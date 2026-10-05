@@ -257,6 +257,8 @@ test("session lock", function()
 	check(SessionLock.owns({ jobId = "a", at = now }, "a"), "owner")
 	check(not SessionLock.owns({ jobId = "b", at = now }, "a"), "not owner")
 	check(not SessionLock.owns(nil, "a"), "no lock")
+end)
+
 -- Tutorial ------------------------------------------------------------------------
 
 test("tutorial step progression", function()

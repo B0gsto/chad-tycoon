@@ -1200,8 +1200,7 @@ return Net
 ]]></string>
         </Properties>
       </Item>
-<<<<<<< HEAD
-      <Item class="ModuleScript" referent="6">
+      <Item class="ModuleScript" referent="9">
         <Properties>
           <string name="Name">SessionLock</string>
           <string name="Source"><![CDATA[--!strict
@@ -1251,8 +1250,10 @@ function SessionLock.owns(existing: Lock?, jobId: string): boolean
 end
 
 return SessionLock
-=======
-      <Item class="ModuleScript" referent="9">
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="10">
         <Properties>
           <string name="Name">TutorialSteps</string>
           <string name="Source"><![CDATA[--!strict
@@ -1376,16 +1377,11 @@ function TutorialSteps.target(step: number, units: { number }?): string?
 end
 
 return TutorialSteps
->>>>>>> worktree-agent-a41f52f5f1625edbb
 ]]></string>
         </Properties>
       </Item>
     </Item>
-<<<<<<< HEAD
-    <Item class="ModuleScript" referent="7">
-=======
-    <Item class="ModuleScript" referent="10">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+    <Item class="ModuleScript" referent="11">
       <Properties>
         <string name="Name">Theme</string>
         <string name="Source"><![CDATA[--[[
@@ -1959,27 +1955,15 @@ return Theme
       </Properties>
     </Item>
   </Item>
-<<<<<<< HEAD
-  <Item class="ServerScriptService" referent="8">
+  <Item class="ServerScriptService" referent="12">
     <Properties>
       <string name="Name">ServerScriptService</string>
     </Properties>
-    <Item class="Folder" referent="9">
+    <Item class="Folder" referent="13">
       <Properties>
         <string name="Name">Server</string>
       </Properties>
-      <Item class="ModuleScript" referent="10">
-=======
-  <Item class="ServerScriptService" referent="11">
-    <Properties>
-      <string name="Name">ServerScriptService</string>
-    </Properties>
-    <Item class="Folder" referent="12">
-      <Properties>
-        <string name="Name">Server</string>
-      </Properties>
-      <Item class="ModuleScript" referent="13">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+      <Item class="ModuleScript" referent="14">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -1998,11 +1982,8 @@ local RunService = game:GetService("RunService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Economy = require(ReplicatedStorage.Shared.Economy)
-<<<<<<< HEAD
 local SessionLock = require(ReplicatedStorage.Shared.SessionLock)
-=======
 local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
->>>>>>> worktree-agent-a41f52f5f1625edbb
 
 local DataService = {}
 
@@ -2240,11 +2221,7 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
-<<<<<<< HEAD
-      <Item class="Script" referent="11">
-=======
-      <Item class="Script" referent="14">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+      <Item class="Script" referent="15">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -2358,11 +2335,7 @@ end)
 ]]></string>
         </Properties>
       </Item>
-<<<<<<< HEAD
-      <Item class="ModuleScript" referent="12">
-=======
-      <Item class="ModuleScript" referent="15">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+      <Item class="ModuleScript" referent="16">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -2540,11 +2513,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-<<<<<<< HEAD
-      <Item class="ModuleScript" referent="13">
-=======
-      <Item class="ModuleScript" referent="16">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+      <Item class="ModuleScript" referent="17">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -2698,10 +2667,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-<<<<<<< HEAD
-      <Item class="ModuleScript" referent="14">
-=======
-      <Item class="ModuleScript" referent="17">
+      <Item class="ModuleScript" referent="18">
         <Properties>
           <string name="Name">Tutorial</string>
           <string name="Source"><![CDATA[--[[
@@ -2814,8 +2780,7 @@ return Tutorial
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="18">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+      <Item class="ModuleScript" referent="19">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -4168,11 +4133,7 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-<<<<<<< HEAD
-      <Item class="ModuleScript" referent="15">
-=======
-      <Item class="ModuleScript" referent="19">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+      <Item class="ModuleScript" referent="20">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -4999,45 +4960,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-<<<<<<< HEAD
-  <Item class="SoundService" referent="16">
-=======
-  <Item class="SoundService" referent="20">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+  <Item class="SoundService" referent="21">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-<<<<<<< HEAD
-  <Item class="StarterPlayer" referent="17">
-=======
-  <Item class="StarterPlayer" referent="21">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+  <Item class="StarterPlayer" referent="22">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-<<<<<<< HEAD
-    <Item class="StarterPlayerScripts" referent="18">
+    <Item class="StarterPlayerScripts" referent="23">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="19">
+      <Item class="Folder" referent="24">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="LocalScript" referent="20">
-=======
-    <Item class="StarterPlayerScripts" referent="22">
-      <Properties>
-        <string name="Name">StarterPlayerScripts</string>
-      </Properties>
-      <Item class="Folder" referent="23">
-        <Properties>
-          <string name="Name">Client</string>
-        </Properties>
-        <Item class="ModuleScript" referent="24">
+        <Item class="ModuleScript" referent="25">
           <Properties>
             <string name="Name">Guide</string>
             <string name="Source"><![CDATA[--[[
@@ -5344,8 +5286,7 @@ return Guide
 ]]></string>
           </Properties>
         </Item>
-        <Item class="LocalScript" referent="25">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+        <Item class="LocalScript" referent="26">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -5509,11 +5450,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-<<<<<<< HEAD
-        <Item class="ModuleScript" referent="21">
-=======
-        <Item class="ModuleScript" referent="26">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+        <Item class="ModuleScript" referent="27">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects using sounds bundled with the Roblox client (no uploads needed),
@@ -5602,11 +5539,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-<<<<<<< HEAD
-        <Item class="ModuleScript" referent="22">
-=======
-        <Item class="ModuleScript" referent="27">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+        <Item class="ModuleScript" referent="28">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -5655,19 +5588,11 @@ return State
 ]]></string>
           </Properties>
         </Item>
-<<<<<<< HEAD
-        <Item class="Folder" referent="23">
+        <Item class="Folder" referent="29">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="24">
-=======
-        <Item class="Folder" referent="28">
-          <Properties>
-            <string name="Name">UI</string>
-          </Properties>
-          <Item class="ModuleScript" referent="29">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+          <Item class="ModuleScript" referent="30">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -6281,11 +6206,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-<<<<<<< HEAD
-          <Item class="ModuleScript" referent="25">
-=======
-          <Item class="ModuleScript" referent="30">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+          <Item class="ModuleScript" referent="31">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -7227,11 +7148,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-<<<<<<< HEAD
-          <Item class="ModuleScript" referent="26">
-=======
-          <Item class="ModuleScript" referent="31">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+          <Item class="ModuleScript" referent="32">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -7925,10 +7842,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-<<<<<<< HEAD
-          <Item class="ModuleScript" referent="27">
-=======
-          <Item class="ModuleScript" referent="32">
+          <Item class="ModuleScript" referent="33">
             <Properties>
               <string name="Name">Tutorial</string>
               <string name="Source"><![CDATA[--[[
@@ -8329,8 +8243,7 @@ return Tutorial
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="33">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+          <Item class="ModuleScript" referent="34">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
@@ -9234,11 +9147,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-<<<<<<< HEAD
-  <Item class="Workspace" referent="28">
-=======
-  <Item class="Workspace" referent="34">
->>>>>>> worktree-agent-a41f52f5f1625edbb
+  <Item class="Workspace" referent="35">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>
