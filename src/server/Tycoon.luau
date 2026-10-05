@@ -75,6 +75,16 @@ Tycoon.hooks = {
 	promptProduct = function(_player: Player, _kind: string, _index: number) end,
 }
 
+-- Gameplay event listeners (used by the tutorial): fn(session, name, data).
+-- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge".
+Tycoon.listeners = {} :: { (Session, string, { [string]: any }) -> () }
+
+local function emit(session: Session, name: string, data: { [string]: any })
+	for _, listener in Tycoon.listeners do
+		task.spawn(listener, session, name, data)
+	end
+end
+
 local function random(): number
 	return rng:NextNumber()
 end
@@ -497,6 +507,7 @@ local function buy(session: Session, amount: number)
 	discoverAll(session)
 	refreshDisplay(session)
 	effect(session, "Buy", { amount = amount })
+	emit(session, "Buy", { amount = amount })
 	markDirty(session)
 end
 
@@ -513,6 +524,7 @@ local function doMerge(session: Session, verbose: boolean)
 		discoverAll(session)
 		refreshDisplay(session)
 		effect(session, "Merge", { merges = merges })
+		emit(session, "Merge", { merges = merges, top = top })
 		if verbose then
 			toast(session, string.format("Merged %s times! Best: %s", Format.short(merges), tierName(top)), "good")
 		end
@@ -578,6 +590,7 @@ padHandlers.Deposit = function(session)
 	p.queue += amount
 	p.carried = 0
 	effect(session, "Deposit", { amount = amount, mult = mult })
+	emit(session, "Deposit", { amount = amount })
 	markDirty(session)
 end
 
@@ -591,6 +604,7 @@ padHandlers.Collect = function(session)
 	addMoney(session, amount)
 	p.pending = 0
 	effect(session, "Cash", { amount = amount })
+	emit(session, "Cash", { amount = amount })
 	markDirty(session)
 end
 
@@ -825,6 +839,8 @@ local function snapshot(session: Session): { [string]: any }
 		income = Economy.incomePerSecond(production, rate, moneyMult),
 		freeIn = math.max(0, p.lastFreeReward + Economy.FREE_REWARD_COOLDOWN - now),
 		plotIndex = session.plot.index,
+		tutorialStep = p.tutorialStep,
+		tutorialDone = p.tutorialDone,
 	}
 end
 
@@ -896,6 +912,7 @@ local function fastTick(session: Session)
 	if collected > 0 then
 		session.profile.carried += collected
 		session.collectBuffer += collected
+		emit(session, "Pickup", { amount = collected })
 		markDirty(session)
 	end
 
@@ -940,6 +957,7 @@ local function slowTick(session: Session)
 		p.pending += processed * Economy.CASH_PER_POINT * Tycoon.moneyMultiplier(session)
 	end
 	if session.passes.AutoCash and p.pending > 0 then
+		emit(session, "Cash", { amount = p.pending })
 		addMoney(session, p.pending)
 		p.pending = 0
 	end
@@ -1061,6 +1079,11 @@ actionHandlers.Sync = function(_session) end
 
 actionHandlers.Merge = function(session)
 	doMerge(session, true)
+end
+
+-- Lets other server modules (e.g. Tutorial) accept their own client actions.
+function Tycoon.addAction(name: string, handler: (Session, { [string]: any }) -> ())
+	actionHandlers[name] = handler
 end
 
 -- Players ---------------------------------------------------------------------------------

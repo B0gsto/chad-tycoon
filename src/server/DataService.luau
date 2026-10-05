@@ -13,6 +13,7 @@ local RunService = game:GetService("RunService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Economy = require(ReplicatedStorage.Shared.Economy)
+local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
 
 local DataService = {}
 
@@ -43,6 +44,8 @@ export type Profile = {
 	settings: { music: boolean, sfx: boolean, fullNumbers: boolean },
 	receipts: { string },
 	totalEarned: number,
+	tutorialStep: number,
+	tutorialDone: boolean,
 }
 
 local function zeros(n: number): { number }
@@ -80,6 +83,8 @@ function DataService.defaultProfile(): Profile
 		settings = { music = true, sfx = true, fullNumbers = false },
 		receipts = {},
 		totalEarned = 0,
+		tutorialStep = 1,
+		tutorialDone = false,
 	}
 end
 
@@ -88,6 +93,11 @@ local function reconcile(data: any): Profile
 	local default = DataService.defaultProfile()
 	if type(data) ~= "table" then
 		return default
+	end
+	-- Saves from before the tutorial existed belong to players who already
+	-- know the game: don't send them through onboarding.
+	if data.tutorialDone == nil then
+		data.tutorialDone = type(data.totalObtained) == "number" and data.totalObtained > 1
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
@@ -114,6 +124,7 @@ local function reconcile(data: any): Profile
 		end
 	end
 	data.buyTier = math.clamp(math.floor(data.buyTier), 1, Economy.MAX_BUY_TIER)
+	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
 	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
 		data.heldChest = ""
 	end

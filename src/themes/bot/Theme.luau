@@ -37,6 +37,54 @@ Theme.Words = {
 	BuyTier = "UPGRADE ASSEMBLY",
 }
 
+-- Onboarding tutorial and loading screen (see the chad theme for the format).
+Theme.Tutorial = {
+	Title = "FACTORY ORIENTATION",
+	Steps = {
+		{
+			Title = "Build your first Bot",
+			Text = "Step on the glowing BUY 1 pad.",
+			Icon = "🛒",
+		},
+		{
+			Title = "Harvest energy",
+			Text = "Your Bots drop energy cells. Walk over them to fill your tank.",
+			Icon = "⚡",
+		},
+		{
+			Title = "Refine the energy",
+			Text = "Step on the ENERGY REFINERY pad to send your tank in.",
+			Icon = "🏭",
+		},
+		{
+			Title = "Cash out",
+			Text = "Step on COLLECT CASH to bank what the refinery made.",
+			Icon = "💵",
+		},
+		{
+			Title = "Fuse two Bots",
+			Text = "Two Bots of the same tier fuse into a stronger one. Step on the FUSION PAD.",
+			Hint = "You need two of the same tier: build one more on BUY 1 first.",
+			Icon = "🔀",
+		},
+	},
+	DoneTitle = "ORIENTATION COMPLETE!",
+	DoneText = "The factory is yours. Time to build the mega factory.",
+	Skip = "Skip",
+	SkipConfirm = "Skip the orientation? You'll miss the completion reward.",
+	Follow = "Follow the arrow",
+}
+
+Theme.Loading = {
+	Status = "Booting the factory...",
+	Tips = {
+		"Tip: two Bots of the same tier fuse into the next tier.",
+		"Tip: refine when the Refinery Multiplier is high for more cash.",
+		"Tip: during a Power Surge every Bot makes double energy.",
+		"Tip: carry crates to the Crate Decoder to open them for free.",
+	},
+}
+
 Theme.Icons = {
 	Unit = "🤖",
 	Orb = "⚡",
@@ -52,6 +100,7 @@ Theme.Icons = {
 	Premium = "⭐",
 	Friends = "👥",
 	Chest = "📦",
+	Free = "🎁",
 }
 
 Theme.Fonts = {
