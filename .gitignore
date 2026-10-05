@@ -5,3 +5,6 @@ sourcemap.json
 *.rbxlx.lock
 /tools/
 .cache/
+preview/node_modules/
+preview/out/
+preview/render/node_modules/

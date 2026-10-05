@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Preview stage</title>
+<script type="importmap">
+{ "imports": {
+	"three": "../render/node_modules/three/build/three.module.js",
+	"three/addons/": "../render/node_modules/three/examples/jsm/"
+} }
+</script>
+<style>
+	html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+	#view { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; display: none; }
+	#overlay { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; pointer-events: none; }
+	#bake { position: absolute; left: 0; top: 0; }
+	#thumb { position: absolute; left: 0; top: 0; display: none; }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="overlay"></div>
+<div id="bake"></div>
+<canvas id="thumb"></canvas>
+<script type="module">
+import { renderGui } from "./gui-renderer.js";
+import { renderScene } from "./scene.js";
+
+const asScreen = (gui) => ({ ...gui, class: "ScreenGui" });
+const AVATAR = "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+	<rect x="4" y="4" width="92" height="92" rx="18" fill="#3a3550"/>
+	<rect x="28" y="20" width="44" height="40" rx="8" fill="#f2c9a0"/>
+	<rect x="24" y="14" width="52" height="14" rx="5" fill="#ffc83c"/>
+	<circle cx="41" cy="40" r="4" fill="#222"/><circle cx="59" cy="40" r="4" fill="#222"/>
+	<path d="M40 50 Q50 57 60 50" stroke="#222" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+	<rect x="22" y="62" width="56" height="34" rx="8" fill="#1e1e26"/>
+</svg>`);
+
+// Renders a SurfaceGui/BillboardGui tree into #bake at w x h CSS px.
+window.bakeGui = async (gui, w, h) => {
+	const bake = document.getElementById("bake");
+	bake.innerHTML = "";
+	bake.style.width = w + "px";
+	bake.style.height = h + "px";
+	const container = document.createElement("div");
+	container.style.cssText = `position:absolute;left:0;top:0;width:${w}px;height:${h}px;overflow:hidden;`;
+	bake.appendChild(container);
+	await renderGui({ viewport: [w, h], root: asScreen(gui) }, container, {
+		guiInset: 0,
+		// Avatar headshots (rbxthumb://) are fetched from Roblox at runtime; draw a stand-in.
+		imageResolver: (image) => (typeof image === "string" && image.startsWith("rbxthumb://") ? AVATAR : null),
+	});
+	return true;
+};
+
+window.clearBake = () => {
+	const bake = document.getElementById("bake");
+	bake.innerHTML = "";
+	bake.style.width = bake.style.height = "0px";
+};
+
+const thumbs = {};
+window.setThumbs = (map) => Object.assign(thumbs, map);
+
+window.renderThumb = async (scene, group, silhouette, camera, size) => {
+	const canvas = document.getElementById("thumb");
+	canvas.style.display = "block";
+	canvas.style.width = canvas.style.height = size + "px";
+	document.getElementById("view").style.display = "none";
+	await renderScene(canvas, scene, {
+		width: size, height: size, pixelRatio: 1, camera, group, silhouette,
+		transparentBackground: true, noShadows: true, noBloom: true, noBillboards: true, maxLights: 0,
+	});
+	return true;
+};
+
+window.renderShot = async (scene, textures, camera, gui, extra) => {
+	document.getElementById("thumb").style.display = "none";
+	const canvas = document.getElementById("view");
+	canvas.style.display = "block";
+	await renderScene(canvas, scene, {
+		width: 1280, height: 720, pixelRatio: window.devicePixelRatio, camera,
+		surfaceTextures: textures.surfaces, billboardTextures: textures.billboards, ...extra,
+	});
+	const overlay = document.getElementById("overlay");
+	overlay.innerHTML = "";
+	if (gui) {
+		await renderGui(gui, overlay, {
+			imageResolver: (image) => {
+				if (typeof image === "string" && image.startsWith("thumb:")) return thumbs[image] || null;
+				return null;
+			},
+		});
+	}
+	return true;
+};
+</script>
+</body>
+</html>

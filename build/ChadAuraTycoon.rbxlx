@@ -337,6 +337,8 @@ end
 
 -- Turns a model into a black silhouette (for undiscovered Index entries).
 function CharacterFactory.silhouette(model: Model)
+	-- Collect first, destroy after, so we never visit children of a destroyed instance.
+	local remove: { Instance } = {}
 	for _, d in model:GetDescendants() do
 		if d:IsA("BasePart") then
 			if d.Transparency < 1 then
@@ -345,8 +347,11 @@ function CharacterFactory.silhouette(model: Model)
 				d.Transparency = 0
 			end
 		elseif d:IsA("ParticleEmitter") or d:IsA("Sparkles") or d:IsA("Fire") or d:IsA("Light") or d:IsA("SurfaceGui") then
-			d:Destroy()
+			table.insert(remove, d)
 		end
+	end
+	for _, d in remove do
+		d:Destroy()
 	end
 end
 
@@ -5041,6 +5046,9 @@ function Kit.unitViewport(parent: Instance, tier: number, props: { [string]: any
 		LightDirection = Vector3.new(-0.5, -1, 0.6),
 		Parent = parent,
 	})
+	-- Tagged so tooling (preview renderer) can identify what the viewport shows.
+	viewport:SetAttribute("Tier", tier)
+	viewport:SetAttribute("Silhouette", silhouette == true)
 	local model = CharacterFactory.build(look, Theme.Tiers[tier].Name)
 	if silhouette then
 		CharacterFactory.silhouette(model)

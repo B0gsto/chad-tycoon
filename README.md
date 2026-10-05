@@ -7,6 +7,26 @@ One codebase, two themed games built on a classic merge-tycoon loop. Everything 
 | **Chad Aura Tycoon** | `build/ChadAuraTycoon.rbxlx` | Normie → Absolute Chad | Aura ✨ | Rizz 💎 |
 | **Bot Factory Tycoon** | `build/BotFactoryTycoon.rbxlx` | Scrap Bot → Infinity Engine | Energy ⚡ | Chips 💾 |
 
+## Screenshots
+
+These are preview renders, not captures from Roblox Studio. Roblox can't run headless, so `preview/render.sh` runs the game's real server and client code under Lune, exports the generated world and UI, and renders them with three.js in headless Chromium. Lighting and materials therefore differ a little from Roblox. The layout, units, signs and UI come straight from the game code. All screenshots are in `preview/screenshots/`.
+
+### Chad Aura Tycoon
+
+| | |
+|---|---|
+| ![Gameplay](preview/screenshots/chad/03-gameplay-hud.png) | ![Your plot](preview/screenshots/chad/02-your-plot.png) |
+| ![All 25 tiers](preview/screenshots/chad/10-all-25-tiers.png) | ![Holding a crate](preview/screenshots/chad/08-holding-crate.png) |
+| ![Shop](preview/screenshots/chad/04-shop.png) | ![Index](preview/screenshots/chad/05-index.png) |
+
+### Bot Factory Tycoon
+
+| | |
+|---|---|
+| ![Gameplay](preview/screenshots/bot/03-gameplay-hud.png) | ![Your plot](preview/screenshots/bot/02-your-plot.png) |
+| ![All 25 tiers](preview/screenshots/bot/10-all-25-tiers.png) | ![Holding a crate](preview/screenshots/bot/08-holding-crate.png) |
+| ![Ranking](preview/screenshots/bot/06-ranking.png) | ![New unit](preview/screenshots/bot/07-new-unit-reward.png) |
+
 ## How the game plays
 
 1. **Buy units** on the Buy 1 / 5 / 25 / 100 pads. They stand on your display shelves.
@@ -74,6 +94,7 @@ src/server/Ranking.luau                OrderedDataStore leaderboard
 src/client/                            HUD, Shop / Index / Ranking / Settings, popups, sounds
 src/themes/chad|bot/Theme.luau         names, words, colours, fonts, lighting, 25 tiers, product IDs
 tests/run.luau                         Lune unit tests (economy, formatting, both themes)
+preview/                               screenshot pipeline (Lune exporter + three.js/Chromium renderer)
 reference/                             the original reference screenshots
 ```
 

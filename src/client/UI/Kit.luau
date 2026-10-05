@@ -225,6 +225,9 @@ function Kit.unitViewport(parent: Instance, tier: number, props: { [string]: any
 		LightDirection = Vector3.new(-0.5, -1, 0.6),
 		Parent = parent,
 	})
+	-- Tagged so tooling (preview renderer) can identify what the viewport shows.
+	viewport:SetAttribute("Tier", tier)
+	viewport:SetAttribute("Silhouette", silhouette == true)
 	local model = CharacterFactory.build(look, Theme.Tiers[tier].Name)
 	if silhouette then
 		CharacterFactory.silhouette(model)

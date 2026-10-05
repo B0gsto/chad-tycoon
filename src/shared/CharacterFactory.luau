@@ -325,6 +325,8 @@ end
 
 -- Turns a model into a black silhouette (for undiscovered Index entries).
 function CharacterFactory.silhouette(model: Model)
+	-- Collect first, destroy after, so we never visit children of a destroyed instance.
+	local remove: { Instance } = {}
 	for _, d in model:GetDescendants() do
 		if d:IsA("BasePart") then
 			if d.Transparency < 1 then
@@ -333,8 +335,11 @@ function CharacterFactory.silhouette(model: Model)
 				d.Transparency = 0
 			end
 		elseif d:IsA("ParticleEmitter") or d:IsA("Sparkles") or d:IsA("Fire") or d:IsA("Light") or d:IsA("SurfaceGui") then
-			d:Destroy()
+			table.insert(remove, d)
 		end
+	end
+	for _, d in remove do
+		d:Destroy()
 	end
 end
 
