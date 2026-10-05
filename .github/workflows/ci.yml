@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          mkdir -p "$HOME/bin"
+          cd "$HOME/bin"
+          fetch() { curl -fsSL -o t.zip "$1" && unzip -o -q t.zip && rm t.zip; }
+          fetch https://github.com/rojo-rbx/rojo/releases/download/v7.4.4/rojo-7.4.4-linux-x86_64.zip
+          fetch https://github.com/Kampfkarren/selene/releases/download/0.27.1/selene-0.27.1-linux.zip
+          fetch https://github.com/JohnnyMorganz/StyLua/releases/download/v0.20.0/stylua-linux-x86_64.zip
+          fetch https://github.com/lune-org/lune/releases/download/v0.8.9/lune-0.8.9-linux-x86_64.zip
+          fetch https://github.com/JohnnyMorganz/luau-lsp/releases/download/1.53.0/luau-lsp-linux-x86_64.zip
+          chmod +x ./*
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Check, test and build
+        run: scripts/check.sh
+
+      - name: Upload place files
+        uses: actions/upload-artifact@v4
+        with:
+          name: places
+          path: build/*.rbxlx

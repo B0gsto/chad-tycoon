@@ -1,0 +1,6012 @@
+<roblox version="4">
+  <Item class="ReplicatedStorage" referent="0">
+    <Properties>
+      <string name="Name">ReplicatedStorage</string>
+    </Properties>
+    <Item class="Folder" referent="1">
+      <Properties>
+        <string name="Name">Shared</string>
+      </Properties>
+      <Item class="ModuleScript" referent="2">
+        <Properties>
+          <string name="Name">CharacterFactory</string>
+          <string name="Source"><![CDATA[--[[
+	CharacterFactory: builds the blocky unit figures from a theme "look" table.
+	Used by the server (display shelves) and the client (Index / reward
+	viewports). Everything is made from plain parts, so no uploaded assets are
+	needed.
+
+	Look fields (all optional except colours):
+	  skin, shirt, pants : Color3
+	  face               : string drawn on the head (emoji or text)
+	  faceColor          : Color3 for text faces
+	  material           : Enum.Material name for the body ("Metal", "Glass", ...)
+	  buff               : 0..1 extra width on torso/arms
+	  scale              : overall size multiplier
+	  jaw                : true for a wide chin block
+	  acc                : list of accessory names (see ACCESSORIES)
+	  accColor           : Color3 for accessories
+	  aura               : Color3 particle aura
+	  sparkles           : true for a Sparkles effect
+	  fire               : Color3 fire effect
+	  glow               : Color3 point light
+]]
+
+local CharacterFactory = {}
+
+export type Look = {
+	skin: Color3,
+	shirt: Color3,
+	pants: Color3,
+	face: string?,
+	faceColor: Color3?,
+	faceFont: Enum.Font?,
+	material: string?,
+	buff: number?,
+	scale: number?,
+	jaw: boolean?,
+	acc: { string }?,
+	accColor: Color3?,
+	aura: Color3?,
+	sparkles: boolean?,
+	fire: Color3?,
+	glow: Color3?,
+}
+
+local function part(model: Model, name: string, size: Vector3, cframe: CFrame, color: Color3, material: Enum.Material?): Part
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = size
+	p.CFrame = cframe
+	p.Color = color
+	p.Material = material or Enum.Material.SmoothPlastic
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Parent = model
+	return p
+end
+
+local function materialFrom(name: string?): Enum.Material
+	if name then
+		local ok, value = pcall(function()
+			return (Enum.Material :: any)[name]
+		end)
+		if ok and value then
+			return value
+		end
+	end
+	return Enum.Material.SmoothPlastic
+end
+
+type Ctx = {
+	model: Model,
+	head: Part,
+	torso: Part,
+	headTop: number,
+	torsoWidth: number,
+	color: Color3,
+}
+
+local ACCESSORIES: { [string]: (Ctx) -> () } = {}
+
+ACCESSORIES.Cap = function(c)
+	local y = c.headTop
+	part(c.model, "Cap", Vector3.new(1.4, 0.4, 1.4), CFrame.new(0, y + 0.1, 0), c.color)
+	part(c.model, "Brim", Vector3.new(1.3, 0.12, 0.7), CFrame.new(0, y - 0.05, -0.95), c.color)
+end
+
+ACCESSORIES.Headband = function(c)
+	part(c.model, "Headband", Vector3.new(1.42, 0.25, 1.42), CFrame.new(0, c.headTop - 0.35, 0), c.color)
+end
+
+ACCESSORIES.Shades = function(c)
+	local y = c.headTop - 0.6
+	part(c.model, "Shades", Vector3.new(1.36, 0.28, 0.12), CFrame.new(0, y, -0.68), Color3.new(0.05, 0.05, 0.05), Enum.Material.Glass)
+end
+
+ACCESSORIES.Visor = function(c)
+	local y = c.headTop - 0.6
+	part(c.model, "Visor", Vector3.new(1.4, 0.3, 0.12), CFrame.new(0, y, -0.68), c.color, Enum.Material.Neon)
+end
+
+ACCESSORIES.Chain = function(c)
+	local gold = Color3.fromRGB(255, 205, 60)
+	part(c.model, "ChainBand", Vector3.new(c.torsoWidth * 0.7, 0.14, 0.08), CFrame.new(0, 3.75, -0.55), gold, Enum.Material.Metal)
+	local medal = part(
+		c.model,
+		"Medal",
+		Vector3.new(0.1, 0.55, 0.55),
+		CFrame.new(0, 3.3, -0.56) * CFrame.Angles(0, math.rad(90), 0),
+		gold,
+		Enum.Material.Metal
+	)
+	medal.Shape = Enum.PartType.Cylinder
+end
+
+ACCESSORIES.Crown = function(c)
+	local y = c.headTop
+	local gold = c.color
+	part(c.model, "CrownBase", Vector3.new(1.45, 0.35, 1.45), CFrame.new(0, y + 0.15, 0), gold, Enum.Material.Metal)
+	for i = 0, 3 do
+		local angle = math.rad(i * 90 + 45)
+		local spike = part(
+			c.model,
+			"Spike",
+			Vector3.new(0.3, 0.45, 0.3),
+			CFrame.new(math.cos(angle) * 0.55, y + 0.5, math.sin(angle) * 0.55),
+			gold,
+			Enum.Material.Metal
+		)
+		spike.Shape = Enum.PartType.Ball
+	end
+end
+
+ACCESSORIES.Halo = function(c)
+	local y = c.headTop + 0.6
+	for i = 0, 9 do
+		local angle = math.rad(i * 36)
+		local bead = part(
+			c.model,
+			"Halo",
+			Vector3.new(0.22, 0.22, 0.22),
+			CFrame.new(math.cos(angle) * 0.75, y, math.sin(angle) * 0.75),
+			c.color,
+			Enum.Material.Neon
+		)
+		bead.Shape = Enum.PartType.Ball
+	end
+end
+
+ACCESSORIES.Horns = function(c)
+	local y = c.headTop + 0.15
+	for side = -1, 1, 2 do
+		local horn = part(
+			c.model,
+			"Horn",
+			Vector3.new(0.25, 0.7, 0.25),
+			CFrame.new(side * 0.5, y, 0) * CFrame.Angles(0, 0, math.rad(-side * 25)),
+			c.color,
+			Enum.Material.Neon
+		)
+		horn.Shape = Enum.PartType.Block
+	end
+end
+
+ACCESSORIES.Antenna = function(c)
+	local y = c.headTop
+	part(c.model, "AntennaRod", Vector3.new(0.1, 0.8, 0.1), CFrame.new(0, y + 0.4, 0), Color3.fromRGB(80, 80, 90), Enum.Material.Metal)
+	local tip = part(c.model, "AntennaTip", Vector3.new(0.3, 0.3, 0.3), CFrame.new(0, y + 0.85, 0), c.color, Enum.Material.Neon)
+	tip.Shape = Enum.PartType.Ball
+end
+
+ACCESSORIES.Cape = function(c)
+	part(
+		c.model,
+		"Cape",
+		Vector3.new(c.torsoWidth * 0.95, 2.6, 0.1),
+		CFrame.new(0, 2.75, 0.6) * CFrame.Angles(math.rad(-8), 0, 0),
+		c.color,
+		Enum.Material.Fabric
+	)
+end
+
+ACCESSORIES.Wings = function(c)
+	for side = -1, 1, 2 do
+		part(
+			c.model,
+			"Wing",
+			Vector3.new(2.2, 1.6, 0.1),
+			CFrame.new(side * (c.torsoWidth / 2 + 0.7), 3.4, 0.75) * CFrame.Angles(0, math.rad(side * 25), math.rad(side * 20)),
+			c.color,
+			Enum.Material.Neon
+		).Transparency =
+			0.25
+	end
+end
+
+ACCESSORIES.Backpack = function(c)
+	part(c.model, "Pack", Vector3.new(c.torsoWidth * 0.7, 1.4, 0.6), CFrame.new(0, 3, 0.8), c.color, Enum.Material.Metal)
+end
+
+ACCESSORIES.Shoulders = function(c)
+	for side = -1, 1, 2 do
+		part(
+			c.model,
+			"Pad",
+			Vector3.new(1.3, 0.4, 1.3),
+			CFrame.new(side * (c.torsoWidth / 2 + 0.45), 4.05, 0),
+			c.color,
+			Enum.Material.Metal
+		)
+	end
+end
+
+-- Builds a model standing on y = 0 at the origin, facing -Z.
+function CharacterFactory.build(look: Look, name: string?): Model
+	local model = Instance.new("Model")
+	model.Name = name or "Unit"
+
+	local buff = look.buff or 0
+	local bodyMaterial = materialFrom(look.material)
+	local torsoWidth = 2 + buff * 0.8
+	local armWidth = 1 + buff * 0.45
+
+	-- Root sits at the feet so PivotTo/ScaleTo keep the unit standing on the floor.
+	local root = part(model, "Root", Vector3.new(0.2, 0.2, 0.2), CFrame.new(0, 0, 0), Color3.new(1, 1, 1))
+	root.Transparency = 1
+	model.PrimaryPart = root
+
+	part(model, "LeftLeg", Vector3.new(0.95, 2, 1), CFrame.new(-0.5, 1, 0), look.pants, bodyMaterial)
+	part(model, "RightLeg", Vector3.new(0.95, 2, 1), CFrame.new(0.5, 1, 0), look.pants, bodyMaterial)
+	local torso = part(model, "Torso", Vector3.new(torsoWidth, 2, 1), CFrame.new(0, 3, 0), look.shirt, bodyMaterial)
+	local armX = torsoWidth / 2 + armWidth / 2
+	part(model, "LeftArm", Vector3.new(armWidth, 2, 1), CFrame.new(-armX, 3, 0), look.skin, bodyMaterial)
+	part(model, "RightArm", Vector3.new(armWidth, 2, 1), CFrame.new(armX, 3, 0), look.skin, bodyMaterial)
+
+	local head = part(model, "Head", Vector3.new(1.3, 1.3, 1.3), CFrame.new(0, 4.65, 0), look.skin, bodyMaterial)
+	local headTop = 5.3
+	if look.jaw then
+		part(model, "Jaw", Vector3.new(1.45, 0.45, 1.2), CFrame.new(0, 4.1, -0.05), look.skin, bodyMaterial)
+	end
+
+	if look.face and look.face ~= "" then
+		local gui = Instance.new("SurfaceGui")
+		gui.Name = "Face"
+		gui.Face = Enum.NormalId.Front
+		gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+		gui.PixelsPerStud = 60
+		gui.LightInfluence = 0
+		gui.Parent = head
+		local label = Instance.new("TextLabel")
+		label.BackgroundTransparency = 1
+		label.Size = UDim2.fromScale(1, 1)
+		label.Text = look.face
+		label.TextScaled = true
+		label.Font = look.faceFont or Enum.Font.GothamBold
+		label.TextColor3 = look.faceColor or Color3.new(0.1, 0.1, 0.1)
+		label.Parent = gui
+	end
+
+	local ctx: Ctx = {
+		model = model,
+		head = head,
+		torso = torso,
+		headTop = headTop,
+		torsoWidth = torsoWidth,
+		color = look.accColor or Color3.fromRGB(255, 205, 60),
+	}
+	local accessories: { string } = look.acc or {}
+	for _, accName in accessories do
+		local builder = ACCESSORIES[accName]
+		if builder then
+			builder(ctx)
+		end
+	end
+
+	if look.aura then
+		local emitter = Instance.new("ParticleEmitter")
+		emitter.Name = "Aura"
+		emitter.Color = ColorSequence.new(look.aura)
+		emitter.LightEmission = 1
+		emitter.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.6),
+			NumberSequenceKeypoint.new(1, 0),
+		})
+		emitter.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.2),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		emitter.Lifetime = NumberRange.new(0.8, 1.4)
+		emitter.Rate = 10
+		emitter.Speed = NumberRange.new(1.5, 3)
+		emitter.SpreadAngle = Vector2.new(180, 180)
+		emitter.Acceleration = Vector3.new(0, 3, 0)
+		emitter.Parent = torso
+	end
+	if look.sparkles then
+		local sparkles = Instance.new("Sparkles")
+		sparkles.SparkleColor = look.aura or Color3.new(1, 1, 1)
+		sparkles.Parent = torso
+	end
+	if look.fire then
+		local fire = Instance.new("Fire")
+		fire.Color = look.fire
+		fire.SecondaryColor = Color3.new(1, 1, 1)
+		fire.Size = 4
+		fire.Heat = 6
+		fire.Parent = torso
+	end
+	if look.glow or look.aura then
+		local light = Instance.new("PointLight")
+		light.Color = look.glow or look.aura :: Color3
+		light.Brightness = 1.5
+		light.Range = 8
+		light.Parent = torso
+	end
+
+	local scale = look.scale or 1
+	if scale ~= 1 then
+		model:ScaleTo(scale)
+	end
+	return model
+end
+
+-- Turns a model into a black silhouette (for undiscovered Index entries).
+function CharacterFactory.silhouette(model: Model)
+	-- Collect first, destroy after, so we never visit children of a destroyed instance.
+	local remove: { Instance } = {}
+	for _, d in model:GetDescendants() do
+		if d:IsA("BasePart") then
+			if d.Transparency < 1 then
+				d.Color = Color3.fromRGB(15, 15, 20)
+				d.Material = Enum.Material.SmoothPlastic
+				d.Transparency = 0
+			end
+		elseif d:IsA("ParticleEmitter") or d:IsA("Sparkles") or d:IsA("Fire") or d:IsA("Light") or d:IsA("SurfaceGui") then
+			table.insert(remove, d)
+		end
+	end
+	for _, d in remove do
+		d:Destroy()
+	end
+end
+
+-- Height of the built model (for placing labels above it).
+function CharacterFactory.height(look: Look): number
+	local h = 5.3
+	local acc = look.acc or {}
+	if table.find(acc, "Halo") then
+		h += 0.8
+	elseif table.find(acc, "Crown") or table.find(acc, "Antenna") then
+		h += 0.6
+	end
+	return h * (look.scale or 1)
+end
+
+return CharacterFactory
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="3">
+        <Properties>
+          <string name="Name">Economy</string>
+          <string name="Source"><![CDATA[--!strict
+--[[
+	Economy: every balance number and pure formula in the game.
+
+	This module has no Roblox dependencies so it can be unit-tested with Lune
+	(see tests/). Both variants share it; only names, colours and looks differ
+	per theme.
+
+	Core loop:
+	  buy units -> units drop orbs -> walk over orbs to carry them
+	  -> deposit at the converter (x random multiplier) -> processed into cash
+	  -> collect cash -> buy more / upgrade.
+	Two units of the same tier merge into one unit of the next tier.
+]]
+
+local Economy = {}
+
+Economy.VERSION = "1.0.0"
+
+Economy.MAX_TIER = 25
+Economy.MAX_BUY_TIER = 15
+Economy.MERGE_RATIO = 2
+Economy.DISPLAY_SLOTS = 30
+
+-- Production ------------------------------------------------------------------
+
+-- Each tier produces this many times more than the previous one. Must be greater
+-- than MERGE_RATIO so merging is always an upgrade.
+Economy.TIER_RATE_GROWTH = 2.6
+
+function Economy.unitRate(tier: number): number
+	return Economy.TIER_RATE_GROWTH ^ (tier - 1)
+end
+
+function Economy.productionPerSecond(units: { number }): number
+	local total = 0
+	for tier = 1, Economy.MAX_TIER do
+		local count = units[tier] or 0
+		if count > 0 then
+			total += count * Economy.unitRate(tier)
+		end
+	end
+	return total
+end
+
+function Economy.totalUnits(units: { number }): number
+	local total = 0
+	for tier = 1, Economy.MAX_TIER do
+		total += units[tier] or 0
+	end
+	return total
+end
+
+function Economy.highestTier(discovered: { number }): number
+	for tier = Economy.MAX_TIER, 1, -1 do
+		if (discovered[tier] or 0) > 0 then
+			return tier
+		end
+	end
+	return 1
+end
+
+-- Merges every pair it can, cascading upward. Mutates `units` in place.
+-- Returns how many merges happened and the highest tier that received a unit.
+function Economy.mergeAll(units: { number }): (number, number)
+	local merges = 0
+	local topCreated = 0
+	for tier = 1, Economy.MAX_TIER - 1 do
+		local count = units[tier] or 0
+		local made = math.floor(count / Economy.MERGE_RATIO)
+		if made > 0 then
+			units[tier] = count - made * Economy.MERGE_RATIO
+			units[tier + 1] = (units[tier + 1] or 0) + made
+			merges += made
+			topCreated = tier + 1
+		end
+	end
+	return merges, topCreated
+end
+
+-- Buying ----------------------------------------------------------------------
+
+Economy.BUY_BASE_PRICE = 20
+Economy.BUY_PRICE_GROWTH = 2.3
+Economy.BUY_AMOUNTS = { 1, 5, 25, 100 }
+
+function Economy.basePrice(buyTier: number): number
+	return Economy.BUY_BASE_PRICE * Economy.BUY_PRICE_GROWTH ^ (buyTier - 1)
+end
+
+-- Units that must be bought at the current buy tier before it can be upgraded.
+function Economy.buyTierRequirement(buyTier: number): number
+	return math.floor(150 * 1.6 ^ (buyTier - 1))
+end
+
+-- Price of the next single unit. Grows linearly with purchases made at this
+-- tier (2x once the upgrade requirement is reached) to push tier upgrades.
+function Economy.unitPrice(buyTier: number, boughtAtTier: number): number
+	return Economy.basePrice(buyTier) * (1 + boughtAtTier / Economy.buyTierRequirement(buyTier))
+end
+
+-- Exact sum of unitPrice for `amount` consecutive purchases.
+function Economy.bulkPrice(buyTier: number, boughtAtTier: number, amount: number): number
+	local req = Economy.buyTierRequirement(buyTier)
+	local linear = amount * boughtAtTier + amount * (amount - 1) / 2
+	return Economy.basePrice(buyTier) * (amount + linear / req)
+end
+
+function Economy.buyTierUpgradeCost(buyTier: number): number
+	return Economy.basePrice(buyTier + 1) * Economy.buyTierRequirement(buyTier) * 0.5
+end
+
+Economy.AUTO_MERGE_COST = 25000
+
+-- Processing (the converter that turns deposited orbs into cash) ---------------
+
+Economy.PROCESS_BASE = 10
+Economy.PROCESS_GROWTH = 1.12
+Economy.PROCESS_COST_BASE = 75
+Economy.PROCESS_COST_GROWTH = 1.155
+Economy.PROCESS_BULK = 10
+
+function Economy.processRate(level: number): number
+	return Economy.PROCESS_BASE * Economy.PROCESS_GROWTH ^ level
+end
+
+function Economy.processUpgradeCost(level: number): number
+	return Economy.PROCESS_COST_BASE * Economy.PROCESS_COST_GROWTH ^ level
+end
+
+-- Cost of buying `amount` levels starting from `level` (geometric series).
+function Economy.processBulkCost(level: number, amount: number): number
+	local g = Economy.PROCESS_COST_GROWTH
+	return Economy.processUpgradeCost(level) * (g ^ amount - 1) / (g - 1)
+end
+
+-- Cash value of one orb point before multipliers.
+Economy.CASH_PER_POINT = 1
+
+-- Deposit multiplier (global, rerolled on a timer) ------------------------------
+
+Economy.DEPOSIT_REROLL_SECONDS = 20
+Economy.DEPOSIT_MULTIPLIERS = {
+	{ value = 0.5, weight = 6 },
+	{ value = 0.7, weight = 10 },
+	{ value = 0.8, weight = 12 },
+	{ value = 0.9, weight = 14 },
+	{ value = 1.0, weight = 16 },
+	{ value = 1.1, weight = 14 },
+	{ value = 1.2, weight = 10 },
+	{ value = 1.3, weight = 8 },
+	{ value = 1.5, weight = 5 },
+	{ value = 1.8, weight = 3 },
+	{ value = 2.0, weight = 1.5 },
+	{ value = 3.0, weight = 0.5 },
+}
+Economy.DEPOSIT_MIN = 0.5
+Economy.DEPOSIT_MAX = 3.0
+
+local function pickWeighted<T>(entries: { T }, weightOf: (T) -> number, roll: number): T
+	local total = 0
+	for _, entry in entries do
+		total += weightOf(entry)
+	end
+	local target = roll * total
+	for _, entry in entries do
+		target -= weightOf(entry)
+		if target < 0 then
+			return entry
+		end
+	end
+	return entries[#entries]
+end
+
+function Economy.rollDepositMultiplier(rng: () -> number): number
+	local entry = pickWeighted(Economy.DEPOSIT_MULTIPLIERS, function(e)
+		return e.weight
+	end, rng())
+	return entry.value
+end
+
+-- Global "surge" event: double orbs for the last part of every cycle. ----------
+
+Economy.SURGE_CYCLE = 600
+Economy.SURGE_DURATION = 120
+Economy.SURGE_MULTIPLIER = 2
+
+-- Returns whether a surge is active at `now` and seconds until it changes state.
+function Economy.surgeState(now: number): (boolean, number)
+	local t = now % Economy.SURGE_CYCLE
+	local start = Economy.SURGE_CYCLE - Economy.SURGE_DURATION
+	if t >= start then
+		return true, Economy.SURGE_CYCLE - t
+	end
+	return false, start - t
+end
+
+-- Chests ----------------------------------------------------------------------
+
+Economy.CHEST_RARITIES = { "Common", "Uncommon", "Rare", "Epic", "Legendary" }
+
+Economy.CHEST_INFO = {
+	Common = { weight = 82, unlockSeconds = 180, gemPrice = 5, priceMult = 1, offsets = { { -2, 75 }, { -1, 20 }, { 0, 5 } } },
+	Uncommon = { weight = 12, unlockSeconds = 480, gemPrice = 12, priceMult = 2.5, offsets = { { -1, 70 }, { 0, 25 }, { 1, 5 } } },
+	Rare = { weight = 4.5, unlockSeconds = 1200, gemPrice = 30, priceMult = 6, offsets = { { -1, 40 }, { 0, 45 }, { 1, 15 } } },
+	Epic = { weight = 1.2, unlockSeconds = 2700, gemPrice = 60, priceMult = 15, offsets = { { 0, 60 }, { 1, 32 }, { 2, 8 } } },
+	Legendary = { weight = 0.3, unlockSeconds = 5400, gemPrice = 120, priceMult = 40, offsets = { { 0, 30 }, { 1, 50 }, { 2, 20 } } },
+}
+
+Economy.CHEST_SPAWN_INTERVAL = 40
+Economy.CHEST_SPAWN_CHANCE = 0.45
+Economy.MAX_FLOOR_CHESTS = 3
+Economy.PREMIUM_UNLOCK_SPEED = 3
+
+function Economy.isRarity(rarity: string): boolean
+	return Economy.CHEST_INFO[rarity] ~= nil
+end
+
+function Economy.rollChestRarity(rng: () -> number): string
+	return pickWeighted(Economy.CHEST_RARITIES, function(r)
+		return Economy.CHEST_INFO[r].weight
+	end, rng())
+end
+
+export type Odds = { tier: number, chance: number }
+
+-- Possible tiers and their % chance, relative to the player's highest tier.
+-- Offsets that clamp onto the same tier are combined.
+function Economy.chestOdds(rarity: string, highestTier: number): { Odds }
+	local info = Economy.CHEST_INFO[rarity]
+	local byTier: { [number]: number } = {}
+	for _, pair in info.offsets do
+		local tier = math.clamp(highestTier + pair[1], 1, Economy.MAX_TIER)
+		byTier[tier] = (byTier[tier] or 0) + pair[2]
+	end
+	local list: { Odds } = {}
+	for tier, chance in byTier do
+		table.insert(list, { tier = tier, chance = chance })
+	end
+	table.sort(list, function(a, b)
+		return a.tier < b.tier
+	end)
+	return list
+end
+
+function Economy.rollChest(rarity: string, highestTier: number, rng: () -> number): number
+	local entry = pickWeighted(Economy.chestOdds(rarity, highestTier), function(o)
+		return o.chance
+	end, rng())
+	return entry.tier
+end
+
+function Economy.chestMoneyPrice(rarity: string, highestTier: number): number
+	local info = Economy.CHEST_INFO[rarity]
+	return 40 * Economy.unitRate(math.max(highestTier - 1, 1)) * info.priceMult
+end
+
+function Economy.unlockSeconds(rarity: string, premium: boolean): number
+	local seconds = Economy.CHEST_INFO[rarity].unlockSeconds
+	if premium then
+		seconds = math.ceil(seconds / Economy.PREMIUM_UNLOCK_SPEED)
+	end
+	return seconds
+end
+
+-- Gems to finish an unlocker immediately: one per started minute.
+function Economy.finishGemCost(secondsLeft: number): number
+	return math.max(1, math.ceil(secondsLeft / 60))
+end
+
+-- Rewards ---------------------------------------------------------------------
+
+function Economy.discoveryGems(tier: number): number
+	return tier
+end
+
+Economy.FREE_REWARD_COOLDOWN = 600
+Economy.FREE_REWARD_GEMS = 3
+Economy.FREE_REWARD_SECONDS = 120
+Economy.FREE_REWARD_MIN = 100
+
+Economy.OFFLINE_CAP_SECONDS = 8 * 3600
+Economy.OFFLINE_EFFICIENCY = 0.25
+Economy.OFFLINE_MIN_SECONDS = 60
+
+Economy.FRIEND_BONUS = 0.1
+Economy.MAX_FRIEND_BONUS = 0.5
+Economy.PREMIUM_BONUS = 0.1
+
+-- Cash per second the player is currently able to earn (bottlenecked by
+-- whichever is slower: production or processing).
+function Economy.incomePerSecond(production: number, processRate: number, moneyMult: number): number
+	return math.min(production, processRate) * Economy.CASH_PER_POINT * moneyMult
+end
+
+-- Money developer products scale with income so they stay useful.
+function Economy.moneyPackAmount(income: number, seconds: number, minimum: number): number
+	return math.max(minimum, math.floor(income * seconds))
+end
+
+-- Tier rarity bands (used for label colours in the Index and on units).
+Economy.TIER_BANDS = {
+	{ upTo = 5, name = "Common" },
+	{ upTo = 10, name = "Uncommon" },
+	{ upTo = 15, name = "Rare" },
+	{ upTo = 20, name = "Epic" },
+	{ upTo = 24, name = "Legendary" },
+	{ upTo = 25, name = "Mythic" },
+}
+
+function Economy.tierBand(tier: number): string
+	for _, band in Economy.TIER_BANDS do
+		if tier <= band.upTo then
+			return band.name
+		end
+	end
+	return "Mythic"
+end
+
+return Economy
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="4">
+        <Properties>
+          <string name="Name">Format</string>
+          <string name="Source"><![CDATA[--!strict
+-- Number and time formatting. Pure Luau so it can be unit-tested with Lune.
+
+local Format = {}
+
+local SUFFIXES = {
+	"",
+	"K",
+	"M",
+	"B",
+	"T",
+	"Qa",
+	"Qi",
+	"Sx",
+	"Sp",
+	"Oc",
+	"No",
+	"Dc",
+	"Ud",
+	"Dd",
+	"Td",
+	"Qad",
+	"Qid",
+	"Sxd",
+	"Spd",
+	"Ocd",
+	"Nod",
+	"Vg",
+}
+
+-- 1234 -> "1.23K", 999 -> "999", 1e6 -> "1.00M"
+function Format.short(n: number): string
+	if n ~= n or n == math.huge or n == -math.huge then
+		return "0"
+	end
+	local sign = if n < 0 then "-" else ""
+	n = math.abs(n)
+	if n < 1000 then
+		return sign .. tostring(math.floor(n))
+	end
+	local index = math.floor(math.log10(n) / 3)
+	if index >= #SUFFIXES then
+		return sign .. string.format("%.2e", n)
+	end
+	local scaled = n / 10 ^ (index * 3)
+	-- log10 can round up just below a power of 1000 (e.g. 0.99T); step back.
+	if scaled < 1 and index > 1 then
+		index -= 1
+		scaled = n / 10 ^ (index * 3)
+	end
+	-- Truncate (not round) so displayed balances never overstate what you have.
+	scaled = math.floor(scaled * 100) / 100
+	return sign .. string.format("%.2f", scaled) .. SUFFIXES[index + 1]
+end
+
+-- 1234567 -> "1,234,567". Very large numbers fall back to short form.
+function Format.commas(n: number): string
+	if n ~= n then
+		return "0"
+	end
+	if math.abs(n) >= 1e15 then
+		return Format.short(n)
+	end
+	local sign = if n < 0 then "-" else ""
+	local digits = tostring(math.floor(math.abs(n)))
+	local out = digits:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+	if out:sub(1, 1) == "," then
+		out = out:sub(2)
+	end
+	return sign .. out
+end
+
+function Format.money(n: number): string
+	return "$" .. Format.short(n)
+end
+
+function Format.multiplier(n: number): string
+	return string.format("%.1fx", n)
+end
+
+-- 75 -> "1:15", 3725 -> "1:02:05"
+function Format.time(seconds: number): string
+	seconds = math.max(0, math.floor(seconds))
+	local h = seconds // 3600
+	local m = (seconds % 3600) // 60
+	local s = seconds % 60
+	if h > 0 then
+		return string.format("%d:%02d:%02d", h, m, s)
+	end
+	return string.format("%d:%02d", m, s)
+end
+
+-- Always "HH:MM:SS" (for unlocker screens).
+function Format.clock(seconds: number): string
+	seconds = math.max(0, math.floor(seconds))
+	return string.format("%02d:%02d:%02d", seconds // 3600, (seconds % 3600) // 60, seconds % 60)
+end
+
+function Format.date(timestamp: number): string
+	local t = os.date("*t", math.floor(timestamp)) :: any
+	return string.format("%d/%d/%d", t.month, t.day, t.year)
+end
+
+return Format
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="5">
+        <Properties>
+          <string name="Name">Net</string>
+          <string name="Source"><![CDATA[-- Remote events/functions. The server creates them, clients wait for them.
+--
+--   State   (server -> client)  full public snapshot of the player's tycoon
+--   Notify  (server -> client)  toasts, popups, reward reveals, confirms
+--   Effect  (server -> client)  cosmetic feedback (collect sounds, floating text)
+--   Action  (client -> server)  button presses from the UI
+--   Query   (client -> server)  request/response data (ranking)
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local Net = {}
+
+local EVENTS = { "State", "Notify", "Effect", "Action" }
+local FUNCTIONS = { "Query" }
+
+local folder: Folder? = nil
+
+local function getFolder(): Folder
+	if folder then
+		return folder
+	end
+	if RunService:IsServer() then
+		local f = ReplicatedStorage:FindFirstChild("Remotes") :: Folder?
+		if not f then
+			local created = Instance.new("Folder")
+			created.Name = "Remotes"
+			f = created
+		end
+		assert(f, "Remotes folder missing")
+		for _, name in EVENTS do
+			if not f:FindFirstChild(name) then
+				local remote = Instance.new("RemoteEvent")
+				remote.Name = name
+				remote.Parent = f
+			end
+		end
+		for _, name in FUNCTIONS do
+			if not f:FindFirstChild(name) then
+				local remote = Instance.new("RemoteFunction")
+				remote.Name = name
+				remote.Parent = f
+			end
+		end
+		f.Parent = ReplicatedStorage
+		folder = f
+		return f
+	end
+	local f = ReplicatedStorage:WaitForChild("Remotes") :: Folder
+	folder = f
+	return f
+end
+
+function Net.event(name: string): RemoteEvent
+	return getFolder():WaitForChild(name) :: RemoteEvent
+end
+
+function Net.func(name: string): RemoteFunction
+	return getFolder():WaitForChild(name) :: RemoteFunction
+end
+
+return Net
+]]></string>
+        </Properties>
+      </Item>
+    </Item>
+    <Item class="ModuleScript" referent="6">
+      <Properties>
+        <string name="Name">Theme</string>
+        <string name="Source"><![CDATA[--[[
+	Theme: CHAD AURA TYCOON
+
+	Everything the player sees that is specific to this variant: names, words,
+	colours, fonts, lighting, the 25 unit tiers and the Roblox monetization IDs.
+	Gameplay numbers live in ReplicatedStorage.Shared.Economy and are shared by
+	both variants.
+
+	To sell passes/products: create them on the Creator Dashboard and paste the
+	IDs below. While an ID is 0, buying it in Studio grants it for free (test
+	mode) and in a live server shows "coming soon".
+]]
+
+local rgb = Color3.fromRGB
+
+local GOLD = rgb(255, 200, 45)
+local PURPLE = rgb(165, 80, 255)
+
+local Theme = {}
+
+Theme.Id = "chad"
+Theme.GameName = "Chad Aura Tycoon"
+Theme.Tagline = "Farm aura. Merge Chads. Mog the server."
+
+Theme.Words = {
+	Unit = "Chad",
+	Units = "Chads",
+	Orb = "Aura",
+	Gem = "Rizz",
+	Chest = "Crate",
+	Deposit = "AURA CONVERTER",
+	Process = "Converting aura",
+	Collect = "COLLECT CASH",
+	Merge = "MOG MERGE",
+	Unlocker = "CRATE CRACKER",
+	PremiumUnlocker = "VIP CRATE CRACKER",
+	Free = "DAILY GAINS",
+	Surge = "AURA SURGE",
+	Multiplier = "Aura Multiplier",
+	BuyTier = "UPGRADE BUY TIER",
+}
+
+Theme.Icons = {
+	Unit = "🗿",
+	Orb = "✨",
+	Gem = "💎",
+	Money = "$",
+	Home = "🏠",
+	Ranking = "🏆",
+	Index = "📖",
+	Shop = "🛒",
+	Invite = "🤝",
+	Settings = "⚙️",
+	Surge = "⚡",
+	Premium = "⭐",
+	Friends = "👥",
+	Chest = "📦",
+}
+
+Theme.Fonts = {
+	Title = Enum.Font.LuckiestGuy,
+	Body = Enum.Font.FredokaOne,
+	Mono = Enum.Font.GothamBlack,
+}
+
+Theme.Colors = {
+	Primary = GOLD,
+	Secondary = PURPLE,
+	Accent = rgb(255, 90, 160),
+	Good = rgb(80, 220, 100),
+	Bad = rgb(235, 80, 60),
+	Text = rgb(255, 255, 255),
+	TextDim = rgb(190, 185, 210),
+	Panel = rgb(28, 24, 40),
+	PanelLight = rgb(48, 42, 68),
+	PanelDark = rgb(16, 14, 24),
+	Stroke = rgb(8, 6, 14),
+	Orb = rgb(200, 140, 255),
+	OrbBig = GOLD,
+
+	Floor = rgb(36, 34, 48),
+	FloorAlt = rgb(46, 42, 60),
+	Wall = rgb(52, 46, 72),
+	WallTrim = rgb(30, 26, 42),
+	Neon = GOLD,
+	NeonAlt = PURPLE,
+	Pad = rgb(255, 205, 60),
+	PadDisabled = rgb(120, 115, 130),
+	Hub = rgb(28, 26, 38),
+	Sky = rgb(25, 18, 45),
+
+	Window = {
+		Shop = rgb(255, 190, 40),
+		Index = rgb(150, 70, 255),
+		Ranking = rgb(255, 120, 60),
+		Settings = rgb(110, 110, 140),
+	},
+
+	Rarity = {
+		Common = rgb(170, 170, 180),
+		Uncommon = rgb(90, 220, 110),
+		Rare = rgb(70, 160, 255),
+		Epic = rgb(185, 90, 255),
+		Legendary = rgb(255, 190, 40),
+		Mythic = rgb(255, 70, 140),
+	},
+}
+
+Theme.Lighting = {
+	ClockTime = 20.5,
+	Ambient = rgb(90, 80, 120),
+	OutdoorAmbient = rgb(110, 95, 150),
+	Brightness = 2,
+	FogColor = rgb(40, 25, 70),
+	FogEnd = 900,
+	AtmosphereColor = rgb(140, 100, 220),
+	AtmosphereDecay = rgb(70, 40, 120),
+	BloomIntensity = 0.6,
+	ColorTint = rgb(255, 245, 255),
+}
+
+-- Leave empty for no music, or paste a Roblox audio asset id ("rbxassetid://...").
+Theme.MusicId = ""
+
+local SKIN = rgb(234, 184, 146)
+local SKIN_TAN = rgb(196, 140, 100)
+local SKIN_DARK = rgb(120, 80, 55)
+
+-- 25 tiers, weakest to strongest. Each pair of tier N merges into tier N+1.
+Theme.Tiers = {
+	{ Name = "Normie", Look = { skin = SKIN, shirt = rgb(140, 140, 150), pants = rgb(60, 80, 130), face = "😐" } },
+	{
+		Name = "Gym Rookie",
+		Look = {
+			skin = SKIN_TAN,
+			shirt = rgb(200, 50, 50),
+			pants = rgb(30, 30, 35),
+			face = "🙂",
+			acc = { "Headband" },
+			accColor = rgb(245, 245, 245),
+			buff = 0.1,
+		},
+	},
+	{
+		Name = "Protein Bro",
+		Look = {
+			skin = SKIN,
+			shirt = rgb(240, 240, 240),
+			pants = rgb(40, 40, 45),
+			face = "😤",
+			acc = { "Cap" },
+			accColor = rgb(30, 90, 200),
+			buff = 0.2,
+		},
+	},
+	{
+		Name = "Mewing Disciple",
+		Look = {
+			skin = SKIN_DARK,
+			shirt = rgb(90, 60, 160),
+			pants = rgb(35, 30, 50),
+			face = "😑",
+			jaw = true,
+			acc = { "Headband" },
+			accColor = PURPLE,
+			buff = 0.25,
+		},
+	},
+	{
+		Name = "Jawline Jr.",
+		Look = { skin = SKIN, shirt = rgb(25, 25, 30), pants = rgb(70, 70, 80), face = "😏", jaw = true, acc = { "Shades" }, buff = 0.3 },
+	},
+	{
+		Name = "Looksmaxxer",
+		Look = {
+			skin = SKIN_TAN,
+			shirt = rgb(255, 105, 180),
+			pants = rgb(250, 250, 250),
+			face = "😎",
+			jaw = true,
+			acc = { "Shades", "Chain" },
+			buff = 0.35,
+		},
+	},
+	{
+		Name = "Sigma Grinder",
+		Look = { skin = SKIN, shirt = rgb(28, 28, 38), pants = rgb(28, 28, 38), face = "🗿", jaw = true, acc = { "Shades" }, buff = 0.4 },
+	},
+	{
+		Name = "Rizz Apprentice",
+		Look = {
+			skin = SKIN_DARK,
+			shirt = rgb(255, 140, 0),
+			pants = rgb(40, 40, 50),
+			face = "😏",
+			jaw = true,
+			acc = { "Cap", "Chain" },
+			accColor = rgb(255, 140, 0),
+			buff = 0.45,
+		},
+	},
+	{
+		Name = "Alpha Lifter",
+		Look = {
+			skin = SKIN_TAN,
+			shirt = rgb(180, 0, 0),
+			pants = rgb(20, 20, 25),
+			face = "😤",
+			jaw = true,
+			acc = { "Headband", "Chain" },
+			accColor = rgb(255, 255, 255),
+			buff = 0.6,
+			scale = 1.05,
+		},
+	},
+	{
+		Name = "Mogger",
+		Look = {
+			skin = SKIN,
+			shirt = rgb(12, 12, 14),
+			pants = rgb(12, 12, 14),
+			face = "🗿",
+			jaw = true,
+			acc = { "Shades", "Chain" },
+			buff = 0.7,
+			scale = 1.1,
+			sparkles = true,
+			aura = rgb(255, 255, 255),
+		},
+	},
+	{
+		Name = "Gigabrain Bro",
+		Look = {
+			skin = SKIN_DARK,
+			shirt = rgb(0, 150, 255),
+			pants = rgb(20, 30, 60),
+			face = "🧐",
+			jaw = true,
+			acc = { "Visor" },
+			accColor = rgb(0, 220, 255),
+			buff = 0.7,
+			scale = 1.1,
+			glow = rgb(0, 200, 255),
+		},
+	},
+	{
+		Name = "Aura Farmer",
+		Look = {
+			skin = SKIN,
+			shirt = rgb(120, 60, 200),
+			pants = rgb(40, 25, 70),
+			face = "😌",
+			jaw = true,
+			acc = { "Cap" },
+			accColor = PURPLE,
+			buff = 0.75,
+			scale = 1.1,
+			aura = PURPLE,
+		},
+	},
+	{
+		Name = "Rizzlord",
+		Look = {
+			skin = SKIN_TAN,
+			shirt = rgb(200, 0, 90),
+			pants = rgb(30, 10, 25),
+			face = "😏",
+			jaw = true,
+			acc = { "Cape", "Chain" },
+			accColor = rgb(160, 0, 70),
+			buff = 0.8,
+			scale = 1.12,
+			aura = rgb(255, 80, 170),
+		},
+	},
+	{
+		Name = "Sigma Supreme",
+		Look = {
+			skin = SKIN,
+			shirt = rgb(10, 10, 12),
+			pants = rgb(10, 10, 12),
+			face = "🗿",
+			jaw = true,
+			acc = { "Cape", "Shades" },
+			accColor = rgb(20, 20, 25),
+			buff = 0.85,
+			scale = 1.15,
+			aura = rgb(240, 240, 255),
+		},
+	},
+	{
+		Name = "Golden Jaw",
+		Look = {
+			skin = GOLD,
+			shirt = rgb(255, 215, 90),
+			pants = rgb(200, 150, 30),
+			material = "Metal",
+			face = "😎",
+			jaw = true,
+			acc = { "Shades", "Chain" },
+			buff = 0.9,
+			scale = 1.15,
+			aura = GOLD,
+		},
+	},
+	{
+		Name = "Diamond Chad",
+		Look = {
+			skin = rgb(170, 230, 255),
+			shirt = rgb(120, 200, 255),
+			pants = rgb(90, 160, 230),
+			material = "Glass",
+			face = "😎",
+			faceColor = rgb(20, 40, 80),
+			jaw = true,
+			acc = { "Crown" },
+			accColor = rgb(130, 230, 255),
+			buff = 0.9,
+			scale = 1.2,
+			sparkles = true,
+			aura = rgb(150, 230, 255),
+		},
+	},
+	{
+		Name = "Thunder Chad",
+		Look = {
+			skin = SKIN_TAN,
+			shirt = rgb(255, 230, 0),
+			pants = rgb(30, 30, 40),
+			face = "😠",
+			jaw = true,
+			acc = { "Headband", "Cape" },
+			accColor = rgb(255, 240, 80),
+			buff = 1,
+			scale = 1.2,
+			aura = rgb(255, 240, 80),
+			glow = rgb(255, 255, 120),
+		},
+	},
+	{
+		Name = "Cosmic Mogger",
+		Look = {
+			skin = rgb(90, 40, 170),
+			shirt = rgb(40, 10, 90),
+			pants = rgb(20, 5, 50),
+			material = "ForceField",
+			face = "🗿",
+			faceColor = rgb(255, 255, 255),
+			jaw = true,
+			acc = { "Halo" },
+			accColor = rgb(200, 130, 255),
+			buff = 1,
+			scale = 1.25,
+			aura = PURPLE,
+		},
+	},
+	{
+		Name = "Aura Titan",
+		Look = {
+			skin = rgb(245, 240, 230),
+			shirt = rgb(230, 225, 215),
+			pants = rgb(200, 195, 185),
+			material = "Marble",
+			face = "😤",
+			jaw = true,
+			acc = { "Crown", "Cape" },
+			accColor = GOLD,
+			buff = 1,
+			scale = 1.3,
+			aura = rgb(255, 255, 255),
+			sparkles = true,
+		},
+	},
+	{
+		Name = "Mythic Rizzler",
+		Look = {
+			skin = SKIN,
+			shirt = rgb(255, 0, 120),
+			pants = rgb(80, 0, 40),
+			face = "😏",
+			jaw = true,
+			acc = { "Crown", "Wings" },
+			accColor = rgb(255, 120, 200),
+			buff = 1,
+			scale = 1.3,
+			aura = rgb(255, 80, 170),
+			fire = rgb(255, 60, 160),
+		},
+	},
+	{
+		Name = "Infinite Sigma",
+		Look = {
+			skin = rgb(20, 20, 24),
+			shirt = rgb(10, 10, 12),
+			pants = rgb(10, 10, 12),
+			material = "Slate",
+			face = "🗿",
+			faceColor = rgb(255, 60, 60),
+			jaw = true,
+			acc = { "Halo", "Cape" },
+			accColor = rgb(255, 40, 40),
+			buff = 1,
+			scale = 1.35,
+			aura = rgb(255, 40, 40),
+		},
+	},
+	{
+		Name = "Celestial Chad",
+		Look = {
+			skin = rgb(240, 240, 255),
+			shirt = rgb(220, 235, 255),
+			pants = rgb(190, 210, 255),
+			material = "Glass",
+			face = "😇",
+			faceColor = rgb(40, 60, 120),
+			jaw = true,
+			acc = { "Halo", "Wings" },
+			accColor = rgb(150, 230, 255),
+			buff = 1,
+			scale = 1.4,
+			aura = rgb(150, 230, 255),
+			sparkles = true,
+		},
+	},
+	{
+		Name = "Aura Overlord",
+		Look = {
+			skin = GOLD,
+			shirt = rgb(255, 225, 120),
+			pants = rgb(180, 130, 20),
+			material = "Metal",
+			face = "🗿",
+			jaw = true,
+			acc = { "Crown", "Wings", "Cape" },
+			accColor = GOLD,
+			buff = 1,
+			scale = 1.45,
+			aura = GOLD,
+			fire = GOLD,
+		},
+	},
+	{
+		Name = "Omega Chad",
+		Look = {
+			skin = rgb(30, 0, 0),
+			shirt = rgb(150, 0, 20),
+			pants = rgb(20, 0, 0),
+			material = "ForceField",
+			face = "😈",
+			faceColor = rgb(255, 255, 255),
+			jaw = true,
+			acc = { "Horns", "Wings", "Cape" },
+			accColor = rgb(255, 30, 30),
+			buff = 1,
+			scale = 1.5,
+			aura = rgb(255, 30, 30),
+			fire = rgb(255, 40, 0),
+		},
+	},
+	{
+		Name = "Absolute Chad",
+		Look = {
+			skin = rgb(255, 215, 80),
+			shirt = rgb(255, 235, 150),
+			pants = rgb(255, 200, 60),
+			material = "Neon",
+			face = "🗿",
+			faceColor = rgb(60, 40, 0),
+			jaw = true,
+			acc = { "Crown", "Halo", "Wings", "Chain" },
+			accColor = rgb(255, 255, 255),
+			buff = 1,
+			scale = 1.6,
+			aura = GOLD,
+			sparkles = true,
+			fire = rgb(255, 220, 90),
+		},
+	},
+}
+
+Theme.Monetization = {
+	Passes = {
+		AutoLoot = { Id = 0, Price = 99, Title = "Auto Aura", Desc = "Aura flows straight into your tank", Color = rgb(255, 170, 40) },
+		AutoCash = {
+			Id = 0,
+			Price = 49,
+			Title = "Auto Cash",
+			Desc = "Converted cash goes straight to your wallet",
+			Color = rgb(70, 200, 90),
+		},
+		DoubleAura = { Id = 0, Price = 299, Title = "Double Aura", Desc = "Every Chad radiates 2x aura", Color = PURPLE },
+		DoubleMoney = { Id = 0, Price = 199, Title = "2X Cash", Desc = "Permanent 2x cash from the converter", Color = rgb(60, 160, 255) },
+		PremiumUnlocker = {
+			Id = 0,
+			Price = 149,
+			Title = "VIP Cracker",
+			Desc = "Second crate cracker, 3x faster",
+			Color = rgb(255, 80, 160),
+		},
+	},
+	PassOrder = { "AutoLoot", "AutoCash", "DoubleAura", "DoubleMoney", "PremiumUnlocker" },
+	MoneyPacks = {
+		{ Id = 0, Price = 19, Seconds = 300, Min = 1000 },
+		{ Id = 0, Price = 49, Seconds = 900, Min = 3000 },
+		{ Id = 0, Price = 99, Seconds = 2700, Min = 10000 },
+		{ Id = 0, Price = 249, Seconds = 7200, Min = 30000 },
+		{ Id = 0, Price = 499, Seconds = 18000, Min = 100000 },
+		{ Id = 0, Price = 999, Seconds = 43200, Min = 300000 },
+	},
+	GemPacks = {
+		{ Id = 0, Price = 49, Amount = 50 },
+		{ Id = 0, Price = 249, Amount = 300 },
+		{ Id = 0, Price = 599, Amount = 800 },
+	},
+}
+
+return Theme
+]]></string>
+      </Properties>
+    </Item>
+  </Item>
+  <Item class="ServerScriptService" referent="7">
+    <Properties>
+      <string name="Name">ServerScriptService</string>
+    </Properties>
+    <Item class="Folder" referent="8">
+      <Properties>
+        <string name="Name">Server</string>
+      </Properties>
+      <Item class="ModuleScript" referent="9">
+        <Properties>
+          <string name="Name">DataService</string>
+          <string name="Source"><![CDATA[--[[
+	DataService: loads and saves player profiles in a DataStore.
+
+	- Retries with backoff on load/save.
+	- If a profile cannot be loaded on a live server the player is kicked
+	  instead of being given a blank profile that would overwrite their save.
+	- In Studio without API access it falls back to an in-memory profile and
+	  never saves, so the game is still playable for testing.
+]]
+
+local DataStoreService = game:GetService("DataStoreService")
+local RunService = game:GetService("RunService")
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Economy = require(ReplicatedStorage.Shared.Economy)
+
+local DataService = {}
+
+local STORE_NAME = "TycoonProfiles_v1"
+local MAX_RETRIES = 4
+
+export type Unlocker = { rarity: string, endsAt: number }
+
+export type Profile = {
+	version: number,
+	money: number,
+	gems: number,
+	carried: number,
+	queue: number,
+	pending: number,
+	units: { number },
+	discovered: { number },
+	totalObtained: number,
+	buyTier: number,
+	boughtAtTier: number,
+	processLevel: number,
+	heldChest: string,
+	unlockers: { Unlocker },
+	autoMergeOwned: boolean,
+	autoMerge: boolean,
+	lastOnline: number,
+	lastFreeReward: number,
+	settings: { music: boolean, sfx: boolean, fullNumbers: boolean },
+	receipts: { string },
+	totalEarned: number,
+}
+
+local function zeros(n: number): { number }
+	local t = table.create(n, 0)
+	return t
+end
+
+function DataService.defaultProfile(): Profile
+	local units = zeros(Economy.MAX_TIER)
+	units[1] = 1
+	local discovered = zeros(Economy.MAX_TIER)
+	discovered[1] = os.time()
+	return {
+		version = 1,
+		money = 50,
+		gems = 10,
+		carried = 0,
+		queue = 0,
+		pending = 0,
+		units = units,
+		discovered = discovered,
+		totalObtained = 1,
+		buyTier = 1,
+		boughtAtTier = 0,
+		processLevel = 0,
+		heldChest = "",
+		unlockers = {
+			{ rarity = "", endsAt = 0 },
+			{ rarity = "", endsAt = 0 },
+		},
+		autoMergeOwned = false,
+		autoMerge = false,
+		lastOnline = 0,
+		lastFreeReward = 0,
+		settings = { music = true, sfx = true, fullNumbers = false },
+		receipts = {},
+		totalEarned = 0,
+	}
+end
+
+-- Fills in any fields missing from older saves and sanitises bad values.
+local function reconcile(data: any): Profile
+	local default = DataService.defaultProfile()
+	if type(data) ~= "table" then
+		return default
+	end
+	for key, value in default :: any do
+		if data[key] == nil or type(data[key]) ~= type(value) then
+			data[key] = value
+		end
+	end
+	for _, key in { "units", "discovered" } do
+		local list = data[key]
+		for tier = 1, Economy.MAX_TIER do
+			if type(list[tier]) ~= "number" or list[tier] ~= list[tier] then
+				list[tier] = 0
+			end
+		end
+	end
+	for i = 1, 2 do
+		local slot = data.unlockers[i]
+		if type(slot) ~= "table" or type(slot.rarity) ~= "string" or type(slot.endsAt) ~= "number" then
+			data.unlockers[i] = { rarity = "", endsAt = 0 }
+		end
+	end
+	for key, value in default.settings :: any do
+		if type(data.settings[key]) ~= type(value) then
+			data.settings[key] = value
+		end
+	end
+	data.buyTier = math.clamp(math.floor(data.buyTier), 1, Economy.MAX_BUY_TIER)
+	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
+		data.heldChest = ""
+	end
+	return data :: Profile
+end
+
+local store: DataStore? = nil
+local storeOk, storeErr = pcall(function()
+	store = DataStoreService:GetDataStore(STORE_NAME)
+end)
+if not storeOk then
+	warn("[DataService] DataStore unavailable:", storeErr)
+end
+
+local function keyFor(player: Player): string
+	return "u_" .. player.UserId
+end
+
+local function retry<T>(label: string, fn: () -> T): (boolean, T?)
+	local lastErr
+	for attempt = 1, MAX_RETRIES do
+		local ok, result = pcall(fn)
+		if ok then
+			return true, result
+		end
+		lastErr = result
+		task.wait(attempt * 1.5)
+	end
+	warn("[DataService]", label, "failed:", lastErr)
+	return false, nil
+end
+
+-- Returns (profile, canSave). profile is nil when the player should be kicked.
+function DataService.load(player: Player): (Profile?, boolean)
+	if not store then
+		if RunService:IsStudio() then
+			warn("[DataService] Studio without DataStore access: progress will not be saved.")
+			return reconcile(nil), false
+		end
+		return nil, false
+	end
+	local activeStore = store :: DataStore
+	local ok, data = retry("load " .. player.Name, function()
+		return activeStore:GetAsync(keyFor(player))
+	end)
+	if not ok then
+		if RunService:IsStudio() then
+			warn("[DataService] Enable 'Studio Access to API Services' to test saving. Using a temporary profile.")
+			return reconcile(nil), false
+		end
+		return nil, false
+	end
+	return reconcile(data), true
+end
+
+function DataService.save(player: Player, profile: Profile): boolean
+	if not store then
+		return false
+	end
+	local activeStore = store :: DataStore
+	profile.lastOnline = os.time()
+	local ok = retry("save " .. player.Name, function()
+		activeStore:UpdateAsync(keyFor(player), function()
+			return profile
+		end)
+		return true
+	end)
+	return ok
+end
+
+return DataService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="Script" referent="10">
+        <Properties>
+          <string name="Name">Main</string>
+          <token name="RunContext">0</token>
+          <string name="Source"><![CDATA[-- Server entry point: builds the map, wires services and handles join/leave/saving.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Server = script.Parent
+local DataService = require(Server.DataService)
+local WorldBuilder = require(Server.WorldBuilder)
+local Tycoon = require(Server.Tycoon)
+local Monetization = require(Server.Monetization)
+local Ranking = require(Server.Ranking)
+
+local AUTOSAVE_SECONDS = 90
+
+-- Create remotes before anything else so clients never wait long.
+Net.event("State")
+
+local world = WorldBuilder.build(Theme)
+Tycoon.init(world, Theme)
+Monetization.init(Theme)
+Ranking.init(Theme, world.ranking)
+
+local saving: { [Player]: boolean } = {}
+
+local function saveSession(session: Tycoon.Session)
+	if session.canSave then
+		DataService.save(session.player, session.profile)
+	end
+end
+
+local function onPlayerAdded(player: Player)
+	local profile, canSave = DataService.load(player)
+	if not player.Parent then
+		return
+	end
+	if not profile then
+		player:Kick("We couldn't load your save right now. Please rejoin in a moment - your progress is safe.")
+		return
+	end
+	local passes = Monetization.ownedPasses(player)
+	if not player.Parent then
+		return
+	end
+	Tycoon.addPlayer(player, profile, canSave, passes)
+end
+
+local function onPlayerRemoving(player: Player)
+	local session = Tycoon.removePlayer(player)
+	if session and not saving[player] then
+		saving[player] = true
+		saveSession(session)
+		saving[player] = nil
+	end
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(onPlayerRemoving)
+for _, player in Players:GetPlayers() do
+	task.spawn(onPlayerAdded, player)
+end
+
+task.spawn(function()
+	while true do
+		task.wait(AUTOSAVE_SECONDS)
+		for player, session in Tycoon.allSessions() do
+			if not saving[player] then
+				task.spawn(saveSession, session)
+			end
+		end
+	end
+end)
+
+game:BindToClose(function()
+	local pending = 0
+	for player, session in Tycoon.allSessions() do
+		pending += 1
+		saving[player] = true
+		task.spawn(function()
+			saveSession(session)
+			pending -= 1
+		end)
+	end
+	Ranking.writeScores()
+	local deadline = os.clock() + 25
+	while pending > 0 and os.clock() < deadline do
+		task.wait(0.1)
+	end
+end)
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="11">
+        <Properties>
+          <string name="Name">Monetization</string>
+          <string name="Source"><![CDATA[--[[
+	Monetization: game passes and developer products.
+
+	IDs come from the theme. While an ID is 0:
+	  - in Studio, "buying" grants it immediately (so every feature is testable)
+	  - on a live server, the player is told it is coming soon.
+]]
+
+local MarketplaceService = game:GetService("MarketplaceService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Economy = require(ReplicatedStorage.Shared.Economy)
+
+local DataService = require(script.Parent.DataService)
+local Tycoon = require(script.Parent.Tycoon)
+
+local Monetization = {}
+
+local theme: any
+local MAX_RECEIPTS = 50
+
+local function passByName(name: string): any
+	return theme.Monetization.Passes[name]
+end
+
+local function productList(kind: string): { any }?
+	if kind == "Money" then
+		return theme.Monetization.MoneyPacks
+	elseif kind == "Gems" then
+		return theme.Monetization.GemPacks
+	end
+	return nil
+end
+
+-- Checks which passes a player already owns.
+function Monetization.ownedPasses(player: Player): { [string]: boolean }
+	local owned = {}
+	for name, pass in theme.Monetization.Passes do
+		if pass.Id ~= 0 then
+			local ok, result = pcall(MarketplaceService.UserOwnsGamePassAsync, MarketplaceService, player.UserId, pass.Id)
+			if ok and result then
+				owned[name] = true
+			end
+		end
+	end
+	return owned
+end
+
+local function grantProduct(session: Tycoon.Session, kind: string, index: number)
+	if kind == "Money" then
+		local pack = theme.Monetization.MoneyPacks[index]
+		local amount = Economy.moneyPackAmount(Tycoon.income(session), pack.Seconds, pack.Min)
+		Tycoon.grantMoney(session, amount)
+	elseif kind == "Gems" then
+		local pack = theme.Monetization.GemPacks[index]
+		Tycoon.grantGems(session, pack.Amount)
+	end
+end
+
+function Monetization.promptPass(player: Player, name: string)
+	local session = Tycoon.getSession(player)
+	local pass = passByName(name)
+	if not session or not pass then
+		return
+	end
+	if session.passes[name] then
+		Tycoon.toast(session, "You already own " .. pass.Title .. "!", "info")
+		return
+	end
+	if pass.Id == 0 then
+		if RunService:IsStudio() then
+			Tycoon.setPass(player, name)
+			Tycoon.toast(session, "[Studio test] Granted " .. pass.Title, "good")
+		else
+			Tycoon.toast(session, pass.Title .. " is coming soon!", "info")
+		end
+		return
+	end
+	MarketplaceService:PromptGamePassPurchase(player, pass.Id)
+end
+
+function Monetization.promptProduct(player: Player, kind: string, index: number)
+	local session = Tycoon.getSession(player)
+	local list = productList(kind)
+	local product = list and list[index]
+	if not session or not product then
+		return
+	end
+	if product.Id == 0 then
+		if RunService:IsStudio() then
+			grantProduct(session, kind, index)
+			Tycoon.toast(session, "[Studio test] Product granted", "good")
+		else
+			Tycoon.toast(session, "This pack is coming soon!", "info")
+		end
+		return
+	end
+	MarketplaceService:PromptProductPurchase(player, product.Id)
+end
+
+local function findProduct(productId: number): (string?, number?)
+	for _, kind in { "Money", "Gems" } do
+		for index, product in productList(kind) :: { any } do
+			if product.Id ~= 0 and product.Id == productId then
+				return kind, index
+			end
+		end
+	end
+	return nil, nil
+end
+
+local function processReceipt(receipt: any): Enum.ProductPurchaseDecision
+	local session = Tycoon.getSessionByUserId(receipt.PlayerId)
+	if not session then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	local profile = session.profile
+	if table.find(profile.receipts, receipt.PurchaseId) then
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+	local kind, index = findProduct(receipt.ProductId)
+	if not kind or not index then
+		warn("[Monetization] Unknown product", receipt.ProductId)
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	grantProduct(session, kind, index)
+	table.insert(profile.receipts, receipt.PurchaseId)
+	while #profile.receipts > MAX_RECEIPTS do
+		table.remove(profile.receipts, 1)
+	end
+	if session.canSave and not DataService.save(session.player, profile) then
+		-- Roll back so the purchase is retried later instead of being lost.
+		table.remove(profile.receipts)
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	return Enum.ProductPurchaseDecision.PurchaseGranted
+end
+
+function Monetization.init(themeModule: any)
+	theme = themeModule
+	MarketplaceService.ProcessReceipt = processReceipt
+	MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passId, purchased)
+		if not purchased then
+			return
+		end
+		for name, pass in theme.Monetization.Passes do
+			if pass.Id == passId then
+				Tycoon.setPass(player, name)
+				local session = Tycoon.getSession(player)
+				if session then
+					Tycoon.toast(session, "Thanks! " .. pass.Title .. " is active.", "good")
+				end
+			end
+		end
+	end)
+	Tycoon.hooks.promptPass = Monetization.promptPass
+	Tycoon.hooks.promptProduct = Monetization.promptProduct
+end
+
+return Monetization
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="12">
+        <Properties>
+          <string name="Name">Ranking</string>
+          <string name="Source"><![CDATA[--[[
+	Ranking: global leaderboard of total units obtained (OrderedDataStore).
+	Falls back to the players in this server when DataStores are unavailable.
+]]
+
+local DataStoreService = game:GetService("DataStoreService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Format = require(ReplicatedStorage.Shared.Format)
+local Net = require(ReplicatedStorage.Shared.Net)
+local Tycoon = require(script.Parent.Tycoon)
+
+local Ranking = {}
+
+local TOP_COUNT = 50
+local REFRESH_SECONDS = 90
+local MAX_SCORE = 2 ^ 53
+
+type Entry = { rank: number, userId: number, name: string, value: number }
+
+local ordered: OrderedDataStore? = nil
+local top: { Entry } = {}
+local updatedAt = 0
+local nameCache: { [number]: string } = {}
+
+local ok, err = pcall(function()
+	ordered = DataStoreService:GetOrderedDataStore("TotalUnits_v1")
+end)
+if not ok then
+	warn("[Ranking] OrderedDataStore unavailable:", err)
+end
+
+local function nameFor(userId: number): string
+	if nameCache[userId] then
+		return nameCache[userId]
+	end
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		nameCache[userId] = player.Name
+		return player.Name
+	end
+	local success, name = pcall(Players.GetNameFromUserIdAsync, Players, userId)
+	local result = if success and name then name else ("User " .. userId)
+	nameCache[userId] = result
+	return result
+end
+
+local function writeScores()
+	if not ordered then
+		return
+	end
+	local store = ordered :: OrderedDataStore
+	for player, session in Tycoon.allSessions() do
+		local score = math.floor(math.min(session.profile.totalObtained, MAX_SCORE))
+		pcall(store.SetAsync, store, tostring(player.UserId), score)
+	end
+end
+
+local function localFallback(): { Entry }
+	local list: { Entry } = {}
+	for player, session in Tycoon.allSessions() do
+		table.insert(list, { rank = 0, userId = player.UserId, name = player.Name, value = session.profile.totalObtained })
+	end
+	table.sort(list, function(a, b)
+		return a.value > b.value
+	end)
+	for i, entry in list do
+		entry.rank = i
+	end
+	return list
+end
+
+local function readTop(): { Entry }?
+	if not ordered then
+		return nil
+	end
+	local store = ordered :: OrderedDataStore
+	local success, pages = pcall(store.GetSortedAsync, store, false, TOP_COUNT)
+	if not success or not pages then
+		return nil
+	end
+	local list: { Entry } = {}
+	for i, item in (pages :: DataStorePages):GetCurrentPage() do
+		local userId = tonumber(item.key) or 0
+		table.insert(list, { rank = i, userId = userId, name = nameFor(userId), value = item.value })
+	end
+	return list
+end
+
+local function updateBoards(labels: { TextLabel }, themeModule: any)
+	local lines = {}
+	for i = 1, math.min(10, #top) do
+		local entry = top[i]
+		local color = if i == 1 then "#FFD23C" elseif i == 2 then "#D8D8E6" elseif i == 3 then "#E08A4A" else "#FFFFFF"
+		table.insert(
+			lines,
+			string.format(
+				'<font color="%s">#%d</font>  %s  <font color="#9CF0A0">%s</font>',
+				color,
+				i,
+				entry.name,
+				Format.short(entry.value)
+			)
+		)
+	end
+	if #lines == 0 then
+		table.insert(lines, "Be the first " .. themeModule.Words.Unit .. " collector!")
+	end
+	local text = table.concat(lines, "\n")
+	for _, label in labels do
+		label.Text = text
+	end
+end
+
+local function refresh(labels: { TextLabel }, themeModule: any)
+	writeScores()
+	top = readTop() or localFallback()
+	updatedAt = os.time()
+	updateBoards(labels, themeModule)
+end
+
+function Ranking.init(themeModule: any, labels: { TextLabel })
+	Net.func("Query").OnServerInvoke = function(_player, kind)
+		if kind == "Ranking" then
+			if #top == 0 then
+				top = localFallback()
+			end
+			return { entries = top, updatedAt = updatedAt }
+		end
+		return nil
+	end
+
+	task.spawn(function()
+		task.wait(5)
+		while true do
+			local success, problem = pcall(refresh, labels, themeModule)
+			if not success then
+				warn("[Ranking] refresh failed:", problem)
+			end
+			task.wait(REFRESH_SECONDS)
+		end
+	end)
+end
+
+Ranking.writeScores = writeScores
+
+return Ranking
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="13">
+        <Properties>
+          <string name="Name">Tycoon</string>
+          <string name="Source"><![CDATA[--[[
+	Tycoon: the core game loop for every player.
+
+	One Session per player: owns a plot, the saved profile and all runtime
+	objects on that plot (displayed units, orbs, floor crates, the held crate).
+
+	Loops:
+	  fast (0.1s)  pad enter detection, orb + crate pickup
+	  slow (1s)    production, processing, auto passes, boards, state push
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Economy = require(Shared.Economy)
+local Format = require(Shared.Format)
+local Net = require(Shared.Net)
+local CharacterFactory = require(Shared.CharacterFactory)
+
+local WorldBuilder = require(script.Parent.WorldBuilder)
+
+type Profile = any
+type Plot = WorldBuilder.Plot
+
+type Orb = { part: BasePart, label: TextLabel, value: number }
+type FloorChest = { model: Model, rarity: string, position: Vector3 }
+type DisplaySlot = { tier: number, model: Model }
+
+export type Session = {
+	player: Player,
+	profile: Profile,
+	canSave: boolean,
+	plot: Plot,
+	passes: { [string]: boolean },
+	premium: boolean,
+	friendBonus: number,
+	inside: { [string]: boolean },
+	orbs: { Orb },
+	floorChests: { FloorChest },
+	heldModel: Model?,
+	display: { [number]: DisplaySlot },
+	displayCounts: string,
+	dirty: boolean,
+	chestTimer: number,
+	collectBuffer: number,
+	actionBudget: number,
+	lastToast: { [string]: number },
+	alive: boolean,
+}
+
+local Tycoon = {}
+
+local theme: any
+local world: WorldBuilder.World
+local sessions: { [Player]: Session } = {}
+local plotOwners: { [number]: Player } = {}
+local rng = Random.new()
+
+local MAX_ORBS = 60
+local ORB_PICKUP_RADIUS = 6
+local CHEST_PICKUP_RADIUS = 5
+local ACTIONS_PER_SECOND = 15
+
+local NotifyRemote: RemoteEvent
+local EffectRemote: RemoteEvent
+local StateRemote: RemoteEvent
+local ActionRemote: RemoteEvent
+
+-- Filled in by Main so Tycoon does not depend on Monetization directly.
+Tycoon.hooks = {
+	promptPass = function(_player: Player, _name: string) end,
+	promptProduct = function(_player: Player, _kind: string, _index: number) end,
+}
+
+local function random(): number
+	return rng:NextNumber()
+end
+
+local function serverNow(): number
+	return Workspace:GetServerTimeNow()
+end
+
+-- Helpers ----------------------------------------------------------------------
+
+function Tycoon.getSession(player: Player): Session?
+	return sessions[player]
+end
+
+function Tycoon.getSessionByUserId(userId: number): Session?
+	for player, session in sessions do
+		if player.UserId == userId then
+			return session
+		end
+	end
+	return nil
+end
+
+function Tycoon.allSessions(): { [Player]: Session }
+	return sessions
+end
+
+local function notify(session: Session, payload: { [string]: any })
+	NotifyRemote:FireClient(session.player, payload)
+end
+
+local function toast(session: Session, text: string, tone: string?)
+	-- Pads fire repeatedly if a player hops on them; avoid spamming the same text.
+	local now = os.clock()
+	if session.lastToast[text] and now - session.lastToast[text] < 1 then
+		return
+	end
+	session.lastToast[text] = now
+	notify(session, { kind = "Toast", text = text, tone = tone or "info" })
+end
+Tycoon.toast = toast
+
+local function effect(session: Session, kind: string, data: { [string]: any }?)
+	EffectRemote:FireClient(session.player, kind, data or {})
+end
+
+local function markDirty(session: Session)
+	session.dirty = true
+end
+Tycoon.markDirty = markDirty
+
+local function tierName(tier: number): string
+	local entry = theme.Tiers[tier]
+	return if entry then entry.Name else ("Tier " .. tier)
+end
+
+function Tycoon.moneyMultiplier(session: Session): number
+	local mult = if session.passes.DoubleMoney then 2 else 1
+	local bonus = session.friendBonus + (if session.premium then Economy.PREMIUM_BONUS else 0)
+	return mult * (1 + bonus)
+end
+
+function Tycoon.orbMultiplier(session: Session): number
+	local mult = if session.passes.DoubleAura then 2 else 1
+	local surge = Economy.surgeState(serverNow())
+	if surge then
+		mult *= Economy.SURGE_MULTIPLIER
+	end
+	return mult
+end
+
+function Tycoon.production(session: Session): number
+	return Economy.productionPerSecond(session.profile.units) * Tycoon.orbMultiplier(session)
+end
+
+function Tycoon.income(session: Session): number
+	local p = session.profile
+	return Economy.incomePerSecond(Tycoon.production(session), Economy.processRate(p.processLevel), Tycoon.moneyMultiplier(session))
+end
+
+local function highestTier(session: Session): number
+	return Economy.highestTier(session.profile.discovered)
+end
+
+local function canAfford(session: Session, cost: number): boolean
+	return session.profile.money >= cost - 1e-6
+end
+
+local function spend(session: Session, cost: number): boolean
+	if not canAfford(session, cost) then
+		toast(session, "Not enough cash! Need " .. Format.money(cost), "bad")
+		return false
+	end
+	session.profile.money = math.max(0, session.profile.money - cost)
+	return true
+end
+
+local function spendGems(session: Session, cost: number): boolean
+	if session.profile.gems < cost then
+		toast(session, string.format("Not enough %s! Need %d %s", theme.Words.Gem, cost, theme.Icons.Gem), "bad")
+		return false
+	end
+	session.profile.gems -= cost
+	return true
+end
+
+local function addMoney(session: Session, amount: number)
+	session.profile.money += amount
+	session.profile.totalEarned += amount
+end
+
+-- Unit display -------------------------------------------------------------------
+
+local function unitBillboard(model: Model, tier: number, count: number?)
+	local look = theme.Tiers[tier].Look
+	local root = model.PrimaryPart :: BasePart
+	local gui = WorldBuilder.billboard(root, CharacterFactory.height(look) + 0.6, 6, 2)
+	gui.MaxDistance = 70
+	local band = Economy.tierBand(tier)
+	WorldBuilder.label(gui, { Text = tierName(tier), Size = UDim2.fromScale(1, 0.55), TextColor3 = theme.Colors.Rarity[band] })
+	local sub = "Tier " .. tier
+	if count and count > 1 then
+		sub ..= "  x" .. Format.short(count)
+	end
+	WorldBuilder.label(gui, {
+		Text = sub,
+		Font = theme.Fonts.Body,
+		Size = UDim2.fromScale(1, 0.4),
+		Position = UDim2.fromScale(0, 0.58),
+		TextColor3 = theme.Colors.TextDim,
+	})
+end
+
+local function refreshDisplay(session: Session)
+	local units = session.profile.units
+	local wanted: { number } = {}
+	local firstOfTier: { [number]: number } = {}
+	for tier = Economy.MAX_TIER, 1, -1 do
+		local count = units[tier] or 0
+		local shown = math.min(count, Economy.DISPLAY_SLOTS - #wanted)
+		for _ = 1, shown do
+			table.insert(wanted, tier)
+			if not firstOfTier[tier] then
+				firstOfTier[tier] = #wanted
+			end
+		end
+		if #wanted >= Economy.DISPLAY_SLOTS then
+			break
+		end
+	end
+
+	-- Labels show counts, so rebuild a tier's first model when its count changes.
+	local countsKey = {}
+	for tier, slotIndex in firstOfTier do
+		countsKey[slotIndex] = tier .. ":" .. (units[tier] or 0)
+	end
+
+	for slotIndex = 1, Economy.DISPLAY_SLOTS do
+		local tier = wanted[slotIndex]
+		local current = session.display[slotIndex]
+		local needsLabelCount = firstOfTier[tier or 0] == slotIndex
+		local key = if needsLabelCount then countsKey[slotIndex] else tostring(tier)
+		if current and (current.tier ~= tier or (current.model:GetAttribute("Key") ~= key)) then
+			current.model:Destroy()
+			session.display[slotIndex] = nil
+			current = nil
+		end
+		if tier and not current then
+			local look = theme.Tiers[tier].Look
+			local model = CharacterFactory.build(look, tierName(tier))
+			model:PivotTo(session.plot.slots[slotIndex])
+			model:SetAttribute("Key", key)
+			unitBillboard(model, tier, if needsLabelCount then units[tier] else nil)
+			model.Parent = session.plot.unitFolder
+			session.display[slotIndex] = { tier = tier, model = model }
+		end
+	end
+end
+
+-- Discovery / rewards ------------------------------------------------------------
+
+local function discoverAll(session: Session)
+	local p = session.profile
+	local newest = 0
+	local gems = 0
+	for tier = 1, Economy.MAX_TIER do
+		if (p.units[tier] or 0) > 0 and p.discovered[tier] == 0 then
+			p.discovered[tier] = os.time()
+			gems += Economy.discoveryGems(tier)
+			newest = tier
+		end
+	end
+	if newest > 0 then
+		p.gems += gems
+		notify(session, { kind = "Reward", tier = newest, new = true, gems = gems })
+	end
+end
+
+local function autoMergeIfOn(session: Session)
+	if session.profile.autoMerge then
+		Economy.mergeAll(session.profile.units)
+	end
+end
+
+local function awardUnit(session: Session, tier: number, source: string)
+	local p = session.profile
+	local isNew = p.discovered[tier] == 0
+	p.units[tier] += 1
+	p.totalObtained += 1
+	if not isNew then
+		notify(session, { kind = "Reward", tier = tier, new = false, source = source })
+	end
+	discoverAll(session)
+	autoMergeIfOn(session)
+	discoverAll(session)
+	refreshDisplay(session)
+	markDirty(session)
+end
+
+-- Crates --------------------------------------------------------------------------
+
+local function buildChest(rarity: string): Model
+	local c = theme.Colors
+	local model = Instance.new("Model")
+	model.Name = rarity .. "Crate"
+	local rarityColor = c.Rarity[rarity]
+	local function piece(name: string, size: Vector3, offset: CFrame, color: Color3, material: Enum.Material): Part
+		local p = Instance.new("Part")
+		p.Name = name
+		p.Size = size
+		p.CFrame = offset
+		p.Color = color
+		p.Material = material
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanQuery = false
+		p.CanTouch = false
+		p.TopSurface = Enum.SurfaceType.Smooth
+		p.BottomSurface = Enum.SurfaceType.Smooth
+		p.Parent = model
+		return p
+	end
+	local wood = Color3.fromRGB(130, 85, 45):Lerp(rarityColor, if rarity == "Common" then 0 else 0.35)
+	local body = piece("Body", Vector3.new(3.4, 2.2, 2.4), CFrame.new(0, 1.1, 0), wood, Enum.Material.WoodPlanks)
+	piece("Lid", Vector3.new(3.6, 0.6, 2.6), CFrame.new(0, 2.5, 0), wood:Lerp(Color3.new(0, 0, 0), 0.15), Enum.Material.WoodPlanks)
+	for _, x in { -1.45, 1.45 } do
+		piece(
+			"Band",
+			Vector3.new(0.3, 2.9, 2.7),
+			CFrame.new(x, 1.45, 0),
+			rarityColor,
+			if rarity == "Common" then Enum.Material.Metal else Enum.Material.Neon
+		)
+	end
+	piece("Lock", Vector3.new(0.6, 0.7, 0.25), CFrame.new(0, 2, -1.3), Color3.fromRGB(255, 205, 60), Enum.Material.Metal)
+	model.PrimaryPart = body
+
+	local gui = WorldBuilder.billboard(body, 3, 6, 1.4)
+	gui.MaxDistance = 80
+	WorldBuilder.label(gui, { Text = rarity, Size = UDim2.fromScale(1, 1), TextColor3 = rarityColor })
+	if rarity ~= "Common" then
+		local sparkles = Instance.new("Sparkles")
+		sparkles.SparkleColor = rarityColor
+		sparkles.Parent = body
+	end
+	return model
+end
+
+local function removeHeldModel(session: Session)
+	if session.heldModel then
+		session.heldModel:Destroy()
+		session.heldModel = nil
+	end
+end
+
+local function attachHeldModel(session: Session)
+	removeHeldModel(session)
+	local rarity = session.profile.heldChest
+	if rarity == "" then
+		return
+	end
+	local character = session.player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not character or not root then
+		return
+	end
+	local model = buildChest(rarity)
+	model:PivotTo(root.CFrame * CFrame.new(0, 0.6, -2.4))
+	local primary = model.PrimaryPart :: BasePart
+	for _, d in model:GetDescendants() do
+		if d:IsA("BasePart") then
+			d.Anchored = false
+			d.Massless = true
+			d.CanCollide = false
+			if d ~= primary then
+				local weld = Instance.new("WeldConstraint")
+				weld.Part0 = primary
+				weld.Part1 = d
+				weld.Parent = d
+			end
+		end
+	end
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = root
+	weld.Part1 = primary
+	weld.Parent = primary
+	model.Parent = character
+	session.heldModel = model
+end
+
+local function clearHeld(session: Session)
+	session.profile.heldChest = ""
+	removeHeldModel(session)
+	markDirty(session)
+end
+
+local function spawnFloorChest(session: Session)
+	if #session.floorChests >= Economy.MAX_FLOOR_CHESTS then
+		return
+	end
+	local rarity = Economy.rollChestRarity(random)
+	local area = session.plot.orbArea
+	local localPos = Vector3.new(rng:NextNumber(area.minX, area.maxX), 0, rng:NextNumber(area.minZ, area.maxZ))
+	local world0 = session.plot.cframe * CFrame.new(localPos + Vector3.new(0, 1.1, 0)) * CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
+	local model = buildChest(rarity)
+	model:PivotTo(world0)
+	model.Parent = session.plot.chestFolder
+	table.insert(session.floorChests, { model = model, rarity = rarity, position = world0.Position })
+	if rarity ~= "Common" then
+		toast(session, string.format("A %s %s appeared!", rarity, theme.Words.Chest), "good")
+	end
+end
+
+local function openChest(session: Session, rarity: string, source: string)
+	local tier = Economy.rollChest(rarity, highestTier(session), random)
+	awardUnit(session, tier, source)
+	effect(session, "ChestOpen", { rarity = rarity })
+end
+
+-- Orbs ------------------------------------------------------------------------------
+
+local function setOrbLabel(orb: Orb)
+	orb.label.Text = theme.Icons.Orb .. Format.short(orb.value)
+end
+
+local function spawnOrb(session: Session, value: number)
+	local plot = session.plot
+	local area = plot.orbArea
+	local target = plot.cframe * CFrame.new(rng:NextNumber(area.minX, area.maxX), 1, rng:NextNumber(area.minZ, area.maxZ))
+
+	local origin = target
+	local slotIndex = rng:NextInteger(1, math.max(1, math.min(Economy.DISPLAY_SLOTS, #session.display)))
+	local slot = session.display[slotIndex]
+	if slot then
+		origin = slot.model:GetPivot() * CFrame.new(0, 4, 0)
+	end
+
+	local big = value >= Economy.productionPerSecond(session.profile.units) * 0.5 and value > 10
+	local part = Instance.new("Part")
+	part.Name = "Orb"
+	part.Shape = Enum.PartType.Ball
+	part.Size = Vector3.new(1.6, 1.6, 1.6)
+	part.Material = Enum.Material.Neon
+	part.Color = if big then theme.Colors.OrbBig else theme.Colors.Orb
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.CFrame = origin
+	local gui = WorldBuilder.billboard(part, 1.6, 3.2, 1)
+	gui.MaxDistance = 45
+	local label = WorldBuilder.label(gui, { Text = "", Font = theme.Fonts.Body, Size = UDim2.fromScale(1, 1) })
+	part.Parent = plot.orbFolder
+
+	local orb: Orb = { part = part, label = label, value = value }
+	setOrbLabel(orb)
+	table.insert(session.orbs, orb)
+	if origin ~= target then
+		TweenService:Create(part, TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { CFrame = target }):Play()
+	end
+end
+
+local function produceOrbs(session: Session, amount: number)
+	if amount <= 0 then
+		return
+	end
+	if #session.orbs >= MAX_ORBS then
+		local orb = session.orbs[rng:NextInteger(1, #session.orbs)]
+		orb.value += amount
+		setOrbLabel(orb)
+		return
+	end
+	local pieces = if amount >= 4 then 2 else 1
+	for _ = 1, pieces do
+		spawnOrb(session, amount / pieces)
+	end
+end
+
+local function clearOrbs(session: Session)
+	for _, orb in session.orbs do
+		orb.part:Destroy()
+	end
+	table.clear(session.orbs)
+end
+
+-- Pads ---------------------------------------------------------------------------------
+
+local padHandlers: { [string]: (Session) -> () } = {}
+
+local function buy(session: Session, amount: number)
+	local p = session.profile
+	local cost = Economy.bulkPrice(p.buyTier, p.boughtAtTier, amount)
+	if not spend(session, cost) then
+		return
+	end
+	p.units[p.buyTier] += amount
+	p.boughtAtTier += amount
+	p.totalObtained += amount
+	autoMergeIfOn(session)
+	discoverAll(session)
+	refreshDisplay(session)
+	effect(session, "Buy", { amount = amount })
+	markDirty(session)
+end
+
+for _, amount in Economy.BUY_AMOUNTS do
+	padHandlers["Buy" .. amount] = function(session)
+		buy(session, amount)
+	end
+end
+
+local function doMerge(session: Session, verbose: boolean)
+	local p = session.profile
+	local merges, top = Economy.mergeAll(p.units)
+	if merges > 0 then
+		discoverAll(session)
+		refreshDisplay(session)
+		effect(session, "Merge", { merges = merges })
+		if verbose then
+			toast(session, string.format("Merged %s times! Best: %s", Format.short(merges), tierName(top)), "good")
+		end
+		markDirty(session)
+	elseif verbose then
+		toast(session, "Nothing to merge yet. You need 2 of the same tier.", "info")
+	end
+end
+
+padHandlers.Merge = function(session)
+	doMerge(session, true)
+end
+
+padHandlers.AutoMerge = function(session)
+	local p = session.profile
+	if not p.autoMergeOwned then
+		if spend(session, Economy.AUTO_MERGE_COST) then
+			p.autoMergeOwned = true
+			p.autoMerge = true
+			doMerge(session, false)
+			toast(session, "Auto Merge unlocked and ON!", "good")
+			markDirty(session)
+		end
+		return
+	end
+	p.autoMerge = not p.autoMerge
+	if p.autoMerge then
+		doMerge(session, false)
+	end
+	toast(session, "Auto Merge " .. (if p.autoMerge then "ON" else "OFF"), "info")
+	markDirty(session)
+end
+
+padHandlers.BuyTier = function(session)
+	local p = session.profile
+	if p.buyTier >= Economy.MAX_BUY_TIER then
+		toast(session, "Buy tier is maxed out!", "info")
+		return
+	end
+	local req = Economy.buyTierRequirement(p.buyTier)
+	if p.boughtAtTier < req then
+		toast(session, string.format("Buy %s more %s first!", Format.short(req - p.boughtAtTier), theme.Words.Units), "bad")
+		return
+	end
+	if not spend(session, Economy.buyTierUpgradeCost(p.buyTier)) then
+		return
+	end
+	p.buyTier += 1
+	p.boughtAtTier = 0
+	toast(session, "You now buy " .. tierName(p.buyTier) .. "!", "good")
+	effect(session, "Upgrade", {})
+	markDirty(session)
+end
+
+padHandlers.Deposit = function(session)
+	local p = session.profile
+	if p.carried <= 0 then
+		toast(session, "Your tank is empty! Walk over " .. theme.Words.Orb .. " orbs first.", "info")
+		return
+	end
+	local mult = ReplicatedStorage:GetAttribute("DepositMult") or 1
+	local amount = p.carried * mult
+	p.queue += amount
+	p.carried = 0
+	effect(session, "Deposit", { amount = amount, mult = mult })
+	markDirty(session)
+end
+
+padHandlers.Collect = function(session)
+	local p = session.profile
+	if p.pending < 1 then
+		toast(session, "No cash ready yet. Deposit " .. theme.Words.Orb .. " first!", "info")
+		return
+	end
+	local amount = p.pending
+	addMoney(session, amount)
+	p.pending = 0
+	effect(session, "Cash", { amount = amount })
+	markDirty(session)
+end
+
+local function procUpgrade(session: Session, amount: number)
+	local p = session.profile
+	if spend(session, Economy.processBulkCost(p.processLevel, amount)) then
+		p.processLevel += amount
+		effect(session, "Upgrade", {})
+		markDirty(session)
+	end
+end
+padHandlers.ProcUp1 = function(session)
+	procUpgrade(session, 1)
+end
+padHandlers.ProcUp10 = function(session)
+	procUpgrade(session, Economy.PROCESS_BULK)
+end
+
+local function useUnlocker(session: Session, slotIndex: number)
+	local p = session.profile
+	if slotIndex == 2 and not session.passes.PremiumUnlocker then
+		Tycoon.hooks.promptPass(session.player, "PremiumUnlocker")
+		return
+	end
+	local slot = p.unlockers[slotIndex]
+	if slot.rarity ~= "" then
+		local left = slot.endsAt - os.time()
+		if left <= 0 then
+			local rarity = slot.rarity
+			slot.rarity = ""
+			slot.endsAt = 0
+			openChest(session, rarity, "unlocker")
+		else
+			local cost = Economy.finishGemCost(left)
+			notify(session, {
+				kind = "Confirm",
+				text = string.format("Finish now for %d %s?", cost, theme.Icons.Gem),
+				action = { action = "FinishUnlocker", slot = slotIndex },
+			})
+		end
+		markDirty(session)
+		return
+	end
+	if p.heldChest == "" then
+		toast(session, "Bring a " .. theme.Words.Chest .. " here to open it for free over time.", "info")
+		return
+	end
+	slot.rarity = p.heldChest
+	slot.endsAt = os.time() + Economy.unlockSeconds(p.heldChest, slotIndex == 2)
+	clearHeld(session)
+	toast(session, "Unlocking... come back when the timer ends!", "good")
+	markDirty(session)
+end
+padHandlers.Unlock1 = function(session)
+	useUnlocker(session, 1)
+end
+padHandlers.Unlock2 = function(session)
+	useUnlocker(session, 2)
+end
+
+padHandlers.Free = function(session)
+	local p = session.profile
+	local left = p.lastFreeReward + Economy.FREE_REWARD_COOLDOWN - os.time()
+	if left > 0 then
+		toast(session, "Next free reward in " .. Format.time(left), "info")
+		return
+	end
+	local cash = math.max(Economy.FREE_REWARD_MIN, Tycoon.income(session) * Economy.FREE_REWARD_SECONDS)
+	addMoney(session, cash)
+	p.gems += Economy.FREE_REWARD_GEMS
+	p.lastFreeReward = os.time()
+	toast(session, string.format("Free reward: +%s and +%d %s", Format.money(cash), Economy.FREE_REWARD_GEMS, theme.Icons.Gem), "good")
+	effect(session, "Cash", { amount = cash })
+	markDirty(session)
+end
+
+-- Boards ------------------------------------------------------------------------------
+
+local function setPad(session: Session, name: string, title: string?, sub: string, affordable: boolean?)
+	local pad = session.plot.padByName[name]
+	if not pad then
+		return
+	end
+	if title then
+		pad.title.Text = title
+	end
+	pad.sub.Text = sub
+	if affordable ~= nil then
+		pad.sub.TextColor3 = if affordable then theme.Colors.Good else theme.Colors.Bad
+	end
+end
+
+local function updateBoards(session: Session)
+	local p = session.profile
+	local labels = session.plot.labels
+	local now = os.time()
+
+	for _, amount in Economy.BUY_AMOUNTS do
+		local cost = Economy.bulkPrice(p.buyTier, p.boughtAtTier, amount)
+		setPad(session, "Buy" .. amount, "Buy " .. amount .. " " .. tierName(p.buyTier), Format.money(cost), canAfford(session, cost))
+	end
+
+	if p.autoMergeOwned then
+		setPad(session, "AutoMerge", "Auto Merge", if p.autoMerge then "ON" else "OFF", p.autoMerge)
+	else
+		setPad(session, "AutoMerge", "Auto Merge", Format.money(Economy.AUTO_MERGE_COST), canAfford(session, Economy.AUTO_MERGE_COST))
+	end
+
+	if p.buyTier >= Economy.MAX_BUY_TIER then
+		labels.BuyTierFromTo.Text = tierName(p.buyTier)
+		labels.BuyTierProgress.Text = "MAXED"
+		labels.BuyTierCost.Text = ""
+		setPad(session, "BuyTier", nil, "MAX", true)
+	else
+		local req = Economy.buyTierRequirement(p.buyTier)
+		local cost = Economy.buyTierUpgradeCost(p.buyTier)
+		labels.BuyTierFromTo.Text = tierName(p.buyTier) .. "  >>  " .. tierName(p.buyTier + 1)
+		labels.BuyTierProgress.Text =
+			string.format("%s %s / %s", theme.Icons.Unit, Format.short(math.min(p.boughtAtTier, req)), Format.short(req))
+		labels.BuyTierCost.Text = Format.money(cost)
+		setPad(session, "BuyTier", nil, Format.money(cost), p.boughtAtTier >= req and canAfford(session, cost))
+	end
+
+	local procCost = Economy.processUpgradeCost(p.processLevel)
+	local procBulk = Economy.processBulkCost(p.processLevel, Economy.PROCESS_BULK)
+	local rateNow = Economy.processRate(p.processLevel)
+	setPad(
+		session,
+		"ProcUp1",
+		string.format("+%s/sec", Format.short(Economy.processRate(p.processLevel + 1) - rateNow)),
+		Format.money(procCost),
+		canAfford(session, procCost)
+	)
+	setPad(
+		session,
+		"ProcUp10",
+		string.format(
+			"+%s/sec (x%d)",
+			Format.short(Economy.processRate(p.processLevel + Economy.PROCESS_BULK) - rateNow),
+			Economy.PROCESS_BULK
+		),
+		Format.money(procBulk),
+		canAfford(session, procBulk)
+	)
+
+	local moneyMult = Tycoon.moneyMultiplier(session)
+	labels.ProcessQueue.Text = theme.Icons.Orb .. " " .. Format.short(p.queue)
+	labels.ProcessRate.Text = Format.money(math.min(p.queue, rateNow) * moneyMult) .. " per second"
+	labels.ProcessSpeed.Text = string.format("Speed: %s %s/sec  (Lv %d)", Format.short(rateNow), theme.Words.Orb, p.processLevel)
+
+	setPad(session, "Collect", nil, Format.money(p.pending), p.pending >= 1)
+
+	local mult = ReplicatedStorage:GetAttribute("DepositMult") or 1
+	local nextAt = ReplicatedStorage:GetAttribute("DepositNextAt") or 0
+	labels.DepositMult.Text = "x" .. string.format("%.1f", mult)
+	labels.DepositMult.TextColor3 = if mult >= 1.2 then theme.Colors.Good elseif mult < 1 then theme.Colors.Bad else theme.Colors.Primary
+	labels.DepositNext.Text = "next change in " .. math.max(0, math.ceil(nextAt - serverNow())) .. "s"
+	setPad(session, "Deposit", nil, theme.Icons.Orb .. Format.short(p.carried) .. "  x" .. string.format("%.1f", mult), p.carried > 0)
+
+	local freeLeft = p.lastFreeReward + Economy.FREE_REWARD_COOLDOWN - now
+	labels.FreeStatus.Text = if freeLeft <= 0 then "READY!" else Format.time(freeLeft)
+	labels.FreeStatus.TextColor3 = if freeLeft <= 0 then theme.Colors.Good else theme.Colors.Text
+	setPad(session, "Free", nil, if freeLeft <= 0 then "Claim!" else Format.time(freeLeft), freeLeft <= 0)
+
+	for i, screen in session.plot.unlockerScreens do
+		local slot = p.unlockers[i]
+		local locked = i == 2 and not session.passes.PremiumUnlocker
+		if locked then
+			screen.status.Text = "🔒 3x faster"
+			screen.timer.Text = "UNLOCK"
+			setPad(session, "Unlock" .. i, nil, "🔒 Game Pass", false)
+		elseif slot.rarity == "" then
+			screen.status.Text = "EMPTY"
+			screen.timer.Text = "--:--:--"
+			setPad(session, "Unlock" .. i, nil, if p.heldChest ~= "" then "Drop crate here" else "Empty", p.heldChest ~= "")
+		else
+			local left = slot.endsAt - now
+			screen.status.Text = slot.rarity .. " " .. theme.Words.Chest
+			screen.status.TextColor3 = theme.Colors.Rarity[slot.rarity]
+			if left <= 0 then
+				screen.timer.Text = "READY!"
+				setPad(session, "Unlock" .. i, nil, "Open!", true)
+			else
+				screen.timer.Text = Format.clock(left)
+				setPad(session, "Unlock" .. i, nil, Format.clock(left), false)
+			end
+		end
+	end
+end
+
+-- State ------------------------------------------------------------------------------
+
+local function snapshot(session: Session): { [string]: any }
+	local p = session.profile
+	local now = os.time()
+	local unlockers = {}
+	for i, slot in p.unlockers do
+		unlockers[i] = {
+			rarity = slot.rarity,
+			secondsLeft = if slot.rarity ~= "" then math.max(0, slot.endsAt - now) else 0,
+		}
+	end
+	local production = Tycoon.production(session)
+	local rate = Economy.processRate(p.processLevel)
+	local moneyMult = Tycoon.moneyMultiplier(session)
+	return {
+		now = now,
+		money = p.money,
+		gems = p.gems,
+		carried = p.carried,
+		queue = p.queue,
+		pending = p.pending,
+		units = p.units,
+		discovered = p.discovered,
+		totalObtained = p.totalObtained,
+		buyTier = p.buyTier,
+		boughtAtTier = p.boughtAtTier,
+		processLevel = p.processLevel,
+		heldChest = p.heldChest,
+		highestTier = highestTier(session),
+		unlockers = unlockers,
+		autoMergeOwned = p.autoMergeOwned,
+		autoMerge = p.autoMerge,
+		settings = p.settings,
+		passes = session.passes,
+		premium = session.premium,
+		friendBonus = session.friendBonus,
+		moneyMult = moneyMult,
+		orbMult = Tycoon.orbMultiplier(session),
+		production = production,
+		processRate = rate,
+		income = Economy.incomePerSecond(production, rate, moneyMult),
+		freeIn = math.max(0, p.lastFreeReward + Economy.FREE_REWARD_COOLDOWN - now),
+		plotIndex = session.plot.index,
+	}
+end
+
+local function updateLeaderstats(session: Session)
+	local stats = session.player:FindFirstChild("leaderstats")
+	if not stats then
+		return
+	end
+	local units = stats:FindFirstChild(theme.Words.Units) :: StringValue?
+	local cash = stats:FindFirstChild("Cash") :: StringValue?
+	if units then
+		units.Value = Format.short(session.profile.totalObtained)
+	end
+	if cash then
+		cash.Value = Format.short(session.profile.money)
+	end
+end
+
+local function flush(session: Session)
+	if not session.dirty or not session.alive then
+		return
+	end
+	session.dirty = false
+	updateBoards(session)
+	updateLeaderstats(session)
+	StateRemote:FireClient(session.player, snapshot(session))
+end
+
+-- Ticks --------------------------------------------------------------------------------
+
+local function fastTick(session: Session)
+	local character = session.player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not root then
+		return
+	end
+	local plot = session.plot
+	local pos = root.Position
+	local localPos = plot.cframe:PointToObjectSpace(pos)
+
+	for _, pad in plot.pads do
+		local inside = math.abs(localPos.X - pad.center.X) <= pad.half.X
+			and math.abs(localPos.Z - pad.center.Z) <= pad.half.Y
+			and localPos.Y > -2
+			and localPos.Y < 9
+		if inside and not session.inside[pad.name] then
+			session.inside[pad.name] = true
+			local handler = padHandlers[pad.name]
+			if handler then
+				handler(session)
+				flush(session)
+			end
+		elseif not inside and session.inside[pad.name] then
+			session.inside[pad.name] = nil
+		end
+	end
+
+	-- Orb pickup (horizontal distance so jumping still collects).
+	local collected = 0
+	for i = #session.orbs, 1, -1 do
+		local orb = session.orbs[i]
+		local offset = orb.part.Position - pos
+		if Vector2.new(offset.X, offset.Z).Magnitude <= ORB_PICKUP_RADIUS and math.abs(offset.Y) < 8 then
+			collected += orb.value
+			orb.part:Destroy()
+			table.remove(session.orbs, i)
+		end
+	end
+	if collected > 0 then
+		session.profile.carried += collected
+		session.collectBuffer += collected
+		markDirty(session)
+	end
+
+	if session.profile.heldChest == "" then
+		for i, chest in session.floorChests do
+			local offset = chest.position - pos
+			if Vector2.new(offset.X, offset.Z).Magnitude <= CHEST_PICKUP_RADIUS then
+				chest.model:Destroy()
+				table.remove(session.floorChests, i)
+				session.profile.heldChest = chest.rarity
+				attachHeldModel(session)
+				effect(session, "ChestPickup", { rarity = chest.rarity })
+				markDirty(session)
+				break
+			end
+		end
+	end
+end
+
+local function slowTick(session: Session)
+	local p = session.profile
+	local production = Tycoon.production(session)
+
+	if session.passes.AutoLoot then
+		p.carried += production
+		if #session.orbs > 0 then
+			local sum = 0
+			for _, orb in session.orbs do
+				sum += orb.value
+			end
+			p.carried += sum
+			clearOrbs(session)
+		end
+	else
+		produceOrbs(session, production)
+	end
+
+	local rate = Economy.processRate(p.processLevel)
+	local processed = math.min(p.queue, rate)
+	if processed > 0 then
+		p.queue -= processed
+		p.pending += processed * Economy.CASH_PER_POINT * Tycoon.moneyMultiplier(session)
+	end
+	if session.passes.AutoCash and p.pending > 0 then
+		addMoney(session, p.pending)
+		p.pending = 0
+	end
+
+	session.chestTimer += 1
+	if session.chestTimer >= Economy.CHEST_SPAWN_INTERVAL then
+		session.chestTimer = 0
+		if rng:NextNumber() < Economy.CHEST_SPAWN_CHANCE then
+			spawnFloorChest(session)
+		end
+	end
+
+	if session.collectBuffer > 0 then
+		effect(session, "Collect", { amount = session.collectBuffer })
+		session.collectBuffer = 0
+	end
+
+	-- Re-attach a held crate after respawning.
+	if p.heldChest ~= "" and (not session.heldModel or not session.heldModel.Parent) then
+		attachHeldModel(session)
+	end
+
+	markDirty(session)
+	flush(session)
+end
+
+local function rerollDeposit()
+	ReplicatedStorage:SetAttribute("DepositMult", Economy.rollDepositMultiplier(random))
+	ReplicatedStorage:SetAttribute("DepositNextAt", serverNow() + Economy.DEPOSIT_REROLL_SECONDS)
+end
+
+-- Actions from the client ---------------------------------------------------------------
+
+local actionHandlers: { [string]: (Session, { [string]: any }) -> () } = {}
+
+actionHandlers.UnlockChest = function(session, data)
+	local p = session.profile
+	local rarity = p.heldChest
+	if rarity == "" then
+		return
+	end
+	if data.method == "gems" then
+		if not spendGems(session, Economy.CHEST_INFO[rarity].gemPrice) then
+			return
+		end
+	else
+		if not spend(session, Economy.chestMoneyPrice(rarity, highestTier(session))) then
+			return
+		end
+	end
+	clearHeld(session)
+	openChest(session, rarity, "unlock")
+end
+
+actionHandlers.DiscardChest = function(session)
+	if session.profile.heldChest ~= "" then
+		clearHeld(session)
+		toast(session, theme.Words.Chest .. " discarded.", "info")
+	end
+end
+
+actionHandlers.FinishUnlocker = function(session, data)
+	local slotIndex = data.slot
+	if slotIndex ~= 1 and slotIndex ~= 2 then
+		return
+	end
+	local slot = session.profile.unlockers[slotIndex]
+	if slot.rarity == "" then
+		return
+	end
+	local left = slot.endsAt - os.time()
+	if left > 0 and not spendGems(session, Economy.finishGemCost(left)) then
+		return
+	end
+	local rarity = slot.rarity
+	slot.rarity = ""
+	slot.endsAt = 0
+	openChest(session, rarity, "unlocker")
+end
+
+actionHandlers.PromptPass = function(session, data)
+	if type(data.name) == "string" and theme.Monetization.Passes[data.name] then
+		Tycoon.hooks.promptPass(session.player, data.name)
+	end
+end
+
+actionHandlers.PromptProduct = function(session, data)
+	if (data.kind == "Money" or data.kind == "Gems") and type(data.index) == "number" then
+		Tycoon.hooks.promptProduct(session.player, data.kind, data.index)
+	end
+end
+
+actionHandlers.SetSetting = function(session, data)
+	local p = session.profile
+	if data.key == "autoMerge" then
+		if p.autoMergeOwned and type(data.value) == "boolean" then
+			p.autoMerge = data.value
+			if p.autoMerge then
+				doMerge(session, false)
+			end
+		elseif not p.autoMergeOwned then
+			toast(session, "Unlock Auto Merge on the pad next to the buy pads first.", "info")
+		end
+	elseif type(data.key) == "string" and type(p.settings[data.key]) == "boolean" and type(data.value) == "boolean" then
+		p.settings[data.key] = data.value
+	end
+	markDirty(session)
+end
+
+actionHandlers.Home = function(session)
+	local character = session.player.Character
+	if character then
+		character:PivotTo(session.plot.spawn)
+	end
+end
+
+-- Sent by the client once its UI is ready; the caller flushes fresh state.
+actionHandlers.Sync = function(_session) end
+
+actionHandlers.Merge = function(session)
+	doMerge(session, true)
+end
+
+-- Players ---------------------------------------------------------------------------------
+
+local function freePlot(): number?
+	for index = 1, #world.plots do
+		if not plotOwners[index] then
+			return index
+		end
+	end
+	return nil
+end
+
+local function setOwnerSign(plot: Plot, player: Player?)
+	if player then
+		plot.labels.Owner.Text = player.DisplayName .. "'s " .. (if theme.Id == "chad" then "Gym" else "Factory")
+		plot.ownerImage.Image = string.format("rbxthumb://type=AvatarHeadShot&id=%d&w=150&h=150", player.UserId)
+	else
+		plot.labels.Owner.Text = "EMPTY PLOT"
+		plot.ownerImage.Image = ""
+		for _, pad in plot.pads do
+			pad.sub.Text = ""
+		end
+		for _, screen in plot.unlockerScreens do
+			screen.status.Text = ""
+			screen.timer.Text = ""
+		end
+		-- Clear the previous owner's numbers from the dynamic boards.
+		for _, key in
+			{
+				"BuyTierFromTo",
+				"BuyTierProgress",
+				"BuyTierCost",
+				"ProcessQueue",
+				"ProcessRate",
+				"ProcessSpeed",
+				"FreeStatus",
+				"DepositNext",
+			}
+		do
+			local boardLabel = plot.labels[key]
+			if boardLabel then
+				boardLabel.Text = ""
+			end
+		end
+	end
+end
+
+local function refreshFriendBonuses()
+	local list = Players:GetPlayers()
+	for _, player in list do
+		local session = sessions[player]
+		if session then
+			task.spawn(function()
+				local friends = 0
+				for _, other in list do
+					if other ~= player and other.Parent then
+						local ok, isFriend = pcall(player.IsFriendsWith, player, other.UserId)
+						if ok and isFriend then
+							friends += 1
+						end
+					end
+				end
+				session.friendBonus = math.min(friends * Economy.FRIEND_BONUS, Economy.MAX_FRIEND_BONUS)
+				markDirty(session)
+			end)
+		end
+	end
+end
+
+local function applyOffline(session: Session)
+	local p = session.profile
+	if p.lastOnline <= 0 then
+		return
+	end
+	local elapsed = math.min(os.time() - p.lastOnline, Economy.OFFLINE_CAP_SECONDS)
+	if elapsed < Economy.OFFLINE_MIN_SECONDS then
+		return
+	end
+	local produced = Economy.productionPerSecond(p.units)
+		* (if session.passes.DoubleAura then 2 else 1)
+		* elapsed
+		* Economy.OFFLINE_EFFICIENCY
+	p.queue += produced
+	local processed = math.min(p.queue, Economy.processRate(p.processLevel) * elapsed)
+	p.queue -= processed
+	local cash = processed * Economy.CASH_PER_POINT * (if session.passes.DoubleMoney then 2 else 1)
+	p.pending += cash
+	notify(session, { kind = "Offline", seconds = elapsed, orbs = produced, cash = cash })
+end
+
+function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, passes: { [string]: boolean }): Session?
+	local index = freePlot()
+	if not index then
+		player:Kick("This server is full. Please join another server!")
+		return nil
+	end
+	plotOwners[index] = player
+	local plot = world.plots[index]
+
+	local session: Session = {
+		player = player,
+		profile = profile,
+		canSave = canSave,
+		plot = plot,
+		passes = passes,
+		premium = player.MembershipType == Enum.MembershipType.Premium,
+		friendBonus = 0,
+		inside = {},
+		orbs = {},
+		floorChests = {},
+		heldModel = nil,
+		display = {},
+		displayCounts = "",
+		dirty = true,
+		chestTimer = 0,
+		collectBuffer = 0,
+		actionBudget = ACTIONS_PER_SECOND,
+		lastToast = {},
+		alive = true,
+	}
+	sessions[player] = session
+
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	local unitsStat = Instance.new("StringValue")
+	unitsStat.Name = theme.Words.Units
+	unitsStat.Parent = leaderstats
+	local cashStat = Instance.new("StringValue")
+	cashStat.Name = "Cash"
+	cashStat.Parent = leaderstats
+	leaderstats.Parent = player
+
+	setOwnerSign(plot, player)
+	refreshDisplay(session)
+	applyOffline(session)
+
+	local function onCharacter(character: Model)
+		local root = character:WaitForChild("HumanoidRootPart", 10)
+		if not root or not session.alive then
+			return
+		end
+		task.wait(0.1)
+		character:PivotTo(plot.spawn)
+		session.heldModel = nil
+		attachHeldModel(session)
+	end
+	player.CharacterAdded:Connect(onCharacter)
+	if player.Character then
+		task.spawn(onCharacter, player.Character)
+	end
+
+	refreshFriendBonuses()
+	markDirty(session)
+	flush(session)
+	return session
+end
+
+function Tycoon.removePlayer(player: Player): Session?
+	local session = sessions[player]
+	if not session then
+		return nil
+	end
+	session.alive = false
+	sessions[player] = nil
+	plotOwners[session.plot.index] = nil
+
+	clearOrbs(session)
+	for _, chest in session.floorChests do
+		chest.model:Destroy()
+	end
+	for _, slot in session.display do
+		slot.model:Destroy()
+	end
+	removeHeldModel(session)
+	setOwnerSign(session.plot, nil)
+	refreshFriendBonuses()
+	return session
+end
+
+function Tycoon.setPass(player: Player, name: string)
+	local session = sessions[player]
+	if session then
+		session.passes[name] = true
+		markDirty(session)
+		flush(session)
+	end
+end
+
+function Tycoon.grantMoney(session: Session, amount: number)
+	addMoney(session, amount)
+	effect(session, "Cash", { amount = amount })
+	markDirty(session)
+	flush(session)
+end
+
+function Tycoon.grantGems(session: Session, amount: number)
+	session.profile.gems += amount
+	toast(session, string.format("+%d %s %s", amount, theme.Words.Gem, theme.Icons.Gem), "good")
+	markDirty(session)
+	flush(session)
+end
+
+function Tycoon.init(builtWorld: WorldBuilder.World, themeModule: any)
+	world = builtWorld
+	theme = themeModule
+
+	NotifyRemote = Net.event("Notify")
+	EffectRemote = Net.event("Effect")
+	StateRemote = Net.event("State")
+	ActionRemote = Net.event("Action")
+
+	rerollDeposit()
+
+	ActionRemote.OnServerEvent:Connect(function(player, data)
+		local session = sessions[player]
+		if not session or type(data) ~= "table" or type(data.action) ~= "string" then
+			return
+		end
+		if session.actionBudget <= 0 then
+			return
+		end
+		session.actionBudget -= 1
+		local handler = actionHandlers[data.action]
+		if handler then
+			handler(session, data)
+			markDirty(session)
+			flush(session)
+		end
+	end)
+
+	task.spawn(function()
+		while true do
+			task.wait(0.1)
+			for _, session in sessions do
+				local ok, err = pcall(fastTick, session)
+				if not ok then
+					warn("[Tycoon] fastTick:", err)
+				end
+			end
+		end
+	end)
+
+	task.spawn(function()
+		while true do
+			task.wait(1)
+			if serverNow() >= (ReplicatedStorage:GetAttribute("DepositNextAt") or 0) then
+				rerollDeposit()
+			end
+			for _, session in sessions do
+				session.actionBudget = ACTIONS_PER_SECOND
+				local ok, err = pcall(slowTick, session)
+				if not ok then
+					warn("[Tycoon] slowTick:", err)
+				end
+			end
+		end
+	end)
+end
+
+return Tycoon
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="14">
+        <Properties>
+          <string name="Name">WorldBuilder</string>
+          <string name="Source"><![CDATA[--[[
+	WorldBuilder: generates the whole map from parts when the server starts.
+
+	Layout (top-down, one plot; the entrance faces the central hub):
+
+	        back wall
+	  +-------------------------------+
+	  |  [ display shelves x3 rows ]  |
+	  | proc+  B1 B5 B25 B100 AM  tier|
+	  | proc       ( orb field )      |
+	  |  DEPOSIT     (MERGE)   UNLOCK |
+	  |                        UNLOCK |
+	  |  COLLECT                 FREE |
+	  +----------[ entrance ]---------+
+
+	All plot-local positions use X = right, Z = toward the back wall.
+]]
+
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Economy = require(ReplicatedStorage.Shared.Economy)
+
+local WorldBuilder = {}
+
+local PLOT_COUNT = 6
+local PLOT_HALF = 55
+-- Wall boards sit in front of the wall pillars (pillar faces are at PLOT_HALF - 2.5).
+local BOARD_X = PLOT_HALF - 3.4
+
+export type Pad = {
+	name: string,
+	center: Vector3,
+	half: Vector2,
+	part: BasePart,
+	title: TextLabel,
+	sub: TextLabel,
+}
+
+export type Plot = {
+	index: number,
+	cframe: CFrame,
+	folder: Folder,
+	unitFolder: Folder,
+	orbFolder: Folder,
+	chestFolder: Folder,
+	spawn: CFrame,
+	slots: { CFrame },
+	orbArea: { minX: number, maxX: number, minZ: number, maxZ: number },
+	pads: { Pad },
+	padByName: { [string]: Pad },
+	labels: { [string]: TextLabel },
+	ownerImage: ImageLabel,
+	unlockerScreens: { { frame: Frame, title: TextLabel, status: TextLabel, timer: TextLabel } },
+}
+
+export type World = {
+	plots: { Plot },
+	ranking: { TextLabel },
+}
+
+local theme: any
+local mapFolder: Folder
+
+local function part(props: { [string]: any }): Part
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Material = Enum.Material.SmoothPlastic
+	for key, value in props do
+		if key ~= "Parent" then
+			(p :: any)[key] = value
+		end
+	end
+	p.Parent = props.Parent or mapFolder
+	return p
+end
+
+local function stroke(parent: Instance, thickness: number?)
+	local s = Instance.new("UIStroke")
+	s.Thickness = thickness or 2
+	s.Color = theme.Colors.Stroke
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+	s.Parent = parent
+end
+
+local function label(parent: Instance, props: { [string]: any }): TextLabel
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.TextScaled = true
+	l.Font = theme.Fonts.Title
+	l.TextColor3 = theme.Colors.Text
+	l.Size = UDim2.fromScale(1, 0.3)
+	for key, value in props do
+		(l :: any)[key] = value
+	end
+	stroke(l, props.StrokeThickness)
+	l.Parent = parent
+	return l
+end
+
+-- A flat sign whose front (-Z) face carries a SurfaceGui.
+local function board(cframe: CFrame, size: Vector2, parent: Instance, accent: Color3?): (SurfaceGui, Frame)
+	local frameColor = accent or theme.Colors.Neon
+	local back = part({
+		Name = "Board",
+		Size = Vector3.new(size.X + 0.6, size.Y + 0.6, 0.6),
+		CFrame = cframe * CFrame.new(0, 0, 0.35),
+		Color = frameColor,
+		Material = Enum.Material.Neon,
+		Parent = parent,
+	})
+	back.CanCollide = false
+	local screen = part({
+		Name = "Screen",
+		Size = Vector3.new(size.X, size.Y, 0.4),
+		CFrame = cframe,
+		Color = theme.Colors.PanelDark,
+		Parent = parent,
+	})
+	screen.CanCollide = false
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Front
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 30
+	gui.LightInfluence = 0
+	gui.Parent = screen
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.fromScale(1, 1)
+	frame.BackgroundColor3 = theme.Colors.PanelDark
+	frame.BorderSizePixel = 0
+	frame.Parent = gui
+	local gradient = Instance.new("UIGradient")
+	gradient.Color = ColorSequence.new(theme.Colors.Panel, theme.Colors.PanelDark)
+	gradient.Rotation = 90
+	gradient.Parent = frame
+	return gui, frame
+end
+
+local function billboard(adornee: BasePart, offsetY: number, width: number, height: number): BillboardGui
+	local gui = Instance.new("BillboardGui")
+	gui.Size = UDim2.fromScale(width, height)
+	gui.StudsOffset = Vector3.new(0, offsetY, 0)
+	gui.LightInfluence = 0
+	gui.MaxDistance = 140
+	gui.Adornee = adornee
+	gui.Parent = adornee
+	return gui
+end
+
+local function setupLighting()
+	local l = theme.Lighting
+	Lighting.ClockTime = l.ClockTime
+	Lighting.Ambient = l.Ambient
+	Lighting.OutdoorAmbient = l.OutdoorAmbient
+	Lighting.Brightness = l.Brightness
+	Lighting.FogColor = l.FogColor
+	Lighting.FogEnd = l.FogEnd
+	Lighting.GlobalShadows = true
+
+	local atmosphere = Lighting:FindFirstChildOfClass("Atmosphere") or Instance.new("Atmosphere")
+	atmosphere.Color = l.AtmosphereColor
+	atmosphere.Decay = l.AtmosphereDecay
+	atmosphere.Density = 0.3
+	atmosphere.Glare = 0.2
+	atmosphere.Haze = 1.5
+	atmosphere.Parent = Lighting
+
+	local bloom = Lighting:FindFirstChildOfClass("BloomEffect") or Instance.new("BloomEffect")
+	bloom.Intensity = l.BloomIntensity
+	bloom.Size = 30
+	bloom.Threshold = 0.9
+	bloom.Parent = Lighting
+
+	local cc = Lighting:FindFirstChildOfClass("ColorCorrectionEffect") or Instance.new("ColorCorrectionEffect")
+	cc.TintColor = l.ColorTint
+	cc.Saturation = 0.15
+	cc.Contrast = 0.08
+	cc.Parent = Lighting
+end
+
+local function buildHub(): { TextLabel }
+	local c = theme.Colors
+	part({
+		Name = "Ground",
+		Size = Vector3.new(560, 1, 560),
+		CFrame = CFrame.new(0, -0.6, 0),
+		Color = c.Hub,
+		Material = Enum.Material.Concrete,
+	})
+
+	local spawn = Instance.new("SpawnLocation")
+	spawn.Name = "HubSpawn"
+	spawn.Anchored = true
+	spawn.Neutral = true
+	spawn.Size = Vector3.new(14, 1, 14)
+	spawn.CFrame = CFrame.new(0, 0, -24)
+	spawn.Color = c.Neon
+	spawn.Material = Enum.Material.Neon
+	spawn.Duration = 0
+	spawn.Parent = mapFolder
+	local decal = spawn:FindFirstChildOfClass("Decal")
+	if decal then
+		decal:Destroy()
+	end
+
+	-- Central tower: title on the X faces, ranking boards on the Z faces.
+	part({ Name = "Tower", Size = Vector3.new(18, 34, 18), CFrame = CFrame.new(0, 17, 0), Color = c.Wall, Material = Enum.Material.Metal })
+	part({
+		Name = "TowerCap",
+		Size = Vector3.new(21, 1.5, 21),
+		CFrame = CFrame.new(0, 34.5, 0),
+		Color = c.Neon,
+		Material = Enum.Material.Neon,
+	})
+	part({
+		Name = "TowerBase",
+		Size = Vector3.new(24, 1, 24),
+		CFrame = CFrame.new(0, 0.2, 0),
+		Color = c.NeonAlt,
+		Material = Enum.Material.Neon,
+	})
+
+	for _, sideAngle in { math.pi / 2, -math.pi / 2 } do
+		local cf = CFrame.new(0, 24, 0) * CFrame.Angles(0, sideAngle, 0) * CFrame.new(0, 0, -9.4)
+		local _, frame = board(cf, Vector2.new(16, 10), mapFolder, c.NeonAlt)
+		label(
+			frame,
+			{ Text = theme.GameName, Size = UDim2.fromScale(0.94, 0.5), Position = UDim2.fromScale(0.03, 0.08), TextColor3 = c.Primary }
+		)
+		label(
+			frame,
+			{ Text = theme.Tagline, Font = theme.Fonts.Body, Size = UDim2.fromScale(0.9, 0.25), Position = UDim2.fromScale(0.05, 0.62) }
+		)
+	end
+
+	local rankingLabels: { TextLabel } = {}
+	for _, sideAngle in { 0, math.pi } do
+		local cf = CFrame.new(0, 18, 0) * CFrame.Angles(0, sideAngle, 0) * CFrame.new(0, 0, -9.4)
+		local _, frame = board(cf, Vector2.new(16, 26), mapFolder, c.Primary)
+		label(frame, {
+			Text = "🏆 TOP " .. string.upper(theme.Words.Units),
+			Size = UDim2.fromScale(0.94, 0.08),
+			Position = UDim2.fromScale(0.03, 0.02),
+			TextColor3 = c.Primary,
+		})
+		local list = label(frame, {
+			Text = "Loading...",
+			Font = theme.Fonts.Body,
+			TextScaled = false,
+			TextSize = 26,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Size = UDim2.fromScale(0.9, 0.86),
+			Position = UDim2.fromScale(0.05, 0.12),
+			RichText = true,
+		})
+		table.insert(rankingLabels, list)
+	end
+
+	-- Neon walkways from hub to each plot row.
+	for _, z in { 1, -1 } do
+		part({
+			Name = "Walkway",
+			Size = Vector3.new(340, 0.2, 3),
+			CFrame = CFrame.new(0, -0.05, z * 70),
+			Color = c.NeonAlt,
+			Material = Enum.Material.Neon,
+		})
+	end
+	for x = -1, 1 do
+		part({
+			Name = "Walkway",
+			Size = Vector3.new(3, 0.2, 140),
+			CFrame = CFrame.new(x * 130, -0.05, 0),
+			Color = c.Neon,
+			Material = Enum.Material.Neon,
+		})
+	end
+
+	-- Decorative light posts.
+	for i = 0, 7 do
+		local angle = i * math.pi / 4
+		local pos = Vector3.new(math.cos(angle) * 40, 0, math.sin(angle) * 40)
+		part({
+			Name = "Post",
+			Size = Vector3.new(1.2, 12, 1.2),
+			CFrame = CFrame.new(pos + Vector3.new(0, 6, 0)),
+			Color = c.WallTrim,
+			Material = Enum.Material.Metal,
+		})
+		local bulb = part({
+			Name = "Bulb",
+			Shape = Enum.PartType.Ball,
+			Size = Vector3.new(2.4, 2.4, 2.4),
+			CFrame = CFrame.new(pos + Vector3.new(0, 12.5, 0)),
+			Color = if i % 2 == 0 then c.Neon else c.NeonAlt,
+			Material = Enum.Material.Neon,
+		})
+		local light = Instance.new("PointLight")
+		light.Color = bulb.Color
+		light.Range = 30
+		light.Brightness = 1.5
+		light.Parent = bulb
+	end
+	return rankingLabels
+end
+
+local function plotCFrame(index: number): CFrame
+	local row = if index <= 3 then 1 else -1
+	local col = ((index - 1) % 3) - 1
+	local center = Vector3.new(col * 130, 0, row * 150)
+	return CFrame.lookAt(center, Vector3.new(center.X, 0, 0))
+end
+
+local function buildPlot(index: number): Plot
+	local c = theme.Colors
+	local w = theme.Words
+	local cf = plotCFrame(index)
+	local folder = Instance.new("Folder")
+	folder.Name = "Plot" .. index
+	folder.Parent = mapFolder
+
+	local function L(x: number, y: number, z: number): CFrame
+		return cf * CFrame.new(x, y, z)
+	end
+	local function P(props: { [string]: any }): Part
+		props.Parent = props.Parent or folder
+		return part(props)
+	end
+
+	-- Floor, field and walls.
+	P({
+		Name = "Floor",
+		Size = Vector3.new(PLOT_HALF * 2, 1, PLOT_HALF * 2),
+		CFrame = L(0, -0.5, 0),
+		Color = c.Floor,
+		Material = Enum.Material.Slate,
+	})
+	P({
+		Name = "Field",
+		Size = Vector3.new(64, 0.1, 44),
+		CFrame = L(0, 0.02, -1),
+		Color = c.FloorAlt,
+		Material = Enum.Material.DiamondPlate,
+	})
+	for _, x in { -32, 32 } do
+		P({ Name = "FieldTrim", Size = Vector3.new(0.6, 0.15, 44), CFrame = L(x, 0.05, -1), Color = c.Neon, Material = Enum.Material.Neon })
+	end
+	for _, z in { -23, 21 } do
+		P({ Name = "FieldTrim", Size = Vector3.new(64, 0.15, 0.6), CFrame = L(0, 0.05, z), Color = c.Neon, Material = Enum.Material.Neon })
+	end
+
+	local wallHeight = 30
+	P({
+		Name = "WallBack",
+		Size = Vector3.new(PLOT_HALF * 2, wallHeight, 1),
+		CFrame = L(0, wallHeight / 2, PLOT_HALF),
+		Color = c.Wall,
+		Material = Enum.Material.Brick,
+	})
+	for side = -1, 1, 2 do
+		P({
+			Name = "WallSide",
+			Size = Vector3.new(1, wallHeight, PLOT_HALF * 2),
+			CFrame = L(side * PLOT_HALF, wallHeight / 2, 0),
+			Color = c.Wall,
+			Material = Enum.Material.Brick,
+		})
+		P({
+			Name = "WallTrim",
+			Size = Vector3.new(1.4, 1, PLOT_HALF * 2),
+			CFrame = L(side * PLOT_HALF, wallHeight, 0),
+			Color = c.WallTrim,
+			Material = Enum.Material.Metal,
+		})
+		P({
+			Name = "WallNeon",
+			Size = Vector3.new(1.2, 0.5, PLOT_HALF * 2),
+			CFrame = L(side * PLOT_HALF, 2, 0),
+			Color = c.NeonAlt,
+			Material = Enum.Material.Neon,
+		})
+		for z = -44, 44, 22 do
+			P({
+				Name = "Pillar",
+				Size = Vector3.new(3, wallHeight, 3),
+				CFrame = L(side * (PLOT_HALF - 1), wallHeight / 2, z),
+				Color = c.WallTrim,
+				Material = Enum.Material.Metal,
+			})
+			P({
+				Name = "PillarNeon",
+				Size = Vector3.new(0.4, wallHeight - 6, 0.6),
+				CFrame = L(side * (PLOT_HALF - 2.6), wallHeight / 2, z),
+				Color = c.Neon,
+				Material = Enum.Material.Neon,
+			})
+		end
+	end
+	P({
+		Name = "BackTrim",
+		Size = Vector3.new(PLOT_HALF * 2, 1, 1.4),
+		CFrame = L(0, wallHeight, PLOT_HALF),
+		Color = c.WallTrim,
+		Material = Enum.Material.Metal,
+	})
+
+	-- Entrance arch with the owner sign facing the hub.
+	for side = -1, 1, 2 do
+		P({
+			Name = "ArchPillar",
+			Size = Vector3.new(4, 22, 4),
+			CFrame = L(side * 16, 11, -PLOT_HALF),
+			Color = c.WallTrim,
+			Material = Enum.Material.Metal,
+		})
+		P({
+			Name = "ArchNeon",
+			Size = Vector3.new(4.4, 0.6, 4.4),
+			CFrame = L(side * 16, 21, -PLOT_HALF),
+			Color = c.Neon,
+			Material = Enum.Material.Neon,
+		})
+	end
+	P({ Name = "ArchBeam", Size = Vector3.new(36, 4, 4), CFrame = L(0, 23, -PLOT_HALF), Color = c.WallTrim, Material = Enum.Material.Metal })
+	-- Boards face plot -Z, which is toward the hub, so no rotation is needed.
+	local _, ownerFrame = board(L(0, 23, -PLOT_HALF - 2.3), Vector2.new(26, 6), folder, c.Primary)
+	local ownerImage = Instance.new("ImageLabel")
+	ownerImage.BackgroundTransparency = 1
+	ownerImage.Size = UDim2.fromScale(0.22, 0.9)
+	ownerImage.Position = UDim2.fromScale(0.02, 0.05)
+	ownerImage.ScaleType = Enum.ScaleType.Fit
+	ownerImage.Image = ""
+	ownerImage.Parent = ownerFrame
+	local ownerLabel = label(
+		ownerFrame,
+		{ Text = "EMPTY PLOT", Size = UDim2.fromScale(0.72, 0.7), Position = UDim2.fromScale(0.26, 0.15), TextColor3 = c.Primary }
+	)
+
+	-- Display shelves: three stepped rows of ten slots.
+	local slots: { CFrame } = {}
+	for row = 0, 2 do
+		local top = 1.5 + row * 5
+		local z = 34 + row * 6.5
+		P({
+			Name = "Shelf",
+			Size = Vector3.new(74, top, 6.5),
+			CFrame = L(0, top / 2, z),
+			Color = c.WallTrim,
+			Material = Enum.Material.Metal,
+		})
+		P({
+			Name = "ShelfNeon",
+			Size = Vector3.new(74, 0.3, 0.4),
+			CFrame = L(0, top - 0.1, z - 3.3),
+			Color = if row % 2 == 0 then c.Neon else c.NeonAlt,
+			Material = Enum.Material.Neon,
+		})
+		for col = 0, 9 do
+			table.insert(slots, L(-31.5 + col * 7, top, z))
+		end
+	end
+	-- Order: front row first, centre-out, so the best units are most visible.
+	local order = { 5, 6, 4, 7, 3, 8, 2, 9, 1, 10 }
+	local ordered: { CFrame } = {}
+	for row = 0, 2 do
+		for _, col in order do
+			table.insert(ordered, slots[row * 10 + col])
+		end
+	end
+	assert(#ordered == Economy.DISPLAY_SLOTS, "display slot count mismatch")
+
+	local pads: { Pad } = {}
+	local padByName: { [string]: Pad } = {}
+	local labels: { [string]: TextLabel } = {}
+
+	local function pad(
+		name: string,
+		x: number,
+		z: number,
+		sizeX: number,
+		sizeZ: number,
+		color: Color3,
+		title: string,
+		sub: string,
+		round: boolean?
+	): Pad
+		local padPart
+		if round then
+			padPart = P({
+				Name = "Pad_" .. name,
+				Shape = Enum.PartType.Cylinder,
+				Size = Vector3.new(0.5, sizeX, sizeZ),
+				CFrame = L(x, 0.25, z) * CFrame.Angles(0, 0, math.rad(90)),
+				Color = color,
+				Material = Enum.Material.Neon,
+			})
+		else
+			padPart = P({
+				Name = "Pad_" .. name,
+				Size = Vector3.new(sizeX, 0.5, sizeZ),
+				CFrame = L(x, 0.25, z),
+				Color = color,
+				Material = Enum.Material.Neon,
+			})
+			P({
+				Name = "PadRim",
+				Size = Vector3.new(sizeX + 1, 0.3, sizeZ + 1),
+				CFrame = L(x, 0.15, z),
+				Color = c.WallTrim,
+				Material = Enum.Material.Metal,
+			})
+		end
+		padPart.CanCollide = false
+		local gui = billboard(padPart, 4.5, 12, 3.6)
+		local titleLabel = label(gui, { Text = title, Size = UDim2.fromScale(1, 0.55) })
+		local subLabel =
+			label(gui, { Text = sub, Size = UDim2.fromScale(1, 0.42), Position = UDim2.fromScale(0, 0.58), TextColor3 = c.Good })
+		local record: Pad = {
+			name = name,
+			center = Vector3.new(x, 0, z),
+			half = Vector2.new(sizeX / 2, sizeZ / 2),
+			part = padPart,
+			title = titleLabel,
+			sub = subLabel,
+		}
+		table.insert(pads, record)
+		padByName[name] = record
+		return record
+	end
+
+	-- Buy row.
+	local buyX = { -36, -22, -8, 6 }
+	for i, amount in Economy.BUY_AMOUNTS do
+		pad("Buy" .. amount, buyX[i], 26, 9, 6, c.Pad, "Buy " .. amount .. " " .. w.Unit, "$0")
+	end
+	pad("AutoMerge", 19, 26, 8, 6, c.NeonAlt, "Auto Merge", "$0")
+
+	-- Buy tier upgrade: pad + board on the right wall.
+	pad("BuyTier", 46, 20, 8, 8, c.NeonAlt, w.BuyTier, "")
+	do
+		local _, frame = board(L(BOARD_X, 9, 20) * CFrame.Angles(0, math.pi / 2, 0), Vector2.new(14, 9), folder, c.NeonAlt)
+		labels.BuyTierTitle = label(
+			frame,
+			{ Text = w.BuyTier, Size = UDim2.fromScale(0.94, 0.2), Position = UDim2.fromScale(0.03, 0.04), TextColor3 = c.Secondary }
+		)
+		labels.BuyTierFromTo =
+			label(frame, { Text = "", Font = theme.Fonts.Body, Size = UDim2.fromScale(0.94, 0.22), Position = UDim2.fromScale(0.03, 0.28) })
+		labels.BuyTierProgress = label(frame, {
+			Text = "",
+			Font = theme.Fonts.Body,
+			Size = UDim2.fromScale(0.94, 0.2),
+			Position = UDim2.fromScale(0.03, 0.54),
+			TextColor3 = c.Primary,
+		})
+		labels.BuyTierCost = label(frame, {
+			Text = "",
+			Font = theme.Fonts.Body,
+			Size = UDim2.fromScale(0.94, 0.18),
+			Position = UDim2.fromScale(0.03, 0.78),
+			TextColor3 = c.Good,
+		})
+	end
+
+	-- Merge pad in the middle of the field.
+	pad("Merge", 0, -2, 12, 12, c.Primary, w.Merge, "Pairs merge into the next tier", true)
+
+	-- Deposit station (left).
+	pad("Deposit", -42, -8, 10, 10, c.Secondary, "DEPOSIT", w.Orb .. " x1.0")
+	do
+		local base = P({
+			Name = "Converter",
+			Size = Vector3.new(6, 1.5, 6),
+			CFrame = L(-50, 0.75, -8),
+			Color = c.WallTrim,
+			Material = Enum.Material.Metal,
+		})
+		base.CanCollide = true
+		local tube = P({
+			Name = "ConverterTube",
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(9, 5, 5),
+			CFrame = L(-50, 6, -8) * CFrame.Angles(0, 0, math.rad(90)),
+			Color = c.Orb,
+			Material = Enum.Material.Glass,
+			Transparency = 0.35,
+		})
+		tube.CanCollide = false
+		local core = P({
+			Name = "ConverterCore",
+			Shape = Enum.PartType.Ball,
+			Size = Vector3.new(3, 3, 3),
+			CFrame = L(-50, 6, -8),
+			Color = c.Orb,
+			Material = Enum.Material.Neon,
+		})
+		core.CanCollide = false
+		local light = Instance.new("PointLight")
+		light.Color = c.Orb
+		light.Range = 18
+		light.Parent = core
+		P({
+			Name = "ConverterTop",
+			Size = Vector3.new(6, 1.2, 6),
+			CFrame = L(-50, 11, -8),
+			Color = c.WallTrim,
+			Material = Enum.Material.Metal,
+		})
+		local _, frame = board(L(-BOARD_X, 17, -8) * CFrame.Angles(0, -math.pi / 2, 0), Vector2.new(14, 7), folder, c.Secondary)
+		label(
+			frame,
+			{ Text = w.Deposit, Size = UDim2.fromScale(0.94, 0.25), Position = UDim2.fromScale(0.03, 0.05), TextColor3 = c.Secondary }
+		)
+		labels.DepositMult = label(
+			frame,
+			{ Text = "x1.0", Size = UDim2.fromScale(0.9, 0.42), Position = UDim2.fromScale(0.05, 0.32), TextColor3 = c.Primary }
+		)
+		labels.DepositNext =
+			label(frame, { Text = "", Font = theme.Fonts.Body, Size = UDim2.fromScale(0.9, 0.18), Position = UDim2.fromScale(0.05, 0.78) })
+	end
+
+	-- Processing board + upgrade pads (left wall, further back).
+	do
+		local _, frame = board(L(-BOARD_X, 11, 17) * CFrame.Angles(0, -math.pi / 2, 0), Vector2.new(14, 8), folder, c.Primary)
+		labels.ProcessTitle = label(frame, {
+			Text = "⚡ " .. w.Process .. " ⚡",
+			Size = UDim2.fromScale(0.94, 0.2),
+			Position = UDim2.fromScale(0.03, 0.05),
+			TextColor3 = c.Primary,
+		})
+		labels.ProcessQueue = label(frame, { Text = "0", Size = UDim2.fromScale(0.9, 0.36), Position = UDim2.fromScale(0.05, 0.28) })
+		labels.ProcessRate = label(frame, {
+			Text = "",
+			Font = theme.Fonts.Body,
+			Size = UDim2.fromScale(0.9, 0.18),
+			Position = UDim2.fromScale(0.05, 0.66),
+			TextColor3 = c.Good,
+		})
+		labels.ProcessSpeed = label(frame, {
+			Text = "",
+			Font = theme.Fonts.Body,
+			Size = UDim2.fromScale(0.9, 0.14),
+			Position = UDim2.fromScale(0.05, 0.84),
+			TextColor3 = c.TextDim,
+		})
+	end
+	pad("ProcUp1", -47, 11, 8, 6, c.Good, "UPGRADE", "$0")
+	pad("ProcUp10", -47, 21, 8, 6, c.Good, "UPGRADE x" .. Economy.PROCESS_BULK, "$0")
+
+	-- Collect cash pad + coin sign.
+	pad("Collect", -40, -34, 11, 11, c.Primary, w.Collect, "$0")
+	do
+		local coin = P({
+			Name = "Coin",
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(1.2, 10, 10),
+			CFrame = L(-50, 8, -34) * CFrame.Angles(0, math.rad(90), 0),
+			Color = c.Primary,
+			Material = Enum.Material.Neon,
+		})
+		coin.CanCollide = false
+		local gui = Instance.new("SurfaceGui")
+		gui.Face = Enum.NormalId.Right
+		gui.LightInfluence = 0
+		gui.Parent = coin
+		label(gui, { Text = "$", Size = UDim2.fromScale(1, 1), TextColor3 = c.PanelDark })
+		local gui2 = Instance.new("SurfaceGui")
+		gui2.Face = Enum.NormalId.Left
+		gui2.LightInfluence = 0
+		gui2.Parent = coin
+		label(gui2, { Text = "$", Size = UDim2.fromScale(1, 1), TextColor3 = c.PanelDark })
+		P({ Name = "CoinStand", Size = Vector3.new(3, 3, 3), CFrame = L(-50, 1.5, -34), Color = c.WallTrim, Material = Enum.Material.Metal })
+	end
+
+	-- Crate unlockers (right).
+	local unlockerScreens = {}
+	for i, z in { -6, 8 } do
+		local name = if i == 1 then w.Unlocker else w.PremiumUnlocker
+		local color = if i == 1 then c.Secondary else c.Accent
+		pad("Unlock" .. i, 42, z, 8, 8, color, name, "")
+		P({ Name = "Machine", Size = Vector3.new(5, 12, 9), CFrame = L(51, 6, z), Color = c.WallTrim, Material = Enum.Material.Metal })
+		P({ Name = "MachineNeon", Size = Vector3.new(5.2, 0.5, 9.2), CFrame = L(51, 12, z), Color = color, Material = Enum.Material.Neon })
+		local _, frame = board(L(48.3, 7.5, z) * CFrame.Angles(0, math.pi / 2, 0), Vector2.new(8, 6), folder, color)
+		local titleLabel =
+			label(frame, { Text = name, Size = UDim2.fromScale(0.94, 0.22), Position = UDim2.fromScale(0.03, 0.04), TextColor3 = color })
+		local statusLabel = label(
+			frame,
+			{ Text = "EMPTY", Font = theme.Fonts.Body, Size = UDim2.fromScale(0.94, 0.2), Position = UDim2.fromScale(0.03, 0.3) }
+		)
+		local timerLabel = label(frame, {
+			Text = "--:--:--",
+			Font = theme.Fonts.Mono,
+			Size = UDim2.fromScale(0.9, 0.3),
+			Position = UDim2.fromScale(0.05, 0.58),
+			TextColor3 = c.Primary,
+		})
+		table.insert(unlockerScreens, { frame = frame, title = titleLabel, status = statusLabel, timer = timerLabel })
+	end
+
+	-- Chest odds board (right wall).
+	do
+		local _, frame = board(L(BOARD_X, 9, -20) * CFrame.Angles(0, math.pi / 2, 0), Vector2.new(10, 9), folder, c.Primary)
+		label(frame, {
+			Text = string.upper(w.Chest) .. " DROPS",
+			Size = UDim2.fromScale(0.94, 0.16),
+			Position = UDim2.fromScale(0.03, 0.03),
+			TextColor3 = c.Primary,
+		})
+		local total = 0
+		for _, rarity in Economy.CHEST_RARITIES do
+			total += Economy.CHEST_INFO[rarity].weight
+		end
+		for i, rarity in Economy.CHEST_RARITIES do
+			local chance = Economy.CHEST_INFO[rarity].weight / total * 100
+			label(frame, {
+				Text = string.format(
+					"%s  %s%%",
+					rarity,
+					if chance < 1 then string.format("%.1f", chance) else tostring(math.floor(chance + 0.5))
+				),
+				Font = theme.Fonts.Body,
+				Size = UDim2.fromScale(0.9, 0.13),
+				Position = UDim2.fromScale(0.05, 0.08 + i * 0.15),
+				TextColor3 = c.Rarity[rarity],
+			})
+		end
+	end
+
+	-- Free reward pad + board.
+	pad("Free", 42, -34, 9, 9, c.Good, w.Free, "")
+	do
+		local _, frame = board(L(BOARD_X, 9, -38) * CFrame.Angles(0, math.pi / 2, 0), Vector2.new(10, 7), folder, c.Good)
+		label(
+			frame,
+			{ Text = "🎁 " .. w.Free, Size = UDim2.fromScale(0.94, 0.24), Position = UDim2.fromScale(0.03, 0.05), TextColor3 = c.Good }
+		)
+		labels.FreeStatus = label(frame, { Text = "", Size = UDim2.fromScale(0.9, 0.34), Position = UDim2.fromScale(0.05, 0.33) })
+		labels.FreeDesc = label(frame, {
+			Text = "Cash + " .. Economy.FREE_REWARD_GEMS .. " " .. w.Gem,
+			Font = theme.Fonts.Body,
+			Size = UDim2.fromScale(0.9, 0.2),
+			Position = UDim2.fromScale(0.05, 0.72),
+			TextColor3 = c.TextDim,
+		})
+	end
+
+	-- Plot lights.
+	for _, pos in { Vector3.new(-25, 26, -20), Vector3.new(25, 26, -20), Vector3.new(-25, 26, 20), Vector3.new(25, 26, 20) } do
+		local lamp = P({
+			Name = "Lamp",
+			Size = Vector3.new(4, 0.6, 4),
+			CFrame = L(pos.X, pos.Y, pos.Z),
+			Color = c.Neon,
+			Material = Enum.Material.Neon,
+		})
+		lamp.CanCollide = false
+		local light = Instance.new("SpotLight")
+		light.Face = Enum.NormalId.Bottom
+		light.Angle = 120
+		light.Range = 40
+		light.Brightness = 2
+		light.Color = Color3.new(1, 1, 1):Lerp(c.Neon, 0.25)
+		light.Parent = lamp
+	end
+
+	labels.Owner = ownerLabel
+
+	local unitFolder = Instance.new("Folder")
+	unitFolder.Name = "Units"
+	unitFolder.Parent = folder
+	local orbFolder = Instance.new("Folder")
+	orbFolder.Name = "Orbs"
+	orbFolder.Parent = folder
+	local chestFolder = Instance.new("Folder")
+	chestFolder.Name = "Chests"
+	chestFolder.Parent = folder
+
+	return {
+		index = index,
+		cframe = cf,
+		folder = folder,
+		unitFolder = unitFolder,
+		orbFolder = orbFolder,
+		chestFolder = chestFolder,
+		spawn = L(0, 4, -44) * CFrame.Angles(0, math.pi, 0),
+		slots = ordered,
+		orbArea = { minX = -29, maxX = 29, minZ = -20, maxZ = 18 },
+		pads = pads,
+		padByName = padByName,
+		labels = labels,
+		ownerImage = ownerImage,
+		unlockerScreens = unlockerScreens,
+	}
+end
+
+function WorldBuilder.build(themeModule: any): World
+	theme = themeModule
+	mapFolder = Instance.new("Folder")
+	mapFolder.Name = "Map"
+	mapFolder.Parent = Workspace
+
+	setupLighting()
+	local ranking = buildHub()
+	local plots = {}
+	for i = 1, PLOT_COUNT do
+		table.insert(plots, buildPlot(i))
+	end
+	return { plots = plots, ranking = ranking }
+end
+
+WorldBuilder.label = function(parent: Instance, props: { [string]: any }): TextLabel
+	return label(parent, props)
+end
+WorldBuilder.billboard = billboard
+
+return WorldBuilder
+]]></string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="SoundService" referent="15">
+    <Properties>
+      <string name="Name">SoundService</string>
+      <bool name="RespectFilteringEnabled">true</bool>
+    </Properties>
+  </Item>
+  <Item class="StarterPlayer" referent="16">
+    <Properties>
+      <string name="Name">StarterPlayer</string>
+      <float name="CameraMaxZoomDistance">120</float>
+    </Properties>
+    <Item class="StarterPlayerScripts" referent="17">
+      <Properties>
+        <string name="Name">StarterPlayerScripts</string>
+      </Properties>
+      <Item class="Folder" referent="18">
+        <Properties>
+          <string name="Name">Client</string>
+        </Properties>
+        <Item class="LocalScript" referent="19">
+          <Properties>
+            <string name="Name">Main</string>
+            <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterGui = game:GetService("StarterGui")
+local Workspace = game:GetService("Workspace")
+
+local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Format = require(Shared.Format)
+local Net = require(Shared.Net)
+
+local Client = script.Parent
+local State = require(Client.State)
+local Sounds = require(Client.Sounds)
+local Kit = require(Client.UI.Kit)
+local Hud = require(Client.UI.Hud)
+local Windows = require(Client.UI.Windows)
+local Popups = require(Client.UI.Popups)
+
+local player = Players.LocalPlayer
+local C = Theme.Colors
+local I = Theme.Icons
+
+local screen = Instance.new("ScreenGui")
+screen.Name = "TycoonUI"
+screen.ResetOnSpawn = false
+screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screen.IgnoreGuiInset = false
+screen.Parent = player:WaitForChild("PlayerGui")
+
+-- Scale the whole UI from a 1280x720 design size.
+local uiScale = Instance.new("UIScale")
+uiScale.Parent = screen
+local function rescale()
+	local camera = Workspace.CurrentCamera
+	if not camera then
+		return
+	end
+	local size = camera.ViewportSize
+	uiScale.Scale = math.clamp(math.min(size.X / 1280, size.Y / 720), 0.55, 1.5)
+end
+rescale()
+Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(rescale)
+if Workspace.CurrentCamera then
+	Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescale)
+end
+
+Kit.setClickSound(function()
+	Sounds.play("Click")
+end)
+
+Popups.build(screen, Sounds)
+Windows.build(screen)
+Hud.build(screen, { openWindow = Windows.open }, Sounds)
+
+pcall(function()
+	StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+end)
+
+local action = Net.event("Action")
+
+Net.event("State").OnClientEvent:Connect(function(data)
+	State.set(data)
+	Sounds.updateMusic()
+end)
+
+Net.event("Notify").OnClientEvent:Connect(function(payload)
+	if type(payload) ~= "table" then
+		return
+	end
+	if payload.kind == "Toast" then
+		Popups.toast(payload.text, payload.tone)
+	elseif payload.kind == "Reward" then
+		Popups.reward(payload)
+	elseif payload.kind == "Offline" then
+		Popups.offline(payload)
+	elseif payload.kind == "Confirm" then
+		Popups.confirm(payload.text, function()
+			action:FireServer(payload.action)
+		end)
+	end
+end)
+
+local TANK = UDim2.new(0.5, 0, 1, -150)
+local WALLET = UDim2.new(0, 190, 1, -110)
+
+Net.event("Effect").OnClientEvent:Connect(function(kind, data)
+	if kind == "Collect" then
+		Sounds.play("Collect", 0.3)
+		Popups.float("+" .. I.Orb .. Format.short(data.amount), C.Orb, TANK)
+	elseif kind == "Cash" then
+		Sounds.play("Cash")
+		Popups.float("+" .. Format.money(data.amount), C.Good, WALLET)
+	elseif kind == "Deposit" then
+		Sounds.play("Deposit")
+		Popups.float(string.format("%s%s x%.1f", I.Orb, Format.short(data.amount), data.mult), C.Primary, TANK)
+	elseif kind == "Buy" then
+		Sounds.play("Buy")
+	elseif kind == "Merge" then
+		Sounds.play("Merge")
+	elseif kind == "Upgrade" then
+		Sounds.play("Reward")
+	elseif kind == "ChestPickup" then
+		Sounds.play("Click")
+	end
+end)
+
+-- Ask for a fresh snapshot now that every listener is connected.
+action:FireServer({ action = "Sync" })
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="20">
+          <Properties>
+            <string name="Name">Sounds</string>
+            <string name="Source"><![CDATA[-- Sound effects using sounds bundled with the Roblox client (no uploads needed),
+-- plus optional theme music.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local SoundService = game:GetService("SoundService")
+
+local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
+local State = require(script.Parent.State)
+
+local Sounds = {}
+
+local DEFS: { [string]: { id: string, volume: number, pitch: number } } = {
+	Click = { id = "rbxasset://sounds/electronicpingshort.wav", volume = 0.35, pitch = 1.6 },
+	Collect = { id = "rbxasset://sounds/electronicpingshort.wav", volume = 0.25, pitch = 2.2 },
+	Cash = { id = "rbxasset://sounds/electronicpingshort.wav", volume = 0.5, pitch = 1.2 },
+	Deposit = { id = "rbxasset://sounds/swoosh.wav", volume = 0.5, pitch = 0.9 },
+	Buy = { id = "rbxasset://sounds/clickfast.wav", volume = 0.6, pitch = 1 },
+	Merge = { id = "rbxasset://sounds/swoosh.wav", volume = 0.6, pitch = 1.4 },
+	Reward = { id = "rbxasset://sounds/electronicpingshort.wav", volume = 0.7, pitch = 0.8 },
+	Error = { id = "rbxasset://sounds/clickfast.wav", volume = 0.5, pitch = 0.6 },
+}
+
+local cache: { [string]: Sound } = {}
+
+local function sfxEnabled(): boolean
+	local data = State.data
+	return not data or not data.settings or data.settings.sfx ~= false
+end
+
+function Sounds.play(name: string, pitchJitter: number?)
+	if not sfxEnabled() then
+		return
+	end
+	local def = DEFS[name]
+	if not def then
+		return
+	end
+	local sound = cache[name]
+	if not sound then
+		sound = Instance.new("Sound")
+		sound.Name = "Sfx_" .. name
+		sound.SoundId = def.id
+		sound.Volume = def.volume
+		sound.Parent = SoundService
+		cache[name] = sound
+	end
+	sound.PlaybackSpeed = def.pitch + (if pitchJitter then (math.random() - 0.5) * pitchJitter else 0)
+	SoundService:PlayLocalSound(sound)
+end
+
+local music: Sound? = nil
+
+function Sounds.updateMusic()
+	if Theme.MusicId == "" then
+		return
+	end
+	if not music then
+		local sound = Instance.new("Sound")
+		sound.Name = "Music"
+		sound.SoundId = Theme.MusicId
+		sound.Looped = true
+		sound.Volume = 0.3
+		sound.Parent = SoundService
+		music = sound
+	end
+	local data = State.data
+	local enabled = not data or data.settings.music ~= false
+	local m = music :: Sound
+	if enabled and not m.IsPlaying then
+		m:Play()
+	elseif not enabled and m.IsPlaying then
+		m:Stop()
+	end
+end
+
+return Sounds
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="21">
+          <Properties>
+            <string name="Name">State</string>
+            <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Format = require(ReplicatedStorage.Shared.Format)
+
+local State = {}
+
+State.data = nil :: { [string]: any }?
+State.changed = Instance.new("BindableEvent")
+State.clockOffset = 0
+State.receivedAt = 0
+
+function State.set(data: { [string]: any })
+	State.data = data
+	State.clockOffset = (data.now or os.time()) - os.time()
+	State.receivedAt = os.clock()
+	State.changed:Fire(data)
+end
+
+-- Server unix time estimate.
+function State.now(): number
+	return os.time() + State.clockOffset
+end
+
+-- Seconds since the snapshot arrived (for smooth countdowns between pushes).
+function State.age(): number
+	return os.clock() - State.receivedAt
+end
+
+-- Formats a number honouring the "full numbers" setting.
+function State.num(n: number): string
+	local data = State.data
+	if data and data.settings and data.settings.fullNumbers then
+		return Format.commas(n)
+	end
+	return Format.short(n)
+end
+
+function State.money(n: number): string
+	return "$" .. State.num(n)
+end
+
+return State
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="Folder" referent="22">
+          <Properties>
+            <string name="Name">UI</string>
+          </Properties>
+          <Item class="ModuleScript" referent="23">
+            <Properties>
+              <string name="Name">Hud</string>
+              <string name="Source"><![CDATA[--[[
+	Hud: always-on screen elements.
+
+	  top centre    unit counter + live deposit multiplier gauge
+	  left          menu buttons (Home, Ranking, Index, Shop, Invite) + 2x promo
+	  bottom left   bonus badges, cash multiplier, cash, gems, "+" button
+	  bottom centre orb tank (what you are carrying)
+	  bottom right  surge timer + version
+	  top right     settings button
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local SocialService = game:GetService("SocialService")
+local Workspace = game:GetService("Workspace")
+
+local Economy = require(ReplicatedStorage.Shared.Economy)
+local Format = require(ReplicatedStorage.Shared.Format)
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Kit = require(script.Parent.Kit)
+local State = require(script.Parent.Parent.State)
+
+local Theme = Kit.Theme
+local C = Kit.C
+local W = Theme.Words
+local I = Theme.Icons
+
+local Hud = {}
+
+export type Handlers = {
+	openWindow: (string) -> (),
+}
+
+local function menuButton(parent: Instance, icon: string, text: string, order: number, color: Color3, onClick: () -> ()): TextButton
+	local button = Kit.new("TextButton", {
+		AutoButtonColor = false,
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.fromOffset(78, 78),
+		Text = "",
+		LayoutOrder = order,
+		Parent = parent,
+	})
+	Kit.corner(button, 16)
+	Kit.stroke(button, 3)
+	Kit.gradient(button, Kit.lighten(color, 0.1), Kit.darken(color, 0.25))
+	Kit.text(button, { Text = icon, Size = UDim2.new(1, 0, 0.62, 0), Position = UDim2.fromScale(0, 0.04) })
+	Kit.title(button, { Text = text, Size = UDim2.new(1, -6, 0.3, 0), Position = UDim2.new(0, 3, 0.66, 0) })
+	Kit.bouncy(button)
+	button.Activated:Connect(onClick)
+	return button
+end
+
+local function badge(parent: Instance, icon: string, order: number): (Frame, TextLabel)
+	local frame = Kit.new("Frame", {
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(64, 64),
+		LayoutOrder = order,
+		Parent = parent,
+	})
+	Kit.text(frame, { Text = icon, Size = UDim2.fromScale(1, 0.7) })
+	local label = Kit.title(frame, { Text = "", Size = UDim2.fromScale(1, 0.36), Position = UDim2.fromScale(0, 0.66) })
+	return frame, label
+end
+
+function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
+	local action = Net.event("Action")
+
+	-- Left menu ---------------------------------------------------------------
+	local menu = Kit.new("Frame", {
+		Name = "Menu",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(260, 180),
+		Position = UDim2.fromOffset(14, 110),
+		Parent = screen,
+	})
+	Kit.new("UIGridLayout", {
+		CellSize = UDim2.fromOffset(78, 78),
+		CellPadding = UDim2.fromOffset(8, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = menu,
+	})
+	menuButton(menu, I.Home, "Home", 1, C.Secondary, function()
+		sounds.play("Click")
+		action:FireServer({ action = "Home" })
+	end)
+	menuButton(menu, I.Ranking, "Ranking", 2, C.Window.Ranking, function()
+		sounds.play("Click")
+		handlers.openWindow("Ranking")
+	end)
+	menuButton(menu, I.Index, "Index", 3, C.Window.Index, function()
+		sounds.play("Click")
+		handlers.openWindow("Index")
+	end)
+	menuButton(menu, I.Shop, "Shop", 4, C.Window.Shop, function()
+		sounds.play("Click")
+		handlers.openWindow("Shop")
+	end)
+	menuButton(menu, I.Invite, "Invite", 5, C.Good, function()
+		sounds.play("Click")
+		pcall(function()
+			SocialService:PromptGameInvite(Players.LocalPlayer)
+		end)
+	end)
+
+	-- Permanent 2x cash promo.
+	local promoPass = Theme.Monetization.Passes.DoubleMoney
+	local promo = Kit.new("Frame", {
+		Name = "Promo",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(230, 96),
+		Position = UDim2.fromOffset(14, 300),
+		Parent = screen,
+	})
+	local promoTag = Kit.title(promo, {
+		Text = "PERMANENT",
+		Size = UDim2.fromOffset(130, 26),
+		Position = UDim2.fromOffset(4, -8),
+		TextColor3 = C.Secondary,
+		Rotation = -4,
+		ZIndex = 3,
+	})
+	promoTag.TextXAlignment = Enum.TextXAlignment.Left
+	Kit.button(promo, {
+		Text = promoPass.Title,
+		Color = C.Primary,
+		Size = UDim2.fromOffset(220, 58),
+		Position = UDim2.fromOffset(0, 12),
+	}, function()
+		action:FireServer({ action = "PromptPass", name = "DoubleMoney" })
+	end)
+	Kit.title(promo, {
+		Text = "Only " .. promoPass.Price .. " R$",
+		Size = UDim2.fromOffset(220, 24),
+		Position = UDim2.fromOffset(0, 72),
+	})
+
+	-- Bottom-left: badges + cash ------------------------------------------------
+	local wallet = Kit.new("Frame", {
+		Name = "Wallet",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(420, 200),
+		Position = UDim2.new(0, 14, 1, -14),
+		AnchorPoint = Vector2.new(0, 1),
+		Parent = screen,
+	})
+	local badges = Kit.new("Frame", {
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(300, 64),
+		Parent = wallet,
+	})
+	Kit.new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = badges,
+	})
+	local _, premiumLabel = badge(badges, I.Premium, 1)
+	local _, friendsLabel = badge(badges, I.Friends, 2)
+	local surgeBadge, surgeBadgeLabel = badge(badges, I.Surge, 3)
+
+	local multLabel = Kit.title(wallet, {
+		Text = "Cash [1.0x]",
+		Size = UDim2.fromOffset(300, 36),
+		Position = UDim2.fromOffset(0, 70),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		RichText = true,
+	})
+	local moneyLabel = Kit.title(wallet, {
+		Text = "$0",
+		Size = UDim2.fromOffset(330, 58),
+		Position = UDim2.fromOffset(0, 104),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.Good,
+	})
+	local gemsLabel = Kit.title(wallet, {
+		Text = I.Gem .. " 0",
+		Size = UDim2.fromOffset(200, 32),
+		Position = UDim2.fromOffset(0, 164),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.Secondary,
+	})
+	Kit.button(wallet, {
+		Text = "+",
+		Color = C.Good,
+		Size = UDim2.fromOffset(54, 54),
+		Position = UDim2.fromOffset(340, 106),
+	}, function()
+		handlers.openWindow("Shop")
+	end)
+
+	-- Top centre: unit counter + multiplier gauge -------------------------------
+	local counter = Kit.panel(screen, {
+		Name = "Counter",
+		Size = UDim2.fromOffset(170, 46),
+		Position = UDim2.new(0.5, 0, 0, 8),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Color = C.PanelLight,
+		Radius = 12,
+	})
+	local counterLabel = Kit.title(counter, { Text = I.Unit .. " 0", Size = UDim2.new(1, -16, 1, -8), Position = UDim2.fromOffset(8, 4) })
+
+	local gauge = Kit.new("Frame", {
+		Name = "Gauge",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(340, 74),
+		Position = UDim2.new(0.5, 0, 0, 58),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Parent = screen,
+	})
+	local gaugeTitle = Kit.title(gauge, { Text = W.Multiplier .. ": 1.0x", Size = UDim2.new(1, 0, 0, 26), RichText = true })
+	local bar = Kit.new("Frame", {
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.new(1, 0, 0, 16),
+		Position = UDim2.fromOffset(0, 30),
+		Parent = gauge,
+	})
+	Kit.corner(bar, 8)
+	Kit.stroke(bar, 2)
+	Kit.new("UIGradient", {
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, C.Bad),
+			ColorSequenceKeypoint.new(0.3, Color3.fromRGB(255, 200, 40)),
+			ColorSequenceKeypoint.new(1, C.Good),
+		}),
+		Parent = bar,
+	})
+	local marker = Kit.new("Frame", {
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.fromOffset(6, 24),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.2, 0.5),
+		Parent = bar,
+	})
+	Kit.corner(marker, 3)
+	Kit.stroke(marker, 2)
+	local gaugeNext = Kit.text(gauge, { Text = "", Size = UDim2.new(1, 0, 0, 22), Position = UDim2.fromOffset(0, 50), RichText = true })
+
+	-- Bottom centre: carried tank ------------------------------------------------
+	local tank = Kit.panel(screen, {
+		Name = "Tank",
+		Size = UDim2.fromOffset(280, 112),
+		Position = UDim2.new(0.5, 0, 1, -12),
+		AnchorPoint = Vector2.new(0.5, 1),
+		Color = C.PanelLight,
+		Radius = 18,
+		StrokeThickness = 4,
+	})
+	local display = Kit.panel(tank, {
+		Size = UDim2.new(1, -40, 0, 52),
+		Position = UDim2.fromOffset(20, 10),
+		Color = C.PanelDark,
+		Radius = 10,
+	})
+	Kit.title(
+		display,
+		{ Text = string.upper(W.Orb), Size = UDim2.new(1, 0, 0.36, 0), Position = UDim2.fromScale(0, 0.04), TextColor3 = C.Primary }
+	)
+	local carriedLabel = Kit.title(display, { Text = "0", Size = UDim2.new(1, -12, 0.6, 0), Position = UDim2.new(0, 6, 0.38, 0) })
+	local tube = Kit.new("Frame", {
+		BackgroundColor3 = C.PanelDark,
+		Size = UDim2.new(1, -40, 0, 30),
+		Position = UDim2.fromOffset(20, 70),
+		ClipsDescendants = true,
+		Parent = tank,
+	})
+	Kit.corner(tube, 15)
+	Kit.stroke(tube, 3)
+	local fill = Kit.new("Frame", {
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.fromScale(0, 1),
+		Parent = tube,
+	})
+	Kit.corner(fill, 15)
+	Kit.gradient(fill, Kit.lighten(C.Orb, 0.35), C.Orb, 0)
+	local tubeIcon = Kit.text(tube, { Text = I.Orb, Size = UDim2.fromScale(1, 1) })
+	tubeIcon.ZIndex = 2
+
+	-- Settings (top right) -------------------------------------------------------
+	local gear = Kit.button(screen, {
+		Text = I.Settings,
+		Color = C.PanelLight,
+		Font = Enum.Font.GothamBold,
+		Size = UDim2.fromOffset(54, 54),
+		Position = UDim2.new(1, -14, 0, 60),
+		AnchorPoint = Vector2.new(1, 0),
+	}, function()
+		handlers.openWindow("Settings")
+	end)
+	gear.Name = "Settings"
+
+	-- Bottom right: surge timer + version ---------------------------------------
+	local surge = Kit.panel(screen, {
+		Name = "Surge",
+		Size = UDim2.fromOffset(150, 70),
+		Position = UDim2.new(1, -14, 1, -40),
+		AnchorPoint = Vector2.new(1, 1),
+		Color = C.PanelLight,
+	})
+	local surgeTitle =
+		Kit.title(surge, { Text = W.Surge, Size = UDim2.new(1, -10, 0.45, 0), Position = UDim2.fromOffset(5, 4), TextColor3 = C.Secondary })
+	local surgeTime = Kit.title(surge, { Text = "0:00", Size = UDim2.new(1, -10, 0.45, 0), Position = UDim2.new(0, 5, 0.5, 0) })
+	Kit.text(screen, {
+		Text = "v" .. Economy.VERSION,
+		Size = UDim2.fromOffset(100, 20),
+		Position = UDim2.new(1, -14, 1, -12),
+		AnchorPoint = Vector2.new(1, 1),
+		TextXAlignment = Enum.TextXAlignment.Right,
+	})
+
+	-- Updates ------------------------------------------------------------------------
+	local lastCarried = 0
+	local function refresh()
+		local data = State.data
+		if not data then
+			return
+		end
+		moneyLabel.Text = State.money(data.money)
+		gemsLabel.Text = I.Gem .. " " .. State.num(data.gems) .. " " .. W.Gem
+		multLabel.Text = string.format('Cash <font color="#FFD23C">[%.1fx]</font>', data.moneyMult)
+		counterLabel.Text = I.Unit .. " " .. State.num(data.totalObtained)
+		carriedLabel.Text = State.num(data.carried)
+		premiumLabel.Text = if data.premium then "+10%" else "Off"
+		premiumLabel.TextColor3 = if data.premium then C.Good else C.TextDim
+		friendsLabel.Text = string.format("+%d%%", math.floor(data.friendBonus * 100 + 0.5))
+		promo.Visible = not data.passes.DoubleMoney
+
+		local capacity = math.max(data.production * 30, 1)
+		Kit.tween(fill, 0.25, { Size = UDim2.fromScale(math.clamp(data.carried / capacity, 0.03, 1), 1) })
+		if data.carried > lastCarried then
+			local s = Kit.new("UIScale", { Scale = 1.12, Parent = carriedLabel })
+			Kit.tween(s, 0.25, { Scale = 1 })
+			task.delay(0.3, function()
+				s:Destroy()
+			end)
+		end
+		lastCarried = data.carried
+	end
+	State.changed.Event:Connect(refresh)
+
+	RunService.Heartbeat:Connect(function()
+		local now = Workspace:GetServerTimeNow()
+		local mult = ReplicatedStorage:GetAttribute("DepositMult") or 1
+		local nextAt = ReplicatedStorage:GetAttribute("DepositNextAt") or now
+		local color = if mult >= 1.2 then "#5CDC64" elseif mult < 1 then "#EB503C" else "#FFD23C"
+		gaugeTitle.Text = string.format('%s: <font color="%s">%.1fx</font>', W.Multiplier, color, mult)
+		gaugeNext.Text = string.format('next change in <font color="#FFD23C">%ds</font>', math.max(0, math.ceil(nextAt - now)))
+		local ratio = (mult - Economy.DEPOSIT_MIN) / (Economy.DEPOSIT_MAX - Economy.DEPOSIT_MIN)
+		marker.Position = UDim2.fromScale(math.clamp(ratio, 0, 1), 0.5)
+
+		local active, left = Economy.surgeState(now)
+		surgeTime.Text = Format.time(left)
+		surgeTitle.Text = if active then W.Surge .. " x" .. Economy.SURGE_MULTIPLIER else "Next " .. W.Surge
+		surgeTitle.TextColor3 = if active then C.Good else C.Secondary
+		surgeBadge.Visible = active
+		surgeBadgeLabel.Text = "x" .. Economy.SURGE_MULTIPLIER
+	end)
+
+	refresh()
+end
+
+return Hud
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="24">
+            <Properties>
+              <string name="Name">Kit</string>
+              <string name="Source"><![CDATA[--[[
+	Kit: small helpers for building the code-driven UI in a consistent style
+	(rounded panels, heavy outlines, gradient buttons, bouncy hover).
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
+local CharacterFactory = require(ReplicatedStorage.Shared.CharacterFactory)
+
+local Kit = {}
+Kit.Theme = Theme
+Kit.C = Theme.Colors
+
+local clickSound: (() -> ())? = nil
+function Kit.setClickSound(fn: () -> ())
+	clickSound = fn
+end
+
+function Kit.new(className: string, props: { [string]: any }?, children: { Instance }?): any
+	local inst = Instance.new(className)
+	local parent = nil
+	local properties: { [string]: any } = props or {}
+	for key, value in properties do
+		if key == "Parent" then
+			parent = value
+		else
+			(inst :: any)[key] = value
+		end
+	end
+	local childList: { Instance } = children or {}
+	for _, child in childList do
+		child.Parent = inst
+	end
+	if parent then
+		inst.Parent = parent
+	end
+	return inst
+end
+
+function Kit.corner(parent: Instance, radius: number?): UICorner
+	return Kit.new("UICorner", { CornerRadius = UDim.new(0, radius or 12), Parent = parent })
+end
+
+function Kit.stroke(parent: Instance, thickness: number?, color: Color3?): UIStroke
+	return Kit.new("UIStroke", {
+		Thickness = thickness or 3,
+		Color = color or Kit.C.Stroke,
+		ApplyStrokeMode = if parent:IsA("TextLabel") or parent:IsA("TextButton")
+			then Enum.ApplyStrokeMode.Border
+			else Enum.ApplyStrokeMode.Contextual,
+		Parent = parent,
+	})
+end
+
+function Kit.textStroke(parent: Instance, thickness: number?)
+	return Kit.new("UIStroke", {
+		Thickness = thickness or 2,
+		Color = Kit.C.Stroke,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
+		Parent = parent,
+	})
+end
+
+function Kit.gradient(parent: Instance, top: Color3, bottom: Color3, rotation: number?): UIGradient
+	return Kit.new("UIGradient", {
+		Color = ColorSequence.new(top, bottom),
+		Rotation = rotation or 90,
+		Parent = parent,
+	})
+end
+
+function Kit.padding(parent: Instance, px: number)
+	return Kit.new("UIPadding", {
+		PaddingTop = UDim.new(0, px),
+		PaddingBottom = UDim.new(0, px),
+		PaddingLeft = UDim.new(0, px),
+		PaddingRight = UDim.new(0, px),
+		Parent = parent,
+	})
+end
+
+function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
+	local label = Kit.new("TextLabel", {
+		BackgroundTransparency = 1,
+		Font = Theme.Fonts.Body,
+		TextColor3 = Kit.C.Text,
+		TextScaled = true,
+		Size = UDim2.fromScale(1, 1),
+		Parent = parent,
+	})
+	for key, value in props do
+		(label :: any)[key] = value
+	end
+	Kit.textStroke(label, props.TextScaled == false and 1.5 or 2)
+	return label
+end
+
+function Kit.title(parent: Instance, props: { [string]: any }): TextLabel
+	props.Font = props.Font or Theme.Fonts.Title
+	return Kit.text(parent, props)
+end
+
+function Kit.tween(obj: Instance, time: number, props: { [string]: any }, style: Enum.EasingStyle?): Tween
+	local tween = TweenService:Create(obj, TweenInfo.new(time, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props)
+	tween:Play()
+	return tween
+end
+
+function Kit.lighten(color: Color3, amount: number): Color3
+	return color:Lerp(Color3.new(1, 1, 1), amount)
+end
+
+function Kit.darken(color: Color3, amount: number): Color3
+	return color:Lerp(Color3.new(0, 0, 0), amount)
+end
+
+-- Adds a UIScale that pops on hover/press. Returns the scale object.
+function Kit.bouncy(button: GuiButton): UIScale
+	local scale = Kit.new("UIScale", { Parent = button })
+	button.MouseEnter:Connect(function()
+		Kit.tween(scale, 0.12, { Scale = 1.06 })
+	end)
+	button.MouseLeave:Connect(function()
+		Kit.tween(scale, 0.12, { Scale = 1 })
+	end)
+	button.MouseButton1Down:Connect(function()
+		Kit.tween(scale, 0.08, { Scale = 0.94 })
+	end)
+	button.MouseButton1Up:Connect(function()
+		Kit.tween(scale, 0.12, { Scale = 1.06 })
+	end)
+	return scale
+end
+
+-- A chunky coloured button with text.
+function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> ())?): TextButton
+	local color = props.Color or Kit.C.Good
+	local button = Kit.new("TextButton", {
+		AutoButtonColor = false,
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Text = "",
+		Size = props.Size or UDim2.fromOffset(160, 50),
+		Position = props.Position or UDim2.new(),
+		AnchorPoint = props.AnchorPoint or Vector2.zero,
+		LayoutOrder = props.LayoutOrder or 0,
+		Parent = parent,
+	})
+	Kit.corner(button, props.Radius or 10)
+	Kit.stroke(button, 3)
+	local gradient = Kit.gradient(button, Kit.lighten(color, 0.15), Kit.darken(color, 0.15))
+	local label = Kit.text(button, {
+		Name = "Label",
+		Text = props.Text or "",
+		Font = props.Font or Theme.Fonts.Title,
+		Size = UDim2.new(1, -12, 1, -8),
+		Position = UDim2.fromOffset(6, 4),
+		RichText = props.RichText or false,
+	})
+	Kit.bouncy(button)
+	button.Activated:Connect(function()
+		if clickSound then
+			clickSound()
+		end
+		if onClick then
+			onClick()
+		end
+	end);
+	(button :: any):SetAttribute("BaseColor", color)
+	-- Recolour helper used by callers to grey out disabled buttons.
+	local function setColor(newColor: Color3)
+		gradient.Color = ColorSequence.new(Kit.lighten(newColor, 0.15), Kit.darken(newColor, 0.15))
+	end
+	button:SetAttribute("Recolor", true)
+	button:GetAttributeChangedSignal("Tint"):Connect(function()
+		local tint = button:GetAttribute("Tint")
+		if typeof(tint) == "Color3" then
+			setColor(tint)
+		end
+	end)
+	label.Name = "Label"
+	return button
+end
+
+function Kit.setButton(button: TextButton, text: string?, color: Color3?)
+	local label = button:FindFirstChild("Label") :: TextLabel?
+	if text and label then
+		label.Text = text
+	end
+	if color then
+		button:SetAttribute("Tint", color)
+	end
+end
+
+-- Panel with gradient background and outline.
+function Kit.panel(parent: Instance, props: { [string]: any }): Frame
+	local color = props.Color or Kit.C.Panel
+	local frame = Kit.new("Frame", {
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = props.Size or UDim2.fromOffset(200, 100),
+		Position = props.Position or UDim2.new(),
+		AnchorPoint = props.AnchorPoint or Vector2.zero,
+		LayoutOrder = props.LayoutOrder or 0,
+		Visible = if props.Visible == nil then true else props.Visible,
+		Name = props.Name or "Panel",
+		Parent = parent,
+	})
+	Kit.corner(frame, props.Radius or 14)
+	Kit.stroke(frame, props.StrokeThickness or 3)
+	Kit.gradient(frame, Kit.lighten(color, 0.06), Kit.darken(color, 0.12))
+	return frame
+end
+
+-- Builds a ViewportFrame showing a unit tier.
+function Kit.unitViewport(parent: Instance, tier: number, props: { [string]: any }, silhouette: boolean?): ViewportFrame
+	local look = Theme.Tiers[tier].Look
+	local viewport = Kit.new("ViewportFrame", {
+		BackgroundTransparency = 1,
+		Size = props.Size or UDim2.fromScale(1, 1),
+		Position = props.Position or UDim2.new(),
+		AnchorPoint = props.AnchorPoint or Vector2.zero,
+		Ambient = Color3.fromRGB(200, 200, 210),
+		LightColor = Color3.new(1, 1, 1),
+		LightDirection = Vector3.new(-0.5, -1, 0.6),
+		Parent = parent,
+	})
+	-- Tagged so tooling (preview renderer) can identify what the viewport shows.
+	viewport:SetAttribute("Tier", tier)
+	viewport:SetAttribute("Silhouette", silhouette == true)
+	local model = CharacterFactory.build(look, Theme.Tiers[tier].Name)
+	if silhouette then
+		CharacterFactory.silhouette(model)
+	end
+	model.Parent = viewport
+	local height = CharacterFactory.height(look)
+	local camera = Instance.new("Camera")
+	camera.FieldOfView = 40
+	local focus = Vector3.new(0, height * 0.5, 0)
+	camera.CFrame = CFrame.lookAt(Vector3.new(height * 0.35, height * 0.62, -height * 1.75), focus)
+	camera.Parent = viewport
+	viewport.CurrentCamera = camera
+	return viewport
+end
+
+-- Standard modal window with a coloured title bar and close button.
+export type Window = {
+	frame: Frame,
+	content: Frame,
+	setOpen: (boolean) -> (),
+	isOpen: () -> boolean,
+	onOpen: BindableEvent,
+}
+
+function Kit.window(screen: ScreenGui, name: string, title: string, icon: string, color: Color3, size: Vector2): Window
+	local frame = Kit.panel(screen, {
+		Name = name,
+		Size = UDim2.fromOffset(size.X, size.Y),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Color = Kit.C.Panel,
+		Visible = false,
+		StrokeThickness = 4,
+	})
+	frame.ZIndex = 10
+	local scale = Kit.new("UIScale", { Parent = frame })
+
+	local bar = Kit.new("Frame", {
+		Name = "TitleBar",
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.new(1, -90, 0, 54),
+		Position = UDim2.fromOffset(12, 12),
+		Parent = frame,
+	})
+	Kit.corner(bar, 10)
+	Kit.stroke(bar, 3)
+	Kit.gradient(bar, Kit.lighten(color, 0.1), Kit.darken(color, 0.1))
+	Kit.title(bar, { Text = icon, Size = UDim2.fromOffset(60, 60), Position = UDim2.fromOffset(-14, -10), TextScaled = true })
+	Kit.title(bar, {
+		Text = string.upper(title),
+		Size = UDim2.new(1, -70, 0.8, 0),
+		Position = UDim2.fromOffset(56, 6),
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+
+	local content = Kit.new("Frame", {
+		Name = "Content",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -24, 1, -86),
+		Position = UDim2.fromOffset(12, 76),
+		Parent = frame,
+	})
+
+	local open = false
+	local onOpen = Instance.new("BindableEvent")
+	local function setOpen(value: boolean)
+		if value == open then
+			return
+		end
+		open = value
+		if value then
+			frame.Visible = true
+			scale.Scale = 0.8
+			Kit.tween(scale, 0.18, { Scale = 1 }, Enum.EasingStyle.Back)
+			onOpen:Fire()
+		else
+			frame.Visible = false
+		end
+	end
+
+	Kit.button(frame, {
+		Text = "X",
+		Color = Kit.C.Bad,
+		Size = UDim2.fromOffset(60, 54),
+		Position = UDim2.new(1, -72, 0, 12),
+	}, function()
+		setOpen(false)
+	end)
+
+	return {
+		frame = frame,
+		content = content,
+		setOpen = setOpen,
+		isOpen = function()
+			return open
+		end,
+		onOpen = onOpen,
+	}
+end
+
+function Kit.scrolling(parent: Instance, props: { [string]: any }?): ScrollingFrame
+	local p = props or {}
+	return Kit.new("ScrollingFrame", {
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Size = p.Size or UDim2.fromScale(1, 1),
+		Position = p.Position or UDim2.new(),
+		ScrollBarThickness = 8,
+		ScrollBarImageColor3 = Kit.C.Primary,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		CanvasSize = UDim2.new(),
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		Parent = parent,
+	})
+end
+
+return Kit
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="25">
+            <Properties>
+              <string name="Name">Popups</string>
+              <string name="Source"><![CDATA[--[[
+	Popups: toasts, reward reveals, the held-crate panel, confirm dialogs,
+	offline earnings and floating "+X" text.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local Economy = require(ReplicatedStorage.Shared.Economy)
+local Format = require(ReplicatedStorage.Shared.Format)
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Kit = require(script.Parent.Kit)
+local State = require(script.Parent.Parent.State)
+
+local Theme = Kit.Theme
+local C = Kit.C
+local W = Theme.Words
+local I = Theme.Icons
+
+local Popups = {}
+
+local screen: ScreenGui
+local toastHolder: Frame
+local sounds: any
+
+-- Toasts ------------------------------------------------------------------------
+
+local TONE_COLORS = {
+	good = C.Good,
+	bad = C.Bad,
+	info = C.Text,
+}
+
+function Popups.toast(text: string, tone: string?)
+	local label = Kit.title(toastHolder, {
+		Text = text,
+		Size = UDim2.new(1, 0, 0, 34),
+		TextColor3 = TONE_COLORS[tone or "info"] or C.Text,
+		TextTransparency = 1,
+	})
+	local labelStroke = label:FindFirstChildOfClass("UIStroke") :: UIStroke
+	labelStroke.Transparency = 1
+	Kit.tween(label, 0.2, { TextTransparency = 0 })
+	Kit.tween(labelStroke, 0.2, { Transparency = 0 })
+	if tone == "bad" then
+		sounds.play("Error")
+	end
+	task.delay(2.6, function()
+		Kit.tween(label, 0.4, { TextTransparency = 1 })
+		Kit.tween(labelStroke, 0.4, { Transparency = 1 })
+		task.wait(0.45)
+		label:Destroy()
+	end)
+	-- Keep the stack short.
+	local items = {}
+	for _, child in toastHolder:GetChildren() do
+		if child:IsA("TextLabel") then
+			table.insert(items, child)
+		end
+	end
+	if #items > 4 then
+		items[1]:Destroy()
+	end
+end
+
+-- Floating text -------------------------------------------------------------------
+
+function Popups.float(text: string, color: Color3, anchor: UDim2)
+	local label = Kit.title(screen, {
+		Text = text,
+		Size = UDim2.fromOffset(260, 44),
+		Position = anchor,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		TextColor3 = color,
+		ZIndex = 20,
+	})
+	local labelStroke = label:FindFirstChildOfClass("UIStroke") :: UIStroke
+	Kit.tween(label, 1.1, { Position = anchor - UDim2.fromOffset(0, 70), TextTransparency = 1 })
+	Kit.tween(labelStroke, 1.1, { Transparency = 1 })
+	task.delay(1.2, function()
+		label:Destroy()
+	end)
+end
+
+-- Reward reveal queue ----------------------------------------------------------------
+
+local rewardQueue: { { [string]: any } } = {}
+local showingReward = false
+
+local function showNextReward()
+	if showingReward or #rewardQueue == 0 then
+		return
+	end
+	showingReward = true
+	local reward = table.remove(rewardQueue, 1) :: { [string]: any }
+	local tier = reward.tier
+	local band = Economy.tierBand(tier)
+	local color = C.Rarity[band]
+
+	local card = Kit.panel(screen, {
+		Name = "Reward",
+		Size = UDim2.fromOffset(360, 420),
+		Position = UDim2.fromScale(0.5, 0.48),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Color = C.Panel,
+		StrokeThickness = 5,
+	})
+	card.ZIndex = 30;
+	(card:FindFirstChildOfClass("UIStroke") :: UIStroke).Color = color
+	local scale = Kit.new("UIScale", { Scale = 0.3, Parent = card })
+	Kit.tween(scale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
+
+	Kit.title(card, {
+		Text = if reward.new then "NEW " .. string.upper(W.Unit) .. "!" else "YOU GOT",
+		Size = UDim2.new(1, -20, 0, 44),
+		Position = UDim2.fromOffset(10, 10),
+		TextColor3 = if reward.new then C.Primary else C.Text,
+	})
+	local viewport = Kit.unitViewport(card, tier, { Size = UDim2.new(1, -40, 0, 230), Position = UDim2.fromOffset(20, 56) })
+	Kit.title(
+		card,
+		{ Text = Theme.Tiers[tier].Name, Size = UDim2.new(1, -20, 0, 40), Position = UDim2.fromOffset(10, 290), TextColor3 = color }
+	)
+	Kit.text(card, {
+		Text = string.format("Tier %d  •  %s", tier, band),
+		Size = UDim2.new(1, -20, 0, 28),
+		Position = UDim2.fromOffset(10, 332),
+		TextColor3 = C.TextDim,
+	})
+	if reward.gems and reward.gems > 0 then
+		Kit.title(card, {
+			Text = string.format("+%d %s %s", reward.gems, W.Gem, I.Gem),
+			Size = UDim2.new(1, -20, 0, 30),
+			Position = UDim2.fromOffset(10, 366),
+			TextColor3 = C.Secondary,
+		})
+	end
+	sounds.play("Reward")
+
+	local model = viewport:FindFirstChildOfClass("Model")
+	local spin = RunService.RenderStepped:Connect(function(dt)
+		if model then
+			model:PivotTo(model:GetPivot() * CFrame.Angles(0, dt * 1.2, 0))
+		end
+	end)
+
+	local closed = false
+	local function close()
+		if closed then
+			return
+		end
+		closed = true
+		spin:Disconnect()
+		Kit.tween(scale, 0.18, { Scale = 0 })
+		task.delay(0.2, function()
+			card:Destroy()
+			showingReward = false
+			showNextReward()
+		end)
+	end
+	local catcher =
+		Kit.new("TextButton", { BackgroundTransparency = 1, Text = "", Size = UDim2.fromScale(1, 1), ZIndex = 40, Parent = card })
+	catcher.Activated:Connect(close)
+	task.delay(3.2, close)
+end
+
+function Popups.reward(data: { [string]: any })
+	-- Ignore anything beyond a handful queued (e.g. huge cascades).
+	if #rewardQueue < 4 then
+		table.insert(rewardQueue, data)
+	end
+	showNextReward()
+end
+
+-- Confirm dialog ---------------------------------------------------------------------------
+
+function Popups.confirm(text: string, onYes: () -> ())
+	local existing = screen:FindFirstChild("Confirm")
+	if existing then
+		existing:Destroy()
+	end
+	local box = Kit.panel(screen, {
+		Name = "Confirm",
+		Size = UDim2.fromOffset(420, 200),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Color = C.Panel,
+		StrokeThickness = 4,
+	})
+	box.ZIndex = 50
+	Kit.title(box, { Text = text, Size = UDim2.new(1, -30, 0, 90), Position = UDim2.fromOffset(15, 12) })
+	Kit.button(box, { Text = "Yes", Color = C.Good, Size = UDim2.new(0.5, -22, 0, 60), Position = UDim2.new(0, 15, 1, -74) }, function()
+		box:Destroy()
+		onYes()
+	end)
+	Kit.button(box, { Text = "No", Color = C.Bad, Size = UDim2.new(0.5, -22, 0, 60), Position = UDim2.new(0.5, 7, 1, -74) }, function()
+		box:Destroy()
+	end)
+end
+
+-- Offline earnings ---------------------------------------------------------------------------
+
+function Popups.offline(data: { [string]: any })
+	local box = Kit.panel(screen, {
+		Name = "Offline",
+		Size = UDim2.fromOffset(460, 260),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Color = C.Panel,
+		StrokeThickness = 4,
+	})
+	box.ZIndex = 45
+	Kit.title(box, { Text = "WELCOME BACK!", Size = UDim2.new(1, -20, 0, 46), Position = UDim2.fromOffset(10, 10), TextColor3 = C.Primary })
+	Kit.text(box, {
+		Text = string.format("Your %s kept grinding for %s.", W.Units, Format.time(data.seconds)),
+		Size = UDim2.new(1, -30, 0, 30),
+		Position = UDim2.fromOffset(15, 62),
+	})
+	Kit.title(box, {
+		Text = string.format("%s %s  →  %s", I.Orb, Format.short(data.orbs), Format.money(data.cash)),
+		Size = UDim2.new(1, -30, 0, 44),
+		Position = UDim2.fromOffset(15, 100),
+		TextColor3 = C.Good,
+	})
+	Kit.text(box, {
+		Text = "Cash is waiting on your Collect pad. Unprocessed " .. W.Orb .. " stays in the converter.",
+		Size = UDim2.new(1, -30, 0, 26),
+		Position = UDim2.fromOffset(15, 148),
+		TextColor3 = C.TextDim,
+	})
+	Kit.button(box, { Text = "Let's go!", Color = C.Good, Size = UDim2.new(1, -30, 0, 56), Position = UDim2.new(0, 15, 1, -68) }, function()
+		box:Destroy()
+	end)
+end
+
+-- Held crate panel -----------------------------------------------------------------------------
+
+local function buildChestPanel()
+	local action = Net.event("Action")
+	local panel = Kit.panel(screen, {
+		Name = "ChestPanel",
+		Size = UDim2.fromOffset(330, 430),
+		Position = UDim2.new(1, -14, 0.5, 20),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Color = C.Panel,
+		Visible = false,
+		StrokeThickness = 4,
+	})
+	local title = Kit.title(panel, { Text = "", Size = UDim2.new(1, -20, 0, 44), Position = UDim2.fromOffset(10, 8) })
+	local icon = Kit.text(panel, { Text = I.Chest, Size = UDim2.new(1, 0, 0, 90), Position = UDim2.fromOffset(0, 52) })
+	local odds = Kit.new(
+		"Frame",
+		{ BackgroundTransparency = 1, Size = UDim2.new(1, -24, 0, 110), Position = UDim2.fromOffset(12, 146), Parent = panel }
+	)
+	Kit.new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder, Parent = odds })
+	local priceRow = Kit.panel(
+		panel,
+		{ Color = C.PanelLight, Size = UDim2.new(1, -24, 0, 44), Position = UDim2.fromOffset(12, 262), Radius = 10, StrokeThickness = 2 }
+	)
+	Kit.title(priceRow, {
+		Text = "Unlock Price",
+		Size = UDim2.new(0.55, -8, 1, -10),
+		Position = UDim2.fromOffset(8, 5),
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	local priceLabel = Kit.title(priceRow, {
+		Text = "",
+		Size = UDim2.new(0.45, -8, 1, -10),
+		Position = UDim2.new(0.55, 0, 0, 5),
+		TextXAlignment = Enum.TextXAlignment.Right,
+		TextColor3 = C.Good,
+	})
+
+	local method = "money"
+	local unlockButton = Kit.button(
+		panel,
+		{ Text = "Unlock!", Color = C.Good, Size = UDim2.new(1, -24, 0, 54), Position = UDim2.fromOffset(12, 314) },
+		function()
+			action:FireServer({ action = "UnlockChest", method = method })
+		end
+	)
+	Kit.button(
+		panel,
+		{ Text = "🗑 Discard", Color = C.Bad, Size = UDim2.new(0.5, -18, 0, 44), Position = UDim2.fromOffset(12, 374) },
+		function()
+			action:FireServer({ action = "DiscardChest" })
+		end
+	)
+	Kit.text(panel, {
+		Text = "or carry it to a " .. W.Unlocker .. " to open it free",
+		Size = UDim2.new(0.5, -12, 0, 44),
+		Position = UDim2.new(0.5, 0, 0, 374),
+		TextColor3 = C.TextDim,
+	})
+
+	local shownFor = ""
+	State.changed.Event:Connect(function(data)
+		local rarity = data.heldChest
+		panel.Visible = rarity ~= ""
+		if rarity == "" then
+			shownFor = ""
+			return
+		end
+		local color = C.Rarity[rarity]
+		local key = rarity .. ":" .. data.highestTier
+		if key ~= shownFor then
+			shownFor = key
+			title.Text = rarity .. " " .. W.Chest
+			title.TextColor3 = color
+			icon.TextColor3 = color;
+			(panel:FindFirstChildOfClass("UIStroke") :: UIStroke).Color = color
+			for _, child in odds:GetChildren() do
+				if child:IsA("Frame") then
+					child:Destroy()
+				end
+			end
+			for order, entry in Economy.chestOdds(rarity, data.highestTier) do
+				local row =
+					Kit.new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 34), LayoutOrder = order, Parent = odds })
+				local band = Economy.tierBand(entry.tier)
+				Kit.title(row, { Text = "T" .. entry.tier, Size = UDim2.new(0.18, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Left })
+				Kit.title(row, {
+					Text = Theme.Tiers[entry.tier].Name,
+					Size = UDim2.new(0.58, 0, 1, 0),
+					Position = UDim2.fromScale(0.18, 0),
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextColor3 = C.Rarity[band],
+				})
+				Kit.title(row, {
+					Text = entry.chance .. "%",
+					Size = UDim2.new(0.24, 0, 1, 0),
+					Position = UDim2.fromScale(0.76, 0),
+					TextXAlignment = Enum.TextXAlignment.Right,
+				})
+			end
+		end
+		local moneyPrice = Economy.chestMoneyPrice(rarity, data.highestTier)
+		local gemPrice = Economy.CHEST_INFO[rarity].gemPrice
+		if data.money >= moneyPrice then
+			method = "money"
+			priceLabel.Text = State.money(moneyPrice)
+			priceLabel.TextColor3 = C.Good
+			Kit.setButton(unlockButton, "🔓 Unlock!", C.Good)
+		else
+			method = "gems"
+			priceLabel.Text = State.money(moneyPrice)
+			priceLabel.TextColor3 = C.Bad
+			Kit.setButton(
+				unlockButton,
+				string.format("🔓 Unlock  %s %d", I.Gem, gemPrice),
+				if data.gems >= gemPrice then C.Secondary else C.PadDisabled
+			)
+		end
+	end)
+end
+
+function Popups.build(screenGui: ScreenGui, soundModule: any)
+	screen = screenGui
+	sounds = soundModule
+	toastHolder = Kit.new("Frame", {
+		Name = "Toasts",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(640, 200),
+		Position = UDim2.new(0.5, 0, 0, 140),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Parent = screen,
+	})
+	Kit.new("UIListLayout", {
+		Padding = UDim.new(0, 2),
+		HorizontalAlignment = Enum.HorizontalAlignment.Center,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = toastHolder,
+	})
+	buildChestPanel()
+end
+
+return Popups
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="26">
+            <Properties>
+              <string name="Name">Windows</string>
+              <string name="Source"><![CDATA[--[[
+	Windows: Shop, Index, Ranking and Settings. Only one is open at a time.
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Economy = require(ReplicatedStorage.Shared.Economy)
+local Format = require(ReplicatedStorage.Shared.Format)
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Kit = require(script.Parent.Kit)
+local State = require(script.Parent.Parent.State)
+
+local Theme = Kit.Theme
+local C = Kit.C
+local W = Theme.Words
+local I = Theme.Icons
+
+local Windows = {}
+
+local windows: { [string]: Kit.Window } = {}
+
+function Windows.open(name: string)
+	for key, window in windows do
+		window.setOpen(key == name and not window.isOpen())
+	end
+end
+
+function Windows.closeAll()
+	for _, window in windows do
+		window.setOpen(false)
+	end
+end
+
+local function sectionTitle(parent: Instance, text: string, order: number)
+	local holder = Kit.new("Frame", {
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 44),
+		LayoutOrder = order,
+		Parent = parent,
+	})
+	Kit.title(
+		holder,
+		{ Text = text, Size = UDim2.new(1, -10, 1, -6), Position = UDim2.fromOffset(6, 3), TextXAlignment = Enum.TextXAlignment.Left }
+	)
+end
+
+-- Shop ------------------------------------------------------------------------------
+
+local function buildShop(screen: ScreenGui)
+	local window = Kit.window(screen, "Shop", "Shop", I.Shop, C.Window.Shop, Vector2.new(820, 520))
+	windows.Shop = window
+	local action = Net.event("Action")
+
+	local scroll = Kit.scrolling(window.content)
+	Kit.new("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder, Parent = scroll })
+	Kit.padding(scroll, 6)
+
+	sectionTitle(scroll, "Game Passes  " .. I.Premium, 1)
+	local passGrid = Kit.new("Frame", {
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -16, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		LayoutOrder = 2,
+		Parent = scroll,
+	})
+	Kit.new("UIGridLayout", {
+		CellSize = UDim2.new(0.33, -8, 0, 200),
+		CellPadding = UDim2.fromOffset(10, 10),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = passGrid,
+	})
+
+	local passButtons: { [string]: TextButton } = {}
+	for order, name in Theme.Monetization.PassOrder do
+		local pass = Theme.Monetization.Passes[name]
+		local card = Kit.panel(passGrid, { Color = pass.Color, LayoutOrder = order, Radius = 14 })
+		Kit.title(card, { Text = pass.Title, Size = UDim2.new(1, -16, 0, 40), Position = UDim2.fromOffset(8, 8) })
+		local descBox = Kit.panel(card, {
+			Color = Kit.darken(pass.Color, 0.45),
+			Size = UDim2.new(1, -24, 0, 76),
+			Position = UDim2.fromOffset(12, 52),
+			Radius = 10,
+			StrokeThickness = 2,
+		})
+		Kit.text(descBox, { Text = pass.Desc, Size = UDim2.new(1, -16, 1, -12), Position = UDim2.fromOffset(8, 6), TextColor3 = C.Primary })
+		passButtons[name] = Kit.button(card, {
+			Text = pass.Price .. " R$",
+			Color = C.Good,
+			Size = UDim2.new(1, -24, 0, 52),
+			Position = UDim2.new(0, 12, 1, -62),
+		}, function()
+			action:FireServer({ action = "PromptPass", name = name })
+		end)
+	end
+
+	sectionTitle(scroll, "$ Cash Packs", 3)
+	local moneyGrid = Kit.new("Frame", {
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -16, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		LayoutOrder = 4,
+		Parent = scroll,
+	})
+	Kit.new("UIGridLayout", {
+		CellSize = UDim2.new(0.5, -6, 0, 70),
+		CellPadding = UDim2.fromOffset(10, 10),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = moneyGrid,
+	})
+	local moneyLabels: { TextLabel } = {}
+	for index, pack in Theme.Monetization.MoneyPacks do
+		local row = Kit.panel(moneyGrid, { Color = C.PanelLight, LayoutOrder = index, Radius = 12 })
+		moneyLabels[index] = Kit.title(row, {
+			Text = "$0",
+			Size = UDim2.new(0.58, -10, 1, -16),
+			Position = UDim2.fromOffset(12, 8),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = C.Good,
+		})
+		Kit.button(row, {
+			Text = pack.Price .. " R$",
+			Color = C.Good,
+			Size = UDim2.new(0.4, -10, 1, -16),
+			Position = UDim2.new(0.6, 0, 0, 8),
+		}, function()
+			action:FireServer({ action = "PromptProduct", kind = "Money", index = index })
+		end)
+	end
+
+	sectionTitle(scroll, I.Gem .. " " .. W.Gem .. " Packs", 5)
+	local gemGrid = Kit.new("Frame", {
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -16, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		LayoutOrder = 6,
+		Parent = scroll,
+	})
+	Kit.new("UIGridLayout", {
+		CellSize = UDim2.new(0.33, -8, 0, 130),
+		CellPadding = UDim2.fromOffset(10, 10),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = gemGrid,
+	})
+	for index, pack in Theme.Monetization.GemPacks do
+		local card = Kit.panel(gemGrid, { Color = Kit.darken(C.Secondary, 0.35), LayoutOrder = index, Radius = 12 })
+		Kit.title(card, {
+			Text = I.Gem .. " " .. pack.Amount,
+			Size = UDim2.new(1, -16, 0, 50),
+			Position = UDim2.fromOffset(8, 8),
+			TextColor3 = C.Primary,
+		})
+		Kit.button(card, {
+			Text = pack.Price .. " R$",
+			Color = C.Good,
+			Size = UDim2.new(1, -24, 0, 50),
+			Position = UDim2.new(0, 12, 1, -60),
+		}, function()
+			action:FireServer({ action = "PromptProduct", kind = "Gems", index = index })
+		end)
+	end
+
+	local function refresh()
+		local data = State.data
+		if not data then
+			return
+		end
+		for index, pack in Theme.Monetization.MoneyPacks do
+			moneyLabels[index].Text = State.money(Economy.moneyPackAmount(data.income, pack.Seconds, pack.Min))
+		end
+		for name, button in passButtons do
+			if data.passes[name] then
+				Kit.setButton(button, "OWNED", C.PadDisabled)
+			end
+		end
+	end
+	State.changed.Event:Connect(refresh)
+	window.onOpen.Event:Connect(refresh)
+end
+
+-- Index -----------------------------------------------------------------------------
+
+local function buildIndex(screen: ScreenGui)
+	local window = Kit.window(screen, "Index", "Index", I.Index, C.Window.Index, Vector2.new(820, 540))
+	windows.Index = window
+
+	local progress = Kit.title(window.content, {
+		Text = "",
+		Size = UDim2.new(1, 0, 0, 30),
+		TextXAlignment = Enum.TextXAlignment.Right,
+		TextColor3 = C.Primary,
+	})
+	local scroll = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -36), Position = UDim2.fromOffset(0, 36) })
+	Kit.padding(scroll, 6)
+	Kit.new("UIGridLayout", {
+		CellSize = UDim2.new(0.25, -12, 0, 230),
+		CellPadding = UDim2.fromOffset(12, 12),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = scroll,
+	})
+
+	local cards: { { frame: Frame, shown: string } } = {}
+	for tier = 1, Economy.MAX_TIER do
+		local card = Kit.panel(scroll, { Color = C.PanelDark, LayoutOrder = tier, Radius = 12 })
+		card:FindFirstChildOfClass("UIStroke").Color = C.Rarity[Economy.tierBand(tier)]
+		cards[tier] = { frame = card, shown = "" }
+	end
+
+	local function fillCard(tier: number, discoveredAt: number)
+		local entry = cards[tier]
+		local key = if discoveredAt > 0 then "known" else "unknown"
+		if entry.shown == key then
+			return
+		end
+		entry.shown = key
+		for _, child in entry.frame:GetChildren() do
+			if child:IsA("GuiObject") then
+				child:Destroy()
+			end
+		end
+		local band = Economy.tierBand(tier)
+		local known = discoveredAt > 0
+		Kit.title(entry.frame, {
+			Text = if known then Theme.Tiers[tier].Name else "???",
+			Size = UDim2.new(0.68, -8, 0, 28),
+			Position = UDim2.fromOffset(8, 6),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = if known then C.Rarity[band] else C.TextDim,
+		})
+		Kit.title(entry.frame, {
+			Text = "Tier " .. tier,
+			Size = UDim2.new(0.32, -8, 0, 22),
+			Position = UDim2.new(0.68, 0, 0, 9),
+			TextXAlignment = Enum.TextXAlignment.Right,
+			TextColor3 = C.TextDim,
+		})
+		Kit.unitViewport(entry.frame, tier, { Size = UDim2.new(1, -16, 1, -76), Position = UDim2.fromOffset(8, 36) }, not known)
+		Kit.text(entry.frame, {
+			Text = if known then "Obtained: " .. Format.date(discoveredAt) else band,
+			Size = UDim2.new(1, -16, 0, 26),
+			Position = UDim2.new(0, 8, 1, -34),
+			TextColor3 = if known then C.Primary else C.Rarity[band],
+		})
+	end
+
+	local function refresh()
+		local data = State.data
+		if not data or not window.isOpen() then
+			return
+		end
+		local found = 0
+		for tier = 1, Economy.MAX_TIER do
+			local at = data.discovered[tier] or 0
+			if at > 0 then
+				found += 1
+			end
+			fillCard(tier, at)
+		end
+		progress.Text = string.format("%s Discovered %d / %d", I.Unit, found, Economy.MAX_TIER)
+	end
+	State.changed.Event:Connect(refresh)
+	window.onOpen.Event:Connect(refresh)
+end
+
+-- Ranking -----------------------------------------------------------------------------
+
+local function buildRanking(screen: ScreenGui)
+	local window = Kit.window(screen, "Ranking", "Ranking", I.Ranking, C.Window.Ranking, Vector2.new(820, 540))
+	windows.Ranking = window
+	local query = Net.func("Query")
+	local action = Net.event("Action")
+
+	local formatButton = Kit.button(window.frame, {
+		Text = "Format (Short)",
+		Color = C.Secondary,
+		Size = UDim2.fromOffset(200, 42),
+		Position = UDim2.new(1, -290, 0, 18),
+	})
+
+	local header = Kit.panel(window.content, { Color = C.PanelLight, Size = UDim2.new(1, 0, 0, 44), Radius = 8 })
+	local function columns(parent: Instance, rank: string, name: string, value: string, color: Color3?)
+		Kit.title(
+			parent,
+			{ Text = rank, Size = UDim2.new(0.18, 0, 1, -10), Position = UDim2.fromOffset(0, 5), TextColor3 = color or C.Text }
+		)
+		Kit.title(
+			parent,
+			{ Text = name, Size = UDim2.new(0.42, 0, 1, -10), Position = UDim2.new(0.18, 0, 0, 5), TextColor3 = color or C.Text }
+		)
+		Kit.title(
+			parent,
+			{ Text = value, Size = UDim2.new(0.38, 0, 1, -10), Position = UDim2.new(0.6, 0, 0, 5), TextColor3 = color or C.Text }
+		)
+	end
+	columns(header, "Rank", "Username", "Total " .. W.Units)
+
+	local list = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -110), Position = UDim2.fromOffset(0, 52) })
+	Kit.new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = list })
+
+	local mine =
+		Kit.panel(window.content, { Color = C.Good, Size = UDim2.new(1, 0, 0, 48), Position = UDim2.new(0, 0, 1, -50), Radius = 8 })
+
+	local entries: { any } = {}
+	local function render()
+		for _, child in list:GetChildren() do
+			if child:IsA("GuiObject") then
+				child:Destroy()
+			end
+		end
+		for _, child in mine:GetChildren() do
+			if child:IsA("TextLabel") then
+				child:Destroy()
+			end
+		end
+		local data = State.data
+		local full = data and data.settings.fullNumbers
+		local function fmt(n: number): string
+			return if full then Format.commas(n) else Format.short(n)
+		end
+		local myRank = "Unranked"
+		local me = Players.LocalPlayer
+		for i, entry in entries do
+			local row = Kit.panel(list, {
+				Color = if i % 2 == 0 then C.Panel else C.PanelLight,
+				Size = UDim2.new(1, -12, 0, 42),
+				LayoutOrder = i,
+				Radius = 8,
+				StrokeThickness = 2,
+			})
+			local color = if i == 1
+				then Color3.fromRGB(255, 210, 60)
+				elseif i == 2 then Color3.fromRGB(215, 215, 230)
+				elseif i == 3 then Color3.fromRGB(225, 140, 75)
+				else nil
+			columns(row, "#" .. entry.rank, entry.name, fmt(entry.value), color)
+			if entry.userId == me.UserId then
+				myRank = "#" .. entry.rank
+			end
+		end
+		if #entries == 0 then
+			Kit.text(list, { Text = "Loading...", Size = UDim2.new(1, 0, 0, 40) })
+		end
+		columns(mine, myRank, me.Name, fmt(data and data.totalObtained or 0))
+		Kit.setButton(formatButton, if full then "Format (Full)" else "Format (Short)")
+	end
+
+	formatButton.Activated:Connect(function()
+		local data = State.data
+		if data then
+			action:FireServer({ action = "SetSetting", key = "fullNumbers", value = not data.settings.fullNumbers })
+		end
+	end)
+
+	window.onOpen.Event:Connect(function()
+		render()
+		task.spawn(function()
+			local ok, result = pcall(query.InvokeServer, query, "Ranking")
+			if ok and type(result) == "table" then
+				entries = result.entries or {}
+				render()
+			end
+		end)
+	end)
+	State.changed.Event:Connect(function()
+		if window.isOpen() then
+			render()
+		end
+	end)
+end
+
+-- Settings ------------------------------------------------------------------------------
+
+local function buildSettings(screen: ScreenGui)
+	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(520, 420))
+	windows.Settings = window
+	local action = Net.event("Action")
+
+	Kit.new("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder, Parent = window.content })
+
+	local toggles: { { key: string, button: TextButton } } = {}
+	local function toggle(order: number, text: string, key: string)
+		local row = Kit.panel(window.content, { Color = C.PanelLight, Size = UDim2.new(1, 0, 0, 62), LayoutOrder = order, Radius = 10 })
+		Kit.title(row, {
+			Text = text,
+			Size = UDim2.new(0.62, -10, 1, -16),
+			Position = UDim2.fromOffset(12, 8),
+			TextXAlignment = Enum.TextXAlignment.Left,
+		})
+		local button = Kit.button(
+			row,
+			{ Text = "ON", Color = C.Good, Size = UDim2.new(0.32, 0, 1, -16), Position = UDim2.new(0.66, 0, 0, 8) },
+			function()
+				local data = State.data
+				if not data then
+					return
+				end
+				local current = if key == "autoMerge" then data.autoMerge else data.settings[key]
+				action:FireServer({ action = "SetSetting", key = key, value = not current })
+			end
+		)
+		table.insert(toggles, { key = key, button = button })
+	end
+	toggle(1, "Music", "music")
+	toggle(2, "Sound Effects", "sfx")
+	toggle(3, "Full Numbers", "fullNumbers")
+	toggle(4, "Auto Merge", "autoMerge")
+
+	local function refresh()
+		local data = State.data
+		if not data then
+			return
+		end
+		for _, t in toggles do
+			local value
+			if t.key == "autoMerge" then
+				value = data.autoMerge
+				if not data.autoMergeOwned then
+					Kit.setButton(t.button, "LOCKED", C.PadDisabled)
+					continue
+				end
+			else
+				value = data.settings[t.key]
+			end
+			Kit.setButton(t.button, if value then "ON" else "OFF", if value then C.Good else C.Bad)
+		end
+	end
+	State.changed.Event:Connect(refresh)
+	window.onOpen.Event:Connect(refresh)
+end
+
+function Windows.build(screen: ScreenGui)
+	buildShop(screen)
+	buildIndex(screen)
+	buildRanking(screen)
+	buildSettings(screen)
+end
+
+return Windows
+]]></string>
+            </Properties>
+          </Item>
+        </Item>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="Workspace" referent="27">
+    <Properties>
+      <string name="Name">Workspace</string>
+      <float name="Gravity">196.2</float>
+      <bool name="NeedsPivotMigration">false</bool>
+    </Properties>
+  </Item>
+</roblox>

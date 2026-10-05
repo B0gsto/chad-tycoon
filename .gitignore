@@ -1,0 +1,10 @@
+roblox.yml
+roblox.toml
+sourcemap.json
+*.rbxl.lock
+*.rbxlx.lock
+/tools/
+.cache/
+preview/node_modules/
+preview/out/
+preview/render/node_modules/

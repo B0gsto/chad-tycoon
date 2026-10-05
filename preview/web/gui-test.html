@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GUI Renderer Test</title>
+<style>
+	html, body { margin: 0; background: #111; }
+	/* Stand-in for the 3D scene behind the UI. */
+	#stage {
+		position: absolute; left: 0; top: 0; width: 1280px; height: 720px; overflow: hidden;
+		background: linear-gradient(180deg, #2b3148 0%, #3c4a3a 55%, #2a2a2a 100%);
+	}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script type="module">
+import { renderGui } from './gui-renderer.js';
+
+// Usage: gui-test.html                 -> built-in sample below
+//        gui-test.html?json=../out/chad/gui/hud.json  -> any exported file
+
+// --- tiny helpers for writing the sample tree (output is plain schema JSON) ---
+const base = (cls, name, p = {}) => ({
+	class: cls, name, visible: true, zindex: 1, layoutOrder: 0,
+	size: [0, 100, 0, 100], position: [0, 0, 0, 0], anchor: [0, 0], rotation: 0,
+	bg: [255, 255, 255], bgTransparency: 0, clips: false, automaticSize: 'None', children: [], ...p,
+});
+const frame = (name, p) => base('Frame', name, p);
+const text = (name, t, p) => base('TextLabel', name, {
+	text: t, richText: false, textColor: [255, 255, 255], textTransparency: 0, font: 'FredokaOne',
+	textScaled: true, textSize: 14, xAlign: 'Center', yAlign: 'Center', textWrapped: false,
+	bgTransparency: 1, size: [1, 0, 1, 0], stroke: { thickness: 2, color: [20, 16, 30], transparency: 0, mode: 'Contextual' }, ...p,
+});
+const grad = (a, b, rotation = 90) => ({ stops: [[0, ...a], [1, ...b]], rotation, transparency: null });
+const stroke = (t = 3) => ({ thickness: t, color: [20, 16, 30], transparency: 0, mode: 'Border' });
+const panel = (name, color, p) => frame(name, {
+	corner: [0, 14], stroke: stroke(3), gradient: grad(color.map((c) => Math.min(255, c + 20)), color.map((c) => c * 0.85)), ...p,
+});
+const button = (name, label, color, p) => base('TextButton', name, {
+	text: '', richText: false, textColor: [255, 255, 255], textTransparency: 0, font: 'LuckiestGuy',
+	textScaled: false, textSize: 14, xAlign: 'Center', yAlign: 'Center', textWrapped: false,
+	corner: [0, 10], stroke: stroke(3), gradient: grad(color.map((c) => Math.min(255, c + 30)), color.map((c) => c * 0.8)),
+	size: [0, 160, 0, 50], ...p,
+	children: [text('Label', label, { font: 'LuckiestGuy', size: [1, -12, 1, -8], position: [0, 6, 0, 4] })],
+});
+
+const menuCard = (icon, label, order, color) => frame(label, {
+	layoutOrder: order, bgTransparency: 1,
+	children: [
+		text('Icon', icon, { size: [1, 0, 0.7, 0], stroke: null }),
+		text('Label', label, { font: 'LuckiestGuy', size: [1, 0, 0.36, 0], position: [0, 0, 0.66, 0] }),
+	],
+});
+
+const passCard = (title, desc, color, order) => panel(title, color, {
+	layoutOrder: order,
+	children: [
+		text('Title', title, { font: 'LuckiestGuy', size: [1, -16, 0, 40], position: [0, 8, 0, 8] }),
+		panel('Desc', color.map((c) => c * 0.55), {
+			size: [1, -24, 0, 76], position: [0, 12, 0, 52], corner: [0, 10], stroke: stroke(2),
+			children: [text('DescText', desc, { size: [1, -16, 1, -12], position: [0, 8, 0, 6], textColor: [255, 236, 150] })],
+		}),
+		button('Buy', '199 R$', [70, 200, 90], { size: [1, -24, 0, 52], position: [0, 12, 1, -62] }),
+	],
+});
+
+const sample = {
+	viewport: [1280, 720],
+	root: base('ScreenGui', 'TycoonUI', { size: [1, 0, 1, 0], bgTransparency: 1, children: [
+		// Left menu: 3x2 grid of emoji buttons.
+		frame('Menu', {
+			size: [0, 260, 0, 180], position: [0, 14, 0, 52], bgTransparency: 1,
+			grid: { cellSize: [0, 78, 0, 78], cellPadding: [0, 8, 0, 8], fill: 'Horizontal', hAlign: 'Left', vAlign: 'Top', sort: 'LayoutOrder' },
+			children: [
+				menuCard('🏠', 'Home', 1), menuCard('🏆', 'Ranking', 2), menuCard('📖', 'Index', 3),
+				menuCard('🛒', 'Shop', 4), menuCard('🤝', 'Invite', 5), menuCard('⚙️', 'Settings', 6),
+			],
+		}),
+		// Money HUD with rich text.
+		text('Mult', 'Cash <font color="#FFD23C">[1.0x]</font>', {
+			richText: true, font: 'LuckiestGuy', size: [0, 260, 0, 40], position: [0, 14, 1, -110], xAlign: 'Left',
+		}),
+		text('Money', '$ 1.79K', {
+			font: 'LuckiestGuy', textColor: [120, 240, 80], size: [0, 260, 0, 70], position: [0, 14, 1, -74], xAlign: 'Left',
+			stroke: { thickness: 3, color: [10, 30, 10], transparency: 0, mode: 'Contextual' },
+		}),
+		// Horizontal toolbar (UIListLayout, centred) at the bottom.
+		frame('Toolbar', {
+			size: [0, 420, 0, 56], position: [0.5, 0, 1, -14], anchor: [0.5, 1], bgTransparency: 0.4, bg: [0, 0, 0], corner: [0.5, 0],
+			padding: [[0, 6], [0, 6], [0, 10], [0, 10]],
+			list: { fill: 'Horizontal', padding: [0, 8], hAlign: 'Center', vAlign: 'Center', sort: 'LayoutOrder' },
+			children: [
+				button('B3', 'Third', [90, 140, 255], { layoutOrder: 3, size: [0, 110, 1, 0], corner: [0.5, 0] }),
+				button('B1', 'First', [255, 120, 60], { layoutOrder: 1, size: [0, 110, 1, 0], corner: [0.5, 0] }),
+				button('B2', 'Second', [70, 200, 90], { layoutOrder: 2, size: [0, 110, 1, -10], corner: [0.5, 0], scale: 1.1 }),
+				button('Hidden', 'Hidden', [255, 0, 0], { layoutOrder: 0, visible: false }),
+			],
+		}),
+		// Rotated badge + image cases on the right.
+		panel('Badge', [230, 60, 160], {
+			size: [0, 150, 0, 44], position: [1, -110, 0, 70], anchor: [0.5, 0.5], rotation: -8, corner: [0, 8],
+			children: [text('T', 'PERMANENT 🔥', { font: 'Bangers', textColor: [255, 240, 120] })],
+		}),
+		base('ImageLabel', 'Thumb', {
+			image: 'thumb:test:1:0', size: [0, 90, 0, 90], position: [1, -200, 0, 110], bgTransparency: 0.3, bg: [0, 0, 0], corner: [0, 12],
+		}),
+		base('ImageLabel', 'Unresolved', {
+			image: 'rbxassetid://123456', size: [0, 90, 0, 90], position: [1, -100, 0, 110], bgTransparency: 1, corner: [0, 12],
+		}),
+		base('ViewportFrame', 'EmptyViewport', { image: null, size: [0, 90, 0, 90], position: [1, -100, 0, 210], bgTransparency: 1 }),
+
+		// Shop window with title bar, close button and a scrolling list + grids.
+		panel('Shop', [60, 50, 90], {
+			zindex: 10, size: [0, 640, 0, 440], position: [0.5, 0, 0.5, 0], anchor: [0.5, 0.5], stroke: stroke(4), children: [
+				panel('TitleBar', [255, 170, 40], {
+					size: [1, -90, 0, 54], position: [0, 12, 0, 12], corner: [0, 10], children: [
+						text('Icon', '🛒', { size: [0, 60, 0, 60], position: [0, -14, 0, -10], stroke: null }),
+						text('Title', 'SHOP', { font: 'LuckiestGuy', size: [1, -70, 0.8, 0], position: [0, 56, 0, 6], xAlign: 'Left' }),
+					],
+				}),
+				button('Close', 'X', [230, 60, 60], { size: [0, 60, 0, 54], position: [1, -72, 0, 12] }),
+				frame('Content', {
+					bgTransparency: 1, size: [1, -24, 1, -86], position: [0, 12, 0, 76], children: [
+						base('ScrollingFrame', 'Scroll', {
+							bgTransparency: 1, size: [1, 0, 1, 0], clips: true, scrollBarColor: [255, 210, 60],
+							padding: [[0, 6], [0, 6], [0, 6], [0, 6]],
+							list: { fill: 'Vertical', padding: [0, 10], hAlign: 'Left', vAlign: 'Top', sort: 'LayoutOrder' },
+							children: [
+								text('Section1', 'Game Passes  ⭐', { font: 'LuckiestGuy', size: [1, -16, 0, 34], xAlign: 'Left', layoutOrder: 1 }),
+								frame('PassGrid', {
+									bgTransparency: 1, size: [1, -16, 0, 0], automaticSize: 'Y', layoutOrder: 2,
+									grid: { cellSize: [0.33, -8, 0, 200], cellPadding: [0, 10, 0, 10], fill: 'Horizontal', hAlign: 'Left', vAlign: 'Top', sort: 'LayoutOrder' },
+									children: [
+										passCard('2x Cash', 'Double all cash forever!', [70, 160, 70], 1),
+										passCard('Auto Merge', 'Merges units automatically while you are away from your plot', [80, 120, 220], 2),
+										passCard('VIP', 'Golden name tag ✨ and +20% gems', [220, 160, 40], 3),
+										passCard('Lucky', 'Better crates', [200, 70, 200], 4),
+									],
+								}),
+								text('Section2', '$ Cash Packs', { font: 'LuckiestGuy', size: [1, -16, 0, 34], xAlign: 'Left', layoutOrder: 3 }),
+							],
+						}),
+					],
+				}),
+			],
+		}),
+		// Fixed-size, wrapped, non-scaled text with Border stroke + gradient text.
+		text('Wrapped', 'TextSize 18, wrapped, left/top aligned.\nSecond paragraph <b>not rich</b>.', {
+			textScaled: false, textSize: 18, textWrapped: true, xAlign: 'Left', yAlign: 'Top', font: 'GothamBold',
+			size: [0, 220, 0, 90], position: [0, 14, 0, 250], bgTransparency: 0.5, bg: [0, 0, 0], corner: [0, 8],
+			padding: [[0, 6], [0, 6], [0, 8], [0, 8]], stroke: { thickness: 2, color: [255, 210, 60], transparency: 0, mode: 'Border' },
+		}),
+		text('GradText', 'GRADIENT', {
+			font: 'LuckiestGuy', size: [0, 220, 0, 50], position: [0, 14, 0, 352],
+			gradient: grad([255, 240, 80], [255, 90, 40]),
+		}),
+		text('Rich', '<b>Bold</b> <i>italic</i> <font color="#55CCFF">blue</font> &lt;tag&gt; <stroke color="#AA00AA" thickness="2">str</stroke>', {
+			richText: true, textScaled: false, textSize: 22, font: 'FredokaOne', stroke: null,
+			size: [0, 330, 0, 30], position: [0, 14, 0, 410], xAlign: 'Left',
+		}),
+		// Z-index check: red behind (zindex 2 declared later but z 1 drawn first).
+		frame('ZTop', { zindex: 3, bg: [60, 200, 255], size: [0, 60, 0, 60], position: [1, -110, 1, -150], corner: [0, 8] }),
+		frame('ZBottom', { zindex: 2, bg: [255, 60, 60], size: [0, 60, 0, 60], position: [1, -140, 1, -120], corner: [0, 8] }),
+	] }),
+};
+
+const thumbSvg = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 140"><circle cx="50" cy="35" r="25" fill="#f5cda0"/><rect x="22" y="62" width="56" height="60" rx="10" fill="#333"/></svg>');
+
+const params = new URLSearchParams(location.search);
+const json = params.get('json') ? await (await fetch(params.get('json'))).json() : sample;
+const stage = document.getElementById('stage');
+await renderGui(json, stage, {
+	imageResolver: (img) => (img && img.startsWith('thumb:') ? thumbSvg : null),
+});
+document.body.dataset.ready = '1';
+</script>
+</body>
+</html>
