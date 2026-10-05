@@ -18,6 +18,7 @@ These are preview renders, not captures from Roblox Studio. Roblox can't run hea
 | ![Gameplay](preview/screenshots/chad/03-gameplay-hud.png) | ![Your plot](preview/screenshots/chad/02-your-plot.png) |
 | ![All 25 tiers](preview/screenshots/chad/10-all-25-tiers.png) | ![Holding a crate](preview/screenshots/chad/08-holding-crate.png) |
 | ![Shop](preview/screenshots/chad/04-shop.png) | ![Index](preview/screenshots/chad/05-index.png) |
+| ![Tutorial](preview/screenshots/chad/11-tutorial.png) | ![Loading screen](preview/screenshots/chad/13-loading-screen.png) |
 
 ### Bot Factory Tycoon
 
@@ -26,8 +27,11 @@ These are preview renders, not captures from Roblox Studio. Roblox can't run hea
 | ![Gameplay](preview/screenshots/bot/03-gameplay-hud.png) | ![Your plot](preview/screenshots/bot/02-your-plot.png) |
 | ![All 25 tiers](preview/screenshots/bot/10-all-25-tiers.png) | ![Holding a crate](preview/screenshots/bot/08-holding-crate.png) |
 | ![Ranking](preview/screenshots/bot/06-ranking.png) | ![New unit](preview/screenshots/bot/07-new-unit-reward.png) |
+| ![Tutorial](preview/screenshots/bot/11-tutorial.png) | ![Settings](preview/screenshots/bot/09-settings.png) |
 
 ## How the game plays
+
+New players get a short, skippable **tutorial** (saved in their profile): buy a unit, walk over the orbs, deposit, collect the cash, then merge two units. A card above the tank shows the current step, and a glowing beam, a bouncing arrow and a highlight point at the pad (or the nearest orb). Each step completes on the real server event. Finishing pays a small reward (25 premium currency + $250). Saves from before the tutorial existed skip it.
 
 1. **Buy units** on the Buy 1 / 5 / 25 / 100 pads. They stand on your display shelves.
 2. Units **drop orbs** on the floor every second. Walk over the orbs to fill your tank (bottom of the screen).
@@ -50,6 +54,7 @@ These are preview renders, not captures from Roblox Studio. Roblox can't run hea
    - A global double-orb **Surge** for 2 of every 10 minutes.
    - Friends (+10% each, max +50%) and Premium (+10%) cash bonuses.
    - Settings: music, sound effects, full numbers, auto merge.
+   - A loading screen (ReplicatedFirst) with the game name and tips. It fades out when the first state snapshot arrives.
 10. **Shop:**
     - 5 game passes: Auto Collect Orbs, Auto Cash, Double Orbs, 2X Cash, and a second Unlocker that is 3x faster.
     - 6 cash packs that scale with your income.
@@ -75,6 +80,7 @@ Toolchain versions are pinned in `rokit.toml`: Rojo, Selene, StyLua, Lune and lu
 rokit install                 # install the pinned tools
 scripts/check.sh              # format check, lint, type-check, tests, build both places
 rojo serve chad.project.json  # live-sync into Studio (or bot.project.json)
+preview/render.sh             # regenerate the screenshots (REUSE_THUMBS=1 skips unit thumbnails)
 lune run scripts/simulate     # print the progression curve of a greedy player
 ```
 
@@ -86,14 +92,19 @@ src/shared/Economy.luau                every balance number + pure formulas (uni
 src/shared/Format.luau                 number/time formatting (unit-tested)
 src/shared/CharacterFactory.luau       builds the blocky unit models from a theme "look"
 src/shared/Net.luau                    remotes
+src/shared/TutorialSteps.luau          tutorial steps + progression rules (pure, unit-tested)
 src/server/WorldBuilder.luau           generates hub + 6 plots
 src/server/Tycoon.luau                 core loop: pads, orbs, crates, merging, processing, state
 src/server/DataService.luau            DataStore profiles (retries, no-overwrite on failed load)
 src/server/Monetization.luau           passes, products, receipt handling
 src/server/Ranking.luau                OrderedDataStore leaderboard
-src/client/                            HUD, Shop / Index / Ranking / Settings, popups, sounds
+src/server/Tutorial.luau               onboarding progress, reward, skip (listens to Tycoon.listeners)
+src/client/                            HUD, Shop / Index / Ranking / Settings, popups, sounds,
+                                       tutorial card + 3D guide (beam/arrow/highlight)
+src/client/UI/Kit.luau                 UI design system: 3D buttons, panels, pills, badges, switches, windows
+src/loader/                            ReplicatedFirst loading screen
 src/themes/chad|bot/Theme.luau         names, words, colours, fonts, lighting, 25 tiers, product IDs
-tests/run.luau                         Lune unit tests (economy, formatting, both themes)
+tests/run.luau                         Lune unit tests (economy, formatting, tutorial, both themes)
 preview/                               screenshot pipeline (Lune exporter + three.js/Chromium renderer)
 reference/                             the original reference screenshots
 ```

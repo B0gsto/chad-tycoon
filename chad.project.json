@@ -2,6 +2,9 @@
   "name": "ChadAuraTycoon",
   "tree": {
     "$className": "DataModel",
+    "ReplicatedFirst": {
+      "Loader": { "$path": "src/loader" }
+    },
     "ReplicatedStorage": {
       "Shared": { "$path": "src/shared" },
       "Theme": { "$path": "src/themes/chad/Theme.luau" }
