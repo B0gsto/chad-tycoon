@@ -621,7 +621,40 @@ local function main()
 	local Economy = requireModule(RS.Shared.Economy)
 	local Net = requireModule(RS.Shared.Net)
 	local CharacterFactory = requireModule(RS.Shared.CharacterFactory)
+	local Poses = requireModule(RS.Shared.Poses)
+	local RigPose = requireModule(RS.Shared.RigPose)
 	Net.event("State")
+
+	-- Units animate on the client in the game; the preview freezes each one
+	-- mid-pose with the same RigPose maths the client Animator uses.
+	-- POSE=<name> forces one pose on every unit (handy when tuning poses).
+	local forcedPose = process.env.POSE
+	local function poseUnits(root, choose: ((number, string) -> string)?)
+		local index = 0
+		for _, d in root:GetDescendants() do
+			-- Player stand-ins (with a HumanoidRootPart) keep their rest pose.
+			if d:IsA("Model") and d:HasTag(Poses.TAG) and not d:GetAttribute("__posed") and not d:FindFirstChild("HumanoidRootPart") then
+				index += 1
+				local seed = math.random(0, 99999)
+				local rig = RigPose.capture(d, seed)
+				if rig then
+					local names = Poses.poseNames(rig.animSet)
+					local pose = forcedPose or (if choose then choose(index, rig.animSet) else names[math.random(1, #names)])
+					local t = Poses.timeFor(rig.animSet, seed, pose) or math.random() * 30
+					if forcedPose then
+						rig.seed = 0
+						local parts, cframes = RigPose.computeFrom(rig, Poses.samplePose(rig.animSet, pose, 1.3, 0))
+						for i, part in parts do
+							part.CFrame = cframes[i]
+						end
+					else
+						RigPose.apply(rig, t)
+					end
+					d:SetAttribute("__posed", true)
+				end
+			end
+		end
+	end
 
 	local WorldBuilder = requireModule(Server.WorldBuilder)
 	local DataService = requireModule(Server.DataService)
@@ -645,7 +678,9 @@ local function main()
 			skin = Color3.fromRGB(245, 205, 160),
 			shirt = if variant == "chad" then Color3.fromRGB(30, 30, 36) else Color3.fromRGB(40, 110, 200),
 			pants = Color3.fromRGB(45, 50, 70),
-			face = "🙂",
+			anim = "Chad", -- the player stand-in is a person in both variants
+			expr = "Happy",
+			hair = Color3.fromRGB(70, 46, 30),
 			acc = { "Cap" },
 			accColor = if variant == "chad" then Color3.fromRGB(240, 190, 40) else Color3.fromRGB(255, 140, 20),
 		}
@@ -732,6 +767,7 @@ local function main()
 	end
 
 	print("[stage] simulated")
+	poseUnits(Workspace)
 	local mainPlayer = fakePlayers[1]
 	local mainSession = Tycoon.getSession(mainPlayer)
 	local plotCFs = {}
@@ -788,6 +824,7 @@ local function main()
 	-- Pick up a crate for the "holding a crate" shot.
 	mainSession.profile.heldChest = "Epic"
 	task.wait(1.1)
+	poseUnits(Workspace)
 	writeJson(OUT .. "/world_held.json", exportScene(Workspace, sceneExtra))
 	local stateHeld = captured.state[mainPlayer.Name]
 
@@ -796,20 +833,20 @@ local function main()
 	showcase.Name = "Showcase"
 	local stage = Instance.new("Part")
 	stage.Name = "Stage"
-	stage.Size = Vector3.new(120, 1, 52)
-	stage.CFrame = CFrame.new(0, -0.5, 1004)
+	stage.Size = Vector3.new(120, 1, 58)
+	stage.CFrame = CFrame.new(0, -0.5, 1007)
 	stage.Color = Theme.Colors.Floor
 	stage.Material = Enum.Material.Slate
 	stage.Anchored = true
 	stage.Parent = showcase
 	local ROWS = { { first = 1, last = 9 }, { first = 10, last = 17 }, { first = 18, last = 25 } }
 	for rowIndex, row in ROWS do
-		local rise = (rowIndex - 1) * 6
-		local z = 990 + (rowIndex - 1) * 13
+		local rise = (rowIndex - 1) * 6.5
+		local z = 990 + (rowIndex - 1) * 15
 		if rise > 0 then
 			local riser = Instance.new("Part")
 			riser.Name = "Riser"
-			riser.Size = Vector3.new(104, rise, 12)
+			riser.Size = Vector3.new(104, rise, 14)
 			riser.CFrame = CFrame.new(0, rise / 2, z)
 			riser.Color = Theme.Colors.WallTrim
 			riser.Material = Enum.Material.Metal
@@ -818,7 +855,7 @@ local function main()
 			local trim = Instance.new("Part")
 			trim.Name = "RiserNeon"
 			trim.Size = Vector3.new(104, 0.3, 0.4)
-			trim.CFrame = CFrame.new(0, rise - 0.1, z - 6.1)
+			trim.CFrame = CFrame.new(0, rise - 0.1, z - 7.1)
 			trim.Color = if rowIndex == 2 then Theme.Colors.Neon else Theme.Colors.NeonAlt
 			trim.Material = Enum.Material.Neon
 			trim.Anchored = true
@@ -852,6 +889,11 @@ local function main()
 			model.Parent = showcase
 		end
 	end
+	-- Cycle through every pose across the 25 tiers.
+	poseUnits(showcase, function(index, animSet)
+		local names = Poses.poseNames(animSet)
+		return names[(index - 1) % #names + 1]
+	end)
 	showcase.Parent = Workspace
 	writeJson(OUT .. "/showcase.json", exportScene(showcase, { theme = sceneExtra.theme }))
 

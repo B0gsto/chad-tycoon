@@ -90,7 +90,9 @@ lune run scripts/simulate     # print the progression curve of a greedy player
 chad.project.json / bot.project.json   Rojo projects (identical except for the Theme module)
 src/shared/Economy.luau                every balance number + pure formulas (unit-tested)
 src/shared/Format.luau                 number/time formatting (unit-tested)
-src/shared/CharacterFactory.luau       builds the blocky unit models from a theme "look"
+src/shared/CharacterFactory.luau       builds the jointed, part-built unit rigs from a theme "look"
+src/shared/Poses.luau                  pose library + sampler for the unit animations (pure maths)
+src/shared/RigPose.luau                applies poses to a unit model (used by Animator and preview)
 src/shared/Net.luau                    remotes
 src/shared/TutorialSteps.luau          tutorial steps + progression rules (pure, unit-tested)
 src/server/WorldBuilder.luau           generates hub + 6 plots
@@ -102,6 +104,7 @@ src/server/Tutorial.luau               onboarding progress, reward, skip (listen
 src/client/                            HUD, Shop / Index / Ranking / Settings, popups, sounds,
                                        tutorial card + 3D guide (beam/arrow/highlight)
 src/client/UI/Kit.luau                 UI design system: 3D buttons, panels, pills, badges, switches, windows
+src/client/Animator.luau               animates units locally (shelves + Index/reward viewports)
 src/loader/                            ReplicatedFirst loading screen
 src/themes/chad|bot/Theme.luau         names, words, colours, fonts, lighting, 25 tiers, product IDs
 tests/run.luau                         Lune unit tests (economy, formatting, tutorial, both themes)

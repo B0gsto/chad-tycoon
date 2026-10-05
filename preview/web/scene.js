@@ -154,6 +154,15 @@ function materialFor(part) {
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const sphereGeo = new THREE.SphereGeometry(0.5, 24, 16);
 const cylGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 32).rotateZ(Math.PI / 2);
+// Roblox wedge: full bottom and back faces, the slope replaces the front/top.
+const wedgeGeo = (() => {
+	const A = [-0.5, -0.5, -0.5], B = [0.5, -0.5, -0.5], C = [-0.5, -0.5, 0.5], D = [0.5, -0.5, 0.5], E = [-0.5, 0.5, 0.5], F = [0.5, 0.5, 0.5];
+	const tris = [A, B, D, A, D, C, C, D, F, C, F, E, A, E, F, A, F, B, A, C, E, B, F, D];
+	const geo = new THREE.BufferGeometry();
+	geo.setAttribute("position", new THREE.Float32BufferAttribute(tris.flat(), 3));
+	geo.computeVertexNormals();
+	return geo;
+})();
 
 function buildPart(part) {
 	const [sx, sy, sz] = part.size;
@@ -166,6 +175,9 @@ function buildPart(part) {
 		const d = Math.min(sy, sz);
 		mesh = new THREE.Mesh(cylGeo, materialFor(part));
 		mesh.scale.set(sx, d, d);
+	} else if (part.shape === "Wedge") {
+		mesh = new THREE.Mesh(wedgeGeo, materialFor(part));
+		mesh.scale.set(sx, sy, sz);
 	} else {
 		mesh = new THREE.Mesh(boxGeo, materialFor(part));
 		mesh.scale.set(sx, sy, sz);

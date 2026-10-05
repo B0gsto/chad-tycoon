@@ -6,6 +6,7 @@
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
 local process = require("@lune/process")
+local roblox = require("@lune/roblox")
 
 local Economy = require("../src/shared/Economy")
 local Format = require("../src/shared/Format")
@@ -392,27 +393,95 @@ local REQUIRED_COLORS = {
 	"PadDisabled",
 	"Hub",
 }
-local ACCESSORIES = {
-	Cap = true,
-	Headband = true,
-	Shades = true,
-	Visor = true,
-	Chain = true,
-	Crown = true,
-	Halo = true,
-	Horns = true,
-	Antenna = true,
-	Cape = true,
-	Wings = true,
-	Backpack = true,
-	Shoulders = true,
+-- Unit models and animation ----------------------------------------------------------
+-- CharacterFactory / Poses / RigPose need real Roblox datatypes: load them with
+-- @lune/roblox and a tiny require shim for `require(script.Parent.X)`.
+
+local ROBLOX_ENV = {
+	Instance = roblox.Instance,
+	Vector3 = roblox.Vector3,
+	Vector2 = roblox.Vector2,
+	CFrame = roblox.CFrame,
+	Color3 = roblox.Color3,
+	Enum = roblox.Enum,
+	ColorSequence = roblox.ColorSequence,
+	NumberSequence = roblox.NumberSequence,
+	NumberSequenceKeypoint = roblox.NumberSequenceKeypoint,
+	NumberRange = roblox.NumberRange,
 }
+local function robloxEnv(): { [string]: any }
+	local env: { [string]: any } = setmetatable({}, { __index = _G }) :: any
+	for key, value in ROBLOX_ENV do
+		env[key] = value
+	end
+	return env
+end
+local sharedCache: { [string]: any } = {}
+local function loadShared(name: string): any
+	if sharedCache[name] == nil then
+		local env = robloxEnv()
+		env.script = {
+			Parent = setmetatable({}, {
+				__index = function(_, child)
+					return child
+				end,
+			}),
+		}
+		env.require = loadShared
+		local path = "src/shared/" .. name .. ".luau"
+		sharedCache[name] = luau.load(fs.readFile(path), { debugName = path, environment = env })()
+	end
+	return sharedCache[name]
+end
+local function loadRobloxTheme(path: string): any
+	return luau.load(fs.readFile(path), { debugName = path, environment = robloxEnv() })()
+end
+
+local CharacterFactory = loadShared("CharacterFactory")
+local Poses = loadShared("Poses")
+local RigPose = loadShared("RigPose")
+local CFrame = roblox.CFrame
+local Vector3 = roblox.Vector3
+
+local KNOWN = {
+	anim = { Chad = true, Bot = true },
+	expr = { Neutral = true, Smirk = true, Smug = true, Determined = true, Angry = true, Happy = true, Stoic = true },
+	hairStyle = { Buzz = true, Flat = true, Slick = true, Quiff = true, Spiky = true, Bun = true, Bald = true },
+	beard = { Stubble = true, Beard = true },
+	top = { Tee = true, Tank = true, Shirtless = true, Jacket = true, Hoodie = true },
+	bottoms = { Pants = true, Joggers = true, Shorts = true },
+	eyes = { Dots = true, Visor = true, Mono = true, Angry = true, Happy = true, Bars = true },
+	mouth = { Grille = true, Bar = true, None = true },
+}
+local MAX_PARTS = 60
+
+local function isFinite(n: number): boolean
+	return n == n and n ~= math.huge and n ~= -math.huge
+end
+local function cframeFinite(cf: any): boolean
+	for _, v in { cf:GetComponents() } do
+		if not isFinite(v) then
+			return false
+		end
+	end
+	return true
+end
+local function cframeNear(a: any, b: any, tolerance: number): boolean
+	local ca, cb = { a:GetComponents() }, { b:GetComponents() }
+	for i = 1, 12 do
+		if math.abs(ca[i] - cb[i]) > tolerance then
+			return false
+		end
+	end
+	return true
+end
 
 for _, variant in { "chad", "bot" } do
 	test("theme " .. variant, function()
 		local theme = loadTheme("src/themes/" .. variant .. "/Theme.luau")
 		eq(theme.Id, variant, "id")
 		eq(#theme.Tiers, Economy.MAX_TIER, "tier count")
+		check(KNOWN.anim[theme.AnimSet] == true, "theme AnimSet")
 		local names = {}
 		for tier, entry in theme.Tiers do
 			check(type(entry.Name) == "string" and #entry.Name > 0, "tier " .. tier .. " has a name")
@@ -421,7 +490,12 @@ for _, variant in { "chad", "bot" } do
 			local look = entry.Look
 			check(look and look.skin and look.shirt and look.pants, "tier " .. tier .. " has colours")
 			for _, acc in look.acc or {} do
-				check(ACCESSORIES[acc] == true, "known accessory " .. acc)
+				check(CharacterFactory.ACCESSORIES[acc] ~= nil, "known accessory " .. acc)
+			end
+			for field, allowed in KNOWN do
+				if look[field] ~= nil then
+					check(allowed[look[field]] == true, string.format("tier %d: known %s %s", tier, field, tostring(look[field])))
+				end
 			end
 			if look.scale then
 				check(look.scale >= 1 and look.scale <= 2, "sane scale")
@@ -457,7 +531,160 @@ for _, variant in { "chad", "bot" } do
 		end
 		check(type(theme.Loading.Status) == "string" and #theme.Loading.Tips > 0, "loading screen strings")
 	end)
+
+	test("unit models " .. variant, function()
+		local theme = loadRobloxTheme("src/themes/" .. variant .. "/Theme.luau")
+		CharacterFactory.setDefaultAnim(theme.AnimSet)
+		local limbSet = {}
+		for _, limb in Poses.LIMBS do
+			limbSet[limb] = true
+		end
+		local previousScale = 1
+		for tier, entry in theme.Tiers do
+			local model = CharacterFactory.build(entry.Look, entry.Name)
+			local label = variant .. " tier " .. tier
+			check(model:HasTag(Poses.TAG), label .. " tagged AnimatedUnit")
+			eq(model:GetAttribute(Poses.SET_ATTRIBUTE), theme.AnimSet, label .. " AnimSet")
+			local root = model.PrimaryPart
+			check(root ~= nil and root.Name == "Root", label .. " Root primary part")
+			check(root ~= nil and root.CFrame.Position.Magnitude < 1e-6, label .. " Root at the feet, at the origin")
+			for _, limb in Poses.LIMBS do
+				check(typeof(model:GetAttribute(Poses.PIVOT_PREFIX .. limb)) == "Vector3", label .. " pivot " .. limb)
+			end
+			local count, bad = 0, 0
+			for _, d in model:GetDescendants() do
+				if d:IsA("BasePart") then
+					count += 1
+					if not d.Anchored or d.CanCollide or d.CanTouch or d.CanQuery then
+						bad += 1
+					end
+					if d ~= root and not limbSet[d:GetAttribute(Poses.LIMB_ATTRIBUTE)] then
+						bad += 1
+					end
+				end
+			end
+			eq(bad, 0, label .. " parts anchored, non-colliding and on a limb")
+			check(count <= MAX_PARTS, string.format("%s part budget (%d <= %d)", label, count, MAX_PARTS))
+			local height = model:GetAttribute("Height")
+			check(type(height) == "number" and height > 4, label .. " height")
+			near(CharacterFactory.height(entry.Look), height, label .. " height() matches the model")
+			local scale = entry.Look.scale or 1
+			check(scale >= previousScale, label .. " is at least as big as the tier below")
+			previousScale = scale
+
+			-- Rest pose round trip: identity joint transforms leave every part in place.
+			local rig = RigPose.capture(model, 1)
+			check(rig ~= nil and #rig.parts == count - 1, label .. " rig captures every limb part")
+			if rig then
+				local identity = {}
+				for _, limb in Poses.LIMBS do
+					identity[limb] = CFrame.new()
+				end
+				local parts, cframes = RigPose.computeFrom(rig, identity)
+				local moved = 0
+				for i, part in parts do
+					if not cframeNear(part.CFrame, cframes[i], 1e-3) then
+						moved += 1
+					end
+				end
+				eq(moved, 0, label .. " rest pose round trip")
+				-- A real pose keeps every part finite and near the unit.
+				RigPose.apply(rig, 12.3)
+				local far = 0
+				for _, part in parts do
+					if not cframeFinite(part.CFrame) or part.CFrame.Position.Magnitude > 20 then
+						far += 1
+					end
+				end
+				eq(far, 0, label .. " posed parts stay finite and attached")
+			end
+			model:Destroy()
+		end
+	end)
 end
+
+test("silhouette", function()
+	local theme = loadRobloxTheme("src/themes/chad/Theme.luau")
+	CharacterFactory.setDefaultAnim(theme.AnimSet)
+	local model = CharacterFactory.build(theme.Tiers[25].Look, "Top")
+	CharacterFactory.silhouette(model)
+	local coloured, effects = 0, 0
+	for _, d in model:GetDescendants() do
+		if d:IsA("BasePart") and d.Transparency < 1 then
+			if d.Color ~= roblox.Color3.fromRGB(15, 15, 20) or d.Material ~= roblox.Enum.Material.SmoothPlastic then
+				coloured += 1
+			end
+		elseif d:IsA("ParticleEmitter") or d:IsA("Sparkles") or d:IsA("Fire") or d:IsA("Light") then
+			effects += 1
+		end
+	end
+	eq(coloured, 0, "every visible part is black")
+	eq(effects, 0, "effects removed")
+end)
+
+test("poses sample", function()
+	for _, set in { "Chad", "Bot" } do
+		local a = Poses.sample(set, 3.7, 42)
+		local b = Poses.sample(set, 3.7, 42)
+		local c = Poses.sample(set, 3.7, 4242)
+		local differs = false
+		for _, limb in Poses.LIMBS do
+			check(a[limb] ~= nil, set .. " sample has " .. limb)
+			check(cframeFinite(a[limb]), set .. " finite " .. limb)
+			check(cframeNear(a[limb], b[limb], 0), set .. " deterministic " .. limb)
+			if not cframeNear(a[limb], c[limb], 1e-4) then
+				differs = true
+			end
+		end
+		check(differs, set .. " different seeds are out of sync")
+		-- Long sweep over many seeds: always finite, rotations stay orthonormal.
+		local bad = 0
+		for i = 0, 400 do
+			local sample = Poses.sample(set, i * 0.173, i % 37)
+			for _, limb in Poses.LIMBS do
+				local cf = sample[limb]
+				if not cframeFinite(cf) or math.abs(cf.LookVector.Magnitude - 1) > 1e-4 then
+					bad += 1
+				end
+			end
+		end
+		eq(bad, 0, set .. " sweep finite")
+		for _, name in Poses.poseNames(set) do
+			local t = Poses.timeFor(set, 77, name)
+			check(t ~= nil and t >= 0, set .. " timeFor " .. name)
+			local pose = Poses.samplePose(set, name)
+			check(pose.Head ~= nil and pose.RightHand ~= nil, set .. " samplePose " .. name)
+		end
+	end
+	-- Unknown sets fall back to Chad instead of erroring.
+	check(Poses.sample("Nope", 1, 1).Head ~= nil, "unknown set falls back")
+end)
+
+test("poses solve", function()
+	local pivots = {}
+	for i, limb in Poses.LIMBS do
+		pivots[limb] = Vector3.new(i * 0.1, i * 0.2, -i * 0.05)
+	end
+	local identity = {}
+	for _, limb in Poses.LIMBS do
+		identity[limb] = CFrame.new()
+	end
+	local frames = Poses.solve(pivots, identity, 1)
+	for _, limb in Poses.LIMBS do
+		check(cframeNear(frames[limb], CFrame.new(pivots[limb]), 1e-5), "rest frame " .. limb)
+	end
+	-- Rotating the waist carries the head around the waist pivot.
+	identity.UpperTorso = CFrame.Angles(0, 0, math.rad(90))
+	frames = Poses.solve(pivots, identity, 1)
+	local offset = pivots.Head - pivots.UpperTorso
+	local expected = pivots.UpperTorso + Vector3.new(-offset.Y, offset.X, offset.Z)
+	check((frames.Head.Position - expected).Magnitude < 1e-4, "child follows parent rotation")
+	-- The hover offset scales with the rig.
+	identity.UpperTorso = CFrame.new()
+	identity.LowerTorso = CFrame.new(0, 0.5, 0)
+	frames = Poses.solve(pivots, identity, 2)
+	check((frames.LowerTorso.Position - (pivots.LowerTorso + Vector3.new(0, 1, 0))).Magnitude < 1e-5, "root offset scaled")
+end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
