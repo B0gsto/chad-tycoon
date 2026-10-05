@@ -175,6 +175,12 @@ function buildPart(part) {
 	holder.matrixAutoUpdate = false;
 	holder.matrix.copy(m);
 	holder.add(mesh);
+	if (part.highlight) {
+		// Roblox Highlight: tinted overlay slightly larger than the part.
+		const glow = new THREE.Mesh(mesh.geometry, new THREE.MeshBasicMaterial({ color: srgb(part.highlight), transparent: true, opacity: 0.5, depthWrite: false, toneMapped: false }));
+		glow.scale.copy(mesh.scale).multiplyScalar(1.04);
+		holder.add(glow);
+	}
 	const glassy = part.material === "Glass" || part.material === "ForceField" || part.transparency > 0;
 	mesh.castShadow = !glassy && part.material !== "Neon";
 	mesh.receiveShadow = true;
@@ -223,7 +229,8 @@ function buildBillboard(bb, texture) {
 	const sprite = new THREE.Sprite(mat);
 	sprite.scale.set(bb.size[0], bb.size[1], 1);
 	sprite.position.set(...bb.pos);
-	sprite.renderOrder = 3;
+	sprite.renderOrder = bb.alwaysOnTop ? 10 : 3;
+	if (bb.alwaysOnTop) mat.depthTest = false;
 	sprite.userData.maxDistance = bb.maxDistance || 1e9;
 	return sprite;
 }
@@ -332,7 +339,13 @@ export async function renderScene(canvas, data, opts) {
 				if (dist > (bb.maxDistance || 1e9)) continue;
 				const tex = await new THREE.TextureLoader().loadAsync(url);
 				tex.colorSpace = THREE.SRGBColorSpace;
-				scene.add(buildBillboard(bb, tex));
+				const sprite = buildBillboard(bb, tex);
+				if (bb.pixels) {
+					// Constant screen size (Roblox offset-sized BillboardGui).
+					const studsPerPixel = (2 * dist * Math.tan(((opts.camera.fov || 70) * Math.PI) / 360)) / opts.height;
+					sprite.scale.set(bb.pixels[0] * studsPerPixel, bb.pixels[1] * studsPerPixel, 1);
+				}
+				scene.add(sprite);
 			}
 		}
 		// Only the nearest lights matter for the shot; WebGL can't afford all of them.
@@ -345,6 +358,19 @@ export async function renderScene(canvas, data, opts) {
 			light.position.set(...l.pos);
 			if (l.kind === "SpotLight") light.position.y -= 1;
 			scene.add(light);
+		}
+		// Beams (e.g. the tutorial guide) as glowing tubes.
+		for (const beam of data.beams || []) {
+			const a = new THREE.Vector3(...beam.from);
+			const b = new THREE.Vector3(...beam.to);
+			const curve = new THREE.LineCurve3(a, b);
+			const radius = ((beam.width0 || 1) + (beam.width1 || 1)) / 8;
+			const tube = new THREE.Mesh(
+				new THREE.TubeGeometry(curve, 1, radius, 10, false),
+				new THREE.MeshBasicMaterial({ color: srgb(beam.color), transparent: true, opacity: 0.8, toneMapped: false, depthWrite: false }),
+			);
+			tube.renderOrder = 4;
+			scene.add(tube);
 		}
 		const spark = sparkTexture();
 		for (const effect of data.effects) {
