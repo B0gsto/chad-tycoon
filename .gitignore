@@ -1,0 +1,7 @@
+roblox.yml
+roblox.toml
+sourcemap.json
+*.rbxl.lock
+*.rbxlx.lock
+/tools/
+.cache/
