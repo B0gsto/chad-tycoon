@@ -875,8 +875,61 @@ return Net
 ]]></string>
         </Properties>
       </Item>
+      <Item class="ModuleScript" referent="6">
+        <Properties>
+          <string name="Name">SessionLock</string>
+          <string name="Source"><![CDATA[--!strict
+--[[
+	SessionLock: pure decision logic for DataStore session locking.
+
+	A profile stores `_lock = { jobId, at }`. A server may only load/save a
+	profile it holds the lock for, which prevents two servers (e.g. after a fast
+	server hop) from overwriting each other's progress or duplicating purchases.
+	Kept pure so it can be unit-tested with Lune.
+]]
+
+local SessionLock = {}
+
+-- A lock not refreshed for this long is considered abandoned (server crashed).
+-- Autosave refreshes the lock far more often than this.
+SessionLock.STALE_SECONDS = 300
+
+export type Lock = { jobId: string, at: number }
+
+export type Decision = "acquire" | "wait" | "steal"
+
+-- Decide whether `jobId` may take the lock at time `now`.
+--   acquire: free, ours already, or stale
+--   wait:    another live server holds it; retry shortly
+--   steal:   we waited long enough; take it anyway (the other server will
+--            notice on its next save and stop writing)
+function SessionLock.decide(existing: Lock?, jobId: string, now: number, waitedSeconds: number, maxWait: number): Decision
+	if existing == nil or type(existing) ~= "table" or type(existing.jobId) ~= "string" then
+		return "acquire"
+	end
+	if existing.jobId == jobId then
+		return "acquire"
+	end
+	if type(existing.at) ~= "number" or now - existing.at >= SessionLock.STALE_SECONDS then
+		return "acquire"
+	end
+	if waitedSeconds >= maxWait then
+		return "steal"
+	end
+	return "wait"
+end
+
+-- Whether a save from `jobId` is still allowed (we still own the lock).
+function SessionLock.owns(existing: Lock?, jobId: string): boolean
+	return existing ~= nil and type(existing) == "table" and existing.jobId == jobId
+end
+
+return SessionLock
+]]></string>
+        </Properties>
+      </Item>
     </Item>
-    <Item class="ModuleScript" referent="6">
+    <Item class="ModuleScript" referent="7">
       <Properties>
         <string name="Name">Theme</string>
         <string name="Source"><![CDATA[--[[
@@ -1430,15 +1483,15 @@ return Theme
       </Properties>
     </Item>
   </Item>
-  <Item class="ServerScriptService" referent="7">
+  <Item class="ServerScriptService" referent="8">
     <Properties>
       <string name="Name">ServerScriptService</string>
     </Properties>
-    <Item class="Folder" referent="8">
+    <Item class="Folder" referent="9">
       <Properties>
         <string name="Name">Server</string>
       </Properties>
-      <Item class="ModuleScript" referent="9">
+      <Item class="ModuleScript" referent="10">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -1452,10 +1505,12 @@ return Theme
 ]]
 
 local DataStoreService = game:GetService("DataStoreService")
+local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Economy = require(ReplicatedStorage.Shared.Economy)
+local SessionLock = require(ReplicatedStorage.Shared.SessionLock)
 
 local DataService = {}
 
@@ -1589,7 +1644,20 @@ local function retry<T>(label: string, fn: () -> T): (boolean, T?)
 	return false, nil
 end
 
+-- This server's identity for session locks (JobId is empty in Studio).
+local JOB_ID = if game.JobId ~= "" then game.JobId else ("studio-" .. HttpService:GenerateGUID(false))
+-- How long a joining player waits for another server to release their save.
+local LOCK_WAIT_SECONDS = 20
+
+local function stripMeta(data: any): any
+	if type(data) == "table" then
+		data._lock = nil
+	end
+	return data
+end
+
 -- Returns (profile, canSave). profile is nil when the player should be kicked.
+-- Acquires a session lock so two servers never write the same save.
 function DataService.load(player: Player): (Profile?, boolean)
 	if not store then
 		if RunService:IsStudio() then
@@ -1599,39 +1667,78 @@ function DataService.load(player: Player): (Profile?, boolean)
 		return nil, false
 	end
 	local activeStore = store :: DataStore
-	local ok, data = retry("load " .. player.Name, function()
-		return activeStore:GetAsync(keyFor(player))
-	end)
-	if not ok then
-		if RunService:IsStudio() then
-			warn("[DataService] Enable 'Studio Access to API Services' to test saving. Using a temporary profile.")
-			return reconcile(nil), false
+	local started = os.clock()
+	while player.Parent do
+		local decision: SessionLock.Decision = "acquire"
+		local loaded: any = nil
+		local ok = retry("load " .. player.Name, function()
+			activeStore:UpdateAsync(keyFor(player), function(current)
+				local existing = if type(current) == "table" then current._lock else nil
+				decision = SessionLock.decide(existing, JOB_ID, os.time(), os.clock() - started, LOCK_WAIT_SECONDS)
+				if decision == "wait" then
+					return nil -- leave the save untouched
+				end
+				local data = if type(current) == "table" then current else {}
+				data._lock = { jobId = JOB_ID, at = os.time() }
+				loaded = table.clone(data)
+				return data
+			end)
+			return true
+		end)
+		if not ok then
+			if RunService:IsStudio() then
+				warn("[DataService] Enable 'Studio Access to API Services' to test saving. Using a temporary profile.")
+				return reconcile(nil), false
+			end
+			return nil, false
 		end
-		return nil, false
+		if decision ~= "wait" then
+			if decision == "steal" then
+				warn("[DataService] Took over a save still locked by another server for", player.Name)
+			end
+			local isNew = loaded == nil or next(stripMeta(loaded)) == nil
+			return reconcile(if isNew then nil else loaded), true
+		end
+		task.wait(3)
 	end
-	return reconcile(data), true
+	return nil, false
 end
 
-function DataService.save(player: Player, profile: Profile): boolean
+-- Saves the profile if this server still owns the session lock.
+-- `release` clears the lock (player left / server shutting down).
+-- Returns (saved, lostOwnership). lostOwnership is true when another server has
+-- taken over this save; the caller should stop playing this session.
+function DataService.save(player: Player, profile: Profile, release: boolean?): (boolean, boolean)
 	if not store then
-		return false
+		return false, false
 	end
 	local activeStore = store :: DataStore
 	profile.lastOnline = os.time()
+	local stillOwner = true
 	local ok = retry("save " .. player.Name, function()
-		activeStore:UpdateAsync(keyFor(player), function()
-			return profile
+		activeStore:UpdateAsync(keyFor(player), function(current)
+			local existing = if type(current) == "table" then current._lock else nil
+			if existing ~= nil and not SessionLock.owns(existing, JOB_ID) then
+				stillOwner = false
+				return nil -- another server owns this save now; never overwrite it
+			end
+			local data = table.clone(profile) :: any
+			data._lock = if release then nil else { jobId = JOB_ID, at = os.time() }
+			return data
 		end)
 		return true
 	end)
-	return ok
+	if not stillOwner then
+		warn("[DataService] Save for", player.Name, "is owned by another server; not overwriting.")
+	end
+	return ok and stillOwner, not stillOwner
 end
 
 return DataService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Script" referent="10">
+      <Item class="Script" referent="11">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -1662,15 +1769,26 @@ Ranking.init(Theme, world.ranking)
 
 local saving: { [Player]: boolean } = {}
 
-local function saveSession(session: Tycoon.Session)
-	if session.canSave then
-		DataService.save(session.player, session.profile)
+local function saveSession(session: Tycoon.Session, release: boolean?)
+	if not session.canSave then
+		return
+	end
+	local _, lost = DataService.save(session.player, session.profile, release)
+	if lost and not release then
+		-- Another server owns this save now (e.g. the player joined elsewhere).
+		-- Stop writing from here so progress can never be overwritten.
+		session.canSave = false
+		session.player:Kick("Your progress is now active in another server. Please rejoin!")
 	end
 end
 
 local function onPlayerAdded(player: Player)
 	local profile, canSave = DataService.load(player)
 	if not player.Parent then
+		-- Left while loading: hand the session lock back straight away.
+		if profile and canSave then
+			DataService.save(player, profile, true)
+		end
 		return
 	end
 	if not profile then
@@ -1679,6 +1797,9 @@ local function onPlayerAdded(player: Player)
 	end
 	local passes = Monetization.ownedPasses(player)
 	if not player.Parent then
+		if canSave then
+			DataService.save(player, profile, true)
+		end
 		return
 	end
 	Tycoon.addPlayer(player, profile, canSave, passes)
@@ -1688,7 +1809,7 @@ local function onPlayerRemoving(player: Player)
 	local session = Tycoon.removePlayer(player)
 	if session and not saving[player] then
 		saving[player] = true
-		saveSession(session)
+		saveSession(session, true)
 		saving[player] = nil
 	end
 end
@@ -1716,7 +1837,7 @@ game:BindToClose(function()
 		pending += 1
 		saving[player] = true
 		task.spawn(function()
-			saveSession(session)
+			saveSession(session, true)
 			pending -= 1
 		end)
 	end
@@ -1729,7 +1850,7 @@ end)
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="11">
+      <Item class="ModuleScript" referent="12">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -1844,6 +1965,18 @@ local function findProduct(productId: number): (string?, number?)
 	return nil, nil
 end
 
+-- Persists the profile; only report the purchase as granted once it is saved.
+local function saveOrRetry(session: Tycoon.Session): Enum.ProductPurchaseDecision
+	if not session.canSave then
+		-- Studio without API access: nothing to persist.
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+	if DataService.save(session.player, session.profile) then
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+	return Enum.ProductPurchaseDecision.NotProcessedYet
+end
+
 local function processReceipt(receipt: any): Enum.ProductPurchaseDecision
 	local session = Tycoon.getSessionByUserId(receipt.PlayerId)
 	if not session then
@@ -1851,24 +1984,23 @@ local function processReceipt(receipt: any): Enum.ProductPurchaseDecision
 	end
 	local profile = session.profile
 	if table.find(profile.receipts, receipt.PurchaseId) then
-		return Enum.ProductPurchaseDecision.PurchaseGranted
+		-- Already granted in this session; make sure it is persisted.
+		return saveOrRetry(session)
 	end
 	local kind, index = findProduct(receipt.ProductId)
 	if not kind or not index then
 		warn("[Monetization] Unknown product", receipt.ProductId)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
+	-- Grant and record the receipt together. If the save below fails, Roblox
+	-- retries this callback; the recorded receipt makes the retry a no-op grant
+	-- that only re-attempts the save, so the player is never paid twice.
 	grantProduct(session, kind, index)
 	table.insert(profile.receipts, receipt.PurchaseId)
 	while #profile.receipts > MAX_RECEIPTS do
 		table.remove(profile.receipts, 1)
 	end
-	if session.canSave and not DataService.save(session.player, profile) then
-		-- Roll back so the purchase is retried later instead of being lost.
-		table.remove(profile.receipts)
-		return Enum.ProductPurchaseDecision.NotProcessedYet
-	end
-	return Enum.ProductPurchaseDecision.PurchaseGranted
+	return saveOrRetry(session)
 end
 
 function Monetization.init(themeModule: any)
@@ -1896,7 +2028,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="12">
+      <Item class="ModuleScript" referent="13">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -2050,7 +2182,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="13">
+      <Item class="ModuleScript" referent="14">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -3380,7 +3512,7 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="14">
+      <Item class="ModuleScript" referent="15">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -4207,26 +4339,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="15">
+  <Item class="SoundService" referent="16">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="16">
+  <Item class="StarterPlayer" referent="17">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="17">
+    <Item class="StarterPlayerScripts" referent="18">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="18">
+      <Item class="Folder" referent="19">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="LocalScript" referent="19">
+        <Item class="LocalScript" referent="20">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -4342,7 +4474,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="20">
+        <Item class="ModuleScript" referent="21">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects using sounds bundled with the Roblox client (no uploads needed),
@@ -4424,7 +4556,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="21">
+        <Item class="ModuleScript" referent="22">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -4473,11 +4605,11 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="22">
+        <Item class="Folder" referent="23">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="23">
+          <Item class="ModuleScript" referent="24">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -4846,7 +4978,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="24">
+          <Item class="ModuleScript" referent="25">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -5199,7 +5331,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="25">
+          <Item class="ModuleScript" referent="26">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -5583,7 +5715,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="26">
+          <Item class="ModuleScript" referent="27">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
@@ -6032,7 +6164,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="27">
+  <Item class="Workspace" referent="28">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>

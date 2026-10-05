@@ -9,6 +9,7 @@ local process = require("@lune/process")
 
 local Economy = require("../src/shared/Economy")
 local Format = require("../src/shared/Format")
+local SessionLock = require("../src/shared/SessionLock")
 
 local passed, failed = 0, 0
 local currentTest = ""
@@ -242,6 +243,19 @@ test("tier bands", function()
 	eq(Economy.tierBand(25), "Mythic")
 	eq(Economy.moneyPackAmount(10, 300, 1000), 3000)
 	eq(Economy.moneyPackAmount(0, 300, 1000), 1000)
+end)
+
+test("session lock", function()
+	local now = 1000000
+	eq(SessionLock.decide(nil, "a", now, 0, 20), "acquire", "free save")
+	eq(SessionLock.decide({ jobId = "a", at = now - 10 }, "a", now, 0, 20), "acquire", "our own lock")
+	eq(SessionLock.decide({ jobId = "b", at = now - 10 }, "a", now, 0, 20), "wait", "live lock elsewhere")
+	eq(SessionLock.decide({ jobId = "b", at = now - 10 }, "a", now, 25, 20), "steal", "waited long enough")
+	eq(SessionLock.decide({ jobId = "b", at = now - SessionLock.STALE_SECONDS }, "a", now, 0, 20), "acquire", "stale lock")
+	eq(SessionLock.decide({ jobId = 5 } :: any, "a", now, 0, 20), "acquire", "malformed lock")
+	check(SessionLock.owns({ jobId = "a", at = now }, "a"), "owner")
+	check(not SessionLock.owns({ jobId = "b", at = now }, "a"), "not owner")
+	check(not SessionLock.owns(nil, "a"), "no lock")
 end)
 
 -- Themes --------------------------------------------------------------------------

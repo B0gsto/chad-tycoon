@@ -8,3 +8,4 @@ sourcemap.json
 preview/node_modules/
 preview/out/
 preview/render/node_modules/
+.claude/worktrees/
