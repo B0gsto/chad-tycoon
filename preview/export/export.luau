@@ -640,7 +640,9 @@ local function main()
 			skin = Color3.fromRGB(245, 205, 160),
 			shirt = if variant == "chad" then Color3.fromRGB(30, 30, 36) else Color3.fromRGB(40, 110, 200),
 			pants = Color3.fromRGB(45, 50, 70),
-			face = "🙂",
+			anim = "Chad", -- the player stand-in is a person in both variants
+			expr = "Happy",
+			hair = Color3.fromRGB(70, 46, 30),
 			acc = { "Cap" },
 			accColor = if variant == "chad" then Color3.fromRGB(240, 190, 40) else Color3.fromRGB(255, 140, 20),
 		}

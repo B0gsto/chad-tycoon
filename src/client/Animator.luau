@@ -207,6 +207,9 @@ local function step()
 			continue
 		end
 
+		if not model:IsDescendantOf(Workspace) then
+			continue
+		end
 		local rootPos = rig.root.Position
 		local distance = (rootPos - camPos).Magnitude
 		if distance > FAR then

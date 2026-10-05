@@ -254,7 +254,7 @@ local EXPRESSIONS: { [string]: Expr } = {
 	Smug = { lid = 0.55, look = 0, brow = -6, browY = 0.02, browRaise = 0.03, mouth = "Smirk", mouthW = 0.34, mouthTilt = 9 },
 	Determined = { lid = 0.85, look = 0, brow = 16, browY = -0.02, browRaise = 0, mouth = "Flat", mouthW = 0.28, mouthTilt = 0 },
 	Angry = { lid = 0.8, look = 0, brow = 26, browY = -0.03, browRaise = 0, mouth = "Open", mouthW = 0.34, mouthTilt = 0 },
-	Happy = { lid = 0.9, look = 0, brow = -8, browY = 0.04, browRaise = 0, mouth = "Grin", mouthW = 0.44, mouthTilt = 0 },
+	Happy = { lid = 0.9, look = 0, brow = -8, browY = 0.04, browRaise = 0, mouth = "Grin", mouthW = 0.4, mouthTilt = 0 },
 	Stoic = { lid = 0.62, look = 0.055, brow = 6, browY = -0.03, browRaise = 0, mouth = "Flat", mouthW = 0.3, mouthTilt = 0 },
 }
 
@@ -272,8 +272,8 @@ local function buildChadFace(c: Ctx)
 	local plain = Enum.Material.SmoothPlastic
 
 	if jaw > 0 then
-		add(c, "Head", "Jaw", Vector3.new(HW + 0.1 * jaw, 0.42, HD - 0.1), at(0, bottom + 0.08, -0.03), skin)
-		add(c, "Head", "Chin", Vector3.new(0.44, 0.26, 0.16), at(0, bottom - 0.02, front + 0.03), skin)
+		add(c, "Head", "Jaw", Vector3.new(HW + 0.08 * jaw, 0.4, HD - 0.1), at(0, bottom + 0.1, -0.03), shade(skin, 0.03))
+		add(c, "Head", "Chin", Vector3.new(0.46, 0.24, 0.12), at(0, bottom - 0.03, front + 0.02), shade(skin, 0.04))
 	end
 	-- Both ears as one block through the head (saves a part).
 	add(c, "Head", "Ears", Vector3.new(HW + 0.08, 0.28, 0.22), at(0, eyeY - 0.12, 0.06), skin)
@@ -335,8 +335,8 @@ local function buildChadFace(c: Ctx)
 	local mouthY = bottom + 0.22
 	local mz = front - 0.03
 	if expr.mouth == "Grin" then
-		add(c, "Head", "Mouth", Vector3.new(expr.mouthW, 0.17, 0.04), at(0, mouthY - 0.02, mz), MOUTH, plain)
-		add(c, "Head", "Teeth", Vector3.new(expr.mouthW - 0.06, 0.07, 0.04), at(0, mouthY + 0.02, mz - 0.01), EYE_WHITE, plain)
+		add(c, "Head", "Mouth", Vector3.new(expr.mouthW, 0.15, 0.04), at(0, mouthY - 0.02, mz), MOUTH, plain)
+		add(c, "Head", "Teeth", Vector3.new(expr.mouthW - 0.12, 0.05, 0.04), at(0, mouthY + 0.015, mz - 0.01), EYE_WHITE, plain)
 	elseif expr.mouth == "Open" then
 		add(c, "Head", "Mouth", Vector3.new(expr.mouthW, 0.15, 0.04), at(0, mouthY - 0.01, mz), MOUTH, plain)
 		add(c, "Head", "Teeth", Vector3.new(expr.mouthW - 0.06, 0.05, 0.04), at(0, mouthY + 0.03, mz - 0.01), EYE_WHITE, plain)
@@ -357,7 +357,7 @@ local function buildChadFace(c: Ctx)
 	-- Hair.
 	local style = look.hairStyle or "Buzz"
 	local top = c.headTop
-	local hatted = c.has.Cap or c.has.CapBack or c.has.Mohawk
+	local hatted = c.has.Cap or c.has.CapBack or c.has.Crown or c.has.Mohawk
 	if style ~= "Bald" then
 		local backH = if style == "Buzz" then 0.48 else 0.62
 		add(c, "Head", "HairBack", Vector3.new(HW + 0.05, backH, 0.08), at(0, top - backH / 2 + 0.02, HD / 2 + 0.03), hair)
@@ -587,7 +587,19 @@ local function buildBotFace(c: Ctx)
 		add(c, "Head", "Eye", Vector3.new(HW - 0.36, 0.15, 0.04), at(0, eyeY, z), led, neon)
 	elseif eyes == "Mono" then
 		add(c, "Head", "Eye", Vector3.new(0.04, 0.36, 0.36), rot(0, eyeY - 0.02, z, 0, 90, 0), led, neon, Enum.PartType.Cylinder)
-		add(c, "Head", "Pupil", Vector3.new(0.04, 0.14, 0.14), rot(0, eyeY - 0.02, z - 0.02, 0, 90, 0), WHITE, neon, Enum.PartType.Cylinder)
+		-- A bright lens gets a dark iris, a coloured one a white-hot core.
+		local bright = led.R + led.G + led.B > 2.4
+		local core = if bright then FACEPLATE else WHITE
+		add(
+			c,
+			"Head",
+			"Pupil",
+			Vector3.new(0.04, 0.14, 0.14),
+			rot(0, eyeY - 0.02, z - 0.02, 0, 90, 0),
+			core,
+			if bright then plain else neon,
+			Enum.PartType.Cylinder
+		)
 	elseif eyes ~= "None" then
 		for _, side in SIDES do
 			local s = side[1]
@@ -840,7 +852,7 @@ ACCESSORIES.Crown = function(c)
 end
 
 ACCESSORIES.Halo = function(c)
-	local y = c.hairTop + 0.42
+	local y = c.hairTop + (if c.has.Crown then 0.78 else 0.42)
 	local r = 0.62
 	for i = 0, 5 do
 		local angle = i * 60
