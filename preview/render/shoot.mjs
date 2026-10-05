@@ -39,7 +39,7 @@ function normalize(value) {
 	if (value && typeof value === "object") {
 		const out = {};
 		for (const [k, v] of Object.entries(value)) {
-			const isListKey = k === "children" || k === "parts" || k === "surfaces" || k === "billboards" || k === "lights" || k === "effects";
+			const isListKey = k === "children" || k === "parts" || k === "surfaces" || k === "billboards" || k === "lights" || k === "effects" || k === "beams";
 			out[k] = isListKey && !Array.isArray(v) ? [] : normalize(v);
 		}
 		return out;
@@ -153,6 +153,9 @@ async function renderThumbs(page, variant, showcase) {
 		const camera = { pos: [feet[0] + h * 0.35, feet[1] + h * 0.62, feet[2] - h * 1.75], look: [feet[0], feet[1] + h * 0.5, feet[2]], fov: 40 };
 		for (const sil of [0, 1]) {
 			const file = join(dir, `${tier}_${sil}.png`);
+			map[`thumb:${variant}:${tier}:${sil}`] = `/out/${variant}/thumbs/${tier}_${sil}.png`;
+			// REUSE_THUMBS=1 skips re-rendering existing thumbnails (fast UI iteration).
+			if (process.env.REUSE_THUMBS && existsSync(file)) continue;
 			await page.evaluate(([scene, group, s, cam]) => window.renderThumb(scene, group, s === 1, cam, 320), [showcase, tier, sil, camera]);
 			const handle = await page.$("#thumb");
 			await handle.screenshot({ path: file, omitBackground: true });
@@ -167,6 +170,10 @@ function shotList(world) {
 	const plot = world.plots[0];
 	const P = (x, y, z) => toWorld(plot, [x, y, z]);
 	const play = { pos: P(-11, 12, -33), look: P(2, 4, 24), fov: 62 };
+	// The fresh tutorial player owns plot 4.
+	const fresh = world.plots[3];
+	const F = (x, y, z) => toWorld(fresh, [x, y, z]);
+	const tutorial = { pos: F(12, 15, -36), look: F(-24, 2, -4), fov: 62 };
 	return [
 		{ name: "01-overview", scene: "world", gui: "none", camera: { pos: [-30, 235, -275], look: [0, 0, 45], fov: 55 }, extra: { shadowSpan: 320, fogNear: 400, fogFar: 1400 } },
 		{ name: "02-your-plot", scene: "world", gui: "none", camera: { pos: P(0, 70, -98), look: P(0, 0, 6), fov: 60 }, extra: { shadowSpan: 120 } },
@@ -178,13 +185,18 @@ function shotList(world) {
 		{ name: "08-holding-crate", scene: "world_held", gui: "crate", camera: { pos: P(-16, 8.5, -6), look: P(-3, 3, -12), fov: 58 } },
 		{ name: "09-settings", scene: "world", gui: "settings", camera: play },
 		{ name: "10-all-25-tiers", scene: "showcase", gui: "none", camera: { pos: [0, 24, 1000 - 66], look: [0, 8, 1003], fov: 50 }, extra: { shadowSpan: 80, fogNear: 300, fogFar: 1200 } },
+		{ name: "11-tutorial", scene: "world_tutorial", gui: "tutorial", camera: tutorial },
+		{ name: "12-tutorial-complete", scene: "world_tutorial", gui: "tutorial_done", camera: tutorial },
+		{ name: "13-loading-screen", scene: "world", gui: "loading", camera: play },
+		{ name: "14-offline-earnings", scene: "world", gui: "offline", camera: play },
+		{ name: "15-shop-premium", scene: "world", gui: "shop_gems", camera: play },
 	];
 }
 
 for (const variant of variants) {
 	console.log(`== ${variant}`);
 	const load = (name) => readJson(join(OUT, variant, name + ".json"));
-	const scenes = { world: load("world"), world_held: load("world_held"), showcase: load("showcase") };
+	const scenes = { world: load("world"), world_held: load("world_held"), world_tutorial: load("world_tutorial"), showcase: load("showcase") };
 
 	const bakePage = await newPage(2);
 	const textures = {};

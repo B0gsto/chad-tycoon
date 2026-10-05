@@ -1,13 +1,334 @@
 <roblox version="4">
-  <Item class="ReplicatedStorage" referent="0">
+  <Item class="ReplicatedFirst" referent="0">
+    <Properties>
+      <string name="Name">ReplicatedFirst</string>
+    </Properties>
+    <Item class="LocalScript" referent="1">
+      <Properties>
+        <string name="Name">Loader</string>
+        <string name="Source"><![CDATA[-- Loader (ReplicatedFirst): replaces Roblox's default loading screen with the
+-- game's own splash and fades it out once the first State snapshot arrives
+-- (the client sets the player's "GameReady" attribute) or after a timeout.
+
+local Players = game:GetService("Players")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local LoadingScreen = require(script:WaitForChild("LoadingScreen"))
+
+local TIMEOUT = 25
+
+local player = Players.LocalPlayer
+local gui = Instance.new("ScreenGui")
+gui.Name = "LoadingScreen"
+gui.IgnoreGuiInset = true
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 100
+pcall(function()
+	gui.ScreenInsets = Enum.ScreenInsets.None
+end)
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local screen = LoadingScreen.build(gui, nil)
+ReplicatedFirst:RemoveDefaultLoadingScreen()
+
+local started = os.clock()
+
+task.spawn(function()
+	local themeModule = ReplicatedStorage:WaitForChild("Theme", TIMEOUT)
+	if themeModule and themeModule:IsA("ModuleScript") then
+		local ok, theme = pcall(require, themeModule)
+		if ok then
+			screen.applyTheme(theme)
+		end
+	end
+end)
+
+if not game:IsLoaded() then
+	game.Loaded:Wait()
+end
+while player:GetAttribute("GameReady") ~= true and os.clock() - started < TIMEOUT do
+	task.wait(0.1)
+end
+-- Keep the splash up briefly so it doesn't just flash on fast joins.
+local shown = os.clock() - started
+if shown < 1.2 then
+	task.wait(1.2 - shown)
+end
+screen.finish()
+task.delay(1, function()
+	gui:Destroy()
+end)
+]]></string>
+      </Properties>
+      <Item class="ModuleScript" referent="2">
+        <Properties>
+          <string name="Name">LoadingScreen</string>
+          <string name="Source"><![CDATA[--[[
+	LoadingScreen: full-screen splash shown from ReplicatedFirst until the
+	first State snapshot arrives. Standalone (the client Kit isn't replicated
+	yet when this runs); it takes the theme later, once ReplicatedStorage has
+	arrived, to show the game name, tagline and colours.
+]]
+
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local LoadingScreen = {}
+
+export type Handle = {
+	root: CanvasGroup,
+	applyTheme: (any) -> (),
+	setStatus: (string) -> (),
+	finish: () -> (),
+}
+
+local DEFAULT = {
+	Primary = Color3.fromRGB(255, 200, 45),
+	Secondary = Color3.fromRGB(165, 80, 255),
+	Panel = Color3.fromRGB(24, 20, 36),
+	PanelDark = Color3.fromRGB(12, 10, 20),
+	Sky = Color3.fromRGB(30, 20, 52),
+	Stroke = Color3.fromRGB(8, 6, 14),
+	Text = Color3.new(1, 1, 1),
+	TextDim = Color3.fromRGB(190, 185, 210),
+}
+
+local function new(className: string, props: { [string]: any }): any
+	local inst = Instance.new(className)
+	local parent = props.Parent
+	for key, value in props do
+		if key ~= "Parent" then
+			(inst :: any)[key] = value
+		end
+	end
+	inst.Parent = parent
+	return inst
+end
+
+local function stroke(parent: Instance, thickness: number, color: Color3): UIStroke
+	return new("UIStroke", { Thickness = thickness, Color = color, Parent = parent })
+end
+
+local function tween(obj: Instance, time: number, props: { [string]: any })
+	TweenService:Create(obj, TweenInfo.new(time, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
+end
+
+function LoadingScreen.build(parent: Instance, theme: any?): Handle
+	local colors = DEFAULT
+	local root = new("CanvasGroup", {
+		Name = "Loading",
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 100,
+		Parent = parent,
+	})
+	local background = new("UIGradient", { Rotation = 90, Parent = root })
+
+	-- Big soft diagonal bands for depth.
+	local bands = {}
+	for i = 1, 4 do
+		local band = new("Frame", {
+			Name = "Band",
+			BackgroundColor3 = Color3.new(1, 1, 1),
+			BackgroundTransparency = 0.94,
+			BorderSizePixel = 0,
+			Size = UDim2.new(0.16, 0, 2.5, 0),
+			Position = UDim2.fromScale(-0.2 + i * 0.3, -0.7),
+			Rotation = 28,
+			Parent = root,
+		})
+		table.insert(bands, band)
+	end
+
+	local center = new("Frame", {
+		Name = "Center",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(900, 360),
+		Position = UDim2.fromScale(0.5, 0.46),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Parent = root,
+	})
+	new("UISizeConstraint", { MaxSize = Vector2.new(900, 360), Parent = center })
+	local scale = new("UIScale", { Parent = center })
+
+	local title = new("TextLabel", {
+		Name = "Title",
+		BackgroundTransparency = 1,
+		Text = "",
+		Font = Enum.Font.FredokaOne,
+		TextSize = 76,
+		TextColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.new(1, 0, 0, 90),
+		Position = UDim2.fromOffset(0, 40),
+		Parent = center,
+	})
+	local titleStroke = stroke(title, 5, colors.Stroke)
+	local titleGradient = new("UIGradient", { Rotation = 90, Parent = title })
+	local tagline = new("TextLabel", {
+		Name = "Tagline",
+		BackgroundTransparency = 1,
+		Text = "",
+		Font = Enum.Font.FredokaOne,
+		TextSize = 26,
+		TextColor3 = colors.TextDim,
+		Size = UDim2.new(1, 0, 0, 34),
+		Position = UDim2.fromOffset(0, 134),
+		Parent = center,
+	})
+	stroke(tagline, 2, colors.Stroke)
+
+	-- Spinner: a ring of dots that fades around.
+	local spinner = new("Frame", {
+		Name = "Spinner",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(70, 70),
+		Position = UDim2.new(0.5, 0, 0, 230),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Parent = center,
+	})
+	local dots: { Frame } = {}
+	local DOTS = 10
+	for i = 1, DOTS do
+		local angle = (i - 1) / DOTS * math.pi * 2
+		local dot = new("Frame", {
+			Name = "Dot",
+			BackgroundColor3 = colors.Primary,
+			BackgroundTransparency = (i - 1) / DOTS * 0.85,
+			Size = UDim2.fromOffset(13, 13),
+			Position = UDim2.new(0.5 + math.sin(angle) * 0.42, 0, 0.5 - math.cos(angle) * 0.42, 0),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Parent = spinner,
+		})
+		new("UICorner", { CornerRadius = UDim.new(1, 0), Parent = dot })
+		stroke(dot, 2, colors.Stroke)
+		dots[i] = dot
+	end
+
+	local status = new("TextLabel", {
+		Name = "Status",
+		BackgroundTransparency = 1,
+		Text = "Loading...",
+		Font = Enum.Font.FredokaOne,
+		TextSize = 22,
+		TextColor3 = colors.Text,
+		Size = UDim2.new(1, 0, 0, 30),
+		Position = UDim2.fromOffset(0, 284),
+		Parent = center,
+	})
+	stroke(status, 2, colors.Stroke)
+
+	local tip = new("TextLabel", {
+		Name = "Tip",
+		BackgroundTransparency = 1,
+		Text = "",
+		Font = Enum.Font.GothamBold,
+		TextSize = 18,
+		TextColor3 = colors.TextDim,
+		TextWrapped = true,
+		Size = UDim2.new(1, -40, 0, 50),
+		Position = UDim2.new(0, 20, 1, -80),
+		Parent = root,
+	})
+	stroke(tip, 1.5, colors.Stroke)
+
+	local tips: { string } = {}
+	local tipIndex = 0
+
+	local function applyTheme(t: any)
+		if type(t) ~= "table" then
+			t = {}
+		end
+		local c = t.Colors or {}
+		local primary = c.Primary or DEFAULT.Primary
+		local sky = c.Sky or DEFAULT.Sky
+		local dark = c.PanelDark or DEFAULT.PanelDark
+		background.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, sky:Lerp(Color3.new(1, 1, 1), 0.05)),
+			ColorSequenceKeypoint.new(0.6, dark),
+			ColorSequenceKeypoint.new(1, dark:Lerp(Color3.new(0, 0, 0), 0.4)),
+		})
+		for _, band in bands do
+			band.BackgroundColor3 = c.Secondary or DEFAULT.Secondary
+			band.BackgroundTransparency = 0.94
+		end
+		local fonts = t.Fonts or {}
+		title.Text = string.upper(t.GameName or "")
+		title.Font = fonts.Title or Enum.Font.FredokaOne
+		titleGradient.Color = ColorSequence.new(primary:Lerp(Color3.new(1, 1, 1), 0.45), primary)
+		titleStroke.Color = c.Stroke or DEFAULT.Stroke
+		tagline.Text = t.Tagline or ""
+		tagline.Font = fonts.Body or Enum.Font.FredokaOne
+		status.Font = fonts.Title or Enum.Font.FredokaOne
+		for _, dot in dots do
+			dot.BackgroundColor3 = primary
+		end
+		local loading = t.Loading or {}
+		status.Text = loading.Status or "Loading..."
+		tips = loading.Tips or {}
+		if #tips > 0 then
+			tipIndex = 1
+			tip.Text = tips[1]
+		end
+	end
+	applyTheme(theme)
+
+	local alive = true
+	local clock = 0
+	local nextTip = 4
+	local connection = RunService.RenderStepped:Connect(function(dt)
+		clock += dt
+		spinner.Rotation = math.floor(clock * 12) * (360 / DOTS)
+		if clock >= nextTip and #tips > 1 then
+			nextTip = clock + 4
+			tipIndex = tipIndex % #tips + 1
+			tip.Text = tips[tipIndex]
+		end
+		local camera = workspace.CurrentCamera
+		if camera then
+			local size = camera.ViewportSize
+			scale.Scale = math.clamp(math.min(size.X / 1000, size.Y / 560), 0.45, 1.4)
+		end
+	end)
+
+	local function finish()
+		if not alive then
+			return
+		end
+		alive = false
+		tween(root, 0.6, { GroupTransparency = 1 })
+		tween(scale, 0.6, { Scale = scale.Scale * 1.08 })
+		task.delay(0.65, function()
+			connection:Disconnect()
+			root:Destroy()
+		end)
+	end
+
+	return {
+		root = root,
+		applyTheme = applyTheme,
+		setStatus = function(text: string)
+			status.Text = text
+		end,
+		finish = finish,
+	}
+end
+
+return LoadingScreen
+]]></string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="ReplicatedStorage" referent="3">
     <Properties>
       <string name="Name">ReplicatedStorage</string>
     </Properties>
-    <Item class="Folder" referent="1">
+    <Item class="Folder" referent="4">
       <Properties>
         <string name="Name">Shared</string>
       </Properties>
-      <Item class="ModuleScript" referent="2">
+      <Item class="ModuleScript" referent="5">
         <Properties>
           <string name="Name">CharacterFactory</string>
           <string name="Source"><![CDATA[--[[
@@ -371,7 +692,7 @@ return CharacterFactory
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="3">
+      <Item class="ModuleScript" referent="6">
         <Properties>
           <string name="Name">Economy</string>
           <string name="Source"><![CDATA[--!strict
@@ -655,6 +976,10 @@ Economy.FREE_REWARD_GEMS = 3
 Economy.FREE_REWARD_SECONDS = 120
 Economy.FREE_REWARD_MIN = 100
 
+-- One-time reward for finishing the onboarding tutorial.
+Economy.TUTORIAL_REWARD_GEMS = 25
+Economy.TUTORIAL_REWARD_CASH = 250
+
 Economy.OFFLINE_CAP_SECONDS = 8 * 3600
 Economy.OFFLINE_EFFICIENCY = 0.25
 Economy.OFFLINE_MIN_SECONDS = 60
@@ -697,7 +1022,7 @@ return Economy
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="4">
+      <Item class="ModuleScript" referent="7">
         <Properties>
           <string name="Name">Format</string>
           <string name="Source"><![CDATA[--!strict
@@ -807,7 +1132,7 @@ return Format
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="5">
+      <Item class="ModuleScript" referent="8">
         <Properties>
           <string name="Name">Net</string>
           <string name="Source"><![CDATA[-- Remote events/functions. The server creates them, clients wait for them.
@@ -875,6 +1200,7 @@ return Net
 ]]></string>
         </Properties>
       </Item>
+<<<<<<< HEAD
       <Item class="ModuleScript" referent="6">
         <Properties>
           <string name="Name">SessionLock</string>
@@ -925,11 +1251,141 @@ function SessionLock.owns(existing: Lock?, jobId: string): boolean
 end
 
 return SessionLock
+=======
+      <Item class="ModuleScript" referent="9">
+        <Properties>
+          <string name="Name">TutorialSteps</string>
+          <string name="Source"><![CDATA[--!strict
+--[[
+	TutorialSteps: the onboarding checklist as pure data + functions.
+
+	No Roblox dependencies, so it is unit-tested with Lune (tests/run.luau) and
+	shared by the server (progression) and the client (what to point at).
+
+	Steps advance only in order. Each step completes on a real gameplay event
+	reported by the server (see Tycoon.listeners) or, as a safety net, when the
+	profile already shows the step was done (e.g. a game pass did it for you).
+
+	  1 buy      Buy a unit on the Buy 1 pad               event "Buy"
+	  2 orbs     Walk over the orbs your units drop        event "Pickup"
+	  3 deposit  Deposit the tank at the converter         event "Deposit"
+	  4 collect  Collect the converted cash                event "Cash"
+	  5 merge    Merge two units of the same tier          event "Merge"
+	  6          finished (reward granted once)
+]]
+
+local TutorialSteps = {}
+
+export type Step = {
+	id: string,
+	event: string,
+	target: string,
+}
+
+TutorialSteps.STEPS = {
+	{ id = "buy", event = "Buy", target = "Buy1" },
+	{ id = "orbs", event = "Pickup", target = "Orbs" },
+	{ id = "deposit", event = "Deposit", target = "Deposit" },
+	{ id = "collect", event = "Cash", target = "Collect" },
+	{ id = "merge", event = "Merge", target = "Merge" },
+} :: { Step }
+
+TutorialSteps.COUNT = #TutorialSteps.STEPS
+TutorialSteps.DONE = TutorialSteps.COUNT + 1
+
+-- Minimal view of the saved profile the checks need.
+export type ProfileView = {
+	carried: number?,
+	units: { number }?,
+	discovered: { number }?,
+}
+
+-- Clamps any stored value (old saves, bad data) into 1..DONE.
+function TutorialSteps.clamp(step: any): number
+	if type(step) ~= "number" or step ~= step then
+		return 1
+	end
+	return math.clamp(math.floor(step), 1, TutorialSteps.DONE)
+end
+
+function TutorialSteps.get(step: number): Step?
+	return TutorialSteps.STEPS[step]
+end
+
+-- The step after `step` if `event` completes it, otherwise `step` unchanged.
+function TutorialSteps.onEvent(step: number, event: string): number
+	local current = TutorialSteps.STEPS[step]
+	if current and current.event == event then
+		return step + 1
+	end
+	return step
+end
+
+-- True when the profile shows the current step is already accomplished.
+function TutorialSteps.satisfied(step: number, profile: ProfileView): boolean
+	local current = TutorialSteps.STEPS[step]
+	if not current then
+		return false
+	end
+	if current.id == "orbs" then
+		return (profile.carried or 0) > 0
+	elseif current.id == "merge" then
+		local discovered = profile.discovered or {}
+		for tier = 2, #discovered do
+			if (discovered[tier] or 0) > 0 then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+-- Advances through every step the profile already satisfies.
+function TutorialSteps.catchUp(step: number, profile: ProfileView): number
+	while step <= TutorialSteps.COUNT and TutorialSteps.satisfied(step, profile) do
+		step += 1
+	end
+	return step
+end
+
+-- True when some tier has at least two units (a merge is possible).
+function TutorialSteps.hasPair(units: { number }?): boolean
+	if not units then
+		return false
+	end
+	for _, count in units do
+		if count >= 2 then
+			return true
+		end
+	end
+	return false
+end
+
+-- What the guide should point at for `step`: a pad name (without "Pad_"),
+-- "Orbs", or nil when finished. The merge step points at the Buy 1 pad until
+-- the player owns a pair.
+function TutorialSteps.target(step: number, units: { number }?): string?
+	local current = TutorialSteps.STEPS[step]
+	if not current then
+		return nil
+	end
+	if current.id == "merge" and not TutorialSteps.hasPair(units) then
+		return "Buy1"
+	end
+	return current.target
+end
+
+return TutorialSteps
+>>>>>>> worktree-agent-a41f52f5f1625edbb
 ]]></string>
         </Properties>
       </Item>
     </Item>
+<<<<<<< HEAD
     <Item class="ModuleScript" referent="7">
+=======
+    <Item class="ModuleScript" referent="10">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
       <Properties>
         <string name="Name">Theme</string>
         <string name="Source"><![CDATA[--[[
@@ -974,6 +1430,55 @@ Theme.Words = {
 	BuyTier = "UPGRADE BUY TIER",
 }
 
+-- Onboarding tutorial (one entry per step in Shared.TutorialSteps) and the
+-- loading screen. Hint is an optional second line shown under the text.
+Theme.Tutorial = {
+	Title = "CHAD TRAINING",
+	Steps = {
+		{
+			Title = "Recruit your first Chad",
+			Text = "Step on the glowing BUY 1 pad.",
+			Icon = "🛒",
+		},
+		{
+			Title = "Farm some aura",
+			Text = "Your Chads drop aura orbs. Walk over them to fill your tank.",
+			Icon = "✨",
+		},
+		{
+			Title = "Convert your aura",
+			Text = "Step on the AURA CONVERTER pad to send your tank in.",
+			Icon = "⚗️",
+		},
+		{
+			Title = "Secure the bag",
+			Text = "Step on COLLECT CASH to bank what the converter made.",
+			Icon = "💵",
+		},
+		{
+			Title = "Mog merge!",
+			Text = "Two Chads of the same tier merge into a stronger one. Step on the MOG MERGE pad.",
+			Hint = "You need two of the same tier: buy one more on BUY 1 first.",
+			Icon = "🔀",
+		},
+	},
+	DoneTitle = "TRAINING COMPLETE!",
+	DoneText = "You know the grind. Now go mog the whole server.",
+	Skip = "Skip",
+	SkipConfirm = "Skip the training? You'll miss the completion reward.",
+	Follow = "Follow the arrow",
+}
+
+Theme.Loading = {
+	Status = "Warming up the gym...",
+	Tips = {
+		"Tip: two Chads of the same tier merge into the next tier.",
+		"Tip: deposit when the Aura Multiplier is high for more cash.",
+		"Tip: during an Aura Surge every Chad drops double aura.",
+		"Tip: carry crates to the Crate Cracker to open them for free.",
+	},
+}
+
 Theme.Icons = {
 	Unit = "🗿",
 	Orb = "✨",
@@ -989,6 +1494,7 @@ Theme.Icons = {
 	Premium = "⭐",
 	Friends = "👥",
 	Chest = "📦",
+	Free = "🎁",
 }
 
 Theme.Fonts = {
@@ -1453,6 +1959,7 @@ return Theme
       </Properties>
     </Item>
   </Item>
+<<<<<<< HEAD
   <Item class="ServerScriptService" referent="8">
     <Properties>
       <string name="Name">ServerScriptService</string>
@@ -1462,6 +1969,17 @@ return Theme
         <string name="Name">Server</string>
       </Properties>
       <Item class="ModuleScript" referent="10">
+=======
+  <Item class="ServerScriptService" referent="11">
+    <Properties>
+      <string name="Name">ServerScriptService</string>
+    </Properties>
+    <Item class="Folder" referent="12">
+      <Properties>
+        <string name="Name">Server</string>
+      </Properties>
+      <Item class="ModuleScript" referent="13">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -1480,7 +1998,11 @@ local RunService = game:GetService("RunService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Economy = require(ReplicatedStorage.Shared.Economy)
+<<<<<<< HEAD
 local SessionLock = require(ReplicatedStorage.Shared.SessionLock)
+=======
+local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
+>>>>>>> worktree-agent-a41f52f5f1625edbb
 
 local DataService = {}
 
@@ -1511,6 +2033,8 @@ export type Profile = {
 	settings: { music: boolean, sfx: boolean, fullNumbers: boolean },
 	receipts: { string },
 	totalEarned: number,
+	tutorialStep: number,
+	tutorialDone: boolean,
 }
 
 local function zeros(n: number): { number }
@@ -1548,6 +2072,8 @@ function DataService.defaultProfile(): Profile
 		settings = { music = true, sfx = true, fullNumbers = false },
 		receipts = {},
 		totalEarned = 0,
+		tutorialStep = 1,
+		tutorialDone = false,
 	}
 end
 
@@ -1556,6 +2082,11 @@ local function reconcile(data: any): Profile
 	local default = DataService.defaultProfile()
 	if type(data) ~= "table" then
 		return default
+	end
+	-- Saves from before the tutorial existed belong to players who already
+	-- know the game: don't send them through onboarding.
+	if data.tutorialDone == nil then
+		data.tutorialDone = type(data.totalObtained) == "number" and data.totalObtained > 1
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
@@ -1582,6 +2113,7 @@ local function reconcile(data: any): Profile
 		end
 	end
 	data.buyTier = math.clamp(math.floor(data.buyTier), 1, Economy.MAX_BUY_TIER)
+	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
 	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
 		data.heldChest = ""
 	end
@@ -1708,7 +2240,11 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
+<<<<<<< HEAD
       <Item class="Script" referent="11">
+=======
+      <Item class="Script" referent="14">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -1726,6 +2262,7 @@ local WorldBuilder = require(Server.WorldBuilder)
 local Tycoon = require(Server.Tycoon)
 local Monetization = require(Server.Monetization)
 local Ranking = require(Server.Ranking)
+local Tutorial = require(Server.Tutorial)
 
 local AUTOSAVE_SECONDS = 90
 
@@ -1734,6 +2271,7 @@ Net.event("State")
 
 local world = WorldBuilder.build(Theme)
 Tycoon.init(world, Theme)
+Tutorial.init()
 Monetization.init(Theme)
 Ranking.init(Theme, world.ranking)
 
@@ -1820,7 +2358,11 @@ end)
 ]]></string>
         </Properties>
       </Item>
+<<<<<<< HEAD
       <Item class="ModuleScript" referent="12">
+=======
+      <Item class="ModuleScript" referent="15">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -1998,7 +2540,11 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
+<<<<<<< HEAD
       <Item class="ModuleScript" referent="13">
+=======
+      <Item class="ModuleScript" referent="16">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -2152,7 +2698,124 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
+<<<<<<< HEAD
       <Item class="ModuleScript" referent="14">
+=======
+      <Item class="ModuleScript" referent="17">
+        <Properties>
+          <string name="Name">Tutorial</string>
+          <string name="Source"><![CDATA[--[[
+	Tutorial: server side of the onboarding checklist.
+
+	Progress lives in the saved profile (tutorialStep 1..6, tutorialDone) and
+	is sent to the client in the State snapshot. Steps advance on real gameplay
+	events reported by Tycoon.listeners; the order and rules are in
+	Shared.TutorialSteps. Finishing grants a one-time reward; skipping does not.
+
+	Notify payloads (client shows them):
+	  { kind = "Tutorial", event = "step", step = n }
+	  { kind = "Tutorial", event = "done", gems = g, cash = c }
+	  { kind = "Tutorial", event = "skipped" }
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Economy = require(Shared.Economy)
+local Net = require(Shared.Net)
+local TutorialSteps = require(Shared.TutorialSteps)
+
+local Tycoon = require(script.Parent.Tycoon)
+
+local Tutorial = {}
+
+local NotifyRemote: RemoteEvent
+
+local function notify(session: Tycoon.Session, payload: { [string]: any })
+	payload.kind = "Tutorial"
+	NotifyRemote:FireClient(session.player, payload)
+end
+
+local function finish(session: Tycoon.Session)
+	local p = session.profile
+	p.tutorialStep = TutorialSteps.DONE
+	p.tutorialDone = true
+	p.gems += Economy.TUTORIAL_REWARD_GEMS
+	p.money += Economy.TUTORIAL_REWARD_CASH
+	p.totalEarned += Economy.TUTORIAL_REWARD_CASH
+	notify(session, { event = "done", gems = Economy.TUTORIAL_REWARD_GEMS, cash = Economy.TUTORIAL_REWARD_CASH })
+end
+
+-- Moves to `step`, skipping anything the profile already shows as done.
+local function advanceTo(session: Tycoon.Session, step: number)
+	local p = session.profile
+	step = TutorialSteps.catchUp(step, p)
+	if step == p.tutorialStep then
+		return
+	end
+	p.tutorialStep = step
+	if step >= TutorialSteps.DONE then
+		finish(session)
+	else
+		notify(session, { event = "step", step = step })
+	end
+	Tycoon.markDirty(session)
+end
+
+local function active(session: Tycoon.Session): boolean
+	return session.alive and not session.profile.tutorialDone
+end
+
+function Tutorial.onEvent(session: Tycoon.Session, name: string, _data: { [string]: any })
+	if not active(session) then
+		return
+	end
+	local current = TutorialSteps.clamp(session.profile.tutorialStep)
+	local nextStep = TutorialSteps.onEvent(current, name)
+	if nextStep ~= current then
+		advanceTo(session, nextStep)
+	end
+end
+
+function Tutorial.skip(session: Tycoon.Session)
+	if not active(session) then
+		return
+	end
+	local p = session.profile
+	p.tutorialDone = true
+	p.tutorialStep = TutorialSteps.DONE
+	notify(session, { event = "skipped" })
+	Tycoon.markDirty(session)
+end
+
+function Tutorial.init()
+	NotifyRemote = Net.event("Notify")
+	table.insert(Tycoon.listeners, Tutorial.onEvent)
+	Tycoon.addAction("SkipTutorial", function(session)
+		Tutorial.skip(session)
+	end)
+
+	-- Safety net: a step the profile already satisfies (e.g. a pass collected
+	-- the orbs for you) completes on its own.
+	task.spawn(function()
+		while true do
+			task.wait(1)
+			for _, session in Tycoon.allSessions() do
+				if active(session) then
+					local current = TutorialSteps.clamp(session.profile.tutorialStep)
+					advanceTo(session, current)
+				end
+			end
+		end
+	end)
+end
+
+return Tutorial
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="18">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -2231,6 +2894,16 @@ Tycoon.hooks = {
 	promptPass = function(_player: Player, _name: string) end,
 	promptProduct = function(_player: Player, _kind: string, _index: number) end,
 }
+
+-- Gameplay event listeners (used by the tutorial): fn(session, name, data).
+-- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge".
+Tycoon.listeners = {} :: { (Session, string, { [string]: any }) -> () }
+
+local function emit(session: Session, name: string, data: { [string]: any })
+	for _, listener in Tycoon.listeners do
+		task.spawn(listener, session, name, data)
+	end
+end
 
 local function random(): number
 	return rng:NextNumber()
@@ -2654,6 +3327,7 @@ local function buy(session: Session, amount: number)
 	discoverAll(session)
 	refreshDisplay(session)
 	effect(session, "Buy", { amount = amount })
+	emit(session, "Buy", { amount = amount })
 	markDirty(session)
 end
 
@@ -2670,6 +3344,7 @@ local function doMerge(session: Session, verbose: boolean)
 		discoverAll(session)
 		refreshDisplay(session)
 		effect(session, "Merge", { merges = merges })
+		emit(session, "Merge", { merges = merges, top = top })
 		if verbose then
 			toast(session, string.format("Merged %s times! Best: %s", Format.short(merges), tierName(top)), "good")
 		end
@@ -2735,6 +3410,7 @@ padHandlers.Deposit = function(session)
 	p.queue += amount
 	p.carried = 0
 	effect(session, "Deposit", { amount = amount, mult = mult })
+	emit(session, "Deposit", { amount = amount })
 	markDirty(session)
 end
 
@@ -2748,6 +3424,7 @@ padHandlers.Collect = function(session)
 	addMoney(session, amount)
 	p.pending = 0
 	effect(session, "Cash", { amount = amount })
+	emit(session, "Cash", { amount = amount })
 	markDirty(session)
 end
 
@@ -2982,6 +3659,8 @@ local function snapshot(session: Session): { [string]: any }
 		income = Economy.incomePerSecond(production, rate, moneyMult),
 		freeIn = math.max(0, p.lastFreeReward + Economy.FREE_REWARD_COOLDOWN - now),
 		plotIndex = session.plot.index,
+		tutorialStep = p.tutorialStep,
+		tutorialDone = p.tutorialDone,
 	}
 end
 
@@ -3053,6 +3732,7 @@ local function fastTick(session: Session)
 	if collected > 0 then
 		session.profile.carried += collected
 		session.collectBuffer += collected
+		emit(session, "Pickup", { amount = collected })
 		markDirty(session)
 	end
 
@@ -3097,6 +3777,7 @@ local function slowTick(session: Session)
 		p.pending += processed * Economy.CASH_PER_POINT * Tycoon.moneyMultiplier(session)
 	end
 	if session.passes.AutoCash and p.pending > 0 then
+		emit(session, "Cash", { amount = p.pending })
 		addMoney(session, p.pending)
 		p.pending = 0
 	end
@@ -3218,6 +3899,11 @@ actionHandlers.Sync = function(_session) end
 
 actionHandlers.Merge = function(session)
 	doMerge(session, true)
+end
+
+-- Lets other server modules (e.g. Tutorial) accept their own client actions.
+function Tycoon.addAction(name: string, handler: (Session, { [string]: any }) -> ())
+	actionHandlers[name] = handler
 end
 
 -- Players ---------------------------------------------------------------------------------
@@ -3482,7 +4168,11 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
+<<<<<<< HEAD
       <Item class="ModuleScript" referent="15">
+=======
+      <Item class="ModuleScript" referent="19">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -4309,17 +4999,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
+<<<<<<< HEAD
   <Item class="SoundService" referent="16">
+=======
+  <Item class="SoundService" referent="20">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
+<<<<<<< HEAD
   <Item class="StarterPlayer" referent="17">
+=======
+  <Item class="StarterPlayer" referent="21">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
+<<<<<<< HEAD
     <Item class="StarterPlayerScripts" referent="18">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
@@ -4329,10 +5028,329 @@ return WorldBuilder
           <string name="Name">Client</string>
         </Properties>
         <Item class="LocalScript" referent="20">
+=======
+    <Item class="StarterPlayerScripts" referent="22">
+      <Properties>
+        <string name="Name">StarterPlayerScripts</string>
+      </Properties>
+      <Item class="Folder" referent="23">
+        <Properties>
+          <string name="Name">Client</string>
+        </Properties>
+        <Item class="ModuleScript" referent="24">
+          <Properties>
+            <string name="Name">Guide</string>
+            <string name="Source"><![CDATA[--[[
+	Guide: points the player at something on their plot.
+
+	  - a glowing Beam from the character's feet to the target
+	  - a bouncing arrow (BillboardGui) above the target with a short label
+	  - a Highlight on the target part
+
+	Targets are pad names ("Buy1", "Deposit", ...; found as
+	workspace.Map.Plot<n>.Pad_<name>) or "Orbs" (the nearest orb on the plot,
+	else the middle of the field). Everything is client-only.
+
+	Two sources can ask for a target: the tutorial (persistent) and a short
+	"navigate" request (e.g. the Free reward button), which wins while active.
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local Kit = require(script.Parent.UI.Kit)
+local State = require(script.Parent.State)
+
+local C = Kit.C
+
+local Guide = {}
+
+local folder: Folder
+local anchor: Part
+local beam: Beam
+local arrow: BillboardGui
+local arrowLabel: TextLabel
+local distanceLabel: TextLabel
+local highlight: Highlight
+
+local tutorialTarget: string? = nil
+local tutorialText = ""
+local navTarget: string? = nil
+local navText = ""
+local navUntil = 0
+
+local currentPart: BasePart? = nil
+local lastResolve = 0
+
+local function plotFolder(): Instance?
+	local data = State.data
+	local map = Workspace:FindFirstChild("Map")
+	if not data or not map or not data.plotIndex then
+		return nil
+	end
+	return map:FindFirstChild("Plot" .. data.plotIndex)
+end
+
+local function rootPart(): BasePart?
+	local character = Players.LocalPlayer.Character
+	return character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+end
+
+local function resolve(name: string): BasePart?
+	local plot = plotFolder()
+	if not plot then
+		return nil
+	end
+	if name == "Orbs" then
+		local orbs = plot:FindFirstChild("Orbs", true)
+		local root = rootPart()
+		local best: BasePart? = nil
+		local bestDistance = math.huge
+		if orbs and root then
+			local from = root.CFrame.Position
+			for _, orb in orbs:GetChildren() do
+				if orb:IsA("BasePart") then
+					local d = (orb.CFrame.Position - from).Magnitude
+					if d < bestDistance then
+						best, bestDistance = orb, d
+					end
+				end
+			end
+		end
+		if best then
+			return best
+		end
+		return (plot:FindFirstChild("Field", true) or plot:FindFirstChild("Floor", true)) :: BasePart?
+	end
+	return plot:FindFirstChild("Pad_" .. name, true) :: BasePart?
+end
+
+local function activeTarget(): (string?, string)
+	if navTarget and os.clock() < navUntil then
+		return navTarget, navText
+	end
+	navTarget = nil
+	return tutorialTarget, tutorialText
+end
+
+local function buildArrow(parent: Instance)
+	arrow = Kit.new("BillboardGui", {
+		Name = "GuideArrow",
+		Size = UDim2.fromOffset(150, 170),
+		StudsOffsetWorldSpace = Vector3.new(0, 7, 0),
+		AlwaysOnTop = true,
+		LightInfluence = 0,
+		MaxDistance = 1000,
+		ResetOnSpawn = false,
+		Enabled = false,
+		Parent = parent,
+	})
+	arrowLabel = Kit.pill(arrow, {
+		Name = "Label",
+		Text = "",
+		Color = C.Panel,
+		TextColor = C.Primary,
+		TextSize = 20,
+		Size = UDim2.fromOffset(0, 32),
+		AutomaticSize = Enum.AutomaticSize.X,
+		Position = UDim2.new(0.5, 0, 0, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
+	})
+	local shaft = Kit.new("Frame", {
+		Name = "Shaft",
+		BackgroundColor3 = C.Primary,
+		Size = UDim2.fromOffset(30, 46),
+		Position = UDim2.new(0.5, 0, 0, 44),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Parent = arrow,
+	})
+	Kit.corner(shaft, 6)
+	Kit.stroke(shaft, 4)
+	local head = Kit.new("Frame", {
+		Name = "Head",
+		BackgroundColor3 = C.Primary,
+		Size = UDim2.fromOffset(56, 56),
+		Position = UDim2.new(0.5, 0, 0, 98),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Rotation = 45,
+		ZIndex = 2,
+		Parent = arrow,
+	})
+	Kit.corner(head, 6)
+	Kit.stroke(head, 4)
+	Kit.gradient(head, Kit.lighten(C.Primary, 0.3), C.Primary, -45)
+	-- Covers the head's upper outline so the shaft flows into it.
+	Kit.new("Frame", {
+		Name = "Join",
+		BackgroundColor3 = C.Primary,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(30, 42),
+		Position = UDim2.new(0.5, 0, 0, 56),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 3,
+		Parent = arrow,
+	})
+	distanceLabel = Kit.title(arrow, {
+		Name = "Distance",
+		Text = "",
+		TextSize = 18,
+		TextWrapped = false,
+		Size = UDim2.new(1, 0, 0, 22),
+		Position = UDim2.new(0, 0, 1, -22),
+		StrokeThickness = 2,
+	})
+end
+
+function Guide.build()
+	folder = Instance.new("Folder")
+	folder.Name = "ClientGuide"
+	folder.Parent = Workspace
+
+	anchor = Instance.new("Part")
+	anchor.Name = "GuideAnchor"
+	anchor.Anchored = true
+	anchor.CanCollide = false
+	anchor.CanQuery = false
+	anchor.CanTouch = false
+	anchor.Transparency = 1
+	anchor.Size = Vector3.new(1, 1, 1)
+	anchor.Parent = folder
+	local targetAttachment = Instance.new("Attachment")
+	targetAttachment.Name = "To"
+	targetAttachment.Parent = anchor
+
+	beam = Instance.new("Beam")
+	beam.Name = "GuideBeam"
+	beam.Attachment1 = targetAttachment
+	beam.Color = ColorSequence.new(C.Primary)
+	beam.LightEmission = 1
+	beam.LightInfluence = 0
+	beam.FaceCamera = true
+	beam.Width0 = 1.1
+	beam.Width1 = 1.6
+	beam.Segments = 20
+	beam.Enabled = false
+	beam.Parent = folder
+
+	highlight = Instance.new("Highlight")
+	highlight.Name = "GuideHighlight"
+	highlight.FillColor = C.Primary
+	highlight.OutlineColor = Color3.new(1, 1, 1)
+	highlight.FillTransparency = 0.55
+	highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+	highlight.Enabled = false
+	highlight.Parent = folder
+
+	buildArrow(anchor)
+
+	local clock = 0
+	RunService.Heartbeat:Connect(function(dt)
+		clock += dt
+		Guide.update(clock)
+	end)
+end
+
+local function setVisible(on: boolean)
+	arrow.Enabled = on
+	highlight.Enabled = on
+	if not on then
+		beam.Enabled = false
+		currentPart = nil
+	end
+end
+
+-- One frame of guide work (also called directly by the preview exporter).
+function Guide.update(clock: number)
+	local name, text = activeTarget()
+	if not name then
+		setVisible(false)
+		return
+	end
+	if os.clock() - lastResolve > 0.25 or not currentPart or not currentPart.Parent then
+		lastResolve = os.clock()
+		currentPart = resolve(name)
+	end
+	local part = currentPart
+	if not part then
+		setVisible(false)
+		return
+	end
+	setVisible(true)
+	arrowLabel.Text = text
+	highlight.Adornee = part
+	local position = part.CFrame.Position
+	anchor.CFrame = CFrame.new(position + Vector3.new(0, 0.6, 0))
+	arrow.StudsOffsetWorldSpace = Vector3.new(0, 7 + math.sin(clock * 4) * 0.7, 0)
+
+	local root = rootPart()
+	if root then
+		local from = root:FindFirstChild("GuideFrom") :: Attachment?
+		if not from then
+			local created = Instance.new("Attachment")
+			created.Name = "GuideFrom"
+			created.CFrame = CFrame.new(0, -2.5, 0)
+			created.Parent = root
+			from = created
+		end
+		beam.Attachment0 = from
+		local distance = (root.CFrame.Position - position).Magnitude
+		beam.Enabled = distance > 9
+		distanceLabel.Text = if distance > 9 then string.format("%dm", math.floor(distance / 3.5 + 0.5)) else ""
+		-- Bright bands flowing toward the target.
+		local phase = (clock * 0.9) % 1
+		local points = { NumberSequenceKeypoint.new(0, 0.85) }
+		for i = 0, 2 do
+			local center = (phase + i / 3) % 1
+			if center > 0.06 and center < 0.94 then
+				table.insert(points, NumberSequenceKeypoint.new(center - 0.05, 0.75))
+				table.insert(points, NumberSequenceKeypoint.new(center, 0.1))
+				table.insert(points, NumberSequenceKeypoint.new(center + 0.05, 0.75))
+			end
+		end
+		table.insert(points, NumberSequenceKeypoint.new(1, 0.4))
+		table.sort(points, function(a, b)
+			return a.Time < b.Time
+		end)
+		beam.Transparency = NumberSequence.new(points)
+	end
+	highlight.FillTransparency = 0.55 + math.sin(clock * 5) * 0.2
+end
+
+function Guide.setTutorialTarget(name: string?, text: string?)
+	if name ~= tutorialTarget then
+		currentPart = nil
+	end
+	tutorialTarget = name
+	tutorialText = text or ""
+end
+
+-- Temporary target that overrides the tutorial for `seconds`.
+function Guide.navigate(name: string?, text: string?, seconds: number?)
+	navTarget = name
+	navText = text or ""
+	navUntil = os.clock() + (seconds or 30)
+	currentPart = nil
+end
+
+function Guide.clearNavigate(name: string)
+	if navTarget == name then
+		navTarget = nil
+		currentPart = nil
+	end
+end
+
+return Guide
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="LocalScript" referent="25">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
 
+local GuiService = game:GetService("GuiService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
@@ -4346,10 +5364,12 @@ local Net = require(Shared.Net)
 local Client = script.Parent
 local State = require(Client.State)
 local Sounds = require(Client.Sounds)
+local Guide = require(Client.Guide)
 local Kit = require(Client.UI.Kit)
 local Hud = require(Client.UI.Hud)
 local Windows = require(Client.UI.Windows)
 local Popups = require(Client.UI.Popups)
+local Tutorial = require(Client.UI.Tutorial)
 
 local player = Players.LocalPlayer
 local C = Theme.Colors
@@ -4360,9 +5380,15 @@ screen.Name = "TycoonUI"
 screen.ResetOnSpawn = false
 screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screen.IgnoreGuiInset = false
+pcall(function()
+	-- Keep clear of the Roblox top bar buttons and device notches.
+	screen.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets
+end)
 screen.Parent = player:WaitForChild("PlayerGui")
 
--- Scale the whole UI from a 1280x720 design size.
+-- Scale the whole UI from a 1280x720 design size. Touch screens get a little
+-- extra so buttons stay comfortably tappable; short screens switch the HUD to
+-- its compact layout.
 local uiScale = Instance.new("UIScale")
 uiScale.Parent = screen
 local function rescale()
@@ -4371,7 +5397,17 @@ local function rescale()
 		return
 	end
 	local size = camera.ViewportSize
-	uiScale.Scale = math.clamp(math.min(size.X / 1280, size.Y / 720), 0.55, 1.5)
+	local topInset = 58
+	pcall(function()
+		local topLeft = GuiService:GetGuiInset()
+		topInset = topLeft.Y
+	end)
+	local fit = math.min(size.X / 1280, size.Y / 720)
+	if Kit.touch then
+		fit *= 1.15
+	end
+	uiScale.Scale = math.clamp(fit, 0.5, 1.5)
+	screen:SetAttribute("Compact", (size.Y - topInset) / uiScale.Scale < 600)
 end
 rescale()
 Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(rescale)
@@ -4379,13 +5415,31 @@ if Workspace.CurrentCamera then
 	Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescale)
 end
 
-Kit.setClickSound(function()
-	Sounds.play("Click")
+Kit.setSoundPlayer(function(name)
+	Sounds.play(name)
 end)
 
 Popups.build(screen, Sounds)
 Windows.build(screen)
-Hud.build(screen, { openWindow = Windows.open }, Sounds)
+Guide.build()
+Hud.build(screen, {
+	openWindow = Windows.open,
+	toast = Popups.toast,
+	guide = function(target)
+		Guide.navigate(target, "CLAIM!", 45)
+	end,
+}, Sounds)
+Tutorial.build(screen, {
+	popups = Popups,
+	sounds = Sounds,
+	guide = Guide,
+	highlight = function(name, on)
+		local button = Hud.buttons[name]
+		if button then
+			Kit.setGlow(button, on)
+		end
+	end,
+})
 
 pcall(function()
 	StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
@@ -4396,6 +5450,13 @@ local action = Net.event("Action")
 Net.event("State").OnClientEvent:Connect(function(data)
 	State.set(data)
 	Sounds.updateMusic()
+	if data.freeIn and data.freeIn > 0 then
+		Guide.clearNavigate("Free")
+	end
+	-- Tells the loading screen (ReplicatedFirst) that the game is ready.
+	if player:GetAttribute("GameReady") ~= true then
+		player:SetAttribute("GameReady", true)
+	end
 end)
 
 Net.event("Notify").OnClientEvent:Connect(function(payload)
@@ -4412,11 +5473,15 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 		Popups.confirm(payload.text, function()
 			action:FireServer(payload.action)
 		end)
+	elseif payload.kind == "Tutorial" then
+		Tutorial.onNotify(payload)
 	end
 end)
 
-local TANK = UDim2.new(0.5, 0, 1, -150)
-local WALLET = UDim2.new(0, 190, 1, -110)
+-- Floating "+X" anchors: beside the tank (the tutorial card sits above it)
+-- and next to the wallet.
+local TANK = UDim2.new(0.5, 250, 1, -80)
+local WALLET = UDim2.fromOffset(200, 40)
 
 Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 	if kind == "Collect" then
@@ -4432,10 +5497,10 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 		Sounds.play("Buy")
 	elseif kind == "Merge" then
 		Sounds.play("Merge")
-	elseif kind == "Upgrade" then
+	elseif kind == "Upgrade" or kind == "ChestOpen" then
 		Sounds.play("Reward")
 	elseif kind == "ChestPickup" then
-		Sounds.play("Click")
+		Sounds.play("Pickup")
 	end
 end)
 
@@ -4444,7 +5509,11 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
+<<<<<<< HEAD
         <Item class="ModuleScript" referent="21">
+=======
+        <Item class="ModuleScript" referent="26">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects using sounds bundled with the Roblox client (no uploads needed),
@@ -4467,6 +5536,13 @@ local DEFS: { [string]: { id: string, volume: number, pitch: number } } = {
 	Merge = { id = "rbxasset://sounds/swoosh.wav", volume = 0.6, pitch = 1.4 },
 	Reward = { id = "rbxasset://sounds/electronicpingshort.wav", volume = 0.7, pitch = 0.8 },
 	Error = { id = "rbxasset://sounds/clickfast.wav", volume = 0.5, pitch = 0.6 },
+	Open = { id = "rbxasset://sounds/swoosh.wav", volume = 0.35, pitch = 1.5 },
+	Close = { id = "rbxasset://sounds/swoosh.wav", volume = 0.3, pitch = 1.9 },
+	Toggle = { id = "rbxasset://sounds/clickfast.wav", volume = 0.5, pitch = 1.3 },
+	Toast = { id = "rbxasset://sounds/electronicpingshort.wav", volume = 0.2, pitch = 1.9 },
+	Step = { id = "rbxasset://sounds/electronicpingshort.wav", volume = 0.6, pitch = 1.35 },
+	Celebrate = { id = "rbxasset://sounds/victory.wav", volume = 0.6, pitch = 1 },
+	Pickup = { id = "rbxasset://sounds/clickfast.wav", volume = 0.4, pitch = 1.6 },
 }
 
 local cache: { [string]: Sound } = {}
@@ -4526,7 +5602,11 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
+<<<<<<< HEAD
         <Item class="ModuleScript" referent="22">
+=======
+        <Item class="ModuleScript" referent="27">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -4575,22 +5655,34 @@ return State
 ]]></string>
           </Properties>
         </Item>
+<<<<<<< HEAD
         <Item class="Folder" referent="23">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
           <Item class="ModuleScript" referent="24">
+=======
+        <Item class="Folder" referent="28">
+          <Properties>
+            <string name="Name">UI</string>
+          </Properties>
+          <Item class="ModuleScript" referent="29">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
-	Hud: always-on screen elements.
+	Hud: always-on screen elements (design space 1280x720, below the top bar).
 
+	  top left      wallet (rolling cash counter, gems, cash multiplier),
+	                bonus chips, menu buttons (with badges), 2x cash promo
 	  top centre    unit counter + live deposit multiplier gauge
-	  left          menu buttons (Home, Ranking, Index, Shop, Invite) + 2x promo
-	  bottom left   bonus badges, cash multiplier, cash, gems, "+" button
+	  top right     surge timer + settings
 	  bottom centre orb tank (what you are carrying)
-	  bottom right  surge timer + version
-	  top right     settings button
+	  bottom left   version
+
+	The bottom corners stay clear for the touch thumbstick and jump button.
+	When the screen is short (attribute "Compact" on the ScreenGui) the promo
+	and bonus chips hide.
 ]]
 
 local Players = game:GetService("Players")
@@ -4608,6 +5700,7 @@ local State = require(script.Parent.Parent.State)
 
 local Theme = Kit.Theme
 local C = Kit.C
+local T = Kit.TEXT
 local W = Theme.Words
 local I = Theme.Icons
 
@@ -4615,74 +5708,208 @@ local Hud = {}
 
 export type Handlers = {
 	openWindow: (string) -> (),
+	guide: ((string?) -> ())?,
+	toast: ((string, string?) -> ())?,
 }
 
-local function menuButton(parent: Instance, icon: string, text: string, order: number, color: Color3, onClick: () -> ()): TextButton
-	local button = Kit.new("TextButton", {
-		AutoButtonColor = false,
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		Size = UDim2.fromOffset(78, 78),
-		Text = "",
-		LayoutOrder = order,
-		Parent = parent,
-	})
-	Kit.corner(button, 16)
-	Kit.stroke(button, 3)
-	Kit.gradient(button, Kit.lighten(color, 0.1), Kit.darken(color, 0.25))
-	Kit.text(button, { Text = icon, Size = UDim2.new(1, 0, 0.62, 0), Position = UDim2.fromScale(0, 0.04) })
-	Kit.title(button, { Text = text, Size = UDim2.new(1, -6, 0.3, 0), Position = UDim2.new(0, 3, 0.66, 0) })
-	Kit.bouncy(button)
-	button.Activated:Connect(onClick)
-	return button
-end
+-- Menu buttons by name (Shop, Index, Ranking, Free, Home, Invite) so other
+-- modules (tutorial) can badge or highlight them.
+Hud.buttons = {} :: { [string]: TextButton }
 
-local function badge(parent: Instance, icon: string, order: number): (Frame, TextLabel)
-	local frame = Kit.new("Frame", {
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(64, 64),
-		LayoutOrder = order,
-		Parent = parent,
-	})
-	Kit.text(frame, { Text = icon, Size = UDim2.fromScale(1, 0.7) })
-	local label = Kit.title(frame, { Text = "", Size = UDim2.fromScale(1, 0.36), Position = UDim2.fromScale(0, 0.66) })
-	return frame, label
-end
+local GOLD_HEX = "#FFD23C"
 
 function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local action = Net.event("Action")
+	local cell = if Kit.touch then 84 else 76
 
-	-- Left menu ---------------------------------------------------------------
+	local function toast(text: string, tone: string?)
+		if handlers.toast then
+			handlers.toast(text, tone)
+		end
+	end
+
+	-- Wallet (top left) --------------------------------------------------------------
+	local wallet = Kit.panel(screen, {
+		Name = "Wallet",
+		Size = UDim2.fromOffset(300, 122),
+		Position = UDim2.fromOffset(12, 10),
+		Color = C.Panel,
+		Radius = Kit.RADIUS.L,
+	})
+	local coin = Kit.new("Frame", {
+		Name = "Coin",
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.fromOffset(52, 52),
+		Position = UDim2.fromOffset(10, 9),
+		Parent = wallet,
+	})
+	Kit.round(coin)
+	Kit.stroke(coin, 3)
+	Kit.gradient(coin, Kit.lighten(C.Good, 0.35), Kit.darken(C.Good, 0.15))
+	Kit.title(coin, { Text = "$", TextSize = 32, Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(1, 2) })
+	local moneyLabel = Kit.title(wallet, {
+		Name = "Money",
+		Text = "$0",
+		TextSize = 38,
+		TextWrapped = false,
+		Size = UDim2.new(1, -84, 0, 40),
+		Position = UDim2.fromOffset(72, 6),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.Good,
+		StrokeThickness = 3,
+	})
+	local moneyPop = Kit.new("UIScale", { Parent = moneyLabel })
+	local multLabel = Kit.title(wallet, {
+		Name = "CashMult",
+		Text = "CASH x1.0",
+		TextSize = T.Small,
+		TextWrapped = false,
+		RichText = true,
+		Size = UDim2.new(1, -84, 0, 18),
+		Position = UDim2.fromOffset(73, 46),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.TextDim,
+		StrokeThickness = 1.5,
+	})
+	local gemWell = Kit.well(wallet, {
+		Name = "Gems",
+		Size = UDim2.new(1, -16, 0, 44),
+		Position = UDim2.fromOffset(8, 70),
+		Radius = Kit.RADIUS.M,
+	})
+	Kit.text(
+		gemWell,
+		{ Text = I.Gem, TextSize = 26, Size = UDim2.fromOffset(40, 44), Position = UDim2.fromOffset(4, 0), StrokeThickness = 0 }
+	)
+	local gemsLabel = Kit.title(gemWell, {
+		Name = "Amount",
+		Text = "0",
+		TextSize = 25,
+		TextWrapped = false,
+		Size = UDim2.new(1, -100, 1, 0),
+		Position = UDim2.fromOffset(44, 1),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = Kit.lighten(C.Secondary, 0.2),
+	})
+	Kit.button(gemWell, {
+		Name = "Add",
+		Text = "+",
+		Color = C.Good,
+		Size = UDim2.fromOffset(48, 40),
+		Position = UDim2.new(1, -3, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		TextSize = 28,
+		Depth = 4,
+	}, function()
+		handlers.openWindow("Shop")
+	end)
+
+	-- Bonus chips under the wallet.
+	local chips = Kit.new("Frame", {
+		Name = "Chips",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(300, 26),
+		Position = UDim2.fromOffset(14, 140),
+		Parent = screen,
+	})
+	Kit.list(chips, 6, true)
+	local function chip(order: number, color: Color3): TextLabel
+		return Kit.pill(chips, {
+			Text = "",
+			Color = color,
+			TextSize = T.Tiny,
+			Size = UDim2.fromOffset(0, 24),
+			AutomaticSize = Enum.AutomaticSize.X,
+			LayoutOrder = order,
+		})
+	end
+	local friendsChip = chip(1, Kit.darken(C.Primary, 0.55))
+	local premiumChip = chip(2, Kit.darken(C.Primary, 0.55))
+	local surgeChip = chip(3, Kit.darken(C.Good, 0.35))
+
+	-- Menu (left) ----------------------------------------------------------------------
 	local menu = Kit.new("Frame", {
 		Name = "Menu",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(260, 180),
-		Position = UDim2.fromOffset(14, 110),
+		Size = UDim2.fromOffset(cell * 2 + 10, cell * 3 + 20),
+		Position = UDim2.fromOffset(12, 176),
 		Parent = screen,
 	})
 	Kit.new("UIGridLayout", {
-		CellSize = UDim2.fromOffset(78, 78),
-		CellPadding = UDim2.fromOffset(8, 8),
+		CellSize = UDim2.fromOffset(cell, cell),
+		CellPadding = UDim2.fromOffset(10, 10),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 		Parent = menu,
 	})
-	menuButton(menu, I.Home, "Home", 1, C.Secondary, function()
-		sounds.play("Click")
-		action:FireServer({ action = "Home" })
-	end)
-	menuButton(menu, I.Ranking, "Ranking", 2, C.Window.Ranking, function()
-		sounds.play("Click")
-		handlers.openWindow("Ranking")
-	end)
-	menuButton(menu, I.Index, "Index", 3, C.Window.Index, function()
-		sounds.play("Click")
-		handlers.openWindow("Index")
-	end)
-	menuButton(menu, I.Shop, "Shop", 4, C.Window.Shop, function()
-		sounds.play("Click")
+	local function menuButton(name: string, icon: string, text: string, order: number, color: Color3, onClick: () -> ())
+		local button = Kit.button(menu, {
+			Name = name,
+			Icon = icon,
+			Text = text,
+			Layout = "Stack",
+			Color = color,
+			Size = UDim2.fromOffset(cell, cell),
+			LayoutOrder = order,
+			Radius = Kit.RADIUS.L,
+		}, onClick)
+		Hud.buttons[name] = button
+		return button
+	end
+
+	-- New discoveries since the Index was last opened (badge).
+	local seenDiscoveries: number? = nil
+	local function discoveredCount(data: { [string]: any }): number
+		local found = 0
+		for tier = 1, Economy.MAX_TIER do
+			if (data.discovered[tier] or 0) > 0 then
+				found += 1
+			end
+		end
+		return found
+	end
+	local function refreshIndexBadge()
+		local data = State.data
+		if not data or not seenDiscoveries then
+			return
+		end
+		local fresh = discoveredCount(data) - seenDiscoveries
+		Kit.setBadge(Hud.buttons.Index, if fresh > 0 then tostring(fresh) else nil)
+	end
+
+	menuButton("Shop", I.Shop, "Shop", 1, C.Window.Shop, function()
 		handlers.openWindow("Shop")
 	end)
-	menuButton(menu, I.Invite, "Invite", 5, C.Good, function()
-		sounds.play("Click")
+	menuButton("Index", I.Index, "Index", 2, C.Window.Index, function()
+		Kit.setGlow(Hud.buttons.Index, false)
+		local data = State.data
+		if data then
+			seenDiscoveries = discoveredCount(data)
+			refreshIndexBadge()
+		end
+		handlers.openWindow("Index")
+	end)
+	menuButton("Ranking", I.Ranking, "Ranking", 3, C.Window.Ranking, function()
+		handlers.openWindow("Ranking")
+	end)
+	local freeButton = menuButton("Free", I.Free, "Free", 4, C.Good, function()
+		local data = State.data
+		if not data then
+			return
+		end
+		local left = math.max(0, data.freeIn - State.age())
+		if left <= 0 then
+			if handlers.guide then
+				handlers.guide("Free")
+			end
+			toast(I.Free .. " Your free reward is ready! Follow the arrow to the " .. W.Free .. " pad.", "good")
+		else
+			toast("Next free reward in " .. Format.time(left), "info")
+		end
+	end)
+	menuButton("Home", I.Home, "Home", 5, C.Secondary, function()
+		action:FireServer({ action = "Home" })
+	end)
+	menuButton("Invite", I.Invite, "Invite", 6, C.Accent, function()
 		pcall(function()
 			SocialService:PromptGameInvite(Players.LocalPlayer)
 		end)
@@ -4693,252 +5920,358 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local promo = Kit.new("Frame", {
 		Name = "Promo",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(230, 96),
-		Position = UDim2.fromOffset(14, 300),
+		Size = UDim2.fromOffset(cell * 2 + 10, 74),
+		Position = UDim2.fromOffset(12, 176 + cell * 3 + 34),
 		Parent = screen,
 	})
-	local promoTag = Kit.title(promo, {
-		Text = "PERMANENT",
-		Size = UDim2.fromOffset(130, 26),
-		Position = UDim2.fromOffset(4, -8),
-		TextColor3 = C.Secondary,
-		Rotation = -4,
-		ZIndex = 3,
-	})
-	promoTag.TextXAlignment = Enum.TextXAlignment.Left
 	Kit.button(promo, {
+		Name = "Buy",
+		Icon = "💰",
 		Text = promoPass.Title,
 		Color = C.Primary,
-		Size = UDim2.fromOffset(220, 58),
-		Position = UDim2.fromOffset(0, 12),
+		TextColor = C.Text,
+		Size = UDim2.new(1, 0, 0, 58),
+		Position = UDim2.fromOffset(0, 8),
+		TextSize = 26,
 	}, function()
 		action:FireServer({ action = "PromptPass", name = "DoubleMoney" })
 	end)
-	Kit.title(promo, {
-		Text = "Only " .. promoPass.Price .. " R$",
-		Size = UDim2.fromOffset(220, 24),
-		Position = UDim2.fromOffset(0, 72),
+	Kit.pill(promo, {
+		Name = "Tag",
+		Text = "PERMANENT",
+		Color = C.Secondary,
+		TextSize = T.Tiny,
+		Size = UDim2.fromOffset(96, 22),
+		Position = UDim2.fromOffset(-4, -4),
+		Rotation = -5,
+		ZIndex = 3,
 	})
-
-	-- Bottom-left: badges + cash ------------------------------------------------
-	local wallet = Kit.new("Frame", {
-		Name = "Wallet",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(420, 200),
-		Position = UDim2.new(0, 14, 1, -14),
-		AnchorPoint = Vector2.new(0, 1),
-		Parent = screen,
-	})
-	local badges = Kit.new("Frame", {
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(300, 64),
-		Parent = wallet,
-	})
-	Kit.new("UIListLayout", {
-		FillDirection = Enum.FillDirection.Horizontal,
-		Padding = UDim.new(0, 8),
-		SortOrder = Enum.SortOrder.LayoutOrder,
-		Parent = badges,
-	})
-	local _, premiumLabel = badge(badges, I.Premium, 1)
-	local _, friendsLabel = badge(badges, I.Friends, 2)
-	local surgeBadge, surgeBadgeLabel = badge(badges, I.Surge, 3)
-
-	local multLabel = Kit.title(wallet, {
-		Text = "Cash [1.0x]",
-		Size = UDim2.fromOffset(300, 36),
-		Position = UDim2.fromOffset(0, 70),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		RichText = true,
-	})
-	local moneyLabel = Kit.title(wallet, {
-		Text = "$0",
-		Size = UDim2.fromOffset(330, 58),
-		Position = UDim2.fromOffset(0, 104),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = C.Good,
-	})
-	local gemsLabel = Kit.title(wallet, {
-		Text = I.Gem .. " 0",
-		Size = UDim2.fromOffset(200, 32),
-		Position = UDim2.fromOffset(0, 164),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = C.Secondary,
-	})
-	Kit.button(wallet, {
-		Text = "+",
+	Kit.pill(promo, {
+		Name = "Price",
+		Text = promoPass.Price .. " R$",
 		Color = C.Good,
-		Size = UDim2.fromOffset(54, 54),
-		Position = UDim2.fromOffset(340, 106),
-	}, function()
-		handlers.openWindow("Shop")
-	end)
+		TextSize = T.Tiny,
+		Size = UDim2.fromOffset(70, 22),
+		Position = UDim2.new(1, 6, 1, -2),
+		AnchorPoint = Vector2.new(1, 1),
+		ZIndex = 3,
+	})
 
-	-- Top centre: unit counter + multiplier gauge -------------------------------
+	-- Top centre: unit counter + multiplier gauge ------------------------------------
 	local counter = Kit.panel(screen, {
 		Name = "Counter",
-		Size = UDim2.fromOffset(170, 46),
+		Size = UDim2.fromOffset(190, 44),
 		Position = UDim2.new(0.5, 0, 0, 8),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Color = C.PanelLight,
-		Radius = 12,
+		Radius = 22,
 	})
-	local counterLabel = Kit.title(counter, { Text = I.Unit .. " 0", Size = UDim2.new(1, -16, 1, -8), Position = UDim2.fromOffset(8, 4) })
+	local counterLabel = Kit.title(counter, {
+		Text = I.Unit .. " 0",
+		TextSize = 28,
+		TextWrapped = false,
+		Size = UDim2.new(1, -16, 1, 0),
+		Position = UDim2.fromOffset(8, 1),
+	})
 
-	local gauge = Kit.new("Frame", {
+	local gauge = Kit.panel(screen, {
 		Name = "Gauge",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(340, 74),
-		Position = UDim2.new(0.5, 0, 0, 58),
+		Size = UDim2.fromOffset(336, 72),
+		Position = UDim2.new(0.5, 0, 0, 60),
 		AnchorPoint = Vector2.new(0.5, 0),
-		Parent = screen,
+		Color = C.Panel,
+		Radius = Kit.RADIUS.L,
 	})
-	local gaugeTitle = Kit.title(gauge, { Text = W.Multiplier .. ": 1.0x", Size = UDim2.new(1, 0, 0, 26), RichText = true })
+	Kit.title(gauge, {
+		Text = string.upper(W.Multiplier),
+		TextSize = T.Small,
+		TextWrapped = false,
+		Size = UDim2.new(1, -90, 0, 22),
+		Position = UDim2.fromOffset(14, 5),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.TextDim,
+		StrokeThickness = 1.5,
+	})
+	local gaugeValue = Kit.title(gauge, {
+		Name = "Value",
+		Text = "x1.0",
+		TextSize = 26,
+		TextWrapped = false,
+		Size = UDim2.fromOffset(80, 26),
+		Position = UDim2.new(1, -12, 0, 2),
+		AnchorPoint = Vector2.new(1, 0),
+		TextXAlignment = Enum.TextXAlignment.Right,
+		TextColor3 = C.Primary,
+	})
 	local bar = Kit.new("Frame", {
+		Name = "Bar",
 		BackgroundColor3 = Color3.new(1, 1, 1),
-		Size = UDim2.new(1, 0, 0, 16),
-		Position = UDim2.fromOffset(0, 30),
+		Size = UDim2.new(1, -28, 0, 14),
+		Position = UDim2.fromOffset(14, 31),
 		Parent = gauge,
 	})
-	Kit.corner(bar, 8)
-	Kit.stroke(bar, 2)
+	Kit.round(bar)
+	Kit.stroke(bar, 2.5)
 	Kit.new("UIGradient", {
 		Color = ColorSequence.new({
 			ColorSequenceKeypoint.new(0, C.Bad),
-			ColorSequenceKeypoint.new(0.3, Color3.fromRGB(255, 200, 40)),
+			ColorSequenceKeypoint.new(0.25, Color3.fromRGB(255, 200, 40)),
 			ColorSequenceKeypoint.new(1, C.Good),
 		}),
 		Parent = bar,
 	})
+	-- Tick at 1.0x (break-even).
+	local even = (1 - Economy.DEPOSIT_MIN) / (Economy.DEPOSIT_MAX - Economy.DEPOSIT_MIN)
+	Kit.new("Frame", {
+		Name = "Even",
+		BackgroundColor3 = C.Stroke,
+		BackgroundTransparency = 0.3,
+		Size = UDim2.new(0, 2, 1, 0),
+		Position = UDim2.fromScale(even, 0),
+		Parent = bar,
+	})
 	local marker = Kit.new("Frame", {
+		Name = "Marker",
 		BackgroundColor3 = Color3.new(1, 1, 1),
-		Size = UDim2.fromOffset(6, 24),
+		Size = UDim2.fromOffset(10, 24),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.2, 0.5),
 		Parent = bar,
 	})
-	Kit.corner(marker, 3)
-	Kit.stroke(marker, 2)
-	local gaugeNext = Kit.text(gauge, { Text = "", Size = UDim2.new(1, 0, 0, 22), Position = UDim2.fromOffset(0, 50), RichText = true })
+	Kit.corner(marker, 4)
+	Kit.stroke(marker, 2.5)
+	local gaugeNext = Kit.text(gauge, {
+		Text = "",
+		TextSize = T.Tiny,
+		RichText = true,
+		TextWrapped = false,
+		Size = UDim2.new(1, -20, 0, 16),
+		Position = UDim2.fromOffset(10, 50),
+		TextColor3 = C.TextDim,
+		StrokeThickness = 1.2,
+	})
 
-	-- Bottom centre: carried tank ------------------------------------------------
-	local tank = Kit.panel(screen, {
-		Name = "Tank",
-		Size = UDim2.fromOffset(280, 112),
-		Position = UDim2.new(0.5, 0, 1, -12),
-		AnchorPoint = Vector2.new(0.5, 1),
-		Color = C.PanelLight,
-		Radius = 18,
-		StrokeThickness = 4,
-	})
-	local display = Kit.panel(tank, {
-		Size = UDim2.new(1, -40, 0, 52),
-		Position = UDim2.fromOffset(20, 10),
-		Color = C.PanelDark,
-		Radius = 10,
-	})
-	Kit.title(
-		display,
-		{ Text = string.upper(W.Orb), Size = UDim2.new(1, 0, 0.36, 0), Position = UDim2.fromScale(0, 0.04), TextColor3 = C.Primary }
-	)
-	local carriedLabel = Kit.title(display, { Text = "0", Size = UDim2.new(1, -12, 0.6, 0), Position = UDim2.new(0, 6, 0.38, 0) })
-	local tube = Kit.new("Frame", {
-		BackgroundColor3 = C.PanelDark,
-		Size = UDim2.new(1, -40, 0, 30),
-		Position = UDim2.fromOffset(20, 70),
-		ClipsDescendants = true,
-		Parent = tank,
-	})
-	Kit.corner(tube, 15)
-	Kit.stroke(tube, 3)
-	local fill = Kit.new("Frame", {
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		Size = UDim2.fromScale(0, 1),
-		Parent = tube,
-	})
-	Kit.corner(fill, 15)
-	Kit.gradient(fill, Kit.lighten(C.Orb, 0.35), C.Orb, 0)
-	local tubeIcon = Kit.text(tube, { Text = I.Orb, Size = UDim2.fromScale(1, 1) })
-	tubeIcon.ZIndex = 2
-
-	-- Settings (top right) -------------------------------------------------------
+	-- Top right: surge timer + settings ----------------------------------------------
 	local gear = Kit.button(screen, {
+		Name = "Settings",
 		Text = I.Settings,
-		Color = C.PanelLight,
+		Color = C.Window.Settings,
 		Font = Enum.Font.GothamBold,
-		Size = UDim2.fromOffset(54, 54),
-		Position = UDim2.new(1, -14, 0, 60),
+		Size = UDim2.fromOffset(58, 58),
+		Position = UDim2.new(1, -12, 0, 8),
 		AnchorPoint = Vector2.new(1, 0),
+		TextSize = 30,
 	}, function()
 		handlers.openWindow("Settings")
 	end)
-	gear.Name = "Settings"
+	Hud.buttons.Settings = gear
 
-	-- Bottom right: surge timer + version ---------------------------------------
 	local surge = Kit.panel(screen, {
 		Name = "Surge",
-		Size = UDim2.fromOffset(150, 70),
-		Position = UDim2.new(1, -14, 1, -40),
-		AnchorPoint = Vector2.new(1, 1),
-		Color = C.PanelLight,
+		Size = UDim2.fromOffset(196, 58),
+		Position = UDim2.new(1, -80, 0, 10),
+		AnchorPoint = Vector2.new(1, 0),
+		Color = C.Panel,
+		Radius = Kit.RADIUS.L,
 	})
-	local surgeTitle =
-		Kit.title(surge, { Text = W.Surge, Size = UDim2.new(1, -10, 0.45, 0), Position = UDim2.fromOffset(5, 4), TextColor3 = C.Secondary })
-	local surgeTime = Kit.title(surge, { Text = "0:00", Size = UDim2.new(1, -10, 0.45, 0), Position = UDim2.new(0, 5, 0.5, 0) })
-	Kit.text(screen, {
-		Text = "v" .. Economy.VERSION,
-		Size = UDim2.fromOffset(100, 20),
-		Position = UDim2.new(1, -14, 1, -12),
-		AnchorPoint = Vector2.new(1, 1),
+	Kit.text(
+		surge,
+		{ Text = I.Surge, TextSize = 30, Size = UDim2.fromOffset(46, 58), Position = UDim2.fromOffset(4, 0), StrokeThickness = 0 }
+	)
+	local surgeTitle = Kit.title(surge, {
+		Text = "NEXT " .. string.upper(W.Surge),
+		TextSize = T.Tiny,
+		TextWrapped = false,
+		Size = UDim2.new(1, -54, 0, 18),
+		Position = UDim2.fromOffset(48, 7),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = Kit.lighten(C.Secondary, 0.25),
+		StrokeThickness = 1.5,
+	})
+	local surgeTime = Kit.title(surge, {
+		Text = "0:00",
+		TextSize = 26,
+		TextWrapped = false,
+		Size = UDim2.new(1, -54, 0, 28),
+		Position = UDim2.fromOffset(48, 24),
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	local surgeStroke = surge:FindFirstChildOfClass("UIStroke") :: UIStroke
+
+	-- Bottom centre: carried tank ------------------------------------------------------
+	local tank = Kit.panel(screen, {
+		Name = "Tank",
+		Size = UDim2.fromOffset(330, 96),
+		Position = UDim2.new(0.5, 0, 1, -10),
+		AnchorPoint = Vector2.new(0.5, 1),
+		Color = C.Panel,
+		Radius = Kit.RADIUS.XL,
+		StrokeThickness = 4,
+	})
+	local tankStroke = tank:FindFirstChildOfClass("UIStroke") :: UIStroke
+	Kit.text(
+		tank,
+		{ Text = I.Orb, TextSize = 28, Size = UDim2.fromOffset(40, 40), Position = UDim2.fromOffset(12, 6), StrokeThickness = 0 }
+	)
+	Kit.title(tank, {
+		Text = string.upper(W.Orb),
+		TextSize = T.H3,
+		TextWrapped = false,
+		Size = UDim2.fromOffset(120, 40),
+		Position = UDim2.fromOffset(54, 6),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = Kit.lighten(C.Orb, 0.2),
+	})
+	local carriedLabel = Kit.title(tank, {
+		Name = "Carried",
+		Text = "0",
+		TextSize = 30,
+		TextWrapped = false,
+		Size = UDim2.new(1, -150, 0, 40),
+		Position = UDim2.new(1, -16, 0, 6),
+		AnchorPoint = Vector2.new(1, 0),
 		TextXAlignment = Enum.TextXAlignment.Right,
 	})
+	local carriedPop = Kit.new("UIScale", { Parent = carriedLabel })
+	local _, setFill, fillLabel = Kit.progress(tank, {
+		Name = "Fill",
+		Color = C.Orb,
+		Size = UDim2.new(1, -28, 0, 28),
+		Position = UDim2.fromOffset(14, 52),
+		TextSize = T.Small,
+	})
 
-	-- Updates ------------------------------------------------------------------------
+	-- Version (bottom left, tiny) -----------------------------------------------------
+	Kit.text(screen, {
+		Name = "Version",
+		Text = "v" .. Economy.VERSION,
+		TextSize = 12,
+		TextWrapped = false,
+		Size = UDim2.fromOffset(100, 16),
+		Position = UDim2.new(0, 12, 1, -6),
+		AnchorPoint = Vector2.new(0, 1),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.TextDim,
+		TextTransparency = 0.3,
+		StrokeThickness = 1,
+	})
+
+	-- Layout mode ------------------------------------------------------------------------
+	local function applyCompact()
+		local compact = screen:GetAttribute("Compact") == true
+		local data = State.data
+		promo.Visible = not compact and not (data and data.passes.DoubleMoney)
+		chips.Visible = not compact
+	end
+	screen:GetAttributeChangedSignal("Compact"):Connect(applyCompact)
+
+	-- Updates ------------------------------------------------------------------------------
+	local shownMoney: number? = nil
+	local targetMoney = 0
 	local lastCarried = 0
+	local tankFull = false
+
 	local function refresh()
 		local data = State.data
 		if not data then
 			return
 		end
-		moneyLabel.Text = State.money(data.money)
-		gemsLabel.Text = I.Gem .. " " .. State.num(data.gems) .. " " .. W.Gem
-		multLabel.Text = string.format('Cash <font color="#FFD23C">[%.1fx]</font>', data.moneyMult)
+		if shownMoney == nil then
+			shownMoney = data.money
+			moneyLabel.Text = State.money(data.money)
+		elseif data.money > targetMoney + 0.5 then
+			moneyPop.Scale = 1.1
+			Kit.tween(moneyPop, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+		end
+		targetMoney = data.money
+		gemsLabel.Text = State.num(data.gems) .. " " .. W.Gem
+		multLabel.Text = string.format('CASH <font color="%s">x%.1f</font>', GOLD_HEX, data.moneyMult)
 		counterLabel.Text = I.Unit .. " " .. State.num(data.totalObtained)
 		carriedLabel.Text = State.num(data.carried)
-		premiumLabel.Text = if data.premium then "+10%" else "Off"
-		premiumLabel.TextColor3 = if data.premium then C.Good else C.TextDim
-		friendsLabel.Text = string.format("+%d%%", math.floor(data.friendBonus * 100 + 0.5))
-		promo.Visible = not data.passes.DoubleMoney
+
+		friendsChip.Text = string.format("%s FRIENDS +%d%%", I.Friends, math.floor(data.friendBonus * 100 + 0.5))
+		premiumChip.Visible = data.premium == true
+		premiumChip.Text = I.Premium .. " PREMIUM +10%"
+		applyCompact()
 
 		local capacity = math.max(data.production * 30, 1)
-		Kit.tween(fill, 0.25, { Size = UDim2.fromScale(math.clamp(data.carried / capacity, 0.03, 1), 1) })
+		local ratio = data.carried / capacity
+		setFill(ratio)
+		local full = ratio >= 1
+		if full ~= tankFull then
+			tankFull = full
+			if full then
+				sounds.play("Toast")
+			end
+		end
+		fillLabel.Text = if full then "FULL! DEPOSIT IT" elseif data.carried <= 0 then "WALK OVER " .. string.upper(W.Orb) else ""
 		if data.carried > lastCarried then
-			local s = Kit.new("UIScale", { Scale = 1.12, Parent = carriedLabel })
-			Kit.tween(s, 0.25, { Scale = 1 })
-			task.delay(0.3, function()
-				s:Destroy()
-			end)
+			carriedPop.Scale = 1.15
+			Kit.tween(carriedPop, 0.25, { Scale = 1 })
 		end
 		lastCarried = data.carried
+
+		if seenDiscoveries == nil then
+			seenDiscoveries = discoveredCount(data)
+		end
+		refreshIndexBadge()
 	end
 	State.changed.Event:Connect(refresh)
 
-	RunService.Heartbeat:Connect(function()
+	local pulse = 0
+	local freeText = ""
+	RunService.Heartbeat:Connect(function(dt)
 		local now = Workspace:GetServerTimeNow()
+		pulse += dt
+
+		-- Rolling cash counter.
+		if shownMoney ~= nil and shownMoney ~= targetMoney then
+			local shown = shownMoney :: number
+			local diff = targetMoney - shown
+			-- Earnings roll up; spending snaps so purchases feel instant.
+			if diff < 0 or math.abs(diff) <= math.max(1, math.abs(targetMoney) * 0.0005) then
+				shown = targetMoney
+			else
+				shown += diff * math.min(1, dt * 7)
+			end
+			shownMoney = shown
+			moneyLabel.Text = State.money(shown)
+		end
+
 		local mult = ReplicatedStorage:GetAttribute("DepositMult") or 1
 		local nextAt = ReplicatedStorage:GetAttribute("DepositNextAt") or now
-		local color = if mult >= 1.2 then "#5CDC64" elseif mult < 1 then "#EB503C" else "#FFD23C"
-		gaugeTitle.Text = string.format('%s: <font color="%s">%.1fx</font>', W.Multiplier, color, mult)
-		gaugeNext.Text = string.format('next change in <font color="#FFD23C">%ds</font>', math.max(0, math.ceil(nextAt - now)))
+		local color = if mult >= 1.2 then C.Good elseif mult < 1 then C.Bad else C.Primary
+		gaugeValue.Text = string.format("x%.1f", mult)
+		gaugeValue.TextColor3 = color
+		gaugeNext.Text = string.format('changes in <font color="%s">%ds</font>', GOLD_HEX, math.max(0, math.ceil(nextAt - now)))
 		local ratio = (mult - Economy.DEPOSIT_MIN) / (Economy.DEPOSIT_MAX - Economy.DEPOSIT_MIN)
 		marker.Position = UDim2.fromScale(math.clamp(ratio, 0, 1), 0.5)
 
 		local active, left = Economy.surgeState(now)
 		surgeTime.Text = Format.time(left)
-		surgeTitle.Text = if active then W.Surge .. " x" .. Economy.SURGE_MULTIPLIER else "Next " .. W.Surge
-		surgeTitle.TextColor3 = if active then C.Good else C.Secondary
-		surgeBadge.Visible = active
-		surgeBadgeLabel.Text = "x" .. Economy.SURGE_MULTIPLIER
+		surgeTitle.Text = if active
+			then string.upper(W.Surge) .. " x" .. Economy.SURGE_MULTIPLIER .. "!"
+			else "NEXT " .. string.upper(W.Surge)
+		surgeTitle.TextColor3 = if active then C.Good else Kit.lighten(C.Secondary, 0.25)
+		surgeStroke.Color = if active then C.Good:Lerp(C.Stroke, 0.5 + 0.5 * math.sin(pulse * 6)) else C.Stroke
+		surgeChip.Visible = active
+		surgeChip.Text = I.Surge .. " SURGE x" .. Economy.SURGE_MULTIPLIER
+
+		tankStroke.Color = if tankFull then C.Bad:Lerp(C.Stroke, 0.5 + 0.5 * math.sin(pulse * 7)) else C.Stroke
+
+		-- Free reward countdown on its menu button.
+		local data = State.data
+		if data then
+			local freeLeft = math.max(0, data.freeIn - State.age())
+			local ready = freeLeft <= 0
+			local text = if ready then "FREE!" else Format.time(freeLeft)
+			if text ~= freeText then
+				freeText = text
+				Kit.setButton(freeButton, text)
+				Kit.setBadge(freeButton, if ready then "!" else nil)
+				Kit.setGlow(freeButton, ready, C.Primary)
+			end
+		end
 	end)
 
 	refresh()
@@ -4948,16 +6281,31 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
+<<<<<<< HEAD
           <Item class="ModuleScript" referent="25">
+=======
+          <Item class="ModuleScript" referent="30">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
-	Kit: small helpers for building the code-driven UI in a consistent style
-	(rounded panels, heavy outlines, gradient buttons, bouncy hover).
+	Kit: the design system for the code-built UI.
+
+	Everything on screen is made from these pieces so the game looks the same
+	everywhere: rounded panels with a heavy outline, chunky 3D buttons (a darker
+	base the face presses down into), pills, badges, progress bars, switches and
+	modal windows.
+
+	Tokens
+	  Kit.TEXT    type scale (TextSize in design pixels; the ScreenGui UIScale
+	              scales the whole 1280x720 design to the device)
+	  Kit.RADIUS  corner radii
+	  Kit.touch   true on touch-first devices (bigger targets)
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 local CharacterFactory = require(ReplicatedStorage.Shared.CharacterFactory)
@@ -4966,9 +6314,46 @@ local Kit = {}
 Kit.Theme = Theme
 Kit.C = Theme.Colors
 
-local clickSound: (() -> ())? = nil
+Kit.TEXT = {
+	Hero = 44,
+	H1 = 32,
+	H2 = 26,
+	H3 = 21,
+	Body = 18,
+	Small = 15,
+	Tiny = 13,
+}
+
+Kit.RADIUS = {
+	S = 8,
+	M = 12,
+	L = 16,
+	XL = 22,
+}
+
+Kit.touch = false
+pcall(function()
+	Kit.touch = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+end)
+
+local WHITE = Color3.new(1, 1, 1)
+
+-- Sounds are injected by Main so Kit stays free of client state.
+local soundPlayer: ((string) -> ())? = nil
+function Kit.setSoundPlayer(fn: (string) -> ())
+	soundPlayer = fn
+end
 function Kit.setClickSound(fn: () -> ())
-	clickSound = fn
+	soundPlayer = function(name: string)
+		if name == "Click" then
+			fn()
+		end
+	end
+end
+function Kit.sound(name: string)
+	if soundPlayer then
+		soundPlayer(name)
+	end
 end
 
 function Kit.new(className: string, props: { [string]: any }?, children: { Instance }?): any
@@ -4993,7 +6378,11 @@ function Kit.new(className: string, props: { [string]: any }?, children: { Insta
 end
 
 function Kit.corner(parent: Instance, radius: number?): UICorner
-	return Kit.new("UICorner", { CornerRadius = UDim.new(0, radius or 12), Parent = parent })
+	return Kit.new("UICorner", { CornerRadius = UDim.new(0, radius or Kit.RADIUS.M), Parent = parent })
+end
+
+function Kit.round(parent: Instance): UICorner
+	return Kit.new("UICorner", { CornerRadius = UDim.new(1, 0), Parent = parent })
 end
 
 function Kit.stroke(parent: Instance, thickness: number?, color: Color3?): UIStroke
@@ -5024,29 +6413,56 @@ function Kit.gradient(parent: Instance, top: Color3, bottom: Color3, rotation: n
 	})
 end
 
-function Kit.padding(parent: Instance, px: number)
+function Kit.padding(parent: Instance, px: number, horizontal: number?)
 	return Kit.new("UIPadding", {
 		PaddingTop = UDim.new(0, px),
 		PaddingBottom = UDim.new(0, px),
-		PaddingLeft = UDim.new(0, px),
-		PaddingRight = UDim.new(0, px),
+		PaddingLeft = UDim.new(0, horizontal or px),
+		PaddingRight = UDim.new(0, horizontal or px),
 		Parent = parent,
 	})
 end
 
+function Kit.list(parent: Instance, gap: number?, horizontal: boolean?, align: Enum.HorizontalAlignment?): UIListLayout
+	return Kit.new("UIListLayout", {
+		Padding = UDim.new(0, gap or 8),
+		FillDirection = if horizontal then Enum.FillDirection.Horizontal else Enum.FillDirection.Vertical,
+		HorizontalAlignment = align or Enum.HorizontalAlignment.Left,
+		VerticalAlignment = if horizontal then Enum.VerticalAlignment.Center else Enum.VerticalAlignment.Top,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = parent,
+	})
+end
+
+--[[
+	Text. Pass TextSize for a fixed size from the type scale (preferred), or
+	leave it out for TextScaled (optionally capped with MaxTextSize).
+]]
 function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
+	local fixed = props.TextSize ~= nil and props.TextScaled ~= true
 	local label = Kit.new("TextLabel", {
 		BackgroundTransparency = 1,
 		Font = Theme.Fonts.Body,
 		TextColor3 = Kit.C.Text,
-		TextScaled = true,
+		TextScaled = not fixed,
+		TextWrapped = true,
 		Size = UDim2.fromScale(1, 1),
 		Parent = parent,
 	})
+	local maxSize = props.MaxTextSize
+	local strokeThickness = props.StrokeThickness
 	for key, value in props do
-		(label :: any)[key] = value
+		if key ~= "MaxTextSize" and key ~= "StrokeThickness" then
+			(label :: any)[key] = value
+		end
 	end
-	Kit.textStroke(label, props.TextScaled == false and 1.5 or 2)
+	if maxSize then
+		Kit.new("UITextSizeConstraint", { MaxTextSize = maxSize, MinTextSize = 8, Parent = label })
+	end
+	if strokeThickness ~= 0 then
+		local thickness = strokeThickness or (if fixed then math.clamp(label.TextSize / 12, 1.2, 3) else 2)
+		Kit.textStroke(label, thickness)
+	end
 	return label
 end
 
@@ -5055,114 +6471,533 @@ function Kit.title(parent: Instance, props: { [string]: any }): TextLabel
 	return Kit.text(parent, props)
 end
 
-function Kit.tween(obj: Instance, time: number, props: { [string]: any }, style: Enum.EasingStyle?): Tween
-	local tween = TweenService:Create(obj, TweenInfo.new(time, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props)
+function Kit.tween(obj: Instance, time: number, props: { [string]: any }, style: Enum.EasingStyle?, direction: Enum.EasingDirection?): Tween
+	local tween =
+		TweenService:Create(obj, TweenInfo.new(time, style or Enum.EasingStyle.Quad, direction or Enum.EasingDirection.Out), props)
 	tween:Play()
 	return tween
 end
 
 function Kit.lighten(color: Color3, amount: number): Color3
-	return color:Lerp(Color3.new(1, 1, 1), amount)
+	return color:Lerp(WHITE, amount)
 end
 
 function Kit.darken(color: Color3, amount: number): Color3
 	return color:Lerp(Color3.new(0, 0, 0), amount)
 end
 
--- Adds a UIScale that pops on hover/press. Returns the scale object.
-function Kit.bouncy(button: GuiButton): UIScale
+function Kit.hex(color: Color3): string
+	return string.format("#%02X%02X%02X", math.floor(color.R * 255 + 0.5), math.floor(color.G * 255 + 0.5), math.floor(color.B * 255 + 0.5))
+end
+
+-- Adds a UIScale that grows on hover and squashes on press. Returns the scale.
+function Kit.bouncy(button: GuiButton, hover: number?): UIScale
 	local scale = Kit.new("UIScale", { Parent = button })
+	local up = hover or 1.05
 	button.MouseEnter:Connect(function()
-		Kit.tween(scale, 0.12, { Scale = 1.06 })
+		Kit.tween(scale, 0.12, { Scale = up })
 	end)
 	button.MouseLeave:Connect(function()
 		Kit.tween(scale, 0.12, { Scale = 1 })
 	end)
 	button.MouseButton1Down:Connect(function()
-		Kit.tween(scale, 0.08, { Scale = 0.94 })
+		Kit.tween(scale, 0.08, { Scale = 0.95 })
 	end)
 	button.MouseButton1Up:Connect(function()
-		Kit.tween(scale, 0.12, { Scale = 1.06 })
+		Kit.tween(scale, 0.14, { Scale = up }, Enum.EasingStyle.Back)
 	end)
 	return scale
 end
 
--- A chunky coloured button with text.
+-- Buttons ---------------------------------------------------------------------------
+
+type ButtonState = {
+	face: Frame,
+	base: Frame,
+	gradient: UIGradient,
+	label: TextLabel,
+	icon: TextLabel?,
+	color: Color3,
+	enabled: boolean,
+	depth: number,
+}
+
+local buttons: { [Instance]: ButtonState } = setmetatable({}, { __mode = "k" }) :: any
+
+local FACE_IDLE = Color3.fromRGB(236, 236, 236)
+
+local function paintButton(state: ButtonState)
+	local color = if state.enabled then state.color else Kit.C.PadDisabled
+	state.gradient.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Kit.lighten(color, 0.32)),
+		ColorSequenceKeypoint.new(0.5, Kit.lighten(color, 0.08)),
+		ColorSequenceKeypoint.new(1, Kit.darken(color, 0.06)),
+	})
+	state.base.BackgroundColor3 = Kit.darken(color, 0.5)
+	state.label.TextTransparency = if state.enabled then 0 else 0.3
+	if state.icon then
+		state.icon.TextTransparency = if state.enabled then 0 else 0.4
+	end
+end
+
+--[[
+	A chunky 3D button. props:
+	  Text, Icon (emoji), Layout ("Inline" | "Stack": icon above text),
+	  Color, Size, Position, AnchorPoint, LayoutOrder, Name, ZIndex,
+	  Font, TextSize, TextColor, RichText, Radius, Depth, Sound (default "Click")
+	Returns the TextButton (the hit area). Recolour/relabel with Kit.setButton,
+	enable/disable with Kit.setEnabled.
+]]
 function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> ())?): TextButton
 	local color = props.Color or Kit.C.Good
+	local size: UDim2 = props.Size or UDim2.fromOffset(160, 52)
+	local fixedHeight = if size.Y.Scale == 0 then size.Y.Offset else nil
+	local depth = props.Depth or (if fixedHeight and fixedHeight < 44 then 4 else 6)
+	local radius = props.Radius or Kit.RADIUS.M
+
 	local button = Kit.new("TextButton", {
+		Name = props.Name or "Button",
 		AutoButtonColor = false,
-		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 1,
 		Text = "",
-		Size = props.Size or UDim2.fromOffset(160, 50),
+		Size = size,
 		Position = props.Position or UDim2.new(),
 		AnchorPoint = props.AnchorPoint or Vector2.zero,
 		LayoutOrder = props.LayoutOrder or 0,
+		ZIndex = props.ZIndex or 1,
 		Parent = parent,
 	})
-	Kit.corner(button, props.Radius or 10)
-	Kit.stroke(button, 3)
-	local gradient = Kit.gradient(button, Kit.lighten(color, 0.15), Kit.darken(color, 0.15))
-	local label = Kit.text(button, {
-		Name = "Label",
-		Text = props.Text or "",
-		Font = props.Font or Theme.Fonts.Title,
-		Size = UDim2.new(1, -12, 1, -8),
-		Position = UDim2.fromOffset(6, 4),
-		RichText = props.RichText or false,
+
+	local base = Kit.new("Frame", {
+		Name = "Base",
+		BackgroundColor3 = Kit.darken(color, 0.5),
+		Size = UDim2.new(1, 0, 1, -depth),
+		Position = UDim2.fromOffset(0, depth),
+		Parent = button,
 	})
-	Kit.bouncy(button)
-	button.Activated:Connect(function()
-		if clickSound then
-			clickSound()
+	Kit.corner(base, radius)
+	Kit.stroke(base, 3)
+
+	local face = Kit.new("Frame", {
+		Name = "Face",
+		BackgroundColor3 = FACE_IDLE,
+		Size = UDim2.new(1, 0, 1, -depth),
+		Parent = button,
+	})
+	Kit.corner(face, radius)
+	Kit.stroke(face, 3)
+	local gradient = Kit.gradient(face, color, color)
+
+	-- Glossy highlight across the top of the face.
+	local shine = Kit.new("Frame", {
+		Name = "Shine",
+		BackgroundColor3 = WHITE,
+		BackgroundTransparency = 0.8,
+		Size = UDim2.new(1, -10, 0.36, 0),
+		Position = UDim2.fromOffset(5, 3),
+		Parent = face,
+	})
+	Kit.corner(shine, math.max(radius - 4, 4))
+
+	local faceHeight = if fixedHeight then fixedHeight - depth else nil
+	local font = props.Font or Theme.Fonts.Title
+	local textColor = props.TextColor or Kit.C.Text
+	local label: TextLabel
+	local icon: TextLabel? = nil
+	if props.Layout == "Stack" then
+		icon = Kit.text(face, {
+			Name = "Icon",
+			Text = props.Icon or "",
+			TextSize = if faceHeight then math.floor(faceHeight * 0.42) else nil,
+			Size = UDim2.new(1, 0, 0.56, 0),
+			Position = UDim2.fromScale(0, 0.04),
+			StrokeThickness = 0,
+		})
+		label = Kit.text(face, {
+			Name = "Label",
+			Text = props.Text or "",
+			Font = font,
+			TextSize = props.TextSize or (if faceHeight then math.clamp(math.floor(faceHeight * 0.2), 11, 22) else nil),
+			TextColor3 = textColor,
+			TextWrapped = false,
+			Size = UDim2.new(1, -6, 0.34, 0),
+			Position = UDim2.new(0, 3, 0.6, 0),
+		})
+	else
+		local text = props.Text or ""
+		if props.Icon then
+			text = props.Icon .. "  " .. text
 		end
+		label = Kit.text(face, {
+			Name = "Label",
+			Text = text,
+			Font = font,
+			RichText = props.RichText or false,
+			TextSize = props.TextSize or (if faceHeight then math.clamp(math.floor(faceHeight * 0.5), 12, 34) else nil),
+			MaxTextSize = if faceHeight or props.TextSize then nil else 30,
+			TextColor3 = textColor,
+			Size = UDim2.new(1, -14, 1, -4),
+			Position = UDim2.fromOffset(7, 2),
+		})
+	end
+
+	local state: ButtonState = {
+		face = face,
+		base = base,
+		gradient = gradient,
+		label = label,
+		icon = icon,
+		color = color,
+		enabled = true,
+		depth = depth,
+	}
+	buttons[button] = state
+	paintButton(state)
+
+	local scale = Kit.new("UIScale", { Parent = button })
+	local function rest()
+		face.Position = UDim2.new()
+	end
+	button.MouseEnter:Connect(function()
+		if state.enabled then
+			Kit.tween(scale, 0.12, { Scale = 1.04 })
+			face.BackgroundColor3 = WHITE
+		end
+	end)
+	button.MouseLeave:Connect(function()
+		Kit.tween(scale, 0.12, { Scale = 1 })
+		face.BackgroundColor3 = FACE_IDLE
+		rest()
+	end)
+	button.MouseButton1Down:Connect(function()
+		if state.enabled then
+			Kit.tween(face, 0.06, { Position = UDim2.fromOffset(0, depth - 1) })
+		end
+	end)
+	button.MouseButton1Up:Connect(function()
+		Kit.tween(face, 0.12, { Position = UDim2.new() }, Enum.EasingStyle.Back)
+	end)
+	button.Activated:Connect(function()
+		if not state.enabled then
+			Kit.sound("Error")
+			return
+		end
+		Kit.sound(props.Sound or "Click")
 		if onClick then
 			onClick()
 		end
-	end);
-	(button :: any):SetAttribute("BaseColor", color)
-	-- Recolour helper used by callers to grey out disabled buttons.
-	local function setColor(newColor: Color3)
-		gradient.Color = ColorSequence.new(Kit.lighten(newColor, 0.15), Kit.darken(newColor, 0.15))
-	end
-	button:SetAttribute("Recolor", true)
-	button:GetAttributeChangedSignal("Tint"):Connect(function()
-		local tint = button:GetAttribute("Tint")
-		if typeof(tint) == "Color3" then
-			setColor(tint)
-		end
 	end)
-	label.Name = "Label"
+	button:SetAttribute("BaseColor", color)
 	return button
 end
 
 function Kit.setButton(button: TextButton, text: string?, color: Color3?)
-	local label = button:FindFirstChild("Label") :: TextLabel?
-	if text and label then
-		label.Text = text
+	local state = buttons[button]
+	if not state then
+		return
+	end
+	if text then
+		state.label.Text = text
 	end
 	if color then
-		button:SetAttribute("Tint", color)
+		state.color = color
 	end
+	paintButton(state)
 end
 
--- Panel with gradient background and outline.
+function Kit.setEnabled(button: TextButton, enabled: boolean)
+	local state = buttons[button]
+	if not state or state.enabled == enabled then
+		return
+	end
+	state.enabled = enabled
+	button.Active = enabled
+	paintButton(state)
+end
+
+function Kit.buttonFace(button: TextButton): Frame?
+	local state = buttons[button]
+	return if state then state.face else nil
+end
+
+-- Panels / pills ----------------------------------------------------------------------
+
+-- Panel with a soft vertical gradient and a heavy outline.
 function Kit.panel(parent: Instance, props: { [string]: any }): Frame
 	local color = props.Color or Kit.C.Panel
 	local frame = Kit.new("Frame", {
-		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundColor3 = WHITE,
 		Size = props.Size or UDim2.fromOffset(200, 100),
 		Position = props.Position or UDim2.new(),
 		AnchorPoint = props.AnchorPoint or Vector2.zero,
 		LayoutOrder = props.LayoutOrder or 0,
 		Visible = if props.Visible == nil then true else props.Visible,
 		Name = props.Name or "Panel",
+		ZIndex = props.ZIndex or 1,
 		Parent = parent,
 	})
-	Kit.corner(frame, props.Radius or 14)
-	Kit.stroke(frame, props.StrokeThickness or 3)
-	Kit.gradient(frame, Kit.lighten(color, 0.06), Kit.darken(color, 0.12))
+	Kit.corner(frame, props.Radius or Kit.RADIUS.L)
+	Kit.stroke(frame, props.StrokeThickness or 3, props.StrokeColor)
+	Kit.gradient(frame, Kit.lighten(color, 0.07), Kit.darken(color, 0.14))
 	return frame
+end
+
+-- A flat inset well (darker area inside a panel).
+function Kit.well(parent: Instance, props: { [string]: any }): Frame
+	local frame = Kit.new("Frame", {
+		Name = props.Name or "Well",
+		BackgroundColor3 = props.Color or Kit.C.PanelDark,
+		BackgroundTransparency = props.Transparency or 0.15,
+		Size = props.Size or UDim2.fromScale(1, 1),
+		Position = props.Position or UDim2.new(),
+		AnchorPoint = props.AnchorPoint or Vector2.zero,
+		LayoutOrder = props.LayoutOrder or 0,
+		Parent = parent,
+	})
+	Kit.corner(frame, props.Radius or Kit.RADIUS.M)
+	return frame
+end
+
+-- Small rounded label with a coloured background ("chips", tags).
+function Kit.pill(parent: Instance, props: { [string]: any }): TextLabel
+	local color = props.Color or Kit.C.PanelLight
+	local label = Kit.text(parent, {
+		Name = props.Name or "Pill",
+		Text = props.Text or "",
+		Font = props.Font or Theme.Fonts.Title,
+		TextSize = props.TextSize or Kit.TEXT.Small,
+		TextColor3 = props.TextColor or Kit.C.Text,
+		TextWrapped = false,
+		BackgroundTransparency = 0,
+		BackgroundColor3 = color,
+		Size = props.Size or UDim2.fromOffset(80, 26),
+		Position = props.Position or UDim2.new(),
+		AnchorPoint = props.AnchorPoint or Vector2.zero,
+		LayoutOrder = props.LayoutOrder or 0,
+		Rotation = props.Rotation or 0,
+		ZIndex = props.ZIndex or 1,
+		AutomaticSize = props.AutomaticSize or Enum.AutomaticSize.None,
+		Visible = if props.Visible == nil then true else props.Visible,
+		RichText = props.RichText or false,
+	})
+	if props.AutomaticSize then
+		Kit.padding(label, 0, 10)
+	end
+	Kit.round(label)
+	Kit.new("UIStroke", {
+		Thickness = 2.5,
+		Color = Kit.C.Stroke,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		Parent = label,
+	})
+	return label
+end
+
+-- Red notification dot on the top-right corner of `target` (nil text hides it).
+function Kit.setBadge(target: GuiObject, text: string?)
+	local holder: GuiObject = buttons[target] and buttons[target].face or target
+	local badge = holder:FindFirstChild("Badge") :: TextLabel?
+	if not text then
+		if badge then
+			badge.Visible = false
+		end
+		return
+	end
+	if not badge then
+		local created = Kit.pill(holder, {
+			Name = "Badge",
+			Text = text,
+			Color = Kit.C.Bad,
+			TextSize = Kit.TEXT.Small,
+			Size = UDim2.fromOffset(26, 26),
+			Position = UDim2.new(1, 7, 0, -7),
+			AnchorPoint = Vector2.new(1, 0),
+			ZIndex = 5,
+			Visible = false,
+		})
+		Kit.new("UIScale", { Name = "Pop", Scale = 1, Parent = created })
+		badge = created
+	end
+	local b = badge :: TextLabel
+	b.Text = text
+	b.Size = UDim2.fromOffset(math.max(26, 12 + utf8.len(text) :: number * 9), 26)
+	if not b.Visible then
+		b.Visible = true
+		local pop = b:FindFirstChild("Pop") :: UIScale
+		pop.Scale = 0.4
+		Kit.tween(pop, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+	end
+end
+
+-- Pulsing coloured ring around `target` to draw the eye (tutorial / ready).
+local glowing: { [Instance]: boolean } = setmetatable({}, { __mode = "k" }) :: any
+function Kit.setGlow(target: GuiObject, on: boolean, color: Color3?)
+	local holder: GuiObject = buttons[target] and buttons[target].face or target
+	local ring = holder:FindFirstChild("Glow") :: Frame?
+	if not on then
+		glowing[holder] = nil
+		if ring then
+			ring.Visible = false
+		end
+		return
+	end
+	if not ring then
+		local created = Kit.new("Frame", {
+			Name = "Glow",
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 12, 1, 12),
+			Position = UDim2.fromOffset(-6, -6),
+			ZIndex = 4,
+			Parent = holder,
+		})
+		local corner = holder:FindFirstChildOfClass("UICorner")
+		Kit.corner(created, (if corner then corner.CornerRadius.Offset else Kit.RADIUS.M) + 6)
+		Kit.new("UIStroke", { Name = "Ring", Thickness = 4, Color = color or Kit.C.Primary, Parent = created })
+		ring = created
+	end
+	local r = ring :: Frame
+	r.Visible = true
+	local stroke = r:FindFirstChild("Ring") :: UIStroke
+	stroke.Color = color or Kit.C.Primary
+	if glowing[holder] then
+		return
+	end
+	glowing[holder] = true
+	task.spawn(function()
+		local on2 = true
+		while glowing[holder] and holder.Parent do
+			Kit.tween(stroke, 0.5, { Transparency = if on2 then 0.75 else 0 }, Enum.EasingStyle.Sine)
+			on2 = not on2
+			task.wait(0.55)
+		end
+		stroke.Transparency = 0
+	end)
+end
+
+-- Horizontal progress bar. Returns the frame and a setter (0..1).
+function Kit.progress(parent: Instance, props: { [string]: any }): (Frame, (number) -> (), TextLabel)
+	local color = props.Color or Kit.C.Good
+	local track = Kit.new("Frame", {
+		Name = props.Name or "Progress",
+		BackgroundColor3 = props.TrackColor or Kit.C.PanelDark,
+		Size = props.Size or UDim2.new(1, 0, 0, 22),
+		Position = props.Position or UDim2.new(),
+		AnchorPoint = props.AnchorPoint or Vector2.zero,
+		LayoutOrder = props.LayoutOrder or 0,
+		ClipsDescendants = false,
+		Parent = parent,
+	})
+	Kit.round(track)
+	Kit.stroke(track, 2.5)
+	local fill = Kit.new("Frame", {
+		Name = "Fill",
+		BackgroundColor3 = WHITE,
+		Size = UDim2.fromScale(0, 1),
+		Parent = track,
+	})
+	Kit.round(fill)
+	Kit.gradient(fill, Kit.lighten(color, 0.3), color)
+	local gloss = Kit.new("Frame", {
+		Name = "Gloss",
+		BackgroundColor3 = WHITE,
+		BackgroundTransparency = 0.75,
+		Size = UDim2.new(1, -8, 0.32, 0),
+		Position = UDim2.fromOffset(4, 2),
+		Parent = fill,
+	})
+	Kit.round(gloss)
+	local label = Kit.title(track, {
+		Name = "Label",
+		Text = props.Text or "",
+		TextSize = props.TextSize or Kit.TEXT.Small,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 3,
+	})
+	local minVisible = props.MinFill or 0.06
+	local function set(ratio: number, instant: boolean?)
+		local r = math.clamp(ratio, 0, 1)
+		fill.Visible = r > 0
+		local target = UDim2.fromScale(math.max(r, minVisible), 1)
+		if instant then
+			fill.Size = target
+		else
+			Kit.tween(fill, 0.35, { Size = target })
+		end
+	end
+	return track, set, label
+end
+
+-- On/off switch. Returns the hit button and a setter (value, locked?).
+function Kit.switch(parent: Instance, props: { [string]: any }, onToggle: () -> ()): (TextButton, (boolean, boolean?) -> ())
+	local w, h = 76, 38
+	local button = Kit.new("TextButton", {
+		Name = props.Name or "Switch",
+		AutoButtonColor = false,
+		BackgroundColor3 = Kit.C.PadDisabled,
+		Text = "",
+		Size = UDim2.fromOffset(w, h),
+		Position = props.Position or UDim2.new(),
+		AnchorPoint = props.AnchorPoint or Vector2.zero,
+		LayoutOrder = props.LayoutOrder or 0,
+		Parent = parent,
+	})
+	Kit.round(button)
+	Kit.stroke(button, 3)
+	local shade = Kit.new("Frame", {
+		Name = "Shade",
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		BackgroundTransparency = 0.78,
+		Size = UDim2.new(1, -8, 0.42, 0),
+		Position = UDim2.new(0, 4, 0, 3),
+		Parent = button,
+	})
+	Kit.round(shade)
+	local stateLabel = Kit.title(button, {
+		Name = "State",
+		Text = "",
+		TextSize = Kit.TEXT.Tiny,
+		Size = UDim2.new(1, -h, 1, 0),
+		Position = UDim2.fromOffset(0, 0),
+		StrokeThickness = 1.5,
+	})
+	local knob = Kit.new("Frame", {
+		Name = "Knob",
+		BackgroundColor3 = WHITE,
+		Size = UDim2.fromOffset(h - 8, h - 8),
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 4, 0.5, 0),
+		Parent = button,
+	})
+	Kit.round(knob)
+	Kit.stroke(knob, 2.5)
+	Kit.gradient(knob, WHITE, Color3.fromRGB(200, 200, 210))
+	Kit.bouncy(button, 1.04)
+	local locked = false
+	button.Activated:Connect(function()
+		Kit.sound(if locked then "Error" else "Toggle")
+		onToggle()
+	end)
+	local function set(value: boolean, isLocked: boolean?)
+		locked = isLocked == true
+		if locked then
+			button.BackgroundColor3 = Kit.darken(Kit.C.PadDisabled, 0.35)
+			stateLabel.Text = "🔒"
+			stateLabel.Position = UDim2.fromOffset(h - 4, 0)
+			Kit.tween(knob, 0.18, { Position = UDim2.new(0, 4, 0.5, 0) })
+			return
+		end
+		button.BackgroundColor3 = if value then Kit.C.Good else Kit.darken(Kit.C.PadDisabled, 0.2)
+		stateLabel.Text = if value then "ON" else "OFF"
+		stateLabel.Position = if value then UDim2.fromOffset(4, 0) else UDim2.fromOffset(h - 4, 0)
+		Kit.tween(
+			knob,
+			0.18,
+			{ Position = if value then UDim2.new(1, -(h - 4), 0.5, 0) else UDim2.new(0, 4, 0.5, 0) },
+			Enum.EasingStyle.Back
+		)
+	end
+	set(false)
+	return button, set
 end
 
 -- Builds a ViewportFrame showing a unit tier.
@@ -5196,76 +7031,123 @@ function Kit.unitViewport(parent: Instance, tier: number, props: { [string]: any
 	return viewport
 end
 
--- Standard modal window with a coloured title bar and close button.
+-- Windows ------------------------------------------------------------------------------
+
+-- Standard modal window: coloured header with an icon medallion and a close button.
 export type Window = {
 	frame: Frame,
 	content: Frame,
+	header: Frame,
 	setOpen: (boolean) -> (),
 	isOpen: () -> boolean,
 	onOpen: BindableEvent,
+	onClose: BindableEvent,
 }
 
 function Kit.window(screen: ScreenGui, name: string, title: string, icon: string, color: Color3, size: Vector2): Window
 	local frame = Kit.panel(screen, {
 		Name = name,
 		Size = UDim2.fromOffset(size.X, size.Y),
-		Position = UDim2.fromScale(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0.5, 6),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Color = Kit.C.Panel,
 		Visible = false,
 		StrokeThickness = 4,
+		Radius = Kit.RADIUS.XL,
 	})
 	frame.ZIndex = 10
 	local scale = Kit.new("UIScale", { Parent = frame })
 
-	local bar = Kit.new("Frame", {
-		Name = "TitleBar",
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		Size = UDim2.new(1, -90, 0, 54),
-		Position = UDim2.fromOffset(12, 12),
+	local header = Kit.new("Frame", {
+		Name = "Header",
+		BackgroundColor3 = WHITE,
+		Size = UDim2.new(1, -20, 0, 60),
+		Position = UDim2.fromOffset(10, 10),
 		Parent = frame,
 	})
-	Kit.corner(bar, 10)
-	Kit.stroke(bar, 3)
-	Kit.gradient(bar, Kit.lighten(color, 0.1), Kit.darken(color, 0.1))
-	Kit.title(bar, { Text = icon, Size = UDim2.fromOffset(60, 60), Position = UDim2.fromOffset(-14, -10), TextScaled = true })
-	Kit.title(bar, {
+	Kit.corner(header, Kit.RADIUS.L)
+	Kit.stroke(header, 3)
+	Kit.gradient(header, Kit.lighten(color, 0.18), Kit.darken(color, 0.12))
+	local headerShine = Kit.new("Frame", {
+		Name = "Shine",
+		BackgroundColor3 = WHITE,
+		BackgroundTransparency = 0.82,
+		Size = UDim2.new(1, -12, 0.4, 0),
+		Position = UDim2.fromOffset(6, 4),
+		Parent = header,
+	})
+	Kit.corner(headerShine, 10)
+
+	-- Icon medallion that pops out of the header's left edge.
+	local medal = Kit.new("Frame", {
+		Name = "Medal",
+		BackgroundColor3 = WHITE,
+		Size = UDim2.fromOffset(70, 70),
+		Position = UDim2.fromOffset(-8, -14),
+		Rotation = -6,
+		Parent = header,
+	})
+	Kit.round(medal)
+	Kit.stroke(medal, 3)
+	Kit.gradient(medal, Kit.lighten(color, 0.45), color)
+	Kit.text(medal, { Name = "Icon", Text = icon, TextSize = 38, Size = UDim2.fromScale(1, 1), StrokeThickness = 0 })
+
+	Kit.title(header, {
+		Name = "Title",
 		Text = string.upper(title),
-		Size = UDim2.new(1, -70, 0.8, 0),
-		Position = UDim2.fromOffset(56, 6),
+		TextSize = Kit.TEXT.H1,
+		TextWrapped = false,
+		Size = UDim2.new(1, -150, 1, 0),
+		Position = UDim2.fromOffset(74, 0),
 		TextXAlignment = Enum.TextXAlignment.Left,
+		StrokeThickness = 2.5,
 	})
 
 	local content = Kit.new("Frame", {
 		Name = "Content",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -24, 1, -86),
-		Position = UDim2.fromOffset(12, 76),
+		Size = UDim2.new(1, -32, 1, -98),
+		Position = UDim2.fromOffset(16, 84),
 		Parent = frame,
 	})
 
 	local open = false
+	local token = 0
 	local onOpen = Instance.new("BindableEvent")
+	local onClose = Instance.new("BindableEvent")
 	local function setOpen(value: boolean)
 		if value == open then
 			return
 		end
 		open = value
+		token += 1
 		if value then
 			frame.Visible = true
-			scale.Scale = 0.8
-			Kit.tween(scale, 0.18, { Scale = 1 }, Enum.EasingStyle.Back)
+			scale.Scale = 0.86
+			Kit.tween(scale, 0.22, { Scale = 1 }, Enum.EasingStyle.Back)
+			Kit.sound("Open")
 			onOpen:Fire()
 		else
-			frame.Visible = false
+			local mine = token
+			Kit.tween(scale, 0.12, { Scale = 0.9 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			task.delay(0.12, function()
+				if token == mine then
+					frame.Visible = false
+				end
+			end)
+			onClose:Fire()
 		end
 	end
 
-	Kit.button(frame, {
+	Kit.button(header, {
+		Name = "Close",
 		Text = "X",
 		Color = Kit.C.Bad,
-		Size = UDim2.fromOffset(60, 54),
-		Position = UDim2.new(1, -72, 0, 12),
+		Size = UDim2.fromOffset(54, 52),
+		Position = UDim2.new(1, -4, 0.5, -1),
+		AnchorPoint = Vector2.new(1, 0.5),
+		TextSize = 28,
+		Sound = "Close",
 	}, function()
 		setOpen(false)
 	end)
@@ -5273,23 +7155,27 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 	return {
 		frame = frame,
 		content = content,
+		header = header,
 		setOpen = setOpen,
 		isOpen = function()
 			return open
 		end,
 		onOpen = onOpen,
+		onClose = onClose,
 	}
 end
 
 function Kit.scrolling(parent: Instance, props: { [string]: any }?): ScrollingFrame
 	local p = props or {}
 	return Kit.new("ScrollingFrame", {
+		Name = p.Name or "Scroll",
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		Size = p.Size or UDim2.fromScale(1, 1),
 		Position = p.Position or UDim2.new(),
-		ScrollBarThickness = 8,
+		ScrollBarThickness = 6,
 		ScrollBarImageColor3 = Kit.C.Primary,
+		VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 		CanvasSize = UDim2.new(),
 		ScrollingDirection = Enum.ScrollingDirection.Y,
@@ -5297,16 +7183,63 @@ function Kit.scrolling(parent: Instance, props: { [string]: any }?): ScrollingFr
 	})
 end
 
+-- Full-screen dimmer; returns the (clickable) frame. Starts hidden.
+function Kit.backdrop(parent: Instance, zindex: number, onClick: (() -> ())?): TextButton
+	local dim = Kit.new("TextButton", {
+		Name = "Backdrop",
+		AutoButtonColor = false,
+		Text = "",
+		BackgroundColor3 = Color3.fromRGB(4, 2, 10),
+		BackgroundTransparency = 0.45,
+		Size = UDim2.new(2, 0, 2, 0),
+		Position = UDim2.fromScale(-0.5, -0.5),
+		ZIndex = zindex,
+		Visible = false,
+		Parent = parent,
+	})
+	if onClick then
+		dim.Activated:Connect(onClick)
+	end
+	return dim
+end
+
+local fadeTokens: { [Instance]: number } = setmetatable({}, { __mode = "k" }) :: any
+function Kit.fadeBackdrop(dim: GuiObject, show: boolean, opacity: number?)
+	local token = (fadeTokens[dim] or 0) + 1
+	fadeTokens[dim] = token
+	if show then
+		if not dim.Visible then
+			dim.BackgroundTransparency = 1
+		end
+		dim.Visible = true
+		Kit.tween(dim, 0.2, { BackgroundTransparency = 1 - (opacity or 0.55) })
+	else
+		Kit.tween(dim, 0.15, { BackgroundTransparency = 1 })
+		task.delay(0.15, function()
+			if fadeTokens[dim] == token then
+				dim.Visible = false
+			end
+		end)
+	end
+end
+
 return Kit
 ]]></string>
             </Properties>
           </Item>
+<<<<<<< HEAD
           <Item class="ModuleScript" referent="26">
+=======
+          <Item class="ModuleScript" referent="31">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
 	Popups: toasts, reward reveals, the held-crate panel, confirm dialogs,
 	offline earnings and floating "+X" text.
+
+	Z order (ScreenGui uses Sibling ZIndex):
+	  floats 20, toasts 25, reward 30-31, offline 44-45, confirm 49-50
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -5321,6 +7254,7 @@ local State = require(script.Parent.Parent.State)
 
 local Theme = Kit.Theme
 local C = Kit.C
+local T = Kit.TEXT
 local W = Theme.Words
 local I = Theme.Icons
 
@@ -5330,43 +7264,88 @@ local screen: ScreenGui
 local toastHolder: Frame
 local sounds: any
 
+local TOAST_Y = 146
+
 -- Toasts ------------------------------------------------------------------------
 
-local TONE_COLORS = {
-	good = C.Good,
-	bad = C.Bad,
-	info = C.Text,
+local TONES = {
+	good = { color = C.Good, icon = "✔" },
+	bad = { color = C.Bad, icon = "!" },
+	info = { color = C.Primary, icon = "i" },
 }
 
+local toastCount = 0
+
 function Popups.toast(text: string, tone: string?)
-	local label = Kit.title(toastHolder, {
-		Text = text,
-		Size = UDim2.new(1, 0, 0, 34),
-		TextColor3 = TONE_COLORS[tone or "info"] or C.Text,
-		TextTransparency = 1,
+	local style = TONES[tone or "info"] or TONES.info
+	toastCount += 1
+	local group = Kit.new("CanvasGroup", {
+		Name = "Toast",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(500, 48),
+		LayoutOrder = -toastCount,
+		GroupTransparency = 1,
+		Parent = toastHolder,
 	})
-	local labelStroke = label:FindFirstChildOfClass("UIStroke") :: UIStroke
-	labelStroke.Transparency = 1
-	Kit.tween(label, 0.2, { TextTransparency = 0 })
-	Kit.tween(labelStroke, 0.2, { Transparency = 0 })
+	local card = Kit.panel(group, {
+		Name = "Card",
+		Color = C.Panel,
+		StrokeColor = style.color,
+		Size = UDim2.new(1, -8, 1, -8),
+		Position = UDim2.fromOffset(4, 4),
+		Radius = 25,
+	})
+	local chip = Kit.new("Frame", {
+		Name = "Icon",
+		BackgroundColor3 = style.color,
+		Size = UDim2.fromOffset(32, 32),
+		Position = UDim2.new(0, 6, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		Parent = card,
+	})
+	Kit.round(chip)
+	Kit.stroke(chip, 2)
+	Kit.title(
+		chip,
+		{ Text = style.icon, TextSize = 20, Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(0, 1), StrokeThickness = 1.5 }
+	)
+	Kit.text(card, {
+		Name = "Text",
+		Text = text,
+		Font = Theme.Fonts.Title,
+		TextScaled = true,
+		MaxTextSize = 18,
+		Size = UDim2.new(1, -60, 1, -8),
+		Position = UDim2.fromOffset(46, 4),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		StrokeThickness = 1.5,
+	})
+	local scale = Kit.new("UIScale", { Scale = 0.85, Parent = group })
+	Kit.tween(group, 0.2, { GroupTransparency = 0 })
+	Kit.tween(scale, 0.25, { Scale = 1 }, Enum.EasingStyle.Back)
 	if tone == "bad" then
 		sounds.play("Error")
+	else
+		sounds.play("Toast")
 	end
-	task.delay(2.6, function()
-		Kit.tween(label, 0.4, { TextTransparency = 1 })
-		Kit.tween(labelStroke, 0.4, { Transparency = 1 })
-		task.wait(0.45)
-		label:Destroy()
+	task.delay(3, function()
+		Kit.tween(group, 0.35, { GroupTransparency = 1 })
+		Kit.tween(scale, 0.35, { Scale = 0.9 })
+		task.wait(0.4)
+		group:Destroy()
 	end)
-	-- Keep the stack short.
+	-- Keep the stack short (newest on top).
 	local items = {}
 	for _, child in toastHolder:GetChildren() do
-		if child:IsA("TextLabel") then
+		if child:IsA("CanvasGroup") then
 			table.insert(items, child)
 		end
 	end
-	if #items > 4 then
-		items[1]:Destroy()
+	table.sort(items, function(a, b)
+		return a.LayoutOrder > b.LayoutOrder
+	end)
+	while #items > 4 do
+		(table.remove(items, 1) :: Instance):Destroy()
 	end
 end
 
@@ -5374,19 +7353,121 @@ end
 
 function Popups.float(text: string, color: Color3, anchor: UDim2)
 	local label = Kit.title(screen, {
+		Name = "Float",
 		Text = text,
-		Size = UDim2.fromOffset(260, 44),
+		TextSize = 30,
+		TextWrapped = false,
+		Size = UDim2.fromOffset(300, 40),
 		Position = anchor,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		TextColor3 = color,
 		ZIndex = 20,
+		StrokeThickness = 3,
 	})
 	local labelStroke = label:FindFirstChildOfClass("UIStroke") :: UIStroke
-	Kit.tween(label, 1.1, { Position = anchor - UDim2.fromOffset(0, 70), TextTransparency = 1 })
-	Kit.tween(labelStroke, 1.1, { Transparency = 1 })
-	task.delay(1.2, function()
+	local pop = Kit.new("UIScale", { Scale = 0.5, Parent = label })
+	Kit.tween(pop, 0.25, { Scale = 1 }, Enum.EasingStyle.Back)
+	local drift = UDim2.fromOffset(math.random(-30, 30), -80)
+	Kit.tween(label, 1.2, { Position = anchor + drift, TextTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	Kit.tween(labelStroke, 1.2, { Transparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	task.delay(1.25, function()
 		label:Destroy()
 	end)
+end
+
+-- Shared modal pieces ------------------------------------------------------------------
+
+local function modal(name: string, size: Vector2, zindex: number, accent: Color3?, onBackdrop: (() -> ())?): (Frame, () -> ())
+	local dim = Kit.backdrop(screen, zindex - 1)
+	dim.Name = name .. "Backdrop"
+	Kit.fadeBackdrop(dim, true, 0.5)
+	local box = Kit.panel(screen, {
+		Name = name,
+		Size = UDim2.fromOffset(size.X, size.Y),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Color = C.Panel,
+		StrokeColor = accent,
+		StrokeThickness = 4,
+		Radius = Kit.RADIUS.XL,
+		ZIndex = zindex,
+	})
+	local scale = Kit.new("UIScale", { Scale = 0.8, Parent = box })
+	Kit.tween(scale, 0.25, { Scale = 1 }, Enum.EasingStyle.Back)
+	local closed = false
+	local function close()
+		if closed then
+			return
+		end
+		closed = true
+		Kit.fadeBackdrop(dim, false)
+		Kit.tween(scale, 0.12, { Scale = 0.85 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		task.delay(0.12, function()
+			box:Destroy()
+		end)
+		task.delay(0.3, function()
+			dim:Destroy()
+		end)
+	end
+	dim.Activated:Connect(function()
+		if onBackdrop then
+			onBackdrop()
+		end
+		close()
+	end)
+	return box, close
+end
+
+local function medallion(parent: Instance, icon: string, color: Color3, size: number, position: UDim2)
+	local medal = Kit.new("Frame", {
+		Name = "Medal",
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.fromOffset(size, size),
+		Position = position,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Parent = parent,
+	})
+	Kit.round(medal)
+	Kit.stroke(medal, 4)
+	Kit.gradient(medal, Kit.lighten(color, 0.45), Kit.darken(color, 0.1))
+	Kit.text(medal, { Text = icon, TextSize = math.floor(size * 0.55), Size = UDim2.fromScale(1, 1), StrokeThickness = 0 })
+	return medal
+end
+
+-- Light rays: thin rotated bars behind something celebratory.
+function Popups.rays(parent: Instance, color: Color3, size: number, position: UDim2, zindex: number?): Frame
+	local holder = Kit.new("Frame", {
+		Name = "Rays",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(size, size),
+		Position = position,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = zindex or 1,
+		Parent = parent,
+	})
+	for i = 0, 5 do
+		local ray = Kit.new("Frame", {
+			Name = "Ray",
+			BackgroundColor3 = color,
+			BackgroundTransparency = 0.86,
+			Size = UDim2.new(0, 30, 1, 0),
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Rotation = i * 30,
+			ZIndex = zindex or 1,
+			Parent = holder,
+		})
+		Kit.round(ray)
+	end
+	local spin: RBXScriptConnection
+	spin = RunService.RenderStepped:Connect(function(dt)
+		if not holder.Parent then
+			spin:Disconnect()
+			return
+		end
+		holder.Rotation = (holder.Rotation + dt * 25) % 360
+	end)
+	return holder
 end
 
 -- Reward reveal queue ----------------------------------------------------------------
@@ -5404,45 +7485,80 @@ local function showNextReward()
 	local band = Economy.tierBand(tier)
 	local color = C.Rarity[band]
 
-	local card = Kit.panel(screen, {
+	local holder = Kit.new("Frame", {
 		Name = "Reward",
-		Size = UDim2.fromOffset(360, 420),
-		Position = UDim2.fromScale(0.5, 0.48),
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(380, 470),
+		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
-		Color = C.Panel,
+		ZIndex = 30,
+		Parent = screen,
+	})
+	Popups.rays(holder, color, 640, UDim2.new(0.5, 0, 0, 190), 30)
+	local card = Kit.panel(holder, {
+		Name = "Card",
+		Size = UDim2.new(1, 0, 1, -24),
+		Position = UDim2.fromOffset(0, 24),
+		Color = Kit.darken(color, 0.72),
+		StrokeColor = color,
 		StrokeThickness = 5,
+		Radius = Kit.RADIUS.XL,
+		ZIndex = 31,
 	})
-	card.ZIndex = 30;
-	(card:FindFirstChildOfClass("UIStroke") :: UIStroke).Color = color
-	local scale = Kit.new("UIScale", { Scale = 0.3, Parent = card })
-	Kit.tween(scale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
+	local scale = Kit.new("UIScale", { Scale = 0.3, Parent = holder })
+	Kit.tween(scale, 0.4, { Scale = 1 }, Enum.EasingStyle.Back)
 
-	Kit.title(card, {
+	local banner = Kit.pill(holder, {
+		Name = "Banner",
 		Text = if reward.new then "NEW " .. string.upper(W.Unit) .. "!" else "YOU GOT",
-		Size = UDim2.new(1, -20, 0, 44),
-		Position = UDim2.fromOffset(10, 10),
-		TextColor3 = if reward.new then C.Primary else C.Text,
+		Color = if reward.new then C.Primary else C.PanelLight,
+		TextColor = C.Text,
+		TextSize = 28,
+		Size = UDim2.fromOffset(250, 48),
+		Position = UDim2.new(0.5, 0, 0, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 33,
 	})
-	local viewport = Kit.unitViewport(card, tier, { Size = UDim2.new(1, -40, 0, 230), Position = UDim2.fromOffset(20, 56) })
-	Kit.title(
-		card,
-		{ Text = Theme.Tiers[tier].Name, Size = UDim2.new(1, -20, 0, 40), Position = UDim2.fromOffset(10, 290), TextColor3 = color }
-	)
-	Kit.text(card, {
-		Text = string.format("Tier %d  •  %s", tier, band),
-		Size = UDim2.new(1, -20, 0, 28),
-		Position = UDim2.fromOffset(10, 332),
-		TextColor3 = C.TextDim,
+	banner.Rotation = -2
+	local viewport = Kit.unitViewport(card, tier, { Size = UDim2.new(1, -40, 0, 230), Position = UDim2.fromOffset(20, 34) })
+	Kit.title(card, {
+		Text = Theme.Tiers[tier].Name,
+		TextSize = 34,
+		TextScaled = true,
+		MaxTextSize = 34,
+		Size = UDim2.new(1, -24, 0, 42),
+		Position = UDim2.fromOffset(12, 268),
+		TextColor3 = Kit.lighten(color, 0.15),
+		StrokeThickness = 3,
+	})
+	Kit.pill(card, {
+		Text = string.format("TIER %d  •  %s", tier, string.upper(band)),
+		Color = Kit.darken(color, 0.35),
+		TextSize = T.Small,
+		Size = UDim2.fromOffset(200, 28),
+		Position = UDim2.new(0.5, 0, 0, 316),
+		AnchorPoint = Vector2.new(0.5, 0),
 	})
 	if reward.gems and reward.gems > 0 then
 		Kit.title(card, {
 			Text = string.format("+%d %s %s", reward.gems, W.Gem, I.Gem),
-			Size = UDim2.new(1, -20, 0, 30),
-			Position = UDim2.fromOffset(10, 366),
-			TextColor3 = C.Secondary,
+			TextSize = T.H3,
+			TextWrapped = false,
+			Size = UDim2.new(1, -20, 0, 28),
+			Position = UDim2.fromOffset(10, 354),
+			TextColor3 = Kit.lighten(C.Secondary, 0.3),
 		})
 	end
-	sounds.play("Reward")
+	Kit.text(card, {
+		Text = "tap to continue",
+		TextSize = T.Tiny,
+		TextWrapped = false,
+		Size = UDim2.new(1, 0, 0, 18),
+		Position = UDim2.new(0, 0, 1, -26),
+		TextColor3 = C.TextDim,
+		StrokeThickness = 1,
+	})
+	sounds.play(if reward.new then "Celebrate" else "Reward")
 
 	local model = viewport:FindFirstChildOfClass("Model")
 	local spin = RunService.RenderStepped:Connect(function(dt)
@@ -5458,17 +7574,17 @@ local function showNextReward()
 		end
 		closed = true
 		spin:Disconnect()
-		Kit.tween(scale, 0.18, { Scale = 0 })
+		Kit.tween(scale, 0.18, { Scale = 0 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		task.delay(0.2, function()
-			card:Destroy()
+			holder:Destroy()
 			showingReward = false
 			showNextReward()
 		end)
 	end
 	local catcher =
-		Kit.new("TextButton", { BackgroundTransparency = 1, Text = "", Size = UDim2.fromScale(1, 1), ZIndex = 40, Parent = card })
+		Kit.new("TextButton", { BackgroundTransparency = 1, Text = "", Size = UDim2.fromScale(1, 1), ZIndex = 40, Parent = holder })
 	catcher.Activated:Connect(close)
-	task.delay(3.2, close)
+	task.delay(3.4, close)
 end
 
 function Popups.reward(data: { [string]: any })
@@ -5481,63 +7597,99 @@ end
 
 -- Confirm dialog ---------------------------------------------------------------------------
 
-function Popups.confirm(text: string, onYes: () -> ())
-	local existing = screen:FindFirstChild("Confirm")
-	if existing then
-		existing:Destroy()
+function Popups.confirm(text: string, onYes: () -> (), options: { [string]: any }?)
+	local opts = options or {}
+	for _, name in { "Confirm", "ConfirmBackdrop" } do
+		local existing = screen:FindFirstChild(name)
+		if existing then
+			existing:Destroy()
+		end
 	end
-	local box = Kit.panel(screen, {
-		Name = "Confirm",
-		Size = UDim2.fromOffset(420, 200),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Color = C.Panel,
-		StrokeThickness = 4,
+	local box, close = modal("Confirm", Vector2.new(460, 250), 50, C.Primary)
+	medallion(box, opts.icon or "❓", C.Primary, 70, UDim2.new(0.5, 0, 0, 0))
+	Kit.title(box, {
+		Text = opts.title or "ARE YOU SURE?",
+		TextSize = T.H2,
+		TextWrapped = false,
+		Size = UDim2.new(1, -30, 0, 32),
+		Position = UDim2.fromOffset(15, 40),
+		TextColor3 = C.Primary,
 	})
-	box.ZIndex = 50
-	Kit.title(box, { Text = text, Size = UDim2.new(1, -30, 0, 90), Position = UDim2.fromOffset(15, 12) })
-	Kit.button(box, { Text = "Yes", Color = C.Good, Size = UDim2.new(0.5, -22, 0, 60), Position = UDim2.new(0, 15, 1, -74) }, function()
-		box:Destroy()
-		onYes()
-	end)
-	Kit.button(box, { Text = "No", Color = C.Bad, Size = UDim2.new(0.5, -22, 0, 60), Position = UDim2.new(0.5, 7, 1, -74) }, function()
-		box:Destroy()
-	end)
+	Kit.text(box, {
+		Name = "Text",
+		Text = text,
+		TextSize = T.Body,
+		Size = UDim2.new(1, -40, 0, 70),
+		Position = UDim2.fromOffset(20, 76),
+	})
+	Kit.button(
+		box,
+		{ Text = opts.yes or "Yes", Color = C.Good, Size = UDim2.new(0.5, -24, 0, 60), Position = UDim2.new(0, 16, 1, -76) },
+		function()
+			close()
+			onYes()
+		end
+	)
+	Kit.button(
+		box,
+		{ Text = opts.no or "No", Color = C.Bad, Size = UDim2.new(0.5, -24, 0, 60), Position = UDim2.new(0.5, 8, 1, -76), Sound = "Close" },
+		close
+	)
 end
 
 -- Offline earnings ---------------------------------------------------------------------------
 
 function Popups.offline(data: { [string]: any })
-	local box = Kit.panel(screen, {
-		Name = "Offline",
-		Size = UDim2.fromOffset(460, 260),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Color = C.Panel,
-		StrokeThickness = 4,
+	local box, close = modal("Offline", Vector2.new(500, 320), 45, C.Primary)
+	medallion(box, "💤", C.Secondary, 80, UDim2.new(0.5, 0, 0, 0))
+	Kit.title(box, {
+		Text = "WELCOME BACK!",
+		TextSize = T.H1,
+		TextWrapped = false,
+		Size = UDim2.new(1, -20, 0, 36),
+		Position = UDim2.fromOffset(10, 44),
+		TextColor3 = C.Primary,
 	})
-	box.ZIndex = 45
-	Kit.title(box, { Text = "WELCOME BACK!", Size = UDim2.new(1, -20, 0, 46), Position = UDim2.fromOffset(10, 10), TextColor3 = C.Primary })
 	Kit.text(box, {
 		Text = string.format("Your %s kept grinding for %s.", W.Units, Format.time(data.seconds)),
-		Size = UDim2.new(1, -30, 0, 30),
-		Position = UDim2.fromOffset(15, 62),
+		TextSize = T.Body,
+		Size = UDim2.new(1, -30, 0, 26),
+		Position = UDim2.fromOffset(15, 82),
 	})
-	Kit.title(box, {
-		Text = string.format("%s %s  →  %s", I.Orb, Format.short(data.orbs), Format.money(data.cash)),
-		Size = UDim2.new(1, -30, 0, 44),
-		Position = UDim2.fromOffset(15, 100),
+	local well = Kit.well(box, { Size = UDim2.new(1, -40, 0, 64), Position = UDim2.fromOffset(20, 114) })
+	Kit.title(well, {
+		Text = string.format("%s %s", I.Orb, Format.short(data.orbs)),
+		TextSize = 28,
+		TextWrapped = false,
+		Size = UDim2.new(0.42, 0, 1, 0),
+		TextColor3 = Kit.lighten(C.Orb, 0.2),
+	})
+	Kit.title(well, {
+		Text = "→",
+		TextSize = 28,
+		TextWrapped = false,
+		Size = UDim2.new(0.16, 0, 1, 0),
+		Position = UDim2.fromScale(0.42, 0),
+		TextColor3 = C.TextDim,
+	})
+	Kit.title(well, {
+		Text = Format.money(data.cash),
+		TextSize = 32,
+		TextWrapped = false,
+		Size = UDim2.new(0.42, 0, 1, 0),
+		Position = UDim2.fromScale(0.58, 0),
 		TextColor3 = C.Good,
 	})
 	Kit.text(box, {
-		Text = "Cash is waiting on your Collect pad. Unprocessed " .. W.Orb .. " stays in the converter.",
-		Size = UDim2.new(1, -30, 0, 26),
-		Position = UDim2.fromOffset(15, 148),
+		Text = "Your cash is waiting on the Collect pad. Unprocessed " .. W.Orb .. " stays in the converter.",
+		TextSize = T.Tiny,
+		Size = UDim2.new(1, -40, 0, 36),
+		Position = UDim2.fromOffset(20, 184),
 		TextColor3 = C.TextDim,
+		StrokeThickness = 1,
 	})
-	Kit.button(box, { Text = "Let's go!", Color = C.Good, Size = UDim2.new(1, -30, 0, 56), Position = UDim2.new(0, 15, 1, -68) }, function()
-		box:Destroy()
-	end)
+	Kit.button(box, { Text = "Let's go!", Color = C.Good, Size = UDim2.new(1, -40, 0, 62), Position = UDim2.new(0, 20, 1, -78) }, close)
+	sounds.play("Reward")
 end
 
 -- Held crate panel -----------------------------------------------------------------------------
@@ -5546,76 +7698,149 @@ local function buildChestPanel()
 	local action = Net.event("Action")
 	local panel = Kit.panel(screen, {
 		Name = "ChestPanel",
-		Size = UDim2.fromOffset(330, 430),
-		Position = UDim2.new(1, -14, 0.5, 20),
+		Size = UDim2.fromOffset(320, 440),
+		Position = UDim2.new(1, -12, 0.5, 30),
 		AnchorPoint = Vector2.new(1, 0.5),
 		Color = C.Panel,
 		Visible = false,
 		StrokeThickness = 4,
+		Radius = Kit.RADIUS.XL,
 	})
-	local title = Kit.title(panel, { Text = "", Size = UDim2.new(1, -20, 0, 44), Position = UDim2.fromOffset(10, 8) })
-	local icon = Kit.text(panel, { Text = I.Chest, Size = UDim2.new(1, 0, 0, 90), Position = UDim2.fromOffset(0, 52) })
-	local odds = Kit.new(
-		"Frame",
-		{ BackgroundTransparency = 1, Size = UDim2.new(1, -24, 0, 110), Position = UDim2.fromOffset(12, 146), Parent = panel }
+	local panelScale = Kit.new("UIScale", { Parent = panel })
+	local panelStroke = panel:FindFirstChildOfClass("UIStroke") :: UIStroke
+	local band = Kit.new("Frame", {
+		Name = "Band",
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.new(1, -16, 0, 46),
+		Position = UDim2.fromOffset(8, 8),
+		Parent = panel,
+	})
+	Kit.corner(band, Kit.RADIUS.L)
+	Kit.stroke(band, 3)
+	local bandGradient = Kit.gradient(band, C.Primary, C.Primary)
+	local title = Kit.title(
+		band,
+		{ Text = "", TextSize = T.H2, TextWrapped = false, Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(0, 1) }
 	)
-	Kit.new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder, Parent = odds })
-	local priceRow = Kit.panel(
+
+	local iconGlow = Kit.new("Frame", {
+		Name = "IconGlow",
+		BackgroundColor3 = C.Primary,
+		BackgroundTransparency = 0.6,
+		Size = UDim2.fromOffset(84, 84),
+		Position = UDim2.new(0.5, 0, 0, 104),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Parent = panel,
+	})
+	Kit.round(iconGlow)
+	Kit.text(
 		panel,
-		{ Color = C.PanelLight, Size = UDim2.new(1, -24, 0, 44), Position = UDim2.fromOffset(12, 262), Radius = 10, StrokeThickness = 2 }
+		{ Text = I.Chest, TextSize = 58, Size = UDim2.fromOffset(100, 80), Position = UDim2.new(0.5, -50, 0, 64), StrokeThickness = 0 }
 	)
-	Kit.title(priceRow, {
-		Text = "Unlock Price",
-		Size = UDim2.new(0.55, -8, 1, -10),
-		Position = UDim2.fromOffset(8, 5),
+
+	Kit.title(panel, {
+		Text = "POSSIBLE " .. string.upper(W.Units),
+		TextSize = T.Tiny,
+		TextWrapped = false,
+		Size = UDim2.new(1, -24, 0, 16),
+		Position = UDim2.fromOffset(12, 148),
 		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.TextDim,
+		StrokeThickness = 1,
+	})
+	local odds = Kit.well(panel, { Name = "Odds", Size = UDim2.new(1, -24, 0, 112), Position = UDim2.fromOffset(12, 166) })
+	Kit.padding(odds, 6, 8)
+	Kit.list(odds, 4)
+
+	local priceRow = Kit.new("Frame", {
+		Name = "Price",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -24, 0, 30),
+		Position = UDim2.fromOffset(12, 284),
+		Parent = panel,
+	})
+	Kit.title(priceRow, {
+		Text = "UNLOCK PRICE",
+		TextSize = T.Small,
+		TextWrapped = false,
+		Size = UDim2.new(0.5, 0, 1, 0),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.TextDim,
+		StrokeThickness = 1.5,
 	})
 	local priceLabel = Kit.title(priceRow, {
 		Text = "",
-		Size = UDim2.new(0.45, -8, 1, -10),
-		Position = UDim2.new(0.55, 0, 0, 5),
+		TextSize = T.H3,
+		TextWrapped = false,
+		Size = UDim2.new(0.5, 0, 1, 0),
+		Position = UDim2.fromScale(0.5, 0),
 		TextXAlignment = Enum.TextXAlignment.Right,
 		TextColor3 = C.Good,
 	})
 
 	local method = "money"
-	local unlockButton = Kit.button(
-		panel,
-		{ Text = "Unlock!", Color = C.Good, Size = UDim2.new(1, -24, 0, 54), Position = UDim2.fromOffset(12, 314) },
-		function()
-			action:FireServer({ action = "UnlockChest", method = method })
-		end
-	)
-	Kit.button(
-		panel,
-		{ Text = "🗑 Discard", Color = C.Bad, Size = UDim2.new(0.5, -18, 0, 44), Position = UDim2.fromOffset(12, 374) },
-		function()
-			action:FireServer({ action = "DiscardChest" })
-		end
-	)
+	local unlockButton = Kit.button(panel, {
+		Name = "Unlock",
+		Text = "Unlock!",
+		Color = C.Good,
+		Size = UDim2.new(1, -24, 0, 58),
+		Position = UDim2.fromOffset(12, 318),
+		TextSize = 24,
+	}, function()
+		action:FireServer({ action = "UnlockChest", method = method })
+	end)
+	Kit.button(panel, {
+		Name = "Discard",
+		Text = "Discard",
+		Icon = "🗑",
+		Color = C.Bad,
+		Size = UDim2.new(0.42, -12, 0, 46),
+		Position = UDim2.fromOffset(12, 382),
+		TextSize = 18,
+		Sound = "Close",
+	}, function()
+		action:FireServer({ action = "DiscardChest" })
+	end)
 	Kit.text(panel, {
 		Text = "or carry it to a " .. W.Unlocker .. " to open it free",
-		Size = UDim2.new(0.5, -12, 0, 44),
-		Position = UDim2.new(0.5, 0, 0, 374),
+		TextSize = T.Tiny,
+		Size = UDim2.new(0.58, -16, 0, 42),
+		Position = UDim2.new(0.42, 6, 0, 380),
+		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = C.TextDim,
+		StrokeThickness = 1,
 	})
+
+	local function fullScale(): number
+		return if screen:GetAttribute("Compact") == true then 0.8 else 1
+	end
+	screen:GetAttributeChangedSignal("Compact"):Connect(function()
+		panelScale.Scale = fullScale()
+	end)
+	panelScale.Scale = fullScale()
 
 	local shownFor = ""
 	State.changed.Event:Connect(function(data)
 		local rarity = data.heldChest
+		local wasVisible = panel.Visible
 		panel.Visible = rarity ~= ""
 		if rarity == "" then
 			shownFor = ""
 			return
 		end
+		if not wasVisible then
+			local target = fullScale()
+			panelScale.Scale = target * 0.6
+			Kit.tween(panelScale, 0.25, { Scale = target }, Enum.EasingStyle.Back)
+		end
 		local color = C.Rarity[rarity]
 		local key = rarity .. ":" .. data.highestTier
 		if key ~= shownFor then
 			shownFor = key
-			title.Text = rarity .. " " .. W.Chest
-			title.TextColor3 = color
-			icon.TextColor3 = color;
-			(panel:FindFirstChildOfClass("UIStroke") :: UIStroke).Color = color
+			title.Text = string.upper(rarity .. " " .. W.Chest)
+			bandGradient.Color = ColorSequence.new(Kit.lighten(color, 0.2), Kit.darken(color, 0.15))
+			iconGlow.BackgroundColor3 = color
+			panelStroke.Color = color
 			for _, child in odds:GetChildren() do
 				if child:IsA("Frame") then
 					child:Destroy()
@@ -5623,40 +7848,59 @@ local function buildChestPanel()
 			end
 			for order, entry in Economy.chestOdds(rarity, data.highestTier) do
 				local row =
-					Kit.new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 34), LayoutOrder = order, Parent = odds })
-				local band = Economy.tierBand(entry.tier)
-				Kit.title(row, { Text = "T" .. entry.tier, Size = UDim2.new(0.18, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Left })
+					Kit.new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 30), LayoutOrder = order, Parent = odds })
+				local tierBand = Economy.tierBand(entry.tier)
+				local barBack = Kit.new("Frame", {
+					BackgroundColor3 = C.Rarity[tierBand],
+					BackgroundTransparency = 0.82,
+					Size = UDim2.fromScale(entry.chance / 100, 1),
+					Parent = row,
+				})
+				Kit.corner(barBack, 6)
+				Kit.title(row, {
+					Text = "#" .. entry.tier,
+					TextSize = T.Small,
+					TextWrapped = false,
+					Size = UDim2.new(0, 40, 1, 0),
+					Position = UDim2.fromOffset(4, 0),
+					TextXAlignment = Enum.TextXAlignment.Left,
+					StrokeThickness = 1.5,
+				})
 				Kit.title(row, {
 					Text = Theme.Tiers[entry.tier].Name,
-					Size = UDim2.new(0.58, 0, 1, 0),
-					Position = UDim2.fromScale(0.18, 0),
+					TextSize = T.Small,
+					TextWrapped = false,
+					Size = UDim2.new(1, -100, 1, 0),
+					Position = UDim2.fromOffset(42, 0),
 					TextXAlignment = Enum.TextXAlignment.Left,
-					TextColor3 = C.Rarity[band],
+					TextColor3 = C.Rarity[tierBand],
+					StrokeThickness = 1.5,
 				})
 				Kit.title(row, {
 					Text = entry.chance .. "%",
-					Size = UDim2.new(0.24, 0, 1, 0),
-					Position = UDim2.fromScale(0.76, 0),
+					TextSize = T.Small,
+					TextWrapped = false,
+					Size = UDim2.new(0, 54, 1, 0),
+					Position = UDim2.new(1, -4, 0, 0),
+					AnchorPoint = Vector2.new(1, 0),
 					TextXAlignment = Enum.TextXAlignment.Right,
+					StrokeThickness = 1.5,
 				})
 			end
 		end
 		local moneyPrice = Economy.chestMoneyPrice(rarity, data.highestTier)
 		local gemPrice = Economy.CHEST_INFO[rarity].gemPrice
+		priceLabel.Text = State.money(moneyPrice)
 		if data.money >= moneyPrice then
 			method = "money"
-			priceLabel.Text = State.money(moneyPrice)
 			priceLabel.TextColor3 = C.Good
+			Kit.setEnabled(unlockButton, true)
 			Kit.setButton(unlockButton, "🔓 Unlock!", C.Good)
 		else
 			method = "gems"
-			priceLabel.Text = State.money(moneyPrice)
 			priceLabel.TextColor3 = C.Bad
-			Kit.setButton(
-				unlockButton,
-				string.format("🔓 Unlock  %s %d", I.Gem, gemPrice),
-				if data.gems >= gemPrice then C.Secondary else C.PadDisabled
-			)
+			Kit.setEnabled(unlockButton, data.gems >= gemPrice)
+			Kit.setButton(unlockButton, string.format("🔓 Unlock  %s %d", I.Gem, gemPrice), C.Secondary)
 		end
 	end)
 end
@@ -5667,17 +7911,13 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 	toastHolder = Kit.new("Frame", {
 		Name = "Toasts",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(640, 200),
-		Position = UDim2.new(0.5, 0, 0, 140),
+		Size = UDim2.fromOffset(560, 230),
+		Position = UDim2.new(0.5, 0, 0, TOAST_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 25,
 		Parent = screen,
 	})
-	Kit.new("UIListLayout", {
-		Padding = UDim.new(0, 2),
-		HorizontalAlignment = Enum.HorizontalAlignment.Center,
-		SortOrder = Enum.SortOrder.LayoutOrder,
-		Parent = toastHolder,
-	})
+	Kit.list(toastHolder, 2, false, Enum.HorizontalAlignment.Center)
 	buildChestPanel()
 end
 
@@ -5685,15 +7925,424 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
+<<<<<<< HEAD
           <Item class="ModuleScript" referent="27">
+=======
+          <Item class="ModuleScript" referent="32">
+            <Properties>
+              <string name="Name">Tutorial</string>
+              <string name="Source"><![CDATA[--[[
+	Tutorial (client): the onboarding card, the guide target and the
+	completion celebration. Progress itself is server-side (see
+	ServerScriptService.Server.Tutorial); this only reads the State snapshot
+	(tutorialStep, tutorialDone) and the "Tutorial" Notify payloads.
+
+	The card sits at the bottom centre, just above the tank, so the world ahead
+	of the player (where the guide arrow points) stays visible. It never blocks
+	input except for its Skip button.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Net = require(ReplicatedStorage.Shared.Net)
+local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
+
+local Kit = require(script.Parent.Kit)
+local State = require(script.Parent.Parent.State)
+
+local Theme = Kit.Theme
+local C = Kit.C
+local T = Kit.TEXT
+local W = Theme.Words
+local I = Theme.Icons
+local Words = Theme.Tutorial
+
+local Tutorial = {}
+
+export type Deps = {
+	popups: any,
+	sounds: any,
+	guide: any?,
+	-- Glows a HUD menu button (e.g. the Index after the first merge).
+	highlight: ((string, boolean) -> ())?,
+}
+
+local CARD_HEIGHT = 112
+
+local screen: ScreenGui
+local deps: Deps
+local card: Frame
+local cardScale: UIScale
+local cardStroke: UIStroke
+local iconLabel: TextLabel
+local stepLabel: TextLabel
+local titleLabel: TextLabel
+local textLabel: TextLabel
+local statusPill: TextLabel
+local dots: { Frame } = {}
+local shownStep = 0
+local visible = false
+
+local function guideText(target: string?): string
+	if target == "Orbs" then
+		return "GRAB " .. string.upper(W.Orb) .. "!"
+	end
+	return "STEP HERE"
+end
+
+local function setVisible(on: boolean)
+	if on == visible then
+		return
+	end
+	visible = on
+	if on then
+		card.Visible = true
+		cardScale.Scale = 0.7
+		Kit.tween(cardScale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+	else
+		Kit.tween(cardScale, 0.18, { Scale = 0 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		task.delay(0.2, function()
+			if not visible then
+				card.Visible = false
+			end
+		end)
+	end
+end
+
+local function render(data: { [string]: any })
+	local step = TutorialSteps.clamp(data.tutorialStep)
+	local active = data.tutorialDone ~= true and step <= TutorialSteps.COUNT
+	setVisible(active)
+	if not active then
+		if deps.guide then
+			deps.guide.setTutorialTarget(nil)
+		end
+		return
+	end
+	local words = Words.Steps[step]
+	local target = TutorialSteps.target(step, data.units)
+	local needsPair = TutorialSteps.STEPS[step].id == "merge" and target ~= "Merge"
+
+	if step ~= shownStep then
+		local advanced = shownStep > 0 and step > shownStep
+		shownStep = step
+		if advanced then
+			cardScale.Scale = 1.08
+			Kit.tween(cardScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
+			cardStroke.Color = C.Good
+			Kit.tween(cardStroke, 0.8, { Color = C.Primary })
+		end
+	end
+	iconLabel.Text = words.Icon
+	stepLabel.Text = string.format('%s  <font color="%s">STEP %d/%d</font>', Words.Title, Kit.hex(C.TextDim), step, TutorialSteps.COUNT)
+	titleLabel.Text = words.Title
+	textLabel.Text = if needsPair and words.Hint then words.Hint else words.Text
+	for i, dot in dots do
+		local done = i < step
+		local current = i == step
+		dot.BackgroundColor3 = if done then C.Good elseif current then C.Primary else C.PanelDark
+		dot.Size = if current then UDim2.fromOffset(26, 12) else UDim2.fromOffset(12, 12)
+	end
+
+	-- Live status for the steps that depend on numbers.
+	local status: string? = nil
+	if step == 3 then
+		status = I.Orb .. " " .. State.num(data.carried) .. " in tank"
+	elseif step == 4 then
+		status = if data.pending >= 1 then "💵 " .. State.money(data.pending) .. " ready" else "converting..."
+	end
+	statusPill.Visible = status ~= nil
+	statusPill.Text = status or ""
+
+	if deps.guide then
+		deps.guide.setTutorialTarget(target, guideText(target))
+	end
+end
+
+local function confetti(parent: Instance)
+	local colors = { C.Primary, C.Secondary, C.Good, C.Accent, C.Orb }
+	for i = 1, 26 do
+		local piece = Kit.new("Frame", {
+			Name = "Confetti",
+			BackgroundColor3 = colors[(i % #colors) + 1],
+			Size = UDim2.fromOffset(math.random(8, 14), math.random(14, 22)),
+			Position = UDim2.new(math.random(), 0, 0, math.random(-60, 40)),
+			Rotation = math.random(0, 360),
+			ZIndex = 44,
+			Parent = parent,
+		})
+		Kit.corner(piece, 3)
+		local fall = math.random(220, 420)
+		Kit.tween(piece, 1.6 + math.random() * 0.8, {
+			Position = piece.Position + UDim2.fromOffset(math.random(-60, 60), fall),
+			Rotation = piece.Rotation + math.random(-240, 240),
+			BackgroundTransparency = 1,
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	end
+end
+
+-- "Training complete" popup with the reward.
+function Tutorial.celebrate(gems: number, cash: number)
+	local existing = screen:FindFirstChild("TutorialDone")
+	if existing then
+		existing:Destroy()
+	end
+	local holder = Kit.new("Frame", {
+		Name = "TutorialDone",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(470, 360),
+		Position = UDim2.fromScale(0.5, 0.48),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 40,
+		Parent = screen,
+	})
+	deps.popups.rays(holder, C.Primary, 600, UDim2.new(0.5, 0, 0, 40), 40)
+	local box = Kit.panel(holder, {
+		Name = "Card",
+		Size = UDim2.new(1, 0, 1, -40),
+		Position = UDim2.fromOffset(0, 40),
+		Color = C.Panel,
+		StrokeColor = C.Primary,
+		StrokeThickness = 5,
+		Radius = Kit.RADIUS.XL,
+		ZIndex = 41,
+	})
+	local scale = Kit.new("UIScale", { Scale = 0.3, Parent = holder })
+	Kit.tween(scale, 0.45, { Scale = 1 }, Enum.EasingStyle.Back)
+
+	local medal = Kit.new("Frame", {
+		Name = "Medal",
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.fromOffset(96, 96),
+		Position = UDim2.new(0.5, 0, 0, 40),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 42,
+		Parent = holder,
+	})
+	Kit.round(medal)
+	Kit.stroke(medal, 4)
+	Kit.gradient(medal, Kit.lighten(C.Primary, 0.45), Kit.darken(C.Primary, 0.1))
+	Kit.text(medal, { Text = "🏆", TextSize = 54, Size = UDim2.fromScale(1, 1), StrokeThickness = 0 })
+
+	Kit.title(box, {
+		Text = Words.DoneTitle,
+		TextSize = T.H1,
+		TextScaled = true,
+		MaxTextSize = T.H1,
+		Size = UDim2.new(1, -30, 0, 40),
+		Position = UDim2.fromOffset(15, 58),
+		TextColor3 = C.Primary,
+		StrokeThickness = 3,
+	})
+	Kit.text(box, {
+		Text = Words.DoneText,
+		TextSize = T.Body,
+		Size = UDim2.new(1, -40, 0, 48),
+		Position = UDim2.fromOffset(20, 100),
+	})
+	local rewards = Kit.new("Frame", {
+		Name = "Rewards",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -40, 0, 46),
+		Position = UDim2.fromOffset(20, 154),
+		Parent = box,
+	})
+	Kit.list(rewards, 14, true, Enum.HorizontalAlignment.Center)
+	Kit.pill(rewards, {
+		Text = string.format("+%d %s %s", gems, W.Gem, I.Gem),
+		Color = Kit.darken(C.Secondary, 0.25),
+		TextSize = T.H3,
+		Size = UDim2.fromOffset(0, 42),
+		AutomaticSize = Enum.AutomaticSize.X,
+		LayoutOrder = 1,
+	})
+	Kit.pill(rewards, {
+		Text = "+" .. State.money(cash),
+		Color = Kit.darken(C.Good, 0.35),
+		TextSize = T.H3,
+		Size = UDim2.fromOffset(0, 42),
+		AutomaticSize = Enum.AutomaticSize.X,
+		LayoutOrder = 2,
+	})
+
+	local function close()
+		if not holder.Parent then
+			return
+		end
+		Kit.tween(scale, 0.18, { Scale = 0 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		task.delay(0.2, function()
+			holder:Destroy()
+		end)
+	end
+	Kit.button(box, {
+		Name = "Go",
+		Text = "Let's go!",
+		Color = C.Good,
+		Size = UDim2.new(1, -60, 0, 62),
+		Position = UDim2.new(0, 30, 1, -80),
+		TextSize = 28,
+		ZIndex = 42,
+	}, close)
+	confetti(holder)
+	deps.sounds.play("Celebrate")
+	task.delay(9, close)
+end
+
+function Tutorial.onNotify(payload: { [string]: any })
+	if payload.event == "step" then
+		deps.sounds.play("Step")
+	elseif payload.event == "done" then
+		setVisible(false)
+		Tutorial.celebrate(payload.gems or 0, payload.cash or 0)
+		-- The merge just discovered a new tier: point at the Index.
+		if deps.highlight then
+			deps.highlight("Index", true)
+		end
+	elseif payload.event == "skipped" then
+		setVisible(false)
+	end
+end
+
+function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
+	screen = screenGui
+	deps = dependencies
+	local action = Net.event("Action")
+
+	card = Kit.panel(screen, {
+		Name = "TutorialCard",
+		Size = UDim2.fromOffset(480, CARD_HEIGHT),
+		Position = UDim2.new(0.5, 0, 1, -118),
+		AnchorPoint = Vector2.new(0.5, 1),
+		Color = C.Panel,
+		StrokeColor = C.Primary,
+		StrokeThickness = 4,
+		Radius = Kit.RADIUS.XL,
+		Visible = false,
+		ZIndex = 6,
+	})
+	cardStroke = card:FindFirstChildOfClass("UIStroke") :: UIStroke
+	cardScale = Kit.new("UIScale", { Parent = card })
+
+	local medal = Kit.new("Frame", {
+		Name = "Medal",
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.fromOffset(70, 70),
+		Position = UDim2.new(0, 14, 0.5, -4),
+		AnchorPoint = Vector2.new(0, 0.5),
+		Parent = card,
+	})
+	Kit.round(medal)
+	Kit.stroke(medal, 3)
+	Kit.gradient(medal, Kit.lighten(C.Primary, 0.45), Kit.darken(C.Primary, 0.1))
+	iconLabel = Kit.text(medal, { Name = "Icon", Text = "", TextSize = 36, Size = UDim2.fromScale(1, 1), StrokeThickness = 0 })
+
+	stepLabel = Kit.title(card, {
+		Name = "Step",
+		Text = "",
+		RichText = true,
+		TextSize = T.Tiny,
+		TextWrapped = false,
+		Size = UDim2.new(1, -200, 0, 18),
+		Position = UDim2.fromOffset(98, 10),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.Primary,
+		StrokeThickness = 1.5,
+	})
+	titleLabel = Kit.title(card, {
+		Name = "Title",
+		Text = "",
+		TextSize = T.H3 + 1,
+		TextWrapped = false,
+		Size = UDim2.new(1, -120, 0, 26),
+		Position = UDim2.fromOffset(98, 28),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		StrokeThickness = 2,
+	})
+	textLabel = Kit.text(card, {
+		Name = "Text",
+		Text = "",
+		TextSize = T.Small,
+		Size = UDim2.new(1, -116, 0, 38),
+		Position = UDim2.fromOffset(98, 56),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		TextColor3 = C.TextDim,
+		StrokeThickness = 1,
+	})
+
+	local dotRow = Kit.new("Frame", {
+		Name = "Dots",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(160, 12),
+		Position = UDim2.fromOffset(98, CARD_HEIGHT - 20),
+		Parent = card,
+	})
+	Kit.list(dotRow, 6, true)
+	for i = 1, TutorialSteps.COUNT do
+		local dot = Kit.new("Frame", {
+			Name = "Dot" .. i,
+			BackgroundColor3 = C.PanelDark,
+			Size = UDim2.fromOffset(12, 12),
+			LayoutOrder = i,
+			Parent = dotRow,
+		})
+		Kit.round(dot)
+		Kit.stroke(dot, 2)
+		dots[i] = dot
+	end
+
+	statusPill = Kit.pill(card, {
+		Name = "Status",
+		Text = "",
+		Color = C.PanelDark,
+		TextColor = C.Good,
+		TextSize = T.Tiny,
+		Size = UDim2.fromOffset(0, 22),
+		AutomaticSize = Enum.AutomaticSize.X,
+		Position = UDim2.new(1, -14, 1, -12),
+		AnchorPoint = Vector2.new(1, 1),
+		Visible = false,
+	})
+
+	Kit.button(card, {
+		Name = "Skip",
+		Text = Words.Skip,
+		Color = C.PanelLight,
+		Size = UDim2.fromOffset(70, 34),
+		Position = UDim2.new(1, -10, 0, 8),
+		AnchorPoint = Vector2.new(1, 0),
+		TextSize = T.Small,
+		Depth = 4,
+	}, function()
+		deps.popups.confirm(Words.SkipConfirm, function()
+			action:FireServer({ action = "SkipTutorial" })
+		end, { title = "SKIP " .. Words.Title .. "?", icon = "⏭", yes = Words.Skip, no = "Keep going" })
+	end)
+
+	State.changed.Event:Connect(render)
+	if State.data then
+		render(State.data)
+	end
+end
+
+return Tutorial
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="33">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
-	Windows: Shop, Index, Ranking and Settings. Only one is open at a time.
+	Windows: Shop, Index, Ranking and Settings.
+
+	Only one is open at a time. A dimmed backdrop sits behind the open window;
+	clicking it, the X button, Escape or the gamepad B button closes it.
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
@@ -5704,152 +8353,347 @@ local State = require(script.Parent.Parent.State)
 
 local Theme = Kit.Theme
 local C = Kit.C
+local T = Kit.TEXT
 local W = Theme.Words
 local I = Theme.Icons
 
 local Windows = {}
 
 local windows: { [string]: Kit.Window } = {}
+local backdrop: TextButton
+Windows.changed = Instance.new("BindableEvent")
+
+local function anyOpen(): boolean
+	for _, window in windows do
+		if window.isOpen() then
+			return true
+		end
+	end
+	return false
+end
+Windows.isAnyOpen = anyOpen
 
 function Windows.open(name: string)
 	for key, window in windows do
 		window.setOpen(key == name and not window.isOpen())
 	end
+	Kit.fadeBackdrop(backdrop, anyOpen())
+	Windows.changed:Fire()
 end
 
 function Windows.closeAll()
 	for _, window in windows do
 		window.setOpen(false)
 	end
+	if backdrop then
+		Kit.fadeBackdrop(backdrop, false)
+	end
+	Windows.changed:Fire()
 end
 
-local function sectionTitle(parent: Instance, text: string, order: number)
-	local holder = Kit.new("Frame", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 44),
-		LayoutOrder = order,
-		Parent = parent,
-	})
-	Kit.title(
-		holder,
-		{ Text = text, Size = UDim2.new(1, -10, 1, -6), Position = UDim2.fromOffset(6, 3), TextXAlignment = Enum.TextXAlignment.Left }
-	)
+local function register(name: string, window: Kit.Window)
+	windows[name] = window
+	window.onClose.Event:Connect(function()
+		Kit.fadeBackdrop(backdrop, anyOpen())
+		Windows.changed:Fire()
+	end)
+end
+
+local function clearChildren(parent: Instance, className: string?)
+	for _, child in parent:GetChildren() do
+		if child:IsA(className or "GuiObject") then
+			child:Destroy()
+		end
+	end
 end
 
 -- Shop ------------------------------------------------------------------------------
 
+local PASS_ICONS = {
+	AutoLoot = "🧲",
+	AutoCash = "🏦",
+	DoubleAura = I.Orb,
+	DoubleMoney = "💰",
+	PremiumUnlocker = "🔓",
+}
+
+local function ribbon(parent: Instance, text: string, color: Color3)
+	return Kit.pill(parent, {
+		Name = "Ribbon",
+		Text = text,
+		Color = color,
+		TextSize = T.Tiny,
+		Size = UDim2.fromOffset(0, 24),
+		AutomaticSize = Enum.AutomaticSize.X,
+		Position = UDim2.new(1, 8, 0, -10),
+		AnchorPoint = Vector2.new(1, 0),
+		Rotation = 6,
+		ZIndex = 4,
+	})
+end
+
 local function buildShop(screen: ScreenGui)
-	local window = Kit.window(screen, "Shop", "Shop", I.Shop, C.Window.Shop, Vector2.new(820, 520))
-	windows.Shop = window
+	local window = Kit.window(screen, "Shop", "Shop", I.Shop, C.Window.Shop, Vector2.new(860, 540))
+	register("Shop", window)
 	local action = Net.event("Action")
 
-	local scroll = Kit.scrolling(window.content)
-	Kit.new("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder, Parent = scroll })
-	Kit.padding(scroll, 6)
-
-	sectionTitle(scroll, "Game Passes  " .. I.Premium, 1)
-	local passGrid = Kit.new("Frame", {
+	-- Tabs.
+	local tabBar = Kit.new("Frame", {
+		Name = "Tabs",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -16, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		LayoutOrder = 2,
-		Parent = scroll,
+		Size = UDim2.new(1, 0, 0, 50),
+		Parent = window.content,
 	})
-	Kit.new("UIGridLayout", {
-		CellSize = UDim2.new(0.33, -8, 0, 200),
-		CellPadding = UDim2.fromOffset(10, 10),
-		SortOrder = Enum.SortOrder.LayoutOrder,
-		Parent = passGrid,
-	})
+	Kit.list(tabBar, 10, true)
+	local pages: { [string]: ScrollingFrame } = {}
+	local tabButtons: { [string]: TextButton } = {}
+	local TABS = {
+		{ key = "Passes", text = "Passes", icon = I.Premium },
+		{ key = "Cash", text = "Cash", icon = "💵" },
+		{ key = "Gems", text = W.Gem, icon = I.Gem },
+	}
+	local selected = "Passes"
+	local function selectTab(key: string)
+		selected = key
+		for name, page in pages do
+			page.Visible = name == key
+		end
+		for name, button in tabButtons do
+			Kit.setButton(button, nil, if name == key then C.Window.Shop else C.PanelLight)
+		end
+	end
+	for order, tab in TABS do
+		tabButtons[tab.key] = Kit.button(tabBar, {
+			Name = tab.key,
+			Icon = tab.icon,
+			Text = tab.text,
+			Color = C.PanelLight,
+			Size = UDim2.fromOffset(170, 46),
+			LayoutOrder = order,
+			TextSize = 22,
+			Depth = 5,
+		}, function()
+			selectTab(tab.key)
+		end)
+	end
 
-	local passButtons: { [string]: TextButton } = {}
+	local function page(key: string): ScrollingFrame
+		local scroll = Kit.scrolling(window.content, { Name = key, Size = UDim2.new(1, 0, 1, -62), Position = UDim2.fromOffset(0, 62) })
+		Kit.new("UIPadding", {
+			PaddingTop = UDim.new(0, 12),
+			PaddingLeft = UDim.new(0, 6),
+			PaddingRight = UDim.new(0, 14),
+			PaddingBottom = UDim.new(0, 10),
+			Parent = scroll,
+		})
+		pages[key] = scroll
+		return scroll
+	end
+
+	-- Passes: 3-wide cards.
+	local passPage = page("Passes")
+	Kit.new("UIGridLayout", {
+		CellSize = UDim2.new(1 / 3, -10, 0, 214),
+		CellPadding = UDim2.fromOffset(14, 16),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = passPage,
+	})
+	local passCards: { [string]: { button: TextButton, tag: TextLabel? } } = {}
 	for order, name in Theme.Monetization.PassOrder do
 		local pass = Theme.Monetization.Passes[name]
-		local card = Kit.panel(passGrid, { Color = pass.Color, LayoutOrder = order, Radius = 14 })
-		Kit.title(card, { Text = pass.Title, Size = UDim2.new(1, -16, 0, 40), Position = UDim2.fromOffset(8, 8) })
-		local descBox = Kit.panel(card, {
-			Color = Kit.darken(pass.Color, 0.45),
-			Size = UDim2.new(1, -24, 0, 76),
-			Position = UDim2.fromOffset(12, 52),
-			Radius = 10,
-			StrokeThickness = 2,
+		local card = Kit.panel(passPage, { Name = name, Color = Kit.darken(pass.Color, 0.55), LayoutOrder = order, Radius = Kit.RADIUS.L })
+		local band = Kit.new("Frame", {
+			Name = "Band",
+			BackgroundColor3 = Color3.new(1, 1, 1),
+			Size = UDim2.new(1, -12, 0, 44),
+			Position = UDim2.fromOffset(6, 6),
+			Parent = card,
 		})
-		Kit.text(descBox, { Text = pass.Desc, Size = UDim2.new(1, -16, 1, -12), Position = UDim2.fromOffset(8, 6), TextColor3 = C.Primary })
-		passButtons[name] = Kit.button(card, {
-			Text = pass.Price .. " R$",
+		Kit.corner(band, Kit.RADIUS.M)
+		Kit.gradient(band, Kit.lighten(pass.Color, 0.15), Kit.darken(pass.Color, 0.1))
+		Kit.title(
+			band,
+			{ Text = pass.Title, TextSize = T.H2, TextWrapped = false, Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(0, 1) }
+		)
+		Kit.text(card, {
+			Name = "Icon",
+			Text = PASS_ICONS[name] or I.Premium,
+			TextSize = 42,
+			Size = UDim2.fromOffset(60, 70),
+			Position = UDim2.fromOffset(8, 58),
+			StrokeThickness = 0,
+		})
+		Kit.text(card, {
+			Name = "Desc",
+			Text = pass.Desc,
+			TextSize = T.Body,
+			Size = UDim2.new(1, -80, 0, 74),
+			Position = UDim2.fromOffset(70, 56),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = Kit.lighten(pass.Color, 0.7),
+		})
+		local button = Kit.button(card, {
+			Name = "Buy",
+			Text = "R$ " .. pass.Price,
 			Color = C.Good,
-			Size = UDim2.new(1, -24, 0, 52),
-			Position = UDim2.new(0, 12, 1, -62),
+			Size = UDim2.new(1, -24, 0, 56),
+			Position = UDim2.new(0, 12, 1, -66),
+			TextSize = 26,
 		}, function()
 			action:FireServer({ action = "PromptPass", name = name })
 		end)
+		local tag = if name == "DoubleMoney" then ribbon(card, "🔥 POPULAR", C.Accent) else nil
+		passCards[name] = { button = button, tag = tag }
 	end
 
-	sectionTitle(scroll, "$ Cash Packs", 3)
-	local moneyGrid = Kit.new("Frame", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -16, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		LayoutOrder = 4,
-		Parent = scroll,
-	})
+	-- Cash packs: two columns of rows.
+	local cashPage = page("Cash")
 	Kit.new("UIGridLayout", {
-		CellSize = UDim2.new(0.5, -6, 0, 70),
-		CellPadding = UDim2.fromOffset(10, 10),
+		CellSize = UDim2.new(0.5, -8, 0, 100),
+		CellPadding = UDim2.fromOffset(14, 16),
 		SortOrder = Enum.SortOrder.LayoutOrder,
-		Parent = moneyGrid,
+		Parent = cashPage,
 	})
 	local moneyLabels: { TextLabel } = {}
+	local packCount = #Theme.Monetization.MoneyPacks
 	for index, pack in Theme.Monetization.MoneyPacks do
-		local row = Kit.panel(moneyGrid, { Color = C.PanelLight, LayoutOrder = index, Radius = 12 })
+		local row = Kit.panel(cashPage, { Name = "Pack" .. index, Color = C.PanelLight, LayoutOrder = index, Radius = Kit.RADIUS.L })
+		local stackIcon = string.rep("💵", math.clamp(math.ceil(index / 2), 1, 3))
+		Kit.text(row, {
+			Text = stackIcon,
+			TextSize = 26,
+			TextWrapped = false,
+			Size = UDim2.fromOffset(110, 30),
+			Position = UDim2.fromOffset(14, 10),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			StrokeThickness = 0,
+		})
 		moneyLabels[index] = Kit.title(row, {
+			Name = "Amount",
 			Text = "$0",
-			Size = UDim2.new(0.58, -10, 1, -16),
-			Position = UDim2.fromOffset(12, 8),
+			TextSize = 30,
+			TextWrapped = false,
+			Size = UDim2.new(0.6, -14, 0, 34),
+			Position = UDim2.fromOffset(14, 40),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextColor3 = C.Good,
 		})
+		Kit.text(row, {
+			Text = string.format("about %s of income", Format.time(pack.Seconds)),
+			TextSize = T.Tiny,
+			TextWrapped = false,
+			Size = UDim2.new(0.6, -14, 0, 16),
+			Position = UDim2.fromOffset(15, 74),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = C.TextDim,
+			StrokeThickness = 1,
+		})
 		Kit.button(row, {
-			Text = pack.Price .. " R$",
+			Name = "Buy",
+			Text = "R$ " .. pack.Price,
 			Color = C.Good,
-			Size = UDim2.new(0.4, -10, 1, -16),
-			Position = UDim2.new(0.6, 0, 0, 8),
+			Size = UDim2.new(0.4, -12, 0, 60),
+			Position = UDim2.new(1, -12, 0.5, 0),
+			AnchorPoint = Vector2.new(1, 0.5),
+			TextSize = 24,
 		}, function()
 			action:FireServer({ action = "PromptProduct", kind = "Money", index = index })
 		end)
+		if index == packCount then
+			ribbon(row, "★ BEST VALUE", C.Primary)
+		end
 	end
 
-	sectionTitle(scroll, I.Gem .. " " .. W.Gem .. " Packs", 5)
+	-- Premium currency packs: three cards.
+	local gemPage = page("Gems")
+	Kit.list(gemPage, 18)
 	local gemGrid = Kit.new("Frame", {
+		Name = "Cards",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -16, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		LayoutOrder = 6,
-		Parent = scroll,
+		Size = UDim2.new(1, 0, 0, 230),
+		LayoutOrder = 1,
+		Parent = gemPage,
 	})
 	Kit.new("UIGridLayout", {
-		CellSize = UDim2.new(0.33, -8, 0, 130),
-		CellPadding = UDim2.fromOffset(10, 10),
+		CellSize = UDim2.new(1 / 3, -10, 0, 230),
+		CellPadding = UDim2.fromOffset(14, 16),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 		Parent = gemGrid,
 	})
+	local gemCount = #Theme.Monetization.GemPacks
 	for index, pack in Theme.Monetization.GemPacks do
-		local card = Kit.panel(gemGrid, { Color = Kit.darken(C.Secondary, 0.35), LayoutOrder = index, Radius = 12 })
+		local card = Kit.panel(
+			gemGrid,
+			{ Name = "Gems" .. index, Color = Kit.darken(C.Secondary, 0.45), LayoutOrder = index, Radius = Kit.RADIUS.L }
+		)
+		local glow = Kit.new("Frame", {
+			Name = "Glow",
+			BackgroundColor3 = C.Secondary,
+			BackgroundTransparency = 0.6,
+			Size = UDim2.fromOffset(96, 96),
+			Position = UDim2.new(0.5, 0, 0, 62),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Parent = card,
+		})
+		Kit.round(glow)
+		Kit.text(card, {
+			Text = string.rep(I.Gem, index),
+			TextSize = 38 - index * 4,
+			TextWrapped = false,
+			Size = UDim2.new(1, 0, 0, 70),
+			Position = UDim2.fromOffset(0, 26),
+			StrokeThickness = 0,
+		})
 		Kit.title(card, {
-			Text = I.Gem .. " " .. pack.Amount,
-			Size = UDim2.new(1, -16, 0, 50),
-			Position = UDim2.fromOffset(8, 8),
-			TextColor3 = C.Primary,
+			Text = "+" .. Format.commas(pack.Amount),
+			TextSize = 34,
+			TextWrapped = false,
+			Size = UDim2.new(1, -16, 0, 38),
+			Position = UDim2.fromOffset(8, 100),
+			TextColor3 = Kit.lighten(C.Secondary, 0.35),
+		})
+		Kit.title(card, {
+			Text = string.upper(W.Gem),
+			TextSize = T.Small,
+			TextWrapped = false,
+			Size = UDim2.new(1, -16, 0, 18),
+			Position = UDim2.fromOffset(8, 136),
+			TextColor3 = C.TextDim,
+			StrokeThickness = 1.5,
 		})
 		Kit.button(card, {
-			Text = pack.Price .. " R$",
+			Name = "Buy",
+			Text = "R$ " .. pack.Price,
 			Color = C.Good,
-			Size = UDim2.new(1, -24, 0, 50),
-			Position = UDim2.new(0, 12, 1, -60),
+			Size = UDim2.new(1, -24, 0, 56),
+			Position = UDim2.new(0, 12, 1, -66),
+			TextSize = 26,
 		}, function()
 			action:FireServer({ action = "PromptProduct", kind = "Gems", index = index })
 		end)
+		if index == gemCount then
+			ribbon(card, "★ BEST VALUE", C.Primary)
+		elseif index == 2 then
+			ribbon(card, "🔥 POPULAR", C.Accent)
+		end
 	end
+	local gemInfo = Kit.well(gemPage, { Name = "Info", Size = UDim2.new(1, 0, 0, 56), LayoutOrder = 99 })
+	Kit.text(gemInfo, {
+		Text = string.format(
+			"%s %s unlock %ss instantly and finish %s timers early. You also earn them from new discoveries and free rewards.",
+			I.Gem,
+			W.Gem,
+			string.lower(W.Chest),
+			W.Unlocker
+		),
+		TextSize = T.Small,
+		Size = UDim2.new(1, -24, 1, 0),
+		Position = UDim2.fromOffset(12, 0),
+		TextColor3 = C.TextDim,
+		StrokeThickness = 1,
+	})
+
+	selectTab(selected)
 
 	local function refresh()
 		local data = State.data
@@ -5859,79 +8703,150 @@ local function buildShop(screen: ScreenGui)
 		for index, pack in Theme.Monetization.MoneyPacks do
 			moneyLabels[index].Text = State.money(Economy.moneyPackAmount(data.income, pack.Seconds, pack.Min))
 		end
-		for name, button in passButtons do
-			if data.passes[name] then
-				Kit.setButton(button, "OWNED", C.PadDisabled)
+		for name, card in passCards do
+			local owned = data.passes[name] == true
+			if card.tag then
+				card.tag.Visible = not owned
 			end
+			Kit.setEnabled(card.button, not owned)
+			Kit.setButton(card.button, if owned then "✔ OWNED" else "R$ " .. Theme.Monetization.Passes[name].Price)
 		end
 	end
 	State.changed.Event:Connect(refresh)
 	window.onOpen.Event:Connect(refresh)
+
+	Windows.selectShopTab = selectTab
 end
 
 -- Index -----------------------------------------------------------------------------
 
 local function buildIndex(screen: ScreenGui)
-	local window = Kit.window(screen, "Index", "Index", I.Index, C.Window.Index, Vector2.new(820, 540))
-	windows.Index = window
+	local window = Kit.window(screen, "Index", "Index", I.Index, C.Window.Index, Vector2.new(880, 560))
+	register("Index", window)
 
-	local progress = Kit.title(window.content, {
-		Text = "",
-		Size = UDim2.new(1, 0, 0, 30),
-		TextXAlignment = Enum.TextXAlignment.Right,
-		TextColor3 = C.Primary,
+	local _, setProgress, progressLabel = Kit.progress(window.content, {
+		Name = "Found",
+		Color = C.Window.Index,
+		Size = UDim2.new(0.42, 0, 0, 30),
+		TextSize = T.Body,
+		MinFill = 0.08,
 	})
-	local scroll = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -36), Position = UDim2.fromOffset(0, 36) })
-	Kit.padding(scroll, 6)
+
+	local legend = Kit.new("Frame", {
+		Name = "Legend",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(0.58, -12, 0, 30),
+		Position = UDim2.new(1, 0, 0, 0),
+		AnchorPoint = Vector2.new(1, 0),
+		Parent = window.content,
+	})
+	Kit.list(legend, 6, true, Enum.HorizontalAlignment.Right)
+	for order, band in Economy.TIER_BANDS do
+		Kit.pill(legend, {
+			Text = band.name,
+			Color = Kit.darken(C.Rarity[band.name], 0.45),
+			TextColor = Kit.lighten(C.Rarity[band.name], 0.3),
+			TextSize = T.Tiny,
+			Size = UDim2.fromOffset(0, 24),
+			AutomaticSize = Enum.AutomaticSize.X,
+			LayoutOrder = order,
+		})
+	end
+
+	local scroll = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -42), Position = UDim2.fromOffset(0, 42) })
+	Kit.new("UIPadding", {
+		PaddingTop = UDim.new(0, 8),
+		PaddingLeft = UDim.new(0, 4),
+		PaddingRight = UDim.new(0, 14),
+		PaddingBottom = UDim.new(0, 8),
+		Parent = scroll,
+	})
 	Kit.new("UIGridLayout", {
-		CellSize = UDim2.new(0.25, -12, 0, 230),
-		CellPadding = UDim2.fromOffset(12, 12),
+		CellSize = UDim2.new(0.2, -12, 0, 200),
+		CellPadding = UDim2.fromOffset(14, 14),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 		Parent = scroll,
 	})
 
 	local cards: { { frame: Frame, shown: string } } = {}
 	for tier = 1, Economy.MAX_TIER do
-		local card = Kit.panel(scroll, { Color = C.PanelDark, LayoutOrder = tier, Radius = 12 })
-		card:FindFirstChildOfClass("UIStroke").Color = C.Rarity[Economy.tierBand(tier)]
+		local card = Kit.panel(scroll, { Name = "Tier" .. tier, Color = C.PanelDark, LayoutOrder = tier, Radius = Kit.RADIUS.L })
 		cards[tier] = { frame = card, shown = "" }
 	end
 
-	local function fillCard(tier: number, discoveredAt: number)
+	-- Tiers discovered this session that the player hasn't looked at yet.
+	local seen: { [number]: boolean } = {}
+	local sessionStart: number? = nil
+
+	local function fillCard(tier: number, discoveredAt: number, isNew: boolean)
 		local entry = cards[tier]
-		local key = if discoveredAt > 0 then "known" else "unknown"
+		local key = (if discoveredAt > 0 then "known" else "unknown") .. (if isNew then "+new" else "")
 		if entry.shown == key then
 			return
 		end
 		entry.shown = key
-		for _, child in entry.frame:GetChildren() do
-			if child:IsA("GuiObject") then
-				child:Destroy()
-			end
-		end
+		clearChildren(entry.frame)
 		local band = Economy.tierBand(tier)
+		local rarity = C.Rarity[band]
 		local known = discoveredAt > 0
-		Kit.title(entry.frame, {
-			Text = if known then Theme.Tiers[tier].Name else "???",
-			Size = UDim2.new(0.68, -8, 0, 28),
-			Position = UDim2.fromOffset(8, 6),
+		local frameStroke = entry.frame:FindFirstChildOfClass("UIStroke") :: UIStroke
+		frameStroke.Color = if known then rarity else C.Stroke
+		local gradient = entry.frame:FindFirstChildOfClass("UIGradient") :: UIGradient
+		local base = if known then Kit.darken(rarity, 0.72) else C.PanelDark
+		gradient.Color = ColorSequence.new(Kit.lighten(base, 0.08), Kit.darken(base, 0.2))
+
+		local strip = Kit.new("Frame", {
+			Name = "Strip",
+			BackgroundColor3 = if known then rarity else C.PanelLight,
+			BackgroundTransparency = if known then 0.15 else 0,
+			Size = UDim2.new(1, -10, 0, 30),
+			Position = UDim2.fromOffset(5, 5),
+			Parent = entry.frame,
+		})
+		Kit.corner(strip, Kit.RADIUS.M)
+		Kit.title(strip, {
+			Text = "#" .. tier,
+			TextSize = T.Small,
+			TextWrapped = false,
+			Size = UDim2.new(0, 34, 1, 0),
+			Position = UDim2.fromOffset(6, 0),
 			TextXAlignment = Enum.TextXAlignment.Left,
-			TextColor3 = if known then C.Rarity[band] else C.TextDim,
+			StrokeThickness = 1.5,
 		})
-		Kit.title(entry.frame, {
-			Text = "Tier " .. tier,
-			Size = UDim2.new(0.32, -8, 0, 22),
-			Position = UDim2.new(0.68, 0, 0, 9),
-			TextXAlignment = Enum.TextXAlignment.Right,
-			TextColor3 = C.TextDim,
+		Kit.title(strip, {
+			Text = if known then Theme.Tiers[tier].Name else "???",
+			TextSize = T.Small,
+			MaxTextSize = T.Small,
+			TextScaled = true,
+			Size = UDim2.new(1, -44, 1, -6),
+			Position = UDim2.fromOffset(38, 3),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			StrokeThickness = 1.5,
 		})
-		Kit.unitViewport(entry.frame, tier, { Size = UDim2.new(1, -16, 1, -76), Position = UDim2.fromOffset(8, 36) }, not known)
+		Kit.unitViewport(entry.frame, tier, { Size = UDim2.new(1, -16, 1, -76), Position = UDim2.fromOffset(8, 38) }, not known)
 		Kit.text(entry.frame, {
-			Text = if known then "Obtained: " .. Format.date(discoveredAt) else band,
+			Name = "Footer",
+			Text = if known then Format.date(discoveredAt) else band,
+			TextSize = T.Tiny,
+			TextWrapped = false,
 			Size = UDim2.new(1, -16, 0, 26),
-			Position = UDim2.new(0, 8, 1, -34),
-			TextColor3 = if known then C.Primary else C.Rarity[band],
+			Position = UDim2.new(0, 8, 1, -32),
+			TextColor3 = if known then C.TextDim else rarity,
+			StrokeThickness = 1,
 		})
+		if isNew then
+			Kit.pill(entry.frame, {
+				Name = "New",
+				Text = "NEW!",
+				Color = C.Bad,
+				TextSize = T.Tiny,
+				Size = UDim2.fromOffset(52, 22),
+				Position = UDim2.new(1, 6, 0, -8),
+				AnchorPoint = Vector2.new(1, 0),
+				Rotation = 8,
+				ZIndex = 4,
+			})
+		end
 	end
 
 	local function refresh()
@@ -5939,100 +8854,227 @@ local function buildIndex(screen: ScreenGui)
 		if not data or not window.isOpen() then
 			return
 		end
+		if not sessionStart then
+			sessionStart = State.now() - 2
+		end
 		local found = 0
 		for tier = 1, Economy.MAX_TIER do
 			local at = data.discovered[tier] or 0
 			if at > 0 then
 				found += 1
 			end
-			fillCard(tier, at)
+			local isNew = at > 0 and at >= (sessionStart :: number) and not seen[tier]
+			fillCard(tier, at, isNew)
 		end
-		progress.Text = string.format("%s Discovered %d / %d", I.Unit, found, Economy.MAX_TIER)
+		progressLabel.Text = string.format("%s  %d / %d DISCOVERED", I.Unit, found, Economy.MAX_TIER)
+		setProgress(found / Economy.MAX_TIER)
 	end
 	State.changed.Event:Connect(refresh)
 	window.onOpen.Event:Connect(refresh)
+	window.onClose.Event:Connect(function()
+		local data = State.data
+		if data then
+			for tier = 1, Economy.MAX_TIER do
+				if (data.discovered[tier] or 0) > 0 then
+					seen[tier] = true
+				end
+			end
+		end
+	end)
+	State.changed.Event:Connect(function()
+		if not sessionStart then
+			sessionStart = State.now() - 2
+		end
+	end)
 end
 
 -- Ranking -----------------------------------------------------------------------------
 
+local MEDALS = { "🥇", "🥈", "🥉" }
+local MEDAL_COLORS = {
+	Color3.fromRGB(255, 205, 60),
+	Color3.fromRGB(200, 210, 225),
+	Color3.fromRGB(215, 135, 75),
+}
+
 local function buildRanking(screen: ScreenGui)
-	local window = Kit.window(screen, "Ranking", "Ranking", I.Ranking, C.Window.Ranking, Vector2.new(820, 540))
-	windows.Ranking = window
+	local window = Kit.window(screen, "Ranking", "Ranking", I.Ranking, C.Window.Ranking, Vector2.new(780, 560))
+	register("Ranking", window)
 	local query = Net.func("Query")
 	local action = Net.event("Action")
 
-	local formatButton = Kit.button(window.frame, {
-		Text = "Format (Short)",
+	-- Toolbar.
+	local subtitle = Kit.text(window.content, {
+		Name = "Subtitle",
+		Text = "Top players by total " .. W.Units,
+		TextSize = T.Small,
+		TextWrapped = false,
+		Size = UDim2.new(1, -340, 0, 44),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.TextDim,
+		StrokeThickness = 1.5,
+	})
+	local formatButton = Kit.button(window.content, {
+		Name = "Format",
+		Text = "Full numbers",
 		Color = C.Secondary,
-		Size = UDim2.fromOffset(200, 42),
-		Position = UDim2.new(1, -290, 0, 18),
+		Size = UDim2.fromOffset(170, 44),
+		Position = UDim2.new(1, -160, 0, 0),
+		AnchorPoint = Vector2.new(1, 0),
+		TextSize = 18,
+		Depth = 5,
+	})
+	local refreshButton = Kit.button(window.content, {
+		Name = "Refresh",
+		Text = "↻ Refresh",
+		Color = C.Window.Ranking,
+		Size = UDim2.fromOffset(146, 44),
+		Position = UDim2.new(1, 0, 0, 0),
+		AnchorPoint = Vector2.new(1, 0),
+		TextSize = 18,
+		Depth = 5,
 	})
 
-	local header = Kit.panel(window.content, { Color = C.PanelLight, Size = UDim2.new(1, 0, 0, 44), Radius = 8 })
-	local function columns(parent: Instance, rank: string, name: string, value: string, color: Color3?)
-		Kit.title(
-			parent,
-			{ Text = rank, Size = UDim2.new(0.18, 0, 1, -10), Position = UDim2.fromOffset(0, 5), TextColor3 = color or C.Text }
-		)
-		Kit.title(
-			parent,
-			{ Text = name, Size = UDim2.new(0.42, 0, 1, -10), Position = UDim2.new(0.18, 0, 0, 5), TextColor3 = color or C.Text }
-		)
-		Kit.title(
-			parent,
-			{ Text = value, Size = UDim2.new(0.38, 0, 1, -10), Position = UDim2.new(0.6, 0, 0, 5), TextColor3 = color or C.Text }
-		)
+	local header = Kit.new("Frame", {
+		Name = "Columns",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -14, 0, 24),
+		Position = UDim2.fromOffset(0, 52),
+		Parent = window.content,
+	})
+	local function headerText(text: string, x: number, w: number, align: Enum.TextXAlignment)
+		Kit.title(header, {
+			Text = text,
+			TextSize = T.Small,
+			TextWrapped = false,
+			Size = UDim2.new(w, 0, 1, 0),
+			Position = UDim2.fromScale(x, 0),
+			TextXAlignment = align,
+			TextColor3 = C.TextDim,
+			StrokeThickness = 1.5,
+		})
 	end
-	columns(header, "Rank", "Username", "Total " .. W.Units)
+	headerText("RANK", 0.02, 0.14, Enum.TextXAlignment.Left)
+	headerText("PLAYER", 0.17, 0.5, Enum.TextXAlignment.Left)
+	headerText(string.upper(W.Units), 0.62, 0.36, Enum.TextXAlignment.Right)
 
-	local list = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -110), Position = UDim2.fromOffset(0, 52) })
-	Kit.new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = list })
+	local list = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -150), Position = UDim2.fromOffset(0, 80) })
+	Kit.new("UIPadding", { PaddingRight = UDim.new(0, 14), PaddingTop = UDim.new(0, 4), PaddingLeft = UDim.new(0, 2), Parent = list })
+	Kit.list(list, 8)
 
-	local mine =
-		Kit.panel(window.content, { Color = C.Good, Size = UDim2.new(1, 0, 0, 48), Position = UDim2.new(0, 0, 1, -50), Radius = 8 })
+	local mine = Kit.panel(window.content, {
+		Name = "Mine",
+		Color = Kit.darken(C.Good, 0.45),
+		StrokeColor = C.Good,
+		Size = UDim2.new(1, -14, 0, 54),
+		Position = UDim2.new(0, 0, 1, -58),
+		Radius = Kit.RADIUS.M,
+	})
+
+	local function row(parent: Instance, rank: number?, rankText: string, name: string, value: string, isMe: boolean)
+		local medal = rank and MEDALS[rank]
+		local color = rank and MEDAL_COLORS[rank]
+		local rankChip = Kit.new("Frame", {
+			Name = "Rank",
+			BackgroundColor3 = color or C.PanelDark,
+			Size = UDim2.fromOffset(46, 38),
+			Position = UDim2.new(0.02, 0, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			Parent = parent,
+		})
+		Kit.corner(rankChip, Kit.RADIUS.M)
+		Kit.stroke(rankChip, 2.5)
+		Kit.text(rankChip, {
+			Text = medal or rankText,
+			Font = Theme.Fonts.Title,
+			TextSize = if medal then 26 else T.Body,
+			TextWrapped = false,
+			Size = UDim2.fromScale(1, 1),
+			StrokeThickness = if medal then 0 else 1.5,
+		})
+		Kit.title(parent, {
+			Name = "Name",
+			Text = name,
+			TextSize = T.H3,
+			TextWrapped = false,
+			Size = UDim2.new(0.45, 0, 1, 0),
+			Position = UDim2.fromScale(0.17, 0),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = if color then Kit.lighten(color, 0.2) else C.Text,
+		})
+		if isMe then
+			Kit.pill(parent, {
+				Text = "YOU",
+				Color = C.Primary,
+				TextColor = C.Stroke,
+				TextSize = T.Tiny,
+				Size = UDim2.fromOffset(46, 22),
+				Position = UDim2.new(0.62, 0, 0.5, 0),
+				AnchorPoint = Vector2.new(1, 0.5),
+			})
+		end
+		Kit.title(parent, {
+			Name = "Value",
+			Text = value,
+			TextSize = T.H3,
+			TextWrapped = false,
+			Size = UDim2.new(0.34, 0, 1, 0),
+			Position = UDim2.new(0.98, 0, 0, 0),
+			AnchorPoint = Vector2.new(1, 0),
+			TextXAlignment = Enum.TextXAlignment.Right,
+			TextColor3 = C.Good,
+		})
+	end
 
 	local entries: { any } = {}
+	local loaded = false
+	local updatedAt = 0
 	local function render()
-		for _, child in list:GetChildren() do
-			if child:IsA("GuiObject") then
-				child:Destroy()
-			end
-		end
-		for _, child in mine:GetChildren() do
-			if child:IsA("TextLabel") then
-				child:Destroy()
-			end
-		end
+		clearChildren(list)
+		clearChildren(mine)
 		local data = State.data
 		local full = data and data.settings.fullNumbers
 		local function fmt(n: number): string
 			return if full then Format.commas(n) else Format.short(n)
 		end
-		local myRank = "Unranked"
 		local me = Players.LocalPlayer
+		local myRank: number? = nil
 		for i, entry in entries do
-			local row = Kit.panel(list, {
-				Color = if i % 2 == 0 then C.Panel else C.PanelLight,
-				Size = UDim2.new(1, -12, 0, 42),
+			local isMe = entry.userId == me.UserId
+			local tint = MEDAL_COLORS[i]
+			local frame = Kit.panel(list, {
+				Name = "Row" .. i,
+				Color = if tint then Kit.darken(tint, 0.68) elseif i % 2 == 0 then C.Panel else C.PanelLight,
+				StrokeColor = if isMe then C.Primary else nil,
+				Size = UDim2.new(1, 0, 0, 50),
 				LayoutOrder = i,
-				Radius = 8,
-				StrokeThickness = 2,
+				Radius = Kit.RADIUS.M,
+				StrokeThickness = if isMe then 3 else 2.5,
 			})
-			local color = if i == 1
-				then Color3.fromRGB(255, 210, 60)
-				elseif i == 2 then Color3.fromRGB(215, 215, 230)
-				elseif i == 3 then Color3.fromRGB(225, 140, 75)
-				else nil
-			columns(row, "#" .. entry.rank, entry.name, fmt(entry.value), color)
-			if entry.userId == me.UserId then
-				myRank = "#" .. entry.rank
+			row(frame, entry.rank, "#" .. entry.rank, entry.name, fmt(entry.value), isMe)
+			if isMe then
+				myRank = entry.rank
 			end
 		end
 		if #entries == 0 then
-			Kit.text(list, { Text = "Loading...", Size = UDim2.new(1, 0, 0, 40) })
+			Kit.text(list, {
+				Text = if loaded then "No rankings yet - be the first!" else "Loading...",
+				TextSize = T.Body,
+				Size = UDim2.new(1, 0, 0, 60),
+				TextColor3 = C.TextDim,
+			})
 		end
-		columns(mine, myRank, me.Name, fmt(data and data.totalObtained or 0))
-		Kit.setButton(formatButton, if full then "Format (Full)" else "Format (Short)")
+		row(mine, nil, if myRank then "#" .. myRank else "--", me.Name, fmt(data and data.totalObtained or 0), false)
+		Kit.setButton(formatButton, if full then "Short numbers" else "Full numbers")
+		local updated = ""
+		if loaded and updatedAt > 0 then
+			local ago = math.max(0, State.now() - updatedAt)
+			updated = if ago < 60
+				then "  •  updated just now"
+				elseif ago < 3600 then string.format("  •  updated %dm ago", ago // 60)
+				else string.format("  •  updated %dh ago", ago // 3600)
+		end
+		subtitle.Text = "Top players by total " .. W.Units .. updated
 	end
 
 	formatButton.Activated:Connect(function()
@@ -6042,15 +9084,34 @@ local function buildRanking(screen: ScreenGui)
 		end
 	end)
 
-	window.onOpen.Event:Connect(function()
-		render()
+	local fetching = false
+	local lastFetch = -math.huge
+	local function fetch()
+		if fetching or os.clock() - lastFetch < 3 then
+			return
+		end
+		fetching = true
+		lastFetch = os.clock()
+		Kit.setEnabled(refreshButton, false)
 		task.spawn(function()
 			local ok, result = pcall(query.InvokeServer, query, "Ranking")
+			fetching = false
+			Kit.setEnabled(refreshButton, true)
 			if ok and type(result) == "table" then
 				entries = result.entries or {}
-				render()
+				updatedAt = result.updatedAt or State.now()
+				loaded = true
+				if window.isOpen() then
+					render()
+				end
 			end
 		end)
+	end
+	refreshButton.Activated:Connect(fetch)
+
+	window.onOpen.Event:Connect(function()
+		render()
+		fetch()
 	end)
 	State.changed.Event:Connect(function()
 		if window.isOpen() then
@@ -6062,39 +9123,66 @@ end
 -- Settings ------------------------------------------------------------------------------
 
 local function buildSettings(screen: ScreenGui)
-	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(520, 420))
-	windows.Settings = window
+	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(560, 446))
+	register("Settings", window)
 	local action = Net.event("Action")
 
-	Kit.new("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder, Parent = window.content })
+	Kit.list(window.content, 10)
 
-	local toggles: { { key: string, button: TextButton } } = {}
-	local function toggle(order: number, text: string, key: string)
-		local row = Kit.panel(window.content, { Color = C.PanelLight, Size = UDim2.new(1, 0, 0, 62), LayoutOrder = order, Radius = 10 })
+	local toggles: { { key: string, set: (boolean, boolean?) -> (), sub: TextLabel } } = {}
+	local function toggle(order: number, icon: string, text: string, desc: string, key: string)
+		local row = Kit.panel(window.content, {
+			Name = key,
+			Color = C.PanelLight,
+			Size = UDim2.new(1, 0, 0, 78),
+			LayoutOrder = order,
+			Radius = Kit.RADIUS.L,
+		})
+		local medal = Kit.new("Frame", {
+			BackgroundColor3 = C.PanelDark,
+			Size = UDim2.fromOffset(52, 52),
+			Position = UDim2.new(0, 12, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			Parent = row,
+		})
+		Kit.round(medal)
+		Kit.text(medal, { Text = icon, TextSize = 28, Size = UDim2.fromScale(1, 1), StrokeThickness = 0 })
 		Kit.title(row, {
 			Text = text,
-			Size = UDim2.new(0.62, -10, 1, -16),
-			Position = UDim2.fromOffset(12, 8),
+			TextSize = T.H3,
+			TextWrapped = false,
+			Size = UDim2.new(1, -190, 0, 28),
+			Position = UDim2.fromOffset(76, 12),
 			TextXAlignment = Enum.TextXAlignment.Left,
 		})
-		local button = Kit.button(
-			row,
-			{ Text = "ON", Color = C.Good, Size = UDim2.new(0.32, 0, 1, -16), Position = UDim2.new(0.66, 0, 0, 8) },
-			function()
-				local data = State.data
-				if not data then
-					return
-				end
-				local current = if key == "autoMerge" then data.autoMerge else data.settings[key]
-				action:FireServer({ action = "SetSetting", key = key, value = not current })
+		local sub = Kit.text(row, {
+			Text = desc,
+			TextSize = T.Tiny,
+			Size = UDim2.new(1, -190, 0, 30),
+			Position = UDim2.fromOffset(76, 40),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			TextColor3 = C.TextDim,
+			StrokeThickness = 1,
+		})
+		local _, set = Kit.switch(row, {
+			Name = "Switch",
+			Position = UDim2.new(1, -16, 0.5, 0),
+			AnchorPoint = Vector2.new(1, 0.5),
+		}, function()
+			local data = State.data
+			if not data then
+				return
 			end
-		)
-		table.insert(toggles, { key = key, button = button })
+			local current = if key == "autoMerge" then data.autoMerge else data.settings[key]
+			action:FireServer({ action = "SetSetting", key = key, value = not current })
+		end)
+		table.insert(toggles, { key = key, set = set, sub = sub })
 	end
-	toggle(1, "Music", "music")
-	toggle(2, "Sound Effects", "sfx")
-	toggle(3, "Full Numbers", "fullNumbers")
-	toggle(4, "Auto Merge", "autoMerge")
+	toggle(1, "🎵", "Music", "Background music", "music")
+	toggle(2, "🔊", "Sound Effects", "Clicks, pickups and rewards", "sfx")
+	toggle(3, "🔢", "Full Numbers", "Show 1,234,567 instead of 1.23M", "fullNumbers")
+	toggle(4, "🔀", "Auto Merge", "Merge pairs automatically", "autoMerge")
 
 	local function refresh()
 		local data = State.data
@@ -6102,17 +9190,17 @@ local function buildSettings(screen: ScreenGui)
 			return
 		end
 		for _, t in toggles do
-			local value
 			if t.key == "autoMerge" then
-				value = data.autoMerge
-				if not data.autoMergeOwned then
-					Kit.setButton(t.button, "LOCKED", C.PadDisabled)
-					continue
+				if data.autoMergeOwned then
+					t.set(data.autoMerge)
+					t.sub.Text = "Merge pairs automatically"
+				else
+					t.set(false, true)
+					t.sub.Text = "Unlock it on the Auto Merge pad (" .. Format.money(Economy.AUTO_MERGE_COST) .. ")"
 				end
 			else
-				value = data.settings[t.key]
+				t.set(data.settings[t.key] == true)
 			end
-			Kit.setButton(t.button, if value then "ON" else "OFF", if value then C.Good else C.Bad)
 		end
 	end
 	State.changed.Event:Connect(refresh)
@@ -6120,10 +9208,22 @@ local function buildSettings(screen: ScreenGui)
 end
 
 function Windows.build(screen: ScreenGui)
+	backdrop = Kit.backdrop(screen, 9, function()
+		Windows.closeAll()
+	end)
 	buildShop(screen)
 	buildIndex(screen)
 	buildRanking(screen)
 	buildSettings(screen)
+
+	UserInputService.InputBegan:Connect(function(input)
+		if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.ButtonB then
+			if anyOpen() then
+				Kit.sound("Close")
+				Windows.closeAll()
+			end
+		end
+	end)
 end
 
 return Windows
@@ -6134,7 +9234,11 @@ return Windows
       </Item>
     </Item>
   </Item>
+<<<<<<< HEAD
   <Item class="Workspace" referent="28">
+=======
+  <Item class="Workspace" referent="34">
+>>>>>>> worktree-agent-a41f52f5f1625edbb
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>

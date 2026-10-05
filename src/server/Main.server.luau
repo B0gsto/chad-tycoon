@@ -12,6 +12,7 @@ local WorldBuilder = require(Server.WorldBuilder)
 local Tycoon = require(Server.Tycoon)
 local Monetization = require(Server.Monetization)
 local Ranking = require(Server.Ranking)
+local Tutorial = require(Server.Tutorial)
 
 local AUTOSAVE_SECONDS = 90
 
@@ -20,6 +21,7 @@ Net.event("State")
 
 local world = WorldBuilder.build(Theme)
 Tycoon.init(world, Theme)
+Tutorial.init()
 Monetization.init(Theme)
 Ranking.init(Theme, world.ranking)
 

@@ -40,6 +40,55 @@ Theme.Words = {
 	BuyTier = "UPGRADE BUY TIER",
 }
 
+-- Onboarding tutorial (one entry per step in Shared.TutorialSteps) and the
+-- loading screen. Hint is an optional second line shown under the text.
+Theme.Tutorial = {
+	Title = "CHAD TRAINING",
+	Steps = {
+		{
+			Title = "Recruit your first Chad",
+			Text = "Step on the glowing BUY 1 pad.",
+			Icon = "🛒",
+		},
+		{
+			Title = "Farm some aura",
+			Text = "Your Chads drop aura orbs. Walk over them to fill your tank.",
+			Icon = "✨",
+		},
+		{
+			Title = "Convert your aura",
+			Text = "Step on the AURA CONVERTER pad to send your tank in.",
+			Icon = "⚗️",
+		},
+		{
+			Title = "Secure the bag",
+			Text = "Step on COLLECT CASH to bank what the converter made.",
+			Icon = "💵",
+		},
+		{
+			Title = "Mog merge!",
+			Text = "Two Chads of the same tier merge into a stronger one. Step on the MOG MERGE pad.",
+			Hint = "You need two of the same tier: buy one more on BUY 1 first.",
+			Icon = "🔀",
+		},
+	},
+	DoneTitle = "TRAINING COMPLETE!",
+	DoneText = "You know the grind. Now go mog the whole server.",
+	Skip = "Skip",
+	SkipConfirm = "Skip the training? You'll miss the completion reward.",
+	Follow = "Follow the arrow",
+}
+
+Theme.Loading = {
+	Status = "Warming up the gym...",
+	Tips = {
+		"Tip: two Chads of the same tier merge into the next tier.",
+		"Tip: deposit when the Aura Multiplier is high for more cash.",
+		"Tip: during an Aura Surge every Chad drops double aura.",
+		"Tip: carry crates to the Crate Cracker to open them for free.",
+	},
+}
+
 Theme.Icons = {
 	Unit = "🗿",
 	Orb = "✨",
@@ -55,6 +104,7 @@ Theme.Icons = {
 	Premium = "⭐",
 	Friends = "👥",
 	Chest = "📦",
+	Free = "🎁",
 }
 
 Theme.Fonts = {

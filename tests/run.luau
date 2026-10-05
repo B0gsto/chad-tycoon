@@ -10,6 +10,7 @@ local process = require("@lune/process")
 local Economy = require("../src/shared/Economy")
 local Format = require("../src/shared/Format")
 local SessionLock = require("../src/shared/SessionLock")
+local TutorialSteps = require("../src/shared/TutorialSteps")
 
 local passed, failed = 0, 0
 local currentTest = ""
@@ -256,6 +257,70 @@ test("session lock", function()
 	check(SessionLock.owns({ jobId = "a", at = now }, "a"), "owner")
 	check(not SessionLock.owns({ jobId = "b", at = now }, "a"), "not owner")
 	check(not SessionLock.owns(nil, "a"), "no lock")
+-- Tutorial ------------------------------------------------------------------------
+
+test("tutorial step progression", function()
+	eq(TutorialSteps.COUNT, 5, "five steps")
+	eq(TutorialSteps.DONE, 6, "done marker")
+	-- Only the current step's event advances, strictly in order.
+	local step = 1
+	for _, event in { "Pickup", "Deposit", "Cash", "Merge" } do
+		eq(TutorialSteps.onEvent(step, event), 1, "out-of-order " .. event .. " ignored")
+	end
+	local order = { "Buy", "Pickup", "Deposit", "Cash", "Merge" }
+	for index, event in order do
+		eq(TutorialSteps.onEvent(step, "Nope"), step, "unknown event ignored")
+		step = TutorialSteps.onEvent(step, event)
+		eq(step, index + 1, "advanced by " .. event)
+	end
+	eq(step, TutorialSteps.DONE, "finished")
+	eq(TutorialSteps.onEvent(step, "Buy"), TutorialSteps.DONE, "finished stays finished")
+	for index, entry in TutorialSteps.STEPS do
+		eq(entry.event, order[index], "step " .. index .. " event")
+	end
+end)
+
+test("tutorial clamp", function()
+	eq(TutorialSteps.clamp(nil), 1, "nil")
+	eq(TutorialSteps.clamp("3"), 1, "string")
+	eq(TutorialSteps.clamp(0 / 0), 1, "nan")
+	eq(TutorialSteps.clamp(-4), 1, "negative")
+	eq(TutorialSteps.clamp(3.7), 3, "floored")
+	eq(TutorialSteps.clamp(99), TutorialSteps.DONE, "capped")
+end)
+
+test("tutorial state safety net", function()
+	local discovered = table.create(Economy.MAX_TIER, 0)
+	discovered[1] = 1
+	local fresh = { carried = 0, units = { 1 }, discovered = discovered }
+	check(not TutorialSteps.satisfied(1, fresh), "buy needs the event")
+	check(not TutorialSteps.satisfied(2, fresh), "empty tank")
+	eq(TutorialSteps.catchUp(2, fresh), 2, "nothing to catch up")
+
+	local carrying = { carried = 4, units = { 2 }, discovered = discovered }
+	check(TutorialSteps.satisfied(2, carrying), "orbs in tank")
+	eq(TutorialSteps.catchUp(2, carrying), 3, "orbs step skipped, deposit still needed")
+	eq(TutorialSteps.catchUp(1, carrying), 1, "earlier steps never skip")
+
+	local merged = table.clone(discovered)
+	merged[2] = 1
+	check(TutorialSteps.satisfied(5, { discovered = merged }), "tier 2 discovered = merged")
+	check(not TutorialSteps.satisfied(5, { discovered = discovered }), "only tier 1")
+	eq(TutorialSteps.catchUp(5, { discovered = merged }), TutorialSteps.DONE, "merge completes the tutorial")
+	check(not TutorialSteps.satisfied(TutorialSteps.DONE, carrying), "done has no condition")
+end)
+
+test("tutorial guide targets", function()
+	eq(TutorialSteps.target(1, { 1 }), "Buy1")
+	eq(TutorialSteps.target(2, { 1 }), "Orbs")
+	eq(TutorialSteps.target(3, { 1 }), "Deposit")
+	eq(TutorialSteps.target(4, { 1 }), "Collect")
+	eq(TutorialSteps.target(5, { 1, 1 }), "Buy1", "no pair yet: buy one more")
+	eq(TutorialSteps.target(5, { 2 }), "Merge", "pair owned: merge")
+	eq(TutorialSteps.target(5, { 0, 3 }), "Merge", "pair of a higher tier")
+	eq(TutorialSteps.target(TutorialSteps.DONE, { 2 }), nil, "finished")
+	check(TutorialSteps.hasPair({ 1, 0, 2 }), "hasPair")
+	check(not TutorialSteps.hasPair(nil), "hasPair nil")
 end)
 
 -- Themes --------------------------------------------------------------------------
@@ -379,6 +444,16 @@ for _, variant in { "chad", "bot" } do
 		end
 		eq(#theme.Monetization.MoneyPacks, 6, "money packs")
 		eq(#theme.Monetization.GemPacks, 3, "gem packs")
+		eq(#theme.Tutorial.Steps, TutorialSteps.COUNT, "one tutorial text per step")
+		for index, entry in theme.Tutorial.Steps do
+			check(type(entry.Title) == "string" and #entry.Title > 0, "tutorial step " .. index .. " title")
+			check(type(entry.Text) == "string" and #entry.Text > 0, "tutorial step " .. index .. " text")
+			check(type(entry.Icon) == "string", "tutorial step " .. index .. " icon")
+		end
+		for _, key in { "Title", "DoneTitle", "DoneText", "Skip", "SkipConfirm", "Follow" } do
+			check(type(theme.Tutorial[key]) == "string", "tutorial string " .. key)
+		end
+		check(type(theme.Loading.Status) == "string" and #theme.Loading.Tips > 0, "loading screen strings")
 	end)
 end
 
