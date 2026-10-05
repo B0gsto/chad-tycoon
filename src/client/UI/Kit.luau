@@ -8,6 +8,7 @@ local TweenService = game:GetService("TweenService")
 
 local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 local CharacterFactory = require(ReplicatedStorage.Shared.CharacterFactory)
+local Animator = require(script.Parent.Parent.Animator)
 
 local Kit = {}
 Kit.Theme = Theme
@@ -233,6 +234,7 @@ function Kit.unitViewport(parent: Instance, tier: number, props: { [string]: any
 		CharacterFactory.silhouette(model)
 	end
 	model.Parent = viewport
+	Animator.attach(model)
 	local height = CharacterFactory.height(look)
 	local camera = Instance.new("Camera")
 	camera.FieldOfView = 40

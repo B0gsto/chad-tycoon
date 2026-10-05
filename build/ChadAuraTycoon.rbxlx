@@ -11,25 +11,47 @@
         <Properties>
           <string name="Name">CharacterFactory</string>
           <string name="Source"><![CDATA[--[[
-	CharacterFactory: builds the blocky unit figures from a theme "look" table.
+	CharacterFactory: builds the unit figures from a theme "look" table.
 	Used by the server (display shelves) and the client (Index / reward
 	viewports). Everything is made from plain parts, so no uploaded assets are
 	needed.
 
-	Look fields (all optional except colours):
-	  skin, shirt, pants : Color3
-	  face               : string drawn on the head (emoji or text)
-	  faceColor          : Color3 for text faces
-	  material           : Enum.Material name for the body ("Metal", "Glass", ...)
-	  buff               : 0..1 extra width on torso/arms
-	  scale              : overall size multiplier
-	  jaw                : true for a wide chin block
-	  acc                : list of accessory names (see ACCESSORIES)
-	  accColor           : Color3 for accessories
-	  aura               : Color3 particle aura
-	  sparkles           : true for a Sparkles effect
-	  fire               : Color3 fire effect
-	  glow               : Color3 point light
+	Every unit is a jointed R15-style rig (15 limbs, see Poses.LIMBS). Each part
+	carries a "Limb" attribute naming the limb it moves with; the model carries
+	the joint pivots ("J_<Limb>"), its "RigScale", its "AnimSet" and the
+	"AnimatedUnit" tag, so the client Animator can pose it. The PrimaryPart
+	"Root" sits at the feet (y = 0) and the unit faces -Z.
+
+	Look fields (all optional except the three colours):
+	  skin, shirt, pants : Color3 (bots: head/forearm plating, chest, legs)
+	  anim       : "Chad" | "Bot" — body style and animation set
+	               (defaults to the theme's Theme.AnimSet, else "Chad")
+	  material   : Enum.Material name for the body ("Metal", "Glass", ...)
+	  buff       : 0..1 muscle / bulk (wider chest, thicker arms)
+	  scale      : overall size multiplier (1..2)
+	  acc        : list of accessory names (see ACCESSORIES)
+	  accColor   : Color3 for accessories
+	  trim       : Color3 secondary colour (chad belt / jacket inner shirt,
+	               bot joints and frame)
+	  aura       : Color3 particle aura
+	  sparkles   : true for a Sparkles effect
+	  fire       : Color3 fire effect
+	  glow       : Color3 point light
+	 Chad only:
+	  expr       : "Neutral" | "Smirk" | "Smug" | "Determined" | "Angry" |
+	               "Happy" | "Stoic"
+	  hair       : Color3 (also the eyebrows)
+	  hairStyle  : "Buzz" | "Flat" | "Slick" | "Quiff" | "Spiky" | "Bun" | "Bald"
+	  beard      : "Stubble" | "Beard"
+	  jaw        : true (or 0..1) for a wide chiselled jaw and chin
+	  top        : "Tee" | "Tank" | "Shirtless" | "Jacket" | "Hoodie"
+	  bottoms    : "Pants" | "Joggers" | "Shorts"
+	  shoes, sole: Color3 sneaker upper / sole
+	  eyeGlow    : Color3 glowing eyes instead of pupils
+	 Bot only:
+	  eyes       : "Dots" | "Visor" | "Mono" | "Angry" | "Happy" | "Bars"
+	  mouth      : "Grille" | "Bar" | "None"
+	  faceColor  : Color3 of the LEDs (eyes, chest core)
 ]]
 
 local CharacterFactory = {}
@@ -38,36 +60,52 @@ export type Look = {
 	skin: Color3,
 	shirt: Color3,
 	pants: Color3,
-	face: string?,
-	faceColor: Color3?,
-	faceFont: Enum.Font?,
+	anim: string?,
 	material: string?,
 	buff: number?,
 	scale: number?,
-	jaw: boolean?,
 	acc: { string }?,
 	accColor: Color3?,
+	trim: Color3?,
 	aura: Color3?,
 	sparkles: boolean?,
 	fire: Color3?,
 	glow: Color3?,
+	expr: string?,
+	hair: Color3?,
+	hairStyle: string?,
+	beard: string?,
+	jaw: (boolean | number)?,
+	top: string?,
+	bottoms: string?,
+	shoes: Color3?,
+	sole: Color3?,
+	eyeGlow: Color3?,
+	eyes: string?,
+	mouth: string?,
+	faceColor: Color3?,
+	-- Legacy (ignored): emoji faces cannot render inside ViewportFrames.
+	face: string?,
+	faceFont: Enum.Font?,
 }
 
-local function part(model: Model, name: string, size: Vector3, cframe: CFrame, color: Color3, material: Enum.Material?): Part
-	local p = Instance.new("Part")
-	p.Name = name
-	p.Size = size
-	p.CFrame = cframe
-	p.Color = color
-	p.Material = material or Enum.Material.SmoothPlastic
-	p.Anchored = true
-	p.CanCollide = false
-	p.CanQuery = false
-	p.CanTouch = false
-	p.TopSurface = Enum.SurfaceType.Smooth
-	p.BottomSurface = Enum.SurfaceType.Smooth
-	p.Parent = model
-	return p
+local TAG = "AnimatedUnit"
+local DETAIL = 0.16 -- parts thinner than this cast no shadow
+
+local BLACK = Color3.new(0, 0, 0)
+local WHITE = Color3.new(1, 1, 1)
+local EYE_WHITE = Color3.fromRGB(248, 248, 250)
+local PUPIL = Color3.fromRGB(28, 26, 34)
+local MOUTH = Color3.fromRGB(96, 38, 40)
+local GOLD = Color3.fromRGB(255, 200, 50)
+local FACEPLATE = Color3.fromRGB(14, 16, 22)
+
+local function shade(c: Color3, k: number): Color3
+	return c:Lerp(BLACK, k)
+end
+
+local function tint(c: Color3, k: number): Color3
+	return c:Lerp(WHITE, k)
 end
 
 local function materialFrom(name: string?): Enum.Material
@@ -82,218 +120,1029 @@ local function materialFrom(name: string?): Enum.Material
 	return Enum.Material.SmoothPlastic
 end
 
+-- Default animation set, from the place's Theme module when there is one.
+local defaultAnim: string? = nil
+function CharacterFactory.setDefaultAnim(name: string)
+	defaultAnim = name
+end
+local function themeAnim(): string
+	if defaultAnim == nil then
+		defaultAnim = "Chad"
+		pcall(function()
+			local theme = game:GetService("ReplicatedStorage"):FindFirstChild("Theme")
+			if theme and theme:IsA("ModuleScript") then
+				local loaded = (require :: any)(theme)
+				if type(loaded) == "table" and type(loaded.AnimSet) == "string" then
+					defaultAnim = loaded.AnimSet
+				end
+			end
+		end)
+	end
+	return defaultAnim :: string
+end
+
+local function animOf(look: Look): string
+	return look.anim or themeAnim()
+end
+
+-- Build context -------------------------------------------------------------------
+
 type Ctx = {
 	model: Model,
-	head: Part,
-	torso: Part,
+	look: Look,
+	scale: number,
+	mat: Enum.Material,
+	acc: Color3,
+	trim: Color3,
+	isBot: boolean,
+	has: { [string]: boolean },
+	top: number,
+	parts: { [string]: BasePart },
+	-- geometry (unscaled studs, model space)
+	W: number,
+	chestD: number,
+	chestTop: number,
+	chestY: number,
+	waistW: number,
+	hipY: number,
+	A: number,
+	delt: number,
+	armX: number,
+	shoulderY: number,
+	wristY: number,
+	headY: number,
+	HW: number,
+	HH: number,
+	HD: number,
 	headTop: number,
-	torsoWidth: number,
-	color: Color3,
+	hairTop: number,
+	eyeY: number,
+	led: Color3,
 }
 
-local ACCESSORIES: { [string]: (Ctx) -> () } = {}
-
-ACCESSORIES.Cap = function(c)
-	local y = c.headTop
-	part(c.model, "Cap", Vector3.new(1.4, 0.4, 1.4), CFrame.new(0, y + 0.1, 0), c.color)
-	part(c.model, "Brim", Vector3.new(1.3, 0.12, 0.7), CFrame.new(0, y - 0.05, -0.95), c.color)
-end
-
-ACCESSORIES.Headband = function(c)
-	part(c.model, "Headband", Vector3.new(1.42, 0.25, 1.42), CFrame.new(0, c.headTop - 0.35, 0), c.color)
-end
-
-ACCESSORIES.Shades = function(c)
-	local y = c.headTop - 0.6
-	part(c.model, "Shades", Vector3.new(1.36, 0.28, 0.12), CFrame.new(0, y, -0.68), Color3.new(0.05, 0.05, 0.05), Enum.Material.Glass)
-end
-
-ACCESSORIES.Visor = function(c)
-	local y = c.headTop - 0.6
-	part(c.model, "Visor", Vector3.new(1.4, 0.3, 0.12), CFrame.new(0, y, -0.68), c.color, Enum.Material.Neon)
-end
-
-ACCESSORIES.Chain = function(c)
-	local gold = Color3.fromRGB(255, 205, 60)
-	part(c.model, "ChainBand", Vector3.new(c.torsoWidth * 0.7, 0.14, 0.08), CFrame.new(0, 3.75, -0.55), gold, Enum.Material.Metal)
-	local medal = part(
-		c.model,
-		"Medal",
-		Vector3.new(0.1, 0.55, 0.55),
-		CFrame.new(0, 3.3, -0.56) * CFrame.Angles(0, math.rad(90), 0),
-		gold,
-		Enum.Material.Metal
-	)
-	medal.Shape = Enum.PartType.Cylinder
-end
-
-ACCESSORIES.Crown = function(c)
-	local y = c.headTop
-	local gold = c.color
-	part(c.model, "CrownBase", Vector3.new(1.45, 0.35, 1.45), CFrame.new(0, y + 0.15, 0), gold, Enum.Material.Metal)
-	for i = 0, 3 do
-		local angle = math.rad(i * 90 + 45)
-		local spike = part(
-			c.model,
-			"Spike",
-			Vector3.new(0.3, 0.45, 0.3),
-			CFrame.new(math.cos(angle) * 0.55, y + 0.5, math.sin(angle) * 0.55),
-			gold,
-			Enum.Material.Metal
-		)
-		spike.Shape = Enum.PartType.Ball
+local function trackTop(c: Ctx, size: Vector3, cf: CFrame)
+	local _, _, _, _, _, _, r10, r11, r12 = cf:GetComponents()
+	local top = cf.Position.Y + (math.abs(r10) * size.X + math.abs(r11) * size.Y + math.abs(r12) * size.Z) / 2
+	if top > c.top then
+		c.top = top
 	end
 end
 
+-- Adds a part to the unit. Size and CFrame are in unscaled model space.
+local function add(
+	c: Ctx,
+	limb: string,
+	name: string,
+	size: Vector3,
+	cf: CFrame,
+	color: Color3,
+	material: Enum.Material?,
+	shape: Enum.PartType?
+): Part
+	local p = Instance.new("Part")
+	p.Name = name
+	if shape then
+		p.Shape = shape
+	end
+	local s = c.scale
+	p.Size = size * s
+	p.CFrame = if s == 1 then cf else CFrame.new(cf.Position * s) * cf.Rotation
+	p.Color = color
+	p.Material = material or c.mat
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	if math.min(size.X, size.Y, size.Z) < DETAIL then
+		p.CastShadow = false
+	end
+	p:SetAttribute("Limb", limb)
+	p.Parent = c.model
+	trackTop(c, size, cf)
+	return p
+end
+
+local function at(x: number, y: number, z: number): CFrame
+	return CFrame.new(x, y, z)
+end
+
+local function rot(x: number, y: number, z: number, rx: number, ry: number, rz: number): CFrame
+	return CFrame.new(x, y, z) * CFrame.Angles(math.rad(rx), math.rad(ry), math.rad(rz))
+end
+
+local SIDES = { { 1, "Right" }, { -1, "Left" } }
+
+local function setPivot(c: Ctx, limb: string, x: number, y: number, z: number)
+	c.model:SetAttribute("J_" .. limb, Vector3.new(x, y, z))
+end
+
+-- Wedge whose right angle sits at the top-inner corner (lats under the chest).
+local function underWedge(side: number): (Vector3, Vector3)
+	return Vector3.new(0, 0, -side), Vector3.new(0, -1, 0)
+end
+-- Wedge whose right angle sits at the bottom-inner corner (traps by the neck).
+local function slopeWedge(side: number): (Vector3, Vector3)
+	return Vector3.new(0, 0, side), Vector3.new(0, 1, 0)
+end
+
+-- Chad faces ----------------------------------------------------------------------
+
+type Expr = {
+	lid: number, -- eye openness 0..1
+	look: number, -- pupil shift (+ = unit's right)
+	brow: number, -- inner-end drop in degrees (+ = angry)
+	browY: number,
+	browRaise: number, -- extra lift of the unit's left brow (one raised eyebrow)
+	mouth: string, -- "Flat" | "Smirk" | "Grin" | "Open"
+	mouthW: number,
+	mouthTilt: number,
+}
+
+local EXPRESSIONS: { [string]: Expr } = {
+	Neutral = { lid = 1, look = 0, brow = 0, browY = 0, browRaise = 0, mouth = "Flat", mouthW = 0.34, mouthTilt = 0 },
+	Smirk = { lid = 0.9, look = 0, brow = 4, browY = 0, browRaise = 0.06, mouth = "Smirk", mouthW = 0.32, mouthTilt = 12 },
+	Smug = { lid = 0.55, look = 0, brow = -6, browY = 0.02, browRaise = 0.03, mouth = "Smirk", mouthW = 0.34, mouthTilt = 9 },
+	Determined = { lid = 0.85, look = 0, brow = 16, browY = -0.02, browRaise = 0, mouth = "Flat", mouthW = 0.28, mouthTilt = 0 },
+	Angry = { lid = 0.8, look = 0, brow = 26, browY = -0.03, browRaise = 0, mouth = "Open", mouthW = 0.34, mouthTilt = 0 },
+	Happy = { lid = 0.9, look = 0, brow = -8, browY = 0.04, browRaise = 0, mouth = "Grin", mouthW = 0.44, mouthTilt = 0 },
+	Stoic = { lid = 0.62, look = 0.055, brow = 6, browY = -0.03, browRaise = 0, mouth = "Flat", mouthW = 0.3, mouthTilt = 0 },
+}
+
+local function buildChadFace(c: Ctx)
+	local look = c.look
+	local skin = look.skin
+	local hair = look.hair or Color3.fromRGB(52, 36, 26)
+	local expr = EXPRESSIONS[look.expr or "Neutral"] or EXPRESSIONS.Neutral
+	local HW, HD, headY = c.HW, c.HD, c.headY
+	local front = -HD / 2
+	local bottom = headY - c.HH / 2
+	local eyeY = c.eyeY
+	local jawValue = look.jaw
+	local jaw = if jawValue == true then 1 elseif type(jawValue) == "number" then jawValue else 0
+	local plain = Enum.Material.SmoothPlastic
+
+	if jaw > 0 then
+		add(c, "Head", "Jaw", Vector3.new(HW + 0.1 * jaw, 0.42, HD - 0.1), at(0, bottom + 0.08, -0.03), skin)
+		add(c, "Head", "Chin", Vector3.new(0.44, 0.26, 0.16), at(0, bottom - 0.02, front + 0.03), skin)
+	end
+	-- Both ears as one block through the head (saves a part).
+	add(c, "Head", "Ears", Vector3.new(HW + 0.08, 0.28, 0.22), at(0, eyeY - 0.12, 0.06), skin)
+	add(c, "Head", "Nose", Vector3.new(0.16, 0.24, 0.14), at(0, eyeY - 0.17, front - 0.06), shade(skin, 0.06))
+
+	-- Eyes (hidden behind shades / visor).
+	if not (c.has.Shades or c.has.Visor) then
+		for _, side in SIDES do
+			local s = side[1]
+			local x = s * 0.24
+			if look.eyeGlow then
+				add(
+					c,
+					"Head",
+					"Eye",
+					Vector3.new(0.26, 0.13 * expr.lid + 0.03, 0.05),
+					at(x, eyeY, front - 0.015),
+					look.eyeGlow,
+					Enum.Material.Neon
+				)
+			else
+				add(c, "Head", "Eye", Vector3.new(0.25, 0.17 * expr.lid, 0.04), at(x, eyeY, front - 0.01), EYE_WHITE, plain)
+				add(
+					c,
+					"Head",
+					"Pupil",
+					Vector3.new(0.12, 0.15 * expr.lid, 0.04),
+					at(x - s * 0.02 + expr.look, eyeY - 0.005, front - 0.025),
+					PUPIL,
+					plain
+				)
+			end
+		end
+	end
+	local browColor = if look.hairStyle == "Bald" then shade(skin, 0.45) else shade(hair, 0.1)
+	for _, side in SIDES do
+		local s = side[1]
+		local lift = expr.browY + (if s < 0 then expr.browRaise else 0)
+		add(
+			c,
+			"Head",
+			"Brow",
+			Vector3.new(0.3, 0.075, 0.07),
+			rot(s * 0.25, eyeY + 0.17 + lift, front - 0.025, 0, 0, s * expr.brow),
+			browColor,
+			plain
+		)
+	end
+
+	-- Facial hair.
+	if look.beard == "Stubble" then
+		add(c, "Head", "Stubble", Vector3.new(HW * 0.84, 0.38, 0.03), at(0, bottom + 0.13, front - 0.005), shade(skin, 0.22), plain)
+	elseif look.beard == "Beard" then
+		add(c, "Head", "Beard", Vector3.new(HW + 0.08 + 0.1 * jaw, 0.5, HD * 0.86), at(0, bottom + 0.07, -0.08), hair)
+		add(c, "Head", "Moustache", Vector3.new(0.46, 0.09, 0.06), at(0, bottom + 0.32, front - 0.04), hair)
+	end
+
+	-- Mouth.
+	local mouthY = bottom + 0.22
+	local mz = front - 0.03
+	if expr.mouth == "Grin" then
+		add(c, "Head", "Mouth", Vector3.new(expr.mouthW, 0.17, 0.04), at(0, mouthY - 0.02, mz), MOUTH, plain)
+		add(c, "Head", "Teeth", Vector3.new(expr.mouthW - 0.06, 0.07, 0.04), at(0, mouthY + 0.02, mz - 0.01), EYE_WHITE, plain)
+	elseif expr.mouth == "Open" then
+		add(c, "Head", "Mouth", Vector3.new(expr.mouthW, 0.15, 0.04), at(0, mouthY - 0.01, mz), MOUTH, plain)
+		add(c, "Head", "Teeth", Vector3.new(expr.mouthW - 0.06, 0.05, 0.04), at(0, mouthY + 0.03, mz - 0.01), EYE_WHITE, plain)
+	elseif expr.mouth == "Smirk" then
+		add(
+			c,
+			"Head",
+			"Mouth",
+			Vector3.new(expr.mouthW, 0.065, 0.04),
+			rot(-0.05, mouthY, mz, 0, 0, -expr.mouthTilt),
+			shade(MOUTH, 0.2),
+			plain
+		)
+	else
+		add(c, "Head", "Mouth", Vector3.new(expr.mouthW, 0.065, 0.04), at(0, mouthY, mz), shade(MOUTH, 0.2), plain)
+	end
+
+	-- Hair.
+	local style = look.hairStyle or "Buzz"
+	local top = c.headTop
+	local hatted = c.has.Cap or c.has.CapBack or c.has.Mohawk
+	if style ~= "Bald" then
+		local backH = if style == "Buzz" then 0.48 else 0.62
+		add(c, "Head", "HairBack", Vector3.new(HW + 0.05, backH, 0.08), at(0, top - backH / 2 + 0.02, HD / 2 + 0.03), hair)
+		if hatted then
+			add(c, "Head", "Hair", Vector3.new(HW + 0.04, 0.1, HD + 0.04), at(0, top + 0.02, 0), hair)
+		elseif style == "Buzz" then
+			add(c, "Head", "Hair", Vector3.new(HW + 0.04, 0.1, HD + 0.04), at(0, top + 0.02, 0.02), hair)
+		elseif style == "Flat" then
+			add(c, "Head", "Hair", Vector3.new(HW + 0.06, 0.38, HD + 0.04), at(0, top + 0.11, 0.01), hair)
+		elseif style == "Slick" then
+			add(c, "Head", "Hair", Vector3.new(HW + 0.06, 0.2, HD + 0.06), at(0, top + 0.05, 0.01), hair)
+			add(c, "Head", "HairFront", Vector3.new(HW * 0.92, 0.14, 0.4), rot(0, top + 0.16, front + 0.22, 12, 0, 0), tint(hair, 0.08))
+		elseif style == "Quiff" then
+			add(c, "Head", "Hair", Vector3.new(HW + 0.05, 0.16, HD + 0.05), at(0, top + 0.03, 0.01), hair)
+			add(c, "Head", "Quiff", Vector3.new(HW * 0.84, 0.36, 0.56), rot(0, top + 0.2, front + 0.26, 24, 0, 0), tint(hair, 0.06))
+		elseif style == "Spiky" then
+			add(c, "Head", "Hair", Vector3.new(HW + 0.05, 0.16, HD + 0.05), at(0, top + 0.03, 0.01), hair)
+			local spikes = { { -0.26, -0.18, 16, -18 }, { 0.26, -0.18, 16, 18 }, { 0, 0.22, -20, 0 } }
+			for _, sp in spikes do
+				add(
+					c,
+					"Head",
+					"Spike",
+					Vector3.new(0.3, 0.42, 0.3),
+					CFrame.new(sp[1], top + 0.2, sp[2])
+						* CFrame.Angles(math.rad(sp[3]), 0, math.rad(sp[4]))
+						* CFrame.Angles(0, math.rad(45), 0),
+					hair
+				)
+			end
+		elseif style == "Bun" then
+			add(c, "Head", "Hair", Vector3.new(HW + 0.05, 0.16, HD + 0.05), at(0, top + 0.03, 0.01), hair)
+			add(c, "Head", "Bun", Vector3.new(0.44, 0.44, 0.44), at(0, top - 0.02, HD / 2 + 0.16), hair, nil, Enum.PartType.Ball)
+		end
+	end
+	c.hairTop = c.top
+end
+
+-- Chad body -----------------------------------------------------------------------
+
+local function buildChad(c: Ctx)
+	local look = c.look
+	local b = math.clamp(look.buff or 0, 0, 1)
+	local skin, shirt, pants = look.skin, look.shirt, look.pants
+	local topStyle = look.top or "Tee"
+	local bottoms = look.bottoms or "Pants"
+	local shirtless = topStyle == "Shirtless"
+	local sleeved = topStyle == "Jacket" or topStyle == "Hoodie"
+	local torsoColor = if shirtless then skin else shirt
+
+	local hipX = 0.4 + 0.06 * b
+	local legT = 0.64 + 0.14 * b
+	local hipY, kneeY, ankleY = 2.05, 1.12, 0.32
+	local waistY = 2.5
+	local waistW = 1.42 + 0.22 * b
+	local W = 1.72 + 0.9 * b
+	local chestD = 0.92 + 0.14 * b
+	local A = 0.54 + 0.34 * b
+	local armX = W / 2 + A / 2 - 0.06
+	local shoulderY = 3.95
+	local elbowY = shoulderY - 0.96
+	local wristY = elbowY - 0.84
+	local neckY = 4.3
+	local HW, HH, HD = 1.1, 1.16, 1.06
+	local headY = neckY + 0.14 + HH / 2
+
+	c.W, c.chestD, c.chestTop, c.chestY, c.waistW, c.hipY = W, chestD, 4.21, 3.72, waistW, hipY
+	c.A, c.armX, c.shoulderY, c.wristY = A, armX, shoulderY, wristY
+	c.delt = A + 0.16
+	c.headY, c.HW, c.HH, c.HD = headY, HW, HH, HD
+	c.headTop = headY + HH / 2
+	c.eyeY = headY + 0.08
+
+	setPivot(c, "LowerTorso", 0, hipY, 0)
+	setPivot(c, "UpperTorso", 0, waistY, 0)
+	setPivot(c, "Head", 0, neckY, 0)
+
+	-- Legs.
+	local shoes = look.shoes or Color3.fromRGB(240, 240, 244)
+	local sole = look.sole or Color3.fromRGB(250, 250, 250)
+	local plainShoes = look.shoes == nil and look.sole == nil
+	for _, side in SIDES do
+		local s, n = side[1], side[2]
+		setPivot(c, n .. "UpperLeg", s * hipX, hipY, 0)
+		setPivot(c, n .. "LowerLeg", s * hipX, kneeY, 0)
+		setPivot(c, n .. "Foot", s * hipX, ankleY, 0)
+		if plainShoes then
+			add(c, n .. "Foot", "Shoe", Vector3.new(legT + 0.08, 0.36, 1.06), at(s * hipX, 0.18, -0.15), shoes)
+		else
+			add(c, n .. "Foot", "Shoe", Vector3.new(legT + 0.06, 0.28, 1.02), at(s * hipX, 0.22, -0.14), shoes)
+			add(c, n .. "Foot", "Sole", Vector3.new(legT + 0.1, 0.1, 1.08), at(s * hipX, 0.05, -0.15), sole)
+		end
+		local shin = if bottoms == "Shorts" then skin else pants
+		add(
+			c,
+			n .. "LowerLeg",
+			n .. "LowerLeg",
+			Vector3.new(legT * 0.9, kneeY - ankleY + 0.04, legT * 0.92),
+			at(s * hipX, (kneeY + ankleY) / 2, 0),
+			shin
+		)
+		add(
+			c,
+			n .. "UpperLeg",
+			n .. "UpperLeg",
+			Vector3.new(legT, hipY - kneeY + 0.08, legT * 1.02),
+			at(s * hipX, (hipY + kneeY) / 2, 0),
+			pants
+		)
+	end
+
+	-- Hips.
+	local hipsW = math.max(waistW, 2 * hipX + legT) + 0.04
+	local hipsD = 0.88 + 0.1 * b
+	c.parts.LowerTorso = add(c, "LowerTorso", "LowerTorso", Vector3.new(hipsW, 0.58, hipsD), at(0, 2.2, 0), pants)
+	if look.trim and not c.has.ChampBelt then
+		add(c, "LowerTorso", "Belt", Vector3.new(hipsW + 0.04, 0.13, hipsD + 0.04), at(0, 2.43, 0), look.trim)
+	end
+
+	-- Torso: V-taper from the waist to the chest.
+	add(c, "UpperTorso", "Abs", Vector3.new(waistW, 0.8, chestD * 0.9), at(0, 2.88, 0), torsoColor)
+	c.parts.UpperTorso = add(c, "UpperTorso", "UpperTorso", Vector3.new(W, 0.98, chestD), at(0, 3.72, 0), torsoColor)
+	local latW = (W - waistW) / 2
+	if latW > 0.12 then
+		for _, side in SIDES do
+			local s = side[1]
+			local x, y = underWedge(s)
+			add(
+				c,
+				"UpperTorso",
+				"Lat",
+				Vector3.new(chestD * 0.86, 0.6, latW),
+				CFrame.fromMatrix(Vector3.new(s * (waistW / 2 + latW / 2), 2.93, 0.02), x, y),
+				shade(torsoColor, 0.03),
+				nil,
+				Enum.PartType.Wedge
+			)
+		end
+	end
+	if b >= 0.15 then
+		local pecColor = if shirtless then shade(skin, 0.04) else torsoColor
+		for _, side in SIDES do
+			local s = side[1]
+			add(c, "UpperTorso", "Pec", Vector3.new(W / 2 - 0.1, 0.44, 0.1), at(s * (W / 4 - 0.01), 3.84, -chestD / 2 - 0.03), pecColor)
+		end
+	end
+	if shirtless and b >= 0.3 then
+		-- Two rows of abs split by a centre line.
+		local absZ = -chestD * 0.45 - 0.02
+		for row = 0, 1 do
+			add(c, "UpperTorso", "Abs", Vector3.new(0.66, 0.2, 0.06), at(0, 3.06 - row * 0.25, absZ), shade(skin, 0.07))
+		end
+		add(c, "UpperTorso", "AbLine", Vector3.new(0.05, 0.48, 0.07), at(0, 2.94, absZ - 0.01), shade(skin, 0.3))
+	end
+	if topStyle == "Jacket" then
+		add(c, "UpperTorso", "InnerShirt", Vector3.new(W * 0.34, 1.7, 0.06), at(0, 3.3, -chestD / 2 - 0.0), look.trim or WHITE)
+	elseif topStyle == "Hoodie" then
+		add(c, "UpperTorso", "Hood", Vector3.new(W * 0.56, 0.42, 0.42), at(0, 4.2, chestD / 2 - 0.05), shade(shirt, 0.08))
+	end
+	local neckW = 0.46 + 0.26 * b
+	add(c, "UpperTorso", "Neck", Vector3.new(neckW, 0.38, 0.48 + 0.16 * b), at(0, 4.3, 0.03), skin)
+	if b >= 0.5 then
+		local trapColor = if topStyle == "Tank" then skin else torsoColor
+		local trapW = W / 2 - neckW / 2 - 0.12
+		local trapH = 0.26 + 0.12 * b
+		for _, side in SIDES do
+			local s = side[1]
+			local x, y = slopeWedge(s)
+			add(
+				c,
+				"UpperTorso",
+				"Trap",
+				Vector3.new(0.56, trapH, trapW),
+				CFrame.fromMatrix(Vector3.new(s * (neckW / 2 + trapW / 2 - 0.02), 4.2 + trapH / 2, 0.08), x, y),
+				trapColor,
+				nil,
+				Enum.PartType.Wedge
+			)
+		end
+	end
+
+	-- Arms.
+	local sleeveColor = if topStyle == "Tee" or sleeved then shirt else skin
+	local armColor = if sleeved then shirt else skin
+	for _, side in SIDES do
+		local s, n = side[1], side[2]
+		local x = s * armX
+		setPivot(c, n .. "UpperArm", x, shoulderY, 0)
+		setPivot(c, n .. "LowerArm", x, elbowY, 0)
+		setPivot(c, n .. "Hand", x, wristY, 0)
+		add(c, n .. "UpperArm", "Delt", Vector3.one * c.delt, at(x, shoulderY - 0.1, 0), sleeveColor, nil, Enum.PartType.Ball)
+		add(c, n .. "UpperArm", n .. "UpperArm", Vector3.new(A, 0.98, A * 0.98), at(x, shoulderY - 0.49, 0), armColor)
+		if topStyle == "Tee" then
+			add(c, n .. "UpperArm", "Sleeve", Vector3.new(A + 0.06, 0.32, A + 0.06), at(x, shoulderY - 0.2, 0), shirt)
+		end
+		if b >= 0.3 and not sleeved then
+			add(c, n .. "UpperArm", "Bicep", Vector3.new(A * 0.72, 0.44, 0.2), at(x, shoulderY - 0.62, -A / 2 - 0.05), shade(skin, 0.03))
+		end
+		add(c, n .. "LowerArm", n .. "LowerArm", Vector3.new(A * 0.9, 0.86, A * 0.92), at(x, elbowY - 0.43, 0), armColor)
+		add(c, n .. "Hand", n .. "Hand", Vector3.new(A * 0.8, 0.42, A * 0.88), at(x, wristY - 0.2, -0.02), skin)
+	end
+
+	-- Head.
+	setPivot(c, "Head", 0, neckY, 0)
+	c.parts.Head = add(c, "Head", "Head", Vector3.new(HW, HH, HD), at(0, headY, 0), skin)
+	buildChadFace(c)
+end
+
+-- Bot body ------------------------------------------------------------------------
+
+local function buildBotFace(c: Ctx)
+	local look = c.look
+	local HW, HD, headY = c.HW, c.HD, c.headY
+	local front = -HD / 2
+	local led = c.led
+	local neon = Enum.Material.Neon
+	local plain = Enum.Material.SmoothPlastic
+	local eyeY = c.eyeY
+	local z = front - 0.06
+
+	add(c, "Head", "Faceplate", Vector3.new(HW - 0.18, 0.58, 0.06), at(0, headY + 0.06, front - 0.02), FACEPLATE, plain)
+	local eyes = look.eyes or "Dots"
+	if c.has.Visor then
+		eyes = "None"
+	end
+	if eyes == "Visor" then
+		add(c, "Head", "Eye", Vector3.new(HW - 0.36, 0.15, 0.04), at(0, eyeY, z), led, neon)
+	elseif eyes == "Mono" then
+		add(c, "Head", "Eye", Vector3.new(0.04, 0.36, 0.36), rot(0, eyeY - 0.02, z, 0, 90, 0), led, neon, Enum.PartType.Cylinder)
+		add(c, "Head", "Pupil", Vector3.new(0.04, 0.14, 0.14), rot(0, eyeY - 0.02, z - 0.02, 0, 90, 0), WHITE, neon, Enum.PartType.Cylinder)
+	elseif eyes ~= "None" then
+		for _, side in SIDES do
+			local s = side[1]
+			local x = s * 0.26
+			if eyes == "Angry" then
+				add(c, "Head", "Eye", Vector3.new(0.3, 0.1, 0.04), rot(x, eyeY, z, 0, 0, s * 18), led, neon)
+			elseif eyes == "Happy" then
+				add(c, "Head", "Eye", Vector3.new(0.17, 0.06, 0.04), rot(x - 0.06, eyeY, z, 0, 0, 35), led, neon)
+				add(c, "Head", "Eye", Vector3.new(0.17, 0.06, 0.04), rot(x + 0.06, eyeY, z, 0, 0, -35), led, neon)
+			elseif eyes == "Bars" then
+				add(c, "Head", "Eye", Vector3.new(0.3, 0.08, 0.04), at(x, eyeY, z), led, neon)
+			else
+				add(c, "Head", "Eye", Vector3.new(0.04, 0.22, 0.22), rot(x, eyeY, z, 0, 90, 0), led, neon, Enum.PartType.Cylinder)
+			end
+		end
+	end
+	local mouth = look.mouth or "Grille"
+	if mouth == "Grille" then
+		for row = 0, 2 do
+			add(
+				c,
+				"Head",
+				"Grille",
+				Vector3.new(0.46, 0.045, 0.04),
+				at(0, headY - 0.3 - row * 0.085, front - 0.01),
+				shade(c.trim, 0.3),
+				plain
+			)
+		end
+	elseif mouth == "Bar" then
+		add(c, "Head", "Mouth", Vector3.new(0.42, 0.06, 0.04), at(0, headY - 0.14, z), led, neon)
+	end
+	-- Both ear bolts as one cylinder through the head.
+	add(c, "Head", "EarBolts", Vector3.new(HW + 0.14, 0.38, 0.38), at(0, headY, 0), c.trim, Enum.Material.Metal, Enum.PartType.Cylinder)
+	if not c.has.Mohawk then
+		add(c, "Head", "Crest", Vector3.new(0.2, 0.12, HD * 0.78), at(0, c.headTop + 0.05, 0.02), shade(look.skin, 0.15))
+	end
+	c.hairTop = c.top
+end
+
+local function buildBot(c: Ctx)
+	local look = c.look
+	local b = math.clamp(look.buff or 0, 0, 1)
+	local skin, shirt, pants, trim = look.skin, look.shirt, look.pants, c.trim
+	local metal = Enum.Material.Metal
+	local plain = Enum.Material.SmoothPlastic
+
+	local hipX = 0.46 + 0.06 * b
+	local legT = 0.56 + 0.1 * b
+	local hipY, kneeY, ankleY = 2.1, 1.22, 0.4
+	local waistY = 2.45
+	local W = 1.85 + 0.75 * b
+	local chestD = 1.05 + 0.15 * b
+	local A = 0.55 + 0.3 * b
+	local armX = W / 2 + 0.3 + 0.12 * b
+	local shoulderY = 3.8
+	local elbowY, wristY = 2.98, 2.16
+	local neckY = 4.12
+	local HW, HH, HD = 1.28, 1.0, 1.12
+	local headY = neckY + 0.12 + HH / 2
+
+	c.W, c.chestD, c.chestTop, c.chestY, c.waistW, c.hipY = W, chestD, 4.05, 3.4, 1.4, hipY
+	c.A, c.armX, c.shoulderY, c.wristY = A, armX, shoulderY, wristY
+	c.delt = 0.62 + 0.12 * b
+	c.headY, c.HW, c.HH, c.HD = headY, HW, HH, HD
+	c.headTop = headY + HH / 2
+	c.eyeY = headY + 0.1
+
+	setPivot(c, "LowerTorso", 0, hipY, 0)
+	setPivot(c, "UpperTorso", 0, waistY, 0)
+	setPivot(c, "Head", 0, neckY, 0)
+
+	for _, side in SIDES do
+		local s, n = side[1], side[2]
+		local x = s * hipX
+		setPivot(c, n .. "UpperLeg", x, hipY, 0)
+		setPivot(c, n .. "LowerLeg", x, kneeY, 0)
+		setPivot(c, n .. "Foot", x, ankleY, 0)
+		add(c, n .. "Foot", "Boot", Vector3.new(legT + 0.2, 0.4, 1.1), at(x, 0.2, -0.12), trim, metal)
+		add(c, n .. "Foot", "ToeCap", Vector3.new(legT + 0.12, 0.14, 0.42), at(x, 0.42, -0.44), pants)
+		add(c, n .. "LowerLeg", n .. "LowerLeg", Vector3.new(legT + 0.08, 0.86, legT + 0.14), at(x, 0.8, -0.02), pants)
+		add(c, n .. "LowerLeg", "Knee", Vector3.one * (legT * 0.8), at(x, kneeY, 0), trim, metal, Enum.PartType.Ball)
+		add(c, n .. "UpperLeg", n .. "UpperLeg", Vector3.new(legT * 0.78, 0.86, legT * 0.78), at(x, 1.66, 0), trim, metal)
+	end
+
+	c.parts.LowerTorso = add(c, "LowerTorso", "LowerTorso", Vector3.new(2 * hipX + legT * 0.8 + 0.12, 0.52, 0.86), at(0, 2.2, 0), pants)
+	add(c, "UpperTorso", "Waist", Vector3.new(0.44, 0.95, 0.95), rot(0, 2.6, 0, 0, 0, 90), trim, metal, Enum.PartType.Cylinder)
+	c.parts.UpperTorso = add(c, "UpperTorso", "UpperTorso", Vector3.new(W, 1.3, chestD), at(0, 3.4, 0), shirt)
+	add(c, "UpperTorso", "ChestPlate", Vector3.new(W * 0.64, 0.74, 0.1), at(0, 3.5, -chestD / 2 - 0.04), skin)
+	add(
+		c,
+		"UpperTorso",
+		"Core",
+		Vector3.new(0.1, 0.44, 0.44),
+		rot(0, 3.5, -chestD / 2 - 0.12, 0, 90, 0),
+		c.led,
+		Enum.Material.Neon,
+		Enum.PartType.Cylinder
+	)
+	add(c, "UpperTorso", "Vent", Vector3.new(W * 0.44, 0.16, 0.05), at(0, 2.96, -chestD / 2 - 0.01), shade(trim, 0.35), plain)
+	for _, side in SIDES do
+		add(
+			c,
+			"UpperTorso",
+			"Bolt",
+			Vector3.one * 0.12,
+			at(side[1] * W * 0.28, 3.8, -chestD / 2 - 0.1),
+			tint(trim, 0.3),
+			metal,
+			Enum.PartType.Ball
+		)
+	end
+	add(c, "UpperTorso", "Neck", Vector3.new(0.34, 0.5, 0.5), rot(0, 4.15, 0, 0, 0, 90), trim, metal, Enum.PartType.Cylinder)
+
+	for _, side in SIDES do
+		local s, n = side[1], side[2]
+		local x = s * armX
+		setPivot(c, n .. "UpperArm", x, shoulderY, 0)
+		setPivot(c, n .. "LowerArm", x, elbowY, 0)
+		setPivot(c, n .. "Hand", x, wristY, 0)
+		add(c, n .. "UpperArm", "ShoulderJoint", Vector3.one * c.delt, at(x, shoulderY, 0), trim, metal, Enum.PartType.Ball)
+		add(c, n .. "UpperArm", n .. "UpperArm", Vector3.new(0.36, 0.84, 0.36), at(x, shoulderY - 0.42, 0), trim, metal)
+		add(c, n .. "LowerArm", "Elbow", Vector3.one * 0.48, at(x, elbowY, 0), trim, metal, Enum.PartType.Ball)
+		add(c, n .. "LowerArm", n .. "LowerArm", Vector3.new(A, 0.78, A + 0.04), at(x, elbowY - 0.42, 0), skin)
+		add(c, n .. "Hand", n .. "Hand", Vector3.new(0.42 + 0.1 * b, 0.36, 0.5), at(x, wristY - 0.2, -0.02), trim, metal)
+	end
+
+	c.parts.Head = add(c, "Head", "Head", Vector3.new(HW, HH, HD), at(0, headY, 0), skin)
+	buildBotFace(c)
+end
+
+-- Accessories ---------------------------------------------------------------------
+
+local ACCESSORIES: { [string]: (Ctx) -> () } = {}
+
+local function capCrown(c: Ctx): number
+	local y = c.headTop + 0.06
+	add(c, "Head", "Cap", Vector3.new(c.HW + 0.1, 0.3, c.HD + 0.1), at(0, y, 0), c.acc, Enum.Material.SmoothPlastic)
+	return y
+end
+
+ACCESSORIES.Cap = function(c)
+	local y = capCrown(c)
+	add(
+		c,
+		"Head",
+		"Brim",
+		Vector3.new(c.HW * 0.92, 0.07, 0.56),
+		rot(0, y - 0.12, -c.HD / 2 - 0.22, -6, 0, 0),
+		shade(c.acc, 0.15),
+		Enum.Material.SmoothPlastic
+	)
+end
+
+ACCESSORIES.CapBack = function(c)
+	local y = capCrown(c)
+	add(
+		c,
+		"Head",
+		"Brim",
+		Vector3.new(c.HW * 0.92, 0.07, 0.5),
+		rot(0, y - 0.1, c.HD / 2 + 0.2, 8, 0, 0),
+		shade(c.acc, 0.15),
+		Enum.Material.SmoothPlastic
+	)
+end
+
+ACCESSORIES.Headband = function(c)
+	local y = if c.isBot then c.headTop - 0.16 else c.eyeY + 0.36
+	add(c, "Head", "Headband", Vector3.new(c.HW + 0.08, 0.16, c.HD + 0.08), at(0, y, 0), c.acc, Enum.Material.Fabric)
+	add(c, "Head", "BandTail", Vector3.new(0.16, 0.42, 0.05), rot(0.12, y - 0.2, c.HD / 2 + 0.07, 0, 0, 18), c.acc, Enum.Material.Fabric)
+end
+
+ACCESSORIES.Shades = function(c)
+	local front = -c.HD / 2
+	local lens = Color3.fromRGB(16, 16, 22)
+	add(c, "Head", "Shades", Vector3.new(c.HW + 0.04, 0.07, 0.07), at(0, c.eyeY + 0.09, front - 0.04), BLACK, Enum.Material.SmoothPlastic)
+	for _, side in SIDES do
+		add(
+			c,
+			"Head",
+			"Lens",
+			Vector3.new(0.42, 0.22, 0.06),
+			at(side[1] * 0.25, c.eyeY - 0.02, front - 0.05),
+			lens,
+			Enum.Material.SmoothPlastic
+		)
+	end
+	add(c, "Head", "Glint", Vector3.new(0.1, 0.05, 0.02), rot(0.32, c.eyeY + 0.02, front - 0.085, 0, 0, 25), WHITE, Enum.Material.Neon)
+end
+
+ACCESSORIES.Visor = function(c)
+	local front = -c.HD / 2
+	add(c, "Head", "Visor", Vector3.new(c.HW + 0.06, 0.22, 0.1), at(0, c.eyeY, front - 0.06), c.acc, Enum.Material.Neon)
+	add(
+		c,
+		"Head",
+		"VisorBand",
+		Vector3.new(c.HW + 0.08, 0.08, c.HD + 0.08),
+		at(0, c.eyeY + 0.14, 0),
+		Color3.fromRGB(30, 30, 36),
+		Enum.Material.Metal
+	)
+end
+
+ACCESSORIES.Chain = function(c)
+	local front = -c.chestD / 2 - (if c.isBot then 0.13 else 0.1)
+	local top = c.chestTop - 0.02
+	for _, side in SIDES do
+		local s = side[1]
+		add(
+			c,
+			"UpperTorso",
+			"Chain",
+			Vector3.new(0.08, 0.7, 0.08),
+			rot(s * 0.19, top - 0.3, front, 0, 0, s * 32),
+			GOLD,
+			Enum.Material.Metal
+		)
+	end
+	add(
+		c,
+		"UpperTorso",
+		"Medal",
+		Vector3.new(0.08, 0.38, 0.38),
+		rot(0, top - 0.7, front - 0.02, 0, 90, 0),
+		GOLD,
+		Enum.Material.Metal,
+		Enum.PartType.Cylinder
+	)
+end
+
+ACCESSORIES.Crown = function(c)
+	local y = c.hairTop - 0.04
+	local gold = c.acc
+	add(c, "Head", "Crown", Vector3.new(c.HW + 0.14, 0.28, c.HD + 0.14), at(0, y + 0.1, 0), gold, Enum.Material.Metal)
+	local w, d = (c.HW + 0.14) / 2 - 0.1, (c.HD + 0.14) / 2 - 0.1
+	for _, corner in { { -w, -d }, { w, -d }, { 0, d } } do
+		add(c, "Head", "CrownPoint", Vector3.new(0.2, 0.32, 0.2), rot(corner[1], y + 0.36, corner[2], 0, 45, 0), gold, Enum.Material.Metal)
+	end
+	add(
+		c,
+		"Head",
+		"CrownGem",
+		Vector3.new(0.16, 0.16, 0.05),
+		rot(0, y + 0.1, -(c.HD + 0.14) / 2 - 0.02, 0, 0, 45),
+		Color3.fromRGB(255, 40, 90),
+		Enum.Material.Neon
+	)
+end
+
 ACCESSORIES.Halo = function(c)
-	local y = c.headTop + 0.6
-	for i = 0, 9 do
-		local angle = math.rad(i * 36)
-		local bead = part(
-			c.model,
+	local y = c.hairTop + 0.42
+	local r = 0.62
+	for i = 0, 5 do
+		local angle = i * 60
+		local a = math.rad(angle)
+		add(
+			c,
+			"Head",
 			"Halo",
-			Vector3.new(0.22, 0.22, 0.22),
-			CFrame.new(math.cos(angle) * 0.75, y, math.sin(angle) * 0.75),
-			c.color,
+			Vector3.new(0.74, 0.09, 0.12),
+			rot(math.sin(a) * r, y, math.cos(a) * r, 0, angle, 0),
+			c.acc,
 			Enum.Material.Neon
 		)
-		bead.Shape = Enum.PartType.Ball
 	end
 end
 
 ACCESSORIES.Horns = function(c)
-	local y = c.headTop + 0.15
-	for side = -1, 1, 2 do
-		local horn = part(
-			c.model,
+	local y = c.headTop
+	for _, side in SIDES do
+		local s = side[1]
+		local x = s * (c.HW / 2 - 0.12)
+		add(
+			c,
+			"Head",
 			"Horn",
-			Vector3.new(0.25, 0.7, 0.25),
-			CFrame.new(side * 0.5, y, 0) * CFrame.Angles(0, 0, math.rad(-side * 25)),
-			c.color,
-			Enum.Material.Neon
+			Vector3.new(0.24, 0.4, 0.24),
+			rot(x + s * 0.06, y + 0.14, -0.1, 0, 0, -s * 28),
+			shade(c.acc, 0.2),
+			Enum.Material.SmoothPlastic
 		)
-		horn.Shape = Enum.PartType.Block
+		add(c, "Head", "HornTip", Vector3.new(0.15, 0.36, 0.15), rot(x + s * 0.12, y + 0.44, -0.1, 0, 0, s * 8), c.acc, Enum.Material.Neon)
 	end
 end
 
 ACCESSORIES.Antenna = function(c)
+	local y = c.hairTop
+	local x = if c.isBot then c.HW / 2 - 0.2 else 0
+	add(c, "Head", "AntennaRod", Vector3.new(0.08, 0.8, 0.08), at(x, y + 0.38, 0.1), Color3.fromRGB(80, 80, 90), Enum.Material.Metal)
+	add(c, "Head", "AntennaTip", Vector3.one * 0.26, at(x, y + 0.82, 0.1), c.acc, Enum.Material.Neon, Enum.PartType.Ball)
+end
+
+ACCESSORIES.Mohawk = function(c)
 	local y = c.headTop
-	part(c.model, "AntennaRod", Vector3.new(0.1, 0.8, 0.1), CFrame.new(0, y + 0.4, 0), Color3.fromRGB(80, 80, 90), Enum.Material.Metal)
-	local tip = part(c.model, "AntennaTip", Vector3.new(0.3, 0.3, 0.3), CFrame.new(0, y + 0.85, 0), c.color, Enum.Material.Neon)
-	tip.Shape = Enum.PartType.Ball
+	add(c, "Head", "Mohawk", Vector3.new(0.18, 0.34, c.HD * 0.8), at(0, y + 0.15, 0.06), c.acc)
+	add(c, "Head", "MohawkFront", Vector3.new(0.18, 0.38, 0.32), rot(0, y + 0.28, -c.HD / 2 + 0.16, 26, 0, 0), c.acc)
+end
+
+ACCESSORIES.Headphones = function(c)
+	local y = c.hairTop
+	add(
+		c,
+		"Head",
+		"Headband",
+		Vector3.new(c.HW + 0.22, 0.1, 0.18),
+		at(0, y + 0.03, 0.04),
+		Color3.fromRGB(30, 30, 36),
+		Enum.Material.SmoothPlastic
+	)
+	for _, side in SIDES do
+		local s = side[1]
+		add(
+			c,
+			"Head",
+			"EarCup",
+			Vector3.new(0.2, 0.5, 0.5),
+			at(s * (c.HW / 2 + 0.1), c.eyeY - 0.12, 0.04),
+			c.acc,
+			Enum.Material.SmoothPlastic,
+			Enum.PartType.Cylinder
+		)
+	end
 end
 
 ACCESSORIES.Cape = function(c)
-	part(
-		c.model,
+	local back = c.chestD / 2
+	add(
+		c,
+		"UpperTorso",
+		"CapeCollar",
+		Vector3.new(c.W + 0.12, 0.26, 0.34),
+		at(0, c.chestTop - 0.02, back),
+		shade(c.acc, 0.15),
+		Enum.Material.Fabric
+	)
+	add(
+		c,
+		"UpperTorso",
 		"Cape",
-		Vector3.new(c.torsoWidth * 0.95, 2.6, 0.1),
-		CFrame.new(0, 2.75, 0.6) * CFrame.Angles(math.rad(-8), 0, 0),
-		c.color,
+		Vector3.new(c.W * 0.94, 2.8, 0.08),
+		rot(0, c.chestTop - 1.42, back + 0.3, -9, 0, 0),
+		c.acc,
 		Enum.Material.Fabric
 	)
 end
 
 ACCESSORIES.Wings = function(c)
-	for side = -1, 1, 2 do
-		part(
-			c.model,
-			"Wing",
-			Vector3.new(2.2, 1.6, 0.1),
-			CFrame.new(side * (c.torsoWidth / 2 + 0.7), 3.4, 0.75) * CFrame.Angles(0, math.rad(side * 25), math.rad(side * 20)),
-			c.color,
-			Enum.Material.Neon
-		).Transparency =
-			0.25
+	local back = c.chestD / 2 + 0.2
+	local y = c.chestTop - 0.2
+	for _, side in SIDES do
+		local s = side[1]
+		local feathers = { { 2.5, 0.9, 28, 0, 0 }, { 1.9, 0.82, 2, -0.5, 0.25 } }
+		for _, f in feathers do
+			local length, height, angle, drop = f[1], f[2], f[3], f[4]
+			local a = math.rad(angle)
+			local cx = s * (0.3 + math.cos(a) * length / 2)
+			local cy = y + drop + math.sin(a) * length / 2
+			local p = add(
+				c,
+				"UpperTorso",
+				"Wing",
+				Vector3.new(length, height, 0.08),
+				CFrame.new(cx, cy, back) * CFrame.Angles(0, math.rad(-s * 18), math.rad(s * angle)),
+				tint(c.acc, f[5]),
+				Enum.Material.Neon
+			)
+			p.Transparency = 0.15
+		end
 	end
 end
 
 ACCESSORIES.Backpack = function(c)
-	part(c.model, "Pack", Vector3.new(c.torsoWidth * 0.7, 1.4, 0.6), CFrame.new(0, 3, 0.8), c.color, Enum.Material.Metal)
+	local back = c.chestD / 2
+	add(c, "UpperTorso", "Pack", Vector3.new(c.W * 0.6, 1.2, 0.56), at(0, c.chestY - 0.15, back + 0.26), c.acc, Enum.Material.Metal)
+	add(
+		c,
+		"UpperTorso",
+		"PackFlap",
+		Vector3.new(c.W * 0.62, 0.3, 0.62),
+		at(0, c.chestY + 0.38, back + 0.26),
+		shade(c.acc, 0.25),
+		Enum.Material.Metal
+	)
 end
 
-ACCESSORIES.Shoulders = function(c)
-	for side = -1, 1, 2 do
-		part(
-			c.model,
-			"Pad",
-			Vector3.new(1.3, 0.4, 1.3),
-			CFrame.new(side * (c.torsoWidth / 2 + 0.45), 4.05, 0),
-			c.color,
-			Enum.Material.Metal
+ACCESSORIES.Jetpack = function(c)
+	local back = c.chestD / 2
+	add(
+		c,
+		"UpperTorso",
+		"Jetpack",
+		Vector3.new(c.W * 0.56, 1.1, 0.5),
+		at(0, c.chestY - 0.1, back + 0.24),
+		Color3.fromRGB(70, 74, 84),
+		Enum.Material.Metal
+	)
+	for _, side in SIDES do
+		local x = side[1] * c.W * 0.2
+		add(
+			c,
+			"UpperTorso",
+			"Thruster",
+			Vector3.new(0.6, 0.38, 0.38),
+			rot(x, c.chestY - 0.75, back + 0.3, 0, 0, 90),
+			c.acc,
+			Enum.Material.Metal,
+			Enum.PartType.Cylinder
+		)
+		add(
+			c,
+			"UpperTorso",
+			"Flame",
+			Vector3.one * 0.3,
+			at(x, c.chestY - 1.12, back + 0.3),
+			Color3.fromRGB(255, 170, 60),
+			Enum.Material.Neon,
+			Enum.PartType.Ball
 		)
 	end
 end
 
--- Builds a model standing on y = 0 at the origin, facing -Z.
-function CharacterFactory.build(look: Look, name: string?): Model
-	local model = Instance.new("Model")
-	model.Name = name or "Unit"
-
-	local buff = look.buff or 0
-	local bodyMaterial = materialFrom(look.material)
-	local torsoWidth = 2 + buff * 0.8
-	local armWidth = 1 + buff * 0.45
-
-	-- Root sits at the feet so PivotTo/ScaleTo keep the unit standing on the floor.
-	local root = part(model, "Root", Vector3.new(0.2, 0.2, 0.2), CFrame.new(0, 0, 0), Color3.new(1, 1, 1))
-	root.Transparency = 1
-	model.PrimaryPart = root
-
-	part(model, "LeftLeg", Vector3.new(0.95, 2, 1), CFrame.new(-0.5, 1, 0), look.pants, bodyMaterial)
-	part(model, "RightLeg", Vector3.new(0.95, 2, 1), CFrame.new(0.5, 1, 0), look.pants, bodyMaterial)
-	local torso = part(model, "Torso", Vector3.new(torsoWidth, 2, 1), CFrame.new(0, 3, 0), look.shirt, bodyMaterial)
-	local armX = torsoWidth / 2 + armWidth / 2
-	part(model, "LeftArm", Vector3.new(armWidth, 2, 1), CFrame.new(-armX, 3, 0), look.skin, bodyMaterial)
-	part(model, "RightArm", Vector3.new(armWidth, 2, 1), CFrame.new(armX, 3, 0), look.skin, bodyMaterial)
-
-	local head = part(model, "Head", Vector3.new(1.3, 1.3, 1.3), CFrame.new(0, 4.65, 0), look.skin, bodyMaterial)
-	local headTop = 5.3
-	if look.jaw then
-		part(model, "Jaw", Vector3.new(1.45, 0.45, 1.2), CFrame.new(0, 4.1, -0.05), look.skin, bodyMaterial)
+-- Pauldrons: a top plate plus a side plate hanging over the upper arm.
+ACCESSORIES.Shoulders = function(c)
+	local size = c.delt + 0.26
+	for _, side in SIDES do
+		local s, n = side[1], side[2]
+		local x = s * (c.armX + 0.04)
+		local top = Vector3.new(size, 0.3, size)
+		add(c, n .. "UpperArm", "Pad", top, rot(x, c.shoulderY + 0.2, 0, 0, 0, -s * 12), c.acc, Enum.Material.Metal)
+		local plate = Vector3.new(0.14, 0.62, size - 0.08)
+		local px = x + s * (size / 2 - 0.02)
+		add(c, n .. "UpperArm", "PadSide", plate, rot(px, c.shoulderY - 0.14, 0, 0, 0, -s * 12), shade(c.acc, 0.25), Enum.Material.Metal)
 	end
+end
 
-	if look.face and look.face ~= "" then
-		local gui = Instance.new("SurfaceGui")
-		gui.Name = "Face"
-		gui.Face = Enum.NormalId.Front
-		gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
-		gui.PixelsPerStud = 60
-		gui.LightInfluence = 0
-		gui.Parent = head
-		local label = Instance.new("TextLabel")
-		label.BackgroundTransparency = 1
-		label.Size = UDim2.fromScale(1, 1)
-		label.Text = look.face
-		label.TextScaled = true
-		label.Font = look.faceFont or Enum.Font.GothamBold
-		label.TextColor3 = look.faceColor or Color3.new(0.1, 0.1, 0.1)
-		label.Parent = gui
+ACCESSORIES.Dumbbell = function(c)
+	local x = c.armX
+	local y = c.wristY - 0.2
+	local iron = Color3.fromRGB(45, 45, 52)
+	add(
+		c,
+		"RightHand",
+		"DumbbellBar",
+		Vector3.new(1.0, 0.12, 0.12),
+		rot(x, y, -0.02, 0, 90, 0),
+		Color3.fromRGB(180, 180, 190),
+		Enum.Material.Metal,
+		Enum.PartType.Cylinder
+	)
+	for _, z in { -0.42, 0.38 } do
+		add(
+			c,
+			"RightHand",
+			"DumbbellPlate",
+			Vector3.new(0.16, 0.56, 0.56),
+			rot(x, y, z, 0, 90, 0),
+			iron,
+			Enum.Material.Metal,
+			Enum.PartType.Cylinder
+		)
 	end
+end
 
-	local ctx: Ctx = {
-		model = model,
-		head = head,
-		torso = torso,
-		headTop = headTop,
-		torsoWidth = torsoWidth,
-		color = look.accColor or Color3.fromRGB(255, 205, 60),
-	}
-	local accessories: { string } = look.acc or {}
-	for _, accName in accessories do
-		local builder = ACCESSORIES[accName]
-		if builder then
-			builder(ctx)
-		end
+ACCESSORIES.Towel = function(c)
+	local x = -(c.W / 2 - 0.35)
+	local towel = c.acc
+	add(c, "UpperTorso", "Towel", Vector3.new(0.5, 0.12, c.chestD + 0.16), at(x, c.chestTop + 0.04, 0), towel, Enum.Material.Fabric)
+	add(
+		c,
+		"UpperTorso",
+		"TowelEnd",
+		Vector3.new(0.48, 0.9, 0.08),
+		at(x, c.chestTop - 0.4, -c.chestD / 2 - 0.12),
+		towel,
+		Enum.Material.Fabric
+	)
+end
+
+ACCESSORIES.Wristbands = function(c)
+	for _, side in SIDES do
+		local s, n = side[1], side[2]
+		add(
+			c,
+			n .. "LowerArm",
+			"Wristband",
+			Vector3.new(c.A * 0.98, 0.18, c.A),
+			at(s * c.armX, c.wristY + 0.12, 0),
+			c.acc,
+			Enum.Material.Fabric
+		)
 	end
+end
 
+ACCESSORIES.ChampBelt = function(c)
+	local d = (if c.isBot then 0.86 else 0.92) + 0.06
+	local w = math.max(c.waistW, 1.5) + 0.26
+	add(c, "LowerTorso", "Belt", Vector3.new(w, 0.26, d), at(0, 2.4, 0), Color3.fromRGB(30, 26, 22), Enum.Material.Fabric)
+	add(c, "LowerTorso", "BeltPlate", Vector3.new(0.66, 0.44, 0.08), at(0, 2.4, -d / 2 - 0.03), c.acc, Enum.Material.Metal)
+end
+
+ACCESSORIES.Cannon = function(c)
+	local x = c.armX
+	local dark = Color3.fromRGB(50, 52, 60)
+	add(c, "RightLowerArm", "CannonHousing", Vector3.new(c.A + 0.16, 0.56, c.A + 0.2), at(x, c.wristY + 0.36, 0), dark, Enum.Material.Metal)
+	add(
+		c,
+		"RightLowerArm",
+		"CannonBarrel",
+		Vector3.new(0.9, 0.42, 0.42),
+		rot(x, c.wristY - 0.1, 0, 0, 0, 90),
+		dark,
+		Enum.Material.Metal,
+		Enum.PartType.Cylinder
+	)
+	add(
+		c,
+		"RightLowerArm",
+		"CannonMuzzle",
+		Vector3.new(0.08, 0.34, 0.34),
+		rot(x, c.wristY - 0.58, 0, 0, 0, 90),
+		c.acc,
+		Enum.Material.Neon,
+		Enum.PartType.Cylinder
+	)
+end
+
+CharacterFactory.ACCESSORIES = ACCESSORIES
+
+-- Effects -------------------------------------------------------------------------
+
+local function addEffects(c: Ctx)
+	local look = c.look
+	local chest = c.parts.UpperTorso
+	local s = c.scale
 	if look.aura then
 		local emitter = Instance.new("ParticleEmitter")
 		emitter.Name = "Aura"
 		emitter.Color = ColorSequence.new(look.aura)
 		emitter.LightEmission = 1
 		emitter.Size = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.6),
+			NumberSequenceKeypoint.new(0, 0.6 * s),
 			NumberSequenceKeypoint.new(1, 0),
 		})
 		emitter.Transparency = NumberSequence.new({
@@ -302,36 +1151,111 @@ function CharacterFactory.build(look: Look, name: string?): Model
 		})
 		emitter.Lifetime = NumberRange.new(0.8, 1.4)
 		emitter.Rate = 10
-		emitter.Speed = NumberRange.new(1.5, 3)
+		emitter.Speed = NumberRange.new(1.5 * s, 3 * s)
 		emitter.SpreadAngle = Vector2.new(180, 180)
 		emitter.Acceleration = Vector3.new(0, 3, 0)
-		emitter.Parent = torso
+		emitter.Parent = chest
 	end
 	if look.sparkles then
 		local sparkles = Instance.new("Sparkles")
 		sparkles.SparkleColor = look.aura or Color3.new(1, 1, 1)
-		sparkles.Parent = torso
+		sparkles.Parent = chest
 	end
 	if look.fire then
 		local fire = Instance.new("Fire")
 		fire.Color = look.fire
 		fire.SecondaryColor = Color3.new(1, 1, 1)
-		fire.Size = 4
+		fire.Size = 4 * s
 		fire.Heat = 6
-		fire.Parent = torso
+		fire.Parent = chest
 	end
 	if look.glow or look.aura then
 		local light = Instance.new("PointLight")
 		light.Color = look.glow or look.aura :: Color3
 		light.Brightness = 1.5
-		light.Range = 8
-		light.Parent = torso
+		light.Range = 8 * s
+		light.Parent = chest
+	end
+end
+
+-- Build ---------------------------------------------------------------------------
+
+-- Builds a model standing on y = 0 at the origin, facing -Z.
+function CharacterFactory.build(look: Look, name: string?): Model
+	local model = Instance.new("Model")
+	model.Name = name or "Unit"
+	local anim = animOf(look)
+	local scale = look.scale or 1
+
+	local accList: { string } = look.acc or {}
+	local has: { [string]: boolean } = {}
+	for _, accName in accList do
+		has[accName] = true
 	end
 
-	local scale = look.scale or 1
-	if scale ~= 1 then
-		model:ScaleTo(scale)
+	local c: Ctx = {
+		model = model,
+		look = look,
+		scale = scale,
+		mat = materialFrom(look.material),
+		acc = look.accColor or Color3.fromRGB(255, 205, 60),
+		trim = look.trim or Color3.fromRGB(58, 62, 72),
+		isBot = anim == "Bot",
+		has = has,
+		top = 0,
+		parts = {},
+		W = 2,
+		chestD = 1,
+		chestTop = 4,
+		chestY = 3.5,
+		waistW = 1.5,
+		hipY = 2,
+		A = 0.6,
+		delt = 0.7,
+		armX = 1.3,
+		shoulderY = 3.9,
+		wristY = 2.1,
+		headY = 5,
+		HW = 1.1,
+		HH = 1.1,
+		HD = 1.1,
+		headTop = 5.6,
+		hairTop = 5.6,
+		eyeY = 5.1,
+		led = look.faceColor or Color3.fromRGB(0, 220, 255),
+	}
+
+	-- Root sits at the feet so PivotTo keeps the unit standing on the floor.
+	local root = Instance.new("Part")
+	root.Name = "Root"
+	root.Size = Vector3.new(0.2, 0.2, 0.2)
+	root.CFrame = CFrame.new()
+	root.Transparency = 1
+	root.Anchored = true
+	root.CanCollide = false
+	root.CanQuery = false
+	root.CanTouch = false
+	root.CastShadow = false
+	root.Parent = model
+	model.PrimaryPart = root
+
+	if c.isBot then
+		buildBot(c)
+	else
+		buildChad(c)
 	end
+	for _, accName in accList do
+		local builder = ACCESSORIES[accName]
+		if builder then
+			builder(c)
+		end
+	end
+	addEffects(c)
+
+	model:SetAttribute("RigScale", scale)
+	model:SetAttribute("AnimSet", anim)
+	model:SetAttribute("Height", c.top * scale)
+	model:AddTag(TAG)
 	return model
 end
 
@@ -355,16 +1279,19 @@ function CharacterFactory.silhouette(model: Model)
 	end
 end
 
--- Height of the built model (for placing labels above it).
+-- Height of the built model in studs (for placing labels above it).
+local heights: { [Look]: number } = setmetatable({}, { __mode = "k" }) :: any
 function CharacterFactory.height(look: Look): number
-	local h = 5.3
-	local acc = look.acc or {}
-	if table.find(acc, "Halo") then
-		h += 0.8
-	elseif table.find(acc, "Crown") or table.find(acc, "Antenna") then
-		h += 0.6
+	local cached = heights[look]
+	if cached then
+		return cached
 	end
-	return h * (look.scale or 1)
+	local model = CharacterFactory.build(look)
+	local value = model:GetAttribute("Height")
+	model:Destroy()
+	local h = if type(value) == "number" then value else 5.6 * (look.scale or 1)
+	heights[look] = h
+	return h
 end
 
 return CharacterFactory
@@ -875,8 +1802,795 @@ return Net
 ]]></string>
         </Properties>
       </Item>
+      <Item class="ModuleScript" referent="6">
+        <Properties>
+          <string name="Name">Poses</string>
+          <string name="Source"><![CDATA[--[[
+	Poses: the procedural animation library for unit models.
+
+	Pure Luau (CFrame maths only, no services or instances), so the same code
+	runs in the client Animator and in the Lune preview exporter.
+
+	Rig: every unit is a 15-limb R15-style rig (see LIMBS). Each limb rotates
+	about a joint pivot. Pivots are positions relative to the model's Root part
+	(the feet) and are written onto the model by CharacterFactory. At rest every
+	limb frame is CFrame.new(pivot) with no rotation, so a joint transform is
+	simply the rotation applied at that pivot:
+
+	  frame[limb] = frame[parent] * CFrame.new(pivot[limb] - pivot[parent]) * transform[limb]
+
+	Axes (model space): +X is the unit's right, +Y up, the unit faces -Z.
+	Pose angles are degrees, applied as CFrame.Angles(x, y, z) (Z first, then Y,
+	then X). Useful directions for the right arm/leg (left limbs are mirrored):
+	  UpperArm  +z raises the arm sideways, +x raises it forwards, +y swings a
+	            raised arm forwards
+	  LowerArm  +x bends the elbow forwards, +z bends it outwards/up
+	  UpperLeg  +x lifts the knee forwards, +z spreads the leg
+	  LowerLeg  -x bends the knee
+	  Torso     +x leans back, +y turns to the unit's left
+	  Head      +x looks up, +y turns to the unit's left
+
+	Animation: each animation set ("Chad" / "Bot") is a looping sequence of
+	poses held for a couple of seconds with eased blends between them, plus an
+	idle overlay (breathing / hovering). The sequence order and phase come from
+	a per-model seed so a shelf of units never moves in sync.
+]]
+
+local Poses = {}
+
+Poses.LIMBS = {
+	"LowerTorso",
+	"UpperTorso",
+	"Head",
+	"LeftUpperArm",
+	"LeftLowerArm",
+	"LeftHand",
+	"RightUpperArm",
+	"RightLowerArm",
+	"RightHand",
+	"LeftUpperLeg",
+	"LeftLowerLeg",
+	"LeftFoot",
+	"RightUpperLeg",
+	"RightLowerLeg",
+	"RightFoot",
+}
+
+Poses.PARENT = {
+	UpperTorso = "LowerTorso",
+	Head = "UpperTorso",
+	LeftUpperArm = "UpperTorso",
+	LeftLowerArm = "LeftUpperArm",
+	LeftHand = "LeftLowerArm",
+	RightUpperArm = "UpperTorso",
+	RightLowerArm = "RightUpperArm",
+	RightHand = "RightLowerArm",
+	LeftUpperLeg = "LowerTorso",
+	LeftLowerLeg = "LeftUpperLeg",
+	LeftFoot = "LeftLowerLeg",
+	RightUpperLeg = "LowerTorso",
+	RightLowerLeg = "RightUpperLeg",
+	RightFoot = "RightLowerLeg",
+}
+
+-- Attribute names CharacterFactory writes on each unit model.
+Poses.PIVOT_PREFIX = "J_" -- Vector3 joint pivot per limb, relative to Root, before scaling
+Poses.SCALE_ATTRIBUTE = "RigScale"
+Poses.SET_ATTRIBUTE = "AnimSet"
+Poses.LIMB_ATTRIBUTE = "Limb"
+Poses.TAG = "AnimatedUnit"
+
+local LIMBS = Poses.LIMBS
+local N = #LIMBS
+local SIZE = N * 3 + 1 -- three angles per limb, then the root's vertical offset
+local ROOT_Y = SIZE
+
+local INDEX: { [string]: number } = {}
+for i, limb in LIMBS do
+	INDEX[limb] = i
+end
+
+local MIRROR = {
+	LeftUpperArm = "RightUpperArm",
+	LeftLowerArm = "RightLowerArm",
+	LeftHand = "RightHand",
+	LeftUpperLeg = "RightUpperLeg",
+	LeftLowerLeg = "RightLowerLeg",
+	LeftFoot = "RightFoot",
+}
+
+type Vec = { number }
+type PoseDef = {
+	base: Vec,
+	anim: ((v: Vec, t: number, seed: number) -> ())?,
+}
+
+-- Builds a pose vector. Right-side limbs are mirrored onto the left unless
+-- the left limb is given explicitly.
+local function P(def: { [string]: { number } }, rootY: number?): Vec
+	local v = table.create(SIZE, 0)
+	local function set(limb: string, x: number, y: number, z: number)
+		local i = INDEX[limb] * 3
+		v[i - 2], v[i - 1], v[i] = x, y, z
+	end
+	for limb, a in def do
+		set(limb, a[1] or 0, a[2] or 0, a[3] or 0)
+	end
+	for left, right in MIRROR do
+		local a = def[right]
+		if def[left] == nil and a then
+			set(left, a[1] or 0, -(a[2] or 0), -(a[3] or 0))
+		end
+	end
+	v[ROOT_Y] = rootY or 0
+	return v
+end
+
+local function add(v: Vec, limb: string, x: number, y: number, z: number)
+	local i = INDEX[limb] * 3
+	v[i - 2] += x
+	v[i - 1] += y
+	v[i] += z
+end
+
+-- Deterministic 0..1 noise.
+local function hash(n: number): number
+	local x = math.sin(n * 12.9898 + 78.233) * 43758.5453
+	return x - math.floor(x)
+end
+
+local function smooth(a: number): number
+	a = math.clamp(a, 0, 1)
+	return a * a * (3 - 2 * a)
+end
+
+local function easeInOutCubic(a: number): number
+	a = math.clamp(a, 0, 1)
+	if a < 0.5 then
+		return 4 * a * a * a
+	end
+	local f = -2 * a + 2
+	return 1 - f * f * f / 2
+end
+
+-- Stepped random value that snaps to a new target every `period` seconds
+-- (servo-like), easing over `snap` seconds.
+local function servo(t: number, period: number, snap: number, seed: number, lo: number, hi: number): number
+	local k = math.floor(t / period)
+	local a = lo + (hi - lo) * hash(k * 7.13 + seed)
+	local b = lo + (hi - lo) * hash((k - 1) * 7.13 + seed)
+	local w = smooth((t - k * period) / snap)
+	return b + (a - b) * w
+end
+
+-- Chad poses ---------------------------------------------------------------------
+
+local CHAD: { [string]: PoseDef } = {}
+
+CHAD.Relaxed = {
+	base = P({
+		RightUpperArm = { 0, 0, 9 },
+		RightLowerArm = { 10, 0, 0 },
+		RightUpperLeg = { 0, 0, 4 },
+		RightFoot = { 0, 0, -4 },
+	}),
+}
+
+-- Front double biceps: upper arms out level, forearms up beside the head.
+CHAD.DoubleBiceps = {
+	base = P({
+		UpperTorso = { 5, 0, 0 },
+		Head = { 6, 0, 0 },
+		RightUpperArm = { 0, 14, 94 },
+		RightLowerArm = { 0, 0, 104 },
+		RightHand = { 0, 0, 18 },
+		RightUpperLeg = { 3, 0, 9 },
+		RightLowerLeg = { -5, 0, 0 },
+		RightFoot = { 2, 0, -9 },
+	}, -0.03),
+	anim = function(v, t)
+		-- Squeeze the peaks.
+		local s = math.sin(t * 5) * 3
+		add(v, "RightLowerArm", 0, 0, s)
+		add(v, "LeftLowerArm", 0, 0, -s)
+	end,
+}
+
+-- Side chest: torso turned, both forearms across the belly.
+CHAD.SideChest = {
+	base = P({
+		LowerTorso = { 0, -22, 0 },
+		UpperTorso = { 3, -12, 0 },
+		Head = { 4, 30, 0 },
+		RightUpperArm = { 22, 55, 10 },
+		RightLowerArm = { 92, 0, 0 },
+		LeftUpperArm = { 34, -48, -4 },
+		LeftLowerArm = { 76, 0, 0 },
+		RightUpperLeg = { 14, 0, 4 },
+		RightLowerLeg = { -30, 0, 0 },
+		RightFoot = { -10, 0, 0 },
+		LeftUpperLeg = { 0, 0, -6 },
+		LeftFoot = { 0, 0, 6 },
+	}, -0.06),
+}
+
+-- Lat spread: fists on the waist, elbows flared forwards.
+CHAD.LatSpread = {
+	base = P({
+		UpperTorso = { 6, 0, 0 },
+		Head = { 4, 0, 0 },
+		RightUpperArm = { 0, 26, 50 },
+		RightLowerArm = { 24, 0, -104 },
+		RightHand = { 0, 0, -10 },
+		RightUpperLeg = { 2, 0, 8 },
+		RightLowerLeg = { -4, 0, 0 },
+		RightFoot = { 2, 0, -8 },
+	}, -0.02),
+	anim = function(v, t)
+		local s = (math.sin(t * 2.2) + 1) * 3
+		add(v, "RightUpperArm", 0, 0, s)
+		add(v, "LeftUpperArm", 0, 0, -s)
+	end,
+}
+
+-- "Most muscular" crab: leaning in, fists together in front of the belly.
+CHAD.MostMuscular = {
+	base = P({
+		UpperTorso = { -16, 0, 0 },
+		Head = { 12, 0, 0 },
+		RightUpperArm = { 30, 36, 40 },
+		RightLowerArm = { 34, 0, -78 },
+		RightHand = { 0, 0, -12 },
+		RightUpperLeg = { 14, 0, 12 },
+		RightLowerLeg = { -24, 0, 0 },
+		RightFoot = { 10, 0, -12 },
+	}, -0.12),
+	anim = function(v, t)
+		local s = math.sin(t * 9) * 1.2
+		add(v, "UpperTorso", s, 0, 0)
+	end,
+}
+
+CHAD.HandsOnHips = {
+	base = P({
+		UpperTorso = { 3, 0, 0 },
+		Head = { 8, -14, 0 },
+		RightUpperArm = { 0, -14, 40 },
+		RightLowerArm = { 14, 0, -102 },
+		RightHand = { 0, 0, -18 },
+		RightUpperLeg = { 0, 0, 8 },
+		RightFoot = { 0, 0, -8 },
+	}),
+}
+
+-- Chin up, jaw out, one hand stroking the jaw, the other on the hip.
+CHAD.Mewing = {
+	base = P({
+		UpperTorso = { 4, 0, 0 },
+		Head = { 20, -8, 5 },
+		RightUpperArm = { 79, 0, -27 },
+		RightLowerArm = { 140, 0, -44 },
+		RightHand = { 0, 0, -10 },
+		LeftUpperArm = { 0, 14, -40 },
+		LeftLowerArm = { 14, 0, 102 },
+		LeftHand = { 0, 0, 18 },
+		RightUpperLeg = { 0, 0, 5 },
+		RightFoot = { 0, 0, -5 },
+	}),
+	anim = function(v, t)
+		add(v, "Head", math.sin(t * 1.4) * 3, 0, 0)
+	end,
+}
+
+-- Arms crossed, slow smug look from side to side.
+CHAD.SmugTurn = {
+	base = P({
+		UpperTorso = { 4, 0, 0 },
+		Head = { 10, 0, 0 },
+		RightUpperArm = { 28, 42, -6 },
+		RightLowerArm = { 98, 0, 0 },
+		LeftUpperArm = { 22, -36, 6 },
+		LeftLowerArm = { 106, 0, 0 },
+		RightUpperLeg = { 0, 0, 6 },
+		RightFoot = { 0, 0, -6 },
+	}),
+	anim = function(v, t)
+		local turn = math.sin(t * 0.9)
+		add(v, "Head", 0, turn * 34, turn * 4)
+		add(v, "UpperTorso", 0, turn * 6, 0)
+	end,
+}
+
+-- Pointing at the viewer, other hand on the hip.
+CHAD.Point = {
+	base = P({
+		UpperTorso = { 0, 12, 0 },
+		Head = { 4, -6, -7 },
+		RightUpperArm = { 86, 14, 2 },
+		RightLowerArm = { 4, 0, 0 },
+		LeftUpperArm = { 0, 14, -40 },
+		LeftLowerArm = { 14, 0, 102 },
+		LeftHand = { 0, 0, 18 },
+		RightUpperLeg = { 4, 0, 6 },
+		RightLowerLeg = { -6, 0, 0 },
+		RightFoot = { 0, 0, -6 },
+	}),
+	anim = function(v, t)
+		-- Little "you!" jabs.
+		local jab = math.max(0, math.sin(t * 6)) ^ 4 * 6
+		add(v, "RightUpperArm", jab, 0, 0)
+	end,
+}
+
+-- Bot poses ----------------------------------------------------------------------
+
+local BOT: { [string]: PoseDef } = {}
+
+BOT.Hover = {
+	base = P({
+		RightUpperArm = { 0, 0, 10 },
+		RightLowerArm = { 16, 0, 0 },
+		RightUpperLeg = { 0, 0, 3 },
+		RightFoot = { 0, 0, -3 },
+	}),
+}
+
+-- Servo twitch: the head and forearms snap between random targets.
+BOT.Twitch = {
+	base = BOT.Hover.base,
+	anim = function(v, t, seed)
+		add(v, "Head", servo(t, 0.55, 0.07, seed, -12, 12), servo(t, 0.55, 0.07, seed + 3, -40, 40), servo(t, 0.55, 0.07, seed + 5, -8, 8))
+		add(v, "RightLowerArm", servo(t, 0.8, 0.09, seed + 11, 0, 50), 0, 0)
+		add(v, "LeftLowerArm", servo(t, 0.7, 0.09, seed + 13, 0, 50), 0, 0)
+	end,
+}
+
+-- Head scan: a slow radar sweep, torso following a little.
+BOT.Scan = {
+	base = P({
+		RightUpperArm = { 0, 0, 12 },
+		RightLowerArm = { 20, 0, 0 },
+		RightUpperLeg = { 0, 0, 5 },
+		RightFoot = { 0, 0, -5 },
+	}),
+	anim = function(v, t)
+		local s = math.sin(t * 1.25)
+		add(v, "Head", 4, s * 55, 0)
+		add(v, "UpperTorso", 0, math.sin(t * 1.25 - 0.5) * 14, 0)
+	end,
+}
+
+-- Arm cannon aimed forward, braced by the other hand, with recoil.
+BOT.Aim = {
+	base = P({
+		UpperTorso = { 0, 14, 0 },
+		Head = { -2, -12, 0 },
+		RightUpperArm = { 88, -4, 0 },
+		RightLowerArm = { 0, 0, 0 },
+		LeftUpperArm = { 56, -38, -8 },
+		LeftLowerArm = { 58, 0, 0 },
+		RightUpperLeg = { 6, 0, 8 },
+		RightLowerLeg = { -8, 0, 0 },
+		RightFoot = { 2, 0, -8 },
+		LeftUpperLeg = { -8, 0, -8 },
+		LeftFoot = { 8, 0, 8 },
+	}, -0.05),
+	anim = function(v, t)
+		local phase = t % 1.3
+		local kick = if phase < 0.35 then (1 - phase / 0.35) ^ 2 * 14 else 0
+		add(v, "RightUpperArm", kick, 0, 0)
+		add(v, "UpperTorso", kick * 0.25, 0, 0)
+	end,
+}
+
+-- Power-up: fists down and out, chest up, vibrating with energy.
+BOT.PowerUp = {
+	base = P({
+		UpperTorso = { 9, 0, 0 },
+		Head = { 16, 0, 0 },
+		RightUpperArm = { -10, 0, 30 },
+		RightLowerArm = { 26, 0, -22 },
+		RightHand = { 0, 0, -10 },
+		RightUpperLeg = { 4, 0, 10 },
+		RightLowerLeg = { -8, 0, 0 },
+		RightFoot = { 4, 0, -10 },
+	}, 0.12),
+	anim = function(v, t)
+		local j = math.sin(t * 47) * 1.4
+		add(v, "UpperTorso", j, 0, j * 0.5)
+		add(v, "RightUpperArm", 0, 0, j)
+		add(v, "LeftUpperArm", 0, 0, -j)
+		v[ROOT_Y] += math.sin(t * 3) * 0.05
+	end,
+}
+
+BOT.Wave = {
+	base = P({
+		UpperTorso = { 0, -6, 0 },
+		Head = { 0, -8, 9 },
+		RightUpperArm = { 0, 0, 150 },
+		RightLowerArm = { 0, 0, 22 },
+		LeftUpperArm = { 0, 0, -10 },
+		LeftLowerArm = { 16, 0, 0 },
+		RightUpperLeg = { 0, 0, 4 },
+		RightFoot = { 0, 0, -4 },
+	}),
+	anim = function(v, t)
+		add(v, "RightLowerArm", 0, 0, math.sin(t * 8) * 26)
+		add(v, "Head", 0, 0, math.sin(t * 4) * 4)
+	end,
+}
+
+-- Animation sets -----------------------------------------------------------------
+
+type Set = {
+	poses: { [string]: PoseDef },
+	order: { string },
+	rest: string,
+	restEvery: number,
+	hold: { number },
+	restHold: { number },
+	blend: number,
+	ease: (number) -> number,
+	overlay: (v: Vec, t: number, seed: number) -> (),
+}
+
+local SETS: { [string]: Set } = {
+	Chad = {
+		poses = CHAD,
+		order = { "DoubleBiceps", "SideChest", "LatSpread", "MostMuscular", "HandsOnHips", "Mewing", "SmugTurn", "Point" },
+		rest = "Relaxed",
+		restEvery = 2,
+		hold = { 1.6, 2.8 },
+		restHold = { 1.2, 2 },
+		blend = 0.6,
+		ease = easeInOutCubic,
+		overlay = function(v, t, seed)
+			-- Breathing.
+			local b = math.sin(t * 1.75 + seed)
+			add(v, "UpperTorso", b * 1.6, 0, 0)
+			add(v, "Head", -b * 1.1, 0, 0)
+			add(v, "RightUpperArm", 0, 0, b * 1.5)
+			add(v, "LeftUpperArm", 0, 0, -b * 1.5)
+		end,
+	},
+	Bot = {
+		poses = BOT,
+		order = { "Twitch", "Scan", "Aim", "PowerUp", "Wave" },
+		rest = "Hover",
+		restEvery = 1,
+		hold = { 1.8, 3 },
+		restHold = { 1.2, 2.2 },
+		blend = 0.32,
+		ease = smooth,
+		overlay = function(v, t, seed)
+			-- Hover bob on the repulsors, arms drifting slightly.
+			local b = math.sin(t * 2.3 + seed)
+			v[ROOT_Y] += 0.07 + b * 0.06
+			add(v, "RightUpperArm", 0, 0, b * 1.5)
+			add(v, "LeftUpperArm", 0, 0, -b * 1.5)
+			add(v, "RightLowerLeg", -2 - b * 2, 0, 0)
+			add(v, "LeftLowerLeg", -2 - b * 2, 0, 0)
+		end,
+	},
+}
+
+type Step = { pose: string, start: number, length: number }
+type Sequence = { steps: { Step }, total: number }
+
+local VARIANTS = 64
+local sequenceCache: { [string]: Sequence } = {}
+
+-- The looping pose sequence for a seed: the poses shuffled, a rest pose every
+-- few poses, and hold lengths that vary per step.
+local function sequenceFor(setName: string, set: Set, seed: number): Sequence
+	local variant = math.floor(math.abs(seed)) % VARIANTS
+	local key = setName .. variant
+	local cached = sequenceCache[key]
+	if cached then
+		return cached
+	end
+	local order = table.clone(set.order)
+	for i = #order, 2, -1 do
+		local j = 1 + math.floor(hash(variant * 31 + i) * i)
+		order[i], order[j] = order[j], order[i]
+	end
+	local steps: { Step } = {}
+	local t = 0
+	local function push(pose: string, range: { number })
+		local hold = range[1] + (range[2] - range[1]) * hash(variant * 17 + #steps * 3.7)
+		table.insert(steps, { pose = pose, start = t, length = set.blend + hold })
+		t += set.blend + hold
+	end
+	for i, pose in order do
+		push(pose, set.hold)
+		if i % set.restEvery == 0 then
+			push(set.rest, set.restHold)
+		end
+	end
+	local sequence = { steps = steps, total = t }
+	sequenceCache[key] = sequence
+	return sequence
+end
+
+local function evalPose(out: Vec, def: PoseDef, t: number, seed: number)
+	table.move(def.base, 1, SIZE, 1, out)
+	if def.anim then
+		def.anim(out, t, seed)
+	end
+end
+
+local bufferA: Vec = table.create(SIZE, 0)
+local bufferB: Vec = table.create(SIZE, 0)
+local RAD = math.pi / 180
+
+local function toTransforms(v: Vec, out: { [string]: CFrame }): { [string]: CFrame }
+	for i, limb in LIMBS do
+		local cf = CFrame.Angles(v[i * 3 - 2] * RAD, v[i * 3 - 1] * RAD, v[i * 3] * RAD)
+		if i == 1 then
+			cf = CFrame.new(0, v[ROOT_Y], 0) * cf
+		end
+		out[limb] = cf
+	end
+	return out
+end
+
+local function phaseTime(set: Set, sequence: Sequence, time: number, seed: number): number
+	local _ = set
+	return (time + (seed % 997) * 1.618) % sequence.total
+end
+
+local function resolveSet(animSet: string): (string, Set)
+	if SETS[animSet] then
+		return animSet, SETS[animSet]
+	end
+	return "Chad", SETS.Chad
+end
+
+-- Joint transforms for one model at `time`, written into `out` (reused to avoid
+-- allocating every frame). The root offset (hover/bob) is in unscaled studs.
+function Poses.sampleInto(out: { [string]: CFrame }, animSet: string, time: number, seed: number): { [string]: CFrame }
+	local setName, set = resolveSet(animSet)
+	local sequence = sequenceFor(setName, set, seed)
+	local t = phaseTime(set, sequence, time, seed)
+	local steps = sequence.steps
+	local index = #steps
+	for i, step in steps do
+		if t < step.start + step.length then
+			index = i
+			break
+		end
+	end
+	local step = steps[index]
+	evalPose(bufferA, set.poses[step.pose], time, seed)
+	local into = t - step.start
+	if into < set.blend then
+		local previous = steps[if index == 1 then #steps else index - 1]
+		evalPose(bufferB, set.poses[previous.pose], time, seed)
+		local w = set.ease(into / set.blend)
+		for i = 1, SIZE do
+			bufferA[i] = bufferB[i] + (bufferA[i] - bufferB[i]) * w
+		end
+	end
+	set.overlay(bufferA, time, seed)
+	return toTransforms(bufferA, out)
+end
+
+-- Joint transforms ({ [limb]: CFrame }) for a model of `animSet` at `time`.
+function Poses.sample(animSet: string, time: number, seed: number): { [string]: CFrame }
+	return Poses.sampleInto({}, animSet, time, seed)
+end
+
+-- Transforms for one named pose (no blending or overlay); for tools and tests.
+function Poses.samplePose(animSet: string, pose: string, time: number?, seed: number?): { [string]: CFrame }
+	local _, set = resolveSet(animSet)
+	local def = set.poses[pose]
+	assert(def, "unknown pose " .. pose)
+	evalPose(bufferA, def, time or 0, seed or 0)
+	return toTransforms(bufferA, {})
+end
+
+-- Names of the poses in a set (the rest pose first).
+function Poses.poseNames(animSet: string): { string }
+	local _, set = resolveSet(animSet)
+	local names = { set.rest }
+	for _, name in set.order do
+		table.insert(names, name)
+	end
+	return names
+end
+
+-- A time at which a model with `seed` is in the middle of holding `pose`
+-- (used by the preview exporter to capture clean poses).
+function Poses.timeFor(animSet: string, seed: number, pose: string): number?
+	local setName, set = resolveSet(animSet)
+	local sequence = sequenceFor(setName, set, seed)
+	for _, step in sequence.steps do
+		if step.pose == pose then
+			local target = step.start + set.blend + (step.length - set.blend) * 0.5
+			local offset = phaseTime(set, sequence, 0, seed)
+			return (target - offset) % sequence.total
+		end
+	end
+	return nil
+end
+
+-- Limb frames relative to the Root, from joint pivots (already scaled) and
+-- joint transforms. `scale` scales the root's hover/bob offset.
+function Poses.solve(
+	pivots: { [string]: Vector3 },
+	transforms: { [string]: CFrame },
+	scale: number,
+	out: { [string]: CFrame }?
+): { [string]: CFrame }
+	local frames = out or {}
+	local rootTransform = transforms.LowerTorso
+	local lift = rootTransform.Position * (scale - 1)
+	frames.LowerTorso = CFrame.new(pivots.LowerTorso + lift) * rootTransform
+	for i = 2, N do
+		local limb = LIMBS[i]
+		local parent = Poses.PARENT[limb]
+		frames[limb] = frames[parent] * CFrame.new(pivots[limb] - pivots[parent]) * transforms[limb]
+	end
+	return frames
+end
+
+Poses.hash = hash
+
+return Poses
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="7">
+        <Properties>
+          <string name="Name">RigPose</string>
+          <string name="Source"><![CDATA[--[[
+	RigPose: applies Poses to a unit model built by CharacterFactory.
+
+	capture() records, while the model is still in its rest pose, every part's
+	offset from its limb's rest frame (Root * pivot). After that a pose is just
+	  part.CFrame = Root.CFrame * limbFrame * offset
+	for every part. Used by the client Animator (which writes the results with
+	BulkMoveTo) and by the preview exporter (which writes them directly).
+
+	Only reads instance properties/attributes; no services, so it also runs
+	under Lune.
+]]
+
+local Poses = require(script.Parent.Poses)
+
+local RigPose = {}
+
+export type Rig = {
+	model: Model,
+	root: BasePart,
+	animSet: string,
+	seed: number,
+	scale: number,
+	pivots: { [string]: Vector3 },
+	parts: { BasePart },
+	limbs: { string },
+	offsets: { CFrame },
+	cframes: { CFrame },
+	transforms: { [string]: CFrame },
+	frames: { [string]: CFrame },
+}
+
+-- Joint pivots of a model (scaled), or nil if it is not an animatable unit.
+local function readPivots(model: Model): ({ [string]: Vector3 }?, number)
+	local scaleValue = model:GetAttribute(Poses.SCALE_ATTRIBUTE)
+	local scale = if type(scaleValue) == "number" then scaleValue else 1
+	local pivots: { [string]: Vector3 } = {}
+	for _, limb in Poses.LIMBS do
+		local pivot = model:GetAttribute(Poses.PIVOT_PREFIX .. limb)
+		if typeof(pivot) ~= "Vector3" then
+			return nil, scale
+		end
+		pivots[limb] = pivot * scale
+	end
+	return pivots, scale
+end
+
+-- Adds one part (which must be at its rest CFrame) to a captured rig.
+function RigPose.addPart(rig: Rig, part: BasePart)
+	if part == rig.root or table.find(rig.parts, part) then
+		return
+	end
+	local limb = part:GetAttribute(Poses.LIMB_ATTRIBUTE)
+	if type(limb) ~= "string" or not rig.pivots[limb] then
+		return
+	end
+	local rest = rig.root.CFrame * CFrame.new(rig.pivots[limb])
+	table.insert(rig.parts, part)
+	table.insert(rig.limbs, limb)
+	table.insert(rig.offsets, rest:ToObjectSpace(part.CFrame))
+end
+
+-- Drops a part from a rig (e.g. it streamed out or was destroyed).
+function RigPose.removePart(rig: Rig, part: BasePart)
+	local index = table.find(rig.parts, part)
+	if index then
+		table.remove(rig.parts, index)
+		table.remove(rig.limbs, index)
+		table.remove(rig.offsets, index)
+		rig.cframes[#rig.cframes] = nil
+	end
+end
+
+-- Records the rest pose of a unit model. Call before the model is first posed.
+function RigPose.capture(model: Model, seed: number?): Rig?
+	local root = model.PrimaryPart
+	if not root then
+		return nil
+	end
+	local pivots, scale = readPivots(model)
+	if not pivots then
+		return nil
+	end
+	local setValue = model:GetAttribute(Poses.SET_ATTRIBUTE)
+	local rig: Rig = {
+		model = model,
+		root = root,
+		animSet = if type(setValue) == "string" then setValue else "Chad",
+		seed = seed or 0,
+		scale = scale,
+		pivots = pivots,
+		parts = {},
+		limbs = {},
+		offsets = {},
+		cframes = {},
+		transforms = {},
+		frames = {},
+	}
+	for _, d in model:GetDescendants() do
+		if d:IsA("BasePart") then
+			RigPose.addPart(rig, d)
+		end
+	end
+	return rig
+end
+
+-- Computes the world CFrame of every rig part at `time`. Returns the rig's
+-- parts and CFrame lists (reused between calls).
+function RigPose.compute(rig: Rig, time: number): ({ BasePart }, { CFrame })
+	local transforms = Poses.sampleInto(rig.transforms, rig.animSet, time, rig.seed)
+	return RigPose.computeFrom(rig, transforms)
+end
+
+-- Same as compute, from explicit joint transforms.
+function RigPose.computeFrom(rig: Rig, transforms: { [string]: CFrame }): ({ BasePart }, { CFrame })
+	local frames = Poses.solve(rig.pivots, transforms, rig.scale, rig.frames)
+	local rootCFrame = rig.root.CFrame
+	local cframes = rig.cframes
+	local limbs, offsets = rig.limbs, rig.offsets
+	for i = 1, #rig.parts do
+		cframes[i] = rootCFrame * frames[limbs[i]] * offsets[i]
+	end
+	return rig.parts, cframes
+end
+
+-- Poses a model in place by setting part CFrames directly (no BulkMoveTo).
+function RigPose.apply(rig: Rig, time: number)
+	local parts, cframes = RigPose.compute(rig, time)
+	for i, part in parts do
+		part.CFrame = cframes[i]
+	end
+end
+
+-- Puts every part back in its rest pose.
+function RigPose.reset(rig: Rig)
+	local rootCFrame = rig.root.CFrame
+	for i, part in rig.parts do
+		part.CFrame = rootCFrame * CFrame.new(rig.pivots[rig.limbs[i]]) * rig.offsets[i]
+	end
+end
+
+return RigPose
+]]></string>
+        </Properties>
+      </Item>
     </Item>
-    <Item class="ModuleScript" referent="6">
+    <Item class="ModuleScript" referent="8">
       <Properties>
         <string name="Name">Theme</string>
         <string name="Source"><![CDATA[--[[
@@ -1003,94 +2717,162 @@ Theme.Lighting = {
 -- Leave empty for no music, or paste a Roblox audio asset id ("rbxassetid://...").
 Theme.MusicId = ""
 
+-- Unit animation set (see ReplicatedStorage.Shared.Poses): gym poses.
+Theme.AnimSet = "Chad"
+
 local SKIN = rgb(234, 184, 146)
+local SKIN_LIGHT = rgb(246, 206, 172)
 local SKIN_TAN = rgb(196, 140, 100)
 local SKIN_DARK = rgb(120, 80, 55)
+local HAIR_BROWN = rgb(66, 44, 30)
+local HAIR_BLACK = rgb(30, 26, 26)
+local HAIR_BLOND = rgb(232, 192, 110)
+local WHITE = rgb(245, 245, 248)
+local INK = rgb(22, 22, 28)
 
 -- 25 tiers, weakest to strongest. Each pair of tier N merges into tier N+1.
+-- Looks are built by Shared.CharacterFactory (see its header for every field).
 Theme.Tiers = {
-	{ Name = "Normie", Look = { skin = SKIN, shirt = rgb(140, 140, 150), pants = rgb(60, 80, 130), face = "😐" } },
+	{
+		Name = "Normie",
+		Look = {
+			skin = SKIN,
+			shirt = rgb(140, 142, 152),
+			pants = rgb(62, 84, 134),
+			shoes = rgb(96, 96, 108),
+			hair = HAIR_BROWN,
+			hairStyle = "Flat",
+			expr = "Neutral",
+		},
+	},
 	{
 		Name = "Gym Rookie",
 		Look = {
 			skin = SKIN_TAN,
-			shirt = rgb(200, 50, 50),
-			pants = rgb(30, 30, 35),
-			face = "🙂",
+			shirt = rgb(205, 52, 52),
+			pants = rgb(32, 32, 38),
+			bottoms = "Shorts",
+			hair = HAIR_BLACK,
+			hairStyle = "Buzz",
+			expr = "Happy",
 			acc = { "Headband" },
-			accColor = rgb(245, 245, 245),
-			buff = 0.1,
+			accColor = WHITE,
+			buff = 0.12,
 		},
 	},
 	{
 		Name = "Protein Bro",
 		Look = {
-			skin = SKIN,
-			shirt = rgb(240, 240, 240),
-			pants = rgb(40, 40, 45),
-			face = "😤",
-			acc = { "Cap" },
-			accColor = rgb(30, 90, 200),
-			buff = 0.2,
+			skin = SKIN_LIGHT,
+			shirt = WHITE,
+			top = "Tank",
+			pants = rgb(78, 80, 92),
+			bottoms = "Joggers",
+			hair = HAIR_BLOND,
+			expr = "Determined",
+			jaw = 0.4,
+			acc = { "CapBack", "Dumbbell" },
+			accColor = rgb(35, 95, 210),
+			buff = 0.22,
 		},
 	},
 	{
 		Name = "Mewing Disciple",
 		Look = {
 			skin = SKIN_DARK,
-			shirt = rgb(90, 60, 160),
-			pants = rgb(35, 30, 50),
-			face = "😑",
+			shirt = rgb(96, 62, 170),
+			pants = rgb(36, 30, 52),
+			bottoms = "Joggers",
+			hair = HAIR_BLACK,
+			hairStyle = "Buzz",
+			beard = "Stubble",
+			expr = "Stoic",
 			jaw = true,
 			acc = { "Headband" },
-			accColor = PURPLE,
-			buff = 0.25,
+			accColor = rgb(170, 110, 255),
+			buff = 0.28,
 		},
 	},
 	{
 		Name = "Jawline Jr.",
-		Look = { skin = SKIN, shirt = rgb(25, 25, 30), pants = rgb(70, 70, 80), face = "😏", jaw = true, acc = { "Shades" }, buff = 0.3 },
+		Look = {
+			skin = SKIN,
+			shirt = INK,
+			pants = rgb(72, 72, 84),
+			hair = HAIR_BROWN,
+			hairStyle = "Slick",
+			expr = "Smirk",
+			jaw = true,
+			acc = { "Shades" },
+			buff = 0.32,
+		},
 	},
 	{
 		Name = "Looksmaxxer",
 		Look = {
 			skin = SKIN_TAN,
-			shirt = rgb(255, 105, 180),
-			pants = rgb(250, 250, 250),
-			face = "😎",
+			shirt = rgb(255, 110, 185),
+			pants = WHITE,
+			shoes = rgb(255, 110, 185),
+			hair = HAIR_BLOND,
+			hairStyle = "Quiff",
+			expr = "Smug",
 			jaw = true,
 			acc = { "Shades", "Chain" },
-			buff = 0.35,
+			buff = 0.38,
 		},
 	},
 	{
 		Name = "Sigma Grinder",
-		Look = { skin = SKIN, shirt = rgb(28, 28, 38), pants = rgb(28, 28, 38), face = "🗿", jaw = true, acc = { "Shades" }, buff = 0.4 },
+		Look = {
+			skin = SKIN,
+			shirt = rgb(30, 30, 40),
+			top = "Hoodie",
+			pants = rgb(30, 30, 40),
+			bottoms = "Joggers",
+			shoes = INK,
+			sole = rgb(200, 40, 40),
+			hair = HAIR_BLACK,
+			hairStyle = "Slick",
+			expr = "Stoic",
+			jaw = true,
+			acc = { "Headphones" },
+			accColor = rgb(220, 50, 50),
+			buff = 0.42,
+		},
 	},
 	{
 		Name = "Rizz Apprentice",
 		Look = {
 			skin = SKIN_DARK,
 			shirt = rgb(255, 140, 0),
-			pants = rgb(40, 40, 50),
-			face = "😏",
+			top = "Jacket",
+			trim = WHITE,
+			pants = rgb(40, 40, 52),
+			hair = HAIR_BLACK,
+			expr = "Smirk",
 			jaw = true,
 			acc = { "Cap", "Chain" },
 			accColor = rgb(255, 140, 0),
-			buff = 0.45,
+			buff = 0.48,
 		},
 	},
 	{
 		Name = "Alpha Lifter",
 		Look = {
 			skin = SKIN_TAN,
-			shirt = rgb(180, 0, 0),
-			pants = rgb(20, 20, 25),
-			face = "😤",
+			shirt = rgb(185, 0, 0),
+			top = "Tank",
+			pants = rgb(22, 22, 28),
+			bottoms = "Shorts",
+			shoes = rgb(185, 0, 0),
+			hair = HAIR_BROWN,
+			hairStyle = "Spiky",
+			expr = "Angry",
 			jaw = true,
-			acc = { "Headband", "Chain" },
-			accColor = rgb(255, 255, 255),
-			buff = 0.6,
+			acc = { "Headband", "Wristbands", "Dumbbell" },
+			accColor = WHITE,
+			buff = 0.62,
 			scale = 1.05,
 		},
 	},
@@ -1098,9 +2880,14 @@ Theme.Tiers = {
 		Name = "Mogger",
 		Look = {
 			skin = SKIN,
-			shirt = rgb(12, 12, 14),
-			pants = rgb(12, 12, 14),
-			face = "🗿",
+			shirt = rgb(14, 14, 16),
+			top = "Tank",
+			pants = rgb(14, 14, 16),
+			shoes = INK,
+			hair = HAIR_BLACK,
+			hairStyle = "Slick",
+			beard = "Stubble",
+			expr = "Smug",
 			jaw = true,
 			acc = { "Shades", "Chain" },
 			buff = 0.7,
@@ -1115,9 +2902,12 @@ Theme.Tiers = {
 			skin = SKIN_DARK,
 			shirt = rgb(0, 150, 255),
 			pants = rgb(20, 30, 60),
-			face = "🧐",
+			shoes = rgb(0, 150, 255),
+			hair = HAIR_BLACK,
+			hairStyle = "Flat",
+			expr = "Determined",
 			jaw = true,
-			acc = { "Visor" },
+			acc = { "Visor", "Headphones" },
 			accColor = rgb(0, 220, 255),
 			buff = 0.7,
 			scale = 1.1,
@@ -1128,12 +2918,17 @@ Theme.Tiers = {
 		Name = "Aura Farmer",
 		Look = {
 			skin = SKIN,
-			shirt = rgb(120, 60, 200),
-			pants = rgb(40, 25, 70),
-			face = "😌",
+			shirt = rgb(125, 60, 210),
+			top = "Hoodie",
+			pants = rgb(42, 26, 72),
+			bottoms = "Joggers",
+			hair = HAIR_BROWN,
+			hairStyle = "Bun",
+			beard = "Stubble",
+			expr = "Smug",
 			jaw = true,
-			acc = { "Cap" },
-			accColor = PURPLE,
+			acc = { "Towel" },
+			accColor = rgb(235, 225, 255),
 			buff = 0.75,
 			scale = 1.1,
 			aura = PURPLE,
@@ -1143,9 +2938,14 @@ Theme.Tiers = {
 		Name = "Rizzlord",
 		Look = {
 			skin = SKIN_TAN,
-			shirt = rgb(200, 0, 90),
+			shirt = rgb(205, 0, 95),
+			top = "Jacket",
+			trim = rgb(30, 10, 25),
 			pants = rgb(30, 10, 25),
-			face = "😏",
+			shoes = rgb(30, 10, 25),
+			hair = HAIR_BROWN,
+			hairStyle = "Quiff",
+			expr = "Smirk",
 			jaw = true,
 			acc = { "Cape", "Chain" },
 			accColor = rgb(160, 0, 70),
@@ -1158,12 +2958,17 @@ Theme.Tiers = {
 		Name = "Sigma Supreme",
 		Look = {
 			skin = SKIN,
-			shirt = rgb(10, 10, 12),
-			pants = rgb(10, 10, 12),
-			face = "🗿",
+			shirt = rgb(12, 12, 14),
+			top = "Tank",
+			pants = rgb(12, 12, 14),
+			shoes = rgb(12, 12, 14),
+			hair = HAIR_BLACK,
+			hairStyle = "Slick",
+			beard = "Stubble",
+			expr = "Stoic",
 			jaw = true,
 			acc = { "Cape", "Shades" },
-			accColor = rgb(20, 20, 25),
+			accColor = rgb(24, 24, 30),
 			buff = 0.85,
 			scale = 1.15,
 			aura = rgb(240, 240, 255),
@@ -1174,11 +2979,17 @@ Theme.Tiers = {
 		Look = {
 			skin = GOLD,
 			shirt = rgb(255, 215, 90),
+			top = "Shirtless",
 			pants = rgb(200, 150, 30),
+			shoes = rgb(255, 225, 120),
+			sole = rgb(200, 150, 30),
 			material = "Metal",
-			face = "😎",
+			hair = rgb(255, 225, 120),
+			hairStyle = "Slick",
+			expr = "Smirk",
 			jaw = true,
-			acc = { "Shades", "Chain" },
+			acc = { "Shades", "Chain", "ChampBelt" },
+			accColor = GOLD,
 			buff = 0.9,
 			scale = 1.15,
 			aura = GOLD,
@@ -1187,12 +2998,15 @@ Theme.Tiers = {
 	{
 		Name = "Diamond Chad",
 		Look = {
-			skin = rgb(170, 230, 255),
+			skin = rgb(175, 232, 255),
 			shirt = rgb(120, 200, 255),
+			top = "Shirtless",
 			pants = rgb(90, 160, 230),
+			shoes = rgb(210, 245, 255),
 			material = "Glass",
-			face = "😎",
-			faceColor = rgb(20, 40, 80),
+			hair = rgb(130, 220, 255),
+			hairStyle = "Spiky",
+			expr = "Smug",
 			jaw = true,
 			acc = { "Crown" },
 			accColor = rgb(130, 230, 255),
@@ -1206,12 +3020,17 @@ Theme.Tiers = {
 		Name = "Thunder Chad",
 		Look = {
 			skin = SKIN_TAN,
-			shirt = rgb(255, 230, 0),
-			pants = rgb(30, 30, 40),
-			face = "😠",
+			shirt = rgb(255, 225, 0),
+			top = "Tank",
+			pants = rgb(30, 30, 42),
+			shoes = rgb(255, 225, 0),
+			hair = HAIR_BLOND,
+			hairStyle = "Spiky",
+			expr = "Angry",
+			eyeGlow = rgb(255, 250, 160),
 			jaw = true,
-			acc = { "Headband", "Cape" },
-			accColor = rgb(255, 240, 80),
+			acc = { "Headband", "Cape", "Wristbands" },
+			accColor = rgb(255, 235, 70),
 			buff = 1,
 			scale = 1.2,
 			aura = rgb(255, 240, 80),
@@ -1221,15 +3040,19 @@ Theme.Tiers = {
 	{
 		Name = "Cosmic Mogger",
 		Look = {
-			skin = rgb(90, 40, 170),
+			skin = rgb(95, 45, 180),
 			shirt = rgb(40, 10, 90),
-			pants = rgb(20, 5, 50),
+			top = "Shirtless",
+			pants = rgb(26, 8, 60),
+			shoes = rgb(200, 150, 255),
 			material = "ForceField",
-			face = "🗿",
-			faceColor = rgb(255, 255, 255),
+			hair = rgb(210, 150, 255),
+			hairStyle = "Slick",
+			expr = "Stoic",
+			eyeGlow = rgb(255, 255, 255),
 			jaw = true,
 			acc = { "Halo" },
-			accColor = rgb(200, 130, 255),
+			accColor = rgb(210, 140, 255),
 			buff = 1,
 			scale = 1.25,
 			aura = PURPLE,
@@ -1240,9 +3063,14 @@ Theme.Tiers = {
 		Look = {
 			skin = rgb(245, 240, 230),
 			shirt = rgb(230, 225, 215),
+			top = "Shirtless",
 			pants = rgb(200, 195, 185),
+			shoes = rgb(230, 225, 215),
 			material = "Marble",
-			face = "😤",
+			hair = rgb(250, 248, 240),
+			hairStyle = "Slick",
+			beard = "Beard",
+			expr = "Determined",
 			jaw = true,
 			acc = { "Crown", "Cape" },
 			accColor = GOLD,
@@ -1256,9 +3084,14 @@ Theme.Tiers = {
 		Name = "Mythic Rizzler",
 		Look = {
 			skin = SKIN,
-			shirt = rgb(255, 0, 120),
+			shirt = rgb(255, 0, 125),
+			top = "Jacket",
+			trim = WHITE,
 			pants = rgb(80, 0, 40),
-			face = "😏",
+			shoes = WHITE,
+			hair = rgb(255, 130, 205),
+			hairStyle = "Quiff",
+			expr = "Smirk",
 			jaw = true,
 			acc = { "Crown", "Wings" },
 			accColor = rgb(255, 120, 200),
@@ -1271,12 +3104,16 @@ Theme.Tiers = {
 	{
 		Name = "Infinite Sigma",
 		Look = {
-			skin = rgb(20, 20, 24),
-			shirt = rgb(10, 10, 12),
-			pants = rgb(10, 10, 12),
+			skin = rgb(26, 26, 30),
+			shirt = rgb(12, 12, 14),
+			top = "Shirtless",
+			pants = rgb(12, 12, 14),
+			shoes = rgb(12, 12, 14),
+			sole = rgb(255, 40, 40),
 			material = "Slate",
-			face = "🗿",
-			faceColor = rgb(255, 60, 60),
+			hairStyle = "Bald",
+			expr = "Stoic",
+			eyeGlow = rgb(255, 50, 50),
 			jaw = true,
 			acc = { "Halo", "Cape" },
 			accColor = rgb(255, 40, 40),
@@ -1288,12 +3125,16 @@ Theme.Tiers = {
 	{
 		Name = "Celestial Chad",
 		Look = {
-			skin = rgb(240, 240, 255),
+			skin = rgb(240, 242, 255),
 			shirt = rgb(220, 235, 255),
+			top = "Shirtless",
 			pants = rgb(190, 210, 255),
+			shoes = WHITE,
 			material = "Glass",
-			face = "😇",
-			faceColor = rgb(40, 60, 120),
+			hair = rgb(235, 245, 255),
+			hairStyle = "Bun",
+			expr = "Happy",
+			eyeGlow = rgb(150, 230, 255),
 			jaw = true,
 			acc = { "Halo", "Wings" },
 			accColor = rgb(150, 230, 255),
@@ -1308,9 +3149,14 @@ Theme.Tiers = {
 		Look = {
 			skin = GOLD,
 			shirt = rgb(255, 225, 120),
+			top = "Shirtless",
 			pants = rgb(180, 130, 20),
+			shoes = rgb(255, 225, 120),
 			material = "Metal",
-			face = "🗿",
+			hair = rgb(255, 225, 120),
+			hairStyle = "Slick",
+			beard = "Beard",
+			expr = "Smug",
 			jaw = true,
 			acc = { "Crown", "Wings", "Cape" },
 			accColor = GOLD,
@@ -1323,12 +3169,17 @@ Theme.Tiers = {
 	{
 		Name = "Omega Chad",
 		Look = {
-			skin = rgb(30, 0, 0),
+			skin = rgb(60, 6, 6),
 			shirt = rgb(150, 0, 20),
-			pants = rgb(20, 0, 0),
+			top = "Shirtless",
+			pants = rgb(26, 0, 0),
+			shoes = rgb(26, 0, 0),
+			sole = rgb(255, 40, 0),
 			material = "ForceField",
-			face = "😈",
-			faceColor = rgb(255, 255, 255),
+			hair = rgb(255, 40, 20),
+			hairStyle = "Spiky",
+			expr = "Angry",
+			eyeGlow = rgb(255, 60, 30),
 			jaw = true,
 			acc = { "Horns", "Wings", "Cape" },
 			accColor = rgb(255, 30, 30),
@@ -1343,12 +3194,16 @@ Theme.Tiers = {
 		Look = {
 			skin = rgb(255, 215, 80),
 			shirt = rgb(255, 235, 150),
+			top = "Shirtless",
 			pants = rgb(255, 200, 60),
+			shoes = rgb(255, 245, 200),
 			material = "Neon",
-			face = "🗿",
-			faceColor = rgb(60, 40, 0),
+			hair = rgb(255, 245, 200),
+			hairStyle = "Slick",
+			expr = "Stoic",
+			eyeGlow = rgb(255, 255, 255),
 			jaw = true,
-			acc = { "Crown", "Halo", "Wings", "Chain" },
+			acc = { "Crown", "Halo", "Wings" },
 			accColor = rgb(255, 255, 255),
 			buff = 1,
 			scale = 1.6,
@@ -1400,15 +3255,15 @@ return Theme
       </Properties>
     </Item>
   </Item>
-  <Item class="ServerScriptService" referent="7">
+  <Item class="ServerScriptService" referent="9">
     <Properties>
       <string name="Name">ServerScriptService</string>
     </Properties>
-    <Item class="Folder" referent="8">
+    <Item class="Folder" referent="10">
       <Properties>
         <string name="Name">Server</string>
       </Properties>
-      <Item class="ModuleScript" referent="9">
+      <Item class="ModuleScript" referent="11">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -1601,7 +3456,7 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Script" referent="10">
+      <Item class="Script" referent="12">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -1699,7 +3554,7 @@ end)
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="11">
+      <Item class="ModuleScript" referent="13">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -1866,7 +3721,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="12">
+      <Item class="ModuleScript" referent="14">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -2020,7 +3875,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="13">
+      <Item class="ModuleScript" referent="15">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -3350,7 +5205,7 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="14">
+      <Item class="ModuleScript" referent="16">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -4177,26 +6032,298 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="15">
+  <Item class="SoundService" referent="17">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="16">
+  <Item class="StarterPlayer" referent="18">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="17">
+    <Item class="StarterPlayerScripts" referent="19">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="18">
+      <Item class="Folder" referent="20">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="LocalScript" referent="19">
+        <Item class="ModuleScript" referent="21">
+          <Properties>
+            <string name="Name">Animator</string>
+            <string name="Source"><![CDATA[--[[
+	Animator: plays the procedural unit animations (Shared.Poses) on the client.
+
+	World units: every model tagged "AnimatedUnit" under Workspace is picked up
+	automatically. The server builds them static; each client poses them
+	locally every frame (nothing replicates). Units further than FAR studs from
+	the camera or off-screen are skipped, and mid-distance ones update at a
+	lower rate. All world parts are moved with one BulkMoveTo call per frame.
+
+	Viewport units (Index cards, reward popup): call Animator.attach(model)
+	after building the model; they animate while their ViewportFrame is
+	visible. Animator.detach(model) stops it (also automatic once the model is
+	destroyed).
+]]
+
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+local Poses = require(Shared:WaitForChild("Poses"))
+local RigPose = require(Shared:WaitForChild("RigPose"))
+
+local Animator = {}
+
+local FAR = 140 -- studs: beyond this units stay frozen
+local NEAR = 55 -- studs: closer than this units update every frame
+local MID_RATE = 2 -- frames between updates for NEAR..MID
+local MID = 95
+local FAR_RATE = 4 -- frames between updates for MID..FAR
+local SCREEN_MARGIN = 120 -- pixels outside the screen still counted as visible
+local VIEWPORT_INTERVAL = 1 / 30 -- viewport units animate at 30 fps
+local PRUNE_AFTER = 3 -- seconds an attached model may sit without a parent
+
+type Entry = {
+	model: Model,
+	rig: RigPose.Rig?,
+	viewport: boolean,
+	slot: number,
+	height: number,
+	orphanSince: number?,
+	nextViewportUpdate: number,
+	connections: { RBXScriptConnection },
+}
+
+local entries: { [Model]: Entry } = {}
+local slotCounter = 0
+local started = false
+
+local function newSeed(): number
+	return math.random(0, 99999)
+end
+
+local function tryCapture(entry: Entry): RigPose.Rig?
+	if entry.rig then
+		return entry.rig
+	end
+	local model = entry.model
+	local okScale, modelScale = pcall(function()
+		return model:GetScale()
+	end)
+	local rig = RigPose.capture(model, newSeed())
+	if rig and okScale and type(modelScale) == "number" and modelScale ~= 1 then
+		-- Someone rescaled the model after it was built: scale the pivots too.
+		rig.scale *= modelScale
+		for limb, pivot in rig.pivots do
+			rig.pivots[limb] = pivot * modelScale
+		end
+		table.clear(rig.parts)
+		table.clear(rig.limbs)
+		table.clear(rig.offsets)
+		for _, d in model:GetDescendants() do
+			if d:IsA("BasePart") then
+				RigPose.addPart(rig, d)
+			end
+		end
+	end
+	if rig then
+		entry.rig = rig
+		local height = model:GetAttribute("Height")
+		entry.height = if type(height) == "number" then height else 6
+	end
+	return rig
+end
+
+local function register(model: Model, viewport: boolean)
+	local existing = entries[model]
+	if existing then
+		existing.viewport = existing.viewport or viewport
+		return
+	end
+	slotCounter += 1
+	local entry: Entry = {
+		model = model,
+		rig = nil,
+		viewport = viewport,
+		slot = slotCounter,
+		height = 6,
+		orphanSince = nil,
+		nextViewportUpdate = 0,
+		connections = {},
+	}
+	entries[model] = entry
+end
+
+-- Hooked up on the first frame a unit is processed (keeps attach() free of
+-- side effects, so tools that load the UI without a frame loop stay happy).
+local function connect(entry: Entry)
+	local model = entry.model
+	-- Parts that stream in later arrive in their rest pose; parts that leave are dropped.
+	table.insert(
+		entry.connections,
+		model.DescendantAdded:Connect(function(d)
+			local rig = entry.rig
+			if rig and d:IsA("BasePart") then
+				RigPose.addPart(rig, d)
+			end
+		end)
+	)
+	table.insert(
+		entry.connections,
+		model.DescendantRemoving:Connect(function(d)
+			local rig = entry.rig
+			if rig and d:IsA("BasePart") then
+				if d == rig.root then
+					-- Streamed out: forget it; it re-registers when it streams back in.
+					task.defer(Animator.detach, entry.model)
+				else
+					RigPose.removePart(rig, d)
+				end
+			end
+		end)
+	)
+end
+
+local function unregister(model: Model)
+	local entry = entries[model]
+	if not entry then
+		return
+	end
+	entries[model] = nil
+	for _, connection in entry.connections do
+		connection:Disconnect()
+	end
+end
+
+-- Animate a model that lives outside Workspace (e.g. in a ViewportFrame).
+function Animator.attach(model: Model)
+	register(model, true)
+end
+
+function Animator.detach(model: Model)
+	unregister(model)
+end
+
+-- Is the ViewportFrame (or other GUI) holding this model actually on screen?
+local function guiVisible(model: Model): boolean
+	local node: Instance? = model.Parent
+	while node do
+		if node:IsA("GuiObject") then
+			if not node.Visible then
+				return false
+			end
+		elseif node:IsA("LayerCollector") then
+			return node.Enabled and node:FindFirstAncestorWhichIsA("PlayerGui") ~= nil
+		end
+		node = node.Parent
+	end
+	return false
+end
+
+local worldParts: { BasePart } = {}
+local worldCFrames: { CFrame } = {}
+local frameCount = 0
+
+local function step()
+	frameCount += 1
+	local now = os.clock()
+	local camera = Workspace.CurrentCamera
+	local camPos = if camera then camera.CFrame.Position else Vector3.zero
+	local viewSize = if camera then camera.ViewportSize else Vector2.new(1920, 1080)
+	table.clear(worldParts)
+	table.clear(worldCFrames)
+
+	for model, entry in entries do
+		if not model.Parent then
+			entry.orphanSince = entry.orphanSince or now
+			if now - (entry.orphanSince :: number) > PRUNE_AFTER then
+				unregister(model)
+			end
+			continue
+		end
+		entry.orphanSince = nil
+		if #entry.connections == 0 then
+			connect(entry)
+		end
+		local rig = tryCapture(entry)
+		if not rig then
+			continue
+		end
+
+		if entry.viewport then
+			if now >= entry.nextViewportUpdate and guiVisible(model) then
+				entry.nextViewportUpdate = now + VIEWPORT_INTERVAL
+				RigPose.apply(rig, now)
+			end
+			continue
+		end
+
+		local rootPos = rig.root.Position
+		local distance = (rootPos - camPos).Magnitude
+		if distance > FAR then
+			continue
+		end
+		local rate = if distance < NEAR then 1 elseif distance < MID then MID_RATE else FAR_RATE
+		if rate > 1 and (frameCount + entry.slot) % rate ~= 0 then
+			continue
+		end
+		if camera and distance > entry.height * 1.5 then
+			local center = rootPos + Vector3.new(0, entry.height * 0.5, 0)
+			local screen, inFront = camera:WorldToViewportPoint(center)
+			if
+				not inFront
+				or screen.X < -SCREEN_MARGIN
+				or screen.Y < -SCREEN_MARGIN
+				or screen.X > viewSize.X + SCREEN_MARGIN
+				or screen.Y > viewSize.Y + SCREEN_MARGIN
+			then
+				continue
+			end
+		end
+		local parts, cframes = RigPose.compute(rig, now)
+		table.move(parts, 1, #parts, #worldParts + 1, worldParts)
+		table.move(cframes, 1, #parts, #worldCFrames + 1, worldCFrames)
+	end
+
+	if #worldParts > 0 then
+		Workspace:BulkMoveTo(worldParts, worldCFrames, Enum.BulkMoveMode.FireCFrameChanged)
+	end
+end
+
+local function onTagged(instance: Instance)
+	if instance:IsA("Model") and instance:IsDescendantOf(Workspace) then
+		register(instance, false)
+	end
+end
+
+function Animator.start()
+	if started then
+		return
+	end
+	started = true
+	CollectionService:GetInstanceAddedSignal(Poses.TAG):Connect(onTagged)
+	CollectionService:GetInstanceRemovedSignal(Poses.TAG):Connect(function(instance)
+		local entry = entries[instance :: Model]
+		if entry and not entry.viewport then
+			unregister(instance :: Model)
+		end
+	end)
+	for _, instance in CollectionService:GetTagged(Poses.TAG) do
+		onTagged(instance)
+	end
+	RunService.RenderStepped:Connect(step)
+end
+
+return Animator
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="LocalScript" referent="22">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -4215,6 +6342,7 @@ local Client = script.Parent
 local State = require(Client.State)
 local Sounds = require(Client.Sounds)
 local Kit = require(Client.UI.Kit)
+local Animator = require(Client.Animator)
 local Hud = require(Client.UI.Hud)
 local Windows = require(Client.UI.Windows)
 local Popups = require(Client.UI.Popups)
@@ -4251,6 +6379,7 @@ Kit.setClickSound(function()
 	Sounds.play("Click")
 end)
 
+Animator.start()
 Popups.build(screen, Sounds)
 Windows.build(screen)
 Hud.build(screen, { openWindow = Windows.open }, Sounds)
@@ -4312,7 +6441,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="20">
+        <Item class="ModuleScript" referent="23">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects using sounds bundled with the Roblox client (no uploads needed),
@@ -4394,7 +6523,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="21">
+        <Item class="ModuleScript" referent="24">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -4443,11 +6572,11 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="22">
+        <Item class="Folder" referent="25">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="23">
+          <Item class="ModuleScript" referent="26">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -4816,7 +6945,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="24">
+          <Item class="ModuleScript" referent="27">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -4829,6 +6958,7 @@ local TweenService = game:GetService("TweenService")
 
 local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 local CharacterFactory = require(ReplicatedStorage.Shared.CharacterFactory)
+local Animator = require(script.Parent.Parent.Animator)
 
 local Kit = {}
 Kit.Theme = Theme
@@ -5054,6 +7184,7 @@ function Kit.unitViewport(parent: Instance, tier: number, props: { [string]: any
 		CharacterFactory.silhouette(model)
 	end
 	model.Parent = viewport
+	Animator.attach(model)
 	local height = CharacterFactory.height(look)
 	local camera = Instance.new("Camera")
 	camera.FieldOfView = 40
@@ -5169,7 +7300,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="25">
+          <Item class="ModuleScript" referent="28">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -5553,7 +7684,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="26">
+          <Item class="ModuleScript" referent="29">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
@@ -6002,7 +8133,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="27">
+  <Item class="Workspace" referent="30">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>
