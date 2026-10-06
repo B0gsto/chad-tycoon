@@ -117,7 +117,8 @@ function materialFor(part) {
 			mat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.85, roughness: 1 });
 			break;
 		case "Glass":
-			mat = new THREE.MeshPhysicalMaterial({ color, roughness: 0.05, metalness: 0.1, transparent: true, opacity: Math.min(opacity, 0.45), envMapIntensity: 1.5 });
+			// Slightly rough so large glass floors don't turn into one sun-glare mirror.
+			mat = new THREE.MeshPhysicalMaterial({ color, roughness: 0.22, metalness: 0.1, transparent: true, opacity: Math.min(opacity, 0.45), envMapIntensity: 1.2 });
 			break;
 		case "ForceField":
 			mat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.8, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false });
@@ -155,6 +156,30 @@ const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const sphereGeo = new THREE.SphereGeometry(0.5, 24, 16);
 const cylGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 32).rotateZ(Math.PI / 2);
 
+// Roblox WedgePart: full bottom and back (+Z) faces, slope rising from the
+// front-bottom edge (-Z) to the back-top edge (+Z).
+const wedgeGeo = (() => {
+	const A = [-0.5, -0.5, -0.5], B = [0.5, -0.5, -0.5], C = [-0.5, -0.5, 0.5], D = [0.5, -0.5, 0.5], E = [-0.5, 0.5, 0.5], F = [0.5, 0.5, 0.5];
+	const tris = [[A, B, D], [A, D, C], [C, D, F], [C, F, E], [A, E, F], [A, F, B], [A, C, E], [B, F, D]];
+	const pos = [], uv = [];
+	for (const tri of tris) {
+		// Side faces (all x equal) map (z, y); the others map (x, z or y).
+		const side = tri.every((v) => v[0] === tri[0][0]);
+		const back = tri.every((v) => v[2] === 0.5);
+		for (const [x, y, z] of tri) {
+			pos.push(x, y, z);
+			if (side) uv.push(z + 0.5, y + 0.5);
+			else if (back) uv.push(x + 0.5, y + 0.5);
+			else uv.push(x + 0.5, z + 0.5);
+		}
+	}
+	const geo = new THREE.BufferGeometry();
+	geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+	geo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+	geo.computeVertexNormals();
+	return geo;
+})();
+
 function buildPart(part) {
 	const [sx, sy, sz] = part.size;
 	let mesh;
@@ -166,6 +191,9 @@ function buildPart(part) {
 		const d = Math.min(sy, sz);
 		mesh = new THREE.Mesh(cylGeo, materialFor(part));
 		mesh.scale.set(sx, d, d);
+	} else if (part.shape === "Wedge") {
+		mesh = new THREE.Mesh(wedgeGeo, materialFor(part));
+		mesh.scale.set(sx, sy, sz);
 	} else {
 		mesh = new THREE.Mesh(boxGeo, materialFor(part));
 		mesh.scale.set(sx, sy, sz);
