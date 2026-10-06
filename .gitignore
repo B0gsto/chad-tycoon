@@ -20,3 +20,5 @@ art/out/**
 !art/out/**/
 !art/out/**/*.json
 !art/out/faces/**
+# Marketing renders, thumbnails and trailers (made in a separate session) stay out of git.
+marketing/
