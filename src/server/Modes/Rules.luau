@@ -2,10 +2,10 @@
 --[[
 	Rules: the pure parts of a Parkour run (no Roblox dependencies, unit-tested).
 
-	A run records the server time it started and the server time each checkpoint was
+	A run records its Course level, the server time it started and the server time each checkpoint was
 	reached. Checkpoints only count in order (touching #4 while on #2 does nothing); the
-	finish only counts after the last checkpoint, and only when every leg took at least
-	Course.MIN_LEG_SECONDS (nobody can cross the course faster than MAX_PLAUSIBLE_SPEED).
+	finish only counts after the level's last checkpoint, and only when every leg took at
+	least the level's MIN_LEG_SECONDS (nobody can cross the course faster than MAX_PLAUSIBLE_SPEED).
 ]]
 
 local Course = require(script.Parent.Course)
@@ -13,14 +13,16 @@ local Course = require(script.Parent.Course)
 local Rules = {}
 
 export type Run = {
+	-- The Course level being run (Course.LEVELS[i]).
+	level: Course.Level,
 	startedAt: number,
 	checkpoint: number,
 	-- Server time each checkpoint was reached (index 1..n).
 	times: { number },
 }
 
-function Rules.newRun(now: number): Run
-	return { startedAt = now, checkpoint = 0, times = {} }
+function Rules.newRun(now: number, level: Course.Level?): Run
+	return { level = level or Course.LEVELS[1], startedAt = now, checkpoint = 0, times = {} }
 end
 
 -- "ok" when `index` is the next checkpoint (the run advances), "old" when it was already
@@ -39,14 +41,15 @@ end
 -- Validates a finish at `now`: (true, seconds) or (false, reason) with reason
 -- "checkpoints" (not all taken) or "fast" (a leg was quicker than possible).
 function Rules.finish(run: Run, now: number): (boolean, number | string)
-	local count = Course.CHECKPOINT_COUNT
+	local count = run.level.CHECKPOINT_COUNT
+	local minimum = run.level.MIN_LEG_SECONDS
 	if run.checkpoint ~= count then
 		return false, "checkpoints"
 	end
 	local previous = run.startedAt
 	for k = 1, count + 1 do
 		local at = if k <= count then run.times[k] else now
-		if type(at) ~= "number" or at - previous < Course.MIN_LEG_SECONDS[k] then
+		if type(at) ~= "number" or at - previous < minimum[k] then
 			return false, "fast"
 		end
 		previous = at

@@ -524,6 +524,12 @@ function Economy.modeReward(
 	}
 end
 
+-- Parkour level multiplier on the finish cash: +20% per level above the first (level 10
+-- pays 2.8x the pack).
+function Economy.parkourLevelBonus(level: number): number
+	return 1 + 0.2 * (math.max(1, math.floor(level)) - 1)
+end
+
 -- Tier rarity bands (used for label colours in the Index and on units).
 Economy.TIER_BANDS = {
 	{ upTo = 5, name = "Common" },

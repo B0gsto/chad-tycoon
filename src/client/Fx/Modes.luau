@@ -10,13 +10,20 @@
 	               against mover parts), the part's frame-to-frame motion (delta CFrame,
 	               rotation included) is applied to the character's root before physics.
 	  Spinners     "SpinnerBar" (Hazard = "bump"): a gentle push away plus a small hop.
+	  Blink pads   tag "BlinkPad": solid when ((t + BlinkPhase) % BlinkPeriod) < BlinkOn
+	               (server clock). Near the player, CanCollide and the look are set locally
+	               (character physics is client-owned): faded when off, with a few quick
+	               flashes in the last BLINK_WARN seconds before switching off.
 	  Bounce pads  tag "BouncePad": once per contact, launch upward at the pad's Bounce
 	               speed (double jump still works in the air), squash the pad, Puff sprite.
 	  Effects      ModeCheckpoint (flag cap pop + star), ModeSplash (splash sprites and
 	               a short camera dip), ModeFinish (stars and confetti).
+	  Levels       a parkour run's start payload carries its level; hints and flags look in
+	               Map.GameModes.Parkour.Level<level>. Mode notifications of other modes
+	               (Mog Test) are ignored.
 	  Hint         standing still for 4 s during a run: a short dotted trail of soft dots
 	               toward the next checkpoint (or the finish).
-	  Gate arrow   the open gate's "GateArrow" (tag "ModeHintArrow", attribute HintBob)
+	  Gate arrow   each open gate's "GateArrow" (tag "ModeHintArrow", attribute HintBob)
 	               bobs gently while the player is near the plaza and not on a run; it
 	               eases in and out and settles back at its rest pose.
 	  Next flag    during a run, the next checkpoint's "FlagCap" (attribute Checkpoint)
@@ -50,6 +57,11 @@ local ARROW_SPEED = 2.6
 local ARROW_FADE = 0.4
 -- Next checkpoint flag: one soft pulse every PULSE_EVERY seconds during a run.
 local PULSE_EVERY = 2.2
+-- Blink pads: seconds of warning flashes before switching off, and flashes per second.
+local BLINK_WARN = 0.5
+local BLINK_FLASH_HZ = 6
+local BLINK_OFF_TOP = 0.75
+local BLINK_OFF_PART = 0.85
 
 type Mover = {
 	root: BasePart,
@@ -75,6 +87,21 @@ local pads: { BasePart } = {}
 local padRest: { [BasePart]: CFrame } = {}
 local padContact: { [BasePart]: boolean } = {}
 local bounds: { min: Vector3, max: Vector3 }? = nil
+
+type Blink = {
+	root: BasePart,
+	centre: Vector3,
+	on: number,
+	period: number,
+	phase: number,
+	solid: { BasePart }, -- parts that collide while the pad is on
+	looks: { BasePart }, -- every visible part, with its built transparency
+	rest: { number },
+	glow: { BasePart },
+	state: string, -- "on" | "dim" (warning flash) | "off" | "" (not applied yet)
+}
+local blinks: { Blink } = {}
+local blinkByPart: { [BasePart]: boolean } = {}
 
 type Arrow = {
 	root: BasePart,
@@ -157,6 +184,76 @@ local function addPad(pad: Instance)
 		table.insert(pads, pad)
 		grow(pad.Position)
 	end
+end
+
+local function addBlink(root: Instance)
+	if not root:IsA("BasePart") or blinkByPart[root] then
+		return
+	end
+	blinkByPart[root] = true
+	local b: Blink = {
+		root = root,
+		centre = root.Position,
+		on = num(root:GetAttribute("BlinkOn"), 2),
+		period = math.max(num(root:GetAttribute("BlinkPeriod"), 3), 0.2),
+		phase = num(root:GetAttribute("BlinkPhase"), 0),
+		solid = {},
+		looks = {},
+		rest = {},
+		glow = {},
+		state = "",
+	}
+	local all = root:GetDescendants()
+	table.insert(all, root)
+	for _, d in all do
+		if d:IsA("BasePart") then
+			if d.CanCollide then
+				table.insert(b.solid, d)
+			end
+			if d.Name == "BlinkGlow" then
+				table.insert(b.glow, d)
+			elseif d.Transparency < 1 then
+				table.insert(b.looks, d)
+				table.insert(b.rest, d.Transparency)
+			end
+		end
+	end
+	table.insert(blinks, b)
+	grow(root.Position)
+end
+
+-- Applies a blink pad's state: "on" (solid, full colour), "dim" (solid, warning flash
+-- frame) or "off" (non-collidable and faded, glow dim).
+local function setBlink(b: Blink, state: string)
+	if b.state == state then
+		return
+	end
+	b.state = state
+	local collide = state ~= "off"
+	for _, part in b.solid do
+		part.CanCollide = collide
+	end
+	for i, part in b.looks do
+		part.Transparency = if state == "off"
+			then (if part == b.root then BLINK_OFF_TOP else BLINK_OFF_PART)
+			elseif state == "dim" then math.max(b.rest[i], 0.4)
+			else b.rest[i]
+	end
+	for _, glow in b.glow do
+		glow.Transparency = if state == "on" then 0 elseif state == "dim" then 0.6 else 0.85
+	end
+end
+
+local function blinkState(b: Blink, t: number): string
+	local into = (t + b.phase) % b.period
+	if into >= b.on then
+		return "off"
+	end
+	local left = b.on - into
+	if left < BLINK_WARN and math.floor(left * BLINK_FLASH_HZ * 2) % 2 == 0 then
+		return "dim"
+	end
+	return "on"
 end
 
 local function addArrow(root: Instance)
@@ -260,11 +357,14 @@ local nextIndex = 1
 local stillSince = os.clock()
 local stillAt = Vector3.zero
 local lastHint = 0
+local currentLevel = 1
 
+-- The current (or last) run's level folder, Map.GameModes.Parkour.Level<currentLevel>.
 local function courseFolder(): Instance?
 	local map = Workspace:FindFirstChild("Map")
 	local modes = map and map:FindFirstChild("GameModes")
-	return modes and modes:FindFirstChild("Parkour")
+	local parkour = modes and modes:FindFirstChild("Parkour")
+	return parkour and parkour:FindFirstChild("Level" .. currentLevel)
 end
 
 local function checkpointPart(index: number): BasePart?
@@ -273,12 +373,21 @@ local function checkpointPart(index: number): BasePart?
 		return nil
 	end
 	for _, d in folder:GetDescendants() do
-		if d.Name == "Checkpoint" and d:IsA("BasePart") and d:GetAttribute("Index") == index then
+		if
+			d.Name == "Checkpoint"
+			and d:IsA("BasePart")
+			and d:GetAttribute("Index") == index
+			and d:GetAttribute("Level") == currentLevel
+		then
 			return d
 		end
 	end
-	local finish = folder:FindFirstChild("ParkourFinish", true)
-	return if finish and finish:IsA("BasePart") then finish else nil
+	for _, d in folder:GetDescendants() do
+		if d.Name == "ParkourFinish" and d:IsA("BasePart") and d:GetAttribute("Level") == currentLevel then
+			return d
+		end
+	end
+	return nil
 end
 
 local function showHint(root: BasePart)
@@ -397,6 +506,11 @@ local function step(dt: number)
 	local under = if hit then byPart[hit.Instance :: BasePart] else nil
 
 	local t = Workspace:GetServerTimeNow()
+	for _, blinkPad in blinks do
+		if (blinkPad.centre - pos).Magnitude <= NEAR then
+			setBlink(blinkPad, blinkState(blinkPad, t))
+		end
+	end
 	local parts: { BasePart } = {}
 	local frames: { CFrame } = {}
 	local carry: CFrame? = nil
@@ -550,6 +664,10 @@ function ModesFx.init()
 		addPad(pad)
 	end
 	CollectionService:GetInstanceAddedSignal("BouncePad"):Connect(addPad)
+	for _, pad in CollectionService:GetTagged("BlinkPad") do
+		addBlink(pad)
+	end
+	CollectionService:GetInstanceAddedSignal("BlinkPad"):Connect(addBlink)
 	for _, arrow in CollectionService:GetTagged("ModeHintArrow") do
 		addArrow(arrow)
 	end
@@ -558,11 +676,13 @@ function ModesFx.init()
 	RunService.PreSimulation:Connect(step)
 
 	Net.event("Notify").OnClientEvent:Connect(function(payload)
-		if type(payload) ~= "table" or payload.kind ~= "Mode" then
+		if type(payload) ~= "table" or payload.kind ~= "Mode" or payload.mode ~= "parkour" then
 			return
 		end
 		local event = payload.event
 		if event == "start" then
+			currentLevel = math.floor(num(payload.level, 1))
+			pulseCap = nil
 			running, nextIndex = true, 1
 			stillSince, lastHint = os.clock(), os.clock()
 		elseif event == "checkpoint" then
