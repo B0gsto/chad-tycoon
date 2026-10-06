@@ -70,10 +70,18 @@ sand island in the sea.
   trails, Chad Aura and Golden Crown. Each has its own pass (the Rookie Trail comes only with the Starter
   Pack), and the All Cosmetics Pack unlocks every non-Starter item. The **Starter Pack** gives a one-time
   cash and Rizz bundle plus the Rookie Trail.
-- **Game Modes.** A plaza on the hub has three gates; Parkour is live, two say COMING SOON
-  (`src/server/GameModes.luau`, `src/server/Modes/*`). Parkour is a timed run over the sea with in-order
-  checkpoints and a too-fast-leg check. A valid finish pays exactly the smallest cash pack's amount on the
-  first finish ever and then at most once per 30 minutes, plus 25 Rizz on the first finish ever.
+- **Game Modes.** A plaza on the hub has three gates, each a teleport portal
+  (`src/server/GameModes.luau`, `src/server/Modes/*`). **Parkour** has 10 levels: level 1 is the hand-made
+  course by the gates; levels 2-10 are generated out at sea (`Course.generate`) and get steadily harder
+  (tighter gaps, smaller discs and beams, faster movers and sweepers, blinking pads from level 4, fewer
+  checkpoints). Unit tests check every jump on every level is fair for the default jump. Levels unlock in
+  order, bests and clears are saved per level, and a finish pays the smallest cash pack's amount times a
+  per-level bonus (`Economy.parkourLevelBonus`) on the first clear of a level and then at most once per
+  cooldown, plus 25 Rizz per first clear. **Mog Test** is a skill-check duel on a floating stage
+  (`Modes/MogRules.luau`, `Mog.luau`, `World/MogStage.luau`, `UI/MogHud.luau`, `Fx/Mog.luau`): press
+  Space / click / tap / A when the needle is in the zone; the window shrinks and the needle speeds up every
+  check; mogging 3 rivals passes the test and pays the mode reward, then the run goes on for a high score
+  with 3 lives. Gate 3 says COMING SOON.
 - **Shop packs scale with progression.** Cash packs pay a number of seconds of your income with a
   minimum per pack, and Rizz packs grow from x1 at tier 1 up to x4 (`Economy.progression`). The shop shows
   each player the same amounts the server grants.
@@ -201,10 +209,11 @@ through `tools/studio.py execute_luau`:
 | `World/Machines.luau` | Smoothie-blender converter, juice-bar processor, piggy-bank vault, high-striker crate smashers |
 | `World/Decor.luau` | Gym dressing, entrance path, fan zones |
 | `World/Hub.luau` | Lighting, island and sea, hub plaza |
-| `World/Modes.luau` | Game Modes plaza and the Parkour course |
+| `World/Modes.luau`, `World/MogStage.luau` | Game Modes plaza, the 10 Parkour levels, the Mog stage |
 | `World/Props.luau` | Swaps part-built props for uploaded Blender meshes when present |
 | `GameModes.luau` | Game mode registry and shared plumbing |
-| `Modes/Catalog.luau`, `Course.luau`, `Rules.luau`, `Parkour.luau` | Mode list, course layout, run rules, Parkour |
+| `Modes/Catalog.luau`, `Course.luau`, `Rules.luau`, `Parkour.luau` | Mode list, level layouts and generator, run rules, Parkour |
+| `Modes/MogRules.luau`, `MogLayout.luau`, `Mog.luau` | Mog Test rules (unit-tested), stage layout, the mode |
 | `Cosmetics.luau` | Cosmetic passes and the Starter Pack |
 | `Intro.luau` | Saves whether the intro was seen |
 | `Tutorial.luau` | Tutorial progress and reward |
@@ -216,7 +225,7 @@ through `tools/studio.py execute_luau`:
 | `State.luau` | Latest server snapshot |
 | `UI/Kit.luau` | UI design system (buttons, panels, icons, windows) |
 | `UI/Hud.luau` | Always-on HUD |
-| `UI/Windows.luau` | Shop, Index, Ranking, Settings |
+| `UI/Windows.luau` | Shop, Index, Ranking, Settings, Game Modes |
 | `UI/Popups.luau` | Toasts, reward reveals, crate panel, dialogs, offline earnings |
 | `UI/Tutorial.luau` | Tutorial quest pill and completion banner |
 | `Guide.luau` | Bobbing chevron that points at a target |
@@ -230,7 +239,8 @@ through `tools/studio.py execute_luau`:
 | `Fx/Ambient.luau` | Idle sway and bob for the map |
 | `Fx/Camera.luau` | Spawn framing, camera punch and shake |
 | `Fx/Cosmetics.luau` | Local double jump and speed puffs |
-| `Fx/Modes.luau` | Moving obstacles and the Parkour client |
+| `Fx/Modes.luau` | Moving obstacles, blink pads and the Parkour client |
+| `UI/MogHud.luau`, `Fx/Mog.luau` | Mog Test ring, hearts and duel camera / rival |
 | `Fx/Sprites.luau` | Blender effect sprites |
 | `Intro/Cutscene.luau`, `Timeline.luau` | Plays the intro; the story as data |
 | `Intro/Stage.luau`, `Actors.luau`, `Effects.luau` | Intro set, cast and effects |
