@@ -15,7 +15,7 @@
 
 local Economy = {}
 
-Economy.VERSION = "1.0.0"
+Economy.VERSION = "1.1.0"
 
 Economy.MAX_TIER = 25
 Economy.MAX_BUY_TIER = 15
@@ -278,6 +278,10 @@ Economy.FREE_REWARD_COOLDOWN = 600
 Economy.FREE_REWARD_GEMS = 3
 Economy.FREE_REWARD_SECONDS = 120
 Economy.FREE_REWARD_MIN = 100
+
+-- One-time reward for finishing the onboarding tutorial.
+Economy.TUTORIAL_REWARD_GEMS = 25
+Economy.TUTORIAL_REWARD_CASH = 250
 
 Economy.OFFLINE_CAP_SECONDS = 8 * 3600
 Economy.OFFLINE_EFFICIENCY = 0.25

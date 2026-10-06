@@ -117,7 +117,8 @@ function materialFor(part) {
 			mat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.85, roughness: 1 });
 			break;
 		case "Glass":
-			mat = new THREE.MeshPhysicalMaterial({ color, roughness: 0.05, metalness: 0.1, transparent: true, opacity: Math.min(opacity, 0.45), envMapIntensity: 1.5 });
+			// Slightly rough so large glass floors don't turn into one sun-glare mirror.
+			mat = new THREE.MeshPhysicalMaterial({ color, roughness: 0.22, metalness: 0.1, transparent: true, opacity: Math.min(opacity, 0.45), envMapIntensity: 1.2 });
 			break;
 		case "ForceField":
 			mat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.8, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false });
@@ -154,6 +155,29 @@ function materialFor(part) {
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const sphereGeo = new THREE.SphereGeometry(0.5, 24, 16);
 const cylGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 32).rotateZ(Math.PI / 2);
+// Roblox WedgePart: full bottom and back (+Z) faces, slope rising from the
+// front-bottom edge (-Z) to the back-top edge (+Z).
+const wedgeGeo = (() => {
+	const A = [-0.5, -0.5, -0.5], B = [0.5, -0.5, -0.5], C = [-0.5, -0.5, 0.5], D = [0.5, -0.5, 0.5], E = [-0.5, 0.5, 0.5], F = [0.5, 0.5, 0.5];
+	const tris = [[A, B, D], [A, D, C], [C, D, F], [C, F, E], [A, E, F], [A, F, B], [A, C, E], [B, F, D]];
+	const pos = [], uv = [];
+	for (const tri of tris) {
+		// Side faces (all x equal) map (z, y); the others map (x, z or y).
+		const side = tri.every((v) => v[0] === tri[0][0]);
+		const back = tri.every((v) => v[2] === 0.5);
+		for (const [x, y, z] of tri) {
+			pos.push(x, y, z);
+			if (side) uv.push(z + 0.5, y + 0.5);
+			else if (back) uv.push(x + 0.5, y + 0.5);
+			else uv.push(x + 0.5, z + 0.5);
+		}
+	}
+	const geo = new THREE.BufferGeometry();
+	geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+	geo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+	geo.computeVertexNormals();
+	return geo;
+})();
 
 function buildPart(part) {
 	const [sx, sy, sz] = part.size;
@@ -166,6 +190,9 @@ function buildPart(part) {
 		const d = Math.min(sy, sz);
 		mesh = new THREE.Mesh(cylGeo, materialFor(part));
 		mesh.scale.set(sx, d, d);
+	} else if (part.shape === "Wedge") {
+		mesh = new THREE.Mesh(wedgeGeo, materialFor(part));
+		mesh.scale.set(sx, sy, sz);
 	} else {
 		mesh = new THREE.Mesh(boxGeo, materialFor(part));
 		mesh.scale.set(sx, sy, sz);
@@ -175,6 +202,12 @@ function buildPart(part) {
 	holder.matrixAutoUpdate = false;
 	holder.matrix.copy(m);
 	holder.add(mesh);
+	if (part.highlight) {
+		// Roblox Highlight: tinted overlay slightly larger than the part.
+		const glow = new THREE.Mesh(mesh.geometry, new THREE.MeshBasicMaterial({ color: srgb(part.highlight), transparent: true, opacity: 0.5, depthWrite: false, toneMapped: false }));
+		glow.scale.copy(mesh.scale).multiplyScalar(1.04);
+		holder.add(glow);
+	}
 	const glassy = part.material === "Glass" || part.material === "ForceField" || part.transparency > 0;
 	mesh.castShadow = !glassy && part.material !== "Neon";
 	mesh.receiveShadow = true;
@@ -223,7 +256,8 @@ function buildBillboard(bb, texture) {
 	const sprite = new THREE.Sprite(mat);
 	sprite.scale.set(bb.size[0], bb.size[1], 1);
 	sprite.position.set(...bb.pos);
-	sprite.renderOrder = 3;
+	sprite.renderOrder = bb.alwaysOnTop ? 10 : 3;
+	if (bb.alwaysOnTop) mat.depthTest = false;
 	sprite.userData.maxDistance = bb.maxDistance || 1e9;
 	return sprite;
 }
@@ -332,7 +366,13 @@ export async function renderScene(canvas, data, opts) {
 				if (dist > (bb.maxDistance || 1e9)) continue;
 				const tex = await new THREE.TextureLoader().loadAsync(url);
 				tex.colorSpace = THREE.SRGBColorSpace;
-				scene.add(buildBillboard(bb, tex));
+				const sprite = buildBillboard(bb, tex);
+				if (bb.pixels) {
+					// Constant screen size (Roblox offset-sized BillboardGui).
+					const studsPerPixel = (2 * dist * Math.tan(((opts.camera.fov || 70) * Math.PI) / 360)) / opts.height;
+					sprite.scale.set(bb.pixels[0] * studsPerPixel, bb.pixels[1] * studsPerPixel, 1);
+				}
+				scene.add(sprite);
 			}
 		}
 		// Only the nearest lights matter for the shot; WebGL can't afford all of them.
@@ -345,6 +385,19 @@ export async function renderScene(canvas, data, opts) {
 			light.position.set(...l.pos);
 			if (l.kind === "SpotLight") light.position.y -= 1;
 			scene.add(light);
+		}
+		// Beams (e.g. the tutorial guide) as glowing tubes.
+		for (const beam of data.beams || []) {
+			const a = new THREE.Vector3(...beam.from);
+			const b = new THREE.Vector3(...beam.to);
+			const curve = new THREE.LineCurve3(a, b);
+			const radius = ((beam.width0 || 1) + (beam.width1 || 1)) / 8;
+			const tube = new THREE.Mesh(
+				new THREE.TubeGeometry(curve, 1, radius, 10, false),
+				new THREE.MeshBasicMaterial({ color: srgb(beam.color), transparent: true, opacity: 0.8, toneMapped: false, depthWrite: false }),
+			);
+			tube.renderOrder = 4;
+			scene.add(tube);
 		}
 		const spark = sparkTexture();
 		for (const effect of data.effects) {

@@ -60,9 +60,18 @@ local plotOwners: { [number]: Player } = {}
 local rng = Random.new()
 
 local MAX_ORBS = 60
+local ORB_SIZE = 1.6
 local ORB_PICKUP_RADIUS = 6
 local CHEST_PICKUP_RADIUS = 5
+-- Crates keep this far apart when they spawn.
+local CHEST_SPACING = 6
 local ACTIONS_PER_SECOND = 15
+-- Plot-local height window for the HumanoidRootPart to count as standing on a
+-- pad (pads sit on the main floor at y = 0; the pool floor is far below).
+local PAD_MIN_Y = 0.5
+local PAD_MAX_Y = 10
+-- Orbs can be collected only from inside the pool, up to this high above its floor.
+local POOL_REACH_Y = 12
 
 local NotifyRemote: RemoteEvent
 local EffectRemote: RemoteEvent
@@ -74,6 +83,16 @@ Tycoon.hooks = {
 	promptPass = function(_player: Player, _name: string) end,
 	promptProduct = function(_player: Player, _kind: string, _index: number) end,
 }
+
+-- Gameplay event listeners (used by the tutorial): fn(session, name, data).
+-- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge".
+Tycoon.listeners = {} :: { (Session, string, { [string]: any }) -> () }
+
+local function emit(session: Session, name: string, data: { [string]: any })
+	for _, listener in Tycoon.listeners do
+		task.spawn(listener, session, name, data)
+	end
+end
 
 local function random(): number
 	return rng:NextNumber()
@@ -247,7 +266,11 @@ local function refreshDisplay(session: Session)
 			local model = CharacterFactory.build(look, tierName(tier))
 			model:PivotTo(session.plot.slots[slotIndex])
 			model:SetAttribute("Key", key)
-			unitBillboard(model, tier, if needsLabelCount then units[tier] else nil)
+			-- Only the first unit of each tier gets a label (with its count) so a
+			-- full shelf stays readable instead of a wall of 30 name tags.
+			if needsLabelCount then
+				unitBillboard(model, tier, units[tier])
+			end
 			model.Parent = session.plot.unitFolder
 			session.display[slotIndex] = { tier = tier, model = model }
 		end
@@ -396,12 +419,28 @@ local function spawnFloorChest(session: Session)
 		return
 	end
 	local rarity = Economy.rollChestRarity(random)
-	local area = session.plot.orbArea
-	local localPos = Vector3.new(rng:NextNumber(area.minX, area.maxX), 0, rng:NextNumber(area.minZ, area.maxZ))
-	local world0 = session.plot.cframe * CFrame.new(localPos + Vector3.new(0, 1.1, 0)) * CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
+	local plot = session.plot
+	-- Pick a spot on the main floor next to the pool, away from other crates.
+	local localPos = Vector3.new(0, 0, 0)
+	for _ = 1, 8 do
+		local area = plot.chestAreas[rng:NextInteger(1, #plot.chestAreas)]
+		localPos = Vector3.new(rng:NextNumber(area.minX, area.maxX), 0, rng:NextNumber(area.minZ, area.maxZ))
+		local clear = true
+		for _, other in session.floorChests do
+			local offset = plot.cframe:PointToObjectSpace(other.position) - localPos
+			if Vector2.new(offset.X, offset.Z).Magnitude < CHEST_SPACING then
+				clear = false
+				break
+			end
+		end
+		if clear then
+			break
+		end
+	end
+	local world0 = plot.cframe * CFrame.new(localPos + Vector3.new(0, 1.1, 0)) * CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
 	local model = buildChest(rarity)
 	model:PivotTo(world0)
-	model.Parent = session.plot.chestFolder
+	model.Parent = plot.chestFolder
 	table.insert(session.floorChests, { model = model, rarity = rarity, position = world0.Position })
 	if rarity ~= "Common" then
 		toast(session, string.format("A %s %s appeared!", rarity, theme.Words.Chest), "good")
@@ -420,12 +459,15 @@ local function setOrbLabel(orb: Orb)
 	orb.label.Text = theme.Icons.Orb .. Format.short(orb.value)
 end
 
+-- Units on the bleachers drop orbs into the sunken pool in front of them: the orb
+-- pops out of a displayed unit, arcs forward and lands on the pool floor.
 local function spawnOrb(session: Session, value: number)
 	local plot = session.plot
 	local area = plot.orbArea
-	local target = plot.cframe * CFrame.new(rng:NextNumber(area.minX, area.maxX), 1, rng:NextNumber(area.minZ, area.maxZ))
+	local landing = Vector3.new(rng:NextNumber(area.minX, area.maxX), plot.orbFloorY + ORB_SIZE / 2, rng:NextNumber(area.minZ, area.maxZ))
+	local target = plot.cframe * CFrame.new(landing)
 
-	local origin = target
+	local origin: CFrame? = nil
 	local slotIndex = rng:NextInteger(1, math.max(1, math.min(Economy.DISPLAY_SLOTS, #session.display)))
 	local slot = session.display[slotIndex]
 	if slot then
@@ -436,14 +478,14 @@ local function spawnOrb(session: Session, value: number)
 	local part = Instance.new("Part")
 	part.Name = "Orb"
 	part.Shape = Enum.PartType.Ball
-	part.Size = Vector3.new(1.6, 1.6, 1.6)
+	part.Size = Vector3.new(ORB_SIZE, ORB_SIZE, ORB_SIZE)
 	part.Material = Enum.Material.Neon
 	part.Color = if big then theme.Colors.OrbBig else theme.Colors.Orb
 	part.Anchored = true
 	part.CanCollide = false
 	part.CanQuery = false
 	part.CanTouch = false
-	part.CFrame = origin
+	part.CFrame = origin or target
 	local gui = WorldBuilder.billboard(part, 1.6, 3.2, 1)
 	gui.MaxDistance = 45
 	local label = WorldBuilder.label(gui, { Text = "", Font = theme.Fonts.Body, Size = UDim2.fromScale(1, 1) })
@@ -452,8 +494,18 @@ local function spawnOrb(session: Session, value: number)
 	local orb: Orb = { part = part, label = label, value = value }
 	setOrbLabel(orb)
 	table.insert(session.orbs, orb)
-	if origin ~= target then
-		TweenService:Create(part, TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { CFrame = target }):Play()
+	if origin then
+		-- Two-step arc: up and forward out of the unit, then down into the pool.
+		local from = origin.Position
+		local to = target.Position
+		local apex = from:Lerp(to, 0.3)
+		apex = Vector3.new(apex.X, math.max(from.Y, to.Y) + 3, apex.Z)
+		TweenService:Create(part, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { CFrame = CFrame.new(apex) }):Play()
+		task.delay(0.3, function()
+			if part.Parent then
+				TweenService:Create(part, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { CFrame = target }):Play()
+			end
+		end)
 	end
 end
 
@@ -497,6 +549,7 @@ local function buy(session: Session, amount: number)
 	discoverAll(session)
 	refreshDisplay(session)
 	effect(session, "Buy", { amount = amount })
+	emit(session, "Buy", { amount = amount })
 	markDirty(session)
 end
 
@@ -513,6 +566,7 @@ local function doMerge(session: Session, verbose: boolean)
 		discoverAll(session)
 		refreshDisplay(session)
 		effect(session, "Merge", { merges = merges })
+		emit(session, "Merge", { merges = merges, top = top })
 		if verbose then
 			toast(session, string.format("Merged %s times! Best: %s", Format.short(merges), tierName(top)), "good")
 		end
@@ -578,6 +632,7 @@ padHandlers.Deposit = function(session)
 	p.queue += amount
 	p.carried = 0
 	effect(session, "Deposit", { amount = amount, mult = mult })
+	emit(session, "Deposit", { amount = amount })
 	markDirty(session)
 end
 
@@ -591,6 +646,7 @@ padHandlers.Collect = function(session)
 	addMoney(session, amount)
 	p.pending = 0
 	effect(session, "Cash", { amount = amount })
+	emit(session, "Cash", { amount = amount })
 	markDirty(session)
 end
 
@@ -825,6 +881,8 @@ local function snapshot(session: Session): { [string]: any }
 		income = Economy.incomePerSecond(production, rate, moneyMult),
 		freeIn = math.max(0, p.lastFreeReward + Economy.FREE_REWARD_COOLDOWN - now),
 		plotIndex = session.plot.index,
+		tutorialStep = p.tutorialStep,
+		tutorialDone = p.tutorialDone,
 	}
 end
 
@@ -864,12 +922,18 @@ local function fastTick(session: Session)
 	local plot = session.plot
 	local pos = root.Position
 	local localPos = plot.cframe:PointToObjectSpace(pos)
+	-- Over the sunken pool (ramps included)? Pads never fire from there, crates
+	-- can't be grabbed from there, and orbs can only be collected from there.
+	local pool = plot.pool
+	local overPool = localPos.X >= pool.minX and localPos.X <= pool.maxX and localPos.Z >= pool.minZ and localPos.Z <= pool.maxZ
+	local inPool = overPool and localPos.Y < plot.orbFloorY + POOL_REACH_Y
 
 	for _, pad in plot.pads do
-		local inside = math.abs(localPos.X - pad.center.X) <= pad.half.X
+		local inside = not overPool
+			and math.abs(localPos.X - pad.center.X) <= pad.half.X
 			and math.abs(localPos.Z - pad.center.Z) <= pad.half.Y
-			and localPos.Y > -2
-			and localPos.Y < 9
+			and localPos.Y > PAD_MIN_Y
+			and localPos.Y < PAD_MAX_Y
 		if inside and not session.inside[pad.name] then
 			session.inside[pad.name] = true
 			local handler = padHandlers[pad.name]
@@ -882,9 +946,10 @@ local function fastTick(session: Session)
 		end
 	end
 
-	-- Orb pickup (horizontal distance so jumping still collects).
+	-- Orb pickup: only from inside the pool (so standing at the rim doesn't
+	-- vacuum it), by horizontal distance so jumping still collects.
 	local collected = 0
-	for i = #session.orbs, 1, -1 do
+	for i = if inPool then #session.orbs else 0, 1, -1 do
 		local orb = session.orbs[i]
 		local offset = orb.part.Position - pos
 		if Vector2.new(offset.X, offset.Z).Magnitude <= ORB_PICKUP_RADIUS and math.abs(offset.Y) < 8 then
@@ -896,13 +961,14 @@ local function fastTick(session: Session)
 	if collected > 0 then
 		session.profile.carried += collected
 		session.collectBuffer += collected
+		emit(session, "Pickup", { amount = collected })
 		markDirty(session)
 	end
 
-	if session.profile.heldChest == "" then
+	if session.profile.heldChest == "" and not overPool then
 		for i, chest in session.floorChests do
 			local offset = chest.position - pos
-			if Vector2.new(offset.X, offset.Z).Magnitude <= CHEST_PICKUP_RADIUS then
+			if Vector2.new(offset.X, offset.Z).Magnitude <= CHEST_PICKUP_RADIUS and math.abs(offset.Y) < 8 then
 				chest.model:Destroy()
 				table.remove(session.floorChests, i)
 				session.profile.heldChest = chest.rarity
@@ -940,6 +1006,7 @@ local function slowTick(session: Session)
 		p.pending += processed * Economy.CASH_PER_POINT * Tycoon.moneyMultiplier(session)
 	end
 	if session.passes.AutoCash and p.pending > 0 then
+		emit(session, "Cash", { amount = p.pending })
 		addMoney(session, p.pending)
 		p.pending = 0
 	end
@@ -1061,6 +1128,11 @@ actionHandlers.Sync = function(_session) end
 
 actionHandlers.Merge = function(session)
 	doMerge(session, true)
+end
+
+-- Lets other server modules (e.g. Tutorial) accept their own client actions.
+function Tycoon.addAction(name: string, handler: (Session, { [string]: any }) -> ())
+	actionHandlers[name] = handler
 end
 
 -- Players ---------------------------------------------------------------------------------

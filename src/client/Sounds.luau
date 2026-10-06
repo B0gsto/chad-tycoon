@@ -18,6 +18,13 @@ local DEFS: { [string]: { id: string, volume: number, pitch: number } } = {
 	Merge = { id = "rbxasset://sounds/swoosh.wav", volume = 0.6, pitch = 1.4 },
 	Reward = { id = "rbxasset://sounds/electronicpingshort.wav", volume = 0.7, pitch = 0.8 },
 	Error = { id = "rbxasset://sounds/clickfast.wav", volume = 0.5, pitch = 0.6 },
+	Open = { id = "rbxasset://sounds/swoosh.wav", volume = 0.35, pitch = 1.5 },
+	Close = { id = "rbxasset://sounds/swoosh.wav", volume = 0.3, pitch = 1.9 },
+	Toggle = { id = "rbxasset://sounds/clickfast.wav", volume = 0.5, pitch = 1.3 },
+	Toast = { id = "rbxasset://sounds/electronicpingshort.wav", volume = 0.2, pitch = 1.9 },
+	Step = { id = "rbxasset://sounds/electronicpingshort.wav", volume = 0.6, pitch = 1.35 },
+	Celebrate = { id = "rbxasset://sounds/victory.wav", volume = 0.6, pitch = 1 },
+	Pickup = { id = "rbxasset://sounds/clickfast.wav", volume = 0.4, pitch = 1.6 },
 }
 
 local cache: { [string]: Sound } = {}

@@ -12,6 +12,7 @@ local WorldBuilder = require(Server.WorldBuilder)
 local Tycoon = require(Server.Tycoon)
 local Monetization = require(Server.Monetization)
 local Ranking = require(Server.Ranking)
+local Tutorial = require(Server.Tutorial)
 
 local AUTOSAVE_SECONDS = 90
 
@@ -20,20 +21,32 @@ Net.event("State")
 
 local world = WorldBuilder.build(Theme)
 Tycoon.init(world, Theme)
+Tutorial.init()
 Monetization.init(Theme)
 Ranking.init(Theme, world.ranking)
 
 local saving: { [Player]: boolean } = {}
 
-local function saveSession(session: Tycoon.Session)
-	if session.canSave then
-		DataService.save(session.player, session.profile)
+local function saveSession(session: Tycoon.Session, release: boolean?)
+	if not session.canSave then
+		return
+	end
+	local _, lost = DataService.save(session.player, session.profile, release)
+	if lost and not release then
+		-- Another server owns this save now (e.g. the player joined elsewhere).
+		-- Stop writing from here so progress can never be overwritten.
+		session.canSave = false
+		session.player:Kick("Your progress is now active in another server. Please rejoin!")
 	end
 end
 
 local function onPlayerAdded(player: Player)
 	local profile, canSave = DataService.load(player)
 	if not player.Parent then
+		-- Left while loading: hand the session lock back straight away.
+		if profile and canSave then
+			DataService.save(player, profile, true)
+		end
 		return
 	end
 	if not profile then
@@ -42,6 +55,9 @@ local function onPlayerAdded(player: Player)
 	end
 	local passes = Monetization.ownedPasses(player)
 	if not player.Parent then
+		if canSave then
+			DataService.save(player, profile, true)
+		end
 		return
 	end
 	Tycoon.addPlayer(player, profile, canSave, passes)
@@ -51,7 +67,7 @@ local function onPlayerRemoving(player: Player)
 	local session = Tycoon.removePlayer(player)
 	if session and not saving[player] then
 		saving[player] = true
-		saveSession(session)
+		saveSession(session, true)
 		saving[player] = nil
 	end
 end
@@ -79,7 +95,7 @@ game:BindToClose(function()
 		pending += 1
 		saving[player] = true
 		task.spawn(function()
-			saveSession(session)
+			saveSession(session, true)
 			pending -= 1
 		end)
 	end

@@ -18,6 +18,7 @@ These are preview renders, not captures from Roblox Studio. Roblox can't run hea
 | ![Gameplay](preview/screenshots/chad/03-gameplay-hud.png) | ![Your plot](preview/screenshots/chad/02-your-plot.png) |
 | ![All 25 tiers](preview/screenshots/chad/10-all-25-tiers.png) | ![Holding a crate](preview/screenshots/chad/08-holding-crate.png) |
 | ![Shop](preview/screenshots/chad/04-shop.png) | ![Index](preview/screenshots/chad/05-index.png) |
+| ![Tutorial](preview/screenshots/chad/11-tutorial.png) | ![Loading screen](preview/screenshots/chad/13-loading-screen.png) |
 
 ### Bot Factory Tycoon
 
@@ -26,11 +27,14 @@ These are preview renders, not captures from Roblox Studio. Roblox can't run hea
 | ![Gameplay](preview/screenshots/bot/03-gameplay-hud.png) | ![Your plot](preview/screenshots/bot/02-your-plot.png) |
 | ![All 25 tiers](preview/screenshots/bot/10-all-25-tiers.png) | ![Holding a crate](preview/screenshots/bot/08-holding-crate.png) |
 | ![Ranking](preview/screenshots/bot/06-ranking.png) | ![New unit](preview/screenshots/bot/07-new-unit-reward.png) |
+| ![Tutorial](preview/screenshots/bot/11-tutorial.png) | ![Settings](preview/screenshots/bot/09-settings.png) |
 
 ## How the game plays
 
+New players get a short, skippable **tutorial** (saved in their profile): buy a unit, walk over the orbs, deposit, collect the cash, then merge two units. A card above the tank shows the current step, and a glowing beam, a bouncing arrow and a highlight point at the pad (or the nearest orb). Each step completes on the real server event. Finishing pays a small reward (25 premium currency + $250). Saves from before the tutorial existed skip it.
+
 1. **Buy units** on the Buy 1 / 5 / 25 / 100 pads. They stand on your display shelves.
-2. Units **drop orbs** on the floor every second. Walk over the orbs to fill your tank (bottom of the screen).
+2. Units **drop orbs** into the sunken **orb pool** in front of the display every second. Walk down either ramp into the pool and over the orbs to fill your tank (bottom of the screen).
 3. Step on **Deposit** to send your tank to the converter. The global **multiplier** (0.5x–3x) re-rolls every 20 s, so timing matters.
 4. The converter **processes** orbs into cash at your processing speed. Upgrade it on the `+/sec` pads.
 5. Step on **Collect Cash** to bank it.
@@ -50,6 +54,7 @@ These are preview renders, not captures from Roblox Studio. Roblox can't run hea
    - A global double-orb **Surge** for 2 of every 10 minutes.
    - Friends (+10% each, max +50%) and Premium (+10%) cash bonuses.
    - Settings: music, sound effects, full numbers, auto merge.
+   - A loading screen (ReplicatedFirst) with the game name and tips. It fades out when the first state snapshot arrives.
 10. **Shop:**
     - 5 game passes: Auto Collect Orbs, Auto Cash, Double Orbs, 2X Cash, and a second Unlocker that is 3x faster.
     - 6 cash packs that scale with your income.
@@ -67,6 +72,14 @@ The server has 6 plots, one per player, arranged around a central hub with a ran
    - On live servers, an item with ID `0` shows "coming soon".
 5. Optional: set `Theme.MusicId` to an audio asset you own.
 
+### Before you open it to players
+
+- **Game Settings → Places → Max Players: 6.** There is one plot per player; a 7th player would be told the server is full.
+- **Test in Studio with "Start" and 2–3 players** (Test → Clients and Servers) to check that saving and leaving work. Saves are session-locked, so a player who hops servers quickly can never overwrite their own progress. The new server waits up to 20 s for the old one to let go.
+- **Test on a phone** with Studio's device emulator. The UI scales and keeps clear of the thumbstick and jump buttons, but check it on your target devices.
+- Fill in the experience questionnaire (maturity rating), and upload an icon and thumbnails. The renders in `preview/screenshots/` work as a starting point.
+- Units animate on each player's own device and are built entirely from parts. Nothing needs uploading. Custom Blender meshes or uploaded animations would first need uploading to your account as Roblox assets.
+
 ## Develop
 
 Toolchain versions are pinned in `rokit.toml`: Rojo, Selene, StyLua, Lune and luau-lsp.
@@ -75,6 +88,7 @@ Toolchain versions are pinned in `rokit.toml`: Rojo, Selene, StyLua, Lune and lu
 rokit install                 # install the pinned tools
 scripts/check.sh              # format check, lint, type-check, tests, build both places
 rojo serve chad.project.json  # live-sync into Studio (or bot.project.json)
+preview/render.sh             # regenerate the screenshots (REUSE_THUMBS=1 skips unit thumbnails)
 lune run scripts/simulate     # print the progression curve of a greedy player
 ```
 
@@ -84,16 +98,25 @@ lune run scripts/simulate     # print the progression curve of a greedy player
 chad.project.json / bot.project.json   Rojo projects (identical except for the Theme module)
 src/shared/Economy.luau                every balance number + pure formulas (unit-tested)
 src/shared/Format.luau                 number/time formatting (unit-tested)
-src/shared/CharacterFactory.luau       builds the blocky unit models from a theme "look"
+src/shared/CharacterFactory.luau       builds the jointed, part-built unit rigs from a theme "look"
+src/shared/Poses.luau                  pose library + sampler for the unit animations (pure maths)
+src/shared/RigPose.luau                applies poses to a unit model (used by Animator and preview)
 src/shared/Net.luau                    remotes
+src/shared/TutorialSteps.luau          tutorial steps + progression rules (pure, unit-tested)
 src/server/WorldBuilder.luau           generates hub + 6 plots
+src/server/PlotLayout.luau             plot-local layout: pool, ramps, pads, crate areas (unit-tested)
 src/server/Tycoon.luau                 core loop: pads, orbs, crates, merging, processing, state
 src/server/DataService.luau            DataStore profiles (retries, no-overwrite on failed load)
 src/server/Monetization.luau           passes, products, receipt handling
 src/server/Ranking.luau                OrderedDataStore leaderboard
-src/client/                            HUD, Shop / Index / Ranking / Settings, popups, sounds
+src/server/Tutorial.luau               onboarding progress, reward, skip (listens to Tycoon.listeners)
+src/client/                            HUD, Shop / Index / Ranking / Settings, popups, sounds,
+                                       tutorial card + 3D guide (beam/arrow/highlight)
+src/client/UI/Kit.luau                 UI design system: 3D buttons, panels, pills, badges, switches, windows
+src/client/Animator.luau               animates units locally (shelves + Index/reward viewports)
+src/loader/                            ReplicatedFirst loading screen
 src/themes/chad|bot/Theme.luau         names, words, colours, fonts, lighting, 25 tiers, product IDs
-tests/run.luau                         Lune unit tests (economy, formatting, both themes)
+tests/run.luau                         Lune unit tests (economy, formatting, tutorial, models/poses, plot layout, both themes)
 preview/                               screenshot pipeline (Lune exporter + three.js/Chromium renderer)
 reference/                             the original reference screenshots
 ```

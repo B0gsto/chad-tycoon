@@ -103,6 +103,7 @@ local EVENTS = {
 	Players = { "PlayerAdded", "PlayerRemoving" },
 	RunService = { "Heartbeat", "RenderStepped", "Stepped" },
 	MarketplaceService = { "PromptGamePassPurchaseFinished" },
+	UserInputService = { "InputBegan", "InputEnded", "InputChanged" },
 }
 for className, names in EVENTS do
 	for _, name in names do
@@ -143,7 +144,7 @@ roblox.implementMethod("RemoteEvent", "FireAllClients", function() end)
 local rankingEntries = {}
 roblox.implementMethod("RemoteFunction", "InvokeServer", function(_self, kind)
 	if kind == "Ranking" then
-		return { entries = rankingEntries, updatedAt = FIXED_NOW }
+		return { entries = rankingEntries, updatedAt = os.time() - 95 }
 	end
 	return nil
 end)
@@ -182,6 +183,9 @@ roblox.implementMethod("Model", "ScaleTo", function(self, scale)
 	end
 end)
 
+roblox.implementMethod("HttpService", "GenerateGUID", function()
+	return "preview-guid"
+end)
 roblox.implementMethod("Workspace", "GetServerTimeNow", function()
 	return FIXED_NOW
 end)
@@ -205,11 +209,12 @@ roblox.implementMethod("Player", "IsFriendsWith", function()
 end)
 
 local fakePlayers = {}
+local localIndex = 1 -- which fake player the client UI belongs to
 roblox.implementMethod("Players", "GetPlayers", function()
 	return fakePlayers
 end)
 roblox.implementProperty("Players", "LocalPlayer", function()
-	return fakePlayers[1]
+	return fakePlayers[localIndex]
 end)
 
 roblox.implementMethod("RunService", "IsServer", function()
@@ -289,7 +294,7 @@ local function makeEnv(scriptInstance)
 		Random = Random,
 		task = task,
 		__previewLocalPlayer = function()
-			return fakePlayers[1]
+			return fakePlayers[localIndex]
 		end,
 		warn = function(...)
 			print("[warn]", ...)
@@ -300,9 +305,14 @@ end
 -- Lune cannot read a few engine-only properties; swap them for constants.
 local SOURCE_PATCHES = {
 	{ "player.MembershipType == Enum.MembershipType.Premium", "false" },
+	{ "if game.JobId ~= \"\" then game.JobId else", "if false then \"\" else" },
 	{ "local pos = root.Position", "local pos = root.CFrame.Position" },
 	{ "Players.LocalPlayer", "__previewLocalPlayer()" },
 	{ "orb.part.Position - pos", "orb.part.CFrame.Position - pos" },
+	-- Lune errors on any access to a destroyed instance (Roblox doesn't), and
+	-- delayed UI callbacks (fades, spinners) may still touch them: detach instead.
+	{ ":Destroy()", ".Parent = nil" },
+	{ "camera.ViewportSize", "Vector2.new(1280, 720)" },
 }
 
 function requireModule(target)
@@ -329,12 +339,6 @@ end
 local function udim(u)
 	return { u.Scale, u.Offset }
 end
-local function lighten(c, a)
-	return c:Lerp(Color3.new(1, 1, 1), a)
-end
-local function darken(c, a)
-	return c:Lerp(Color3.new(0, 0, 0), a)
-end
 
 -- Lune sometimes stores the font only as FontFace; recover a family name either way.
 local function fontName(inst): string
@@ -356,6 +360,17 @@ local function fontName(inst): string
 	return "GothamBold"
 end
 
+-- Reads a property Lune may not have a default for (unset engine properties).
+local function prop(inst, name: string, default: any): any
+	local ok, value = pcall(function()
+		return inst[name]
+	end)
+	if ok and value ~= nil then
+		return value
+	end
+	return default
+end
+
 local GUI_CLASSES = {
 	Frame = true,
 	TextLabel = true,
@@ -371,7 +386,11 @@ local function exportGui(inst)
 	local node: { [string]: any } = { class = inst.ClassName, name = inst.Name, children = {} }
 	local isRoot = inst:IsA("LayerCollector")
 	if isRoot then
-		node.visible = true
+		node.visible = if inst:IsA("ScreenGui") then prop(inst, "Enabled", true) else true
+		if inst:IsA("ScreenGui") then
+			node.ignoreGuiInset = prop(inst, "IgnoreGuiInset", false)
+			node.displayOrder = prop(inst, "DisplayOrder", 0)
+		end
 		node.zindex = 1
 		node.layoutOrder = 0
 		node.size = { 1, 0, 1, 0 }
@@ -414,6 +433,9 @@ local function exportGui(inst)
 			node.image = string.format("thumb:%s:%d:%d", variant, tier, if inst:GetAttribute("Silhouette") then 1 else 0)
 		end
 	end
+	if inst:IsA("CanvasGroup") then
+		node.groupTransparency = prop(inst, "GroupTransparency", 0)
+	end
 	if inst:IsA("ScrollingFrame") then
 		node.scrollBarColor = rgb(inst.ScrollBarImageColor3)
 		node.clips = true
@@ -435,12 +457,6 @@ local function exportGui(inst)
 			for _, kp in child.Color.Keypoints do
 				local c = rgb(kp.Value)
 				table.insert(stops, { kp.Time, c[1], c[2], c[3] })
-			end
-			-- Kit buttons recolour their gradient through a "Tint" attribute.
-			local tint = inst:GetAttribute("Tint")
-			if typeof(tint) == "Color3" then
-				local a, b = rgb(lighten(tint, 0.15)), rgb(darken(tint, 0.15))
-				stops = { { 0, a[1], a[2], a[3] }, { 1, b[1], b[2], b[3] } }
 			end
 			node.gradient = { stops = stops, rotation = child.Rotation }
 		elseif cls == "UIPadding" then
@@ -484,6 +500,7 @@ local function exportScene(root, extra)
 	local billboards = {}
 	local lights = {}
 	local effects = {}
+	local beams = {}
 
 	local function partId(p)
 		return partIndex[idOf(p)]
@@ -494,6 +511,8 @@ local function exportScene(root, extra)
 			local shape = "Block"
 			if d:IsA("Part") then
 				shape = d.Shape.Name
+			elseif d:IsA("WedgePart") then
+				shape = "Wedge"
 			end
 			table.insert(parts, {
 				name = d.Name,
@@ -522,16 +541,40 @@ local function exportScene(root, extra)
 					gui = exportGui(d),
 				})
 			end
-		elseif d:IsA("BillboardGui") then
+		elseif d:IsA("BillboardGui") and prop(d, "Enabled", true) then
 			local adornee = d.Adornee or d.Parent
 			if adornee and adornee:IsA("BasePart") then
-				local pos = adornee.CFrame.Position + d.StudsOffset
+				local pos = adornee.CFrame.Position + prop(d, "StudsOffset", Vector3.zero) + prop(d, "StudsOffsetWorldSpace", Vector3.zero)
+				-- Pixel-sized billboards keep a constant on-screen size; the renderer
+				-- bakes them at 48 px per "stud" and sizes them by camera distance.
+				local pixels = d.Size.X.Scale == 0 and d.Size.Y.Scale == 0
+				local sx = if pixels then d.Size.X.Offset / 48 else d.Size.X.Scale
+				local sy = if pixels then d.Size.Y.Offset / 48 else d.Size.Y.Scale
 				table.insert(billboards, {
 					pos = { pos.X, pos.Y, pos.Z },
-					size = { d.Size.X.Scale, d.Size.Y.Scale },
+					size = { sx, sy },
+					pixels = if pixels then { d.Size.X.Offset, d.Size.Y.Offset } else nil,
 					maxDistance = d.MaxDistance,
+					alwaysOnTop = prop(d, "AlwaysOnTop", false),
 					gui = exportGui(d),
 				})
+			end
+		elseif d:IsA("Beam") and prop(d, "Enabled", true) and prop(d, "Attachment0", nil) and prop(d, "Attachment1", nil) then
+			local function worldOf(att)
+				return (att.Parent.CFrame * att.CFrame).Position
+			end
+			local a, b = worldOf(d.Attachment0), worldOf(d.Attachment1)
+			table.insert(beams, {
+				from = { a.X, a.Y, a.Z },
+				to = { b.X, b.Y, b.Z },
+				color = rgb(d.Color.Keypoints[1].Value),
+				width0 = prop(d, "Width0", 1),
+				width1 = prop(d, "Width1", 1),
+			})
+		elseif d:IsA("Highlight") and prop(d, "Enabled", true) and prop(d, "Adornee", nil) then
+			local id = partId(d.Adornee)
+			if id then
+				parts[id].highlight = rgb(d.FillColor)
 			end
 		elseif (d:IsA("PointLight") or d:IsA("SpotLight")) and d.Parent and d.Parent:IsA("BasePart") then
 			local p = d.Parent.CFrame.Position
@@ -560,7 +603,8 @@ local function exportScene(root, extra)
 			})
 		end
 	end
-	local scene = { variant = variant, parts = parts, surfaces = surfaces, billboards = billboards, lights = lights, effects = effects }
+	local scene =
+		{ variant = variant, parts = parts, surfaces = surfaces, billboards = billboards, lights = lights, effects = effects, beams = beams }
 	for k, v in extra or {} do
 		scene[k] = v
 	end
@@ -583,7 +627,40 @@ local function main()
 	local Economy = requireModule(RS.Shared.Economy)
 	local Net = requireModule(RS.Shared.Net)
 	local CharacterFactory = requireModule(RS.Shared.CharacterFactory)
+	local Poses = requireModule(RS.Shared.Poses)
+	local RigPose = requireModule(RS.Shared.RigPose)
 	Net.event("State")
+
+	-- Units animate on the client in the game; the preview freezes each one
+	-- mid-pose with the same RigPose maths the client Animator uses.
+	-- POSE=<name> forces one pose on every unit (handy when tuning poses).
+	local forcedPose = process.env.POSE
+	local function poseUnits(root, choose: ((number, string) -> string)?)
+		local index = 0
+		for _, d in root:GetDescendants() do
+			-- Player stand-ins (with a HumanoidRootPart) keep their rest pose.
+			if d:IsA("Model") and d:HasTag(Poses.TAG) and not d:GetAttribute("__posed") and not d:FindFirstChild("HumanoidRootPart") then
+				index += 1
+				local seed = math.random(0, 99999)
+				local rig = RigPose.capture(d, seed)
+				if rig then
+					local names = Poses.poseNames(rig.animSet)
+					local pose = forcedPose or (if choose then choose(index, rig.animSet) else names[math.random(1, #names)])
+					local t = Poses.timeFor(rig.animSet, seed, pose) or math.random() * 30
+					if forcedPose then
+						rig.seed = 0
+						local parts, cframes = RigPose.computeFrom(rig, Poses.samplePose(rig.animSet, pose, 1.3, 0))
+						for i, part in parts do
+							part.CFrame = cframes[i]
+						end
+					else
+						RigPose.apply(rig, t)
+					end
+					d:SetAttribute("__posed", true)
+				end
+			end
+		end
+	end
 
 	local WorldBuilder = requireModule(Server.WorldBuilder)
 	local DataService = requireModule(Server.DataService)
@@ -591,6 +668,20 @@ local function main()
 
 	print("[stage] building world")
 	local world = WorldBuilder.build(Theme)
+	-- Part budget report (static map only: units, orbs and crates come later).
+	local hubParts = 0
+	for _, child in Workspace.Map:GetChildren() do
+		if child:IsA("BasePart") then
+			hubParts += 1
+		end
+	end
+	local plotParts = 0
+	for _, d in world.plots[1].folder:GetDescendants() do
+		if d:IsA("BasePart") then
+			plotParts += 1
+		end
+	end
+	print(string.format("[parts] hub %d, per plot %d", hubParts, plotParts))
 	-- Crates appear quickly so the preview has some on the floor.
 	Economy.CHEST_SPAWN_INTERVAL = 2
 	Economy.CHEST_SPAWN_CHANCE = 1
@@ -607,7 +698,9 @@ local function main()
 			skin = Color3.fromRGB(245, 205, 160),
 			shirt = if variant == "chad" then Color3.fromRGB(30, 30, 36) else Color3.fromRGB(40, 110, 200),
 			pants = Color3.fromRGB(45, 50, 70),
-			face = "🙂",
+			anim = "Chad", -- the player stand-in is a person in both variants
+			expr = "Happy",
+			hair = Color3.fromRGB(70, 46, 30),
 			acc = { "Cap" },
 			accColor = if variant == "chad" then Color3.fromRGB(240, 190, 40) else Color3.fromRGB(255, 140, 20),
 		}
@@ -646,6 +739,21 @@ local function main()
 		p.lastFreeReward = FIXED_NOW - 400
 		p.lastOnline = 0
 		p.unlockers[1] = { rarity = "Rare", endsAt = FIXED_NOW + 734 }
+		p.tutorialDone = true
+		return p
+	end
+
+	-- A brand-new player who just bought their first unit (tutorial step 2).
+	local function freshProfile()
+		local p = DataService.defaultProfile()
+		p.units[1] = 2
+		p.boughtAtTier = 1
+		p.totalObtained = 2
+		p.money = 30
+		p.lastOnline = 0
+		p.lastFreeReward = FIXED_NOW - 400
+		p.tutorialStep = 3
+		p.carried = 14
 		return p
 	end
 
@@ -653,7 +761,7 @@ local function main()
 		profileFor(if variant == "chad" then 14 else 13, 3.47e6, 240),
 		profileFor(9, 48200, 35),
 		profileFor(17, 6.1e8, 610),
-		profileFor(6, 2300, 12),
+		freshProfile(),
 	}
 
 	for i, name in NAMES[variant] do
@@ -668,8 +776,13 @@ local function main()
 		local character = avatar(player.Name)
 		character.Parent = Workspace
 		player.Character = character
-		-- Stand a little in front of the merge pad, facing the shelves.
-		character:PivotTo(session.plot.cframe * CFrame.new(-6 + i, 0, -14) * CFrame.Angles(0, math.rad(200), 0))
+		-- The main player wades through the orb pool; the others wait near their
+		-- entrance (off every pad so the simulation doesn't trigger them).
+		local plot = session.plot
+		local spot = if i == 1
+			then CFrame.new(-7, plot.orbFloorY, 9) * CFrame.Angles(0, math.rad(195), 0)
+			else CFrame.new(-6 + i, 0, -36) * CFrame.Angles(0, math.rad(200), 0)
+		character:PivotTo(plot.cframe * spot)
 	end
 
 	print("[stage] players added")
@@ -679,6 +792,7 @@ local function main()
 	end
 
 	print("[stage] simulated")
+	poseUnits(Workspace)
 	local mainPlayer = fakePlayers[1]
 	local mainSession = Tycoon.getSession(mainPlayer)
 	local plotCFs = {}
@@ -732,9 +846,21 @@ local function main()
 	writeJson(OUT .. "/world.json", exportScene(Workspace, sceneExtra))
 	local stateNormal = captured.state[mainPlayer.Name]
 
-	-- Pick up a crate for the "holding a crate" shot.
+	-- Pick up a crate for the "holding a crate" shot and carry it across the main
+	-- floor toward the crate unlockers.
+	mainCharacter:PivotTo(mainSession.plot.cframe * CFrame.new(30, 0, -27) * CFrame.Angles(0, math.rad(-140), 0))
 	mainSession.profile.heldChest = "Epic"
+	-- The crate that was "picked up" (and any others within reach) leave the floor.
+	local heldAt = mainCharacter:FindFirstChild("HumanoidRootPart").CFrame.Position
+	for i = #mainSession.floorChests, 1, -1 do
+		local chest = mainSession.floorChests[i]
+		if (chest.position - heldAt).Magnitude < 14 then
+			chest.model:Destroy()
+			table.remove(mainSession.floorChests, i)
+		end
+	end
 	task.wait(1.1)
+	poseUnits(Workspace)
 	writeJson(OUT .. "/world_held.json", exportScene(Workspace, sceneExtra))
 	local stateHeld = captured.state[mainPlayer.Name]
 
@@ -743,20 +869,20 @@ local function main()
 	showcase.Name = "Showcase"
 	local stage = Instance.new("Part")
 	stage.Name = "Stage"
-	stage.Size = Vector3.new(120, 1, 52)
-	stage.CFrame = CFrame.new(0, -0.5, 1004)
+	stage.Size = Vector3.new(120, 1, 58)
+	stage.CFrame = CFrame.new(0, -0.5, 1007)
 	stage.Color = Theme.Colors.Floor
 	stage.Material = Enum.Material.Slate
 	stage.Anchored = true
 	stage.Parent = showcase
 	local ROWS = { { first = 1, last = 9 }, { first = 10, last = 17 }, { first = 18, last = 25 } }
 	for rowIndex, row in ROWS do
-		local rise = (rowIndex - 1) * 6
-		local z = 990 + (rowIndex - 1) * 13
+		local rise = (rowIndex - 1) * 6.5
+		local z = 990 + (rowIndex - 1) * 15
 		if rise > 0 then
 			local riser = Instance.new("Part")
 			riser.Name = "Riser"
-			riser.Size = Vector3.new(104, rise, 12)
+			riser.Size = Vector3.new(104, rise, 14)
 			riser.CFrame = CFrame.new(0, rise / 2, z)
 			riser.Color = Theme.Colors.WallTrim
 			riser.Material = Enum.Material.Metal
@@ -765,7 +891,7 @@ local function main()
 			local trim = Instance.new("Part")
 			trim.Name = "RiserNeon"
 			trim.Size = Vector3.new(104, 0.3, 0.4)
-			trim.CFrame = CFrame.new(0, rise - 0.1, z - 6.1)
+			trim.CFrame = CFrame.new(0, rise - 0.1, z - 7.1)
 			trim.Color = if rowIndex == 2 then Theme.Colors.Neon else Theme.Colors.NeonAlt
 			trim.Material = Enum.Material.Neon
 			trim.Anchored = true
@@ -799,6 +925,11 @@ local function main()
 			model.Parent = showcase
 		end
 	end
+	-- Cycle through every pose across the 25 tiers.
+	poseUnits(showcase, function(index, animSet)
+		local names = Poses.poseNames(animSet)
+		return names[(index - 1) % #names + 1]
+	end)
 	showcase.Parent = Workspace
 	writeJson(OUT .. "/showcase.json", exportScene(showcase, { theme = sceneExtra.theme }))
 
@@ -808,15 +939,27 @@ local function main()
 	local Client = game:GetService("StarterPlayer").StarterPlayerScripts.Client
 	local State = requireModule(Client.State)
 	local Sounds = requireModule(Client.Sounds)
+	local Guide = requireModule(Client.Guide)
 	local Hud = requireModule(Client.UI.Hud)
 	local Windows = requireModule(Client.UI.Windows)
 	local Popups = requireModule(Client.UI.Popups)
+	local TutorialUI = requireModule(Client.UI.Tutorial)
 
 	local screen = Instance.new("ScreenGui")
 	screen.Name = "TycoonUI"
 	Popups.build(screen, Sounds)
 	Windows.build(screen)
-	Hud.build(screen, { openWindow = Windows.open }, Sounds)
+	Guide.build()
+	Hud.build(screen, { openWindow = Windows.open, toast = Popups.toast }, Sounds)
+	local Kit = requireModule(Client.UI.Kit)
+	TutorialUI.build(screen, {
+		popups = Popups,
+		sounds = Sounds,
+		guide = Guide,
+		highlight = function(name, on)
+			Kit.setGlow(Hud.buttons[name], on)
+		end,
+	})
 
 	local RunService = game:GetService("RunService")
 	local function settle(state)
@@ -825,24 +968,24 @@ local function main()
 	end
 
 	local function clearTransient()
-		for _, name in { "Toasts" } do
-			local holder = screen:FindFirstChild(name)
-			if holder then
-				for _, child in holder:GetChildren() do
-					if child:IsA("TextLabel") then
-						child:Destroy()
-					end
+		local holder = screen:FindFirstChild("Toasts")
+		if holder then
+			for _, child in holder:GetChildren() do
+				if child:IsA("GuiObject") then
+					child.Parent = nil
 				end
 			end
 		end
-		for _, name in { "Reward", "Confirm", "Offline" } do
+		for _, name in { "Reward", "Confirm", "ConfirmBackdrop", "Offline", "OfflineBackdrop", "TutorialDone", "Float" } do
 			local existing = screen:FindFirstChild(name)
 			while existing do
-				existing:Destroy()
+				existing.Parent = nil
 				existing = screen:FindFirstChild(name)
 			end
 		end
 		Windows.closeAll()
+		-- Window close animations hide frames after a short delay.
+		task.wait(0.3)
 	end
 
 	local function shot(name)
@@ -852,6 +995,7 @@ local function main()
 	settle(stateNormal)
 	clearTransient()
 	Popups.toast("Merged 12 times! Best: " .. Theme.Tiers[14].Name, "good")
+	Popups.toast("A Rare " .. Theme.Words.Chest .. " appeared!", "info")
 	shot("hud")
 
 	clearTransient()
@@ -859,11 +1003,18 @@ local function main()
 	shot("shop")
 
 	clearTransient()
+	Windows.open("Shop")
+	Windows.selectShopTab("Gems")
+	shot("shop_gems")
+	Windows.selectShopTab("Passes")
+
+	clearTransient()
 	Windows.open("Index")
 	shot("index")
 
 	clearTransient()
 	Windows.open("Ranking")
+	task.wait(0.1)
 	shot("ranking")
 
 	clearTransient()
@@ -878,6 +1029,41 @@ local function main()
 	settle(stateNormal)
 	Popups.reward({ tier = 15, new = true, gems = 15 })
 	shot("reward")
+
+	clearTransient()
+	settle(stateNormal)
+	Popups.offline({ seconds = 3 * 3600 + 25 * 60, orbs = 8.4e6, cash = 2.1e6 })
+	shot("offline")
+
+	-- Tutorial: the fresh player on plot 4, guided to the nearest orb.
+	clearTransient()
+	localIndex = 4
+	local freshPlayer = fakePlayers[4]
+	local stateFresh = captured.state[freshPlayer.Name]
+	settle(stateFresh)
+	Guide.update(0.3)
+	local freshScene = exportScene(Workspace, sceneExtra)
+	writeJson(OUT .. "/world_tutorial.json", freshScene)
+	shot("tutorial")
+
+	clearTransient()
+	local stateDone = table.clone(stateFresh)
+	stateDone.tutorialDone = true
+	stateDone.tutorialStep = 6
+	settle(stateDone)
+	TutorialUI.onNotify({ kind = "Tutorial", event = "done", gems = 25, cash = 250 })
+	shot("tutorial_done")
+	Kit.setGlow(Hud.buttons.Index, false)
+	localIndex = 1
+
+	-- Loading screen (ReplicatedFirst) on its own ScreenGui.
+	local LoadingScreen = requireModule(game:GetService("ReplicatedFirst").Loader.LoadingScreen)
+	local loadingGui = Instance.new("ScreenGui")
+	loadingGui.Name = "LoadingScreen"
+	loadingGui.IgnoreGuiInset = true
+	LoadingScreen.build(loadingGui, Theme)
+	signalFor(RunService, "RenderStepped"):Fire(0.2)
+	writeJson(OUT .. "/gui/loading.json", { viewport = { 1280, 720 }, root = exportGui(loadingGui) })
 
 	-- Overview shot has no UI.
 	clearTransient()

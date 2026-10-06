@@ -110,6 +110,18 @@ local function findProduct(productId: number): (string?, number?)
 	return nil, nil
 end
 
+-- Persists the profile; only report the purchase as granted once it is saved.
+local function saveOrRetry(session: Tycoon.Session): Enum.ProductPurchaseDecision
+	if not session.canSave then
+		-- Studio without API access: nothing to persist.
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+	if DataService.save(session.player, session.profile) then
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+	return Enum.ProductPurchaseDecision.NotProcessedYet
+end
+
 local function processReceipt(receipt: any): Enum.ProductPurchaseDecision
 	local session = Tycoon.getSessionByUserId(receipt.PlayerId)
 	if not session then
@@ -117,24 +129,23 @@ local function processReceipt(receipt: any): Enum.ProductPurchaseDecision
 	end
 	local profile = session.profile
 	if table.find(profile.receipts, receipt.PurchaseId) then
-		return Enum.ProductPurchaseDecision.PurchaseGranted
+		-- Already granted in this session; make sure it is persisted.
+		return saveOrRetry(session)
 	end
 	local kind, index = findProduct(receipt.ProductId)
 	if not kind or not index then
 		warn("[Monetization] Unknown product", receipt.ProductId)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
+	-- Grant and record the receipt together. If the save below fails, Roblox
+	-- retries this callback; the recorded receipt makes the retry a no-op grant
+	-- that only re-attempts the save, so the player is never paid twice.
 	grantProduct(session, kind, index)
 	table.insert(profile.receipts, receipt.PurchaseId)
 	while #profile.receipts > MAX_RECEIPTS do
 		table.remove(profile.receipts, 1)
 	end
-	if session.canSave and not DataService.save(session.player, profile) then
-		-- Roll back so the purchase is retried later instead of being lost.
-		table.remove(profile.receipts)
-		return Enum.ProductPurchaseDecision.NotProcessedYet
-	end
-	return Enum.ProductPurchaseDecision.PurchaseGranted
+	return saveOrRetry(session)
 end
 
 function Monetization.init(themeModule: any)

@@ -9,10 +9,13 @@
 ]]
 
 local DataStoreService = game:GetService("DataStoreService")
+local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Economy = require(ReplicatedStorage.Shared.Economy)
+local SessionLock = require(ReplicatedStorage.Shared.SessionLock)
+local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
 
 local DataService = {}
 
@@ -43,6 +46,8 @@ export type Profile = {
 	settings: { music: boolean, sfx: boolean, fullNumbers: boolean },
 	receipts: { string },
 	totalEarned: number,
+	tutorialStep: number,
+	tutorialDone: boolean,
 }
 
 local function zeros(n: number): { number }
@@ -80,6 +85,8 @@ function DataService.defaultProfile(): Profile
 		settings = { music = true, sfx = true, fullNumbers = false },
 		receipts = {},
 		totalEarned = 0,
+		tutorialStep = 1,
+		tutorialDone = false,
 	}
 end
 
@@ -88,6 +95,11 @@ local function reconcile(data: any): Profile
 	local default = DataService.defaultProfile()
 	if type(data) ~= "table" then
 		return default
+	end
+	-- Saves from before the tutorial existed belong to players who already
+	-- know the game: don't send them through onboarding.
+	if data.tutorialDone == nil then
+		data.tutorialDone = type(data.totalObtained) == "number" and data.totalObtained > 1
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
@@ -114,6 +126,7 @@ local function reconcile(data: any): Profile
 		end
 	end
 	data.buyTier = math.clamp(math.floor(data.buyTier), 1, Economy.MAX_BUY_TIER)
+	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
 	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
 		data.heldChest = ""
 	end
@@ -146,7 +159,20 @@ local function retry<T>(label: string, fn: () -> T): (boolean, T?)
 	return false, nil
 end
 
+-- This server's identity for session locks (JobId is empty in Studio).
+local JOB_ID = if game.JobId ~= "" then game.JobId else ("studio-" .. HttpService:GenerateGUID(false))
+-- How long a joining player waits for another server to release their save.
+local LOCK_WAIT_SECONDS = 20
+
+local function stripMeta(data: any): any
+	if type(data) == "table" then
+		data._lock = nil
+	end
+	return data
+end
+
 -- Returns (profile, canSave). profile is nil when the player should be kicked.
+-- Acquires a session lock so two servers never write the same save.
 function DataService.load(player: Player): (Profile?, boolean)
 	if not store then
 		if RunService:IsStudio() then
@@ -156,32 +182,71 @@ function DataService.load(player: Player): (Profile?, boolean)
 		return nil, false
 	end
 	local activeStore = store :: DataStore
-	local ok, data = retry("load " .. player.Name, function()
-		return activeStore:GetAsync(keyFor(player))
-	end)
-	if not ok then
-		if RunService:IsStudio() then
-			warn("[DataService] Enable 'Studio Access to API Services' to test saving. Using a temporary profile.")
-			return reconcile(nil), false
+	local started = os.clock()
+	while player.Parent do
+		local decision: SessionLock.Decision = "acquire"
+		local loaded: any = nil
+		local ok = retry("load " .. player.Name, function()
+			activeStore:UpdateAsync(keyFor(player), function(current)
+				local existing = if type(current) == "table" then current._lock else nil
+				decision = SessionLock.decide(existing, JOB_ID, os.time(), os.clock() - started, LOCK_WAIT_SECONDS)
+				if decision == "wait" then
+					return nil -- leave the save untouched
+				end
+				local data = if type(current) == "table" then current else {}
+				data._lock = { jobId = JOB_ID, at = os.time() }
+				loaded = table.clone(data)
+				return data
+			end)
+			return true
+		end)
+		if not ok then
+			if RunService:IsStudio() then
+				warn("[DataService] Enable 'Studio Access to API Services' to test saving. Using a temporary profile.")
+				return reconcile(nil), false
+			end
+			return nil, false
 		end
-		return nil, false
+		if decision ~= "wait" then
+			if decision == "steal" then
+				warn("[DataService] Took over a save still locked by another server for", player.Name)
+			end
+			local isNew = loaded == nil or next(stripMeta(loaded)) == nil
+			return reconcile(if isNew then nil else loaded), true
+		end
+		task.wait(3)
 	end
-	return reconcile(data), true
+	return nil, false
 end
 
-function DataService.save(player: Player, profile: Profile): boolean
+-- Saves the profile if this server still owns the session lock.
+-- `release` clears the lock (player left / server shutting down).
+-- Returns (saved, lostOwnership). lostOwnership is true when another server has
+-- taken over this save; the caller should stop playing this session.
+function DataService.save(player: Player, profile: Profile, release: boolean?): (boolean, boolean)
 	if not store then
-		return false
+		return false, false
 	end
 	local activeStore = store :: DataStore
 	profile.lastOnline = os.time()
+	local stillOwner = true
 	local ok = retry("save " .. player.Name, function()
-		activeStore:UpdateAsync(keyFor(player), function()
-			return profile
+		activeStore:UpdateAsync(keyFor(player), function(current)
+			local existing = if type(current) == "table" then current._lock else nil
+			if existing ~= nil and not SessionLock.owns(existing, JOB_ID) then
+				stillOwner = false
+				return nil -- another server owns this save now; never overwrite it
+			end
+			local data = table.clone(profile) :: any
+			data._lock = if release then nil else { jobId = JOB_ID, at = os.time() }
+			return data
 		end)
 		return true
 	end)
-	return ok
+	if not stillOwner then
+		warn("[DataService] Save for", player.Name, "is owned by another server; not overwriting.")
+	end
+	return ok and stillOwner, not stillOwner
 end
 
 return DataService

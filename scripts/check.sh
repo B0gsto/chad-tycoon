@@ -21,7 +21,7 @@ echo "== luau-lsp"
 for variant in chad bot; do
 	rojo sourcemap "$variant.project.json" -o sourcemap.json
 	luau-lsp analyze --sourcemap=sourcemap.json --definitions="$DEFS" \
-		src/shared src/server src/client "src/themes/$variant"
+		src/shared src/server src/client src/loader "src/themes/$variant"
 done
 rm -f sourcemap.json
 

@@ -1,5 +1,6 @@
 -- Client entry point: builds the UI and routes server messages.
 
+local GuiService = game:GetService("GuiService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
@@ -13,10 +14,13 @@ local Net = require(Shared.Net)
 local Client = script.Parent
 local State = require(Client.State)
 local Sounds = require(Client.Sounds)
+local Guide = require(Client.Guide)
 local Kit = require(Client.UI.Kit)
+local Animator = require(Client.Animator)
 local Hud = require(Client.UI.Hud)
 local Windows = require(Client.UI.Windows)
 local Popups = require(Client.UI.Popups)
+local Tutorial = require(Client.UI.Tutorial)
 
 local player = Players.LocalPlayer
 local C = Theme.Colors
@@ -27,9 +31,15 @@ screen.Name = "TycoonUI"
 screen.ResetOnSpawn = false
 screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screen.IgnoreGuiInset = false
+pcall(function()
+	-- Keep clear of the Roblox top bar buttons and device notches.
+	screen.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets
+end)
 screen.Parent = player:WaitForChild("PlayerGui")
 
--- Scale the whole UI from a 1280x720 design size.
+-- Scale the whole UI from a 1280x720 design size. Touch screens get a little
+-- extra so buttons stay comfortably tappable; short screens switch the HUD to
+-- its compact layout.
 local uiScale = Instance.new("UIScale")
 uiScale.Parent = screen
 local function rescale()
@@ -38,7 +48,17 @@ local function rescale()
 		return
 	end
 	local size = camera.ViewportSize
-	uiScale.Scale = math.clamp(math.min(size.X / 1280, size.Y / 720), 0.55, 1.5)
+	local topInset = 58
+	pcall(function()
+		local topLeft = GuiService:GetGuiInset()
+		topInset = topLeft.Y
+	end)
+	local fit = math.min(size.X / 1280, size.Y / 720)
+	if Kit.touch then
+		fit *= 1.15
+	end
+	uiScale.Scale = math.clamp(fit, 0.5, 1.5)
+	screen:SetAttribute("Compact", (size.Y - topInset) / uiScale.Scale < 600)
 end
 rescale()
 Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(rescale)
@@ -46,13 +66,32 @@ if Workspace.CurrentCamera then
 	Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescale)
 end
 
-Kit.setClickSound(function()
-	Sounds.play("Click")
+Kit.setSoundPlayer(function(name)
+	Sounds.play(name)
 end)
 
+Animator.start()
 Popups.build(screen, Sounds)
 Windows.build(screen)
-Hud.build(screen, { openWindow = Windows.open }, Sounds)
+Guide.build()
+Hud.build(screen, {
+	openWindow = Windows.open,
+	toast = Popups.toast,
+	guide = function(target)
+		Guide.navigate(target, "CLAIM!", 45)
+	end,
+}, Sounds)
+Tutorial.build(screen, {
+	popups = Popups,
+	sounds = Sounds,
+	guide = Guide,
+	highlight = function(name, on)
+		local button = Hud.buttons[name]
+		if button then
+			Kit.setGlow(button, on)
+		end
+	end,
+})
 
 pcall(function()
 	StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
@@ -63,6 +102,13 @@ local action = Net.event("Action")
 Net.event("State").OnClientEvent:Connect(function(data)
 	State.set(data)
 	Sounds.updateMusic()
+	if data.freeIn and data.freeIn > 0 then
+		Guide.clearNavigate("Free")
+	end
+	-- Tells the loading screen (ReplicatedFirst) that the game is ready.
+	if player:GetAttribute("GameReady") ~= true then
+		player:SetAttribute("GameReady", true)
+	end
 end)
 
 Net.event("Notify").OnClientEvent:Connect(function(payload)
@@ -79,11 +125,15 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 		Popups.confirm(payload.text, function()
 			action:FireServer(payload.action)
 		end)
+	elseif payload.kind == "Tutorial" then
+		Tutorial.onNotify(payload)
 	end
 end)
 
-local TANK = UDim2.new(0.5, 0, 1, -150)
-local WALLET = UDim2.new(0, 190, 1, -110)
+-- Floating "+X" anchors: beside the tank (the tutorial card sits above it)
+-- and next to the wallet.
+local TANK = UDim2.new(0.5, 250, 1, -80)
+local WALLET = UDim2.fromOffset(200, 40)
 
 Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 	if kind == "Collect" then
@@ -99,10 +149,10 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 		Sounds.play("Buy")
 	elseif kind == "Merge" then
 		Sounds.play("Merge")
-	elseif kind == "Upgrade" then
+	elseif kind == "Upgrade" or kind == "ChestOpen" then
 		Sounds.play("Reward")
 	elseif kind == "ChestPickup" then
-		Sounds.play("Click")
+		Sounds.play("Pickup")
 	end
 end)
 
