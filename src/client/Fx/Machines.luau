@@ -827,6 +827,10 @@ local function cashShower(amount: number, big: boolean)
 end
 
 local function onCash(data: any)
+	-- Auto Cash payouts are silent: no coin shower around the player.
+	if data.source == "Auto" then
+		return
+	end
 	local amount = tonumber(data.amount) or 0
 	if data.source == "Purchase" or typeof(data.padPos) ~= "Vector3" then
 		cashShower(amount, data.source == "Purchase")
