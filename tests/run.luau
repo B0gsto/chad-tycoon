@@ -289,7 +289,11 @@ test("buy pricing", function()
 			end
 		end
 		check(Economy.buyTierUpgradeCost(buyTier) > 0, "upgrade cost positive")
-		check(Economy.buyTierRequirement(buyTier) >= 150, "requirement")
+		check(Economy.buyTierRequirement(buyTier) >= 1, "requirement")
+		if buyTier > 1 then
+			check(Economy.buyTierRequirement(buyTier) >= Economy.buyTierRequirement(buyTier - 1), "requirement grows")
+			check(Economy.buyTierUpgradeCost(buyTier) > Economy.buyTierUpgradeCost(buyTier - 1), "upgrade cost grows")
+		end
 	end
 	near(Economy.unitPrice(1, Economy.buyTierRequirement(1)), 2 * Economy.basePrice(1), "price doubles at requirement")
 end)
@@ -354,8 +358,9 @@ test("chests", function()
 		end
 		local rng = seeded(7)
 		for _ = 1, 500 do
+			-- Highest 10 anchors crates at tier 6.
 			local tier = Economy.rollChest(rarity, 10, rng)
-			check(tier >= 8 and tier <= 14, "roll near highest tier")
+			check(tier >= 4 and tier <= 10, "roll near the crate anchor")
 		end
 		check(Economy.unlockSeconds(rarity, true) < Economy.unlockSeconds(rarity, false), "premium is faster")
 	end
@@ -368,25 +373,36 @@ test("chests", function()
 			check(Economy.chestExpectedValue(rarity, highest) > 0, rarity .. " worth something at " .. highest)
 		end
 	end
+	-- Crates are anchored below the highest tier, further down the higher it is.
+	eq(Economy.chestAnchor(1), 1)
+	eq(Economy.chestAnchor(3), 2)
+	eq(Economy.chestAnchor(10), 6)
+	eq(Economy.chestAnchor(25), 13)
+	for highest = 2, 25 do
+		check(Economy.chestAnchor(highest) <= highest, "anchor at or below highest at " .. highest)
+		check(Economy.chestAnchor(highest) >= Economy.chestAnchor(highest - 1), "anchor never drops at " .. highest)
+	end
 	-- Higher rarities feel better: Rare rarely gives its lowest tier, Epic and
-	-- Legendary mostly give the highest tier or above, at every stage.
+	-- Legendary mostly give the anchor tier or above, at every stage.
 	for highest = 1, 25 do
+		local anchor = math.max(Economy.chestAnchor(highest), 2)
 		local rare = Economy.chestOdds("Rare", highest)
 		check(#rare >= 2, "rare offers a choice at " .. highest)
 		check(rare[1].chance <= 25, "rare lowest tier at most 25% at " .. highest)
-		check(rare[#rare].tier <= math.max(highest, 2) + 1, "rare stays near highest at " .. highest)
+		check(rare[#rare].tier <= anchor + 1, "rare stays near the anchor at " .. highest)
+		for _, entry in Economy.chestOdds("Common", highest) do
+			check(entry.tier <= highest, "common never above highest at " .. highest)
+		end
 		for _, rarity in { "Epic", "Legendary" } do
-			local atOrAbove = 0
+			local above = 0
 			for _, entry in Economy.chestOdds(rarity, highest) do
-				check(entry.tier >= math.min(highest, 25), rarity .. " never below highest at " .. highest)
+				check(entry.tier >= anchor, rarity .. " never below the anchor at " .. highest)
 				check(entry.tier <= math.max(highest, 2) + 3, rarity .. " not absurdly high at " .. highest)
-				if entry.tier > highest or entry.tier == 25 then
-					atOrAbove += entry.chance
+				if entry.tier > anchor then
+					above += entry.chance
 				end
 			end
-			if highest < 25 then
-				check(atOrAbove >= 70, rarity .. " mostly above highest at " .. highest)
-			end
+			check(above >= 70, rarity .. " mostly above the anchor at " .. highest)
 		end
 		local prevValue = 0
 		for _, rarity in Economy.CHEST_RARITIES do
@@ -405,9 +421,9 @@ test("chests", function()
 	eq(earlyRare[#earlyRare].tier, 3)
 
 	local common = Economy.chestOdds("Common", 6)
-	eq(common[1].tier, 4)
+	eq(common[1].tier, 2)
 	eq(common[1].chance, 75)
-	eq(common[3].tier, 6)
+	eq(common[3].tier, 4)
 	eq(common[3].chance, 5)
 
 	local rng = seeded(99)
@@ -1818,6 +1834,10 @@ test("intro seen flag", function()
 	eq(legacy.introSeen, true, "saves from before the intro skip it")
 	eq(DataService.reconcile({ money = 10, introSeen = false }).introSeen, false, "unwatched stays unwatched")
 	eq(DataService.reconcile({ money = 10, introSeen = true }).introSeen, true, "watched stays watched")
+	-- Purchase counts from a save made under a bigger upgrade requirement are capped to it.
+	local capped = DataService.reconcile({ money = 10, buyTier = 3, boughtAtTier = 400 })
+	eq(capped.boughtAtTier, Economy.buyTierRequirement(3), "purchases past the requirement are capped")
+	eq(DataService.reconcile({ money = 10, buyTier = 3, boughtAtTier = 1 }).boughtAtTier, 1, "purchases under it are kept")
 end)
 
 -- Cosmetics ----------------------------------------------------------------------------
@@ -2885,7 +2905,7 @@ test("Game modes: finish reward is the smallest cash pack, with a cooldown", fun
 	local theme = loadRobloxTheme("src/themes/chad/Theme.luau")
 	local pack = theme.Monetization.MoneyPacks[1]
 	local cooldown = Economy.MODE_REWARD_COOLDOWN
-	eq(cooldown, 600, "10 minute cooldown")
+	eq(cooldown, 1800, "30 minute cooldown")
 	local prev = 0
 	for tier = 1, Economy.MAX_TIER do
 		local progression = Economy.progression(tier, tier * 3)
@@ -3187,6 +3207,20 @@ end)
 
 -- Mog Test rules (tests/mog.luau).
 require("./mog")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
+
+test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", function()
+	(_G :: any).SIMULATE_AS_LIBRARY = true
+	local Simulate = require("../scripts/simulate")
+	local theme = loadRobloxTheme("src/themes/chad/Theme.luau")
+	local pack = theme.Monetization.MoneyPacks[1]
+	eq(Simulate.SMALL_PACK_SECONDS, pack.Seconds, "simulated parkour reward uses the smallest pack's seconds")
+	eq(Simulate.SMALL_PACK_MIN, pack.Min, "simulated parkour reward uses the smallest pack's minimum")
+
+	local reached = Simulate.run({ hours = 3, step = 5 }).reached
+	check(reached[2] ~= nil and reached[2] <= 60, "tier 2 within the first minute")
+	check(reached[6] ~= nil and reached[6] >= 25 * 60 and reached[6] <= 60 * 60, "tier 6 after 25 to 60 minutes")
+	check(reached[10] == nil, "tier 10 not before 3 hours")
+end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then

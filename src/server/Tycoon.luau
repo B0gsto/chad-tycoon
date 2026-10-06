@@ -31,9 +31,8 @@ type Profile = any
 type Plot = WorldBuilder.Plot
 
 -- `cell` is the pile slot the orb rests in (see orbCells): 1..n on the floor, PILE_TOP + k on top.
--- `due`: Auto Aura collects the orb at this os.clock() (after its roll-in lands and rests);
--- `windup`: when the "Auto" wind-up started (collected AUTO_WINDUP later).
-type Orb = { part: BasePart, value: number, count: number, cell: number, tier: number, due: number?, windup: number? }
+-- `due`: Auto Aura collects the orb at this os.clock() (after its roll-in lands and rests).
+type Orb = { part: BasePart, value: number, count: number, cell: number, tier: number, due: number? }
 -- `landsAt`: os.clock() by which the client's arrival has landed (CratePickup.landTime);
 -- `blocked`: in range when the last held crate was released, until the player leaves its range.
 type FloorChest = { model: Model, rarity: string, position: Vector3, landsAt: number, blocked: boolean }
@@ -86,7 +85,6 @@ local PILE_TOP_FROM = 40 -- floor orbs needed before the pile grows a partial se
 local PILE_TOP_CHANCE = 0.3
 local ORB_PICKUP_RADIUS = 6
 local ORB_PICKED_POSITIONS = 12
-local AUTO_WINDUP = 0.25 -- seconds between the "Auto" attribute (client squash) and collection
 -- Merge effects per action; more steps are sent as one summarised effect.
 local MAX_MERGE_EFFECTS = 6
 local MERGE_FROM_POSITIONS = 4
@@ -1074,24 +1072,13 @@ local function feedOrb(session: Session, orb: Orb, value: number, origin: Vector
 	end
 	setRoute(part, "FeedPath", route)
 	part:SetAttribute("FeedTint", orbTint(tier))
-	if not orb.windup then
-		scheduleAuto(session, orb, origin, route)
-	end
+	scheduleAuto(session, orb, origin, route)
 	part:SetAttribute("Feed", ((part:GetAttribute("Feed") :: number?) or 0) + 1)
 end
 
--- The ball a produced orb joins once the pen is full (balls about to be auto-collected are
--- skipped while others remain).
+-- The ball a produced orb joins once the pen is full.
 local function feedTargetOrb(session: Session, tier: number?, cap: number): Orb?
-	local candidates: { Orb } = {}
-	for _, orb in session.orbs do
-		if not orb.windup then
-			table.insert(candidates, orb)
-		end
-	end
-	if #candidates == 0 then
-		candidates = session.orbs
-	end
+	local candidates = session.orbs
 	local balls: { OrbLook.Ball } = table.create(#candidates)
 	for i, orb in candidates do
 		balls[i] = { tier = orb.tier, count = orb.count }
@@ -1561,14 +1548,17 @@ end
 -- Ticks --------------------------------------------------------------------------------
 
 -- Credits picked-up orbs to the tank: the same path for walking over them and for Auto Aura.
--- `auto` tells the client to play the auto-collect cue instead of the walk-over magnet.
+-- Auto Aura is silent: no "OrbsPicked" magnet and no "Collect" cue, the carried number on the
+-- dumbbell simply rolls up.
 local function creditPicked(session: Session, collected: number, positions: { Vector3 }, counts: { number }, now: number, auto: boolean)
 	if collected <= 0 then
 		return
 	end
 	session.profile.carried += collected
-	session.collectBuffer += collected
-	effect(session, "OrbsPicked", { amount = collected, positions = positions, counts = counts, auto = auto })
+	if not auto then
+		session.collectBuffer += collected
+		effect(session, "OrbsPicked", { amount = collected, positions = positions, counts = counts })
+	end
 	emit(session, "Pickup", { amount = collected })
 	markDirty(session)
 	if now - session.lastPickupFlush >= PICKUP_FLUSH_INTERVAL then
@@ -1577,35 +1567,24 @@ local function creditPicked(session: Session, collected: number, positions: { Ve
 	end
 end
 
--- Auto Aura: orbs past their `due` time get the "Auto" attribute (the client winds them up),
--- then are collected AUTO_WINDUP later, wherever the player is.
+-- Auto Aura: orbs past their `due` time are collected wherever the player is. They simply
+-- vanish from the pen: no wind-up, flight, sparkle or sound.
 local function autoCollect(session: Session, now: number)
 	if not session.passes.AutoLoot or #session.orbs == 0 then
 		return
 	end
 	local values: { number } = {}
-	local positions: { Vector3 } = {}
-	local counts: { number } = {}
 	for i = #session.orbs, 1, -1 do
 		local orb = session.orbs[i]
 		if orb.due == nil then
 			orb.due = now + 0.3 + 0.15 * i -- pass bought with orbs already in the pen
-		elseif orb.windup then
-			if now - orb.windup >= AUTO_WINDUP then
-				table.insert(values, orb.value)
-				if #positions < ORB_PICKED_POSITIONS then
-					table.insert(positions, orb.part.CFrame.Position)
-					table.insert(counts, orb.count)
-				end
-				orb.part:Destroy()
-				table.remove(session.orbs, i)
-			end
 		elseif now >= orb.due then
-			orb.windup = now
-			orb.part:SetAttribute("Auto", true)
+			table.insert(values, orb.value)
+			orb.part:Destroy()
+			table.remove(session.orbs, i)
 		end
 	end
-	creditPicked(session, OrbLook.credit(values), positions, counts, now, true)
+	creditPicked(session, OrbLook.credit(values), {}, {}, now, true)
 end
 
 -- Automatic crate pickup: the plot owner walks to a landed crate in their pen and picks up

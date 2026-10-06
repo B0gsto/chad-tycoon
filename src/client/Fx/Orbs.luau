@@ -17,8 +17,8 @@
 --     outline) visible within LABEL_MAX_DISTANCE.
 --   * "OrbsPicked" effects: ghost orbs magnet into the character with a rising
 --     combo blip.
---   * Auto Aura (server `Auto` attribute set just before removal): the orb winds up with a
---     squash, then flies to the player if near, else bursts into sparkles where it lay.
+--   * Auto Aura: the server removes the orb once it has landed and rested; it just vanishes
+--     (no effect is sent for it).
 --   * Look: each orb is drawn as clones of props/OrbBall (Color = tier colour) and
 --     props/OrbShine (white) via AssetModels, and the server's ball is hidden locally. Without
 --     the uploaded models the server's ball shows in the tier colour.
@@ -52,7 +52,6 @@ local FAR = CFrame.new(0, -10000, 0)
 local ROLL_WINDOW = 1.5 -- seconds after Spawned during which an orb still rolls in
 local SOUND_GAP = 1 / 12
 local COMBO_RESET = 0.6
-local AUTO_FLY_RANGE = 60 -- Auto Aura orbs fly to the player within this many studs
 local LABEL_MAX_DISTANCE = 70 -- camera distance cap of the "xN" tags (BillboardGui.MaxDistance)
 local LABEL_HEIGHT = 1.15 -- studs
 local WHITE = Color3.new(1, 1, 1)
@@ -1480,13 +1479,7 @@ local function track(part: Instance)
 	table.insert(
 		fx.conns,
 		p.AttributeChanged:Connect(function(attr)
-			if attr == "Auto" then
-				-- Auto Aura wind-up: a quick squash and swell before the server collects it.
-				fx.squash = 0
-				fx.squashAmp = 0.35
-				fx.pulse = 0.3
-				fx.still = false
-			elseif attr == "Tier" then
+			if attr == "Tier" then
 				clearBall(fx)
 				styleOrb(fx)
 			elseif attr == "Feed" then
@@ -1564,20 +1557,7 @@ local function onPicked(data: any)
 	end
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
-	local auto = data.auto == true
 	local counts = if type(data.counts) == "table" then data.counts else {}
-	if auto and (not root or (root.Position - (data.positions[1] or root.Position)).Magnitude > AUTO_FLY_RANGE) then
-		-- Auto Aura away from the pen: each orb bursts into sparkles and a puff where it lay.
-		for i, pos in data.positions do
-			if typeof(pos) == "Vector3" and i <= 8 then
-				local color = ORB_PALETTE[1]
-				Orbs.sparkle(pos + Vector3.new(0, 0.6, 0), color, 4, 0.6)
-				Orbs.puff(pos)
-			end
-		end
-		pickupBlip(math.min(#data.positions, 3))
-		return
-	end
 	if not root then
 		return
 	end
@@ -1608,9 +1588,9 @@ local function onPicked(data: any)
 			variant = "Ball",
 			size = 1.3 * grow,
 			endSize = 0.25 * grow,
-			duration = (if auto then 0.4 else 0.25) + math.random() * 0.15,
-			delay = (i - 1) * (if auto then 0.06 else 0.035),
-			arc = if auto then 4 else 1.5,
+			duration = 0.25 + math.random() * 0.15,
+			delay = (i - 1) * 0.035,
+			arc = 1.5,
 			accel = true,
 			trail = true,
 			onDone = function()
@@ -1618,9 +1598,7 @@ local function onPicked(data: any)
 				if count >= 2 then
 					Orbs.ring(root.Position - Vector3.new(0, 2.5, 0), color, 1.6 + grow, 0.35, 0.35)
 				end
-				if not auto or i <= 6 then -- a wall of auto orbs only blips the first few
-					pickupBlip(count)
-				end
+				pickupBlip(count)
 			end,
 		})
 	end

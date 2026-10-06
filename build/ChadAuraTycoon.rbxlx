@@ -8055,7 +8055,7 @@ return CratePickup
 
 local Economy = {}
 
-Economy.VERSION = "1.1.0"
+Economy.VERSION = "1.2.0"
 
 Economy.MAX_TIER = 25
 Economy.MAX_BUY_TIER = 15
@@ -8071,7 +8071,7 @@ Economy.DISPLAY_SLOTS = Economy.DISPLAY_ROWS * Economy.DISPLAY_COLS
 
 -- Each tier produces this many times more than the previous one. Must be greater
 -- than MERGE_RATIO so merging is always an upgrade.
-Economy.TIER_RATE_GROWTH = 2.6
+Economy.TIER_RATE_GROWTH = 2.2
 
 function Economy.unitRate(tier: number): number
 	return Economy.TIER_RATE_GROWTH ^ (tier - 1)
@@ -8216,9 +8216,14 @@ end
 
 -- Buying ----------------------------------------------------------------------
 
-Economy.BUY_BASE_PRICE = 20
-Economy.BUY_PRICE_GROWTH = 2.3
+Economy.BUY_BASE_PRICE = 50
+Economy.BUY_PRICE_GROWTH = 4
 Economy.BUY_AMOUNTS = { 1, 5, 25, 100 }
+-- Units to buy at buy tier 1 before upgrading, growing by BUY_REQ_GROWTH per buy tier.
+Economy.BUY_REQ_BASE = 1
+Economy.BUY_REQ_GROWTH = 1.5
+-- A buy tier upgrade costs this share of buying the requirement at the next tier's base price.
+Economy.BUY_TIER_UPGRADE_SHARE = 0.5
 
 function Economy.basePrice(buyTier: number): number
 	return Economy.BUY_BASE_PRICE * Economy.BUY_PRICE_GROWTH ^ (buyTier - 1)
@@ -8226,7 +8231,7 @@ end
 
 -- Units that must be bought at the current buy tier before it can be upgraded.
 function Economy.buyTierRequirement(buyTier: number): number
-	return math.floor(150 * 1.6 ^ (buyTier - 1))
+	return math.floor(Economy.BUY_REQ_BASE * Economy.BUY_REQ_GROWTH ^ (buyTier - 1))
 end
 
 -- Price of the next single unit. Grows linearly with purchases made at this
@@ -8243,17 +8248,17 @@ function Economy.bulkPrice(buyTier: number, boughtAtTier: number, amount: number
 end
 
 function Economy.buyTierUpgradeCost(buyTier: number): number
-	return Economy.basePrice(buyTier + 1) * Economy.buyTierRequirement(buyTier) * 0.5
+	return Economy.basePrice(buyTier + 1) * Economy.buyTierRequirement(buyTier) * Economy.BUY_TIER_UPGRADE_SHARE
 end
 
-Economy.AUTO_MERGE_COST = 25000
+Economy.AUTO_MERGE_COST = 5000
 
 -- Processing (the converter that turns deposited orbs into cash) ---------------
 
-Economy.PROCESS_BASE = 10
+Economy.PROCESS_BASE = 4
 Economy.PROCESS_GROWTH = 1.12
-Economy.PROCESS_COST_BASE = 75
-Economy.PROCESS_COST_GROWTH = 1.155
+Economy.PROCESS_COST_BASE = 200
+Economy.PROCESS_COST_GROWTH = 1.18
 Economy.PROCESS_BULK = 10
 
 function Economy.processRate(level: number): number
@@ -8335,7 +8340,7 @@ end
 
 Economy.CHEST_RARITIES = { "Common", "Uncommon", "Rare", "Epic", "Legendary" }
 
--- `offsets` = { tier offset from the player's highest tier, % chance }.
+-- `offsets` = { tier offset from the crate anchor (see chestAnchor), % chance }.
 -- `minAnchor` = the lowest tier the offsets are applied to: at very low highest
 -- tiers Rare+ crates shift their window up instead of piling the clamped
 -- chances onto tier 1, so they still feel better than a Common crate.
@@ -8364,6 +8369,16 @@ Economy.CHEST_SPAWN_CHANCE = 0.45
 Economy.MAX_FLOOR_CHESTS = 3
 Economy.PREMIUM_UNLOCK_SPEED = 3
 
+-- Crates are anchored this share of the way from the player's highest tier down to tier 1
+-- (rounded towards the highest tier). Late tiers take hours to reach while crates keep
+-- arriving every few minutes, so the gap grows with the tier to keep crates a bonus
+-- rather than a shortcut: highest 3 -> anchor 2, 6 -> 4, 10 -> 6, 20 -> 11, 25 -> 13.
+Economy.CHEST_TIER_LAG = 0.5
+
+function Economy.chestAnchor(highestTier: number): number
+	return highestTier - math.floor((highestTier - 1) * Economy.CHEST_TIER_LAG)
+end
+
 function Economy.isRarity(rarity: string): boolean
 	return Economy.CHEST_INFO[rarity] ~= nil
 end
@@ -8376,11 +8391,11 @@ end
 
 export type Odds = { tier: number, chance: number }
 
--- Possible tiers and their % chance, relative to the player's highest tier.
+-- Possible tiers and their % chance, relative to the crate anchor of the player's highest tier.
 -- Offsets that clamp onto the same tier are combined (see `minAnchor`).
 function Economy.chestOdds(rarity: string, highestTier: number): { Odds }
 	local info = Economy.CHEST_INFO[rarity]
-	local anchor = math.max(highestTier, info.minAnchor or 1)
+	local anchor = math.max(Economy.chestAnchor(highestTier), info.minAnchor or 1)
 	local byTier: { [number]: number } = {}
 	for _, pair in info.offsets do
 		local tier = math.clamp(anchor + pair[1], 1, Economy.MAX_TIER)
@@ -8444,7 +8459,7 @@ Economy.FREE_REWARD_MIN = 100
 
 -- One-time reward for finishing the onboarding tutorial.
 Economy.TUTORIAL_REWARD_GEMS = 25
-Economy.TUTORIAL_REWARD_CASH = 250
+Economy.TUTORIAL_REWARD_CASH = 25
 
 Economy.OFFLINE_CAP_SECONDS = 8 * 3600
 Economy.OFFLINE_EFFICIENCY = 0.25
@@ -8519,7 +8534,7 @@ end
 -- (moneyPackAmount with that pack's seconds and minimum): on the first finish ever and then
 -- at most once per MODE_REWARD_COOLDOWN. Players may run again straight away, but finishes
 -- inside the cooldown pay no cash. The first finish ever also pays Rizz.
-Economy.MODE_REWARD_COOLDOWN = 600
+Economy.MODE_REWARD_COOLDOWN = 1800
 Economy.MODE_FIRST_CLEAR_GEMS = 25
 
 export type ModeReward = {
@@ -11595,12 +11610,12 @@ Theme.Monetization = {
 	-- Cash packs give `Seconds` of the buyer's income, never below their progression floor
 	-- (Economy.moneyPackAmount); `Min` is the absolute floor for brand-new players.
 	MoneyPacks = {
-		{ Id = 3716878799, Price = 19, Seconds = 300, Min = 1000 },
-		{ Id = 3716878815, Price = 49, Seconds = 900, Min = 3000 },
-		{ Id = 3716878826, Price = 99, Seconds = 2700, Min = 10000 },
-		{ Id = 3716878834, Price = 249, Seconds = 7200, Min = 30000 },
-		{ Id = 3716878844, Price = 499, Seconds = 18000, Min = 100000 },
-		{ Id = 3716878853, Price = 999, Seconds = 43200, Min = 300000 },
+		{ Id = 3716878799, Price = 19, Seconds = 300, Min = 750 },
+		{ Id = 3716878815, Price = 49, Seconds = 900, Min = 2500 },
+		{ Id = 3716878826, Price = 99, Seconds = 2700, Min = 7500 },
+		{ Id = 3716878834, Price = 249, Seconds = 7200, Min = 20000 },
+		{ Id = 3716878844, Price = 499, Seconds = 18000, Min = 50000 },
+		{ Id = 3716878853, Price = 999, Seconds = 43200, Min = 125000 },
 	},
 	-- Rizz packs give `Base` Rizz at tier 1, growing with the buyer's highest tier
 	-- (Economy.gemPackAmount). Roblox names: Small / Big / Mega Rizz Pack.
@@ -11689,7 +11704,7 @@ Theme.Cosmetics = {
 	BundleIcon = "CosAll",
 	-- Granted once per account: `CashSeconds` of income (Economy.moneyPackAmount, at least
 	-- `CashMin`), the Rizz of GemPacks[GemPack] (Economy.gemPackAmount) and `Item`.
-	Starter = { Pass = "StarterPack", CashSeconds = 1800, CashMin = 25000, GemPack = 2, Item = "TrailRookie", Icon = "CosStarter" },
+	Starter = { Pass = "StarterPack", CashSeconds = 1800, CashMin = 5000, GemPack = 2, Item = "TrailRookie", Icon = "CosStarter" },
 	-- Humanoid WalkSpeed before any boost.
 	BaseWalkSpeed = 16,
 }
@@ -12534,6 +12549,9 @@ local function reconcile(data: any): Profile
 		end
 	end
 	data.buyTier = math.clamp(math.floor(data.buyTier), 1, Economy.MAX_BUY_TIER)
+	-- Purchases past the upgrade requirement only count once (Economy.unitPrice grows with
+	-- them); a save made under a larger requirement would otherwise price units out of reach.
+	data.boughtAtTier = math.clamp(math.floor(data.boughtAtTier), 0, Economy.buyTierRequirement(data.buyTier))
 	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
 	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
 		data.heldChest = ""
@@ -12827,7 +12845,13 @@ function GameModes.start(player: Player, id: string, teleport: boolean, options:
 	if current and current ~= def then
 		current.stop(player, "switch")
 	end
-	return def.start(player, teleport, options)
+	local ok = def.start(player, teleport, options)
+	if not ok and current then
+		-- The old run is over and the new one was refused: never leave the player standing
+		-- on a far arena with no run.
+		GameModes.toGates(player)
+	end
+	return ok
 end
 
 function GameModes.stop(player: Player, reason: string)
@@ -12945,6 +12969,10 @@ function GameModes.init(built: any, theme: any, tycoon: any, world: any)
 
 	Tycoon.hooks.modes = function(session: any)
 		return GameModes.snapshot(session.player)
+	end
+	-- "Home" during a run ends it first (un-anchors a Mog player, no "left" stop later).
+	Tycoon.hooks.leavingForHome = function(session: any)
+		GameModes.stop(session.player, "quit")
 	end
 
 	Tycoon.addAction("ModeStart", function(session, data)
@@ -13939,18 +13967,6 @@ function Course.level(i: number): Level
 	return Course.LEVELS[math.clamp(math.floor(i), 1, Course.LEVEL_COUNT)]
 end
 
--- Level 1 aliases (World.Modes still reads these)
-Course.ELEMENTS = level1.ELEMENTS
-Course.PATH = level1.PATH
-Course.CHECKPOINTS = level1.CHECKPOINTS
-Course.CHECKPOINT_COUNT = level1.CHECKPOINT_COUNT
-Course.START = level1.START
-Course.FINISH = level1.FINISH
-Course.FINISH_ARCH_X = level1.FINISH_ARCH.x
-Course.WATER_BOX = level1.WATER_BOX
-Course.BOUNDS = level1.BOUNDS
-Course.MIN_LEG_SECONDS = level1.MIN_LEG_SECONDS
-
 -- Is (x, z) outside every CLEAR rectangle (free for hub props)?
 function Course.isClear(x: number, z: number): boolean
 	for _, r in Course.CLEAR do
@@ -14067,7 +14083,7 @@ local FIRST_CHECK = 2.0
 -- Press timing slack (seconds) around the needle's lap and around the server clock.
 local LAP_SLACK = 0.05
 local PRESS_PAST = 0.6
-local PRESS_FUTURE = 0.1
+local PRESS_FUTURE = 0.25
 -- An unanswered check becomes a miss this long after the needle's lap ends.
 local TIMEOUT_SLACK = 0.35
 -- Seconds after finishing before the player is brought back to the gates.
@@ -14147,10 +14163,16 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		label.Text = table.concat(lines, "\n")
 	end
 
-	local function freeSpot(): number?
+	local function freeSpot(player: Player): number?
+		-- A player who plays again within RETURN_AFTER still holds their spot: reuse it.
+		for i = 1, #MogLayout.SPOTS do
+			if spotOwner[i] == player then
+				return i
+			end
+		end
 		for i = 1, #MogLayout.SPOTS do
 			local owner = spotOwner[i]
-			if not owner or runs[owner] == nil or owner.Parent == nil then
+			if not owner or owner.Parent == nil then
 				return i
 			end
 		end
@@ -14190,7 +14212,14 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			end
 		end
 		if spotOwner[state.spot] == player then
-			spotOwner[state.spot] = nil
+			-- The player stands on the pad a few more seconds after a finish (RETURN_AFTER):
+			-- keep the spot until they are gone so nobody is teleported onto them.
+			local spot = state.spot
+			task.delay(RETURN_AFTER + 1, function()
+				if spotOwner[spot] == player then
+					spotOwner[spot] = nil
+				end
+			end)
 		end
 		runs[player] = nil
 	end
@@ -14353,7 +14382,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		if not session or not GameModes.root(player) then
 			return false
 		end
-		local index = freeSpot()
+		local index = freeSpot(player)
 		if not index then
 			GameModes.notify(player, "stop", ID, { reason = "full" })
 			return false
@@ -15022,6 +15051,9 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		if not ok then
 			GameModes.notify(player, "invalid", ID, { reason = result })
 			GameModes.refresh(player)
+			if state.run.level.remote then
+				GameModes.returnLater(player, 4, nil)
+			end
 			return
 		end
 		local level = state.run.level
@@ -15089,7 +15121,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		local prevX = lastX[player]
 		lastX[player] = x
 		local state = runs[player]
-		if prevX and Course.crossedStart(prevX, x, z) and y < Course.START.y + 8 then
+		if prevX and Course.crossedStart(prevX, x, z) and y < Course.LEVELS[1].START.y + 8 then
 			def.start(player, false)
 			return
 		end
@@ -16391,9 +16423,8 @@ type Profile = any
 type Plot = WorldBuilder.Plot
 
 -- `cell` is the pile slot the orb rests in (see orbCells): 1..n on the floor, PILE_TOP + k on top.
--- `due`: Auto Aura collects the orb at this os.clock() (after its roll-in lands and rests);
--- `windup`: when the "Auto" wind-up started (collected AUTO_WINDUP later).
-type Orb = { part: BasePart, value: number, count: number, cell: number, tier: number, due: number?, windup: number? }
+-- `due`: Auto Aura collects the orb at this os.clock() (after its roll-in lands and rests).
+type Orb = { part: BasePart, value: number, count: number, cell: number, tier: number, due: number? }
 -- `landsAt`: os.clock() by which the client's arrival has landed (CratePickup.landTime);
 -- `blocked`: in range when the last held crate was released, until the player leaves its range.
 type FloorChest = { model: Model, rarity: string, position: Vector3, landsAt: number, blocked: boolean }
@@ -16446,7 +16477,6 @@ local PILE_TOP_FROM = 40 -- floor orbs needed before the pile grows a partial se
 local PILE_TOP_CHANCE = 0.3
 local ORB_PICKUP_RADIUS = 6
 local ORB_PICKED_POSITIONS = 12
-local AUTO_WINDUP = 0.25 -- seconds between the "Auto" attribute (client squash) and collection
 -- Merge effects per action; more steps are sent as one summarised effect.
 local MAX_MERGE_EFFECTS = 6
 local MERGE_FROM_POSITIONS = 4
@@ -16490,6 +16520,8 @@ Tycoon.hooks = {
 	modes = function(_session: Session): { [string]: any }?
 		return nil
 	end,
+	-- Called before the "Home" action moves the player (GameModes ends any run first).
+	leavingForHome = function(_session: Session) end,
 }
 
 -- Gameplay event listeners (used by the tutorial): fn(session, name, data).
@@ -17432,24 +17464,13 @@ local function feedOrb(session: Session, orb: Orb, value: number, origin: Vector
 	end
 	setRoute(part, "FeedPath", route)
 	part:SetAttribute("FeedTint", orbTint(tier))
-	if not orb.windup then
-		scheduleAuto(session, orb, origin, route)
-	end
+	scheduleAuto(session, orb, origin, route)
 	part:SetAttribute("Feed", ((part:GetAttribute("Feed") :: number?) or 0) + 1)
 end
 
--- The ball a produced orb joins once the pen is full (balls about to be auto-collected are
--- skipped while others remain).
+-- The ball a produced orb joins once the pen is full.
 local function feedTargetOrb(session: Session, tier: number?, cap: number): Orb?
-	local candidates: { Orb } = {}
-	for _, orb in session.orbs do
-		if not orb.windup then
-			table.insert(candidates, orb)
-		end
-	end
-	if #candidates == 0 then
-		candidates = session.orbs
-	end
+	local candidates = session.orbs
 	local balls: { OrbLook.Ball } = table.create(#candidates)
 	for i, orb in candidates do
 		balls[i] = { tier = orb.tier, count = orb.count }
@@ -17919,14 +17940,17 @@ end
 -- Ticks --------------------------------------------------------------------------------
 
 -- Credits picked-up orbs to the tank: the same path for walking over them and for Auto Aura.
--- `auto` tells the client to play the auto-collect cue instead of the walk-over magnet.
+-- Auto Aura is silent: no "OrbsPicked" magnet and no "Collect" cue, the carried number on the
+-- dumbbell simply rolls up.
 local function creditPicked(session: Session, collected: number, positions: { Vector3 }, counts: { number }, now: number, auto: boolean)
 	if collected <= 0 then
 		return
 	end
 	session.profile.carried += collected
-	session.collectBuffer += collected
-	effect(session, "OrbsPicked", { amount = collected, positions = positions, counts = counts, auto = auto })
+	if not auto then
+		session.collectBuffer += collected
+		effect(session, "OrbsPicked", { amount = collected, positions = positions, counts = counts })
+	end
 	emit(session, "Pickup", { amount = collected })
 	markDirty(session)
 	if now - session.lastPickupFlush >= PICKUP_FLUSH_INTERVAL then
@@ -17935,35 +17959,24 @@ local function creditPicked(session: Session, collected: number, positions: { Ve
 	end
 end
 
--- Auto Aura: orbs past their `due` time get the "Auto" attribute (the client winds them up),
--- then are collected AUTO_WINDUP later, wherever the player is.
+-- Auto Aura: orbs past their `due` time are collected wherever the player is. They simply
+-- vanish from the pen: no wind-up, flight, sparkle or sound.
 local function autoCollect(session: Session, now: number)
 	if not session.passes.AutoLoot or #session.orbs == 0 then
 		return
 	end
 	local values: { number } = {}
-	local positions: { Vector3 } = {}
-	local counts: { number } = {}
 	for i = #session.orbs, 1, -1 do
 		local orb = session.orbs[i]
 		if orb.due == nil then
 			orb.due = now + 0.3 + 0.15 * i -- pass bought with orbs already in the pen
-		elseif orb.windup then
-			if now - orb.windup >= AUTO_WINDUP then
-				table.insert(values, orb.value)
-				if #positions < ORB_PICKED_POSITIONS then
-					table.insert(positions, orb.part.CFrame.Position)
-					table.insert(counts, orb.count)
-				end
-				orb.part:Destroy()
-				table.remove(session.orbs, i)
-			end
 		elseif now >= orb.due then
-			orb.windup = now
-			orb.part:SetAttribute("Auto", true)
+			table.insert(values, orb.value)
+			orb.part:Destroy()
+			table.remove(session.orbs, i)
 		end
 	end
-	creditPicked(session, OrbLook.credit(values), positions, counts, now, true)
+	creditPicked(session, OrbLook.credit(values), {}, {}, now, true)
 end
 
 -- Automatic crate pickup: the plot owner walks to a landed crate in their pen and picks up
@@ -18200,6 +18213,7 @@ actionHandlers.SetSetting = function(session, data)
 end
 
 actionHandlers.Home = function(session)
+	Tycoon.hooks.leavingForHome(session)
 	local character = session.player.Character
 	if character then
 		character:PivotTo(session.plot.spawn)
@@ -31701,8 +31715,8 @@ return MogFx
 --     outline) visible within LABEL_MAX_DISTANCE.
 --   * "OrbsPicked" effects: ghost orbs magnet into the character with a rising
 --     combo blip.
---   * Auto Aura (server `Auto` attribute set just before removal): the orb winds up with a
---     squash, then flies to the player if near, else bursts into sparkles where it lay.
+--   * Auto Aura: the server removes the orb once it has landed and rested; it just vanishes
+--     (no effect is sent for it).
 --   * Look: each orb is drawn as clones of props/OrbBall (Color = tier colour) and
 --     props/OrbShine (white) via AssetModels, and the server's ball is hidden locally. Without
 --     the uploaded models the server's ball shows in the tier colour.
@@ -31736,7 +31750,6 @@ local FAR = CFrame.new(0, -10000, 0)
 local ROLL_WINDOW = 1.5 -- seconds after Spawned during which an orb still rolls in
 local SOUND_GAP = 1 / 12
 local COMBO_RESET = 0.6
-local AUTO_FLY_RANGE = 60 -- Auto Aura orbs fly to the player within this many studs
 local LABEL_MAX_DISTANCE = 70 -- camera distance cap of the "xN" tags (BillboardGui.MaxDistance)
 local LABEL_HEIGHT = 1.15 -- studs
 local WHITE = Color3.new(1, 1, 1)
@@ -33164,13 +33177,7 @@ local function track(part: Instance)
 	table.insert(
 		fx.conns,
 		p.AttributeChanged:Connect(function(attr)
-			if attr == "Auto" then
-				-- Auto Aura wind-up: a quick squash and swell before the server collects it.
-				fx.squash = 0
-				fx.squashAmp = 0.35
-				fx.pulse = 0.3
-				fx.still = false
-			elseif attr == "Tier" then
+			if attr == "Tier" then
 				clearBall(fx)
 				styleOrb(fx)
 			elseif attr == "Feed" then
@@ -33248,20 +33255,7 @@ local function onPicked(data: any)
 	end
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
-	local auto = data.auto == true
 	local counts = if type(data.counts) == "table" then data.counts else {}
-	if auto and (not root or (root.Position - (data.positions[1] or root.Position)).Magnitude > AUTO_FLY_RANGE) then
-		-- Auto Aura away from the pen: each orb bursts into sparkles and a puff where it lay.
-		for i, pos in data.positions do
-			if typeof(pos) == "Vector3" and i <= 8 then
-				local color = ORB_PALETTE[1]
-				Orbs.sparkle(pos + Vector3.new(0, 0.6, 0), color, 4, 0.6)
-				Orbs.puff(pos)
-			end
-		end
-		pickupBlip(math.min(#data.positions, 3))
-		return
-	end
 	if not root then
 		return
 	end
@@ -33292,9 +33286,9 @@ local function onPicked(data: any)
 			variant = "Ball",
 			size = 1.3 * grow,
 			endSize = 0.25 * grow,
-			duration = (if auto then 0.4 else 0.25) + math.random() * 0.15,
-			delay = (i - 1) * (if auto then 0.06 else 0.035),
-			arc = if auto then 4 else 1.5,
+			duration = 0.25 + math.random() * 0.15,
+			delay = (i - 1) * 0.035,
+			arc = 1.5,
 			accel = true,
 			trail = true,
 			onDone = function()
@@ -33302,9 +33296,7 @@ local function onPicked(data: any)
 				if count >= 2 then
 					Orbs.ring(root.Position - Vector3.new(0, 2.5, 0), color, 1.6 + grow, 0.35, 0.35)
 				end
-				if not auto or i <= 6 then -- a wall of auto orbs only blips the first few
-					pickupBlip(count)
-				end
+				pickupBlip(count)
 			end,
 		})
 	end
