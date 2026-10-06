@@ -35,10 +35,10 @@ sand island in the sea.
   player's real plot. It can be skipped. Server: `src/server/Intro.luau`; client: `src/client/Intro/*`.
 - **Tutorial.** A slim, skippable checklist of 5 steps: buy a unit, pick up orbs, deposit, collect cash,
   merge. A quest pill under the top HUD and a small bobbing chevron over the target show the current
-  step. Each step completes on the real server event. Finishing pays 25 Rizz + $250.
+  step. Each step completes on the real server event. Finishing pays 25 Rizz + $25.
 - **Rack.** Units stand on a display rack of up to 10 shelves and 100 slots (`Economy.UNIT_CAP`), each
   with a name plate that glows more at higher tiers. Two units of a tier merge into one of the next tier
-  (2.6x output) on the Merge pad or with Auto Merge ($25,000). At the cap, a new unit first auto-merges
+  (2.2x output) on the Merge pad or with Auto Merge ($5,000). At the cap, a new unit first auto-merges
   the lowest pair; units are refused only when nothing can merge. The HUD shows "37/100", or "RACK FULL"
   when the rack is full.
 - **Orbs.** Each unit drops orbs that hop off its shelf, roll along the gutter and down the chute into the
@@ -57,8 +57,9 @@ sand island in the sea.
   x2"), the client adds a warm golden-hour grade, soft bloom, sun rays and drifting gold sparkles, and the
   music cross-fades to the surge track (`src/client/Fx/Surge.luau`, `Theme.SurgeMusicId`).
 - **Crates** (Common to Legendary) slide down the same chute into the pen. Walk into one to pick it up
-  (within 4.5 studs, one at a time; `src/shared/CratePickup.luau`). The crate panel shows the odds for
-  your best tier and offers:
+  (within 4.5 studs, one at a time; `src/shared/CratePickup.luau`). Crates hold units around half-way
+  between tier 1 and your best tier (`Economy.chestAnchor`), so they help without skipping the curve. The
+  crate panel shows the odds for your best tier and offers:
   - **Open now** with the "Open Crate" product (R$ 30, any rarity), or free and instant with the
     **Crate Master** pass. Both are offered only where `PolicyService` allows paid random items.
   - Carry it to the **Crate Smasher** to open it free on a timer (the VIP Smasher pass is 3x faster).
@@ -72,7 +73,7 @@ sand island in the sea.
 - **Game Modes.** A plaza on the hub has three gates; Parkour is live, two say COMING SOON
   (`src/server/GameModes.luau`, `src/server/Modes/*`). Parkour is a timed run over the sea with in-order
   checkpoints and a too-fast-leg check. A valid finish pays exactly the smallest cash pack's amount on the
-  first finish ever and then at most once per 10 minutes, plus 25 Rizz on the first finish ever.
+  first finish ever and then at most once per 30 minutes, plus 25 Rizz on the first finish ever.
 - **Shop packs scale with progression.** Cash packs pay a number of seconds of your income with a
   minimum per pack, and Rizz packs grow from x1 at tier 1 up to x4 (`Economy.progression`). The shop shows
   each player the same amounts the server grants.
@@ -130,7 +131,8 @@ rokit install                            # install the pinned tools
 scripts/check.sh                         # format check, lint, type-check, unit tests, build build/ChadAuraTycoon.rbxlx
 scripts/lint-files.sh src/a.luau [...]   # the same checks on just these files (work in progress)
 rojo serve chad.project.json             # live-sync into Studio
-lune run scripts/simulate                # print the progression curve of a greedy player
+lune run scripts/simulate                # when a greedy no-pass player reaches each tier (600 h)
+lune run scripts/simulate --extras --aura --cash   # with free reward, parkour, surge, crates and passes
 preview/render.sh                        # regenerate preview/screenshots/chad/
 ```
 

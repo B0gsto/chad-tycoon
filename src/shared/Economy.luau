@@ -15,7 +15,7 @@
 
 local Economy = {}
 
-Economy.VERSION = "1.1.0"
+Economy.VERSION = "1.2.0"
 
 Economy.MAX_TIER = 25
 Economy.MAX_BUY_TIER = 15
@@ -31,7 +31,7 @@ Economy.DISPLAY_SLOTS = Economy.DISPLAY_ROWS * Economy.DISPLAY_COLS
 
 -- Each tier produces this many times more than the previous one. Must be greater
 -- than MERGE_RATIO so merging is always an upgrade.
-Economy.TIER_RATE_GROWTH = 2.6
+Economy.TIER_RATE_GROWTH = 2.2
 
 function Economy.unitRate(tier: number): number
 	return Economy.TIER_RATE_GROWTH ^ (tier - 1)
@@ -176,9 +176,14 @@ end
 
 -- Buying ----------------------------------------------------------------------
 
-Economy.BUY_BASE_PRICE = 20
-Economy.BUY_PRICE_GROWTH = 2.3
+Economy.BUY_BASE_PRICE = 50
+Economy.BUY_PRICE_GROWTH = 4
 Economy.BUY_AMOUNTS = { 1, 5, 25, 100 }
+-- Units to buy at buy tier 1 before upgrading, growing by BUY_REQ_GROWTH per buy tier.
+Economy.BUY_REQ_BASE = 1
+Economy.BUY_REQ_GROWTH = 1.5
+-- A buy tier upgrade costs this share of buying the requirement at the next tier's base price.
+Economy.BUY_TIER_UPGRADE_SHARE = 0.5
 
 function Economy.basePrice(buyTier: number): number
 	return Economy.BUY_BASE_PRICE * Economy.BUY_PRICE_GROWTH ^ (buyTier - 1)
@@ -186,7 +191,7 @@ end
 
 -- Units that must be bought at the current buy tier before it can be upgraded.
 function Economy.buyTierRequirement(buyTier: number): number
-	return math.floor(150 * 1.6 ^ (buyTier - 1))
+	return math.floor(Economy.BUY_REQ_BASE * Economy.BUY_REQ_GROWTH ^ (buyTier - 1))
 end
 
 -- Price of the next single unit. Grows linearly with purchases made at this
@@ -203,17 +208,17 @@ function Economy.bulkPrice(buyTier: number, boughtAtTier: number, amount: number
 end
 
 function Economy.buyTierUpgradeCost(buyTier: number): number
-	return Economy.basePrice(buyTier + 1) * Economy.buyTierRequirement(buyTier) * 0.5
+	return Economy.basePrice(buyTier + 1) * Economy.buyTierRequirement(buyTier) * Economy.BUY_TIER_UPGRADE_SHARE
 end
 
-Economy.AUTO_MERGE_COST = 25000
+Economy.AUTO_MERGE_COST = 5000
 
 -- Processing (the converter that turns deposited orbs into cash) ---------------
 
-Economy.PROCESS_BASE = 10
+Economy.PROCESS_BASE = 4
 Economy.PROCESS_GROWTH = 1.12
-Economy.PROCESS_COST_BASE = 75
-Economy.PROCESS_COST_GROWTH = 1.155
+Economy.PROCESS_COST_BASE = 200
+Economy.PROCESS_COST_GROWTH = 1.18
 Economy.PROCESS_BULK = 10
 
 function Economy.processRate(level: number): number
@@ -295,7 +300,7 @@ end
 
 Economy.CHEST_RARITIES = { "Common", "Uncommon", "Rare", "Epic", "Legendary" }
 
--- `offsets` = { tier offset from the player's highest tier, % chance }.
+-- `offsets` = { tier offset from the crate anchor (see chestAnchor), % chance }.
 -- `minAnchor` = the lowest tier the offsets are applied to: at very low highest
 -- tiers Rare+ crates shift their window up instead of piling the clamped
 -- chances onto tier 1, so they still feel better than a Common crate.
@@ -324,6 +329,16 @@ Economy.CHEST_SPAWN_CHANCE = 0.45
 Economy.MAX_FLOOR_CHESTS = 3
 Economy.PREMIUM_UNLOCK_SPEED = 3
 
+-- Crates are anchored this share of the way from the player's highest tier down to tier 1
+-- (rounded towards the highest tier). Late tiers take hours to reach while crates keep
+-- arriving every few minutes, so the gap grows with the tier to keep crates a bonus
+-- rather than a shortcut: highest 3 -> anchor 2, 6 -> 4, 10 -> 6, 20 -> 11, 25 -> 13.
+Economy.CHEST_TIER_LAG = 0.5
+
+function Economy.chestAnchor(highestTier: number): number
+	return highestTier - math.floor((highestTier - 1) * Economy.CHEST_TIER_LAG)
+end
+
 function Economy.isRarity(rarity: string): boolean
 	return Economy.CHEST_INFO[rarity] ~= nil
 end
@@ -336,11 +351,11 @@ end
 
 export type Odds = { tier: number, chance: number }
 
--- Possible tiers and their % chance, relative to the player's highest tier.
+-- Possible tiers and their % chance, relative to the crate anchor of the player's highest tier.
 -- Offsets that clamp onto the same tier are combined (see `minAnchor`).
 function Economy.chestOdds(rarity: string, highestTier: number): { Odds }
 	local info = Economy.CHEST_INFO[rarity]
-	local anchor = math.max(highestTier, info.minAnchor or 1)
+	local anchor = math.max(Economy.chestAnchor(highestTier), info.minAnchor or 1)
 	local byTier: { [number]: number } = {}
 	for _, pair in info.offsets do
 		local tier = math.clamp(anchor + pair[1], 1, Economy.MAX_TIER)
@@ -404,7 +419,7 @@ Economy.FREE_REWARD_MIN = 100
 
 -- One-time reward for finishing the onboarding tutorial.
 Economy.TUTORIAL_REWARD_GEMS = 25
-Economy.TUTORIAL_REWARD_CASH = 250
+Economy.TUTORIAL_REWARD_CASH = 25
 
 Economy.OFFLINE_CAP_SECONDS = 8 * 3600
 Economy.OFFLINE_EFFICIENCY = 0.25
@@ -479,7 +494,7 @@ end
 -- (moneyPackAmount with that pack's seconds and minimum): on the first finish ever and then
 -- at most once per MODE_REWARD_COOLDOWN. Players may run again straight away, but finishes
 -- inside the cooldown pay no cash. The first finish ever also pays Rizz.
-Economy.MODE_REWARD_COOLDOWN = 600
+Economy.MODE_REWARD_COOLDOWN = 1800
 Economy.MODE_FIRST_CLEAR_GEMS = 25
 
 export type ModeReward = {
