@@ -1269,14 +1269,23 @@ Theme.Monetization = {
 	},
 	PassOrder = { "AutoLoot", "AutoCash", "DoubleAura", "DoubleMoney", "PremiumUnlocker", "CrateKey" },
 	-- Cash packs give `Seconds` of the buyer's income, never below their progression floor
-	-- (Economy.moneyPackAmount); `Min` is the absolute floor for brand-new players.
+	-- (Economy.moneyPackAmount); `Min` is the absolute floor for brand-new players. Packs are
+	-- 15 min / 1 h / 5 h / 24 h of income.
 	MoneyPacks = {
-		{ Id = 3716878799, Price = 19, Seconds = 300, Min = 1000 },
 		{ Id = 3716878815, Price = 49, Seconds = 900, Min = 3000 },
-		{ Id = 3716878826, Price = 99, Seconds = 2700, Min = 10000 },
-		{ Id = 3716878834, Price = 249, Seconds = 7200, Min = 30000 },
+		{ Id = 3716953998, Price = 199, Seconds = 3600, Min = 12000 },
 		{ Id = 3716878844, Price = 499, Seconds = 18000, Min = 100000 },
-		{ Id = 3716878853, Price = 999, Seconds = 43200, Min = 300000 },
+		{ Id = 3716954002, Price = 1000, Seconds = 86400, Min = 500000 },
+	},
+	-- Aura packs put aura straight into the buyer's tank (profile.carried, ready for the
+	-- converter): `Seconds` of the buyer's aura production, never below the progression floor
+	-- (Economy.auraPackAmount); `Min` is the floor for brand-new players. Roblox names:
+	-- "Aura Pack: 15 Minutes / 1 Hour / 5 Hours / 24 Hours".
+	AuraPacks = {
+		{ Id = 3716954009, Price = 49, Seconds = 900, Min = 3000 },
+		{ Id = 3716954016, Price = 199, Seconds = 3600, Min = 12000 },
+		{ Id = 3716954024, Price = 499, Seconds = 18000, Min = 100000 },
+		{ Id = 3716954037, Price = 1000, Seconds = 86400, Min = 500000 },
 	},
 	-- Rizz packs give `Base` Rizz at tier 1, growing with the buyer's highest tier
 	-- (Economy.gemPackAmount). Roblox names: Small / Big / Mega Rizz Pack.
@@ -1287,6 +1296,13 @@ Theme.Monetization = {
 	},
 	-- Instant crate opening: one developer product, the same price for every crate rarity.
 	CrateOpen = { Id = 3716878439, Price = 30 },
+}
+
+-- Game modes (Server.GameModes). A Parkour finish pays `RewardSeconds` of the player's income,
+-- never below their progression floor nor `RewardMin` (Economy.modeReward, the same sizing
+-- as a cash pack), with the Economy.MODE_REWARD_COOLDOWN between full rewards.
+Theme.Modes = {
+	Parkour = { RewardSeconds = 300, RewardMin = 1000 },
 }
 
 -- Cosmetics: each item is unlocked by its own game pass (Theme.Monetization.Passes[Pass]) or

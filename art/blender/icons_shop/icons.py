@@ -337,6 +337,126 @@ def gem_pack3():
 
 
 # ------------------------------------------------------------------------------------------------
+# Aura packs
+# ------------------------------------------------------------------------------------------------
+
+
+# The game's aura orb paint (Theme.OrbColors tiers 1..5): violet, hot pink, sunny yellow, mint, sky
+# blue. Each orb is the shoplib proof orb (self-lit sphere, white gloss pill and dot) with a
+# FACING ramp in its tier colour: pale core, full colour, a deeper band and a coloured rim.
+AURA = {
+    "violet": [(0.0, ck.mix("Grape", "White", 0.35)), (0.4, "Grape"), (0.75, "GrapeDeep"), (1.0, "Magenta")],
+    "pink": [(0.0, ck.mix((255, 92, 170), "White", 0.4)), (0.4, (255, 92, 170)),
+             (0.75, ck.mix((255, 92, 170), "GrapeDeep", 0.3)), (1.0, "Magenta")],
+    "yellow": [(0.0, ck.mix((255, 208, 64), "White", 0.45)), (0.4, (255, 208, 64)),
+               (0.75, ck.mix((255, 208, 64), "Orange", 0.6)), (1.0, ck.mix("Orange", "Coral", 0.35))],
+    "mint": [(0.0, ck.mix((72, 214, 150), "White", 0.4)), (0.4, (72, 214, 150)),
+             (0.75, ck.mix((72, 214, 150), "Emerald", 0.6)), (1.0, ck.mix((72, 214, 150), "CyanPop", 0.45))],
+    "sky": [(0.0, ck.mix((80, 170, 255), "White", 0.4)), (0.4, (80, 170, 255)), (0.75, "BlueDeep"),
+            (1.0, ck.mix((80, 170, 255), "Grape", 0.4))],
+}
+
+
+def aura_orb(location, r, tier="violet", sparkles=False):
+    """One aura orb of radius r in a Theme.OrbColors tier colour (see AURA), as a posable empty."""
+    key = "aura_" + tier
+    mat = sl._mats.get(key)
+    if mat is None:
+        mat = ck.gradient_material("Aura_" + tier, AURA[tier], mode="FACING", emission=0.14, roughness=0.15,
+                                   coat=0.9)
+        sl._mats[key] = mat
+    white = M("White", roughness=0.3, coat=0.0, emission=1.2)
+    o = ck.sphere(1.0, 48, 24, mat, "AuraOrb")
+    gl = ck.capsule(0.15, 0.62, 16, 4, white, "Gloss", axis="Z")
+    gl.location = (-0.5, -0.6, 0.5)
+    gl.rotation_euler = (0.8, -0.6, 0.7)
+    gl.scale = (1.0, 0.4, 1.0)
+    dot = ck.sphere(0.085, 16, 8, white, "GlossDot", (-0.2, -0.86, 0.5))
+    dot.scale = (1.0, 0.5, 1.0)
+    parts = [o, gl, dot]
+    if sparkles:
+        st = ck.extrude_shape(ck.star_points(4, 0.4, 0.15, round_steps=2, rotate=90), depth=0.14,
+                              mat=M(ck.mix("Sunny", "White", 0.45), emission=0.6), name="OrbSparkle", bevel=0.045)
+        st.location = (0.42, -1.0, 0.36)
+        st.rotation_euler = (1.45, 0.0, 0.4)
+        parts.append(st)
+    return pose(parts, location, scale=r, name="AuraOrb")
+
+
+def orbs(spec):
+    """[(x, y, z, r, tier[, sparkles]), ...] -> aura orbs."""
+    return [aura_orb((x, y, z), r, tier, bool(rest and rest[0])) for x, y, z, r, tier, *rest in spec]
+
+
+def aura_pack1():
+    """A small cluster of three orbs: violet and pink side by side, a sunny one on top."""
+    parts = orbs([(-0.8, 0.0, 0.0, 0.85, "violet", True), (0.8, 0.15, 0.0, 0.8, "pink"),
+                  (0.02, 0.35, 1.22, 0.74, "yellow")])
+    return [pose(parts, rotation=(0, 0, -6))], {}
+
+
+def aura_pack2():
+    """A heap of seven orbs (three, two, one, and one rolling in front) with two sparkles."""
+    r = 0.62
+    parts = orbs([(-1.24, 0.0, 0.0, r, "pink"), (0.0, -0.1, 0.0, r, "violet", True), (1.24, 0.0, 0.0, r, "mint"),
+                  (-0.62, 0.25, 1.05, r, "sky"), (0.62, 0.25, 1.05, r, "yellow"),
+                  (0.0, 0.45, 2.08, r, "violet"), (1.55, -1.0, -0.2, 0.44, "pink")])
+    parts = [pose(parts, rotation=(0, 0, -6))]
+    return parts + [sl.sparkle((-1.55, -0.8, 1.75), 0.32), sl.sparkle((1.3, -0.7, 2.15), 0.26)], {}
+
+
+def aura_bowl(radius=1.75, height=1.0):
+    """Wide sunny gold bowl (gold-deep foot and fat rim) with a glowing violet mound filling it."""
+    gold = M(ck.mix("Sunny", "White", 0.06))
+    deep = M(ck.mix("Sunny", "Orange", 0.4))
+    prof = [(0, 0.0), (radius * 0.45, 0.0), (radius * 0.62, 0.08), (radius * 0.86, height * 0.4),
+            (radius * 0.98, height * 0.85), (radius, height)]
+    bowl = ck.lathe(prof, 56, gold, "Bowl", smooth_angle=60)
+    foot = ck.lathe(ck.round_profile(0, radius * 0.5, -0.22, 0.04, 0.08, 3), 48, deep, "Foot")
+    rim = ck.torus(radius, 0.13, 64, 12, mat=deep, name="BowlRim", location=(0, 0, height))
+    band = ck.torus(radius * 0.88, 0.07, 64, 8, mat=deep, name="BowlBand", location=(0, 0, height * 0.5))
+    fill = ck.lathe([(0, height + 0.45), (radius * 0.6, height + 0.32), (radius * 0.97, height - 0.05), (0, height - 0.05)],
+                    48, sl._mats["aura_violet"], "AuraFill", smooth_angle=80)
+    gl = ck.gloss_streak([(radius * 0.92 * math.cos(math.radians(a)), radius * 0.92 * math.sin(math.radians(a)),
+                           height * 0.68) for a in (-150, -138, -126, -114)], 0.14, (-0.5, -0.6, 0.3))
+    return [bowl, foot, rim, band, fill, gl]
+
+
+def aura_pack3():
+    """A big golden bowl brimming with a glowing heap of nine big orbs, sparkles and a soft violet glow."""
+    r = 0.6
+    heap = orbs([(-1.15, -0.55, 1.2, r, "pink"), (0.0, -0.95, 1.15, r, "violet", True), (1.15, -0.55, 1.2, r, "mint"),
+                 (-1.05, 0.65, 1.3, r, "sky"), (1.05, 0.65, 1.3, r, "violet"),
+                 (-0.6, -0.15, 2.05, r, "yellow"), (0.62, -0.1, 2.05, r, "sky"), (0.0, 0.7, 2.05, r, "pink"),
+                 (0.0, 0.1, 2.95, 0.62, "violet")])
+    bowl = aura_bowl()  # after the orbs: the bowl's fill reuses the violet orb material
+    parts = [pose(bowl + heap, rotation=(0, 0, -8))]
+    parts += [sl.sparkle((-1.75, -0.9, 2.75), 0.36), sl.sparkle((1.6, -0.9, 3.1), 0.3),
+              sl.sparkle((1.95, -1.2, 0.9), 0.24)]
+    return parts, {"glow": ("Grape", 0.6)}
+
+
+def aura_pack4():
+    """The top pack: the golden bowl overflowing with a tall heap of big orbs in every aura colour,
+    orbs spilling over the rim and onto the ground, the strongest violet glow and big sparkles."""
+    r = 0.6
+    heap = orbs([(-1.15, -0.55, 1.2, r, "pink"), (0.0, -0.95, 1.15, r, "violet", True), (1.15, -0.55, 1.2, r, "mint"),
+                 (-1.05, 0.65, 1.3, r, "sky"), (1.05, 0.65, 1.3, r, "violet"),
+                 # a wide dome of five on top, two more above it and a crowning orb
+                 (-1.25, -0.2, 2.15, r, "yellow"), (0.0, -0.35, 2.0, r, "sky"), (1.25, -0.15, 2.15, r, "pink"),
+                 (-0.6, 0.75, 2.1, r, "mint"), (0.6, 0.8, 2.1, r, "yellow"),
+                 (-0.62, 0.05, 2.95, r, "violet"), (0.62, 0.1, 2.95, r, "mint"), (0.0, 0.55, 3.6, 0.58, "pink", True),
+                 # spilling over the front rim, then out on the ground in front of the bowl
+                 (-1.6, -1.3, 1.0, 0.5, "yellow"), (1.7, -1.15, 0.98, 0.5, "sky"),
+                 (-0.55, -2.15, 0.25, 0.46, "mint"), (0.75, -2.2, 0.2, 0.4, "violet")])
+    bowl = aura_bowl()
+    parts = [pose(bowl + heap, rotation=(0, 0, -8))]
+    parts += [sl.sparkle((-1.75, -1.0, 3.25), 0.46), sl.sparkle((1.7, -1.0, 3.35), 0.4),
+              sl.sparkle((2.15, -1.4, 1.75), 0.28), sl.sparkle((-2.15, -1.4, 0.3), 0.26)]
+    return parts, {"glow": ("Grape", 1.0)}
+
+
+# ------------------------------------------------------------------------------------------------
 # Rewards and misc
 # ------------------------------------------------------------------------------------------------
 
@@ -557,6 +677,10 @@ ICONS = {
     "GemPack1": gem_pack1,
     "GemPack2": gem_pack2,
     "GemPack3": gem_pack3,
+    "AuraPack1": aura_pack1,
+    "AuraPack2": aura_pack2,
+    "AuraPack3": aura_pack3,
+    "AuraPack4": aura_pack4,
     "Heart": heart,
     "Timer": timer,
     "Crown": crown_icon,

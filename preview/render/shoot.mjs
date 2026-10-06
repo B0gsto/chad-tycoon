@@ -231,6 +231,8 @@ function shotList(world) {
 		{ name: "19-entrance", scene: "world", gui: "none", camera: { pos: P(10, 9, -62), look: P(0, 6, -20), fov: 58 }, extra: { shadowSpan: 120 } },
 		{ name: "20-hub", scene: "world", gui: "none", camera: { pos: [22, 26, -58], look: [0, 8, 0], fov: 58 }, extra: { shadowSpan: 160 } },
 		{ name: "21-shop-cosmetics", scene: "world", gui: "shop_cosmetics", camera: play },
+		{ name: "22-shop-cash", scene: "world", gui: "shop_cash", camera: play },
+		{ name: "23-shop-aura", scene: "world", gui: "shop_aura", camera: play },
 	];
 }
 

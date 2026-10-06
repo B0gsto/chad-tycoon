@@ -71,11 +71,12 @@ sand island in the sea.
   cash and Rizz bundle plus the Rookie Trail.
 - **Game Modes.** A plaza on the hub has three gates; Parkour is live, two say COMING SOON
   (`src/server/GameModes.luau`, `src/server/Modes/*`). Parkour is a timed run over the sea with in-order
-  checkpoints and a too-fast-leg check. A valid finish pays exactly the smallest cash pack's amount on the
+  checkpoints and a too-fast-leg check. A valid finish pays 5 minutes of income (at least 1,000, `Theme.Modes.Parkour`) on the
   first finish ever and then at most once per 10 minutes, plus 25 Rizz on the first finish ever.
-- **Shop packs scale with progression.** Cash packs pay a number of seconds of your income with a
-  minimum per pack, and Rizz packs grow from x1 at tier 1 up to x4 (`Economy.progression`). The shop shows
-  each player the same amounts the server grants.
+- **Shop packs scale with progression.** Cash packs pay 15 min / 1 h / 5 h / 24 h of your income and aura
+  packs put 15 min / 1 h / 5 h / 24 h of your aura production straight into your tank, each with a minimum
+  per pack; Rizz packs grow from x1 at tier 1 up to x4 (`Economy.progression`). The shop shows each player
+  the same amounts the server grants.
 - **HUD** (`src/client/UI/Hud.luau`), laid out like the owner's reference game: chunky icons and outlined
   text straight over the world. Settings gear top right; unit count and deposit strip top centre; icon grid
   (Home, Ranking, Modes, Index, Shop, Invite) and a 2X CASH / Starter Pack promo on the left; cash, Rizz
@@ -104,7 +105,8 @@ All passes and products exist on the universe and their ids are in `Theme.Moneti
 | Pass | All Cosmetics Pack (`AllCosmetics`) | 299 |
 | Pass | Starter Pack (`StarterPack`) | 59 |
 | Product | Open Crate (`CrateOpen`) | 30 |
-| Product | Cash packs 1-6 (`MoneyPacks`) | 19, 49, 99, 249, 499, 999 |
+| Product | Cash packs 1-4 (`MoneyPacks`) | 49, 199, 499, 1000 |
+| Product | Aura packs 1-4 (`AuraPacks`) | 49, 199, 499, 1000 |
 | Product | Rizz packs 1-3 (`GemPacks`) | 49, 249, 599 |
 
 If a price changes on the dashboard, change `Price` in the theme too (the buttons show it). An id of `0`

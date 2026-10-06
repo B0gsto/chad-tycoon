@@ -8,9 +8,9 @@
 	  player back to their last checkpoint (0 = start deck) with a splash; the run goes on.
 	- Standing on the finish deck after the last checkpoint ends the run; Rules.finish checks
 	  that no leg was impossibly fast. Valid finishes record the personal best
-	  (profile.modes.parkour) and the server best list, and pay Economy.modeReward: exactly the
-	  smallest shop cash pack (Theme.Monetization.MoneyPacks[1], same Economy.moneyPackAmount
-	  call as Monetization) on the first finish ever and then once per
+	  (profile.modes.parkour) and the server best list, and pay Economy.modeReward:
+	  Theme.Modes.Parkour.RewardSeconds of income, at least RewardMin (the same
+	  Economy.moneyPackAmount sizing as a shop cash pack) on the first finish ever and then once per
 	  Economy.MODE_REWARD_COOLDOWN; nothing inside the cooldown (players may still run
 	  again at once); MODE_FIRST_CLEAR_GEMS Rizz on the first finish ever.
 	- Leaving the course area for Course.LEAVE_SECONDS ends the run ("left").
@@ -76,9 +76,17 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	local function rewardFor(session: any): Economy.ModeReward
 		local p = session.profile
 		local rec = record(session)
-		local pack = theme.Monetization.MoneyPacks[1]
+		local config = theme.Modes.Parkour
 		local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
-		return Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, rec.clears == 0, rec.lastRewardAt, os.time())
+		return Economy.modeReward(
+			Tycoon.income(session),
+			progression,
+			config.RewardSeconds,
+			config.RewardMin,
+			rec.clears == 0,
+			rec.lastRewardAt,
+			os.time()
+		)
 	end
 
 	local function updateBoard()
