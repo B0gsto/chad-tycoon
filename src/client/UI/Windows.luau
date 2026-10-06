@@ -3222,48 +3222,72 @@ end
 
 -- Game Modes --------------------------------------------------------------------------------
 --[[
-	A small list of plaza game modes: Parkour (personal best, clears, what finishing pays
-	right now and a PLAY button that fires ModeStart, which teleports to the start deck;
-	PLAY is the one loud element) plus one slim "More modes coming soon" row. The window
-	is sized to those two rows. Reads State.data.modes.parkour.
+	The plaza game modes, one full row each in the same arrangement (quiet medal, title,
+	blurb, stats, reward line and a gold PLAY that fires ModeStart and closes the window;
+	PLAY is the one loud element per row), then one slim "More modes coming soon" row.
+
+	Parkour adds a picker of 10 round level chips under its blurb: cleared levels are
+	filled with the accent and carry a tiny check, the next one to play is outlined and
+	softly pulsing, locked ones are dim with a lock (tapping one wobbles it and says
+	"Clear level N-1 first!"). The selected level's name, difficulty (10 pips), best and
+	clears and what finishing it pays sit above PLAY, which starts that level. The
+	selection snaps back to `unlocked` whenever the window opens.
+
+	MOG TEST: best score, rivals mogged and passes, reward line, PLAY (disabled
+	"PLAYING" while a test runs). Reads State.data.modes.parkour and .mog.
 ]]
 local function runTime(seconds: number): string
 	local tenths = math.floor(math.max(seconds, 0) * 10 + 0.5)
 	return string.format("%d:%02d.%d", tenths // 600, (tenths // 10) % 60, tenths % 10)
 end
 
-local function buildModes(screen: ScreenGui)
-	local accent = Theme.World.Mint
-	-- 150 (Parkour) + 10 + 44 (coming soon) + 20 padding + 84 of header and margins.
-	local window = Kit.window(screen, "Modes", "Game Modes", "🏁", accent, Vector2.new(540, 308), Vector2.new(420, 300))
-	register("Modes", window)
-	local action = Net.event("Action")
-	Kit.list(window.content, 10)
+local function plural(n: number, word: string, many: string?): string
+	return string.format("%d %s", n, if n == 1 then word else many or word .. "s")
+end
 
-	local rows: { GuiObject } = {}
+-- "Finish: +$X (+N Rizz)" or the cooldown countdown; `bonus` adds a "(xB)" tag.
+local function setRewardLine(label: TextLabel, cash: number, gems: number, full: boolean, cooldownEnds: number, bonus: number?)
+	local left = cooldownEnds - os.time()
+	if not full and left > 0 then
+		label.TextColor3 = C.TextDim
+		label.Text = "Reward again in " .. Format.time(left)
+		return
+	end
+	label.TextColor3 = C.MoneyText
+	local text = "Finish: +" .. Format.money(cash)
+	if bonus and bonus > 1.001 then
+		text ..= string.format("  (×%s)", (string.format("%.1f", bonus):gsub("%.0$", "")))
+	end
+	if gems > 0 then
+		text ..= " +" .. tostring(gems) .. " " .. W.Gem
+	end
+	label.Text = text
+end
 
-	-- Parkour
-	local parkour = Kit.panel(window.content, {
-		Name = "PARKOUR",
+type ModeRow = { panel: Frame, stats: TextLabel, reward: TextLabel, play: TextButton }
+
+-- One mode row: medal, title, blurb, stats line, reward line and the PLAY button.
+local function modeRow(parent: Instance, props: { [string]: any }, accent: Color3, onPlay: () -> ()): ModeRow
+	local panel = Kit.panel(parent, {
+		Name = props.Name,
 		Elevated = true,
-		Size = UDim2.new(1, 0, 0, 150),
-		LayoutOrder = 1,
+		Size = UDim2.new(1, 0, 0, props.Height),
+		LayoutOrder = props.LayoutOrder,
 		Radius = Kit.RADIUS.M + 2,
 	})
-	table.insert(rows, parkour)
-	-- Quiet medal (a mint rim only), so the PLAY button is the one loud thing here.
+	-- Quiet medal (an accent rim only), so the PLAY button is the one loud thing here.
 	local medal = Kit.new("Frame", {
 		Name = "Medal",
 		BackgroundColor3 = C.Well,
 		Size = UDim2.fromOffset(46, 46),
 		Position = UDim2.fromOffset(12, 14),
-		Parent = parkour,
+		Parent = panel,
 	})
 	Kit.corner(medal, 14)
 	Kit.new("UIStroke", { Thickness = 2, Color = accent, Transparency = 0.2, Parent = medal })
-	Kit.text(medal, { Text = "🏃", TextSize = 26, Size = UDim2.fromScale(1, 1), ZIndex = 2 })
-	Kit.title(parkour, {
-		Text = "PARKOUR",
+	Kit.text(medal, { Text = props.Medal, TextSize = 26, Size = UDim2.fromScale(1, 1), ZIndex = 2 })
+	Kit.title(panel, {
+		Text = props.Title,
 		TextSize = T.H3,
 		TextWrapped = false,
 		TextXAlignment = Enum.TextXAlignment.Left,
@@ -3271,8 +3295,8 @@ local function buildModes(screen: ScreenGui)
 		Position = UDim2.fromOffset(70, 14),
 		TextColor3 = C.Text,
 	})
-	Kit.text(parkour, {
-		Text = "Jump, bounce and slide over the sea!",
+	Kit.text(panel, {
+		Text = props.Blurb,
 		TextSize = T.Small,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.new(1, -80, 0, 20),
@@ -3280,30 +3304,32 @@ local function buildModes(screen: ScreenGui)
 		TextColor3 = C.TextDim,
 		StrokeThickness = 0,
 	})
-	local stats = Kit.text(parkour, {
+	local stats = Kit.text(panel, {
 		Name = "Stats",
 		Text = "",
 		Font = F.UI,
 		TextSize = T.Small,
 		TextXAlignment = Enum.TextXAlignment.Left,
+		TextWrapped = false,
 		Size = UDim2.new(1, -80, 0, 20),
 		Position = UDim2.fromOffset(70, 60),
 		TextColor3 = C.Text,
 		StrokeThickness = 0,
 	})
-	local reward = Kit.text(parkour, {
+	local reward = Kit.text(panel, {
 		Name = "Reward",
 		Text = "",
 		Font = F.UI,
 		TextSize = T.Small,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -24, 0, 20),
+		TextWrapped = false,
+		Size = UDim2.new(1, -164, 0, 20),
 		Position = UDim2.new(0, 12, 1, -40),
 		AnchorPoint = Vector2.new(0, 0.5),
 		TextColor3 = C.MoneyText,
 		StrokeThickness = 0,
 	})
-	local play = Kit.button(parkour, {
+	local play = Kit.button(panel, {
 		Name = "Play",
 		Text = "PLAY",
 		Font = Theme.Fonts.Display,
@@ -3312,17 +3338,258 @@ local function buildModes(screen: ScreenGui)
 		Size = UDim2.fromOffset(130, 50),
 		Position = UDim2.new(1, -12, 1, -12),
 		AnchorPoint = Vector2.new(1, 1),
-	}, function()
-		action:FireServer({ action = "ModeStart", mode = "parkour" })
-		Windows.closeAll()
-	end)
-	reward.Size = UDim2.new(1, -164, 0, 20)
+	}, onPlay)
+	return { panel = panel, stats = stats, reward = reward, play = play }
+end
+
+local LEVEL_CHIP = 32
+local PIP_COUNT = 10
+
+local function buildModes(screen: ScreenGui)
+	local accent = Theme.World.Mint
+	-- 204 (Parkour) + 10 + 150 (Mog) + 10 + 44 (coming soon) + 20 padding + 84 of header and
+	-- margins. Kit.fit scales the whole window down on short (phone landscape) screens.
+	local window = Kit.window(screen, "Modes", "Game Modes", "🏁", accent, Vector2.new(540, 522), Vector2.new(420, 500))
+	register("Modes", window)
+	local action = Net.event("Action")
+	Kit.list(window.content, 10)
+
+	local rows: { GuiObject } = {}
+	local selected = 1
+
+	-- Parkour ---------------------------------------------------------------------------
+	local parkour = modeRow(
+		window.content,
+		{
+			Name = "PARKOUR",
+			Height = 204,
+			LayoutOrder = 1,
+			Medal = "🏃",
+			Title = "PARKOUR",
+			Blurb = "Jump, bounce and slide over the sea!",
+		},
+		accent,
+		function()
+			action:FireServer({ action = "ModeStart", mode = "parkour", level = selected })
+			Windows.closeAll()
+		end
+	)
+	table.insert(rows, parkour.panel)
+	-- The selected level's details sit in the left column above the reward line.
+	local levelName = Kit.title(parkour.panel, {
+		Name = "LevelName",
+		Text = "",
+		TextSize = T.Body,
+		TextWrapped = false,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -164, 0, 22),
+		Position = UDim2.fromOffset(12, 106),
+		TextColor3 = C.Text,
+	})
+	local pipRow = Kit.new("Frame", {
+		Name = "Difficulty",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -164, 0, 16),
+		Position = UDim2.fromOffset(12, 130),
+		Parent = parkour.panel,
+	})
+	Kit.list(pipRow, 3, true).VerticalAlignment = Enum.VerticalAlignment.Center
+	Kit.icon(pipRow, "Fire", 16, C.Gold, { LayoutOrder = 0 })
+	local pips: { Frame } = {}
+	for i = 1, PIP_COUNT do
+		local pip = Kit.new("Frame", {
+			Name = "Pip" .. i,
+			BackgroundColor3 = C.Well,
+			Size = UDim2.fromOffset(10, 10),
+			LayoutOrder = i,
+			Parent = pipRow,
+		})
+		Kit.corner(pip, 3)
+		pips[i] = pip
+	end
+	local pipText = Kit.text(pipRow, {
+		Name = "Of10",
+		Text = "",
+		Font = F.UI,
+		TextSize = T.Tiny,
+		TextWrapped = false,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.fromOffset(44, 16),
+		LayoutOrder = PIP_COUNT + 1,
+		TextColor3 = C.TextDim,
+		StrokeThickness = 0,
+	})
+	parkour.stats.Position = UDim2.fromOffset(12, 148)
+	parkour.stats.Size = UDim2.new(1, -164, 0, 20)
+	parkour.reward.Position = UDim2.new(0, 12, 1, -24)
+
+	-- Level chips under the blurb.
+	local chipRow = Kit.new("Frame", {
+		Name = "Levels",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -24, 0, LEVEL_CHIP + 4),
+		Position = UDim2.fromOffset(12, 64),
+		Parent = parkour.panel,
+	})
+	Kit.list(chipRow, 6, true).VerticalAlignment = Enum.VerticalAlignment.Center
+	-- A "Clear level N-1 first!" bubble over the chips (the toast for locked taps).
+	local hint = Kit.pill(parkour.panel, {
+		Name = "Hint",
+		Text = "",
+		Font = Theme.Fonts.Display,
+		TextSize = T.Small,
+		Color = C.Bad,
+		Solid = true,
+		Size = UDim2.fromOffset(190, 26),
+		Position = UDim2.new(0.5, 0, 0, 40),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Visible = false,
+		ZIndex = 8,
+	})
+	local hintToken = 0
+	local function showHint(text: string)
+		hintToken += 1
+		local mine = hintToken
+		hint.Text = text
+		hint.Visible = true
+		Kit.pop(hint, 1.2)
+		task.delay(1.8, function()
+			if hintToken == mine then
+				hint.Visible = false
+			end
+		end)
+	end
+
+	type Chip = {
+		button: TextButton,
+		label: TextLabel,
+		stroke: UIStroke,
+		lock: Frame,
+		check: Frame,
+		state: string,
+		pulse: Tween?,
+	}
+	local chips: { Chip } = {}
+	local refresh: () -> ()
+	for i = 1, PIP_COUNT do
+		local button = Kit.new("TextButton", {
+			Name = "Level" .. i,
+			Text = "",
+			AutoButtonColor = false,
+			BackgroundColor3 = C.Well,
+			Size = UDim2.fromOffset(LEVEL_CHIP, LEVEL_CHIP),
+			LayoutOrder = i,
+			Parent = chipRow,
+		})
+		Kit.round(button)
+		local stroke = Kit.new("UIStroke", {
+			Thickness = 2,
+			Color = accent,
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+			Parent = button,
+		})
+		local label = Kit.number(button, {
+			Text = tostring(i),
+			TextSize = 16,
+			Size = UDim2.fromScale(1, 1),
+			TextColor3 = C.Text,
+			StrokeThickness = 0,
+			ZIndex = 2,
+		})
+		local lock = Kit.icon(button, "Lock", 16, C.TextMute, {
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 2,
+		})
+		local check = Kit.icon(button, "Check", 14, C.Good, {
+			Position = UDim2.new(1, 3, 0, -3),
+			AnchorPoint = Vector2.new(1, 0),
+			ZIndex = 3,
+		})
+		local chip: Chip = { button = button, label = label, stroke = stroke, lock = lock, check = check, state = "" }
+		chips[i] = chip
+		button.Activated:Connect(function()
+			local info = State.data and State.data.modes and State.data.modes.parkour
+			local unlocked = if type(info) == "table" then tonumber(info.unlocked) or 1 else 1
+			if i > unlocked then
+				Kit.sound("Error")
+				Kit.tween(button, 0.06, { Rotation = -14 })
+				task.delay(0.06, function()
+					Kit.tween(button, 0.08, { Rotation = 12 })
+					task.delay(0.08, function()
+						Kit.tween(button, 0.2, { Rotation = 0 }, Enum.EasingStyle.Back)
+					end)
+				end)
+				showHint(string.format("Clear level %d first!", i - 1))
+				return
+			end
+			Kit.sound("Click")
+			selected = i
+			Kit.pop(button, 1.4)
+			refresh()
+		end)
+	end
+
+	-- Paints a chip for its state ("cleared", "next", "locked"); only the next level pulses.
+	local function paintChip(chip: Chip, state: string, isSelected: boolean)
+		if chip.state ~= state then
+			chip.state = state
+			if chip.pulse then
+				chip.pulse:Cancel()
+				chip.pulse = nil
+			end
+			chip.stroke.Transparency = if state == "locked" then 0.6 else 0
+			if state == "next" then
+				local pulse = TweenService:Create(
+					chip.stroke,
+					TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+					{ Transparency = 0.65 }
+				)
+				pulse:Play()
+				chip.pulse = pulse
+			end
+		end
+		local cleared = state == "cleared"
+		local locked = state == "locked"
+		chip.button.BackgroundColor3 = if cleared then accent else C.Well
+		chip.button.BackgroundTransparency = if locked then 0.45 else 0
+		chip.label.Visible = not locked
+		chip.label.TextColor3 = if cleared then Theme.World.Ink else C.Text
+		chip.lock.Visible = locked
+		chip.check.Visible = cleared
+		if isSelected then
+			chip.stroke.Color = C.Gold
+			chip.stroke.Thickness = 3
+		else
+			chip.stroke.Color = if cleared then Kit.lip(accent) elseif locked then C.TextMute else accent
+			chip.stroke.Thickness = if locked then 1 else 2
+		end
+	end
+
+	-- MOG TEST --------------------------------------------------------------------------
+	local mog = modeRow(
+		window.content,
+		{
+			Name = "MOGTEST",
+			Height = 150,
+			LayoutOrder = 2,
+			Medal = "💪",
+			Title = "MOG TEST",
+			Blurb = "Hit the ring in time to out-mog 3 rivals!",
+		},
+		accent,
+		function()
+			action:FireServer({ action = "ModeStart", mode = "mog" })
+			Windows.closeAll()
+		end
+	)
+	table.insert(rows, mog.panel)
 
 	-- Every other mode: one slim, quiet row.
 	local soon = Kit.panel(window.content, {
 		Name = "ComingSoon",
 		Size = UDim2.new(1, 0, 0, 44),
-		LayoutOrder = 2,
+		LayoutOrder = 3,
 		Radius = Kit.RADIUS.M,
 		Transparency = 0.35,
 	})
@@ -3345,37 +3612,105 @@ local function buildModes(screen: ScreenGui)
 		ZIndex = 2,
 	})
 
-	local function refresh()
+	local function refreshParkour()
 		local data = State.data
 		local info = data and data.modes and data.modes.parkour
-		if type(info) ~= "table" then
-			stats.Text = "Best --  ·  0 clears"
-			reward.Text = ""
+		local list = if type(info) == "table" and type(info.levels) == "table" then info.levels else {}
+		local count = math.max(#list, 1)
+		local unlocked = math.clamp(if type(info) == "table" then tonumber(info.unlocked) or 1 else 1, 1, count)
+		selected = math.clamp(selected, 1, unlocked)
+		chipRow.Visible = #list > 0
+		for i, chip in chips do
+			local lv = list[i]
+			chip.button.Visible = lv ~= nil
+			if lv then
+				local state = if (tonumber(lv.clears) or 0) > 0 then "cleared" elseif i <= unlocked then "next" else "locked"
+				paintChip(chip, state, i == selected)
+			end
+		end
+		local lv = list[selected]
+		if type(info) ~= "table" or type(lv) ~= "table" then
+			levelName.Text = "Level 1"
+			pipText.Text = ""
+			parkour.stats.Text = "Best --  ·  0 clears"
+			parkour.reward.Text = ""
 			return
 		end
-		local best = if type(info.best) == "number" then runTime(info.best) else "--"
-		stats.Text = string.format("Best %s  ·  %d clear%s", best, info.clears or 0, if info.clears == 1 then "" else "s")
-		local preview = info.rewardPreview
-		local left = (tonumber(info.cooldownEnds) or 0) - os.time()
-		if type(preview) ~= "table" then
-			reward.Text = ""
-		elseif preview.full == false and left > 0 then
-			reward.TextColor3 = C.TextDim
-			reward.Text = "Reward again in " .. Format.time(left)
-		else
-			reward.TextColor3 = C.MoneyText
-			local text = "Finish: +" .. Format.money(preview.packCash or preview.cash or 0)
-			if (preview.gems or 0) > 0 then
-				text ..= " +" .. tostring(preview.gems) .. " " .. W.Gem
-			end
-			reward.Text = text
+		levelName.Text = string.format("Level %d  ·  %s", selected, tostring(lv.name or ""))
+		local difficulty = math.clamp(tonumber(lv.difficulty) or selected, 1, PIP_COUNT)
+		for i, pip in pips do
+			local on = i <= difficulty
+			pip.BackgroundColor3 = if on then C.Gold:Lerp(C.Bad, (i - 1) / (PIP_COUNT - 1)) else C.Well
+			pip.BackgroundTransparency = if on then 0 else 0.3
 		end
-		Kit.setButton(play, if info.running then "RESTART" else "PLAY")
+		pipText.Text = string.format("%d/%d", difficulty, PIP_COUNT)
+		local best = tonumber(lv.best) or 0
+		local clears = tonumber(lv.clears) or 0
+		parkour.stats.Text = string.format("Best %s  ·  %s", if best > 0 then runTime(best) else "--", plural(clears, "clear"))
+		-- rewardPreview is priced for info.level; rescale its cash to the selected level's bonus.
+		local preview = info.rewardPreview
+		if type(preview) ~= "table" then
+			parkour.reward.Text = ""
+		else
+			local current = list[tonumber(info.level) or 1]
+			local currentBonus = if type(current) == "table" then tonumber(current.bonus) or 1 else 1
+			local bonus = tonumber(lv.bonus) or 1
+			local cash = math.floor((tonumber(preview.packCash) or 0) / math.max(currentBonus, 0.01) * bonus + 0.5)
+			-- A level's first clear always pays in full (and adds the first-clear Rizz).
+			local first = clears == 0
+			local cooldownEnds = tonumber(info.cooldownEnds) or 0
+			local full = first or cooldownEnds <= os.time()
+			setRewardLine(parkour.reward, cash, if first then Economy.MODE_FIRST_CLEAR_GEMS else 0, full, cooldownEnds, bonus)
+		end
+		local runningHere = info.running and tonumber(info.level) == selected
+		Kit.setButton(parkour.play, if runningHere then "RESTART" else "PLAY")
+	end
+
+	local function refreshMog()
+		local data = State.data
+		local info = data and data.modes and data.modes.mog
+		if type(info) ~= "table" then
+			mog.stats.Text = "Best score --  ·  0 rivals  ·  0 passes"
+			mog.reward.Text = ""
+			return
+		end
+		local best = tonumber(info.best) or 0
+		mog.stats.Text = string.format(
+			"Best score %s  ·  %s  ·  %s",
+			if best > 0 then tostring(best) else "--",
+			plural(tonumber(info.rivals) or 0, "rival"),
+			plural(tonumber(info.clears) or 0, "pass", "passes")
+		)
+		local preview = info.rewardPreview
+		if type(preview) ~= "table" then
+			mog.reward.Text = ""
+		else
+			setRewardLine(
+				mog.reward,
+				tonumber(preview.packCash) or tonumber(preview.cash) or 0,
+				tonumber(preview.gems) or 0,
+				preview.full ~= false,
+				tonumber(info.cooldownEnds) or 0
+			)
+		end
+		Kit.setButton(mog.play, if info.running then "PLAYING" else "PLAY")
+		Kit.setEnabled(mog.play, not info.running)
+	end
+
+	refresh = function()
+		refreshParkour()
+		refreshMog()
+	end
+	-- Re-centre the selection on the level to play (the lowest unlocked, uncleared one).
+	local function resync()
+		local info = State.data and State.data.modes and State.data.modes.parkour
+		selected = if type(info) == "table" then tonumber(info.unlocked) or 1 else 1
+		refresh()
 	end
 	State.changed.Event:Connect(refresh)
 	window.onOpen.Event:Connect(function()
-		refresh()
-		-- The cooldown line counts down while the window is open.
+		resync()
+		-- The cooldown lines count down while the window is open.
 		task.spawn(function()
 			while window.isOpen() do
 				task.wait(1)
@@ -3385,10 +3720,10 @@ local function buildModes(screen: ScreenGui)
 	end)
 
 	beforeOpen.Modes = function()
-		refresh()
+		resync()
 		ripple(rows)
 	end
-	refresh()
+	resync()
 end
 
 function Windows.build(screen: ScreenGui)

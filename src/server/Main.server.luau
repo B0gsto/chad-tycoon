@@ -27,7 +27,7 @@ Tycoon.init(world, Theme)
 Tutorial.init()
 Intro.init()
 Monetization.init(Theme)
-GameModes.init(world.modes, Theme, Tycoon)
+GameModes.init(world.modes, Theme, Tycoon, world)
 Cosmetics.init(Theme)
 Ranking.init(Theme, world.ranking)
 

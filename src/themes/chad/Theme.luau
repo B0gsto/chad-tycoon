@@ -1272,28 +1272,28 @@ Theme.Monetization = {
 	-- (Economy.moneyPackAmount); `Min` is the absolute floor for brand-new players. Packs are
 	-- 15 min / 1 h / 5 h / 24 h of income.
 	MoneyPacks = {
-		{ Id = 3716878815, Price = 49, Seconds = 900, Min = 3000 },
-		{ Id = 3716953998, Price = 199, Seconds = 3600, Min = 12000 },
-		{ Id = 3716878844, Price = 499, Seconds = 18000, Min = 100000 },
-		{ Id = 3716954002, Price = 1000, Seconds = 86400, Min = 500000 },
+		{ Id = 3716878815, Price = 49, Seconds = 900, Min = 2500 },
+		{ Id = 3716953998, Price = 199, Seconds = 3600, Min = 10000 },
+		{ Id = 3716878844, Price = 499, Seconds = 18000, Min = 50000 },
+		{ Id = 3716954002, Price = 1000, Seconds = 86400, Min = 250000 },
 	},
 	-- Aura packs put aura straight into the buyer's tank (profile.carried, ready for the
 	-- converter): `Seconds` of the buyer's aura production, never below the progression floor
 	-- (Economy.auraPackAmount); `Min` is the floor for brand-new players. Roblox names:
 	-- "Aura Pack: 15 Minutes / 1 Hour / 5 Hours / 24 Hours".
 	AuraPacks = {
-		{ Id = 3716954009, Price = 49, Seconds = 900, Min = 3000 },
-		{ Id = 3716954016, Price = 199, Seconds = 3600, Min = 12000 },
-		{ Id = 3716954024, Price = 499, Seconds = 18000, Min = 100000 },
-		{ Id = 3716954037, Price = 1000, Seconds = 86400, Min = 500000 },
+		{ Id = 3716954009, Price = 49, Seconds = 900, Min = 2500 },
+		{ Id = 3716954016, Price = 199, Seconds = 3600, Min = 10000 },
+		{ Id = 3716954024, Price = 499, Seconds = 18000, Min = 50000 },
+		{ Id = 3716954037, Price = 1000, Seconds = 86400, Min = 250000 },
 	},
 	-- Retired cash packs (5 min / 45 min / 2 h / 12 h). Never prompted or shown, but a
 	-- receipt that was still pending when they left the shop is honoured at its old size.
 	LegacyMoneyPacks = {
-		{ Id = 3716878799, Seconds = 300, Min = 1000 },
-		{ Id = 3716878826, Seconds = 2700, Min = 10000 },
-		{ Id = 3716878834, Seconds = 7200, Min = 30000 },
-		{ Id = 3716878853, Seconds = 43200, Min = 300000 },
+		{ Id = 3716878799, Seconds = 300, Min = 750 },
+		{ Id = 3716878826, Seconds = 2700, Min = 7500 },
+		{ Id = 3716878834, Seconds = 7200, Min = 20000 },
+		{ Id = 3716878853, Seconds = 43200, Min = 125000 },
 	},
 	-- Rizz packs give `Base` Rizz at tier 1, growing with the buyer's highest tier
 	-- (Economy.gemPackAmount). Roblox names: Small / Big / Mega Rizz Pack.
@@ -1306,11 +1306,11 @@ Theme.Monetization = {
 	CrateOpen = { Id = 3716878439, Price = 30 },
 }
 
--- Game modes (Server.GameModes). A Parkour finish pays `RewardSeconds` of the player's income,
--- never below their progression floor nor `RewardMin` (Economy.modeReward, the same sizing
--- as a cash pack), with the Economy.MODE_REWARD_COOLDOWN between full rewards.
+-- Game modes (Server.GameModes). A Parkour or Mog Test finish pays `Seconds` of the player's
+-- income, never below their progression floor nor `Min` (Economy.modeReward, sized like a cash
+-- pack: this was the retired 5-minute pack), with Economy.MODE_REWARD_COOLDOWN between full rewards.
 Theme.Modes = {
-	Parkour = { RewardSeconds = 300, RewardMin = 1000 },
+	Reward = { Seconds = 300, Min = 750 },
 }
 
 -- Cosmetics: each item is unlocked by its own game pass (Theme.Monetization.Passes[Pass]) or
@@ -1389,7 +1389,7 @@ Theme.Cosmetics = {
 	BundleIcon = "CosAll",
 	-- Granted once per account: `CashSeconds` of income (Economy.moneyPackAmount, at least
 	-- `CashMin`), the Rizz of GemPacks[GemPack] (Economy.gemPackAmount) and `Item`.
-	Starter = { Pass = "StarterPack", CashSeconds = 1800, CashMin = 25000, GemPack = 2, Item = "TrailRookie", Icon = "CosStarter" },
+	Starter = { Pass = "StarterPack", CashSeconds = 1800, CashMin = 5000, GemPack = 2, Item = "TrailRookie", Icon = "CosStarter" },
 	-- Humanoid WalkSpeed before any boost.
 	BaseWalkSpeed = 16,
 }

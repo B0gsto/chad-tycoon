@@ -35,10 +35,10 @@ sand island in the sea.
   player's real plot. It can be skipped. Server: `src/server/Intro.luau`; client: `src/client/Intro/*`.
 - **Tutorial.** A slim, skippable checklist of 5 steps: buy a unit, pick up orbs, deposit, collect cash,
   merge. A quest pill under the top HUD and a small bobbing chevron over the target show the current
-  step. Each step completes on the real server event. Finishing pays 25 Rizz + $250.
+  step. Each step completes on the real server event. Finishing pays 25 Rizz + $25.
 - **Rack.** Units stand on a display rack of up to 10 shelves and 100 slots (`Economy.UNIT_CAP`), each
   with a name plate that glows more at higher tiers. Two units of a tier merge into one of the next tier
-  (2.6x output) on the Merge pad or with Auto Merge ($25,000). At the cap, a new unit first auto-merges
+  (2.2x output) on the Merge pad or with Auto Merge ($5,000). At the cap, a new unit first auto-merges
   the lowest pair; units are refused only when nothing can merge. The HUD shows "37/100", or "RACK FULL"
   when the rack is full.
 - **Orbs.** Each unit drops orbs that hop off its shelf, roll along the gutter and down the chute into the
@@ -57,8 +57,9 @@ sand island in the sea.
   x2"), the client adds a warm golden-hour grade, soft bloom, sun rays and drifting gold sparkles, and the
   music cross-fades to the surge track (`src/client/Fx/Surge.luau`, `Theme.SurgeMusicId`).
 - **Crates** (Common to Legendary) slide down the same chute into the pen. Walk into one to pick it up
-  (within 4.5 studs, one at a time; `src/shared/CratePickup.luau`). The crate panel shows the odds for
-  your best tier and offers:
+  (within 4.5 studs, one at a time; `src/shared/CratePickup.luau`). Crates hold units around half-way
+  between tier 1 and your best tier (`Economy.chestAnchor`), so they help without skipping the curve. The
+  crate panel shows the odds for your best tier and offers:
   - **Open now** with the "Open Crate" product (R$ 30, any rarity), or free and instant with the
     **Crate Master** pass. Both are offered only where `PolicyService` allows paid random items.
   - Carry it to the **Crate Smasher** to open it free on a timer (the VIP Smasher pass is 3x faster).
@@ -69,10 +70,18 @@ sand island in the sea.
   trails, Chad Aura and Golden Crown. Each has its own pass (the Rookie Trail comes only with the Starter
   Pack), and the All Cosmetics Pack unlocks every non-Starter item. The **Starter Pack** gives a one-time
   cash and Rizz bundle plus the Rookie Trail.
-- **Game Modes.** A plaza on the hub has three gates; Parkour is live, two say COMING SOON
-  (`src/server/GameModes.luau`, `src/server/Modes/*`). Parkour is a timed run over the sea with in-order
-  checkpoints and a too-fast-leg check. A valid finish pays 5 minutes of income (at least 1,000, `Theme.Modes.Parkour`) on the
-  first finish ever and then at most once per 10 minutes, plus 25 Rizz on the first finish ever.
+- **Game Modes.** A plaza on the hub has three gates, each a teleport portal
+  (`src/server/GameModes.luau`, `src/server/Modes/*`). **Parkour** has 10 levels: level 1 is the hand-made
+  course by the gates; levels 2-10 are generated out at sea (`Course.generate`) and get steadily harder
+  (tighter gaps, smaller discs and beams, faster movers and sweepers, blinking pads from level 4, fewer
+  checkpoints). Unit tests check every jump on every level is fair for the default jump. Levels unlock in
+  order, bests and clears are saved per level, and a finish pays 5 minutes of income (at least 750, `Theme.Modes.Reward`) times a
+  per-level bonus (`Economy.parkourLevelBonus`) on the first clear of a level and then at most once per
+  cooldown, plus 25 Rizz per first clear. **Mog Test** is a skill-check duel on a floating stage
+  (`Modes/MogRules.luau`, `Mog.luau`, `World/MogStage.luau`, `UI/MogHud.luau`, `Fx/Mog.luau`): press
+  Space / click / tap / A when the needle is in the zone; the window shrinks and the needle speeds up every
+  check; mogging 3 rivals passes the test and pays the mode reward, then the run goes on for a high score
+  with 3 lives. Gate 3 says COMING SOON.
 - **Shop packs scale with progression.** Cash packs pay 15 min / 1 h / 5 h / 24 h of your income and aura
   packs put 15 min / 1 h / 5 h / 24 h of your aura production straight into your tank, each with a minimum
   per pack; Rizz packs grow from x1 at tier 1 up to x4 (`Economy.progression`). The shop shows each player
@@ -132,7 +141,8 @@ rokit install                            # install the pinned tools
 scripts/check.sh                         # format check, lint, type-check, unit tests, build build/ChadAuraTycoon.rbxlx
 scripts/lint-files.sh src/a.luau [...]   # the same checks on just these files (work in progress)
 rojo serve chad.project.json             # live-sync into Studio
-lune run scripts/simulate                # print the progression curve of a greedy player
+lune run scripts/simulate                # when a greedy no-pass player reaches each tier (600 h)
+lune run scripts/simulate --extras --aura --cash   # with free reward, parkour, surge, crates and passes
 preview/render.sh                        # regenerate preview/screenshots/chad/
 ```
 
@@ -201,10 +211,11 @@ through `tools/studio.py execute_luau`:
 | `World/Machines.luau` | Smoothie-blender converter, juice-bar processor, piggy-bank vault, high-striker crate smashers |
 | `World/Decor.luau` | Gym dressing, entrance path, fan zones |
 | `World/Hub.luau` | Lighting, island and sea, hub plaza |
-| `World/Modes.luau` | Game Modes plaza and the Parkour course |
+| `World/Modes.luau`, `World/MogStage.luau` | Game Modes plaza, the 10 Parkour levels, the Mog stage |
 | `World/Props.luau` | Swaps part-built props for uploaded Blender meshes when present |
 | `GameModes.luau` | Game mode registry and shared plumbing |
-| `Modes/Catalog.luau`, `Course.luau`, `Rules.luau`, `Parkour.luau` | Mode list, course layout, run rules, Parkour |
+| `Modes/Catalog.luau`, `Course.luau`, `Rules.luau`, `Parkour.luau` | Mode list, level layouts and generator, run rules, Parkour |
+| `Modes/MogRules.luau`, `MogLayout.luau`, `Mog.luau` | Mog Test rules (unit-tested), stage layout, the mode |
 | `Cosmetics.luau` | Cosmetic passes and the Starter Pack |
 | `Intro.luau` | Saves whether the intro was seen |
 | `Tutorial.luau` | Tutorial progress and reward |
@@ -216,7 +227,7 @@ through `tools/studio.py execute_luau`:
 | `State.luau` | Latest server snapshot |
 | `UI/Kit.luau` | UI design system (buttons, panels, icons, windows) |
 | `UI/Hud.luau` | Always-on HUD |
-| `UI/Windows.luau` | Shop, Index, Ranking, Settings |
+| `UI/Windows.luau` | Shop, Index, Ranking, Settings, Game Modes |
 | `UI/Popups.luau` | Toasts, reward reveals, crate panel, dialogs, offline earnings |
 | `UI/Tutorial.luau` | Tutorial quest pill and completion banner |
 | `Guide.luau` | Bobbing chevron that points at a target |
@@ -230,7 +241,8 @@ through `tools/studio.py execute_luau`:
 | `Fx/Ambient.luau` | Idle sway and bob for the map |
 | `Fx/Camera.luau` | Spawn framing, camera punch and shake |
 | `Fx/Cosmetics.luau` | Local double jump and speed puffs |
-| `Fx/Modes.luau` | Moving obstacles and the Parkour client |
+| `Fx/Modes.luau` | Moving obstacles, blink pads and the Parkour client |
+| `UI/MogHud.luau`, `Fx/Mog.luau` | Mog Test ring, hearts and duel camera / rival |
 | `Fx/Sprites.luau` | Blender effect sprites |
 | `Intro/Cutscene.luau`, `Timeline.luau` | Plays the intro; the story as data |
 | `Intro/Stage.luau`, `Actors.luau`, `Effects.luau` | Intro set, cast and effects |

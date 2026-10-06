@@ -289,7 +289,11 @@ test("buy pricing", function()
 			end
 		end
 		check(Economy.buyTierUpgradeCost(buyTier) > 0, "upgrade cost positive")
-		check(Economy.buyTierRequirement(buyTier) >= 150, "requirement")
+		check(Economy.buyTierRequirement(buyTier) >= 1, "requirement")
+		if buyTier > 1 then
+			check(Economy.buyTierRequirement(buyTier) >= Economy.buyTierRequirement(buyTier - 1), "requirement grows")
+			check(Economy.buyTierUpgradeCost(buyTier) > Economy.buyTierUpgradeCost(buyTier - 1), "upgrade cost grows")
+		end
 	end
 	near(Economy.unitPrice(1, Economy.buyTierRequirement(1)), 2 * Economy.basePrice(1), "price doubles at requirement")
 end)
@@ -354,8 +358,9 @@ test("chests", function()
 		end
 		local rng = seeded(7)
 		for _ = 1, 500 do
+			-- Highest 10 anchors crates at tier 6.
 			local tier = Economy.rollChest(rarity, 10, rng)
-			check(tier >= 8 and tier <= 14, "roll near highest tier")
+			check(tier >= 4 and tier <= 10, "roll near the crate anchor")
 		end
 		check(Economy.unlockSeconds(rarity, true) < Economy.unlockSeconds(rarity, false), "premium is faster")
 	end
@@ -368,25 +373,36 @@ test("chests", function()
 			check(Economy.chestExpectedValue(rarity, highest) > 0, rarity .. " worth something at " .. highest)
 		end
 	end
+	-- Crates are anchored below the highest tier, further down the higher it is.
+	eq(Economy.chestAnchor(1), 1)
+	eq(Economy.chestAnchor(3), 2)
+	eq(Economy.chestAnchor(10), 6)
+	eq(Economy.chestAnchor(25), 13)
+	for highest = 2, 25 do
+		check(Economy.chestAnchor(highest) <= highest, "anchor at or below highest at " .. highest)
+		check(Economy.chestAnchor(highest) >= Economy.chestAnchor(highest - 1), "anchor never drops at " .. highest)
+	end
 	-- Higher rarities feel better: Rare rarely gives its lowest tier, Epic and
-	-- Legendary mostly give the highest tier or above, at every stage.
+	-- Legendary mostly give the anchor tier or above, at every stage.
 	for highest = 1, 25 do
+		local anchor = math.max(Economy.chestAnchor(highest), 2)
 		local rare = Economy.chestOdds("Rare", highest)
 		check(#rare >= 2, "rare offers a choice at " .. highest)
 		check(rare[1].chance <= 25, "rare lowest tier at most 25% at " .. highest)
-		check(rare[#rare].tier <= math.max(highest, 2) + 1, "rare stays near highest at " .. highest)
+		check(rare[#rare].tier <= anchor + 1, "rare stays near the anchor at " .. highest)
+		for _, entry in Economy.chestOdds("Common", highest) do
+			check(entry.tier <= highest, "common never above highest at " .. highest)
+		end
 		for _, rarity in { "Epic", "Legendary" } do
-			local atOrAbove = 0
+			local above = 0
 			for _, entry in Economy.chestOdds(rarity, highest) do
-				check(entry.tier >= math.min(highest, 25), rarity .. " never below highest at " .. highest)
+				check(entry.tier >= anchor, rarity .. " never below the anchor at " .. highest)
 				check(entry.tier <= math.max(highest, 2) + 3, rarity .. " not absurdly high at " .. highest)
-				if entry.tier > highest or entry.tier == 25 then
-					atOrAbove += entry.chance
+				if entry.tier > anchor then
+					above += entry.chance
 				end
 			end
-			if highest < 25 then
-				check(atOrAbove >= 70, rarity .. " mostly above highest at " .. highest)
-			end
+			check(above >= 70, rarity .. " mostly above the anchor at " .. highest)
 		end
 		local prevValue = 0
 		for _, rarity in Economy.CHEST_RARITIES do
@@ -405,9 +421,9 @@ test("chests", function()
 	eq(earlyRare[#earlyRare].tier, 3)
 
 	local common = Economy.chestOdds("Common", 6)
-	eq(common[1].tier, 4)
+	eq(common[1].tier, 2)
 	eq(common[1].chance, 75)
-	eq(common[3].tier, 6)
+	eq(common[3].tier, 4)
 	eq(common[3].chance, 5)
 
 	local rng = seeded(99)
@@ -826,7 +842,7 @@ for _, variant in { "chad" } do
 			end
 		end
 		check(not seen[theme.Monetization.CrateOpen.Id], "crate product id unique")
-		check(type(theme.Modes.Parkour.RewardSeconds) == "number" and theme.Modes.Parkour.RewardMin > 0, "parkour reward")
+		check(type(theme.Modes.Reward.Seconds) == "number" and theme.Modes.Reward.Min > 0, "mode reward")
 		for index, pack in theme.Monetization.GemPacks do
 			check(type(pack.Base) == "number" and pack.Base > 0 and pack.Amount == nil, "rizz pack base " .. index)
 		end
@@ -1856,6 +1872,10 @@ test("intro seen flag", function()
 	eq(legacy.introSeen, true, "saves from before the intro skip it")
 	eq(DataService.reconcile({ money = 10, introSeen = false }).introSeen, false, "unwatched stays unwatched")
 	eq(DataService.reconcile({ money = 10, introSeen = true }).introSeen, true, "watched stays watched")
+	-- Purchase counts from a save made under a bigger upgrade requirement are capped to it.
+	local capped = DataService.reconcile({ money = 10, buyTier = 3, boughtAtTier = 400 })
+	eq(capped.boughtAtTier, Economy.buyTierRequirement(3), "purchases past the requirement are capped")
+	eq(DataService.reconcile({ money = 10, buyTier = 3, boughtAtTier = 1 }).boughtAtTier, 1, "purchases under it are kept")
 end)
 
 -- Cosmetics ----------------------------------------------------------------------------
@@ -2921,13 +2941,12 @@ end)
 
 test("Game modes: finish reward is sized like a cash pack, with a cooldown", function()
 	local theme = loadRobloxTheme("src/themes/chad/Theme.luau")
-	local config = theme.Modes.Parkour
-	-- Its own constants (the old smallest cash pack), not a shop pack.
-	local pack = { Seconds = config.RewardSeconds, Min = config.RewardMin }
-	eq(pack.Seconds, 300, "parkour reward seconds")
-	eq(pack.Min, 1000, "parkour reward minimum")
+	-- Its own constants (the retired 5-minute cash pack), not a shop pack.
+	local pack = theme.Modes.Reward
+	eq(pack.Seconds, 300, "mode reward seconds")
+	eq(pack.Min, 750, "mode reward minimum")
 	local cooldown = Economy.MODE_REWARD_COOLDOWN
-	eq(cooldown, 600, "10 minute cooldown")
+	eq(cooldown, 1800, "30 minute cooldown")
 	local prev = 0
 	for tier = 1, Economy.MAX_TIER do
 		local progression = Economy.progression(tier, tier * 3)
@@ -2950,31 +2969,35 @@ test("Game modes: finish reward is sized like a cash pack, with a cooldown", fun
 	check(later.full and later.cash == later.packCash, "full pack again after the cooldown")
 end)
 
-test("Game modes: checkpoints in order and plausible times", function()
-	local count = ModesCourse.CHECKPOINT_COUNT
-	check(count >= 6 and count <= 8, "6-8 checkpoints")
-	for k = 1, count + 1 do
-		check(ModesCourse.MIN_LEG_SECONDS[k] > 0, "leg " .. k .. " has a minimum time")
+test("Game modes: checkpoints in order and plausible times, per level", function()
+	eq(ModesCourse.LEVEL_COUNT, 10, "ten parkour levels")
+	eq(#ModesCourse.LEVELS, ModesCourse.LEVEL_COUNT, "every level is built")
+	for i, level in ModesCourse.LEVELS do
+		local count = level.CHECKPOINT_COUNT
+		check(count >= 3 and count <= 8, "level " .. i .. ": 3-8 checkpoints")
+		for k = 1, count + 1 do
+			check(level.MIN_LEG_SECONDS[k] > 0, "level " .. i .. " leg " .. k .. " has a minimum time")
+		end
+		local fast = ModesRules.newRun(0, level)
+		for k = 1, count do
+			ModesRules.touchCheckpoint(fast, k, k * 0.1)
+		end
+		local ok, reason = ModesRules.finish(fast, count * 0.1 + 0.1)
+		check(not ok and reason == "fast", "level " .. i .. ": impossibly fast runs earn nothing")
+		local fair = ModesRules.newRun(0, level)
+		for k = 1, count do
+			ModesRules.touchCheckpoint(fair, k, k * 30)
+		end
+		local okFair, time = ModesRules.finish(fair, count * 30 + 30)
+		check(okFair and time == count * 30 + 30, "level " .. i .. ": a normal run finishes")
 	end
-	local run = ModesRules.newRun(100)
+	local run = ModesRules.newRun(100, ModesCourse.LEVELS[2])
 	eq(ModesRules.touchCheckpoint(run, 2, 101), "skip", "skipping ahead does nothing")
 	eq(run.checkpoint, 0, "still at the start")
 	eq(ModesRules.touchCheckpoint(run, 1, 110), "ok", "first checkpoint")
 	eq(ModesRules.touchCheckpoint(run, 1, 111), "old", "same checkpoint again")
 	local ok, reason = ModesRules.finish(run, 200)
 	check(not ok and reason == "checkpoints", "finish needs every checkpoint")
-	local fast = ModesRules.newRun(0)
-	for k = 1, count do
-		ModesRules.touchCheckpoint(fast, k, k * 0.1)
-	end
-	ok, reason = ModesRules.finish(fast, count * 0.1 + 0.1)
-	check(not ok and reason == "fast", "impossibly fast runs earn nothing")
-	local fair = ModesRules.newRun(0)
-	for k = 1, count do
-		ModesRules.touchCheckpoint(fair, k, k * 10)
-	end
-	local okFair, time = ModesRules.finish(fair, count * 10 + 10)
-	check(okFair and time == count * 10 + 10, "a normal run finishes")
 	local list = {}
 	eq(ModesRules.recordBest(list, 1, "A", 50, 3), 1, "first time ranks 1")
 	eq(ModesRules.recordBest(list, 2, "B", 40, 3), 1, "faster ranks first")
@@ -2982,15 +3005,37 @@ test("Game modes: checkpoints in order and plausible times", function()
 	eq(#list, 2, "one entry per player")
 end)
 
-test("Game modes: profile defaults", function()
+test("Game modes: profile defaults and per-level parkour records", function()
 	local DataService = loadDataService()
-	local fresh = DataService.defaultProfile().modes.parkour
+	eq(DataService.PARKOUR_LEVELS, ModesCourse.LEVEL_COUNT, "profile arrays match the level count")
+	local profile = DataService.defaultProfile()
+	local fresh = profile.modes.parkour
 	check(fresh.best == 0 and fresh.clears == 0 and fresh.lastRewardAt == 0, "new profiles have no parkour record")
+	eq(#profile.parkour.best, 10, "dense best array")
+	eq(#profile.parkour.clears, 10, "dense clears array")
 	eq(DataService.reconcile({ money = 1 }).modes.parkour.best, 0, "old saves get the record")
 	local bad = DataService.reconcile({ money = 1, modes = { parkour = { best = "x", clears = -2, lastRewardAt = 5 } } })
 	check(bad.modes.parkour.best == 0 and bad.modes.parkour.clears == 0, "bad values are reset")
 	eq(bad.modes.parkour.lastRewardAt, 5, "good values stay")
-	eq(DataService.reconcile({ money = 1, modes = { parkour = { best = 42.5, clears = 3, lastRewardAt = 0 } } }).modes.parkour.best, 42.5)
+	check(bad.parkour.best[1] == 0 and bad.parkour.clears[1] == 0, "bad old values do not migrate")
+	local old = DataService.reconcile({ money = 1, modes = { parkour = { best = 42.5, clears = 3, lastRewardAt = 0 } } })
+	eq(old.modes.parkour.best, 42.5)
+	eq(old.parkour.best[1], 42.5, "old best migrates to level 1")
+	eq(old.parkour.clears[1], 3, "old clears migrate to level 1")
+	eq(old.parkour.best[2], 0, "other levels start empty")
+	local holes = DataService.reconcile({ money = 1, parkour = { best = { 30, "x", -1, 0 / 0 }, clears = { 2, 1 } } })
+	eq(#holes.parkour.best, 10, "short arrays are padded")
+	check(
+		holes.parkour.best[1] == 30 and holes.parkour.best[2] == 0 and holes.parkour.best[3] == 0 and holes.parkour.best[4] == 0,
+		"bad entries reset"
+	)
+	eq(holes.parkour.clears[2], 1, "good entries stay")
+	eq(#DataService.reconcile({ money = 1, parkour = "x" }).parkour.clears, 10, "a broken record is rebuilt")
+	eq(Economy.parkourLevelBonus(1), 1, "level 1 pays the plain pack")
+	check(math.abs(Economy.parkourLevelBonus(10) - 2.8) < 1e-9, "level 10 pays 2.8x")
+	for n = 2, 10 do
+		check(Economy.parkourLevelBonus(n) > Economy.parkourLevelBonus(n - 1), "harder levels pay more")
+	end
 end)
 
 -- Edge-to-edge horizontal distance between two path elements (box, disc, or a point).
@@ -3008,84 +3053,214 @@ local function shapeGap(a: any, ax: number, az: number, b: any, bx: number, bz: 
 	return math.sqrt(dx * dx + dz * dz) - ar - br
 end
 
-test("Game modes: every course jump is fair with the default jump", function()
-	-- Assumed: JumpHeight 7.2, WalkSpeed 16; designed to MAX_GAP 9 studs edge to edge and
-	-- MAX_STEP_UP 5 studs, except onto the deck after a bounce pad (its launch apex).
-	local path = ModesCourse.PATH
+test("Game modes: maxGap matches the default jump", function()
+	local flat = ModesCourse.maxGap(0)
+	check(flat > 7.7 and flat < 8, "flat reach about 8.6 minus the margin (" .. flat .. ")")
+	check(ModesCourse.maxGap(5) < flat and ModesCourse.maxGap(5) > 5, "a 5 stud step shortens the reach")
+	eq(ModesCourse.maxGap(-20), ModesCourse.MAX_GAP, "drops are capped")
+	check(ModesCourse.maxGap(8) < 0, "8 studs up is out of reach")
+end)
+
+test("Game modes: every level's jumps are fair with the default jump", function()
 	local gravity = 196.2
-	local bounceOn = {}
-	for _, e in ModesCourse.ELEMENTS do
-		if e.kind == "bounce" then
-			for i, p in path do
-				if p.shape == "box" and math.abs(e.x - p.x) <= p.sx / 2 and math.abs(e.z - p.z) <= p.sz / 2 then
-					bounceOn[i] = e.power * e.power / (2 * gravity) - 3
-				end
-			end
-		end
-	end
-	-- Positions (x, y, z) an element takes along its motion (movers sampled).
-	local function poses(e: any): { { number } }
+	local function poses(e: any, steps: number): { { number } }
 		if e.kind ~= "mover" then
 			return { { e.x, e.y, e.z } }
 		end
 		local out = {}
-		for s = -1, 1, 0.25 do
+		for s = -1, 1, 2 / steps do
 			local d = e.distance * s
 			table.insert(out, { e.x + e.axis[1] * d, e.y + e.axis[2] * d, e.z + e.axis[3] * d })
 		end
 		return out
 	end
-	for i = 1, #path - 1 do
-		local a, b = path[i], path[i + 1]
-		local label = string.format("path %d -> %d", i, i + 1)
-		if a.kind == "slide" or b.kind == "slide" then
-			-- The ramp joins its neighbours: each end touches the next deck.
-			local ramp = if a.kind == "slide" then a else b
-			local other = if a.kind == "slide" then b else a
-			local endPoint = if a.kind == "slide" then ramp.to else ramp.from
-			local gap = shapeGap({ shape = "point" }, endPoint[1], endPoint[3], other, other.x, other.z)
-			check(gap <= 1.5, label .. ": slide end meets its deck (" .. gap .. ")")
-			check(math.abs(endPoint[2] - other.y) <= 0.5, label .. ": slide end is level with its deck")
-		else
-			local best, overlap = math.huge, false
-			for _, pa in poses(a) do
-				for _, pb in poses(b) do
-					local gap = shapeGap(a, pa[1], pa[3], b, pb[1], pb[3])
-					local up = pb[2] - pa[2]
-					local maxUp = bounceOn[i] or ModesCourse.MAX_STEP_UP
-					if up <= maxUp then
-						best = math.min(best, gap)
-					end
-					if gap < 0.5 then
-						overlap = true
+	for li, level in ModesCourse.LEVELS do
+		local path = level.PATH
+		local bounceOn, bounces = {}, 0
+		for _, e in level.ELEMENTS do
+			if e.kind == "bounce" then
+				for i, p in path do
+					if
+						p.shape == "box"
+						and math.abs(e.x - p.x) <= p.sx / 2
+						and math.abs(e.z - p.z) <= p.sz / 2
+						and math.abs(p.y - e.y) < 0.01
+					then
+						bounceOn[i] = e.power * e.power / (2 * gravity) - 3
+						bounces += 1
 					end
 				end
-			end
-			check(best <= ModesCourse.MAX_GAP, string.format("%s: jumpable gap (%.2f)", label, best))
-			check(not overlap, label .. ": platforms never overlap or touch")
-			if a.kind ~= "mover" and b.kind ~= "mover" then
-				check(b.y - a.y <= (bounceOn[i] or ModesCourse.MAX_STEP_UP), label .. ": step up within reach")
+			elseif e.kind == "blink" then
+				check(e.on >= 1.2 and e.on < e.period and e.path, "level " .. li .. ": blink pads stay solid long enough")
 			end
 		end
-		if a.kind ~= "slide" then
-			check(not ModesCourse.inWater(a.x, a.y, a.z), label .. ": platform top is above the water line")
+		check(bounces >= 1, "level " .. li .. ": the bounce pad sits on a path deck")
+		for i = 1, #path - 1 do
+			local a, b = path[i], path[i + 1]
+			local label = string.format("level %d path %d -> %d", li, i, i + 1)
+			check(not (a.kind == "blink" and b.kind == "blink"), label .. ": never two blink pads in a row")
+			if a.kind == "slide" or b.kind == "slide" then
+				local ramp = if a.kind == "slide" then a else b
+				local other = if a.kind == "slide" then b else a
+				local endPoint = if a.kind == "slide" then ramp.to else ramp.from
+				local gap = shapeGap({ shape = "point" }, endPoint[1], endPoint[3], other, other.x, other.z)
+				check(gap <= 1.5, label .. ": slide end meets its deck (" .. gap .. ")")
+				check(math.abs(endPoint[2] - other.y) <= 0.5, label .. ": slide end is level with its deck")
+			else
+				-- After a bounce pad the jump apex is the launch apex (less 3 studs, as above).
+				local jump = bounceOn[i]
+				local best, worst, overlap = math.huge, -math.huge, false
+				for _, pa in poses(a, 16) do
+					for _, pb in poses(b, 16) do
+						local gap = shapeGap(a, pa[1], pa[3], b, pb[1], pb[3])
+						local up = pb[2] - pa[2]
+						local reach = ModesCourse.maxGap(up, jump)
+						local maxUp = bounceOn[i] or ModesCourse.MAX_STEP_UP
+						if up <= maxUp and gap <= reach then
+							best = math.min(best, gap)
+						end
+						worst = math.max(worst, gap - reach)
+						if gap < 0.5 then
+							overlap = true
+						end
+					end
+				end
+				check(best < math.huge, string.format("%s: jumpable at its best phase", label))
+				if level.remote then
+					check(worst <= 1e-6, string.format("%s: jumpable at every phase (%.2f over)", label, worst))
+				end
+				check(not overlap, label .. ": platforms never overlap or touch")
+				if a.kind ~= "mover" and b.kind ~= "mover" then
+					check(b.y - a.y <= (bounceOn[i] or ModesCourse.MAX_STEP_UP), label .. ": step up within reach")
+				end
+			end
+			if a.kind ~= "slide" then
+				check(not ModesCourse.inWater(a.x, a.y, a.z), label .. ": platform top is above the water line")
+			end
+		end
+		local last = path[#path]
+		check(
+			last.name == "FinishDeck" and ModesCourse.inFinish(level, last.x, last.y, last.z),
+			"level " .. li .. ": finish deck ends the path"
+		)
+		check(not ModesCourse.inWater(last.x, last.y, last.z), "level " .. li .. ": finish deck is dry")
+		check(ModesCourse.inBounds(level, last.x, last.y, last.z), "level " .. li .. ": finish inside the bounds")
+		local arch = level.FINISH_ARCH
+		local prev = path[#path - 1]
+		check((prev.x - arch.x) * arch.faceX + (prev.z - arch.z) * arch.faceZ > 0, "level " .. li .. ": the arch faces the runner")
+		for k = 0, level.CHECKPOINT_COUNT do
+			local at, look = ModesCourse.respawn(level, k)
+			check(
+				math.abs(look[1] * look[1] + look[2] * look[2] - 1) < 1e-6,
+				"level " .. li .. " respawn " .. k .. " faces along the course"
+			)
+			check(not ModesCourse.inWater(at[1], at[2], at[3]), "level " .. li .. " respawn " .. k .. " is dry")
+			check(ModesCourse.inBounds(level, at[1], at[2], at[3]), "level " .. li .. " respawn " .. k .. " is inside the bounds")
+		end
+		check(level.remote == (li > 1), "only level 1 is on foot")
+		check(type(level.name) == "string" and #level.name > 0 and level.difficulty == li, "level " .. li .. " has a name and difficulty")
+		for _, key in { "main", "alt", "checkpoint", "mover", "accent", "blink" } do
+			check(type(level.palette[key]) == "string", "level " .. li .. " palette " .. key)
 		end
 	end
-	for t = 0, 1, 0.05 do
-		local s = path[#path - 1]
-		local x = s.from[1] + (s.to[1] - s.from[1]) * t
-		local y = s.from[2] + (s.to[2] - s.from[2]) * t
-		check(not ModesCourse.inWater(x, y, s.from[3]), "slide stays above the water line")
-	end
-	check(next(bounceOn) ~= nil, "the bounce pad sits on a path deck")
-	-- Respawn spots stand on their checkpoints.
-	for k = 0, ModesCourse.CHECKPOINT_COUNT do
-		local at, look = ModesCourse.respawn(k)
-		check(math.abs(look[1] * look[1] + look[2] * look[2] - 1) < 1e-6, "respawn " .. k .. " faces along the course")
-		check(not ModesCourse.inWater(at[1], at[2], at[3]), "respawn " .. k .. " is dry")
-	end
+	local a1, b1 = ModesCourse.generate(5), ModesCourse.generate(5)
+	check(#a1.ELEMENTS == #b1.ELEMENTS and a1.ELEMENTS[9].x == b1.ELEMENTS[9].x, "generation is deterministic")
 	check(ModesCourse.crossedStart(ModesCourse.START_LINE_X + 1, ModesCourse.START_LINE_X - 1, 0), "walking west through gate 1 starts")
 	check(not ModesCourse.crossedStart(ModesCourse.START_LINE_X - 1, ModesCourse.START_LINE_X + 1, 0), "walking back out does not")
+end)
+
+test("Game modes: each level is harder than the last", function()
+	-- +1: bigger is harder; -1: smaller is harder.
+	local knobs = {
+		gap = 1,
+		discR = -1,
+		beamW = -1,
+		padSize = -1,
+		checkpointR = -1,
+		moverTravel = 1,
+		moverPeriod = -1,
+		spinSpeed = 1,
+		spinBars = 1,
+		checkpointEvery = 1,
+		pathLength = 1,
+		rise = 1,
+		blinkOn = -1,
+	}
+	for n = 3, ModesCourse.LEVEL_COUNT do
+		local a, b = ModesCourse.LEVELS[n - 1].TUNING, ModesCourse.LEVELS[n].TUNING
+		local tighter = 0
+		for key, sign in knobs do
+			local va = a[key] or (if sign < 0 then math.huge else 0)
+			local vb = b[key] or (if sign < 0 then math.huge else 0)
+			check(va == vb or (vb - va) * sign > 0, string.format("level %d does not loosen %s", n, key))
+			if va ~= vb and (vb - va) * sign > 0 then
+				tighter += 1
+			end
+		end
+		check(tighter >= 1, "level " .. n .. " tightens something")
+		check(#ModesCourse.LEVELS[n].PATH > #ModesCourse.LEVELS[n - 1].PATH, "level " .. n .. " is longer")
+	end
+	check(ModesCourse.LEVELS[4].TUNING.blinkOn ~= nil and ModesCourse.LEVELS[3].TUNING.blinkOn == nil, "blink pads from level 4")
+end)
+
+test("Game modes: parkour regions stay clear of the island, props and each other", function()
+	local avoid = {
+		{ 583, 212, 55 + 40 },
+		{ 179, 841, 42 + 40 },
+		{ -429, 360, 36 + 40 },
+		{ -714, -260, 60 + 40 },
+		{ -155, -580, 44 + 40 },
+		{ 669, -602, 50 + 40 },
+		{ 0, 400, 110 },
+		{ 0, 0, 262 },
+	}
+	local function rectCircle(r: any, cx: number, cz: number): number
+		local dx = math.max(r.x0 - cx, 0, cx - r.x1)
+		local dz = math.max(r.z0 - cz, 0, cz - r.z1)
+		return math.sqrt(dx * dx + dz * dz)
+	end
+	local function rectRect(a: any, b: any): number
+		local dx = math.max(a.x0 - b.x1, 0, b.x0 - a.x1)
+		local dz = math.max(a.z0 - b.z1, 0, b.z0 - a.z1)
+		return math.sqrt(dx * dx + dz * dz)
+	end
+	local level1Box = { x0 = -382, x1 = -186, z0 = -76, z1 = 18 }
+	for i = 2, ModesCourse.LEVEL_COUNT do
+		local r = ModesCourse.REGIONS[i]
+		check(r == ModesCourse.LEVELS[i].BOUNDS, "region " .. i .. " is the level's bounds")
+		for _, c in avoid do
+			check(rectCircle(r, c[1], c[2]) >= c[3], string.format("region %d clears (%d, %d)", i, c[1], c[2]))
+		end
+		check(rectRect(r, level1Box) >= 30, "region " .. i .. " clears level 1")
+		for _, x in { r.x0, r.x1 } do
+			for _, z in { r.z0, r.z1 } do
+				check(x * x + z * z <= 900 * 900, "region " .. i .. " is within 900 studs")
+			end
+		end
+		for j = i + 1, ModesCourse.LEVEL_COUNT do
+			check(rectRect(r, ModesCourse.REGIONS[j]) >= 30, string.format("regions %d and %d are 30 studs apart", i, j))
+		end
+		for _, e in ModesCourse.LEVELS[i].ELEMENTS do
+			check(ModesCourse.inBounds(ModesCourse.LEVELS[i], e.x, e.y, e.z), "level " .. i .. " elements inside its bounds")
+		end
+	end
+end)
+
+-- Mog Test rules (tests/mog.luau).
+require("./mog")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
+
+test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", function()
+	(_G :: any).SIMULATE_AS_LIBRARY = true
+	local Simulate = require("../scripts/simulate")
+	local theme = loadRobloxTheme("src/themes/chad/Theme.luau")
+	local pack = theme.Modes.Reward
+	eq(Simulate.SMALL_PACK_SECONDS, pack.Seconds, "simulated parkour reward uses the mode reward's seconds")
+	eq(Simulate.SMALL_PACK_MIN, pack.Min, "simulated parkour reward uses the mode reward's minimum")
+
+	local reached = Simulate.run({ hours = 3, step = 5 }).reached
+	check(reached[2] ~= nil and reached[2] <= 60, "tier 2 within the first minute")
+	check(reached[6] ~= nil and reached[6] >= 25 * 60 and reached[6] <= 60 * 60, "tier 6 after 25 to 60 minutes")
+	check(reached[10] == nil, "tier 10 not before 3 hours")
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

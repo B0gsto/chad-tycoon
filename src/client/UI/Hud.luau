@@ -63,7 +63,7 @@ Hud.freeClaimedAt = 0
 -- Red shake on the cash amount ("can't afford").
 Hud.shakeWallet = function() end
 -- Game-mode run pill (timer + checkpoints + quit).
-Hud.runStart = function(_startedAt: number, _checkpoint: number, _checkpoints: number) end
+Hud.runStart = function(_startedAt: number, _checkpoint: number, _checkpoints: number, _level: number?) end
 Hud.runCheckpoint = function(_index: number, _checkpoints: number) end
 Hud.runStop = function() end
 -- True once the cash counter has finished rolling.
@@ -278,7 +278,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			tutorialWasOpen = false
 			task.delay(9, function()
 				Kit.setGlow(Hud.buttons.Modes, true)
-				toast("New! Tap MODES to try the Parkour course", "info")
+				toast("New! Tap MODES to try Parkour and the Mog Test", "info")
 			end)
 		end
 	end)
@@ -456,6 +456,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- Run pill: a game-mode run's timer under the multiplier chip (the tutorial pill's
 	-- slot; ScreenGui attribute "RunActive" tells Tutorial to step aside). Timer from the
 	-- server clock, checkpoint n/N, and an "x" that asks "QUIT?" before firing ModeQuit.
+	-- A gold "L3" chip on the left names the Parkour level (the Star shows without one).
 	local RUN_W, RUN_H = 236, 36
 	local runRest = UDim2.new(0.5, 0, 0, RUN_Y)
 	local runAway = UDim2.new(0.5, 0, 0, -RUN_H - 20)
@@ -467,14 +468,32 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Radius = RUN_H // 2,
 		Visible = false,
 	})
-	Kit.icon(runPill, "Star", 22, C.Gold, { Position = UDim2.new(0, 10, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), ZIndex = 3 })
+	local runStar =
+		Kit.icon(runPill, "Star", 22, C.Gold, { Position = UDim2.new(0, 10, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), ZIndex = 3 })
+	local runLevel = Kit.text(runPill, {
+		Name = "Level",
+		Text = "L1",
+		Font = Theme.Fonts.Display,
+		TextSize = 15,
+		TextWrapped = false,
+		Size = UDim2.fromOffset(34, 24),
+		Position = UDim2.new(0, 6, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		BackgroundColor3 = C.Gold,
+		BackgroundTransparency = 0,
+		TextColor3 = C.GoldInk,
+		StrokeThickness = 0,
+		Visible = false,
+		ZIndex = 3,
+	})
+	Kit.round(runLevel)
 	local runClock = Kit.number(runPill, {
 		Name = "Clock",
 		Text = "0:00.0",
 		TextSize = 20,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.fromOffset(86, RUN_H),
-		Position = UDim2.fromOffset(38, 0),
+		Size = UDim2.fromOffset(82, RUN_H),
+		Position = UDim2.fromOffset(42, 0),
 		ZIndex = 3,
 	})
 	local runCheck = Kit.text(runPill, {
@@ -530,8 +549,13 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local runShown = false
 	local runConn: RBXScriptConnection? = nil
 	local lastClockText = ""
-	Hud.runStart = function(startedAt: number, checkpoint: number, checkpoints: number)
+	Hud.runStart = function(startedAt: number, checkpoint: number, checkpoints: number, level: number?)
 		runStartedAt = startedAt
+		runStar.Visible = level == nil
+		runLevel.Visible = level ~= nil
+		if level then
+			runLevel.Text = "L" .. tostring(level)
+		end
 		runCheck.Text = string.format("%d/%d", checkpoint, checkpoints)
 		quitArmed = false
 		Kit.setButton(quitButton, "X", C.SurfaceHi)

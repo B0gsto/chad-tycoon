@@ -4,7 +4,9 @@
 	A mode is a catalog entry (Modes.Catalog: id, title, blurb, gate slot, enabled) plus an
 	implementation registered here (see Modes.Parkour):
 
-	  start(player, teleport)  begin a run (teleport = move the player to the mode's start);
+	  start(player, teleport, options)
+	                           begin a run (teleport = move the player to the mode's start;
+	                           options = the "ModeStart" action's data table, or nil);
 	                           returns false when refused
 	  stop(player, reason)     end the player's run: "quit" | "left" | "respawn" | "leave" |
 	                           "switch" | "invalid"
@@ -13,6 +15,9 @@
 	                           (position polling: start lines, checkpoints, falls)
 	  snapshot(player)         the State snapshot's modes[id] table
 	  rewardPreview(player)    what finishing right now would pay ({ cash, gems, ... })
+
+	Every implementation's create() receives (GameModes, context) with context = { built =
+	World.Modes' Built, theme, Tycoon, world = WorldBuilder's whole result }.
 
 	GameModes keeps which mode each player is in, stops runs on leave / respawn, provides the
 	teleports (mode start, plaza, own plot) and the Notify / Effect helpers, and adds the
@@ -39,7 +44,7 @@ export type ModeDef = {
 	blurb: string,
 	slot: number,
 	enabled: boolean,
-	start: (player: Player, teleport: boolean) -> boolean,
+	start: (player: Player, teleport: boolean, options: { [string]: any }?) -> boolean,
 	stop: (player: Player, reason: string) -> (),
 	running: (player: Player) -> boolean,
 	tick: (player: Player, root: BasePart, now: number) -> (),
@@ -51,6 +56,7 @@ export type ModeDef = {
 -- { create = function(GameModes, context) -> ModeDef }.
 local BUILTIN = {
 	parkour = script.Parent.Modes.Parkour,
+	mog = script.Parent.Modes.Mog,
 }
 
 local TICK = 0.1
@@ -114,7 +120,7 @@ function GameModes.active(player: Player): ModeDef?
 	return nil
 end
 
-function GameModes.start(player: Player, id: string, teleport: boolean): boolean
+function GameModes.start(player: Player, id: string, teleport: boolean, options: { [string]: any }?): boolean
 	local def = modes[id]
 	if not def or not def.enabled then
 		return false
@@ -123,7 +129,13 @@ function GameModes.start(player: Player, id: string, teleport: boolean): boolean
 	if current and current ~= def then
 		current.stop(player, "switch")
 	end
-	return def.start(player, teleport)
+	local ok = def.start(player, teleport, options)
+	if not ok and current then
+		-- The old run is over and the new one was refused: never leave the player standing
+		-- on a far arena with no run.
+		GameModes.toGates(player)
+	end
+	return ok
 end
 
 function GameModes.stop(player: Player, reason: string)
@@ -198,6 +210,22 @@ function GameModes.toGates(player: Player)
 	GameModes.teleport(player, spot(Course.QUIT), Vector3.new(1, 0, 0))
 end
 
+-- Brings a player back from a teleport-only arena (a far Parkour level, the Mog stage):
+-- after `seconds`, unless they started another run or `stillThere` says they already left,
+-- they stand in front of the gates again.
+function GameModes.returnLater(player: Player, seconds: number, stillThere: ((root: BasePart) -> boolean)?)
+	task.delay(seconds, function()
+		local root = GameModes.root(player)
+		if not root or GameModes.active(player) then
+			return
+		end
+		if stillThere and not stillThere(root) then
+			return
+		end
+		GameModes.toGates(player)
+	end)
+end
+
 -- The State snapshot's `modes` table: modes[id] for every registered mode.
 function GameModes.snapshot(player: Player): { [string]: any }
 	local out = {}
@@ -215,21 +243,25 @@ local function watchPlayer(player: Player)
 	end)
 end
 
-function GameModes.init(built: any, theme: any, tycoon: any)
+function GameModes.init(built: any, theme: any, tycoon: any, world: any)
 	Tycoon = tycoon
 	for id, module in BUILTIN do
 		local impl = (require :: any)(module)
-		GameModes.register(impl.create(GameModes, { built = built, theme = theme, Tycoon = tycoon }))
+		GameModes.register(impl.create(GameModes, { built = built, theme = theme, Tycoon = tycoon, world = world }))
 		assert(modes[id], "mode " .. id .. " did not register")
 	end
 
 	Tycoon.hooks.modes = function(session: any)
 		return GameModes.snapshot(session.player)
 	end
+	-- "Home" during a run ends it first (un-anchors a Mog player, no "left" stop later).
+	Tycoon.hooks.leavingForHome = function(session: any)
+		GameModes.stop(session.player, "quit")
+	end
 
 	Tycoon.addAction("ModeStart", function(session, data)
 		if type(data.mode) == "string" then
-			GameModes.start(session.player, data.mode, true)
+			GameModes.start(session.player, data.mode, true, data)
 		end
 	end)
 	Tycoon.addAction("ModeQuit", function(session)

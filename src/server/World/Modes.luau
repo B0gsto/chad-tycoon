@@ -21,10 +21,18 @@
 	  Bounce pads: parts named "BouncePad" (tag "BouncePad"), attribute Bounce = upward launch
 	  speed in studs/s for the local player.
 
-	Named parts the game looks up: "ParkourStart" (trigger in gate 1's opening),
-	"ParkourFinish" (trigger over the finish deck), "ParkourWater" (catch volume over the
-	sea), "Checkpoint" discs with attribute Index (1..n) and Mode = "parkour".
-	Client hints (Client.Fx.Modes): the open gate's "GateArrow" root (tag "ModeHintArrow",
+	  Blink pads: "BlinkPad" box tops (tag "BlinkPad"; rim, underside, chevron and a Neon
+	  "BlinkGlow" band are its descendants), attributes BlinkOn, BlinkPeriod, BlinkPhase
+	  (seconds): solid when ((t + BlinkPhase) % BlinkPeriod) < BlinkOn. The server never
+	  toggles them; Client.Fx.Modes sets CanCollide and the look locally.
+
+	Every level of Server.Modes.Course is built into Parkour/Level<i> (attributes Mode,
+	Level, Checkpoints, Title). Named parts the game looks up: "ParkourStart" (trigger in
+	gate 1's opening; other open gates hold "ModeStart"), per level "ParkourFinish" (trigger
+	over the finish deck) and "ParkourWater" (catch volume over the sea), both with attribute
+	Level, and "Checkpoint" discs with attributes Index (1..n), Level and Mode = "parkour".
+	Remote levels (reached by teleport) also get a LEVEL <i> start arch on their start deck.
+	Client hints (Client.Fx.Modes): each open gate's "GateArrow" root (tag "ModeHintArrow",
 	attribute HintBob = bob height in studs, children move with it) and each checkpoint's
 	"FlagCap" (attribute Checkpoint = its index).
 
@@ -389,17 +397,19 @@ local function chevron(e: Course.Element, nextE: Course.Element, parent: Instanc
 	end
 end
 
-local function checkpoint(e: Course.Element, parent: Instance): BasePart
+-- `midZ` splits the level's lanes: flags hang on the side away from it (the outer edge).
+local function checkpoint(e: Course.Element, parent: Instance, levelIndex: number, midZ: number): BasePart
 	local index = e.index :: number
 	local top = platform(e, "Checkpoint", parent, false)
 	top:SetAttribute("Index", index)
+	top:SetAttribute("Level", levelIndex)
 	top:SetAttribute("Mode", "parkour")
 	-- Big number painted on the disc (an upright cylinder's top is its +X face).
 	local root = surface(top, Enum.NormalId.Right, 24)
 	local dot = panel(root, W.Sunny, UDim2.fromScale(0.28, 0.28), UDim2.fromScale(0.44, 0.44), 0.5)
 	text(dot, { Text = tostring(index), Size = UDim2.fromScale(0.7, 0.7), Position = UDim2.fromScale(0.15, 0.17) })
 	-- Big numbered flag on the lane's outer edge, hanging along the course.
-	local side = if e.z > -26 then 1 else -1
+	local side = if e.z > midZ then 1 else -1
 	local cap = flagPole(
 		e.x,
 		e.y,
@@ -412,6 +422,29 @@ local function checkpoint(e: Course.Element, parent: Instance): BasePart
 		true
 	)
 	cap:SetAttribute("Checkpoint", index)
+	cap:SetAttribute("Level", levelIndex)
+	return top
+end
+
+-- A pad that is solid only part of the time (Client.Fx.Modes toggles it locally): a normal
+-- platform in the palette's blink colour with its rim and underside parented to the top,
+-- plus a thin glowing Neon band round its edge so it reads as "this one blinks".
+local function blink(e: Course.Element, parent: Instance): BasePart
+	local top = platform(e, "BlinkPad", parent, true)
+	local sx, sz = e.sx :: number, e.sz :: number
+	decor(make("Part", {
+		Name = "BlinkGlow",
+		Size = Vector3.new(sx + 0.5, 0.3, sz + 0.5),
+		CFrame = CFrame.new(e.x, e.y - 0.3, e.z),
+		Color = color(e.color):Lerp(W.White, 0.35),
+		Material = Enum.Material.Neon,
+		CastShadow = false,
+		Parent = top,
+	}))
+	top:SetAttribute("BlinkOn", e.on)
+	top:SetAttribute("BlinkPeriod", e.period)
+	top:SetAttribute("BlinkPhase", e.phase or 0)
+	top:AddTag("BlinkPad")
 	return top
 end
 
@@ -580,13 +613,13 @@ end
 -- The open gate's hint arrow: a chunky coral arrow pointing down into the opening. The shaft
 -- is the root (tag "ModeHintArrow", HintBob = bob height); Client.Fx.Modes bobs it, with the
 -- arms and tip parented to it, while the player is near the plaza and not on a run.
-local function gateArrow(add: (props: { [string]: any }) -> BasePart, tipY: number)
+local function gateArrow(add: (props: { [string]: any }) -> BasePart, tipY: number, tint: Color3)
 	local a, thick = 1.9, 1.3
 	local root = decor(add({
 		Name = "GateArrow",
 		Size = Vector3.new(thick, 4.2, 1),
 		CFrame = CFrame.new(0, tipY + 2.5, 0),
-		Color = W.Coral,
+		Color = tint,
 	}))
 	root:SetAttribute("HintBob", 0.8)
 	root:AddTag("ModeHintArrow")
@@ -595,7 +628,7 @@ local function gateArrow(add: (props: { [string]: any }) -> BasePart, tipY: numb
 			Name = "GateArrowArm",
 			Size = Vector3.new(a * math.sqrt(2) + 0.5, thick, 1),
 			CFrame = CFrame.new(side * a / 2, tipY + a / 2, 0) * CFrame.Angles(0, 0, side * math.pi / 4),
-			Color = W.Coral,
+			Color = tint,
 			Parent = root,
 		}))
 	end
@@ -604,13 +637,73 @@ local function gateArrow(add: (props: { [string]: any }) -> BasePart, tipY: numb
 		Shape = BALL,
 		Size = cube(thick * 1.1),
 		CFrame = CFrame.new(0, tipY + 0.2, 0),
-		Color = W.Coral,
+		Color = tint,
 		Parent = root,
 	}))
 end
 
--- A gate on the plaza's west edge, front facing the hub. Gate 1 (open) is the big sunny
--- PARKOUR gate holding the "ParkourStart" trigger and the hint arrow; locked gates are
+-- Portal colours per open mode (ring colour, alternate segment colour).
+local PORTAL_COLORS: { [string]: { Color3 } } = {
+	parkour = { W.Coral, W.Sunny },
+	mog = { W.Grape, W.Pink },
+}
+
+-- A swirling portal standing upright in an open gate's opening (gate frame `base`, front
+-- facing -Z): a faint Neon disc and three concentric rings of Neon segments, each ring its
+-- own model spinning about the gate's through-axis (Client.Fx.Ambient turns models with a
+-- Spin attribute about their pivot's up axis, which here points through the opening).
+local PORTAL_RINGS = {
+	{ r = 5.2, n = 10, spin = 1.2, transparency = 0.3 },
+	{ r = 3.9, n = 8, spin = -1.8, transparency = 0.45 },
+	{ r = 2.6, n = 6, spin = 2.6, transparency = 0.6 },
+}
+local function portal(base: CFrame, centreY: number, colors: { Color3 }, parent: Instance)
+	local axisFrame = base * CFrame.new(0, centreY, 0.9) * CFrame.Angles(math.pi / 2, 0, 0)
+	decor(make("Part", {
+		Name = "PortalVeil",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.2, 11, 11),
+		CFrame = base * CFrame.new(0, centreY, 1.1) * CFrame.Angles(0, math.pi / 2, 0),
+		Color = colors[1]:Lerp(W.White, 0.5),
+		Material = Enum.Material.Neon,
+		Transparency = 0.82,
+		CastShadow = false,
+		Parent = parent,
+	}))
+	for i, ring in PORTAL_RINGS do
+		local model = Instance.new("Model")
+		model.Name = "PortalRing"
+		model:SetAttribute("Spin", ring.spin)
+		local hub = decor(make("Part", {
+			Name = "PortalHub",
+			Size = cube(0.2),
+			CFrame = axisFrame,
+			Transparency = 1,
+			CastShadow = false,
+			Parent = model,
+		}))
+		model.PrimaryPart = hub
+		local arc = 2 * ring.r * math.sin(math.pi / ring.n) * 0.72
+		for k = 0, ring.n - 1 do
+			local a = 2 * math.pi * k / ring.n + i * 0.4
+			decor(make("Part", {
+				Name = "PortalSegment",
+				Size = Vector3.new(0.55, 0.3, arc),
+				CFrame = axisFrame * CFrame.new(ring.r * math.cos(a), 0, ring.r * math.sin(a)) * CFrame.Angles(0, -a, 0),
+				Color = colors[(k + i) % 2 + 1],
+				Material = Enum.Material.Neon,
+				Transparency = ring.transparency,
+				CastShadow = false,
+				Parent = model,
+			}))
+		end
+		model.Parent = parent
+	end
+end
+
+-- A gate on the plaza's west edge, front facing the hub. Every enabled entry is a big open
+-- gate in its catalog colour (gate 1 PARKOUR stays sunny) holding its start trigger, the
+-- hint arrow and a swirling portal (walking through teleports; the server handles it); locked gates are
 -- smaller, blue-grey, closed with bars and a friendly padlock under a COMING SOON card.
 local function gate(entry: Catalog.Entry, parent: Instance)
 	local spot = Course.GATES[entry.slot]
@@ -622,9 +715,13 @@ local function gate(entry: Catalog.Entry, parent: Instance)
 	local base = CFrame.new(Course.GATE_X, Course.PLAZA.top, spot.z) * CFrame.Angles(0, FACE_HUB, 0)
 	local add = adder(base, folder)
 	local open = entry.enabled
-	local body = if open then W.Sunny else LOCKED
+	local tint = color(entry.color)
+	local body = if not open then LOCKED elseif entry.id == "parkour" then W.Sunny else tint:Lerp(W.White, 0.2)
 	local trim = if open then W.White else W.Chrome
-	local height = if open then 16 else 13
+	-- Gate 1 is the biggest; other open gates are a little smaller so the signs of
+	-- neighbouring open gates never touch.
+	local main = entry.slot == 1
+	local height = if not open then 13 elseif main then 16 else 15
 	local thick = if open then 3.6 else 3
 	local half = (if open then Course.GATE_HALF else LOCKED_HALF) + thick / 2
 	for _, sx in { -1, 1 } do
@@ -661,7 +758,7 @@ local function gate(entry: Catalog.Entry, parent: Instance)
 		Color = body,
 	})
 	-- The name card sits on the beam, framed by a trim-coloured backing.
-	local sw, sh = if open then 20 else 12, if open then 8.5 else 6.5
+	local sw, sh = if not open then 12 elseif main then 20 else 15, if not open then 6.5 elseif main then 8.5 else 7.5
 	local sy = height + 0.3 + sh / 2
 	decor(add({ Name = "GateSignBack", Size = Vector3.new(sw + 1.4, sh + 1.4, 0.8), CFrame = CFrame.new(0, sy, 0.5), Color = trim }))
 	local card = decor(add({
@@ -671,10 +768,11 @@ local function gate(entry: Catalog.Entry, parent: Instance)
 		Color = if open then W.Cream else LOCKED_CARD,
 	}))
 	if open then
-		cardFace(card, Enum.NormalId.Front, 30, W.Cream, W.Coral, "OPEN!", entry.title)
-		cardFace(card, Enum.NormalId.Back, 30, W.Cream, W.Coral, "GOOD LUCK!", entry.title)
+		cardFace(card, Enum.NormalId.Front, 30, W.Cream, tint, "OPEN!", entry.title)
+		cardFace(card, Enum.NormalId.Back, 30, W.Cream, tint, "GOOD LUCK!", entry.title)
 		add({ Name = "StartLine", Size = Vector3.new(Course.GATE_HALF * 2, 0.12, 1.6), CFrame = CFrame.new(0, 0.06, 0), Color = W.Sunny })
-		gateArrow(add, 8.6)
+		gateArrow(add, 8.6, tint)
+		portal(base, 6.2, PORTAL_COLORS[entry.id] or { tint, W.White }, folder)
 		trigger(
 			entry.id == "parkour" and "ParkourStart" or "ModeStart",
 			base * CFrame.new(0, 5, 0),
@@ -847,7 +945,8 @@ local function bestBoard(parent: Instance): TextLabel
 	local yaw = math.atan2(-(b.faceX - b.x), -(b.faceZ - b.z))
 	local base = CFrame.new(b.x, Course.PLAZA.top, b.z) * CFrame.Angles(0, yaw, 0)
 	local add = adder(base, parent)
-	local w, h, bottom = 11, 12, 3
+	-- Tall enough for one line per level (Modes.Parkour writes LEVEL_COUNT lines).
+	local w, h, bottom = 15, 16, 2.5
 	for _, sx in { -1, 1 } do
 		local x = sx * (w / 2 + 0.6)
 		add({
@@ -870,25 +969,25 @@ local function bestBoard(parent: Instance): TextLabel
 		decor(add({ Name = "BestBoard", Size = Vector3.new(w, h, 0.8), CFrame = CFrame.new(0, bottom + h / 2, 0), Color = W.White }))
 	local root = surface(slab, Enum.NormalId.Front, 30)
 	local card = panel(root, W.Cream, UDim2.fromScale(0.03, 0.025), UDim2.fromScale(0.94, 0.95), 0.06)
-	local pill = panel(card, W.Coral, UDim2.fromScale(0.06, 0.03), UDim2.fromScale(0.88, 0.13), 0.5)
+	local pill = panel(card, W.Coral, UDim2.fromScale(0.1, 0.025), UDim2.fromScale(0.8, 0.1), 0.5)
 	text(pill, { Text = "PARKOUR BEST", TextColor3 = W.White, Size = UDim2.fromScale(0.9, 0.74), Position = UDim2.fromScale(0.05, 0.13) })
 	text(card, {
 		Text = "SERVER TOP TIMES",
 		Font = theme.Fonts.Bold,
-		Size = UDim2.fromScale(0.8, 0.06),
-		Position = UDim2.fromScale(0.1, 0.17),
+		Size = UDim2.fromScale(0.8, 0.05),
+		Position = UDim2.fromScale(0.1, 0.135),
 	})
 	local list = text(card, {
 		Text = "Be the first to finish!",
 		Font = theme.Fonts.Bold,
 		TextScaled = false,
-		TextSize = 26,
+		TextSize = 25,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextYAlignment = Enum.TextYAlignment.Top,
 		TextWrapped = true,
 		RichText = true,
-		Size = UDim2.fromScale(0.86, 0.72),
-		Position = UDim2.fromScale(0.07, 0.25),
+		Size = UDim2.fromScale(0.9, 0.78),
+		Position = UDim2.fromScale(0.05, 0.2),
 	})
 	local back = surface(slab, Enum.NormalId.Back, 30)
 	local backCard = panel(back, W.Cream, UDim2.fromScale(0.03, 0.025), UDim2.fromScale(0.94, 0.95), 0.06)
@@ -1003,46 +1102,13 @@ end
 
 -- Course --------------------------------------------------------------------------------
 
-local function buildCourse(parent: Instance)
-	local tops: { [Course.Element]: BasePart } = {}
-	for _, e in Course.ELEMENTS do
-		if e.kind == "pad" then
-			platform(e, e.name or "Platform", parent, false)
-		elseif e.kind == "checkpoint" then
-			checkpoint(e, parent)
-		elseif e.kind == "mover" then
-			tops[e] = mover(e, parent)
-		elseif e.kind == "spinner" then
-			spinner(e, parent)
-		elseif e.kind == "bounce" then
-			bounce(e, parent)
-		elseif e.kind == "wall" then
-			wall(e, parent)
-		elseif e.kind == "slide" then
-			slide(e, parent)
-		end
-	end
-	-- Foam under every platform out at sea, and a chevron on each top toward the next one
-	-- (none on the bounce deck: its pad is the hint).
-	for i, e in Course.PATH do
-		if e.kind ~= "slide" then
-			foam(e, parent)
-			local nextE = Course.PATH[i + 1]
-			if nextE and e.name ~= "BounceDeck" then
-				chevron(e, nextE, tops[e] or parent)
-			end
-		end
-	end
+local ARCH_SPRING = 10
+local ARCH_SEGMENTS = 7
 
-	-- Finish: a sunny trophy arch over the finish deck, front facing the slide (-X): two
-	-- pillars, a rounded half-circle of candy segments, a FINISH banner between the pillars
-	-- and the spinning trophy standing on the banner inside the arch.
-	local f = Course.FINISH
-	local fz = (f.z0 + f.z1) / 2
-	local base = CFrame.new(Course.FINISH_ARCH_X, 1.2, fz) * CFrame.Angles(0, -FACE_HUB, 0)
-	local add = adder(base, parent)
-	local half = (f.z1 - f.z0) / 2 + 0.6
-	local spring = 10
+-- Two candy pillars and a rounded half-circle of `body`-coloured segments, built through
+-- `add` (frame: front facing -Z, x across the deck, y up from the deck top).
+local function archFrame(add: (props: { [string]: any }) -> BasePart, half: number, body: Color3)
+	local spring = ARCH_SPRING
 	for _, sx in { -1, 1 } do
 		add({
 			Name = "FinishFoot",
@@ -1056,7 +1122,7 @@ local function buildCourse(parent: Instance)
 			Shape = CYLINDER,
 			Size = Vector3.new(spring, 3, 3),
 			CFrame = CFrame.new(sx * half, spring / 2, 0) * UPRIGHT,
-			Color = W.Sunny,
+			Color = body,
 		})
 		for _, y in { 2.5, 5.5 } do
 			add({
@@ -1068,7 +1134,7 @@ local function buildCourse(parent: Instance)
 			})
 		end
 	end
-	local segments = 7
+	local segments = ARCH_SEGMENTS
 	for i = 0, segments do
 		local a = math.pi * i / segments
 		decor(add({
@@ -1085,15 +1151,109 @@ local function buildCourse(parent: Instance)
 				Shape = CYLINDER,
 				Size = Vector3.new(2 * half * math.sin(math.pi / (2 * segments)) + 0.4, 3, 3),
 				CFrame = CFrame.new(half * math.cos(m), spring + half * math.sin(m), 0) * CFrame.Angles(0, 0, m + math.pi / 2),
-				Color = W.Sunny,
+				Color = body,
 			}))
 		end
 	end
+end
+
+-- Frame at (x, y, z) whose front (-Z) faces the horizontal direction (faceX, faceZ).
+local function facing(x: number, y: number, z: number, faceX: number, faceZ: number): CFrame
+	return CFrame.new(x, y, z) * CFrame.Angles(0, math.atan2(-faceX, -faceZ), 0)
+end
+
+-- Half the arch span across a deck box (x0..x1, z0..z1) for an arch facing along X or Z.
+local function spanHalf(b: Course.Box, faceX: number): number
+	return (if faceX ~= 0 then b.z1 - b.z0 else b.x1 - b.x0) / 2 + 0.6
+end
+
+-- A remote level's entrance: an arch over the start deck behind the spawn spot, its card
+-- facing along the course ("LEVEL <i>" / name) so a player who just arrived reads it, and
+-- five small flag poles in the level's palette along the deck's sides.
+local function startArch(level: Course.Level, deck: Course.Element, parent: Instance)
+	local s = level.START
+	local pal = level.palette
+	local sx, sz = deck.sx :: number, deck.sz :: number
+	local box = { x0 = deck.x - sx / 2, x1 = deck.x + sx / 2, z0 = deck.z - sz / 2, z1 = deck.z + sz / 2, y0 = 0, y1 = 0 }
+	local half = spanHalf(box, s.faceX)
+	-- Behind the spawn: half a deck back from the spawn spot, against the course direction.
+	local back = (if s.faceX ~= 0 then sx else sz) / 2 - 1.6
+	local base = facing(deck.x - s.faceX * back, deck.y, deck.z - s.faceZ * back, s.faceX, s.faceZ)
+	local add = adder(base, parent)
+	archFrame(add, half, color(pal.main))
+	local sign =
+		decor(add({ Name = "StartSign", Size = Vector3.new(half * 2 + 3.4, 4.2, 1), CFrame = CFrame.new(0, 9, 0), Color = W.Cream }))
+	-- The card's Front face (-Z) looks along the course.
+	cardFace(sign, Enum.NormalId.Front, 44, W.Cream, color(pal.accent), "LEVEL " .. level.index, string.upper(level.name))
+	cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "LEVEL " .. level.index, "GO GO GO!")
+	local keys = { pal.main, pal.alt, pal.checkpoint, pal.mover, pal.blink }
+	for i, key in keys do
+		-- Spread along the deck's two side edges (parallel to the course direction).
+		local t = -0.5 + 1.5 * (i - 1) / (#keys - 1) -- clear of the arch pillars behind
+		local side = if i % 2 == 0 then 1 else -1
+		local along, across = t * ((if s.faceX ~= 0 then sx else sz) / 2 - 1.2), side * ((if s.faceX ~= 0 then sz else sx) / 2 - 0.8)
+		local px = deck.x + (if s.faceX ~= 0 then along else across)
+		local pz = deck.z + (if s.faceX ~= 0 then across else along)
+		flagPole(px, deck.y, pz, 7, color(key), nil, math.atan2(-s.faceX, -s.faceZ) + math.pi / 2, parent)
+	end
+end
+
+-- Level `level`'s parts into `parent`. Level 1 comes out exactly as the original course.
+local function buildCourse(level: Course.Level, parent: Instance)
+	local midZ = if level.remote then (level.BOUNDS.z0 + level.BOUNDS.z1) / 2 else -26
+	local tops: { [Course.Element]: BasePart } = {}
+	for _, e in level.ELEMENTS do
+		if e.kind == "pad" then
+			platform(e, e.name or "Platform", parent, false)
+		elseif e.kind == "checkpoint" then
+			checkpoint(e, parent, level.index, midZ)
+		elseif e.kind == "mover" then
+			tops[e] = mover(e, parent)
+		elseif e.kind == "blink" then
+			tops[e] = blink(e, parent)
+		elseif e.kind == "spinner" then
+			spinner(e, parent)
+		elseif e.kind == "bounce" then
+			bounce(e, parent)
+		elseif e.kind == "wall" then
+			wall(e, parent)
+		elseif e.kind == "slide" then
+			slide(e, parent)
+		end
+	end
+	-- Foam under every platform out at sea, and a chevron on each top toward the next one
+	-- (none on the bounce deck: its pad is the hint).
+	for i, e in level.PATH do
+		if e.kind ~= "slide" then
+			foam(e, parent)
+			local nextE = level.PATH[i + 1]
+			if nextE and e.name ~= "BounceDeck" then
+				chevron(e, nextE, tops[e] or parent)
+			end
+		end
+	end
+	if level.remote and level.PATH[1] then
+		startArch(level, level.PATH[1], parent)
+	end
+
+	-- Finish: a sunny trophy arch over the finish deck, front facing the incoming runner: two
+	-- pillars, a rounded half-circle of candy segments, a FINISH banner between the pillars
+	-- and the spinning trophy standing on the banner inside the arch.
+	local f = level.FINISH
+	local fa = level.FINISH_ARCH
+	local base = facing(fa.x, fa.y, fa.z, fa.faceX, fa.faceZ)
+	local add = adder(base, parent)
+	local half = spanHalf(f, fa.faceX)
+	archFrame(add, half, W.Sunny)
 	local bannerY = 9
 	local sign =
 		decor(add({ Name = "FinishSign", Size = Vector3.new(half * 2 + 3.4, 4.2, 1), CFrame = CFrame.new(0, bannerY, 0), Color = W.Cream }))
 	cardFace(sign, Enum.NormalId.Front, 44, W.Cream, W.Teal, "YOU DID IT!", "FINISH")
-	cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "THE END OF", "PARKOUR")
+	if level.remote then
+		cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "WELL DONE!", "LEVEL " .. level.index .. " CLEAR")
+	else
+		cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "THE END OF", "PARKOUR")
+	end
 	-- Chequered finish line on the deck.
 	local line = add({ Name = "FinishLine", Size = Vector3.new(half * 2 - 1, 0.12, 2.4), CFrame = CFrame.new(0, 0.06, 0), Color = W.White })
 	local cols = 12
@@ -1157,19 +1317,21 @@ local function buildCourse(parent: Instance)
 	end
 	trophy.Parent = parent
 
-	trigger(
+	local finish = trigger(
 		"ParkourFinish",
-		CFrame.new((f.x0 + f.x1) / 2, (f.y0 + f.y1) / 2, fz),
+		CFrame.new((f.x0 + f.x1) / 2, (f.y0 + f.y1) / 2, (f.z0 + f.z1) / 2),
 		Vector3.new(f.x1 - f.x0, f.y1 - f.y0, f.z1 - f.z0),
 		parent
 	)
-	local w = Course.WATER_BOX
-	trigger(
+	finish:SetAttribute("Level", level.index)
+	local w = level.WATER_BOX
+	local water = trigger(
 		"ParkourWater",
 		CFrame.new((w.x0 + w.x1) / 2, (w.y0 + w.y1) / 2, (w.z0 + w.z1) / 2),
 		Vector3.new(w.x1 - w.x0, w.y1 - w.y0, w.z1 - w.z0),
 		parent
 	)
+	water:SetAttribute("Level", level.index)
 end
 
 function Modes.build(): Built
@@ -1182,7 +1344,7 @@ function Modes.build(): Built
 	local parkour = Instance.new("Folder")
 	parkour.Name = "Parkour"
 	parkour:SetAttribute("Mode", "parkour")
-	parkour:SetAttribute("Checkpoints", Course.CHECKPOINT_COUNT)
+	parkour:SetAttribute("Levels", Course.LEVEL_COUNT)
 	parkour.Parent = folder
 
 	buildPlaza(plaza)
@@ -1191,7 +1353,17 @@ function Modes.build(): Built
 	end
 	bigSign(plaza)
 	local list = bestBoard(plaza)
-	buildCourse(parkour)
+	for i, level in Course.LEVELS do
+		local levelFolder = Instance.new("Folder")
+		levelFolder.Name = "Level" .. i
+		levelFolder:SetAttribute("Mode", "parkour")
+		levelFolder:SetAttribute("Level", i)
+		levelFolder:SetAttribute("Checkpoints", level.CHECKPOINT_COUNT)
+		levelFolder:SetAttribute("Title", level.name)
+		levelFolder:SetAttribute("LevelName", level.name)
+		buildCourse(level, levelFolder)
+		levelFolder.Parent = parkour
+	end
 	return { folder = folder, bestList = list }
 end
 
