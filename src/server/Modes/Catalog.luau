@@ -20,7 +20,7 @@ export type Entry = {
 
 local Catalog: { Entry } = {
 	{ id = "parkour", title = "PARKOUR", blurb = "Run, jump and bounce over the sea!", slot = 1, enabled = true, color = "Coral" },
-	{ id = "soon2", title = "COMING SOON", blurb = "A new game mode is on its way!", slot = 2, enabled = false, color = "Steel" },
+	{ id = "mog", title = "MOG TEST", blurb = "Hit the timing rings to out-mog the rivals!", slot = 2, enabled = true, color = "Grape" },
 	{ id = "soon3", title = "COMING SOON", blurb = "A new game mode is on its way!", slot = 3, enabled = false, color = "Steel" },
 }
 

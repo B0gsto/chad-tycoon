@@ -130,6 +130,8 @@ Tycoon.hooks = {
 	modes = function(_session: Session): { [string]: any }?
 		return nil
 	end,
+	-- Called before the "Home" action moves the player (GameModes ends any run first).
+	leavingForHome = function(_session: Session) end,
 }
 
 -- Gameplay event listeners (used by the tutorial): fn(session, name, data).
@@ -1840,6 +1842,7 @@ actionHandlers.SetSetting = function(session, data)
 end
 
 actionHandlers.Home = function(session)
+	Tycoon.hooks.leavingForHome(session)
 	local character = session.player.Character
 	if character then
 		character:PivotTo(session.plot.spawn)

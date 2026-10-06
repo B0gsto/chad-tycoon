@@ -58,8 +58,20 @@ export type Profile = {
 	starterGranted: boolean,
 	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
 	-- of the last full cash reward (Economy.modeReward cooldown).
-	modes: { parkour: { best: number, clears: number, lastRewardAt: number } },
+	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
+	-- passed.
+	-- Parkour per level (dense, PARKOUR_LEVELS long, 0 = never): best seconds and finishes.
+	-- modes.parkour keeps the shared reward cooldown and mirrors level 1 for the old UI.
+	parkour: { best: { number }, clears: { number } },
+	modes: {
+		parkour: { best: number, clears: number, lastRewardAt: number },
+		mog: { best: number, rivals: number, clears: number, lastRewardAt: number },
+	},
 }
+
+-- Must equal Modes.Course.LEVEL_COUNT (checked by the unit tests).
+local PARKOUR_LEVELS = 10
+DataService.PARKOUR_LEVELS = PARKOUR_LEVELS
 
 local function zeros(n: number): { number }
 	local t = table.create(n, 0)
@@ -102,7 +114,11 @@ function DataService.defaultProfile(): Profile
 		introSeen = false,
 		cosmetics = { trail = "", toggles = {} },
 		starterGranted = false,
-		modes = { parkour = { best = 0, clears = 0, lastRewardAt = 0 } },
+		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS) },
+		modes = {
+			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
+			mog = { best = 0, rivals = 0, clears = 0, lastRewardAt = 0 },
+		},
 	}
 end
 
@@ -111,6 +127,16 @@ local function reconcile(data: any): Profile
 	local default = DataService.defaultProfile()
 	if type(data) ~= "table" then
 		return default
+	end
+	-- Saves from before Parkour levels: the old single record becomes level 1's.
+	if type(data.parkour) ~= "table" then
+		local old = type(data.modes) == "table" and data.modes.parkour
+		local migrated = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS) }
+		if type(old) == "table" then
+			migrated.best[1] = old.best
+			migrated.clears[1] = old.clears
+		end
+		data.parkour = migrated
 	end
 	-- Saves from before the tutorial existed belong to players who already
 	-- know the game: don't send them through onboarding.
@@ -174,6 +200,19 @@ local function reconcile(data: any): Profile
 				end
 			end
 		end
+	end
+	for _, key in { "best", "clears" } do
+		local list = data.parkour[key]
+		local fixed = zeros(PARKOUR_LEVELS)
+		if type(list) == "table" then
+			for i = 1, PARKOUR_LEVELS do
+				local v = list[i]
+				if type(v) == "number" and v == v and v >= 0 and v ~= math.huge then
+					fixed[i] = if key == "clears" then math.floor(v) else v
+				end
+			end
+		end
+		data.parkour[key] = fixed
 	end
 	if data.pendingCrate ~= "" and not Economy.isRarity(data.pendingCrate) then
 		data.pendingCrate = ""

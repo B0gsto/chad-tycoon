@@ -31,6 +31,7 @@ local Pads = require(World.Pads)
 local Pen = require(World.Pen)
 local Props = require(World.Props)
 local Modes = require(World.Modes)
+local MogStage = require(World.MogStage)
 
 local WorldBuilder = {}
 
@@ -67,6 +68,8 @@ export type World = {
 	ranking: { TextLabel },
 	-- The GAME MODES plaza and Parkour course (World.Modes).
 	modes: Modes.Built,
+	-- The MOG TEST stage out at sea (World.MogStage).
+	mog: MogStage.Built,
 }
 
 local theme = Common.theme
@@ -341,13 +344,14 @@ function WorldBuilder.build(_themeModule: any): World
 	Hub.setupLighting()
 	local ranking = Hub.buildHub()
 	local modes = Modes.build()
+	local mog = MogStage.build()
 	local plots = {}
 	for i = 1, PLOT_COUNT do
 		table.insert(plots, buildPlot(i))
 	end
 	-- Blender meshes replace the part-built props that have one (World.Props).
 	Props.apply(mapFolder)
-	return { plots = plots, ranking = ranking, modes = modes }
+	return { plots = plots, ranking = ranking, modes = modes, mog = mog }
 end
 
 WorldBuilder.label = Common.label

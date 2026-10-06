@@ -22,6 +22,7 @@ local Hud = require(Client.UI.Hud)
 local Windows = require(Client.UI.Windows)
 local Popups = require(Client.UI.Popups)
 local Tutorial = require(Client.UI.Tutorial)
+local MogHud = require(Client.UI.MogHud)
 
 -- The opening cutscene (optional: the game runs without it if it fails to load).
 local introOk, Cutscene = pcall(require, Client.Intro.Cutscene)
@@ -81,6 +82,7 @@ end)
 Animator.start()
 Popups.build(screen, Sounds)
 Windows.build(screen)
+MogHud.build(screen)
 Guide.build()
 Hud.build(screen, {
 	openWindow = Windows.open,
@@ -220,21 +222,36 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 		end)
 	elseif payload.kind == "Tutorial" then
 		Tutorial.onNotify(payload)
+	elseif payload.kind == "Mode" and payload.mode == "mog" then
+		-- MOG TEST: the skill-check ring, hearts and finish card (Fx.Mog does the 3D side).
+		MogHud.onNotify(payload)
+		if payload.event == "stop" and payload.reason == "full" then
+			-- All six duel spots are taken: the test never started.
+			Popups.toast("The Mog stage is full right now, try again in a moment", "info")
+		end
 	elseif payload.kind == "Mode" then
 		-- Game-mode runs: the HUD run pill and the finish card (Fx.Modes does the 3D side).
 		local event = payload.event
 		if event == "start" then
-			Hud.runStart(tonumber(payload.startedAt) or workspace:GetServerTimeNow(), 0, tonumber(payload.checkpoints) or 0)
+			Hud.runStart(
+				tonumber(payload.startedAt) or workspace:GetServerTimeNow(),
+				0,
+				tonumber(payload.checkpoints) or 0,
+				tonumber(payload.level)
+			)
 			Sounds.play("Ready")
 		elseif event == "checkpoint" then
 			Hud.runCheckpoint(tonumber(payload.index) or 0, tonumber(payload.checkpoints) or 0)
 			Sounds.play("Step")
 		elseif event == "finish" then
 			Hud.runStop()
+			-- "Run again" replays the same level; "Next level" starts the one just unlocked.
 			Popups.modeFinish(payload, function()
-				action:FireServer({ action = "ModeStart", mode = payload.mode })
+				action:FireServer({ action = "ModeStart", mode = payload.mode, level = tonumber(payload.level) })
 			end, function()
 				action:FireServer({ action = "Home" })
+			end, function()
+				action:FireServer({ action = "ModeStart", mode = payload.mode, level = tonumber(payload.nextLevel) })
 			end)
 		elseif event == "invalid" then
 			Hud.runStop()
@@ -314,7 +331,7 @@ end)
 -- 3D effect modules (built by other streams; any may be missing or fail).
 local fxFolder = Client:FindFirstChild("Fx")
 if fxFolder then
-	for _, name in { "Camera", "Shelf", "Orbs", "Machines", "Crates", "Fans", "Ambient", "Plates", "Cosmetics", "Modes", "Surge" } do
+	for _, name in { "Camera", "Shelf", "Orbs", "Machines", "Crates", "Fans", "Ambient", "Plates", "Cosmetics", "Modes", "Mog", "Surge" } do
 		local moduleScript = fxFolder:FindFirstChild(name)
 		if moduleScript and moduleScript:IsA("ModuleScript") then
 			local ok, err = pcall(function()
