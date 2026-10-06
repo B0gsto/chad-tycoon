@@ -183,6 +183,9 @@ roblox.implementMethod("Model", "ScaleTo", function(self, scale)
 	end
 end)
 
+roblox.implementMethod("HttpService", "GenerateGUID", function()
+	return "preview-guid"
+end)
 roblox.implementMethod("Workspace", "GetServerTimeNow", function()
 	return FIXED_NOW
 end)
@@ -302,6 +305,7 @@ end
 -- Lune cannot read a few engine-only properties; swap them for constants.
 local SOURCE_PATCHES = {
 	{ "player.MembershipType == Enum.MembershipType.Premium", "false" },
+	{ "if game.JobId ~= \"\" then game.JobId else", "if false then \"\" else" },
 	{ "local pos = root.Position", "local pos = root.CFrame.Position" },
 	{ "Players.LocalPlayer", "__previewLocalPlayer()" },
 	{ "orb.part.Position - pos", "orb.part.CFrame.Position - pos" },

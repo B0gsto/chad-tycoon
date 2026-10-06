@@ -72,6 +72,14 @@ The server has 6 plots, one per player, arranged around a central hub with a ran
    - On live servers, an item with ID `0` shows "coming soon".
 5. Optional: set `Theme.MusicId` to an audio asset you own.
 
+### Before you open it to players
+
+- **Game Settings → Places → Max Players: 6.** There is one plot per player; a 7th player would be told the server is full.
+- **Test in Studio with "Start" and 2–3 players** (Test → Clients and Servers) to check that saving and leaving work. Saves are session-locked, so a player who hops servers quickly can never overwrite their own progress. The new server waits up to 20 s for the old one to let go.
+- **Test on a phone** with Studio's device emulator. The UI scales and keeps clear of the thumbstick and jump buttons, but check it on your target devices.
+- Fill in the experience questionnaire (maturity rating), and upload an icon and thumbnails. The renders in `preview/screenshots/` work as a starting point.
+- Units animate on each player's own device and are built entirely from parts. Nothing needs uploading. Custom Blender meshes or uploaded animations would first need uploading to your account as Roblox assets.
+
 ## Develop
 
 Toolchain versions are pinned in `rokit.toml`: Rojo, Selene, StyLua, Lune and luau-lsp.

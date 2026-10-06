@@ -15,7 +15,7 @@
 
 local Economy = {}
 
-Economy.VERSION = "1.0.0"
+Economy.VERSION = "1.1.0"
 
 Economy.MAX_TIER = 25
 Economy.MAX_BUY_TIER = 15

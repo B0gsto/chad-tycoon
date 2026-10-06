@@ -266,7 +266,11 @@ local function refreshDisplay(session: Session)
 			local model = CharacterFactory.build(look, tierName(tier))
 			model:PivotTo(session.plot.slots[slotIndex])
 			model:SetAttribute("Key", key)
-			unitBillboard(model, tier, if needsLabelCount then units[tier] else nil)
+			-- Only the first unit of each tier gets a label (with its count) so a
+			-- full shelf stays readable instead of a wall of 30 name tags.
+			if needsLabelCount then
+				unitBillboard(model, tier, units[tier])
+			end
 			model.Parent = session.plot.unitFolder
 			session.display[slotIndex] = { tier = tier, model = model }
 		end

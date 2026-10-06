@@ -170,11 +170,11 @@ function shotList(world) {
 	const plot = world.plots[0];
 	const P = (x, y, z) => toWorld(plot, [x, y, z]);
 	// Behind the main player, who wades through the orb pool toward the bleachers.
-	const play = { pos: P(-12, 9, -4), look: P(1, -2, 25), fov: 62 };
+	const play = { pos: P(-6, 27, -42), look: P(0, -2, 17), fov: 58 };
 	// The fresh tutorial player owns plot 4.
 	const fresh = world.plots[3];
 	const F = (x, y, z) => toWorld(fresh, [x, y, z]);
-	const tutorial = { pos: F(12, 15, -36), look: F(-24, 2, -4), fov: 62 };
+	const tutorial = { pos: F(6, 25, -48), look: F(-28, 0, 2), fov: 56 };
 	return [
 		{ name: "01-overview", scene: "world", gui: "none", camera: { pos: [-30, 235, -275], look: [0, 0, 45], fov: 55 }, extra: { shadowSpan: 320, fogNear: 400, fogFar: 1400 } },
 		{ name: "02-your-plot", scene: "world", gui: "none", camera: { pos: P(0, 62, -84), look: P(0, -2, 8), fov: 60 }, extra: { shadowSpan: 120 } },
@@ -185,7 +185,7 @@ function shotList(world) {
 		{ name: "07-new-unit-reward", scene: "world", gui: "reward", camera: play },
 		{ name: "08-holding-crate", scene: "world_held", gui: "crate", camera: { pos: P(20, 9, -41), look: P(36, 3, -16), fov: 58 } },
 		{ name: "09-settings", scene: "world", gui: "settings", camera: play },
-		{ name: "10-all-25-tiers", scene: "showcase", gui: "none", camera: { pos: [0, 24, 1000 - 66], look: [0, 8, 1003], fov: 50 }, extra: { shadowSpan: 80, fogNear: 300, fogFar: 1200 } },
+		{ name: "10-all-25-tiers", scene: "showcase", gui: "none", camera: { pos: [0, 23, 1000 - 61], look: [0, 7.5, 1004], fov: 56 }, extra: { shadowSpan: 80, fogNear: 300, fogFar: 1200 } },
 		{ name: "11-tutorial", scene: "world_tutorial", gui: "tutorial", camera: tutorial },
 		{ name: "12-tutorial-complete", scene: "world_tutorial", gui: "tutorial_done", camera: tutorial },
 		{ name: "13-loading-screen", scene: "world", gui: "loading", camera: play },
