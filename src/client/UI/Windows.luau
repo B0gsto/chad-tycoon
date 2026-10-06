@@ -23,6 +23,7 @@ local Net = require(ReplicatedStorage.Shared.Net)
 
 local Kit = require(script.Parent.Kit)
 local ShopScenes = require(script.Parent.ShopScenes)
+local Sprites = require(script.Parent.Parent.Fx.Sprites)
 local State = require(script.Parent.Parent.State)
 
 local Theme = Kit.Theme
@@ -147,10 +148,15 @@ local PASS_TINTS: { [string]: Color3 } = {
 	CrateKey = Theme.World.Orange,
 }
 
--- Corner tags on pass banners, hidden once the pass is owned.
+-- Ribbon candy colours, one per kind of tag (OWNED keeps the mint "good" green).
+local RIBBON_SUNNY = Theme.World.Sunny -- popular, savings
+local RIBBON_PINK = Color3.fromRGB(255, 84, 168) -- best seller, starter deal, exclusive
+local RIBBON_CORAL = Theme.World.Coral -- best value
+
+-- Corner tags on pass banners, hidden once the pass is owned (each contrasts with its banner).
 local PASS_TAGS: { [string]: { text: string, color: Color3 } } = {
-	AutoLoot = { text = "BEST SELLER", color = C.Danger },
-	DoubleMoney = { text = "POPULAR", color = C.Accent },
+	AutoLoot = { text = "BEST SELLER", color = RIBBON_PINK },
+	DoubleMoney = { text = "POPULAR", color = RIBBON_SUNNY },
 }
 
 -- Small text (12 px and under) on blue: near-white, never blue-grey.
@@ -162,20 +168,72 @@ local function price(amount: number): string
 	return ROBUX .. " " .. tostring(amount)
 end
 
--- Corner tag ("POPULAR", "BEST VALUE", "OWNED"): a solid pill overlapping the top-right edge.
-local function ribbon(parent: Instance, text: string, color: Color3)
-	return Kit.pill(parent, {
+--[[
+	Corner tag ("POPULAR", "BEST VALUE", "OWNED"): a solid candy pill with white
+	text in a dark outline, overlapping the card's top-right corner by ~6 px,
+	over a soft drop shadow. The returned label is the shadow (it sizes to the
+	text); the coloured face is its child, so Visible and pop/breathe scale
+	move both together.
+]]
+local RIBBON_PAD = 12
+local function ribbon(parent: Instance, text: string, color: Color3): TextLabel
+	local shadow = Kit.text(parent, {
 		Name = "Ribbon",
 		Text = text,
-		Color = color,
-		Solid = true,
-		TextSize = 14,
-		Size = UDim2.fromOffset(0, 24),
+		Font = F.UI,
+		TextSize = 16,
+		TextTransparency = 1,
+		TextWrapped = false,
+		BackgroundColor3 = C.Ink,
+		BackgroundTransparency = 0.45,
+		Size = UDim2.fromOffset(0, 26),
 		AutomaticSize = Enum.AutomaticSize.X,
-		Position = UDim2.new(1, 6, 0, -10),
+		Position = UDim2.new(1, 8, 0, -5),
 		AnchorPoint = Vector2.new(1, 0),
-		ZIndex = 6,
+		StrokeThickness = 0,
+		ZIndex = 7,
 	})
+	Kit.padding(shadow, 0, RIBBON_PAD)
+	Kit.round(shadow)
+	local face = Kit.text(shadow, {
+		Name = "Face",
+		Text = text,
+		Font = F.UI,
+		TextSize = 16,
+		TextWrapped = false,
+		TextColor3 = Color3.new(1, 1, 1),
+		BackgroundColor3 = color,
+		BackgroundTransparency = 0,
+		Size = UDim2.new(1, RIBBON_PAD * 2, 1, 0),
+		Position = UDim2.fromOffset(-RIBBON_PAD - 2, -3),
+		StrokeThickness = 0,
+		ZIndex = 7,
+	})
+	Kit.round(face)
+	Kit.gradient(face, Color3.new(1, 1, 1), Color3.new(0.86, 0.86, 0.9))
+	Kit.new("UIStroke", {
+		Thickness = 2,
+		Color = Kit.darken(Kit.lip(color), 0.35),
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
+		LineJoinMode = Enum.LineJoinMode.Round,
+		Parent = face,
+	})
+	-- The outline ring sits on a transparent child so the face can outline its glyphs too.
+	local edge = Kit.new("Frame", {
+		Name = "Edge",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 7,
+		Parent = face,
+	})
+	Kit.round(edge)
+	Kit.new("UIStroke", {
+		Thickness = 2,
+		Color = Kit.lip(color),
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		Parent = edge,
+	})
+	return shadow
 end
 
 -- Product art: the atlas icon `art` drawn large, or the `fallback` shape icon tinted `color`.
@@ -238,9 +296,9 @@ local function gemPackText(amount: number): string
 	return "+" .. Format.commas(amount)
 end
 
--- Aura amounts read like the HUD's tank: the player's number format, then the word.
-local function auraText(amount: number): string
-	return State.num(amount) .. " " .. W.Orb
+-- A Rizz pack card's amount (the Gem icon beside it names the unit).
+local function gemCardText(amount: number): string
+	return Format.commas(amount)
 end
 
 -- "15 min", "1 h", "24 h": how much income or aura a pack is worth.
@@ -261,8 +319,9 @@ local BANNER_H = 130 -- pass banner height
 local STAGE_W = 230 -- a banner's animated stage, at the default window...
 local STAGE_MIN_W = 140 -- ...and the narrowest it shrinks to
 local COS_H = 204 -- cosmetic card height
-local PACK_H = 218 -- cash / aura / Rizz card height (stage, amount, two-line caption, price)
-local PACK_STAGE = 100 -- pack card stage (square)
+local PACK_H = 238 -- cash / aura / Rizz card height (stage, amount, one-line caption, price)
+local PACK_STAGE = 125 -- pack card stage (square)
+local PACK_ICON = 26 -- currency icon left of a pack's amount
 local STARTER_H = 120 -- Starter pack card at the top of the page
 local BUNDLE_H = 120 -- All Cosmetics card heading the cosmetics section
 local GAP = 16
@@ -281,6 +340,17 @@ local function minText(label: TextLabel): TextLabel
 		constraint.MinTextSize = math.min(MIN_TEXT, constraint.MaxTextSize)
 	end
 	return label
+end
+
+-- Small text on a candy tint: white glyphs in a 1.5 px outline of the tint's deep tone.
+local function outline(label: TextLabel, tint: Color3): UIStroke
+	return Kit.new("UIStroke", {
+		Thickness = 1.5,
+		Color = Kit.darken(Kit.lip(tint), 0.3),
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
+		LineJoinMode = Enum.LineJoinMode.Round,
+		Parent = label,
+	})
 end
 
 --[[
@@ -431,9 +501,10 @@ local function buildShop(screen: ScreenGui)
 		chip.Visible = false
 	end
 	local headerTitle = window.header:FindFirstChild("Title")
-	if headerTitle and headerTitle:IsA("GuiObject") then
+	if headerTitle and headerTitle:IsA("TextLabel") then
 		headerTitle.Position = UDim2.fromOffset(84, 1)
-		headerTitle.Size = UDim2.new(0, 160, 1, 0)
+		headerTitle.Size = UDim2.new(0, 120, 1, 0)
+		headerTitle.TextSize = 33
 	end
 	local cart = Kit.new("Frame", {
 		Name = "Cart",
@@ -492,7 +563,7 @@ local function buildShop(screen: ScreenGui)
 			Name = name,
 			BackgroundColor3 = C.Well,
 			BackgroundTransparency = 0.15,
-			Size = UDim2.fromOffset(width, 32),
+			Size = UDim2.fromOffset(width, 38),
 			Position = UDim2.new(1, -right, 0.5, -1),
 			AnchorPoint = Vector2.new(1, 0.5),
 			ZIndex = 3,
@@ -500,30 +571,30 @@ local function buildShop(screen: ScreenGui)
 		})
 		Kit.round(holder)
 		Kit.new("UIStroke", { Thickness = 1.5, Color = color, Transparency = 0.5, Parent = holder })
-		Kit.icon(holder, icon, 24, color, {
+		Kit.icon(holder, icon, 28, color, {
 			Name = "Icon",
-			Position = UDim2.new(0, 5, 0.5, 0),
+			Position = UDim2.new(0, 6, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
 			ZIndex = 4,
 		})
 		return minText(Kit.number(holder, {
 			Name = "Amount",
 			Text = "0",
-			TextSize = 17,
-			MaxTextSize = 17,
+			TextSize = 20,
+			MaxTextSize = 20,
 			TextScaled = true,
-			Size = UDim2.new(1, -40, 0, 22),
-			Position = UDim2.new(0, 32, 0.5, 0),
+			Size = UDim2.new(1, -46, 0, 26),
+			Position = UDim2.new(0, 37, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextColor3 = color,
 			ZIndex = 4,
 		}))
 	end
-	local cashChip = walletChip("CashChip", "Coin", C.MoneyText, 128, 60)
-	local gemChip = walletChip("GemChip", "Gem", C.Rizz, 92, 196)
+	local cashChip = walletChip("CashChip", "Coin", C.MoneyText, 146, 60)
+	local gemChip = walletChip("GemChip", "Gem", C.Rizz, 106, 212)
 	-- The tank (aura carried, like the HUD's dumbbell plaque): bought aura flies here.
-	local auraChip = walletChip("AuraChip", "Orb", C.Orb, 104, 296)
+	local auraChip = walletChip("AuraChip", "Orb", C.Orb, 120, 324)
 
 	--[[
 		Section switcher: one pill (icon + label) per section in a well, with a
@@ -719,7 +790,7 @@ local function buildShop(screen: ScreenGui)
 			Parent = switcher,
 		})
 		Kit.list(pill, 6, true, Enum.HorizontalAlignment.Center)
-		pillIcons[i] = Kit.icon(pill, section.icon, 22, iconColor(section.icon), {
+		pillIcons[i] = Kit.icon(pill, section.icon, 26, iconColor(section.icon), {
 			Name = "Icon",
 			LayoutOrder = 1,
 			ZIndex = 4,
@@ -728,7 +799,7 @@ local function buildShop(screen: ScreenGui)
 			Name = "Label",
 			Text = string.upper(section.pill),
 			Font = F.UI,
-			TextSize = 16,
+			TextSize = 18,
 			TextWrapped = false,
 			TextColor3 = if i == 1 then SELECTED_TEXT else C.Text,
 			Size = UDim2.new(0, 0, 1, 0),
@@ -1067,7 +1138,7 @@ local function buildShop(screen: ScreenGui)
 		}))
 		Kit.new("UIStroke", { Thickness = 3, Color = Kit.lip(tint), Parent = titleLabel })
 		if caption then
-			Kit.text(body, {
+			local captionLabel = Kit.text(body, {
 				Name = "Caption",
 				Text = caption,
 				Font = F.Bold,
@@ -1077,9 +1148,10 @@ local function buildShop(screen: ScreenGui)
 				Size = UDim2.new(1, WIDE_TEXT_W, 0, 18),
 				Position = UDim2.fromOffset(WIDE_LEFT + 2, 42),
 				TextXAlignment = Enum.TextXAlignment.Left,
-				TextColor3 = Kit.darken(tint, 0.62),
+				TextColor3 = Color3.new(1, 1, 1),
 				ZIndex = 4,
 			})
+			outline(captionLabel, tint)
 		end
 		return titleLabel
 	end
@@ -1150,7 +1222,7 @@ local function buildShop(screen: ScreenGui)
 			Size = UDim2.new(1, -50, 0, 18),
 			Position = UDim2.fromOffset(44, 31),
 			TextXAlignment = Enum.TextXAlignment.Left,
-			TextColor3 = SMALL_TEXT,
+			TextColor3 = C.Text,
 			ZIndex = 4,
 		})
 		return amount
@@ -1163,7 +1235,7 @@ local function buildShop(screen: ScreenGui)
 	local starterButton, starterSheen = widePrice(starterBody, price(starterPass.Price), function()
 		action:FireServer({ action = "PromptPass", name = COS.Starter.Pass })
 	end)
-	local starterTag = ribbon(starterBody, "STARTER DEAL", C.Accent)
+	local starterTag = ribbon(starterBody, "STARTER DEAL", RIBBON_PINK)
 	local starterEntry: Entry = {
 		cell = starterCell,
 		body = starterBody,
@@ -1214,25 +1286,62 @@ local function buildShop(screen: ScreenGui)
 		})
 		local body = Kit.panel(cell, { Name = "Body", Color = tint, Size = UDim2.fromScale(1, 1), Radius = BANNER_R })
 		local clip = bannerPaint(body, tint, BANNER_R)
-		-- The stage: a darker window the pass's little scene plays in.
+		-- The stage: a lit window in the banner's own tint (a diagonal light-to-deep
+		-- gradient, a lighter rim and a glassy sheen along its top) the pass's little
+		-- scene plays in. It clips the scene, so nothing it draws reaches the text.
 		local stage = Kit.new("Frame", {
 			Name = "Stage",
-			BackgroundColor3 = Kit.darken(tint, 0.42),
-			BackgroundTransparency = 0.15,
+			BackgroundColor3 = Color3.new(1, 1, 1),
+			BackgroundTransparency = 0,
 			ClipsDescendants = true,
 			Size = UDim2.fromOffset(STAGE_W, BANNER_H - 18),
 			Position = UDim2.fromOffset(9, 9),
 			ZIndex = 4,
 			Parent = body,
 		})
-		Kit.corner(stage, Kit.RADIUS.M)
-		Kit.new("UIStroke", { Thickness = 2.5, Color = Kit.lighten(tint, 0.45), Transparency = 0.15, Parent = stage })
+		Kit.corner(stage, BANNER_R - 6)
+		Kit.new("UIGradient", {
+			Color = ColorSequence.new(Kit.lighten(tint, 0.15), Kit.darken(tint, 0.1)),
+			Rotation = 35,
+			Parent = stage,
+		})
+		Kit.new("UIStroke", {
+			Thickness = 2,
+			Color = Kit.lighten(tint, 0.5),
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+			Parent = stage,
+		})
+		-- Extra room on the right: counters a scene draws at its right edge stay whole
+		-- inside the stage instead of being cut off right next to the title.
+		Kit.new("UIPadding", {
+			PaddingLeft = UDim.new(0, 6),
+			PaddingRight = UDim.new(0, 22),
+			Parent = stage,
+		})
+		-- Created before the scene, so the scene draws over it (offsets undo the padding).
+		local stageSheen = Kit.new("Frame", {
+			Name = "Sheen",
+			BackgroundColor3 = Color3.new(1, 1, 1),
+			BackgroundTransparency = 0.6,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, 12, 0, 22),
+			Position = UDim2.fromOffset(2, 4),
+			ZIndex = 1,
+			Parent = stage,
+		})
+		Kit.corner(stageSheen, 11)
+		Kit.new("UIGradient", {
+			Transparency = NumberSequence.new(0.35, 1),
+			Rotation = 90,
+			Parent = stageSheen,
+		})
 		local scene: Scene = ShopScenes.pass(stage, name, tint)
+		-- The text column sits above the stage (and anything its scene draws).
 		local info = Kit.new("Frame", {
 			Name = "Info",
 			BackgroundTransparency = 1,
 			Size = UDim2.fromScale(1, 1),
-			ZIndex = 4,
+			ZIndex = 6,
 			Parent = body,
 		})
 		local title = minText(Kit.title(info, {
@@ -1247,7 +1356,7 @@ local function buildShop(screen: ScreenGui)
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextColor3 = Color3.new(1, 1, 1),
 			StrokeThickness = 0,
-			ZIndex = 4,
+			ZIndex = 6,
 		}))
 		Kit.new("UIStroke", {
 			Thickness = 3,
@@ -1259,27 +1368,29 @@ local function buildShop(screen: ScreenGui)
 			Name = "Desc",
 			Text = pass.Desc,
 			Font = F.Bold,
-			TextSize = 15,
+			TextSize = 16,
 			TextWrapped = true,
-			Size = UDim2.new(1, 0, 0, 38),
+			Size = UDim2.new(1, 0, 0, 40),
 			Position = UDim2.fromOffset(1, 49),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextYAlignment = Enum.TextYAlignment.Top,
-			TextColor3 = Kit.darken(tint, 0.62),
-			ZIndex = 4,
+			TextColor3 = Color3.new(1, 1, 1),
+			ZIndex = 6,
 		})
+		outline(desc, tint)
+		-- PERMANENT: white on the tint's deep navy-leaning tone, so it reads on every banner.
 		Kit.pill(info, {
 			Name = "Perk",
 			Text = "PERMANENT",
-			Color = Kit.darken(tint, 0.3),
+			Color = Kit.darken(Kit.lip(tint), 0.25),
 			Solid = true,
 			TextColor = Color3.new(1, 1, 1),
-			TextSize = 14,
-			Size = UDim2.fromOffset(0, 24),
+			TextSize = 15,
+			Size = UDim2.fromOffset(0, 26),
 			AutomaticSize = Enum.AutomaticSize.X,
-			Position = UDim2.new(0, 0, 1, -14),
+			Position = UDim2.new(0, 0, 1, -12),
 			AnchorPoint = Vector2.new(0, 1),
-			ZIndex = 4,
+			ZIndex = 6,
 		})
 		local button, sheen = priceButton(body, {
 			Text = price(pass.Price),
@@ -1317,7 +1428,8 @@ local function buildShop(screen: ScreenGui)
 	-- Fits a banner to the window: stage width, the text column between it and the price.
 	local function placeBanner(banner: Banner, stageW: number, priceW: number)
 		banner.stage.Size = UDim2.fromOffset(stageW, BANNER_H - 18)
-		local left = 9 + stageW + 16
+		-- A wide gap: the scene's counters stop at the stage edge, the title starts well clear of it.
+		local left = 9 + stageW + 28
 		banner.info.Position = UDim2.fromOffset(left, 0)
 		banner.info.Size = UDim2.new(1, -(left + priceW + 16 + 14), 1, 0)
 		banner.button.Size = UDim2.fromOffset(priceW, PRICE_H)
@@ -1371,7 +1483,7 @@ local function buildShop(screen: ScreenGui)
 		action:FireServer({ action = "PromptPass", name = COS.Bundle })
 	end)
 	local saving = bundleSaving()
-	local bundleSave = ribbon(bundleBody, string.format("SAVE %d%%", saving), C.Danger)
+	local bundleSave = ribbon(bundleBody, string.format("SAVE %d%%", saving), RIBBON_SUNNY)
 	bundleSave.Visible = saving > 0
 	local bundleOwnedTag = ribbon(bundleBody, "OWNED", C.Good)
 	bundleOwnedTag.Visible = false
@@ -1445,7 +1557,7 @@ local function buildShop(screen: ScreenGui)
 			end
 		) :: CosCard
 		if item.Starter then
-			card.tag = ribbon(card.body, "EXCLUSIVE", C.Accent)
+			card.tag = ribbon(card.body, "EXCLUSIVE", RIBBON_PINK)
 			card.lock = Kit.icon(card.body, "Lock", 30, C.Text, {
 				Name = "Lock",
 				Position = UDim2.fromOffset(14, 12),
@@ -1516,72 +1628,152 @@ local function buildShop(screen: ScreenGui)
 		buttons stay the brightest thing on them.
 	]]
 	type Pack = Entry & { amount: TextLabel, sub: TextLabel, scene: Scene }
-	type PackGrid = { grid: Frame, layout: UIGridLayout, count: number, wide: number, narrow: number, columns: number }
+	type PackGrid = {
+		grid: Frame,
+		layout: UIGridLayout,
+		count: number,
+		wide: number,
+		narrow: number,
+		columns: number,
+		cardW: number,
+	}
 	local packGrids: { PackGrid } = {}
-	local function packGrid(name: string, packCount: number, wide: number, narrow: number): Frame
+	-- `wide` / `narrow`: columns on a wide / narrow window (the cell size follows them; a row
+	-- with fewer cards than columns is centred).
+	local function packGrid(name: string, packCount: number, wide: number, narrow: number): PackGrid
 		local grid = Kit.new("Frame", { Name = name, BackgroundTransparency = 1, Parent = scroll })
 		local gridLayout = Kit.new("UIGridLayout", {
 			CellSize = UDim2.new(1 / wide, 0, 0, PACK_H),
 			CellPadding = UDim2.fromOffset(GAP, GAP),
 			SortOrder = Enum.SortOrder.LayoutOrder,
+			HorizontalAlignment = Enum.HorizontalAlignment.Center,
 			Parent = grid,
 		})
-		table.insert(packGrids, { grid = grid, layout = gridLayout, count = packCount, wide = wide, narrow = narrow, columns = wide })
-		return grid
+		local packs: PackGrid =
+			{ grid = grid, layout = gridLayout, count = packCount, wide = wide, narrow = narrow, columns = wide, cardW = 180 }
+		table.insert(packGrids, packs)
+		return packs
 	end
-	local function packCard(grid: Frame, kind: string, index: number, packPrice: number, accent: Color3, amountColor: Color3): Pack
+	--[[
+		Amounts are the hero of a pack card: the currency icon and a big bold number
+		in the pack colour with a dark outline. The number's size follows its length
+		and the card width (28 px, never under 24 px for the short number format).
+	]]
+	local amountGrid: { [TextLabel]: PackGrid } = {}
+	local function fitAmount(label: TextLabel, text: string)
+		local packs = amountGrid[label]
+		local room = (if packs then packs.cardW else 180) - 20 - PACK_ICON - 4
+		label.TextSize = math.clamp(math.floor(room / (0.68 * math.max(#text, 1))), 16, 28)
+	end
+	local function setAmount(label: TextLabel, text: string)
+		fitAmount(label, text)
+		label.Text = text
+	end
+	local function packCard(
+		packs: PackGrid,
+		kind: string,
+		index: number,
+		packPrice: number,
+		accent: Color3,
+		amountColor: Color3,
+		icon: string
+	): Pack
+		local grid = packs.grid
 		local cell = Kit.new("Frame", { Name = kind .. index, BackgroundTransparency = 1, LayoutOrder = index, Parent = grid })
 		local radius = Kit.RADIUS.L
 		local deep = Kit.darken(accent, 0.45)
 		local body = Kit.panel(cell, { Name = "Body", Color = deep, Size = UDim2.fromScale(1, 1), Radius = radius })
 		local clip = bannerPaint(body, deep, radius, Kit.lighten(accent, 0.15))
-		-- A soft accent halo the pack's scene sits on.
-		local halo = Kit.new("Frame", {
-			Name = "Halo",
-			BackgroundColor3 = accent,
+		-- Moulded-plastic highlight along the top of the card.
+		local shine = Kit.new("Frame", {
+			Name = "Shine",
+			BackgroundColor3 = Color3.new(1, 1, 1),
 			BackgroundTransparency = 0.72,
-			Size = UDim2.fromOffset(PACK_STAGE - 8, PACK_STAGE - 8),
-			Position = UDim2.new(0.5, 0, 0, 6 + PACK_STAGE // 2),
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, -12, 0, 30),
+			Position = UDim2.fromOffset(6, 4),
+			ZIndex = 2,
+			Parent = body,
+		})
+		Kit.corner(shine, radius - 4)
+		Kit.new("UIGradient", { Transparency = NumberSequence.new(0.3, 1), Rotation = 90, Parent = shine })
+		-- A soft glow in the pack colour behind the stage, bigger and brighter up the ladder.
+		local glowSize = math.floor(PACK_STAGE * (0.85 + 0.1 * index))
+		local glowId = Sprites.image("SoftDot")
+		local glowProps = {
+			Name = "Halo",
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(glowSize, glowSize),
+			Position = UDim2.new(0.5, 0, 0, 8 + PACK_STAGE // 2),
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			ZIndex = 3,
 			Parent = body,
-		})
-		Kit.round(halo)
+		}
+		if glowId then
+			local glow = Kit.new("ImageLabel", glowProps)
+			glow.Image = glowId
+			glow.ImageColor3 = Kit.lighten(accent, 0.2)
+			glow.ImageTransparency = math.max(0.1, 0.5 - 0.1 * index)
+			glow.ScaleType = Enum.ScaleType.Fit
+		else
+			local glow = Kit.new("Frame", glowProps)
+			glow.BackgroundColor3 = accent
+			glow.BackgroundTransparency = math.max(0.45, 0.8 - 0.08 * index)
+			Kit.round(glow)
+		end
 		local stage = Kit.new("Frame", {
 			Name = "Stage",
 			BackgroundTransparency = 1,
 			ClipsDescendants = true,
 			Size = UDim2.fromOffset(PACK_STAGE, PACK_STAGE),
-			Position = UDim2.new(0.5, 0, 0, 6),
+			Position = UDim2.new(0.5, 0, 0, 8),
 			AnchorPoint = Vector2.new(0.5, 0),
 			ZIndex = 4,
 			Parent = body,
 		})
 		local scene: Scene = ShopScenes.pack(stage, kind, index)
-		local amount = minText(Kit.number(body, {
+		local amountRow = Kit.new("Frame", {
+			Name = "AmountRow",
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -12, 0, 32),
+			Position = UDim2.fromOffset(6, PACK_STAGE + 8),
+			ZIndex = 4,
+			Parent = body,
+		})
+		Kit.list(amountRow, 4, true, Enum.HorizontalAlignment.Center).VerticalAlignment = Enum.VerticalAlignment.Center
+		Kit.icon(amountRow, icon, PACK_ICON, iconColor(icon), { Name = "Icon", LayoutOrder = 1, ZIndex = 4 })
+		local amount = Kit.number(amountRow, {
 			Name = "Amount",
 			Text = "",
-			TextSize = 26,
-			MaxTextSize = 26,
-			TextScaled = true,
-			Size = UDim2.new(1, -16, 0, 26),
-			Position = UDim2.fromOffset(8, PACK_STAGE + 6),
+			TextSize = 28,
+			Size = UDim2.new(0, 0, 1, 0),
+			AutomaticSize = Enum.AutomaticSize.X,
 			TextColor3 = amountColor,
+			LayoutOrder = 2,
+			StrokeThickness = 0,
 			ZIndex = 4,
-		}))
-		Kit.textStroke(amount, 1.8, 0.3)
+		})
+		Kit.new("UIStroke", {
+			Thickness = 1.6,
+			Color = C.Ink,
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
+			LineJoinMode = Enum.LineJoinMode.Round,
+			Parent = amount,
+		})
+		amountGrid[amount] = packs
 		local sub = Kit.text(body, {
 			Name = "Sub",
 			Text = "",
 			Font = F.Bold,
-			TextSize = MIN_TEXT,
-			TextWrapped = true,
-			Size = UDim2.new(1, -16, 0, 34),
-			Position = UDim2.fromOffset(8, PACK_STAGE + 33),
-			TextYAlignment = Enum.TextYAlignment.Top,
-			TextColor3 = SMALL_TEXT,
+			TextSize = 15,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Size = UDim2.new(1, -12, 0, 20),
+			Position = UDim2.fromOffset(6, PACK_STAGE + 41),
+			TextColor3 = Color3.new(1, 1, 1),
 			ZIndex = 4,
 		})
+		outline(sub, deep)
 		local pack: Pack
 		local button, sheen = priceButton(body, {
 			Text = price(packPrice),
@@ -1613,48 +1805,53 @@ local function buildShop(screen: ScreenGui)
 	-- Cash and aura: the second pack is the popular one, the biggest the best value.
 	local function packTags(pack: Pack, index: number, total: number)
 		if index == total then
-			ribbon(pack.body, "BEST VALUE", C.Danger)
+			ribbon(pack.body, "BEST VALUE", RIBBON_CORAL)
 		elseif index == 2 and total >= 3 then
-			ribbon(pack.body, "POPULAR", C.Accent)
+			ribbon(pack.body, "POPULAR", RIBBON_SUNNY)
 		end
 	end
 
 	sectionHead(3)
 	local moneyPacks = Theme.Monetization.MoneyPacks
-	local cashGrid = packGrid("Cash", #moneyPacks, math.min(#moneyPacks, 4), 2)
+	local cashPacks = packGrid("Cash", #moneyPacks, math.min(#moneyPacks, 4), 2)
+	local cashGrid = cashPacks.grid
 	local moneyLabels: { TextLabel } = {}
 	local moneyShown: { [number]: number } = {}
 	for index, pack in moneyPacks do
-		local card = packCard(cashGrid, "Money", index, pack.Price, C.Cash, C.MoneyText)
+		local card = packCard(cashPacks, "Money", index, pack.Price, C.Cash, C.MoneyText, "Coin")
 		moneyLabels[index] = card.amount
-		card.sub.Text = string.format("about %s of income", durationText(pack.Seconds))
+		card.sub.Text = string.format("%s of income", durationText(pack.Seconds))
 		packTags(card, index, #moneyPacks)
 	end
 
 	sectionHead(4)
 	local auraPacks = Theme.Monetization.AuraPacks
-	local auraGrid = packGrid("Aura", #auraPacks, math.min(#auraPacks, 4), 2)
+	local auraPackGrid = packGrid("Aura", #auraPacks, math.min(#auraPacks, 4), 2)
+	local auraGrid = auraPackGrid.grid
 	local auraLabels: { TextLabel } = {}
 	local auraShown: { [number]: number } = {}
 	for index, pack in auraPacks do
-		local card = packCard(auraGrid, "Aura", index, pack.Price, C.Violet, Kit.lighten(C.Orb, 0.4))
+		local card = packCard(auraPackGrid, "Aura", index, pack.Price, C.Violet, Kit.lighten(C.Orb, 0.55), "Orb")
 		auraLabels[index] = card.amount
-		card.sub.Text = string.format("about %s of your %ss' %s", durationText(pack.Seconds), W.Unit, string.lower(W.Orb))
+		card.sub.Text = string.format("%s of %s", durationText(pack.Seconds), string.lower(W.Orb))
 		packTags(card, index, #auraPacks)
 	end
 
+	-- Rizz: the same card size as cash and aura, the short row centred.
 	sectionHead(5)
 	local gemPacks = Theme.Monetization.GemPacks
-	local gemGrid = packGrid("Gems", #gemPacks, #gemPacks, #gemPacks)
+	local GEM_NAMES = { "Small pack", "Big pack", "Mega pack" }
+	local gemPackGrid = packGrid("Gems", #gemPacks, math.max(#gemPacks, 4), #gemPacks)
+	local gemGrid = gemPackGrid.grid
 	local gemLabels: { TextLabel } = {}
 	local gemShown: { [number]: number } = {}
 	for index, pack in gemPacks do
-		local card = packCard(gemGrid, "Gems", index, pack.Price, C.Rizz, Kit.lighten(C.Rizz, 0.4))
+		local card = packCard(gemPackGrid, "Gems", index, pack.Price, C.Rizz, Kit.lighten(C.Rizz, 0.45), "Gem")
 		gemLabels[index] = card.amount
-		card.amount.Text = gemPackText(pack.Base)
-		card.sub.Text = string.upper(W.Gem)
+		setAmount(card.amount, gemCardText(pack.Base))
+		card.sub.Text = GEM_NAMES[index] or string.format("%s pack", W.Gem)
 		if index == #gemPacks then
-			ribbon(card.body, "BEST VALUE", C.Danger)
+			ribbon(card.body, "BEST VALUE", RIBBON_CORAL)
 		end
 	end
 	local gemInfo = Kit.text(scroll, {
@@ -1665,9 +1862,10 @@ local function buildShop(screen: ScreenGui)
 			string.lower(W.Chest),
 			W.Unlocker
 		),
-		TextSize = T.Small,
-		TextColor3 = C.TextDim,
-		TextXAlignment = Enum.TextXAlignment.Left,
+		Font = F.Bold,
+		TextSize = 15,
+		TextColor3 = C.Text,
+		TextXAlignment = Enum.TextXAlignment.Center,
 	})
 
 	-- Layout: explicit positions so the switcher knows where each section starts,
@@ -1698,6 +1896,12 @@ local function buildShop(screen: ScreenGui)
 		for _, packs in packGrids do
 			packs.columns = if wide then packs.wide else packs.narrow
 			packs.layout.CellSize = cellSize(packs.columns, PACK_H)
+			packs.cardW = (size.X - 62 - 18 - GAP * (packs.columns - 1)) / packs.columns
+		end
+		for label in amountGrid do
+			if label.Text ~= "" then
+				fitAmount(label, label.Text)
+			end
 		end
 		-- Banners: the page width (window minus the well's inset, padding and scrollbar
 		-- gutter) sets the stage width; the text column keeps at least ~240 px.
@@ -1753,7 +1957,7 @@ local function buildShop(screen: ScreenGui)
 		local switchW = math.min(150 * count, size.X - 44)
 		switcher.Size = UDim2.fromOffset(switchW, SWITCH_H)
 		for _, icon in pillIcons do
-			icon.Visible = switchW / count >= 136
+			icon.Visible = switchW / count >= 140
 		end
 	end
 	layout(window.size())
@@ -2066,9 +2270,10 @@ local function buildShop(screen: ScreenGui)
 			local shown = moneyShown[index]
 			moneyShown[index] = amount
 			if shown and shown ~= amount and open then
-				Kit.countTo(moneyLabels[index], shown, amount, State.money)
+				fitAmount(moneyLabels[index], State.num(amount))
+				Kit.countTo(moneyLabels[index], shown, amount, State.num)
 			elseif shown ~= amount then
-				moneyLabels[index].Text = State.money(amount)
+				setAmount(moneyLabels[index], State.num(amount))
 			end
 		end
 		for index, pack in auraPacks do
@@ -2076,9 +2281,10 @@ local function buildShop(screen: ScreenGui)
 			local shown = auraShown[index]
 			auraShown[index] = amount
 			if shown and shown ~= amount and open then
-				Kit.countTo(auraLabels[index], shown, amount, auraText)
+				fitAmount(auraLabels[index], State.num(amount))
+				Kit.countTo(auraLabels[index], shown, amount, State.num)
 			elseif shown ~= amount then
-				auraLabels[index].Text = auraText(amount)
+				setAmount(auraLabels[index], State.num(amount))
 			end
 		end
 		for index, pack in gemPacks do
@@ -2086,9 +2292,10 @@ local function buildShop(screen: ScreenGui)
 			local shown = gemShown[index]
 			gemShown[index] = amount
 			if shown and shown ~= amount and open then
-				Kit.countTo(gemLabels[index], shown, amount, gemPackText)
+				fitAmount(gemLabels[index], gemCardText(amount))
+				Kit.countTo(gemLabels[index], shown, amount, gemCardText)
 			elseif shown ~= amount then
-				gemLabels[index].Text = gemPackText(amount)
+				setAmount(gemLabels[index], gemCardText(amount))
 			end
 		end
 		for name, banner in banners do

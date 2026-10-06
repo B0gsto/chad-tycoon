@@ -528,28 +528,69 @@ local function icon(parent: Instance, names: { string }, color: Color3?, props: 
 	return f
 end
 
--- Swaps the atlas cell an image icon shows (crate rarity), keeping the frame.
+-- Swaps the atlas cell an image icon (and its shade) shows, keeping the frame.
 local function retexture(iconFrame: Instance, name: string)
-	local image = iconFrame:FindFirstChild("Image")
 	local icons = Assets and Assets.Icons
 	local entry = if type(icons) == "table" then icons[name] else nil
-	if image and image:IsA("ImageLabel") and type(entry) == "table" and type(entry.image) == "string" then
-		image.Image = entry.image
-		image.ImageRectOffset = Vector2.new(tonumber(entry.x) or 0, tonumber(entry.y) or 0)
-		image.ImageRectSize = Vector2.new(tonumber(entry.w) or 0, tonumber(entry.h) or 0)
+	if type(entry) ~= "table" or type(entry.image) ~= "string" then
+		return
+	end
+	for _, childName in { "Image", "Shade" } do
+		local image = iconFrame:FindFirstChild(childName)
+		if image and image:IsA("ImageLabel") then
+			image.Image = entry.image
+			image.ImageRectOffset = Vector2.new(tonumber(entry.x) or 0, tonumber(entry.y) or 0)
+			image.ImageRectSize = Vector2.new(tonumber(entry.w) or 0, tonumber(entry.h) or 0)
+		end
 	end
 end
 
--- The gold coin: the Blender CoinSpin sprite, or the shape coin.
-local function coin(parent: Instance, props: { [string]: any }): GuiObject
+-- A dark copy of `gui`'s image (the ImageLabel itself, or a Kit.icon's "Image") a little
+-- below-right of it: a drop shadow, so the art reads on light and dark stage tints alike.
+local function shade(gui: Instance, alpha: number?)
+	local found = if gui:IsA("ImageLabel") then gui else gui:FindFirstChild("Image")
+	if not found or not found:IsA("ImageLabel") then
+		return
+	end
+	local image = found :: ImageLabel
+	local copy = image:Clone()
+	copy.Name = "Shade"
+	copy.ImageColor3 = WC.Ink
+	copy.ImageTransparency = alpha or 0.45
+	copy.Position = image.Position + UDim2.fromScale(0.03, 0.06)
+	copy.ZIndex = math.max(image.ZIndex - 1, 1)
+	copy.Parent = image.Parent
+end
+
+-- The gold coin: the Blender CoinSpin sprite, or the shape coin. `shaded` wraps it in a
+-- Frame with a drop shadow (size, move and pop the returned wrapper).
+local function coin(parent: Instance, props: { [string]: any }, shaded: boolean?): GuiObject
 	if COIN_IMAGE then
-		local gui = node("ImageLabel", parent, { Name = "Coin", Image = COIN_IMAGE, ScaleType = Enum.ScaleType.Fit })
+		local gui: any
+		if shaded then
+			gui = node("Frame", parent, { Name = "Coin" })
+			local image = node("ImageLabel", gui, {
+				Name = "Image",
+				Image = COIN_IMAGE,
+				ScaleType = Enum.ScaleType.Fit,
+				Size = FULL,
+				Position = at(0.5, 0.5),
+				ZIndex = props.ZIndex or 1,
+			})
+			shade(image)
+		else
+			gui = node("ImageLabel", parent, { Name = "Coin", Image = COIN_IMAGE, ScaleType = Enum.ScaleType.Fit })
+		end
 		for key, value in props do
 			gui[key] = value
 		end
 		return gui
 	end
-	return icon(parent, { "Coin" }, C.Gold, props)
+	local f = icon(parent, { "Coin" }, C.Gold, props)
+	if shaded then
+		shade(f)
+	end
+	return f
 end
 
 -- A glossy candy aura ball.
@@ -560,7 +601,7 @@ local function orb(parent: Instance, color: Color3, props: { [string]: any }): G
 end
 
 -- Chunky display text (sticker style): coloured fill, thick navy outline.
-local function sticker(parent: Instance, text: string, color: Color3, props: { [string]: any }): TextLabel
+local function sticker(parent: Instance, text: string, color: Color3, props: { [string]: any }, thickness: number?): TextLabel
 	local label = node("TextLabel", parent, {
 		Text = text,
 		Font = F.Display,
@@ -572,7 +613,7 @@ local function sticker(parent: Instance, text: string, color: Color3, props: { [
 	end
 	Kit.new("UIStroke", {
 		Color = WC.Ink,
-		Thickness = 2.5,
+		Thickness = thickness or 2.5,
 		LineJoinMode = Enum.LineJoinMode.Round,
 		ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
 		Parent = label,
@@ -580,42 +621,52 @@ local function sticker(parent: Instance, text: string, color: Color3, props: { [
 	return label
 end
 
--- Sparkle twinkle: scales in with a quarter spin, holds, scales out.
+-- Sparkle twinkle: scales in with a quarter spin (Back overshoot ~10 %), holds, scales out.
 local function twinkle(ctx: Ctx, gui: GuiObject, size: UDim2, hold: number?)
 	gui.Visible = true
 	gui.Size = ZERO
 	gui.Rotation = 0
-	tw(ctx, gui, 0.2, { Size = size }, BACK, OUT)
-	tw(ctx, gui, 0.6 + (hold or 0.1), { Rotation = 90 }, LINEAR)
-	later(ctx, 0.2 + (hold or 0.1), function()
-		tw(ctx, gui, 0.25, { Size = ZERO }, QUAD, IN)
+	tw(ctx, gui, 0.18, { Size = size }, BACK, OUT)
+	tw(ctx, gui, 0.5 + (hold or 0.1), { Rotation = 90 }, LINEAR)
+	later(ctx, 0.18 + (hold or 0.1), function()
+		tw(ctx, gui, 0.22, { Size = ZERO }, QUAD, IN)
 	end)
 end
 
--- Purchase burst: star pops flying out of (x, y) plus a puff of Kit confetti.
+-- Sets a sprite's alpha to `peak`, then fades it back to `rest`.
+local function flash(ctx: Ctx, gui: Instance, peak: number, rest: number, time: number?)
+	setAlpha(gui, peak)
+	fade(ctx, gui, time or 0.5, rest)
+end
+
+-- Purchase burst: star pops flying out of (x, y) plus a puff of Kit confetti. Each star's
+-- end point is clamped 0.2 stage-heights inside the edges, so none leaves the stage.
 local function burst(ctx: Ctx, x: number, y: number, stars: number, confetti: number, reach: number?)
 	local A = ctx.aspect
 	local id = Sprites.image("StarPop")
-	local dist = reach or 0.55
+	local dist = reach or 0.6
+	local x0 = x * A
 	for i = 1, stars do
 		local star = sprite(ctx.root, "StarPop", if id then WHITE else WC.Sunny, {
-			Size = sq(ctx, 0.22),
+			Size = sq(ctx, 0.3),
 			Position = at(x, y),
 			ZIndex = 9,
 		})
 		temp(ctx, star)
-		local angle = (i / stars) * math.pi * 2 + math.random() * 0.7
-		fly(ctx, star, 0.6 + math.random() * 0.15, function(a)
+		local angle = (i / stars) * math.pi * 2 + math.random() * 0.6
+		local ex = math.clamp(x0 + math.cos(angle) * dist, 0.2, A - 0.2)
+		local ey = math.clamp(y + math.sin(angle) * dist, 0.2, 0.8)
+		fly(ctx, star, 0.55 + math.random() * 0.15, function(a)
 			local e = 1 - (1 - a) ^ 3
-			star.Position = at((x * A + math.cos(angle) * dist * e) / A, y + math.sin(angle) * dist * e)
-			star.Size = sq(ctx, 0.26 * (1 - a * a) + 0.01)
-			star.Rotation = 140 * a
+			star.Position = at((x0 + (ex - x0) * e) / A, y + (ey - y) * e)
+			star.Size = sq(ctx, 0.3 * (1 - a * a) + 0.01)
+			star.Rotation = 160 * a
 		end, function()
 			star:Destroy()
 		end)
 	end
 	if confetti > 0 then
-		Kit.confetti(ctx.root, { Count = confetti, Power = 0.4, Origin = at(x, y), ZIndex = 10 })
+		Kit.confetti(ctx.root, { Count = confetti, Power = 0.3, Origin = at(x, y), ZIndex = 10 })
 	end
 end
 
@@ -630,45 +681,75 @@ local function onCelebrate(ctx: Ctx, fn: () -> ())
 end
 
 -- Pass scenes ---------------------------------------------------------------------------
+--[[
+	Geometry is worked in stage-height units ("h"): the stage is A = 230/120 ≈ 1.92 h wide
+	and 1 h tall. Everything that moves keeps ≥ 0.05 h (≈ 6 px) from the edges at its
+	largest (idle breathing x pops x Back overshoot x rotation), except things that
+	deliberately enter from an edge (Auto Aura orbs, Auto Cash drops, falling crates) and
+	soft light (SoftDot glows, aura rings, crate rays), which fade at the edges.
+]]
 
 local PASSES: { [string]: (Ctx, Color3) -> () } = {}
 
--- Auto Aura: candy orbs spiral in from the edges into a glowing dumbbell.
+-- Auto Aura: candy orbs spiral in from the edges into a big glowing dumbbell.
 PASSES.AutoLoot = function(ctx, _tint)
 	local root, A = ctx.root, ctx.aspect
-	local cx, cy = 0.5, 0.54
-	local glow = sprite(root, "SoftDot", C.Violet, { Size = sq(ctx, 1.15), Position = at(cx, cy), ZIndex = 1 })
+	local cx, cy = 0.5, 0.52
+	local GLOW = 0.4
+	local glow = sprite(root, "SoftDot", C.Violet, { Size = box(ctx, 2.1, 1.35), Position = at(cx, cy), ZIndex = 1 })
+	local core = sprite(root, "SoftDot", WHITE, { Size = sq(ctx, 0.4), Position = at(cx, cy), ZIndex = 2 })
 	local rings = {}
 	for i = 1, 2 do
 		rings[i] = sprite(root, "Ring", Kit.lighten(C.Violet, 0.4), { Size = sq(ctx, 0.5), Position = at(cx, cy), ZIndex = 2 })
 	end
+	-- 1.55 x 0.68 h; with breathing 1.04 and a 0.9 pop it peaks at 1.79 x 0.78 h.
 	local dumbbell = Sprites.image("hud/Dumbbell")
 	local holder = node("Frame", root, {
 		Name = "Dumbbell",
-		Size = if dumbbell then box(ctx, 1.02, 0.45) else sq(ctx, 0.62),
+		Size = if dumbbell then box(ctx, 1.55, 0.68) else sq(ctx, 0.74),
 		Position = at(cx, cy),
 		ZIndex = 3,
 	})
 	local holderScale = Kit.new("UIScale", { Parent = holder })
-	local hero: GuiObject = if dumbbell
-		then node(
-			"ImageLabel",
-			holder,
-			{ Image = dumbbell, ScaleType = Enum.ScaleType.Fit, Size = FULL, Position = at(0.5, 0.5), ZIndex = 3 }
-		)
-		else icon(holder, { "Orb" }, C.Orb, { ZIndex = 3 })
-	local sparkle = sprite(root, "Sparkle", WC.Butter, { Size = ZERO, Position = at(cx + 0.08, cy - 0.2), ZIndex = 6, Visible = false })
+	local hero = node("Frame", holder, { Name = "Hero", Size = FULL, Position = at(0.5, 0.5), ZIndex = 3 })
+	if dumbbell then
+		shade(node("ImageLabel", hero, {
+			Name = "Image",
+			Image = dumbbell,
+			ScaleType = Enum.ScaleType.Fit,
+			Size = FULL,
+			Position = at(0.5, 0.5),
+			ZIndex = 4,
+		}))
+	else
+		shade(icon(hero, { "Orb" }, C.Orb, { ZIndex = 4 }))
+	end
+	-- A sparkle over each bell, alternating per catch.
+	local sparkles = {}
+	for k, dx in { -0.3, 0.3 } do
+		sparkles[k] = sprite(root, "Sparkle", if k == 1 then WHITE else WC.Butter, {
+			Size = ZERO,
+			Position = at(cx + dx, cy - 0.24),
+			ZIndex = 6,
+			Visible = false,
+		})
+	end
 	local orbs = {}
 	for i = 1, 5 do
-		orbs[i] = orb(root, OrbLook.tierColor(i, Theme.OrbColors), { Size = sq(ctx, 0.2), ZIndex = 4, Visible = false })
+		orbs[i] = orb(root, OrbLook.tierColor(i, Theme.OrbColors), { Size = sq(ctx, 0.26), ZIndex = 5, Visible = false })
 	end
 	local orbPool = pool(ctx, orbs)
 
+	local turn = 0
 	local function catch()
-		Kit.pop(hero, 0.7)
-		setAlpha(glow, 0.15)
-		fade(ctx, glow, 0.5, 0.5)
-		twinkle(ctx, sparkle, sq(ctx, 0.26), 0)
+		Kit.pop(hero, 0.6)
+		flash(ctx, glow, 0.05, GLOW, 0.5)
+		core.Size = sq(ctx, 0.4)
+		setAlpha(core, 0.15)
+		tw(ctx, core, 0.35, { Size = sq(ctx, 0.85) }, QUAD, OUT)
+		fade(ctx, core, 0.35, 1, QUAD, IN)
+		turn = turn % #sparkles + 1
+		twinkle(ctx, sparkles[turn], sq(ctx, 0.34), 0)
 	end
 	local function launch()
 		local o = take(orbPool)
@@ -678,11 +759,11 @@ PASSES.AutoLoot = function(ctx, _tint)
 		local theta0 = math.random() * math.pi * 2
 		local spin = (if math.random() < 0.5 then -1 else 1) * math.pi * (1.6 + math.random() * 0.6)
 		local rx, ry = 0.62 * A, 0.78
-		fly(ctx, o, 1.25 + math.random() * 0.3, function(a)
+		fly(ctx, o, 1.1 + math.random() * 0.25, function(a)
 			local r = 1 - a * a
 			local theta = theta0 + spin * a
 			o.Position = at((cx * A + rx * r * math.cos(theta)) / A, cy + ry * r * math.sin(theta))
-			o.Size = sq(ctx, 0.2 * (0.5 + 0.5 * r))
+			o.Size = sq(ctx, 0.26 * (0.45 + 0.55 * r))
 		end, function()
 			free(orbPool, o)
 			catch()
@@ -694,36 +775,39 @@ PASSES.AutoLoot = function(ctx, _tint)
 		local ring = rings[ringTurn]
 		ring.Size = sq(ctx, 1.9)
 		setAlpha(ring, 1)
-		tw(ctx, ring, 1.5, { Size = sq(ctx, 0.45) }, QUAD, IN)
-		fade(ctx, ring, 1.5, 0.5, QUAD, IN)
-		later(ctx, 1.5, function()
+		tw(ctx, ring, 1.3, { Size = sq(ctx, 0.45) }, QUAD, IN)
+		fade(ctx, ring, 1.3, 0.35, QUAD, IN)
+		later(ctx, 1.3, function()
 			setAlpha(ring, 1)
 		end)
 	end
 
 	onPlay(ctx, function()
-		tw(ctx, holderScale, 1.1, { Scale = 1.05 }, SINE, INOUT, -1, true)
+		tw(ctx, holderScale, 1.0, { Scale = 1.04 }, SINE, INOUT, -1, true)
 		loop(ctx, function(nap)
 			launch()
-			nap(0.42)
+			nap(0.34)
 		end)
 		loop(ctx, function(nap)
 			ringPulse()
-			nap(0.8)
+			nap(0.7)
 		end)
 	end)
 	onRest(ctx, function()
 		holderScale.Scale = 1
-		glow.Size = sq(ctx, 1.15)
-		setAlpha(glow, 0.5)
+		glow.Size = box(ctx, 2.1, 1.35)
+		setAlpha(glow, GLOW)
+		setAlpha(core, 1)
 		for _, ring in rings do
 			ring.Size = sq(ctx, 0.5)
 			setAlpha(ring, 1)
 		end
-		sparkle.Visible = false
+		for _, s in sparkles do
+			s.Visible = false
+		end
 		if PREVIEW then
 			-- Still frame: three orbs on their way in.
-			local spots = { { 0.2, 0.3 }, { 0.8, 0.72 }, { 0.3, 0.84 } }
+			local spots = { { 0.14, 0.3 }, { 0.86, 0.7 }, { 0.26, 0.8 } }
 			for i, spot in spots do
 				orbs[i].Visible = true
 				orbs[i].Position = at(spot[1], spot[2])
@@ -734,40 +818,77 @@ PASSES.AutoLoot = function(ctx, _tint)
 		for i = 1, 5 do
 			later(ctx, (i - 1) * 0.06, launch)
 		end
-		Kit.pop(hero, 2)
-		burst(ctx, cx, cy, 5, 12)
+		Kit.pop(hero, 0.9)
+		flash(ctx, glow, 0, GLOW, 0.8)
+		burst(ctx, cx, cy, 6, 14)
 	end)
 end
 
--- Auto Cash: an orb drops into a converter box, a coin arcs out into a wallet that bulges.
+-- Auto Cash: an orb drops into a converter box, a coin arcs out into a wallet that bulges,
+-- and a little pill counts the cash up (+$5 .. +$95, then round again).
 PASSES.AutoCash = function(ctx, _tint)
-	local root = ctx.root
-	local bx, by = 0.16, 0.64
-	local wx, wy = 0.83, 0.62
-	local converter = node("Frame", root, { Name = "Converter", Size = box(ctx, 0.46, 0.46), Position = at(bx, by), ZIndex = 3 })
-	paint(converter, WC.Teal, 9, WC.Ink, 2.5)
-	local slot = node("Frame", converter, { Size = UDim2.fromScale(0.62, 0.14), Position = at(0.5, 0.18), ZIndex = 4 })
-	paint(slot, WC.TealDeep, -1)
-	sticker(converter, "$", WC.Sunny, { Size = UDim2.fromScale(0.62, 0.56), Position = at(0.5, 0.62), ZIndex = 4 })
+	local root, A = ctx.root, ctx.aspect
+	local bxh, by = 0.4, 0.6 -- converter centre (x in h)
+	local wxh, wy = 1.42, 0.4 -- wallet centre
+	local bx, wx = bxh / A, wxh / A
+	local GLOW = 0.55
+	local glow = sprite(root, "SoftDot", WC.Sunny, { Size = box(ctx, 1.4, 1.05), Position = at(wx, wy), ZIndex = 1 })
+	local shadow = node("Frame", root, {
+		Name = "Shadow",
+		BackgroundColor3 = C.Ink,
+		BackgroundTransparency = 0.6,
+		Size = box(ctx, 0.66, 0.08),
+		Position = at(bx, 0.9),
+		ZIndex = 2,
+	})
+	Kit.round(shadow)
 
-	local wallet = node("Frame", root, { Name = "Wallet", Size = box(ctx, 0.6, 0.44), Position = at(wx, wy), ZIndex = 3 })
-	paint(wallet, WC.Mint, 9, C.CashDeep, 2.5)
+	-- Converter 0.6 x 0.62 h (0.29 .. 0.91 tall; pops 0.5).
+	local converter = node("Frame", root, { Name = "Converter", Size = box(ctx, 0.6, 0.62), Position = at(bx, by), ZIndex = 3 })
+	paint(converter, WC.Teal, 10, WC.Ink, 3)
+	local slot = node("Frame", converter, { Size = UDim2.fromScale(0.62, 0.13), Position = at(0.5, 0.16), ZIndex = 4 })
+	paint(slot, WC.TealDeep, -1)
+	sticker(converter, "$", WC.Sunny, { Size = UDim2.fromScale(0.62, 0.58), Position = at(0.5, 0.6), ZIndex = 4 }, 3)
+
+	-- Wallet 0.8 x 0.54 h (pops 0.6: right edge 1.85 h, top 0.11).
+	local wallet = node("Frame", root, { Name = "Wallet", Size = box(ctx, 0.8, 0.54), Position = at(wx, wy), ZIndex = 3 })
+	paint(wallet, WC.Mint, 10, WC.Ink, 3)
 	local flap = node("Frame", wallet, {
 		Size = UDim2.fromScale(1, 0.48),
 		Position = at(0.5, 0),
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 4,
 	})
-	paint(flap, C.CashDeep, 9)
+	paint(flap, C.CashDeep, 10)
 	local clasp = node("Frame", flap, { Size = UDim2.fromScale(0.17, 0.5), Position = at(0.84, 0.78), ZIndex = 5 })
-	paint(clasp, WC.Sunny, -1, C.GoldDeep, 1.5)
+	paint(clasp, WC.Sunny, -1, WC.Ink, 1.5)
 
-	local counter = sticker(root, "+$0", WC.Sunny, { Size = box(ctx, 0.9, 0.3), Position = at(wx, 0.18), ZIndex = 6 })
+	-- The counter pill: bottom-right, 42 % of the stage wide, well inside the edges.
+	local pill = node("Frame", root, {
+		Name = "Counter",
+		AnchorPoint = Vector2.new(1, 1),
+		Position = at(0.955, 0.92),
+		Size = UDim2.fromScale(0.42, 0.26),
+		ZIndex = 6,
+	})
+	paint(pill, WC.Ink, -1, WC.Sunny, 2)
+	local counter = node("TextLabel", pill, {
+		Name = "Amount",
+		Text = "+$0",
+		Font = F.Display,
+		TextScaled = true,
+		TextColor3 = WC.Sunny,
+		Size = UDim2.fromScale(0.84, 0.76),
+		Position = at(0.5, 0.52),
+		ZIndex = 7,
+	})
+	Kit.new("UITextSizeConstraint", { MaxTextSize = 26, MinTextSize = 6, Parent = counter })
 	local earned = 0
 	local function show()
 		counter.Text = "+$" .. tostring(earned)
 	end
 
+	local sparkle = sprite(root, "Sparkle", WC.Butter, { Size = ZERO, Position = at(1.62 / A, 0.22), ZIndex = 7, Visible = false })
 	local coins = {}
 	for i = 1, 4 do
 		coins[i] = coin(root, { Size = sq(ctx, 0.26), ZIndex = 5, Visible = false })
@@ -775,27 +896,34 @@ PASSES.AutoCash = function(ctx, _tint)
 	local coinPool = pool(ctx, coins)
 	local drops = {}
 	for i = 1, 2 do
-		drops[i] = orb(root, OrbLook.tierColor(i, Theme.OrbColors), { Size = sq(ctx, 0.17), ZIndex = 2, Visible = false })
+		drops[i] = orb(root, OrbLook.tierColor(i, Theme.OrbColors), { Size = sq(ctx, 0.2), ZIndex = 2, Visible = false })
 	end
 	local dropPool = pool(ctx, drops)
 
-	local x0, y0 = bx, by - 0.24
-	local x1, y1 = wx, wy - 0.04
+	-- The coin leaves the slot (0.32) and lands in the wallet; its arc tops out at 0.2.
+	local x0, y0 = bxh, 0.32
+	local x1, y1 = wxh - 0.1, 0.36
 	local function launchCoin(amount: number)
 		local c = take(coinPool)
 		if not c then
 			return
 		end
-		Kit.pop(converter, 0.9)
-		fly(ctx, c, 0.78, function(a)
-			c.Position = at(x0 + (x1 - x0) * a, y0 + (y1 - y0) * a - 0.55 * 4 * a * (1 - a))
-			c.Size = box(ctx, 0.26 * math.max(math.abs(math.cos(a * math.pi * 3)), 0.15), 0.26)
+		Kit.pop(converter, 0.5)
+		fly(ctx, c, 0.62, function(a)
+			local s = 0.26 * math.min(1, 0.4 + a * 3)
+			c.Position = at((x0 + (x1 - x0) * a) / A, y0 + (y1 - y0) * a - 0.14 * 4 * a * (1 - a))
+			c.Size = box(ctx, s * math.max(math.abs(math.cos(a * math.pi * 3)), 0.15), s)
 		end, function()
 			free(coinPool, c)
-			Kit.pop(wallet, 1)
-			earned = if earned + amount > 9999 then amount else earned + amount
+			Kit.pop(wallet, 0.6)
+			flash(ctx, glow, 0.1, GLOW, 0.45)
+			earned += amount
+			if earned > 95 then
+				earned = amount
+			end
 			show()
-			Kit.pop(counter, 0.6)
+			Kit.pop(pill, 0.5)
+			twinkle(ctx, sparkle, sq(ctx, 0.28), 0)
 		end)
 	end
 	local function dropOrb()
@@ -803,9 +931,9 @@ PASSES.AutoCash = function(ctx, _tint)
 		if not o then
 			return
 		end
-		fly(ctx, o, 0.3, function(a)
-			o.Position = at(bx, -0.12 + (by - 0.12) * a * a)
-			o.Size = sq(ctx, 0.17 * (1 - 0.5 * a))
+		fly(ctx, o, 0.26, function(a)
+			o.Position = at(bx, -0.12 + 0.54 * a * a)
+			o.Size = sq(ctx, 0.2 * (1 - 0.4 * a))
 		end, function()
 			free(dropPool, o)
 		end)
@@ -814,53 +942,56 @@ PASSES.AutoCash = function(ctx, _tint)
 	onPlay(ctx, function()
 		loop(ctx, function(nap)
 			dropOrb()
-			if not nap(0.3) then
+			if not nap(0.24) then
 				return
 			end
 			launchCoin(5)
-			nap(0.42)
+			nap(0.36)
 		end)
 	end)
 	onRest(ctx, function()
+		setAlpha(glow, GLOW)
+		sparkle.Visible = false
 		if PREVIEW then
-			earned = 100
+			earned = 45
 			local still = coins[1]
 			still.Visible = true
-			still.Position = at(0.5, 0.12)
+			still.Position = at((x0 + x1) * 0.5 / A, 0.22)
 		end
 		show()
 	end)
 	onCelebrate(ctx, function()
-		for i = 1, 5 do
-			later(ctx, (i - 1) * 0.09, function()
-				launchCoin(20)
+		for i = 1, 4 do
+			later(ctx, (i - 1) * 0.08, function()
+				launchCoin(10)
 			end)
 		end
-		burst(ctx, wx, wy - 0.1, 4, 12)
+		burst(ctx, wx, wy, 5, 12)
 	end)
 end
 
--- Double Aura: a Chad with two violet aura rings pulsing out alternately, and a bouncy 2X badge.
+-- Double Aura: a Chad with violet aura rings pulsing out alternately, and a bouncy 2X badge.
 PASSES.DoubleAura = function(ctx, _tint)
 	local root = ctx.root
 	local cx, cy = 0.5, 0.52
-	local glow = sprite(root, "SoftDot", C.Violet, { Size = sq(ctx, 1.05), Position = at(cx, cy), ZIndex = 1 })
+	local glow = sprite(root, "SoftDot", C.Violet, { Size = box(ctx, 2.0, 1.3), Position = at(cx, cy), ZIndex = 1 })
 	local rings = {}
 	for i = 1, 2 do
 		rings[i] = sprite(root, "Ring", Kit.lighten(C.Violet, 0.15), { Size = sq(ctx, 0.45), Position = at(cx, cy), ZIndex = 2 })
 	end
 	local tier = math.min(8, #Theme.Tiers)
 	local ok = pcall(function()
-		local viewport = Kit.unitViewport(root, tier, { Size = sq(ctx, 1.04), Position = at(cx, 0.5), AnchorPoint = CENTER })
+		local viewport = Kit.unitViewport(root, tier, { Size = sq(ctx, 1.0), Position = at(cx, 0.5), AnchorPoint = CENTER })
 		viewport.ZIndex = 3
 	end)
 	if not ok then
-		icon(root, { "Chad" }, C.Text, { Size = sq(ctx, 0.8), Position = at(cx, cy), ZIndex = 3 })
+		shade(icon(root, { "Chad" }, C.Text, { Size = sq(ctx, 0.84), Position = at(cx, cy), ZIndex = 3 }))
 	end
-	local badge = node("Frame", root, { Name = "Badge", Size = box(ctx, 0.62, 0.36), Position = at(0.8, 0.27), Rotation = -8, ZIndex = 5 })
-	paint(badge, C.Gold, -1, C.GoldDeep, 3)
-	sticker(badge, "2X", WHITE, { Size = UDim2.fromScale(0.78, 0.8), Position = at(0.5, 0.52), ZIndex = 6 })
-	local spots = { { 0.29, 0.27 }, { 0.7, 0.8 }, { 0.26, 0.76 } }
+	-- Badge 0.7 x 0.4 h at (1.44 h, 0.33), tilted ±8°; a 1.2 pop still clears the edges.
+	local badge = node("Frame", root, { Name = "Badge", Size = box(ctx, 0.7, 0.4), Position = at(0.75, 0.33), Rotation = -8, ZIndex = 5 })
+	paint(badge, C.Gold, -1, WC.Ink, 3)
+	sticker(badge, "2X", WHITE, { Size = UDim2.fromScale(0.78, 0.8), Position = at(0.5, 0.52), ZIndex = 6 }, 3)
+	local spots = { { 0.24, 0.28 }, { 0.72, 0.78 }, { 0.27, 0.76 } }
 	local sparkles = {}
 	for i, spot in spots do
 		sparkles[i] = sprite(root, "Sparkle", WC.Butter, { Size = ZERO, Position = at(spot[1], spot[2]), ZIndex = 4, Visible = false })
@@ -870,38 +1001,38 @@ PASSES.DoubleAura = function(ctx, _tint)
 	local function ringPulse(strength: number)
 		ringTurn = ringTurn % 2 + 1
 		local ring = rings[ringTurn]
-		ring.Size = sq(ctx, 0.45)
-		setAlpha(ring, 0.1)
-		tw(ctx, ring, 1.6, { Size = sq(ctx, 1.55 * strength) }, QUAD, OUT)
-		fade(ctx, ring, 1.6, 1, SINE, IN)
+		ring.Size = sq(ctx, 0.4)
+		setAlpha(ring, 0.05)
+		tw(ctx, ring, 1.3, { Size = sq(ctx, 1.3 * strength) }, QUAD, OUT)
+		fade(ctx, ring, 1.3, 1, QUAD, OUT)
 	end
 	local function wiggle(strength: number)
 		Kit.pop(badge, strength)
-		tw(ctx, badge, 0.1, { Rotation = 8 }, QUAD, OUT)
-		later(ctx, 0.1, function()
-			tw(ctx, badge, 0.6, { Rotation = -8 }, ELASTIC, OUT)
+		tw(ctx, badge, 0.08, { Rotation = 8 }, QUAD, OUT)
+		later(ctx, 0.08, function()
+			tw(ctx, badge, 0.55, { Rotation = -8 }, ELASTIC, OUT)
 		end)
 	end
 
 	onPlay(ctx, function()
-		tw(ctx, glow, 1.2, { Size = sq(ctx, 1.22) }, SINE, INOUT, -1, true)
+		tw(ctx, glow, 1.0, { Size = box(ctx, 2.3, 1.5) }, SINE, INOUT, -1, true)
 		loop(ctx, function(nap)
 			ringPulse(1)
-			nap(0.8)
+			nap(0.65)
 		end)
 		loop(ctx, function(nap)
-			wiggle(1.4)
-			nap(1.8)
-		end, 0.4)
+			wiggle(1)
+			nap(1.4)
+		end, 0.3)
 		local turn = 0
 		loop(ctx, function(nap)
 			turn = turn % #sparkles + 1
-			twinkle(ctx, sparkles[turn], sq(ctx, 0.2), 0.15)
-			nap(0.55)
+			twinkle(ctx, sparkles[turn], sq(ctx, 0.28), 0.1)
+			nap(0.42)
 		end, 0.2)
 	end)
 	onRest(ctx, function()
-		glow.Size = sq(ctx, 1.05)
+		glow.Size = box(ctx, 2.0, 1.3)
 		for _, ring in rings do
 			ring.Size = sq(ctx, 0.45)
 			setAlpha(ring, 1)
@@ -909,10 +1040,10 @@ PASSES.DoubleAura = function(ctx, _tint)
 		badge.Rotation = -8
 		for _, s in sparkles do
 			s.Visible = PREVIEW
-			s.Size = if PREVIEW then sq(ctx, 0.16) else ZERO
+			s.Size = if PREVIEW then sq(ctx, 0.22) else ZERO
 		end
 		if PREVIEW then
-			rings[1].Size = sq(ctx, 1.1)
+			rings[1].Size = sq(ctx, 1.0)
 			setAlpha(rings[1], 0.45)
 		end
 	end)
@@ -921,63 +1052,70 @@ PASSES.DoubleAura = function(ctx, _tint)
 		later(ctx, 0.12, function()
 			ringPulse(1.3)
 		end)
-		wiggle(2.5)
-		burst(ctx, cx, cy, 5, 12)
+		wiggle(1.2)
+		flash(ctx, glow, 0, 0.5, 0.8)
+		burst(ctx, cx, cy, 6, 14)
 	end)
 end
 
--- 2X Cash: a coin flips and splits into two coins that clink apart, then a 2X stamp slams in.
+-- 2X Cash: a coin flips and splits into two coins that clink apart, then a 2X stamp pops in.
 PASSES.DoubleMoney = function(ctx, _tint)
-	local root = ctx.root
-	local cx, cy = 0.38, 0.52
-	local leftX, rightX = 0.25, 0.51
-	local stampX, stampY = 0.81, 0.5
-	local BIG, SMALL = 0.62, 0.52
-	local glow = sprite(root, "SoftDot", WC.Sunny, { Size = sq(ctx, 1.0), Position = at(cx, cy), ZIndex = 1 })
-	local big = coin(root, { Size = sq(ctx, BIG), Position = at(cx, cy), ZIndex = 3 })
-	local left = coin(root, { Size = sq(ctx, SMALL), Position = at(leftX, cy), ZIndex = 3 })
-	local right = coin(root, { Size = sq(ctx, SMALL), Position = at(rightX, cy), ZIndex = 4 })
+	local root, A = ctx.root, ctx.aspect
+	local cy = 0.5
+	-- In h: the merged coin at 0.63, the pair at 0.42 / 0.84 (0.66 h each, pops 0.5),
+	-- the stamp at 1.4 (0.74 x 0.6 h, -10°; Back overshoot x pop stays ≤ 1.11).
+	local cx, leftX, rightX = 0.63 / A, 0.42 / A, 0.84 / A
+	local stampX = 1.4 / A
+	local BIG, SMALL = 0.8, 0.66
+	local GLOW = 0.4
+	local glow = sprite(root, "SoftDot", WC.Sunny, { Size = box(ctx, 2.1, 1.35), Position = at(0.5, cy), ZIndex = 1 })
+	local big = coin(root, { Size = sq(ctx, BIG), Position = at(cx, cy), ZIndex = 3 }, true)
+	local left = coin(root, { Size = sq(ctx, SMALL), Position = at(leftX, cy), ZIndex = 3 }, true)
+	local right = coin(root, { Size = sq(ctx, SMALL), Position = at(rightX, cy), ZIndex = 4 }, true)
 	local starId = Sprites.image("StarPop")
 	local star = sprite(root, "StarPop", if starId then WHITE else WC.Sunny, {
 		Size = ZERO,
-		Position = at(stampX, stampY),
+		Position = at(stampX, cy),
 		ZIndex = 5,
 		Visible = false,
 	})
-	local stampSize = box(ctx, 0.82, 0.62)
-	local stamp = sticker(root, "2X", WC.Sunny, { Size = stampSize, Position = at(stampX, stampY), Rotation = -10, ZIndex = 6 })
+	local stampSize = box(ctx, 0.74, 0.6)
+	local stamp = sticker(root, "2X", WC.Sunny, { Size = stampSize, Position = at(stampX, cy), Rotation = -10, ZIndex = 6 }, 3.5)
 	local sparkles = {
-		sprite(root, "Sparkle", WHITE, { Size = ZERO, Position = at(cx, 0.24), ZIndex = 6, Visible = false }),
-		sprite(root, "Sparkle", WC.Butter, { Size = ZERO, Position = at(cx + 0.03, 0.8), ZIndex = 6, Visible = false }),
+		sprite(root, "Sparkle", WHITE, { Size = ZERO, Position = at(cx, 0.2), ZIndex = 6, Visible = false }),
+		sprite(root, "Sparkle", WC.Butter, { Size = ZERO, Position = at(cx + 0.05, 0.82), ZIndex = 6, Visible = false }),
 	}
 
 	local function slam(strength: number)
 		stamp.Visible = true
-		stamp.Size = box(ctx, 0.82 * 2.4, 0.62 * 2.4)
-		stamp.Rotation = -30
-		tw(ctx, stamp, 0.16, { Size = stampSize, Rotation = -10 }, QUAD, IN)
-		later(ctx, 0.16, function()
-			Kit.pop(stamp, strength)
-			Kit.pop(left, 0.6)
-			Kit.pop(right, 0.6)
+		stamp.Size = ZERO
+		stamp.Rotation = -40
+		tw(ctx, stamp, 0.28, { Size = stampSize, Rotation = -10 }, BACK, OUT)
+		later(ctx, 0.12, function()
+			Kit.pop(left, 0.5)
+			Kit.pop(right, 0.5)
+			flash(ctx, glow, 0.05, GLOW, 0.5)
 			star.Visible = true
 			star.Size = sq(ctx, 0.3)
 			setAlpha(star, 0)
-			tw(ctx, star, 0.45, { Size = sq(ctx, 1.25) }, QUAD, OUT)
-			fade(ctx, star, 0.45, 1, QUAD, IN)
+			tw(ctx, star, 0.4, { Size = sq(ctx, 0.86) }, QUAD, OUT)
+			fade(ctx, star, 0.4, 1, QUAD, IN)
+		end)
+		later(ctx, 0.28, function()
+			Kit.pop(stamp, strength)
 		end)
 	end
 
 	onPlay(ctx, function()
 		loop(ctx, function(nap)
-			if not nap(1.3) then
+			if not nap(1.0) then
 				return
 			end
 			-- Merge back into one coin.
-			tw(ctx, stamp, 0.18, { Size = ZERO, Rotation = 10 }, BACK, IN)
-			tw(ctx, left, 0.22, { Position = at(cx, cy) }, QUAD, IN)
-			tw(ctx, right, 0.22, { Position = at(cx, cy) }, QUAD, IN)
-			if not nap(0.22) then
+			tw(ctx, stamp, 0.16, { Size = ZERO, Rotation = 10 }, BACK, IN)
+			tw(ctx, left, 0.2, { Position = at(cx, cy) }, QUAD, IN)
+			tw(ctx, right, 0.2, { Position = at(cx, cy) }, QUAD, IN)
+			if not nap(0.2) then
 				return
 			end
 			left.Visible = false
@@ -986,18 +1124,18 @@ PASSES.DoubleMoney = function(ctx, _tint)
 			star.Visible = false
 			big.Visible = true
 			big.Size = sq(ctx, BIG)
-			Kit.pop(big, 0.8)
-			if not nap(0.4) then
+			Kit.pop(big, 0.7)
+			if not nap(0.3) then
 				return
 			end
 			-- Flip, flip...
 			for _ = 1, 2 do
-				tw(ctx, big, 0.11, { Size = box(ctx, 0.04, BIG) }, QUAD, IN)
-				if not nap(0.11) then
+				tw(ctx, big, 0.09, { Size = box(ctx, 0.04, BIG) }, QUAD, IN)
+				if not nap(0.09) then
 					return
 				end
-				tw(ctx, big, 0.11, { Size = sq(ctx, BIG) }, QUAD, OUT)
-				if not nap(0.12) then
+				tw(ctx, big, 0.09, { Size = sq(ctx, BIG) }, QUAD, OUT)
+				if not nap(0.1) then
 					return
 				end
 			end
@@ -1007,18 +1145,18 @@ PASSES.DoubleMoney = function(ctx, _tint)
 			right.Position = at(cx, cy)
 			left.Visible = true
 			right.Visible = true
-			tw(ctx, left, 0.32, { Position = at(leftX, cy) }, BACK, OUT)
-			tw(ctx, right, 0.32, { Position = at(rightX, cy) }, BACK, OUT)
-			if not nap(0.22) then
+			tw(ctx, left, 0.28, { Position = at(leftX, cy) }, BACK, OUT)
+			tw(ctx, right, 0.28, { Position = at(rightX, cy) }, BACK, OUT)
+			if not nap(0.18) then
 				return
 			end
-			twinkle(ctx, sparkles[1], sq(ctx, 0.24), 0.05)
-			twinkle(ctx, sparkles[2], sq(ctx, 0.17), 0.05)
-			if not nap(0.15) then
+			twinkle(ctx, sparkles[1], sq(ctx, 0.26), 0.05)
+			twinkle(ctx, sparkles[2], sq(ctx, 0.2), 0.05)
+			if not nap(0.1) then
 				return
 			end
-			slam(1.2)
-			nap(0.65)
+			slam(0.7)
+			nap(0.5)
 		end)
 	end)
 	onRest(ctx, function()
@@ -1033,30 +1171,35 @@ PASSES.DoubleMoney = function(ctx, _tint)
 		stamp.Size = stampSize
 		stamp.Rotation = -10
 		star.Visible = false
-		setAlpha(glow, 0.5)
+		setAlpha(glow, GLOW)
 		for _, s in sparkles do
 			s.Visible = false
 		end
 	end)
 	onCelebrate(ctx, function()
-		slam(2.4)
-		burst(ctx, stampX, stampY, 5, 12)
+		slam(0.9)
+		burst(ctx, stampX, cy, 6, 14)
 	end)
 end
 
--- VIP Smasher: a pink-and-gold hammer smashes a crate (puff + confetti), a new crate drops in.
+-- VIP Smasher: a pink-and-gold hammer smashes a crate (puff, star, debris); the next crate
+-- is already dropping in while the puff fades, so the stage is never empty.
 PASSES.PremiumUnlocker = function(ctx, _tint)
-	local root = ctx.root
-	local crateX, crateBottom, CRATE = 0.34, 0.94, 0.56
+	local root, A = ctx.root, ctx.aspect
+	-- Crate frame 0.86 h on the floor at x 0.62 h (the atlas art shows ~0.65 h of it).
+	local crateXh, crateBottom, CRATE = 0.62, 0.98, 0.86
+	local crateX = crateXh / A
 	local crateMid = crateBottom - CRATE * 0.5
 	local CRATES = { "CrateRare", "CrateEpic", "CrateLegendary" }
+	local GLOW = 0.5
+	local glow = sprite(root, "SoftDot", WC.Sunny, { Size = sq(ctx, 1.25), Position = at(crateX, crateMid), ZIndex = 1 })
 	local shadow = node("Frame", root, {
 		Name = "Shadow",
 		BackgroundColor3 = C.Ink,
-		BackgroundTransparency = 0.72,
-		Size = box(ctx, 0.62, 0.1),
-		Position = at(crateX, crateBottom),
-		ZIndex = 1,
+		BackgroundTransparency = 0.6,
+		Size = box(ctx, 0.66, 0.08),
+		Position = at(crateX, 0.9),
+		ZIndex = 2,
 	})
 	Kit.round(shadow)
 	local crate = icon(root, { "CrateRare", "Gift2", "Star" }, WC.Sunny, {
@@ -1065,6 +1208,7 @@ PASSES.PremiumUnlocker = function(ctx, _tint)
 		AnchorPoint = BOTTOM,
 		ZIndex = 3,
 	})
+	shade(crate)
 	local puff = sprite(root, "Puff", WHITE, { Size = ZERO, Position = at(crateX, crateMid), ZIndex = 5, Visible = false })
 	local starId = Sprites.image("StarPop")
 	local star = sprite(root, "StarPop", if starId then WHITE else WC.Sunny, {
@@ -1073,45 +1217,55 @@ PASSES.PremiumUnlocker = function(ctx, _tint)
 		ZIndex = 4,
 		Visible = false,
 	})
-	local confettiColors = { WC.Sunny, WC.Mint, WC.Blue }
 	local bits = {}
-	for i, color in confettiColors do
-		bits[i] = sprite(root, "Confetti", color, { Size = sq(ctx, 0.15), ZIndex = 6, Visible = false })
+	for i, color in { WC.Sunny, WC.Mint, HOT_PINK, WC.Blue, WC.Butter } do
+		bits[i] = sprite(root, "Confetti", color, { Size = sq(ctx, 0.18), ZIndex = 6, Visible = false })
 	end
 	local bitPool = pool(ctx, bits)
 
-	-- The hammer swings round its handle end (the arm's centre).
-	local REST, WINDUP, STRIKE = 50, 64, -68
-	local arm = node("Frame", root, { Name = "Hammer", Size = sq(ctx, 1.3), Position = at(0.625, 0.53), Rotation = REST, ZIndex = 7 })
-	local handle = node("Frame", arm, { Size = UDim2.fromScale(0.1, 0.45), Position = at(0.5, 0.53), AnchorPoint = BOTTOM, ZIndex = 7 })
-	paint(handle, WC.Sunny, 5, C.GoldDeep, 2)
-	local head = node("Frame", arm, { Size = UDim2.fromScale(0.5, 0.22), Position = at(0.5, 0.09), ZIndex = 8 })
-	paint(head, HOT_PINK, 9, WC.Sunny, 3)
-	sticker(head, "VIP", WC.Sunny, { Size = UDim2.fromScale(0.78, 0.7), Position = at(0.5, 0.53), ZIndex = 9 })
+	-- The hammer swings round its handle end P = (1.45 h, 0.88), the arm's centre; the
+	-- head (0.56 x 0.26 h) sits 0.66 h up the handle. Rest -6°, wind-up +7°, strike -58°
+	-- keep the head ≥ 0.05 h inside the stage (strike lands on the crate's right half).
+	local REST, WINDUP, STRIKE = -6, 7, -58
+	local ARM = 1.32
+	local arm = node("Frame", root, { Name = "Hammer", Size = sq(ctx, ARM), Position = at(1.45 / A, 0.88), Rotation = REST, ZIndex = 7 })
+	local handle = node("Frame", arm, { Size = UDim2.fromScale(0.07, 0.52), Position = at(0.5, 0.545), AnchorPoint = BOTTOM, ZIndex = 7 })
+	paint(handle, WC.Sunny, 5, WC.Ink, 2.5)
+	local head = node("Frame", arm, { Size = UDim2.fromScale(0.56 / ARM, 0.26 / ARM), Position = at(0.5, 0), ZIndex = 8 })
+	paint(head, HOT_PINK, 9, WC.Ink, 3)
+	for _, x in { 0.07, 0.93 } do
+		local cap = node("Frame", head, { Size = UDim2.fromScale(0.12, 1.1), Position = at(x, 0.5), ZIndex = 9 })
+		paint(cap, WC.Sunny, 5, WC.Ink, 2)
+	end
+	sticker(head, "VIP", WC.Sunny, { Size = UDim2.fromScale(0.66, 0.74), Position = at(0.5, 0.53), ZIndex = 10 })
 
 	local crateTurn = 1
 	local function smashFx(power: number)
 		crate.Visible = false
+		flash(ctx, glow, 0, GLOW, 0.6)
 		puff.Visible = true
 		puff.Size = sq(ctx, 0.3)
 		setAlpha(puff, 0)
-		tw(ctx, puff, 0.45, { Size = sq(ctx, 1.05 * power) }, QUAD, OUT)
+		tw(ctx, puff, 0.45, { Size = sq(ctx, 0.8 * power) }, QUAD, OUT)
 		fade(ctx, puff, 0.45, 1, QUAD, IN)
 		star.Visible = true
 		star.Size = sq(ctx, 0.2)
 		setAlpha(star, 0)
-		tw(ctx, star, 0.4, { Size = sq(ctx, 0.95 * power) }, QUAD, OUT)
-		fade(ctx, star, 0.4, 1, QUAD, IN)
-		local A = ctx.aspect
-		for i = 1, #bits do
+		tw(ctx, star, 0.38, { Size = sq(ctx, 0.78 * power) }, QUAD, OUT)
+		fade(ctx, star, 0.38, 1, QUAD, IN)
+		for k = 1, #bits do
 			local bit = take(bitPool)
 			if bit then
-				local dx = (i - 2) * 0.32 + (math.random() - 0.5) * 0.12
-				local rise = 0.5 + math.random() * 0.2
+				local dx = (k - 3) * 0.17 + (math.random() - 0.5) * 0.1
+				local rise = 0.28 + math.random() * 0.1
 				local spin0 = math.random(0, 360)
-				fly(ctx, bit, 0.7, function(a)
-					bit.Position = at((crateX * A + dx * a * power) / A, crateMid - rise * 4 * a * (1 - a) + 0.25 * a * a)
-					bit.Rotation = spin0 + 300 * a
+				setAlpha(bit, 0)
+				fly(ctx, bit, 0.65, function(a)
+					bit.Position = at((crateXh + dx * a) / A, crateMid - rise * 4 * a * (1 - a) + 0.3 * a * a)
+					bit.Rotation = spin0 + 320 * a
+					if a > 0.7 then
+						setAlpha(bit, (a - 0.7) / 0.3)
+					end
 				end, function()
 					free(bitPool, bit)
 				end)
@@ -1122,40 +1276,43 @@ PASSES.PremiumUnlocker = function(ctx, _tint)
 		crateTurn = crateTurn % #CRATES + 1
 		retexture(crate, CRATES[crateTurn])
 		crate.Size = sq(ctx, CRATE)
-		crate.Position = at(crateX, -0.05)
+		crate.Position = at(crateX, crateBottom - 1)
 		crate.Visible = true
-		tw(ctx, crate, 0.55, { Position = at(crateX, crateBottom) }, BOUNCE, OUT)
+		tw(ctx, crate, 0.45, { Position = at(crateX, crateBottom) }, BOUNCE, OUT)
+		shadow.Size = box(ctx, 0.3, 0.05)
+		tw(ctx, shadow, 0.45, { Size = box(ctx, 0.66, 0.08) }, BOUNCE, OUT)
 	end
 
 	onPlay(ctx, function()
 		loop(ctx, function(nap)
-			if not nap(0.5) then
+			if not nap(0.3) then
 				return
 			end
-			tw(ctx, arm, 0.3, { Rotation = WINDUP }, SINE, OUT)
-			if not nap(0.32) then
+			tw(ctx, arm, 0.22, { Rotation = WINDUP }, SINE, OUT)
+			if not nap(0.24) then
 				return
 			end
-			tw(ctx, arm, 0.13, { Rotation = STRIKE }, QUAD, IN)
-			if not nap(0.13) then
+			tw(ctx, arm, 0.1, { Rotation = STRIKE }, QUAD, IN)
+			if not nap(0.1) then
 				return
 			end
-			tw(ctx, crate, 0.07, { Size = box(ctx, CRATE * 1.3, CRATE * 0.62) }, QUAD, OUT)
-			if not nap(0.08) then
+			tw(ctx, crate, 0.06, { Size = box(ctx, CRATE * 1.25, CRATE * 0.7) }, QUAD, OUT)
+			if not nap(0.06) then
 				return
 			end
 			smashFx(1)
-			if not nap(0.25) then
+			tw(ctx, arm, 0.45, { Rotation = REST }, BACK, OUT)
+			-- The next crate falls in while the puff is still fading.
+			if not nap(0.12) then
 				return
 			end
-			tw(ctx, arm, 0.5, { Rotation = REST }, BACK, OUT)
-			if not nap(0.45) then
+			dropCrate()
+			if not nap(0.4) then
 				return
 			end
 			puff.Visible = false
 			star.Visible = false
-			dropCrate()
-			nap(0.6)
+			nap(0.45)
 		end)
 	end)
 	onRest(ctx, function()
@@ -1163,27 +1320,36 @@ PASSES.PremiumUnlocker = function(ctx, _tint)
 		crate.Visible = true
 		crate.Size = sq(ctx, CRATE)
 		crate.Position = at(crateX, crateBottom)
+		shadow.Size = box(ctx, 0.66, 0.08)
+		setAlpha(glow, GLOW)
 		puff.Visible = false
 		star.Visible = false
 	end)
 	onCelebrate(ctx, function()
-		burst(ctx, crateX, crateMid, 5, 14)
-		Kit.pop(head, 2)
+		flash(ctx, glow, 0, GLOW, 0.8)
+		burst(ctx, crateX, 0.5, 6, 14)
+		Kit.pop(head, 0.5)
 	end)
 end
 
--- Crate Master: a golden key turns in a legendary crate, the lid pops, sun rays and sparkles burst.
+-- Crate Master: a golden key slides into a legendary crate and turns, the crate jumps open
+-- with a star flash, sun rays and sparkles, then the key slides back out.
 PASSES.CrateKey = function(ctx, _tint)
 	local root, A = ctx.root, ctx.aspect
-	local cx, crateBottom, CRATE = 0.46, 0.95, 0.62
-	local crateTop = crateBottom - CRATE
-	local rays = node("Frame", root, { Name = "Rays", Size = sq(ctx, 1.75), Position = at(cx, 0.5), ZIndex = 1 })
+	-- Crate frame 0.96 h (art ~0.73 h) at x 0.9 h; keyhole at y 0.58.
+	local cxh, crateBottom, CRATE = 0.9, 0.99, 0.96
+	local cx = cxh / A
+	local holeY = 0.58
+	local KEY = 1.0
+	local keyIn, keyOut = at(cx, holeY), at((cxh + 0.25) / A, holeY)
+	local GLOW = 0.45
+	local rays = node("Frame", root, { Name = "Rays", Size = sq(ctx, 2.2), Position = at(cx, 0.5), ZIndex = 1 })
 	local bars = {}
 	for k = 0, 2 do
 		local bar = node("Frame", rays, {
 			BackgroundColor3 = WC.Butter,
-			BackgroundTransparency = 0.75,
-			Size = UDim2.fromScale(0.16, 1),
+			BackgroundTransparency = 0.6,
+			Size = UDim2.fromScale(0.15, 1),
 			Position = at(0.5, 0.5),
 			Rotation = k * 60,
 			ZIndex = 1,
@@ -1201,56 +1367,64 @@ PASSES.CrateKey = function(ctx, _tint)
 		})
 		table.insert(bars, bar)
 	end
-	local glow = sprite(root, "SoftDot", WC.Sunny, { Size = sq(ctx, 1.0), Position = at(cx, 0.5), ZIndex = 2 })
+	local glow = sprite(root, "SoftDot", WC.Sunny, { Size = box(ctx, 1.8, 1.3), Position = at(cx, 0.5), ZIndex = 2 })
+	local starId = Sprites.image("StarPop")
+	local star = sprite(root, "StarPop", if starId then WHITE else WC.Sunny, {
+		Size = ZERO,
+		Position = at(cx, 0.5),
+		ZIndex = 2,
+		Visible = false,
+	})
 	local crate = icon(root, { "CrateLegendary", "Gift2", "Star" }, WC.Sunny, {
 		Size = sq(ctx, CRATE),
 		Position = at(cx, crateBottom),
 		AnchorPoint = BOTTOM,
 		ZIndex = 3,
 	})
-	local lidClosed = at(cx, crateTop + 0.08)
-	local lid = node("Frame", root, { Name = "Lid", Size = box(ctx, CRATE * 0.9, 0.13), Position = lidClosed, ZIndex = 4, Visible = false })
-	paint(lid, C.Gold, 5, C.GoldDeep, 2.5)
+	shade(crate)
 
-	-- The key's tip sits in the keyhole (the holder's centre), shaft and bow to the right.
-	local key = node("Frame", root, { Name = "Key", Size = sq(ctx, 0.72), Position = at(cx, crateBottom - CRATE * 0.42), ZIndex = 5 })
+	-- The key's tip sits in the keyhole (the holder's centre), shaft and bow to the right;
+	-- turned -90° the bow points up (top 0.07).
+	local key = node("Frame", root, { Name = "Key", Size = sq(ctx, KEY), Position = keyOut, ZIndex = 5 })
 	local shaft =
-		node("Frame", key, { Size = UDim2.fromScale(0.36, 0.1), Position = at(0.5, 0.5), AnchorPoint = Vector2.new(0, 0.5), ZIndex = 5 })
-	paint(shaft, C.Gold, 3, WC.Ink, 2)
+		node("Frame", key, { Size = UDim2.fromScale(0.38, 0.1), Position = at(0.5, 0.5), AnchorPoint = Vector2.new(0, 0.5), ZIndex = 5 })
+	paint(shaft, C.Gold, 3, WC.Ink, 2.5)
 	local tooth =
-		node("Frame", key, { Size = UDim2.fromScale(0.07, 0.11), Position = at(0.57, 0.52), AnchorPoint = Vector2.new(0, 0), ZIndex = 5 })
-	paint(tooth, C.Gold, 2, WC.Ink, 2)
-	local bow = node("Frame", key, { Size = UDim2.fromScale(0.25, 0.25), Position = at(0.88, 0.5), ZIndex = 6 })
-	paint(bow, C.Gold, -1, WC.Ink, 2.5)
+		node("Frame", key, { Size = UDim2.fromScale(0.07, 0.12), Position = at(0.57, 0.52), AnchorPoint = Vector2.new(0, 0), ZIndex = 5 })
+	paint(tooth, C.Gold, 2, WC.Ink, 2.5)
+	local bow = node("Frame", key, { Size = UDim2.fromScale(0.26, 0.26), Position = at(0.88, 0.5), ZIndex = 6 })
+	paint(bow, C.Gold, -1, WC.Ink, 3)
+	local hole = node("Frame", bow, { Size = UDim2.fromScale(0.36, 0.36), Position = at(0.5, 0.5), ZIndex = 7 })
+	paint(hole, C.GoldDeep, -1)
 
 	local sparkles = {
-		sprite(root, "Sparkle", WHITE, { Size = sq(ctx, 0.2), ZIndex = 6, Visible = false }),
-		sprite(root, "Sparkle", WC.Butter, { Size = sq(ctx, 0.2), ZIndex = 6, Visible = false }),
+		sprite(root, "Sparkle", WHITE, { Size = sq(ctx, 0.3), ZIndex = 6, Visible = false }),
+		sprite(root, "Sparkle", WC.Butter, { Size = sq(ctx, 0.3), ZIndex = 6, Visible = false }),
 	}
 	local sparklePool = pool(ctx, sparkles)
 
 	local function open(power: number)
-		tw(ctx, crate, 0.1, { Size = box(ctx, CRATE * 0.9, CRATE * 1.15) }, QUAD, OUT)
-		later(ctx, 0.1, function()
-			tw(ctx, crate, 0.35, { Size = sq(ctx, CRATE) }, BACK, OUT)
+		tw(ctx, crate, 0.08, { Size = box(ctx, CRATE * 1.1, CRATE * 0.92) }, QUAD, OUT)
+		later(ctx, 0.08, function()
+			tw(ctx, crate, 0.3, { Size = sq(ctx, CRATE) }, BACK, OUT)
 		end)
-		lid.Visible = true
-		lid.Position = lidClosed
-		lid.Rotation = 0
-		tw(ctx, lid, 0.25, { Position = at(cx + 0.04, crateTop - 0.2), Rotation = -22 }, BACK, OUT)
-		tw(ctx, glow, 0.25, { Size = sq(ctx, 1.5 * power) }, QUAD, OUT)
-		fade(ctx, glow, 0.25, 0.1)
+		star.Visible = true
+		star.Size = sq(ctx, 0.2)
+		setAlpha(star, 0)
+		tw(ctx, star, 0.45, { Size = sq(ctx, 0.85) }, QUAD, OUT)
+		fade(ctx, star, 0.45, 1, QUAD, IN)
+		tw(ctx, glow, 0.25, { Size = box(ctx, 2.3 * power, 1.6) }, QUAD, OUT)
+		fade(ctx, glow, 0.25, 0.05)
 		for _, bar in bars do
-			tw(ctx, bar, 0.25, { BackgroundTransparency = 0.2 }, QUAD, OUT)
+			tw(ctx, bar, 0.25, { BackgroundTransparency = 0.1 }, QUAD, OUT)
 		end
 		for i = 1, #sparkles do
 			local s = take(sparklePool)
 			if s then
 				local side = if i == 1 then -1 else 1
-				local x0, y0 = cx * A, crateTop
-				fly(ctx, s, 0.8, function(a)
-					s.Position = at((x0 + side * 0.55 * power * a) / A, y0 - 0.5 * 4 * a * (1 - a) + 0.15 * a)
-					s.Size = sq(ctx, 0.24 * math.sin(math.pi * math.min(a * 1.2, 1)) + 0.01)
+				fly(ctx, s, 0.75, function(a)
+					s.Position = at((cxh + side * 0.65 * power * a) / A, 0.35 - 0.2 * 4 * a * (1 - a) + 0.3 * a)
+					s.Size = sq(ctx, 0.3 * math.sin(math.pi * math.min(a * 1.2, 1)) + 0.01)
 					s.Rotation = 180 * a
 				end, function()
 					free(sparklePool, s)
@@ -1259,83 +1433,94 @@ PASSES.CrateKey = function(ctx, _tint)
 		end
 	end
 	local function close()
-		tw(ctx, lid, 0.2, { Position = lidClosed, Rotation = 0 }, QUAD, IN)
-		later(ctx, 0.2, function()
-			lid.Visible = false
-			Kit.pop(crate, 0.5)
-		end)
+		star.Visible = false
 		for _, bar in bars do
-			tw(ctx, bar, 0.6, { BackgroundTransparency = 0.75 }, QUAD, OUT)
+			tw(ctx, bar, 0.6, { BackgroundTransparency = 0.6 }, QUAD, OUT)
 		end
-		tw(ctx, glow, 0.6, { Size = sq(ctx, 1.0) }, QUAD, OUT)
-		fade(ctx, glow, 0.6, 0.45)
+		tw(ctx, glow, 0.6, { Size = box(ctx, 1.8, 1.3) }, QUAD, OUT)
+		fade(ctx, glow, 0.6, GLOW)
+		Kit.pop(crate, 0.4)
 	end
 
 	onPlay(ctx, function()
-		tw(ctx, rays, 9, { Rotation = 360 }, LINEAR, INOUT, -1)
+		tw(ctx, rays, 8, { Rotation = 360 }, LINEAR, INOUT, -1)
 		loop(ctx, function(nap)
-			if not nap(0.6) then
+			if not nap(0.4) then
 				return
 			end
-			tw(ctx, key, 0.3, { Rotation = 90 }, BACK, OUT)
-			if not nap(0.32) then
+			tw(ctx, key, 0.2, { Position = keyIn }, QUAD, OUT)
+			if not nap(0.22) then
 				return
 			end
-			for _, r in { -6, 6, 0 } do
-				tw(ctx, crate, 0.06, { Rotation = r }, QUAD, OUT)
-				if not nap(0.06) then
+			tw(ctx, key, 0.25, { Rotation = -90 }, BACK, OUT)
+			if not nap(0.27) then
+				return
+			end
+			for _, r in { -6, 6, -4, 0 } do
+				tw(ctx, crate, 0.05, { Rotation = r }, QUAD, OUT)
+				if not nap(0.05) then
 					return
 				end
 			end
 			open(1)
-			if not nap(1.2) then
+			if not nap(1.0) then
 				return
 			end
 			close()
-			tw(ctx, key, 0.25, { Rotation = 0 }, QUAD, OUT)
-			nap(0.7)
+			tw(ctx, key, 0.2, { Rotation = 0 }, QUAD, OUT)
+			if not nap(0.22) then
+				return
+			end
+			tw(ctx, key, 0.25, { Position = keyOut }, QUAD, OUT)
+			nap(0.3)
 		end)
 	end)
 	onRest(ctx, function()
 		rays.Rotation = 0
 		for _, bar in bars do
-			bar.BackgroundTransparency = if PREVIEW then 0.45 else 0.75
+			bar.BackgroundTransparency = if PREVIEW then 0.35 else 0.6
 		end
-		glow.Size = sq(ctx, 1.0)
-		setAlpha(glow, 0.45)
+		glow.Size = box(ctx, 1.8, 1.3)
+		setAlpha(glow, GLOW)
+		star.Visible = false
 		crate.Rotation = 0
 		crate.Size = sq(ctx, CRATE)
-		lid.Visible = false
 		key.Rotation = 0
+		key.Position = keyOut
 		if PREVIEW then
 			sparkles[1].Visible = true
-			sparkles[1].Position = at(cx - 0.2, 0.22)
+			sparkles[1].Position = at((cxh - 0.5) / A, 0.24)
 			sparkles[2].Visible = true
-			sparkles[2].Position = at(cx + 0.24, 0.3)
+			sparkles[2].Position = at((cxh + 0.6) / A, 0.26)
 		end
 	end)
 	onCelebrate(ctx, function()
 		open(1.25)
-		later(ctx, 1.1, close)
-		burst(ctx, cx, crateTop, 5, 14)
+		later(ctx, 1.0, close)
+		burst(ctx, cx, 0.45, 6, 14)
 	end)
 end
 
--- Starter Pack / All Cosmetics / anything else: a gift or star with orbiting sparkles and a sheen.
+-- Starter Pack / All Cosmetics / anything else: a big gift or star that breathes and hops,
+-- with sparkles twinkling round it and a sheen sweeping across.
 local function giftScene(ctx: Ctx, tint: Color3, names: { string })
 	local root = ctx.root
 	local cx, cy = 0.5, 0.5
-	local glow = sprite(root, "SoftDot", Kit.lighten(tint, 0.55), { Size = sq(ctx, 1.05), Position = at(cx, cy), ZIndex = 1 })
-	local holder = node("Frame", root, { Name = "Hero", Size = sq(ctx, 0.78), Position = at(cx, cy), ZIndex = 3 })
+	local GLOW = 0.35
+	local glow = sprite(root, "SoftDot", Kit.lighten(tint, 0.3), { Size = box(ctx, 2.0, 1.3), Position = at(cx, cy), ZIndex = 1 })
+	-- 0.92 h frame (art ~0.7 h); breathing 1.03 and a 1.2 pop keep the art inside.
+	local holder = node("Frame", root, { Name = "Hero", Size = sq(ctx, 0.92), Position = at(cx, cy), ZIndex = 3 })
 	local holderScale = Kit.new("UIScale", { Parent = holder })
 	local hero = icon(holder, names, WC.Sunny, { ZIndex = 3 })
-	local orbit = node("Frame", root, { Name = "Orbit", Size = sq(ctx, 1.0), Position = at(cx, cy), ZIndex = 4 })
-	local spots = { { 0.5, 0.02 }, { 0.93, 0.74 }, { 0.07, 0.74 } }
+	shade(hero)
+	local spots = { { 0.2, 0.28 }, { 0.8, 0.3 }, { 0.76, 0.74 }, { 0.27, 0.76 } }
+	local sparkles = {}
 	for i, spot in spots do
-		sprite(orbit, "Sparkle", if i == 2 then WC.Butter else WHITE, {
-			Size = UDim2.fromScale(0.17, 0.17),
+		sparkles[i] = sprite(root, "Sparkle", if i % 2 == 0 then WC.Butter else WHITE, {
+			Size = ZERO,
 			Position = at(spot[1], spot[2]),
 			ZIndex = 4,
+			Visible = false,
 		})
 	end
 	local sheen = node("Frame", root, {
@@ -1350,33 +1535,47 @@ local function giftScene(ctx: Ctx, tint: Color3, names: { string })
 	Kit.new("UIGradient", {
 		Transparency = NumberSequence.new({
 			NumberSequenceKeypoint.new(0, 1),
-			NumberSequenceKeypoint.new(0.5, 0.7),
+			NumberSequenceKeypoint.new(0.5, 0.6),
 			NumberSequenceKeypoint.new(1, 1),
 		}),
 		Parent = sheen,
 	})
 
 	onPlay(ctx, function()
-		tw(ctx, holderScale, 1.3, { Scale = 1.05 }, SINE, INOUT, -1, true)
-		tw(ctx, holder, 1.6, { Position = at(cx, cy - 0.04) }, SINE, INOUT, -1, true)
-		tw(ctx, orbit, 7, { Rotation = 360 }, LINEAR, INOUT, -1)
-		tw(ctx, glow, 1.3, { Size = sq(ctx, 1.2) }, SINE, INOUT, -1, true)
+		tw(ctx, holderScale, 1.1, { Scale = 1.03 }, SINE, INOUT, -1, true)
+		tw(ctx, holder, 1.4, { Position = at(cx, cy - 0.02) }, SINE, INOUT, -1, true)
+		tw(ctx, glow, 1.1, { Size = box(ctx, 2.3, 1.5) }, SINE, INOUT, -1, true)
+		local turn = 0
+		loop(ctx, function(nap)
+			turn = turn % #sparkles + 1
+			twinkle(ctx, sparkles[turn], sq(ctx, 0.3), 0.1)
+			nap(0.35)
+		end)
+		loop(ctx, function(nap)
+			Kit.pop(hero, 0.5)
+			flash(ctx, glow, 0.1, GLOW, 0.5)
+			nap(2.2)
+		end, 0.6)
 		loop(ctx, function(nap)
 			sheen.Position = at(-0.3, 0.5)
-			tw(ctx, sheen, 1.3, { Position = at(1.3, 0.5) }, SINE, INOUT)
-			nap(4.5)
+			tw(ctx, sheen, 1.0, { Position = at(1.3, 0.5) }, SINE, INOUT)
+			nap(3.2)
 		end, 0.8)
 	end)
 	onRest(ctx, function()
 		holderScale.Scale = 1
 		holder.Position = at(cx, cy)
-		orbit.Rotation = 0
-		glow.Size = sq(ctx, 1.05)
-		setAlpha(glow, 0.45)
+		glow.Size = box(ctx, 2.0, 1.3)
+		setAlpha(glow, GLOW)
 		sheen.Position = at(-0.3, 0.5)
+		for _, s in sparkles do
+			s.Visible = PREVIEW
+			s.Size = if PREVIEW then sq(ctx, 0.22) else ZERO
+		end
 	end)
 	onCelebrate(ctx, function()
-		Kit.pop(hero, 2.2)
+		Kit.pop(hero, 1.2)
+		flash(ctx, glow, 0, GLOW, 0.8)
 		burst(ctx, cx, cy, 6, 14)
 	end)
 end
@@ -1390,7 +1589,8 @@ end
 
 --[[
 	Animated art for one pass banner. `stage` is a transparent Frame the caller sizes
-	(about 230x120 design px) and clips; `name` the pass key; `tint` the banner colour.
+	(about 230x120 design px, at least ~150x80 for the art to read) and clips; `name` the
+	pass key; `tint` the banner colour.
 ]]
 function ShopScenes.pass(stage: Frame, name: string, tint: Color3): Scene
 	local ctx = newCtx(stage, PASS_ASPECT)
@@ -1410,20 +1610,31 @@ local CASH_ICONS = { "CashPack1", "CashPack3", "CashPack5", "CashPack6" }
 
 --[[
 	Animated art for one pack card: kind "Money" | "Aura" | "Gems", index 1..4 (the size
-	ladder: bigger index = bigger pile, more particles, stronger glow). `stage` about 110x110.
+	ladder: bigger index = bigger pile, more particles, stronger glow). `stage` about
+	110x110 or larger (1:1). The pile frame is 0.98 of the stage (art ~0.75); coins rain
+	in from the top edge and land on it, orbs float up out of it, gems glint.
 ]]
 function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 	local i = math.clamp(math.floor(tonumber(index) or 1), 1, 4)
 	local ctx = newCtx(stage, PACK_ASPECT)
 	ctx.root.Name = "Scene" .. tostring(kind) .. tostring(i)
 	local root = ctx.root
-	local cx, cy = 0.5, 0.54
+	local cx, cy = 0.5, 0.52
 
 	local glowColor = if kind == "Aura" then C.Violet elseif kind == "Gems" then C.Rizz else WC.Sunny
-	local glowAlpha = 0.82 - 0.1 * i
-	local glowSize = 0.72 + 0.08 * i
+	local glowAlpha = 0.66 - 0.09 * i
+	local glowSize = 0.9 + 0.1 * i
 	local glow = sprite(root, "SoftDot", glowColor, { Size = sq(ctx, glowSize), Position = at(cx, cy), ZIndex = 1 })
-	local holder = node("Frame", root, { Name = "Pile", Size = sq(ctx, 0.8), Position = at(cx, cy), ZIndex = 3 })
+	local shadow = node("Frame", root, {
+		Name = "Shadow",
+		BackgroundColor3 = C.Ink,
+		BackgroundTransparency = 0.68,
+		Size = box(ctx, 0.56, 0.08),
+		Position = at(cx, 0.9),
+		ZIndex = 2,
+	})
+	Kit.round(shadow)
+	local holder = node("Frame", root, { Name = "Pile", Size = sq(ctx, 0.98), Position = at(cx, cy), ZIndex = 3 })
 	local holderScale = Kit.new("UIScale", { Parent = holder })
 
 	local hero: GuiObject
@@ -1431,6 +1642,7 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 		local art = "AuraPack" .. i
 		if Kit.hasImageIcon(art) then
 			hero = icon(holder, { art }, nil, { ZIndex = 3 })
+			shade(hero)
 		else
 			-- A little heap of candy orbs, one more per size step.
 			hero = node("Frame", holder, { Size = FULL, Position = at(0.5, 0.5), ZIndex = 3 })
@@ -1446,26 +1658,37 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 		end
 	elseif kind == "Gems" then
 		hero = icon(holder, { "GemPack" .. math.min(i, 3), "Gem" }, C.Rizz, { ZIndex = 3 })
+		shade(hero)
 	else
 		hero = icon(holder, { CASH_ICONS[i], "Coin" }, C.Gold, { ZIndex = 3 })
+		shade(hero)
 	end
 
-	-- Particles: coins sprinkling (Money), orbs drifting up (Aura); sparkles twinkle on all.
+	-- Particles: coins raining onto the pile (Money), orbs floating up out of it (Aura);
+	-- sparkles glint where a coin lands / an orb pops, and all over the pile (Gems).
 	local flyers: { GuiObject } = {}
 	if kind == "Money" then
 		for k = 1, i + 1 do
-			flyers[k] = coin(root, { Size = sq(ctx, 0.2), ZIndex = 5, Visible = false })
+			flyers[k] = coin(root, { Size = sq(ctx, 0.22), ZIndex = 5, Visible = false })
 		end
 	elseif kind == "Aura" then
 		for k = 1, i + 1 do
-			flyers[k] = orb(root, OrbLook.tierColor(k, Theme.OrbColors), { Size = sq(ctx, 0.13), ZIndex = 2, Visible = false })
+			flyers[k] = orb(root, OrbLook.tierColor(k, Theme.OrbColors), { Size = sq(ctx, 0.17), ZIndex = 5, Visible = false })
 		end
 	end
 	local flyerPool = pool(ctx, flyers)
-	local sparkleCount = if kind == "Gems" then math.min(2 + i, 5) else (if kind == "Aura" then 2 else 1)
+	local sparkleCount = if kind == "Gems" then math.min(2 + i, 5) else 2
 	local sparkles: { GuiObject } = {}
 	for k = 1, sparkleCount do
 		sparkles[k] = sprite(root, "Sparkle", if k % 2 == 0 then WC.Butter else WHITE, { Size = ZERO, ZIndex = 6, Visible = false })
+	end
+
+	local sparkleTurn = 0
+	local function glint(x: number, y: number, size: number)
+		sparkleTurn = sparkleTurn % #sparkles + 1
+		local s = sparkles[sparkleTurn]
+		s.Position = at(x, y)
+		twinkle(ctx, s, sq(ctx, size), 0.05)
 	end
 
 	local function launch()
@@ -1474,57 +1697,68 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 			return
 		end
 		if kind == "Money" then
-			local x0 = cx + (math.random() - 0.5) * 0.3
-			local vx = (math.random() - 0.5) * 0.7
-			local up = 1.3 + math.random() * 0.25 + 0.05 * i
-			local y0 = 0.45
-			local down = 0.92 - y0 + up
-			fly(ctx, p, 0.95 + math.random() * 0.2, function(a)
-				p.Position = at(x0 + vx * a, y0 - up * a + down * a * a)
-				local shrink = if a > 0.75 then 1 - (a - 0.75) * 4 else 1
-				p.Size = box(ctx, 0.2 * shrink * math.max(math.abs(math.cos(a * math.pi * 2.5)), 0.15), 0.2 * shrink)
+			-- Falls in from the top edge, spinning, lands on the pile, hops, sinks in.
+			local x0 = 0.3 + math.random() * 0.4
+			local drift = (math.random() - 0.5) * 0.12
+			local land = 0.3 + math.random() * 0.14
+			fly(ctx, p, 0.85 + math.random() * 0.15, function(a)
+				local y
+				if a < 0.6 then
+					local f = a / 0.6
+					y = -0.12 + (land + 0.12) * f * f
+				else
+					y = land - 0.08 * math.sin(math.pi * math.min((a - 0.6) / 0.4 * 1.4, 1))
+				end
+				local s = if a > 0.82 then 1 - (a - 0.82) / 0.18 else 1
+				p.Position = at(x0 + drift * a, y)
+				p.Size = box(ctx, 0.22 * s * math.max(math.abs(math.cos(a * math.pi * 3)), 0.15), 0.22 * s)
 			end, function()
 				free(flyerPool, p)
+				glint(x0 + drift, land - 0.02, 0.2 + 0.02 * i)
 			end)
 		else
-			local x0 = cx + (math.random() - 0.5) * 0.5
-			local sway = (math.random() - 0.5) * 0.12
+			-- Floats up out of the pile with a sway, eases to a stop near the top, pops.
+			local x0 = 0.3 + math.random() * 0.4
+			local sway = 0.05 + math.random() * 0.04
 			local phase = math.random() * math.pi * 2
-			fly(ctx, p, 1.5 + math.random() * 0.4, function(a)
-				p.Position = at(x0 + sway * math.sin(phase + a * math.pi * 2), 0.78 - 0.7 * a)
-				p.Size = sq(ctx, 0.13 * (1 - a * a) + 0.005)
+			local top = 0.14 + math.random() * 0.08
+			local xEnd = x0 + sway * math.sin(phase + math.pi * 2.5)
+			fly(ctx, p, 1.3 + math.random() * 0.3, function(a)
+				local s = if a > 0.85 then 1 - (a - 0.85) / 0.15 else math.min(a / 0.15, 1)
+				p.Position = at(x0 + sway * math.sin(phase + a * math.pi * 2.5), 0.5 + (top - 0.5) * (1 - (1 - a) ^ 2))
+				p.Size = sq(ctx, 0.17 * s + 0.005)
 			end, function()
 				free(flyerPool, p)
+				glint(xEnd, top, 0.2 + 0.02 * i)
 			end)
 		end
 	end
-	local sparkleTurn = 0
-	local function sparkleOnce()
-		sparkleTurn = sparkleTurn % #sparkles + 1
-		local s = sparkles[sparkleTurn]
+	local gemTurn = 0
+	local function gemGlint()
 		local angle = math.random() * math.pi * 2
-		local radius = 0.24 + math.random() * 0.14
-		s.Position = at(cx + math.cos(angle) * radius, cy - 0.04 + math.sin(angle) * radius)
-		twinkle(ctx, s, sq(ctx, 0.15 + 0.02 * i), 0.1)
+		local radius = 0.08 + math.random() * 0.16
+		glint(cx + math.cos(angle) * radius, cy - 0.04 + math.sin(angle) * radius, 0.2 + 0.03 * i)
+		gemTurn += 1
+		if gemTurn % 3 == 0 then
+			flash(ctx, glow, math.max(glowAlpha - 0.3, 0), glowAlpha, 0.4)
+		end
 	end
 
 	onPlay(ctx, function()
-		tw(ctx, holderScale, 1.3, { Scale = 1.045 }, SINE, INOUT, -1, true)
-		if i == 4 then
-			tw(ctx, glow, 0.9, { Size = sq(ctx, glowSize * 1.18) }, SINE, INOUT, -1, true)
-			local glowTarget, prop = alphaTarget(glow)
-			tw(ctx, glowTarget, 0.9, { [prop] = 0.12 }, SINE, INOUT, -1, true)
-		end
+		tw(ctx, holderScale, 1.2, { Scale = 1.035 }, SINE, INOUT, -1, true)
+		tw(ctx, glow, 1.0, { Size = sq(ctx, glowSize * 1.12) }, SINE, INOUT, -1, true)
 		if #flyers > 0 then
 			loop(ctx, function(nap)
 				launch()
-				nap(1.05 - 0.17 * i)
-			end, math.random() * 0.5)
+				nap(if kind == "Money" then 0.75 - 0.12 * i else 0.85 - 0.13 * i)
+			end, math.random() * 0.4)
 		end
-		loop(ctx, function(nap)
-			sparkleOnce()
-			nap(if kind == "Gems" then 0.62 - 0.08 * i else 0.9)
-		end, math.random() * 0.6)
+		if kind == "Gems" then
+			loop(ctx, function(nap)
+				gemGlint()
+				nap(0.5 - 0.07 * i)
+			end, math.random() * 0.4)
+		end
 	end)
 	onRest(ctx, function()
 		holderScale.Scale = 1
@@ -1537,26 +1771,29 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 			-- Still frame: a couple of particles and a sparkle in the air.
 			if flyers[1] then
 				flyers[1].Visible = true
-				flyers[1].Position = at(0.24, 0.2)
+				flyers[1].Position = at(0.24, 0.22)
 			end
 			if flyers[2] then
 				flyers[2].Visible = true
-				flyers[2].Position = at(0.78, 0.26)
+				flyers[2].Position = at(0.78, 0.28)
 			end
 			sparkles[1].Visible = true
-			sparkles[1].Size = sq(ctx, 0.16)
-			sparkles[1].Position = at(0.8, 0.72)
+			sparkles[1].Size = sq(ctx, 0.18)
+			sparkles[1].Position = at(0.78, 0.7)
 		end
 	end)
 	onCelebrate(ctx, function()
-		Kit.pop(hero, 2)
+		Kit.pop(hero, 0.9)
+		flash(ctx, glow, 0, glowAlpha, 0.8)
 		for k = 1, #flyers do
 			later(ctx, (k - 1) * 0.05, launch)
 		end
-		for k = 1, math.min(#sparkles, 3) do
-			later(ctx, (k - 1) * 0.08, sparkleOnce)
+		if kind == "Gems" then
+			for k = 1, 3 do
+				later(ctx, (k - 1) * 0.08, gemGlint)
+			end
 		end
-		burst(ctx, cx, cy, 4, 10, 0.5)
+		burst(ctx, cx, cy, 5, 10, 0.45)
 	end)
 
 	return finish(ctx)
