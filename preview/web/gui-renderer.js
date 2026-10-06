@@ -871,6 +871,11 @@ function renderImage(box, el, radius, ctx) {
 		left: '0', top: '0', width: '100%', height: '100%', overflow: 'hidden',
 		borderRadius: radius ? px(radius) : '', opacity: String(1 - transparency),
 	});
+	if (Array.isArray(n.imageRect) && n.imageRect[2] > 0 && n.imageRect[3] > 0) {
+		renderImageRect(box, wrap, url, ctx, placeholder);
+		el.appendChild(wrap);
+		return;
+	}
 	const img = document.createElement('img');
 	img.src = url;
 	img.alt = '';
@@ -896,6 +901,45 @@ function renderImage(box, el, radius, ctx) {
 	}
 	el.appendChild(wrap);
 	ctx.images.push({ img, onFail: () => wrap.replaceWith(placeholder()) });
+}
+
+// ImageRectOffset / ImageRectSize: only the [x, y, w, h] pixel rect of the image is shown, laid out by
+// ScaleType as if it were the whole image. The rect's aspect is known up front; the full image's size
+// is not, so the image (and its ImageColor3 tint mask) is positioned once it has decoded.
+function renderImageRect(box, wrap, url, ctx, placeholder) {
+	const n = box.node;
+	const [rx, ry, rw, rh] = n.imageRect;
+	const W = box.w, H = box.h;
+	let sx = W / rw, sy = H / rh;
+	if (n.scaleType === 'Fit') sx = sy = Math.min(W / rw, H / rh);
+	else if (n.scaleType === 'Crop') sx = sy = Math.max(W / rw, H / rh);
+	const dw = rw * sx, dh = rh * sy;
+	const clip = div('rbx-image-rect');
+	Object.assign(clip.style, { left: px((W - dw) / 2), top: px((H - dh) / 2), width: px(dw), height: px(dh), overflow: 'hidden' });
+	const img = document.createElement('img');
+	img.src = url;
+	img.alt = '';
+	img.draggable = false;
+	Object.assign(img.style, { position: 'absolute', left: px(-rx * sx), top: px(-ry * sy), display: 'block', maxWidth: 'none' });
+	clip.appendChild(img);
+	const tint = n.imageColor;
+	const tinted = tint && (tint[0] < 255 || tint[1] < 255 || tint[2] < 255);
+	const t = tinted ? div('rbx-image-tint') : null;
+	if (t) {
+		Object.assign(t.style, {
+			left: px(-rx * sx), top: px(-ry * sy), backgroundColor: rgba(tint), mixBlendMode: 'multiply',
+			maskImage: `url("${url}")`, webkitMaskImage: `url("${url}")`, maskSize: '100% 100%', webkitMaskSize: '100% 100%',
+			maskRepeat: 'no-repeat', webkitMaskRepeat: 'no-repeat',
+		});
+		clip.appendChild(t);
+	}
+	wrap.appendChild(clip);
+	const onLoad = () => {
+		const w = px(img.naturalWidth * sx), h = px(img.naturalHeight * sy);
+		Object.assign(img.style, { width: w, height: h });
+		if (t) Object.assign(t.style, { width: w, height: h });
+	};
+	ctx.images.push({ img, onLoad, onFail: () => wrap.replaceWith(placeholder()) });
 }
 
 function renderText(box, content) {
@@ -975,10 +1019,14 @@ function renderText(box, content) {
 }
 
 function waitImages(entries, timeoutMs) {
-	const each = entries.map(({ img, onFail }) =>
-		img.decode().catch(() => {
-			if (!img.complete || img.naturalWidth === 0) onFail();
-		}),
+	const each = entries.map(({ img, onFail, onLoad }) =>
+		img.decode().then(
+			() => onLoad?.(),
+			() => {
+				if (!img.complete || img.naturalWidth === 0) onFail();
+				else onLoad?.();
+			},
+		),
 	);
 	return Promise.race([Promise.all(each), new Promise((r) => setTimeout(r, timeoutMs))]);
 }

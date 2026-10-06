@@ -3,10 +3,18 @@
 
 	Only one is open at a time. A dimmed backdrop sits behind the open window;
 	clicking it, the X button, Escape or the gamepad B button closes it.
+
+	Look: lighter-blue raised tiles on the window's deep-blue well, one accent
+	colour per window. Every shop price sits on the same mint button (one
+	height, one text size) with an idle sheen.
+	Motion: cards ripple in when a window or tab opens, shop tabs cross-fade
+	and slide from the side of the tab, numbers count, bars and switches ease.
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
@@ -19,12 +27,20 @@ local State = require(script.Parent.Parent.State)
 local Theme = Kit.Theme
 local C = Kit.C
 local T = Kit.TEXT
+local F = Kit.F
 local W = Theme.Words
 local I = Theme.Icons
+
+-- The Lune preview exporter has no real tweens or frame time: finish
+-- transitions immediately there.
+local PREVIEW = typeof(TweenInfo.new(0)) ~= "TweenInfo"
 
 local Windows = {}
 
 local windows: { [string]: Kit.Window } = {}
+-- Runs just before a window opens (while it is still hidden), so content can
+-- be refreshed and its cards set up to ripple in with the window.
+local beforeOpen: { [string]: () -> () } = {}
 local backdrop: TextButton
 Windows.changed = Instance.new("BindableEvent")
 
@@ -38,7 +54,15 @@ local function anyOpen(): boolean
 end
 Windows.isAnyOpen = anyOpen
 
-function Windows.open(name: string)
+-- opts.focus (Shop only): a pass name or section ("Passes", "Cash", "Gems") to open scrolled to.
+function Windows.open(name: string, opts: { focus: string? }?)
+	if opts and opts.focus and name == "Shop" then
+		Windows.shopFocus = opts.focus
+	end
+	local target = windows[name]
+	if target and not target.isOpen() and beforeOpen[name] then
+		beforeOpen[name]()
+	end
 	for key, window in windows do
 		window.setOpen(key == name and not window.isOpen())
 	end
@@ -64,383 +88,1828 @@ local function register(name: string, window: Kit.Window)
 	end)
 end
 
+-- Removes content children, keeping panel chrome (Highlight, Lip, Shadow).
 local function clearChildren(parent: Instance, className: string?)
 	for _, child in parent:GetChildren() do
-		if child:IsA(className or "GuiObject") then
+		if child:IsA(className or "GuiObject") and not child:GetAttribute("KitChrome") then
 			child:Destroy()
 		end
 	end
 end
 
+--[[
+	Cards ease in one after another, 25 ms apart (scale only: the window's own
+	fade covers transparency, so a card never keeps a half-faded look when the
+	window closes mid-animation).
+]]
+local function ripple(cards: { GuiObject })
+	for i, gui in cards do
+		Kit.appear(gui, { from = 0.9, time = 0.26, delay = math.min(i - 1, 12) * 0.025, fade = false })
+	end
+end
+
+-- Repaints a Kit.panel body (gradient, outline and lip) in `color`.
+local function paintPanel(frame: Frame, color: Color3, strokeColor: Color3?)
+	local lipColor = Kit.lip(color)
+	local gradient = frame:FindFirstChildOfClass("UIGradient")
+	if gradient then
+		gradient.Color = ColorSequence.new(Kit.lighten(color, 0.1), color:Lerp(lipColor, 0.12))
+	end
+	local stroke = frame:FindFirstChildOfClass("UIStroke")
+	if stroke then
+		stroke.Color = strokeColor or lipColor
+	end
+	local lip = frame:FindFirstChild("Lip")
+	if lip and lip:IsA("Frame") then
+		lip.BackgroundColor3 = lipColor
+	end
+end
+
 -- Shop ------------------------------------------------------------------------------
 
-local PASS_ICONS = {
-	AutoLoot = "🧲",
-	AutoCash = "🏦",
-	DoubleAura = I.Orb,
-	DoubleMoney = "💰",
-	PremiumUnlocker = "🔓",
+-- Pass art from the icon atlas, with the shape icon used when the art is missing.
+local PASS_ICONS: { [string]: { string } } = {
+	AutoLoot = { "PassAutoCollect", "Orb" },
+	AutoCash = { "PassAutoCash", "Coin" },
+	DoubleAura = { "PassDoubleOrbs", "Orb" },
+	DoubleMoney = { "PassDoubleCash", "Coin" },
+	PremiumUnlocker = { "PassVipCracker", "Lock" },
+	CrateKey = { "PassCrateKey", "CrateLegendary" },
 }
 
+-- Each pass card is fully tinted with its own candy colour (mint is kept for the price buttons).
+local PASS_TINTS: { [string]: Color3 } = {
+	AutoLoot = Theme.World.Sunny,
+	AutoCash = Theme.World.Coral,
+	DoubleAura = Theme.World.Grape,
+	DoubleMoney = Theme.World.Blue,
+	PremiumUnlocker = Theme.World.Pink,
+	CrateKey = Theme.World.Orange,
+}
+
+-- Small text (12 px and under) on blue: near-white, never blue-grey.
+local SMALL_TEXT = C.Text:Lerp(C.TextDim, 0.5)
+
+-- Robux prices use Kit's shared glyph (see Kit.ROBUX).
+local ROBUX = Kit.ROBUX
+local function price(amount: number): string
+	return ROBUX .. " " .. tostring(amount)
+end
+
+-- Corner tag ("POPULAR", "BEST VALUE", "OWNED"): a solid pill overlapping the top-right edge.
 local function ribbon(parent: Instance, text: string, color: Color3)
 	return Kit.pill(parent, {
 		Name = "Ribbon",
 		Text = text,
 		Color = color,
-		TextSize = T.Tiny,
+		Solid = true,
+		TextSize = 14,
 		Size = UDim2.fromOffset(0, 24),
 		AutomaticSize = Enum.AutomaticSize.X,
-		Position = UDim2.new(1, 8, 0, -10),
+		Position = UDim2.new(1, 6, 0, -10),
 		AnchorPoint = Vector2.new(1, 0),
-		Rotation = 6,
-		ZIndex = 4,
+		ZIndex = 6,
 	})
 end
 
+-- Product art: the atlas icon `art` drawn large, or the `fallback` shape icon tinted `color`.
+local function productArt(parent: Instance, art: string, fallback: string, color: Color3, size: number): GuiObject
+	local props = {
+		Name = "Art",
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 4,
+	}
+	if Kit.hasImageIcon(art) then
+		return Kit.icon(parent, art, size, nil, props)
+	end
+	return Kit.icon(parent, fallback, math.floor(size * 0.7), color, props)
+end
+
+-- Section ids in page order, the switcher's pill text and each section's header.
+local SECTIONS = {
+	{ key = "Passes", pill = "Passes", title = "GAME PASSES", caption = "Permanent upgrades", icon = "Star" },
+	{ key = "Cosmetics", pill = "Cosmetics", title = "COSMETICS", caption = "Look cool. Move faster.", icon = "Crown" },
+	{ key = "Cash", pill = "Cash", title = "CASH", caption = "Grows as your " .. W.Unit .. "s get stronger", icon = "Coin" },
+	{
+		key = "Gems",
+		pill = W.Gem,
+		title = string.upper(W.Gem),
+		caption = "More " .. W.Gem .. " as your " .. W.Unit .. "s get stronger",
+		icon = "Gem",
+	},
+}
+
+local function gemPackText(amount: number): string
+	return "+" .. Format.commas(amount)
+end
+
+--[[
+	Shop sizes (design pixels at 1280x720). At the default window the Starter
+	card, the GAME PASSES header and one full row of pass cards (price buttons
+	included) fit the visible page without scrolling.
+]]
+local PASS_H = 204 -- pass and cosmetic card height
+local ROW_H = 88 -- cash / Rizz row height
+local STARTER_H = 120 -- Starter pack card at the top of the page
+local BUNDLE_H = 120 -- All Cosmetics card heading the cosmetics section
+local GAP = 16
+local HEAD_H = 40 -- section header height
+local SWITCH_H = 44 -- section switcher bar (36 px pills inside)
+local PAGE_TOP = SWITCH_H + 8 -- the scrolling page starts below the switcher
+local PRICE_H = 42 -- every price button
+local PRICE_TEXT = 20
+local FADE_H = 30 -- soft fade along the bottom edge of the page
+local MIN_TEXT = 14 -- no shop text renders smaller (TextScaled labels included)
+
+-- TextScaled labels in the shop never shrink below MIN_TEXT.
+local function minText(label: TextLabel): TextLabel
+	local constraint = label:FindFirstChildOfClass("UITextSizeConstraint")
+	if constraint then
+		constraint.MinTextSize = math.min(MIN_TEXT, constraint.MaxTextSize)
+	end
+	return label
+end
+
+-- Cosmetics: card tints (the world's candy paint) and the grid order, with the
+-- Starter-only items last so the purchasable ones fill the first rows.
+local COS = Theme.Cosmetics
+local COS_TINTS: { [string]: Color3 } = {
+	SpeedBoost = Theme.World.Blue,
+	DoubleJump = Theme.World.Grape,
+	TrailRainbow = Theme.World.Pink,
+	TrailStar = Theme.World.Sunny,
+	TrailRookie = Theme.World.Mint,
+	AuraGlow = Theme.World.Orange,
+	Crown = Theme.World.Coral,
+}
+local COS_ORDER: { string } = {}
+for _, name in COS.Order do
+	if not COS.Items[name].Starter then
+		table.insert(COS_ORDER, name)
+	end
+end
+for _, name in COS.Order do
+	if COS.Items[name].Starter then
+		table.insert(COS_ORDER, name)
+	end
+end
+
+-- The All Cosmetics pass's saving against buying every cosmetic pass on its own, in percent.
+local function bundleSaving(): number
+	local total = 0
+	for _, name in COS_ORDER do
+		local item = COS.Items[name]
+		local pass = item.Pass and Theme.Monetization.Passes[item.Pass]
+		if pass and not item.Starter then
+			total += pass.Price
+		end
+	end
+	local bundle = Theme.Monetization.Passes[COS.Bundle].Price
+	return if total > bundle then math.floor((1 - bundle / total) * 100) else 0
+end
+
+--[[
+	The Starter pack's cash and Rizz for this player right now, from the same
+	Economy functions (and the same progression) the server grants with.
+]]
+function Windows.starterAmounts(data: { [string]: any }): (number, number)
+	local starter = COS.Starter
+	local progression = Economy.progression(data.highestTier or 1, data.processLevel or 0)
+	local cash = Economy.moneyPackAmount(data.income or 0, starter.CashSeconds, starter.CashMin, progression)
+	local pack = Theme.Monetization.GemPacks[starter.GemPack]
+	return cash, Economy.gemPackAmount(pack.Base, progression)
+end
+
+-- The cosmetics part of a snapshot, empty when the server sent none.
+local NO_COSMETICS = { owned = {}, trail = "", toggles = {}, bundleOwned = false, starterOwned = false }
+local function cosmeticsOf(data: { [string]: any }): { [string]: any }
+	local cosmetics = data.cosmetics
+	return if type(cosmetics) == "table" then cosmetics else NO_COSMETICS
+end
+Windows.cosmeticsOf = cosmeticsOf
+
+-- Pending focus for the next shop open: a section ("Cosmetics", "Cash", "Gems" ...), a
+-- pass ("DoubleMoney", "StarterPack", "AllCosmetics") or a cosmetic, set by Windows.open.
+Windows.shopFocus = nil :: string?
+
 local function buildShop(screen: ScreenGui)
-	local window = Kit.window(screen, "Shop", "Shop", I.Shop, C.Window.Shop, Vector2.new(860, 540))
+	local window = Kit.window(screen, "Shop", "Shop", I.Shop, C.Window.Shop, Vector2.new(860, 600), Vector2.new(620, 460))
 	register("Shop", window)
 	local action = Net.event("Action")
+	local content = window.content
+	local frame = window.frame
 
-	-- Tabs.
-	local tabBar = Kit.new("Frame", {
-		Name = "Tabs",
+	-- Every open/close starts a new session; idle loops and delayed steps stop when it changes.
+	local session = 0
+	local idleStops: { () -> () } = {}
+
+	-- Header: the big cart icon pops out over the top-left corner; cash and Rizz chips at the right.
+	local chip = window.header:FindFirstChild("Chip")
+	if chip and chip:IsA("GuiObject") then
+		chip.Visible = false
+	end
+	local headerTitle = window.header:FindFirstChild("Title")
+	if headerTitle and headerTitle:IsA("GuiObject") then
+		headerTitle.Position = UDim2.fromOffset(84, 1)
+		headerTitle.Size = UDim2.new(0, 160, 1, 0)
+	end
+	local cart = Kit.new("Frame", {
+		Name = "Cart",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 50),
-		Parent = window.content,
+		Size = UDim2.fromOffset(88, 88),
+		Position = UDim2.fromOffset(-20, -28),
+		ZIndex = 8,
+		Parent = frame,
 	})
-	Kit.list(tabBar, 10, true)
-	local pages: { [string]: ScrollingFrame } = {}
-	local tabButtons: { [string]: TextButton } = {}
-	local TABS = {
-		{ key = "Passes", text = "Passes", icon = I.Premium },
-		{ key = "Cash", text = "Cash", icon = "💵" },
-		{ key = "Gems", text = W.Gem, icon = I.Gem },
-	}
-	local selected = "Passes"
-	local function selectTab(key: string)
-		selected = key
-		for name, page in pages do
-			page.Visible = name == key
+	local cartScale = Kit.new("UIScale", { Parent = cart })
+	productArt(cart, "Shop", "Shop", C.Gold, 88)
+
+	local function walletChip(name: string, icon: string, color: Color3, width: number, right: number): TextLabel
+		local holder = Kit.new("Frame", {
+			Name = name,
+			BackgroundColor3 = C.Well,
+			BackgroundTransparency = 0.15,
+			Size = UDim2.fromOffset(width, 32),
+			Position = UDim2.new(1, -right, 0.5, -1),
+			AnchorPoint = Vector2.new(1, 0.5),
+			ZIndex = 3,
+			Parent = window.header,
+		})
+		Kit.round(holder)
+		Kit.new("UIStroke", { Thickness = 1.5, Color = color, Transparency = 0.5, Parent = holder })
+		Kit.icon(holder, icon, 24, color, {
+			Name = "Icon",
+			Position = UDim2.new(0, 5, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ZIndex = 4,
+		})
+		return minText(Kit.number(holder, {
+			Name = "Amount",
+			Text = "0",
+			TextSize = 17,
+			MaxTextSize = 17,
+			TextScaled = true,
+			Size = UDim2.new(1, -40, 0, 22),
+			Position = UDim2.new(0, 32, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = color,
+			ZIndex = 4,
+		}))
+	end
+	local cashChip = walletChip("CashChip", "Coin", C.MoneyText, 128, 60)
+	local gemChip = walletChip("GemChip", "Gem", C.Rizz, 92, 196)
+
+	--[[
+		Section switcher: one pill (icon + label) per section in a well, with a
+		sunny indicator gliding under the section in view (Kit.tabs' selected
+		style: ink text on the light pill). The indicator follows the page as it
+		scrolls; tapping a pill scrolls that section's header to the top.
+	]]
+	local count = #SECTIONS
+	local switcher = Kit.well(content, {
+		Name = "Switcher",
+		Size = UDim2.fromOffset(150 * count, SWITCH_H),
+		Position = UDim2.new(0.5, 0, 0, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Radius = SWITCH_H // 2,
+		ZIndex = 2,
+	})
+	local function slot(i: number): (UDim2, UDim2)
+		return UDim2.new((i - 1) / count, 4, 0, 4), UDim2.new(1 / count, -8, 1, -8)
+	end
+	local slotPos, slotSize = slot(1)
+	local highlight = Kit.new("Frame", {
+		Name = "Highlight",
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = slotSize,
+		Position = slotPos,
+		ZIndex = 2,
+		Parent = switcher,
+	})
+	Kit.round(highlight)
+	Kit.gradient(highlight, Kit.lighten(C.Gold, 0.24), C.Gold)
+	Kit.new("UIStroke", { Thickness = 1.5, Color = Kit.lip(C.Gold), Parent = highlight })
+	local SELECTED_TEXT = Kit.inkOn(C.Gold)
+
+	local scroll = Kit.scrolling(content, {
+		Name = "Scroll",
+		Size = UDim2.new(1, 0, 1, -PAGE_TOP),
+		Position = UDim2.fromOffset(0, PAGE_TOP),
+	})
+	scroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+
+	-- Soft fade along the bottom edge of the page (stacked strips of the well colour, so it
+	-- also renders without gradient transparency); it fades out at the end of the page.
+	local fade = Kit.new("Frame", {
+		Name = "Fade",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -8, 0, FADE_H),
+		Position = UDim2.new(0, 0, 1, 0),
+		AnchorPoint = Vector2.new(0, 1),
+		ZIndex = 9,
+		Parent = content,
+	})
+	local FADE_STEPS = 6
+	local fadeStrips: { [Frame]: number } = {}
+	for i = 1, FADE_STEPS do
+		local strip = Kit.new("Frame", {
+			Name = "Strip" .. i,
+			BackgroundColor3 = C.Well,
+			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.6 * 0.9,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, 0, 1 / FADE_STEPS, 0),
+			Position = UDim2.fromScale(0, (i - 1) / FADE_STEPS),
+			ZIndex = 9,
+			Parent = fade,
+		})
+		fadeStrips[strip] = strip.BackgroundTransparency
+	end
+	local fadeShown = true
+	local function showFade(on: boolean)
+		if on == fadeShown then
+			return
 		end
-		for name, button in tabButtons do
-			Kit.setButton(button, nil, if name == key then C.Window.Shop else C.PanelLight)
+		fadeShown = on
+		for strip, transparency in fadeStrips do
+			if PREVIEW then
+				strip.BackgroundTransparency = if on then transparency else 1
+			else
+				Kit.tween(strip, 0.2, { BackgroundTransparency = if on then transparency else 1 })
+			end
 		end
 	end
-	for order, tab in TABS do
-		tabButtons[tab.key] = Kit.button(tabBar, {
-			Name = tab.key,
-			Icon = tab.icon,
-			Text = tab.text,
-			Color = C.PanelLight,
-			Size = UDim2.fromOffset(170, 46),
-			LayoutOrder = order,
-			TextSize = 22,
-			Depth = 5,
-		}, function()
-			selectTab(tab.key)
+
+	local pills: { TextButton } = {}
+	local pillLabels: { TextLabel } = {}
+	local heads: { Frame } = {}
+	local sectionY: { number } = {}
+	local current = 1
+	local canvasH = 0
+	local previewShift = 0
+	local layout: (Vector2) -> ()
+	-- Visible page height: the window minus its chrome (header 72, bottom 12, padding 20) and the switcher.
+	local function pageH(): number
+		return window.size().Y - 104 - PAGE_TOP
+	end
+	-- Farthest the page scrolls: canvas height minus the visible height.
+	local function maxScroll(): number
+		return math.max(0, canvasH - pageH())
+	end
+	-- While a pill's scroll runs, the indicator stays on the tapped section.
+	local pinUntil = 0
+	local syncSection: () -> ()
+	-- Scrolls the page so canvas height `y` is at the top (clamped to the page).
+	local function scrollTo(y: number, instant: boolean?)
+		local target = Vector2.new(0, math.max(0, math.min(y, maxScroll())))
+		if PREVIEW then
+			-- The preview exporter has no canvas scrolling: shift the page instead.
+			previewShift = target.Y
+			layout(window.size())
+			syncSection()
+		elseif instant then
+			scroll.CanvasPosition = target
+		else
+			pinUntil = os.clock() + 0.45
+			Kit.tween(scroll, 0.4, { CanvasPosition = target }, Enum.EasingStyle.Quint)
+			task.delay(0.5, function()
+				if window.isOpen() and os.clock() >= pinUntil then
+					syncSection()
+				end
+			end)
+		end
+	end
+
+	local function setCurrent(index: number, animate: boolean)
+		if index == current and animate then
+			return
+		end
+		current = index
+		local pos = slot(index)
+		if animate and not PREVIEW then
+			Kit.tween(highlight, 0.24, { Position = pos }, Enum.EasingStyle.Back)
+			if heads[index] then
+				Kit.pop(heads[index], 0.5)
+			end
+		else
+			highlight.Position = pos
+		end
+		for i, label in pillLabels do
+			local color = if i == index then SELECTED_TEXT else C.Text
+			if animate and not PREVIEW then
+				Kit.tween(label, 0.18, { TextColor3 = color })
+			else
+				label.TextColor3 = color
+			end
+		end
+	end
+	local function scrollToSection(index: number, instant: boolean?)
+		setCurrent(index, not instant)
+		scrollTo(sectionY[index] or 0, instant)
+	end
+	for i, section in SECTIONS do
+		local pos, size = slot(i)
+		local pill = Kit.new("TextButton", {
+			Name = section.key,
+			AutoButtonColor = false,
+			BackgroundTransparency = 1,
+			Text = "",
+			Size = size,
+			Position = pos,
+			ZIndex = 3,
+			Parent = switcher,
+		})
+		Kit.list(pill, 6, true, Enum.HorizontalAlignment.Center)
+		Kit.icon(pill, section.icon, 22, if section.icon == "Gem" then C.Rizz else C.Gold, {
+			Name = "Icon",
+			LayoutOrder = 1,
+			ZIndex = 4,
+		})
+		pillLabels[i] = Kit.text(pill, {
+			Name = "Label",
+			Text = string.upper(section.pill),
+			Font = F.UI,
+			TextSize = 16,
+			TextWrapped = false,
+			TextColor3 = if i == 1 then SELECTED_TEXT else C.Text,
+			Size = UDim2.new(0, 0, 1, 0),
+			AutomaticSize = Enum.AutomaticSize.X,
+			LayoutOrder = 2,
+			StrokeThickness = 0,
+			ZIndex = 4,
+		})
+		Kit.bouncy(pill, 1)
+		pill.Activated:Connect(function()
+			Kit.sound("Click")
+			scrollToSection(i)
+		end)
+		pills[i] = pill
+	end
+
+	-- Section header: icon, big outlined title and a small caption in one row.
+	local function sectionHead(index: number): Frame
+		local section = SECTIONS[index]
+		local head = Kit.new("Frame", { Name = "Head" .. section.key, BackgroundTransparency = 1, Parent = scroll })
+		local row = Kit.list(head, 10, true)
+		row.VerticalAlignment = Enum.VerticalAlignment.Center
+		Kit.icon(head, section.icon, 32, if section.icon == "Gem" then C.Rizz else C.Gold, { Name = "Icon", LayoutOrder = 1 })
+		Kit.title(head, {
+			Name = "Title",
+			Text = section.title,
+			TextSize = 28,
+			TextWrapped = false,
+			Size = UDim2.new(0, 0, 0, 34),
+			AutomaticSize = Enum.AutomaticSize.X,
+			LayoutOrder = 2,
+			StrokeThickness = 3,
+		})
+		Kit.text(head, {
+			Name = "Caption",
+			Text = section.caption,
+			Font = F.Bold,
+			TextSize = 15,
+			TextWrapped = false,
+			Size = UDim2.new(0, 0, 0, 20),
+			AutomaticSize = Enum.AutomaticSize.X,
+			LayoutOrder = 3,
+			TextColor3 = SMALL_TEXT,
+		})
+		heads[index] = head
+		return head
+	end
+
+	-- A grid cell holds a "Body" panel, so hover can lift the body while the grid owns the cell.
+	type Entry = {
+		cell: Frame,
+		body: Frame,
+		art: GuiObject,
+		artHolder: Frame,
+		button: TextButton,
+		sheen: Frame?,
+	}
+	local cascade: { GuiObject } = {}
+	local entries: { Entry } = {}
+	local refresh: () -> ()
+
+	-- Little stars burst from a point (frame-local pixels) on tap.
+	local function stars(at: Vector2)
+		if PREVIEW then
+			return
+		end
+		for i = 1, 5 do
+			local angle = math.rad(i * 72 + math.random(-15, 15))
+			local star = Kit.icon(frame, "Star", 14, C.Gold, {
+				Name = "TapStar",
+				Position = UDim2.fromOffset(at.X, at.Y),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = 40,
+			})
+			local reach = math.random(26, 40)
+			Kit.tween(star, 0.35, {
+				Position = UDim2.fromOffset(at.X + math.cos(angle) * reach, at.Y + math.sin(angle) * reach),
+				Size = UDim2.fromOffset(0, 0),
+				Rotation = math.random(-90, 90),
+			}, Enum.EasingStyle.Quad)
+			task.delay(0.36, function()
+				star:Destroy()
+			end)
+		end
+	end
+
+	-- Absolute screen point -> pixels inside the window frame (the window may be scaled by Kit.fit).
+	local function local_(point: Vector2): Vector2
+		local s = frame.AbsoluteSize.X / math.max(1, window.size().X)
+		return (point - frame.AbsolutePosition) / math.max(s, 0.01)
+	end
+	local function centreOf(gui: GuiObject): Vector2
+		return local_(gui.AbsolutePosition + gui.AbsoluteSize / 2)
+	end
+
+	local function makeEntry(
+		parent: Instance,
+		name: string,
+		order: number,
+		color: Color3,
+		artName: string,
+		fallback: string,
+		artSize: number,
+		artPos: UDim2
+	)
+		local cell = Kit.new("Frame", { Name = name, BackgroundTransparency = 1, LayoutOrder = order, Parent = parent })
+		local body = Kit.panel(cell, {
+			Name = "Body",
+			Color = color,
+			Size = UDim2.fromScale(1, 1),
+			Radius = Kit.RADIUS.M + 4,
+			StrokeColor = Kit.lighten(color, 0.45),
+			StrokeThickness = 2,
+		})
+		local artHolder = Kit.new("Frame", {
+			Name = "ArtHolder",
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(artSize, artSize),
+			Position = artPos,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 4,
+			Parent = body,
+		})
+		local art = productArt(artHolder, artName, fallback, color, artSize)
+		table.insert(cascade, cell)
+		return cell, body, artHolder, art
+	end
+
+	-- Price button with an idle sheen bar parked off its left edge; squashes on press, stars on tap.
+	local function priceButton(body: Frame, props: { [string]: any }, onClick: () -> ()): (TextButton, Frame?)
+		props.Name = "Buy"
+		props.Font = F.Number
+		props.TextColor = C.Ink
+		props.Color = C.Cash
+		props.TextSize = PRICE_TEXT
+		local button = Kit.button(body, props, onClick)
+		button.ZIndex = 5
+		local face = Kit.buttonFace(button)
+		local sheen: Frame? = nil
+		if face then
+			face.ClipsDescendants = true
+			local bar = Kit.new("Frame", {
+				Name = "Sheen",
+				BackgroundColor3 = Color3.new(1, 1, 1),
+				BackgroundTransparency = 0.55,
+				BorderSizePixel = 0,
+				Size = UDim2.new(0, 26, 1.6, 0),
+				Position = UDim2.new(0, -40, -0.3, 0),
+				Rotation = 18,
+				ZIndex = 8,
+				Parent = face,
+			})
+			Kit.new("UIGradient", {
+				Transparency = NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 1),
+					NumberSequenceKeypoint.new(0.5, 0.2),
+					NumberSequenceKeypoint.new(1, 1),
+				}),
+				Parent = bar,
+			})
+			sheen = bar
+		end
+		button.MouseButton1Down:Connect(function()
+			stars(centreOf(button))
+		end)
+		return button, sheen
+	end
+
+	-- Hover / touch: the body lifts 3 px and the art tilts with a small pop.
+	local function hoverable(entry: Entry)
+		if PREVIEW then
+			return
+		end
+		local function lift(on: boolean)
+			Kit.tween(entry.body, 0.16, { Position = UDim2.fromOffset(0, if on then -3 else 0) }, Enum.EasingStyle.Quad)
+			Kit.tween(entry.art, 0.22, { Rotation = if on then -8 else 0 }, Enum.EasingStyle.Back)
+			if on then
+				Kit.pop(entry.artHolder, 0.6)
+			end
+		end
+		entry.body.MouseEnter:Connect(function()
+			lift(true)
+		end)
+		entry.body.MouseLeave:Connect(function()
+			lift(false)
+		end)
+		entry.button.MouseButton1Down:Connect(function()
+			if Kit.touch then
+				lift(true)
+				task.delay(0.25, function()
+					lift(false)
+				end)
+			end
 		end)
 	end
 
-	local function page(key: string): ScrollingFrame
-		local scroll = Kit.scrolling(window.content, { Name = key, Size = UDim2.new(1, 0, 1, -62), Position = UDim2.fromOffset(0, 62) })
-		Kit.new("UIPadding", {
-			PaddingTop = UDim.new(0, 12),
-			PaddingLeft = UDim.new(0, 6),
-			PaddingRight = UDim.new(0, 14),
-			PaddingBottom = UDim.new(0, 10),
-			Parent = scroll,
+	-- Purchases: the last product prompted, so landed cash or Rizz flies from its row.
+	local lastPrompt: { kind: string, entry: Entry, at: number }? = nil
+
+	-- Candy card shared by passes and cosmetics: art, outlined title, a darker inset
+	-- with the description (14-15 px, up to two lines) and the price button along the bottom.
+	type PassCard = Entry & { tag: TextLabel?, owned: TextLabel, desc: TextLabel, wasOwned: boolean? }
+	local function tileCard(
+		grid: Frame,
+		name: string,
+		order: number,
+		tint: Color3,
+		art: { string },
+		title: string,
+		descText: string,
+		buttonText: string,
+		onClick: () -> ()
+	): PassCard
+		local cell, body, artHolder, artGui = makeEntry(grid, name, order, tint, art[1], art[2], 74, UDim2.new(0.5, 0, 0, 43))
+		local lipColor = Kit.lip(tint)
+		local titleLabel = minText(Kit.title(body, {
+			Name = "Title",
+			Text = string.upper(title),
+			TextSize = 24,
+			MaxTextSize = 24,
+			TextScaled = true,
+			TextWrapped = false,
+			Size = UDim2.new(1, -20, 0, 26),
+			Position = UDim2.fromOffset(10, 81),
+			TextColor3 = Color3.new(1, 1, 1),
+			StrokeThickness = 0,
+			ZIndex = 4,
+		}))
+		Kit.new("UIStroke", { Thickness = 2.5, Color = lipColor, Parent = titleLabel })
+		local inset = Kit.new("Frame", {
+			Name = "Inset",
+			BackgroundColor3 = Kit.darken(tint, 0.28),
+			BackgroundTransparency = 0.1,
+			Size = UDim2.new(1, -20, 0, 40),
+			Position = UDim2.fromOffset(10, 110),
+			ZIndex = 3,
+			Parent = body,
 		})
-		pages[key] = scroll
-		return scroll
+		Kit.corner(inset, 10)
+		local desc = minText(Kit.text(inset, {
+			Name = "Desc",
+			Text = descText,
+			Font = F.Bold,
+			TextSize = 15,
+			MaxTextSize = 15,
+			TextScaled = true,
+			Size = UDim2.new(1, -12, 1, -4),
+			Position = UDim2.fromOffset(6, 2),
+			TextColor3 = Color3.new(1, 1, 1),
+			ZIndex = 4,
+		}))
+		local button, sheen = priceButton(body, {
+			Text = buttonText,
+			Size = UDim2.new(1, -20, 0, PRICE_H),
+			Position = UDim2.new(0, 10, 1, -10),
+			AnchorPoint = Vector2.new(0, 1),
+		}, onClick)
+		local owned = ribbon(body, "OWNED", C.Good)
+		owned.Visible = false
+		local entry: PassCard = {
+			cell = cell,
+			body = body,
+			art = artGui,
+			artHolder = artHolder,
+			button = button,
+			sheen = sheen,
+			owned = owned,
+			desc = desc,
+		}
+		hoverable(entry)
+		table.insert(entries, entry)
+		return entry
 	end
 
-	-- Passes: 3-wide cards.
-	local passPage = page("Passes")
-	Kit.new("UIGridLayout", {
-		CellSize = UDim2.new(1 / 3, -10, 0, 214),
-		CellPadding = UDim2.fromOffset(14, 16),
-		SortOrder = Enum.SortOrder.LayoutOrder,
-		Parent = passPage,
+	-- Wide cards: art on the left (WIDE_LEFT px), text in the middle, the price button on the right.
+	local WIDE_LEFT = 136
+	local WIDE_PRICE_W = 150
+	local WIDE_TEXT_W = -(WIDE_LEFT + WIDE_PRICE_W + 34) -- text column width (scale 1 plus this)
+
+	-- Wide card text: an outlined title and, when given, a one-line caption under it.
+	local function wideText(body: Frame, tint: Color3, title: string, caption: string?): TextLabel
+		local titleLabel = minText(Kit.title(body, {
+			Name = "Title",
+			Text = title,
+			TextSize = 28,
+			MaxTextSize = 28,
+			TextScaled = true,
+			TextWrapped = false,
+			Size = UDim2.new(1, WIDE_TEXT_W, 0, 32),
+			Position = UDim2.fromOffset(WIDE_LEFT, 10),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = Color3.new(1, 1, 1),
+			StrokeThickness = 0,
+			ZIndex = 4,
+		}))
+		Kit.new("UIStroke", { Thickness = 2.5, Color = Kit.lip(tint), Parent = titleLabel })
+		if caption then
+			Kit.text(body, {
+				Name = "Caption",
+				Text = caption,
+				Font = F.Bold,
+				TextSize = 15,
+				TextWrapped = false,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				Size = UDim2.new(1, WIDE_TEXT_W, 0, 18),
+				Position = UDim2.fromOffset(WIDE_LEFT + 2, 42),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextColor3 = Kit.darken(tint, 0.62),
+				ZIndex = 4,
+			})
+		end
+		return titleLabel
+	end
+
+	-- The price button on the right of a wide card, vertically centred (same style as every card).
+	local function widePrice(body: Frame, text: string, onClick: () -> ()): (TextButton, Frame?)
+		return priceButton(body, {
+			Text = text,
+			Size = UDim2.fromOffset(WIDE_PRICE_W, PRICE_H),
+			Position = UDim2.new(1, -18, 0.5, 0),
+			AnchorPoint = Vector2.new(1, 0.5),
+		}, onClick)
+	end
+
+	-- Starter pack: a wide mint card at the very top while the player does not own it ------
+	local starterPass = Theme.Monetization.Passes[COS.Starter.Pass]
+	local starterTint = Theme.World.Mint
+	local starterCell, starterBody, starterArtHolder, starterArt =
+		makeEntry(scroll, "Starter", 0, starterTint, COS.Starter.Icon, "Star", 104, UDim2.new(0, 68, 0.5, 0))
+	wideText(starterBody, starterTint, "STARTER PACK")
+	-- What is inside: three chips, with this player's own cash and Rizz amounts.
+	local chips = Kit.new("Frame", {
+		Name = "Contents",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, WIDE_TEXT_W, 0, 56),
+		Position = UDim2.fromOffset(WIDE_LEFT, 50),
+		ZIndex = 3,
+		Parent = starterBody,
 	})
-	local passCards: { [string]: { button: TextButton, tag: TextLabel? } } = {}
+	Kit.list(chips, 8, true)
+	local function contentChip(order: number, icon: string, fallback: string, color: Color3, caption: string): TextLabel
+		local chip = Kit.new("Frame", {
+			Name = "Chip" .. order,
+			BackgroundColor3 = Kit.darken(starterTint, 0.3),
+			BackgroundTransparency = 0.05,
+			Size = UDim2.new(1 / 3, -6, 1, 0),
+			LayoutOrder = order,
+			ZIndex = 3,
+			Parent = chips,
+		})
+		Kit.corner(chip, 12)
+		Kit.icon(chip, Kit.pickIcon(icon, fallback), 34, color, {
+			Name = "Icon",
+			Position = UDim2.new(0, 6, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ZIndex = 4,
+		})
+		local amount = minText(Kit.number(chip, {
+			Name = "Amount",
+			Text = "",
+			TextSize = 20,
+			MaxTextSize = 20,
+			TextScaled = true,
+			Size = UDim2.new(1, -50, 0, 24),
+			Position = UDim2.fromOffset(44, 6),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = Color3.new(1, 1, 1),
+			ZIndex = 4,
+		}))
+		Kit.text(chip, {
+			Name = "Caption",
+			Text = caption,
+			Font = F.Bold,
+			TextSize = 14,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Size = UDim2.new(1, -50, 0, 18),
+			Position = UDim2.fromOffset(44, 31),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = SMALL_TEXT,
+			ZIndex = 4,
+		})
+		return amount
+	end
+	local starterCash = contentChip(1, "Coin", "Coin", C.Gold, "cash")
+	local starterGems = contentChip(2, "Gem", "Gem", C.Rizz, W.Gem)
+	local rookie = COS.Items[COS.Starter.Item]
+	local rookieLabel = contentChip(3, rookie.Icon, "Star", rookie.Color, "exclusive")
+	rookieLabel.Text = rookie.Title
+	local starterButton, starterSheen = widePrice(starterBody, price(starterPass.Price), function()
+		action:FireServer({ action = "PromptPass", name = COS.Starter.Pass })
+	end)
+	local starterTag = ribbon(starterBody, "STARTER DEAL", C.Accent)
+	local starterEntry: Entry = {
+		cell = starterCell,
+		body = starterBody,
+		art = starterArt,
+		artHolder = starterArtHolder,
+		button = starterButton,
+		sheen = starterSheen,
+	}
+	hoverable(starterEntry)
+	table.insert(entries, starterEntry)
+	-- Shown until the pass is owned (a fresh purchase celebrates first, then folds away).
+	local starterShown = true
+	local starterWasOwned: boolean? = nil
+	local starterShownCash: number? = nil
+	local starterShownGems: number? = nil
+
+	-- Section 1: game passes ---------------------------------------------------------
+	sectionHead(1)
+	local passGrid = Kit.new("Frame", { Name = "Passes", BackgroundTransparency = 1, Parent = scroll })
+	local passLayout = Kit.new("UIGridLayout", {
+		CellSize = UDim2.new(1 / 3, -11, 0, PASS_H),
+		CellPadding = UDim2.fromOffset(16, GAP),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = passGrid,
+	})
+	local passCards: { [string]: PassCard } = {}
 	for order, name in Theme.Monetization.PassOrder do
 		local pass = Theme.Monetization.Passes[name]
-		local card = Kit.panel(passPage, { Name = name, Color = Kit.darken(pass.Color, 0.55), LayoutOrder = order, Radius = Kit.RADIUS.L })
-		local band = Kit.new("Frame", {
-			Name = "Band",
-			BackgroundColor3 = Color3.new(1, 1, 1),
-			Size = UDim2.new(1, -12, 0, 44),
-			Position = UDim2.fromOffset(6, 6),
-			Parent = card,
-		})
-		Kit.corner(band, Kit.RADIUS.M)
-		Kit.gradient(band, Kit.lighten(pass.Color, 0.15), Kit.darken(pass.Color, 0.1))
-		Kit.title(
-			band,
-			{ Text = pass.Title, TextSize = T.H2, TextWrapped = false, Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(0, 1) }
+		local entry = tileCard(
+			passGrid,
+			name,
+			order,
+			PASS_TINTS[name] or pass.Color,
+			PASS_ICONS[name] or { "Star", "Star" },
+			pass.Title,
+			pass.Desc,
+			price(pass.Price),
+			function()
+				action:FireServer({ action = "PromptPass", name = name })
+			end
 		)
-		Kit.text(card, {
-			Name = "Icon",
-			Text = PASS_ICONS[name] or I.Premium,
-			TextSize = 42,
-			Size = UDim2.fromOffset(60, 70),
-			Position = UDim2.fromOffset(8, 58),
-			StrokeThickness = 0,
-		})
-		Kit.text(card, {
-			Name = "Desc",
-			Text = pass.Desc,
-			TextSize = T.Body,
-			Size = UDim2.new(1, -80, 0, 74),
-			Position = UDim2.fromOffset(70, 56),
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextColor3 = Kit.lighten(pass.Color, 0.7),
-		})
-		local button = Kit.button(card, {
-			Name = "Buy",
-			Text = "R$ " .. pass.Price,
-			Color = C.Good,
-			Size = UDim2.new(1, -24, 0, 56),
-			Position = UDim2.new(0, 12, 1, -66),
-			TextSize = 26,
-		}, function()
-			action:FireServer({ action = "PromptPass", name = name })
-		end)
-		local tag = if name == "DoubleMoney" then ribbon(card, "🔥 POPULAR", C.Accent) else nil
-		passCards[name] = { button = button, tag = tag }
+		if name == "DoubleMoney" then
+			entry.tag = ribbon(entry.body, "POPULAR", C.Accent)
+		end
+		passCards[name] = entry
 	end
 
-	-- Cash packs: two columns of rows.
-	local cashPage = page("Cash")
-	Kit.new("UIGridLayout", {
-		CellSize = UDim2.new(0.5, -8, 0, 100),
-		CellPadding = UDim2.fromOffset(14, 16),
-		SortOrder = Enum.SortOrder.LayoutOrder,
-		Parent = cashPage,
+	-- Section 2: cosmetics -------------------------------------------------------------
+	sectionHead(2)
+	-- Taps wait for the server; until its next snapshot (or 1.5 s) the card shows the choice.
+	local pendingCos: { [string]: { value: any, at: number } } = {}
+	local function shownChoice(key: string, serverValue: any): any
+		local pending = pendingCos[key]
+		if pending and os.clock() - pending.at < 1.5 and pending.value ~= serverValue then
+			return pending.value
+		end
+		pendingCos[key] = nil
+		return serverValue
+	end
+
+	-- All Cosmetics: a wide coral card with every cosmetic it unlocks in a row.
+	local bundlePass = Theme.Monetization.Passes[COS.Bundle]
+	local bundleTint = Theme.World.Coral
+	local bundleCell, bundleBody, bundleArtHolder, bundleArt =
+		makeEntry(scroll, "Bundle", 0, bundleTint, COS.BundleIcon, "Crown", 100, UDim2.new(0, 68, 0.5, 0))
+	wideText(bundleBody, bundleTint, string.upper(bundlePass.Title), "Everything below, forever")
+	local included = 0
+	for _, name in COS_ORDER do
+		if not COS.Items[name].Starter then
+			included += 1
+		end
+	end
+	local includes = Kit.new("Frame", {
+		Name = "Includes",
+		BackgroundColor3 = Kit.darken(bundleTint, 0.28),
+		BackgroundTransparency = 0.1,
+		Size = UDim2.fromOffset(included * 40 - 6 + 16, 44),
+		Position = UDim2.fromOffset(WIDE_LEFT, 64),
+		ZIndex = 3,
+		Parent = bundleBody,
 	})
+	Kit.corner(includes, 12)
+	Kit.padding(includes, 5, 8)
+	Kit.list(includes, 6, true).VerticalAlignment = Enum.VerticalAlignment.Center
+	for i, name in COS_ORDER do
+		local item = COS.Items[name]
+		if not item.Starter then
+			Kit.icon(includes, Kit.pickIcon(item.Icon, "Star"), 34, item.Color, { Name = name, LayoutOrder = i, ZIndex = 4 })
+		end
+	end
+	local bundleButton, bundleSheen = widePrice(bundleBody, price(bundlePass.Price), function()
+		action:FireServer({ action = "PromptPass", name = COS.Bundle })
+	end)
+	local saving = bundleSaving()
+	local bundleSave = ribbon(bundleBody, string.format("SAVE %d%%", saving), C.Danger)
+	bundleSave.Visible = saving > 0
+	local bundleOwnedTag = ribbon(bundleBody, "OWNED", C.Good)
+	bundleOwnedTag.Visible = false
+	local bundleEntry: Entry = {
+		cell = bundleCell,
+		body = bundleBody,
+		art = bundleArt,
+		artHolder = bundleArtHolder,
+		button = bundleButton,
+		sheen = bundleSheen,
+	}
+	hoverable(bundleEntry)
+	table.insert(entries, bundleEntry)
+	local bundleWasOwned: boolean? = nil
+
+	-- One card per cosmetic. Owned trails show EQUIP / EQUIPPED, owned perks and wearables an
+	-- on/off switch; a Starter-only item stays locked until the Starter pack is owned.
+	local cosGrid = Kit.new("Frame", { Name = "Cosmetics", BackgroundTransparency = 1, Parent = scroll })
+	local cosLayout = Kit.new("UIGridLayout", {
+		CellSize = UDim2.new(1 / 3, -11, 0, PASS_H),
+		CellPadding = UDim2.fromOffset(16, GAP),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = cosGrid,
+	})
+	type CosCard = PassCard & {
+		lock: GuiObject?,
+		control: Frame?,
+		setSwitch: ((boolean, boolean?) -> ())?,
+		switchShown: boolean?,
+	}
+	local cosCards: { [string]: CosCard } = {}
+	local function cosTap(name: string)
+		local data = State.data
+		if not data then
+			return
+		end
+		local cos = cosmeticsOf(data)
+		local item = COS.Items[name]
+		if cos.owned[name] then
+			if item.Kind == "trail" then
+				local current = shownChoice("trail", cos.trail or "")
+				local value = if current == name then "" else name
+				pendingCos.trail = { value = value, at = os.clock() }
+				action:FireServer({ action = "EquipTrail", name = value })
+				refresh()
+			end
+		elseif item.Starter then
+			-- Only the Starter pack gives it: bring that card into view.
+			scrollTo(0)
+			Kit.pop(starterCell, 1)
+		elseif item.Pass then
+			action:FireServer({ action = "PromptPass", name = item.Pass })
+		end
+	end
+	for order, name in COS_ORDER do
+		local item = COS.Items[name]
+		local pass = item.Pass and Theme.Monetization.Passes[item.Pass]
+		local tint = COS_TINTS[name] or item.Color
+		local card = tileCard(
+			cosGrid,
+			name,
+			order,
+			tint,
+			{ item.Icon, "Star" },
+			item.Title,
+			if item.Starter then "Starter Pack exclusive" else item.Desc,
+			if pass then price(pass.Price) else "STARTER PACK",
+			function()
+				cosTap(name)
+			end
+		) :: CosCard
+		if item.Starter then
+			card.tag = ribbon(card.body, "EXCLUSIVE", C.Accent)
+			card.lock = Kit.icon(card.body, "Lock", 30, C.Text, {
+				Name = "Lock",
+				Position = UDim2.fromOffset(14, 12),
+				ZIndex = 5,
+			})
+		end
+		if item.Kind ~= "trail" then
+			-- Owned perk / wearable: "ACTIVE" with an on/off switch where the price was.
+			local control = Kit.new("Frame", {
+				Name = "Control",
+				BackgroundColor3 = Kit.darken(tint, 0.28),
+				BackgroundTransparency = 0.1,
+				Size = UDim2.new(1, -20, 0, 42),
+				Position = UDim2.new(0, 10, 1, -10),
+				AnchorPoint = Vector2.new(0, 1),
+				Visible = false,
+				ZIndex = 4,
+				Parent = card.body,
+			})
+			Kit.corner(control, 12)
+			Kit.text(control, {
+				Name = "Label",
+				Text = "ACTIVE",
+				Font = F.UI,
+				TextSize = 17,
+				TextWrapped = false,
+				Size = UDim2.new(1, -90, 1, 0),
+				Position = UDim2.fromOffset(14, 0),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextColor3 = Color3.new(1, 1, 1),
+				ZIndex = 5,
+			})
+			local toggle, set = Kit.switch(control, {
+				Name = "Toggle",
+				Position = UDim2.new(1, -8, 0.5, 0),
+				AnchorPoint = Vector2.new(1, 0.5),
+			}, function()
+				local data = State.data
+				if not data then
+					return
+				end
+				local cos = cosmeticsOf(data)
+				if not cos.owned[name] then
+					return
+				end
+				local value = not shownChoice(name, cos.toggles[name] ~= false)
+				pendingCos[name] = { value = value, at = os.clock() }
+				action:FireServer({ action = "ToggleCosmetic", name = name, value = value })
+				refresh()
+			end)
+			-- The switch's ON / OFF word at the shop's 14 px floor.
+			local state = toggle:FindFirstChild("State")
+			if state and state:IsA("TextLabel") then
+				state.TextSize = MIN_TEXT
+				state.TextWrapped = false
+			end
+			card.control = control
+			card.setSwitch = set
+		end
+		cosCards[name] = card
+	end
+
+	-- Sections 3 and 4: cash and Rizz rows -----------------------------------------------
+	local rowLayouts: { UIGridLayout } = {}
+	local function rowGrid(name: string): Frame
+		local grid = Kit.new("Frame", { Name = name, BackgroundTransparency = 1, Parent = scroll })
+		rowLayouts[#rowLayouts + 1] = Kit.new("UIGridLayout", {
+			CellSize = UDim2.new(0.5, -8, 0, ROW_H),
+			CellPadding = UDim2.fromOffset(16, GAP),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Parent = grid,
+		})
+		return grid
+	end
+	local function productRow(grid: Frame, name: string, index: number, art: string, fallback: string, amountColor: Color3, kind: string)
+		local cell, body, artHolder, artGui = makeEntry(grid, name, index, C.SurfaceHi, art, fallback, 70, UDim2.new(0, 46, 0.5, 0))
+		local amount = minText(Kit.number(body, {
+			Name = "Amount",
+			Text = "",
+			TextSize = 28,
+			MaxTextSize = 28,
+			TextScaled = true,
+			Size = UDim2.new(1, -222, 0, 32),
+			Position = UDim2.fromOffset(90, 12),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = amountColor,
+			ZIndex = 4,
+		}))
+		Kit.textStroke(amount, 1.6, 0.35)
+		local sub = Kit.text(body, {
+			Name = "Sub",
+			Text = "",
+			Font = F.Bold,
+			TextSize = 15,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Size = UDim2.new(1, -222, 0, 20),
+			Position = UDim2.fromOffset(90, 50),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = SMALL_TEXT,
+			ZIndex = 4,
+		})
+		local entry: Entry
+		local pack = if kind == "Money" then Theme.Monetization.MoneyPacks[index] else Theme.Monetization.GemPacks[index]
+		local button, sheen = priceButton(body, {
+			Text = price(pack.Price),
+			Size = UDim2.fromOffset(116, PRICE_H),
+			Position = UDim2.new(1, -14, 0.5, 0),
+			AnchorPoint = Vector2.new(1, 0.5),
+		}, function()
+			lastPrompt = { kind = kind, entry = entry, at = os.clock() }
+			action:FireServer({ action = "PromptProduct", kind = kind, index = index })
+		end)
+		entry = { cell = cell, body = body, art = artGui, artHolder = artHolder, button = button, sheen = sheen }
+		hoverable(entry)
+		table.insert(entries, entry)
+		return amount, sub, body
+	end
+
+	sectionHead(3)
+	local cashGrid = rowGrid("Cash")
 	local moneyLabels: { TextLabel } = {}
+	local moneyShown: { [number]: number } = {}
 	local packCount = #Theme.Monetization.MoneyPacks
 	for index, pack in Theme.Monetization.MoneyPacks do
-		local row = Kit.panel(cashPage, { Name = "Pack" .. index, Color = C.PanelLight, LayoutOrder = index, Radius = Kit.RADIUS.L })
-		local stackIcon = string.rep("💵", math.clamp(math.ceil(index / 2), 1, 3))
-		Kit.text(row, {
-			Text = stackIcon,
-			TextSize = 26,
-			TextWrapped = false,
-			Size = UDim2.fromOffset(110, 30),
-			Position = UDim2.fromOffset(14, 10),
-			TextXAlignment = Enum.TextXAlignment.Left,
-			StrokeThickness = 0,
-		})
-		moneyLabels[index] = Kit.title(row, {
-			Name = "Amount",
-			Text = "$0",
-			TextSize = 30,
-			TextWrapped = false,
-			Size = UDim2.new(0.6, -14, 0, 34),
-			Position = UDim2.fromOffset(14, 40),
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextColor3 = C.Good,
-		})
-		Kit.text(row, {
-			Text = string.format("about %s of income", Format.time(pack.Seconds)),
-			TextSize = T.Tiny,
-			TextWrapped = false,
-			Size = UDim2.new(0.6, -14, 0, 16),
-			Position = UDim2.fromOffset(15, 74),
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextColor3 = C.TextDim,
-			StrokeThickness = 1,
-		})
-		Kit.button(row, {
-			Name = "Buy",
-			Text = "R$ " .. pack.Price,
-			Color = C.Good,
-			Size = UDim2.new(0.4, -12, 0, 60),
-			Position = UDim2.new(1, -12, 0.5, 0),
-			AnchorPoint = Vector2.new(1, 0.5),
-			TextSize = 24,
-		}, function()
-			action:FireServer({ action = "PromptProduct", kind = "Money", index = index })
-		end)
+		local amount, sub, body =
+			productRow(cashGrid, "Pack" .. index, index, "CashPack" .. math.min(index, 6), "Coin", C.MoneyText, "Money")
+		moneyLabels[index] = amount
+		sub.Text = string.format("about %s of income", Format.time(pack.Seconds))
 		if index == packCount then
-			ribbon(row, "★ BEST VALUE", C.Primary)
+			ribbon(body, "BEST VALUE", C.Danger)
 		end
 	end
 
-	-- Premium currency packs: three cards.
-	local gemPage = page("Gems")
-	Kit.list(gemPage, 18)
-	local gemGrid = Kit.new("Frame", {
-		Name = "Cards",
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 230),
-		LayoutOrder = 1,
-		Parent = gemPage,
-	})
-	Kit.new("UIGridLayout", {
-		CellSize = UDim2.new(1 / 3, -10, 0, 230),
-		CellPadding = UDim2.fromOffset(14, 16),
-		SortOrder = Enum.SortOrder.LayoutOrder,
-		Parent = gemGrid,
-	})
+	sectionHead(4)
+	local gemGrid = rowGrid("Gems")
+	local gemLabels: { TextLabel } = {}
+	local gemShown: { [number]: number } = {}
 	local gemCount = #Theme.Monetization.GemPacks
 	for index, pack in Theme.Monetization.GemPacks do
-		local card = Kit.panel(
-			gemGrid,
-			{ Name = "Gems" .. index, Color = Kit.darken(C.Secondary, 0.45), LayoutOrder = index, Radius = Kit.RADIUS.L }
-		)
-		local glow = Kit.new("Frame", {
-			Name = "Glow",
-			BackgroundColor3 = C.Secondary,
-			BackgroundTransparency = 0.6,
-			Size = UDim2.fromOffset(96, 96),
-			Position = UDim2.new(0.5, 0, 0, 62),
-			AnchorPoint = Vector2.new(0.5, 0.5),
-			Parent = card,
-		})
-		Kit.round(glow)
-		Kit.text(card, {
-			Text = string.rep(I.Gem, index),
-			TextSize = 38 - index * 4,
-			TextWrapped = false,
-			Size = UDim2.new(1, 0, 0, 70),
-			Position = UDim2.fromOffset(0, 26),
-			StrokeThickness = 0,
-		})
-		Kit.title(card, {
-			Text = "+" .. Format.commas(pack.Amount),
-			TextSize = 34,
-			TextWrapped = false,
-			Size = UDim2.new(1, -16, 0, 38),
-			Position = UDim2.fromOffset(8, 100),
-			TextColor3 = Kit.lighten(C.Secondary, 0.35),
-		})
-		Kit.title(card, {
-			Text = string.upper(W.Gem),
-			TextSize = T.Small,
-			TextWrapped = false,
-			Size = UDim2.new(1, -16, 0, 18),
-			Position = UDim2.fromOffset(8, 136),
-			TextColor3 = C.TextDim,
-			StrokeThickness = 1.5,
-		})
-		Kit.button(card, {
-			Name = "Buy",
-			Text = "R$ " .. pack.Price,
-			Color = C.Good,
-			Size = UDim2.new(1, -24, 0, 56),
-			Position = UDim2.new(0, 12, 1, -66),
-			TextSize = 26,
-		}, function()
-			action:FireServer({ action = "PromptProduct", kind = "Gems", index = index })
-		end)
+		local amount, sub, body =
+			productRow(gemGrid, "Gems" .. index, index, "GemPack" .. math.min(index, 3), "Gem", Kit.lighten(C.Rizz, 0.35), "Gems")
+		gemLabels[index] = amount
+		amount.Text = gemPackText(pack.Base)
+		sub.Text = string.upper(W.Gem)
 		if index == gemCount then
-			ribbon(card, "★ BEST VALUE", C.Primary)
-		elseif index == 2 then
-			ribbon(card, "🔥 POPULAR", C.Accent)
+			ribbon(body, "BEST VALUE", C.Danger)
 		end
 	end
-	local gemInfo = Kit.well(gemPage, { Name = "Info", Size = UDim2.new(1, 0, 0, 56), LayoutOrder = 99 })
-	Kit.text(gemInfo, {
+	local gemInfo = Kit.text(scroll, {
+		Name = "Info",
 		Text = string.format(
-			"%s %s unlock %ss instantly and finish %s timers early. You also earn them from new discoveries and free rewards.",
-			I.Gem,
+			"%s unlock %ss instantly and finish %s timers early. You also earn them from new discoveries and free rewards.",
 			W.Gem,
 			string.lower(W.Chest),
 			W.Unlocker
 		),
 		TextSize = T.Small,
-		Size = UDim2.new(1, -24, 1, 0),
-		Position = UDim2.fromOffset(12, 0),
 		TextColor3 = C.TextDim,
-		StrokeThickness = 1,
+		TextXAlignment = Enum.TextXAlignment.Left,
 	})
 
-	selectTab(selected)
+	-- Layout: explicit positions so the switcher knows where each section starts,
+	-- and the card grids reflow to two columns when the window narrows.
+	local columnsNow = 3
+	local gridTop: { [Frame]: number } = {}
+	local headY: { number } = {} -- canvas height of each section header
+	local passesY = 0
+	-- Marks the end of the page, so the bottom can be found from on-screen positions.
+	local pageEnd = Kit.new("Frame", {
+		Name = "PageEnd",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(1, 0),
+		Parent = scroll,
+	})
+	function layout(size: Vector2)
+		local columns = if size.X >= 760 then 3 else 2
+		columnsNow = columns
+		local cardSize = UDim2.new(1 / columns, -math.ceil(16 * (columns - 1) / columns), 0, PASS_H)
+		passLayout.CellSize = cardSize
+		cosLayout.CellSize = cardSize
+		local function gridH(cards: number): number
+			local rows = math.ceil(cards / columns)
+			return rows * PASS_H + (rows - 1) * GAP
+		end
+		-- Cash and Rizz rows: two per line, one per line on a narrowed window so the amounts stay big.
+		local rowColumns = if size.X >= 760 then 2 else 1
+		for _, rows in rowLayouts do
+			rows.CellSize = if rowColumns == 2 then UDim2.new(0.5, -8, 0, ROW_H) else UDim2.new(1, 0, 0, ROW_H)
+		end
+		starterCell.Visible = starterShown
+		local blocks: { { gui: GuiObject, h: number, gapAfter: number, section: number? } } = {
+			{ gui = starterCell, h = if starterShown then STARTER_H else 0, gapAfter = if starterShown then 18 else 0 },
+			{ gui = heads[1], h = HEAD_H, gapAfter = 10, section = 1 },
+			{ gui = passGrid, h = gridH(#Theme.Monetization.PassOrder), gapAfter = 24 },
+			{ gui = heads[2], h = HEAD_H, gapAfter = 10, section = 2 },
+			{ gui = bundleCell, h = BUNDLE_H, gapAfter = GAP + 6 },
+			{ gui = cosGrid, h = gridH(#COS_ORDER), gapAfter = 24 },
+			{ gui = heads[3], h = HEAD_H, gapAfter = 10, section = 3 },
+			{ gui = cashGrid, h = math.ceil(packCount / rowColumns) * (ROW_H + GAP) - GAP, gapAfter = 24 },
+			{ gui = heads[4], h = HEAD_H, gapAfter = 10, section = 4 },
+			{ gui = gemGrid, h = math.ceil(gemCount / rowColumns) * (ROW_H + GAP) - GAP, gapAfter = 10 },
+			{ gui = gemInfo, h = 40, gapAfter = 12 },
+		}
+		-- The Starter card's ribbon overlaps its top edge: start a little lower for it.
+		local y = if starterShown then 12 else 4
+		for _, block in blocks do
+			block.gui.Position = UDim2.fromOffset(4, y - previewShift)
+			block.gui.Size = UDim2.new(1, -18, 0, block.h)
+			if block.section then
+				headY[block.section] = y
+				sectionY[block.section] = y - 4
+			end
+			if block.gui:IsA("Frame") then
+				gridTop[block.gui] = y
+			end
+			y += block.h + block.gapAfter
+		end
+		-- The Passes pill opens the page at the very top, Starter card included.
+		passesY = sectionY[1]
+		sectionY[1] = 0
+		-- The last section is short: room below it lets its header scroll all the way to the top.
+		canvasH = math.max(y, sectionY[count] + pageH())
+		pageEnd.Position = UDim2.fromOffset(0, canvasH - previewShift)
+		scroll.CanvasSize = UDim2.fromOffset(0, canvasH)
+		-- The switcher keeps its pills roomy but never wider than the page.
+		switcher.Size = UDim2.fromOffset(math.min(150 * count, size.X - 60), SWITCH_H)
+	end
+	layout(window.size())
+	window.onResize.Event:Connect(layout)
 
-	local function refresh()
+	-- Canvas height that brings card `order` of `grid` into view (its section header for the first row).
+	local function cardY(grid: Frame, order: number, headY: number): number
+		local row = (order - 1) // columnsNow
+		if row == 0 then
+			return headY
+		end
+		return (gridTop[grid] or 0) + row * (PASS_H + GAP) - 12
+	end
+
+	--[[
+		Section in view: the last section whose header sits in the top part of the
+		visible page (at or above 40% of its height), measured from where the
+		headers really are on screen (so window and screen scaling cannot skew
+		it). Moving to another section needs its header 18 px past that line, so
+		the indicator does not flicker at a boundary. At the very bottom of the
+		page the last section wins. Also fades the bottom-edge hint out there.
+	]]
+	local HYSTERESIS = 18
+	local function sectionInView(): number
+		local page = pageH()
+		local offsets: { number } = {}
+		local endOffset: number
+		local scale = if PREVIEW then 0 else scroll.AbsoluteSize.Y / math.max(1, page)
+		if scale > 0.05 then
+			local top = scroll.AbsolutePosition.Y
+			for i, head in heads do
+				offsets[i] = (head.AbsolutePosition.Y - top) / scale
+			end
+			endOffset = (pageEnd.AbsolutePosition.Y - top) / scale
+		else
+			local top = if PREVIEW then previewShift else scroll.CanvasPosition.Y
+			for i in heads do
+				offsets[i] = (headY[i] or 0) - top
+			end
+			endOffset = canvasH - top
+		end
+		local atBottom = endOffset <= page + 2
+		showFade(not atBottom)
+		if atBottom then
+			return count
+		end
+		local line = page * 0.4
+		local function lastAbove(y: number): number
+			local index = 1
+			for i, offset in offsets do
+				if offset <= y then
+					index = i
+				end
+			end
+			return index
+		end
+		local ahead = lastAbove(line - HYSTERESIS)
+		local back = lastAbove(line + HYSTERESIS)
+		if ahead > current then
+			return ahead
+		elseif back < current then
+			return back
+		end
+		return current
+	end
+	function syncSection()
+		setCurrent(sectionInView(), window.isOpen())
+	end
+	-- Scrolling re-checks on the next frame, once the engine has placed the page.
+	local syncQueued = false
+	scroll:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+		if PREVIEW or syncQueued or not window.isOpen() or os.clock() < pinUntil then
+			return
+		end
+		syncQueued = true
+		RunService.Heartbeat:Once(function()
+			syncQueued = false
+			if window.isOpen() and os.clock() >= pinUntil then
+				syncSection()
+			end
+		end)
+	end)
+
+	-- Wallet chips ---------------------------------------------------------------------
+	local chipMoney: number? = nil
+	local chipGems: number? = nil
+
+	-- Coins or gems fly from a row to the header chip.
+	local function flyTo(from: GuiObject, chipLabel: TextLabel, icon: string, color: Color3)
+		if PREVIEW then
+			return
+		end
+		local mine = session
+		local start = centreOf(from)
+		local finish = centreOf(chipLabel.Parent :: GuiObject)
+		for i = 1, 7 do
+			local piece = Kit.icon(frame, icon, 26, color, {
+				Name = "Fly",
+				Position = UDim2.fromOffset(start.X + math.random(-24, 24), start.Y + math.random(-14, 14)),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = 40,
+			})
+			task.delay(i * 0.05, function()
+				if session ~= mine then
+					piece:Destroy()
+					return
+				end
+				Kit.tween(
+					piece,
+					0.5,
+					{ Position = UDim2.fromOffset(finish.X, finish.Y), Size = UDim2.fromOffset(16, 16) },
+					Enum.EasingStyle.Quad,
+					Enum.EasingDirection.In
+				)
+				task.delay(0.5, function()
+					piece:Destroy()
+					if i == 1 and session == mine then
+						Kit.pop(chipLabel.Parent :: GuiObject, 1)
+					end
+				end)
+			end)
+		end
+	end
+
+	-- A card just became owned while the shop is open: it pops and its OWNED ribbon lands.
+	local function celebrate(card: PassCard, delay: number, burst: boolean)
+		local function go()
+			if not window.isOpen() then
+				card.owned.Visible = true
+				return
+			end
+			Kit.pop(card.cell, 1.6)
+			Kit.appear(card.owned, { from = 0.4, time = 0.3 })
+			if burst then
+				local spot = centreOf(card.cell)
+				Kit.confetti(frame, { Origin = UDim2.fromOffset(spot.X, spot.Y), Count = 24, ZIndex = 45 })
+				Kit.sound("Reward")
+			end
+		end
+		if delay > 0 and not PREVIEW then
+			task.delay(delay, go)
+		else
+			go()
+		end
+	end
+
+	-- Starter card, All Cosmetics card and cosmetic cards from the snapshot.
+	local function refreshCosmetics(data: { [string]: any }, open: boolean)
+		local cos = cosmeticsOf(data)
+
+		-- Starter pack: this player's amounts roll; a purchase celebrates, then the card folds away.
+		local starterOwned = cos.starterOwned == true
+		local starterJust = starterOwned and starterWasOwned == false and open
+		local cash, gems = Windows.starterAmounts(data)
+		if starterShownCash and starterShownCash ~= cash and open then
+			Kit.countTo(starterCash, starterShownCash, cash, State.money)
+		elseif starterShownCash ~= cash then
+			starterCash.Text = State.money(cash)
+		end
+		if starterShownGems and starterShownGems ~= gems and open then
+			Kit.countTo(starterGems, starterShownGems, gems, gemPackText)
+		elseif starterShownGems ~= gems then
+			starterGems.Text = gemPackText(gems)
+		end
+		starterShownCash, starterShownGems = cash, gems
+		Kit.setEnabled(starterButton, not starterOwned)
+		Kit.setButton(starterButton, if starterOwned then "✓ OWNED" else price(starterPass.Price))
+		starterTag.Visible = not starterOwned
+		if starterOwned and starterShown then
+			local mine = session
+			local function fold()
+				starterShown = false
+				layout(window.size())
+			end
+			if starterJust and not PREVIEW then
+				local spot = centreOf(starterCell)
+				Kit.pop(starterCell, 1.6)
+				Kit.confetti(frame, { Origin = UDim2.fromOffset(spot.X, spot.Y), Count = 30, ZIndex = 45 })
+				Kit.sound("Reward")
+				task.delay(1.6, function()
+					if session ~= mine then
+						fold()
+						return
+					end
+					Kit.disappear(starterCell, { to = 0.9, time = 0.25, onDone = fold })
+				end)
+			else
+				fold()
+			end
+		elseif not starterOwned and not starterShown then
+			starterShown = true
+			layout(window.size())
+		end
+		starterWasOwned = starterOwned
+
+		-- All Cosmetics: owning it flips every card at once in one cascade.
+		local bundleOwned = cos.bundleOwned == true
+		local bundleJust = bundleOwned and bundleWasOwned == false and open
+		Kit.setEnabled(bundleButton, not bundleOwned)
+		Kit.setButton(bundleButton, if bundleOwned then "✓ OWNED" else price(bundlePass.Price))
+		bundleSave.Visible = not bundleOwned and saving > 0
+		if bundleJust then
+			local spot = centreOf(bundleCell)
+			Kit.pop(bundleCell, 1.6)
+			Kit.confetti(frame, { Origin = UDim2.fromOffset(spot.X, spot.Y), Count = 36, ZIndex = 45 })
+			Kit.appear(bundleOwnedTag, { from = 0.4, time = 0.3 })
+			Kit.sound("Reward")
+		else
+			bundleOwnedTag.Visible = bundleOwned
+		end
+		bundleWasOwned = bundleOwned
+
+		local trail = shownChoice("trail", cos.trail or "")
+		local wave = 0
+		for _, name in COS_ORDER do
+			local card = cosCards[name]
+			local item = COS.Items[name]
+			local owned = cos.owned[name] == true
+			if card.lock then
+				card.lock.Visible = not owned
+			end
+			if card.tag then
+				card.tag.Visible = not owned
+			end
+			card.desc.Text = if item.Starter and not owned then "Starter Pack exclusive" else item.Desc
+			local control = card.control
+			if owned and item.Kind == "trail" then
+				local on = trail == name
+				Kit.setEnabled(card.button, true)
+				Kit.setButton(card.button, if on then "✓ EQUIPPED" else "EQUIP", if on then C.Gold else C.Cash)
+			elseif owned and control and card.setSwitch then
+				local on = shownChoice(name, cos.toggles[name] ~= false) == true
+				if card.switchShown ~= on then
+					card.switchShown = on
+					card.setSwitch(on)
+				end
+			elseif item.Pass then
+				local pass = Theme.Monetization.Passes[item.Pass]
+				Kit.setEnabled(card.button, true)
+				Kit.setButton(card.button, price(pass.Price), C.Cash)
+			else
+				Kit.setEnabled(card.button, true)
+				Kit.setButton(card.button, "STARTER PACK", C.SurfaceHi)
+			end
+			card.button.Visible = not (owned and control ~= nil)
+			if control then
+				control.Visible = owned
+			end
+			if owned and card.wasOwned == false and open then
+				-- With the bundle, every card flips in one wave; a single purchase bursts on its own
+				-- (the Starter pack's trail lets the Starter card do the bursting).
+				wave += 1
+				celebrate(card, if bundleJust then wave * 0.07 else 0, not bundleJust and not (item.Starter and starterJust))
+			else
+				card.owned.Visible = owned
+			end
+			card.wasOwned = owned
+		end
+	end
+
+	function refresh()
 		local data = State.data
 		if not data then
 			return
 		end
-		for index, pack in Theme.Monetization.MoneyPacks do
-			moneyLabels[index].Text = State.money(Economy.moneyPackAmount(data.income, pack.Seconds, pack.Min))
-		end
-		for name, card in passCards do
-			local owned = data.passes[name] == true
-			if card.tag then
-				card.tag.Visible = not owned
+		local open = window.isOpen()
+		-- Header chips roll; a landed purchase flies in from the row that was bought.
+		local money, gems = data.money, data.gems or 0
+		if chipMoney and money ~= chipMoney and open then
+			Kit.countTo(cashChip, chipMoney, money, State.money)
+			if money > chipMoney and lastPrompt and lastPrompt.kind == "Money" and os.clock() - lastPrompt.at < 120 then
+				flyTo(lastPrompt.entry.button, cashChip, "Coin", C.Gold)
+				lastPrompt = nil
 			end
-			Kit.setEnabled(card.button, not owned)
-			Kit.setButton(card.button, if owned then "✔ OWNED" else "R$ " .. Theme.Monetization.Passes[name].Price)
+		elseif money ~= chipMoney then
+			cashChip.Text = State.money(money)
 		end
+		if chipGems and gems ~= chipGems and open then
+			Kit.countTo(gemChip, chipGems, gems, Format.commas)
+			if gems > chipGems and lastPrompt and lastPrompt.kind == "Gems" and os.clock() - lastPrompt.at < 120 then
+				flyTo(lastPrompt.entry.button, gemChip, "Gem", C.Rizz)
+				lastPrompt = nil
+			end
+		elseif gems ~= chipGems then
+			gemChip.Text = Format.commas(gems)
+		end
+		chipMoney, chipGems = money, gems
+
+		-- Each player sees their own pack sizes (the server grants with the same functions).
+		local progression = Economy.progression(data.highestTier or 1, data.processLevel or 0)
+		for index, pack in Theme.Monetization.MoneyPacks do
+			local amount = Economy.moneyPackAmount(data.income, pack.Seconds, pack.Min, progression)
+			local shown = moneyShown[index]
+			moneyShown[index] = amount
+			if shown and shown ~= amount and open then
+				Kit.countTo(moneyLabels[index], shown, amount, State.money)
+			elseif shown ~= amount then
+				moneyLabels[index].Text = State.money(amount)
+			end
+		end
+		for index, pack in Theme.Monetization.GemPacks do
+			local amount = Economy.gemPackAmount(pack.Base, progression)
+			local shown = gemShown[index]
+			gemShown[index] = amount
+			if shown and shown ~= amount and open then
+				Kit.countTo(gemLabels[index], shown, amount, gemPackText)
+			elseif shown ~= amount then
+				gemLabels[index].Text = gemPackText(amount)
+			end
+		end
+		for name, entry in passCards do
+			local pass = Theme.Monetization.Passes[name]
+			local owned = data.passes[name] == true
+			-- Crate Master opens paid random items: not sold where those are restricted.
+			local blocked = name == "CrateKey" and not owned and data.crateRobux ~= true
+			if entry.tag then
+				entry.tag.Visible = not owned
+			end
+			Kit.setEnabled(entry.button, not owned and not blocked)
+			Kit.setButton(entry.button, if owned then "✓ OWNED" elseif blocked then "UNAVAILABLE" else price(pass.Price))
+			entry.desc.Text = if blocked then "Not available here" else pass.Desc
+			if owned and entry.wasOwned == false and open then
+				-- Just bought: the card celebrates and the OWNED ribbon lands.
+				Kit.pop(entry.cell, 1.6)
+				local spot = centreOf(entry.cell)
+				Kit.confetti(frame, { Origin = UDim2.fromOffset(spot.X, spot.Y), Count = 24, ZIndex = 45 })
+				Kit.appear(entry.owned, { from = 0.4, time = 0.3 })
+				Kit.sound("Reward")
+			else
+				entry.owned.Visible = owned
+			end
+			entry.wasOwned = owned
+		end
+		refreshCosmetics(data, open)
 	end
 	State.changed.Event:Connect(refresh)
-	window.onOpen.Event:Connect(refresh)
 
-	Windows.selectShopTab = selectTab
+	-- Idle motion while open: icons bob out of phase, ribbons breathe, and one
+	-- sheen at a time sweeps across the next price button.
+	local function startIdle()
+		if PREVIEW then
+			return
+		end
+		local mine = session
+		for i, entry in entries do
+			local base = entry.art.Position
+			local tween = TweenService:Create(
+				entry.art,
+				TweenInfo.new(1.6 + (i % 3) * 0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true, (i % 5) * 0.3),
+				{ Position = base + UDim2.fromOffset(0, -4) }
+			)
+			tween:Play()
+			table.insert(idleStops, function()
+				tween:Cancel()
+				Kit.tween(entry.art, 0.15, { Position = base })
+			end)
+		end
+		for _, cards in { passCards, cosCards } :: { { [string]: PassCard } } do
+			for _, entry in cards do
+				if entry.tag and entry.tag.Visible then
+					table.insert(idleStops, Kit.breathe(entry.tag, 0.05))
+				end
+			end
+		end
+		task.spawn(function()
+			local turn = 0
+			task.wait(1.2)
+			while session == mine do
+				for _ = 1, #entries do
+					turn = turn % #entries + 1
+					local entry = entries[turn]
+					local state = entry.button.Active and entry.button.Visible and entry.cell.Visible and entry.sheen
+					if state then
+						local sheen = entry.sheen :: Frame
+						sheen.Position = UDim2.new(0, -40, -0.3, 0)
+						Kit.tween(sheen, 0.7, { Position = UDim2.new(1, 20, -0.3, 0) }, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+						break
+					end
+				end
+				task.wait(2.2)
+			end
+		end)
+	end
+	local function stopIdle()
+		session += 1
+		for _, stop in idleStops do
+			stop()
+		end
+		table.clear(idleStops)
+	end
+	window.onClose.Event:Connect(stopIdle)
+
+	beforeOpen.Shop = function()
+		stopIdle()
+		local mine = session
+		refresh()
+		local focus = Windows.shopFocus or screen:GetAttribute("ShopFocus")
+		Windows.shopFocus = nil
+		screen:SetAttribute("ShopFocus", nil)
+		-- Where the page opens: the focused card or section, otherwise the top.
+		local index = 1
+		local y = 0
+		local focusCell: GuiObject? = nil
+		if type(focus) == "string" then
+			for i, section in SECTIONS do
+				if section.key == focus then
+					index = i
+					y = sectionY[i] or 0
+				end
+			end
+			local passOrder = table.find(Theme.Monetization.PassOrder, focus)
+			local cosOrder = table.find(COS_ORDER, focus)
+			if passOrder then
+				y = cardY(passGrid, passOrder, passesY)
+				focusCell = passCards[focus].cell
+			elseif focus == COS.Starter.Pass and starterShown then
+				focusCell = starterCell
+			elseif focus == COS.Bundle then
+				index, y = 2, sectionY[2]
+				focusCell = bundleCell
+			elseif cosOrder then
+				-- The first cosmetics row sits under the All Cosmetics card.
+				index, y = 2, cardY(cosGrid, cosOrder, sectionY[2])
+				focusCell = cosCards[focus].cell
+			end
+		end
+		scrollTo(y, true)
+		setCurrent(index, false)
+		showFade(math.min(y, maxScroll()) < maxScroll() - 2)
+
+		-- Opening choreography: section headers slide in, cards cascade (scale +
+		-- fade, 28 ms apart), the cart lands a beat later with an overshoot and wiggle.
+		for i, head in heads do
+			if not PREVIEW then
+				local target = head.Position
+				head.Position = target + UDim2.fromOffset(-24, 0)
+				Kit.tween(head, 0.32, { Position = target }, Enum.EasingStyle.Back)
+				Kit.appear(head, { from = 1, time = 0.2, delay = (i - 1) * 0.05 })
+			end
+		end
+		local shown: { GuiObject } = {}
+		for _, cell in cascade do
+			if cell.Visible then
+				table.insert(shown, cell)
+			end
+		end
+		Kit.stagger(shown, 0.028)
+		if not PREVIEW then
+			cartScale.Scale = 0
+			cart.Rotation = -18
+			task.delay(0.14, function()
+				if session ~= mine then
+					cartScale.Scale = 1
+					cart.Rotation = 0
+					return
+				end
+				Kit.tween(cartScale, 0.34, { Scale = 1 }, Enum.EasingStyle.Back)
+				Kit.tween(cart, 0.16, { Rotation = 10 }, Enum.EasingStyle.Quad)
+				task.delay(0.16, function()
+					Kit.tween(cart, 0.3, { Rotation = 0 }, Enum.EasingStyle.Back)
+				end)
+			end)
+			task.delay(0.5, function()
+				if session ~= mine then
+					return
+				end
+				startIdle()
+				if focusCell then
+					Kit.pop(focusCell, 1)
+				end
+			end)
+		end
+	end
+
+	-- Kept for callers that pick a section by name ("Passes", "Cash", "Gems").
+	Windows.selectShopTab = function(key: string)
+		for i, section in SECTIONS do
+			if section.key == key then
+				scrollToSection(i, true)
+				setCurrent(i, false)
+			end
+		end
+	end
 end
 
 -- Index -----------------------------------------------------------------------------
 
+-- Where the sparkle stars burst around a freshly discovered card (card scale).
+local SPARKLE_SPOTS = {
+	{ 0.12, 0.18, 18 },
+	{ 0.86, 0.14, 22 },
+	{ 0.5, 0.06, 14 },
+	{ 0.1, 0.72, 14 },
+	{ 0.9, 0.66, 18 },
+}
+
+-- A soft "new!" moment: the card pops and a few stars twinkle around it.
+local function sparkle(frame: Frame)
+	if PREVIEW then
+		return
+	end
+	Kit.pop(frame, 0.6)
+	for i, spot in SPARKLE_SPOTS do
+		local star = Kit.icon(frame, "Star", spot[3], C.GoldLight, {
+			Name = "Sparkle",
+			Position = UDim2.fromScale(spot[1], spot[2]),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 6,
+		})
+		Kit.appear(star, { from = 0.2, time = 0.3, delay = (i - 1) * 0.06 })
+		Kit.tween(star, 0.9, { Position = UDim2.new(spot[1], 0, spot[2], -10) })
+		task.delay(0.55 + (i - 1) * 0.06, function()
+			Kit.disappear(star, { to = 0.5, time = 0.25, destroy = true })
+		end)
+	end
+end
+
+-- Index card height (design px): number row, character, two-line name, rarity tag.
+local CARD_H = 212
+
 local function buildIndex(screen: ScreenGui)
-	local window = Kit.window(screen, "Index", "Index", I.Index, C.Window.Index, Vector2.new(880, 560))
+	local window = Kit.window(screen, "Index", "Index", I.Index, C.Window.Index, Vector2.new(880, 560), Vector2.new(560, 440))
 	register("Index", window)
 
-	local _, setProgress, progressLabel = Kit.progress(window.content, {
+	-- Discovered count: a compact bar in the header row, left of the close button.
+	local _, setProgress, progressLabel = Kit.progress(window.header, {
 		Name = "Found",
 		Color = C.Window.Index,
-		Size = UDim2.new(0.42, 0, 0, 30),
-		TextSize = T.Body,
+		Size = UDim2.fromOffset(210, 28),
+		Position = UDim2.new(1, -62, 0.5, -1),
+		AnchorPoint = Vector2.new(1, 0.5),
+		TextSize = T.Small,
 		MinFill = 0.08,
 	})
+	local function foundText(n: number): string
+		return string.format("%d / %d FOUND", n, Economy.MAX_TIER)
+	end
 
+	-- Rarity legend: one slim row of tags above the grid.
 	local legend = Kit.new("Frame", {
 		Name = "Legend",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(0.58, -12, 0, 30),
-		Position = UDim2.new(1, 0, 0, 0),
-		AnchorPoint = Vector2.new(1, 0),
+		Size = UDim2.new(1, -14, 0, 26),
 		Parent = window.content,
 	})
-	Kit.list(legend, 6, true, Enum.HorizontalAlignment.Right)
+	Kit.list(legend, 6, true, Enum.HorizontalAlignment.Left)
 	for order, band in Economy.TIER_BANDS do
 		Kit.pill(legend, {
-			Text = band.name,
-			Color = Kit.darken(C.Rarity[band.name], 0.45),
-			TextColor = Kit.lighten(C.Rarity[band.name], 0.3),
-			TextSize = T.Tiny,
+			Text = string.upper(band.name),
+			Color = C.Rarity[band.name],
+			Solid = true,
+			TextSize = T.Small,
 			Size = UDim2.fromOffset(0, 24),
 			AutomaticSize = Enum.AutomaticSize.X,
 			LayoutOrder = order,
 		})
 	end
 
-	local scroll = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -42), Position = UDim2.fromOffset(0, 42) })
+	local scroll = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -30), Position = UDim2.fromOffset(0, 30) })
 	Kit.new("UIPadding", {
-		PaddingTop = UDim.new(0, 8),
+		PaddingTop = UDim.new(0, 10),
 		PaddingLeft = UDim.new(0, 4),
 		PaddingRight = UDim.new(0, 14),
-		PaddingBottom = UDim.new(0, 8),
+		PaddingBottom = UDim.new(0, 12),
 		Parent = scroll,
 	})
-	Kit.new("UIGridLayout", {
-		CellSize = UDim2.new(0.2, -12, 0, 200),
-		CellPadding = UDim2.fromOffset(14, 14),
+	local grid = Kit.new("UIGridLayout", {
+		CellSize = UDim2.new(0.2, -12, 0, CARD_H),
+		CellPadding = UDim2.fromOffset(14, 16),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 		Parent = scroll,
 	})
+	-- 5 columns at full width, 4 or 3 as the window narrows on small screens.
+	local function layoutGrid(size: Vector2)
+		local columns = if size.X >= 820 then 5 elseif size.X >= 680 then 4 else 3
+		grid.CellSize = UDim2.new(1 / columns, -12, 0, CARD_H)
+	end
+	layoutGrid(window.size())
+	window.onResize.Event:Connect(layoutGrid)
 
 	local cards: { { frame: Frame, shown: string } } = {}
+	local cardFrames: { GuiObject } = {}
 	for tier = 1, Economy.MAX_TIER do
-		local card = Kit.panel(scroll, { Name = "Tier" .. tier, Color = C.PanelDark, LayoutOrder = tier, Radius = Kit.RADIUS.L })
-		cards[tier] = { frame = card, shown = "" }
+		local frame = Kit.panel(scroll, { Name = "Tier" .. tier, Elevated = true, LayoutOrder = tier, Radius = Kit.RADIUS.M + 2 })
+		cards[tier] = { frame = frame, shown = "" }
+		cardFrames[tier] = frame
 	end
 
-	-- Tiers discovered this session that the player hasn't looked at yet.
+	-- Tiers discovered this session that the player hasn't looked at yet, and
+	-- the ones whose "new" sparkle already played.
 	local seen: { [number]: boolean } = {}
+	local sparkled: { [number]: boolean } = {}
 	local sessionStart: number? = nil
 
 	local function fillCard(tier: number, discoveredAt: number, isNew: boolean)
@@ -449,93 +1918,171 @@ local function buildIndex(screen: ScreenGui)
 		if entry.shown == key then
 			return
 		end
+		local wasKnown = string.sub(entry.shown, 1, 5) == "known"
 		entry.shown = key
-		clearChildren(entry.frame)
+		local frame = entry.frame
+		clearChildren(frame)
 		local band = Economy.tierBand(tier)
 		local rarity = C.Rarity[band]
 		local known = discoveredAt > 0
-		local frameStroke = entry.frame:FindFirstChildOfClass("UIStroke") :: UIStroke
-		frameStroke.Color = if known then rarity else C.Stroke
-		local gradient = entry.frame:FindFirstChildOfClass("UIGradient") :: UIGradient
-		local base = if known then Kit.darken(rarity, 0.72) else C.PanelDark
-		gradient.Color = ColorSequence.new(Kit.lighten(base, 0.08), Kit.darken(base, 0.2))
+		-- Found: a raised tile with a rarity outline. Unknown: a quieter flat tile.
+		if known then
+			paintPanel(frame, C.SurfaceHi, rarity:Lerp(C.Edge, 0.3))
+		else
+			paintPanel(frame, C.Surface)
+		end
 
-		local strip = Kit.new("Frame", {
-			Name = "Strip",
-			BackgroundColor3 = if known then rarity else C.PanelLight,
-			BackgroundTransparency = if known then 0.15 else 0,
-			Size = UDim2.new(1, -10, 0, 30),
-			Position = UDim2.fromOffset(5, 5),
-			Parent = entry.frame,
-		})
-		Kit.corner(strip, Kit.RADIUS.M)
-		Kit.title(strip, {
+		Kit.number(frame, {
+			Name = "Tier",
 			Text = "#" .. tier,
 			TextSize = T.Small,
-			TextWrapped = false,
-			Size = UDim2.new(0, 34, 1, 0),
-			Position = UDim2.fromOffset(6, 0),
+			Size = UDim2.new(0, 34, 0, 24),
+			Position = UDim2.fromOffset(12, 8),
 			TextXAlignment = Enum.TextXAlignment.Left,
-			StrokeThickness = 1.5,
+			TextColor3 = if known then C.TextDim else C.TextMute,
 		})
-		Kit.title(strip, {
-			Text = if known then Theme.Tiers[tier].Name else "???",
+		-- Name under the character: 14 px, up to two lines (never scaled down).
+		Kit.text(frame, {
+			Name = "Name",
+			Text = if known then string.upper(Theme.Tiers[tier].Name) else "???",
+			Font = F.UI,
 			TextSize = T.Small,
-			MaxTextSize = T.Small,
-			TextScaled = true,
-			Size = UDim2.new(1, -44, 1, -6),
-			Position = UDim2.fromOffset(38, 3),
-			TextXAlignment = Enum.TextXAlignment.Left,
-			StrokeThickness = 1.5,
+			TextWrapped = true,
+			Size = UDim2.new(1, -16, 0, 36),
+			Position = UDim2.new(0, 8, 1, -70),
+			TextColor3 = if known then C.Text else C.TextMute,
+			ZIndex = 3,
 		})
-		Kit.unitViewport(entry.frame, tier, { Size = UDim2.new(1, -16, 1, -76), Position = UDim2.fromOffset(8, 38) }, not known)
-		Kit.text(entry.frame, {
-			Name = "Footer",
-			Text = if known then Format.date(discoveredAt) else band,
-			TextSize = T.Tiny,
-			TextWrapped = false,
-			Size = UDim2.new(1, -16, 0, 26),
-			Position = UDim2.new(0, 8, 1, -32),
-			TextColor3 = if known then C.TextDim else rarity,
-			StrokeThickness = 1,
-		})
-		if isNew then
-			Kit.pill(entry.frame, {
-				Name = "New",
-				Text = "NEW!",
-				Color = C.Bad,
-				TextSize = T.Tiny,
-				Size = UDim2.fromOffset(52, 22),
-				Position = UDim2.new(1, 6, 0, -8),
-				AnchorPoint = Vector2.new(1, 0),
-				Rotation = 8,
-				ZIndex = 4,
+		if known then
+			-- Soft rarity-tinted spot behind the character.
+			local spot = Kit.new("Frame", {
+				Name = "Spot",
+				BackgroundColor3 = C.Well:Lerp(rarity, 0.22),
+				Size = UDim2.new(1, -40, 1, -40),
+				Position = UDim2.new(0.5, 0, 0, 86),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Parent = frame,
 			})
+			Kit.new("UIAspectRatioConstraint", { AspectRatio = 1, Parent = spot })
+			Kit.round(spot)
+		end
+		-- Unknown tiers: a smaller soft-blue silhouette (Kit.unitViewport tints it).
+		local viewport = if known
+			then Kit.unitViewport(frame, tier, { Size = UDim2.new(1, -16, 1, -112), Position = UDim2.fromOffset(8, 32) })
+			else Kit.unitViewport(frame, tier, {
+				Size = UDim2.new(1, -60, 1, -130),
+				Position = UDim2.new(0.5, 0, 0, 40),
+				AnchorPoint = Vector2.new(0.5, 0),
+			}, true)
+		viewport.ZIndex = 2
+		if known then
+			Kit.pill(frame, {
+				Name = "Footer",
+				Text = string.upper(band),
+				Color = rarity,
+				TextSize = T.Small,
+				Size = UDim2.fromOffset(0, 24),
+				AutomaticSize = Enum.AutomaticSize.X,
+				Position = UDim2.new(0.5, 0, 1, -8),
+				AnchorPoint = Vector2.new(0.5, 1),
+				ZIndex = 3,
+			})
+		else
+			Kit.text(frame, {
+				Name = "Footer",
+				Text = string.upper(band),
+				Font = F.UI,
+				TextSize = T.Small,
+				TextWrapped = false,
+				Size = UDim2.new(1, -16, 0, 24),
+				Position = UDim2.new(0, 8, 1, -32),
+				TextColor3 = SMALL_TEXT,
+			})
+		end
+		if isNew then
+			-- Fully inside the card's top-right corner.
+			Kit.pill(frame, {
+				Name = "New",
+				Text = "NEW",
+				Color = C.Danger,
+				Solid = true,
+				TextColor = C.Text,
+				TextSize = T.Small,
+				Size = UDim2.fromOffset(48, 22),
+				Position = UDim2.new(1, -8, 0, 8),
+				AnchorPoint = Vector2.new(1, 0),
+				ZIndex = 5,
+			})
+		end
+		if window.isOpen() and known and not wasKnown then
+			-- Discovered while the Index is open: ease the character in and celebrate.
+			viewport.ImageTransparency = 1
+			Kit.tween(viewport, 0.3, { ImageTransparency = 0 })
+			if not sparkled[tier] then
+				sparkled[tier] = true
+				sparkle(frame)
+			end
 		end
 	end
 
-	local function refresh()
+	local found = 0
+	local prebuilt = false
+	local function refresh(force: boolean?)
 		local data = State.data
-		if not data or not window.isOpen() then
+		if not data or not (force or window.isOpen()) then
 			return
 		end
 		if not sessionStart then
 			sessionStart = State.now() - 2
 		end
-		local found = 0
+		local count = 0
 		for tier = 1, Economy.MAX_TIER do
 			local at = data.discovered[tier] or 0
 			if at > 0 then
-				found += 1
+				count += 1
 			end
 			local isNew = at > 0 and at >= (sessionStart :: number) and not seen[tier]
 			fillCard(tier, at, isNew)
 		end
-		progressLabel.Text = string.format("%s  %d / %d DISCOVERED", I.Unit, found, Economy.MAX_TIER)
-		setProgress(found / Economy.MAX_TIER)
+		if count ~= found and window.isOpen() then
+			Kit.countTo(progressLabel, found, count, foundText)
+		elseif count ~= found or progressLabel.Text == "" then
+			progressLabel.Text = foundText(count)
+		end
+		found = count
+		setProgress(count / Economy.MAX_TIER)
 	end
-	State.changed.Event:Connect(refresh)
-	window.onOpen.Event:Connect(refresh)
+	State.changed.Event:Connect(function()
+		refresh()
+	end)
+
+	beforeOpen.Index = function()
+		refresh(true)
+		ripple(cardFrames)
+		-- The bar refills from empty each time the Index opens.
+		setProgress(0, true)
+		setProgress(found / Economy.MAX_TIER)
+		-- First look at tiers discovered since the last visit: sparkle once,
+		-- right after the card has rippled in.
+		local data = State.data
+		if not data or not sessionStart then
+			return
+		end
+		for tier = 1, Economy.MAX_TIER do
+			local at = data.discovered[tier] or 0
+			if at > 0 and at >= (sessionStart :: number) and not seen[tier] and not sparkled[tier] then
+				sparkled[tier] = true
+				local frame = cards[tier].frame
+				if not PREVIEW then
+					task.delay(math.min(tier - 1, 12) * 0.025 + 0.3, function()
+						if window.isOpen() then
+							sparkle(frame)
+						end
+					end)
+				end
+			end
+		end
+	end
 	window.onClose.Event:Connect(function()
 		local data = State.data
 		if data then
@@ -550,20 +2097,37 @@ local function buildIndex(screen: ScreenGui)
 		if not sessionStart then
 			sessionStart = State.now() - 2
 		end
+		-- Build every card in the background (a couple per frame) after the
+		-- first snapshot, so opening the Index never pops viewports in.
+		if not prebuilt then
+			prebuilt = true
+			task.spawn(function()
+				local data = State.data
+				for tier = 1, Economy.MAX_TIER do
+					if data then
+						local at = data.discovered[tier] or 0
+						fillCard(tier, at, at > 0 and at >= (sessionStart :: number) and not seen[tier])
+					end
+					if tier % 2 == 0 then
+						task.wait()
+					end
+					data = State.data
+				end
+				refresh()
+			end)
+		end
 	end)
 end
 
 -- Ranking -----------------------------------------------------------------------------
 
-local MEDALS = { "🥇", "🥈", "🥉" }
-local MEDAL_COLORS = {
-	Color3.fromRGB(255, 205, 60),
-	Color3.fromRGB(200, 210, 225),
-	Color3.fromRGB(215, 135, 75),
-}
+-- Gold, silver and bronze medal chips for the top three.
+local MEDAL_COLORS = { C.Gold, C.Chrome, C.Amber }
+
+type RowLabels = { rank: TextLabel, chip: Frame, value: TextLabel }
 
 local function buildRanking(screen: ScreenGui)
-	local window = Kit.window(screen, "Ranking", "Ranking", I.Ranking, C.Window.Ranking, Vector2.new(780, 560))
+	local window = Kit.window(screen, "Ranking", "Ranking", I.Ranking, C.Window.Ranking, Vector2.new(780, 560), Vector2.new(600, 440))
 	register("Ranking", window)
 	local query = Net.func("Query")
 	local action = Net.event("Action")
@@ -577,27 +2141,24 @@ local function buildRanking(screen: ScreenGui)
 		Size = UDim2.new(1, -340, 0, 44),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = C.TextDim,
-		StrokeThickness = 1.5,
 	})
 	local formatButton = Kit.button(window.content, {
 		Name = "Format",
 		Text = "Full numbers",
-		Color = C.Secondary,
-		Size = UDim2.fromOffset(170, 44),
-		Position = UDim2.new(1, -160, 0, 0),
+		Color = C.SurfaceHi,
+		Size = UDim2.fromOffset(150, 42),
+		Position = UDim2.new(1, -140, 0, 0),
 		AnchorPoint = Vector2.new(1, 0),
-		TextSize = 18,
-		Depth = 5,
+		TextSize = 14,
 	})
 	local refreshButton = Kit.button(window.content, {
 		Name = "Refresh",
-		Text = "↻ Refresh",
+		Text = "Refresh",
 		Color = C.Window.Ranking,
-		Size = UDim2.fromOffset(146, 44),
+		Size = UDim2.fromOffset(130, 42),
 		Position = UDim2.new(1, 0, 0, 0),
 		AnchorPoint = Vector2.new(1, 0),
-		TextSize = 18,
-		Depth = 5,
+		TextSize = 14,
 	})
 
 	local header = Kit.new("Frame", {
@@ -608,129 +2169,172 @@ local function buildRanking(screen: ScreenGui)
 		Parent = window.content,
 	})
 	local function headerText(text: string, x: number, w: number, align: Enum.TextXAlignment)
-		Kit.title(header, {
+		Kit.text(header, {
 			Text = text,
-			TextSize = T.Small,
+			Font = F.UI,
+			TextSize = T.Tiny,
 			TextWrapped = false,
 			Size = UDim2.new(w, 0, 1, 0),
 			Position = UDim2.fromScale(x, 0),
 			TextXAlignment = align,
-			TextColor3 = C.TextDim,
-			StrokeThickness = 1.5,
+			TextColor3 = SMALL_TEXT,
 		})
 	end
 	headerText("RANK", 0.02, 0.14, Enum.TextXAlignment.Left)
 	headerText("PLAYER", 0.17, 0.5, Enum.TextXAlignment.Left)
 	headerText(string.upper(W.Units), 0.62, 0.36, Enum.TextXAlignment.Right)
 
-	local list = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -150), Position = UDim2.fromOffset(0, 80) })
-	Kit.new("UIPadding", { PaddingRight = UDim.new(0, 14), PaddingTop = UDim.new(0, 4), PaddingLeft = UDim.new(0, 2), Parent = list })
+	local list = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -154), Position = UDim2.fromOffset(0, 80) })
+	Kit.new("UIPadding", {
+		PaddingRight = UDim.new(0, 14),
+		PaddingTop = UDim.new(0, 4),
+		PaddingLeft = UDim.new(0, 2),
+		PaddingBottom = UDim.new(0, 10),
+		Parent = list,
+	})
 	Kit.list(list, 8)
 
+	-- The player's own row, pinned under the list with a sunny outline.
 	local mine = Kit.panel(window.content, {
 		Name = "Mine",
-		Color = Kit.darken(C.Good, 0.45),
-		StrokeColor = C.Good,
+		Elevated = true,
+		StrokeColor = C.Gold,
+		StrokeThickness = 2.5,
 		Size = UDim2.new(1, -14, 0, 54),
-		Position = UDim2.new(0, 0, 1, -58),
+		Position = UDim2.new(0, 0, 1, -62),
 		Radius = Kit.RADIUS.M,
 	})
 
-	local function row(parent: Instance, rank: number?, rankText: string, name: string, value: string, isMe: boolean)
-		local medal = rank and MEDALS[rank]
+	local function row(parent: Instance, rank: number?, rankText: string, name: string, value: string, isMe: boolean): RowLabels
 		local color = rank and MEDAL_COLORS[rank]
 		local rankChip = Kit.new("Frame", {
 			Name = "Rank",
-			BackgroundColor3 = color or C.PanelDark,
-			Size = UDim2.fromOffset(46, 38),
-			Position = UDim2.new(0.02, 0, 0.5, 0),
+			BackgroundColor3 = color or C.Well,
+			Size = UDim2.fromOffset(if color then 34 else 46, if color then 34 else 30),
+			Position = UDim2.new(0.02, if color then 6 else 0, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
 			Parent = parent,
 		})
-		Kit.corner(rankChip, Kit.RADIUS.M)
-		Kit.stroke(rankChip, 2.5)
-		Kit.text(rankChip, {
-			Text = medal or rankText,
-			Font = Theme.Fonts.Title,
-			TextSize = if medal then 26 else T.Body,
-			TextWrapped = false,
+		if color then
+			-- Solid medal coin, lighter on top, with a darker rim.
+			Kit.round(rankChip)
+			Kit.gradient(rankChip, Color3.new(1, 1, 1), Color3.new(0.86, 0.86, 0.9))
+			Kit.new("UIStroke", { Thickness = 2, Color = Kit.lip(color), Parent = rankChip })
+		else
+			Kit.corner(rankChip, 10)
+			Kit.new("UIStroke", { Thickness = 1, Color = C.Edge, Transparency = 0.3, Parent = rankChip })
+		end
+		local rankLabel = Kit.number(rankChip, {
+			Text = if color then tostring(rank) else rankText,
+			TextSize = if color then T.Body else T.Small,
 			Size = UDim2.fromScale(1, 1),
-			StrokeThickness = if medal then 0 else 1.5,
+			TextColor3 = if color then C.GoldInk else C.TextDim,
+			StrokeThickness = 0,
 		})
-		Kit.title(parent, {
+		Kit.text(parent, {
 			Name = "Name",
 			Text = name,
-			TextSize = T.H3,
+			Font = F.UI,
+			TextSize = T.Body,
 			TextWrapped = false,
-			Size = UDim2.new(0.45, 0, 1, 0),
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Size = UDim2.new(0.38, 0, 1, 0),
 			Position = UDim2.fromScale(0.17, 0),
 			TextXAlignment = Enum.TextXAlignment.Left,
-			TextColor3 = if color then Kit.lighten(color, 0.2) else C.Text,
+			TextColor3 = C.Text,
 		})
 		if isMe then
 			Kit.pill(parent, {
 				Text = "YOU",
-				Color = C.Primary,
-				TextColor = C.Stroke,
-				TextSize = T.Tiny,
-				Size = UDim2.fromOffset(46, 22),
+				Color = C.Gold,
+				Solid = true,
+				TextSize = 12,
+				Size = UDim2.fromOffset(42, 22),
 				Position = UDim2.new(0.62, 0, 0.5, 0),
 				AnchorPoint = Vector2.new(1, 0.5),
 			})
 		end
-		Kit.title(parent, {
+		local valueLabel = Kit.number(parent, {
 			Name = "Value",
 			Text = value,
-			TextSize = T.H3,
-			TextWrapped = false,
+			TextSize = T.Body,
 			Size = UDim2.new(0.34, 0, 1, 0),
 			Position = UDim2.new(0.98, 0, 0, 0),
 			AnchorPoint = Vector2.new(1, 0),
 			TextXAlignment = Enum.TextXAlignment.Right,
-			TextColor3 = C.Good,
+			TextColor3 = if color then C.GoldLight else C.Text,
 		})
+		return { rank = rankLabel, chip = rankChip, value = valueLabel }
 	end
 
 	local entries: { any } = {}
 	local loaded = false
 	local updatedAt = 0
-	local function render()
-		clearChildren(list)
-		clearChildren(mine)
+	local listFull: boolean? = nil
+	local mineLabels: RowLabels = row(mine, nil, "--", Players.LocalPlayer.Name, "0", false)
+	local mineValue: number? = nil
+
+	local function fullNumbers(): boolean
 		local data = State.data
-		local full = data and data.settings.fullNumbers
-		local function fmt(n: number): string
-			return if full then Format.commas(n) else Format.short(n)
-		end
+		return data ~= nil and data.settings.fullNumbers == true
+	end
+	local function fmt(n: number): string
+		return if fullNumbers() then Format.commas(n) else Format.short(n)
+	end
+
+	-- Rebuilds the leaderboard rows; `animate` ripples them in.
+	local function renderList(animate: boolean)
+		clearChildren(list)
+		listFull = fullNumbers()
 		local me = Players.LocalPlayer
-		local myRank: number? = nil
+		local rows: { GuiObject } = {}
 		for i, entry in entries do
 			local isMe = entry.userId == me.UserId
-			local tint = MEDAL_COLORS[i]
 			local frame = Kit.panel(list, {
 				Name = "Row" .. i,
-				Color = if tint then Kit.darken(tint, 0.68) elseif i % 2 == 0 then C.Panel else C.PanelLight,
-				StrokeColor = if isMe then C.Primary else nil,
-				Size = UDim2.new(1, 0, 0, 50),
+				Elevated = true,
+				StrokeColor = if isMe then C.Gold else nil,
+				StrokeThickness = if isMe then 2.5 else nil,
+				Size = UDim2.new(1, 0, 0, 46),
 				LayoutOrder = i,
 				Radius = Kit.RADIUS.M,
-				StrokeThickness = if isMe then 3 else 2.5,
 			})
 			row(frame, entry.rank, "#" .. entry.rank, entry.name, fmt(entry.value), isMe)
-			if isMe then
-				myRank = entry.rank
-			end
+			table.insert(rows, frame)
 		end
 		if #entries == 0 then
-			Kit.text(list, {
+			local empty = Kit.text(list, {
 				Text = if loaded then "No rankings yet - be the first!" else "Loading...",
 				TextSize = T.Body,
 				Size = UDim2.new(1, 0, 0, 60),
 				TextColor3 = C.TextDim,
 			})
+			table.insert(rows, empty)
 		end
-		row(mine, nil, if myRank then "#" .. myRank else "--", me.Name, fmt(data and data.totalObtained or 0), false)
-		Kit.setButton(formatButton, if full then "Short numbers" else "Full numbers")
+		if animate then
+			Kit.stagger(rows)
+		end
+	end
+
+	-- Pinned row, format button and subtitle.
+	local function renderInfo()
+		local data = State.data
+		local me = Players.LocalPlayer
+		local myRank: number? = nil
+		for _, entry in entries do
+			if entry.userId == me.UserId then
+				myRank = entry.rank
+			end
+		end
+		mineLabels.rank.Text = if myRank then "#" .. myRank else "--"
+		local total = data and data.totalObtained or 0
+		if mineValue and mineValue ~= total and window.isOpen() then
+			Kit.countTo(mineLabels.value, mineValue, total, fmt)
+		else
+			mineLabels.value.Text = fmt(total)
+		end
+		mineValue = total
+		Kit.setButton(formatButton, if fullNumbers() then "Short numbers" else "Full numbers")
 		local updated = ""
 		if loaded and updatedAt > 0 then
 			local ago = math.max(0, State.now() - updatedAt)
@@ -767,7 +2371,8 @@ local function buildRanking(screen: ScreenGui)
 				updatedAt = result.updatedAt or State.now()
 				loaded = true
 				if window.isOpen() then
-					render()
+					renderList(true)
+					renderInfo()
 				end
 			end
 		end)
@@ -775,63 +2380,83 @@ local function buildRanking(screen: ScreenGui)
 	refreshButton.Activated:Connect(fetch)
 
 	window.onOpen.Event:Connect(function()
-		render()
+		-- Rows are rebuilt (and ripple in) on every open; they are created after
+		-- the window's own fade starts, so they fade themselves.
+		renderList(true)
+		renderInfo()
 		fetch()
 	end)
 	State.changed.Event:Connect(function()
-		if window.isOpen() then
-			render()
+		if not window.isOpen() then
+			return
 		end
+		if listFull ~= fullNumbers() then
+			renderList(false)
+		end
+		renderInfo()
 	end)
 end
 
 -- Settings ------------------------------------------------------------------------------
 
 local function buildSettings(screen: ScreenGui)
-	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(560, 446))
+	-- Sized to its four rows: 4 x 70 + 3 x 10 gaps + 20 padding + 84 of header and margins.
+	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(560, 414))
 	register("Settings", window)
 	local action = Net.event("Action")
 
 	Kit.list(window.content, 10)
 
-	local toggles: { { key: string, set: (boolean, boolean?) -> (), sub: TextLabel } } = {}
+	local rows: { GuiObject } = {}
+	local toggles: { { key: string, set: (boolean, boolean?) -> (), sub: TextLabel, medal: Frame } } = {}
 	local function toggle(order: number, icon: string, text: string, desc: string, key: string)
 		local row = Kit.panel(window.content, {
 			Name = key,
-			Color = C.PanelLight,
-			Size = UDim2.new(1, 0, 0, 78),
+			Elevated = true,
+			Size = UDim2.new(1, 0, 0, 70),
 			LayoutOrder = order,
-			Radius = Kit.RADIUS.L,
+			Radius = Kit.RADIUS.M + 2,
 		})
+		table.insert(rows, row)
+		-- Icon tile: deep blue, warms to the window's teal while the setting is on.
 		local medal = Kit.new("Frame", {
-			BackgroundColor3 = C.PanelDark,
-			Size = UDim2.fromOffset(52, 52),
+			Name = "Medal",
+			BackgroundColor3 = C.Well,
+			Size = UDim2.fromOffset(46, 46),
 			Position = UDim2.new(0, 12, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
 			Parent = row,
 		})
-		Kit.round(medal)
-		Kit.text(medal, { Text = icon, TextSize = 28, Size = UDim2.fromScale(1, 1), StrokeThickness = 0 })
-		Kit.title(row, {
-			Text = text,
-			TextSize = T.H3,
+		Kit.corner(medal, 14)
+		Kit.new("UIStroke", { Thickness = 1.5, Color = C.Edge, Transparency = 0.2, Parent = medal })
+		Kit.icon(medal, icon, 26, Kit.ICON_COLORS[icon] or C.Text, {
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 2,
+		})
+		Kit.text(row, {
+			Text = string.upper(text),
+			Font = F.UI,
+			TextSize = T.Body,
 			TextWrapped = false,
-			Size = UDim2.new(1, -190, 0, 28),
-			Position = UDim2.fromOffset(76, 12),
+			Size = UDim2.new(1, -170, 0, 22),
+			Position = UDim2.fromOffset(72, 12),
 			TextXAlignment = Enum.TextXAlignment.Left,
 		})
 		local sub = Kit.text(row, {
 			Text = desc,
-			TextSize = T.Tiny,
-			Size = UDim2.new(1, -190, 0, 30),
-			Position = UDim2.fromOffset(76, 40),
+			TextSize = T.Small,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Size = UDim2.new(1, -176, 0, 20),
+			Position = UDim2.fromOffset(72, 37),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextYAlignment = Enum.TextYAlignment.Top,
 			TextColor3 = C.TextDim,
-			StrokeThickness = 1,
 		})
 		local _, set = Kit.switch(row, {
 			Name = "Switch",
+			Large = true,
 			Position = UDim2.new(1, -16, 0.5, 0),
 			AnchorPoint = Vector2.new(1, 0.5),
 		}, function()
@@ -842,20 +2467,23 @@ local function buildSettings(screen: ScreenGui)
 			local current = if key == "autoMerge" then data.autoMerge else data.settings[key]
 			action:FireServer({ action = "SetSetting", key = key, value = not current })
 		end)
-		table.insert(toggles, { key = key, set = set, sub = sub })
+		table.insert(toggles, { key = key, set = set, sub = sub, medal = medal })
 	end
-	toggle(1, "🎵", "Music", "Background music", "music")
-	toggle(2, "🔊", "Sound Effects", "Clicks, pickups and rewards", "sfx")
-	toggle(3, "🔢", "Full Numbers", "Show 1,234,567 instead of 1.23M", "fullNumbers")
-	toggle(4, "🔀", "Auto Merge", "Merge pairs automatically", "autoMerge")
+	toggle(1, "Music", "Music", "Background music", "music")
+	toggle(2, "Sound", "Sound Effects", "Clicks, pickups and rewards", "sfx")
+	toggle(3, "Hash", "Full Numbers", "Show 1,234,567 instead of 1.23M", "fullNumbers")
+	toggle(4, "Merge", "Auto Merge", "Merge pairs automatically", "autoMerge")
 
+	local ON_TILE = C.Well:Lerp(C.Window.Settings, 0.4)
 	local function refresh()
 		local data = State.data
 		if not data then
 			return
 		end
 		for _, t in toggles do
+			local on: boolean
 			if t.key == "autoMerge" then
+				on = data.autoMergeOwned == true and data.autoMerge == true
 				if data.autoMergeOwned then
 					t.set(data.autoMerge)
 					t.sub.Text = "Merge pairs automatically"
@@ -864,12 +2492,190 @@ local function buildSettings(screen: ScreenGui)
 					t.sub.Text = "Unlock it on the Auto Merge pad (" .. Format.money(Economy.AUTO_MERGE_COST) .. ")"
 				end
 			else
-				t.set(data.settings[t.key] == true)
+				on = data.settings[t.key] == true
+				t.set(on)
 			end
+			Kit.tween(t.medal, 0.2, { BackgroundColor3 = if on then ON_TILE else C.Well })
 		end
 	end
 	State.changed.Event:Connect(refresh)
 	window.onOpen.Event:Connect(refresh)
+
+	beforeOpen.Settings = function()
+		refresh()
+		ripple(rows)
+	end
+end
+
+-- Game Modes --------------------------------------------------------------------------------
+--[[
+	A small list of plaza game modes: Parkour (personal best, clears, what finishing pays
+	right now and a PLAY button that fires ModeStart, which teleports to the start deck;
+	PLAY is the one loud element) plus one slim "More modes coming soon" row. The window
+	is sized to those two rows. Reads State.data.modes.parkour.
+]]
+local function runTime(seconds: number): string
+	local tenths = math.floor(math.max(seconds, 0) * 10 + 0.5)
+	return string.format("%d:%02d.%d", tenths // 600, (tenths // 10) % 60, tenths % 10)
+end
+
+local function buildModes(screen: ScreenGui)
+	local accent = Theme.World.Mint
+	-- 150 (Parkour) + 10 + 44 (coming soon) + 20 padding + 84 of header and margins.
+	local window = Kit.window(screen, "Modes", "Game Modes", "🏁", accent, Vector2.new(540, 308), Vector2.new(420, 300))
+	register("Modes", window)
+	local action = Net.event("Action")
+	Kit.list(window.content, 10)
+
+	local rows: { GuiObject } = {}
+
+	-- Parkour
+	local parkour = Kit.panel(window.content, {
+		Name = "PARKOUR",
+		Elevated = true,
+		Size = UDim2.new(1, 0, 0, 150),
+		LayoutOrder = 1,
+		Radius = Kit.RADIUS.M + 2,
+	})
+	table.insert(rows, parkour)
+	-- Quiet medal (a mint rim only), so the PLAY button is the one loud thing here.
+	local medal = Kit.new("Frame", {
+		Name = "Medal",
+		BackgroundColor3 = C.Well,
+		Size = UDim2.fromOffset(46, 46),
+		Position = UDim2.fromOffset(12, 14),
+		Parent = parkour,
+	})
+	Kit.corner(medal, 14)
+	Kit.new("UIStroke", { Thickness = 2, Color = accent, Transparency = 0.2, Parent = medal })
+	Kit.text(medal, { Text = "🏃", TextSize = 26, Size = UDim2.fromScale(1, 1), ZIndex = 2 })
+	Kit.title(parkour, {
+		Text = "PARKOUR",
+		TextSize = T.H3,
+		TextWrapped = false,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -80, 0, 24),
+		Position = UDim2.fromOffset(70, 14),
+		TextColor3 = C.Text,
+	})
+	Kit.text(parkour, {
+		Text = "Jump, bounce and slide over the sea!",
+		TextSize = T.Small,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -80, 0, 20),
+		Position = UDim2.fromOffset(70, 38),
+		TextColor3 = C.TextDim,
+		StrokeThickness = 0,
+	})
+	local stats = Kit.text(parkour, {
+		Name = "Stats",
+		Text = "",
+		Font = F.UI,
+		TextSize = T.Small,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -80, 0, 20),
+		Position = UDim2.fromOffset(70, 60),
+		TextColor3 = C.Text,
+		StrokeThickness = 0,
+	})
+	local reward = Kit.text(parkour, {
+		Name = "Reward",
+		Text = "",
+		Font = F.UI,
+		TextSize = T.Small,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -24, 0, 20),
+		Position = UDim2.new(0, 12, 1, -40),
+		AnchorPoint = Vector2.new(0, 0.5),
+		TextColor3 = C.MoneyText,
+		StrokeThickness = 0,
+	})
+	local play = Kit.button(parkour, {
+		Name = "Play",
+		Text = "PLAY",
+		Font = Theme.Fonts.Display,
+		Color = C.Gold,
+		Breathe = true,
+		Size = UDim2.fromOffset(130, 50),
+		Position = UDim2.new(1, -12, 1, -12),
+		AnchorPoint = Vector2.new(1, 1),
+	}, function()
+		action:FireServer({ action = "ModeStart", mode = "parkour" })
+		Windows.closeAll()
+	end)
+	reward.Size = UDim2.new(1, -164, 0, 20)
+
+	-- Every other mode: one slim, quiet row.
+	local soon = Kit.panel(window.content, {
+		Name = "ComingSoon",
+		Size = UDim2.new(1, 0, 0, 44),
+		LayoutOrder = 2,
+		Radius = Kit.RADIUS.M,
+		Transparency = 0.35,
+	})
+	table.insert(rows, soon)
+	Kit.icon(soon, "Lock", 18, C.TextMute, {
+		Position = UDim2.new(0, 16, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 2,
+	})
+	Kit.text(soon, {
+		Text = "More modes coming soon",
+		Font = F.UI,
+		TextSize = T.Small,
+		TextWrapped = false,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -60, 1, 0),
+		Position = UDim2.fromOffset(44, 0),
+		TextColor3 = C.TextMute,
+		StrokeThickness = 0,
+		ZIndex = 2,
+	})
+
+	local function refresh()
+		local data = State.data
+		local info = data and data.modes and data.modes.parkour
+		if type(info) ~= "table" then
+			stats.Text = "Best --  ·  0 clears"
+			reward.Text = ""
+			return
+		end
+		local best = if type(info.best) == "number" then runTime(info.best) else "--"
+		stats.Text = string.format("Best %s  ·  %d clear%s", best, info.clears or 0, if info.clears == 1 then "" else "s")
+		local preview = info.rewardPreview
+		local left = (tonumber(info.cooldownEnds) or 0) - os.time()
+		if type(preview) ~= "table" then
+			reward.Text = ""
+		elseif preview.full == false and left > 0 then
+			reward.TextColor3 = C.TextDim
+			reward.Text = "Reward again in " .. Format.time(left)
+		else
+			reward.TextColor3 = C.MoneyText
+			local text = "Finish: +" .. Format.money(preview.packCash or preview.cash or 0)
+			if (preview.gems or 0) > 0 then
+				text ..= " +" .. tostring(preview.gems) .. " " .. W.Gem
+			end
+			reward.Text = text
+		end
+		Kit.setButton(play, if info.running then "RESTART" else "PLAY")
+	end
+	State.changed.Event:Connect(refresh)
+	window.onOpen.Event:Connect(function()
+		refresh()
+		-- The cooldown line counts down while the window is open.
+		task.spawn(function()
+			while window.isOpen() do
+				task.wait(1)
+				refresh()
+			end
+		end)
+	end)
+
+	beforeOpen.Modes = function()
+		refresh()
+		ripple(rows)
+	end
+	refresh()
 end
 
 function Windows.build(screen: ScreenGui)
@@ -880,6 +2686,7 @@ function Windows.build(screen: ScreenGui)
 	buildIndex(screen)
 	buildRanking(screen)
 	buildSettings(screen)
+	buildModes(screen)
 
 	UserInputService.InputBegan:Connect(function(input)
 		if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.ButtonB then

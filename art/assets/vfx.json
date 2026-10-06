@@ -1,0 +1,15 @@
+{
+  "domain": "vfx",
+  "assets": [
+    {"name": "CoinSpin", "file": "art/out/vfx/CoinSpin.png", "kind": "Image"},
+    {"name": "Confetti", "file": "art/out/vfx/Confetti.png", "kind": "Image"},
+    {"name": "Heart", "file": "art/out/vfx/Heart.png", "kind": "Image"},
+    {"name": "Note", "file": "art/out/vfx/Note.png", "kind": "Image"},
+    {"name": "Puff", "file": "art/out/vfx/Puff.png", "kind": "Image"},
+    {"name": "Ring", "file": "art/out/vfx/Ring.png", "kind": "Image"},
+    {"name": "SoftDot", "file": "art/out/vfx/SoftDot.png", "kind": "Image"},
+    {"name": "Sparkle", "file": "art/out/vfx/Sparkle.png", "kind": "Image"},
+    {"name": "StarPop", "file": "art/out/vfx/StarPop.png", "kind": "Image"},
+    {"name": "Sweat", "file": "art/out/vfx/Sweat.png", "kind": "Image"}
+  ]
+}

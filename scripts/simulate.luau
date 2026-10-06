@@ -14,7 +14,7 @@ local queue = 0
 local buyTier = 1
 local boughtAtTier = 0
 local processLevel = 0
-local reached = { [1] = 0 }
+local reached: { [number]: number } = { [1] = 0 }
 local HOURS = 60
 local efficiency = 0.85 -- the player is not always on the pads
 
@@ -49,7 +49,15 @@ for t = 1, HOURS * 3600 do
 				money -= Economy.bulkPrice(buyTier, boughtAtTier, amount)
 				units[buyTier] += amount
 				boughtAtTier += amount
-				Economy.mergeAll(units)
+				-- A cascade can pass straight through a tier (two 18s merge into a 19
+				-- in the same step), so record every tier a merge created, not only
+				-- the ones still owned afterwards.
+				local _, _, steps = Economy.mergeAll(units)
+				for _, step in steps do
+					if not reached[step.tier + 1] then
+						reached[step.tier + 1] = t
+					end
+				end
 			else
 				break
 			end

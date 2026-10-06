@@ -1,0 +1,10 @@
+{
+ "kind": "Converter",
+ "tris": 1176,
+ "size": [
+  8.06,
+  11.44,
+  6.98
+ ],
+ "axes": "roblox x, y (height), z (depth)"
+}

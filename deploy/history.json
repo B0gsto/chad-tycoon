@@ -1,0 +1,15 @@
+[
+  {
+    "versionNumber": 3,
+    "versionType": "Published",
+    "publishedAt": "2026-10-06T20:05:38Z",
+    "universeId": 10769596890,
+    "placeId": 97313994892728,
+    "file": "build/ChadAuraTycoon.rbxl",
+    "bytes": 1245069,
+    "sha256": "b692ec4819d93b31ec5142e1269ba1ba7db336458a742779e1db0cd26251ffe2",
+    "builtAt": "2026-10-06T20:05:28Z",
+    "git": "b8dc9e7+dirty",
+    "forced": false
+  }
+]

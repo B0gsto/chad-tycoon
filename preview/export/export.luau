@@ -21,12 +21,13 @@ local task = require("@lune/task")
 
 local variant = process.args[1] or "chad"
 local PLACES = { chad = "build/ChadAuraTycoon.rbxlx", bot = "build/BotFactoryTycoon.rbxlx" }
-local OUT = "preview/out/" .. variant
+-- PREVIEW_PLACE / PREVIEW_OUT let several exports run side by side (private build + output dir).
+local OUT = process.env.PREVIEW_OUT or ("preview/out/" .. variant)
 fs.writeDir(OUT .. "/gui")
 
 math.randomseed(if variant == "chad" then 7 else 11)
 
-local game = roblox.deserializePlace(fs.readFile(PLACES[variant]))
+local game = roblox.deserializePlace(fs.readFile(process.env.PREVIEW_PLACE or PLACES[variant]))
 local Instance = roblox.Instance
 local Enum = roblox.Enum
 local CFrame = roblox.CFrame
@@ -104,6 +105,7 @@ local EVENTS = {
 	RunService = { "Heartbeat", "RenderStepped", "Stepped" },
 	MarketplaceService = { "PromptGamePassPurchaseFinished" },
 	UserInputService = { "InputBegan", "InputEnded", "InputChanged" },
+	ProximityPrompt = { "Triggered", "TriggerEnded", "PromptShown", "PromptHidden", "PromptButtonHoldBegan", "PromptButtonHoldEnded" },
 }
 for className, names in EVENTS do
 	for _, name in names do
@@ -305,7 +307,7 @@ end
 -- Lune cannot read a few engine-only properties; swap them for constants.
 local SOURCE_PATCHES = {
 	{ "player.MembershipType == Enum.MembershipType.Premium", "false" },
-	{ "if game.JobId ~= \"\" then game.JobId else", "if false then \"\" else" },
+	{ 'if game.JobId ~= "" then game.JobId else', 'if false then "" else' },
 	{ "local pos = root.Position", "local pos = root.CFrame.Position" },
 	{ "Players.LocalPlayer", "__previewLocalPlayer()" },
 	{ "orb.part.Position - pos", "orb.part.CFrame.Position - pos" },
@@ -371,6 +373,26 @@ local function prop(inst, name: string, default: any): any
 	return default
 end
 
+-- An asset id string ("rbxassetid://...") from a Content property, trying the legacy string property
+-- first (`MeshId`, `Image`, `Texture`) and then its Content twin (`MeshContent`, ...). Instances loaded
+-- from .rbxm files only carry the Content form. Empty or missing values give nil.
+local function contentId(inst, legacy: string, content: string): string?
+	local value = prop(inst, legacy, nil)
+	if type(value) == "string" and value ~= "" then
+		return value
+	end
+	local c = prop(inst, content, nil)
+	if c ~= nil then
+		local ok, uri = pcall(function()
+			return c.Uri
+		end)
+		if ok and type(uri) == "string" and uri ~= "" then
+			return uri
+		end
+	end
+	return nil
+end
+
 local GUI_CLASSES = {
 	Frame = true,
 	TextLabel = true,
@@ -425,7 +447,15 @@ local function exportGui(inst)
 		node.yAlign = inst.TextYAlignment.Name
 	end
 	if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
-		node.image = inst.Image
+		node.image = contentId(inst, "Image", "ImageContent") or ""
+		node.imageColor = rgb(prop(inst, "ImageColor3", Color3.new(1, 1, 1)))
+		node.imageTransparency = prop(inst, "ImageTransparency", 0)
+		node.scaleType = prop(inst, "ScaleType", Enum.ScaleType.Stretch).Name
+		local rectSize = prop(inst, "ImageRectSize", Vector2.zero)
+		if rectSize.X > 0 and rectSize.Y > 0 then
+			local rectOffset = prop(inst, "ImageRectOffset", Vector2.zero)
+			node.imageRect = { rectOffset.X, rectOffset.Y, rectSize.X, rectSize.Y }
+		end
 	end
 	if inst:IsA("ViewportFrame") then
 		local tier = inst:GetAttribute("Tier")
@@ -501,6 +531,7 @@ local function exportScene(root, extra)
 	local lights = {}
 	local effects = {}
 	local beams = {}
+	local decals = {}
 
 	local function partId(p)
 		return partIndex[idOf(p)]
@@ -523,6 +554,8 @@ local function exportScene(root, extra)
 				material = d.Material.Name,
 				transparency = d.Transparency,
 				group = d:GetAttribute("Group"),
+				-- MeshParts: the preview draws a pinned asset's local GLB (preview/web/models/<key>.glb), else a box.
+				meshId = if d:IsA("MeshPart") then contentId(d, "MeshId", "MeshContent") else nil,
 			})
 			partIndex[idOf(d)] = #parts
 		end
@@ -539,6 +572,27 @@ local function exportScene(root, extra)
 					canvas = { d.CanvasSize.X, d.CanvasSize.Y },
 					lightInfluence = d.LightInfluence,
 					gui = exportGui(d),
+				})
+			end
+		elseif (d:IsA("Decal") or d:IsA("Texture")) and d.Parent and d.Parent:IsA("BasePart") then
+			-- Decals / Textures: the preview draws a pinned image's local source PNG on the face.
+			local id = partId(d.Parent)
+			local image = contentId(d, "Texture", "TextureContent")
+			if id and image and prop(d, "Transparency", 0) < 1 then
+				table.insert(decals, {
+					part = id,
+					face = d.Face.Name,
+					image = image,
+					color = rgb(prop(d, "Color3", Color3.new(1, 1, 1))),
+					transparency = prop(d, "Transparency", 0),
+					tile = if d:IsA("Texture")
+						then {
+							prop(d, "StudsPerTileU", 2),
+							prop(d, "StudsPerTileV", 2),
+							prop(d, "OffsetStudsU", 0),
+							prop(d, "OffsetStudsV", 0),
+						}
+						else nil,
 				})
 			end
 		elseif d:IsA("BillboardGui") and prop(d, "Enabled", true) then
@@ -603,8 +657,16 @@ local function exportScene(root, extra)
 			})
 		end
 	end
-	local scene =
-		{ variant = variant, parts = parts, surfaces = surfaces, billboards = billboards, lights = lights, effects = effects, beams = beams }
+	local scene = {
+		variant = variant,
+		parts = parts,
+		surfaces = surfaces,
+		billboards = billboards,
+		lights = lights,
+		effects = effects,
+		beams = beams,
+		decals = decals,
+	}
 	for k, v in extra or {} do
 		scene[k] = v
 	end
@@ -769,6 +831,9 @@ local function main()
 		player.Name = name
 		player.DisplayName = name
 		player.UserId = 1000 + i
+		-- Newer Lune only resolves Ref properties (Player.Character) within one DOM, so the
+		-- fake players must live in the place's tree alongside their characters.
+		player.Parent = game:GetService("Players")
 		table.insert(fakePlayers, player)
 	end
 	for i, player in fakePlayers do
@@ -939,6 +1004,8 @@ local function main()
 	local Client = game:GetService("StarterPlayer").StarterPlayerScripts.Client
 	local State = requireModule(Client.State)
 	local Sounds = requireModule(Client.Sounds)
+	-- Stills are silent, and Lune can't read Sound.SoundId (no default), so mute playback.
+	Sounds.play = function() end
 	local Guide = requireModule(Client.Guide)
 	local Hud = requireModule(Client.UI.Hud)
 	local Windows = requireModule(Client.UI.Windows)
@@ -976,7 +1043,20 @@ local function main()
 				end
 			end
 		end
-		for _, name in { "Reward", "Confirm", "ConfirmBackdrop", "Offline", "OfflineBackdrop", "TutorialDone", "Float" } do
+		local modals = {
+			"Reward",
+			"Confirm",
+			"ConfirmBackdrop",
+			"Offline",
+			"OfflineBackdrop",
+			"StarterOffer",
+			"StarterOfferBackdrop",
+			"StarterDone",
+			"StarterDoneBackdrop",
+			"TutorialDone",
+			"Float",
+		}
+		for _, name in modals do
 			local existing = screen:FindFirstChild(name)
 			while existing do
 				existing.Parent = nil
@@ -1007,6 +1087,23 @@ local function main()
 	Windows.selectShopTab("Gems")
 	shot("shop_gems")
 	Windows.selectShopTab("Passes")
+
+	-- Cosmetics: this player owns the Rainbow Trail (equipped) and Speedy Sneakers.
+	clearTransient()
+	local stateCosmetics = table.clone(stateNormal)
+	stateCosmetics.cosmetics = {
+		owned = { TrailRainbow = true, SpeedBoost = true },
+		trail = "TrailRainbow",
+		toggles = { SpeedBoost = true, DoubleJump = true, AuraGlow = true, Crown = true },
+		bundleOwned = false,
+		starterOwned = false,
+		starterGranted = false,
+	}
+	settle(stateCosmetics)
+	Windows.open("Shop", { focus = "Cosmetics" })
+	shot("shop_cosmetics")
+	Windows.selectShopTab("Passes")
+	settle(stateNormal)
 
 	clearTransient()
 	Windows.open("Index")
@@ -1055,6 +1152,16 @@ local function main()
 	shot("tutorial_done")
 	Kit.setGlow(Hud.buttons.Index, false)
 	localIndex = 1
+
+	-- Starter pack: the one-time offer and the card that celebrates the grant (last: preview
+	-- modals never close, so they would hide the HUD promo in later shots).
+	clearTransient()
+	settle(stateNormal)
+	Popups.starterOffer()
+	shot("starter_offer")
+	clearTransient()
+	Popups.starter({ kind = "Starter", cash = 25000, gems = 300, item = "TrailRookie" })
+	shot("starter_done")
 
 	-- Loading screen (ReplicatedFirst) on its own ScreenGui.
 	local LoadingScreen = requireModule(game:GetService("ReplicatedFirst").Loader.LoadingScreen)

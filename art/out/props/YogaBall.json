@@ -1,0 +1,15 @@
+{
+ "kind": "YogaBall",
+ "tris": 572,
+ "size": [
+  2.397,
+  2.204,
+  2.398
+ ],
+ "offset": [
+  -0.0,
+  0.19,
+  0.0
+ ],
+ "axes": "Roblox studs: size = [X, Y up, Z]; offset = mesh base centre in the fallback prop frame"
+}

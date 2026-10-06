@@ -1,0 +1,74 @@
+# CD for Chad Aura Tycoon (docs/deploy.md, "CI/CD").
+# Every push to main (unless the head commit message contains "[skip deploy]") and every manual run: the full checks
+# plus the release build (scripts/build-release.sh), then tools/deploy.py publishes build/ChadAuraTycoon.rbxl to the
+# place in deploy/target.json and makes sure Max Players (serverSize) is 6, one per plot.
+# The only credential is the repository secret ROBLOX_API_KEY, given to the publish step alone.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: "published = live for new servers; saved = stored in version history only"
+        type: choice
+        options: [published, saved]
+        default: published
+
+permissions:
+  contents: read
+
+# Never run two publishes at once; a newer push waits for the running one instead of cancelling it.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ !contains(github.event.head_commit.message, '[skip deploy]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # 'true' or 'false' only: lets the first step fail fast without handing the key to any step but the publish.
+      HAS_KEY: ${{ secrets.ROBLOX_API_KEY != '' }}
+      VERSION_TYPE: ${{ inputs.version_type || 'published' }}
+    steps:
+      - name: Require the ROBLOX_API_KEY secret
+        run: |
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::error title=Missing secret::Repository secret ROBLOX_API_KEY is not set. Add it with: gh secret set ROBLOX_API_KEY --repo ${{ github.repository }} < ~/RobloxProjects/.roblox-api-key"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: tools/ci-install-tools.sh
+
+      - name: Check, test and release build
+        run: scripts/build-release.sh
+
+      - name: Publish to Roblox
+        env:
+          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ "$VERSION_TYPE" = "saved" ]; then
+            python3 tools/deploy.py publish --saved
+          else
+            python3 tools/deploy.py publish
+            # Idempotent: reads serverSize and only changes it when it is not 6.
+            python3 tools/deploy.py server-size 6
+          fi
+
+      - name: Upload release file and deploy history
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: |
+            build/ChadAuraTycoon.rbxl
+            deploy/history.json
+          retention-days: 90
+          if-no-files-found: warn

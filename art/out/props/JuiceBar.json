@@ -1,0 +1,10 @@
+{
+ "kind": "JuiceBar",
+ "tris": 2363,
+ "size": [
+  11.62,
+  9.85,
+  10.64
+ ],
+ "axes": "Roblox studs [X, Y up, Z]; front faces -Z; origin at the base centre"
+}

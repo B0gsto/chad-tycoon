@@ -1,0 +1,15 @@
+{
+ "kind": "OrbBall",
+ "tris": 1216,
+ "size": [
+  1.6,
+  1.6,
+  1.6
+ ],
+ "offsetFromBallCentre": [
+  -0.0,
+  0.0,
+  0.0
+ ],
+ "axes": "Roblox studs [X, Y up, Z]; front faces -Z; at ball diameter 1.6 (scale both by d / 1.6)"
+}

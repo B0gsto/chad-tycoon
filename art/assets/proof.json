@@ -1,0 +1,7 @@
+{
+  "domain": "proof",
+  "assets": [
+    { "name": "sphere", "file": "art/proof/out/proof_sphere.png", "kind": "Image" },
+    { "name": "cube", "file": "art/proof/out/proof_cube.fbx", "kind": "Model" }
+  ]
+}

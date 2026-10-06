@@ -1,0 +1,15 @@
+{
+ "kind": "Kettlebell",
+ "tris": 1124,
+ "size": [
+  1.4,
+  1.94,
+  1.439
+ ],
+ "offset": [
+  0.0,
+  0.0,
+  -0.02
+ ],
+ "axes": "Roblox studs: size = [X, Y up, Z]; offset = mesh base centre in the fallback prop frame"
+}

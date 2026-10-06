@@ -1,0 +1,7 @@
+{
+  "domain": "hud",
+  "assets": [
+    {"name": "Dumbbell", "file": "art/out/ui/HudDumbbell.png", "kind": "Image"},
+    {"name": "DumbbellGlow", "file": "art/out/ui/HudDumbbellGlow.png", "kind": "Image"}
+  ]
+}

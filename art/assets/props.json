@@ -1,0 +1,32 @@
+{
+  "domain": "props",
+  "assets": [
+    {"name": "OrbBall", "file": "art/out/props/OrbBall.fbx", "kind": "Model"},
+    {"name": "OrbShine", "file": "art/out/props/OrbShine.fbx", "kind": "Model"},
+    {"name": "Barbell", "file": "art/out/props/Barbell.fbx", "kind": "Model"},
+    {"name": "BeachBall", "file": "art/out/props/BeachBall.fbx", "kind": "Model"},
+    {"name": "Bench", "file": "art/out/props/Bench.fbx", "kind": "Model"},
+    {"name": "Converter", "file": "art/out/props/Converter.fbx", "kind": "Model"},
+    {"name": "Crate", "file": "art/out/props/Crate.fbx", "kind": "Model"},
+    {"name": "CrateCracker", "file": "art/out/props/CrateCracker.fbx", "kind": "Model"},
+    {"name": "CrateCrackerVip", "file": "art/out/props/CrateCrackerVip.fbx", "kind": "Model"},
+    {"name": "Crown", "file": "art/out/props/Crown.fbx", "kind": "Model"},
+    {"name": "Dumbbell", "file": "art/out/props/Dumbbell.fbx", "kind": "Model"},
+    {"name": "DumbbellRack", "file": "art/out/props/DumbbellRack.fbx", "kind": "Model"},
+    {"name": "GigaStatue", "file": "art/out/props/GigaStatue.fbx", "kind": "Model"},
+    {"name": "HubBench", "file": "art/out/props/HubBench.fbx", "kind": "Model"},
+    {"name": "JuiceBar", "file": "art/out/props/JuiceBar.fbx", "kind": "Model"},
+    {"name": "Kettlebell", "file": "art/out/props/Kettlebell.fbx", "kind": "Model"},
+    {"name": "PalmPlanter", "file": "art/out/props/PalmPlanter.fbx", "kind": "Model"},
+    {"name": "PalmTree", "file": "art/out/props/PalmTree.fbx", "kind": "Model"},
+    {"name": "PunchBag", "file": "art/out/props/PunchBag.fbx", "kind": "Model"},
+    {"name": "Speaker", "file": "art/out/props/Speaker.fbx", "kind": "Model"},
+    {"name": "TowelStack", "file": "art/out/props/TowelStack.fbx", "kind": "Model"},
+    {"name": "Treadmill", "file": "art/out/props/Treadmill.fbx", "kind": "Model"},
+    {"name": "Trophy", "file": "art/out/props/Trophy.fbx", "kind": "Model"},
+    {"name": "TrophyPodium", "file": "art/out/props/TrophyPodium.fbx", "kind": "Model"},
+    {"name": "Vault", "file": "art/out/props/Vault.fbx", "kind": "Model"},
+    {"name": "WaterCooler", "file": "art/out/props/WaterCooler.fbx", "kind": "Model"},
+    {"name": "YogaBall", "file": "art/out/props/YogaBall.fbx", "kind": "Model"}
+  ]
+}

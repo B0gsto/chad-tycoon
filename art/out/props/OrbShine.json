@@ -1,0 +1,15 @@
+{
+ "kind": "OrbShine",
+ "tris": 80,
+ "size": [
+  1.0394,
+  0.3271,
+  0.2698
+ ],
+ "offsetFromBallCentre": [
+  0.0129,
+  0.5526,
+  -0.5059
+ ],
+ "axes": "Roblox studs [X, Y up, Z]; front faces -Z; at ball diameter 1.6 (scale both by d / 1.6)"
+}

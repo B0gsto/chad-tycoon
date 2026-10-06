@@ -1,0 +1,13 @@
+{
+  "domain": "faces",
+  "assets": [
+    {"name": "Happy", "file": "art/out/faces/Happy.png", "kind": "Image"},
+    {"name": "Proud", "file": "art/out/faces/Proud.png", "kind": "Image"},
+    {"name": "Shock", "file": "art/out/faces/Shock.png", "kind": "Image"},
+    {"name": "Awe", "file": "art/out/faces/Awe.png", "kind": "Image"},
+    {"name": "Sad", "file": "art/out/faces/Sad.png", "kind": "Image"},
+    {"name": "Idea", "file": "art/out/faces/Idea.png", "kind": "Image"},
+    {"name": "Fury", "file": "art/out/faces/Fury.png", "kind": "Image"},
+    {"name": "Smirk", "file": "art/out/faces/Smirk.png", "kind": "Image"}
+  ]
+}

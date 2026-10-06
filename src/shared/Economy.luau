@@ -20,7 +20,12 @@ Economy.VERSION = "1.1.0"
 Economy.MAX_TIER = 25
 Economy.MAX_BUY_TIER = 15
 Economy.MERGE_RATIO = 2
-Economy.DISPLAY_SLOTS = 30
+-- A player owns at most UNIT_CAP units, each shown as its own model on the display rack
+-- (DISPLAY_ROWS shelves, DISPLAY_COLS units per shelf on average). See addUnitsCapped.
+Economy.UNIT_CAP = 100
+Economy.DISPLAY_ROWS = 10
+Economy.DISPLAY_COLS = 10
+Economy.DISPLAY_SLOTS = Economy.DISPLAY_ROWS * Economy.DISPLAY_COLS
 
 -- Production ------------------------------------------------------------------
 
@@ -61,10 +66,14 @@ function Economy.highestTier(discovered: { number }): number
 end
 
 -- Merges every pair it can, cascading upward. Mutates `units` in place.
--- Returns how many merges happened and the highest tier that received a unit.
-function Economy.mergeAll(units: { number }): (number, number)
+-- Returns how many merges happened, the highest tier that received a unit and
+-- the merge steps in order (one per tier: `made` units of `tier` + 1 created).
+export type MergeStep = { tier: number, made: number }
+
+function Economy.mergeAll(units: { number }): (number, number, { MergeStep })
 	local merges = 0
 	local topCreated = 0
+	local steps: { MergeStep } = {}
 	for tier = 1, Economy.MAX_TIER - 1 do
 		local count = units[tier] or 0
 		local made = math.floor(count / Economy.MERGE_RATIO)
@@ -73,9 +82,96 @@ function Economy.mergeAll(units: { number }): (number, number)
 			units[tier + 1] = (units[tier + 1] or 0) + made
 			merges += made
 			topCreated = tier + 1
+			table.insert(steps, { tier = tier, made = made })
 		end
 	end
-	return merges, topCreated
+	return merges, topCreated, steps
+end
+
+export type CapResult = {
+	-- The new per-tier counts (1..MAX_TIER); the input table is left untouched.
+	units: { number },
+	-- How many of the incoming units were taken (charge only for these).
+	accepted: number,
+	-- Overflow merges in the order they happened; consecutive merges of the same tier are
+	-- combined into one step (`made` units of `tier` + 1 created).
+	steps: { MergeStep },
+}
+
+-- Lowest tier below MAX_TIER that holds a mergeable pair, or nil.
+local function lowestPair(units: { number }): number?
+	for tier = 1, Economy.MAX_TIER - 1 do
+		if units[tier] >= Economy.MERGE_RATIO then
+			return tier
+		end
+	end
+	return nil
+end
+
+-- Adds `amount` units of `tier` without letting the total pass `cap` (default UNIT_CAP).
+-- Whenever a unit would arrive beyond the cap, the lowest tier holding a pair merges once
+-- first (the arriving unit counts, so it can complete that pair); the unit made by a merge
+-- may pair up again later. The top tier never merges, so once nothing can merge the rest of
+-- the batch is refused. A count already above the cap (an old save; pass amount 0) is merged
+-- down first, and while it stays above the cap nothing new is accepted.
+-- Every merge conserves unitValue exactly, so the result is worth the old units plus
+-- `accepted` units of `tier`.
+function Economy.addUnitsCapped(units: { number }, tier: number, amount: number, cap: number?): CapResult
+	local limit = cap or Economy.UNIT_CAP
+	local out: { number } = table.create(Economy.MAX_TIER, 0)
+	local total = 0
+	for t = 1, Economy.MAX_TIER do
+		out[t] = units[t] or 0
+		total += out[t]
+	end
+	local steps: { MergeStep } = {}
+	local function mergeOnce(): boolean
+		local t = lowestPair(out)
+		if not t then
+			return false
+		end
+		out[t] -= Economy.MERGE_RATIO
+		out[t + 1] += 1
+		total -= Economy.MERGE_RATIO - 1
+		local last = steps[#steps]
+		if last and last.tier == t then
+			last.made += 1
+		else
+			table.insert(steps, { tier = t, made = 1 })
+		end
+		return true
+	end
+
+	while total > limit do
+		if not mergeOnce() then
+			break
+		end
+	end
+
+	local remaining = math.max(0, math.floor(amount))
+	local accepted = 0
+	if total <= limit then
+		-- Everything that fits without merging.
+		local direct = math.min(remaining, limit - total)
+		out[tier] += direct
+		total += direct
+		accepted += direct
+		remaining -= direct
+		-- The rest one at a time: an arrival past the cap is paid for by one merge (a merge
+		-- removes at least one unit).
+		while remaining > 0 do
+			out[tier] += 1
+			total += 1
+			if total > limit and not mergeOnce() then
+				out[tier] -= 1
+				total -= 1
+				break
+			end
+			accepted += 1
+			remaining -= 1
+		end
+	end
+	return { units = out, accepted = accepted, steps = steps }
 end
 
 -- Buying ----------------------------------------------------------------------
@@ -199,13 +295,29 @@ end
 
 Economy.CHEST_RARITIES = { "Common", "Uncommon", "Rare", "Epic", "Legendary" }
 
-Economy.CHEST_INFO = {
-	Common = { weight = 82, unlockSeconds = 180, gemPrice = 5, priceMult = 1, offsets = { { -2, 75 }, { -1, 20 }, { 0, 5 } } },
-	Uncommon = { weight = 12, unlockSeconds = 480, gemPrice = 12, priceMult = 2.5, offsets = { { -1, 70 }, { 0, 25 }, { 1, 5 } } },
-	Rare = { weight = 4.5, unlockSeconds = 1200, gemPrice = 30, priceMult = 6, offsets = { { -1, 40 }, { 0, 45 }, { 1, 15 } } },
-	Epic = { weight = 1.2, unlockSeconds = 2700, gemPrice = 60, priceMult = 15, offsets = { { 0, 60 }, { 1, 32 }, { 2, 8 } } },
-	Legendary = { weight = 0.3, unlockSeconds = 5400, gemPrice = 120, priceMult = 40, offsets = { { 0, 30 }, { 1, 50 }, { 2, 20 } } },
+-- `offsets` = { tier offset from the player's highest tier, % chance }.
+-- `minAnchor` = the lowest tier the offsets are applied to: at very low highest
+-- tiers Rare+ crates shift their window up instead of piling the clamped
+-- chances onto tier 1, so they still feel better than a Common crate.
+export type ChestInfo = {
+	weight: number,
+	unlockSeconds: number,
+	minAnchor: number?,
+	offsets: { { number } },
 }
+
+Economy.CHEST_INFO = {
+	Common = { weight = 82, unlockSeconds = 180, offsets = { { -2, 75 }, { -1, 20 }, { 0, 5 } } },
+	Uncommon = { weight = 12, unlockSeconds = 480, offsets = { { -1, 60 }, { 0, 32 }, { 1, 8 } } },
+	Rare = { weight = 4.5, unlockSeconds = 1200, minAnchor = 2, offsets = { { -1, 20 }, { 0, 50 }, { 1, 30 } } },
+	Epic = { weight = 1.2, unlockSeconds = 2700, minAnchor = 2, offsets = { { 0, 30 }, { 1, 50 }, { 2, 20 } } },
+	Legendary = {
+		weight = 0.3,
+		unlockSeconds = 5400,
+		minAnchor = 2,
+		offsets = { { 0, 15 }, { 1, 45 }, { 2, 30 }, { 3, 10 } },
+	},
+} :: { [string]: ChestInfo }
 
 Economy.CHEST_SPAWN_INTERVAL = 40
 Economy.CHEST_SPAWN_CHANCE = 0.45
@@ -225,12 +337,13 @@ end
 export type Odds = { tier: number, chance: number }
 
 -- Possible tiers and their % chance, relative to the player's highest tier.
--- Offsets that clamp onto the same tier are combined.
+-- Offsets that clamp onto the same tier are combined (see `minAnchor`).
 function Economy.chestOdds(rarity: string, highestTier: number): { Odds }
 	local info = Economy.CHEST_INFO[rarity]
+	local anchor = math.max(highestTier, info.minAnchor or 1)
 	local byTier: { [number]: number } = {}
 	for _, pair in info.offsets do
-		local tier = math.clamp(highestTier + pair[1], 1, Economy.MAX_TIER)
+		local tier = math.clamp(anchor + pair[1], 1, Economy.MAX_TIER)
 		byTier[tier] = (byTier[tier] or 0) + pair[2]
 	end
 	local list: { Odds } = {}
@@ -250,9 +363,19 @@ function Economy.rollChest(rarity: string, highestTier: number, rng: () -> numbe
 	return entry.tier
 end
 
-function Economy.chestMoneyPrice(rarity: string, highestTier: number): number
-	local info = Economy.CHEST_INFO[rarity]
-	return 40 * Economy.unitRate(math.max(highestTier - 1, 1)) * info.priceMult
+-- What a unit of `tier` costs to make by buying tier-1 units and merging them up
+-- (the cheapest way to get one, since higher buy tiers cost more per tier-1 unit).
+function Economy.unitValue(tier: number): number
+	return Economy.BUY_BASE_PRICE * Economy.MERGE_RATIO ^ (math.max(tier, 1) - 1)
+end
+
+-- Expected unit value of what a crate of this rarity contains.
+function Economy.chestExpectedValue(rarity: string, highestTier: number): number
+	local total = 0
+	for _, entry in Economy.chestOdds(rarity, highestTier) do
+		total += Economy.unitValue(entry.tier) * entry.chance / 100
+	end
+	return total
 end
 
 function Economy.unlockSeconds(rarity: string, premium: boolean): number
@@ -297,9 +420,93 @@ function Economy.incomePerSecond(production: number, processRate: number, moneyM
 	return math.min(production, processRate) * Economy.CASH_PER_POINT * moneyMult
 end
 
--- Money developer products scale with income so they stay useful.
-function Economy.moneyPackAmount(income: number, seconds: number, minimum: number): number
-	return math.max(minimum, math.floor(income * seconds))
+-- Progression (what Robux packs scale with) ---------------------------------------
+
+-- Durable progress only: the highest tier ever discovered and the converter level. Neither
+-- can go down, so selling, merging or a bad multiplier moment never makes a pack worse.
+-- Buy tier is left out: a player can only buy tiers they have already discovered, so it
+-- never says more than `tier` does.
+export type Progression = { tier: number, processLevel: number }
+
+function Economy.progression(highestTier: number, processLevel: number): Progression
+	return {
+		tier = math.clamp(math.floor(highestTier), 1, Economy.MAX_TIER),
+		processLevel = math.max(0, math.floor(processLevel)),
+	}
+end
+
+-- Cash per second a player at this progression earns at the very least: the output of ONE
+-- unit of their highest tier, run through their own converter, with no boosts. Anyone who
+-- discovered that tier made such a unit (and a real rack holds many more units below it),
+-- and the converter cap is the same one Tycoon.income applies, so the floor stays at or
+-- below what a real player at that stage earns.
+function Economy.progressionIncome(progression: Progression): number
+	return Economy.incomePerSecond(Economy.unitRate(progression.tier), Economy.processRate(progression.processLevel), 1)
+end
+
+-- Cash packs: `seconds` of income at the better of the live income and the progression
+-- floor, never below the pack's fixed `minimum` (which only matters for brand-new players).
+function Economy.moneyPackAmount(income: number, seconds: number, minimum: number, progression: Progression): number
+	local perSecond = math.max(income, Economy.progressionIncome(progression))
+	return math.max(minimum, math.floor(perSecond * seconds))
+end
+
+-- Rizz packs multiply their base amount by this: x1 at tier 1 rising smoothly to x4 at
+-- the top tier. Crate timers (and so finishGemCost) do not grow with tier, so a
+-- late-game Rizz buys the same skips as an early one; x4 keeps the biggest pack at about
+-- 15 hours of skipping every crate that spawns instead of days.
+Economy.GEM_PACK_MAX_FACTOR = 4
+Economy.GEM_PACK_CURVE = 1.25
+
+function Economy.gemPackFactor(progression: Progression): number
+	local t = (progression.tier - 1) / (Economy.MAX_TIER - 1)
+	return 1 + (Economy.GEM_PACK_MAX_FACTOR - 1) * t ^ Economy.GEM_PACK_CURVE
+end
+
+-- Rounds to friendly shop numbers: nearest 5 below 500, nearest 50 from there.
+local function friendly(amount: number): number
+	local step = if amount < 500 then 5 else 50
+	return math.max(step, math.floor(amount / step + 0.5) * step)
+end
+
+function Economy.gemPackAmount(base: number, progression: Progression): number
+	return math.max(base, friendly(base * Economy.gemPackFactor(progression)))
+end
+
+-- Game modes (Parkour) ------------------------------------------------------------
+
+-- Finishing a mode pays exactly what the smallest cash pack would give the player right now
+-- (moneyPackAmount with that pack's seconds and minimum): on the first finish ever and then
+-- at most once per MODE_REWARD_COOLDOWN. Players may run again straight away, but finishes
+-- inside the cooldown pay no cash. The first finish ever also pays Rizz.
+Economy.MODE_REWARD_COOLDOWN = 600
+Economy.MODE_FIRST_CLEAR_GEMS = 25
+
+export type ModeReward = {
+	-- Cash this finish pays (packCash when `full`, else 0).
+	cash: number,
+	gems: number,
+	full: boolean,
+	packCash: number,
+}
+
+function Economy.modeReward(
+	income: number,
+	progression: Progression,
+	packSeconds: number,
+	packMinimum: number,
+	firstClear: boolean,
+	lastFullAt: number,
+	now: number
+): ModeReward
+	local packCash = Economy.moneyPackAmount(income, packSeconds, packMinimum, progression)
+	local full = firstClear or now >= lastFullAt + Economy.MODE_REWARD_COOLDOWN
+	return {
+		cash = if full then packCash else 0,
+		gems = if firstClear then Economy.MODE_FIRST_CLEAR_GEMS else 0,
+		full = full,
+		packCash = packCash,
+	}
 end
 
 -- Tier rarity bands (used for label colours in the Index and on units).

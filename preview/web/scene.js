@@ -7,6 +7,7 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
 const srgb = (c) => new THREE.Color().setRGB(c[0] / 255, c[1] / 255, c[2] / 255, THREE.SRGBColorSpace);
 
@@ -179,7 +180,95 @@ const wedgeGeo = (() => {
 	return geo;
 })();
 
+// --- Uploaded Blender art ---------------------------------------------------------------
+// The preview cannot fetch Roblox assets, so shoot.mjs serves /asset-index.json (built from
+// assets/pins.json): image asset id -> local source PNG URL, mesh id -> { key, glb URL or null }.
+let assetIndex = { images: {}, meshes: {} };
+export async function loadAssetIndex(url = "/asset-index.json") {
+	try {
+		const res = await fetch(url);
+		if (res.ok) assetIndex = await res.json();
+	} catch {
+		// No index (e.g. a page opened without shoot.mjs): every asset falls back.
+	}
+	return assetIndex;
+}
+
+// "rbxassetid://123", "rbxasset://...?id=123" or "http://www.roblox.com/asset/?id=123" -> "123".
+function assetNumber(content) {
+	if (typeof content !== "string") return null;
+	const m = content.match(/^rbxassetid:\/\/(\d+)\s*$/) || content.match(/[?&]id=(\d+)/);
+	return m ? m[1] : null;
+}
+
+// Local URL of the pinned source PNG for an image content id, or null.
+export function assetImageUrl(content) {
+	const id = assetNumber(content);
+	return (id && assetIndex.images[id]) || null;
+}
+
+// Pinned Blender meshes (preview/web/models/<key with / as __>.glb). The GLB comes from the same Blender
+// scene as the uploaded FBX (rbxkit.export_glb), which Roblox imports turned 180 degrees about Y, so the
+// template is turned the same way, then centred on its bounds so it can be scaled to each part's Size.
+const meshModels = new Map();
+function loadMeshModel(url) {
+	if (!meshModels.has(url)) {
+		meshModels.set(
+			url,
+			new GLTFLoader().loadAsync(url).then(
+				(gltf) => {
+					const inner = gltf.scene;
+					inner.rotation.y = Math.PI;
+					inner.updateMatrixWorld(true);
+					const box = new THREE.Box3().setFromObject(inner);
+					const size = box.getSize(new THREE.Vector3());
+					const center = box.getCenter(new THREE.Vector3());
+					inner.position.sub(center);
+					inner.traverse((o) => {
+						if (!o.isMesh) return;
+						o.castShadow = true;
+						o.receiveShadow = true;
+						if (o.geometry.attributes.color) {
+							for (const m of [o.material].flat()) {
+								m.vertexColors = true;
+								m.needsUpdate = true;
+							}
+						}
+					});
+					const root = new THREE.Group();
+					root.add(inner);
+					return { root, size: [size.x || 1, size.y || 1, size.z || 1] };
+				},
+				() => null,
+			),
+		);
+	}
+	return meshModels.get(url);
+}
+const meshTemplates = {};
+function meshUrl(part) {
+	const id = assetNumber(part.meshId);
+	return (id && assetIndex.meshes[id]?.glb) || null;
+}
+
+function buildMesh(part) {
+	const template = meshTemplates[meshUrl(part)];
+	if (!template) return null;
+	const model = template.root.clone(true);
+	model.scale.set(part.size[0] / template.size[0], part.size[1] / template.size[1], part.size[2] / template.size[2]);
+	const holder = new THREE.Group();
+	holder.matrixAutoUpdate = false;
+	holder.matrix.copy(cframeMatrix(part.cf));
+	holder.add(model);
+	holder.userData.part = part;
+	return holder;
+}
+
 function buildPart(part) {
+	if (part.meshId) {
+		const mesh = buildMesh(part);
+		if (mesh) return mesh;
+	}
 	const [sx, sy, sz] = part.size;
 	let mesh;
 	if (part.shape === "Ball") {
@@ -251,6 +340,33 @@ function buildSurface(surface, part, texture) {
 	return holder;
 }
 
+// Decal / Texture: the image on a plane just outside the face, tinted by Color3 and lit like the part.
+// Textures tile every StudsPerTileU x StudsPerTileV studs.
+function buildDecal(decal, part, texture) {
+	const face = FACES[decal.face] || FACES.Front;
+	const [w, h] = face.dims(part.size);
+	if (decal.tile) {
+		const [u, v, ou, ov] = decal.tile;
+		texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+		texture.repeat.set(w / Math.max(u, 0.01), h / Math.max(v, 0.01));
+		texture.offset.set(ou / Math.max(u, 0.01), -ov / Math.max(v, 0.01));
+	}
+	const mat = new THREE.MeshStandardMaterial({
+		map: texture, color: srgb(decal.color), transparent: true, opacity: 1 - (decal.transparency || 0),
+		roughness: 0.8, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2,
+	});
+	const plane = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+	plane.rotation.set(...face.rot);
+	plane.position.set(...face.normal.map((n, i) => n * (part.size[i] / 2 + 0.02)));
+	plane.renderOrder = 1;
+	plane.receiveShadow = true;
+	const holder = new THREE.Group();
+	holder.matrixAutoUpdate = false;
+	holder.matrix.copy(cframeMatrix(part.cf));
+	holder.add(plane);
+	return holder;
+}
+
 function buildBillboard(bb, texture) {
 	const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, toneMapped: false, depthWrite: false });
 	const sprite = new THREE.Sprite(mat);
@@ -314,7 +430,7 @@ export async function renderScene(canvas, data, opts) {
 		const sky = srgb(theme.sky);
 		const fog = srgb(theme.fog);
 		scene.background = sky.clone().lerp(fog, 0.35);
-		scene.fog = new THREE.Fog(fog, opts.fogNear ?? 220, opts.fogFar ?? 900);
+		scene.fog = new THREE.Fog(fog, opts.fogNear ?? 900, opts.fogFar ?? 3000);
 	}
 	const pmrem = new THREE.PMREMGenerator(renderer);
 	scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -338,10 +454,15 @@ export async function renderScene(canvas, data, opts) {
 	const camPos = new THREE.Vector3(...opts.camera.pos);
 	const include = (p) => opts.group == null || p.group === opts.group;
 
+	if (!opts.silhouette) {
+		const meshUrls = [...new Set(data.parts.map(meshUrl).filter(Boolean))];
+		await Promise.all(meshUrls.map(async (u) => (meshTemplates[u] = await loadMeshModel(u))));
+	}
+
 	const partsById = [];
 	data.parts.forEach((p, i) => {
 		if (!include(p)) return;
-		const part = opts.silhouette ? { ...p, color: [15, 15, 20], material: "SmoothPlastic", transparency: 0 } : p;
+		const part = opts.silhouette ? { ...p, meshId: undefined, color: [15, 15, 20], material: "SmoothPlastic", transparency: 0 } : p;
 		const obj = buildPart(part);
 		partsById[i + 1] = p;
 		scene.add(obj);
@@ -356,6 +477,16 @@ export async function renderScene(canvas, data, opts) {
 			tex.colorSpace = THREE.SRGBColorSpace;
 			tex.anisotropy = 8;
 			scene.add(buildSurface(surface, part, tex));
+		}
+		for (const decal of data.decals || []) {
+			const part = partsById[decal.part];
+			const url = assetImageUrl(decal.image);
+			if (!part || !url) continue;
+			const tex = await new THREE.TextureLoader().loadAsync(url).catch(() => null);
+			if (!tex) continue;
+			tex.colorSpace = THREE.SRGBColorSpace;
+			tex.anisotropy = 8;
+			scene.add(buildDecal(decal, part, tex));
 		}
 		if (!opts.noBillboards) {
 			for (const [i, bb] of data.billboards.entries()) {

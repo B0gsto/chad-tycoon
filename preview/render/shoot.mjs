@@ -20,10 +20,41 @@ const CHROME = process.env.CHROME || "/opt/pw-browsers/chromium_headless_shell-1
 const variants = process.argv.slice(2).length ? process.argv.slice(2) : ["chad"];
 
 // --- static server ------------------------------------------------------------------
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json", ".png": "image/png", ".ttf": "font/ttf" };
+const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json", ".png": "image/png", ".ttf": "font/ttf", ".glb": "model/gltf-binary" };
+// Uploaded Blender art (assets/pins.json) is drawn from the local files it was uploaded from:
+// /asset-index.json maps image asset ids to their source PNGs (served from the game root under
+// /game/art/ and /game/assets/) and mesh ids to preview/web/models/<key with / as __>.glb when present.
+const GAME = resolve(ROOT, "..");
+const GAME_DIRS = ["art", "assets"].map((d) => join(GAME, d) + "/");
+function assetIndex() {
+	const index = { images: {}, meshes: {} };
+	let pins = {};
+	try {
+		pins = JSON.parse(readFileSync(join(GAME, "assets", "pins.json"), "utf8")).pins || {};
+	} catch {}
+	for (const [key, pin] of Object.entries(pins)) {
+		if (!pin || !pin.assetId) continue;
+		if (pin.kind === "Image" && pin.source && existsSync(join(GAME, pin.source))) {
+			index.images[String(pin.assetId)] = "/game/" + pin.source.split("/").map(encodeURIComponent).join("/");
+		} else if (pin.kind === "Model" && pin.meshId) {
+			const id = String(pin.meshId).match(/(\d+)\s*$/)?.[1];
+			const glb = key.replaceAll("/", "__") + ".glb";
+			if (id) index.meshes[id] = { key, glb: existsSync(join(ROOT, "web", "models", glb)) ? `/web/models/${glb}` : null };
+		}
+	}
+	return index;
+}
+
 const server = createServer((req, res) => {
-	const path = join(ROOT, decodeURIComponent(new URL(req.url, "http://x").pathname));
-	if (!path.startsWith(ROOT) || !existsSync(path)) {
+	const pathname = decodeURIComponent(new URL(req.url, "http://x").pathname);
+	if (pathname === "/asset-index.json") {
+		res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(assetIndex()));
+		return;
+	}
+	const fromGame = pathname.startsWith("/game/");
+	const path = fromGame ? join(GAME, pathname.slice("/game/".length)) : join(ROOT, pathname);
+	const allowed = fromGame ? GAME_DIRS.some((d) => path.startsWith(d)) : path.startsWith(ROOT);
+	if (!allowed || !existsSync(path)) {
 		res.writeHead(404).end();
 		return;
 	}
@@ -39,7 +70,7 @@ function normalize(value) {
 	if (value && typeof value === "object") {
 		const out = {};
 		for (const [k, v] of Object.entries(value)) {
-			const isListKey = k === "children" || k === "parts" || k === "surfaces" || k === "billboards" || k === "lights" || k === "effects" || k === "beams";
+			const isListKey = k === "children" || k === "parts" || k === "surfaces" || k === "billboards" || k === "lights" || k === "effects" || k === "beams" || k === "decals";
 			out[k] = isListKey && !Array.isArray(v) ? [] : normalize(v);
 		}
 		return out;
@@ -106,9 +137,11 @@ async function bakeTextures(page, variant, sceneName, scene) {
 		jobs.push({ kind: "billboards", i, gui: b.gui, w, h });
 	});
 	let baked = 0;
+	// Cached bakes are keyed on the pinned images too, so a new upload re-bakes the GUIs that show it.
+	const pinnedImages = JSON.stringify(assetIndex().images);
 	for (const job of jobs) {
 		const hasContent = JSON.stringify(job.gui).includes('"text":"') || JSON.stringify(job.gui).includes('"class":"Frame"') || JSON.stringify(job.gui).includes("Image");
-		const key = createHash("sha1").update(JSON.stringify([job.gui, job.w, job.h])).digest("hex").slice(0, 16);
+		const key = createHash("sha1").update(JSON.stringify(JSON.stringify(job.gui).includes("rbxassetid") ? [job.gui, job.w, job.h, pinnedImages] : [job.gui, job.w, job.h])).digest("hex").slice(0, 16);
 		const file = join(texDir, key + ".png");
 		if (!existsSync(file)) {
 			// Skip labels whose every text is empty (unowned plots).
@@ -170,27 +203,34 @@ function shotList(world) {
 	const plot = world.plots[0];
 	const P = (x, y, z) => toWorld(plot, [x, y, z]);
 	// Behind the main player, who wades through the orb pool toward the bleachers.
-	const play = { pos: P(-6, 27, -42), look: P(0, -2, 17), fov: 58 };
+	const play = { pos: P(-5, 21, -31), look: P(0, 2, 17), fov: 58 };
 	// The fresh tutorial player owns plot 4.
 	const fresh = world.plots[3];
 	const F = (x, y, z) => toWorld(fresh, [x, y, z]);
-	const tutorial = { pos: F(6, 25, -48), look: F(-28, 0, 2), fov: 56 };
+	const tutorial = { pos: F(-4, 20, -36), look: F(12, 1, 8), fov: 56 };
 	return [
-		{ name: "01-overview", scene: "world", gui: "none", camera: { pos: [-30, 235, -275], look: [0, 0, 45], fov: 55 }, extra: { shadowSpan: 320, fogNear: 400, fogFar: 1400 } },
-		{ name: "02-your-plot", scene: "world", gui: "none", camera: { pos: P(0, 62, -84), look: P(0, -2, 8), fov: 60 }, extra: { shadowSpan: 120 } },
+		{ name: "01-overview", scene: "world", gui: "none", camera: { pos: [-24, 180, -235], look: [0, 0, 30], fov: 55 }, extra: { shadowSpan: 320 } },
+		{ name: "02-your-plot", scene: "world", gui: "none", camera: { pos: P(0, 50, -68), look: P(0, 0, 8), fov: 60 }, extra: { shadowSpan: 120 } },
 		{ name: "03-gameplay-hud", scene: "world", gui: "hud", camera: play },
 		{ name: "04-shop", scene: "world", gui: "shop", camera: play },
 		{ name: "05-index", scene: "world", gui: "index", camera: play },
 		{ name: "06-ranking", scene: "world", gui: "ranking", camera: play },
 		{ name: "07-new-unit-reward", scene: "world", gui: "reward", camera: play },
-		{ name: "08-holding-crate", scene: "world_held", gui: "crate", camera: { pos: P(20, 9, -41), look: P(36, 3, -16), fov: 58 } },
+		{ name: "08-holding-crate", scene: "world_held", gui: "crate", camera: { pos: P(2, 9, -36), look: P(16, 2, -14), fov: 58 } },
 		{ name: "09-settings", scene: "world", gui: "settings", camera: play },
-		{ name: "10-all-25-tiers", scene: "showcase", gui: "none", camera: { pos: [0, 23, 1000 - 61], look: [0, 7.5, 1004], fov: 56 }, extra: { shadowSpan: 80, fogNear: 300, fogFar: 1200 } },
+		{ name: "10-all-25-tiers", scene: "showcase", gui: "none", camera: { pos: [0, 23, 1000 - 61], look: [0, 7.5, 1004], fov: 56 }, extra: { shadowSpan: 80 } },
 		{ name: "11-tutorial", scene: "world_tutorial", gui: "tutorial", camera: tutorial },
 		{ name: "12-tutorial-complete", scene: "world_tutorial", gui: "tutorial_done", camera: tutorial },
 		{ name: "13-loading-screen", scene: "world", gui: "loading", camera: play },
 		{ name: "14-offline-earnings", scene: "world", gui: "offline", camera: play },
 		{ name: "15-shop-premium", scene: "world", gui: "shop_gems", camera: play },
+		// Close-ups for art review (no UI).
+		{ name: "16-pen", scene: "world", gui: "none", camera: { pos: P(19, 11, -9), look: P(0, 2, 15), fov: 55 }, extra: { shadowSpan: 90 } },
+		{ name: "17-stage", scene: "world", gui: "none", camera: { pos: P(0, 13, 1), look: P(0, 8, 32), fov: 62 }, extra: { shadowSpan: 90 } },
+		{ name: "18-machines", scene: "world", gui: "none", camera: { pos: P(-4, 14, -30), look: P(-34, 3, -8), fov: 58 }, extra: { shadowSpan: 90 } },
+		{ name: "19-entrance", scene: "world", gui: "none", camera: { pos: P(10, 9, -62), look: P(0, 6, -20), fov: 58 }, extra: { shadowSpan: 120 } },
+		{ name: "20-hub", scene: "world", gui: "none", camera: { pos: [22, 26, -58], look: [0, 8, 0], fov: 58 }, extra: { shadowSpan: 160 } },
+		{ name: "21-shop-cosmetics", scene: "world", gui: "shop_cosmetics", camera: play },
 	];
 }
 

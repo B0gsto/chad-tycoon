@@ -123,6 +123,27 @@ function RigPose.computeFrom(rig: Rig, transforms: { [string]: CFrame }): ({ Bas
 	return rig.parts, cframes
 end
 
+-- World CFrames for one named pose at `time` (see Poses.samplePoseInto), or a
+-- blend from `fromPose` (alpha 0..1). For models that code moves and poses
+-- itself (cutscenes): move the Root first, then pose. The pose is looked up in
+-- the rig's AnimSet, then the Story / Fan / Chad / Bot sets.
+function RigPose.computePose(rig: Rig, pose: string, time: number, fromPose: string?, alpha: number?): ({ BasePart }, { CFrame })
+	local transforms = if fromPose
+			and alpha
+			and alpha < 1
+		then Poses.blendInto(rig.transforms, rig.animSet, fromPose, pose, alpha, time, rig.seed)
+		else Poses.samplePoseInto(rig.transforms, rig.animSet, pose, time, rig.seed)
+	return RigPose.computeFrom(rig, transforms)
+end
+
+-- Same as computePose, writing the part CFrames directly.
+function RigPose.applyPose(rig: Rig, pose: string, time: number, fromPose: string?, alpha: number?)
+	local parts, cframes = RigPose.computePose(rig, pose, time, fromPose, alpha)
+	for i, part in parts do
+		part.CFrame = cframes[i]
+	end
+end
+
 -- Poses a model in place by setting part CFrames directly (no BulkMoveTo).
 function RigPose.apply(rig: Rig, time: number)
 	local parts, cframes = RigPose.compute(rig, time)

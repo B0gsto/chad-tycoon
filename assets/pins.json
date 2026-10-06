@@ -1,0 +1,677 @@
+{
+  "pins": {
+    "brand/KeyArt": {
+      "assetId": "71618244352821",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "6e0d234dd5c725841dde35c2b999d9ba8505a297bb4303645bd6a268eb4463fa",
+      "source": "art/out/brand/KeyArt.png",
+      "updatedAt": "2026-10-06T11:53:02Z"
+    },
+    "brand/Logo": {
+      "assetId": "128398060676282",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "7102805ad42f5d2084b4c3a1968a68e838fc7a6530c14fde5e1db6c40866d169",
+      "source": "art/out/brand/Logo.png",
+      "updatedAt": "2026-10-06T11:53:02Z"
+    },
+    "brand/LogoSmall": {
+      "assetId": "97449962729528",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "2a2e4837924127317455d95f7dad53e6a628d265e269e04a04a44e4c7b22b5c4",
+      "source": "art/out/brand/LogoSmall.png",
+      "updatedAt": "2026-10-06T11:53:02Z"
+    },
+    "brand/TitleCard": {
+      "assetId": "99223113715315",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "4642eece96846597a6f6c234fc5ca44026083762e1d9d3cf333ede8abd15d4b0",
+      "source": "art/out/brand/TitleCard.png",
+      "updatedAt": "2026-10-06T11:53:02Z"
+    },
+    "faces/Awe": {
+      "assetId": "78333652861995",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "48503f47bdea8331f0484ca431d8a1ba1495a8d91c76e57c3c6fcc8c9247cd34",
+      "source": "art/out/faces/Awe.png",
+      "updatedAt": "2026-10-06T12:14:38Z"
+    },
+    "faces/Fury": {
+      "assetId": "101904074645479",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "9ecfb0842dc5359bca0ddda15a357c0fa6a775e7b55d231def69c4eb4359c152",
+      "source": "art/out/faces/Fury.png",
+      "updatedAt": "2026-10-06T12:14:38Z"
+    },
+    "faces/Happy": {
+      "assetId": "140117233144369",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "fe85d4392dc7521afea76d8cdd8d6f2828fbae076a7700f858ddc821b7023b07",
+      "source": "art/out/faces/Happy.png",
+      "updatedAt": "2026-10-06T12:14:38Z"
+    },
+    "faces/Idea": {
+      "assetId": "88379991249124",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "0fef3a441695a20948ed2130504b706e8798782a7f31ab1193ea80882bd7f11b",
+      "source": "art/out/faces/Idea.png",
+      "updatedAt": "2026-10-06T12:14:38Z"
+    },
+    "faces/Proud": {
+      "assetId": "109799948495901",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "b99c15c6e80b73e86bfdf83179a33a6b5ca05dc2c62be49bc34bd52fd421d165",
+      "source": "art/out/faces/Proud.png",
+      "updatedAt": "2026-10-06T12:14:38Z"
+    },
+    "faces/Sad": {
+      "assetId": "103950408119181",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "768b65b4d8a65b6ae86f0ca2ed5548bef43c7f999dffcdb38fef17cafa533f7c",
+      "source": "art/out/faces/Sad.png",
+      "updatedAt": "2026-10-06T12:14:38Z"
+    },
+    "faces/Shock": {
+      "assetId": "87522234834040",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "9327a2e4ba1d9a6f28da3c0979518bb8b7c23aef682481d4c092fadcb0ea3c6a",
+      "source": "art/out/faces/Shock.png",
+      "updatedAt": "2026-10-06T12:14:38Z"
+    },
+    "faces/Smirk": {
+      "assetId": "83922041775343",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "72460ab2beec612292bc5ae91c64ce0eeb6fe770430b3f8c214314b7d65a349c",
+      "source": "art/out/faces/Smirk.png",
+      "updatedAt": "2026-10-06T12:14:38Z"
+    },
+    "hud/Dumbbell": {
+      "assetId": "139703345038304",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "85a83dd072c755871553ce549767d56127e5ed783bc595da696e85259880e6da",
+      "source": "art/out/ui/HudDumbbell.png",
+      "updatedAt": "2026-10-06T18:27:05Z"
+    },
+    "hud/DumbbellGlow": {
+      "assetId": "72694445273613",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "a50e8153b2f349a7752591aa6d3d8ecaf3548817091185e2115ced814195683b",
+      "source": "art/out/ui/HudDumbbellGlow.png",
+      "updatedAt": "2026-10-06T18:27:05Z"
+    },
+    "proof/cube": {
+      "assetId": "89753695118063",
+      "kind": "Model",
+      "meshId": "rbxassetid://80374365012668",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/proof__cube.rbxm",
+      "sha256": "b449c53fb9af8a531cda6370e119b7e506c34c464e0591d99bc21641485f60ff",
+      "size": [
+        4,
+        4,
+        4
+      ],
+      "source": "art/proof/out/proof_cube.fbx",
+      "updatedAt": "2026-10-06T10:13:10Z"
+    },
+    "proof/sphere": {
+      "assetId": "136882863283158",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "8d01dc00317d4f8be0af77009c5b8cfb6427234a2f500effd87bb64226bad4bd",
+      "source": "art/proof/out/proof_sphere.png",
+      "updatedAt": "2026-10-06T10:13:00Z"
+    },
+    "props/Barbell": {
+      "assetId": "104146566714540",
+      "kind": "Model",
+      "meshId": "rbxassetid://87394703936998",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Barbell.rbxm",
+      "sha256": "6177db1830a2daa2a927f2026c3c4b21987adf9ba6e8ba044afbc5610902377c",
+      "size": [
+        4.82,
+        2.9,
+        2.9
+      ],
+      "source": "art/out/props/Barbell.fbx",
+      "updatedAt": "2026-10-06T11:53:16Z"
+    },
+    "props/BeachBall": {
+      "assetId": "90372365952404",
+      "kind": "Model",
+      "meshId": "rbxassetid://134231720312186",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__BeachBall.rbxm",
+      "sha256": "42a72612aa4efab125fdea5bc3d86cf19d435950614a6d6eb7462f271b15de36",
+      "size": [
+        2.566,
+        2.587,
+        2.592
+      ],
+      "source": "art/out/props/BeachBall.fbx",
+      "updatedAt": "2026-10-06T11:53:23Z"
+    },
+    "props/Bench": {
+      "assetId": "95898920259945",
+      "kind": "Model",
+      "meshId": "rbxassetid://82042765529921",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Bench.rbxm",
+      "sha256": "43c71c9473de6ef08ed370035a365f327a61aa1b80b637b41a0bbf33aa813226",
+      "size": [
+        3.5,
+        4.25,
+        5.75
+      ],
+      "source": "art/out/props/Bench.fbx",
+      "updatedAt": "2026-10-06T11:53:34Z"
+    },
+    "props/Converter": {
+      "assetId": "90966316774560",
+      "kind": "Model",
+      "meshId": "rbxassetid://107463350156869",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Converter.rbxm",
+      "sha256": "535e1a15fb2eaecf1b88d8c26e5a954b6cf95e6931617e5b6ce89da472d154a3",
+      "size": [
+        8.059,
+        11.436,
+        6.981
+      ],
+      "source": "art/out/props/Converter.fbx",
+      "updatedAt": "2026-10-06T11:53:49Z"
+    },
+    "props/Crate": {
+      "assetId": "121738360793611",
+      "kind": "Model",
+      "meshId": "rbxassetid://73450554963924",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Crate.rbxm",
+      "sha256": "f7f6756a26f23876413b9b5105149d0e0ae2e052f2e927a082b53f6102dcbdb8",
+      "size": [
+        3.567,
+        2.928,
+        2.875
+      ],
+      "source": "art/out/props/Crate.fbx",
+      "updatedAt": "2026-10-06T15:08:34Z"
+    },
+    "props/CrateCracker": {
+      "assetId": "113747494182815",
+      "kind": "Model",
+      "meshId": "rbxassetid://107684415589321",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CrateCracker.rbxm",
+      "sha256": "5a3a6481b125e83c310db32a5afc7719fa35fe61676d8123f31df4c6413eec79",
+      "size": [
+        11.225,
+        17.868,
+        6.524
+      ],
+      "source": "art/out/props/CrateCracker.fbx",
+      "updatedAt": "2026-10-06T15:08:48Z"
+    },
+    "props/CrateCrackerVip": {
+      "assetId": "130388099668980",
+      "kind": "Model",
+      "meshId": "rbxassetid://123967303250340",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CrateCrackerVip.rbxm",
+      "sha256": "355c5151941147a5120ae3b4be78fbbf768ebc59a22d0814b623f38fd4cfaffc",
+      "size": [
+        11.173,
+        18.541,
+        6.524
+      ],
+      "source": "art/out/props/CrateCrackerVip.fbx",
+      "updatedAt": "2026-10-06T15:09:12Z"
+    },
+    "props/Crown": {
+      "assetId": "135254738535718",
+      "kind": "Model",
+      "meshId": "rbxassetid://72739445782075",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Crown.rbxm",
+      "sha256": "915fb16483870b8d048f735dbfdc96c18364a1ecb145007799c410a9f62a5588",
+      "size": [
+        1.6,
+        1.343,
+        1.621
+      ],
+      "source": "art/out/props/Crown.fbx",
+      "updatedAt": "2026-10-06T15:09:18Z"
+    },
+    "props/Dumbbell": {
+      "assetId": "88610475155992",
+      "kind": "Model",
+      "meshId": "rbxassetid://100310764212013",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Dumbbell.rbxm",
+      "sha256": "89ec7a52ede01cce0e222f7aaf10ffc237a6cae1239d6518973d6fa8bcc3a18b",
+      "size": [
+        1.53,
+        1,
+        0.985
+      ],
+      "source": "art/out/props/Dumbbell.fbx",
+      "updatedAt": "2026-10-06T11:54:30Z"
+    },
+    "props/DumbbellRack": {
+      "assetId": "103122188817874",
+      "kind": "Model",
+      "meshId": "rbxassetid://72997765868957",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__DumbbellRack.rbxm",
+      "sha256": "2be2156912884a2beb423fbe42ba1d2f7606e8e20c3438ef6312ad574b422987",
+      "size": [
+        6.992,
+        2.97,
+        2.377
+      ],
+      "source": "art/out/props/DumbbellRack.fbx",
+      "updatedAt": "2026-10-06T11:54:37Z"
+    },
+    "props/GigaStatue": {
+      "assetId": "125671889099926",
+      "kind": "Model",
+      "meshId": "rbxassetid://112354669974339",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__GigaStatue.rbxm",
+      "sha256": "39cb146d5fefc4b9e5f0adcf8af7e74b5914bb925aa245d5b11745f8f4c2c547",
+      "size": [
+        20.8,
+        21.381,
+        8.2
+      ],
+      "source": "art/out/props/GigaStatue.fbx",
+      "updatedAt": "2026-10-06T19:26:23Z"
+    },
+    "props/HubBench": {
+      "assetId": "82355450103448",
+      "kind": "Model",
+      "meshId": "rbxassetid://111760734508021",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__HubBench.rbxm",
+      "sha256": "87ad8462c6d0b9f876d5a7ec19cdb05afe6f71fe6e64bb253f0e26f8ea11b501",
+      "size": [
+        5.2,
+        3.724,
+        2.335
+      ],
+      "source": "art/out/props/HubBench.fbx",
+      "updatedAt": "2026-10-06T11:54:50Z"
+    },
+    "props/JuiceBar": {
+      "assetId": "76469507692445",
+      "kind": "Model",
+      "meshId": "rbxassetid://132436435956958",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__JuiceBar.rbxm",
+      "sha256": "480b36673e23eb2a50c2129c9c39332dd83a9fdc1d7abe1e46b064544b708752",
+      "size": [
+        11.62,
+        9.85,
+        10.638
+      ],
+      "source": "art/out/props/JuiceBar.fbx",
+      "updatedAt": "2026-10-06T11:55:02Z"
+    },
+    "props/Kettlebell": {
+      "assetId": "72153707170180",
+      "kind": "Model",
+      "meshId": "rbxassetid://102707165516822",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Kettlebell.rbxm",
+      "sha256": "36a4d15ec263c7bb4f592a82ac8cd4ca62eecea0c696667dbecb045bd3658b44",
+      "size": [
+        1.4,
+        1.94,
+        1.439
+      ],
+      "source": "art/out/props/Kettlebell.fbx",
+      "updatedAt": "2026-10-06T11:55:11Z"
+    },
+    "props/OrbBall": {
+      "assetId": "118463801670154",
+      "kind": "Model",
+      "meshId": "rbxassetid://105111405068458",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__OrbBall.rbxm",
+      "sha256": "be217e35db2c0a3fbda228d28d544af8f1d67d66de9fe796475f8652eba7f2fd",
+      "size": [
+        1.6,
+        1.6,
+        1.6
+      ],
+      "source": "art/out/props/OrbBall.fbx",
+      "updatedAt": "2026-10-06T18:42:59Z"
+    },
+    "props/OrbShine": {
+      "assetId": "101658550578454",
+      "kind": "Model",
+      "meshId": "rbxassetid://92262549696484",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__OrbShine.rbxm",
+      "sha256": "2e63728cbf8a6395c58418cc3c237a72f8198a2060ed33aa5d1a82d5e3584b9d",
+      "size": [
+        1.039,
+        0.327,
+        0.27
+      ],
+      "source": "art/out/props/OrbShine.fbx",
+      "updatedAt": "2026-10-06T18:43:09Z"
+    },
+    "props/PalmPlanter": {
+      "assetId": "121598246090110",
+      "kind": "Model",
+      "meshId": "rbxassetid://93707552240384",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__PalmPlanter.rbxm",
+      "sha256": "0be225daa0f28689ec1a6332e7fbef7c95ad7a5e322e8b235d5ffa5ba225e151",
+      "size": [
+        7.33,
+        7.97,
+        7.33
+      ],
+      "source": "art/out/props/PalmPlanter.fbx",
+      "updatedAt": "2026-10-06T15:09:36Z"
+    },
+    "props/PalmTree": {
+      "assetId": "137361770651678",
+      "kind": "Model",
+      "meshId": "rbxassetid://87594245081552",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__PalmTree.rbxm",
+      "sha256": "d1ce4385f3436529f3930016df86484d43a83339bb0fc60bc1e6a4f28fa54f49",
+      "size": [
+        13.05,
+        14.84,
+        13.05
+      ],
+      "source": "art/out/props/PalmTree.fbx",
+      "updatedAt": "2026-10-06T15:09:45Z"
+    },
+    "props/PunchBag": {
+      "assetId": "125578648871318",
+      "kind": "Model",
+      "meshId": "rbxassetid://138800662668478",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__PunchBag.rbxm",
+      "sha256": "0abf65277fae22801a03a579b3b8b85f5547c27e8679cf71a30d97b3f7b53473",
+      "size": [
+        4.44,
+        7.04,
+        2.78
+      ],
+      "source": "art/out/props/PunchBag.fbx",
+      "updatedAt": "2026-10-06T11:55:46Z"
+    },
+    "props/Speaker": {
+      "assetId": "100084201897088",
+      "kind": "Model",
+      "meshId": "rbxassetid://124489885885533",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Speaker.rbxm",
+      "sha256": "f7ec57683a10757140a3f79681718e6e8ce2457d701025a232124d2df0f4b96b",
+      "size": [
+        2,
+        3.5,
+        1.811
+      ],
+      "source": "art/out/props/Speaker.fbx",
+      "updatedAt": "2026-10-06T11:55:57Z"
+    },
+    "props/TowelStack": {
+      "assetId": "92893048345939",
+      "kind": "Model",
+      "meshId": "rbxassetid://139625810634839",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__TowelStack.rbxm",
+      "sha256": "a242aaf93660e3c5dc24eec2981cfe919dcf3b84d85b3d73990a0107d2850724",
+      "size": [
+        2,
+        2.19,
+        1.5
+      ],
+      "source": "art/out/props/TowelStack.fbx",
+      "updatedAt": "2026-10-06T11:56:08Z"
+    },
+    "props/Treadmill": {
+      "assetId": "75264743904222",
+      "kind": "Model",
+      "meshId": "rbxassetid://71726560914536",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Treadmill.rbxm",
+      "sha256": "237c6cb6ef6b6fe115cdf1ba7564ee11f70261d1c928b4b55789ace5a16cfac7",
+      "size": [
+        2.64,
+        3.853,
+        5.342
+      ],
+      "source": "art/out/props/Treadmill.fbx",
+      "updatedAt": "2026-10-06T11:56:19Z"
+    },
+    "props/Trophy": {
+      "assetId": "87863595861615",
+      "kind": "Model",
+      "meshId": "rbxassetid://119444632925723",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Trophy.rbxm",
+      "sha256": "65561182ba5a8c3ef4cac0a47198208e43ace68b2c9163c2d34d9e53917814ca",
+      "size": [
+        2.3,
+        2.62,
+        1.48
+      ],
+      "source": "art/out/props/Trophy.fbx",
+      "updatedAt": "2026-10-06T11:56:27Z"
+    },
+    "props/TrophyPodium": {
+      "assetId": "122326518818110",
+      "kind": "Model",
+      "meshId": "rbxassetid://132990407659661",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__TrophyPodium.rbxm",
+      "sha256": "0e4f0dec574080c1a386d498c91177954ecf0f5864b7c0f254e68d91e220df4b",
+      "size": [
+        18.938,
+        6.91,
+        18.938
+      ],
+      "source": "art/out/props/TrophyPodium.fbx",
+      "updatedAt": "2026-10-06T11:56:36Z"
+    },
+    "props/Vault": {
+      "assetId": "138007150709938",
+      "kind": "Model",
+      "meshId": "rbxassetid://86667106129092",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Vault.rbxm",
+      "sha256": "4470706e85d8b8229cd89eb324c890542489e088dd4da9131adf2763b69fa825",
+      "size": [
+        3.84,
+        4.94,
+        5.18
+      ],
+      "source": "art/out/props/Vault.fbx",
+      "updatedAt": "2026-10-06T15:09:59Z"
+    },
+    "props/WaterCooler": {
+      "assetId": "101857403961621",
+      "kind": "Model",
+      "meshId": "rbxassetid://74562014985001",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__WaterCooler.rbxm",
+      "sha256": "f62299a6e63e3e7753cc1f1fce61aee946927692da8959ae464dbd7cc1a54298",
+      "size": [
+        1.74,
+        4.96,
+        2.08
+      ],
+      "source": "art/out/props/WaterCooler.fbx",
+      "updatedAt": "2026-10-06T11:56:49Z"
+    },
+    "props/YogaBall": {
+      "assetId": "114693396389988",
+      "kind": "Model",
+      "meshId": "rbxassetid://135099897931092",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__YogaBall.rbxm",
+      "sha256": "4bdb0c6467115819bcbb01ccd71c1cfc2860b40cc31658575b917f7e301e82d8",
+      "size": [
+        2.397,
+        2.204,
+        2.398
+      ],
+      "source": "art/out/props/YogaBall.fbx",
+      "updatedAt": "2026-10-06T11:56:59Z"
+    },
+    "ui/atlas_1": {
+      "assetId": "84497601801102",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "20ebf72396ffb65e11ca0b28179900f062b11e104ee396cc2d2f16c47ca47b3a",
+      "source": "art/out/atlas/ui_1.png",
+      "updatedAt": "2026-10-06T15:08:18Z"
+    },
+    "ui/atlas_2": {
+      "assetId": "88854863588402",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "e11267c22023a4932f1d9d86a2ef2d6900bfe76d9255eafdf703cde76fcb0e6c",
+      "source": "art/out/atlas/ui_2.png",
+      "updatedAt": "2026-10-06T15:08:18Z"
+    },
+    "ui/atlas_3": {
+      "assetId": "111750088795309",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "b10b342970ad2b4ad415b5e49aa48f2603dbdef5f27bdaeceff3aa8cc00cdebd",
+      "source": "art/out/atlas/ui_3.png",
+      "updatedAt": "2026-10-06T15:08:18Z"
+    },
+    "vfx/CoinSpin": {
+      "assetId": "131554566758916",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "153a7b807d1ded031c61493bc508ea48ca66116784597b667d6a3b59364755b6",
+      "source": "art/out/vfx/CoinSpin.png",
+      "updatedAt": "2026-10-06T11:52:31Z"
+    },
+    "vfx/Confetti": {
+      "assetId": "123195389221355",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "9c570423cc49d2f9d8235a87df66a2a81c0798ed3d01f91bb5f6a772b64cc089",
+      "source": "art/out/vfx/Confetti.png",
+      "updatedAt": "2026-10-06T11:52:31Z"
+    },
+    "vfx/Heart": {
+      "assetId": "98018597903742",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "5d1e3ddd081264193f5bf11834a5016cfd9554f168d354df5b024349e2802b4c",
+      "source": "art/out/vfx/Heart.png",
+      "updatedAt": "2026-10-06T11:52:31Z"
+    },
+    "vfx/Note": {
+      "assetId": "110985022089574",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "3e565008867181aef94ff03685854580eba143439c50322b3aa8db6dec6f8dd9",
+      "source": "art/out/vfx/Note.png",
+      "updatedAt": "2026-10-06T11:52:31Z"
+    },
+    "vfx/Puff": {
+      "assetId": "129521157636475",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "b2f06689b215c802bfc80ca9f878acbc035fa03e4e29bdefd0e45cc8aae665c4",
+      "source": "art/out/vfx/Puff.png",
+      "updatedAt": "2026-10-06T11:52:31Z"
+    },
+    "vfx/Ring": {
+      "assetId": "110527052718532",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "ffe08b5b646387e78192cca97698beeab617bc60569a2bf1f5efa94c34428a0d",
+      "source": "art/out/vfx/Ring.png",
+      "updatedAt": "2026-10-06T11:52:31Z"
+    },
+    "vfx/SoftDot": {
+      "assetId": "105240966552716",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "3ec7e2f2b712a4eb59cfbdbdb4219464bdb8196efbbace4e94d892a540f4fa9c",
+      "source": "art/out/vfx/SoftDot.png",
+      "updatedAt": "2026-10-06T11:52:31Z"
+    },
+    "vfx/Sparkle": {
+      "assetId": "130168407424147",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "75978940bc516bbc3d5e78d33c624bf3fd8c9d9e43809723e53652186bf79257",
+      "source": "art/out/vfx/Sparkle.png",
+      "updatedAt": "2026-10-06T11:52:31Z"
+    },
+    "vfx/StarPop": {
+      "assetId": "88238364073070",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "6f3b929f8c74b21b9217dd4f11666c53c0c48c9cbb1ba7198ea993b559199a6e",
+      "source": "art/out/vfx/StarPop.png",
+      "updatedAt": "2026-10-06T11:52:31Z"
+    },
+    "vfx/Sweat": {
+      "assetId": "82794322755830",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "40da15d895ea88d9274d09a76b494d1ec1cb1d65c2abb64408f1e05e244e0729",
+      "source": "art/out/vfx/Sweat.png",
+      "updatedAt": "2026-10-06T11:52:31Z"
+    }
+  },
+  "version": 1
+}
