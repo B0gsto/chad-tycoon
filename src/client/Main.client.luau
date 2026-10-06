@@ -270,6 +270,11 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 		Hud.pulseTank()
 		Popups.float("+" .. I.Orb .. Format.short(data.amount or 0), C.Orb, TANK)
 	elseif kind == "Cash" then
+		-- Auto Cash pays out every few seconds: no sound, float or coin burst for it, the
+		-- wallet number simply rolls up.
+		if data.source == "Auto" then
+			return
+		end
 		local amount = if type(data.amount) == "number" then data.amount else 0
 		lastCashAt = os.clock()
 		if data.source == "Purchase" then
