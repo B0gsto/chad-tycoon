@@ -49991,6 +49991,21 @@ end
 	move both together.
 ]]
 local RIBBON_PAD = 12
+-- Width of a ribbon's text (TextService when available, else an estimate). The ribbon
+-- is sized explicitly: AutomaticSize would include its face child, which pokes out past
+-- the ribbon for the shadow effect, and grow without bound.
+local function ribbonTextWidth(text: string): number
+	local width = 0
+	pcall(function()
+		local TextService = game:GetService("TextService")
+		width = TextService:GetTextSize(text, 16, F.UI, Vector2.new(1000, 26)).X
+	end)
+	if width <= 0 then
+		width = (utf8.len(text) or #text) * 9
+	end
+	return math.ceil(width)
+end
+
 local function ribbon(parent: Instance, text: string, color: Color3): TextLabel
 	local shadow = Kit.text(parent, {
 		Name = "Ribbon",
@@ -50001,8 +50016,7 @@ local function ribbon(parent: Instance, text: string, color: Color3): TextLabel
 		TextWrapped = false,
 		BackgroundColor3 = C.Ink,
 		BackgroundTransparency = 0.45,
-		Size = UDim2.fromOffset(0, 26),
-		AutomaticSize = Enum.AutomaticSize.X,
+		Size = UDim2.fromOffset(ribbonTextWidth(text) + RIBBON_PAD * 2, 26),
 		Position = UDim2.new(1, 8, 0, -5),
 		AnchorPoint = Vector2.new(1, 0),
 		StrokeThickness = 0,
