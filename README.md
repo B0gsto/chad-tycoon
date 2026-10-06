@@ -75,16 +75,17 @@ sand island in the sea.
   course by the gates; levels 2-10 are generated out at sea (`Course.generate`) and get steadily harder
   (tighter gaps, smaller discs and beams, faster movers and sweepers, blinking pads from level 4, fewer
   checkpoints). Unit tests check every jump on every level is fair for the default jump. Levels unlock in
-  order, bests and clears are saved per level, and a finish pays the smallest cash pack's amount times a
+  order, bests and clears are saved per level, and a finish pays 5 minutes of income (at least 750, `Theme.Modes.Reward`) times a
   per-level bonus (`Economy.parkourLevelBonus`) on the first clear of a level and then at most once per
   cooldown, plus 25 Rizz per first clear. **Mog Test** is a skill-check duel on a floating stage
   (`Modes/MogRules.luau`, `Mog.luau`, `World/MogStage.luau`, `UI/MogHud.luau`, `Fx/Mog.luau`): press
   Space / click / tap / A when the needle is in the zone; the window shrinks and the needle speeds up every
   check; mogging 3 rivals passes the test and pays the mode reward, then the run goes on for a high score
   with 3 lives. Gate 3 says COMING SOON.
-- **Shop packs scale with progression.** Cash packs pay a number of seconds of your income with a
-  minimum per pack, and Rizz packs grow from x1 at tier 1 up to x4 (`Economy.progression`). The shop shows
-  each player the same amounts the server grants.
+- **Shop packs scale with progression.** Cash packs pay 15 min / 1 h / 5 h / 24 h of your income and aura
+  packs put 15 min / 1 h / 5 h / 24 h of your aura production straight into your tank, each with a minimum
+  per pack; Rizz packs grow from x1 at tier 1 up to x4 (`Economy.progression`). The shop shows each player
+  the same amounts the server grants.
 - **HUD** (`src/client/UI/Hud.luau`), laid out like the owner's reference game: chunky icons and outlined
   text straight over the world. Settings gear top right; unit count and deposit strip top centre; icon grid
   (Home, Ranking, Modes, Index, Shop, Invite) and a 2X CASH / Starter Pack promo on the left; cash, Rizz
@@ -113,7 +114,8 @@ All passes and products exist on the universe and their ids are in `Theme.Moneti
 | Pass | All Cosmetics Pack (`AllCosmetics`) | 299 |
 | Pass | Starter Pack (`StarterPack`) | 59 |
 | Product | Open Crate (`CrateOpen`) | 30 |
-| Product | Cash packs 1-6 (`MoneyPacks`) | 19, 49, 99, 249, 499, 999 |
+| Product | Cash packs 1-4 (`MoneyPacks`) | 49, 199, 499, 1000 |
+| Product | Aura packs 1-4 (`AuraPacks`) | 49, 199, 499, 1000 |
 | Product | Rizz packs 1-3 (`GemPacks`) | 49, 249, 599 |
 
 If a price changes on the dashboard, change `Price` in the theme too (the buttons show it). An id of `0`

@@ -466,6 +466,15 @@ function Economy.moneyPackAmount(income: number, seconds: number, minimum: numbe
 	return math.max(minimum, math.floor(perSecond * seconds))
 end
 
+-- Aura packs (aura straight into the tank): `seconds` of aura at the better of the live
+-- production (orbs per second, Tycoon.production) and the progression floor (one unit of the
+-- highest tier, the same floor progressionIncome uses), never below the pack's fixed
+-- `minimum` (which only matters for brand-new players).
+function Economy.auraPackAmount(production: number, seconds: number, minimum: number, progression: Progression): number
+	local perSecond = math.max(production, Economy.unitRate(progression.tier))
+	return math.max(minimum, math.floor(perSecond * seconds))
+end
+
 -- Rizz packs multiply their base amount by this: x1 at tier 1 rising smoothly to x4 at
 -- the top tier. Crate timers (and so finishGemCost) do not grow with tier, so a
 -- late-game Rizz buys the same skips as an early one; x4 keeps the biggest pack at about
@@ -490,8 +499,8 @@ end
 
 -- Game modes (Parkour) ------------------------------------------------------------
 
--- Finishing a mode pays exactly what the smallest cash pack would give the player right now
--- (moneyPackAmount with that pack's seconds and minimum): on the first finish ever and then
+-- Finishing a mode pays a cash pack's worth sized like the shop's (moneyPackAmount with the
+-- mode's own seconds and minimum, Theme.Modes): on the first finish ever and then
 -- at most once per MODE_REWARD_COOLDOWN. Players may run again straight away, but finishes
 -- inside the cooldown pay no cash. The first finish ever also pays Rizz.
 Economy.MODE_REWARD_COOLDOWN = 1800

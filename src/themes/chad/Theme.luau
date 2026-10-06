@@ -1269,14 +1269,31 @@ Theme.Monetization = {
 	},
 	PassOrder = { "AutoLoot", "AutoCash", "DoubleAura", "DoubleMoney", "PremiumUnlocker", "CrateKey" },
 	-- Cash packs give `Seconds` of the buyer's income, never below their progression floor
-	-- (Economy.moneyPackAmount); `Min` is the absolute floor for brand-new players.
+	-- (Economy.moneyPackAmount); `Min` is the absolute floor for brand-new players. Packs are
+	-- 15 min / 1 h / 5 h / 24 h of income.
 	MoneyPacks = {
-		{ Id = 3716878799, Price = 19, Seconds = 300, Min = 750 },
 		{ Id = 3716878815, Price = 49, Seconds = 900, Min = 2500 },
-		{ Id = 3716878826, Price = 99, Seconds = 2700, Min = 7500 },
-		{ Id = 3716878834, Price = 249, Seconds = 7200, Min = 20000 },
+		{ Id = 3716953998, Price = 199, Seconds = 3600, Min = 10000 },
 		{ Id = 3716878844, Price = 499, Seconds = 18000, Min = 50000 },
-		{ Id = 3716878853, Price = 999, Seconds = 43200, Min = 125000 },
+		{ Id = 3716954002, Price = 1000, Seconds = 86400, Min = 250000 },
+	},
+	-- Aura packs put aura straight into the buyer's tank (profile.carried, ready for the
+	-- converter): `Seconds` of the buyer's aura production, never below the progression floor
+	-- (Economy.auraPackAmount); `Min` is the floor for brand-new players. Roblox names:
+	-- "Aura Pack: 15 Minutes / 1 Hour / 5 Hours / 24 Hours".
+	AuraPacks = {
+		{ Id = 3716954009, Price = 49, Seconds = 900, Min = 2500 },
+		{ Id = 3716954016, Price = 199, Seconds = 3600, Min = 10000 },
+		{ Id = 3716954024, Price = 499, Seconds = 18000, Min = 50000 },
+		{ Id = 3716954037, Price = 1000, Seconds = 86400, Min = 250000 },
+	},
+	-- Retired cash packs (5 min / 45 min / 2 h / 12 h). Never prompted or shown, but a
+	-- receipt that was still pending when they left the shop is honoured at its old size.
+	LegacyMoneyPacks = {
+		{ Id = 3716878799, Seconds = 300, Min = 750 },
+		{ Id = 3716878826, Seconds = 2700, Min = 7500 },
+		{ Id = 3716878834, Seconds = 7200, Min = 20000 },
+		{ Id = 3716878853, Seconds = 43200, Min = 125000 },
 	},
 	-- Rizz packs give `Base` Rizz at tier 1, growing with the buyer's highest tier
 	-- (Economy.gemPackAmount). Roblox names: Small / Big / Mega Rizz Pack.
@@ -1287,6 +1304,13 @@ Theme.Monetization = {
 	},
 	-- Instant crate opening: one developer product, the same price for every crate rarity.
 	CrateOpen = { Id = 3716878439, Price = 30 },
+}
+
+-- Game modes (Server.GameModes). A Parkour or Mog Test finish pays `Seconds` of the player's
+-- income, never below their progression floor nor `Min` (Economy.modeReward, sized like a cash
+-- pack: this was the retired 5-minute pack), with Economy.MODE_REWARD_COOLDOWN between full rewards.
+Theme.Modes = {
+	Reward = { Seconds = 300, Min = 750 },
 }
 
 -- Cosmetics: each item is unlocked by its own game pass (Theme.Monetization.Passes[Pass]) or

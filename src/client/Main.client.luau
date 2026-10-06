@@ -311,6 +311,9 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 		if data.ok == false and data.reason == "money" then
 			Hud.shakeWallet()
 		end
+	elseif kind == "AuraGrant" then
+		-- Aura pack: orbs fly into the tank (the server sends the "+X aura" toast).
+		Hud.orbBurst(if type(data.amount) == "number" then data.amount else 0)
 	elseif kind == "Deposit" then
 		Sounds.play("Deposit")
 		Popups.float(string.format("%s%s x%.1f", I.Orb, Format.short(data.amount or 0), data.mult or 1), C.Primary, TANK)

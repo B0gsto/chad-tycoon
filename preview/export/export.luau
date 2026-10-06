@@ -1086,6 +1086,10 @@ local function main()
 	Windows.open("Shop")
 	Windows.selectShopTab("Gems")
 	shot("shop_gems")
+	Windows.selectShopTab("Cash")
+	shot("shop_cash")
+	Windows.selectShopTab("Aura")
+	shot("shop_aura")
 	Windows.selectShopTab("Passes")
 
 	-- Cosmetics: this player owns the Rainbow Trail (equipped) and Speedy Sneakers.

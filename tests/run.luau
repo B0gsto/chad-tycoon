@@ -492,10 +492,14 @@ test("packs scale with progression", function()
 	local fresh = Economy.progression(1, 0)
 	eq(Economy.moneyPackAmount(10, 300, 1000, fresh), 3000)
 	eq(Economy.moneyPackAmount(0, 300, 1000, fresh), 1000)
+	-- Aura packs: seconds of production, never below the tier-1 unit floor or the minimum.
+	eq(Economy.auraPackAmount(0, 900, 3000, fresh), 3000)
+	eq(Economy.auraPackAmount(100, 900, 3000, fresh), 90000)
+	check(Economy.auraPackAmount(0, 86400, 0, fresh) >= math.floor(Economy.unitRate(1) * 86400), "aura pack tier floor")
 	-- Durable measure: clamped tier, never-negative converter level.
 	eq(Economy.progression(99, -3).tier, Economy.MAX_TIER)
 	eq(Economy.progression(0, -3).processLevel, 0)
-	local seconds = { 300, 900, 2700, 7200, 18000, 43200 }
+	local seconds = { 300, 900, 3600, 18000, 86400 }
 	local bases, prices = { 50, 300, 800 }, { 49, 249, 599 }
 	local lastFloor = 0
 	local lastGems = { 0, 0, 0 }
@@ -511,6 +515,21 @@ test("packs scale with progression", function()
 				local amount = Economy.moneyPackAmount(income, s, 1000, prog)
 				check(amount >= 1000 and amount >= math.floor(floor * s), "cash pack floor " .. tier)
 				check(amount >= math.floor(income * s), "cash pack follows live income " .. tier)
+			end
+		end
+		local lastAura = 0
+		for _, s in seconds do
+			local unitFloor = Economy.unitRate(tier)
+			for _, production in { 0, unitFloor / 2, unitFloor * 3 } do
+				local aura = Economy.auraPackAmount(production, s, 3000, prog)
+				check(aura >= 3000 and aura >= math.floor(unitFloor * s), "aura pack floor " .. tier)
+				check(aura >= math.floor(production * s), "aura pack follows live production " .. tier)
+			end
+			local aura = Economy.auraPackAmount(0, s, 3000, prog)
+			check(aura >= lastAura, "aura pack monotonic in seconds at tier " .. tier)
+			lastAura = aura
+			if tier > 1 then
+				check(aura >= Economy.auraPackAmount(0, s, 3000, Economy.progression(tier - 1, 120)), "aura pack grows with tier " .. tier)
 			end
 		end
 		local perRobux = 0
@@ -530,7 +549,7 @@ test("packs scale with progression", function()
 	-- The shop and the receipt handler size packs with the same shared functions.
 	for _, path in { "src/server/Monetization.luau", "src/client/UI/Windows.luau" } do
 		local src = fs.readFile(path)
-		for _, fn in { "Economy.progression(", "Economy.moneyPackAmount(", "Economy.gemPackAmount(" } do
+		for _, fn in { "Economy.progression(", "Economy.moneyPackAmount(", "Economy.gemPackAmount(", "Economy.auraPackAmount(" } do
 			check(string.find(src, fn, 1, true) ~= nil, path .. " uses " .. fn)
 		end
 		check(string.find(src, "pack.Amount", 1, true) == nil, path .. " has no fixed rizz amount")
@@ -803,8 +822,27 @@ for _, variant in { "chad" } do
 		for _, required in { "AutoLoot", "AutoCash", "DoubleAura", "DoubleMoney", "PremiumUnlocker" } do
 			check(theme.Monetization.Passes[required] ~= nil, "pass defined " .. required)
 		end
-		eq(#theme.Monetization.MoneyPacks, 6, "money packs")
+		eq(#theme.Monetization.MoneyPacks, 4, "money packs")
 		eq(#theme.Monetization.GemPacks, 3, "gem packs")
+		eq(#theme.Monetization.AuraPacks, 4, "aura packs")
+		for _, list in { "MoneyPacks", "AuraPacks" } do
+			local lastSeconds, lastMin = 0, 0
+			for index, pack in theme.Monetization[list] do
+				check(type(pack.Id) == "number" and pack.Price > 0, list .. " id and price " .. index)
+				check(pack.Seconds > lastSeconds and pack.Min > lastMin, list .. " grow with price " .. index)
+				lastSeconds, lastMin = pack.Seconds, pack.Min
+			end
+		end
+		-- Every product id (live, retired and the crate) is unique, so a receipt maps to one grant.
+		local seen = {}
+		for _, list in { "MoneyPacks", "AuraPacks", "GemPacks", "LegacyMoneyPacks" } do
+			for index, pack in theme.Monetization[list] do
+				check(pack.Id ~= 0 and not seen[pack.Id], list .. " id unique " .. index)
+				seen[pack.Id] = true
+			end
+		end
+		check(not seen[theme.Monetization.CrateOpen.Id], "crate product id unique")
+		check(type(theme.Modes.Reward.Seconds) == "number" and theme.Modes.Reward.Min > 0, "mode reward")
 		for index, pack in theme.Monetization.GemPacks do
 			check(type(pack.Base) == "number" and pack.Base > 0 and pack.Amount == nil, "rizz pack base " .. index)
 		end
@@ -2901,9 +2939,12 @@ test("Game modes: catalog and registry shape", function()
 	eq(GameModes.active(player), nil, "stopped")
 end)
 
-test("Game modes: finish reward is the smallest cash pack, with a cooldown", function()
+test("Game modes: finish reward is sized like a cash pack, with a cooldown", function()
 	local theme = loadRobloxTheme("src/themes/chad/Theme.luau")
-	local pack = theme.Monetization.MoneyPacks[1]
+	-- Its own constants (the retired 5-minute cash pack), not a shop pack.
+	local pack = theme.Modes.Reward
+	eq(pack.Seconds, 300, "mode reward seconds")
+	eq(pack.Min, 750, "mode reward minimum")
 	local cooldown = Economy.MODE_REWARD_COOLDOWN
 	eq(cooldown, 1800, "30 minute cooldown")
 	local prev = 0
@@ -3212,9 +3253,9 @@ test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", 
 	(_G :: any).SIMULATE_AS_LIBRARY = true
 	local Simulate = require("../scripts/simulate")
 	local theme = loadRobloxTheme("src/themes/chad/Theme.luau")
-	local pack = theme.Monetization.MoneyPacks[1]
-	eq(Simulate.SMALL_PACK_SECONDS, pack.Seconds, "simulated parkour reward uses the smallest pack's seconds")
-	eq(Simulate.SMALL_PACK_MIN, pack.Min, "simulated parkour reward uses the smallest pack's minimum")
+	local pack = theme.Modes.Reward
+	eq(Simulate.SMALL_PACK_SECONDS, pack.Seconds, "simulated parkour reward uses the mode reward's seconds")
+	eq(Simulate.SMALL_PACK_MIN, pack.Min, "simulated parkour reward uses the mode reward's minimum")
 
 	local reached = Simulate.run({ hours = 3, step = 5 }).reached
 	check(reached[2] ~= nil and reached[2] <= 60, "tier 2 within the first minute")

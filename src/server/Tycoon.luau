@@ -1798,7 +1798,7 @@ actionHandlers.PromptPass = function(session, data)
 end
 
 actionHandlers.PromptProduct = function(session, data)
-	if (data.kind == "Money" or data.kind == "Gems") and type(data.index) == "number" then
+	if (data.kind == "Money" or data.kind == "Gems" or data.kind == "Aura") and type(data.index) == "number" then
 		Tycoon.hooks.promptProduct(session.player, data.kind, data.index)
 	end
 end
@@ -2108,6 +2108,17 @@ end
 function Tycoon.grantGems(session: Session, amount: number)
 	session.profile.gems += amount
 	toast(session, string.format("+%d %s %s", amount, theme.Words.Gem, theme.Icons.Gem), "good")
+	markDirty(session)
+	flush(session)
+end
+
+-- Aura pack: aura straight into the tank, ready for the converter. Not a pickup (no
+-- "Pickup" event, so quests and the orb collect counter ignore it); flush refreshes the
+-- Deposit pad label (updateBoards) and the HUD tank (State).
+function Tycoon.grantAura(session: Session, amount: number)
+	session.profile.carried += amount
+	toast(session, "+" .. Format.short(amount) .. " " .. string.lower(theme.Words.Orb) .. " in your tank!", "good")
+	effect(session, "AuraGrant", { amount = amount })
 	markDirty(session)
 	flush(session)
 end

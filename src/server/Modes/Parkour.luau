@@ -11,8 +11,9 @@
 	- Standing on the finish deck after the last checkpoint ends the run; Rules.finish checks
 	  that no leg was impossibly fast. Valid finishes record the per-level best/clears
 	  (profile.parkour; level 1 is mirrored into profile.modes.parkour) and the server best
-	  list of that level, and pay Economy.modeReward × Economy.parkourLevelBonus(level): the
-	  smallest shop cash pack on the first clear OF THAT LEVEL and then once per
+	  list of that level, and pay Economy.modeReward × Economy.parkourLevelBonus(level):
+	  Theme.Modes.Reward (Seconds of income, at least Min, sized like a cash pack) on the
+	  first clear OF THAT LEVEL and then once per
 	  Economy.MODE_REWARD_COOLDOWN (one cooldown shared by all levels, modes.parkour.
 	  lastRewardAt); MODE_FIRST_CLEAR_GEMS Rizz on each level's first clear. After a remote
 	  finish the player is brought back to the gates (GameModes.returnLater).
@@ -112,7 +113,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 
 	local function rewardFor(session: any, level: number): Economy.ModeReward
 		local p = session.profile
-		local pack = theme.Monetization.MoneyPacks[1]
+		local pack = theme.Modes.Reward
 		local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
 		local first = (levels(session).clears[level] or 0) == 0
 		local r =

@@ -102,7 +102,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 	local function rewardFor(session: any): Economy.ModeReward
 		local p = session.profile
 		local rec = record(session)
-		local pack = theme.Monetization.MoneyPacks[1]
+		local pack = theme.Modes.Reward
 		local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
 		return Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, rec.clears == 0, rec.lastRewardAt, os.time())
 	end

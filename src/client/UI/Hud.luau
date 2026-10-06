@@ -56,6 +56,8 @@ Hud.buttons = {} :: { [string]: TextButton }
 -- Filled in by build(); safe no-ops before that.
 Hud.pulseTank = function(_big: boolean?) end
 Hud.coinBurst = function(_amount: number, _padPos: Vector3?, _fromGui: GuiObject?) end
+-- Aura orbs burst from the screen centre into the dumbbell tank (aura pack bought).
+Hud.orbBurst = function(_amount: number) end
 -- os.clock() of the last free-reward claim from the HUD (Main flies those coins from it).
 Hud.freeClaimedAt = 0
 -- Red shake on the cash amount ("can't afford").
@@ -1177,6 +1179,45 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 					sounds.play("Coin", 0.04, coinPitch)
 					coinPitch = math.min(coinPitch + 0.035, 1.5)
 					Kit.pop(moneyLabel, 0.4)
+				end)
+			end)
+		end
+	end
+
+	-- Aura pack: a handful of orbs pop out at the screen centre and fly into the tank, each
+	-- landing with the walk-over pickup pop at a rising pitch; the tank number rolls up from
+	-- the State refresh that follows the grant.
+	Hud.orbBurst = function(amount: number)
+		local layerAt = fxLayer.AbsolutePosition
+		local viewport = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+		local origin = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
+		local target = carriedLabel.AbsolutePosition + carriedLabel.AbsoluteSize * 0.5 - layerAt
+		local scale = if uiScale then uiScale.Scale else 1
+		local count = math.clamp(6 + math.floor(math.log10(math.max(amount, 1))), 6, 12)
+		local size = math.floor(34 * scale)
+		for i = 1, count do
+			local orb = Kit.icon(fxLayer, "Orb", size, C.Orb, { Name = "Orb", AnchorPoint = Vector2.new(0.5, 0.5) })
+			orb.Position = UDim2.fromOffset(origin.X, origin.Y)
+			orb.Size = UDim2.fromOffset(size * 0.4, size * 0.4)
+			local angle = (i / count + math.random() * 0.1) * math.pi * 2
+			local radius = (50 + math.random() * 70) * scale
+			local spread = origin + Vector2.new(math.cos(angle), math.sin(angle) * 0.7) * radius
+			Kit.tween(
+				orb,
+				0.3,
+				{ Position = UDim2.fromOffset(spread.X, spread.Y), Size = UDim2.fromOffset(size, size) },
+				Enum.EasingStyle.Back
+			)
+			task.delay(0.3 + i * 0.06, function()
+				local fly = 0.45 + math.random() * 0.1
+				Kit.tween(orb, fly, {
+					Position = UDim2.fromOffset(target.X, target.Y),
+					Size = UDim2.fromOffset(size * 0.5, size * 0.5),
+				}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+				task.delay(fly, function()
+					orb:Destroy()
+					sounds.play("OrbPickup", 0, math.min(1 + i * 0.05, 1.6))
+					Hud.pulseTank(i == count)
 				end)
 			end)
 		end

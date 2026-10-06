@@ -1,6 +1,10 @@
 --[[
 	Monetization: game passes and developer products.
 
+	Developer products: cash packs (Theme.Monetization.MoneyPacks), Rizz packs (GemPacks),
+	aura packs (AuraPacks: aura straight into the tank, Tycoon.grantAura) and the instant
+	crate open. Pack amounts follow the buyer's progression (Shared.Economy).
+
 	IDs come from the theme. While an ID is 0:
 	  - in Studio, "buying" grants it immediately (so every feature is testable)
 	  - on a live server, the player is told it is coming soon.
@@ -58,6 +62,11 @@ local function productList(kind: string): { any }?
 		return theme.Monetization.MoneyPacks
 	elseif kind == "Gems" then
 		return theme.Monetization.GemPacks
+	elseif kind == "Aura" then
+		return theme.Monetization.AuraPacks
+	elseif kind == "LegacyMoney" then
+		-- Retired packs: only reachable through a receipt (Tycoon never prompts this kind).
+		return theme.Monetization.LegacyMoneyPacks
 	end
 	return nil
 end
@@ -86,13 +95,17 @@ end
 local function grantProduct(session: Tycoon.Session, kind: string, index: number)
 	local p = session.profile
 	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
-	if kind == "Money" then
-		local pack = theme.Monetization.MoneyPacks[index]
+	if kind == "Money" or kind == "LegacyMoney" then
+		local pack = (productList(kind) :: { any })[index]
 		local amount = Economy.moneyPackAmount(Tycoon.income(session), pack.Seconds, pack.Min, progression)
 		Tycoon.grantMoney(session, amount)
 	elseif kind == "Gems" then
 		local pack = theme.Monetization.GemPacks[index]
 		Tycoon.grantGems(session, Economy.gemPackAmount(pack.Base, progression))
+	elseif kind == "Aura" then
+		local pack = theme.Monetization.AuraPacks[index]
+		local amount = Economy.auraPackAmount(Tycoon.production(session), pack.Seconds, pack.Min, progression)
+		Tycoon.grantAura(session, amount)
 	end
 end
 
@@ -176,7 +189,7 @@ end
 
 -- (kind, index) of a pack, or ("Crate", true) for the crate product.
 local function findProduct(productId: number): (string?, any)
-	for _, kind in { "Money", "Gems" } do
+	for _, kind in { "Money", "Gems", "Aura", "LegacyMoney" } do
 		for index, product in productList(kind) :: { any } do
 			if product.Id ~= 0 and product.Id == productId then
 				return kind, index
