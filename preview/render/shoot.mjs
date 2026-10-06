@@ -169,20 +169,21 @@ async function renderThumbs(page, variant, showcase) {
 function shotList(world) {
 	const plot = world.plots[0];
 	const P = (x, y, z) => toWorld(plot, [x, y, z]);
-	const play = { pos: P(-11, 12, -33), look: P(2, 4, 24), fov: 62 };
+	// Behind the main player, who wades through the orb pool toward the bleachers.
+	const play = { pos: P(-12, 9, -4), look: P(1, -2, 25), fov: 62 };
 	// The fresh tutorial player owns plot 4.
 	const fresh = world.plots[3];
 	const F = (x, y, z) => toWorld(fresh, [x, y, z]);
 	const tutorial = { pos: F(12, 15, -36), look: F(-24, 2, -4), fov: 62 };
 	return [
 		{ name: "01-overview", scene: "world", gui: "none", camera: { pos: [-30, 235, -275], look: [0, 0, 45], fov: 55 }, extra: { shadowSpan: 320, fogNear: 400, fogFar: 1400 } },
-		{ name: "02-your-plot", scene: "world", gui: "none", camera: { pos: P(0, 70, -98), look: P(0, 0, 6), fov: 60 }, extra: { shadowSpan: 120 } },
+		{ name: "02-your-plot", scene: "world", gui: "none", camera: { pos: P(0, 62, -84), look: P(0, -2, 8), fov: 60 }, extra: { shadowSpan: 120 } },
 		{ name: "03-gameplay-hud", scene: "world", gui: "hud", camera: play },
 		{ name: "04-shop", scene: "world", gui: "shop", camera: play },
 		{ name: "05-index", scene: "world", gui: "index", camera: play },
 		{ name: "06-ranking", scene: "world", gui: "ranking", camera: play },
 		{ name: "07-new-unit-reward", scene: "world", gui: "reward", camera: play },
-		{ name: "08-holding-crate", scene: "world_held", gui: "crate", camera: { pos: P(-16, 8.5, -6), look: P(-3, 3, -12), fov: 58 } },
+		{ name: "08-holding-crate", scene: "world_held", gui: "crate", camera: { pos: P(20, 9, -41), look: P(36, 3, -16), fov: 58 } },
 		{ name: "09-settings", scene: "world", gui: "settings", camera: play },
 		{ name: "10-all-25-tiers", scene: "showcase", gui: "none", camera: { pos: [0, 24, 1000 - 66], look: [0, 8, 1003], fov: 50 }, extra: { shadowSpan: 80, fogNear: 300, fogFar: 1200 } },
 		{ name: "11-tutorial", scene: "world_tutorial", gui: "tutorial", camera: tutorial },

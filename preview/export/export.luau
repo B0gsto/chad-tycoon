@@ -507,6 +507,8 @@ local function exportScene(root, extra)
 			local shape = "Block"
 			if d:IsA("Part") then
 				shape = d.Shape.Name
+			elseif d:IsA("WedgePart") then
+				shape = "Wedge"
 			end
 			table.insert(parts, {
 				name = d.Name,
@@ -662,6 +664,20 @@ local function main()
 
 	print("[stage] building world")
 	local world = WorldBuilder.build(Theme)
+	-- Part budget report (static map only: units, orbs and crates come later).
+	local hubParts = 0
+	for _, child in Workspace.Map:GetChildren() do
+		if child:IsA("BasePart") then
+			hubParts += 1
+		end
+	end
+	local plotParts = 0
+	for _, d in world.plots[1].folder:GetDescendants() do
+		if d:IsA("BasePart") then
+			plotParts += 1
+		end
+	end
+	print(string.format("[parts] hub %d, per plot %d", hubParts, plotParts))
 	-- Crates appear quickly so the preview has some on the floor.
 	Economy.CHEST_SPAWN_INTERVAL = 2
 	Economy.CHEST_SPAWN_CHANCE = 1
@@ -756,8 +772,13 @@ local function main()
 		local character = avatar(player.Name)
 		character.Parent = Workspace
 		player.Character = character
-		-- Stand a little in front of the merge pad, facing the shelves.
-		character:PivotTo(session.plot.cframe * CFrame.new(-6 + i, 0, -14) * CFrame.Angles(0, math.rad(200), 0))
+		-- The main player wades through the orb pool; the others wait near their
+		-- entrance (off every pad so the simulation doesn't trigger them).
+		local plot = session.plot
+		local spot = if i == 1
+			then CFrame.new(-7, plot.orbFloorY, 9) * CFrame.Angles(0, math.rad(195), 0)
+			else CFrame.new(-6 + i, 0, -36) * CFrame.Angles(0, math.rad(200), 0)
+		character:PivotTo(plot.cframe * spot)
 	end
 
 	print("[stage] players added")
@@ -821,8 +842,19 @@ local function main()
 	writeJson(OUT .. "/world.json", exportScene(Workspace, sceneExtra))
 	local stateNormal = captured.state[mainPlayer.Name]
 
-	-- Pick up a crate for the "holding a crate" shot.
+	-- Pick up a crate for the "holding a crate" shot and carry it across the main
+	-- floor toward the crate unlockers.
+	mainCharacter:PivotTo(mainSession.plot.cframe * CFrame.new(30, 0, -27) * CFrame.Angles(0, math.rad(-140), 0))
 	mainSession.profile.heldChest = "Epic"
+	-- The crate that was "picked up" (and any others within reach) leave the floor.
+	local heldAt = mainCharacter:FindFirstChild("HumanoidRootPart").CFrame.Position
+	for i = #mainSession.floorChests, 1, -1 do
+		local chest = mainSession.floorChests[i]
+		if (chest.position - heldAt).Magnitude < 14 then
+			chest.model:Destroy()
+			table.remove(mainSession.floorChests, i)
+		end
+	end
 	task.wait(1.1)
 	poseUnits(Workspace)
 	writeJson(OUT .. "/world_held.json", exportScene(Workspace, sceneExtra))

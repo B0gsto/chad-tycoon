@@ -135,6 +135,11 @@ Theme.Colors = {
 	Hub = rgb(34, 38, 44),
 	Sky = rgb(12, 20, 32),
 
+	-- Plot decor (Theme.Decor = "factory").
+	Hazard = rgb(255, 196, 0),
+	Belt = rgb(26, 28, 32),
+	Pipe = rgb(120, 128, 140),
+
 	Window = {
 		Shop = rgb(0, 190, 240),
 		Index = rgb(255, 130, 20),
@@ -172,6 +177,10 @@ Theme.AnimSet = "Bot"
 
 local WHITE = rgb(240, 244, 250)
 local DARK = rgb(40, 42, 50)
+
+-- Plot decoration style built by WorldBuilder: "gym" or "factory" (nil = none).
+Theme.Decor = "factory"
+
 local function bot(fields: { [string]: any }): { [string]: any }
 	fields.faceColor = fields.faceColor or CYAN
 	fields.trim = fields.trim or DARK

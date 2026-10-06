@@ -34,7 +34,7 @@ These are preview renders, not captures from Roblox Studio. Roblox can't run hea
 New players get a short, skippable **tutorial** (saved in their profile): buy a unit, walk over the orbs, deposit, collect the cash, then merge two units. A card above the tank shows the current step, and a glowing beam, a bouncing arrow and a highlight point at the pad (or the nearest orb). Each step completes on the real server event. Finishing pays a small reward (25 premium currency + $250). Saves from before the tutorial existed skip it.
 
 1. **Buy units** on the Buy 1 / 5 / 25 / 100 pads. They stand on your display shelves.
-2. Units **drop orbs** on the floor every second. Walk over the orbs to fill your tank (bottom of the screen).
+2. Units **drop orbs** into the sunken **orb pool** in front of the display every second. Walk down either ramp into the pool and over the orbs to fill your tank (bottom of the screen).
 3. Step on **Deposit** to send your tank to the converter. The global **multiplier** (0.5x–3x) re-rolls every 20 s, so timing matters.
 4. The converter **processes** orbs into cash at your processing speed. Upgrade it on the `+/sec` pads.
 5. Step on **Collect Cash** to bank it.
@@ -96,6 +96,7 @@ src/shared/RigPose.luau                applies poses to a unit model (used by An
 src/shared/Net.luau                    remotes
 src/shared/TutorialSteps.luau          tutorial steps + progression rules (pure, unit-tested)
 src/server/WorldBuilder.luau           generates hub + 6 plots
+src/server/PlotLayout.luau             plot-local layout: pool, ramps, pads, crate areas (unit-tested)
 src/server/Tycoon.luau                 core loop: pads, orbs, crates, merging, processing, state
 src/server/DataService.luau            DataStore profiles (retries, no-overwrite on failed load)
 src/server/Monetization.luau           passes, products, receipt handling
@@ -107,7 +108,7 @@ src/client/UI/Kit.luau                 UI design system: 3D buttons, panels, pil
 src/client/Animator.luau               animates units locally (shelves + Index/reward viewports)
 src/loader/                            ReplicatedFirst loading screen
 src/themes/chad|bot/Theme.luau         names, words, colours, fonts, lighting, 25 tiers, product IDs
-tests/run.luau                         Lune unit tests (economy, formatting, tutorial, both themes)
+tests/run.luau                         Lune unit tests (economy, formatting, tutorial, models/poses, plot layout, both themes)
 preview/                               screenshot pipeline (Lune exporter + three.js/Chromium renderer)
 reference/                             the original reference screenshots
 ```
