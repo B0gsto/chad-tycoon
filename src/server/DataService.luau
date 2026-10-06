@@ -158,6 +158,9 @@ local function reconcile(data: any): Profile
 		end
 	end
 	data.buyTier = math.clamp(math.floor(data.buyTier), 1, Economy.MAX_BUY_TIER)
+	-- Purchases past the upgrade requirement only count once (Economy.unitPrice grows with
+	-- them); a save made under a larger requirement would otherwise price units out of reach.
+	data.boughtAtTier = math.clamp(math.floor(data.boughtAtTier), 0, Economy.buyTierRequirement(data.buyTier))
 	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
 	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
 		data.heldChest = ""

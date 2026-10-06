@@ -1271,12 +1271,12 @@ Theme.Monetization = {
 	-- Cash packs give `Seconds` of the buyer's income, never below their progression floor
 	-- (Economy.moneyPackAmount); `Min` is the absolute floor for brand-new players.
 	MoneyPacks = {
-		{ Id = 3716878799, Price = 19, Seconds = 300, Min = 1000 },
-		{ Id = 3716878815, Price = 49, Seconds = 900, Min = 3000 },
-		{ Id = 3716878826, Price = 99, Seconds = 2700, Min = 10000 },
-		{ Id = 3716878834, Price = 249, Seconds = 7200, Min = 30000 },
-		{ Id = 3716878844, Price = 499, Seconds = 18000, Min = 100000 },
-		{ Id = 3716878853, Price = 999, Seconds = 43200, Min = 300000 },
+		{ Id = 3716878799, Price = 19, Seconds = 300, Min = 750 },
+		{ Id = 3716878815, Price = 49, Seconds = 900, Min = 2500 },
+		{ Id = 3716878826, Price = 99, Seconds = 2700, Min = 7500 },
+		{ Id = 3716878834, Price = 249, Seconds = 7200, Min = 20000 },
+		{ Id = 3716878844, Price = 499, Seconds = 18000, Min = 50000 },
+		{ Id = 3716878853, Price = 999, Seconds = 43200, Min = 125000 },
 	},
 	-- Rizz packs give `Base` Rizz at tier 1, growing with the buyer's highest tier
 	-- (Economy.gemPackAmount). Roblox names: Small / Big / Mega Rizz Pack.
@@ -1365,7 +1365,7 @@ Theme.Cosmetics = {
 	BundleIcon = "CosAll",
 	-- Granted once per account: `CashSeconds` of income (Economy.moneyPackAmount, at least
 	-- `CashMin`), the Rizz of GemPacks[GemPack] (Economy.gemPackAmount) and `Item`.
-	Starter = { Pass = "StarterPack", CashSeconds = 1800, CashMin = 25000, GemPack = 2, Item = "TrailRookie", Icon = "CosStarter" },
+	Starter = { Pass = "StarterPack", CashSeconds = 1800, CashMin = 5000, GemPack = 2, Item = "TrailRookie", Icon = "CosStarter" },
 	-- Humanoid WalkSpeed before any boost.
 	BaseWalkSpeed = 16,
 }
