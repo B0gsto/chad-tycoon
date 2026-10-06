@@ -1,5 +1,5 @@
 --[[
-	Unit tests for the pure shared modules and both themes.
+	Unit tests for the pure shared modules and the theme.
 	Run with:  lune run tests/run
 ]]
 
@@ -476,7 +476,7 @@ local function cframeNear(a: any, b: any, tolerance: number): boolean
 	return true
 end
 
-for _, variant in { "chad", "bot" } do
+for _, variant in { "chad" } do
 	test("theme " .. variant, function()
 		local theme = loadTheme("src/themes/" .. variant .. "/Theme.luau")
 		eq(theme.Id, variant, "id")

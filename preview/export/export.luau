@@ -9,7 +9,7 @@
 	  out/<variant>/showcase.json     all 25 unit tiers lined up
 	  out/<variant>/gui/<shot>.json   the HUD / windows / popups for each screenshot
 
-	Usage: lune run preview/export/export.luau <chad|bot>
+	Usage: lune run preview/export/export.luau [chad]
 ]]
 
 local fs = require("@lune/fs")

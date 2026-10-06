@@ -12,9 +12,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 rojo build chad.project.json -o build/ChadAuraTycoon.rbxlx
-rojo build bot.project.json -o build/BotFactoryTycoon.rbxlx
-for variant in chad bot; do
+for variant in chad; do
 	lune run preview/export/export.luau "$variant"
 done
 (cd preview/render && npm install --silent)
-node preview/render/shoot.mjs chad bot
+node preview/render/shoot.mjs chad

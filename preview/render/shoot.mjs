@@ -1,6 +1,6 @@
 // Drives headless Chromium to turn the exported preview data into screenshots.
 //
-//   node preview/render/shoot.mjs [chad|bot ...]
+//   node preview/render/shoot.mjs [chad]
 //
 // Steps per variant: bake every SurfaceGui/BillboardGui to a PNG texture,
 // render the 25 unit thumbnails (for the Index / reward UI), then render each
@@ -17,7 +17,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(ROOT, "out");
 const SHOTS = join(ROOT, "screenshots");
 const CHROME = process.env.CHROME || "/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell";
-const variants = process.argv.slice(2).length ? process.argv.slice(2) : ["chad", "bot"];
+const variants = process.argv.slice(2).length ? process.argv.slice(2) : ["chad"];
 
 // --- static server ------------------------------------------------------------------
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json", ".png": "image/png", ".ttf": "font/ttf" };

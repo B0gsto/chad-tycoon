@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Formats, lints, type-checks, tests and builds both game variants.
+# Formats, lints, type-checks, tests and builds the game.
 # Usage: scripts/check.sh   (expects rojo, selene, stylua, lune, luau-lsp on PATH;
 #                            `rokit install` provides them from rokit.toml)
 set -euo pipefail
@@ -18,7 +18,7 @@ echo "== selene"
 selene src
 
 echo "== luau-lsp"
-for variant in chad bot; do
+for variant in chad; do
 	rojo sourcemap "$variant.project.json" -o sourcemap.json
 	luau-lsp analyze --sourcemap=sourcemap.json --definitions="$DEFS" \
 		src/shared src/server src/client src/loader "src/themes/$variant"
@@ -31,5 +31,4 @@ lune run tests/run
 echo "== build"
 mkdir -p build
 rojo build chad.project.json -o build/ChadAuraTycoon.rbxlx
-rojo build bot.project.json -o build/BotFactoryTycoon.rbxlx
 echo "All checks passed."
