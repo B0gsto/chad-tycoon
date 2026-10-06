@@ -3,9 +3,20 @@ roblox.toml
 sourcemap.json
 *.rbxl.lock
 *.rbxlx.lock
-/tools/
 .cache/
 preview/node_modules/
 preview/out/
 preview/render/node_modules/
 .claude/worktrees/
+__pycache__/
+.DS_Store
+node_modules/
+# Release binary from scripts/build-release.sh (CI uploads it as an artifact). build/ChadAuraTycoon.rbxlx stays tracked.
+build/*.rbxl
+build/.*.tmp.*
+# Blender renders are regenerable from art/blender; keep the JSON sidecars (atlas/UI rects) and the hero faces
+# (tests/run.luau checks art/out/faces/*.png exist).
+art/out/**
+!art/out/**/
+!art/out/**/*.json
+!art/out/faces/**

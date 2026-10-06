@@ -1,0 +1,10 @@
+{
+ "kind": "Crown",
+ "tris": 684,
+ "size": [
+  1.6,
+  1.34,
+  1.62
+ ],
+ "axes": "Roblox studs [X, Y up, Z]; front faces -Z; origin at the base centre"
+}

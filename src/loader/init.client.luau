@@ -9,6 +9,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LoadingScreen = require(script:WaitForChild("LoadingScreen"))
 
 local TIMEOUT = 25
+local ART_TIMEOUT = 8
 
 local player = Players.LocalPlayer
 local gui = Instance.new("ScreenGui")
@@ -34,6 +35,13 @@ task.spawn(function()
 			screen.applyTheme(theme)
 		end
 	end
+end)
+
+-- Brand art: ReplicatedFirst runs before ReplicatedStorage is guaranteed, so
+-- wait (briefly) for Shared.Assets and read the brand/KeyArt and brand/Logo
+-- ids from it; without them the code-drawn splash stays.
+task.spawn(function()
+	screen.applyArt(LoadingScreen.findArt(ART_TIMEOUT))
 end)
 
 if not game:IsLoaded() then

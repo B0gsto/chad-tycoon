@@ -5,10 +5,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-DEFS="${LUAU_DEFS:-.cache/globalTypes.d.luau}"
+# Roblox type definitions must match the installed luau-lsp release, so the cache is versioned.
+LSP_VERSION="$(luau-lsp --version | tr -d '[:space:]')"
+DEFS="${LUAU_DEFS:-.cache/globalTypes-$LSP_VERSION.d.luau}"
 if [ ! -f "$DEFS" ]; then
 	mkdir -p "$(dirname "$DEFS")"
-	curl -fsSL -o "$DEFS" https://raw.githubusercontent.com/JohnnyMorganz/luau-lsp/1.53.0/scripts/globalTypes.d.luau
+	curl -fsSL -o "$DEFS.tmp" \
+		"https://raw.githubusercontent.com/JohnnyMorganz/luau-lsp/$LSP_VERSION/scripts/globalTypes.d.luau"
+	mv "$DEFS.tmp" "$DEFS"
 fi
 
 echo "== stylua"

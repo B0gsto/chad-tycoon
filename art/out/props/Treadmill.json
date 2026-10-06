@@ -1,0 +1,15 @@
+{
+ "kind": "Treadmill",
+ "tris": 1256,
+ "size": [
+  2.64,
+  3.853,
+  5.342
+ ],
+ "offset": [
+  0.0,
+  0.0,
+  0.029
+ ],
+ "axes": "Roblox studs: size = [X, Y up, Z]; offset = mesh base centre in the fallback prop frame"
+}

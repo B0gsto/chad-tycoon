@@ -1,0 +1,9 @@
+{
+  "domain": "brand",
+  "assets": [
+    {"name": "Logo", "file": "art/out/brand/Logo.png", "kind": "Image"},
+    {"name": "LogoSmall", "file": "art/out/brand/LogoSmall.png", "kind": "Image"},
+    {"name": "KeyArt", "file": "art/out/brand/KeyArt.png", "kind": "Image"},
+    {"name": "TitleCard", "file": "art/out/brand/TitleCard.png", "kind": "Image"}
+  ]
+}

@@ -1,0 +1,15 @@
+{
+ "kind": "PunchBag",
+ "tris": 1180,
+ "size": [
+  4.44,
+  7.04,
+  2.78
+ ],
+ "offset": [
+  -0.02,
+  0.0,
+  0.0
+ ],
+ "axes": "Roblox studs: size = [X, Y up, Z]; offset = mesh base centre in the fallback prop frame"
+}

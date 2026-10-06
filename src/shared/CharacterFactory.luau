@@ -11,31 +11,46 @@
 	"Root" sits at the feet (y = 0) and the unit faces -Z.
 
 	Look fields (all optional except the three colours):
-	  skin, shirt, pants : Color3 (bots: head/forearm plating, chest, legs)
-	  anim       : "Chad" | "Bot" — body style and animation set
+	  skin, shirt, pants : Color3 (bots: head/forearm plating, chest, legs;
+	               fans: leggings / joggers)
+	  anim       : "Chad" | "Bot" | "Fan" — body style and animation set
 	               (defaults to the theme's Theme.AnimSet, else "Chad")
 	  material   : Enum.Material name for the body ("Metal", "Glass", ...)
 	  buff       : 0..1 muscle / bulk (wider chest, thicker arms)
-	  scale      : overall size multiplier (1..2)
+	  scale      : overall size multiplier (1..2; fans 0.85..0.92)
 	  acc        : list of accessory names (see ACCESSORIES)
 	  accColor   : Color3 for accessories
 	  trim       : Color3 secondary colour (chad belt / jacket inner shirt,
-	               bot joints and frame)
+	               bot joints and frame, fan shirt emblem)
 	  aura       : Color3 particle aura
+	  auraRate   : aura particles per second (default 10; low tiers use a faint aura)
 	  sparkles   : true for a Sparkles effect
 	  fire       : Color3 fire effect
 	  glow       : Color3 point light
-	 Chad only:
+	  manual     : true to leave off the "AnimatedUnit" tag, for models that
+	               code poses itself with RigPose (cutscenes)
+	 Chad and Fan:
 	  expr       : "Neutral" | "Smirk" | "Smug" | "Determined" | "Angry" |
-	               "Happy" | "Stoic"
+	               "Happy" | "Stoic" | "Cheer" | "Starry" | "Sad" | "Shock"
+	  exprs      : extra expressions to build hidden, switched with
+	               CharacterFactory.setExpression(model, name)
 	  hair       : Color3 (also the eyebrows)
-	  hairStyle  : "Buzz" | "Flat" | "Slick" | "Quiff" | "Spiky" | "Bun" | "Bald"
+	  hairStyle  : "Buzz" | "Flat" | "Slick" | "Quiff" | "Spiky" | "Bun" | "Bald" |
+	               "Ponytail" | "Pigtails" | "Bob" | "LongHair"
 	  beard      : "Stubble" | "Beard"
 	  jaw        : true (or 0..1) for a wide chiselled jaw and chin
 	  top        : "Tee" | "Tank" | "Shirtless" | "Jacket" | "Hoodie"
-	  bottoms    : "Pants" | "Joggers" | "Shorts"
+	  bottoms    : "Pants" | "Joggers" | "Shorts" | "Skirt" (fans: knee-length
+	               over leggings in the pants colour)
 	  shoes, sole: Color3 sneaker upper / sole
 	  eyeGlow    : Color3 glowing eyes instead of pupils
+	 Fan only (smaller, rounder build with big eyes):
+	  skirt      : Color3 of the skirt (default accColor)
+	  emblem     : "Heart" | "Star" | "Disc" shirt print in the trim colour
+	  lashes     : true for eyelashes
+	  blush      : false to leave off the cheek blush
+	  prop       : accessory held by the fan ("FanSign" | "PomPoms" | "FoamFinger")
+	  signText   : text on a FanSign (model attribute "SignText", default "#1 FAN")
 	 Bot only:
 	  eyes       : "Dots" | "Visor" | "Mono" | "Angry" | "Happy" | "Bars"
 	  mouth      : "Grille" | "Bar" | "None"
@@ -56,6 +71,7 @@ export type Look = {
 	accColor: Color3?,
 	trim: Color3?,
 	aura: Color3?,
+	auraRate: number?,
 	sparkles: boolean?,
 	fire: Color3?,
 	glow: Color3?,
@@ -72,6 +88,14 @@ export type Look = {
 	eyes: string?,
 	mouth: string?,
 	faceColor: Color3?,
+	manual: boolean?,
+	exprs: { string }?,
+	skirt: Color3?,
+	emblem: string?,
+	lashes: boolean?,
+	blush: boolean?,
+	prop: string?,
+	signText: string?,
 	-- Legacy (ignored): emoji faces cannot render inside ViewportFrames.
 	face: string?,
 	faceFont: Enum.Font?,
@@ -87,6 +111,12 @@ local PUPIL = Color3.fromRGB(28, 26, 34)
 local MOUTH = Color3.fromRGB(96, 38, 40)
 local GOLD = Color3.fromRGB(255, 200, 50)
 local FACEPLATE = Color3.fromRGB(14, 16, 22)
+local TONGUE = Color3.fromRGB(255, 128, 140)
+local BLUSH = Color3.fromRGB(255, 168, 182)
+local STAR = Color3.fromRGB(255, 212, 64) -- Theme.World.Sunny
+local INK = Color3.fromRGB(58, 48, 96) -- Theme.World.Ink
+local WOOD = Color3.fromRGB(222, 170, 112) -- Theme.World.Wood
+local SIGN_TEXT = "#1 FAN"
 
 local function shade(c: Color3, k: number): Color3
 	return c:Lerp(BLACK, k)
@@ -143,6 +173,9 @@ type Ctx = {
 	acc: Color3,
 	trim: Color3,
 	isBot: boolean,
+	cute: boolean, -- fan build: big eyes, no nose / ears, rounder parts
+	exprTag: string?, -- expression the face parts being built belong to
+	exprHidden: boolean,
 	has: { [string]: boolean },
 	top: number,
 	parts: { [string]: BasePart },
@@ -207,6 +240,12 @@ local function add(
 		p.CastShadow = false
 	end
 	p:SetAttribute("Limb", limb)
+	if c.exprTag then
+		p:SetAttribute("Expr", c.exprTag)
+		if c.exprHidden then
+			p.Transparency = 1
+		end
+	end
 	p.Parent = c.model
 	trackTop(c, size, cf)
 	return p
@@ -235,17 +274,20 @@ local function slopeWedge(side: number): (Vector3, Vector3)
 	return Vector3.new(0, 0, side), Vector3.new(0, 1, 0)
 end
 
--- Chad faces ----------------------------------------------------------------------
+-- Chad and fan faces --------------------------------------------------------------
 
 type Expr = {
-	lid: number, -- eye openness 0..1
+	lid: number, -- eye openness 0..1 (above 1 = wide open)
 	look: number, -- pupil shift (+ = unit's right)
-	brow: number, -- inner-end drop in degrees (+ = angry)
+	brow: number, -- inner-end drop in degrees (+ = angry, - = worried)
 	browY: number,
 	browRaise: number, -- extra lift of the unit's left brow (one raised eyebrow)
-	mouth: string, -- "Flat" | "Smirk" | "Grin" | "Open"
+	mouth: string, -- "Flat" | "Smirk" | "Grin" | "Open" | "Big" | "Frown" | "O"
 	mouthW: number,
 	mouthTilt: number,
+	lookY: number?, -- pupil drop (+ = looking down)
+	pupil: number?, -- pupil size multiplier
+	star: boolean?, -- star-shaped eyes
 }
 
 local EXPRESSIONS: { [string]: Expr } = {
@@ -256,34 +298,33 @@ local EXPRESSIONS: { [string]: Expr } = {
 	Angry = { lid = 0.8, look = 0, brow = 26, browY = -0.03, browRaise = 0, mouth = "Open", mouthW = 0.34, mouthTilt = 0 },
 	Happy = { lid = 0.9, look = 0, brow = -8, browY = 0.04, browRaise = 0, mouth = "Grin", mouthW = 0.4, mouthTilt = 0 },
 	Stoic = { lid = 0.62, look = 0.055, brow = 6, browY = -0.03, browRaise = 0, mouth = "Flat", mouthW = 0.3, mouthTilt = 0 },
+	Cheer = { lid = 0.95, look = 0, brow = -10, browY = 0.06, browRaise = 0, mouth = "Big", mouthW = 0.42, mouthTilt = 0 },
+	Starry = { lid = 1, look = 0, brow = -8, browY = 0.06, browRaise = 0, mouth = "Big", mouthW = 0.38, mouthTilt = 0, star = true },
+	Sad = { lid = 0.7, look = 0, brow = -20, browY = 0.03, browRaise = 0, mouth = "Frown", mouthW = 0.3, mouthTilt = 0, lookY = 0.03 },
+	Shock = { lid = 1.2, look = 0, brow = -10, browY = 0.1, browRaise = 0, mouth = "O", mouthW = 0.17, mouthTilt = 0, pupil = 0.7 },
 }
+CharacterFactory.EXPRESSIONS = EXPRESSIONS
 
-local function buildChadFace(c: Ctx)
+-- Eyes, brows and mouth for one expression.
+local function buildExpression(c: Ctx, expr: Expr)
 	local look = c.look
 	local skin = look.skin
 	local hair = look.hair or Color3.fromRGB(52, 36, 26)
-	local expr = EXPRESSIONS[look.expr or "Neutral"] or EXPRESSIONS.Neutral
-	local HW, HD, headY = c.HW, c.HD, c.headY
-	local front = -HD / 2
-	local bottom = headY - c.HH / 2
+	local front = -c.HD / 2
+	local bottom = c.headY - c.HH / 2
 	local eyeY = c.eyeY
-	local jawValue = look.jaw
-	local jaw = if jawValue == true then 1 elseif type(jawValue) == "number" then jawValue else 0
 	local plain = Enum.Material.SmoothPlastic
+	local cute = c.cute
 
-	if jaw > 0 then
-		add(c, "Head", "Jaw", Vector3.new(HW + 0.08 * jaw, 0.4, HD - 0.1), at(0, bottom + 0.1, -0.03), shade(skin, 0.03))
-		add(c, "Head", "Chin", Vector3.new(0.46, 0.24, 0.12), at(0, bottom - 0.03, front + 0.02), shade(skin, 0.04))
-	end
-	-- Both ears as one block through the head (saves a part).
-	add(c, "Head", "Ears", Vector3.new(HW + 0.08, 0.28, 0.22), at(0, eyeY - 0.12, 0.06), skin)
-	add(c, "Head", "Nose", Vector3.new(0.16, 0.24, 0.14), at(0, eyeY - 0.17, front - 0.06), shade(skin, 0.06))
-
-	-- Eyes (hidden behind shades / visor).
+	-- Eyes (hidden behind shades / visor). Fans get big round eyes with a shine.
 	if not (c.has.Shades or c.has.Visor) then
+		local eyeX = if cute then 0.25 else 0.24
+		local eyeW = if cute then 0.27 else 0.25
+		local eyeH = (if cute then 0.27 else 0.17) * expr.lid
+		local pupilK = expr.pupil or 1
 		for _, side in SIDES do
 			local s = side[1]
-			local x = s * 0.24
+			local x = s * eyeX
 			if look.eyeGlow then
 				add(
 					c,
@@ -294,14 +335,31 @@ local function buildChadFace(c: Ctx)
 					look.eyeGlow,
 					Enum.Material.Neon
 				)
+			elseif expr.star then
+				-- Two squares turned 45 degrees apart make an eight-point star.
+				for _, angle in { 0, 45 } do
+					add(c, "Head", "Eye", Vector3.new(0.23, 0.23, 0.04), rot(x, eyeY, front - 0.015, 0, 0, angle), STAR, plain)
+				end
+				add(c, "Head", "Shine", Vector3.new(0.07, 0.07, 0.03), at(x - s * 0.04, eyeY + 0.05, front - 0.035), WHITE, plain)
 			else
-				add(c, "Head", "Eye", Vector3.new(0.25, 0.17 * expr.lid, 0.04), at(x, eyeY, front - 0.01), EYE_WHITE, plain)
+				add(c, "Head", "Eye", Vector3.new(eyeW, eyeH, 0.04), at(x, eyeY, front - 0.01), EYE_WHITE, plain)
+				local pw = (if cute then 0.17 else 0.12) * pupilK
+				local ph = (if cute then 0.22 else 0.15) * math.min(expr.lid, 1) * pupilK
+				local px = x - s * 0.02 + expr.look
+				local py = eyeY - 0.005 - (expr.lookY or 0)
+				add(c, "Head", "Pupil", Vector3.new(pw, ph, 0.04), at(px, py, front - 0.025), PUPIL, plain)
+				if cute then
+					add(c, "Head", "Shine", Vector3.new(0.06, 0.06, 0.03), at(px + 0.035, py + ph * 0.25, front - 0.045), WHITE, plain)
+				end
+			end
+			if look.lashes and not look.eyeGlow then
+				local lashY = eyeY + (if expr.star then 0.1 else eyeH / 2)
 				add(
 					c,
 					"Head",
-					"Pupil",
-					Vector3.new(0.12, 0.15 * expr.lid, 0.04),
-					at(x - s * 0.02 + expr.look, eyeY - 0.005, front - 0.025),
+					"Lash",
+					Vector3.new(0.12, 0.05, 0.04),
+					rot(x + s * eyeW * 0.5, lashY, front - 0.02, 0, 0, s * 28),
 					PUPIL,
 					plain
 				)
@@ -309,18 +367,147 @@ local function buildChadFace(c: Ctx)
 		end
 	end
 	local browColor = if look.hairStyle == "Bald" then shade(skin, 0.45) else shade(hair, 0.1)
+	local browSize = if cute then Vector3.new(0.24, 0.06, 0.06) else Vector3.new(0.3, 0.075, 0.07)
+	local browUp = if cute then 0.22 else 0.17
 	for _, side in SIDES do
 		local s = side[1]
 		local lift = expr.browY + (if s < 0 then expr.browRaise else 0)
-		add(
-			c,
-			"Head",
-			"Brow",
-			Vector3.new(0.3, 0.075, 0.07),
-			rot(s * 0.25, eyeY + 0.17 + lift, front - 0.025, 0, 0, s * expr.brow),
-			browColor,
-			plain
-		)
+		add(c, "Head", "Brow", browSize, rot(s * 0.25, eyeY + browUp + lift, front - 0.025, 0, 0, s * expr.brow), browColor, plain)
+	end
+
+	-- Mouth.
+	local mouthY = bottom + (if cute then 0.24 else 0.22)
+	local mz = front - 0.03
+	local w = expr.mouthW
+	if expr.mouth == "Grin" then
+		add(c, "Head", "Mouth", Vector3.new(w, 0.15, 0.04), at(0, mouthY - 0.02, mz), MOUTH, plain)
+		add(c, "Head", "Teeth", Vector3.new(w - 0.12, 0.05, 0.04), at(0, mouthY + 0.015, mz - 0.01), EYE_WHITE, plain)
+	elseif expr.mouth == "Open" then
+		add(c, "Head", "Mouth", Vector3.new(w, 0.15, 0.04), at(0, mouthY - 0.01, mz), MOUTH, plain)
+		add(c, "Head", "Teeth", Vector3.new(w - 0.06, 0.05, 0.04), at(0, mouthY + 0.03, mz - 0.01), EYE_WHITE, plain)
+	elseif expr.mouth == "Big" then
+		-- Wide open cheering smile: teeth along the top, tongue at the bottom.
+		add(c, "Head", "Mouth", Vector3.new(w, 0.21, 0.04), at(0, mouthY - 0.04, mz), MOUTH, plain)
+		add(c, "Head", "Teeth", Vector3.new(w - 0.08, 0.06, 0.04), at(0, mouthY + 0.03, mz - 0.01), EYE_WHITE, plain)
+		add(c, "Head", "Tongue", Vector3.new(w * 0.5, 0.07, 0.04), at(0, mouthY - 0.1, mz - 0.01), TONGUE, plain)
+	elseif expr.mouth == "Frown" then
+		for _, side in SIDES do
+			local s = side[1]
+			add(
+				c,
+				"Head",
+				"Mouth",
+				Vector3.new(w / 2 + 0.03, 0.06, 0.04),
+				rot(s * w / 4, mouthY - 0.02, mz, 0, 0, -s * 18),
+				shade(MOUTH, 0.2),
+				plain
+			)
+		end
+	elseif expr.mouth == "O" then
+		add(c, "Head", "Mouth", Vector3.new(w, w * 1.25, 0.04), at(0, mouthY - 0.03, mz), MOUTH, plain)
+	elseif expr.mouth == "Smirk" then
+		add(c, "Head", "Mouth", Vector3.new(w, 0.065, 0.04), rot(-0.05, mouthY, mz, 0, 0, -expr.mouthTilt), shade(MOUTH, 0.2), plain)
+	else
+		add(c, "Head", "Mouth", Vector3.new(w, 0.065, 0.04), at(0, mouthY, mz), shade(MOUTH, 0.2), plain)
+	end
+end
+
+local GIRL_HAIR = { Ponytail = true, Pigtails = true, Bob = true, LongHair = true }
+
+-- The longer fan hairstyles: a cap, a fringe and a back / sides / tails.
+local function buildLongHair(c: Ctx, style: string, hair: Color3, hatted: boolean)
+	local HW, HD, top = c.HW, c.HD, c.headTop
+	local front = -HD / 2
+	local back = HD / 2
+	local dark = shade(hair, 0.06)
+	add(c, "Head", "Hair", Vector3.new(HW + 0.08, 0.22, HD + 0.08), at(0, top + 0.04, 0.01), hair)
+	if not hatted then
+		add(c, "Head", "Bangs", Vector3.new(HW + 0.04, 0.2, 0.14), at(0, top - 0.09, front + 0.02), tint(hair, 0.05))
+	end
+	if style == "Ponytail" then
+		add(c, "Head", "HairBack", Vector3.new(HW + 0.06, 0.7, 0.12), at(0, top - 0.33, back + 0.04), hair)
+		local tieY = top - 0.1
+		add(c, "Head", "HairTie", Vector3.one * 0.24, at(0, tieY, back + 0.14), c.acc, nil, Enum.PartType.Ball)
+		add(c, "Head", "Ponytail", Vector3.new(0.36, 1.0, 0.32), rot(0, tieY - 0.48, back + 0.3, -18, 0, 0), dark)
+	elseif style == "Pigtails" then
+		add(c, "Head", "HairBack", Vector3.new(HW + 0.06, 0.7, 0.12), at(0, top - 0.33, back + 0.04), hair)
+		for _, side in SIDES do
+			local s = side[1]
+			local x = s * (HW / 2 + 0.1)
+			local y = c.headY + 0.14
+			add(c, "Head", "HairTie", Vector3.one * 0.22, at(x, y, 0.1), c.acc, nil, Enum.PartType.Ball)
+			add(c, "Head", "Pigtail", Vector3.new(0.34, 0.86, 0.34), rot(x + s * 0.12, y - 0.44, 0.12, 0, 0, s * 14), dark)
+		end
+	elseif style == "Bob" then
+		add(c, "Head", "HairBack", Vector3.new(HW + 0.08, 0.92, 0.14), at(0, top - 0.44, back + 0.05), hair)
+		for _, side in SIDES do
+			local s = side[1]
+			add(c, "Head", "HairSide", Vector3.new(0.14, 0.84, HD * 0.86), at(s * (HW / 2 + 0.05), top - 0.42, 0.06), hair)
+		end
+	else -- LongHair: down past the shoulders at the back.
+		add(c, "Head", "HairBack", Vector3.new(HW + 0.1, 1.7, 0.16), at(0, top - 0.82, back + 0.06), hair)
+		for _, side in SIDES do
+			local s = side[1]
+			add(c, "Head", "HairSide", Vector3.new(0.14, 1.2, HD * 0.8), at(s * (HW / 2 + 0.05), top - 0.58, 0.1), hair)
+		end
+	end
+end
+
+local function buildChadFace(c: Ctx)
+	local look = c.look
+	local skin = look.skin
+	local hair = look.hair or Color3.fromRGB(52, 36, 26)
+	local HW, HD = c.HW, c.HD
+	local front = -HD / 2
+	local bottom = c.headY - c.HH / 2
+	local eyeY = c.eyeY
+	local jawValue = look.jaw
+	local jaw = if jawValue == true then 1 elseif type(jawValue) == "number" then jawValue else 0
+	local plain = Enum.Material.SmoothPlastic
+
+	if jaw > 0 then
+		add(c, "Head", "Jaw", Vector3.new(HW + 0.08 * jaw, 0.4, HD - 0.1), at(0, bottom + 0.1, -0.03), shade(skin, 0.03))
+		add(c, "Head", "Chin", Vector3.new(0.46, 0.24, 0.12), at(0, bottom - 0.03, front + 0.02), shade(skin, 0.04))
+	end
+	if c.cute then
+		if look.blush ~= false then
+			for _, side in SIDES do
+				add(
+					c,
+					"Head",
+					"Blush",
+					Vector3.new(0.02, 0.17, 0.17),
+					rot(side[1] * 0.38, eyeY - 0.2, front - 0.005, 0, 90, 0),
+					BLUSH,
+					plain,
+					Enum.PartType.Cylinder
+				)
+			end
+		end
+	else
+		-- Both ears as one block through the head (saves a part).
+		add(c, "Head", "Ears", Vector3.new(HW + 0.08, 0.28, 0.22), at(0, eyeY - 0.12, 0.06), skin)
+		add(c, "Head", "Nose", Vector3.new(0.16, 0.24, 0.14), at(0, eyeY - 0.17, front - 0.06), shade(skin, 0.06))
+	end
+
+	-- Eyes, brows and mouth. With `exprs`, every listed expression is built and
+	-- all but the current one are hidden (see CharacterFactory.setExpression).
+	local current = look.expr or (if c.cute then "Cheer" else "Neutral")
+	if look.exprs and #look.exprs > 0 then
+		local list = table.clone(look.exprs)
+		if not table.find(list, current) then
+			table.insert(list, 1, current)
+		end
+		for _, name in list do
+			c.exprTag = name
+			c.exprHidden = name ~= current
+			buildExpression(c, EXPRESSIONS[name] or EXPRESSIONS.Neutral)
+		end
+		c.exprTag = nil
+		c.exprHidden = false
+		c.model:SetAttribute("Expression", current)
+	else
+		buildExpression(c, EXPRESSIONS[current] or EXPRESSIONS.Neutral)
 	end
 
 	-- Facial hair.
@@ -331,34 +518,13 @@ local function buildChadFace(c: Ctx)
 		add(c, "Head", "Moustache", Vector3.new(0.46, 0.09, 0.06), at(0, bottom + 0.32, front - 0.04), hair)
 	end
 
-	-- Mouth.
-	local mouthY = bottom + 0.22
-	local mz = front - 0.03
-	if expr.mouth == "Grin" then
-		add(c, "Head", "Mouth", Vector3.new(expr.mouthW, 0.15, 0.04), at(0, mouthY - 0.02, mz), MOUTH, plain)
-		add(c, "Head", "Teeth", Vector3.new(expr.mouthW - 0.12, 0.05, 0.04), at(0, mouthY + 0.015, mz - 0.01), EYE_WHITE, plain)
-	elseif expr.mouth == "Open" then
-		add(c, "Head", "Mouth", Vector3.new(expr.mouthW, 0.15, 0.04), at(0, mouthY - 0.01, mz), MOUTH, plain)
-		add(c, "Head", "Teeth", Vector3.new(expr.mouthW - 0.06, 0.05, 0.04), at(0, mouthY + 0.03, mz - 0.01), EYE_WHITE, plain)
-	elseif expr.mouth == "Smirk" then
-		add(
-			c,
-			"Head",
-			"Mouth",
-			Vector3.new(expr.mouthW, 0.065, 0.04),
-			rot(-0.05, mouthY, mz, 0, 0, -expr.mouthTilt),
-			shade(MOUTH, 0.2),
-			plain
-		)
-	else
-		add(c, "Head", "Mouth", Vector3.new(expr.mouthW, 0.065, 0.04), at(0, mouthY, mz), shade(MOUTH, 0.2), plain)
-	end
-
 	-- Hair.
 	local style = look.hairStyle or "Buzz"
 	local top = c.headTop
 	local hatted = c.has.Cap or c.has.CapBack or c.has.Crown or c.has.Mohawk
-	if style ~= "Bald" then
+	if GIRL_HAIR[style] then
+		buildLongHair(c, style, hair, hatted == true)
+	elseif style ~= "Bald" then
 		local backH = if style == "Buzz" then 0.48 else 0.62
 		add(c, "Head", "HairBack", Vector3.new(HW + 0.05, backH, 0.08), at(0, top - backH / 2 + 0.02, HD / 2 + 0.03), hair)
 		if hatted then
@@ -391,6 +557,9 @@ local function buildChadFace(c: Ctx)
 		elseif style == "Bun" then
 			add(c, "Head", "Hair", Vector3.new(HW + 0.05, 0.16, HD + 0.05), at(0, top + 0.03, 0.01), hair)
 			add(c, "Head", "Bun", Vector3.new(0.44, 0.44, 0.44), at(0, top - 0.02, HD / 2 + 0.16), hair, nil, Enum.PartType.Ball)
+			if c.cute and not hatted then
+				add(c, "Head", "Bangs", Vector3.new(HW + 0.04, 0.2, 0.14), at(0, top - 0.09, front + 0.02), tint(hair, 0.05))
+			end
 		end
 	end
 	c.hairTop = c.top
@@ -562,6 +731,157 @@ local function buildChad(c: Ctx)
 
 	-- Head.
 	setPivot(c, "Head", 0, neckY, 0)
+	c.parts.Head = add(c, "Head", "Head", Vector3.new(HW, HH, HD), at(0, headY, 0), skin)
+	buildChadFace(c)
+end
+
+-- Fan body ------------------------------------------------------------------------
+
+-- Shirt print on the chest: a heart, a star or a plain disc in the trim colour.
+local function addEmblem(c: Ctx, y: number)
+	local kind = c.look.emblem
+	if not kind then
+		return
+	end
+	local color = c.look.trim or WHITE
+	local z = -c.chestD / 2 - 0.02
+	local plain = Enum.Material.SmoothPlastic
+	if kind == "Heart" then
+		for _, side in SIDES do
+			add(
+				c,
+				"UpperTorso",
+				"Emblem",
+				Vector3.new(0.05, 0.25, 0.25),
+				rot(side[1] * 0.1, y + 0.05, z, 0, 90, 0),
+				color,
+				plain,
+				Enum.PartType.Cylinder
+			)
+		end
+		add(c, "UpperTorso", "Emblem", Vector3.new(0.25, 0.25, 0.05), rot(0, y - 0.05, z, 0, 0, 45), color, plain)
+	elseif kind == "Star" then
+		for _, angle in { 0, 45 } do
+			add(c, "UpperTorso", "Emblem", Vector3.new(0.3, 0.3, 0.05), rot(0, y, z, 0, 0, angle), color, plain)
+		end
+	else
+		add(c, "UpperTorso", "Emblem", Vector3.new(0.05, 0.4, 0.4), rot(0, y, z, 0, 90, 0), color, plain, Enum.PartType.Cylinder)
+	end
+end
+
+-- A small, round, cheerful build: big head, ball hands and shoulders, sneakers.
+local function buildFan(c: Ctx)
+	local look = c.look
+	local skin, shirt, pants = look.skin, look.shirt, look.pants
+	local topStyle = if look.top == "Hoodie" then "Hoodie" else "Tee"
+	local bottoms = look.bottoms or "Joggers"
+	local hoodie = topStyle == "Hoodie"
+
+	local hipX = 0.33
+	local legT = 0.5
+	local hipY, kneeY, ankleY = 1.8, 1.02, 0.3
+	local waistY = 2.15
+	local waistW = 1.22
+	local W = 1.42
+	local chestD = 0.8
+	local A = 0.42
+	local armX = W / 2 + A / 2 - 0.01
+	local shoulderY = 3.28
+	local elbowY = shoulderY - 0.78
+	local wristY = elbowY - 0.7
+	local neckY = 3.56
+	local HW, HH, HD = 1.18, 1.12, 1.08
+	local headY = neckY + 0.12 + HH / 2
+
+	c.W, c.chestD, c.chestTop, c.chestY, c.waistW, c.hipY = W, chestD, 3.47, 3.05, waistW, hipY
+	c.A, c.armX, c.shoulderY, c.wristY = A, armX, shoulderY, wristY
+	c.delt = A + 0.1
+	c.headY, c.HW, c.HH, c.HD = headY, HW, HH, HD
+	c.headTop = headY + HH / 2
+	c.eyeY = headY + 0.02
+
+	setPivot(c, "LowerTorso", 0, hipY, 0)
+	setPivot(c, "UpperTorso", 0, waistY, 0)
+	setPivot(c, "Head", 0, neckY, 0)
+
+	-- Legs: leggings or joggers and chunky sneakers.
+	local shoes = look.shoes or WHITE
+	local sole = look.sole or Color3.fromRGB(250, 250, 250)
+	for _, side in SIDES do
+		local s, n = side[1], side[2]
+		local x = s * hipX
+		setPivot(c, n .. "UpperLeg", x, hipY, 0)
+		setPivot(c, n .. "LowerLeg", x, kneeY, 0)
+		setPivot(c, n .. "Foot", x, ankleY, 0)
+		add(c, n .. "Foot", "Shoe", Vector3.new(legT + 0.1, 0.3, 0.9), at(x, 0.22, -0.1), shoes)
+		add(c, n .. "Foot", "Sole", Vector3.new(legT + 0.14, 0.1, 0.96), at(x, 0.05, -0.11), sole)
+		local shin = if bottoms == "Shorts" then skin else pants
+		add(
+			c,
+			n .. "LowerLeg",
+			n .. "LowerLeg",
+			Vector3.new(legT * 0.88, kneeY - ankleY + 0.06, legT * 0.9),
+			at(x, (kneeY + ankleY) / 2, 0),
+			shin
+		)
+		if bottoms == "Joggers" then
+			add(
+				c,
+				n .. "LowerLeg",
+				"Cuff",
+				Vector3.new(legT * 0.88 + 0.06, 0.14, legT * 0.9 + 0.06),
+				at(x, ankleY + 0.13, 0),
+				shade(pants, 0.1)
+			)
+		end
+		add(c, n .. "UpperLeg", n .. "UpperLeg", Vector3.new(legT, hipY - kneeY + 0.08, legT), at(x, (hipY + kneeY) / 2, 0), pants)
+	end
+
+	-- Hips, and a knee-length skirt with a white hem over the leggings.
+	local hipsW = 2 * hipX + legT + 0.08
+	local hipsD = 0.8
+	local skirt = look.skirt or look.accColor or shirt
+	c.parts.LowerTorso = add(
+		c,
+		"LowerTorso",
+		"LowerTorso",
+		Vector3.new(hipsW, 0.52, hipsD),
+		at(0, hipY + 0.12, 0),
+		if bottoms == "Skirt" then skirt else pants
+	)
+	if bottoms == "Skirt" then
+		add(c, "LowerTorso", "Skirt", Vector3.new(hipsW + 0.3, 0.84, hipsD + 0.24), at(0, hipY - 0.2, 0), skirt)
+		add(c, "LowerTorso", "SkirtHem", Vector3.new(hipsW + 0.36, 0.12, hipsD + 0.3), at(0, hipY - 0.58, 0), WHITE)
+	end
+
+	-- Torso.
+	add(c, "UpperTorso", "Waist", Vector3.new(waistW, 0.76, chestD * 0.94), at(0, 2.5, 0), shirt)
+	c.parts.UpperTorso = add(c, "UpperTorso", "UpperTorso", Vector3.new(W, 0.86, chestD), at(0, 3.05, 0), shirt)
+	add(c, "UpperTorso", "Neck", Vector3.new(0.36, 0.3, 0.38), at(0, neckY + 0.02, 0.02), skin)
+	if hoodie then
+		add(c, "UpperTorso", "Hood", Vector3.new(W * 0.62, 0.4, 0.4), at(0, 3.5, chestD / 2 - 0.02), shade(shirt, 0.08))
+		add(c, "UpperTorso", "Pocket", Vector3.new(W * 0.56, 0.3, 0.06), at(0, 2.45, -chestD * 0.47 - 0.02), shade(shirt, 0.06))
+	end
+	addEmblem(c, 2.98)
+
+	-- Arms: round shoulders, tee sleeves or hoodie sleeves, ball hands.
+	local armColor = if hoodie then shirt else skin
+	for _, side in SIDES do
+		local s, n = side[1], side[2]
+		local x = s * armX
+		setPivot(c, n .. "UpperArm", x, shoulderY, 0)
+		setPivot(c, n .. "LowerArm", x, elbowY, 0)
+		setPivot(c, n .. "Hand", x, wristY, 0)
+		add(c, n .. "UpperArm", "Shoulder", Vector3.one * c.delt, at(x, shoulderY - 0.06, 0), shirt, nil, Enum.PartType.Ball)
+		add(c, n .. "UpperArm", n .. "UpperArm", Vector3.new(A, 0.8, A), at(x, shoulderY - 0.4, 0), armColor)
+		if not hoodie then
+			add(c, n .. "UpperArm", "Sleeve", Vector3.new(A + 0.08, 0.34, A + 0.08), at(x, shoulderY - 0.2, 0), shirt)
+		end
+		add(c, n .. "LowerArm", n .. "LowerArm", Vector3.new(A * 0.92, 0.74, A * 0.92), at(x, elbowY - 0.36, 0), armColor)
+		add(c, n .. "Hand", n .. "Hand", Vector3.one * (A + 0.06), at(x, wristY - 0.16, -0.02), skin, nil, Enum.PartType.Ball)
+	end
+
+	-- Head.
 	c.parts.Head = add(c, "Head", "Head", Vector3.new(HW, HH, HD), at(0, headY, 0), skin)
 	buildChadFace(c)
 end
@@ -768,6 +1088,15 @@ ACCESSORIES.CapBack = function(c)
 end
 
 ACCESSORIES.Headband = function(c)
+	if c.cute then
+		-- Fans: a hair band over the crown from ear to ear.
+		local top = c.headTop
+		add(c, "Head", "Headband", Vector3.new(c.HW + 0.2, 0.12, 0.22), at(0, top + 0.2, -0.14), c.acc)
+		for _, side in SIDES do
+			add(c, "Head", "BandSide", Vector3.new(0.12, 0.5, 0.22), at(side[1] * (c.HW / 2 + 0.14), top - 0.06, -0.14), c.acc)
+		end
+		return
+	end
 	local y = if c.isBot then c.headTop - 0.16 else c.eyeY + 0.36
 	add(c, "Head", "Headband", Vector3.new(c.HW + 0.08, 0.16, c.HD + 0.08), at(0, y, 0), c.acc, Enum.Material.Fabric)
 	add(c, "Head", "BandTail", Vector3.new(0.16, 0.42, 0.05), rot(0.12, y - 0.2, c.HD / 2 + 0.07, 0, 0, 18), c.acc, Enum.Material.Fabric)
@@ -1128,6 +1457,101 @@ ACCESSORIES.Cannon = function(c)
 	)
 end
 
+-- Fan accessories -----------------------------------------------------------------
+
+-- A bow on the top right of the head.
+ACCESSORIES.Bow = function(c)
+	local x = c.HW * 0.28
+	local y = c.headTop + 0.16
+	local z = -0.12
+	local plain = Enum.Material.SmoothPlastic
+	for _, side in SIDES do
+		local s = side[1]
+		add(c, "Head", "Bow", Vector3.new(0.3, 0.26, 0.12), rot(x + s * 0.17, y, z, 0, 0, s * 15), c.acc, plain)
+	end
+	add(c, "Head", "BowKnot", Vector3.new(0.14, 0.16, 0.15), at(x, y, z), shade(c.acc, 0.12), plain)
+end
+
+local function signLabel(card: BasePart, face: Enum.NormalId, text: string): TextLabel
+	local gui = Instance.new("SurfaceGui")
+	gui.Name = "SignGui"
+	gui.Face = face
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 60
+	gui.MaxDistance = 120
+	gui.Parent = card
+	local label = Instance.new("TextLabel")
+	label.Name = "SignText"
+	label.BackgroundTransparency = 1
+	-- (The Lune unit-test environment has no UDim2.)
+	if UDim2 ~= nil then
+		label.Position = UDim2.fromScale(0.05, 0.27)
+		label.Size = UDim2.fromScale(0.9, 0.66)
+	end
+	label.Font = Enum.Font.FredokaOne
+	label.TextScaled = true
+	label.TextColor3 = INK
+	label.Text = text
+	label.Parent = gui
+	return label
+end
+
+-- A white card with a coloured header band on a wooden stick, held in the
+-- right hand. The text (both faces) is the model's "SignText" attribute.
+ACCESSORIES.FanSign = function(c)
+	local x = c.armX + c.A / 2 + 0.08
+	local bottom = c.wristY - 0.48
+	local stick = 2.1
+	local cardW, cardH = 1.6, 1.05
+	local cx = x + 0.35
+	local cy = bottom + stick + cardH / 2 - 0.12
+	local plain = Enum.Material.SmoothPlastic
+	add(c, "RightHand", "SignStick", Vector3.new(0.1, stick, 0.1), at(x, bottom + stick / 2, 0), WOOD, plain)
+	local card = add(c, "RightHand", "SignCard", Vector3.new(cardW, cardH, 0.1), at(cx, cy, 0), WHITE, plain)
+	add(c, "RightHand", "SignHeader", Vector3.new(cardW + 0.02, 0.24, 0.12), at(cx, cy + cardH / 2 - 0.12, 0), c.acc, plain)
+	local text = c.look.signText or SIGN_TEXT
+	c.model:SetAttribute("SignText", text)
+	local labels = { signLabel(card, Enum.NormalId.Front, text), signLabel(card, Enum.NormalId.Back, text) }
+	-- Keep the text in sync with the attribute (no signals under Lune, hence pcall).
+	local model = c.model
+	pcall(function()
+		model:GetAttributeChangedSignal("SignText"):Connect(function()
+			local value = model:GetAttribute("SignText")
+			for _, label in labels do
+				label.Text = if type(value) == "string" then value else SIGN_TEXT
+			end
+		end)
+	end)
+end
+
+-- Fluffy pom-poms in both hands.
+ACCESSORIES.PomPoms = function(c)
+	for _, side in SIDES do
+		local s, n = side[1], side[2]
+		local x, y = s * c.armX, c.wristY - 0.2
+		add(c, n .. "Hand", "PomPom", Vector3.one * 0.8, at(x, y - 0.1, -0.04), c.acc, Enum.Material.Fabric, Enum.PartType.Ball)
+		add(
+			c,
+			n .. "Hand",
+			"PomPomPuff",
+			Vector3.one * 0.5,
+			at(x + s * 0.2, y - 0.4, -0.2),
+			tint(c.acc, 0.4),
+			Enum.Material.Fabric,
+			Enum.PartType.Ball
+		)
+	end
+end
+
+-- A big foam "#1" hand on the right hand, index finger out along the arm.
+ACCESSORIES.FoamFinger = function(c)
+	local x, y = c.armX, c.wristY - 0.2
+	local plain = Enum.Material.SmoothPlastic
+	add(c, "RightHand", "FoamPalm", Vector3.new(0.66, 0.62, 0.38), at(x, y - 0.12, -0.02), c.acc, plain)
+	add(c, "RightHand", "FoamFinger", Vector3.new(0.24, 0.8, 0.26), at(x - 0.15, y - 0.8, -0.02), c.acc, plain)
+	add(c, "RightHand", "FoamThumb", Vector3.new(0.22, 0.36, 0.24), rot(x - 0.38, y - 0.2, -0.06, 0, 0, -30), shade(c.acc, 0.06), plain)
+end
+
 CharacterFactory.ACCESSORIES = ACCESSORIES
 
 -- Effects -------------------------------------------------------------------------
@@ -1150,7 +1574,7 @@ local function addEffects(c: Ctx)
 			NumberSequenceKeypoint.new(1, 1),
 		})
 		emitter.Lifetime = NumberRange.new(0.8, 1.4)
-		emitter.Rate = 10
+		emitter.Rate = look.auraRate or 10
 		emitter.Speed = NumberRange.new(1.5 * s, 3 * s)
 		emitter.SpreadAngle = Vector2.new(180, 180)
 		emitter.Acceleration = Vector3.new(0, 3, 0)
@@ -1172,22 +1596,28 @@ local function addEffects(c: Ctx)
 	if look.glow or look.aura then
 		local light = Instance.new("PointLight")
 		light.Color = look.glow or look.aura :: Color3
-		light.Brightness = 1.5
-		light.Range = 8 * s
+		-- Faint auras (low tiers) get a dimmer, smaller light.
+		local strength = if look.glow then 1 else math.clamp((look.auraRate or 10) / 10, 0.35, 1)
+		light.Brightness = 1.5 * strength
+		light.Range = (5 + 3 * strength) * s
 		light.Parent = chest
 	end
 end
 
 -- Build ---------------------------------------------------------------------------
 
--- Builds a model standing on y = 0 at the origin, facing -Z.
+-- Builds a model standing on y = 0 at the origin, facing -Z. Its PrimaryPart
+-- "Root" is at the feet, so model:PivotTo(CFrame) places the feet.
 function CharacterFactory.build(look: Look, name: string?): Model
 	local model = Instance.new("Model")
 	model.Name = name or "Unit"
 	local anim = animOf(look)
 	local scale = look.scale or 1
 
-	local accList: { string } = look.acc or {}
+	local accList: { string } = table.clone(look.acc or {})
+	if look.prop and not table.find(accList, look.prop) then
+		table.insert(accList, look.prop)
+	end
 	local has: { [string]: boolean } = {}
 	for _, accName in accList do
 		has[accName] = true
@@ -1201,6 +1631,9 @@ function CharacterFactory.build(look: Look, name: string?): Model
 		acc = look.accColor or Color3.fromRGB(255, 205, 60),
 		trim = look.trim or Color3.fromRGB(58, 62, 72),
 		isBot = anim == "Bot",
+		cute = anim == "Fan",
+		exprTag = nil,
+		exprHidden = false,
 		has = has,
 		top = 0,
 		parts = {},
@@ -1241,6 +1674,8 @@ function CharacterFactory.build(look: Look, name: string?): Model
 
 	if c.isBot then
 		buildBot(c)
+	elseif c.cute then
+		buildFan(c)
 	else
 		buildChad(c)
 	end
@@ -1255,8 +1690,43 @@ function CharacterFactory.build(look: Look, name: string?): Model
 	model:SetAttribute("RigScale", scale)
 	model:SetAttribute("AnimSet", anim)
 	model:SetAttribute("Height", c.top * scale)
-	model:AddTag(TAG)
+	if not look.manual then
+		model:AddTag(TAG)
+	end
 	return model
+end
+
+-- Shows one of the expressions a model was built with (look.exprs) and hides
+-- the others. Returns false if the model has no such expression.
+function CharacterFactory.setExpression(model: Model, name: string): boolean
+	local found = false
+	for _, d in model:GetDescendants() do
+		if d:IsA("BasePart") and d:GetAttribute("Expr") == name then
+			found = true
+			break
+		end
+	end
+	if not found then
+		return false
+	end
+	for _, d in model:GetDescendants() do
+		local tag = d:GetAttribute("Expr")
+		if tag ~= nil and d:IsA("BasePart") then
+			d.Transparency = if tag == name then 0 else 1
+		end
+	end
+	model:SetAttribute("Expression", name)
+	return true
+end
+
+-- Changes the text on a model's FanSign (both faces).
+function CharacterFactory.setSignText(model: Model, text: string)
+	model:SetAttribute("SignText", text)
+	for _, d in model:GetDescendants() do
+		if d:IsA("TextLabel") and d.Name == "SignText" then
+			d.Text = text
+		end
+	end
 end
 
 -- Turns a model into a black silhouette (for undiscovered Index entries).

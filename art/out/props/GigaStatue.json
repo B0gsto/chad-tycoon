@@ -1,0 +1,10 @@
+{
+ "kind": "GigaStatue",
+ "tris": 2477,
+ "size": [
+  20.8,
+  21.38,
+  8.2
+ ],
+ "axes": "roblox x, y (height), z (depth)"
+}

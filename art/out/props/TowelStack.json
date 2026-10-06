@@ -1,0 +1,10 @@
+{
+ "kind": "TowelStack",
+ "tris": 756,
+ "size": [
+  2.0,
+  2.19,
+  1.5
+ ],
+ "axes": "Roblox studs [X, Y up, Z]; front faces -Z; origin at the base centre"
+}

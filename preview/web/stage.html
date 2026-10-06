@@ -24,7 +24,10 @@
 <canvas id="thumb"></canvas>
 <script type="module">
 import { renderGui } from "./gui-renderer.js";
-import { renderScene } from "./scene.js";
+import { renderScene, loadAssetIndex, assetImageUrl } from "./scene.js";
+
+// Uploaded images (rbxassetid:// ids pinned in assets/pins.json) draw from their local source PNGs.
+await loadAssetIndex();
 
 const asScreen = (gui) => ({ ...gui, class: "ScreenGui" });
 const AVATAR = "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
@@ -48,7 +51,7 @@ window.bakeGui = async (gui, w, h) => {
 	await renderGui({ viewport: [w, h], root: asScreen(gui) }, container, {
 		guiInset: 0,
 		// Avatar headshots (rbxthumb://) are fetched from Roblox at runtime; draw a stand-in.
-		imageResolver: (image) => (typeof image === "string" && image.startsWith("rbxthumb://") ? AVATAR : null),
+		imageResolver: (image) => (typeof image === "string" && image.startsWith("rbxthumb://") ? AVATAR : assetImageUrl(image)),
 	});
 	return true;
 };
@@ -88,7 +91,7 @@ window.renderShot = async (scene, textures, camera, gui, extra) => {
 		await renderGui(gui, overlay, {
 			imageResolver: (image) => {
 				if (typeof image === "string" && image.startsWith("thumb:")) return thumbs[image] || null;
-				return null;
+				return assetImageUrl(image);
 			},
 		});
 	}

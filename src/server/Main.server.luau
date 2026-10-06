@@ -13,6 +13,9 @@ local Tycoon = require(Server.Tycoon)
 local Monetization = require(Server.Monetization)
 local Ranking = require(Server.Ranking)
 local Tutorial = require(Server.Tutorial)
+local Intro = require(Server.Intro)
+local GameModes = require(Server.GameModes)
+local Cosmetics = require(Server.Cosmetics)
 
 local AUTOSAVE_SECONDS = 90
 
@@ -22,7 +25,10 @@ Net.event("State")
 local world = WorldBuilder.build(Theme)
 Tycoon.init(world, Theme)
 Tutorial.init()
+Intro.init()
 Monetization.init(Theme)
+GameModes.init(world.modes, Theme, Tycoon)
+Cosmetics.init(Theme)
 Ranking.init(Theme, world.ranking)
 
 local saving: { [Player]: boolean } = {}
@@ -60,7 +66,12 @@ local function onPlayerAdded(player: Player)
 		end
 		return
 	end
-	Tycoon.addPlayer(player, profile, canSave, passes)
+	-- Before the session's first State snapshot, so the client knows whether to play the intro.
+	Intro.onSessionStart(player, profile)
+	local session = Tycoon.addPlayer(player, profile, canSave, passes)
+	if session then
+		Cosmetics.onSessionStart(session)
+	end
 end
 
 local function onPlayerRemoving(player: Player)

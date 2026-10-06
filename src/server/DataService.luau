@@ -38,6 +38,9 @@ export type Profile = {
 	boughtAtTier: number,
 	processLevel: number,
 	heldChest: string,
+	-- Rarity of the crate the player was last prompted to open with Robux ("" = none);
+	-- the receipt opens this one if the crate is no longer held.
+	pendingCrate: string,
 	unlockers: { Unlocker },
 	autoMergeOwned: boolean,
 	autoMerge: boolean,
@@ -48,6 +51,14 @@ export type Profile = {
 	totalEarned: number,
 	tutorialStep: number,
 	tutorialDone: boolean,
+	introSeen: boolean,
+	-- Equipped trail ("" = none) and on/off switches of the toggle cosmetics (missing = on).
+	cosmetics: { trail: string, toggles: { [string]: boolean } },
+	-- The Starter pack's one-time cash, Rizz and trail have been given.
+	starterGranted: boolean,
+	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
+	-- of the last full cash reward (Economy.modeReward cooldown).
+	modes: { parkour: { best: number, clears: number, lastRewardAt: number } },
 }
 
 local function zeros(n: number): { number }
@@ -74,6 +85,7 @@ function DataService.defaultProfile(): Profile
 		boughtAtTier = 0,
 		processLevel = 0,
 		heldChest = "",
+		pendingCrate = "",
 		unlockers = {
 			{ rarity = "", endsAt = 0 },
 			{ rarity = "", endsAt = 0 },
@@ -87,6 +99,10 @@ function DataService.defaultProfile(): Profile
 		totalEarned = 0,
 		tutorialStep = 1,
 		tutorialDone = false,
+		introSeen = false,
+		cosmetics = { trail = "", toggles = {} },
+		starterGranted = false,
+		modes = { parkour = { best = 0, clears = 0, lastRewardAt = 0 } },
 	}
 end
 
@@ -100,6 +116,11 @@ local function reconcile(data: any): Profile
 	-- know the game: don't send them through onboarding.
 	if data.tutorialDone == nil then
 		data.tutorialDone = type(data.totalObtained) == "number" and data.totalObtained > 1
+	end
+	-- Saves from before the intro cutscene existed: those players already know
+	-- the story, so it never plays for them.
+	if data.introSeen == nil then
+		data.introSeen = true
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
@@ -125,13 +146,43 @@ local function reconcile(data: any): Profile
 			data.settings[key] = value
 		end
 	end
+	if type(data.cosmetics.trail) ~= "string" then
+		data.cosmetics.trail = ""
+	end
+	if type(data.cosmetics.toggles) ~= "table" then
+		data.cosmetics.toggles = {}
+	end
+	for key, value in data.cosmetics.toggles do
+		if type(key) ~= "string" or type(value) ~= "boolean" then
+			data.cosmetics.toggles[key] = nil
+		end
+	end
 	data.buyTier = math.clamp(math.floor(data.buyTier), 1, Economy.MAX_BUY_TIER)
 	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
 	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
 		data.heldChest = ""
 	end
+	for id, defaults in default.modes :: any do
+		local record = data.modes[id]
+		if type(record) ~= "table" then
+			data.modes[id] = defaults
+		else
+			for key, value in defaults do
+				local v = record[key]
+				if type(v) ~= "number" or v ~= v or v < 0 or v == math.huge then
+					record[key] = value
+				end
+			end
+		end
+	end
+	if data.pendingCrate ~= "" and not Economy.isRarity(data.pendingCrate) then
+		data.pendingCrate = ""
+	end
 	return data :: Profile
 end
+
+-- Exposed for the unit tests.
+DataService.reconcile = reconcile
 
 local store: DataStore? = nil
 local storeOk, storeErr = pcall(function()

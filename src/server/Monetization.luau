@@ -4,9 +4,18 @@
 	IDs come from the theme. While an ID is 0:
 	  - in Studio, "buying" grants it immediately (so every feature is testable)
 	  - on a live server, the player is told it is coming soon.
+
+	Instant crate opening is one developer product for every crate rarity
+	(Theme.Monetization.CrateOpen); the prompted crate's rarity is recorded in
+	profile.pendingCrate so the receipt can pay out even if the crate is gone.
+	Crates are paid random items, so the product is only offered where PolicyService
+	allows them (unknown or failed lookup = not allowed). The Crate Master pass
+	(Passes.CrateKey) opens every crate free; Tycoon handles that without a prompt.
 ]]
 
 local MarketplaceService = game:GetService("MarketplaceService")
+local Players = game:GetService("Players")
+local PolicyService = game:GetService("PolicyService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -19,6 +28,26 @@ local Monetization = {}
 
 local theme: any
 local MAX_RECEIPTS = 50
+
+-- Players whose policy allows paid random items (crate products). Absent = not
+-- allowed: still loading, the lookup failed, or restricted.
+local crateAllowed: { [Player]: boolean } = {}
+
+local function loadPolicy(player: Player)
+	local ok, info = pcall(PolicyService.GetPolicyInfoForPlayerAsync, PolicyService, player)
+	if not player.Parent then
+		return
+	end
+	local allowed = ok and type(info) == "table" and info.ArePaidRandomItemsRestricted == false
+	if allowed then
+		crateAllowed[player] = true
+	end
+	Tycoon.refresh(player)
+end
+
+function Monetization.crateRobuxAllowed(player: Player): boolean
+	return crateAllowed[player] == true
+end
 
 local function passByName(name: string): any
 	return theme.Monetization.Passes[name]
@@ -33,9 +62,14 @@ local function productList(kind: string): { any }?
 	return nil
 end
 
--- Checks which passes a player already owns.
+-- Checks which passes a player already owns. Studio play tests start with none: the
+-- place's creator owns every pass, and Auto Aura would turn the orb loop off (passes
+-- are still granted there by test purchases).
 function Monetization.ownedPasses(player: Player): { [string]: boolean }
 	local owned = {}
+	if RunService:IsStudio() then
+		return owned
+	end
 	for name, pass in theme.Monetization.Passes do
 		if pass.Id ~= 0 then
 			local ok, result = pcall(MarketplaceService.UserOwnsGamePassAsync, MarketplaceService, player.UserId, pass.Id)
@@ -47,15 +81,44 @@ function Monetization.ownedPasses(player: Player): { [string]: boolean }
 	return owned
 end
 
+-- Packs are sized by the buyer's progression at the moment the receipt is processed, with
+-- the same shared functions the shop uses to show each player their own amounts.
 local function grantProduct(session: Tycoon.Session, kind: string, index: number)
+	local p = session.profile
+	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
 	if kind == "Money" then
 		local pack = theme.Monetization.MoneyPacks[index]
-		local amount = Economy.moneyPackAmount(Tycoon.income(session), pack.Seconds, pack.Min)
+		local amount = Economy.moneyPackAmount(Tycoon.income(session), pack.Seconds, pack.Min, progression)
 		Tycoon.grantMoney(session, amount)
 	elseif kind == "Gems" then
 		local pack = theme.Monetization.GemPacks[index]
-		Tycoon.grantGems(session, pack.Amount)
+		Tycoon.grantGems(session, Economy.gemPackAmount(pack.Base, progression))
 	end
+end
+
+-- Instant crate open for a held crate of `rarity` (see Tycoon.openCrateProduct).
+function Monetization.promptCrate(player: Player, rarity: string)
+	local session = Tycoon.getSession(player)
+	local product = theme.Monetization.CrateOpen
+	if not session or not Economy.isRarity(rarity) then
+		return
+	end
+	if not Monetization.crateRobuxAllowed(player) then
+		Tycoon.toast(session, "Carry it to a " .. theme.Words.Unlocker .. " to open it free!", "info")
+		return
+	end
+	-- The product is the same for every rarity: remember which crate this prompt is for.
+	session.profile.pendingCrate = rarity
+	if product.Id == 0 then
+		if RunService:IsStudio() then
+			Tycoon.openCrateProduct(session)
+			Tycoon.toast(session, "[Studio test] Crate opened", "good")
+		else
+			Tycoon.toast(session, "Opening crates instantly is coming soon!", "info")
+		end
+		return
+	end
+	MarketplaceService:PromptProductPurchase(player, product.Id)
 end
 
 function Monetization.promptPass(player: Player, name: string)
@@ -66,6 +129,18 @@ function Monetization.promptPass(player: Player, name: string)
 	end
 	if session.passes[name] then
 		Tycoon.toast(session, "You already own " .. pass.Title .. "!", "info")
+		return
+	end
+	-- Cosmetic passes are not random items: never behind the paid-random-items policy.
+	local cosmetics = theme.Cosmetics
+	local item = cosmetics and cosmetics.Items[name]
+	if item and not item.Starter and session.passes[cosmetics.Bundle] then
+		Tycoon.toast(session, pass.Title .. " is already in your " .. theme.Monetization.Passes[cosmetics.Bundle].Title .. "!", "info")
+		return
+	end
+	-- Crate Master opens paid random items: only sold where those are allowed.
+	if name == "CrateKey" and not Monetization.crateRobuxAllowed(player) then
+		Tycoon.toast(session, pass.Title .. " is not available here.", "info")
 		return
 	end
 	if pass.Id == 0 then
@@ -99,13 +174,18 @@ function Monetization.promptProduct(player: Player, kind: string, index: number)
 	MarketplaceService:PromptProductPurchase(player, product.Id)
 end
 
-local function findProduct(productId: number): (string?, number?)
+-- (kind, index) of a pack, or ("Crate", true) for the crate product.
+local function findProduct(productId: number): (string?, any)
 	for _, kind in { "Money", "Gems" } do
 		for index, product in productList(kind) :: { any } do
 			if product.Id ~= 0 and product.Id == productId then
 				return kind, index
 			end
 		end
+	end
+	local crate = theme.Monetization.CrateOpen
+	if crate.Id ~= 0 and crate.Id == productId then
+		return "Crate", true
 	end
 	return nil, nil
 end
@@ -140,7 +220,14 @@ local function processReceipt(receipt: any): Enum.ProductPurchaseDecision
 	-- Grant and record the receipt together. If the save below fails, Roblox
 	-- retries this callback; the recorded receipt makes the retry a no-op grant
 	-- that only re-attempts the save, so the player is never paid twice.
-	grantProduct(session, kind, index)
+	-- A crate product always pays out, even if the crate was dropped or the
+	-- player rejoined (no session = NotProcessedYet above, retried on rejoin):
+	-- the held crate, else the saved pendingCrate rarity, else a Common crate.
+	if kind == "Crate" then
+		Tycoon.openCrateProduct(session)
+	else
+		grantProduct(session, kind, index)
+	end
 	table.insert(profile.receipts, receipt.PurchaseId)
 	while #profile.receipts > MAX_RECEIPTS do
 		table.remove(profile.receipts, 1)
@@ -167,6 +254,15 @@ function Monetization.init(themeModule: any)
 	end)
 	Tycoon.hooks.promptPass = Monetization.promptPass
 	Tycoon.hooks.promptProduct = Monetization.promptProduct
+	Tycoon.hooks.promptCrate = Monetization.promptCrate
+	Tycoon.hooks.crateRobuxAllowed = Monetization.crateRobuxAllowed
+	Players.PlayerAdded:Connect(loadPolicy)
+	for _, player in Players:GetPlayers() do
+		task.spawn(loadPolicy, player)
+	end
+	Players.PlayerRemoving:Connect(function(player)
+		crateAllowed[player] = nil
+	end)
 end
 
 return Monetization

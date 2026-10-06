@@ -1,0 +1,15 @@
+{
+ "kind": "Bench",
+ "tris": 1104,
+ "size": [
+  3.5,
+  4.25,
+  5.75
+ ],
+ "offset": [
+  0.0,
+  0.0,
+  0.575
+ ],
+ "axes": "Roblox studs: size = [X, Y up, Z]; offset = mesh base centre in the fallback prop frame"
+}

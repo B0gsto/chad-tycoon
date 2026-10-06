@@ -1,0 +1,10 @@
+{
+ "kind": "Speaker",
+ "tris": 1112,
+ "size": [
+  2.0,
+  3.5,
+  1.81
+ ],
+ "axes": "Roblox studs [X, Y up, Z]; front faces -Z; origin at the base centre"
+}

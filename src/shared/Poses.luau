@@ -23,10 +23,17 @@
 	  Torso     +x leans back, +y turns to the unit's left
 	  Head      +x looks up, +y turns to the unit's left
 
-	Animation: each animation set ("Chad" / "Bot") is a looping sequence of
-	poses held for a couple of seconds with eased blends between them, plus an
-	idle overlay (breathing / hovering). The sequence order and phase come from
-	a per-model seed so a shelf of units never moves in sync.
+	Animation: each animation set ("Chad" / "Bot" / "Fan" / "Story") is a looping
+	sequence of poses held for a couple of seconds with eased blends between
+	them, plus an idle overlay (breathing / hovering / bouncing). The sequence
+	order and phase come from a per-model seed so a shelf of units never moves
+	in sync.
+
+	Explicit poses (cutscenes, code-driven models): samplePose / samplePoseInto
+	give one named pose, blendInto mixes two, and the Walk / Run / Strut gaits
+	are cycles of time; gaitTime(gait, distance, scale) turns the distance a
+	model has travelled into the time that keeps its feet planted. Pose names
+	are looked up in the model's set first, then in Story, Fan, Chad and Bot.
 ]]
 
 local Poses = {}
@@ -414,6 +421,348 @@ BOT.Wave = {
 	end,
 }
 
+-- Fan poses ----------------------------------------------------------------------
+
+local FAN: { [string]: PoseDef } = {}
+local TAU = math.pi * 2
+
+-- 0..1..0 pulse with period `period` seconds.
+local function pulse(t: number, period: number, phase: number?): number
+	return 0.5 - 0.5 * math.cos(TAU * t / period + (phase or 0))
+end
+
+-- A light bounce on the toes: heels lift, knees give a little at the bottom.
+local function toeBounce(v: Vec, u: number, height: number)
+	v[ROOT_Y] += height * u - 0.02 * (1 - u)
+	add(v, "RightFoot", -10 * u, 0, 0)
+	add(v, "LeftFoot", -10 * u, 0, 0)
+	add(v, "RightLowerLeg", -6 * (1 - u), 0, 0)
+	add(v, "LeftLowerLeg", -6 * (1 - u), 0, 0)
+	add(v, "RightUpperLeg", 3 * (1 - u), 0, 0)
+	add(v, "LeftUpperLeg", 3 * (1 - u), 0, 0)
+end
+
+-- Fist on the hip (left arm).
+local LEFT_HIP = { LeftUpperArm = { 0, 16, -42 }, LeftLowerArm = { 16, 0, 100 }, LeftHand = { 0, 0, 18 } }
+
+local function withLeftHip(def: { [string]: { number } }): { [string]: { number } }
+	for limb, a in LEFT_HIP do
+		def[limb] = a
+	end
+	return def
+end
+
+FAN.Idle = {
+	base = P({
+		RightUpperArm = { 4, 0, 8 },
+		RightLowerArm = { 16, 0, 0 },
+		RightUpperLeg = { 0, 0, 3 },
+		RightFoot = { 0, 0, -3 },
+	}),
+	anim = function(v, t, seed)
+		local u = pulse(t, 0.8, seed * 0.37)
+		toeBounce(v, u, 0.07)
+		add(v, "RightUpperArm", 0, 0, 3 * u)
+		add(v, "LeftUpperArm", 0, 0, -3 * u)
+		add(v, "Head", -2 * u, 0, math.sin(t * 0.9 + seed) * 3)
+	end,
+}
+
+-- Both arms up in a V, little hops.
+FAN.Cheer = {
+	base = P({
+		UpperTorso = { 4, 0, 0 },
+		Head = { 10, 0, 0 },
+		RightUpperArm = { 0, 8, 150 },
+		RightLowerArm = { 0, 0, 12 },
+		RightHand = { 0, 0, 8 },
+		RightUpperLeg = { 0, 0, 4 },
+		RightFoot = { 0, 0, -4 },
+	}),
+	anim = function(v, t, seed)
+		local hop = math.abs(math.sin(math.pi * t / 0.62 + seed * 0.29))
+		local land = (1 - hop) ^ 2
+		v[ROOT_Y] += 0.24 * hop - 0.06 * land
+		add(v, "RightUpperLeg", 9 * land, 0, 0)
+		add(v, "LeftUpperLeg", 9 * land, 0, 0)
+		add(v, "RightLowerLeg", -18 * land, 0, 0)
+		add(v, "LeftLowerLeg", -18 * land, 0, 0)
+		add(v, "RightFoot", 9 * land - 12 * hop, 0, 0)
+		add(v, "LeftFoot", 9 * land - 12 * hop, 0, 0)
+		add(v, "RightUpperArm", 0, 0, 10 * hop)
+		add(v, "LeftUpperArm", 0, 0, -10 * hop)
+		add(v, "Head", 4 * hop, 0, 0)
+	end,
+}
+
+FAN.Wave = {
+	base = P(withLeftHip({
+		UpperTorso = { 0, -6, 0 },
+		Head = { 2, -8, 8 },
+		RightUpperArm = { 0, 0, 148 },
+		RightLowerArm = { 0, 0, 20 },
+		RightUpperLeg = { 0, 0, 4 },
+		RightFoot = { 0, 0, -4 },
+	})),
+	anim = function(v, t, seed)
+		add(v, "RightLowerArm", 0, 0, math.sin(t * 7 + seed) * 26)
+		add(v, "Head", 0, 0, math.sin(t * 3.5 + seed) * 4)
+		toeBounce(v, pulse(t, 0.9, seed), 0.04)
+	end,
+}
+
+-- Clapping in front of the chest.
+FAN.Clap = {
+	base = P({
+		UpperTorso = { -2, 0, 0 },
+		Head = { 4, 0, 0 },
+		RightUpperArm = { 52, 62, 0 },
+		RightLowerArm = { 58, 0, 0 },
+		RightUpperLeg = { 0, 0, 4 },
+		RightFoot = { 0, 0, -4 },
+	}),
+	anim = function(v, t, seed)
+		-- Hands meet at the bottom of a quick sine (about two claps a second).
+		local open = pulse(t, 0.46, seed)
+		add(v, "RightUpperArm", 0, -16 * open, 0)
+		add(v, "LeftUpperArm", 0, 16 * open, 0)
+		add(v, "RightLowerArm", 0, 0, 10 * open)
+		add(v, "LeftLowerArm", 0, 0, -10 * open)
+		toeBounce(v, pulse(t, 0.92, seed), 0.05)
+	end,
+}
+
+-- Amazed: hands on the cheeks, swaying side to side.
+FAN.Swoon = {
+	base = P({
+		UpperTorso = { 4, 0, 0 },
+		Head = { 8, 0, 0 },
+		RightUpperArm = { 80, 40, 50 },
+		RightLowerArm = { 120, 0, 0 },
+		RightUpperLeg = { 0, 0, 3 },
+		RightLowerLeg = { -4, 0, 0 },
+		RightFoot = { 0, 0, -3 },
+	}),
+	anim = function(v, t, seed)
+		local s = math.sin(t * 2.1 + seed)
+		add(v, "LowerTorso", 0, 0, s * 3)
+		add(v, "UpperTorso", 0, 0, s * 3)
+		add(v, "Head", 0, s * 3, s * 7)
+		v[ROOT_Y] += 0.02 * math.abs(s)
+	end,
+}
+
+-- The fan sign held high (right hand), bobbing; the other fist pumps.
+FAN.SignUp = {
+	base = P({
+		UpperTorso = { 4, 0, 0 },
+		Head = { 12, 0, 0 },
+		RightUpperArm = { 0, 0, 166 },
+		RightLowerArm = { 0, 0, 6 },
+		LeftUpperArm = { 0, 0, -16 },
+		LeftLowerArm = { 60, 0, 0 },
+		RightUpperLeg = { 0, 0, 4 },
+		RightFoot = { 0, 0, -4 },
+	}),
+	anim = function(v, t, seed)
+		local u = pulse(t, 0.7, seed)
+		add(v, "RightUpperArm", 0, 0, -8 * u)
+		add(v, "RightLowerArm", 0, 0, 6 * u)
+		add(v, "LeftUpperArm", 0, 0, -10 * u)
+		add(v, "LeftLowerArm", 30 * u, 0, 0)
+		toeBounce(v, u, 0.06)
+	end,
+}
+
+-- Pointing at the stage with a hand on the hip.
+FAN.Point = {
+	base = P(withLeftHip({
+		UpperTorso = { -3, 10, 0 },
+		Head = { 6, -6, -5 },
+		RightUpperArm = { 84, 12, 2 },
+		RightLowerArm = { 6, 0, 0 },
+		RightUpperLeg = { 4, 0, 6 },
+		RightLowerLeg = { -6, 0, 0 },
+		RightFoot = { 0, 0, -6 },
+	})),
+	anim = function(v, t, seed)
+		local jab = math.max(0, math.sin(t * 5 + seed)) ^ 4 * 7
+		add(v, "RightUpperArm", jab, 0, 0)
+		toeBounce(v, pulse(t, 0.84, seed), 0.04)
+	end,
+}
+
+-- A big jump: crouch, spring up with arms high and knees tucked, land.
+FAN.Jump = {
+	base = P({
+		RightUpperArm = { 0, 0, 10 },
+		RightLowerArm = { 12, 0, 0 },
+		RightUpperLeg = { 0, 0, 3 },
+		RightFoot = { 0, 0, -3 },
+	}),
+	anim = function(v, t, seed)
+		local p = (t / 1.3 + seed * 0.13) % 1
+		local crouch, air, h = 0, 0, 0
+		if p < 0.25 then
+			crouch = math.sin(math.pi * p / 0.25)
+		elseif p < 0.8 then
+			local q = (p - 0.25) / 0.55
+			air = math.sin(math.pi * q)
+			h = 4 * q * (1 - q) * 0.85
+		else
+			crouch = 0.8 * math.sin(math.pi * (p - 0.8) / 0.2)
+		end
+		v[ROOT_Y] += h - 0.26 * crouch
+		for _, n in { "Right", "Left" } do
+			local s = if n == "Right" then 1 else -1
+			add(v, n .. "UpperLeg", 22 * crouch + 26 * air, 0, 0)
+			add(v, n .. "LowerLeg", -44 * crouch - 40 * air, 0, 0)
+			add(v, n .. "Foot", 22 * crouch - 10 * air, 0, 0)
+			add(v, n .. "UpperArm", -30 * crouch, 0, s * 140 * air)
+			add(v, n .. "LowerArm", 0, 0, s * 14 * air)
+		end
+		add(v, "UpperTorso", -10 * crouch + 4 * air, 0, 0)
+		add(v, "Head", 6 * crouch + 8 * air, 0, 0)
+	end,
+}
+
+-- Story poses (intro cutscene; playable by every set) -----------------------------
+
+local STORY: { [string]: PoseDef } = {}
+
+STORY.Stand = CHAD.Relaxed
+
+-- Head down, shoulders slumped, a slow sad sway.
+STORY.Sad = {
+	base = P({
+		UpperTorso = { -12, 0, 0 },
+		Head = { -24, 0, 0 },
+		RightUpperArm = { 6, 0, 3 },
+		RightLowerArm = { 8, 0, 0 },
+		RightUpperLeg = { 0, 0, 2 },
+		RightFoot = { 0, 0, -2 },
+	}, -0.02),
+	anim = function(v, t)
+		local s = math.sin(t * 1.1)
+		add(v, "LowerTorso", 0, 0, s * 2)
+		add(v, "UpperTorso", 2 * math.sin(t * 0.7), s * 2, 0)
+		add(v, "Head", 0, 0, -s * 3)
+	end,
+}
+
+-- Arms flung out, leaning back.
+STORY.Shock = {
+	base = P({
+		UpperTorso = { 14, 0, 0 },
+		Head = { 10, 0, 0 },
+		RightUpperArm = { 10, 0, 64 },
+		RightLowerArm = { 0, 0, 34 },
+		RightHand = { 0, 0, 14 },
+		RightUpperLeg = { -10, 0, 6 },
+		RightLowerLeg = { -4, 0, 0 },
+		RightFoot = { 6, 0, -6 },
+		LeftUpperLeg = { 6, 0, -5 },
+		LeftLowerLeg = { -8, 0, 0 },
+		LeftFoot = { 0, 0, 5 },
+	}, -0.04),
+	anim = function(v, t)
+		local s = math.sin(t * 2.6)
+		add(v, "UpperTorso", 1.5 * s, 0, 0)
+		add(v, "RightUpperArm", 0, 0, 3 * s)
+		add(v, "LeftUpperArm", 0, 0, -3 * s)
+	end,
+}
+
+-- "I've got it!": finger up beside the head, standing tall.
+STORY.Idea = {
+	base = P(withLeftHip({
+		UpperTorso = { 5, 0, 0 },
+		Head = { 10, -10, 4 },
+		RightUpperArm = { 118, 0, -2 },
+		RightLowerArm = { 90, 0, 0 },
+		RightUpperLeg = { 0, 0, 4 },
+		RightFoot = { 0, 0, -4 },
+	})),
+	anim = function(v, t)
+		local u = pulse(t, 0.9)
+		add(v, "RightLowerArm", 5 * u, 0, 0)
+		v[ROOT_Y] += 0.03 * u
+	end,
+}
+
+STORY.Flex = CHAD.DoubleBiceps
+
+-- Walk / run cycles. `period` is one full cycle (two steps); `swing` the hip
+-- swing in degrees. Feed them time = distance / (speed * scale) (Poses.gaitTime)
+-- so the feet keep pace with a model that code is moving.
+type Gait = {
+	period: number,
+	swing: number,
+	knee: number,
+	arm: number,
+	elbow: number,
+	lean: number,
+	bounce: number,
+	speed: number, -- studs per second at RigScale 1
+}
+
+local LEG = 1.95 -- hip height used for the stride / root drop (unscaled studs)
+
+local function gaitSpeed(period: number, swing: number): number
+	return 4 * LEG * math.sin(math.rad(swing)) / period
+end
+
+local GAITS: { [string]: Gait } = {
+	Walk = { period = 1, swing = 24, knee = 34, arm = 20, elbow = 16, lean = 0, bounce = 1, speed = gaitSpeed(1, 24) },
+	Run = { period = 0.64, swing = 38, knee = 76, arm = 42, elbow = 84, lean = -10, bounce = 0.6, speed = gaitSpeed(0.64, 38) },
+	Strut = { period = 1.15, swing = 20, knee = 26, arm = 16, elbow = 12, lean = 6, bounce = 1, speed = gaitSpeed(1.15, 20) },
+}
+
+local function gaitPose(name: string, extra: { [string]: { number } }): PoseDef
+	local g = GAITS[name]
+	return {
+		base = P(extra),
+		anim = function(v, t)
+			local phase = TAU * t / g.period
+			local s, c = math.sin(phase), math.cos(phase)
+			local hip = g.swing * s
+			-- The knee bends while the leg swings forwards.
+			local kneeR = -(6 + g.knee * math.max(0, c) ^ 1.5)
+			local kneeL = -(6 + g.knee * math.max(0, -c) ^ 1.5)
+			add(v, "RightUpperLeg", hip, 0, 0)
+			add(v, "LeftUpperLeg", -hip, 0, 0)
+			add(v, "RightLowerLeg", kneeR, 0, 0)
+			add(v, "LeftLowerLeg", kneeL, 0, 0)
+			add(v, "RightFoot", -0.35 * (hip + kneeR), 0, 0)
+			add(v, "LeftFoot", -0.35 * (-hip + kneeL), 0, 0)
+			add(v, "RightUpperArm", -g.arm * s, 0, 0)
+			add(v, "LeftUpperArm", g.arm * s, 0, 0)
+			add(v, "RightLowerArm", g.elbow + 10 * math.max(0, -s), 0, 0)
+			add(v, "LeftLowerArm", g.elbow + 10 * math.max(0, s), 0, 0)
+			add(v, "LowerTorso", 0, 4 * s, 0)
+			add(v, "UpperTorso", g.lean, -7 * s, 0)
+			add(v, "Head", -g.lean * 0.6, 3 * s, 0)
+			-- Hips drop as the legs spread so the planted foot stays on the floor.
+			v[ROOT_Y] += -LEG * (1 - math.cos(math.rad(hip))) * g.bounce
+		end,
+	}
+end
+
+STORY.Walk = gaitPose("Walk", {})
+STORY.Run = gaitPose("Run", { Head = { 4, 0, 0 } })
+-- Strut: chest up, chin up, arms swinging wide, a swagger in the shoulders.
+STORY.Strut = (function()
+	local def = gaitPose("Strut", { Head = { 6, 0, 0 }, RightUpperArm = { 0, 0, 12 } })
+	local walk = def.anim :: (Vec, number, number) -> ()
+	def.anim = function(v, t, seed)
+		walk(v, t, seed)
+		local s = math.sin(TAU * t / GAITS.Strut.period)
+		add(v, "UpperTorso", 0, 0, 3 * s)
+		add(v, "Head", 0, -4 * s, -2 * s)
+	end
+	return def
+end)()
+
 -- Animation sets -----------------------------------------------------------------
 
 type Set = {
@@ -426,6 +775,7 @@ type Set = {
 	blend: number,
 	ease: (number) -> number,
 	overlay: (v: Vec, t: number, seed: number) -> (),
+	extra: { string }?, -- poses of the set that are never in the random rotation
 }
 
 local SETS: { [string]: Set } = {
@@ -466,7 +816,58 @@ local SETS: { [string]: Set } = {
 			add(v, "LeftLowerLeg", -2 - b * 2, 0, 0)
 		end,
 	},
+	Fan = {
+		poses = FAN,
+		order = { "Cheer", "Wave", "Clap", "Swoon", "SignUp", "Point", "Jump" },
+		rest = "Idle",
+		restEvery = 1,
+		hold = { 2.2, 3.6 },
+		restHold = { 1.6, 2.6 },
+		blend = 0.45,
+		ease = easeInOutCubic,
+		overlay = function(v, t, seed)
+			-- Gentle breathing.
+			local b = math.sin(t * 2 + seed)
+			add(v, "UpperTorso", b * 1.2, 0, 0)
+			add(v, "Head", -b * 0.8, 0, 0)
+		end,
+	},
+	-- The intro cutscene cast. Models normally play these with
+	-- Poses.samplePose / RigPose.applyPose rather than the rotation.
+	Story = {
+		poses = STORY,
+		order = { "Sad", "Shock", "Idea", "Flex" },
+		rest = "Stand",
+		restEvery = 1,
+		hold = { 1.6, 2.6 },
+		restHold = { 1.2, 2 },
+		blend = 0.5,
+		ease = easeInOutCubic,
+		overlay = function(v, t, seed)
+			local b = math.sin(t * 1.75 + seed)
+			add(v, "UpperTorso", b * 1.2, 0, 0)
+			add(v, "Head", -b * 0.8, 0, 0)
+		end,
+		extra = { "Walk", "Run", "Strut" },
+	},
 }
+
+-- Where a pose name is looked up after the model's own set, so any rig can
+-- play any pose (e.g. a Chad hero playing Story "Sad", a fan playing "Walk").
+local FALLBACK: { { [string]: PoseDef } } = { STORY, FAN, CHAD, BOT }
+
+local function findPose(set: Set, pose: string): PoseDef?
+	local def = set.poses[pose]
+	if def then
+		return def
+	end
+	for _, poses in FALLBACK do
+		if poses[pose] then
+			return poses[pose]
+		end
+	end
+	return nil
+end
 
 type Step = { pose: string, start: number, length: number }
 type Sequence = { steps: { Step }, total: number }
@@ -574,16 +975,75 @@ function Poses.sample(animSet: string, time: number, seed: number): { [string]: 
 	return Poses.sampleInto({}, animSet, time, seed)
 end
 
--- Transforms for one named pose (no blending or overlay); for tools and tests.
-function Poses.samplePose(animSet: string, pose: string, time: number?, seed: number?): { [string]: CFrame }
+-- Transforms for one named pose (no blending or overlay), written into `out`.
+-- The pose is looked up in `animSet`, then in the Story, Fan, Chad and Bot
+-- sets. Cyclic poses (Walk, Run, Strut, Cheer, ...) move with `time`.
+function Poses.samplePoseInto(out: { [string]: CFrame }, animSet: string, pose: string, time: number, seed: number?): { [string]: CFrame }
 	local _, set = resolveSet(animSet)
-	local def = set.poses[pose]
+	local def = findPose(set, pose)
 	assert(def, "unknown pose " .. pose)
-	evalPose(bufferA, def, time or 0, seed or 0)
-	return toTransforms(bufferA, {})
+	evalPose(bufferA, def, time, seed or 0)
+	return toTransforms(bufferA, out)
 end
 
--- Names of the poses in a set (the rest pose first).
+-- Transforms for one named pose (no blending or overlay); for tools and tests.
+function Poses.samplePose(animSet: string, pose: string, time: number?, seed: number?): { [string]: CFrame }
+	return Poses.samplePoseInto({}, animSet, pose, time or 0, seed)
+end
+
+-- Transforms part way from `fromPose` to `toPose`: alpha 0 is fromPose, 1 is
+-- toPose, eased with the set's blend curve. Both poses keep animating.
+function Poses.blendInto(
+	out: { [string]: CFrame },
+	animSet: string,
+	fromPose: string,
+	toPose: string,
+	alpha: number,
+	time: number,
+	seed: number?
+): { [string]: CFrame }
+	local _, set = resolveSet(animSet)
+	local from, to = findPose(set, fromPose), findPose(set, toPose)
+	assert(from, "unknown pose " .. fromPose)
+	assert(to, "unknown pose " .. toPose)
+	evalPose(bufferA, to, time, seed or 0)
+	local w = set.ease(alpha)
+	if w < 1 then
+		evalPose(bufferB, from, time, seed or 0)
+		for i = 1, SIZE do
+			bufferA[i] = bufferB[i] + (bufferA[i] - bufferB[i]) * w
+		end
+	end
+	return toTransforms(bufferA, out)
+end
+
+-- Gaits for code-driven movement: Walk, Run, Strut. `speed` is in studs per
+-- second at RigScale 1, `period` the seconds per full cycle at that speed.
+Poses.GAIT = {} :: { [string]: { speed: number, period: number } }
+for name, g in GAITS do
+	Poses.GAIT[name] = { speed = g.speed, period = g.period }
+end
+
+-- The pose time that matches `distance` studs travelled by a rig of `scale`,
+-- so the feet stay planted: samplePose(set, gait, gaitTime(gait, d, scale)).
+function Poses.gaitTime(gait: string, distance: number, scale: number?): number
+	local g = GAITS[gait]
+	assert(g, "unknown gait " .. gait)
+	return distance / (g.speed * (scale or 1))
+end
+
+-- Every pose a set defines, including the ones never played in the rotation
+-- (Story: Walk, Run, Strut).
+function Poses.allPoseNames(animSet: string): { string }
+	local _, set = resolveSet(animSet)
+	local names = Poses.poseNames(animSet)
+	for _, name in set.extra or {} do
+		table.insert(names, name)
+	end
+	return names
+end
+
+-- Names of the poses in a set's rotation (the rest pose first).
 function Poses.poseNames(animSet: string): { string }
 	local _, set = resolveSet(animSet)
 	local names = { set.rest }

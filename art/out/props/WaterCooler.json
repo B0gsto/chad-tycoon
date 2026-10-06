@@ -1,0 +1,10 @@
+{
+ "kind": "WaterCooler",
+ "tris": 1332,
+ "size": [
+  1.74,
+  4.96,
+  2.08
+ ],
+ "axes": "Roblox studs [X, Y up, Z]; front faces -Z; origin at the base centre"
+}
