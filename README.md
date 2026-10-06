@@ -30,7 +30,7 @@ These are preview renders, not captures from Roblox Studio. Roblox can't run hea
 ## How the game plays
 
 1. **Buy units** on the Buy 1 / 5 / 25 / 100 pads. They stand on your display shelves.
-2. Units **drop orbs** on the floor every second. Walk over the orbs to fill your tank (bottom of the screen).
+2. Units **drop orbs** into the sunken **orb pool** in front of the display every second. Walk down either ramp into the pool and over the orbs to fill your tank (bottom of the screen).
 3. Step on **Deposit** to send your tank to the converter. The global **multiplier** (0.5x–3x) re-rolls every 20 s, so timing matters.
 4. The converter **processes** orbs into cash at your processing speed. Upgrade it on the `+/sec` pads.
 5. Step on **Collect Cash** to bank it.
@@ -87,13 +87,14 @@ src/shared/Format.luau                 number/time formatting (unit-tested)
 src/shared/CharacterFactory.luau       builds the blocky unit models from a theme "look"
 src/shared/Net.luau                    remotes
 src/server/WorldBuilder.luau           generates hub + 6 plots
+src/server/PlotLayout.luau             plot-local layout: pool, ramps, pads, crate areas (unit-tested)
 src/server/Tycoon.luau                 core loop: pads, orbs, crates, merging, processing, state
 src/server/DataService.luau            DataStore profiles (retries, no-overwrite on failed load)
 src/server/Monetization.luau           passes, products, receipt handling
 src/server/Ranking.luau                OrderedDataStore leaderboard
 src/client/                            HUD, Shop / Index / Ranking / Settings, popups, sounds
 src/themes/chad|bot/Theme.luau         names, words, colours, fonts, lighting, 25 tiers, product IDs
-tests/run.luau                         Lune unit tests (economy, formatting, both themes)
+tests/run.luau                         Lune unit tests (economy, formatting, both themes, plot layout)
 preview/                               screenshot pipeline (Lune exporter + three.js/Chromium renderer)
 reference/                             the original reference screenshots
 ```

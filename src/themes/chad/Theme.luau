@@ -89,6 +89,12 @@ Theme.Colors = {
 	Hub = rgb(28, 26, 38),
 	Sky = rgb(25, 18, 45),
 
+	-- Plot decor (Theme.Decor = "gym").
+	Rubber = rgb(30, 28, 36),
+	Chrome = rgb(150, 155, 172),
+	Iron = rgb(48, 46, 56),
+	Leather = rgb(95, 40, 150),
+
 	Window = {
 		Shop = rgb(255, 190, 40),
 		Index = rgb(150, 70, 255),
@@ -121,6 +127,9 @@ Theme.Lighting = {
 
 -- Leave empty for no music, or paste a Roblox audio asset id ("rbxassetid://...").
 Theme.MusicId = ""
+
+-- Plot decoration style built by WorldBuilder: "gym" or "factory" (nil = none).
+Theme.Decor = "gym"
 
 local SKIN = rgb(234, 184, 146)
 local SKIN_TAN = rgb(196, 140, 100)

@@ -365,8 +365,91 @@ for _, variant in { "chad", "bot" } do
 		end
 		eq(#theme.Monetization.MoneyPacks, 6, "money packs")
 		eq(#theme.Monetization.GemPacks, 3, "gem packs")
+		check(theme.Decor == nil or theme.Decor == "gym" or theme.Decor == "factory", "decor style")
 	end)
 end
+
+-- Plot layout ----------------------------------------------------------------------
+
+local Layout = require("../src/server/PlotLayout")
+
+test("plot layout: pool and ramps", function()
+	local pool = Layout.POOL
+	local width = pool.maxX - pool.minX
+	local depth = pool.maxZ - pool.minZ
+	check(width >= 50 and width <= 62, "pool roughly 56 wide")
+	check(depth >= 22 and depth <= 30, "pool roughly 26 deep")
+	check(Layout.POOL_FLOOR_Y <= -3 and Layout.POOL_FLOOR_Y >= -5, "pool ~4 studs deep")
+	eq(#Layout.RAMPS, 2, "two ramps")
+	for _, ramp in Layout.RAMPS do
+		local r = ramp.rect
+		check(r.minX >= pool.minX and r.maxX <= pool.maxX and r.minZ >= pool.minZ and r.maxZ <= pool.maxZ, "ramp inside pool")
+		-- A ramp's high end touches the pool edge on its own side.
+		check(if ramp.side > 0 then r.maxX == pool.maxX else r.minX == pool.minX, "ramp meets the floor edge")
+		local slope = math.deg(math.atan(-Layout.POOL_FLOOR_Y / (r.maxX - r.minX)))
+		check(slope < 30, "ramp is walkable")
+		check(not Layout.overlaps(r, Layout.ORB_AREA), "orbs never land on a ramp")
+	end
+	local o = Layout.ORB_AREA
+	check(o.minX >= pool.minX and o.maxX <= pool.maxX and o.minZ >= pool.minZ and o.maxZ <= pool.maxZ, "orb area inside pool")
+	check(o.maxX - o.minX > 20 and o.maxZ - o.minZ > 15, "orb area is roomy")
+	-- The pool sits directly in front of the bleachers.
+	local shelves = Layout.MACHINES.Shelves
+	check(shelves.minZ >= pool.maxZ and shelves.minZ - pool.maxZ < 3, "pool right in front of the bleachers")
+	check(Layout.inPool(0, (pool.minZ + pool.maxZ) / 2), "pool centre is in the pool")
+	check(not Layout.inPool(0, pool.minZ - 2), "floor in front of the pool is not")
+end)
+
+test("plot layout: pads", function()
+	local inner = Layout.INNER_HALF
+	local names = {}
+	for _, name in Layout.PAD_ORDER do
+		names[name] = true
+		check(Layout.PADS[name] ~= nil, "pad has a spot: " .. name)
+	end
+	for name in Layout.PADS do
+		check(names[name] == true, "pad is built: " .. name)
+	end
+	for _, amount in Economy.BUY_AMOUNTS do
+		check(Layout.PADS["Buy" .. amount] ~= nil, "buy pad " .. amount)
+	end
+	for _, name in { "AutoMerge", "Merge", "Deposit", "ProcUp1", "ProcUp10", "Collect", "BuyTier", "Unlock1", "Unlock2", "Free" } do
+		check(Layout.PADS[name] ~= nil, "pad " .. name)
+	end
+
+	for i, nameA in Layout.PAD_ORDER do
+		local spot = Layout.PADS[nameA]
+		local rim = Layout.padRect(spot, Layout.PAD_RIM)
+		check(rim.minX >= -inner and rim.maxX <= inner and rim.minZ >= -inner and rim.maxZ <= inner, nameA .. " inside the walls")
+		check(not Layout.overlaps(rim, Layout.POOL, 1.5), nameA .. " clear of the pool")
+		for _, ramp in Layout.RAMPS do
+			check(not Layout.overlaps(rim, ramp.rect, 1.5), nameA .. " clear of the ramps")
+		end
+		for machine, rect in Layout.MACHINES do
+			check(not Layout.overlaps(rim, rect), nameA .. " clear of " .. machine)
+		end
+		for j = i + 1, #Layout.PAD_ORDER do
+			local nameB = Layout.PAD_ORDER[j]
+			check(not Layout.overlaps(rim, Layout.padRect(Layout.PADS[nameB], Layout.PAD_RIM)), nameA .. " vs " .. nameB)
+		end
+		-- The spawn point must not start on a pad.
+		check(not Layout.contains(Layout.padRect(spot, 2), Layout.SPAWN.x, Layout.SPAWN.z), nameA .. " clear of spawn")
+	end
+end)
+
+test("plot layout: crate areas", function()
+	check(#Layout.CHEST_AREAS >= 1, "has crate areas")
+	for _, area in Layout.CHEST_AREAS do
+		-- Crates are ~3.4 studs wide and picked up within 5 studs: keep them off pads and out of the pool.
+		check(not Layout.overlaps(area, Layout.POOL, 6), "crate area away from the pool")
+		for _, name in Layout.PAD_ORDER do
+			check(not Layout.overlaps(area, Layout.padRect(Layout.PADS[name], Layout.PAD_RIM), 2), "crate area clear of " .. name)
+		end
+		for machine, rect in Layout.MACHINES do
+			check(not Layout.overlaps(area, rect, 2), "crate area clear of " .. machine)
+		end
+	end
+end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
