@@ -64,6 +64,9 @@ local function productList(kind: string): { any }?
 		return theme.Monetization.GemPacks
 	elseif kind == "Aura" then
 		return theme.Monetization.AuraPacks
+	elseif kind == "LegacyMoney" then
+		-- Retired packs: only reachable through a receipt (Tycoon never prompts this kind).
+		return theme.Monetization.LegacyMoneyPacks
 	end
 	return nil
 end
@@ -92,8 +95,8 @@ end
 local function grantProduct(session: Tycoon.Session, kind: string, index: number)
 	local p = session.profile
 	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
-	if kind == "Money" then
-		local pack = theme.Monetization.MoneyPacks[index]
+	if kind == "Money" or kind == "LegacyMoney" then
+		local pack = (productList(kind) :: { any })[index]
 		local amount = Economy.moneyPackAmount(Tycoon.income(session), pack.Seconds, pack.Min, progression)
 		Tycoon.grantMoney(session, amount)
 	elseif kind == "Gems" then
@@ -186,7 +189,7 @@ end
 
 -- (kind, index) of a pack, or ("Crate", true) for the crate product.
 local function findProduct(productId: number): (string?, any)
-	for _, kind in { "Money", "Gems", "Aura" } do
+	for _, kind in { "Money", "Gems", "Aura", "LegacyMoney" } do
 		for index, product in productList(kind) :: { any } do
 			if product.Id ~= 0 and product.Id == productId then
 				return kind, index

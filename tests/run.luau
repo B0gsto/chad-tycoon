@@ -817,6 +817,15 @@ for _, variant in { "chad" } do
 				lastSeconds, lastMin = pack.Seconds, pack.Min
 			end
 		end
+		-- Every product id (live, retired and the crate) is unique, so a receipt maps to one grant.
+		local seen = {}
+		for _, list in { "MoneyPacks", "AuraPacks", "GemPacks", "LegacyMoneyPacks" } do
+			for index, pack in theme.Monetization[list] do
+				check(pack.Id ~= 0 and not seen[pack.Id], list .. " id unique " .. index)
+				seen[pack.Id] = true
+			end
+		end
+		check(not seen[theme.Monetization.CrateOpen.Id], "crate product id unique")
 		check(type(theme.Modes.Parkour.RewardSeconds) == "number" and theme.Modes.Parkour.RewardMin > 0, "parkour reward")
 		for index, pack in theme.Monetization.GemPacks do
 			check(type(pack.Base) == "number" and pack.Base > 0 and pack.Amount == nil, "rizz pack base " .. index)

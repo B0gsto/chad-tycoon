@@ -1287,6 +1287,14 @@ Theme.Monetization = {
 		{ Id = 3716954024, Price = 499, Seconds = 18000, Min = 100000 },
 		{ Id = 3716954037, Price = 1000, Seconds = 86400, Min = 500000 },
 	},
+	-- Retired cash packs (5 min / 45 min / 2 h / 12 h). Never prompted or shown, but a
+	-- receipt that was still pending when they left the shop is honoured at its old size.
+	LegacyMoneyPacks = {
+		{ Id = 3716878799, Seconds = 300, Min = 1000 },
+		{ Id = 3716878826, Seconds = 2700, Min = 10000 },
+		{ Id = 3716878834, Seconds = 7200, Min = 30000 },
+		{ Id = 3716878853, Seconds = 43200, Min = 300000 },
+	},
 	-- Rizz packs give `Base` Rizz at tier 1, growing with the buyer's highest tier
 	-- (Economy.gemPackAmount). Roblox names: Small / Big / Mega Rizz Pack.
 	GemPacks = {
