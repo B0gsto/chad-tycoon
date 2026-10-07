@@ -685,10 +685,11 @@ Theme.Intro = {
 	},
 }
 
--- Leave empty for no music, or paste a Roblox audio asset id ("rbxassetid://...").
+-- Music: empty plays the built-in funk / disco playlist (client Sounds), or paste a
+-- Roblox audio asset id ("rbxassetid://...") to play just that track.
 Theme.MusicId = ""
--- Music during an Aura Surge ("rbxassetid://..."). Empty: the other built-in track,
--- played a little faster (or the same track sped up when only one loads).
+-- Music during an Aura Surge ("rbxassetid://..."). Empty: the built-in surge playlist
+-- (or the normal track sped up while no surge track has loaded).
 Theme.SurgeMusicId = ""
 
 -- Unit animation set (see ReplicatedStorage.Shared.Poses): gym poses.

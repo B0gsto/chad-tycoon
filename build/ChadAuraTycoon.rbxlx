@@ -8909,6 +8909,9 @@ return Net
 --     tierIndex(tier, n) picks one of the n Theme.OrbColors, cycling so neighbouring tiers differ.
 --   * feedTarget(balls, tier, cap, roll): the pen fill rule. Below the cap every produced orb is
 --     a new ball; at the cap it joins an existing ball (same tier first, then the lowest count).
+--   * Dumbbells: about one produced piece in DUMBBELL_CHANCE lands as a tier-tinted dumbbell
+--     instead of a ball, DUMBBELL_SCALE times an orb's size and worth DUMBBELL_VALUE times the
+--     piece. It never joins or is fed by other balls and keeps the floor cells around it clear.
 --   * tagRGB(r, g, b): text colour of a ball's "xN" tag (a lightened ball colour, white if pale).
 --   * travelTime(length, queue): a conservative upper bound of how long the client's roll-in
 --     animation takes for a route of `length` studs (hop + fall + gutter/chute roll that
@@ -8918,6 +8921,11 @@ local OrbLook = {}
 
 OrbLook.CAP = 64 -- balls a pen holds before new orbs count up existing balls
 OrbLook.SETTLE = 1.2 -- seconds an orb rests in the pen before Auto Aura collects it
+
+OrbLook.DUMBBELL_CHANCE = 1 / 25 -- share of produced pieces that land as a dumbbell
+OrbLook.DUMBBELL_VALUE = 10 -- a dumbbell is worth this many times the piece it replaces
+OrbLook.DUMBBELL_SCALE = 2 -- its length, in orb diameters
+OrbLook.DUMBBELL_PLATE = 0.31 -- radius of its big plates (its resting height), in dumbbell lengths
 
 -- Palette slot (1..n) for orbs produced by a unit of `tier` (tier 1 = slot 1).
 function OrbLook.tierIndex(tier: number?, n: number): number
@@ -11151,10 +11159,11 @@ Theme.Intro = {
 	},
 }
 
--- Leave empty for no music, or paste a Roblox audio asset id ("rbxassetid://...").
+-- Music: empty plays the built-in funk / disco playlist (client Sounds), or paste a
+-- Roblox audio asset id ("rbxassetid://...") to play just that track.
 Theme.MusicId = ""
--- Music during an Aura Surge ("rbxassetid://..."). Empty: the other built-in track,
--- played a little faster (or the same track sped up when only one loads).
+-- Music during an Aura Surge ("rbxassetid://..."). Empty: the built-in surge playlist
+-- (or the normal track sped up while no surge track has loaded).
 Theme.SurgeMusicId = ""
 
 -- Unit animation set (see ReplicatedStorage.Shared.Poses): gym poses.
@@ -18092,7 +18101,8 @@ type Plot = WorldBuilder.Plot
 
 -- `cell` is the pile slot the orb rests in (see orbCells): 1..n on the floor, PILE_TOP + k on top.
 -- `due`: Auto Aura collects the orb at this os.clock() (after its roll-in lands and rests).
-type Orb = { part: BasePart, value: number, count: number, cell: number, tier: number, due: number? }
+-- `dumbbell`: a rare prize piece (OrbLook.DUMBBELL_*) that is never fed and blocks the cells around it.
+type Orb = { part: BasePart, value: number, count: number, cell: number, tier: number, due: number?, dumbbell: boolean? }
 -- `landsAt`: os.clock() by which the client's arrival has landed (CratePickup.landTime);
 -- `blocked`: in range when the last held crate was released, until the player leaves its range.
 type FloorChest = { model: Model, rarity: string, position: Vector3, landsAt: number, blocked: boolean }
@@ -18985,31 +18995,57 @@ local function topSupports(g: PileGrid, cell: number): (number, number, number, 
 	return floorCell(g, col, row), floorCell(g, col + 1, row), floorCell(g, col, row + 1), floorCell(g, col + 1, row + 1)
 end
 
--- Plot-local centres of the occupied pile cells, and how many orbs sit on the floor.
-local function pileTaken(session: Session): ({ [number]: Vector3 }, number)
+-- The floor cells around a floor cell (up to 8; fewer at the grid's edge).
+local function floorNeighbours(g: PileGrid, cell: number): { number }
+	local col, row = (cell - 1) % g.cols + 1, (cell - 1) // g.cols + 1
+	local out = {}
+	for dr = -1, 1 do
+		for dc = -1, 1 do
+			local c, r = col + dc, row + dr
+			if (dc ~= 0 or dr ~= 0) and c >= 1 and c <= g.cols and r >= 1 and r <= g.rows then
+				table.insert(out, floorCell(g, c, r))
+			end
+		end
+	end
+	return out
+end
+
+-- Plot-local centres of the occupied pile cells, how many orbs sit on the floor, and the empty
+-- floor cells a dumbbell covers (its 8 neighbours: it is twice an orb's size). Nothing lands
+-- on those, so no top-layer slot can ever rest on a dumbbell either.
+local function pileTaken(session: Session): ({ [number]: Vector3 }, number, { [number]: boolean })
 	local cf = session.plot.cframe
 	local taken: { [number]: Vector3 } = {}
+	local blocked: { [number]: boolean } = {}
 	local floorCount = 0
+	local g: PileGrid? = nil
 	for _, orb in session.orbs do
 		taken[orb.cell] = cf:PointToObjectSpace(orb.part.CFrame.Position)
 		if orb.cell < PILE_TOP then
 			floorCount += 1
 		end
+		if orb.dumbbell then
+			g = g or pileGrid(session.plot.orbArea)
+			for _, cell in floorNeighbours(g :: PileGrid, orb.cell) do
+				blocked[cell] = true
+			end
+		end
 	end
-	return taken, floorCount
+	return taken, floorCount, blocked
 end
 
 -- Picks a free pile cell: floor cells near the focus first (with random scatter so the heap
 -- looks natural), and once the floor is crowded sometimes a hollow on top of four floor orbs.
--- Returns (cell, world landing CFrame), or nil when the pile has no room.
-local function orbLanding(session: Session): (number?, CFrame?)
+-- A `dumbbell` only takes an inner floor cell whose 8 neighbours are empty too.
+-- Returns (cell, world landing CFrame of an orb resting there), or nil when the pile has no room.
+local function orbLanding(session: Session, dumbbell: boolean?): (number?, CFrame?)
 	local plot = session.plot
 	local g = pileGrid(plot.orbArea)
 	local r = ORB_SIZE / 2
 	local restY = plot.orbFloorY + r
-	local taken, floorCount = pileTaken(session)
+	local taken, floorCount, blocked = pileTaken(session)
 
-	if floorCount >= PILE_TOP_FROM and rng:NextNumber() < PILE_TOP_CHANCE then
+	if not dumbbell and floorCount >= PILE_TOP_FROM and rng:NextNumber() < PILE_TOP_CHANCE then
 		local best: number?, bestScore, bestPos = nil, math.huge, Vector3.zero
 		for k = 1, (g.cols - 1) * (g.rows - 1) do
 			local cell = PILE_TOP + k
@@ -19042,8 +19078,23 @@ local function orbLanding(session: Session): (number?, CFrame?)
 	for row = 1, g.rows do
 		for col = 1, g.cols do
 			local cell = floorCell(g, col, row)
-			if taken[cell] then
+			if taken[cell] or blocked[cell] then
 				continue
+			end
+			if dumbbell then
+				if col == 1 or col == g.cols or row == 1 or row == g.rows then
+					continue
+				end
+				local clear = true
+				for _, n in floorNeighbours(g, cell) do
+					if taken[n] then
+						clear = false
+						break
+					end
+				end
+				if not clear then
+					continue
+				end
 			end
 			local x, z = g.x0 + (col - 1) * PILE_SPACING, g.z0 + (row - 1) * PILE_SPACING
 			local score = math.sqrt((x - g.focusX) ^ 2 + (z - g.focusZ) ^ 2) + rng:NextNumber(0, PILE_SCATTER)
@@ -19086,7 +19137,19 @@ local function scheduleAuto(session: Session, orb: Orb, origin: Vector3?, route:
 	orb.due = math.max(orb.due or 0, os.clock() + OrbLook.autoCollectDelay(length, 2.5))
 end
 
-local function spawnOrb(session: Session, value: number, cell: number, target: CFrame, origin: Vector3?, route: { Vector3 }?, tier: number?)
+-- `dumbbell`: the piece lands as a dumbbell (Kind = "Dumbbell"): a cylinder along X,
+-- OrbLook.DUMBBELL_SCALE orbs long and as thick as its plates, resting on them. Its route still
+-- ends at the orb resting point `target` (clients lift the dumbbell onto its plates).
+local function spawnOrb(
+	session: Session,
+	value: number,
+	cell: number,
+	target: CFrame,
+	origin: Vector3?,
+	route: { Vector3 }?,
+	tier: number?,
+	dumbbell: boolean?
+)
 	local plot = session.plot
 	local tint = orbTint(tier)
 	local part = Instance.new("Part")
@@ -19101,6 +19164,15 @@ local function spawnOrb(session: Session, value: number, cell: number, target: C
 	part.CanQuery = false
 	part.CanTouch = false
 	part.CFrame = target
+	if dumbbell then
+		local length = ORB_SIZE * OrbLook.DUMBBELL_SCALE
+		local plate = length * OrbLook.DUMBBELL_PLATE
+		part.Name = "Dumbbell"
+		part.Shape = Enum.PartType.Cylinder
+		part.Size = Vector3.new(length, plate * 2, plate * 2)
+		part.CFrame = target + Vector3.new(0, plate - ORB_SIZE / 2, 0)
+		part:SetAttribute("Kind", "Dumbbell")
+	end
 	if origin then
 		part:SetAttribute("Origin", origin)
 	end
@@ -19113,7 +19185,7 @@ local function spawnOrb(session: Session, value: number, cell: number, target: C
 	part:SetAttribute("RestY", (plot.cframe * CFrame.new(0, plot.orbFloorY + ORB_SIZE / 2, 0)).Position.Y)
 	part:SetAttribute("Spawned", serverNow())
 	part.Parent = plot.orbFolder
-	local orb: Orb = { part = part, value = value, count = 1, cell = cell, tier = tier or 1 }
+	local orb: Orb = { part = part, value = value, count = 1, cell = cell, tier = tier or 1, dumbbell = dumbbell }
 	scheduleAuto(session, orb, origin, route)
 	table.insert(session.orbs, orb)
 end
@@ -19136,14 +19208,17 @@ local function feedOrb(session: Session, orb: Orb, value: number, origin: Vector
 	part:SetAttribute("Feed", ((part:GetAttribute("Feed") :: number?) or 0) + 1)
 end
 
--- The ball a produced orb joins once the pen is full.
-local function feedTargetOrb(session: Session, tier: number?, cap: number): Orb?
-	local candidates = session.orbs
-	local balls: { OrbLook.Ball } = table.create(#candidates)
-	for i, orb in candidates do
-		balls[i] = { tier = orb.tier, count = orb.count }
+-- The ball a produced orb joins once the pen is full. Dumbbells never take feed orbs.
+local function feedTargetOrb(session: Session, tier: number?): Orb?
+	local candidates: { Orb } = {}
+	local balls: { OrbLook.Ball } = {}
+	for _, orb in session.orbs do
+		if not orb.dumbbell then
+			table.insert(candidates, orb)
+			table.insert(balls, { tier = orb.tier, count = orb.count })
+		end
 	end
-	local index = OrbLook.feedTarget(balls, tier, math.min(cap, #balls), rng:NextNumber())
+	local index = OrbLook.feedTarget(balls, tier, #balls, rng:NextNumber())
 	return if index then candidates[index] else nil
 end
 
@@ -19156,14 +19231,32 @@ local function produceOrbs(session: Session, amount: number)
 		local value = amount / pieces
 		local origin, feet, tier = orbSource(session)
 		local cell, target = nil, nil
+		local dumbbell = false
 		if #session.orbs < OrbLook.CAP then
-			cell, target = orbLanding(session)
+			-- Now and then the piece lands as a dumbbell worth DUMBBELL_VALUE times as much
+			-- (only where it has room; otherwise it stays a plain orb).
+			if rng:NextNumber() < OrbLook.DUMBBELL_CHANCE then
+				cell, target = orbLanding(session, true)
+				dumbbell = cell ~= nil
+			end
+			if not cell then
+				cell, target = orbLanding(session)
+			end
 		end
 		if cell and target then
-			spawnOrb(session, value, cell, target, origin, orbRoute(session, feet, target.Position), tier)
+			spawnOrb(
+				session,
+				if dumbbell then value * OrbLook.DUMBBELL_VALUE else value,
+				cell,
+				target,
+				origin,
+				orbRoute(session, feet, target.Position),
+				tier,
+				dumbbell
+			)
 		else
 			-- Pen full (or no free slot): the orb joins an existing ball and its Count goes up.
-			local orb = feedTargetOrb(session, tier, #session.orbs)
+			local orb = feedTargetOrb(session, tier)
 			if orb then
 				feedOrb(session, orb, value, origin, orbRoute(session, feet, orb.part.CFrame.Position), tier)
 			end
@@ -31044,11 +31137,9 @@ local function thud(crate: Crate, floor: Vector3, k: number)
 	Orbs.ring(floor + Vector3.new(0, 0.12, 0), Color3.fromRGB(235, 225, 210), 4.5 * size, 0.45, 0.3)
 	Orbs.ring(floor + Vector3.new(0, 0.18, 0), crate.color, 3 * size, 0.5, 0.1)
 	smokePuff(floor + Vector3.new(0, 0.3, 0), math.floor((8 + crate.rank * 2) * k), 9 * k)
-	Sounds.play("CrateShake", 0.08, 0.7 - crate.rank * 0.03)
 	if k >= 1 then
 		Orbs.sparkle(floor + Vector3.new(0, 1.5, 0), crate.color, 10 + crate.rank * 3, 0.9 + crate.rank * 0.1)
 		if crate.rank >= 2 then
-			Sounds.play("OrbLand", 0.05, 0.5)
 			if playerNear(floor, 70) then
 				Camera.shake(0.04 + crate.rank * 0.04, 0.2)
 			end
@@ -36058,6 +36149,11 @@ return MogFx
 --     combo blip.
 --   * Auto Aura: the server removes the orb once it has landed and rested; it just vanishes
 --     (no effect is sent for it).
+--   * Dumbbells (Kind = "Dumbbell", a rare prize worth OrbLook.DUMBBELL_VALUE pieces): built
+--     from parts (steel bar, tier-tinted grip and plates with glowing neon rims, end caps) and
+--     lit by a soft tier light. It rolls in on its plates at orb size, pumps up to full size
+--     when it hits the pen floor, then rests with a slow sway and twinkles; picking it up
+--     throws a bigger burst and an "x10" pop.
 --   * Look: each orb is drawn as clones of props/OrbBall (Color = tier colour) and
 --     props/OrbShine (white) via AssetModels, and the server's ball is hidden locally. Without
 --     the uploaded models the server's ball shows in the tier colour.
@@ -37167,11 +37263,19 @@ type OrbFx = {
 	labelLift: number, -- per-orb tag height jitter, so neighbouring tags do not line up
 	still: boolean, -- resting and placed: skipped by the frame loop until something wakes it
 	conns: { RBXScriptConnection },
+	dumbbell: boolean, -- Kind = "Dumbbell": drawn from `pieces` instead of the ball
+	pieces: { DumbbellPiece }?,
+	light: PointLight?,
+	grow: number, -- dumbbell pump-up on landing: < 0 = travel size, 0..1 growing, >= 1 full
+	barAxis: Vector3, -- rolling dumbbell: world direction of its bar
+	spin: number, -- rolling dumbbell: angle turned around its bar
+	lastPos: Vector3?,
+	twinkle: number, -- seconds until the resting dumbbell's next sparkle
 }
 
 local orbs: { [BasePart]: OrbFx } = {}
 -- Recently removed orbs, so pickup ghosts can keep the colour of the orb they replace.
-local recentGone: { { pos: Vector3, color: Color3, big: boolean, at: number } } = {}
+local recentGone: { { pos: Vector3, color: Color3, big: boolean, dumbbell: boolean, at: number } } = {}
 local orbFolder: Instance? = nil
 local folderConns: { RBXScriptConnection } = {}
 local INK = (Theme :: any).World and (Theme :: any).World.Ink or Color3.fromRGB(58, 48, 96)
@@ -37283,8 +37387,14 @@ local function updateLabel(fx: OrbFx, punch: boolean)
 end
 
 local function refreshVisibility(fx: OrbFx)
-	-- The server ball only shows without the Blender ball, once launched.
-	fx.part.LocalTransparencyModifier = if fx.waiting or fx.ball then 1 else 0
+	-- The server ball only shows without the Blender ball, once launched. A dumbbell's server
+	-- part is a plain stand-in for other players: always hidden here.
+	fx.part.LocalTransparencyModifier = if fx.waiting or fx.ball or fx.dumbbell then 1 else 0
+	if fx.pieces then
+		for _, piece in fx.pieces do
+			piece.part.LocalTransparencyModifier = if fx.waiting then 1 else 0
+		end
+	end
 	if fx.ball then
 		fx.ball.LocalTransparencyModifier = if fx.waiting then 1 else 0
 	end
@@ -37304,6 +37414,105 @@ local function clearBall(fx: OrbFx)
 		fx.shine:Destroy()
 	end
 	fx.ball, fx.shine = nil, nil
+	if fx.pieces then
+		for _, piece in fx.pieces do
+			piece.part:Destroy()
+		end
+	end
+	fx.pieces, fx.light = nil, nil
+end
+
+-- Dumbbells ----------------------------------------------------------------------------------
+-- Cylinders along the bar (local X). x = centre along the bar, len = length, dia = diameter, all
+-- in dumbbell lengths; the big rims' radius is OrbLook.DUMBBELL_PLATE (its resting height).
+
+type DumbbellPiece = { part: Part, x: number, len: number, dia: number }
+
+local DUMBBELL_TRAVEL = 0.5 -- size while rolling in (fits the gutter and chute like an orb)
+local DUMBBELL_GROW = 0.45 -- seconds to pump up to full size after hitting the pen floor
+local STEEL = Color3.fromRGB(228, 234, 242)
+-- { x, len, dia, paint }; pieces with x ~= 0 are mirrored to both ends.
+local DUMBBELL_SHAPE: { { any } } = {
+	{ 0, 0.96, 0.085, "steel" }, -- bar
+	{ 0, 0.3, 0.105, "grip" },
+	{ 0.2, 0.05, 0.16, "steel" }, -- collar
+	{ 0.285, 0.12, 0.6, "plate" }, -- big plate
+	{ 0.285, 0.07, 0.62, "rim" },
+	{ 0.39, 0.085, 0.46, "plate" }, -- small plate
+	{ 0.39, 0.05, 0.475, "rim" },
+	{ 0.465, 0.04, 0.12, "steel" }, -- end cap
+}
+
+local function paintPiece(part: Part, paint: string, color: Color3)
+	if paint == "steel" then
+		part.Color, part.Material, part.Reflectance = STEEL, Enum.Material.SmoothPlastic, 0.3
+	elseif paint == "grip" then
+		part.Color, part.Material, part.Reflectance = color:Lerp(INK, 0.45), Enum.Material.SmoothPlastic, 0
+	elseif paint == "plate" then
+		part.Color, part.Material, part.Reflectance = color, Enum.Material.SmoothPlastic, 0.12
+	else
+		part.Color, part.Material, part.Reflectance = color:Lerp(WHITE, 0.45), Enum.Material.Neon, 0
+	end
+end
+
+local function buildDumbbell(fx: OrbFx)
+	local pieces: { DumbbellPiece } = {}
+	for _, spec in DUMBBELL_SHAPE do
+		local x, len, dia, paint = spec[1] :: number, spec[2] :: number, spec[3] :: number, spec[4] :: string
+		local sides: { number } = if x == 0 then { 1 } else { -1, 1 }
+		for _, side in sides do
+			local part = basePart(Enum.PartType.Cylinder, "Dumbbell")
+			paintPiece(part, paint, fx.color)
+			part.Parent = folder
+			table.insert(pieces, { part = part, x = x * side, len = len, dia = dia })
+		end
+	end
+	local light = Instance.new("PointLight")
+	light.Color = fx.color:Lerp(WHITE, 0.25)
+	light.Range = 7
+	light.Brightness = 1.2
+	light.Shadows = false
+	light.Parent = pieces[1].part
+	fx.pieces, fx.light = pieces, light
+end
+
+-- Size multiplier of a dumbbell: travel size, then a springy pump-up to full size.
+local function dumbbellScale(fx: OrbFx): number
+	if fx.grow < 0 then
+		return DUMBBELL_TRAVEL
+	end
+	return DUMBBELL_TRAVEL + (1 - DUMBBELL_TRAVEL) * backOut(math.min(fx.grow, 1))
+end
+
+-- Radius of a dumbbell's big plates at size multiplier `k`, and an orb's radius (its route's).
+local function dumbbellRadii(fx: OrbFx, k: number): (number, number)
+	local length = fx.part.Size.X
+	return OrbLook.DUMBBELL_PLATE * length * k, length / OrbLook.DUMBBELL_SCALE / 2
+end
+
+-- Rotation of a dumbbell whose bar points along horizontal `axis`, turned `spin` around it.
+local function barFrame(axis: Vector3, spin: number): CFrame
+	return CFrame.fromMatrix(Vector3.zero, axis, Vector3.yAxis) * CFrame.Angles(spin, 0, 0)
+end
+
+-- Rolling dumbbell: the bar turns across the direction of travel and it rolls on its plates.
+local function rollDumbbell(fx: OrbFx, pos: Vector3, radius: number, dt: number): CFrame
+	local last = fx.lastPos
+	fx.lastPos = pos
+	if last then
+		local axis = Vector3.yAxis:Cross(pos - last)
+		local m = axis.Magnitude
+		if m > 1e-4 then
+			local want, sign = axis / m, 1
+			if want:Dot(fx.barAxis) < 0 then
+				want, sign = -want, -1
+			end
+			local blended = fx.barAxis:Lerp(want, math.min(1, dt * 12))
+			fx.barAxis = if blended.Magnitude > 1e-3 then blended.Unit else want
+			fx.spin += sign * m / math.max(radius, 0.1)
+		end
+	end
+	return barFrame(fx.barAxis, fx.spin)
 end
 
 -- Paints the orb in its producing tier's colour and dresses it in the two Blender pieces
@@ -37314,7 +37523,11 @@ local function styleOrb(fx: OrbFx)
 	fx.part.Color = fx.color
 	fx.part.Material = Enum.Material.SmoothPlastic
 	fx.part.Transparency = 0
-	if not fx.ball then
+	if fx.dumbbell then
+		if not fx.pieces then
+			buildDumbbell(fx)
+		end
+	elseif not fx.ball then
 		fx.ball = cloneBall("OrbBall", fx.color)
 		fx.shine = if fx.ball then cloneBall("OrbShine") else nil
 	end
@@ -37331,7 +37544,7 @@ local function untrack(part: BasePart)
 		fx.roll = nil
 		finishRoll()
 	end
-	table.insert(recentGone, { pos = fx.home.Position, color = fx.color, big = fx.big, at = os.clock() })
+	table.insert(recentGone, { pos = fx.home.Position, color = fx.color, big = fx.big, dumbbell = fx.dumbbell, at = os.clock() })
 	if #recentGone > 24 then
 		table.remove(recentGone, 1)
 	end
@@ -37342,25 +37555,26 @@ local function untrack(part: BasePart)
 	fx.shell:Destroy()
 end
 
-local lastLandSound = 0
-
-local function landSound(volumeJitter: number)
-	if os.clock() - lastLandSound > 0.12 then
-		lastLandSound = os.clock();
-		(Sounds.play :: any)("OrbLand", volumeJitter)
-	end
-end
-
 -- First touch of the pen floor: a dust puff (a soft ring without the sprite), a few
 -- sparkles and a squash.
 local function touchedFloor(fx: OrbFx, pos: Vector3, impact: number)
 	fx.squash, fx.squashAmp = 0, 0.32 * impact
+	if fx.dumbbell then
+		-- A prize: it pumps up to full size with a bigger burst.
+		fx.grow = 0
+		local plate = dumbbellRadii(fx, DUMBBELL_TRAVEL)
+		local floor = pos - Vector3.new(0, plate, 0)
+		Orbs.puff(floor, 4)
+		Orbs.ring(floor, fx.color, 2.8, 0.55, 0.3)
+		Orbs.sparkle(pos, fx.color, 10, 0.8)
+		Orbs.sparkle(pos, WHITE, 4, 0.6)
+		return
+	end
 	local floor = pos - Vector3.new(0, fx.part.Size.Y * 0.45, 0)
 	if not Orbs.puff(floor, if impact > 0.6 then 3 else 2) then
 		Orbs.ring(floor, fx.color, 1.5 * fx.scale, 0.45, 0.35)
 	end
 	Orbs.sparkle(pos, fx.color, 3, 0.45)
-	landSound(0.3)
 end
 
 -- Came to rest at its spot: small settle wobble, then the idle bob fades in.
@@ -37484,8 +37698,21 @@ local function track(part: Instance)
 		ball = nil,
 		shine = nil,
 		conns = {},
+		dumbbell = p:GetAttribute("Kind") == "Dumbbell",
+		pieces = nil,
+		light = nil,
+		grow = 1,
+		barAxis = CFrame.Angles(0, math.random() * math.pi * 2, 0).XVector,
+		spin = 0,
+		lastPos = nil,
+		twinkle = math.random(),
 	}
 	orbs[p] = fx
+	if fx.dumbbell then
+		-- Lies with its bar across the view (both plates show), turned a little.
+		fx.restRot = faceCamera(p.Position) * CFrame.Angles(0, (math.random() * 2 - 1) * REST_YAW * 0.7, 0)
+		fx.rot = fx.restRot
+	end
 
 	-- Roll in from the unit that produced it (queued behind earlier orbs), or pop in place.
 	local spawned = p:GetAttribute("Spawned")
@@ -37494,12 +37721,15 @@ local function track(part: Instance)
 		local path = readRoute(p, "Path")
 		local origin = p:GetAttribute("Origin")
 		local restY = p:GetAttribute("RestY")
+		-- A dumbbell follows the orb route (radius = its travel-size plates) and is lifted
+		-- onto its plates when drawn.
+		local radius = if fx.dumbbell then (dumbbellRadii(fx, DUMBBELL_TRAVEL)) else p.Size.Y / 2
 		local roll = if path
 			then newRoll(
 				path,
 				if typeof(origin) == "Vector3" then origin else nil,
 				if type(restY) == "number" then restY else nil,
-				p.Size.Y / 2,
+				radius,
 				0
 			)
 			else nil
@@ -37507,6 +37737,7 @@ local function track(part: Instance)
 			fx.roll = roll
 			fx.waiting = true
 			fx.rest = 0
+			fx.grow = -1
 		else
 			fx.appear = 0
 			fx.rest = 0
@@ -37591,6 +37822,14 @@ local function pickupBlip(count: number)
 	(Sounds.play :: any)("OrbPickup", 0, pitch)
 end
 
+-- Extra celebration when the piece picked up at `pos` was a dumbbell.
+local function dumbbellPicked(pos: Vector3, color: Color3)
+	Orbs.sparkle(pos, color, 14, 1.1)
+	Orbs.sparkle(pos, WHITE, 6, 0.9)
+	Orbs.ring(pos - Vector3.new(0, 0.8, 0), color, 3.4, 0.5, 0.25)
+	Orbs.text(pos + Vector3.new(0, 1.5, 0), "x" .. tostring(OrbLook.DUMBBELL_VALUE) .. "!", color:Lerp(WHITE, 0.3), { scale = 1.6 })
+end
+
 local function onPicked(data: any)
 	if type(data) ~= "table" or type(data.positions) ~= "table" then
 		return
@@ -37608,18 +37847,24 @@ local function onPicked(data: any)
 		local count = if type(counts[i]) == "number" then math.max(1, counts[i]) else 1
 		local grow = 1
 		local color = ORB_PALETTE[1]
+		local dumbbell = false
 		-- Match the colour of the real orb that sat there, if we still know it.
 		for _, fx in orbs do
 			if (fx.home.Position - pos).Magnitude < 1.2 then
-				color = fx.color
+				color, dumbbell = fx.color, fx.dumbbell
 				break
 			end
 		end
 		for _, gone in recentGone do
 			if (gone.pos - pos).Magnitude < 1.2 then
-				color = gone.color
+				color, dumbbell = gone.color, gone.dumbbell
 				break
 			end
+		end
+		if dumbbell then
+			grow = 1.6
+			count = math.max(count, 4) -- the fuller pickup sound
+			dumbbellPicked(pos, color)
 		end
 		Orbs.fly({
 			from = pos + Vector3.new(0, 0.25, 0),
@@ -37688,6 +37933,27 @@ local function drawOrb(fx: OrbFx, cf: CFrame, s: number, sx: number, sy: number,
 			table.insert(moveParts, shine)
 			table.insert(moveCFrames, cf * CFrame.new(SHINE_OFFSET * scale))
 		end
+	end
+end
+
+-- Queues a dumbbell's pieces at `cf` (its centre and rotation), scaled by `s`.
+local function drawDumbbell(fx: OrbFx, cf: CFrame, s: number)
+	table.insert(moveParts, fx.part)
+	table.insert(moveCFrames, cf)
+	table.insert(moveParts, fx.shell)
+	table.insert(moveCFrames, cf)
+	local pieces = fx.pieces
+	if not pieces then
+		return
+	end
+	local length = fx.part.Size.X * s
+	for _, piece in pieces do
+		local size = Vector3.new(piece.len * length, piece.dia * length, piece.dia * length)
+		if (piece.part.Size - size).Magnitude > 0.002 then
+			piece.part.Size = size
+		end
+		table.insert(moveParts, piece.part)
+		table.insert(moveCFrames, cf * CFrame.new(piece.x * length, 0, 0))
 	end
 end
 
@@ -37802,7 +38068,9 @@ local function step(dt: number)
 				refreshVisibility(fx)
 			end
 			local pos, phase = sampleRoll(roll, t)
-			spinRoll(roll, pos)
+			if not fx.dumbbell then
+				spinRoll(roll, pos)
+			end
 			if phase ~= roll.phase then
 				if phase >= PHASE_GUTTER and roll.phase < PHASE_GUTTER then
 					fx.squash, fx.squashAmp = 0, 0.1 + 0.15 * roll.gutterImpact -- lands in the gutter
@@ -37812,7 +38080,21 @@ local function step(dt: number)
 				end
 				roll.phase = phase
 			end
-			if phase < PHASE_DONE then
+			if fx.dumbbell then
+				if fx.grow >= 0 then
+					fx.grow += dt / DUMBBELL_GROW
+				end
+				local k = dumbbellScale(fx)
+				local plate, orbR = dumbbellRadii(fx, k)
+				local lifted = pos + Vector3.new(0, plate - orbR, 0)
+				local rot = rollDumbbell(fx, lifted, plate, dt)
+				if phase < PHASE_DONE then
+					local grow = backOut(math.clamp(t / APPEAR_TIME, 0, 1))
+					drawDumbbell(fx, CFrame.new(lifted) * rot, fx.scale * grow * k * sx)
+					continue
+				end
+				roll.rot = rot
+			elseif phase < PHASE_DONE then
 				local grow = backOut(math.clamp(t / APPEAR_TIME, 0, 1))
 				drawOrb(fx, CFrame.new(pos) * roll.rot, fx.scale * grow, sx, sy, clock, flashed)
 				continue
@@ -37837,6 +38119,30 @@ local function step(dt: number)
 			appear = backOut(fx.appear)
 		end
 		local s = fx.scale * (1 + fx.pulse) * appear
+		if fx.dumbbell then
+			-- Resting prize: finishes pumping up, sways slowly, breathes, glows and twinkles.
+			-- Never marked still (there are only ever a few).
+			if fx.grow < 1 then
+				fx.grow = math.min(1, fx.grow + dt / DUMBBELL_GROW)
+			end
+			local k = dumbbellScale(fx)
+			local full = dumbbellRadii(fx, 1)
+			local pos = fx.home.Position + Vector3.new(0, full * (k - 1), 0)
+			local sway = CFrame.Angles(0, math.sin(clock * 0.9 + fx.phase) * 0.12, 0)
+			local breathe = 1 + math.sin(clock * 2 + fx.phase) * 0.015
+			drawDumbbell(fx, CFrame.new(pos) * sway * fx.rot, s * k * breathe * sx)
+			if fx.light then
+				fx.light.Brightness = 1.2 + 0.5 * math.sin(clock * 2.4 + fx.phase)
+			end
+			fx.twinkle -= dt
+			if fx.twinkle <= 0 and appear >= 1 then
+				fx.twinkle = 0.7 + math.random() * 0.6
+				local along = (math.random() * 2 - 1) * full * 1.3
+				local glint = pos + (sway * fx.rot).XVector * along + Vector3.new(0, full * 0.8, 0)
+				Orbs.sparkle(glint, fx.color:Lerp(WHITE, 0.4), 1, 0.25)
+			end
+			continue
+		end
 		drawOrb(fx, CFrame.new(fx.home.Position) * fx.rot, s, sx, sy, clock, flashed)
 		fx.still = fx.rest >= 1 and fx.appear >= 1 and fx.pulse == 0 and fx.squash < 0 and fx.flash <= 0
 	end
@@ -46994,11 +47300,13 @@ action:FireServer({ action = "Sync" })
 -- tick, shipped with every client) as a last resort for UI clicks.
 --
 -- Sounds.play(name, pitchJitter?, pitchMult?): unknown names are a no-op.
--- Sounds.updateMusic(): starts/stops the looping music per settings.music.
+-- Sounds.updateMusic(): starts/stops the music per settings.music. The music is a
+-- playlist: each track plays once, then the next in a shuffled order (reshuffled
+-- when it runs out, never the same track twice in a row).
 -- Sounds.setMood("surge" | nil): during an Aura Surge the music cross-fades (1 s)
--- to the surge track (Theme.SurgeMusicId, else the other built-in track, a bit
--- faster and louder) and back, resuming the normal track where it paused. With
--- no second track loaded the normal track just speeds up for the surge. Music
+-- to the surge playlist (Theme.SurgeMusicId, else SURGE_MUSIC; each surge starts
+-- the next track) and back, resuming the normal track where it paused. With no
+-- surge track loaded yet the normal track just speeds up for the surge. Music
 -- off stays off; the mood waits while the intro cutscene plays.
 
 local ContentProvider = game:GetService("ContentProvider")
@@ -47053,7 +47361,6 @@ local TICK_B = lib(104556737710683)
 local TICK_C = lib(111480305904301)
 local CRACKLE_A = lib(130988843893972)
 local CRACKLE_B = lib(109769434232691)
-local CRACKLE_C = lib(112005936752839)
 local HIT_A = lib(132346841133984)
 local HIT_B = lib(83739861834001)
 local HIT_C = lib(112084716984188)
@@ -47066,17 +47373,33 @@ local CEREMONY_COMMON = lib(75797999851350)
 local CEREMONY_EPIC = lib(100965222685530)
 local CEREMONY_LEGENDARY = lib(85196226744574)
 
--- Upbeat, loopable APM library tracks (licensed for every experience). Used
+-- Funk / disco APM library tracks (licensed for every experience). The playlist
 -- when the theme leaves MusicId empty.
 local DEFAULT_MUSIC = {
-	lib(1842265339), -- APM "Get Dancing"
-	lib(1843197585), -- APM "Remote Control"
+	lib(1839889634), -- APM "Work Out"
+	lib(9038367768), -- APM "Funky Disco Beats"
+	lib(1843481682), -- APM "Flash Funk"
+	lib(1843481858), -- APM "Funk Jam"
+	lib(1839686686), -- APM "So Groovy"
+	lib(1839802242), -- APM "Bouncy Funk"
+	lib(1835725225), -- APM "Disco Sapiens"
+	lib(1847605088), -- APM "Retro Funk"
+	lib(9042511427), -- APM "Downtown Swagger C"
+}
+-- Harder APM tracks for an Aura Surge, when the theme leaves SurgeMusicId empty.
+local SURGE_MUSIC = {
+	lib(1847444965), -- APM "Party Hype A"
+	lib(1839890308), -- APM "Football Frenzy"
+	lib(1839705126), -- APM "Hype"
+	lib(1845056062), -- APM "Pump It Up (a)"
+	lib(9043939853), -- APM "Big Muscles A"
+	lib(1837110694), -- APM "Skyhook"
+	lib(1840321644), -- APM "Rave!"
 }
 local MUSIC_VOLUME = 0.18
--- Aura Surge music: cross-fade time, the surge track's speed and loudness, and the
--- speed of the normal track when it has to double as the surge track.
+-- Aura Surge music: cross-fade time, the surge track's loudness, and the speed
+-- of the normal track when it has to double as the surge track.
 local MOOD_FADE = 1
-local SURGE_TRACK_SPEED = 1.12
 local SURGE_VOLUME = MUSIC_VOLUME * 1.15
 local SURGE_SOLO_SPEED = 1.15
 
@@ -47113,7 +47436,6 @@ local DEFS: { [string]: Def } = {
 	Pickup = { ids = { GUI_BUBBLE, UI_CUTE_POP }, volume = 0.45 },
 	-- Orbs
 	OrbPickup = { ids = { POP_PLUCK, POP_MARIMBA }, volume = 0.22, gap = 0.03 },
-	OrbLand = { ids = { CRACKLE_C, BUNDLED_TICK }, volume = 0.06, gap = 0.04 },
 	-- Merges
 	MergeCharge = { ids = { CRACKLE_A, CRACKLE_B }, volume = 0.4 },
 	MergeBoom = { ids = { HIT_A, HIT_B, HIT_C }, volume = 0.55, rotate = true },
@@ -47260,25 +47582,67 @@ function Sounds.playCutscene(name: string, pitchJitter: number?, pitchMult: numb
 	playNow(name, pitchJitter, pitchMult)
 end
 
-local musicIds: { string } = if Theme.MusicId ~= "" then { Theme.MusicId } else DEFAULT_MUSIC
-local surgeMusicId: string = (Theme :: any).SurgeMusicId or ""
+-- A shuffled play order over `ids`; `pos` is the last track handed out.
+type Playlist = { ids: { string }, order: { string }, pos: number }
 
--- Kick off loading of every candidate early.
+local function newPlaylist(ids: { string }): Playlist
+	return { ids = ids, order = {}, pos = 0 }
+end
+
+-- The track the playlist hands out next. A used-up order is reshuffled, with the
+-- track that just played moved off the front so it never plays twice in a row.
+local function peek(list: Playlist): string
+	if list.pos >= #list.order then
+		local last = list.order[#list.order]
+		local order = table.clone(list.ids)
+		for i = #order, 2, -1 do
+			local j = math.random(1, i)
+			order[i], order[j] = order[j], order[i]
+		end
+		if #order > 1 and order[1] == last then
+			order[1], order[#order] = order[#order], order[1]
+		end
+		list.order = order
+		list.pos = 0
+	end
+	return list.order[list.pos + 1]
+end
+
+-- Hands out the next track, skipping ones that failed to load, and starts loading
+-- the one after it. A track still loading is handed out anyway (it streams in)
+-- unless `loadedOnly`, which then returns nil and keeps it for later. Nil when
+-- every track failed.
+local function nextTrack(list: Playlist, loadedOnly: boolean?): string?
+	for _ = 1, #list.ids do
+		local id = peek(list)
+		probe(id)
+		local state = status[id]
+		if state == "failed" then
+			list.pos += 1
+		elseif state == "ok" or not loadedOnly then
+			list.pos += 1
+			probe(peek(list))
+			return id
+		else
+			return nil
+		end
+	end
+	return nil
+end
+
+local mainList = newPlaylist(if Theme.MusicId ~= "" then { Theme.MusicId } else DEFAULT_MUSIC)
+local surgeMusicId: string = (Theme :: any).SurgeMusicId or ""
+local surgeList = newPlaylist(if surgeMusicId ~= "" then { surgeMusicId } else SURGE_MUSIC)
+
+-- Kick off loading of every sound effect and the first surge track early (the
+-- music loads its tracks one ahead as it goes).
 task.defer(function()
 	for _, entry in DEFS do
 		for _, id in entry.ids do
 			probe(id)
 		end
 	end
-	for _, id in musicIds do
-		probe(id)
-	end
-	for _, id in DEFAULT_MUSIC do
-		probe(id)
-	end
-	if surgeMusicId ~= "" then
-		probe(surgeMusicId)
-	end
+	probe(peek(surgeList))
 end)
 
 local music: Sound? = nil
@@ -47311,34 +47675,37 @@ local function cancelFades()
 	table.clear(fades)
 end
 
--- The surge track and its speed: the theme's SurgeMusicId, else a loaded built-in
--- track other than `currentId`; nil when there is none (the normal track speeds up).
-local function surgeTrack(currentId: string): (string?, number)
-	if surgeMusicId ~= "" and status[surgeMusicId] == "ok" then
-		return surgeMusicId, 1
-	end
-	for _, id in DEFAULT_MUSIC do
-		if id ~= currentId and status[id] == "ok" then
-			return id, SURGE_TRACK_SPEED
-		end
-	end
-	return nil, SURGE_SOLO_SPEED
-end
-
 local function enterSurge(m: Sound)
-	local id, speed = surgeTrack(m.SoundId)
+	-- A surge track still fading out from the last surge just carries on.
+	local s = surgeMusic
+	local carryOn = s ~= nil and s.IsPlaying and status[s.SoundId] == "ok"
+	local id = if carryOn then (s :: Sound).SoundId else nextTrack(surgeList, true)
 	if not id then
 		surgeMode = "speed"
-		fade(m, { PlaybackSpeed = speed, Volume = SURGE_VOLUME })
+		fade(m, { PlaybackSpeed = SURGE_SOLO_SPEED, Volume = SURGE_VOLUME })
 		return
 	end
 	surgeMode = "track"
-	local s = surgeMusic
 	if not s then
 		local sound = Instance.new("Sound")
 		sound.Name = "MusicSurge"
-		sound.Looped = true
 		sound.Parent = SoundService
+		sound.Ended:Connect(function()
+			if surgeMode ~= "track" then
+				return
+			end
+			local nextId = nextTrack(surgeList, true)
+			if nextId then
+				sound.SoundId = nextId
+				sound.TimePosition = 0
+				sound:Play()
+			elseif music then
+				-- The next surge track is still loading: the normal track speeds up instead.
+				surgeMode = "speed"
+				music:Resume()
+				fade(music, { PlaybackSpeed = SURGE_SOLO_SPEED, Volume = SURGE_VOLUME })
+			end
+		end)
 		surgeMusic = sound
 		s = sound
 	end
@@ -47347,7 +47714,6 @@ local function enterSurge(m: Sound)
 		surgeSound:Stop()
 		surgeSound.SoundId = id
 	end
-	surgeSound.PlaybackSpeed = speed
 	surgeSound.Volume = 0
 	if not surgeSound.IsPlaying then
 		surgeSound:Play()
@@ -47389,21 +47755,34 @@ local function stopAll(m: Sound)
 	m.PlaybackSpeed = 1
 end
 
--- Called on every state update: also swaps to the next music candidate if the
--- current one turned out not to load.
+-- Called on every state update: also skips to the next track if the current one
+-- turned out not to load.
 function Sounds.updateMusic()
 	local data = State.data
 	local enabled = not data or not data.settings or data.settings.music ~= false
-	local id = chooseId(musicIds)
+	if not music and not enabled then
+		return
+	end
+	local current = if music then music.SoundId else ""
+	local id = if current ~= "" and status[current] ~= "failed" then current else nextTrack(mainList)
 	if not music then
-		if not enabled or not id then
+		if not id then
 			return
 		end
 		local sound = Instance.new("Sound")
 		sound.Name = "Music"
-		sound.Looped = true
 		sound.Volume = MUSIC_VOLUME
 		sound.Parent = SoundService
+		-- Each track plays once, then the playlist moves on (also while sped up for
+		-- a surge; under a surge track it is paused and never ends).
+		sound.Ended:Connect(function()
+			local nextId = nextTrack(mainList)
+			if nextId then
+				sound.SoundId = nextId
+				sound.TimePosition = 0
+				sound:Play()
+			end
+		end)
 		music = sound
 	end
 	local m = music :: Sound
@@ -50968,7 +51347,8 @@ function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> 
 		Name = "Base",
 		BackgroundColor3 = Kit.lip(color),
 		Size = UDim2.new(1, 0, 1, -depth),
-		Position = UDim2.fromOffset(0, depth),
+		Position = UDim2.new(0.5, 0, 0, depth),
+		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = button,
 	})
 	Kit.corner(base, radius)
@@ -50977,6 +51357,9 @@ function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> 
 		Name = "Face",
 		BackgroundColor3 = WHITE,
 		Size = UDim2.new(1, 0, 1, -depth),
+		-- Centred so Breathe's UIScale grows both sides evenly, not off the right edge.
+		Position = UDim2.fromScale(0.5, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = button,
 	})
 	Kit.corner(face, radius)
@@ -51094,7 +51477,7 @@ function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> 
 
 	local scale = scaleOf(button)
 	local function rest()
-		face.Position = UDim2.new()
+		face.Position = UDim2.fromScale(0.5, 0)
 		base.Visible = true
 	end
 	Kit.selectable(button)
@@ -51114,12 +51497,12 @@ function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> 
 	local function press()
 		if state.enabled then
 			Kit.tween(scale, 0.07, { Scale = 0.94 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-			Kit.tween(face, 0.07, { Position = UDim2.fromOffset(0, depth - 1) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			Kit.tween(face, 0.07, { Position = UDim2.new(0.5, 0, 0, depth - 1) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		end
 	end
 	local function release()
 		Kit.tween(scale, 0.28, { Scale = if state.hover then 1.03 else 1 }, Enum.EasingStyle.Back)
-		Kit.tween(face, 0.22, { Position = UDim2.new() }, Enum.EasingStyle.Back)
+		Kit.tween(face, 0.22, { Position = UDim2.fromScale(0.5, 0) }, Enum.EasingStyle.Back)
 	end
 	-- A finger tap fires MouseEnter but not always MouseLeave, so touch never hovers
 	-- (a stuck hover would leave the button enlarged and lit after the tap).
@@ -56425,7 +56808,8 @@ function Popups.offline(data: { [string]: any })
 			Color = C.Gold,
 			Breathe = true,
 			Size = UDim2.new(1, -40, 0, 58),
-			Position = UDim2.new(0, 20, 1, -76),
+			Position = UDim2.new(0.5, 0, 1, -18),
+			AnchorPoint = Vector2.new(0.5, 1),
 		}, close)
 		go:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
@@ -57178,7 +57562,8 @@ function Popups.starter(data: { [string]: any })
 			Color = C.Gold,
 			Breathe = true,
 			Size = UDim2.new(1, -40, 0, 58),
-			Position = UDim2.new(0, 20, 1, -76),
+			Position = UDim2.new(0.5, 0, 1, -18),
+			AnchorPoint = Vector2.new(0.5, 1),
 		}, close)
 		go:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
