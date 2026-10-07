@@ -1,0 +1,279 @@
+{
+ "axes": "Roblox studs, size = [X, Y up, Z]; mesh origin = base centre; front = -Z (Blender -Y)",
+ "props/Keycap": {
+  "size": [
+   8.0,
+   2.5,
+   8.0
+  ],
+  "tris": 576
+ },
+ "props/KeycapWide": {
+  "size": [
+   24.0,
+   2.5,
+   8.0
+  ],
+  "tris": 576
+ },
+ "props/CardioTreadmill": {
+  "size": [
+   6.18,
+   6.281,
+   11.829
+  ],
+  "tris": 2352,
+  "belt": {
+   "topY": 1.4,
+   "chevronTopY": 1.435,
+   "x": [
+    -2.15,
+    2.15
+   ],
+   "z": [
+    -3.236,
+    5.364
+   ]
+  },
+  "note": "runner faces -Z; console + handrails at the -Z end"
+ },
+ "cardio/Cardio": {
+  "file": "art/out/cardio/Cardio.png",
+  "px": 512,
+  "post": "art/blender/cardio/icon_post.py"
+ },
+ "group": "art/out/cardio/group.png",
+ "keys": {
+  "script": "art/blender/cardio/keys.py",
+  "pitch": 4.0,
+  "letter": "raised 0.06 above the dish, Arial Black, ~2.2 studs tall (KeySpace: small SPACE legend, same orientation); baked near-black, cap near-white (tint with MeshPart.Color, Material SmoothPlastic)",
+  "orientation": "unrotated MeshPart: letter up = mesh +X, letter right = mesh +Z, read from above; a runner looking along +X reads letters upright (Blender: up = -X, right = +Y; roblox = (-bx, bz, by))",
+  "sheet": "art/out/cardio/keys_sheet.png",
+  "meshes": {
+   "props/Key_A": {
+    "size": [
+     3.9,
+     1.65,
+     3.9
+    ],
+    "tris": 473
+   },
+   "props/Key_B": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 631
+   },
+   "props/Key_C": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 615
+   },
+   "props/Key_D": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 575
+   },
+   "props/Key_E": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 474
+   },
+   "props/Key_F": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 468
+   },
+   "props/Key_G": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 627
+   },
+   "props/Key_H": {
+    "size": [
+     3.9,
+     1.648,
+     3.9
+    ],
+    "tris": 474
+   },
+   "props/Key_I": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 450
+   },
+   "props/Key_J": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 549
+   },
+   "props/Key_K": {
+    "size": [
+     3.9,
+     1.65,
+     3.9
+    ],
+    "tris": 474
+   },
+   "props/Key_L": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 456
+   },
+   "props/Key_M": {
+    "size": [
+     3.9,
+     1.651,
+     3.9
+    ],
+    "tris": 477
+   },
+   "props/Key_N": {
+    "size": [
+     3.9,
+     1.648,
+     3.9
+    ],
+    "tris": 468
+   },
+   "props/Key_O": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 602
+   },
+   "props/Key_P": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 536
+   },
+   "props/Key_Q": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 662
+   },
+   "props/Key_R": {
+    "size": [
+     3.9,
+     1.648,
+     3.9
+    ],
+    "tris": 617
+   },
+   "props/Key_S": {
+    "size": [
+     3.9,
+     1.647,
+     3.9
+    ],
+    "tris": 687
+   },
+   "props/Key_T": {
+    "size": [
+     3.9,
+     1.648,
+     3.9
+    ],
+    "tris": 462
+   },
+   "props/Key_U": {
+    "size": [
+     3.9,
+     1.648,
+     3.9
+    ],
+    "tris": 573
+   },
+   "props/Key_V": {
+    "size": [
+     3.9,
+     1.65,
+     3.9
+    ],
+    "tris": 459
+   },
+   "props/Key_W": {
+    "size": [
+     3.9,
+     1.655,
+     3.9
+    ],
+    "tris": 477
+   },
+   "props/Key_X": {
+    "size": [
+     3.9,
+     1.65,
+     3.9
+    ],
+    "tris": 474
+   },
+   "props/Key_Y": {
+    "size": [
+     3.9,
+     1.65,
+     3.9
+    ],
+    "tris": 465
+   },
+   "props/Key_Z": {
+    "size": [
+     3.9,
+     1.648,
+     3.9
+    ],
+    "tris": 468
+   },
+   "props/KeySpace": {
+    "size": [
+     15.9,
+     1.656,
+     3.9
+    ],
+    "tris": 1025
+   },
+   "props/KeyBlank": {
+    "size": [
+     3.9,
+     1.6,
+     3.9
+    ],
+    "tris": 440
+   }
+  }
+ }
+}

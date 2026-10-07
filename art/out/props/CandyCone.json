@@ -1,0 +1,15 @@
+{
+ "kind": "CandyCone",
+ "tris": 2128,
+ "size": [
+  6.004,
+  12.301,
+  5.737
+ ],
+ "offset": [
+  0.0,
+  0.0,
+  -0.065
+ ],
+ "axes": "Roblox studs: size = [X, Y up, Z]; offset = mesh base centre in the fallback prop frame"
+}

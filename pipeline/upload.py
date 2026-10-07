@@ -33,6 +33,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -119,6 +120,14 @@ def measure_rbxm(rel):
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
+def patch_key_collision(rel):
+    """CollisionFidelity = Box on a downloaded CARDIO keycap model (tools/patch_key_collision.luau)."""
+    r = subprocess.run(["lune", "run", os.path.join(GAME_DIR, "tools", "patch_key_collision.luau"), rel],
+                       capture_output=True, text=True, timeout=120, cwd=GAME_DIR)
+    if r.returncode != 0:
+        raise RuntimeError(f"patch {rel}: {(r.stdout + r.stderr).strip()[-400:]}")
+
+
 def status(item, pin):
     """'upload' | 'poll' | 'ok' | 'missing' (file absent, pin kept) | 'error' (file absent, no pin)."""
     path = os.path.join(GAME_DIR, item["file"])
@@ -142,6 +151,8 @@ def upload_one(item, route):
         want = os.path.join("assets", "models", safe + ".rbxm")
         if rel != want:  # identical bytes pinned under another name: keep a copy under this key's name too
             assets.atomic_write(os.path.join(GAME_DIR, want), open(os.path.join(GAME_DIR, rel), "rb").read())
+        if re.match(r"^props__Key(_[A-Z]|Space|Blank)$", safe):  # CARDIO keycaps: Box collision
+            patch_key_collision(want)
         m = measure_rbxm(want)
         pin.update(rbxm=want, meshId=m.get("meshId"), size=m.get("size"), meshParts=m.get("meshParts"))
     return pin

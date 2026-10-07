@@ -1,0 +1,15 @@
+{
+ "kind": "CandyCottonCloud",
+ "tris": 2352,
+ "size": [
+  12.283,
+  5.698,
+  6.319
+ ],
+ "offset": [
+  -0.241,
+  0.666,
+  0.252
+ ],
+ "axes": "Roblox studs: size = [X, Y up, Z]; offset = mesh base centre in the fallback prop frame"
+}

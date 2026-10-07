@@ -32,6 +32,14 @@
       "source": "art/out/brand/TitleCard.png",
       "updatedAt": "2026-10-06T11:53:02Z"
     },
+    "cardio/Cardio": {
+      "assetId": "125742457379991",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "2042b5338df8572f9fa917513ab2f2502965ec627d0379a92a1e6f16ad79448c",
+      "source": "art/out/cardio/Cardio.png",
+      "updatedAt": "2026-10-07T16:01:10Z"
+    },
     "faces/Awe": {
       "assetId": "78333652861995",
       "kind": "Image",
@@ -272,6 +280,246 @@
       "source": "art/out/props/Bench.fbx",
       "updatedAt": "2026-10-06T11:53:34Z"
     },
+    "props/CandyBar": {
+      "assetId": "102110661362065",
+      "kind": "Model",
+      "meshId": "rbxassetid://114322325129783",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyBar.rbxm",
+      "sha256": "90bea3a2f2a42d1b78437ed6f4752290ac02cf7123aaf76d558dbbd1d25e5247",
+      "size": [
+        6.25,
+        9.8,
+        2.035
+      ],
+      "source": "art/out/props/CandyBar.fbx",
+      "updatedAt": "2026-10-07T16:54:56Z"
+    },
+    "props/CandyCane": {
+      "assetId": "121813511879632",
+      "kind": "Model",
+      "meshId": "rbxassetid://73050189316981",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyCane.rbxm",
+      "sha256": "ee321554da8ffbb2ff2100b9bd5b00bd92ddbc9f6fccbe6a27e5b7dc7931b642",
+      "size": [
+        4.34,
+        9.99,
+        1.24
+      ],
+      "source": "art/out/props/CandyCane.fbx",
+      "updatedAt": "2026-10-07T16:55:05Z"
+    },
+    "props/CandyCone": {
+      "assetId": "135080171022425",
+      "kind": "Model",
+      "meshId": "rbxassetid://75177248914027",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyCone.rbxm",
+      "sha256": "c490303c5d292d760335fd4ef2b6fd2d9e36369f66c39aece574791c28b9fc53",
+      "size": [
+        6.004,
+        12.301,
+        5.737
+      ],
+      "source": "art/out/props/CandyCone.fbx",
+      "updatedAt": "2026-10-07T16:54:45Z"
+    },
+    "props/CandyCookie": {
+      "assetId": "135859812612224",
+      "kind": "Model",
+      "meshId": "rbxassetid://109764379137544",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyCookie.rbxm",
+      "sha256": "25553adc59d582545e58f3047b94b8e6c99b278564b5ad690d012f7bc1abd973",
+      "size": [
+        8.583,
+        8.417,
+        2.964
+      ],
+      "source": "art/out/props/CandyCookie.fbx",
+      "updatedAt": "2026-10-07T16:54:16Z"
+    },
+    "props/CandyCottonCloud": {
+      "assetId": "82804733999391",
+      "kind": "Model",
+      "meshId": "rbxassetid://87737994922403",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyCottonCloud.rbxm",
+      "sha256": "b3f58454e660edbbc6b0a9a647a3739d5a2fe04cb46879be43fb473a14068828",
+      "size": [
+        12.283,
+        5.698,
+        6.319
+      ],
+      "source": "art/out/props/CandyCottonCloud.fbx",
+      "updatedAt": "2026-10-07T16:56:25Z"
+    },
+    "props/CandyCupcake": {
+      "assetId": "84793501675605",
+      "kind": "Model",
+      "meshId": "rbxassetid://102586600019205",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyCupcake.rbxm",
+      "sha256": "38dc861cac826fb090a7903ad0602b217e6689e2c8d5c131ccec00c10de1dd04",
+      "size": [
+        6.8,
+        10.086,
+        6.817
+      ],
+      "source": "art/out/props/CandyCupcake.fbx",
+      "updatedAt": "2026-10-07T16:54:02Z"
+    },
+    "props/CandyDonut": {
+      "assetId": "124738860818952",
+      "kind": "Model",
+      "meshId": "rbxassetid://121927578509399",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyDonut.rbxm",
+      "sha256": "d427538b351427308398446b88550cb2ba3681f55b338fad5c504dd80aa5d865",
+      "size": [
+        9.686,
+        5.897,
+        9.091
+      ],
+      "source": "art/out/props/CandyDonut.fbx",
+      "updatedAt": "2026-10-07T16:53:44Z"
+    },
+    "props/CandyGummyBear": {
+      "assetId": "95918860756127",
+      "kind": "Model",
+      "meshId": "rbxassetid://112435510685553",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyGummyBear.rbxm",
+      "sha256": "80d7aac6a86e42d5c49b14d769aa0085717426930191c3a3edb5590f11c4cceb",
+      "size": [
+        5.955,
+        8.63,
+        3.958
+      ],
+      "source": "art/out/props/CandyGummyBear.fbx",
+      "updatedAt": "2026-10-07T16:55:44Z"
+    },
+    "props/CandyIceCube": {
+      "assetId": "119687391751130",
+      "kind": "Model",
+      "meshId": "rbxassetid://121657093328595",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyIceCube.rbxm",
+      "sha256": "b9eb5d36e2be5f5bfd74ddb30ef306d3b41b98dedc1a7764e6814d6abda60325",
+      "size": [
+        5.75,
+        10.4,
+        6.114
+      ],
+      "source": "art/out/props/CandyIceCube.fbx",
+      "updatedAt": "2026-10-07T16:56:38Z"
+    },
+    "props/CandyLollipop": {
+      "assetId": "81692873007300",
+      "kind": "Model",
+      "meshId": "rbxassetid://93291792210531",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyLollipop.rbxm",
+      "sha256": "fe605aecf8ca8501f4bcad79e96602c3a80f38611f8ecb84c3dded63eaa61b6a",
+      "size": [
+        6.8,
+        12.34,
+        1.44
+      ],
+      "source": "art/out/props/CandyLollipop.fbx",
+      "updatedAt": "2026-10-07T16:55:29Z"
+    },
+    "props/CandyMacaron": {
+      "assetId": "124982169559628",
+      "kind": "Model",
+      "meshId": "rbxassetid://139053846286941",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyMacaron.rbxm",
+      "sha256": "1f2cc3a92906046fb29d41ee390232e966cc7bcc3a0989ce41aa673164cbbf8b",
+      "size": [
+        7.523,
+        5.588,
+        7.779
+      ],
+      "source": "art/out/props/CandyMacaron.fbx",
+      "updatedAt": "2026-10-07T16:55:54Z"
+    },
+    "props/CandyStrawberry": {
+      "assetId": "106941294527500",
+      "kind": "Model",
+      "meshId": "rbxassetid://70628576919443",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyStrawberry.rbxm",
+      "sha256": "0d77b8c5a24970739ac5f4c674660bf9c1dc31932d1131f703e5ecff3e46279e",
+      "size": [
+        6.422,
+        8.963,
+        6.373
+      ],
+      "source": "art/out/props/CandyStrawberry.fbx",
+      "updatedAt": "2026-10-07T16:53:33Z"
+    },
+    "props/CandySwirl": {
+      "assetId": "121055108986719",
+      "kind": "Model",
+      "meshId": "rbxassetid://109922324732759",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandySwirl.rbxm",
+      "sha256": "268c9092c12ef4c0c8d153f688b98bb198c34f0c12036020df494cfa7af1cb17",
+      "size": [
+        8.4,
+        8.4,
+        2.83
+      ],
+      "source": "art/out/props/CandySwirl.fbx",
+      "updatedAt": "2026-10-07T16:54:34Z"
+    },
+    "props/CandyTruffle": {
+      "assetId": "72786083085471",
+      "kind": "Model",
+      "meshId": "rbxassetid://134734992056010",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CandyTruffle.rbxm",
+      "sha256": "185c0bc407a26e1971420b128e71be8bcf1ab2c69dce1369fedf15eaed9ce51c",
+      "size": [
+        7.488,
+        9.315,
+        7.488
+      ],
+      "source": "art/out/props/CandyTruffle.fbx",
+      "updatedAt": "2026-10-07T16:56:11Z"
+    },
+    "props/CardioTreadmill": {
+      "assetId": "107524496834337",
+      "kind": "Model",
+      "meshId": "rbxassetid://128241207981823",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__CardioTreadmill.rbxm",
+      "sha256": "1bdc18d50655992cfa49444895ecb883f83518cd1e9280e93fd6240771ce16ac",
+      "size": [
+        6.18,
+        6.281,
+        11.829
+      ],
+      "source": "art/out/props/CardioTreadmill.fbx",
+      "updatedAt": "2026-10-07T16:00:57Z"
+    },
     "props/Converter": {
       "assetId": "90966316774560",
       "kind": "Model",
@@ -447,6 +695,486 @@
       ],
       "source": "art/out/props/Kettlebell.fbx",
       "updatedAt": "2026-10-06T11:55:11Z"
+    },
+    "props/KeyBlank": {
+      "assetId": "109182174940862",
+      "kind": "Model",
+      "meshId": "rbxassetid://74540370916673",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__KeyBlank.rbxm",
+      "sha256": "5b840a5434f094738b8cb7b193783d3ded28538814456ad0d4fa51afbd03297f",
+      "size": [
+        3.9,
+        1.6,
+        3.9
+      ],
+      "source": "art/out/props/KeyBlank.fbx",
+      "updatedAt": "2026-10-07T16:34:28Z"
+    },
+    "props/KeySpace": {
+      "assetId": "93969977594742",
+      "kind": "Model",
+      "meshId": "rbxassetid://84980205793846",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__KeySpace.rbxm",
+      "sha256": "34c8d2801de5ed8d851d933ce573fc580235038fc69465d48cbb0a754c3a15f3",
+      "size": [
+        15.9,
+        1.656,
+        3.9
+      ],
+      "source": "art/out/props/KeySpace.fbx",
+      "updatedAt": "2026-10-07T16:34:19Z"
+    },
+    "props/Key_A": {
+      "assetId": "76320597688356",
+      "kind": "Model",
+      "meshId": "rbxassetid://129963724234407",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_A.rbxm",
+      "sha256": "43429e634472422bec3bbefa36e829321cb011c2163780696bc50fdd158b6fb5",
+      "size": [
+        3.9,
+        1.65,
+        3.9
+      ],
+      "source": "art/out/props/Key_A.fbx",
+      "updatedAt": "2026-10-07T16:29:26Z"
+    },
+    "props/Key_B": {
+      "assetId": "76495016975595",
+      "kind": "Model",
+      "meshId": "rbxassetid://80954526999811",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_B.rbxm",
+      "sha256": "bc9870fc177527188360e887eab7c5cfb3f636e74b5999fb31b958756239bb7a",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_B.fbx",
+      "updatedAt": "2026-10-07T16:29:38Z"
+    },
+    "props/Key_C": {
+      "assetId": "135644534527571",
+      "kind": "Model",
+      "meshId": "rbxassetid://101412471452156",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_C.rbxm",
+      "sha256": "09d31d920b3274ed9f60913bdce9977ff419e7581e17598fb62115f6baa9c0b6",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_C.fbx",
+      "updatedAt": "2026-10-07T16:29:45Z"
+    },
+    "props/Key_D": {
+      "assetId": "72574645645832",
+      "kind": "Model",
+      "meshId": "rbxassetid://120899204161641",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_D.rbxm",
+      "sha256": "4bcf843ec30df46b7643654875d1290f75186a1b4bff4458ad66adef3c30ee22",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_D.fbx",
+      "updatedAt": "2026-10-07T16:29:59Z"
+    },
+    "props/Key_E": {
+      "assetId": "133945289139722",
+      "kind": "Model",
+      "meshId": "rbxassetid://139466998559312",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_E.rbxm",
+      "sha256": "9e65f93498df10e46fe18e9079a694b0e491f599a23097ef19da1fad8e5bb8f6",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_E.fbx",
+      "updatedAt": "2026-10-07T16:30:05Z"
+    },
+    "props/Key_F": {
+      "assetId": "132059971222054",
+      "kind": "Model",
+      "meshId": "rbxassetid://115448065409258",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_F.rbxm",
+      "sha256": "8698050b2f368fcb77bf26e895e6ddfa915b2ca9d3475ab720802018784e5821",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_F.fbx",
+      "updatedAt": "2026-10-07T16:30:19Z"
+    },
+    "props/Key_G": {
+      "assetId": "95998582355910",
+      "kind": "Model",
+      "meshId": "rbxassetid://97081700835746",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_G.rbxm",
+      "sha256": "00e43eadcb89756333ee91ec7ecd4be3eabc89886299d7ed1713b8508f4a25d6",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_G.fbx",
+      "updatedAt": "2026-10-07T16:30:28Z"
+    },
+    "props/Key_H": {
+      "assetId": "80862619552804",
+      "kind": "Model",
+      "meshId": "rbxassetid://106597306561188",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_H.rbxm",
+      "sha256": "24a8ca437fd10ac94a52a074ba2ff2613e866457ce004ef1880376587b675f75",
+      "size": [
+        3.9,
+        1.648,
+        3.9
+      ],
+      "source": "art/out/props/Key_H.fbx",
+      "updatedAt": "2026-10-07T16:30:37Z"
+    },
+    "props/Key_I": {
+      "assetId": "107453498601124",
+      "kind": "Model",
+      "meshId": "rbxassetid://80990103096702",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_I.rbxm",
+      "sha256": "42a793d8fb5c9ca1e06d2f0553ac2efc32d0bec3cccea62b2b6fa8b483bd3efc",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_I.fbx",
+      "updatedAt": "2026-10-07T16:30:48Z"
+    },
+    "props/Key_J": {
+      "assetId": "122793774623973",
+      "kind": "Model",
+      "meshId": "rbxassetid://86722893679163",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_J.rbxm",
+      "sha256": "abc479a117cff9cd863a88f1ede4a643f2412f9391c51d174405d082dfa11265",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_J.fbx",
+      "updatedAt": "2026-10-07T16:30:57Z"
+    },
+    "props/Key_K": {
+      "assetId": "74692009514559",
+      "kind": "Model",
+      "meshId": "rbxassetid://101352697037431",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_K.rbxm",
+      "sha256": "f240728798ee605c0e8c9351ae84ca99b52e6188e47e7f4514a954f2416489f6",
+      "size": [
+        3.9,
+        1.65,
+        3.9
+      ],
+      "source": "art/out/props/Key_K.fbx",
+      "updatedAt": "2026-10-07T16:31:05Z"
+    },
+    "props/Key_L": {
+      "assetId": "139743082744340",
+      "kind": "Model",
+      "meshId": "rbxassetid://122575684382637",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_L.rbxm",
+      "sha256": "26e66fe26878ae327e396d3e01132ecb91ce505b0f6a9cef0eeff579d6d4a27d",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_L.fbx",
+      "updatedAt": "2026-10-07T16:31:17Z"
+    },
+    "props/Key_M": {
+      "assetId": "74583391176495",
+      "kind": "Model",
+      "meshId": "rbxassetid://111746420505018",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_M.rbxm",
+      "sha256": "dcc3631f5397ce07476c12206414b01e55b45f551be9dda760bc98e18cc6b072",
+      "size": [
+        3.9,
+        1.651,
+        3.9
+      ],
+      "source": "art/out/props/Key_M.fbx",
+      "updatedAt": "2026-10-07T16:31:28Z"
+    },
+    "props/Key_N": {
+      "assetId": "107129130392997",
+      "kind": "Model",
+      "meshId": "rbxassetid://99744343229480",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_N.rbxm",
+      "sha256": "8114bae68827ee93d694f7f8db4f53b1491a16f06f62b35db4dd957833526481",
+      "size": [
+        3.9,
+        1.648,
+        3.9
+      ],
+      "source": "art/out/props/Key_N.fbx",
+      "updatedAt": "2026-10-07T16:31:44Z"
+    },
+    "props/Key_O": {
+      "assetId": "79383033360116",
+      "kind": "Model",
+      "meshId": "rbxassetid://117079871709858",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_O.rbxm",
+      "sha256": "75cf22267e1e3940ced3cda9e59763b1471d668d083b0984e8d16cde8470fcde",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_O.fbx",
+      "updatedAt": "2026-10-07T16:32:00Z"
+    },
+    "props/Key_P": {
+      "assetId": "76125327569785",
+      "kind": "Model",
+      "meshId": "rbxassetid://107926780153675",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_P.rbxm",
+      "sha256": "75e04c5da6ddf139bfee4c0df0c1c761135cc5ed0a4261b91246d37a84843f7d",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_P.fbx",
+      "updatedAt": "2026-10-07T16:32:09Z"
+    },
+    "props/Key_Q": {
+      "assetId": "77631282356814",
+      "kind": "Model",
+      "meshId": "rbxassetid://105246986158848",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_Q.rbxm",
+      "sha256": "a016bb5ed1dc625b038b6010620d46af5038919a60218e85e4566f58f0632abc",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_Q.fbx",
+      "updatedAt": "2026-10-07T16:32:19Z"
+    },
+    "props/Key_R": {
+      "assetId": "137281179495948",
+      "kind": "Model",
+      "meshId": "rbxassetid://130449769868697",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_R.rbxm",
+      "sha256": "2bd9d79254330f134fdb3b99ca50502689fdb406c7effe0216ae855a3b7ed413",
+      "size": [
+        3.9,
+        1.648,
+        3.9
+      ],
+      "source": "art/out/props/Key_R.fbx",
+      "updatedAt": "2026-10-07T16:32:38Z"
+    },
+    "props/Key_S": {
+      "assetId": "140569827194967",
+      "kind": "Model",
+      "meshId": "rbxassetid://97154690827215",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_S.rbxm",
+      "sha256": "1e2431c989bacd5d3ac8db36631c7fee92568b67549e4608cb516208776800aa",
+      "size": [
+        3.9,
+        1.647,
+        3.9
+      ],
+      "source": "art/out/props/Key_S.fbx",
+      "updatedAt": "2026-10-07T16:32:54Z"
+    },
+    "props/Key_T": {
+      "assetId": "111790548115568",
+      "kind": "Model",
+      "meshId": "rbxassetid://102219020618103",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_T.rbxm",
+      "sha256": "c93d3ebac9b7ad4fa84db3f2f7970fc1705d8939ad9de3ec2e6acada6b4d74eb",
+      "size": [
+        3.9,
+        1.648,
+        3.9
+      ],
+      "source": "art/out/props/Key_T.fbx",
+      "updatedAt": "2026-10-07T16:33:06Z"
+    },
+    "props/Key_U": {
+      "assetId": "136560979367682",
+      "kind": "Model",
+      "meshId": "rbxassetid://123324860991328",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_U.rbxm",
+      "sha256": "fdb9db689ab86b6ed1fcee792e276db43bbde41c4ca420453e6f7e62cadd3a78",
+      "size": [
+        3.9,
+        1.648,
+        3.9
+      ],
+      "source": "art/out/props/Key_U.fbx",
+      "updatedAt": "2026-10-07T16:33:18Z"
+    },
+    "props/Key_V": {
+      "assetId": "113505480009558",
+      "kind": "Model",
+      "meshId": "rbxassetid://72115986352544",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_V.rbxm",
+      "sha256": "d87f9c7ced2a1fb278a979a124f3f112f04f2a743036f7315dedad788c6f7580",
+      "size": [
+        3.9,
+        1.65,
+        3.9
+      ],
+      "source": "art/out/props/Key_V.fbx",
+      "updatedAt": "2026-10-07T16:33:25Z"
+    },
+    "props/Key_W": {
+      "assetId": "124385272397700",
+      "kind": "Model",
+      "meshId": "rbxassetid://78580672313051",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_W.rbxm",
+      "sha256": "3cafb5d29df697f5442ad5e005c91656af337133d8a3ff7b890121a96a256017",
+      "size": [
+        3.9,
+        1.655,
+        3.9
+      ],
+      "source": "art/out/props/Key_W.fbx",
+      "updatedAt": "2026-10-07T16:33:37Z"
+    },
+    "props/Key_X": {
+      "assetId": "139973395861658",
+      "kind": "Model",
+      "meshId": "rbxassetid://119456353166482",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_X.rbxm",
+      "sha256": "7551a4e013850edc183b49e55353dd1d8806826a91931618462c0fe2e57628ef",
+      "size": [
+        3.9,
+        1.65,
+        3.9
+      ],
+      "source": "art/out/props/Key_X.fbx",
+      "updatedAt": "2026-10-07T16:33:48Z"
+    },
+    "props/Key_Y": {
+      "assetId": "109416708094057",
+      "kind": "Model",
+      "meshId": "rbxassetid://90414251240644",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_Y.rbxm",
+      "sha256": "7289202bbfa62c7fa86d647909a1cf6603d24e41ff46712760cd133b40e3760a",
+      "size": [
+        3.9,
+        1.65,
+        3.9
+      ],
+      "source": "art/out/props/Key_Y.fbx",
+      "updatedAt": "2026-10-07T16:34:00Z"
+    },
+    "props/Key_Z": {
+      "assetId": "102820608128516",
+      "kind": "Model",
+      "meshId": "rbxassetid://134591860067552",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Key_Z.rbxm",
+      "sha256": "f6beac7922611a327a28946b0eceee2324a3e5b873dc63cfb5ca886a76e6f07f",
+      "size": [
+        3.9,
+        1.648,
+        3.9
+      ],
+      "source": "art/out/props/Key_Z.fbx",
+      "updatedAt": "2026-10-07T16:34:08Z"
+    },
+    "props/Keycap": {
+      "assetId": "80816077445457",
+      "kind": "Model",
+      "meshId": "rbxassetid://92430612601704",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__Keycap.rbxm",
+      "sha256": "fab20f7c917d4349885bbde8a61a074f6fbe392d50e0ed1d75ffed8def5de2e5",
+      "size": [
+        8,
+        2.5,
+        8
+      ],
+      "source": "art/out/props/Keycap.fbx",
+      "updatedAt": "2026-10-07T16:00:41Z"
+    },
+    "props/KeycapWide": {
+      "assetId": "90780340946933",
+      "kind": "Model",
+      "meshId": "rbxassetid://133348892081892",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__KeycapWide.rbxm",
+      "sha256": "14ffe9e4513196ab8f5249d6fd4b500c6977814596fab740ceecb245bee085a8",
+      "size": [
+        24,
+        2.5,
+        8
+      ],
+      "source": "art/out/props/KeycapWide.fbx",
+      "updatedAt": "2026-10-07T16:00:47Z"
     },
     "props/OrbBall": {
       "assetId": "118463801670154",

@@ -1,0 +1,10 @@
+{
+ "kind": "KeySpace",
+ "tris": 1025,
+ "size": [
+  15.9,
+  1.656,
+  3.9
+ ],
+ "axes": "Roblox studs: size = [X, Y up, Z]; letter up = mesh +X, letter right = mesh +Z"
+}

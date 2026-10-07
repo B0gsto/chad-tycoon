@@ -102,6 +102,10 @@ pinned assets from the local files instead:
 - The creator comes from `deploy/target.json`.
 - Each Model is downloaded back as `assets/models/<domain>__<name>.rbxm`. This is the only file that carries the
   MeshPart collision data. The run then measures it, and the pin records `meshId` and `size`.
+- CARDIO keycaps (`props/Key_A`..`Key_Z`, `props/KeySpace`, `props/KeyBlank`) need `CollisionFidelity = Box`,
+  which scripts can't set at runtime. `tools/patch_key_collision.luau` (Lune) writes Box into their `.rbxm` files,
+  and `pipeline/upload.py` runs it on each keycap it downloads. After replacing those files any other way, re-run
+  `lune run tools/patch_key_collision.luau`; `--check` only verifies (exit 1 if a keycap isn't Box).
 
 ## Use in game code
 

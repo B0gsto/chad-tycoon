@@ -1,0 +1,15 @@
+{
+ "kind": "CandySwirl",
+ "tris": 2000,
+ "size": [
+  8.4,
+  8.4,
+  2.83
+ ],
+ "offset": [
+  0.0,
+  -4.2,
+  -0.065
+ ],
+ "axes": "Roblox studs: size = [X, Y up, Z]; offset = mesh base centre in the fallback prop frame"
+}

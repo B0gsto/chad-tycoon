@@ -1,0 +1,15 @@
+{
+ "kind": "Keycap",
+ "tris": 576,
+ "size": [
+  8.0,
+  2.5,
+  8.0
+ ],
+ "offset": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "axes": "Roblox studs: size = [X, Y up, Z]; offset = mesh base centre in the fallback prop frame"
+}

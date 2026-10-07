@@ -3289,6 +3289,10 @@ end)
 
 -- Mog Test rules (tests/mog.luau).
 require("./mog")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
+-- Cardio keyboard runner rules and layout (tests/cardio.luau).
+require("./cardio")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
+-- Cardio chaser Chads (tests/cardio_chase.luau).
+require("./cardio_chase")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
 
 test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", function()
 	(_G :: any).SIMULATE_AS_LIBRARY = true

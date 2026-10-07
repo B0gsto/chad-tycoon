@@ -67,6 +67,10 @@ export type Profile = {
 	-- Parkour per level (dense, PARKOUR_LEVELS long, 0 = never): best seconds and finishes.
 	-- modes.parkour keeps the shared reward cooldown and mirrors level 1 for the old UI.
 	parkour: { best: { number }, clears: { number } },
+	-- Cardio (keyboard runner): Speed earned (permanent, never goes down), highest safe zone
+	-- reached (0..CARDIO_STAGES), treadmill level (0..CARDIO_TREADMILL_MAX), safe-zone arrivals
+	-- and the player's own max WalkSpeed (0 = none, else 16..CARDIO_WALK_CAP).
+	cardio: { speed: number, bestStage: number, treadmill: number, clears: number, speedCap: number },
 	modes: {
 		parkour: { best: number, clears: number, lastRewardAt: number },
 		mog: {
@@ -77,12 +81,20 @@ export type Profile = {
 			pvpWins: number,
 			pvpPlayed: number,
 		},
+		-- best mirrors cardio.bestStage, clears cardio.clears; lastRewardAt is the cooldown.
+		cardio: { best: number, clears: number, lastRewardAt: number },
 	},
 }
 
 -- Must equal Modes.Course.LEVEL_COUNT (checked by the unit tests).
 local PARKOUR_LEVELS = 10
 DataService.PARKOUR_LEVELS = PARKOUR_LEVELS
+-- Must equal Modes.CardioRules.STAGE_COUNT / TREADMILL_MAX.
+local CARDIO_STAGES = 10
+local CARDIO_TREADMILL_MAX = 10
+-- Must equal Modes.CardioRules.BASE_WALK / WALK_CAP.
+local CARDIO_WALK_MIN = 16
+local CARDIO_WALK_CAP = 120
 
 local function zeros(n: number): { number }
 	local t = table.create(n, 0)
@@ -128,9 +140,11 @@ function DataService.defaultProfile(): Profile
 		onboarding = 0,
 		badges = {},
 		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS) },
+		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0 },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
 			mog = { best = 0, rivals = 0, clears = 0, lastRewardAt = 0, pvpWins = 0, pvpPlayed = 0 },
+			cardio = { best = 0, clears = 0, lastRewardAt = 0 },
 		},
 	}
 end
@@ -234,6 +248,17 @@ local function reconcile(data: any): Profile
 		end
 		data.parkour[key] = fixed
 	end
+	for key, value in default.cardio :: any do
+		local v = data.cardio[key]
+		if type(v) ~= "number" or v ~= v or v < 0 or v == math.huge then
+			data.cardio[key] = value
+		end
+	end
+	data.cardio.bestStage = math.clamp(math.floor(data.cardio.bestStage), 0, CARDIO_STAGES)
+	data.cardio.treadmill = math.clamp(math.floor(data.cardio.treadmill), 0, CARDIO_TREADMILL_MAX)
+	data.cardio.clears = math.floor(data.cardio.clears)
+	local cap = math.floor(data.cardio.speedCap + 0.5)
+	data.cardio.speedCap = if cap < CARDIO_WALK_MIN then 0 else math.min(cap, CARDIO_WALK_CAP)
 	for key, value in data.badges do
 		if type(key) ~= "string" or type(value) ~= "boolean" then
 			data.badges[key] = nil

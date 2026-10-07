@@ -82,6 +82,9 @@ local UNLOCK_STINGER = lib(121068318613723)
 local CEREMONY_COMMON = lib(75797999851350)
 local CEREMONY_EPIC = lib(100965222685530)
 local CEREMONY_LEGENDARY = lib(85196226744574)
+-- CARDIO step sound: "keyboard click" by Telemest (public Creator Store audio, one
+-- stroke in a 0.65 s clip), picked by the owner on 2026-10-07.
+local KEY_CLICK = lib(96591611478915)
 
 -- Upbeat, loopable APM library tracks (licensed for every experience). Used
 -- when the theme leaves MusicId empty.
@@ -140,6 +143,8 @@ local DEFS: { [string]: Def } = {
 	SurgeStart = { ids = { FRENZY_START, UNLOCK_STINGER }, volume = 0.7 },
 	CrateShake = { ids = { CRACKLE_B, CRACKLE_A }, volume = 0.55 },
 	CrateBurst = { ids = { UNLOCK_STINGER, CEREMONY_COMMON }, volume = 0.6 },
+	-- CARDIO keyboard floor: one key press per step (callers add pitch jitter for variety)
+	KeyClick = { ids = { KEY_CLICK, BUNDLED_TICK }, volume = 0.85, gap = 0.05 },
 }
 
 local PRELOAD_TIMEOUT = 6
@@ -299,6 +304,14 @@ end)
 
 local music: Sound? = nil
 
+-- Every music track plays through this group, so a mode can turn the music down
+-- (Sounds.setMusicDuck) without fighting the per-track cross-fades.
+local musicGroup = Instance.new("SoundGroup")
+musicGroup.Name = "MusicGroup"
+musicGroup.Volume = 1
+musicGroup.Parent = SoundService
+local duckTween: Tween? = nil
+
 -- Music mood ("surge" or nil) and how the surge music is playing right now:
 -- "track" = a second Sound (surgeMusic) with the normal track paused under it,
 -- "speed" = the normal track itself sped up; nil = normal music.
@@ -354,6 +367,7 @@ local function enterSurge(m: Sound)
 		local sound = Instance.new("Sound")
 		sound.Name = "MusicSurge"
 		sound.Looped = true
+		sound.SoundGroup = musicGroup
 		sound.Parent = SoundService
 		surgeMusic = sound
 		s = sound
@@ -419,6 +433,7 @@ function Sounds.updateMusic()
 		sound.Name = "Music"
 		sound.Looped = true
 		sound.Volume = MUSIC_VOLUME
+		sound.SoundGroup = musicGroup
 		sound.Parent = SoundService
 		music = sound
 	end
@@ -460,5 +475,16 @@ Players.LocalPlayer:GetAttributeChangedSignal("IntroPlaying"):Connect(function()
 		Sounds.updateMusic()
 	end
 end)
+
+-- Music level for a game mode: 1 = normal, e.g. 0.4 in CARDIO so the key clicks come
+-- through. Eases over half a second.
+function Sounds.setMusicDuck(level: number)
+	if duckTween then
+		duckTween:Cancel()
+	end
+	local tween = TweenService:Create(musicGroup, TweenInfo.new(0.5), { Volume = math.clamp(level, 0, 1) })
+	duckTween = tween
+	tween:Play()
+end
 
 return Sounds
