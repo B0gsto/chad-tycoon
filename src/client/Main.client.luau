@@ -70,6 +70,7 @@ local function rescale()
 	screen:SetAttribute("Compact", (size.Y - topInset) / uiScale.Scale < 600)
 end
 rescale()
+Kit.onInput(rescale)
 Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(rescale)
 if Workspace.CurrentCamera then
 	Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescale)

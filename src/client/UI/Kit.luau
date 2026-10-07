@@ -18,7 +18,10 @@
 	  Kit.TEXT    type scale (TextSize in design pixels; the ScreenGui UIScale
 	              scales the whole 1280x720 design to the device)
 	  Kit.RADIUS  corner radii
-	  Kit.touch   true on touch-first devices (bigger targets)
+	  Kit.input   "touch" | "gamepad" | "keyboard", the input used last
+	              (Kit.touch / Kit.gamepad follow it; Kit.onInput re-flows)
+	  Kit.hint    wording per input mode: Kit.hint("TAP", "SPACE", "A")
+	  Kit.focus   gamepad selection into a window / dialog (Kit.blur releases)
 	  Kit.ICONS   names accepted by Kit.icon (and Kit.button's Icon prop)
 
 	Every builder keeps its public signature; see the headers below.
@@ -27,6 +30,7 @@
 local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local GuiService = game:GetService("GuiService")
 local UserInputService = game:GetService("UserInputService")
 
 local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
@@ -56,10 +60,97 @@ Kit.RADIUS = {
 	XL = 22,
 }
 
+-- Input mode ----------------------------------------------------------------------------
+--[[
+	Kit.input is "touch", "gamepad" or "keyboard" (keyboard + mouse): the kind of
+	input the player used last, starting from what the device offers (a console
+	is gamepad, a phone touch, a laptop keyboard even with a touch screen until it
+	is tapped). Kit.touch and Kit.gamepad follow it. Kit.onInput(fn) runs fn(mode)
+	now and whenever the mode changes, so layouts and hints can re-flow when a
+	player picks up a controller or plugs in a keyboard. Kit.console is true on a
+	TV-distance (10-foot) interface.
+]]
+export type InputMode = "touch" | "gamepad" | "keyboard"
+Kit.input = "keyboard" :: InputMode
 Kit.touch = false
+Kit.gamepad = false
+Kit.console = false
 pcall(function()
-	Kit.touch = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	Kit.console = GuiService:IsTenFootInterface()
 end)
+local inputListeners: { (InputMode) -> () } = {}
+
+local function classifyInput(inputType: Enum.UserInputType?): InputMode?
+	if inputType == nil then
+		return nil
+	end
+	if inputType == Enum.UserInputType.Touch then
+		return "touch"
+	end
+	local name = inputType.Name
+	if string.sub(name, 1, 7) == "Gamepad" then
+		return "gamepad"
+	end
+	if name == "Keyboard" or string.sub(name, 1, 5) == "Mouse" or name == "TextInput" then
+		return "keyboard"
+	end
+	return nil
+end
+
+local function setInput(mode: InputMode)
+	if mode == Kit.input then
+		return
+	end
+	Kit.input = mode
+	Kit.touch = mode == "touch"
+	Kit.gamepad = mode == "gamepad"
+	for _, fn in inputListeners do
+		task.spawn(fn, mode)
+	end
+end
+
+pcall(function()
+	local mode: InputMode = "keyboard"
+	if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+		mode = "touch"
+	end
+	if UserInputService.GamepadEnabled and not UserInputService.KeyboardEnabled and not UserInputService.TouchEnabled then
+		mode = "gamepad"
+	end
+	if Kit.console then
+		mode = "gamepad"
+	end
+	Kit.input = mode
+	Kit.touch = mode == "touch"
+	Kit.gamepad = mode == "gamepad"
+	UserInputService.LastInputTypeChanged:Connect(function(inputType)
+		local next = classifyInput(inputType)
+		if next then
+			setInput(next)
+		end
+	end)
+end)
+
+function Kit.onInput(fn: (InputMode) -> ()): () -> ()
+	table.insert(inputListeners, fn)
+	task.spawn(fn, Kit.input)
+	return function()
+		local i = table.find(inputListeners, fn)
+		if i then
+			table.remove(inputListeners, i)
+		end
+	end
+end
+
+-- Picks the wording for the current input: Kit.hint("TAP", "SPACE", "A").
+function Kit.hint(touch: string, keyboard: string, gamepad: string): string
+	if Kit.touch then
+		return touch
+	elseif Kit.gamepad then
+		return gamepad
+	end
+	return keyboard
+end
 
 local WHITE = Color3.new(1, 1, 1)
 local BLACK = Color3.new(0, 0, 0)
@@ -108,6 +199,120 @@ function Kit.new(className: string, props: { [string]: any }?, children: { Insta
 		inst.Parent = parent
 	end
 	return inst
+end
+
+-- Gamepad selection -------------------------------------------------------------------
+--[[
+	Console players without the virtual cursor move a selection between
+	GuiButtons with the stick. Every Kit button carries Kit.SELECTION (a sunny
+	rounded outline) so the focus reads in the toy style. Kit.confine(holder)
+	keeps the selection inside an open window or dialog (a SelectionGroup that
+	stops at its edges), Kit.focus(holder) confines and selects its first
+	button, Kit.blur(holder) drops the selection if it is inside. Kit.select(gui)
+	moves the selection on gamepad only, so mouse and touch are never hijacked.
+]]
+local function buildSelection(): Frame
+	local frame = Kit.new("Frame", {
+		Name = "Selection",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 12, 1, 12),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 50,
+	})
+	Kit.new("UICorner", { CornerRadius = UDim.new(0, 18), Parent = frame })
+	Kit.new("UIStroke", { Thickness = 4, Color = C.Primary, Parent = frame })
+	local glow = Kit.new("Frame", {
+		Name = "Glow",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 8, 1, 8),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 49,
+		Parent = frame,
+	})
+	Kit.new("UICorner", { CornerRadius = UDim.new(0, 22), Parent = glow })
+	Kit.new("UIStroke", { Thickness = 3, Color = C.Primary, Transparency = 0.6, Parent = glow })
+	return frame
+end
+Kit.SELECTION = buildSelection()
+
+function Kit.selectable(button: GuiObject, on: boolean?)
+	button.Selectable = on ~= false
+	if on ~= false then
+		button.SelectionImageObject = Kit.SELECTION
+	end
+end
+
+function Kit.selectedIn(holder: Instance?): boolean
+	local selected = GuiService.SelectedObject
+	return selected ~= nil and holder ~= nil and (selected == holder or selected:IsDescendantOf(holder))
+end
+
+function Kit.select(gui: GuiObject?)
+	if not Kit.gamepad then
+		return
+	end
+	pcall(function()
+		GuiService.SelectedObject = gui
+	end)
+end
+
+-- First visible, selectable GuiButton under `root` in LayoutOrder / tree order.
+function Kit.firstSelectable(root: Instance): GuiObject?
+	local function visit(inst: Instance): GuiObject?
+		if inst:IsA("GuiObject") then
+			if not inst.Visible then
+				return nil
+			end
+			if inst:IsA("GuiButton") and inst.Selectable and inst.Active ~= false and inst.AbsoluteSize.X > 0 then
+				return inst
+			end
+		end
+		for _, child in inst:GetChildren() do
+			local found = visit(child)
+			if found then
+				return found
+			end
+		end
+		return nil
+	end
+	return visit(root)
+end
+
+function Kit.confine(holder: GuiObject, on: boolean?)
+	pcall(function()
+		holder.SelectionGroup = on ~= false
+		local stop = if on ~= false then Enum.SelectionBehavior.Stop else Enum.SelectionBehavior.Escape
+		holder.SelectionBehaviorUp = stop
+		holder.SelectionBehaviorDown = stop
+		holder.SelectionBehaviorLeft = stop
+		holder.SelectionBehaviorRight = stop
+	end)
+end
+
+function Kit.focus(holder: GuiObject, preferred: GuiObject?)
+	Kit.confine(holder, true)
+	if not Kit.gamepad then
+		return
+	end
+	task.defer(function()
+		if not holder.Visible then
+			return
+		end
+		local target = preferred or Kit.firstSelectable(holder)
+		if target then
+			Kit.select(target)
+		end
+	end)
+end
+
+function Kit.blur(holder: GuiObject)
+	if Kit.selectedIn(holder) then
+		pcall(function()
+			GuiService.SelectedObject = nil
+		end)
+	end
 end
 
 -- Colour helpers ----------------------------------------------------------------------
@@ -1434,17 +1639,36 @@ end
 function Kit.bouncy(button: GuiButton, hover: number?): UIScale
 	local scale = scaleOf(button)
 	local up = hover or 1.03
+	Kit.selectable(button)
+	-- A finger tap fires MouseEnter but not always MouseLeave, so touch never hovers.
 	button.MouseEnter:Connect(function()
-		Kit.tween(scale, 0.12, { Scale = up })
+		if not Kit.touch then
+			Kit.tween(scale, 0.12, { Scale = up })
+		end
 	end)
 	button.MouseLeave:Connect(function()
+		Kit.tween(scale, 0.12, { Scale = 1 })
+	end)
+	button.SelectionGained:Connect(function()
+		Kit.tween(scale, 0.12, { Scale = up })
+	end)
+	button.SelectionLost:Connect(function()
 		Kit.tween(scale, 0.12, { Scale = 1 })
 	end)
 	button.MouseButton1Down:Connect(function()
 		Kit.tween(scale, 0.07, { Scale = 0.94 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	end)
 	button.MouseButton1Up:Connect(function()
-		Kit.tween(scale, 0.28, { Scale = up }, Enum.EasingStyle.Back)
+		Kit.tween(scale, 0.28, { Scale = if Kit.touch then 1 else up }, Enum.EasingStyle.Back)
+	end)
+	button.Activated:Connect(function()
+		if Kit.gamepad then
+			-- A press from the controller squashes and springs like a click.
+			Kit.tween(scale, 0.07, { Scale = 0.94 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			task.delay(0.08, function()
+				Kit.tween(scale, 0.28, { Scale = up }, Enum.EasingStyle.Back)
+			end)
+		end
 	end)
 	return scale
 end
@@ -1694,30 +1918,53 @@ function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> 
 		face.Position = UDim2.new()
 		base.Visible = true
 	end
-	button.MouseEnter:Connect(function()
+	Kit.selectable(button)
+	local function hoverOn()
 		if state.enabled then
 			state.hover = true
 			Kit.tween(scale, 0.12, { Scale = 1.03 })
 			paintButton(state)
 		end
-	end)
-	button.MouseLeave:Connect(function()
+	end
+	local function hoverOff()
 		state.hover = false
 		Kit.tween(scale, 0.12, { Scale = 1 })
 		paintButton(state)
 		rest()
-	end)
-	button.MouseButton1Down:Connect(function()
+	end
+	local function press()
 		if state.enabled then
 			Kit.tween(scale, 0.07, { Scale = 0.94 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 			Kit.tween(face, 0.07, { Position = UDim2.fromOffset(0, depth - 1) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		end
-	end)
-	button.MouseButton1Up:Connect(function()
+	end
+	local function release()
 		Kit.tween(scale, 0.28, { Scale = if state.hover then 1.03 else 1 }, Enum.EasingStyle.Back)
 		Kit.tween(face, 0.22, { Position = UDim2.new() }, Enum.EasingStyle.Back)
+	end
+	-- A finger tap fires MouseEnter but not always MouseLeave, so touch never hovers
+	-- (a stuck hover would leave the button enlarged and lit after the tap).
+	button.MouseEnter:Connect(function()
+		if not Kit.touch then
+			hoverOn()
+		end
+	end)
+	button.MouseLeave:Connect(hoverOff)
+	button.SelectionGained:Connect(hoverOn)
+	button.SelectionLost:Connect(hoverOff)
+	button.MouseButton1Down:Connect(press)
+	button.MouseButton1Up:Connect(function()
+		if Kit.touch then
+			state.hover = false
+			paintButton(state)
+		end
+		release()
 	end)
 	button.Activated:Connect(function()
+		if Kit.gamepad then
+			press()
+			task.delay(0.08, release)
+		end
 		if not state.enabled then
 			Kit.sound("Error")
 			return
@@ -1784,6 +2031,7 @@ function Kit.hitArea(button: GuiButton, size: number, onClick: () -> ()): TextBu
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = button.ZIndex + 3,
+		Selectable = false,
 		Parent = button,
 	})
 	hit.Activated:Connect(onClick)
@@ -2606,7 +2854,10 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 			Kit.setBlur(true)
 			Kit.sound("Open")
 			onOpen:Fire()
+			-- Gamepad: the selection lands on the window's first button and stays inside.
+			Kit.focus(holder)
 		else
+			Kit.blur(holder)
 			Kit.disappear(frame, {
 				onDone = function()
 					holder.Visible = false
@@ -2758,6 +3009,7 @@ function Kit.backdrop(parent: Instance, zindex: number, onClick: (() -> ())?): T
 		Position = UDim2.fromScale(-0.5, -0.5),
 		ZIndex = zindex,
 		Visible = false,
+		Selectable = false,
 		Parent = parent,
 	})
 	if onClick then
