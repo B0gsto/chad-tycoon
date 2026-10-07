@@ -16,7 +16,7 @@
 	               flashes in the last BLINK_WARN seconds before switching off.
 	  Bounce pads  tag "BouncePad": once per contact, launch upward at the pad's Bounce
 	               speed (double jump still works in the air), squash the pad, Puff sprite.
-	  Effects      ModeCheckpoint (flag cap pop + star), ModeSplash (fell through
+	  Effects      ModeSplash (fell through
 	               the cloud floor: a white cloud poof and a short camera dip), ModeFinish
 	               (stars and confetti), ModeKill (touched a kill brick: a red/black
 	               burst and a short red screen flash). Spin movers with SpinAxis = "Z" (windmill blades)
@@ -25,12 +25,10 @@
 	               Map.GameModes.Parkour.Level<level>. Mode notifications of other modes
 	               (Mog Test) are ignored.
 	  Hint         standing still for 4 s during a run: a short dotted trail of soft dots
-	               toward the next checkpoint (or the finish).
+	               toward the map's finish deck (there are no checkpoints).
 	  Gate arrow   each open gate's "GateArrow" (tag "ModeHintArrow", attribute HintBob)
 	               bobs gently while the player is near the plaza and not on a run; it
 	               eases in and out and settles back at its rest pose.
-	  Next flag    during a run, the next checkpoint's "FlagCap" (attribute Checkpoint)
-	               gives a soft pulse with a sunny ring every couple of seconds.
 	  Budget       on "low" devices (Fx.Budget) movers farther than LOW_FAR studs from
 	               the player pose every 2nd frame; celebration confetti / splash dots
 	               scale with Budget.count. Hints, pads and nearby movers never thin out.
@@ -64,8 +62,6 @@ local HINT_EVERY = 8
 local ARROW_NEAR = 90
 local ARROW_SPEED = 2.6
 local ARROW_FADE = 0.4
--- Next checkpoint flag: one soft pulse every PULSE_EVERY seconds during a run.
-local PULSE_EVERY = 2.2
 -- Blink pads: seconds of warning flashes before switching off, and flashes per second.
 local BLINK_WARN = 0.5
 local BLINK_FLASH_HZ = 6
@@ -121,8 +117,6 @@ type Arrow = {
 	fade: number, -- 0..1, eased into the bob amplitude
 }
 local arrows: { Arrow } = {}
--- Rest sizes of flag caps (pulses and pops always tween back to these).
-local capRest: { [BasePart]: Vector3 } = {}
 
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Include
@@ -290,15 +284,6 @@ local function addArrow(root: Instance)
 	table.insert(arrows, arrow)
 end
 
-local function restSize(cap: BasePart): Vector3
-	local size = capRest[cap]
-	if not size then
-		size = cap.Size
-		capRest[cap] = size
-	end
-	return size
-end
-
 -- A throwaway invisible anchor for world sprites.
 local function anchorAt(position: Vector3, life: number): BasePart
 	local part = Instance.new("Part")
@@ -368,7 +353,6 @@ end
 
 -- Run state (from the "Mode" notifies) for the still-player hint.
 local running = false
-local nextIndex = 1
 local stillSince = os.clock()
 local stillAt = Vector3.zero
 local lastHint = 0
@@ -382,20 +366,11 @@ local function courseFolder(): Instance?
 	return parkour and parkour:FindFirstChild("Level" .. currentLevel)
 end
 
-local function checkpointPart(index: number): BasePart?
+-- The run's finish trigger (the hint's target).
+local function finishPart(): BasePart?
 	local folder = courseFolder()
 	if not folder then
 		return nil
-	end
-	for _, d in folder:GetDescendants() do
-		if
-			d.Name == "Checkpoint"
-			and d:IsA("BasePart")
-			and d:GetAttribute("Index") == index
-			and d:GetAttribute("Level") == currentLevel
-		then
-			return d
-		end
 	end
 	for _, d in folder:GetDescendants() do
 		if d.Name == "ParkourFinish" and d:IsA("BasePart") and d:GetAttribute("Level") == currentLevel then
@@ -406,7 +381,7 @@ local function checkpointPart(index: number): BasePart?
 end
 
 local function showHint(root: BasePart)
-	local target = checkpointPart(nextIndex)
+	local target = finishPart()
 	if not target then
 		return
 	end
@@ -458,44 +433,6 @@ local function bobArrows(pos: Vector3, dt: number)
 	if #parts > 0 then
 		Workspace:BulkMoveTo(parts, frames, Enum.BulkMoveMode.FireCFrameChanged)
 	end
-end
-
--- Next-checkpoint flag pulse during a run.
-local pulseIndex = 0
-local pulseCap: BasePart? = nil
-local lastPulse = 0
-local function pulseNextFlag()
-	local now = os.clock()
-	if not running or now - lastPulse < PULSE_EVERY then
-		return
-	end
-	lastPulse = now
-	local cap = pulseCap
-	if pulseIndex ~= nextIndex or not cap or not cap:IsDescendantOf(Workspace) then
-		cap = nil
-		local folder = courseFolder()
-		if folder then
-			for _, d in folder:GetDescendants() do
-				if d.Name == "FlagCap" and d:IsA("BasePart") and d:GetAttribute("Checkpoint") == nextIndex then
-					cap = d
-					break
-				end
-			end
-		end
-		pulseIndex, pulseCap = nextIndex, cap
-	end
-	if not cap then
-		return
-	end
-	local size = restSize(cap)
-	cap.Size = size
-	TweenService:Create(cap, TweenInfo.new(0.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true), { Size = size * 1.3 }):Play()
-	local at = cap.Position
-	Sprites.billboard(
-		anchorAt(at, 2),
-		"Ring",
-		{ position = at, size = 3.6, life = 0.9, rise = Vector3.zero, color = W.Sunny, maxDistance = 160 }
-	)
 end
 
 -- Map scenery and themed ambience -------------------------------------------------------
@@ -1406,7 +1343,6 @@ local function step(dt: number)
 	stepScenery(root.Position)
 	stepAmbience(dt, root.Position)
 	bobArrows(root.Position, dt)
-	pulseNextFlag()
 	local b = bounds
 	if not b then
 		return
@@ -1504,47 +1440,6 @@ local function step(dt: number)
 end
 
 -- Effects -------------------------------------------------------------------------------
-
-local function checkpointPop(position: Vector3)
-	local folder = courseFolder()
-	local cap: BasePart? = nil
-	local best = 14
-	if folder then
-		for _, d in folder:GetDescendants() do
-			if d.Name == "FlagCap" and d:IsA("BasePart") then
-				local flat = Vector3.new(d.Position.X - position.X, 0, d.Position.Z - position.Z).Magnitude
-				if flat < best then
-					best = flat
-					cap = d
-				end
-			end
-		end
-	end
-	local top = if cap then cap.Position else position + Vector3.new(0, 6, 0)
-	local anchor = anchorAt(top, 3)
-	Sprites.billboard(anchor, "StarPop", { position = top, size = 3, life = 0.9, rise = Vector3.new(0, 2, 0), spin = 40 })
-	local pops = Budget.count(5)
-	for i = 1, pops do
-		if not Sprites.room() then
-			break -- decorative: the device's sprite budget is full
-		end
-		local a = i / pops * TAU
-		Sprites.billboard(anchor, "Confetti", {
-			position = top,
-			size = 0.8,
-			life = 1.1,
-			delay = 0.04 * i,
-			rise = Vector3.new(math.cos(a) * 3, 2.5, math.sin(a) * 3),
-			color = ({ W.Sunny, W.Pink, W.Mint, W.Blue, W.Coral })[i],
-			spin = 180,
-		})
-	end
-	if cap then
-		local size = restSize(cap)
-		cap.Size = size * 1.7
-		TweenService:Create(cap, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = size }):Play()
-	end
-end
 
 -- Fell through the cloud floor: a white cloud poof (Puff particles plus a few soft white balls
 -- that swell and fade, so it reads even without the sprite art) and a short camera dip.
@@ -1738,12 +1633,9 @@ function ModesFx.init()
 		local event = payload.event
 		if event == "start" then
 			currentLevel = math.floor(num(payload.level, 1))
-			pulseCap = nil
-			running, nextIndex = true, 1
+			running = true
 			stillSince, lastHint = os.clock(), os.clock()
 			startAmbience(currentLevel)
-		elseif event == "checkpoint" then
-			nextIndex = num(payload.index, nextIndex) + 1
 		elseif event == "finish" or event == "invalid" or event == "stop" then
 			running = false
 			endAmbience()
@@ -1754,9 +1646,7 @@ function ModesFx.init()
 		if type(data) ~= "table" or typeof(data.pos) ~= "Vector3" then
 			return
 		end
-		if kind == "ModeCheckpoint" then
-			checkpointPop(data.pos)
-		elseif kind == "ModeSplash" then
+		if kind == "ModeSplash" then
 			splash(data.pos)
 		elseif kind == "ModeKill" then
 			kill(data.pos)

@@ -34,9 +34,7 @@
 	                      a flat "Belt" part on the belt rectangle whose LookVector is the
 	                      runner's forward (+X) and whose Top face carries a Texture
 	                      "BeltTexture" for the client to scroll (OffsetStudsV).
-	    WinPad            (stages 1..10) tag "CardioWinPad", attribute Stage.
 	    UpgradePad        (lobby) tag "CardioUpgradePad" with the "SPEED UP" UpgradeConsole.
-	    Checkpoint        flag Model, attributes Stage, Index = 0, tag "CardioCheckpoint".
 	    LobbyDecor        (lobby) orange Neon X trusses on its three walls and roof joists, the
 	                      back-wall CARDIO title, candy clusters and warm lamps; decor only.
 	  Room<n>             Model per bridge room (n = stage), attributes Stage, Theme:
@@ -51,7 +49,7 @@
 	                      coloured ball when missing), decor only (fall through them).
 	    Base / BlinkRail  chocolate slabs under the static platforms, Neon rails under blinking
 	                      ones; Block<k> pillars (theme-tinted, down to the hazard) with Neon
-	                      "BlockEdge" strips; mid-stage Checkpoint flags (Index = platform).
+	                      "BlockEdge" strips.
 	  Walls               one part per LAYOUT.walls box in the room theme's wall colour, a
 	                      dotted Texture on the faces you see, a Neon "WallTrim" on top.
 	  Doors/Door<i>       Model per LAYOUT.doors entry (i = index), attributes Stage, Side, Timed:
@@ -98,7 +96,6 @@ export type Built = {
 	-- Safe zone models and their deck base slabs by stage (0 = lobby).
 	zones: { [number]: Model },
 	decks: { [number]: BasePart },
-	winPads: { [number]: BasePart },
 	upgradePad: BasePart,
 	treadmills: { Model },
 	-- Bridge room models and hazard slabs by stage; timed door slabs by LAYOUT.doors index.
@@ -727,59 +724,7 @@ local function buildTrusses(trussFolders: { [number]: Instance }): number
 	return count
 end
 
--- Flags, pads, treadmills --------------------------------------------------------------
-
-local function flag(parent: Instance, x: number, y: number, z: number, colour: Color3, stage: number, index: number)
-	local model = folderIn(parent, "Checkpoint", "Model")
-	model:SetAttribute("Stage", stage)
-	model:SetAttribute("Index", index)
-	model:AddTag("CardioCheckpoint")
-	local h = 11
-	decor(disc(model, "FlagPole", Vector3.new(x, y + h / 2, z), 0.6, h, W.White))
-	decor(add(model, {
-		Name = "Flag",
-		Size = Vector3.new(4.6, 3, 0.3),
-		CFrame = CFrame.new(x + 2.4, y + h - 1.8, z),
-		Color = colour,
-	}))
-	decor(add(model, {
-		Name = "FlagCap",
-		Shape = BALL,
-		Size = Vector3.new(1.4, 1.4, 1.4),
-		CFrame = CFrame.new(x, y + h + 0.5, z),
-		Color = W.Sunny,
-		Material = Enum.Material.Neon,
-	}))
-end
-
-local function winPad(parent: Instance, zone: Layout.Zone): BasePart
-	local pad = zone.winPad :: Layout.Pad
-	local s = pad.size
-	decor(add(parent, {
-		Name = "WinGlow",
-		Size = Vector3.new(s + 1.2, 0.3, s + 1.2),
-		CFrame = CFrame.new(pad.x, TOP + 0.15, pad.z),
-		Color = W.Sunny,
-		Material = Enum.Material.Neon,
-		CastShadow = false,
-	}))
-	local part = add(parent, {
-		Name = "WinPad",
-		Size = Vector3.new(s, 0.5, s),
-		-- Front toward +X so the Top-face print reads for runners arriving from the west.
-		CFrame = CFrame.new(pad.x, TOP + 0.25, pad.z) * CFrame.Angles(0, -math.pi / 2, 0),
-		Color = W.Sunny,
-	})
-	part:SetAttribute("Stage", zone.stage)
-	part:AddTag("CardioWinPad")
-	light(part, W.Sunny, 18, 1.5)
-	text(surface(part, Enum.NormalId.Top, 24), {
-		Text = "WIN",
-		Size = UDim2.fromScale(0.76, 0.5),
-		Position = UDim2.fromScale(0.12, 0.25),
-	})
-	return part
-end
+-- Pads, treadmills --------------------------------------------------------------
 
 local function upgradePad(parent: Instance, zone: Layout.Zone): BasePart
 	local pad = zone.upgradePad :: Layout.Pad
@@ -1352,15 +1297,9 @@ function CardioTrack.build(): Built
 			})
 		end
 	end
-	for _, c in LAYOUT.checkpoints do
-		if c.index > 0 then
-			flag(rooms[c.stage], c.x0 + 1.5, c.y - 3, c.z1 - 1.5, stageColour(c.stage), c.stage, c.index)
-		end
-	end
 
 	local zones: { [number]: Model } = {}
 	local decks: { [number]: BasePart } = {}
-	local winPads: { [number]: BasePart } = {}
 	local treadmills: { Model } = {}
 	local upgrade: BasePart? = nil
 	for _, zone in LAYOUT.zones do
@@ -1370,16 +1309,12 @@ function CardioTrack.build(): Built
 		for i, tm in zone.treadmills do
 			table.insert(treadmills, treadmill(model, zone.stage, i, tm))
 		end
-		if zone.winPad then
-			winPads[zone.stage] = winPad(model, zone)
-		end
 		if zone.upgradePad then
 			upgrade = upgradePad(model, zone)
 		end
 		if zone.stage == 0 then
 			lobbyRoom(model, zone)
 		end
-		flag(model, zone.x0 + 3, zone.top, zone.z1 - 3, stageColour(zone.stage), zone.stage, 0)
 	end
 
 	-- Chocolate slabs: decks into their zone models, block pillars and platform bases into
@@ -1418,7 +1353,6 @@ function CardioTrack.build(): Built
 		keys = keys,
 		zones = zones,
 		decks = decks,
-		winPads = winPads,
 		upgradePad = upgrade :: BasePart,
 		treadmills = treadmills,
 		rooms = rooms,

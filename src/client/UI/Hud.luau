@@ -615,6 +615,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			runLevel.Text = "L" .. tostring(level)
 		end
 		runCheck.Text = string.format("%d/%d", checkpoint, checkpoints)
+		-- Modes without checkpoints (the obby, since maps have none) hide the n/N chip.
+		runCheck.Visible = checkpoints > 0
 		quitArmed = false
 		Kit.setButton(quitButton, "X", C.SurfaceHi)
 		quitButton.Size = UDim2.fromOffset(30, 28)

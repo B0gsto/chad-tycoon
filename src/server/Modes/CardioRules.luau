@@ -31,10 +31,11 @@
 	Progression check (a coarse 1 s simulation, also run in tests/cardio.luau): a player who
 	spends half the time running on keys (60% of the time actually stepping) and half on the
 	best treadmill they have reached, and buys one treadmill level every 4 minutes, reaches
-	  stage 2 ~1 min, 3 ~4 min, 4 ~9 min, 5 ~14 min, 6 ~19 min, 7 ~26 min, 8 ~32 min,
-	  9 ~41 min, 10 ~51 min.
+	  stage 2 ~1.5 min, 3 ~6 min, 4 ~12 min, 5 ~18 min, 6 ~23 min, 7 ~29 min, 8 ~34 min,
+	  9 ~41 min, 10 ~49 min (about 70% of the Speed from treadmills).
 	Step multiplier: (1 + 0.25 * bestStage) * (1 + 0.1 * treadmillLevel)  (x1 .. x7)
-	Treadmill rate:  1.5 * (1 + zoneStage)^1.3 * (1 + 0.25 * level)       Speed/s
+	Treadmill rate:  0.45 * (1 + zoneStage)^1.3 * (1 + 0.25 * level)
+	                 * max(1, (speed / 150)^0.25)                         Speed/s
 	Treadmill cost:  max(150 * (level + 1)^2, income * (120 + 24 * level)) cash for level -> level + 1
 ]]
 
@@ -59,7 +60,10 @@ CardioRules.REACH_SLACK = 1.5
 CardioRules.MAX_STEP_UP = 5
 
 CardioRules.TREADMILL_MAX = 10
-CardioRules.TREADMILL_BASE = 1.5
+CardioRules.TREADMILL_BASE = 0.45
+-- Treadmills grow with the runner: x max(1, (speed / SPEED_REF) ^ SPEED_EXP) (x1 .. ~x5.4).
+CardioRules.TREADMILL_SPEED_REF = 150
+CardioRules.TREADMILL_SPEED_EXP = 0.25
 CardioRules.TREADMILL_ZONE_EXP = 1.3
 CardioRules.TREADMILL_LEVEL_BONUS = 0.25
 CardioRules.STEP_STAGE_BONUS = 0.25
@@ -94,8 +98,6 @@ export type Stage = {
 	blinkPeriod: number?,
 	-- Sliding keys (side to side, +-travel studs over period seconds; nil before stage 6).
 	movers: Movers?,
-	-- A mid-stage checkpoint on every checkpointEvery-th platform (0 = safe zones only).
-	checkpointEvery: number,
 	-- Jump course length from the end of the stage's run-up carpet to this stage's safe zone,
 	-- studs (gaps + platforms; the run-up itself is laid out by CardioLayout).
 	length: number,
@@ -113,8 +115,7 @@ local function stage(
 	jumps: number,
 	rise: number,
 	blink: { number }?,
-	movers: Movers?,
-	checkpointEvery: number
+	movers: Movers?
 ): Stage
 	return {
 		n = 0,
@@ -130,7 +131,6 @@ local function stage(
 		blinkOn = if blink then blink[1] else nil,
 		blinkPeriod = if blink then blink[2] else nil,
 		movers = movers,
-		checkpointEvery = checkpointEvery,
 		length = 0,
 	}
 end
@@ -138,16 +138,16 @@ end
 CardioRules.STAGE_COUNT = 10
 -- stylua: ignore
 CardioRules.STAGES = {
-	stage("Home Row",         "Mint",      0,      7,  25.2, 25.2, 4, 0,   nil,          nil,                               2),
-	stage("Shift Street",     "Sunny",     150,    12, 22.4, 25.2, 4, 1,   nil,          nil,                               2),
-	stage("Tab Tunnel",       "Teal",      1100,   17, 22.4, 22.4, 4, 2,   nil,          nil,                               2),
-	stage("Caps Lock Canyon", "Orange",    3500,   22.5, 16.8, 22.4, 3, 2.5, { 2.2, 3.2 }, nil,                            2),
-	stage("Enter Expressway", "Pink",      8000,   28, 16.8, 22.4, 3, 3,   { 2.0, 3.0 }, nil,                               2),
-	stage("Backspace Bridge", "Blue",      15000,  33, 14, 16.8, 3, 3.5, { 1.9, 2.9 }, { travel = 8, period = 5 },        0),
-	stage("Function Falls",   "Grape",     27000,  39, 14, 16.8, 3, 4,   { 1.8, 2.8 }, { travel = 8, period = 4.5 },      0),
-	stage("Arrow Key Alley",  "Coral",     45000,  45, 11.2, 16.8, 3, 4.5, { 1.7, 2.7 }, { travel = 10, period = 4.2 },     0),
-	stage("Escape Heights",   "RedOrange", 77000,  52.5, 11.2, 16.8, 3, 5,  { 1.6, 2.6 }, { travel = 10, period = 4 },       0),
-	stage("Spacebar Skyway",  "Butter",    125000, 61, 11.2, 16.8, 3, 5,   { 1.5, 2.5 }, { travel = 12, period = 3.8 },     0),
+	stage("Home Row",         "Mint",      0,      7,  25.2, 25.2, 4, 0,   nil,          nil),
+	stage("Shift Street",     "Sunny",     150,    12, 22.4, 25.2, 4, 1,   nil,          nil),
+	stage("Tab Tunnel",       "Teal",      1100,   17, 22.4, 22.4, 4, 2,   nil,          nil),
+	stage("Caps Lock Canyon", "Orange",    3500,   22.5, 16.8, 22.4, 3, 2.5, { 2.2, 3.2 }, nil),
+	stage("Enter Expressway", "Pink",      8000,   28, 16.8, 22.4, 3, 3,   { 2.0, 3.0 }, nil),
+	stage("Backspace Bridge", "Blue",      15000,  33, 14, 16.8, 3, 3.5, { 1.9, 2.9 }, { travel = 8, period = 5 }),
+	stage("Function Falls",   "Grape",     27000,  39, 14, 16.8, 3, 4,   { 1.8, 2.8 }, { travel = 8, period = 4.5 }),
+	stage("Arrow Key Alley",  "Coral",     45000,  45, 11.2, 16.8, 3, 4.5, { 1.7, 2.7 }, { travel = 10, period = 4.2 }),
+	stage("Escape Heights",   "RedOrange", 77000,  52.5, 11.2, 16.8, 3, 5,  { 1.6, 2.6 }, { travel = 10, period = 4 }),
+	stage("Spacebar Skyway",  "Butter",    125000, 61, 11.2, 16.8, 3, 5,   { 1.5, 2.5 }, { travel = 12, period = 3.8 }),
 } :: { Stage }
 
 -- Smooth, increasing, diminishing-returns WalkSpeed for a Speed stat.
@@ -248,11 +248,14 @@ function CardioRules.stepMultiplier(bestStage: number, treadmillLevel: number): 
 	return (1 + CardioRules.STEP_STAGE_BONUS * b) * (1 + CardioRules.STEP_LEVEL_BONUS * l)
 end
 
--- Speed per second while standing on a treadmill in safe zone `zoneStage` (0 = lobby).
-function CardioRules.treadmillRate(zoneStage: number, level: number): number
+-- Speed per second while standing on a treadmill in safe zone `zoneStage` (0 = lobby) with
+-- `level` SPEED UP levels; grows on its own with the runner's current Speed (nil = 0).
+function CardioRules.treadmillRate(zoneStage: number, level: number, speed: number?): number
 	local z = math.clamp(math.floor(zoneStage), 0, CardioRules.STAGE_COUNT)
 	local l = math.clamp(math.floor(level), 0, CardioRules.TREADMILL_MAX)
-	return CardioRules.TREADMILL_BASE * (1 + z) ^ CardioRules.TREADMILL_ZONE_EXP * (1 + CardioRules.TREADMILL_LEVEL_BONUS * l)
+	local s = math.max(speed or 0, 0)
+	local grow = math.max(1, (s / CardioRules.TREADMILL_SPEED_REF) ^ CardioRules.TREADMILL_SPEED_EXP)
+	return CardioRules.TREADMILL_BASE * (1 + z) ^ CardioRules.TREADMILL_ZONE_EXP * (1 + CardioRules.TREADMILL_LEVEL_BONUS * l) * grow
 end
 
 -- Cash to raise the treadmill from `level` to level + 1: 2..5.6 minutes of income, never below

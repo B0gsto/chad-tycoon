@@ -33,7 +33,7 @@
 	  ModeMover slide root (same attributes as moving platforms).
 
 	Every level of Server.Modes.Course is built into Parkour/Level<i> (attributes Mode,
-	Level, Checkpoints, Title, LevelName, StageFirst, StageLast, and the map's Theme, Blurb,
+	Level, Title, LevelName, StageFirst, StageLast, and the map's Theme, Blurb,
 	Icon, Accent). Platforms are bright SmoothPlastic candy slabs in their element's colour
 	with a lighter lip and a thin white underside; Course.BRIDGES[i] (the rainbow stairs to the
 	next map) go into Level<i>/Bridge, the cloud floor far below (Course.cloudLayer) into
@@ -41,13 +41,12 @@
 	Level<i>/Scenery. Named parts the game looks up: "ParkourStart" (trigger in gate 1's
 	opening; other open gates hold "ModeStart"), per level "ParkourFinish" (trigger over the
 	finish deck) and "ParkourWater" (the catch volume at Course.FLOOR_Y), both with
-	attribute Level, and "Checkpoint" arrow pads with attributes Index (1..n per map), Stage
-	(global), Level and Mode = "parkour". Every level is reached by teleport through gate 1's
+	attribute Level. There are no checkpoints (a fall goes back to the map's start deck): the
+	wide "RestDeck" pads where they stood are plain platforms. Every level is reached by teleport through gate 1's
 	portal and gets a start arch on its start deck (map 1: the CHAD OBBY lobby); nothing of the
 	course stands next to the plaza.
 	Client hints (Client.Fx.Modes): each open gate's "GateArrow" root (tag "ModeHintArrow",
-	attribute HintBob = bob height in studs, children move with it) and each checkpoint's
-	"FlagCap" (attribute Checkpoint = its index).
+	attribute HintBob = bob height in studs, children move with it).
 
 	Sign text is TextScaled; every sign face's PixelsPerStud is picked so its biggest label
 	lands near 100 px tall (TextScaled's ceiling), which keeps it crisp without wasting texture.
@@ -441,85 +440,6 @@ local function chevron(e: Course.Element, nextE: Course.Element, parent: Instanc
 			Parent = parent,
 		}))
 	end
-end
-
--- A reference-style arrow checkpoint pad: a 12x12 `Checkpoint` blue slab (its top named
--- "Checkpoint"), a big white arrow painted on it pointing at the next path element (`nextE`),
--- the global stage number in the pad's far right corner and the numbered flag pole in the far
--- left corner, its cloth hanging out over the edge.
-local PAD = 12
-local function checkpoint(e: Course.Element, parent: Instance, levelIndex: number, nextE: Course.Element?): BasePart
-	local index = e.index :: number
-	local stage = (e :: any).stage or index
-	local box = table.clone(e) :: any
-	if e.shape == "disc" or not e.sx then
-		box.shape, box.sx, box.sz = "box", PAD, PAD
-	end
-	local top = platform(box, "Checkpoint", parent, false, W.Checkpoint)
-	top:SetAttribute("Index", index)
-	top:SetAttribute("Stage", stage)
-	top:SetAttribute("Level", levelIndex)
-	top:SetAttribute("Mode", "parkour")
-	-- The way on: toward the next element (or along +X when there is none).
-	local dx, dz = 1, 0
-	if nextE then
-		local ddx, ddz = nextE.x - e.x, nextE.z - e.z
-		local length = math.sqrt(ddx * ddx + ddz * ddz)
-		if length > 1e-3 then
-			dx, dz = ddx / length, ddz / length
-		end
-	end
-	local half = math.min(box.sx, box.sz) / 2
-	-- A flat carrier whose Front face looks up and whose up vector points the way on, so the
-	-- painted arrow's top is the direction to go and its top-right is the pad's far right corner.
-	local at = Vector3.new(e.x, e.y + 0.03, e.z)
-	local paint = decor(make("Part", {
-		Name = "CheckpointArrow",
-		Size = Vector3.new(half * 2 - 0.6, half * 2 - 0.6, 0.05),
-		CFrame = CFrame.lookAt(at, at + Vector3.yAxis, Vector3.new(dx, 0, dz)),
-		Transparency = 1,
-		CastShadow = false,
-		Parent = top,
-	}))
-	local root = surface(paint, Enum.NormalId.Front, 20)
-	local function bar(position: UDim2, size: UDim2, rotation: number)
-		local f = panel(root, W.White, position, size, 0.5)
-		f.AnchorPoint = Vector2.new(0.5, 0.5)
-		f.Rotation = rotation
-	end
-	-- Shaft, then the two arms of the head meeting at the tip.
-	bar(UDim2.fromScale(0.5, 0.6), UDim2.fromScale(0.17, 0.5), 0)
-	bar(UDim2.fromScale(0.39, 0.34), UDim2.fromScale(0.17, 0.42), 45)
-	bar(UDim2.fromScale(0.61, 0.34), UDim2.fromScale(0.17, 0.42), -45)
-	local number = text(root, {
-		Text = tostring(stage),
-		TextColor3 = W.White,
-		Font = theme.Fonts.Display,
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.fromScale(0.98, 0.02),
-		Size = UDim2.fromScale(0.3, 0.24),
-	})
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = W.Checkpoint:Lerp(W.Ink, 0.45)
-	stroke.Thickness = 3
-	stroke.Parent = number
-	-- Flag pole in the far left corner (right = the way on turned clockwise seen from above).
-	local rx, rz = -dz, dx
-	local reach = half - 1.3
-	local cap = flagPole(
-		e.x + (dx - rx) * reach,
-		e.y,
-		e.z + (dz - rz) * reach,
-		20,
-		FLAG_COLORS[(index - 1) % #FLAG_COLORS + 1],
-		tostring(stage),
-		math.atan2(rz, -rx),
-		parent,
-		true
-	)
-	cap:SetAttribute("Checkpoint", index)
-	cap:SetAttribute("Level", levelIndex)
-	return top
 end
 
 -- A pad that is solid only part of the time (Client.Fx.Modes toggles it locally): one thick
@@ -1577,10 +1497,6 @@ end
 -- Level `level`'s parts into `parent`.
 local function buildCourse(level: Course.Level, parent: Instance)
 	local tops: { [Course.Element]: BasePart } = {}
-	local nextOf: { [Course.Element]: Course.Element } = {}
-	for i, e in level.PATH do
-		nextOf[e] = level.PATH[i + 1]
-	end
 	local deck = level.PATH[1]
 	local lobby = level.index == 1
 	for _, e in level.ELEMENTS do
@@ -1589,8 +1505,6 @@ local function buildCourse(level: Course.Level, parent: Instance)
 			if e == deck then
 				tops[e] = top
 			end
-		elseif e.kind == "checkpoint" then
-			checkpoint(e, parent, level.index, nextOf[e])
 		elseif e.kind == "mover" then
 			tops[e] = mover(e, parent)
 		elseif e.kind == "blink" then
@@ -1614,10 +1528,10 @@ local function buildCourse(level: Course.Level, parent: Instance)
 		end
 	end
 	-- A chevron on each top toward the next one (none on the bounce deck: its pad is the hint;
-	-- none on checkpoints: their big arrow is).
+	-- the rest decks where checkpoints used to be are plain pads and get one too).
 	for i, e in level.PATH do
 		-- (none on blink pads either: their slab is the only part that fades.)
-		if e.kind ~= "slide" and e.kind ~= "checkpoint" and e.kind ~= "blink" then
+		if e.kind ~= "slide" and e.kind ~= "blink" then
 			local nextE = level.PATH[i + 1]
 			if nextE and e.name ~= "BounceDeck" then
 				chevron(e, nextE, if e == deck then parent else tops[e] or parent)
@@ -1804,7 +1718,6 @@ function Modes.build(): Built
 		levelFolder.Name = "Level" .. i
 		levelFolder:SetAttribute("Mode", "parkour")
 		levelFolder:SetAttribute("Level", i)
-		levelFolder:SetAttribute("Checkpoints", level.CHECKPOINT_COUNT)
 		levelFolder:SetAttribute("Title", level.name)
 		levelFolder:SetAttribute("LevelName", level.name)
 		local map: any = level
@@ -1814,7 +1727,7 @@ function Modes.build(): Built
 		levelFolder:SetAttribute("Accent", map.accent or "Sunny")
 		local first = map.STAGE_FIRST or 1
 		levelFolder:SetAttribute("StageFirst", first)
-		levelFolder:SetAttribute("StageLast", first + level.CHECKPOINT_COUNT + 1)
+		levelFolder:SetAttribute("StageLast", map.STAGE_LAST or first + 1)
 		buildCourse(level, levelFolder)
 		buildBridge(i, levelFolder)
 		levelFolder.Parent = parkour

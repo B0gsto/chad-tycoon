@@ -68,9 +68,11 @@ export type Profile = {
 	-- passed (and PvP wins paid), pvpWins / pvpPlayed = PvP duels won / fought.
 	-- Parkour per level (dense, PARKOUR_LEVELS long, 0 = never): best seconds and finishes.
 	-- modes.parkour keeps the shared reward cooldown and mirrors level 1 for the old UI.
-	-- stage = highest global sky-obby stage reached (0 = never ran); gear = the chosen
-	-- coil ("none" | "speed" | "jump" | "gravity", worn only during runs).
-	parkour: { best: { number }, clears: { number }, stage: number, gear: string },
+	-- stage = highest sky-obby stage reached (0 = never ran; one stage per map since the
+	-- checkpoints went: map n is stage n, finishing map 10 is 11); stageMaps = the stage is
+	-- in those units (older saves counted checkpoints and are rebuilt on load); gear = the
+	-- chosen coil ("none" | "speed" | "jump" | "gravity", worn only during runs).
+	parkour: { best: { number }, clears: { number }, stage: number, stageMaps: boolean, gear: string },
 	-- Cardio (keyboard runner): Speed earned (permanent, never goes down), highest safe zone
 	-- reached (0..CARDIO_STAGES), treadmill level (0..CARDIO_TREADMILL_MAX), safe-zone arrivals
 	-- and the player's own max WalkSpeed (0 = none, else 16..CARDIO_WALK_CAP).
@@ -143,7 +145,7 @@ function DataService.defaultProfile(): Profile
 		starterGranted = false,
 		onboarding = 0,
 		badges = {},
-		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, gear = "none" },
+		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, stageMaps = true, gear = "none" },
 		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0 },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
@@ -258,7 +260,19 @@ local function reconcile(data: any): Profile
 		data.parkour[key] = fixed
 	end
 	local stage = data.parkour.stage
-	data.parkour.stage = if type(stage) == "number" and stage == stage and stage >= 0 and stage ~= math.huge then math.floor(stage) else 0
+	stage = if type(stage) == "number" and stage == stage and stage >= 0 and stage ~= math.huge then math.floor(stage) else 0
+	if data.parkour.stageMaps ~= true then
+		-- Saves from the checkpoint days: `stage` counted checkpoints along the chain. Rebuild
+		-- it in map units from the maps cleared in a row from map 1 (the start of the next
+		-- map is reached; all ten cleared is the last finish, PARKOUR_LEVELS + 1).
+		local cleared = 0
+		while cleared < PARKOUR_LEVELS and data.parkour.clears[cleared + 1] > 0 do
+			cleared += 1
+		end
+		stage = if cleared > 0 then cleared + 1 elseif stage > 0 then 1 else 0
+		data.parkour.stageMaps = true
+	end
+	data.parkour.stage = math.min(stage, PARKOUR_LEVELS + 1)
 	if not PARKOUR_GEARS[data.parkour.gear] then
 		data.parkour.gear = "none"
 	end

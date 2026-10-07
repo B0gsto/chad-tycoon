@@ -23,14 +23,14 @@
 	                on a treadmill an "x{multiplier} SPEED" tag rides above the head.
 	  Treadmills    the Texture(s) on each "Belt" (inside models tagged "CardioTreadmill")
 	                scroll backwards under the runner (OffsetStudsV); the belt under the
-	                local player scrolls faster. While standing on a belt the character
-	                turns to the belt's LookVector and plays its own run animation in
-	                place (Animate.run.RunAnim), with dust puffs and the odd sweat drop.
+	                local player scrolls at their WalkSpeed. While standing on a belt the
+	                character turns to the belt's LookVector and plays its own run
+	                animation in place (Animate.run.RunAnim) at WalkSpeed / 16 speed, with dust puffs and the odd sweat drop.
 	  Speed         radial speed lines (a pooled ScreenGui under the HUD) and a gentle FOV
 	                kick, both scaling with the horizontal speed above ~50 studs/s; reduced
 	                motion skips the FOV and halves the lines.
 	  Bursts        stage clear: stars and confetti (bigger on a first clear), finish: a
-	                large ring of both, checkpoint: sparkles, fall: a landing ring + puff,
+	                large ring of both, fall: a landing ring + puff,
 	                upgrade: sparkles over the upgrade pad (Fx.Sprites, budgeted).
 	  Doors         timed exit doors (parts tagged "CardioDoor", attrs DoorOpen, DoorPeriod,
 	                DoorPhase: open while ((t + phase) % period) < open, t = server time) drive
@@ -96,6 +96,7 @@ local POP_LIFE = 0.9
 local POP_COLOR = Color3.fromRGB(176, 92, 255)
 local SNEAKER_COLOR = Color3.fromRGB(255, 70, 80)
 local BELT_SPEED = 6 -- studs/s for treadmills nobody local is on
+local RUN_ANIM_MAX = 4 -- fastest run-in-place playback (x the 16 studs/s pace)
 local TAU = math.pi * 2
 
 local RAINBOW: { Color3 } = {
@@ -538,10 +539,11 @@ local function stepTreadmills(dt: number, now: number, humanoid: Humanoid?, root
 	end
 	local camera = Workspace.CurrentCamera
 	local eye = if camera then camera.CFrame.Position else Vector3.zero
-	local level = num(snap.treadmill, 0)
+	-- The belt under you scrolls at your own WalkSpeed, so faster runners visibly run faster.
+	local walk = if humanoid then math.max(humanoid.WalkSpeed, BELT_SPEED) else BELT_SPEED
 	for _, t in treadmills do
 		if #t.textures > 0 and t.belt.Parent and (t.belt.Position - eye).Magnitude < 180 then
-			local speed = if t == on then 10 + level * 0.8 else BELT_SPEED
+			local speed = if t == on then walk else BELT_SPEED
 			t.phase += dt * speed * t.dir
 			for _, texture in t.textures do
 				local tile = math.max(texture.StudsPerTileV, 0.1)
@@ -562,7 +564,8 @@ local function stepTreadmills(dt: number, now: number, humanoid: Humanoid?, root
 			if not track.IsPlaying then
 				track:Play(0.2)
 			end
-			track:AdjustSpeed(1.15 + level * 0.06)
+			-- The run cycle is paced for 16 studs/s (as Animate does): match the WalkSpeed.
+			track:AdjustSpeed(math.clamp(walk / 16, 1, RUN_ANIM_MAX))
 		end
 		-- Turn to face along the belt.
 		local fwd = on.belt.CFrame.LookVector
@@ -1215,11 +1218,6 @@ function CardioFx.onNotify(p: any)
 		local pos = playerPos()
 		if pos then
 			burst(pos, if p.first == true then 14 else 7, if p.first == true then 6 else 4, p.first == true)
-		end
-	elseif event == "checkpoint" then
-		local pos = playerPos()
-		if pos then
-			sparkle(pos + Vector3.new(0, 1, 0), 6, W.Mint or WHITE)
 		end
 	elseif event == "fall" then
 		task.delay(0.35, function()

@@ -1,11 +1,14 @@
 # Sky obby
 
 The parkour becomes a classic rainbow **sky obby**: one continuous candy-coloured course high above
-the clouds, numbered stages, floating green islands with lighthouses, windmills and trees, a
-hot-air balloon, a top progress bar of player heads, a stage leaderboard, a Skip Stage button and
+the clouds, floating green islands with lighthouses, windmills and trees, a
+hot-air balloon, a top progress bar of player heads, a stage leaderboard, a Skip Map button and
 a gear hotbar (speed coil, jump coil, gravity coil) the player chooses from. The ten themed maps
 stay as the ten sections (worlds) of the obby and the map picker still picks where to start.
 This file is the contract between the parts (see docs/parkour-maps.md for the previous layer).
+
+**Round 4 (current): no checkpoints.** See "No checkpoints" at the end: it overrides every
+checkpoint, per-checkpoint stage and Skip Stage rule in the earlier sections.
 
 | Part | Owns |
 |---|---|
@@ -134,3 +137,39 @@ This file is the contract between the parts (see docs/parkour-maps.md for the pr
 - **Flicker**: no two coplanar faces anywhere in the obby builders (lips, undersides, stripes,
   decals: offset by 0.05), no overlapping translucent parts (clouds and foam become opaque
   Transparency 0, or non-overlapping), blink pads fade via Transparency only on one part.
+
+## No checkpoints (round 4, owner's decision)
+
+There are no checkpoints inside a map. Each of the ten maps is a section of the obby and the map
+picker picks where to start; falling sends the player back to the **start of the map they are on**.
+
+- **Course**: no `checkpoint` elements. Where the generator placed them it now places a plain
+  wide square `pad` named `"RestDeck"` (same size and spot, so the layout and every fairness
+  check are unchanged; rainbow coloured, chevron toward the next pad, never carries lava).
+  `CHECKPOINTS`, `CHECKPOINT_COUNT`, `MIN_LEG_SECONDS`, `legLength`, `onCheckpoint` and `stageOf`
+  are gone. New: `level.PATH_LENGTH` (`Course.pathLength(level)`, start deck to finish deck along
+  PATH) and `level.MIN_SECONDS = PATH_LENGTH / MAX_PLAUSIBLE_SPEED`. `Course.respawn(level)` is
+  always the start deck. `Course.levelOfStage(stage) -> level`.
+- **Stages are maps**: map n is stage n (`STAGE_FIRST = n`, `STAGE_LAST = n + 1`), and
+  `Course.STAGE_COUNT = LEVEL_COUNT + 1` (map 10's finish). Stage numbers are progress labels
+  (progress bar, STAGE board), never a saved respawn spot. Unlocking and saving stays per map
+  (finishing map n unlocks n + 1 in the picker).
+- **Server**: `Course.inWater` (fell) and `Course.inKill` (lava) teleport to the map's start deck
+  and notify `{ event = "respawn", index = 0, stage = STAGE_FIRST, reason? }`; the clock keeps
+  running. No "checkpoint" notify, no `ModeCheckpoint` effect. Payload fields `checkpoints` and
+  `index` stay, always 0, for older client code.
+- **Anti-cheat**: `Rules.finish` checks one start-to-finish minimum, `MIN_SECONDS` (scaled by
+  28/16 when the speed coil was worn); the only invalid reason is `"fast"`.
+- **Skip Map** (was Skip Stage): the same cash action `ParkourSkip` and cost
+  (`Economy.parkourSkipCost`). It finishes the current map as an assisted run (teleport under the
+  finish arch: it pays, counts the clear and unlocks the next map, no best time or board entry)
+  and then starts a run on the next map's start deck; on map 10 it just finishes. Notify
+  `{ event = "skip", level, stage = STAGE_LAST }`. It is a cash action, so no Robux receipts are
+  involved.
+- **Saved data**: `profile.parkour.stage` is now in map units (0..11) and `stageMaps = true`
+  marks it. Saves without the marker (checkpoint-era stages) are rebuilt on load from the maps
+  cleared in a row from map 1 (cleared n: stage n + 1; none cleared but a stage: 1; never ran: 0).
+- **World**: no arrow pads, flags or `Checkpoint` parts; the `Level<i>` folder loses its
+  `Checkpoints` attribute (`StageFirst` / `StageLast` stay).
+- **Client**: ObbyHud shows "MAP n / 10" and a "SKIP MAP $X" button; Fx.Modes drops the
+  next-flag pulse and the checkpoint pop, and the idle hint points toward the finish deck.

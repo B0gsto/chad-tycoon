@@ -21648,9 +21648,11 @@ export type Profile = {
 	-- passed (and PvP wins paid), pvpWins / pvpPlayed = PvP duels won / fought.
 	-- Parkour per level (dense, PARKOUR_LEVELS long, 0 = never): best seconds and finishes.
 	-- modes.parkour keeps the shared reward cooldown and mirrors level 1 for the old UI.
-	-- stage = highest global sky-obby stage reached (0 = never ran); gear = the chosen
-	-- coil ("none" | "speed" | "jump" | "gravity", worn only during runs).
-	parkour: { best: { number }, clears: { number }, stage: number, gear: string },
+	-- stage = highest sky-obby stage reached (0 = never ran; one stage per map since the
+	-- checkpoints went: map n is stage n, finishing map 10 is 11); stageMaps = the stage is
+	-- in those units (older saves counted checkpoints and are rebuilt on load); gear = the
+	-- chosen coil ("none" | "speed" | "jump" | "gravity", worn only during runs).
+	parkour: { best: { number }, clears: { number }, stage: number, stageMaps: boolean, gear: string },
 	-- Cardio (keyboard runner): Speed earned (permanent, never goes down), highest safe zone
 	-- reached (0..CARDIO_STAGES), treadmill level (0..CARDIO_TREADMILL_MAX), safe-zone arrivals
 	-- and the player's own max WalkSpeed (0 = none, else 16..CARDIO_WALK_CAP).
@@ -21723,7 +21725,7 @@ function DataService.defaultProfile(): Profile
 		starterGranted = false,
 		onboarding = 0,
 		badges = {},
-		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, gear = "none" },
+		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, stageMaps = true, gear = "none" },
 		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0 },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
@@ -21838,7 +21840,19 @@ local function reconcile(data: any): Profile
 		data.parkour[key] = fixed
 	end
 	local stage = data.parkour.stage
-	data.parkour.stage = if type(stage) == "number" and stage == stage and stage >= 0 and stage ~= math.huge then math.floor(stage) else 0
+	stage = if type(stage) == "number" and stage == stage and stage >= 0 and stage ~= math.huge then math.floor(stage) else 0
+	if data.parkour.stageMaps ~= true then
+		-- Saves from the checkpoint days: `stage` counted checkpoints along the chain. Rebuild
+		-- it in map units from the maps cleared in a row from map 1 (the start of the next
+		-- map is reached; all ten cleared is the last finish, PARKOUR_LEVELS + 1).
+		local cleared = 0
+		while cleared < PARKOUR_LEVELS and data.parkour.clears[cleared + 1] > 0 do
+			cleared += 1
+		end
+		stage = if cleared > 0 then cleared + 1 elseif stage > 0 then 1 else 0
+		data.parkour.stageMaps = true
+	end
+	data.parkour.stage = math.min(stage, PARKOUR_LEVELS + 1)
 	if not PARKOUR_GEARS[data.parkour.gear] then
 		data.parkour.gear = "none"
 	end
@@ -22516,7 +22530,8 @@ end)
 	  (0 = the Warm-Up lobby, default; at most profile.cardio.bestStage). Starting again restarts.
 	- Steps: every CardioRules.KEY_STEP studs of ground run over a key (server-measured, clamped
 	  to what the current WalkSpeed allows) add stepMultiplier(bestStage, treadmill) Speed.
-	  Standing on a treadmill adds treadmillRate(zone, treadmill) Speed per second instead.
+	  Standing on a treadmill adds treadmillRate(zone, treadmill, speed) Speed per second instead
+	  (it grows with the player's Speed).
 	  Speed (profile.cardio.speed) is permanent; in a run, WalkSpeed = CardioRules.walkSpeed(speed)
 	  through the Humanoid "BaseWalkSpeed" attribute (Speedy Sneakers still multiplies on top),
 	  lowered to the player's own cap if set.
@@ -22526,9 +22541,10 @@ end)
 	- Steps are measured on the dense key carpet (CardioLayout.KEY.size studs) but paid per
 	  CardioRules.KEY_STEP (8) studs, i.e. one step per ~two keys. Every key counts: bridge
 	  sills, run-up pieces, jump / blink / mover / end platforms and decor blocks.
-	- Checkpoints only count forward; feet below CardioLayout.killYAt(x) (the room's killY, just
+	- No mid-stage checkpoints: feet below CardioLayout.killYAt(x) (the room's killY, just
 	  above a bridge room's hazard floor, so landing on the hazard is a fall) send the player
-	  back to the last one. Reaching safe zone n (once per run) pays Economy.modeReward x
+	  back to the start of the stage being run, i.e. the spawn of the safe zone before it
+	  (zone n - 1 for bridge room n; the lobby for stage 1). Reaching safe zone n (once per run) pays Economy.modeReward x
 	  stageBonus(n): the first time ever (n > bestStage) is a first clear (raises bestStage and with it the
 	  step multiplier), later arrivals pay on the shared cooldown (modes.cardio.lastRewardAt).
 	  Safe zone 10 is the FINISH; the run goes on after it.
@@ -22541,18 +22557,16 @@ end)
 	  { event = "stage", stage, name, first, cash, full, cooldownEnds, bestStage, multiplier }
 	  { event = "finish", stage = 10, first, cash, full, cooldownEnds, bestStage, multiplier }
 	                                  (safe zone 10 sends "finish" instead of "stage")
-	  { event = "checkpoint", stage, index }      mid-stage checkpoint (safe zones send "stage")
-	  { event = "fall", stage, index }            back at that checkpoint
+	  { event = "fall", stage }                   back at safe zone `stage`'s spawn
 	  { event = "upgrade", level, cost, rate, multiplier, nextCost? }
 	  { event = "refused", reason, cost? }        upgrade refused: "run" | "far" | "max" | "cash"
 	  { event = "stop", reason }
 	Snapshot: running, speed, walkSpeed (effective base, capped), maxWalkSpeed (uncapped),
 	speedCap (nil when none), multiplier, bestStage, treadmill, treadmillMax, treadmillRate,
 	nextCost, stage, onTreadmill, cooldownEnds, stageCount, needs, names.
-	Effects: "CardioSteps" { gained, speed, walkSpeed, treadmill, multiplier } (at most ~4 per
-	second while gaining; speed and gained are whole Speed, treadmill is true on a belt,
-	multiplier is the step multiplier), "ModeSplash" { pos } on a fall, "ModeCheckpoint"
-	{ pos, index } on a mid-stage checkpoint, "ModeFinish" { pos, newBest } on a first clear,
+	Effects: "CardioSteps" { gained, speed, walkSpeed, treadmill, multiplier, rate } (at most ~4
+	per second while gaining; speed and gained are whole Speed, treadmill is true on a belt,
+	multiplier is the step multiplier, rate the current treadmillRate), "ModeSplash" { pos } on a fall, "ModeFinish" { pos, newBest } on a first clear,
 	"Cash" { amount, source = "Mode", padPos } when cash is paid.
 ]]
 
@@ -22601,8 +22615,6 @@ for n, s in CardioRules.STAGES do
 end
 
 type State = {
-	-- Checkpoint returned to after a fall.
-	checkpoint: CardioLayout.Checkpoint,
 	-- Safe zones reached this run (reward once per run each).
 	arrived: { [number]: boolean },
 	lastPos: Vector3?,
@@ -22625,13 +22637,9 @@ local function vec(p: { x: number, y: number, z: number }): Vector3
 	return Vector3.new(p.x, p.y, p.z)
 end
 
-local function zoneCheckpoint(stage: number): CardioLayout.Checkpoint
-	for _, c in LAYOUT.checkpoints do
-		if c.stage == stage and c.index == 0 then
-			return c
-		end
-	end
-	return LAYOUT.checkpoints[1]
+-- Spawn point of safe zone `stage` (0 = lobby): the start of stage + 1.
+local function zoneSpawn(stage: number): CardioLayout.Point
+	return CardioLayout.spawn(stage) or LAYOUT.zones[1].spawn
 end
 
 local function inBounds(x: number, z: number, margin: number): boolean
@@ -22735,7 +22743,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		return r
 	end
 
-	local function teleportTo(player: Player, state: State, c: CardioLayout.Checkpoint)
+	local function teleportTo(player: Player, state: State, c: CardioLayout.Point)
 		GameModes.teleport(player, vec(c), FORWARD)
 		state.lastPos = nil
 		state.stepDist = 0
@@ -22766,10 +22774,8 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			end
 			stage = math.floor(asked)
 		end
-		local checkpoint = zoneCheckpoint(stage)
 		local t = now()
 		local state: State = {
-			checkpoint = checkpoint,
 			arrived = { [stage] = true },
 			lastPos = nil,
 			lastT = t,
@@ -22785,7 +22791,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		}
 		runs[player] = state
 		-- The arena is far out at sea: a run always begins on its deck.
-		teleportTo(player, state, checkpoint)
+		teleportTo(player, state, zoneSpawn(stage))
 		local humanoid = humanoidOf(player)
 		if humanoid then
 			humanoid:SetAttribute("BaseWalkSpeed", state.walk)
@@ -22904,24 +22910,22 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			return
 		end
 		state.outsideSince = nil
+		-- The last safe zone passed (the HUD shows stage + 1 as the stage being run).
+		state.stage = CardioLayout.startStageAt(x)
 		local killY = CardioLayout.killYAt(x)
 		if y < killY then
-			local c = state.checkpoint
+			-- No checkpoints: back to the start of the stage, the safe zone before it.
 			GameModes.effect(player, "ModeSplash", { pos = Vector3.new(x, killY - CardioLayout.KILL_ABOVE, z) })
-			teleportTo(player, state, c)
+			teleportTo(player, state, zoneSpawn(state.stage))
 			chaser.stop(player, "fall") -- CardioChase hook
-			GameModes.notify(player, "fall", ID, { stage = c.stage, index = c.index })
+			GameModes.notify(player, "fall", ID, { stage = state.stage })
 			return
 		end
-		-- The last safe zone passed (the HUD shows stage + 1 as the stage being run): in bridge
-		-- room n that is n - 1, not stageAt's n.
-		local room = CardioLayout.roomAt(x)
-		state.stage = if room and room.kind == "bridge" then room.stage - 1 else CardioLayout.stageAt(x)
 		-- CardioChase hook begin: caught by the chaser -> back to the previous safe zone.
 		local caughtTo = chaser.tick(player, x, z, t)
 		if caughtTo then
-			state.checkpoint = zoneCheckpoint(caughtTo)
-			teleportTo(player, state, state.checkpoint)
+			state.stage = caughtTo
+			teleportTo(player, state, zoneSpawn(caughtTo))
 			return
 		end
 		-- CardioChase hook end
@@ -22934,7 +22938,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		if zoneStage then
 			state.treadmillZone = zoneStage
 			state.stepDist = 0
-			rec.speed += CardioRules.treadmillRate(zoneStage, rec.treadmill) * dt
+			rec.speed += CardioRules.treadmillRate(zoneStage, rec.treadmill, rec.speed) * dt
 		else
 			local last = state.lastPos
 			if last and CardioLayout.isOverKey(x, y, z, t) then
@@ -22966,21 +22970,14 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 					walkSpeed = state.walk,
 					treadmill = state.onTreadmill,
 					multiplier = multiplierOf(session),
+					rate = CardioRules.treadmillRate(state.treadmillZone, rec.treadmill, rec.speed),
 				})
 				state.shownSpeed = shown
 				state.lastEffectAt = t
 			end
 		end
 
-		-- Checkpoints (forward only) and safe-zone arrivals.
-		local c = CardioLayout.checkpointAt(x, z, y)
-		if c and c.order > state.checkpoint.order then
-			state.checkpoint = c
-			if c.index > 0 then
-				GameModes.effect(player, "ModeCheckpoint", { pos = vec(c), index = c.index })
-				GameModes.notify(player, "checkpoint", ID, { stage = c.stage, index = c.index })
-			end
-		end
+		-- Safe-zone arrivals (paid on reaching the deck; there is no pad to step on).
 		local zone = CardioLayout.zoneAt(x, z, y)
 		if zone and zone.stage >= 1 and not state.arrived[zone.stage] then
 			state.arrived[zone.stage] = true
@@ -23016,7 +23013,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			bestStage = if rec then rec.bestStage else 0,
 			treadmill = level,
 			treadmillMax = CardioRules.TREADMILL_MAX,
-			treadmillRate = CardioRules.treadmillRate(if state then state.treadmillZone else 0, level),
+			treadmillRate = CardioRules.treadmillRate(if state then state.treadmillZone else 0, level, speed),
 			nextCost = if session then nextCostOf(session) else nil,
 			stage = if state then state.stage else 0,
 			onTreadmill = if state then state.onTreadmill else false,
@@ -23066,7 +23063,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		GameModes.notify(player, "upgrade", ID, {
 			level = rec.treadmill,
 			cost = cost,
-			rate = CardioRules.treadmillRate(0, rec.treadmill),
+			rate = CardioRules.treadmillRate(0, rec.treadmill, rec.speed),
 			multiplier = multiplierOf(session),
 			nextCost = nextCostOf(session),
 		})
@@ -23120,8 +23117,8 @@ return Cardio
 
 	A chase stage's SECTION is its bridge room's path (CardioLayout platforms of stage n: west
 	sill, run-up, jump platforms, end platform, east sill). Walking TRIGGER studs onto the
-	run-up (its first "run" piece starts at `x0`; within TRIGGER_WINDOW studs past that, so
-	respawning at a mid-stage checkpoint does not start one) begins a chase: a big Chad of
+	run-up (its first "run" piece starts at `x0`; within TRIGGER_WINDOW studs past that, so a
+	teleport deep into the stage does not start one) begins a chase: a big Chad of
 	TUNING[n].tier, scaled TUNING[n].scale, appears in the west doorway (`startX`) and, after
 	`headStart` seconds, runs along the path's CENTRE LINE `line` (vertices { s, x, z, half }:
 	every surface's centre from x0 to x1, joined straight over gaps and the run-up's jog; s =
@@ -23504,7 +23501,7 @@ return CardioChase
 --[[
 	CardioLayout: pure, deterministic layout of the CARDIO keyboard runner (no Roblox APIs,
 	no math.random; unit-tested in tests/cardio.luau), shared by World.CardioTrack (builds it),
-	Modes.Cardio (teleports, steps, treadmills, checkpoints, safe zones, falls) and
+	Modes.Cardio (teleports, steps, treadmills, safe zones, falls) and
 	Modes.CardioChase.
 
 	THEMED ROOMS along +X, centred on z = ORIGIN.z, from ORIGIN.x to at most X_END. `rooms`
@@ -23516,7 +23513,7 @@ return CardioChase
 	                    height, crossed by a NARROW KEY BRIDGE Rules.STAGES[n].width wide
 	                    (9 keys on stage 1 .. 4 keys from stage 8). Its west and east walls are
 	                    DOOR_WALL (= one key) thick with a doorway each (`doors`);
-	    safe zone n     a full key-carpet room (treadmills, WIN pad; zone 10 = FINISH) between
+	    safe zone n     a full key-carpet room (treadmills; zone 10 = FINISH) between
 	                    bridge room n's east wall and bridge room n+1's west wall.
 	A bridge room's walkable path, in order (all `platforms`, x-disjoint and increasing):
 	  "sill"  one key long, door-width wide: the floor of the west doorway (inside the wall);
@@ -23630,7 +23627,6 @@ CardioLayout.PROPS = { floor = 26, wall = 8, blocks = 4, edgeFloor = 9, wallGrou
 -- Clearance (studs) between floor props / blocks and the path's footprint (incl. gaps).
 CardioLayout.PROP_CLEAR = 4
 CardioLayout.TREADMILL = { length = 10, width = 6, height = 1.2 }
-CardioLayout.WIN_PAD = 8
 CardioLayout.UPGRADE_PAD = 6
 -- Stage banner centre height above the deck (over the west doorway).
 CardioLayout.SIGN_HEIGHT = 24
@@ -23846,8 +23842,8 @@ export type Zone = {
 	z0: number,
 	z1: number,
 	top: number,
-	checkpoint: Point,
-	winPad: Pad?,
+	-- Where a run started here, a fall in stage + 1 and a catch put you (on a key centre).
+	spawn: Point,
 	treadmills: { Treadmill },
 	upgradePad: Pad?,
 }
@@ -23872,21 +23868,6 @@ export type Platform = {
 	phase: number?,
 	travel: number?,
 	period: number?,
-}
-
--- Checkpoints in run order: safe zones (index 0) and mid-stage platforms (index = platform).
--- Standing inside the box (x0..x1, z0..z1) reaches it; (x, y, z) is where a fall returns you.
-export type Checkpoint = {
-	order: number,
-	stage: number,
-	index: number,
-	x: number,
-	y: number,
-	z: number,
-	x0: number,
-	x1: number,
-	z0: number,
-	z1: number,
 }
 
 -- Stage banner: (x, y, z) is its centre, inside bridge room n just past the west doorway;
@@ -23988,7 +23969,6 @@ export type Layout = {
 	zones: { Zone },
 	-- Every walkable bridge surface in course order; platforms[id].id == id.
 	platforms: { Platform },
-	checkpoints: { Checkpoint },
 	signs: { Sign },
 	walls: { Wall },
 	bases: { Base },
@@ -24057,7 +24037,6 @@ function CardioLayout.generate(): Layout
 	local keys: { Key } = {}
 	local zones: { Zone } = {}
 	local platforms: { Platform } = {}
-	local checkpoints: { Checkpoint } = {}
 	local signs: { Sign } = {}
 	local walls: { Wall } = {}
 	local bases: { Base } = {}
@@ -24151,23 +24130,14 @@ function CardioLayout.generate(): Layout
 		})
 	end
 
-	local function addCheckpoint(stage: number, index: number, x: number, y: number, z: number, box: Surface)
-		-- Snap to a key centre: a respawn on a key seam drops the Humanoid's floor ray between
-		-- the caps, so the character sinks into the keys.
-		x = box.x0 + (math.floor((x - box.x0) / K) + 0.5) * K
-		z = box.z0 + (math.floor((z - box.z0) / K) + 0.5) * K
-		table.insert(checkpoints, {
-			order = #checkpoints + 1,
-			stage = stage,
-			index = index,
-			x = x,
+	-- Snap a spawn to a key centre: a respawn on a key seam drops the Humanoid's floor ray
+	-- between the caps, so the character sinks into the keys.
+	local function spawnOn(box: Surface, x: number, y: number, z: number): Point
+		return {
+			x = box.x0 + (math.floor((x - box.x0) / K) + 0.5) * K,
 			y = y,
-			z = z,
-			x0 = box.x0,
-			x1 = box.x1,
-			z0 = box.z0,
-			z1 = box.z1,
-		})
+			z = box.z0 + (math.floor((z - box.z0) / K) + 0.5) * K,
+		}
 	end
 
 	local function addWall(
@@ -24234,15 +24204,14 @@ function CardioLayout.generate(): Layout
 			z0 = z0,
 			z1 = z0 + wide * K,
 			top = O.y,
-			checkpoint = { x = x0 + 6, y = O.y + 3, z = O.z },
-			winPad = nil,
+			spawn = { x = x0 + 6, y = O.y + 3, z = O.z },
 			treadmills = {},
 			upgradePad = nil,
 		}
 		table.insert(zones, zone)
 		local box = { x0 = zone.x0, x1 = zone.x1, z0 = zone.z0, z1 = zone.z1, top = O.y, stage = stage }
 		addBase(box, 0)
-		addCheckpoint(stage, 0, zone.checkpoint.x, zone.checkpoint.y, zone.checkpoint.z, box)
+		zone.spawn = spawnOn(box, zone.spawn.x, zone.spawn.y, zone.spawn.z)
 		addRoom(if stage == 0 then "lobby" else "zone", stage, zone.x0, zone.x1, HALF, O.y + CardioLayout.ZONE_WALL_HEIGHT)
 		return zone
 	end
@@ -24494,10 +24463,7 @@ function CardioLayout.generate(): Layout
 				p.period = m.period
 				p.phase = round1(rand() * m.period)
 			end
-			local box = platform(p)
-			if s.checkpointEvery > 0 and k % s.checkpointEvery == 0 and kind == "key" then
-				addCheckpoint(n, k, cur + 4, top + 3, zc, box)
-			end
+			platform(p)
 			prevLat, prevW = lat, w
 			cur += s.plat
 		end
@@ -24733,7 +24699,6 @@ function CardioLayout.generate(): Layout
 		local size = if n == Rules.STAGE_COUNT then CardioLayout.FINISH_KEYS else CardioLayout.ZONE_KEYS
 		local zone = deck(n, cur, size.long, size.wide)
 		local mid = zone.x0 + CardioLayout.ZONE_KEYS.long * K / 2
-		zone.winPad = { x = mid, z = O.z, size = CardioLayout.WIN_PAD }
 		for _, dz in { -29, -17, 17, 29 } do
 			table.insert(zone.treadmills, { x = mid, y = belt, z = O.z + dz, yaw = face })
 		end
@@ -24770,7 +24735,6 @@ function CardioLayout.generate(): Layout
 		keys = keys,
 		zones = zones,
 		platforms = platforms,
-		checkpoints = checkpoints,
 		signs = signs,
 		walls = walls,
 		bases = bases,
@@ -24821,10 +24785,18 @@ function CardioLayout.zone(stage: number): Zone?
 	return LAYOUT.zones[stage + 1]
 end
 
--- Where a fall (or "Start at") puts you for the safe zone of `stage` (0 = lobby).
-function CardioLayout.checkpoint(stage: number): Point?
+-- The spawn of the safe zone of `stage` (0 = lobby): where "Start at" stage puts you, and
+-- where a fall or a catch in stage + 1 sends you back (there are no mid-stage checkpoints).
+function CardioLayout.spawn(stage: number): Point?
 	local z = LAYOUT.zones[stage + 1]
-	return if z then z.checkpoint else nil
+	return if z then z.spawn else nil
+end
+
+-- The last safe zone passed at this X (the HUD runs stage + 1): n - 1 in bridge room n (not
+-- stageAt's n), else stageAt(x). A fall or a catch here respawns at spawn(startStageAt(x)).
+function CardioLayout.startStageAt(x: number): number
+	local room = CardioLayout.roomAt(x)
+	return if room and room.kind == "bridge" then room.stage - 1 else CardioLayout.stageAt(x)
 end
 
 -- The safe zone whose deck is under (x, z); with y, only when the feet are near its top.
@@ -24848,16 +24820,6 @@ function CardioLayout.stageAt(x: number): number
 		end
 	end
 	return Rules.STAGE_COUNT
-end
-
--- The checkpoint whose box contains (x, z) with the feet near its top, if any.
-function CardioLayout.checkpointAt(x: number, z: number, y: number): Checkpoint?
-	for _, c in LAYOUT.checkpoints do
-		if x >= c.x0 and x <= c.x1 and z >= c.z0 and z <= c.z1 and y >= c.y - 5 and y <= c.y + 9 then
-			return c
-		end
-	end
-	return nil
 end
 
 -- Is a key solid at time t, and how far has it slid along its axis?
@@ -24980,10 +24942,11 @@ return CardioLayout
 	Progression check (a coarse 1 s simulation, also run in tests/cardio.luau): a player who
 	spends half the time running on keys (60% of the time actually stepping) and half on the
 	best treadmill they have reached, and buys one treadmill level every 4 minutes, reaches
-	  stage 2 ~1 min, 3 ~4 min, 4 ~9 min, 5 ~14 min, 6 ~19 min, 7 ~26 min, 8 ~32 min,
-	  9 ~41 min, 10 ~51 min.
+	  stage 2 ~1.5 min, 3 ~6 min, 4 ~12 min, 5 ~18 min, 6 ~23 min, 7 ~29 min, 8 ~34 min,
+	  9 ~41 min, 10 ~49 min (about 70% of the Speed from treadmills).
 	Step multiplier: (1 + 0.25 * bestStage) * (1 + 0.1 * treadmillLevel)  (x1 .. x7)
-	Treadmill rate:  1.5 * (1 + zoneStage)^1.3 * (1 + 0.25 * level)       Speed/s
+	Treadmill rate:  0.45 * (1 + zoneStage)^1.3 * (1 + 0.25 * level)
+	                 * max(1, (speed / 150)^0.25)                         Speed/s
 	Treadmill cost:  max(150 * (level + 1)^2, income * (120 + 24 * level)) cash for level -> level + 1
 ]]
 
@@ -25008,7 +24971,10 @@ CardioRules.REACH_SLACK = 1.5
 CardioRules.MAX_STEP_UP = 5
 
 CardioRules.TREADMILL_MAX = 10
-CardioRules.TREADMILL_BASE = 1.5
+CardioRules.TREADMILL_BASE = 0.45
+-- Treadmills grow with the runner: x max(1, (speed / SPEED_REF) ^ SPEED_EXP) (x1 .. ~x5.4).
+CardioRules.TREADMILL_SPEED_REF = 150
+CardioRules.TREADMILL_SPEED_EXP = 0.25
 CardioRules.TREADMILL_ZONE_EXP = 1.3
 CardioRules.TREADMILL_LEVEL_BONUS = 0.25
 CardioRules.STEP_STAGE_BONUS = 0.25
@@ -25043,8 +25009,6 @@ export type Stage = {
 	blinkPeriod: number?,
 	-- Sliding keys (side to side, +-travel studs over period seconds; nil before stage 6).
 	movers: Movers?,
-	-- A mid-stage checkpoint on every checkpointEvery-th platform (0 = safe zones only).
-	checkpointEvery: number,
 	-- Jump course length from the end of the stage's run-up carpet to this stage's safe zone,
 	-- studs (gaps + platforms; the run-up itself is laid out by CardioLayout).
 	length: number,
@@ -25062,8 +25026,7 @@ local function stage(
 	jumps: number,
 	rise: number,
 	blink: { number }?,
-	movers: Movers?,
-	checkpointEvery: number
+	movers: Movers?
 ): Stage
 	return {
 		n = 0,
@@ -25079,7 +25042,6 @@ local function stage(
 		blinkOn = if blink then blink[1] else nil,
 		blinkPeriod = if blink then blink[2] else nil,
 		movers = movers,
-		checkpointEvery = checkpointEvery,
 		length = 0,
 	}
 end
@@ -25087,16 +25049,16 @@ end
 CardioRules.STAGE_COUNT = 10
 -- stylua: ignore
 CardioRules.STAGES = {
-	stage("Home Row",         "Mint",      0,      7,  25.2, 25.2, 4, 0,   nil,          nil,                               2),
-	stage("Shift Street",     "Sunny",     150,    12, 22.4, 25.2, 4, 1,   nil,          nil,                               2),
-	stage("Tab Tunnel",       "Teal",      1100,   17, 22.4, 22.4, 4, 2,   nil,          nil,                               2),
-	stage("Caps Lock Canyon", "Orange",    3500,   22.5, 16.8, 22.4, 3, 2.5, { 2.2, 3.2 }, nil,                            2),
-	stage("Enter Expressway", "Pink",      8000,   28, 16.8, 22.4, 3, 3,   { 2.0, 3.0 }, nil,                               2),
-	stage("Backspace Bridge", "Blue",      15000,  33, 14, 16.8, 3, 3.5, { 1.9, 2.9 }, { travel = 8, period = 5 },        0),
-	stage("Function Falls",   "Grape",     27000,  39, 14, 16.8, 3, 4,   { 1.8, 2.8 }, { travel = 8, period = 4.5 },      0),
-	stage("Arrow Key Alley",  "Coral",     45000,  45, 11.2, 16.8, 3, 4.5, { 1.7, 2.7 }, { travel = 10, period = 4.2 },     0),
-	stage("Escape Heights",   "RedOrange", 77000,  52.5, 11.2, 16.8, 3, 5,  { 1.6, 2.6 }, { travel = 10, period = 4 },       0),
-	stage("Spacebar Skyway",  "Butter",    125000, 61, 11.2, 16.8, 3, 5,   { 1.5, 2.5 }, { travel = 12, period = 3.8 },     0),
+	stage("Home Row",         "Mint",      0,      7,  25.2, 25.2, 4, 0,   nil,          nil),
+	stage("Shift Street",     "Sunny",     150,    12, 22.4, 25.2, 4, 1,   nil,          nil),
+	stage("Tab Tunnel",       "Teal",      1100,   17, 22.4, 22.4, 4, 2,   nil,          nil),
+	stage("Caps Lock Canyon", "Orange",    3500,   22.5, 16.8, 22.4, 3, 2.5, { 2.2, 3.2 }, nil),
+	stage("Enter Expressway", "Pink",      8000,   28, 16.8, 22.4, 3, 3,   { 2.0, 3.0 }, nil),
+	stage("Backspace Bridge", "Blue",      15000,  33, 14, 16.8, 3, 3.5, { 1.9, 2.9 }, { travel = 8, period = 5 }),
+	stage("Function Falls",   "Grape",     27000,  39, 14, 16.8, 3, 4,   { 1.8, 2.8 }, { travel = 8, period = 4.5 }),
+	stage("Arrow Key Alley",  "Coral",     45000,  45, 11.2, 16.8, 3, 4.5, { 1.7, 2.7 }, { travel = 10, period = 4.2 }),
+	stage("Escape Heights",   "RedOrange", 77000,  52.5, 11.2, 16.8, 3, 5,  { 1.6, 2.6 }, { travel = 10, period = 4 }),
+	stage("Spacebar Skyway",  "Butter",    125000, 61, 11.2, 16.8, 3, 5,   { 1.5, 2.5 }, { travel = 12, period = 3.8 }),
 } :: { Stage }
 
 -- Smooth, increasing, diminishing-returns WalkSpeed for a Speed stat.
@@ -25197,11 +25159,14 @@ function CardioRules.stepMultiplier(bestStage: number, treadmillLevel: number): 
 	return (1 + CardioRules.STEP_STAGE_BONUS * b) * (1 + CardioRules.STEP_LEVEL_BONUS * l)
 end
 
--- Speed per second while standing on a treadmill in safe zone `zoneStage` (0 = lobby).
-function CardioRules.treadmillRate(zoneStage: number, level: number): number
+-- Speed per second while standing on a treadmill in safe zone `zoneStage` (0 = lobby) with
+-- `level` SPEED UP levels; grows on its own with the runner's current Speed (nil = 0).
+function CardioRules.treadmillRate(zoneStage: number, level: number, speed: number?): number
 	local z = math.clamp(math.floor(zoneStage), 0, CardioRules.STAGE_COUNT)
 	local l = math.clamp(math.floor(level), 0, CardioRules.TREADMILL_MAX)
-	return CardioRules.TREADMILL_BASE * (1 + z) ^ CardioRules.TREADMILL_ZONE_EXP * (1 + CardioRules.TREADMILL_LEVEL_BONUS * l)
+	local s = math.max(speed or 0, 0)
+	local grow = math.max(1, (s / CardioRules.TREADMILL_SPEED_REF) ^ CardioRules.TREADMILL_SPEED_EXP)
+	return CardioRules.TREADMILL_BASE * (1 + z) ^ CardioRules.TREADMILL_ZONE_EXP * (1 + CardioRules.TREADMILL_LEVEL_BONUS * l) * grow
 end
 
 -- Cash to raise the treadmill from `level` to level + 1: 2..5.6 minutes of income, never below
@@ -25290,7 +25255,7 @@ return Catalog
 	LEVEL 1 is hand-made (LEVEL1_ELEMENTS); LEVELS 2..10 are generated deterministically by
 	Course.generate(n) (own seeded LCG) from Course.TUNING[n], a difficulty table that
 	tightens every level: wider gaps, smaller discs, thinner beams, faster/longer movers,
-	faster spinners, fewer checkpoints, longer paths, bigger height changes and (from level 4)
+	faster spinners, fewer rest decks, longer paths, bigger height changes and (from level 4)
 	blink pads. Every jump stays fair for the default character WITHOUT Double Jump
 	(Course.maxGap). A generated path is a serpentine: lanes along local +-X joined by two
 	turn pads stepping local +Z; the finish deck is placed one more step +Z, so the next map
@@ -25306,21 +25271,24 @@ return Catalog
 	  PROPS       sky scenery (type Prop): floating islands beside the course (one carrying
 	              the map's landmark), clouds below, balloons above, map extras
 	  palette     Theme.World colour keys: { main, alt, checkpoint, mover, accent, blink }
+	              (`checkpoint` is the old name of the rest-deck colour slot)
 	              (picker cards and landmark tints; path tops are rainbow, see RAINBOW)
 	  ELEMENTS    every element (below); PATH = the `path` ones in walking order
-	  CHECKPOINTS checkpoint elements by index; CHECKPOINT_COUNT
 	  KILLS       the map's kill elements (lava), in ELEMENTS order
-	  STAGE_FIRST global stage of the start deck; checkpoint k is stage STAGE_FIRST + k;
-	  STAGE_LAST  the finish deck's stage (STAGE_FIRST + CHECKPOINT_COUNT + 1), which is the
-	              next map's STAGE_FIRST
+	  STAGE_FIRST the map's stage number: one stage per map (map n is stage n), a progress
+	              label only (no saved respawn spot: a fall always goes back to START)
+	  STAGE_LAST  the finish deck's stage (STAGE_FIRST + 1), which is the next map's
+	              STAGE_FIRST; map 10's finish is Course.STAGE_COUNT (LEVEL_COUNT + 1)
 	  START       { x, y, z, faceX, faceZ }: start deck spawn (feet) and facing
-	  FINISH      { x0, x1, z0, z1, y0, y1 }: feet inside it after the last checkpoint finish
+	  FINISH      { x0, x1, z0, z1, y0, y1 }: feet inside it finish the run
 	  FINISH_ARCH { x, y, z, faceX, faceZ }: arch centre on the finish deck top; its front
 	              faces the incoming runner (faceX/faceZ is that front's direction)
 	  WATER_BOX   { x0, x1, z0, z1, y0, y1 }: the cloud catch volume under the map
 	              (y0 = FLOOR_Y - 20, y1 = FLOOR_Y)
 	  BOUNDS      { x0, x1, z0, z1, y0, y1 }: outside it for LEAVE_SECONDS ends the run
-	  MIN_LEG_SECONDS  minimum seconds per checkpoint leg (anti-cheat)
+	  PATH_LENGTH horizontal studs from the start deck to the finish deck along PATH
+	  MIN_SECONDS minimum seconds for a start-to-finish run (PATH_LENGTH /
+	              MAX_PLAUSIBLE_SPEED, anti-cheat)
 	  TUNING      the knobs it was generated from (nil for level 1)
 
 	Element kinds (`path = true` elements are walked on, in PATH order). All have kind,
@@ -25330,9 +25298,9 @@ return Catalog
 	              gaps measure it like a box) or "hex" (a six-sided tile of circumradius r, a
 	              corner along X; gaps measure it like a disc of radius r, its reach from the
 	              flat sides, r * sqrt(3) / 2); optional `name` ("StartDeck", "FinishDeck",
-	              "Beam", "Bridge", ...)
-	  checkpoint  static square arrow pad (shape "box", sx = sz = 2 * r), numbered `index`
-	              1..n in course order, global `stage`
+	              "Beam", "Bridge", "RestDeck", ...). A "RestDeck" is a wide square box
+	              where the checkpoints used to be: a breather, NOT a checkpoint (there are
+	              no checkpoints: a fall sends the runner back to the map's start deck)
 	  mover       box platform (sx, sz) that moves: motion "slide" along unit `axis` {x,y,z}
 	              or "bob" (axis {0,1,0}) by +-`distance` studs around (x, y, z), one full
 	              cycle every `period` seconds; offset = distance * sin(2 pi t / period + phase)
@@ -25353,7 +25321,7 @@ return Catalog
 	              GetServerTimeNow()); otherwise non-collidable and faded. Never two in a row.
 
 	Colours: every pad/slide path element's `color` cycles Course.RAINBOW in walking order
-	along the whole obby (bridges included); checkpoints are "Checkpoint"; movers and blink
+	along the whole obby (bridges included, rest decks too); movers and blink
 	pads keep their map's mover/blink colour.
 ]]
 
@@ -25410,7 +25378,7 @@ Course.BOARD2 = { x = -Course.BOARD.x, z = Course.BOARD.z, faceX = -Course.BOARD
 Course.START_LINE2_X = Course.GATE2_X
 
 -- Falling in: feet below WATER_Y beyond the island's shore (horizontal distance from the
--- world origin greater than WATER_RADIUS) sends a running player back to their checkpoint.
+-- world origin greater than WATER_RADIUS) was the old sea fall (see SKY_Y / inWater).
 -- Holds for every level (all of them are far off the island).
 Course.WATER_Y = 1.5
 Course.WATER_RADIUS = 219
@@ -25428,7 +25396,7 @@ Course.WALK_SPEED = 16
 Course.SAFETY = 0.8
 
 -- Integrity: nobody moves along the course faster than this (studs/s, about twice a
--- Speedy Sneakers run), so each checkpoint-to-checkpoint leg has a minimum time.
+-- Speedy Sneakers run), so a start-to-finish run has a minimum time (MIN_SECONDS).
 Course.MAX_PLAUSIBLE_SPEED = 40
 
 Course.LEVEL_COUNT = 10
@@ -25513,12 +25481,12 @@ export type Tuning = {
 	discR: number,
 	beamW: number,
 	padSize: number,
-	checkpointR: number,
+	checkpointR: number, -- half the side of a rest deck
 	moverTravel: number,
 	moverPeriod: number,
 	spinSpeed: number,
 	spinBars: number,
-	checkpointEvery: number, -- path elements per checkpoint
+	checkpointEvery: number, -- path elements per rest deck
 	pathLength: number,
 	rise: number, -- largest height change per jump (up or down)
 	blinkOn: number?, -- seconds solid per cycle (nil = no blink pads)
@@ -25570,9 +25538,7 @@ export type Level = {
 	palette: { [string]: string },
 	ELEMENTS: { Element },
 	PATH: { Element },
-	CHECKPOINTS: { Element },
 	KILLS: { Element },
-	CHECKPOINT_COUNT: number,
 	STAGE_FIRST: number,
 	STAGE_LAST: number,
 	START: { x: number, y: number, z: number, faceX: number, faceZ: number },
@@ -25580,7 +25546,8 @@ export type Level = {
 	FINISH_ARCH: { x: number, y: number, z: number, faceX: number, faceZ: number },
 	WATER_BOX: Box,
 	BOUNDS: Box,
-	MIN_LEG_SECONDS: { number },
+	PATH_LENGTH: number,
+	MIN_SECONDS: number,
 	TUNING: Tuning?,
 }
 
@@ -25592,20 +25559,9 @@ local function disc(x: number, y: number, z: number, r: number, color: string): 
 	return { kind = "pad", shape = "disc", x = x, y = y, z = z, r = r, color = color, path = true }
 end
 
-local function checkpoint(index: number, x: number, y: number, z: number, r: number, color: string?): Element
-	return {
-		kind = "checkpoint",
-		shape = "box",
-		index = index,
-		x = x,
-		y = y,
-		z = z,
-		sx = 2 * r,
-		sz = 2 * r,
-		r = r,
-		color = color or "Checkpoint",
-		path = true,
-	}
+-- A wide square rest deck (2r by 2r) where the old checkpoints stood: a plain pad.
+local function restPad(x: number, y: number, z: number, r: number, color: string?): Element
+	return box(x, y, z, 2 * r, 2 * r, color or "Sunny", "RestDeck")
 end
 
 -- A hollow square tile walked on its frame (`width` studs wide) and a six-sided tile.
@@ -25626,16 +25582,16 @@ local LEVEL1_ELEMENTS = {
 	box(-197, 0.6, 0, 14, 14, "Sunny", "StartDeck"),
 	box(-210, 2.4, 0, 9, 14, "Butter"),
 	box(-221, 4.2, 0, 9, 14, "Sunny"),
-	checkpoint(1, -234, 5, 0, 6),
+	restPad(-234, 5, 0, 6),
 	-- Stepping discs.
 	disc(-247, 5, 4, 4.5, "Butter"),
 	disc(-257, 5.5, -3, 4.5, "Sunny"),
 	disc(-267, 6, 3, 4.5, "Butter"),
 	disc(-277, 6.5, -2, 4.5, "Sunny"),
-	checkpoint(2, -291, 7, 0, 6),
+	restPad(-291, 7, 0, 6),
 	-- Balance beam.
 	box(-309, 7, 0, 18, 4, "Butter", "Beam"),
-	checkpoint(3, -326, 7.5, 0, 6),
+	restPad(-326, 7.5, 0, 6),
 	-- A platform sliding back and forth along the course.
 	{
 		kind = "mover",
@@ -25653,7 +25609,7 @@ local LEVEL1_ELEMENTS = {
 		period = 5,
 		phase = 0,
 	},
-	checkpoint(4, -356, 8, 0, 6),
+	restPad(-356, 8, 0, 6),
 	-- Turn south: a deck with two slow sweeper bars to jump over.
 	box(-356, 8, -21, 14, 24, "Sunny", "SweeperDeck"),
 	{ kind = "spinner", x = -356, y = 8, z = -15, length = 12, speed = 1.2, phase = 0 },
@@ -25661,7 +25617,7 @@ local LEVEL1_ELEMENTS = {
 	-- Bounce pad up to the high return lane.
 	box(-356, 8, -39, 12, 10, "Butter", "BounceDeck"),
 	{ kind = "bounce", x = -356, y = 8, z = -39.5, r = 2.5, power = 78 },
-	checkpoint(5, -356, 17, -53, 6),
+	restPad(-356, 17, -53, 6),
 	-- Back east: a bobbing platform, then the wall-hop deck.
 	{
 		kind = "mover",
@@ -25683,7 +25639,7 @@ local LEVEL1_ELEMENTS = {
 	{ kind = "wall", x = -326, y = 17, z = -53, sx = 1.2, sz = 14, h = 2.4, color = "Teal" },
 	{ kind = "wall", x = -320, y = 17, z = -53, sx = 1.2, sz = 14, h = 2.4, color = "Teal" },
 	{ kind = "wall", x = -314, y = 17, z = -53, sx = 1.2, sz = 14, h = 2.4, color = "Teal" },
-	checkpoint(6, -298, 17, -53, 6),
+	restPad(-298, 17, -53, 6),
 	-- A platform sliding sideways across the lane.
 	{
 		kind = "mover",
@@ -25702,7 +25658,7 @@ local LEVEL1_ELEMENTS = {
 		phase = math.pi / 2,
 	},
 	box(-268, 16, -53, 12, 12, "Sunny"),
-	checkpoint(7, -254.5, 15, -53, 6),
+	restPad(-254.5, 15, -53, 6),
 	-- The big slide down to the finish deck.
 	box(-242.5, 15, -53, 9, 9, "Butter", "SlideTop"),
 	{
@@ -26409,7 +26365,7 @@ end
 -- Kill elements (lava) on map n's wide path decks, in its local frame: up to 1 + n // 3 of
 -- them (Course.killCount), at most KILL_PER_DECK per deck, KILL_SPACING studs clear of each
 -- other; fewer when the decks run out. A deck qualifies when it is a plain box pad (not the start/finish deck, a
--- checkpoint, mover, blink pad or ring) at least KILL_MIN_DECK long along the walking axis
+-- rest deck, mover, blink pad or ring) at least KILL_MIN_DECK long along the walking axis
 -- (the direction from the previous path element). A strip lies across the deck KILL_WIDTH
 -- wide, leaving KILL_CLEAR studs of the deck free on each side along the walking axis and
 -- KILL_GAP studs from every wall and bounce pad on it; a deck KILL_SLIDE_DECK long or more
@@ -26444,7 +26400,15 @@ local function placeKills(elements: { Element }, n: number, rand: () -> number):
 		end
 		local from = before
 		before = e
-		if not from or e.kind ~= "pad" or e.shape ~= "box" or e.name == "StartDeck" or e.name == "FinishDeck" or e.name == "Bridge" then
+		if
+			not from
+			or e.kind ~= "pad"
+			or e.shape ~= "box"
+			or e.name == "StartDeck"
+			or e.name == "FinishDeck"
+			or e.name == "Bridge"
+			or e.name == "RestDeck"
+		then
 			continue
 		end
 		local alongX = math.abs(e.x - from.x) >= math.abs(e.z - from.z)
@@ -26577,7 +26541,7 @@ local KINDS = { "pad", "disc", "beam", "slide", "bob", "spinner", "walls", "blin
 local LIVELY = { slide = true, bob = true, blink = true, ramp = true }
 
 local function finalize(level: Level)
-	level.PATH, level.CHECKPOINTS, level.KILLS = {}, {}, {}
+	level.PATH, level.KILLS = {}, {}
 	for _, element in level.ELEMENTS do
 		if element.path then
 			table.insert(level.PATH, element)
@@ -26585,15 +26549,9 @@ local function finalize(level: Level)
 		if element.kind == "kill" then
 			table.insert(level.KILLS, element)
 		end
-		if element.kind == "checkpoint" then
-			level.CHECKPOINTS[element.index :: number] = element
-		end
 	end
-	level.CHECKPOINT_COUNT = #level.CHECKPOINTS
-	level.MIN_LEG_SECONDS = {}
-	for k = 1, level.CHECKPOINT_COUNT + 1 do
-		level.MIN_LEG_SECONDS[k] = Course.legLength(level, k - 1, k) / Course.MAX_PLAUSIBLE_SPEED
-	end
+	level.PATH_LENGTH = Course.pathLength(level)
+	level.MIN_SECONDS = level.PATH_LENGTH / Course.MAX_PLAUSIBLE_SPEED
 end
 
 -- Lays out level n (2..LEVEL_COUNT) in its local frame from TUNING[n] and its map's recipe
@@ -26638,7 +26596,7 @@ local function generateLocal(n: number): Local
 		end
 		return left
 	end
-	local sinceCp, cpIndex, bounced, afterBounce = 0, 0, 0, false
+	local sinceCp, bounced, afterBounce = 0, 0, false
 	local plainPads = 0
 	while count < T.pathLength do
 		if turnLeft == 0 and room() <= 0 then
@@ -26649,7 +26607,7 @@ local function generateLocal(n: number): Local
 		if count == T.pathLength - 1 then
 			kind = "finish"
 		elseif sinceCp >= checkpointEvery - 1 then
-			kind = "checkpoint"
+			kind = "rest"
 		elseif turning then
 			kind = "pad"
 		elseif bounced < bounceCount and count >= T.pathLength * (bounced + 1) // (bounceCount + 1) and not afterBounce then
@@ -26666,7 +26624,7 @@ local function generateLocal(n: number): Local
 				and prev.y >= Y_MIN + 2.5
 				and (
 					(prev.kind == "pad" and prev.shape ~= "hex" and (prev.name == nil or prev.name == "Beam" or prev.name == "StartDeck"))
-					or prev.kind == "checkpoint"
+					or prev.name == "RestDeck"
 				)
 			local function weight(k: string): number
 				if (calm and LIVELY[k]) or (k == "ramp" and not rampOk) or (k == "blink" and not T.blinkOn) then
@@ -26729,9 +26687,8 @@ local function generateLocal(n: number): Local
 		local extras: { Element } = {}
 		if kind == "finish" then
 			e = box(0, 0, 0, 16, 14, pal.main, "FinishDeck")
-		elseif kind == "checkpoint" then
-			cpIndex += 1
-			e = checkpoint(cpIndex, 0, 0, 0, T.checkpointR, pal.checkpoint)
+		elseif kind == "rest" then
+			e = restPad(0, 0, 0, T.checkpointR, pal.checkpoint)
 		elseif kind == "disc" then
 			-- Every other round tile or so is a big hex.
 			e = if rand() < 0.45 then hex(0, 0, 0, round2(6 + rand()), colour) else disc(0, 0, 0, T.discR, colour)
@@ -26815,7 +26772,7 @@ local function generateLocal(n: number): Local
 			add(x)
 		end
 		afterBounce = kind == "bounce"
-		sinceCp = if kind == "checkpoint" then 0 else sinceCp + 1
+		sinceCp = if kind == "rest" then 0 else sinceCp + 1
 		if turning then
 			turnLeft -= 1
 			laneZ = e.z
@@ -26849,27 +26806,12 @@ local function generateLocal(n: number): Local
 	}
 end
 
--- Horizontal distance along the centres of consecutive path elements from checkpoint
--- `fromIndex` (0 = start deck) to checkpoint `toIndex` (CHECKPOINT_COUNT + 1 = finish deck).
-function Course.legLength(level: Level, fromIndex: number, toIndex: number): number
+-- Horizontal distance along the centres of consecutive path elements, start deck to finish
+-- deck (Level.PATH_LENGTH; MIN_SECONDS divides it by MAX_PLAUSIBLE_SPEED).
+function Course.pathLength(level: Level): number
 	local path = level.PATH
-	local first: number? = if fromIndex == 0 then 1 else nil
-	local last: number? = if toIndex > level.CHECKPOINT_COUNT then #path else nil
-	for i, element in path do
-		if element.kind == "checkpoint" then
-			if element.index == fromIndex then
-				first = i
-			end
-			if element.index == toIndex then
-				last = i
-			end
-		end
-	end
-	if not first or not last then
-		return 0
-	end
 	local total = 0
-	for i = first, last - 1 do
+	for i = 1, #path - 1 do
 		local a, b = path[i], path[i + 1]
 		total += math.sqrt((a.x - b.x) ^ 2 + (a.z - b.z) ^ 2)
 	end
@@ -27026,16 +26968,13 @@ do
 	for n, f in FRAMES do
 		f.ox, f.oz = round2(f.ox + shiftX), round2(f.oz + shiftZ)
 		f.stageFirst, f.rainbowFirst = stage, slot
-		local checkpoints, path = 0, 0
+		local path = 0
 		for _, e in LOCALS[n].elements do
 			if e.path then
 				path += 1
 			end
-			if e.kind == "checkpoint" then
-				checkpoints += 1
-			end
 		end
-		stage += checkpoints + 1
+		stage += 1
 		slot += path + Course.BRIDGE_STEPS
 	end
 	-- Map 10's finish deck.
@@ -27071,10 +27010,7 @@ local function place(L: Local, f: Frame): Level
 			end
 		end
 		if e.path then
-			if e.kind == "checkpoint" then
-				e.color = "Checkpoint"
-				e.stage = f.stageFirst + (e.index :: number)
-			elseif e.kind == "pad" or e.kind == "slide" then
+			if e.kind == "pad" or e.kind == "slide" then
 				e.color = rainbow(slot)
 			end
 			slot += 1
@@ -27095,12 +27031,6 @@ local function place(L: Local, f: Frame): Level
 	local hx, hz = (fin.sx :: number) / 2, (fin.sz :: number) / 2
 	local bounds = boxToWorld(f, L.bounds)
 	bounds.y0, bounds.y1 = Course.FLOOR_Y - 30, round2(L.top + f.oy)
-	local checkpoints = 0
-	for _, e in L.elements do
-		if e.kind == "checkpoint" then
-			checkpoints += 1
-		end
-	end
 	local level: Level = {
 		index = n,
 		name = Course.NAMES[n],
@@ -27114,17 +27044,16 @@ local function place(L: Local, f: Frame): Level
 		palette = Course.PALETTES[n],
 		ELEMENTS = L.elements,
 		PATH = {},
-		CHECKPOINTS = {},
 		KILLS = {},
-		CHECKPOINT_COUNT = 0,
 		STAGE_FIRST = f.stageFirst,
-		STAGE_LAST = f.stageFirst + checkpoints + 1,
+		STAGE_LAST = f.stageFirst + 1,
 		START = { x = s.x, y = s.y, z = s.z, faceX = faceX, faceZ = faceZ },
 		FINISH = { x0 = fin.x - hx, x1 = fin.x + hx, z0 = fin.z - hz, z1 = fin.z + hz, y0 = fin.y - 1, y1 = fin.y + 10 },
 		FINISH_ARCH = { x = archX, y = fin.y, z = archZ, faceX = archFaceX, faceZ = archFaceZ },
 		WATER_BOX = { x0 = bounds.x0, x1 = bounds.x1, z0 = bounds.z0, z1 = bounds.z1, y0 = Course.FLOOR_Y - 20, y1 = Course.FLOOR_Y },
 		BOUNDS = bounds,
-		MIN_LEG_SECONDS = {},
+		PATH_LENGTH = 0,
+		MIN_SECONDS = 0,
 		TUNING = L.tuning,
 	}
 	finalize(level)
@@ -27223,24 +27152,10 @@ function Course.level(i: number): Level
 	return Course.LEVELS[math.clamp(math.floor(i), 1, Course.LEVEL_COUNT)]
 end
 
--- Global stage of checkpoint `checkpointIndex` on `level` (0 = start deck,
--- CHECKPOINT_COUNT + 1 = finish deck).
-function Course.stageOf(level: Level, checkpointIndex: number): number
-	return level.STAGE_FIRST + math.clamp(math.floor(checkpointIndex), 0, level.CHECKPOINT_COUNT + 1)
-end
-
--- The level and checkpoint index of global stage `stage` (clamped to 1..STAGE_COUNT). A
--- stage shared by a finish deck and the next start deck belongs to the next map (index 0);
--- the last stage is map 10's finish deck (CHECKPOINT_COUNT + 1).
-function Course.levelOfStage(stage: number): (Level, number)
-	local s = math.clamp(math.floor(stage), 1, Course.STAGE_COUNT)
-	for _, level in Course.LEVELS do
-		if s < level.STAGE_LAST then
-			return level, s - level.STAGE_FIRST
-		end
-	end
-	local last = Course.LEVELS[Course.LEVEL_COUNT]
-	return last, last.CHECKPOINT_COUNT + 1
+-- The level whose stage `stage` is (clamped to 1..STAGE_COUNT): map n is stage n; the last
+-- stage (STAGE_COUNT) is map 10's finish deck.
+function Course.levelOfStage(stage: number): Level
+	return Course.level(math.clamp(math.floor(stage), 1, Course.LEVEL_COUNT))
 end
 
 -- Is (x, z) outside every CLEAR rectangle (free for hub props)?
@@ -27251,18 +27166,6 @@ function Course.isClear(x: number, z: number): boolean
 		end
 	end
 	return true
-end
-
--- Are a player's feet standing on checkpoint `cp`?
-function Course.onCheckpoint(cp: Element, x: number, y: number, z: number): boolean
-	if y < cp.y - 1 or y > cp.y + 6 then
-		return false
-	end
-	if cp.sx then
-		return math.abs(x - cp.x) <= (cp.sx :: number) / 2 + 0.5 and math.abs(z - cp.z) <= (cp.sz :: number) / 2 + 0.5
-	end
-	local r = (cp.r :: number) + 0.5
-	return (x - cp.x) ^ 2 + (z - cp.z) ^ 2 <= r * r
 end
 
 local function inBox(b: Box, x: number, y: number, z: number): boolean
@@ -27330,19 +27233,13 @@ function Course.inKill(level: Level, x: number, y: number, z: number, t: number)
 	return false
 end
 
--- Respawn spot for checkpoint `index` (0 = start deck) on `level`: feet position
--- { x, y, z } and the horizontal direction { dx, dz } toward the next path element.
-function Course.respawn(level: Level, index: number): ({ number }, { number })
-	local here: Element? = level.CHECKPOINTS[index]
+-- Respawn spot on `level`: always its start deck (no checkpoints; every fall and lava touch
+-- sends the runner back to the start of the map). Feet position { x, y, z } and the
+-- horizontal direction { dx, dz } toward the next path element.
+function Course.respawn(level: Level): ({ number }, { number })
 	local start = level.START
-	local at = if here then { here.x, here.y, here.z } else { start.x, start.y, start.z }
-	local nextElement: Element? = nil
-	for i, element in level.PATH do
-		if (here and element == here) or (not here and i == 1) then
-			nextElement = level.PATH[i + 1]
-			break
-		end
-	end
+	local at = { start.x, start.y, start.z }
+	local nextElement: Element? = level.PATH[2]
 	if not nextElement then
 		return at, { start.faceX, start.faceZ }
 	end
@@ -28697,10 +28594,11 @@ return MogRules
 	  through gate 1's portal (Course.crossedStart) does not start a run: it sends a "pick"
 	  notify so the client opens the Maps window on the default level. Starting again
 	  restarts.
-	- Checkpoints count only in order (Modes.Rules). Feet in the water past the shore send the
-	  player back to their last checkpoint (0 = start deck) with a splash; the run goes on.
-	- Standing on the finish deck after the last checkpoint ends the run; Rules.finish checks
-	  that no leg was impossibly fast. Valid finishes record the per-level best/clears
+	- No checkpoints (owner's call, docs/sky-obby.md): falling below the cloud floor
+	  (Course.inWater) or touching lava (Course.inKill) sends the player back to the START
+	  DECK of the map they are running; the clock keeps going.
+	- Standing on the finish deck ends the run; Rules.finish checks that the start-to-finish
+	  time was not impossibly fast (Course level MIN_SECONDS). Valid finishes record the per-level best/clears
 	  (profile.parkour; level 1 is mirrored into profile.modes.parkour) and the server best
 	  list of that level, and pay Economy.modeReward × Economy.parkourLevelBonus(level):
 	  Theme.Modes.Reward (Seconds of income, at least Min, sized like a cash pack) on the
@@ -28710,40 +28608,42 @@ return MogRules
 	  finish the player is brought back to the gates (GameModes.returnLater).
 	- Leaving the level's bounds for Course.LEAVE_SECONDS ends the run ("left"); on a remote
 	  level the player goes back to the gates.
-	- Stages (docs/sky-obby.md): the ten maps are one chained sky obby with global stage
-	  numbers (start deck, checkpoints, finish deck). profile.parkour.stage keeps the highest
-	  stage reached; Player attributes "ParkourStage" (this run's stage, 0 when not running)
-	  and "ParkourBestStage" feed the HUD's progress bar.
+	- Stages (docs/sky-obby.md): the ten maps are one chained sky obby; a stage is a map (map n
+	  is stage n, map 10's finish is Course.STAGE_COUNT = 11). Stage numbers are progress
+	  labels only, never a respawn spot. profile.parkour.stage keeps the highest stage
+	  reached (finishing map n reaches n + 1); Player attributes "ParkourStage" (this run's
+	  stage, 0 when not running) and "ParkourBestStage" feed the HUD's progress bar.
 	- Gear: action "ParkourGear" { gear = "none" | "speed" | "jump" | "gravity" } saves the
 	  choice (profile.parkour.gear); it is worn only during a run (speed: WalkSpeed 16 -> 28
 	  through the Humanoid's BaseWalkSpeed; jump: JumpHeight 7.2 -> 14 or JumpPower 50 -> 70;
 	  gravity: a "GravityCoil" VectorForce on the root lifting 55% of the weight) and taken off
 	  on stop / finish / leave. A run that wore gear at any point is `assisted`.
-	- Skip: action "ParkourSkip" costs Economy.parkourSkipCost(income) cash (two minutes of
-	  income, at least Economy.PARKOUR_SKIP_MIN; the snapshot's `skipCost`), teleports to the next
-	  checkpoint (after the last one: the finish deck, which finishes the run) and marks the
-	  run assisted. Assisted runs pay, unlock and count clears but never record a best time
-	  or a board entry.
+	- Skip Map: action "ParkourSkip" costs Economy.parkourSkipCost(income) cash (two minutes
+	  of income, at least Economy.PARKOUR_SKIP_MIN; the snapshot's `skipCost`; a cash action,
+	  no Robux receipt). It finishes the current map as an assisted run (teleport under the
+	  finish arch; it unlocks the next map) and starts a run on the next map's start deck
+	  (map 10: just the finish). Assisted runs pay, unlock and count clears but never record
+	  a best time or a board entry.
 
 	Notify payloads (kind = "Mode", mode = "parkour"):
 	  { event = "pick", level }                                  crossed gate 1: open the Maps
 	                                                             window on `level` (the default)
-	  { event = "start", checkpoints, startedAt, best?, level, levelName, levels, remote,
+	  { event = "start", checkpoints = 0, startedAt, best?, level, levelName, levels, remote,
 	    stage, stageCount, gear, assisted }
-	  { event = "checkpoint", index, checkpoints, split, stage, stageCount }
-	                                                             split = seconds since start
-	  { event = "respawn", index, stage, stageCount, reason? }   back at checkpoint `index`
+	  { event = "respawn", index = 0, stage, stageCount, reason? }
+	                                                             back at the map's start deck
 	                                                             reason = "kill" after lava
-	  { event = "skip", stage, stageCount, index, checkpoints }  paid skip to `stage`
+	  { event = "skip", stage, stageCount, index = 0, checkpoints = 0, level }
+	                                                             paid Skip Map of `level`
+	(`checkpoints` / `index` stay 0 for older client code; there is no "checkpoint" event.)
 	  { event = "finish", time, best, newBest, first, cash, full, cooldownEnds, rank?,
 	    level, levelName, nextLevel?, unlockedNew, unlocked, levels, stage, stageCount,
 	    assisted }                                               assisted: newBest false, no rank
-	`stage` is the global stage (start deck / checkpoint / finish deck) the runner stands on.
-	  { event = "invalid", reason }                              "checkpoints" | "fast"
+	`stage` is the global stage (the map being run; its finish deck: the next one).
+	  { event = "invalid", reason }                              "fast"
 	  { event = "stop", reason }                                 run ended without a finish
 	Effects: "ModeSplash" { pos } where the player hit the water; "ModeKill" { pos } where a
-	kill brick (Course.inKill) caught them; "ModeCheckpoint"
-	{ pos, index }; "ModeFinish" { pos, newBest }; plus the usual "Cash" { amount,
+	kill brick (Course.inKill) caught them; "ModeFinish" { pos, newBest }; plus the usual "Cash" { amount,
 	source = "Mode", padPos } when cash is paid.
 ]]
 
@@ -28798,38 +28698,8 @@ local function vec(t: { number }): Vector3
 	return Vector3.new(t[1], t[2], t[3])
 end
 
--- Global stage of `level`'s start deck. Course provides STAGE_FIRST (docs/sky-obby.md);
--- older Course data is numbered the same way: each map adds its checkpoints + its finish.
-local function stageFirst(level: Course.Level): number
-	local first = (level :: any).STAGE_FIRST
-	if type(first) == "number" then
-		return first
-	end
-	local n = 1
-	for i = 1, level.index - 1 do
-		n += Course.LEVELS[i].CHECKPOINT_COUNT + 1
-	end
-	return n
-end
-
--- Global stage of checkpoint `index` of `level` (0 = start deck, CHECKPOINT_COUNT + 1 =
--- finish deck).
-local function stageAt(level: Course.Level, index: number): number
-	local cp = level.CHECKPOINTS[index]
-	local stage = cp and (cp :: any).stage
-	if type(stage) == "number" then
-		return stage
-	end
-	return stageFirst(level) + index
-end
-
 local function stageCount(): number
-	local count = (Course :: any).STAGE_COUNT
-	if type(count) == "number" and count > 0 then
-		return count
-	end
-	local last = Course.LEVELS[Course.LEVEL_COUNT]
-	return stageFirst(last) + last.CHECKPOINT_COUNT + 1
+	return Course.STAGE_COUNT
 end
 
 local function setAttribute(player: Player, name: string, value: any)
@@ -28917,8 +28787,9 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		label.Text = table.concat(lines, "\n")
 	end
 
-	local function teleportTo(player: Player, level: Course.Level, index: number)
-		local at, look = Course.respawn(level, index)
+	-- Puts the player on `level`'s start deck (start, falls, lava).
+	local function teleportTo(player: Player, level: Course.Level)
+		local at, look = Course.respawn(level)
 		GameModes.teleport(player, vec(at), Vector3.new(look[1], 0, look[2]))
 		lastX[player] = at[1]
 	end
@@ -29047,14 +28918,14 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		}
 		runs[player] = state
 		if teleport or level.remote then
-			teleportTo(player, level, 0)
+			teleportTo(player, level)
 		end
 		equip(player, session, state)
-		local stage = stageAt(level, 0)
+		local stage = level.STAGE_FIRST
 		reach(player, session, stage)
 		local best = rec.best[index] or 0
 		GameModes.notify(player, "start", ID, {
-			checkpoints = level.CHECKPOINT_COUNT,
+			checkpoints = 0,
 			startedAt = t,
 			best = if best > 0 then best else nil,
 			level = index,
@@ -29129,7 +29000,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			rank = Rules.recordBest(serverBest[index], player.UserId, player.DisplayName, time, BEST_SIZE)
 			updateBoard()
 		end
-		local stage = stageAt(level, level.CHECKPOINT_COUNT + 1)
+		local stage = level.STAGE_LAST
 		reach(player, session, stage)
 		setAttribute(player, "ParkourStage", 0)
 
@@ -29187,32 +29058,28 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			return
 		end
 		local level = state.run.level
-		if Course.inWater(x, y, z) then
-			GameModes.effect(player, "ModeSplash", { pos = Vector3.new(x, level.WATER_BOX.y0 + 1.2, z) })
+		-- Back to the start deck of this map (no checkpoints); the run goes on.
+		local function backToStart(reason: string?)
 			state.graceUntil = t + TELEPORT_GRACE
 			state.outsideSince = nil
-			teleportTo(player, level, state.run.checkpoint)
+			teleportTo(player, level)
 			GameModes.notify(player, "respawn", ID, {
-				index = state.run.checkpoint,
-				stage = stageAt(level, state.run.checkpoint),
+				index = 0,
+				stage = level.STAGE_FIRST,
 				stageCount = stageCount(),
+				reason = reason,
 			})
+		end
+		if Course.inWater(x, y, z) then
+			GameModes.effect(player, "ModeSplash", { pos = Vector3.new(x, level.WATER_BOX.y0 + 1.2, z) })
+			backToStart(nil)
 			return
 		end
 		if Course.inBounds(level, x, y, z) then
 			state.outsideSince = nil
-			-- Lava bars and strips (read defensively: older Course data has no kill elements).
-			local inKill = (Course :: any).inKill
-			if inKill and inKill(level, x, y, z, t) then
+			if Course.inKill(level, x, y, z, t) then
 				GameModes.effect(player, "ModeKill", { pos = pos })
-				state.graceUntil = t + TELEPORT_GRACE
-				teleportTo(player, level, state.run.checkpoint)
-				GameModes.notify(player, "respawn", ID, {
-					index = state.run.checkpoint,
-					stage = stageAt(level, state.run.checkpoint),
-					stageCount = stageCount(),
-					reason = "kill",
-				})
+				backToStart("kill")
 				return
 			end
 		else
@@ -29225,25 +29092,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			end
 			return
 		end
-		local nextCp = level.CHECKPOINTS[state.run.checkpoint + 1]
-		if nextCp and Course.onCheckpoint(nextCp, x, y, z) then
-			local index = nextCp.index :: number
-			Rules.touchCheckpoint(state.run, index, t)
-			local stage = stageAt(level, index)
-			local session = GameModes.session(player)
-			if session then
-				reach(player, session, stage)
-			end
-			GameModes.effect(player, "ModeCheckpoint", { pos = Vector3.new(nextCp.x, nextCp.y, nextCp.z), index = index })
-			GameModes.notify(player, "checkpoint", ID, {
-				index = index,
-				checkpoints = level.CHECKPOINT_COUNT,
-				split = Rules.roundTime(t - state.run.startedAt),
-				stage = stage,
-				stageCount = stageCount(),
-			})
-			GameModes.refresh(player)
-		elseif Course.inFinish(level, x, y, z) then
+		if Course.inFinish(level, x, y, z) then
 			finish(player, state, root, t)
 		end
 	end
@@ -29272,7 +29121,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 				difficulty = level.difficulty,
 				best = if rec then rec.best[i] else 0,
 				clears = if rec then rec.clears[i] else 0,
-				checkpoints = level.CHECKPOINT_COUNT,
+				checkpoints = 0,
 				bonus = Economy.parkourLevelBonus(i),
 				-- Map look (Course.MAPS); read defensively so older Course data still works.
 				theme = (level :: any).theme,
@@ -29282,7 +29131,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			}
 		end
 		local best = if rec then rec.best[default] else 0
-		local stage = if state then stageAt(current, state.run.checkpoint) else 0
+		local stage = if state then current.STAGE_FIRST else 0
 		-- Snapshots go out on join too: keep the HUD bar's attributes current.
 		setAttribute(player, "ParkourStage", stage)
 		if rec then
@@ -29292,8 +29141,8 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			best = if best > 0 then best else nil,
 			clears = if rec then rec.clears[default] else 0,
 			running = state ~= nil,
-			checkpoint = if state then state.run.checkpoint else 0,
-			checkpoints = current.CHECKPOINT_COUNT,
+			checkpoint = 0,
+			checkpoints = 0,
 			startedAt = if state then state.run.startedAt else nil,
 			cooldownEnds = if cooldown and cooldown.lastRewardAt > 0 then cooldown.lastRewardAt + Economy.MODE_REWARD_COOLDOWN else 0,
 			rewardPreview = def.rewardPreview(player, current.index),
@@ -29342,28 +29191,27 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		end
 		p.money -= cost
 		Tycoon.markDirty(session)
+		-- Skip Map: finish this map as an assisted run (it unlocks the next one), then start
+		-- the next map from its start deck.
 		local t = now()
 		local level = state.run.level
 		state.assisted = true
 		state.graceUntil = t + TELEPORT_GRACE
 		state.outsideSince = nil
-		local leg = Rules.skip(state.run, t)
-		local stage = stageAt(level, leg)
-		local payload = { stage = stage, stageCount = stageCount(), index = leg, checkpoints = level.CHECKPOINT_COUNT }
-		if leg <= level.CHECKPOINT_COUNT then
-			teleportTo(player, level, leg)
-			reach(player, session, stage)
-			local cp = level.CHECKPOINTS[leg]
-			GameModes.effect(player, "ModeCheckpoint", { pos = Vector3.new(cp.x, cp.y, cp.z), index = leg })
-			GameModes.notify(player, "skip", ID, payload)
-			GameModes.refresh(player)
-		else
-			-- Past the last checkpoint: onto the finish deck, under the arch, and done.
-			local arch = level.FINISH_ARCH
-			GameModes.teleport(player, Vector3.new(arch.x, arch.y, arch.z), Vector3.new(-arch.faceX, 0, -arch.faceZ))
-			lastX[player] = arch.x
-			GameModes.notify(player, "skip", ID, payload)
-			finish(player, state, root, t)
+		Rules.skip(state.run)
+		local arch = level.FINISH_ARCH
+		GameModes.teleport(player, Vector3.new(arch.x, arch.y, arch.z), Vector3.new(-arch.faceX, 0, -arch.faceZ))
+		lastX[player] = arch.x
+		GameModes.notify(player, "skip", ID, {
+			stage = level.STAGE_LAST,
+			stageCount = stageCount(),
+			index = 0,
+			checkpoints = 0,
+			level = level.index,
+		})
+		finish(player, state, root, t)
+		if level.index < Course.LEVEL_COUNT and not runs[player] then
+			def.start(player, true, { level = level.index + 1 })
 		end
 	end)
 
@@ -29387,13 +29235,13 @@ return Parkour
 --[[
 	Rules: the pure parts of a Parkour run (no Roblox dependencies, unit-tested).
 
-	A run records its Course level, the server time it started and the server time each checkpoint was
-	reached. Checkpoints only count in order (touching #4 while on #2 does nothing); the
-	finish only counts after the level's last checkpoint, and only when every leg took at
-	least the level's MIN_LEG_SECONDS (nobody can cross the course faster than MAX_PLAUSIBLE_SPEED).
-Those minimums assume WalkSpeed 16: a run that wore the speed coil passes `speedScale`
-(28/16) to Rules.finish so its legs may be that much quicker. Legs bought with a stage skip
-(Rules.skip) have no minimum.
+	A run records its Course level and the server time it started. There are no checkpoints:
+	a run is one leg from the map's start deck to its finish deck, and a fall only sends the
+	runner back to the start deck (the clock keeps running). The finish counts only when the
+	run took at least the level's MIN_SECONDS (its PATH_LENGTH at MAX_PLAUSIBLE_SPEED: nobody
+	crosses the map faster). That minimum assumes WalkSpeed 16: a run that wore the speed coil
+	passes `speedScale` (28/16) to Rules.finish so it may be that much quicker. A map bought
+	with a paid Skip Map (Rules.skip) has no minimum.
 ]]
 
 local Course = require(script.Parent.Course)
@@ -29404,59 +29252,27 @@ export type Run = {
 	-- The Course level being run (Course.LEVELS[i]).
 	level: Course.Level,
 	startedAt: number,
-	checkpoint: number,
-	-- Server time each checkpoint was reached (index 1..n).
-	times: { number },
-	-- Legs skipped with a paid stage skip (leg k ends at checkpoint k; CHECKPOINT_COUNT + 1
-	-- is the finish leg): no minimum time.
-	skipped: { [number]: boolean },
+	-- The map was skipped with a paid Skip Map: no minimum time.
+	skipped: boolean,
 }
 
 function Rules.newRun(now: number, level: Course.Level?): Run
-	return { level = level or Course.LEVELS[1], startedAt = now, checkpoint = 0, times = {}, skipped = {} }
+	return { level = level or Course.LEVELS[1], startedAt = now, skipped = false }
 end
 
--- "ok" when `index` is the next checkpoint (the run advances), "old" when it was already
--- taken, "skip" when it is ahead of the next one (ignored).
-function Rules.touchCheckpoint(run: Run, index: number, now: number): string
-	if index <= run.checkpoint then
-		return "old"
-	elseif index ~= run.checkpoint + 1 then
-		return "skip"
-	end
-	run.checkpoint = index
-	run.times[index] = now
-	return "ok"
+-- Marks the run's map as skipped (paid Skip Map): Rules.finish accepts it at any time.
+function Rules.skip(run: Run)
+	run.skipped = true
 end
 
--- Skips the run's next leg at `now`: the next checkpoint counts as touched (or, after the
--- last one, the finish leg is marked so Rules.finish accepts it). Returns the skipped leg.
-function Rules.skip(run: Run, now: number): number
-	local leg = run.checkpoint + 1
-	run.skipped[leg] = true
-	if leg <= run.level.CHECKPOINT_COUNT then
-		Rules.touchCheckpoint(run, leg, now)
-	end
-	return leg
-end
-
--- Validates a finish at `now`: (true, seconds) or (false, reason) with reason
--- "checkpoints" (not all taken) or "fast" (a leg was quicker than possible). `speedScale`
--- (default 1) is how much faster than WalkSpeed 16 the runner could move.
+-- Validates a finish at `now`: (true, seconds) or (false, "fast") when the run was quicker
+-- than possible. `speedScale` (default 1) is how much faster than WalkSpeed 16 the runner
+-- could move.
 function Rules.finish(run: Run, now: number, speedScale: number?): (boolean, number | string)
-	local count = run.level.CHECKPOINT_COUNT
-	local minimum = run.level.MIN_LEG_SECONDS
 	local scale = if type(speedScale) == "number" and speedScale >= 1 then speedScale else 1
-	if run.checkpoint ~= count then
-		return false, "checkpoints"
-	end
-	local previous = run.startedAt
-	for k = 1, count + 1 do
-		local at = if k <= count then run.times[k] else now
-		if type(at) ~= "number" or (not run.skipped[k] and at - previous < minimum[k] / scale) then
-			return false, "fast"
-		end
-		previous = at
+	local minimum = run.level.MIN_SECONDS
+	if not run.skipped and (type(minimum) ~= "number" or now - run.startedAt < minimum / scale) then
+		return false, "fast"
 	end
 	return true, now - run.startedAt
 end
@@ -33010,9 +32826,7 @@ return Tycoon
 	                      a flat "Belt" part on the belt rectangle whose LookVector is the
 	                      runner's forward (+X) and whose Top face carries a Texture
 	                      "BeltTexture" for the client to scroll (OffsetStudsV).
-	    WinPad            (stages 1..10) tag "CardioWinPad", attribute Stage.
 	    UpgradePad        (lobby) tag "CardioUpgradePad" with the "SPEED UP" UpgradeConsole.
-	    Checkpoint        flag Model, attributes Stage, Index = 0, tag "CardioCheckpoint".
 	    LobbyDecor        (lobby) orange Neon X trusses on its three walls and roof joists, the
 	                      back-wall CARDIO title, candy clusters and warm lamps; decor only.
 	  Room<n>             Model per bridge room (n = stage), attributes Stage, Theme:
@@ -33027,7 +32841,7 @@ return Tycoon
 	                      coloured ball when missing), decor only (fall through them).
 	    Base / BlinkRail  chocolate slabs under the static platforms, Neon rails under blinking
 	                      ones; Block<k> pillars (theme-tinted, down to the hazard) with Neon
-	                      "BlockEdge" strips; mid-stage Checkpoint flags (Index = platform).
+	                      "BlockEdge" strips.
 	  Walls               one part per LAYOUT.walls box in the room theme's wall colour, a
 	                      dotted Texture on the faces you see, a Neon "WallTrim" on top.
 	  Doors/Door<i>       Model per LAYOUT.doors entry (i = index), attributes Stage, Side, Timed:
@@ -33074,7 +32888,6 @@ export type Built = {
 	-- Safe zone models and their deck base slabs by stage (0 = lobby).
 	zones: { [number]: Model },
 	decks: { [number]: BasePart },
-	winPads: { [number]: BasePart },
 	upgradePad: BasePart,
 	treadmills: { Model },
 	-- Bridge room models and hazard slabs by stage; timed door slabs by LAYOUT.doors index.
@@ -33703,59 +33516,7 @@ local function buildTrusses(trussFolders: { [number]: Instance }): number
 	return count
 end
 
--- Flags, pads, treadmills --------------------------------------------------------------
-
-local function flag(parent: Instance, x: number, y: number, z: number, colour: Color3, stage: number, index: number)
-	local model = folderIn(parent, "Checkpoint", "Model")
-	model:SetAttribute("Stage", stage)
-	model:SetAttribute("Index", index)
-	model:AddTag("CardioCheckpoint")
-	local h = 11
-	decor(disc(model, "FlagPole", Vector3.new(x, y + h / 2, z), 0.6, h, W.White))
-	decor(add(model, {
-		Name = "Flag",
-		Size = Vector3.new(4.6, 3, 0.3),
-		CFrame = CFrame.new(x + 2.4, y + h - 1.8, z),
-		Color = colour,
-	}))
-	decor(add(model, {
-		Name = "FlagCap",
-		Shape = BALL,
-		Size = Vector3.new(1.4, 1.4, 1.4),
-		CFrame = CFrame.new(x, y + h + 0.5, z),
-		Color = W.Sunny,
-		Material = Enum.Material.Neon,
-	}))
-end
-
-local function winPad(parent: Instance, zone: Layout.Zone): BasePart
-	local pad = zone.winPad :: Layout.Pad
-	local s = pad.size
-	decor(add(parent, {
-		Name = "WinGlow",
-		Size = Vector3.new(s + 1.2, 0.3, s + 1.2),
-		CFrame = CFrame.new(pad.x, TOP + 0.15, pad.z),
-		Color = W.Sunny,
-		Material = Enum.Material.Neon,
-		CastShadow = false,
-	}))
-	local part = add(parent, {
-		Name = "WinPad",
-		Size = Vector3.new(s, 0.5, s),
-		-- Front toward +X so the Top-face print reads for runners arriving from the west.
-		CFrame = CFrame.new(pad.x, TOP + 0.25, pad.z) * CFrame.Angles(0, -math.pi / 2, 0),
-		Color = W.Sunny,
-	})
-	part:SetAttribute("Stage", zone.stage)
-	part:AddTag("CardioWinPad")
-	light(part, W.Sunny, 18, 1.5)
-	text(surface(part, Enum.NormalId.Top, 24), {
-		Text = "WIN",
-		Size = UDim2.fromScale(0.76, 0.5),
-		Position = UDim2.fromScale(0.12, 0.25),
-	})
-	return part
-end
+-- Pads, treadmills --------------------------------------------------------------
 
 local function upgradePad(parent: Instance, zone: Layout.Zone): BasePart
 	local pad = zone.upgradePad :: Layout.Pad
@@ -34328,15 +34089,9 @@ function CardioTrack.build(): Built
 			})
 		end
 	end
-	for _, c in LAYOUT.checkpoints do
-		if c.index > 0 then
-			flag(rooms[c.stage], c.x0 + 1.5, c.y - 3, c.z1 - 1.5, stageColour(c.stage), c.stage, c.index)
-		end
-	end
 
 	local zones: { [number]: Model } = {}
 	local decks: { [number]: BasePart } = {}
-	local winPads: { [number]: BasePart } = {}
 	local treadmills: { Model } = {}
 	local upgrade: BasePart? = nil
 	for _, zone in LAYOUT.zones do
@@ -34346,16 +34101,12 @@ function CardioTrack.build(): Built
 		for i, tm in zone.treadmills do
 			table.insert(treadmills, treadmill(model, zone.stage, i, tm))
 		end
-		if zone.winPad then
-			winPads[zone.stage] = winPad(model, zone)
-		end
 		if zone.upgradePad then
 			upgrade = upgradePad(model, zone)
 		end
 		if zone.stage == 0 then
 			lobbyRoom(model, zone)
 		end
-		flag(model, zone.x0 + 3, zone.top, zone.z1 - 3, stageColour(zone.stage), zone.stage, 0)
 	end
 
 	-- Chocolate slabs: decks into their zone models, block pillars and platform bases into
@@ -34394,7 +34145,6 @@ function CardioTrack.build(): Built
 		keys = keys,
 		zones = zones,
 		decks = decks,
-		winPads = winPads,
 		upgradePad = upgrade :: BasePart,
 		treadmills = treadmills,
 		rooms = rooms,
@@ -38178,7 +37928,7 @@ return MapDecor
 	  ModeMover slide root (same attributes as moving platforms).
 
 	Every level of Server.Modes.Course is built into Parkour/Level<i> (attributes Mode,
-	Level, Checkpoints, Title, LevelName, StageFirst, StageLast, and the map's Theme, Blurb,
+	Level, Title, LevelName, StageFirst, StageLast, and the map's Theme, Blurb,
 	Icon, Accent). Platforms are bright SmoothPlastic candy slabs in their element's colour
 	with a lighter lip and a thin white underside; Course.BRIDGES[i] (the rainbow stairs to the
 	next map) go into Level<i>/Bridge, the cloud floor far below (Course.cloudLayer) into
@@ -38186,13 +37936,12 @@ return MapDecor
 	Level<i>/Scenery. Named parts the game looks up: "ParkourStart" (trigger in gate 1's
 	opening; other open gates hold "ModeStart"), per level "ParkourFinish" (trigger over the
 	finish deck) and "ParkourWater" (the catch volume at Course.FLOOR_Y), both with
-	attribute Level, and "Checkpoint" arrow pads with attributes Index (1..n per map), Stage
-	(global), Level and Mode = "parkour". Every level is reached by teleport through gate 1's
+	attribute Level. There are no checkpoints (a fall goes back to the map's start deck): the
+	wide "RestDeck" pads where they stood are plain platforms. Every level is reached by teleport through gate 1's
 	portal and gets a start arch on its start deck (map 1: the CHAD OBBY lobby); nothing of the
 	course stands next to the plaza.
 	Client hints (Client.Fx.Modes): each open gate's "GateArrow" root (tag "ModeHintArrow",
-	attribute HintBob = bob height in studs, children move with it) and each checkpoint's
-	"FlagCap" (attribute Checkpoint = its index).
+	attribute HintBob = bob height in studs, children move with it).
 
 	Sign text is TextScaled; every sign face's PixelsPerStud is picked so its biggest label
 	lands near 100 px tall (TextScaled's ceiling), which keeps it crisp without wasting texture.
@@ -38586,85 +38335,6 @@ local function chevron(e: Course.Element, nextE: Course.Element, parent: Instanc
 			Parent = parent,
 		}))
 	end
-end
-
--- A reference-style arrow checkpoint pad: a 12x12 `Checkpoint` blue slab (its top named
--- "Checkpoint"), a big white arrow painted on it pointing at the next path element (`nextE`),
--- the global stage number in the pad's far right corner and the numbered flag pole in the far
--- left corner, its cloth hanging out over the edge.
-local PAD = 12
-local function checkpoint(e: Course.Element, parent: Instance, levelIndex: number, nextE: Course.Element?): BasePart
-	local index = e.index :: number
-	local stage = (e :: any).stage or index
-	local box = table.clone(e) :: any
-	if e.shape == "disc" or not e.sx then
-		box.shape, box.sx, box.sz = "box", PAD, PAD
-	end
-	local top = platform(box, "Checkpoint", parent, false, W.Checkpoint)
-	top:SetAttribute("Index", index)
-	top:SetAttribute("Stage", stage)
-	top:SetAttribute("Level", levelIndex)
-	top:SetAttribute("Mode", "parkour")
-	-- The way on: toward the next element (or along +X when there is none).
-	local dx, dz = 1, 0
-	if nextE then
-		local ddx, ddz = nextE.x - e.x, nextE.z - e.z
-		local length = math.sqrt(ddx * ddx + ddz * ddz)
-		if length > 1e-3 then
-			dx, dz = ddx / length, ddz / length
-		end
-	end
-	local half = math.min(box.sx, box.sz) / 2
-	-- A flat carrier whose Front face looks up and whose up vector points the way on, so the
-	-- painted arrow's top is the direction to go and its top-right is the pad's far right corner.
-	local at = Vector3.new(e.x, e.y + 0.03, e.z)
-	local paint = decor(make("Part", {
-		Name = "CheckpointArrow",
-		Size = Vector3.new(half * 2 - 0.6, half * 2 - 0.6, 0.05),
-		CFrame = CFrame.lookAt(at, at + Vector3.yAxis, Vector3.new(dx, 0, dz)),
-		Transparency = 1,
-		CastShadow = false,
-		Parent = top,
-	}))
-	local root = surface(paint, Enum.NormalId.Front, 20)
-	local function bar(position: UDim2, size: UDim2, rotation: number)
-		local f = panel(root, W.White, position, size, 0.5)
-		f.AnchorPoint = Vector2.new(0.5, 0.5)
-		f.Rotation = rotation
-	end
-	-- Shaft, then the two arms of the head meeting at the tip.
-	bar(UDim2.fromScale(0.5, 0.6), UDim2.fromScale(0.17, 0.5), 0)
-	bar(UDim2.fromScale(0.39, 0.34), UDim2.fromScale(0.17, 0.42), 45)
-	bar(UDim2.fromScale(0.61, 0.34), UDim2.fromScale(0.17, 0.42), -45)
-	local number = text(root, {
-		Text = tostring(stage),
-		TextColor3 = W.White,
-		Font = theme.Fonts.Display,
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.fromScale(0.98, 0.02),
-		Size = UDim2.fromScale(0.3, 0.24),
-	})
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = W.Checkpoint:Lerp(W.Ink, 0.45)
-	stroke.Thickness = 3
-	stroke.Parent = number
-	-- Flag pole in the far left corner (right = the way on turned clockwise seen from above).
-	local rx, rz = -dz, dx
-	local reach = half - 1.3
-	local cap = flagPole(
-		e.x + (dx - rx) * reach,
-		e.y,
-		e.z + (dz - rz) * reach,
-		20,
-		FLAG_COLORS[(index - 1) % #FLAG_COLORS + 1],
-		tostring(stage),
-		math.atan2(rz, -rx),
-		parent,
-		true
-	)
-	cap:SetAttribute("Checkpoint", index)
-	cap:SetAttribute("Level", levelIndex)
-	return top
 end
 
 -- A pad that is solid only part of the time (Client.Fx.Modes toggles it locally): one thick
@@ -39722,10 +39392,6 @@ end
 -- Level `level`'s parts into `parent`.
 local function buildCourse(level: Course.Level, parent: Instance)
 	local tops: { [Course.Element]: BasePart } = {}
-	local nextOf: { [Course.Element]: Course.Element } = {}
-	for i, e in level.PATH do
-		nextOf[e] = level.PATH[i + 1]
-	end
 	local deck = level.PATH[1]
 	local lobby = level.index == 1
 	for _, e in level.ELEMENTS do
@@ -39734,8 +39400,6 @@ local function buildCourse(level: Course.Level, parent: Instance)
 			if e == deck then
 				tops[e] = top
 			end
-		elseif e.kind == "checkpoint" then
-			checkpoint(e, parent, level.index, nextOf[e])
 		elseif e.kind == "mover" then
 			tops[e] = mover(e, parent)
 		elseif e.kind == "blink" then
@@ -39759,10 +39423,10 @@ local function buildCourse(level: Course.Level, parent: Instance)
 		end
 	end
 	-- A chevron on each top toward the next one (none on the bounce deck: its pad is the hint;
-	-- none on checkpoints: their big arrow is).
+	-- the rest decks where checkpoints used to be are plain pads and get one too).
 	for i, e in level.PATH do
 		-- (none on blink pads either: their slab is the only part that fades.)
-		if e.kind ~= "slide" and e.kind ~= "checkpoint" and e.kind ~= "blink" then
+		if e.kind ~= "slide" and e.kind ~= "blink" then
 			local nextE = level.PATH[i + 1]
 			if nextE and e.name ~= "BounceDeck" then
 				chevron(e, nextE, if e == deck then parent else tops[e] or parent)
@@ -39949,7 +39613,6 @@ function Modes.build(): Built
 		levelFolder.Name = "Level" .. i
 		levelFolder:SetAttribute("Mode", "parkour")
 		levelFolder:SetAttribute("Level", i)
-		levelFolder:SetAttribute("Checkpoints", level.CHECKPOINT_COUNT)
 		levelFolder:SetAttribute("Title", level.name)
 		levelFolder:SetAttribute("LevelName", level.name)
 		local map: any = level
@@ -39959,7 +39622,7 @@ function Modes.build(): Built
 		levelFolder:SetAttribute("Accent", map.accent or "Sunny")
 		local first = map.STAGE_FIRST or 1
 		levelFolder:SetAttribute("StageFirst", first)
-		levelFolder:SetAttribute("StageLast", first + level.CHECKPOINT_COUNT + 1)
+		levelFolder:SetAttribute("StageLast", map.STAGE_LAST or first + 1)
 		buildCourse(level, levelFolder)
 		buildBridge(i, levelFolder)
 		levelFolder.Parent = parkour
@@ -44368,14 +44031,14 @@ return Camera
 	                on a treadmill an "x{multiplier} SPEED" tag rides above the head.
 	  Treadmills    the Texture(s) on each "Belt" (inside models tagged "CardioTreadmill")
 	                scroll backwards under the runner (OffsetStudsV); the belt under the
-	                local player scrolls faster. While standing on a belt the character
-	                turns to the belt's LookVector and plays its own run animation in
-	                place (Animate.run.RunAnim), with dust puffs and the odd sweat drop.
+	                local player scrolls at their WalkSpeed. While standing on a belt the
+	                character turns to the belt's LookVector and plays its own run
+	                animation in place (Animate.run.RunAnim) at WalkSpeed / 16 speed, with dust puffs and the odd sweat drop.
 	  Speed         radial speed lines (a pooled ScreenGui under the HUD) and a gentle FOV
 	                kick, both scaling with the horizontal speed above ~50 studs/s; reduced
 	                motion skips the FOV and halves the lines.
 	  Bursts        stage clear: stars and confetti (bigger on a first clear), finish: a
-	                large ring of both, checkpoint: sparkles, fall: a landing ring + puff,
+	                large ring of both, fall: a landing ring + puff,
 	                upgrade: sparkles over the upgrade pad (Fx.Sprites, budgeted).
 	  Doors         timed exit doors (parts tagged "CardioDoor", attrs DoorOpen, DoorPeriod,
 	                DoorPhase: open while ((t + phase) % period) < open, t = server time) drive
@@ -44441,6 +44104,7 @@ local POP_LIFE = 0.9
 local POP_COLOR = Color3.fromRGB(176, 92, 255)
 local SNEAKER_COLOR = Color3.fromRGB(255, 70, 80)
 local BELT_SPEED = 6 -- studs/s for treadmills nobody local is on
+local RUN_ANIM_MAX = 4 -- fastest run-in-place playback (x the 16 studs/s pace)
 local TAU = math.pi * 2
 
 local RAINBOW: { Color3 } = {
@@ -44883,10 +44547,11 @@ local function stepTreadmills(dt: number, now: number, humanoid: Humanoid?, root
 	end
 	local camera = Workspace.CurrentCamera
 	local eye = if camera then camera.CFrame.Position else Vector3.zero
-	local level = num(snap.treadmill, 0)
+	-- The belt under you scrolls at your own WalkSpeed, so faster runners visibly run faster.
+	local walk = if humanoid then math.max(humanoid.WalkSpeed, BELT_SPEED) else BELT_SPEED
 	for _, t in treadmills do
 		if #t.textures > 0 and t.belt.Parent and (t.belt.Position - eye).Magnitude < 180 then
-			local speed = if t == on then 10 + level * 0.8 else BELT_SPEED
+			local speed = if t == on then walk else BELT_SPEED
 			t.phase += dt * speed * t.dir
 			for _, texture in t.textures do
 				local tile = math.max(texture.StudsPerTileV, 0.1)
@@ -44907,7 +44572,8 @@ local function stepTreadmills(dt: number, now: number, humanoid: Humanoid?, root
 			if not track.IsPlaying then
 				track:Play(0.2)
 			end
-			track:AdjustSpeed(1.15 + level * 0.06)
+			-- The run cycle is paced for 16 studs/s (as Animate does): match the WalkSpeed.
+			track:AdjustSpeed(math.clamp(walk / 16, 1, RUN_ANIM_MAX))
 		end
 		-- Turn to face along the belt.
 		local fwd = on.belt.CFrame.LookVector
@@ -45560,11 +45226,6 @@ function CardioFx.onNotify(p: any)
 		local pos = playerPos()
 		if pos then
 			burst(pos, if p.first == true then 14 else 7, if p.first == true then 6 else 4, p.first == true)
-		end
-	elseif event == "checkpoint" then
-		local pos = playerPos()
-		if pos then
-			sparkle(pos + Vector3.new(0, 1, 0), 6, W.Mint or WHITE)
 		end
 	elseif event == "fall" then
 		task.delay(0.35, function()
@@ -50054,7 +49715,7 @@ return Machines
 	               flashes in the last BLINK_WARN seconds before switching off.
 	  Bounce pads  tag "BouncePad": once per contact, launch upward at the pad's Bounce
 	               speed (double jump still works in the air), squash the pad, Puff sprite.
-	  Effects      ModeCheckpoint (flag cap pop + star), ModeSplash (fell through
+	  Effects      ModeSplash (fell through
 	               the cloud floor: a white cloud poof and a short camera dip), ModeFinish
 	               (stars and confetti), ModeKill (touched a kill brick: a red/black
 	               burst and a short red screen flash). Spin movers with SpinAxis = "Z" (windmill blades)
@@ -50063,12 +49724,10 @@ return Machines
 	               Map.GameModes.Parkour.Level<level>. Mode notifications of other modes
 	               (Mog Test) are ignored.
 	  Hint         standing still for 4 s during a run: a short dotted trail of soft dots
-	               toward the next checkpoint (or the finish).
+	               toward the map's finish deck (there are no checkpoints).
 	  Gate arrow   each open gate's "GateArrow" (tag "ModeHintArrow", attribute HintBob)
 	               bobs gently while the player is near the plaza and not on a run; it
 	               eases in and out and settles back at its rest pose.
-	  Next flag    during a run, the next checkpoint's "FlagCap" (attribute Checkpoint)
-	               gives a soft pulse with a sunny ring every couple of seconds.
 	  Budget       on "low" devices (Fx.Budget) movers farther than LOW_FAR studs from
 	               the player pose every 2nd frame; celebration confetti / splash dots
 	               scale with Budget.count. Hints, pads and nearby movers never thin out.
@@ -50102,8 +49761,6 @@ local HINT_EVERY = 8
 local ARROW_NEAR = 90
 local ARROW_SPEED = 2.6
 local ARROW_FADE = 0.4
--- Next checkpoint flag: one soft pulse every PULSE_EVERY seconds during a run.
-local PULSE_EVERY = 2.2
 -- Blink pads: seconds of warning flashes before switching off, and flashes per second.
 local BLINK_WARN = 0.5
 local BLINK_FLASH_HZ = 6
@@ -50159,8 +49816,6 @@ type Arrow = {
 	fade: number, -- 0..1, eased into the bob amplitude
 }
 local arrows: { Arrow } = {}
--- Rest sizes of flag caps (pulses and pops always tween back to these).
-local capRest: { [BasePart]: Vector3 } = {}
 
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Include
@@ -50328,15 +49983,6 @@ local function addArrow(root: Instance)
 	table.insert(arrows, arrow)
 end
 
-local function restSize(cap: BasePart): Vector3
-	local size = capRest[cap]
-	if not size then
-		size = cap.Size
-		capRest[cap] = size
-	end
-	return size
-end
-
 -- A throwaway invisible anchor for world sprites.
 local function anchorAt(position: Vector3, life: number): BasePart
 	local part = Instance.new("Part")
@@ -50406,7 +50052,6 @@ end
 
 -- Run state (from the "Mode" notifies) for the still-player hint.
 local running = false
-local nextIndex = 1
 local stillSince = os.clock()
 local stillAt = Vector3.zero
 local lastHint = 0
@@ -50420,20 +50065,11 @@ local function courseFolder(): Instance?
 	return parkour and parkour:FindFirstChild("Level" .. currentLevel)
 end
 
-local function checkpointPart(index: number): BasePart?
+-- The run's finish trigger (the hint's target).
+local function finishPart(): BasePart?
 	local folder = courseFolder()
 	if not folder then
 		return nil
-	end
-	for _, d in folder:GetDescendants() do
-		if
-			d.Name == "Checkpoint"
-			and d:IsA("BasePart")
-			and d:GetAttribute("Index") == index
-			and d:GetAttribute("Level") == currentLevel
-		then
-			return d
-		end
 	end
 	for _, d in folder:GetDescendants() do
 		if d.Name == "ParkourFinish" and d:IsA("BasePart") and d:GetAttribute("Level") == currentLevel then
@@ -50444,7 +50080,7 @@ local function checkpointPart(index: number): BasePart?
 end
 
 local function showHint(root: BasePart)
-	local target = checkpointPart(nextIndex)
+	local target = finishPart()
 	if not target then
 		return
 	end
@@ -50496,44 +50132,6 @@ local function bobArrows(pos: Vector3, dt: number)
 	if #parts > 0 then
 		Workspace:BulkMoveTo(parts, frames, Enum.BulkMoveMode.FireCFrameChanged)
 	end
-end
-
--- Next-checkpoint flag pulse during a run.
-local pulseIndex = 0
-local pulseCap: BasePart? = nil
-local lastPulse = 0
-local function pulseNextFlag()
-	local now = os.clock()
-	if not running or now - lastPulse < PULSE_EVERY then
-		return
-	end
-	lastPulse = now
-	local cap = pulseCap
-	if pulseIndex ~= nextIndex or not cap or not cap:IsDescendantOf(Workspace) then
-		cap = nil
-		local folder = courseFolder()
-		if folder then
-			for _, d in folder:GetDescendants() do
-				if d.Name == "FlagCap" and d:IsA("BasePart") and d:GetAttribute("Checkpoint") == nextIndex then
-					cap = d
-					break
-				end
-			end
-		end
-		pulseIndex, pulseCap = nextIndex, cap
-	end
-	if not cap then
-		return
-	end
-	local size = restSize(cap)
-	cap.Size = size
-	TweenService:Create(cap, TweenInfo.new(0.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true), { Size = size * 1.3 }):Play()
-	local at = cap.Position
-	Sprites.billboard(
-		anchorAt(at, 2),
-		"Ring",
-		{ position = at, size = 3.6, life = 0.9, rise = Vector3.zero, color = W.Sunny, maxDistance = 160 }
-	)
 end
 
 -- Map scenery and themed ambience -------------------------------------------------------
@@ -51444,7 +51042,6 @@ local function step(dt: number)
 	stepScenery(root.Position)
 	stepAmbience(dt, root.Position)
 	bobArrows(root.Position, dt)
-	pulseNextFlag()
 	local b = bounds
 	if not b then
 		return
@@ -51542,47 +51139,6 @@ local function step(dt: number)
 end
 
 -- Effects -------------------------------------------------------------------------------
-
-local function checkpointPop(position: Vector3)
-	local folder = courseFolder()
-	local cap: BasePart? = nil
-	local best = 14
-	if folder then
-		for _, d in folder:GetDescendants() do
-			if d.Name == "FlagCap" and d:IsA("BasePart") then
-				local flat = Vector3.new(d.Position.X - position.X, 0, d.Position.Z - position.Z).Magnitude
-				if flat < best then
-					best = flat
-					cap = d
-				end
-			end
-		end
-	end
-	local top = if cap then cap.Position else position + Vector3.new(0, 6, 0)
-	local anchor = anchorAt(top, 3)
-	Sprites.billboard(anchor, "StarPop", { position = top, size = 3, life = 0.9, rise = Vector3.new(0, 2, 0), spin = 40 })
-	local pops = Budget.count(5)
-	for i = 1, pops do
-		if not Sprites.room() then
-			break -- decorative: the device's sprite budget is full
-		end
-		local a = i / pops * TAU
-		Sprites.billboard(anchor, "Confetti", {
-			position = top,
-			size = 0.8,
-			life = 1.1,
-			delay = 0.04 * i,
-			rise = Vector3.new(math.cos(a) * 3, 2.5, math.sin(a) * 3),
-			color = ({ W.Sunny, W.Pink, W.Mint, W.Blue, W.Coral })[i],
-			spin = 180,
-		})
-	end
-	if cap then
-		local size = restSize(cap)
-		cap.Size = size * 1.7
-		TweenService:Create(cap, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = size }):Play()
-	end
-end
 
 -- Fell through the cloud floor: a white cloud poof (Puff particles plus a few soft white balls
 -- that swell and fade, so it reads even without the sprite art) and a short camera dip.
@@ -51776,12 +51332,9 @@ function ModesFx.init()
 		local event = payload.event
 		if event == "start" then
 			currentLevel = math.floor(num(payload.level, 1))
-			pulseCap = nil
-			running, nextIndex = true, 1
+			running = true
 			stillSince, lastHint = os.clock(), os.clock()
 			startAmbience(currentLevel)
-		elseif event == "checkpoint" then
-			nextIndex = num(payload.index, nextIndex) + 1
 		elseif event == "finish" or event == "invalid" or event == "stop" then
 			running = false
 			endAmbience()
@@ -51792,9 +51345,7 @@ function ModesFx.init()
 		if type(data) ~= "table" or typeof(data.pos) ~= "Vector3" then
 			return
 		end
-		if kind == "ModeCheckpoint" then
-			checkpointPop(data.pos)
-		elseif kind == "ModeSplash" then
+		if kind == "ModeSplash" then
 			splash(data.pos)
 		elseif kind == "ModeKill" then
 			kill(data.pos)
@@ -63638,16 +63189,16 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			end
 			Sounds.play("Step")
 		elseif event == "respawn" then
-			-- Fell through the clouds (or touched lava): back on the last checkpoint, the run goes on.
+			-- Fell through the clouds (or touched lava): back to the start of the map, the run goes on.
 			if payload.stage ~= nil then
 				ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
 			end
 			if payload.reason == "kill" then
 				Sounds.play("Error")
-				Popups.toast("Ouch! Back to your checkpoint", "bad")
+				Popups.toast("Ouch! Back to the start of the map", "bad")
 			end
 		elseif event == "skip" then
-			-- Paid a stage skip: on to the next checkpoint (the run is now assisted).
+			-- Paid a map skip: on to the next map (the run is now assisted).
 			ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
 			if payload.index ~= nil then
 				Hud.runCheckpoint(tonumber(payload.index) or 0, tonumber(payload.checkpoints) or 0)
@@ -63676,7 +63227,7 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			Hud.runStop()
 			ObbyHud.hide()
 			Popups.toast(
-				if payload.reason == "fast" then "Whoa, too fast! Try the course again" else "Missed a checkpoint! Try again",
+				if payload.reason == "fast" then "Whoa, too fast! Try the course again" else "Something went wrong, try the map again",
 				"info"
 			)
 		elseif event == "stop" then
@@ -64435,12 +63986,13 @@ return State
 	  Stage line    top centre in the run-pill slot (y 92): a persistent "STAGE 4 · NAME"
 	                and, while Speed < need, a pulsing coral "Need more speed!" hint.
 	  Title         a big bubbly "STAGE n" (plus the stage's name) under it whenever you
-	                enter a stage; also "STAGE 3 CLEAR!", "CHECKPOINT!", "OOPS!",
+	                enter a stage; also "STAGE 3 CLEAR!", "OOPS!",
 	                "TREADMILL LV 4!" banners (the stage title follows a clear).
 	  Right column  centre right: Custom Speed (title, "Your Max Speed: N", a number box
 	                + green OK that fires CardioSpeedCap { cap } with 0 / empty = no cap,
-	                "Current speed: N"; collapsible, collapsed by default on compact
-	                touch screens), the treadmill card (on / near a treadmill), SPEED UP
+	                "Current speed: N"; a small "Custom Speed" chip by default on every
+	                screen: tapping it expands the box, OK and the run's end fold it),
+	                the treadmill card (on / near a treadmill), SPEED UP
 	                (near the upgrade pad, fires CardioUpgrade) and a QUIT pill that asks
 	                "QUIT?" before ModeQuit.
 	  Start picker  centre: when a run starts in the lobby and bestStage > 0, buttons
@@ -64522,11 +64074,15 @@ local treadLine: TextLabel
 local customCard: Frame
 local customBody: Frame
 local customToggle: TextButton
+local customTitle: TextLabel
+local customChip: TextButton
 local maxLabel: TextLabel
 local currentLabel: TextLabel
 local capBox: TextBox
 local capButton: TextButton
-local customOpen = true
+local customOpen = false
+-- Collapsed Custom Speed chip width.
+local CHIP_W = 176
 local quitButton: TextButton
 -- Treadmill card
 local treadCard: Frame
@@ -64749,6 +64305,22 @@ local function setMultiplier(mult: number)
 	treadLine.Text = "Treadmill Lv " .. math.clamp(math.floor(num(snap.treadmill, 0)), 0, MAX_LEVEL)
 end
 
+-- Custom Speed is a small chip until tapped; OK and the run's end fold it again.
+local function setCustomOpen(open: boolean)
+	customOpen = open
+	customBody.Visible = open
+	customChip.Visible = not open
+	customCard.Size = UDim2.fromOffset(if open then COLUMN_W else CHIP_W, if open then 168 else 40)
+	customTitle.TextSize = if open then 22 else 17
+	customTitle.Size = UDim2.fromOffset((if open then COLUMN_W else CHIP_W) - 54, 26)
+	customTitle.Position = UDim2.fromOffset(14, if open then 9 else 7)
+	customToggle.Position = UDim2.new(1, -8, 0, if open then 8 else 6)
+	Kit.setButton(customToggle, if open then "–" else "+", C.SurfaceHi)
+	if not open and capBox:IsFocused() then
+		capBox:ReleaseFocus()
+	end
+end
+
 local function sendCap()
 	local digits = string.gsub(capBox.Text, "%D", "")
 	local cap = math.clamp(tonumber(digits) or 0, 0, MAX_CAP)
@@ -64757,13 +64329,7 @@ local function sendCap()
 	Kit.pop(capButton, 1.2)
 	snap.speedCap = if cap > 0 then cap else nil
 	paintCustom()
-end
-
-local function setCustomOpen(open: boolean)
-	customOpen = open
-	customBody.Visible = open
-	customCard.Size = UDim2.fromOffset(COLUMN_W, if open then 168 else 44)
-	Kit.setButton(customToggle, if open then "–" else "+", C.SurfaceHi)
+	setCustomOpen(false)
 end
 
 -- Cards ---------------------------------------------------------------------------------------
@@ -65014,6 +64580,7 @@ local function hide()
 		renderConn = nil
 	end
 	capBox:ReleaseFocus()
+	setCustomOpen(false)
 	hidePicker()
 	Kit.disappear(stageLine)
 	Kit.disappear(boxBody)
@@ -65097,12 +64664,8 @@ function CardioHud.onNotify(p: any)
 		if p.first == true and screen then
 			Kit.confetti(screen, { Count = 18, Origin = UDim2.fromScale(0.5, 0.3) })
 		end
-	elseif event == "checkpoint" then
-		hidePicker()
-		showBanner("CHECKPOINT!", nil, MINT, 1.1)
-		Sounds.play("Step")
 	elseif event == "fall" then
-		showBanner("OOPS!", "Back to the checkpoint. Build more Speed!", CORAL, 1.6)
+		showBanner("OOPS!", "Back to the start of the stage. Build more Speed!", CORAL, 1.6)
 		Sounds.play("Error")
 	elseif event == "finish" then
 		hide()
@@ -65170,6 +64733,14 @@ function CardioHud.onSteps(data: any)
 	end
 	if data.walkSpeed ~= nil then
 		setWalk(num(data.walkSpeed, walkSpeed))
+	end
+	-- The treadmill rate grows with Speed: keep "+X speed/s" live.
+	if type(data.rate) == "number" and data.rate ~= snap.treadmillRate then
+		snap.treadmillRate = data.rate
+		if active then
+			paintTreadmill()
+			paintUpgrade()
+		end
 	end
 	-- Every gain pops the number (bigger gains, bigger bounce).
 	if active and gained > 0 then
@@ -65292,23 +64863,23 @@ end
 local function buildCustom()
 	customCard = Kit.panel(column, {
 		Name = "CustomSpeed",
-		Size = UDim2.fromOffset(COLUMN_W, 168),
+		Size = UDim2.fromOffset(CHIP_W, 40),
 		LayoutOrder = 1,
 		Radius = 18,
 		Visible = false,
 	})
-	Kit.title(customCard, {
+	customTitle = Kit.title(customCard, {
 		Name = "Title",
 		Text = "Custom Speed",
-		TextSize = 22,
+		TextSize = 17,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.fromOffset(COLUMN_W - 60, 26),
-		Position = UDim2.fromOffset(14, 9),
+		Size = UDim2.fromOffset(CHIP_W - 54, 26),
+		Position = UDim2.fromOffset(14, 7),
 		ZIndex = 3,
 	})
 	customToggle = Kit.button(customCard, {
 		Name = "Toggle",
-		Text = "–",
+		Text = "+",
 		Color = C.SurfaceHi,
 		TextSize = 18,
 		Size = UDim2.fromOffset(30, 28),
@@ -65321,8 +64892,22 @@ local function buildCustom()
 		setCustomOpen(not customOpen)
 	end)
 	Kit.selectable(customToggle)
+	-- The whole collapsed chip opens the box (not just the + button).
+	customChip = Kit.new("TextButton", {
+		Name = "Chip",
+		Text = "",
+		BackgroundTransparency = 1,
+		AutoButtonColor = false,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 5,
+		Parent = customCard,
+	})
+	customChip.Activated:Connect(function()
+		setCustomOpen(true)
+	end)
 	customBody = Kit.new("Frame", {
 		Name = "Body",
+		Visible = false,
 		BackgroundTransparency = 1,
 		Size = UDim2.new(1, 0, 1, -44),
 		Position = UDim2.fromOffset(0, 40),
@@ -65818,9 +65403,8 @@ function CardioHud.build(screenGui: ScreenGui)
 
 	-- Layout: compact screens shrink the box and the column; the desktop wallet (bottom
 	-- left) keeps its room; touch keeps the jump button's corner (multiplier lines go
-	-- above the number and the column rides higher); compact touch folds Custom Speed.
+	-- above the number and the column rides higher). Custom Speed starts as a chip everywhere.
 	local columnScale = Kit.new("UIScale", { Parent = column })
-	local lastCompactTouch: boolean? = nil
 	local function relayout()
 		local compact = screenGui:GetAttribute("Compact") == true
 		compactTouch = compact and Kit.touch
@@ -65851,10 +65435,6 @@ function CardioHud.build(screenGui: ScreenGui)
 		sideLayout.Padding = UDim.new(0, if wide then 2 else 14)
 		columnScale.Scale = if compact then 0.74 else 1
 		column.Position = if Kit.touch then UDim2.new(1, -16, 0.5, -40) else UDim2.new(1, -24, 0.5, 0)
-		if lastCompactTouch ~= compactTouch then
-			lastCompactTouch = compactTouch
-			setCustomOpen(not compactTouch)
-		end
 		if active then
 			paintTreadmill()
 		end
@@ -66489,6 +66069,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			runLevel.Text = "L" .. tostring(level)
 		end
 		runCheck.Text = string.format("%d/%d", checkpoint, checkpoints)
+		-- Modes without checkpoints (the obby, since maps have none) hide the n/N chip.
+		runCheck.Visible = checkpoints > 0
 		quitArmed = false
 		Kit.setButton(quitButton, "X", C.SurfaceHi)
 		quitButton.Size = UDim2.fromOffset(30, 28)
@@ -73154,9 +72736,11 @@ return MogRing
 	            at ParkourStage / stageCount; the local head sits on top with a white caret
 	            under the bar. Attributes are followed live (PlayerAdded / Removing too).
 	  Row       one line under the bar: Hud's run pill (docked through deps.dockRun) on the
-	            left, "STAGE n / N" in the centre, SKIP STAGE (pink, with a coin and the cash cost from
-	            State.data.modes.parkour.skipCost, refreshed on State.changed; fires
-	            ParkourSkip) on the right.
+	            left, "MAP n / N" in the centre (a stage is a map: N = stageCount - 1, map 10's
+	            finish being the last stage), SKIP MAP (pink, with a coin and the cash cost
+	            from State.data.modes.parkour.skipCost, refreshed on State.changed; fires
+	            ParkourSkip: the server finishes this map as assisted and starts the next one
+	            from its start deck) on the right. There are no checkpoints.
 	  Gear      a 3-slot hotbar 8 px above the dumbbell (deps.tank): Speed, Jump and Gravity
 	            coils with key badges 1 / 2 / 3. Keys or a tap toggle; the chosen slot is
 	            outlined gold; tapping it again picks "none". Fires ParkourGear { gear } and
@@ -73253,7 +72837,7 @@ local function skipCost(): number?
 end
 
 local function skipText(cost: number?): string
-	return if cost then "SKIP STAGE  " .. Format.money(cost) else "SKIP STAGE"
+	return if cost then "SKIP MAP  " .. Format.money(cost) else "SKIP MAP"
 end
 
 -- The course's last stage from the world: Parkour folder's Levels and the last level
@@ -73583,7 +73167,7 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 	-- Counter and skip -----------------------------------------------------------------
 	local counter = Kit.hudText(root, {
 		Name = "Stage",
-		Text = "STAGE 1",
+		Text = "MAP 1",
 		RichText = true,
 		Font = F.Display,
 		TextSize = 30,
@@ -73611,8 +73195,11 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 	end)
 
 	local function renderCounter()
-		local total = if stageCount > 0 then string.format(' <font size="18" transparency="0.25">/ %d</font>', stageCount) else ""
-		counter.Text = string.format("STAGE %d%s", math.max(myStage, 1), total)
+		-- One stage per map; the last stage is map 10's finish deck, so maps = stageCount - 1.
+		local maps = math.max(stageCount - 1, 0)
+		local total = if maps > 0 then string.format(' <font size="18" transparency="0.25">/ %d</font>', maps) else ""
+		local map = if maps > 0 then math.clamp(myStage, 1, maps) else math.max(myStage, 1)
+		counter.Text = string.format("MAP %d%s", map, total)
 	end
 
 	-- Gear hotbar --------------------------------------------------------------------------

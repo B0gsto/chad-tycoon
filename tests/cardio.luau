@@ -98,6 +98,16 @@ return function(h: { [string]: any })
 		for z = 0, 9 do
 			check(Rules.treadmillRate(z + 1, 0) > Rules.treadmillRate(z, 0), "deeper treadmills are stronger at " .. z)
 		end
+		-- Treadmills grow with the runner's Speed on their own (never below the base rate).
+		eq(Rules.treadmillRate(3, 2, 0), Rules.treadmillRate(3, 2), "speed 0 = base rate")
+		eq(Rules.treadmillRate(3, 2, 100), Rules.treadmillRate(3, 2), "no shrink early on")
+		local prevRate = 0
+		for _, s in { 150, 1000, 8000, 45000, 125000 } do
+			local r = Rules.treadmillRate(0, 0, s)
+			check(r > prevRate, "faster runners train faster at " .. s)
+			prevRate = r
+		end
+		check(Rules.treadmillRate(0, 0, 125000) >= 4 * Rules.treadmillRate(0, 0), "late treadmills stay useful")
 		for l = 0, 9 do
 			check(Rules.treadmillRate(0, l + 1) > Rules.treadmillRate(0, l), "levels speed the treadmill at " .. l)
 			check(Rules.treadmillCost(l + 1, 0) > Rules.treadmillCost(l, 0), "minimum grows at " .. l)
@@ -122,7 +132,7 @@ return function(h: { [string]: any })
 				level += 1
 			end
 			local steps = Rules.walkSpeed(speed) / Rules.KEY_STEP * 0.6
-			speed += 0.5 * steps * Rules.stepMultiplier(best, level) + 0.5 * Rules.treadmillRate(best, level)
+			speed += 0.5 * steps * Rules.stepMultiplier(best, level) + 0.5 * Rules.treadmillRate(best, level, speed)
 			while best < Rules.STAGE_COUNT and speed >= Rules.STAGES[best + 1].need do
 				best += 1
 				at[best] = t / 60
@@ -691,13 +701,12 @@ return function(h: { [string]: any })
 				check(tm.z - T.width / 2 >= z.z0 and tm.z + T.width / 2 <= z.z1, "treadmill on its deck (z)")
 				check(math.abs(tm.z - O.z) >= 8 + T.width / 2, "treadmills leave the running lane free")
 			end
-			if z.winPad then
-				check(z.winPad.x - z.winPad.size / 2 >= z.x0 and z.winPad.x + z.winPad.size / 2 <= z.x1, "win pad on its deck")
-			end
-			check(z.checkpoint.x > z.x0 and z.checkpoint.x < z.x1, "checkpoint on its deck")
+			check((z :: any).winPad == nil, "no win pad in zone " .. z.stage)
+			check(z.spawn.x > z.x0 and z.spawn.x < z.x1, "spawn on its deck")
+			check(z.spawn.z > z.z0 and z.spawn.z < z.z1, "spawn on its deck (z)")
 		end
 		check(L.zones[1].upgradePad ~= nil and #L.zones[1].treadmills >= 2, "lobby has treadmills and the upgrade pad")
-		check(L.zones[1].winPad == nil, "no win pad in the lobby")
+		check((Layout :: any).WIN_PAD == nil, "no WIN pads")
 		for _, s in L.signs do
 			inside(s.x, s.z, "sign")
 			eq(s.need, Rules.STAGES[s.stage].need, "sign shows the need")
@@ -808,8 +817,8 @@ return function(h: { [string]: any })
 
 	test("Cardio: helpers", function()
 		local lobby = L.zones[1]
-		local cp = Layout.checkpoint(0)
-		check(cp ~= nil and cp.x == lobby.checkpoint.x, "lobby checkpoint")
+		local cp = Layout.spawn(0)
+		check(cp ~= nil and cp.x == lobby.spawn.x, "lobby spawn")
 		local here = Layout.zoneAt(cp.x, cp.z, O.y)
 		check(here ~= nil and here.stage == 0, "zoneAt lobby")
 		check(Layout.zoneAt(cp.x, cp.z, O.y + 40) == nil, "zoneAt ignores high flyers")
@@ -830,21 +839,24 @@ return function(h: { [string]: any })
 		local z5 = L.zones[6]
 		local tm5 = z5.treadmills[2]
 		eq((Layout.onTreadmill(tm5.x, tm5.y, tm5.z)), 5, "deeper treadmill zone")
-		local c = Layout.checkpointAt(cp.x, cp.z, O.y)
-		check(c ~= nil and c.stage == 0 and c.index == 0, "checkpointAt lobby")
-		for i, ch in L.checkpoints do
-			eq(ch.order, i, "checkpoint order")
-			if i > 1 then
-				check(ch.x > L.checkpoints[i - 1].x, "checkpoints go along the course")
-			end
+		-- No checkpoints: a fall anywhere in stage n (its bridge room) returns you to safe zone
+		-- n - 1's spawn (the lobby for stage 1); in safe zone n you stay at zone n.
+		check((L :: any).checkpoints == nil and (Layout :: any).checkpointAt == nil, "no checkpoints")
+		for _, s in Rules.STAGES do
+			check((s :: any).checkpointEvery == nil, "no checkpointEvery")
 		end
-		local mid = {}
-		for _, ch in L.checkpoints do
-			if ch.index > 0 then
-				mid[ch.stage] = (mid[ch.stage] or 0) + 1
-			end
+		for _, p in L.platforms do
+			local back = Layout.startStageAt((p.x0 + p.x1) / 2)
+			eq(back, p.stage - 1, "a fall on platform " .. p.id .. " goes back one zone")
+			local sp = Layout.spawn(back)
+			local zone = L.zones[back + 1]
+			check(sp.x == zone.spawn.x and sp.x < p.x0, "respawn behind the stage " .. p.stage)
+			check((Layout.zoneAt(sp.x, sp.z, sp.y - 3) or {}).stage == back, "respawn on zone " .. back .. "'s deck")
+			check(Layout.isOverKey(sp.x, zone.top, sp.z) ~= nil, "respawn on a key " .. back)
 		end
-		check((mid[1] or 0) >= (mid[5] or 0) and (mid[10] or 0) == 0, "fewer checkpoints later")
+		for _, z in L.zones do
+			eq(Layout.startStageAt(z.spawn.x), z.stage, "a fall in zone " .. z.stage .. " stays there")
+		end
 		check(L.finish.x > L.zones[#L.zones].x0, "finish on the last deck")
 		eq(Layout.killYAt(-5000), Layout.KILL_Y, "killYAt outside the rooms")
 		local r3 = Layout.room(3)

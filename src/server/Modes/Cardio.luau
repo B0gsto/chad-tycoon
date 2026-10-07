@@ -6,7 +6,8 @@
 	  (0 = the Warm-Up lobby, default; at most profile.cardio.bestStage). Starting again restarts.
 	- Steps: every CardioRules.KEY_STEP studs of ground run over a key (server-measured, clamped
 	  to what the current WalkSpeed allows) add stepMultiplier(bestStage, treadmill) Speed.
-	  Standing on a treadmill adds treadmillRate(zone, treadmill) Speed per second instead.
+	  Standing on a treadmill adds treadmillRate(zone, treadmill, speed) Speed per second instead
+	  (it grows with the player's Speed).
 	  Speed (profile.cardio.speed) is permanent; in a run, WalkSpeed = CardioRules.walkSpeed(speed)
 	  through the Humanoid "BaseWalkSpeed" attribute (Speedy Sneakers still multiplies on top),
 	  lowered to the player's own cap if set.
@@ -16,9 +17,10 @@
 	- Steps are measured on the dense key carpet (CardioLayout.KEY.size studs) but paid per
 	  CardioRules.KEY_STEP (8) studs, i.e. one step per ~two keys. Every key counts: bridge
 	  sills, run-up pieces, jump / blink / mover / end platforms and decor blocks.
-	- Checkpoints only count forward; feet below CardioLayout.killYAt(x) (the room's killY, just
+	- No mid-stage checkpoints: feet below CardioLayout.killYAt(x) (the room's killY, just
 	  above a bridge room's hazard floor, so landing on the hazard is a fall) send the player
-	  back to the last one. Reaching safe zone n (once per run) pays Economy.modeReward x
+	  back to the start of the stage being run, i.e. the spawn of the safe zone before it
+	  (zone n - 1 for bridge room n; the lobby for stage 1). Reaching safe zone n (once per run) pays Economy.modeReward x
 	  stageBonus(n): the first time ever (n > bestStage) is a first clear (raises bestStage and with it the
 	  step multiplier), later arrivals pay on the shared cooldown (modes.cardio.lastRewardAt).
 	  Safe zone 10 is the FINISH; the run goes on after it.
@@ -31,18 +33,16 @@
 	  { event = "stage", stage, name, first, cash, full, cooldownEnds, bestStage, multiplier }
 	  { event = "finish", stage = 10, first, cash, full, cooldownEnds, bestStage, multiplier }
 	                                  (safe zone 10 sends "finish" instead of "stage")
-	  { event = "checkpoint", stage, index }      mid-stage checkpoint (safe zones send "stage")
-	  { event = "fall", stage, index }            back at that checkpoint
+	  { event = "fall", stage }                   back at safe zone `stage`'s spawn
 	  { event = "upgrade", level, cost, rate, multiplier, nextCost? }
 	  { event = "refused", reason, cost? }        upgrade refused: "run" | "far" | "max" | "cash"
 	  { event = "stop", reason }
 	Snapshot: running, speed, walkSpeed (effective base, capped), maxWalkSpeed (uncapped),
 	speedCap (nil when none), multiplier, bestStage, treadmill, treadmillMax, treadmillRate,
 	nextCost, stage, onTreadmill, cooldownEnds, stageCount, needs, names.
-	Effects: "CardioSteps" { gained, speed, walkSpeed, treadmill, multiplier } (at most ~4 per
-	second while gaining; speed and gained are whole Speed, treadmill is true on a belt,
-	multiplier is the step multiplier), "ModeSplash" { pos } on a fall, "ModeCheckpoint"
-	{ pos, index } on a mid-stage checkpoint, "ModeFinish" { pos, newBest } on a first clear,
+	Effects: "CardioSteps" { gained, speed, walkSpeed, treadmill, multiplier, rate } (at most ~4
+	per second while gaining; speed and gained are whole Speed, treadmill is true on a belt,
+	multiplier is the step multiplier, rate the current treadmillRate), "ModeSplash" { pos } on a fall, "ModeFinish" { pos, newBest } on a first clear,
 	"Cash" { amount, source = "Mode", padPos } when cash is paid.
 ]]
 
@@ -91,8 +91,6 @@ for n, s in CardioRules.STAGES do
 end
 
 type State = {
-	-- Checkpoint returned to after a fall.
-	checkpoint: CardioLayout.Checkpoint,
 	-- Safe zones reached this run (reward once per run each).
 	arrived: { [number]: boolean },
 	lastPos: Vector3?,
@@ -115,13 +113,9 @@ local function vec(p: { x: number, y: number, z: number }): Vector3
 	return Vector3.new(p.x, p.y, p.z)
 end
 
-local function zoneCheckpoint(stage: number): CardioLayout.Checkpoint
-	for _, c in LAYOUT.checkpoints do
-		if c.stage == stage and c.index == 0 then
-			return c
-		end
-	end
-	return LAYOUT.checkpoints[1]
+-- Spawn point of safe zone `stage` (0 = lobby): the start of stage + 1.
+local function zoneSpawn(stage: number): CardioLayout.Point
+	return CardioLayout.spawn(stage) or LAYOUT.zones[1].spawn
 end
 
 local function inBounds(x: number, z: number, margin: number): boolean
@@ -225,7 +219,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		return r
 	end
 
-	local function teleportTo(player: Player, state: State, c: CardioLayout.Checkpoint)
+	local function teleportTo(player: Player, state: State, c: CardioLayout.Point)
 		GameModes.teleport(player, vec(c), FORWARD)
 		state.lastPos = nil
 		state.stepDist = 0
@@ -256,10 +250,8 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			end
 			stage = math.floor(asked)
 		end
-		local checkpoint = zoneCheckpoint(stage)
 		local t = now()
 		local state: State = {
-			checkpoint = checkpoint,
 			arrived = { [stage] = true },
 			lastPos = nil,
 			lastT = t,
@@ -275,7 +267,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		}
 		runs[player] = state
 		-- The arena is far out at sea: a run always begins on its deck.
-		teleportTo(player, state, checkpoint)
+		teleportTo(player, state, zoneSpawn(stage))
 		local humanoid = humanoidOf(player)
 		if humanoid then
 			humanoid:SetAttribute("BaseWalkSpeed", state.walk)
@@ -394,24 +386,22 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			return
 		end
 		state.outsideSince = nil
+		-- The last safe zone passed (the HUD shows stage + 1 as the stage being run).
+		state.stage = CardioLayout.startStageAt(x)
 		local killY = CardioLayout.killYAt(x)
 		if y < killY then
-			local c = state.checkpoint
+			-- No checkpoints: back to the start of the stage, the safe zone before it.
 			GameModes.effect(player, "ModeSplash", { pos = Vector3.new(x, killY - CardioLayout.KILL_ABOVE, z) })
-			teleportTo(player, state, c)
+			teleportTo(player, state, zoneSpawn(state.stage))
 			chaser.stop(player, "fall") -- CardioChase hook
-			GameModes.notify(player, "fall", ID, { stage = c.stage, index = c.index })
+			GameModes.notify(player, "fall", ID, { stage = state.stage })
 			return
 		end
-		-- The last safe zone passed (the HUD shows stage + 1 as the stage being run): in bridge
-		-- room n that is n - 1, not stageAt's n.
-		local room = CardioLayout.roomAt(x)
-		state.stage = if room and room.kind == "bridge" then room.stage - 1 else CardioLayout.stageAt(x)
 		-- CardioChase hook begin: caught by the chaser -> back to the previous safe zone.
 		local caughtTo = chaser.tick(player, x, z, t)
 		if caughtTo then
-			state.checkpoint = zoneCheckpoint(caughtTo)
-			teleportTo(player, state, state.checkpoint)
+			state.stage = caughtTo
+			teleportTo(player, state, zoneSpawn(caughtTo))
 			return
 		end
 		-- CardioChase hook end
@@ -424,7 +414,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		if zoneStage then
 			state.treadmillZone = zoneStage
 			state.stepDist = 0
-			rec.speed += CardioRules.treadmillRate(zoneStage, rec.treadmill) * dt
+			rec.speed += CardioRules.treadmillRate(zoneStage, rec.treadmill, rec.speed) * dt
 		else
 			local last = state.lastPos
 			if last and CardioLayout.isOverKey(x, y, z, t) then
@@ -456,21 +446,14 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 					walkSpeed = state.walk,
 					treadmill = state.onTreadmill,
 					multiplier = multiplierOf(session),
+					rate = CardioRules.treadmillRate(state.treadmillZone, rec.treadmill, rec.speed),
 				})
 				state.shownSpeed = shown
 				state.lastEffectAt = t
 			end
 		end
 
-		-- Checkpoints (forward only) and safe-zone arrivals.
-		local c = CardioLayout.checkpointAt(x, z, y)
-		if c and c.order > state.checkpoint.order then
-			state.checkpoint = c
-			if c.index > 0 then
-				GameModes.effect(player, "ModeCheckpoint", { pos = vec(c), index = c.index })
-				GameModes.notify(player, "checkpoint", ID, { stage = c.stage, index = c.index })
-			end
-		end
+		-- Safe-zone arrivals (paid on reaching the deck; there is no pad to step on).
 		local zone = CardioLayout.zoneAt(x, z, y)
 		if zone and zone.stage >= 1 and not state.arrived[zone.stage] then
 			state.arrived[zone.stage] = true
@@ -506,7 +489,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			bestStage = if rec then rec.bestStage else 0,
 			treadmill = level,
 			treadmillMax = CardioRules.TREADMILL_MAX,
-			treadmillRate = CardioRules.treadmillRate(if state then state.treadmillZone else 0, level),
+			treadmillRate = CardioRules.treadmillRate(if state then state.treadmillZone else 0, level, speed),
 			nextCost = if session then nextCostOf(session) else nil,
 			stage = if state then state.stage else 0,
 			onTreadmill = if state then state.onTreadmill else false,
@@ -556,7 +539,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		GameModes.notify(player, "upgrade", ID, {
 			level = rec.treadmill,
 			cost = cost,
-			rate = CardioRules.treadmillRate(0, rec.treadmill),
+			rate = CardioRules.treadmillRate(0, rec.treadmill, rec.speed),
 			multiplier = multiplierOf(session),
 			nextCost = nextCostOf(session),
 		})

@@ -3029,35 +3029,34 @@ test("Game modes: finish reward is sized like a cash pack, with a cooldown", fun
 	check(later.full and later.cash == later.packCash, "full pack again after the cooldown")
 end)
 
-test("Game modes: checkpoints in order and plausible times, per level", function()
+test("Game modes: no checkpoints, one plausible start-to-finish time per level", function()
 	eq(ModesCourse.LEVEL_COUNT, 10, "ten parkour levels")
 	eq(#ModesCourse.LEVELS, ModesCourse.LEVEL_COUNT, "every level is built")
 	for i, level in ModesCourse.LEVELS do
-		local count = level.CHECKPOINT_COUNT
-		check(count >= 3 and count <= 8, "level " .. i .. ": 3-8 checkpoints")
-		for k = 1, count + 1 do
-			check(level.MIN_LEG_SECONDS[k] > 0, "level " .. i .. " leg " .. k .. " has a minimum time")
+		local any = level :: any
+		eq(any.CHECKPOINTS, nil, "level " .. i .. ": no checkpoint list")
+		eq(any.CHECKPOINT_COUNT, nil, "level " .. i .. ": no checkpoint count")
+		local rests = 0
+		for _, e in level.ELEMENTS do
+			check(e.kind ~= "checkpoint", "level " .. i .. ": no checkpoint elements")
+			if e.name == "RestDeck" then
+				rests += 1
+				check(e.kind == "pad" and e.shape == "box" and e.index == nil, "level " .. i .. ": rest decks are plain pads")
+			end
 		end
+		check(rests >= 3 and rests <= 8, "level " .. i .. ": 3-8 rest decks where the checkpoints stood")
+		check(level.PATH_LENGTH > 50, "level " .. i .. " has a path length")
+		check(
+			math.abs(level.MIN_SECONDS - level.PATH_LENGTH / ModesCourse.MAX_PLAUSIBLE_SPEED) < 1e-9 and level.MIN_SECONDS > 0,
+			"level " .. i .. ": the minimum time is the path at MAX_PLAUSIBLE_SPEED"
+		)
 		local fast = ModesRules.newRun(0, level)
-		for k = 1, count do
-			ModesRules.touchCheckpoint(fast, k, k * 0.1)
-		end
-		local ok, reason = ModesRules.finish(fast, count * 0.1 + 0.1)
+		local ok, reason = ModesRules.finish(fast, level.MIN_SECONDS - 0.05)
 		check(not ok and reason == "fast", "level " .. i .. ": impossibly fast runs earn nothing")
 		local fair = ModesRules.newRun(0, level)
-		for k = 1, count do
-			ModesRules.touchCheckpoint(fair, k, k * 30)
-		end
-		local okFair, time = ModesRules.finish(fair, count * 30 + 30)
-		check(okFair and time == count * 30 + 30, "level " .. i .. ": a normal run finishes")
+		local okFair, time = ModesRules.finish(fair, 300)
+		check(okFair and time == 300, "level " .. i .. ": a normal run finishes")
 	end
-	local run = ModesRules.newRun(100, ModesCourse.LEVELS[2])
-	eq(ModesRules.touchCheckpoint(run, 2, 101), "skip", "skipping ahead does nothing")
-	eq(run.checkpoint, 0, "still at the start")
-	eq(ModesRules.touchCheckpoint(run, 1, 110), "ok", "first checkpoint")
-	eq(ModesRules.touchCheckpoint(run, 1, 111), "old", "same checkpoint again")
-	local ok, reason = ModesRules.finish(run, 200)
-	check(not ok and reason == "checkpoints", "finish needs every checkpoint")
 	local list = {}
 	eq(ModesRules.recordBest(list, 1, "A", 50, 3), 1, "first time ranks 1")
 	eq(ModesRules.recordBest(list, 2, "B", 40, 3), 1, "faster ranks first")
@@ -3260,25 +3259,17 @@ end
 
 test("Sky obby: Rules skip and speed-scaled anti-cheat", function()
 	local level = ModesCourse.LEVELS[1]
-	local count = level.CHECKPOINT_COUNT
-	-- Legs exactly as quick as the speed coil allows: too fast unscaled, fine at 28/16.
+	-- A run exactly as quick as the speed coil allows: too fast unscaled, fine at 28/16.
 	local run = ModesRules.newRun(0, level)
-	local t = 0
-	for k = 1, count do
-		t += level.MIN_LEG_SECONDS[k] * 16 / 28 + 0.01
-		ModesRules.touchCheckpoint(run, k, t)
-	end
-	local finishAt = t + level.MIN_LEG_SECONDS[count + 1] * 16 / 28 + 0.01
+	local finishAt = level.MIN_SECONDS * 16 / 28 + 0.01
 	local plain = ModesRules.finish(run, finishAt)
-	eq(plain, false, "coil-fast legs fail at walking speed")
-	eq((ModesRules.finish(run, finishAt, 28 / 16)), true, "the speed coil scales the minimums")
-	-- Skipped legs have no minimum.
+	eq(plain, false, "coil-fast runs fail at walking speed")
+	eq((ModesRules.finish(run, finishAt, 28 / 16)), true, "the speed coil scales the minimum")
+	-- A skipped map has no minimum.
 	local skipped = ModesRules.newRun(0, level)
-	for _ = 1, count + 1 do
-		ModesRules.skip(skipped, 0.01)
-	end
-	eq(skipped.checkpoint, count, "skips advance through every checkpoint")
-	eq((ModesRules.finish(skipped, 0.02)), true, "an all-skipped run is not 'fast'")
+	ModesRules.skip(skipped)
+	eq(skipped.skipped, true, "the skip is recorded")
+	eq((ModesRules.finish(skipped, 0.02)), true, "a skipped map is not 'fast'")
 end)
 
 test("Sky obby: stages, gear and the assisted flag", function()
@@ -3327,42 +3318,63 @@ test("Sky obby: stages, gear and the assisted flag", function()
 	eq(humanoid.JumpPower, 50, "removed on respawn")
 end)
 
-test("Sky obby: a kill brick sends the runner back to the checkpoint", function()
+test("Sky obby: falls and kill bricks send the runner back to the map's start deck", function()
 	local def, rig = loadParkour()
 	local player = rig.player
-	local level = ModesCourse.LEVELS[1]
+	local level = ModesCourse.LEVELS[2]
+	rig.session.profile.parkour.clears[1] = 1
 	local C = ModesCourse :: any
 	local saved = C.inKill
-	local spot = level.START
+	-- Far along the course (where a checkpoint used to be): a rest deck.
+	local rest = nil
+	for _, e in level.PATH do
+		if e.name == "RestDeck" then
+			rest = e
+		end
+	end
+	assert(rest, "map 2 has a rest deck")
 	C.inKill = function(lv, x, _, z)
-		return lv == level and math.abs(x - spot.x) < 0.01 and math.abs(z - spot.z) < 0.01
+		return lv == level and math.abs(x - rest.x) < 0.01 and math.abs(z - rest.z) < 0.01
 	end
 	local ok, err = pcall(function()
-		def.start(player, true, { level = 1 })
-		rig.root.Position = roblox.Vector3.new(spot.x, spot.y + 3, spot.z)
+		check(def.start(player, true, { level = 2 }), "map 2 starts")
+		local at = ModesCourse.respawn(level)
+		local startAt = roblox.Vector3.new(at[1], at[2], at[3])
+		check(math.abs(at[1] - level.START.x) < 1e-9 and math.abs(at[3] - level.START.z) < 1e-9, "the respawn spot is the start deck")
+		-- Standing on the old checkpoint spot does nothing (no checkpoint).
+		rig.root.Position = roblox.Vector3.new(rest.x + 3, rest.y + 3, rest.z)
+		rig.clock.t += 2
+		def.tick(player, rig.root, rig.clock.t)
+		eq(rig.last("checkpoint"), nil, "no checkpoint notify")
+		eq(def.snapshot(player).checkpoint, 0, "no checkpoint reached")
+		eq(player:GetAttribute("ParkourStage"), level.STAGE_FIRST, "the stage is the map")
+		-- Lava on the rest deck: back to the START of map 2.
 		local before = rig.teleports
+		rig.root.Position = roblox.Vector3.new(rest.x, rest.y + 3, rest.z)
 		rig.clock.t += 2
 		def.tick(player, rig.root, rig.clock.t)
 		local note = rig.last("respawn")
 		check(note ~= nil, "a respawn notify")
 		eq(note and note.reason, "kill", "reason kill")
-		eq(note and note.index, 0, "back to the start deck (no checkpoint yet)")
+		eq(note and note.index, 0, "back to the start deck")
+		eq(note and note.stage, level.STAGE_FIRST, "the map's stage")
 		eq(rig.teleports, before + 1, "teleported once")
-		local at = ModesCourse.respawn(level, 0)
-		check(
-			rig.teleportedTo ~= nil and (rig.teleportedTo - roblox.Vector3.new(at[1], at[2], at[3])).Magnitude < 0.01,
-			"moved to the checkpoint"
-		)
+		check(rig.teleportedTo ~= nil and (rig.teleportedTo - startAt).Magnitude < 0.01, "moved to the start deck")
 		local fx = rig.effects[#rig.effects]
 		eq(fx and fx.kind, "ModeKill", "ModeKill effect")
 		-- Grace: an immediate second tick does nothing.
 		def.tick(player, rig.root, rig.clock.t + 0.1)
 		eq(rig.teleports, before + 1, "grace after the respawn")
-		-- No inKill (older Course data): no kills.
-		C.inKill = nil
+		-- A fall through the cloud floor near the end: back to the start deck too.
+		C.inKill = saved
+		rig.root.Position = roblox.Vector3.new(rest.x, ModesCourse.FLOOR_Y - 2 + 3, rest.z)
 		rig.clock.t += 2
 		def.tick(player, rig.root, rig.clock.t)
-		eq(rig.teleports, before + 1, "no inKill helper: no respawn")
+		eq(rig.teleports, before + 2, "a fall teleports")
+		check(rig.teleportedTo ~= nil and (rig.teleportedTo - startAt).Magnitude < 0.01, "a fall goes to the start deck")
+		local fell = rig.last("respawn")
+		check(fell ~= nil and fell.reason == nil and fell.index == 0, "fall respawn at the start")
+		check(def.running(player), "the run goes on")
 	end)
 	C.inKill = saved
 	if not ok then
@@ -3370,11 +3382,9 @@ test("Sky obby: a kill brick sends the runner back to the checkpoint", function(
 	end
 end)
 
-test("Sky obby: paid skips and an assisted finish", function()
+test("Sky obby: Skip Map finishes the map and starts the next one", function()
 	local def, rig = loadParkour()
 	local player, profile = rig.player, rig.session.profile
-	local level = ModesCourse.LEVELS[1]
-	local count = level.CHECKPOINT_COUNT
 	local cost = Economy.parkourSkipCost(0)
 	eq(cost, Economy.PARKOUR_SKIP_MIN, "with no income a skip costs the minimum")
 	eq(Economy.parkourSkipCost(1), 250, "two minutes of $1/s is under the minimum")
@@ -3387,35 +3397,46 @@ test("Sky obby: paid skips and an assisted finish", function()
 	check(string.find(rig.toasts[1], "Not enough cash", 1, true) ~= nil, "toast says Not enough cash")
 	eq(profile.money, cost - 1, "nothing taken")
 	eq(rig.last("skip"), nil, "no skip")
-	profile.money = cost * (count + 1) + 5
-	local teleports = rig.teleports
+	profile.money = cost + 5
 	rig.actions.ParkourSkip(rig.session, {})
-	eq(profile.money, cost * count + 5, "one skip's cash taken")
-	eq(rig.teleports, teleports + 1, "teleported to the next checkpoint")
-	eq(rig.last("skip").stage, 2, "skip notify carries the new stage")
-	eq(player:GetAttribute("ParkourStage"), 2, "stage attribute follows the skip")
-	eq(def.snapshot(player).checkpoint, 1, "the run advanced")
-	for _ = 2, count + 1 do
-		rig.clock.t += 1
-		rig.actions.ParkourSkip(rig.session, {})
-	end
+	local skip = rig.last("skip")
+	check(skip ~= nil and skip.level == 1 and skip.stage == 2, "skip notify: map 1 skipped, on to stage 2")
 	local finish = rig.last("finish")
-	check(finish ~= nil, "skipping past the last checkpoint finishes")
+	check(finish ~= nil, "skipping a map finishes it")
 	eq(finish.gems, nil, "no Rizz in the finish")
-	eq(profile.money, 5 + finish.cash, "every skip paid (plus the finish cash)")
-	eq(finish.assisted, true, "a skipped run is assisted")
+	eq(profile.money, 5 + finish.cash, "one skip paid (plus the finish cash)")
+	eq(finish.assisted, true, "a skipped map is assisted")
 	eq(finish.newBest, false, "assisted runs set no best")
 	eq(finish.rank, nil, "and no board entry")
-	eq(finish.stage, count + 2, "finish deck stage")
+	eq(finish.stage, 2, "the finish reaches the next map's stage")
 	eq(profile.parkour.clears[1], 1, "the clear still counts")
 	eq(profile.parkour.best[1], 0, "no best time recorded")
 	eq(finish.unlocked, 2, "and it unlocks the next map")
 	check(finish.cash > 0, "and it pays")
-	eq(profile.parkour.stage, count + 2, "best stage saved")
-	eq(player:GetAttribute("ParkourBestStage"), count + 2, "best stage attribute")
-	eq(player:GetAttribute("ParkourStage"), 0, "not running after the finish")
+	local start = rig.last("start")
+	check(start ~= nil and start.level == 2 and start.stage == 2, "the next map starts")
+	check(def.running(player), "running map 2")
+	local at = ModesCourse.respawn(ModesCourse.LEVELS[2])
+	check(
+		rig.teleportedTo ~= nil and (rig.teleportedTo - roblox.Vector3.new(at[1], at[2], at[3])).Magnitude < 0.01,
+		"on map 2's start deck"
+	)
+	eq(profile.parkour.stage, 2, "best stage saved")
+	eq(player:GetAttribute("ParkourBestStage"), 2, "best stage attribute")
+	eq(player:GetAttribute("ParkourStage"), 2, "running on stage 2")
+	-- The last map: a skip just finishes.
+	for i = 2, ModesCourse.LEVEL_COUNT - 1 do
+		profile.parkour.clears[i] = 1
+	end
+	def.start(player, true, { level = ModesCourse.LEVEL_COUNT })
+	profile.money = cost
 	rig.actions.ParkourSkip(rig.session, {})
-	eq(profile.money, 5 + finish.cash, "no skips outside a run")
+	eq(rig.last("finish").level, ModesCourse.LEVEL_COUNT, "map 10 skipped")
+	check(not def.running(player), "no map after the last")
+	eq(profile.parkour.stage, ModesCourse.STAGE_COUNT, "the last stage reached")
+	local money = profile.money
+	rig.actions.ParkourSkip(rig.session, {})
+	eq(profile.money, money, "no skips outside a run")
 end)
 
 test("Sky obby: profile fields and the stage board", function()
@@ -3423,15 +3444,26 @@ test("Sky obby: profile fields and the stage board", function()
 	local fresh = DataService.defaultProfile()
 	eq(fresh.parkour.stage, 0, "new profiles have reached no stage")
 	eq(fresh.parkour.gear, "none", "and wear no gear")
+	eq(fresh.parkour.stageMaps, true, "new profiles count stages in maps")
 	local old = DataService.reconcile({ money = 1, parkour = { best = { 30 }, clears = { 1 } } })
-	eq(old.parkour.stage, 0, "old saves get a stage")
+	eq(old.parkour.stage, 2, "old saves get a stage from their clears (map 1 cleared: map 2)")
 	eq(old.parkour.gear, "none", "and no gear")
+	-- Checkpoint-era saves: `stage` counted checkpoints; rebuilt in maps from the clears.
+	local checkpointEra =
+		DataService.reconcile({ money = 1, parkour = { best = {}, clears = { 2, 1, 1, 0, 1 }, stage = 37, gear = "jump" } })
+	check(checkpointEra.parkour.stage == 4 and checkpointEra.parkour.stageMaps, "checkpoint-era stage 37 becomes map 4")
+	local started = DataService.reconcile({ money = 1, parkour = { best = {}, clears = {}, stage = 5 } })
+	eq(started.parkour.stage, 1, "a checkpoint-era runner with no clears is on map 1")
+	local allDone = DataService.reconcile({ money = 1, parkour = { best = {}, clears = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 }, stage = 80 } })
+	eq(allDone.parkour.stage, 11, "all ten cleared: the last stage")
 	local migrated = DataService.reconcile({ money = 1, modes = { parkour = { best = 4, clears = 1, lastRewardAt = 0 } } })
-	check(migrated.parkour.stage == 0 and migrated.parkour.gear == "none", "migrated saves get the new fields")
-	local bad = DataService.reconcile({ money = 1, parkour = { best = {}, clears = {}, stage = 0 / 0, gear = "rocket" } })
+	check(migrated.parkour.stage == 2 and migrated.parkour.gear == "none", "migrated saves get the new fields")
+	local bad = DataService.reconcile({ money = 1, parkour = { best = {}, clears = {}, stage = 0 / 0, gear = "rocket", stageMaps = true } })
 	check(bad.parkour.stage == 0 and bad.parkour.gear == "none", "bad values reset")
-	local good = DataService.reconcile({ money = 1, parkour = { best = {}, clears = {}, stage = 12.7, gear = "gravity" } })
-	check(good.parkour.stage == 12 and good.parkour.gear == "gravity", "good values stay (whole stages)")
+	local good = DataService.reconcile({ money = 1, parkour = { best = {}, clears = {}, stage = 7.7, gear = "gravity", stageMaps = true } })
+	check(good.parkour.stage == 7 and good.parkour.gear == "gravity", "good values stay (whole stages)")
+	local high = DataService.reconcile({ money = 1, parkour = { best = {}, clears = {}, stage = 40, stageMaps = true } })
+	eq(high.parkour.stage, 11, "map stages are capped at the last stage")
 
 	local services = {
 		DataStoreService = {
@@ -3578,14 +3610,11 @@ test("Game modes: every level's jumps are fair with the default jump", function(
 		local arch = level.FINISH_ARCH
 		local prev = path[#path - 1]
 		check((prev.x - arch.x) * arch.faceX + (prev.z - arch.z) * arch.faceZ > 0, "level " .. li .. ": the arch faces the runner")
-		for k = 0, level.CHECKPOINT_COUNT do
-			local at, look = ModesCourse.respawn(level, k)
-			check(
-				math.abs(look[1] * look[1] + look[2] * look[2] - 1) < 1e-6,
-				"level " .. li .. " respawn " .. k .. " faces along the course"
-			)
-			check(not ModesCourse.inWater(at[1], at[2], at[3]), "level " .. li .. " respawn " .. k .. " is dry")
-			check(ModesCourse.inBounds(level, at[1], at[2], at[3]), "level " .. li .. " respawn " .. k .. " is inside the bounds")
+		do
+			local at, look = ModesCourse.respawn(level)
+			check(math.abs(look[1] * look[1] + look[2] * look[2] - 1) < 1e-6, "level " .. li .. " respawn faces along the course")
+			check(not ModesCourse.inWater(at[1], at[2], at[3]), "level " .. li .. " respawn is dry")
+			check(ModesCourse.inBounds(level, at[1], at[2], at[3]), "level " .. li .. " respawn is inside the bounds")
 		end
 		check(level.remote, "level " .. li .. " is reached by teleport")
 		check(type(level.name) == "string" and #level.name > 0 and level.difficulty == li, "level " .. li .. " has a name and difficulty")
@@ -4061,14 +4090,12 @@ end)
 test("Sky obby: one chain of maps with rainbow bridges and global stages", function()
 	local C = ModesCourse
 	check(C.SKY_Y == 320 and C.FLOOR_Y == C.SKY_Y - 24, "sky and cloud floor heights")
-	check(C.STAGE_COUNT > 60, "more than 60 stages (" .. C.STAGE_COUNT .. ")")
+	eq(C.STAGE_COUNT, C.LEVEL_COUNT + 1, "one stage per map, plus map 10's finish")
 	eq(#C.RAINBOW, 8, "eight rainbow colours")
 	eq(#C.BRIDGES, C.LEVEL_COUNT - 1, "a bridge between every two maps")
 	local slot = 0
 	local function colour(level: any, e: any, label: string)
-		if e.kind == "checkpoint" then
-			eq(e.color, "Checkpoint", label .. ": checkpoints are sky blue")
-		elseif e.kind == "pad" or e.kind == "slide" then
+		if e.kind == "pad" or e.kind == "slide" then
 			eq(e.color, C.RAINBOW[slot % 8 + 1], label .. ": rainbow in walking order")
 		elseif e.kind == "mover" then
 			eq(e.color, level.palette.mover, label .. ": movers keep the map colour")
@@ -4081,15 +4108,9 @@ test("Sky obby: one chain of maps with rainbow bridges and global stages", funct
 		local label = "map " .. i
 		-- Stages run on from map to map.
 		eq(level.STAGE_FIRST, if i == 1 then 1 else C.LEVELS[i - 1].STAGE_LAST, label .. " starts where the last map ended")
-		eq(level.STAGE_LAST, level.STAGE_FIRST + level.CHECKPOINT_COUNT + 1, label .. " finish stage")
-		for k, cp in level.CHECKPOINTS do
-			eq(cp.stage, level.STAGE_FIRST + k, label .. " checkpoint " .. k .. " stage")
-			eq(C.stageOf(level, k), cp.stage, label .. " stageOf " .. k)
-			local at, index = C.levelOfStage(cp.stage)
-			check(at == level and index == k, label .. " levelOfStage finds checkpoint " .. k)
-		end
-		local at, index = C.levelOfStage(level.STAGE_FIRST)
-		check(at == level and index == 0, label .. " its first stage is its start deck")
+		eq(level.STAGE_FIRST, i, label .. " is stage " .. i)
+		eq(level.STAGE_LAST, level.STAGE_FIRST + 1, label .. " finish stage")
+		check(C.levelOfStage(level.STAGE_FIRST) == level, label .. " levelOfStage finds the map")
 		-- High in the sky: every path top at or above SKY_Y, a fall is feet under FLOOR_Y.
 		for k, e in level.PATH do
 			local tops = if e.kind == "slide" then { e.from[2], e.to[2] } else { e.y }
@@ -4136,8 +4157,7 @@ test("Sky obby: one chain of maps with rainbow bridges and global stages", funct
 	end
 	local last = C.LEVELS[C.LEVEL_COUNT]
 	eq(last.STAGE_LAST, C.STAGE_COUNT, "the last finish deck is the last stage")
-	local at, index = C.levelOfStage(C.STAGE_COUNT)
-	check(at == last and index == last.CHECKPOINT_COUNT + 1, "levelOfStage(STAGE_COUNT) is the last finish deck")
+	check(C.levelOfStage(C.STAGE_COUNT) == last, "levelOfStage(STAGE_COUNT) is the last map")
 	local g1, g2 = C.generate(3), C.LEVELS[3]
 	check(
 		#g1.PATH == #g2.PATH and g1.PATH[5].x == g2.PATH[5].x and g1.PATH[5].color == g2.PATH[5].color,
@@ -4222,8 +4242,12 @@ test("Sky obby: lava kill strips and sliding bars on wide decks", function()
 				end
 			end
 			check(
-				deck.kind == "pad" and deck.name ~= "StartDeck" and deck.name ~= "FinishDeck" and deck.name ~= "Bridge",
-				what .. ": not on the start/finish deck, a checkpoint, mover or blink pad"
+				deck.kind == "pad"
+					and deck.name ~= "StartDeck"
+					and deck.name ~= "FinishDeck"
+					and deck.name ~= "Bridge"
+					and deck.name ~= "RestDeck",
+				what .. ": not on the start/finish deck, a rest deck, mover or blink pad"
 			)
 			local from = level.PATH[di - 1]
 			local alongX = math.abs(deck.x - from.x) >= math.abs(deck.z - from.z)
@@ -4299,16 +4323,18 @@ test("Sky obby: lava kill strips and sliding bars on wide decks", function()
 				end
 			end
 		end
-		-- Start, finish and checkpoints are always safe.
+		-- Start, finish and rest decks are always safe.
 		local spots = { { level.START.x, level.START.y, level.START.z } }
-		for _, cp in level.CHECKPOINTS do
-			table.insert(spots, { cp.x, cp.y, cp.z })
+		for _, e in level.PATH do
+			if e.name == "RestDeck" then
+				table.insert(spots, { e.x, e.y, e.z })
+			end
 		end
 		local fin = level.PATH[#level.PATH]
 		table.insert(spots, { fin.x, fin.y, fin.z })
 		for _, s in spots do
 			for step = 0, 24 do
-				check(not ModesCourse.inKill(level, s[1], s[2] + 0.1, s[3], step * 0.25), label .. ": start/checkpoints/finish are safe")
+				check(not ModesCourse.inKill(level, s[1], s[2] + 0.1, s[3], step * 0.25), label .. ": start/rest decks/finish are safe")
 			end
 		end
 	end
