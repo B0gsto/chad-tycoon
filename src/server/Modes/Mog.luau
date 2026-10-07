@@ -35,8 +35,8 @@
 	  { event = "check", id, n, appearAt, speed, dir, zoneStart, zoneSize, perfectSize,
 	    duration }                                   sent `lead` seconds before appearAt
 	  { event = "result", id, result, reason?, travel?, score, combo, lives, rivalHp, rivalMax }
-	  { event = "rival", mogged, rival, rivals, passed, cash?, gems?, full? }
-	  { event = "finish", score, rivals, best, newBest, passed, cash, gems, full,
+	  { event = "rival", mogged, rival, rivals, passed, cash?, full? }
+	  { event = "finish", score, rivals, best, newBest, passed, cash, full,
 	    cooldownEnds, rank? }
 	  { event = "stop", reason }                     ended without a finish ("full" = no free spot,
 	                                                 "noOpponent" = queue timed out, "cancel")
@@ -49,7 +49,7 @@
 	  { event = "round", vs, id, you = { result, hp, maxHp, combo, score },
 	    opp = { result, hp, maxHp }, suddenDeath? }
 	  { event = "finish", vs, won, reason ("ko" | "forfeit"), opponent = { userId, name }, score,
-	    wins, played, cash, gems, full, cooldownEnds }
+	    wins, played, cash, full, cooldownEnds }
 	Rival info: { index, name, tier, hp, maxHp } (tier = Theme.Tiers index the client dresses).
 	Effects: the usual "Cash" { amount, source = "Mode", padPos } when the pass pays cash.
 ]]
@@ -309,7 +309,6 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 				padPos = if root then root.Position else padPos,
 			})
 		end
-		p.gems += reward.gems
 		GameModes.hooks.rewarded(session, ID, reward)
 		Tycoon.markDirty(session)
 		return reward
@@ -347,7 +346,6 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			newBest = newBest,
 			passed = run.passed,
 			cash = if reward then reward.cash else 0,
-			gems = if reward then reward.gems else 0,
 			full = if reward then reward.full else false,
 			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 			rank = rank,
@@ -387,7 +385,6 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			if outcome.passed then
 				local reward = payPass(player, state)
 				payload.cash = if reward then reward.cash else 0
-				payload.gems = if reward then reward.gems else 0
 				payload.full = if reward then reward.full else false
 			end
 			GameModes.notify(player, "rival", ID, payload)
@@ -547,7 +544,6 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 					wins = rec.pvpWins,
 					played = rec.pvpPlayed,
 					cash = if reward then reward.cash else 0,
-					gems = if reward then reward.gems else 0,
 					full = if reward then reward.full else false,
 					cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 				})
@@ -876,10 +872,10 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 	function def.rewardPreview(player: Player): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, gems = 0, full = false, packCash = 0 }
+			return { cash = 0, full = false, packCash = 0 }
 		end
 		local r = rewardFor(session)
-		return { cash = r.cash, gems = r.gems, full = r.full, packCash = r.packCash }
+		return { cash = r.cash, full = r.full, packCash = r.packCash }
 	end
 
 	function def.snapshot(player: Player): { [string]: any }

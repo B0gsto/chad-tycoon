@@ -228,7 +228,6 @@ function shotList(world) {
 		{ name: "12-tutorial-complete", scene: "world_tutorial", gui: "tutorial_done", camera: tutorial },
 		{ name: "13-loading-screen", scene: "world", gui: "loading", camera: play },
 		{ name: "14-offline-earnings", scene: "world", gui: "offline", camera: play },
-		{ name: "15-shop-premium", scene: "world", gui: "shop_gems", camera: play },
 		// Close-ups for art review (no UI).
 		{ name: "16-pen", scene: "world", gui: "none", camera: { pos: P(19, 11, -9), look: P(0, 2, 15), fov: 55 }, extra: { shadowSpan: 90 } },
 		{ name: "17-stage", scene: "world", gui: "none", camera: { pos: P(0, 13, 1), look: P(0, 8, 32), fov: 62 }, extra: { shadowSpan: 90 } },

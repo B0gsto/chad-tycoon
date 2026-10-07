@@ -5,14 +5,14 @@ usage:
   tools/monetization.py list [--json]
   tools/monetization.py ensure-product --name N --description D --price R [--icon PNG] [--off-sale]
   tools/monetization.py ensure-pass    --name N --description D --price R [--icon PNG] [--off-sale]
-  tools/monetization.py update-product --id ID [--name N] [--description D]
-  tools/monetization.py update-pass    --id ID [--name N] [--description D]
+  tools/monetization.py update-product --id ID [--name N] [--description D] [--off-sale | --on-sale]
+  tools/monetization.py update-pass    --id ID [--name N] [--description D] [--off-sale | --on-sale]
 
 ensure-* is idempotent: it lists the universe's items first and reuses an item whose name matches exactly
 (it never changes the price, sale state or icon of an existing item; a mismatch is only reported). Otherwise it
 creates the item. It prints one JSON line {"kind", "id", "name", "price", "isForSale", "created"}.
-update-* changes only the name and/or description of the item with that id (multipart PATCH), then prints the
-item as read back, with its description.
+update-* changes only the name, description and/or sale state of the item with that id (multipart PATCH),
+then prints the item as read back, with its description.
 
 The universe comes from deploy/target.json. The API key is read from ~/RobloxProjects/.roblox-api-key (same
 handling as tools/assets.py) and is never printed. Needed key permissions, with the universe added under each:
@@ -114,12 +114,14 @@ def ensure(kind, u, name, description, price, icon, for_sale):
     return summary(kind, created, created=True)
 
 
-def update(kind, u, item_id, name=None, description=None):
-    """Changes only the name and/or description of one existing item, then reads it back."""
+def update(kind, u, item_id, name=None, description=None, for_sale=None):
+    """Changes only the name, description and/or sale state of one existing item, then reads it back."""
     base, id_field, _ = KINDS[kind]
     fields = {k: v for k, v in (("name", name), ("description", description)) if v is not None}
+    if for_sale is not None:
+        fields["isForSale"] = "true" if for_sale else "false"
     if not fields:
-        raise SystemExit("update: give --name and/or --description")
+        raise SystemExit("update: give --name, --description, --off-sale or --on-sale")
     call("PATCH", f"{base.format(u=u)}/{int(item_id)}", fields)
     again = [e for e in list_items(kind, u) if int(e[id_field]) == int(item_id)]
     if not again:
@@ -146,6 +148,9 @@ def main():
         p.add_argument("--id", type=int, required=True)
         p.add_argument("--name")
         p.add_argument("--description")
+        sale = p.add_mutually_exclusive_group()
+        sale.add_argument("--off-sale", dest="for_sale", action="store_false", default=None)
+        sale.add_argument("--on-sale", dest="for_sale", action="store_true", default=None)
     a = ap.parse_args()
     u = universe()
     try:
@@ -160,7 +165,7 @@ def main():
             return
         if a.cmd in ("update-product", "update-pass"):
             kind = "product" if a.cmd == "update-product" else "pass"
-            print(json.dumps(update(kind, u, a.id, a.name, a.description)))
+            print(json.dumps(update(kind, u, a.id, a.name, a.description, a.for_sale)))
             return
         if a.icon and not os.path.isfile(a.icon):
             raise SystemExit(f"missing icon {a.icon}")
