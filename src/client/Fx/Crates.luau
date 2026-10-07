@@ -25,6 +25,8 @@
 	Crates that already exist when the plot is bound just appear in place.
 	All movement is local (BulkMoveTo on the server's anchored parts) and a pure
 	function of time since the crate appeared, so it is frame-rate independent.
+	On "low" devices (Fx.Budget) idle crates past their intro move every 2nd frame
+	and only within 110 studs; dust puffs scale with Budget.count.
 ]]
 
 local Players = game:GetService("Players")
@@ -45,6 +47,7 @@ local State = require(Client.State)
 local Camera = require(script.Parent.Camera)
 local Orbs = require(script.Parent.Orbs)
 local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
 
 local Crates = {}
 
@@ -67,6 +70,8 @@ local BOUNCE2, BOUNCE2_APEX = 0.26, 0.6
 local SQUASH = 0.6
 local FALLBACK_DROP = 7 -- no route: drop from this high above the landing spot
 local CULL = 170 -- studs from the camera: beyond this crates stay still
+local LOW_CULL = 110 -- the same on a "low" budget device
+local idleFrame = 0
 local MAX_CRATES = 8
 local CHIP_RANGE = 70 -- camera distance cap of the rarity labels (BillboardGui.MaxDistance)
 local CHIP_HEIGHT = 1.6 -- studs
@@ -243,7 +248,7 @@ local function smokePuff(pos: Vector3, count: number, speed: number)
 	end
 	emitter.Rate = 0
 	emitter.Parent = holder
-	emitter:Emit(count)
+	emitter:Emit(Budget.count(count))
 	task.delay(1.2, function()
 		holder:Destroy()
 	end)
@@ -685,12 +690,16 @@ local function step()
 	local now = os.clock()
 	table.clear(moveParts)
 	table.clear(moveCFrames)
+	idleFrame += 1
+	local low = Budget.low()
+	local cull = if low then LOW_CULL else CULL
+	local skipIdle = low and idleFrame % 2 == 0
 	for model, crate in crates do
 		if not model.Parent or crate.broken then
 			continue
 		end
 		local intro = now - crate.born < crate.land + SQUASH + 0.6
-		if not intro and not nearCamera(crate.base.Position, CULL) then
+		if not intro and (skipIdle or not nearCamera(crate.base.Position, cull)) then
 			continue
 		end
 		local ok, err = pcall(stepCrate, crate, now)

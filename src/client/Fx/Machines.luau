@@ -26,6 +26,7 @@ local State = require(Client.State)
 local Sounds = require(Client.Sounds)
 local Orbs = require(script.Parent.Orbs)
 local Camera = require(script.Parent.Camera)
+local Budget = require(script.Parent.Budget)
 
 local player = Players.LocalPlayer
 local C = Theme.Colors
@@ -122,8 +123,9 @@ local function confettiBurst(pos: Vector3, count: number, power: number?, colors
 	local palette = colors or CONFETTI_COLORS
 	local k = power or 1
 	local now = os.clock()
-	for i = 1, count do
-		if #confetti >= MAX_CONFETTI then
+	local cap = Budget.count(MAX_CONFETTI) -- fewer on phones (Fx.Budget)
+	for i = 1, Budget.count(count) do
+		if #confetti >= cap then
 			break
 		end
 		local part = table.remove(confettiPool) or newPart(Enum.PartType.Block, "Confetti", WHITE, Vector3.new(0.34, 0.07, 0.24))
@@ -309,8 +311,9 @@ end
 -- A few stars pop out (Back ease), float up and fade.
 local function starBurst(pos: Vector3, count: number, color: Color3?)
 	local now = os.clock()
-	for i = 1, count do
-		if #stars >= MAX_STARS then
+	local cap = Budget.count(MAX_STARS)
+	for i = 1, Budget.count(count) do
+		if #stars >= cap then
 			break
 		end
 		local star = table.remove(starPool) or newStar()

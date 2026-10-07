@@ -418,6 +418,7 @@ local function showCelebrate(gems: number, cash: number, done: () -> ())
 	local catcher = Kit.new("TextButton", {
 		Name = "Dismiss",
 		BackgroundTransparency = 1,
+		Selectable = false,
 		Text = "",
 		Size = UDim2.fromScale(1, 1),
 		ZIndex = 25,
@@ -545,14 +546,15 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		ZIndex = 7,
 	})
 
-	-- Quiet skip: a small "x" (36 px hit area) that asks before skipping.
+	-- Quiet skip: a small "x" (44 px hit area, centred where the 36 px one was) that asks
+	-- before skipping.
 	local skip = Kit.new("TextButton", {
 		Name = "Skip",
 		BackgroundTransparency = 1,
 		Text = "",
 		AutoButtonColor = false,
-		Size = UDim2.fromOffset(36, 36),
-		Position = UDim2.new(1, -2, 0.5, 0),
+		Size = UDim2.fromOffset(44, 44),
+		Position = UDim2.new(1, 2, 0.5, 0),
 		AnchorPoint = Vector2.new(1, 0.5),
 		ZIndex = 8,
 		Parent = pill,
@@ -564,19 +566,25 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		ZIndex = 9,
 	})
 	Kit.bouncy(skip, 1.12)
-	skip.MouseEnter:Connect(function()
+	Kit.selectable(skip)
+	local function lit(on: boolean)
 		for _, part in cross:GetChildren() do
 			if part:IsA("Frame") then
-				Kit.tween(part, 0.12, { BackgroundColor3 = C.TextDim })
+				Kit.tween(part, 0.12, { BackgroundColor3 = if on then C.TextDim else C.TextMute })
 			end
 		end
+	end
+	skip.MouseEnter:Connect(function()
+		lit(true)
 	end)
 	skip.MouseLeave:Connect(function()
-		for _, part in cross:GetChildren() do
-			if part:IsA("Frame") then
-				Kit.tween(part, 0.12, { BackgroundColor3 = C.TextMute })
-			end
-		end
+		lit(false)
+	end)
+	skip.SelectionGained:Connect(function()
+		lit(true)
+	end)
+	skip.SelectionLost:Connect(function()
+		lit(false)
 	end)
 	skip.Activated:Connect(function()
 		Kit.sound("Click")

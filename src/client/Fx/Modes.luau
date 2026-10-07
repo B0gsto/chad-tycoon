@@ -28,6 +28,9 @@
 	               eases in and out and settles back at its rest pose.
 	  Next flag    during a run, the next checkpoint's "FlagCap" (attribute Checkpoint)
 	               gives a soft pulse with a sunny ring every couple of seconds.
+	  Budget       on "low" devices (Fx.Budget) movers farther than LOW_FAR studs from
+	               the player pose every 2nd frame; celebration confetti / splash dots
+	               scale with Budget.count. Hints, pads and nearby movers never thin out.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -39,6 +42,7 @@ local Workspace = game:GetService("Workspace")
 
 local Net = require(ReplicatedStorage.Shared.Net)
 local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
 
 local ModesFx = {}
 
@@ -47,6 +51,8 @@ local W = (require(ReplicatedStorage:WaitForChild("Theme")) :: any).World
 
 -- Movers further than this from the player stay put; nothing runs beyond FAR of every mover.
 local NEAR = 220
+local LOW_FAR = 80 -- studs: on a "low" device movers past this pose every 2nd frame
+local stepFrame = 0
 local TAU = 2 * math.pi
 local BUMP_COOLDOWN = 0.7
 local STILL_FOR = 4
@@ -514,8 +520,14 @@ local function step(dt: number)
 	local parts: { BasePart } = {}
 	local frames: { CFrame } = {}
 	local carry: CFrame? = nil
+	stepFrame += 1
+	local thin = Budget.low() and stepFrame % 2 == 0
 	for _, m in movers do
-		if (m.rest.Position - pos).Magnitude <= NEAR then
+		local distance = (m.rest.Position - pos).Magnitude
+		if distance <= NEAR then
+			if thin and distance > LOW_FAR and m ~= under then
+				continue
+			end
 			local pose = poseAt(m, t)
 			if m == under and m.live then
 				carry = pose * m.current:Inverse()
@@ -598,8 +610,12 @@ local function checkpointPop(position: Vector3)
 	local top = if cap then cap.Position else position + Vector3.new(0, 6, 0)
 	local anchor = anchorAt(top, 3)
 	Sprites.billboard(anchor, "StarPop", { position = top, size = 3, life = 0.9, rise = Vector3.new(0, 2, 0), spin = 40 })
-	for i = 1, 5 do
-		local a = i / 5 * TAU
+	local pops = Budget.count(5)
+	for i = 1, pops do
+		if not Sprites.room() then
+			break -- decorative: the device's sprite budget is full
+		end
+		local a = i / pops * TAU
 		Sprites.billboard(anchor, "Confetti", {
 			position = top,
 			size = 0.8,
@@ -621,8 +637,12 @@ local function splash(position: Vector3)
 	local anchor = anchorAt(position, 3)
 	Sprites.billboard(anchor, "Ring", { position = position, size = 6, life = 0.7, rise = Vector3.zero, color = W.Pool })
 	Sprites.billboard(anchor, "Puff", { position = position, size = 4, life = 0.8, rise = Vector3.new(0, 3, 0) })
-	for i = 1, 6 do
-		local a = i / 6 * TAU
+	local dots = Budget.count(6)
+	for i = 1, dots do
+		if not Sprites.room() then
+			break
+		end
+		local a = i / dots * TAU
 		Sprites.billboard(anchor, "SoftDot", {
 			position = position,
 			size = 0.7,
@@ -641,8 +661,12 @@ end
 
 local function finish(position: Vector3)
 	local anchor = anchorAt(position, 3)
-	for i = 1, 8 do
-		local a = i / 8 * TAU
+	local pops = Budget.count(8)
+	for i = 1, pops do
+		if not Sprites.room() then
+			break -- decorative: the device's sprite budget is full
+		end
+		local a = i / pops * TAU
 		Sprites.billboard(anchor, if i % 2 == 0 then "StarPop" else "Confetti", {
 			position = position + Vector3.new(0, 2, 0),
 			size = if i % 2 == 0 then 2 else 1,

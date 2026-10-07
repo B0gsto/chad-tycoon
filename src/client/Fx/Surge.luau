@@ -12,7 +12,8 @@
 	              (with a slow, small 2.2 s pulse), a little contrast and brightness
 	  SurgeBloom  BloomEffect: a soft, wide bloom on the brightest surfaces only
 	  SurgeRays   SunRaysEffect: a faint sun glow
-	plus large, soft gold sparkles drifting up over the local player's plot. The
+	plus large, soft gold sparkles drifting up over the local player's plot (their
+	rate scaled by Fx.Budget on phones). The
 	look eases in over FADE_IN seconds and out over FADE_OUT seconds, after which
 	every instance is removed. No flashing: every value moves smoothly.
 
@@ -93,6 +94,7 @@ function Surge.init()
 	local State = require(script.Parent.Parent.State) :: any
 	local Sounds = require(script.Parent.Parent.Sounds) :: any
 	local Sprites = require(script.Parent.Sprites) :: any
+	local Budget = require(script.Parent.Budget) :: any
 
 	local WHITE = Color3.new(1, 1, 1)
 	local TINT = Color3.fromRGB(Surge.TINT_RGB[1], Surge.TINT_RGB[2], Surge.TINT_RGB[3])
@@ -266,8 +268,9 @@ function Surge.init()
 		r.Intensity = g.rays
 
 		ensureSparkles(os.clock())
+		local budget = Budget.scale() -- fewer drifting sparkles on phones (Fx.Budget)
 		for emitter, rate in emitters do
-			emitter.Rate = rate * g.sparkles
+			emitter.Rate = rate * g.sparkles * budget
 		end
 	end)
 end

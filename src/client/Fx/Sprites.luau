@@ -17,12 +17,21 @@
 
 	Sprites.billboard(parent, name, opts) is a one-off sprite pop in the world: it
 	scales in (Back out), drifts by `rise`, fades and cleans itself up.
+
+	Sprites.room() is false while the live billboard count is at the device's
+	budget (Fx.Budget: 24 on low, 48 on mid, unlimited on high); decorative pops
+	check it and skip, gameplay feedback ignores it.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
+local Budget = require(script.Parent.Budget)
+
 local Sprites = {}
+
+local ROOM: { [string]: number } = { low = 24, mid = 48, high = math.huge }
+local live = 0 -- billboards currently in the world
 
 local WHITE = Color3.new(1, 1, 1)
 
@@ -98,6 +107,8 @@ function Sprites.emitter(parent: Instance, name: string, props: { [string]: any 
 			(emitter :: any)[key] = value
 		end
 	end
+	-- A sustained rate follows the device budget (bursts: callers use Budget.count).
+	emitter.Rate *= Budget.scale()
 	emitter.Parent = parent
 	return emitter
 end
@@ -112,6 +123,11 @@ export type BillboardOptions = {
 	spin: number?, -- degrees turned over the life
 	maxDistance: number?, -- studs (default 80)
 }
+
+-- True while there is budget left for another decorative billboard on this device.
+function Sprites.room(): boolean
+	return live < ROOM[Budget.tier()]
+end
 
 -- A one-off sprite at `opts.position` on an attachment under `parent` (a part):
 -- scales in, drifts by `rise` (Quad out), fades over the last 40% and is destroyed.
@@ -150,6 +166,7 @@ function Sprites.billboard(parent: BasePart, name: string, opts: BillboardOption
 	image.Rotation = (math.random() - 0.5) * 24
 	image.Parent = gui
 	attachment.Parent = parent
+	live += 1
 
 	local function play(target: Instance, info: TweenInfo, goal: { [string]: any })
 		TweenService:Create(target, info, goal):Play()
@@ -173,6 +190,7 @@ function Sprites.billboard(parent: BasePart, name: string, opts: BillboardOption
 		{ ImageTransparency = 1 }
 	)
 	task.delay(delay + life + 0.05, function()
+		live -= 1
 		attachment:Destroy()
 	end)
 	return gui
