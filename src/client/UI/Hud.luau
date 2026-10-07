@@ -12,7 +12,7 @@
 	                 promo under it: tilted "PERMANENT" tag, wide 2X CASH (or
 	                 STARTER PACK) button, "Only 199 R$"
 	  bottom left    status row (Premium, Friends, Boost), "Cash [ x1.0 ]",
-	                 the big cash amount + square "+" and a compact Rizz line
+	                 the big cash amount + square "+"
 	  bottom centre  the dumbbell: "AURA" + the carried amount on its plaque
 	  bottom right   FREE gift with its countdown, version in the corner
 
@@ -74,6 +74,13 @@ Hud.shakeWallet = function() end
 Hud.runStart = function(_startedAt: number, _checkpoint: number, _checkpoints: number, _level: number?) end
 Hud.runCheckpoint = function(_index: number, _checkpoints: number) end
 Hud.runStop = function() end
+-- The sky obby docks the run pill into its own row (pos + anchor; nil puts it back).
+Hud.dockRun = function(_pos: UDim2?, _anchor: Vector2?) end
+-- A parkour run is on: the tycoon's top centre (units, deposit strip), the quest pill,
+-- the promo and the FREE gift step aside for the obby HUD; off brings them back.
+Hud.setObbyMode = function(_on: boolean) end
+-- The dumbbell group (the obby gear hotbar sits on top of it).
+Hud.tank = nil :: Frame?
 -- True once the cash counter has finished rolling.
 Hud.walletIdle = function(): boolean
 	return true
@@ -404,6 +411,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			and not compact
 			and promoFits
 			and screen:GetAttribute("WindowOpen") ~= true
+			and screen:GetAttribute("ObbyMode") ~= true
 			and screen:GetAttribute("CardioActive") ~= true -- a Cardio run keeps the screen clear
 		if show and mode ~= promoMode then
 			if promoShown then
@@ -505,6 +513,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- server clock, checkpoint n/N, and an "x" that asks "QUIT?" before firing ModeQuit.
 	-- A gold "L3" chip on the left names the Parkour level (the Star shows without one).
 	local RUN_W, RUN_H = 236, 36
+	local RUN_ANCHOR = Vector2.new(0.5, 0)
 	local runRest = UDim2.new(0.5, 0, 0, RUN_Y)
 	local runAway = UDim2.new(0.5, 0, 0, -RUN_H - 20)
 	local runPill = Kit.panel(screen, {
@@ -610,6 +619,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Kit.setButton(quitButton, "X", C.SurfaceHi)
 		quitButton.Size = UDim2.fromOffset(30, 28)
 		runPill.Size = UDim2.fromOffset(RUN_W, RUN_H)
+		runPill.AnchorPoint = RUN_ANCHOR
 		screen:SetAttribute("RunActive", true)
 		if not runShown then
 			runShown = true
@@ -652,6 +662,17 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 					runPill.Visible = false
 				end
 			end)
+		end
+	end
+
+	Hud.dockRun = function(pos: UDim2?, anchor: Vector2?)
+		local rest = pos or UDim2.new(0.5, 0, 0, RUN_Y)
+		RUN_ANCHOR = anchor or Vector2.new(0.5, 0)
+		runRest = rest
+		runAway = UDim2.new(rest.X.Scale, rest.X.Offset, 0, -RUN_H - 20)
+		if runShown then
+			runPill.AnchorPoint = RUN_ANCHOR
+			Kit.tween(runPill, 0.25, { Position = runRest }, Enum.EasingStyle.Quad)
 		end
 	end
 
@@ -888,7 +909,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 	end
 
-	-- Bottom left: status row, cash multiplier line, cash amount + plus, Rizz -------------
+	-- Bottom left: status row, cash multiplier line, cash amount + plus -------------------
 	local wallet = group("Wallet", {
 		Size = UDim2.fromOffset(420, 168),
 		Position = UDim2.new(0, EDGE_X, 1, -6),
@@ -958,44 +979,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	hitPad(addButton, function()
 		handlers.openWindow("Shop", { focus = "Cash" })
 	end)
-	local rizz = group("Rizz", { Size = UDim2.fromOffset(120, 30), Parent = wallet })
-	Kit.hudIcon(rizz, "Gem", 24, C.Rizz, { Name = "GemIcon", Position = UDim2.fromOffset(0, 3), ZIndex = 2 })
-	local gemsLabel = Kit.hudText(rizz, {
-		Name = "Gems",
-		Text = "0",
-		Font = F.Number,
-		TextSize = 20,
-		TextColor3 = C.Rizz,
-		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 30),
-		Position = UDim2.fromOffset(28, 0),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		ZIndex = 3,
-	})
-	local gemPlus = Kit.button(rizz, {
-		Name = "AddRizz",
-		Icon = "Plus",
-		IconColor = Color3.new(1, 1, 1),
-		Color = C.Rizz,
-		Size = UDim2.fromOffset(24, 24),
-		Radius = 12,
-		Depth = 2,
-		ZIndex = 3,
-	}, function()
-		handlers.openWindow("Shop", { focus = "Gems" })
-	end)
-	hitPad(gemPlus, function()
-		handlers.openWindow("Shop", { focus = "Gems" })
-	end)
-	-- The plus and the Rizz line follow the cash amount's width.
+	-- The plus follows the cash amount's width.
 	local function layoutWallet()
 		local x = math.max(textWidth(moneyLabel.Text, moneyLabel.TextSize, moneyLabel.Font) + 4, 60)
 		addButton.Position = UDim2.fromOffset(x + 10, 92)
-		rizz.Position = UDim2.fromOffset(x + 64, 99)
-		gemPlus.Position = UDim2.fromOffset(28 + textWidth(gemsLabel.Text, gemsLabel.TextSize, gemsLabel.Font) + 8, 3)
 	end
 	moneyLabel:GetPropertyChangedSignal("Text"):Connect(layoutWallet)
-	gemsLabel:GetPropertyChangedSignal("Text"):Connect(layoutWallet)
 
 	-- Layout mode ------------------------------------------------------------------------
 	-- Compact screens: smaller grid icons, no status captions, no promo, a smaller
@@ -1156,7 +1145,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		place(next(targets) ~= nil)
 	end
 	-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
-	local selectables: { GuiObject } = { promoButton, addButton, gemPlus, quitButton }
+	local selectables: { GuiObject } = { promoButton, addButton, quitButton }
 	for _, button in Hud.buttons do
 		table.insert(selectables, button)
 	end
@@ -1219,7 +1208,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			roll(moneyLabel, data.money, State.money)
 		end
 		moneyShown = data.money
-		roll(gemsLabel, data.gems, State.num)
 		if lastMult ~= nil and lastMult ~= data.moneyMult then
 			Kit.pop(multLine, 0.8)
 		end
@@ -1524,6 +1512,52 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end)
 	refresh()
 	layoutWallet()
+
+	-- Obby mode: the run's own HUD owns the top centre ----------------------------------
+	Hud.tank = tank
+	local obbyOn = false
+	local tutorialConn: RBXScriptConnection? = nil
+	local tutorialWanted = false
+	local forcing = false
+	Hud.setObbyMode = function(on: boolean)
+		if on == obbyOn then
+			return
+		end
+		obbyOn = on
+		screen:SetAttribute("ObbyMode", on)
+		for _, gui in { units, strip, corner } :: { GuiObject } do
+			gui.Visible = not on
+		end
+		updatePromo()
+		-- The quest pill (Tutorial) stays down even if it re-renders mid-run; whatever
+		-- it asked for meanwhile is applied when the run ends.
+		local pill = screen:FindFirstChild("TutorialPill")
+		if not (pill and pill:IsA("GuiObject")) then
+			return
+		end
+		if on then
+			tutorialWanted = pill.Visible
+			pill.Visible = false
+			tutorialConn = pill:GetPropertyChangedSignal("Visible"):Connect(function()
+				if forcing then
+					return
+				end
+				tutorialWanted = pill.Visible
+				if pill.Visible then
+					forcing = true
+					pill.Visible = false
+					forcing = false
+				end
+			end)
+		else
+			if tutorialConn then
+				tutorialConn:Disconnect()
+				tutorialConn = nil
+			end
+			pill.Visible = tutorialWanted
+		end
+	end
+
 	-- Entrance: the HUD eases in a block at a time, top first.
 	local entrance: { GuiObject } = { units, strip, gear }
 	for _, row in GRID_ROWS do

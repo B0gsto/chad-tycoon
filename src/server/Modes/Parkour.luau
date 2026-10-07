@@ -4,8 +4,9 @@
 	- Levels: every level is out at sea and reached only by teleport. A player has unlocked
 	  level 1 + (number of consecutive cleared levels from 1); "ModeStart" may pick any
 	  unlocked level (options.level), else the lowest level not yet cleared. Walking west
-	  through gate 1's portal (Course.crossedStart) starts that default level too. Starting
-	  again restarts.
+	  through gate 1's portal (Course.crossedStart) does not start a run: it sends a "pick"
+	  notify so the client opens the Maps window on the default level. Starting again
+	  restarts.
 	- Checkpoints count only in order (Modes.Rules). Feet in the water past the shore send the
 	  player back to their last checkpoint (0 = start deck) with a splash; the run goes on.
 	- Standing on the finish deck after the last checkpoint ends the run; Rules.finish checks
@@ -15,20 +16,43 @@
 	  Theme.Modes.Reward (Seconds of income, at least Min, sized like a cash pack) on the
 	  first clear OF THAT LEVEL and then once per
 	  Economy.MODE_REWARD_COOLDOWN (one cooldown shared by all levels, modes.parkour.
-	  lastRewardAt); MODE_FIRST_CLEAR_GEMS Rizz on each level's first clear. After a remote
+	  lastRewardAt). After a remote
 	  finish the player is brought back to the gates (GameModes.returnLater).
 	- Leaving the level's bounds for Course.LEAVE_SECONDS ends the run ("left"); on a remote
 	  level the player goes back to the gates.
+	- Stages (docs/sky-obby.md): the ten maps are one chained sky obby with global stage
+	  numbers (start deck, checkpoints, finish deck). profile.parkour.stage keeps the highest
+	  stage reached; Player attributes "ParkourStage" (this run's stage, 0 when not running)
+	  and "ParkourBestStage" feed the HUD's progress bar.
+	- Gear: action "ParkourGear" { gear = "none" | "speed" | "jump" | "gravity" } saves the
+	  choice (profile.parkour.gear); it is worn only during a run (speed: WalkSpeed 16 -> 28
+	  through the Humanoid's BaseWalkSpeed; jump: JumpHeight 7.2 -> 14 or JumpPower 50 -> 70;
+	  gravity: a "GravityCoil" VectorForce on the root lifting 55% of the weight) and taken off
+	  on stop / finish / leave. A run that wore gear at any point is `assisted`.
+	- Skip: action "ParkourSkip" costs Economy.parkourSkipCost(income) cash (two minutes of
+	  income, at least Economy.PARKOUR_SKIP_MIN; the snapshot's `skipCost`), teleports to the next
+	  checkpoint (after the last one: the finish deck, which finishes the run) and marks the
+	  run assisted. Assisted runs pay, unlock and count clears but never record a best time
+	  or a board entry.
 
 	Notify payloads (kind = "Mode", mode = "parkour"):
-	  { event = "start", checkpoints, startedAt, best?, level, levelName, levels, remote }
-	  { event = "checkpoint", index, checkpoints, split }        split = seconds since start
-	  { event = "respawn", index }                               back at checkpoint `index`
-	  { event = "finish", time, best, newBest, first, cash, gems, full, cooldownEnds, rank?,
-	    level, levelName, nextLevel?, unlockedNew, unlocked, levels }
+	  { event = "pick", level }                                  crossed gate 1: open the Maps
+	                                                             window on `level` (the default)
+	  { event = "start", checkpoints, startedAt, best?, level, levelName, levels, remote,
+	    stage, stageCount, gear, assisted }
+	  { event = "checkpoint", index, checkpoints, split, stage, stageCount }
+	                                                             split = seconds since start
+	  { event = "respawn", index, stage, stageCount, reason? }   back at checkpoint `index`
+	                                                             reason = "kill" after lava
+	  { event = "skip", stage, stageCount, index, checkpoints }  paid skip to `stage`
+	  { event = "finish", time, best, newBest, first, cash, full, cooldownEnds, rank?,
+	    level, levelName, nextLevel?, unlockedNew, unlocked, levels, stage, stageCount,
+	    assisted }                                               assisted: newBest false, no rank
+	`stage` is the global stage (start deck / checkpoint / finish deck) the runner stands on.
 	  { event = "invalid", reason }                              "checkpoints" | "fast"
 	  { event = "stop", reason }                                 run ended without a finish
-	Effects: "ModeSplash" { pos } where the player hit the water; "ModeCheckpoint"
+	Effects: "ModeSplash" { pos } where the player hit the water; "ModeKill" { pos } where a
+	kill brick (Course.inKill) caught them; "ModeCheckpoint"
 	{ pos, index }; "ModeFinish" { pos, newBest }; plus the usual "Cash" { amount,
 	source = "Mode", padPos } when cash is paid.
 ]]
@@ -36,6 +60,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
+local Format = require(ReplicatedStorage.Shared.Format)
 local Course = require(script.Parent.Course)
 local Rules = require(script.Parent.Rules)
 
@@ -51,13 +76,29 @@ local FEET_BELOW_ROOT = 3
 -- Seconds after a remote finish before the player is taken back to the gates.
 local RETURN_SECONDS = 15
 
+-- Gear (coils) worn during runs.
+local GEARS = { none = true, speed = true, jump = true, gravity = true }
+local GEAR_WALK_SPEED = 28
+local GEAR_JUMP_HEIGHT = 14
+local DEFAULT_JUMP_POWER = 50
+local GEAR_JUMP_POWER = 70
+-- Share of the character's weight the gravity coil cancels.
+local GRAVITY_CANCEL = 0.55
+local COIL = "GravityCoil"
+
 type State = {
 	run: Rules.Run,
 	outsideSince: number?,
 	graceUntil: number,
+	-- Gear was worn or a stage was skipped during this run.
+	assisted: boolean,
+	-- The speed coil was worn during this run (looser anti-cheat minimums).
+	speedUsed: boolean,
 }
 
-type Record = { best: { number }, clears: { number } }
+type Worn = { gear: string, humanoid: any, root: any, base: any }
+
+type Record = { best: { number }, clears: { number }, stage: number, gear: string }
 
 local function escape(s: string): string
 	return (string.gsub(s, "[&<>]", { ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;" }))
@@ -65,6 +106,51 @@ end
 
 local function vec(t: { number }): Vector3
 	return Vector3.new(t[1], t[2], t[3])
+end
+
+-- Global stage of `level`'s start deck. Course provides STAGE_FIRST (docs/sky-obby.md);
+-- older Course data is numbered the same way: each map adds its checkpoints + its finish.
+local function stageFirst(level: Course.Level): number
+	local first = (level :: any).STAGE_FIRST
+	if type(first) == "number" then
+		return first
+	end
+	local n = 1
+	for i = 1, level.index - 1 do
+		n += Course.LEVELS[i].CHECKPOINT_COUNT + 1
+	end
+	return n
+end
+
+-- Global stage of checkpoint `index` of `level` (0 = start deck, CHECKPOINT_COUNT + 1 =
+-- finish deck).
+local function stageAt(level: Course.Level, index: number): number
+	local cp = level.CHECKPOINTS[index]
+	local stage = cp and (cp :: any).stage
+	if type(stage) == "number" then
+		return stage
+	end
+	return stageFirst(level) + index
+end
+
+local function stageCount(): number
+	local count = (Course :: any).STAGE_COUNT
+	if type(count) == "number" and count > 0 then
+		return count
+	end
+	local last = Course.LEVELS[Course.LEVEL_COUNT]
+	return stageFirst(last) + last.CHECKPOINT_COUNT + 1
+end
+
+local function setAttribute(player: Player, name: string, value: any)
+	if player:GetAttribute(name) ~= value then
+		player:SetAttribute(name, value)
+	end
+end
+
+local function speedMultiplier(humanoid: any): number
+	local mult = humanoid:GetAttribute("SpeedMultiplier")
+	return if type(mult) == "number" then mult else 1
 end
 
 -- Levels unlocked: 1 + consecutive cleared levels from level 1 (at most LEVEL_COUNT).
@@ -147,6 +233,98 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		lastX[player] = at[1]
 	end
 
+	-- The runner now stands on global `stage` (0 = not running): attributes + saved best.
+	local function reach(player: Player, session: any, stage: number)
+		setAttribute(player, "ParkourStage", stage)
+		local rec = levels(session)
+		if stage > rec.stage then
+			rec.stage = stage
+			Tycoon.markDirty(session)
+		end
+		setAttribute(player, "ParkourBestStage", rec.stage)
+	end
+
+	-- Gear -------------------------------------------------------------------------------
+
+	local worn: { [Player]: Worn } = {}
+
+	-- Takes the worn coil off and restores the defaults it changed.
+	local function removeGear(player: Player)
+		local w = worn[player]
+		if not w then
+			return
+		end
+		worn[player] = nil
+		local humanoid = w.humanoid
+		if w.gear == "speed" then
+			local base = if type(w.base) == "number" then w.base else Course.WALK_SPEED
+			humanoid:SetAttribute("BaseWalkSpeed", base)
+			humanoid.WalkSpeed = base * speedMultiplier(humanoid)
+		elseif w.gear == "jump" then
+			if humanoid.UseJumpPower then
+				humanoid.JumpPower = DEFAULT_JUMP_POWER
+			else
+				humanoid.JumpHeight = Course.JUMP_HEIGHT
+			end
+		elseif w.gear == "gravity" then
+			for _, name in { COIL, COIL .. "Attachment" } do
+				local part = w.root:FindFirstChild(name)
+				if part then
+					part:Destroy()
+				end
+			end
+		end
+	end
+
+	-- Puts `gear` on the player's character (taking any other coil off first). True when a
+	-- coil is now worn.
+	local function wearGear(player: Player, gear: string): boolean
+		removeGear(player)
+		if gear == "none" or not GEARS[gear] then
+			return false
+		end
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid") :: any
+		local root = GameModes.root(player) :: any
+		if not humanoid or not root then
+			return false
+		end
+		local w: Worn = { gear = gear, humanoid = humanoid, root = root, base = humanoid:GetAttribute("BaseWalkSpeed") }
+		if gear == "speed" then
+			-- Through BaseWalkSpeed so Cosmetics' speed boost still multiplies it.
+			humanoid:SetAttribute("BaseWalkSpeed", GEAR_WALK_SPEED)
+			humanoid.WalkSpeed = GEAR_WALK_SPEED * speedMultiplier(humanoid)
+		elseif gear == "jump" then
+			if humanoid.UseJumpPower then
+				humanoid.JumpPower = GEAR_JUMP_POWER
+			else
+				humanoid.JumpHeight = GEAR_JUMP_HEIGHT
+			end
+		elseif gear == "gravity" then
+			local attachment = Instance.new("Attachment")
+			attachment.Name = COIL .. "Attachment"
+			attachment.Parent = root
+			local force = Instance.new("VectorForce")
+			force.Name = COIL
+			force.Attachment0 = attachment
+			force.RelativeTo = Enum.ActuatorRelativeTo.World
+			force.ApplyAtCenterOfMass = true
+			force.Force = Vector3.new(0, GRAVITY_CANCEL * root.AssemblyMass * workspace.Gravity, 0)
+			force.Parent = root
+		end
+		worn[player] = w
+		return true
+	end
+
+	-- Wears the player's chosen gear for the run in `state` (marks the run assisted).
+	local function equip(player: Player, session: any, state: State)
+		local gear = levels(session).gear
+		if wearGear(player, gear) then
+			state.assisted = true
+			state.speedUsed = state.speedUsed or gear == "speed"
+		end
+	end
+
 	local def = {} :: any
 	def.id = ID
 
@@ -170,10 +348,20 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		end
 		local level = Course.level(index)
 		local t = now()
-		runs[player] = { run = Rules.newRun(t, level), outsideSince = nil, graceUntil = t + TELEPORT_GRACE }
+		local state: State = {
+			run = Rules.newRun(t, level),
+			outsideSince = nil,
+			graceUntil = t + TELEPORT_GRACE,
+			assisted = false,
+			speedUsed = false,
+		}
+		runs[player] = state
 		if teleport or level.remote then
 			teleportTo(player, level, 0)
 		end
+		equip(player, session, state)
+		local stage = stageAt(level, 0)
+		reach(player, session, stage)
 		local best = rec.best[index] or 0
 		GameModes.notify(player, "start", ID, {
 			checkpoints = level.CHECKPOINT_COUNT,
@@ -183,6 +371,10 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			levelName = level.name,
 			levels = Course.LEVEL_COUNT,
 			remote = level.remote,
+			stage = stage,
+			stageCount = stageCount(),
+			gear = rec.gear,
+			assisted = state.assisted,
 		})
 		GameModes.refresh(player)
 		return true
@@ -193,6 +385,10 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			return
 		end
 		runs[player] = nil
+		removeGear(player)
+		if reason ~= "leave" then
+			setAttribute(player, "ParkourStage", 0)
+		end
 		if reason ~= "leave" then
 			GameModes.notify(player, "stop", ID, { reason = reason })
 			GameModes.refresh(player)
@@ -201,11 +397,14 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 
 	local function finish(player: Player, state: State, root: BasePart, t: number)
 		runs[player] = nil
+		removeGear(player)
+		setAttribute(player, "ParkourStage", 0)
 		local session = GameModes.session(player)
 		if not session then
 			return
 		end
-		local ok, result = Rules.finish(state.run, t)
+		local speedScale = if state.speedUsed then GEAR_WALK_SPEED / Course.WALK_SPEED else 1
+		local ok, result = Rules.finish(state.run, t, speedScale)
 		if not ok then
 			GameModes.notify(player, "invalid", ID, { reason = result })
 			GameModes.refresh(player)
@@ -226,7 +425,8 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		if reward.full then
 			cooldown.lastRewardAt = os.time()
 		end
-		local newBest = rec.best[index] <= 0 or time < rec.best[index]
+		local assisted = state.assisted
+		local newBest = not assisted and (rec.best[index] <= 0 or time < rec.best[index])
 		if newBest then
 			rec.best[index] = time
 		end
@@ -234,8 +434,14 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			cooldown.best, cooldown.clears = rec.best[1], rec.clears[1]
 		end
 		local unlocked = unlockedOf(rec)
-		local rank = Rules.recordBest(serverBest[index], player.UserId, player.DisplayName, time, BEST_SIZE)
-		updateBoard()
+		local rank = nil
+		if not assisted then
+			rank = Rules.recordBest(serverBest[index], player.UserId, player.DisplayName, time, BEST_SIZE)
+			updateBoard()
+		end
+		local stage = stageAt(level, level.CHECKPOINT_COUNT + 1)
+		reach(player, session, stage)
+		setAttribute(player, "ParkourStage", 0)
 
 		local p = session.profile
 		if reward.cash > 0 then
@@ -243,7 +449,6 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			p.totalEarned += reward.cash
 			GameModes.effect(player, "Cash", { amount = reward.cash, source = "Mode", padPos = root.Position })
 		end
-		p.gems += reward.gems
 		GameModes.effect(player, "ModeFinish", { pos = root.Position, newBest = newBest })
 		GameModes.notify(player, "finish", ID, {
 			time = time,
@@ -251,7 +456,6 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			newBest = newBest,
 			first = first,
 			cash = reward.cash,
-			gems = reward.gems,
 			full = reward.full,
 			cooldownEnds = cooldown.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 			rank = rank,
@@ -261,6 +465,9 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			unlockedNew = unlocked > unlockedBefore,
 			unlocked = unlocked,
 			levels = Course.LEVEL_COUNT,
+			stage = stage,
+			stageCount = stageCount(),
+			assisted = assisted,
 		})
 		GameModes.hooks.rewarded(session, ID, reward)
 		Tycoon.markDirty(session)
@@ -280,7 +487,10 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		lastX[player] = x
 		local state = runs[player]
 		if prevX and Course.crossedStart(prevX, x, z) and y < Course.PLAZA.top + 8 then
-			def.start(player, false)
+			local session = GameModes.session(player)
+			if session then
+				GameModes.notify(player, "pick", ID, { level = defaultOf(levels(session)) })
+			end
 			return
 		end
 		if not state or t < state.graceUntil then
@@ -292,11 +502,29 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			state.graceUntil = t + TELEPORT_GRACE
 			state.outsideSince = nil
 			teleportTo(player, level, state.run.checkpoint)
-			GameModes.notify(player, "respawn", ID, { index = state.run.checkpoint })
+			GameModes.notify(player, "respawn", ID, {
+				index = state.run.checkpoint,
+				stage = stageAt(level, state.run.checkpoint),
+				stageCount = stageCount(),
+			})
 			return
 		end
 		if Course.inBounds(level, x, y, z) then
 			state.outsideSince = nil
+			-- Lava bars and strips (read defensively: older Course data has no kill elements).
+			local inKill = (Course :: any).inKill
+			if inKill and inKill(level, x, y, z, t) then
+				GameModes.effect(player, "ModeKill", { pos = pos })
+				state.graceUntil = t + TELEPORT_GRACE
+				teleportTo(player, level, state.run.checkpoint)
+				GameModes.notify(player, "respawn", ID, {
+					index = state.run.checkpoint,
+					stage = stageAt(level, state.run.checkpoint),
+					stageCount = stageCount(),
+					reason = "kill",
+				})
+				return
+			end
 		else
 			state.outsideSince = state.outsideSince or t
 			if t - (state.outsideSince :: number) >= Course.LEAVE_SECONDS then
@@ -311,11 +539,18 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		if nextCp and Course.onCheckpoint(nextCp, x, y, z) then
 			local index = nextCp.index :: number
 			Rules.touchCheckpoint(state.run, index, t)
+			local stage = stageAt(level, index)
+			local session = GameModes.session(player)
+			if session then
+				reach(player, session, stage)
+			end
 			GameModes.effect(player, "ModeCheckpoint", { pos = Vector3.new(nextCp.x, nextCp.y, nextCp.z), index = index })
 			GameModes.notify(player, "checkpoint", ID, {
 				index = index,
 				checkpoints = level.CHECKPOINT_COUNT,
 				split = Rules.roundTime(t - state.run.startedAt),
+				stage = stage,
+				stageCount = stageCount(),
 			})
 			GameModes.refresh(player)
 		elseif Course.inFinish(level, x, y, z) then
@@ -327,10 +562,10 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	function def.rewardPreview(player: Player, level: number?): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, gems = 0, full = false, packCash = 0 }
+			return { cash = 0, full = false, packCash = 0 }
 		end
 		local r = rewardFor(session, level or defaultOf(levels(session)))
-		return { cash = r.cash, gems = r.gems, full = r.full, packCash = r.packCash }
+		return { cash = r.cash, full = r.full, packCash = r.packCash }
 	end
 
 	function def.snapshot(player: Player): { [string]: any }
@@ -349,9 +584,20 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 				clears = if rec then rec.clears[i] else 0,
 				checkpoints = level.CHECKPOINT_COUNT,
 				bonus = Economy.parkourLevelBonus(i),
+				-- Map look (Course.MAPS); read defensively so older Course data still works.
+				theme = (level :: any).theme,
+				blurb = (level :: any).blurb,
+				icon = (level :: any).icon,
+				accent = (level :: any).accent,
 			}
 		end
 		local best = if rec then rec.best[default] else 0
+		local stage = if state then stageAt(current, state.run.checkpoint) else 0
+		-- Snapshots go out on join too: keep the HUD bar's attributes current.
+		setAttribute(player, "ParkourStage", stage)
+		if rec then
+			setAttribute(player, "ParkourBestStage", rec.stage)
+		end
 		return {
 			best = if best > 0 then best else nil,
 			clears = if rec then rec.clears[default] else 0,
@@ -365,12 +611,76 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			unlocked = if rec then unlockedOf(rec) else 1,
 			levelCount = Course.LEVEL_COUNT,
 			levels = list,
+			gear = if rec then rec.gear else "none",
+			stage = stage,
+			bestStage = if rec then rec.stage else 0,
+			stageCount = stageCount(),
+			assisted = if state then state.assisted else false,
+			skipCost = if session then Economy.parkourSkipCost(Tycoon.income(session)) else Economy.PARKOUR_SKIP_MIN,
 		}
 	end
+
+	-- Actions ------------------------------------------------------------------------------
+
+	Tycoon.addAction("ParkourGear", function(session: any, data: { [string]: any })
+		local gear = data.gear
+		if type(gear) ~= "string" or not GEARS[gear] then
+			return
+		end
+		local player = session.player
+		levels(session).gear = gear
+		Tycoon.markDirty(session)
+		local state = runs[player]
+		if state then
+			equip(player, session, state)
+		end
+		GameModes.refresh(player)
+	end)
+
+	Tycoon.addAction("ParkourSkip", function(session: any)
+		local player = session.player
+		local state = runs[player]
+		local root = GameModes.root(player)
+		if not state or not root then
+			return
+		end
+		local p = session.profile
+		local cost = Economy.parkourSkipCost(Tycoon.income(session))
+		if p.money < cost then
+			Tycoon.toast(session, "Not enough cash! Skip costs " .. Format.money(cost), "bad")
+			return
+		end
+		p.money -= cost
+		Tycoon.markDirty(session)
+		local t = now()
+		local level = state.run.level
+		state.assisted = true
+		state.graceUntil = t + TELEPORT_GRACE
+		state.outsideSince = nil
+		local leg = Rules.skip(state.run, t)
+		local stage = stageAt(level, leg)
+		local payload = { stage = stage, stageCount = stageCount(), index = leg, checkpoints = level.CHECKPOINT_COUNT }
+		if leg <= level.CHECKPOINT_COUNT then
+			teleportTo(player, level, leg)
+			reach(player, session, stage)
+			local cp = level.CHECKPOINTS[leg]
+			GameModes.effect(player, "ModeCheckpoint", { pos = Vector3.new(cp.x, cp.y, cp.z), index = leg })
+			GameModes.notify(player, "skip", ID, payload)
+			GameModes.refresh(player)
+		else
+			-- Past the last checkpoint: onto the finish deck, under the arch, and done.
+			local arch = level.FINISH_ARCH
+			GameModes.teleport(player, Vector3.new(arch.x, arch.y, arch.z), Vector3.new(-arch.faceX, 0, -arch.faceZ))
+			lastX[player] = arch.x
+			GameModes.notify(player, "skip", ID, payload)
+			finish(player, state, root, t)
+		end
+	end)
 
 	game:GetService("Players").PlayerRemoving:Connect(function(player)
 		runs[player] = nil
 		lastX[player] = nil
+		removeGear(player)
 	end)
 	updateBoard()
 	return def

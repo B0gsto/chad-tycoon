@@ -1248,19 +1248,11 @@ local function showRewardCard(reward: { [string]: any }, done: () -> ())
 		})
 		stats.ZIndex = 2
 		Kit.list(stats, 0, true, Enum.HorizontalAlignment.Center)
-		local hasGems = reward.gems and reward.gems > 0
-		local width = if hasGems then UDim2.fromScale(0.5, 1) else UDim2.fromScale(1, 1)
-		local rate = statCell(stats, "Orb", C.Orb, string.upper(W.Orb) .. " / SEC", Kit.lighten(C.Orb, 0.35), 1, width)
+		local rate = statCell(stats, "Orb", C.Orb, string.upper(W.Orb) .. " / SEC", Kit.lighten(C.Orb, 0.35), 1, UDim2.fromScale(1, 1))
 		Kit.appear(stats, { from = 0.9, time = 0.24 })
 		Kit.countTo(rate, 0, Economy.unitRate(tier), function(n)
 			return Format.short(n) .. "/s"
 		end, 0.5)
-		if hasGems then
-			local gems = statCell(stats, "Gem", C.Rizz, "+" .. string.upper(W.Gem), Kit.lighten(C.Rizz, 0.35), 2, width)
-			Kit.countTo(gems, 0, reward.gems, function(n)
-				return "+" .. tostring(n)
-			end, 0.55)
-		end
 	end)
 
 	-- Step 5: the button.
@@ -1716,13 +1708,14 @@ end
 -- Game mode finish ----------------------------------------------------------------------------
 --[[
 	The Parkour finish card: "LEVEL n CLEAR!" (or "NEW BEST!") over the level's name,
-	the run time, best and today's rank, the reward rolling up (cash; Rizz on the first
-	clear) or a calm "Reward again in m:ss" line while the full reward is cooling down,
+	the run time, best and today's rank, the cash reward rolling up or a
+	calm "Reward again in m:ss" line while the full reward is cooling down,
 	and a popping "Level n+1 unlocked!" chip when this clear opened the next level.
-	Buttons: "Next level" (gold, when there is one) beside "Run again", with a slim
-	"Back to my gym" under them; on the last level just "Run again" and "Back to my gym".
-	`data` is the finish Notify payload (time, best, newBest, rank?, cash, gems, full,
-	cooldownEnds, level, levelName, nextLevel?, unlockedNew).
+	Buttons: "Next level" (gold, when there is one) beside "Run again", with slim "Choose
+	map" (opens the Maps window) and "Back to my gym" under them; on the last level "Run
+	again" beside "Back to my gym" with a slim "Choose map" under them. `data` is the finish Notify payload (time, best, newBest, rank?, cash, full,
+	cooldownEnds, level, levelName, nextLevel?, unlockedNew, assisted?). An assisted run (gear or a
+	skipped stage) shows "Assisted run" instead of the best / rank line.
 ]]
 
 local function runTime(seconds: number): string
@@ -1731,10 +1724,41 @@ local function runTime(seconds: number): string
 end
 Popups.runTime = runTime
 
-function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> (), onNext: (() -> ())?)
+-- A finish card's reward well: the coin and a rolling "+$N", centred as one group sized
+-- for the final amount so it holds still while it counts.
+local function cashRow(well: Frame, total: number): TextLabel
+	local final = "+" .. Format.money(total)
+	local width = 0
+	pcall(function()
+		local TextService = game:GetService("TextService")
+		width = TextService:GetTextSize(final, 26, Kit.F.Number, Vector2.new(1000, 40)).X
+	end)
+	if width <= 0 then
+		width = (utf8.len(final) or #final) * 16
+	end
+	local cell = Kit.new("Frame", {
+		Name = "Cash",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(0, 38 + math.ceil(width) + 4, 1, 0),
+		Position = UDim2.fromScale(0.5, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Parent = well,
+	})
+	Kit.icon(cell, "Coin", 30, C.Gold, { Position = UDim2.new(0, 0, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
+	return Kit.number(cell, {
+		Text = "+0",
+		TextSize = 26,
+		Size = UDim2.new(1, -38, 1, 0),
+		Position = UDim2.fromOffset(38, 0),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.MoneyText,
+		StrokeThickness = 0,
+	})
+end
+
+function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> (), onNext: (() -> ())?, onPick: (() -> ())?)
 	Popups.enqueue("ModeFinish", Popups.PRIORITY.Normal, function(done)
 		local cashTotal = tonumber(data.cash) or 0
-		local gemTotal = tonumber(data.gems) or 0
 		local cooling = data.full == false and (tonumber(data.cooldownEnds) or 0) > os.time()
 		local level = tonumber(data.level)
 		local nextLevel = tonumber(data.nextLevel)
@@ -1742,11 +1766,15 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		local unlockedNew = data.unlockedNew == true and nextLevel ~= nil
 		-- Height grows with the unlock chip and the third (slim) button.
 		local noteY = if unlockedNew then 284 else 254
-		local buttonsH = if hasNext then 128 else 74
+		local hasPick = onPick ~= nil
+		local buttonsH = if hasNext or hasPick then 128 else 74
 		local box, close = modal("ModeFinish", Vector2.new(480, noteY + 22 + 14 + buttonsH), 45, nil, done)
 		local medal = medallion(box, "🏁", C.Gold, 84, UDim2.new(0.5, 0, 0, 0))
 		Kit.title(box, {
-			Text = if data.newBest then "NEW BEST!" elseif level then "LEVEL " .. tostring(level) .. " CLEAR!" else "COURSE CLEAR!",
+			Text = if data.newBest and data.assisted ~= true
+				then "NEW BEST!"
+				elseif level then "LEVEL " .. tostring(level) .. " CLEAR!"
+				else "COURSE CLEAR!",
 			TextSize = T.H1,
 			TextWrapped = false,
 			Size = UDim2.new(1, -20, 0, 34),
@@ -1754,7 +1782,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			TextColor3 = C.Gold,
 		})
 		local levelLine = if type(data.levelName) == "string" then data.levelName else ""
-		if level and data.newBest then
+		if level and data.newBest and data.assisted ~= true then
 			levelLine = "Level " .. tostring(level) .. (if levelLine ~= "" then "  ·  " .. levelLine else "")
 		end
 		Kit.text(box, {
@@ -1775,41 +1803,26 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			Position = UDim2.fromOffset(10, 106),
 			TextColor3 = C.Text,
 		})
+		-- An assisted run (gear or a skipped stage) never sets a best or a board entry.
+		local assisted = data.assisted == true
 		local sub = "Best " .. runTime(tonumber(data.best) or tonumber(data.time) or 0)
 		if type(data.rank) == "number" then
 			sub ..= "  ·  #" .. tostring(data.rank) .. " today"
 		end
 		Kit.text(box, {
-			Text = sub,
+			Name = if assisted then "Assisted" else "Best",
+			Text = if assisted then "Assisted run" else sub,
+			Font = if assisted then Kit.F.UI else nil,
 			TextSize = T.Body,
 			Size = UDim2.new(1, -30, 0, 22),
 			Position = UDim2.fromOffset(15, 156),
-			TextColor3 = C.TextDim,
+			TextColor3 = if assisted then C.Rizz else C.TextDim,
 			StrokeThickness = 0,
 		})
 		local well = Kit.well(box, { Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, 184) })
 		-- Runs inside the reward cooldown pay nothing: no empty "+$0" row.
-		well.Visible = cashTotal > 0 or gemTotal > 0
-		local function amount(icon: string, iconColor: Color3, x: number, width: number, textColor: Color3): TextLabel
-			local cell = Kit.new("Frame", {
-				BackgroundTransparency = 1,
-				Size = UDim2.new(width, 0, 1, 0),
-				Position = UDim2.fromScale(x, 0),
-				Parent = well,
-			})
-			Kit.icon(cell, icon, 30, iconColor, { Position = UDim2.new(0, 14, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
-			return Kit.number(cell, {
-				Text = "+0",
-				TextSize = 26,
-				Size = UDim2.new(1, -54, 1, 0),
-				Position = UDim2.fromOffset(50, 0),
-				TextXAlignment = Enum.TextXAlignment.Left,
-				TextColor3 = textColor,
-				StrokeThickness = 0,
-			})
-		end
-		local cashLabel = amount("Coin", C.Gold, 0, if gemTotal > 0 then 0.6 else 1, C.MoneyText)
-		local gemLabel = if gemTotal > 0 then amount("Gem", C.Rizz, 0.6, 0.4, Kit.lighten(C.Rizz, 0.35)) else nil
+		well.Visible = cashTotal > 0
+		local cashLabel = cashRow(well, cashTotal)
 		local note = Kit.text(box, {
 			Text = if cooling
 				then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
@@ -1836,7 +1849,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			})
 		end
 		-- With a next level: [Next level] [Run again] and a slim "Back to my gym" below.
-		local rowY = if hasNext then -128 else -74
+		local rowY = if hasNext or hasPick then -128 else -74
 		local nextButton: TextButton? = nil
 		if hasNext then
 			nextButton = Kit.button(box, {
@@ -1865,16 +1878,38 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			close()
 			onAgain()
 		end)
+		-- Slim second row: [Choose map] [Back to my gym] with a next level, else a full-width
+		-- [Choose map] under [Run again] [Back to my gym].
+		local homeSize = UDim2.new(0.5, -26, 0, 56)
+		local homePos = UDim2.new(0.5, 6, 1, rowY)
+		if hasNext then
+			homeSize = if hasPick then UDim2.new(0.5, -26, 0, 42) else UDim2.new(1, -40, 0, 42)
+			homePos = if hasPick then UDim2.new(0.5, 6, 1, -60) else UDim2.new(0, 20, 1, -60)
+		end
 		local home = Kit.button(box, {
 			Text = "Back to my gym",
 			Color = C.SurfaceHi,
 			TextSize = if hasNext then T.Body else nil,
-			Size = if hasNext then UDim2.new(1, -40, 0, 42) else UDim2.new(0.5, -26, 0, 56),
-			Position = if hasNext then UDim2.new(0, 20, 1, -60) else UDim2.new(0.5, 6, 1, rowY),
+			Size = homeSize,
+			Position = homePos,
 		}, function()
 			close()
 			onHome()
 		end)
+		local pick: TextButton? = nil
+		if onPick then
+			pick = Kit.button(box, {
+				Name = "ChooseMap",
+				Text = "Choose map",
+				Color = C.SurfaceHi,
+				TextSize = T.Body,
+				Size = if hasNext then UDim2.new(0.5, -26, 0, 42) else UDim2.new(1, -40, 0, 42),
+				Position = UDim2.new(0, 20, 1, -60),
+			}, function()
+				close()
+				onPick()
+			end)
+		end
 		-- Gamepad starts on the loud button; B is "Back to my gym".
 		local primary: GuiObject = nextButton or again
 		primary:SetAttribute("FocusFirst", true)
@@ -1889,6 +1924,9 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		end
 		Kit.appear(again, { from = 0.8, time = 0.26, delay = 0.14 })
 		Kit.appear(home, { from = 0.8, time = 0.26, delay = 0.18 })
+		if pick then
+			Kit.appear(pick, { from = 0.8, time = 0.26, delay = 0.2 })
+		end
 		if unlockChip then
 			local chip = unlockChip
 			chip.Visible = false
@@ -1907,13 +1945,6 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 				return "+" .. Format.money(n)
 			end, 0.8)
 		end)
-		if gemLabel then
-			after(0.45, function()
-				Kit.countTo(gemLabel, 0, gemTotal, function(n)
-					return "+" .. tostring(math.floor(n + 0.5))
-				end, 0.6)
-			end)
-		end
 		if cooling then
 			-- The countdown line ticks while the card is up.
 			task.spawn(function()
@@ -1933,10 +1964,10 @@ end
 	"NEW BEST!", rivals mogged, best and today's rank, the reward rolling up or the
 	"Reward again in m:ss" line while the full reward cools down. "Mog again" and
 	"Back to my gym". `data` is the mog finish Notify payload (score, rivals, best,
-	newBest, passed, cash, gems, full, cooldownEnds, rank?).
+	newBest, passed, cash, full, cooldownEnds, rank?).
 
 	A 1v1 duel (data.vs == "pvp": won, reason "ko" | "forfeit", opponent { userId, name },
-	score, wins, played, cash, gems, full, cooldownEnds) uses the same card: "YOU MOGGED
+	score, wins, played, cash, full, cooldownEnds) uses the same card: "YOU MOGGED
 	<name>!" in gold or "<name> MOGGED YOU" in red, duels won / played, the reward (the
 	winner's) and "Duel again" instead of "Mog again".
 ]]
@@ -1944,7 +1975,6 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 	Popups.enqueue("MogFinish", Popups.PRIORITY.Normal, function(done)
 		local score = tonumber(data.score) or 0
 		local cashTotal = tonumber(data.cash) or 0
-		local gemTotal = tonumber(data.gems) or 0
 		local cooling = data.full == false and (tonumber(data.cooldownEnds) or 0) > os.time()
 		local duel = data.vs == "pvp"
 		local won = duel and data.won == true
@@ -1992,27 +2022,8 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			StrokeThickness = 0,
 		})
 		local well = Kit.well(box, { Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, 164) })
-		well.Visible = cashTotal > 0 or gemTotal > 0
-		local function amount(icon: string, iconColor: Color3, x: number, width: number, textColor: Color3): TextLabel
-			local cell = Kit.new("Frame", {
-				BackgroundTransparency = 1,
-				Size = UDim2.new(width, 0, 1, 0),
-				Position = UDim2.fromScale(x, 0),
-				Parent = well,
-			})
-			Kit.icon(cell, icon, 30, iconColor, { Position = UDim2.new(0, 14, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
-			return Kit.number(cell, {
-				Text = "+0",
-				TextSize = 26,
-				Size = UDim2.new(1, -54, 1, 0),
-				Position = UDim2.fromOffset(50, 0),
-				TextXAlignment = Enum.TextXAlignment.Left,
-				TextColor3 = textColor,
-				StrokeThickness = 0,
-			})
-		end
-		local cashLabel = amount("Coin", C.Gold, 0, if gemTotal > 0 then 0.6 else 1, C.MoneyText)
-		local gemLabel = if gemTotal > 0 then amount("Gem", C.Rizz, 0.6, 0.4, Kit.lighten(C.Rizz, 0.35)) else nil
+		well.Visible = cashTotal > 0
+		local cashLabel = cashRow(well, cashTotal)
 		local note = Kit.text(box, {
 			Text = if duel and data.reason == "forfeit"
 				then (if won then foe .. " left the duel. The win is yours!" else "You left the duel.")
@@ -2070,13 +2081,6 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 				return "+" .. Format.money(n)
 			end, 0.8)
 		end)
-		if gemLabel then
-			after(0.45, function()
-				Kit.countTo(gemLabel, 0, gemTotal, function(n)
-					return "+" .. tostring(math.floor(n + 0.5))
-				end, 0.6)
-			end)
-		end
 		if cooling and not (duel and (not won or data.reason == "forfeit")) then
 			task.spawn(function()
 				while note.Parent do
@@ -2212,9 +2216,9 @@ local OFFER_AFTER_JOIN = 60
 local OFFER_AFTER_TUTORIAL = 6
 local CALM = 4
 
--- The three things in the pack in a well: cash, Rizz and the Rookie Trail. Returns the
--- amount labels and the trail's icon (for the celebration's pop-in).
-local function starterContents(box: Frame, y: number, trailCaption: string): (TextLabel, TextLabel, Frame)
+-- The two things in the pack in a well: cash and the Rookie Trail. Returns the cash
+-- amount label and the trail's icon (for the celebration's pop-in).
+local function starterContents(box: Frame, y: number, trailCaption: string): (TextLabel, Frame)
 	local well = Kit.well(box, { Name = "Contents", Size = UDim2.new(1, -40, 0, 100), Position = UDim2.fromOffset(20, y) })
 	local function cell(
 		index: number,
@@ -2227,8 +2231,8 @@ local function starterContents(box: Frame, y: number, trailCaption: string): (Te
 		local holder = Kit.new("Frame", {
 			Name = "Item" .. index,
 			BackgroundTransparency = 1,
-			Size = UDim2.new(1 / 3, 0, 1, 0),
-			Position = UDim2.fromScale((index - 1) / 3, 0),
+			Size = UDim2.new(1 / 2, 0, 1, 0),
+			Position = UDim2.fromScale((index - 1) / 2, 0),
 			Parent = well,
 		})
 		local art = Kit.icon(holder, Kit.pickIcon(icon, fallback), 46, color, {
@@ -2260,11 +2264,10 @@ local function starterContents(box: Frame, y: number, trailCaption: string): (Te
 		return amount, art
 	end
 	local cash = cell(1, "Coin", "Coin", C.Gold, C.MoneyText, "cash")
-	local gems = cell(2, "Gem", "Gem", C.Rizz, Kit.lighten(C.Rizz, 0.35), W.Gem)
 	local item = Theme.Cosmetics.Items[STARTER.Item]
-	local trail, trailArt = cell(3, item.Icon, "Star", item.Color, C.Text, trailCaption)
+	local trail, trailArt = cell(2, item.Icon, "Star", item.Color, C.Text, trailCaption)
 	trail.Text = item.Title
-	return cash, gems, trailArt
+	return cash, trailArt
 end
 
 -- The pack's art standing over the top edge of a modal, with slow mint rays behind the box.
@@ -2341,10 +2344,8 @@ function Popups.starterOffer()
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,
 		})
-		local cash, gems = starterContents(box, 142, "only in this pack")
-		local cashAmount, gemAmount = Windows.starterAmounts(data)
-		cash.Text = State.money(cashAmount)
-		gems.Text = "+" .. Format.commas(gemAmount)
+		local cash = starterContents(box, 142, "only in this pack")
+		cash.Text = State.money(Windows.starterAmounts(data))
 		local buy = Kit.button(box, {
 			Name = "Buy",
 			Text = Kit.ROBUX .. " " .. tostring(pass.Price),
@@ -2374,7 +2375,7 @@ function Popups.starterOffer()
 	end)
 end
 
--- The grant landed: what the pack gave, cash and Rizz rolling up and the trail popping in.
+-- The grant landed: what the pack gave, cash rolling up and the trail popping in.
 function Popups.starter(data: { [string]: any })
 	-- Never over the intro: hold the card until it has finished.
 	local player = Players.LocalPlayer
@@ -2412,9 +2413,8 @@ function Popups.starter(data: { [string]: any })
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,
 		})
-		local cash, gems, trailArt = starterContents(box, 142, "now in your shop")
+		local cash, trailArt = starterContents(box, 142, "now in your shop")
 		cash.Text = State.money(0)
-		gems.Text = "+0"
 		local go = Kit.button(box, {
 			Name = "Go",
 			Text = "Awesome!",
@@ -2430,14 +2430,8 @@ function Popups.starter(data: { [string]: any })
 		Kit.appear(art, { from = 0.4, time = 0.34, delay = 0.06 })
 		Kit.appear(go, { from = 0.8, time = 0.26, delay = 0.2 })
 		local cashTotal = tonumber(data.cash) or 0
-		local gemTotal = tonumber(data.gems) or 0
 		after(0.2, function()
 			Kit.countTo(cash, 0, cashTotal, State.money, 0.8)
-		end)
-		after(0.35, function()
-			Kit.countTo(gems, 0, gemTotal, function(n: number): string
-				return "+" .. Format.commas(n)
-			end, 0.8)
 		end)
 		trailArt.Visible = false
 		after(0.6, function()

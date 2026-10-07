@@ -27,7 +27,6 @@ export type Unlocker = { rarity: string, endsAt: number }
 export type Profile = {
 	version: number,
 	money: number,
-	gems: number,
 	carried: number,
 	queue: number,
 	pending: number,
@@ -41,6 +40,9 @@ export type Profile = {
 	-- Rarity of the crate the player was last prompted to open with Robux ("" = none);
 	-- the receipt opens this one if the crate is no longer held.
 	pendingCrate: string,
+	-- Smasher slot (1 or 2) that Robux prompt was for (0 = the held crate): the receipt
+	-- opens the crate still in that slot.
+	pendingUnlocker: number,
 	unlockers: { Unlocker },
 	autoMergeOwned: boolean,
 	autoMerge: boolean,
@@ -54,7 +56,7 @@ export type Profile = {
 	introSeen: boolean,
 	-- Equipped trail ("" = none) and on/off switches of the toggle cosmetics (missing = on).
 	cosmetics: { trail: string, toggles: { [string]: boolean } },
-	-- The Starter pack's one-time cash, Rizz and trail have been given.
+	-- The Starter pack's one-time cash and trail have been given.
 	starterGranted: boolean,
 	-- Highest onboarding funnel step logged (Analytics; ONBOARDING_LEGACY = saves from before it).
 	onboarding: number,
@@ -66,7 +68,9 @@ export type Profile = {
 	-- passed (and PvP wins paid), pvpWins / pvpPlayed = PvP duels won / fought.
 	-- Parkour per level (dense, PARKOUR_LEVELS long, 0 = never): best seconds and finishes.
 	-- modes.parkour keeps the shared reward cooldown and mirrors level 1 for the old UI.
-	parkour: { best: { number }, clears: { number } },
+	-- stage = highest global sky-obby stage reached (0 = never ran); gear = the chosen
+	-- coil ("none" | "speed" | "jump" | "gravity", worn only during runs).
+	parkour: { best: { number }, clears: { number }, stage: number, gear: string },
 	-- Cardio (keyboard runner): Speed earned (permanent, never goes down), highest safe zone
 	-- reached (0..CARDIO_STAGES), treadmill level (0..CARDIO_TREADMILL_MAX), safe-zone arrivals
 	-- and the player's own max WalkSpeed (0 = none, else 16..CARDIO_WALK_CAP).
@@ -109,7 +113,6 @@ function DataService.defaultProfile(): Profile
 	return {
 		version = 1,
 		money = 50,
-		gems = 10,
 		carried = 0,
 		queue = 0,
 		pending = 0,
@@ -121,6 +124,7 @@ function DataService.defaultProfile(): Profile
 		processLevel = 0,
 		heldChest = "",
 		pendingCrate = "",
+		pendingUnlocker = 0,
 		unlockers = {
 			{ rarity = "", endsAt = 0 },
 			{ rarity = "", endsAt = 0 },
@@ -139,7 +143,7 @@ function DataService.defaultProfile(): Profile
 		starterGranted = false,
 		onboarding = 0,
 		badges = {},
-		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS) },
+		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, gear = "none" },
 		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0 },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
@@ -148,6 +152,9 @@ function DataService.defaultProfile(): Profile
 		},
 	}
 end
+
+-- Parkour gear names a save may hold (Modes.Parkour).
+local PARKOUR_GEARS = { none = true, speed = true, jump = true, gravity = true }
 
 -- Fills in any fields missing from older saves and sanitises bad values.
 local function reconcile(data: any): Profile
@@ -158,7 +165,7 @@ local function reconcile(data: any): Profile
 	-- Saves from before Parkour levels: the old single record becomes level 1's.
 	if type(data.parkour) ~= "table" then
 		local old = type(data.modes) == "table" and data.modes.parkour
-		local migrated = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS) }
+		local migrated = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, gear = "none" }
 		if type(old) == "table" then
 			migrated.best[1] = old.best
 			migrated.clears[1] = old.clears
@@ -175,6 +182,8 @@ local function reconcile(data: any): Profile
 	if data.introSeen == nil then
 		data.introSeen = true
 	end
+	-- Rizz (gems) was removed from the game: old balances are dropped.
+	data.gems = nil
 	-- Saves from before the onboarding funnel: those players are not new, so they never log it.
 	if data.onboarding == nil then
 		data.onboarding = 99
@@ -248,6 +257,11 @@ local function reconcile(data: any): Profile
 		end
 		data.parkour[key] = fixed
 	end
+	local stage = data.parkour.stage
+	data.parkour.stage = if type(stage) == "number" and stage == stage and stage >= 0 and stage ~= math.huge then math.floor(stage) else 0
+	if not PARKOUR_GEARS[data.parkour.gear] then
+		data.parkour.gear = "none"
+	end
 	for key, value in default.cardio :: any do
 		local v = data.cardio[key]
 		if type(v) ~= "number" or v ~= v or v < 0 or v == math.huge then
@@ -266,6 +280,9 @@ local function reconcile(data: any): Profile
 	end
 	if data.pendingCrate ~= "" and not Economy.isRarity(data.pendingCrate) then
 		data.pendingCrate = ""
+	end
+	if data.pendingUnlocker ~= 1 and data.pendingUnlocker ~= 2 then
+		data.pendingUnlocker = 0
 	end
 	return data :: Profile
 end

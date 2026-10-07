@@ -12,11 +12,13 @@
 -- tick, shipped with every client) as a last resort for UI clicks.
 --
 -- Sounds.play(name, pitchJitter?, pitchMult?): unknown names are a no-op.
--- Sounds.updateMusic(): starts/stops the looping music per settings.music.
+-- Sounds.updateMusic(): starts/stops the music per settings.music. The music is a
+-- playlist: each track plays once, then the next in a shuffled order (reshuffled
+-- when it runs out, never the same track twice in a row).
 -- Sounds.setMood("surge" | nil): during an Aura Surge the music cross-fades (1 s)
--- to the surge track (Theme.SurgeMusicId, else the other built-in track, a bit
--- faster and louder) and back, resuming the normal track where it paused. With
--- no second track loaded the normal track just speeds up for the surge. Music
+-- to the surge playlist (Theme.SurgeMusicId, else SURGE_MUSIC; each surge starts
+-- the next track) and back, resuming the normal track where it paused. With no
+-- surge track loaded yet the normal track just speeds up for the surge. Music
 -- off stays off; the mood waits while the intro cutscene plays.
 
 local ContentProvider = game:GetService("ContentProvider")
@@ -43,7 +45,6 @@ local UI_BRIGHT_CLICK = lib(15675059323) -- Roblox_UI_Bright_Click
 local UI_CUTE_POP = lib(15675055424) -- Roblox_UI_Cute_Pop
 local UI_TONAL_STINGER = lib(15675043410) -- Roblox_UI_Tonal_Stinger
 local UI_WHOOSH_01 = lib(15675024286) -- Roblox_UI_Whoosh_01
-local UI_WHOOSH_03 = lib(15674975792) -- Roblox_UI_Whoosh_03
 local UI_DELETE = lib(15675075163) -- Roblox_UI_Delete
 local GUI_SELECT = lib(17208396156) -- Roblox GUI - Select
 local GUI_NOTIFY_HIGH = lib(17208361335) -- Roblox GUI - Notification High
@@ -54,7 +55,6 @@ local GUI_DECLINE = lib(17208214688) -- Roblox GUI - Call Decline
 local GUI_PURCHASE = lib(17208380755) -- Roblox GUI - Purchase
 
 -- Pro Sound Effects library.
-local WHOOSH_AIRY = lib(9125646252) -- Magic Whooshes Airy
 local WHOOSH_ZOOM = lib(9125648149) -- Magic Zoom Up Sharp Tubular Whoosh
 
 -- Free public Creator Store audio.
@@ -63,7 +63,6 @@ local COIN_COLLECT = lib(135483737426662) -- Coin Collect
 local ERROR_BUZZ = lib(91501650514390) -- Error Buzz
 
 -- This game's own uploads.
-local POP_PLUCK = lib(110564740926229)
 local POP_MARIMBA = lib(82880781602391)
 local POP_BELL = lib(108513451493306)
 local TICK_A = lib(95444478167276)
@@ -86,17 +85,33 @@ local CEREMONY_LEGENDARY = lib(85196226744574)
 -- stroke in a 0.65 s clip), picked by the owner on 2026-10-07.
 local KEY_CLICK = lib(96591611478915)
 
--- Upbeat, loopable APM library tracks (licensed for every experience). Used
+-- Funk / disco APM library tracks (licensed for every experience). The playlist
 -- when the theme leaves MusicId empty.
 local DEFAULT_MUSIC = {
-	lib(1842265339), -- APM "Get Dancing"
-	lib(1843197585), -- APM "Remote Control"
+	lib(1839889634), -- APM "Work Out"
+	lib(9038367768), -- APM "Funky Disco Beats"
+	lib(1843481682), -- APM "Flash Funk"
+	lib(1843481858), -- APM "Funk Jam"
+	lib(1839686686), -- APM "So Groovy"
+	lib(1839802242), -- APM "Bouncy Funk"
+	lib(1835725225), -- APM "Disco Sapiens"
+	lib(1847605088), -- APM "Retro Funk"
+	lib(9042511427), -- APM "Downtown Swagger C"
+}
+-- Harder APM tracks for an Aura Surge, when the theme leaves SurgeMusicId empty.
+local SURGE_MUSIC = {
+	lib(1847444965), -- APM "Party Hype A"
+	lib(1839890308), -- APM "Football Frenzy"
+	lib(1839705126), -- APM "Hype"
+	lib(1845056062), -- APM "Pump It Up (a)"
+	lib(9043939853), -- APM "Big Muscles A"
+	lib(1837110694), -- APM "Skyhook"
+	lib(1840321644), -- APM "Rave!"
 }
 local MUSIC_VOLUME = 0.18
--- Aura Surge music: cross-fade time, the surge track's speed and loudness, and the
--- speed of the normal track when it has to double as the surge track.
+-- Aura Surge music: cross-fade time, the surge track's loudness, and the speed
+-- of the normal track when it has to double as the surge track.
 local MOOD_FADE = 1
-local SURGE_TRACK_SPEED = 1.12
 local SURGE_VOLUME = MUSIC_VOLUME * 1.15
 local SURGE_SOLO_SPEED = 1.15
 
@@ -125,14 +140,14 @@ local DEFS: { [string]: Def } = {
 	Collect = { ids = { POP_MARIMBA, COIN_COLLECT }, volume = 0.3, gap = 0.05 },
 	Cash = { ids = { KACHING, GUI_PURCHASE }, volume = 0.35, gap = 0.1 },
 	Coin = { ids = { POP_MARIMBA, COIN_COLLECT }, volume = 0.28, gap = 0.045 },
-	Deposit = { ids = { WHOOSH_AIRY, UI_WHOOSH_03 }, volume = 0.4 },
-	DepositStream = { ids = { WHOOSH_AIRY, UI_WHOOSH_03 }, volume = 0.3, pitch = 1.15, gap = 0.25 },
+	-- One soft pop when the Deposit pad banks your aura.
+	Deposit = { ids = { UI_CUTE_POP, POP_BELL }, volume = 0.5, gap = 0.15 },
 	Buy = { ids = { GUI_PURCHASE, KACHING }, volume = 0.5 },
 	BuyPop = { ids = { POP_BELL, UI_CUTE_POP }, volume = 0.45 },
 	Upgrade = { ids = { LEVELUP, UNLOCK_STINGER }, volume = 0.45 },
 	Pickup = { ids = { GUI_BUBBLE, UI_CUTE_POP }, volume = 0.45 },
 	-- Orbs
-	OrbPickup = { ids = { POP_PLUCK, POP_MARIMBA }, volume = 0.22, gap = 0.03 },
+	OrbPickup = { ids = { UI_CUTE_POP, POP_BELL }, volume = 0.35, gap = 0.08 },
 	-- Merges
 	MergeCharge = { ids = { CRACKLE_A, CRACKLE_B }, volume = 0.4 },
 	MergeBoom = { ids = { HIT_A, HIT_B, HIT_C }, volume = 0.55, rotate = true },
@@ -281,25 +296,67 @@ function Sounds.playCutscene(name: string, pitchJitter: number?, pitchMult: numb
 	playNow(name, pitchJitter, pitchMult)
 end
 
-local musicIds: { string } = if Theme.MusicId ~= "" then { Theme.MusicId } else DEFAULT_MUSIC
-local surgeMusicId: string = (Theme :: any).SurgeMusicId or ""
+-- A shuffled play order over `ids`; `pos` is the last track handed out.
+type Playlist = { ids: { string }, order: { string }, pos: number }
 
--- Kick off loading of every candidate early.
+local function newPlaylist(ids: { string }): Playlist
+	return { ids = ids, order = {}, pos = 0 }
+end
+
+-- The track the playlist hands out next. A used-up order is reshuffled, with the
+-- track that just played moved off the front so it never plays twice in a row.
+local function peek(list: Playlist): string
+	if list.pos >= #list.order then
+		local last = list.order[#list.order]
+		local order = table.clone(list.ids)
+		for i = #order, 2, -1 do
+			local j = math.random(1, i)
+			order[i], order[j] = order[j], order[i]
+		end
+		if #order > 1 and order[1] == last then
+			order[1], order[#order] = order[#order], order[1]
+		end
+		list.order = order
+		list.pos = 0
+	end
+	return list.order[list.pos + 1]
+end
+
+-- Hands out the next track, skipping ones that failed to load, and starts loading
+-- the one after it. A track still loading is handed out anyway (it streams in)
+-- unless `loadedOnly`, which then returns nil and keeps it for later. Nil when
+-- every track failed.
+local function nextTrack(list: Playlist, loadedOnly: boolean?): string?
+	for _ = 1, #list.ids do
+		local id = peek(list)
+		probe(id)
+		local state = status[id]
+		if state == "failed" then
+			list.pos += 1
+		elseif state == "ok" or not loadedOnly then
+			list.pos += 1
+			probe(peek(list))
+			return id
+		else
+			return nil
+		end
+	end
+	return nil
+end
+
+local mainList = newPlaylist(if Theme.MusicId ~= "" then { Theme.MusicId } else DEFAULT_MUSIC)
+local surgeMusicId: string = (Theme :: any).SurgeMusicId or ""
+local surgeList = newPlaylist(if surgeMusicId ~= "" then { surgeMusicId } else SURGE_MUSIC)
+
+-- Kick off loading of every sound effect and the first surge track early (the
+-- music loads its tracks one ahead as it goes).
 task.defer(function()
 	for _, entry in DEFS do
 		for _, id in entry.ids do
 			probe(id)
 		end
 	end
-	for _, id in musicIds do
-		probe(id)
-	end
-	for _, id in DEFAULT_MUSIC do
-		probe(id)
-	end
-	if surgeMusicId ~= "" then
-		probe(surgeMusicId)
-	end
+	probe(peek(surgeList))
 end)
 
 local music: Sound? = nil
@@ -340,35 +397,38 @@ local function cancelFades()
 	table.clear(fades)
 end
 
--- The surge track and its speed: the theme's SurgeMusicId, else a loaded built-in
--- track other than `currentId`; nil when there is none (the normal track speeds up).
-local function surgeTrack(currentId: string): (string?, number)
-	if surgeMusicId ~= "" and status[surgeMusicId] == "ok" then
-		return surgeMusicId, 1
-	end
-	for _, id in DEFAULT_MUSIC do
-		if id ~= currentId and status[id] == "ok" then
-			return id, SURGE_TRACK_SPEED
-		end
-	end
-	return nil, SURGE_SOLO_SPEED
-end
-
 local function enterSurge(m: Sound)
-	local id, speed = surgeTrack(m.SoundId)
+	-- A surge track still fading out from the last surge just carries on.
+	local s = surgeMusic
+	local carryOn = s ~= nil and s.IsPlaying and status[s.SoundId] == "ok"
+	local id = if carryOn then (s :: Sound).SoundId else nextTrack(surgeList, true)
 	if not id then
 		surgeMode = "speed"
-		fade(m, { PlaybackSpeed = speed, Volume = SURGE_VOLUME })
+		fade(m, { PlaybackSpeed = SURGE_SOLO_SPEED, Volume = SURGE_VOLUME })
 		return
 	end
 	surgeMode = "track"
-	local s = surgeMusic
 	if not s then
 		local sound = Instance.new("Sound")
 		sound.Name = "MusicSurge"
-		sound.Looped = true
 		sound.SoundGroup = musicGroup
 		sound.Parent = SoundService
+		sound.Ended:Connect(function()
+			if surgeMode ~= "track" then
+				return
+			end
+			local nextId = nextTrack(surgeList, true)
+			if nextId then
+				sound.SoundId = nextId
+				sound.TimePosition = 0
+				sound:Play()
+			elseif music then
+				-- The next surge track is still loading: the normal track speeds up instead.
+				surgeMode = "speed"
+				music:Resume()
+				fade(music, { PlaybackSpeed = SURGE_SOLO_SPEED, Volume = SURGE_VOLUME })
+			end
+		end)
 		surgeMusic = sound
 		s = sound
 	end
@@ -377,7 +437,6 @@ local function enterSurge(m: Sound)
 		surgeSound:Stop()
 		surgeSound.SoundId = id
 	end
-	surgeSound.PlaybackSpeed = speed
 	surgeSound.Volume = 0
 	if not surgeSound.IsPlaying then
 		surgeSound:Play()
@@ -419,22 +478,35 @@ local function stopAll(m: Sound)
 	m.PlaybackSpeed = 1
 end
 
--- Called on every state update: also swaps to the next music candidate if the
--- current one turned out not to load.
+-- Called on every state update: also skips to the next track if the current one
+-- turned out not to load.
 function Sounds.updateMusic()
 	local data = State.data
 	local enabled = not data or not data.settings or data.settings.music ~= false
-	local id = chooseId(musicIds)
+	if not music and not enabled then
+		return
+	end
+	local current = if music then music.SoundId else ""
+	local id = if current ~= "" and status[current] ~= "failed" then current else nextTrack(mainList)
 	if not music then
-		if not enabled or not id then
+		if not id then
 			return
 		end
 		local sound = Instance.new("Sound")
 		sound.Name = "Music"
-		sound.Looped = true
 		sound.Volume = MUSIC_VOLUME
 		sound.SoundGroup = musicGroup
 		sound.Parent = SoundService
+		-- Each track plays once, then the playlist moves on (also while sped up for
+		-- a surge; under a surge track it is paused and never ends).
+		sound.Ended:Connect(function()
+			local nextId = nextTrack(mainList)
+			if nextId then
+				sound.SoundId = nextId
+				sound.TimePosition = 0
+				sound:Play()
+			end
+		end)
 		music = sound
 	end
 	local m = music :: Sound

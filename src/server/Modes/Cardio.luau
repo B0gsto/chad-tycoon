@@ -19,7 +19,7 @@
 	- Checkpoints only count forward; feet below CardioLayout.killYAt(x) (the room's killY, just
 	  above a bridge room's hazard floor, so landing on the hazard is a fall) send the player
 	  back to the last one. Reaching safe zone n (once per run) pays Economy.modeReward x
-	  stageBonus(n): the first time ever (n > bestStage) is a first clear (+Rizz, raises bestStage and with it the
+	  stageBonus(n): the first time ever (n > bestStage) is a first clear (raises bestStage and with it the
 	  step multiplier), later arrivals pay on the shared cooldown (modes.cardio.lastRewardAt).
 	  Safe zone 10 is the FINISH; the run goes on after it.
 	- Leaving the runway any other way (Home, GoModes...) ends the run ("left").
@@ -28,8 +28,8 @@
 
 	Notify payloads (kind = "Mode", mode = "cardio"):
 	  { event = "start", stage, speed, walkSpeed, bestStage, multiplier }
-	  { event = "stage", stage, name, first, cash, gems, full, cooldownEnds, bestStage, multiplier }
-	  { event = "finish", stage = 10, first, cash, gems, full, cooldownEnds, bestStage, multiplier }
+	  { event = "stage", stage, name, first, cash, full, cooldownEnds, bestStage, multiplier }
+	  { event = "finish", stage = 10, first, cash, full, cooldownEnds, bestStage, multiplier }
 	                                  (safe zone 10 sends "finish" instead of "stage")
 	  { event = "checkpoint", stage, index }      mid-stage checkpoint (safe zones send "stage")
 	  { event = "fall", stage, index }            back at that checkpoint
@@ -331,7 +331,6 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			p.totalEarned += reward.cash
 			GameModes.effect(player, "Cash", { amount = reward.cash, source = "Mode", padPos = root.Position })
 		end
-		p.gems += reward.gems
 		if first then
 			GameModes.effect(player, "ModeFinish", { pos = root.Position, newBest = true })
 		end
@@ -341,7 +340,6 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			name = s and s.name,
 			first = first,
 			cash = reward.cash,
-			gems = reward.gems,
 			full = reward.full,
 			cooldownEnds = cooldownEnds(session),
 			bestStage = rec.bestStage,
@@ -355,19 +353,20 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 	function def.tick(player: Player, root: BasePart, t: number)
 		local state = runs[player]
 		if not state then
-			-- Walking through this mode's plaza gate (toward -X) starts a run.
+			-- Walking through this mode's gate on either plaza (toward -X on the first, toward +X
+			-- on the mirrored second) starts a run.
 			local gx = root.Position.X
 			local prevX = lastX[player]
 			lastX[player] = gx
 			local gate = Course.GATES[def.slot]
-			if
-				gate
-				and prevX
-				and prevX > Course.GATE_X
-				and gx <= Course.GATE_X
-				and math.abs(root.Position.Z - gate.z) <= Course.GATE_HALF + 1
-				and root.Position.Y - FEET_BELOW_ROOT < Course.PLAZA.top + 8
-			then
+			local gate2 = Course.GATES2 and Course.GATES2[def.slot]
+			local gz = root.Position.Z
+			local crossed = prevX ~= nil
+				and (
+					(gate ~= nil and prevX > Course.GATE_X and gx <= Course.GATE_X and math.abs(gz - gate.z) <= Course.GATE_HALF + 1)
+					or (gate2 ~= nil and prevX < Course.GATE2_X and gx >= Course.GATE2_X and math.abs(gz - gate2.z) <= Course.GATE_HALF + 1)
+				)
+			if crossed and root.Position.Y - FEET_BELOW_ROOT < Course.PLAZA.top + 8 then
 				lastX[player] = nil
 				GameModes.start(player, ID, true)
 			end
@@ -483,12 +482,12 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 	function def.rewardPreview(player: Player): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, gems = 0, full = false, packCash = 0 }
+			return { cash = 0, full = false, packCash = 0 }
 		end
 		local rec = record(session)
 		local stage = math.min(rec.bestStage + 1, CardioRules.STAGE_COUNT)
 		local r = rewardFor(session, stage, rec.bestStage < CardioRules.STAGE_COUNT)
-		return { cash = r.cash, gems = r.gems, full = r.full, packCash = r.packCash }
+		return { cash = r.cash, full = r.full, packCash = r.packCash }
 	end
 
 	function def.snapshot(player: Player): { [string]: any }

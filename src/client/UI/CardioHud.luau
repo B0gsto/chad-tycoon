@@ -53,7 +53,6 @@ local CardioHud = {}
 local C = Kit.C
 local F = Kit.F
 local W = Theme.World
-local GEM_WORD: string = (Theme.Words and Theme.Words.Gem) or "Rizz"
 
 local MINT: Color3 = W.Mint or Color3.fromRGB(98, 224, 160)
 local CORAL: Color3 = W.Coral or C.Bad
@@ -231,19 +230,11 @@ local function stageTitle(delay: number?)
 end
 
 local function rewardText(p: any): string?
-	local parts = {}
 	local cash = num(p.cash, 0)
-	local gems = num(p.gems, 0)
-	if cash > 0 then
-		table.insert(parts, "+" .. Format.money(cash))
-	end
-	if gems > 0 then
-		table.insert(parts, "+" .. Format.short(gems) .. " " .. GEM_WORD)
-	end
-	if #parts == 0 then
+	if cash <= 0 then
 		return if p.full == false then "Reward is cooling down" else nil
 	end
-	local text = table.concat(parts, "   ")
+	local text = "+" .. Format.money(cash)
 	if p.full == false then
 		text ..= "  (cooling down)"
 	end

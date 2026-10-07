@@ -28,7 +28,7 @@ you stand still. Stages need more and more Speed. In Chad Aura Tycoon it is the 
    server time from stage 4), sliding keys (moving platforms from stage 6), and fewer
    checkpoints. Stage 10 ends at the FINISH podium.
 5. **WIN pad** in a safe zone: reaching stage n's safe zone the first time ever pays a first clear
-   (Economy.modeReward with firstClear, times `CardioRules.stageBonus(n)`, plus Rizz) and raises
+   (Economy.modeReward with firstClear, times `CardioRules.stageBonus(n)`) and raises
    `bestStage`. Later arrivals pay through the normal mode reward cooldown
    (`profile.modes.cardio.lastRewardAt`). Every first clear also raises the permanent
    **step multiplier** (`CardioRules.stepMultiplier(bestStage, treadmill level)`).
@@ -66,8 +66,8 @@ x ≈ -1300 to +1300 at most, deck tops around y = 20 above the sea. It is reach
   `CardioUpgrade` (buy treadmill level), `CardioSpeedCap { cap? }` (own max WalkSpeed; nil / 0 /
   invalid clears it, else rounded and clamped to [16, walkSpeed(speed)]), and the existing `ModeQuit`.
 - Notify events: `start { stage, speed, walkSpeed, bestStage, multiplier }`,
-  `stage { stage, first, cash, gems, full }` (reached a safe zone),
-  `checkpoint { stage }`, `fall { stage }`, `finish { cash, gems, full }`, `upgrade { level, cost }`,
+  `stage { stage, first, cash, full }` (reached a safe zone),
+  `checkpoint { stage }`, `fall { stage }`, `finish { cash, full }`, `upgrade { level, cost }`,
   `stop { reason }`.
 - Speed changes travel in the State snapshot (`modes.cardio`: speed, walkSpeed, multiplier,
   maxWalkSpeed (uncapped), speedCap (nil when none), bestStage, treadmill, treadmillRate,

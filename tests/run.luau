@@ -434,8 +434,6 @@ test("chests", function()
 	end
 	check((counts.Common or 0) > (counts.Uncommon or 0), "common most frequent")
 	check((counts.Legendary or 0) < (counts.Epic or 0), "legendary rarest")
-	eq(Economy.finishGemCost(1), 1)
-	eq(Economy.finishGemCost(61), 2)
 end)
 
 -- Crates are picked up by walking to them (no prompt): in range, landed, not already
@@ -500,9 +498,7 @@ test("packs scale with progression", function()
 	eq(Economy.progression(99, -3).tier, Economy.MAX_TIER)
 	eq(Economy.progression(0, -3).processLevel, 0)
 	local seconds = { 300, 900, 3600, 18000, 86400 }
-	local bases, prices = { 50, 300, 800 }, { 49, 249, 599 }
 	local lastFloor = 0
-	local lastGems = { 0, 0, 0 }
 	for tier = 1, Economy.MAX_TIER do
 		local prog = Economy.progression(tier, 120)
 		local floor = Economy.progressionIncome(prog)
@@ -532,27 +528,14 @@ test("packs scale with progression", function()
 				check(aura >= Economy.auraPackAmount(0, s, 3000, Economy.progression(tier - 1, 120)), "aura pack grows with tier " .. tier)
 			end
 		end
-		local perRobux = 0
-		for i, base in bases do
-			local gems = Economy.gemPackAmount(base, prog)
-			check(gems >= base and gems >= lastGems[i], "rizz pack " .. i .. " non-decreasing at tier " .. tier)
-			check(gems < 500 and gems % 5 == 0 or gems % 50 == 0, "friendly rizz amount " .. gems)
-			check(gems / prices[i] > perRobux, "bigger rizz pack is better value at tier " .. tier)
-			perRobux = gems / prices[i]
-			lastGems[i] = gems
-			check(Economy.gemPackAmount(base + 50, prog) >= gems, "rizz monotonic in base")
-		end
 	end
-	eq(Economy.gemPackAmount(800, Economy.progression(1, 0)), 800)
-	local top = Economy.gemPackFactor(Economy.progression(Economy.MAX_TIER, 0))
-	check(top >= 3 and top <= 6, "late-game rizz factor stays proportionate")
 	-- The shop and the receipt handler size packs with the same shared functions.
 	for _, path in { "src/server/Monetization.luau", "src/client/UI/Windows.luau" } do
 		local src = fs.readFile(path)
-		for _, fn in { "Economy.progression(", "Economy.moneyPackAmount(", "Economy.gemPackAmount(", "Economy.auraPackAmount(" } do
+		for _, fn in { "Economy.progression(", "Economy.moneyPackAmount(", "Economy.auraPackAmount(" } do
 			check(string.find(src, fn, 1, true) ~= nil, path .. " uses " .. fn)
 		end
-		check(string.find(src, "pack.Amount", 1, true) == nil, path .. " has no fixed rizz amount")
+		check(string.find(src, "pack.Amount", 1, true) == nil, path .. " has no fixed pack amount")
 	end
 end)
 
@@ -669,7 +652,6 @@ local REQUIRED_WORDS = {
 	"Unit",
 	"Units",
 	"Orb",
-	"Gem",
 	"Chest",
 	"Deposit",
 	"Process",
@@ -823,7 +805,7 @@ for _, variant in { "chad" } do
 			check(theme.Monetization.Passes[required] ~= nil, "pass defined " .. required)
 		end
 		eq(#theme.Monetization.MoneyPacks, 4, "money packs")
-		eq(#theme.Monetization.GemPacks, 3, "gem packs")
+		eq(theme.Monetization.GemPacks, nil, "no Rizz packs")
 		eq(#theme.Monetization.AuraPacks, 4, "aura packs")
 		for _, list in { "MoneyPacks", "AuraPacks" } do
 			local lastSeconds, lastMin = 0, 0
@@ -835,7 +817,7 @@ for _, variant in { "chad" } do
 		end
 		-- Every product id (live, retired and the crate) is unique, so a receipt maps to one grant.
 		local seen = {}
-		for _, list in { "MoneyPacks", "AuraPacks", "GemPacks", "LegacyMoneyPacks" } do
+		for _, list in { "MoneyPacks", "AuraPacks", "LegacyMoneyPacks" } do
 			for index, pack in theme.Monetization[list] do
 				check(pack.Id ~= 0 and not seen[pack.Id], list .. " id unique " .. index)
 				seen[pack.Id] = true
@@ -843,9 +825,6 @@ for _, variant in { "chad" } do
 		end
 		check(not seen[theme.Monetization.CrateOpen.Id], "crate product id unique")
 		check(type(theme.Modes.Reward.Seconds) == "number" and theme.Modes.Reward.Min > 0, "mode reward")
-		for index, pack in theme.Monetization.GemPacks do
-			check(type(pack.Base) == "number" and pack.Base > 0 and pack.Amount == nil, "rizz pack base " .. index)
-		end
 		eq(#theme.Tutorial.Steps, TutorialSteps.COUNT, "one tutorial text per step")
 		for index, entry in theme.Tutorial.Steps do
 			check(type(entry.Title) == "string" and #entry.Title > 0, "tutorial step " .. index .. " title")
@@ -861,7 +840,7 @@ for _, variant in { "chad" } do
 
 	-- Crate products: instant opening is ONE Robux developer product, the same price for
 	-- every crate rarity, plus the Crate Master pass that opens every crate free;
-	-- Rizz and cash cannot open crates any more.
+	-- cash cannot open crates and there is no Rizz any more.
 	test("crate products " .. variant, function()
 		local theme = loadTheme("src/themes/" .. variant .. "/Theme.luau")
 		local monetization = theme.Monetization :: any
@@ -880,6 +859,8 @@ for _, variant in { "chad" } do
 		for _, rarity in Economy.CHEST_RARITIES do
 			check((Economy.CHEST_INFO[rarity] :: any).gemPrice == nil, rarity .. " has no Rizz price")
 		end
+		check((Economy :: any).finishGemCost == nil, "smashers cannot be finished with Rizz")
+		check(theme.Words.Gem == nil and theme.Icons.Gem == nil, "no Rizz currency")
 	end)
 
 	test("unit models " .. variant, function()
@@ -1963,7 +1944,6 @@ test("cosmetics theme tables", function()
 	check(table.find(theme.Monetization.PassOrder, c.Bundle) == nil, "bundle not in PassOrder")
 	check(table.find(theme.Monetization.PassOrder, c.Starter.Pass) == nil, "starter not in PassOrder")
 	check(c.Items[c.Starter.Item] ~= nil and c.Items[c.Starter.Item].Starter == true, "starter item")
-	check(theme.Monetization.GemPacks[c.Starter.GemPack] ~= nil, "starter Rizz pack")
 	check(c.Items.SpeedBoost.SpeedMultiplier > 1 and c.BaseWalkSpeed > 0, "speed boost numbers")
 	local prices = {
 		SpeedBoost = 79,
@@ -2057,13 +2037,11 @@ test("starter pack grant", function()
 
 	local starter = theme.Cosmetics.Starter
 	local early = Economy.progression(1, 0)
-	local cash, gems = Cosmetics.starterAmounts(theme, 0, early)
-	eq(cash, starter.CashMin, "new player gets the cash minimum")
-	eq(gems, Economy.gemPackAmount(theme.Monetization.GemPacks[starter.GemPack].Base, early), "Big Rizz Pack amount")
+	eq(Cosmetics.starterCash(theme, 0, early), starter.CashMin, "new player gets the cash minimum")
 	local late = Economy.progression(20, 10)
-	local lateCash, lateGems = Cosmetics.starterAmounts(theme, 1e6, late)
-	eq(lateCash, Economy.moneyPackAmount(1e6, starter.CashSeconds, starter.CashMin, late), "30 minutes of income")
-	check(lateCash >= 1e6 * 1800 and lateGems >= gems, "late amounts scale up")
+	local lateCash = Cosmetics.starterCash(theme, 1e6, late)
+	eq(lateCash, Economy.moneyPackAmount(1e6, starter.CashSeconds, starter.CashMin, late), "an hour of income")
+	check(lateCash >= 1e6 * 3600, "late amounts scale up")
 end)
 
 test("intro timeline", function()
@@ -2918,6 +2896,7 @@ local function loadGameModes(): any
 		require = function(module)
 			return module
 		end,
+		Vector3 = roblox.Vector3,
 	}, { __index = _G })
 	local path = "src/server/GameModes.luau"
 	return luau.load(fs.readFile(path), { debugName = path, environment = env })()
@@ -2959,7 +2938,7 @@ test("Game modes: catalog and registry shape", function()
 				return { running = false }
 			end,
 			rewardPreview = function()
-				return { cash = 0, gems = 0 }
+				return { cash = 0 }
 			end,
 		}
 	end
@@ -2977,6 +2956,49 @@ test("Game modes: catalog and registry shape", function()
 	eq(GameModes.snapshot(player).parkour.running, false, "snapshot keyed by id")
 	GameModes.stop(player, "quit")
 	eq(GameModes.active(player), nil, "stopped")
+end)
+
+test("Game modes: toGates / toPlaza pick the nearer plaza", function()
+	local GameModes = loadGameModes()
+	local C = ModesCourse :: any
+	local savedQuit, savedArrival = C.nearestQuit, C.nearestArrival
+	local quit2 = { x = -C.QUIT.x, y = C.QUIT.y, z = C.QUIT.z }
+	local arrival2 = { x = -C.ARRIVAL.x, y = C.ARRIVAL.y, z = C.ARRIVAL.z }
+	C.nearestQuit = function(x)
+		return if x > 0 then quit2 else C.QUIT
+	end
+	C.nearestArrival = function(x)
+		return if x > 0 then arrival2 else C.ARRIVAL
+	end
+	local at = roblox.Vector3.new(0, 0, 0)
+	local moved: any, look: any = nil, nil
+	GameModes.root = function()
+		return { Position = at }
+	end
+	GameModes.teleport = function(_, feet, face)
+		moved, look = feet, face
+	end
+	local ok, err = pcall(function()
+		at = roblox.Vector3.new(150, 3, 0)
+		GameModes.toGates({})
+		eq(moved.X, quit2.x, "east of the hub: the mirrored plaza's quit spot")
+		eq(look.X, -1, "facing back toward the hub (west)")
+		GameModes.toPlaza({})
+		eq(moved.X, arrival2.x, "east of the hub: the mirrored arrival")
+		eq(look.X, 1, "arrival faces the mirrored gates (east)")
+		at = roblox.Vector3.new(-150, 3, 0)
+		GameModes.toGates({})
+		eq(moved.X, C.QUIT.x, "west of the hub: the original quit spot")
+		eq(look.X, 1, "facing the hub (east)")
+		C.nearestQuit = nil
+		at = roblox.Vector3.new(150, 3, 0)
+		GameModes.toGates({})
+		eq(moved.X, C.QUIT.x, "without nearestQuit: always the original spot")
+	end)
+	C.nearestQuit, C.nearestArrival = savedQuit, savedArrival
+	if not ok then
+		error(err, 0)
+	end
 end)
 
 test("Game modes: finish reward is sized like a cash pack, with a cooldown", function()
@@ -3001,10 +3023,8 @@ test("Game modes: finish reward is sized like a cash pack, with a cooldown", fun
 	local now = 1e9
 	local first = Economy.modeReward(0, progression, pack.Seconds, pack.Min, true, now - 5, now)
 	check(first.full, "first finish always pays the full pack")
-	eq(first.gems, Economy.MODE_FIRST_CLEAR_GEMS, "first finish pays Rizz")
 	local early = Economy.modeReward(0, progression, pack.Seconds, pack.Min, false, now - cooldown + 1, now)
 	check(not early.full and early.cash == 0 and early.packCash > 0, "inside the cooldown a finish pays no cash")
-	eq(early.gems, 0, "Rizz only on the first finish")
 	local later = Economy.modeReward(0, progression, pack.Seconds, pack.Min, false, now - cooldown, now)
 	check(later.full and later.cash == later.packCash, "full pack again after the cooldown")
 end)
@@ -3078,13 +3098,382 @@ test("Game modes: profile defaults and per-level parkour records", function()
 	end
 end)
 
+-- Sky obby server (docs/sky-obby.md): stages, gear, skip, stage board ------------------
+
+-- A minimal Instance stand-in for the Parkour tests (children by name, attributes).
+local function fakeInstance(className: string, props: { [string]: any }?): any
+	local data = {
+		ClassName = className,
+		Name = className,
+		children = {},
+		attrs = {},
+		parentRef = nil,
+		destroyed = false,
+	}
+	local obj: any
+	obj = setmetatable(data, {
+		__index = function(_, key)
+			if key == "Parent" then
+				return rawget(data, "parentRef")
+			end
+			return nil
+		end,
+		__newindex = function(_, key, value)
+			if key == "Parent" then
+				local old = rawget(data, "parentRef")
+				if old then
+					old.children[obj] = nil
+				end
+				rawset(data, "parentRef", value)
+				if value then
+					value.children[obj] = true
+				end
+			else
+				rawset(data, key, value)
+			end
+		end,
+	})
+	function obj:FindFirstChild(name: string): any
+		for child in self.children do
+			if child.Name == name then
+				return child
+			end
+		end
+		return nil
+	end
+	function obj:FindFirstChildOfClass(class: string): any
+		for child in self.children do
+			if child.ClassName == class then
+				return child
+			end
+		end
+		return nil
+	end
+	function obj:GetAttribute(name: string): any
+		return self.attrs[name]
+	end
+	function obj:SetAttribute(name: string, value: any)
+		self.attrs[name] = value
+	end
+	function obj:Destroy()
+		self.Parent = nil
+		self.destroyed = true
+	end
+	for key, value in props or {} do
+		obj[key] = value
+	end
+	return obj
+end
+
+-- Loads Modes.Parkour against stub GameModes / Tycoon. Returns the mode def and a rig.
+local function loadParkour(): (any, any)
+	local DataService = loadDataService()
+	local theme = loadRobloxTheme("src/themes/chad/Theme.luau")
+	local clock = { t = 1000 }
+	local rig: any = { notes = {}, toasts = {}, actions = {}, effects = {}, teleports = 0, clock = clock }
+	local character = fakeInstance("Model")
+	local humanoid = fakeInstance("Humanoid", { WalkSpeed = 16, JumpHeight = 7.2, JumpPower = 50, UseJumpPower = false })
+	humanoid.Parent = character
+	local root = fakeInstance("Part", { Name = "HumanoidRootPart", AssemblyMass = 20, Position = roblox.Vector3.new(0, 0, 0) })
+	root.Parent = character
+	local player = fakeInstance("Player", { UserId = 7, DisplayName = "Tester", Character = character })
+	local session = { player = player, profile = DataService.defaultProfile() }
+	rig.player, rig.humanoid, rig.root, rig.session = player, humanoid, root, session
+	local GameModes = {
+		hooks = {
+			reward = function(_, _, reward)
+				return reward
+			end,
+			rewarded = function() end,
+		},
+		session = function()
+			return session
+		end,
+		notify = function(_, event, _, data)
+			local note = table.clone(data or {})
+			note.event = event
+			table.insert(rig.notes, note)
+		end,
+		effect = function(_, kind, data)
+			table.insert(rig.effects, { kind = kind, data = data })
+		end,
+		refresh = function() end,
+		root = function()
+			return root
+		end,
+		teleport = function(_, feet)
+			rig.teleports += 1
+			rig.teleportedTo = feet
+		end,
+		returnLater = function() end,
+		toGates = function() end,
+	}
+	local Tycoon = {
+		income = function()
+			return 0
+		end,
+		markDirty = function() end,
+		toast = function(_, text)
+			table.insert(rig.toasts, text)
+		end,
+		addAction = function(name, fn)
+			rig.actions[name] = fn
+		end,
+	}
+	local services = {
+		ReplicatedStorage = { Shared = { Economy = Economy, Format = Format } },
+		Players = { PlayerRemoving = { Connect = function() end } },
+	}
+	local env = setmetatable({
+		game = {
+			GetService = function(_, name)
+				return services[name]
+			end,
+		},
+		script = { Parent = { Course = ModesCourse, Rules = ModesRules } },
+		require = function(module)
+			return module
+		end,
+		workspace = {
+			Gravity = 196.2,
+			GetServerTimeNow = function()
+				return clock.t
+			end,
+		},
+		Vector3 = roblox.Vector3,
+		Enum = roblox.Enum,
+		Instance = { new = fakeInstance },
+	}, { __index = _G })
+	local path = MODES_DIR .. "Parkour.luau"
+	local Parkour = luau.load(fs.readFile(path), { debugName = path, environment = env })()
+	local def = Parkour.create(GameModes, { built = nil, theme = theme, Tycoon = Tycoon })
+	function rig.last(event: string): any
+		for i = #rig.notes, 1, -1 do
+			if rig.notes[i].event == event then
+				return rig.notes[i]
+			end
+		end
+		return nil
+	end
+	return def, rig
+end
+
+test("Sky obby: Rules skip and speed-scaled anti-cheat", function()
+	local level = ModesCourse.LEVELS[1]
+	local count = level.CHECKPOINT_COUNT
+	-- Legs exactly as quick as the speed coil allows: too fast unscaled, fine at 28/16.
+	local run = ModesRules.newRun(0, level)
+	local t = 0
+	for k = 1, count do
+		t += level.MIN_LEG_SECONDS[k] * 16 / 28 + 0.01
+		ModesRules.touchCheckpoint(run, k, t)
+	end
+	local finishAt = t + level.MIN_LEG_SECONDS[count + 1] * 16 / 28 + 0.01
+	local plain = ModesRules.finish(run, finishAt)
+	eq(plain, false, "coil-fast legs fail at walking speed")
+	eq((ModesRules.finish(run, finishAt, 28 / 16)), true, "the speed coil scales the minimums")
+	-- Skipped legs have no minimum.
+	local skipped = ModesRules.newRun(0, level)
+	for _ = 1, count + 1 do
+		ModesRules.skip(skipped, 0.01)
+	end
+	eq(skipped.checkpoint, count, "skips advance through every checkpoint")
+	eq((ModesRules.finish(skipped, 0.02)), true, "an all-skipped run is not 'fast'")
+end)
+
+test("Sky obby: stages, gear and the assisted flag", function()
+	local def, rig = loadParkour()
+	local player, humanoid, root, profile = rig.player, rig.humanoid, rig.root, rig.session.profile
+	eq(def.snapshot(player).gear, "none", "no gear by default")
+	eq(player:GetAttribute("ParkourStage"), 0, "snapshot sets the stage attribute on join")
+	eq(player:GetAttribute("ParkourBestStage"), 0, "and the best stage")
+	check(def.start(player, true, { level = 1 }), "level 1 starts")
+	local start = rig.last("start")
+	eq(start.stage, 1, "map 1's start deck is stage 1")
+	check(type(start.stageCount) == "number" and start.stageCount > ModesCourse.LEVEL_COUNT, "stage count is sent")
+	eq(start.assisted, false, "a plain run is not assisted")
+	eq(player:GetAttribute("ParkourStage"), 1, "running on stage 1")
+	eq(profile.parkour.stage, 1, "stage 1 reached and saved")
+	eq(humanoid.WalkSpeed, 16, "no gear, normal speed")
+
+	rig.actions.ParkourGear(rig.session, { gear = "bogus" })
+	eq(profile.parkour.gear, "none", "unknown gear refused")
+	rig.actions.ParkourGear(rig.session, { gear = "speed" })
+	eq(profile.parkour.gear, "speed", "gear choice saved")
+	eq(humanoid.WalkSpeed, 28, "speed coil worn during the run")
+	eq(def.snapshot(player).assisted, true, "wearing gear makes the run assisted")
+	rig.actions.ParkourGear(rig.session, { gear = "jump" })
+	eq(humanoid.WalkSpeed, 16, "switching coils restores the speed")
+	eq(humanoid.JumpHeight, 14, "jump coil")
+	rig.actions.ParkourGear(rig.session, { gear = "gravity" })
+	eq(humanoid.JumpHeight, 7.2, "jump restored")
+	local coil = root:FindFirstChild("GravityCoil")
+	check(coil ~= nil and coil.ClassName == "VectorForce", "gravity coil on the root")
+	check(math.abs(coil.Force.Y - 0.55 * 20 * 196.2) < 0.01, "cancels 55% of the weight")
+	def.stop(player, "quit")
+	eq(root:FindFirstChild("GravityCoil"), nil, "stopping takes the coil off")
+	eq(root:FindFirstChild("GravityCoilAttachment"), nil, "and its attachment")
+	eq(player:GetAttribute("ParkourStage"), 0, "not running: stage 0")
+	eq(def.snapshot(player).gear, "gravity", "snapshot carries the gear")
+
+	rig.actions.ParkourGear(rig.session, { gear = "speed" })
+	eq(humanoid.WalkSpeed, 16, "gear is not worn outside a run")
+	humanoid.UseJumpPower = true
+	rig.actions.ParkourGear(rig.session, { gear = "jump" })
+	def.start(player, true, { level = 1 })
+	eq(humanoid.JumpPower, 70, "chosen gear goes on at the start (JumpPower rigs)")
+	eq(rig.last("start").assisted, true, "a geared start is assisted")
+	def.stop(player, "respawn")
+	eq(humanoid.JumpPower, 50, "removed on respawn")
+end)
+
+test("Sky obby: a kill brick sends the runner back to the checkpoint", function()
+	local def, rig = loadParkour()
+	local player = rig.player
+	local level = ModesCourse.LEVELS[1]
+	local C = ModesCourse :: any
+	local saved = C.inKill
+	local spot = level.START
+	C.inKill = function(lv, x, _, z)
+		return lv == level and math.abs(x - spot.x) < 0.01 and math.abs(z - spot.z) < 0.01
+	end
+	local ok, err = pcall(function()
+		def.start(player, true, { level = 1 })
+		rig.root.Position = roblox.Vector3.new(spot.x, spot.y + 3, spot.z)
+		local before = rig.teleports
+		rig.clock.t += 2
+		def.tick(player, rig.root, rig.clock.t)
+		local note = rig.last("respawn")
+		check(note ~= nil, "a respawn notify")
+		eq(note and note.reason, "kill", "reason kill")
+		eq(note and note.index, 0, "back to the start deck (no checkpoint yet)")
+		eq(rig.teleports, before + 1, "teleported once")
+		local at = ModesCourse.respawn(level, 0)
+		check(
+			rig.teleportedTo ~= nil and (rig.teleportedTo - roblox.Vector3.new(at[1], at[2], at[3])).Magnitude < 0.01,
+			"moved to the checkpoint"
+		)
+		local fx = rig.effects[#rig.effects]
+		eq(fx and fx.kind, "ModeKill", "ModeKill effect")
+		-- Grace: an immediate second tick does nothing.
+		def.tick(player, rig.root, rig.clock.t + 0.1)
+		eq(rig.teleports, before + 1, "grace after the respawn")
+		-- No inKill (older Course data): no kills.
+		C.inKill = nil
+		rig.clock.t += 2
+		def.tick(player, rig.root, rig.clock.t)
+		eq(rig.teleports, before + 1, "no inKill helper: no respawn")
+	end)
+	C.inKill = saved
+	if not ok then
+		error(err, 0)
+	end
+end)
+
+test("Sky obby: paid skips and an assisted finish", function()
+	local def, rig = loadParkour()
+	local player, profile = rig.player, rig.session.profile
+	local level = ModesCourse.LEVELS[1]
+	local count = level.CHECKPOINT_COUNT
+	local cost = Economy.parkourSkipCost(0)
+	eq(cost, Economy.PARKOUR_SKIP_MIN, "with no income a skip costs the minimum")
+	eq(Economy.parkourSkipCost(1), 250, "two minutes of $1/s is under the minimum")
+	eq(Economy.parkourSkipCost(10), 1200, "two minutes of income")
+	eq(def.snapshot(player).skipCost, cost, "the snapshot carries the cash cost")
+	def.start(player, true, { level = 1 })
+	profile.money = cost - 1
+	rig.actions.ParkourSkip(rig.session, {})
+	eq(#rig.toasts, 1, "short of cash: a toast")
+	check(string.find(rig.toasts[1], "Not enough cash", 1, true) ~= nil, "toast says Not enough cash")
+	eq(profile.money, cost - 1, "nothing taken")
+	eq(rig.last("skip"), nil, "no skip")
+	profile.money = cost * (count + 1) + 5
+	local teleports = rig.teleports
+	rig.actions.ParkourSkip(rig.session, {})
+	eq(profile.money, cost * count + 5, "one skip's cash taken")
+	eq(rig.teleports, teleports + 1, "teleported to the next checkpoint")
+	eq(rig.last("skip").stage, 2, "skip notify carries the new stage")
+	eq(player:GetAttribute("ParkourStage"), 2, "stage attribute follows the skip")
+	eq(def.snapshot(player).checkpoint, 1, "the run advanced")
+	for _ = 2, count + 1 do
+		rig.clock.t += 1
+		rig.actions.ParkourSkip(rig.session, {})
+	end
+	local finish = rig.last("finish")
+	check(finish ~= nil, "skipping past the last checkpoint finishes")
+	eq(finish.gems, nil, "no Rizz in the finish")
+	eq(profile.money, 5 + finish.cash, "every skip paid (plus the finish cash)")
+	eq(finish.assisted, true, "a skipped run is assisted")
+	eq(finish.newBest, false, "assisted runs set no best")
+	eq(finish.rank, nil, "and no board entry")
+	eq(finish.stage, count + 2, "finish deck stage")
+	eq(profile.parkour.clears[1], 1, "the clear still counts")
+	eq(profile.parkour.best[1], 0, "no best time recorded")
+	eq(finish.unlocked, 2, "and it unlocks the next map")
+	check(finish.cash > 0, "and it pays")
+	eq(profile.parkour.stage, count + 2, "best stage saved")
+	eq(player:GetAttribute("ParkourBestStage"), count + 2, "best stage attribute")
+	eq(player:GetAttribute("ParkourStage"), 0, "not running after the finish")
+	rig.actions.ParkourSkip(rig.session, {})
+	eq(profile.money, 5 + finish.cash, "no skips outside a run")
+end)
+
+test("Sky obby: profile fields and the stage board", function()
+	local DataService = loadDataService()
+	local fresh = DataService.defaultProfile()
+	eq(fresh.parkour.stage, 0, "new profiles have reached no stage")
+	eq(fresh.parkour.gear, "none", "and wear no gear")
+	local old = DataService.reconcile({ money = 1, parkour = { best = { 30 }, clears = { 1 } } })
+	eq(old.parkour.stage, 0, "old saves get a stage")
+	eq(old.parkour.gear, "none", "and no gear")
+	local migrated = DataService.reconcile({ money = 1, modes = { parkour = { best = 4, clears = 1, lastRewardAt = 0 } } })
+	check(migrated.parkour.stage == 0 and migrated.parkour.gear == "none", "migrated saves get the new fields")
+	local bad = DataService.reconcile({ money = 1, parkour = { best = {}, clears = {}, stage = 0 / 0, gear = "rocket" } })
+	check(bad.parkour.stage == 0 and bad.parkour.gear == "none", "bad values reset")
+	local good = DataService.reconcile({ money = 1, parkour = { best = {}, clears = {}, stage = 12.7, gear = "gravity" } })
+	check(good.parkour.stage == 12 and good.parkour.gear == "gravity", "good values stay (whole stages)")
+
+	local services = {
+		DataStoreService = {
+			GetOrderedDataStore = function()
+				error("no DataStore in tests")
+			end,
+		},
+		Players = {},
+		ReplicatedStorage = { Shared = { Format = Format, Net = {} } },
+	}
+	local env = setmetatable({
+		game = {
+			GetService = function(_, name)
+				return services[name]
+			end,
+		},
+		script = { Parent = { Tycoon = {} } },
+		require = function(module)
+			return module
+		end,
+		warn = function() end,
+	}, { __index = _G })
+	local path = "src/server/Ranking.luau"
+	local Ranking = luau.load(fs.readFile(path), { debugName = path, environment = env })()
+	local stage, clears = Ranking.unpackStage(Ranking.packStage(42, 17))
+	check(stage == 42 and clears == 17, "stage and clears round-trip")
+	check(Ranking.packStage(5, 0) > Ranking.packStage(4, 9999999), "a higher stage always ranks first")
+	check(Ranking.packStage(5, 3) > Ranking.packStage(5, 2), "clears break ties")
+	local s, c = Ranking.stageOf({ parkour = { stage = 9, clears = { 2, 3, 0 } } })
+	check(s == 9 and c == 5, "clears are summed over the maps")
+end)
+
 -- Edge-to-edge horizontal distance between two path elements (box, disc, or a point).
-local function shapeGap(a: any, ax: number, az: number, b: any, bx: number, bz: number): number
+-- Rings measure like boxes, hexes like discs of their corner radius or, with `inner`, of
+-- their flat-side radius (the reach a jump onto or off one needs).
+local function shapeGap(a: any, ax: number, az: number, b: any, bx: number, bz: number, inner: boolean?): number
 	local function half(e: any): (number, number, number)
-		if e.shape == "box" then
+		if e.shape == "box" or e.shape == "ring" then
 			return e.sx / 2, e.sz / 2, 0
 		end
-		return 0, 0, e.r or 0
+		local r = e.r or 0
+		return 0, 0, if inner and e.shape == "hex" then r * math.sqrt(3) / 2 else r
 	end
 	local ahx, ahz, ar = half(a)
 	local bhx, bhz, br = half(b)
@@ -3153,13 +3542,14 @@ test("Game modes: every level's jumps are fair with the default jump", function(
 				for _, pa in poses(a, 16) do
 					for _, pb in poses(b, 16) do
 						local gap = shapeGap(a, pa[1], pa[3], b, pb[1], pb[3])
+						local far = shapeGap(a, pa[1], pa[3], b, pb[1], pb[3], true)
 						local up = pb[2] - pa[2]
 						local reach = ModesCourse.maxGap(up, jump)
 						local maxUp = bounceOn[i] or ModesCourse.MAX_STEP_UP
-						if up <= maxUp and gap <= reach then
-							best = math.min(best, gap)
+						if up <= maxUp and far <= reach then
+							best = math.min(best, far)
 						end
-						worst = math.max(worst, gap - reach)
+						worst = math.max(worst, far - reach)
 						if gap < 0.5 then
 							overlap = true
 						end
@@ -3209,6 +3599,411 @@ test("Game modes: every level's jumps are fair with the default jump", function(
 	check(not ModesCourse.crossedStart(ModesCourse.START_LINE_X - 1, ModesCourse.START_LINE_X + 1, 0), "walking back out does not")
 end)
 
+test("Game modes: ten themed parkour maps with their own recipes and sky scenery", function()
+	local kinds = {
+		island = true,
+		lighthouse = true,
+		windmill = true,
+		tree = true,
+		balloon = true,
+		cloud = true,
+		star = true,
+		rainbowarch = true,
+		landmark = true,
+		loop = true,
+		spiral = true,
+	}
+	-- Props that stand on an island (inside its radius, on its grass top).
+	local riders = { landmark = true, windmill = true, tree = true, lighthouse = true }
+	-- Horizontal distance from (px, pz) to an element's footprint at its nearest phase.
+	local function footDistance(e: any, px: number, pz: number): number
+		if e.kind == "slide" then
+			local a, b = e.from, e.to
+			local dx, dz = b[1] - a[1], b[3] - a[3]
+			local t = math.clamp(((px - a[1]) * dx + (pz - a[3]) * dz) / (dx * dx + dz * dz), 0, 1)
+			return math.sqrt((px - a[1] - dx * t) ^ 2 + (pz - a[3] - dz * t) ^ 2) - e.width / 2
+		end
+		local best = math.huge
+		local steps = if e.kind == "mover" then 16 else 0
+		for s = 0, steps do
+			local d = if e.kind == "mover" then e.distance * (2 * s / steps - 1) else 0
+			local x, z = e.x + (if e.axis then e.axis[1] * d else 0), e.z + (if e.axis then e.axis[3] * d else 0)
+			if e.sx then
+				local ox = math.max(0, math.abs(px - x) - e.sx / 2)
+				local oz = math.max(0, math.abs(pz - z) - e.sz / 2)
+				best = math.min(best, math.sqrt(ox * ox + oz * oz))
+			else
+				best = math.min(best, math.sqrt((px - x) ^ 2 + (pz - z) ^ 2) - (e.r or (e.length or 0) / 2))
+			end
+		end
+		return best
+	end
+	-- Colours: every palette key and card accent is a Theme.World colour, and no two maps
+	-- share a path-top colour or a card accent.
+	local world = loadRobloxTheme("src/themes/chad/Theme.luau").World
+	local mains, accents = {}, {}
+	for i, pal in ModesCourse.PALETTES do
+		for key, value in pal do
+			check(typeof(world[value]) == "Color3", string.format("map %d palette %s = %s is a Theme.World colour", i, key, value))
+		end
+		check(not mains[pal.main], "map " .. i .. " has its own path-top colour")
+		mains[pal.main] = true
+		local accent = ModesCourse.MAPS[i].accent
+		check(typeof(world[accent]) == "Color3", "map " .. i .. " accent is a Theme.World colour")
+		check(not accents[accent], "map " .. i .. " has its own accent")
+		accents[accent] = true
+	end
+	local themes = {}
+	local blinks, meanGap = {}, {}
+	for i, level in ModesCourse.LEVELS do
+		local map = ModesCourse.MAPS[i]
+		local label = "map " .. i
+		check(map ~= nil and map.name == ModesCourse.NAMES[i], label .. " has a MAPS entry named like the level")
+		for _, key in { "theme", "blurb", "icon", "accent" } do
+			check(type(level[key]) == "string" and #level[key] > 0 and level[key] == map[key], label .. " has its " .. key)
+		end
+		check(not themes[level.theme], label .. " has its own theme")
+		themes[level.theme] = true
+		check(i == 1 or map.recipe ~= nil, label .. " has a recipe")
+		-- Sky scenery: known kinds inside the bounds (the giant arch over the bridge aside);
+		-- 2-4 big islands beside the course, never within PROP_CLEARANCE of the path (every
+		-- phase) nor overlapping each other; riders (landmark, windmill, trees, lighthouse) on
+		-- an island; the anchor set piece clear of the path; clouds CLOUD_CLEAR under the path
+		-- or CLOUD_BESIDE off it; balloons 25-40 above it; the map's extras.
+		local props, b = level.PROPS, level.BOUNDS
+		check(#props >= 8 and #props <= 30, label .. " has 8-30 props (" .. #props .. ")")
+		local first, last = level.PATH[1], level.PATH[#level.PATH]
+		local lo, hi = math.huge, -math.huge
+		for _, e in level.PATH do
+			for _, pose in ModesCourse.poses(e) do
+				lo, hi = math.min(lo, pose[2]), math.max(hi, pose[2])
+			end
+			for _, pt in { e.from, e.to } do
+				if pt then
+					lo, hi = math.min(lo, pt[2]), math.max(hi, pt[2])
+				end
+			end
+		end
+		local islands, counts = {}, {}
+		for _, p in props do
+			counts[p.kind] = (counts[p.kind] or 0) + 1
+			if p.kind == "island" then
+				table.insert(islands, p)
+			end
+		end
+		check(#islands >= 2 and #islands <= 4, label .. " has 2-4 islands (" .. #islands .. ")")
+		check(ModesCourse.PROP_CLEARANCE >= 4, "props keep 4 studs off the path")
+		for _, p in props do
+			local what = label .. " " .. p.kind .. string.format(" at (%.1f, %.1f)", p.x, p.z)
+			check(kinds[p.kind] == true, what .. ": known kind")
+			if p.kind ~= "rainbowarch" then
+				check(p.x >= b.x0 and p.x <= b.x1 and p.z >= b.z0 and p.z <= b.z1, what .. ": inside the bounds")
+			end
+			check(p.y > ModesCourse.FLOOR_Y - 40 and p.y < b.y1, what .. ": in the sky, under the bounds' top")
+			local height = ModesCourse.PROP_HEIGHT[p.kind]
+			if height then
+				check(p.y + height * (p.scale or 1) < b.y1, what .. ": its top under the bounds' top")
+			end
+			if p.kind == "island" then
+				check(p.r >= 28 and p.r <= 48, what .. ": radius 28-48")
+				check(p.y < lo, what .. ": floats below the path")
+				local foot = p.r
+				for _, q in props do
+					if q.kind == "landmark" and q.x == p.x and q.z == p.z then
+						foot = math.max(foot, ModesCourse.propFoot(q))
+					end
+				end
+				local need = ModesCourse.PROP_CLEARANCE + foot
+				for _, e in level.ELEMENTS do
+					local d = footDistance(e, p.x, p.z)
+					check(d >= need - 1e-6, string.format("%s: %.2f clear of %s (needs %.2f)", what, d, e.name or e.kind, need))
+				end
+			elseif riders[p.kind] then
+				local on = false
+				for _, q in islands do
+					local d = math.sqrt((p.x - q.x) ^ 2 + (p.z - q.z) ^ 2)
+					local inside = if p.kind == "landmark" then d < 0.01 else d + ModesCourse.propFoot(p) <= q.r + 1e-6
+					on = on or (inside and math.abs(p.y - q.y) < 1e-6)
+				end
+				check(on, what .. ": stands on an island")
+			elseif p.kind == "cloud" then
+				local foot = ModesCourse.propFoot(p)
+				local top = p.y + ModesCourse.PROP_HEIGHT.cloud * (p.scale or 1)
+				local off = math.huge
+				for _, e in level.PATH do
+					off = math.min(off, footDistance(e, p.x, p.z))
+				end
+				check(
+					top <= lo - ModesCourse.CLOUD_CLEAR + 1e-6 or off >= ModesCourse.CLOUD_BESIDE + foot - 1e-6,
+					string.format("%s: %.1f under the path or %.1f off it", what, lo - top, off - foot)
+				)
+				check(p.y <= lo, what .. ": no higher than the path")
+			elseif p.kind == "balloon" then
+				check(p.y >= hi + 25 - 1e-6 and p.y <= hi + 40 + 1e-6, what .. ": 25-40 studs above the course")
+				check((p.scale or 1) >= 2, what .. ": a big balloon")
+			elseif p.kind == "rainbowarch" then
+				-- Giant, across the walking line: over the bridge into the map (map 1: over its
+				-- first lane); its feet clear of every map's course and bridges, and whatever
+				-- passes under its span stays inside the opening with headroom.
+				local s = level.START
+				local along = (p.x - s.x) * -s.faceX + (p.z - s.z) * -s.faceZ
+				local across = (p.x - s.x) * -s.faceZ + (p.z - s.z) * s.faceX
+				if i == 1 then
+					check(along < 0 and math.abs(across) <= 16, what .. ": straddles the first lane")
+				else
+					check(math.abs(across) < 0.01 and along >= first.sx / 2 + 14, what .. ": over the bridge, on the walking line")
+				end
+				check(
+					math.abs(p.y - first.y) < 0.01 and p.scale == ModesCourse.ARCH_SCALE,
+					what .. ": giant, its feet at the deck's height"
+				)
+				local face = { s.faceX, s.faceZ }
+				local everything = {}
+				for _, other in ModesCourse.LEVELS do
+					for _, e in other.ELEMENTS do
+						table.insert(everything, e)
+					end
+				end
+				for _, bridge in ModesCourse.BRIDGES do
+					for _, e in bridge do
+						table.insert(everything, e)
+					end
+				end
+				check(ModesCourse.archFits(everything, p.x, p.y, p.z, face, p.scale), what .. ": feet and span clear of every course")
+				local spread = ModesCourse.ARCH_FEET[1] * p.scale
+				local feetR = ModesCourse.ARCH_FEET[2] * p.scale
+				for _, sign in { -1, 1 } do
+					local fx, fz = p.x - s.faceZ * spread * sign, p.z + s.faceX * spread * sign
+					for _, e in everything do
+						check(
+							footDistance(e, fx, fz) >= feetR + ModesCourse.PROP_CLEARANCE - 1e-6,
+							string.format("%s: foot clear of %s", what, e.name or e.kind)
+						)
+					end
+				end
+			elseif p.kind == "loop" or p.kind == "spiral" then
+				local need = ModesCourse.PROP_CLEARANCE + ModesCourse.propFoot(p)
+				for _, e in level.ELEMENTS do
+					local d = footDistance(e, p.x, p.z)
+					check(d >= need - 1e-6, string.format("%s: %.2f clear of %s (needs %.2f)", what, d, e.name or e.kind, need))
+				end
+				check(p.y <= lo, what .. ": stands beside the course, no higher than the path")
+				for _, q in islands do
+					local d = math.sqrt((p.x - q.x) ^ 2 + (p.z - q.z) ^ 2)
+					check(d >= q.r + ModesCourse.propFoot(p), what .. ": off the islands")
+				end
+			end
+		end
+		for x = 1, #islands do
+			for y = x + 1, #islands do
+				local p, q = islands[x], islands[y]
+				local d = math.sqrt((p.x - q.x) ^ 2 + (p.z - q.z) ^ 2)
+				check(d >= p.r + q.r, string.format("%s islands %d and %d do not overlap (%.1f)", label, x, y, d))
+			end
+		end
+		check(counts.landmark == 1, label .. " has exactly one landmark")
+		check((counts.cloud or 0) >= 4 and (counts.cloud or 0) <= 8, label .. " has 4-8 clouds")
+		check((counts.balloon or 0) >= 1 and (counts.balloon or 0) <= 2, label .. " has 1-2 balloons")
+		eq(counts.windmill or 0, if level.theme == "storm" then 0 else 1, label .. " windmill (none in the storm)")
+		eq(counts.rainbowarch or 0, if i % 3 == 1 then 1 else 0, label .. " giant rainbow arch on maps 1, 4, 7, 10")
+		eq(counts.loop or 0, if i % 3 == 2 then 1 else 0, label .. " rainbow loop on maps 2, 5, 8")
+		eq(counts.spiral or 0, if i % 3 == 0 then 1 else 0, label .. " spiral stair on maps 3, 6, 9")
+		if level.theme == "bay" then
+			eq(counts.lighthouse, 1, "the bay has a lighthouse")
+		elseif level.theme == "beach" or level.theme == "cove" then
+			check((counts.tree or 0) >= 3, label .. " has trees")
+		elseif level.theme == "giga" then
+			check((counts.star or 0) >= 3, "giga has stars")
+		end
+		for _, p in props do
+			if p.kind == "landmark" then
+				check(ModesCourse.propFoot(p) >= 16 * 2.2 and (p.scale or 1) >= 2.2, label .. " landmark is big (scale 2.2+)")
+				local foot = ModesCourse.propFoot(p)
+				check(
+					p.x - foot >= b.x0 and p.x + foot <= b.x1 and p.z - foot >= b.z0 and p.z + foot <= b.z1,
+					label .. " landmark footprint inside the bounds (never cropped)"
+				)
+			end
+		end
+		check(level.BASE == nil and ModesCourse.BASE_TOP == nil and ModesCourse.BASE_TOPS == nil, label .. " has no sea base")
+		-- Recipe signatures.
+		blinks[i] = 0
+		local bounces = 0
+		for _, e in level.ELEMENTS do
+			if e.kind == "blink" then
+				blinks[i] += 1
+			elseif e.kind == "bounce" then
+				bounces += 1
+			end
+		end
+		local total, n = 0, 0
+		for k = 1, #level.PATH - 1 do
+			local a, c = level.PATH[k], level.PATH[k + 1]
+			if a.kind ~= "slide" and c.kind ~= "slide" then
+				total += shapeGap(a, a.x, a.z, c, c.x, c.z)
+				n += 1
+			end
+		end
+		meanGap[i] = total / n
+		if i == 5 then
+			check(bounces >= 2, "Bubble Bounce has two or more bounce pads")
+		elseif i == 6 then
+			check(last.y - first.y >= 20, "Coral Climb ends 20+ studs above its start")
+		end
+		check(b.x1 - b.x0 <= 600 and b.z1 - b.z0 <= 600, label .. " fits its region size")
+		for j = i + 1, ModesCourse.LEVEL_COUNT do
+			local o = ModesCourse.REGIONS[j]
+			check(b.x1 < o.x0 or o.x1 < b.x0 or b.z1 < o.z0 or o.z1 < b.z0, string.format("regions %d and %d do not overlap", i, j))
+		end
+	end
+	for i = 1, ModesCourse.LEVEL_COUNT do
+		if i ~= 4 then
+			check(blinks[4] > blinks[i], "Blink Reef has the most blink pads (vs map " .. i .. ")")
+		end
+		if i ~= 7 then
+			check(
+				meanGap[7] > meanGap[i],
+				string.format("Shark Fin Sprint has the widest gaps (%.2f vs map %d %.2f)", meanGap[7], i, meanGap[i])
+			)
+		end
+	end
+	local slides = 0
+	for _, e in ModesCourse.LEVELS[2].PATH do
+		if e.kind == "slide" then
+			slides += 1
+		end
+	end
+	check(slides >= 1, "Coconut Cove has slides")
+	local a, c = ModesCourse.generate(9), ModesCourse.generate(9)
+	check(#a.PROPS == #c.PROPS, "same scenery on every call")
+	for k, p in a.PROPS do
+		check(p.kind == c.PROPS[k].kind and p.x == c.PROPS[k].x and p.z == c.PROPS[k].z, "prop " .. k .. " is deterministic")
+	end
+end)
+
+test("Sky obby: big clear tiles, ring and hex pads, clouds far under the path", function()
+	local C = ModesCourse
+	-- Every path element and bridge step of the whole obby.
+	local path = {}
+	for _, level in C.LEVELS do
+		for _, e in level.PATH do
+			table.insert(path, e)
+		end
+	end
+	for _, bridge in C.BRIDGES do
+		for _, e in bridge do
+			table.insert(path, e)
+		end
+	end
+	local function under(e: any, x: number, z: number, r: number): boolean
+		-- Does a puff of radius r at (x, z) reach under element e's footprint?
+		local px, pz = e.x, e.z
+		if e.from then
+			px, pz = (e.from[1] + e.to[1]) / 2, (e.from[3] + e.to[3]) / 2
+		end
+		local reach = r + (if e.sx then math.max(e.sx, e.sz) / 2 elseif e.from then 40 else (e.r or 0)) + (e.distance or 0)
+		return math.sqrt((px - x) ^ 2 + (pz - z) ^ 2) < reach
+	end
+	local shapes = { ring = 0, hex = 0 }
+	for li, level in C.LEVELS do
+		local label = "map " .. li
+		local lo = math.huge
+		for _, e in level.PATH do
+			for _, pose in C.poses(e) do
+				lo = math.min(lo, pose[2])
+			end
+			if e.from then
+				lo = math.min(lo, e.from[2], e.to[2])
+			end
+			-- Tiles: nothing under 9 studs across (beams and slides are runways).
+			if e.kind ~= "slide" and e.name ~= "Beam" then
+				local across = if e.sx then math.min(e.sx, e.sz) elseif e.shape == "hex" then e.r * math.sqrt(3) else 2 * e.r
+				check(across >= 9 - 1e-6, string.format("%s %s %s is 9+ studs across (%.2f)", label, e.kind, tostring(e.shape), across))
+			end
+			if e.shape == "ring" then
+				shapes.ring += 1
+				check(
+					e.kind == "pad" and e.sx >= 12 and e.sx <= 14 and e.sz == e.sx and e.width == 3,
+					label .. " ring is 12-14 square, frame 3"
+				)
+			elseif e.shape == "hex" then
+				shapes.hex += 1
+				check(e.kind == "pad" and e.r >= 6 and e.r <= 7, label .. " hex has radius 6-7")
+			end
+		end
+		-- Ring / hex jumps: never touching, within reach from the flat side.
+		for k = 1, #level.PATH - 1 do
+			local a, b = level.PATH[k], level.PATH[k + 1]
+			if
+				(a.shape == "ring" or a.shape == "hex" or b.shape == "ring" or b.shape == "hex")
+				and a.kind ~= "slide"
+				and b.kind ~= "slide"
+			then
+				local near = C.edgeGap(a, a.x, a.z, b, b.x, b.z)
+				local far = C.edgeGap(a, a.x, a.z, b, b.x, b.z, true)
+				check(
+					near >= 0.6 and far <= C.maxGap(b.y - a.y),
+					string.format("%s %s -> %s jump is fair (%.2f..%.2f)", label, a.shape, b.shape, near, far)
+				)
+				check(
+					math.abs(far - shapeGap(a, a.x, a.z, b, b.x, b.z, true)) < 1e-6,
+					label .. " ring/hex gaps measure the same in Course and the tests"
+				)
+			end
+		end
+		-- The cloud floor: 40-80 thin, wide puffs far under the path, spread past the bounds,
+		-- with open sky between them.
+		local puffs = C.cloudLayer(level)
+		check(#puffs >= 40 and #puffs <= 80, string.format("%s cloud floor has 40-80 puffs (%d)", label, #puffs))
+		local b = level.BOUNDS
+		local x0, x1, z0, z1 = math.huge, -math.huge, math.huge, -math.huge
+		for _, puff in puffs do
+			check(puff.h >= 6 and puff.h <= 10 and puff.d >= 40 and puff.d <= 120, label .. " cloud puff is thin and wide")
+			check(
+				puff.y + puff.h / 2 <= lo - C.CLOUD_FLOOR_DEPTH[1] + 1e-6 and puff.y - puff.h / 2 >= lo - C.CLOUD_FLOOR_DEPTH[2] - 1e-6,
+				label .. " cloud puff floats 150-220 studs under the path"
+			)
+			x0, x1 = math.min(x0, puff.x - puff.d / 2), math.max(x1, puff.x + puff.d / 2)
+			z0, z1 = math.min(z0, puff.z - puff.d / 2), math.max(z1, puff.z + puff.d / 2)
+			for _, e in path do
+				if under(e, puff.x, puff.z, puff.d / 2) then
+					check(e.y - (puff.y + puff.h / 2) >= 30, label .. " cloud puff stays 30+ studs under every path element")
+				end
+			end
+		end
+		check(x0 < b.x0 - 40 and x1 > b.x1 + 40 and z0 < b.z0 - 40 and z1 > b.z1 + 40, label .. " cloud floor spreads well past the course")
+		local open = 0
+		for gx = 0, 9 do
+			for gz = 0, 9 do
+				local x, z = b.x0 + (b.x1 - b.x0) * gx / 9, b.z0 + (b.z1 - b.z0) * gz / 9
+				local covered = false
+				for _, puff in puffs do
+					covered = covered or (puff.x - x) ^ 2 + (puff.z - z) ^ 2 <= (puff.d / 2) ^ 2
+				end
+				open += if covered then 0 else 1
+			end
+		end
+		check(open >= 5, label .. " blue sky shows between the floor clouds (" .. open .. " open of 100)")
+		eq(#C.cloudLayer(level), #puffs, label .. " cloud floor is deterministic")
+		-- Cloud props: never within 30 studs under any path element of the obby.
+		for _, p in level.PROPS do
+			if p.kind == "cloud" then
+				local foot = C.propFoot(p)
+				local top = p.y + C.PROP_HEIGHT.cloud * (p.scale or 1)
+				for _, e in path do
+					if under(e, p.x, p.z, foot) then
+						check(
+							e.y - top >= 30,
+							string.format("%s cloud at (%.0f, %.0f) is 30+ studs under %s", label, p.x, p.z, e.name or e.kind)
+						)
+					end
+				end
+			end
+		end
+	end
+	check(shapes.ring >= 5 and shapes.hex >= 5, string.format("ring and hex pads along the path (%d, %d)", shapes.ring, shapes.hex))
+end)
+
 test("Game modes: each level is harder than the last", function()
 	-- +1: bigger is harder; -1: smaller is harder.
 	local knobs = {
@@ -3243,48 +4038,111 @@ test("Game modes: each level is harder than the last", function()
 	check(ModesCourse.LEVELS[4].TUNING.blinkOn ~= nil and ModesCourse.LEVELS[3].TUNING.blinkOn == nil, "blink pads from level 4")
 end)
 
-test("Game modes: parkour regions stay clear of the island, props and each other", function()
-	local avoid = {
-		{ 583, 212, 55 + 40 },
-		{ 179, 841, 42 + 40 },
-		{ -429, 360, 36 + 40 },
-		{ -714, -260, 60 + 40 },
-		{ -155, -580, 44 + 40 },
-		{ 669, -602, 50 + 40 },
-		{ 0, 400, 110 },
-		{ 0, 0, 262 },
-	}
-	local function rectCircle(r: any, cx: number, cz: number): number
-		local dx = math.max(r.x0 - cx, 0, cx - r.x1)
-		local dz = math.max(r.z0 - cz, 0, cz - r.z1)
-		return math.sqrt(dx * dx + dz * dz)
-	end
-	local function rectRect(a: any, b: any): number
-		local dx = math.max(a.x0 - b.x1, 0, b.x0 - a.x1)
-		local dz = math.max(a.z0 - b.z1, 0, b.z0 - a.z1)
-		return math.sqrt(dx * dx + dz * dz)
-	end
-	-- The plaza and its gates: no level may come near them (the course is portal-only).
-	local plazaBox = { x0 = -230, x1 = -118, z0 = -40, z1 = 40 }
+test("Game modes: parkour regions stay apart, high above the hub", function()
 	for i = 1, ModesCourse.LEVEL_COUNT do
 		local r = ModesCourse.REGIONS[i]
 		check(r == ModesCourse.LEVELS[i].BOUNDS, "region " .. i .. " is the level's bounds")
-		for _, c in avoid do
-			check(rectCircle(r, c[1], c[2]) >= c[3], string.format("region %d clears (%d, %d)", i, c[1], c[2]))
+		for _, v in { r.x0, r.x1, r.z0, r.z1 } do
+			check(math.abs(v) <= ModesCourse.CHAIN_LIMIT, "region " .. i .. " is within x, z +-1400")
 		end
-		check(rectRect(r, plazaBox) >= 30, "region " .. i .. " clears the plaza")
-		for _, x in { r.x0, r.x1 } do
-			for _, z in { r.z0, r.z1 } do
-				check(x * x + z * z <= 900 * 900, "region " .. i .. " is within 900 studs")
-			end
-		end
+		check(r.y0 > 200 and r.y0 < ModesCourse.FLOOR_Y, "region " .. i .. " is high in the sky and holds the cloud floor")
+		local c = ModesCourse.CENTRES[i]
+		check(math.abs(c[1] - (r.x0 + r.x1) / 2) < 0.01 and math.abs(c[2] - (r.z0 + r.z1) / 2) < 0.01, "centre " .. i .. " is the region's")
 		for j = i + 1, ModesCourse.LEVEL_COUNT do
-			check(rectRect(r, ModesCourse.REGIONS[j]) >= 30, string.format("regions %d and %d are 30 studs apart", i, j))
+			local o = ModesCourse.REGIONS[j]
+			check(r.x1 < o.x0 or o.x1 < r.x0 or r.z1 < o.z0 or o.z1 < r.z0, string.format("regions %d and %d do not overlap", i, j))
 		end
 		for _, e in ModesCourse.LEVELS[i].ELEMENTS do
 			check(ModesCourse.inBounds(ModesCourse.LEVELS[i], e.x, e.y, e.z), "level " .. i .. " elements inside its bounds")
 		end
 	end
+end)
+
+test("Sky obby: one chain of maps with rainbow bridges and global stages", function()
+	local C = ModesCourse
+	check(C.SKY_Y == 320 and C.FLOOR_Y == C.SKY_Y - 24, "sky and cloud floor heights")
+	check(C.STAGE_COUNT > 60, "more than 60 stages (" .. C.STAGE_COUNT .. ")")
+	eq(#C.RAINBOW, 8, "eight rainbow colours")
+	eq(#C.BRIDGES, C.LEVEL_COUNT - 1, "a bridge between every two maps")
+	local slot = 0
+	local function colour(level: any, e: any, label: string)
+		if e.kind == "checkpoint" then
+			eq(e.color, "Checkpoint", label .. ": checkpoints are sky blue")
+		elseif e.kind == "pad" or e.kind == "slide" then
+			eq(e.color, C.RAINBOW[slot % 8 + 1], label .. ": rainbow in walking order")
+		elseif e.kind == "mover" then
+			eq(e.color, level.palette.mover, label .. ": movers keep the map colour")
+		elseif e.kind == "blink" then
+			eq(e.color, level.palette.blink, label .. ": blink pads keep the map colour")
+		end
+		slot += 1
+	end
+	for i, level in C.LEVELS do
+		local label = "map " .. i
+		-- Stages run on from map to map.
+		eq(level.STAGE_FIRST, if i == 1 then 1 else C.LEVELS[i - 1].STAGE_LAST, label .. " starts where the last map ended")
+		eq(level.STAGE_LAST, level.STAGE_FIRST + level.CHECKPOINT_COUNT + 1, label .. " finish stage")
+		for k, cp in level.CHECKPOINTS do
+			eq(cp.stage, level.STAGE_FIRST + k, label .. " checkpoint " .. k .. " stage")
+			eq(C.stageOf(level, k), cp.stage, label .. " stageOf " .. k)
+			local at, index = C.levelOfStage(cp.stage)
+			check(at == level and index == k, label .. " levelOfStage finds checkpoint " .. k)
+		end
+		local at, index = C.levelOfStage(level.STAGE_FIRST)
+		check(at == level and index == 0, label .. " its first stage is its start deck")
+		-- High in the sky: every path top at or above SKY_Y, a fall is feet under FLOOR_Y.
+		for k, e in level.PATH do
+			local tops = if e.kind == "slide" then { e.from[2], e.to[2] } else { e.y }
+			for _, y in tops do
+				check(y >= C.SKY_Y - 1e-6, string.format("%s path %d top %.1f is in the sky", label, k, y))
+			end
+			check(not C.inWater(e.x, e.y, e.z), label .. " path " .. k .. " top is not a fall")
+			colour(level, e, label .. " path " .. k)
+		end
+		check(C.inWater(level.START.x, C.FLOOR_Y - 1, level.START.z), label .. ": under the cloud floor is a fall")
+		local w = level.WATER_BOX
+		check(w.y1 == C.FLOOR_Y and w.y0 == C.FLOOR_Y - 20, label .. " cloud catch volume under the floor")
+		-- The rainbow stair to the next map: six steps, each a fair little hop up.
+		if i < C.LEVEL_COUNT then
+			local bridge = C.BRIDGES[i]
+			eq(#bridge, 6, label .. " bridge has six steps")
+			local finish, start = level.PATH[#level.PATH], C.LEVELS[i + 1].PATH[1]
+			eq(start.name, "StartDeck", label .. " bridge leads to the next start deck")
+			local deckGap = shapeGap(finish, finish.x, finish.z, start, start.x, start.z)
+			check(math.abs(deckGap - C.BRIDGE_GAP) < 0.02, string.format("%s next start deck 26 studs on (%.2f)", label, deckGap))
+			local walk = { finish }
+			for k, step in bridge do
+				check(
+					step.kind == "pad" and step.shape == "box" and step.name == "Bridge" and step.path,
+					label .. " bridge step " .. k .. " is a pad"
+				)
+				colour(level, step, label .. " bridge step " .. k)
+				table.insert(walk, step)
+			end
+			table.insert(walk, start)
+			for k = 1, #walk - 1 do
+				local a, c = walk[k], walk[k + 1]
+				local gap = shapeGap(a, a.x, a.z, c, c.x, c.z)
+				check(gap > 0.5 and gap <= 2, string.format("%s bridge hop %d gap %.2f", label, k, gap))
+				check(c.y - a.y > 0 and c.y - a.y <= 1.5, string.format("%s bridge hop %d rise %.2f", label, k, c.y - a.y))
+			end
+			for j, r in C.REGIONS do
+				for _, step in bridge do
+					local inside = step.x >= r.x0 and step.x <= r.x1 and step.z >= r.z0 and step.z <= r.z1
+					check(not inside or j == i or j == i + 1, label .. " bridge crosses no other map")
+				end
+			end
+		end
+	end
+	local last = C.LEVELS[C.LEVEL_COUNT]
+	eq(last.STAGE_LAST, C.STAGE_COUNT, "the last finish deck is the last stage")
+	local at, index = C.levelOfStage(C.STAGE_COUNT)
+	check(at == last and index == last.CHECKPOINT_COUNT + 1, "levelOfStage(STAGE_COUNT) is the last finish deck")
+	local g1, g2 = C.generate(3), C.LEVELS[3]
+	check(
+		#g1.PATH == #g2.PATH and g1.PATH[5].x == g2.PATH[5].x and g1.PATH[5].color == g2.PATH[5].color,
+		"generate matches the chained level"
+	)
 end)
 
 -- Mog Test rules (tests/mog.luau).
@@ -3293,6 +4151,229 @@ require("./mog")({ test = test, check = check, eq = eq, near = near, seeded = se
 require("./cardio")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
 -- Cardio chaser Chads (tests/cardio_chase.luau).
 require("./cardio_chase")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
+
+test("Sky obby: lava kill strips and sliding bars on wide decks", function()
+	for li, level in ModesCourse.LEVELS do
+		local label = "level " .. li
+		local kills = {}
+		for _, e in level.ELEMENTS do
+			if e.kind == "kill" then
+				table.insert(kills, e)
+				check(not e.path, label .. ": kill elements are not path elements")
+			end
+		end
+		if li >= 2 then
+			check(#kills >= 1 and #kills <= 1 + li // 3, label .. " kill count is 1 .. 1 + difficulty // 3")
+		else
+			eq(#kills, 0, label .. " has no kill elements")
+		end
+		eq(#level.KILLS, #kills, label .. " KILLS lists them")
+		check(#kills <= ModesCourse.killCount(li), label .. " killCount is the cap")
+		local perDeck = {}
+		for ki, k in kills do
+			local what = string.format("%s kill %d", label, ki)
+			check(k.color == "Lava" and math.abs(k.h - 0.6) < 1e-6, what .. ": lava, 0.6 tall")
+			-- The deck it stands on: a box path pad whose top is the kill's y.
+			local deck, di
+			for i, p in level.PATH do
+				if
+					p.shape == "box"
+					and math.abs(p.y - k.y) < 0.01
+					and math.abs(k.x - p.x) <= p.sx / 2 + 1e-6
+					and math.abs(k.z - p.z) <= p.sz / 2 + 1e-6
+				then
+					deck, di = p, i
+				end
+			end
+			check(deck ~= nil, what .. ": sits on a path pad's top")
+			if not deck then
+				continue
+			end
+			perDeck[deck] = perDeck[deck] or {}
+			table.insert(perDeck[deck], k)
+			check(#perDeck[deck] <= 2, what .. ": at most 2 per deck")
+			for _, o in perDeck[deck] do
+				if o ~= k then
+					local gap = math.max(math.abs(o.x - k.x), math.abs(o.z - k.z)) - 1.6
+					check(o.motion == nil and k.motion == nil and gap >= 6 - 1e-6, what .. ": 6 studs from the deck's other strip")
+				end
+			end
+			local spun = false
+			for _, o in level.ELEMENTS do
+				if o.kind == "spinner" and math.abs(o.x - deck.x) <= deck.sx / 2 and math.abs(o.z - deck.z) <= deck.sz / 2 then
+					spun = true
+				end
+			end
+			if spun then
+				-- Only when the map has no other eligible deck: no kill on a spinner-free deck.
+				for _, o in kills do
+					local free = true
+					for _, sp in level.ELEMENTS do
+						if
+							sp.kind == "spinner"
+							and math.abs(sp.y - o.y) < 0.01
+							and math.abs(sp.x - o.x) < 20
+							and math.abs(sp.z - o.z) < 20
+						then
+							free = false
+						end
+					end
+					check(not free, what .. ": spinner decks only when nothing else is eligible")
+				end
+			end
+			check(
+				deck.kind == "pad" and deck.name ~= "StartDeck" and deck.name ~= "FinishDeck" and deck.name ~= "Bridge",
+				what .. ": not on the start/finish deck, a checkpoint, mover or blink pad"
+			)
+			local from = level.PATH[di - 1]
+			local alongX = math.abs(deck.x - from.x) >= math.abs(deck.z - from.z)
+			local length = if alongX then deck.sx else deck.sz
+			local across = if alongX then deck.sz else deck.sx
+			check(length >= 16, what .. ": deck is at least 16 long")
+			check(math.abs((if alongX then k.sx else k.sz) - 1.6) < 1e-6, what .. ": 1.6 across the walking axis")
+			check(math.abs((if alongX then k.sz else k.sx) - across) < 1e-6, what .. ": full deck width")
+			-- Along-axis span of the kill at a given offset, and the deck's.
+			local deckC = if alongX then deck.x else deck.z
+			local function spanAt(t: number): (number, number)
+				local c = if alongX then k.x else k.z
+				if k.motion == "slide" then
+					local a = if alongX then k.axis[1] else k.axis[3]
+					check(math.abs(math.abs(a) - 1) < 1e-6, what .. ": slides along the walking axis")
+					c += a * k.distance * math.sin(2 * math.pi * t / k.period + k.phase)
+				end
+				return c - 0.8, c + 0.8
+			end
+			if k.motion == "slide" then
+				check(length >= 20, what .. ": sliding bars on decks 20+ long")
+				check(math.abs(k.distance - (length / 2 - 4)) < 0.01, what .. ": slides extent/2 - 4")
+				check(k.period >= 4 and k.period <= 6, what .. ": period 4-6")
+				for step = 0, 40 do
+					local lo, hi = spanAt(step * k.period / 40)
+					check(lo >= deckC - length / 2 - 1e-6 and hi <= deckC + length / 2 + 1e-6, what .. ": bar stays on its deck")
+				end
+			else
+				local lo, hi = spanAt(0)
+				check(lo - (deckC - length / 2) >= 4 - 1e-6, what .. ": 4 studs clear before it")
+				check(deckC + length / 2 - hi >= 4 - 1e-6, what .. ": 4 studs clear after it")
+			end
+			-- Never within 2 studs of a wall or bounce pad on the deck (at any phase).
+			for _, o in level.ELEMENTS do
+				if (o.kind == "wall" or o.kind == "bounce") and math.abs(o.y - deck.y) < 0.01 then
+					local oc = if alongX then o.x else o.z
+					local half = if o.kind == "bounce" then o.r else (if alongX then o.sx else o.sz) / 2
+					local onDeck = math.abs(o.x - deck.x) <= deck.sx / 2 and math.abs(o.z - deck.z) <= deck.sz / 2
+					if onDeck then
+						for step = 0, 20 do
+							local lo, hi = spanAt(step * (k.period or 1) / 20)
+							local gap = math.max(lo - (oc + half), (oc - half) - hi)
+							check(gap >= 2 - 1e-6, what .. ": 2 studs from " .. o.kind)
+						end
+					end
+				end
+			end
+			-- inKill: on the strip yes, 3 studs beside it (along the walk) no.
+			for _, t in { 0, 0.7, 1.9, 3.3 } do
+				local lo, hi = spanAt(t)
+				local c = (lo + hi) / 2
+				local function at(off: number): (number, number)
+					if alongX then
+						return c + off, k.z
+					end
+					return k.x, c + off
+				end
+				local x, z = at(0)
+				check(ModesCourse.inKill(level, x, k.y + 0.1, z, t), what .. ": inKill on it")
+				check(ModesCourse.inKill(level, x, k.y + 2.5, z, t), what .. ": inKill when hopping low over it")
+				check(not ModesCourse.inKill(level, x, k.y + 4, z, t), what .. ": not when jumping high over it")
+				for _, side in { -3, 3 } do
+					local bx, bz = at(side)
+					local hit = ModesCourse.inKill(level, bx, k.y + 0.1, bz, t)
+					-- (unless another strip lies there)
+					local other = false
+					for _, o in kills do
+						if o ~= k and o.motion == nil and math.abs(bx - o.x) <= o.sx / 2 and math.abs(bz - o.z) <= o.sz / 2 then
+							other = true
+						end
+					end
+					check(other or not hit, what .. ": not 3 studs beside it")
+				end
+			end
+		end
+		-- Start, finish and checkpoints are always safe.
+		local spots = { { level.START.x, level.START.y, level.START.z } }
+		for _, cp in level.CHECKPOINTS do
+			table.insert(spots, { cp.x, cp.y, cp.z })
+		end
+		local fin = level.PATH[#level.PATH]
+		table.insert(spots, { fin.x, fin.y, fin.z })
+		for _, s in spots do
+			for step = 0, 24 do
+				check(not ModesCourse.inKill(level, s[1], s[2] + 0.1, s[3], step * 0.25), label .. ": start/checkpoints/finish are safe")
+			end
+		end
+	end
+	local a, b = ModesCourse.generate(9), ModesCourse.generate(9)
+	check(#a.KILLS == #b.KILLS and a.KILLS[1].x == b.KILLS[1].x and a.KILLS[#a.KILLS].z == b.KILLS[#b.KILLS].z, "kills are deterministic")
+end)
+
+test("Game modes: a second plaza mirrored on the hub's +X side", function()
+	local C = ModesCourse
+	local p, q = C.PLAZA, C.PLAZA2
+	eq(q.x0, -p.x1, "plaza2 x0")
+	eq(q.x1, -p.x0, "plaza2 x1")
+	check(q.z0 == p.z0 and q.z1 == p.z1 and q.top == p.top, "plaza2 z and top")
+	check(C.SPUR2.x0 == -C.SPUR.x1 and C.SPUR2.x1 == -C.SPUR.x0 and C.SPUR2.half == C.SPUR.half, "spur2 mirrored")
+	eq(C.GATE2_X, -C.GATE_X, "gate2 x")
+	eq(C.START_LINE2_X, -C.START_LINE_X, "start line 2")
+	for slot, g in C.GATES do
+		eq(C.GATES2[slot].z, g.z, "gate2 " .. slot .. " z")
+	end
+	check(C.ARRIVAL2.x == -C.ARRIVAL.x and C.QUIT2.x == -C.QUIT.x, "arrival/quit mirrored")
+	check(C.QUIT.faceX == 1 and C.QUIT2.faceX == -1, "quit spots face the hub")
+	check(C.ARRIVAL.faceX == -1 and C.ARRIVAL2.faceX == 1, "arrival spots face the gates")
+	-- Portals: west through gate 1 at -X, east through the mirrored gate 1 at +X.
+	local L1, L2 = C.START_LINE_X, C.START_LINE2_X
+	check(C.crossedStart(L1 + 1, L1 - 1, 0), "west through gate 1 starts")
+	check(not C.crossedStart(L1 - 1, L1 + 1, 0), "walking back out at -X does not")
+	check(C.crossedStart(L2 - 1, L2 + 1, 0), "east through the mirrored gate 1 starts")
+	check(not C.crossedStart(L2 + 1, L2 - 1, 0), "walking back out at +X does not")
+	check(not C.crossedStart(L2 - 1, L2 + 1, C.GATES2[2].z), "the mirrored gate 2 is not the portal")
+	check(not C.crossedStart(L1 + 1, L1 - 1, C.GATES[3].z), "gate 3 is not the portal")
+	check(not C.crossedStart(0, 1, 0) and not C.crossedStart(-1, 1, 0), "walking about the hub does not")
+	-- Nearest spots.
+	check(C.nearestQuit(-150, 5) == C.QUIT and C.nearestQuit(150, -5) == C.QUIT2, "nearest quit")
+	check(C.nearestArrival(-30, 0) == C.ARRIVAL and C.nearestArrival(30, 0) == C.ARRIVAL2, "nearest arrival")
+	check(C.nearestQuit(-1, 80) == C.QUIT and C.nearestQuit(1, -80) == C.QUIT2, "the player's x decides")
+	-- CLEAR covers both plazas (and mirrors itself).
+	for _, r in { p, q } do
+		for _, x in { r.x0, (r.x0 + r.x1) / 2, r.x1 } do
+			for _, z in { r.z0, 0, r.z1 } do
+				check(not C.isClear(x, z), string.format("CLEAR covers (%g, %g)", x, z))
+			end
+		end
+	end
+	check(not C.isClear(C.BIG_SIGN2.x, C.BIG_SIGN2.z), "CLEAR covers the second big sign")
+	for _, r in C.CLEAR do
+		local mirrored = false
+		for _, o in C.CLEAR do
+			mirrored = mirrored or (o.x0 == -r.x1 and o.x1 == -r.x0 and o.z0 == r.z0 and o.z1 == r.z1)
+		end
+		check(mirrored, "every CLEAR rectangle has its mirror")
+	end
+	-- The second plaza (and its spur) overlap no plot (World.Common: plots of half PLOT_HALF at
+	-- (col * PLOT_SPACING_X, row * PLOT_ROW_Z)) and stay outside the hub ring.
+	local half = Layout.PLOT_HALF
+	local spacing, rowZ = half * 2 + 10, 32 + 12 + 10 + half
+	for index = 1, 6 do
+		local row = if index <= 3 then 1 else -1
+		local px, pz = (((index - 1) % 3) - 1) * spacing, row * rowZ
+		for _, r in { q, { x0 = C.SPUR2.x0, x1 = C.SPUR2.x1, z0 = -C.SPUR2.half, z1 = C.SPUR2.half } } do
+			check(r.x1 < px - half or r.x0 > px + half or r.z1 < pz - half or r.z0 > pz + half, "plaza 2 clear of plot " .. index)
+		end
+	end
+	check(C.SPUR2.x0 >= spacing + 19 + 5 - 1e-6, "spur 2 starts at the hub ring's outer edge")
+	check(q.x1 + 20 < 219, "plaza 2 stays on the island")
+end)
 
 test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", function()
 	(_G :: any).SIMULATE_AS_LIBRARY = true

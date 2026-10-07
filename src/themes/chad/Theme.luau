@@ -26,7 +26,6 @@ Theme.Words = {
 	Unit = "Chad",
 	Units = "Chads",
 	Orb = "Aura",
-	Gem = "Rizz",
 	Chest = "Crate",
 	Deposit = "AURA CONVERTER",
 	Process = "Converting aura",
@@ -99,7 +98,6 @@ Theme.Loading = {
 Theme.Icons = {
 	Unit = "🗿",
 	Orb = "✨",
-	Gem = "💎",
 	Money = "$",
 	Home = "🏠",
 	Ranking = "🏆",
@@ -118,7 +116,7 @@ Theme.Icons = {
 --   Display  hero titles only (window titles, reward cards, surge banner)
 --   UI       buttons, tabs, labels, pills (uppercase)
 --   Body     descriptions and copy, sentence case
---   Number   every number: money, gems, counters, prices, timers
+--   Number   every number: money, counters, prices, timers
 Theme.Fonts = {
 	Display = Enum.Font.LuckiestGuy,
 	UI = Enum.Font.BuilderSansExtraBold,
@@ -154,7 +152,7 @@ Theme.Colors = {
 	-- Stroke is the outline used by world billboards (Theme.World.Ink); UI uses Edge.
 	Stroke = rgb(58, 48, 96),
 	-- Accents: sunny yellow is the one CTA colour (orange lip, Ink text), grape
-	-- is secondary, mint is money, sky blue is gems, orange is the surge, coral
+	-- is secondary, mint is money, sky blue is accents, orange is the surge, coral
 	-- is close/danger.
 	Gold = rgb(255, 212, 64),
 	GoldDeep = rgb(244, 150, 44),
@@ -299,6 +297,33 @@ Theme.World = {
 	Blue = BLUE,
 	Chrome = rgb(226, 232, 242),
 	Steel = rgb(150, 164, 196),
+	-- Parkour map hues (one family per map, Server.Modes.Course PALETTES / World.MapDecor).
+	MintPale = rgb(184, 242, 206),
+	Navy = rgb(36, 62, 138),
+	HotPink = rgb(255, 64, 158),
+	SkyBlue = rgb(166, 216, 255),
+	Apricot = rgb(255, 196, 148),
+	Terracotta = rgb(214, 102, 56),
+	Slate = rgb(66, 76, 100),
+	Volt = rgb(240, 255, 56),
+	Basalt = rgb(40, 36, 46),
+	Lava = rgb(255, 104, 18),
+	Gold = rgb(255, 196, 40),
+	-- Sky obby (docs/sky-obby.md): saturated candy rainbow the path cycles through
+	-- (Server.Modes.Course RAINBOW), the blue arrow checkpoint pads and the cloud floor.
+	RainbowRed = rgb(255, 80, 80),
+	RainbowOrange = rgb(255, 150, 50),
+	RainbowYellow = rgb(255, 225, 60),
+	RainbowGreen = rgb(90, 220, 100),
+	RainbowCyan = rgb(70, 220, 230),
+	RainbowBlue = rgb(70, 140, 255),
+	RainbowPurple = rgb(170, 110, 255),
+	RainbowPink = rgb(255, 120, 200),
+	Checkpoint = rgb(90, 170, 255),
+	Cloud = rgb(250, 250, 255),
+	-- The storm landmark's light grey thunder cloud and the giga statue's darker gold limbs.
+	StormCloud = rgb(200, 205, 215),
+	GoldDeep = rgb(222, 150, 30),
 	-- One colour per pad job, so a pad's colour tells you what it does: yellows buy and
 	-- upgrade, teal/blue move aura and cash, warm pops are the special pads.
 	Pads = {
@@ -673,10 +698,11 @@ Theme.Intro = {
 	},
 }
 
--- Leave empty for no music, or paste a Roblox audio asset id ("rbxassetid://...").
+-- Music: empty plays the built-in funk / disco playlist (client Sounds), or paste a
+-- Roblox audio asset id ("rbxassetid://...") to play just that track.
 Theme.MusicId = ""
--- Music during an Aura Surge ("rbxassetid://..."). Empty: the other built-in track,
--- played a little faster (or the same track sped up when only one loads).
+-- Music during an Aura Surge ("rbxassetid://..."). Empty: the built-in surge playlist
+-- (or the normal track sped up while no surge track has loaded).
 Theme.SurgeMusicId = ""
 
 -- Unit animation set (see ReplicatedStorage.Shared.Poses): gym poses.
@@ -1274,12 +1300,12 @@ Theme.Monetization = {
 			Desc = "Every cosmetic, now and later",
 			Color = rgb(255, 122, 110),
 		},
-		-- One per account: cash, Rizz and the Rookie Trail, granted once (Theme.Cosmetics.Starter).
+		-- One per account: cash and the Rookie Trail, granted once (Theme.Cosmetics.Starter).
 		StarterPack = {
 			Id = 2008886371,
 			Price = 59,
 			Title = "Starter Pack",
-			Desc = "Cash, Rizz and the Rookie Trail",
+			Desc = "A big cash boost and the Rookie Trail",
 			Color = rgb(98, 224, 160),
 		},
 	},
@@ -1310,15 +1336,14 @@ Theme.Monetization = {
 		{ Id = 3716878826, Seconds = 2700, Min = 7500 },
 		{ Id = 3716878834, Seconds = 7200, Min = 20000 },
 		{ Id = 3716878853, Seconds = 43200, Min = 125000 },
+		-- The retired Small / Big / Mega Rizz Packs (49 / 249 / 599 R$): Rizz is gone, so a
+		-- pending receipt pays cash worth about the same Robux as the cash packs above.
+		{ Id = 3716878857, Seconds = 900, Min = 2500 },
+		{ Id = 3716878861, Seconds = 4500, Min = 12500 },
+		{ Id = 3716878866, Seconds = 21600, Min = 60000 },
 	},
-	-- Rizz packs give `Base` Rizz at tier 1, growing with the buyer's highest tier
-	-- (Economy.gemPackAmount). Roblox names: Small / Big / Mega Rizz Pack.
-	GemPacks = {
-		{ Id = 3716878857, Price = 49, Base = 50 },
-		{ Id = 3716878861, Price = 249, Base = 300 },
-		{ Id = 3716878866, Price = 599, Base = 800 },
-	},
-	-- Instant crate opening: one developer product, the same price for every crate rarity.
+	-- Instant crate opening (a held crate or one still in a smasher): one developer product,
+	-- the same price for every crate rarity.
 	CrateOpen = { Id = 3716878439, Price = 30 },
 }
 
@@ -1404,8 +1429,8 @@ Theme.Cosmetics = {
 	Bundle = "AllCosmetics",
 	BundleIcon = "CosAll",
 	-- Granted once per account: `CashSeconds` of income (Economy.moneyPackAmount, at least
-	-- `CashMin`), the Rizz of GemPacks[GemPack] (Economy.gemPackAmount) and `Item`.
-	Starter = { Pass = "StarterPack", CashSeconds = 1800, CashMin = 5000, GemPack = 2, Item = "TrailRookie", Icon = "CosStarter" },
+	-- `CashMin`) and `Item`.
+	Starter = { Pass = "StarterPack", CashSeconds = 3600, CashMin = 10000, Item = "TrailRookie", Icon = "CosStarter" },
 	-- Humanoid WalkSpeed before any boost.
 	BaseWalkSpeed = 16,
 }

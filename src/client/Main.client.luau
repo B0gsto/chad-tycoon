@@ -24,6 +24,7 @@ local Popups = require(Client.UI.Popups)
 local Tutorial = require(Client.UI.Tutorial)
 local MogHud = require(Client.UI.MogHud)
 local CardioHud = require(Client.UI.CardioHud)
+local ObbyHud = require(Client.UI.ObbyHud)
 
 -- The opening cutscene (optional: the game runs without it if it fails to load).
 local introOk, Cutscene = pcall(require, Client.Intro.Cutscene)
@@ -110,6 +111,9 @@ Hud.build(screen, {
 		Guide.navigate(target, "CLAIM!", 45)
 	end,
 }, Sounds)
+-- The sky obby's rainbow progress bar, stage counter, skip button and gear hotbar.
+-- Hud's run pill docks into its row; its gear hotbar rides on Hud's dumbbell.
+ObbyHud.build(screen, { sounds = Sounds, dockRun = Hud.dockRun, tank = Hud.tank })
 -- Last "Cash" effect: the tutorial reward waits for the wallet count-up.
 local lastCashAt = 0
 
@@ -203,7 +207,7 @@ if RunService:IsStudio() then
 		end
 		local tier = string.match(spec, "^reward,(%d+)$")
 		if tier then
-			Popups.reward({ kind = "Reward", tier = tonumber(tier), tiers = { tonumber(tier) }, new = true, gems = 5 })
+			Popups.reward({ kind = "Reward", tier = tonumber(tier), tiers = { tonumber(tier) }, new = true })
 		elseif spec == "close" then
 			Windows.closeAll()
 			Popups.closeModals()
@@ -262,7 +266,20 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 	elseif payload.kind == "Mode" then
 		-- Game-mode runs: the HUD run pill and the finish card (Fx.Modes does the 3D side).
 		local event = payload.event
-		if event == "start" then
+		if event == "pick" then
+			-- Walked through gate 1's portal: pick a map (opening the window plays "Open").
+			Windows.openMaps(tonumber(payload.level))
+		elseif event == "start" then
+			-- A run teleports the player onto the course: no window (the map picker, the
+			-- Modes window) may stay up over it.
+			Windows.closeAll()
+			if payload.mode == "parkour" then
+				-- The obby HUD owns the top centre for the run: the tycoon's counter, deposit
+				-- strip, quest pill, promo and FREE gift step aside; it docks the run pill
+				-- before the pill slides in.
+				Hud.setObbyMode(true)
+				ObbyHud.show(tonumber(payload.stage), tonumber(payload.stageCount))
+			end
 			Hud.runStart(
 				tonumber(payload.startedAt) or workspace:GetServerTimeNow(),
 				0,
@@ -272,25 +289,56 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			Sounds.play("Ready")
 		elseif event == "checkpoint" then
 			Hud.runCheckpoint(tonumber(payload.index) or 0, tonumber(payload.checkpoints) or 0)
+			if payload.stage ~= nil then
+				ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
+			end
+			Sounds.play("Step")
+		elseif event == "respawn" then
+			-- Fell through the clouds (or touched lava): back on the last checkpoint, the run goes on.
+			if payload.stage ~= nil then
+				ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
+			end
+			if payload.reason == "kill" then
+				Sounds.play("Error")
+				Popups.toast("Ouch! Back to your checkpoint", "bad")
+			end
+		elseif event == "skip" then
+			-- Paid a stage skip: on to the next checkpoint (the run is now assisted).
+			ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
+			if payload.index ~= nil then
+				Hud.runCheckpoint(tonumber(payload.index) or 0, tonumber(payload.checkpoints) or 0)
+			end
 			Sounds.play("Step")
 		elseif event == "finish" then
+			Hud.setObbyMode(false)
 			Hud.runStop()
-			-- "Run again" replays the same level; "Next level" starts the one just unlocked.
+			ObbyHud.hide()
+			-- "Run again" replays the same level; "Next level" starts the one just unlocked;
+			-- "Choose map" opens the Maps window on the next level (or this one).
+			local onPick = if payload.mode == "parkour"
+				then function()
+					Windows.openMaps(tonumber(payload.nextLevel) or tonumber(payload.level))
+				end
+				else nil
 			Popups.modeFinish(payload, function()
 				action:FireServer({ action = "ModeStart", mode = payload.mode, level = tonumber(payload.level) })
 			end, function()
 				action:FireServer({ action = "Home" })
 			end, function()
 				action:FireServer({ action = "ModeStart", mode = payload.mode, level = tonumber(payload.nextLevel) })
-			end)
+			end, onPick)
 		elseif event == "invalid" then
+			Hud.setObbyMode(false)
 			Hud.runStop()
+			ObbyHud.hide()
 			Popups.toast(
 				if payload.reason == "fast" then "Whoa, too fast! Try the course again" else "Missed a checkpoint! Try again",
 				"info"
 			)
 		elseif event == "stop" then
+			Hud.setObbyMode(false)
 			Hud.runStop()
+			ObbyHud.hide()
 			if payload.reason == "left" then
 				Popups.toast("You left the course. Run ended", "info")
 			elseif payload.reason == "respawn" then
@@ -313,7 +361,7 @@ local WALLET = UDim2.new(0, 150, 1, -110)
 Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 	data = if type(data) == "table" then data else {}
 	if kind == "Collect" then
-		Sounds.play("Collect", 0.3)
+		-- Silent: Fx.Orbs already popped for each pickup.
 		Hud.pulseTank()
 		Popups.float("+" .. I.Orb .. Format.short(data.amount or 0), C.Orb, TANK)
 	elseif kind == "Cash" then

@@ -28,11 +28,15 @@ local Shelves = require(script.Parent.World.Shelves)
 local Props = require(script.Parent.World.Props)
 
 type Profile = any
+
+-- Roblox's built-in Robux glyph, for prices in server-made messages.
+local ROBUX = utf8.char(0xE002)
 type Plot = WorldBuilder.Plot
 
 -- `cell` is the pile slot the orb rests in (see orbCells): 1..n on the floor, PILE_TOP + k on top.
 -- `due`: Auto Aura collects the orb at this os.clock() (after its roll-in lands and rests).
-type Orb = { part: BasePart, value: number, count: number, cell: number, tier: number, due: number? }
+-- `dumbbell`: a rare prize piece (OrbLook.DUMBBELL_*) that is never fed and blocks the cells around it.
+type Orb = { part: BasePart, value: number, count: number, cell: number, tier: number, due: number?, dumbbell: boolean? }
 -- `landsAt`: os.clock() by which the client's arrival has landed (CratePickup.landTime);
 -- `blocked`: in range when the last held crate was released, until the player leaves its range.
 type FloorChest = { model: Model, rarity: string, position: Vector3, landsAt: number, blocked: boolean }
@@ -112,7 +116,7 @@ local ActionRemote: RemoteEvent
 Tycoon.hooks = {
 	promptPass = function(_player: Player, _name: string) end,
 	promptProduct = function(_player: Player, _kind: string, _index: number) end,
-	promptCrate = function(_player: Player, _rarity: string) end,
+	promptCrate = function(_player: Player, _rarity: string, _slot: number?) end,
 	-- May this player buy instant crate opens (paid random items)? Monetization
 	-- answers from PolicyService; this default only serves previews and tests.
 	crateRobuxAllowed = function(_player: Player): boolean
@@ -247,15 +251,6 @@ local function spend(session: Session, cost: number, padName: string?): boolean
 		return false
 	end
 	session.profile.money = math.max(0, session.profile.money - cost)
-	return true
-end
-
-local function spendGems(session: Session, cost: number): boolean
-	if session.profile.gems < cost then
-		toast(session, string.format("Not enough %s! Need %d %s", theme.Words.Gem, cost, theme.Icons.Gem), "bad")
-		return false
-	end
-	session.profile.gems -= cost
 	return true
 end
 
@@ -515,12 +510,10 @@ end
 local function discoverAll(session: Session, extra: { number }?)
 	local p = session.profile
 	local newest = 0
-	local gems = 0
 	local found: { number } = {}
 	local function mark(tier: number)
 		if tier >= 1 and tier <= Economy.MAX_TIER and p.discovered[tier] == 0 then
 			p.discovered[tier] = os.time()
-			gems += Economy.discoveryGems(tier)
 			newest = math.max(newest, tier)
 			table.insert(found, tier)
 		end
@@ -534,9 +527,8 @@ local function discoverAll(session: Session, extra: { number }?)
 		end
 	end
 	if newest > 0 then
-		p.gems += gems
 		table.sort(found)
-		notify(session, { kind = "Reward", tier = newest, tiers = found, new = true, gems = gems })
+		notify(session, { kind = "Reward", tier = newest, tiers = found, new = true })
 	end
 end
 
@@ -925,31 +917,57 @@ local function topSupports(g: PileGrid, cell: number): (number, number, number, 
 	return floorCell(g, col, row), floorCell(g, col + 1, row), floorCell(g, col, row + 1), floorCell(g, col + 1, row + 1)
 end
 
--- Plot-local centres of the occupied pile cells, and how many orbs sit on the floor.
-local function pileTaken(session: Session): ({ [number]: Vector3 }, number)
+-- The floor cells around a floor cell (up to 8; fewer at the grid's edge).
+local function floorNeighbours(g: PileGrid, cell: number): { number }
+	local col, row = (cell - 1) % g.cols + 1, (cell - 1) // g.cols + 1
+	local out = {}
+	for dr = -1, 1 do
+		for dc = -1, 1 do
+			local c, r = col + dc, row + dr
+			if (dc ~= 0 or dr ~= 0) and c >= 1 and c <= g.cols and r >= 1 and r <= g.rows then
+				table.insert(out, floorCell(g, c, r))
+			end
+		end
+	end
+	return out
+end
+
+-- Plot-local centres of the occupied pile cells, how many orbs sit on the floor, and the empty
+-- floor cells a dumbbell covers (its 8 neighbours: it is twice an orb's size). Nothing lands
+-- on those, so no top-layer slot can ever rest on a dumbbell either.
+local function pileTaken(session: Session): ({ [number]: Vector3 }, number, { [number]: boolean })
 	local cf = session.plot.cframe
 	local taken: { [number]: Vector3 } = {}
+	local blocked: { [number]: boolean } = {}
 	local floorCount = 0
+	local g: PileGrid? = nil
 	for _, orb in session.orbs do
 		taken[orb.cell] = cf:PointToObjectSpace(orb.part.CFrame.Position)
 		if orb.cell < PILE_TOP then
 			floorCount += 1
 		end
+		if orb.dumbbell then
+			g = g or pileGrid(session.plot.orbArea)
+			for _, cell in floorNeighbours(g :: PileGrid, orb.cell) do
+				blocked[cell] = true
+			end
+		end
 	end
-	return taken, floorCount
+	return taken, floorCount, blocked
 end
 
 -- Picks a free pile cell: floor cells near the focus first (with random scatter so the heap
 -- looks natural), and once the floor is crowded sometimes a hollow on top of four floor orbs.
--- Returns (cell, world landing CFrame), or nil when the pile has no room.
-local function orbLanding(session: Session): (number?, CFrame?)
+-- A `dumbbell` only takes an inner floor cell whose 8 neighbours are empty too.
+-- Returns (cell, world landing CFrame of an orb resting there), or nil when the pile has no room.
+local function orbLanding(session: Session, dumbbell: boolean?): (number?, CFrame?)
 	local plot = session.plot
 	local g = pileGrid(plot.orbArea)
 	local r = ORB_SIZE / 2
 	local restY = plot.orbFloorY + r
-	local taken, floorCount = pileTaken(session)
+	local taken, floorCount, blocked = pileTaken(session)
 
-	if floorCount >= PILE_TOP_FROM and rng:NextNumber() < PILE_TOP_CHANCE then
+	if not dumbbell and floorCount >= PILE_TOP_FROM and rng:NextNumber() < PILE_TOP_CHANCE then
 		local best: number?, bestScore, bestPos = nil, math.huge, Vector3.zero
 		for k = 1, (g.cols - 1) * (g.rows - 1) do
 			local cell = PILE_TOP + k
@@ -982,8 +1000,23 @@ local function orbLanding(session: Session): (number?, CFrame?)
 	for row = 1, g.rows do
 		for col = 1, g.cols do
 			local cell = floorCell(g, col, row)
-			if taken[cell] then
+			if taken[cell] or blocked[cell] then
 				continue
+			end
+			if dumbbell then
+				if col == 1 or col == g.cols or row == 1 or row == g.rows then
+					continue
+				end
+				local clear = true
+				for _, n in floorNeighbours(g, cell) do
+					if taken[n] then
+						clear = false
+						break
+					end
+				end
+				if not clear then
+					continue
+				end
 			end
 			local x, z = g.x0 + (col - 1) * PILE_SPACING, g.z0 + (row - 1) * PILE_SPACING
 			local score = math.sqrt((x - g.focusX) ^ 2 + (z - g.focusZ) ^ 2) + rng:NextNumber(0, PILE_SCATTER)
@@ -1026,7 +1059,19 @@ local function scheduleAuto(session: Session, orb: Orb, origin: Vector3?, route:
 	orb.due = math.max(orb.due or 0, os.clock() + OrbLook.autoCollectDelay(length, 2.5))
 end
 
-local function spawnOrb(session: Session, value: number, cell: number, target: CFrame, origin: Vector3?, route: { Vector3 }?, tier: number?)
+-- `dumbbell`: the piece lands as a dumbbell (Kind = "Dumbbell"): a cylinder along X,
+-- OrbLook.DUMBBELL_SCALE orbs long and as thick as its plates, resting on them. Its route still
+-- ends at the orb resting point `target` (clients lift the dumbbell onto its plates).
+local function spawnOrb(
+	session: Session,
+	value: number,
+	cell: number,
+	target: CFrame,
+	origin: Vector3?,
+	route: { Vector3 }?,
+	tier: number?,
+	dumbbell: boolean?
+)
 	local plot = session.plot
 	local tint = orbTint(tier)
 	local part = Instance.new("Part")
@@ -1041,6 +1086,15 @@ local function spawnOrb(session: Session, value: number, cell: number, target: C
 	part.CanQuery = false
 	part.CanTouch = false
 	part.CFrame = target
+	if dumbbell then
+		local length = ORB_SIZE * OrbLook.DUMBBELL_SCALE
+		local plate = length * OrbLook.DUMBBELL_PLATE
+		part.Name = "Dumbbell"
+		part.Shape = Enum.PartType.Cylinder
+		part.Size = Vector3.new(length, plate * 2, plate * 2)
+		part.CFrame = target + Vector3.new(0, plate - ORB_SIZE / 2, 0)
+		part:SetAttribute("Kind", "Dumbbell")
+	end
 	if origin then
 		part:SetAttribute("Origin", origin)
 	end
@@ -1053,7 +1107,7 @@ local function spawnOrb(session: Session, value: number, cell: number, target: C
 	part:SetAttribute("RestY", (plot.cframe * CFrame.new(0, plot.orbFloorY + ORB_SIZE / 2, 0)).Position.Y)
 	part:SetAttribute("Spawned", serverNow())
 	part.Parent = plot.orbFolder
-	local orb: Orb = { part = part, value = value, count = 1, cell = cell, tier = tier or 1 }
+	local orb: Orb = { part = part, value = value, count = 1, cell = cell, tier = tier or 1, dumbbell = dumbbell }
 	scheduleAuto(session, orb, origin, route)
 	table.insert(session.orbs, orb)
 end
@@ -1076,14 +1130,17 @@ local function feedOrb(session: Session, orb: Orb, value: number, origin: Vector
 	part:SetAttribute("Feed", ((part:GetAttribute("Feed") :: number?) or 0) + 1)
 end
 
--- The ball a produced orb joins once the pen is full.
-local function feedTargetOrb(session: Session, tier: number?, cap: number): Orb?
-	local candidates = session.orbs
-	local balls: { OrbLook.Ball } = table.create(#candidates)
-	for i, orb in candidates do
-		balls[i] = { tier = orb.tier, count = orb.count }
+-- The ball a produced orb joins once the pen is full. Dumbbells never take feed orbs.
+local function feedTargetOrb(session: Session, tier: number?): Orb?
+	local candidates: { Orb } = {}
+	local balls: { OrbLook.Ball } = {}
+	for _, orb in session.orbs do
+		if not orb.dumbbell then
+			table.insert(candidates, orb)
+			table.insert(balls, { tier = orb.tier, count = orb.count })
+		end
 	end
-	local index = OrbLook.feedTarget(balls, tier, math.min(cap, #balls), rng:NextNumber())
+	local index = OrbLook.feedTarget(balls, tier, #balls, rng:NextNumber())
 	return if index then candidates[index] else nil
 end
 
@@ -1096,14 +1153,32 @@ local function produceOrbs(session: Session, amount: number)
 		local value = amount / pieces
 		local origin, feet, tier = orbSource(session)
 		local cell, target = nil, nil
+		local dumbbell = false
 		if #session.orbs < OrbLook.CAP then
-			cell, target = orbLanding(session)
+			-- Now and then the piece lands as a dumbbell worth DUMBBELL_VALUE times as much
+			-- (only where it has room; otherwise it stays a plain orb).
+			if rng:NextNumber() < OrbLook.DUMBBELL_CHANCE then
+				cell, target = orbLanding(session, true)
+				dumbbell = cell ~= nil
+			end
+			if not cell then
+				cell, target = orbLanding(session)
+			end
 		end
 		if cell and target then
-			spawnOrb(session, value, cell, target, origin, orbRoute(session, feet, target.Position), tier)
+			spawnOrb(
+				session,
+				if dumbbell then value * OrbLook.DUMBBELL_VALUE else value,
+				cell,
+				target,
+				origin,
+				orbRoute(session, feet, target.Position),
+				tier,
+				dumbbell
+			)
 		else
 			-- Pen full (or no free slot): the orb joins an existing ball and its Count goes up.
-			local orb = feedTargetOrb(session, tier, #session.orbs)
+			local orb = feedTargetOrb(session, tier)
 			if orb then
 				feedOrb(session, orb, value, origin, orbRoute(session, feet, orb.part.CFrame.Position), tier)
 			end
@@ -1301,18 +1376,20 @@ local function useUnlocker(session: Session, slotIndex: number)
 	local slot = p.unlockers[slotIndex]
 	if slot.rarity ~= "" then
 		local left = slot.endsAt - os.time()
-		if left <= 0 then
+		if left <= 0 or session.passes.CrateKey then
+			-- Crate Master owners smash it right away for free.
 			local rarity = slot.rarity
 			slot.rarity = ""
 			slot.endsAt = 0
 			openChest(session, rarity, "unlocker")
-		else
-			local cost = Economy.finishGemCost(left)
+		elseif Tycoon.hooks.crateRobuxAllowed(session.player) then
 			notify(session, {
 				kind = "Confirm",
-				text = string.format("Finish now for %d %s?", cost, theme.Icons.Gem),
+				text = string.format("Smash it now for %s%d?", ROBUX, theme.Monetization.CrateOpen.Price),
 				action = { action = "FinishUnlocker", slot = slotIndex },
 			})
+		else
+			toast(session, "Ready in " .. Format.time(left) .. ". Come back when the timer ends!", "info")
 		end
 		markDirty(session)
 		return
@@ -1345,9 +1422,8 @@ padHandlers.Free = function(session)
 	end
 	local cash = math.max(Economy.FREE_REWARD_MIN, Tycoon.income(session) * Economy.FREE_REWARD_SECONDS)
 	addMoney(session, cash)
-	p.gems += Economy.FREE_REWARD_GEMS
 	p.lastFreeReward = os.time()
-	toast(session, string.format("Free reward: +%s and +%d %s", Format.money(cash), Economy.FREE_REWARD_GEMS, theme.Icons.Gem), "good")
+	toast(session, "Free reward: +" .. Format.money(cash), "good")
 	effect(session, "Cash", { amount = cash, source = "Free", padPos = padPos(session, "Free") })
 	markDirty(session)
 end
@@ -1482,7 +1558,6 @@ local function snapshot(session: Session): { [string]: any }
 	return {
 		now = now,
 		money = p.money,
-		gems = p.gems,
 		carried = p.carried,
 		queue = p.queue,
 		pending = p.pending,
@@ -1771,23 +1846,27 @@ actionHandlers.DiscardChest = function(session)
 	end
 end
 
+-- Smashes the crate in an unlocker slot early. Crate Master owners (and finished timers)
+-- open it free; everyone else is prompted the same "Open Crate" product as a held crate,
+-- and the slot is emptied only when the receipt arrives (Tycoon.openCrateProduct).
 actionHandlers.FinishUnlocker = function(session, data)
 	local slotIndex = data.slot
 	if slotIndex ~= 1 and slotIndex ~= 2 then
 		return
 	end
 	local slot = session.profile.unlockers[slotIndex]
-	if slot.rarity == "" then
+	if slot.rarity == "" or not Economy.isRarity(slot.rarity) then
 		return
 	end
-	local left = slot.endsAt - os.time()
-	if left > 0 and not spendGems(session, Economy.finishGemCost(left)) then
+	if slot.endsAt - os.time() > 0 and not session.passes.CrateKey then
+		Tycoon.hooks.promptCrate(session.player, slot.rarity, slotIndex)
 		return
 	end
 	local rarity = slot.rarity
 	slot.rarity = ""
 	slot.endsAt = 0
 	openChest(session, rarity, "unlocker")
+	markDirty(session)
 end
 
 actionHandlers.PromptPass = function(session, data)
@@ -1797,7 +1876,7 @@ actionHandlers.PromptPass = function(session, data)
 end
 
 actionHandlers.PromptProduct = function(session, data)
-	if (data.kind == "Money" or data.kind == "Gems" or data.kind == "Aura") and type(data.index) == "number" then
+	if (data.kind == "Money" or data.kind == "Aura") and type(data.index) == "number" then
 		Tycoon.hooks.promptProduct(session.player, data.kind, data.index)
 	end
 end
@@ -2007,15 +2086,13 @@ function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, pa
 	end
 
 	-- Studio-only test hook: a Server script sets the player attribute "DebugGrant" to
-	-- "cash,<n>", "gems,<n>", "units,<total>" (Tier 1..5 spread), "pass,<Name>", "crate" or "pickup".
+	-- "cash,<n>", "units,<total>" (Tier 1..5 spread), "pass,<Name>", "crate" or "pickup".
 	if RunService:IsStudio() then
 		player:GetAttributeChangedSignal("DebugGrant"):Connect(function()
 			local kind, arg = string.match(tostring(player:GetAttribute("DebugGrant")), "^(%a+),?(.*)$")
 			local n = tonumber(arg) or 0
 			if kind == "cash" then
 				Tycoon.grantMoney(session, n)
-			elseif kind == "gems" then
-				Tycoon.grantGems(session, n)
 			elseif kind == "units" then
 				local units = table.create(Economy.MAX_TIER, 0)
 				for i = 0, n - 1 do
@@ -2082,11 +2159,27 @@ function Tycoon.setPass(player: Player, name: string)
 end
 
 -- A paid instant crate open (the single "Open Crate" developer product, any rarity).
--- Opens the held crate if there is one; otherwise (dropped, discarded, rejoined) the
--- player still gets a crate of the rarity recorded when the prompt was issued
--- (profile.pendingCrate), or a Common one, so a purchase always pays out.
+-- Prompted for a smasher slot (profile.pendingUnlocker), it smashes the crate still in
+-- that slot. Otherwise it opens the held crate if there is one; failing both (dropped,
+-- discarded, timer ran out, rejoined) the player still gets a crate of the rarity
+-- recorded when the prompt was issued (profile.pendingCrate), or a Common one, so a
+-- purchase always pays out.
 function Tycoon.openCrateProduct(session: Session)
 	local p = session.profile
+	local slotIndex = p.pendingUnlocker
+	local slot = p.unlockers[slotIndex]
+	p.pendingUnlocker = 0
+	if slot then
+		-- A smasher prompt never spends the held crate: the slot's crate, else the prompted rarity.
+		local rarity = if Economy.isRarity(slot.rarity) then slot.rarity else p.pendingCrate
+		slot.rarity = ""
+		slot.endsAt = 0
+		p.pendingCrate = ""
+		openChest(session, if Economy.isRarity(rarity) then rarity else "Common", "unlocker")
+		markDirty(session)
+		flush(session)
+		return
+	end
 	local rarity = p.heldChest
 	if not Economy.isRarity(rarity) then
 		rarity = if Economy.isRarity(p.pendingCrate) then p.pendingCrate else "Common"
@@ -2108,13 +2201,6 @@ function Tycoon.grantMoney(session: Session, amount: number)
 	addMoney(session, amount)
 	local root = rootPart(session)
 	effect(session, "Cash", { amount = amount, source = "Purchase", padPos = root and root.Position })
-	markDirty(session)
-	flush(session)
-end
-
-function Tycoon.grantGems(session: Session, amount: number)
-	session.profile.gems += amount
-	toast(session, string.format("+%d %s %s", amount, theme.Words.Gem, theme.Icons.Gem), "good")
 	markDirty(session)
 	flush(session)
 end
