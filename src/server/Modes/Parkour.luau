@@ -15,7 +15,7 @@
 	  Theme.Modes.Reward (Seconds of income, at least Min, sized like a cash pack) on the
 	  first clear OF THAT LEVEL and then once per
 	  Economy.MODE_REWARD_COOLDOWN (one cooldown shared by all levels, modes.parkour.
-	  lastRewardAt); MODE_FIRST_CLEAR_GEMS Rizz on each level's first clear. After a remote
+	  lastRewardAt). After a remote
 	  finish the player is brought back to the gates (GameModes.returnLater).
 	- Leaving the level's bounds for Course.LEAVE_SECONDS ends the run ("left"); on a remote
 	  level the player goes back to the gates.
@@ -24,7 +24,7 @@
 	  { event = "start", checkpoints, startedAt, best?, level, levelName, levels, remote }
 	  { event = "checkpoint", index, checkpoints, split }        split = seconds since start
 	  { event = "respawn", index }                               back at checkpoint `index`
-	  { event = "finish", time, best, newBest, first, cash, gems, full, cooldownEnds, rank?,
+	  { event = "finish", time, best, newBest, first, cash, full, cooldownEnds, rank?,
 	    level, levelName, nextLevel?, unlockedNew, unlocked, levels }
 	  { event = "invalid", reason }                              "checkpoints" | "fast"
 	  { event = "stop", reason }                                 run ended without a finish
@@ -243,7 +243,6 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			p.totalEarned += reward.cash
 			GameModes.effect(player, "Cash", { amount = reward.cash, source = "Mode", padPos = root.Position })
 		end
-		p.gems += reward.gems
 		GameModes.effect(player, "ModeFinish", { pos = root.Position, newBest = newBest })
 		GameModes.notify(player, "finish", ID, {
 			time = time,
@@ -251,7 +250,6 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			newBest = newBest,
 			first = first,
 			cash = reward.cash,
-			gems = reward.gems,
 			full = reward.full,
 			cooldownEnds = cooldown.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 			rank = rank,
@@ -327,10 +325,10 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	function def.rewardPreview(player: Player, level: number?): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, gems = 0, full = false, packCash = 0 }
+			return { cash = 0, full = false, packCash = 0 }
 		end
 		local r = rewardFor(session, level or defaultOf(levels(session)))
-		return { cash = r.cash, gems = r.gems, full = r.full, packCash = r.packCash }
+		return { cash = r.cash, full = r.full, packCash = r.packCash }
 	end
 
 	function def.snapshot(player: Player): { [string]: any }

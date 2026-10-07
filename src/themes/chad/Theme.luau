@@ -26,7 +26,6 @@ Theme.Words = {
 	Unit = "Chad",
 	Units = "Chads",
 	Orb = "Aura",
-	Gem = "Rizz",
 	Chest = "Crate",
 	Deposit = "AURA CONVERTER",
 	Process = "Converting aura",
@@ -99,7 +98,6 @@ Theme.Loading = {
 Theme.Icons = {
 	Unit = "🗿",
 	Orb = "✨",
-	Gem = "💎",
 	Money = "$",
 	Home = "🏠",
 	Ranking = "🏆",
@@ -118,7 +116,7 @@ Theme.Icons = {
 --   Display  hero titles only (window titles, reward cards, surge banner)
 --   UI       buttons, tabs, labels, pills (uppercase)
 --   Body     descriptions and copy, sentence case
---   Number   every number: money, gems, counters, prices, timers
+--   Number   every number: money, counters, prices, timers
 Theme.Fonts = {
 	Display = Enum.Font.LuckiestGuy,
 	UI = Enum.Font.BuilderSansExtraBold,
@@ -154,7 +152,7 @@ Theme.Colors = {
 	-- Stroke is the outline used by world billboards (Theme.World.Ink); UI uses Edge.
 	Stroke = rgb(58, 48, 96),
 	-- Accents: sunny yellow is the one CTA colour (orange lip, Ink text), grape
-	-- is secondary, mint is money, sky blue is gems, orange is the surge, coral
+	-- is secondary, mint is money, sky blue is accents, orange is the surge, coral
 	-- is close/danger.
 	Gold = rgb(255, 212, 64),
 	GoldDeep = rgb(244, 150, 44),
@@ -1275,12 +1273,12 @@ Theme.Monetization = {
 			Desc = "Every cosmetic, now and later",
 			Color = rgb(255, 122, 110),
 		},
-		-- One per account: cash, Rizz and the Rookie Trail, granted once (Theme.Cosmetics.Starter).
+		-- One per account: cash and the Rookie Trail, granted once (Theme.Cosmetics.Starter).
 		StarterPack = {
 			Id = 2008886371,
 			Price = 59,
 			Title = "Starter Pack",
-			Desc = "Cash, Rizz and the Rookie Trail",
+			Desc = "A big cash boost and the Rookie Trail",
 			Color = rgb(98, 224, 160),
 		},
 	},
@@ -1311,15 +1309,14 @@ Theme.Monetization = {
 		{ Id = 3716878826, Seconds = 2700, Min = 7500 },
 		{ Id = 3716878834, Seconds = 7200, Min = 20000 },
 		{ Id = 3716878853, Seconds = 43200, Min = 125000 },
+		-- The retired Small / Big / Mega Rizz Packs (49 / 249 / 599 R$): Rizz is gone, so a
+		-- pending receipt pays cash worth about the same Robux as the cash packs above.
+		{ Id = 3716878857, Seconds = 900, Min = 2500 },
+		{ Id = 3716878861, Seconds = 4500, Min = 12500 },
+		{ Id = 3716878866, Seconds = 21600, Min = 60000 },
 	},
-	-- Rizz packs give `Base` Rizz at tier 1, growing with the buyer's highest tier
-	-- (Economy.gemPackAmount). Roblox names: Small / Big / Mega Rizz Pack.
-	GemPacks = {
-		{ Id = 3716878857, Price = 49, Base = 50 },
-		{ Id = 3716878861, Price = 249, Base = 300 },
-		{ Id = 3716878866, Price = 599, Base = 800 },
-	},
-	-- Instant crate opening: one developer product, the same price for every crate rarity.
+	-- Instant crate opening (a held crate or one still in a smasher): one developer product,
+	-- the same price for every crate rarity.
 	CrateOpen = { Id = 3716878439, Price = 30 },
 }
 
@@ -1405,8 +1402,8 @@ Theme.Cosmetics = {
 	Bundle = "AllCosmetics",
 	BundleIcon = "CosAll",
 	-- Granted once per account: `CashSeconds` of income (Economy.moneyPackAmount, at least
-	-- `CashMin`), the Rizz of GemPacks[GemPack] (Economy.gemPackAmount) and `Item`.
-	Starter = { Pass = "StarterPack", CashSeconds = 1800, CashMin = 5000, GemPack = 2, Item = "TrailRookie", Icon = "CosStarter" },
+	-- `CashMin`) and `Item`.
+	Starter = { Pass = "StarterPack", CashSeconds = 3600, CashMin = 10000, Item = "TrailRookie", Icon = "CosStarter" },
 	-- Humanoid WalkSpeed before any boost.
 	BaseWalkSpeed = 16,
 }

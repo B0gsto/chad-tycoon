@@ -5,7 +5,7 @@
 	                                      AutoCash, DoubleAura, DoubleMoney, PremiumUnlocker,
 	                                      CrateKey, StarterPack, AllCosmetics; anything else
 	                                      gets a sparkling star)
-	  ShopScenes.pack(stage, kind, index) a pack card scene: kind "Money" | "Aura" | "Gems",
+	  ShopScenes.pack(stage, kind, index) a pack card scene: kind "Money" | "Aura",
 	                                      index 1..4 (bigger = bigger pile, more particles)
 
 	Both return a Scene { play, stop, celebrate, destroy }:
@@ -1746,10 +1746,10 @@ end
 local CASH_ICONS = { "CashPack1", "CashPack3", "CashPack5", "CashPack6" }
 
 --[[
-	Animated art for one pack card: kind "Money" | "Aura" | "Gems", index 1..4 (the size
+	Animated art for one pack card: kind "Money" | "Aura", index 1..4 (the size
 	ladder: bigger index = bigger pile, more particles, stronger glow). `stage` about
 	110x110 or larger (1:1). The pile frame is 0.98 of the stage (art ~0.75); coins rain
-	in from the top edge and land on it, orbs float up out of it, gems glint.
+	in from the top edge and land on it, orbs float up out of it.
 ]]
 function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 	local i = math.clamp(math.floor(tonumber(index) or 1), 1, 4)
@@ -1758,7 +1758,7 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 	local root = ctx.root
 	local cx, cy = 0.5, 0.52
 
-	local glowColor = if kind == "Aura" then C.Violet elseif kind == "Gems" then C.Rizz else WC.Sunny
+	local glowColor = if kind == "Aura" then C.Violet else WC.Sunny
 	local glowAlpha = 0.66 - 0.09 * i
 	local glowSize = 0.9 + 0.1 * i
 	local glow = sprite(root, "SoftDot", glowColor, { Size = sq(ctx, glowSize), Position = at(cx, cy), ZIndex = 1 })
@@ -1793,16 +1793,13 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 				})
 			end
 		end
-	elseif kind == "Gems" then
-		hero = icon(holder, { "GemPack" .. math.min(i, 3), "Gem" }, C.Rizz, { ZIndex = 3 })
-		shade(hero)
 	else
 		hero = icon(holder, { CASH_ICONS[i], "Coin" }, C.Gold, { ZIndex = 3 })
 		shade(hero)
 	end
 
 	-- Particles: coins raining onto the pile (Money), orbs floating up out of it (Aura);
-	-- sparkles glint where a coin lands / an orb pops, and all over the pile (Gems).
+	-- sparkles glint where a coin lands / an orb pops.
 	local flyers: { GuiObject } = {}
 	if kind == "Money" then
 		for k = 1, i + 1 do
@@ -1814,9 +1811,8 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 		end
 	end
 	local flyerPool = pool(ctx, flyers)
-	local sparkleCount = if kind == "Gems" then math.min(2 + i, 5) else 2
 	local sparkles: { GuiObject } = {}
-	for k = 1, sparkleCount do
+	for k = 1, 2 do
 		sparkles[k] = sprite(root, "Sparkle", if k % 2 == 0 then WC.Butter else WHITE, { Size = ZERO, ZIndex = 6, Visible = false })
 	end
 
@@ -1870,17 +1866,6 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 			end)
 		end
 	end
-	local gemTurn = 0
-	local function gemGlint()
-		local angle = math.random() * math.pi * 2
-		local radius = 0.08 + math.random() * 0.16
-		glint(cx + math.cos(angle) * radius, cy - 0.04 + math.sin(angle) * radius, 0.2 + 0.03 * i)
-		gemTurn += 1
-		if gemTurn % 3 == 0 then
-			flash(ctx, glow, math.max(glowAlpha - 0.3, 0), glowAlpha, 0.4)
-		end
-	end
-
 	onPlay(ctx, function()
 		tw(ctx, holderScale, 1.2, { Scale = 1.035 }, SINE, INOUT, -1, true)
 		tw(ctx, glow, 1.0, { Size = sq(ctx, glowSize * 1.12) }, SINE, INOUT, -1, true)
@@ -1888,12 +1873,6 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 			loop(ctx, function(nap)
 				launch()
 				nap(if kind == "Money" then 0.75 - 0.12 * i else 0.85 - 0.13 * i)
-			end, math.random() * 0.4)
-		end
-		if kind == "Gems" then
-			loop(ctx, function(nap)
-				gemGlint()
-				nap(0.5 - 0.07 * i)
 			end, math.random() * 0.4)
 		end
 	end)
@@ -1924,11 +1903,6 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 		flash(ctx, glow, 0, glowAlpha, 0.8)
 		for k = 1, #flyers do
 			later(ctx, (k - 1) * 0.05, launch)
-		end
-		if kind == "Gems" then
-			for k = 1, 3 do
-				later(ctx, (k - 1) * 0.08, gemGlint)
-			end
 		end
 		burst(ctx, cx, cy, 5, 10, 0.45)
 	end)

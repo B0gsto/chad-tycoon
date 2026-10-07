@@ -835,10 +835,9 @@ local function main()
 	end
 
 	-- Profiles at different stages of progress.
-	local function profileFor(highest: number, money: number, gems: number)
+	local function profileFor(highest: number, money: number)
 		local p = DataService.defaultProfile()
 		p.money = money
-		p.gems = gems
 		p.units[1] = 0
 		for tier = 1, highest do
 			-- More copies of the lower tiers, a few of the top ones.
@@ -877,9 +876,9 @@ local function main()
 	end
 
 	local profiles = {
-		profileFor(if variant == "chad" then 14 else 13, 3.47e6, 240),
-		profileFor(9, 48200, 35),
-		profileFor(17, 6.1e8, 610),
+		profileFor(if variant == "chad" then 14 else 13, 3.47e6),
+		profileFor(9, 48200),
+		profileFor(17, 6.1e8),
 		freshProfile(),
 	}
 
@@ -1149,8 +1148,6 @@ local function main()
 
 	clearTransient()
 	Windows.open("Shop")
-	Windows.selectShopTab("Gems")
-	shot("shop_gems")
 	Windows.selectShopTab("Cash")
 	shot("shop_cash")
 	Windows.selectShopTab("Aura")
@@ -1193,7 +1190,7 @@ local function main()
 
 	clearTransient()
 	settle(stateNormal)
-	Popups.reward({ tier = 15, new = true, gems = 15 })
+	Popups.reward({ tier = 15, new = true })
 	shot("reward")
 
 	clearTransient()
@@ -1217,7 +1214,7 @@ local function main()
 	stateDone.tutorialDone = true
 	stateDone.tutorialStep = 6
 	settle(stateDone)
-	TutorialUI.onNotify({ kind = "Tutorial", event = "done", gems = 25, cash = 250 })
+	TutorialUI.onNotify({ kind = "Tutorial", event = "done", cash = 250 })
 	shot("tutorial_done")
 	Kit.setGlow(Hud.buttons.Index, false)
 	localIndex = 1
@@ -1229,7 +1226,7 @@ local function main()
 	Popups.starterOffer()
 	shot("starter_offer")
 	clearTransient()
-	Popups.starter({ kind = "Starter", cash = 25000, gems = 300, item = "TrailRookie" })
+	Popups.starter({ kind = "Starter", cash = 25000, item = "TrailRookie" })
 	shot("starter_done")
 
 	-- Loading screen (ReplicatedFirst) on its own ScreenGui.

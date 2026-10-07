@@ -8554,24 +8554,13 @@ function Economy.unlockSeconds(rarity: string, premium: boolean): number
 	return seconds
 end
 
--- Gems to finish an unlocker immediately: one per started minute.
-function Economy.finishGemCost(secondsLeft: number): number
-	return math.max(1, math.ceil(secondsLeft / 60))
-end
-
 -- Rewards ---------------------------------------------------------------------
 
-function Economy.discoveryGems(tier: number): number
-	return tier
-end
-
 Economy.FREE_REWARD_COOLDOWN = 600
-Economy.FREE_REWARD_GEMS = 3
 Economy.FREE_REWARD_SECONDS = 120
 Economy.FREE_REWARD_MIN = 100
 
 -- One-time reward for finishing the onboarding tutorial.
-Economy.TUTORIAL_REWARD_GEMS = 25
 Economy.TUTORIAL_REWARD_CASH = 25
 
 Economy.OFFLINE_CAP_SECONDS = 8 * 3600
@@ -8628,41 +8617,17 @@ function Economy.auraPackAmount(production: number, seconds: number, minimum: nu
 	return math.max(minimum, math.floor(perSecond * seconds))
 end
 
--- Rizz packs multiply their base amount by this: x1 at tier 1 rising smoothly to x4 at
--- the top tier. Crate timers (and so finishGemCost) do not grow with tier, so a
--- late-game Rizz buys the same skips as an early one; x4 keeps the biggest pack at about
--- 15 hours of skipping every crate that spawns instead of days.
-Economy.GEM_PACK_MAX_FACTOR = 4
-Economy.GEM_PACK_CURVE = 1.25
-
-function Economy.gemPackFactor(progression: Progression): number
-	local t = (progression.tier - 1) / (Economy.MAX_TIER - 1)
-	return 1 + (Economy.GEM_PACK_MAX_FACTOR - 1) * t ^ Economy.GEM_PACK_CURVE
-end
-
--- Rounds to friendly shop numbers: nearest 5 below 500, nearest 50 from there.
-local function friendly(amount: number): number
-	local step = if amount < 500 then 5 else 50
-	return math.max(step, math.floor(amount / step + 0.5) * step)
-end
-
-function Economy.gemPackAmount(base: number, progression: Progression): number
-	return math.max(base, friendly(base * Economy.gemPackFactor(progression)))
-end
-
 -- Game modes (Parkour) ------------------------------------------------------------
 
 -- Finishing a mode pays a cash pack's worth sized like the shop's (moneyPackAmount with the
 -- mode's own seconds and minimum, Theme.Modes): on the first finish ever and then
 -- at most once per MODE_REWARD_COOLDOWN. Players may run again straight away, but finishes
--- inside the cooldown pay no cash. The first finish ever also pays Rizz.
+-- inside the cooldown pay no cash.
 Economy.MODE_REWARD_COOLDOWN = 1800
-Economy.MODE_FIRST_CLEAR_GEMS = 25
 
 export type ModeReward = {
 	-- Cash this finish pays (packCash when `full`, else 0).
 	cash: number,
-	gems: number,
 	full: boolean,
 	packCash: number,
 }
@@ -8680,7 +8645,6 @@ function Economy.modeReward(
 	local full = firstClear or now >= lastFullAt + Economy.MODE_REWARD_COOLDOWN
 	return {
 		cash = if full then packCash else 0,
-		gems = if firstClear then Economy.MODE_FIRST_CLEAR_GEMS else 0,
 		full = full,
 		packCash = packCash,
 	}
@@ -8909,6 +8873,9 @@ return Net
 --     tierIndex(tier, n) picks one of the n Theme.OrbColors, cycling so neighbouring tiers differ.
 --   * feedTarget(balls, tier, cap, roll): the pen fill rule. Below the cap every produced orb is
 --     a new ball; at the cap it joins an existing ball (same tier first, then the lowest count).
+--   * Dumbbells: about one produced piece in DUMBBELL_CHANCE lands as a tier-tinted dumbbell
+--     instead of a ball, DUMBBELL_SCALE times an orb's size and worth DUMBBELL_VALUE times the
+--     piece. It never joins or is fed by other balls and keeps the floor cells around it clear.
 --   * tagRGB(r, g, b): text colour of a ball's "xN" tag (a lightened ball colour, white if pale).
 --   * travelTime(length, queue): a conservative upper bound of how long the client's roll-in
 --     animation takes for a route of `length` studs (hop + fall + gutter/chute roll that
@@ -8918,6 +8885,11 @@ local OrbLook = {}
 
 OrbLook.CAP = 64 -- balls a pen holds before new orbs count up existing balls
 OrbLook.SETTLE = 1.2 -- seconds an orb rests in the pen before Auto Aura collects it
+
+OrbLook.DUMBBELL_CHANCE = 1 / 25 -- share of produced pieces that land as a dumbbell
+OrbLook.DUMBBELL_VALUE = 10 -- a dumbbell is worth this many times the piece it replaces
+OrbLook.DUMBBELL_SCALE = 2 -- its length, in orb diameters
+OrbLook.DUMBBELL_PLATE = 0.31 -- radius of its big plates (its resting height), in dumbbell lengths
 
 -- Palette slot (1..n) for orbs produced by a unit of `tier` (tier 1 = slot 1).
 function OrbLook.tierIndex(tier: number?, n: number): number
@@ -10492,7 +10464,6 @@ Theme.Words = {
 	Unit = "Chad",
 	Units = "Chads",
 	Orb = "Aura",
-	Gem = "Rizz",
 	Chest = "Crate",
 	Deposit = "AURA CONVERTER",
 	Process = "Converting aura",
@@ -10565,7 +10536,6 @@ Theme.Loading = {
 Theme.Icons = {
 	Unit = "🗿",
 	Orb = "✨",
-	Gem = "💎",
 	Money = "$",
 	Home = "🏠",
 	Ranking = "🏆",
@@ -10584,7 +10554,7 @@ Theme.Icons = {
 --   Display  hero titles only (window titles, reward cards, surge banner)
 --   UI       buttons, tabs, labels, pills (uppercase)
 --   Body     descriptions and copy, sentence case
---   Number   every number: money, gems, counters, prices, timers
+--   Number   every number: money, counters, prices, timers
 Theme.Fonts = {
 	Display = Enum.Font.LuckiestGuy,
 	UI = Enum.Font.BuilderSansExtraBold,
@@ -10620,7 +10590,7 @@ Theme.Colors = {
 	-- Stroke is the outline used by world billboards (Theme.World.Ink); UI uses Edge.
 	Stroke = rgb(58, 48, 96),
 	-- Accents: sunny yellow is the one CTA colour (orange lip, Ink text), grape
-	-- is secondary, mint is money, sky blue is gems, orange is the surge, coral
+	-- is secondary, mint is money, sky blue is accents, orange is the surge, coral
 	-- is close/danger.
 	Gold = rgb(255, 212, 64),
 	GoldDeep = rgb(244, 150, 44),
@@ -11741,12 +11711,12 @@ Theme.Monetization = {
 			Desc = "Every cosmetic, now and later",
 			Color = rgb(255, 122, 110),
 		},
-		-- One per account: cash, Rizz and the Rookie Trail, granted once (Theme.Cosmetics.Starter).
+		-- One per account: cash and the Rookie Trail, granted once (Theme.Cosmetics.Starter).
 		StarterPack = {
 			Id = 2008886371,
 			Price = 59,
 			Title = "Starter Pack",
-			Desc = "Cash, Rizz and the Rookie Trail",
+			Desc = "A big cash boost and the Rookie Trail",
 			Color = rgb(98, 224, 160),
 		},
 	},
@@ -11777,15 +11747,14 @@ Theme.Monetization = {
 		{ Id = 3716878826, Seconds = 2700, Min = 7500 },
 		{ Id = 3716878834, Seconds = 7200, Min = 20000 },
 		{ Id = 3716878853, Seconds = 43200, Min = 125000 },
+		-- The retired Small / Big / Mega Rizz Packs (49 / 249 / 599 R$): Rizz is gone, so a
+		-- pending receipt pays cash worth about the same Robux as the cash packs above.
+		{ Id = 3716878857, Seconds = 900, Min = 2500 },
+		{ Id = 3716878861, Seconds = 4500, Min = 12500 },
+		{ Id = 3716878866, Seconds = 21600, Min = 60000 },
 	},
-	-- Rizz packs give `Base` Rizz at tier 1, growing with the buyer's highest tier
-	-- (Economy.gemPackAmount). Roblox names: Small / Big / Mega Rizz Pack.
-	GemPacks = {
-		{ Id = 3716878857, Price = 49, Base = 50 },
-		{ Id = 3716878861, Price = 249, Base = 300 },
-		{ Id = 3716878866, Price = 599, Base = 800 },
-	},
-	-- Instant crate opening: one developer product, the same price for every crate rarity.
+	-- Instant crate opening (a held crate or one still in a smasher): one developer product,
+	-- the same price for every crate rarity.
 	CrateOpen = { Id = 3716878439, Price = 30 },
 }
 
@@ -11871,8 +11840,8 @@ Theme.Cosmetics = {
 	Bundle = "AllCosmetics",
 	BundleIcon = "CosAll",
 	-- Granted once per account: `CashSeconds` of income (Economy.moneyPackAmount, at least
-	-- `CashMin`), the Rizz of GemPacks[GemPack] (Economy.gemPackAmount) and `Item`.
-	Starter = { Pass = "StarterPack", CashSeconds = 1800, CashMin = 5000, GemPack = 2, Item = "TrailRookie", Icon = "CosStarter" },
+	-- `CashMin`) and `Item`.
+	Starter = { Pass = "StarterPack", CashSeconds = 3600, CashMin = 10000, Item = "TrailRookie", Icon = "CosStarter" },
 	-- Humanoid WalkSpeed before any boost.
 	BaseWalkSpeed = 16,
 }
@@ -12124,7 +12093,7 @@ return Badges
 
 	Saved in profile.cosmetics: the equipped trail ("" = none) and the on/off switch of
 	each toggle item (perk / wear; missing = on). profile.starterGranted marks the
-	Starter pack's one-time cash + Rizz as given.
+	Starter pack's one-time cash as given.
 
 	On every character (and whenever ownership or equipment changes) the server puts
 	the visible pieces on the character so everyone sees them: Humanoid.WalkSpeed, the
@@ -12262,13 +12231,10 @@ function Cosmetics.claimStarter(t: any, profile: any, passes: { [string]: boolea
 	return true
 end
 
--- The Starter pack's cash and Rizz for a player at `income` cash/s and `progression`.
-function Cosmetics.starterAmounts(t: any, income: number, progression: Economy.Progression): (number, number)
+-- The Starter pack's cash for a player at `income` cash/s and `progression`.
+function Cosmetics.starterCash(t: any, income: number, progression: Economy.Progression): number
 	local starter = t.Cosmetics.Starter
-	local cash = Economy.moneyPackAmount(income, starter.CashSeconds, starter.CashMin, progression)
-	local pack = t.Monetization.GemPacks[starter.GemPack]
-	local gems = Economy.gemPackAmount(pack.Base, progression)
-	return cash, gems
+	return Economy.moneyPackAmount(income, starter.CashSeconds, starter.CashMin, progression)
 end
 
 -- The State snapshot's `cosmetics` field.
@@ -12617,9 +12583,8 @@ local function grantStarter(session: Session, delayNotify: boolean)
 		return
 	end
 	local progression = Economy.progression(Economy.highestTier(profile.discovered), profile.processLevel)
-	local cash, gems = Cosmetics.starterAmounts(theme, Tycoon.income(session), progression)
+	local cash = Cosmetics.starterCash(theme, Tycoon.income(session), progression)
 	local starter = theme.Cosmetics.Starter
-	profile.gems += gems
 	Tycoon.grantMoney(session, cash)
 	if profile.cosmetics.trail == "" then
 		profile.cosmetics.trail = starter.Item
@@ -12629,7 +12594,7 @@ local function grantStarter(session: Session, delayNotify: boolean)
 	if session.canSave then
 		task.spawn(DataService.save, session.player, profile)
 	end
-	local payload = { kind = "Starter", cash = cash, gems = gems, item = starter.Item }
+	local payload = { kind = "Starter", cash = cash, item = starter.Item }
 	if delayNotify then
 		task.delay(STARTER_NOTIFY_DELAY, function()
 			if session.alive then
@@ -12783,7 +12748,6 @@ export type Unlocker = { rarity: string, endsAt: number }
 export type Profile = {
 	version: number,
 	money: number,
-	gems: number,
 	carried: number,
 	queue: number,
 	pending: number,
@@ -12797,6 +12761,9 @@ export type Profile = {
 	-- Rarity of the crate the player was last prompted to open with Robux ("" = none);
 	-- the receipt opens this one if the crate is no longer held.
 	pendingCrate: string,
+	-- Smasher slot (1 or 2) that Robux prompt was for (0 = the held crate): the receipt
+	-- opens the crate still in that slot.
+	pendingUnlocker: number,
 	unlockers: { Unlocker },
 	autoMergeOwned: boolean,
 	autoMerge: boolean,
@@ -12810,7 +12777,7 @@ export type Profile = {
 	introSeen: boolean,
 	-- Equipped trail ("" = none) and on/off switches of the toggle cosmetics (missing = on).
 	cosmetics: { trail: string, toggles: { [string]: boolean } },
-	-- The Starter pack's one-time cash, Rizz and trail have been given.
+	-- The Starter pack's one-time cash and trail have been given.
 	starterGranted: boolean,
 	-- Highest onboarding funnel step logged (Analytics; ONBOARDING_LEGACY = saves from before it).
 	onboarding: number,
@@ -12853,7 +12820,6 @@ function DataService.defaultProfile(): Profile
 	return {
 		version = 1,
 		money = 50,
-		gems = 10,
 		carried = 0,
 		queue = 0,
 		pending = 0,
@@ -12865,6 +12831,7 @@ function DataService.defaultProfile(): Profile
 		processLevel = 0,
 		heldChest = "",
 		pendingCrate = "",
+		pendingUnlocker = 0,
 		unlockers = {
 			{ rarity = "", endsAt = 0 },
 			{ rarity = "", endsAt = 0 },
@@ -12917,6 +12884,8 @@ local function reconcile(data: any): Profile
 	if data.introSeen == nil then
 		data.introSeen = true
 	end
+	-- Rizz (gems) was removed from the game: old balances are dropped.
+	data.gems = nil
 	-- Saves from before the onboarding funnel: those players are not new, so they never log it.
 	if data.onboarding == nil then
 		data.onboarding = 99
@@ -12997,6 +12966,9 @@ local function reconcile(data: any): Profile
 	end
 	if data.pendingCrate ~= "" and not Economy.isRarity(data.pendingCrate) then
 		data.pendingCrate = ""
+	end
+	if data.pendingUnlocker ~= 1 and data.pendingUnlocker ~= 2 then
+		data.pendingUnlocker = 0
 	end
 	return data :: Profile
 end
@@ -13143,7 +13115,7 @@ return DataService
 	  tick(player, root, now)  every TICK seconds for every player with a character
 	                           (position polling: start lines, checkpoints, falls)
 	  snapshot(player)         the State snapshot's modes[id] table
-	  rewardPreview(player)    what finishing right now would pay ({ cash, gems, ... })
+	  rewardPreview(player)    what finishing right now would pay ({ cash, full, ... })
 
 	Every implementation's create() receives (GameModes, context) with context = { built =
 	World.Modes' Built, theme, Tycoon, world = WorldBuilder's whole result }.
@@ -13195,7 +13167,7 @@ local order: { string } = {}
 local Tycoon: any
 
 -- Reward hooks: `reward` may change a reward before it is paid (events, boosts);
--- `rewarded` is told after it was paid. reward = { cash, gems, full, packCash }.
+-- `rewarded` is told after it was paid. reward = { cash, full, packCash }.
 GameModes.hooks = {
 	reward = function(_session: any, _modeId: string, reward: { [string]: any }): { [string]: any }
 		return reward
@@ -14520,8 +14492,8 @@ return Course
 	  { event = "check", id, n, appearAt, speed, dir, zoneStart, zoneSize, perfectSize,
 	    duration }                                   sent `lead` seconds before appearAt
 	  { event = "result", id, result, reason?, travel?, score, combo, lives, rivalHp, rivalMax }
-	  { event = "rival", mogged, rival, rivals, passed, cash?, gems?, full? }
-	  { event = "finish", score, rivals, best, newBest, passed, cash, gems, full,
+	  { event = "rival", mogged, rival, rivals, passed, cash?, full? }
+	  { event = "finish", score, rivals, best, newBest, passed, cash, full,
 	    cooldownEnds, rank? }
 	  { event = "stop", reason }                     ended without a finish ("full" = no free spot,
 	                                                 "noOpponent" = queue timed out, "cancel")
@@ -14534,7 +14506,7 @@ return Course
 	  { event = "round", vs, id, you = { result, hp, maxHp, combo, score },
 	    opp = { result, hp, maxHp }, suddenDeath? }
 	  { event = "finish", vs, won, reason ("ko" | "forfeit"), opponent = { userId, name }, score,
-	    wins, played, cash, gems, full, cooldownEnds }
+	    wins, played, cash, full, cooldownEnds }
 	Rival info: { index, name, tier, hp, maxHp } (tier = Theme.Tiers index the client dresses).
 	Effects: the usual "Cash" { amount, source = "Mode", padPos } when the pass pays cash.
 ]]
@@ -14794,7 +14766,6 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 				padPos = if root then root.Position else padPos,
 			})
 		end
-		p.gems += reward.gems
 		GameModes.hooks.rewarded(session, ID, reward)
 		Tycoon.markDirty(session)
 		return reward
@@ -14832,7 +14803,6 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			newBest = newBest,
 			passed = run.passed,
 			cash = if reward then reward.cash else 0,
-			gems = if reward then reward.gems else 0,
 			full = if reward then reward.full else false,
 			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 			rank = rank,
@@ -14872,7 +14842,6 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			if outcome.passed then
 				local reward = payPass(player, state)
 				payload.cash = if reward then reward.cash else 0
-				payload.gems = if reward then reward.gems else 0
 				payload.full = if reward then reward.full else false
 			end
 			GameModes.notify(player, "rival", ID, payload)
@@ -15032,7 +15001,6 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 					wins = rec.pvpWins,
 					played = rec.pvpPlayed,
 					cash = if reward then reward.cash else 0,
-					gems = if reward then reward.gems else 0,
 					full = if reward then reward.full else false,
 					cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 				})
@@ -15361,10 +15329,10 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 	function def.rewardPreview(player: Player): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, gems = 0, full = false, packCash = 0 }
+			return { cash = 0, full = false, packCash = 0 }
 		end
 		local r = rewardFor(session)
-		return { cash = r.cash, gems = r.gems, full = r.full, packCash = r.packCash }
+		return { cash = r.cash, full = r.full, packCash = r.packCash }
 	end
 
 	function def.snapshot(player: Player): { [string]: any }
@@ -15827,7 +15795,7 @@ return MogRules
 	  Theme.Modes.Reward (Seconds of income, at least Min, sized like a cash pack) on the
 	  first clear OF THAT LEVEL and then once per
 	  Economy.MODE_REWARD_COOLDOWN (one cooldown shared by all levels, modes.parkour.
-	  lastRewardAt); MODE_FIRST_CLEAR_GEMS Rizz on each level's first clear. After a remote
+	  lastRewardAt). After a remote
 	  finish the player is brought back to the gates (GameModes.returnLater).
 	- Leaving the level's bounds for Course.LEAVE_SECONDS ends the run ("left"); on a remote
 	  level the player goes back to the gates.
@@ -15836,7 +15804,7 @@ return MogRules
 	  { event = "start", checkpoints, startedAt, best?, level, levelName, levels, remote }
 	  { event = "checkpoint", index, checkpoints, split }        split = seconds since start
 	  { event = "respawn", index }                               back at checkpoint `index`
-	  { event = "finish", time, best, newBest, first, cash, gems, full, cooldownEnds, rank?,
+	  { event = "finish", time, best, newBest, first, cash, full, cooldownEnds, rank?,
 	    level, levelName, nextLevel?, unlockedNew, unlocked, levels }
 	  { event = "invalid", reason }                              "checkpoints" | "fast"
 	  { event = "stop", reason }                                 run ended without a finish
@@ -16055,7 +16023,6 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			p.totalEarned += reward.cash
 			GameModes.effect(player, "Cash", { amount = reward.cash, source = "Mode", padPos = root.Position })
 		end
-		p.gems += reward.gems
 		GameModes.effect(player, "ModeFinish", { pos = root.Position, newBest = newBest })
 		GameModes.notify(player, "finish", ID, {
 			time = time,
@@ -16063,7 +16030,6 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			newBest = newBest,
 			first = first,
 			cash = reward.cash,
-			gems = reward.gems,
 			full = reward.full,
 			cooldownEnds = cooldown.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 			rank = rank,
@@ -16139,10 +16105,10 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	function def.rewardPreview(player: Player, level: number?): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, gems = 0, full = false, packCash = 0 }
+			return { cash = 0, full = false, packCash = 0 }
 		end
 		local r = rewardFor(session, level or defaultOf(levels(session)))
-		return { cash = r.cash, gems = r.gems, full = r.full, packCash = r.packCash }
+		return { cash = r.cash, full = r.full, packCash = r.packCash }
 	end
 
 	function def.snapshot(player: Player): { [string]: any }
@@ -16304,7 +16270,7 @@ return Rules
           <string name="Source"><![CDATA[--[[
 	Monetization: game passes and developer products.
 
-	Developer products: cash packs (Theme.Monetization.MoneyPacks), Rizz packs (GemPacks),
+	Developer products: cash packs (Theme.Monetization.MoneyPacks),
 	aura packs (AuraPacks: aura straight into the tank, Tycoon.grantAura) and the instant
 	crate open. Pack amounts follow the buyer's progression (Shared.Economy).
 
@@ -16313,8 +16279,9 @@ return Rules
 	  - on a live server, the player is told it is coming soon.
 
 	Instant crate opening is one developer product for every crate rarity
-	(Theme.Monetization.CrateOpen); the prompted crate's rarity is recorded in
-	profile.pendingCrate so the receipt can pay out even if the crate is gone.
+	(Theme.Monetization.CrateOpen), for the held crate or one still in a smasher; the
+	prompted crate's rarity (and smasher slot) is recorded in profile.pendingCrate
+	(pendingUnlocker) so the receipt can pay out even if the crate is gone.
 	Crates are paid random items, so the product is only offered where PolicyService
 	allows them (unknown or failed lookup = not allowed). The Crate Master pass
 	(Passes.CrateKey) opens every crate free; Tycoon handles that without a prompt.
@@ -16364,8 +16331,6 @@ end
 local function productList(kind: string): { any }?
 	if kind == "Money" then
 		return theme.Monetization.MoneyPacks
-	elseif kind == "Gems" then
-		return theme.Monetization.GemPacks
 	elseif kind == "Aura" then
 		return theme.Monetization.AuraPacks
 	elseif kind == "LegacyMoney" then
@@ -16403,9 +16368,6 @@ local function grantProduct(session: Tycoon.Session, kind: string, index: number
 		local pack = (productList(kind) :: { any })[index]
 		local amount = Economy.moneyPackAmount(Tycoon.income(session), pack.Seconds, pack.Min, progression)
 		Tycoon.grantMoney(session, amount)
-	elseif kind == "Gems" then
-		local pack = theme.Monetization.GemPacks[index]
-		Tycoon.grantGems(session, Economy.gemPackAmount(pack.Base, progression))
 	elseif kind == "Aura" then
 		local pack = theme.Monetization.AuraPacks[index]
 		local amount = Economy.auraPackAmount(Tycoon.production(session), pack.Seconds, pack.Min, progression)
@@ -16413,19 +16375,25 @@ local function grantProduct(session: Tycoon.Session, kind: string, index: number
 	end
 end
 
--- Instant crate open for a held crate of `rarity` (see Tycoon.openCrateProduct).
-function Monetization.promptCrate(player: Player, rarity: string)
+-- Instant crate open for a held crate of `rarity`, or for the crate in smasher `slot`
+-- (see Tycoon.openCrateProduct).
+function Monetization.promptCrate(player: Player, rarity: string, slot: number?)
 	local session = Tycoon.getSession(player)
 	local product = theme.Monetization.CrateOpen
 	if not session or not Economy.isRarity(rarity) then
 		return
 	end
 	if not Monetization.crateRobuxAllowed(player) then
-		Tycoon.toast(session, "Carry it to a " .. theme.Words.Unlocker .. " to open it free!", "info")
+		if slot then
+			Tycoon.toast(session, "Come back when the timer ends!", "info")
+		else
+			Tycoon.toast(session, "Carry it to a " .. theme.Words.Unlocker .. " to open it free!", "info")
+		end
 		return
 	end
 	-- The product is the same for every rarity: remember which crate this prompt is for.
 	session.profile.pendingCrate = rarity
+	session.profile.pendingUnlocker = slot or 0
 	if product.Id == 0 then
 		if RunService:IsStudio() then
 			Tycoon.openCrateProduct(session)
@@ -16496,7 +16464,7 @@ end
 
 -- (kind, index) of a pack, or ("Crate", true) for the crate product.
 local function findProduct(productId: number): (string?, any)
-	for _, kind in { "Money", "Gems", "Aura", "LegacyMoney" } do
+	for _, kind in { "Money", "Aura", "LegacyMoney" } do
 		for index, product in productList(kind) :: { any } do
 			if product.Id ~= 0 and product.Id == productId then
 				return kind, index
@@ -16542,7 +16510,8 @@ local function processReceipt(receipt: any): Enum.ProductPurchaseDecision
 	-- that only re-attempts the save, so the player is never paid twice.
 	-- A crate product always pays out, even if the crate was dropped or the
 	-- player rejoined (no session = NotProcessedYet above, retried on rejoin):
-	-- the held crate, else the saved pendingCrate rarity, else a Common crate.
+	-- the prompted smasher's crate, else the held crate, else the saved pendingCrate
+	-- rarity, else a Common crate.
 	if kind == "Crate" then
 		Tycoon.openCrateProduct(session)
 	else
@@ -17276,7 +17245,7 @@ return Ranking
 
 	Notify payloads (client shows them):
 	  { kind = "Tutorial", event = "step", step = n }
-	  { kind = "Tutorial", event = "done", gems = g, cash = c }
+	  { kind = "Tutorial", event = "done", cash = c }
 	  { kind = "Tutorial", event = "skipped" }
 ]]
 
@@ -17304,11 +17273,10 @@ local function finish(session: Tycoon.Session)
 	local p = session.profile
 	p.tutorialStep = TutorialSteps.DONE
 	p.tutorialDone = true
-	p.gems += Economy.TUTORIAL_REWARD_GEMS
 	p.money += Economy.TUTORIAL_REWARD_CASH
 	p.totalEarned += Economy.TUTORIAL_REWARD_CASH
 	Badges.graduate(session)
-	notify(session, { event = "done", gems = Economy.TUTORIAL_REWARD_GEMS, cash = Economy.TUTORIAL_REWARD_CASH })
+	notify(session, { event = "done", cash = Economy.TUTORIAL_REWARD_CASH })
 end
 
 -- Moves to `step`, skipping anything the profile already shows as done.
@@ -17414,11 +17382,15 @@ local Shelves = require(script.Parent.World.Shelves)
 local Props = require(script.Parent.World.Props)
 
 type Profile = any
+
+-- Roblox's built-in Robux glyph, for prices in server-made messages.
+local ROBUX = utf8.char(0xE002)
 type Plot = WorldBuilder.Plot
 
 -- `cell` is the pile slot the orb rests in (see orbCells): 1..n on the floor, PILE_TOP + k on top.
 -- `due`: Auto Aura collects the orb at this os.clock() (after its roll-in lands and rests).
-type Orb = { part: BasePart, value: number, count: number, cell: number, tier: number, due: number? }
+-- `dumbbell`: a rare prize piece (OrbLook.DUMBBELL_*) that is never fed and blocks the cells around it.
+type Orb = { part: BasePart, value: number, count: number, cell: number, tier: number, due: number?, dumbbell: boolean? }
 -- `landsAt`: os.clock() by which the client's arrival has landed (CratePickup.landTime);
 -- `blocked`: in range when the last held crate was released, until the player leaves its range.
 type FloorChest = { model: Model, rarity: string, position: Vector3, landsAt: number, blocked: boolean }
@@ -17498,7 +17470,7 @@ local ActionRemote: RemoteEvent
 Tycoon.hooks = {
 	promptPass = function(_player: Player, _name: string) end,
 	promptProduct = function(_player: Player, _kind: string, _index: number) end,
-	promptCrate = function(_player: Player, _rarity: string) end,
+	promptCrate = function(_player: Player, _rarity: string, _slot: number?) end,
 	-- May this player buy instant crate opens (paid random items)? Monetization
 	-- answers from PolicyService; this default only serves previews and tests.
 	crateRobuxAllowed = function(_player: Player): boolean
@@ -17633,15 +17605,6 @@ local function spend(session: Session, cost: number, padName: string?): boolean
 		return false
 	end
 	session.profile.money = math.max(0, session.profile.money - cost)
-	return true
-end
-
-local function spendGems(session: Session, cost: number): boolean
-	if session.profile.gems < cost then
-		toast(session, string.format("Not enough %s! Need %d %s", theme.Words.Gem, cost, theme.Icons.Gem), "bad")
-		return false
-	end
-	session.profile.gems -= cost
 	return true
 end
 
@@ -17901,12 +17864,10 @@ end
 local function discoverAll(session: Session, extra: { number }?)
 	local p = session.profile
 	local newest = 0
-	local gems = 0
 	local found: { number } = {}
 	local function mark(tier: number)
 		if tier >= 1 and tier <= Economy.MAX_TIER and p.discovered[tier] == 0 then
 			p.discovered[tier] = os.time()
-			gems += Economy.discoveryGems(tier)
 			newest = math.max(newest, tier)
 			table.insert(found, tier)
 		end
@@ -17920,9 +17881,8 @@ local function discoverAll(session: Session, extra: { number }?)
 		end
 	end
 	if newest > 0 then
-		p.gems += gems
 		table.sort(found)
-		notify(session, { kind = "Reward", tier = newest, tiers = found, new = true, gems = gems })
+		notify(session, { kind = "Reward", tier = newest, tiers = found, new = true })
 	end
 end
 
@@ -18311,31 +18271,57 @@ local function topSupports(g: PileGrid, cell: number): (number, number, number, 
 	return floorCell(g, col, row), floorCell(g, col + 1, row), floorCell(g, col, row + 1), floorCell(g, col + 1, row + 1)
 end
 
--- Plot-local centres of the occupied pile cells, and how many orbs sit on the floor.
-local function pileTaken(session: Session): ({ [number]: Vector3 }, number)
+-- The floor cells around a floor cell (up to 8; fewer at the grid's edge).
+local function floorNeighbours(g: PileGrid, cell: number): { number }
+	local col, row = (cell - 1) % g.cols + 1, (cell - 1) // g.cols + 1
+	local out = {}
+	for dr = -1, 1 do
+		for dc = -1, 1 do
+			local c, r = col + dc, row + dr
+			if (dc ~= 0 or dr ~= 0) and c >= 1 and c <= g.cols and r >= 1 and r <= g.rows then
+				table.insert(out, floorCell(g, c, r))
+			end
+		end
+	end
+	return out
+end
+
+-- Plot-local centres of the occupied pile cells, how many orbs sit on the floor, and the empty
+-- floor cells a dumbbell covers (its 8 neighbours: it is twice an orb's size). Nothing lands
+-- on those, so no top-layer slot can ever rest on a dumbbell either.
+local function pileTaken(session: Session): ({ [number]: Vector3 }, number, { [number]: boolean })
 	local cf = session.plot.cframe
 	local taken: { [number]: Vector3 } = {}
+	local blocked: { [number]: boolean } = {}
 	local floorCount = 0
+	local g: PileGrid? = nil
 	for _, orb in session.orbs do
 		taken[orb.cell] = cf:PointToObjectSpace(orb.part.CFrame.Position)
 		if orb.cell < PILE_TOP then
 			floorCount += 1
 		end
+		if orb.dumbbell then
+			g = g or pileGrid(session.plot.orbArea)
+			for _, cell in floorNeighbours(g :: PileGrid, orb.cell) do
+				blocked[cell] = true
+			end
+		end
 	end
-	return taken, floorCount
+	return taken, floorCount, blocked
 end
 
 -- Picks a free pile cell: floor cells near the focus first (with random scatter so the heap
 -- looks natural), and once the floor is crowded sometimes a hollow on top of four floor orbs.
--- Returns (cell, world landing CFrame), or nil when the pile has no room.
-local function orbLanding(session: Session): (number?, CFrame?)
+-- A `dumbbell` only takes an inner floor cell whose 8 neighbours are empty too.
+-- Returns (cell, world landing CFrame of an orb resting there), or nil when the pile has no room.
+local function orbLanding(session: Session, dumbbell: boolean?): (number?, CFrame?)
 	local plot = session.plot
 	local g = pileGrid(plot.orbArea)
 	local r = ORB_SIZE / 2
 	local restY = plot.orbFloorY + r
-	local taken, floorCount = pileTaken(session)
+	local taken, floorCount, blocked = pileTaken(session)
 
-	if floorCount >= PILE_TOP_FROM and rng:NextNumber() < PILE_TOP_CHANCE then
+	if not dumbbell and floorCount >= PILE_TOP_FROM and rng:NextNumber() < PILE_TOP_CHANCE then
 		local best: number?, bestScore, bestPos = nil, math.huge, Vector3.zero
 		for k = 1, (g.cols - 1) * (g.rows - 1) do
 			local cell = PILE_TOP + k
@@ -18368,8 +18354,23 @@ local function orbLanding(session: Session): (number?, CFrame?)
 	for row = 1, g.rows do
 		for col = 1, g.cols do
 			local cell = floorCell(g, col, row)
-			if taken[cell] then
+			if taken[cell] or blocked[cell] then
 				continue
+			end
+			if dumbbell then
+				if col == 1 or col == g.cols or row == 1 or row == g.rows then
+					continue
+				end
+				local clear = true
+				for _, n in floorNeighbours(g, cell) do
+					if taken[n] then
+						clear = false
+						break
+					end
+				end
+				if not clear then
+					continue
+				end
 			end
 			local x, z = g.x0 + (col - 1) * PILE_SPACING, g.z0 + (row - 1) * PILE_SPACING
 			local score = math.sqrt((x - g.focusX) ^ 2 + (z - g.focusZ) ^ 2) + rng:NextNumber(0, PILE_SCATTER)
@@ -18412,7 +18413,19 @@ local function scheduleAuto(session: Session, orb: Orb, origin: Vector3?, route:
 	orb.due = math.max(orb.due or 0, os.clock() + OrbLook.autoCollectDelay(length, 2.5))
 end
 
-local function spawnOrb(session: Session, value: number, cell: number, target: CFrame, origin: Vector3?, route: { Vector3 }?, tier: number?)
+-- `dumbbell`: the piece lands as a dumbbell (Kind = "Dumbbell"): a cylinder along X,
+-- OrbLook.DUMBBELL_SCALE orbs long and as thick as its plates, resting on them. Its route still
+-- ends at the orb resting point `target` (clients lift the dumbbell onto its plates).
+local function spawnOrb(
+	session: Session,
+	value: number,
+	cell: number,
+	target: CFrame,
+	origin: Vector3?,
+	route: { Vector3 }?,
+	tier: number?,
+	dumbbell: boolean?
+)
 	local plot = session.plot
 	local tint = orbTint(tier)
 	local part = Instance.new("Part")
@@ -18427,6 +18440,15 @@ local function spawnOrb(session: Session, value: number, cell: number, target: C
 	part.CanQuery = false
 	part.CanTouch = false
 	part.CFrame = target
+	if dumbbell then
+		local length = ORB_SIZE * OrbLook.DUMBBELL_SCALE
+		local plate = length * OrbLook.DUMBBELL_PLATE
+		part.Name = "Dumbbell"
+		part.Shape = Enum.PartType.Cylinder
+		part.Size = Vector3.new(length, plate * 2, plate * 2)
+		part.CFrame = target + Vector3.new(0, plate - ORB_SIZE / 2, 0)
+		part:SetAttribute("Kind", "Dumbbell")
+	end
 	if origin then
 		part:SetAttribute("Origin", origin)
 	end
@@ -18439,7 +18461,7 @@ local function spawnOrb(session: Session, value: number, cell: number, target: C
 	part:SetAttribute("RestY", (plot.cframe * CFrame.new(0, plot.orbFloorY + ORB_SIZE / 2, 0)).Position.Y)
 	part:SetAttribute("Spawned", serverNow())
 	part.Parent = plot.orbFolder
-	local orb: Orb = { part = part, value = value, count = 1, cell = cell, tier = tier or 1 }
+	local orb: Orb = { part = part, value = value, count = 1, cell = cell, tier = tier or 1, dumbbell = dumbbell }
 	scheduleAuto(session, orb, origin, route)
 	table.insert(session.orbs, orb)
 end
@@ -18462,14 +18484,17 @@ local function feedOrb(session: Session, orb: Orb, value: number, origin: Vector
 	part:SetAttribute("Feed", ((part:GetAttribute("Feed") :: number?) or 0) + 1)
 end
 
--- The ball a produced orb joins once the pen is full.
-local function feedTargetOrb(session: Session, tier: number?, cap: number): Orb?
-	local candidates = session.orbs
-	local balls: { OrbLook.Ball } = table.create(#candidates)
-	for i, orb in candidates do
-		balls[i] = { tier = orb.tier, count = orb.count }
+-- The ball a produced orb joins once the pen is full. Dumbbells never take feed orbs.
+local function feedTargetOrb(session: Session, tier: number?): Orb?
+	local candidates: { Orb } = {}
+	local balls: { OrbLook.Ball } = {}
+	for _, orb in session.orbs do
+		if not orb.dumbbell then
+			table.insert(candidates, orb)
+			table.insert(balls, { tier = orb.tier, count = orb.count })
+		end
 	end
-	local index = OrbLook.feedTarget(balls, tier, math.min(cap, #balls), rng:NextNumber())
+	local index = OrbLook.feedTarget(balls, tier, #balls, rng:NextNumber())
 	return if index then candidates[index] else nil
 end
 
@@ -18482,14 +18507,32 @@ local function produceOrbs(session: Session, amount: number)
 		local value = amount / pieces
 		local origin, feet, tier = orbSource(session)
 		local cell, target = nil, nil
+		local dumbbell = false
 		if #session.orbs < OrbLook.CAP then
-			cell, target = orbLanding(session)
+			-- Now and then the piece lands as a dumbbell worth DUMBBELL_VALUE times as much
+			-- (only where it has room; otherwise it stays a plain orb).
+			if rng:NextNumber() < OrbLook.DUMBBELL_CHANCE then
+				cell, target = orbLanding(session, true)
+				dumbbell = cell ~= nil
+			end
+			if not cell then
+				cell, target = orbLanding(session)
+			end
 		end
 		if cell and target then
-			spawnOrb(session, value, cell, target, origin, orbRoute(session, feet, target.Position), tier)
+			spawnOrb(
+				session,
+				if dumbbell then value * OrbLook.DUMBBELL_VALUE else value,
+				cell,
+				target,
+				origin,
+				orbRoute(session, feet, target.Position),
+				tier,
+				dumbbell
+			)
 		else
 			-- Pen full (or no free slot): the orb joins an existing ball and its Count goes up.
-			local orb = feedTargetOrb(session, tier, #session.orbs)
+			local orb = feedTargetOrb(session, tier)
 			if orb then
 				feedOrb(session, orb, value, origin, orbRoute(session, feet, orb.part.CFrame.Position), tier)
 			end
@@ -18687,18 +18730,20 @@ local function useUnlocker(session: Session, slotIndex: number)
 	local slot = p.unlockers[slotIndex]
 	if slot.rarity ~= "" then
 		local left = slot.endsAt - os.time()
-		if left <= 0 then
+		if left <= 0 or session.passes.CrateKey then
+			-- Crate Master owners smash it right away for free.
 			local rarity = slot.rarity
 			slot.rarity = ""
 			slot.endsAt = 0
 			openChest(session, rarity, "unlocker")
-		else
-			local cost = Economy.finishGemCost(left)
+		elseif Tycoon.hooks.crateRobuxAllowed(session.player) then
 			notify(session, {
 				kind = "Confirm",
-				text = string.format("Finish now for %d %s?", cost, theme.Icons.Gem),
+				text = string.format("Smash it now for %s%d?", ROBUX, theme.Monetization.CrateOpen.Price),
 				action = { action = "FinishUnlocker", slot = slotIndex },
 			})
+		else
+			toast(session, "Ready in " .. Format.time(left) .. ". Come back when the timer ends!", "info")
 		end
 		markDirty(session)
 		return
@@ -18731,9 +18776,8 @@ padHandlers.Free = function(session)
 	end
 	local cash = math.max(Economy.FREE_REWARD_MIN, Tycoon.income(session) * Economy.FREE_REWARD_SECONDS)
 	addMoney(session, cash)
-	p.gems += Economy.FREE_REWARD_GEMS
 	p.lastFreeReward = os.time()
-	toast(session, string.format("Free reward: +%s and +%d %s", Format.money(cash), Economy.FREE_REWARD_GEMS, theme.Icons.Gem), "good")
+	toast(session, "Free reward: +" .. Format.money(cash), "good")
 	effect(session, "Cash", { amount = cash, source = "Free", padPos = padPos(session, "Free") })
 	markDirty(session)
 end
@@ -18868,7 +18912,6 @@ local function snapshot(session: Session): { [string]: any }
 	return {
 		now = now,
 		money = p.money,
-		gems = p.gems,
 		carried = p.carried,
 		queue = p.queue,
 		pending = p.pending,
@@ -19157,23 +19200,27 @@ actionHandlers.DiscardChest = function(session)
 	end
 end
 
+-- Smashes the crate in an unlocker slot early. Crate Master owners (and finished timers)
+-- open it free; everyone else is prompted the same "Open Crate" product as a held crate,
+-- and the slot is emptied only when the receipt arrives (Tycoon.openCrateProduct).
 actionHandlers.FinishUnlocker = function(session, data)
 	local slotIndex = data.slot
 	if slotIndex ~= 1 and slotIndex ~= 2 then
 		return
 	end
 	local slot = session.profile.unlockers[slotIndex]
-	if slot.rarity == "" then
+	if slot.rarity == "" or not Economy.isRarity(slot.rarity) then
 		return
 	end
-	local left = slot.endsAt - os.time()
-	if left > 0 and not spendGems(session, Economy.finishGemCost(left)) then
+	if slot.endsAt - os.time() > 0 and not session.passes.CrateKey then
+		Tycoon.hooks.promptCrate(session.player, slot.rarity, slotIndex)
 		return
 	end
 	local rarity = slot.rarity
 	slot.rarity = ""
 	slot.endsAt = 0
 	openChest(session, rarity, "unlocker")
+	markDirty(session)
 end
 
 actionHandlers.PromptPass = function(session, data)
@@ -19183,7 +19230,7 @@ actionHandlers.PromptPass = function(session, data)
 end
 
 actionHandlers.PromptProduct = function(session, data)
-	if (data.kind == "Money" or data.kind == "Gems" or data.kind == "Aura") and type(data.index) == "number" then
+	if (data.kind == "Money" or data.kind == "Aura") and type(data.index) == "number" then
 		Tycoon.hooks.promptProduct(session.player, data.kind, data.index)
 	end
 end
@@ -19393,15 +19440,13 @@ function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, pa
 	end
 
 	-- Studio-only test hook: a Server script sets the player attribute "DebugGrant" to
-	-- "cash,<n>", "gems,<n>", "units,<total>" (Tier 1..5 spread), "pass,<Name>", "crate" or "pickup".
+	-- "cash,<n>", "units,<total>" (Tier 1..5 spread), "pass,<Name>", "crate" or "pickup".
 	if RunService:IsStudio() then
 		player:GetAttributeChangedSignal("DebugGrant"):Connect(function()
 			local kind, arg = string.match(tostring(player:GetAttribute("DebugGrant")), "^(%a+),?(.*)$")
 			local n = tonumber(arg) or 0
 			if kind == "cash" then
 				Tycoon.grantMoney(session, n)
-			elseif kind == "gems" then
-				Tycoon.grantGems(session, n)
 			elseif kind == "units" then
 				local units = table.create(Economy.MAX_TIER, 0)
 				for i = 0, n - 1 do
@@ -19468,11 +19513,27 @@ function Tycoon.setPass(player: Player, name: string)
 end
 
 -- A paid instant crate open (the single "Open Crate" developer product, any rarity).
--- Opens the held crate if there is one; otherwise (dropped, discarded, rejoined) the
--- player still gets a crate of the rarity recorded when the prompt was issued
--- (profile.pendingCrate), or a Common one, so a purchase always pays out.
+-- Prompted for a smasher slot (profile.pendingUnlocker), it smashes the crate still in
+-- that slot. Otherwise it opens the held crate if there is one; failing both (dropped,
+-- discarded, timer ran out, rejoined) the player still gets a crate of the rarity
+-- recorded when the prompt was issued (profile.pendingCrate), or a Common one, so a
+-- purchase always pays out.
 function Tycoon.openCrateProduct(session: Session)
 	local p = session.profile
+	local slotIndex = p.pendingUnlocker
+	local slot = p.unlockers[slotIndex]
+	p.pendingUnlocker = 0
+	if slot then
+		-- A smasher prompt never spends the held crate: the slot's crate, else the prompted rarity.
+		local rarity = if Economy.isRarity(slot.rarity) then slot.rarity else p.pendingCrate
+		slot.rarity = ""
+		slot.endsAt = 0
+		p.pendingCrate = ""
+		openChest(session, if Economy.isRarity(rarity) then rarity else "Common", "unlocker")
+		markDirty(session)
+		flush(session)
+		return
+	end
 	local rarity = p.heldChest
 	if not Economy.isRarity(rarity) then
 		rarity = if Economy.isRarity(p.pendingCrate) then p.pendingCrate else "Common"
@@ -19494,13 +19555,6 @@ function Tycoon.grantMoney(session: Session, amount: number)
 	addMoney(session, amount)
 	local root = rootPart(session)
 	effect(session, "Cash", { amount = amount, source = "Purchase", padPos = root and root.Position })
-	markDirty(session)
-	flush(session)
-end
-
-function Tycoon.grantGems(session: Session, amount: number)
-	session.profile.gems += amount
-	toast(session, string.format("+%d %s %s", amount, theme.Words.Gem, theme.Icons.Gem), "good")
 	markDirty(session)
 	flush(session)
 end
@@ -30813,10 +30867,6 @@ local function onDeposit(data: any)
 	local amount = tonumber(data.amount) or 0
 	local count = math.clamp(8 + math.floor(math.log10(math.max(1, amount)) * 2), 8, 16)
 	local first = true
-	play("DepositStream", 0.05, 1)
-	task.delay(0.3, function()
-		play("DepositStream", 0.05, 1.15)
-	end)
 	for i = 1, count do
 		local jitter = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5) * 1.2
 		Orbs.fly({
@@ -33133,10 +33183,14 @@ return MogFx
 --     silent pop; the ball's "xN" tag ticks up.
 --   * Every ball with Count >= 2 wears a floating "xN" tag (lightened ball colour, Ink
 --     outline) visible within LABEL_MAX_DISTANCE.
---   * "OrbsPicked" effects: ghost orbs magnet into the character with a rising
---     combo blip.
+--   * "OrbsPicked" effects: ghost orbs magnet into the character with a single soft pop.
 --   * Auto Aura: the server removes the orb once it has landed and rested; it just vanishes
 --     (no effect is sent for it).
+--   * Dumbbells (Kind = "Dumbbell", a rare prize worth OrbLook.DUMBBELL_VALUE pieces): built
+--     from parts (steel bar, tier-tinted grip and plates with glowing neon rims, end caps) and
+--     lit by a soft tier light. It rolls in on its plates at orb size, pumps up to full size
+--     when it hits the pen floor, then rests with a slow sway and twinkles; picking it up
+--     throws a bigger burst and an "x10" pop.
 --   * Look: each orb is drawn as clones of props/OrbBall (Color = tier colour) and
 --     props/OrbShine (white) via AssetModels, and the server's ball is hidden locally. Without
 --     the uploaded models the server's ball shows in the tier colour.
@@ -33170,7 +33224,6 @@ local Orbs = {}
 local FAR = CFrame.new(0, -10000, 0)
 local ROLL_WINDOW = 1.5 -- seconds after Spawned during which an orb still rolls in
 local SOUND_GAP = 1 / 12
-local COMBO_RESET = 0.6
 local LABEL_MAX_DISTANCE = 70 -- camera distance cap of the "xN" tags (BillboardGui.MaxDistance)
 local LABEL_HEIGHT = 1.15 -- studs
 local WHITE = Color3.new(1, 1, 1)
@@ -34246,11 +34299,19 @@ type OrbFx = {
 	labelLift: number, -- per-orb tag height jitter, so neighbouring tags do not line up
 	still: boolean, -- resting and placed: skipped by the frame loop until something wakes it
 	conns: { RBXScriptConnection },
+	dumbbell: boolean, -- Kind = "Dumbbell": drawn from `pieces` instead of the ball
+	pieces: { DumbbellPiece }?,
+	light: PointLight?,
+	grow: number, -- dumbbell pump-up on landing: < 0 = travel size, 0..1 growing, >= 1 full
+	barAxis: Vector3, -- rolling dumbbell: world direction of its bar
+	spin: number, -- rolling dumbbell: angle turned around its bar
+	lastPos: Vector3?,
+	twinkle: number, -- seconds until the resting dumbbell's next sparkle
 }
 
 local orbs: { [BasePart]: OrbFx } = {}
 -- Recently removed orbs, so pickup ghosts can keep the colour of the orb they replace.
-local recentGone: { { pos: Vector3, color: Color3, big: boolean, at: number } } = {}
+local recentGone: { { pos: Vector3, color: Color3, big: boolean, dumbbell: boolean, at: number } } = {}
 local orbFolder: Instance? = nil
 local folderConns: { RBXScriptConnection } = {}
 local INK = (Theme :: any).World and (Theme :: any).World.Ink or Color3.fromRGB(58, 48, 96)
@@ -34362,8 +34423,14 @@ local function updateLabel(fx: OrbFx, punch: boolean)
 end
 
 local function refreshVisibility(fx: OrbFx)
-	-- The server ball only shows without the Blender ball, once launched.
-	fx.part.LocalTransparencyModifier = if fx.waiting or fx.ball then 1 else 0
+	-- The server ball only shows without the Blender ball, once launched. A dumbbell's server
+	-- part is a plain stand-in for other players: always hidden here.
+	fx.part.LocalTransparencyModifier = if fx.waiting or fx.ball or fx.dumbbell then 1 else 0
+	if fx.pieces then
+		for _, piece in fx.pieces do
+			piece.part.LocalTransparencyModifier = if fx.waiting then 1 else 0
+		end
+	end
 	if fx.ball then
 		fx.ball.LocalTransparencyModifier = if fx.waiting then 1 else 0
 	end
@@ -34383,6 +34450,105 @@ local function clearBall(fx: OrbFx)
 		fx.shine:Destroy()
 	end
 	fx.ball, fx.shine = nil, nil
+	if fx.pieces then
+		for _, piece in fx.pieces do
+			piece.part:Destroy()
+		end
+	end
+	fx.pieces, fx.light = nil, nil
+end
+
+-- Dumbbells ----------------------------------------------------------------------------------
+-- Cylinders along the bar (local X). x = centre along the bar, len = length, dia = diameter, all
+-- in dumbbell lengths; the big rims' radius is OrbLook.DUMBBELL_PLATE (its resting height).
+
+type DumbbellPiece = { part: Part, x: number, len: number, dia: number }
+
+local DUMBBELL_TRAVEL = 0.5 -- size while rolling in (fits the gutter and chute like an orb)
+local DUMBBELL_GROW = 0.45 -- seconds to pump up to full size after hitting the pen floor
+local STEEL = Color3.fromRGB(228, 234, 242)
+-- { x, len, dia, paint }; pieces with x ~= 0 are mirrored to both ends.
+local DUMBBELL_SHAPE: { { any } } = {
+	{ 0, 0.96, 0.085, "steel" }, -- bar
+	{ 0, 0.3, 0.105, "grip" },
+	{ 0.2, 0.05, 0.16, "steel" }, -- collar
+	{ 0.285, 0.12, 0.6, "plate" }, -- big plate
+	{ 0.285, 0.07, 0.62, "rim" },
+	{ 0.39, 0.085, 0.46, "plate" }, -- small plate
+	{ 0.39, 0.05, 0.475, "rim" },
+	{ 0.465, 0.04, 0.12, "steel" }, -- end cap
+}
+
+local function paintPiece(part: Part, paint: string, color: Color3)
+	if paint == "steel" then
+		part.Color, part.Material, part.Reflectance = STEEL, Enum.Material.SmoothPlastic, 0.3
+	elseif paint == "grip" then
+		part.Color, part.Material, part.Reflectance = color:Lerp(INK, 0.45), Enum.Material.SmoothPlastic, 0
+	elseif paint == "plate" then
+		part.Color, part.Material, part.Reflectance = color, Enum.Material.SmoothPlastic, 0.12
+	else
+		part.Color, part.Material, part.Reflectance = color:Lerp(WHITE, 0.45), Enum.Material.Neon, 0
+	end
+end
+
+local function buildDumbbell(fx: OrbFx)
+	local pieces: { DumbbellPiece } = {}
+	for _, spec in DUMBBELL_SHAPE do
+		local x, len, dia, paint = spec[1] :: number, spec[2] :: number, spec[3] :: number, spec[4] :: string
+		local sides: { number } = if x == 0 then { 1 } else { -1, 1 }
+		for _, side in sides do
+			local part = basePart(Enum.PartType.Cylinder, "Dumbbell")
+			paintPiece(part, paint, fx.color)
+			part.Parent = folder
+			table.insert(pieces, { part = part, x = x * side, len = len, dia = dia })
+		end
+	end
+	local light = Instance.new("PointLight")
+	light.Color = fx.color:Lerp(WHITE, 0.25)
+	light.Range = 7
+	light.Brightness = 1.2
+	light.Shadows = false
+	light.Parent = pieces[1].part
+	fx.pieces, fx.light = pieces, light
+end
+
+-- Size multiplier of a dumbbell: travel size, then a springy pump-up to full size.
+local function dumbbellScale(fx: OrbFx): number
+	if fx.grow < 0 then
+		return DUMBBELL_TRAVEL
+	end
+	return DUMBBELL_TRAVEL + (1 - DUMBBELL_TRAVEL) * backOut(math.min(fx.grow, 1))
+end
+
+-- Radius of a dumbbell's big plates at size multiplier `k`, and an orb's radius (its route's).
+local function dumbbellRadii(fx: OrbFx, k: number): (number, number)
+	local length = fx.part.Size.X
+	return OrbLook.DUMBBELL_PLATE * length * k, length / OrbLook.DUMBBELL_SCALE / 2
+end
+
+-- Rotation of a dumbbell whose bar points along horizontal `axis`, turned `spin` around it.
+local function barFrame(axis: Vector3, spin: number): CFrame
+	return CFrame.fromMatrix(Vector3.zero, axis, Vector3.yAxis) * CFrame.Angles(spin, 0, 0)
+end
+
+-- Rolling dumbbell: the bar turns across the direction of travel and it rolls on its plates.
+local function rollDumbbell(fx: OrbFx, pos: Vector3, radius: number, dt: number): CFrame
+	local last = fx.lastPos
+	fx.lastPos = pos
+	if last then
+		local axis = Vector3.yAxis:Cross(pos - last)
+		local m = axis.Magnitude
+		if m > 1e-4 then
+			local want, sign = axis / m, 1
+			if want:Dot(fx.barAxis) < 0 then
+				want, sign = -want, -1
+			end
+			local blended = fx.barAxis:Lerp(want, math.min(1, dt * 12))
+			fx.barAxis = if blended.Magnitude > 1e-3 then blended.Unit else want
+			fx.spin += sign * m / math.max(radius, 0.1)
+		end
+	end
+	return barFrame(fx.barAxis, fx.spin)
 end
 
 -- Paints the orb in its producing tier's colour and dresses it in the two Blender pieces
@@ -34393,7 +34559,11 @@ local function styleOrb(fx: OrbFx)
 	fx.part.Color = fx.color
 	fx.part.Material = Enum.Material.SmoothPlastic
 	fx.part.Transparency = 0
-	if not fx.ball then
+	if fx.dumbbell then
+		if not fx.pieces then
+			buildDumbbell(fx)
+		end
+	elseif not fx.ball then
 		fx.ball = cloneBall("OrbBall", fx.color)
 		fx.shine = if fx.ball then cloneBall("OrbShine") else nil
 	end
@@ -34410,7 +34580,7 @@ local function untrack(part: BasePart)
 		fx.roll = nil
 		finishRoll()
 	end
-	table.insert(recentGone, { pos = fx.home.Position, color = fx.color, big = fx.big, at = os.clock() })
+	table.insert(recentGone, { pos = fx.home.Position, color = fx.color, big = fx.big, dumbbell = fx.dumbbell, at = os.clock() })
 	if #recentGone > 24 then
 		table.remove(recentGone, 1)
 	end
@@ -34425,6 +34595,17 @@ end
 -- sparkles and a squash.
 local function touchedFloor(fx: OrbFx, pos: Vector3, impact: number)
 	fx.squash, fx.squashAmp = 0, 0.32 * impact
+	if fx.dumbbell then
+		-- A prize: it pumps up to full size with a bigger burst.
+		fx.grow = 0
+		local plate = dumbbellRadii(fx, DUMBBELL_TRAVEL)
+		local floor = pos - Vector3.new(0, plate, 0)
+		Orbs.puff(floor, 4)
+		Orbs.ring(floor, fx.color, 2.8, 0.55, 0.3)
+		Orbs.sparkle(pos, fx.color, 10, 0.8)
+		Orbs.sparkle(pos, WHITE, 4, 0.6)
+		return
+	end
 	local floor = pos - Vector3.new(0, fx.part.Size.Y * 0.45, 0)
 	if not Orbs.puff(floor, if impact > 0.6 then 3 else 2) then
 		Orbs.ring(floor, fx.color, 1.5 * fx.scale, 0.45, 0.35)
@@ -34553,8 +34734,21 @@ local function track(part: Instance)
 		ball = nil,
 		shine = nil,
 		conns = {},
+		dumbbell = p:GetAttribute("Kind") == "Dumbbell",
+		pieces = nil,
+		light = nil,
+		grow = 1,
+		barAxis = CFrame.Angles(0, math.random() * math.pi * 2, 0).XVector,
+		spin = 0,
+		lastPos = nil,
+		twinkle = math.random(),
 	}
 	orbs[p] = fx
+	if fx.dumbbell then
+		-- Lies with its bar across the view (both plates show), turned a little.
+		fx.restRot = faceCamera(p.Position) * CFrame.Angles(0, (math.random() * 2 - 1) * REST_YAW * 0.7, 0)
+		fx.rot = fx.restRot
+	end
 
 	-- Roll in from the unit that produced it (queued behind earlier orbs), or pop in place.
 	local spawned = p:GetAttribute("Spawned")
@@ -34563,12 +34757,15 @@ local function track(part: Instance)
 		local path = readRoute(p, "Path")
 		local origin = p:GetAttribute("Origin")
 		local restY = p:GetAttribute("RestY")
+		-- A dumbbell follows the orb route (radius = its travel-size plates) and is lifted
+		-- onto its plates when drawn.
+		local radius = if fx.dumbbell then (dumbbellRadii(fx, DUMBBELL_TRAVEL)) else p.Size.Y / 2
 		local roll = if path
 			then newRoll(
 				path,
 				if typeof(origin) == "Vector3" then origin else nil,
 				if type(restY) == "number" then restY else nil,
-				p.Size.Y / 2,
+				radius,
 				0
 			)
 			else nil
@@ -34576,6 +34773,7 @@ local function track(part: Instance)
 			fx.roll = roll
 			fx.waiting = true
 			fx.rest = 0
+			fx.grow = -1
 		else
 			fx.appear = 0
 			fx.rest = 0
@@ -34634,30 +34832,29 @@ local function bindFolder(f: Instance?)
 	end
 end
 
--- Pickup magnet + combo --------------------------------------------------------------------
+-- Pickup magnet + pop ----------------------------------------------------------------------
 
-local combo = 0
-local lastPickup = 0
 local lastSound = 0
 
+-- One soft pop per pickup: no combo pitch climb, no layered tick. Orbs landing in the
+-- same instant share one pop.
 local function pickupBlip(count: number)
 	local now = os.clock()
-	if now - lastPickup > COMBO_RESET then
-		combo = 0
-	end
-	lastPickup = now
-	combo += math.min(count, 4)
 	if now - lastSound < SOUND_GAP then
 		return
 	end
 	lastSound = now
-	local pitch = math.min(2, 1 + (combo - 1) * 0.06)
-	-- Merged orbs: a touch lower and fuller (plus a quiet tick layered on top).
-	if count >= 2 then
-		pitch *= 0.92
-		(Sounds.play :: any)("Tick", 0.05, math.min(pitch * 1.2, 2))
-	end
-	(Sounds.play :: any)("OrbPickup", 0, pitch)
+	-- Merged orbs and dumbbells: the same pop, a touch lower and fuller.
+	local play: any = Sounds.play
+	play("OrbPickup", 0.06, if count >= 2 then 0.9 else 1)
+end
+
+-- Extra celebration when the piece picked up at `pos` was a dumbbell.
+local function dumbbellPicked(pos: Vector3, color: Color3)
+	Orbs.sparkle(pos, color, 14, 1.1)
+	Orbs.sparkle(pos, WHITE, 6, 0.9)
+	Orbs.ring(pos - Vector3.new(0, 0.8, 0), color, 3.4, 0.5, 0.25)
+	Orbs.text(pos + Vector3.new(0, 1.5, 0), "x" .. tostring(OrbLook.DUMBBELL_VALUE) .. "!", color:Lerp(WHITE, 0.3), { scale = 1.6 })
 end
 
 local function onPicked(data: any)
@@ -34677,18 +34874,24 @@ local function onPicked(data: any)
 		local count = if type(counts[i]) == "number" then math.max(1, counts[i]) else 1
 		local grow = 1
 		local color = ORB_PALETTE[1]
+		local dumbbell = false
 		-- Match the colour of the real orb that sat there, if we still know it.
 		for _, fx in orbs do
 			if (fx.home.Position - pos).Magnitude < 1.2 then
-				color = fx.color
+				color, dumbbell = fx.color, fx.dumbbell
 				break
 			end
 		end
 		for _, gone in recentGone do
 			if (gone.pos - pos).Magnitude < 1.2 then
-				color = gone.color
+				color, dumbbell = gone.color, gone.dumbbell
 				break
 			end
+		end
+		if dumbbell then
+			grow = 1.6
+			count = math.max(count, 4) -- the fuller pickup sound
+			dumbbellPicked(pos, color)
 		end
 		Orbs.fly({
 			from = pos + Vector3.new(0, 0.25, 0),
@@ -34757,6 +34960,27 @@ local function drawOrb(fx: OrbFx, cf: CFrame, s: number, sx: number, sy: number,
 			table.insert(moveParts, shine)
 			table.insert(moveCFrames, cf * CFrame.new(SHINE_OFFSET * scale))
 		end
+	end
+end
+
+-- Queues a dumbbell's pieces at `cf` (its centre and rotation), scaled by `s`.
+local function drawDumbbell(fx: OrbFx, cf: CFrame, s: number)
+	table.insert(moveParts, fx.part)
+	table.insert(moveCFrames, cf)
+	table.insert(moveParts, fx.shell)
+	table.insert(moveCFrames, cf)
+	local pieces = fx.pieces
+	if not pieces then
+		return
+	end
+	local length = fx.part.Size.X * s
+	for _, piece in pieces do
+		local size = Vector3.new(piece.len * length, piece.dia * length, piece.dia * length)
+		if (piece.part.Size - size).Magnitude > 0.002 then
+			piece.part.Size = size
+		end
+		table.insert(moveParts, piece.part)
+		table.insert(moveCFrames, cf * CFrame.new(piece.x * length, 0, 0))
 	end
 end
 
@@ -34871,7 +35095,9 @@ local function step(dt: number)
 				refreshVisibility(fx)
 			end
 			local pos, phase = sampleRoll(roll, t)
-			spinRoll(roll, pos)
+			if not fx.dumbbell then
+				spinRoll(roll, pos)
+			end
 			if phase ~= roll.phase then
 				if phase >= PHASE_GUTTER and roll.phase < PHASE_GUTTER then
 					fx.squash, fx.squashAmp = 0, 0.1 + 0.15 * roll.gutterImpact -- lands in the gutter
@@ -34881,7 +35107,21 @@ local function step(dt: number)
 				end
 				roll.phase = phase
 			end
-			if phase < PHASE_DONE then
+			if fx.dumbbell then
+				if fx.grow >= 0 then
+					fx.grow += dt / DUMBBELL_GROW
+				end
+				local k = dumbbellScale(fx)
+				local plate, orbR = dumbbellRadii(fx, k)
+				local lifted = pos + Vector3.new(0, plate - orbR, 0)
+				local rot = rollDumbbell(fx, lifted, plate, dt)
+				if phase < PHASE_DONE then
+					local grow = backOut(math.clamp(t / APPEAR_TIME, 0, 1))
+					drawDumbbell(fx, CFrame.new(lifted) * rot, fx.scale * grow * k * sx)
+					continue
+				end
+				roll.rot = rot
+			elseif phase < PHASE_DONE then
 				local grow = backOut(math.clamp(t / APPEAR_TIME, 0, 1))
 				drawOrb(fx, CFrame.new(pos) * roll.rot, fx.scale * grow, sx, sy, clock, flashed)
 				continue
@@ -34906,6 +35146,30 @@ local function step(dt: number)
 			appear = backOut(fx.appear)
 		end
 		local s = fx.scale * (1 + fx.pulse) * appear
+		if fx.dumbbell then
+			-- Resting prize: finishes pumping up, sways slowly, breathes, glows and twinkles.
+			-- Never marked still (there are only ever a few).
+			if fx.grow < 1 then
+				fx.grow = math.min(1, fx.grow + dt / DUMBBELL_GROW)
+			end
+			local k = dumbbellScale(fx)
+			local full = dumbbellRadii(fx, 1)
+			local pos = fx.home.Position + Vector3.new(0, full * (k - 1), 0)
+			local sway = CFrame.Angles(0, math.sin(clock * 0.9 + fx.phase) * 0.12, 0)
+			local breathe = 1 + math.sin(clock * 2 + fx.phase) * 0.015
+			drawDumbbell(fx, CFrame.new(pos) * sway * fx.rot, s * k * breathe * sx)
+			if fx.light then
+				fx.light.Brightness = 1.2 + 0.5 * math.sin(clock * 2.4 + fx.phase)
+			end
+			fx.twinkle -= dt
+			if fx.twinkle <= 0 and appear >= 1 then
+				fx.twinkle = 0.7 + math.random() * 0.6
+				local along = (math.random() * 2 - 1) * full * 1.3
+				local glint = pos + (sway * fx.rot).XVector * along + Vector3.new(0, full * 0.8, 0)
+				Orbs.sparkle(glint, fx.color:Lerp(WHITE, 0.4), 1, 0.25)
+			end
+			continue
+		end
 		drawOrb(fx, CFrame.new(fx.home.Position) * fx.rot, s, sx, sy, clock, flashed)
 		fx.still = fx.rest >= 1 and fx.appear >= 1 and fx.pulse == 0 and fx.squash < 0 and fx.flash <= 0
 	end
@@ -43857,7 +44121,7 @@ if RunService:IsStudio() then
 		end
 		local tier = string.match(spec, "^reward,(%d+)$")
 		if tier then
-			Popups.reward({ kind = "Reward", tier = tonumber(tier), tiers = { tonumber(tier) }, new = true, gems = 5 })
+			Popups.reward({ kind = "Reward", tier = tonumber(tier), tiers = { tonumber(tier) }, new = true })
 		elseif spec == "close" then
 			Windows.closeAll()
 			Popups.closeModals()
@@ -43962,7 +44226,7 @@ local WALLET = UDim2.new(0, 150, 1, -110)
 Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 	data = if type(data) == "table" then data else {}
 	if kind == "Collect" then
-		Sounds.play("Collect", 0.3)
+		-- Silent: Fx.Orbs already popped for each pickup.
 		Hud.pulseTank()
 		Popups.float("+" .. I.Orb .. Format.short(data.amount or 0), C.Orb, TANK)
 	elseif kind == "Cash" then
@@ -44084,7 +44348,6 @@ local UI_BRIGHT_CLICK = lib(15675059323) -- Roblox_UI_Bright_Click
 local UI_CUTE_POP = lib(15675055424) -- Roblox_UI_Cute_Pop
 local UI_TONAL_STINGER = lib(15675043410) -- Roblox_UI_Tonal_Stinger
 local UI_WHOOSH_01 = lib(15675024286) -- Roblox_UI_Whoosh_01
-local UI_WHOOSH_03 = lib(15674975792) -- Roblox_UI_Whoosh_03
 local UI_DELETE = lib(15675075163) -- Roblox_UI_Delete
 local GUI_SELECT = lib(17208396156) -- Roblox GUI - Select
 local GUI_NOTIFY_HIGH = lib(17208361335) -- Roblox GUI - Notification High
@@ -44095,7 +44358,6 @@ local GUI_DECLINE = lib(17208214688) -- Roblox GUI - Call Decline
 local GUI_PURCHASE = lib(17208380755) -- Roblox GUI - Purchase
 
 -- Pro Sound Effects library.
-local WHOOSH_AIRY = lib(9125646252) -- Magic Whooshes Airy
 local WHOOSH_ZOOM = lib(9125648149) -- Magic Zoom Up Sharp Tubular Whoosh
 
 -- Free public Creator Store audio.
@@ -44104,7 +44366,6 @@ local COIN_COLLECT = lib(135483737426662) -- Coin Collect
 local ERROR_BUZZ = lib(91501650514390) -- Error Buzz
 
 -- This game's own uploads.
-local POP_PLUCK = lib(110564740926229)
 local POP_MARIMBA = lib(82880781602391)
 local POP_BELL = lib(108513451493306)
 local TICK_A = lib(95444478167276)
@@ -44179,14 +44440,14 @@ local DEFS: { [string]: Def } = {
 	Collect = { ids = { POP_MARIMBA, COIN_COLLECT }, volume = 0.3, gap = 0.05 },
 	Cash = { ids = { KACHING, GUI_PURCHASE }, volume = 0.35, gap = 0.1 },
 	Coin = { ids = { POP_MARIMBA, COIN_COLLECT }, volume = 0.28, gap = 0.045 },
-	Deposit = { ids = { WHOOSH_AIRY, UI_WHOOSH_03 }, volume = 0.4 },
-	DepositStream = { ids = { WHOOSH_AIRY, UI_WHOOSH_03 }, volume = 0.3, pitch = 1.15, gap = 0.25 },
+	-- One soft pop when the Deposit pad banks your aura.
+	Deposit = { ids = { UI_CUTE_POP, POP_BELL }, volume = 0.5, gap = 0.15 },
 	Buy = { ids = { GUI_PURCHASE, KACHING }, volume = 0.5 },
 	BuyPop = { ids = { POP_BELL, UI_CUTE_POP }, volume = 0.45 },
 	Upgrade = { ids = { LEVELUP, UNLOCK_STINGER }, volume = 0.45 },
 	Pickup = { ids = { GUI_BUBBLE, UI_CUTE_POP }, volume = 0.45 },
 	-- Orbs
-	OrbPickup = { ids = { POP_PLUCK, POP_MARIMBA }, volume = 0.22, gap = 0.03 },
+	OrbPickup = { ids = { UI_CUTE_POP, POP_BELL }, volume = 0.35, gap = 0.08 },
 	-- Merges
 	MergeCharge = { ids = { CRACKLE_A, CRACKLE_B }, volume = 0.4 },
 	MergeBoom = { ids = { HIT_A, HIT_B, HIT_C }, volume = 0.55, rotate = true },
@@ -44649,7 +44910,7 @@ return State
 	                 promo under it: tilted "PERMANENT" tag, wide 2X CASH (or
 	                 STARTER PACK) button, "Only 199 R$"
 	  bottom left    status row (Premium, Friends, Boost), "Cash [ x1.0 ]",
-	                 the big cash amount + square "+" and a compact Rizz line
+	                 the big cash amount + square "+"
 	  bottom centre  the dumbbell: "AURA" + the carried amount on its plaque
 	  bottom right   FREE gift with its countdown, version in the corner
 
@@ -45521,7 +45782,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 	end
 
-	-- Bottom left: status row, cash multiplier line, cash amount + plus, Rizz -------------
+	-- Bottom left: status row, cash multiplier line, cash amount + plus -------------------
 	local wallet = group("Wallet", {
 		Size = UDim2.fromOffset(420, 168),
 		Position = UDim2.new(0, EDGE_X, 1, -6),
@@ -45591,44 +45852,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	hitPad(addButton, function()
 		handlers.openWindow("Shop", { focus = "Cash" })
 	end)
-	local rizz = group("Rizz", { Size = UDim2.fromOffset(120, 30), Parent = wallet })
-	Kit.hudIcon(rizz, "Gem", 24, C.Rizz, { Name = "GemIcon", Position = UDim2.fromOffset(0, 3), ZIndex = 2 })
-	local gemsLabel = Kit.hudText(rizz, {
-		Name = "Gems",
-		Text = "0",
-		Font = F.Number,
-		TextSize = 20,
-		TextColor3 = C.Rizz,
-		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 30),
-		Position = UDim2.fromOffset(28, 0),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		ZIndex = 3,
-	})
-	local gemPlus = Kit.button(rizz, {
-		Name = "AddRizz",
-		Icon = "Plus",
-		IconColor = Color3.new(1, 1, 1),
-		Color = C.Rizz,
-		Size = UDim2.fromOffset(24, 24),
-		Radius = 12,
-		Depth = 2,
-		ZIndex = 3,
-	}, function()
-		handlers.openWindow("Shop", { focus = "Gems" })
-	end)
-	hitPad(gemPlus, function()
-		handlers.openWindow("Shop", { focus = "Gems" })
-	end)
-	-- The plus and the Rizz line follow the cash amount's width.
+	-- The plus follows the cash amount's width.
 	local function layoutWallet()
 		local x = math.max(textWidth(moneyLabel.Text, moneyLabel.TextSize, moneyLabel.Font) + 4, 60)
 		addButton.Position = UDim2.fromOffset(x + 10, 92)
-		rizz.Position = UDim2.fromOffset(x + 64, 99)
-		gemPlus.Position = UDim2.fromOffset(28 + textWidth(gemsLabel.Text, gemsLabel.TextSize, gemsLabel.Font) + 8, 3)
 	end
 	moneyLabel:GetPropertyChangedSignal("Text"):Connect(layoutWallet)
-	gemsLabel:GetPropertyChangedSignal("Text"):Connect(layoutWallet)
 
 	-- Layout mode ------------------------------------------------------------------------
 	-- Compact screens: smaller grid icons, no status captions, no promo, a smaller
@@ -45789,7 +46018,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		place(next(targets) ~= nil)
 	end
 	-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
-	local selectables: { GuiObject } = { promoButton, addButton, gemPlus, quitButton }
+	local selectables: { GuiObject } = { promoButton, addButton, quitButton }
 	for _, button in Hud.buttons do
 		table.insert(selectables, button)
 	end
@@ -45851,7 +46080,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			roll(moneyLabel, data.money, State.money)
 		end
 		moneyShown = data.money
-		roll(gemsLabel, data.gems, State.num)
 		if lastMult ~= nil and lastMult ~= data.moneyMult then
 			Kit.pop(multLine, 0.8)
 		end
@@ -52210,19 +52438,11 @@ local function showRewardCard(reward: { [string]: any }, done: () -> ())
 		})
 		stats.ZIndex = 2
 		Kit.list(stats, 0, true, Enum.HorizontalAlignment.Center)
-		local hasGems = reward.gems and reward.gems > 0
-		local width = if hasGems then UDim2.fromScale(0.5, 1) else UDim2.fromScale(1, 1)
-		local rate = statCell(stats, "Orb", C.Orb, string.upper(W.Orb) .. " / SEC", Kit.lighten(C.Orb, 0.35), 1, width)
+		local rate = statCell(stats, "Orb", C.Orb, string.upper(W.Orb) .. " / SEC", Kit.lighten(C.Orb, 0.35), 1, UDim2.fromScale(1, 1))
 		Kit.appear(stats, { from = 0.9, time = 0.24 })
 		Kit.countTo(rate, 0, Economy.unitRate(tier), function(n)
 			return Format.short(n) .. "/s"
 		end, 0.5)
-		if hasGems then
-			local gems = statCell(stats, "Gem", C.Rizz, "+" .. string.upper(W.Gem), Kit.lighten(C.Rizz, 0.35), 2, width)
-			Kit.countTo(gems, 0, reward.gems, function(n)
-				return "+" .. tostring(n)
-			end, 0.55)
-		end
 	end)
 
 	-- Step 5: the button.
@@ -52678,12 +52898,12 @@ end
 -- Game mode finish ----------------------------------------------------------------------------
 --[[
 	The Parkour finish card: "LEVEL n CLEAR!" (or "NEW BEST!") over the level's name,
-	the run time, best and today's rank, the reward rolling up (cash; Rizz on the first
-	clear) or a calm "Reward again in m:ss" line while the full reward is cooling down,
+	the run time, best and today's rank, the cash reward rolling up or a
+	calm "Reward again in m:ss" line while the full reward is cooling down,
 	and a popping "Level n+1 unlocked!" chip when this clear opened the next level.
 	Buttons: "Next level" (gold, when there is one) beside "Run again", with a slim
 	"Back to my gym" under them; on the last level just "Run again" and "Back to my gym".
-	`data` is the finish Notify payload (time, best, newBest, rank?, cash, gems, full,
+	`data` is the finish Notify payload (time, best, newBest, rank?, cash, full,
 	cooldownEnds, level, levelName, nextLevel?, unlockedNew).
 ]]
 
@@ -52693,10 +52913,41 @@ local function runTime(seconds: number): string
 end
 Popups.runTime = runTime
 
+-- A finish card's reward well: the coin and a rolling "+$N", centred as one group sized
+-- for the final amount so it holds still while it counts.
+local function cashRow(well: Frame, total: number): TextLabel
+	local final = "+" .. Format.money(total)
+	local width = 0
+	pcall(function()
+		local TextService = game:GetService("TextService")
+		width = TextService:GetTextSize(final, 26, Kit.F.Number, Vector2.new(1000, 40)).X
+	end)
+	if width <= 0 then
+		width = (utf8.len(final) or #final) * 16
+	end
+	local cell = Kit.new("Frame", {
+		Name = "Cash",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(0, 38 + math.ceil(width) + 4, 1, 0),
+		Position = UDim2.fromScale(0.5, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Parent = well,
+	})
+	Kit.icon(cell, "Coin", 30, C.Gold, { Position = UDim2.new(0, 0, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
+	return Kit.number(cell, {
+		Text = "+0",
+		TextSize = 26,
+		Size = UDim2.new(1, -38, 1, 0),
+		Position = UDim2.fromOffset(38, 0),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.MoneyText,
+		StrokeThickness = 0,
+	})
+end
+
 function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> (), onNext: (() -> ())?)
 	Popups.enqueue("ModeFinish", Popups.PRIORITY.Normal, function(done)
 		local cashTotal = tonumber(data.cash) or 0
-		local gemTotal = tonumber(data.gems) or 0
 		local cooling = data.full == false and (tonumber(data.cooldownEnds) or 0) > os.time()
 		local level = tonumber(data.level)
 		local nextLevel = tonumber(data.nextLevel)
@@ -52751,27 +53002,8 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		})
 		local well = Kit.well(box, { Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, 184) })
 		-- Runs inside the reward cooldown pay nothing: no empty "+$0" row.
-		well.Visible = cashTotal > 0 or gemTotal > 0
-		local function amount(icon: string, iconColor: Color3, x: number, width: number, textColor: Color3): TextLabel
-			local cell = Kit.new("Frame", {
-				BackgroundTransparency = 1,
-				Size = UDim2.new(width, 0, 1, 0),
-				Position = UDim2.fromScale(x, 0),
-				Parent = well,
-			})
-			Kit.icon(cell, icon, 30, iconColor, { Position = UDim2.new(0, 14, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
-			return Kit.number(cell, {
-				Text = "+0",
-				TextSize = 26,
-				Size = UDim2.new(1, -54, 1, 0),
-				Position = UDim2.fromOffset(50, 0),
-				TextXAlignment = Enum.TextXAlignment.Left,
-				TextColor3 = textColor,
-				StrokeThickness = 0,
-			})
-		end
-		local cashLabel = amount("Coin", C.Gold, 0, if gemTotal > 0 then 0.6 else 1, C.MoneyText)
-		local gemLabel = if gemTotal > 0 then amount("Gem", C.Rizz, 0.6, 0.4, Kit.lighten(C.Rizz, 0.35)) else nil
+		well.Visible = cashTotal > 0
+		local cashLabel = cashRow(well, cashTotal)
 		local note = Kit.text(box, {
 			Text = if cooling
 				then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
@@ -52869,13 +53101,6 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 				return "+" .. Format.money(n)
 			end, 0.8)
 		end)
-		if gemLabel then
-			after(0.45, function()
-				Kit.countTo(gemLabel, 0, gemTotal, function(n)
-					return "+" .. tostring(math.floor(n + 0.5))
-				end, 0.6)
-			end)
-		end
 		if cooling then
 			-- The countdown line ticks while the card is up.
 			task.spawn(function()
@@ -52895,10 +53120,10 @@ end
 	"NEW BEST!", rivals mogged, best and today's rank, the reward rolling up or the
 	"Reward again in m:ss" line while the full reward cools down. "Mog again" and
 	"Back to my gym". `data` is the mog finish Notify payload (score, rivals, best,
-	newBest, passed, cash, gems, full, cooldownEnds, rank?).
+	newBest, passed, cash, full, cooldownEnds, rank?).
 
 	A 1v1 duel (data.vs == "pvp": won, reason "ko" | "forfeit", opponent { userId, name },
-	score, wins, played, cash, gems, full, cooldownEnds) uses the same card: "YOU MOGGED
+	score, wins, played, cash, full, cooldownEnds) uses the same card: "YOU MOGGED
 	<name>!" in gold or "<name> MOGGED YOU" in red, duels won / played, the reward (the
 	winner's) and "Duel again" instead of "Mog again".
 ]]
@@ -52906,7 +53131,6 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 	Popups.enqueue("MogFinish", Popups.PRIORITY.Normal, function(done)
 		local score = tonumber(data.score) or 0
 		local cashTotal = tonumber(data.cash) or 0
-		local gemTotal = tonumber(data.gems) or 0
 		local cooling = data.full == false and (tonumber(data.cooldownEnds) or 0) > os.time()
 		local duel = data.vs == "pvp"
 		local won = duel and data.won == true
@@ -52954,27 +53178,8 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			StrokeThickness = 0,
 		})
 		local well = Kit.well(box, { Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, 164) })
-		well.Visible = cashTotal > 0 or gemTotal > 0
-		local function amount(icon: string, iconColor: Color3, x: number, width: number, textColor: Color3): TextLabel
-			local cell = Kit.new("Frame", {
-				BackgroundTransparency = 1,
-				Size = UDim2.new(width, 0, 1, 0),
-				Position = UDim2.fromScale(x, 0),
-				Parent = well,
-			})
-			Kit.icon(cell, icon, 30, iconColor, { Position = UDim2.new(0, 14, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
-			return Kit.number(cell, {
-				Text = "+0",
-				TextSize = 26,
-				Size = UDim2.new(1, -54, 1, 0),
-				Position = UDim2.fromOffset(50, 0),
-				TextXAlignment = Enum.TextXAlignment.Left,
-				TextColor3 = textColor,
-				StrokeThickness = 0,
-			})
-		end
-		local cashLabel = amount("Coin", C.Gold, 0, if gemTotal > 0 then 0.6 else 1, C.MoneyText)
-		local gemLabel = if gemTotal > 0 then amount("Gem", C.Rizz, 0.6, 0.4, Kit.lighten(C.Rizz, 0.35)) else nil
+		well.Visible = cashTotal > 0
+		local cashLabel = cashRow(well, cashTotal)
 		local note = Kit.text(box, {
 			Text = if duel and data.reason == "forfeit"
 				then (if won then foe .. " left the duel. The win is yours!" else "You left the duel.")
@@ -53032,13 +53237,6 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 				return "+" .. Format.money(n)
 			end, 0.8)
 		end)
-		if gemLabel then
-			after(0.45, function()
-				Kit.countTo(gemLabel, 0, gemTotal, function(n)
-					return "+" .. tostring(math.floor(n + 0.5))
-				end, 0.6)
-			end)
-		end
 		if cooling and not (duel and (not won or data.reason == "forfeit")) then
 			task.spawn(function()
 				while note.Parent do
@@ -53174,9 +53372,9 @@ local OFFER_AFTER_JOIN = 60
 local OFFER_AFTER_TUTORIAL = 6
 local CALM = 4
 
--- The three things in the pack in a well: cash, Rizz and the Rookie Trail. Returns the
--- amount labels and the trail's icon (for the celebration's pop-in).
-local function starterContents(box: Frame, y: number, trailCaption: string): (TextLabel, TextLabel, Frame)
+-- The two things in the pack in a well: cash and the Rookie Trail. Returns the cash
+-- amount label and the trail's icon (for the celebration's pop-in).
+local function starterContents(box: Frame, y: number, trailCaption: string): (TextLabel, Frame)
 	local well = Kit.well(box, { Name = "Contents", Size = UDim2.new(1, -40, 0, 100), Position = UDim2.fromOffset(20, y) })
 	local function cell(
 		index: number,
@@ -53189,8 +53387,8 @@ local function starterContents(box: Frame, y: number, trailCaption: string): (Te
 		local holder = Kit.new("Frame", {
 			Name = "Item" .. index,
 			BackgroundTransparency = 1,
-			Size = UDim2.new(1 / 3, 0, 1, 0),
-			Position = UDim2.fromScale((index - 1) / 3, 0),
+			Size = UDim2.new(1 / 2, 0, 1, 0),
+			Position = UDim2.fromScale((index - 1) / 2, 0),
 			Parent = well,
 		})
 		local art = Kit.icon(holder, Kit.pickIcon(icon, fallback), 46, color, {
@@ -53222,11 +53420,10 @@ local function starterContents(box: Frame, y: number, trailCaption: string): (Te
 		return amount, art
 	end
 	local cash = cell(1, "Coin", "Coin", C.Gold, C.MoneyText, "cash")
-	local gems = cell(2, "Gem", "Gem", C.Rizz, Kit.lighten(C.Rizz, 0.35), W.Gem)
 	local item = Theme.Cosmetics.Items[STARTER.Item]
-	local trail, trailArt = cell(3, item.Icon, "Star", item.Color, C.Text, trailCaption)
+	local trail, trailArt = cell(2, item.Icon, "Star", item.Color, C.Text, trailCaption)
 	trail.Text = item.Title
-	return cash, gems, trailArt
+	return cash, trailArt
 end
 
 -- The pack's art standing over the top edge of a modal, with slow mint rays behind the box.
@@ -53303,10 +53500,8 @@ function Popups.starterOffer()
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,
 		})
-		local cash, gems = starterContents(box, 142, "only in this pack")
-		local cashAmount, gemAmount = Windows.starterAmounts(data)
-		cash.Text = State.money(cashAmount)
-		gems.Text = "+" .. Format.commas(gemAmount)
+		local cash = starterContents(box, 142, "only in this pack")
+		cash.Text = State.money(Windows.starterAmounts(data))
 		local buy = Kit.button(box, {
 			Name = "Buy",
 			Text = Kit.ROBUX .. " " .. tostring(pass.Price),
@@ -53336,7 +53531,7 @@ function Popups.starterOffer()
 	end)
 end
 
--- The grant landed: what the pack gave, cash and Rizz rolling up and the trail popping in.
+-- The grant landed: what the pack gave, cash rolling up and the trail popping in.
 function Popups.starter(data: { [string]: any })
 	-- Never over the intro: hold the card until it has finished.
 	local player = Players.LocalPlayer
@@ -53374,9 +53569,8 @@ function Popups.starter(data: { [string]: any })
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,
 		})
-		local cash, gems, trailArt = starterContents(box, 142, "now in your shop")
+		local cash, trailArt = starterContents(box, 142, "now in your shop")
 		cash.Text = State.money(0)
-		gems.Text = "+0"
 		local go = Kit.button(box, {
 			Name = "Go",
 			Text = "Awesome!",
@@ -53392,14 +53586,8 @@ function Popups.starter(data: { [string]: any })
 		Kit.appear(art, { from = 0.4, time = 0.34, delay = 0.06 })
 		Kit.appear(go, { from = 0.8, time = 0.26, delay = 0.2 })
 		local cashTotal = tonumber(data.cash) or 0
-		local gemTotal = tonumber(data.gems) or 0
 		after(0.2, function()
 			Kit.countTo(cash, 0, cashTotal, State.money, 0.8)
-		end)
-		after(0.35, function()
-			Kit.countTo(gems, 0, gemTotal, function(n: number): string
-				return "+" .. Format.commas(n)
-			end, 0.8)
 		end)
 		trailArt.Visible = false
 		after(0.6, function()
@@ -54090,7 +54278,7 @@ return Popups
 	                                      AutoCash, DoubleAura, DoubleMoney, PremiumUnlocker,
 	                                      CrateKey, StarterPack, AllCosmetics; anything else
 	                                      gets a sparkling star)
-	  ShopScenes.pack(stage, kind, index) a pack card scene: kind "Money" | "Aura" | "Gems",
+	  ShopScenes.pack(stage, kind, index) a pack card scene: kind "Money" | "Aura",
 	                                      index 1..4 (bigger = bigger pile, more particles)
 
 	Both return a Scene { play, stop, celebrate, destroy }:
@@ -55831,10 +56019,10 @@ end
 local CASH_ICONS = { "CashPack1", "CashPack3", "CashPack5", "CashPack6" }
 
 --[[
-	Animated art for one pack card: kind "Money" | "Aura" | "Gems", index 1..4 (the size
+	Animated art for one pack card: kind "Money" | "Aura", index 1..4 (the size
 	ladder: bigger index = bigger pile, more particles, stronger glow). `stage` about
 	110x110 or larger (1:1). The pile frame is 0.98 of the stage (art ~0.75); coins rain
-	in from the top edge and land on it, orbs float up out of it, gems glint.
+	in from the top edge and land on it, orbs float up out of it.
 ]]
 function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 	local i = math.clamp(math.floor(tonumber(index) or 1), 1, 4)
@@ -55843,7 +56031,7 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 	local root = ctx.root
 	local cx, cy = 0.5, 0.52
 
-	local glowColor = if kind == "Aura" then C.Violet elseif kind == "Gems" then C.Rizz else WC.Sunny
+	local glowColor = if kind == "Aura" then C.Violet else WC.Sunny
 	local glowAlpha = 0.66 - 0.09 * i
 	local glowSize = 0.9 + 0.1 * i
 	local glow = sprite(root, "SoftDot", glowColor, { Size = sq(ctx, glowSize), Position = at(cx, cy), ZIndex = 1 })
@@ -55878,16 +56066,13 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 				})
 			end
 		end
-	elseif kind == "Gems" then
-		hero = icon(holder, { "GemPack" .. math.min(i, 3), "Gem" }, C.Rizz, { ZIndex = 3 })
-		shade(hero)
 	else
 		hero = icon(holder, { CASH_ICONS[i], "Coin" }, C.Gold, { ZIndex = 3 })
 		shade(hero)
 	end
 
 	-- Particles: coins raining onto the pile (Money), orbs floating up out of it (Aura);
-	-- sparkles glint where a coin lands / an orb pops, and all over the pile (Gems).
+	-- sparkles glint where a coin lands / an orb pops.
 	local flyers: { GuiObject } = {}
 	if kind == "Money" then
 		for k = 1, i + 1 do
@@ -55899,9 +56084,8 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 		end
 	end
 	local flyerPool = pool(ctx, flyers)
-	local sparkleCount = if kind == "Gems" then math.min(2 + i, 5) else 2
 	local sparkles: { GuiObject } = {}
-	for k = 1, sparkleCount do
+	for k = 1, 2 do
 		sparkles[k] = sprite(root, "Sparkle", if k % 2 == 0 then WC.Butter else WHITE, { Size = ZERO, ZIndex = 6, Visible = false })
 	end
 
@@ -55955,17 +56139,6 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 			end)
 		end
 	end
-	local gemTurn = 0
-	local function gemGlint()
-		local angle = math.random() * math.pi * 2
-		local radius = 0.08 + math.random() * 0.16
-		glint(cx + math.cos(angle) * radius, cy - 0.04 + math.sin(angle) * radius, 0.2 + 0.03 * i)
-		gemTurn += 1
-		if gemTurn % 3 == 0 then
-			flash(ctx, glow, math.max(glowAlpha - 0.3, 0), glowAlpha, 0.4)
-		end
-	end
-
 	onPlay(ctx, function()
 		tw(ctx, holderScale, 1.2, { Scale = 1.035 }, SINE, INOUT, -1, true)
 		tw(ctx, glow, 1.0, { Size = sq(ctx, glowSize * 1.12) }, SINE, INOUT, -1, true)
@@ -55973,12 +56146,6 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 			loop(ctx, function(nap)
 				launch()
 				nap(if kind == "Money" then 0.75 - 0.12 * i else 0.85 - 0.13 * i)
-			end, math.random() * 0.4)
-		end
-		if kind == "Gems" then
-			loop(ctx, function(nap)
-				gemGlint()
-				nap(0.5 - 0.07 * i)
 			end, math.random() * 0.4)
 		end
 	end)
@@ -56009,11 +56176,6 @@ function ShopScenes.pack(stage: Frame, kind: string, index: number): Scene
 		flash(ctx, glow, 0, glowAlpha, 0.8)
 		for k = 1, #flyers do
 			later(ctx, (k - 1) * 0.05, launch)
-		end
-		if kind == "Gems" then
-			for k = 1, 3 do
-				later(ctx, (k - 1) * 0.08, gemGlint)
-			end
 		end
 		burst(ctx, cx, cy, 5, 10, 0.45)
 	end)
@@ -56064,7 +56226,6 @@ local Theme = Kit.Theme
 local C = Kit.C
 local F = Kit.F
 local T = Kit.TEXT
-local W = Theme.Words
 local Words = Theme.Tutorial
 
 local Tutorial = {}
@@ -56334,7 +56495,7 @@ end
 
 -- "Training complete": a toast-sized banner where the pill sat, queued with
 -- the other popups. Not modal: tap or wait to dismiss.
-local function showCelebrate(gems: number, cash: number, done: () -> ())
+local function showCelebrate(cash: number, done: () -> ())
 	local existing = screen:FindFirstChild("TutorialDone")
 	if existing then
 		existing:Destroy()
@@ -56403,7 +56564,6 @@ local function showCelebrate(gems: number, cash: number, done: () -> ())
 	})
 	Kit.list(rewards, 6, true)
 	local pills = {
-		{ text = string.format("+%d %s", gems, W.Gem), color = C.Rizz },
 		{ text = "+" .. State.money(cash), color = C.Cash },
 	}
 	for i, info in pills do
@@ -56460,7 +56620,7 @@ end
 
 -- Waits for the first-collect cash to finish rolling into the wallet (the
 -- "done" notify can arrive before or after the Cash effect), then queues the banner.
-function Tutorial.celebrate(gems: number, cash: number)
+function Tutorial.celebrate(cash: number)
 	task.spawn(function()
 		task.wait(0.5)
 		local waited = 0.5
@@ -56470,7 +56630,7 @@ function Tutorial.celebrate(gems: number, cash: number)
 			waited += 0.1
 		end
 		deps.popups.enqueue("Tutorial", deps.popups.PRIORITY.Tutorial, function(done)
-			showCelebrate(gems, cash, done)
+			showCelebrate(cash, done)
 		end)
 	end)
 end
@@ -56483,7 +56643,7 @@ function Tutorial.onNotify(payload: { [string]: any })
 			completeAndLeave()
 			shownStep = 0
 		end
-		Tutorial.celebrate(payload.gems or 0, payload.cash or 0)
+		Tutorial.celebrate(payload.cash or 0)
 		-- The merge just discovered a new tier: point at the Index.
 		if deps.highlight then
 			deps.highlight("Index", true)
@@ -56745,7 +56905,7 @@ local function focusWindow(name: string)
 end
 
 -- opts.focus (Shop only): a pass or cosmetic name, or a section ("Passes", "Cosmetics", "Cash",
--- "Aura", "Gems"), to open scrolled to.
+-- "Aura"), to open scrolled to.
 function Windows.open(name: string, opts: { focus: string? }?)
 	if opts and opts.focus and name == "Shop" then
 		Windows.shopFocus = opts.focus
@@ -56828,8 +56988,8 @@ end
 --[[
 	One long page under a pill switcher, top to bottom: the Starter Pack hero
 	card (until owned), a full-width animated banner per game pass, the
-	cosmetics (All Cosmetics bundle + a card grid), then cash, aura and Rizz
-	pack cards. Every banner and pack card has a ShopScenes stage that plays
+	cosmetics (All Cosmetics bundle + a card grid), then cash and aura pack
+	cards. Every banner and pack card has a ShopScenes stage that plays
 	only while the shop is open, so a closed shop costs nothing per frame.
 ]]
 
@@ -56988,27 +57148,10 @@ local SECTIONS = {
 		icon = "Orb",
 		color = C.Violet,
 	},
-	{
-		key = "Gems",
-		pill = W.Gem,
-		title = string.upper(W.Gem),
-		caption = "More " .. W.Gem .. " as your " .. W.Unit .. "s get stronger",
-		icon = "Gem",
-		color = C.Rizz,
-	},
 }
 
 local function iconColor(icon: string): Color3
 	return Kit.ICON_COLORS[icon] or C.Gold
-end
-
-local function gemPackText(amount: number): string
-	return "+" .. Format.commas(amount)
-end
-
--- A Rizz pack card's amount (the Gem icon beside it names the unit).
-local function gemCardText(amount: number): string
-	return Format.commas(amount)
 end
 
 -- "15 min", "1 h", "24 h": how much income or aura a pack is worth.
@@ -57029,7 +57172,7 @@ local BANNER_H = 130 -- pass banner height
 local STAGE_W = 230 -- a banner's animated stage, at the default window...
 local STAGE_MIN_W = 140 -- ...and the narrowest it shrinks to
 local COS_H = 204 -- cosmetic card height
-local PACK_H = 238 -- cash / aura / Rizz card height (stage, amount, one-line caption, price)
+local PACK_H = 238 -- cash / aura card height (stage, amount, one-line caption, price)
 local PACK_STAGE = 125 -- pack card stage (square)
 local PACK_ICON = 26 -- currency icon left of a pack's amount
 local STARTER_H = 120 -- Starter pack card at the top of the page
@@ -57134,15 +57277,13 @@ local function bundleSaving(): number
 end
 
 --[[
-	The Starter pack's cash and Rizz for this player right now, from the same
-	Economy functions (and the same progression) the server grants with.
+	The Starter pack's cash for this player right now, from the same Economy
+	functions (and the same progression) the server grants with.
 ]]
-function Windows.starterAmounts(data: { [string]: any }): (number, number)
+function Windows.starterAmounts(data: { [string]: any }): number
 	local starter = COS.Starter
 	local progression = Economy.progression(data.highestTier or 1, data.processLevel or 0)
-	local cash = Economy.moneyPackAmount(data.income or 0, starter.CashSeconds, starter.CashMin, progression)
-	local pack = Theme.Monetization.GemPacks[starter.GemPack]
-	return cash, Economy.gemPackAmount(pack.Base, progression)
+	return Economy.moneyPackAmount(data.income or 0, starter.CashSeconds, starter.CashMin, progression)
 end
 
 -- The cosmetics part of a snapshot, empty when the server sent none.
@@ -57153,7 +57294,7 @@ local function cosmeticsOf(data: { [string]: any }): { [string]: any }
 end
 Windows.cosmeticsOf = cosmeticsOf
 
--- Pending focus for the next shop open: a section ("Cosmetics", "Cash", "Aura", "Gems" ...), a
+-- Pending focus for the next shop open: a section ("Cosmetics", "Cash", "Aura" ...), a
 -- pass ("DoubleMoney", "StarterPack", "AllCosmetics") or a cosmetic, set by Windows.open.
 Windows.shopFocus = nil :: string?
 -- Opens the MOG TEST picker (VS RIVALS / 1v1 DUEL); Main points it at MogHud.choose
@@ -57208,7 +57349,7 @@ local function buildShop(screen: ScreenGui)
 		table.insert(idleTweens, { tween = TweenService:Create(gui, info, props), gui = gui, rest = rest })
 	end
 
-	-- Header: the big cart icon pops out over the top-left corner; tank, Rizz and cash chips at the right.
+	-- Header: the big cart icon pops out over the top-left corner; tank and cash chips at the right.
 	local chip = window.header:FindFirstChild("Chip")
 	if chip and chip:IsA("GuiObject") then
 		chip.Visible = false
@@ -57305,9 +57446,8 @@ local function buildShop(screen: ScreenGui)
 		}))
 	end
 	local cashChip = walletChip("CashChip", "Coin", C.MoneyText, 146, 60)
-	local gemChip = walletChip("GemChip", "Gem", C.Rizz, 106, 212)
 	-- The tank (aura carried, like the HUD's dumbbell plaque): bought aura flies here.
-	local auraChip = walletChip("AuraChip", "Orb", C.Orb, 120, 324)
+	local auraChip = walletChip("AuraChip", "Orb", C.Orb, 120, 212)
 
 	--[[
 		Section switcher: one pill (icon + label) per section in a well, with a
@@ -57781,7 +57921,7 @@ local function buildShop(screen: ScreenGui)
 		end)
 	end
 
-	-- Purchases: the last product prompted, so landed cash, aura or Rizz flies from its card.
+	-- Purchases: the last product prompted, so landed cash or aura flies from its card.
 	local lastPrompt: { kind: string, entry: Entry, index: number, at: number }? = nil
 
 	-- Candy card for cosmetics: art, outlined title, a darker inset with the description
@@ -57918,7 +58058,7 @@ local function buildShop(screen: ScreenGui)
 		makeEntry(scroll, "Starter", 0, starterTint, COS.Starter.Icon, "Star", 104, UDim2.new(0, 68, 0.5, 0))
 	local starterClip = bannerPaint(starterBody, starterTint, WIDE_R)
 	wideText(starterBody, starterTint, "STARTER PACK")
-	-- What is inside: three chips, with this player's own cash and Rizz amounts.
+	-- What is inside: two chips, this player's own cash amount and the exclusive trail.
 	local chips = Kit.new("Frame", {
 		Name = "Contents",
 		BackgroundTransparency = 1,
@@ -57933,7 +58073,7 @@ local function buildShop(screen: ScreenGui)
 			Name = "Chip" .. order,
 			BackgroundColor3 = Kit.darken(starterTint, 0.3),
 			BackgroundTransparency = 0.05,
-			Size = UDim2.new(1 / 3, -6, 1, 0),
+			Size = UDim2.new(1 / 2, -4, 1, 0),
 			LayoutOrder = order,
 			ZIndex = 3,
 			Parent = chips,
@@ -57973,9 +58113,8 @@ local function buildShop(screen: ScreenGui)
 		return amount
 	end
 	local starterCash = contentChip(1, "Coin", "Coin", C.Gold, "cash")
-	local starterGems = contentChip(2, "Gem", "Gem", C.Rizz, W.Gem)
 	local rookie = COS.Items[COS.Starter.Item]
-	local rookieLabel = contentChip(3, rookie.Icon, "Star", rookie.Color, "exclusive")
+	local rookieLabel = contentChip(2, rookie.Icon, "Star", rookie.Color, "exclusive")
 	rookieLabel.Text = rookie.Title
 	local starterButton, starterSheen = widePrice(starterBody, price(starterPass.Price), function()
 		action:FireServer({ action = "PromptPass", name = COS.Starter.Pass })
@@ -57996,7 +58135,6 @@ local function buildShop(screen: ScreenGui)
 	local starterShown = true
 	local starterWasOwned: boolean? = nil
 	local starterShownCash: number? = nil
-	local starterShownGems: number? = nil
 
 	--[[
 		Section 1: game passes, one full-width banner each. Left: the pass's
@@ -58366,7 +58504,7 @@ local function buildShop(screen: ScreenGui)
 	end
 
 	--[[
-		Sections 3-5: cash, aura and Rizz pack cards. Each card: the pack's
+		Sections 3-4: cash and aura pack cards. Each card: the pack's
 		animated stage (ShopScenes.pack) on a soft halo, the amount this player
 		gets (it rolls when it changes), a short caption and the price button.
 		The cards sit on a deep version of the section colour so the mint price
@@ -58582,37 +58720,6 @@ local function buildShop(screen: ScreenGui)
 		packTags(card, index, #auraPacks)
 	end
 
-	-- Rizz: the same card size as cash and aura, the short row centred.
-	sectionHead(5)
-	local gemPacks = Theme.Monetization.GemPacks
-	local GEM_NAMES = { "Small pack", "Big pack", "Mega pack" }
-	local gemPackGrid = packGrid("Gems", #gemPacks, math.max(#gemPacks, 4), #gemPacks)
-	local gemGrid = gemPackGrid.grid
-	local gemLabels: { TextLabel } = {}
-	local gemShown: { [number]: number } = {}
-	for index, pack in gemPacks do
-		local card = packCard(gemPackGrid, "Gems", index, pack.Price, C.Rizz, Kit.lighten(C.Rizz, 0.45), "Gem")
-		gemLabels[index] = card.amount
-		setAmount(card.amount, gemCardText(pack.Base))
-		card.sub.Text = GEM_NAMES[index] or string.format("%s pack", W.Gem)
-		if index == #gemPacks then
-			ribbon(card.body, "BEST VALUE", RIBBON_CORAL)
-		end
-	end
-	local gemInfo = Kit.text(scroll, {
-		Name = "Info",
-		Text = string.format(
-			"%s unlock %ss instantly and finish %s timers early. You also earn them from new discoveries and free rewards.",
-			W.Gem,
-			string.lower(W.Chest),
-			W.Unlocker
-		),
-		Font = F.Bold,
-		TextSize = 15,
-		TextColor3 = C.Text,
-		TextXAlignment = Enum.TextXAlignment.Center,
-	})
-
 	-- Layout: explicit positions so the switcher knows where each section starts,
 	-- and the grids reflow (cosmetics 3 -> 2 columns, cash and aura 4 -> 2) when the window narrows.
 	local columnsNow = 3
@@ -58665,17 +58772,16 @@ local function buildShop(screen: ScreenGui)
 			{ gui = bundleCell, h = BUNDLE_H, gapAfter = GAP + 6 },
 			{ gui = cosGrid, h = gridH(#COS_ORDER, columns, COS_H), gapAfter = 26 },
 		}
-		local packSections = { { 3, cashGrid }, { 4, auraGrid }, { 5, gemGrid } }
+		local packSections = { { 3, cashGrid }, { 4, auraGrid } }
 		for i, entry in packSections do
 			local packs = packGrids[i]
 			table.insert(blocks, { gui = heads[entry[1]], h = HEAD_H, gapAfter = 14, section = entry[1] })
 			table.insert(blocks, {
 				gui = entry[2],
 				h = gridH(packs.count, packs.columns, PACK_H),
-				gapAfter = if i == #packSections then 10 else 26,
+				gapAfter = 26,
 			})
 		end
-		table.insert(blocks, { gui = gemInfo, h = 40, gapAfter = 12 })
 		-- The Starter card's ribbon overlaps its top edge: start a little lower for it.
 		local y = if starterShown then 12 else 4
 		for _, block in blocks do
@@ -58788,10 +58894,9 @@ local function buildShop(screen: ScreenGui)
 
 	-- Wallet chips ---------------------------------------------------------------------
 	local chipMoney: number? = nil
-	local chipGems: number? = nil
 	local chipAura: number? = nil
 
-	-- Coins or gems fly from a row to the header chip.
+	-- Coins or orbs fly from a row to the header chip.
 	local function flyTo(from: GuiObject, chipLabel: TextLabel, icon: string, color: Color3)
 		if PREVIEW then
 			return
@@ -58857,18 +58962,13 @@ local function buildShop(screen: ScreenGui)
 		-- Starter pack: this player's amounts roll; a purchase celebrates, then the card folds away.
 		local starterOwned = cos.starterOwned == true
 		local starterJust = starterOwned and starterWasOwned == false and open
-		local cash, gems = Windows.starterAmounts(data)
+		local cash = Windows.starterAmounts(data)
 		if starterShownCash and starterShownCash ~= cash and open then
 			Kit.countTo(starterCash, starterShownCash, cash, State.money)
 		elseif starterShownCash ~= cash then
 			starterCash.Text = State.money(cash)
 		end
-		if starterShownGems and starterShownGems ~= gems and open then
-			Kit.countTo(starterGems, starterShownGems, gems, gemPackText)
-		elseif starterShownGems ~= gems then
-			starterGems.Text = gemPackText(gems)
-		end
-		starterShownCash, starterShownGems = cash, gems
+		starterShownCash = cash
 		Kit.setEnabled(starterButton, not starterOwned)
 		Kit.setButton(starterButton, if starterOwned then "✓ OWNED" else price(starterPass.Price))
 		starterTag.Visible = not starterOwned
@@ -58971,7 +59071,7 @@ local function buildShop(screen: ScreenGui)
 		end
 		local open = window.isOpen()
 		-- Header chips roll; a landed purchase flies in from the card that was bought.
-		local money, gems, carried = data.money, data.gems or 0, data.carried or 0
+		local money, carried = data.money, data.carried or 0
 		if chipMoney and money ~= chipMoney and open then
 			Kit.countTo(cashChip, chipMoney, money, State.money)
 			if money > chipMoney and lastPrompt and lastPrompt.kind == "Money" and os.clock() - lastPrompt.at < 120 then
@@ -58980,15 +59080,6 @@ local function buildShop(screen: ScreenGui)
 			end
 		elseif money ~= chipMoney then
 			cashChip.Text = State.money(money)
-		end
-		if chipGems and gems ~= chipGems and open then
-			Kit.countTo(gemChip, chipGems, gems, Format.commas)
-			if gems > chipGems and lastPrompt and lastPrompt.kind == "Gems" and os.clock() - lastPrompt.at < 120 then
-				flyTo(lastPrompt.entry.button, gemChip, "Gem", C.Rizz)
-				lastPrompt = nil
-			end
-		elseif gems ~= chipGems then
-			gemChip.Text = Format.commas(gems)
 		end
 		-- The tank also fills from collecting, so only a jump of about a pack's size counts as the purchase.
 		if chipAura and carried ~= chipAura and open then
@@ -59006,7 +59097,7 @@ local function buildShop(screen: ScreenGui)
 		elseif carried ~= chipAura then
 			auraChip.Text = State.num(carried)
 		end
-		chipMoney, chipGems, chipAura = money, gems, carried
+		chipMoney, chipAura = money, carried
 
 		-- Each player sees their own pack sizes (the server grants with the same functions).
 		local progression = Economy.progression(data.highestTier or 1, data.processLevel or 0)
@@ -59030,17 +59121,6 @@ local function buildShop(screen: ScreenGui)
 				Kit.countTo(auraLabels[index], shown, amount, State.num)
 			elseif shown ~= amount then
 				setAmount(auraLabels[index], State.num(amount))
-			end
-		end
-		for index, pack in gemPacks do
-			local amount = Economy.gemPackAmount(pack.Base, progression)
-			local shown = gemShown[index]
-			gemShown[index] = amount
-			if shown and shown ~= amount and open then
-				fitAmount(gemLabels[index], gemCardText(amount))
-				Kit.countTo(gemLabels[index], shown, amount, gemCardText)
-			elseif shown ~= amount then
-				setAmount(gemLabels[index], gemCardText(amount))
 			end
 		end
 		for name, banner in banners do
@@ -59248,7 +59328,7 @@ local function buildShop(screen: ScreenGui)
 		end
 	end
 
-	-- Kept for callers that pick a section by name ("Passes", "Cosmetics", "Cash", "Aura", "Gems").
+	-- Kept for callers that pick a section by name ("Passes", "Cosmetics", "Cash", "Aura").
 	Windows.selectShopTab = function(key: string)
 		for i, section in SECTIONS do
 			if section.key == key then
@@ -59999,8 +60079,8 @@ local function plural(n: number, word: string, many: string?): string
 	return string.format("%d %s", n, if n == 1 then word else many or word .. "s")
 end
 
--- "Finish: +$X (+N Rizz)" or the cooldown countdown; `bonus` adds a "(xB)" tag.
-local function setRewardLine(label: TextLabel, cash: number, gems: number, full: boolean, cooldownEnds: number, bonus: number?)
+-- "Finish: +$X" or the cooldown countdown; `bonus` adds a "(xB)" tag.
+local function setRewardLine(label: TextLabel, cash: number, full: boolean, cooldownEnds: number, bonus: number?)
 	local left = cooldownEnds - os.time()
 	if not full and left > 0 then
 		label.TextColor3 = C.TextDim
@@ -60011,9 +60091,6 @@ local function setRewardLine(label: TextLabel, cash: number, gems: number, full:
 	local text = "Finish: +" .. Format.money(cash)
 	if bonus and bonus > 1.001 then
 		text ..= string.format("  (×%s)", (string.format("%.1f", bonus):gsub("%.0$", "")))
-	end
-	if gems > 0 then
-		text ..= " +" .. tostring(gems) .. " " .. W.Gem
 	end
 	label.Text = text
 end
@@ -60433,11 +60510,11 @@ local function buildModes(screen: ScreenGui)
 			local currentBonus = if type(current) == "table" then tonumber(current.bonus) or 1 else 1
 			local bonus = tonumber(lv.bonus) or 1
 			local cash = math.floor((tonumber(preview.packCash) or 0) / math.max(currentBonus, 0.01) * bonus + 0.5)
-			-- A level's first clear always pays in full (and adds the first-clear Rizz).
+			-- A level's first clear always pays in full.
 			local first = clears == 0
 			local cooldownEnds = tonumber(info.cooldownEnds) or 0
 			local full = first or cooldownEnds <= os.time()
-			setRewardLine(parkour.reward, cash, if first then Economy.MODE_FIRST_CLEAR_GEMS else 0, full, cooldownEnds, bonus)
+			setRewardLine(parkour.reward, cash, full, cooldownEnds, bonus)
 		end
 		local runningHere = info.running and tonumber(info.level) == selected
 		Kit.setButton(parkour.play, if runningHere then "RESTART" else "PLAY")
@@ -60465,7 +60542,6 @@ local function buildModes(screen: ScreenGui)
 			setRewardLine(
 				mog.reward,
 				tonumber(preview.packCash) or tonumber(preview.cash) or 0,
-				tonumber(preview.gems) or 0,
 				preview.full ~= false,
 				tonumber(info.cooldownEnds) or 0
 			)

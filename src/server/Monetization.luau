@@ -1,7 +1,7 @@
 --[[
 	Monetization: game passes and developer products.
 
-	Developer products: cash packs (Theme.Monetization.MoneyPacks), Rizz packs (GemPacks),
+	Developer products: cash packs (Theme.Monetization.MoneyPacks),
 	aura packs (AuraPacks: aura straight into the tank, Tycoon.grantAura) and the instant
 	crate open. Pack amounts follow the buyer's progression (Shared.Economy).
 
@@ -10,8 +10,9 @@
 	  - on a live server, the player is told it is coming soon.
 
 	Instant crate opening is one developer product for every crate rarity
-	(Theme.Monetization.CrateOpen); the prompted crate's rarity is recorded in
-	profile.pendingCrate so the receipt can pay out even if the crate is gone.
+	(Theme.Monetization.CrateOpen), for the held crate or one still in a smasher; the
+	prompted crate's rarity (and smasher slot) is recorded in profile.pendingCrate
+	(pendingUnlocker) so the receipt can pay out even if the crate is gone.
 	Crates are paid random items, so the product is only offered where PolicyService
 	allows them (unknown or failed lookup = not allowed). The Crate Master pass
 	(Passes.CrateKey) opens every crate free; Tycoon handles that without a prompt.
@@ -61,8 +62,6 @@ end
 local function productList(kind: string): { any }?
 	if kind == "Money" then
 		return theme.Monetization.MoneyPacks
-	elseif kind == "Gems" then
-		return theme.Monetization.GemPacks
 	elseif kind == "Aura" then
 		return theme.Monetization.AuraPacks
 	elseif kind == "LegacyMoney" then
@@ -100,9 +99,6 @@ local function grantProduct(session: Tycoon.Session, kind: string, index: number
 		local pack = (productList(kind) :: { any })[index]
 		local amount = Economy.moneyPackAmount(Tycoon.income(session), pack.Seconds, pack.Min, progression)
 		Tycoon.grantMoney(session, amount)
-	elseif kind == "Gems" then
-		local pack = theme.Monetization.GemPacks[index]
-		Tycoon.grantGems(session, Economy.gemPackAmount(pack.Base, progression))
 	elseif kind == "Aura" then
 		local pack = theme.Monetization.AuraPacks[index]
 		local amount = Economy.auraPackAmount(Tycoon.production(session), pack.Seconds, pack.Min, progression)
@@ -110,19 +106,25 @@ local function grantProduct(session: Tycoon.Session, kind: string, index: number
 	end
 end
 
--- Instant crate open for a held crate of `rarity` (see Tycoon.openCrateProduct).
-function Monetization.promptCrate(player: Player, rarity: string)
+-- Instant crate open for a held crate of `rarity`, or for the crate in smasher `slot`
+-- (see Tycoon.openCrateProduct).
+function Monetization.promptCrate(player: Player, rarity: string, slot: number?)
 	local session = Tycoon.getSession(player)
 	local product = theme.Monetization.CrateOpen
 	if not session or not Economy.isRarity(rarity) then
 		return
 	end
 	if not Monetization.crateRobuxAllowed(player) then
-		Tycoon.toast(session, "Carry it to a " .. theme.Words.Unlocker .. " to open it free!", "info")
+		if slot then
+			Tycoon.toast(session, "Come back when the timer ends!", "info")
+		else
+			Tycoon.toast(session, "Carry it to a " .. theme.Words.Unlocker .. " to open it free!", "info")
+		end
 		return
 	end
 	-- The product is the same for every rarity: remember which crate this prompt is for.
 	session.profile.pendingCrate = rarity
+	session.profile.pendingUnlocker = slot or 0
 	if product.Id == 0 then
 		if RunService:IsStudio() then
 			Tycoon.openCrateProduct(session)
@@ -193,7 +195,7 @@ end
 
 -- (kind, index) of a pack, or ("Crate", true) for the crate product.
 local function findProduct(productId: number): (string?, any)
-	for _, kind in { "Money", "Gems", "Aura", "LegacyMoney" } do
+	for _, kind in { "Money", "Aura", "LegacyMoney" } do
 		for index, product in productList(kind) :: { any } do
 			if product.Id ~= 0 and product.Id == productId then
 				return kind, index
@@ -239,7 +241,8 @@ local function processReceipt(receipt: any): Enum.ProductPurchaseDecision
 	-- that only re-attempts the save, so the player is never paid twice.
 	-- A crate product always pays out, even if the crate was dropped or the
 	-- player rejoined (no session = NotProcessedYet above, retried on rejoin):
-	-- the held crate, else the saved pendingCrate rarity, else a Common crate.
+	-- the prompted smasher's crate, else the held crate, else the saved pendingCrate
+	-- rarity, else a Common crate.
 	if kind == "Crate" then
 		Tycoon.openCrateProduct(session)
 	else

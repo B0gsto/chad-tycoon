@@ -34,7 +34,6 @@ local Theme = Kit.Theme
 local C = Kit.C
 local F = Kit.F
 local T = Kit.TEXT
-local W = Theme.Words
 local Words = Theme.Tutorial
 
 local Tutorial = {}
@@ -304,7 +303,7 @@ end
 
 -- "Training complete": a toast-sized banner where the pill sat, queued with
 -- the other popups. Not modal: tap or wait to dismiss.
-local function showCelebrate(gems: number, cash: number, done: () -> ())
+local function showCelebrate(cash: number, done: () -> ())
 	local existing = screen:FindFirstChild("TutorialDone")
 	if existing then
 		existing:Destroy()
@@ -373,7 +372,6 @@ local function showCelebrate(gems: number, cash: number, done: () -> ())
 	})
 	Kit.list(rewards, 6, true)
 	local pills = {
-		{ text = string.format("+%d %s", gems, W.Gem), color = C.Rizz },
 		{ text = "+" .. State.money(cash), color = C.Cash },
 	}
 	for i, info in pills do
@@ -430,7 +428,7 @@ end
 
 -- Waits for the first-collect cash to finish rolling into the wallet (the
 -- "done" notify can arrive before or after the Cash effect), then queues the banner.
-function Tutorial.celebrate(gems: number, cash: number)
+function Tutorial.celebrate(cash: number)
 	task.spawn(function()
 		task.wait(0.5)
 		local waited = 0.5
@@ -440,7 +438,7 @@ function Tutorial.celebrate(gems: number, cash: number)
 			waited += 0.1
 		end
 		deps.popups.enqueue("Tutorial", deps.popups.PRIORITY.Tutorial, function(done)
-			showCelebrate(gems, cash, done)
+			showCelebrate(cash, done)
 		end)
 	end)
 end
@@ -453,7 +451,7 @@ function Tutorial.onNotify(payload: { [string]: any })
 			completeAndLeave()
 			shownStep = 0
 		end
-		Tutorial.celebrate(payload.gems or 0, payload.cash or 0)
+		Tutorial.celebrate(payload.cash or 0)
 		-- The merge just discovered a new tier: point at the Index.
 		if deps.highlight then
 			deps.highlight("Index", true)
