@@ -8,12 +8,15 @@
 
 	The plaza sits on the -X side of the hub, between the two plot rows: a boardwalk spur
 	leaves the hub ring's -X side at z = 0 and ends on a square wooden deck with the three
-	mode gates in a row on its west edge, under one big GAME MODES sign. Gate 1 leads on foot
-	onto LEVEL 1 (hand-made): it runs west out over the sea along z = 0, turns south at its
-	far end, comes back east along z = -53 and slides down to the finish deck on the beach.
+	mode gates in a row on its west edge, under one big GAME MODES sign. Every gate is a
+	portal: walking through gate 1 teleports the player onto the start deck of their
+	current Parkour level. Nothing of the course stands next to the plaza.
 
-	LEVELS 2..10 are "remote": each is built out at sea inside its own rectangle
-	(level.BOUNDS, also Course.REGIONS[i]) and reached only by teleport. They are generated
+	Every level is "remote": each is built out at sea inside its own rectangle
+	(level.BOUNDS, also Course.REGIONS[i], centred on Course.CENTRES[i]) and reached only by
+	teleport. LEVEL 1 is hand-made (LEVEL1_ELEMENTS, drawn beside the plaza and then moved
+	onto its centre): it runs west along one lane, turns south at its far end, comes back
+	east along a second lane and slides down to the finish deck. LEVELS 2..10 are generated
 	deterministically by Course.generate(n) (own seeded LCG) from Course.TUNING[n], a
 	difficulty table that tightens every level: wider gaps, smaller discs, thinner beams,
 	faster/longer movers, faster spinners, fewer checkpoints, longer paths, bigger height
@@ -22,7 +25,7 @@
 	two turn pads stepping +Z.
 
 	Level fields (Course.LEVELS[i] / Course.level(i)):
-	  index, name, difficulty (1..10), remote (false only for level 1)
+	  index, name, difficulty (1..10), remote (always true: every level is reached by teleport)
 	  palette     Theme.World colour keys: { main, alt, checkpoint, mover, accent, blink }.
 	              Every element's `color` is already one of these.
 	  ELEMENTS    every element (below); PATH = the `path` ones in walking order
@@ -82,12 +85,13 @@ Course.BIG_SIGN = { x = -197, z = 0, width = 56, height = 15, bottom = 28 }
 -- Best-times board on the plaza, facing the spur mouth.
 Course.BOARD = { x = -152, z = 20, faceX = -140, faceZ = 4 }
 
--- Walking west across this line inside gate 1's opening starts a level 1 run.
+-- Walking west across this line inside gate 1's opening starts a Parkour run (the player
+-- is teleported onto the level's start deck).
 Course.START_LINE_X = Course.GATE_X
 
 -- Falling in: feet below WATER_Y beyond the island's shore (horizontal distance from the
 -- world origin greater than WATER_RADIUS) sends a running player back to their checkpoint.
--- Holds for every level (remote levels are all far off the island).
+-- Holds for every level (all of them are far off the island).
 Course.WATER_Y = 1.5
 Course.WATER_RADIUS = 219
 Course.LEAVE_SECONDS = 2.5
@@ -202,9 +206,11 @@ local function checkpoint(index: number, x: number, y: number, z: number, r: num
 	return { kind = "checkpoint", shape = "disc", index = index, x = x, y = y, z = z, r = r, color = color or "Coral", path = true }
 end
 
+-- Level 1, drawn with its start deck at x = -197, z = 0 (where it once began on the beach)
+-- and moved out to sea by LEVEL1_OFFSET below. Path tops are warm (Sunny / Butter, Coral
+-- checkpoints, Orange movers) so they pop against the sea.
 local LEVEL1_ELEMENTS = {
-	-- Start deck and two wide steps up off the beach. Path tops are warm (Sunny / Butter,
-	-- Coral checkpoints, Orange movers) so they pop against the sea.
+	-- Start deck and two wide steps up.
 	box(-197, 0.6, 0, 14, 14, "Sunny", "StartDeck"),
 	box(-210, 2.4, 0, 9, 14, "Butter"),
 	box(-221, 4.2, 0, 9, 14, "Sunny"),
@@ -231,7 +237,7 @@ local LEVEL1_ELEMENTS = {
 		path = true,
 		motion = "slide",
 		axis = { 1, 0, 0 },
-		distance = 3,
+		distance = 2.8,
 		period = 5,
 		phase = 0,
 	},
@@ -285,7 +291,7 @@ local LEVEL1_ELEMENTS = {
 	},
 	box(-268, 16, -53, 12, 12, "Sunny"),
 	checkpoint(7, -252, 15, -53, 7),
-	-- The big slide down to the finish deck on the beach.
+	-- The big slide down to the finish deck.
 	box(-241, 15, -53, 6, 8, "Butter", "SlideTop"),
 	{
 		kind = "slide",
@@ -328,8 +334,9 @@ Course.PALETTES = {
 	{ main = "Grape", alt = "Pink", checkpoint = "Sunny", mover = "RedOrange", accent = "Teal", blink = "Mint" },
 }
 
--- Centre (x, z) of each remote level's rectangle (index 1 unused: level 1 is hand-made).
+-- Centre (x, z) of each level's rectangle.
 Course.CENTRES = {
+	[1] = { -600, 480 },
 	[2] = { 400, 0 },
 	[3] = { 300, -400 },
 	[4] = { -50, -410 },
@@ -704,23 +711,42 @@ function Course.legLength(level: Level, fromIndex: number, toIndex: number): num
 	return total
 end
 
+-- Level 1 as drawn spans x -380..-186, z -74..16 (centre -283, -29); this moves it onto
+-- CENTRES[1] and lifts every top 2 studs so the low decks sit clear of the water line.
+local LEVEL1_OFFSET = { x = Course.CENTRES[1][1] + 283, y = 2, z = Course.CENTRES[1][2] + 29 }
+
+local function shifted(b: Box): Box
+	local o = LEVEL1_OFFSET
+	return { x0 = b.x0 + o.x, x1 = b.x1 + o.x, z0 = b.z0 + o.z, z1 = b.z1 + o.z, y0 = b.y0, y1 = b.y1 }
+end
+
+for _, e in LEVEL1_ELEMENTS do
+	e.x, e.y, e.z = e.x + LEVEL1_OFFSET.x, e.y + LEVEL1_OFFSET.y, e.z + LEVEL1_OFFSET.z
+	for _, key in { "from", "to" } do
+		local point = (e :: any)[key]
+		if point then
+			point[1], point[2], point[3] = point[1] + LEVEL1_OFFSET.x, point[2] + LEVEL1_OFFSET.y, point[3] + LEVEL1_OFFSET.z
+		end
+	end
+end
+
 local level1: Level = {
 	index = 1,
 	name = Course.NAMES[1],
 	difficulty = 1,
-	remote = false,
+	remote = true,
 	palette = Course.PALETTES[1],
 	ELEMENTS = LEVEL1_ELEMENTS,
 	PATH = {},
 	CHECKPOINTS = {},
 	CHECKPOINT_COUNT = 0,
 	-- The start deck, facing west.
-	START = { x = -197, y = 0.6, z = 0, faceX = -1, faceZ = 0 },
-	FINISH = { x0 = -210, x1 = -192, z0 = -60, z1 = -46, y0 = 0, y1 = 10 },
+	START = { x = -197 + LEVEL1_OFFSET.x, y = 0.6 + LEVEL1_OFFSET.y, z = LEVEL1_OFFSET.z, faceX = -1, faceZ = 0 },
+	FINISH = shifted({ x0 = -210, x1 = -192, z0 = -60, z1 = -46, y0 = LEVEL1_OFFSET.y, y1 = 10 + LEVEL1_OFFSET.y }),
 	-- The runner comes off the slide at the deck's west edge.
-	FINISH_ARCH = { x = -204, y = 1.2, z = -53, faceX = -1, faceZ = 0 },
-	WATER_BOX = { x0 = -382, x1 = -218, z0 = -76, z1 = 18, y0 = -1.2, y1 = 1.5 },
-	BOUNDS = { x0 = -380, x1 = -186, z0 = -74, z1 = 16, y0 = -10, y1 = 80 },
+	FINISH_ARCH = { x = -204 + LEVEL1_OFFSET.x, y = 1.2 + LEVEL1_OFFSET.y, z = -53 + LEVEL1_OFFSET.z, faceX = -1, faceZ = 0 },
+	WATER_BOX = shifted({ x0 = -382, x1 = -218, z0 = -76, z1 = 18, y0 = -1.2, y1 = Course.WATER_Y }),
+	BOUNDS = shifted({ x0 = -380, x1 = -186, z0 = -74, z1 = 16, y0 = -10, y1 = 80 }),
 	MIN_LEG_SECONDS = {},
 	TUNING = nil,
 }
@@ -798,10 +824,10 @@ function Course.respawn(level: Level, index: number): ({ number }, { number })
 	return at, { dx / length, dz / length }
 end
 
--- Beach props the hub must not place here (palms, beach balls).
+-- Beach props the hub must not place here (palms, beach balls): the plaza, its spur and the
+-- big sign behind the gates.
 Course.CLEAR = {
-	{ x0 = -222, x1 = -138, z0 = -36, z1 = 36 },
-	{ x0 = -226, x1 = -186, z0 = -64, z1 = -40 },
+	{ x0 = -210, x1 = -138, z0 = -36, z1 = 36 },
 }
 
 return Course

@@ -3157,7 +3157,7 @@ test("Game modes: every level's jumps are fair with the default jump", function(
 			check(not ModesCourse.inWater(at[1], at[2], at[3]), "level " .. li .. " respawn " .. k .. " is dry")
 			check(ModesCourse.inBounds(level, at[1], at[2], at[3]), "level " .. li .. " respawn " .. k .. " is inside the bounds")
 		end
-		check(level.remote == (li > 1), "only level 1 is on foot")
+		check(level.remote, "level " .. li .. " is reached by teleport")
 		check(type(level.name) == "string" and #level.name > 0 and level.difficulty == li, "level " .. li .. " has a name and difficulty")
 		for _, key in { "main", "alt", "checkpoint", "mover", "accent", "blink" } do
 			check(type(level.palette[key]) == "string", "level " .. li .. " palette " .. key)
@@ -3224,14 +3224,15 @@ test("Game modes: parkour regions stay clear of the island, props and each other
 		local dz = math.max(a.z0 - b.z1, 0, b.z0 - a.z1)
 		return math.sqrt(dx * dx + dz * dz)
 	end
-	local level1Box = { x0 = -382, x1 = -186, z0 = -76, z1 = 18 }
-	for i = 2, ModesCourse.LEVEL_COUNT do
+	-- The plaza and its gates: no level may come near them (the course is portal-only).
+	local plazaBox = { x0 = -230, x1 = -118, z0 = -40, z1 = 40 }
+	for i = 1, ModesCourse.LEVEL_COUNT do
 		local r = ModesCourse.REGIONS[i]
 		check(r == ModesCourse.LEVELS[i].BOUNDS, "region " .. i .. " is the level's bounds")
 		for _, c in avoid do
 			check(rectCircle(r, c[1], c[2]) >= c[3], string.format("region %d clears (%d, %d)", i, c[1], c[2]))
 		end
-		check(rectRect(r, level1Box) >= 30, "region " .. i .. " clears level 1")
+		check(rectRect(r, plazaBox) >= 30, "region " .. i .. " clears the plaza")
 		for _, x in { r.x0, r.x1 } do
 			for _, z in { r.z0, r.z1 } do
 				check(x * x + z * z <= 900 * 900, "region " .. i .. " is within 900 studs")
@@ -3261,6 +3262,17 @@ test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", 
 	check(reached[2] ~= nil and reached[2] <= 60, "tier 2 within the first minute")
 	check(reached[6] ~= nil and reached[6] >= 25 * 60 and reached[6] <= 60 * 60, "tier 6 after 25 to 60 minutes")
 	check(reached[10] == nil, "tier 10 not before 3 hours")
+end)
+
+test("loading screen brand matches the theme and assets", function()
+	local Brand = require("../src/loader/Brand")
+	local theme = loadRobloxTheme("src/themes/chad/Theme.luau")
+	local Assets = loadShared("Assets")
+	eq(Brand.GameName, theme.GameName, "Brand.GameName")
+	eq(Brand.Tagline, theme.Tagline, "Brand.Tagline")
+	eq(Brand.Loading.Status, theme.Loading.Status, "Brand.Loading.Status")
+	eq(Brand.KeyArt, Assets.Images["brand/KeyArt"], "Brand.KeyArt")
+	eq(Brand.Logo, Assets.Images["brand/Logo"], "Brand.Logo")
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

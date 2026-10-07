@@ -71,8 +71,8 @@ sand island in the sea.
   Pack), and the All Cosmetics Pack unlocks every non-Starter item. The **Starter Pack** gives a one-time
   cash and Rizz bundle plus the Rookie Trail.
 - **Game Modes.** A plaza on the hub has three gates, each a teleport portal
-  (`src/server/GameModes.luau`, `src/server/Modes/*`). **Parkour** has 10 levels: level 1 is the hand-made
-  course by the gates; levels 2-10 are generated out at sea (`Course.generate`) and get steadily harder
+  (`src/server/GameModes.luau`, `src/server/Modes/*`). **Parkour** has 10 levels, all out at sea and reached
+  only through gate 1's portal: level 1 is hand-made; levels 2-10 are generated (`Course.generate`) and get steadily harder
   (tighter gaps, smaller discs and beams, faster movers and sweepers, blinking pads from level 4, fewer
   checkpoints). Unit tests check every jump on every level is fair for the default jump. Levels unlock in
   order, bests and clears are saved per level, and a finish pays 5 minutes of income (at least 750, `Theme.Modes.Reward`) times a
