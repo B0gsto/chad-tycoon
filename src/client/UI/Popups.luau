@@ -1711,9 +1711,9 @@ end
 	the run time, best and today's rank, the cash reward rolling up or a
 	calm "Reward again in m:ss" line while the full reward is cooling down,
 	and a popping "Level n+1 unlocked!" chip when this clear opened the next level.
-	Buttons: "Next level" (gold, when there is one) beside "Run again", with a slim
-	"Back to my gym" under them; on the last level just "Run again" and "Back to my gym".
-	`data` is the finish Notify payload (time, best, newBest, rank?, cash, full,
+	Buttons: "Next level" (gold, when there is one) beside "Run again", with slim "Choose
+	map" (opens the Maps window) and "Back to my gym" under them; on the last level "Run
+	again" beside "Back to my gym" with a slim "Choose map" under them. `data` is the finish Notify payload (time, best, newBest, rank?, cash, full,
 	cooldownEnds, level, levelName, nextLevel?, unlockedNew).
 ]]
 
@@ -1755,7 +1755,7 @@ local function cashRow(well: Frame, total: number): TextLabel
 	})
 end
 
-function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> (), onNext: (() -> ())?)
+function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> (), onNext: (() -> ())?, onPick: (() -> ())?)
 	Popups.enqueue("ModeFinish", Popups.PRIORITY.Normal, function(done)
 		local cashTotal = tonumber(data.cash) or 0
 		local cooling = data.full == false and (tonumber(data.cooldownEnds) or 0) > os.time()
@@ -1765,7 +1765,8 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		local unlockedNew = data.unlockedNew == true and nextLevel ~= nil
 		-- Height grows with the unlock chip and the third (slim) button.
 		local noteY = if unlockedNew then 284 else 254
-		local buttonsH = if hasNext then 128 else 74
+		local hasPick = onPick ~= nil
+		local buttonsH = if hasNext or hasPick then 128 else 74
 		local box, close = modal("ModeFinish", Vector2.new(480, noteY + 22 + 14 + buttonsH), 45, nil, done)
 		local medal = medallion(box, "🏁", C.Gold, 84, UDim2.new(0.5, 0, 0, 0))
 		Kit.title(box, {
@@ -1840,7 +1841,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			})
 		end
 		-- With a next level: [Next level] [Run again] and a slim "Back to my gym" below.
-		local rowY = if hasNext then -128 else -74
+		local rowY = if hasNext or hasPick then -128 else -74
 		local nextButton: TextButton? = nil
 		if hasNext then
 			nextButton = Kit.button(box, {
@@ -1869,16 +1870,38 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			close()
 			onAgain()
 		end)
+		-- Slim second row: [Choose map] [Back to my gym] with a next level, else a full-width
+		-- [Choose map] under [Run again] [Back to my gym].
+		local homeSize = UDim2.new(0.5, -26, 0, 56)
+		local homePos = UDim2.new(0.5, 6, 1, rowY)
+		if hasNext then
+			homeSize = if hasPick then UDim2.new(0.5, -26, 0, 42) else UDim2.new(1, -40, 0, 42)
+			homePos = if hasPick then UDim2.new(0.5, 6, 1, -60) else UDim2.new(0, 20, 1, -60)
+		end
 		local home = Kit.button(box, {
 			Text = "Back to my gym",
 			Color = C.SurfaceHi,
 			TextSize = if hasNext then T.Body else nil,
-			Size = if hasNext then UDim2.new(1, -40, 0, 42) else UDim2.new(0.5, -26, 0, 56),
-			Position = if hasNext then UDim2.new(0, 20, 1, -60) else UDim2.new(0.5, 6, 1, rowY),
+			Size = homeSize,
+			Position = homePos,
 		}, function()
 			close()
 			onHome()
 		end)
+		local pick: TextButton? = nil
+		if onPick then
+			pick = Kit.button(box, {
+				Name = "ChooseMap",
+				Text = "Choose map",
+				Color = C.SurfaceHi,
+				TextSize = T.Body,
+				Size = if hasNext then UDim2.new(0.5, -26, 0, 42) else UDim2.new(1, -40, 0, 42),
+				Position = UDim2.new(0, 20, 1, -60),
+			}, function()
+				close()
+				onPick()
+			end)
+		end
 		-- Gamepad starts on the loud button; B is "Back to my gym".
 		local primary: GuiObject = nextButton or again
 		primary:SetAttribute("FocusFirst", true)
@@ -1893,6 +1916,9 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		end
 		Kit.appear(again, { from = 0.8, time = 0.26, delay = 0.14 })
 		Kit.appear(home, { from = 0.8, time = 0.26, delay = 0.18 })
+		if pick then
+			Kit.appear(pick, { from = 0.8, time = 0.26, delay = 0.2 })
+		end
 		if unlockChip then
 			local chip = unlockChip
 			chip.Visible = false

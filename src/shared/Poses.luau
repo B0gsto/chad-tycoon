@@ -322,6 +322,114 @@ CHAD.Point = {
 	end,
 }
 
+-- Both fists punched up in a V, pumping.
+CHAD.Victory = {
+	base = P({
+		UpperTorso = { 8, 0, 0 },
+		Head = { 16, 0, 0 },
+		RightUpperArm = { 0, 8, 150 },
+		RightLowerArm = { 0, 0, 14 },
+		RightUpperLeg = { 0, 0, 10 },
+		RightFoot = { 0, 0, -10 },
+	}),
+	anim = function(v, t)
+		local pump = math.abs(math.sin(t * 4.5))
+		add(v, "RightUpperArm", 0, 0, pump * 8)
+		add(v, "LeftUpperArm", 0, 0, -pump * 8)
+		v[ROOT_Y] += 0.05 * pump
+	end,
+}
+
+-- Abs and thigh: hands behind the head, abs crunched, one leg forward.
+CHAD.AbsAndThigh = {
+	base = P({
+		UpperTorso = { -10, 0, 0 },
+		Head = { 4, 0, 0 },
+		RightUpperArm = { 0, -30, 108 },
+		RightLowerArm = { 0, 0, 150 },
+		RightUpperLeg = { 20, 0, 6 },
+		RightLowerLeg = { -12, 0, 0 },
+		RightFoot = { 6, 0, -6 },
+		LeftUpperLeg = { -4, 0, -6 },
+		LeftFoot = { 0, 0, 6 },
+	}, -0.04),
+	anim = function(v, t)
+		add(v, "UpperTorso", -math.abs(math.sin(t * 3)) * 4, 0, 0)
+	end,
+}
+
+-- Flexes the right arm and kisses the peak, other hand on the hip.
+CHAD.BicepKiss = {
+	base = P({
+		UpperTorso = { 4, -10, 0 },
+		Head = { 4, -44, -10 },
+		RightUpperArm = { 0, 12, 96 },
+		RightLowerArm = { 0, 0, 112 },
+		RightHand = { 0, 0, 14 },
+		LeftUpperArm = { 0, 14, -40 },
+		LeftLowerArm = { 14, 0, 102 },
+		LeftHand = { 0, 0, 18 },
+		RightUpperLeg = { 0, 0, 6 },
+		RightFoot = { 0, 0, -6 },
+	}),
+	anim = function(v, t)
+		local kiss = math.max(0, math.sin(t * 3)) ^ 6
+		add(v, "Head", -kiss * 6, -kiss * 6, 0)
+	end,
+}
+
+-- Dab: face in the right elbow, left arm flung up and out.
+CHAD.Dab = {
+	base = P({
+		UpperTorso = { -6, 14, 8 },
+		Head = { -22, 30, 12 },
+		RightUpperArm = { 25, 125, 90 },
+		RightLowerArm = { 0, 0, 80 },
+		LeftUpperArm = { 0, 0, -135 },
+		LeftLowerArm = { 0, 0, 0 },
+		LeftHand = { 0, 0, 0 },
+		RightUpperLeg = { 0, 0, 10 },
+		RightFoot = { 0, 0, -10 },
+	}, -0.02),
+}
+
+-- Finger guns at the viewer, firing in turn.
+CHAD.FingerGuns = {
+	base = P({
+		UpperTorso = { 2, 6, 0 },
+		Head = { 6, -6, -6 },
+		RightUpperArm = { 88, -4, 6 },
+		RightLowerArm = { 4, 0, 0 },
+		RightUpperLeg = { 4, 0, 8 },
+		RightLowerLeg = { -6, 0, 0 },
+		RightFoot = { 0, 0, -8 },
+	}),
+	anim = function(v, t)
+		local right = math.max(0, math.sin(t * 5)) ^ 8
+		local left = math.max(0, -math.sin(t * 5)) ^ 8
+		add(v, "RightUpperArm", right * 14, 0, 0)
+		add(v, "LeftUpperArm", left * 14, 0, 0)
+	end,
+}
+
+-- "Too easy" shrug: forearms out, palms up, head tilted.
+CHAD.Shrug = {
+	base = P({
+		UpperTorso = { 6, 0, 0 },
+		Head = { 8, 0, 20 },
+		RightUpperArm = { 0, 0, 36 },
+		RightLowerArm = { 80, 0, 42 },
+		RightHand = { 0, 0, 20 },
+		RightUpperLeg = { 0, 0, 6 },
+		RightFoot = { 0, 0, -6 },
+	}),
+	anim = function(v, t)
+		local s = math.max(0, math.sin(t * 3)) ^ 2 * 6
+		add(v, "RightUpperArm", 0, 0, s)
+		add(v, "LeftUpperArm", 0, 0, -s)
+	end,
+}
+
 -- Bot poses ----------------------------------------------------------------------
 
 local BOT: { [string]: PoseDef } = {}
@@ -781,7 +889,22 @@ type Set = {
 local SETS: { [string]: Set } = {
 	Chad = {
 		poses = CHAD,
-		order = { "DoubleBiceps", "SideChest", "LatSpread", "MostMuscular", "HandsOnHips", "Mewing", "SmugTurn", "Point" },
+		order = {
+			"DoubleBiceps",
+			"SideChest",
+			"LatSpread",
+			"MostMuscular",
+			"HandsOnHips",
+			"Mewing",
+			"SmugTurn",
+			"Point",
+			"Victory",
+			"AbsAndThigh",
+			"BicepKiss",
+			"Dab",
+			"FingerGuns",
+			"Shrug",
+		},
 		rest = "Relaxed",
 		restEvery = 2,
 		hold = { 1.6, 2.8 },
