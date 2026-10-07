@@ -25,6 +25,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
 
+local Analytics = require(script.Parent.Analytics)
 local DataService = require(script.Parent.DataService)
 local Tycoon = require(script.Parent.Tycoon)
 
@@ -131,6 +132,7 @@ function Monetization.promptCrate(player: Player, rarity: string)
 		end
 		return
 	end
+	Analytics.shop(player, 2, "Prompted")
 	MarketplaceService:PromptProductPurchase(player, product.Id)
 end
 
@@ -165,6 +167,7 @@ function Monetization.promptPass(player: Player, name: string)
 		end
 		return
 	end
+	Analytics.shop(player, 2, "Prompted")
 	MarketplaceService:PromptGamePassPurchase(player, pass.Id)
 end
 
@@ -184,6 +187,7 @@ function Monetization.promptProduct(player: Player, kind: string, index: number)
 		end
 		return
 	end
+	Analytics.shop(player, 2, "Prompted")
 	MarketplaceService:PromptProductPurchase(player, product.Id)
 end
 
@@ -241,6 +245,7 @@ local function processReceipt(receipt: any): Enum.ProductPurchaseDecision
 	else
 		grantProduct(session, kind, index)
 	end
+	Analytics.shop(session.player, 3, "Purchased")
 	table.insert(profile.receipts, receipt.PurchaseId)
 	while #profile.receipts > MAX_RECEIPTS do
 		table.remove(profile.receipts, 1)
@@ -257,6 +262,7 @@ function Monetization.init(themeModule: any)
 		end
 		for name, pass in theme.Monetization.Passes do
 			if pass.Id == passId then
+				Analytics.shop(player, 3, "Purchased")
 				Tycoon.setPass(player, name)
 				local session = Tycoon.getSession(player)
 				if session then
