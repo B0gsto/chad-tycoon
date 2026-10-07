@@ -141,6 +141,7 @@ end
 -- Each pass banner is fully tinted with its own candy colour (mint is kept for the price buttons).
 local PASS_TINTS: { [string]: Color3 } = {
 	AutoLoot = Theme.World.Sunny,
+	AutoMerge = Theme.World.Orange,
 	AutoCash = Theme.World.Coral,
 	DoubleAura = Theme.World.Grape,
 	DoubleMoney = Theme.World.Blue,
@@ -3202,7 +3203,7 @@ local function buildSettings(screen: ScreenGui)
 					t.sub.Text = "Merge pairs automatically"
 				else
 					t.set(false, true)
-					t.sub.Text = "Unlock it on the Auto Merge pad (" .. Format.money(Economy.AUTO_MERGE_COST) .. ")"
+					t.sub.Text = "Game pass: tap to get it (" .. price(Theme.Monetization.Passes.AutoMerge.Price) .. ")"
 				end
 			else
 				on = data.settings[t.key] == true

@@ -1,7 +1,7 @@
 --[[
 	ShopScenes: the little looping animations on the shop's pass banners and pack cards.
 
-	  ShopScenes.pass(stage, name, tint)  one banner scene per game pass key (AutoLoot,
+	  ShopScenes.pass(stage, name, tint)  one banner scene per game pass key (AutoLoot, AutoMerge,
 	                                      AutoCash, DoubleAura, DoubleMoney, PremiumUnlocker,
 	                                      CrateKey, StarterPack, AllCosmetics; anything else
 	                                      gets a sparkling star)
@@ -821,6 +821,143 @@ PASSES.AutoLoot = function(ctx, _tint)
 		Kit.pop(hero, 0.9)
 		flash(ctx, glow, 0, GLOW, 0.8)
 		burst(ctx, cx, cy, 6, 14)
+	end)
+end
+
+-- Auto Merge: two matching Chads hop, slide together and fuse into one bigger Chad of the
+-- next tier (a star pop, a ring and an "AUTO-MERGED!" sticker), then a new pair pops in.
+PASSES.AutoMerge = function(ctx, _tint)
+	local root, A = ctx.root, ctx.aspect
+	local cx, cy = 0.5, 0.6
+	local lxh, rxh = 0.46, A - 0.46 -- pair centres (x in h)
+	local PAIR, BIG = 0.46, 0.62
+	local GLOW = 0.5
+	local tier = math.clamp(3, 1, math.max(#Theme.OrbColors - 1, 1))
+	local glow = sprite(root, "SoftDot", WC.Sunny, { Size = box(ctx, 1.6, 1.1), Position = at(cx, cy), ZIndex = 1 })
+	local ring = sprite(root, "Ring", Kit.lighten(WC.Sunny, 0.3), { Size = sq(ctx, 0.5), Position = at(cx, cy), ZIndex = 2 })
+	-- The merge mark between the pair; it shrinks away while they slide in.
+	local mark = icon(root, { "Merge" }, C.Cash, { Size = sq(ctx, 0.3), Position = at(cx, cy), ZIndex = 3 })
+	shade(mark)
+
+	-- A tier-coloured candy disc with a Chad on it and a tier tag (pops ~1.2: a 0.62 h
+	-- unit at y 0.6 peaks 0.23 .. 0.97).
+	local function unit(name: string, t: number, size: number, x: number): GuiObject
+		local holder = node("Frame", root, { Name = name, Size = sq(ctx, size), Position = at(x, cy), ZIndex = 4 })
+		orb(holder, OrbLook.tierColor(t, Theme.OrbColors), { Size = FULL, Position = at(0.5, 0.5), ZIndex = 4 })
+		shade(icon(holder, { "Chad" }, C.Text, { Size = UDim2.fromScale(0.74, 0.74), Position = at(0.5, 0.47), ZIndex = 5 }))
+		local tag = node("Frame", holder, { Size = UDim2.fromScale(0.4, 0.4), Position = at(0.84, 0.84), ZIndex = 6 })
+		paint(tag, WC.Sunny, -1, WC.Ink, 2)
+		sticker(tag, tostring(t), WHITE, { Size = UDim2.fromScale(0.68, 0.68), Position = at(0.5, 0.5), ZIndex = 7 }, 2)
+		return holder
+	end
+	local left = unit("Left", tier, PAIR, lxh / A)
+	local right = unit("Right", tier, PAIR, rxh / A)
+	local fused = unit("Fused", tier + 1, BIG, cx)
+	-- 1.3 x 0.2 h across the top (0.03 .. 0.23 at a 1.1 pop).
+	local label = sticker(root, "AUTO-MERGED!", WC.Sunny, {
+		Name = "Merged",
+		Size = box(ctx, 1.3, 0.2),
+		Position = at(cx, 0.13),
+		Rotation = -4,
+		ZIndex = 8,
+	}, 3)
+	local spots = { { 0.2, 0.25 }, { 0.8, 0.3 }, { 0.68, 0.86 } }
+	local sparkles = {}
+	for i, spot in spots do
+		sparkles[i] = sprite(root, "Sparkle", WC.Butter, { Size = ZERO, Position = at(spot[1], spot[2]), ZIndex = 7, Visible = false })
+	end
+
+	local function ringPulse(strength: number)
+		ring.Size = sq(ctx, 0.4)
+		setAlpha(ring, 0.05)
+		tw(ctx, ring, 0.9, { Size = sq(ctx, 1.25 * strength) }, QUAD, OUT)
+		fade(ctx, ring, 0.9, 1, QUAD, OUT)
+	end
+	local turn = 0
+	local function fuse()
+		left.Visible = false
+		right.Visible = false
+		fused.Visible = true
+		fused.Size = sq(ctx, 0.3)
+		tw(ctx, fused, 0.32, { Size = sq(ctx, BIG) }, BACK, OUT)
+		flash(ctx, glow, 0.05, GLOW, 0.6)
+		ringPulse(1)
+		burst(ctx, cx, cy, 4, 0, 0.45)
+		label.Visible = true
+		label.Size = ZERO
+		tw(ctx, label, 0.28, { Size = box(ctx, 1.3, 0.2) }, BACK, OUT)
+		turn = turn % #sparkles + 1
+		twinkle(ctx, sparkles[turn], sq(ctx, 0.26), 0.15)
+	end
+
+	onPlay(ctx, function()
+		tw(ctx, glow, 1.1, { Size = box(ctx, 1.8, 1.25) }, SINE, INOUT, -1, true)
+		loop(ctx, function(nap)
+			-- Hop, then slide together.
+			Kit.pop(left, 0.5)
+			Kit.pop(right, 0.5)
+			if not nap(0.45) then
+				return
+			end
+			tw(ctx, left, 0.42, { Position = at((cx * A - 0.08) / A, cy) }, QUAD, IN)
+			tw(ctx, right, 0.42, { Position = at((cx * A + 0.08) / A, cy) }, QUAD, IN)
+			tw(ctx, mark, 0.25, { Size = ZERO }, QUAD, IN)
+			if not nap(0.42) then
+				return
+			end
+			fuse()
+			if not nap(1.3) then
+				return
+			end
+			-- Out with the big one, in with a fresh pair.
+			tw(ctx, fused, 0.2, { Size = ZERO }, QUAD, IN)
+			tw(ctx, label, 0.2, { Size = ZERO }, QUAD, IN)
+			if not nap(0.22) then
+				return
+			end
+			fused.Visible = false
+			label.Visible = false
+			for k, u in { left, right } do
+				u.Position = at((if k == 1 then lxh else rxh) / A, cy)
+				u.Size = ZERO
+				u.Visible = true
+				tw(ctx, u, 0.3, { Size = sq(ctx, PAIR) }, BACK, OUT)
+			end
+			tw(ctx, mark, 0.3, { Size = sq(ctx, 0.3) }, BACK, OUT)
+			nap(0.7)
+		end, 0.3)
+	end)
+	onRest(ctx, function()
+		glow.Size = box(ctx, 1.6, 1.1)
+		setAlpha(glow, GLOW)
+		ring.Size = sq(ctx, 0.5)
+		setAlpha(ring, 1)
+		left.Position = at(lxh / A, cy)
+		right.Position = at(rxh / A, cy)
+		for _, u in { left, right } do
+			u.Size = sq(ctx, PAIR)
+			u.Visible = true
+		end
+		fused.Size = sq(ctx, BIG)
+		fused.Visible = false
+		mark.Size = sq(ctx, 0.3)
+		label.Size = box(ctx, 1.3, 0.2)
+		label.Visible = PREVIEW
+		for _, s in sparkles do
+			s.Visible = PREVIEW
+			s.Size = if PREVIEW then sq(ctx, 0.22) else ZERO
+		end
+	end)
+	onCelebrate(ctx, function()
+		ringPulse(1.3)
+		later(ctx, 0.12, function()
+			ringPulse(1.3)
+		end)
+		for _, u in { left, right, fused } do
+			Kit.pop(u, 1)
+		end
+		flash(ctx, glow, 0, GLOW, 0.8)
+		burst(ctx, cx, cy, 7, 14)
 	end)
 end
 
