@@ -40,6 +40,7 @@
 	              (picker cards and landmark tints; path tops are rainbow, see RAINBOW)
 	  ELEMENTS    every element (below); PATH = the `path` ones in walking order
 	  CHECKPOINTS checkpoint elements by index; CHECKPOINT_COUNT
+	  KILLS       the map's kill elements (lava), in ELEMENTS order
 	  STAGE_FIRST global stage of the start deck; checkpoint k is stage STAGE_FIRST + k;
 	  STAGE_LAST  the finish deck's stage (STAGE_FIRST + CHECKPOINT_COUNT + 1), which is the
 	              next map's STAGE_FIRST
@@ -74,6 +75,10 @@
 	              along Z)
 	  bounce      bounce pad of radius `r` on a deck top `y`: launches the player up at `power`
 	              studs/s (the next path element may be higher than a normal jump)
+	  kill        lava box (not a path element) standing on a path deck's top `y`: sx by sz,
+	              `h` tall, colour "Lava"; a sliding bar also has motion "slide", axis,
+	              distance, period and phase (same formula as movers). Maps 2..10 carry
+	              Course.killCount(n) of them (placeKills); Course.inKill checks feet.
 	  blink       box pad (sx, sz; path) that is solid only part of the time: solid when
 	              ((t + phase) % period) < on, with t = server time (workspace:
 	              GetServerTimeNow()); otherwise non-collidable and faded. Never two in a row.
@@ -89,9 +94,9 @@ local Course = {}
 Course.PLAZA = { x0 = -190, x1 = -140, z0 = -28, z1 = 28, top = 0.5 }
 Course.SPUR = { x0 = -140, x1 = -118, half = 6, top = 0.3 }
 -- Where GoModes / ModeQuit put the player (feet): the spur end facing the gates (-X), and
--- in front of the gates facing back toward the hub (+X).
-Course.ARRIVAL = { x = -146, y = 0.5, z = 0 }
-Course.QUIT = { x = -180, y = 0.5, z = 0 }
+-- in front of the gates facing back toward the hub (+X). faceX: the direction faced.
+Course.ARRIVAL = { x = -146, y = 0.5, z = 0, faceX = -1 }
+Course.QUIT = { x = -180, y = 0.5, z = 0, faceX = 1 }
 
 -- Mode gates: one per catalog slot, in a row on the plaza's west edge, fronts facing the
 -- hub (+X). GATE_HALF is half the opening width of the open (slot 1) gate; locked gates are
@@ -111,6 +116,29 @@ Course.BOARD = { x = -152, z = 20, faceX = -140, faceZ = 4 }
 -- Walking west across this line inside gate 1's opening starts a Parkour run (the player
 -- is teleported onto the level's start deck).
 Course.START_LINE_X = Course.GATE_X
+
+-- The second plaza: the first mirrored onto the hub's +X side (x -> -x), its gates on the
+-- east edge facing -X (toward the hub), the same catalog gates and signs. Walking EAST
+-- across START_LINE2_X inside gate 1's opening starts a run there.
+Course.PLAZA2 = { x0 = -Course.PLAZA.x1, x1 = -Course.PLAZA.x0, z0 = Course.PLAZA.z0, z1 = Course.PLAZA.z1, top = Course.PLAZA.top }
+Course.SPUR2 = { x0 = -Course.SPUR.x1, x1 = -Course.SPUR.x0, half = Course.SPUR.half, top = Course.SPUR.top }
+Course.ARRIVAL2 = { x = -Course.ARRIVAL.x, y = Course.ARRIVAL.y, z = Course.ARRIVAL.z, faceX = -Course.ARRIVAL.faceX }
+Course.QUIT2 = { x = -Course.QUIT.x, y = Course.QUIT.y, z = Course.QUIT.z, faceX = -Course.QUIT.faceX }
+Course.GATE2_X = -Course.GATE_X
+Course.GATES2 = {
+	[1] = { z = Course.GATES[1].z },
+	[2] = { z = Course.GATES[2].z },
+	[3] = { z = Course.GATES[3].z },
+}
+Course.BIG_SIGN2 = {
+	x = -Course.BIG_SIGN.x,
+	z = Course.BIG_SIGN.z,
+	width = Course.BIG_SIGN.width,
+	height = Course.BIG_SIGN.height,
+	bottom = Course.BIG_SIGN.bottom,
+}
+Course.BOARD2 = { x = -Course.BOARD.x, z = Course.BOARD.z, faceX = -Course.BOARD.faceX, faceZ = Course.BOARD.faceZ }
+Course.START_LINE2_X = Course.GATE2_X
 
 -- Falling in: feet below WATER_Y beyond the island's shore (horizontal distance from the
 -- world origin greater than WATER_RADIUS) sends a running player back to their checkpoint.
@@ -274,6 +302,7 @@ export type Level = {
 	ELEMENTS: { Element },
 	PATH: { Element },
 	CHECKPOINTS: { Element },
+	KILLS: { Element },
 	CHECKPOINT_COUNT: number,
 	STAGE_FIRST: number,
 	STAGE_LAST: number,
@@ -1108,6 +1137,157 @@ local function deckClear(elements: { Element }, except: Element, e: Element): bo
 	return true
 end
 
+-- Kill elements (lava) on map n's wide path decks, in its local frame: up to 1 + n // 3 of
+-- them (Course.killCount), at most KILL_PER_DECK per deck, KILL_SPACING studs clear of each
+-- other; fewer when the decks run out. A deck qualifies when it is a plain box pad (not the start/finish deck, a
+-- checkpoint, mover, blink pad or ring) at least KILL_MIN_DECK long along the walking axis
+-- (the direction from the previous path element). A strip lies across the deck KILL_WIDTH
+-- wide, leaving KILL_CLEAR studs of the deck free on each side along the walking axis and
+-- KILL_GAP studs from every wall and bounce pad on it; a deck KILL_SLIDE_DECK long or more
+-- with no wall or bounce pad may instead carry a sliding bar (centre of the deck, moving
+-- +-(extent / 2 - KILL_CLEAR) along the walking axis). Decks with spinners (they already guard
+-- them) carry lava only when the map has no other deck.
+Course.KILL_WIDTH = 1.6
+Course.KILL_PER_DECK = 2
+Course.KILL_SPACING = 6
+Course.KILL_HEIGHT = 0.6
+Course.KILL_CLEAR = 4
+Course.KILL_GAP = 2
+Course.KILL_MIN_DECK = 16
+Course.KILL_SLIDE_DECK = 20
+
+function Course.killCount(n: number): number
+	return if n >= 2 then 1 + n // 3 else 0
+end
+
+local function placeKills(elements: { Element }, n: number, rand: () -> number): { Element }
+	local want = Course.killCount(n)
+	if want == 0 then
+		return {}
+	end
+	type Spot = { deck: Element, alongX: boolean, length: number, offsets: { number }, slide: boolean, used: { number } }
+	local w = Course.KILL_WIDTH / 2
+	local calmSpots, busySpots = {} :: { Spot }, {} :: { Spot }
+	local before: Element? = nil
+	for _, e in elements do
+		if not e.path then
+			continue
+		end
+		local from = before
+		before = e
+		if not from or e.kind ~= "pad" or e.shape ~= "box" or e.name == "StartDeck" or e.name == "FinishDeck" or e.name == "Bridge" then
+			continue
+		end
+		local alongX = math.abs(e.x - from.x) >= math.abs(e.z - from.z)
+		local length = (if alongX then e.sx else e.sz) :: number
+		if length < Course.KILL_MIN_DECK then
+			continue
+		end
+		-- Walls and bounce pads on this deck ({ along-axis offset, half extent }), and spinners.
+		local blocks: { { number } } = {}
+		local spinners = false
+		for _, o in elements do
+			local on = math.abs(o.y - e.y) < 0.01
+				and math.abs(o.x - e.x) <= (e.sx :: number) / 2
+				and math.abs(o.z - e.z) <= (e.sz :: number) / 2
+			if on and o.kind == "wall" then
+				table.insert(blocks, { if alongX then o.x - e.x else o.z - e.z, ((if alongX then o.sx else o.sz) :: number) / 2 })
+			elseif on and o.kind == "bounce" then
+				table.insert(blocks, { if alongX then o.x - e.x else o.z - e.z, o.r :: number })
+			elseif on and o.kind == "spinner" then
+				spinners = true
+			end
+		end
+		-- Strip centres every 0.2 studs, KILL_CLEAR from both ends and KILL_GAP from blocks.
+		local limit = length / 2 - Course.KILL_CLEAR - w
+		local offsets = {}
+		for k = -math.floor(limit * 5 + 1e-6), math.floor(limit * 5 + 1e-6) do
+			local c = k / 5
+			local ok = true
+			for _, b in blocks do
+				ok = ok and math.abs(c - b[1]) - w - b[2] >= Course.KILL_GAP - 1e-6
+			end
+			if ok then
+				table.insert(offsets, c)
+			end
+		end
+		local slide = length >= Course.KILL_SLIDE_DECK and #blocks == 0
+		if #offsets > 0 or slide then
+			local spot = { deck = e, alongX = alongX, length = length, offsets = offsets, slide = slide, used = {} }
+			table.insert(if spinners then busySpots else calmSpots, spot)
+		end
+	end
+	local kills: { Element } = {}
+	local function add(spot: Spot, slide: boolean, offset: number)
+		local e = spot.deck
+		local across = (if spot.alongX then e.sz else e.sx) :: number
+		local kill: Element = {
+			kind = "kill",
+			x = if spot.alongX then round2(e.x + offset) else e.x,
+			y = e.y,
+			z = if spot.alongX then e.z else round2(e.z + offset),
+			sx = if spot.alongX then Course.KILL_WIDTH else across,
+			sz = if spot.alongX then across else Course.KILL_WIDTH,
+			h = Course.KILL_HEIGHT,
+			color = "Lava",
+		}
+		if slide then
+			kill.motion = "slide"
+			kill.axis = if spot.alongX then { 1, 0, 0 } else { 0, 0, 1 }
+			kill.distance = round2(spot.length / 2 - Course.KILL_CLEAR)
+			kill.period = round2(4 + 2 * rand())
+			kill.phase = round2(rand() * 2 * math.pi)
+			spot.offsets = {}
+		end
+		table.insert(spot.used, offset)
+		table.insert(kills, kill)
+	end
+	-- Strip centres on a deck still KILL_SPACING (plus both half widths) from its other strips.
+	local function free(spot: Spot): { number }
+		local out = {}
+		if #spot.used >= Course.KILL_PER_DECK then
+			return out
+		end
+		for _, c in spot.offsets do
+			local ok = true
+			for _, u in spot.used do
+				ok = ok and math.abs(c - u) >= 2 * w + Course.KILL_SPACING - 1e-6
+			end
+			if ok then
+				table.insert(out, c)
+			end
+		end
+		return out
+	end
+	-- One per deck, picked at random (spinner decks only when there is no other); then, if
+	-- decks run short, a second strip on decks that already have one.
+	local order: { Spot } = {}
+	local list = if #calmSpots > 0 then calmSpots else busySpots
+	-- (A sliding bar takes its whole deck: none when decks are short.)
+	local plenty = #list >= want
+	do
+		while #kills < want and #list > 0 do
+			local spot = table.remove(list, 1 + math.floor(rand() * #list)) :: Spot
+			table.insert(order, spot)
+			local slide = spot.slide and (#spot.offsets == 0 or (plenty and rand() < 0.5))
+			add(spot, slide, if slide then 0 else spot.offsets[1 + math.floor(rand() * #spot.offsets)])
+		end
+	end
+	local progress = true
+	while #kills < want and progress do
+		progress = false
+		for _, spot in order do
+			local room = free(spot)
+			if #kills < want and #room > 0 then
+				add(spot, false, room[1 + math.floor(rand() * #room)])
+				progress = true
+			end
+		end
+	end
+	assert(#kills >= 1, `Course.generate: level {n} has no deck for lava`)
+	return kills
+end
+
 -- One map before it is placed: everything in its local frame.
 type Local = {
 	n: number,
@@ -1128,10 +1308,13 @@ local KINDS = { "pad", "disc", "beam", "slide", "bob", "spinner", "walls", "blin
 local LIVELY = { slide = true, bob = true, blink = true, ramp = true }
 
 local function finalize(level: Level)
-	level.PATH, level.CHECKPOINTS = {}, {}
+	level.PATH, level.CHECKPOINTS, level.KILLS = {}, {}, {}
 	for _, element in level.ELEMENTS do
 		if element.path then
 			table.insert(level.PATH, element)
+		end
+		if element.kind == "kill" then
+			table.insert(level.KILLS, element)
 		end
 		if element.kind == "checkpoint" then
 			level.CHECKPOINTS[element.index :: number] = element
@@ -1378,6 +1561,10 @@ local function generateLocal(n: number): Local
 	assert(x0 >= X_FLOOR - 1e-6, `Course.generate: level {n} reaches behind its start deck`)
 	assert(z1 <= prev.z + (prev.sz :: number) / 2 + 1e-6, `Course.generate: level {n} finish is not its outer edge`)
 	local props = placeScenery(elements, map.theme, n, 1, { 1, 0 }, rand)
+	-- Lava last (after the scenery, from the same rng), so nothing above shifts.
+	for _, kill in placeKills(elements, n, rand) do
+		table.insert(elements, kill)
+	end
 	return {
 		n = n,
 		elements = elements,
@@ -1659,6 +1846,7 @@ local function place(L: Local, f: Frame): Level
 		ELEMENTS = L.elements,
 		PATH = {},
 		CHECKPOINTS = {},
+		KILLS = {},
 		CHECKPOINT_COUNT = 0,
 		STAGE_FIRST = f.stageFirst,
 		STAGE_LAST = f.stageFirst + checkpoints + 1,
@@ -1825,9 +2013,52 @@ function Course.inWater(_x: number, y: number, _z: number): boolean
 	return y < Course.FLOOR_Y
 end
 
--- Did a player's feet cross the start line westward inside gate 1's opening?
+-- Did a player's feet cross a start line inside gate 1's opening: westward at the first
+-- plaza (-X) or eastward at the second (+X)?
 function Course.crossedStart(prevX: number, x: number, z: number): boolean
-	return prevX > Course.START_LINE_X and x <= Course.START_LINE_X and math.abs(z - Course.GATES[1].z) <= Course.GATE_HALF + 1
+	if prevX > Course.START_LINE_X and x <= Course.START_LINE_X then
+		return math.abs(z - Course.GATES[1].z) <= Course.GATE_HALF + 1
+	end
+	if prevX < Course.START_LINE2_X and x >= Course.START_LINE2_X then
+		return math.abs(z - Course.GATES2[1].z) <= Course.GATE_HALF + 1
+	end
+	return false
+end
+
+export type Spot = { x: number, y: number, z: number, faceX: number }
+
+local function closer(a: Spot, b: Spot, x: number, z: number): Spot
+	return if (x - b.x) ^ 2 + (z - b.z) ^ 2 < (x - a.x) ^ 2 + (z - a.z) ^ 2 then b else a
+end
+
+-- The quit spot (in front of the gates, facing the hub) of the plaza nearer to (x, z).
+function Course.nearestQuit(x: number, z: number): Spot
+	return closer(Course.QUIT, Course.QUIT2, x, z)
+end
+
+-- The arrival spot (the spur end, facing the gates) of the plaza nearer to (x, z).
+function Course.nearestArrival(x: number, z: number): Spot
+	return closer(Course.ARRIVAL, Course.ARRIVAL2, x, z)
+end
+
+-- Are a player's feet in one of the level's kill boxes at server time t (a sliding bar at
+-- its pose then): inside it horizontally and y in [top - 0.5, top + h + 2.5]?
+function Course.inKill(level: Level, x: number, y: number, z: number, t: number): boolean
+	for _, k in level.KILLS do
+		if y < k.y - 0.5 or y > k.y + (k.h or 0) + 2.5 then
+			continue
+		end
+		local cx, cz = k.x, k.z
+		if k.motion == "slide" then
+			local axis = k.axis :: { number }
+			local d = (k.distance :: number) * math.sin(2 * math.pi * t / (k.period :: number) + (k.phase or 0))
+			cx, cz = cx + axis[1] * d, cz + axis[3] * d
+		end
+		if math.abs(x - cx) <= (k.sx :: number) / 2 and math.abs(z - cz) <= (k.sz :: number) / 2 then
+			return true
+		end
+	end
+	return false
 end
 
 -- Respawn spot for checkpoint `index` (0 = start deck) on `level`: feet position
@@ -1851,10 +2082,11 @@ function Course.respawn(level: Level, index: number): ({ number }, { number })
 	return at, { dx / length, dz / length }
 end
 
--- Beach props the hub must not place here (palms, beach balls): the plaza, its spur and the
--- big sign behind the gates.
+-- Beach props the hub must not place here (palms, beach balls): both plazas, their spurs
+-- and the big signs behind the gates (the second mirrors the first).
 Course.CLEAR = {
 	{ x0 = -210, x1 = -138, z0 = -36, z1 = 36 },
+	{ x0 = 138, x1 = 210, z0 = -36, z1 = 36 },
 }
 
 return Course

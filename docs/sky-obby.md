@@ -106,3 +106,31 @@ This file is the contract between the parts (see docs/parkour-maps.md for the pr
   very light); `SpinAxis` support for windmills.
 - Finish card shows "Assisted run" instead of best/rank lines when `assisted`.
 - Map picker preview camera still frames the level's bounding box (now including islands).
+
+## Hazards, second plaza, bigger signs (round 3)
+
+- **Kill elements** (`Course`): element `{ kind = "kill", x, y, z, sx, sz, h = 0.6, color = "Lava",
+  motion?, axis?, distance?, period?, phase? }` standing ON a path pad's top (`y` = the pad top).
+  Two uses: a lava strip across a wide deck (hop over it; at least 4 studs of the deck stay clear
+  on each side along the walking axis) and a sliding lava bar on big decks (`motion = "slide"`,
+  same formula as movers). From map 2 up, 1 + difficulty // 3 per map. Pure check
+  `Course.inKill(level, x, y, z, t) -> boolean` (feet inside the box at its pose at server
+  time t, y in [top - 0.5, top + h + 2.5]). Kill elements are not path elements and never
+  change jump fairness.
+- **World**: kill boxes are parts named "KillBrick" (tag `KillBrick`, attribute `Hazard = "kill"`),
+  red/black diagonal stripes (Neon red core `Lava` + black bands), CanCollide false; sliding ones
+  are a `ModeMover` slide root with the brick as a child (client moves it; the server computes the
+  same pose). Theme.World gains `Lava` (255, 60, 40) if missing.
+- **Server** (`Parkour.tick`): `Course.inKill` → respawn at the last checkpoint with effect
+  `"ModeKill" { pos }` and notify `{ event = "respawn", index, reason = "kill" }`.
+- **Client** (`Fx.Modes`): `ModeKill` = red/black poof + screen flash; `KillBrick` parts pulse.
+- **Second plaza** (`Course.PLAZA2`, `GATES2`, `ARRIVAL2`, `QUIT2`): the GAME MODES plaza mirrored
+  on the hub's +X side (x -> -x), gates facing -X toward the hub, same catalog gates and signs.
+  `Course.crossedStart(prevX, x, z)` is true for crossing either portal (west through gate 1,
+  east through the mirrored gate 1); `Course.nearestQuit(x, z)` / `nearestArrival(x, z)` return the
+  closer spot; GameModes.toGates / toPlaza use them (the player's current x decides).
+- **Bigger signs**: the start arch's "GO GO GO!" sign 1.6x taller/wider with text to match; every
+  checkpoint flag and its number sign 2x; the finish "FINISH" banner 1.4x.
+- **Flicker**: no two coplanar faces anywhere in the obby builders (lips, undersides, stripes,
+  decals: offset by 0.05), no overlapping translucent parts (clouds and foam become opaque
+  Transparency 0, or non-overlapping), blink pads fade via Transparency only on one part.

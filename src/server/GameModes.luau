@@ -203,14 +203,41 @@ local function spot(s: { x: number, y: number, z: number }): Vector3
 	return Vector3.new(s.x, s.y, s.z)
 end
 
--- The plaza's arrival point (end of the spur), facing the gates.
-function GameModes.toPlaza(player: Player)
-	GameModes.teleport(player, spot(Course.ARRIVAL), Vector3.new(-1, 0, 0))
+type Spot = { x: number, y: number, z: number }
+
+-- Facing for a plaza spot: its faceX (a direction, or an x to look toward) or `default`
+-- (plazas sit west of the hub at -x and mirrored at +x, so the side decides the default).
+local function faceOf(s: Spot, default: number): Vector3
+	local f = (s :: any).faceX
+	if type(f) ~= "number" then
+		return Vector3.new(default, 0, 0)
+	end
+	local dx = if math.abs(f) <= 1 then f else f - s.x
+	return Vector3.new(if dx == 0 then default else math.sign(dx), 0, 0)
 end
 
--- In front of the gates, facing back toward the hub (after quitting a run).
+-- The spot nearest the player's current position via Course[helper] (two plazas), else
+-- `fallback` (the original plaza's spot).
+local function nearest(player: Player, helper: string, fallback: Spot): Spot
+	local pick = (Course :: any)[helper]
+	local root = GameModes.root(player)
+	if type(pick) ~= "function" or not root then
+		return fallback
+	end
+	local found = pick(root.Position.X, root.Position.Z)
+	return if type(found) == "table" then found else fallback
+end
+
+-- The nearer plaza's arrival point (end of its spur), facing the gates.
+function GameModes.toPlaza(player: Player)
+	local s = nearest(player, "nearestArrival", Course.ARRIVAL)
+	GameModes.teleport(player, spot(s), faceOf(s, if s.x > 0 then 1 else -1))
+end
+
+-- In front of the nearer plaza's gates, facing back toward the hub (after quitting a run).
 function GameModes.toGates(player: Player)
-	GameModes.teleport(player, spot(Course.QUIT), Vector3.new(1, 0, 0))
+	local s = nearest(player, "nearestQuit", Course.QUIT)
+	GameModes.teleport(player, spot(s), faceOf(s, if s.x > 0 then -1 else 1))
 end
 
 -- Brings a player back from a teleport-only arena (a far Parkour level, the Mog stage):

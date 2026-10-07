@@ -189,8 +189,8 @@ BUILDERS.lighthouse = function(k, _p)
 		d -= 0.45
 	end
 	k.block("LighthouseDoor", Vector3.new(1.8, 2.8, 0.4), at(0, 3.4, -3.05), W.TealDeep)
-	k.cyl("LighthouseWindow", 0.3, 1.1, at(0, 9.2, -2.55) * CFrame.Angles(0, math.rad(90), 0), W.TealLight)
-	k.cyl("LighthouseWindow", 0.3, 1.1, at(0, 15.6, -2.2) * CFrame.Angles(0, math.rad(90), 0), W.TealLight)
+	k.cyl("LighthouseWindow", 0.3, 1.1, at(0, 10.5, -2.75) * CFrame.Angles(0, math.rad(90), 0), W.TealLight)
+	k.cyl("LighthouseWindow", 0.3, 1.1, at(0, 17.3, -2.3) * CFrame.Angles(0, math.rad(90), 0), W.TealLight)
 	k.cyl("LighthouseGallery", 0.7, d + 2.2, up(0, y + 0.35, 0), W.Steel)
 	local lamp = k.cyl("LighthouseLamp", 3, d - 0.6, up(0, y + 2.2, 0), W.Butter, { Material = NEON })
 	lamp:AddTag("MapGlow")
@@ -243,14 +243,7 @@ PIECES.fin = function(k, p)
 		W.Ink,
 		{ Transparency = 0.6, CastShadow = false }
 	)
-	child(
-		"SharkWake",
-		"Part",
-		Vector3.new(1.4, 0.12, 4.5),
-		CFrame.new(0, 0.12, 4 * s),
-		W.White,
-		{ Transparency = 0.35, CastShadow = false }
-	)
+	child("SharkWake", "Part", Vector3.new(1.4, 0.12, 4.5), CFrame.new(0, 0.12, 4 * s), W.White, { CastShadow = false })
 end
 
 -- The gold Giga statue on a cream pedestal: the uploaded mesh when it is available, else a
@@ -275,7 +268,7 @@ PIECES.statue = function(k, _p)
 	k.block("StatueNeck", Vector3.new(1.6, 0.8, 1.6), at(0, y + 13.2, 0), GOLD_DEEP, gold)
 	local head = y + 15.2
 	k.block("StatueHead", Vector3.new(3.8, 3.6, 3.6), at(0, head, 0), GOLD, gold)
-	k.block("StatueHair", Vector3.new(4, 1, 3.8), at(0, head + 2.1, 0.1), GOLD_DEEP, gold)
+	k.block("StatueHair", Vector3.new(4, 1, 4), at(0, head + 2.1, 0.1), GOLD_DEEP, gold)
 	for _, sx in { -1, 1 } do
 		k.block("StatueEye", Vector3.new(0.6, 0.9, 0.2), at(sx * 0.8, head + 0.4, -1.85), W.Ink)
 	end
@@ -386,7 +379,7 @@ BUILDERS.windmill = function(k, p)
 	for i = 0, 2 do
 		local blade = hub * CFrame.Angles(0, 0, math.pi / 2 + i * 2 * math.pi / 3)
 		k.block("WindmillSpar", Vector3.new(8.5, 0.5, 0.4), blade * at(4.6, 0, 0), TRUNK).Parent = root
-		k.block("WindmillSail", Vector3.new(6.5, 2.2, 0.2), blade * at(5.2, 1.2, 0.1), if i == 0 then W.RainbowRed else W.White).Parent =
+		k.block("WindmillSail", Vector3.new(6.5, 2.2, 0.2), blade * at(5.2, 1.2, 0.15), if i == 0 then W.RainbowRed else W.White).Parent =
 			root
 	end
 end
@@ -428,7 +421,6 @@ BUILDERS.cloud = function(k, p)
 		local v = puffs[i]
 		k.ball("CloudPuff", v[4], at(v[1], v[2], v[3]), W.Cloud, {
 			Material = Enum.Material.SmoothPlastic,
-			Transparency = 0.05,
 			CastShadow = false,
 		})
 	end
@@ -469,14 +461,14 @@ BUILDERS.rainbowarch = function(k, _p)
 			local m = math.pi * (j + 0.5) / segments
 			k.block(
 				"RainbowBand",
-				Vector3.new(chord, band + 0.05, 1.4),
+				Vector3.new(chord, band + 0.05, 1.4 + (i % 2) * 0.1 + (j % 2) * 0.2),
 				at(r * math.cos(m), r * math.sin(m), 0) * CFrame.Angles(0, 0, m + math.pi / 2),
 				W[key]
 			)
 		end
 	end
 	for _, sx in { -1, 1 } do
-		k.ball("RainbowCloud", 9, at(sx * (outer - 3 * band), 1.5, 0), W.Cloud, { Transparency = 0.05, CastShadow = false })
+		k.ball("RainbowCloud", 9, at(sx * (outer - 3 * band), 1.5, 0), W.Cloud, { CastShadow = false })
 	end
 end
 
@@ -493,14 +485,14 @@ BUILDERS.loop = function(k, _p)
 			local m = 2 * math.pi * (j + 0.5) / segments
 			k.block(
 				"RainbowLoop",
-				Vector3.new(chord, band + 0.05, 1.6),
+				Vector3.new(chord, band + 0.05, 1.6 + (i % 2) * 0.1 + (j % 2) * 0.2),
 				at(r * math.cos(m), cy + r * math.sin(m), 0) * CFrame.Angles(0, 0, m + math.pi / 2),
 				W[key]
 			)
 		end
 	end
 	for _, sx in { -1, 1 } do
-		k.ball("LoopCloud", 9, at(sx * 4, 1.5, 0), W.Cloud, { Transparency = 0.05, CastShadow = false })
+		k.ball("LoopCloud", 9, at(sx * 4, 1.5, 0), W.Cloud, { CastShadow = false })
 	end
 end
 
@@ -510,7 +502,7 @@ local SPIRAL_COLORS =
 	{ "RainbowRed", "RainbowOrange", "RainbowYellow", "RainbowGreen", "RainbowCyan", "RainbowBlue", "RainbowPurple", "RainbowPink" }
 BUILDERS.spiral = function(k, _p)
 	local steps, rise = 24, 30
-	k.ball("SpiralCloud", 12, at(0, 0, 0), W.Cloud, { Transparency = 0.05, CastShadow = false })
+	k.ball("SpiralCloud", 12, at(0, 0, 0), W.Cloud, { CastShadow = false })
 	k.cyl("SpiralPole", rise + 4, 1.6, up(0, (rise + 4) / 2 + 1, 0), W.White)
 	for i = 1, steps do
 		local a = (i - 1) * 4 * math.pi / steps
@@ -572,14 +564,14 @@ LANDMARKS.beach = function(k, _p)
 		local centre = at(7, y + d / 2, -6) * CFrame.Angles(0, math.rad(i * 25), 0)
 		k.ball("BallTower", d, centre, W.White)
 		for j, col in { W.Coral, W.Sunny, W.Blue } do
-			k.cyl("BallTowerBand", d * 0.25, d + 0.05, centre * CFrame.Angles(0, math.rad(j * 60), 0), col)
+			k.cyl("BallTowerBand", d * 0.25, d + 0.1 + j * 0.15, centre * CFrame.Angles(0, math.rad(j * 60), 0), col)
 		end
 		y += d - 1
 	end
 	local towel = at(-8, 0.55, -7) * CFrame.Angles(0, math.rad(20), 0)
 	k.block("GiantTowel", Vector3.new(5.5, 0.3, 10), towel, W.Blue)
 	for _, z in { -2.8, 2.8 } do
-		k.block("GiantTowelStripe", Vector3.new(5.52, 0.32, 1.2), towel * at(0, 0, z), W.White)
+		k.block("GiantTowelStripe", Vector3.new(5.6, 0.4, 1.2), towel * at(0, 0, z), W.White)
 	end
 	k.block("SandCastle", Vector3.new(6, 3, 6), at(8, 1.9, 8), W.SandDark)
 	for _, v in { { 5.6, 5.6 }, { 10.4, 10.4 }, { 10.4, 5.6 } } do
@@ -631,13 +623,13 @@ LANDMARKS.bay = function(k, _p)
 		d -= 0.6
 	end
 	k.block("GiantLighthouseDoor", Vector3.new(3, 4.5, 0.6), at(0, 4.25, -5.5), W.Sunny)
-	for i, wy in { 13, 22, 31 } do
-		local r = (11 - 0.6 * (wy - 2) / 5) / 2
+	for i, wy in { 14.5, 24.5, 34.5 } do
+		local r = (11 - 0.6 * math.floor((wy - 2) / 5)) / 2
 		k.cyl(
 			"GiantLighthouseWindow",
 			0.4,
 			1.8,
-			at(0, wy, -r + 0.1) * CFrame.Angles(0, math.rad(90), 0),
+			at(0, wy, -r - 0.05) * CFrame.Angles(0, math.rad(90), 0),
 			if i == 2 then W.Sunny else W.TealLight
 		)
 	end
@@ -647,7 +639,7 @@ LANDMARKS.bay = function(k, _p)
 		local a = i * math.pi / 2 + math.pi / 4
 		k.block("GiantLighthouseFrame", Vector3.new(0.5, 4.6, 0.5), at(math.cos(a) * 3.3, y + 3.25, math.sin(a) * 3.3), W.Steel)
 	end
-	k.block("GiantLighthouseBeam", Vector3.new(2.6, 2.6, 12), at(0, y + 3.25, -9), W.Butter, {
+	k.block("GiantLighthouseBeam", Vector3.new(2.6, 2.6, 12), at(0, y + 3.25, -9.3), W.Butter, {
 		Material = NEON,
 		Transparency = 0.6,
 		CastShadow = false,
@@ -700,10 +692,10 @@ LANDMARKS.reef = function(k, _p)
 	end
 end
 
--- A giant sky-blue open shell with a pearl, shooting a tall jet of MapBubble bubbles (34 parts).
+-- A giant sky-blue open shell with a pearl, shooting a tall jet of MapBubble bubbles (30 parts).
 LANDMARKS.bubble = function(k, p)
 	foundation(k, 26, 0.5, W.SkyBlue:Lerp(W.White, 0.3))
-	k.cyl("BubbleFountainFoam", 0.1, 24, up(0, 0.6, 0), W.White, { Transparency = 0.4, CastShadow = false })
+	k.cyl("BubbleFountainFoam", 0.1, 24, up(0, 0.6, 0), W.White, { CastShadow = false })
 	local shellCol = W.SkyBlue:Lerp(W.White, 0.2)
 	k.cyl("GiantShell", 1.6, 18, up(0, 1.3, -1), shellCol)
 	local hinge = at(0, 2, 7) * CFrame.Angles(math.rad(110), 0, 0)
@@ -712,21 +704,24 @@ LANDMARKS.bubble = function(k, p)
 		k.block("GiantShellRib", Vector3.new(0.9, 0.7, 9), hinge * CFrame.Angles(0, math.rad(i * 22), 0) * at(0, 0.8, -4.8), W.Blue)
 	end
 	k.ball("GiantPearl", 4, at(0, 3.8, -1), W.White, { Reflectance = 0.3 })
-	k.cyl("BubbleJet", 38, 3.2, up(0, 24, -1), W.Blue, { Transparency = 0.55, CastShadow = false })
+	k.cyl("BubbleJet", 38, 3.2, up(0, 24, -1), W.SkyBlue:Lerp(W.White, 0.35), { CastShadow = false })
 	for i = 0, 6 do
 		local a = i * math.pi / 3
 		local r = if i == 6 then 0 else 3
 		k.ball("BubbleCrown", if i == 6 then 5 else 4, at(math.cos(a) * r, if i == 6 then 44 else 42, math.sin(a) * r - 1), W.White, {
-			Transparency = 0.35,
 			CastShadow = false,
 		})
 	end
 	local rand = rng(p)
-	for i = 1, 16 do
+	-- See-through bubbles each rise in their own lane round the jet, spaced so two never touch
+	-- (even swaying): overlapping translucent parts flicker as the camera moves.
+	local lanes = 12
+	for i = 1, lanes do
+		local a = i * 2 * math.pi / lanes
 		local bubble = k.ball(
 			"Bubble",
-			rand:NextNumber(1.6, 3.6),
-			at(rand:NextNumber(-1.8, 1.8), 3 + i * 2.4, rand:NextNumber(-1.8, 1.8) - 1),
+			rand:NextNumber(1.4, 1.8),
+			at(math.cos(a) * 4.6, 3 + i * 3.2, math.sin(a) * 4.6 - 1),
 			if i % 3 == 0 then W.Blue else if i % 3 == 1 then W.SkyBlue else W.White,
 			{ Transparency = 0.45, Reflectance = 0.15, CastShadow = false }
 		)
@@ -776,14 +771,14 @@ end
 -- feet and three fins circling it (ModeMover spin roots) (34 parts).
 LANDMARKS.shark = function(k, p)
 	foundation(k, 30, 0.3, W.Ocean:Lerp(W.Ink, 0.4))
-	k.cyl("FinArchFoam", 0.1, 26, up(0, 0.4, 0), W.White, { Transparency = 0.35, CastShadow = false })
+	k.cyl("FinArchFoam", 0.1, 26, up(0, 0.4, 0), W.White, { CastShadow = false })
 	for _, sx in { -1, 1 } do
 		local frame = at(sx * 8, 0, 0) * CFrame.Angles(0, 0, sx * math.rad(11.5))
 		k.wedge("GiantFin", Vector3.new(2.6, 41, 14), frame * at(0, 20.5, -7), FIN)
 		k.wedge("GiantFin", Vector3.new(2.6, 41, 7), frame * at(0, 20.5, 3.5) * CFrame.Angles(0, math.pi, 0), W.TealDeep)
 		k.block("GiantFinBelly", Vector3.new(2.8, 3, 18), frame * at(0, 1.5, -2), W.White:Lerp(W.Steel, 0.2))
 		for j = 0, 2 do
-			k.ball("FinArchSplash", 3 + j, at(sx * (9 + j * 1.5), 0.8, -6 + j * 5), W.White, { Transparency = 0.3, CastShadow = false })
+			k.ball("FinArchSplash", 3 + j, at(sx * (9 + j * 1.5), 0.8, -6 + j * 5), W.White, { CastShadow = false })
 		end
 	end
 	for i = 0, 2 do
@@ -885,7 +880,7 @@ LANDMARKS.volcano = function(k, _p)
 		glow(k.cyl("GiantVolcanoDrip", (p2 - p1).Magnitude + 0.8, 1.6, between(p1, p2), LAVA, { Material = NEON }))
 		glow(k.ball("GiantVolcanoBlob", 2.4, CFrame.new(p2), LAVA, { Material = NEON }))
 	end
-	for i, v in { { 0, 45, 0, 6 }, { 2, 50, -1, 5 }, { -1, 54.5, 1, 4 }, { 1.5, 58, 0, 3 } } do
+	for i, v in { { 0, 45, 0, 6 }, { 2, 50.5, -1, 5 }, { -1, 54.5, 1, 4 }, { 1.5, 58, 0, 3 } } do
 		k.ball("GiantVolcanoSmoke", v[4], at(v[1], v[2], v[3]), W.Steel:Lerp(W.White, 0.15 * i), {
 			Transparency = 0.2 + 0.15 * i,
 			CastShadow = false,

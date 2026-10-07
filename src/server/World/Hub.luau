@@ -967,10 +967,12 @@ local function buildBoardwalk()
 		local length = (CROSS_Z - WALK_HALF) * 2
 		deck(x, 0, WALK_HALF * 2, length)
 		edge(x - side * edgeIn, 0, 0.7, length)
-		if side == -1 then
-			-- Open where the GAME MODES spur leaves the ring (World.Modes builds the spur).
+		-- Open where a GAME MODES spur leaves the ring (World.Modes builds the spurs): SPUR at
+		-- -X, SPUR2 (the mirrored plaza) at +X when it exists.
+		local spurSpec = if side == -1 then ModesCourse.SPUR else (ModesCourse :: any).SPUR2
+		if spurSpec then
 			local outer = CROSS_Z + WALK_HALF
-			local spur = ModesCourse.SPUR.half
+			local spur = spurSpec.half
 			for _, sz in { -1, 1 } do
 				edge(x + side * edgeIn, sz * (spur + outer) / 2, 0.7, outer - spur)
 			end
@@ -1080,7 +1082,11 @@ local function buildHub(): { TextLabel }
 
 	local balls = { { 54, 3 }, { -50, 8 }, { 80, -30 }, { -36, -33 }, { -158, 42 }, { 168, 28 }, { 24, 166 }, { -30, -170 } }
 	for i, b in balls do
-		beachBall(b[1], b[2], i * 1.3)
+		-- None on either GAME MODES plaza or spur (World.Modes).
+		local x, z = b[1], b[2]
+		if ModesCourse.isClear(x, z) and ModesCourse.isClear(x + 3, z + 3) and ModesCourse.isClear(x - 3, z - 3) then
+			beachBall(x, z, i * 1.3)
+		end
 	end
 
 	return rankingLabels
