@@ -96,6 +96,14 @@ sand island in the sea.
   right.
 - **Extras:** Index of all 25 tiers, global ranking, a free gift every 10 minutes, offline earnings up to
   8 h, friend (+10% each, max +50%) and Premium (+10%) bonuses, settings, and a loading screen.
+- **Badges** (`src/server/Badges.luau`, ids in `Theme.Badges`): Welcome to the Gym, Gym Graduate (tutorial
+  finished, not skipped), Certified Chad (tier 10), Absolute Chad (tier 25) and Parkour Master (level 10).
+  `tools/badges.py ensure` creates missing ones from `art/out/badges/<Key>.png` (rendered by
+  `art/blender/badges/`).
+- **Analytics** (`src/server/Analytics.luau`) for the Creator Dashboard: the onboarding funnel (Joined, Intro
+  Done, then each tutorial step, logged once per new player), a recurring "Shop" funnel (Opened, Prompted,
+  Purchased) and a "TutorialSkipped" custom event. Use them to judge ad traffic: where new players stop and
+  how many shop visits end in a purchase.
 
 ## Publish
 
@@ -129,8 +137,9 @@ Still to do by the owner in the Creator Dashboard:
 
 1. The experience questionnaire: declare that the game sells **paid random items** (crates; the odds are
    shown in the crate panel).
-2. **Places → Max Players: 6** (one plot per player; a 7th player is told the server is full).
-3. Upload the **icon and thumbnails** (`marketing/` and `preview/screenshots/` are starting points).
+2. **Places → Max Players: 6** (one plot per player; a 7th player is told the server is full). Done.
+3. Upload the **icon and thumbnails** (`marketing/` and `preview/screenshots/` are starting points). The icon
+   and one thumbnail are live; add more thumbnails before running ads.
 
 Also enable Studio Access to API Services for testing saves in Studio. Saves are session-locked
 (`src/shared/SessionLock.luau`), so a fast server hop never overwrites progress.

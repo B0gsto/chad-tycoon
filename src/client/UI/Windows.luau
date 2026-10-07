@@ -99,6 +99,10 @@ function Windows.open(name: string, opts: { focus: string? }?)
 	end
 	Kit.fadeBackdrop(backdrop, anyOpen())
 	Windows.changed:Fire()
+	if name == "Shop" and target and target.isOpen() then
+		-- Shop funnel step 1 (Server.Analytics).
+		Net.event("Action"):FireServer({ action = "ShopOpened" })
+	end
 end
 
 function Windows.closeAll()

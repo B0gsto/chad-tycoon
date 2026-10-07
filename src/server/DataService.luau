@@ -56,6 +56,10 @@ export type Profile = {
 	cosmetics: { trail: string, toggles: { [string]: boolean } },
 	-- The Starter pack's one-time cash, Rizz and trail have been given.
 	starterGranted: boolean,
+	-- Highest onboarding funnel step logged (Analytics; ONBOARDING_LEGACY = saves from before it).
+	onboarding: number,
+	-- Roblox badges: true = awarded, false = earned and waiting to be awarded (Badges).
+	badges: { [string]: boolean },
 	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
 	-- of the last full cash reward (Economy.modeReward cooldown).
 	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
@@ -121,6 +125,8 @@ function DataService.defaultProfile(): Profile
 		introSeen = false,
 		cosmetics = { trail = "", toggles = {} },
 		starterGranted = false,
+		onboarding = 0,
+		badges = {},
 		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS) },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
@@ -154,6 +160,10 @@ local function reconcile(data: any): Profile
 	-- the story, so it never plays for them.
 	if data.introSeen == nil then
 		data.introSeen = true
+	end
+	-- Saves from before the onboarding funnel: those players are not new, so they never log it.
+	if data.onboarding == nil then
+		data.onboarding = 99
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
@@ -223,6 +233,11 @@ local function reconcile(data: any): Profile
 			end
 		end
 		data.parkour[key] = fixed
+	end
+	for key, value in data.badges do
+		if type(key) ~= "string" or type(value) ~= "boolean" then
+			data.badges[key] = nil
+		end
 	end
 	if data.pendingCrate ~= "" and not Economy.isRarity(data.pendingCrate) then
 		data.pendingCrate = ""

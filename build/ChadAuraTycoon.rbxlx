@@ -29,6 +29,9 @@ local gui = Instance.new("ScreenGui")
 gui.Name = "LoadingScreen"
 gui.IgnoreGuiInset = true
 gui.ResetOnSpawn = false
+-- A script-made ScreenGui defaults to Global z-order, which drew the splash's
+-- whole contents behind its own background: players saw only the gradient.
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.DisplayOrder = 100
 pcall(function()
 	gui.ScreenInsets = Enum.ScreenInsets.None
@@ -175,7 +178,7 @@ local LoadingScreen = {}
 export type Art = { keyArt: string?, logo: string? }
 
 export type Handle = {
-	root: CanvasGroup,
+	root: Frame,
 	applyTheme: (any) -> (),
 	applyArt: (Art?) -> (),
 	setStatus: (string) -> (),
@@ -222,6 +225,22 @@ local function tween(obj: Instance, time: number, props: { [string]: any }, styl
 	TweenService:Create(obj, TweenInfo.new(time, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
 end
 
+-- Fades a whole tree out (what GroupTransparency did on a CanvasGroup).
+local function fadeOut(root: Instance, time: number)
+	for _, obj in { root, table.unpack(root:GetDescendants()) } do
+		if obj:IsA("GuiObject") then
+			tween(obj, time, { BackgroundTransparency = 1 })
+		end
+		if obj:IsA("TextLabel") then
+			tween(obj, time, { TextTransparency = 1 })
+		elseif obj:IsA("ImageLabel") then
+			tween(obj, time, { ImageTransparency = 1 })
+		elseif obj:IsA("UIStroke") then
+			tween(obj, time, { Transparency = 1 })
+		end
+	end
+end
+
 --[[
 	The brand art ids from ReplicatedStorage.Shared.Assets (the generated asset
 	table, a plain data module). Waits up to `timeout` seconds for it to
@@ -256,9 +275,12 @@ end
 
 function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	local colors = DEFAULT
-	local root = new("CanvasGroup", {
+	-- A plain Frame, not a CanvasGroup: a full-screen CanvasGroup on a large
+	-- high-DPI window drew only its own gradient and none of its children.
+	local root = new("Frame", {
 		Name = "Loading",
 		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
 		Size = UDim2.fromScale(1, 1),
 		ZIndex = 100,
 		Parent = parent,
@@ -599,7 +621,7 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		alive = false
 		target = 1
 		task.delay(0.3, function()
-			tween(root, 0.6, { GroupTransparency = 1 })
+			fadeOut(root, 0.6)
 			tween(scale, 0.6, { Scale = scale.Scale * 1.04 })
 		end)
 		task.delay(0.95, function()
@@ -11643,6 +11665,15 @@ Theme.Tiers = {
 	},
 }
 
+-- Roblox badges (Server.Badges). Ids come from tools/badges.py; 0 = not created yet (skipped).
+Theme.Badges = {
+	Welcome = { Id = 204493874675594, Name = "Welcome to the Gym", Desc = "You joined Chad Aura Tycoon. Time to get swole!" },
+	GymGraduate = { Id = 3879673344738499, Name = "Gym Graduate", Desc = "Finished the gym tutorial." },
+	CertifiedChad = { Id = 750945717242204, Name = "Certified Chad", Desc = "Discovered a tier 10 Chad." },
+	AbsoluteChad = { Id = 3658346446208010, Name = "Absolute Chad", Desc = "Discovered the Absolute Chad, the top tier!" },
+	ParkourMaster = { Id = 3548287220393826, Name = "Parkour Master", Desc = "Cleared parkour level 10." },
+}
+
 Theme.Monetization = {
 	Passes = {
 		AutoLoot = {
@@ -11859,6 +11890,229 @@ return Theme
         <string name="Name">Server</string>
       </Properties>
       <Item class="ModuleScript" referent="78">
+        <Properties>
+          <string name="Name">Analytics</string>
+          <string name="Source"><![CDATA[--[[
+	Analytics: funnels for the Creator Dashboard (AnalyticsService), so ad traffic can be
+	judged by where new players stop and how often the shop turns into a purchase.
+
+	Onboarding funnel (Dashboard > Analytics > Funnels > Onboarding), once per player.
+	The highest step logged is saved in profile.onboarding; saves from before this
+	module start at ONBOARDING_LEGACY and never log.
+	  1 Joined            first session starts
+	  2 Intro Done        the cutscene finished or was skipped (Player attribute IntroSeen)
+	  3..7                each tutorial step reached / finished (Buy, Orbs, Deposit, Collect, Merge)
+	A skipped tutorial logs the custom event "TutorialSkipped" and stops the funnel.
+
+	Shop funnel (recurring "Shop"): 1 Opened, 2 Prompted, 3 Purchased. One funnel session
+	per shop visit; a prompt from outside the shop (pads, crate panel) starts a new one.
+]]
+
+local AnalyticsService = game:GetService("AnalyticsService")
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
+
+local Tycoon = require(script.Parent.Tycoon)
+
+local Analytics = {}
+
+Analytics.ONBOARDING_LEGACY = 99
+
+local ONBOARDING_NAMES = { "Joined", "Intro Done" }
+for i, step in TutorialSteps.STEPS do
+	ONBOARDING_NAMES[2 + i] = "Tutorial " .. i .. " " .. step.id
+end
+
+-- Player -> current shop funnel session id and its last step.
+local shopFunnel: { [Player]: { id: string, step: number } } = {}
+
+local function safely(fn: (...any) -> (), ...: any)
+	local ok, err = pcall(fn, ...)
+	if not ok then
+		warn("[Analytics]", err)
+	end
+end
+
+-- Logs onboarding steps up to `step` that this player has not logged yet.
+function Analytics.onboard(session: Tycoon.Session, step: number)
+	local p = session.profile
+	if not session.alive or step <= p.onboarding or p.onboarding >= Analytics.ONBOARDING_LEGACY then
+		return
+	end
+	for s = p.onboarding + 1, math.min(step, #ONBOARDING_NAMES) do
+		safely(AnalyticsService.LogOnboardingFunnelStepEvent, AnalyticsService, session.player, s, ONBOARDING_NAMES[s])
+	end
+	p.onboarding = step
+	Tycoon.markDirty(session)
+end
+
+-- Tutorial progress: `step` is the step now current (DONE = finished); skipped = true when skipped.
+function Analytics.tutorial(session: Tycoon.Session, step: number, skipped: boolean?)
+	if skipped then
+		safely(AnalyticsService.LogCustomEvent, AnalyticsService, session.player, "TutorialSkipped", step)
+		return
+	end
+	-- Step n current means steps 1..n-1 are done: funnel step 2 + (n - 1).
+	Analytics.onboard(session, 1 + step)
+end
+
+function Analytics.shop(player: Player, step: number, name: string)
+	local funnel = shopFunnel[player]
+	if step == 1 or not funnel or step <= funnel.step then
+		funnel = { id = HttpService:GenerateGUID(false), step = 0 }
+		shopFunnel[player] = funnel
+	end
+	funnel.step = step
+	safely(AnalyticsService.LogFunnelStepEvent, AnalyticsService, player, "Shop", funnel.id, step, name)
+end
+
+function Analytics.onSessionStart(session: Tycoon.Session)
+	local player = session.player
+	Analytics.onboard(session, 1)
+	if player:GetAttribute("IntroSeen") == true then
+		Analytics.onboard(session, 2)
+	else
+		local conn
+		conn = player:GetAttributeChangedSignal("IntroSeen"):Connect(function()
+			if player:GetAttribute("IntroSeen") == true then
+				conn:Disconnect()
+				Analytics.onboard(session, 2)
+			end
+		end)
+	end
+end
+
+function Analytics.init()
+	-- The shop window reports each time it opens (Client.UI.Windows).
+	Tycoon.addAction("ShopOpened", function(session)
+		Analytics.shop(session.player, 1, "Opened")
+	end)
+	Players.PlayerRemoving:Connect(function(player)
+		shopFunnel[player] = nil
+	end)
+end
+
+return Analytics
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="79">
+        <Properties>
+          <string name="Name">Badges</string>
+          <string name="Source"><![CDATA[--[[
+	Badges: awards the Roblox badges listed in Theme.Badges (ids from the universe,
+	created with tools/badges.py). A badge with Id 0 is skipped.
+
+	Each badge is awarded once: profile.badges[key] is set when BadgeService confirms it,
+	and a failed award is retried on the next check (every CHECK_SECONDS, plus right after
+	the tutorial finishes). Conditions read only the saved profile:
+	  Welcome        joined the game
+	  GymGraduate    finished the tutorial (Badges.graduate, not on a skip)
+	  CertifiedChad  discovered tier 10
+	  AbsoluteChad   discovered the top tier
+	  ParkourMaster  cleared the last parkour level
+]]
+
+local BadgeService = game:GetService("BadgeService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Economy = require(ReplicatedStorage.Shared.Economy)
+
+local Tycoon = require(script.Parent.Tycoon)
+
+local Badges = {}
+
+local CHECK_SECONDS = 5
+
+local theme: any
+-- Awards in flight per session, so a slow AwardBadgeAsync is never sent twice.
+local busy: { [any]: { [string]: boolean } } = setmetatable({}, { __mode = "k" }) :: any
+
+local conditions: { [string]: (profile: any) -> boolean } = {
+	Welcome = function()
+		return true
+	end,
+	GymGraduate = function(p)
+		return p.badges.GymGraduate == false
+	end,
+	CertifiedChad = function(p)
+		return Economy.highestTier(p.discovered) >= 10
+	end,
+	AbsoluteChad = function(p)
+		return Economy.highestTier(p.discovered) >= Economy.MAX_TIER
+	end,
+	ParkourMaster = function(p)
+		return (p.parkour.clears[#p.parkour.clears] or 0) > 0
+	end,
+}
+
+-- Awards one badge if its condition holds. profile.badges[key]: true = awarded,
+-- false = earned but not yet confirmed by BadgeService (retried), nil = not earned.
+local function check(session: Tycoon.Session, key: string)
+	local badge = theme.Badges[key]
+	local p = session.profile
+	if not badge or badge.Id == 0 or p.badges[key] == true or not conditions[key](p) then
+		return
+	end
+	local inFlight = busy[session] or {}
+	busy[session] = inFlight
+	if inFlight[key] then
+		return
+	end
+	inFlight[key] = true
+	local ok, result = pcall(BadgeService.AwardBadgeAsync, BadgeService, session.player.UserId, badge.Id)
+	inFlight[key] = nil
+	if not session.alive then
+		return
+	end
+	if ok and result then
+		p.badges[key] = true
+		Tycoon.markDirty(session)
+	elseif not ok then
+		warn("[Badges]", key, result)
+	end
+end
+
+local function checkAll(session: Tycoon.Session)
+	for key in theme.Badges do
+		if session.alive then
+			check(session, key)
+		end
+	end
+end
+
+-- The tutorial was finished (not skipped).
+function Badges.graduate(session: Tycoon.Session)
+	if session.profile.badges.GymGraduate == nil then
+		session.profile.badges.GymGraduate = false
+	end
+	task.spawn(check, session, "GymGraduate")
+end
+
+function Badges.onSessionStart(session: Tycoon.Session)
+	task.spawn(checkAll, session)
+end
+
+function Badges.init(themeModule: any)
+	theme = themeModule
+	task.spawn(function()
+		while true do
+			task.wait(CHECK_SECONDS)
+			for _, session in Tycoon.allSessions() do
+				task.spawn(checkAll, session)
+			end
+		end
+	end)
+end
+
+return Badges
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="80">
         <Properties>
           <string name="Name">Cosmetics</string>
           <string name="Source"><![CDATA[--[[
@@ -12496,7 +12750,7 @@ return Cosmetics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="79">
+      <Item class="ModuleScript" referent="81">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -12557,6 +12811,10 @@ export type Profile = {
 	cosmetics: { trail: string, toggles: { [string]: boolean } },
 	-- The Starter pack's one-time cash, Rizz and trail have been given.
 	starterGranted: boolean,
+	-- Highest onboarding funnel step logged (Analytics; ONBOARDING_LEGACY = saves from before it).
+	onboarding: number,
+	-- Roblox badges: true = awarded, false = earned and waiting to be awarded (Badges).
+	badges: { [string]: boolean },
 	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
 	-- of the last full cash reward (Economy.modeReward cooldown).
 	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
@@ -12622,6 +12880,8 @@ function DataService.defaultProfile(): Profile
 		introSeen = false,
 		cosmetics = { trail = "", toggles = {} },
 		starterGranted = false,
+		onboarding = 0,
+		badges = {},
 		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS) },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
@@ -12655,6 +12915,10 @@ local function reconcile(data: any): Profile
 	-- the story, so it never plays for them.
 	if data.introSeen == nil then
 		data.introSeen = true
+	end
+	-- Saves from before the onboarding funnel: those players are not new, so they never log it.
+	if data.onboarding == nil then
+		data.onboarding = 99
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
@@ -12724,6 +12988,11 @@ local function reconcile(data: any): Profile
 			end
 		end
 		data.parkour[key] = fixed
+	end
+	for key, value in data.badges do
+		if type(key) ~= "string" or type(value) ~= "boolean" then
+			data.badges[key] = nil
+		end
 	end
 	if data.pendingCrate ~= "" and not Economy.isRarity(data.pendingCrate) then
 		data.pendingCrate = ""
@@ -12854,7 +13123,7 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="80">
+      <Item class="ModuleScript" referent="82">
         <Properties>
           <string name="Name">GameModes</string>
           <string name="Source"><![CDATA[--[[
@@ -13165,7 +13434,7 @@ return GameModes
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="81">
+      <Item class="ModuleScript" referent="83">
         <Properties>
           <string name="Name">Intro</string>
           <string name="Source"><![CDATA[--[[
@@ -13203,7 +13472,7 @@ return Intro
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Script" referent="82">
+      <Item class="Script" referent="84">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -13225,6 +13494,8 @@ local Tutorial = require(Server.Tutorial)
 local Intro = require(Server.Intro)
 local GameModes = require(Server.GameModes)
 local Cosmetics = require(Server.Cosmetics)
+local Analytics = require(Server.Analytics)
+local Badges = require(Server.Badges)
 
 local AUTOSAVE_SECONDS = 90
 
@@ -13239,6 +13510,8 @@ Monetization.init(Theme)
 GameModes.init(world.modes, Theme, Tycoon, world)
 Cosmetics.init(Theme)
 Ranking.init(Theme, world.ranking)
+Analytics.init()
+Badges.init(Theme)
 
 local saving: { [Player]: boolean } = {}
 
@@ -13280,6 +13553,8 @@ local function onPlayerAdded(player: Player)
 	local session = Tycoon.addPlayer(player, profile, canSave, passes)
 	if session then
 		Cosmetics.onSessionStart(session)
+		Analytics.onSessionStart(session)
+		Badges.onSessionStart(session)
 	end
 end
 
@@ -13328,11 +13603,11 @@ end)
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="83">
+      <Item class="Folder" referent="85">
         <Properties>
           <string name="Name">Modes</string>
         </Properties>
-        <Item class="ModuleScript" referent="84">
+        <Item class="ModuleScript" referent="86">
           <Properties>
             <string name="Name">Catalog</string>
             <string name="Source"><![CDATA[--!strict
@@ -13365,7 +13640,7 @@ return Catalog
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="85">
+        <Item class="ModuleScript" referent="87">
           <Properties>
             <string name="Name">Course</string>
             <string name="Source"><![CDATA[--!strict
@@ -14204,7 +14479,7 @@ return Course
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="86">
+        <Item class="ModuleScript" referent="88">
           <Properties>
             <string name="Name">Mog</string>
             <string name="Source"><![CDATA[--[[
@@ -15125,7 +15400,7 @@ return { create = create }
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="87">
+        <Item class="ModuleScript" referent="89">
           <Properties>
             <string name="Name">MogLayout</string>
             <string name="Source"><![CDATA[--[[
@@ -15202,7 +15477,7 @@ return MogLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="88">
+        <Item class="ModuleScript" referent="90">
           <Properties>
             <string name="Name">MogRules</string>
             <string name="Source"><![CDATA[--[[
@@ -15531,7 +15806,7 @@ return MogRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="89">
+        <Item class="ModuleScript" referent="91">
           <Properties>
             <string name="Name">Parkour</string>
             <string name="Source"><![CDATA[--[[
@@ -15916,7 +16191,7 @@ return Parkour
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="90">
+        <Item class="ModuleScript" referent="92">
           <Properties>
             <string name="Name">Rules</string>
             <string name="Source"><![CDATA[--!strict
@@ -16022,7 +16297,7 @@ return Rules
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="91">
+      <Item class="ModuleScript" referent="93">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -16052,6 +16327,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
 
+local Analytics = require(script.Parent.Analytics)
 local DataService = require(script.Parent.DataService)
 local Tycoon = require(script.Parent.Tycoon)
 
@@ -16158,6 +16434,7 @@ function Monetization.promptCrate(player: Player, rarity: string)
 		end
 		return
 	end
+	Analytics.shop(player, 2, "Prompted")
 	MarketplaceService:PromptProductPurchase(player, product.Id)
 end
 
@@ -16192,6 +16469,7 @@ function Monetization.promptPass(player: Player, name: string)
 		end
 		return
 	end
+	Analytics.shop(player, 2, "Prompted")
 	MarketplaceService:PromptGamePassPurchase(player, pass.Id)
 end
 
@@ -16211,6 +16489,7 @@ function Monetization.promptProduct(player: Player, kind: string, index: number)
 		end
 		return
 	end
+	Analytics.shop(player, 2, "Prompted")
 	MarketplaceService:PromptProductPurchase(player, product.Id)
 end
 
@@ -16268,6 +16547,7 @@ local function processReceipt(receipt: any): Enum.ProductPurchaseDecision
 	else
 		grantProduct(session, kind, index)
 	end
+	Analytics.shop(session.player, 3, "Purchased")
 	table.insert(profile.receipts, receipt.PurchaseId)
 	while #profile.receipts > MAX_RECEIPTS do
 		table.remove(profile.receipts, 1)
@@ -16284,6 +16564,7 @@ function Monetization.init(themeModule: any)
 		end
 		for name, pass in theme.Monetization.Passes do
 			if pass.Id == passId then
+				Analytics.shop(player, 3, "Purchased")
 				Tycoon.setPass(player, name)
 				local session = Tycoon.getSession(player)
 				if session then
@@ -16309,7 +16590,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="92">
+      <Item class="ModuleScript" referent="94">
         <Properties>
           <string name="Name">PlotLayout</string>
           <string name="Source"><![CDATA[--!strict
@@ -16827,7 +17108,7 @@ return Layout
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="93">
+      <Item class="ModuleScript" referent="95">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -16981,7 +17262,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="94">
+      <Item class="ModuleScript" referent="96">
         <Properties>
           <string name="Name">Tutorial</string>
           <string name="Source"><![CDATA[--[[
@@ -17005,6 +17286,8 @@ local Economy = require(Shared.Economy)
 local Net = require(Shared.Net)
 local TutorialSteps = require(Shared.TutorialSteps)
 
+local Analytics = require(script.Parent.Analytics)
+local Badges = require(script.Parent.Badges)
 local Tycoon = require(script.Parent.Tycoon)
 
 local Tutorial = {}
@@ -17023,6 +17306,7 @@ local function finish(session: Tycoon.Session)
 	p.gems += Economy.TUTORIAL_REWARD_GEMS
 	p.money += Economy.TUTORIAL_REWARD_CASH
 	p.totalEarned += Economy.TUTORIAL_REWARD_CASH
+	Badges.graduate(session)
 	notify(session, { event = "done", gems = Economy.TUTORIAL_REWARD_GEMS, cash = Economy.TUTORIAL_REWARD_CASH })
 end
 
@@ -17034,6 +17318,7 @@ local function advanceTo(session: Tycoon.Session, step: number)
 		return
 	end
 	p.tutorialStep = step
+	Analytics.tutorial(session, step)
 	if step >= TutorialSteps.DONE then
 		finish(session)
 	else
@@ -17063,6 +17348,7 @@ function Tutorial.skip(session: Tycoon.Session)
 	end
 	local p = session.profile
 	p.tutorialDone = true
+	Analytics.tutorial(session, p.tutorialStep, true)
 	p.tutorialStep = TutorialSteps.DONE
 	notify(session, { event = "skipped" })
 	Tycoon.markDirty(session)
@@ -17094,7 +17380,7 @@ return Tutorial
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="95">
+      <Item class="ModuleScript" referent="97">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -19290,11 +19576,11 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="96">
+      <Item class="Folder" referent="98">
         <Properties>
           <string name="Name">World</string>
         </Properties>
-        <Item class="ModuleScript" referent="97">
+        <Item class="ModuleScript" referent="99">
           <Properties>
             <string name="Name">Common</string>
             <string name="Source"><![CDATA[--[[
@@ -19469,7 +19755,7 @@ return Common
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="98">
+        <Item class="ModuleScript" referent="100">
           <Properties>
             <string name="Name">Decor</string>
             <string name="Source"><![CDATA[--[[
@@ -20142,7 +20428,7 @@ return Decor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="99">
+        <Item class="ModuleScript" referent="101">
           <Properties>
             <string name="Name">Hub</string>
             <string name="Source"><![CDATA[--[[
@@ -21240,7 +21526,7 @@ return Hub
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="100">
+        <Item class="ModuleScript" referent="102">
           <Properties>
             <string name="Name">Machines</string>
             <string name="Source"><![CDATA[--[[
@@ -22058,7 +22344,7 @@ return Machines
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="101">
+        <Item class="ModuleScript" referent="103">
           <Properties>
             <string name="Name">Modes</string>
             <string name="Source"><![CDATA[--[[
@@ -23431,7 +23717,7 @@ return Modes
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="102">
+        <Item class="ModuleScript" referent="104">
           <Properties>
             <string name="Name">MogStage</string>
             <string name="Source"><![CDATA[--[[
@@ -23772,7 +24058,7 @@ return MogStage
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="103">
+        <Item class="ModuleScript" referent="105">
           <Properties>
             <string name="Name">Pads</string>
             <string name="Source"><![CDATA[--[[
@@ -24086,7 +24372,7 @@ return Pads
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="104">
+        <Item class="ModuleScript" referent="106">
           <Properties>
             <string name="Name">Pen</string>
             <string name="Source"><![CDATA[--[[
@@ -24405,7 +24691,7 @@ return Pen
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="105">
+        <Item class="ModuleScript" referent="107">
           <Properties>
             <string name="Name">Props</string>
             <string name="Source"><![CDATA[--!strict
@@ -24676,7 +24962,7 @@ return Props
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="106">
+        <Item class="ModuleScript" referent="108">
           <Properties>
             <string name="Name">Shell</string>
             <string name="Source"><![CDATA[--[[
@@ -25132,7 +25418,7 @@ return Shell
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="107">
+        <Item class="ModuleScript" referent="109">
           <Properties>
             <string name="Name">Shelves</string>
             <string name="Source"><![CDATA[--[[
@@ -25842,7 +26128,7 @@ return Shelves
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="108">
+      <Item class="ModuleScript" referent="110">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -26210,26 +26496,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="109">
+  <Item class="SoundService" referent="111">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="110">
+  <Item class="StarterPlayer" referent="112">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="111">
+    <Item class="StarterPlayerScripts" referent="113">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="112">
+      <Item class="Folder" referent="114">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="ModuleScript" referent="113">
+        <Item class="ModuleScript" referent="115">
           <Properties>
             <string name="Name">Animator</string>
             <string name="Source"><![CDATA[--[[
@@ -26903,11 +27189,11 @@ return Animator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="114">
+        <Item class="Folder" referent="116">
           <Properties>
             <string name="Name">Fx</string>
           </Properties>
-          <Item class="ModuleScript" referent="115">
+          <Item class="ModuleScript" referent="117">
             <Properties>
               <string name="Name">Ambient</string>
               <string name="Source"><![CDATA[--[[
@@ -27274,7 +27560,7 @@ return Ambient
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="116">
+          <Item class="ModuleScript" referent="118">
             <Properties>
               <string name="Name">Camera</string>
               <string name="Source"><![CDATA[--[[
@@ -27600,7 +27886,7 @@ return Camera
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="117">
+          <Item class="ModuleScript" referent="119">
             <Properties>
               <string name="Name">Cosmetics</string>
               <string name="Source"><![CDATA[--[[
@@ -27856,7 +28142,7 @@ return CosmeticsFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="118">
+          <Item class="ModuleScript" referent="120">
             <Properties>
               <string name="Name">Crates</string>
               <string name="Source"><![CDATA[--[[
@@ -28726,7 +29012,7 @@ return Crates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="119">
+          <Item class="ModuleScript" referent="121">
             <Properties>
               <string name="Name">Fans</string>
               <string name="Source"><![CDATA[--[[
@@ -29714,7 +30000,7 @@ return Fans
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="120">
+          <Item class="ModuleScript" referent="122">
             <Properties>
               <string name="Name">Machines</string>
               <string name="Source"><![CDATA[-- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow):
@@ -31251,7 +31537,7 @@ return Machines
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="121">
+          <Item class="ModuleScript" referent="123">
             <Properties>
               <string name="Name">Modes</string>
               <string name="Source"><![CDATA[--!strict
@@ -31966,7 +32252,7 @@ return ModesFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="122">
+          <Item class="ModuleScript" referent="124">
             <Properties>
               <string name="Name">Mog</string>
               <string name="Source"><![CDATA[--!strict
@@ -32519,7 +32805,7 @@ return MogFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="123">
+          <Item class="ModuleScript" referent="125">
             <Properties>
               <string name="Name">Orbs</string>
               <string name="Source"><![CDATA[-- Client-side aura orb visuals for the local player's own plot.
@@ -34380,7 +34666,7 @@ return Orbs
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="124">
+          <Item class="ModuleScript" referent="126">
             <Properties>
               <string name="Name">PlateStyle</string>
               <string name="Source"><![CDATA[--!strict
@@ -34629,7 +34915,7 @@ return PlateStyle
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="125">
+          <Item class="ModuleScript" referent="127">
             <Properties>
               <string name="Name">Plates</string>
               <string name="Source"><![CDATA[--!strict
@@ -35456,7 +35742,7 @@ return Plates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="126">
+          <Item class="ModuleScript" referent="128">
             <Properties>
               <string name="Name">Shelf</string>
               <string name="Source"><![CDATA[--[[
@@ -37080,7 +37366,7 @@ return Shelf
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="127">
+          <Item class="ModuleScript" referent="129">
             <Properties>
               <string name="Name">Sprites</string>
               <string name="Source"><![CDATA[--[[
@@ -37267,7 +37553,7 @@ return Sprites
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="128">
+          <Item class="ModuleScript" referent="130">
             <Properties>
               <string name="Name">Surge</string>
               <string name="Source"><![CDATA[--[[
@@ -37549,7 +37835,7 @@ return Surge
             </Properties>
           </Item>
         </Item>
-        <Item class="ModuleScript" referent="129">
+        <Item class="ModuleScript" referent="131">
           <Properties>
             <string name="Name">Guide</string>
             <string name="Source"><![CDATA[--[[
@@ -37991,11 +38277,11 @@ return Guide
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="130">
+        <Item class="Folder" referent="132">
           <Properties>
             <string name="Name">Intro</string>
           </Properties>
-          <Item class="ModuleScript" referent="131">
+          <Item class="ModuleScript" referent="133">
             <Properties>
               <string name="Name">Actors</string>
               <string name="Source"><![CDATA[--!strict
@@ -38664,7 +38950,7 @@ return Actors
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="132">
+          <Item class="ModuleScript" referent="134">
             <Properties>
               <string name="Name">Avatar</string>
               <string name="Source"><![CDATA[--!strict
@@ -39307,7 +39593,7 @@ return Avatar
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="133">
+          <Item class="ModuleScript" referent="135">
             <Properties>
               <string name="Name">AvatarRig</string>
               <string name="Source"><![CDATA[--!strict
@@ -39538,7 +39824,7 @@ return AvatarRig
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="134">
+          <Item class="ModuleScript" referent="136">
             <Properties>
               <string name="Name">Cutscene</string>
               <string name="Source"><![CDATA[--[[
@@ -40374,7 +40660,7 @@ return Cutscene
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="135">
+          <Item class="ModuleScript" referent="137">
             <Properties>
               <string name="Name">Effects</string>
               <string name="Source"><![CDATA[--!strict
@@ -41299,7 +41585,7 @@ return Effects
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="136">
+          <Item class="ModuleScript" referent="138">
             <Properties>
               <string name="Name">Framing</string>
               <string name="Source"><![CDATA[--!strict
@@ -41506,7 +41792,7 @@ return Framing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="137">
+          <Item class="ModuleScript" referent="139">
             <Properties>
               <string name="Name">Stage</string>
               <string name="Source"><![CDATA[--!strict
@@ -41792,7 +42078,7 @@ return Stage
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="138">
+          <Item class="ModuleScript" referent="140">
             <Properties>
               <string name="Name">Timeline</string>
               <string name="Source"><![CDATA[--!strict
@@ -42167,7 +42453,7 @@ return Timeline
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="139">
+          <Item class="ModuleScript" referent="141">
             <Properties>
               <string name="Name">Ui</string>
               <string name="Source"><![CDATA[--!strict
@@ -43010,7 +43296,7 @@ return Ui
             </Properties>
           </Item>
         </Item>
-        <Item class="LocalScript" referent="140">
+        <Item class="LocalScript" referent="142">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -43378,7 +43664,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="141">
+        <Item class="ModuleScript" referent="143">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects plus background music.
@@ -43850,7 +44136,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="142">
+        <Item class="ModuleScript" referent="144">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -43899,11 +44185,11 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="143">
+        <Item class="Folder" referent="145">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="144">
+          <Item class="ModuleScript" referent="146">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -45294,7 +45580,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="145">
+          <Item class="ModuleScript" referent="147">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -48130,7 +48416,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="146">
+          <Item class="ModuleScript" referent="148">
             <Properties>
               <string name="Name">MogHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -49123,7 +49409,7 @@ return MogHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="147">
+          <Item class="ModuleScript" referent="149">
             <Properties>
               <string name="Name">MogRing</string>
               <string name="Source"><![CDATA[--!strict
@@ -49629,7 +49915,7 @@ return MogRing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="148">
+          <Item class="ModuleScript" referent="150">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -52547,7 +52833,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="149">
+          <Item class="ModuleScript" referent="151">
             <Properties>
               <string name="Name">ShopScenes</string>
               <string name="Source"><![CDATA[--[[
@@ -54492,7 +54778,7 @@ return ShopScenes
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="150">
+          <Item class="ModuleScript" referent="152">
             <Properties>
               <string name="Name">Tutorial</string>
               <string name="Source"><![CDATA[--[[
@@ -55117,7 +55403,7 @@ return Tutorial
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="151">
+          <Item class="ModuleScript" referent="153">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
@@ -55193,6 +55479,10 @@ function Windows.open(name: string, opts: { focus: string? }?)
 	end
 	Kit.fadeBackdrop(backdrop, anyOpen())
 	Windows.changed:Fire()
+	if name == "Shop" and target and target.isOpen() then
+		-- Shop funnel step 1 (Server.Analytics).
+		Net.event("Action"):FireServer({ action = "ShopOpened" })
+	end
 end
 
 function Windows.closeAll()
@@ -58885,7 +59175,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="152">
+  <Item class="Workspace" referent="154">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>

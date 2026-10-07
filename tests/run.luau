@@ -1878,6 +1878,19 @@ test("intro seen flag", function()
 	eq(DataService.reconcile({ money = 10, buyTier = 3, boughtAtTier = 1 }).boughtAtTier, 1, "purchases under it are kept")
 end)
 
+test("onboarding funnel and badges fields", function()
+	local DataService = loadDataService()
+	eq(DataService.reconcile(nil).onboarding, 0, "new players start the onboarding funnel")
+	eq(DataService.reconcile({ money = 10 }).onboarding, 99, "saves from before the funnel never log it")
+	eq(DataService.reconcile({ money = 10, onboarding = 4 }).onboarding, 4, "funnel progress is kept")
+	local badges = DataService.reconcile({ money = 10, badges = { Welcome = true, GymGraduate = false, [1] = true, Bad = 2 } }).badges
+	eq(badges.Welcome, true, "awarded badges are kept")
+	eq(badges.GymGraduate, false, "pending badges are kept")
+	eq(badges[1], nil, "non-string keys are dropped")
+	eq(badges.Bad, nil, "non-boolean values are dropped")
+	eq(DataService.reconcile({ money = 10, badges = "x" }).badges.Welcome, nil, "a broken badges field resets")
+end)
+
 -- Cosmetics ----------------------------------------------------------------------------
 -- Cosmetic passes, the bundle and the Starter pack (Theme.Cosmetics, Server.Cosmetics).
 
