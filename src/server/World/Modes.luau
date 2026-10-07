@@ -1,5 +1,6 @@
 --[[
-	Modes: the GAME MODES plaza on the hub's -X side and the Parkour levels out over the sea.
+	Modes: the GAME MODES plaza on the hub's -X side and the Parkour sky obby high above the
+	clouds (docs/sky-obby.md).
 
 	Everything is placed from Server.Modes.Course (layout numbers) and Server.Modes.Catalog
 	(one gate per mode slot). The server builds every part at its rest pose and never moves
@@ -27,14 +28,18 @@
 	  toggles them; Client.Fx.Modes sets CanCollide and the look locally.
 
 	Every level of Server.Modes.Course is built into Parkour/Level<i> (attributes Mode,
-	Level, Checkpoints, Title, LevelName, and the map's Theme, Blurb, Icon, Accent). Each map's
-	platforms, arches and stripes take its theme's STYLE (rim, underside, trim, materials);
-	its scenery (level.PROPS) is drawn by World.MapDecor into Level<i>/Scenery. Named parts the game looks up: "ParkourStart" (trigger in
-	gate 1's opening; other open gates hold "ModeStart"), per level "ParkourFinish" (trigger
-	over the finish deck) and "ParkourWater" (catch volume over the sea), both with attribute
-	Level, and "Checkpoint" discs with attributes Index (1..n), Level and Mode = "parkour".
-	Every level is reached by teleport through gate 1's portal and gets a LEVEL <i> start
-	arch on its start deck; nothing of the course stands next to the plaza.
+	Level, Checkpoints, Title, LevelName, StageFirst, StageLast, and the map's Theme, Blurb,
+	Icon, Accent). Platforms are bright SmoothPlastic candy slabs in their element's colour
+	with a lighter lip and a thin white underside; Course.BRIDGES[i] (the rainbow stairs to the
+	next map) go into Level<i>/Bridge, the cloud floor far below (Course.cloudLayer) into
+	Level<i>/CloudFloor and the scenery (level.PROPS) is drawn by World.MapDecor into
+	Level<i>/Scenery. Named parts the game looks up: "ParkourStart" (trigger in gate 1's
+	opening; other open gates hold "ModeStart"), per level "ParkourFinish" (trigger over the
+	finish deck) and "ParkourWater" (the catch volume at Course.FLOOR_Y), both with
+	attribute Level, and "Checkpoint" arrow pads with attributes Index (1..n per map), Stage
+	(global), Level and Mode = "parkour". Every level is reached by teleport through gate 1's
+	portal and gets a start arch on its start deck (map 1: the CHAD OBBY lobby); nothing of the
+	course stands next to the plaza.
 	Client hints (Client.Fx.Modes): each open gate's "GateArrow" root (tag "ModeHintArrow",
 	attribute HintBob = bob height in studs, children move with it) and each checkpoint's
 	"FlagCap" (attribute Checkpoint = its index).
@@ -67,62 +72,11 @@ local LOCKED = W.Steel
 local LOCKED_CARD = W.Steel:Lerp(W.Ink, 0.3)
 -- Half the bar-filled opening of a locked gate (the open gate uses Course.GATE_HALF).
 local LOCKED_HALF = 4
--- Sea foam sits just above the shallows / ocean surface.
-local FOAM_Y = -0.8
-
--- A map's platform style, keyed by level.theme: `rim` is the band under each top (and the
--- arch feet), `under` the deep underside, `trim` an optional thin edge band under the rim
--- (and the arch rings and mover stripes; nil keeps the classic white), `top` the material of
--- the palette-coloured tops, `rimMaterial` the rim's and `trimNeon` makes the trim glow.
--- `rimHeight` / `rimOut` thicken the rim band (default 0.7 tall, 0.6 studs out each side).
-type Style = {
-	rimHeight: number?,
-	rimOut: number?,
-	rim: Color3,
-	under: Color3,
-	trim: Color3?,
-	top: Enum.Material,
-	rimMaterial: Enum.Material,
-	trimNeon: boolean?,
-}
+-- Sky obby look (docs/sky-obby.md): platform lips are their top's colour this much lighter,
+-- and map 1's lobby deck is a candy green checkerboard.
 local SMOOTH = Enum.Material.SmoothPlastic
-local PLASTIC = Enum.Material.Plastic
-local STYLE: { [string]: Style } = {
-	beach = { rim = W.White, under = W.Honey:Lerp(W.WoodDark, 0.45), top = SMOOTH, rimMaterial = SMOOTH },
-	cove = { rim = W.GrassDark, under = W.GrassDark:Lerp(W.Ink, 0.45), trim = W.Butter, top = PLASTIC, rimMaterial = SMOOTH },
-	bay = { rim = W.Navy, under = W.Navy:Lerp(W.Ink, 0.4), trim = W.White, top = SMOOTH, rimMaterial = Enum.Material.WoodPlanks },
-	reef = { rim = W.Teal, under = W.TealDeep:Lerp(W.Ink, 0.3), trim = W.HotPink, top = SMOOTH, rimMaterial = SMOOTH },
-	bubble = { rim = W.Blue, under = W.Blue:Lerp(W.Navy, 0.4), trim = W.SkyBlue, top = SMOOTH, rimMaterial = SMOOTH, trimNeon = true },
-	coral = { rim = W.Terracotta, under = W.Terracotta:Lerp(W.Ink, 0.45), trim = W.Butter, top = SMOOTH, rimMaterial = SMOOTH },
-	shark = {
-		rim = W.TealLight:Lerp(W.White, 0.45),
-		under = W.TealDeep:Lerp(W.Ink, 0.45),
-		trim = W.Coral,
-		top = SMOOTH,
-		rimMaterial = SMOOTH,
-		rimHeight = 1.1,
-		rimOut = 1.2,
-	},
-	storm = {
-		rim = W.Slate,
-		under = W.Slate:Lerp(W.Ink, 0.5),
-		trim = W.Volt,
-		top = PLASTIC,
-		rimMaterial = Enum.Material.DiamondPlate,
-		trimNeon = true,
-	},
-	volcano = {
-		rim = W.Basalt,
-		under = W.Basalt:Lerp(W.Ink, 0.3),
-		trim = W.Lava,
-		top = PLASTIC,
-		rimMaterial = Enum.Material.Basalt,
-		trimNeon = true,
-	},
-	giga = { rim = W.Gold, under = W.Grape:Lerp(W.Ink, 0.35), trim = W.Grape, top = SMOOTH, rimMaterial = SMOOTH },
-}
--- The style of the level being built (buildCourse sets it).
-local style: Style = STYLE.beach
+local LIP_TINT = 0.4
+local LOBBY_GREEN = W.RainbowGreen:Lerp(W.Grass, 0.35)
 
 export type Built = {
 	folder: Folder,
@@ -331,117 +285,114 @@ end
 
 -- Platforms -----------------------------------------------------------------------------
 
--- A warm candy-top platform: the coloured top, a white rim band just below it and a deeper
--- teal underside that grounds it over the sea. Returns the top part (named `name`); rim and
--- underside are parented to it when `rimInTop` (movers carry them).
-local UNDERSIDE = 2.4
-local function platform(e: Course.Element, name: string, parent: Instance, rimInTop: boolean): BasePart
-	local fill = color(e.color)
-	local material = if e.color == "Wood" then Enum.Material.WoodPlanks else style.top
-	local rimH, rimOut = style.rimHeight or 0.7, 2 * (style.rimOut or 0.6)
-	local rimY, underY = e.y - 0.6 - rimH / 2, e.y - 1.3 - UNDERSIDE / 2 + 0.1
-	local trimY = rimY - rimH / 2 + 0.05
-	local trimProps: { [string]: any }? = if style.trim
-		then {
-			Name = "PlatformTrim",
-			Color = style.trim,
-			Material = if style.trimNeon then Enum.Material.Neon else SMOOTH,
-			CastShadow = false,
-		}
-		else nil
-	local top: BasePart
+-- A bright candy slab: the SmoothPlastic top in the element's colour (or `fill`), a 0.3-stud
+-- lighter lip just under it and a thin white underside. Returns the top part (named `name`);
+-- lip and underside are parented to it when `rimInTop` (movers carry them).
+local TOP_H = 1.2
+local LIP_H, LIP_OUT = 0.3, 0.3
+local UNDER_H, UNDER_IN = 0.5, 0.4
+local function platform(e: Course.Element, name: string, parent: Instance, rimInTop: boolean, fill: Color3?): BasePart
+	local col = fill or color(e.color)
+	local material = if e.color == "Wood" then Enum.Material.WoodPlanks else SMOOTH
+	local lipY = e.y - TOP_H - LIP_H / 2 + 0.05
+	local underY = e.y - TOP_H - LIP_H - UNDER_H / 2 + 0.1
+	local under = if rimInTop then nil else parent
+	local top: BasePart = nil :: any
 	if e.shape == "disc" then
 		local r = e.r :: number
 		top = make("Part", {
 			Name = name,
 			Shape = CYLINDER,
-			Size = Vector3.new(1.2, r * 2, r * 2),
-			CFrame = CFrame.new(e.x, e.y - 0.6, e.z) * UPRIGHT,
-			Color = fill,
+			Size = Vector3.new(TOP_H, r * 2, r * 2),
+			CFrame = CFrame.new(e.x, e.y - TOP_H / 2, e.z) * UPRIGHT,
+			Color = col,
 			Material = material,
 			Parent = parent,
 		})
-		make("Part", {
+		decor(make("Part", {
 			Name = "PlatformRim",
 			Shape = CYLINDER,
-			Size = Vector3.new(rimH, r * 2 + rimOut, r * 2 + rimOut),
-			CFrame = CFrame.new(e.x, rimY, e.z) * UPRIGHT,
-			Color = style.rim,
-			Material = style.rimMaterial,
-			Parent = if rimInTop then top else parent,
-		})
-		if trimProps then
-			trimProps.Shape = CYLINDER
-			trimProps.Size = Vector3.new(0.25, r * 2 + rimOut + 0.3, r * 2 + rimOut + 0.3)
-			trimProps.CFrame = CFrame.new(e.x, trimY, e.z) * UPRIGHT
-			trimProps.Parent = if rimInTop then top else parent
-			decor(make("Part", trimProps))
-		end
+			Size = Vector3.new(LIP_H, r * 2 + LIP_OUT * 2, r * 2 + LIP_OUT * 2),
+			CFrame = CFrame.new(e.x, lipY, e.z) * UPRIGHT,
+			Color = col:Lerp(W.White, LIP_TINT),
+			Material = SMOOTH,
+			Parent = under or top,
+		}))
 		decor(make("Part", {
 			Name = "PlatformBase",
 			Shape = CYLINDER,
-			Size = Vector3.new(UNDERSIDE, r * 2 - 0.8, r * 2 - 0.8),
+			Size = Vector3.new(UNDER_H, r * 2 - UNDER_IN * 2, r * 2 - UNDER_IN * 2),
 			CFrame = CFrame.new(e.x, underY, e.z) * UPRIGHT,
-			Color = style.under,
-			Parent = if rimInTop then top else parent,
+			Color = W.White,
+			Material = SMOOTH,
+			Parent = under or top,
 		}))
+	elseif e.shape == "ring" or e.shape == "hex" then
+		-- A hollow square (four frame bars) or a hexagon (three boxes turned 60 degrees
+		-- apart, a corner along X), each piece with its white underside.
+		local pieces: { { any } } = {}
+		if e.shape == "ring" then
+			local sx, sz = e.sx :: number, e.sz :: number
+			local w = math.min(e.width or 3, sx / 2, sz / 2)
+			for _, side in { -1, 1 } do
+				table.insert(pieces, { Vector3.new(sx, 0, w), CFrame.new(0, 0, side * (sz - w) / 2) })
+				table.insert(pieces, { Vector3.new(w, 0, sz - 2 * w), CFrame.new(side * (sx - w) / 2, 0, 0) })
+			end
+		else
+			local r = e.r :: number
+			for k = 0, 2 do
+				table.insert(pieces, { Vector3.new(r, 0, r * math.sqrt(3)), CFrame.Angles(0, k * math.pi / 3, 0) })
+			end
+		end
+		for _, piece in pieces do
+			local size, offset = piece[1] :: Vector3, piece[2] :: CFrame
+			local at = CFrame.new(e.x, 0, e.z) * offset
+			local bar = make("Part", {
+				Name = name,
+				Size = Vector3.new(size.X, TOP_H, size.Z),
+				CFrame = at + Vector3.new(0, e.y - TOP_H / 2, 0),
+				Color = col,
+				Material = material,
+				Parent = parent,
+			})
+			top = top or bar
+			decor(make("Part", {
+				Name = "PlatformBase",
+				Size = Vector3.new(math.max(size.X - UNDER_IN, 1), UNDER_H + LIP_H, math.max(size.Z - UNDER_IN, 1)),
+				CFrame = at + Vector3.new(0, underY + LIP_H / 2, 0),
+				Color = col:Lerp(W.White, 0.7),
+				Material = SMOOTH,
+				Parent = under or bar,
+			}))
+		end
 	else
 		local sx, sz = e.sx :: number, e.sz :: number
 		top = make("Part", {
 			Name = name,
-			Size = Vector3.new(sx, 1.2, sz),
-			CFrame = CFrame.new(e.x, e.y - 0.6, e.z),
-			Color = fill,
+			Size = Vector3.new(sx, TOP_H, sz),
+			CFrame = CFrame.new(e.x, e.y - TOP_H / 2, e.z),
+			Color = col,
 			Material = material,
 			Parent = parent,
 		})
-		make("Part", {
+		decor(make("Part", {
 			Name = "PlatformRim",
-			Size = Vector3.new(sx + rimOut, rimH, sz + rimOut),
-			CFrame = CFrame.new(e.x, rimY, e.z),
-			Color = style.rim,
-			Material = style.rimMaterial,
-			Parent = if rimInTop then top else parent,
-		})
-		if trimProps then
-			trimProps.Size = Vector3.new(sx + rimOut + 0.3, 0.25, sz + rimOut + 0.3)
-			trimProps.CFrame = CFrame.new(e.x, trimY, e.z)
-			trimProps.Parent = if rimInTop then top else parent
-			decor(make("Part", trimProps))
-		end
+			Size = Vector3.new(sx + LIP_OUT * 2, LIP_H, sz + LIP_OUT * 2),
+			CFrame = CFrame.new(e.x, lipY, e.z),
+			Color = col:Lerp(W.White, LIP_TINT),
+			Material = SMOOTH,
+			Parent = under or top,
+		}))
 		decor(make("Part", {
 			Name = "PlatformBase",
-			Size = Vector3.new(math.max(sx - 0.8, 1), UNDERSIDE, math.max(sz - 0.8, 1)),
+			Size = Vector3.new(math.max(sx - UNDER_IN * 2, 1), UNDER_H, math.max(sz - UNDER_IN * 2, 1)),
 			CFrame = CFrame.new(e.x, underY, e.z),
-			Color = style.under,
-			Parent = if rimInTop then top else parent,
+			Color = W.White,
+			Material = SMOOTH,
+			Parent = under or top,
 		}))
 	end
 	return top
-end
-
--- A soft white foam patch on the water under a platform out at sea (its rest footprint).
-local function foam(e: Course.Element, parent: Instance)
-	if e.x * e.x + e.z * e.z <= Course.WATER_RADIUS * Course.WATER_RADIUS then
-		return
-	end
-	local props: { [string]: any } = {
-		Name = "PlatformFoam",
-		Color = W.White,
-		Transparency = 0.35,
-		CastShadow = false,
-		Parent = parent,
-	}
-	if e.shape == "disc" then
-		local d = (e.r :: number) * 2 + 4
-		props.Shape = CYLINDER
-		props.Size = Vector3.new(0.1, d, d)
-		props.CFrame = CFrame.new(e.x, FOAM_Y, e.z) * UPRIGHT
-	else
-		props.Size = Vector3.new((e.sx :: number) + 3, 0.1, (e.sz :: number) + 3)
-		props.CFrame = CFrame.new(e.x, FOAM_Y, e.z)
-	end
-	decor(make("Part", props))
 end
 
 -- A flat teal chevron painted on a platform top near its exit edge, pointing at the next path
@@ -458,6 +409,8 @@ local function chevron(e: Course.Element, nextE: Course.Element, parent: Instanc
 	local edge: number
 	if e.shape == "disc" then
 		edge = e.r :: number
+	elseif e.shape == "hex" then
+		edge = (e.r :: number) * math.sqrt(3) / 2
 	else
 		local hx, hz = (e.sx :: number) / 2, (e.sz :: number) / 2
 		edge = math.min(if dx ~= 0 then hx / math.abs(dx) else math.huge, if dz ~= 0 then hz / math.abs(dz) else math.huge)
@@ -480,27 +433,77 @@ local function chevron(e: Course.Element, nextE: Course.Element, parent: Instanc
 	end
 end
 
--- `midZ` splits the level's lanes: flags hang on the side away from it (the outer edge).
-local function checkpoint(e: Course.Element, parent: Instance, levelIndex: number, midZ: number): BasePart
+-- A reference-style arrow checkpoint pad: a 12x12 `Checkpoint` blue slab (its top named
+-- "Checkpoint"), a big white arrow painted on it pointing at the next path element (`nextE`),
+-- the global stage number in the pad's far right corner and the numbered flag pole in the far
+-- left corner, its cloth hanging out over the edge.
+local PAD = 12
+local function checkpoint(e: Course.Element, parent: Instance, levelIndex: number, nextE: Course.Element?): BasePart
 	local index = e.index :: number
-	local top = platform(e, "Checkpoint", parent, false)
+	local stage = (e :: any).stage or index
+	local box = table.clone(e) :: any
+	if e.shape == "disc" or not e.sx then
+		box.shape, box.sx, box.sz = "box", PAD, PAD
+	end
+	local top = platform(box, "Checkpoint", parent, false, W.Checkpoint)
 	top:SetAttribute("Index", index)
+	top:SetAttribute("Stage", stage)
 	top:SetAttribute("Level", levelIndex)
 	top:SetAttribute("Mode", "parkour")
-	-- Big number painted on the disc (an upright cylinder's top is its +X face).
-	local root = surface(top, Enum.NormalId.Right, 24)
-	local dot = panel(root, W.Sunny, UDim2.fromScale(0.28, 0.28), UDim2.fromScale(0.44, 0.44), 0.5)
-	text(dot, { Text = tostring(index), Size = UDim2.fromScale(0.7, 0.7), Position = UDim2.fromScale(0.15, 0.17) })
-	-- Big numbered flag on the lane's outer edge, hanging along the course.
-	local side = if e.z > midZ then 1 else -1
+	-- The way on: toward the next element (or along +X when there is none).
+	local dx, dz = 1, 0
+	if nextE then
+		local ddx, ddz = nextE.x - e.x, nextE.z - e.z
+		local length = math.sqrt(ddx * ddx + ddz * ddz)
+		if length > 1e-3 then
+			dx, dz = ddx / length, ddz / length
+		end
+	end
+	local half = math.min(box.sx, box.sz) / 2
+	-- A flat carrier whose Front face looks up and whose up vector points the way on, so the
+	-- painted arrow's top is the direction to go and its top-right is the pad's far right corner.
+	local at = Vector3.new(e.x, e.y + 0.03, e.z)
+	local paint = decor(make("Part", {
+		Name = "CheckpointArrow",
+		Size = Vector3.new(half * 2 - 0.6, half * 2 - 0.6, 0.05),
+		CFrame = CFrame.lookAt(at, at + Vector3.yAxis, Vector3.new(dx, 0, dz)),
+		Transparency = 1,
+		CastShadow = false,
+		Parent = top,
+	}))
+	local root = surface(paint, Enum.NormalId.Front, 20)
+	local function bar(position: UDim2, size: UDim2, rotation: number)
+		local f = panel(root, W.White, position, size, 0.5)
+		f.AnchorPoint = Vector2.new(0.5, 0.5)
+		f.Rotation = rotation
+	end
+	-- Shaft, then the two arms of the head meeting at the tip.
+	bar(UDim2.fromScale(0.5, 0.6), UDim2.fromScale(0.17, 0.5), 0)
+	bar(UDim2.fromScale(0.39, 0.34), UDim2.fromScale(0.17, 0.42), 45)
+	bar(UDim2.fromScale(0.61, 0.34), UDim2.fromScale(0.17, 0.42), -45)
+	local number = text(root, {
+		Text = tostring(stage),
+		TextColor3 = W.White,
+		Font = theme.Fonts.Display,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.fromScale(0.98, 0.02),
+		Size = UDim2.fromScale(0.3, 0.24),
+	})
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = W.Checkpoint:Lerp(W.Ink, 0.45)
+	stroke.Thickness = 3
+	stroke.Parent = number
+	-- Flag pole in the far left corner (right = the way on turned clockwise seen from above).
+	local rx, rz = -dz, dx
+	local reach = half - 1.3
 	local cap = flagPole(
-		e.x,
+		e.x + (dx - rx) * reach,
 		e.y,
-		e.z + side * ((e.r :: number) - 1.4),
+		e.z + (dz - rz) * reach,
 		12,
 		FLAG_COLORS[(index - 1) % #FLAG_COLORS + 1],
-		tostring(index),
-		0,
+		tostring(stage),
+		math.atan2(rz, -rx),
 		parent,
 		true
 	)
@@ -548,7 +551,7 @@ local function mover(e: Course.Element, parent: Instance): BasePart
 			Shape = CYLINDER,
 			Size = Vector3.new(0.1, 4, 4),
 			CFrame = CFrame.new(e.x, e.y + 0.02, e.z) * UPRIGHT,
-			Color = style.trim or W.White,
+			Color = W.White,
 			Parent = top,
 		})
 	else
@@ -556,7 +559,7 @@ local function mover(e: Course.Element, parent: Instance): BasePart
 			Name = "MoverStripe",
 			Size = Vector3.new((e.sx :: number) - 1.6, 0.1, 1.2),
 			CFrame = CFrame.new(e.x, e.y + 0.02, e.z) * along,
-			Color = style.trim or W.White,
+			Color = W.White,
 			Parent = top,
 		})
 	end
@@ -679,12 +682,12 @@ local function slide(e: Course.Element, parent: Instance)
 	end
 	for _, t in { 0.3, 0.7 } do
 		local p = a:Lerp(b, t)
-		local height = p.Y - 1 + 1.2
+		local height = 6
 		make("Part", {
 			Name = "SlideLeg",
 			Shape = CYLINDER,
 			Size = Vector3.new(height, 1.6, 1.6),
-			CFrame = CFrame.new(p.X, -1.2 + height / 2, p.Z) * UPRIGHT,
+			CFrame = CFrame.new(p.X, p.Y - 1 - height / 2, p.Z) * UPRIGHT,
 			Color = W.Teal,
 			Parent = parent,
 		})
@@ -1183,25 +1186,78 @@ local function buildPlaza(parent: Instance)
 	end
 end
 
+-- Sky -------------------------------------------------------------------------------------
+
+-- The cloud floor far under the map (Course.cloudLayer): 40-80 thin, wide, overlapping white
+-- puffs with gaps of blue sky between them, never colliding (the ParkourWater catch volume at
+-- Course.FLOOR_Y handles falls).
+local function cloudFloor(level: Course.Level, parent: Instance)
+	local layer = (Course :: any).cloudLayer
+	if layer == nil then
+		return
+	end
+	local holder = Instance.new("Folder")
+	holder.Name = "CloudFloor"
+	for i, puff in layer(level) do
+		decor(make("Part", {
+			Name = "CloudPuff",
+			Shape = CYLINDER,
+			Size = Vector3.new(puff.h, puff.d, puff.d),
+			CFrame = CFrame.new(puff.x, puff.y, puff.z) * UPRIGHT,
+			Color = if i % 3 == 0 then W.Cloud:Lerp(W.Checkpoint, 0.06) else W.Cloud,
+			Material = SMOOTH,
+			Transparency = 0.15,
+			CastShadow = false,
+			Parent = holder,
+		}))
+	end
+	holder.Parent = parent
+end
+
+-- Terrain clouds high overhead (wrapped: Lune's preview export has no Terrain).
+local function skyClouds()
+	pcall(function()
+		local terrain = (workspace :: any).Terrain
+		local clouds = terrain:FindFirstChildOfClass("Clouds") or Instance.new("Clouds")
+		clouds.Cover = 0.7
+		clouds.Density = 0.3
+		clouds.Parent = terrain
+	end)
+end
+
+-- The rainbow stairs from map n's finish deck to map n+1's start deck (Course.BRIDGES[n]),
+-- drawn into Level<n>/Bridge.
+local function buildBridge(n: number, parent: Instance)
+	local steps: { Course.Element }? = ((Course :: any).BRIDGES or {})[n]
+	if steps == nil or #steps == 0 then
+		return
+	end
+	local holder = Instance.new("Folder")
+	holder.Name = "Bridge"
+	for _, e in steps do
+		platform(e, e.name or "Platform", holder, false)
+	end
+	holder.Parent = parent
+end
+
 -- Course --------------------------------------------------------------------------------
 
 local ARCH_SPRING = 10
 local ARCH_SEGMENTS = 7
 
 -- Two candy pillars and a rounded half-circle of `body`-coloured segments, built through
--- `add` (frame: front facing -Z, x across the deck, y up from the deck top). Feet take the
--- map style's rim, rings and joints its trim.
+-- `add` (frame: front facing -Z, x across the deck, y up from the deck top), with white
+-- feet, rings and joints.
 local function archFrame(add: (props: { [string]: any }) -> BasePart, half: number, body: Color3)
 	local spring = ARCH_SPRING
-	local trim = style.trim or W.White
+	local trim = W.White
 	for _, sx in { -1, 1 } do
 		add({
 			Name = "FinishFoot",
 			Shape = CYLINDER,
 			Size = Vector3.new(1, 4.2, 4.2),
 			CFrame = CFrame.new(sx * half, 0.5, 0) * UPRIGHT,
-			Color = style.rim,
-			Material = style.rimMaterial,
+			Color = W.White,
 		})
 		add({
 			Name = "FinishPillar",
@@ -1253,26 +1309,131 @@ local function spanHalf(b: Course.Box, faceX: number): number
 	return (if faceX ~= 0 then b.z1 - b.z0 else b.x1 - b.x0) / 2 + 0.6
 end
 
--- A level's entrance: an arch over the start deck behind the spawn spot, its card
--- facing along the course ("LEVEL <i>" / name) so a player who just arrived reads it, and
--- five small flag poles in the level's palette along the deck's sides.
-local function startArch(level: Course.Level, deck: Course.Element, parent: Instance)
+-- Block letters for the lobby sign: per letter, cell rectangles { c0, r0, c1, r1 } on a 3x5
+-- grid (columns left to right, rows bottom to top).
+local GLYPHS: { [string]: { { number } } } = {
+	C = { { 0, 0, 0, 4 }, { 1, 4, 2, 4 }, { 1, 0, 2, 0 } },
+	H = { { 0, 0, 0, 4 }, { 2, 0, 2, 4 }, { 1, 2, 1, 2 } },
+	A = { { 0, 0, 0, 3 }, { 2, 0, 2, 3 }, { 1, 4, 1, 4 }, { 1, 2, 1, 2 } },
+	D = { { 0, 0, 0, 4 }, { 1, 4, 1, 4 }, { 1, 0, 1, 0 }, { 2, 1, 2, 3 } },
+	O = { { 0, 1, 0, 3 }, { 2, 1, 2, 3 }, { 1, 4, 1, 4 }, { 1, 0, 1, 0 } },
+	B = { { 0, 0, 0, 4 }, { 1, 4, 1, 4 }, { 1, 2, 1, 2 }, { 1, 0, 1, 0 }, { 2, 3, 2, 3 }, { 2, 1, 2, 1 } },
+	Y = { { 0, 3, 0, 4 }, { 2, 3, 2, 4 }, { 1, 0, 1, 2 } },
+}
+local LETTER_COLORS =
+	{ "RainbowRed", "RainbowOrange", "RainbowYellow", "RainbowGreen", "RainbowCyan", "RainbowBlue", "RainbowPurple", "RainbowPink" }
+local LETTER_CELL = 1.6
+
+-- "CHAD OBBY" in chunky rainbow block letters standing on a white plinth bar per word, built
+-- in `base` (front -Z faces the reader; letters run toward the reader's right, local -X).
+-- One Model "Letters" (35 parts).
+local function blockLetters(word: string, base: CFrame, parent: Instance)
+	local model = Instance.new("Model")
+	model.Name = "Letters"
+	local cell = LETTER_CELL
+	local width = 0
+	for i = 1, #word do
+		width += if string.sub(word, i, i) == " " then 2 else (if i < #word then 4 else 3)
+	end
+	local col0 = -width / 2
+	local colour = 0
+	local wordStart = col0
+	local function plinth(c0: number, c1: number)
+		decor(make("Part", {
+			Name = "LettersBase",
+			Size = Vector3.new((c1 - c0 + 1) * cell, cell * 0.6, cell * 2.2),
+			CFrame = base * CFrame.new(-((c0 + c1) / 2 + 0.5) * cell, -cell * 0.3, 0),
+			Color = W.White,
+			Material = SMOOTH,
+			Parent = model,
+		}))
+	end
+	local c = col0
+	for i = 1, #word do
+		local ch = string.sub(word, i, i)
+		if ch == " " then
+			plinth(wordStart - 0.5, c - 1.5)
+			c += 2
+			wordStart = c
+			continue
+		end
+		colour += 1
+		local tint = W[LETTER_COLORS[(colour - 1) % #LETTER_COLORS + 1]]
+		local glyph: { { number } } = GLYPHS[ch] or {}
+		for _, rect in glyph do
+			local cx = c + (rect[1] + rect[3]) / 2 + 0.5
+			local cy = (rect[2] + rect[4]) / 2 + 0.5
+			decor(make("Part", {
+				Name = "Letter",
+				Size = Vector3.new((rect[3] - rect[1] + 1) * cell, (rect[4] - rect[2] + 1) * cell, cell),
+				CFrame = base * CFrame.new(-cx * cell, cy * cell, 0),
+				Color = tint,
+				Material = SMOOTH,
+				Parent = model,
+			}))
+		end
+		c += 4
+	end
+	plinth(wordStart - 0.5, c - 1.5)
+	model.Parent = parent
+end
+
+-- A soft green checkerboard painted on a lobby deck's top.
+local function checker(top: BasePart, sx: number, sz: number)
+	local tile = 4
+	local nx, nz = math.max(1, math.floor(sx / tile + 0.5)), math.max(1, math.floor(sz / tile + 0.5))
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Top
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 4
+	gui.Parent = top
+	for i = 0, nx - 1 do
+		for j = 0, nz - 1 do
+			if (i + j) % 2 == 0 then
+				local cell = Instance.new("Frame")
+				cell.BackgroundColor3 = LOBBY_GREEN:Lerp(W.White, 0.3)
+				cell.BorderSizePixel = 0
+				cell.Position = UDim2.fromScale(i / nx, j / nz)
+				cell.Size = UDim2.fromScale(1 / nx, 1 / nz)
+				cell.Parent = gui
+			end
+		end
+	end
+end
+
+-- A map's entrance: an arch over the start deck behind the spawn spot, its card facing along
+-- the course so a player who just arrived reads it ("STAGE <first stage>" under the map name;
+-- map 1 says CHAD OBBY / START), and five small rainbow flag poles along the deck's sides.
+-- Map 1's deck is the green checkered lobby with "CHAD OBBY" block letters floating high
+-- behind the arch.
+local function startArch(level: Course.Level, deck: Course.Element, top: BasePart?, parent: Instance)
 	local s = level.START
-	local pal = level.palette
 	local sx, sz = deck.sx :: number, deck.sz :: number
 	local box = { x0 = deck.x - sx / 2, x1 = deck.x + sx / 2, z0 = deck.z - sz / 2, z1 = deck.z + sz / 2, y0 = 0, y1 = 0 }
 	local half = spanHalf(box, s.faceX)
+	local lobby = level.index == 1
 	-- Behind the spawn: half a deck back from the spawn spot, against the course direction.
 	local back = (if s.faceX ~= 0 then sx else sz) / 2 - 1.6
 	local base = facing(deck.x - s.faceX * back, deck.y, deck.z - s.faceZ * back, s.faceX, s.faceZ)
 	local add = adder(base, parent)
-	archFrame(add, half, color(pal.main))
+	local accent = color((level :: any).accent or "RainbowBlue")
+	archFrame(add, half, if lobby then W.RainbowRed else accent)
 	local sign =
 		decor(add({ Name = "StartSign", Size = Vector3.new(half * 2 + 3.4, 4.2, 1), CFrame = CFrame.new(0, 9, 0), Color = W.Cream }))
 	-- The card's Front face (-Z) looks along the course.
-	cardFace(sign, Enum.NormalId.Front, 44, W.Cream, color(pal.accent), "LEVEL " .. level.index, string.upper(level.name))
-	cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "LEVEL " .. level.index, "GO GO GO!")
-	local keys = { pal.main, pal.alt, pal.checkpoint, pal.mover, pal.blink }
+	local first = (level :: any).STAGE_FIRST or 1
+	if lobby then
+		cardFace(sign, Enum.NormalId.Front, 44, W.Cream, W.RainbowGreen, "CHAD OBBY", "START")
+		cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.RainbowRed, "STAGE " .. first, "GO GO GO!")
+		if top then
+			checker(top, sx, sz)
+		end
+		blockLetters("CHAD OBBY", base * CFrame.new(0, ARCH_SPRING + half + 5, 4), parent)
+	else
+		cardFace(sign, Enum.NormalId.Front, 44, W.Cream, accent, string.upper(level.name), "STAGE " .. first)
+		cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "STAGE " .. first, "GO GO GO!")
+	end
+	local keys = { "RainbowRed", "RainbowYellow", "RainbowGreen", "RainbowBlue", "RainbowPurple" }
 	for i, key in keys do
 		-- Spread along the deck's two side edges (parallel to the course direction).
 		local t = -0.5 + 1.5 * (i - 1) / (#keys - 1) -- clear of the arch pillars behind
@@ -1286,14 +1447,21 @@ end
 
 -- Level `level`'s parts into `parent`.
 local function buildCourse(level: Course.Level, parent: Instance)
-	style = STYLE[(level :: any).theme or "beach"] or STYLE.beach
-	local midZ = (level.BOUNDS.z0 + level.BOUNDS.z1) / 2
 	local tops: { [Course.Element]: BasePart } = {}
+	local nextOf: { [Course.Element]: Course.Element } = {}
+	for i, e in level.PATH do
+		nextOf[e] = level.PATH[i + 1]
+	end
+	local deck = level.PATH[1]
+	local lobby = level.index == 1
 	for _, e in level.ELEMENTS do
 		if e.kind == "pad" then
-			platform(e, e.name or "Platform", parent, false)
+			local top = platform(e, e.name or "Platform", parent, false, if lobby and e == deck then LOBBY_GREEN else nil)
+			if e == deck then
+				tops[e] = top
+			end
 		elseif e.kind == "checkpoint" then
-			checkpoint(e, parent, level.index, midZ)
+			checkpoint(e, parent, level.index, nextOf[e])
 		elseif e.kind == "mover" then
 			tops[e] = mover(e, parent)
 		elseif e.kind == "blink" then
@@ -1308,22 +1476,18 @@ local function buildCourse(level: Course.Level, parent: Instance)
 			slide(e, parent)
 		end
 	end
-	-- Foam under every platform out at sea, and a chevron on each top toward the next one
-	-- (none on the bounce deck: its pad is the hint).
+	-- A chevron on each top toward the next one (none on the bounce deck: its pad is the hint;
+	-- none on checkpoints: their big arrow is).
 	for i, e in level.PATH do
-		if e.kind ~= "slide" then
-			-- The base slab hides the sea under the course: no foam needed there.
-			if not (level :: any).BASE then
-				foam(e, parent)
-			end
+		if e.kind ~= "slide" and e.kind ~= "checkpoint" then
 			local nextE = level.PATH[i + 1]
 			if nextE and e.name ~= "BounceDeck" then
-				chevron(e, nextE, tops[e] or parent)
+				chevron(e, nextE, if e == deck then parent else tops[e] or parent)
 			end
 		end
 	end
-	if level.PATH[1] then
-		startArch(level, level.PATH[1], parent)
+	if deck then
+		startArch(level, deck, tops[deck], parent)
 	end
 
 	-- Finish: a sunny trophy arch over the finish deck, front facing the incoming runner: two
@@ -1339,7 +1503,7 @@ local function buildCourse(level: Course.Level, parent: Instance)
 	local sign =
 		decor(add({ Name = "FinishSign", Size = Vector3.new(half * 2 + 3.4, 4.2, 1), CFrame = CFrame.new(0, bannerY, 0), Color = W.Cream }))
 	cardFace(sign, Enum.NormalId.Front, 44, W.Cream, W.Teal, "YOU DID IT!", "FINISH")
-	cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "WELL DONE!", "LEVEL " .. level.index .. " CLEAR")
+	cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "WELL DONE!", "WORLD " .. level.index .. " CLEAR")
 	-- Chequered finish line on the deck.
 	local line = add({ Name = "FinishLine", Size = Vector3.new(half * 2 - 1, 0.12, 2.4), CFrame = CFrame.new(0, 0.06, 0), Color = W.White })
 	local cols = 12
@@ -1419,8 +1583,8 @@ local function buildCourse(level: Course.Level, parent: Instance)
 	)
 	water:SetAttribute("Level", level.index)
 
+	cloudFloor(level, parent)
 	MapDecor.build(level, parent)
-	style = STYLE.beach
 end
 
 function Modes.build(): Built
@@ -1442,6 +1606,7 @@ function Modes.build(): Built
 	end
 	bigSign(plaza)
 	local list = bestBoard(plaza)
+	skyClouds()
 	for i, level in Course.LEVELS do
 		local levelFolder = Instance.new("Folder")
 		levelFolder.Name = "Level" .. i
@@ -1455,7 +1620,11 @@ function Modes.build(): Built
 		levelFolder:SetAttribute("Blurb", map.blurb or "")
 		levelFolder:SetAttribute("Icon", map.icon or "")
 		levelFolder:SetAttribute("Accent", map.accent or "Sunny")
+		local first = map.STAGE_FIRST or 1
+		levelFolder:SetAttribute("StageFirst", first)
+		levelFolder:SetAttribute("StageLast", first + level.CHECKPOINT_COUNT + 1)
 		buildCourse(level, levelFolder)
+		buildBridge(i, levelFolder)
 		levelFolder.Parent = parkour
 	end
 	return { folder = folder, bestList = list }

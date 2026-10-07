@@ -1,23 +1,24 @@
 --[[
-	MapDecor: the scenery of a Parkour map, drawn from `level.PROPS` (Server.Modes.Course;
-	contract in docs/parkour-maps.md). Every prop is a handful of chunky pastel parts standing
-	with its base at (x, y, z), front (-Z) turned `yaw` radians about Y (as Course generates it), uniformly scaled by
-	`scale` (islets and lava pools use `r` instead). Props placed at Course.WATER_Y are out at
-	sea: floating kinds (buoy, fin, lavapool, bubblefield, beachball) sit on the ocean surface
-	and the rest stand planted just under it; islets rise from the sea to Course.ISLET_TOP,
-	where their crew props stand. Props over the map's base slab (level.BASE, drawn by
-	MapDecor.base into Level<i>/Base) stand or float on its top instead. Decor never collides,
-	queries or touches; only islets and the base are walkable. The `landmark` kind is the map's
-	one big set piece (60-80 studs tall at Course.LANDMARK_SCALE[theme]), drawn by LANDMARKS[theme].
+	MapDecor: the sky scenery of a Parkour map, drawn from `level.PROPS` (Server.Modes.Course;
+	contracts in docs/sky-obby.md and docs/parkour-maps.md). Every prop is a handful of chunky
+	candy parts standing with its base at (x, y, z), front (-Z) turned `yaw` radians about Y,
+	uniformly scaled by `scale` (islands use `r` instead). Kinds: `island` (floating grass disc,
+	grass top at y), `lighthouse`, `windmill`, `tree` (standing on an island top), `balloon`
+	(basket at y), `cloud` and `star` (centred at y), `rainbowarch` (feet at y), the anchor set
+	pieces `loop` (a vertical rainbow ring on cloud puffs at y) and `spiral` (a rainbow stair
+	round a pole, its cloud at y), and `landmark`
+	(the map's one big themed set piece, 110-145 studs tall at Course.LANDMARK_SCALE[theme],
+	drawn by LANDMARKS[theme] on top of its island). Decor never collides, queries or touches.
 
 	Tags / attributes the client animates (Client.Fx.Modes):
-	  MapBubble     translucent balls of a bubblefield, attributes Rise (studs/s) and Top (world
-	                y where a bubble pops and restarts at its rest y)
-	  MapBob        a buoy's float (root; the rest of the buoy is parented to it)
-	  MapLightning  Neon bolt segments under a storm cloud (built hidden, Transparency 1)
-	  MapGlow       Neon lava (crater, drips, pools) and the lighthouse lamp
-	  ModeMover     a shark fin's invisible root with Mover = "spin", MoveSpeed, MovePhase; the
-	                fin stands `r` studs out along the root's RightVector (see World.Modes)
+	  MapBob        a hot-air balloon's envelope (root; the rest of the balloon is parented to it)
+	  MapLightning  Neon bolt segments of the storm landmark (built hidden, Transparency 1)
+	  MapGlow       Neon lava of the volcano landmark and the lighthouse lamp
+	  ModeMover     invisible spin roots with Mover = "spin", MoveSpeed, MovePhase (see
+	                World.Modes): the shark landmark's fins stand `r` studs out along the root's
+	                RightVector; a windmill's hub also has SpinAxis = "Z" (it turns about its
+	                look vector, the axle) with the blades along its right/up vectors
+	  Spin          (Model attribute, Client.Fx.Ambient) the gold stars turn slowly
 	Part of the world generator; see Server.WorldBuilder for the overview.
 ]]
 
@@ -33,22 +34,25 @@ local CYLINDER = Enum.PartType.Cylinder
 local BALL = Enum.PartType.Ball
 local NEON = Enum.Material.Neon
 
--- The ocean's top surface (World.Hub OCEAN_TOP) where floating props sit.
-local SEA_Y = -1.2
 -- Warn when a map's scenery grows past this many parts.
-local PART_BUDGET = 300
+local PART_BUDGET = 700
 
 local ROCK = W.Steel:Lerp(W.WoodDark, 0.35)
 -- One hue family per map (Server.Modes.Course PALETTES): volcano basalt + lava, storm slate +
 -- volt yellow, shark deep teal, giga real gold.
 local DARK_ROCK = W.Basalt:Lerp(W.Steel, 0.18)
 local STORM_ROCK = W.Slate:Lerp(W.Ink, 0.2)
-local STORM = W.Slate:Lerp(W.Steel, 0.2)
+-- The storm cloud: light grey puffs (a dark one reads as a blob against the sky).
+local STORM = W.StormCloud
 local LAVA = W.Lava
 local LAVA_HOT = W.Sunny:Lerp(W.Lava, 0.35)
 local GOLD = W.Gold
 local BOLT = W.Volt:Lerp(W.White, 0.35)
 local FIN = W.TealDeep:Lerp(W.Ink, 0.35)
+-- Sky islands: bright candy grass, a dark-sand rim, brown trunks and wood.
+local GRASS = W.Grass:Lerp(W.RainbowGreen, 0.45)
+local RIM_SAND = W.SandDark:Lerp(W.WoodDark, 0.5):Lerp(W.Terracotta, 0.15)
+local TRUNK = W.Terracotta:Lerp(W.Ink, 0.45)
 
 type Prop = { kind: string, x: number, y: number, z: number, yaw: number?, scale: number?, r: number?, speed: number? }
 
@@ -139,15 +143,6 @@ local function rng(p: Prop): Random
 	return Random.new(math.floor(p.x * 7 + p.z * 13 + p.y * 3))
 end
 
--- A non-colliding, unqueried decor part (base details).
-local function decorPart(props: { [string]: any }): BasePart
-	local part = make("Part", props)
-	part.CanCollide = false
-	part.CanQuery = false
-	part.CanTouch = false
-	return part
-end
-
 local function rockColor(theme: string): Color3
 	return if theme == "volcano" then DARK_ROCK elseif theme == "storm" then STORM_ROCK else ROCK
 end
@@ -155,41 +150,11 @@ end
 -- Prop builders -------------------------------------------------------------------------
 
 local BUILDERS: { [string]: (k: Kit, p: Prop) -> () } = {}
-
--- A sand (or dark rock) disc rising from the sea under a deck; walkable. `r` = radius.
-BUILDERS.islet = function(k, p)
-	local r = p.r or 8
-	local volcanic = k.theme == "volcano"
-	local topCol = if volcanic then DARK_ROCK:Lerp(W.Ink, 0.2) else W.Sand
-	local sideCol = if volcanic then DARK_ROCK else W.SandDark
-	-- World heights, converted into the prop frame (its base sits at p.y).
-	local topY = ((Course :: any).ISLET_TOP or Course.WATER_Y + 1) - p.y
-	local bottomY = SEA_Y - 2 - p.y
-	local function solid(part: BasePart)
-		part.CanCollide = true
-		part.CanQuery = true
-	end
-	local rock = k.cyl("IsletRock", topY - 0.4 - bottomY, r * 2 + 2, up(0, (topY - 0.4 + bottomY) / 2, 0), rockColor(k.theme))
-	solid(rock)
-	solid(k.cyl("IsletSide", 1.4, r * 2 + 0.6, up(0, topY - 0.85, 0), sideCol))
-	solid(k.cyl("IsletTop", 0.6, r * 2 - 0.4, up(0, topY - 0.3, 0), topCol))
-	k.cyl("IsletFoam", 0.1, r * 2 + 5, up(0, SEA_Y + 0.15 - p.y, 0), W.White, { Transparency = 0.35, CastShadow = false })
-	local rand = rng(p)
-	for i = 1, 3 do
-		local a = rand:NextNumber(0, 2 * math.pi)
-		local d = rand:NextNumber(0.55, 0.85) * r
-		local size = rand:NextNumber(1.2, 2.2)
-		k.ball(
-			"IsletPebble",
-			size,
-			at(math.cos(a) * d, topY + size * 0.15, math.sin(a) * d),
-			if i == 2 then sideCol else rockColor(k.theme)
-		)
-	end
-end
+-- Pieces the landmarks reuse (never drawn straight from level.PROPS).
+local PIECES: { [string]: (k: Kit, p: Prop) -> () } = {}
 
 -- A tall palm leaning toward its front-right with drooping fronds and coconuts (11 parts).
-BUILDERS.palm = function(k, _p)
+PIECES.palm = function(k, _p)
 	local trunk = {
 		Vector3.new(0, -0.5, 0),
 		Vector3.new(0.5, 4, 0),
@@ -211,67 +176,6 @@ BUILDERS.palm = function(k, _p)
 		local frame = CFrame.new(top) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(-droop, 0, 0) * CFrame.new(0, 0, -3)
 		k.block("PalmFrond", Vector3.new(2.2, 0.4, 6.6), frame, if i % 2 == 0 then W.Grass else W.GrassDark)
 	end
-end
-
--- A striped beach umbrella over a towel (8 parts).
-BUILDERS.umbrella = function(k, _p)
-	local tilt = CFrame.Angles(0, 0, math.rad(8))
-	k.cyl("UmbrellaPole", 7.6, 0.4, tilt * up(0, 3.6, 0), W.White)
-	k.cyl("UmbrellaCanopy", 0.5, 8.4, tilt * up(0, 7, 0), W.Coral)
-	k.cyl("UmbrellaCanopy", 0.5, 6.2, tilt * up(0, 7.45, 0), W.White)
-	k.cyl("UmbrellaCanopy", 0.5, 3.8, tilt * up(0, 7.9, 0), W.Coral)
-	k.ball("UmbrellaTop", 0.9, tilt * at(0, 8.3, 0), W.Sunny)
-	local towel = at(3.2, 0.06, 0.5) * CFrame.Angles(0, math.rad(12), 0)
-	k.block("Towel", Vector3.new(3.4, 0.12, 6), towel, W.Blue)
-	for _, z in { -1.6, 1.6 } do
-		k.block("TowelStripe", Vector3.new(3.42, 0.14, 0.7), towel * at(0, 0, z), W.White)
-	end
-end
-
--- A striped beach ball (4 parts): meridian bands are thin discs through the centre.
-BUILDERS.beachball = function(k, _p)
-	local d = 3
-	local centre = at(0, d * 0.42, 0)
-	k.ball("BeachBall", d, centre, W.White)
-	for i, col in { W.Coral, W.Sunny, W.Blue } do
-		k.cyl("BeachBallBand", 0.75, d + 0.04, centre * CFrame.Angles(0, math.rad(i * 60), 0), col)
-	end
-end
-
--- A rock arch: two chunky pillars, a lintel, boulders and a tuft on top (9 parts).
-BUILDERS.rockarch = function(k, _p)
-	local col = rockColor(k.theme)
-	local light = col:Lerp(W.Sand, 0.25)
-	k.block("ArchPillar", Vector3.new(3.4, 10, 3.4), at(-4.6, 4.6, 0) * CFrame.Angles(0, 0, math.rad(-5)), col)
-	k.block("ArchPillar", Vector3.new(3.2, 10, 3.6), at(4.6, 4.6, 0) * CFrame.Angles(0, 0, math.rad(4)), light)
-	k.block("ArchLintel", Vector3.new(13.5, 2.8, 4), at(0, 10.2, 0) * CFrame.Angles(0, 0, math.rad(2)), col)
-	k.ball("ArchBoulder", 4.2, at(-5.4, 1.2, 1.2), light)
-	k.ball("ArchBoulder", 3.4, at(5.6, 1, -1.2), col)
-	k.ball("ArchBoulder", 3.6, at(-3.4, 11.6, 0.2), light)
-	k.ball("ArchBoulder", 2.8, at(3, 11.8, -0.4), col)
-	k.block("ArchTuft", Vector3.new(3, 0.6, 2.2), at(0.4, 12, 0.3), W.Grass)
-	k.block("ArchTuft", Vector3.new(1.6, 0.6, 1.6), at(-1.8, 12.4, -0.2), W.GrassDark)
-end
-
--- A boulder cluster (4 parts), `scale`.
-BUILDERS.rock = function(k, _p)
-	local col = rockColor(k.theme)
-	local light = col:Lerp(W.White, 0.12)
-	k.ball("Boulder", 5, at(0, 1.6, 0), col)
-	k.block("Boulder", Vector3.new(3.4, 3, 3), at(2.2, 1.2, 1) * CFrame.Angles(0.3, 0.6, 0.2), light)
-	k.ball("Boulder", 2.6, at(-2.4, 0.8, 1.2), light)
-	k.ball("Boulder", 1.6, at(1, 0.6, -2.6), col)
-end
-
--- A little pile of coconuts with one cracked open (7 parts).
-BUILDERS.coconut = function(k, _p)
-	local d = 1.3
-	for _, v in { { -0.7, 0 }, { 0.7, 0.1 }, { 0, 1.1 }, { 0.1, -1.1 } } do
-		k.ball("Coconut", d, at(v[1], d / 2, v[2]), W.WoodDark)
-	end
-	k.ball("Coconut", d, at(0, d * 1.3, 0.2), W.WoodDark)
-	k.ball("CoconutHalf", d, at(1.8, 0.35, 0.9), W.WoodDark)
-	k.cyl("CoconutMeat", 0.1, d * 0.85, up(1.8, 0.62, 0.9), W.Cream)
 end
 
 -- A red-and-white striped lighthouse on a rock base with a glowing lamp (15 parts).
@@ -296,63 +200,9 @@ BUILDERS.lighthouse = function(k, _p)
 	k.ball("LighthouseTip", 1.2, at(0, y + 6.2, 0), W.Sunny)
 end
 
--- A bobbing buoy: the float is the MapBob root, the rest rides on it (6 parts).
-BUILDERS.buoy = function(k, _p)
-	local root = k.cyl("BuoyFloat", 1.6, 3, up(0, 0.4, 0), W.Coral)
-	root:AddTag("MapBob")
-	local function child(part: BasePart)
-		part.Parent = root
-	end
-	child(k.cyl("BuoyBand", 0.5, 3.1, up(0, 0.5, 0), W.White))
-	for _, yaw in { 0, 90 } do
-		child(k.block("BuoyCage", Vector3.new(0.3, 3.6, 2), at(0, 2.8, 0) * CFrame.Angles(0, math.rad(yaw), 0), W.Coral))
-	end
-	child(k.cyl("BuoyCap", 0.4, 1.6, up(0, 4.6, 0), W.White))
-	child(k.ball("BuoyLight", 0.9, at(0, 5.1, 0), W.Sunny, { Material = NEON }))
-end
-
--- A coral cluster: tubes with round tips and two fans on a rock (10 parts), `scale`.
-BUILDERS.coral = function(k, _p)
-	k.ball("CoralRock", 3.4, at(0, 0.4, 0), W.SandDark)
-	local tubes = {
-		{ -0.8, 0.2, 5, 0.9, W.Coral },
-		{ 0.7, -0.5, 3.6, 0.8, W.Pink },
-		{ 0.1, 0.9, 2.6, 0.7, W.Orange },
-	}
-	for _, t in tubes do
-		local h = t[3]
-		k.cyl("CoralTube", h, t[4], up(t[1], h / 2 + 0.6, t[2]) * CFrame.Angles(0.08, 0, 0), t[5])
-		k.ball("CoralTip", t[4] + 0.3, at(t[1], h + 0.6, t[2]), t[5]:Lerp(W.White, 0.25))
-	end
-	k.cyl("CoralFan", 0.25, 3.6, at(1.6, 2.4, 0.6) * CFrame.Angles(0, math.rad(30), 0), W.Grape)
-	k.cyl("CoralFan", 0.25, 2.6, at(-1.7, 1.9, -0.8) * CFrame.Angles(0, math.rad(-40), 0), W.Pink)
-	k.cyl("CoralSprig", 2, 0.4, between(Vector3.new(-1.4, 0.8, 1.2), Vector3.new(-2.2, 2.6, 1.8)), W.Mint)
-end
-
--- A spot of rising bubbles: ~8 translucent balls tagged MapBubble plus a foam ring (9 parts).
-BUILDERS.bubblefield = function(k, p)
-	k.cyl("BubbleFoam", 0.1, 9, up(0, 0.1, 0), W.White, { Transparency = 0.4, CastShadow = false })
-	local rand = rng(p)
-	local s = k.s
-	for i = 1, 8 do
-		local a = rand:NextNumber(0, 2 * math.pi)
-		local d = rand:NextNumber(0, 3.6)
-		local size = rand:NextNumber(0.8, 2.2)
-		local y = 0.4 + rand:NextNumber(0, 12)
-		local bubble = k.ball("Bubble", size, at(math.cos(a) * d, y, math.sin(a) * d), if i % 3 == 0 then W.Pink else W.TealLight, {
-			Transparency = 0.45,
-			Reflectance = 0.15,
-			CastShadow = false,
-		})
-		bubble:SetAttribute("Rise", rand:NextNumber(2, 4.5))
-		bubble:SetAttribute("Top", k.base.Y + (15 + rand:NextNumber(0, 6)) * s)
-		bubble:AddTag("MapBubble")
-	end
-end
-
 -- A shark fin circling the prop's spot (4 parts): an invisible ModeMover spin root at the
 -- centre, the fin `r` studs out along the root's RightVector and its shadow and wake.
-BUILDERS.fin = function(k, p)
+PIECES.fin = function(k, p)
 	local r = p.r or 10
 	local speed = p.speed or 0.6
 	local root = make("Part", {
@@ -403,115 +253,58 @@ BUILDERS.fin = function(k, p)
 	)
 end
 
--- A dark storm cloud (its base is the cloud's underside) with rain and a hidden Neon bolt
--- tagged MapLightning (15 parts).
-BUILDERS.cloud = function(k, _p)
-	local puffs = {
-		{ 0, 3.4, 0, 9 },
-		{ -5, 2.6, 0.6, 7.4 },
-		{ 5.2, 2.6, -0.4, 7.6 },
-		{ -2.4, 5.6, -0.8, 6.6 },
-		{ 2.6, 5.4, 0.9, 6.2 },
-		{ -8.6, 2, -0.6, 5 },
-		{ 8.8, 2.1, 0.4, 5.2 },
-	}
-	for i, v in puffs do
-		k.ball("StormPuff", v[4], at(v[1], v[2], v[3]), if i % 2 == 0 then STORM else STORM:Lerp(W.Steel, 0.35))
-	end
-	k.block("StormBase", Vector3.new(18, 1.6, 6.4), at(0, 1.2, 0), STORM:Lerp(W.Ink, 0.15))
-	local zig = {
-		Vector3.new(0.5, 0.5, 0),
-		Vector3.new(-1.6, -4, 0),
-		Vector3.new(1.2, -7.5, 0),
-		Vector3.new(-0.8, -12.5, 0),
-	}
-	for i = 1, 3 do
-		local a, b = zig[i], zig[i + 1]
-		local bolt =
-			k.block("StormBolt", Vector3.new(0.7, 0.7, (b - a).Magnitude + 0.5), CFrame.lookAt((a + b) / 2, b, Vector3.zAxis), BOLT, {
-				Material = NEON,
-				Transparency = 1,
-				CastShadow = false,
-			})
-		bolt:AddTag("MapLightning")
-	end
-	for _, v in { { -5, 0.8 }, { 4, -0.6 }, { 6.5, 1.2 }, { -2.5, -1.4 } } do
-		k.block("StormRain", Vector3.new(0.15, 9, 0.15), at(v[1], -4, v[2]) * CFrame.Angles(0, 0, math.rad(8)), W.TealLight, {
-			Transparency = 0.6,
-			CastShadow = false,
-		})
-	end
-end
-
--- A stepped volcano cone with a glowing crater, lava drips, rim rocks and smoke (18 parts).
-BUILDERS.volcano = function(k, _p)
-	local tiers = { { 30, 4 }, { 25, 4 }, { 20, 4 }, { 15.5, 3.5 }, { 12, 3 } }
-	local y = -1
-	for i, t in tiers do
-		k.cyl("VolcanoCone", t[2], t[1], up(0, y + t[2] / 2, 0), if i % 2 == 0 then DARK_ROCK:Lerp(W.WoodDark, 0.2) else DARK_ROCK)
-		y += t[2]
-	end
-	local crater = k.cyl("VolcanoCrater", 0.6, 8.6, up(0, y + 0.1, 0), LAVA, { Material = NEON })
-	crater:AddTag("MapGlow")
-	for i = 0, 2 do
-		local a = math.rad(i * 120 + 25)
-		local dir = Vector3.new(math.cos(a), 0, math.sin(a))
-		local from = dir * 5 + Vector3.new(0, y - 0.2, 0)
-		local to = dir * 11 + Vector3.new(0, y - 9, 0)
-		local drip = k.cyl("VolcanoDrip", (to - from).Magnitude, 1.4, between(from, to), LAVA_HOT, { Material = NEON })
-		drip:AddTag("MapGlow")
-	end
-	for i = 0, 3 do
-		local a = math.rad(i * 90 + 70)
-		k.ball("VolcanoRimRock", 2.6, at(math.cos(a) * 5.4, y + 0.4, math.sin(a) * 5.4), DARK_ROCK:Lerp(W.Ink, 0.3))
-	end
-	for i, v in { { 0, 4, 0, 5 }, { 1.8, 7.5, -0.6, 4 }, { -0.6, 10.5, 0.8, 3.2 } } do
-		k.ball("VolcanoSmoke", v[4], at(v[1], y + v[2], v[3]), W.Steel:Lerp(W.White, 0.2 * i), {
-			Transparency = 0.25 + 0.15 * i,
-			CastShadow = false,
-		})
-	end
-end
-
--- A glowing lava pool at sea level, `r` = radius (6 parts).
-BUILDERS.lavapool = function(k, p)
-	local r = p.r or 5
-	k.cyl("LavaRim", 0.8, r * 2 + 2.4, up(0, 0.1, 0), DARK_ROCK)
-	local pool = k.cyl("LavaPool", 0.5, r * 2, up(0, 0.4, 0), LAVA, { Material = NEON })
-	pool:AddTag("MapGlow")
-	local core = k.cyl("LavaCore", 0.5, r, up(0, 0.45, 0), LAVA_HOT, { Material = NEON })
-	core:AddTag("MapGlow")
-	local rand = rng(p)
-	for _ = 1, 3 do
-		local a = rand:NextNumber(0, 2 * math.pi)
-		k.ball("LavaRock", rand:NextNumber(1.4, 2.4), at(math.cos(a) * (r + 0.8), 0.5, math.sin(a) * (r + 0.8)), DARK_ROCK)
-	end
-end
-
--- The gold Giga statue on a grape pedestal: the uploaded mesh when it is available, else a
--- chunky flexing figure (2 or 11 parts).
-BUILDERS.statue = function(k, _p)
+-- The gold Giga statue on a cream pedestal: the uploaded mesh when it is available, else a
+-- clear chunky figure cheering with both arms up: gold torso and head, deeper gold limbs,
+-- belt and hair, ink eyes and smile (2 or 21 parts).
+local GOLD_DEEP = W.GoldDeep
+PIECES.statue = function(k, _p)
 	local pedestal = 2.4
-	k.block("StatuePedestal", Vector3.new(8, pedestal, 8), at(0, pedestal / 2, 0), W.Grape)
-	local gold = { Reflectance = 0.12 }
+	k.block("StatuePedestal", Vector3.new(8, pedestal, 8), at(0, pedestal / 2, 0), W.Cream)
+	local gold = { Reflectance = 0.12, Material = Enum.Material.SmoothPlastic }
 	if Props.has("GigaStatue") and Props.mesh("GigaStatue", k.base * CFrame.new(0, pedestal * k.s, 0), k.s, k.parent) then
 		return
 	end
 	local y = pedestal
 	for _, sx in { -1, 1 } do
-		k.block("StatueLeg", Vector3.new(1.8, 6, 2), at(sx * 1.3, y + 3, 0), GOLD, gold)
+		k.block("StatueFoot", Vector3.new(2.4, 1, 3.2), at(sx * 1.5, y + 0.5, -0.3), GOLD_DEEP, gold)
+		k.block("StatueLeg", Vector3.new(2.2, 5.4, 2.4), at(sx * 1.5, y + 3.6, 0), GOLD_DEEP, gold)
 	end
-	k.block("StatueTorso", Vector3.new(6, 6.4, 3), at(0, y + 9, 0), GOLD, gold)
-	k.ball("StatueHead", 3.4, at(0, y + 13.6, 0), GOLD, gold)
+	k.block("StatueBelt", Vector3.new(6, 1.2, 3.2), at(0, y + 6.8, 0), GOLD_DEEP, gold)
+	k.block("StatueTorso", Vector3.new(5.6, 4.6, 3), at(0, y + 9.6, 0), GOLD, gold)
+	k.block("StatueChest", Vector3.new(7, 2.4, 3.2), at(0, y + 11.6, 0), GOLD, gold)
+	k.block("StatueNeck", Vector3.new(1.6, 0.8, 1.6), at(0, y + 13.2, 0), GOLD_DEEP, gold)
+	local head = y + 15.2
+	k.block("StatueHead", Vector3.new(3.8, 3.6, 3.6), at(0, head, 0), GOLD, gold)
+	k.block("StatueHair", Vector3.new(4, 1, 3.8), at(0, head + 2.1, 0.1), GOLD_DEEP, gold)
 	for _, sx in { -1, 1 } do
-		k.block("StatueUpperArm", Vector3.new(4, 1.9, 1.9), at(sx * 4.8, y + 11.2, 0), GOLD, gold)
-		k.block("StatueForearm", Vector3.new(1.8, 4, 1.8), at(sx * 6.4, y + 13.6, 0), GOLD, gold)
-		k.ball("StatueFist", 2.4, at(sx * 6.4, y + 15.8, 0), GOLD, gold)
+		k.block("StatueEye", Vector3.new(0.6, 0.9, 0.2), at(sx * 0.8, head + 0.4, -1.85), W.Ink)
+	end
+	k.block("StatueSmile", Vector3.new(1.6, 0.3, 0.2), at(0, head - 0.8, -1.85), W.Ink)
+	-- Arms up in a V: shoulder -> elbow -> fist.
+	for _, sx in { -1, 1 } do
+		local shoulder = Vector3.new(sx * 3.7, y + 12, 0)
+		local elbow = Vector3.new(sx * 5.6, y + 15.4, 0)
+		local fist = Vector3.new(sx * 6.4, y + 19, 0)
+		k.block(
+			"StatueUpperArm",
+			Vector3.new(1.9, (elbow - shoulder).Magnitude + 1, 1.9),
+			CFrame.lookAt((shoulder + elbow) / 2, elbow, Vector3.zAxis) * CFrame.Angles(math.pi / 2, 0, 0),
+			GOLD_DEEP,
+			gold
+		)
+		k.block(
+			"StatueForearm",
+			Vector3.new(1.8, (fist - elbow).Magnitude + 0.8, 1.8),
+			CFrame.lookAt((elbow + fist) / 2, fist, Vector3.zAxis) * CFrame.Angles(math.pi / 2, 0, 0),
+			GOLD_DEEP,
+			gold
+		)
+		k.ball("StatueFist", 2.4, CFrame.new(fist), GOLD, gold)
 	end
 end
 
 -- Bunting: two posts with a sagging rope of pennants (11 parts). `r` = half the span.
-BUILDERS.flagline = function(k, p)
+PIECES.flagline = function(k, p)
 	local half = p.r or 7
 	local postH = 8
 	for _, sx in { -1, 1 } do
@@ -532,20 +325,220 @@ BUILDERS.flagline = function(k, p)
 	end
 end
 
+-- Sky props ---------------------------------------------------------------------------------
+
+-- A floating green island, `r` = radius, grass top at the prop's y: a grass disc, a dark-sand
+-- rim band, a tapering rock cone hanging below and bushes on the edge (8-10 parts).
+BUILDERS.island = function(k, p)
+	local r = p.r or 12
+	k.cyl("IslandGrass", 1.2, r * 2, up(0, -0.6, 0), GRASS)
+	k.cyl("IslandRim", 1.8, r * 2 + 0.8, up(0, -1.9, 0), RIM_SAND)
+	local y = -2.8
+	for i, f in { 0.92, 0.7, 0.46, 0.22 } do
+		local h = r * (0.32 - i * 0.03)
+		k.cyl("IslandRock", h + 0.2, r * 2 * f, up(0, y - h / 2, 0), if i % 2 == 0 then ROCK else ROCK:Lerp(RIM_SAND, 0.25))
+		y -= h
+	end
+	local rand = rng(p)
+	for i = 1, if r >= 30 then 4 else 2 do
+		local a = rand:NextNumber(0, 2 * math.pi)
+		local d = math.min(r * 0.12 + 2, 7)
+		k.ball(
+			"IslandBush",
+			d,
+			at(math.cos(a) * (r - d * 0.6), d * 0.2, math.sin(a) * (r - d * 0.6)),
+			if i == 1 then W.GrassDark else GRASS:Lerp(W.GrassDark, 0.4)
+		)
+	end
+end
+
+-- A round cartoon tree: brown trunk and three green canopy balls (4 parts).
+BUILDERS.tree = function(k, _p)
+	k.cyl("TreeTrunk", 6, 1.3, up(0, 3, 0), TRUNK)
+	k.ball("TreeCanopy", 7.5, at(0, 8, 0), GRASS)
+	k.ball("TreeCanopy", 5, at(-2.4, 6.6, 0.8), GRASS:Lerp(W.GrassDark, 0.35))
+	k.ball("TreeCanopy", 4.6, at(2.2, 7, -0.9), GRASS:Lerp(W.White, 0.15))
+end
+
+-- A white windmill with a red cap and three sail blades on an invisible ModeMover spin root
+-- (Mover = "spin", SpinAxis = "Z": the client turns it about its look vector, the axle).
+-- Blades lie along the root's right/up vectors (13 parts).
+BUILDERS.windmill = function(k, p)
+	local y, d = 0, 6
+	for i = 1, 3 do
+		local h = 4.5
+		k.cyl("WindmillTower", h, d, up(0, y + h / 2, 0), if i == 2 then W.Cream else W.White)
+		y += h
+		d -= 0.9
+	end
+	k.cyl("WindmillCap", 1.6, d + 1.2, up(0, y + 0.8, 0), W.RainbowRed)
+	k.ball("WindmillCap", d + 0.6, at(0, y + 1.6, 0), W.RainbowRed)
+	k.block("WindmillDoor", Vector3.new(1.8, 2.8, 0.4), at(0, 1.4, -2.95), TRUNK)
+	local hub = at(0, y - 0.6, -(d / 2 + 1.2))
+	local root = k.block("WindmillHub", Vector3.new(1, 1, 1), hub, W.White, { Transparency = 1, CastShadow = false })
+	root:SetAttribute("Mover", "spin")
+	root:SetAttribute("MoveSpeed", p.speed or 0.9)
+	root:SetAttribute("MovePhase", 0)
+	root:SetAttribute("SpinAxis", "Z")
+	root:AddTag("ModeMover")
+	k.cyl("WindmillAxle", 1.6, 0.7, hub * at(0, 0, 0.8) * CFrame.Angles(0, math.pi / 2, 0), TRUNK).Parent = root
+	k.ball("WindmillBoss", 1.6, hub, W.RainbowYellow).Parent = root
+	for i = 0, 2 do
+		local blade = hub * CFrame.Angles(0, 0, math.pi / 2 + i * 2 * math.pi / 3)
+		k.block("WindmillSpar", Vector3.new(8.5, 0.5, 0.4), blade * at(4.6, 0, 0), TRUNK).Parent = root
+		k.block("WindmillSail", Vector3.new(6.5, 2.2, 0.2), blade * at(5.2, 1.2, 0.1), if i == 0 then W.RainbowRed else W.White).Parent =
+			root
+	end
+end
+
+-- A hot-air balloon with its basket at the prop's y: a red envelope ball wrapped in rainbow
+-- bands, a pink skirt, four ropes and a wicker basket. The envelope is the MapBob root and
+-- everything else rides on it (13 parts).
+BUILDERS.balloon = function(k, _p)
+	local cy, rr = 15, 6.5
+	local root = k.ball("BalloonEnvelope", rr * 2, at(0, cy, 0), W.RainbowRed)
+	root:AddTag("MapBob")
+	local bands = { W.RainbowOrange, W.RainbowYellow, W.RainbowGreen, W.RainbowBlue, W.RainbowPurple }
+	for i, col in bands do
+		local h = (i - 3) * 2.3
+		local d = 2 * math.sqrt(rr * rr - h * h) + 0.15
+		k.cyl("BalloonBand", 1.1, d, up(0, cy + h, 0), col).Parent = root
+	end
+	k.cyl("BalloonSkirt", 2.4, 4.6, up(0, cy - rr - 0.2, 0), W.RainbowPink).Parent = root
+	k.block("BalloonBasket", Vector3.new(3, 2.2, 3), at(0, 1.1, 0), TRUNK, { Material = Enum.Material.WoodPlanks }).Parent = root
+	k.block("BalloonBasketRim", Vector3.new(3.3, 0.4, 3.3), at(0, 2.3, 0), W.Cream).Parent = root
+	for _, v in { { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 } } do
+		local a = Vector3.new(v[1] * 1.4, 2.4, v[2] * 1.4)
+		local b = Vector3.new(v[1] * 1.8, cy - rr - 1.2, v[2] * 1.8)
+		k.cyl("BalloonRope", (b - a).Magnitude, 0.18, between(a, b), W.WoodDark).Parent = root
+	end
+end
+
+-- A soft white cloud of 3-5 overlapping balls centred on the prop's y.
+BUILDERS.cloud = function(k, p)
+	local puffs = {
+		{ 0, 0, 0, 11 },
+		{ -6.5, -1.2, 0.6, 8 },
+		{ 6.8, -1.4, -0.4, 8.4 },
+		{ -2.6, 2.8, -0.6, 7.2 },
+		{ 3.2, 2.4, 0.8, 6.6 },
+	}
+	local n = rng(p):NextInteger(3, 5)
+	for i = 1, n do
+		local v = puffs[i]
+		k.ball("CloudPuff", v[4], at(v[1], v[2], v[3]), W.Cloud, {
+			Material = Enum.Material.SmoothPlastic,
+			Transparency = 0.05,
+			CastShadow = false,
+		})
+	end
+end
+
+-- A gold 5-point star standing upright, centred on the prop's y: a hub disc and five diamond
+-- blocks whose outer halves form the points, in a Model that slowly spins (6 parts).
+BUILDERS.star = function(k, _p)
+	local model = Instance.new("Model")
+	model.Name = "Star"
+	model:SetAttribute("Spin", 0.6)
+	local sk = kit(k.base, k.s, model, k.theme)
+	local gold = { Material = Enum.Material.SmoothPlastic, Reflectance = 0.15 }
+	model.PrimaryPart = sk.cyl("StarHub", 1, 4.2, CFrame.Angles(0, math.pi / 2, 0), GOLD, gold)
+	for i = 0, 4 do
+		local a = math.pi / 2 + i * 2 * math.pi / 5
+		sk.block(
+			"StarPoint",
+			Vector3.new(2.7, 2.7, 0.8),
+			CFrame.Angles(0, 0, a) * at(2.3, 0, 0) * CFrame.Angles(0, 0, math.pi / 4),
+			GOLD,
+			gold
+		)
+	end
+	model.Parent = k.parent
+end
+
+-- A rainbow arch standing on its feet at the prop's y: seven concentric half-circle bands
+-- (red outside to purple inside) of four segments each (six when scaled up big), and a cloud
+-- puff on each foot (30-44 parts). Course.ARCH_FEET mirrors the feet.
+local ARCH_COLORS = { "RainbowRed", "RainbowOrange", "RainbowYellow", "RainbowGreen", "RainbowCyan", "RainbowBlue", "RainbowPurple" }
+BUILDERS.rainbowarch = function(k, _p)
+	local outer, band, segments = 20, 1.6, if k.s > 1.5 then 6 else 4
+	for i, key in ARCH_COLORS do
+		local r = outer - (i - 1) * band
+		local chord = 2 * r * math.sin(math.pi / (2 * segments)) + 0.5
+		for j = 0, segments - 1 do
+			local m = math.pi * (j + 0.5) / segments
+			k.block(
+				"RainbowBand",
+				Vector3.new(chord, band + 0.05, 1.4),
+				at(r * math.cos(m), r * math.sin(m), 0) * CFrame.Angles(0, 0, m + math.pi / 2),
+				W[key]
+			)
+		end
+	end
+	for _, sx in { -1, 1 } do
+		k.ball("RainbowCloud", 9, at(sx * (outer - 3 * band), 1.5, 0), W.Cloud, { Transparency = 0.05, CastShadow = false })
+	end
+end
+
+-- A vertical rainbow loop standing on two cloud puffs at the prop's y, facing its front: seven
+-- concentric full rings (red outside to purple inside, outer radius 20) of eight segments
+-- each (58 parts).
+BUILDERS.loop = function(k, _p)
+	local outer, band, segments = 20, 1.6, 8
+	local cy = outer + 1
+	for i, key in ARCH_COLORS do
+		local r = outer - (i - 1) * band
+		local chord = 2 * r * math.sin(math.pi / segments) + 0.5
+		for j = 0, segments - 1 do
+			local m = 2 * math.pi * (j + 0.5) / segments
+			k.block(
+				"RainbowLoop",
+				Vector3.new(chord, band + 0.05, 1.6),
+				at(r * math.cos(m), cy + r * math.sin(m), 0) * CFrame.Angles(0, 0, m + math.pi / 2),
+				W[key]
+			)
+		end
+	end
+	for _, sx in { -1, 1 } do
+		k.ball("LoopCloud", 9, at(sx * 4, 1.5, 0), W.Cloud, { Transparency = 0.05, CastShadow = false })
+	end
+end
+
+-- A spiral rainbow stair: 24 thin candy steps climbing 30 units in two turns around a white
+-- pole on a cloud puff, a gold ball on top (28 parts).
+local SPIRAL_COLORS =
+	{ "RainbowRed", "RainbowOrange", "RainbowYellow", "RainbowGreen", "RainbowCyan", "RainbowBlue", "RainbowPurple", "RainbowPink" }
+BUILDERS.spiral = function(k, _p)
+	local steps, rise = 24, 30
+	k.ball("SpiralCloud", 12, at(0, 0, 0), W.Cloud, { Transparency = 0.05, CastShadow = false })
+	k.cyl("SpiralPole", rise + 4, 1.6, up(0, (rise + 4) / 2 + 1, 0), W.White)
+	for i = 1, steps do
+		local a = (i - 1) * 4 * math.pi / steps
+		local y = 2 + (i - 1) * rise / (steps - 1)
+		k.block(
+			"SpiralStep",
+			Vector3.new(8, 0.6, 2.8),
+			CFrame.Angles(0, a, 0) * at(4.6, y, 0) * CFrame.Angles(0, math.rad(-8), 0),
+			W[SPIRAL_COLORS[(i - 1) % #SPIRAL_COLORS + 1]]
+		)
+	end
+	k.ball("SpiralTop", 3, at(0, rise + 6, 0), GOLD, { Reflectance = 0.12 })
+end
+
 -- Landmarks ------------------------------------------------------------------------------
--- Sizes below are prop units at scale 1; Course.LANDMARK_SCALE[theme] scales each to 60-80 studs.
+-- Sizes below are prop units at scale 1; Course.LANDMARK_SCALE[theme] scales each to 110-145 studs.
 
 -- A kit for a sub-prop standing at `cf` (prop units) in `k`'s frame, scaled by `scale`.
 local function sub(k: Kit, cf: CFrame, scale: number): Kit
 	return kit(k.base * CFrame.new(cf.Position * k.s) * cf.Rotation, k.s * scale, k.parent, k.theme)
 end
 
--- Prop units from the landmark's base down to just under the ocean surface.
-local function sink(k: Kit): number
-	return math.max(1, (k.base.Y - SEA_Y) / k.s + 1.5)
+-- Prop units the landmark's foundation sinks into the island it stands on.
+local function sink(_k: Kit): number
+	return 1.5
 end
 
--- An upright disc from under the sea up to `top` (prop units), `d` wide.
+-- An upright disc sunk a little into the island up to `top` (prop units), `d` wide.
 local function foundation(k: Kit, d: number, top: number, col: Color3, name: string?): BasePart
 	local bottom = -sink(k)
 	return k.cyl(name or "LandmarkFoot", top - bottom, d, up(0, (top + bottom) / 2, 0), col)
@@ -618,8 +611,8 @@ LANDMARKS.cove = function(k, p)
 	for _, x in { -3, 4 } do
 		k.block("GiantArchVine", Vector3.new(1.2, 7, 0.6), at(x, 25, -4.3), W.GrassDark)
 	end
-	BUILDERS.palm(sub(k, at(-6, 35, 0) * CFrame.Angles(0, 0.6, 0), 1.35), p)
-	BUILDERS.palm(sub(k, at(6.5, 35, 0.5) * CFrame.Angles(0, 3.4, 0), 1.2), p)
+	PIECES.palm(sub(k, at(-6, 35, 0) * CFrame.Angles(0, 0.6, 0), 1.35), p)
+	PIECES.palm(sub(k, at(6.5, 35, 0.5) * CFrame.Angles(0, 3.4, 0), 1.2), p)
 end
 
 -- A 46-unit navy-and-white lighthouse on a rock with a glowing lamp, its beam and a ring of
@@ -795,7 +788,7 @@ LANDMARKS.shark = function(k, p)
 	end
 	for i = 0, 2 do
 		local fin = sub(k, at(0, 0.4, 0) * CFrame.Angles(0, i * 2 * math.pi / 3, 0), 1.3)
-		BUILDERS.fin(fin, { kind = "fin", x = p.x, y = p.y, z = p.z, r = 10.5, speed = 0.45 })
+		PIECES.fin(fin, { kind = "fin", x = p.x, y = p.y, z = p.z, r = 10.5, speed = 0.45 })
 	end
 end
 
@@ -831,10 +824,10 @@ LANDMARKS.storm = function(k, _p)
 		{ 5, 45.5, -1, 7 },
 	}
 	for i, v in puffs do
-		local col = if i % 3 == 0 then W.Slate else if i % 2 == 0 then STORM else STORM:Lerp(W.Steel, 0.35)
-		k.ball("GiantStormPuff", v[4], at(v[1], v[2], v[3]), col)
+		local col = if i % 3 == 0 then STORM:Lerp(W.Steel, 0.18) elseif i % 2 == 0 then STORM else STORM:Lerp(W.White, 0.3)
+		k.ball("GiantStormPuff", v[4], at(v[1], v[2], v[3]), col, { Material = Enum.Material.SmoothPlastic })
 	end
-	k.block("GiantStormBase", Vector3.new(26, 2, 9), at(0, 31.5, 0), STORM:Lerp(W.Ink, 0.15))
+	k.block("GiantStormBase", Vector3.new(26, 2, 9), at(0, 31.5, 0), STORM:Lerp(W.Steel, 0.25), { Material = Enum.Material.SmoothPlastic })
 	k.block("GiantStormTrim", Vector3.new(26.4, 0.6, 9.4), at(0, 30.6, 0), W.Volt, { Material = NEON, CastShadow = false })
 	local bolts = {
 		{ Vector3.new(-6, 30.5, 0), Vector3.new(-3, 21, 1), Vector3.new(-6, 10, 0) },
@@ -900,20 +893,21 @@ LANDMARKS.volcano = function(k, _p)
 	end
 end
 
--- A stepped grape/cream/gold plinth with a giant gold Giga (the uploaded mesh scaled to ~34
+-- A stepped cream plinth with a gold trim and a giant gold Giga (the uploaded mesh scaled to ~34
 -- studs when available, else the part-built figure doubled) and bunting front and back (26-36 parts).
 LANDMARKS.giga = function(k, p)
 	local bottom = -sink(k)
-	k.block("GigaPlinth", Vector3.new(26, 3 - bottom, 26), at(0, (3 + bottom) / 2, 0), W.Grape)
+	k.block("GigaPlinth", Vector3.new(26, 3 - bottom, 26), at(0, (3 + bottom) / 2, 0), W.Cream:Lerp(W.Butter, 0.25))
 	k.block("GigaPlinth", Vector3.new(21, 3, 21), at(0, 4.5, 0), W.Cream)
-	k.block("GigaPlinth", Vector3.new(16, 2, 16), at(0, 7, 0), GOLD, { Reflectance = 0.12 })
+	k.block("GigaPlinth", Vector3.new(16, 2, 16), at(0, 7, 0), W.Cream:Lerp(W.White, 0.4))
+	k.block("GigaPlinthTrim", Vector3.new(21.4, 0.5, 21.4), at(0, 6.1, 0), GOLD, { Reflectance = 0.12 })
 	local size = if Props.has("GigaStatue") then Props.size("GigaStatue") else nil
 	local mesh = size and Props.mesh("GigaStatue", k.base * CFrame.new(0, 8 * k.s, 0), k.s * 34 / size.Y, k.parent)
 	if not mesh then
-		BUILDERS.statue(sub(k, at(0, 8, 0), 2), p)
+		PIECES.statue(sub(k, at(0, 8, 0), 2), p)
 	end
 	for _, z in { -10, 10 } do
-		BUILDERS.flagline(
+		PIECES.flagline(
 			sub(k, at(0, 3, z) * CFrame.Angles(0, if z > 0 then math.pi else 0, 0), 1.1),
 			{ kind = "flagline", x = p.x, y = p.y, z = p.z, r = 10 }
 		)
@@ -926,305 +920,19 @@ BUILDERS.landmark = function(k, p)
 	build(k, p)
 end
 
--- Base ------------------------------------------------------------------------------------
-
--- A base's look: `top` slab colour and material, the outer `rim` ring's (a contrasting second
--- colour/material: wet sand, foam, lava crust, gold trim), `reflect` for both, and the round
--- scenery `blob`s overhanging its edges (sand mounds, bushes, coral balls, boulders, cloud
--- puffs, gold orbs) with optional `blobAlpha` transparency and `blobMaterial`.
-type BaseLook = {
-	top: Color3,
-	rim: Color3,
-	material: Enum.Material?,
-	rimMaterial: Enum.Material?,
-	reflect: number?,
-	blob: Color3,
-	blob2: Color3?,
-	blobAlpha: number?,
-	blobMaterial: Enum.Material?,
-	blobReflect: number?,
-}
--- A theme's base-top colour from Course.BASE_TOPS.
-local function baseTop(theme: string): Color3
-	local mix = Course.BASE_TOPS[theme]
-	local col: Color3 = W[mix[1]]
-	return if mix[2] then col:Lerp(W[mix[2]], mix[3]) else col
-end
-local BASE_LOOK: { [string]: BaseLook } = {
-	beach = {
-		top = baseTop("beach"),
-		rim = W.SandDark:Lerp(W.WoodDark, 0.4),
-		rimMaterial = Enum.Material.Sand,
-		blob = W.Sand:Lerp(W.SandDark, 0.35),
-		blob2 = W.Sand,
-		blobMaterial = Enum.Material.Sand,
-	},
-	cove = {
-		top = baseTop("cove"),
-		rim = W.SandDark:Lerp(W.GrassDark, 0.45),
-		rimMaterial = Enum.Material.Sand,
-		blob = W.Grass,
-		blob2 = W.GrassDark,
-	},
-	bay = {
-		top = baseTop("bay"),
-		rim = W.Navy,
-		rimMaterial = Enum.Material.WoodPlanks,
-		blob = ROCK:Lerp(W.Navy, 0.3),
-		blob2 = ROCK,
-	},
-	reef = { top = baseTop("reef"), rim = W.Teal, blob = W.HotPink, blob2 = W.TealLight },
-	bubble = {
-		top = baseTop("bubble"),
-		rim = W.Blue:Lerp(W.Navy, 0.35),
-		blob = W.White,
-		blob2 = W.SkyBlue,
-		blobAlpha = 0.15,
-	},
-	coral = {
-		top = baseTop("coral"),
-		rim = W.Terracotta,
-		rimMaterial = Enum.Material.Sandstone,
-		blob = W.Orange,
-		blob2 = W.Terracotta,
-	},
-	shark = {
-		top = baseTop("shark"),
-		rim = W.TealLight,
-		rimMaterial = Enum.Material.Slate,
-		blob = ROCK:Lerp(W.TealDeep, 0.25),
-		blob2 = ROCK,
-	},
-	storm = {
-		top = baseTop("storm"),
-		rim = W.Volt,
-		material = Enum.Material.Slate,
-		blob = STORM_ROCK,
-		blob2 = STORM_ROCK:Lerp(W.Steel, 0.25),
-		blobMaterial = Enum.Material.Slate,
-	},
-	volcano = {
-		top = baseTop("volcano"),
-		rim = W.Lava:Lerp(W.Basalt, 0.3),
-		material = Enum.Material.Basalt,
-		rimMaterial = Enum.Material.CrackedLava,
-		blob = DARK_ROCK,
-		blob2 = DARK_ROCK:Lerp(W.Ink, 0.3),
-		blobMaterial = Enum.Material.Basalt,
-	},
-	giga = {
-		top = baseTop("giga"),
-		rim = GOLD:Lerp(W.Terracotta, 0.3),
-		reflect = 0.1,
-		blob = GOLD,
-		blob2 = W.Grape,
-		blobReflect = 0.2,
-	},
-}
--- Width of the outer rim ring round the top, how far its top sits under the base top, and
--- the corner radius of the base (the rim's outline; the top's corners are BASE_RIM tighter).
-local BASE_RIM = 2.5
-local BASE_RIM_DROP = 0.4
-local BASE_CORNER = 9
-
-type BaseBox = { x0: number, x1: number, z0: number, z1: number, top: number }
-
--- Is (x, z) on the base's rounded rectangle?
-local function onBase(b: BaseBox?, x: number, z: number): boolean
-	if b == nil or x < b.x0 or x > b.x1 or z < b.z0 or z > b.z1 then
-		return false
-	end
-	local r = math.min(BASE_CORNER, (b.x1 - b.x0) / 2, (b.z1 - b.z0) / 2)
-	local dx = math.max(0, math.abs(x - (b.x0 + b.x1) / 2) - ((b.x1 - b.x0) / 2 - r))
-	local dz = math.max(0, math.abs(z - (b.z0 + b.z1) / 2) - ((b.z1 - b.z0) / 2 - r))
-	return dx * dx + dz * dz <= r * r
-end
-
--- The themed ground slab under the whole course (level.BASE): a rounded top (two overlapping
--- boxes + four corner cylinders) inside a slightly larger outer rim ring BASE_RIM_DROP lower,
--- in a contrasting colour/material; up to three flat theme details on the top and four round
--- blobs overhanging the edges (clear of the landmark) (23 parts at most). The slabs collide
--- (a fallen runner lands on them, below the water line, and respawns); details don't.
-function MapDecor.base(level: Course.Level, folder: Instance)
-	local b: BaseBox? = (level :: any).BASE
-	if b == nil then
-		return
-	end
-	local theme: string = (level :: any).theme or "beach"
-	local look = BASE_LOOK[theme] or BASE_LOOK.beach
-	local holder = Instance.new("Folder")
-	holder.Name = "Base"
-	local cx, cz = (b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2
-	local w, d = b.x1 - b.x0, b.z1 - b.z0
-	local r = math.min(BASE_CORNER, w / 2, d / 2)
-	local function slab(name: string, size: Vector3, cf: CFrame, col: Color3, material: Enum.Material?, cylinder: boolean?): BasePart
-		local props: { [string]: any } = {
-			Name = name,
-			Size = size,
-			CFrame = cf,
-			Color = col,
-			Material = material or Enum.Material.SmoothPlastic,
-			Reflectance = look.reflect or 0,
-			Parent = holder,
-		}
-		if cylinder then
-			props.Shape = CYLINDER
-		end
-		local part = make("Part", props)
-		part.CanCollide = true
-		part.CanQuery = true
-		part.CanTouch = false
-		return part
-	end
-	-- A rounded rectangle (inset `m` from the base outline) from `bottom` up to `top`.
-	local function rounded(name: string, m: number, top: number, bottom: number, col: Color3, material: Enum.Material?)
-		local h, y = top - bottom, (top + bottom) / 2
-		local rr = math.max(0.5, r - m)
-		local ww, dd = w - 2 * m, d - 2 * m
-		slab(name, Vector3.new(ww, h, dd - 2 * rr), CFrame.new(cx, y, cz), col, material)
-		slab(name, Vector3.new(ww - 2 * rr, h, dd), CFrame.new(cx, y, cz), col, material)
-		for _, sx in { -1, 1 } do
-			for _, sz in { -1, 1 } do
-				slab(
-					name,
-					Vector3.new(h, 2 * rr, 2 * rr),
-					CFrame.new(cx + sx * (ww / 2 - rr), y, cz + sz * (dd / 2 - rr)) * UPRIGHT,
-					col,
-					material,
-					true
-				)
-			end
-		end
-	end
-	rounded("BaseRim", 0, b.top - BASE_RIM_DROP, SEA_Y - 3, look.rim, look.rimMaterial)
-	rounded("BaseTop", BASE_RIM, b.top, b.top - 1.2, look.top, look.material)
-	-- Theme details on the top (decor: no collision).
-	local rand = Random.new(math.floor(cx * 3 + cz * 7))
-	local function spot(margin: number): (number, number)
-		return rand:NextNumber(b.x0 + margin, b.x1 - margin), rand:NextNumber(b.z0 + margin, b.z1 - margin)
-	end
-	local function detail(props: { [string]: any }): BasePart
-		props.Parent = holder
-		props.CastShadow = false
-		return decorPart(props)
-	end
-	local margin = math.min(16, w / 2 - 1, d / 2 - 1)
-	if theme == "reef" or theme == "coral" or theme == "cove" or theme == "bubble" then
-		local col = if theme == "cove"
-			then W.Mint
-			else if theme == "bubble" then W.SkyBlue else if theme == "reef" then W.TealLight else W.Apricot:Lerp(W.White, 0.4)
-		for _ = 1, 3 do
-			local x, z = spot(margin)
-			local size = rand:NextNumber(14, 26)
-			detail({
-				Name = "BasePatch",
-				Shape = CYLINDER,
-				Size = Vector3.new(0.12, size, size),
-				CFrame = CFrame.new(x, b.top + 0.06, z) * UPRIGHT,
-				Color = col,
-			})
-		end
-	elseif theme == "shark" or theme == "volcano" or theme == "bay" or theme == "storm" then
-		for _ = 1, 3 do
-			local x, z = spot(margin)
-			local yaw = rand:NextNumber(-0.5, 0.5)
-			if theme == "volcano" then
-				glow(detail({
-					Name = "BaseCrack",
-					Size = Vector3.new(rand:NextNumber(12, 24), 0.15, 0.9),
-					CFrame = CFrame.new(x, b.top + 0.05, z) * CFrame.Angles(0, yaw * 3, 0),
-					Color = LAVA,
-					Material = NEON,
-				}))
-			elseif theme == "storm" then
-				detail({
-					Name = "BasePuddle",
-					Shape = CYLINDER,
-					Size = Vector3.new(0.12, rand:NextNumber(10, 18), rand:NextNumber(10, 18)),
-					CFrame = CFrame.new(x, b.top + 0.06, z) * UPRIGHT,
-					Color = W.Slate:Lerp(W.Ink, 0.35),
-					Reflectance = 0.3,
-				})
-			else
-				detail({
-					Name = "BaseFoam",
-					Size = Vector3.new(rand:NextNumber(18, 32), 0.12, 1.6),
-					CFrame = CFrame.new(x, b.top + 0.06, z) * CFrame.Angles(0, yaw, 0),
-					Color = W.White,
-					Transparency = 0.35,
-				})
-			end
-		end
-	elseif theme == "giga" then
-		-- A grape inlay band just inside the gold rim.
-		for _, sz in { -1, 1 } do
-			detail({
-				Name = "BaseInlay",
-				Size = Vector3.new(w - 2 * r - 6, 0.12, 1.4),
-				CFrame = CFrame.new(cx, b.top + 0.06, cz + sz * (d / 2 - BASE_RIM - 3)),
-				Color = W.Grape,
-			})
-		end
-	end
-	-- Round blobs half over the edge (one per side, slid along it), never under the landmark.
-	local landmark: Prop? = nil
-	for _, p in ((level :: any).PROPS or {}) :: { Prop } do
-		if p.kind == "landmark" then
-			landmark = p
-		end
-	end
-	for i, edge in { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } } do
-		local size = rand:NextNumber(6, 10)
-		local along = rand:NextNumber(-0.35, 0.35)
-		local x = if edge[1] ~= 0 then cx + edge[1] * (w / 2 + 0.5) else cx + along * (w - 2 * r)
-		local z = if edge[2] ~= 0 then cz + edge[2] * (d / 2 + 0.5) else cz + along * (d - 2 * r)
-		if landmark then
-			local foot = Course.propFoot(landmark)
-			if math.sqrt((x - landmark.x) ^ 2 + (z - landmark.z) ^ 2) < foot + size / 2 then
-				-- Slide it to the other half of that side.
-				if edge[1] ~= 0 then
-					z = cz - along * (d - 2 * r)
-				else
-					x = cx - along * (w - 2 * r)
-				end
-				if math.sqrt((x - landmark.x) ^ 2 + (z - landmark.z) ^ 2) < foot + size / 2 then
-					continue
-				end
-			end
-		end
-		detail({
-			Name = "BaseBlob",
-			Shape = BALL,
-			Size = Vector3.new(size, size, size),
-			CFrame = CFrame.new(x, b.top - size * 0.15, z),
-			Color = if i % 2 == 0 then look.blob2 or look.blob else look.blob,
-			Material = look.blobMaterial or Enum.Material.SmoothPlastic,
-			Transparency = look.blobAlpha or 0,
-			Reflectance = look.blobReflect or 0,
-		}).CastShadow =
-			true
-	end
-	holder.Parent = folder
-end
-
 -- Build -----------------------------------------------------------------------------------
 
-local FLOATING = { buoy = true, fin = true, lavapool = true, bubblefield = true, beachball = true }
 -- Kinds sized by `r` (never scaled).
-local BY_RADIUS = { islet = true, lavapool = true }
--- Non-floating props out at sea stand this far under the ocean surface.
-local PLANT = 0.4
+local BY_RADIUS = { island = true }
 local warned: { [string]: boolean } = {}
 
 -- Draws every `level.PROPS` entry into a "Scenery" folder under `folder`.
 function MapDecor.build(level: Course.Level, folder: Instance)
-	MapDecor.base(level, folder)
 	local props: { Prop } = (level :: any).PROPS or {}
 	if #props == 0 then
 		return
 	end
 	local theme: string = (level :: any).theme or "beach"
-	local base: BaseBox? = (level :: any).BASE
 	local scenery = Instance.new("Folder")
 	scenery.Name = "Scenery"
 	for _, p in props do
@@ -1236,13 +944,7 @@ function MapDecor.build(level: Course.Level, folder: Instance)
 			end
 			continue
 		end
-		local y = p.y
-		if p.kind ~= "islet" and p.y <= Course.WATER_Y + 0.01 then
-			-- Out at sea, or on the base slab when it stands over it.
-			local ground = if onBase(base, p.x, p.z) then (base :: BaseBox).top else SEA_Y
-			y = if FLOATING[p.kind] then ground else ground - PLANT
-		end
-		local base = CFrame.new(p.x, y, p.z) * CFrame.Angles(0, p.yaw or 0, 0)
+		local base = CFrame.new(p.x, p.y, p.z) * CFrame.Angles(0, p.yaw or 0, 0)
 		build(kit(base, if BY_RADIUS[p.kind] then 1 else p.scale or 1, scenery, theme), p)
 	end
 	local count = 0

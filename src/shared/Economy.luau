@@ -503,6 +503,9 @@ end
 -- inside the cooldown pay no cash. The first finish ever also pays Rizz.
 Economy.MODE_REWARD_COOLDOWN = 1800
 Economy.MODE_FIRST_CLEAR_GEMS = 25
+-- Rizz price of a Parkour "Skip Stage" (teleport to the next checkpoint; the run becomes
+-- assisted: it pays and unlocks but sets no best time).
+Economy.PARKOUR_SKIP_GEMS = 15
 
 export type ModeReward = {
 	-- Cash this finish pays (packCash when `full`, else 0).

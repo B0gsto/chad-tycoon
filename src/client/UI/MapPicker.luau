@@ -14,8 +14,9 @@
 
 	The preview is a lazy clone of workspace.Map.GameModes.Parkour.Level<n> without its
 	invisible volumes (Transparency 1, ParkourFinish, ParkourWater, Trigger), cached per map,
-	over a flat sea plane, framed so the whole course bounding box fits the viewport from a high
-	3/4 angle. It orbits on RenderStepped only while the window is open.
+	over a flat sky-blue plane (the course floats above the clouds), framed so the whole level
+	bounding box (path, cloud floor and floating islands with their props) fits the viewport
+	from a high 3/4 angle. It orbits on RenderStepped only while the window is open.
 
 	Windows.luau owns the window list: it calls MapPicker.build with its register/closeAll
 	helpers and the shared reward/pip helpers, and exposes Windows.open("Maps") and
@@ -99,7 +100,8 @@ local LOCKED_SLATE = Color3.fromRGB(104, 112, 138)
 local ACCENTS = { "Sunny", "Teal", "Blue", "Coral", "Mint", "Pink", "Grape", "Blue", "Orange", "Sunny" }
 local ICONS = { "🏖️", "🌴", "⚓", "🐠", "🫧", "🪸", "🦈", "⛈️", "🌋", "👑" }
 local STRIP = { ParkourFinish = true, ParkourWater = true, Trigger = true }
-local SEA = Color3.fromRGB(70, 175, 205)
+-- The sky under the cloud floor (preview plane and well).
+local SEA = Color3.fromRGB(120, 190, 245)
 local PREVIEW_FOV = 40
 -- Camera pitch (degrees below the horizon) for the 3/4 overhead view, and the breathing
 -- room left round the course in the frame.
@@ -138,7 +140,7 @@ end
 
 type Preview = { model: Model, center: Vector3, span: Vector3 }
 
--- Clones Level<n> without its invisible volumes into a Model over a sea plane, or nil when
+-- Clones Level<n> without its invisible volumes into a Model over a sky plane, or nil when
 -- the level is not in the workspace (yet).
 local function buildPreview(n: number): Preview?
 	local map = workspace:FindFirstChild("Map")
@@ -768,7 +770,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		local best = if type(lv) == "table" then tonumber(lv.best) or 0 else 0
 		setSidePips(if type(lv) == "table" then tonumber(lv.difficulty) or selected else selected)
 		sideStats.Text = string.format("Best %s  ·  %s", if best > 0 then deps.runTime(best) else "--", deps.plural(clears, "clear"))
-		blurb.Text = if type(lv) == "table" and type(lv.blurb) == "string" then lv.blurb else "Jump, bounce and slide over the sea!"
+		blurb.Text = if type(lv) == "table" and type(lv.blurb) == "string" then lv.blurb else "Jump, bounce and slide across the sky!"
 		if info and type(lv) == "table" then
 			deps.parkourReward(reward, info, selected)
 		else
