@@ -1,0 +1,115 @@
+{
+ "axes": "Roblox studs, size = [X, Y up, Z]; mesh origin = base centre; front = -Z (Blender -Y)",
+ "props/CandyStrawberry": {
+  "size": [
+   6.422,
+   8.963,
+   6.373
+  ],
+  "tris": 2208
+ },
+ "props/CandyDonut": {
+  "size": [
+   9.686,
+   5.897,
+   9.091
+  ],
+  "tris": 1960
+ },
+ "props/CandyCupcake": {
+  "size": [
+   6.8,
+   10.086,
+   6.817
+  ],
+  "tris": 2352
+ },
+ "props/CandyCookie": {
+  "size": [
+   8.583,
+   8.417,
+   2.964
+  ],
+  "tris": 1152
+ },
+ "props/CandySwirl": {
+  "size": [
+   8.4,
+   8.4,
+   2.83
+  ],
+  "tris": 2000
+ },
+ "props/CandyCone": {
+  "size": [
+   6.004,
+   12.301,
+   5.737
+  ],
+  "tris": 2128
+ },
+ "props/CandyBar": {
+  "size": [
+   6.25,
+   9.8,
+   2.035
+  ],
+  "tris": 2282
+ },
+ "props/CandyCane": {
+  "size": [
+   4.34,
+   9.99,
+   1.24
+  ],
+  "tris": 1248
+ },
+ "props/CandyLollipop": {
+  "size": [
+   6.8,
+   12.34,
+   1.44
+  ],
+  "tris": 1768
+ },
+ "props/CandyGummyBear": {
+  "size": [
+   5.955,
+   8.63,
+   3.958
+  ],
+  "tris": 2224
+ },
+ "props/CandyMacaron": {
+  "size": [
+   7.523,
+   5.588,
+   7.779
+  ],
+  "tris": 2232
+ },
+ "props/CandyTruffle": {
+  "size": [
+   7.488,
+   9.315,
+   7.488
+  ],
+  "tris": 1780
+ },
+ "props/CandyCottonCloud": {
+  "size": [
+   12.283,
+   5.698,
+   6.319
+  ],
+  "tris": 2352
+ },
+ "props/CandyIceCube": {
+  "size": [
+   5.75,
+   10.4,
+   6.114
+  ],
+  "tris": 1320
+ }
+}

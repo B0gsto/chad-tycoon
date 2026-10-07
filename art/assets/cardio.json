@@ -1,0 +1,6 @@
+{
+  "domain": "cardio",
+  "assets": [
+    {"name": "Cardio", "file": "art/out/cardio/Cardio.png", "kind": "Image", "cells": {"Cardio": [0, 0, 512, 512]}}
+  ]
+}

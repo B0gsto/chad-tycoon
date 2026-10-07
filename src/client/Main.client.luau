@@ -23,6 +23,7 @@ local Windows = require(Client.UI.Windows)
 local Popups = require(Client.UI.Popups)
 local Tutorial = require(Client.UI.Tutorial)
 local MogHud = require(Client.UI.MogHud)
+local CardioHud = require(Client.UI.CardioHud)
 local ObbyHud = require(Client.UI.ObbyHud)
 
 -- The opening cutscene (optional: the game runs without it if it fails to load).
@@ -99,6 +100,7 @@ Animator.start()
 Popups.build(screen, Sounds)
 Windows.build(screen)
 MogHud.build(screen)
+CardioHud.build(screen)
 -- The Modes window's MOG TEST PLAY opens the VS RIVALS / 1v1 DUEL picker.
 Windows.onMogPlay = MogHud.choose
 Guide.build()
@@ -221,6 +223,7 @@ end
 
 Net.event("State").OnClientEvent:Connect(function(data)
 	State.set(data)
+	CardioHud.onState(data)
 	maybePlayIntro()
 	Sounds.updateMusic()
 	if data.freeIn and data.freeIn > 0 then
@@ -256,6 +259,10 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			-- All six duel spots are taken: the test never started.
 			Popups.toast("The Mog stage is full right now, try again in a moment", "info")
 		end
+	elseif payload.kind == "Mode" and payload.mode == "cardio" then
+		-- CARDIO (keyboard runner): speed counter, stage strip, cards and banners
+		-- (Fx.Cardio does the 3D side).
+		CardioHud.onNotify(payload)
 	elseif payload.kind == "Mode" then
 		-- Game-mode runs: the HUD run pill and the finish card (Fx.Modes does the 3D side).
 		local event = payload.event
@@ -399,13 +406,32 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 		Popups.noteChestOpen(data.rarity)
 	elseif kind == "ChestPickup" then
 		Sounds.play("Pickup")
+	elseif kind == "CardioSteps" then
+		CardioHud.onSteps(data)
 	end
 end)
 
 -- 3D effect modules (built by other streams; any may be missing or fail).
 local fxFolder = Client:FindFirstChild("Fx")
 if fxFolder then
-	for _, name in { "Camera", "Shelf", "Orbs", "Machines", "Crates", "Fans", "Ambient", "Plates", "Cosmetics", "Modes", "Mog", "Surge" } do
+	for _, name in
+		{
+			"Camera",
+			"Shelf",
+			"Orbs",
+			"Machines",
+			"Crates",
+			"Fans",
+			"Ambient",
+			"Plates",
+			"Cosmetics",
+			"Modes",
+			"Mog",
+			"Surge",
+			"Cardio",
+			"CardioChase",
+		}
+	do
 		local moduleScript = fxFolder:FindFirstChild(name)
 		if moduleScript and moduleScript:IsA("ModuleScript") then
 			local ok, err = pcall(function()

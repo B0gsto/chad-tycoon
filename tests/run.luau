@@ -4147,6 +4147,10 @@ end)
 
 -- Mog Test rules (tests/mog.luau).
 require("./mog")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
+-- Cardio keyboard runner rules and layout (tests/cardio.luau).
+require("./cardio")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
+-- Cardio chaser Chads (tests/cardio_chase.luau).
+require("./cardio_chase")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
 
 test("Sky obby: lava kill strips and sliding bars on wide decks", function()
 	for li, level in ModesCourse.LEVELS do

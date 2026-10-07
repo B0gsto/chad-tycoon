@@ -412,6 +412,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			and promoFits
 			and screen:GetAttribute("WindowOpen") ~= true
 			and screen:GetAttribute("ObbyMode") ~= true
+			and screen:GetAttribute("CardioActive") ~= true -- a Cardio run keeps the screen clear
 		if show and mode ~= promoMode then
 			if promoShown then
 				-- Switching offers: the old one eases out, the new one eases in.
@@ -1160,6 +1161,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		updateSelectable()
 	end)
 	screen:GetAttributeChangedSignal("ModalOpen"):Connect(updateSelectable)
+	screen:GetAttributeChangedSignal("CardioActive"):Connect(updatePromo)
 	screen:GetAttributeChangedSignal("CratePanelOpen"):Connect(function()
 		place(true)
 	end)

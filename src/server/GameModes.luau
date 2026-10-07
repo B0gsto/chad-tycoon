@@ -60,6 +60,7 @@ export type ModeDef = {
 local BUILTIN = {
 	parkour = script.Parent.Modes.Parkour,
 	mog = script.Parent.Modes.Mog,
+	cardio = script.Parent.Modes.Cardio,
 }
 
 local TICK = 0.1
