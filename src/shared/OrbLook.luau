@@ -6,6 +6,9 @@
 --     tierIndex(tier, n) picks one of the n Theme.OrbColors, cycling so neighbouring tiers differ.
 --   * feedTarget(balls, tier, cap, roll): the pen fill rule. Below the cap every produced orb is
 --     a new ball; at the cap it joins an existing ball (same tier first, then the lowest count).
+--   * Dumbbells: about one produced piece in DUMBBELL_CHANCE lands as a tier-tinted dumbbell
+--     instead of a ball, DUMBBELL_SCALE times an orb's size and worth DUMBBELL_VALUE times the
+--     piece. It never joins or is fed by other balls and keeps the floor cells around it clear.
 --   * tagRGB(r, g, b): text colour of a ball's "xN" tag (a lightened ball colour, white if pale).
 --   * travelTime(length, queue): a conservative upper bound of how long the client's roll-in
 --     animation takes for a route of `length` studs (hop + fall + gutter/chute roll that
@@ -15,6 +18,11 @@ local OrbLook = {}
 
 OrbLook.CAP = 64 -- balls a pen holds before new orbs count up existing balls
 OrbLook.SETTLE = 1.2 -- seconds an orb rests in the pen before Auto Aura collects it
+
+OrbLook.DUMBBELL_CHANCE = 1 / 25 -- share of produced pieces that land as a dumbbell
+OrbLook.DUMBBELL_VALUE = 10 -- a dumbbell is worth this many times the piece it replaces
+OrbLook.DUMBBELL_SCALE = 2 -- its length, in orb diameters
+OrbLook.DUMBBELL_PLATE = 0.31 -- radius of its big plates (its resting height), in dumbbell lengths
 
 -- Palette slot (1..n) for orbs produced by a unit of `tier` (tier 1 = slot 1).
 function OrbLook.tierIndex(tier: number?, n: number): number
