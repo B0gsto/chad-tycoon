@@ -24,7 +24,7 @@ local LoadingScreen = {}
 export type Art = { keyArt: string?, logo: string? }
 
 export type Handle = {
-	root: CanvasGroup,
+	root: Frame,
 	applyTheme: (any) -> (),
 	applyArt: (Art?) -> (),
 	setStatus: (string) -> (),
@@ -71,6 +71,22 @@ local function tween(obj: Instance, time: number, props: { [string]: any }, styl
 	TweenService:Create(obj, TweenInfo.new(time, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
 end
 
+-- Fades a whole tree out (what GroupTransparency did on a CanvasGroup).
+local function fadeOut(root: Instance, time: number)
+	for _, obj in { root, table.unpack(root:GetDescendants()) } do
+		if obj:IsA("GuiObject") then
+			tween(obj, time, { BackgroundTransparency = 1 })
+		end
+		if obj:IsA("TextLabel") then
+			tween(obj, time, { TextTransparency = 1 })
+		elseif obj:IsA("ImageLabel") then
+			tween(obj, time, { ImageTransparency = 1 })
+		elseif obj:IsA("UIStroke") then
+			tween(obj, time, { Transparency = 1 })
+		end
+	end
+end
+
 --[[
 	The brand art ids from ReplicatedStorage.Shared.Assets (the generated asset
 	table, a plain data module). Waits up to `timeout` seconds for it to
@@ -105,9 +121,12 @@ end
 
 function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	local colors = DEFAULT
-	local root = new("CanvasGroup", {
+	-- A plain Frame, not a CanvasGroup: a full-screen CanvasGroup on a large
+	-- high-DPI window drew only its own gradient and none of its children.
+	local root = new("Frame", {
 		Name = "Loading",
 		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
 		Size = UDim2.fromScale(1, 1),
 		ZIndex = 100,
 		Parent = parent,
@@ -448,7 +467,7 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		alive = false
 		target = 1
 		task.delay(0.3, function()
-			tween(root, 0.6, { GroupTransparency = 1 })
+			fadeOut(root, 0.6)
 			tween(scale, 0.6, { Scale = scale.Scale * 1.04 })
 		end)
 		task.delay(0.95, function()
