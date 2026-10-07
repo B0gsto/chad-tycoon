@@ -309,6 +309,21 @@ Theme.World = {
 	Basalt = rgb(40, 36, 46),
 	Lava = rgb(255, 104, 18),
 	Gold = rgb(255, 196, 40),
+	-- Sky obby (docs/sky-obby.md): saturated candy rainbow the path cycles through
+	-- (Server.Modes.Course RAINBOW), the blue arrow checkpoint pads and the cloud floor.
+	RainbowRed = rgb(255, 80, 80),
+	RainbowOrange = rgb(255, 150, 50),
+	RainbowYellow = rgb(255, 225, 60),
+	RainbowGreen = rgb(90, 220, 100),
+	RainbowCyan = rgb(70, 220, 230),
+	RainbowBlue = rgb(70, 140, 255),
+	RainbowPurple = rgb(170, 110, 255),
+	RainbowPink = rgb(255, 120, 200),
+	Checkpoint = rgb(90, 170, 255),
+	Cloud = rgb(250, 250, 255),
+	-- The storm landmark's light grey thunder cloud and the giga statue's darker gold limbs.
+	StormCloud = rgb(200, 205, 215),
+	GoldDeep = rgb(222, 150, 30),
 	-- One colour per pad job, so a pad's colour tells you what it does: yellows buy and
 	-- upgrade, teal/blue move aura and cash, warm pops are the special pads.
 	Pads = {

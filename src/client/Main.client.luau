@@ -23,6 +23,7 @@ local Windows = require(Client.UI.Windows)
 local Popups = require(Client.UI.Popups)
 local Tutorial = require(Client.UI.Tutorial)
 local MogHud = require(Client.UI.MogHud)
+local ObbyHud = require(Client.UI.ObbyHud)
 
 -- The opening cutscene (optional: the game runs without it if it fails to load).
 local introOk, Cutscene = pcall(require, Client.Intro.Cutscene)
@@ -108,6 +109,9 @@ Hud.build(screen, {
 		Guide.navigate(target, "CLAIM!", 45)
 	end,
 }, Sounds)
+-- The sky obby's rainbow progress bar, stage counter, skip button and gear hotbar.
+-- Hud's run pill docks into its row; its gear hotbar rides on Hud's dumbbell.
+ObbyHud.build(screen, { sounds = Sounds, dockRun = Hud.dockRun, tank = Hud.tank })
 -- Last "Cash" effect: the tutorial reward waits for the wallet count-up.
 local lastCashAt = 0
 
@@ -262,6 +266,13 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			-- A run teleports the player onto the course: no window (the map picker, the
 			-- Modes window) may stay up over it.
 			Windows.closeAll()
+			if payload.mode == "parkour" then
+				-- The obby HUD owns the top centre for the run: the tycoon's counter, deposit
+				-- strip, quest pill, promo and FREE gift step aside; it docks the run pill
+				-- before the pill slides in.
+				Hud.setObbyMode(true)
+				ObbyHud.show(tonumber(payload.stage), tonumber(payload.stageCount))
+			end
 			Hud.runStart(
 				tonumber(payload.startedAt) or workspace:GetServerTimeNow(),
 				0,
@@ -271,9 +282,26 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			Sounds.play("Ready")
 		elseif event == "checkpoint" then
 			Hud.runCheckpoint(tonumber(payload.index) or 0, tonumber(payload.checkpoints) or 0)
+			if payload.stage ~= nil then
+				ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
+			end
+			Sounds.play("Step")
+		elseif event == "respawn" then
+			-- Fell through the clouds: back on the last checkpoint, the run goes on.
+			if payload.stage ~= nil then
+				ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
+			end
+		elseif event == "skip" then
+			-- Paid a stage skip: on to the next checkpoint (the run is now assisted).
+			ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
+			if payload.index ~= nil then
+				Hud.runCheckpoint(tonumber(payload.index) or 0, tonumber(payload.checkpoints) or 0)
+			end
 			Sounds.play("Step")
 		elseif event == "finish" then
+			Hud.setObbyMode(false)
 			Hud.runStop()
+			ObbyHud.hide()
 			-- "Run again" replays the same level; "Next level" starts the one just unlocked;
 			-- "Choose map" opens the Maps window on the next level (or this one).
 			local onPick = if payload.mode == "parkour"
@@ -289,13 +317,17 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 				action:FireServer({ action = "ModeStart", mode = payload.mode, level = tonumber(payload.nextLevel) })
 			end, onPick)
 		elseif event == "invalid" then
+			Hud.setObbyMode(false)
 			Hud.runStop()
+			ObbyHud.hide()
 			Popups.toast(
 				if payload.reason == "fast" then "Whoa, too fast! Try the course again" else "Missed a checkpoint! Try again",
 				"info"
 			)
 		elseif event == "stop" then
+			Hud.setObbyMode(false)
 			Hud.runStop()
+			ObbyHud.hide()
 			if payload.reason == "left" then
 				Popups.toast("You left the course. Run ended", "info")
 			elseif payload.reason == "respawn" then

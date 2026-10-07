@@ -1714,7 +1714,8 @@ end
 	Buttons: "Next level" (gold, when there is one) beside "Run again", with slim "Choose
 	map" (opens the Maps window) and "Back to my gym" under them; on the last level "Run
 	again" beside "Back to my gym" with a slim "Choose map" under them. `data` is the finish Notify payload (time, best, newBest, rank?, cash, full,
-	cooldownEnds, level, levelName, nextLevel?, unlockedNew).
+	cooldownEnds, level, levelName, nextLevel?, unlockedNew, assisted?). An assisted run (gear or a
+	skipped stage) shows "Assisted run" instead of the best / rank line.
 ]]
 
 local function runTime(seconds: number): string
@@ -1770,7 +1771,10 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		local box, close = modal("ModeFinish", Vector2.new(480, noteY + 22 + 14 + buttonsH), 45, nil, done)
 		local medal = medallion(box, "🏁", C.Gold, 84, UDim2.new(0.5, 0, 0, 0))
 		Kit.title(box, {
-			Text = if data.newBest then "NEW BEST!" elseif level then "LEVEL " .. tostring(level) .. " CLEAR!" else "COURSE CLEAR!",
+			Text = if data.newBest and data.assisted ~= true
+				then "NEW BEST!"
+				elseif level then "LEVEL " .. tostring(level) .. " CLEAR!"
+				else "COURSE CLEAR!",
 			TextSize = T.H1,
 			TextWrapped = false,
 			Size = UDim2.new(1, -20, 0, 34),
@@ -1778,7 +1782,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			TextColor3 = C.Gold,
 		})
 		local levelLine = if type(data.levelName) == "string" then data.levelName else ""
-		if level and data.newBest then
+		if level and data.newBest and data.assisted ~= true then
 			levelLine = "Level " .. tostring(level) .. (if levelLine ~= "" then "  ·  " .. levelLine else "")
 		end
 		Kit.text(box, {
@@ -1799,16 +1803,20 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			Position = UDim2.fromOffset(10, 106),
 			TextColor3 = C.Text,
 		})
+		-- An assisted run (gear or a skipped stage) never sets a best or a board entry.
+		local assisted = data.assisted == true
 		local sub = "Best " .. runTime(tonumber(data.best) or tonumber(data.time) or 0)
 		if type(data.rank) == "number" then
 			sub ..= "  ·  #" .. tostring(data.rank) .. " today"
 		end
 		Kit.text(box, {
-			Text = sub,
+			Name = if assisted then "Assisted" else "Best",
+			Text = if assisted then "Assisted run" else sub,
+			Font = if assisted then Kit.F.UI else nil,
 			TextSize = T.Body,
 			Size = UDim2.new(1, -30, 0, 22),
 			Position = UDim2.fromOffset(15, 156),
-			TextColor3 = C.TextDim,
+			TextColor3 = if assisted then C.Rizz else C.TextDim,
 			StrokeThickness = 0,
 		})
 		local well = Kit.well(box, { Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, 184) })

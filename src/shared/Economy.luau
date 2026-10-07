@@ -469,6 +469,13 @@ end
 -- at most once per MODE_REWARD_COOLDOWN. Players may run again straight away, but finishes
 -- inside the cooldown pay no cash.
 Economy.MODE_REWARD_COOLDOWN = 1800
+-- Cash price of a Parkour "Skip Stage" (teleport to the next checkpoint; the run becomes
+-- assisted: it pays and unlocks but sets no best time): two minutes of income, at least $250.
+Economy.PARKOUR_SKIP_MIN = 250
+Economy.PARKOUR_SKIP_SECONDS = 120
+function Economy.parkourSkipCost(income: number): number
+	return math.max(Economy.PARKOUR_SKIP_MIN, math.floor(income * Economy.PARKOUR_SKIP_SECONDS + 0.5))
+end
 
 export type ModeReward = {
 	-- Cash this finish pays (packCash when `full`, else 0).

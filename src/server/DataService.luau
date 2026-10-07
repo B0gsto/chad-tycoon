@@ -68,7 +68,9 @@ export type Profile = {
 	-- passed (and PvP wins paid), pvpWins / pvpPlayed = PvP duels won / fought.
 	-- Parkour per level (dense, PARKOUR_LEVELS long, 0 = never): best seconds and finishes.
 	-- modes.parkour keeps the shared reward cooldown and mirrors level 1 for the old UI.
-	parkour: { best: { number }, clears: { number } },
+	-- stage = highest global sky-obby stage reached (0 = never ran); gear = the chosen
+	-- coil ("none" | "speed" | "jump" | "gravity", worn only during runs).
+	parkour: { best: { number }, clears: { number }, stage: number, gear: string },
 	modes: {
 		parkour: { best: number, clears: number, lastRewardAt: number },
 		mog: {
@@ -129,13 +131,16 @@ function DataService.defaultProfile(): Profile
 		starterGranted = false,
 		onboarding = 0,
 		badges = {},
-		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS) },
+		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, gear = "none" },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
 			mog = { best = 0, rivals = 0, clears = 0, lastRewardAt = 0, pvpWins = 0, pvpPlayed = 0 },
 		},
 	}
 end
+
+-- Parkour gear names a save may hold (Modes.Parkour).
+local PARKOUR_GEARS = { none = true, speed = true, jump = true, gravity = true }
 
 -- Fills in any fields missing from older saves and sanitises bad values.
 local function reconcile(data: any): Profile
@@ -146,7 +151,7 @@ local function reconcile(data: any): Profile
 	-- Saves from before Parkour levels: the old single record becomes level 1's.
 	if type(data.parkour) ~= "table" then
 		local old = type(data.modes) == "table" and data.modes.parkour
-		local migrated = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS) }
+		local migrated = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, gear = "none" }
 		if type(old) == "table" then
 			migrated.best[1] = old.best
 			migrated.clears[1] = old.clears
@@ -237,6 +242,11 @@ local function reconcile(data: any): Profile
 			end
 		end
 		data.parkour[key] = fixed
+	end
+	local stage = data.parkour.stage
+	data.parkour.stage = if type(stage) == "number" and stage == stage and stage >= 0 and stage ~= math.huge then math.floor(stage) else 0
+	if not PARKOUR_GEARS[data.parkour.gear] then
+		data.parkour.gear = "none"
 	end
 	for key, value in data.badges do
 		if type(key) ~= "string" or type(value) ~= "boolean" then

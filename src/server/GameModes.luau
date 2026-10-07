@@ -21,7 +21,10 @@
 
 	GameModes keeps which mode each player is in, stops runs on leave / respawn, provides the
 	teleports (mode start, plaza, own plot) and the Notify / Effect helpers, and adds the
-	actions "ModeStart" { mode }, "ModeQuit" and "GoModes".
+	actions "ModeStart" { mode }, "ModeQuit" and "GoModes". Modes add their own actions
+	through context.Tycoon.addAction (Parkour: "ParkourGear" { gear }, "ParkourSkip"). A
+	run's stop (any reason, including "respawn" and "leave") must undo whatever the mode put
+	on the character (Parkour's gear).
 
 	Notify payloads all have kind = "Mode", `event` and `mode` (see Modes.Parkour for each
 	event's fields). Effects are fired on the "Effect" remote as (kind, data).

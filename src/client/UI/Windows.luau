@@ -2843,24 +2843,41 @@ end
 -- Gold, silver and bronze medal chips for the top three.
 local MEDAL_COLORS = { C.Gold, C.Chrome, C.Amber }
 
-type RowLabels = { rank: TextLabel, chip: Frame, value: TextLabel }
+type RowLabels = { rank: TextLabel, chip: Frame, value: TextLabel, extra: TextLabel? }
+
+-- Boards: total units (the original board) and the sky obby's highest stage (with clears).
+type Board = "units" | "stage"
+
+-- The local player's highest obby stage and total clears, from the snapshot (falling back to
+-- the replicated ParkourBestStage attribute).
+local function myStage(): (number, number)
+	local data = State.data
+	local info = data and data.modes and data.modes.parkour
+	local stage = tonumber(Players.LocalPlayer:GetAttribute("ParkourBestStage")) or 0
+	local clears = 0
+	if type(info) == "table" then
+		stage = math.max(stage, tonumber(info.stage) or tonumber(info.bestStage) or 0)
+		if type(info.clears) == "number" then
+			clears = info.clears
+		elseif type(info.levels) == "table" then
+			for _, lv in info.levels do
+				if type(lv) == "table" then
+					clears += tonumber(lv.clears) or 0
+				end
+			end
+		end
+	end
+	return stage, clears
+end
 
 local function buildRanking(screen: ScreenGui)
 	local window = Kit.window(screen, "Ranking", "Ranking", I.Ranking, C.Window.Ranking, Vector2.new(780, 560), Vector2.new(600, 440))
 	register("Ranking", window)
 	local query = Net.func("Query")
 	local action = Net.event("Action")
+	local board: Board = "units"
 
-	-- Toolbar.
-	local subtitle = Kit.text(window.content, {
-		Name = "Subtitle",
-		Text = "Top players by total " .. W.Units,
-		TextSize = T.Small,
-		TextWrapped = false,
-		Size = UDim2.new(1, -340, 0, 44),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = C.TextDim,
-	})
+	-- Toolbar: the board tabs on the left, number format and refresh on the right.
 	local formatButton = Kit.button(window.content, {
 		Name = "Format",
 		Text = "Full numbers",
@@ -2879,16 +2896,28 @@ local function buildRanking(screen: ScreenGui)
 		AnchorPoint = Vector2.new(1, 0),
 		TextSize = 14,
 	})
+	local subtitle = Kit.text(window.content, {
+		Name = "Subtitle",
+		Text = "Top players by total " .. W.Units,
+		TextSize = T.Small,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Size = UDim2.new(1, -14, 0, 22),
+		Position = UDim2.fromOffset(4, 48),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.TextDim,
+	})
 
 	local header = Kit.new("Frame", {
 		Name = "Columns",
 		BackgroundTransparency = 1,
 		Size = UDim2.new(1, -14, 0, 24),
-		Position = UDim2.fromOffset(0, 52),
+		Position = UDim2.fromOffset(0, 72),
 		Parent = window.content,
 	})
-	local function headerText(text: string, x: number, w: number, align: Enum.TextXAlignment)
-		Kit.text(header, {
+	local headers: { [Board]: { TextLabel } } = { units = {}, stage = {} }
+	local function headerText(boards: { Board }, text: string, x: number, w: number, align: Enum.TextXAlignment)
+		local label = Kit.text(header, {
 			Text = text,
 			Font = F.UI,
 			TextSize = T.Tiny,
@@ -2898,12 +2927,17 @@ local function buildRanking(screen: ScreenGui)
 			TextXAlignment = align,
 			TextColor3 = SMALL_TEXT,
 		})
+		for _, key in boards do
+			table.insert(headers[key], label)
+		end
 	end
-	headerText("RANK", 0.02, 0.14, Enum.TextXAlignment.Left)
-	headerText("PLAYER", 0.17, 0.5, Enum.TextXAlignment.Left)
-	headerText(string.upper(W.Units), 0.62, 0.36, Enum.TextXAlignment.Right)
+	headerText({ "units", "stage" }, "RANK", 0.02, 0.14, Enum.TextXAlignment.Left)
+	headerText({ "units", "stage" }, "PLAYER", 0.17, 0.4, Enum.TextXAlignment.Left)
+	headerText({ "units" }, string.upper(W.Units), 0.62, 0.36, Enum.TextXAlignment.Right)
+	headerText({ "stage" }, "STAGE", 0.64, 0.16, Enum.TextXAlignment.Right)
+	headerText({ "stage" }, "CLEARS", 0.82, 0.16, Enum.TextXAlignment.Right)
 
-	local list = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -154), Position = UDim2.fromOffset(0, 80) })
+	local list = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -174), Position = UDim2.fromOffset(0, 100) })
 	-- Rows are not buttons: the list itself is selectable so a gamepad can scroll it.
 	Kit.selectable(list)
 	Kit.new("UIPadding", {
@@ -2915,7 +2949,7 @@ local function buildRanking(screen: ScreenGui)
 	})
 	Kit.list(list, 8)
 
-	-- The player's own row, pinned under the list with a sunny outline.
+	-- The player's own row, pinned under the list with a sunny outline (one face per board).
 	local mine = Kit.panel(window.content, {
 		Name = "Mine",
 		Elevated = true,
@@ -2925,8 +2959,22 @@ local function buildRanking(screen: ScreenGui)
 		Position = UDim2.new(0, 0, 1, -62),
 		Radius = Kit.RADIUS.M,
 	})
+	local function mineFace(name: string): Frame
+		return Kit.new("Frame", { Name = name, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = mine })
+	end
+	local mineUnits = mineFace("Units")
+	local mineStage = mineFace("Stage")
 
-	local function row(parent: Instance, rank: number?, rankText: string, name: string, value: string, isMe: boolean): RowLabels
+	-- One row: rank chip, name, the board value and (stage board) the clears column.
+	local function row(
+		parent: Instance,
+		rank: number?,
+		rankText: string,
+		name: string,
+		value: string,
+		isMe: boolean,
+		extra: string?
+	): RowLabels
 		local color = rank and MEDAL_COLORS[rank]
 		local rankChip = Kit.new("Frame", {
 			Name = "Rank",
@@ -2979,20 +3027,35 @@ local function buildRanking(screen: ScreenGui)
 			Name = "Value",
 			Text = value,
 			TextSize = T.Body,
-			Size = UDim2.new(0.34, 0, 1, 0),
-			Position = UDim2.new(0.98, 0, 0, 0),
+			Size = UDim2.new(if extra then 0.16 else 0.34, 0, 1, 0),
+			Position = UDim2.new(if extra then 0.8 else 0.98, 0, 0, 0),
 			AnchorPoint = Vector2.new(1, 0),
 			TextXAlignment = Enum.TextXAlignment.Right,
 			TextColor3 = if color then C.GoldLight else C.Text,
 		})
-		return { rank = rankLabel, chip = rankChip, value = valueLabel }
+		local extraLabel: TextLabel? = nil
+		if extra then
+			extraLabel = Kit.number(parent, {
+				Name = "Clears",
+				Text = extra,
+				TextSize = T.Body,
+				Size = UDim2.new(0.16, 0, 1, 0),
+				Position = UDim2.new(0.98, 0, 0, 0),
+				AnchorPoint = Vector2.new(1, 0),
+				TextXAlignment = Enum.TextXAlignment.Right,
+				TextColor3 = C.TextDim,
+			})
+		end
+		return { rank = rankLabel, chip = rankChip, value = valueLabel, extra = extraLabel }
 	end
 
 	local entries: { any } = {}
+	local stageEntries: { any } = {}
 	local loaded = false
 	local updatedAt = 0
 	local listFull: boolean? = nil
-	local mineLabels: RowLabels = row(mine, nil, "--", Players.LocalPlayer.Name, "0", false)
+	local mineLabels: RowLabels = row(mineUnits, nil, "--", Players.LocalPlayer.Name, "0", false)
+	local mineStageLabels: RowLabels = row(mineStage, nil, "--", Players.LocalPlayer.Name, "0", false, "0")
 	local mineValue: number? = nil
 
 	local function fullNumbers(): boolean
@@ -3002,15 +3065,26 @@ local function buildRanking(screen: ScreenGui)
 	local function fmt(n: number): string
 		return if fullNumbers() then Format.commas(n) else Format.short(n)
 	end
+	local function isMine(entry: any): boolean
+		local me = Players.LocalPlayer
+		if entry.userId ~= nil then
+			return tonumber(entry.userId) == me.UserId
+		end
+		return entry.name == me.Name or entry.name == me.DisplayName
+	end
 
 	-- Rebuilds the leaderboard rows; `animate` ripples them in.
 	local function renderList(animate: boolean)
 		clearChildren(list)
 		listFull = fullNumbers()
-		local me = Players.LocalPlayer
 		local rows: { GuiObject } = {}
-		for i, entry in entries do
-			local isMe = entry.userId == me.UserId
+		local shown = if board == "stage" then stageEntries else entries
+		for i, entry in shown do
+			if type(entry) ~= "table" then
+				continue
+			end
+			local isMe = isMine(entry)
+			local rank = tonumber(entry.rank) or i
 			local frame = Kit.panel(list, {
 				Name = "Row" .. i,
 				Elevated = true,
@@ -3020,10 +3094,16 @@ local function buildRanking(screen: ScreenGui)
 				LayoutOrder = i,
 				Radius = Kit.RADIUS.M,
 			})
-			row(frame, entry.rank, "#" .. entry.rank, entry.name, fmt(entry.value), isMe)
+			local name = tostring(entry.name or "?")
+			if board == "stage" then
+				local stage = tonumber(entry.stage) or tonumber(entry.value) or 0
+				row(frame, rank, "#" .. rank, name, tostring(stage), isMe, Format.commas(tonumber(entry.clears) or 0))
+			else
+				row(frame, rank, "#" .. rank, name, fmt(tonumber(entry.value) or 0), isMe)
+			end
 			table.insert(rows, frame)
 		end
-		if #entries == 0 then
+		if #rows == 0 then
 			local empty = Kit.text(list, {
 				Text = if loaded then "No rankings yet - be the first!" else "Loading...",
 				TextSize = T.Body,
@@ -3037,15 +3117,30 @@ local function buildRanking(screen: ScreenGui)
 		end
 	end
 
-	-- Pinned row, format button and subtitle.
+	-- Pinned row, format button, column headers and subtitle.
 	local function renderInfo()
 		local data = State.data
-		local me = Players.LocalPlayer
 		local myRank: number? = nil
-		for _, entry in entries do
-			if entry.userId == me.UserId then
-				myRank = entry.rank
+		local myStageRank: number? = nil
+		for i, entry in entries do
+			if type(entry) == "table" and isMine(entry) then
+				myRank = tonumber(entry.rank) or i
 			end
+		end
+		for i, entry in stageEntries do
+			if type(entry) == "table" and isMine(entry) then
+				myStageRank = tonumber(entry.rank) or i
+			end
+		end
+		mineUnits.Visible = board == "units"
+		mineStage.Visible = board == "stage"
+		for _, labels in headers do
+			for _, label in labels do
+				label.Visible = false
+			end
+		end
+		for _, label in headers[board] do
+			label.Visible = true
 		end
 		mineLabels.rank.Text = if myRank then "#" .. myRank else "--"
 		local total = data and data.totalObtained or 0
@@ -3055,7 +3150,15 @@ local function buildRanking(screen: ScreenGui)
 			mineLabels.value.Text = fmt(total)
 		end
 		mineValue = total
+		local stage, clears = myStage()
+		mineStageLabels.rank.Text = if myStageRank then "#" .. myStageRank else "--"
+		mineStageLabels.value.Text = tostring(stage)
+		local clearsLabel = mineStageLabels.extra
+		if clearsLabel then
+			clearsLabel.Text = Format.commas(clears)
+		end
 		Kit.setButton(formatButton, if fullNumbers() then "Short numbers" else "Full numbers")
+		formatButton.Visible = board == "units"
 		local updated = ""
 		if loaded and updatedAt > 0 then
 			local ago = math.max(0, State.now() - updatedAt)
@@ -3064,8 +3167,25 @@ local function buildRanking(screen: ScreenGui)
 				elseif ago < 3600 then string.format("  •  updated %dm ago", ago // 60)
 				else string.format("  •  updated %dh ago", ago // 3600)
 		end
-		subtitle.Text = "Top players by total " .. W.Units .. updated
+		subtitle.Text = (if board == "stage" then "Highest sky obby stage reached" else "Top players by total " .. W.Units) .. updated
 	end
+
+	-- Board tabs (built after the rows' helpers: Kit.tabs selects the first one at once).
+	local tabsReady = false
+	Kit.tabs(window.content, {
+		Name = "Boards",
+		Items = { { key = "units", text = W.Units }, { key = "stage", text = "Stage" } },
+		Color = C.Window.Ranking,
+		Size = UDim2.fromOffset(230, 42),
+		TextSize = 14,
+	}, function(key: string)
+		board = if key == "stage" then "stage" else "units"
+		if tabsReady and window.isOpen() then
+			renderList(true)
+			renderInfo()
+		end
+	end)
+	tabsReady = true
 
 	formatButton.Activated:Connect(function()
 		local data = State.data
@@ -3088,7 +3208,8 @@ local function buildRanking(screen: ScreenGui)
 			fetching = false
 			Kit.setEnabled(refreshButton, true)
 			if ok and type(result) == "table" then
-				entries = result.entries or {}
+				entries = if type(result.entries) == "table" then result.entries else {}
+				stageEntries = if type(result.stage) == "table" then result.stage else {}
 				updatedAt = result.updatedAt or State.now()
 				loaded = true
 				if window.isOpen() then

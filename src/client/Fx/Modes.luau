@@ -16,8 +16,10 @@
 	               flashes in the last BLINK_WARN seconds before switching off.
 	  Bounce pads  tag "BouncePad": once per contact, launch upward at the pad's Bounce
 	               speed (double jump still works in the air), squash the pad, Puff sprite.
-	  Effects      ModeCheckpoint (flag cap pop + star), ModeSplash (splash sprites and
-	               a short camera dip), ModeFinish (stars and confetti).
+	  Effects      ModeCheckpoint (flag cap pop + star), ModeSplash (fell through
+	               the cloud floor: a white cloud poof and a short camera dip), ModeFinish
+	               (stars and confetti). Spin movers with SpinAxis = "Z" (windmill blades)
+	               turn about the root's look vector instead of world up.
 	  Levels       a parkour run's start payload carries its level; hints and flags look in
 	               Map.GameModes.Parkour.Level<level>. Mode notifications of other modes
 	               (Mog Test) are ignored.
@@ -84,6 +86,7 @@ type Mover = {
 	live: boolean, -- posed last frame (its delta is safe to carry)
 	hazard: boolean,
 	length: number,
+	spinZ: boolean, -- SpinAxis = "Z": spins about the root's look vector, not world up
 }
 
 local movers: { Mover } = {}
@@ -141,6 +144,10 @@ local function poseAt(m: Mover, t: number): CFrame
 	if m.kind == "spin" then
 		-- Wrapped in double precision first: CFrame.Angles works in float32, and t is ~1.7e9.
 		local angle = (m.speed * t + m.phase) % TAU
+		if m.spinZ then
+			-- SpinAxis "Z" (windmill blades): about the root's own look vector.
+			return m.rest * CFrame.Angles(0, 0, angle)
+		end
 		return CFrame.new(m.rest.Position) * CFrame.Angles(0, angle, 0) * m.rest.Rotation
 	end
 	return m.rest + m.axis * (m.distance * math.sin(TAU * t / m.period + m.phase))
@@ -166,6 +173,7 @@ local function addMover(root: Instance)
 		live = false,
 		hazard = root:GetAttribute("Hazard") == "bump",
 		length = root.Size.X,
+		spinZ = root:GetAttribute("SpinAxis") == "Z",
 	}
 	for _, d in root:GetDescendants() do
 		if d:IsA("BasePart") then
@@ -505,18 +513,22 @@ end
 --
 -- Ambience: on a run's start the Level folder's Theme attribute picks a look, eased in over
 -- AMBIENCE_FADE s and out again on finish / invalid / stop, on respawn, and after OUT_GRACE s
--- outside the level's bounds. A start while a look is up cross-fades to the new one.
---   beach / cove / bay / reef / bubble / coral / shark  a light ParkourGrade tint plus a
---            touch of Ambient, fog and Atmosphere colour (sunny warm, teal-green, dusk,
---            aqua-purple, pale mint, sunset peach, steel blue).
---   storm    ParkourGrade (ColorCorrectionEffect): cool, darker, desaturated; darker
---            Ambient / OutdoorAmbient, nearer greyer fog, denser greyer Atmosphere; the
---            grade flashes brighter while a bolt near the player is lit.
---   volcano  ParkourGrade warm tint, a warm Atmosphere touch, ember emitters (ParkourEmbers,
---            made lazily) on the level's MapGlow parts, enabled only during the run.
---   giga     soft gold sparkles around the player's root (attachment ParkourSparkles).
--- ParkourGrade is our own instance: Fx.Surge's SurgeGrade is separate and the two stack.
--- Every Lighting / Atmosphere value is saved when a look starts and written back exactly.
+-- outside the level's bounds (the folder's extents padded LEVEL_PAD_SIDE sideways and
+-- LEVEL_PAD_BELOW below, so a fall to the cloud floor and the respawn keep the look).
+-- A start while a look is up cross-fades to the new one.
+--   every theme  a bright sunny midday sky (sky obby): a saturated cool-blue ParkourGrade,
+--            thin pale Atmosphere (low density, horizon haze, a little glare), brighter
+--            Lighting and exposure, ClockTime 13 when the scene is outside 10-15, and a
+--            light ParkourBloom (made lazily, enabled only during runs).
+--   storm    the same but a little cooler and dimmer; the grade flashes brighter while a
+--            bolt near the player is lit.
+--   volcano  a touch warmer, plus ember emitters (ParkourEmbers, made lazily) on the
+--            level's MapGlow parts, enabled only during the run.
+--   giga     the sunny look plus soft gold sparkles around the player's root
+--            (attachment ParkourSparkles).
+-- ParkourGrade / ParkourBloom are our own instances: Fx.Surge's SurgeGrade / SurgeBloom are
+-- separate and stack. Every Lighting / Atmosphere value is saved when a look starts and
+-- written back exactly.
 
 local Lighting = game:GetService("Lighting")
 
@@ -531,6 +543,15 @@ local BOLT_PULSE = 0.16 -- seconds per flash pulse (lit for the first BOLT_LIT o
 local BOLT_LIT = 0.07
 local AMBIENCE_FADE = 1
 local OUT_GRACE = 3
+local LEVEL_PAD_SIDE = 60 -- studs the level's bounds reach past its parts sideways
+local LEVEL_PAD_BELOW = 400 -- ... and below (the cloud floor and the fall to it)
+local LEVEL_PAD_ABOVE = 80
+local BLOOM_INTENSITY = 0.35
+local BLOOM_SIZE = 24
+local BLOOM_THRESHOLD = 1.2
+local SUNNY_CLOCK = 13 -- ClockTime during a run when the scene's is outside CLOCK_MIN-CLOCK_MAX
+local CLOCK_MIN = 10
+local CLOCK_MAX = 15
 local EMBER_RATE = 4
 local SPARKLE_RATE = 6
 local WHITE = Color3.new(1, 1, 1)
@@ -806,158 +827,91 @@ type Look = {
 	fog: Color3,
 	fogMix: number,
 	fogEnd: number, -- fog never ends further than this while the look is up
-	atmosphere: Color3,
+	atmosphere: Color3, -- Atmosphere Color and Decay are mixed toward these
+	decay: Color3,
 	atmosphereMix: number,
-	density: number, -- added to the Atmosphere's density
-	haze: number, -- added to its haze
+	density: number, -- the Atmosphere's density while the look is up
+	haze: number, -- its haze
+	glare: number, -- its glare
+	light: number, -- added to Lighting.Brightness
+	exposure: number, -- added to Lighting.ExposureCompensation
+	bloom: number, -- ParkourBloom intensity
 	flash: number, -- grade brightness added while a near bolt is lit
 }
 
--- Every look is mild except storm / volcano: tints stay within ~0.85-1 per channel,
--- saturation within +-0.15 and brightness within +-0.05 so the pastel art never muddies.
+-- The sky obby: one bright sunny midday look for every map (saturated cobalt sky, pale
+-- haze at the horizon, light bloom); storm keeps a slight cool dim and volcano a slight
+-- warm offset on top. Tints stay within ~0.9-1 per channel so the pastel art never muddies.
+local SUNNY: Look = {
+	tint = Color3.fromRGB(235, 245, 255),
+	brightness = 0.02,
+	contrast = 0.03,
+	saturation = 0.25,
+	ambient = Color3.fromRGB(235, 245, 255),
+	ambientMix = 0.08,
+	fog = Color3.fromRGB(215, 235, 255),
+	fogMix = 0.2,
+	fogEnd = 100000,
+	atmosphere = Color3.fromRGB(225, 240, 255),
+	decay = Color3.fromRGB(200, 225, 255),
+	atmosphereMix = 0.75,
+	density = 0.25,
+	haze = 1.5,
+	glare = 0.3,
+	light = 0.6,
+	exposure = 0.15,
+	bloom = BLOOM_INTENSITY,
+	flash = 0,
+}
 local LOOKS: { [string]: Look } = {
-	beach = { -- warm, sunny
-		tint = Color3.fromRGB(255, 247, 230),
-		brightness = 0.03,
-		contrast = 0.03,
-		saturation = 0.12,
-		ambient = Color3.fromRGB(255, 232, 200),
-		ambientMix = 0.1,
-		fog = Color3.fromRGB(255, 240, 215),
-		fogMix = 0.15,
-		fogEnd = 100000,
-		atmosphere = Color3.fromRGB(255, 236, 205),
-		atmosphereMix = 0.15,
-		density = 0,
-		haze = 0,
-		flash = 0,
-	},
-	cove = { -- teal-green
-		tint = Color3.fromRGB(230, 255, 245),
-		brightness = 0.01,
-		contrast = 0.02,
-		saturation = 0.05,
-		ambient = Color3.fromRGB(165, 230, 210),
-		ambientMix = 0.1,
-		fog = Color3.fromRGB(190, 235, 222),
-		fogMix = 0.2,
-		fogEnd = 100000,
-		atmosphere = Color3.fromRGB(190, 235, 222),
-		atmosphereMix = 0.2,
-		density = 0.01,
-		haze = 0.2,
-		flash = 0,
-	},
-	bay = { -- dusk warmth
-		tint = Color3.fromRGB(255, 236, 220),
-		brightness = -0.04,
+	beach = SUNNY,
+	cove = SUNNY,
+	bay = SUNNY,
+	reef = SUNNY,
+	bubble = SUNNY,
+	coral = SUNNY,
+	shark = SUNNY,
+	giga = SUNNY,
+	storm = { -- the sunny sky, a little cooler and dimmer
+		tint = Color3.fromRGB(226, 238, 255),
+		brightness = -0.01,
 		contrast = 0.04,
-		saturation = 0.05,
-		ambient = Color3.fromRGB(230, 160, 120),
+		saturation = 0.15,
+		ambient = Color3.fromRGB(190, 205, 235),
 		ambientMix = 0.12,
-		fog = Color3.fromRGB(240, 182, 150),
+		fog = Color3.fromRGB(200, 215, 238),
 		fogMix = 0.25,
 		fogEnd = 100000,
-		atmosphere = Color3.fromRGB(250, 192, 160),
-		atmosphereMix = 0.25,
-		density = 0.02,
-		haze = 0.4,
-		flash = 0,
+		atmosphere = Color3.fromRGB(210, 222, 242),
+		decay = Color3.fromRGB(185, 205, 240),
+		atmosphereMix = 0.75,
+		density = 0.28,
+		haze = 1.8,
+		glare = 0.2,
+		light = 0.4,
+		exposure = 0.05,
+		bloom = BLOOM_INTENSITY * 0.8,
+		flash = 0.1,
 	},
-	reef = { -- aqua-purple
-		tint = Color3.fromRGB(234, 240, 255),
-		brightness = 0,
-		contrast = 0.03,
-		saturation = 0.1,
-		ambient = Color3.fromRGB(170, 185, 240),
-		ambientMix = 0.1,
-		fog = Color3.fromRGB(195, 205, 248),
-		fogMix = 0.2,
-		fogEnd = 100000,
-		atmosphere = Color3.fromRGB(205, 200, 250),
-		atmosphereMix = 0.2,
-		density = 0.01,
-		haze = 0.2,
-		flash = 0,
-	},
-	bubble = { -- pale mint, bright
-		tint = Color3.fromRGB(240, 255, 247),
-		brightness = 0.04,
-		contrast = -0.02,
-		saturation = 0.02,
-		ambient = Color3.fromRGB(220, 255, 235),
-		ambientMix = 0.1,
-		fog = Color3.fromRGB(225, 250, 236),
-		fogMix = 0.2,
-		fogEnd = 100000,
-		atmosphere = Color3.fromRGB(225, 250, 236),
-		atmosphereMix = 0.2,
-		density = 0,
-		haze = 0,
-		flash = 0,
-	},
-	coral = { -- sunset peach
-		tint = Color3.fromRGB(255, 238, 226),
+	volcano = { -- the sunny sky, a touch warmer
+		tint = Color3.fromRGB(250, 243, 236),
 		brightness = 0.02,
-		contrast = 0.03,
-		saturation = 0.08,
-		ambient = Color3.fromRGB(255, 190, 170),
+		contrast = 0.04,
+		saturation = 0.25,
+		ambient = Color3.fromRGB(255, 220, 190),
 		ambientMix = 0.1,
-		fog = Color3.fromRGB(255, 206, 186),
+		fog = Color3.fromRGB(240, 232, 225),
 		fogMix = 0.2,
 		fogEnd = 100000,
-		atmosphere = Color3.fromRGB(255, 210, 190),
-		atmosphereMix = 0.2,
-		density = 0.01,
-		haze = 0.3,
-		flash = 0,
-	},
-	shark = { -- steel-blue, cool
-		tint = Color3.fromRGB(224, 235, 255),
-		brightness = -0.02,
-		contrast = 0.05,
-		saturation = -0.12,
-		ambient = Color3.fromRGB(120, 145, 185),
-		ambientMix = 0.15,
-		fog = Color3.fromRGB(160, 180, 205),
-		fogMix = 0.25,
-		fogEnd = 100000,
-		atmosphere = Color3.fromRGB(170, 186, 210),
-		atmosphereMix = 0.25,
-		density = 0.02,
-		haze = 0.3,
-		flash = 0,
-	},
-	storm = {
-		tint = Color3.fromRGB(200, 215, 255),
-		brightness = -0.06,
-		contrast = 0.08,
-		saturation = -0.2,
-		ambient = Color3.fromRGB(45, 55, 80),
-		ambientMix = 0.55,
-		fog = Color3.fromRGB(95, 105, 125),
-		fogMix = 0.8,
-		fogEnd = 900,
-		atmosphere = Color3.fromRGB(140, 150, 170),
-		atmosphereMix = 0.7,
-		density = 0.12,
-		haze = 1.2,
-		flash = 0.14,
-	},
-	volcano = {
-		tint = Color3.fromRGB(255, 220, 190),
-		brightness = 0.01,
-		contrast = 0.05,
-		saturation = 0.1,
-		ambient = Color3.fromRGB(150, 80, 50),
-		ambientMix = 0.2,
-		fog = Color3.fromRGB(200, 120, 90),
-		fogMix = 0.3,
-		fogEnd = 100000,
-		atmosphere = Color3.fromRGB(255, 180, 140),
-		atmosphereMix = 0.3,
-		density = 0.03,
-		haze = 0.4,
+		atmosphere = Color3.fromRGB(240, 236, 235),
+		decay = Color3.fromRGB(235, 220, 215),
+		atmosphereMix = 0.75,
+		density = 0.25,
+		haze = 1.6,
+		glare = 0.3,
+		light = 0.6,
+		exposure = 0.15,
+		bloom = BLOOM_INTENSITY,
 		flash = 0,
 	},
 }
@@ -973,8 +927,14 @@ type Grade = {
 	fogColor: Color3,
 	fogEnd: number,
 	atmoColor: Color3,
+	decay: Color3,
 	density: number,
 	haze: number,
+	glare: number,
+	light: number, -- Lighting.Brightness
+	clock: number, -- Lighting.ClockTime
+	exposure: number, -- Lighting.ExposureCompensation
+	bloom: number, -- ParkourBloom intensity (0 in the untouched scene)
 }
 
 -- Ambience state. ambTheme is set from a run's start until the look has faded out again.
@@ -993,6 +953,7 @@ local ambFrom: Grade? = nil
 local ambTo: Grade? = nil
 local ambFromBase = true
 local grade: ColorCorrectionEffect? = nil
+local bloom: BloomEffect? = nil
 local atmosphere: Atmosphere? = nil
 local sparkles: ParticleEmitter? = nil
 local embers: { [BasePart]: ParticleEmitter } = {}
@@ -1007,8 +968,14 @@ local saved: Grade = {
 	fogColor = Color3.new(),
 	fogEnd = 0,
 	atmoColor = Color3.new(),
+	decay = Color3.new(),
 	density = 0,
 	haze = 0,
+	glare = 0,
+	light = 0,
+	clock = 0,
+	exposure = 0,
+	bloom = 0,
 }
 local levelBounds: { [Instance]: { min: Vector3, max: Vector3 } } = {}
 
@@ -1019,7 +986,8 @@ local function levelFolder(level: number): Instance?
 	return parkour and parkour:FindFirstChild("Level" .. level)
 end
 
--- The level folder's extents (from its parts, cached), padded for jumps and falls.
+-- The level folder's extents (from its parts, cached), padded for jumps and the long fall
+-- to the cloud floor far below the course.
 local function boundsOf(folder: Instance): { min: Vector3, max: Vector3 }?
 	local cached = levelBounds[folder]
 	if cached then
@@ -1037,7 +1005,10 @@ local function boundsOf(folder: Instance): { min: Vector3, max: Vector3 }?
 	if not lo or not hi then
 		return nil
 	end
-	local box = { min = lo - Vector3.new(40, 80, 40), max = hi + Vector3.new(40, 80, 40) }
+	local box = {
+		min = lo - Vector3.new(LEVEL_PAD_SIDE, LEVEL_PAD_BELOW, LEVEL_PAD_SIDE),
+		max = hi + Vector3.new(LEVEL_PAD_SIDE, LEVEL_PAD_ABOVE, LEVEL_PAD_SIDE),
+	}
 	levelBounds[folder] = box
 	return box
 end
@@ -1109,7 +1080,7 @@ local function makeSparkles(root: BasePart): ParticleEmitter
 	})
 end
 
--- The scene's values with `theme`'s look fully applied (giga has no grade: the scene).
+-- The scene's values with `theme`'s look fully applied (an unknown theme: the scene).
 local function gradeFor(theme: string): Grade
 	local look = LOOKS[theme]
 	if not look then
@@ -1125,8 +1096,14 @@ local function gradeFor(theme: string): Grade
 		fogColor = saved.fogColor:Lerp(look.fog, look.fogMix),
 		fogEnd = math.min(saved.fogEnd, look.fogEnd),
 		atmoColor = saved.atmoColor:Lerp(look.atmosphere, look.atmosphereMix),
-		density = math.clamp(saved.density + look.density, 0, 1),
-		haze = math.clamp(saved.haze + look.haze, 0, 10),
+		decay = saved.decay:Lerp(look.decay, look.atmosphereMix),
+		density = look.density,
+		haze = look.haze,
+		glare = look.glare,
+		light = saved.light + look.light,
+		clock = if saved.clock < CLOCK_MIN or saved.clock > CLOCK_MAX then SUNNY_CLOCK else saved.clock,
+		exposure = saved.exposure + look.exposure,
+		bloom = look.bloom,
 	}
 end
 
@@ -1141,8 +1118,14 @@ local function blend(a: Grade, b: Grade, t: number): Grade
 		fogColor = a.fogColor:Lerp(b.fogColor, t),
 		fogEnd = a.fogEnd + (b.fogEnd - a.fogEnd) * t,
 		atmoColor = a.atmoColor:Lerp(b.atmoColor, t),
+		decay = a.decay:Lerp(b.decay, t),
 		density = a.density + (b.density - a.density) * t,
 		haze = a.haze + (b.haze - a.haze) * t,
+		glare = a.glare + (b.glare - a.glare) * t,
+		light = a.light + (b.light - a.light) * t,
+		clock = a.clock + (b.clock - a.clock) * t,
+		exposure = a.exposure + (b.exposure - a.exposure) * t,
+		bloom = a.bloom + (b.bloom - a.bloom) * t,
 	}
 end
 
@@ -1178,11 +1161,30 @@ local function applyLook(flash: number)
 	Lighting.OutdoorAmbient = g.outdoor
 	Lighting.FogColor = g.fogColor
 	Lighting.FogEnd = g.fogEnd
+	Lighting.Brightness = g.light
+	Lighting.ClockTime = g.clock
+	Lighting.ExposureCompensation = g.exposure
 	local atmo = atmosphere
 	if atmo then
 		atmo.Color = g.atmoColor
+		atmo.Decay = g.decay
 		atmo.Density = g.density
 		atmo.Haze = g.haze
+		atmo.Glare = g.glare
+	end
+	local bl = bloom
+	if not bl or not bl.Parent then
+		local made = Instance.new("BloomEffect")
+		made.Name = "ParkourBloom"
+		made.Size = BLOOM_SIZE
+		made.Threshold = BLOOM_THRESHOLD
+		made.Parent = Lighting
+		bl = made
+		bloom = made
+	end
+	if bl then
+		bl.Intensity = g.bloom
+		bl.Enabled = true
 	end
 	local x = ease(ambExtra)
 	for _, e in liveEmbers do
@@ -1239,15 +1241,25 @@ local function clearAmbience()
 		Lighting.OutdoorAmbient = saved.outdoor
 		Lighting.FogColor = saved.fogColor
 		Lighting.FogEnd = saved.fogEnd
+		Lighting.Brightness = saved.light
+		Lighting.ClockTime = saved.clock
+		Lighting.ExposureCompensation = saved.exposure
 		local atmo = atmosphere
 		if atmo and atmo.Parent then
 			atmo.Color = saved.atmoColor
+			atmo.Decay = saved.decay
 			atmo.Density = saved.density
 			atmo.Haze = saved.haze
+			atmo.Glare = saved.glare
 		end
 	end
 	if grade then
 		grade:Destroy()
+	end
+	local bl = bloom
+	if bl then
+		bl.Intensity = 0
+		bl.Enabled = false
 	end
 	dropExtras()
 	grade, atmosphere, ambFolder, ambFrom, ambTo, ambFromBase = nil, nil, nil, nil, nil, true
@@ -1284,12 +1296,17 @@ local function startAmbience(level: number)
 	saved.outdoor = Lighting.OutdoorAmbient
 	saved.fogColor = Lighting.FogColor
 	saved.fogEnd = Lighting.FogEnd
+	saved.light = Lighting.Brightness
+	saved.clock = Lighting.ClockTime
+	saved.exposure = Lighting.ExposureCompensation
 	local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
 	atmosphere = atmo
 	if atmo then
 		saved.atmoColor = atmo.Color
+		saved.decay = atmo.Decay
 		saved.density = atmo.Density
 		saved.haze = atmo.Haze
+		saved.glare = atmo.Glare
 	end
 	ambFrom, ambTo, ambFromBase = saved, gradeFor(theme), true
 	startExtras(theme, folder)
@@ -1492,23 +1509,52 @@ local function checkpointPop(position: Vector3)
 	end
 end
 
+-- Fell through the cloud floor: a white cloud poof (Puff particles plus a few soft white balls
+-- that swell and fade, so it reads even without the sprite art) and a short camera dip.
+local CLOUD_WHITE = Color3.fromRGB(250, 250, 255)
 local function splash(position: Vector3)
 	local anchor = anchorAt(position, 3)
-	Sprites.billboard(anchor, "Ring", { position = position, size = 6, life = 0.7, rise = Vector3.zero, color = W.Pool })
-	Sprites.billboard(anchor, "Puff", { position = position, size = 4, life = 0.8, rise = Vector3.new(0, 3, 0) })
-	local dots = Budget.count(6)
-	for i = 1, dots do
-		if not Sprites.room() then
-			break
-		end
-		local a = i / dots * TAU
-		Sprites.billboard(anchor, "SoftDot", {
-			position = position,
-			size = 0.7,
-			life = 0.7,
-			rise = Vector3.new(math.cos(a) * 2.5, 3.5, math.sin(a) * 2.5),
-			color = W.Pool,
-		})
+	local cloud = if typeof(W.Cloud) == "Color3" then W.Cloud else CLOUD_WHITE
+	local emitter = Sprites.emitter(anchor, "Puff", {
+		Color = ColorSequence.new(cloud),
+		Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1.5),
+			NumberSequenceKeypoint.new(0.3, 4),
+			NumberSequenceKeypoint.new(1, 5),
+		}),
+		Speed = NumberRange.new(6, 12),
+		SpreadAngle = Vector2.new(80, 80),
+		Drag = 4,
+		Lifetime = NumberRange.new(0.7, 1.1),
+		Acceleration = Vector3.new(0, 3, 0),
+	})
+	if emitter then
+		emitter:Emit(Budget.count(14))
+	end
+	Sprites.billboard(anchor, "Ring", { position = position, size = 8, life = 0.7, rise = Vector3.zero, color = cloud })
+	local balls = Budget.count(6)
+	for i = 1, balls do
+		local a = i / balls * TAU + math.random() * 0.6
+		local ball = Instance.new("Part")
+		ball.Name = "CloudPoof"
+		ball.Shape = Enum.PartType.Ball
+		ball.Anchored = true
+		ball.CanCollide = false
+		ball.CanQuery = false
+		ball.CanTouch = false
+		ball.CastShadow = false
+		ball.Material = Enum.Material.SmoothPlastic
+		ball.Color = cloud
+		ball.Transparency = 0.15
+		ball.Size = Vector3.one * (1.5 + math.random() * 1.5)
+		ball.CFrame = CFrame.new(position + Vector3.new(math.cos(a) * 1.2, 0, math.sin(a) * 1.2))
+		ball.Parent = anchor
+		local reach = 3 + math.random() * 2.5
+		TweenService:Create(ball, TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = Vector3.one * (4.5 + math.random() * 2.5),
+			CFrame = CFrame.new(position + Vector3.new(math.cos(a) * reach, 1.5 + math.random() * 2, math.sin(a) * reach)),
+			Transparency = 1,
+		}):Play()
 	end
 	local humanoid = character()
 	if humanoid then

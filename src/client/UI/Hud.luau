@@ -74,6 +74,13 @@ Hud.shakeWallet = function() end
 Hud.runStart = function(_startedAt: number, _checkpoint: number, _checkpoints: number, _level: number?) end
 Hud.runCheckpoint = function(_index: number, _checkpoints: number) end
 Hud.runStop = function() end
+-- The sky obby docks the run pill into its own row (pos + anchor; nil puts it back).
+Hud.dockRun = function(_pos: UDim2?, _anchor: Vector2?) end
+-- A parkour run is on: the tycoon's top centre (units, deposit strip), the quest pill,
+-- the promo and the FREE gift step aside for the obby HUD; off brings them back.
+Hud.setObbyMode = function(_on: boolean) end
+-- The dumbbell group (the obby gear hotbar sits on top of it).
+Hud.tank = nil :: Frame?
 -- True once the cash counter has finished rolling.
 Hud.walletIdle = function(): boolean
 	return true
@@ -400,7 +407,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	local function updatePromo()
 		local mode = wantedPromo()
-		local show = mode ~= nil and not compact and promoFits and screen:GetAttribute("WindowOpen") ~= true
+		local show = mode ~= nil
+			and not compact
+			and promoFits
+			and screen:GetAttribute("WindowOpen") ~= true
+			and screen:GetAttribute("ObbyMode") ~= true
 		if show and mode ~= promoMode then
 			if promoShown then
 				-- Switching offers: the old one eases out, the new one eases in.
@@ -501,6 +512,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- server clock, checkpoint n/N, and an "x" that asks "QUIT?" before firing ModeQuit.
 	-- A gold "L3" chip on the left names the Parkour level (the Star shows without one).
 	local RUN_W, RUN_H = 236, 36
+	local RUN_ANCHOR = Vector2.new(0.5, 0)
 	local runRest = UDim2.new(0.5, 0, 0, RUN_Y)
 	local runAway = UDim2.new(0.5, 0, 0, -RUN_H - 20)
 	local runPill = Kit.panel(screen, {
@@ -606,6 +618,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Kit.setButton(quitButton, "X", C.SurfaceHi)
 		quitButton.Size = UDim2.fromOffset(30, 28)
 		runPill.Size = UDim2.fromOffset(RUN_W, RUN_H)
+		runPill.AnchorPoint = RUN_ANCHOR
 		screen:SetAttribute("RunActive", true)
 		if not runShown then
 			runShown = true
@@ -648,6 +661,17 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 					runPill.Visible = false
 				end
 			end)
+		end
+	end
+
+	Hud.dockRun = function(pos: UDim2?, anchor: Vector2?)
+		local rest = pos or UDim2.new(0.5, 0, 0, RUN_Y)
+		RUN_ANCHOR = anchor or Vector2.new(0.5, 0)
+		runRest = rest
+		runAway = UDim2.new(rest.X.Scale, rest.X.Offset, 0, -RUN_H - 20)
+		if runShown then
+			runPill.AnchorPoint = RUN_ANCHOR
+			Kit.tween(runPill, 0.25, { Position = runRest }, Enum.EasingStyle.Quad)
 		end
 	end
 
@@ -1486,6 +1510,52 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end)
 	refresh()
 	layoutWallet()
+
+	-- Obby mode: the run's own HUD owns the top centre ----------------------------------
+	Hud.tank = tank
+	local obbyOn = false
+	local tutorialConn: RBXScriptConnection? = nil
+	local tutorialWanted = false
+	local forcing = false
+	Hud.setObbyMode = function(on: boolean)
+		if on == obbyOn then
+			return
+		end
+		obbyOn = on
+		screen:SetAttribute("ObbyMode", on)
+		for _, gui in { units, strip, corner } :: { GuiObject } do
+			gui.Visible = not on
+		end
+		updatePromo()
+		-- The quest pill (Tutorial) stays down even if it re-renders mid-run; whatever
+		-- it asked for meanwhile is applied when the run ends.
+		local pill = screen:FindFirstChild("TutorialPill")
+		if not (pill and pill:IsA("GuiObject")) then
+			return
+		end
+		if on then
+			tutorialWanted = pill.Visible
+			pill.Visible = false
+			tutorialConn = pill:GetPropertyChangedSignal("Visible"):Connect(function()
+				if forcing then
+					return
+				end
+				tutorialWanted = pill.Visible
+				if pill.Visible then
+					forcing = true
+					pill.Visible = false
+					forcing = false
+				end
+			end)
+		else
+			if tutorialConn then
+				tutorialConn:Disconnect()
+				tutorialConn = nil
+			end
+			pill.Visible = tutorialWanted
+		end
+	end
+
 	-- Entrance: the HUD eases in a block at a time, top first.
 	local entrance: { GuiObject } = { units, strip, gear }
 	for _, row in GRID_ROWS do
