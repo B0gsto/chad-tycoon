@@ -15,8 +15,7 @@
 --     silent pop; the ball's "xN" tag ticks up.
 --   * Every ball with Count >= 2 wears a floating "xN" tag (lightened ball colour, Ink
 --     outline) visible within LABEL_MAX_DISTANCE.
---   * "OrbsPicked" effects: ghost orbs magnet into the character with a rising
---     combo blip.
+--   * "OrbsPicked" effects: ghost orbs magnet into the character with a single soft pop.
 --   * Auto Aura: the server removes the orb once it has landed and rested; it just vanishes
 --     (no effect is sent for it).
 --   * Dumbbells (Kind = "Dumbbell", a rare prize worth OrbLook.DUMBBELL_VALUE pieces): built
@@ -57,7 +56,6 @@ local Orbs = {}
 local FAR = CFrame.new(0, -10000, 0)
 local ROLL_WINDOW = 1.5 -- seconds after Spawned during which an orb still rolls in
 local SOUND_GAP = 1 / 12
-local COMBO_RESET = 0.6
 local LABEL_MAX_DISTANCE = 70 -- camera distance cap of the "xN" tags (BillboardGui.MaxDistance)
 local LABEL_HEIGHT = 1.15 -- studs
 local WHITE = Color3.new(1, 1, 1)
@@ -1666,30 +1664,21 @@ local function bindFolder(f: Instance?)
 	end
 end
 
--- Pickup magnet + combo --------------------------------------------------------------------
+-- Pickup magnet + pop ----------------------------------------------------------------------
 
-local combo = 0
-local lastPickup = 0
 local lastSound = 0
 
+-- One soft pop per pickup: no combo pitch climb, no layered tick. Orbs landing in the
+-- same instant share one pop.
 local function pickupBlip(count: number)
 	local now = os.clock()
-	if now - lastPickup > COMBO_RESET then
-		combo = 0
-	end
-	lastPickup = now
-	combo += math.min(count, 4)
 	if now - lastSound < SOUND_GAP then
 		return
 	end
 	lastSound = now
-	local pitch = math.min(2, 1 + (combo - 1) * 0.06)
-	-- Merged orbs: a touch lower and fuller (plus a quiet tick layered on top).
-	if count >= 2 then
-		pitch *= 0.92
-		(Sounds.play :: any)("Tick", 0.05, math.min(pitch * 1.2, 2))
-	end
-	(Sounds.play :: any)("OrbPickup", 0, pitch)
+	-- Merged orbs and dumbbells: the same pop, a touch lower and fuller.
+	local play: any = Sounds.play
+	play("OrbPickup", 0.06, if count >= 2 then 0.9 else 1)
 end
 
 -- Extra celebration when the piece picked up at `pos` was a dumbbell.
