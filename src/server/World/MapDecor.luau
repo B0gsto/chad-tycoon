@@ -944,9 +944,15 @@ type BaseLook = {
 	blobMaterial: Enum.Material?,
 	blobReflect: number?,
 }
+-- A theme's base-top colour from Course.BASE_TOPS.
+local function baseTop(theme: string): Color3
+	local mix = Course.BASE_TOPS[theme]
+	local col: Color3 = W[mix[1]]
+	return if mix[2] then col:Lerp(W[mix[2]], mix[3]) else col
+end
 local BASE_LOOK: { [string]: BaseLook } = {
 	beach = {
-		top = W.Sand,
+		top = baseTop("beach"),
 		rim = W.SandDark:Lerp(W.WoodDark, 0.4),
 		rimMaterial = Enum.Material.Sand,
 		blob = W.Sand:Lerp(W.SandDark, 0.35),
@@ -954,37 +960,43 @@ local BASE_LOOK: { [string]: BaseLook } = {
 		blobMaterial = Enum.Material.Sand,
 	},
 	cove = {
-		top = W.MintPale:Lerp(W.Sand, 0.4),
+		top = baseTop("cove"),
 		rim = W.SandDark:Lerp(W.GrassDark, 0.45),
 		rimMaterial = Enum.Material.Sand,
 		blob = W.Grass,
 		blob2 = W.GrassDark,
 	},
 	bay = {
-		top = W.Sand:Lerp(W.White, 0.55),
+		top = baseTop("bay"),
 		rim = W.Navy,
 		rimMaterial = Enum.Material.WoodPlanks,
 		blob = ROCK:Lerp(W.Navy, 0.3),
 		blob2 = ROCK,
 	},
-	reef = { top = W.Pink:Lerp(W.Sand, 0.55), rim = W.Teal, blob = W.HotPink, blob2 = W.TealLight },
-	bubble = { top = W.SkyBlue:Lerp(W.White, 0.2), rim = W.White, blob = W.White, blob2 = W.SkyBlue, blobAlpha = 0.15 },
+	reef = { top = baseTop("reef"), rim = W.Teal, blob = W.HotPink, blob2 = W.TealLight },
+	bubble = {
+		top = baseTop("bubble"),
+		rim = W.Blue:Lerp(W.Navy, 0.35),
+		blob = W.White,
+		blob2 = W.SkyBlue,
+		blobAlpha = 0.15,
+	},
 	coral = {
-		top = W.Apricot:Lerp(W.Sand, 0.35),
+		top = baseTop("coral"),
 		rim = W.Terracotta,
 		rimMaterial = Enum.Material.Sandstone,
 		blob = W.Orange,
 		blob2 = W.Terracotta,
 	},
 	shark = {
-		top = W.TealLight:Lerp(W.TealDeep, 0.45),
-		rim = W.TealDeep:Lerp(W.Ink, 0.4),
+		top = baseTop("shark"),
+		rim = W.TealLight,
 		rimMaterial = Enum.Material.Slate,
 		blob = ROCK:Lerp(W.TealDeep, 0.25),
 		blob2 = ROCK,
 	},
 	storm = {
-		top = W.Slate,
+		top = baseTop("storm"),
 		rim = W.Volt,
 		material = Enum.Material.Slate,
 		blob = STORM_ROCK,
@@ -992,7 +1004,7 @@ local BASE_LOOK: { [string]: BaseLook } = {
 		blobMaterial = Enum.Material.Slate,
 	},
 	volcano = {
-		top = W.Basalt,
+		top = baseTop("volcano"),
 		rim = W.Lava:Lerp(W.Basalt, 0.3),
 		material = Enum.Material.Basalt,
 		rimMaterial = Enum.Material.CrackedLava,
@@ -1000,7 +1012,14 @@ local BASE_LOOK: { [string]: BaseLook } = {
 		blob2 = DARK_ROCK:Lerp(W.Ink, 0.3),
 		blobMaterial = Enum.Material.Basalt,
 	},
-	giga = { top = W.Cream, rim = GOLD, reflect = 0.1, blob = GOLD, blob2 = W.Grape, blobReflect = 0.2 },
+	giga = {
+		top = baseTop("giga"),
+		rim = GOLD:Lerp(W.Terracotta, 0.3),
+		reflect = 0.1,
+		blob = GOLD,
+		blob2 = W.Grape,
+		blobReflect = 0.2,
+	},
 }
 -- Width of the outer rim ring round the top, how far its top sits under the base top, and
 -- the corner radius of the base (the rim's outline; the top's corners are BASE_RIM tighter).
@@ -1093,7 +1112,7 @@ function MapDecor.base(level: Course.Level, folder: Instance)
 	if theme == "reef" or theme == "coral" or theme == "cove" or theme == "bubble" then
 		local col = if theme == "cove"
 			then W.Mint
-			else if theme == "bubble" then W.White else if theme == "reef" then W.TealLight else W.Apricot:Lerp(W.White, 0.4)
+			else if theme == "bubble" then W.SkyBlue else if theme == "reef" then W.TealLight else W.Apricot:Lerp(W.White, 0.4)
 		for _ = 1, 3 do
 			local x, z = spot(margin)
 			local size = rand:NextNumber(14, 26)

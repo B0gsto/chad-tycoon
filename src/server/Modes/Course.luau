@@ -376,21 +376,37 @@ Course.NAMES = {
 }
 
 -- Theme.World colour keys per level: one hue family per map (path tops light, rims darker
--- in World.Modes STYLE): 1 sunny yellow, 2 mint green, 3 navy/white, 4 hot pink + teal,
--- 5 pale sky blue + white, 6 orange/terracotta, 7 deep teal, 8 storm slate + volt yellow,
--- 9 lava orange on basalt, 10 gold + cream + grape.
+-- in World.Modes STYLE): 1 sunny yellow, 2 mint green, 3 white on periwinkle navy, 4 hot
+-- pink + teal, 5 white/butter on icy blue, 6 orange/terracotta, 7 coral/white on deep teal,
+-- 8 storm slate + volt yellow, 9 lava orange on basalt, 10 cream + gold + grape.
 Course.PALETTES = {
 	{ main = "Sunny", alt = "Butter", checkpoint = "Coral", mover = "Orange", accent = "Teal", blink = "Pink" },
 	{ main = "Mint", alt = "MintPale", checkpoint = "Coral", mover = "Butter", accent = "GrassDark", blink = "Pink" },
 	{ main = "White", alt = "Chrome", checkpoint = "Sunny", mover = "Coral", accent = "Navy", blink = "Pink" },
 	{ main = "Pink", alt = "TealLight", checkpoint = "Sunny", mover = "Teal", accent = "Teal", blink = "HotPink" },
-	{ main = "SkyBlue", alt = "White", checkpoint = "Mint", mover = "Blue", accent = "Pink", blink = "Grape" },
+	{ main = "Butter", alt = "White", checkpoint = "Mint", mover = "Blue", accent = "HotPink", blink = "Grape" },
 	{ main = "Orange", alt = "Apricot", checkpoint = "Mint", mover = "Terracotta", accent = "Teal", blink = "Pink" },
-	{ main = "TealLight", alt = "Teal", checkpoint = "Sunny", mover = "Coral", accent = "TealDeep", blink = "Pink" },
+	{ main = "Coral", alt = "White", checkpoint = "Sunny", mover = "Butter", accent = "Navy", blink = "Pink" },
 	{ main = "Steel", alt = "Chrome", checkpoint = "Mint", mover = "Volt", accent = "Volt", blink = "Pink" },
 	{ main = "Lava", alt = "Orange", checkpoint = "Butter", mover = "Steel", accent = "Butter", blink = "Mint" },
-	{ main = "Gold", alt = "Cream", checkpoint = "Mint", mover = "Grape", accent = "Grape", blink = "Pink" },
+	{ main = "Cream", alt = "White", checkpoint = "Mint", mover = "Grape", accent = "Grape", blink = "Pink" },
 }
+
+-- Each theme's base-slab top colour (World.MapDecor BASE_LOOK): a Theme.World key, or
+-- { key, other, t } for key:Lerp(other, t). Every two maps' tops differ clearly and only the
+-- beach's sand is near-white, so overhead shots tell the maps apart and pale paths pop.
+Course.BASE_TOPS = {
+	beach = { "Sand" },
+	cove = { "MintPale", "Sand", 0.4 },
+	bay = { "SkyBlue", "Navy", 0.45 },
+	reef = { "Pink", "Sand", 0.55 },
+	bubble = { "SkyBlue", "Blue", 0.5 },
+	coral = { "Apricot", "Sand", 0.35 },
+	shark = { "TealDeep", "Teal", 0.2 },
+	storm = { "Slate" },
+	volcano = { "Basalt" },
+	giga = { "Gold", "Cream", 0.25 },
+} :: { [string]: { any } }
 
 -- The ten maps: look (theme, icon, accent = Theme.World key for the picker card) and, for
 -- the generated ones (2..10), the recipe Course.generate plays them with.
@@ -757,13 +773,13 @@ Course.LANDMARK_SCALE = {
 	reef = 1.6,
 	bubble = 1.5,
 	coral = 1.45,
-	shark = 1.65,
+	shark = 2.15,
 	storm = 1.45,
 	volcano = 1.25,
 	giga = 1.65,
 } :: { [string]: number }
 -- Most studs a level's BOUNDS may grow on one side to make room for its landmark.
-Course.LANDMARK_GROW = 40
+Course.LANDMARK_GROW = 60
 
 local function newLandmark(theme: string): Prop
 	return { kind = "landmark", x = 0, y = Course.WATER_Y, z = 0, scale = Course.LANDMARK_SCALE[theme] or 1.5 }

@@ -3228,6 +3228,36 @@ test("Game modes: ten themed parkour maps with their own recipes and scenery", f
 		check(not accents[accent], "map " .. i .. " has its own accent")
 		accents[accent] = true
 	end
+	-- Base tops: every two maps' slab tops are >= 0.25 apart in RGB (0-1 channels) and only
+	-- the beach's sand may be near-white (within 0.3 of white), so overhead shots never read
+	-- white on white or one map like another.
+	local function baseTop(theme: string): { number }
+		local mix = ModesCourse.BASE_TOPS[theme]
+		check(mix ~= nil and typeof(world[mix[1]]) == "Color3", theme .. " has a Theme.World base top")
+		local a = world[mix[1]]
+		local b = if mix[2] then world[mix[2]] else a
+		check(typeof(b) == "Color3", theme .. " base top mixes a Theme.World colour")
+		local t = mix[3] or 0
+		return { a.R + (b.R - a.R) * t, a.G + (b.G - a.G) * t, a.B + (b.B - a.B) * t }
+	end
+	local tops = {}
+	for i, map in ModesCourse.MAPS do
+		tops[i] = baseTop(map.theme)
+		local c = tops[i]
+		local toWhite = math.sqrt((1 - c[1]) ^ 2 + (1 - c[2]) ^ 2 + (1 - c[3]) ^ 2)
+		check(i == 1 or toWhite >= 0.3, string.format("map %d base top is not near-white (%.2f from white)", i, toWhite))
+	end
+	-- The art-director-approved warm pastels (1 sand, 2 mint sand, 4 pink sand, 6 apricot sand)
+	-- sit closer together; those pairs only must not drift any closer.
+	local approved = { ["1-2"] = 0.17, ["1-4"] = 0.14, ["1-6"] = 0.07, ["2-6"] = 0.24, ["4-6"] = 0.12 }
+	for i = 1, #tops do
+		for j = i + 1, #tops do
+			local a, b = tops[i], tops[j]
+			local gap = math.sqrt((a[1] - b[1]) ^ 2 + (a[2] - b[2]) ^ 2 + (a[3] - b[3]) ^ 2)
+			local least = approved[i .. "-" .. j] or 0.25
+			check(gap >= least, string.format("maps %d and %d base tops differ clearly (%.3f apart)", i, j, gap))
+		end
+	end
 	local themes = {}
 	local blinks, meanGap = {}, {}
 	for i, level in ModesCourse.LEVELS do

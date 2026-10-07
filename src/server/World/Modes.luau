@@ -74,7 +74,10 @@ local FOAM_Y = -0.8
 -- arch feet), `under` the deep underside, `trim` an optional thin edge band under the rim
 -- (and the arch rings and mover stripes; nil keeps the classic white), `top` the material of
 -- the palette-coloured tops, `rimMaterial` the rim's and `trimNeon` makes the trim glow.
+-- `rimHeight` / `rimOut` thicken the rim band (default 0.7 tall, 0.6 studs out each side).
 type Style = {
+	rimHeight: number?,
+	rimOut: number?,
 	rim: Color3,
 	under: Color3,
 	trim: Color3?,
@@ -89,9 +92,17 @@ local STYLE: { [string]: Style } = {
 	cove = { rim = W.GrassDark, under = W.GrassDark:Lerp(W.Ink, 0.45), trim = W.Butter, top = PLASTIC, rimMaterial = SMOOTH },
 	bay = { rim = W.Navy, under = W.Navy:Lerp(W.Ink, 0.4), trim = W.White, top = SMOOTH, rimMaterial = Enum.Material.WoodPlanks },
 	reef = { rim = W.Teal, under = W.TealDeep:Lerp(W.Ink, 0.3), trim = W.HotPink, top = SMOOTH, rimMaterial = SMOOTH },
-	bubble = { rim = W.White, under = W.SkyBlue:Lerp(W.Blue, 0.6), trim = W.Blue, top = SMOOTH, rimMaterial = SMOOTH, trimNeon = true },
+	bubble = { rim = W.Blue, under = W.Blue:Lerp(W.Navy, 0.4), trim = W.SkyBlue, top = SMOOTH, rimMaterial = SMOOTH, trimNeon = true },
 	coral = { rim = W.Terracotta, under = W.Terracotta:Lerp(W.Ink, 0.45), trim = W.Butter, top = SMOOTH, rimMaterial = SMOOTH },
-	shark = { rim = W.TealDeep, under = W.TealDeep:Lerp(W.Ink, 0.45), trim = W.White, top = SMOOTH, rimMaterial = SMOOTH },
+	shark = {
+		rim = W.TealLight:Lerp(W.White, 0.45),
+		under = W.TealDeep:Lerp(W.Ink, 0.45),
+		trim = W.Coral,
+		top = SMOOTH,
+		rimMaterial = SMOOTH,
+		rimHeight = 1.1,
+		rimOut = 1.2,
+	},
 	storm = {
 		rim = W.Slate,
 		under = W.Slate:Lerp(W.Ink, 0.5),
@@ -327,7 +338,9 @@ local UNDERSIDE = 2.4
 local function platform(e: Course.Element, name: string, parent: Instance, rimInTop: boolean): BasePart
 	local fill = color(e.color)
 	local material = if e.color == "Wood" then Enum.Material.WoodPlanks else style.top
-	local rimY, underY = e.y - 0.95, e.y - 1.3 - UNDERSIDE / 2 + 0.1
+	local rimH, rimOut = style.rimHeight or 0.7, 2 * (style.rimOut or 0.6)
+	local rimY, underY = e.y - 0.6 - rimH / 2, e.y - 1.3 - UNDERSIDE / 2 + 0.1
+	local trimY = rimY - rimH / 2 + 0.05
 	local trimProps: { [string]: any }? = if style.trim
 		then {
 			Name = "PlatformTrim",
@@ -351,7 +364,7 @@ local function platform(e: Course.Element, name: string, parent: Instance, rimIn
 		make("Part", {
 			Name = "PlatformRim",
 			Shape = CYLINDER,
-			Size = Vector3.new(0.7, r * 2 + 1.2, r * 2 + 1.2),
+			Size = Vector3.new(rimH, r * 2 + rimOut, r * 2 + rimOut),
 			CFrame = CFrame.new(e.x, rimY, e.z) * UPRIGHT,
 			Color = style.rim,
 			Material = style.rimMaterial,
@@ -359,8 +372,8 @@ local function platform(e: Course.Element, name: string, parent: Instance, rimIn
 		})
 		if trimProps then
 			trimProps.Shape = CYLINDER
-			trimProps.Size = Vector3.new(0.25, r * 2 + 1.5, r * 2 + 1.5)
-			trimProps.CFrame = CFrame.new(e.x, rimY - 0.3, e.z) * UPRIGHT
+			trimProps.Size = Vector3.new(0.25, r * 2 + rimOut + 0.3, r * 2 + rimOut + 0.3)
+			trimProps.CFrame = CFrame.new(e.x, trimY, e.z) * UPRIGHT
 			trimProps.Parent = if rimInTop then top else parent
 			decor(make("Part", trimProps))
 		end
@@ -384,15 +397,15 @@ local function platform(e: Course.Element, name: string, parent: Instance, rimIn
 		})
 		make("Part", {
 			Name = "PlatformRim",
-			Size = Vector3.new(sx + 1.2, 0.7, sz + 1.2),
+			Size = Vector3.new(sx + rimOut, rimH, sz + rimOut),
 			CFrame = CFrame.new(e.x, rimY, e.z),
 			Color = style.rim,
 			Material = style.rimMaterial,
 			Parent = if rimInTop then top else parent,
 		})
 		if trimProps then
-			trimProps.Size = Vector3.new(sx + 1.5, 0.25, sz + 1.5)
-			trimProps.CFrame = CFrame.new(e.x, rimY - 0.3, e.z)
+			trimProps.Size = Vector3.new(sx + rimOut + 0.3, 0.25, sz + rimOut + 0.3)
+			trimProps.CFrame = CFrame.new(e.x, trimY, e.z)
 			trimProps.Parent = if rimInTop then top else parent
 			decor(make("Part", trimProps))
 		end
