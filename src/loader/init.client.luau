@@ -21,6 +21,9 @@ local gui = Instance.new("ScreenGui")
 gui.Name = "LoadingScreen"
 gui.IgnoreGuiInset = true
 gui.ResetOnSpawn = false
+-- A script-made ScreenGui defaults to Global z-order, which drew the splash's
+-- whole contents behind its own background: players saw only the gradient.
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.DisplayOrder = 100
 pcall(function()
 	gui.ScreenInsets = Enum.ScreenInsets.None
