@@ -1334,6 +1334,9 @@ local function stepAmbience(dt: number, pos: Vector3?)
 	end
 end
 
+local moverParts: { BasePart } = {}
+local moverFrames: { CFrame } = {}
+
 local function step(dt: number)
 	local humanoid, root = character()
 	if not humanoid or not root then
@@ -1365,8 +1368,8 @@ local function step(dt: number)
 			setBlink(blinkPad, blinkState(blinkPad, t))
 		end
 	end
-	local parts: { BasePart } = {}
-	local frames: { CFrame } = {}
+	-- (Reused every frame: the mover lists are cleared after the BulkMoveTo.)
+	local parts, frames = moverParts, moverFrames
 	local carry: CFrame? = nil
 	for _, m in movers do
 		if (m.rest.Position - pos).Magnitude <= NEAR then
@@ -1386,6 +1389,8 @@ local function step(dt: number)
 	end
 	if #parts > 0 then
 		Workspace:BulkMoveTo(parts, frames, Enum.BulkMoveMode.FireCFrameChanged)
+		table.clear(parts)
+		table.clear(frames)
 	end
 	if carry then
 		root.CFrame = carry * root.CFrame

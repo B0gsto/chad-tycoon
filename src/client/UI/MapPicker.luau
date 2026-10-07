@@ -840,13 +840,17 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			refresh()
 		end
 	end)
+	local tickId = 0
 	window.onOpen.Event:Connect(function()
 		showPreview(selected)
-		-- The cooldown line counts down while the window is open.
+		-- The cooldown line counts down while the window is open (one loop per open: a
+		-- reopen within the second retires the previous loop).
+		tickId += 1
+		local myId = tickId
 		task.spawn(function()
-			while window.isOpen() do
+			while window.isOpen() and tickId == myId do
 				task.wait(1)
-				if window.isOpen() then
+				if window.isOpen() and tickId == myId then
 					local info = parkourInfo()
 					local list = levelList(info)
 					if info and type(list[selected]) == "table" then
