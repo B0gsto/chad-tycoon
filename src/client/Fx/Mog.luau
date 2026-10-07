@@ -14,6 +14,10 @@
 	  Camera       Scriptable duel framing over the player's shoulder looking at the
 	               rival, with a slow sideways drift; on finish / stop the camera goes back
 	               to Custom on the humanoid (Fx.Camera then frames it behind the player).
+	  Poses        the player's own avatar strikes a new pose on every hit or perfect (a hop on
+	               a perfect; Fx.PlayerPose), reels in Shock on a miss and throws a Victory
+	               when a rival is mogged. In a duel the opponent's avatar is posed the same
+	               way from their result, so both players see the pose-off.
 	  Duel         no rival model: the opponent is the real character of
 	               Players:GetPlayerByUserId(opponent.userId), followed live (rivalPos is
 	               the fallback) and sized from its extents. On "round": a star pop (your
@@ -41,6 +45,7 @@ local Sounds = require(Client.Sounds) :: any
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
 local Animator = require(Client.Animator) :: any
+local PlayerPose = require(script.Parent.PlayerPose)
 
 local MogFx = {}
 
@@ -66,6 +71,9 @@ local duel = false -- a 1v1 duel: the opponent is a real player's character
 local opponentId = 0
 local cameraOn = false
 local token = 0 -- bumps on every rival change so stale tweens stop
+local selfPoser: PlayerPose.Poser? = nil
+local foePoser: PlayerPose.Poser? = nil
+local poseTokens: { [PlayerPose.Poser]: number } = {}
 
 local function num(value: any, default: number): number
 	return if type(value) == "number" and value == value then value else default
@@ -134,6 +142,49 @@ local function trackOpponent()
 	local hip = if humanoid then humanoid.HipHeight else 2
 	rivalPos = root.Position - Vector3.new(0, root.Size.Y / 2 + hip, 0)
 	rivalHeight = math.clamp(model:GetExtentsSize().Y, 3, 14)
+end
+
+-- Poses ------------------------------------------------------------------------------------
+
+-- Strikes `pose` on an avatar; with `settle`, eases back to HandsOnHips after that many
+-- seconds unless it struck another pose first.
+local function strike(poser: PlayerPose.Poser?, pose: string, hop: number?, settle: number?)
+	if not poser then
+		return
+	end
+	local mine = (poseTokens[poser] or 0) + 1
+	poseTokens[poser] = mine
+	poser:strike(pose, hop)
+	if settle then
+		task.delay(settle, function()
+			if poseTokens[poser] == mine then
+				poser:strike("HandsOnHips")
+			end
+		end)
+	end
+end
+
+-- The pose for a skill-check result: a fresh flex on a hit, a hopping one on a perfect,
+-- a shocked stagger on a miss.
+local function strikeResult(poser: PlayerPose.Poser?, result: any)
+	if result == "perfect" then
+		strike(poser, PlayerPose.nextPose(), 0.6)
+	elseif result == "hit" then
+		strike(poser, PlayerPose.nextPose(), 0.2)
+	elseif result == "miss" then
+		strike(poser, "Shock", nil, 1)
+	end
+end
+
+local function stopPosers()
+	if selfPoser then
+		selfPoser:stop()
+	end
+	if foePoser then
+		foePoser:stop()
+	end
+	selfPoser, foePoser = nil, nil
+	table.clear(poseTokens)
 end
 
 -- Rival -------------------------------------------------------------------------------------
@@ -387,6 +438,7 @@ end
 
 local function clear()
 	running, duel, opponentId = false, false, 0
+	stopPosers()
 	releaseCamera()
 	removeRival()
 	if folder then
@@ -420,12 +472,14 @@ local function onStart(p: any)
 	else
 		spawnRival(p.rival)
 	end
+	selfPoser = PlayerPose.attach(player.Character)
 	takeCamera()
 end
 
 local function onResult(p: any)
 	local combo = num(p.combo, 0)
 	local head = rivalPos + Vector3.new(0, rivalHeight * 0.85, 0)
+	strikeResult(selfPoser, p.result)
 	if p.result == "perfect" then
 		setExpr("Shock", 0.8)
 		flinch(1.4)
@@ -456,6 +510,14 @@ local function onRound(p: any)
 	local combo = num(you.combo, 0)
 	local head = rivalPos + Vector3.new(0, rivalHeight + 0.6, 0)
 	local feet = playerPos + Vector3.new(0, 0.3, 0)
+	if not foePoser then
+		-- The opponent's avatar may stream in after the start.
+		local root = opponentRoot()
+		local model = root and root.Parent
+		foePoser = if model and model:IsA("Model") then PlayerPose.attach(model) else nil
+	end
+	strikeResult(selfPoser, you.result)
+	strikeResult(foePoser, opp.result)
 	if you.result == "perfect" then
 		pulseAura(combo, W.Sunny)
 		sprite("StarPop", head, { size = 3, life = 0.8, rise = Vector3.new(0, 2, 0), spin = 60 })
@@ -524,6 +586,7 @@ function MogFx.onNotify(p: any)
 			onRound(p)
 		end
 	elseif event == "rival" then
+		strike(selfPoser, "Victory", 0.8, 1.6)
 		moggedPop()
 		local nextRival = p.rival
 		task.delay(1.1, function()
