@@ -55,7 +55,7 @@ sand island in the sea.
   unit count as "Deposit bonus: x1.3 · 12s". Collect the cash on the Collect pad.
 - **Aura Surge.** The last 2 minutes of every 10 double all orbs. The strip turns orange ("AURA SURGE
   x2"), the client adds a warm golden-hour grade, soft bloom, sun rays and drifting gold sparkles, and the
-  music cross-fades to the surge track (`src/client/Fx/Surge.luau`, `Theme.SurgeMusicId`).
+  music cross-fades to the surge playlist (`src/client/Fx/Surge.luau`, `Theme.SurgeMusicId`).
 - **Crates** (Common to Legendary) slide down the same chute into the pen. Walk into one to pick it up
   (within 4.5 studs, one at a time; `src/shared/CratePickup.luau`). Crates hold units around half-way
   between tier 1 and your best tier (`Economy.chestAnchor`), so they help without skipping the curve. The
