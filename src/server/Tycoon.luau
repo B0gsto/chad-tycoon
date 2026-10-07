@@ -1997,6 +1997,8 @@ function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, pa
 		end
 		task.wait(0.1)
 		character:PivotTo(plot.spawn)
+		-- Tells the loading screen (ReplicatedFirst) the character is on its plot.
+		character:SetAttribute("OnPlot", true)
 		session.heldModel = nil
 		attachHeldModel(session)
 	end

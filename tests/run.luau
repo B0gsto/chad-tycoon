@@ -3263,6 +3263,17 @@ test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", 
 	check(reached[10] == nil, "tier 10 not before 3 hours")
 end)
 
+test("loading screen brand matches the theme and assets", function()
+	local Brand = require("../src/loader/Brand")
+	local theme = loadRobloxTheme("src/themes/chad/Theme.luau")
+	local Assets = loadShared("Assets")
+	eq(Brand.GameName, theme.GameName, "Brand.GameName")
+	eq(Brand.Tagline, theme.Tagline, "Brand.Tagline")
+	eq(Brand.Loading.Status, theme.Loading.Status, "Brand.Loading.Status")
+	eq(Brand.KeyArt, Assets.Images["brand/KeyArt"], "Brand.KeyArt")
+	eq(Brand.Logo, Assets.Images["brand/Logo"], "Brand.Logo")
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
 	process.exit(1)
