@@ -19,6 +19,11 @@
 --     combo blip.
 --   * Auto Aura: the server removes the orb once it has landed and rested; it just vanishes
 --     (no effect is sent for it).
+--   * Dumbbells (Kind = "Dumbbell", a rare prize worth OrbLook.DUMBBELL_VALUE pieces): built
+--     from parts (steel bar, tier-tinted grip and plates with glowing neon rims, end caps) and
+--     lit by a soft tier light. It rolls in on its plates at orb size, pumps up to full size
+--     when it hits the pen floor, then rests with a slow sway and twinkles; picking it up
+--     throws a bigger burst and an "x10" pop.
 --   * Look: each orb is drawn as clones of props/OrbBall (Color = tier colour) and
 --     props/OrbShine (white) via AssetModels, and the server's ball is hidden locally. Without
 --     the uploaded models the server's ball shows in the tier colour.
@@ -1128,11 +1133,19 @@ type OrbFx = {
 	labelLift: number, -- per-orb tag height jitter, so neighbouring tags do not line up
 	still: boolean, -- resting and placed: skipped by the frame loop until something wakes it
 	conns: { RBXScriptConnection },
+	dumbbell: boolean, -- Kind = "Dumbbell": drawn from `pieces` instead of the ball
+	pieces: { DumbbellPiece }?,
+	light: PointLight?,
+	grow: number, -- dumbbell pump-up on landing: < 0 = travel size, 0..1 growing, >= 1 full
+	barAxis: Vector3, -- rolling dumbbell: world direction of its bar
+	spin: number, -- rolling dumbbell: angle turned around its bar
+	lastPos: Vector3?,
+	twinkle: number, -- seconds until the resting dumbbell's next sparkle
 }
 
 local orbs: { [BasePart]: OrbFx } = {}
 -- Recently removed orbs, so pickup ghosts can keep the colour of the orb they replace.
-local recentGone: { { pos: Vector3, color: Color3, big: boolean, at: number } } = {}
+local recentGone: { { pos: Vector3, color: Color3, big: boolean, dumbbell: boolean, at: number } } = {}
 local orbFolder: Instance? = nil
 local folderConns: { RBXScriptConnection } = {}
 local INK = (Theme :: any).World and (Theme :: any).World.Ink or Color3.fromRGB(58, 48, 96)
@@ -1244,8 +1257,14 @@ local function updateLabel(fx: OrbFx, punch: boolean)
 end
 
 local function refreshVisibility(fx: OrbFx)
-	-- The server ball only shows without the Blender ball, once launched.
-	fx.part.LocalTransparencyModifier = if fx.waiting or fx.ball then 1 else 0
+	-- The server ball only shows without the Blender ball, once launched. A dumbbell's server
+	-- part is a plain stand-in for other players: always hidden here.
+	fx.part.LocalTransparencyModifier = if fx.waiting or fx.ball or fx.dumbbell then 1 else 0
+	if fx.pieces then
+		for _, piece in fx.pieces do
+			piece.part.LocalTransparencyModifier = if fx.waiting then 1 else 0
+		end
+	end
 	if fx.ball then
 		fx.ball.LocalTransparencyModifier = if fx.waiting then 1 else 0
 	end
@@ -1265,6 +1284,105 @@ local function clearBall(fx: OrbFx)
 		fx.shine:Destroy()
 	end
 	fx.ball, fx.shine = nil, nil
+	if fx.pieces then
+		for _, piece in fx.pieces do
+			piece.part:Destroy()
+		end
+	end
+	fx.pieces, fx.light = nil, nil
+end
+
+-- Dumbbells ----------------------------------------------------------------------------------
+-- Cylinders along the bar (local X). x = centre along the bar, len = length, dia = diameter, all
+-- in dumbbell lengths; the big rims' radius is OrbLook.DUMBBELL_PLATE (its resting height).
+
+type DumbbellPiece = { part: Part, x: number, len: number, dia: number }
+
+local DUMBBELL_TRAVEL = 0.5 -- size while rolling in (fits the gutter and chute like an orb)
+local DUMBBELL_GROW = 0.45 -- seconds to pump up to full size after hitting the pen floor
+local STEEL = Color3.fromRGB(228, 234, 242)
+-- { x, len, dia, paint }; pieces with x ~= 0 are mirrored to both ends.
+local DUMBBELL_SHAPE: { { any } } = {
+	{ 0, 0.96, 0.085, "steel" }, -- bar
+	{ 0, 0.3, 0.105, "grip" },
+	{ 0.2, 0.05, 0.16, "steel" }, -- collar
+	{ 0.285, 0.12, 0.6, "plate" }, -- big plate
+	{ 0.285, 0.07, 0.62, "rim" },
+	{ 0.39, 0.085, 0.46, "plate" }, -- small plate
+	{ 0.39, 0.05, 0.475, "rim" },
+	{ 0.465, 0.04, 0.12, "steel" }, -- end cap
+}
+
+local function paintPiece(part: Part, paint: string, color: Color3)
+	if paint == "steel" then
+		part.Color, part.Material, part.Reflectance = STEEL, Enum.Material.SmoothPlastic, 0.3
+	elseif paint == "grip" then
+		part.Color, part.Material, part.Reflectance = color:Lerp(INK, 0.45), Enum.Material.SmoothPlastic, 0
+	elseif paint == "plate" then
+		part.Color, part.Material, part.Reflectance = color, Enum.Material.SmoothPlastic, 0.12
+	else
+		part.Color, part.Material, part.Reflectance = color:Lerp(WHITE, 0.45), Enum.Material.Neon, 0
+	end
+end
+
+local function buildDumbbell(fx: OrbFx)
+	local pieces: { DumbbellPiece } = {}
+	for _, spec in DUMBBELL_SHAPE do
+		local x, len, dia, paint = spec[1] :: number, spec[2] :: number, spec[3] :: number, spec[4] :: string
+		local sides: { number } = if x == 0 then { 1 } else { -1, 1 }
+		for _, side in sides do
+			local part = basePart(Enum.PartType.Cylinder, "Dumbbell")
+			paintPiece(part, paint, fx.color)
+			part.Parent = folder
+			table.insert(pieces, { part = part, x = x * side, len = len, dia = dia })
+		end
+	end
+	local light = Instance.new("PointLight")
+	light.Color = fx.color:Lerp(WHITE, 0.25)
+	light.Range = 7
+	light.Brightness = 1.2
+	light.Shadows = false
+	light.Parent = pieces[1].part
+	fx.pieces, fx.light = pieces, light
+end
+
+-- Size multiplier of a dumbbell: travel size, then a springy pump-up to full size.
+local function dumbbellScale(fx: OrbFx): number
+	if fx.grow < 0 then
+		return DUMBBELL_TRAVEL
+	end
+	return DUMBBELL_TRAVEL + (1 - DUMBBELL_TRAVEL) * backOut(math.min(fx.grow, 1))
+end
+
+-- Radius of a dumbbell's big plates at size multiplier `k`, and an orb's radius (its route's).
+local function dumbbellRadii(fx: OrbFx, k: number): (number, number)
+	local length = fx.part.Size.X
+	return OrbLook.DUMBBELL_PLATE * length * k, length / OrbLook.DUMBBELL_SCALE / 2
+end
+
+-- Rotation of a dumbbell whose bar points along horizontal `axis`, turned `spin` around it.
+local function barFrame(axis: Vector3, spin: number): CFrame
+	return CFrame.fromMatrix(Vector3.zero, axis, Vector3.yAxis) * CFrame.Angles(spin, 0, 0)
+end
+
+-- Rolling dumbbell: the bar turns across the direction of travel and it rolls on its plates.
+local function rollDumbbell(fx: OrbFx, pos: Vector3, radius: number, dt: number): CFrame
+	local last = fx.lastPos
+	fx.lastPos = pos
+	if last then
+		local axis = Vector3.yAxis:Cross(pos - last)
+		local m = axis.Magnitude
+		if m > 1e-4 then
+			local want, sign = axis / m, 1
+			if want:Dot(fx.barAxis) < 0 then
+				want, sign = -want, -1
+			end
+			local blended = fx.barAxis:Lerp(want, math.min(1, dt * 12))
+			fx.barAxis = if blended.Magnitude > 1e-3 then blended.Unit else want
+			fx.spin += sign * m / math.max(radius, 0.1)
+		end
+	end
+	return barFrame(fx.barAxis, fx.spin)
 end
 
 -- Paints the orb in its producing tier's colour and dresses it in the two Blender pieces
@@ -1275,7 +1393,11 @@ local function styleOrb(fx: OrbFx)
 	fx.part.Color = fx.color
 	fx.part.Material = Enum.Material.SmoothPlastic
 	fx.part.Transparency = 0
-	if not fx.ball then
+	if fx.dumbbell then
+		if not fx.pieces then
+			buildDumbbell(fx)
+		end
+	elseif not fx.ball then
 		fx.ball = cloneBall("OrbBall", fx.color)
 		fx.shine = if fx.ball then cloneBall("OrbShine") else nil
 	end
@@ -1292,7 +1414,7 @@ local function untrack(part: BasePart)
 		fx.roll = nil
 		finishRoll()
 	end
-	table.insert(recentGone, { pos = fx.home.Position, color = fx.color, big = fx.big, at = os.clock() })
+	table.insert(recentGone, { pos = fx.home.Position, color = fx.color, big = fx.big, dumbbell = fx.dumbbell, at = os.clock() })
 	if #recentGone > 24 then
 		table.remove(recentGone, 1)
 	end
@@ -1316,6 +1438,18 @@ end
 -- sparkles and a squash.
 local function touchedFloor(fx: OrbFx, pos: Vector3, impact: number)
 	fx.squash, fx.squashAmp = 0, 0.32 * impact
+	if fx.dumbbell then
+		-- A prize: it pumps up to full size with a bigger burst.
+		fx.grow = 0
+		local plate = dumbbellRadii(fx, DUMBBELL_TRAVEL)
+		local floor = pos - Vector3.new(0, plate, 0)
+		Orbs.puff(floor, 4)
+		Orbs.ring(floor, fx.color, 2.8, 0.55, 0.3)
+		Orbs.sparkle(pos, fx.color, 10, 0.8)
+		Orbs.sparkle(pos, WHITE, 4, 0.6)
+		landSound(0.3)
+		return
+	end
 	local floor = pos - Vector3.new(0, fx.part.Size.Y * 0.45, 0)
 	if not Orbs.puff(floor, if impact > 0.6 then 3 else 2) then
 		Orbs.ring(floor, fx.color, 1.5 * fx.scale, 0.45, 0.35)
@@ -1445,8 +1579,21 @@ local function track(part: Instance)
 		ball = nil,
 		shine = nil,
 		conns = {},
+		dumbbell = p:GetAttribute("Kind") == "Dumbbell",
+		pieces = nil,
+		light = nil,
+		grow = 1,
+		barAxis = CFrame.Angles(0, math.random() * math.pi * 2, 0).XVector,
+		spin = 0,
+		lastPos = nil,
+		twinkle = math.random(),
 	}
 	orbs[p] = fx
+	if fx.dumbbell then
+		-- Lies with its bar across the view (both plates show), turned a little.
+		fx.restRot = faceCamera(p.Position) * CFrame.Angles(0, (math.random() * 2 - 1) * REST_YAW * 0.7, 0)
+		fx.rot = fx.restRot
+	end
 
 	-- Roll in from the unit that produced it (queued behind earlier orbs), or pop in place.
 	local spawned = p:GetAttribute("Spawned")
@@ -1455,12 +1602,15 @@ local function track(part: Instance)
 		local path = readRoute(p, "Path")
 		local origin = p:GetAttribute("Origin")
 		local restY = p:GetAttribute("RestY")
+		-- A dumbbell follows the orb route (radius = its travel-size plates) and is lifted
+		-- onto its plates when drawn.
+		local radius = if fx.dumbbell then (dumbbellRadii(fx, DUMBBELL_TRAVEL)) else p.Size.Y / 2
 		local roll = if path
 			then newRoll(
 				path,
 				if typeof(origin) == "Vector3" then origin else nil,
 				if type(restY) == "number" then restY else nil,
-				p.Size.Y / 2,
+				radius,
 				0
 			)
 			else nil
@@ -1468,6 +1618,7 @@ local function track(part: Instance)
 			fx.roll = roll
 			fx.waiting = true
 			fx.rest = 0
+			fx.grow = -1
 		else
 			fx.appear = 0
 			fx.rest = 0
@@ -1552,6 +1703,14 @@ local function pickupBlip(count: number)
 	(Sounds.play :: any)("OrbPickup", 0, pitch)
 end
 
+-- Extra celebration when the piece picked up at `pos` was a dumbbell.
+local function dumbbellPicked(pos: Vector3, color: Color3)
+	Orbs.sparkle(pos, color, 14, 1.1)
+	Orbs.sparkle(pos, WHITE, 6, 0.9)
+	Orbs.ring(pos - Vector3.new(0, 0.8, 0), color, 3.4, 0.5, 0.25)
+	Orbs.text(pos + Vector3.new(0, 1.5, 0), "x" .. tostring(OrbLook.DUMBBELL_VALUE) .. "!", color:Lerp(WHITE, 0.3), { scale = 1.6 })
+end
+
 local function onPicked(data: any)
 	if type(data) ~= "table" or type(data.positions) ~= "table" then
 		return
@@ -1569,18 +1728,24 @@ local function onPicked(data: any)
 		local count = if type(counts[i]) == "number" then math.max(1, counts[i]) else 1
 		local grow = 1
 		local color = ORB_PALETTE[1]
+		local dumbbell = false
 		-- Match the colour of the real orb that sat there, if we still know it.
 		for _, fx in orbs do
 			if (fx.home.Position - pos).Magnitude < 1.2 then
-				color = fx.color
+				color, dumbbell = fx.color, fx.dumbbell
 				break
 			end
 		end
 		for _, gone in recentGone do
 			if (gone.pos - pos).Magnitude < 1.2 then
-				color = gone.color
+				color, dumbbell = gone.color, gone.dumbbell
 				break
 			end
+		end
+		if dumbbell then
+			grow = 1.6
+			count = math.max(count, 4) -- the fuller pickup sound
+			dumbbellPicked(pos, color)
 		end
 		Orbs.fly({
 			from = pos + Vector3.new(0, 0.25, 0),
@@ -1649,6 +1814,27 @@ local function drawOrb(fx: OrbFx, cf: CFrame, s: number, sx: number, sy: number,
 			table.insert(moveParts, shine)
 			table.insert(moveCFrames, cf * CFrame.new(SHINE_OFFSET * scale))
 		end
+	end
+end
+
+-- Queues a dumbbell's pieces at `cf` (its centre and rotation), scaled by `s`.
+local function drawDumbbell(fx: OrbFx, cf: CFrame, s: number)
+	table.insert(moveParts, fx.part)
+	table.insert(moveCFrames, cf)
+	table.insert(moveParts, fx.shell)
+	table.insert(moveCFrames, cf)
+	local pieces = fx.pieces
+	if not pieces then
+		return
+	end
+	local length = fx.part.Size.X * s
+	for _, piece in pieces do
+		local size = Vector3.new(piece.len * length, piece.dia * length, piece.dia * length)
+		if (piece.part.Size - size).Magnitude > 0.002 then
+			piece.part.Size = size
+		end
+		table.insert(moveParts, piece.part)
+		table.insert(moveCFrames, cf * CFrame.new(piece.x * length, 0, 0))
 	end
 end
 
@@ -1763,7 +1949,9 @@ local function step(dt: number)
 				refreshVisibility(fx)
 			end
 			local pos, phase = sampleRoll(roll, t)
-			spinRoll(roll, pos)
+			if not fx.dumbbell then
+				spinRoll(roll, pos)
+			end
 			if phase ~= roll.phase then
 				if phase >= PHASE_GUTTER and roll.phase < PHASE_GUTTER then
 					fx.squash, fx.squashAmp = 0, 0.1 + 0.15 * roll.gutterImpact -- lands in the gutter
@@ -1773,7 +1961,21 @@ local function step(dt: number)
 				end
 				roll.phase = phase
 			end
-			if phase < PHASE_DONE then
+			if fx.dumbbell then
+				if fx.grow >= 0 then
+					fx.grow += dt / DUMBBELL_GROW
+				end
+				local k = dumbbellScale(fx)
+				local plate, orbR = dumbbellRadii(fx, k)
+				local lifted = pos + Vector3.new(0, plate - orbR, 0)
+				local rot = rollDumbbell(fx, lifted, plate, dt)
+				if phase < PHASE_DONE then
+					local grow = backOut(math.clamp(t / APPEAR_TIME, 0, 1))
+					drawDumbbell(fx, CFrame.new(lifted) * rot, fx.scale * grow * k * sx)
+					continue
+				end
+				roll.rot = rot
+			elseif phase < PHASE_DONE then
 				local grow = backOut(math.clamp(t / APPEAR_TIME, 0, 1))
 				drawOrb(fx, CFrame.new(pos) * roll.rot, fx.scale * grow, sx, sy, clock, flashed)
 				continue
@@ -1798,6 +2000,30 @@ local function step(dt: number)
 			appear = backOut(fx.appear)
 		end
 		local s = fx.scale * (1 + fx.pulse) * appear
+		if fx.dumbbell then
+			-- Resting prize: finishes pumping up, sways slowly, breathes, glows and twinkles.
+			-- Never marked still (there are only ever a few).
+			if fx.grow < 1 then
+				fx.grow = math.min(1, fx.grow + dt / DUMBBELL_GROW)
+			end
+			local k = dumbbellScale(fx)
+			local full = dumbbellRadii(fx, 1)
+			local pos = fx.home.Position + Vector3.new(0, full * (k - 1), 0)
+			local sway = CFrame.Angles(0, math.sin(clock * 0.9 + fx.phase) * 0.12, 0)
+			local breathe = 1 + math.sin(clock * 2 + fx.phase) * 0.015
+			drawDumbbell(fx, CFrame.new(pos) * sway * fx.rot, s * k * breathe * sx)
+			if fx.light then
+				fx.light.Brightness = 1.2 + 0.5 * math.sin(clock * 2.4 + fx.phase)
+			end
+			fx.twinkle -= dt
+			if fx.twinkle <= 0 and appear >= 1 then
+				fx.twinkle = 0.7 + math.random() * 0.6
+				local along = (math.random() * 2 - 1) * full * 1.3
+				local glint = pos + (sway * fx.rot).XVector * along + Vector3.new(0, full * 0.8, 0)
+				Orbs.sparkle(glint, fx.color:Lerp(WHITE, 0.4), 1, 0.25)
+			end
+			continue
+		end
 		drawOrb(fx, CFrame.new(fx.home.Position) * fx.rot, s, sx, sy, clock, flashed)
 		fx.still = fx.rest >= 1 and fx.appear >= 1 and fx.pulse == 0 and fx.squash < 0 and fx.flash <= 0
 	end
