@@ -11,4 +11,5 @@ return {
 	Tagline = "Farm aura. Merge Chads. Mog the server.",
 	KeyArt = "rbxassetid://71618244352821",
 	Logo = "rbxassetid://128398060676282",
+	Loading = { Status = "Warming up the gym..." },
 }

@@ -11,6 +11,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local LoadingScreen = require(script:WaitForChild("LoadingScreen"))
+local Brand = require(script:WaitForChild("Brand"))
 
 local TIMEOUT = 45
 local ART_TIMEOUT = 8
@@ -27,7 +28,7 @@ end)
 gui.Parent = player:WaitForChild("PlayerGui")
 
 -- If the splash ever fails to build, a plain dark cover still hides the sky.
-local ok, built = pcall(LoadingScreen.build, gui, nil)
+local ok, built = pcall(LoadingScreen.build, gui, Brand)
 local screen: LoadingScreen.Handle
 if ok then
 	screen = built
@@ -48,6 +49,15 @@ end
 ReplicatedFirst:RemoveDefaultLoadingScreen()
 
 local started = os.clock()
+
+-- The brand art ships in ReplicatedFirst too, so it can show from the start
+-- instead of after ReplicatedStorage arrives; fetch it ahead of everything else.
+screen.applyArt({ keyArt = Brand.KeyArt, logo = Brand.Logo })
+task.spawn(function()
+	pcall(function()
+		game:GetService("ContentProvider"):PreloadAsync({ Brand.KeyArt, Brand.Logo })
+	end)
+end)
 
 task.spawn(function()
 	local themeModule = ReplicatedStorage:WaitForChild("Theme", TIMEOUT)

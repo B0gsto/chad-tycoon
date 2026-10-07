@@ -138,6 +138,11 @@ local function maybePlayIntro()
 		if player:GetAttribute("IntroSeen") ~= false then
 			return
 		end
+		-- Start after the loading screen (ReplicatedFirst) has faded out, not under it.
+		local playerGui = player:WaitForChild("PlayerGui")
+		while playerGui:FindFirstChild("LoadingScreen") and waited < 50 do
+			waited += task.wait(0.1)
+		end
 		Cutscene.play({
 			delay = 1.4,
 			onDone = function()
