@@ -1200,17 +1200,16 @@ padHandlers.Merge = function(session)
 	doMerge(session, true, false)
 end
 
+-- Auto Merge is a game pass (Theme.Monetization.Passes.AutoMerge). Profiles that unlocked it
+-- with cash before it became a pass keep it (autoMergeOwned).
+local function ownsAutoMerge(session: Session): boolean
+	return session.passes.AutoMerge == true or session.profile.autoMergeOwned == true
+end
+
 padHandlers.AutoMerge = function(session)
 	local p = session.profile
-	if not p.autoMergeOwned then
-		if spend(session, Economy.AUTO_MERGE_COST, "AutoMerge") then
-			p.autoMergeOwned = true
-			p.autoMerge = true
-			effect(session, "Upgrade", { pad = "AutoMerge", padPos = padPos(session, "AutoMerge") })
-			doMerge(session, false, true)
-			toast(session, "Auto Merge unlocked and ON!", "good")
-			markDirty(session)
-		end
+	if not ownsAutoMerge(session) then
+		Tycoon.hooks.promptPass(session.player, "AutoMerge")
 		return
 	end
 	p.autoMerge = not p.autoMerge
@@ -1379,10 +1378,10 @@ local function updateBoards(session: Session)
 		setPad(session, "Buy" .. amount, "Buy " .. amount .. " " .. tierName(p.buyTier), Format.money(cost), canAfford(session, cost))
 	end
 
-	if p.autoMergeOwned then
+	if ownsAutoMerge(session) then
 		setPad(session, "AutoMerge", "Auto Merge", if p.autoMerge then "ON" else "OFF", p.autoMerge)
 	else
-		setPad(session, "AutoMerge", "Auto Merge", Format.money(Economy.AUTO_MERGE_COST), canAfford(session, Economy.AUTO_MERGE_COST))
+		setPad(session, "AutoMerge", "Auto Merge", Format.robux(theme.Monetization.Passes.AutoMerge.Price), true)
 	end
 
 	if p.buyTier >= Economy.MAX_BUY_TIER then
@@ -1500,7 +1499,7 @@ local function snapshot(session: Session): { [string]: any }
 		crateRobux = Tycoon.hooks.crateRobuxAllowed(session.player),
 		highestTier = highestTier(session),
 		unlockers = unlockers,
-		autoMergeOwned = p.autoMergeOwned,
+		autoMergeOwned = ownsAutoMerge(session),
 		autoMerge = p.autoMerge,
 		settings = p.settings,
 		passes = session.passes,
@@ -1806,13 +1805,13 @@ end
 actionHandlers.SetSetting = function(session, data)
 	local p = session.profile
 	if data.key == "autoMerge" then
-		if p.autoMergeOwned and type(data.value) == "boolean" then
+		if not ownsAutoMerge(session) then
+			Tycoon.hooks.promptPass(session.player, "AutoMerge")
+		elseif type(data.value) == "boolean" then
 			p.autoMerge = data.value
 			if p.autoMerge then
 				doMerge(session, false, true)
 			end
-		elseif not p.autoMergeOwned then
-			toast(session, "Unlock Auto Merge on the pad next to the buy pads first.", "info")
 		end
 	elseif type(data.key) == "string" and type(p.settings[data.key]) == "boolean" and type(data.value) == "boolean" then
 		p.settings[data.key] = data.value
@@ -2070,6 +2069,12 @@ function Tycoon.setPass(player: Player, name: string)
 	local session = sessions[player]
 	if session then
 		session.passes[name] = true
+		if name == "AutoMerge" then
+			-- Starts ON the moment it is bought.
+			session.profile.autoMerge = true
+			effect(session, "Upgrade", { pad = "AutoMerge", padPos = padPos(session, "AutoMerge") })
+			doMerge(session, false, true)
+		end
 		Tycoon.hooks.passGranted(session, name)
 		markDirty(session)
 		flush(session)

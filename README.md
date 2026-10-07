@@ -38,7 +38,7 @@ sand island in the sea.
   step. Each step completes on the real server event. Finishing pays 25 Rizz + $25.
 - **Rack.** Units stand on a display rack of up to 10 shelves and 100 slots (`Economy.UNIT_CAP`), each
   with a name plate that glows more at higher tiers. Two units of a tier merge into one of the next tier
-  (2.2x output) on the Merge pad or with Auto Merge ($5,000). At the cap, a new unit first auto-merges
+  (2.2x output) on the Merge pad or with the Auto Merge game pass. At the cap, a new unit first auto-merges
   the lowest pair; units are refused only when nothing can merge. The HUD shows "37/100", or "RACK FULL"
   when the rack is full.
 - **Orbs.** Each unit drops orbs that hop off its shelf, roll along the gutter and down the chute into the

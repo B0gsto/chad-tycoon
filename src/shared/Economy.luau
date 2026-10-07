@@ -211,8 +211,6 @@ function Economy.buyTierUpgradeCost(buyTier: number): number
 	return Economy.basePrice(buyTier + 1) * Economy.buyTierRequirement(buyTier) * Economy.BUY_TIER_UPGRADE_SHARE
 end
 
-Economy.AUTO_MERGE_COST = 5000
-
 -- Processing (the converter that turns deposited orbs into cash) ---------------
 
 Economy.PROCESS_BASE = 4

@@ -1004,9 +1004,8 @@ local function computeReady(data: any): { [string]: boolean }
 	for _, amount in Economy.BUY_AMOUNTS do
 		out["Buy" .. amount] = money >= Economy.bulkPrice(buyTier, bought, amount) - 1e-6
 	end
-	if not data.autoMergeOwned then
-		out.AutoMerge = money >= Economy.AUTO_MERGE_COST
-	end
+	-- Auto Merge is a game pass: the pad invites a tap until it is owned.
+	out.AutoMerge = not data.autoMergeOwned
 	if buyTier < Economy.MAX_BUY_TIER then
 		out.BuyTier = bought >= Economy.buyTierRequirement(buyTier) and money >= Economy.buyTierUpgradeCost(buyTier)
 	end

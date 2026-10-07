@@ -1208,6 +1208,13 @@ Theme.Monetization = {
 			Desc = "Aura flies to you by itself",
 			Color = rgb(255, 170, 40),
 		},
+		AutoMerge = {
+			Id = 2014838314,
+			Price = 79,
+			Title = "Auto Merge",
+			Desc = "Pairs merge by themselves",
+			Color = rgb(255, 120, 60),
+		},
 		AutoCash = {
 			Id = 2006853781,
 			Price = 49,
@@ -1267,7 +1274,7 @@ Theme.Monetization = {
 			Color = rgb(98, 224, 160),
 		},
 	},
-	PassOrder = { "AutoLoot", "AutoCash", "DoubleAura", "DoubleMoney", "PremiumUnlocker", "CrateKey" },
+	PassOrder = { "AutoLoot", "AutoMerge", "AutoCash", "DoubleAura", "DoubleMoney", "PremiumUnlocker", "CrateKey" },
 	-- Cash packs give `Seconds` of the buyer's income, never below their progression floor
 	-- (Economy.moneyPackAmount); `Min` is the absolute floor for brand-new players. Packs are
 	-- 15 min / 1 h / 5 h / 24 h of income.
