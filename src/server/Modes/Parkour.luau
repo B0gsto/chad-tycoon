@@ -16,7 +16,7 @@
 	  Theme.Modes.Reward (Seconds of income, at least Min, sized like a cash pack) on the
 	  first clear OF THAT LEVEL and then once per
 	  Economy.MODE_REWARD_COOLDOWN (one cooldown shared by all levels, modes.parkour.
-	  lastRewardAt); MODE_FIRST_CLEAR_GEMS Rizz on each level's first clear. After a remote
+	  lastRewardAt). After a remote
 	  finish the player is brought back to the gates (GameModes.returnLater).
 	- Leaving the level's bounds for Course.LEAVE_SECONDS ends the run ("left"); on a remote
 	  level the player goes back to the gates.
@@ -29,7 +29,8 @@
 	  through the Humanoid's BaseWalkSpeed; jump: JumpHeight 7.2 -> 14 or JumpPower 50 -> 70;
 	  gravity: a "GravityCoil" VectorForce on the root lifting 55% of the weight) and taken off
 	  on stop / finish / leave. A run that wore gear at any point is `assisted`.
-	- Skip: action "ParkourSkip" costs Economy.PARKOUR_SKIP_GEMS Rizz, teleports to the next
+	- Skip: action "ParkourSkip" costs Economy.parkourSkipCost(income) cash (two minutes of
+	  income, at least Economy.PARKOUR_SKIP_MIN; the snapshot's `skipCost`), teleports to the next
 	  checkpoint (after the last one: the finish deck, which finishes the run) and marks the
 	  run assisted. Assisted runs pay, unlock and count clears but never record a best time
 	  or a board entry.
@@ -43,7 +44,7 @@
 	                                                             split = seconds since start
 	  { event = "respawn", index, stage, stageCount }            back at checkpoint `index`
 	  { event = "skip", stage, stageCount, index, checkpoints }  paid skip to `stage`
-	  { event = "finish", time, best, newBest, first, cash, gems, full, cooldownEnds, rank?,
+	  { event = "finish", time, best, newBest, first, cash, full, cooldownEnds, rank?,
 	    level, levelName, nextLevel?, unlockedNew, unlocked, levels, stage, stageCount,
 	    assisted }                                               assisted: newBest false, no rank
 	`stage` is the global stage (start deck / checkpoint / finish deck) the runner stands on.
@@ -57,6 +58,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
+local Format = require(ReplicatedStorage.Shared.Format)
 local Course = require(script.Parent.Course)
 local Rules = require(script.Parent.Rules)
 
@@ -445,7 +447,6 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			p.totalEarned += reward.cash
 			GameModes.effect(player, "Cash", { amount = reward.cash, source = "Mode", padPos = root.Position })
 		end
-		p.gems += reward.gems
 		GameModes.effect(player, "ModeFinish", { pos = root.Position, newBest = newBest })
 		GameModes.notify(player, "finish", ID, {
 			time = time,
@@ -453,7 +454,6 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			newBest = newBest,
 			first = first,
 			cash = reward.cash,
-			gems = reward.gems,
 			full = reward.full,
 			cooldownEnds = cooldown.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 			rank = rank,
@@ -546,10 +546,10 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	function def.rewardPreview(player: Player, level: number?): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, gems = 0, full = false, packCash = 0 }
+			return { cash = 0, full = false, packCash = 0 }
 		end
 		local r = rewardFor(session, level or defaultOf(levels(session)))
-		return { cash = r.cash, gems = r.gems, full = r.full, packCash = r.packCash }
+		return { cash = r.cash, full = r.full, packCash = r.packCash }
 	end
 
 	function def.snapshot(player: Player): { [string]: any }
@@ -600,7 +600,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			bestStage = if rec then rec.stage else 0,
 			stageCount = stageCount(),
 			assisted = if state then state.assisted else false,
-			skipCost = Economy.PARKOUR_SKIP_GEMS,
+			skipCost = if session then Economy.parkourSkipCost(Tycoon.income(session)) else Economy.PARKOUR_SKIP_MIN,
 		}
 	end
 
@@ -629,13 +629,12 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			return
 		end
 		local p = session.profile
-		local cost = Economy.PARKOUR_SKIP_GEMS
-		if p.gems < cost then
-			local words, icons = theme.Words or {}, theme.Icons or {}
-			Tycoon.toast(session, string.format("Not enough %s! Need %d %s", words.Gem or "Rizz", cost, icons.Gem or ""), "bad")
+		local cost = Economy.parkourSkipCost(Tycoon.income(session))
+		if p.money < cost then
+			Tycoon.toast(session, "Not enough cash! Skip costs " .. Format.money(cost), "bad")
 			return
 		end
-		p.gems -= cost
+		p.money -= cost
 		Tycoon.markDirty(session)
 		local t = now()
 		local level = state.run.level

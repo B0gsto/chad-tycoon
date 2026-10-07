@@ -80,8 +80,9 @@ This file is the contract between the parts (see docs/parkour-maps.md for the pr
   `Name = "GravityCoil"`), removed on stop/finish/respawn. A run on which gear was active at any
   point is `assisted`: it still pays and unlocks and counts clears, but never sets a best time or
   a board entry. Snapshot `modes.parkour.gear`.
-- **Skip stage.** Action `ParkourSkip`: costs `Economy.PARKOUR_SKIP_GEMS = 15` Rizz (refused with
-  a toast when short), teleports the player to the next checkpoint (or the finish deck, which
+- **Skip stage.** Action `ParkourSkip`: costs cash, `Economy.parkourSkipCost(income)`: two minutes of
+  income (`PARKOUR_SKIP_SECONDS = 120`), at least `PARKOUR_SKIP_MIN = 250` (refused with a
+  "Not enough cash!" toast when short; snapshot `modes.parkour.skipCost`), teleports the player to the next checkpoint (or the finish deck, which
   then finishes the run as assisted), advances the run as if touched, marks assisted. Notify
   `{ event = "skip", stage }`.
 - **Stage board.** `Ranking.luau` gets a third board "STAGE" (top 10 by `profile.parkour.stage`,
@@ -95,7 +96,7 @@ This file is the contract between the parts (see docs/parkour-maps.md for the pr
 - **ObbyHud** (new, shown while running or standing on the obby): the top rainbow progress bar
   with every parkour player's avatar head (Players:GetUserThumbnailAsync, cached) positioned by
   `ParkourStage / STAGE_COUNT`, the local player's head highlighted with a white caret, a trophy
-  at the end; a "STAGE n" counter under it; a `SKIP STAGE (15 Rizz)` button; a 3-slot gear
+  at the end; a "STAGE n" counter under it; a `SKIP STAGE $X` button (coin icon, cash cost from the snapshot's `skipCost`); a 3-slot gear
   hotbar bottom centre (Speed, Jump, Gravity coils; keys 1-3 / tap toggle; the chosen slot is
   outlined gold; "none" when the chosen one is tapped again) that fires `ParkourGear`.
   The existing run pill (timer) stays.

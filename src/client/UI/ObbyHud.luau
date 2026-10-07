@@ -11,8 +11,9 @@
 	            at ParkourStage / stageCount; the local head sits on top with a white caret
 	            under the bar. Attributes are followed live (PlayerAdded / Removing too).
 	  Row       one line under the bar: Hud's run pill (docked through deps.dockRun) on the
-	            left, "STAGE n / N" in the centre, SKIP STAGE (pink, with the Rizz cost from
-	            Economy.PARKOUR_SKIP_GEMS, else 15; fires ParkourSkip) on the right.
+	            left, "STAGE n / N" in the centre, SKIP STAGE (pink, with a coin and the cash cost from
+	            State.data.modes.parkour.skipCost, refreshed on State.changed; fires
+	            ParkourSkip) on the right.
 	  Gear      a 3-slot hotbar 8 px above the dumbbell (deps.tank): Speed, Jump and Gravity
 	            coils with key badges 1 / 2 / 3. Keys or a tap toggle; the chosen slot is
 	            outlined gold; tapping it again picks "none". Fires ParkourGear { gear } and
@@ -27,6 +28,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
+local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
 local Kit = require(script.Parent.Kit)
@@ -72,7 +74,6 @@ local SLOT = 66
 local SLOT_GAP = 10
 local HOTBAR_GAP = 8
 local HOTBAR_BOTTOM = 129 -- fallback: Hud's dumbbell (264 * 448 / 1024 + 6) + 8
-local DEFAULT_SKIP = 15
 
 local RAINBOW_KEYS =
 	{ "RainbowRed", "RainbowOrange", "RainbowYellow", "RainbowGreen", "RainbowCyan", "RainbowBlue", "RainbowPurple", "RainbowPink" }
@@ -101,10 +102,15 @@ local function rainbow(i: number): Color3
 	return if typeof(color) == "Color3" then color else RAINBOW_FALLBACK[i]
 end
 
-local function skipCost(): number
-	local ok, Economy = pcall(require, ReplicatedStorage.Shared.Economy)
-	local cost = if ok and type(Economy) == "table" then tonumber((Economy :: any).PARKOUR_SKIP_GEMS) else nil
-	return cost or DEFAULT_SKIP
+-- The cash cost of a skip from the parkour snapshot (nil before the first snapshot).
+local function skipCost(): number?
+	local data = State.data
+	local info = data and data.modes and data.modes.parkour
+	return if type(info) == "table" then tonumber(info.skipCost) else nil
+end
+
+local function skipText(cost: number?): string
+	return if cost then "SKIP STAGE  " .. Format.money(cost) else "SKIP STAGE"
 end
 
 -- The course's last stage from the world: Parkour folder's Levels and the last level
@@ -446,9 +452,9 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 	local counterScale = Kit.new("UIScale", { Parent = counter })
 	local skip = Kit.button(root, {
 		Name = "Skip",
-		Text = "SKIP STAGE  " .. tostring(cost),
-		Icon = "Gem",
-		IconColor = C.Rizz,
+		Text = skipText(cost),
+		Icon = "Coin",
+		IconColor = C.MoneyText,
 		Font = F.Display,
 		Color = Color3.fromRGB(255, 95, 150),
 		TextSize = 17,
@@ -575,6 +581,18 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		end
 	end
 	State.changed.Event:Connect(syncGear)
+
+	local function syncSkip()
+		local next = skipCost()
+		if next ~= cost then
+			cost = next
+			local label = Kit.buttonLabel(skip)
+			if label then
+				label.Text = skipText(cost)
+			end
+		end
+	end
+	State.changed.Event:Connect(syncSkip)
 
 	-- Layout -----------------------------------------------------------------------------
 	local function viewport(): Vector2

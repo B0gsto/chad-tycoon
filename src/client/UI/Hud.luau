@@ -12,7 +12,7 @@
 	                 promo under it: tilted "PERMANENT" tag, wide 2X CASH (or
 	                 STARTER PACK) button, "Only 199 R$"
 	  bottom left    status row (Premium, Friends, Boost), "Cash [ x1.0 ]",
-	                 the big cash amount + square "+" and a compact Rizz line
+	                 the big cash amount + square "+"
 	  bottom centre  the dumbbell: "AURA" + the carried amount on its plaque
 	  bottom right   FREE gift with its countdown, version in the corner
 
@@ -908,7 +908,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 	end
 
-	-- Bottom left: status row, cash multiplier line, cash amount + plus, Rizz -------------
+	-- Bottom left: status row, cash multiplier line, cash amount + plus -------------------
 	local wallet = group("Wallet", {
 		Size = UDim2.fromOffset(420, 168),
 		Position = UDim2.new(0, EDGE_X, 1, -6),
@@ -978,44 +978,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	hitPad(addButton, function()
 		handlers.openWindow("Shop", { focus = "Cash" })
 	end)
-	local rizz = group("Rizz", { Size = UDim2.fromOffset(120, 30), Parent = wallet })
-	Kit.hudIcon(rizz, "Gem", 24, C.Rizz, { Name = "GemIcon", Position = UDim2.fromOffset(0, 3), ZIndex = 2 })
-	local gemsLabel = Kit.hudText(rizz, {
-		Name = "Gems",
-		Text = "0",
-		Font = F.Number,
-		TextSize = 20,
-		TextColor3 = C.Rizz,
-		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 30),
-		Position = UDim2.fromOffset(28, 0),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		ZIndex = 3,
-	})
-	local gemPlus = Kit.button(rizz, {
-		Name = "AddRizz",
-		Icon = "Plus",
-		IconColor = Color3.new(1, 1, 1),
-		Color = C.Rizz,
-		Size = UDim2.fromOffset(24, 24),
-		Radius = 12,
-		Depth = 2,
-		ZIndex = 3,
-	}, function()
-		handlers.openWindow("Shop", { focus = "Gems" })
-	end)
-	hitPad(gemPlus, function()
-		handlers.openWindow("Shop", { focus = "Gems" })
-	end)
-	-- The plus and the Rizz line follow the cash amount's width.
+	-- The plus follows the cash amount's width.
 	local function layoutWallet()
 		local x = math.max(textWidth(moneyLabel.Text, moneyLabel.TextSize, moneyLabel.Font) + 4, 60)
 		addButton.Position = UDim2.fromOffset(x + 10, 92)
-		rizz.Position = UDim2.fromOffset(x + 64, 99)
-		gemPlus.Position = UDim2.fromOffset(28 + textWidth(gemsLabel.Text, gemsLabel.TextSize, gemsLabel.Font) + 8, 3)
 	end
 	moneyLabel:GetPropertyChangedSignal("Text"):Connect(layoutWallet)
-	gemsLabel:GetPropertyChangedSignal("Text"):Connect(layoutWallet)
 
 	-- Layout mode ------------------------------------------------------------------------
 	-- Compact screens: smaller grid icons, no status captions, no promo, a smaller
@@ -1176,7 +1144,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		place(next(targets) ~= nil)
 	end
 	-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
-	local selectables: { GuiObject } = { promoButton, addButton, gemPlus, quitButton }
+	local selectables: { GuiObject } = { promoButton, addButton, quitButton }
 	for _, button in Hud.buttons do
 		table.insert(selectables, button)
 	end
@@ -1238,7 +1206,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			roll(moneyLabel, data.money, State.money)
 		end
 		moneyShown = data.money
-		roll(gemsLabel, data.gems, State.num)
 		if lastMult ~= nil and lastMult ~= data.moneyMult then
 			Kit.pop(multLine, 0.8)
 		end

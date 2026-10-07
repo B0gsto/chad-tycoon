@@ -6,9 +6,9 @@ comes from Blender-made art (meshes, sprites, icons, faces, HUD and brand art) u
 pipeline in [docs/assets.md](docs/assets.md). Every uploaded prop has a part-built fallback, so the game
 still works while an asset is missing or in moderation.
 
-| Place file | Units (25 tiers) | Orbs | Premium currency | Universe / place |
-|---|---|---|---|---|
-| `build/ChadAuraTycoon.rbxlx` | Normie → Absolute Chad | Aura | Rizz | `deploy/target.json` |
+| Place file | Units (25 tiers) | Orbs | Universe / place |
+|---|---|---|---|
+| `build/ChadAuraTycoon.rbxlx` | Normie → Absolute Chad | Aura | `deploy/target.json` |
 
 ## Screenshots
 
@@ -35,7 +35,7 @@ sand island in the sea.
   player's real plot. It can be skipped. Server: `src/server/Intro.luau`; client: `src/client/Intro/*`.
 - **Tutorial.** A slim, skippable checklist of 5 steps: buy a unit, pick up orbs, deposit, collect cash,
   merge. A quest pill under the top HUD and a small bobbing chevron over the target show the current
-  step. Each step completes on the real server event. Finishing pays 25 Rizz + $25.
+  step. Each step completes on the real server event. Finishing pays $25.
 - **Rack.** Units stand on a display rack of up to 10 shelves and 100 slots (`Economy.UNIT_CAP`), each
   with a name plate that glows more at higher tiers. Two units of a tier merge into one of the next tier
   (2.2x output) on the Merge pad or with the Auto Merge game pass. At the cap, a new unit first auto-merges
@@ -63,13 +63,14 @@ sand island in the sea.
   - **Open now** with the "Open Crate" product (R$ 30, any rarity), or free and instant with the
     **Crate Master** pass. Both are offered only where `PolicyService` allows paid random items.
   - Carry it to the **Crate Smasher** to open it free on a timer (the VIP Smasher pass is 3x faster).
+    Smashing it before the timer ends takes the same "Open Crate" product, or is free with Crate Master.
   - **Discard** it.
 - **Fans** are wholesome cheering fans around each plot: 3 + half your best tier, up to 12 on your own
   plot and 4 on others. They run in, clap, wave signs and cheer when you buy or merge.
 - **Cosmetics** (`src/server/Cosmetics.luau`): Speedy Sneakers, Double Jump, Rainbow / Star / Rookie
   trails, Chad Aura and Golden Crown. Each has its own pass (the Rookie Trail comes only with the Starter
   Pack), and the All Cosmetics Pack unlocks every non-Starter item. The **Starter Pack** gives a one-time
-  cash and Rizz bundle plus the Rookie Trail.
+  hour of income (at least 10,000) plus the Rookie Trail.
 - **Game Modes.** A plaza on the hub has three gates, each a teleport portal
   (`src/server/GameModes.luau`, `src/server/Modes/*`). **Parkour** is a rainbow **sky obby**: the ten
   themed maps (Sunny Steps, Coconut Cove, Sweeper Bay, Blink Reef, Bubble Bounce, Coral Climb, Shark Fin
@@ -80,14 +81,14 @@ sand island in the sea.
   floor; falling lands on the cloud catch volume and respawns you at your stage. Walking through gate 1's
   portal, CHOOSE MAP in the Modes window or "Choose map" on the finish card opens the **map picker**
   (`src/client/UI/MapPicker.luau`, a live 3D preview per map). During a run the HUD shows a rainbow
-  progress bar with every runner's avatar head, "STAGE n / 70", **SKIP STAGE** (15 Rizz, `ParkourSkip`)
+  progress bar with every runner's avatar head, "STAGE n / 70", **SKIP STAGE** (cash: two minutes of income, at least $250, `ParkourSkip`)
   and a 3-slot **gear hotbar** (Speed, Jump and Gravity coils, keys 1-3, `ParkourGear`): gear and skips
   make the run "assisted" (it pays, unlocks and counts clears but never sets a best time or board entry).
   The Ranking window has a STAGE board. Unit tests check every jump on every map is fair for the default
   jump. Maps unlock in order, bests, clears and the best stage are saved, and a finish pays 5 minutes of
   income (at least 750, `Theme.Modes.Reward`) times a per-map bonus (`Economy.parkourLevelBonus`) on the
   first clear of a map and then at most once per
-  cooldown, plus 25 Rizz per first clear. **Mog Test** is a skill-check duel on a floating stage
+  cooldown. **Mog Test** is a skill-check duel on a floating stage
   (`Modes/MogRules.luau`, `Mog.luau`, `World/MogStage.luau`, `UI/MogHud.luau`, `Fx/Mog.luau`): press
   Space / click / tap / A when the needle is in the zone; the window shrinks and the needle speeds up every
   check; mogging 3 rivals passes the test and pays the mode reward, then the run goes on for a high score
@@ -97,11 +98,11 @@ sand island in the sea.
   duels fought are saved, but only PvE scores go on the TOP MOGGERS board. Gate 3 says COMING SOON.
 - **Shop packs scale with progression.** Cash packs pay 15 min / 1 h / 5 h / 24 h of your income and aura
   packs put 15 min / 1 h / 5 h / 24 h of your aura production straight into your tank, each with a minimum
-  per pack; Rizz packs grow from x1 at tier 1 up to x4 (`Economy.progression`). The shop shows each player
+  per pack (`Economy.progression`). The shop shows each player
   the same amounts the server grants.
 - **HUD** (`src/client/UI/Hud.luau`), laid out like the owner's reference game: chunky icons and outlined
   text straight over the world. Settings gear top right; unit count and deposit strip top centre; icon grid
-  (Home, Ranking, Modes, Index, Shop, Invite) and a 2X CASH / Starter Pack promo on the left; cash, Rizz
+  (Home, Ranking, Modes, Index, Shop, Invite) and a 2X CASH / Starter Pack promo on the left; cash
   and bonuses bottom left; the Blender dumbbell with the carried aura bottom centre; the free gift bottom
   right.
 - **Extras:** Index of all 25 tiers, global ranking, a free gift every 10 minutes, offline earnings up to
@@ -137,7 +138,6 @@ All passes and products exist on the universe and their ids are in `Theme.Moneti
 | Product | Open Crate (`CrateOpen`) | 30 |
 | Product | Cash packs 1-4 (`MoneyPacks`) | 49, 199, 499, 1000 |
 | Product | Aura packs 1-4 (`AuraPacks`) | 49, 199, 499, 1000 |
-| Product | Rizz packs 1-3 (`GemPacks`) | 49, 249, 599 |
 
 If a price changes on the dashboard, change `Price` in the theme too (the buttons show it). An id of `0`
 is granted for free in Studio and shows "coming soon" on live servers. `tools/monetization.py` creates and
@@ -195,7 +195,7 @@ Studio capture tools (macOS; need Screen Recording and Accessibility):
 Studio-only debug hooks (ignored on live servers), set as Player attributes from Studio, for example
 through `tools/studio.py execute_luau`:
 
-- `DebugGrant` (set by a server script): `"cash,<n>"`, `"gems,<n>"`, `"units,<total>"`, `"pass,<Name>"`,
+- `DebugGrant` (set by a server script): `"cash,<n>"`, `"units,<total>"`, `"pass,<Name>"`,
   `"crate"` or `"pickup"`.
 - `IntroPreview` (on the LocalPlayer): `"<beat>,<pauseSeconds>"` replays the intro paused in that beat;
   `"skip"` ends it.

@@ -83,7 +83,7 @@ local function focusWindow(name: string)
 end
 
 -- opts.focus (Shop only): a pass or cosmetic name, or a section ("Passes", "Cosmetics", "Cash",
--- "Aura", "Gems"), to open scrolled to.
+-- "Aura"), to open scrolled to.
 function Windows.open(name: string, opts: { focus: string? }?)
 	if opts and opts.focus and name == "Shop" then
 		Windows.shopFocus = opts.focus
@@ -166,8 +166,8 @@ end
 --[[
 	One long page under a pill switcher, top to bottom: the Starter Pack hero
 	card (until owned), a full-width animated banner per game pass, the
-	cosmetics (All Cosmetics bundle + a card grid), then cash, aura and Rizz
-	pack cards. Every banner and pack card has a ShopScenes stage that plays
+	cosmetics (All Cosmetics bundle + a card grid), then cash and aura pack
+	cards. Every banner and pack card has a ShopScenes stage that plays
 	only while the shop is open, so a closed shop costs nothing per frame.
 ]]
 
@@ -326,27 +326,10 @@ local SECTIONS = {
 		icon = "Orb",
 		color = C.Violet,
 	},
-	{
-		key = "Gems",
-		pill = W.Gem,
-		title = string.upper(W.Gem),
-		caption = "More " .. W.Gem .. " as your " .. W.Unit .. "s get stronger",
-		icon = "Gem",
-		color = C.Rizz,
-	},
 }
 
 local function iconColor(icon: string): Color3
 	return Kit.ICON_COLORS[icon] or C.Gold
-end
-
-local function gemPackText(amount: number): string
-	return "+" .. Format.commas(amount)
-end
-
--- A Rizz pack card's amount (the Gem icon beside it names the unit).
-local function gemCardText(amount: number): string
-	return Format.commas(amount)
 end
 
 -- "15 min", "1 h", "24 h": how much income or aura a pack is worth.
@@ -367,7 +350,7 @@ local BANNER_H = 130 -- pass banner height
 local STAGE_W = 230 -- a banner's animated stage, at the default window...
 local STAGE_MIN_W = 140 -- ...and the narrowest it shrinks to
 local COS_H = 204 -- cosmetic card height
-local PACK_H = 238 -- cash / aura / Rizz card height (stage, amount, one-line caption, price)
+local PACK_H = 238 -- cash / aura card height (stage, amount, one-line caption, price)
 local PACK_STAGE = 125 -- pack card stage (square)
 local PACK_ICON = 26 -- currency icon left of a pack's amount
 local STARTER_H = 120 -- Starter pack card at the top of the page
@@ -472,15 +455,13 @@ local function bundleSaving(): number
 end
 
 --[[
-	The Starter pack's cash and Rizz for this player right now, from the same
-	Economy functions (and the same progression) the server grants with.
+	The Starter pack's cash for this player right now, from the same Economy
+	functions (and the same progression) the server grants with.
 ]]
-function Windows.starterAmounts(data: { [string]: any }): (number, number)
+function Windows.starterAmounts(data: { [string]: any }): number
 	local starter = COS.Starter
 	local progression = Economy.progression(data.highestTier or 1, data.processLevel or 0)
-	local cash = Economy.moneyPackAmount(data.income or 0, starter.CashSeconds, starter.CashMin, progression)
-	local pack = Theme.Monetization.GemPacks[starter.GemPack]
-	return cash, Economy.gemPackAmount(pack.Base, progression)
+	return Economy.moneyPackAmount(data.income or 0, starter.CashSeconds, starter.CashMin, progression)
 end
 
 -- The cosmetics part of a snapshot, empty when the server sent none.
@@ -491,7 +472,7 @@ local function cosmeticsOf(data: { [string]: any }): { [string]: any }
 end
 Windows.cosmeticsOf = cosmeticsOf
 
--- Pending focus for the next shop open: a section ("Cosmetics", "Cash", "Aura", "Gems" ...), a
+-- Pending focus for the next shop open: a section ("Cosmetics", "Cash", "Aura" ...), a
 -- pass ("DoubleMoney", "StarterPack", "AllCosmetics") or a cosmetic, set by Windows.open.
 Windows.shopFocus = nil :: string?
 -- Opens the MOG TEST picker (VS RIVALS / 1v1 DUEL); Main points it at MogHud.choose
@@ -546,7 +527,7 @@ local function buildShop(screen: ScreenGui)
 		table.insert(idleTweens, { tween = TweenService:Create(gui, info, props), gui = gui, rest = rest })
 	end
 
-	-- Header: the big cart icon pops out over the top-left corner; tank, Rizz and cash chips at the right.
+	-- Header: the big cart icon pops out over the top-left corner; tank and cash chips at the right.
 	local chip = window.header:FindFirstChild("Chip")
 	if chip and chip:IsA("GuiObject") then
 		chip.Visible = false
@@ -643,9 +624,8 @@ local function buildShop(screen: ScreenGui)
 		}))
 	end
 	local cashChip = walletChip("CashChip", "Coin", C.MoneyText, 146, 60)
-	local gemChip = walletChip("GemChip", "Gem", C.Rizz, 106, 212)
 	-- The tank (aura carried, like the HUD's dumbbell plaque): bought aura flies here.
-	local auraChip = walletChip("AuraChip", "Orb", C.Orb, 120, 324)
+	local auraChip = walletChip("AuraChip", "Orb", C.Orb, 120, 212)
 
 	--[[
 		Section switcher: one pill (icon + label) per section in a well, with a
@@ -1119,7 +1099,7 @@ local function buildShop(screen: ScreenGui)
 		end)
 	end
 
-	-- Purchases: the last product prompted, so landed cash, aura or Rizz flies from its card.
+	-- Purchases: the last product prompted, so landed cash or aura flies from its card.
 	local lastPrompt: { kind: string, entry: Entry, index: number, at: number }? = nil
 
 	-- Candy card for cosmetics: art, outlined title, a darker inset with the description
@@ -1256,7 +1236,7 @@ local function buildShop(screen: ScreenGui)
 		makeEntry(scroll, "Starter", 0, starterTint, COS.Starter.Icon, "Star", 104, UDim2.new(0, 68, 0.5, 0))
 	local starterClip = bannerPaint(starterBody, starterTint, WIDE_R)
 	wideText(starterBody, starterTint, "STARTER PACK")
-	-- What is inside: three chips, with this player's own cash and Rizz amounts.
+	-- What is inside: two chips, this player's own cash amount and the exclusive trail.
 	local chips = Kit.new("Frame", {
 		Name = "Contents",
 		BackgroundTransparency = 1,
@@ -1271,7 +1251,7 @@ local function buildShop(screen: ScreenGui)
 			Name = "Chip" .. order,
 			BackgroundColor3 = Kit.darken(starterTint, 0.3),
 			BackgroundTransparency = 0.05,
-			Size = UDim2.new(1 / 3, -6, 1, 0),
+			Size = UDim2.new(1 / 2, -4, 1, 0),
 			LayoutOrder = order,
 			ZIndex = 3,
 			Parent = chips,
@@ -1311,9 +1291,8 @@ local function buildShop(screen: ScreenGui)
 		return amount
 	end
 	local starterCash = contentChip(1, "Coin", "Coin", C.Gold, "cash")
-	local starterGems = contentChip(2, "Gem", "Gem", C.Rizz, W.Gem)
 	local rookie = COS.Items[COS.Starter.Item]
-	local rookieLabel = contentChip(3, rookie.Icon, "Star", rookie.Color, "exclusive")
+	local rookieLabel = contentChip(2, rookie.Icon, "Star", rookie.Color, "exclusive")
 	rookieLabel.Text = rookie.Title
 	local starterButton, starterSheen = widePrice(starterBody, price(starterPass.Price), function()
 		action:FireServer({ action = "PromptPass", name = COS.Starter.Pass })
@@ -1334,7 +1313,6 @@ local function buildShop(screen: ScreenGui)
 	local starterShown = true
 	local starterWasOwned: boolean? = nil
 	local starterShownCash: number? = nil
-	local starterShownGems: number? = nil
 
 	--[[
 		Section 1: game passes, one full-width banner each. Left: the pass's
@@ -1704,7 +1682,7 @@ local function buildShop(screen: ScreenGui)
 	end
 
 	--[[
-		Sections 3-5: cash, aura and Rizz pack cards. Each card: the pack's
+		Sections 3-4: cash and aura pack cards. Each card: the pack's
 		animated stage (ShopScenes.pack) on a soft halo, the amount this player
 		gets (it rolls when it changes), a short caption and the price button.
 		The cards sit on a deep version of the section colour so the mint price
@@ -1920,37 +1898,6 @@ local function buildShop(screen: ScreenGui)
 		packTags(card, index, #auraPacks)
 	end
 
-	-- Rizz: the same card size as cash and aura, the short row centred.
-	sectionHead(5)
-	local gemPacks = Theme.Monetization.GemPacks
-	local GEM_NAMES = { "Small pack", "Big pack", "Mega pack" }
-	local gemPackGrid = packGrid("Gems", #gemPacks, math.max(#gemPacks, 4), #gemPacks)
-	local gemGrid = gemPackGrid.grid
-	local gemLabels: { TextLabel } = {}
-	local gemShown: { [number]: number } = {}
-	for index, pack in gemPacks do
-		local card = packCard(gemPackGrid, "Gems", index, pack.Price, C.Rizz, Kit.lighten(C.Rizz, 0.45), "Gem")
-		gemLabels[index] = card.amount
-		setAmount(card.amount, gemCardText(pack.Base))
-		card.sub.Text = GEM_NAMES[index] or string.format("%s pack", W.Gem)
-		if index == #gemPacks then
-			ribbon(card.body, "BEST VALUE", RIBBON_CORAL)
-		end
-	end
-	local gemInfo = Kit.text(scroll, {
-		Name = "Info",
-		Text = string.format(
-			"%s unlock %ss instantly and finish %s timers early. You also earn them from new discoveries and free rewards.",
-			W.Gem,
-			string.lower(W.Chest),
-			W.Unlocker
-		),
-		Font = F.Bold,
-		TextSize = 15,
-		TextColor3 = C.Text,
-		TextXAlignment = Enum.TextXAlignment.Center,
-	})
-
 	-- Layout: explicit positions so the switcher knows where each section starts,
 	-- and the grids reflow (cosmetics 3 -> 2 columns, cash and aura 4 -> 2) when the window narrows.
 	local columnsNow = 3
@@ -2003,17 +1950,16 @@ local function buildShop(screen: ScreenGui)
 			{ gui = bundleCell, h = BUNDLE_H, gapAfter = GAP + 6 },
 			{ gui = cosGrid, h = gridH(#COS_ORDER, columns, COS_H), gapAfter = 26 },
 		}
-		local packSections = { { 3, cashGrid }, { 4, auraGrid }, { 5, gemGrid } }
+		local packSections = { { 3, cashGrid }, { 4, auraGrid } }
 		for i, entry in packSections do
 			local packs = packGrids[i]
 			table.insert(blocks, { gui = heads[entry[1]], h = HEAD_H, gapAfter = 14, section = entry[1] })
 			table.insert(blocks, {
 				gui = entry[2],
 				h = gridH(packs.count, packs.columns, PACK_H),
-				gapAfter = if i == #packSections then 10 else 26,
+				gapAfter = 26,
 			})
 		end
-		table.insert(blocks, { gui = gemInfo, h = 40, gapAfter = 12 })
 		-- The Starter card's ribbon overlaps its top edge: start a little lower for it.
 		local y = if starterShown then 12 else 4
 		for _, block in blocks do
@@ -2126,10 +2072,9 @@ local function buildShop(screen: ScreenGui)
 
 	-- Wallet chips ---------------------------------------------------------------------
 	local chipMoney: number? = nil
-	local chipGems: number? = nil
 	local chipAura: number? = nil
 
-	-- Coins or gems fly from a row to the header chip.
+	-- Coins or orbs fly from a row to the header chip.
 	local function flyTo(from: GuiObject, chipLabel: TextLabel, icon: string, color: Color3)
 		if PREVIEW then
 			return
@@ -2195,18 +2140,13 @@ local function buildShop(screen: ScreenGui)
 		-- Starter pack: this player's amounts roll; a purchase celebrates, then the card folds away.
 		local starterOwned = cos.starterOwned == true
 		local starterJust = starterOwned and starterWasOwned == false and open
-		local cash, gems = Windows.starterAmounts(data)
+		local cash = Windows.starterAmounts(data)
 		if starterShownCash and starterShownCash ~= cash and open then
 			Kit.countTo(starterCash, starterShownCash, cash, State.money)
 		elseif starterShownCash ~= cash then
 			starterCash.Text = State.money(cash)
 		end
-		if starterShownGems and starterShownGems ~= gems and open then
-			Kit.countTo(starterGems, starterShownGems, gems, gemPackText)
-		elseif starterShownGems ~= gems then
-			starterGems.Text = gemPackText(gems)
-		end
-		starterShownCash, starterShownGems = cash, gems
+		starterShownCash = cash
 		Kit.setEnabled(starterButton, not starterOwned)
 		Kit.setButton(starterButton, if starterOwned then "✓ OWNED" else price(starterPass.Price))
 		starterTag.Visible = not starterOwned
@@ -2309,7 +2249,7 @@ local function buildShop(screen: ScreenGui)
 		end
 		local open = window.isOpen()
 		-- Header chips roll; a landed purchase flies in from the card that was bought.
-		local money, gems, carried = data.money, data.gems or 0, data.carried or 0
+		local money, carried = data.money, data.carried or 0
 		if chipMoney and money ~= chipMoney and open then
 			Kit.countTo(cashChip, chipMoney, money, State.money)
 			if money > chipMoney and lastPrompt and lastPrompt.kind == "Money" and os.clock() - lastPrompt.at < 120 then
@@ -2318,15 +2258,6 @@ local function buildShop(screen: ScreenGui)
 			end
 		elseif money ~= chipMoney then
 			cashChip.Text = State.money(money)
-		end
-		if chipGems and gems ~= chipGems and open then
-			Kit.countTo(gemChip, chipGems, gems, Format.commas)
-			if gems > chipGems and lastPrompt and lastPrompt.kind == "Gems" and os.clock() - lastPrompt.at < 120 then
-				flyTo(lastPrompt.entry.button, gemChip, "Gem", C.Rizz)
-				lastPrompt = nil
-			end
-		elseif gems ~= chipGems then
-			gemChip.Text = Format.commas(gems)
 		end
 		-- The tank also fills from collecting, so only a jump of about a pack's size counts as the purchase.
 		if chipAura and carried ~= chipAura and open then
@@ -2344,7 +2275,7 @@ local function buildShop(screen: ScreenGui)
 		elseif carried ~= chipAura then
 			auraChip.Text = State.num(carried)
 		end
-		chipMoney, chipGems, chipAura = money, gems, carried
+		chipMoney, chipAura = money, carried
 
 		-- Each player sees their own pack sizes (the server grants with the same functions).
 		local progression = Economy.progression(data.highestTier or 1, data.processLevel or 0)
@@ -2368,17 +2299,6 @@ local function buildShop(screen: ScreenGui)
 				Kit.countTo(auraLabels[index], shown, amount, State.num)
 			elseif shown ~= amount then
 				setAmount(auraLabels[index], State.num(amount))
-			end
-		end
-		for index, pack in gemPacks do
-			local amount = Economy.gemPackAmount(pack.Base, progression)
-			local shown = gemShown[index]
-			gemShown[index] = amount
-			if shown and shown ~= amount and open then
-				fitAmount(gemLabels[index], gemCardText(amount))
-				Kit.countTo(gemLabels[index], shown, amount, gemCardText)
-			elseif shown ~= amount then
-				setAmount(gemLabels[index], gemCardText(amount))
 			end
 		end
 		for name, banner in banners do
@@ -2586,7 +2506,7 @@ local function buildShop(screen: ScreenGui)
 		end
 	end
 
-	-- Kept for callers that pick a section by name ("Passes", "Cosmetics", "Cash", "Aura", "Gems").
+	-- Kept for callers that pick a section by name ("Passes", "Cosmetics", "Cash", "Aura").
 	Windows.selectShopTab = function(key: string)
 		for i, section in SECTIONS do
 			if section.key == key then
@@ -3456,8 +3376,8 @@ local function plural(n: number, word: string, many: string?): string
 	return string.format("%d %s", n, if n == 1 then word else many or word .. "s")
 end
 
--- "Finish: +$X (+N Rizz)" or the cooldown countdown; `bonus` adds a "(xB)" tag.
-local function setRewardLine(label: TextLabel, cash: number, gems: number, full: boolean, cooldownEnds: number, bonus: number?)
+-- "Finish: +$X" or the cooldown countdown; `bonus` adds a "(xB)" tag.
+local function setRewardLine(label: TextLabel, cash: number, full: boolean, cooldownEnds: number, bonus: number?)
 	local left = cooldownEnds - os.time()
 	if not full and left > 0 then
 		label.TextColor3 = C.TextDim
@@ -3468,9 +3388,6 @@ local function setRewardLine(label: TextLabel, cash: number, gems: number, full:
 	local text = "Finish: +" .. Format.money(cash)
 	if bonus and bonus > 1.001 then
 		text ..= string.format("  (×%s)", (string.format("%.1f", bonus):gsub("%.0$", "")))
-	end
-	if gems > 0 then
-		text ..= " +" .. tostring(gems) .. " " .. W.Gem
 	end
 	label.Text = text
 end
@@ -3542,11 +3459,11 @@ local function parkourReward(label: TextLabel, info: { [string]: any }, level: n
 	local currentBonus = if type(current) == "table" then tonumber(current.bonus) or 1 else 1
 	local bonus = tonumber(lv.bonus) or 1
 	local cash = math.floor((tonumber(preview.packCash) or 0) / math.max(currentBonus, 0.01) * bonus + 0.5)
-	-- A level's first clear always pays in full (and adds the first-clear Rizz).
+	-- A level's first clear always pays in full.
 	local first = (tonumber(lv.clears) or 0) == 0
 	local cooldownEnds = tonumber(info.cooldownEnds) or 0
 	local full = first or cooldownEnds <= os.time()
-	setRewardLine(label, cash, if first then Economy.MODE_FIRST_CLEAR_GEMS else 0, full, cooldownEnds, bonus)
+	setRewardLine(label, cash, full, cooldownEnds, bonus)
 end
 
 type ModeRow = { panel: Frame, stats: TextLabel, reward: TextLabel, play: TextButton }
@@ -3811,7 +3728,6 @@ local function buildModes(screen: ScreenGui)
 			setRewardLine(
 				mog.reward,
 				tonumber(preview.packCash) or tonumber(preview.cash) or 0,
-				tonumber(preview.gems) or 0,
 				preview.full ~= false,
 				tonumber(info.cooldownEnds) or 0
 			)

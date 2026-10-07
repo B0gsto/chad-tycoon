@@ -27,7 +27,6 @@ export type Unlocker = { rarity: string, endsAt: number }
 export type Profile = {
 	version: number,
 	money: number,
-	gems: number,
 	carried: number,
 	queue: number,
 	pending: number,
@@ -41,6 +40,9 @@ export type Profile = {
 	-- Rarity of the crate the player was last prompted to open with Robux ("" = none);
 	-- the receipt opens this one if the crate is no longer held.
 	pendingCrate: string,
+	-- Smasher slot (1 or 2) that Robux prompt was for (0 = the held crate): the receipt
+	-- opens the crate still in that slot.
+	pendingUnlocker: number,
 	unlockers: { Unlocker },
 	autoMergeOwned: boolean,
 	autoMerge: boolean,
@@ -54,7 +56,7 @@ export type Profile = {
 	introSeen: boolean,
 	-- Equipped trail ("" = none) and on/off switches of the toggle cosmetics (missing = on).
 	cosmetics: { trail: string, toggles: { [string]: boolean } },
-	-- The Starter pack's one-time cash, Rizz and trail have been given.
+	-- The Starter pack's one-time cash and trail have been given.
 	starterGranted: boolean,
 	-- Highest onboarding funnel step logged (Analytics; ONBOARDING_LEGACY = saves from before it).
 	onboarding: number,
@@ -99,7 +101,6 @@ function DataService.defaultProfile(): Profile
 	return {
 		version = 1,
 		money = 50,
-		gems = 10,
 		carried = 0,
 		queue = 0,
 		pending = 0,
@@ -111,6 +112,7 @@ function DataService.defaultProfile(): Profile
 		processLevel = 0,
 		heldChest = "",
 		pendingCrate = "",
+		pendingUnlocker = 0,
 		unlockers = {
 			{ rarity = "", endsAt = 0 },
 			{ rarity = "", endsAt = 0 },
@@ -166,6 +168,8 @@ local function reconcile(data: any): Profile
 	if data.introSeen == nil then
 		data.introSeen = true
 	end
+	-- Rizz (gems) was removed from the game: old balances are dropped.
+	data.gems = nil
 	-- Saves from before the onboarding funnel: those players are not new, so they never log it.
 	if data.onboarding == nil then
 		data.onboarding = 99
@@ -251,6 +255,9 @@ local function reconcile(data: any): Profile
 	end
 	if data.pendingCrate ~= "" and not Economy.isRarity(data.pendingCrate) then
 		data.pendingCrate = ""
+	end
+	if data.pendingUnlocker ~= 1 and data.pendingUnlocker ~= 2 then
+		data.pendingUnlocker = 0
 	end
 	return data :: Profile
 end

@@ -14,7 +14,7 @@
 	  tick(player, root, now)  every TICK seconds for every player with a character
 	                           (position polling: start lines, checkpoints, falls)
 	  snapshot(player)         the State snapshot's modes[id] table
-	  rewardPreview(player)    what finishing right now would pay ({ cash, gems, ... })
+	  rewardPreview(player)    what finishing right now would pay ({ cash, full, ... })
 
 	Every implementation's create() receives (GameModes, context) with context = { built =
 	World.Modes' Built, theme, Tycoon, world = WorldBuilder's whole result }.
@@ -69,7 +69,7 @@ local order: { string } = {}
 local Tycoon: any
 
 -- Reward hooks: `reward` may change a reward before it is paid (events, boosts);
--- `rewarded` is told after it was paid. reward = { cash, gems, full, packCash }.
+-- `rewarded` is told after it was paid. reward = { cash, full, packCash }.
 GameModes.hooks = {
 	reward = function(_session: any, _modeId: string, reward: { [string]: any }): { [string]: any }
 		return reward

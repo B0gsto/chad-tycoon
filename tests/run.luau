@@ -434,8 +434,6 @@ test("chests", function()
 	end
 	check((counts.Common or 0) > (counts.Uncommon or 0), "common most frequent")
 	check((counts.Legendary or 0) < (counts.Epic or 0), "legendary rarest")
-	eq(Economy.finishGemCost(1), 1)
-	eq(Economy.finishGemCost(61), 2)
 end)
 
 -- Crates are picked up by walking to them (no prompt): in range, landed, not already
@@ -500,9 +498,7 @@ test("packs scale with progression", function()
 	eq(Economy.progression(99, -3).tier, Economy.MAX_TIER)
 	eq(Economy.progression(0, -3).processLevel, 0)
 	local seconds = { 300, 900, 3600, 18000, 86400 }
-	local bases, prices = { 50, 300, 800 }, { 49, 249, 599 }
 	local lastFloor = 0
-	local lastGems = { 0, 0, 0 }
 	for tier = 1, Economy.MAX_TIER do
 		local prog = Economy.progression(tier, 120)
 		local floor = Economy.progressionIncome(prog)
@@ -532,27 +528,14 @@ test("packs scale with progression", function()
 				check(aura >= Economy.auraPackAmount(0, s, 3000, Economy.progression(tier - 1, 120)), "aura pack grows with tier " .. tier)
 			end
 		end
-		local perRobux = 0
-		for i, base in bases do
-			local gems = Economy.gemPackAmount(base, prog)
-			check(gems >= base and gems >= lastGems[i], "rizz pack " .. i .. " non-decreasing at tier " .. tier)
-			check(gems < 500 and gems % 5 == 0 or gems % 50 == 0, "friendly rizz amount " .. gems)
-			check(gems / prices[i] > perRobux, "bigger rizz pack is better value at tier " .. tier)
-			perRobux = gems / prices[i]
-			lastGems[i] = gems
-			check(Economy.gemPackAmount(base + 50, prog) >= gems, "rizz monotonic in base")
-		end
 	end
-	eq(Economy.gemPackAmount(800, Economy.progression(1, 0)), 800)
-	local top = Economy.gemPackFactor(Economy.progression(Economy.MAX_TIER, 0))
-	check(top >= 3 and top <= 6, "late-game rizz factor stays proportionate")
 	-- The shop and the receipt handler size packs with the same shared functions.
 	for _, path in { "src/server/Monetization.luau", "src/client/UI/Windows.luau" } do
 		local src = fs.readFile(path)
-		for _, fn in { "Economy.progression(", "Economy.moneyPackAmount(", "Economy.gemPackAmount(", "Economy.auraPackAmount(" } do
+		for _, fn in { "Economy.progression(", "Economy.moneyPackAmount(", "Economy.auraPackAmount(" } do
 			check(string.find(src, fn, 1, true) ~= nil, path .. " uses " .. fn)
 		end
-		check(string.find(src, "pack.Amount", 1, true) == nil, path .. " has no fixed rizz amount")
+		check(string.find(src, "pack.Amount", 1, true) == nil, path .. " has no fixed pack amount")
 	end
 end)
 
@@ -669,7 +652,6 @@ local REQUIRED_WORDS = {
 	"Unit",
 	"Units",
 	"Orb",
-	"Gem",
 	"Chest",
 	"Deposit",
 	"Process",
@@ -823,7 +805,7 @@ for _, variant in { "chad" } do
 			check(theme.Monetization.Passes[required] ~= nil, "pass defined " .. required)
 		end
 		eq(#theme.Monetization.MoneyPacks, 4, "money packs")
-		eq(#theme.Monetization.GemPacks, 3, "gem packs")
+		eq(theme.Monetization.GemPacks, nil, "no Rizz packs")
 		eq(#theme.Monetization.AuraPacks, 4, "aura packs")
 		for _, list in { "MoneyPacks", "AuraPacks" } do
 			local lastSeconds, lastMin = 0, 0
@@ -835,7 +817,7 @@ for _, variant in { "chad" } do
 		end
 		-- Every product id (live, retired and the crate) is unique, so a receipt maps to one grant.
 		local seen = {}
-		for _, list in { "MoneyPacks", "AuraPacks", "GemPacks", "LegacyMoneyPacks" } do
+		for _, list in { "MoneyPacks", "AuraPacks", "LegacyMoneyPacks" } do
 			for index, pack in theme.Monetization[list] do
 				check(pack.Id ~= 0 and not seen[pack.Id], list .. " id unique " .. index)
 				seen[pack.Id] = true
@@ -843,9 +825,6 @@ for _, variant in { "chad" } do
 		end
 		check(not seen[theme.Monetization.CrateOpen.Id], "crate product id unique")
 		check(type(theme.Modes.Reward.Seconds) == "number" and theme.Modes.Reward.Min > 0, "mode reward")
-		for index, pack in theme.Monetization.GemPacks do
-			check(type(pack.Base) == "number" and pack.Base > 0 and pack.Amount == nil, "rizz pack base " .. index)
-		end
 		eq(#theme.Tutorial.Steps, TutorialSteps.COUNT, "one tutorial text per step")
 		for index, entry in theme.Tutorial.Steps do
 			check(type(entry.Title) == "string" and #entry.Title > 0, "tutorial step " .. index .. " title")
@@ -861,7 +840,7 @@ for _, variant in { "chad" } do
 
 	-- Crate products: instant opening is ONE Robux developer product, the same price for
 	-- every crate rarity, plus the Crate Master pass that opens every crate free;
-	-- Rizz and cash cannot open crates any more.
+	-- cash cannot open crates and there is no Rizz any more.
 	test("crate products " .. variant, function()
 		local theme = loadTheme("src/themes/" .. variant .. "/Theme.luau")
 		local monetization = theme.Monetization :: any
@@ -880,6 +859,8 @@ for _, variant in { "chad" } do
 		for _, rarity in Economy.CHEST_RARITIES do
 			check((Economy.CHEST_INFO[rarity] :: any).gemPrice == nil, rarity .. " has no Rizz price")
 		end
+		check((Economy :: any).finishGemCost == nil, "smashers cannot be finished with Rizz")
+		check(theme.Words.Gem == nil and theme.Icons.Gem == nil, "no Rizz currency")
 	end)
 
 	test("unit models " .. variant, function()
@@ -1963,7 +1944,6 @@ test("cosmetics theme tables", function()
 	check(table.find(theme.Monetization.PassOrder, c.Bundle) == nil, "bundle not in PassOrder")
 	check(table.find(theme.Monetization.PassOrder, c.Starter.Pass) == nil, "starter not in PassOrder")
 	check(c.Items[c.Starter.Item] ~= nil and c.Items[c.Starter.Item].Starter == true, "starter item")
-	check(theme.Monetization.GemPacks[c.Starter.GemPack] ~= nil, "starter Rizz pack")
 	check(c.Items.SpeedBoost.SpeedMultiplier > 1 and c.BaseWalkSpeed > 0, "speed boost numbers")
 	local prices = {
 		SpeedBoost = 79,
@@ -2057,13 +2037,11 @@ test("starter pack grant", function()
 
 	local starter = theme.Cosmetics.Starter
 	local early = Economy.progression(1, 0)
-	local cash, gems = Cosmetics.starterAmounts(theme, 0, early)
-	eq(cash, starter.CashMin, "new player gets the cash minimum")
-	eq(gems, Economy.gemPackAmount(theme.Monetization.GemPacks[starter.GemPack].Base, early), "Big Rizz Pack amount")
+	eq(Cosmetics.starterCash(theme, 0, early), starter.CashMin, "new player gets the cash minimum")
 	local late = Economy.progression(20, 10)
-	local lateCash, lateGems = Cosmetics.starterAmounts(theme, 1e6, late)
-	eq(lateCash, Economy.moneyPackAmount(1e6, starter.CashSeconds, starter.CashMin, late), "30 minutes of income")
-	check(lateCash >= 1e6 * 1800 and lateGems >= gems, "late amounts scale up")
+	local lateCash = Cosmetics.starterCash(theme, 1e6, late)
+	eq(lateCash, Economy.moneyPackAmount(1e6, starter.CashSeconds, starter.CashMin, late), "an hour of income")
+	check(lateCash >= 1e6 * 3600, "late amounts scale up")
 end)
 
 test("intro timeline", function()
@@ -2959,7 +2937,7 @@ test("Game modes: catalog and registry shape", function()
 				return { running = false }
 			end,
 			rewardPreview = function()
-				return { cash = 0, gems = 0 }
+				return { cash = 0 }
 			end,
 		}
 	end
@@ -3001,10 +2979,8 @@ test("Game modes: finish reward is sized like a cash pack, with a cooldown", fun
 	local now = 1e9
 	local first = Economy.modeReward(0, progression, pack.Seconds, pack.Min, true, now - 5, now)
 	check(first.full, "first finish always pays the full pack")
-	eq(first.gems, Economy.MODE_FIRST_CLEAR_GEMS, "first finish pays Rizz")
 	local early = Economy.modeReward(0, progression, pack.Seconds, pack.Min, false, now - cooldown + 1, now)
 	check(not early.full and early.cash == 0 and early.packCash > 0, "inside the cooldown a finish pays no cash")
-	eq(early.gems, 0, "Rizz only on the first finish")
 	local later = Economy.modeReward(0, progression, pack.Seconds, pack.Min, false, now - cooldown, now)
 	check(later.full and later.cash == later.packCash, "full pack again after the cooldown")
 end)
@@ -3198,7 +3174,7 @@ local function loadParkour(): (any, any)
 		end,
 	}
 	local services = {
-		ReplicatedStorage = { Shared = { Economy = Economy } },
+		ReplicatedStorage = { Shared = { Economy = Economy, Format = Format } },
 		Players = { PlayerRemoving = { Connect = function() end } },
 	}
 	local env = setmetatable({
@@ -3309,18 +3285,22 @@ test("Sky obby: paid skips and an assisted finish", function()
 	local player, profile = rig.player, rig.session.profile
 	local level = ModesCourse.LEVELS[1]
 	local count = level.CHECKPOINT_COUNT
-	eq(Economy.PARKOUR_SKIP_GEMS, 15, "a skip costs 15 Rizz")
+	local cost = Economy.parkourSkipCost(0)
+	eq(cost, Economy.PARKOUR_SKIP_MIN, "with no income a skip costs the minimum")
+	eq(Economy.parkourSkipCost(1), 250, "two minutes of $1/s is under the minimum")
+	eq(Economy.parkourSkipCost(10), 1200, "two minutes of income")
+	eq(def.snapshot(player).skipCost, cost, "the snapshot carries the cash cost")
 	def.start(player, true, { level = 1 })
-	profile.gems = 10
+	profile.money = cost - 1
 	rig.actions.ParkourSkip(rig.session, {})
-	eq(#rig.toasts, 1, "short of Rizz: a toast")
-	check(string.find(rig.toasts[1], "Not enough Rizz", 1, true) ~= nil, "toast says Not enough Rizz")
-	eq(profile.gems, 10, "nothing taken")
+	eq(#rig.toasts, 1, "short of cash: a toast")
+	check(string.find(rig.toasts[1], "Not enough cash", 1, true) ~= nil, "toast says Not enough cash")
+	eq(profile.money, cost - 1, "nothing taken")
 	eq(rig.last("skip"), nil, "no skip")
-	profile.gems = 15 * (count + 1) + 5
+	profile.money = cost * (count + 1) + 5
 	local teleports = rig.teleports
 	rig.actions.ParkourSkip(rig.session, {})
-	eq(profile.gems, 15 * count + 5, "15 Rizz taken")
+	eq(profile.money, cost * count + 5, "one skip's cash taken")
 	eq(rig.teleports, teleports + 1, "teleported to the next checkpoint")
 	eq(rig.last("skip").stage, 2, "skip notify carries the new stage")
 	eq(player:GetAttribute("ParkourStage"), 2, "stage attribute follows the skip")
@@ -3331,7 +3311,8 @@ test("Sky obby: paid skips and an assisted finish", function()
 	end
 	local finish = rig.last("finish")
 	check(finish ~= nil, "skipping past the last checkpoint finishes")
-	eq(profile.gems, 5 + finish.gems, "every skip paid (plus the first-clear Rizz)")
+	eq(finish.gems, nil, "no Rizz in the finish")
+	eq(profile.money, 5 + finish.cash, "every skip paid (plus the finish cash)")
 	eq(finish.assisted, true, "a skipped run is assisted")
 	eq(finish.newBest, false, "assisted runs set no best")
 	eq(finish.rank, nil, "and no board entry")
@@ -3339,12 +3320,12 @@ test("Sky obby: paid skips and an assisted finish", function()
 	eq(profile.parkour.clears[1], 1, "the clear still counts")
 	eq(profile.parkour.best[1], 0, "no best time recorded")
 	eq(finish.unlocked, 2, "and it unlocks the next map")
-	check(finish.gems > 0, "and it pays")
+	check(finish.cash > 0, "and it pays")
 	eq(profile.parkour.stage, count + 2, "best stage saved")
 	eq(player:GetAttribute("ParkourBestStage"), count + 2, "best stage attribute")
 	eq(player:GetAttribute("ParkourStage"), 0, "not running after the finish")
 	rig.actions.ParkourSkip(rig.session, {})
-	eq(profile.gems, 5 + finish.gems, "no skips outside a run")
+	eq(profile.money, 5 + finish.cash, "no skips outside a run")
 end)
 
 test("Sky obby: profile fields and the stage board", function()

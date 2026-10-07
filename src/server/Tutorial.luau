@@ -8,7 +8,7 @@
 
 	Notify payloads (client shows them):
 	  { kind = "Tutorial", event = "step", step = n }
-	  { kind = "Tutorial", event = "done", gems = g, cash = c }
+	  { kind = "Tutorial", event = "done", cash = c }
 	  { kind = "Tutorial", event = "skipped" }
 ]]
 
@@ -36,11 +36,10 @@ local function finish(session: Tycoon.Session)
 	local p = session.profile
 	p.tutorialStep = TutorialSteps.DONE
 	p.tutorialDone = true
-	p.gems += Economy.TUTORIAL_REWARD_GEMS
 	p.money += Economy.TUTORIAL_REWARD_CASH
 	p.totalEarned += Economy.TUTORIAL_REWARD_CASH
 	Badges.graduate(session)
-	notify(session, { event = "done", gems = Economy.TUTORIAL_REWARD_GEMS, cash = Economy.TUTORIAL_REWARD_CASH })
+	notify(session, { event = "done", cash = Economy.TUTORIAL_REWARD_CASH })
 end
 
 -- Moves to `step`, skipping anything the profile already shows as done.

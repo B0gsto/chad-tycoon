@@ -28,6 +28,9 @@ local Shelves = require(script.Parent.World.Shelves)
 local Props = require(script.Parent.World.Props)
 
 type Profile = any
+
+-- Roblox's built-in Robux glyph, for prices in server-made messages.
+local ROBUX = utf8.char(0xE002)
 type Plot = WorldBuilder.Plot
 
 -- `cell` is the pile slot the orb rests in (see orbCells): 1..n on the floor, PILE_TOP + k on top.
@@ -113,7 +116,7 @@ local ActionRemote: RemoteEvent
 Tycoon.hooks = {
 	promptPass = function(_player: Player, _name: string) end,
 	promptProduct = function(_player: Player, _kind: string, _index: number) end,
-	promptCrate = function(_player: Player, _rarity: string) end,
+	promptCrate = function(_player: Player, _rarity: string, _slot: number?) end,
 	-- May this player buy instant crate opens (paid random items)? Monetization
 	-- answers from PolicyService; this default only serves previews and tests.
 	crateRobuxAllowed = function(_player: Player): boolean
@@ -248,15 +251,6 @@ local function spend(session: Session, cost: number, padName: string?): boolean
 		return false
 	end
 	session.profile.money = math.max(0, session.profile.money - cost)
-	return true
-end
-
-local function spendGems(session: Session, cost: number): boolean
-	if session.profile.gems < cost then
-		toast(session, string.format("Not enough %s! Need %d %s", theme.Words.Gem, cost, theme.Icons.Gem), "bad")
-		return false
-	end
-	session.profile.gems -= cost
 	return true
 end
 
@@ -516,12 +510,10 @@ end
 local function discoverAll(session: Session, extra: { number }?)
 	local p = session.profile
 	local newest = 0
-	local gems = 0
 	local found: { number } = {}
 	local function mark(tier: number)
 		if tier >= 1 and tier <= Economy.MAX_TIER and p.discovered[tier] == 0 then
 			p.discovered[tier] = os.time()
-			gems += Economy.discoveryGems(tier)
 			newest = math.max(newest, tier)
 			table.insert(found, tier)
 		end
@@ -535,9 +527,8 @@ local function discoverAll(session: Session, extra: { number }?)
 		end
 	end
 	if newest > 0 then
-		p.gems += gems
 		table.sort(found)
-		notify(session, { kind = "Reward", tier = newest, tiers = found, new = true, gems = gems })
+		notify(session, { kind = "Reward", tier = newest, tiers = found, new = true })
 	end
 end
 
@@ -1385,18 +1376,20 @@ local function useUnlocker(session: Session, slotIndex: number)
 	local slot = p.unlockers[slotIndex]
 	if slot.rarity ~= "" then
 		local left = slot.endsAt - os.time()
-		if left <= 0 then
+		if left <= 0 or session.passes.CrateKey then
+			-- Crate Master owners smash it right away for free.
 			local rarity = slot.rarity
 			slot.rarity = ""
 			slot.endsAt = 0
 			openChest(session, rarity, "unlocker")
-		else
-			local cost = Economy.finishGemCost(left)
+		elseif Tycoon.hooks.crateRobuxAllowed(session.player) then
 			notify(session, {
 				kind = "Confirm",
-				text = string.format("Finish now for %d %s?", cost, theme.Icons.Gem),
+				text = string.format("Smash it now for %s%d?", ROBUX, theme.Monetization.CrateOpen.Price),
 				action = { action = "FinishUnlocker", slot = slotIndex },
 			})
+		else
+			toast(session, "Ready in " .. Format.time(left) .. ". Come back when the timer ends!", "info")
 		end
 		markDirty(session)
 		return
@@ -1429,9 +1422,8 @@ padHandlers.Free = function(session)
 	end
 	local cash = math.max(Economy.FREE_REWARD_MIN, Tycoon.income(session) * Economy.FREE_REWARD_SECONDS)
 	addMoney(session, cash)
-	p.gems += Economy.FREE_REWARD_GEMS
 	p.lastFreeReward = os.time()
-	toast(session, string.format("Free reward: +%s and +%d %s", Format.money(cash), Economy.FREE_REWARD_GEMS, theme.Icons.Gem), "good")
+	toast(session, "Free reward: +" .. Format.money(cash), "good")
 	effect(session, "Cash", { amount = cash, source = "Free", padPos = padPos(session, "Free") })
 	markDirty(session)
 end
@@ -1566,7 +1558,6 @@ local function snapshot(session: Session): { [string]: any }
 	return {
 		now = now,
 		money = p.money,
-		gems = p.gems,
 		carried = p.carried,
 		queue = p.queue,
 		pending = p.pending,
@@ -1855,23 +1846,27 @@ actionHandlers.DiscardChest = function(session)
 	end
 end
 
+-- Smashes the crate in an unlocker slot early. Crate Master owners (and finished timers)
+-- open it free; everyone else is prompted the same "Open Crate" product as a held crate,
+-- and the slot is emptied only when the receipt arrives (Tycoon.openCrateProduct).
 actionHandlers.FinishUnlocker = function(session, data)
 	local slotIndex = data.slot
 	if slotIndex ~= 1 and slotIndex ~= 2 then
 		return
 	end
 	local slot = session.profile.unlockers[slotIndex]
-	if slot.rarity == "" then
+	if slot.rarity == "" or not Economy.isRarity(slot.rarity) then
 		return
 	end
-	local left = slot.endsAt - os.time()
-	if left > 0 and not spendGems(session, Economy.finishGemCost(left)) then
+	if slot.endsAt - os.time() > 0 and not session.passes.CrateKey then
+		Tycoon.hooks.promptCrate(session.player, slot.rarity, slotIndex)
 		return
 	end
 	local rarity = slot.rarity
 	slot.rarity = ""
 	slot.endsAt = 0
 	openChest(session, rarity, "unlocker")
+	markDirty(session)
 end
 
 actionHandlers.PromptPass = function(session, data)
@@ -1881,7 +1876,7 @@ actionHandlers.PromptPass = function(session, data)
 end
 
 actionHandlers.PromptProduct = function(session, data)
-	if (data.kind == "Money" or data.kind == "Gems" or data.kind == "Aura") and type(data.index) == "number" then
+	if (data.kind == "Money" or data.kind == "Aura") and type(data.index) == "number" then
 		Tycoon.hooks.promptProduct(session.player, data.kind, data.index)
 	end
 end
@@ -2091,15 +2086,13 @@ function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, pa
 	end
 
 	-- Studio-only test hook: a Server script sets the player attribute "DebugGrant" to
-	-- "cash,<n>", "gems,<n>", "units,<total>" (Tier 1..5 spread), "pass,<Name>", "crate" or "pickup".
+	-- "cash,<n>", "units,<total>" (Tier 1..5 spread), "pass,<Name>", "crate" or "pickup".
 	if RunService:IsStudio() then
 		player:GetAttributeChangedSignal("DebugGrant"):Connect(function()
 			local kind, arg = string.match(tostring(player:GetAttribute("DebugGrant")), "^(%a+),?(.*)$")
 			local n = tonumber(arg) or 0
 			if kind == "cash" then
 				Tycoon.grantMoney(session, n)
-			elseif kind == "gems" then
-				Tycoon.grantGems(session, n)
 			elseif kind == "units" then
 				local units = table.create(Economy.MAX_TIER, 0)
 				for i = 0, n - 1 do
@@ -2166,11 +2159,27 @@ function Tycoon.setPass(player: Player, name: string)
 end
 
 -- A paid instant crate open (the single "Open Crate" developer product, any rarity).
--- Opens the held crate if there is one; otherwise (dropped, discarded, rejoined) the
--- player still gets a crate of the rarity recorded when the prompt was issued
--- (profile.pendingCrate), or a Common one, so a purchase always pays out.
+-- Prompted for a smasher slot (profile.pendingUnlocker), it smashes the crate still in
+-- that slot. Otherwise it opens the held crate if there is one; failing both (dropped,
+-- discarded, timer ran out, rejoined) the player still gets a crate of the rarity
+-- recorded when the prompt was issued (profile.pendingCrate), or a Common one, so a
+-- purchase always pays out.
 function Tycoon.openCrateProduct(session: Session)
 	local p = session.profile
+	local slotIndex = p.pendingUnlocker
+	local slot = p.unlockers[slotIndex]
+	p.pendingUnlocker = 0
+	if slot then
+		-- A smasher prompt never spends the held crate: the slot's crate, else the prompted rarity.
+		local rarity = if Economy.isRarity(slot.rarity) then slot.rarity else p.pendingCrate
+		slot.rarity = ""
+		slot.endsAt = 0
+		p.pendingCrate = ""
+		openChest(session, if Economy.isRarity(rarity) then rarity else "Common", "unlocker")
+		markDirty(session)
+		flush(session)
+		return
+	end
 	local rarity = p.heldChest
 	if not Economy.isRarity(rarity) then
 		rarity = if Economy.isRarity(p.pendingCrate) then p.pendingCrate else "Common"
@@ -2192,13 +2201,6 @@ function Tycoon.grantMoney(session: Session, amount: number)
 	addMoney(session, amount)
 	local root = rootPart(session)
 	effect(session, "Cash", { amount = amount, source = "Purchase", padPos = root and root.Position })
-	markDirty(session)
-	flush(session)
-end
-
-function Tycoon.grantGems(session: Session, amount: number)
-	session.profile.gems += amount
-	toast(session, string.format("+%d %s %s", amount, theme.Words.Gem, theme.Icons.Gem), "good")
 	markDirty(session)
 	flush(session)
 end

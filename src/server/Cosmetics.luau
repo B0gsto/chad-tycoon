@@ -6,7 +6,7 @@
 
 	Saved in profile.cosmetics: the equipped trail ("" = none) and the on/off switch of
 	each toggle item (perk / wear; missing = on). profile.starterGranted marks the
-	Starter pack's one-time cash + Rizz as given.
+	Starter pack's one-time cash as given.
 
 	On every character (and whenever ownership or equipment changes) the server puts
 	the visible pieces on the character so everyone sees them: Humanoid.WalkSpeed, the
@@ -144,13 +144,10 @@ function Cosmetics.claimStarter(t: any, profile: any, passes: { [string]: boolea
 	return true
 end
 
--- The Starter pack's cash and Rizz for a player at `income` cash/s and `progression`.
-function Cosmetics.starterAmounts(t: any, income: number, progression: Economy.Progression): (number, number)
+-- The Starter pack's cash for a player at `income` cash/s and `progression`.
+function Cosmetics.starterCash(t: any, income: number, progression: Economy.Progression): number
 	local starter = t.Cosmetics.Starter
-	local cash = Economy.moneyPackAmount(income, starter.CashSeconds, starter.CashMin, progression)
-	local pack = t.Monetization.GemPacks[starter.GemPack]
-	local gems = Economy.gemPackAmount(pack.Base, progression)
-	return cash, gems
+	return Economy.moneyPackAmount(income, starter.CashSeconds, starter.CashMin, progression)
 end
 
 -- The State snapshot's `cosmetics` field.
@@ -499,9 +496,8 @@ local function grantStarter(session: Session, delayNotify: boolean)
 		return
 	end
 	local progression = Economy.progression(Economy.highestTier(profile.discovered), profile.processLevel)
-	local cash, gems = Cosmetics.starterAmounts(theme, Tycoon.income(session), progression)
+	local cash = Cosmetics.starterCash(theme, Tycoon.income(session), progression)
 	local starter = theme.Cosmetics.Starter
-	profile.gems += gems
 	Tycoon.grantMoney(session, cash)
 	if profile.cosmetics.trail == "" then
 		profile.cosmetics.trail = starter.Item
@@ -511,7 +507,7 @@ local function grantStarter(session: Session, delayNotify: boolean)
 	if session.canSave then
 		task.spawn(DataService.save, session.player, profile)
 	end
-	local payload = { kind = "Starter", cash = cash, gems = gems, item = starter.Item }
+	local payload = { kind = "Starter", cash = cash, item = starter.Item }
 	if delayNotify then
 		task.delay(STARTER_NOTIFY_DELAY, function()
 			if session.alive then

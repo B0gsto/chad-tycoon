@@ -205,7 +205,7 @@ if RunService:IsStudio() then
 		end
 		local tier = string.match(spec, "^reward,(%d+)$")
 		if tier then
-			Popups.reward({ kind = "Reward", tier = tonumber(tier), tiers = { tonumber(tier) }, new = true, gems = 5 })
+			Popups.reward({ kind = "Reward", tier = tonumber(tier), tiers = { tonumber(tier) }, new = true })
 		elseif spec == "close" then
 			Windows.closeAll()
 			Popups.closeModals()
