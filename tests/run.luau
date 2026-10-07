@@ -1878,6 +1878,19 @@ test("intro seen flag", function()
 	eq(DataService.reconcile({ money = 10, buyTier = 3, boughtAtTier = 1 }).boughtAtTier, 1, "purchases under it are kept")
 end)
 
+test("onboarding funnel and badges fields", function()
+	local DataService = loadDataService()
+	eq(DataService.reconcile(nil).onboarding, 0, "new players start the onboarding funnel")
+	eq(DataService.reconcile({ money = 10 }).onboarding, 99, "saves from before the funnel never log it")
+	eq(DataService.reconcile({ money = 10, onboarding = 4 }).onboarding, 4, "funnel progress is kept")
+	local badges = DataService.reconcile({ money = 10, badges = { Welcome = true, GymGraduate = false, [1] = true, Bad = 2 } }).badges
+	eq(badges.Welcome, true, "awarded badges are kept")
+	eq(badges.GymGraduate, false, "pending badges are kept")
+	eq(badges[1], nil, "non-string keys are dropped")
+	eq(badges.Bad, nil, "non-boolean values are dropped")
+	eq(DataService.reconcile({ money = 10, badges = "x" }).badges.Welcome, nil, "a broken badges field resets")
+end)
+
 -- Cosmetics ----------------------------------------------------------------------------
 -- Cosmetic passes, the bundle and the Starter pack (Theme.Cosmetics, Server.Cosmetics).
 
@@ -2591,13 +2604,37 @@ end
 
 do
 	local function stubChild(name: string): any
-		return {
+		local stub = {
 			Name = name,
 			WaitForChild = function(_, child: string)
 				return stubChild(child)
 			end,
 		}
+		-- `script.Parent.Fx.Budget` and similar dotted paths resolve to more stubs.
+		return setmetatable(stub, {
+			__index = function(_, child: string)
+				return stubChild(child)
+			end,
+		})
 	end
+	-- Fx.Budget is a client module (it needs Kit); the Animator only asks it for a tier.
+	local budgetStub = {
+		tier = function()
+			return "high"
+		end,
+		scale = function()
+			return 1
+		end,
+		count = function(n: number)
+			return n
+		end,
+		low = function()
+			return false
+		end,
+		onChange = function()
+			return function() end
+		end,
+	}
 	local env = robloxEnv()
 	env.game = {
 		GetService = function(_, name: string)
@@ -2605,6 +2642,9 @@ do
 		end,
 	}
 	env.require = function(target: any)
+		if target.Name == "Budget" then
+			return budgetStub
+		end
 		return loadShared(target.Name)
 	end
 	env.script = stubChild("Animator")

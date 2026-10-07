@@ -20,6 +20,14 @@
 	window is open (attribute "WindowOpen") the groups slide off their edges.
 	Short screens (attribute "Compact") get smaller grid icons, drop the status
 	captions and the promo, and hide Roblox's player list.
+
+	Input (Kit.onInput, re-placed live): on touch the wallet moves to the top
+	left with the grid under it (one row on phones) so nothing sits on Roblox's
+	thumbstick (bottom-left third, lower half) or jump button, the FREE gift
+	rises above the jump button, the gear leaves the top bar and every button is
+	at least 44 screen px (invisible hit pads on the small ones). On gamepad / TV
+	the edges get a title-safe margin; every HUD button is Selectable (the Kit
+	ring, hover scale on SelectionGained) unless a window or dialog is open.
 ]]
 
 local Players = game:GetService("Players")
@@ -87,6 +95,10 @@ local DUMBBELL_W = 264
 local DUMBBELL_W_COMPACT = 200
 local DUMBBELL_ASPECT = 448 / 1024
 local NARROW_PX = 900
+local TAP_PX = 44 -- smallest touch target, in screen px
+local TOP_BAR_PX = 58
+local SAFE_X = 40 -- gamepad / TV title-safe edge (design px)
+local SAFE_BOTTOM = 24
 local PREMIUM_BONUS = 10
 
 local function textWidth(text: string, size: number, font: Enum.Font): number
@@ -106,6 +118,7 @@ end
 function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local action = Net.event("Action")
 	local compact = false
+	local promoFits = true -- touch: the promo only shows where it clears the thumbstick
 	local screenScale = screen:FindFirstChildOfClass("UIScale")
 
 	local function toast(text: string, tone: string?)
@@ -147,6 +160,28 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		props.Parent = props.Parent or screen
 		return Kit.new("Frame", props)
 	end
+	-- Invisible hit pads grow small buttons to TAP_PX on touch (sized in place()).
+	local pads: { { pad: TextButton, button: GuiObject } } = {}
+	local function hitPad(button: GuiObject, onClick: () -> ())
+		local pad = Kit.new("TextButton", {
+			Name = "Hit",
+			Text = "",
+			AutoButtonColor = false,
+			BackgroundTransparency = 1,
+			Selectable = false,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromScale(1, 1),
+			Visible = false,
+			ZIndex = 30,
+			Parent = button,
+		})
+		pad.Activated:Connect(function()
+			Kit.sound("Click")
+			onClick()
+		end)
+		table.insert(pads, { pad = pad, button = button })
+	end
 	-- A panel-less tap target: icon + caption are children, the button itself is
 	-- the icon square (badges and glow rings sit on it).
 	local function bareButton(parent: Instance, name: string, size: number, onClick: () -> ()): TextButton
@@ -159,11 +194,19 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			Parent = parent,
 		})
 		local scale = Kit.new("UIScale", { Parent = button })
-		button.MouseEnter:Connect(function()
+		Kit.selectable(button)
+		local function hover()
 			Kit.tween(scale, 0.12, { Scale = 1.07 })
-		end)
-		button.MouseLeave:Connect(function()
+		end
+		local function unhover()
 			Kit.tween(scale, 0.12, { Scale = 1 })
+		end
+		button.MouseEnter:Connect(hover)
+		button.MouseLeave:Connect(unhover)
+		-- Gamepad selection shows the same lift as the mouse hover.
+		pcall(function()
+			button.SelectionGained:Connect(hover)
+			button.SelectionLost:Connect(unhover)
 		end)
 		button.MouseButton1Down:Connect(function()
 			Kit.tween(scale, 0.08, { Scale = 0.92 })
@@ -186,7 +229,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end)
 	gear.AnchorPoint = Vector2.new(1, 0)
 	gear.Position = UDim2.new(1, -10, 0, -GEAR - 7)
-	Kit.hudIcon(gear, "Settings", GEAR, C.Text, { Name = "Icon", ZIndex = 2 })
+	Kit.hudIcon(gear, "Settings", GEAR, C.Text, { Name = "Icon", ZIndex = 2 }).Size = UDim2.fromScale(1, 1)
 	Hud.buttons.Settings = gear
 
 	-- Left edge: icon grid with captions --------------------------------------------------
@@ -278,7 +321,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			tutorialWasOpen = false
 			task.delay(9, function()
 				Kit.setGlow(Hud.buttons.Modes, true)
-				toast("New! Tap MODES to try Parkour and the Mog Test", "info")
+				toast("New! " .. (if Kit.touch then "Tap" else "Open") .. " MODES to try Parkour and the Mog Test", "info")
 			end)
 		end
 	end)
@@ -357,7 +400,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	local function updatePromo()
 		local mode = wantedPromo()
-		local show = mode ~= nil and not compact and screen:GetAttribute("WindowOpen") ~= true
+		local show = mode ~= nil and not compact and promoFits and screen:GetAttribute("WindowOpen") ~= true
 		if show and mode ~= promoMode then
 			if promoShown then
 				-- Switching offers: the old one eases out, the new one eases in.
@@ -513,18 +556,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local runCheckScale = Kit.new("UIScale", { Parent = runCheck })
 	local quitArmed = false
 	local quitButton: TextButton
-	quitButton = Kit.button(runPill, {
-		Name = "Quit",
-		Text = "X",
-		Color = C.SurfaceHi,
-		TextSize = 14,
-		Size = UDim2.fromOffset(30, 28),
-		Position = UDim2.new(1, -4, 0.5, 0),
-		AnchorPoint = Vector2.new(1, 0.5),
-		Radius = 14,
-		Depth = 2,
-		ZIndex = 4,
-	}, function()
+	local function onQuit()
 		if quitArmed then
 			quitArmed = false
 			action:FireServer({ action = "ModeQuit" })
@@ -544,7 +576,20 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				Kit.tween(runPill, 0.2, { Size = UDim2.fromOffset(RUN_W, RUN_H) })
 			end
 		end)
-	end)
+	end
+	quitButton = Kit.button(runPill, {
+		Name = "Quit",
+		Text = "X",
+		Color = C.SurfaceHi,
+		TextSize = 14,
+		Size = UDim2.fromOffset(30, 28),
+		Position = UDim2.new(1, -4, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Radius = 14,
+		Depth = 2,
+		ZIndex = 4,
+	}, onQuit)
+	hitPad(quitButton, onQuit)
 	local runStartedAt = 0
 	local runShown = false
 	local runConn: RBXScriptConnection? = nil
@@ -868,7 +913,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		return holder, caption
 	end
 	local premiumRow, premiumText = status("Premium", Kit.pickIcon("Crown", "Star"), C.Gold, 0)
-	local _, friendsText = status("Friends", Kit.pickIcon("Invite", "Fans"), C.Rizz, 70)
+	local friendsRow, friendsText = status("Friends", Kit.pickIcon("Invite", "Fans"), C.Rizz, 70)
 	local boostRow, boostText = status("Boost", "Surge", C.Amber, 140)
 	local multLine = Kit.hudText(wallet, {
 		Name = "CashMult",
@@ -906,6 +951,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	}, function()
 		handlers.openWindow("Shop", { focus = "Cash" })
 	end)
+	hitPad(addButton, function()
+		handlers.openWindow("Shop", { focus = "Cash" })
+	end)
 	local rizz = group("Rizz", { Size = UDim2.fromOffset(120, 30), Parent = wallet })
 	Kit.hudIcon(rizz, "Gem", 24, C.Rizz, { Name = "GemIcon", Position = UDim2.fromOffset(0, 3), ZIndex = 2 })
 	local gemsLabel = Kit.hudText(rizz, {
@@ -932,6 +980,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	}, function()
 		handlers.openWindow("Shop", { focus = "Gems" })
 	end)
+	hitPad(gemPlus, function()
+		handlers.openWindow("Shop", { focus = "Gems" })
+	end)
 	-- The plus and the Rizz line follow the cash amount's width.
 	local function layoutWallet()
 		local x = math.max(textWidth(moneyLabel.Text, moneyLabel.TextSize, moneyLabel.Font) + 4, 60)
@@ -943,39 +994,101 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	gemsLabel:GetPropertyChangedSignal("Text"):Connect(layoutWallet)
 
 	-- Layout mode ------------------------------------------------------------------------
-	-- Compact screens: smaller grid icons (>= 44 px targets), no status captions, no
-	-- promo, a smaller dumbbell. Touch: the FREE gift moves up out of the jump
-	-- button's corner. While a window is open the grid slides off the left edge, the
-	-- bottom groups below the bottom edge and the top centre up, and all glide back.
-	local slots: { { gui: GuiObject, rest: () -> UDim2, away: UDim2 } } = {}
-	local function slot(gui: GuiObject, rest: () -> UDim2, away: UDim2)
+	-- Compact screens: smaller grid icons, no status captions, no promo, a smaller
+	-- dumbbell. Touch (live, Kit.onInput): the wallet moves to the top left with the
+	-- grid under it (one row when compact) so the thumbstick's bottom-left third stays
+	-- clear, the FREE gift rises above the jump button, the gear leaves the top bar,
+	-- and every button is >= TAP_PX on screen. Gamepad / TV: title-safe edges. While a
+	-- window is open the grid slides off the left edge, the bottom groups below the
+	-- bottom edge and the top groups up, and all glide back.
+	local gridIcon = GRID_ICON
+	local oneRow = false
+	local L = { edge = EDGE_X, bottom = -6, walletTop = false, walletY = 0, gridY = GRID_Y, tap = 0, tankX = 0, freeY = -20 }
+	local function gridRows(): { { string } }
+		if oneRow then
+			return { { "Home", "Ranking", "Modes", "Index", "Shop", "Invite" } }
+		end
+		return GRID_ROWS
+	end
+	local function gridHeight(): number
+		local rows = #gridRows()
+		return rows * gridIcon + (rows - 1) * GRID_GAP_Y
+	end
+	-- Viewport (screen px) and the UI scale Main applied.
+	local function view(): (Vector2, number)
+		local scale = if screenScale then screenScale.Scale else 1
+		local ok, size = pcall(function()
+			return Workspace.CurrentCamera.ViewportSize
+		end)
+		if not ok or typeof(size) ~= "Vector2" or size.X <= 0 then
+			size = Vector2.new(1280, 720)
+		end
+		return size, math.max(scale, 0.01)
+	end
+	local function measure()
+		local size, scale = view()
+		local touch = Kit.touch
+		local pad = Kit.gamepad or Kit.tenFoot
+		L.edge = if pad then SAFE_X else EDGE_X
+		L.bottom = if pad then -SAFE_BOTTOM else -6
+		L.tap = if touch then math.ceil(TAP_PX / scale) else 0
+		L.walletTop = touch
+		oneRow = touch and compact
+		gridIcon = math.max(if compact then GRID_ICON_COMPACT else GRID_ICON, L.tap)
+		-- Top-left wallet: compact screens drop the status row (its 62 px) there.
+		local skip = if touch and compact then 62 else 0
+		L.walletY = 168 - skip
+		L.gridY = if touch then 138 - skip + 12 else GRID_Y
+		-- Thumbstick zone: left third, lower half of the screen (design px below the top bar).
+		local designW = size.X / scale
+		local halfY = (size.Y / 2 - TOP_BAR_PX) / scale
+		promoFits = not touch or L.gridY + gridHeight() + 26 + PROMO_H + 40 <= halfY
+		local tankW = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
+		L.tankX = if touch then math.max(0, designW / 3 + 8 - (designW - tankW) / 2) else 0
+		-- Jump button: 70 px at 20 px from the corner on small screens, 120 px 90 px up otherwise.
+		local jumpTop = if math.min(size.X, size.Y) <= 500 then 90 else 210
+		L.freeY = if touch then -math.ceil((jumpTop + 8) / scale) elseif pad then -SAFE_BOTTOM else -20
+	end
+
+	local slots: { { gui: GuiObject, rest: () -> UDim2, away: () -> UDim2 } } = {}
+	local function slot(gui: GuiObject, rest: () -> UDim2, away: () -> UDim2)
 		table.insert(slots, { gui = gui, rest = rest, away = away })
 	end
-	local gridIcon = GRID_ICON
-	local function gridHeight(): number
-		return 2 * gridIcon + GRID_GAP_Y
-	end
 	slot(grid, function()
-		return UDim2.fromOffset(EDGE_X, GRID_Y)
-	end, UDim2.fromOffset(-260, GRID_Y))
+		return UDim2.fromOffset(L.edge, L.gridY)
+	end, function()
+		return UDim2.fromOffset(-600, L.gridY)
+	end)
 	slot(promo, function()
-		return UDim2.fromOffset(EDGE_X, GRID_Y + gridHeight() + 26)
-	end, UDim2.fromOffset(-260, GRID_Y + gridHeight() + 26))
+		return UDim2.fromOffset(L.edge, L.gridY + gridHeight() + 26)
+	end, function()
+		return UDim2.fromOffset(-260, L.gridY + gridHeight() + 26)
+	end)
 	slot(wallet, function()
-		return UDim2.new(0, EDGE_X, 1, -6)
-	end, UDim2.new(0, EDGE_X, 1, 200))
+		return if L.walletTop then UDim2.new(0, L.edge, 0, L.walletY) else UDim2.new(0, L.edge, 1, L.bottom)
+	end, function()
+		return if L.walletTop then UDim2.new(0, L.edge, 0, -60) else UDim2.new(0, L.edge, 1, 200)
+	end)
 	slot(tank, function()
-		return UDim2.new(0.5, 0, 1, -6)
-	end, UDim2.new(0.5, 0, 1, 160))
+		return UDim2.new(0.5, L.tankX, 1, L.bottom)
+	end, function()
+		return UDim2.new(0.5, L.tankX, 1, 160)
+	end)
 	slot(corner, function()
-		return UDim2.new(1, -EDGE_X, 1, if Kit.touch then -190 else -20)
-	end, UDim2.new(1, 120, 1, if Kit.touch then -190 else -20))
+		return UDim2.new(1, -L.edge, 1, L.freeY)
+	end, function()
+		return UDim2.new(1, 120, 1, L.freeY)
+	end)
 	slot(units, function()
 		return UDim2.new(0.5, 0, 0, UNITS_Y)
-	end, UDim2.new(0.5, 0, 0, -140))
+	end, function()
+		return UDim2.new(0.5, 0, 0, -140)
+	end)
 	slot(strip, function()
 		return UDim2.new(0.5, 0, 0, STRIP_Y)
-	end, UDim2.new(0.5, 0, 0, -140))
+	end, function()
+		return UDim2.new(0.5, 0, 0, -140)
+	end)
 	local targets: { [GuiObject]: UDim2 } = {}
 	local function place(animate: boolean)
 		local away = screen:GetAttribute("WindowOpen") == true
@@ -983,7 +1096,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		-- down to the FREE gift, so the gift steps aside while it is up.
 		local crate = screen:GetAttribute("CratePanelOpen") == true
 		for _, s in slots do
-			local pos = if away or (crate and s.gui == corner) then s.away else s.rest()
+			local pos = if away or (crate and s.gui == corner) then s.away() else s.rest()
 			if targets[s.gui] ~= pos then
 				targets[s.gui] = pos
 				if animate then
@@ -996,52 +1109,89 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	local function applyCompact()
 		compact = screen:GetAttribute("Compact") == true
-		gridIcon = if compact then GRID_ICON_COMPACT else GRID_ICON
+		measure()
 		local step = gridIcon + GRID_GAP_X
-		for row, names in GRID_ROWS do
+		local columns = 0
+		for row, names in gridRows() do
+			columns = math.max(columns, #names)
 			for column, name in names do
 				local button = Hud.buttons[name]
 				button.Size = UDim2.fromOffset(gridIcon, gridIcon)
 				button.Position = UDim2.fromOffset((column - 1) * step, (row - 1) * (gridIcon + GRID_GAP_Y))
 			end
 		end
-		grid.Size = UDim2.fromOffset(3 * step - GRID_GAP_X, gridHeight())
+		grid.Size = UDim2.fromOffset(columns * step - GRID_GAP_X, gridHeight())
 		for _, caption in captions do
 			caption.TextSize = if compact then 15 else 18
 		end
-		-- Status captions go first on short screens; the icons stay.
+		-- Status captions go first on short screens; the icons stay (not on a touch
+		-- phone, where the wallet sits in the top-left corner).
 		for _, label in { premiumText, friendsText, boostText } do
 			label.Visible = not compact
 		end
+		for _, row in { premiumRow, friendsRow, boostRow } do
+			row.Visible = not (Kit.touch and compact)
+		end
 		local width = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
 		tank.Size = UDim2.fromOffset(width, width * DUMBBELL_ASPECT)
+		-- Gear: on the top bar's line with a mouse; below it (never on Roblox's bar) otherwise.
+		local gearSize = math.max(GEAR, L.tap)
+		gear.Size = UDim2.fromOffset(gearSize, gearSize)
+		gear.Position = if Kit.input == "keyboard" and not Kit.tenFoot then UDim2.new(1, -10, 0, -GEAR - 7) else UDim2.new(1, -L.edge, 0, 4)
+		-- FREE gift grows to a full touch target; the countdown follows it.
+		local freeSize = math.max(60, L.tap)
+		freeButton.Size = UDim2.fromOffset(freeSize, freeSize)
+		corner.Size = UDim2.fromOffset(math.max(84, freeSize + 16), freeSize + 32)
+		freeTimer.Position = UDim2.new(0.5, 0, 0, freeSize + 2)
+		for _, p in pads do
+			local w, h = p.button.Size.X.Offset, p.button.Size.Y.Offset
+			p.pad.Size = UDim2.fromOffset(math.max(w, L.tap), math.max(h, L.tap))
+			p.pad.Visible = Kit.touch and (w < L.tap or h < L.tap)
+		end
 		updatePromo()
 		place(next(targets) ~= nil)
+	end
+	-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
+	local selectables: { GuiObject } = { promoButton, addButton, gemPlus, quitButton }
+	for _, button in Hud.buttons do
+		table.insert(selectables, button)
+	end
+	local function updateSelectable()
+		local blocked = screen:GetAttribute("WindowOpen") == true or screen:GetAttribute("ModalOpen") == true
+		for _, button in selectables do
+			Kit.selectable(button, not blocked)
+		end
 	end
 	screen:GetAttributeChangedSignal("WindowOpen"):Connect(function()
 		place(true)
 		updatePromo()
+		updateSelectable()
 	end)
+	screen:GetAttributeChangedSignal("ModalOpen"):Connect(updateSelectable)
 	screen:GetAttributeChangedSignal("CratePanelOpen"):Connect(function()
 		place(true)
 	end)
 	State.changed.Event:Connect(updatePromo)
-	-- Compact or narrow screens: Roblox's player list would cover the top-right
-	-- corner and the unit counter, so it stays hidden there.
+	-- Compact, narrow or touch screens: Roblox's player list would cover the top-right
+	-- corner (the gear on touch) and the unit counter, so it stays hidden there.
 	local function updatePlayerList()
 		local size = designSize()
 		local narrow = size.X > 0 and size.X * (if screenScale then screenScale.Scale else 1) < NARROW_PX
-		Kit.hidePlayerList("smallscreen", screen:GetAttribute("Compact") == true or narrow)
+		Kit.hidePlayerList("smallscreen", screen:GetAttribute("Compact") == true or narrow or Kit.touch)
 	end
-	screen:GetAttributeChangedSignal("Compact"):Connect(function()
+	local function relayout()
 		applyCompact()
 		updatePlayerList()
-	end)
+	end
+	screen:GetAttributeChangedSignal("Compact"):Connect(relayout)
 	pcall(function()
 		screen:GetPropertyChangedSignal("AbsoluteSize"):Connect(updatePlayerList)
 	end)
-	applyCompact()
-	updatePlayerList()
+	if screenScale then
+		screenScale:GetPropertyChangedSignal("Scale"):Connect(relayout)
+	end
+	Kit.onInput(relayout)
+	updateSelectable()
 
 	-- Updates ------------------------------------------------------------------------------
 	local moneyShown: number? = nil

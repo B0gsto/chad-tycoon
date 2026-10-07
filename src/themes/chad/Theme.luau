@@ -1211,6 +1211,15 @@ Theme.Tiers = {
 	},
 }
 
+-- Roblox badges (Server.Badges). Ids come from tools/badges.py; 0 = not created yet (skipped).
+Theme.Badges = {
+	Welcome = { Id = 204493874675594, Name = "Welcome to the Gym", Desc = "You joined Chad Aura Tycoon. Time to get swole!" },
+	GymGraduate = { Id = 3879673344738499, Name = "Gym Graduate", Desc = "Finished the gym tutorial." },
+	CertifiedChad = { Id = 750945717242204, Name = "Certified Chad", Desc = "Discovered a tier 10 Chad." },
+	AbsoluteChad = { Id = 3658346446208010, Name = "Absolute Chad", Desc = "Discovered the Absolute Chad, the top tier!" },
+	ParkourMaster = { Id = 3548287220393826, Name = "Parkour Master", Desc = "Cleared parkour level 10." },
+}
+
 Theme.Monetization = {
 	Passes = {
 		AutoLoot = {

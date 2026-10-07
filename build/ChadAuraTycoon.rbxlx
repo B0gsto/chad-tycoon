@@ -11677,6 +11677,15 @@ Theme.Tiers = {
 	},
 }
 
+-- Roblox badges (Server.Badges). Ids come from tools/badges.py; 0 = not created yet (skipped).
+Theme.Badges = {
+	Welcome = { Id = 204493874675594, Name = "Welcome to the Gym", Desc = "You joined Chad Aura Tycoon. Time to get swole!" },
+	GymGraduate = { Id = 3879673344738499, Name = "Gym Graduate", Desc = "Finished the gym tutorial." },
+	CertifiedChad = { Id = 750945717242204, Name = "Certified Chad", Desc = "Discovered a tier 10 Chad." },
+	AbsoluteChad = { Id = 3658346446208010, Name = "Absolute Chad", Desc = "Discovered the Absolute Chad, the top tier!" },
+	ParkourMaster = { Id = 3548287220393826, Name = "Parkour Master", Desc = "Cleared parkour level 10." },
+}
+
 Theme.Monetization = {
 	Passes = {
 		AutoLoot = {
@@ -11893,6 +11902,229 @@ return Theme
         <string name="Name">Server</string>
       </Properties>
       <Item class="ModuleScript" referent="78">
+        <Properties>
+          <string name="Name">Analytics</string>
+          <string name="Source"><![CDATA[--[[
+	Analytics: funnels for the Creator Dashboard (AnalyticsService), so ad traffic can be
+	judged by where new players stop and how often the shop turns into a purchase.
+
+	Onboarding funnel (Dashboard > Analytics > Funnels > Onboarding), once per player.
+	The highest step logged is saved in profile.onboarding; saves from before this
+	module start at ONBOARDING_LEGACY and never log.
+	  1 Joined            first session starts
+	  2 Intro Done        the cutscene finished or was skipped (Player attribute IntroSeen)
+	  3..7                each tutorial step reached / finished (Buy, Orbs, Deposit, Collect, Merge)
+	A skipped tutorial logs the custom event "TutorialSkipped" and stops the funnel.
+
+	Shop funnel (recurring "Shop"): 1 Opened, 2 Prompted, 3 Purchased. One funnel session
+	per shop visit; a prompt from outside the shop (pads, crate panel) starts a new one.
+]]
+
+local AnalyticsService = game:GetService("AnalyticsService")
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
+
+local Tycoon = require(script.Parent.Tycoon)
+
+local Analytics = {}
+
+Analytics.ONBOARDING_LEGACY = 99
+
+local ONBOARDING_NAMES = { "Joined", "Intro Done" }
+for i, step in TutorialSteps.STEPS do
+	ONBOARDING_NAMES[2 + i] = "Tutorial " .. i .. " " .. step.id
+end
+
+-- Player -> current shop funnel session id and its last step.
+local shopFunnel: { [Player]: { id: string, step: number } } = {}
+
+local function safely(fn: (...any) -> (), ...: any)
+	local ok, err = pcall(fn, ...)
+	if not ok then
+		warn("[Analytics]", err)
+	end
+end
+
+-- Logs onboarding steps up to `step` that this player has not logged yet.
+function Analytics.onboard(session: Tycoon.Session, step: number)
+	local p = session.profile
+	if not session.alive or step <= p.onboarding or p.onboarding >= Analytics.ONBOARDING_LEGACY then
+		return
+	end
+	for s = p.onboarding + 1, math.min(step, #ONBOARDING_NAMES) do
+		safely(AnalyticsService.LogOnboardingFunnelStepEvent, AnalyticsService, session.player, s, ONBOARDING_NAMES[s])
+	end
+	p.onboarding = step
+	Tycoon.markDirty(session)
+end
+
+-- Tutorial progress: `step` is the step now current (DONE = finished); skipped = true when skipped.
+function Analytics.tutorial(session: Tycoon.Session, step: number, skipped: boolean?)
+	if skipped then
+		safely(AnalyticsService.LogCustomEvent, AnalyticsService, session.player, "TutorialSkipped", step)
+		return
+	end
+	-- Step n current means steps 1..n-1 are done: funnel step 2 + (n - 1).
+	Analytics.onboard(session, 1 + step)
+end
+
+function Analytics.shop(player: Player, step: number, name: string)
+	local funnel = shopFunnel[player]
+	if step == 1 or not funnel or step <= funnel.step then
+		funnel = { id = HttpService:GenerateGUID(false), step = 0 }
+		shopFunnel[player] = funnel
+	end
+	funnel.step = step
+	safely(AnalyticsService.LogFunnelStepEvent, AnalyticsService, player, "Shop", funnel.id, step, name)
+end
+
+function Analytics.onSessionStart(session: Tycoon.Session)
+	local player = session.player
+	Analytics.onboard(session, 1)
+	if player:GetAttribute("IntroSeen") == true then
+		Analytics.onboard(session, 2)
+	else
+		local conn
+		conn = player:GetAttributeChangedSignal("IntroSeen"):Connect(function()
+			if player:GetAttribute("IntroSeen") == true then
+				conn:Disconnect()
+				Analytics.onboard(session, 2)
+			end
+		end)
+	end
+end
+
+function Analytics.init()
+	-- The shop window reports each time it opens (Client.UI.Windows).
+	Tycoon.addAction("ShopOpened", function(session)
+		Analytics.shop(session.player, 1, "Opened")
+	end)
+	Players.PlayerRemoving:Connect(function(player)
+		shopFunnel[player] = nil
+	end)
+end
+
+return Analytics
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="79">
+        <Properties>
+          <string name="Name">Badges</string>
+          <string name="Source"><![CDATA[--[[
+	Badges: awards the Roblox badges listed in Theme.Badges (ids from the universe,
+	created with tools/badges.py). A badge with Id 0 is skipped.
+
+	Each badge is awarded once: profile.badges[key] is set when BadgeService confirms it,
+	and a failed award is retried on the next check (every CHECK_SECONDS, plus right after
+	the tutorial finishes). Conditions read only the saved profile:
+	  Welcome        joined the game
+	  GymGraduate    finished the tutorial (Badges.graduate, not on a skip)
+	  CertifiedChad  discovered tier 10
+	  AbsoluteChad   discovered the top tier
+	  ParkourMaster  cleared the last parkour level
+]]
+
+local BadgeService = game:GetService("BadgeService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Economy = require(ReplicatedStorage.Shared.Economy)
+
+local Tycoon = require(script.Parent.Tycoon)
+
+local Badges = {}
+
+local CHECK_SECONDS = 5
+
+local theme: any
+-- Awards in flight per session, so a slow AwardBadgeAsync is never sent twice.
+local busy: { [any]: { [string]: boolean } } = setmetatable({}, { __mode = "k" }) :: any
+
+local conditions: { [string]: (profile: any) -> boolean } = {
+	Welcome = function()
+		return true
+	end,
+	GymGraduate = function(p)
+		return p.badges.GymGraduate == false
+	end,
+	CertifiedChad = function(p)
+		return Economy.highestTier(p.discovered) >= 10
+	end,
+	AbsoluteChad = function(p)
+		return Economy.highestTier(p.discovered) >= Economy.MAX_TIER
+	end,
+	ParkourMaster = function(p)
+		return (p.parkour.clears[#p.parkour.clears] or 0) > 0
+	end,
+}
+
+-- Awards one badge if its condition holds. profile.badges[key]: true = awarded,
+-- false = earned but not yet confirmed by BadgeService (retried), nil = not earned.
+local function check(session: Tycoon.Session, key: string)
+	local badge = theme.Badges[key]
+	local p = session.profile
+	if not badge or badge.Id == 0 or p.badges[key] == true or not conditions[key](p) then
+		return
+	end
+	local inFlight = busy[session] or {}
+	busy[session] = inFlight
+	if inFlight[key] then
+		return
+	end
+	inFlight[key] = true
+	local ok, result = pcall(BadgeService.AwardBadgeAsync, BadgeService, session.player.UserId, badge.Id)
+	inFlight[key] = nil
+	if not session.alive then
+		return
+	end
+	if ok and result then
+		p.badges[key] = true
+		Tycoon.markDirty(session)
+	elseif not ok then
+		warn("[Badges]", key, result)
+	end
+end
+
+local function checkAll(session: Tycoon.Session)
+	for key in theme.Badges do
+		if session.alive then
+			check(session, key)
+		end
+	end
+end
+
+-- The tutorial was finished (not skipped).
+function Badges.graduate(session: Tycoon.Session)
+	if session.profile.badges.GymGraduate == nil then
+		session.profile.badges.GymGraduate = false
+	end
+	task.spawn(check, session, "GymGraduate")
+end
+
+function Badges.onSessionStart(session: Tycoon.Session)
+	task.spawn(checkAll, session)
+end
+
+function Badges.init(themeModule: any)
+	theme = themeModule
+	task.spawn(function()
+		while true do
+			task.wait(CHECK_SECONDS)
+			for _, session in Tycoon.allSessions() do
+				task.spawn(checkAll, session)
+			end
+		end
+	end)
+end
+
+return Badges
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="80">
         <Properties>
           <string name="Name">Cosmetics</string>
           <string name="Source"><![CDATA[--[[
@@ -12530,7 +12762,7 @@ return Cosmetics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="79">
+      <Item class="ModuleScript" referent="81">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -12591,6 +12823,10 @@ export type Profile = {
 	cosmetics: { trail: string, toggles: { [string]: boolean } },
 	-- The Starter pack's one-time cash, Rizz and trail have been given.
 	starterGranted: boolean,
+	-- Highest onboarding funnel step logged (Analytics; ONBOARDING_LEGACY = saves from before it).
+	onboarding: number,
+	-- Roblox badges: true = awarded, false = earned and waiting to be awarded (Badges).
+	badges: { [string]: boolean },
 	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
 	-- of the last full cash reward (Economy.modeReward cooldown).
 	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
@@ -12656,6 +12892,8 @@ function DataService.defaultProfile(): Profile
 		introSeen = false,
 		cosmetics = { trail = "", toggles = {} },
 		starterGranted = false,
+		onboarding = 0,
+		badges = {},
 		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS) },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
@@ -12689,6 +12927,10 @@ local function reconcile(data: any): Profile
 	-- the story, so it never plays for them.
 	if data.introSeen == nil then
 		data.introSeen = true
+	end
+	-- Saves from before the onboarding funnel: those players are not new, so they never log it.
+	if data.onboarding == nil then
+		data.onboarding = 99
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
@@ -12758,6 +13000,11 @@ local function reconcile(data: any): Profile
 			end
 		end
 		data.parkour[key] = fixed
+	end
+	for key, value in data.badges do
+		if type(key) ~= "string" or type(value) ~= "boolean" then
+			data.badges[key] = nil
+		end
 	end
 	if data.pendingCrate ~= "" and not Economy.isRarity(data.pendingCrate) then
 		data.pendingCrate = ""
@@ -12888,7 +13135,7 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="80">
+      <Item class="ModuleScript" referent="82">
         <Properties>
           <string name="Name">GameModes</string>
           <string name="Source"><![CDATA[--[[
@@ -13199,7 +13446,7 @@ return GameModes
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="81">
+      <Item class="ModuleScript" referent="83">
         <Properties>
           <string name="Name">Intro</string>
           <string name="Source"><![CDATA[--[[
@@ -13237,7 +13484,7 @@ return Intro
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Script" referent="82">
+      <Item class="Script" referent="84">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -13259,6 +13506,8 @@ local Tutorial = require(Server.Tutorial)
 local Intro = require(Server.Intro)
 local GameModes = require(Server.GameModes)
 local Cosmetics = require(Server.Cosmetics)
+local Analytics = require(Server.Analytics)
+local Badges = require(Server.Badges)
 
 local AUTOSAVE_SECONDS = 90
 
@@ -13273,6 +13522,8 @@ Monetization.init(Theme)
 GameModes.init(world.modes, Theme, Tycoon, world)
 Cosmetics.init(Theme)
 Ranking.init(Theme, world.ranking)
+Analytics.init()
+Badges.init(Theme)
 
 local saving: { [Player]: boolean } = {}
 
@@ -13314,6 +13565,8 @@ local function onPlayerAdded(player: Player)
 	local session = Tycoon.addPlayer(player, profile, canSave, passes)
 	if session then
 		Cosmetics.onSessionStart(session)
+		Analytics.onSessionStart(session)
+		Badges.onSessionStart(session)
 	end
 end
 
@@ -13362,11 +13615,11 @@ end)
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="83">
+      <Item class="Folder" referent="85">
         <Properties>
           <string name="Name">Modes</string>
         </Properties>
-        <Item class="ModuleScript" referent="84">
+        <Item class="ModuleScript" referent="86">
           <Properties>
             <string name="Name">Catalog</string>
             <string name="Source"><![CDATA[--!strict
@@ -13399,7 +13652,7 @@ return Catalog
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="85">
+        <Item class="ModuleScript" referent="87">
           <Properties>
             <string name="Name">Course</string>
             <string name="Source"><![CDATA[--!strict
@@ -14890,7 +15143,7 @@ return Course
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="86">
+        <Item class="ModuleScript" referent="88">
           <Properties>
             <string name="Name">Mog</string>
             <string name="Source"><![CDATA[--[[
@@ -15811,7 +16064,7 @@ return { create = create }
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="87">
+        <Item class="ModuleScript" referent="89">
           <Properties>
             <string name="Name">MogLayout</string>
             <string name="Source"><![CDATA[--[[
@@ -15888,7 +16141,7 @@ return MogLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="88">
+        <Item class="ModuleScript" referent="90">
           <Properties>
             <string name="Name">MogRules</string>
             <string name="Source"><![CDATA[--[[
@@ -16217,7 +16470,7 @@ return MogRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="89">
+        <Item class="ModuleScript" referent="91">
           <Properties>
             <string name="Name">Parkour</string>
             <string name="Source"><![CDATA[--[[
@@ -16613,7 +16866,7 @@ return Parkour
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="90">
+        <Item class="ModuleScript" referent="92">
           <Properties>
             <string name="Name">Rules</string>
             <string name="Source"><![CDATA[--!strict
@@ -16719,7 +16972,7 @@ return Rules
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="91">
+      <Item class="ModuleScript" referent="93">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -16749,6 +17002,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
 
+local Analytics = require(script.Parent.Analytics)
 local DataService = require(script.Parent.DataService)
 local Tycoon = require(script.Parent.Tycoon)
 
@@ -16855,6 +17109,7 @@ function Monetization.promptCrate(player: Player, rarity: string)
 		end
 		return
 	end
+	Analytics.shop(player, 2, "Prompted")
 	MarketplaceService:PromptProductPurchase(player, product.Id)
 end
 
@@ -16889,6 +17144,7 @@ function Monetization.promptPass(player: Player, name: string)
 		end
 		return
 	end
+	Analytics.shop(player, 2, "Prompted")
 	MarketplaceService:PromptGamePassPurchase(player, pass.Id)
 end
 
@@ -16908,6 +17164,7 @@ function Monetization.promptProduct(player: Player, kind: string, index: number)
 		end
 		return
 	end
+	Analytics.shop(player, 2, "Prompted")
 	MarketplaceService:PromptProductPurchase(player, product.Id)
 end
 
@@ -16965,6 +17222,7 @@ local function processReceipt(receipt: any): Enum.ProductPurchaseDecision
 	else
 		grantProduct(session, kind, index)
 	end
+	Analytics.shop(session.player, 3, "Purchased")
 	table.insert(profile.receipts, receipt.PurchaseId)
 	while #profile.receipts > MAX_RECEIPTS do
 		table.remove(profile.receipts, 1)
@@ -16981,6 +17239,7 @@ function Monetization.init(themeModule: any)
 		end
 		for name, pass in theme.Monetization.Passes do
 			if pass.Id == passId then
+				Analytics.shop(player, 3, "Purchased")
 				Tycoon.setPass(player, name)
 				local session = Tycoon.getSession(player)
 				if session then
@@ -17006,7 +17265,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="92">
+      <Item class="ModuleScript" referent="94">
         <Properties>
           <string name="Name">PlotLayout</string>
           <string name="Source"><![CDATA[--!strict
@@ -17524,7 +17783,7 @@ return Layout
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="93">
+      <Item class="ModuleScript" referent="95">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -17678,7 +17937,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="94">
+      <Item class="ModuleScript" referent="96">
         <Properties>
           <string name="Name">Tutorial</string>
           <string name="Source"><![CDATA[--[[
@@ -17702,6 +17961,8 @@ local Economy = require(Shared.Economy)
 local Net = require(Shared.Net)
 local TutorialSteps = require(Shared.TutorialSteps)
 
+local Analytics = require(script.Parent.Analytics)
+local Badges = require(script.Parent.Badges)
 local Tycoon = require(script.Parent.Tycoon)
 
 local Tutorial = {}
@@ -17720,6 +17981,7 @@ local function finish(session: Tycoon.Session)
 	p.gems += Economy.TUTORIAL_REWARD_GEMS
 	p.money += Economy.TUTORIAL_REWARD_CASH
 	p.totalEarned += Economy.TUTORIAL_REWARD_CASH
+	Badges.graduate(session)
 	notify(session, { event = "done", gems = Economy.TUTORIAL_REWARD_GEMS, cash = Economy.TUTORIAL_REWARD_CASH })
 end
 
@@ -17731,6 +17993,7 @@ local function advanceTo(session: Tycoon.Session, step: number)
 		return
 	end
 	p.tutorialStep = step
+	Analytics.tutorial(session, step)
 	if step >= TutorialSteps.DONE then
 		finish(session)
 	else
@@ -17760,6 +18023,7 @@ function Tutorial.skip(session: Tycoon.Session)
 	end
 	local p = session.profile
 	p.tutorialDone = true
+	Analytics.tutorial(session, p.tutorialStep, true)
 	p.tutorialStep = TutorialSteps.DONE
 	notify(session, { event = "skipped" })
 	Tycoon.markDirty(session)
@@ -17791,7 +18055,7 @@ return Tutorial
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="95">
+      <Item class="ModuleScript" referent="97">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -19987,11 +20251,11 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="96">
+      <Item class="Folder" referent="98">
         <Properties>
           <string name="Name">World</string>
         </Properties>
-        <Item class="ModuleScript" referent="97">
+        <Item class="ModuleScript" referent="99">
           <Properties>
             <string name="Name">Common</string>
             <string name="Source"><![CDATA[--[[
@@ -20166,7 +20430,7 @@ return Common
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="98">
+        <Item class="ModuleScript" referent="100">
           <Properties>
             <string name="Name">Decor</string>
             <string name="Source"><![CDATA[--[[
@@ -20839,7 +21103,7 @@ return Decor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="99">
+        <Item class="ModuleScript" referent="101">
           <Properties>
             <string name="Name">Hub</string>
             <string name="Source"><![CDATA[--[[
@@ -21937,7 +22201,7 @@ return Hub
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="100">
+        <Item class="ModuleScript" referent="102">
           <Properties>
             <string name="Name">Machines</string>
             <string name="Source"><![CDATA[--[[
@@ -22755,7 +23019,7 @@ return Machines
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="101">
+        <Item class="ModuleScript" referent="103">
           <Properties>
             <string name="Name">MapDecor</string>
             <string name="Source"><![CDATA[--[[
@@ -24021,7 +24285,7 @@ return MapDecor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="102">
+        <Item class="ModuleScript" referent="104">
           <Properties>
             <string name="Name">Modes</string>
             <string name="Source"><![CDATA[--[[
@@ -25491,7 +25755,7 @@ return Modes
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="103">
+        <Item class="ModuleScript" referent="105">
           <Properties>
             <string name="Name">MogStage</string>
             <string name="Source"><![CDATA[--[[
@@ -25832,7 +26096,7 @@ return MogStage
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="104">
+        <Item class="ModuleScript" referent="106">
           <Properties>
             <string name="Name">Pads</string>
             <string name="Source"><![CDATA[--[[
@@ -26146,7 +26410,7 @@ return Pads
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="105">
+        <Item class="ModuleScript" referent="107">
           <Properties>
             <string name="Name">Pen</string>
             <string name="Source"><![CDATA[--[[
@@ -26465,7 +26729,7 @@ return Pen
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="106">
+        <Item class="ModuleScript" referent="108">
           <Properties>
             <string name="Name">Props</string>
             <string name="Source"><![CDATA[--!strict
@@ -26736,7 +27000,7 @@ return Props
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="107">
+        <Item class="ModuleScript" referent="109">
           <Properties>
             <string name="Name">Shell</string>
             <string name="Source"><![CDATA[--[[
@@ -27192,7 +27456,7 @@ return Shell
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="108">
+        <Item class="ModuleScript" referent="110">
           <Properties>
             <string name="Name">Shelves</string>
             <string name="Source"><![CDATA[--[[
@@ -27902,7 +28166,7 @@ return Shelves
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="109">
+      <Item class="ModuleScript" referent="111">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -28270,26 +28534,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="110">
+  <Item class="SoundService" referent="112">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="111">
+  <Item class="StarterPlayer" referent="113">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="112">
+    <Item class="StarterPlayerScripts" referent="114">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="113">
+      <Item class="Folder" referent="115">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="ModuleScript" referent="114">
+        <Item class="ModuleScript" referent="116">
           <Properties>
             <string name="Name">Animator</string>
             <string name="Source"><![CDATA[--[[
@@ -28313,6 +28577,8 @@ return WorldBuilder
 	All world parts are moved with one BulkMoveTo call per frame. The hot path
 	reuses its tables (no table allocations per frame); only CFrame values are
 	created. Animator.stats() reports the last frame's counts.
+	On "mid" / "low" devices (Fx.Budget) the full / trickle counts scale with
+	Budget.count and on low units past LOW_FAR studs hold their pose.
 
 	Viewport units (Index cards, reward popup): call Animator.attach(model)
 	after building the model; they animate while their ViewportFrame is
@@ -28338,10 +28604,12 @@ local Workspace = game:GetService("Workspace")
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Poses = require(Shared:WaitForChild("Poses"))
 local RigPose = require(Shared:WaitForChild("RigPose"))
+local Budget = require(script.Parent.Fx.Budget)
 
 local Animator = {}
 
 local FAR = 140 -- studs: beyond this units hold their pose
+local LOW_FAR = 100 -- the same on a "low" budget device
 local OWN_FULL = 16 -- own-plot rigs posed every frame (nearest visible first)
 local OTHER_FULL = 4 -- other plots' rigs posed every frame
 local OWN_TRICKLE = 8 -- further visible own-plot rigs refreshed per frame, round-robin
@@ -28842,6 +29110,8 @@ local function step()
 	table.clear(worldParts)
 	table.clear(worldCFrames)
 	stats.units, stats.visible, stats.full, stats.trickle = 0, 0, 0, 0
+	local far = if Budget.low() then LOW_FAR else FAR
+	local ownFull, otherFull = Budget.count(OWN_FULL), Budget.count(OTHER_FULL)
 
 	local ownN, otherN = 0, 0
 	local ownVisible, otherVisible = 0, 0
@@ -28887,7 +29157,7 @@ local function step()
 		local half = entry.height * 0.5
 		local rel = (entry.pos :: Vector3) + Vector3.new(0, half, 0) - camPos
 		local distance = rel.Magnitude
-		if distance > FAR then
+		if distance > far then
 			continue
 		end
 		if distance > entry.height * 1.5 and not inView(rel, half * VIEW_MARGIN, look, right, up, tanX, tanY) then
@@ -28902,10 +29172,10 @@ local function step()
 		end
 		if ownPlot == nil or entry.plot == ownPlot then
 			ownVisible += 1
-			ownN = insertNearest(ownPick, ownKeys, ownN, OWN_FULL, entry, key)
+			ownN = insertNearest(ownPick, ownKeys, ownN, ownFull, entry, key)
 		else
 			otherVisible += 1
-			otherN = insertNearest(otherPick, otherKeys, otherN, OTHER_FULL, entry, key)
+			otherN = insertNearest(otherPick, otherKeys, otherN, otherFull, entry, key)
 		end
 	end
 
@@ -28917,8 +29187,8 @@ local function step()
 	end
 	stats.full = ownN + otherN
 	stats.visible = ownVisible + otherVisible
-	ownCursor = trickle(ownCursor, true, OWN_TRICKLE, ownVisible - ownN, now)
-	otherCursor = trickle(otherCursor, false, OTHER_TRICKLE, otherVisible - otherN, now)
+	ownCursor = trickle(ownCursor, true, Budget.count(OWN_TRICKLE), ownVisible - ownN, now)
+	otherCursor = trickle(otherCursor, false, Budget.count(OTHER_TRICKLE), otherVisible - otherN, now)
 	-- Drop the references so destroyed models can be collected.
 	table.clear(ownPick)
 	table.clear(otherPick)
@@ -28963,11 +29233,11 @@ return Animator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="115">
+        <Item class="Folder" referent="117">
           <Properties>
             <string name="Name">Fx</string>
           </Properties>
-          <Item class="ModuleScript" referent="116">
+          <Item class="ModuleScript" referent="118">
             <Properties>
               <string name="Name">Ambient</string>
               <string name="Source"><![CDATA[--[[
@@ -28989,10 +29259,14 @@ return Animator
 	One Heartbeat loop moves everything with a single BulkMoveTo. Things far
 	from the camera (clouds excepted) hold still, mid-range ones update every
 	few frames, and every motion is a function of time, so nothing drifts.
+	On "mid" / "low" devices (Fx.Budget) the moving radius shrinks and updates
+	thin out further (low: nothing past 120 studs, near things every 2nd frame).
 ]]
 
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+
+local Budget = require(script.Parent.Budget)
 
 local Ambient = {}
 
@@ -29001,6 +29275,12 @@ local NEAR = 90 -- studs: closer than this things update every frame
 local MID_RATE = 3 -- frames between updates beyond NEAR
 local CLOUD_RATE = 4 -- frames between cloud updates
 local BEHIND = -40 -- studs behind the camera plane still updated
+-- Per device tier: { far, near, near rate, mid rate, cloud rate } ("high" is the values above).
+local TIERS: { [string]: { number } } = {
+	high = { FAR, NEAR, 1, MID_RATE, CLOUD_RATE },
+	mid = { 170, 70, 1, MID_RATE, 6 },
+	low = { 120, 50, 2, 4, 8 },
+}
 local MODEL_DELAY = 0.5 -- seconds to let a model's parts arrive before capturing it
 
 local FLAG_SWAY = math.rad(6)
@@ -29283,22 +29563,25 @@ local function step()
 	local camera = Workspace.CurrentCamera
 	local camPos = if camera then camera.CFrame.Position else Vector3.zero
 	local camLook = if camera then camera.CFrame.LookVector else Vector3.new(0, 0, -1)
+	local tier = TIERS[Budget.tier()]
+	local far, near, nearRate, midRate, cloudRate = tier[1], tier[2], tier[3], tier[4], tier[5]
 	table.clear(bulkParts)
 	table.clear(bulkCFrames)
 	local n = 0
 	for i = 1, count do
 		local target = targets[i]
 		if target.sky then
-			if (frameCount + target.slot) % CLOUD_RATE ~= 0 then
+			if (frameCount + target.slot) % cloudRate ~= 0 then
 				continue
 			end
 		else
 			local offset = target.hinge.Position - camPos
 			local distance = offset.Magnitude
-			if distance > FAR or offset:Dot(camLook) < BEHIND then
+			if distance > far or offset:Dot(camLook) < BEHIND then
 				continue
 			end
-			if distance > NEAR and (frameCount + target.slot) % MID_RATE ~= 0 then
+			local rate = if distance > near then midRate else nearRate
+			if rate > 1 and (frameCount + target.slot) % rate ~= 0 then
 				continue
 			end
 		end
@@ -29334,7 +29617,184 @@ return Ambient
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="117">
+          <Item class="ModuleScript" referent="119">
+            <Properties>
+              <string name="Name">Budget</string>
+              <string name="Source"><![CDATA[--[[
+	Fx.Budget: how much effect work this device gets, so phones stay smooth.
+
+	  Budget.tier()      "low" | "mid" | "high"
+	  Budget.scale()     particle / count multiplier (low 0.4, mid 0.7, high 1)
+	  Budget.count(n)    max(1, round(n * scale)): emitter rates, burst sizes, caps
+	  Budget.low()       shorthand for tier() == "low"
+	  Budget.onChange(fn) runs fn(tier) whenever the tier changes; returns a disconnect
+
+	Tier:
+	  low   touch input with Automatic or <= 4 graphics quality, or a touch device
+	        whose screen's shorter side is under 500 px (a phone)
+	  mid   touch otherwise, or graphics quality <= 6
+	  high  everything else (desktop / console at quality 7+ or Automatic)
+
+	Re-evaluated when the input mode changes (Kit.onInput), when the player moves
+	the graphics slider and when the viewport resizes. Every engine call is in a
+	pcall so the Lune preview (stubbed engine) lands on "high". Kit is required
+	lazily (deferred) because Kit itself requires Animator and Fx.Sprites, which
+	use this module.
+]]
+
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+export type Tier = "low" | "mid" | "high"
+
+local Budget = {}
+
+local SCALE: { [Tier]: number } = { low = 0.4, mid = 0.7, high = 1 }
+local PHONE_SIDE = 500 -- px: a touch screen whose shorter side is under this is a phone
+
+local current: Tier = "high"
+local listeners: { (Tier) -> () } = {}
+local kit: any = nil
+
+local function touchInput(): boolean
+	if kit then
+		return kit.touch == true
+	end
+	local ok, touch = pcall(function()
+		return UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	end)
+	return ok and touch == true
+end
+
+-- SavedQualityLevel as a number: 0 = Automatic, 1-10 = the slider; nil when unknown.
+local function quality(): number?
+	local ok, level = pcall(function()
+		local settings = UserSettings():GetService("UserGameSettings")
+		return settings.SavedQualityLevel.Value
+	end)
+	if ok and type(level) == "number" then
+		return level
+	end
+	return nil
+end
+
+local function smallTouchScreen(): boolean
+	local ok, small = pcall(function()
+		if not UserInputService.TouchEnabled then
+			return false
+		end
+		local camera = Workspace.CurrentCamera
+		if not camera then
+			return false
+		end
+		local size = camera.ViewportSize
+		local side = math.min(size.X, size.Y)
+		return side > 1 and side < PHONE_SIDE
+	end)
+	return ok and small == true
+end
+
+local function evaluate(): Tier
+	local level = quality()
+	local touch = touchInput()
+	if touch and (level == 0 or (level ~= nil and level <= 4)) then
+		return "low"
+	end
+	if smallTouchScreen() then
+		return "low"
+	end
+	if touch or (level ~= nil and level >= 1 and level <= 6) then
+		return "mid"
+	end
+	return "high"
+end
+
+local function refresh()
+	local tier = evaluate()
+	if tier == current then
+		return
+	end
+	current = tier
+	for _, fn in table.clone(listeners) do
+		task.spawn(fn, tier)
+	end
+end
+
+function Budget.tier(): Tier
+	return current
+end
+
+function Budget.low(): boolean
+	return current == "low"
+end
+
+function Budget.scale(): number
+	return SCALE[current]
+end
+
+function Budget.count(n: number): number
+	return math.max(1, math.floor(n * SCALE[current] + 0.5))
+end
+
+-- Runs fn(tier) on every change (not now); returns a disconnect function.
+function Budget.onChange(fn: (Tier) -> ()): () -> ()
+	table.insert(listeners, fn)
+	return function()
+		local i = table.find(listeners, fn)
+		if i then
+			table.remove(listeners, i)
+		end
+	end
+end
+
+current = evaluate()
+
+pcall(function()
+	local settings = UserSettings():GetService("UserGameSettings")
+	settings:GetPropertyChangedSignal("SavedQualityLevel"):Connect(refresh)
+end)
+
+local viewportConn: RBXScriptConnection? = nil
+local function watchCamera()
+	pcall(function()
+		if viewportConn then
+			viewportConn:Disconnect()
+			viewportConn = nil
+		end
+		local camera = Workspace.CurrentCamera
+		if camera then
+			viewportConn = camera:GetPropertyChangedSignal("ViewportSize"):Connect(refresh)
+		end
+		refresh()
+	end)
+end
+watchCamera()
+pcall(function()
+	Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(watchCamera)
+end)
+
+-- Kit requires modules that require this one: hook its input mode once loading settles.
+pcall(function()
+	task.defer(function()
+		pcall(function()
+			local module = script.Parent.Parent:FindFirstChild("UI")
+			module = module and module:FindFirstChild("Kit")
+			if not module then
+				return
+			end
+			kit = require(module :: any)
+			kit.onInput(function()
+				refresh()
+			end)
+		end)
+	end)
+end)
+
+return Budget
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="120">
             <Properties>
               <string name="Name">Camera</string>
               <string name="Source"><![CDATA[--[[
@@ -29660,7 +30120,7 @@ return Camera
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="118">
+          <Item class="ModuleScript" referent="121">
             <Properties>
               <string name="Name">Cosmetics</string>
               <string name="Source"><![CDATA[--[[
@@ -29678,6 +30138,11 @@ return Camera
 
 	Nothing runs per frame: every connection is event-driven and only exists while
 	its cosmetic is on.
+
+	Device budget (Fx.Budget): on "mid" / "low" devices every character's
+	server-made trail stars and aura particles (CosTrailStars, CosAura*) emit at
+	Budget.scale() of their rate locally, the speed puffs follow Sprites.emitter's
+	scaling, and the double-jump burst throws fewer puffs.
 ]]
 
 local Players = game:GetService("Players")
@@ -29685,6 +30150,7 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
 
 local CosmeticsFx = {}
 
@@ -29735,8 +30201,12 @@ local function burst(root: BasePart, humanoid: Humanoid)
 		spin = 90,
 		maxDistance = 60,
 	})
-	for i = 1, 3 do
-		local angle = (i / 3 + math.random() * 0.2) * math.pi * 2
+	local puffs = Budget.count(3)
+	for i = 1, puffs do
+		if not Sprites.room() then
+			break
+		end
+		local angle = (i / puffs + math.random() * 0.2) * math.pi * 2
 		Sprites.billboard(root, "Puff", {
 			position = feet,
 			size = 1.3,
@@ -29876,6 +30346,56 @@ local function clearSpeed()
 	end
 end
 
+-- Everyone's trail / aura particles on a budget ------------------------------------------
+
+local fullRate: { [ParticleEmitter]: number } = setmetatable({}, { __mode = "k" }) :: any
+
+local function budgetEmitter(emitter: Instance)
+	if not emitter:IsA("ParticleEmitter") then
+		return
+	end
+	local name = emitter.Name
+	if name ~= "CosTrailStars" and string.sub(name, 1, 6) ~= "CosAura" then
+		return
+	end
+	local full = fullRate[emitter]
+	if not full then
+		full = emitter.Rate
+		fullRate[emitter] = full
+	end
+	emitter.Rate = full * Budget.scale()
+end
+
+local function watchCharacter(character: Model)
+	for _, d in character:GetDescendants() do
+		budgetEmitter(d)
+	end
+	character.DescendantAdded:Connect(budgetEmitter)
+end
+
+local function watchPlayer(other: Player)
+	if other.Character then
+		watchCharacter(other.Character)
+	end
+	other.CharacterAdded:Connect(watchCharacter)
+end
+
+local function budgetCosmetics()
+	pcall(function()
+		for _, other in Players:GetPlayers() do
+			watchPlayer(other)
+		end
+		Players.PlayerAdded:Connect(watchPlayer)
+	end)
+	Budget.onChange(function()
+		for emitter in fullRate do
+			if emitter.Parent then
+				budgetEmitter(emitter)
+			end
+		end
+	end)
+end
+
 -- Wiring ----------------------------------------------------------------------------------
 
 local function refresh()
@@ -29895,6 +30415,7 @@ local function refresh()
 end
 
 function CosmeticsFx.init()
+	budgetCosmetics()
 	if not player then
 		return
 	end
@@ -29916,7 +30437,7 @@ return CosmeticsFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="119">
+          <Item class="ModuleScript" referent="122">
             <Properties>
               <string name="Name">Crates</string>
               <string name="Source"><![CDATA[--[[
@@ -29946,6 +30467,8 @@ return CosmeticsFx
 	Crates that already exist when the plot is bound just appear in place.
 	All movement is local (BulkMoveTo on the server's anchored parts) and a pure
 	function of time since the crate appeared, so it is frame-rate independent.
+	On "low" devices (Fx.Budget) idle crates past their intro move every 2nd frame
+	and only within 110 studs; dust puffs scale with Budget.count.
 ]]
 
 local Players = game:GetService("Players")
@@ -29966,6 +30489,7 @@ local State = require(Client.State)
 local Camera = require(script.Parent.Camera)
 local Orbs = require(script.Parent.Orbs)
 local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
 
 local Crates = {}
 
@@ -29988,6 +30512,8 @@ local BOUNCE2, BOUNCE2_APEX = 0.26, 0.6
 local SQUASH = 0.6
 local FALLBACK_DROP = 7 -- no route: drop from this high above the landing spot
 local CULL = 170 -- studs from the camera: beyond this crates stay still
+local LOW_CULL = 110 -- the same on a "low" budget device
+local idleFrame = 0
 local MAX_CRATES = 8
 local CHIP_RANGE = 70 -- camera distance cap of the rarity labels (BillboardGui.MaxDistance)
 local CHIP_HEIGHT = 1.6 -- studs
@@ -30164,7 +30690,7 @@ local function smokePuff(pos: Vector3, count: number, speed: number)
 	end
 	emitter.Rate = 0
 	emitter.Parent = holder
-	emitter:Emit(count)
+	emitter:Emit(Budget.count(count))
 	task.delay(1.2, function()
 		holder:Destroy()
 	end)
@@ -30606,12 +31132,16 @@ local function step()
 	local now = os.clock()
 	table.clear(moveParts)
 	table.clear(moveCFrames)
+	idleFrame += 1
+	local low = Budget.low()
+	local cull = if low then LOW_CULL else CULL
+	local skipIdle = low and idleFrame % 2 == 0
 	for model, crate in crates do
 		if not model.Parent or crate.broken then
 			continue
 		end
 		local intro = now - crate.born < crate.land + SQUASH + 0.6
-		if not intro and not nearCamera(crate.base.Position, CULL) then
+		if not intro and (skipIdle or not nearCamera(crate.base.Position, cull)) then
 			continue
 		end
 		local ok, err = pcall(stepCrate, crate, now)
@@ -30786,7 +31316,7 @@ return Crates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="120">
+          <Item class="ModuleScript" referent="123">
             <Properties>
               <string name="Name">Fans</string>
               <string name="Source"><![CDATA[--[[
@@ -30816,7 +31346,9 @@ return Crates
 	Fans are built with CharacterFactory (manual rigs, not the Animator) and
 	posed here with RigPose: one RenderStepped loop, at most MAX_ANIMATED fans
 	near the camera (the rest hold still, re-placed once per state change),
-	everything written with one BulkMoveTo.
+	everything written with one BulkMoveTo. On "mid" / "low" devices (Fx.Budget)
+	fewer fans are posed (MAX_ANIMATED and MAX_PARTICLES scaled by Budget.count)
+	and on low the posed ones update every 2nd frame (every 3rd past NEAR).
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -30833,6 +31365,7 @@ local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 
 local State = require(script.Parent.Parent.State)
 local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
 
 local Fans = {}
 
@@ -31348,10 +31881,11 @@ local function rank()
 			table.insert(ranked, fan)
 		end
 	end
-	if #ranked > MAX_ANIMATED then
+	local most = Budget.count(MAX_ANIMATED)
+	if #ranked > most then
 		table.sort(ranked, closer)
 	end
-	for i = 1, math.min(#ranked, MAX_ANIMATED) do
+	for i = 1, math.min(#ranked, most) do
 		ranked[i].animated = true
 	end
 end
@@ -31379,12 +31913,14 @@ local function step()
 	end
 	table.clear(bulkParts)
 	table.clear(bulkCFrames)
+	local low = Budget.low()
 	local i = 1
 	while i <= #allFans do
 		local fan = allFans[i]
 		if advance(fan, now) then
 			if fan.animated then
-				if fan.dist < NEAR or (frameCount + fan.slot) % 2 == 0 then
+				local rate = if fan.dist < NEAR then (if low then 2 else 1) else (if low then 3 else 2)
+				if rate == 1 or (frameCount + fan.slot) % rate == 0 then
 					draw(fan)
 				end
 			elseif fan.drawnState ~= fan.state then
@@ -31420,8 +31956,9 @@ local function burst(position: Vector3, count: number)
 		fxAnchor = part
 		anchor = part
 	end
-	for _ = 1, count do
-		if particles >= MAX_PARTICLES then
+	local cap = Budget.count(MAX_PARTICLES)
+	for _ = 1, Budget.count(count) do
+		if particles >= cap then
 			return
 		end
 		particles += 1
@@ -31774,7 +32311,7 @@ return Fans
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="121">
+          <Item class="ModuleScript" referent="124">
             <Properties>
               <string name="Name">Machines</string>
               <string name="Source"><![CDATA[-- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow):
@@ -31805,6 +32342,7 @@ local State = require(Client.State)
 local Sounds = require(Client.Sounds)
 local Orbs = require(script.Parent.Orbs)
 local Camera = require(script.Parent.Camera)
+local Budget = require(script.Parent.Budget)
 
 local player = Players.LocalPlayer
 local C = Theme.Colors
@@ -31901,8 +32439,9 @@ local function confettiBurst(pos: Vector3, count: number, power: number?, colors
 	local palette = colors or CONFETTI_COLORS
 	local k = power or 1
 	local now = os.clock()
-	for i = 1, count do
-		if #confetti >= MAX_CONFETTI then
+	local cap = Budget.count(MAX_CONFETTI) -- fewer on phones (Fx.Budget)
+	for i = 1, Budget.count(count) do
+		if #confetti >= cap then
 			break
 		end
 		local part = table.remove(confettiPool) or newPart(Enum.PartType.Block, "Confetti", WHITE, Vector3.new(0.34, 0.07, 0.24))
@@ -32088,8 +32627,9 @@ end
 -- A few stars pop out (Back ease), float up and fade.
 local function starBurst(pos: Vector3, count: number, color: Color3?)
 	local now = os.clock()
-	for i = 1, count do
-		if #stars >= MAX_STARS then
+	local cap = Budget.count(MAX_STARS)
+	for i = 1, Budget.count(count) do
+		if #stars >= cap then
 			break
 		end
 		local star = table.remove(starPool) or newStar()
@@ -33311,7 +33851,7 @@ return Machines
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="122">
+          <Item class="ModuleScript" referent="125">
             <Properties>
               <string name="Name">Modes</string>
               <string name="Source"><![CDATA[--!strict
@@ -33344,6 +33884,9 @@ return Machines
 	               eases in and out and settles back at its rest pose.
 	  Next flag    during a run, the next checkpoint's "FlagCap" (attribute Checkpoint)
 	               gives a soft pulse with a sunny ring every couple of seconds.
+	  Budget       on "low" devices (Fx.Budget) movers farther than LOW_FAR studs from
+	               the player pose every 2nd frame; celebration confetti / splash dots
+	               scale with Budget.count. Hints, pads and nearby movers never thin out.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -33355,6 +33898,7 @@ local Workspace = game:GetService("Workspace")
 
 local Net = require(ReplicatedStorage.Shared.Net)
 local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
 
 local ModesFx = {}
 
@@ -33363,6 +33907,8 @@ local W = (require(ReplicatedStorage:WaitForChild("Theme")) :: any).World
 
 -- Movers further than this from the player stay put; nothing runs beyond FAR of every mover.
 local NEAR = 220
+local LOW_FAR = 80 -- studs: on a "low" device movers past this pose every 2nd frame
+local stepFrame = 0
 local TAU = 2 * math.pi
 local BUMP_COOLDOWN = 0.7
 local STILL_FOR = 4
@@ -34687,8 +35233,14 @@ local function step(dt: number)
 	-- (Reused every frame: the mover lists are cleared after the BulkMoveTo.)
 	local parts, frames = moverParts, moverFrames
 	local carry: CFrame? = nil
+	stepFrame += 1
+	local thin = Budget.low() and stepFrame % 2 == 0
 	for _, m in movers do
-		if (m.rest.Position - pos).Magnitude <= NEAR then
+		local distance = (m.rest.Position - pos).Magnitude
+		if distance <= NEAR then
+			if thin and distance > LOW_FAR and m ~= under then
+				continue
+			end
 			local pose = poseAt(m, t)
 			if m == under and m.live then
 				carry = pose * m.current:Inverse()
@@ -34773,8 +35325,12 @@ local function checkpointPop(position: Vector3)
 	local top = if cap then cap.Position else position + Vector3.new(0, 6, 0)
 	local anchor = anchorAt(top, 3)
 	Sprites.billboard(anchor, "StarPop", { position = top, size = 3, life = 0.9, rise = Vector3.new(0, 2, 0), spin = 40 })
-	for i = 1, 5 do
-		local a = i / 5 * TAU
+	local pops = Budget.count(5)
+	for i = 1, pops do
+		if not Sprites.room() then
+			break -- decorative: the device's sprite budget is full
+		end
+		local a = i / pops * TAU
 		Sprites.billboard(anchor, "Confetti", {
 			position = top,
 			size = 0.8,
@@ -34796,8 +35352,12 @@ local function splash(position: Vector3)
 	local anchor = anchorAt(position, 3)
 	Sprites.billboard(anchor, "Ring", { position = position, size = 6, life = 0.7, rise = Vector3.zero, color = W.Pool })
 	Sprites.billboard(anchor, "Puff", { position = position, size = 4, life = 0.8, rise = Vector3.new(0, 3, 0) })
-	for i = 1, 6 do
-		local a = i / 6 * TAU
+	local dots = Budget.count(6)
+	for i = 1, dots do
+		if not Sprites.room() then
+			break
+		end
+		local a = i / dots * TAU
 		Sprites.billboard(anchor, "SoftDot", {
 			position = position,
 			size = 0.7,
@@ -34816,8 +35376,12 @@ end
 
 local function finish(position: Vector3)
 	local anchor = anchorAt(position, 3)
-	for i = 1, 8 do
-		local a = i / 8 * TAU
+	local pops = Budget.count(8)
+	for i = 1, pops do
+		if not Sprites.room() then
+			break -- decorative: the device's sprite budget is full
+		end
+		local a = i / pops * TAU
 		Sprites.billboard(anchor, if i % 2 == 0 then "StarPop" else "Confetti", {
 			position = position + Vector3.new(0, 2, 0),
 			size = if i % 2 == 0 then 2 else 1,
@@ -34908,7 +35472,7 @@ return ModesFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="123">
+          <Item class="ModuleScript" referent="126">
             <Properties>
               <string name="Name">Mog</string>
               <string name="Source"><![CDATA[--!strict
@@ -34952,6 +35516,7 @@ local Theme = require(ReplicatedStorage:WaitForChild("Theme")) :: any
 local Client = script.Parent.Parent
 local Sounds = require(Client.Sounds) :: any
 local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
 local Animator = require(Client.Animator) :: any
 
 local MogFx = {}
@@ -35176,8 +35741,12 @@ local function moggedPop()
 	task.delay(0.7, function()
 		sprite("Puff", head, { size = 7, life = 0.8, rise = Vector3.new(0, 2, 0) })
 		sprite("Ring", head, { size = 8, life = 0.6, rise = Vector3.zero, color = W.Sunny })
-		for i = 1, 6 do
-			local angle = i / 6 * math.pi * 2
+		local pops = Budget.count(6) -- decorative: fewer on phones (Fx.Budget)
+		for i = 1, pops do
+			if not Sprites.room() then
+				break -- decorative: the device's sprite budget is full
+			end
+			local angle = i / pops * math.pi * 2
 			local offset = Vector3.new(math.cos(angle) * 1.5, math.sin(angle) * 1.2, 0)
 			sprite(if i % 2 == 0 then "StarPop" else "Confetti", head + offset, {
 				size = 2.6,
@@ -35387,8 +35956,12 @@ end
 local function duelFinish(won: boolean, foeHead: Vector3)
 	if won then
 		sprite("Ring", foeHead, { size = 7, life = 0.6, rise = Vector3.zero, color = W.Sunny })
-		for i = 1, 6 do
-			local angle = i / 6 * math.pi * 2
+		local pops = Budget.count(6) -- decorative: fewer on phones (Fx.Budget)
+		for i = 1, pops do
+			if not Sprites.room() then
+				break -- decorative: the device's sprite budget is full
+			end
+			local angle = i / pops * math.pi * 2
 			local offset = Vector3.new(math.cos(angle) * 1.5, math.sin(angle) * 1.2, 0)
 			sprite(if i % 2 == 0 then "StarPop" else "Confetti", foeHead + offset, {
 				size = 2.6,
@@ -35461,7 +36034,7 @@ return MogFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="124">
+          <Item class="ModuleScript" referent="127">
             <Properties>
               <string name="Name">Orbs</string>
               <string name="Source"><![CDATA[-- Client-side aura orb visuals for the local player's own plot.
@@ -35508,6 +36081,7 @@ local Client = script.Parent.Parent
 local State = require(Client.State)
 local Sounds = require(Client.Sounds)
 local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
 
 local player = Players.LocalPlayer
 local C = Theme.Colors
@@ -35623,7 +36197,7 @@ function Orbs.sparkle(pos: Vector3, color: Color3?, count: number?, speed: numbe
 	if now - sparkleWindow > SPARKLE_WINDOW then
 		sparkleWindow, sparkleSpent = now, 0
 	end
-	local n = math.min(count or 8, SPARKLE_BUDGET - sparkleSpent)
+	local n = math.min(Budget.count(count or 8), Budget.count(SPARKLE_BUDGET) - sparkleSpent)
 	if n <= 0 then
 		return
 	end
@@ -35677,7 +36251,7 @@ function Orbs.puff(pos: Vector3, count: number?): boolean
 	end
 	local e = entry :: { part: BasePart, emitter: ParticleEmitter }
 	e.part.CFrame = CFrame.new(pos)
-	e.emitter:Emit(math.min(count or 3, 12))
+	e.emitter:Emit(Budget.count(math.min(count or 3, 12)))
 	return true
 end
 
@@ -35959,7 +36533,7 @@ export type CoinOptions = {
 -- Spawns gold coins at `pos` (a puff when speed is high, a shower when height is high).
 function Orbs.coins(pos: Vector3, opts: CoinOptions?)
 	local o = opts or {}
-	local count = math.clamp(o.count or 6, 1, 40)
+	local count = Budget.count(math.clamp(o.count or 6, 1, 40))
 	local speed = o.speed or 18
 	local spread = o.spread or 0.4
 	local height = o.height or 0
@@ -35967,7 +36541,7 @@ function Orbs.coins(pos: Vector3, opts: CoinOptions?)
 	local stagger = o.stagger or 0
 	for i = 1, count do
 		local function spawnCoin()
-			if #coinList >= MAX_COINS then
+			if #coinList >= Budget.count(MAX_COINS) then
 				local old = table.remove(coinList, 1)
 				if old then
 					old.part:Destroy()
@@ -36394,7 +36968,7 @@ Orbs.readRoute = readRoute
 -- Queues a roll behind the orbs already heading for the chute. False = the wait would be too
 -- long (or too many rolls are running): show the orb without the trip.
 local function scheduleRoll(r: Roll, now: number): boolean
-	if activeRolls >= MAX_ROLLS then
+	if activeRolls >= Budget.count(MAX_ROLLS) then
 		return false
 	end
 	local reach = r.dHop + r.dFall + r.dGutter
@@ -37322,7 +37896,7 @@ return Orbs
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="125">
+          <Item class="ModuleScript" referent="128">
             <Properties>
               <string name="Name">PlateStyle</string>
               <string name="Source"><![CDATA[--!strict
@@ -37571,7 +38145,7 @@ return PlateStyle
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="126">
+          <Item class="ModuleScript" referent="129">
             <Properties>
               <string name="Name">Plates</string>
               <string name="Source"><![CDATA[--!strict
@@ -37599,6 +38173,8 @@ return PlateStyle
 	  starts the looping glow tweens (TweenService, nothing per frame in Lua) only for full
 	  animated plates on the own rack in view, and keeps a few lights on the own rack.
 	  Neighbours' plates are built only when the camera comes within NEAR_RACK studs.
+	  On "mid" / "low" devices (Fx.Budget) fewer plates animate and carry lights
+	  (Budget.count), and on low neighbours' plates wait until 100 studs.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -37611,6 +38187,7 @@ local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 
 local Client = script.Parent.Parent
 local Animator = require(Client.Animator)
+local Budget = require(script.Parent.Budget)
 local State = require(Client.State)
 local PlateStyle = require(script.Parent.PlateStyle)
 
@@ -38287,7 +38864,8 @@ end
 local function scanRack(rack: Rack, camPos: Vector3, look: Vector3, right: Vector3, up: Vector3, tanX: number, tanY: number)
 	local centre = rackCentre(rack)
 	local wasNear = rack.near
-	rack.near = rack.own or (centre ~= nil and (centre - camPos).Magnitude < NEAR_RACK)
+	local nearRack = if Budget.low() then math.min(NEAR_RACK, 100) else NEAR_RACK
+	rack.near = rack.own or (centre ~= nil and (centre - camPos).Magnitude < nearRack)
 	local now = os.clock()
 	for model, since in rack.waiting do
 		local age = now - since
@@ -38316,7 +38894,7 @@ local function scanRack(rack: Rack, camPos: Vector3, look: Vector3, right: Vecto
 		local animate = rack.own
 			and p.mode == "full"
 			and dist < FAR
-			and animCount < ANIM_MAX
+			and animCount < Budget.count(ANIM_MAX)
 			and (style.pulseSpeed > 0 or style.shimmer or style.cycle or style.sparkles)
 			and Animator.inView(rel, 3, look, right, up, tanX, tanY)
 		if animate then
@@ -38333,7 +38911,7 @@ local function scanRack(rack: Rack, camPos: Vector3, look: Vector3, right: Vecto
 			end
 		end
 		if p.light then
-			local lit = rack.own and style.light and lightCount < LIGHTS_MAX and dist < FAR
+			local lit = rack.own and style.light and lightCount < Budget.count(LIGHTS_MAX) and dist < FAR
 			if lit then
 				lightCount += 1
 			end
@@ -38398,7 +38976,7 @@ return Plates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="127">
+          <Item class="ModuleScript" referent="130">
             <Properties>
               <string name="Name">Shelf</string>
               <string name="Source"><![CDATA[--[[
@@ -40022,7 +40600,7 @@ return Shelf
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="128">
+          <Item class="ModuleScript" referent="131">
             <Properties>
               <string name="Name">Sprites</string>
               <string name="Source"><![CDATA[--[[
@@ -40044,12 +40622,21 @@ return Shelf
 
 	Sprites.billboard(parent, name, opts) is a one-off sprite pop in the world: it
 	scales in (Back out), drifts by `rise`, fades and cleans itself up.
+
+	Sprites.room() is false while the live billboard count is at the device's
+	budget (Fx.Budget: 24 on low, 48 on mid, unlimited on high); decorative pops
+	check it and skip, gameplay feedback ignores it.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
+local Budget = require(script.Parent.Budget)
+
 local Sprites = {}
+
+local ROOM: { [string]: number } = { low = 24, mid = 48, high = math.huge }
+local live = 0 -- billboards currently in the world
 
 local WHITE = Color3.new(1, 1, 1)
 
@@ -40125,6 +40712,8 @@ function Sprites.emitter(parent: Instance, name: string, props: { [string]: any 
 			(emitter :: any)[key] = value
 		end
 	end
+	-- A sustained rate follows the device budget (bursts: callers use Budget.count).
+	emitter.Rate *= Budget.scale()
 	emitter.Parent = parent
 	return emitter
 end
@@ -40139,6 +40728,11 @@ export type BillboardOptions = {
 	spin: number?, -- degrees turned over the life
 	maxDistance: number?, -- studs (default 80)
 }
+
+-- True while there is budget left for another decorative billboard on this device.
+function Sprites.room(): boolean
+	return live < ROOM[Budget.tier()]
+end
 
 -- A one-off sprite at `opts.position` on an attachment under `parent` (a part):
 -- scales in, drifts by `rise` (Quad out), fades over the last 40% and is destroyed.
@@ -40177,6 +40771,7 @@ function Sprites.billboard(parent: BasePart, name: string, opts: BillboardOption
 	image.Rotation = (math.random() - 0.5) * 24
 	image.Parent = gui
 	attachment.Parent = parent
+	live += 1
 
 	local function play(target: Instance, info: TweenInfo, goal: { [string]: any })
 		TweenService:Create(target, info, goal):Play()
@@ -40200,6 +40795,7 @@ function Sprites.billboard(parent: BasePart, name: string, opts: BillboardOption
 		{ ImageTransparency = 1 }
 	)
 	task.delay(delay + life + 0.05, function()
+		live -= 1
 		attachment:Destroy()
 	end)
 	return gui
@@ -40209,7 +40805,7 @@ return Sprites
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="129">
+          <Item class="ModuleScript" referent="132">
             <Properties>
               <string name="Name">Surge</string>
               <string name="Source"><![CDATA[--[[
@@ -40226,7 +40822,8 @@ return Sprites
 	              (with a slow, small 2.2 s pulse), a little contrast and brightness
 	  SurgeBloom  BloomEffect: a soft, wide bloom on the brightest surfaces only
 	  SurgeRays   SunRaysEffect: a faint sun glow
-	plus large, soft gold sparkles drifting up over the local player's plot. The
+	plus large, soft gold sparkles drifting up over the local player's plot (their
+	rate scaled by Fx.Budget on phones). The
 	look eases in over FADE_IN seconds and out over FADE_OUT seconds, after which
 	every instance is removed. No flashing: every value moves smoothly.
 
@@ -40307,6 +40904,7 @@ function Surge.init()
 	local State = require(script.Parent.Parent.State) :: any
 	local Sounds = require(script.Parent.Parent.Sounds) :: any
 	local Sprites = require(script.Parent.Sprites) :: any
+	local Budget = require(script.Parent.Budget) :: any
 
 	local WHITE = Color3.new(1, 1, 1)
 	local TINT = Color3.fromRGB(Surge.TINT_RGB[1], Surge.TINT_RGB[2], Surge.TINT_RGB[3])
@@ -40480,8 +41078,9 @@ function Surge.init()
 		r.Intensity = g.rays
 
 		ensureSparkles(os.clock())
+		local budget = Budget.scale() -- fewer drifting sparkles on phones (Fx.Budget)
 		for emitter, rate in emitters do
-			emitter.Rate = rate * g.sparkles
+			emitter.Rate = rate * g.sparkles * budget
 		end
 	end)
 end
@@ -40491,7 +41090,7 @@ return Surge
             </Properties>
           </Item>
         </Item>
-        <Item class="ModuleScript" referent="130">
+        <Item class="ModuleScript" referent="133">
           <Properties>
             <string name="Name">Guide</string>
             <string name="Source"><![CDATA[--[[
@@ -40933,11 +41532,11 @@ return Guide
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="131">
+        <Item class="Folder" referent="134">
           <Properties>
             <string name="Name">Intro</string>
           </Properties>
-          <Item class="ModuleScript" referent="132">
+          <Item class="ModuleScript" referent="135">
             <Properties>
               <string name="Name">Actors</string>
               <string name="Source"><![CDATA[--!strict
@@ -41606,7 +42205,7 @@ return Actors
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="133">
+          <Item class="ModuleScript" referent="136">
             <Properties>
               <string name="Name">Avatar</string>
               <string name="Source"><![CDATA[--!strict
@@ -42249,7 +42848,7 @@ return Avatar
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="134">
+          <Item class="ModuleScript" referent="137">
             <Properties>
               <string name="Name">AvatarRig</string>
               <string name="Source"><![CDATA[--!strict
@@ -42480,7 +43079,7 @@ return AvatarRig
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="135">
+          <Item class="ModuleScript" referent="138">
             <Properties>
               <string name="Name">Cutscene</string>
               <string name="Source"><![CDATA[--[[
@@ -43316,7 +43915,7 @@ return Cutscene
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="136">
+          <Item class="ModuleScript" referent="139">
             <Properties>
               <string name="Name">Effects</string>
               <string name="Source"><![CDATA[--!strict
@@ -44241,7 +44840,7 @@ return Effects
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="137">
+          <Item class="ModuleScript" referent="140">
             <Properties>
               <string name="Name">Framing</string>
               <string name="Source"><![CDATA[--!strict
@@ -44448,7 +45047,7 @@ return Framing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="138">
+          <Item class="ModuleScript" referent="141">
             <Properties>
               <string name="Name">Stage</string>
               <string name="Source"><![CDATA[--!strict
@@ -44734,7 +45333,7 @@ return Stage
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="139">
+          <Item class="ModuleScript" referent="142">
             <Properties>
               <string name="Name">Timeline</string>
               <string name="Source"><![CDATA[--!strict
@@ -45109,7 +45708,7 @@ return Timeline
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="140">
+          <Item class="ModuleScript" referent="143">
             <Properties>
               <string name="Name">Ui</string>
               <string name="Source"><![CDATA[--!strict
@@ -45163,6 +45762,7 @@ export type Ui = typeof(setmetatable(
 		captionText: string,
 		captionToken: number,
 		skip: TextButton,
+		skipHit: TextButton,
 		nameCardGui: Frame?,
 		titleCardGui: Frame?,
 		flashFrame: Frame,
@@ -45380,6 +45980,22 @@ function Ui.new(theme: any, worldParent: Instance, onSkip: () -> ()): Ui
 	}, skip)
 	new("UITextSizeConstraint", { MaxTextSize = 20, MinTextSize = 10 }, skip)
 	skip.Activated:Connect(onSkip)
+	-- Gamepad: Skip takes the shared selection ring (B also skips, see Cutscene).
+	pcall(Kit.selectable, skip)
+	-- Touch: an invisible hit area at least 48 px each way, centred on the pill (sized in
+	-- _layout), so the quiet button keeps its look but takes a thumb.
+	local skipHit = new("TextButton", {
+		Name = "Hit",
+		AutoButtonColor = false,
+		BackgroundTransparency = 1,
+		Selectable = false,
+		Text = "",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(104, 48),
+		ZIndex = 19,
+	}, skip)
+	skipHit.Activated:Connect(onSkip)
 
 	local flashFrame = new("Frame", {
 		Name = "Flash",
@@ -45415,6 +46031,7 @@ function Ui.new(theme: any, worldParent: Instance, onSkip: () -> ()): Ui
 		captionText = "",
 		captionToken = 0,
 		skip = skip,
+		skipHit = skipHit,
 		nameCardGui = nil,
 		titleCardGui = nil,
 		flashFrame = flashFrame,
@@ -45472,7 +46089,9 @@ function Ui._relayout(self: Ui)
 	self.safe = Rect.new(w * SAFE_X, math.max(h * SAFE_Y, insetTop), w * (1 - SAFE_X), h * (1 - SAFE_Y))
 
 	local k = self.k
-	self.skip.Size = UDim2.fromOffset(math.floor(96 * k), math.floor(math.min(36 * k, h * BAR * 0.7)))
+	local skipW, skipH = math.floor(96 * k), math.floor(math.min(36 * k, h * BAR * 0.7))
+	self.skip.Size = UDim2.fromOffset(skipW, skipH)
+	self.skipHit.Size = UDim2.fromOffset(math.max(skipW + 8, 48), math.max(skipH + 12, 48))
 	setMaxText(self.skip, 20 * k)
 
 	self:_layoutCaption()
@@ -45596,6 +46215,12 @@ function Ui.showSkip(self: Ui)
 	local skip = self.skip
 	skip.Visible = true
 	Kit.tween(skip, 0.35, { BackgroundTransparency = 0.25, TextTransparency = 0.1 }, OUT)
+	-- On a controller the selection sits on Skip, so A skips as well as B.
+	if Kit.gamepad or Kit.tenFoot then
+		pcall(function()
+			GuiService.SelectedObject = skip
+		end)
+	end
 end
 
 -- Name card ----------------------------------------------------------------------------
@@ -45942,6 +46567,11 @@ function Ui.destroy(self: Ui)
 	for _, c in self.connections do
 		c:Disconnect()
 	end
+	pcall(function()
+		if GuiService.SelectedObject == self.skip then
+			GuiService.SelectedObject = nil
+		end
+	end)
 	self.captionToken += 1
 	self.gui:Destroy()
 	self.world:Destroy()
@@ -45952,7 +46582,7 @@ return Ui
             </Properties>
           </Item>
         </Item>
-        <Item class="LocalScript" referent="141">
+        <Item class="LocalScript" referent="144">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -46004,8 +46634,9 @@ end)
 screen.Parent = player:WaitForChild("PlayerGui")
 
 -- Scale the whole UI from a 1280x720 design size. Touch screens get a little
--- extra so buttons stay comfortably tappable; short screens switch the HUD to
--- its compact layout.
+-- extra so buttons stay comfortably tappable; a TV (10-foot console, or a
+-- gamepad on a big screen) gets extra for the viewing distance and may go up
+-- to 3x on 4K; short screens switch the HUD to its compact layout.
 local uiScale = Instance.new("UIScale")
 uiScale.Parent = screen
 local function rescale()
@@ -46022,11 +46653,25 @@ local function rescale()
 	local fit = math.min(size.X / 1280, size.Y / 720)
 	if Kit.touch then
 		fit *= 1.15
+	elseif Kit.tenFoot or (Kit.gamepad and size.X >= 1600) then
+		fit *= 1.12
 	end
-	uiScale.Scale = math.clamp(fit, 0.5, 1.5)
+	uiScale.Scale = math.clamp(fit, 0.5, if Kit.tenFoot then 3 else 1.5)
 	screen:SetAttribute("Compact", (size.Y - topInset) / uiScale.Scale < 600)
 end
 rescale()
+-- Modules that only hold the ScreenGui read the input mode from its Input attribute.
+Kit.onInput(function(mode)
+	screen:SetAttribute("Input", mode)
+	rescale()
+end)
+-- Console navigation: the D-pad / left stick moves the selection between buttons.
+pcall(function()
+	GuiService.AutoSelectGuiEnabled = true
+end)
+pcall(function()
+	GuiService.GuiNavigationEnabled = true
+end)
 Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(rescale)
 if Workspace.CurrentCamera then
 	Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescale)
@@ -46332,7 +46977,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="142">
+        <Item class="ModuleScript" referent="145">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects plus background music.
@@ -46804,7 +47449,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="143">
+        <Item class="ModuleScript" referent="146">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -46853,11 +47498,11 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="144">
+        <Item class="Folder" referent="147">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="145">
+          <Item class="ModuleScript" referent="148">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -46882,6 +47527,14 @@ return State
 	window is open (attribute "WindowOpen") the groups slide off their edges.
 	Short screens (attribute "Compact") get smaller grid icons, drop the status
 	captions and the promo, and hide Roblox's player list.
+
+	Input (Kit.onInput, re-placed live): on touch the wallet moves to the top
+	left with the grid under it (one row on phones) so nothing sits on Roblox's
+	thumbstick (bottom-left third, lower half) or jump button, the FREE gift
+	rises above the jump button, the gear leaves the top bar and every button is
+	at least 44 screen px (invisible hit pads on the small ones). On gamepad / TV
+	the edges get a title-safe margin; every HUD button is Selectable (the Kit
+	ring, hover scale on SelectionGained) unless a window or dialog is open.
 ]]
 
 local Players = game:GetService("Players")
@@ -46949,6 +47602,10 @@ local DUMBBELL_W = 264
 local DUMBBELL_W_COMPACT = 200
 local DUMBBELL_ASPECT = 448 / 1024
 local NARROW_PX = 900
+local TAP_PX = 44 -- smallest touch target, in screen px
+local TOP_BAR_PX = 58
+local SAFE_X = 40 -- gamepad / TV title-safe edge (design px)
+local SAFE_BOTTOM = 24
 local PREMIUM_BONUS = 10
 
 local function textWidth(text: string, size: number, font: Enum.Font): number
@@ -46968,6 +47625,7 @@ end
 function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local action = Net.event("Action")
 	local compact = false
+	local promoFits = true -- touch: the promo only shows where it clears the thumbstick
 	local screenScale = screen:FindFirstChildOfClass("UIScale")
 
 	local function toast(text: string, tone: string?)
@@ -47009,6 +47667,28 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		props.Parent = props.Parent or screen
 		return Kit.new("Frame", props)
 	end
+	-- Invisible hit pads grow small buttons to TAP_PX on touch (sized in place()).
+	local pads: { { pad: TextButton, button: GuiObject } } = {}
+	local function hitPad(button: GuiObject, onClick: () -> ())
+		local pad = Kit.new("TextButton", {
+			Name = "Hit",
+			Text = "",
+			AutoButtonColor = false,
+			BackgroundTransparency = 1,
+			Selectable = false,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromScale(1, 1),
+			Visible = false,
+			ZIndex = 30,
+			Parent = button,
+		})
+		pad.Activated:Connect(function()
+			Kit.sound("Click")
+			onClick()
+		end)
+		table.insert(pads, { pad = pad, button = button })
+	end
 	-- A panel-less tap target: icon + caption are children, the button itself is
 	-- the icon square (badges and glow rings sit on it).
 	local function bareButton(parent: Instance, name: string, size: number, onClick: () -> ()): TextButton
@@ -47021,11 +47701,19 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			Parent = parent,
 		})
 		local scale = Kit.new("UIScale", { Parent = button })
-		button.MouseEnter:Connect(function()
+		Kit.selectable(button)
+		local function hover()
 			Kit.tween(scale, 0.12, { Scale = 1.07 })
-		end)
-		button.MouseLeave:Connect(function()
+		end
+		local function unhover()
 			Kit.tween(scale, 0.12, { Scale = 1 })
+		end
+		button.MouseEnter:Connect(hover)
+		button.MouseLeave:Connect(unhover)
+		-- Gamepad selection shows the same lift as the mouse hover.
+		pcall(function()
+			button.SelectionGained:Connect(hover)
+			button.SelectionLost:Connect(unhover)
 		end)
 		button.MouseButton1Down:Connect(function()
 			Kit.tween(scale, 0.08, { Scale = 0.92 })
@@ -47048,7 +47736,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end)
 	gear.AnchorPoint = Vector2.new(1, 0)
 	gear.Position = UDim2.new(1, -10, 0, -GEAR - 7)
-	Kit.hudIcon(gear, "Settings", GEAR, C.Text, { Name = "Icon", ZIndex = 2 })
+	Kit.hudIcon(gear, "Settings", GEAR, C.Text, { Name = "Icon", ZIndex = 2 }).Size = UDim2.fromScale(1, 1)
 	Hud.buttons.Settings = gear
 
 	-- Left edge: icon grid with captions --------------------------------------------------
@@ -47140,7 +47828,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			tutorialWasOpen = false
 			task.delay(9, function()
 				Kit.setGlow(Hud.buttons.Modes, true)
-				toast("New! Tap MODES to try Parkour and the Mog Test", "info")
+				toast("New! " .. (if Kit.touch then "Tap" else "Open") .. " MODES to try Parkour and the Mog Test", "info")
 			end)
 		end
 	end)
@@ -47219,7 +47907,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	local function updatePromo()
 		local mode = wantedPromo()
-		local show = mode ~= nil and not compact and screen:GetAttribute("WindowOpen") ~= true
+		local show = mode ~= nil and not compact and promoFits and screen:GetAttribute("WindowOpen") ~= true
 		if show and mode ~= promoMode then
 			if promoShown then
 				-- Switching offers: the old one eases out, the new one eases in.
@@ -47375,18 +48063,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local runCheckScale = Kit.new("UIScale", { Parent = runCheck })
 	local quitArmed = false
 	local quitButton: TextButton
-	quitButton = Kit.button(runPill, {
-		Name = "Quit",
-		Text = "X",
-		Color = C.SurfaceHi,
-		TextSize = 14,
-		Size = UDim2.fromOffset(30, 28),
-		Position = UDim2.new(1, -4, 0.5, 0),
-		AnchorPoint = Vector2.new(1, 0.5),
-		Radius = 14,
-		Depth = 2,
-		ZIndex = 4,
-	}, function()
+	local function onQuit()
 		if quitArmed then
 			quitArmed = false
 			action:FireServer({ action = "ModeQuit" })
@@ -47406,7 +48083,20 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				Kit.tween(runPill, 0.2, { Size = UDim2.fromOffset(RUN_W, RUN_H) })
 			end
 		end)
-	end)
+	end
+	quitButton = Kit.button(runPill, {
+		Name = "Quit",
+		Text = "X",
+		Color = C.SurfaceHi,
+		TextSize = 14,
+		Size = UDim2.fromOffset(30, 28),
+		Position = UDim2.new(1, -4, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Radius = 14,
+		Depth = 2,
+		ZIndex = 4,
+	}, onQuit)
+	hitPad(quitButton, onQuit)
 	local runStartedAt = 0
 	local runShown = false
 	local runConn: RBXScriptConnection? = nil
@@ -47730,7 +48420,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		return holder, caption
 	end
 	local premiumRow, premiumText = status("Premium", Kit.pickIcon("Crown", "Star"), C.Gold, 0)
-	local _, friendsText = status("Friends", Kit.pickIcon("Invite", "Fans"), C.Rizz, 70)
+	local friendsRow, friendsText = status("Friends", Kit.pickIcon("Invite", "Fans"), C.Rizz, 70)
 	local boostRow, boostText = status("Boost", "Surge", C.Amber, 140)
 	local multLine = Kit.hudText(wallet, {
 		Name = "CashMult",
@@ -47768,6 +48458,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	}, function()
 		handlers.openWindow("Shop", { focus = "Cash" })
 	end)
+	hitPad(addButton, function()
+		handlers.openWindow("Shop", { focus = "Cash" })
+	end)
 	local rizz = group("Rizz", { Size = UDim2.fromOffset(120, 30), Parent = wallet })
 	Kit.hudIcon(rizz, "Gem", 24, C.Rizz, { Name = "GemIcon", Position = UDim2.fromOffset(0, 3), ZIndex = 2 })
 	local gemsLabel = Kit.hudText(rizz, {
@@ -47794,6 +48487,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	}, function()
 		handlers.openWindow("Shop", { focus = "Gems" })
 	end)
+	hitPad(gemPlus, function()
+		handlers.openWindow("Shop", { focus = "Gems" })
+	end)
 	-- The plus and the Rizz line follow the cash amount's width.
 	local function layoutWallet()
 		local x = math.max(textWidth(moneyLabel.Text, moneyLabel.TextSize, moneyLabel.Font) + 4, 60)
@@ -47805,39 +48501,101 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	gemsLabel:GetPropertyChangedSignal("Text"):Connect(layoutWallet)
 
 	-- Layout mode ------------------------------------------------------------------------
-	-- Compact screens: smaller grid icons (>= 44 px targets), no status captions, no
-	-- promo, a smaller dumbbell. Touch: the FREE gift moves up out of the jump
-	-- button's corner. While a window is open the grid slides off the left edge, the
-	-- bottom groups below the bottom edge and the top centre up, and all glide back.
-	local slots: { { gui: GuiObject, rest: () -> UDim2, away: UDim2 } } = {}
-	local function slot(gui: GuiObject, rest: () -> UDim2, away: UDim2)
+	-- Compact screens: smaller grid icons, no status captions, no promo, a smaller
+	-- dumbbell. Touch (live, Kit.onInput): the wallet moves to the top left with the
+	-- grid under it (one row when compact) so the thumbstick's bottom-left third stays
+	-- clear, the FREE gift rises above the jump button, the gear leaves the top bar,
+	-- and every button is >= TAP_PX on screen. Gamepad / TV: title-safe edges. While a
+	-- window is open the grid slides off the left edge, the bottom groups below the
+	-- bottom edge and the top groups up, and all glide back.
+	local gridIcon = GRID_ICON
+	local oneRow = false
+	local L = { edge = EDGE_X, bottom = -6, walletTop = false, walletY = 0, gridY = GRID_Y, tap = 0, tankX = 0, freeY = -20 }
+	local function gridRows(): { { string } }
+		if oneRow then
+			return { { "Home", "Ranking", "Modes", "Index", "Shop", "Invite" } }
+		end
+		return GRID_ROWS
+	end
+	local function gridHeight(): number
+		local rows = #gridRows()
+		return rows * gridIcon + (rows - 1) * GRID_GAP_Y
+	end
+	-- Viewport (screen px) and the UI scale Main applied.
+	local function view(): (Vector2, number)
+		local scale = if screenScale then screenScale.Scale else 1
+		local ok, size = pcall(function()
+			return Workspace.CurrentCamera.ViewportSize
+		end)
+		if not ok or typeof(size) ~= "Vector2" or size.X <= 0 then
+			size = Vector2.new(1280, 720)
+		end
+		return size, math.max(scale, 0.01)
+	end
+	local function measure()
+		local size, scale = view()
+		local touch = Kit.touch
+		local pad = Kit.gamepad or Kit.tenFoot
+		L.edge = if pad then SAFE_X else EDGE_X
+		L.bottom = if pad then -SAFE_BOTTOM else -6
+		L.tap = if touch then math.ceil(TAP_PX / scale) else 0
+		L.walletTop = touch
+		oneRow = touch and compact
+		gridIcon = math.max(if compact then GRID_ICON_COMPACT else GRID_ICON, L.tap)
+		-- Top-left wallet: compact screens drop the status row (its 62 px) there.
+		local skip = if touch and compact then 62 else 0
+		L.walletY = 168 - skip
+		L.gridY = if touch then 138 - skip + 12 else GRID_Y
+		-- Thumbstick zone: left third, lower half of the screen (design px below the top bar).
+		local designW = size.X / scale
+		local halfY = (size.Y / 2 - TOP_BAR_PX) / scale
+		promoFits = not touch or L.gridY + gridHeight() + 26 + PROMO_H + 40 <= halfY
+		local tankW = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
+		L.tankX = if touch then math.max(0, designW / 3 + 8 - (designW - tankW) / 2) else 0
+		-- Jump button: 70 px at 20 px from the corner on small screens, 120 px 90 px up otherwise.
+		local jumpTop = if math.min(size.X, size.Y) <= 500 then 90 else 210
+		L.freeY = if touch then -math.ceil((jumpTop + 8) / scale) elseif pad then -SAFE_BOTTOM else -20
+	end
+
+	local slots: { { gui: GuiObject, rest: () -> UDim2, away: () -> UDim2 } } = {}
+	local function slot(gui: GuiObject, rest: () -> UDim2, away: () -> UDim2)
 		table.insert(slots, { gui = gui, rest = rest, away = away })
 	end
-	local gridIcon = GRID_ICON
-	local function gridHeight(): number
-		return 2 * gridIcon + GRID_GAP_Y
-	end
 	slot(grid, function()
-		return UDim2.fromOffset(EDGE_X, GRID_Y)
-	end, UDim2.fromOffset(-260, GRID_Y))
+		return UDim2.fromOffset(L.edge, L.gridY)
+	end, function()
+		return UDim2.fromOffset(-600, L.gridY)
+	end)
 	slot(promo, function()
-		return UDim2.fromOffset(EDGE_X, GRID_Y + gridHeight() + 26)
-	end, UDim2.fromOffset(-260, GRID_Y + gridHeight() + 26))
+		return UDim2.fromOffset(L.edge, L.gridY + gridHeight() + 26)
+	end, function()
+		return UDim2.fromOffset(-260, L.gridY + gridHeight() + 26)
+	end)
 	slot(wallet, function()
-		return UDim2.new(0, EDGE_X, 1, -6)
-	end, UDim2.new(0, EDGE_X, 1, 200))
+		return if L.walletTop then UDim2.new(0, L.edge, 0, L.walletY) else UDim2.new(0, L.edge, 1, L.bottom)
+	end, function()
+		return if L.walletTop then UDim2.new(0, L.edge, 0, -60) else UDim2.new(0, L.edge, 1, 200)
+	end)
 	slot(tank, function()
-		return UDim2.new(0.5, 0, 1, -6)
-	end, UDim2.new(0.5, 0, 1, 160))
+		return UDim2.new(0.5, L.tankX, 1, L.bottom)
+	end, function()
+		return UDim2.new(0.5, L.tankX, 1, 160)
+	end)
 	slot(corner, function()
-		return UDim2.new(1, -EDGE_X, 1, if Kit.touch then -190 else -20)
-	end, UDim2.new(1, 120, 1, if Kit.touch then -190 else -20))
+		return UDim2.new(1, -L.edge, 1, L.freeY)
+	end, function()
+		return UDim2.new(1, 120, 1, L.freeY)
+	end)
 	slot(units, function()
 		return UDim2.new(0.5, 0, 0, UNITS_Y)
-	end, UDim2.new(0.5, 0, 0, -140))
+	end, function()
+		return UDim2.new(0.5, 0, 0, -140)
+	end)
 	slot(strip, function()
 		return UDim2.new(0.5, 0, 0, STRIP_Y)
-	end, UDim2.new(0.5, 0, 0, -140))
+	end, function()
+		return UDim2.new(0.5, 0, 0, -140)
+	end)
 	local targets: { [GuiObject]: UDim2 } = {}
 	local function place(animate: boolean)
 		local away = screen:GetAttribute("WindowOpen") == true
@@ -47845,7 +48603,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		-- down to the FREE gift, so the gift steps aside while it is up.
 		local crate = screen:GetAttribute("CratePanelOpen") == true
 		for _, s in slots do
-			local pos = if away or (crate and s.gui == corner) then s.away else s.rest()
+			local pos = if away or (crate and s.gui == corner) then s.away() else s.rest()
 			if targets[s.gui] ~= pos then
 				targets[s.gui] = pos
 				if animate then
@@ -47858,52 +48616,89 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	local function applyCompact()
 		compact = screen:GetAttribute("Compact") == true
-		gridIcon = if compact then GRID_ICON_COMPACT else GRID_ICON
+		measure()
 		local step = gridIcon + GRID_GAP_X
-		for row, names in GRID_ROWS do
+		local columns = 0
+		for row, names in gridRows() do
+			columns = math.max(columns, #names)
 			for column, name in names do
 				local button = Hud.buttons[name]
 				button.Size = UDim2.fromOffset(gridIcon, gridIcon)
 				button.Position = UDim2.fromOffset((column - 1) * step, (row - 1) * (gridIcon + GRID_GAP_Y))
 			end
 		end
-		grid.Size = UDim2.fromOffset(3 * step - GRID_GAP_X, gridHeight())
+		grid.Size = UDim2.fromOffset(columns * step - GRID_GAP_X, gridHeight())
 		for _, caption in captions do
 			caption.TextSize = if compact then 15 else 18
 		end
-		-- Status captions go first on short screens; the icons stay.
+		-- Status captions go first on short screens; the icons stay (not on a touch
+		-- phone, where the wallet sits in the top-left corner).
 		for _, label in { premiumText, friendsText, boostText } do
 			label.Visible = not compact
 		end
+		for _, row in { premiumRow, friendsRow, boostRow } do
+			row.Visible = not (Kit.touch and compact)
+		end
 		local width = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
 		tank.Size = UDim2.fromOffset(width, width * DUMBBELL_ASPECT)
+		-- Gear: on the top bar's line with a mouse; below it (never on Roblox's bar) otherwise.
+		local gearSize = math.max(GEAR, L.tap)
+		gear.Size = UDim2.fromOffset(gearSize, gearSize)
+		gear.Position = if Kit.input == "keyboard" and not Kit.tenFoot then UDim2.new(1, -10, 0, -GEAR - 7) else UDim2.new(1, -L.edge, 0, 4)
+		-- FREE gift grows to a full touch target; the countdown follows it.
+		local freeSize = math.max(60, L.tap)
+		freeButton.Size = UDim2.fromOffset(freeSize, freeSize)
+		corner.Size = UDim2.fromOffset(math.max(84, freeSize + 16), freeSize + 32)
+		freeTimer.Position = UDim2.new(0.5, 0, 0, freeSize + 2)
+		for _, p in pads do
+			local w, h = p.button.Size.X.Offset, p.button.Size.Y.Offset
+			p.pad.Size = UDim2.fromOffset(math.max(w, L.tap), math.max(h, L.tap))
+			p.pad.Visible = Kit.touch and (w < L.tap or h < L.tap)
+		end
 		updatePromo()
 		place(next(targets) ~= nil)
+	end
+	-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
+	local selectables: { GuiObject } = { promoButton, addButton, gemPlus, quitButton }
+	for _, button in Hud.buttons do
+		table.insert(selectables, button)
+	end
+	local function updateSelectable()
+		local blocked = screen:GetAttribute("WindowOpen") == true or screen:GetAttribute("ModalOpen") == true
+		for _, button in selectables do
+			Kit.selectable(button, not blocked)
+		end
 	end
 	screen:GetAttributeChangedSignal("WindowOpen"):Connect(function()
 		place(true)
 		updatePromo()
+		updateSelectable()
 	end)
+	screen:GetAttributeChangedSignal("ModalOpen"):Connect(updateSelectable)
 	screen:GetAttributeChangedSignal("CratePanelOpen"):Connect(function()
 		place(true)
 	end)
 	State.changed.Event:Connect(updatePromo)
-	-- Compact or narrow screens: Roblox's player list would cover the top-right
-	-- corner and the unit counter, so it stays hidden there.
+	-- Compact, narrow or touch screens: Roblox's player list would cover the top-right
+	-- corner (the gear on touch) and the unit counter, so it stays hidden there.
 	local function updatePlayerList()
 		local size = designSize()
 		local narrow = size.X > 0 and size.X * (if screenScale then screenScale.Scale else 1) < NARROW_PX
-		Kit.hidePlayerList("smallscreen", screen:GetAttribute("Compact") == true or narrow)
+		Kit.hidePlayerList("smallscreen", screen:GetAttribute("Compact") == true or narrow or Kit.touch)
 	end
-	screen:GetAttributeChangedSignal("Compact"):Connect(function()
+	local function relayout()
 		applyCompact()
 		updatePlayerList()
-	end)
+	end
+	screen:GetAttributeChangedSignal("Compact"):Connect(relayout)
 	pcall(function()
 		screen:GetPropertyChangedSignal("AbsoluteSize"):Connect(updatePlayerList)
 	end)
-	applyCompact()
-	updatePlayerList()
+	if screenScale then
+		screenScale:GetPropertyChangedSignal("Scale"):Connect(relayout)
+	end
+	Kit.onInput(relayout)
+	updateSelectable()
 
 	-- Updates ------------------------------------------------------------------------------
 	local moneyShown: number? = nil
@@ -48248,7 +49043,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="146">
+          <Item class="ModuleScript" referent="149">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -48271,7 +49066,16 @@ return Hud
 	  Kit.TEXT    type scale (TextSize in design pixels; the ScreenGui UIScale
 	              scales the whole 1280x720 design to the device)
 	  Kit.RADIUS  corner radii
-	  Kit.touch   true on touch-first devices (bigger targets)
+	  Kit.input   "touch" | "gamepad" | "keyboard", the input used last
+	              (Kit.touch / Kit.gamepad follow it; Kit.onInput re-flows)
+	              Kit.onInput(fn) -> disconnect; Kit.tenFoot on TV consoles
+	  Kit.keyHint prompt text per mode: Kit.keyHint("confirm"|"back"|"jump")
+	              ("TAP" / "A" / "SPACE"...); Kit.hint(touch, keyboard, gamepad)
+	  Kit.focus   gamepad selection: Kit.focus(target) selects target's first
+	              visible button (FocusFirst attribute wins), Kit.focus(nil)
+	              clears, Kit.unfocus(container) releases, Kit.confine(holder)
+	              traps the D-pad; Kit.selectable(button) + Kit.selectionRing()
+	              give buttons built elsewhere the shared selection ring
 	  Kit.ICONS   names accepted by Kit.icon (and Kit.button's Icon prop)
 
 	Every builder keeps its public signature; see the headers below.
@@ -48280,6 +49084,7 @@ return Hud
 local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local GuiService = game:GetService("GuiService")
 local UserInputService = game:GetService("UserInputService")
 
 local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
@@ -48309,10 +49114,136 @@ Kit.RADIUS = {
 	XL = 22,
 }
 
+-- Input mode ----------------------------------------------------------------------------
+--[[
+	Kit.input is "touch", "gamepad" or "keyboard" (keyboard + mouse): the kind of
+	input the player used last, starting from what the device offers (a console
+	is gamepad, a phone touch, a laptop keyboard even with a touch screen until it
+	is tapped). Kit.touch and Kit.gamepad follow it. Kit.onInput(fn) runs fn(mode)
+	now and whenever the mode changes, so layouts and hints can re-flow when a
+	player picks up a controller or plugs in a keyboard. Kit.tenFoot is true on a
+	TV-distance (10-foot) console interface (Kit.console is the same flag).
+]]
+export type InputMode = "touch" | "gamepad" | "keyboard"
+Kit.input = "keyboard" :: InputMode
 Kit.touch = false
+Kit.gamepad = false
+Kit.tenFoot = false
 pcall(function()
-	Kit.touch = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	Kit.tenFoot = GuiService:IsTenFootInterface() == true
 end)
+Kit.console = Kit.tenFoot
+local inputListeners: { (InputMode) -> () } = {}
+
+-- Maps a UserInputType to a mode; nil for types that say nothing (Focus, TextInput...).
+local function classifyInput(inputType: Enum.UserInputType?): InputMode?
+	if inputType == nil then
+		return nil
+	end
+	if inputType == Enum.UserInputType.Touch then
+		return "touch"
+	end
+	local name = inputType.Name
+	if string.sub(name, 1, 7) == "Gamepad" then
+		return "gamepad"
+	end
+	if name == "Keyboard" or string.sub(name, 1, 5) == "Mouse" then
+		return "keyboard"
+	end
+	return nil
+end
+
+local function applyInput(mode: InputMode)
+	Kit.input = mode
+	Kit.touch = mode == "touch"
+	Kit.gamepad = mode == "gamepad"
+end
+
+local function setInput(mode: InputMode)
+	if mode == Kit.input then
+		return
+	end
+	applyInput(mode)
+	for _, fn in table.clone(inputListeners) do
+		task.spawn(fn, mode)
+	end
+end
+
+pcall(function()
+	local mode: InputMode = "keyboard"
+	local touch, keyboard, gamepad = UserInputService.TouchEnabled, UserInputService.KeyboardEnabled, UserInputService.GamepadEnabled
+	if gamepad and not keyboard and not touch then
+		mode = "gamepad"
+	elseif touch and not keyboard then
+		mode = "touch"
+	end
+	if Kit.tenFoot then
+		mode = "gamepad"
+	end
+	applyInput(mode)
+end)
+-- A controller counts as "in use" on a button press or a clear stick / trigger move; a
+-- resting stick's drift (reported as gamepad input) must not re-flow a keyboard player's HUD.
+local STICK_DEADZONE = 0.35
+local function gamepadIntent(input: InputObject): boolean
+	local key = input.KeyCode
+	if key == Enum.KeyCode.Thumbstick1 or key == Enum.KeyCode.Thumbstick2 then
+		return input.Position.Magnitude >= STICK_DEADZONE
+	end
+	if key == Enum.KeyCode.ButtonL2 or key == Enum.KeyCode.ButtonR2 then
+		return input.Position.Z >= STICK_DEADZONE
+	end
+	return input.UserInputState == Enum.UserInputState.Begin
+end
+pcall(function()
+	UserInputService.LastInputTypeChanged:Connect(function(inputType: Enum.UserInputType)
+		local mode = classifyInput(inputType)
+		if mode and mode ~= "gamepad" then
+			setInput(mode)
+		end
+	end)
+	local function onGamepad(input: InputObject)
+		if classifyInput(input.UserInputType) == "gamepad" and gamepadIntent(input) then
+			setInput("gamepad")
+		end
+	end
+	UserInputService.InputBegan:Connect(onGamepad)
+	UserInputService.InputChanged:Connect(onGamepad)
+end)
+
+-- Runs fn(Kit.input) now and on every change; returns a disconnect function.
+function Kit.onInput(fn: (InputMode) -> ()): () -> ()
+	table.insert(inputListeners, fn)
+	task.spawn(fn, Kit.input)
+	return function()
+		local i = table.find(inputListeners, fn)
+		if i then
+			table.remove(inputListeners, i)
+		end
+	end
+end
+
+local KEY_HINTS: { [string]: { [string]: string } } = {
+	touch = { confirm = "TAP", back = "TAP", jump = "TAP" },
+	gamepad = { confirm = "A", back = "B", jump = "A" },
+	keyboard = { confirm = "SPACE", back = "ESC", jump = "SPACE" },
+}
+
+-- Prompt text for an action in the current mode: Kit.keyHint("confirm") -> "TAP" / "A" / "SPACE".
+function Kit.keyHint(action: "confirm" | "back" | "jump"): string
+	local hints = KEY_HINTS[Kit.input] or KEY_HINTS.keyboard
+	return hints[action] or hints.confirm
+end
+
+-- Picks free wording for the current input: Kit.hint("TAP", "SPACE", "A").
+function Kit.hint(touch: string, keyboard: string, gamepad: string): string
+	if Kit.touch then
+		return touch
+	elseif Kit.gamepad then
+		return gamepad
+	end
+	return keyboard
+end
 
 local WHITE = Color3.new(1, 1, 1)
 local BLACK = Color3.new(0, 0, 0)
@@ -48362,6 +49293,203 @@ function Kit.new(className: string, props: { [string]: any }?, children: { Insta
 	end
 	return inst
 end
+
+-- Gamepad selection -------------------------------------------------------------------
+--[[
+	Console players move a selection (GuiService.SelectedObject) between
+	GuiButtons with the D-pad / left stick. Every Kit control is Selectable and
+	wears Kit.selectionRing() (a sunny rounded outline with a soft glow) so the
+	focus reads in the toy style; decorative hit areas and backdrops are not
+	Selectable. Kit.selectable(button) does the same for buttons built elsewhere.
+
+	Kit.focus(target) selects the first visible, Selectable button under target
+	(a descendant with attribute FocusFirst = true wins; else lowest LayoutOrder,
+	then topmost-leftmost) on gamepad / 10-foot only; Kit.focus(nil) clears the
+	selection in every mode. Kit.unfocus(container) clears it when it sits inside
+	container (or always for nil). Kit.confine(holder) makes holder a
+	SelectionGroup the D-pad cannot leave (Kit.window does this).
+]]
+local selectionRing: Frame? = nil
+
+function Kit.selectionRing(): Frame
+	if selectionRing then
+		return selectionRing
+	end
+	local frame = Kit.new("Frame", {
+		Name = "SelectionRing",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 12, 1, 12),
+		Position = UDim2.fromOffset(-6, -6),
+		ZIndex = 50,
+	})
+	Kit.new("UICorner", { CornerRadius = UDim.new(0, Kit.RADIUS.M), Parent = frame })
+	Kit.new("UIStroke", {
+		Thickness = 3,
+		Color = C.Primary,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		Parent = frame,
+	})
+	-- Inner white hairline so the ring reads on yellow buttons too.
+	local inner = Kit.new("Frame", {
+		Name = "Inner",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -6, 1, -6),
+		Position = UDim2.fromOffset(3, 3),
+		ZIndex = 50,
+		Parent = frame,
+	})
+	Kit.new("UICorner", { CornerRadius = UDim.new(0, Kit.RADIUS.M - 3), Parent = inner })
+	Kit.new("UIStroke", { Thickness = 1.5, Color = WHITE, Transparency = 0.15, Parent = inner })
+	-- Soft outer glow: two wider, fading strokes.
+	for i, spec in { { 4, 0.55 }, { 9, 0.8 } } do
+		local glow = Kit.new("Frame", {
+			Name = "Glow" .. i,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, spec[1] * 2, 1, spec[1] * 2),
+			Position = UDim2.fromOffset(-spec[1], -spec[1]),
+			ZIndex = 49,
+			Parent = frame,
+		})
+		Kit.new("UICorner", { CornerRadius = UDim.new(0, Kit.RADIUS.M + spec[1]), Parent = glow })
+		Kit.new("UIStroke", { Thickness = spec[1], Color = C.Primary, Transparency = spec[2], Parent = glow })
+	end
+	selectionRing = frame
+	return frame
+end
+Kit.SELECTION = Kit.selectionRing()
+
+-- Makes a button navigable by gamepad with the shared ring (`on` = false opts out).
+function Kit.selectable(button: GuiObject, on: boolean?)
+	pcall(function()
+		button.Selectable = on ~= false
+		if on ~= false then
+			button.SelectionImageObject = Kit.selectionRing()
+		end
+	end)
+end
+
+local function currentSelection(): GuiObject?
+	local ok, selected = pcall(function()
+		return GuiService.SelectedObject
+	end)
+	return if ok then selected else nil
+end
+
+local function setSelection(gui: GuiObject?)
+	pcall(function()
+		GuiService.SelectedObject = gui
+	end)
+end
+
+function Kit.selectedIn(holder: Instance?): boolean
+	local selected = currentSelection()
+	return selected ~= nil and holder ~= nil and (selected == holder or selected:IsDescendantOf(holder))
+end
+
+-- Moves the selection to `gui` on gamepad only, so mouse and touch are never hijacked.
+function Kit.select(gui: GuiObject?)
+	if Kit.gamepad or Kit.tenFoot then
+		setSelection(gui)
+	end
+end
+
+local function navigable(inst: Instance): boolean
+	if not inst:IsA("GuiButton") then
+		return false
+	end
+	local ok, result = pcall(function()
+		return inst.Selectable and inst.Visible and inst.AbsoluteSize.X > 0
+	end)
+	return ok and result == true
+end
+
+-- First visible, Selectable GuiButton under `root` (FocusFirst, then LayoutOrder,
+-- then topmost-leftmost). Hidden branches are skipped.
+function Kit.firstSelectable(root: Instance): GuiObject?
+	local best: GuiObject? = nil
+	local bestKey: { number }? = nil
+	local function better(a: { number }, b: { number }?): boolean
+		if b == nil then
+			return true
+		end
+		for i = 1, #a do
+			if a[i] ~= b[i] then
+				return a[i] < b[i]
+			end
+		end
+		return false
+	end
+	local function visit(inst: Instance)
+		if inst:IsA("GuiObject") and not inst.Visible then
+			return
+		end
+		if navigable(inst) then
+			local gui = inst :: GuiObject
+			local pos = gui.AbsolutePosition
+			local key = {
+				if gui:GetAttribute("FocusFirst") == true then 0 else 1,
+				gui.LayoutOrder,
+				math.floor(pos.Y),
+				math.floor(pos.X),
+			}
+			if better(key, bestKey) then
+				best, bestKey = gui, key
+			end
+		end
+		for _, child in inst:GetChildren() do
+			visit(child)
+		end
+	end
+	for _, child in root:GetChildren() do
+		visit(child)
+	end
+	return best
+end
+
+-- Keeps the D-pad inside `holder` (a SelectionGroup that stops at its edges).
+function Kit.confine(holder: GuiObject, on: boolean?)
+	pcall(function()
+		holder.SelectionGroup = on ~= false
+		local stop = if on ~= false then Enum.SelectionBehavior.Stop else Enum.SelectionBehavior.Escape
+		holder.SelectionBehaviorUp = stop
+		holder.SelectionBehaviorDown = stop
+		holder.SelectionBehaviorLeft = stop
+		holder.SelectionBehaviorRight = stop
+	end)
+end
+
+-- Selects the first navigable button in `target` (or target itself) on gamepad;
+-- nil clears the selection in every mode. `preferred` overrides the search.
+function Kit.focus(target: GuiObject?, preferred: GuiObject?)
+	if target == nil then
+		setSelection(nil)
+		return
+	end
+	if not (Kit.gamepad or Kit.tenFoot) then
+		return
+	end
+	local pick = preferred
+	if pick == nil then
+		local ok, found = pcall(function()
+			if navigable(target) then
+				return target
+			end
+			return Kit.firstSelectable(target)
+		end)
+		pick = if ok then found else nil
+	end
+	if pick then
+		setSelection(pick)
+	end
+end
+
+-- Drops the selection if it is inside `container` (nil: always).
+function Kit.unfocus(container: GuiObject?)
+	if container == nil or Kit.selectedIn(container) then
+		setSelection(nil)
+	end
+end
+Kit.blur = Kit.unfocus
 
 -- Colour helpers ----------------------------------------------------------------------
 
@@ -49687,17 +50815,39 @@ end
 function Kit.bouncy(button: GuiButton, hover: number?): UIScale
 	local scale = scaleOf(button)
 	local up = hover or 1.03
+	Kit.selectable(button)
+	-- A finger tap fires MouseEnter but not always MouseLeave, so touch never hovers.
 	button.MouseEnter:Connect(function()
-		Kit.tween(scale, 0.12, { Scale = up })
+		if not Kit.touch then
+			Kit.tween(scale, 0.12, { Scale = up })
+		end
 	end)
 	button.MouseLeave:Connect(function()
 		Kit.tween(scale, 0.12, { Scale = 1 })
+	end)
+	-- The gamepad selection lifts the button like a hover (pcall: the preview has no Selection* events).
+	pcall(function()
+		button.SelectionGained:Connect(function()
+			Kit.tween(scale, 0.12, { Scale = up })
+		end)
+		button.SelectionLost:Connect(function()
+			Kit.tween(scale, 0.12, { Scale = 1 })
+		end)
 	end)
 	button.MouseButton1Down:Connect(function()
 		Kit.tween(scale, 0.07, { Scale = 0.94 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	end)
 	button.MouseButton1Up:Connect(function()
-		Kit.tween(scale, 0.28, { Scale = up }, Enum.EasingStyle.Back)
+		Kit.tween(scale, 0.28, { Scale = if Kit.touch then 1 else up }, Enum.EasingStyle.Back)
+	end)
+	button.Activated:Connect(function()
+		if Kit.gamepad then
+			-- A press from the controller squashes and springs like a click.
+			Kit.tween(scale, 0.07, { Scale = 0.94 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			task.delay(0.08, function()
+				Kit.tween(scale, 0.28, { Scale = up }, Enum.EasingStyle.Back)
+			end)
+		end
 	end)
 	return scale
 end
@@ -49947,30 +51097,55 @@ function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> 
 		face.Position = UDim2.new()
 		base.Visible = true
 	end
-	button.MouseEnter:Connect(function()
+	Kit.selectable(button)
+	local function hoverOn()
 		if state.enabled then
 			state.hover = true
 			Kit.tween(scale, 0.12, { Scale = 1.03 })
 			paintButton(state)
 		end
-	end)
-	button.MouseLeave:Connect(function()
+	end
+	local function hoverOff()
 		state.hover = false
 		Kit.tween(scale, 0.12, { Scale = 1 })
 		paintButton(state)
 		rest()
-	end)
-	button.MouseButton1Down:Connect(function()
+	end
+	local function press()
 		if state.enabled then
 			Kit.tween(scale, 0.07, { Scale = 0.94 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 			Kit.tween(face, 0.07, { Position = UDim2.fromOffset(0, depth - 1) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		end
-	end)
-	button.MouseButton1Up:Connect(function()
+	end
+	local function release()
 		Kit.tween(scale, 0.28, { Scale = if state.hover then 1.03 else 1 }, Enum.EasingStyle.Back)
 		Kit.tween(face, 0.22, { Position = UDim2.new() }, Enum.EasingStyle.Back)
+	end
+	-- A finger tap fires MouseEnter but not always MouseLeave, so touch never hovers
+	-- (a stuck hover would leave the button enlarged and lit after the tap).
+	button.MouseEnter:Connect(function()
+		if not Kit.touch then
+			hoverOn()
+		end
+	end)
+	button.MouseLeave:Connect(hoverOff)
+	pcall(function()
+		button.SelectionGained:Connect(hoverOn)
+		button.SelectionLost:Connect(hoverOff)
+	end)
+	button.MouseButton1Down:Connect(press)
+	button.MouseButton1Up:Connect(function()
+		if Kit.touch then
+			state.hover = false
+			paintButton(state)
+		end
+		release()
 	end)
 	button.Activated:Connect(function()
+		if Kit.gamepad then
+			press()
+			task.delay(0.08, release)
+		end
 		if not state.enabled then
 			Kit.sound("Error")
 			return
@@ -50037,6 +51212,7 @@ function Kit.hitArea(button: GuiButton, size: number, onClick: () -> ()): TextBu
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = button.ZIndex + 3,
+		Selectable = false,
 		Parent = button,
 	})
 	hit.Activated:Connect(onClick)
@@ -50712,6 +51888,8 @@ export type Window = {
 	size: () -> Vector2,
 	-- Fires with the new design size when the window narrows or widens.
 	onResize: BindableEvent,
+	-- Gamepad: re-selects the first button in content (call after re-rendering it).
+	focus: () -> (),
 }
 
 --[[
@@ -50838,6 +52016,9 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 	})
 	Kit.padding(content, 10)
 
+	-- The D-pad never leaves an open window.
+	Kit.confine(holder)
+
 	local open = false
 	local onOpen = Instance.new("BindableEvent")
 	local onClose = Instance.new("BindableEvent")
@@ -50859,7 +52040,14 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 			Kit.setBlur(true)
 			Kit.sound("Open")
 			onOpen:Fire()
+			-- Gamepad: the selection lands on the first button once the content is built.
+			task.defer(function()
+				if open then
+					Kit.focus(content)
+				end
+			end)
 		else
+			Kit.unfocus(holder)
 			Kit.disappear(frame, {
 				onDone = function()
 					holder.Visible = false
@@ -50907,6 +52095,11 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 			return current
 		end,
 		onResize = onResize,
+		focus = function()
+			if open then
+				Kit.focus(content)
+			end
+		end,
 	}
 end
 
@@ -51011,6 +52204,7 @@ function Kit.backdrop(parent: Instance, zindex: number, onClick: (() -> ())?): T
 		Position = UDim2.fromScale(-0.5, -0.5),
 		ZIndex = zindex,
 		Visible = false,
+		Selectable = false,
 		Parent = parent,
 	})
 	if onClick then
@@ -51084,7 +52278,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="147">
+          <Item class="ModuleScript" referent="150">
             <Properties>
               <string name="Name">MapPicker</string>
               <string name="Source"><![CDATA[--[[
@@ -51519,6 +52713,8 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		action:FireServer({ action = "ModeStart", mode = "parkour", level = selected })
 		deps.closeAll()
 	end)
+	-- Gamepad starts on PLAY.
+	play:SetAttribute("FocusFirst", true)
 
 	-- "Clear <map> first!" bubble over the grid (the toast for locked taps).
 	local hint = Kit.pill(window.frame, {
@@ -51985,7 +53181,7 @@ return MapPicker
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="148">
+          <Item class="ModuleScript" referent="151">
             <Properties>
               <string name="Name">MogHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -52050,6 +53246,7 @@ local W = Theme.World
 
 local RING = 180 -- ring diameter (px, design space)
 local ACTION = "MogPress"
+local QUIT_ACTION = "MogQuit"
 local PRIORITY = 3000
 local RESULT_WORDS = { perfect = "PERFECT", hit = "HIT", miss = "MISS" }
 
@@ -52099,6 +53296,16 @@ local shownScore = 0
 local lives, maxLives = 3, 3
 local passedShown = false
 local quitArmed = false
+-- Which input prompt the ring centre shows ("idle", "check"), so it re-reads when the
+-- player switches between touch, keyboard and gamepad; nil while it shows something else.
+local centreHint: string? = nil
+-- The resting quit label: a close "X", or "Y" on a controller (the button that quits).
+local function quitLabel(): string
+	return if Kit.gamepad then "Y" else "X"
+end
+
+-- The quit button's press (first arms "QUIT?", the second quits); set in build.
+local quitPress: () -> () = function() end
 local warned = false
 local bannerToken = 0
 local stepConn: RBXScriptConnection? = nil
@@ -52216,11 +53423,13 @@ local function setIdle()
 	check, pressed, frozenTravel = nil, false, nil
 	ring:idle()
 	ring:setNeedle(nil, 1)
-	ring:setCentre(if Kit.touch then "TAP" else "SPACE", C.TextDim)
+	centreHint = "idle"
+	ring:setCentre(Kit.keyHint("confirm"), C.TextDim)
 end
 
 local function wobble()
 	-- "Wait..." : a little side-to-side shake of the ring, no camera shake.
+	centreHint = nil
 	ring:setCentre("wait…", C.TextDim)
 	local frame: Frame = ring.frame
 	local base = UDim2.fromScale(0.5, 0.5)
@@ -52269,6 +53478,7 @@ local function step()
 	end
 	if not warned then
 		warned = true
+		centreHint = nil
 		ring:setCentre("#" .. tostring(c.n), C.Text)
 	end
 	ring:setNeedle(frozenTravel or travelNow(c), c.dir)
@@ -52289,7 +53499,8 @@ local function onCheck(p: any)
 	-- The DBD-style warning: tick, and MogRing swells the ring in with the new zone.
 	ring:setCheck({ zoneStart = c.zoneStart, zoneSize = c.zoneSize, perfectSize = c.perfectSize, dir = c.dir, n = c.n })
 	ring:setNeedle(nil, c.dir)
-	ring:setCentre(if Kit.touch then "TAP!" else "SPACE", C.Gold)
+	centreHint = "check"
+	ring:setCentre(Kit.keyHint("confirm") .. (if Kit.touch then "!" else ""), C.Gold)
 	Sounds.play("Tick")
 end
 
@@ -52481,6 +53692,13 @@ local function bind()
 		Enum.KeyCode.Return,
 		Enum.KeyCode.ButtonA
 	)
+	-- Gamepad quit: Y (or B) presses the quit button (arm, then confirm).
+	ContextActionService:BindActionAtPriority(QUIT_ACTION, function(_, state)
+		if state == Enum.UserInputState.Begin then
+			quitPress()
+		end
+		return Enum.ContextActionResult.Sink
+	end, false, PRIORITY, Enum.KeyCode.ButtonY, Enum.KeyCode.ButtonB)
 	if not stepConn then
 		stepConn = RunService.RenderStepped:Connect(step)
 	end
@@ -52488,6 +53706,7 @@ end
 
 local function unbind()
 	ContextActionService:UnbindAction(ACTION)
+	ContextActionService:UnbindAction(QUIT_ACTION)
 	if stepConn then
 		stepConn:Disconnect()
 		stepConn = nil
@@ -52515,7 +53734,7 @@ local function onStart(p: any)
 	shownScore = num(p.score, 0)
 	scoreLabel.Text = Format.short(shownScore)
 	comboChip.Visible = false
-	Kit.setButton(quitButton, "X", C.SurfaceHi)
+	Kit.setButton(quitButton, quitLabel(), C.SurfaceHi)
 	quitButton.Size = UDim2.fromOffset(30, 28)
 	heartsRow.Visible = not pvp
 	youPanel.Visible = pvp
@@ -52653,6 +53872,27 @@ function MogHud.build(screenGui: ScreenGui)
 		Depth = 2,
 		ZIndex = 4,
 	}, function()
+		quitPress()
+	end)
+	Kit.selectable(quitButton)
+	-- The X reads 30 x 28; on touch it takes taps over 48 px.
+	local quitHit = Kit.hitArea(quitButton, 48, function()
+		Kit.sound("Click")
+		quitPress()
+	end)
+	quitHit.Visible = Kit.touch
+	Kit.onInput(function()
+		quitHit.Visible = Kit.touch
+		if active then
+			tapHint.Visible = Kit.touch
+			if centreHint == "idle" then
+				ring:setCentre(Kit.keyHint("confirm"), C.TextDim)
+			elseif centreHint == "check" then
+				ring:setCentre(Kit.keyHint("confirm") .. (if Kit.touch then "!" else ""), C.Gold)
+			end
+		end
+	end)
+	quitPress = function()
 		if quitArmed then
 			quitArmed = false
 			action:FireServer({ action = "ModeQuit" })
@@ -52665,11 +53905,11 @@ function MogHud.build(screenGui: ScreenGui)
 		task.delay(3, function()
 			if quitArmed then
 				quitArmed = false
-				Kit.setButton(quitButton, "X", C.SurfaceHi)
+				Kit.setButton(quitButton, quitLabel(), C.SurfaceHi)
 				Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(30, 28) })
 			end
 		end)
-	end)
+	end
 	comboChip = Kit.text(root, {
 		Name = "Combo",
 		Text = "x2 COMBO",
@@ -52766,6 +54006,8 @@ function MogHud.build(screenGui: ScreenGui)
 		Name = "Tap",
 		Text = "",
 		BackgroundTransparency = 1,
+		-- Gamepad presses with A (ContextActionService); the selection never lands here.
+		Selectable = false,
 		Size = UDim2.fromOffset(RING + 40, RING + 40),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
@@ -52978,7 +54220,7 @@ return MogHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="149">
+          <Item class="ModuleScript" referent="152">
             <Properties>
               <string name="Name">MogRing</string>
               <string name="Source"><![CDATA[--!strict
@@ -53484,7 +54726,7 @@ return MogRing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="150">
+          <Item class="ModuleScript" referent="153">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -53505,6 +54747,8 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local GuiService = game:GetService("GuiService")
+local ContextActionService = game:GetService("ContextActionService")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
@@ -53585,6 +54829,7 @@ local function catcher(parent: Instance, zindex: number): TextButton
 		Name = "Skip",
 		AutoButtonColor = false,
 		BackgroundTransparency = 1,
+		Selectable = false,
 		Text = "",
 		Size = UDim2.fromOffset(6000, 6000),
 		Position = UDim2.fromScale(0.5, 0.5),
@@ -53904,8 +55149,117 @@ end
 	Kit.appear(box). `close()` eases it out with Kit.disappear and calls
 	`onClosed` once it is gone.
 ]]
+-- Gamepad and keyboard "back" ------------------------------------------------------------------
+--[[
+	Every open overlay (modal, reward card, crate reveal) pushes a Back entry. B /
+	Escape runs the top-most one (highest ZIndex, newest first); an entry with no
+	`fn` swallows the press (nothing dismissable). The ScreenGui's ModalOpen
+	attribute is true while any entry is up, so Windows leaves its own B / Escape
+	alone underneath a modal.
+]]
+type Back = { z: number, seq: number, fn: (() -> ())? }
+local backStack: { Back } = {}
+local backSeq = 0
+local BACK_ACTION = "PopupsBack"
+local backBound = false
+local runBack: () -> ()
+local function syncModalFlag()
+	local up = #backStack > 0
+	if screen then
+		screen:SetAttribute("ModalOpen", up)
+	end
+	if up == backBound or PREVIEW then
+		return
+	end
+	backBound = up
+	-- B / Escape bound (sunk, high priority) only while an overlay is up.
+	pcall(function()
+		if up then
+			ContextActionService:BindActionAtPriority(BACK_ACTION, function(_, state)
+				if state ~= Enum.UserInputState.Begin then
+					return Enum.ContextActionResult.Pass
+				end
+				runBack()
+				return Enum.ContextActionResult.Sink
+			end, false, Enum.ContextActionPriority.High.Value + 10, Enum.KeyCode.ButtonB, Enum.KeyCode.Escape)
+		else
+			ContextActionService:UnbindAction(BACK_ACTION)
+		end
+	end)
+end
+local function pushBack(z: number, fn: (() -> ())?): Back
+	backSeq += 1
+	local entry: Back = { z = z, seq = backSeq, fn = fn }
+	table.insert(backStack, entry)
+	syncModalFlag()
+	return entry
+end
+local function dropBack(entry: Back)
+	local i = table.find(backStack, entry)
+	if i then
+		table.remove(backStack, i)
+		syncModalFlag()
+	end
+end
+local function topBack(): Back?
+	local top: Back? = nil
+	for _, entry in backStack do
+		if not top or entry.z > top.z or (entry.z == top.z and entry.seq > top.seq) then
+			top = entry
+		end
+	end
+	return top
+end
+
+-- Runs the top-most overlay's back action (deferred, so Windows still sees ModalOpen
+-- for this same press and leaves the window under the modal open).
+runBack = function()
+	local top = topBack()
+	local fn = top and top.fn
+	if fn then
+		task.defer(fn)
+	end
+end
+
+local function selectedNow(): GuiObject?
+	local ok, selected = pcall(function()
+		return GuiService.SelectedObject
+	end)
+	return if ok then selected else nil
+end
+
+-- Gamepad: once the caller has filled the card (next frame), select its FocusFirst
+-- button, or its first button, and keep the selection inside it.
+local function focusCard(card: GuiObject)
+	if PREVIEW then
+		return
+	end
+	task.defer(function()
+		if card.Parent then
+			Kit.confine(card)
+			Kit.focus(card)
+		end
+	end)
+end
+
+-- Drops the selection out of a closing card and hands it back to what was selected
+-- before it opened (a button in an open window), if that is still on screen.
+local function release(card: GuiObject, previous: GuiObject?)
+	if PREVIEW then
+		return
+	end
+	Kit.unfocus(card)
+	if previous and previous ~= card and previous.Visible and previous:IsDescendantOf(game) and not previous:IsDescendantOf(card) then
+		local current = selectedNow()
+		if current == nil or current == card or current:IsDescendantOf(card) then
+			Kit.select(previous)
+		end
+	end
+end
+
 local modalCount = 0
 local openModals: { [() -> ()]: boolean } = {}
+local backOf: { [() -> ()]: Back } = {}
 local function modal(name: string, size: Vector2, zindex: number, onBackdrop: (() -> ())?, onClosed: (() -> ())?): (Frame, () -> ())
 	modalCount += 1
 	local openKey = "Modal:" .. name .. modalCount
@@ -53936,12 +55290,19 @@ local function modal(name: string, size: Vector2, zindex: number, onBackdrop: ((
 		ZIndex = zindex,
 	})
 	local closed = false
+	local previous = selectedNow()
+	local back: Back? = nil
 	local function close()
 		if closed then
 			return
 		end
 		closed = true
 		openModals[close] = nil
+		backOf[close] = nil
+		if back then
+			dropBack(back)
+		end
+		release(box, previous)
 		Kit.setBlur(false)
 		Kit.markOpen(screen, openKey, false)
 		Kit.fadeBackdrop(dim, false)
@@ -53960,14 +55321,27 @@ local function modal(name: string, size: Vector2, zindex: number, onBackdrop: ((
 			task.delay(0.15, onClosed)
 		end
 	end
-	dim.Activated:Connect(function()
+	local function backdropTap()
 		if onBackdrop then
 			onBackdrop()
 		end
 		close()
-	end)
+	end
+	dim.Activated:Connect(backdropTap)
 	openModals[close] = true
+	-- B / Escape acts like a backdrop tap unless the card overrides it (onBack).
+	back = pushBack(zindex, backdropTap)
+	backOf[close] = back :: Back
+	focusCard(box)
 	return box, close
+end
+
+-- Overrides what B / Escape does on the modal `close` belongs to (nil: ignore it).
+local function onBack(close: () -> (), fn: (() -> ())?)
+	local entry = backOf[close]
+	if entry then
+		entry.fn = fn
+	end
 end
 
 -- Closes every open modal (Studio capture hook "UiPreview" = "close").
@@ -54477,6 +55851,8 @@ local function showRewardCard(reward: { [string]: any }, done: () -> ())
 
 	local closed = false
 	local spin: RBXScriptConnection? = nil
+	local previous = selectedNow()
+	local back: Back? = nil
 	local function alive(): boolean
 		return not closed and root.Parent ~= nil
 	end
@@ -54488,6 +55864,10 @@ local function showRewardCard(reward: { [string]: any }, done: () -> ())
 		if spin then
 			spin:Disconnect()
 		end
+		if back then
+			dropBack(back)
+		end
+		release(holder, previous)
 		Kit.markOpen(screen, openKey, false)
 		Kit.disappear(holder, {
 			time = 0.18,
@@ -54500,6 +55880,7 @@ local function showRewardCard(reward: { [string]: any }, done: () -> ())
 		task.delay(0.4, done)
 	end
 	catcher(holder, 5).Activated:Connect(close)
+	back = pushBack(30, close)
 
 	-- Step 2: the unit turns in on its stage. It starts a little past its rest
 	-- pose (never side-on or from behind), eases to the front three-quarter
@@ -54630,7 +56011,11 @@ local function showRewardCard(reward: { [string]: any }, done: () -> ())
 			AnchorPoint = Vector2.new(0.5, 1),
 			ZIndex = 6,
 		}, close)
+		button:SetAttribute("FocusFirst", true)
 		Kit.appear(button, { from = 0.6, time = 0.28 })
+		if not PREVIEW then
+			Kit.focus(holder, button)
+		end
 	end)
 
 	if #extras > 0 then
@@ -54732,17 +56117,25 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 
 	local skipped = false
 	local finished = false
+	local skipBack: Back? = nil
 	local function finish()
 		if finished then
 			return
 		end
 		finished = true
+		if skipBack then
+			dropBack(skipBack)
+		end
 		Kit.disappear(holder, { to = 1.08, time = 0.2, destroy = true })
 		task.delay(0.1, function()
 			showRewardCard(reward, done)
 		end)
 	end
 	catcher(holder, 6).Activated:Connect(function()
+		skipped = true
+		finish()
+	end)
+	skipBack = pushBack(30, function()
 		skipped = true
 		finish()
 	end)
@@ -54957,6 +56350,8 @@ function Popups.confirm(text: string, onYes: () -> (), options: { [string]: any 
 			Position = UDim2.new(0.5, 8, 1, -76),
 			Sound = "Close",
 		}, close)
+		-- Gamepad lands on the safe answer; B also answers "No".
+		no:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		local buttons: { GuiObject } = { yes, no }
@@ -55032,6 +56427,7 @@ function Popups.offline(data: { [string]: any })
 			Size = UDim2.new(1, -40, 0, 58),
 			Position = UDim2.new(0, 20, 1, -76),
 		}, close)
+		go:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		Kit.appear(go, { from = 0.8, time = 0.26, delay = 0.14 })
@@ -55232,6 +56628,13 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 				onPick()
 			end)
 		end
+		-- Gamepad starts on the loud button; B is "Back to my gym".
+		local primary: GuiObject = nextButton or again
+		primary:SetAttribute("FocusFirst", true)
+		onBack(close, function()
+			close()
+			onHome()
+		end)
 		Kit.appear(box)
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		if nextButton then
@@ -55400,6 +56803,11 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			close()
 			onHome()
 		end)
+		again:SetAttribute("FocusFirst", true)
+		onBack(close, function()
+			close()
+			onHome()
+		end)
 		Kit.appear(box)
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		Kit.appear(again, { from = 0.8, time = 0.26, delay = 0.14 })
@@ -55535,6 +56943,7 @@ function Popups.mogChoose(onRivals: () -> (), onPvp: () -> (), onClosed: (() -> 
 		local duel, duelGo =
 			card(0.5, "⚔️", C.Bad, "1v1 DUEL", "Out-mog a real player! PERFECT hits twice. Winner gets the reward.", "FIND DUEL", onPvp)
 		Kit.breathe(duelGo)
+		rivalsGo:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		Kit.appear(rivals, { from = 0.8, time = 0.26, delay = 0.1 })
@@ -55704,6 +57113,7 @@ function Popups.starterOffer()
 			close()
 			Net.event("Action"):FireServer({ action = "PromptPass", name = STARTER.Pass })
 		end)
+		buy:SetAttribute("FocusFirst", true)
 		local later = Kit.button(box, {
 			Name = "Later",
 			Text = "Not now",
@@ -55770,6 +57180,7 @@ function Popups.starter(data: { [string]: any })
 			Size = UDim2.new(1, -40, 0, 58),
 			Position = UDim2.new(0, 20, 1, -76),
 		}, close)
+		go:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
 		Kit.appear(art, { from = 0.4, time = 0.34, delay = 0.06 })
 		Kit.appear(go, { from = 0.8, time = 0.26, delay = 0.2 })
@@ -55959,6 +57370,7 @@ local function buildChestPanel()
 	}, function()
 		action:FireServer({ action = "OpenCrateNow" })
 	end)
+	openButton:SetAttribute("FocusFirst", true)
 	local masterTag = Kit.pill(panel, {
 		Name = "MasterTag",
 		Text = string.upper(crateKey.Title),
@@ -55983,7 +57395,15 @@ local function buildChestPanel()
 		StrokeThickness = 0,
 	})
 	-- Quiet text link: the pass that opens every crate free.
-	local function textLink(name: string, text: string, color: Color3, hover: Color3, y: number, width: number): TextButton
+	local function textLink(
+		name: string,
+		text: string,
+		color: Color3,
+		hover: Color3,
+		y: number,
+		width: number,
+		onClick: () -> ()
+	): TextButton
 		local link = Kit.new("TextButton", {
 			Name = name,
 			BackgroundTransparency = 1,
@@ -55999,12 +57419,36 @@ local function buildChestPanel()
 			Parent = panel,
 		})
 		Kit.bouncy(link, 1.04)
+		local function lit(on: boolean)
+			Kit.tween(link, 0.12, { TextColor3 = if on then hover else color })
+		end
 		link.MouseEnter:Connect(function()
-			Kit.tween(link, 0.12, { TextColor3 = hover })
+			lit(true)
 		end)
 		link.MouseLeave:Connect(function()
-			Kit.tween(link, 0.12, { TextColor3 = color })
+			lit(false)
 		end)
+		link.SelectionGained:Connect(function()
+			lit(true)
+		end)
+		link.SelectionLost:Connect(function()
+			lit(false)
+		end)
+		link.Activated:Connect(onClick)
+		-- The link reads 30 px tall; its tap area is 44 (an invisible strip over it).
+		local hit = Kit.new("TextButton", {
+			Name = "Hit",
+			BackgroundTransparency = 1,
+			AutoButtonColor = false,
+			Selectable = false,
+			Text = "",
+			Size = UDim2.new(1, 0, 0, 44),
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = link.ZIndex + 1,
+			Parent = link,
+		})
+		hit.Activated:Connect(onClick)
 		return link
 	end
 	local passLink = textLink(
@@ -56013,12 +57457,12 @@ local function buildChestPanel()
 		C.TextDim,
 		C.GoldLight,
 		BUTTON_Y + 88,
-		PANEL_W - 40
+		PANEL_W - 40,
+		function()
+			Kit.sound("Click")
+			action:FireServer({ action = "PromptPass", name = "CrateKey" })
+		end
 	)
-	passLink.Activated:Connect(function()
-		Kit.sound("Click")
-		action:FireServer({ action = "PromptPass", name = "CrateKey" })
-	end)
 	-- Discard: a red button at the bottom of the card, DISCARD_GAP below the rows above it.
 	-- It discards the held crate at once, whatever its rarity.
 	local DISCARD_H, DISCARD_GAP = 44, 14
@@ -56184,6 +57628,7 @@ local function buildChestPanel()
 			shownFor = ""
 			if open then
 				open = false
+				Kit.unfocus(panel)
 				Kit.disappear(panel)
 				Kit.hidePlayerList("crate", false)
 				screen:SetAttribute("CratePanelOpen", false)
@@ -56428,7 +57873,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="151">
+          <Item class="ModuleScript" referent="154">
             <Properties>
               <string name="Name">ShopScenes</string>
               <string name="Source"><![CDATA[--[[
@@ -58373,7 +59818,7 @@ return ShopScenes
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="152">
+          <Item class="ModuleScript" referent="155">
             <Properties>
               <string name="Name">Tutorial</string>
               <string name="Source"><![CDATA[--[[
@@ -58796,6 +60241,7 @@ local function showCelebrate(gems: number, cash: number, done: () -> ())
 	local catcher = Kit.new("TextButton", {
 		Name = "Dismiss",
 		BackgroundTransparency = 1,
+		Selectable = false,
 		Text = "",
 		Size = UDim2.fromScale(1, 1),
 		ZIndex = 25,
@@ -58923,14 +60369,15 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		ZIndex = 7,
 	})
 
-	-- Quiet skip: a small "x" (36 px hit area) that asks before skipping.
+	-- Quiet skip: a small "x" (44 px hit area, centred where the 36 px one was) that asks
+	-- before skipping.
 	local skip = Kit.new("TextButton", {
 		Name = "Skip",
 		BackgroundTransparency = 1,
 		Text = "",
 		AutoButtonColor = false,
-		Size = UDim2.fromOffset(36, 36),
-		Position = UDim2.new(1, -2, 0.5, 0),
+		Size = UDim2.fromOffset(44, 44),
+		Position = UDim2.new(1, 2, 0.5, 0),
 		AnchorPoint = Vector2.new(1, 0.5),
 		ZIndex = 8,
 		Parent = pill,
@@ -58942,19 +60389,25 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		ZIndex = 9,
 	})
 	Kit.bouncy(skip, 1.12)
-	skip.MouseEnter:Connect(function()
+	Kit.selectable(skip)
+	local function lit(on: boolean)
 		for _, part in cross:GetChildren() do
 			if part:IsA("Frame") then
-				Kit.tween(part, 0.12, { BackgroundColor3 = C.TextDim })
+				Kit.tween(part, 0.12, { BackgroundColor3 = if on then C.TextDim else C.TextMute })
 			end
 		end
+	end
+	skip.MouseEnter:Connect(function()
+		lit(true)
 	end)
 	skip.MouseLeave:Connect(function()
-		for _, part in cross:GetChildren() do
-			if part:IsA("Frame") then
-				Kit.tween(part, 0.12, { BackgroundColor3 = C.TextMute })
-			end
-		end
+		lit(false)
+	end)
+	skip.SelectionGained:Connect(function()
+		lit(true)
+	end)
+	skip.SelectionLost:Connect(function()
+		lit(false)
 	end)
 	skip.Activated:Connect(function()
 		Kit.sound("Click")
@@ -58998,7 +60451,7 @@ return Tutorial
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="153">
+          <Item class="ModuleScript" referent="156">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
@@ -59060,6 +60513,31 @@ local function anyOpen(): boolean
 end
 Windows.isAnyOpen = anyOpen
 
+-- Gamepad: a window can name the control its selection should land on when it opens
+-- (Shop: the card it was opened at); otherwise its FocusFirst control or first button.
+local focusPick: { [string]: () -> GuiObject? } = {}
+
+-- Re-runs gamepad focus one frame after a window's content is (re)built, so the
+-- selection lands on its first card or button rather than a stale one.
+local function focusWindow(name: string)
+	local window = windows[name]
+	if not window or PREVIEW then
+		return
+	end
+	task.defer(function()
+		if not window.isOpen() then
+			return
+		end
+		local pick = focusPick[name]
+		local preferred = if pick then pick() else nil
+		if preferred then
+			Kit.focus(window.content, preferred)
+		else
+			window.focus()
+		end
+	end)
+end
+
 -- opts.focus (Shop only): a pass or cosmetic name, or a section ("Passes", "Cosmetics", "Cash",
 -- "Aura", "Gems"), to open scrolled to.
 function Windows.open(name: string, opts: { focus: string? }?)
@@ -59073,8 +60551,15 @@ function Windows.open(name: string, opts: { focus: string? }?)
 	for key, window in windows do
 		window.setOpen(key == name and not window.isOpen())
 	end
+	if target and target.isOpen() then
+		focusWindow(name)
+	end
 	Kit.fadeBackdrop(backdrop, anyOpen())
 	Windows.changed:Fire()
+	if name == "Shop" and target and target.isOpen() then
+		-- Shop funnel step 1 (Server.Analytics).
+		Net.event("Action"):FireServer({ action = "ShopOpened" })
+	end
 end
 
 function Windows.closeAll()
@@ -59689,6 +61174,8 @@ local function buildShop(screen: ScreenGui)
 	})
 	scroll.ZIndex = 2
 	scroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+	-- Gamepad selection moves between the cards; the engine scrolls the page to them.
+	scroll.Selectable = false
 
 	-- Soft fade along the bottom edge of the page (stacked strips of the well colour, so it
 	-- also renders without gradient transparency); it fades out at the end of the page.
@@ -59831,9 +61318,31 @@ local function buildShop(screen: ScreenGui)
 			ZIndex = 4,
 		})
 		Kit.bouncy(pill, 1)
-		pill.Activated:Connect(function()
+		Kit.selectable(pill)
+		if i == 1 then
+			pill:SetAttribute("FocusFirst", true)
+		end
+		local function pick()
 			Kit.sound("Click")
 			scrollToSection(i)
+		end
+		pill.Activated:Connect(pick)
+		-- On touch the pill (36 px) takes taps over its whole slot of the 44 px bar.
+		local hit = Kit.new("TextButton", {
+			Name = "Hit" .. section.key,
+			Text = "",
+			AutoButtonColor = false,
+			BackgroundTransparency = 1,
+			Selectable = false,
+			Size = UDim2.new(1 / #SECTIONS, 0, 1, 0),
+			Position = UDim2.fromScale((i - 1) / #SECTIONS, 0),
+			Visible = Kit.touch,
+			ZIndex = 5,
+			Parent = switcher,
+		})
+		hit.Activated:Connect(pick)
+		Kit.onInput(function()
+			hit.Visible = Kit.touch
 		end)
 		pills[i] = pill
 	end
@@ -59917,6 +61426,7 @@ local function buildShop(screen: ScreenGui)
 	}
 	local cascade: { GuiObject } = {}
 	local entries: { Entry } = {}
+	local shopFocusButton: GuiObject? = nil
 	local scenes: { Scene } = {}
 	local refresh: () -> ()
 
@@ -60046,6 +61556,13 @@ local function buildShop(screen: ScreenGui)
 			lift(true)
 		end)
 		entry.body.MouseLeave:Connect(function()
+			lift(false)
+		end)
+		-- Gamepad: the selected card lifts like a hovered one.
+		entry.button.SelectionGained:Connect(function()
+			lift(true)
+		end)
+		entry.button.SelectionLost:Connect(function()
 			lift(false)
 		end)
 		entry.button.MouseButton1Down:Connect(function()
@@ -61431,6 +62948,9 @@ local function buildShop(screen: ScreenGui)
 	end
 	window.onClose.Event:Connect(stopIdle)
 
+	focusPick.Shop = function()
+		return shopFocusButton
+	end
 	beforeOpen.Shop = function()
 		stopIdle()
 		local mine = session
@@ -61468,6 +62988,15 @@ local function buildShop(screen: ScreenGui)
 		scrollTo(y, true)
 		setCurrent(index, false)
 		showFade(math.min(y, maxScroll()) < maxScroll() - 2)
+		-- Gamepad: opened at a card, the selection starts on its buy button.
+		shopFocusButton = nil
+		if focusCell then
+			for _, entry in entries do
+				if entry.cell == focusCell then
+					shopFocusButton = entry.button
+				end
+			end
+		end
 
 		-- Opening choreography: section headers slide in, cards and banners ripple in (scale +
 		-- fade, 28 ms apart), the cart lands a beat later with an overshoot and wiggle.
@@ -61598,6 +63127,11 @@ local function buildIndex(screen: ScreenGui)
 	end
 
 	local scroll = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -30), Position = UDim2.fromOffset(0, 30) })
+	-- The Index has no buttons: on gamepad the grid itself is selected so the stick scrolls it.
+	Kit.selectable(scroll)
+	focusPick.Index = function()
+		return scroll
+	end
 	Kit.new("UIPadding", {
 		PaddingTop = UDim.new(0, 10),
 		PaddingLeft = UDim.new(0, 4),
@@ -61906,6 +63440,8 @@ local function buildRanking(screen: ScreenGui)
 	headerText(string.upper(W.Units), 0.62, 0.36, Enum.TextXAlignment.Right)
 
 	local list = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -154), Position = UDim2.fromOffset(0, 80) })
+	-- Rows are not buttons: the list itself is selectable so a gamepad can scroll it.
+	Kit.selectable(list)
 	Kit.new("UIPadding", {
 		PaddingRight = UDim.new(0, 14),
 		PaddingTop = UDim.new(0, 4),
@@ -62210,7 +63746,11 @@ local function buildSettings(screen: ScreenGui)
 					t.sub.Text = "Merge pairs automatically"
 				else
 					t.set(false, true)
-					t.sub.Text = "Game pass: tap to get it (" .. price(Theme.Monetization.Passes.AutoMerge.Price) .. ")"
+					t.sub.Text = "Game pass: "
+						.. Kit.hint("tap", "click", "press")
+						.. " to get it ("
+						.. price(Theme.Monetization.Passes.AutoMerge.Price)
+						.. ")"
 				end
 			else
 				on = data.settings[t.key] == true
@@ -62506,6 +64046,8 @@ local function buildModes(screen: ScreenGui)
 	parkour.reward.Position = UDim2.new(0, 12, 1, -24)
 
 	-- MOG TEST --------------------------------------------------------------------------
+	-- Gamepad starts on the loud PLAY of the first mode.
+	parkour.play:SetAttribute("FocusFirst", true)
 	local mog = modeRow(
 		window.content,
 		{
@@ -62663,8 +64205,14 @@ function Windows.build(screen: ScreenGui)
 	maps = picker
 	beforeOpen.Maps = picker.beforeOpen
 
+	-- B / Escape closes the open window. gameProcessedEvent is not checked: ButtonB
+	-- comes in processed while a button is selected, and that is when it matters.
+	-- A modal on top (Popups sets ModalOpen) handles the press itself.
 	UserInputService.InputBegan:Connect(function(input)
 		if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.ButtonB then
+			if screen:GetAttribute("ModalOpen") == true then
+				return
+			end
 			if anyOpen() then
 				Kit.sound("Close")
 				Windows.closeAll()
@@ -62681,7 +64229,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="154">
+  <Item class="Workspace" referent="157">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>

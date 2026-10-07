@@ -430,6 +430,8 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		action:FireServer({ action = "ModeStart", mode = "parkour", level = selected })
 		deps.closeAll()
 	end)
+	-- Gamepad starts on PLAY.
+	play:SetAttribute("FocusFirst", true)
 
 	-- "Clear <map> first!" bubble over the grid (the toast for locked taps).
 	local hint = Kit.pill(window.frame, {

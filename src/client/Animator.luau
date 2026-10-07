@@ -19,6 +19,8 @@
 	All world parts are moved with one BulkMoveTo call per frame. The hot path
 	reuses its tables (no table allocations per frame); only CFrame values are
 	created. Animator.stats() reports the last frame's counts.
+	On "mid" / "low" devices (Fx.Budget) the full / trickle counts scale with
+	Budget.count and on low units past LOW_FAR studs hold their pose.
 
 	Viewport units (Index cards, reward popup): call Animator.attach(model)
 	after building the model; they animate while their ViewportFrame is
@@ -44,10 +46,12 @@ local Workspace = game:GetService("Workspace")
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Poses = require(Shared:WaitForChild("Poses"))
 local RigPose = require(Shared:WaitForChild("RigPose"))
+local Budget = require(script.Parent.Fx.Budget)
 
 local Animator = {}
 
 local FAR = 140 -- studs: beyond this units hold their pose
+local LOW_FAR = 100 -- the same on a "low" budget device
 local OWN_FULL = 16 -- own-plot rigs posed every frame (nearest visible first)
 local OTHER_FULL = 4 -- other plots' rigs posed every frame
 local OWN_TRICKLE = 8 -- further visible own-plot rigs refreshed per frame, round-robin
@@ -548,6 +552,8 @@ local function step()
 	table.clear(worldParts)
 	table.clear(worldCFrames)
 	stats.units, stats.visible, stats.full, stats.trickle = 0, 0, 0, 0
+	local far = if Budget.low() then LOW_FAR else FAR
+	local ownFull, otherFull = Budget.count(OWN_FULL), Budget.count(OTHER_FULL)
 
 	local ownN, otherN = 0, 0
 	local ownVisible, otherVisible = 0, 0
@@ -593,7 +599,7 @@ local function step()
 		local half = entry.height * 0.5
 		local rel = (entry.pos :: Vector3) + Vector3.new(0, half, 0) - camPos
 		local distance = rel.Magnitude
-		if distance > FAR then
+		if distance > far then
 			continue
 		end
 		if distance > entry.height * 1.5 and not inView(rel, half * VIEW_MARGIN, look, right, up, tanX, tanY) then
@@ -608,10 +614,10 @@ local function step()
 		end
 		if ownPlot == nil or entry.plot == ownPlot then
 			ownVisible += 1
-			ownN = insertNearest(ownPick, ownKeys, ownN, OWN_FULL, entry, key)
+			ownN = insertNearest(ownPick, ownKeys, ownN, ownFull, entry, key)
 		else
 			otherVisible += 1
-			otherN = insertNearest(otherPick, otherKeys, otherN, OTHER_FULL, entry, key)
+			otherN = insertNearest(otherPick, otherKeys, otherN, otherFull, entry, key)
 		end
 	end
 
@@ -623,8 +629,8 @@ local function step()
 	end
 	stats.full = ownN + otherN
 	stats.visible = ownVisible + otherVisible
-	ownCursor = trickle(ownCursor, true, OWN_TRICKLE, ownVisible - ownN, now)
-	otherCursor = trickle(otherCursor, false, OTHER_TRICKLE, otherVisible - otherN, now)
+	ownCursor = trickle(ownCursor, true, Budget.count(OWN_TRICKLE), ownVisible - ownN, now)
+	otherCursor = trickle(otherCursor, false, Budget.count(OTHER_TRICKLE), otherVisible - otherN, now)
 	-- Drop the references so destroyed models can be collected.
 	table.clear(ownPick)
 	table.clear(otherPick)

@@ -19,6 +19,8 @@ local Economy = require(Shared.Economy)
 local Net = require(Shared.Net)
 local TutorialSteps = require(Shared.TutorialSteps)
 
+local Analytics = require(script.Parent.Analytics)
+local Badges = require(script.Parent.Badges)
 local Tycoon = require(script.Parent.Tycoon)
 
 local Tutorial = {}
@@ -37,6 +39,7 @@ local function finish(session: Tycoon.Session)
 	p.gems += Economy.TUTORIAL_REWARD_GEMS
 	p.money += Economy.TUTORIAL_REWARD_CASH
 	p.totalEarned += Economy.TUTORIAL_REWARD_CASH
+	Badges.graduate(session)
 	notify(session, { event = "done", gems = Economy.TUTORIAL_REWARD_GEMS, cash = Economy.TUTORIAL_REWARD_CASH })
 end
 
@@ -48,6 +51,7 @@ local function advanceTo(session: Tycoon.Session, step: number)
 		return
 	end
 	p.tutorialStep = step
+	Analytics.tutorial(session, step)
 	if step >= TutorialSteps.DONE then
 		finish(session)
 	else
@@ -77,6 +81,7 @@ function Tutorial.skip(session: Tycoon.Session)
 	end
 	local p = session.profile
 	p.tutorialDone = true
+	Analytics.tutorial(session, p.tutorialStep, true)
 	p.tutorialStep = TutorialSteps.DONE
 	notify(session, { event = "skipped" })
 	Tycoon.markDirty(session)

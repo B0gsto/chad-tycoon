@@ -16,6 +16,8 @@ local Tutorial = require(Server.Tutorial)
 local Intro = require(Server.Intro)
 local GameModes = require(Server.GameModes)
 local Cosmetics = require(Server.Cosmetics)
+local Analytics = require(Server.Analytics)
+local Badges = require(Server.Badges)
 
 local AUTOSAVE_SECONDS = 90
 
@@ -30,6 +32,8 @@ Monetization.init(Theme)
 GameModes.init(world.modes, Theme, Tycoon, world)
 Cosmetics.init(Theme)
 Ranking.init(Theme, world.ranking)
+Analytics.init()
+Badges.init(Theme)
 
 local saving: { [Player]: boolean } = {}
 
@@ -71,6 +75,8 @@ local function onPlayerAdded(player: Player)
 	local session = Tycoon.addPlayer(player, profile, canSave, passes)
 	if session then
 		Cosmetics.onSessionStart(session)
+		Analytics.onSessionStart(session)
+		Badges.onSessionStart(session)
 	end
 end
 

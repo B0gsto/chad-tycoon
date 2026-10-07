@@ -1,6 +1,11 @@
 // Drives headless Chromium to turn the exported preview data into screenshots.
 //
 //   node preview/render/shoot.mjs [chad]
+//   GUI_ONLY=1 node preview/render/shoot.mjs chad-844x390-touch
+//
+// Each shot's page is sized from its gui JSON's viewport (export.luau --viewport).
+// GUI_ONLY=1 skips the 3D scenes (no texture bakes) and draws the UI shots over a
+// flat sky, reusing out/chad/thumbs when they exist.
 //
 // Steps per variant: bake every SurfaceGui/BillboardGui to a PNG texture,
 // render the 25 unit thumbnails (for the Index / reward UI), then render each
@@ -108,8 +113,8 @@ const browser = await chromium.launch({
 	args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
 });
 
-async function newPage(scale) {
-	const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: scale });
+async function newPage(scale, width = 1280, height = 720) {
+	const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: scale });
 	page.on("pageerror", (e) => console.error("[page error]", e.message));
 	page.on("console", (m) => {
 		if (m.type() === "error") console.error("[console]", m.text());
@@ -239,35 +244,47 @@ function shotList(world) {
 for (const variant of variants) {
 	console.log(`== ${variant}`);
 	const load = (name) => readJson(join(OUT, variant, name + ".json"));
-	const scenes = { world: load("world"), world_held: load("world_held"), world_tutorial: load("world_tutorial"), showcase: load("showcase") };
+	const guiOnly = !!process.env.GUI_ONLY;
+	const scenes = guiOnly ? {} : { world: load("world"), world_held: load("world_held"), world_tutorial: load("world_tutorial"), showcase: load("showcase") };
 
-	const bakePage = await newPage(2);
 	const textures = {};
-	for (const [name, scene] of Object.entries(scenes)) textures[name] = await bakeTextures(bakePage, variant, name, scene);
-	await bakePage.close();
+	let thumbs = {};
+	if (guiOnly) {
+		const base = variant.split("-")[0];
+		for (let tier = 1; tier <= 25; tier++)
+			for (const sil of [0, 1])
+				if (existsSync(join(OUT, base, "thumbs", `${tier}_${sil}.png`))) thumbs[`thumb:${base}:${tier}:${sil}`] = `/out/${base}/thumbs/${tier}_${sil}.png`;
+	} else {
+		const bakePage = await newPage(2);
+		for (const [name, scene] of Object.entries(scenes)) textures[name] = await bakeTextures(bakePage, variant, name, scene);
+		await bakePage.close();
 
-	const thumbPage = await newPage(1);
-	const thumbs = await renderThumbs(thumbPage, variant, scenes.showcase);
-	await thumbPage.close();
+		const thumbPage = await newPage(1);
+		thumbs = await renderThumbs(thumbPage, variant, scenes.showcase);
+		await thumbPage.close();
+	}
 
 	const shotDir = join(SHOTS, variant);
 	mkdirSync(shotDir, { recursive: true });
 	const only = process.env.ONLY ? process.env.ONLY.split(",") : null;
-	for (const shot of shotList(scenes.world)) {
+	const fakeWorld = { plots: [[0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], [], [], [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]] };
+	for (const shot of shotList(guiOnly ? fakeWorld : scenes.world)) {
 		if (only && !only.some((o) => shot.name.includes(o))) continue;
-		const page = await newPage(1.5);
-		await page.evaluate((map) => window.setThumbs(map), thumbs);
+		if (guiOnly && (shot.gui === "none" || !existsSync(join(OUT, variant, "gui", shot.gui + ".json")))) continue;
 		const gui = shot.gui === "none" ? null : readJson(join(OUT, variant, "gui", shot.gui + ".json"));
+		const [width, height] = gui?.viewport || [1280, 720];
+		const page = await newPage(1.5, width, height);
+		await page.evaluate((map) => window.setThumbs(map), thumbs);
 		const started = Date.now();
 		await page.evaluate(([scene, tex, cam, g, extra]) => window.renderShot(scene, tex, cam, g, extra), [
-			scenes[shot.scene],
-			textures[shot.scene],
+			guiOnly ? null : scenes[shot.scene],
+			guiOnly ? {} : textures[shot.scene],
 			shot.camera,
 			gui,
-			shot.extra || {},
+			{ ...(shot.extra || {}), width, height },
 		]);
 		const file = join(shotDir, shot.name + ".png");
-		await page.screenshot({ path: file, clip: { x: 0, y: 0, width: 1280, height: 720 } });
+		await page.screenshot({ path: file, clip: { x: 0, y: 0, width, height } });
 		await page.close();
 		console.log(`  ${shot.name} (${((Date.now() - started) / 1000).toFixed(1)}s)`);
 	}

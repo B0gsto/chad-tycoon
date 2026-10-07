@@ -57,6 +57,31 @@ local function anyOpen(): boolean
 end
 Windows.isAnyOpen = anyOpen
 
+-- Gamepad: a window can name the control its selection should land on when it opens
+-- (Shop: the card it was opened at); otherwise its FocusFirst control or first button.
+local focusPick: { [string]: () -> GuiObject? } = {}
+
+-- Re-runs gamepad focus one frame after a window's content is (re)built, so the
+-- selection lands on its first card or button rather than a stale one.
+local function focusWindow(name: string)
+	local window = windows[name]
+	if not window or PREVIEW then
+		return
+	end
+	task.defer(function()
+		if not window.isOpen() then
+			return
+		end
+		local pick = focusPick[name]
+		local preferred = if pick then pick() else nil
+		if preferred then
+			Kit.focus(window.content, preferred)
+		else
+			window.focus()
+		end
+	end)
+end
+
 -- opts.focus (Shop only): a pass or cosmetic name, or a section ("Passes", "Cosmetics", "Cash",
 -- "Aura", "Gems"), to open scrolled to.
 function Windows.open(name: string, opts: { focus: string? }?)
@@ -70,8 +95,15 @@ function Windows.open(name: string, opts: { focus: string? }?)
 	for key, window in windows do
 		window.setOpen(key == name and not window.isOpen())
 	end
+	if target and target.isOpen() then
+		focusWindow(name)
+	end
 	Kit.fadeBackdrop(backdrop, anyOpen())
 	Windows.changed:Fire()
+	if name == "Shop" and target and target.isOpen() then
+		-- Shop funnel step 1 (Server.Analytics).
+		Net.event("Action"):FireServer({ action = "ShopOpened" })
+	end
 end
 
 function Windows.closeAll()
@@ -686,6 +718,8 @@ local function buildShop(screen: ScreenGui)
 	})
 	scroll.ZIndex = 2
 	scroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+	-- Gamepad selection moves between the cards; the engine scrolls the page to them.
+	scroll.Selectable = false
 
 	-- Soft fade along the bottom edge of the page (stacked strips of the well colour, so it
 	-- also renders without gradient transparency); it fades out at the end of the page.
@@ -828,9 +862,31 @@ local function buildShop(screen: ScreenGui)
 			ZIndex = 4,
 		})
 		Kit.bouncy(pill, 1)
-		pill.Activated:Connect(function()
+		Kit.selectable(pill)
+		if i == 1 then
+			pill:SetAttribute("FocusFirst", true)
+		end
+		local function pick()
 			Kit.sound("Click")
 			scrollToSection(i)
+		end
+		pill.Activated:Connect(pick)
+		-- On touch the pill (36 px) takes taps over its whole slot of the 44 px bar.
+		local hit = Kit.new("TextButton", {
+			Name = "Hit" .. section.key,
+			Text = "",
+			AutoButtonColor = false,
+			BackgroundTransparency = 1,
+			Selectable = false,
+			Size = UDim2.new(1 / #SECTIONS, 0, 1, 0),
+			Position = UDim2.fromScale((i - 1) / #SECTIONS, 0),
+			Visible = Kit.touch,
+			ZIndex = 5,
+			Parent = switcher,
+		})
+		hit.Activated:Connect(pick)
+		Kit.onInput(function()
+			hit.Visible = Kit.touch
 		end)
 		pills[i] = pill
 	end
@@ -914,6 +970,7 @@ local function buildShop(screen: ScreenGui)
 	}
 	local cascade: { GuiObject } = {}
 	local entries: { Entry } = {}
+	local shopFocusButton: GuiObject? = nil
 	local scenes: { Scene } = {}
 	local refresh: () -> ()
 
@@ -1043,6 +1100,13 @@ local function buildShop(screen: ScreenGui)
 			lift(true)
 		end)
 		entry.body.MouseLeave:Connect(function()
+			lift(false)
+		end)
+		-- Gamepad: the selected card lifts like a hovered one.
+		entry.button.SelectionGained:Connect(function()
+			lift(true)
+		end)
+		entry.button.SelectionLost:Connect(function()
 			lift(false)
 		end)
 		entry.button.MouseButton1Down:Connect(function()
@@ -2428,6 +2492,9 @@ local function buildShop(screen: ScreenGui)
 	end
 	window.onClose.Event:Connect(stopIdle)
 
+	focusPick.Shop = function()
+		return shopFocusButton
+	end
 	beforeOpen.Shop = function()
 		stopIdle()
 		local mine = session
@@ -2465,6 +2532,15 @@ local function buildShop(screen: ScreenGui)
 		scrollTo(y, true)
 		setCurrent(index, false)
 		showFade(math.min(y, maxScroll()) < maxScroll() - 2)
+		-- Gamepad: opened at a card, the selection starts on its buy button.
+		shopFocusButton = nil
+		if focusCell then
+			for _, entry in entries do
+				if entry.cell == focusCell then
+					shopFocusButton = entry.button
+				end
+			end
+		end
 
 		-- Opening choreography: section headers slide in, cards and banners ripple in (scale +
 		-- fade, 28 ms apart), the cart lands a beat later with an overshoot and wiggle.
@@ -2595,6 +2671,11 @@ local function buildIndex(screen: ScreenGui)
 	end
 
 	local scroll = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -30), Position = UDim2.fromOffset(0, 30) })
+	-- The Index has no buttons: on gamepad the grid itself is selected so the stick scrolls it.
+	Kit.selectable(scroll)
+	focusPick.Index = function()
+		return scroll
+	end
 	Kit.new("UIPadding", {
 		PaddingTop = UDim.new(0, 10),
 		PaddingLeft = UDim.new(0, 4),
@@ -2903,6 +2984,8 @@ local function buildRanking(screen: ScreenGui)
 	headerText(string.upper(W.Units), 0.62, 0.36, Enum.TextXAlignment.Right)
 
 	local list = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -154), Position = UDim2.fromOffset(0, 80) })
+	-- Rows are not buttons: the list itself is selectable so a gamepad can scroll it.
+	Kit.selectable(list)
 	Kit.new("UIPadding", {
 		PaddingRight = UDim.new(0, 14),
 		PaddingTop = UDim.new(0, 4),
@@ -3207,7 +3290,11 @@ local function buildSettings(screen: ScreenGui)
 					t.sub.Text = "Merge pairs automatically"
 				else
 					t.set(false, true)
-					t.sub.Text = "Game pass: tap to get it (" .. price(Theme.Monetization.Passes.AutoMerge.Price) .. ")"
+					t.sub.Text = "Game pass: "
+						.. Kit.hint("tap", "click", "press")
+						.. " to get it ("
+						.. price(Theme.Monetization.Passes.AutoMerge.Price)
+						.. ")"
 				end
 			else
 				on = data.settings[t.key] == true
@@ -3503,6 +3590,8 @@ local function buildModes(screen: ScreenGui)
 	parkour.reward.Position = UDim2.new(0, 12, 1, -24)
 
 	-- MOG TEST --------------------------------------------------------------------------
+	-- Gamepad starts on the loud PLAY of the first mode.
+	parkour.play:SetAttribute("FocusFirst", true)
 	local mog = modeRow(
 		window.content,
 		{
@@ -3660,8 +3749,14 @@ function Windows.build(screen: ScreenGui)
 	maps = picker
 	beforeOpen.Maps = picker.beforeOpen
 
+	-- B / Escape closes the open window. gameProcessedEvent is not checked: ButtonB
+	-- comes in processed while a button is selected, and that is when it matters.
+	-- A modal on top (Popups sets ModalOpen) handles the press itself.
 	UserInputService.InputBegan:Connect(function(input)
 		if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.ButtonB then
+			if screen:GetAttribute("ModalOpen") == true then
+				return
+			end
 			if anyOpen() then
 				Kit.sound("Close")
 				Windows.closeAll()

@@ -23,6 +23,8 @@
 	  starts the looping glow tweens (TweenService, nothing per frame in Lua) only for full
 	  animated plates on the own rack in view, and keeps a few lights on the own rack.
 	  Neighbours' plates are built only when the camera comes within NEAR_RACK studs.
+	  On "mid" / "low" devices (Fx.Budget) fewer plates animate and carry lights
+	  (Budget.count), and on low neighbours' plates wait until 100 studs.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -35,6 +37,7 @@ local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 
 local Client = script.Parent.Parent
 local Animator = require(Client.Animator)
+local Budget = require(script.Parent.Budget)
 local State = require(Client.State)
 local PlateStyle = require(script.Parent.PlateStyle)
 
@@ -711,7 +714,8 @@ end
 local function scanRack(rack: Rack, camPos: Vector3, look: Vector3, right: Vector3, up: Vector3, tanX: number, tanY: number)
 	local centre = rackCentre(rack)
 	local wasNear = rack.near
-	rack.near = rack.own or (centre ~= nil and (centre - camPos).Magnitude < NEAR_RACK)
+	local nearRack = if Budget.low() then math.min(NEAR_RACK, 100) else NEAR_RACK
+	rack.near = rack.own or (centre ~= nil and (centre - camPos).Magnitude < nearRack)
 	local now = os.clock()
 	for model, since in rack.waiting do
 		local age = now - since
@@ -740,7 +744,7 @@ local function scanRack(rack: Rack, camPos: Vector3, look: Vector3, right: Vecto
 		local animate = rack.own
 			and p.mode == "full"
 			and dist < FAR
-			and animCount < ANIM_MAX
+			and animCount < Budget.count(ANIM_MAX)
 			and (style.pulseSpeed > 0 or style.shimmer or style.cycle or style.sparkles)
 			and Animator.inView(rel, 3, look, right, up, tanX, tanY)
 		if animate then
@@ -757,7 +761,7 @@ local function scanRack(rack: Rack, camPos: Vector3, look: Vector3, right: Vecto
 			end
 		end
 		if p.light then
-			local lit = rack.own and style.light and lightCount < LIGHTS_MAX and dist < FAR
+			local lit = rack.own and style.light and lightCount < Budget.count(LIGHTS_MAX) and dist < FAR
 			if lit then
 				lightCount += 1
 			end

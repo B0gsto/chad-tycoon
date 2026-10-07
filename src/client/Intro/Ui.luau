@@ -49,6 +49,7 @@ export type Ui = typeof(setmetatable(
 		captionText: string,
 		captionToken: number,
 		skip: TextButton,
+		skipHit: TextButton,
 		nameCardGui: Frame?,
 		titleCardGui: Frame?,
 		flashFrame: Frame,
@@ -266,6 +267,22 @@ function Ui.new(theme: any, worldParent: Instance, onSkip: () -> ()): Ui
 	}, skip)
 	new("UITextSizeConstraint", { MaxTextSize = 20, MinTextSize = 10 }, skip)
 	skip.Activated:Connect(onSkip)
+	-- Gamepad: Skip takes the shared selection ring (B also skips, see Cutscene).
+	pcall(Kit.selectable, skip)
+	-- Touch: an invisible hit area at least 48 px each way, centred on the pill (sized in
+	-- _layout), so the quiet button keeps its look but takes a thumb.
+	local skipHit = new("TextButton", {
+		Name = "Hit",
+		AutoButtonColor = false,
+		BackgroundTransparency = 1,
+		Selectable = false,
+		Text = "",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(104, 48),
+		ZIndex = 19,
+	}, skip)
+	skipHit.Activated:Connect(onSkip)
 
 	local flashFrame = new("Frame", {
 		Name = "Flash",
@@ -301,6 +318,7 @@ function Ui.new(theme: any, worldParent: Instance, onSkip: () -> ()): Ui
 		captionText = "",
 		captionToken = 0,
 		skip = skip,
+		skipHit = skipHit,
 		nameCardGui = nil,
 		titleCardGui = nil,
 		flashFrame = flashFrame,
@@ -358,7 +376,9 @@ function Ui._relayout(self: Ui)
 	self.safe = Rect.new(w * SAFE_X, math.max(h * SAFE_Y, insetTop), w * (1 - SAFE_X), h * (1 - SAFE_Y))
 
 	local k = self.k
-	self.skip.Size = UDim2.fromOffset(math.floor(96 * k), math.floor(math.min(36 * k, h * BAR * 0.7)))
+	local skipW, skipH = math.floor(96 * k), math.floor(math.min(36 * k, h * BAR * 0.7))
+	self.skip.Size = UDim2.fromOffset(skipW, skipH)
+	self.skipHit.Size = UDim2.fromOffset(math.max(skipW + 8, 48), math.max(skipH + 12, 48))
 	setMaxText(self.skip, 20 * k)
 
 	self:_layoutCaption()
@@ -482,6 +502,12 @@ function Ui.showSkip(self: Ui)
 	local skip = self.skip
 	skip.Visible = true
 	Kit.tween(skip, 0.35, { BackgroundTransparency = 0.25, TextTransparency = 0.1 }, OUT)
+	-- On a controller the selection sits on Skip, so A skips as well as B.
+	if Kit.gamepad or Kit.tenFoot then
+		pcall(function()
+			GuiService.SelectedObject = skip
+		end)
+	end
 end
 
 -- Name card ----------------------------------------------------------------------------
@@ -828,6 +854,11 @@ function Ui.destroy(self: Ui)
 	for _, c in self.connections do
 		c:Disconnect()
 	end
+	pcall(function()
+		if GuiService.SelectedObject == self.skip then
+			GuiService.SelectedObject = nil
+		end
+	end)
 	self.captionToken += 1
 	self.gui:Destroy()
 	self.world:Destroy()

@@ -9,7 +9,13 @@
 	  out/<variant>/showcase.json     all 25 unit tiers lined up
 	  out/<variant>/gui/<shot>.json   the HUD / windows / popups for each screenshot
 
-	Usage: lune run preview/export/export.luau [chad]
+	Usage: lune run preview/export/export.luau [chad] [--viewport WxH] [--touch | --gamepad]
+
+	--viewport sizes the screen (default 1280x720) and --touch / --gamepad make
+	UserInputService report that device, so Kit picks its touch / console
+	layout. Either option writes to out/<variant>-<WxH>[-touch|-gamepad]
+	(e.g. out/chad-844x390-touch) so the normal export is untouched; render
+	its HUD with `GUI_ONLY=1 node preview/render/shoot.mjs chad-844x390-touch`.
 ]]
 
 local fs = require("@lune/fs")
@@ -19,10 +25,37 @@ local roblox = require("@lune/roblox")
 local serde = require("@lune/serde")
 local task = require("@lune/task")
 
-local variant = process.args[1] or "chad"
+local variant = "chad"
+local VIEW_W, VIEW_H = 1280, 720
+local device: string? = nil -- "touch" | "gamepad" (nil: keyboard + mouse)
+local custom = false
+do
+	local i = 1
+	while i <= #process.args do
+		local arg = process.args[i]
+		if arg == "--viewport" then
+			i += 1
+			local w, h = string.match(process.args[i] or "", "^(%d+)x(%d+)$")
+			assert(w and h, "--viewport wants WxH, e.g. 844x390")
+			VIEW_W, VIEW_H = tonumber(w) :: number, tonumber(h) :: number
+			custom = true
+		elseif arg == "--touch" or arg == "--gamepad" then
+			device = string.sub(arg, 3)
+			custom = true
+		else
+			variant = arg
+		end
+		i += 1
+	end
+end
 local PLACES = { chad = "build/ChadAuraTycoon.rbxlx", bot = "build/BotFactoryTycoon.rbxlx" }
 -- PREVIEW_PLACE / PREVIEW_OUT let several exports run side by side (private build + output dir).
-local OUT = process.env.PREVIEW_OUT or ("preview/out/" .. variant)
+local OUT = process.env.PREVIEW_OUT
+	or (
+		"preview/out/"
+		.. variant
+		.. (if custom then string.format("-%dx%d", VIEW_W, VIEW_H) .. (if device then "-" .. device else "") else "")
+	)
 fs.writeDir(OUT .. "/gui")
 
 math.randomseed(if variant == "chad" then 7 else 11)
@@ -96,15 +129,33 @@ local function signalFor(inst, name: string)
 end
 
 local EVENTS = {
-	TextButton = { "Activated", "MouseEnter", "MouseLeave", "MouseButton1Down", "MouseButton1Up", "MouseButton1Click" },
-	ImageButton = { "Activated", "MouseEnter", "MouseLeave", "MouseButton1Down", "MouseButton1Up", "MouseButton1Click" },
+	TextButton = {
+		"Activated",
+		"MouseEnter",
+		"MouseLeave",
+		"MouseButton1Down",
+		"MouseButton1Up",
+		"MouseButton1Click",
+		"SelectionGained",
+		"SelectionLost",
+	},
+	ImageButton = {
+		"Activated",
+		"MouseEnter",
+		"MouseLeave",
+		"MouseButton1Down",
+		"MouseButton1Up",
+		"MouseButton1Click",
+		"SelectionGained",
+		"SelectionLost",
+	},
 	BindableEvent = { "Event" },
 	RemoteEvent = { "OnClientEvent", "OnServerEvent" },
 	Player = { "CharacterAdded", "CharacterRemoving" },
 	Players = { "PlayerAdded", "PlayerRemoving" },
 	RunService = { "Heartbeat", "RenderStepped", "Stepped" },
 	MarketplaceService = { "PromptGamePassPurchaseFinished" },
-	UserInputService = { "InputBegan", "InputEnded", "InputChanged" },
+	UserInputService = { "InputBegan", "InputEnded", "InputChanged", "LastInputTypeChanged" },
 	ProximityPrompt = { "Triggered", "TriggerEnded", "PromptShown", "PromptHidden", "PromptButtonHoldBegan", "PromptButtonHoldEnded" },
 }
 for className, names in EVENTS do
@@ -314,7 +365,13 @@ local SOURCE_PATCHES = {
 	-- Lune errors on any access to a destroyed instance (Roblox doesn't), and
 	-- delayed UI callbacks (fades, spinners) may still touch them: detach instead.
 	{ ":Destroy()", ".Parent = nil" },
-	{ "camera.ViewportSize", "Vector2.new(1280, 720)" },
+	{ "camera.ViewportSize", string.format("Vector2.new(%d, %d)", VIEW_W, VIEW_H) },
+	{ "Workspace.CurrentCamera.ViewportSize", string.format("Vector2.new(%d, %d)", VIEW_W, VIEW_H) },
+	-- Lune can't override reflected properties, so the device flags are patched into the source.
+	{ "UserInputService.TouchEnabled", tostring(device == "touch") },
+	{ "UserInputService.GamepadEnabled", tostring(device == "gamepad") },
+	{ "UserInputService.KeyboardEnabled", tostring(device == nil) },
+	{ "UserInputService.MouseEnabled", tostring(device == nil) },
 }
 
 function requireModule(target)
@@ -1014,6 +1071,14 @@ local function main()
 
 	local screen = Instance.new("ScreenGui")
 	screen.Name = "TycoonUI"
+	-- Same UI scale and Compact flag as Main.client (58 px top bar, x1.15 on touch).
+	local KitEarly = requireModule(Client.UI.Kit)
+	local fit = math.min(VIEW_W / 1280, VIEW_H / 720) * (if KitEarly.touch then 1.15 else 1)
+	local uiScale = Instance.new("UIScale")
+	uiScale.Scale = math.clamp(fit, 0.5, 1.5)
+	uiScale.Parent = screen
+	screen:SetAttribute("Compact", (VIEW_H - 58) / uiScale.Scale < 600)
+	screen:SetAttribute("Input", KitEarly.input)
 	Popups.build(screen, Sounds)
 	Windows.build(screen)
 	Guide.build()
@@ -1069,7 +1134,7 @@ local function main()
 	end
 
 	local function shot(name)
-		writeJson(OUT .. "/gui/" .. name .. ".json", { viewport = { 1280, 720 }, root = exportGui(screen) })
+		writeJson(OUT .. "/gui/" .. name .. ".json", { viewport = { VIEW_W, VIEW_H }, root = exportGui(screen) })
 	end
 
 	settle(stateNormal)
@@ -1174,12 +1239,12 @@ local function main()
 	loadingGui.IgnoreGuiInset = true
 	LoadingScreen.build(loadingGui, Theme)
 	signalFor(RunService, "RenderStepped"):Fire(0.2)
-	writeJson(OUT .. "/gui/loading.json", { viewport = { 1280, 720 }, root = exportGui(loadingGui) })
+	writeJson(OUT .. "/gui/loading.json", { viewport = { VIEW_W, VIEW_H }, root = exportGui(loadingGui) })
 
 	-- Overview shot has no UI.
 	clearTransient()
 	local empty = Instance.new("ScreenGui")
-	writeJson(OUT .. "/gui/none.json", { viewport = { 1280, 720 }, root = exportGui(empty) })
+	writeJson(OUT .. "/gui/none.json", { viewport = { VIEW_W, VIEW_H }, root = exportGui(empty) })
 
 	print("done", variant)
 end
