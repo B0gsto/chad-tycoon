@@ -9,7 +9,7 @@ The game is published to its own experience through Open Cloud:
 | Target file | `deploy/target.json` |
 | Publish log | `deploy/history.json` (one entry per publish: version, type, UTC time, file, size, sha256, git head) |
 | API key | `$ROBLOX_API_KEY` when set (CI), else `~/RobloxProjects/.roblox-api-key` (mode 600; sent as `x-api-key`, never printed) |
-| CI/CD | `.github/workflows/ci.yml` (checks) and `.github/workflows/deploy.yml` (publish on push to `main`): see [CI/CD](#cicd) |
+| CI/CD | `.github/workflows/ci.yml` (checks), `.github/workflows/automerge.yml` (merge green PRs) and `.github/workflows/deploy.yml` (publish on push to `main`): see [CI/CD](#cicd) |
 
 ## Release
 
@@ -60,8 +60,11 @@ GitHub Actions on `B0gsto/chad-tycoon` (private repo):
 | Pull request; push to any branch except `main` | `ci.yml` (CI) | `tools/ci-install-tools.sh`, `scripts/check.sh`; uploads `build/ChadAuraTycoon.rbxlx` as artifact `place-<sha>` (14 days). A newer push to the same ref cancels the running check. |
 | Push to `main` (merging a PR included) | `deploy.yml` (Deploy) | the same toolchain, `scripts/build-release.sh` (all checks + `build/ChadAuraTycoon.rbxl`), `tools/deploy.py publish` (Published = live for new servers), then `tools/deploy.py server-size 6`. Uploads the `.rbxl` and `deploy/history.json` as artifact `release-<sha>` (90 days). |
 | Actions > Deploy > **Run workflow** | `deploy.yml` | same, with `version_type` = `published` or `saved`. |
+| CI finished green for a pull request | `automerge.yml` (Auto-merge) | merges the PR into `main` with a merge commit (`Merge pull request #N: <title>`) and dispatches Deploy (a merge made by the Actions token does not fire the push trigger). Leaves drafts, PRs with conflicts, PRs not based on `main` and PRs whose head moved on since the checked commit; `[skip deploy]` in the PR title or body merges without publishing. |
 
 - A failing check stops the publish: nothing is uploaded unless `scripts/check.sh` passes.
+- Every pull request merges itself once CI is green (Bogdan's standing instruction, 2026-10-07): open the PR
+  and walk away; to hold one back, open it as a draft or convert it to a draft.
 - Deploys never overlap (concurrency group `deploy`, not cancelled): a second push to `main` waits for the
   running publish, then publishes its own build.
 - Toolchain: Rojo 7.7.0, Lune 0.10.5, selene 0.31.0, StyLua 2.5.2, luau-lsp 1.70.0, pinned with sha256 sums

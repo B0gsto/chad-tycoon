@@ -74,6 +74,11 @@ function Format.money(n: number): string
 	return "$" .. Format.short(n)
 end
 
+-- A Robux price: the Robux glyph (private-use U+E002, drawn by every Roblox font) and the amount.
+function Format.robux(n: number): string
+	return utf8.char(0xE002) .. " " .. tostring(n)
+end
+
 function Format.multiplier(n: number): string
 	return string.format("%.1fx", n)
 end

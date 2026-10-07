@@ -111,6 +111,42 @@ def pass_auto_cash():
     return [pose([coin_e] + arrows, rotation=(-12, 0, 16))], {}
 
 
+def pass_auto_merge():
+    """Two equal medium aura orbs (bottom corners) with chunky mint arrows pointing up into one big
+    sparkling orb (automatic merge: two combine into one bigger)."""
+    def straight_arrow(p0, p1, y, mat, minor=0.17):
+        """Straight chunky arrow in the XZ plane from p0 to p1 (x, z), tip at p1, with circ_arrow's fat head."""
+        dx, dz = p1[0] - p0[0], p1[1] - p0[1]
+        ln = math.hypot(dx, dz)
+        tx, tz = dx / ln, dz / ln
+        base = (p1[0] - tx * 0.45, p1[1] - tz * 0.45)
+        pts = [(p0[0] + (base[0] - p0[0]) * k / 4, y, p0[1] + (base[1] - p0[1]) * k / 4) for k in range(5)]
+        parts = [ck.sweep(pts, [minor] * len(pts), 16, mat, "ArrowShaft", up=(0, 1, 0))]
+        head = ck.extrude_shape([(0.42, 0.0), (-0.12, 0.38), (-0.12, -0.38)], depth=minor * 2, mat=mat,
+                                name="ArrowHead", bevel=0.09, bevel_segments=4)
+        e1 = (tx, 0, tz)
+        e2 = (-tz, 0, tx)
+        m = sl.Matrix(((e1[0], e2[0], 0, 0), (0, 0, -1, 0), (e1[2], e2[2], 0, 0), (0, 0, 0, 1)))
+        sl.bake_matrix(head, m)
+        head.location = (p1[0] - tx * 0.42, y, p1[1] - tz * 0.42)
+        parts.append(head)
+        return parts
+
+    green = M("Mint")
+    big_c, big_r = (0.0, 0.8), 0.95
+    small_r = 0.56
+    parts = [sl.orb((big_c[0], 0.0, big_c[1]), big_r)]
+    for side in (-1, 1):
+        c = (side * 1.2, -0.95)
+        parts.append(sl.orb((c[0], 0.0, c[1]), small_r, sparkles=False))
+        dx, dz = big_c[0] - c[0], big_c[1] - c[1]
+        ln = math.hypot(dx, dz)
+        ux, uz = dx / ln, dz / ln
+        s0, s1 = small_r * 0.75, ln - big_r * 0.88
+        parts += straight_arrow((c[0] + ux * s0, c[1] + uz * s0), (c[0] + ux * s1, c[1] + uz * s1), -0.8, green)
+    return [pose(parts, rotation=(-12, 0, 8))], {}
+
+
 def pass_double_orbs():
     parts = [sl.orb((-0.72, 0.45, 0.3), 0.84, sparkles=False), sl.orb((0.3, -0.3, -0.12), 0.98)]
     parts.append(sl.x2_badge((1.15, -1.35, -0.72), 1.1))
@@ -664,6 +700,7 @@ ICONS = {
     "CrateLegendary": crate_icon("Legendary"),
     "PassAutoCollect": pass_auto_collect,
     "PassAutoCash": pass_auto_cash,
+    "PassAutoMerge": pass_auto_merge,
     "PassDoubleOrbs": pass_double_orbs,
     "PassDoubleCash": pass_double_cash,
     "PassVipCracker": pass_vip_cracker,

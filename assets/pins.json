@@ -657,28 +657,28 @@
       "updatedAt": "2026-10-06T11:56:59Z"
     },
     "ui/atlas_1": {
-      "assetId": "105407912158381",
+      "assetId": "124009831336881",
       "kind": "Image",
       "moderation": "Approved",
-      "sha256": "419da403ebcd8ff951346b710dd6e55f3bd14f5aa5ef622fcad35d4ad2316981",
+      "sha256": "c89486ad5b17ca12c3ce71eed07cf2e28c6ad0b50ac7eb8f093d5753d2884482",
       "source": "art/out/atlas/ui_1.png",
-      "updatedAt": "2026-10-06T21:50:59Z"
+      "updatedAt": "2026-10-07T07:20:01Z"
     },
     "ui/atlas_2": {
-      "assetId": "112224508048288",
+      "assetId": "110910493203649",
       "kind": "Image",
       "moderation": "Approved",
-      "sha256": "8e78b380fb0c768f90b5ecdde33b987c76876dea17deff47fbcdd8e29bb85c6f",
+      "sha256": "062bde10636113c7aa51534476934d4f4bef876541c43d0725b4bf9e05996607",
       "source": "art/out/atlas/ui_2.png",
-      "updatedAt": "2026-10-06T21:50:59Z"
+      "updatedAt": "2026-10-07T08:28:14Z"
     },
     "ui/atlas_3": {
-      "assetId": "90916412791247",
+      "assetId": "100180679123457",
       "kind": "Image",
       "moderation": "Approved",
-      "sha256": "61bd3374ad0461601b32b762becd101765eda6b77d033426d57ca31a7d5fe5e5",
+      "sha256": "3ba9050e882cbecbb842e23fa0bf0ffd57504a52a919bfe02651ec76caa28818",
       "source": "art/out/atlas/ui_3.png",
-      "updatedAt": "2026-10-06T21:50:59Z"
+      "updatedAt": "2026-10-07T07:20:01Z"
     },
     "vfx/CoinSpin": {
       "assetId": "131554566758916",

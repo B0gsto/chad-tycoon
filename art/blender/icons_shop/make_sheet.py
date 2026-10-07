@@ -15,7 +15,7 @@ import chadkit as ck  # noqa: E402
 OUT = os.path.join(ck.ROOT, "art", "out", "icons")
 BG = (58, 84, 170)
 NAMES = ["CrateCommon", "CrateUncommon", "CrateRare", "CrateEpic", "CrateLegendary",
-         "PassAutoCollect", "PassAutoCash", "PassDoubleOrbs", "PassDoubleCash", "PassVipCracker", "PassCrateKey",
+         "PassAutoCollect", "PassAutoCash", "PassAutoMerge", "PassDoubleOrbs", "PassDoubleCash", "PassVipCracker", "PassCrateKey",
          "CashPack1", "CashPack2", "CashPack3", "CashPack4", "CashPack5", "CashPack6",
          "GemPack1", "GemPack2", "GemPack3", "Heart", "Timer", "Crown", "Fire", "Gift2", "Fans"]
 

@@ -1,6 +1,7 @@
 # CI for Chad Aura Tycoon (docs/deploy.md, "CI/CD").
 # Every pull request and every push to a branch other than main: format, lint, type-check, unit tests and the place
-# build (scripts/check.sh). Pushes to main run the same checks inside deploy.yml before publishing.
+# build (scripts/check.sh). Pushes to main run the same checks inside deploy.yml before publishing. A green run
+# for a pull request lets automerge.yml merge that PR into main.
 name: CI
 
 on:
