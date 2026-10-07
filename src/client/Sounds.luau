@@ -45,7 +45,6 @@ local UI_BRIGHT_CLICK = lib(15675059323) -- Roblox_UI_Bright_Click
 local UI_CUTE_POP = lib(15675055424) -- Roblox_UI_Cute_Pop
 local UI_TONAL_STINGER = lib(15675043410) -- Roblox_UI_Tonal_Stinger
 local UI_WHOOSH_01 = lib(15675024286) -- Roblox_UI_Whoosh_01
-local UI_WHOOSH_03 = lib(15674975792) -- Roblox_UI_Whoosh_03
 local UI_DELETE = lib(15675075163) -- Roblox_UI_Delete
 local GUI_SELECT = lib(17208396156) -- Roblox GUI - Select
 local GUI_NOTIFY_HIGH = lib(17208361335) -- Roblox GUI - Notification High
@@ -56,7 +55,6 @@ local GUI_DECLINE = lib(17208214688) -- Roblox GUI - Call Decline
 local GUI_PURCHASE = lib(17208380755) -- Roblox GUI - Purchase
 
 -- Pro Sound Effects library.
-local WHOOSH_AIRY = lib(9125646252) -- Magic Whooshes Airy
 local WHOOSH_ZOOM = lib(9125648149) -- Magic Zoom Up Sharp Tubular Whoosh
 
 -- Free public Creator Store audio.
@@ -139,8 +137,8 @@ local DEFS: { [string]: Def } = {
 	Collect = { ids = { POP_MARIMBA, COIN_COLLECT }, volume = 0.3, gap = 0.05 },
 	Cash = { ids = { KACHING, GUI_PURCHASE }, volume = 0.35, gap = 0.1 },
 	Coin = { ids = { POP_MARIMBA, COIN_COLLECT }, volume = 0.28, gap = 0.045 },
-	Deposit = { ids = { WHOOSH_AIRY, UI_WHOOSH_03 }, volume = 0.4 },
-	DepositStream = { ids = { WHOOSH_AIRY, UI_WHOOSH_03 }, volume = 0.3, pitch = 1.15, gap = 0.25 },
+	-- One soft pop when the Deposit pad banks your aura.
+	Deposit = { ids = { UI_CUTE_POP, POP_BELL }, volume = 0.5, gap = 0.15 },
 	Buy = { ids = { GUI_PURCHASE, KACHING }, volume = 0.5 },
 	BuyPop = { ids = { POP_BELL, UI_CUTE_POP }, volume = 0.45 },
 	Upgrade = { ids = { LEVELUP, UNLOCK_STINGER }, volume = 0.45 },
