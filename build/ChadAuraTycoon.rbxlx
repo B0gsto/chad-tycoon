@@ -7,16 +7,21 @@
       <Properties>
         <string name="Name">Loader</string>
         <string name="Source"><![CDATA[-- Loader (ReplicatedFirst): replaces Roblox's default loading screen with the
--- game's own splash and fades it out once the first State snapshot arrives
--- (the client sets the player's "GameReady" attribute) or after a timeout.
+-- game's own splash and keeps it up until the player is really in the game:
+-- the first State snapshot has arrived (the client sets the player's
+-- "GameReady" attribute), the character stands on its plot (the server sets
+-- its "OnPlot" attribute), and the world around it has streamed in. Without
+-- that the screen faded out over an empty blue sky while the save loaded.
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local LoadingScreen = require(script:WaitForChild("LoadingScreen"))
+local Brand = require(script:WaitForChild("Brand"))
 
-local TIMEOUT = 25
+local TIMEOUT = 45
 local ART_TIMEOUT = 8
 
 local player = Players.LocalPlayer
@@ -30,10 +35,37 @@ pcall(function()
 end)
 gui.Parent = player:WaitForChild("PlayerGui")
 
-local screen = LoadingScreen.build(gui, nil)
+-- If the splash ever fails to build, a plain dark cover still hides the sky.
+local ok, built = pcall(LoadingScreen.build, gui, Brand)
+local screen: LoadingScreen.Handle
+if ok then
+	screen = built
+else
+	warn("LoadingScreen failed:", built)
+	local cover = Instance.new("Frame")
+	cover.BackgroundColor3 = Color3.fromRGB(46, 62, 136)
+	cover.BorderSizePixel = 0
+	cover.Size = UDim2.fromScale(1, 1)
+	cover.Parent = gui
+	screen = {
+		applyTheme = function() end,
+		applyArt = function() end,
+		setStatus = function() end,
+		finish = function() end,
+	} :: any
+end
 ReplicatedFirst:RemoveDefaultLoadingScreen()
 
 local started = os.clock()
+
+-- The brand art ships in ReplicatedFirst too, so it can show from the start
+-- instead of after ReplicatedStorage arrives; fetch it ahead of everything else.
+screen.applyArt({ keyArt = Brand.KeyArt, logo = Brand.Logo })
+task.spawn(function()
+	pcall(function()
+		game:GetService("ContentProvider"):PreloadAsync({ Brand.KeyArt, Brand.Logo })
+	end)
+end)
 
 task.spawn(function()
 	local themeModule = ReplicatedStorage:WaitForChild("Theme", TIMEOUT)
@@ -55,8 +87,32 @@ end)
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
-while player:GetAttribute("GameReady") ~= true and os.clock() - started < TIMEOUT do
+local function timeLeft(): boolean
+	return os.clock() - started < TIMEOUT
+end
+while player:GetAttribute("GameReady") ~= true and timeLeft() do
 	task.wait(0.1)
+end
+-- The character on its plot (the server moves it there after loading the save).
+local root: BasePart? = nil
+while timeLeft() do
+	local character = player.Character
+	local part = character and character:FindFirstChild("HumanoidRootPart")
+	if part and part:IsA("BasePart") and character:GetAttribute("OnPlot") == true then
+		root = part
+		break
+	end
+	task.wait(0.1)
+end
+-- With streaming on, wait for the parts around the plot before showing it.
+if root and workspace.StreamingEnabled and timeLeft() then
+	pcall(function()
+		player:RequestStreamAroundAsync(root.Position, 10)
+	end)
+end
+-- A few frames for the camera to settle behind the character.
+for _ = 1, 3 do
+	RunService.RenderStepped:Wait()
 end
 -- Keep the splash up briefly so it doesn't just flash on fast joins.
 local shown = os.clock() - started
@@ -64,12 +120,33 @@ if shown < 1.2 then
 	task.wait(1.2 - shown)
 end
 screen.finish()
-task.delay(1, function()
+task.delay(if ok then 1 else 0, function()
 	gui:Destroy()
 end)
 ]]></string>
       </Properties>
       <Item class="ModuleScript" referent="2">
+        <Properties>
+          <string name="Name">Brand</string>
+          <string name="Source"><![CDATA[--[[
+	Brand: what the loading screen shows from its very first frame. It lives in
+	ReplicatedFirst because ReplicatedStorage (Theme, Shared.Assets) only
+	replicates near the end of the join, so without this the splash is a bare
+	sky gradient for most of the load. The Theme and Assets still override it
+	once they arrive; tests/run checks the two stay in sync.
+]]
+
+return {
+	GameName = "Chad Aura Tycoon",
+	Tagline = "Farm aura. Merge Chads. Mog the server.",
+	KeyArt = "rbxassetid://71618244352821",
+	Logo = "rbxassetid://128398060676282",
+	Loading = { Status = "Warming up the gym..." },
+}
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="3">
         <Properties>
           <string name="Name">LoadingScreen</string>
           <string name="Source"><![CDATA[--[[
@@ -548,15 +625,15 @@ return LoadingScreen
       </Item>
     </Item>
   </Item>
-  <Item class="ReplicatedStorage" referent="3">
+  <Item class="ReplicatedStorage" referent="4">
     <Properties>
       <string name="Name">ReplicatedStorage</string>
     </Properties>
-    <Item class="Folder" referent="4">
+    <Item class="Folder" referent="5">
       <Properties>
         <string name="Name">AssetModels</string>
       </Properties>
-      <Item class="Model" referent="5">
+      <Item class="Model" referent="6">
         <Properties>
           <string name="Name">proof__cube</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -606,7 +683,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="6">
+        <Item class="MeshPart" referent="7">
           <Properties>
             <string name="Name">ProofCube</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -747,7 +824,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="7">
+      <Item class="Model" referent="8">
         <Properties>
           <string name="Name">props__Barbell</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -797,7 +874,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="8">
+        <Item class="MeshPart" referent="9">
           <Properties>
             <string name="Name">Barbell</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -938,7 +1015,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="9">
+      <Item class="Model" referent="10">
         <Properties>
           <string name="Name">props__BeachBall</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -988,7 +1065,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="10">
+        <Item class="MeshPart" referent="11">
           <Properties>
             <string name="Name">BeachBall.001</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1129,7 +1206,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="11">
+      <Item class="Model" referent="12">
         <Properties>
           <string name="Name">props__Bench</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1179,7 +1256,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="12">
+        <Item class="MeshPart" referent="13">
           <Properties>
             <string name="Name">Bench</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1320,7 +1397,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="13">
+      <Item class="Model" referent="14">
         <Properties>
           <string name="Name">props__Converter</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1370,7 +1447,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="14">
+        <Item class="MeshPart" referent="15">
           <Properties>
             <string name="Name">Converter</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1511,7 +1588,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="15">
+      <Item class="Model" referent="16">
         <Properties>
           <string name="Name">props__Crate</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1561,7 +1638,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="16">
+        <Item class="MeshPart" referent="17">
           <Properties>
             <string name="Name">Crate</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1702,7 +1779,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="17">
+      <Item class="Model" referent="18">
         <Properties>
           <string name="Name">props__CrateCracker</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1752,7 +1829,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="18">
+        <Item class="MeshPart" referent="19">
           <Properties>
             <string name="Name">CrateCracker</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1893,7 +1970,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="19">
+      <Item class="Model" referent="20">
         <Properties>
           <string name="Name">props__CrateCrackerVip</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1943,7 +2020,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="20">
+        <Item class="MeshPart" referent="21">
           <Properties>
             <string name="Name">CrateCrackerVip</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2084,7 +2161,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="21">
+      <Item class="Model" referent="22">
         <Properties>
           <string name="Name">props__Crown</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2134,7 +2211,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="22">
+        <Item class="MeshPart" referent="23">
           <Properties>
             <string name="Name">Crown</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2275,7 +2352,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="23">
+      <Item class="Model" referent="24">
         <Properties>
           <string name="Name">props__Dumbbell</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2325,7 +2402,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="24">
+        <Item class="MeshPart" referent="25">
           <Properties>
             <string name="Name">Dumbbell</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2466,7 +2543,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="25">
+      <Item class="Model" referent="26">
         <Properties>
           <string name="Name">props__DumbbellRack</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2516,7 +2593,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="26">
+        <Item class="MeshPart" referent="27">
           <Properties>
             <string name="Name">DumbbellRack</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2657,7 +2734,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="27">
+      <Item class="Model" referent="28">
         <Properties>
           <string name="Name">props__GigaStatue</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2707,7 +2784,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="28">
+        <Item class="MeshPart" referent="29">
           <Properties>
             <string name="Name">GigaStatue</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2848,7 +2925,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="29">
+      <Item class="Model" referent="30">
         <Properties>
           <string name="Name">props__HubBench</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2898,7 +2975,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="30">
+        <Item class="MeshPart" referent="31">
           <Properties>
             <string name="Name">HubBench</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3039,7 +3116,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="31">
+      <Item class="Model" referent="32">
         <Properties>
           <string name="Name">props__JuiceBar</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3089,7 +3166,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="32">
+        <Item class="MeshPart" referent="33">
           <Properties>
             <string name="Name">JuiceBar</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3230,7 +3307,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="33">
+      <Item class="Model" referent="34">
         <Properties>
           <string name="Name">props__Kettlebell</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3280,7 +3357,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="34">
+        <Item class="MeshPart" referent="35">
           <Properties>
             <string name="Name">Kettlebell</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3421,7 +3498,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="35">
+      <Item class="Model" referent="36">
         <Properties>
           <string name="Name">props__OrbBall</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3471,7 +3548,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="36">
+        <Item class="MeshPart" referent="37">
           <Properties>
             <string name="Name">OrbBall</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3612,7 +3689,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="37">
+      <Item class="Model" referent="38">
         <Properties>
           <string name="Name">props__OrbShine</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3662,7 +3739,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="38">
+        <Item class="MeshPart" referent="39">
           <Properties>
             <string name="Name">OrbShine</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3803,7 +3880,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="39">
+      <Item class="Model" referent="40">
         <Properties>
           <string name="Name">props__PalmPlanter</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3853,7 +3930,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="40">
+        <Item class="MeshPart" referent="41">
           <Properties>
             <string name="Name">PalmPlanter</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3994,7 +4071,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="41">
+      <Item class="Model" referent="42">
         <Properties>
           <string name="Name">props__PalmTree</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4044,7 +4121,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="42">
+        <Item class="MeshPart" referent="43">
           <Properties>
             <string name="Name">PalmTree</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4185,7 +4262,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="43">
+      <Item class="Model" referent="44">
         <Properties>
           <string name="Name">props__PunchBag</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4235,7 +4312,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="44">
+        <Item class="MeshPart" referent="45">
           <Properties>
             <string name="Name">PunchBag</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4376,7 +4453,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="45">
+      <Item class="Model" referent="46">
         <Properties>
           <string name="Name">props__Speaker</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4426,7 +4503,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="46">
+        <Item class="MeshPart" referent="47">
           <Properties>
             <string name="Name">Speaker</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4567,7 +4644,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="47">
+      <Item class="Model" referent="48">
         <Properties>
           <string name="Name">props__TowelStack</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4617,7 +4694,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="48">
+        <Item class="MeshPart" referent="49">
           <Properties>
             <string name="Name">TowelStack</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4758,7 +4835,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="49">
+      <Item class="Model" referent="50">
         <Properties>
           <string name="Name">props__Treadmill</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4808,7 +4885,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="50">
+        <Item class="MeshPart" referent="51">
           <Properties>
             <string name="Name">Treadmill</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4949,7 +5026,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="51">
+      <Item class="Model" referent="52">
         <Properties>
           <string name="Name">props__Trophy</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4999,7 +5076,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="52">
+        <Item class="MeshPart" referent="53">
           <Properties>
             <string name="Name">Trophy</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5140,7 +5217,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="53">
+      <Item class="Model" referent="54">
         <Properties>
           <string name="Name">props__TrophyPodium</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5190,7 +5267,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="54">
+        <Item class="MeshPart" referent="55">
           <Properties>
             <string name="Name">TrophyPodium</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5331,7 +5408,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="55">
+      <Item class="Model" referent="56">
         <Properties>
           <string name="Name">props__Vault</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5381,7 +5458,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="56">
+        <Item class="MeshPart" referent="57">
           <Properties>
             <string name="Name">Vault</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5522,7 +5599,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="57">
+      <Item class="Model" referent="58">
         <Properties>
           <string name="Name">props__WaterCooler</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5572,7 +5649,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="58">
+        <Item class="MeshPart" referent="59">
           <Properties>
             <string name="Name">WaterCooler</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5713,7 +5790,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="59">
+      <Item class="Model" referent="60">
         <Properties>
           <string name="Name">props__YogaBall</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5763,7 +5840,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="60">
+        <Item class="MeshPart" referent="61">
           <Properties>
             <string name="Name">YogaBall</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5905,11 +5982,11 @@ return LoadingScreen
         </Item>
       </Item>
     </Item>
-    <Item class="Folder" referent="61">
+    <Item class="Folder" referent="62">
       <Properties>
         <string name="Name">Shared</string>
       </Properties>
-      <Item class="ModuleScript" referent="62">
+      <Item class="ModuleScript" referent="63">
         <Properties>
           <string name="Name">AssetModels</string>
           <string name="Source"><![CDATA[--!strict
@@ -5956,7 +6033,7 @@ return AssetModels
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="63">
+      <Item class="ModuleScript" referent="64">
         <Properties>
           <string name="Name">Assets</string>
           <string name="Source"><![CDATA[--!strict
@@ -6208,7 +6285,7 @@ return Assets
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="64">
+      <Item class="ModuleScript" referent="65">
         <Properties>
           <string name="Name">CharacterFactory</string>
           <string name="Source"><![CDATA[--[[
@@ -7981,7 +8058,7 @@ return CharacterFactory
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="65">
+      <Item class="ModuleScript" referent="66">
         <Properties>
           <string name="Name">CratePickup</string>
           <string name="Source"><![CDATA[--!strict
@@ -8050,7 +8127,7 @@ return CratePickup
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="66">
+      <Item class="ModuleScript" referent="67">
         <Properties>
           <string name="Name">Economy</string>
           <string name="Source"><![CDATA[--!strict
@@ -8617,7 +8694,7 @@ return Economy
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="67">
+      <Item class="ModuleScript" referent="68">
         <Properties>
           <string name="Name">Format</string>
           <string name="Source"><![CDATA[--!strict
@@ -8727,7 +8804,7 @@ return Format
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="68">
+      <Item class="ModuleScript" referent="69">
         <Properties>
           <string name="Name">Net</string>
           <string name="Source"><![CDATA[-- Remote events/functions. The server creates them, clients wait for them.
@@ -8795,7 +8872,7 @@ return Net
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="69">
+      <Item class="ModuleScript" referent="70">
         <Properties>
           <string name="Name">OrbLook</string>
           <string name="Source"><![CDATA[--!strict
@@ -8909,7 +8986,7 @@ return OrbLook
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="70">
+      <Item class="ModuleScript" referent="71">
         <Properties>
           <string name="Name">Poses</string>
           <string name="Source"><![CDATA[--[[
@@ -10008,7 +10085,7 @@ return Poses
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="71">
+      <Item class="ModuleScript" referent="72">
         <Properties>
           <string name="Name">RigPose</string>
           <string name="Source"><![CDATA[--[[
@@ -10177,7 +10254,7 @@ return RigPose
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="72">
+      <Item class="ModuleScript" referent="73">
         <Properties>
           <string name="Name">SessionLock</string>
           <string name="Source"><![CDATA[--!strict
@@ -10230,7 +10307,7 @@ return SessionLock
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="73">
+      <Item class="ModuleScript" referent="74">
         <Properties>
           <string name="Name">TutorialSteps</string>
           <string name="Source"><![CDATA[--!strict
@@ -10358,7 +10435,7 @@ return TutorialSteps
         </Properties>
       </Item>
     </Item>
-    <Item class="ModuleScript" referent="74">
+    <Item class="ModuleScript" referent="75">
       <Properties>
         <string name="Name">Theme</string>
         <string name="Source"><![CDATA[--[[
@@ -11762,15 +11839,15 @@ return Theme
       </Properties>
     </Item>
   </Item>
-  <Item class="ServerScriptService" referent="75">
+  <Item class="ServerScriptService" referent="76">
     <Properties>
       <string name="Name">ServerScriptService</string>
     </Properties>
-    <Item class="Folder" referent="76">
+    <Item class="Folder" referent="77">
       <Properties>
         <string name="Name">Server</string>
       </Properties>
-      <Item class="ModuleScript" referent="77">
+      <Item class="ModuleScript" referent="78">
         <Properties>
           <string name="Name">Cosmetics</string>
           <string name="Source"><![CDATA[--[[
@@ -12408,7 +12485,7 @@ return Cosmetics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="78">
+      <Item class="ModuleScript" referent="79">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -12766,7 +12843,7 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="79">
+      <Item class="ModuleScript" referent="80">
         <Properties>
           <string name="Name">GameModes</string>
           <string name="Source"><![CDATA[--[[
@@ -13077,7 +13154,7 @@ return GameModes
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="80">
+      <Item class="ModuleScript" referent="81">
         <Properties>
           <string name="Name">Intro</string>
           <string name="Source"><![CDATA[--[[
@@ -13115,7 +13192,7 @@ return Intro
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Script" referent="81">
+      <Item class="Script" referent="82">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -13240,11 +13317,11 @@ end)
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="82">
+      <Item class="Folder" referent="83">
         <Properties>
           <string name="Name">Modes</string>
         </Properties>
-        <Item class="ModuleScript" referent="83">
+        <Item class="ModuleScript" referent="84">
           <Properties>
             <string name="Name">Catalog</string>
             <string name="Source"><![CDATA[--!strict
@@ -13277,7 +13354,7 @@ return Catalog
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="84">
+        <Item class="ModuleScript" referent="85">
           <Properties>
             <string name="Name">Course</string>
             <string name="Source"><![CDATA[--!strict
@@ -14116,7 +14193,7 @@ return Course
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="85">
+        <Item class="ModuleScript" referent="86">
           <Properties>
             <string name="Name">Mog</string>
             <string name="Source"><![CDATA[--[[
@@ -15037,7 +15114,7 @@ return { create = create }
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="86">
+        <Item class="ModuleScript" referent="87">
           <Properties>
             <string name="Name">MogLayout</string>
             <string name="Source"><![CDATA[--[[
@@ -15114,7 +15191,7 @@ return MogLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="87">
+        <Item class="ModuleScript" referent="88">
           <Properties>
             <string name="Name">MogRules</string>
             <string name="Source"><![CDATA[--[[
@@ -15443,7 +15520,7 @@ return MogRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="88">
+        <Item class="ModuleScript" referent="89">
           <Properties>
             <string name="Name">Parkour</string>
             <string name="Source"><![CDATA[--[[
@@ -15828,7 +15905,7 @@ return Parkour
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="89">
+        <Item class="ModuleScript" referent="90">
           <Properties>
             <string name="Name">Rules</string>
             <string name="Source"><![CDATA[--!strict
@@ -15934,7 +16011,7 @@ return Rules
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="90">
+      <Item class="ModuleScript" referent="91">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -16221,7 +16298,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="91">
+      <Item class="ModuleScript" referent="92">
         <Properties>
           <string name="Name">PlotLayout</string>
           <string name="Source"><![CDATA[--!strict
@@ -16739,7 +16816,7 @@ return Layout
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="92">
+      <Item class="ModuleScript" referent="93">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -16893,7 +16970,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="93">
+      <Item class="ModuleScript" referent="94">
         <Properties>
           <string name="Name">Tutorial</string>
           <string name="Source"><![CDATA[--[[
@@ -17006,7 +17083,7 @@ return Tutorial
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="94">
+      <Item class="ModuleScript" referent="95">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -19008,6 +19085,8 @@ function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, pa
 		end
 		task.wait(0.1)
 		character:PivotTo(plot.spawn)
+		-- Tells the loading screen (ReplicatedFirst) the character is on its plot.
+		character:SetAttribute("OnPlot", true)
 		session.heldModel = nil
 		attachHeldModel(session)
 	end
@@ -19195,11 +19274,11 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="95">
+      <Item class="Folder" referent="96">
         <Properties>
           <string name="Name">World</string>
         </Properties>
-        <Item class="ModuleScript" referent="96">
+        <Item class="ModuleScript" referent="97">
           <Properties>
             <string name="Name">Common</string>
             <string name="Source"><![CDATA[--[[
@@ -19374,7 +19453,7 @@ return Common
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="97">
+        <Item class="ModuleScript" referent="98">
           <Properties>
             <string name="Name">Decor</string>
             <string name="Source"><![CDATA[--[[
@@ -20047,7 +20126,7 @@ return Decor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="98">
+        <Item class="ModuleScript" referent="99">
           <Properties>
             <string name="Name">Hub</string>
             <string name="Source"><![CDATA[--[[
@@ -21145,7 +21224,7 @@ return Hub
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="99">
+        <Item class="ModuleScript" referent="100">
           <Properties>
             <string name="Name">Machines</string>
             <string name="Source"><![CDATA[--[[
@@ -21963,7 +22042,7 @@ return Machines
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="100">
+        <Item class="ModuleScript" referent="101">
           <Properties>
             <string name="Name">Modes</string>
             <string name="Source"><![CDATA[--[[
@@ -23336,7 +23415,7 @@ return Modes
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="101">
+        <Item class="ModuleScript" referent="102">
           <Properties>
             <string name="Name">MogStage</string>
             <string name="Source"><![CDATA[--[[
@@ -23677,7 +23756,7 @@ return MogStage
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="102">
+        <Item class="ModuleScript" referent="103">
           <Properties>
             <string name="Name">Pads</string>
             <string name="Source"><![CDATA[--[[
@@ -23991,7 +24070,7 @@ return Pads
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="103">
+        <Item class="ModuleScript" referent="104">
           <Properties>
             <string name="Name">Pen</string>
             <string name="Source"><![CDATA[--[[
@@ -24310,7 +24389,7 @@ return Pen
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="104">
+        <Item class="ModuleScript" referent="105">
           <Properties>
             <string name="Name">Props</string>
             <string name="Source"><![CDATA[--!strict
@@ -24581,7 +24660,7 @@ return Props
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="105">
+        <Item class="ModuleScript" referent="106">
           <Properties>
             <string name="Name">Shell</string>
             <string name="Source"><![CDATA[--[[
@@ -25037,7 +25116,7 @@ return Shell
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="106">
+        <Item class="ModuleScript" referent="107">
           <Properties>
             <string name="Name">Shelves</string>
             <string name="Source"><![CDATA[--[[
@@ -25747,7 +25826,7 @@ return Shelves
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="107">
+      <Item class="ModuleScript" referent="108">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -26115,26 +26194,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="108">
+  <Item class="SoundService" referent="109">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="109">
+  <Item class="StarterPlayer" referent="110">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="110">
+    <Item class="StarterPlayerScripts" referent="111">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="111">
+      <Item class="Folder" referent="112">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="ModuleScript" referent="112">
+        <Item class="ModuleScript" referent="113">
           <Properties>
             <string name="Name">Animator</string>
             <string name="Source"><![CDATA[--[[
@@ -26808,11 +26887,11 @@ return Animator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="113">
+        <Item class="Folder" referent="114">
           <Properties>
             <string name="Name">Fx</string>
           </Properties>
-          <Item class="ModuleScript" referent="114">
+          <Item class="ModuleScript" referent="115">
             <Properties>
               <string name="Name">Ambient</string>
               <string name="Source"><![CDATA[--[[
@@ -27179,7 +27258,7 @@ return Ambient
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="115">
+          <Item class="ModuleScript" referent="116">
             <Properties>
               <string name="Name">Camera</string>
               <string name="Source"><![CDATA[--[[
@@ -27505,7 +27584,7 @@ return Camera
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="116">
+          <Item class="ModuleScript" referent="117">
             <Properties>
               <string name="Name">Cosmetics</string>
               <string name="Source"><![CDATA[--[[
@@ -27761,7 +27840,7 @@ return CosmeticsFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="117">
+          <Item class="ModuleScript" referent="118">
             <Properties>
               <string name="Name">Crates</string>
               <string name="Source"><![CDATA[--[[
@@ -28631,7 +28710,7 @@ return Crates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="118">
+          <Item class="ModuleScript" referent="119">
             <Properties>
               <string name="Name">Fans</string>
               <string name="Source"><![CDATA[--[[
@@ -29619,7 +29698,7 @@ return Fans
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="119">
+          <Item class="ModuleScript" referent="120">
             <Properties>
               <string name="Name">Machines</string>
               <string name="Source"><![CDATA[-- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow):
@@ -31157,7 +31236,7 @@ return Machines
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="120">
+          <Item class="ModuleScript" referent="121">
             <Properties>
               <string name="Name">Modes</string>
               <string name="Source"><![CDATA[--!strict
@@ -31872,7 +31951,7 @@ return ModesFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="121">
+          <Item class="ModuleScript" referent="122">
             <Properties>
               <string name="Name">Mog</string>
               <string name="Source"><![CDATA[--!strict
@@ -32425,7 +32504,7 @@ return MogFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="122">
+          <Item class="ModuleScript" referent="123">
             <Properties>
               <string name="Name">Orbs</string>
               <string name="Source"><![CDATA[-- Client-side aura orb visuals for the local player's own plot.
@@ -34286,7 +34365,7 @@ return Orbs
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="123">
+          <Item class="ModuleScript" referent="124">
             <Properties>
               <string name="Name">PlateStyle</string>
               <string name="Source"><![CDATA[--!strict
@@ -34535,7 +34614,7 @@ return PlateStyle
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="124">
+          <Item class="ModuleScript" referent="125">
             <Properties>
               <string name="Name">Plates</string>
               <string name="Source"><![CDATA[--!strict
@@ -35362,7 +35441,7 @@ return Plates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="125">
+          <Item class="ModuleScript" referent="126">
             <Properties>
               <string name="Name">Shelf</string>
               <string name="Source"><![CDATA[--[[
@@ -36986,7 +37065,7 @@ return Shelf
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="126">
+          <Item class="ModuleScript" referent="127">
             <Properties>
               <string name="Name">Sprites</string>
               <string name="Source"><![CDATA[--[[
@@ -37173,7 +37252,7 @@ return Sprites
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="127">
+          <Item class="ModuleScript" referent="128">
             <Properties>
               <string name="Name">Surge</string>
               <string name="Source"><![CDATA[--[[
@@ -37455,7 +37534,7 @@ return Surge
             </Properties>
           </Item>
         </Item>
-        <Item class="ModuleScript" referent="128">
+        <Item class="ModuleScript" referent="129">
           <Properties>
             <string name="Name">Guide</string>
             <string name="Source"><![CDATA[--[[
@@ -37897,11 +37976,11 @@ return Guide
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="129">
+        <Item class="Folder" referent="130">
           <Properties>
             <string name="Name">Intro</string>
           </Properties>
-          <Item class="ModuleScript" referent="130">
+          <Item class="ModuleScript" referent="131">
             <Properties>
               <string name="Name">Actors</string>
               <string name="Source"><![CDATA[--!strict
@@ -38570,7 +38649,7 @@ return Actors
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="131">
+          <Item class="ModuleScript" referent="132">
             <Properties>
               <string name="Name">Avatar</string>
               <string name="Source"><![CDATA[--!strict
@@ -39213,7 +39292,7 @@ return Avatar
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="132">
+          <Item class="ModuleScript" referent="133">
             <Properties>
               <string name="Name">AvatarRig</string>
               <string name="Source"><![CDATA[--!strict
@@ -39444,7 +39523,7 @@ return AvatarRig
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="133">
+          <Item class="ModuleScript" referent="134">
             <Properties>
               <string name="Name">Cutscene</string>
               <string name="Source"><![CDATA[--[[
@@ -40280,7 +40359,7 @@ return Cutscene
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="134">
+          <Item class="ModuleScript" referent="135">
             <Properties>
               <string name="Name">Effects</string>
               <string name="Source"><![CDATA[--!strict
@@ -41205,7 +41284,7 @@ return Effects
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="135">
+          <Item class="ModuleScript" referent="136">
             <Properties>
               <string name="Name">Framing</string>
               <string name="Source"><![CDATA[--!strict
@@ -41412,7 +41491,7 @@ return Framing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="136">
+          <Item class="ModuleScript" referent="137">
             <Properties>
               <string name="Name">Stage</string>
               <string name="Source"><![CDATA[--!strict
@@ -41698,7 +41777,7 @@ return Stage
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="137">
+          <Item class="ModuleScript" referent="138">
             <Properties>
               <string name="Name">Timeline</string>
               <string name="Source"><![CDATA[--!strict
@@ -42073,7 +42152,7 @@ return Timeline
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="138">
+          <Item class="ModuleScript" referent="139">
             <Properties>
               <string name="Name">Ui</string>
               <string name="Source"><![CDATA[--!strict
@@ -42916,7 +42995,7 @@ return Ui
             </Properties>
           </Item>
         </Item>
-        <Item class="LocalScript" referent="139">
+        <Item class="LocalScript" referent="140">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -43060,6 +43139,11 @@ local function maybePlayIntro()
 		end
 		if player:GetAttribute("IntroSeen") ~= false then
 			return
+		end
+		-- Start after the loading screen (ReplicatedFirst) has faded out, not under it.
+		local playerGui = player:WaitForChild("PlayerGui")
+		while playerGui:FindFirstChild("LoadingScreen") and waited < 50 do
+			waited += task.wait(0.1)
 		end
 		Cutscene.play({
 			delay = 1.4,
@@ -43279,7 +43363,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="140">
+        <Item class="ModuleScript" referent="141">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects plus background music.
@@ -43751,7 +43835,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="141">
+        <Item class="ModuleScript" referent="142">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -43800,11 +43884,11 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="142">
+        <Item class="Folder" referent="143">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="143">
+          <Item class="ModuleScript" referent="144">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -45195,7 +45279,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="144">
+          <Item class="ModuleScript" referent="145">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -48031,7 +48115,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="145">
+          <Item class="ModuleScript" referent="146">
             <Properties>
               <string name="Name">MogHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -49024,7 +49108,7 @@ return MogHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="146">
+          <Item class="ModuleScript" referent="147">
             <Properties>
               <string name="Name">MogRing</string>
               <string name="Source"><![CDATA[--!strict
@@ -49530,7 +49614,7 @@ return MogRing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="147">
+          <Item class="ModuleScript" referent="148">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -52448,7 +52532,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="148">
+          <Item class="ModuleScript" referent="149">
             <Properties>
               <string name="Name">ShopScenes</string>
               <string name="Source"><![CDATA[--[[
@@ -54256,7 +54340,7 @@ return ShopScenes
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="149">
+          <Item class="ModuleScript" referent="150">
             <Properties>
               <string name="Name">Tutorial</string>
               <string name="Source"><![CDATA[--[[
@@ -54881,7 +54965,7 @@ return Tutorial
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="150">
+          <Item class="ModuleScript" referent="151">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
@@ -58648,7 +58732,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="151">
+  <Item class="Workspace" referent="152">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>
