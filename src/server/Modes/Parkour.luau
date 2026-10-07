@@ -1,11 +1,11 @@
 --[[
 	Parkour: the first game mode. Timed runs over the ten levels in Modes.Course.
 
-	- Levels: level 1 is reached on foot through gate 1 (Course.crossedStart); levels 2..10
-	  are remote (out at sea) and reached only by teleport. A player has unlocked level
-	  1 + (number of consecutive cleared levels from 1); "ModeStart" may pick any unlocked
-	  level (options.level), else the lowest level not yet cleared. Walking through gate 1
-	  starts that default level too (teleporting when it is remote). Starting again restarts.
+	- Levels: every level is out at sea and reached only by teleport. A player has unlocked
+	  level 1 + (number of consecutive cleared levels from 1); "ModeStart" may pick any
+	  unlocked level (options.level), else the lowest level not yet cleared. Walking west
+	  through gate 1's portal (Course.crossedStart) starts that default level too. Starting
+	  again restarts.
 	- Checkpoints count only in order (Modes.Rules). Feet in the water past the shore send the
 	  player back to their last checkpoint (0 = start deck) with a splash; the run goes on.
 	- Standing on the finish deck after the last checkpoint ends the run; Rules.finish checks
@@ -279,7 +279,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		local prevX = lastX[player]
 		lastX[player] = x
 		local state = runs[player]
-		if prevX and Course.crossedStart(prevX, x, z) and y < Course.LEVELS[1].START.y + 8 then
+		if prevX and Course.crossedStart(prevX, x, z) and y < Course.PLAZA.top + 8 then
 			def.start(player, false)
 			return
 		end

@@ -1,5 +1,5 @@
 --[[
-	Modes: the GAME MODES plaza on the hub's -X side and the Parkour course out over the sea.
+	Modes: the GAME MODES plaza on the hub's -X side and the Parkour levels out over the sea.
 
 	Everything is placed from Server.Modes.Course (layout numbers) and Server.Modes.Catalog
 	(one gate per mode slot). The server builds every part at its rest pose and never moves
@@ -31,7 +31,8 @@
 	gate 1's opening; other open gates hold "ModeStart"), per level "ParkourFinish" (trigger
 	over the finish deck) and "ParkourWater" (catch volume over the sea), both with attribute
 	Level, and "Checkpoint" discs with attributes Index (1..n), Level and Mode = "parkour".
-	Remote levels (reached by teleport) also get a LEVEL <i> start arch on their start deck.
+	Every level is reached by teleport through gate 1's portal and gets a LEVEL <i> start
+	arch on its start deck; nothing of the course stands next to the plaza.
 	Client hints (Client.Fx.Modes): each open gate's "GateArrow" root (tag "ModeHintArrow",
 	attribute HintBob = bob height in studs, children move with it) and each checkpoint's
 	"FlagCap" (attribute Checkpoint = its index).
@@ -1167,7 +1168,7 @@ local function spanHalf(b: Course.Box, faceX: number): number
 	return (if faceX ~= 0 then b.z1 - b.z0 else b.x1 - b.x0) / 2 + 0.6
 end
 
--- A remote level's entrance: an arch over the start deck behind the spawn spot, its card
+-- A level's entrance: an arch over the start deck behind the spawn spot, its card
 -- facing along the course ("LEVEL <i>" / name) so a player who just arrived reads it, and
 -- five small flag poles in the level's palette along the deck's sides.
 local function startArch(level: Course.Level, deck: Course.Element, parent: Instance)
@@ -1198,9 +1199,9 @@ local function startArch(level: Course.Level, deck: Course.Element, parent: Inst
 	end
 end
 
--- Level `level`'s parts into `parent`. Level 1 comes out exactly as the original course.
+-- Level `level`'s parts into `parent`.
 local function buildCourse(level: Course.Level, parent: Instance)
-	local midZ = if level.remote then (level.BOUNDS.z0 + level.BOUNDS.z1) / 2 else -26
+	local midZ = (level.BOUNDS.z0 + level.BOUNDS.z1) / 2
 	local tops: { [Course.Element]: BasePart } = {}
 	for _, e in level.ELEMENTS do
 		if e.kind == "pad" then
@@ -1232,7 +1233,7 @@ local function buildCourse(level: Course.Level, parent: Instance)
 			end
 		end
 	end
-	if level.remote and level.PATH[1] then
+	if level.PATH[1] then
 		startArch(level, level.PATH[1], parent)
 	end
 
@@ -1249,11 +1250,7 @@ local function buildCourse(level: Course.Level, parent: Instance)
 	local sign =
 		decor(add({ Name = "FinishSign", Size = Vector3.new(half * 2 + 3.4, 4.2, 1), CFrame = CFrame.new(0, bannerY, 0), Color = W.Cream }))
 	cardFace(sign, Enum.NormalId.Front, 44, W.Cream, W.Teal, "YOU DID IT!", "FINISH")
-	if level.remote then
-		cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "WELL DONE!", "LEVEL " .. level.index .. " CLEAR")
-	else
-		cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "THE END OF", "PARKOUR")
-	end
+	cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "WELL DONE!", "LEVEL " .. level.index .. " CLEAR")
 	-- Chequered finish line on the deck.
 	local line = add({ Name = "FinishLine", Size = Vector3.new(half * 2 - 1, 0.12, 2.4), CFrame = CFrame.new(0, 0.06, 0), Color = W.White })
 	local cols = 12
