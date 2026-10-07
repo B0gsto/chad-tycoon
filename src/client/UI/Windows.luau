@@ -461,6 +461,9 @@ Windows.cosmeticsOf = cosmeticsOf
 -- Pending focus for the next shop open: a section ("Cosmetics", "Cash", "Aura", "Gems" ...), a
 -- pass ("DoubleMoney", "StarterPack", "AllCosmetics") or a cosmetic, set by Windows.open.
 Windows.shopFocus = nil :: string?
+-- Opens the MOG TEST picker (VS RIVALS / 1v1 DUEL); Main points it at MogHud.choose
+-- (Windows cannot require MogHud: MogHud -> Popups -> Windows).
+Windows.onMogPlay = nil :: (() -> ())?
 
 -- Faint sparkles drifting behind the page: scale position on the page and size in pixels.
 local DRIFT_SPOTS = {
@@ -3235,7 +3238,7 @@ end
 	selection snaps back to `unlocked` whenever the window opens.
 
 	MOG TEST: best score, rivals mogged and passes, reward line, PLAY (disabled
-	"PLAYING" while a test runs). Reads State.data.modes.parkour and .mog.
+	"PLAYING" while a test runs) opens the VS RIVALS / 1v1 DUEL picker (Windows.onMogPlay). Reads State.data.modes.parkour and .mog.
 ]]
 local function runTime(seconds: number): string
 	local tenths = math.floor(math.max(seconds, 0) * 10 + 0.5)
@@ -3576,11 +3579,16 @@ local function buildModes(screen: ScreenGui)
 			LayoutOrder = 2,
 			Medal = "💪",
 			Title = "MOG TEST",
-			Blurb = "Hit the ring in time to out-mog 3 rivals!",
+			Blurb = "Out-mog 3 rivals, or duel a real player 1v1!",
 		},
 		accent,
 		function()
-			action:FireServer({ action = "ModeStart", mode = "mog" })
+			local pick = Windows.onMogPlay
+			if pick then
+				pick()
+			else
+				action:FireServer({ action = "ModeStart", mode = "mog", vs = "rivals" })
+			end
 			Windows.closeAll()
 		end
 	)

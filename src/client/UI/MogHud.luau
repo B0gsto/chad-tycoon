@@ -1,28 +1,40 @@
 --!strict
 --[[
-	MogHud: the screen side of the MOG TEST (a skill-check duel against rival chads).
+	MogHud: the screen side of the MOG TEST, a skill-check duel either against rival chads
+	(vs = "rivals", solo) or against a real player (vs = "pvp", 1v1).
 
-	  Ring         centre-right, 180 px: Cream rim, dark well track, the zone as an arc
-	               of thin rotated segment frames (exact to the degree; the first
-	               perfectSize degrees are the gold "perfect" slice), a red needle posed
-	               every frame from the server clock (travel = speed * (now - appearAt),
-	               screen angle = dir * travel clockwise from 12 o'clock) and a centre
-	               label ("SPACE" / "TAP" / the check number). A check arrives a moment
-	               before its needle starts: Tick, the ring fades in with a pulse and a
-	               soft glow breathes until the needle runs.
+	  Picker       Notify "choose" (the player walked through the mog gate) and the Modes
+	               window's PLAY open Popups.mogChoose: VS RIVALS or 1v1 DUEL, which fire
+	               ModeStart with vs = "rivals" | "pvp".
+	  Queue        "queue" { since, timeout }: a compact "FINDING OPPONENT…" panel on the
+	               right (spinner, dots, elapsed seconds, Cancel = MogCancel); the player
+	               walks around meanwhile. "stop" "noOpponent" toasts and reopens the picker.
+	               While queued choose() opens no picker and pops the queue panel instead.
+	  Ring         centre-right, 180 px, drawn by UI.MogRing: setCheck draws the zone with
+	               its swell-in cue, warn() runs every frame until the needle starts, then
+	               setNeedle(travel, dir) poses the needle from the server clock (travel =
+	               speed * (now - appearAt)), flash() on each result, idle() between checks.
+	               The result word ("PERFECT!", "HIT", "MISS" / "TOO EARLY" / "TOO SLOW"
+	               in red) pops in on the ring's top edge and rises as it fades.
 	  Input        Space, Enter and gamepad A (ContextActionService, high priority, sunk
 	               so Space does not jump) and a big invisible button over the ring for
 	               mouse / touch. One MogPress per check, sent with the server time of the
 	               press; presses before the needle starts only give a small "wait..."
 	               wobble. The needle freezes where it was pressed until the result.
-	  Status       score (bouncy count) and the combo chip above the ring, hearts
-	               (maxLives) under them, the rival's name and HP bar under the ring, a
-	               quiet "X" that asks "QUIT?" before firing ModeQuit.
-	  Banners      "MOG TEST!" at the start, "MOGGED!" per rival, "MOG TEST PASSED!"
-	               with the cash the first time the run passes.
+	  Status       score (bouncy count) and the combo chip above the ring and a quiet "X"
+	               that asks "QUIT?" before firing ModeQuit. Vs rivals: hearts (maxLives)
+	               under them and the rival's name and HP bar under the ring. In a duel the
+	               hearts become your own HP bar ("YOU", green, gold flash on perfect) and
+	               the bottom panel is the opponent's name and red HP bar, both moved by
+	               "round" only ("result" is just your own press); the opponent's result
+	               shows small under it ("Opponent: PERFECT").
+	  Banners      "MOG TEST!" / "1v1 DUEL!" (vs <name>) at the start, "MOGGED!" per rival,
+	               "MOG TEST PASSED!" with the cash the first time the run passes,
+	               "SUDDEN DEATH!" in a duel.
 
 	MogHud.onNotify(payload) takes every Notify with kind "Mode" and mode "mog" (Main
-	routes them); Fx.Mog does the 3D side from the same payloads.
+	routes them); Fx.Mog does the 3D side from the same payloads. MogHud.choose() opens
+	the picker (Windows.onMogPlay points here).
 ]]
 
 local ContextActionService = game:GetService("ContextActionService")
@@ -36,6 +48,7 @@ local Net = require(ReplicatedStorage.Shared.Net)
 
 local Client = script.Parent.Parent
 local Kit = require(script.Parent.Kit) :: any
+local MogRing = require(script.Parent.MogRing) :: any
 local Popups = require(script.Parent.Popups) :: any
 local Sounds = require(Client.Sounds) :: any
 
@@ -46,11 +59,9 @@ local F = Kit.F
 local W = Theme.World
 
 local RING = 180 -- ring diameter (px, design space)
-local TRACK_OUT = 84 -- zone arc outer radius
-local TRACK_IN = 60 -- zone arc inner radius
-local SEGMENT = 2 -- largest zone segment (degrees)
 local ACTION = "MogPress"
 local PRIORITY = 3000
+local RESULT_WORDS = { perfect = "PERFECT", hit = "HIT", miss = "MISS" }
 
 local action = Net.event("Action")
 
@@ -67,27 +78,30 @@ type Check = {
 
 local screen: ScreenGui? = nil
 local root: Frame
-local ring: Frame
-local ringScale: UIScale
-local rim: Frame
-local glow: Frame
-local zone: Frame
-local needle: Frame
-local centre: TextLabel
+local ring: any -- MogRing
 local tapHint: TextLabel
 local resultLabel: TextLabel
 local scoreLabel: TextLabel
 local comboChip: TextLabel
 local heartsRow: Frame
+local youPanel: Frame
+local youFill: Frame
+local youHpText: TextLabel
 local rivalName: TextLabel
 local rivalFill: Frame
 local rivalHpText: TextLabel
+local oppResult: TextLabel
 local banner: Frame
 local bannerTitle: TextLabel
 local bannerSub: TextLabel
 local quitButton: TextButton
+local queuePanel: Frame
+local queueTitle: TextLabel
+local queueTime: TextLabel
+local queueSpinner: Frame
 
 local active = false
+local pvp = false -- this run is a 1v1 duel
 local check: Check? = nil
 local pressed = false -- this check's press is sent (input locked until the result)
 local frozenTravel: number? = nil
@@ -98,6 +112,9 @@ local quitArmed = false
 local warned = false
 local bannerToken = 0
 local stepConn: RBXScriptConnection? = nil
+local queueToken = 0
+local choosing = false -- the picker is open (or queued)
+local queued = false -- waiting for a duel opponent (the queue panel is up)
 
 local function num(value: any, default: number): number
 	return if type(value) == "number" and value == value then value else default
@@ -177,85 +194,26 @@ end
 
 -- Ring --------------------------------------------------------------------------------------
 
--- One arc segment between screen angles a and b (degrees clockwise from 12 o'clock).
-local function segment(parent: Instance, a: number, b: number, color: Color3, z: number)
-	local mid = math.rad((a + b) / 2)
-	local radius = (TRACK_OUT + TRACK_IN) / 2
-	local width = 2 * math.pi * radius * math.abs(b - a) / 360 + 1.2 -- slight overlap: no seams
-	Kit.new("Frame", {
-		BackgroundColor3 = color,
-		BorderSizePixel = 0,
-		Size = UDim2.fromOffset(width, TRACK_OUT - TRACK_IN),
-		Position = UDim2.new(0.5, math.sin(mid) * radius, 0.5, -math.cos(mid) * radius),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Rotation = math.deg(mid),
-		ZIndex = z,
-		Parent = parent,
-	})
-end
-
--- An arc from travel t0 to t1 drawn on the screen side `dir` points to.
-local function arc(parent: Instance, t0: number, t1: number, dir: number, color: Color3, z: number)
-	if t1 <= t0 then
-		return
-	end
-	local count = math.max(1, math.ceil((t1 - t0) / SEGMENT))
-	local step = (t1 - t0) / count
-	for i = 0, count - 1 do
-		local a, b = t0 + i * step, t0 + (i + 1) * step
-		segment(parent, dir * a, dir * b, color, z)
-	end
-end
-
-local function buildZone(c: Check)
-	zone:ClearAllChildren()
-	local zoneEnd = math.min(c.zoneStart + c.zoneSize, 360)
-	local perfectEnd = math.min(c.zoneStart + c.perfectSize, zoneEnd)
-	arc(zone, perfectEnd, zoneEnd, c.dir, W.Cream, 4)
-	arc(zone, c.zoneStart, perfectEnd, c.dir, C.Gold, 5)
-	-- Thin bright edge lines at both ends so the bounds read crisply.
-	for _, t in { c.zoneStart, zoneEnd } do
-		segment(zone, c.dir * t - 0.6, c.dir * t + 0.6, C.GoldLight, 6)
-	end
-end
-
 local function travelNow(c: Check): number
 	return math.clamp(c.speed * (Workspace:GetServerTimeNow() - c.appearAt), 0, 360)
 end
 
-local function burst(color: Color3)
-	local wave = Kit.new("Frame", {
-		Name = "Burst",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(RING, RING),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		ZIndex = 1,
-		Parent = ring,
-	})
-	Kit.round(wave)
-	local stroke = Kit.stroke(wave, 10, color)
-	Kit.tween(wave, 0.5, { Size = UDim2.fromOffset(RING * 1.7, RING * 1.7) }, Enum.EasingStyle.Quart)
-	Kit.tween(stroke, 0.5, { Transparency = 1, Thickness = 2 }, Enum.EasingStyle.Quart)
-	task.delay(0.55, function()
-		wave:Destroy()
-	end)
-end
+local showBanner: (title: string, sub: string?, color: Color3, hold: number) -> ()
 
-local function flashRim(color: Color3)
-	rim.BackgroundColor3 = color
-	Kit.tween(rim, 0.6, { BackgroundColor3 = W.Cream })
-end
+-- The result word pops in on the ring's top edge (clear of the "#n" centre label) and
+-- rises toward the hearts / HP row while it fades.
+local RESULT_FROM = UDim2.new(0.5, 0, 0, 6)
+local RESULT_TO = UDim2.new(0.5, 0, 0, -16)
 
 local function popResult(text: string, color: Color3)
 	resultLabel.Text = text
 	resultLabel.TextColor3 = color
 	resultLabel.TextTransparency = 0
-	resultLabel.Position = UDim2.new(0.5, 0, 0.5, 0)
+	resultLabel.Position = RESULT_FROM
 	local scale = resultLabel:FindFirstChildOfClass("UIScale") :: UIScale
 	scale.Scale = 0.3
 	Kit.tween(scale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
-	Kit.tween(resultLabel, 0.9, { Position = UDim2.new(0.5, 0, 0.5, -34) }, Enum.EasingStyle.Quad)
+	Kit.tween(resultLabel, 0.9, { Position = RESULT_TO }, Enum.EasingStyle.Quad)
 	task.delay(0.65, function()
 		if resultLabel.Text == text then
 			Kit.tween(resultLabel, 0.3, { TextTransparency = 1 })
@@ -266,24 +224,22 @@ end
 local function setIdle()
 	-- Between checks the ring rests small and dim with the needle hidden.
 	check, pressed, frozenTravel = nil, false, nil
-	zone:ClearAllChildren()
-	needle.Visible = false
-	Kit.tween(ringScale, 0.3, { Scale = 0.86 })
-	Kit.tween(glow, 0.3, { BackgroundTransparency = 1 })
-	centre.Text = if Kit.touch then "TAP" else "SPACE"
-	centre.TextColor3 = C.TextDim
+	ring:idle()
+	ring:setNeedle(nil, 1)
+	ring:setCentre(if Kit.touch then "TAP" else "SPACE", C.TextDim)
 end
 
 local function wobble()
 	-- "Wait..." : a little side-to-side shake of the ring, no camera shake.
-	centre.Text = "wait…"
+	ring:setCentre("wait…", C.TextDim)
+	local frame: Frame = ring.frame
 	local base = UDim2.fromScale(0.5, 0.5)
 	task.spawn(function()
 		for _, dx in { 6, -6, 4, -3, 0 } do
-			ring.Position = base + UDim2.fromOffset(dx, 0)
+			frame.Position = base + UDim2.fromOffset(dx, 0)
 			task.wait(0.04)
 		end
-		ring.Position = base
+		frame.Position = base
 	end)
 end
 
@@ -299,7 +255,7 @@ local function press()
 	end
 	pressed = true
 	frozenTravel = travelNow(c)
-	Kit.pop(ring, 1.06)
+	Kit.pop(ring.frame, 1.06)
 	action:FireServer({ action = "MogPress", id = c.id, at = now })
 end
 
@@ -317,19 +273,15 @@ local function step()
 	end
 	local now = Workspace:GetServerTimeNow()
 	if now < c.appearAt then
-		-- Warning: a soft glow breathes until the needle starts.
-		glow.BackgroundTransparency = 0.55 + 0.25 * math.cos(now * 12)
+		-- Warning: MogRing breathes its cue until the needle starts.
+		ring:warn(now)
 		return
 	end
 	if not warned then
 		warned = true
-		glow.BackgroundTransparency = 1
-		centre.Text = "#" .. tostring(c.n)
-		centre.TextColor3 = C.Text
-		needle.Visible = true
+		ring:setCentre("#" .. tostring(c.n), C.Text)
 	end
-	local travel = frozenTravel or travelNow(c)
-	needle.Rotation = c.dir * travel
+	ring:setNeedle(frozenTravel or travelNow(c), c.dir)
 end
 
 local function onCheck(p: any)
@@ -344,53 +296,33 @@ local function onCheck(p: any)
 		perfectSize = num(p.perfectSize, 10),
 	}
 	check, pressed, frozenTravel, warned = c, false, nil, false
-	buildZone(c)
-	needle.Visible = false
-	needle.Rotation = 0
-	centre.Text = if Kit.touch then "TAP!" else "SPACE"
-	centre.TextColor3 = C.Gold
-	-- The DBD-style warning: tick, the ring swells in with a pulse.
+	-- The DBD-style warning: tick, and MogRing swells the ring in with the new zone.
+	ring:setCheck({ zoneStart = c.zoneStart, zoneSize = c.zoneSize, perfectSize = c.perfectSize, dir = c.dir, n = c.n })
+	ring:setNeedle(nil, c.dir)
+	ring:setCentre(if Kit.touch then "TAP!" else "SPACE", C.Gold)
 	Sounds.play("Tick")
-	ringScale.Scale = 0.7
-	Kit.tween(ringScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
-	burst(W.Cream)
 end
 
-local function onResult(p: any)
-	local c = check
-	if c and p.id ~= nil and p.id ~= c.id then
-		return
+-- An HP bar fill and its "hp/max" label; `flash` briefly tints the fill (a hit taken).
+local function setBar(fill: Frame, label: TextLabel, hp: number, hpMax: number, flash: Color3?)
+	hpMax = math.max(hpMax, 1)
+	Kit.tween(fill, 0.35, { Size = UDim2.fromScale(math.clamp(hp / hpMax, 0, 1), 1) }, Enum.EasingStyle.Quart)
+	label.Text = string.format("%d/%d", math.max(hp, 0), hpMax)
+	if flash then
+		local base = fill.BackgroundColor3
+		fill.BackgroundColor3 = flash
+		Kit.tween(fill, 0.5, { BackgroundColor3 = base })
+		Kit.pop(label, 1.25)
 	end
-	if c then
-		local travel = num(p.travel, frozenTravel or travelNow(c))
-		frozenTravel = travel
-		needle.Rotation = c.dir * travel
-		needle.Visible = true
-	end
-	local result = p.result
-	if result == "perfect" then
-		flashRim(C.Gold)
-		burst(C.Gold)
-		popResult("PERFECT!", C.Gold)
-		Sounds.play("Coin", 0.05, 1.15)
-	elseif result == "hit" then
-		flashRim(Color3.new(1, 1, 1))
-		burst(W.Cream)
-		popResult("HIT", W.Cream)
-		Sounds.play("Pickup", 0.08)
-	else
-		flashRim(C.Bad)
-		popResult(if p.reason == "early" then "TOO EARLY" elseif p.reason == "timeout" then "TOO SLOW" else "MISS", C.Bad)
-		Sounds.play("Error")
-	end
+end
+
+local function setScore(score: number, combo: number)
 	-- Score rolls up with a bounce; the combo chip shows from x2.
-	local score = num(p.score, shownScore)
 	if score ~= shownScore then
 		Kit.countTo(scoreLabel, shownScore, score, Format.short, 0.4)
 		Kit.pop(scoreLabel, 1.25)
 		shownScore = score
 	end
-	local combo = num(p.combo, 0)
 	if combo >= 2 then
 		comboChip.Text = "x" .. tostring(combo) .. " COMBO"
 		if not comboChip.Visible then
@@ -402,15 +334,65 @@ local function onResult(p: any)
 	elseif comboChip.Visible then
 		comboChip.Visible = false
 	end
-	setHearts(num(p.lives, lives), maxLives, true)
-	local hp, hpMax = num(p.rivalHp, 1), math.max(num(p.rivalMax, 1), 1)
-	Kit.tween(rivalFill, 0.35, { Size = UDim2.fromScale(math.clamp(hp / hpMax, 0, 1), 1) }, Enum.EasingStyle.Quart)
-	rivalHpText.Text = string.format("%d/%d", math.max(hp, 0), hpMax)
+end
+
+local function onResult(p: any)
+	local c = check
+	if c and p.id ~= nil and p.id ~= c.id then
+		return
+	end
+	if c then
+		local travel = num(p.travel, frozenTravel or travelNow(c))
+		frozenTravel = travel
+		ring:setNeedle(travel, c.dir)
+	end
+	local result = p.result
+	if result == "perfect" then
+		ring:flash("perfect")
+		popResult("PERFECT!", C.Gold)
+		Sounds.play("Coin", 0.05, 1.15)
+	elseif result == "hit" then
+		ring:flash("hit")
+		popResult("HIT", W.Cream)
+		Sounds.play("Pickup", 0.08)
+	else
+		ring:flash("miss")
+		popResult(if p.reason == "early" then "TOO EARLY" elseif p.reason == "timeout" then "TOO SLOW" else "MISS", C.Bad)
+		Sounds.play("Error")
+	end
+	setScore(num(p.score, shownScore), num(p.combo, 0))
+	if not pvp then
+		-- Vs rivals the result carries the damage; a duel waits for "round".
+		setHearts(num(p.lives, lives), maxLives, true)
+		setBar(rivalFill, rivalHpText, num(p.rivalHp, 1), num(p.rivalMax, 1))
+	end
 	task.delay(0.7, function()
 		if active and check == c then
 			setIdle()
 		end
 	end)
+end
+
+-- A duel round: both presses are judged, both HP bars move.
+local function onRound(p: any)
+	local you = if type(p.you) == "table" then p.you else {}
+	local opp = if type(p.opp) == "table" then p.opp else {}
+	local hurt = opp.result == "hit" or opp.result == "perfect" or you.result == "miss"
+	local landed = you.result == "hit" or you.result == "perfect" or opp.result == "miss"
+	setBar(youFill, youHpText, num(you.hp, 0), num(you.maxHp, 1), if hurt then C.Bad else nil)
+	setBar(rivalFill, rivalHpText, num(opp.hp, 0), num(opp.maxHp, 1), if landed then Color3.new(1, 1, 1) else nil)
+	if you.score ~= nil then
+		setScore(num(you.score, shownScore), num(you.combo, 0))
+	end
+	local word = RESULT_WORDS[opp.result] or "MISS"
+	oppResult.Text = "Opponent: " .. word
+	oppResult.TextColor3 = if opp.result == "perfect" then C.Gold elseif opp.result == "hit" then W.Cream else C.Bad
+	oppResult.TextTransparency = 0
+	Kit.pop(oppResult, 1.2)
+	if p.suddenDeath == true then
+		showBanner("SUDDEN DEATH!", "Next hit wins!", C.Bad, 1.6)
+		Sounds.play("Ready")
+	end
 end
 
 local function setRival(info: any)
@@ -424,7 +406,7 @@ local function setRival(info: any)
 	rivalHpText.Text = string.format("%d/%d", hp, hpMax)
 end
 
-local function showBanner(title: string, sub: string?, color: Color3, hold: number)
+function showBanner(title: string, sub: string?, color: Color3, hold: number)
 	bannerToken += 1
 	local mine = bannerToken
 	bannerTitle.Text = title
@@ -437,6 +419,63 @@ local function showBanner(title: string, sub: string?, color: Color3, hold: numb
 		if bannerToken == mine then
 			Kit.disappear(banner)
 		end
+	end)
+end
+
+-- Picker and queue ---------------------------------------------------------------------------
+
+local function hideQueue()
+	queueToken += 1
+	queued = false
+	if queuePanel.Visible then
+		Kit.disappear(queuePanel)
+	end
+end
+
+-- "FINDING OPPONENT…": the spinner turns, the dots count and the seconds tick (from the
+-- server's `since`, a workspace:GetServerTimeNow() stamp) until the queue ends.
+local function showQueue(p: any)
+	queueToken += 1
+	queued = true
+	local mine = queueToken
+	local now = Workspace:GetServerTimeNow()
+	local since = num(p.since, now)
+	if since > now + 5 or since < now - 600 then
+		since = now -- not a server-clock stamp: count from now
+	end
+	local timeout = num(p.timeout, 0)
+	queuePanel.Visible = true
+	Kit.appear(queuePanel, { from = 0.7, time = 0.25 })
+	task.spawn(function()
+		while queueToken == mine do
+			local t = Workspace:GetServerTimeNow()
+			local elapsed = math.max(0, math.floor(t - since))
+			queueTitle.Text = "FINDING OPPONENT" .. string.rep(".", 1 + math.floor(t * 2) % 3)
+			queueTime.Text = if timeout > 0
+				then string.format("%ds  ·  up to %ds", elapsed, math.ceil(timeout))
+				else string.format("%ds", elapsed)
+			queueSpinner.Rotation = (t * 360) % 360
+			task.wait()
+		end
+	end)
+end
+
+function MogHud.choose()
+	if queued then
+		-- Already waiting for a duel: point at the queue panel instead of a second picker.
+		Kit.pop(queuePanel, 1.15)
+		return
+	end
+	if choosing or active then
+		return
+	end
+	choosing = true
+	Popups.mogChoose(function()
+		action:FireServer({ action = "ModeStart", mode = "mog", vs = "rivals" })
+	end, function()
+		action:FireServer({ action = "ModeStart", mode = "mog", vs = "pvp" })
+	end, function()
+		choosing = false
 	end)
 end
 
@@ -469,6 +508,7 @@ local function hide()
 	active = false
 	unbind()
 	check = nil
+	hideQueue()
 	if screen then
 		screen:SetAttribute("RunActive", false)
 	end
@@ -479,15 +519,25 @@ local function hide()
 end
 
 local function onStart(p: any)
+	hideQueue()
 	active, passedShown, quitArmed = true, false, false
+	pvp = p.vs == "pvp"
 	shownScore = num(p.score, 0)
 	scoreLabel.Text = Format.short(shownScore)
 	comboChip.Visible = false
 	Kit.setButton(quitButton, "X", C.SurfaceHi)
 	quitButton.Size = UDim2.fromOffset(30, 28)
-	lives = num(p.lives, 3)
-	setHearts(lives, num(p.maxLives, lives), false)
-	setRival(p.rival)
+	heartsRow.Visible = not pvp
+	youPanel.Visible = pvp
+	oppResult.TextTransparency = 1
+	if pvp then
+		setBar(youFill, youHpText, num(p.hp, 8), num(p.maxHp, 8))
+		setRival(p.opponent)
+	else
+		lives = num(p.lives, 3)
+		setHearts(lives, num(p.maxLives, lives), false)
+		setRival(p.rival)
+	end
 	setIdle()
 	root.Visible = true
 	Kit.appear(root, { from = 0.6, time = 0.3 })
@@ -498,8 +548,13 @@ local function onStart(p: any)
 	end
 	bind()
 	Sounds.play("Ready")
-	local best = num(p.best, 0)
-	showBanner("MOG TEST!", if best > 0 then "Best " .. Format.short(best) else "Hit the zone to mog!", C.Gold, 1.8)
+	if pvp then
+		local foe = type(p.opponent) == "table" and p.opponent.name
+		showBanner("1v1 DUEL!", "vs " .. tostring(foe or "Opponent"), C.Gold, 2)
+	else
+		local best = num(p.best, 0)
+		showBanner("MOG TEST!", if best > 0 then "Best " .. Format.short(best) else "Hit the zone to mog!", C.Gold, 1.8)
+	end
 end
 
 function MogHud.onNotify(p: any)
@@ -508,7 +563,13 @@ function MogHud.onNotify(p: any)
 	end
 	local event: string = tostring(p.event)
 	local ending = event == "finish" or event == "stop"
-	if event == "start" then
+	if event == "choose" then
+		MogHud.choose()
+		return
+	elseif event == "queue" then
+		showQueue(p)
+		return
+	elseif event == "start" then
 		onStart(p)
 	elseif not active and not ending then
 		return
@@ -516,6 +577,8 @@ function MogHud.onNotify(p: any)
 		onCheck(p)
 	elseif event == "result" then
 		onResult(p)
+	elseif event == "round" then
+		onRound(p)
 	elseif event == "rival" then
 		local passedNow = p.passed == true and not passedShown
 		if passedNow then
@@ -534,10 +597,11 @@ function MogHud.onNotify(p: any)
 		end)
 	elseif event == "finish" then
 		local wasActive = active
+		local duel = p.vs == "pvp"
 		hide()
 		if wasActive or p.score ~= nil then
 			Popups.mogFinish(p, function()
-				action:FireServer({ action = "ModeStart", mode = "mog" })
+				action:FireServer({ action = "ModeStart", mode = "mog", vs = if duel then "pvp" else "rivals" })
 			end, function()
 				action:FireServer({ action = "Home" })
 			end)
@@ -545,7 +609,10 @@ function MogHud.onNotify(p: any)
 	elseif event == "stop" then
 		local wasActive = active
 		hide()
-		if wasActive and p.reason == "quit" then
+		if p.reason == "noOpponent" then
+			Popups.toast("No one to duel right now — try VS RIVALS!", "info")
+			MogHud.choose()
+		elseif wasActive and p.reason == "quit" then
 			Popups.toast("Mog test ended", "info")
 		end
 	end
@@ -558,7 +625,7 @@ function MogHud.build(screenGui: ScreenGui)
 	root = Kit.new("Frame", {
 		Name = "MogHud",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(300, 390),
+		Size = UDim2.fromOffset(300, 410),
 		Position = UDim2.new(1, -36, 0.5, 6),
 		AnchorPoint = Vector2.new(1, 0.5),
 		Visible = false,
@@ -641,14 +708,59 @@ function MogHud.build(screenGui: ScreenGui)
 	})
 	Kit.list(heartsRow, 6, true, Enum.HorizontalAlignment.Center)
 
-	-- The ring.
-	ring = Kit.new("Frame", {
-		Name = "Ring",
+	-- In a duel the hearts give way to your own HP bar: "YOU", a green bar, "hp/max".
+	youPanel = Kit.new("Frame", {
+		Name = "You",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(RING, RING),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
+		Size = UDim2.fromOffset(240, 28),
+		Position = UDim2.new(0.5, 0, 0, 82),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Visible = false,
+		Parent = root,
 	})
+	Kit.text(youPanel, {
+		Name = "Label",
+		Text = "YOU",
+		Font = F.Display,
+		TextSize = 18,
+		TextWrapped = false,
+		TextColor3 = C.Gold,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(0, 44, 1, 0),
+		ZIndex = 3,
+	})
+	local youTrack = Kit.new("Frame", {
+		Name = "Bar",
+		BackgroundColor3 = C.Well,
+		Size = UDim2.new(1, -104, 0, 18),
+		Position = UDim2.new(0, 46, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 3,
+		Parent = youPanel,
+	})
+	Kit.round(youTrack)
+	Kit.stroke(youTrack, 2, C.Gold)
+	youFill = Kit.new("Frame", {
+		Name = "Fill",
+		BackgroundColor3 = C.Good,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 4,
+		Parent = youTrack,
+	})
+	Kit.round(youFill)
+	Kit.gradient(youFill, Color3.new(1, 1, 1), Kit.darken(Color3.new(1, 1, 1), 0.15), 90)
+	youHpText = Kit.number(youPanel, {
+		Name = "Hp",
+		Text = "8/8",
+		TextSize = 16,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Size = UDim2.fromOffset(52, 28),
+		Position = UDim2.new(1, 0, 0, 0),
+		AnchorPoint = Vector2.new(1, 0),
+		ZIndex = 3,
+	})
+
+	-- The ring (UI.MogRing draws it; the holder keeps the tap target and result label).
 	local ringHolder = Kit.new("Frame", {
 		Name = "RingHolder",
 		BackgroundTransparency = 1,
@@ -657,97 +769,7 @@ function MogHud.build(screenGui: ScreenGui)
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = root,
 	})
-	ring.Parent = ringHolder
-	ringScale = Kit.new("UIScale", { Parent = ring })
-	glow = Kit.new("Frame", {
-		Name = "Glow",
-		BackgroundColor3 = C.Gold,
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(RING + 28, RING + 28),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		ZIndex = 1,
-		Parent = ring,
-	})
-	Kit.round(glow)
-	rim = Kit.new("Frame", {
-		Name = "Rim",
-		BackgroundColor3 = W.Cream,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 2,
-		Parent = ring,
-	})
-	Kit.round(rim)
-	Kit.shadow(rim, RING // 2, 0.35, 4)
-	local track = Kit.new("Frame", {
-		Name = "Track",
-		BackgroundColor3 = C.Well,
-		Size = UDim2.fromOffset(TRACK_OUT * 2 + 2, TRACK_OUT * 2 + 2),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		ZIndex = 3,
-		Parent = ring,
-	})
-	Kit.round(track)
-	zone = Kit.new("Frame", {
-		Name = "Zone",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 4,
-		Parent = ring,
-	})
-	local plate = Kit.new("Frame", {
-		Name = "Plate",
-		BackgroundColor3 = C.Surface,
-		Size = UDim2.fromOffset(TRACK_IN * 2 - 6, TRACK_IN * 2 - 6),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		ZIndex = 7,
-		Parent = ring,
-	})
-	Kit.round(plate)
-	Kit.stroke(plate, 3, C.Edge)
-	centre = Kit.number(plate, {
-		Name = "Centre",
-		Text = "SPACE",
-		TextSize = 24,
-		TextWrapped = false,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 8,
-	})
-	-- The needle: a pivot frame the size of the ring, turned each frame; the red bar
-	-- runs across the track with a round cap at its tip.
-	needle = Kit.new("Frame", {
-		Name = "Needle",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 9,
-		Visible = false,
-		Parent = ring,
-	})
-	local bar = Kit.new("Frame", {
-		Name = "Bar",
-		BackgroundColor3 = C.Bad,
-		BorderSizePixel = 0,
-		Size = UDim2.fromOffset(6, TRACK_OUT - TRACK_IN + 14),
-		Position = UDim2.new(0.5, 0, 0.5, -TRACK_IN + 6),
-		AnchorPoint = Vector2.new(0.5, 1),
-		ZIndex = 9,
-		Parent = needle,
-	})
-	Kit.round(bar)
-	Kit.stroke(bar, 1.5, Color3.new(1, 1, 1))
-	local cap = Kit.new("Frame", {
-		Name = "Cap",
-		BackgroundColor3 = C.Bad,
-		Size = UDim2.fromOffset(14, 14),
-		Position = UDim2.new(0.5, 0, 0, 0),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		ZIndex = 10,
-		Parent = bar,
-	})
-	Kit.round(cap)
-	Kit.stroke(cap, 2, Color3.new(1, 1, 1))
+	ring = MogRing.new(ringHolder, RING)
 
 	-- The tap target over the whole ring (mouse and touch).
 	local hit = Kit.new("TextButton", {
@@ -780,7 +802,7 @@ function MogHud.build(screenGui: ScreenGui)
 		TextSize = 34,
 		TextWrapped = false,
 		Size = UDim2.fromOffset(260, 40),
-		Position = UDim2.new(0.5, 0, 0.5, 0),
+		Position = RESULT_FROM,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		TextTransparency = 1,
 		ZIndex = 14,
@@ -836,6 +858,102 @@ function MogHud.build(screenGui: ScreenGui)
 	})
 	Kit.round(rivalFill)
 	Kit.gradient(rivalFill, Kit.lighten(C.Bad, 0.25), C.Bad, 90)
+
+	-- The opponent's last result in a duel, small under their bar.
+	oppResult = Kit.text(root, {
+		Name = "OppResult",
+		Text = "",
+		Font = F.Display,
+		TextSize = 16,
+		TextWrapped = false,
+		Size = UDim2.fromOffset(240, 22),
+		Position = UDim2.new(0.5, 0, 0, 382),
+		AnchorPoint = Vector2.new(0.5, 0),
+		TextTransparency = 1,
+		ZIndex = 3,
+	})
+	Kit.new("UIScale", { Parent = oppResult })
+
+	-- "FINDING OPPONENT…" (right side, outside the run HUD: shown while root is hidden).
+	queuePanel = Kit.panel(screenGui, {
+		Name = "MogQueue",
+		Size = UDim2.fromOffset(276, 124),
+		Position = UDim2.new(1, -36, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Radius = 18,
+		Visible = false,
+		ZIndex = 20,
+	})
+	queueSpinner = Kit.new("Frame", {
+		Name = "Spinner",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(48, 48),
+		Position = UDim2.fromOffset(14, 10),
+		ZIndex = 21,
+		Parent = queuePanel,
+	})
+	-- A faint well disc behind the dots so the spinner reads as one badge.
+	local spinnerWell = Kit.new("Frame", {
+		Name = "Well",
+		BackgroundColor3 = C.Well,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 21,
+		Parent = queueSpinner,
+	})
+	Kit.round(spinnerWell)
+	for i = 1, 10 do
+		-- Ten dots round a circle, growing and brightening toward the head.
+		local angle = i / 10 * math.pi * 2
+		local size = 5 + math.floor(i / 2)
+		local dot = Kit.new("Frame", {
+			BackgroundColor3 = C.Gold,
+			BackgroundTransparency = (10 - i) / 12,
+			Size = UDim2.fromOffset(size, size),
+			Position = UDim2.new(0.5, math.sin(angle) * 16, 0.5, -math.cos(angle) * 16),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 22,
+			Parent = queueSpinner,
+		})
+		Kit.round(dot)
+	end
+	queueTitle = Kit.text(queuePanel, {
+		Name = "Title",
+		Text = "FINDING OPPONENT...",
+		Font = F.Display,
+		TextSize = 17,
+		TextWrapped = false,
+		TextColor3 = C.Gold,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -84, 0, 22),
+		Position = UDim2.fromOffset(72, 12),
+		ZIndex = 21,
+	})
+	queueTime = Kit.text(queuePanel, {
+		Name = "Time",
+		Text = "0s",
+		TextSize = 15,
+		TextWrapped = false,
+		TextColor3 = C.TextDim,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -84, 0, 20),
+		Position = UDim2.fromOffset(72, 36),
+		StrokeThickness = 0,
+		ZIndex = 21,
+	})
+	-- The same slim secondary button as Popups' "Back to my gym".
+	Kit.button(queuePanel, {
+		Name = "Cancel",
+		Text = "Cancel",
+		Color = C.SurfaceHi,
+		TextSize = Kit.TEXT.Body,
+		Size = UDim2.new(1, -28, 0, 42),
+		Position = UDim2.new(0.5, 0, 1, -12),
+		AnchorPoint = Vector2.new(0.5, 1),
+		ZIndex = 22,
+	}, function()
+		action:FireServer({ action = "MogCancel" })
+		hideQueue()
+	end)
 
 	-- Banner (top centre, under the unit count).
 	banner = Kit.new("Frame", {

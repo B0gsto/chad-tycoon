@@ -48,6 +48,10 @@ MogRules.ZONE_FROM_HARD = 70
 MogRules.ZONE_UNTIL = 330
 MogRules.DELAY_MIN = 0.5
 MogRules.DELAY_MAX = 1.4
+-- PvP: HP per duelist, self-damage of a miss, extra lead (seconds) before the first check.
+MogRules.PVP_HP = 8
+MogRules.PVP_MISS_DAMAGE = 1
+MogRules.PVP_FIRST_LEAD = 0.6
 
 export type Check = {
 	n: number,
@@ -79,6 +83,16 @@ export type Run = {
 }
 
 export type Outcome = { moggedRival: Rival?, rival: Rival?, passed: boolean?, finished: boolean? }
+
+-- One side of a PvP duel; `result` is this round's answer (nil = not answered yet).
+export type Duelist = { hp: number, maxHp: number, score: number, combo: number, bestCombo: number, result: string? }
+
+-- A PvP duel: sides[1] and sides[2]; winner = 1 | 2 once finished.
+export type Duel = { n: number, sides: { Duelist }, finished: boolean, winner: number?, suddenDeath: boolean }
+
+-- What a round did: each side's result (a missing answer counts as "miss"), the winner when
+-- the duel is over, suddenDeath when a KO tie sent both back to 1 HP.
+export type Round = { results: { string }, finished: boolean, winner: number?, suddenDeath: boolean }
 
 export type BestEntry = { userId: number, name: string, score: number, rivals: number }
 
@@ -226,6 +240,84 @@ function MogRules.recordBest(list: { BestEntry }, userId: number, name: string, 
 		table.remove(list)
 	end
 	return at
+end
+
+local function duelist(): Duelist
+	return { hp = MogRules.PVP_HP, maxHp = MogRules.PVP_HP, score = 0, combo = 0, bestCombo = 0, result = nil }
+end
+
+function MogRules.newDuel(): Duel
+	return { n = 0, sides = { duelist(), duelist() }, finished = false, winner = nil, suddenDeath = false }
+end
+
+-- Records side `side`'s answer ("perfect" | "hit" | "miss") to this round's check and
+-- updates its score and combo. Returns false (and changes nothing) when that side already
+-- answered or the duel is over. HP only changes in duelRound.
+function MogRules.duelPress(duel: Duel, side: number, result: string): boolean
+	local d = duel.sides[side]
+	if duel.finished or not d or d.result ~= nil then
+		return false
+	end
+	d.result = result
+	if result == "perfect" or result == "hit" then
+		d.score += if result == "perfect" then MogRules.PERFECT_SCORE else MogRules.HIT_SCORE
+		d.combo += 1
+		d.bestCombo = math.max(d.bestCombo, d.combo)
+	else
+		d.combo = 0
+	end
+	return true
+end
+
+-- Has every side answered this round's check?
+function MogRules.duelAnswered(duel: Duel): boolean
+	return duel.sides[1].result ~= nil and duel.sides[2].result ~= nil
+end
+
+-- Ends the round: a side that has not answered misses (duelPress), then both sides' damage
+-- lands at once and the duel is decided (or goes to sudden death). Clears the answers for
+-- the next round.
+function MogRules.duelRound(duel: Duel): Round
+	local round: Round = { results = {}, finished = false, winner = nil, suddenDeath = false }
+	if duel.finished then
+		return round
+	end
+	for side = 1, 2 do
+		if duel.sides[side].result == nil then
+			MogRules.duelPress(duel, side, "miss")
+		end
+	end
+	local damage = { 0, 0 }
+	for side = 1, 2 do
+		local result = duel.sides[side].result :: string
+		round.results[side] = result
+		if result == "perfect" then
+			damage[3 - side] += MogRules.PERFECT_DAMAGE
+		elseif result == "hit" then
+			damage[3 - side] += MogRules.HIT_DAMAGE
+		else
+			damage[side] += MogRules.PVP_MISS_DAMAGE
+		end
+	end
+	local a, b = duel.sides[1], duel.sides[2]
+	a.hp -= damage[1]
+	b.hp -= damage[2]
+	a.result, b.result = nil, nil
+	if a.hp <= 0 or b.hp <= 0 then
+		if a.hp == b.hp then
+			-- Sudden death: both back to 1 HP, the next round decides.
+			a.hp, b.hp = 1, 1
+			duel.suddenDeath = true
+			round.suddenDeath = true
+		else
+			duel.winner = if a.hp > b.hp then 1 else 2
+			duel.finished = true
+			round.finished = true
+			round.winner = duel.winner
+			a.hp, b.hp = math.max(0, a.hp), math.max(0, b.hp)
+		end
+	end
+	return round
 end
 
 return MogRules

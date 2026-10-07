@@ -1,6 +1,7 @@
 --!strict
 --[[
-	Fx.Mog: the 3D side of the MOG TEST (MogHud draws the skill-check ring).
+	Fx.Mog: the 3D side of the MOG TEST (MogHud draws the skill-check ring), vs rivals or
+	in a 1v1 duel (start / round / finish carry vs = "pvp").
 
 	  Rival        built locally with CharacterFactory from the rival's tier look (so only
 	               this client sees its own rival), standing at rivalPos facing the player.
@@ -13,6 +14,13 @@
 	  Camera       Scriptable duel framing over the player's shoulder looking at the
 	               rival, with a slow sideways drift; on finish / stop the camera goes back
 	               to Custom on the humanoid (Fx.Camera then frames it behind the player).
+	  Duel         no rival model: the opponent is the real character of
+	               Players:GetPlayerByUserId(opponent.userId), followed live (rivalPos is
+	               the fallback) and sized from its extents. On "round": a star pop (your
+	               perfect) or a cream ring (your hit) over their head, a red ring at your
+	               feet when you got hurt, the aura pulsing from your own result. On the
+	               finish: stars and confetti over the loser when you won, a red puff over
+	               you when you lost.
 	  Sounds       Celebrate when a rival is mogged; the UI sounds belong to MogHud.
 
 	Listens to Notify (kind "Mode", mode "mog") on its own; everything it makes is
@@ -53,6 +61,8 @@ local auraLight: PointLight? = nil
 local playerPos = Vector3.zero
 local rivalPos = Vector3.new(0, 0, -12)
 local running = false
+local duel = false -- a 1v1 duel: the opponent is a real player's character
+local opponentId = 0
 local cameraOn = false
 local token = 0 -- bumps on every rival change so stale tweens stop
 
@@ -100,6 +110,29 @@ local function animate(time: number, style: Enum.EasingStyle, fn: (number) -> ()
 		value:Destroy()
 	end)
 	tween:Play()
+end
+
+-- Duel opponent ---------------------------------------------------------------------------
+
+-- The opponent's live root part, or nil (left, respawning or not streamed in).
+local function opponentRoot(): BasePart?
+	local other = Players:GetPlayerByUserId(opponentId)
+	local root = other and other.Character and other.Character:FindFirstChild("HumanoidRootPart")
+	return if root and root:IsA("BasePart") then root else nil
+end
+
+-- Follows the opponent's feet and height (rivalPos / rivalHeight); keeps the last values
+-- when the character is gone.
+local function trackOpponent()
+	local root = opponentRoot()
+	local model = root and root.Parent
+	if not root or not model or not model:IsA("Model") then
+		return
+	end
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	local hip = if humanoid then humanoid.HipHeight else 2
+	rivalPos = root.Position - Vector3.new(0, root.Size.Y / 2 + hip, 0)
+	rivalHeight = math.clamp(model:GetExtentsSize().Y, 3, 14)
 end
 
 -- Rival -------------------------------------------------------------------------------------
@@ -328,6 +361,9 @@ local function takeCamera()
 		if cam.CameraType ~= Enum.CameraType.Scriptable then
 			cam.CameraType = Enum.CameraType.Scriptable
 		end
+		if duel then
+			trackOpponent()
+		end
 		local flat = Vector3.new(rivalPos.X - playerPos.X, 0, rivalPos.Z - playerPos.Z)
 		local forward = if flat.Magnitude > 0.1 then flat.Unit else Vector3.new(0, 0, -1)
 		local right = forward:Cross(Vector3.yAxis)
@@ -345,7 +381,7 @@ end
 -- Run ---------------------------------------------------------------------------------------
 
 local function clear()
-	running = false
+	running, duel, opponentId = false, false, 0
 	releaseCamera()
 	removeRival()
 	if folder then
@@ -370,7 +406,15 @@ local function onStart(p: any)
 	f.Parent = Workspace
 	folder = f
 	buildAura()
-	spawnRival(p.rival)
+	if p.vs == "pvp" then
+		duel = true
+		local opponent = if type(p.opponent) == "table" then p.opponent else {}
+		opponentId = math.floor(num(opponent.userId, 0))
+		rivalHeight = 6
+		trackOpponent()
+	else
+		spawnRival(p.rival)
+	end
 	takeCamera()
 end
 
@@ -400,6 +444,55 @@ local function onResult(p: any)
 	end
 end
 
+-- A duel round: sprites on whoever took damage, the aura from your own result.
+local function onRound(p: any)
+	local you = if type(p.you) == "table" then p.you else {}
+	local opp = if type(p.opp) == "table" then p.opp else {}
+	local combo = num(you.combo, 0)
+	local head = rivalPos + Vector3.new(0, rivalHeight + 0.6, 0)
+	local feet = playerPos + Vector3.new(0, 0.3, 0)
+	if you.result == "perfect" then
+		pulseAura(combo, W.Sunny)
+		sprite("StarPop", head, { size = 3, life = 0.8, rise = Vector3.new(0, 2, 0), spin = 60 })
+		sprite("Ring", feet, { size = auraSize(combo) * 1.4, life = 0.5, rise = Vector3.zero, color = W.Sunny })
+	elseif you.result == "hit" then
+		pulseAura(combo, W.Cream)
+		sprite("Ring", head, { size = 3.5, life = 0.5, rise = Vector3.new(0, 1, 0), color = W.Cream })
+	else
+		pulseAura(0, C.Bad)
+	end
+	if opp.result == "miss" then
+		-- Their own miss hurts them: a small red puff over their head.
+		sprite("Puff", head, { size = 3, life = 0.6, rise = Vector3.new(0, 1.5, 0), color = C.Bad })
+	end
+	if opp.result == "hit" or opp.result == "perfect" or you.result == "miss" then
+		sprite("Ring", feet, { size = 6, life = 0.5, rise = Vector3.zero, color = C.Bad })
+	end
+end
+
+-- The duel's last word, made after clear() so the sprites outlive the folder.
+local function duelFinish(won: boolean, foeHead: Vector3)
+	if won then
+		sprite("Ring", foeHead, { size = 7, life = 0.6, rise = Vector3.zero, color = W.Sunny })
+		for i = 1, 6 do
+			local angle = i / 6 * math.pi * 2
+			local offset = Vector3.new(math.cos(angle) * 1.5, math.sin(angle) * 1.2, 0)
+			sprite(if i % 2 == 0 then "StarPop" else "Confetti", foeHead + offset, {
+				size = 2.6,
+				life = 1,
+				delay = i * 0.03,
+				rise = Vector3.new(math.cos(angle) * 4, 3 + math.sin(angle) * 2, 0),
+				spin = 90,
+			})
+		end
+		Sounds.play("Celebrate")
+	else
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local head = if root and root:IsA("BasePart") then root.Position + Vector3.new(0, 3, 0) else playerPos + Vector3.new(0, 6, 0)
+		sprite("Puff", head, { size = 5, life = 0.8, rise = Vector3.new(0, 2, 0), color = C.Bad })
+	end
+end
+
 function MogFx.onNotify(p: any)
 	if type(p) ~= "table" then
 		return
@@ -410,9 +503,17 @@ function MogFx.onNotify(p: any)
 	elseif not running then
 		return
 	elseif event == "check" then
-		setExpr("Determined")
+		if not duel then
+			setExpr("Determined")
+		end
 	elseif event == "result" then
-		onResult(p)
+		if not duel then
+			onResult(p)
+		end
+	elseif event == "round" then
+		if duel then
+			onRound(p)
+		end
 	elseif event == "rival" then
 		moggedPop()
 		local nextRival = p.rival
@@ -421,6 +522,10 @@ function MogFx.onNotify(p: any)
 				spawnRival(nextRival)
 			end
 		end)
+	elseif event == "finish" and duel then
+		local foeHead = rivalPos + Vector3.new(0, rivalHeight * 0.85, 0)
+		clear()
+		duelFinish(p.won == true, foeHead)
 	elseif event == "finish" or event == "stop" then
 		clear()
 	end

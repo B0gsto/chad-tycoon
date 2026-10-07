@@ -1772,6 +1772,11 @@ end
 	"Reward again in m:ss" line while the full reward cools down. "Mog again" and
 	"Back to my gym". `data` is the mog finish Notify payload (score, rivals, best,
 	newBest, passed, cash, gems, full, cooldownEnds, rank?).
+
+	A 1v1 duel (data.vs == "pvp": won, reason "ko" | "forfeit", opponent { userId, name },
+	score, wins, played, cash, gems, full, cooldownEnds) uses the same card: "YOU MOGGED
+	<name>!" in gold or "<name> MOGGED YOU" in red, duels won / played, the reward (the
+	winner's) and "Duel again" instead of "Mog again".
 ]]
 function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> ())
 	Popups.enqueue("MogFinish", Popups.PRIORITY.Normal, function(done)
@@ -1779,15 +1784,28 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		local cashTotal = tonumber(data.cash) or 0
 		local gemTotal = tonumber(data.gems) or 0
 		local cooling = data.full == false and (tonumber(data.cooldownEnds) or 0) > os.time()
+		local duel = data.vs == "pvp"
+		local won = duel and data.won == true
+		local foe = if duel and type(data.opponent) == "table" then tostring(data.opponent.name or "Opponent") else "Opponent"
 		local box, close = modal("MogFinish", Vector2.new(480, 380), 45, nil, done)
-		local medal = medallion(box, "💪", C.Gold, 84, UDim2.new(0.5, 0, 0, 0))
+		local medal = medallion(
+			box,
+			if duel and not won then "😤" else "💪",
+			if duel and not won then C.Bad else C.Gold,
+			84,
+			UDim2.new(0.5, 0, 0, 0)
+		)
 		Kit.title(box, {
-			Text = if data.newBest then "NEW BEST!" else "MOG TEST OVER",
+			Text = if duel
+				then (if won then "YOU MOGGED " .. string.upper(foe) .. "!" else string.upper(foe) .. " MOGGED YOU")
+				elseif data.newBest then "NEW BEST!"
+				else "MOG TEST OVER",
+			TextScaled = duel,
 			TextSize = T.H1,
 			TextWrapped = false,
 			Size = UDim2.new(1, -20, 0, 34),
 			Position = UDim2.fromOffset(10, 48),
-			TextColor3 = C.Gold,
+			TextColor3 = if duel and not won then C.Bad else C.Gold,
 		})
 		local scoreLabel = Kit.number(box, {
 			Text = "0",
@@ -1798,7 +1816,9 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		})
 		local sub = "Rivals mogged " .. tostring(tonumber(data.rivals) or 0)
 		sub ..= "  ·  Best " .. Format.short(math.max(tonumber(data.best) or 0, score))
-		if type(data.rank) == "number" then
+		if duel then
+			sub = "Duels won " .. tostring(tonumber(data.wins) or 0) .. "  ·  Played " .. tostring(tonumber(data.played) or 0)
+		elseif type(data.rank) == "number" then
 			sub ..= "  ·  #" .. tostring(data.rank) .. " today"
 		end
 		Kit.text(box, {
@@ -1832,8 +1852,11 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		local cashLabel = amount("Coin", C.Gold, 0, if gemTotal > 0 then 0.6 else 1, C.MoneyText)
 		local gemLabel = if gemTotal > 0 then amount("Gem", C.Rizz, 0.6, 0.4, Kit.lighten(C.Rizz, 0.35)) else nil
 		local note = Kit.text(box, {
-			Text = if cooling
-				then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
+			Text = if duel and data.reason == "forfeit"
+				then (if won then foe .. " left the duel. The win is yours!" else "You left the duel.")
+				elseif duel and not won then "So close! Hit PERFECT to deal double damage."
+				elseif cooling then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
+				elseif duel then "Total mog! Can you win another?"
 				elseif data.passed then "MOG TEST PASSED! Can you mog even more?"
 				else "Nice try! Mog more rivals to pass.",
 			TextSize = T.Small,
@@ -1843,7 +1866,7 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			StrokeThickness = 0,
 		})
 		local again = Kit.button(box, {
-			Text = "Mog again",
+			Text = if duel then "Duel again" else "Mog again",
 			Font = Theme.Fonts.Display,
 			Color = C.Gold,
 			Breathe = true,
@@ -1866,7 +1889,7 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		Kit.appear(again, { from = 0.8, time = 0.26, delay = 0.14 })
 		Kit.appear(home, { from = 0.8, time = 0.26, delay = 0.18 })
-		if data.newBest or data.passed then
+		if data.newBest or data.passed or won then
 			Kit.confetti(box, { Origin = UDim2.fromScale(0.5, 0.1), Count = 24, ZIndex = 60 })
 		end
 		after(0.1, function()
@@ -1887,7 +1910,7 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 				end, 0.6)
 			end)
 		end
-		if cooling then
+		if cooling and not (duel and (not won or data.reason == "forfeit")) then
 			task.spawn(function()
 				while note.Parent do
 					local left = (tonumber(data.cooldownEnds) or 0) - os.time()
@@ -1897,6 +1920,112 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			end)
 		end
 		sounds.play("Reward")
+	end)
+end
+
+--[[
+	The MOG TEST picker, opened by walking through the mog gate (Notify "choose") or the
+	Modes window's PLAY: two big cards side by side. VS RIVALS (solo: mog 3 rival chads to
+	pass) and 1v1 DUEL (out-mog a real player; hit = 1 damage, perfect = 2, a miss hurts
+	you; the winner takes the reward). Each card's button closes the picker and runs its
+	callback; the backdrop just closes it. `onClosed` runs once the picker is gone either way.
+]]
+function Popups.mogChoose(onRivals: () -> (), onPvp: () -> (), onClosed: (() -> ())?)
+	Popups.enqueue("MogChoose", Popups.PRIORITY.Normal, function(done)
+		local box, close = modal("MogChoose", Vector2.new(560, 374), 45, nil, function()
+			done()
+			if onClosed then
+				onClosed()
+			end
+		end)
+		-- The badge sits astride the card's top edge (raised a little so its lip and
+		-- shadow clear the title below).
+		local medal = medallion(box, "💪", C.Gold, 84, UDim2.new(0.5, 0, 0, -8))
+		Kit.title(box, {
+			Text = "MOG TEST",
+			TextSize = T.H1,
+			TextWrapped = false,
+			Size = UDim2.new(1, -20, 0, 34),
+			Position = UDim2.fromOffset(10, 56),
+			TextColor3 = C.Gold,
+		})
+		Kit.text(box, {
+			Text = "Who do you want to mog?",
+			TextSize = T.Body,
+			Size = UDim2.new(1, -30, 0, 22),
+			Position = UDim2.fromOffset(15, 92),
+			TextColor3 = C.TextDim,
+			StrokeThickness = 0,
+		})
+		local function card(
+			x: number,
+			icon: string,
+			color: Color3,
+			title: string,
+			blurb: string,
+			label: string,
+			pick: () -> ()
+		): (Frame, TextButton)
+			local panel = Kit.panel(box, {
+				Name = title,
+				Elevated = true,
+				Size = UDim2.new(0.5, -28, 0, 226),
+				Position = UDim2.new(x, if x == 0 then 20 else 8, 0, 128),
+				Radius = Kit.RADIUS.L,
+				StrokeThickness = 3,
+				StrokeColor = color,
+				ZIndex = 46,
+			})
+			Kit.title(panel, {
+				Text = icon,
+				TextSize = 44,
+				Size = UDim2.new(1, 0, 0, 52),
+				Position = UDim2.fromOffset(0, 8),
+				StrokeThickness = 0,
+				ZIndex = 47,
+			})
+			Kit.title(panel, {
+				Text = title,
+				TextSize = 26,
+				TextWrapped = false,
+				TextColor3 = color,
+				Size = UDim2.new(1, -16, 0, 30),
+				Position = UDim2.fromOffset(8, 62),
+				ZIndex = 47,
+			})
+			Kit.text(panel, {
+				-- Full-white body text: TextDim at Small size was too faint on the card.
+				Text = blurb,
+				TextSize = T.Small + 2,
+				TextColor3 = C.Text,
+				Size = UDim2.new(1, -20, 0, 62),
+				Position = UDim2.fromOffset(10, 94),
+				StrokeThickness = 0,
+				ZIndex = 47,
+			})
+			local button = Kit.button(panel, {
+				Text = label,
+				Font = Theme.Fonts.Display,
+				Color = color,
+				Size = UDim2.new(1, -24, 0, 52),
+				Position = UDim2.new(0, 12, 1, -64),
+				ZIndex = 48,
+			}, function()
+				close()
+				pick()
+			end)
+			return panel, button
+		end
+		local rivals, rivalsGo = card(0, "🏋️", C.Gold, "VS RIVALS", "Solo: mog 3 rival chads to pass the test!", "PLAY", onRivals)
+		local duel, duelGo =
+			card(0.5, "⚔️", C.Bad, "1v1 DUEL", "Out-mog a real player! PERFECT hits twice. Winner gets the reward.", "FIND DUEL", onPvp)
+		Kit.breathe(duelGo)
+		Kit.appear(box)
+		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
+		Kit.appear(rivals, { from = 0.8, time = 0.26, delay = 0.1 })
+		Kit.appear(duel, { from = 0.8, time = 0.26, delay = 0.16 })
+		Kit.appear(rivalsGo, { from = 0.8, time = 0.24, delay = 0.2 })
+		sounds.play("Toast")
 	end)
 end
 

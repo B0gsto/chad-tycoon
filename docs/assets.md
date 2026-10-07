@@ -13,7 +13,7 @@ have a `run_all.sh` and a `make_sheet.py` contact sheet).
 |---|---|---|---|---|
 | `brand` | Logo, LogoSmall, KeyArt, TitleCard | Image | `art/blender/brand/` | loading screen |
 | `faces` | Happy, Proud, Shock, Awe, Sad, Idea, Fury, Smirk | Image | `art/blender/faces/` | intro cutscene avatar expressions |
-| `hud` | Dumbbell, DumbbellGlow | Image | `art/blender/ui/hud_*.py` | HUD dumbbell |
+| `hud` | Dumbbell, DumbbellGlow, MogRing* | Image | `art/blender/ui/hud_*.py`, `mog_ring.py` | HUD dumbbell, MOG TEST ring |
 | `props` | 27 meshes (OrbBall, Crate, Converter, Vault, PalmTree, Crown, ...) | Model | `art/blender/props/`, `orbs/`, `cosmetics/` | `World/Props`, `Fx/Orbs`, `Cosmetics` (via `AssetModels`) |
 | `ui` | atlas_1..3 (icon atlases with `cells`) | Image | `art/blender/icons/`, `icons_shop/`, `cosmetics/icons.py` + `tools/pack_atlas.py` | `Kit.icon` |
 | `vfx` | CoinSpin, Confetti, Heart, Note, Puff, Ring, SoftDot, Sparkle, StarPop, Sweat | Image | `art/blender/vfx/` | `Fx/Sprites` |

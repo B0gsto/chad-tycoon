@@ -7,16 +7,21 @@
       <Properties>
         <string name="Name">Loader</string>
         <string name="Source"><![CDATA[-- Loader (ReplicatedFirst): replaces Roblox's default loading screen with the
--- game's own splash and fades it out once the first State snapshot arrives
--- (the client sets the player's "GameReady" attribute) or after a timeout.
+-- game's own splash and keeps it up until the player is really in the game:
+-- the first State snapshot has arrived (the client sets the player's
+-- "GameReady" attribute), the character stands on its plot (the server sets
+-- its "OnPlot" attribute), and the world around it has streamed in. Without
+-- that the screen faded out over an empty blue sky while the save loaded.
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local LoadingScreen = require(script:WaitForChild("LoadingScreen"))
+local Brand = require(script:WaitForChild("Brand"))
 
-local TIMEOUT = 25
+local TIMEOUT = 45
 local ART_TIMEOUT = 8
 
 local player = Players.LocalPlayer
@@ -30,10 +35,37 @@ pcall(function()
 end)
 gui.Parent = player:WaitForChild("PlayerGui")
 
-local screen = LoadingScreen.build(gui, nil)
+-- If the splash ever fails to build, a plain dark cover still hides the sky.
+local ok, built = pcall(LoadingScreen.build, gui, Brand)
+local screen: LoadingScreen.Handle
+if ok then
+	screen = built
+else
+	warn("LoadingScreen failed:", built)
+	local cover = Instance.new("Frame")
+	cover.BackgroundColor3 = Color3.fromRGB(46, 62, 136)
+	cover.BorderSizePixel = 0
+	cover.Size = UDim2.fromScale(1, 1)
+	cover.Parent = gui
+	screen = {
+		applyTheme = function() end,
+		applyArt = function() end,
+		setStatus = function() end,
+		finish = function() end,
+	} :: any
+end
 ReplicatedFirst:RemoveDefaultLoadingScreen()
 
 local started = os.clock()
+
+-- The brand art ships in ReplicatedFirst too, so it can show from the start
+-- instead of after ReplicatedStorage arrives; fetch it ahead of everything else.
+screen.applyArt({ keyArt = Brand.KeyArt, logo = Brand.Logo })
+task.spawn(function()
+	pcall(function()
+		game:GetService("ContentProvider"):PreloadAsync({ Brand.KeyArt, Brand.Logo })
+	end)
+end)
 
 task.spawn(function()
 	local themeModule = ReplicatedStorage:WaitForChild("Theme", TIMEOUT)
@@ -55,8 +87,32 @@ end)
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
-while player:GetAttribute("GameReady") ~= true and os.clock() - started < TIMEOUT do
+local function timeLeft(): boolean
+	return os.clock() - started < TIMEOUT
+end
+while player:GetAttribute("GameReady") ~= true and timeLeft() do
 	task.wait(0.1)
+end
+-- The character on its plot (the server moves it there after loading the save).
+local root: BasePart? = nil
+while timeLeft() do
+	local character = player.Character
+	local part = character and character:FindFirstChild("HumanoidRootPart")
+	if part and part:IsA("BasePart") and character:GetAttribute("OnPlot") == true then
+		root = part
+		break
+	end
+	task.wait(0.1)
+end
+-- With streaming on, wait for the parts around the plot before showing it.
+if root and workspace.StreamingEnabled and timeLeft() then
+	pcall(function()
+		player:RequestStreamAroundAsync(root.Position, 10)
+	end)
+end
+-- A few frames for the camera to settle behind the character.
+for _ = 1, 3 do
+	RunService.RenderStepped:Wait()
 end
 -- Keep the splash up briefly so it doesn't just flash on fast joins.
 local shown = os.clock() - started
@@ -64,12 +120,33 @@ if shown < 1.2 then
 	task.wait(1.2 - shown)
 end
 screen.finish()
-task.delay(1, function()
+task.delay(if ok then 1 else 0, function()
 	gui:Destroy()
 end)
 ]]></string>
       </Properties>
       <Item class="ModuleScript" referent="2">
+        <Properties>
+          <string name="Name">Brand</string>
+          <string name="Source"><![CDATA[--[[
+	Brand: what the loading screen shows from its very first frame. It lives in
+	ReplicatedFirst because ReplicatedStorage (Theme, Shared.Assets) only
+	replicates near the end of the join, so without this the splash is a bare
+	sky gradient for most of the load. The Theme and Assets still override it
+	once they arrive; tests/run checks the two stay in sync.
+]]
+
+return {
+	GameName = "Chad Aura Tycoon",
+	Tagline = "Farm aura. Merge Chads. Mog the server.",
+	KeyArt = "rbxassetid://71618244352821",
+	Logo = "rbxassetid://128398060676282",
+	Loading = { Status = "Warming up the gym..." },
+}
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="3">
         <Properties>
           <string name="Name">LoadingScreen</string>
           <string name="Source"><![CDATA[--[[
@@ -548,15 +625,15 @@ return LoadingScreen
       </Item>
     </Item>
   </Item>
-  <Item class="ReplicatedStorage" referent="3">
+  <Item class="ReplicatedStorage" referent="4">
     <Properties>
       <string name="Name">ReplicatedStorage</string>
     </Properties>
-    <Item class="Folder" referent="4">
+    <Item class="Folder" referent="5">
       <Properties>
         <string name="Name">AssetModels</string>
       </Properties>
-      <Item class="Model" referent="5">
+      <Item class="Model" referent="6">
         <Properties>
           <string name="Name">proof__cube</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -606,7 +683,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="6">
+        <Item class="MeshPart" referent="7">
           <Properties>
             <string name="Name">ProofCube</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -747,7 +824,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="7">
+      <Item class="Model" referent="8">
         <Properties>
           <string name="Name">props__Barbell</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -797,7 +874,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="8">
+        <Item class="MeshPart" referent="9">
           <Properties>
             <string name="Name">Barbell</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -938,7 +1015,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="9">
+      <Item class="Model" referent="10">
         <Properties>
           <string name="Name">props__BeachBall</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -988,7 +1065,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="10">
+        <Item class="MeshPart" referent="11">
           <Properties>
             <string name="Name">BeachBall.001</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1129,7 +1206,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="11">
+      <Item class="Model" referent="12">
         <Properties>
           <string name="Name">props__Bench</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1179,7 +1256,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="12">
+        <Item class="MeshPart" referent="13">
           <Properties>
             <string name="Name">Bench</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1320,7 +1397,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="13">
+      <Item class="Model" referent="14">
         <Properties>
           <string name="Name">props__Converter</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1370,7 +1447,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="14">
+        <Item class="MeshPart" referent="15">
           <Properties>
             <string name="Name">Converter</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1511,7 +1588,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="15">
+      <Item class="Model" referent="16">
         <Properties>
           <string name="Name">props__Crate</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1561,7 +1638,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="16">
+        <Item class="MeshPart" referent="17">
           <Properties>
             <string name="Name">Crate</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1702,7 +1779,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="17">
+      <Item class="Model" referent="18">
         <Properties>
           <string name="Name">props__CrateCracker</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1752,7 +1829,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="18">
+        <Item class="MeshPart" referent="19">
           <Properties>
             <string name="Name">CrateCracker</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1893,7 +1970,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="19">
+      <Item class="Model" referent="20">
         <Properties>
           <string name="Name">props__CrateCrackerVip</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1943,7 +2020,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="20">
+        <Item class="MeshPart" referent="21">
           <Properties>
             <string name="Name">CrateCrackerVip</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2084,7 +2161,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="21">
+      <Item class="Model" referent="22">
         <Properties>
           <string name="Name">props__Crown</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2134,7 +2211,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="22">
+        <Item class="MeshPart" referent="23">
           <Properties>
             <string name="Name">Crown</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2275,7 +2352,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="23">
+      <Item class="Model" referent="24">
         <Properties>
           <string name="Name">props__Dumbbell</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2325,7 +2402,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="24">
+        <Item class="MeshPart" referent="25">
           <Properties>
             <string name="Name">Dumbbell</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2466,7 +2543,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="25">
+      <Item class="Model" referent="26">
         <Properties>
           <string name="Name">props__DumbbellRack</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2516,7 +2593,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="26">
+        <Item class="MeshPart" referent="27">
           <Properties>
             <string name="Name">DumbbellRack</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2657,7 +2734,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="27">
+      <Item class="Model" referent="28">
         <Properties>
           <string name="Name">props__GigaStatue</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2707,7 +2784,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="28">
+        <Item class="MeshPart" referent="29">
           <Properties>
             <string name="Name">GigaStatue</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2848,7 +2925,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="29">
+      <Item class="Model" referent="30">
         <Properties>
           <string name="Name">props__HubBench</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2898,7 +2975,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="30">
+        <Item class="MeshPart" referent="31">
           <Properties>
             <string name="Name">HubBench</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3039,7 +3116,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="31">
+      <Item class="Model" referent="32">
         <Properties>
           <string name="Name">props__JuiceBar</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3089,7 +3166,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="32">
+        <Item class="MeshPart" referent="33">
           <Properties>
             <string name="Name">JuiceBar</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3230,7 +3307,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="33">
+      <Item class="Model" referent="34">
         <Properties>
           <string name="Name">props__Kettlebell</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3280,7 +3357,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="34">
+        <Item class="MeshPart" referent="35">
           <Properties>
             <string name="Name">Kettlebell</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3421,7 +3498,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="35">
+      <Item class="Model" referent="36">
         <Properties>
           <string name="Name">props__OrbBall</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3471,7 +3548,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="36">
+        <Item class="MeshPart" referent="37">
           <Properties>
             <string name="Name">OrbBall</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3612,7 +3689,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="37">
+      <Item class="Model" referent="38">
         <Properties>
           <string name="Name">props__OrbShine</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3662,7 +3739,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="38">
+        <Item class="MeshPart" referent="39">
           <Properties>
             <string name="Name">OrbShine</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3803,7 +3880,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="39">
+      <Item class="Model" referent="40">
         <Properties>
           <string name="Name">props__PalmPlanter</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3853,7 +3930,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="40">
+        <Item class="MeshPart" referent="41">
           <Properties>
             <string name="Name">PalmPlanter</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3994,7 +4071,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="41">
+      <Item class="Model" referent="42">
         <Properties>
           <string name="Name">props__PalmTree</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4044,7 +4121,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="42">
+        <Item class="MeshPart" referent="43">
           <Properties>
             <string name="Name">PalmTree</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4185,7 +4262,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="43">
+      <Item class="Model" referent="44">
         <Properties>
           <string name="Name">props__PunchBag</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4235,7 +4312,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="44">
+        <Item class="MeshPart" referent="45">
           <Properties>
             <string name="Name">PunchBag</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4376,7 +4453,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="45">
+      <Item class="Model" referent="46">
         <Properties>
           <string name="Name">props__Speaker</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4426,7 +4503,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="46">
+        <Item class="MeshPart" referent="47">
           <Properties>
             <string name="Name">Speaker</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4567,7 +4644,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="47">
+      <Item class="Model" referent="48">
         <Properties>
           <string name="Name">props__TowelStack</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4617,7 +4694,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="48">
+        <Item class="MeshPart" referent="49">
           <Properties>
             <string name="Name">TowelStack</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4758,7 +4835,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="49">
+      <Item class="Model" referent="50">
         <Properties>
           <string name="Name">props__Treadmill</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4808,7 +4885,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="50">
+        <Item class="MeshPart" referent="51">
           <Properties>
             <string name="Name">Treadmill</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4949,7 +5026,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="51">
+      <Item class="Model" referent="52">
         <Properties>
           <string name="Name">props__Trophy</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4999,7 +5076,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="52">
+        <Item class="MeshPart" referent="53">
           <Properties>
             <string name="Name">Trophy</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5140,7 +5217,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="53">
+      <Item class="Model" referent="54">
         <Properties>
           <string name="Name">props__TrophyPodium</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5190,7 +5267,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="54">
+        <Item class="MeshPart" referent="55">
           <Properties>
             <string name="Name">TrophyPodium</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5331,7 +5408,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="55">
+      <Item class="Model" referent="56">
         <Properties>
           <string name="Name">props__Vault</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5381,7 +5458,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="56">
+        <Item class="MeshPart" referent="57">
           <Properties>
             <string name="Name">Vault</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5522,7 +5599,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="57">
+      <Item class="Model" referent="58">
         <Properties>
           <string name="Name">props__WaterCooler</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5572,7 +5649,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="58">
+        <Item class="MeshPart" referent="59">
           <Properties>
             <string name="Name">WaterCooler</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5713,7 +5790,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="59">
+      <Item class="Model" referent="60">
         <Properties>
           <string name="Name">props__YogaBall</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5763,7 +5840,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="60">
+        <Item class="MeshPart" referent="61">
           <Properties>
             <string name="Name">YogaBall</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5905,11 +5982,11 @@ return LoadingScreen
         </Item>
       </Item>
     </Item>
-    <Item class="Folder" referent="61">
+    <Item class="Folder" referent="62">
       <Properties>
         <string name="Name">Shared</string>
       </Properties>
-      <Item class="ModuleScript" referent="62">
+      <Item class="ModuleScript" referent="63">
         <Properties>
           <string name="Name">AssetModels</string>
           <string name="Source"><![CDATA[--!strict
@@ -5956,7 +6033,7 @@ return AssetModels
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="63">
+      <Item class="ModuleScript" referent="64">
         <Properties>
           <string name="Name">Assets</string>
           <string name="Source"><![CDATA[--!strict
@@ -5984,6 +6061,17 @@ local Images: { [string]: string } = {
 	["faces/Smirk"] = "rbxassetid://83922041775343",
 	["hud/Dumbbell"] = "rbxassetid://139703345038304",
 	["hud/DumbbellGlow"] = "rbxassetid://72694445273613",
+	["hud/MogRingArc"] = "rbxassetid://82444561760164",
+	["hud/MogRingArcGlow"] = "rbxassetid://135325189070129",
+	["hud/MogRingArcWide"] = "rbxassetid://104615914892441",
+	["hud/MogRingBase"] = "rbxassetid://100186232964953",
+	["hud/MogRingBurst"] = "rbxassetid://129394495451746",
+	["hud/MogRingEdge"] = "rbxassetid://87835309047700",
+	["hud/MogRingFlash"] = "rbxassetid://128216691752716",
+	["hud/MogRingHalo"] = "rbxassetid://81600921432516",
+	["hud/MogRingNeedle"] = "rbxassetid://89825850684715",
+	["hud/MogRingTrailL"] = "rbxassetid://140703410837019",
+	["hud/MogRingTrailR"] = "rbxassetid://111013692402636",
 	["proof/sphere"] = "rbxassetid://136882863283158",
 	["ui/atlas_1"] = "rbxassetid://124009831336881",
 	["ui/atlas_2"] = "rbxassetid://110910493203649",
@@ -6198,7 +6286,7 @@ return Assets
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="64">
+      <Item class="ModuleScript" referent="65">
         <Properties>
           <string name="Name">CharacterFactory</string>
           <string name="Source"><![CDATA[--[[
@@ -7971,7 +8059,7 @@ return CharacterFactory
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="65">
+      <Item class="ModuleScript" referent="66">
         <Properties>
           <string name="Name">CratePickup</string>
           <string name="Source"><![CDATA[--!strict
@@ -8040,7 +8128,7 @@ return CratePickup
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="66">
+      <Item class="ModuleScript" referent="67">
         <Properties>
           <string name="Name">Economy</string>
           <string name="Source"><![CDATA[--!strict
@@ -8605,7 +8693,7 @@ return Economy
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="67">
+      <Item class="ModuleScript" referent="68">
         <Properties>
           <string name="Name">Format</string>
           <string name="Source"><![CDATA[--!strict
@@ -8720,7 +8808,7 @@ return Format
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="68">
+      <Item class="ModuleScript" referent="69">
         <Properties>
           <string name="Name">Net</string>
           <string name="Source"><![CDATA[-- Remote events/functions. The server creates them, clients wait for them.
@@ -8788,7 +8876,7 @@ return Net
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="69">
+      <Item class="ModuleScript" referent="70">
         <Properties>
           <string name="Name">OrbLook</string>
           <string name="Source"><![CDATA[--!strict
@@ -8902,7 +8990,7 @@ return OrbLook
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="70">
+      <Item class="ModuleScript" referent="71">
         <Properties>
           <string name="Name">Poses</string>
           <string name="Source"><![CDATA[--[[
@@ -10001,7 +10089,7 @@ return Poses
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="71">
+      <Item class="ModuleScript" referent="72">
         <Properties>
           <string name="Name">RigPose</string>
           <string name="Source"><![CDATA[--[[
@@ -10170,7 +10258,7 @@ return RigPose
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="72">
+      <Item class="ModuleScript" referent="73">
         <Properties>
           <string name="Name">SessionLock</string>
           <string name="Source"><![CDATA[--!strict
@@ -10223,7 +10311,7 @@ return SessionLock
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="73">
+      <Item class="ModuleScript" referent="74">
         <Properties>
           <string name="Name">TutorialSteps</string>
           <string name="Source"><![CDATA[--!strict
@@ -10351,7 +10439,7 @@ return TutorialSteps
         </Properties>
       </Item>
     </Item>
-    <Item class="ModuleScript" referent="74">
+    <Item class="ModuleScript" referent="75">
       <Properties>
         <string name="Name">Theme</string>
         <string name="Source"><![CDATA[--[[
@@ -11762,15 +11850,15 @@ return Theme
       </Properties>
     </Item>
   </Item>
-  <Item class="ServerScriptService" referent="75">
+  <Item class="ServerScriptService" referent="76">
     <Properties>
       <string name="Name">ServerScriptService</string>
     </Properties>
-    <Item class="Folder" referent="76">
+    <Item class="Folder" referent="77">
       <Properties>
         <string name="Name">Server</string>
       </Properties>
-      <Item class="ModuleScript" referent="77">
+      <Item class="ModuleScript" referent="78">
         <Properties>
           <string name="Name">Cosmetics</string>
           <string name="Source"><![CDATA[--[[
@@ -12408,7 +12496,7 @@ return Cosmetics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="78">
+      <Item class="ModuleScript" referent="79">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -12472,13 +12560,20 @@ export type Profile = {
 	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
 	-- of the last full cash reward (Economy.modeReward cooldown).
 	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
-	-- passed.
+	-- passed (and PvP wins paid), pvpWins / pvpPlayed = PvP duels won / fought.
 	-- Parkour per level (dense, PARKOUR_LEVELS long, 0 = never): best seconds and finishes.
 	-- modes.parkour keeps the shared reward cooldown and mirrors level 1 for the old UI.
 	parkour: { best: { number }, clears: { number } },
 	modes: {
 		parkour: { best: number, clears: number, lastRewardAt: number },
-		mog: { best: number, rivals: number, clears: number, lastRewardAt: number },
+		mog: {
+			best: number,
+			rivals: number,
+			clears: number,
+			lastRewardAt: number,
+			pvpWins: number,
+			pvpPlayed: number,
+		},
 	},
 }
 
@@ -12530,7 +12625,7 @@ function DataService.defaultProfile(): Profile
 		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS) },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
-			mog = { best = 0, rivals = 0, clears = 0, lastRewardAt = 0 },
+			mog = { best = 0, rivals = 0, clears = 0, lastRewardAt = 0, pvpWins = 0, pvpPlayed = 0 },
 		},
 	}
 end
@@ -12759,7 +12854,7 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="79">
+      <Item class="ModuleScript" referent="80">
         <Properties>
           <string name="Name">GameModes</string>
           <string name="Source"><![CDATA[--[[
@@ -13070,7 +13165,7 @@ return GameModes
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="80">
+      <Item class="ModuleScript" referent="81">
         <Properties>
           <string name="Name">Intro</string>
           <string name="Source"><![CDATA[--[[
@@ -13108,7 +13203,7 @@ return Intro
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Script" referent="81">
+      <Item class="Script" referent="82">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -13233,11 +13328,11 @@ end)
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="82">
+      <Item class="Folder" referent="83">
         <Properties>
           <string name="Name">Modes</string>
         </Properties>
-        <Item class="ModuleScript" referent="83">
+        <Item class="ModuleScript" referent="84">
           <Properties>
             <string name="Name">Catalog</string>
             <string name="Source"><![CDATA[--!strict
@@ -13262,7 +13357,7 @@ export type Entry = {
 
 local Catalog: { Entry } = {
 	{ id = "parkour", title = "PARKOUR", blurb = "Run, jump and bounce over the sea!", slot = 1, enabled = true, color = "Coral" },
-	{ id = "mog", title = "MOG TEST", blurb = "Hit the timing rings to out-mog the rivals!", slot = 2, enabled = true, color = "Grape" },
+	{ id = "mog", title = "MOG TEST", blurb = "Out-mog rivals or duel a real player!", slot = 2, enabled = true, color = "Grape" },
 	{ id = "soon3", title = "COMING SOON", blurb = "A new game mode is on its way!", slot = 3, enabled = false, color = "Steel" },
 }
 
@@ -13270,7 +13365,7 @@ return Catalog
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="84">
+        <Item class="ModuleScript" referent="85">
           <Properties>
             <string name="Name">Course</string>
             <string name="Source"><![CDATA[--!strict
@@ -14109,16 +14204,19 @@ return Course
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="85">
+        <Item class="ModuleScript" referent="86">
           <Properties>
             <string name="Name">Mog</string>
             <string name="Source"><![CDATA[--[[
 	Mog: the MOG TEST game mode, a skill-check duel on the MOG STAGE out at sea
 	(World.MogStage, numbers in Modes.MogLayout, rules in Modes.MogRules).
 
-	- Walking west through gate 2 or the "ModeStart" action starts a run: the player is
-	  teleported to a free duel spot (MogLayout.SPOTS; refused when all are taken), facing a
-	  rival chad, and held still (HumanoidRootPart anchored, no jumping) until the run ends.
+	- The "ModeStart" action { mode = "mog", vs = "rivals" | "pvp" } starts a run. Without a
+	  valid `vs` (walking west through gate 2, old clients) nothing starts: the client gets
+	  { event = "choose" } and shows a picker that fires ModeStart again with `vs`.
+	- vs = "rivals" (PvE): the player is teleported to a free duel spot (MogLayout.SPOTS;
+	  refused when all are taken), facing a rival chad, and held still (HumanoidRootPart
+	  anchored, no jumping) until the run ends.
 	- Skill checks come one after another (MogRules.check); the client answers with the
 	  "MogPress" action { id, at } (at = its workspace:GetServerTimeNow() at the press). The
 	  server judges the press from `at`; a check nobody answers is a "timeout" miss.
@@ -14127,9 +14225,21 @@ return Course
 	  Parkour: first pass ever, then once per Economy.MODE_REWARD_COOLDOWN). The run then goes
 	  on for a high score until the lives run out; afterwards the player is sent back to the
 	  gates (GameModes.returnLater).
+	- vs = "pvp": 1v1 against a real player. A player waiting in the queue is matched at once;
+	  otherwise the player waits (not teleported, def.running is true) for QUEUE_TIMEOUT
+	  seconds, then gets stop "noOpponent". The "MogCancel" action leaves the queue. A match
+	  needs a whole free spot: the earlier-queued player (side A) stands on spot.player facing
+	  inward, the other (side B) on spot.rival facing A; both are held still. Both get the same
+	  check at the same time (the first PVP_FIRST_LEAD later), press once each (judged like
+	  PvE), and the round ends when both answered or the needle lap timed out (MogRules
+	  duelPress / duelRound: hit 1 damage to the opponent, perfect 2, miss 1 to yourself, all
+	  at once; KO tie = sudden death at 1 HP). The winner is paid like a PvE pass (same
+	  cooldown and clears). Leaving, respawning, quitting or switching mode mid-duel forfeits:
+	  the other side wins at once. PvP never goes on the TOP MOGGERS board.
 
 	Notify payloads (kind = "Mode", mode = "mog"):
-	  { event = "start", lives, maxLives, startedAt, best, spot, playerPos, rivalPos, rival,
+	  { event = "choose" }                           no `vs` given: show the rivals / PvP picker
+	  { event = "start", vs = "rivals", lives, maxLives, startedAt, best, spot, playerPos, rivalPos, rival,
 	    passRivals, score = 0 }                      playerPos / rivalPos: feet (Vector3)
 	  { event = "check", id, n, appearAt, speed, dir, zoneStart, zoneSize, perfectSize,
 	    duration }                                   sent `lead` seconds before appearAt
@@ -14137,7 +14247,18 @@ return Course
 	  { event = "rival", mogged, rival, rivals, passed, cash?, gems?, full? }
 	  { event = "finish", score, rivals, best, newBest, passed, cash, gems, full,
 	    cooldownEnds, rank? }
-	  { event = "stop", reason }                     ended without a finish ("full" = no free spot)
+	  { event = "stop", reason }                     ended without a finish ("full" = no free spot,
+	                                                 "noOpponent" = queue timed out, "cancel")
+	PvP payloads (every one carries vs = "pvp"; hp values are after the round):
+	  { event = "queue", vs, since, timeout }        waiting for an opponent (since: server time)
+	  { event = "start", vs, startedAt, spot, playerPos, rivalPos, hp, maxHp,
+	    opponent = { userId, name, hp, maxHp }, score = 0, wins }   rivalPos: the opponent's feet
+	  { event = "check", vs, ...same fields as PvE }  the same check for both sides
+	  { event = "result", vs, id, result, reason?, travel?, score, combo }   own press, no HP change
+	  { event = "round", vs, id, you = { result, hp, maxHp, combo, score },
+	    opp = { result, hp, maxHp }, suddenDeath? }
+	  { event = "finish", vs, won, reason ("ko" | "forfeit"), opponent = { userId, name }, score,
+	    wins, played, cash, gems, full, cooldownEnds }
 	Rival info: { index, name, tier, hp, maxHp } (tier = Theme.Tiers index the client dresses).
 	Effects: the usual "Cash" { amount, source = "Mode", padPos } when the pass pays cash.
 ]]
@@ -14162,6 +14283,8 @@ local PRESS_FUTURE = 0.25
 local TIMEOUT_SLACK = 0.35
 -- Seconds after finishing before the player is brought back to the gates.
 local RETURN_AFTER = 6
+-- Seconds a PvP player waits in the queue before giving up.
+local QUEUE_TIMEOUT = 45
 -- Feet are this far below the HumanoidRootPart's centre on a default character.
 local FEET_BELOW_ROOT = 3
 
@@ -14178,6 +14301,22 @@ type State = {
 	reward: Economy.ModeReward?,
 	saved: Saved?,
 }
+
+-- A PvP duel shared by both players (players[1] = side A, players[2] = side B).
+type Duel = {
+	rules: MogRules.Duel,
+	players: { Player },
+	spot: number,
+	rng: Random,
+	check: MogRules.Check?,
+	checkId: number,
+	appearAt: number,
+	pending: boolean,
+	saved: { [Player]: Saved? },
+	over: boolean,
+}
+
+type QueueEntry = { player: Player, since: number }
 
 local function escape(s: string): string
 	return (string.gsub(s, "[&<>]", { ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;" }))
@@ -14197,6 +14336,10 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 	local runs: { [Player]: State } = {}
 	local lastX: { [Player]: number } = {}
 	local spotOwner: { [number]: Player } = {}
+	-- Bumped every time a spot is handed out, so a stale freeLater never frees a reused spot.
+	local spotGen: { [number]: number } = {}
+	local duels: { [Player]: Duel } = {}
+	local queue: { QueueEntry } = {}
 	local serverBest: { MogRules.BestEntry } = {}
 	local nextCheckId = 0
 
@@ -14209,7 +14352,14 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		return workspace:GetServerTimeNow()
 	end
 
-	local function record(session: any): { best: number, rivals: number, clears: number, lastRewardAt: number }
+	local function record(session: any): {
+		best: number,
+		rivals: number,
+		clears: number,
+		lastRewardAt: number,
+		pvpWins: number,
+		pvpPlayed: number,
+	}
 		return session.profile.modes.mog
 	end
 
@@ -14237,11 +14387,14 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		label.Text = table.concat(lines, "\n")
 	end
 
-	local function freeSpot(player: Player): number?
-		-- A player who plays again within RETURN_AFTER still holds their spot: reuse it.
-		for i = 1, #MogLayout.SPOTS do
-			if spotOwner[i] == player then
-				return i
+	local function freeSpot(player: Player, other: Player?): number?
+		-- A solo player who plays again within RETURN_AFTER still holds their spot: reuse it.
+		-- A duel never does: the last opponent may still stand on that spot's other pad.
+		if not other then
+			for i = 1, #MogLayout.SPOTS do
+				if spotOwner[i] == player then
+					return i
+				end
 			end
 		end
 		for i = 1, #MogLayout.SPOTS do
@@ -14253,14 +14406,14 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		return nil
 	end
 
-	-- Holds the character still on its pad: anchored root, no jumping.
-	local function hold(player: Player, state: State)
+	-- Holds the character still on its pad: anchored root, no jumping. Returns what unhold needs.
+	local function hold(player: Player): Saved?
 		local root = GameModes.root(player)
 		if not root then
-			return
+			return nil
 		end
 		local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-		state.saved = {
+		local saved: Saved = {
 			root = root,
 			humanoid = humanoid,
 			jumpHeight = if humanoid then humanoid.JumpHeight else 7.2,
@@ -14272,12 +14425,10 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			humanoid.JumpHeight = 0
 			humanoid.JumpPower = 0
 		end
+		return saved
 	end
 
-	-- Undoes hold() and frees the spot. Must run before any teleport away from the stage.
-	local function release(player: Player, state: State)
-		local saved = state.saved
-		state.saved = nil
+	local function unhold(saved: Saved?)
 		if saved then
 			saved.root.Anchored = false
 			if saved.humanoid then
@@ -14285,16 +14436,26 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 				saved.humanoid.JumpPower = saved.jumpPower
 			end
 		end
-		if spotOwner[state.spot] == player then
-			-- The player stands on the pad a few more seconds after a finish (RETURN_AFTER):
-			-- keep the spot until they are gone so nobody is teleported onto them.
-			local spot = state.spot
+	end
+
+	-- Frees `spot` once its players are gone: they stand on the pads a few more seconds after a
+	-- finish (RETURN_AFTER), so nobody is teleported onto them meanwhile.
+	local function freeLater(spot: number, owner: Player)
+		if spotOwner[spot] == owner then
+			local gen = spotGen[spot]
 			task.delay(RETURN_AFTER + 1, function()
-				if spotOwner[spot] == player then
+				if spotOwner[spot] == owner and spotGen[spot] == gen then
 					spotOwner[spot] = nil
 				end
 			end)
 		end
+	end
+
+	-- Undoes hold() and frees the spot. Must run before any teleport away from the stage.
+	local function release(player: Player, state: State)
+		unhold(state.saved)
+		state.saved = nil
+		freeLater(state.spot, player)
 		runs[player] = nil
 	end
 
@@ -14333,7 +14494,9 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		})
 	end
 
-	local function payPass(player: Player, state: State): Economy.ModeReward?
+	-- Pays the mode reward (a PvE pass or a PvP win): shares the clears / cooldown record.
+	-- `padPos` places the "Cash" effect when the character is gone.
+	local function payReward(player: Player, padPos: Vector3): Economy.ModeReward?
 		local session = GameModes.session(player)
 		if not session then
 			return nil
@@ -14352,12 +14515,17 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			GameModes.effect(player, "Cash", {
 				amount = reward.cash,
 				source = "Mode",
-				padPos = if root then root.Position else vec(MogLayout.SPOTS[state.spot].player),
+				padPos = if root then root.Position else padPos,
 			})
 		end
 		p.gems += reward.gems
 		GameModes.hooks.rewarded(session, ID, reward)
 		Tycoon.markDirty(session)
+		return reward
+	end
+
+	local function payPass(player: Player, state: State): Economy.ModeReward?
+		local reward = payReward(player, vec(MogLayout.SPOTS[state.spot].player))
 		state.reward = reward
 		return reward
 	end
@@ -14441,20 +14609,331 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		end
 	end
 
+	-- Judges a "MogPress" { id, at } against a check announced for `appearAt` with id `checkId`.
+	-- Returns nil for a stale, malformed or implausibly timed press.
+	local function judgePress(
+		check: MogRules.Check,
+		checkId: number,
+		appearAt: number,
+		data: { [string]: any }
+	): (string?, string?, number?)
+		local id, at = data.id, data.at
+		if type(id) ~= "number" or type(at) ~= "number" or at ~= at or id ~= checkId then
+			return nil
+		end
+		local t = now()
+		if at < appearAt - LAP_SLACK or at > appearAt + check.duration + LAP_SLACK then
+			return nil
+		end
+		if at < t - PRESS_PAST or at > t + PRESS_FUTURE then
+			return nil
+		end
+		local travel = check.speed * (at - appearAt)
+		local result, reason = MogRules.judge(check, travel)
+		return result, reason, travel
+	end
+
+	-- PvP --------------------------------------------------------------------------------------
+
+	local function queued(player: Player): number?
+		for i, entry in queue do
+			if entry.player == player then
+				return i
+			end
+		end
+		return nil
+	end
+
+	local function dequeue(player: Player): boolean
+		local i = queued(player)
+		if i then
+			table.remove(queue, i)
+		end
+		return i ~= nil
+	end
+
+	-- Can this queued player be put in a duel right now?
+	local function ready(player: Player): boolean
+		return player.Parent ~= nil
+			and GameModes.session(player) ~= nil
+			and GameModes.root(player) ~= nil
+			and not runs[player]
+			and not duels[player]
+	end
+
+	local function sideOf(duel: Duel, player: Player): number
+		return if duel.players[1] == player then 1 else 2
+	end
+
+	-- Feet of side `side` on the duel's spot: A on the player pad, B on the rival pad.
+	local function padOf(duel: Duel, side: number): Vector3
+		local spot = MogLayout.SPOTS[duel.spot]
+		return vec(if side == 1 then spot.player else spot.rival)
+	end
+
+	local function sendPvp(player: Player, event: string, data: { [string]: any })
+		data.vs = "pvp"
+		GameModes.notify(player, event, ID, data)
+	end
+
+	local issueDuelCheck: (duel: Duel) -> ()
+
+	local function scheduleDuelCheck(duel: Duel, delay: number)
+		task.delay(delay, function()
+			if not duel.over and not duel.pending then
+				issueDuelCheck(duel)
+			end
+		end)
+	end
+
+	-- Both sides get the same check with the same id and appearAt.
+	issueDuelCheck = function(duel: Duel)
+		local rules = duel.rules
+		rules.n += 1
+		local check = MogRules.check(rules.n, function()
+			return duel.rng:NextNumber()
+		end)
+		nextCheckId += 1
+		duel.check = check
+		duel.checkId = nextCheckId
+		duel.appearAt = now() + check.lead + (if rules.n == 1 then MogRules.PVP_FIRST_LEAD else 0)
+		duel.pending = true
+		for _, player in duel.players do
+			sendPvp(player, "check", {
+				id = duel.checkId,
+				n = check.n,
+				appearAt = duel.appearAt,
+				speed = check.speed,
+				dir = check.dir,
+				zoneStart = check.zoneStart,
+				zoneSize = check.zoneSize,
+				perfectSize = check.perfectSize,
+				duration = check.duration,
+			})
+		end
+	end
+
+	-- Ends the duel: releases both players, frees the spot (after RETURN_AFTER), counts it on
+	-- both records and pays `winner`. Everyone but `quitter` (who gets a stop from def.stop)
+	-- gets a finish and is sent back to the gates later.
+	local function endDuel(duel: Duel, winner: Player, reason: string, quitter: Player?)
+		if duel.over then
+			return
+		end
+		duel.over = true
+		-- A forfeit before any round was played pays nothing (no win-trading by quitting).
+		local pays = reason ~= "forfeit" or duel.rules.n >= 2
+		duel.pending = false
+		for _, player in duel.players do
+			unhold(duel.saved[player])
+			duels[player] = nil
+		end
+		duel.saved = {}
+		freeLater(duel.spot, duel.players[1])
+		for i, player in duel.players do
+			local session = GameModes.session(player)
+			if not session then
+				continue
+			end
+			local won = player == winner
+			local rec = record(session)
+			rec.pvpPlayed += 1
+			local reward = nil
+			if won then
+				rec.pvpWins += 1
+				if pays then
+					reward = payReward(player, padOf(duel, i))
+				end
+			end
+			Tycoon.markDirty(session)
+			if player ~= quitter then
+				local opponent = duel.players[3 - i]
+				sendPvp(player, "finish", {
+					won = won,
+					reason = reason,
+					opponent = { userId = opponent.UserId, name = opponent.DisplayName },
+					score = duel.rules.sides[i].score,
+					wins = rec.pvpWins,
+					played = rec.pvpPlayed,
+					cash = if reward then reward.cash else 0,
+					gems = if reward then reward.gems else 0,
+					full = if reward then reward.full else false,
+					cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
+				})
+				GameModes.refresh(player)
+				GameModes.returnLater(player, RETURN_AFTER, function(root: BasePart): boolean
+					return MogLayout.onStage(root.Position.X, root.Position.Z)
+				end)
+			end
+		end
+	end
+
+	-- Records `player`'s answer to the current check and tells them (no HP change yet).
+	local function answer(duel: Duel, player: Player, result: string, reason: string?, travel: number?)
+		local side = sideOf(duel, player)
+		if not MogRules.duelPress(duel.rules, side, result) then
+			return
+		end
+		local d = duel.rules.sides[side]
+		sendPvp(player, "result", {
+			id = duel.checkId,
+			result = result,
+			reason = reason,
+			travel = travel,
+			score = d.score,
+			combo = d.combo,
+		})
+	end
+
+	-- Both answered (or timed out): the damage lands, then the duel ends or goes on.
+	local function endRound(duel: Duel)
+		local check = duel.check :: MogRules.Check
+		duel.pending = false
+		local round = MogRules.duelRound(duel.rules)
+		for i, player in duel.players do
+			local you, opp = duel.rules.sides[i], duel.rules.sides[3 - i]
+			sendPvp(player, "round", {
+				id = duel.checkId,
+				you = { result = round.results[i], hp = you.hp, maxHp = you.maxHp, combo = you.combo, score = you.score },
+				opp = { result = round.results[3 - i], hp = opp.hp, maxHp = opp.maxHp },
+				suddenDeath = if round.suddenDeath then true else nil,
+			})
+		end
+		if round.finished then
+			endDuel(duel, duel.players[round.winner :: number], "ko", nil)
+		else
+			scheduleDuelCheck(duel, check.delay)
+		end
+	end
+
+	local function startDuel(a: Player, b: Player, index: number)
+		local t = now()
+		local duel: Duel = {
+			rules = MogRules.newDuel(),
+			players = { a, b },
+			spot = index,
+			rng = Random.new(),
+			check = nil,
+			checkId = 0,
+			appearAt = 0,
+			pending = false,
+			saved = {},
+			over = false,
+		}
+		duels[a] = duel
+		duels[b] = duel
+		spotOwner[index] = a
+		spotGen[index] = (spotGen[index] or 0) + 1
+		local spot = MogLayout.SPOTS[index]
+		local inward = Vector3.new(spot.faceX, 0, spot.faceZ)
+		GameModes.teleport(a, padOf(duel, 1), inward)
+		GameModes.teleport(b, padOf(duel, 2), -inward)
+		lastX[a] = spot.player.x
+		lastX[b] = spot.rival.x
+		duel.saved[a] = hold(a)
+		duel.saved[b] = hold(b)
+		for i, player in duel.players do
+			local opponent = duel.players[3 - i]
+			local session = GameModes.session(player)
+			sendPvp(player, "start", {
+				startedAt = t,
+				spot = index,
+				playerPos = padOf(duel, i),
+				rivalPos = padOf(duel, 3 - i),
+				hp = MogRules.PVP_HP,
+				maxHp = MogRules.PVP_HP,
+				opponent = {
+					userId = opponent.UserId,
+					name = opponent.DisplayName,
+					hp = MogRules.PVP_HP,
+					maxHp = MogRules.PVP_HP,
+				},
+				score = 0,
+				wins = if session then record(session).pvpWins else 0,
+			})
+			GameModes.refresh(player)
+		end
+		scheduleDuelCheck(duel, FIRST_CHECK)
+	end
+
+	-- Matches the two earliest ready players in the queue when a whole spot is free.
+	local function tryMatch()
+		local a: Player?, b: Player? = nil, nil
+		for _, entry in queue do
+			if ready(entry.player) then
+				if not a then
+					a = entry.player
+				else
+					b = entry.player
+					break
+				end
+			end
+		end
+		if not a or not b then
+			return
+		end
+		local index = freeSpot(a, b)
+		if not index then
+			return
+		end
+		dequeue(a)
+		dequeue(b)
+		startDuel(a, b, index)
+	end
+
+	-- Settles a duel's check once the needle's lap is over: missing answers are timeouts.
+	local function duelTimeout(duel: Duel, t: number)
+		local check = duel.check
+		if not duel.pending or not check or t <= duel.appearAt + check.duration + TIMEOUT_SLACK then
+			return
+		end
+		for i, player in duel.players do
+			if duel.rules.sides[i].result == nil then
+				answer(duel, player, "miss", "timeout", nil)
+			end
+		end
+		endRound(duel)
+	end
+
 	local def = {} :: any
 	def.id = ID
 
+	-- True during a PvE run, a duel, or while waiting in the PvP queue.
 	function def.running(player: Player): boolean
-		return runs[player] ~= nil
+		return runs[player] ~= nil or duels[player] ~= nil or queued(player) ~= nil
 	end
 
-	function def.start(player: Player, _teleport: boolean, _options: { [string]: any }?): boolean
-		if runs[player] then
+	function def.start(player: Player, _teleport: boolean, options: { [string]: any }?): boolean
+		local vs = options and options.vs
+		if vs ~= "rivals" and vs ~= "pvp" then
+			if def.running(player) then
+				return true
+			end
+			GameModes.notify(player, "choose", ID)
+			return false
+		end
+		if runs[player] or duels[player] then
 			return true
+		end
+		if queued(player) then
+			if vs == "pvp" then
+				return true
+			end
+			dequeue(player)
 		end
 		local session = GameModes.session(player)
 		if not session or not GameModes.root(player) then
 			return false
+		end
+		if vs == "pvp" then
+			local since = now()
+			table.insert(queue, { player = player, since = since })
+			tryMatch()
+			if queued(player) then
+				sendPvp(player, "queue", { since = since, timeout = QUEUE_TIMEOUT })
+				GameModes.refresh(player)
+			end
+			return true
 		end
 		local index = freeSpot(player)
 		if not index then
@@ -14475,13 +14954,15 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		}
 		runs[player] = state
 		spotOwner[index] = player
+		spotGen[index] = (spotGen[index] or 0) + 1
 		-- The stage is teleport-only, so every start teleports.
 		local spot = MogLayout.SPOTS[index]
 		GameModes.teleport(player, vec(spot.player), Vector3.new(spot.faceX, 0, spot.faceZ))
 		lastX[player] = spot.player.x
-		hold(player, state)
+		state.saved = hold(player)
 		local best = record(session).best
 		GameModes.notify(player, "start", ID, {
+			vs = "rivals",
 			lives = state.run.lives,
 			maxLives = MogRules.LIVES,
 			startedAt = t,
@@ -14498,7 +14979,20 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		return true
 	end
 
+	-- Leaving the queue just dequeues; leaving a duel forfeits it to the opponent.
 	function def.stop(player: Player, reason: string)
+		local wasQueued = dequeue(player)
+		local duel = duels[player]
+		if wasQueued or duel then
+			if duel then
+				endDuel(duel, duel.players[3 - sideOf(duel, player)], "forfeit", player)
+			end
+			if reason ~= "leave" then
+				sendPvp(player, "stop", { reason = reason })
+				GameModes.refresh(player)
+			end
+			return
+		end
 		local state = runs[player]
 		if not state then
 			return
@@ -14515,6 +15009,22 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		local x, z = pos.X, pos.Z
 		local prevX = lastX[player]
 		lastX[player] = x
+		local duel = duels[player]
+		if duel then
+			duelTimeout(duel, t)
+			return
+		end
+		local waiting = queued(player)
+		if waiting then
+			if t - queue[waiting].since > QUEUE_TIMEOUT then
+				table.remove(queue, waiting)
+				sendPvp(player, "stop", { reason = "noOpponent" })
+				GameModes.refresh(player)
+			else
+				tryMatch()
+			end
+			return
+		end
 		local state = runs[player]
 		if not state then
 			if
@@ -14524,6 +15034,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 				and math.abs(z - Course.GATES[2].z) <= Course.GATE_HALF + 1
 				and pos.Y - FEET_BELOW_ROOT < Course.PLAZA.top + 8
 			then
+				-- No `vs`: the client is asked to choose (rivals or PvP).
 				GameModes.start(player, ID, true)
 			end
 			return
@@ -14536,25 +15047,39 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 
 	Tycoon.addAction("MogPress", function(session: any, data: { [string]: any })
 		local player = session.player
+		local duel = duels[player]
+		if duel then
+			local check = duel.check
+			if not check or not duel.pending then
+				return
+			end
+			local result, reason, travel = judgePress(check, duel.checkId, duel.appearAt, data)
+			if result then
+				answer(duel, player, result, reason, travel)
+				if duel.pending and MogRules.duelAnswered(duel.rules) then
+					endRound(duel)
+				end
+			end
+			return
+		end
 		local state = runs[player]
 		local check = state and state.check
 		if not state or not check or not state.pending then
 			return
 		end
-		local id, at = data.id, data.at
-		if type(id) ~= "number" or type(at) ~= "number" or at ~= at or id ~= state.checkId then
-			return
+		local result, reason, travel = judgePress(check, state.checkId, state.appearAt, data)
+		if result then
+			resolve(player, state, result, reason, travel)
 		end
-		local t = now()
-		if at < state.appearAt - LAP_SLACK or at > state.appearAt + check.duration + LAP_SLACK then
-			return
+	end)
+
+	-- Leaves the PvP queue (no teleport: a queued player never left the plaza).
+	Tycoon.addAction("MogCancel", function(session: any, _data: { [string]: any })
+		local player = session.player
+		if dequeue(player) then
+			sendPvp(player, "stop", { reason = "cancel" })
+			GameModes.refresh(player)
 		end
-		if at < t - PRESS_PAST or at > t + PRESS_FUTURE then
-			return
-		end
-		local travel = check.speed * (at - state.appearAt)
-		local result, reason = MogRules.judge(check, travel)
-		resolve(player, state, result, reason, travel)
 	end)
 
 	function def.rewardPreview(player: Player): { [string]: any }
@@ -14569,13 +15094,17 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 	function def.snapshot(player: Player): { [string]: any }
 		local session = GameModes.session(player)
 		local state = runs[player]
+		local duel = duels[player]
 		local rec = session and record(session)
 		return {
 			best = if rec then rec.best else 0,
 			rivals = if rec then rec.rivals else 0,
 			clears = if rec then rec.clears else 0,
-			running = state ~= nil,
-			score = if state then state.run.score else 0,
+			pvpWins = if rec then rec.pvpWins else 0,
+			pvpPlayed = if rec then rec.pvpPlayed else 0,
+			running = state ~= nil or duel ~= nil,
+			queued = queued(player) ~= nil,
+			score = if state then state.run.score elseif duel then duel.rules.sides[sideOf(duel, player)].score else 0,
 			lives = if state then state.run.lives else MogRules.LIVES,
 			cooldownEnds = if rec and rec.lastRewardAt > 0 then rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN else 0,
 			rewardPreview = def.rewardPreview(player),
@@ -14584,10 +15113,8 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 	end
 
 	Players.PlayerRemoving:Connect(function(player)
-		local state = runs[player]
-		if state then
-			release(player, state)
-		end
+		-- Releases a PvE run, leaves the queue or forfeits a duel (GameModes also stops it).
+		def.stop(player, "leave")
 		lastX[player] = nil
 	end)
 	updateBoard()
@@ -14598,7 +15125,7 @@ return { create = create }
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="86">
+        <Item class="ModuleScript" referent="87">
           <Properties>
             <string name="Name">MogLayout</string>
             <string name="Source"><![CDATA[--[[
@@ -14675,7 +15202,7 @@ return MogLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="87">
+        <Item class="ModuleScript" referent="88">
           <Properties>
             <string name="Name">MogRules</string>
             <string name="Source"><![CDATA[--[[
@@ -14728,6 +15255,10 @@ MogRules.ZONE_FROM_HARD = 70
 MogRules.ZONE_UNTIL = 330
 MogRules.DELAY_MIN = 0.5
 MogRules.DELAY_MAX = 1.4
+-- PvP: HP per duelist, self-damage of a miss, extra lead (seconds) before the first check.
+MogRules.PVP_HP = 8
+MogRules.PVP_MISS_DAMAGE = 1
+MogRules.PVP_FIRST_LEAD = 0.6
 
 export type Check = {
 	n: number,
@@ -14759,6 +15290,16 @@ export type Run = {
 }
 
 export type Outcome = { moggedRival: Rival?, rival: Rival?, passed: boolean?, finished: boolean? }
+
+-- One side of a PvP duel; `result` is this round's answer (nil = not answered yet).
+export type Duelist = { hp: number, maxHp: number, score: number, combo: number, bestCombo: number, result: string? }
+
+-- A PvP duel: sides[1] and sides[2]; winner = 1 | 2 once finished.
+export type Duel = { n: number, sides: { Duelist }, finished: boolean, winner: number?, suddenDeath: boolean }
+
+-- What a round did: each side's result (a missing answer counts as "miss"), the winner when
+-- the duel is over, suddenDeath when a KO tie sent both back to 1 HP.
+export type Round = { results: { string }, finished: boolean, winner: number?, suddenDeath: boolean }
 
 export type BestEntry = { userId: number, name: string, score: number, rivals: number }
 
@@ -14908,11 +15449,89 @@ function MogRules.recordBest(list: { BestEntry }, userId: number, name: string, 
 	return at
 end
 
+local function duelist(): Duelist
+	return { hp = MogRules.PVP_HP, maxHp = MogRules.PVP_HP, score = 0, combo = 0, bestCombo = 0, result = nil }
+end
+
+function MogRules.newDuel(): Duel
+	return { n = 0, sides = { duelist(), duelist() }, finished = false, winner = nil, suddenDeath = false }
+end
+
+-- Records side `side`'s answer ("perfect" | "hit" | "miss") to this round's check and
+-- updates its score and combo. Returns false (and changes nothing) when that side already
+-- answered or the duel is over. HP only changes in duelRound.
+function MogRules.duelPress(duel: Duel, side: number, result: string): boolean
+	local d = duel.sides[side]
+	if duel.finished or not d or d.result ~= nil then
+		return false
+	end
+	d.result = result
+	if result == "perfect" or result == "hit" then
+		d.score += if result == "perfect" then MogRules.PERFECT_SCORE else MogRules.HIT_SCORE
+		d.combo += 1
+		d.bestCombo = math.max(d.bestCombo, d.combo)
+	else
+		d.combo = 0
+	end
+	return true
+end
+
+-- Has every side answered this round's check?
+function MogRules.duelAnswered(duel: Duel): boolean
+	return duel.sides[1].result ~= nil and duel.sides[2].result ~= nil
+end
+
+-- Ends the round: a side that has not answered misses (duelPress), then both sides' damage
+-- lands at once and the duel is decided (or goes to sudden death). Clears the answers for
+-- the next round.
+function MogRules.duelRound(duel: Duel): Round
+	local round: Round = { results = {}, finished = false, winner = nil, suddenDeath = false }
+	if duel.finished then
+		return round
+	end
+	for side = 1, 2 do
+		if duel.sides[side].result == nil then
+			MogRules.duelPress(duel, side, "miss")
+		end
+	end
+	local damage = { 0, 0 }
+	for side = 1, 2 do
+		local result = duel.sides[side].result :: string
+		round.results[side] = result
+		if result == "perfect" then
+			damage[3 - side] += MogRules.PERFECT_DAMAGE
+		elseif result == "hit" then
+			damage[3 - side] += MogRules.HIT_DAMAGE
+		else
+			damage[side] += MogRules.PVP_MISS_DAMAGE
+		end
+	end
+	local a, b = duel.sides[1], duel.sides[2]
+	a.hp -= damage[1]
+	b.hp -= damage[2]
+	a.result, b.result = nil, nil
+	if a.hp <= 0 or b.hp <= 0 then
+		if a.hp == b.hp then
+			-- Sudden death: both back to 1 HP, the next round decides.
+			a.hp, b.hp = 1, 1
+			duel.suddenDeath = true
+			round.suddenDeath = true
+		else
+			duel.winner = if a.hp > b.hp then 1 else 2
+			duel.finished = true
+			round.finished = true
+			round.winner = duel.winner
+			a.hp, b.hp = math.max(0, a.hp), math.max(0, b.hp)
+		end
+	end
+	return round
+end
+
 return MogRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="88">
+        <Item class="ModuleScript" referent="89">
           <Properties>
             <string name="Name">Parkour</string>
             <string name="Source"><![CDATA[--[[
@@ -15297,7 +15916,7 @@ return Parkour
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="89">
+        <Item class="ModuleScript" referent="90">
           <Properties>
             <string name="Name">Rules</string>
             <string name="Source"><![CDATA[--!strict
@@ -15403,7 +16022,7 @@ return Rules
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="90">
+      <Item class="ModuleScript" referent="91">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -15690,7 +16309,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="91">
+      <Item class="ModuleScript" referent="92">
         <Properties>
           <string name="Name">PlotLayout</string>
           <string name="Source"><![CDATA[--!strict
@@ -16208,7 +16827,7 @@ return Layout
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="92">
+      <Item class="ModuleScript" referent="93">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -16362,7 +16981,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="93">
+      <Item class="ModuleScript" referent="94">
         <Properties>
           <string name="Name">Tutorial</string>
           <string name="Source"><![CDATA[--[[
@@ -16475,7 +17094,7 @@ return Tutorial
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="94">
+      <Item class="ModuleScript" referent="95">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -18476,6 +19095,8 @@ function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, pa
 		end
 		task.wait(0.1)
 		character:PivotTo(plot.spawn)
+		-- Tells the loading screen (ReplicatedFirst) the character is on its plot.
+		character:SetAttribute("OnPlot", true)
 		session.heldModel = nil
 		attachHeldModel(session)
 	end
@@ -18669,11 +19290,11 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="95">
+      <Item class="Folder" referent="96">
         <Properties>
           <string name="Name">World</string>
         </Properties>
-        <Item class="ModuleScript" referent="96">
+        <Item class="ModuleScript" referent="97">
           <Properties>
             <string name="Name">Common</string>
             <string name="Source"><![CDATA[--[[
@@ -18848,7 +19469,7 @@ return Common
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="97">
+        <Item class="ModuleScript" referent="98">
           <Properties>
             <string name="Name">Decor</string>
             <string name="Source"><![CDATA[--[[
@@ -19521,7 +20142,7 @@ return Decor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="98">
+        <Item class="ModuleScript" referent="99">
           <Properties>
             <string name="Name">Hub</string>
             <string name="Source"><![CDATA[--[[
@@ -20619,7 +21240,7 @@ return Hub
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="99">
+        <Item class="ModuleScript" referent="100">
           <Properties>
             <string name="Name">Machines</string>
             <string name="Source"><![CDATA[--[[
@@ -21437,7 +22058,7 @@ return Machines
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="100">
+        <Item class="ModuleScript" referent="101">
           <Properties>
             <string name="Name">Modes</string>
             <string name="Source"><![CDATA[--[[
@@ -22810,7 +23431,7 @@ return Modes
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="101">
+        <Item class="ModuleScript" referent="102">
           <Properties>
             <string name="Name">MogStage</string>
             <string name="Source"><![CDATA[--[[
@@ -23151,7 +23772,7 @@ return MogStage
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="102">
+        <Item class="ModuleScript" referent="103">
           <Properties>
             <string name="Name">Pads</string>
             <string name="Source"><![CDATA[--[[
@@ -23465,7 +24086,7 @@ return Pads
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="103">
+        <Item class="ModuleScript" referent="104">
           <Properties>
             <string name="Name">Pen</string>
             <string name="Source"><![CDATA[--[[
@@ -23784,7 +24405,7 @@ return Pen
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="104">
+        <Item class="ModuleScript" referent="105">
           <Properties>
             <string name="Name">Props</string>
             <string name="Source"><![CDATA[--!strict
@@ -24055,7 +24676,7 @@ return Props
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="105">
+        <Item class="ModuleScript" referent="106">
           <Properties>
             <string name="Name">Shell</string>
             <string name="Source"><![CDATA[--[[
@@ -24511,7 +25132,7 @@ return Shell
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="106">
+        <Item class="ModuleScript" referent="107">
           <Properties>
             <string name="Name">Shelves</string>
             <string name="Source"><![CDATA[--[[
@@ -25221,7 +25842,7 @@ return Shelves
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="107">
+      <Item class="ModuleScript" referent="108">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -25589,26 +26210,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="108">
+  <Item class="SoundService" referent="109">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="109">
+  <Item class="StarterPlayer" referent="110">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="110">
+    <Item class="StarterPlayerScripts" referent="111">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="111">
+      <Item class="Folder" referent="112">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="ModuleScript" referent="112">
+        <Item class="ModuleScript" referent="113">
           <Properties>
             <string name="Name">Animator</string>
             <string name="Source"><![CDATA[--[[
@@ -26282,11 +26903,11 @@ return Animator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="113">
+        <Item class="Folder" referent="114">
           <Properties>
             <string name="Name">Fx</string>
           </Properties>
-          <Item class="ModuleScript" referent="114">
+          <Item class="ModuleScript" referent="115">
             <Properties>
               <string name="Name">Ambient</string>
               <string name="Source"><![CDATA[--[[
@@ -26653,7 +27274,7 @@ return Ambient
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="115">
+          <Item class="ModuleScript" referent="116">
             <Properties>
               <string name="Name">Camera</string>
               <string name="Source"><![CDATA[--[[
@@ -26979,7 +27600,7 @@ return Camera
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="116">
+          <Item class="ModuleScript" referent="117">
             <Properties>
               <string name="Name">Cosmetics</string>
               <string name="Source"><![CDATA[--[[
@@ -27235,7 +27856,7 @@ return CosmeticsFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="117">
+          <Item class="ModuleScript" referent="118">
             <Properties>
               <string name="Name">Crates</string>
               <string name="Source"><![CDATA[--[[
@@ -28105,7 +28726,7 @@ return Crates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="118">
+          <Item class="ModuleScript" referent="119">
             <Properties>
               <string name="Name">Fans</string>
               <string name="Source"><![CDATA[--[[
@@ -29093,7 +29714,7 @@ return Fans
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="119">
+          <Item class="ModuleScript" referent="120">
             <Properties>
               <string name="Name">Machines</string>
               <string name="Source"><![CDATA[-- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow):
@@ -30630,7 +31251,7 @@ return Machines
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="120">
+          <Item class="ModuleScript" referent="121">
             <Properties>
               <string name="Name">Modes</string>
               <string name="Source"><![CDATA[--!strict
@@ -31345,12 +31966,13 @@ return ModesFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="121">
+          <Item class="ModuleScript" referent="122">
             <Properties>
               <string name="Name">Mog</string>
               <string name="Source"><![CDATA[--!strict
 --[[
-	Fx.Mog: the 3D side of the MOG TEST (MogHud draws the skill-check ring).
+	Fx.Mog: the 3D side of the MOG TEST (MogHud draws the skill-check ring), vs rivals or
+	in a 1v1 duel (start / round / finish carry vs = "pvp").
 
 	  Rival        built locally with CharacterFactory from the rival's tier look (so only
 	               this client sees its own rival), standing at rivalPos facing the player.
@@ -31363,6 +31985,13 @@ return ModesFx
 	  Camera       Scriptable duel framing over the player's shoulder looking at the
 	               rival, with a slow sideways drift; on finish / stop the camera goes back
 	               to Custom on the humanoid (Fx.Camera then frames it behind the player).
+	  Duel         no rival model: the opponent is the real character of
+	               Players:GetPlayerByUserId(opponent.userId), followed live (rivalPos is
+	               the fallback) and sized from its extents. On "round": a star pop (your
+	               perfect) or a cream ring (your hit) over their head, a red ring at your
+	               feet when you got hurt, the aura pulsing from your own result. On the
+	               finish: stars and confetti over the loser when you won, a red puff over
+	               you when you lost.
 	  Sounds       Celebrate when a rival is mogged; the UI sounds belong to MogHud.
 
 	Listens to Notify (kind "Mode", mode "mog") on its own; everything it makes is
@@ -31403,6 +32032,8 @@ local auraLight: PointLight? = nil
 local playerPos = Vector3.zero
 local rivalPos = Vector3.new(0, 0, -12)
 local running = false
+local duel = false -- a 1v1 duel: the opponent is a real player's character
+local opponentId = 0
 local cameraOn = false
 local token = 0 -- bumps on every rival change so stale tweens stop
 
@@ -31450,6 +32081,29 @@ local function animate(time: number, style: Enum.EasingStyle, fn: (number) -> ()
 		value:Destroy()
 	end)
 	tween:Play()
+end
+
+-- Duel opponent ---------------------------------------------------------------------------
+
+-- The opponent's live root part, or nil (left, respawning or not streamed in).
+local function opponentRoot(): BasePart?
+	local other = Players:GetPlayerByUserId(opponentId)
+	local root = other and other.Character and other.Character:FindFirstChild("HumanoidRootPart")
+	return if root and root:IsA("BasePart") then root else nil
+end
+
+-- Follows the opponent's feet and height (rivalPos / rivalHeight); keeps the last values
+-- when the character is gone.
+local function trackOpponent()
+	local root = opponentRoot()
+	local model = root and root.Parent
+	if not root or not model or not model:IsA("Model") then
+		return
+	end
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	local hip = if humanoid then humanoid.HipHeight else 2
+	rivalPos = root.Position - Vector3.new(0, root.Size.Y / 2 + hip, 0)
+	rivalHeight = math.clamp(model:GetExtentsSize().Y, 3, 14)
 end
 
 -- Rival -------------------------------------------------------------------------------------
@@ -31678,6 +32332,9 @@ local function takeCamera()
 		if cam.CameraType ~= Enum.CameraType.Scriptable then
 			cam.CameraType = Enum.CameraType.Scriptable
 		end
+		if duel then
+			trackOpponent()
+		end
 		local flat = Vector3.new(rivalPos.X - playerPos.X, 0, rivalPos.Z - playerPos.Z)
 		local forward = if flat.Magnitude > 0.1 then flat.Unit else Vector3.new(0, 0, -1)
 		local right = forward:Cross(Vector3.yAxis)
@@ -31695,7 +32352,7 @@ end
 -- Run ---------------------------------------------------------------------------------------
 
 local function clear()
-	running = false
+	running, duel, opponentId = false, false, 0
 	releaseCamera()
 	removeRival()
 	if folder then
@@ -31720,7 +32377,15 @@ local function onStart(p: any)
 	f.Parent = Workspace
 	folder = f
 	buildAura()
-	spawnRival(p.rival)
+	if p.vs == "pvp" then
+		duel = true
+		local opponent = if type(p.opponent) == "table" then p.opponent else {}
+		opponentId = math.floor(num(opponent.userId, 0))
+		rivalHeight = 6
+		trackOpponent()
+	else
+		spawnRival(p.rival)
+	end
 	takeCamera()
 end
 
@@ -31750,6 +32415,55 @@ local function onResult(p: any)
 	end
 end
 
+-- A duel round: sprites on whoever took damage, the aura from your own result.
+local function onRound(p: any)
+	local you = if type(p.you) == "table" then p.you else {}
+	local opp = if type(p.opp) == "table" then p.opp else {}
+	local combo = num(you.combo, 0)
+	local head = rivalPos + Vector3.new(0, rivalHeight + 0.6, 0)
+	local feet = playerPos + Vector3.new(0, 0.3, 0)
+	if you.result == "perfect" then
+		pulseAura(combo, W.Sunny)
+		sprite("StarPop", head, { size = 3, life = 0.8, rise = Vector3.new(0, 2, 0), spin = 60 })
+		sprite("Ring", feet, { size = auraSize(combo) * 1.4, life = 0.5, rise = Vector3.zero, color = W.Sunny })
+	elseif you.result == "hit" then
+		pulseAura(combo, W.Cream)
+		sprite("Ring", head, { size = 3.5, life = 0.5, rise = Vector3.new(0, 1, 0), color = W.Cream })
+	else
+		pulseAura(0, C.Bad)
+	end
+	if opp.result == "miss" then
+		-- Their own miss hurts them: a small red puff over their head.
+		sprite("Puff", head, { size = 3, life = 0.6, rise = Vector3.new(0, 1.5, 0), color = C.Bad })
+	end
+	if opp.result == "hit" or opp.result == "perfect" or you.result == "miss" then
+		sprite("Ring", feet, { size = 6, life = 0.5, rise = Vector3.zero, color = C.Bad })
+	end
+end
+
+-- The duel's last word, made after clear() so the sprites outlive the folder.
+local function duelFinish(won: boolean, foeHead: Vector3)
+	if won then
+		sprite("Ring", foeHead, { size = 7, life = 0.6, rise = Vector3.zero, color = W.Sunny })
+		for i = 1, 6 do
+			local angle = i / 6 * math.pi * 2
+			local offset = Vector3.new(math.cos(angle) * 1.5, math.sin(angle) * 1.2, 0)
+			sprite(if i % 2 == 0 then "StarPop" else "Confetti", foeHead + offset, {
+				size = 2.6,
+				life = 1,
+				delay = i * 0.03,
+				rise = Vector3.new(math.cos(angle) * 4, 3 + math.sin(angle) * 2, 0),
+				spin = 90,
+			})
+		end
+		Sounds.play("Celebrate")
+	else
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local head = if root and root:IsA("BasePart") then root.Position + Vector3.new(0, 3, 0) else playerPos + Vector3.new(0, 6, 0)
+		sprite("Puff", head, { size = 5, life = 0.8, rise = Vector3.new(0, 2, 0), color = C.Bad })
+	end
+end
+
 function MogFx.onNotify(p: any)
 	if type(p) ~= "table" then
 		return
@@ -31760,9 +32474,17 @@ function MogFx.onNotify(p: any)
 	elseif not running then
 		return
 	elseif event == "check" then
-		setExpr("Determined")
+		if not duel then
+			setExpr("Determined")
+		end
 	elseif event == "result" then
-		onResult(p)
+		if not duel then
+			onResult(p)
+		end
+	elseif event == "round" then
+		if duel then
+			onRound(p)
+		end
 	elseif event == "rival" then
 		moggedPop()
 		local nextRival = p.rival
@@ -31771,6 +32493,10 @@ function MogFx.onNotify(p: any)
 				spawnRival(nextRival)
 			end
 		end)
+	elseif event == "finish" and duel then
+		local foeHead = rivalPos + Vector3.new(0, rivalHeight * 0.85, 0)
+		clear()
+		duelFinish(p.won == true, foeHead)
 	elseif event == "finish" or event == "stop" then
 		clear()
 	end
@@ -31793,7 +32519,7 @@ return MogFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="122">
+          <Item class="ModuleScript" referent="123">
             <Properties>
               <string name="Name">Orbs</string>
               <string name="Source"><![CDATA[-- Client-side aura orb visuals for the local player's own plot.
@@ -33654,7 +34380,7 @@ return Orbs
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="123">
+          <Item class="ModuleScript" referent="124">
             <Properties>
               <string name="Name">PlateStyle</string>
               <string name="Source"><![CDATA[--!strict
@@ -33903,7 +34629,7 @@ return PlateStyle
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="124">
+          <Item class="ModuleScript" referent="125">
             <Properties>
               <string name="Name">Plates</string>
               <string name="Source"><![CDATA[--!strict
@@ -34730,7 +35456,7 @@ return Plates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="125">
+          <Item class="ModuleScript" referent="126">
             <Properties>
               <string name="Name">Shelf</string>
               <string name="Source"><![CDATA[--[[
@@ -36354,7 +37080,7 @@ return Shelf
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="126">
+          <Item class="ModuleScript" referent="127">
             <Properties>
               <string name="Name">Sprites</string>
               <string name="Source"><![CDATA[--[[
@@ -36541,7 +37267,7 @@ return Sprites
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="127">
+          <Item class="ModuleScript" referent="128">
             <Properties>
               <string name="Name">Surge</string>
               <string name="Source"><![CDATA[--[[
@@ -36823,7 +37549,7 @@ return Surge
             </Properties>
           </Item>
         </Item>
-        <Item class="ModuleScript" referent="128">
+        <Item class="ModuleScript" referent="129">
           <Properties>
             <string name="Name">Guide</string>
             <string name="Source"><![CDATA[--[[
@@ -37265,11 +37991,11 @@ return Guide
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="129">
+        <Item class="Folder" referent="130">
           <Properties>
             <string name="Name">Intro</string>
           </Properties>
-          <Item class="ModuleScript" referent="130">
+          <Item class="ModuleScript" referent="131">
             <Properties>
               <string name="Name">Actors</string>
               <string name="Source"><![CDATA[--!strict
@@ -37938,7 +38664,7 @@ return Actors
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="131">
+          <Item class="ModuleScript" referent="132">
             <Properties>
               <string name="Name">Avatar</string>
               <string name="Source"><![CDATA[--!strict
@@ -38581,7 +39307,7 @@ return Avatar
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="132">
+          <Item class="ModuleScript" referent="133">
             <Properties>
               <string name="Name">AvatarRig</string>
               <string name="Source"><![CDATA[--!strict
@@ -38812,7 +39538,7 @@ return AvatarRig
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="133">
+          <Item class="ModuleScript" referent="134">
             <Properties>
               <string name="Name">Cutscene</string>
               <string name="Source"><![CDATA[--[[
@@ -39648,7 +40374,7 @@ return Cutscene
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="134">
+          <Item class="ModuleScript" referent="135">
             <Properties>
               <string name="Name">Effects</string>
               <string name="Source"><![CDATA[--!strict
@@ -40573,7 +41299,7 @@ return Effects
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="135">
+          <Item class="ModuleScript" referent="136">
             <Properties>
               <string name="Name">Framing</string>
               <string name="Source"><![CDATA[--!strict
@@ -40780,7 +41506,7 @@ return Framing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="136">
+          <Item class="ModuleScript" referent="137">
             <Properties>
               <string name="Name">Stage</string>
               <string name="Source"><![CDATA[--!strict
@@ -41066,7 +41792,7 @@ return Stage
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="137">
+          <Item class="ModuleScript" referent="138">
             <Properties>
               <string name="Name">Timeline</string>
               <string name="Source"><![CDATA[--!strict
@@ -41441,7 +42167,7 @@ return Timeline
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="138">
+          <Item class="ModuleScript" referent="139">
             <Properties>
               <string name="Name">Ui</string>
               <string name="Source"><![CDATA[--!strict
@@ -42284,7 +43010,7 @@ return Ui
             </Properties>
           </Item>
         </Item>
-        <Item class="LocalScript" referent="139">
+        <Item class="LocalScript" referent="140">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -42372,6 +43098,8 @@ Animator.start()
 Popups.build(screen, Sounds)
 Windows.build(screen)
 MogHud.build(screen)
+-- The Modes window's MOG TEST PLAY opens the VS RIVALS / 1v1 DUEL picker.
+Windows.onMogPlay = MogHud.choose
 Guide.build()
 Hud.build(screen, {
 	openWindow = Windows.open,
@@ -42426,6 +43154,11 @@ local function maybePlayIntro()
 		end
 		if player:GetAttribute("IntroSeen") ~= false then
 			return
+		end
+		-- Start after the loading screen (ReplicatedFirst) has faded out, not under it.
+		local playerGui = player:WaitForChild("PlayerGui")
+		while playerGui:FindFirstChild("LoadingScreen") and waited < 50 do
+			waited += task.wait(0.1)
 		end
 		Cutscene.play({
 			delay = 1.4,
@@ -42512,7 +43245,8 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 	elseif payload.kind == "Tutorial" then
 		Tutorial.onNotify(payload)
 	elseif payload.kind == "Mode" and payload.mode == "mog" then
-		-- MOG TEST: the skill-check ring, hearts and finish card (Fx.Mog does the 3D side).
+		-- MOG TEST (vs rivals or a 1v1 duel): the picker, queue panel, ring, HP and finish card
+		-- (Fx.Mog does the 3D side).
 		MogHud.onNotify(payload)
 		if payload.event == "stop" and payload.reason == "full" then
 			-- All six duel spots are taken: the test never started.
@@ -42644,7 +43378,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="140">
+        <Item class="ModuleScript" referent="141">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects plus background music.
@@ -43116,7 +43850,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="141">
+        <Item class="ModuleScript" referent="142">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -43165,11 +43899,11 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="142">
+        <Item class="Folder" referent="143">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="143">
+          <Item class="ModuleScript" referent="144">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -44560,7 +45294,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="144">
+          <Item class="ModuleScript" referent="145">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -47396,34 +48130,46 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="145">
+          <Item class="ModuleScript" referent="146">
             <Properties>
               <string name="Name">MogHud</string>
               <string name="Source"><![CDATA[--!strict
 --[[
-	MogHud: the screen side of the MOG TEST (a skill-check duel against rival chads).
+	MogHud: the screen side of the MOG TEST, a skill-check duel either against rival chads
+	(vs = "rivals", solo) or against a real player (vs = "pvp", 1v1).
 
-	  Ring         centre-right, 180 px: Cream rim, dark well track, the zone as an arc
-	               of thin rotated segment frames (exact to the degree; the first
-	               perfectSize degrees are the gold "perfect" slice), a red needle posed
-	               every frame from the server clock (travel = speed * (now - appearAt),
-	               screen angle = dir * travel clockwise from 12 o'clock) and a centre
-	               label ("SPACE" / "TAP" / the check number). A check arrives a moment
-	               before its needle starts: Tick, the ring fades in with a pulse and a
-	               soft glow breathes until the needle runs.
+	  Picker       Notify "choose" (the player walked through the mog gate) and the Modes
+	               window's PLAY open Popups.mogChoose: VS RIVALS or 1v1 DUEL, which fire
+	               ModeStart with vs = "rivals" | "pvp".
+	  Queue        "queue" { since, timeout }: a compact "FINDING OPPONENT…" panel on the
+	               right (spinner, dots, elapsed seconds, Cancel = MogCancel); the player
+	               walks around meanwhile. "stop" "noOpponent" toasts and reopens the picker.
+	               While queued choose() opens no picker and pops the queue panel instead.
+	  Ring         centre-right, 180 px, drawn by UI.MogRing: setCheck draws the zone with
+	               its swell-in cue, warn() runs every frame until the needle starts, then
+	               setNeedle(travel, dir) poses the needle from the server clock (travel =
+	               speed * (now - appearAt)), flash() on each result, idle() between checks.
+	               The result word ("PERFECT!", "HIT", "MISS" / "TOO EARLY" / "TOO SLOW"
+	               in red) pops in on the ring's top edge and rises as it fades.
 	  Input        Space, Enter and gamepad A (ContextActionService, high priority, sunk
 	               so Space does not jump) and a big invisible button over the ring for
 	               mouse / touch. One MogPress per check, sent with the server time of the
 	               press; presses before the needle starts only give a small "wait..."
 	               wobble. The needle freezes where it was pressed until the result.
-	  Status       score (bouncy count) and the combo chip above the ring, hearts
-	               (maxLives) under them, the rival's name and HP bar under the ring, a
-	               quiet "X" that asks "QUIT?" before firing ModeQuit.
-	  Banners      "MOG TEST!" at the start, "MOGGED!" per rival, "MOG TEST PASSED!"
-	               with the cash the first time the run passes.
+	  Status       score (bouncy count) and the combo chip above the ring and a quiet "X"
+	               that asks "QUIT?" before firing ModeQuit. Vs rivals: hearts (maxLives)
+	               under them and the rival's name and HP bar under the ring. In a duel the
+	               hearts become your own HP bar ("YOU", green, gold flash on perfect) and
+	               the bottom panel is the opponent's name and red HP bar, both moved by
+	               "round" only ("result" is just your own press); the opponent's result
+	               shows small under it ("Opponent: PERFECT").
+	  Banners      "MOG TEST!" / "1v1 DUEL!" (vs <name>) at the start, "MOGGED!" per rival,
+	               "MOG TEST PASSED!" with the cash the first time the run passes,
+	               "SUDDEN DEATH!" in a duel.
 
 	MogHud.onNotify(payload) takes every Notify with kind "Mode" and mode "mog" (Main
-	routes them); Fx.Mog does the 3D side from the same payloads.
+	routes them); Fx.Mog does the 3D side from the same payloads. MogHud.choose() opens
+	the picker (Windows.onMogPlay points here).
 ]]
 
 local ContextActionService = game:GetService("ContextActionService")
@@ -47437,6 +48183,7 @@ local Net = require(ReplicatedStorage.Shared.Net)
 
 local Client = script.Parent.Parent
 local Kit = require(script.Parent.Kit) :: any
+local MogRing = require(script.Parent.MogRing) :: any
 local Popups = require(script.Parent.Popups) :: any
 local Sounds = require(Client.Sounds) :: any
 
@@ -47447,11 +48194,9 @@ local F = Kit.F
 local W = Theme.World
 
 local RING = 180 -- ring diameter (px, design space)
-local TRACK_OUT = 84 -- zone arc outer radius
-local TRACK_IN = 60 -- zone arc inner radius
-local SEGMENT = 2 -- largest zone segment (degrees)
 local ACTION = "MogPress"
 local PRIORITY = 3000
+local RESULT_WORDS = { perfect = "PERFECT", hit = "HIT", miss = "MISS" }
 
 local action = Net.event("Action")
 
@@ -47468,27 +48213,30 @@ type Check = {
 
 local screen: ScreenGui? = nil
 local root: Frame
-local ring: Frame
-local ringScale: UIScale
-local rim: Frame
-local glow: Frame
-local zone: Frame
-local needle: Frame
-local centre: TextLabel
+local ring: any -- MogRing
 local tapHint: TextLabel
 local resultLabel: TextLabel
 local scoreLabel: TextLabel
 local comboChip: TextLabel
 local heartsRow: Frame
+local youPanel: Frame
+local youFill: Frame
+local youHpText: TextLabel
 local rivalName: TextLabel
 local rivalFill: Frame
 local rivalHpText: TextLabel
+local oppResult: TextLabel
 local banner: Frame
 local bannerTitle: TextLabel
 local bannerSub: TextLabel
 local quitButton: TextButton
+local queuePanel: Frame
+local queueTitle: TextLabel
+local queueTime: TextLabel
+local queueSpinner: Frame
 
 local active = false
+local pvp = false -- this run is a 1v1 duel
 local check: Check? = nil
 local pressed = false -- this check's press is sent (input locked until the result)
 local frozenTravel: number? = nil
@@ -47499,6 +48247,9 @@ local quitArmed = false
 local warned = false
 local bannerToken = 0
 local stepConn: RBXScriptConnection? = nil
+local queueToken = 0
+local choosing = false -- the picker is open (or queued)
+local queued = false -- waiting for a duel opponent (the queue panel is up)
 
 local function num(value: any, default: number): number
 	return if type(value) == "number" and value == value then value else default
@@ -47578,85 +48329,26 @@ end
 
 -- Ring --------------------------------------------------------------------------------------
 
--- One arc segment between screen angles a and b (degrees clockwise from 12 o'clock).
-local function segment(parent: Instance, a: number, b: number, color: Color3, z: number)
-	local mid = math.rad((a + b) / 2)
-	local radius = (TRACK_OUT + TRACK_IN) / 2
-	local width = 2 * math.pi * radius * math.abs(b - a) / 360 + 1.2 -- slight overlap: no seams
-	Kit.new("Frame", {
-		BackgroundColor3 = color,
-		BorderSizePixel = 0,
-		Size = UDim2.fromOffset(width, TRACK_OUT - TRACK_IN),
-		Position = UDim2.new(0.5, math.sin(mid) * radius, 0.5, -math.cos(mid) * radius),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Rotation = math.deg(mid),
-		ZIndex = z,
-		Parent = parent,
-	})
-end
-
--- An arc from travel t0 to t1 drawn on the screen side `dir` points to.
-local function arc(parent: Instance, t0: number, t1: number, dir: number, color: Color3, z: number)
-	if t1 <= t0 then
-		return
-	end
-	local count = math.max(1, math.ceil((t1 - t0) / SEGMENT))
-	local step = (t1 - t0) / count
-	for i = 0, count - 1 do
-		local a, b = t0 + i * step, t0 + (i + 1) * step
-		segment(parent, dir * a, dir * b, color, z)
-	end
-end
-
-local function buildZone(c: Check)
-	zone:ClearAllChildren()
-	local zoneEnd = math.min(c.zoneStart + c.zoneSize, 360)
-	local perfectEnd = math.min(c.zoneStart + c.perfectSize, zoneEnd)
-	arc(zone, perfectEnd, zoneEnd, c.dir, W.Cream, 4)
-	arc(zone, c.zoneStart, perfectEnd, c.dir, C.Gold, 5)
-	-- Thin bright edge lines at both ends so the bounds read crisply.
-	for _, t in { c.zoneStart, zoneEnd } do
-		segment(zone, c.dir * t - 0.6, c.dir * t + 0.6, C.GoldLight, 6)
-	end
-end
-
 local function travelNow(c: Check): number
 	return math.clamp(c.speed * (Workspace:GetServerTimeNow() - c.appearAt), 0, 360)
 end
 
-local function burst(color: Color3)
-	local wave = Kit.new("Frame", {
-		Name = "Burst",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(RING, RING),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		ZIndex = 1,
-		Parent = ring,
-	})
-	Kit.round(wave)
-	local stroke = Kit.stroke(wave, 10, color)
-	Kit.tween(wave, 0.5, { Size = UDim2.fromOffset(RING * 1.7, RING * 1.7) }, Enum.EasingStyle.Quart)
-	Kit.tween(stroke, 0.5, { Transparency = 1, Thickness = 2 }, Enum.EasingStyle.Quart)
-	task.delay(0.55, function()
-		wave:Destroy()
-	end)
-end
+local showBanner: (title: string, sub: string?, color: Color3, hold: number) -> ()
 
-local function flashRim(color: Color3)
-	rim.BackgroundColor3 = color
-	Kit.tween(rim, 0.6, { BackgroundColor3 = W.Cream })
-end
+-- The result word pops in on the ring's top edge (clear of the "#n" centre label) and
+-- rises toward the hearts / HP row while it fades.
+local RESULT_FROM = UDim2.new(0.5, 0, 0, 6)
+local RESULT_TO = UDim2.new(0.5, 0, 0, -16)
 
 local function popResult(text: string, color: Color3)
 	resultLabel.Text = text
 	resultLabel.TextColor3 = color
 	resultLabel.TextTransparency = 0
-	resultLabel.Position = UDim2.new(0.5, 0, 0.5, 0)
+	resultLabel.Position = RESULT_FROM
 	local scale = resultLabel:FindFirstChildOfClass("UIScale") :: UIScale
 	scale.Scale = 0.3
 	Kit.tween(scale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
-	Kit.tween(resultLabel, 0.9, { Position = UDim2.new(0.5, 0, 0.5, -34) }, Enum.EasingStyle.Quad)
+	Kit.tween(resultLabel, 0.9, { Position = RESULT_TO }, Enum.EasingStyle.Quad)
 	task.delay(0.65, function()
 		if resultLabel.Text == text then
 			Kit.tween(resultLabel, 0.3, { TextTransparency = 1 })
@@ -47667,24 +48359,22 @@ end
 local function setIdle()
 	-- Between checks the ring rests small and dim with the needle hidden.
 	check, pressed, frozenTravel = nil, false, nil
-	zone:ClearAllChildren()
-	needle.Visible = false
-	Kit.tween(ringScale, 0.3, { Scale = 0.86 })
-	Kit.tween(glow, 0.3, { BackgroundTransparency = 1 })
-	centre.Text = if Kit.touch then "TAP" else "SPACE"
-	centre.TextColor3 = C.TextDim
+	ring:idle()
+	ring:setNeedle(nil, 1)
+	ring:setCentre(if Kit.touch then "TAP" else "SPACE", C.TextDim)
 end
 
 local function wobble()
 	-- "Wait..." : a little side-to-side shake of the ring, no camera shake.
-	centre.Text = "wait…"
+	ring:setCentre("wait…", C.TextDim)
+	local frame: Frame = ring.frame
 	local base = UDim2.fromScale(0.5, 0.5)
 	task.spawn(function()
 		for _, dx in { 6, -6, 4, -3, 0 } do
-			ring.Position = base + UDim2.fromOffset(dx, 0)
+			frame.Position = base + UDim2.fromOffset(dx, 0)
 			task.wait(0.04)
 		end
-		ring.Position = base
+		frame.Position = base
 	end)
 end
 
@@ -47700,7 +48390,7 @@ local function press()
 	end
 	pressed = true
 	frozenTravel = travelNow(c)
-	Kit.pop(ring, 1.06)
+	Kit.pop(ring.frame, 1.06)
 	action:FireServer({ action = "MogPress", id = c.id, at = now })
 end
 
@@ -47718,19 +48408,15 @@ local function step()
 	end
 	local now = Workspace:GetServerTimeNow()
 	if now < c.appearAt then
-		-- Warning: a soft glow breathes until the needle starts.
-		glow.BackgroundTransparency = 0.55 + 0.25 * math.cos(now * 12)
+		-- Warning: MogRing breathes its cue until the needle starts.
+		ring:warn(now)
 		return
 	end
 	if not warned then
 		warned = true
-		glow.BackgroundTransparency = 1
-		centre.Text = "#" .. tostring(c.n)
-		centre.TextColor3 = C.Text
-		needle.Visible = true
+		ring:setCentre("#" .. tostring(c.n), C.Text)
 	end
-	local travel = frozenTravel or travelNow(c)
-	needle.Rotation = c.dir * travel
+	ring:setNeedle(frozenTravel or travelNow(c), c.dir)
 end
 
 local function onCheck(p: any)
@@ -47745,53 +48431,33 @@ local function onCheck(p: any)
 		perfectSize = num(p.perfectSize, 10),
 	}
 	check, pressed, frozenTravel, warned = c, false, nil, false
-	buildZone(c)
-	needle.Visible = false
-	needle.Rotation = 0
-	centre.Text = if Kit.touch then "TAP!" else "SPACE"
-	centre.TextColor3 = C.Gold
-	-- The DBD-style warning: tick, the ring swells in with a pulse.
+	-- The DBD-style warning: tick, and MogRing swells the ring in with the new zone.
+	ring:setCheck({ zoneStart = c.zoneStart, zoneSize = c.zoneSize, perfectSize = c.perfectSize, dir = c.dir, n = c.n })
+	ring:setNeedle(nil, c.dir)
+	ring:setCentre(if Kit.touch then "TAP!" else "SPACE", C.Gold)
 	Sounds.play("Tick")
-	ringScale.Scale = 0.7
-	Kit.tween(ringScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
-	burst(W.Cream)
 end
 
-local function onResult(p: any)
-	local c = check
-	if c and p.id ~= nil and p.id ~= c.id then
-		return
+-- An HP bar fill and its "hp/max" label; `flash` briefly tints the fill (a hit taken).
+local function setBar(fill: Frame, label: TextLabel, hp: number, hpMax: number, flash: Color3?)
+	hpMax = math.max(hpMax, 1)
+	Kit.tween(fill, 0.35, { Size = UDim2.fromScale(math.clamp(hp / hpMax, 0, 1), 1) }, Enum.EasingStyle.Quart)
+	label.Text = string.format("%d/%d", math.max(hp, 0), hpMax)
+	if flash then
+		local base = fill.BackgroundColor3
+		fill.BackgroundColor3 = flash
+		Kit.tween(fill, 0.5, { BackgroundColor3 = base })
+		Kit.pop(label, 1.25)
 	end
-	if c then
-		local travel = num(p.travel, frozenTravel or travelNow(c))
-		frozenTravel = travel
-		needle.Rotation = c.dir * travel
-		needle.Visible = true
-	end
-	local result = p.result
-	if result == "perfect" then
-		flashRim(C.Gold)
-		burst(C.Gold)
-		popResult("PERFECT!", C.Gold)
-		Sounds.play("Coin", 0.05, 1.15)
-	elseif result == "hit" then
-		flashRim(Color3.new(1, 1, 1))
-		burst(W.Cream)
-		popResult("HIT", W.Cream)
-		Sounds.play("Pickup", 0.08)
-	else
-		flashRim(C.Bad)
-		popResult(if p.reason == "early" then "TOO EARLY" elseif p.reason == "timeout" then "TOO SLOW" else "MISS", C.Bad)
-		Sounds.play("Error")
-	end
+end
+
+local function setScore(score: number, combo: number)
 	-- Score rolls up with a bounce; the combo chip shows from x2.
-	local score = num(p.score, shownScore)
 	if score ~= shownScore then
 		Kit.countTo(scoreLabel, shownScore, score, Format.short, 0.4)
 		Kit.pop(scoreLabel, 1.25)
 		shownScore = score
 	end
-	local combo = num(p.combo, 0)
 	if combo >= 2 then
 		comboChip.Text = "x" .. tostring(combo) .. " COMBO"
 		if not comboChip.Visible then
@@ -47803,15 +48469,65 @@ local function onResult(p: any)
 	elseif comboChip.Visible then
 		comboChip.Visible = false
 	end
-	setHearts(num(p.lives, lives), maxLives, true)
-	local hp, hpMax = num(p.rivalHp, 1), math.max(num(p.rivalMax, 1), 1)
-	Kit.tween(rivalFill, 0.35, { Size = UDim2.fromScale(math.clamp(hp / hpMax, 0, 1), 1) }, Enum.EasingStyle.Quart)
-	rivalHpText.Text = string.format("%d/%d", math.max(hp, 0), hpMax)
+end
+
+local function onResult(p: any)
+	local c = check
+	if c and p.id ~= nil and p.id ~= c.id then
+		return
+	end
+	if c then
+		local travel = num(p.travel, frozenTravel or travelNow(c))
+		frozenTravel = travel
+		ring:setNeedle(travel, c.dir)
+	end
+	local result = p.result
+	if result == "perfect" then
+		ring:flash("perfect")
+		popResult("PERFECT!", C.Gold)
+		Sounds.play("Coin", 0.05, 1.15)
+	elseif result == "hit" then
+		ring:flash("hit")
+		popResult("HIT", W.Cream)
+		Sounds.play("Pickup", 0.08)
+	else
+		ring:flash("miss")
+		popResult(if p.reason == "early" then "TOO EARLY" elseif p.reason == "timeout" then "TOO SLOW" else "MISS", C.Bad)
+		Sounds.play("Error")
+	end
+	setScore(num(p.score, shownScore), num(p.combo, 0))
+	if not pvp then
+		-- Vs rivals the result carries the damage; a duel waits for "round".
+		setHearts(num(p.lives, lives), maxLives, true)
+		setBar(rivalFill, rivalHpText, num(p.rivalHp, 1), num(p.rivalMax, 1))
+	end
 	task.delay(0.7, function()
 		if active and check == c then
 			setIdle()
 		end
 	end)
+end
+
+-- A duel round: both presses are judged, both HP bars move.
+local function onRound(p: any)
+	local you = if type(p.you) == "table" then p.you else {}
+	local opp = if type(p.opp) == "table" then p.opp else {}
+	local hurt = opp.result == "hit" or opp.result == "perfect" or you.result == "miss"
+	local landed = you.result == "hit" or you.result == "perfect" or opp.result == "miss"
+	setBar(youFill, youHpText, num(you.hp, 0), num(you.maxHp, 1), if hurt then C.Bad else nil)
+	setBar(rivalFill, rivalHpText, num(opp.hp, 0), num(opp.maxHp, 1), if landed then Color3.new(1, 1, 1) else nil)
+	if you.score ~= nil then
+		setScore(num(you.score, shownScore), num(you.combo, 0))
+	end
+	local word = RESULT_WORDS[opp.result] or "MISS"
+	oppResult.Text = "Opponent: " .. word
+	oppResult.TextColor3 = if opp.result == "perfect" then C.Gold elseif opp.result == "hit" then W.Cream else C.Bad
+	oppResult.TextTransparency = 0
+	Kit.pop(oppResult, 1.2)
+	if p.suddenDeath == true then
+		showBanner("SUDDEN DEATH!", "Next hit wins!", C.Bad, 1.6)
+		Sounds.play("Ready")
+	end
 end
 
 local function setRival(info: any)
@@ -47825,7 +48541,7 @@ local function setRival(info: any)
 	rivalHpText.Text = string.format("%d/%d", hp, hpMax)
 end
 
-local function showBanner(title: string, sub: string?, color: Color3, hold: number)
+function showBanner(title: string, sub: string?, color: Color3, hold: number)
 	bannerToken += 1
 	local mine = bannerToken
 	bannerTitle.Text = title
@@ -47838,6 +48554,63 @@ local function showBanner(title: string, sub: string?, color: Color3, hold: numb
 		if bannerToken == mine then
 			Kit.disappear(banner)
 		end
+	end)
+end
+
+-- Picker and queue ---------------------------------------------------------------------------
+
+local function hideQueue()
+	queueToken += 1
+	queued = false
+	if queuePanel.Visible then
+		Kit.disappear(queuePanel)
+	end
+end
+
+-- "FINDING OPPONENT…": the spinner turns, the dots count and the seconds tick (from the
+-- server's `since`, a workspace:GetServerTimeNow() stamp) until the queue ends.
+local function showQueue(p: any)
+	queueToken += 1
+	queued = true
+	local mine = queueToken
+	local now = Workspace:GetServerTimeNow()
+	local since = num(p.since, now)
+	if since > now + 5 or since < now - 600 then
+		since = now -- not a server-clock stamp: count from now
+	end
+	local timeout = num(p.timeout, 0)
+	queuePanel.Visible = true
+	Kit.appear(queuePanel, { from = 0.7, time = 0.25 })
+	task.spawn(function()
+		while queueToken == mine do
+			local t = Workspace:GetServerTimeNow()
+			local elapsed = math.max(0, math.floor(t - since))
+			queueTitle.Text = "FINDING OPPONENT" .. string.rep(".", 1 + math.floor(t * 2) % 3)
+			queueTime.Text = if timeout > 0
+				then string.format("%ds  ·  up to %ds", elapsed, math.ceil(timeout))
+				else string.format("%ds", elapsed)
+			queueSpinner.Rotation = (t * 360) % 360
+			task.wait()
+		end
+	end)
+end
+
+function MogHud.choose()
+	if queued then
+		-- Already waiting for a duel: point at the queue panel instead of a second picker.
+		Kit.pop(queuePanel, 1.15)
+		return
+	end
+	if choosing or active then
+		return
+	end
+	choosing = true
+	Popups.mogChoose(function()
+		action:FireServer({ action = "ModeStart", mode = "mog", vs = "rivals" })
+	end, function()
+		action:FireServer({ action = "ModeStart", mode = "mog", vs = "pvp" })
+	end, function()
+		choosing = false
 	end)
 end
 
@@ -47870,6 +48643,7 @@ local function hide()
 	active = false
 	unbind()
 	check = nil
+	hideQueue()
 	if screen then
 		screen:SetAttribute("RunActive", false)
 	end
@@ -47880,15 +48654,25 @@ local function hide()
 end
 
 local function onStart(p: any)
+	hideQueue()
 	active, passedShown, quitArmed = true, false, false
+	pvp = p.vs == "pvp"
 	shownScore = num(p.score, 0)
 	scoreLabel.Text = Format.short(shownScore)
 	comboChip.Visible = false
 	Kit.setButton(quitButton, "X", C.SurfaceHi)
 	quitButton.Size = UDim2.fromOffset(30, 28)
-	lives = num(p.lives, 3)
-	setHearts(lives, num(p.maxLives, lives), false)
-	setRival(p.rival)
+	heartsRow.Visible = not pvp
+	youPanel.Visible = pvp
+	oppResult.TextTransparency = 1
+	if pvp then
+		setBar(youFill, youHpText, num(p.hp, 8), num(p.maxHp, 8))
+		setRival(p.opponent)
+	else
+		lives = num(p.lives, 3)
+		setHearts(lives, num(p.maxLives, lives), false)
+		setRival(p.rival)
+	end
 	setIdle()
 	root.Visible = true
 	Kit.appear(root, { from = 0.6, time = 0.3 })
@@ -47899,8 +48683,13 @@ local function onStart(p: any)
 	end
 	bind()
 	Sounds.play("Ready")
-	local best = num(p.best, 0)
-	showBanner("MOG TEST!", if best > 0 then "Best " .. Format.short(best) else "Hit the zone to mog!", C.Gold, 1.8)
+	if pvp then
+		local foe = type(p.opponent) == "table" and p.opponent.name
+		showBanner("1v1 DUEL!", "vs " .. tostring(foe or "Opponent"), C.Gold, 2)
+	else
+		local best = num(p.best, 0)
+		showBanner("MOG TEST!", if best > 0 then "Best " .. Format.short(best) else "Hit the zone to mog!", C.Gold, 1.8)
+	end
 end
 
 function MogHud.onNotify(p: any)
@@ -47909,7 +48698,13 @@ function MogHud.onNotify(p: any)
 	end
 	local event: string = tostring(p.event)
 	local ending = event == "finish" or event == "stop"
-	if event == "start" then
+	if event == "choose" then
+		MogHud.choose()
+		return
+	elseif event == "queue" then
+		showQueue(p)
+		return
+	elseif event == "start" then
 		onStart(p)
 	elseif not active and not ending then
 		return
@@ -47917,6 +48712,8 @@ function MogHud.onNotify(p: any)
 		onCheck(p)
 	elseif event == "result" then
 		onResult(p)
+	elseif event == "round" then
+		onRound(p)
 	elseif event == "rival" then
 		local passedNow = p.passed == true and not passedShown
 		if passedNow then
@@ -47935,10 +48732,11 @@ function MogHud.onNotify(p: any)
 		end)
 	elseif event == "finish" then
 		local wasActive = active
+		local duel = p.vs == "pvp"
 		hide()
 		if wasActive or p.score ~= nil then
 			Popups.mogFinish(p, function()
-				action:FireServer({ action = "ModeStart", mode = "mog" })
+				action:FireServer({ action = "ModeStart", mode = "mog", vs = if duel then "pvp" else "rivals" })
 			end, function()
 				action:FireServer({ action = "Home" })
 			end)
@@ -47946,7 +48744,10 @@ function MogHud.onNotify(p: any)
 	elseif event == "stop" then
 		local wasActive = active
 		hide()
-		if wasActive and p.reason == "quit" then
+		if p.reason == "noOpponent" then
+			Popups.toast("No one to duel right now — try VS RIVALS!", "info")
+			MogHud.choose()
+		elseif wasActive and p.reason == "quit" then
 			Popups.toast("Mog test ended", "info")
 		end
 	end
@@ -47959,7 +48760,7 @@ function MogHud.build(screenGui: ScreenGui)
 	root = Kit.new("Frame", {
 		Name = "MogHud",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(300, 390),
+		Size = UDim2.fromOffset(300, 410),
 		Position = UDim2.new(1, -36, 0.5, 6),
 		AnchorPoint = Vector2.new(1, 0.5),
 		Visible = false,
@@ -48042,14 +48843,59 @@ function MogHud.build(screenGui: ScreenGui)
 	})
 	Kit.list(heartsRow, 6, true, Enum.HorizontalAlignment.Center)
 
-	-- The ring.
-	ring = Kit.new("Frame", {
-		Name = "Ring",
+	-- In a duel the hearts give way to your own HP bar: "YOU", a green bar, "hp/max".
+	youPanel = Kit.new("Frame", {
+		Name = "You",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(RING, RING),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
+		Size = UDim2.fromOffset(240, 28),
+		Position = UDim2.new(0.5, 0, 0, 82),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Visible = false,
+		Parent = root,
 	})
+	Kit.text(youPanel, {
+		Name = "Label",
+		Text = "YOU",
+		Font = F.Display,
+		TextSize = 18,
+		TextWrapped = false,
+		TextColor3 = C.Gold,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(0, 44, 1, 0),
+		ZIndex = 3,
+	})
+	local youTrack = Kit.new("Frame", {
+		Name = "Bar",
+		BackgroundColor3 = C.Well,
+		Size = UDim2.new(1, -104, 0, 18),
+		Position = UDim2.new(0, 46, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 3,
+		Parent = youPanel,
+	})
+	Kit.round(youTrack)
+	Kit.stroke(youTrack, 2, C.Gold)
+	youFill = Kit.new("Frame", {
+		Name = "Fill",
+		BackgroundColor3 = C.Good,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 4,
+		Parent = youTrack,
+	})
+	Kit.round(youFill)
+	Kit.gradient(youFill, Color3.new(1, 1, 1), Kit.darken(Color3.new(1, 1, 1), 0.15), 90)
+	youHpText = Kit.number(youPanel, {
+		Name = "Hp",
+		Text = "8/8",
+		TextSize = 16,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Size = UDim2.fromOffset(52, 28),
+		Position = UDim2.new(1, 0, 0, 0),
+		AnchorPoint = Vector2.new(1, 0),
+		ZIndex = 3,
+	})
+
+	-- The ring (UI.MogRing draws it; the holder keeps the tap target and result label).
 	local ringHolder = Kit.new("Frame", {
 		Name = "RingHolder",
 		BackgroundTransparency = 1,
@@ -48058,97 +48904,7 @@ function MogHud.build(screenGui: ScreenGui)
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = root,
 	})
-	ring.Parent = ringHolder
-	ringScale = Kit.new("UIScale", { Parent = ring })
-	glow = Kit.new("Frame", {
-		Name = "Glow",
-		BackgroundColor3 = C.Gold,
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(RING + 28, RING + 28),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		ZIndex = 1,
-		Parent = ring,
-	})
-	Kit.round(glow)
-	rim = Kit.new("Frame", {
-		Name = "Rim",
-		BackgroundColor3 = W.Cream,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 2,
-		Parent = ring,
-	})
-	Kit.round(rim)
-	Kit.shadow(rim, RING // 2, 0.35, 4)
-	local track = Kit.new("Frame", {
-		Name = "Track",
-		BackgroundColor3 = C.Well,
-		Size = UDim2.fromOffset(TRACK_OUT * 2 + 2, TRACK_OUT * 2 + 2),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		ZIndex = 3,
-		Parent = ring,
-	})
-	Kit.round(track)
-	zone = Kit.new("Frame", {
-		Name = "Zone",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 4,
-		Parent = ring,
-	})
-	local plate = Kit.new("Frame", {
-		Name = "Plate",
-		BackgroundColor3 = C.Surface,
-		Size = UDim2.fromOffset(TRACK_IN * 2 - 6, TRACK_IN * 2 - 6),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		ZIndex = 7,
-		Parent = ring,
-	})
-	Kit.round(plate)
-	Kit.stroke(plate, 3, C.Edge)
-	centre = Kit.number(plate, {
-		Name = "Centre",
-		Text = "SPACE",
-		TextSize = 24,
-		TextWrapped = false,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 8,
-	})
-	-- The needle: a pivot frame the size of the ring, turned each frame; the red bar
-	-- runs across the track with a round cap at its tip.
-	needle = Kit.new("Frame", {
-		Name = "Needle",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 9,
-		Visible = false,
-		Parent = ring,
-	})
-	local bar = Kit.new("Frame", {
-		Name = "Bar",
-		BackgroundColor3 = C.Bad,
-		BorderSizePixel = 0,
-		Size = UDim2.fromOffset(6, TRACK_OUT - TRACK_IN + 14),
-		Position = UDim2.new(0.5, 0, 0.5, -TRACK_IN + 6),
-		AnchorPoint = Vector2.new(0.5, 1),
-		ZIndex = 9,
-		Parent = needle,
-	})
-	Kit.round(bar)
-	Kit.stroke(bar, 1.5, Color3.new(1, 1, 1))
-	local cap = Kit.new("Frame", {
-		Name = "Cap",
-		BackgroundColor3 = C.Bad,
-		Size = UDim2.fromOffset(14, 14),
-		Position = UDim2.new(0.5, 0, 0, 0),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		ZIndex = 10,
-		Parent = bar,
-	})
-	Kit.round(cap)
-	Kit.stroke(cap, 2, Color3.new(1, 1, 1))
+	ring = MogRing.new(ringHolder, RING)
 
 	-- The tap target over the whole ring (mouse and touch).
 	local hit = Kit.new("TextButton", {
@@ -48181,7 +48937,7 @@ function MogHud.build(screenGui: ScreenGui)
 		TextSize = 34,
 		TextWrapped = false,
 		Size = UDim2.fromOffset(260, 40),
-		Position = UDim2.new(0.5, 0, 0.5, 0),
+		Position = RESULT_FROM,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		TextTransparency = 1,
 		ZIndex = 14,
@@ -48238,6 +48994,102 @@ function MogHud.build(screenGui: ScreenGui)
 	Kit.round(rivalFill)
 	Kit.gradient(rivalFill, Kit.lighten(C.Bad, 0.25), C.Bad, 90)
 
+	-- The opponent's last result in a duel, small under their bar.
+	oppResult = Kit.text(root, {
+		Name = "OppResult",
+		Text = "",
+		Font = F.Display,
+		TextSize = 16,
+		TextWrapped = false,
+		Size = UDim2.fromOffset(240, 22),
+		Position = UDim2.new(0.5, 0, 0, 382),
+		AnchorPoint = Vector2.new(0.5, 0),
+		TextTransparency = 1,
+		ZIndex = 3,
+	})
+	Kit.new("UIScale", { Parent = oppResult })
+
+	-- "FINDING OPPONENT…" (right side, outside the run HUD: shown while root is hidden).
+	queuePanel = Kit.panel(screenGui, {
+		Name = "MogQueue",
+		Size = UDim2.fromOffset(276, 124),
+		Position = UDim2.new(1, -36, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Radius = 18,
+		Visible = false,
+		ZIndex = 20,
+	})
+	queueSpinner = Kit.new("Frame", {
+		Name = "Spinner",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(48, 48),
+		Position = UDim2.fromOffset(14, 10),
+		ZIndex = 21,
+		Parent = queuePanel,
+	})
+	-- A faint well disc behind the dots so the spinner reads as one badge.
+	local spinnerWell = Kit.new("Frame", {
+		Name = "Well",
+		BackgroundColor3 = C.Well,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 21,
+		Parent = queueSpinner,
+	})
+	Kit.round(spinnerWell)
+	for i = 1, 10 do
+		-- Ten dots round a circle, growing and brightening toward the head.
+		local angle = i / 10 * math.pi * 2
+		local size = 5 + math.floor(i / 2)
+		local dot = Kit.new("Frame", {
+			BackgroundColor3 = C.Gold,
+			BackgroundTransparency = (10 - i) / 12,
+			Size = UDim2.fromOffset(size, size),
+			Position = UDim2.new(0.5, math.sin(angle) * 16, 0.5, -math.cos(angle) * 16),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 22,
+			Parent = queueSpinner,
+		})
+		Kit.round(dot)
+	end
+	queueTitle = Kit.text(queuePanel, {
+		Name = "Title",
+		Text = "FINDING OPPONENT...",
+		Font = F.Display,
+		TextSize = 17,
+		TextWrapped = false,
+		TextColor3 = C.Gold,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -84, 0, 22),
+		Position = UDim2.fromOffset(72, 12),
+		ZIndex = 21,
+	})
+	queueTime = Kit.text(queuePanel, {
+		Name = "Time",
+		Text = "0s",
+		TextSize = 15,
+		TextWrapped = false,
+		TextColor3 = C.TextDim,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -84, 0, 20),
+		Position = UDim2.fromOffset(72, 36),
+		StrokeThickness = 0,
+		ZIndex = 21,
+	})
+	-- The same slim secondary button as Popups' "Back to my gym".
+	Kit.button(queuePanel, {
+		Name = "Cancel",
+		Text = "Cancel",
+		Color = C.SurfaceHi,
+		TextSize = Kit.TEXT.Body,
+		Size = UDim2.new(1, -28, 0, 42),
+		Position = UDim2.new(0.5, 0, 1, -12),
+		AnchorPoint = Vector2.new(0.5, 1),
+		ZIndex = 22,
+	}, function()
+		action:FireServer({ action = "MogCancel" })
+		hideQueue()
+	end)
+
 	-- Banner (top centre, under the unit count).
 	banner = Kit.new("Frame", {
 		Name = "MogBanner",
@@ -48271,7 +49123,513 @@ return MogHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="146">
+          <Item class="ModuleScript" referent="147">
+            <Properties>
+              <string name="Name">MogRing</string>
+              <string name="Source"><![CDATA[--!strict
+--[[
+	MogRing: the visuals of the MOG TEST skill-check ring (MogHud owns the logic and input).
+
+	  local ring = MogRing.new(parent, 180)   -- diameter in px
+	  ring.frame / ring.scale                  -- root Frame (centred in parent) and its UIScale
+	  ring:setCheck(c)    c = { zoneStart, zoneSize, perfectSize, dir, n }: draws the zone, swells in, hides the needle
+	  ring:warn(now)      every frame before the needle starts: soft breathing gold halo
+	  ring:setNeedle(travel?, dir)   every frame while running (nil hides the needle)
+	  ring:setCentre(text, color)
+	  ring:flash("perfect" | "hit" | "miss")
+	  ring:idle()         between checks: no zone, no needle, small and dim
+	  ring:destroy()
+
+	Textures (art/blender/ui/mog_ring.py -> hud/MogRing*): an anti-aliased base (shadow, thick gold rim, bright
+	blue track with bold 30-degree ticks, centre plate), white tintable layers (halo, rim flash, zone band and
+	its wider perfect slice, both with a baked dark outline that takes the tint's hue; glow, edge ticks, trail,
+	burst) and a full-colour needle (gold hub at the plate edge, outlined red hand reaching past the rim).
+
+	Arcs: MogRingArc is the zone band's RIGHT half only (0..180 deg clockwise from 12 o'clock). Rotating the
+	ImageLabel by `a` puts that half at screen angles [a, a + 180]; a UIGradient (rotates with the image) with a
+	hard transparency step at 0.5 and Rotation = span keeps only image angles [0, span] (it hides the half-plane
+	on the gradient's far side, whose boundary is the radial line at image angle span). Travel [t0, t1] maps to
+	screen angles dir * travel, so dir = 1 starts at a = t0 and dir = -1 at a = -t1; both cover exactly span
+	degrees, so the zone stays exact to the degree. Spans over 180 use two pieces.
+
+	Without the image ids (not uploaded yet) the ring falls back to the old frame drawing: UICorner discs and
+	a zone made of thin rotated segments.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Theme = require(ReplicatedStorage:WaitForChild("Theme")) :: any
+local Kit = require(script.Parent.Kit) :: any
+
+local C = Kit.C
+local W = Theme.World
+
+local DESIGN = 180 -- design diameter: the geometry below is in px of a 180 px ring
+local CANVAS = 1.2 -- most textures cover 1.2 x the ring
+local HALO_CANVAS = 1.5
+local TRACK_OUT = 79 -- fallback drawing: track, plate and zone radii (match art/blender/ui/mog_ring.py)
+local PLATE = 49
+local BAND_OUT, BAND_IN = 79.5, 49.5
+local WIDE_OUT, WIDE_IN = 84.5, 45.5 -- the raised perfect slice
+local TRAIL_SPAN = 28 -- degrees of motion trail behind the needle
+local SEGMENT = 2 -- fallback zone segment (degrees)
+local WHITE = Color3.new(1, 1, 1)
+local PERFECT = Color3.fromRGB(255, 210, 31) -- fallback perfect slice (the texture one is full colour)
+local GLOW = 0.2 -- perfect-slice glow transparency at rest (a perfect flash pops it to 0)
+local DIM = Color3.fromRGB(226, 230, 240) -- base tint while idle (light: the gold rim stays gold)
+local ZONE = Color3.fromRGB(56, 232, 120) -- saturated green zone band (its baked outline takes this hue)
+
+local Assets = (function(): any
+	local shared = ReplicatedStorage:FindFirstChild("Shared")
+	local module = shared and shared:FindFirstChild("Assets")
+	if module and module:IsA("ModuleScript") then
+		local ok, result = pcall(require, module)
+		if ok and type(result) == "table" then
+			return result
+		end
+	end
+	return nil
+end)()
+
+local KEYS = { "Base", "Halo", "Flash", "Arc", "ArcWide", "ArcGlow", "Edge", "Needle", "TrailL", "TrailR", "Burst" }
+local ids: { [string]: string } = {}
+local complete = true
+do
+	local images = if Assets and type(Assets.Images) == "table" then Assets.Images else {}
+	for _, key in KEYS do
+		local id = images["hud/MogRing" .. key]
+		if type(id) == "string" and id ~= "" then
+			ids[key] = id
+		else
+			complete = false
+		end
+	end
+end
+
+-- Transparency steps across the gradient's middle: opaque on the near side, clear on the far side.
+local HARD = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 0),
+	NumberSequenceKeypoint.new(0.4995, 0),
+	NumberSequenceKeypoint.new(0.5005, 1),
+	NumberSequenceKeypoint.new(1, 1),
+})
+local SOFT = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 0),
+	NumberSequenceKeypoint.new(0.475, 0),
+	NumberSequenceKeypoint.new(0.525, 1),
+	NumberSequenceKeypoint.new(1, 1),
+})
+
+export type Check = { zoneStart: number, zoneSize: number, perfectSize: number, dir: number, n: number? }
+
+local MogRing = {}
+MogRing.__index = MogRing
+
+export type MogRing = typeof(setmetatable(
+	{} :: {
+		frame: Frame,
+		scale: UIScale,
+		size: number,
+		images: boolean,
+		base: GuiObject,
+		halo: GuiObject,
+		flashLayer: GuiObject?,
+		zone: Frame,
+		perfect: { ImageLabel },
+		needle: GuiObject,
+		trails: { [number]: ImageLabel },
+		trailCut: { [number]: UIGradient },
+		centre: TextLabel,
+		running: boolean,
+		lastTravel: number?,
+		trailFading: boolean,
+		haloTween: Tween?,
+	},
+	MogRing
+))
+
+local function centred(props: { [string]: any }): { [string]: any }
+	props.BackgroundTransparency = if props.BackgroundTransparency == nil then 1 else props.BackgroundTransparency
+	props.BorderSizePixel = 0
+	props.Position = props.Position or UDim2.fromScale(0.5, 0.5)
+	props.AnchorPoint = Vector2.new(0.5, 0.5)
+	return props
+end
+
+local function image(parent: Instance, key: string, scale: number, z: number, props: { [string]: any }?): ImageLabel
+	local p = centred(props or {})
+	p.Name = p.Name or key
+	p.Image = ids[key]
+	p.Size = UDim2.fromScale(scale, scale)
+	p.ZIndex = z
+	p.Parent = parent
+	return Kit.new("ImageLabel", p)
+end
+
+-- Colour / transparency of either an ImageLabel (texture mode) or a Frame (fallback).
+local function colourProp(obj: GuiObject): string
+	return if obj:IsA("ImageLabel") then "ImageColor3" else "BackgroundColor3"
+end
+local function alphaProp(obj: GuiObject): string
+	return if obj:IsA("ImageLabel") then "ImageTransparency" else "BackgroundTransparency"
+end
+
+-- Texture mode --------------------------------------------------------------------------------
+
+-- One arc piece: the half band rotated to screen angle `a`, cut to `span` (0 < span <= 180) degrees.
+local function arcPiece(
+	parent: Instance,
+	key: string,
+	a: number,
+	span: number,
+	color: Color3,
+	alpha: number,
+	z: number,
+	cut: NumberSequence
+): ImageLabel
+	local piece = image(parent, key, CANVAS, z, { Rotation = a, ImageColor3 = color, ImageTransparency = alpha })
+	Kit.new("UIGradient", { Rotation = span, Transparency = cut, Parent = piece })
+	return piece
+end
+
+-- Pieces covering travel [t0, t1] on the side `dir` points to.
+local function arcImages(
+	parent: Instance,
+	key: string,
+	t0: number,
+	t1: number,
+	dir: number,
+	color: Color3,
+	alpha: number,
+	z: number,
+	cut: NumberSequence
+): { ImageLabel }
+	local pieces = {}
+	local span = t1 - t0
+	local a = if dir == 1 then t0 else -t1
+	while span > 1e-3 do
+		local part = math.min(span, 180)
+		table.insert(pieces, arcPiece(parent, key, a, part, color, alpha, z, cut))
+		a += part
+		span -= part
+	end
+	return pieces
+end
+
+-- Fallback mode -------------------------------------------------------------------------------
+
+local function segment(parent: Instance, k: number, a: number, b: number, color: Color3, z: number, wide: boolean?)
+	local mid = math.rad((a + b) / 2)
+	local outer, inner = if wide then WIDE_OUT else BAND_OUT, if wide then WIDE_IN else BAND_IN
+	local radius = k * (outer + inner) / 2
+	local width = 2 * math.pi * radius * math.abs(b - a) / 360 + 1.2 -- slight overlap: no seams
+	Kit.new("Frame", {
+		BackgroundColor3 = color,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(width, k * (outer - inner)),
+		Position = UDim2.new(0.5, math.sin(mid) * radius, 0.5, -math.cos(mid) * radius),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Rotation = math.deg(mid),
+		ZIndex = z,
+		Parent = parent,
+	})
+end
+
+local function arcFrames(parent: Instance, k: number, t0: number, t1: number, dir: number, color: Color3, z: number, wide: boolean?)
+	if t1 <= t0 then
+		return
+	end
+	local count = math.max(1, math.ceil((t1 - t0) / SEGMENT))
+	local step = (t1 - t0) / count
+	for i = 0, count - 1 do
+		local a, b = t0 + i * step, t0 + (i + 1) * step
+		segment(parent, k, dir * a, dir * b, color, z, wide)
+	end
+end
+
+local function disc(parent: Instance, name: string, scale: number, color: Color3, z: number, alpha: number?): Frame
+	local frame = Kit.new(
+		"Frame",
+		centred({
+			Name = name,
+			BackgroundColor3 = color,
+			BackgroundTransparency = alpha or 0,
+			Size = UDim2.fromScale(scale, scale),
+			ZIndex = z,
+			Parent = parent,
+		})
+	)
+	Kit.round(frame)
+	return frame
+end
+
+-- Build ---------------------------------------------------------------------------------------
+
+function MogRing.new(parent: GuiObject, size: number): MogRing
+	local k = size / DESIGN
+	local frame = Kit.new(
+		"Frame",
+		centred({
+			Name = "MogRing",
+			Size = UDim2.fromOffset(size, size),
+			Parent = parent,
+		})
+	)
+	local scale = Kit.new("UIScale", { Parent = frame })
+	local self = setmetatable({
+		frame = frame,
+		scale = scale,
+		size = size,
+		images = complete,
+		perfect = {},
+		trails = {},
+		trailCut = {},
+		running = false,
+		lastTravel = nil,
+		trailFading = false,
+		haloTween = nil,
+	}, MogRing) :: any
+
+	if complete then
+		self.halo = image(frame, "Halo", HALO_CANVAS, 1, { ImageColor3 = C.Gold, ImageTransparency = 1 })
+		self.base = image(frame, "Base", CANVAS, 2)
+		self.zone = Kit.new("Frame", centred({ Name = "Zone", Size = UDim2.fromScale(1, 1), ZIndex = 3, Parent = frame }))
+		for _, dir in { 1, -1 } do
+			local trail = image(frame, if dir == 1 then "TrailL" else "TrailR", CANVAS, 7, { Visible = false, ImageColor3 = C.GoldLight })
+			self.trails[dir] = trail
+			self.trailCut[dir] = Kit.new("UIGradient", { Transparency = HARD, Parent = trail })
+		end
+		self.flashLayer = image(frame, "Flash", CANVAS, 8, { ImageTransparency = 1 })
+		self.needle = image(frame, "Needle", CANVAS, 9, { Visible = false })
+	else
+		self.halo = disc(frame, "Glow", (size + 28) / size, C.Gold, 1, 1)
+		local rim = disc(frame, "Rim", 1, C.Gold, 2)
+		Kit.stroke(rim, 2, Color3.fromRGB(150, 92, 18))
+		Kit.shadow(rim, size // 2, 0.35, 4)
+		self.base = rim
+		disc(frame, "Track", (TRACK_OUT * 2 + 2) / DESIGN, Color3.fromRGB(86, 126, 230), 3)
+		self.zone = Kit.new("Frame", centred({ Name = "Zone", Size = UDim2.fromScale(1, 1), ZIndex = 4, Parent = frame }))
+		local plate = disc(frame, "Plate", (PLATE * 2 - 4) / DESIGN, C.Surface, 7)
+		Kit.stroke(plate, 3, C.Edge)
+		local needle =
+			Kit.new("Frame", centred({ Name = "Needle", Size = UDim2.fromScale(1, 1), ZIndex = 9, Visible = false, Parent = frame }))
+		local bar = Kit.new("Frame", {
+			Name = "Bar",
+			BackgroundColor3 = C.Bad,
+			BorderSizePixel = 0,
+			Size = UDim2.fromOffset(9 * k, (104 - PLATE + 7) * k),
+			Position = UDim2.new(0.5, 0, 0.5, -(PLATE - 7) * k),
+			AnchorPoint = Vector2.new(0.5, 1),
+			ZIndex = 9,
+			Parent = needle,
+		})
+		Kit.round(bar)
+		Kit.stroke(bar, 2, Color3.fromRGB(24, 30, 72))
+		self.needle = needle
+	end
+
+	self.centre = Kit.number(frame, {
+		Name = "Centre",
+		Text = if Kit.touch then "TAP" else "SPACE",
+		TextSize = math.floor(26 * k + 0.5),
+		TextWrapped = false,
+		TextColor3 = C.TextDim,
+		Size = UDim2.fromScale(0.56, 0.4),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 10,
+	})
+	return self :: MogRing
+end
+
+-- Halo ----------------------------------------------------------------------------------------
+
+local function haloTo(self: MogRing, color: Color3?, from: number?, to: number, time: number)
+	if self.haloTween then
+		self.haloTween:Cancel()
+		self.haloTween = nil
+	end
+	local halo = self.halo
+	if color then
+		(halo :: any)[colourProp(halo)] = color
+	end
+	if from then
+		(halo :: any)[alphaProp(halo)] = from
+	end
+	if time <= 0 then
+		(halo :: any)[alphaProp(halo)] = to
+	else
+		self.haloTween = Kit.tween(halo, time, { [alphaProp(halo)] = to }, Enum.EasingStyle.Quad)
+	end
+end
+
+-- Zone ----------------------------------------------------------------------------------------
+
+local function clearZone(self: MogRing)
+	self.zone:ClearAllChildren()
+	table.clear(self.perfect)
+end
+
+function MogRing.setCheck(self: MogRing, c: Check)
+	clearZone(self)
+	local dir = if c.dir == -1 then -1 else 1
+	local zoneStart = math.clamp(c.zoneStart, 0, 360)
+	local zoneEnd = math.min(zoneStart + math.max(c.zoneSize, 0), 360)
+	local perfectEnd = math.min(zoneStart + math.max(c.perfectSize, 0), zoneEnd)
+	if self.images then
+		-- The green band covers the whole zone; the raised full-colour gold perfect slice lies on its start, with
+		-- its glow underneath (it shows round the slice, not over the band) and a white divider at the hand-off.
+		arcImages(self.zone, "Arc", zoneStart, zoneEnd, dir, ZONE, 0, 4, HARD)
+		if perfectEnd > zoneStart then
+			self.perfect = arcImages(self.zone, "ArcGlow", zoneStart, perfectEnd, dir, C.GoldLight, GLOW, 3, SOFT)
+			arcImages(self.zone, "ArcWide", zoneStart, perfectEnd, dir, WHITE, 0, 5, HARD)
+			image(self.zone, "Edge", CANVAS, 6, { Rotation = dir * perfectEnd, ImageColor3 = WHITE })
+		end
+		image(self.zone, "Edge", CANVAS, 6, { Rotation = dir * zoneStart, ImageColor3 = C.GoldLight })
+		image(self.zone, "Edge", CANVAS, 6, { Rotation = dir * zoneEnd, ImageColor3 = WHITE })
+		Kit.tween(self.base, 0.2, { ImageColor3 = WHITE })
+	else
+		local k = self.size / DESIGN
+		arcFrames(self.zone, k, perfectEnd, zoneEnd, dir, ZONE, 4)
+		arcFrames(self.zone, k, zoneStart, perfectEnd, dir, PERFECT, 5, true)
+		for _, t in { zoneStart, zoneEnd } do
+			segment(self.zone, k, dir * t - 0.6, dir * t + 0.6, C.GoldLight, 6)
+		end
+	end
+	self:setNeedle(nil, dir)
+	haloTo(self, nil, nil, 1, 0)
+	-- The swell-in cue.
+	self.scale.Scale = 0.7
+	Kit.tween(self.scale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
+	self:_burst(W.Cream)
+end
+
+function MogRing.warn(self: MogRing, now: number)
+	if self.haloTween then
+		self.haloTween:Cancel()
+		self.haloTween = nil
+	end
+	local halo = self.halo;
+	(halo :: any)[colourProp(halo)] = C.Gold;
+	(halo :: any)[alphaProp(halo)] = 0.3 + 0.25 * math.cos(now * 12)
+end
+
+-- Needle --------------------------------------------------------------------------------------
+
+function MogRing.setNeedle(self: MogRing, travel: number?, dir: number)
+	local d = if dir == -1 then -1 else 1
+	if travel == nil then
+		self.needle.Visible = false
+		for _, trail in self.trails do
+			trail.Visible = false
+		end
+		self.running, self.lastTravel, self.trailFading = false, nil, false
+		return
+	end
+	if not self.running then
+		self.running = true
+		haloTo(self, nil, nil, 1, 0.15)
+	end
+	self.needle.Visible = true
+	self.needle.Rotation = d * travel
+	local trail = self.trails[d]
+	if trail then
+		local other = self.trails[-d]
+		if other then
+			other.Visible = false
+		end
+		local shown = math.clamp(travel, 0, TRAIL_SPAN)
+		trail.Visible = shown > 0.5
+		trail.Rotation = d * travel
+		-- Hide the part of the trail that would reach back past 12 o'clock (the start of travel).
+		self.trailCut[d].Rotation = if d == 1 then 180 - shown else shown
+		local last = self.lastTravel
+		if last ~= nil and math.abs(travel - last) < 1e-3 then
+			-- Frozen (pressed or judged): the streak fades out once.
+			if not self.trailFading then
+				self.trailFading = true
+				Kit.tween(trail, 0.2, { ImageTransparency = 1 })
+			end
+		elseif self.trailFading or last == nil then
+			self.trailFading = false
+			trail.ImageTransparency = 0.1
+		end
+	end
+	self.lastTravel = travel
+end
+
+function MogRing.setCentre(self: MogRing, text: string, color: Color3)
+	self.centre.Text = text
+	self.centre.TextColor3 = color
+end
+
+-- Results -------------------------------------------------------------------------------------
+
+function MogRing._burst(self: MogRing, color: Color3)
+	if self.images then
+		local wave = image(self.frame, "Burst", 1, 1, { Name = "Burst", ImageColor3 = color })
+		Kit.tween(wave, 0.5, { Size = UDim2.fromScale(1.7, 1.7), ImageTransparency = 1 }, Enum.EasingStyle.Quart)
+		task.delay(0.55, function()
+			wave:Destroy()
+		end)
+		return
+	end
+	local wave = Kit.new("Frame", centred({ Name = "Burst", Size = UDim2.fromScale(1, 1), ZIndex = 1, Parent = self.frame }))
+	Kit.round(wave)
+	local stroke = Kit.stroke(wave, 10, color)
+	Kit.tween(wave, 0.5, { Size = UDim2.fromScale(1.7, 1.7) }, Enum.EasingStyle.Quart)
+	Kit.tween(stroke, 0.5, { Transparency = 1, Thickness = 2 }, Enum.EasingStyle.Quart)
+	task.delay(0.55, function()
+		wave:Destroy()
+	end)
+end
+
+function MogRing.flash(self: MogRing, kind: string)
+	local color = if kind == "perfect" then C.Gold elseif kind == "hit" then W.Cream else C.Bad
+	local flashLayer = self.flashLayer
+	if flashLayer then
+		local layer = flashLayer :: ImageLabel
+		layer.ImageColor3 = if kind == "hit" then WHITE elseif kind == "perfect" then C.GoldLight else color
+		layer.ImageTransparency = 0
+		Kit.tween(layer, 0.6, { ImageTransparency = 1 })
+	else
+		local rim = self.base :: Frame
+		rim.BackgroundColor3 = if kind == "hit" then WHITE else color
+		Kit.tween(rim, 0.6, { BackgroundColor3 = C.Gold })
+	end
+	haloTo(self, color, if kind == "miss" then 0.35 else 0.1, 1, 0.7)
+	if kind == "perfect" then
+		for _, glow in self.perfect do
+			glow.ImageColor3 = WHITE
+			glow.ImageTransparency = 0
+			Kit.tween(glow, 0.45, { ImageColor3 = C.GoldLight, ImageTransparency = GLOW })
+		end
+	end
+	self:_burst(color)
+end
+
+function MogRing.idle(self: MogRing)
+	clearZone(self)
+	self:setNeedle(nil, 1)
+	Kit.tween(self.scale, 0.3, { Scale = 0.86 })
+	haloTo(self, nil, nil, 1, 0.3)
+	if self.images then
+		Kit.tween(self.base, 0.3, { ImageColor3 = DIM })
+	end
+end
+
+function MogRing.destroy(self: MogRing)
+	if self.haloTween then
+		self.haloTween:Cancel()
+	end
+	self.frame:Destroy()
+end
+
+return MogRing
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="148">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -50048,6 +51406,11 @@ end
 	"Reward again in m:ss" line while the full reward cools down. "Mog again" and
 	"Back to my gym". `data` is the mog finish Notify payload (score, rivals, best,
 	newBest, passed, cash, gems, full, cooldownEnds, rank?).
+
+	A 1v1 duel (data.vs == "pvp": won, reason "ko" | "forfeit", opponent { userId, name },
+	score, wins, played, cash, gems, full, cooldownEnds) uses the same card: "YOU MOGGED
+	<name>!" in gold or "<name> MOGGED YOU" in red, duels won / played, the reward (the
+	winner's) and "Duel again" instead of "Mog again".
 ]]
 function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> ())
 	Popups.enqueue("MogFinish", Popups.PRIORITY.Normal, function(done)
@@ -50055,15 +51418,28 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		local cashTotal = tonumber(data.cash) or 0
 		local gemTotal = tonumber(data.gems) or 0
 		local cooling = data.full == false and (tonumber(data.cooldownEnds) or 0) > os.time()
+		local duel = data.vs == "pvp"
+		local won = duel and data.won == true
+		local foe = if duel and type(data.opponent) == "table" then tostring(data.opponent.name or "Opponent") else "Opponent"
 		local box, close = modal("MogFinish", Vector2.new(480, 380), 45, nil, done)
-		local medal = medallion(box, "💪", C.Gold, 84, UDim2.new(0.5, 0, 0, 0))
+		local medal = medallion(
+			box,
+			if duel and not won then "😤" else "💪",
+			if duel and not won then C.Bad else C.Gold,
+			84,
+			UDim2.new(0.5, 0, 0, 0)
+		)
 		Kit.title(box, {
-			Text = if data.newBest then "NEW BEST!" else "MOG TEST OVER",
+			Text = if duel
+				then (if won then "YOU MOGGED " .. string.upper(foe) .. "!" else string.upper(foe) .. " MOGGED YOU")
+				elseif data.newBest then "NEW BEST!"
+				else "MOG TEST OVER",
+			TextScaled = duel,
 			TextSize = T.H1,
 			TextWrapped = false,
 			Size = UDim2.new(1, -20, 0, 34),
 			Position = UDim2.fromOffset(10, 48),
-			TextColor3 = C.Gold,
+			TextColor3 = if duel and not won then C.Bad else C.Gold,
 		})
 		local scoreLabel = Kit.number(box, {
 			Text = "0",
@@ -50074,7 +51450,9 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		})
 		local sub = "Rivals mogged " .. tostring(tonumber(data.rivals) or 0)
 		sub ..= "  ·  Best " .. Format.short(math.max(tonumber(data.best) or 0, score))
-		if type(data.rank) == "number" then
+		if duel then
+			sub = "Duels won " .. tostring(tonumber(data.wins) or 0) .. "  ·  Played " .. tostring(tonumber(data.played) or 0)
+		elseif type(data.rank) == "number" then
 			sub ..= "  ·  #" .. tostring(data.rank) .. " today"
 		end
 		Kit.text(box, {
@@ -50108,8 +51486,11 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		local cashLabel = amount("Coin", C.Gold, 0, if gemTotal > 0 then 0.6 else 1, C.MoneyText)
 		local gemLabel = if gemTotal > 0 then amount("Gem", C.Rizz, 0.6, 0.4, Kit.lighten(C.Rizz, 0.35)) else nil
 		local note = Kit.text(box, {
-			Text = if cooling
-				then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
+			Text = if duel and data.reason == "forfeit"
+				then (if won then foe .. " left the duel. The win is yours!" else "You left the duel.")
+				elseif duel and not won then "So close! Hit PERFECT to deal double damage."
+				elseif cooling then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
+				elseif duel then "Total mog! Can you win another?"
 				elseif data.passed then "MOG TEST PASSED! Can you mog even more?"
 				else "Nice try! Mog more rivals to pass.",
 			TextSize = T.Small,
@@ -50119,7 +51500,7 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			StrokeThickness = 0,
 		})
 		local again = Kit.button(box, {
-			Text = "Mog again",
+			Text = if duel then "Duel again" else "Mog again",
 			Font = Theme.Fonts.Display,
 			Color = C.Gold,
 			Breathe = true,
@@ -50142,7 +51523,7 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		Kit.appear(again, { from = 0.8, time = 0.26, delay = 0.14 })
 		Kit.appear(home, { from = 0.8, time = 0.26, delay = 0.18 })
-		if data.newBest or data.passed then
+		if data.newBest or data.passed or won then
 			Kit.confetti(box, { Origin = UDim2.fromScale(0.5, 0.1), Count = 24, ZIndex = 60 })
 		end
 		after(0.1, function()
@@ -50163,7 +51544,7 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 				end, 0.6)
 			end)
 		end
-		if cooling then
+		if cooling and not (duel and (not won or data.reason == "forfeit")) then
 			task.spawn(function()
 				while note.Parent do
 					local left = (tonumber(data.cooldownEnds) or 0) - os.time()
@@ -50173,6 +51554,112 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			end)
 		end
 		sounds.play("Reward")
+	end)
+end
+
+--[[
+	The MOG TEST picker, opened by walking through the mog gate (Notify "choose") or the
+	Modes window's PLAY: two big cards side by side. VS RIVALS (solo: mog 3 rival chads to
+	pass) and 1v1 DUEL (out-mog a real player; hit = 1 damage, perfect = 2, a miss hurts
+	you; the winner takes the reward). Each card's button closes the picker and runs its
+	callback; the backdrop just closes it. `onClosed` runs once the picker is gone either way.
+]]
+function Popups.mogChoose(onRivals: () -> (), onPvp: () -> (), onClosed: (() -> ())?)
+	Popups.enqueue("MogChoose", Popups.PRIORITY.Normal, function(done)
+		local box, close = modal("MogChoose", Vector2.new(560, 374), 45, nil, function()
+			done()
+			if onClosed then
+				onClosed()
+			end
+		end)
+		-- The badge sits astride the card's top edge (raised a little so its lip and
+		-- shadow clear the title below).
+		local medal = medallion(box, "💪", C.Gold, 84, UDim2.new(0.5, 0, 0, -8))
+		Kit.title(box, {
+			Text = "MOG TEST",
+			TextSize = T.H1,
+			TextWrapped = false,
+			Size = UDim2.new(1, -20, 0, 34),
+			Position = UDim2.fromOffset(10, 56),
+			TextColor3 = C.Gold,
+		})
+		Kit.text(box, {
+			Text = "Who do you want to mog?",
+			TextSize = T.Body,
+			Size = UDim2.new(1, -30, 0, 22),
+			Position = UDim2.fromOffset(15, 92),
+			TextColor3 = C.TextDim,
+			StrokeThickness = 0,
+		})
+		local function card(
+			x: number,
+			icon: string,
+			color: Color3,
+			title: string,
+			blurb: string,
+			label: string,
+			pick: () -> ()
+		): (Frame, TextButton)
+			local panel = Kit.panel(box, {
+				Name = title,
+				Elevated = true,
+				Size = UDim2.new(0.5, -28, 0, 226),
+				Position = UDim2.new(x, if x == 0 then 20 else 8, 0, 128),
+				Radius = Kit.RADIUS.L,
+				StrokeThickness = 3,
+				StrokeColor = color,
+				ZIndex = 46,
+			})
+			Kit.title(panel, {
+				Text = icon,
+				TextSize = 44,
+				Size = UDim2.new(1, 0, 0, 52),
+				Position = UDim2.fromOffset(0, 8),
+				StrokeThickness = 0,
+				ZIndex = 47,
+			})
+			Kit.title(panel, {
+				Text = title,
+				TextSize = 26,
+				TextWrapped = false,
+				TextColor3 = color,
+				Size = UDim2.new(1, -16, 0, 30),
+				Position = UDim2.fromOffset(8, 62),
+				ZIndex = 47,
+			})
+			Kit.text(panel, {
+				-- Full-white body text: TextDim at Small size was too faint on the card.
+				Text = blurb,
+				TextSize = T.Small + 2,
+				TextColor3 = C.Text,
+				Size = UDim2.new(1, -20, 0, 62),
+				Position = UDim2.fromOffset(10, 94),
+				StrokeThickness = 0,
+				ZIndex = 47,
+			})
+			local button = Kit.button(panel, {
+				Text = label,
+				Font = Theme.Fonts.Display,
+				Color = color,
+				Size = UDim2.new(1, -24, 0, 52),
+				Position = UDim2.new(0, 12, 1, -64),
+				ZIndex = 48,
+			}, function()
+				close()
+				pick()
+			end)
+			return panel, button
+		end
+		local rivals, rivalsGo = card(0, "🏋️", C.Gold, "VS RIVALS", "Solo: mog 3 rival chads to pass the test!", "PLAY", onRivals)
+		local duel, duelGo =
+			card(0.5, "⚔️", C.Bad, "1v1 DUEL", "Out-mog a real player! PERFECT hits twice. Winner gets the reward.", "FIND DUEL", onPvp)
+		Kit.breathe(duelGo)
+		Kit.appear(box)
+		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
+		Kit.appear(rivals, { from = 0.8, time = 0.26, delay = 0.1 })
+		Kit.appear(duel, { from = 0.8, time = 0.26, delay = 0.16 })
+		Kit.appear(rivalsGo, { from = 0.8, time = 0.24, delay = 0.2 })
+		sounds.play("Toast")
 	end)
 end
 
@@ -51060,7 +52547,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="147">
+          <Item class="ModuleScript" referent="149">
             <Properties>
               <string name="Name">ShopScenes</string>
               <string name="Source"><![CDATA[--[[
@@ -53005,7 +54492,7 @@ return ShopScenes
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="148">
+          <Item class="ModuleScript" referent="150">
             <Properties>
               <string name="Name">Tutorial</string>
               <string name="Source"><![CDATA[--[[
@@ -53630,7 +55117,7 @@ return Tutorial
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="149">
+          <Item class="ModuleScript" referent="151">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
@@ -54096,6 +55583,9 @@ Windows.cosmeticsOf = cosmeticsOf
 -- Pending focus for the next shop open: a section ("Cosmetics", "Cash", "Aura", "Gems" ...), a
 -- pass ("DoubleMoney", "StarterPack", "AllCosmetics") or a cosmetic, set by Windows.open.
 Windows.shopFocus = nil :: string?
+-- Opens the MOG TEST picker (VS RIVALS / 1v1 DUEL); Main points it at MogHud.choose
+-- (Windows cannot require MogHud: MogHud -> Popups -> Windows).
+Windows.onMogPlay = nil :: (() -> ())?
 
 -- Faint sparkles drifting behind the page: scale position on the page and size in pixels.
 local DRIFT_SPOTS = {
@@ -56870,7 +58360,7 @@ end
 	selection snaps back to `unlocked` whenever the window opens.
 
 	MOG TEST: best score, rivals mogged and passes, reward line, PLAY (disabled
-	"PLAYING" while a test runs). Reads State.data.modes.parkour and .mog.
+	"PLAYING" while a test runs) opens the VS RIVALS / 1v1 DUEL picker (Windows.onMogPlay). Reads State.data.modes.parkour and .mog.
 ]]
 local function runTime(seconds: number): string
 	local tenths = math.floor(math.max(seconds, 0) * 10 + 0.5)
@@ -57211,11 +58701,16 @@ local function buildModes(screen: ScreenGui)
 			LayoutOrder = 2,
 			Medal = "💪",
 			Title = "MOG TEST",
-			Blurb = "Hit the ring in time to out-mog 3 rivals!",
+			Blurb = "Out-mog 3 rivals, or duel a real player 1v1!",
 		},
 		accent,
 		function()
-			action:FireServer({ action = "ModeStart", mode = "mog" })
+			local pick = Windows.onMogPlay
+			if pick then
+				pick()
+			else
+				action:FireServer({ action = "ModeStart", mode = "mog", vs = "rivals" })
+			end
 			Windows.closeAll()
 		end
 	)
@@ -57390,7 +58885,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="150">
+  <Item class="Workspace" referent="152">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>
