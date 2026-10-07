@@ -7,10 +7,11 @@
 	  through gate 1's portal (Course.crossedStart) does not start a run: it sends a "pick"
 	  notify so the client opens the Maps window on the default level. Starting again
 	  restarts.
-	- Checkpoints count only in order (Modes.Rules). Feet in the water past the shore send the
-	  player back to their last checkpoint (0 = start deck) with a splash; the run goes on.
-	- Standing on the finish deck after the last checkpoint ends the run; Rules.finish checks
-	  that no leg was impossibly fast. Valid finishes record the per-level best/clears
+	- No checkpoints (owner's call, docs/sky-obby.md): falling below the cloud floor
+	  (Course.inWater) or touching lava (Course.inKill) sends the player back to the START
+	  DECK of the map they are running; the clock keeps going.
+	- Standing on the finish deck ends the run; Rules.finish checks that the start-to-finish
+	  time was not impossibly fast (Course level MIN_SECONDS). Valid finishes record the per-level best/clears
 	  (profile.parkour; level 1 is mirrored into profile.modes.parkour) and the server best
 	  list of that level, and pay Economy.modeReward × Economy.parkourLevelBonus(level):
 	  Theme.Modes.Reward (Seconds of income, at least Min, sized like a cash pack) on the
@@ -20,40 +21,42 @@
 	  finish the player is brought back to the gates (GameModes.returnLater).
 	- Leaving the level's bounds for Course.LEAVE_SECONDS ends the run ("left"); on a remote
 	  level the player goes back to the gates.
-	- Stages (docs/sky-obby.md): the ten maps are one chained sky obby with global stage
-	  numbers (start deck, checkpoints, finish deck). profile.parkour.stage keeps the highest
-	  stage reached; Player attributes "ParkourStage" (this run's stage, 0 when not running)
-	  and "ParkourBestStage" feed the HUD's progress bar.
+	- Stages (docs/sky-obby.md): the ten maps are one chained sky obby; a stage is a map (map n
+	  is stage n, map 10's finish is Course.STAGE_COUNT = 11). Stage numbers are progress
+	  labels only, never a respawn spot. profile.parkour.stage keeps the highest stage
+	  reached (finishing map n reaches n + 1); Player attributes "ParkourStage" (this run's
+	  stage, 0 when not running) and "ParkourBestStage" feed the HUD's progress bar.
 	- Gear: action "ParkourGear" { gear = "none" | "speed" | "jump" | "gravity" } saves the
 	  choice (profile.parkour.gear); it is worn only during a run (speed: WalkSpeed 16 -> 28
 	  through the Humanoid's BaseWalkSpeed; jump: JumpHeight 7.2 -> 14 or JumpPower 50 -> 70;
 	  gravity: a "GravityCoil" VectorForce on the root lifting 55% of the weight) and taken off
 	  on stop / finish / leave. A run that wore gear at any point is `assisted`.
-	- Skip: action "ParkourSkip" costs Economy.parkourSkipCost(income) cash (two minutes of
-	  income, at least Economy.PARKOUR_SKIP_MIN; the snapshot's `skipCost`), teleports to the next
-	  checkpoint (after the last one: the finish deck, which finishes the run) and marks the
-	  run assisted. Assisted runs pay, unlock and count clears but never record a best time
-	  or a board entry.
+	- Skip Map: action "ParkourSkip" costs Economy.parkourSkipCost(income) cash (two minutes
+	  of income, at least Economy.PARKOUR_SKIP_MIN; the snapshot's `skipCost`; a cash action,
+	  no Robux receipt). It finishes the current map as an assisted run (teleport under the
+	  finish arch; it unlocks the next map) and starts a run on the next map's start deck
+	  (map 10: just the finish). Assisted runs pay, unlock and count clears but never record
+	  a best time or a board entry.
 
 	Notify payloads (kind = "Mode", mode = "parkour"):
 	  { event = "pick", level }                                  crossed gate 1: open the Maps
 	                                                             window on `level` (the default)
-	  { event = "start", checkpoints, startedAt, best?, level, levelName, levels, remote,
+	  { event = "start", checkpoints = 0, startedAt, best?, level, levelName, levels, remote,
 	    stage, stageCount, gear, assisted }
-	  { event = "checkpoint", index, checkpoints, split, stage, stageCount }
-	                                                             split = seconds since start
-	  { event = "respawn", index, stage, stageCount, reason? }   back at checkpoint `index`
+	  { event = "respawn", index = 0, stage, stageCount, reason? }
+	                                                             back at the map's start deck
 	                                                             reason = "kill" after lava
-	  { event = "skip", stage, stageCount, index, checkpoints }  paid skip to `stage`
+	  { event = "skip", stage, stageCount, index = 0, checkpoints = 0, level }
+	                                                             paid Skip Map of `level`
+	(`checkpoints` / `index` stay 0 for older client code; there is no "checkpoint" event.)
 	  { event = "finish", time, best, newBest, first, cash, full, cooldownEnds, rank?,
 	    level, levelName, nextLevel?, unlockedNew, unlocked, levels, stage, stageCount,
 	    assisted }                                               assisted: newBest false, no rank
-	`stage` is the global stage (start deck / checkpoint / finish deck) the runner stands on.
-	  { event = "invalid", reason }                              "checkpoints" | "fast"
+	`stage` is the global stage (the map being run; its finish deck: the next one).
+	  { event = "invalid", reason }                              "fast"
 	  { event = "stop", reason }                                 run ended without a finish
 	Effects: "ModeSplash" { pos } where the player hit the water; "ModeKill" { pos } where a
-	kill brick (Course.inKill) caught them; "ModeCheckpoint"
-	{ pos, index }; "ModeFinish" { pos, newBest }; plus the usual "Cash" { amount,
+	kill brick (Course.inKill) caught them; "ModeFinish" { pos, newBest }; plus the usual "Cash" { amount,
 	source = "Mode", padPos } when cash is paid.
 ]]
 
@@ -108,38 +111,8 @@ local function vec(t: { number }): Vector3
 	return Vector3.new(t[1], t[2], t[3])
 end
 
--- Global stage of `level`'s start deck. Course provides STAGE_FIRST (docs/sky-obby.md);
--- older Course data is numbered the same way: each map adds its checkpoints + its finish.
-local function stageFirst(level: Course.Level): number
-	local first = (level :: any).STAGE_FIRST
-	if type(first) == "number" then
-		return first
-	end
-	local n = 1
-	for i = 1, level.index - 1 do
-		n += Course.LEVELS[i].CHECKPOINT_COUNT + 1
-	end
-	return n
-end
-
--- Global stage of checkpoint `index` of `level` (0 = start deck, CHECKPOINT_COUNT + 1 =
--- finish deck).
-local function stageAt(level: Course.Level, index: number): number
-	local cp = level.CHECKPOINTS[index]
-	local stage = cp and (cp :: any).stage
-	if type(stage) == "number" then
-		return stage
-	end
-	return stageFirst(level) + index
-end
-
 local function stageCount(): number
-	local count = (Course :: any).STAGE_COUNT
-	if type(count) == "number" and count > 0 then
-		return count
-	end
-	local last = Course.LEVELS[Course.LEVEL_COUNT]
-	return stageFirst(last) + last.CHECKPOINT_COUNT + 1
+	return Course.STAGE_COUNT
 end
 
 local function setAttribute(player: Player, name: string, value: any)
@@ -227,8 +200,9 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		label.Text = table.concat(lines, "\n")
 	end
 
-	local function teleportTo(player: Player, level: Course.Level, index: number)
-		local at, look = Course.respawn(level, index)
+	-- Puts the player on `level`'s start deck (start, falls, lava).
+	local function teleportTo(player: Player, level: Course.Level)
+		local at, look = Course.respawn(level)
 		GameModes.teleport(player, vec(at), Vector3.new(look[1], 0, look[2]))
 		lastX[player] = at[1]
 	end
@@ -357,14 +331,14 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		}
 		runs[player] = state
 		if teleport or level.remote then
-			teleportTo(player, level, 0)
+			teleportTo(player, level)
 		end
 		equip(player, session, state)
-		local stage = stageAt(level, 0)
+		local stage = level.STAGE_FIRST
 		reach(player, session, stage)
 		local best = rec.best[index] or 0
 		GameModes.notify(player, "start", ID, {
-			checkpoints = level.CHECKPOINT_COUNT,
+			checkpoints = 0,
 			startedAt = t,
 			best = if best > 0 then best else nil,
 			level = index,
@@ -439,7 +413,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			rank = Rules.recordBest(serverBest[index], player.UserId, player.DisplayName, time, BEST_SIZE)
 			updateBoard()
 		end
-		local stage = stageAt(level, level.CHECKPOINT_COUNT + 1)
+		local stage = level.STAGE_LAST
 		reach(player, session, stage)
 		setAttribute(player, "ParkourStage", 0)
 
@@ -497,32 +471,28 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			return
 		end
 		local level = state.run.level
-		if Course.inWater(x, y, z) then
-			GameModes.effect(player, "ModeSplash", { pos = Vector3.new(x, level.WATER_BOX.y0 + 1.2, z) })
+		-- Back to the start deck of this map (no checkpoints); the run goes on.
+		local function backToStart(reason: string?)
 			state.graceUntil = t + TELEPORT_GRACE
 			state.outsideSince = nil
-			teleportTo(player, level, state.run.checkpoint)
+			teleportTo(player, level)
 			GameModes.notify(player, "respawn", ID, {
-				index = state.run.checkpoint,
-				stage = stageAt(level, state.run.checkpoint),
+				index = 0,
+				stage = level.STAGE_FIRST,
 				stageCount = stageCount(),
+				reason = reason,
 			})
+		end
+		if Course.inWater(x, y, z) then
+			GameModes.effect(player, "ModeSplash", { pos = Vector3.new(x, level.WATER_BOX.y0 + 1.2, z) })
+			backToStart(nil)
 			return
 		end
 		if Course.inBounds(level, x, y, z) then
 			state.outsideSince = nil
-			-- Lava bars and strips (read defensively: older Course data has no kill elements).
-			local inKill = (Course :: any).inKill
-			if inKill and inKill(level, x, y, z, t) then
+			if Course.inKill(level, x, y, z, t) then
 				GameModes.effect(player, "ModeKill", { pos = pos })
-				state.graceUntil = t + TELEPORT_GRACE
-				teleportTo(player, level, state.run.checkpoint)
-				GameModes.notify(player, "respawn", ID, {
-					index = state.run.checkpoint,
-					stage = stageAt(level, state.run.checkpoint),
-					stageCount = stageCount(),
-					reason = "kill",
-				})
+				backToStart("kill")
 				return
 			end
 		else
@@ -535,25 +505,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			end
 			return
 		end
-		local nextCp = level.CHECKPOINTS[state.run.checkpoint + 1]
-		if nextCp and Course.onCheckpoint(nextCp, x, y, z) then
-			local index = nextCp.index :: number
-			Rules.touchCheckpoint(state.run, index, t)
-			local stage = stageAt(level, index)
-			local session = GameModes.session(player)
-			if session then
-				reach(player, session, stage)
-			end
-			GameModes.effect(player, "ModeCheckpoint", { pos = Vector3.new(nextCp.x, nextCp.y, nextCp.z), index = index })
-			GameModes.notify(player, "checkpoint", ID, {
-				index = index,
-				checkpoints = level.CHECKPOINT_COUNT,
-				split = Rules.roundTime(t - state.run.startedAt),
-				stage = stage,
-				stageCount = stageCount(),
-			})
-			GameModes.refresh(player)
-		elseif Course.inFinish(level, x, y, z) then
+		if Course.inFinish(level, x, y, z) then
 			finish(player, state, root, t)
 		end
 	end
@@ -582,7 +534,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 				difficulty = level.difficulty,
 				best = if rec then rec.best[i] else 0,
 				clears = if rec then rec.clears[i] else 0,
-				checkpoints = level.CHECKPOINT_COUNT,
+				checkpoints = 0,
 				bonus = Economy.parkourLevelBonus(i),
 				-- Map look (Course.MAPS); read defensively so older Course data still works.
 				theme = (level :: any).theme,
@@ -592,7 +544,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			}
 		end
 		local best = if rec then rec.best[default] else 0
-		local stage = if state then stageAt(current, state.run.checkpoint) else 0
+		local stage = if state then current.STAGE_FIRST else 0
 		-- Snapshots go out on join too: keep the HUD bar's attributes current.
 		setAttribute(player, "ParkourStage", stage)
 		if rec then
@@ -602,8 +554,8 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			best = if best > 0 then best else nil,
 			clears = if rec then rec.clears[default] else 0,
 			running = state ~= nil,
-			checkpoint = if state then state.run.checkpoint else 0,
-			checkpoints = current.CHECKPOINT_COUNT,
+			checkpoint = 0,
+			checkpoints = 0,
 			startedAt = if state then state.run.startedAt else nil,
 			cooldownEnds = if cooldown and cooldown.lastRewardAt > 0 then cooldown.lastRewardAt + Economy.MODE_REWARD_COOLDOWN else 0,
 			rewardPreview = def.rewardPreview(player, current.index),
@@ -652,28 +604,27 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		end
 		p.money -= cost
 		Tycoon.markDirty(session)
+		-- Skip Map: finish this map as an assisted run (it unlocks the next one), then start
+		-- the next map from its start deck.
 		local t = now()
 		local level = state.run.level
 		state.assisted = true
 		state.graceUntil = t + TELEPORT_GRACE
 		state.outsideSince = nil
-		local leg = Rules.skip(state.run, t)
-		local stage = stageAt(level, leg)
-		local payload = { stage = stage, stageCount = stageCount(), index = leg, checkpoints = level.CHECKPOINT_COUNT }
-		if leg <= level.CHECKPOINT_COUNT then
-			teleportTo(player, level, leg)
-			reach(player, session, stage)
-			local cp = level.CHECKPOINTS[leg]
-			GameModes.effect(player, "ModeCheckpoint", { pos = Vector3.new(cp.x, cp.y, cp.z), index = leg })
-			GameModes.notify(player, "skip", ID, payload)
-			GameModes.refresh(player)
-		else
-			-- Past the last checkpoint: onto the finish deck, under the arch, and done.
-			local arch = level.FINISH_ARCH
-			GameModes.teleport(player, Vector3.new(arch.x, arch.y, arch.z), Vector3.new(-arch.faceX, 0, -arch.faceZ))
-			lastX[player] = arch.x
-			GameModes.notify(player, "skip", ID, payload)
-			finish(player, state, root, t)
+		Rules.skip(state.run)
+		local arch = level.FINISH_ARCH
+		GameModes.teleport(player, Vector3.new(arch.x, arch.y, arch.z), Vector3.new(-arch.faceX, 0, -arch.faceZ))
+		lastX[player] = arch.x
+		GameModes.notify(player, "skip", ID, {
+			stage = level.STAGE_LAST,
+			stageCount = stageCount(),
+			index = 0,
+			checkpoints = 0,
+			level = level.index,
+		})
+		finish(player, state, root, t)
+		if level.index < Course.LEVEL_COUNT and not runs[player] then
+			def.start(player, true, { level = level.index + 1 })
 		end
 	end)
 

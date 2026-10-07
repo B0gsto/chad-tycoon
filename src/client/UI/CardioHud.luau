@@ -13,12 +13,13 @@
 	  Stage line    top centre in the run-pill slot (y 92): a persistent "STAGE 4 · NAME"
 	                and, while Speed < need, a pulsing coral "Need more speed!" hint.
 	  Title         a big bubbly "STAGE n" (plus the stage's name) under it whenever you
-	                enter a stage; also "STAGE 3 CLEAR!", "CHECKPOINT!", "OOPS!",
+	                enter a stage; also "STAGE 3 CLEAR!", "OOPS!",
 	                "TREADMILL LV 4!" banners (the stage title follows a clear).
 	  Right column  centre right: Custom Speed (title, "Your Max Speed: N", a number box
 	                + green OK that fires CardioSpeedCap { cap } with 0 / empty = no cap,
-	                "Current speed: N"; collapsible, collapsed by default on compact
-	                touch screens), the treadmill card (on / near a treadmill), SPEED UP
+	                "Current speed: N"; a small "Custom Speed" chip by default on every
+	                screen: tapping it expands the box, OK and the run's end fold it),
+	                the treadmill card (on / near a treadmill), SPEED UP
 	                (near the upgrade pad, fires CardioUpgrade) and a QUIT pill that asks
 	                "QUIT?" before ModeQuit.
 	  Start picker  centre: when a run starts in the lobby and bestStage > 0, buttons
@@ -100,11 +101,15 @@ local treadLine: TextLabel
 local customCard: Frame
 local customBody: Frame
 local customToggle: TextButton
+local customTitle: TextLabel
+local customChip: TextButton
 local maxLabel: TextLabel
 local currentLabel: TextLabel
 local capBox: TextBox
 local capButton: TextButton
-local customOpen = true
+local customOpen = false
+-- Collapsed Custom Speed chip width.
+local CHIP_W = 176
 local quitButton: TextButton
 -- Treadmill card
 local treadCard: Frame
@@ -327,6 +332,22 @@ local function setMultiplier(mult: number)
 	treadLine.Text = "Treadmill Lv " .. math.clamp(math.floor(num(snap.treadmill, 0)), 0, MAX_LEVEL)
 end
 
+-- Custom Speed is a small chip until tapped; OK and the run's end fold it again.
+local function setCustomOpen(open: boolean)
+	customOpen = open
+	customBody.Visible = open
+	customChip.Visible = not open
+	customCard.Size = UDim2.fromOffset(if open then COLUMN_W else CHIP_W, if open then 168 else 40)
+	customTitle.TextSize = if open then 22 else 17
+	customTitle.Size = UDim2.fromOffset((if open then COLUMN_W else CHIP_W) - 54, 26)
+	customTitle.Position = UDim2.fromOffset(14, if open then 9 else 7)
+	customToggle.Position = UDim2.new(1, -8, 0, if open then 8 else 6)
+	Kit.setButton(customToggle, if open then "–" else "+", C.SurfaceHi)
+	if not open and capBox:IsFocused() then
+		capBox:ReleaseFocus()
+	end
+end
+
 local function sendCap()
 	local digits = string.gsub(capBox.Text, "%D", "")
 	local cap = math.clamp(tonumber(digits) or 0, 0, MAX_CAP)
@@ -335,13 +356,7 @@ local function sendCap()
 	Kit.pop(capButton, 1.2)
 	snap.speedCap = if cap > 0 then cap else nil
 	paintCustom()
-end
-
-local function setCustomOpen(open: boolean)
-	customOpen = open
-	customBody.Visible = open
-	customCard.Size = UDim2.fromOffset(COLUMN_W, if open then 168 else 44)
-	Kit.setButton(customToggle, if open then "–" else "+", C.SurfaceHi)
+	setCustomOpen(false)
 end
 
 -- Cards ---------------------------------------------------------------------------------------
@@ -592,6 +607,7 @@ local function hide()
 		renderConn = nil
 	end
 	capBox:ReleaseFocus()
+	setCustomOpen(false)
 	hidePicker()
 	Kit.disappear(stageLine)
 	Kit.disappear(boxBody)
@@ -675,12 +691,8 @@ function CardioHud.onNotify(p: any)
 		if p.first == true and screen then
 			Kit.confetti(screen, { Count = 18, Origin = UDim2.fromScale(0.5, 0.3) })
 		end
-	elseif event == "checkpoint" then
-		hidePicker()
-		showBanner("CHECKPOINT!", nil, MINT, 1.1)
-		Sounds.play("Step")
 	elseif event == "fall" then
-		showBanner("OOPS!", "Back to the checkpoint. Build more Speed!", CORAL, 1.6)
+		showBanner("OOPS!", "Back to the start of the stage. Build more Speed!", CORAL, 1.6)
 		Sounds.play("Error")
 	elseif event == "finish" then
 		hide()
@@ -748,6 +760,14 @@ function CardioHud.onSteps(data: any)
 	end
 	if data.walkSpeed ~= nil then
 		setWalk(num(data.walkSpeed, walkSpeed))
+	end
+	-- The treadmill rate grows with Speed: keep "+X speed/s" live.
+	if type(data.rate) == "number" and data.rate ~= snap.treadmillRate then
+		snap.treadmillRate = data.rate
+		if active then
+			paintTreadmill()
+			paintUpgrade()
+		end
 	end
 	-- Every gain pops the number (bigger gains, bigger bounce).
 	if active and gained > 0 then
@@ -870,23 +890,23 @@ end
 local function buildCustom()
 	customCard = Kit.panel(column, {
 		Name = "CustomSpeed",
-		Size = UDim2.fromOffset(COLUMN_W, 168),
+		Size = UDim2.fromOffset(CHIP_W, 40),
 		LayoutOrder = 1,
 		Radius = 18,
 		Visible = false,
 	})
-	Kit.title(customCard, {
+	customTitle = Kit.title(customCard, {
 		Name = "Title",
 		Text = "Custom Speed",
-		TextSize = 22,
+		TextSize = 17,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.fromOffset(COLUMN_W - 60, 26),
-		Position = UDim2.fromOffset(14, 9),
+		Size = UDim2.fromOffset(CHIP_W - 54, 26),
+		Position = UDim2.fromOffset(14, 7),
 		ZIndex = 3,
 	})
 	customToggle = Kit.button(customCard, {
 		Name = "Toggle",
-		Text = "–",
+		Text = "+",
 		Color = C.SurfaceHi,
 		TextSize = 18,
 		Size = UDim2.fromOffset(30, 28),
@@ -899,8 +919,22 @@ local function buildCustom()
 		setCustomOpen(not customOpen)
 	end)
 	Kit.selectable(customToggle)
+	-- The whole collapsed chip opens the box (not just the + button).
+	customChip = Kit.new("TextButton", {
+		Name = "Chip",
+		Text = "",
+		BackgroundTransparency = 1,
+		AutoButtonColor = false,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 5,
+		Parent = customCard,
+	})
+	customChip.Activated:Connect(function()
+		setCustomOpen(true)
+	end)
 	customBody = Kit.new("Frame", {
 		Name = "Body",
+		Visible = false,
 		BackgroundTransparency = 1,
 		Size = UDim2.new(1, 0, 1, -44),
 		Position = UDim2.fromOffset(0, 40),
@@ -1396,9 +1430,8 @@ function CardioHud.build(screenGui: ScreenGui)
 
 	-- Layout: compact screens shrink the box and the column; the desktop wallet (bottom
 	-- left) keeps its room; touch keeps the jump button's corner (multiplier lines go
-	-- above the number and the column rides higher); compact touch folds Custom Speed.
+	-- above the number and the column rides higher). Custom Speed starts as a chip everywhere.
 	local columnScale = Kit.new("UIScale", { Parent = column })
-	local lastCompactTouch: boolean? = nil
 	local function relayout()
 		local compact = screenGui:GetAttribute("Compact") == true
 		compactTouch = compact and Kit.touch
@@ -1429,10 +1462,6 @@ function CardioHud.build(screenGui: ScreenGui)
 		sideLayout.Padding = UDim.new(0, if wide then 2 else 14)
 		columnScale.Scale = if compact then 0.74 else 1
 		column.Position = if Kit.touch then UDim2.new(1, -16, 0.5, -40) else UDim2.new(1, -24, 0.5, 0)
-		if lastCompactTouch ~= compactTouch then
-			lastCompactTouch = compactTouch
-			setCustomOpen(not compactTouch)
-		end
 		if active then
 			paintTreadmill()
 		end

@@ -21,7 +21,7 @@
 	LEVEL 1 is hand-made (LEVEL1_ELEMENTS); LEVELS 2..10 are generated deterministically by
 	Course.generate(n) (own seeded LCG) from Course.TUNING[n], a difficulty table that
 	tightens every level: wider gaps, smaller discs, thinner beams, faster/longer movers,
-	faster spinners, fewer checkpoints, longer paths, bigger height changes and (from level 4)
+	faster spinners, fewer rest decks, longer paths, bigger height changes and (from level 4)
 	blink pads. Every jump stays fair for the default character WITHOUT Double Jump
 	(Course.maxGap). A generated path is a serpentine: lanes along local +-X joined by two
 	turn pads stepping local +Z; the finish deck is placed one more step +Z, so the next map
@@ -37,21 +37,24 @@
 	  PROPS       sky scenery (type Prop): floating islands beside the course (one carrying
 	              the map's landmark), clouds below, balloons above, map extras
 	  palette     Theme.World colour keys: { main, alt, checkpoint, mover, accent, blink }
+	              (`checkpoint` is the old name of the rest-deck colour slot)
 	              (picker cards and landmark tints; path tops are rainbow, see RAINBOW)
 	  ELEMENTS    every element (below); PATH = the `path` ones in walking order
-	  CHECKPOINTS checkpoint elements by index; CHECKPOINT_COUNT
 	  KILLS       the map's kill elements (lava), in ELEMENTS order
-	  STAGE_FIRST global stage of the start deck; checkpoint k is stage STAGE_FIRST + k;
-	  STAGE_LAST  the finish deck's stage (STAGE_FIRST + CHECKPOINT_COUNT + 1), which is the
-	              next map's STAGE_FIRST
+	  STAGE_FIRST the map's stage number: one stage per map (map n is stage n), a progress
+	              label only (no saved respawn spot: a fall always goes back to START)
+	  STAGE_LAST  the finish deck's stage (STAGE_FIRST + 1), which is the next map's
+	              STAGE_FIRST; map 10's finish is Course.STAGE_COUNT (LEVEL_COUNT + 1)
 	  START       { x, y, z, faceX, faceZ }: start deck spawn (feet) and facing
-	  FINISH      { x0, x1, z0, z1, y0, y1 }: feet inside it after the last checkpoint finish
+	  FINISH      { x0, x1, z0, z1, y0, y1 }: feet inside it finish the run
 	  FINISH_ARCH { x, y, z, faceX, faceZ }: arch centre on the finish deck top; its front
 	              faces the incoming runner (faceX/faceZ is that front's direction)
 	  WATER_BOX   { x0, x1, z0, z1, y0, y1 }: the cloud catch volume under the map
 	              (y0 = FLOOR_Y - 20, y1 = FLOOR_Y)
 	  BOUNDS      { x0, x1, z0, z1, y0, y1 }: outside it for LEAVE_SECONDS ends the run
-	  MIN_LEG_SECONDS  minimum seconds per checkpoint leg (anti-cheat)
+	  PATH_LENGTH horizontal studs from the start deck to the finish deck along PATH
+	  MIN_SECONDS minimum seconds for a start-to-finish run (PATH_LENGTH /
+	              MAX_PLAUSIBLE_SPEED, anti-cheat)
 	  TUNING      the knobs it was generated from (nil for level 1)
 
 	Element kinds (`path = true` elements are walked on, in PATH order). All have kind,
@@ -61,9 +64,9 @@
 	              gaps measure it like a box) or "hex" (a six-sided tile of circumradius r, a
 	              corner along X; gaps measure it like a disc of radius r, its reach from the
 	              flat sides, r * sqrt(3) / 2); optional `name` ("StartDeck", "FinishDeck",
-	              "Beam", "Bridge", ...)
-	  checkpoint  static square arrow pad (shape "box", sx = sz = 2 * r), numbered `index`
-	              1..n in course order, global `stage`
+	              "Beam", "Bridge", "RestDeck", ...). A "RestDeck" is a wide square box
+	              where the checkpoints used to be: a breather, NOT a checkpoint (there are
+	              no checkpoints: a fall sends the runner back to the map's start deck)
 	  mover       box platform (sx, sz) that moves: motion "slide" along unit `axis` {x,y,z}
 	              or "bob" (axis {0,1,0}) by +-`distance` studs around (x, y, z), one full
 	              cycle every `period` seconds; offset = distance * sin(2 pi t / period + phase)
@@ -84,7 +87,7 @@
 	              GetServerTimeNow()); otherwise non-collidable and faded. Never two in a row.
 
 	Colours: every pad/slide path element's `color` cycles Course.RAINBOW in walking order
-	along the whole obby (bridges included); checkpoints are "Checkpoint"; movers and blink
+	along the whole obby (bridges included, rest decks too); movers and blink
 	pads keep their map's mover/blink colour.
 ]]
 
@@ -141,7 +144,7 @@ Course.BOARD2 = { x = -Course.BOARD.x, z = Course.BOARD.z, faceX = -Course.BOARD
 Course.START_LINE2_X = Course.GATE2_X
 
 -- Falling in: feet below WATER_Y beyond the island's shore (horizontal distance from the
--- world origin greater than WATER_RADIUS) sends a running player back to their checkpoint.
+-- world origin greater than WATER_RADIUS) was the old sea fall (see SKY_Y / inWater).
 -- Holds for every level (all of them are far off the island).
 Course.WATER_Y = 1.5
 Course.WATER_RADIUS = 219
@@ -159,7 +162,7 @@ Course.WALK_SPEED = 16
 Course.SAFETY = 0.8
 
 -- Integrity: nobody moves along the course faster than this (studs/s, about twice a
--- Speedy Sneakers run), so each checkpoint-to-checkpoint leg has a minimum time.
+-- Speedy Sneakers run), so a start-to-finish run has a minimum time (MIN_SECONDS).
 Course.MAX_PLAUSIBLE_SPEED = 40
 
 Course.LEVEL_COUNT = 10
@@ -244,12 +247,12 @@ export type Tuning = {
 	discR: number,
 	beamW: number,
 	padSize: number,
-	checkpointR: number,
+	checkpointR: number, -- half the side of a rest deck
 	moverTravel: number,
 	moverPeriod: number,
 	spinSpeed: number,
 	spinBars: number,
-	checkpointEvery: number, -- path elements per checkpoint
+	checkpointEvery: number, -- path elements per rest deck
 	pathLength: number,
 	rise: number, -- largest height change per jump (up or down)
 	blinkOn: number?, -- seconds solid per cycle (nil = no blink pads)
@@ -301,9 +304,7 @@ export type Level = {
 	palette: { [string]: string },
 	ELEMENTS: { Element },
 	PATH: { Element },
-	CHECKPOINTS: { Element },
 	KILLS: { Element },
-	CHECKPOINT_COUNT: number,
 	STAGE_FIRST: number,
 	STAGE_LAST: number,
 	START: { x: number, y: number, z: number, faceX: number, faceZ: number },
@@ -311,7 +312,8 @@ export type Level = {
 	FINISH_ARCH: { x: number, y: number, z: number, faceX: number, faceZ: number },
 	WATER_BOX: Box,
 	BOUNDS: Box,
-	MIN_LEG_SECONDS: { number },
+	PATH_LENGTH: number,
+	MIN_SECONDS: number,
 	TUNING: Tuning?,
 }
 
@@ -323,20 +325,9 @@ local function disc(x: number, y: number, z: number, r: number, color: string): 
 	return { kind = "pad", shape = "disc", x = x, y = y, z = z, r = r, color = color, path = true }
 end
 
-local function checkpoint(index: number, x: number, y: number, z: number, r: number, color: string?): Element
-	return {
-		kind = "checkpoint",
-		shape = "box",
-		index = index,
-		x = x,
-		y = y,
-		z = z,
-		sx = 2 * r,
-		sz = 2 * r,
-		r = r,
-		color = color or "Checkpoint",
-		path = true,
-	}
+-- A wide square rest deck (2r by 2r) where the old checkpoints stood: a plain pad.
+local function restPad(x: number, y: number, z: number, r: number, color: string?): Element
+	return box(x, y, z, 2 * r, 2 * r, color or "Sunny", "RestDeck")
 end
 
 -- A hollow square tile walked on its frame (`width` studs wide) and a six-sided tile.
@@ -357,16 +348,16 @@ local LEVEL1_ELEMENTS = {
 	box(-197, 0.6, 0, 14, 14, "Sunny", "StartDeck"),
 	box(-210, 2.4, 0, 9, 14, "Butter"),
 	box(-221, 4.2, 0, 9, 14, "Sunny"),
-	checkpoint(1, -234, 5, 0, 6),
+	restPad(-234, 5, 0, 6),
 	-- Stepping discs.
 	disc(-247, 5, 4, 4.5, "Butter"),
 	disc(-257, 5.5, -3, 4.5, "Sunny"),
 	disc(-267, 6, 3, 4.5, "Butter"),
 	disc(-277, 6.5, -2, 4.5, "Sunny"),
-	checkpoint(2, -291, 7, 0, 6),
+	restPad(-291, 7, 0, 6),
 	-- Balance beam.
 	box(-309, 7, 0, 18, 4, "Butter", "Beam"),
-	checkpoint(3, -326, 7.5, 0, 6),
+	restPad(-326, 7.5, 0, 6),
 	-- A platform sliding back and forth along the course.
 	{
 		kind = "mover",
@@ -384,7 +375,7 @@ local LEVEL1_ELEMENTS = {
 		period = 5,
 		phase = 0,
 	},
-	checkpoint(4, -356, 8, 0, 6),
+	restPad(-356, 8, 0, 6),
 	-- Turn south: a deck with two slow sweeper bars to jump over.
 	box(-356, 8, -21, 14, 24, "Sunny", "SweeperDeck"),
 	{ kind = "spinner", x = -356, y = 8, z = -15, length = 12, speed = 1.2, phase = 0 },
@@ -392,7 +383,7 @@ local LEVEL1_ELEMENTS = {
 	-- Bounce pad up to the high return lane.
 	box(-356, 8, -39, 12, 10, "Butter", "BounceDeck"),
 	{ kind = "bounce", x = -356, y = 8, z = -39.5, r = 2.5, power = 78 },
-	checkpoint(5, -356, 17, -53, 6),
+	restPad(-356, 17, -53, 6),
 	-- Back east: a bobbing platform, then the wall-hop deck.
 	{
 		kind = "mover",
@@ -414,7 +405,7 @@ local LEVEL1_ELEMENTS = {
 	{ kind = "wall", x = -326, y = 17, z = -53, sx = 1.2, sz = 14, h = 2.4, color = "Teal" },
 	{ kind = "wall", x = -320, y = 17, z = -53, sx = 1.2, sz = 14, h = 2.4, color = "Teal" },
 	{ kind = "wall", x = -314, y = 17, z = -53, sx = 1.2, sz = 14, h = 2.4, color = "Teal" },
-	checkpoint(6, -298, 17, -53, 6),
+	restPad(-298, 17, -53, 6),
 	-- A platform sliding sideways across the lane.
 	{
 		kind = "mover",
@@ -433,7 +424,7 @@ local LEVEL1_ELEMENTS = {
 		phase = math.pi / 2,
 	},
 	box(-268, 16, -53, 12, 12, "Sunny"),
-	checkpoint(7, -254.5, 15, -53, 6),
+	restPad(-254.5, 15, -53, 6),
 	-- The big slide down to the finish deck.
 	box(-242.5, 15, -53, 9, 9, "Butter", "SlideTop"),
 	{
@@ -1140,7 +1131,7 @@ end
 -- Kill elements (lava) on map n's wide path decks, in its local frame: up to 1 + n // 3 of
 -- them (Course.killCount), at most KILL_PER_DECK per deck, KILL_SPACING studs clear of each
 -- other; fewer when the decks run out. A deck qualifies when it is a plain box pad (not the start/finish deck, a
--- checkpoint, mover, blink pad or ring) at least KILL_MIN_DECK long along the walking axis
+-- rest deck, mover, blink pad or ring) at least KILL_MIN_DECK long along the walking axis
 -- (the direction from the previous path element). A strip lies across the deck KILL_WIDTH
 -- wide, leaving KILL_CLEAR studs of the deck free on each side along the walking axis and
 -- KILL_GAP studs from every wall and bounce pad on it; a deck KILL_SLIDE_DECK long or more
@@ -1175,7 +1166,15 @@ local function placeKills(elements: { Element }, n: number, rand: () -> number):
 		end
 		local from = before
 		before = e
-		if not from or e.kind ~= "pad" or e.shape ~= "box" or e.name == "StartDeck" or e.name == "FinishDeck" or e.name == "Bridge" then
+		if
+			not from
+			or e.kind ~= "pad"
+			or e.shape ~= "box"
+			or e.name == "StartDeck"
+			or e.name == "FinishDeck"
+			or e.name == "Bridge"
+			or e.name == "RestDeck"
+		then
 			continue
 		end
 		local alongX = math.abs(e.x - from.x) >= math.abs(e.z - from.z)
@@ -1308,7 +1307,7 @@ local KINDS = { "pad", "disc", "beam", "slide", "bob", "spinner", "walls", "blin
 local LIVELY = { slide = true, bob = true, blink = true, ramp = true }
 
 local function finalize(level: Level)
-	level.PATH, level.CHECKPOINTS, level.KILLS = {}, {}, {}
+	level.PATH, level.KILLS = {}, {}
 	for _, element in level.ELEMENTS do
 		if element.path then
 			table.insert(level.PATH, element)
@@ -1316,15 +1315,9 @@ local function finalize(level: Level)
 		if element.kind == "kill" then
 			table.insert(level.KILLS, element)
 		end
-		if element.kind == "checkpoint" then
-			level.CHECKPOINTS[element.index :: number] = element
-		end
 	end
-	level.CHECKPOINT_COUNT = #level.CHECKPOINTS
-	level.MIN_LEG_SECONDS = {}
-	for k = 1, level.CHECKPOINT_COUNT + 1 do
-		level.MIN_LEG_SECONDS[k] = Course.legLength(level, k - 1, k) / Course.MAX_PLAUSIBLE_SPEED
-	end
+	level.PATH_LENGTH = Course.pathLength(level)
+	level.MIN_SECONDS = level.PATH_LENGTH / Course.MAX_PLAUSIBLE_SPEED
 end
 
 -- Lays out level n (2..LEVEL_COUNT) in its local frame from TUNING[n] and its map's recipe
@@ -1369,7 +1362,7 @@ local function generateLocal(n: number): Local
 		end
 		return left
 	end
-	local sinceCp, cpIndex, bounced, afterBounce = 0, 0, 0, false
+	local sinceCp, bounced, afterBounce = 0, 0, false
 	local plainPads = 0
 	while count < T.pathLength do
 		if turnLeft == 0 and room() <= 0 then
@@ -1380,7 +1373,7 @@ local function generateLocal(n: number): Local
 		if count == T.pathLength - 1 then
 			kind = "finish"
 		elseif sinceCp >= checkpointEvery - 1 then
-			kind = "checkpoint"
+			kind = "rest"
 		elseif turning then
 			kind = "pad"
 		elseif bounced < bounceCount and count >= T.pathLength * (bounced + 1) // (bounceCount + 1) and not afterBounce then
@@ -1397,7 +1390,7 @@ local function generateLocal(n: number): Local
 				and prev.y >= Y_MIN + 2.5
 				and (
 					(prev.kind == "pad" and prev.shape ~= "hex" and (prev.name == nil or prev.name == "Beam" or prev.name == "StartDeck"))
-					or prev.kind == "checkpoint"
+					or prev.name == "RestDeck"
 				)
 			local function weight(k: string): number
 				if (calm and LIVELY[k]) or (k == "ramp" and not rampOk) or (k == "blink" and not T.blinkOn) then
@@ -1460,9 +1453,8 @@ local function generateLocal(n: number): Local
 		local extras: { Element } = {}
 		if kind == "finish" then
 			e = box(0, 0, 0, 16, 14, pal.main, "FinishDeck")
-		elseif kind == "checkpoint" then
-			cpIndex += 1
-			e = checkpoint(cpIndex, 0, 0, 0, T.checkpointR, pal.checkpoint)
+		elseif kind == "rest" then
+			e = restPad(0, 0, 0, T.checkpointR, pal.checkpoint)
 		elseif kind == "disc" then
 			-- Every other round tile or so is a big hex.
 			e = if rand() < 0.45 then hex(0, 0, 0, round2(6 + rand()), colour) else disc(0, 0, 0, T.discR, colour)
@@ -1546,7 +1538,7 @@ local function generateLocal(n: number): Local
 			add(x)
 		end
 		afterBounce = kind == "bounce"
-		sinceCp = if kind == "checkpoint" then 0 else sinceCp + 1
+		sinceCp = if kind == "rest" then 0 else sinceCp + 1
 		if turning then
 			turnLeft -= 1
 			laneZ = e.z
@@ -1580,27 +1572,12 @@ local function generateLocal(n: number): Local
 	}
 end
 
--- Horizontal distance along the centres of consecutive path elements from checkpoint
--- `fromIndex` (0 = start deck) to checkpoint `toIndex` (CHECKPOINT_COUNT + 1 = finish deck).
-function Course.legLength(level: Level, fromIndex: number, toIndex: number): number
+-- Horizontal distance along the centres of consecutive path elements, start deck to finish
+-- deck (Level.PATH_LENGTH; MIN_SECONDS divides it by MAX_PLAUSIBLE_SPEED).
+function Course.pathLength(level: Level): number
 	local path = level.PATH
-	local first: number? = if fromIndex == 0 then 1 else nil
-	local last: number? = if toIndex > level.CHECKPOINT_COUNT then #path else nil
-	for i, element in path do
-		if element.kind == "checkpoint" then
-			if element.index == fromIndex then
-				first = i
-			end
-			if element.index == toIndex then
-				last = i
-			end
-		end
-	end
-	if not first or not last then
-		return 0
-	end
 	local total = 0
-	for i = first, last - 1 do
+	for i = 1, #path - 1 do
 		local a, b = path[i], path[i + 1]
 		total += math.sqrt((a.x - b.x) ^ 2 + (a.z - b.z) ^ 2)
 	end
@@ -1757,16 +1734,13 @@ do
 	for n, f in FRAMES do
 		f.ox, f.oz = round2(f.ox + shiftX), round2(f.oz + shiftZ)
 		f.stageFirst, f.rainbowFirst = stage, slot
-		local checkpoints, path = 0, 0
+		local path = 0
 		for _, e in LOCALS[n].elements do
 			if e.path then
 				path += 1
 			end
-			if e.kind == "checkpoint" then
-				checkpoints += 1
-			end
 		end
-		stage += checkpoints + 1
+		stage += 1
 		slot += path + Course.BRIDGE_STEPS
 	end
 	-- Map 10's finish deck.
@@ -1802,10 +1776,7 @@ local function place(L: Local, f: Frame): Level
 			end
 		end
 		if e.path then
-			if e.kind == "checkpoint" then
-				e.color = "Checkpoint"
-				e.stage = f.stageFirst + (e.index :: number)
-			elseif e.kind == "pad" or e.kind == "slide" then
+			if e.kind == "pad" or e.kind == "slide" then
 				e.color = rainbow(slot)
 			end
 			slot += 1
@@ -1826,12 +1797,6 @@ local function place(L: Local, f: Frame): Level
 	local hx, hz = (fin.sx :: number) / 2, (fin.sz :: number) / 2
 	local bounds = boxToWorld(f, L.bounds)
 	bounds.y0, bounds.y1 = Course.FLOOR_Y - 30, round2(L.top + f.oy)
-	local checkpoints = 0
-	for _, e in L.elements do
-		if e.kind == "checkpoint" then
-			checkpoints += 1
-		end
-	end
 	local level: Level = {
 		index = n,
 		name = Course.NAMES[n],
@@ -1845,17 +1810,16 @@ local function place(L: Local, f: Frame): Level
 		palette = Course.PALETTES[n],
 		ELEMENTS = L.elements,
 		PATH = {},
-		CHECKPOINTS = {},
 		KILLS = {},
-		CHECKPOINT_COUNT = 0,
 		STAGE_FIRST = f.stageFirst,
-		STAGE_LAST = f.stageFirst + checkpoints + 1,
+		STAGE_LAST = f.stageFirst + 1,
 		START = { x = s.x, y = s.y, z = s.z, faceX = faceX, faceZ = faceZ },
 		FINISH = { x0 = fin.x - hx, x1 = fin.x + hx, z0 = fin.z - hz, z1 = fin.z + hz, y0 = fin.y - 1, y1 = fin.y + 10 },
 		FINISH_ARCH = { x = archX, y = fin.y, z = archZ, faceX = archFaceX, faceZ = archFaceZ },
 		WATER_BOX = { x0 = bounds.x0, x1 = bounds.x1, z0 = bounds.z0, z1 = bounds.z1, y0 = Course.FLOOR_Y - 20, y1 = Course.FLOOR_Y },
 		BOUNDS = bounds,
-		MIN_LEG_SECONDS = {},
+		PATH_LENGTH = 0,
+		MIN_SECONDS = 0,
 		TUNING = L.tuning,
 	}
 	finalize(level)
@@ -1954,24 +1918,10 @@ function Course.level(i: number): Level
 	return Course.LEVELS[math.clamp(math.floor(i), 1, Course.LEVEL_COUNT)]
 end
 
--- Global stage of checkpoint `checkpointIndex` on `level` (0 = start deck,
--- CHECKPOINT_COUNT + 1 = finish deck).
-function Course.stageOf(level: Level, checkpointIndex: number): number
-	return level.STAGE_FIRST + math.clamp(math.floor(checkpointIndex), 0, level.CHECKPOINT_COUNT + 1)
-end
-
--- The level and checkpoint index of global stage `stage` (clamped to 1..STAGE_COUNT). A
--- stage shared by a finish deck and the next start deck belongs to the next map (index 0);
--- the last stage is map 10's finish deck (CHECKPOINT_COUNT + 1).
-function Course.levelOfStage(stage: number): (Level, number)
-	local s = math.clamp(math.floor(stage), 1, Course.STAGE_COUNT)
-	for _, level in Course.LEVELS do
-		if s < level.STAGE_LAST then
-			return level, s - level.STAGE_FIRST
-		end
-	end
-	local last = Course.LEVELS[Course.LEVEL_COUNT]
-	return last, last.CHECKPOINT_COUNT + 1
+-- The level whose stage `stage` is (clamped to 1..STAGE_COUNT): map n is stage n; the last
+-- stage (STAGE_COUNT) is map 10's finish deck.
+function Course.levelOfStage(stage: number): Level
+	return Course.level(math.clamp(math.floor(stage), 1, Course.LEVEL_COUNT))
 end
 
 -- Is (x, z) outside every CLEAR rectangle (free for hub props)?
@@ -1982,18 +1932,6 @@ function Course.isClear(x: number, z: number): boolean
 		end
 	end
 	return true
-end
-
--- Are a player's feet standing on checkpoint `cp`?
-function Course.onCheckpoint(cp: Element, x: number, y: number, z: number): boolean
-	if y < cp.y - 1 or y > cp.y + 6 then
-		return false
-	end
-	if cp.sx then
-		return math.abs(x - cp.x) <= (cp.sx :: number) / 2 + 0.5 and math.abs(z - cp.z) <= (cp.sz :: number) / 2 + 0.5
-	end
-	local r = (cp.r :: number) + 0.5
-	return (x - cp.x) ^ 2 + (z - cp.z) ^ 2 <= r * r
 end
 
 local function inBox(b: Box, x: number, y: number, z: number): boolean
@@ -2061,19 +1999,13 @@ function Course.inKill(level: Level, x: number, y: number, z: number, t: number)
 	return false
 end
 
--- Respawn spot for checkpoint `index` (0 = start deck) on `level`: feet position
--- { x, y, z } and the horizontal direction { dx, dz } toward the next path element.
-function Course.respawn(level: Level, index: number): ({ number }, { number })
-	local here: Element? = level.CHECKPOINTS[index]
+-- Respawn spot on `level`: always its start deck (no checkpoints; every fall and lava touch
+-- sends the runner back to the start of the map). Feet position { x, y, z } and the
+-- horizontal direction { dx, dz } toward the next path element.
+function Course.respawn(level: Level): ({ number }, { number })
 	local start = level.START
-	local at = if here then { here.x, here.y, here.z } else { start.x, start.y, start.z }
-	local nextElement: Element? = nil
-	for i, element in level.PATH do
-		if (here and element == here) or (not here and i == 1) then
-			nextElement = level.PATH[i + 1]
-			break
-		end
-	end
+	local at = { start.x, start.y, start.z }
+	local nextElement: Element? = level.PATH[2]
 	if not nextElement then
 		return at, { start.faceX, start.faceZ }
 	end

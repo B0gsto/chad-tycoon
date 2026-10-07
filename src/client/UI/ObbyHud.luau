@@ -11,9 +11,11 @@
 	            at ParkourStage / stageCount; the local head sits on top with a white caret
 	            under the bar. Attributes are followed live (PlayerAdded / Removing too).
 	  Row       one line under the bar: Hud's run pill (docked through deps.dockRun) on the
-	            left, "STAGE n / N" in the centre, SKIP STAGE (pink, with a coin and the cash cost from
-	            State.data.modes.parkour.skipCost, refreshed on State.changed; fires
-	            ParkourSkip) on the right.
+	            left, "MAP n / N" in the centre (a stage is a map: N = stageCount - 1, map 10's
+	            finish being the last stage), SKIP MAP (pink, with a coin and the cash cost
+	            from State.data.modes.parkour.skipCost, refreshed on State.changed; fires
+	            ParkourSkip: the server finishes this map as assisted and starts the next one
+	            from its start deck) on the right. There are no checkpoints.
 	  Gear      a 3-slot hotbar 8 px above the dumbbell (deps.tank): Speed, Jump and Gravity
 	            coils with key badges 1 / 2 / 3. Keys or a tap toggle; the chosen slot is
 	            outlined gold; tapping it again picks "none". Fires ParkourGear { gear } and
@@ -110,7 +112,7 @@ local function skipCost(): number?
 end
 
 local function skipText(cost: number?): string
-	return if cost then "SKIP STAGE  " .. Format.money(cost) else "SKIP STAGE"
+	return if cost then "SKIP MAP  " .. Format.money(cost) else "SKIP MAP"
 end
 
 -- The course's last stage from the world: Parkour folder's Levels and the last level
@@ -440,7 +442,7 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 	-- Counter and skip -----------------------------------------------------------------
 	local counter = Kit.hudText(root, {
 		Name = "Stage",
-		Text = "STAGE 1",
+		Text = "MAP 1",
 		RichText = true,
 		Font = F.Display,
 		TextSize = 30,
@@ -468,8 +470,11 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 	end)
 
 	local function renderCounter()
-		local total = if stageCount > 0 then string.format(' <font size="18" transparency="0.25">/ %d</font>', stageCount) else ""
-		counter.Text = string.format("STAGE %d%s", math.max(myStage, 1), total)
+		-- One stage per map; the last stage is map 10's finish deck, so maps = stageCount - 1.
+		local maps = math.max(stageCount - 1, 0)
+		local total = if maps > 0 then string.format(' <font size="18" transparency="0.25">/ %d</font>', maps) else ""
+		local map = if maps > 0 then math.clamp(myStage, 1, maps) else math.max(myStage, 1)
+		counter.Text = string.format("MAP %d%s", map, total)
 	end
 
 	-- Gear hotbar --------------------------------------------------------------------------

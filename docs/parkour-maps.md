@@ -2,7 +2,8 @@
 
 The ten Parkour levels are ten themed **maps**. Each map plays differently (its own recipe of
 obstacles), looks different (its own palette, platform style and scenery) and is picked from a
-**map picker** instead of being started blind. This file is the contract between the four parts:
+**map picker** instead of being started blind. There are no checkpoints inside a map: a fall
+sends the player back to the map's start deck (docs/sky-obby.md, "No checkpoints"). This file is the contract between the four parts:
 
 | Part | File(s) | Owns |
 |---|---|---|

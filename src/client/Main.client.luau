@@ -294,16 +294,16 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			end
 			Sounds.play("Step")
 		elseif event == "respawn" then
-			-- Fell through the clouds (or touched lava): back on the last checkpoint, the run goes on.
+			-- Fell through the clouds (or touched lava): back to the start of the map, the run goes on.
 			if payload.stage ~= nil then
 				ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
 			end
 			if payload.reason == "kill" then
 				Sounds.play("Error")
-				Popups.toast("Ouch! Back to your checkpoint", "bad")
+				Popups.toast("Ouch! Back to the start of the map", "bad")
 			end
 		elseif event == "skip" then
-			-- Paid a stage skip: on to the next checkpoint (the run is now assisted).
+			-- Paid a map skip: on to the next map (the run is now assisted).
 			ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
 			if payload.index ~= nil then
 				Hud.runCheckpoint(tonumber(payload.index) or 0, tonumber(payload.checkpoints) or 0)
@@ -332,7 +332,7 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			Hud.runStop()
 			ObbyHud.hide()
 			Popups.toast(
-				if payload.reason == "fast" then "Whoa, too fast! Try the course again" else "Missed a checkpoint! Try again",
+				if payload.reason == "fast" then "Whoa, too fast! Try the course again" else "Something went wrong, try the map again",
 				"info"
 			)
 		elseif event == "stop" then

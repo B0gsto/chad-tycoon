@@ -2,7 +2,7 @@
 --[[
 	CardioLayout: pure, deterministic layout of the CARDIO keyboard runner (no Roblox APIs,
 	no math.random; unit-tested in tests/cardio.luau), shared by World.CardioTrack (builds it),
-	Modes.Cardio (teleports, steps, treadmills, checkpoints, safe zones, falls) and
+	Modes.Cardio (teleports, steps, treadmills, safe zones, falls) and
 	Modes.CardioChase.
 
 	THEMED ROOMS along +X, centred on z = ORIGIN.z, from ORIGIN.x to at most X_END. `rooms`
@@ -14,7 +14,7 @@
 	                    height, crossed by a NARROW KEY BRIDGE Rules.STAGES[n].width wide
 	                    (9 keys on stage 1 .. 4 keys from stage 8). Its west and east walls are
 	                    DOOR_WALL (= one key) thick with a doorway each (`doors`);
-	    safe zone n     a full key-carpet room (treadmills, WIN pad; zone 10 = FINISH) between
+	    safe zone n     a full key-carpet room (treadmills; zone 10 = FINISH) between
 	                    bridge room n's east wall and bridge room n+1's west wall.
 	A bridge room's walkable path, in order (all `platforms`, x-disjoint and increasing):
 	  "sill"  one key long, door-width wide: the floor of the west doorway (inside the wall);
@@ -128,7 +128,6 @@ CardioLayout.PROPS = { floor = 26, wall = 8, blocks = 4, edgeFloor = 9, wallGrou
 -- Clearance (studs) between floor props / blocks and the path's footprint (incl. gaps).
 CardioLayout.PROP_CLEAR = 4
 CardioLayout.TREADMILL = { length = 10, width = 6, height = 1.2 }
-CardioLayout.WIN_PAD = 8
 CardioLayout.UPGRADE_PAD = 6
 -- Stage banner centre height above the deck (over the west doorway).
 CardioLayout.SIGN_HEIGHT = 24
@@ -344,8 +343,8 @@ export type Zone = {
 	z0: number,
 	z1: number,
 	top: number,
-	checkpoint: Point,
-	winPad: Pad?,
+	-- Where a run started here, a fall in stage + 1 and a catch put you (on a key centre).
+	spawn: Point,
 	treadmills: { Treadmill },
 	upgradePad: Pad?,
 }
@@ -370,21 +369,6 @@ export type Platform = {
 	phase: number?,
 	travel: number?,
 	period: number?,
-}
-
--- Checkpoints in run order: safe zones (index 0) and mid-stage platforms (index = platform).
--- Standing inside the box (x0..x1, z0..z1) reaches it; (x, y, z) is where a fall returns you.
-export type Checkpoint = {
-	order: number,
-	stage: number,
-	index: number,
-	x: number,
-	y: number,
-	z: number,
-	x0: number,
-	x1: number,
-	z0: number,
-	z1: number,
 }
 
 -- Stage banner: (x, y, z) is its centre, inside bridge room n just past the west doorway;
@@ -486,7 +470,6 @@ export type Layout = {
 	zones: { Zone },
 	-- Every walkable bridge surface in course order; platforms[id].id == id.
 	platforms: { Platform },
-	checkpoints: { Checkpoint },
 	signs: { Sign },
 	walls: { Wall },
 	bases: { Base },
@@ -555,7 +538,6 @@ function CardioLayout.generate(): Layout
 	local keys: { Key } = {}
 	local zones: { Zone } = {}
 	local platforms: { Platform } = {}
-	local checkpoints: { Checkpoint } = {}
 	local signs: { Sign } = {}
 	local walls: { Wall } = {}
 	local bases: { Base } = {}
@@ -649,23 +631,14 @@ function CardioLayout.generate(): Layout
 		})
 	end
 
-	local function addCheckpoint(stage: number, index: number, x: number, y: number, z: number, box: Surface)
-		-- Snap to a key centre: a respawn on a key seam drops the Humanoid's floor ray between
-		-- the caps, so the character sinks into the keys.
-		x = box.x0 + (math.floor((x - box.x0) / K) + 0.5) * K
-		z = box.z0 + (math.floor((z - box.z0) / K) + 0.5) * K
-		table.insert(checkpoints, {
-			order = #checkpoints + 1,
-			stage = stage,
-			index = index,
-			x = x,
+	-- Snap a spawn to a key centre: a respawn on a key seam drops the Humanoid's floor ray
+	-- between the caps, so the character sinks into the keys.
+	local function spawnOn(box: Surface, x: number, y: number, z: number): Point
+		return {
+			x = box.x0 + (math.floor((x - box.x0) / K) + 0.5) * K,
 			y = y,
-			z = z,
-			x0 = box.x0,
-			x1 = box.x1,
-			z0 = box.z0,
-			z1 = box.z1,
-		})
+			z = box.z0 + (math.floor((z - box.z0) / K) + 0.5) * K,
+		}
 	end
 
 	local function addWall(
@@ -732,15 +705,14 @@ function CardioLayout.generate(): Layout
 			z0 = z0,
 			z1 = z0 + wide * K,
 			top = O.y,
-			checkpoint = { x = x0 + 6, y = O.y + 3, z = O.z },
-			winPad = nil,
+			spawn = { x = x0 + 6, y = O.y + 3, z = O.z },
 			treadmills = {},
 			upgradePad = nil,
 		}
 		table.insert(zones, zone)
 		local box = { x0 = zone.x0, x1 = zone.x1, z0 = zone.z0, z1 = zone.z1, top = O.y, stage = stage }
 		addBase(box, 0)
-		addCheckpoint(stage, 0, zone.checkpoint.x, zone.checkpoint.y, zone.checkpoint.z, box)
+		zone.spawn = spawnOn(box, zone.spawn.x, zone.spawn.y, zone.spawn.z)
 		addRoom(if stage == 0 then "lobby" else "zone", stage, zone.x0, zone.x1, HALF, O.y + CardioLayout.ZONE_WALL_HEIGHT)
 		return zone
 	end
@@ -992,10 +964,7 @@ function CardioLayout.generate(): Layout
 				p.period = m.period
 				p.phase = round1(rand() * m.period)
 			end
-			local box = platform(p)
-			if s.checkpointEvery > 0 and k % s.checkpointEvery == 0 and kind == "key" then
-				addCheckpoint(n, k, cur + 4, top + 3, zc, box)
-			end
+			platform(p)
 			prevLat, prevW = lat, w
 			cur += s.plat
 		end
@@ -1231,7 +1200,6 @@ function CardioLayout.generate(): Layout
 		local size = if n == Rules.STAGE_COUNT then CardioLayout.FINISH_KEYS else CardioLayout.ZONE_KEYS
 		local zone = deck(n, cur, size.long, size.wide)
 		local mid = zone.x0 + CardioLayout.ZONE_KEYS.long * K / 2
-		zone.winPad = { x = mid, z = O.z, size = CardioLayout.WIN_PAD }
 		for _, dz in { -29, -17, 17, 29 } do
 			table.insert(zone.treadmills, { x = mid, y = belt, z = O.z + dz, yaw = face })
 		end
@@ -1268,7 +1236,6 @@ function CardioLayout.generate(): Layout
 		keys = keys,
 		zones = zones,
 		platforms = platforms,
-		checkpoints = checkpoints,
 		signs = signs,
 		walls = walls,
 		bases = bases,
@@ -1319,10 +1286,18 @@ function CardioLayout.zone(stage: number): Zone?
 	return LAYOUT.zones[stage + 1]
 end
 
--- Where a fall (or "Start at") puts you for the safe zone of `stage` (0 = lobby).
-function CardioLayout.checkpoint(stage: number): Point?
+-- The spawn of the safe zone of `stage` (0 = lobby): where "Start at" stage puts you, and
+-- where a fall or a catch in stage + 1 sends you back (there are no mid-stage checkpoints).
+function CardioLayout.spawn(stage: number): Point?
 	local z = LAYOUT.zones[stage + 1]
-	return if z then z.checkpoint else nil
+	return if z then z.spawn else nil
+end
+
+-- The last safe zone passed at this X (the HUD runs stage + 1): n - 1 in bridge room n (not
+-- stageAt's n), else stageAt(x). A fall or a catch here respawns at spawn(startStageAt(x)).
+function CardioLayout.startStageAt(x: number): number
+	local room = CardioLayout.roomAt(x)
+	return if room and room.kind == "bridge" then room.stage - 1 else CardioLayout.stageAt(x)
 end
 
 -- The safe zone whose deck is under (x, z); with y, only when the feet are near its top.
@@ -1346,16 +1321,6 @@ function CardioLayout.stageAt(x: number): number
 		end
 	end
 	return Rules.STAGE_COUNT
-end
-
--- The checkpoint whose box contains (x, z) with the feet near its top, if any.
-function CardioLayout.checkpointAt(x: number, z: number, y: number): Checkpoint?
-	for _, c in LAYOUT.checkpoints do
-		if x >= c.x0 and x <= c.x1 and z >= c.z0 and z <= c.z1 and y >= c.y - 5 and y <= c.y + 9 then
-			return c
-		end
-	end
-	return nil
 end
 
 -- Is a key solid at time t, and how far has it slid along its axis?

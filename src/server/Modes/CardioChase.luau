@@ -6,8 +6,8 @@
 
 	A chase stage's SECTION is its bridge room's path (CardioLayout platforms of stage n: west
 	sill, run-up, jump platforms, end platform, east sill). Walking TRIGGER studs onto the
-	run-up (its first "run" piece starts at `x0`; within TRIGGER_WINDOW studs past that, so
-	respawning at a mid-stage checkpoint does not start one) begins a chase: a big Chad of
+	run-up (its first "run" piece starts at `x0`; within TRIGGER_WINDOW studs past that, so a
+	teleport deep into the stage does not start one) begins a chase: a big Chad of
 	TUNING[n].tier, scaled TUNING[n].scale, appears in the west doorway (`startX`) and, after
 	`headStart` seconds, runs along the path's CENTRE LINE `line` (vertices { s, x, z, half }:
 	every surface's centre from x0 to x1, joined straight over gaps and the run-up's jog; s =
