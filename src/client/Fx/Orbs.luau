@@ -1425,15 +1425,6 @@ local function untrack(part: BasePart)
 	fx.shell:Destroy()
 end
 
-local lastLandSound = 0
-
-local function landSound(volumeJitter: number)
-	if os.clock() - lastLandSound > 0.12 then
-		lastLandSound = os.clock();
-		(Sounds.play :: any)("OrbLand", volumeJitter)
-	end
-end
-
 -- First touch of the pen floor: a dust puff (a soft ring without the sprite), a few
 -- sparkles and a squash.
 local function touchedFloor(fx: OrbFx, pos: Vector3, impact: number)
@@ -1455,7 +1446,6 @@ local function touchedFloor(fx: OrbFx, pos: Vector3, impact: number)
 		Orbs.ring(floor, fx.color, 1.5 * fx.scale, 0.45, 0.35)
 	end
 	Orbs.sparkle(pos, fx.color, 3, 0.45)
-	landSound(0.3)
 end
 
 -- Came to rest at its spot: small settle wobble, then the idle bob fades in.

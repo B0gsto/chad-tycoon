@@ -602,11 +602,9 @@ local function thud(crate: Crate, floor: Vector3, k: number)
 	Orbs.ring(floor + Vector3.new(0, 0.12, 0), Color3.fromRGB(235, 225, 210), 4.5 * size, 0.45, 0.3)
 	Orbs.ring(floor + Vector3.new(0, 0.18, 0), crate.color, 3 * size, 0.5, 0.1)
 	smokePuff(floor + Vector3.new(0, 0.3, 0), math.floor((8 + crate.rank * 2) * k), 9 * k)
-	Sounds.play("CrateShake", 0.08, 0.7 - crate.rank * 0.03)
 	if k >= 1 then
 		Orbs.sparkle(floor + Vector3.new(0, 1.5, 0), crate.color, 10 + crate.rank * 3, 0.9 + crate.rank * 0.1)
 		if crate.rank >= 2 then
-			Sounds.play("OrbLand", 0.05, 0.5)
 			if playerNear(floor, 70) then
 				Camera.shake(0.04 + crate.rank * 0.04, 0.2)
 			end
