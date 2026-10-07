@@ -4,8 +4,9 @@
 	- Levels: every level is out at sea and reached only by teleport. A player has unlocked
 	  level 1 + (number of consecutive cleared levels from 1); "ModeStart" may pick any
 	  unlocked level (options.level), else the lowest level not yet cleared. Walking west
-	  through gate 1's portal (Course.crossedStart) starts that default level too. Starting
-	  again restarts.
+	  through gate 1's portal (Course.crossedStart) does not start a run: it sends a "pick"
+	  notify so the client opens the Maps window on the default level. Starting again
+	  restarts.
 	- Checkpoints count only in order (Modes.Rules). Feet in the water past the shore send the
 	  player back to their last checkpoint (0 = start deck) with a splash; the run goes on.
 	- Standing on the finish deck after the last checkpoint ends the run; Rules.finish checks
@@ -21,6 +22,8 @@
 	  level the player goes back to the gates.
 
 	Notify payloads (kind = "Mode", mode = "parkour"):
+	  { event = "pick", level }                                  crossed gate 1: open the Maps
+	                                                             window on `level` (the default)
 	  { event = "start", checkpoints, startedAt, best?, level, levelName, levels, remote }
 	  { event = "checkpoint", index, checkpoints, split }        split = seconds since start
 	  { event = "respawn", index }                               back at checkpoint `index`
@@ -280,7 +283,10 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		lastX[player] = x
 		local state = runs[player]
 		if prevX and Course.crossedStart(prevX, x, z) and y < Course.PLAZA.top + 8 then
-			def.start(player, false)
+			local session = GameModes.session(player)
+			if session then
+				GameModes.notify(player, "pick", ID, { level = defaultOf(levels(session)) })
+			end
 			return
 		end
 		if not state or t < state.graceUntil then
@@ -349,6 +355,11 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 				clears = if rec then rec.clears[i] else 0,
 				checkpoints = level.CHECKPOINT_COUNT,
 				bonus = Economy.parkourLevelBonus(i),
+				-- Map look (Course.MAPS); read defensively so older Course data still works.
+				theme = (level :: any).theme,
+				blurb = (level :: any).blurb,
+				icon = (level :: any).icon,
+				accent = (level :: any).accent,
 			}
 		end
 		local best = if rec then rec.best[default] else 0
