@@ -3169,6 +3169,226 @@ test("Game modes: every level's jumps are fair with the default jump", function(
 	check(not ModesCourse.crossedStart(ModesCourse.START_LINE_X - 1, ModesCourse.START_LINE_X + 1, 0), "walking back out does not")
 end)
 
+test("Game modes: ten themed parkour maps with their own recipes and scenery", function()
+	local kinds = {
+		islet = true,
+		palm = true,
+		umbrella = true,
+		beachball = true,
+		rockarch = true,
+		rock = true,
+		coconut = true,
+		lighthouse = true,
+		buoy = true,
+		coral = true,
+		bubblefield = true,
+		fin = true,
+		cloud = true,
+		volcano = true,
+		lavapool = true,
+		statue = true,
+		flagline = true,
+		landmark = true,
+	}
+	-- Horizontal distance from (px, pz) to an element's footprint at its nearest phase.
+	local function footDistance(e: any, px: number, pz: number): number
+		if e.kind == "slide" then
+			local a, b = e.from, e.to
+			local dx, dz = b[1] - a[1], b[3] - a[3]
+			local t = math.clamp(((px - a[1]) * dx + (pz - a[3]) * dz) / (dx * dx + dz * dz), 0, 1)
+			return math.sqrt((px - a[1] - dx * t) ^ 2 + (pz - a[3] - dz * t) ^ 2) - e.width / 2
+		end
+		local best = math.huge
+		local steps = if e.kind == "mover" then 16 else 0
+		for s = 0, steps do
+			local d = if e.kind == "mover" then e.distance * (2 * s / steps - 1) else 0
+			local x, z = e.x + (if e.axis then e.axis[1] * d else 0), e.z + (if e.axis then e.axis[3] * d else 0)
+			if e.sx then
+				local ox = math.max(0, math.abs(px - x) - e.sx / 2)
+				local oz = math.max(0, math.abs(pz - z) - e.sz / 2)
+				best = math.min(best, math.sqrt(ox * ox + oz * oz))
+			else
+				best = math.min(best, math.sqrt((px - x) ^ 2 + (pz - z) ^ 2) - (e.r or (e.length or 0) / 2))
+			end
+		end
+		return best
+	end
+	-- Colours: every palette key and card accent is a Theme.World colour, and no two maps
+	-- share a path-top colour or a card accent.
+	local world = loadRobloxTheme("src/themes/chad/Theme.luau").World
+	local mains, accents = {}, {}
+	for i, pal in ModesCourse.PALETTES do
+		for key, value in pal do
+			check(typeof(world[value]) == "Color3", string.format("map %d palette %s = %s is a Theme.World colour", i, key, value))
+		end
+		check(not mains[pal.main], "map " .. i .. " has its own path-top colour")
+		mains[pal.main] = true
+		local accent = ModesCourse.MAPS[i].accent
+		check(typeof(world[accent]) == "Color3", "map " .. i .. " accent is a Theme.World colour")
+		check(not accents[accent], "map " .. i .. " has its own accent")
+		accents[accent] = true
+	end
+	local themes = {}
+	local blinks, meanGap = {}, {}
+	for i, level in ModesCourse.LEVELS do
+		local map = ModesCourse.MAPS[i]
+		local label = "map " .. i
+		check(map ~= nil and map.name == ModesCourse.NAMES[i], label .. " has a MAPS entry named like the level")
+		for _, key in { "theme", "blurb", "icon", "accent" } do
+			check(type(level[key]) == "string" and #level[key] > 0 and level[key] == map[key], label .. " has its " .. key)
+		end
+		check(not themes[level.theme], label .. " has its own theme")
+		themes[level.theme] = true
+		check(i == 1 or map.recipe ~= nil, label .. " has a recipe")
+		-- Scenery: known kinds, inside the bounds, clear of the path (deck islets aside).
+		local props, b = level.PROPS, level.BOUNDS
+		check(#props >= 8 and #props <= 20, label .. " has 8-20 props (" .. #props .. ")")
+		local first, last = level.PATH[1], level.PATH[#level.PATH]
+		local under = { start = false, finish = false }
+		for _, p in props do
+			local what = label .. " " .. p.kind .. string.format(" at (%.1f, %.1f)", p.x, p.z)
+			check(kinds[p.kind] == true, what .. ": known kind")
+			check(p.x >= b.x0 and p.x <= b.x1 and p.z >= b.z0 and p.z <= b.z1, what .. ": inside the bounds")
+			check(p.y >= ModesCourse.WATER_Y and p.y < b.y1, what .. ": stands at or above the water")
+			local deckIslet = false
+			if p.kind == "islet" then
+				for key, deck in { start = first, finish = last } do
+					if math.abs(p.x - deck.x) < 0.01 and math.abs(p.z - deck.z) < 0.01 then
+						under[key], deckIslet = true, true
+						check(p.r >= 10 and p.y < deck.y - 1, what .. ": wide islet below the deck")
+					end
+				end
+			end
+			if not deckIslet then
+				local need = ModesCourse.PROP_CLEARANCE + ModesCourse.propFoot(p)
+				check(ModesCourse.PROP_CLEARANCE >= 4, "props keep 4 studs off the path")
+				for _, e in level.ELEMENTS do
+					local d = footDistance(e, p.x, p.z)
+					check(d >= need - 1e-6, string.format("%s: %.2f clear of %s (needs %.2f)", what, d, e.name or e.kind, need))
+				end
+			end
+		end
+		check(under.start and under.finish, label .. " has islets under its start and finish decks")
+		-- One big landmark, inside the bounds and off the path (checked with the props above).
+		local landmarks = {}
+		for _, p in props do
+			if p.kind == "landmark" then
+				table.insert(landmarks, p)
+			end
+		end
+		check(#landmarks == 1, label .. " has exactly one landmark (" .. #landmarks .. ")")
+		for _, p in landmarks do
+			check(ModesCourse.propFoot(p) >= 16 * 1.25 and (p.scale or 1) >= 1.25, label .. " landmark is big (scale 1.25+)")
+			local foot = ModesCourse.propFoot(p)
+			check(
+				p.x - foot >= b.x0 and p.x + foot <= b.x1 and p.z - foot >= b.z0 and p.z + foot <= b.z1,
+				label .. " landmark footprint inside the bounds (never cropped)"
+			)
+			if map.recipe and map.recipe.landmarkAxis ~= false then
+				local x0, x1 = math.huge, -math.huge
+				for _, e in level.PATH do
+					x0, x1 = math.min(x0, e.x), math.max(x1, e.x)
+				end
+				check(math.abs(p.x - (x0 + x1) / 2) <= 16, label .. " landmark stands on the course's main axis")
+			end
+			for _, q in props do
+				if q ~= p and q.kind ~= "landmark" then
+					local d = math.sqrt((p.x - q.x) ^ 2 + (p.z - q.z) ^ 2)
+					local crew = q.y > ModesCourse.WATER_Y + 0.01 and q.kind ~= "cloud"
+					check(crew or d >= ModesCourse.propFoot(p) + ModesCourse.propFoot(q), label .. " landmark clear of the " .. q.kind)
+				end
+			end
+		end
+		-- The themed base: under every path footprint (every phase), below the water line so a
+		-- runner who lands on it respawns, inside the bounds and under the landmark.
+		local base = level.BASE
+		check(type(base) == "table" and base.x0 < base.x1 and base.z0 < base.z1, label .. " has a BASE")
+		check(base.top < ModesCourse.WATER_Y, label .. " BASE top is under the water line")
+		check(base.x0 >= b.x0 and base.x1 <= b.x1 and base.z0 >= b.z0 and base.z1 <= b.z1, label .. " BASE inside the bounds")
+		for _, e in level.ELEMENTS do
+			local spots = {}
+			if e.kind == "slide" then
+				local w = e.width / 2
+				for _, pt in { e.from, e.to } do
+					table.insert(spots, { pt[1] - w, pt[1] + w, pt[3] - w, pt[3] + w })
+				end
+			else
+				local half = e.r or (e.length or 0) / 2
+				local hx, hz = (e.sx or 2 * half) / 2, (e.sz or 2 * half) / 2
+				for _, pose in ModesCourse.poses(e) do
+					table.insert(spots, { pose[1] - hx, pose[1] + hx, pose[3] - hz, pose[3] + hz })
+				end
+			end
+			for _, r in spots do
+				check(
+					r[1] >= base.x0 and r[2] <= base.x1 and r[3] >= base.z0 and r[4] <= base.z1,
+					label .. " BASE covers " .. (e.name or e.kind)
+				)
+			end
+		end
+		for _, p in landmarks do
+			check(p.x > base.x0 and p.x < base.x1 and p.z > base.z0 and p.z < base.z1, label .. " landmark stands on the BASE")
+		end
+		-- Landing on the base anywhere (feet on its top) is falling in.
+		for _, pt in { { base.x0, base.z0 }, { base.x1, base.z1 }, { (base.x0 + base.x1) / 2, (base.z0 + base.z1) / 2 } } do
+			check(ModesCourse.inWater(pt[1], base.top, pt[2]), label .. " a runner on the BASE is in the water")
+			check(ModesCourse.inWater(pt[1], base.top + 0.3, pt[2]), label .. " ... even a little above its top")
+		end
+		-- Recipe signatures.
+		blinks[i] = 0
+		local bounces = 0
+		for _, e in level.ELEMENTS do
+			if e.kind == "blink" then
+				blinks[i] += 1
+			elseif e.kind == "bounce" then
+				bounces += 1
+			end
+		end
+		local total, n = 0, 0
+		for k = 1, #level.PATH - 1 do
+			local a, c = level.PATH[k], level.PATH[k + 1]
+			if a.kind ~= "slide" and c.kind ~= "slide" then
+				total += shapeGap(a, a.x, a.z, c, c.x, c.z)
+				n += 1
+			end
+		end
+		meanGap[i] = total / n
+		if i == 5 then
+			check(bounces >= 2, "Bubble Bounce has two or more bounce pads")
+		elseif i == 6 then
+			check(last.y - first.y >= 20, "Coral Climb ends 20+ studs above its start")
+		end
+		check(b.x1 - b.x0 <= 240 and b.z1 - b.z0 <= 210 + ModesCourse.LANDMARK_GROW, label .. " fits its region size")
+		for j = i + 1, ModesCourse.LEVEL_COUNT do
+			local o = ModesCourse.REGIONS[j]
+			check(b.x1 < o.x0 or o.x1 < b.x0 or b.z1 < o.z0 or o.z1 < b.z0, string.format("regions %d and %d do not overlap", i, j))
+		end
+	end
+	for i = 1, ModesCourse.LEVEL_COUNT do
+		if i ~= 4 then
+			check(blinks[4] > blinks[i], "Blink Reef has the most blink pads (vs map " .. i .. ")")
+		end
+		if i ~= 7 then
+			check(
+				meanGap[7] > meanGap[i],
+				string.format("Shark Fin Sprint has the widest gaps (%.2f vs map %d %.2f)", meanGap[7], i, meanGap[i])
+			)
+		end
+	end
+	local slides = 0
+	for _, e in ModesCourse.LEVELS[2].PATH do
+		if e.kind == "slide" then
+			slides += 1
+		end
+	end
+	check(slides >= 1, "Coconut Cove has slides")
+	local a, c = ModesCourse.generate(9), ModesCourse.generate(9)
+	check(#a.PROPS == #c.PROPS, "same scenery on every call")
+	for k, p in a.PROPS do
+		check(p.kind == c.PROPS[k].kind and p.x == c.PROPS[k].x and p.z == c.PROPS[k].z, "prop " .. k .. " is deterministic")
+	end
+end)
+
 test("Game modes: each level is harder than the last", function()
 	-- +1: bigger is harder; -1: smaller is harder.
 	local knobs = {

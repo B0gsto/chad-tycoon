@@ -483,11 +483,865 @@ local function pulseNextFlag()
 	)
 end
 
+-- Map scenery and themed ambience -------------------------------------------------------
+--
+-- Scenery tags from the world builder (docs/parkour-maps.md), animated locally with
+-- os.clock() (pure decoration, so clients need not agree) and only within MAP_NEAR studs:
+--   MapBubble     rises at its Rise studs/s with a soft sway, fades out near Top and back in
+--                 at its rest y.
+--   MapBob        a buoy root: bobs BOB_HEIGHT studs and tilts a few degrees; every
+--                 descendant part moves rigidly with it (BulkMoveTo, like the movers).
+--   MapLightning  a neon bolt: hidden (Transparency 1), flashing in 2-3 pulse bursts every
+--                 4-9 s (own random timer per bolt).
+--   MapGlow       a neon part whose colour slowly breathes between dimmer and brighter.
+-- Which items are near is refreshed MAP_REFRESH times a second into reused lists; items
+-- that drift out of range go back to their rest look. Nothing runs when none are near.
+--
+-- Ambience: on a run's start the Level folder's Theme attribute picks a look, eased in over
+-- AMBIENCE_FADE s and out again on finish / invalid / stop, on respawn, and after OUT_GRACE s
+-- outside the level's bounds. A start while a look is up cross-fades to the new one.
+--   beach / cove / bay / reef / bubble / coral / shark  a light ParkourGrade tint plus a
+--            touch of Ambient, fog and Atmosphere colour (sunny warm, teal-green, dusk,
+--            aqua-purple, pale mint, sunset peach, steel blue).
+--   storm    ParkourGrade (ColorCorrectionEffect): cool, darker, desaturated; darker
+--            Ambient / OutdoorAmbient, nearer greyer fog, denser greyer Atmosphere; the
+--            grade flashes brighter while a bolt near the player is lit.
+--   volcano  ParkourGrade warm tint, a warm Atmosphere touch, ember emitters (ParkourEmbers,
+--            made lazily) on the level's MapGlow parts, enabled only during the run.
+--   giga     soft gold sparkles around the player's root (attachment ParkourSparkles).
+-- ParkourGrade is our own instance: Fx.Surge's SurgeGrade is separate and the two stack.
+-- Every Lighting / Atmosphere value is saved when a look starts and written back exactly.
+
+local Lighting = game:GetService("Lighting")
+
+local MAP_NEAR = 250
+local MAP_REFRESH = 0.25
+local BOB_HEIGHT = 0.6
+local BOB_TILT = math.rad(4)
+local BUBBLE_SWAY = 0.5
+local BUBBLE_FADE = 1.5 -- studs at each end of the climb over which a bubble fades
+local GLOW_STEP = 1 / 15 -- glow colour updates per second cap
+local BOLT_PULSE = 0.16 -- seconds per flash pulse (lit for the first BOLT_LIT of it)
+local BOLT_LIT = 0.07
+local AMBIENCE_FADE = 1
+local OUT_GRACE = 3
+local EMBER_RATE = 4
+local SPARKLE_RATE = 6
+local WHITE = Color3.new(1, 1, 1)
+
+type Bubble = {
+	part: BasePart,
+	rest: Vector3,
+	rot: CFrame,
+	alpha: number, -- built transparency
+	rise: number,
+	span: number,
+	phase: number, -- studs into the climb at t = 0
+	live: boolean,
+}
+type Bob = {
+	part: BasePart,
+	rest: CFrame,
+	parts: { BasePart }?, -- root first, gathered the first time it comes near
+	offsets: { CFrame },
+	phase: number,
+	speed: number,
+	live: boolean,
+}
+type Bolt = { part: BasePart, nextAt: number, start: number, pulses: number, lit: boolean, live: boolean }
+type Glow = { part: BasePart, base: Color3, dim: Color3, bright: Color3, phase: number, speed: number, live: boolean }
+
+local bubbles: { Bubble } = {}
+local bobs: { Bob } = {}
+local bolts: { Bolt } = {}
+local glows: { Glow } = {}
+local nearBubbles: { Bubble } = {}
+local nearBobs: { Bob } = {}
+local nearBolts: { Bolt } = {}
+local nearGlows: { Glow } = {}
+local mapTracked: { [Instance]: boolean } = {}
+local moveParts: { BasePart } = {}
+local moveFrames: { CFrame } = {}
+local nextRefresh = 0
+local nextGlow = 0
+local boltLit = false -- some bolt near the player is lit this frame
+
+local function addBubble(part: Instance)
+	if not part:IsA("BasePart") or mapTracked[part] then
+		return
+	end
+	local rise = num(part:GetAttribute("Rise"), 2)
+	local span = num(part:GetAttribute("Top"), part.Position.Y + 12) - part.Position.Y
+	if rise <= 0 or span < 1 then
+		return
+	end
+	mapTracked[part] = true
+	table.insert(bubbles, {
+		part = part,
+		rest = part.Position,
+		rot = part.CFrame.Rotation,
+		alpha = part.Transparency,
+		rise = rise,
+		span = span,
+		phase = math.random() * span,
+		live = false,
+	})
+end
+
+local function addBob(part: Instance)
+	if not part:IsA("BasePart") or mapTracked[part] then
+		return
+	end
+	mapTracked[part] = true
+	table.insert(bobs, {
+		part = part,
+		rest = part.CFrame,
+		parts = nil,
+		offsets = {},
+		phase = math.random() * TAU,
+		speed = 1.1 + math.random() * 0.5,
+		live = false,
+	})
+end
+
+local function addBolt(part: Instance)
+	if not part:IsA("BasePart") or mapTracked[part] then
+		return
+	end
+	mapTracked[part] = true
+	part.Transparency = 1
+	table.insert(bolts, { part = part, nextAt = os.clock() + math.random() * 9, start = -1, pulses = 0, lit = false, live = false })
+end
+
+local function addGlow(part: Instance)
+	if not part:IsA("BasePart") or mapTracked[part] then
+		return
+	end
+	mapTracked[part] = true
+	local base = part.Color
+	local h, s, v = base:ToHSV()
+	table.insert(glows, {
+		part = part,
+		base = base,
+		dim = Color3.fromHSV(h, s, v * 0.62),
+		bright = Color3.fromHSV(h, s * 0.8, math.min(1, v * 1.15)),
+		phase = math.random() * TAU,
+		speed = TAU / (2.6 + math.random() * 1.6),
+		live = false,
+	})
+end
+
+-- Drops a removed (or streamed-out) instance from a scenery list and its near list.
+local function dropFrom(list: { any }, near: { any }, inst: Instance)
+	if not mapTracked[inst] then
+		return
+	end
+	for i = #list, 1, -1 do
+		if list[i].part == inst then
+			table.remove(list, i)
+		end
+	end
+	for i = #near, 1, -1 do
+		if near[i].part == inst then
+			table.remove(near, i)
+		end
+	end
+	mapTracked[inst] = nil
+end
+
+-- Back to the built look when an item leaves the player's range.
+local function restBubble(b: Bubble)
+	b.part.CFrame = CFrame.new(b.rest) * b.rot
+	b.part.Transparency = b.alpha
+end
+
+local function restBob(b: Bob)
+	local parts = b.parts
+	if parts then
+		for i, part in parts do
+			table.insert(moveParts, part)
+			table.insert(moveFrames, b.rest * b.offsets[i])
+		end
+	end
+end
+
+local function restBolt(b: Bolt)
+	b.part.Transparency = 1
+	b.lit = false
+	b.start = -1
+end
+
+local function refreshNear(pos: Vector3)
+	table.clear(nearBubbles)
+	table.clear(nearBobs)
+	table.clear(nearBolts)
+	table.clear(nearGlows)
+	for _, b in bubbles do
+		local near = (b.rest - pos).Magnitude <= MAP_NEAR
+		if near then
+			table.insert(nearBubbles, b)
+		elseif b.live then
+			restBubble(b)
+		end
+		b.live = near
+	end
+	for _, b in bobs do
+		local near = (b.rest.Position - pos).Magnitude <= MAP_NEAR
+		if near then
+			if not b.parts then
+				local parts = { b.part }
+				b.offsets = { CFrame.identity }
+				for _, d in b.part:GetDescendants() do
+					if d:IsA("BasePart") then
+						table.insert(parts, d)
+						table.insert(b.offsets, b.rest:ToObjectSpace(d.CFrame))
+					end
+				end
+				b.parts = parts
+			end
+			table.insert(nearBobs, b)
+		elseif b.live then
+			restBob(b)
+		end
+		b.live = near
+	end
+	for _, b in bolts do
+		local near = (b.part.Position - pos).Magnitude <= MAP_NEAR
+		if near then
+			table.insert(nearBolts, b)
+		elseif b.live then
+			restBolt(b)
+		end
+		b.live = near
+	end
+	for _, g in glows do
+		local near = (g.part.Position - pos).Magnitude <= MAP_NEAR
+		if near then
+			table.insert(nearGlows, g)
+		elseif g.live then
+			g.part.Color = g.base
+		end
+		g.live = near
+	end
+end
+
+local function stepScenery(pos: Vector3)
+	local now = os.clock()
+	if now >= nextRefresh then
+		nextRefresh = now + MAP_REFRESH
+		refreshNear(pos)
+	end
+	boltLit = false
+	for _, b in nearBubbles do
+		local travel = (now * b.rise + b.phase) % b.span
+		local sway = now * 1.3 + b.phase
+		b.part.Transparency = 1 - (1 - b.alpha) * math.clamp(math.min(travel, b.span - travel) / BUBBLE_FADE, 0, 1)
+		table.insert(moveParts, b.part)
+		table.insert(
+			moveFrames,
+			CFrame.new(b.rest.X + BUBBLE_SWAY * math.sin(sway), b.rest.Y + travel, b.rest.Z + BUBBLE_SWAY * math.cos(sway * 0.8)) * b.rot
+		)
+	end
+	for _, b in nearBobs do
+		local parts = b.parts
+		if parts then
+			local a = now * b.speed + b.phase
+			local p = b.rest.Position
+			local pose = CFrame.new(p.X, p.Y + BOB_HEIGHT * math.sin(a), p.Z)
+				* CFrame.Angles(BOB_TILT * math.sin(a * 0.8 + 1), 0, BOB_TILT * math.cos(a * 0.7))
+				* b.rest.Rotation
+			for i, part in parts do
+				table.insert(moveParts, part)
+				table.insert(moveFrames, pose * b.offsets[i])
+			end
+		end
+	end
+	if #moveParts > 0 then
+		Workspace:BulkMoveTo(moveParts, moveFrames, Enum.BulkMoveMode.FireCFrameChanged)
+		table.clear(moveParts)
+		table.clear(moveFrames)
+	end
+	for _, b in nearBolts do
+		local lit = false
+		if b.start < 0 and now >= b.nextAt then
+			b.start, b.pulses = now, math.random(2, 3)
+		end
+		if b.start >= 0 then
+			local into = (now - b.start) / BOLT_PULSE
+			local pulse = math.floor(into)
+			if pulse >= b.pulses then
+				b.start = -1
+				b.nextAt = now + 4 + math.random() * 5
+			else
+				lit = (into - pulse) * BOLT_PULSE < BOLT_LIT
+			end
+		end
+		if lit ~= b.lit then
+			b.lit = lit
+			b.part.Transparency = if lit then 0 else 1
+		end
+		boltLit = boltLit or lit
+	end
+	if #nearGlows > 0 and now >= nextGlow then
+		nextGlow = now + GLOW_STEP
+		for _, g in nearGlows do
+			g.part.Color = g.dim:Lerp(g.bright, 0.5 + 0.5 * math.sin(now * g.speed + g.phase))
+		end
+	end
+end
+
+type Look = {
+	tint: Color3,
+	brightness: number,
+	contrast: number,
+	saturation: number,
+	ambient: Color3,
+	ambientMix: number,
+	fog: Color3,
+	fogMix: number,
+	fogEnd: number, -- fog never ends further than this while the look is up
+	atmosphere: Color3,
+	atmosphereMix: number,
+	density: number, -- added to the Atmosphere's density
+	haze: number, -- added to its haze
+	flash: number, -- grade brightness added while a near bolt is lit
+}
+
+-- Every look is mild except storm / volcano: tints stay within ~0.85-1 per channel,
+-- saturation within +-0.15 and brightness within +-0.05 so the pastel art never muddies.
+local LOOKS: { [string]: Look } = {
+	beach = { -- warm, sunny
+		tint = Color3.fromRGB(255, 247, 230),
+		brightness = 0.03,
+		contrast = 0.03,
+		saturation = 0.12,
+		ambient = Color3.fromRGB(255, 232, 200),
+		ambientMix = 0.1,
+		fog = Color3.fromRGB(255, 240, 215),
+		fogMix = 0.15,
+		fogEnd = 100000,
+		atmosphere = Color3.fromRGB(255, 236, 205),
+		atmosphereMix = 0.15,
+		density = 0,
+		haze = 0,
+		flash = 0,
+	},
+	cove = { -- teal-green
+		tint = Color3.fromRGB(230, 255, 245),
+		brightness = 0.01,
+		contrast = 0.02,
+		saturation = 0.05,
+		ambient = Color3.fromRGB(165, 230, 210),
+		ambientMix = 0.1,
+		fog = Color3.fromRGB(190, 235, 222),
+		fogMix = 0.2,
+		fogEnd = 100000,
+		atmosphere = Color3.fromRGB(190, 235, 222),
+		atmosphereMix = 0.2,
+		density = 0.01,
+		haze = 0.2,
+		flash = 0,
+	},
+	bay = { -- dusk warmth
+		tint = Color3.fromRGB(255, 236, 220),
+		brightness = -0.04,
+		contrast = 0.04,
+		saturation = 0.05,
+		ambient = Color3.fromRGB(230, 160, 120),
+		ambientMix = 0.12,
+		fog = Color3.fromRGB(240, 182, 150),
+		fogMix = 0.25,
+		fogEnd = 100000,
+		atmosphere = Color3.fromRGB(250, 192, 160),
+		atmosphereMix = 0.25,
+		density = 0.02,
+		haze = 0.4,
+		flash = 0,
+	},
+	reef = { -- aqua-purple
+		tint = Color3.fromRGB(234, 240, 255),
+		brightness = 0,
+		contrast = 0.03,
+		saturation = 0.1,
+		ambient = Color3.fromRGB(170, 185, 240),
+		ambientMix = 0.1,
+		fog = Color3.fromRGB(195, 205, 248),
+		fogMix = 0.2,
+		fogEnd = 100000,
+		atmosphere = Color3.fromRGB(205, 200, 250),
+		atmosphereMix = 0.2,
+		density = 0.01,
+		haze = 0.2,
+		flash = 0,
+	},
+	bubble = { -- pale mint, bright
+		tint = Color3.fromRGB(240, 255, 247),
+		brightness = 0.04,
+		contrast = -0.02,
+		saturation = 0.02,
+		ambient = Color3.fromRGB(220, 255, 235),
+		ambientMix = 0.1,
+		fog = Color3.fromRGB(225, 250, 236),
+		fogMix = 0.2,
+		fogEnd = 100000,
+		atmosphere = Color3.fromRGB(225, 250, 236),
+		atmosphereMix = 0.2,
+		density = 0,
+		haze = 0,
+		flash = 0,
+	},
+	coral = { -- sunset peach
+		tint = Color3.fromRGB(255, 238, 226),
+		brightness = 0.02,
+		contrast = 0.03,
+		saturation = 0.08,
+		ambient = Color3.fromRGB(255, 190, 170),
+		ambientMix = 0.1,
+		fog = Color3.fromRGB(255, 206, 186),
+		fogMix = 0.2,
+		fogEnd = 100000,
+		atmosphere = Color3.fromRGB(255, 210, 190),
+		atmosphereMix = 0.2,
+		density = 0.01,
+		haze = 0.3,
+		flash = 0,
+	},
+	shark = { -- steel-blue, cool
+		tint = Color3.fromRGB(224, 235, 255),
+		brightness = -0.02,
+		contrast = 0.05,
+		saturation = -0.12,
+		ambient = Color3.fromRGB(120, 145, 185),
+		ambientMix = 0.15,
+		fog = Color3.fromRGB(160, 180, 205),
+		fogMix = 0.25,
+		fogEnd = 100000,
+		atmosphere = Color3.fromRGB(170, 186, 210),
+		atmosphereMix = 0.25,
+		density = 0.02,
+		haze = 0.3,
+		flash = 0,
+	},
+	storm = {
+		tint = Color3.fromRGB(200, 215, 255),
+		brightness = -0.06,
+		contrast = 0.08,
+		saturation = -0.2,
+		ambient = Color3.fromRGB(45, 55, 80),
+		ambientMix = 0.55,
+		fog = Color3.fromRGB(95, 105, 125),
+		fogMix = 0.8,
+		fogEnd = 900,
+		atmosphere = Color3.fromRGB(140, 150, 170),
+		atmosphereMix = 0.7,
+		density = 0.12,
+		haze = 1.2,
+		flash = 0.14,
+	},
+	volcano = {
+		tint = Color3.fromRGB(255, 220, 190),
+		brightness = 0.01,
+		contrast = 0.05,
+		saturation = 0.1,
+		ambient = Color3.fromRGB(150, 80, 50),
+		ambientMix = 0.2,
+		fog = Color3.fromRGB(200, 120, 90),
+		fogMix = 0.3,
+		fogEnd = 100000,
+		atmosphere = Color3.fromRGB(255, 180, 140),
+		atmosphereMix = 0.3,
+		density = 0.03,
+		haze = 0.4,
+		flash = 0,
+	},
+}
+
+-- Absolute Lighting / Atmosphere / grade values; what is on screen is a blend of two.
+type Grade = {
+	tint: Color3,
+	brightness: number,
+	contrast: number,
+	saturation: number,
+	ambient: Color3,
+	outdoor: Color3,
+	fogColor: Color3,
+	fogEnd: number,
+	atmoColor: Color3,
+	density: number,
+	haze: number,
+}
+
+-- Ambience state. ambTheme is set from a run's start until the look has faded out again.
+-- The screen shows ambFrom blended toward ambTo by the eased ambWeight. ambFrom is the
+-- untouched scene (`saved`, ambFromBase true) except during a cross-fade between maps,
+-- when it is a snapshot of what was on screen; it returns to the scene once that ends.
+local ambTheme: string? = nil
+local ambLevel = 0
+local ambFolder: Instance? = nil
+local ambTarget = 0
+local ambWeight = 0
+local ambExtra = 0 -- separate ramp for the embers / sparkles (restarts on a cross-fade)
+local ambFlash = 0
+local ambOutSince: number? = nil
+local ambFrom: Grade? = nil
+local ambTo: Grade? = nil
+local ambFromBase = true
+local grade: ColorCorrectionEffect? = nil
+local atmosphere: Atmosphere? = nil
+local sparkles: ParticleEmitter? = nil
+local embers: { [BasePart]: ParticleEmitter } = {}
+local liveEmbers: { ParticleEmitter } = {}
+local saved: Grade = {
+	tint = WHITE,
+	brightness = 0,
+	contrast = 0,
+	saturation = 0,
+	ambient = Color3.new(),
+	outdoor = Color3.new(),
+	fogColor = Color3.new(),
+	fogEnd = 0,
+	atmoColor = Color3.new(),
+	density = 0,
+	haze = 0,
+}
+local levelBounds: { [Instance]: { min: Vector3, max: Vector3 } } = {}
+
+local function levelFolder(level: number): Instance?
+	local map = Workspace:FindFirstChild("Map")
+	local modes = map and map:FindFirstChild("GameModes")
+	local parkour = modes and modes:FindFirstChild("Parkour")
+	return parkour and parkour:FindFirstChild("Level" .. level)
+end
+
+-- The level folder's extents (from its parts, cached), padded for jumps and falls.
+local function boundsOf(folder: Instance): { min: Vector3, max: Vector3 }?
+	local cached = levelBounds[folder]
+	if cached then
+		return cached
+	end
+	local lo, hi = nil :: Vector3?, nil :: Vector3?
+	for _, d in folder:GetDescendants() do
+		if d:IsA("BasePart") then
+			local half = d.Size.Magnitude / 2
+			local a, b = d.Position - Vector3.one * half, d.Position + Vector3.one * half
+			lo = if lo then lo:Min(a) else a
+			hi = if hi then hi:Max(b) else b
+		end
+	end
+	if not lo or not hi then
+		return nil
+	end
+	local box = { min = lo - Vector3.new(40, 80, 40), max = hi + Vector3.new(40, 80, 40) }
+	levelBounds[folder] = box
+	return box
+end
+
+-- A ParticleEmitter with sprite `name`, or a plain one when the sprite is missing.
+local function emitter(parent: Instance, name: string, props: { [string]: any }): ParticleEmitter
+	local made = Sprites.emitter(parent, name, props)
+	if made then
+		return made
+	end
+	local plain = Instance.new("ParticleEmitter")
+	for key, value in props do
+		(plain :: any)[key] = value
+	end
+	plain.Parent = parent
+	return plain
+end
+
+local function emberFor(part: BasePart): ParticleEmitter
+	local cached = embers[part]
+	if cached and cached.Parent then
+		return cached
+	end
+	local orange = ColorSequence.new(Color3.fromRGB(255, 190, 90), Color3.fromRGB(255, 90, 40))
+	local e = emitter(part, "SoftDot", {
+		Rate = 0,
+		Color = orange,
+		LightEmission = 1,
+		Lifetime = NumberRange.new(1.6, 2.8),
+		Speed = NumberRange.new(3, 7),
+		Drag = 0.6,
+		Acceleration = Vector3.new(0, 1.5, 0),
+		EmissionDirection = Enum.NormalId.Top,
+		SpreadAngle = Vector2.new(25, 25),
+		Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.15),
+			NumberSequenceKeypoint.new(0.3, 0.4),
+			NumberSequenceKeypoint.new(1, 0),
+		}),
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.2),
+			NumberSequenceKeypoint.new(0.7, 0.3),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+	})
+	e.Name = "ParkourEmbers"
+	embers[part] = e
+	return e
+end
+
+local function makeSparkles(root: BasePart): ParticleEmitter
+	local attachment = Instance.new("Attachment")
+	attachment.Name = "ParkourSparkles"
+	attachment.Parent = root
+	return emitter(attachment, "Sparkle", {
+		Rate = 0,
+		Color = ColorSequence.new(Color3.fromRGB(255, 214, 120), Color3.fromRGB(255, 240, 205)),
+		LightEmission = 0.5,
+		Lifetime = NumberRange.new(0.9, 1.5),
+		Speed = NumberRange.new(1.5, 3),
+		Drag = 1.5,
+		Acceleration = Vector3.new(0, 1, 0),
+		SpreadAngle = Vector2.new(180, 180),
+		Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0),
+			NumberSequenceKeypoint.new(0.2, 0.55),
+			NumberSequenceKeypoint.new(1, 0),
+		}),
+	})
+end
+
+-- The scene's values with `theme`'s look fully applied (giga has no grade: the scene).
+local function gradeFor(theme: string): Grade
+	local look = LOOKS[theme]
+	if not look then
+		return table.clone(saved)
+	end
+	return {
+		tint = look.tint,
+		brightness = look.brightness,
+		contrast = look.contrast,
+		saturation = look.saturation,
+		ambient = saved.ambient:Lerp(look.ambient, look.ambientMix),
+		outdoor = saved.outdoor:Lerp(look.ambient, look.ambientMix),
+		fogColor = saved.fogColor:Lerp(look.fog, look.fogMix),
+		fogEnd = math.min(saved.fogEnd, look.fogEnd),
+		atmoColor = saved.atmoColor:Lerp(look.atmosphere, look.atmosphereMix),
+		density = math.clamp(saved.density + look.density, 0, 1),
+		haze = math.clamp(saved.haze + look.haze, 0, 10),
+	}
+end
+
+local function blend(a: Grade, b: Grade, t: number): Grade
+	return {
+		tint = a.tint:Lerp(b.tint, t),
+		brightness = a.brightness + (b.brightness - a.brightness) * t,
+		contrast = a.contrast + (b.contrast - a.contrast) * t,
+		saturation = a.saturation + (b.saturation - a.saturation) * t,
+		ambient = a.ambient:Lerp(b.ambient, t),
+		outdoor = a.outdoor:Lerp(b.outdoor, t),
+		fogColor = a.fogColor:Lerp(b.fogColor, t),
+		fogEnd = a.fogEnd + (b.fogEnd - a.fogEnd) * t,
+		atmoColor = a.atmoColor:Lerp(b.atmoColor, t),
+		density = a.density + (b.density - a.density) * t,
+		haze = a.haze + (b.haze - a.haze) * t,
+	}
+end
+
+local function ease(w: number): number
+	return w * w * (3 - 2 * w)
+end
+
+-- What is on screen right now (without the lightning flash).
+local function shownGrade(): Grade
+	local from, to = ambFrom or saved, ambTo or saved
+	return blend(from, to, ease(ambWeight))
+end
+
+-- Writes the current blend plus a lightning flash (0..1).
+local function applyLook(flash: number)
+	local g = shownGrade()
+	local look = if ambTheme then LOOKS[ambTheme] else nil
+	local cc = grade
+	if not cc then
+		local made = Instance.new("ColorCorrectionEffect")
+		made.Name = "ParkourGrade"
+		made.Parent = Lighting
+		cc = made
+		grade = made
+	end
+	if cc then
+		cc.TintColor = g.tint
+		cc.Brightness = g.brightness + (if look then look.flash * flash else 0)
+		cc.Contrast = g.contrast
+		cc.Saturation = g.saturation
+	end
+	Lighting.Ambient = g.ambient
+	Lighting.OutdoorAmbient = g.outdoor
+	Lighting.FogColor = g.fogColor
+	Lighting.FogEnd = g.fogEnd
+	local atmo = atmosphere
+	if atmo then
+		atmo.Color = g.atmoColor
+		atmo.Density = g.density
+		atmo.Haze = g.haze
+	end
+	local x = ease(ambExtra)
+	for _, e in liveEmbers do
+		e.Rate = EMBER_RATE * x
+	end
+	local s = sparkles
+	if s then
+		s.Rate = SPARKLE_RATE * x
+	end
+end
+
+-- Stops the theme's extras: embers off, sparkles left to die out then removed.
+local function dropExtras()
+	for _, e in liveEmbers do
+		e.Rate = 0
+		e.Enabled = false
+	end
+	table.clear(liveEmbers)
+	local s = sparkles
+	if s then
+		local attachment = s.Parent
+		s.Rate = 0
+		task.delay(2, function()
+			if attachment then
+				attachment:Destroy()
+			end
+		end)
+	end
+	sparkles = nil
+end
+
+-- Starts `theme`'s extras for the level `folder` (their rate follows ambExtra).
+local function startExtras(theme: string, folder: Instance)
+	if theme == "volcano" then
+		for _, g in glows do
+			if g.part:IsDescendantOf(folder) then
+				local e = emberFor(g.part)
+				e.Enabled = true
+				table.insert(liveEmbers, e)
+			end
+		end
+	elseif theme == "giga" then
+		local _, root = character()
+		if root then
+			sparkles = makeSparkles(root)
+		end
+	end
+end
+
+-- Puts every Lighting value back exactly and removes (or disables) what the look added.
+local function clearAmbience()
+	if ambTheme then
+		Lighting.Ambient = saved.ambient
+		Lighting.OutdoorAmbient = saved.outdoor
+		Lighting.FogColor = saved.fogColor
+		Lighting.FogEnd = saved.fogEnd
+		local atmo = atmosphere
+		if atmo and atmo.Parent then
+			atmo.Color = saved.atmoColor
+			atmo.Density = saved.density
+			atmo.Haze = saved.haze
+		end
+	end
+	if grade then
+		grade:Destroy()
+	end
+	dropExtras()
+	grade, atmosphere, ambFolder, ambFrom, ambTo, ambFromBase = nil, nil, nil, nil, nil, true
+	ambTheme, ambTarget, ambWeight, ambExtra, ambFlash, ambOutSince = nil, 0, 0, 0, 0, nil
+end
+
+local function startAmbience(level: number)
+	local folder = levelFolder(level)
+	local theme = if folder then folder:GetAttribute("Theme") else nil
+	if not folder or type(theme) ~= "string" or (not LOOKS[theme] and theme ~= "giga") then
+		if ambTheme then
+			clearAmbience()
+		end
+		return
+	end
+	if ambTheme then
+		-- Already showing a look: cross-fade from what is on screen to this map's look
+		-- (the scene's own values in `saved` stay as they were first captured).
+		local same = ambTheme == theme and ambLevel == level and ambFolder == folder
+		local target = gradeFor(theme)
+		ambFrom, ambTo, ambFromBase = shownGrade(), target, false
+		ambWeight = 0
+		if not same then
+			dropExtras()
+			ambExtra = 0
+			startExtras(theme, folder)
+		end
+		ambTheme, ambLevel, ambFolder, ambTarget, ambOutSince = theme, level, folder, 1, nil
+		applyLook(ambFlash)
+		return
+	end
+	ambTheme, ambLevel, ambFolder, ambTarget, ambWeight, ambExtra = theme, level, folder, 1, 0, 0
+	saved.ambient = Lighting.Ambient
+	saved.outdoor = Lighting.OutdoorAmbient
+	saved.fogColor = Lighting.FogColor
+	saved.fogEnd = Lighting.FogEnd
+	local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
+	atmosphere = atmo
+	if atmo then
+		saved.atmoColor = atmo.Color
+		saved.density = atmo.Density
+		saved.haze = atmo.Haze
+	end
+	ambFrom, ambTo, ambFromBase = saved, gradeFor(theme), true
+	startExtras(theme, folder)
+	applyLook(0)
+end
+
+-- Eases the look out (it is cleared once fully faded). Mid cross-fade, what is on screen
+-- becomes the look to fade from, so the fade ends on the untouched scene.
+local function endAmbience()
+	if ambTheme and not ambFromBase then
+		ambFrom, ambTo, ambFromBase, ambWeight = saved, shownGrade(), true, 1
+	end
+	ambTarget, ambOutSince = 0, nil
+end
+
+local function stepAmbience(dt: number, pos: Vector3?)
+	if not ambTheme then
+		return
+	end
+	local folder = ambFolder
+	if ambTarget > 0 and folder and pos then
+		local box = if folder.Parent then boundsOf(folder) else nil
+		local inside = box ~= nil and pos == pos:Max(box.min):Min(box.max)
+		local now = os.clock()
+		if inside then
+			ambOutSince = nil
+		elseif not ambOutSince then
+			ambOutSince = now
+		elseif now - (ambOutSince :: number) > OUT_GRACE then
+			endAmbience()
+		end
+	end
+	local before, beforeExtra = ambWeight, ambExtra
+	local stepW = (if ambTarget > 0 then dt else -dt) / AMBIENCE_FADE
+	ambWeight = math.clamp(ambWeight + stepW, 0, 1)
+	ambExtra = math.clamp(ambExtra + stepW, 0, 1)
+	if ambWeight == 1 and not ambFromBase then
+		-- The cross-fade is done: the screen is ambTo, so fade later from the scene.
+		ambFrom, ambFromBase = saved, true
+	end
+	local flash = if boltLit then 1 else 0
+	if ambWeight ~= before or ambExtra ~= beforeExtra or flash ~= ambFlash then
+		ambFlash = flash
+		applyLook(flash)
+	end
+	if ambWeight == 0 and ambTarget == 0 then
+		clearAmbience()
+	end
+end
+
 local function step(dt: number)
 	local humanoid, root = character()
 	if not humanoid or not root then
+		stepAmbience(dt, nil)
 		return
 	end
+	stepScenery(root.Position)
+	stepAmbience(dt, root.Position)
 	bobArrows(root.Position, dt)
 	pulseNextFlag()
 	local b = bounds
@@ -672,6 +1526,27 @@ function ModesFx.init()
 		addArrow(arrow)
 	end
 	CollectionService:GetInstanceAddedSignal("ModeHintArrow"):Connect(addArrow)
+	for tag, add in { MapBubble = addBubble, MapBob = addBob, MapLightning = addBolt, MapGlow = addGlow } :: { [string]: (Instance) -> () } do
+		for _, part in CollectionService:GetTagged(tag) do
+			add(part)
+		end
+		CollectionService:GetInstanceAddedSignal(tag):Connect(add)
+	end
+	CollectionService:GetInstanceRemovedSignal("MapBubble"):Connect(function(inst)
+		dropFrom(bubbles, nearBubbles, inst)
+	end)
+	CollectionService:GetInstanceRemovedSignal("MapBob"):Connect(function(inst)
+		dropFrom(bobs, nearBobs, inst)
+	end)
+	CollectionService:GetInstanceRemovedSignal("MapLightning"):Connect(function(inst)
+		dropFrom(bolts, nearBolts, inst)
+	end)
+	CollectionService:GetInstanceRemovedSignal("MapGlow"):Connect(function(inst)
+		dropFrom(glows, nearGlows, inst)
+		embers[inst :: BasePart] = nil
+	end)
+	-- A respawn ends the themed look (the old root's sparkles go with the old character).
+	player.CharacterAdded:Connect(endAmbience)
 
 	RunService.PreSimulation:Connect(step)
 
@@ -685,10 +1560,12 @@ function ModesFx.init()
 			pulseCap = nil
 			running, nextIndex = true, 1
 			stillSince, lastHint = os.clock(), os.clock()
+			startAmbience(currentLevel)
 		elseif event == "checkpoint" then
 			nextIndex = num(payload.index, nextIndex) + 1
 		elseif event == "finish" or event == "invalid" or event == "stop" then
 			running = false
+			endAmbience()
 		end
 	end)
 

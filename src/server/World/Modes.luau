@@ -27,7 +27,9 @@
 	  toggles them; Client.Fx.Modes sets CanCollide and the look locally.
 
 	Every level of Server.Modes.Course is built into Parkour/Level<i> (attributes Mode,
-	Level, Checkpoints, Title). Named parts the game looks up: "ParkourStart" (trigger in
+	Level, Checkpoints, Title, LevelName, and the map's Theme, Blurb, Icon, Accent). Each map's
+	platforms, arches and stripes take its theme's STYLE (rim, underside, trim, materials);
+	its scenery (level.PROPS) is drawn by World.MapDecor into Level<i>/Scenery. Named parts the game looks up: "ParkourStart" (trigger in
 	gate 1's opening; other open gates hold "ModeStart"), per level "ParkourFinish" (trigger
 	over the finish deck) and "ParkourWater" (catch volume over the sea), both with attribute
 	Level, and "Checkpoint" discs with attributes Index (1..n), Level and Mode = "parkour".
@@ -43,6 +45,7 @@
 ]]
 
 local Common = require(script.Parent.Common)
+local MapDecor = require(script.Parent.MapDecor)
 local Course = require(script.Parent.Parent.Modes.Course)
 local Catalog = require(script.Parent.Parent.Modes.Catalog)
 
@@ -66,6 +69,49 @@ local LOCKED_CARD = W.Steel:Lerp(W.Ink, 0.3)
 local LOCKED_HALF = 4
 -- Sea foam sits just above the shallows / ocean surface.
 local FOAM_Y = -0.8
+
+-- A map's platform style, keyed by level.theme: `rim` is the band under each top (and the
+-- arch feet), `under` the deep underside, `trim` an optional thin edge band under the rim
+-- (and the arch rings and mover stripes; nil keeps the classic white), `top` the material of
+-- the palette-coloured tops, `rimMaterial` the rim's and `trimNeon` makes the trim glow.
+type Style = {
+	rim: Color3,
+	under: Color3,
+	trim: Color3?,
+	top: Enum.Material,
+	rimMaterial: Enum.Material,
+	trimNeon: boolean?,
+}
+local SMOOTH = Enum.Material.SmoothPlastic
+local PLASTIC = Enum.Material.Plastic
+local STYLE: { [string]: Style } = {
+	beach = { rim = W.White, under = W.Honey:Lerp(W.WoodDark, 0.45), top = SMOOTH, rimMaterial = SMOOTH },
+	cove = { rim = W.GrassDark, under = W.GrassDark:Lerp(W.Ink, 0.45), trim = W.Butter, top = PLASTIC, rimMaterial = SMOOTH },
+	bay = { rim = W.Navy, under = W.Navy:Lerp(W.Ink, 0.4), trim = W.White, top = SMOOTH, rimMaterial = Enum.Material.WoodPlanks },
+	reef = { rim = W.Teal, under = W.TealDeep:Lerp(W.Ink, 0.3), trim = W.HotPink, top = SMOOTH, rimMaterial = SMOOTH },
+	bubble = { rim = W.White, under = W.SkyBlue:Lerp(W.Blue, 0.6), trim = W.Blue, top = SMOOTH, rimMaterial = SMOOTH, trimNeon = true },
+	coral = { rim = W.Terracotta, under = W.Terracotta:Lerp(W.Ink, 0.45), trim = W.Butter, top = SMOOTH, rimMaterial = SMOOTH },
+	shark = { rim = W.TealDeep, under = W.TealDeep:Lerp(W.Ink, 0.45), trim = W.White, top = SMOOTH, rimMaterial = SMOOTH },
+	storm = {
+		rim = W.Slate,
+		under = W.Slate:Lerp(W.Ink, 0.5),
+		trim = W.Volt,
+		top = PLASTIC,
+		rimMaterial = Enum.Material.DiamondPlate,
+		trimNeon = true,
+	},
+	volcano = {
+		rim = W.Basalt,
+		under = W.Basalt:Lerp(W.Ink, 0.3),
+		trim = W.Lava,
+		top = PLASTIC,
+		rimMaterial = Enum.Material.Basalt,
+		trimNeon = true,
+	},
+	giga = { rim = W.Gold, under = W.Grape:Lerp(W.Ink, 0.35), trim = W.Grape, top = SMOOTH, rimMaterial = SMOOTH },
+}
+-- The style of the level being built (buildCourse sets it).
+local style: Style = STYLE.beach
 
 export type Built = {
 	folder: Folder,
@@ -280,8 +326,16 @@ end
 local UNDERSIDE = 2.4
 local function platform(e: Course.Element, name: string, parent: Instance, rimInTop: boolean): BasePart
 	local fill = color(e.color)
-	local material = if e.color == "Wood" then Enum.Material.WoodPlanks else Enum.Material.SmoothPlastic
+	local material = if e.color == "Wood" then Enum.Material.WoodPlanks else style.top
 	local rimY, underY = e.y - 0.95, e.y - 1.3 - UNDERSIDE / 2 + 0.1
+	local trimProps: { [string]: any }? = if style.trim
+		then {
+			Name = "PlatformTrim",
+			Color = style.trim,
+			Material = if style.trimNeon then Enum.Material.Neon else SMOOTH,
+			CastShadow = false,
+		}
+		else nil
 	local top: BasePart
 	if e.shape == "disc" then
 		local r = e.r :: number
@@ -299,15 +353,23 @@ local function platform(e: Course.Element, name: string, parent: Instance, rimIn
 			Shape = CYLINDER,
 			Size = Vector3.new(0.7, r * 2 + 1.2, r * 2 + 1.2),
 			CFrame = CFrame.new(e.x, rimY, e.z) * UPRIGHT,
-			Color = W.White,
+			Color = style.rim,
+			Material = style.rimMaterial,
 			Parent = if rimInTop then top else parent,
 		})
+		if trimProps then
+			trimProps.Shape = CYLINDER
+			trimProps.Size = Vector3.new(0.25, r * 2 + 1.5, r * 2 + 1.5)
+			trimProps.CFrame = CFrame.new(e.x, rimY - 0.3, e.z) * UPRIGHT
+			trimProps.Parent = if rimInTop then top else parent
+			decor(make("Part", trimProps))
+		end
 		decor(make("Part", {
 			Name = "PlatformBase",
 			Shape = CYLINDER,
 			Size = Vector3.new(UNDERSIDE, r * 2 - 0.8, r * 2 - 0.8),
 			CFrame = CFrame.new(e.x, underY, e.z) * UPRIGHT,
-			Color = W.TealDeep,
+			Color = style.under,
 			Parent = if rimInTop then top else parent,
 		}))
 	else
@@ -324,14 +386,21 @@ local function platform(e: Course.Element, name: string, parent: Instance, rimIn
 			Name = "PlatformRim",
 			Size = Vector3.new(sx + 1.2, 0.7, sz + 1.2),
 			CFrame = CFrame.new(e.x, rimY, e.z),
-			Color = W.White,
+			Color = style.rim,
+			Material = style.rimMaterial,
 			Parent = if rimInTop then top else parent,
 		})
+		if trimProps then
+			trimProps.Size = Vector3.new(sx + 1.5, 0.25, sz + 1.5)
+			trimProps.CFrame = CFrame.new(e.x, rimY - 0.3, e.z)
+			trimProps.Parent = if rimInTop then top else parent
+			decor(make("Part", trimProps))
+		end
 		decor(make("Part", {
 			Name = "PlatformBase",
 			Size = Vector3.new(math.max(sx - 0.8, 1), UNDERSIDE, math.max(sz - 0.8, 1)),
 			CFrame = CFrame.new(e.x, underY, e.z),
-			Color = W.TealDeep,
+			Color = style.under,
 			Parent = if rimInTop then top else parent,
 		}))
 	end
@@ -466,7 +535,7 @@ local function mover(e: Course.Element, parent: Instance): BasePart
 			Shape = CYLINDER,
 			Size = Vector3.new(0.1, 4, 4),
 			CFrame = CFrame.new(e.x, e.y + 0.02, e.z) * UPRIGHT,
-			Color = W.White,
+			Color = style.trim or W.White,
 			Parent = top,
 		})
 	else
@@ -474,7 +543,7 @@ local function mover(e: Course.Element, parent: Instance): BasePart
 			Name = "MoverStripe",
 			Size = Vector3.new((e.sx :: number) - 1.6, 0.1, 1.2),
 			CFrame = CFrame.new(e.x, e.y + 0.02, e.z) * along,
-			Color = W.White,
+			Color = style.trim or W.White,
 			Parent = top,
 		})
 	end
@@ -1107,16 +1176,19 @@ local ARCH_SPRING = 10
 local ARCH_SEGMENTS = 7
 
 -- Two candy pillars and a rounded half-circle of `body`-coloured segments, built through
--- `add` (frame: front facing -Z, x across the deck, y up from the deck top).
+-- `add` (frame: front facing -Z, x across the deck, y up from the deck top). Feet take the
+-- map style's rim, rings and joints its trim.
 local function archFrame(add: (props: { [string]: any }) -> BasePart, half: number, body: Color3)
 	local spring = ARCH_SPRING
+	local trim = style.trim or W.White
 	for _, sx in { -1, 1 } do
 		add({
 			Name = "FinishFoot",
 			Shape = CYLINDER,
 			Size = Vector3.new(1, 4.2, 4.2),
 			CFrame = CFrame.new(sx * half, 0.5, 0) * UPRIGHT,
-			Color = W.White,
+			Color = style.rim,
+			Material = style.rimMaterial,
 		})
 		add({
 			Name = "FinishPillar",
@@ -1131,7 +1203,7 @@ local function archFrame(add: (props: { [string]: any }) -> BasePart, half: numb
 				Shape = CYLINDER,
 				Size = Vector3.new(0.8, 3.5, 3.5),
 				CFrame = CFrame.new(sx * half, y, 0) * UPRIGHT,
-				Color = W.White,
+				Color = trim,
 			})
 		end
 	end
@@ -1143,7 +1215,7 @@ local function archFrame(add: (props: { [string]: any }) -> BasePart, half: numb
 			Shape = BALL,
 			Size = cube(3.4),
 			CFrame = CFrame.new(half * math.cos(a), spring + half * math.sin(a), 0),
-			Color = W.White,
+			Color = trim,
 		}))
 		if i < segments then
 			local m = math.pi * (i + 0.5) / segments
@@ -1201,6 +1273,7 @@ end
 
 -- Level `level`'s parts into `parent`.
 local function buildCourse(level: Course.Level, parent: Instance)
+	style = STYLE[(level :: any).theme or "beach"] or STYLE.beach
 	local midZ = (level.BOUNDS.z0 + level.BOUNDS.z1) / 2
 	local tops: { [Course.Element]: BasePart } = {}
 	for _, e in level.ELEMENTS do
@@ -1226,7 +1299,10 @@ local function buildCourse(level: Course.Level, parent: Instance)
 	-- (none on the bounce deck: its pad is the hint).
 	for i, e in level.PATH do
 		if e.kind ~= "slide" then
-			foam(e, parent)
+			-- The base slab hides the sea under the course: no foam needed there.
+			if not (level :: any).BASE then
+				foam(e, parent)
+			end
 			local nextE = level.PATH[i + 1]
 			if nextE and e.name ~= "BounceDeck" then
 				chevron(e, nextE, tops[e] or parent)
@@ -1329,6 +1405,9 @@ local function buildCourse(level: Course.Level, parent: Instance)
 		parent
 	)
 	water:SetAttribute("Level", level.index)
+
+	MapDecor.build(level, parent)
+	style = STYLE.beach
 end
 
 function Modes.build(): Built
@@ -1358,6 +1437,11 @@ function Modes.build(): Built
 		levelFolder:SetAttribute("Checkpoints", level.CHECKPOINT_COUNT)
 		levelFolder:SetAttribute("Title", level.name)
 		levelFolder:SetAttribute("LevelName", level.name)
+		local map: any = level
+		levelFolder:SetAttribute("Theme", map.theme or "beach")
+		levelFolder:SetAttribute("Blurb", map.blurb or "")
+		levelFolder:SetAttribute("Icon", map.icon or "")
+		levelFolder:SetAttribute("Accent", map.accent or "Sunny")
 		buildCourse(level, levelFolder)
 		levelFolder.Parent = parkour
 	end

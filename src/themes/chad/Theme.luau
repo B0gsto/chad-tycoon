@@ -299,6 +299,18 @@ Theme.World = {
 	Blue = BLUE,
 	Chrome = rgb(226, 232, 242),
 	Steel = rgb(150, 164, 196),
+	-- Parkour map hues (one family per map, Server.Modes.Course PALETTES / World.MapDecor).
+	MintPale = rgb(184, 242, 206),
+	Navy = rgb(36, 62, 138),
+	HotPink = rgb(255, 64, 158),
+	SkyBlue = rgb(166, 216, 255),
+	Apricot = rgb(255, 196, 148),
+	Terracotta = rgb(214, 102, 56),
+	Slate = rgb(66, 76, 100),
+	Volt = rgb(240, 255, 56),
+	Basalt = rgb(40, 36, 46),
+	Lava = rgb(255, 104, 18),
+	Gold = rgb(255, 196, 40),
 	-- One colour per pad job, so a pad's colour tells you what it does: yellows buy and
 	-- upgrade, teal/blue move aura and cash, warm pops are the special pads.
 	Pads = {

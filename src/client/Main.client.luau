@@ -240,7 +240,13 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 	elseif payload.kind == "Mode" then
 		-- Game-mode runs: the HUD run pill and the finish card (Fx.Modes does the 3D side).
 		local event = payload.event
-		if event == "start" then
+		if event == "pick" then
+			-- Walked through gate 1's portal: pick a map (opening the window plays "Open").
+			Windows.openMaps(tonumber(payload.level))
+		elseif event == "start" then
+			-- A run teleports the player onto the course: no window (the map picker, the
+			-- Modes window) may stay up over it.
+			Windows.closeAll()
 			Hud.runStart(
 				tonumber(payload.startedAt) or workspace:GetServerTimeNow(),
 				0,
@@ -253,14 +259,20 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			Sounds.play("Step")
 		elseif event == "finish" then
 			Hud.runStop()
-			-- "Run again" replays the same level; "Next level" starts the one just unlocked.
+			-- "Run again" replays the same level; "Next level" starts the one just unlocked;
+			-- "Choose map" opens the Maps window on the next level (or this one).
+			local onPick = if payload.mode == "parkour"
+				then function()
+					Windows.openMaps(tonumber(payload.nextLevel) or tonumber(payload.level))
+				end
+				else nil
 			Popups.modeFinish(payload, function()
 				action:FireServer({ action = "ModeStart", mode = payload.mode, level = tonumber(payload.level) })
 			end, function()
 				action:FireServer({ action = "Home" })
 			end, function()
 				action:FireServer({ action = "ModeStart", mode = payload.mode, level = tonumber(payload.nextLevel) })
-			end)
+			end, onPick)
 		elseif event == "invalid" then
 			Hud.runStop()
 			Popups.toast(

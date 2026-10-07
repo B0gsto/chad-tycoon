@@ -22,6 +22,7 @@ local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
 local Kit = require(script.Parent.Kit)
+local MapPicker = require(script.Parent.MapPicker)
 local ShopScenes = require(script.Parent.ShopScenes)
 local Sprites = require(script.Parent.Parent.Fx.Sprites)
 local State = require(script.Parent.Parent.State)
@@ -3230,12 +3231,10 @@ end
 	blurb, stats, reward line and a gold PLAY that fires ModeStart and closes the window;
 	PLAY is the one loud element per row), then one slim "More modes coming soon" row.
 
-	Parkour adds a picker of 10 round level chips under its blurb: cleared levels are
-	filled with the accent and carry a tiny check, the next one to play is outlined and
-	softly pulsing, locked ones are dim with a lock (tapping one wobbles it and says
-	"Clear level N-1 first!"). The selected level's name, difficulty (10 pips), best and
-	clears and what finishing it pays sit above PLAY, which starts that level. The
-	selection snaps back to `unlocked` whenever the window opens.
+	Parkour shows the preselected map (the player's unlocked level, re-synced whenever the
+	window opens): its name, difficulty (10 pips), best and clears and what finishing it
+	pays, beside PLAY (starts that map) and CHOOSE MAP (opens the Maps window,
+	MapPicker.luau, where every map is picked from a card grid with a 3D preview).
 
 	MOG TEST: best score, rivals mogged and passes, reward line, PLAY (disabled
 	"PLAYING" while a test runs) opens the VS RIVALS / 1v1 DUEL picker (Windows.onMogPlay). Reads State.data.modes.parkour and .mog.
@@ -3266,6 +3265,80 @@ local function setRewardLine(label: TextLabel, cash: number, gems: number, full:
 		text ..= " +" .. tostring(gems) .. " " .. W.Gem
 	end
 	label.Text = text
+end
+
+local PIP_COUNT = 10
+
+-- Difficulty row: a fire icon, 10 pips (gold warming to red) and "n/10". props: Name, Size,
+-- Position, Pip (pip size, default 10). Returns the setter.
+local function difficultyPips(parent: Instance, props: { [string]: any }): (number) -> ()
+	local pipSize = props.Pip or 10
+	local row = Kit.new("Frame", {
+		Name = props.Name or "Difficulty",
+		BackgroundTransparency = 1,
+		Size = props.Size,
+		Position = props.Position,
+		ZIndex = 2,
+		Parent = parent,
+	})
+	Kit.list(row, 3, true).VerticalAlignment = Enum.VerticalAlignment.Center
+	Kit.icon(row, "Fire", pipSize + 6, C.Gold, { LayoutOrder = 0, ZIndex = 2 })
+	local pips: { Frame } = {}
+	for i = 1, PIP_COUNT do
+		local pip = Kit.new("Frame", {
+			Name = "Pip" .. i,
+			BackgroundColor3 = C.Well,
+			Size = UDim2.fromOffset(pipSize, pipSize),
+			LayoutOrder = i,
+			ZIndex = 2,
+			Parent = row,
+		})
+		Kit.corner(pip, 3)
+		pips[i] = pip
+	end
+	local of = Kit.text(row, {
+		Name = "Of10",
+		Text = "",
+		Font = F.UI,
+		TextSize = T.Tiny,
+		TextWrapped = false,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.fromOffset(44, pipSize + 6),
+		LayoutOrder = PIP_COUNT + 1,
+		TextColor3 = C.TextDim,
+		StrokeThickness = 0,
+		ZIndex = 2,
+	})
+	return function(value: number)
+		local difficulty = math.clamp(math.floor(value), 1, PIP_COUNT)
+		for i, pip in pips do
+			local on = i <= difficulty
+			pip.BackgroundColor3 = if on then C.Gold:Lerp(C.Bad, (i - 1) / (PIP_COUNT - 1)) else C.Well
+			pip.BackgroundTransparency = if on then 0 else 0.3
+		end
+		of.Text = string.format("%d/%d", difficulty, PIP_COUNT)
+	end
+end
+
+-- What finishing parkour `level` pays, from the snapshot `info` (modes.parkour).
+-- rewardPreview is priced for info.level; its cash is rescaled to `level`'s bonus.
+local function parkourReward(label: TextLabel, info: { [string]: any }, level: number)
+	local list = if type(info.levels) == "table" then info.levels else {}
+	local lv = list[level]
+	local preview = info.rewardPreview
+	if type(preview) ~= "table" or type(lv) ~= "table" then
+		label.Text = ""
+		return
+	end
+	local current = list[tonumber(info.level) or 1]
+	local currentBonus = if type(current) == "table" then tonumber(current.bonus) or 1 else 1
+	local bonus = tonumber(lv.bonus) or 1
+	local cash = math.floor((tonumber(preview.packCash) or 0) / math.max(currentBonus, 0.01) * bonus + 0.5)
+	-- A level's first clear always pays in full (and adds the first-clear Rizz).
+	local first = (tonumber(lv.clears) or 0) == 0
+	local cooldownEnds = tonumber(info.cooldownEnds) or 0
+	local full = first or cooldownEnds <= os.time()
+	setRewardLine(label, cash, if first then Economy.MODE_FIRST_CLEAR_GEMS else 0, full, cooldownEnds, bonus)
 end
 
 type ModeRow = { panel: Frame, stats: TextLabel, reward: TextLabel, play: TextButton }
@@ -3346,14 +3419,30 @@ local function modeRow(parent: Instance, props: { [string]: any }, accent: Color
 	return { panel = panel, stats = stats, reward = reward, play = play }
 end
 
-local LEVEL_CHIP = 32
-local PIP_COUNT = 10
+local maps: MapPicker.Picker? = nil
+
+-- Opens the Maps window (MapPicker) with `level` selected (nil: the player's unlocked map).
+-- Already open: just moves the selection.
+function Windows.openMaps(level: number?)
+	local picker = maps
+	if not picker then
+		return
+	end
+	if picker.window.isOpen() then
+		if level then
+			picker.select(level)
+		end
+		return
+	end
+	picker.preselect(level)
+	Windows.open("Maps")
+end
 
 local function buildModes(screen: ScreenGui)
 	local accent = Theme.World.Mint
-	-- 204 (Parkour) + 10 + 150 (Mog) + 10 + 44 (coming soon) + 20 padding + 84 of header and
+	-- 168 (Parkour) + 10 + 150 (Mog) + 10 + 44 (coming soon) + 20 padding + 84 of header and
 	-- margins. Kit.fit scales the whole window down on short (phone landscape) screens.
-	local window = Kit.window(screen, "Modes", "Game Modes", "🏁", accent, Vector2.new(540, 522), Vector2.new(420, 500))
+	local window = Kit.window(screen, "Modes", "Game Modes", "🏁", accent, Vector2.new(540, 486), Vector2.new(420, 470))
 	register("Modes", window)
 	local action = Net.event("Action")
 	Kit.list(window.content, 10)
@@ -3366,11 +3455,11 @@ local function buildModes(screen: ScreenGui)
 		window.content,
 		{
 			Name = "PARKOUR",
-			Height = 204,
+			Height = 168,
 			LayoutOrder = 1,
 			Medal = "🏃",
 			Title = "PARKOUR",
-			Blurb = "Jump, bounce and slide over the sea!",
+			Blurb = "Ten sea maps: jump, bounce and slide!",
 		},
 		accent,
 		function()
@@ -3379,196 +3468,39 @@ local function buildModes(screen: ScreenGui)
 		end
 	)
 	table.insert(rows, parkour.panel)
-	-- The selected level's details sit in the left column above the reward line.
+	-- CHOOSE MAP sits above PLAY and opens the Maps window on the preselected map.
+	Kit.button(parkour.panel, {
+		Name = "ChooseMap",
+		Text = "CHOOSE MAP",
+		Font = Theme.Fonts.Display,
+		TextSize = T.Small,
+		Color = C.SurfaceHi,
+		Size = UDim2.fromOffset(130, 38),
+		Position = UDim2.new(1, -12, 1, -70),
+		AnchorPoint = Vector2.new(1, 1),
+	}, function()
+		Windows.openMaps(selected)
+	end)
+	-- The preselected map's details sit in the left column above the reward line.
 	local levelName = Kit.title(parkour.panel, {
 		Name = "LevelName",
 		Text = "",
 		TextSize = T.Body,
 		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.new(1, -164, 0, 22),
-		Position = UDim2.fromOffset(12, 106),
+		Position = UDim2.fromOffset(12, 66),
 		TextColor3 = C.Text,
 	})
-	local pipRow = Kit.new("Frame", {
+	local setPips = difficultyPips(parkour.panel, {
 		Name = "Difficulty",
-		BackgroundTransparency = 1,
 		Size = UDim2.new(1, -164, 0, 16),
-		Position = UDim2.fromOffset(12, 130),
-		Parent = parkour.panel,
+		Position = UDim2.fromOffset(12, 90),
 	})
-	Kit.list(pipRow, 3, true).VerticalAlignment = Enum.VerticalAlignment.Center
-	Kit.icon(pipRow, "Fire", 16, C.Gold, { LayoutOrder = 0 })
-	local pips: { Frame } = {}
-	for i = 1, PIP_COUNT do
-		local pip = Kit.new("Frame", {
-			Name = "Pip" .. i,
-			BackgroundColor3 = C.Well,
-			Size = UDim2.fromOffset(10, 10),
-			LayoutOrder = i,
-			Parent = pipRow,
-		})
-		Kit.corner(pip, 3)
-		pips[i] = pip
-	end
-	local pipText = Kit.text(pipRow, {
-		Name = "Of10",
-		Text = "",
-		Font = F.UI,
-		TextSize = T.Tiny,
-		TextWrapped = false,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.fromOffset(44, 16),
-		LayoutOrder = PIP_COUNT + 1,
-		TextColor3 = C.TextDim,
-		StrokeThickness = 0,
-	})
-	parkour.stats.Position = UDim2.fromOffset(12, 148)
+	parkour.stats.Position = UDim2.fromOffset(12, 110)
 	parkour.stats.Size = UDim2.new(1, -164, 0, 20)
 	parkour.reward.Position = UDim2.new(0, 12, 1, -24)
-
-	-- Level chips under the blurb.
-	local chipRow = Kit.new("Frame", {
-		Name = "Levels",
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -24, 0, LEVEL_CHIP + 4),
-		Position = UDim2.fromOffset(12, 64),
-		Parent = parkour.panel,
-	})
-	Kit.list(chipRow, 6, true).VerticalAlignment = Enum.VerticalAlignment.Center
-	-- A "Clear level N-1 first!" bubble over the chips (the toast for locked taps).
-	local hint = Kit.pill(parkour.panel, {
-		Name = "Hint",
-		Text = "",
-		Font = Theme.Fonts.Display,
-		TextSize = T.Small,
-		Color = C.Bad,
-		Solid = true,
-		Size = UDim2.fromOffset(190, 26),
-		Position = UDim2.new(0.5, 0, 0, 40),
-		AnchorPoint = Vector2.new(0.5, 0),
-		Visible = false,
-		ZIndex = 8,
-	})
-	local hintToken = 0
-	local function showHint(text: string)
-		hintToken += 1
-		local mine = hintToken
-		hint.Text = text
-		hint.Visible = true
-		Kit.pop(hint, 1.2)
-		task.delay(1.8, function()
-			if hintToken == mine then
-				hint.Visible = false
-			end
-		end)
-	end
-
-	type Chip = {
-		button: TextButton,
-		label: TextLabel,
-		stroke: UIStroke,
-		lock: Frame,
-		check: Frame,
-		state: string,
-		pulse: Tween?,
-	}
-	local chips: { Chip } = {}
-	local refresh: () -> ()
-	for i = 1, PIP_COUNT do
-		local button = Kit.new("TextButton", {
-			Name = "Level" .. i,
-			Text = "",
-			AutoButtonColor = false,
-			BackgroundColor3 = C.Well,
-			Size = UDim2.fromOffset(LEVEL_CHIP, LEVEL_CHIP),
-			LayoutOrder = i,
-			Parent = chipRow,
-		})
-		Kit.round(button)
-		local stroke = Kit.new("UIStroke", {
-			Thickness = 2,
-			Color = accent,
-			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-			Parent = button,
-		})
-		local label = Kit.number(button, {
-			Text = tostring(i),
-			TextSize = 16,
-			Size = UDim2.fromScale(1, 1),
-			TextColor3 = C.Text,
-			StrokeThickness = 0,
-			ZIndex = 2,
-		})
-		local lock = Kit.icon(button, "Lock", 16, C.TextMute, {
-			Position = UDim2.fromScale(0.5, 0.5),
-			AnchorPoint = Vector2.new(0.5, 0.5),
-			ZIndex = 2,
-		})
-		local check = Kit.icon(button, "Check", 14, C.Good, {
-			Position = UDim2.new(1, 3, 0, -3),
-			AnchorPoint = Vector2.new(1, 0),
-			ZIndex = 3,
-		})
-		local chip: Chip = { button = button, label = label, stroke = stroke, lock = lock, check = check, state = "" }
-		chips[i] = chip
-		button.Activated:Connect(function()
-			local info = State.data and State.data.modes and State.data.modes.parkour
-			local unlocked = if type(info) == "table" then tonumber(info.unlocked) or 1 else 1
-			if i > unlocked then
-				Kit.sound("Error")
-				Kit.tween(button, 0.06, { Rotation = -14 })
-				task.delay(0.06, function()
-					Kit.tween(button, 0.08, { Rotation = 12 })
-					task.delay(0.08, function()
-						Kit.tween(button, 0.2, { Rotation = 0 }, Enum.EasingStyle.Back)
-					end)
-				end)
-				showHint(string.format("Clear level %d first!", i - 1))
-				return
-			end
-			Kit.sound("Click")
-			selected = i
-			Kit.pop(button, 1.4)
-			refresh()
-		end)
-	end
-
-	-- Paints a chip for its state ("cleared", "next", "locked"); only the next level pulses.
-	local function paintChip(chip: Chip, state: string, isSelected: boolean)
-		if chip.state ~= state then
-			chip.state = state
-			if chip.pulse then
-				chip.pulse:Cancel()
-				chip.pulse = nil
-			end
-			chip.stroke.Transparency = if state == "locked" then 0.6 else 0
-			if state == "next" then
-				local pulse = TweenService:Create(
-					chip.stroke,
-					TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-					{ Transparency = 0.65 }
-				)
-				pulse:Play()
-				chip.pulse = pulse
-			end
-		end
-		local cleared = state == "cleared"
-		local locked = state == "locked"
-		chip.button.BackgroundColor3 = if cleared then accent else C.Well
-		chip.button.BackgroundTransparency = if locked then 0.45 else 0
-		chip.label.Visible = not locked
-		chip.label.TextColor3 = if cleared then Theme.World.Ink else C.Text
-		chip.lock.Visible = locked
-		chip.check.Visible = cleared
-		if isSelected then
-			chip.stroke.Color = C.Gold
-			chip.stroke.Thickness = 3
-		else
-			chip.stroke.Color = if cleared then Kit.lip(accent) elseif locked then C.TextMute else accent
-			chip.stroke.Thickness = if locked then 1 else 2
-		end
-	end
 
 	-- MOG TEST --------------------------------------------------------------------------
 	local mog = modeRow(
@@ -3628,49 +3560,21 @@ local function buildModes(screen: ScreenGui)
 		local count = math.max(#list, 1)
 		local unlocked = math.clamp(if type(info) == "table" then tonumber(info.unlocked) or 1 else 1, 1, count)
 		selected = math.clamp(selected, 1, unlocked)
-		chipRow.Visible = #list > 0
-		for i, chip in chips do
-			local lv = list[i]
-			chip.button.Visible = lv ~= nil
-			if lv then
-				local state = if (tonumber(lv.clears) or 0) > 0 then "cleared" elseif i <= unlocked then "next" else "locked"
-				paintChip(chip, state, i == selected)
-			end
-		end
 		local lv = list[selected]
 		if type(info) ~= "table" or type(lv) ~= "table" then
 			levelName.Text = "Level 1"
-			pipText.Text = ""
+			setPips(1)
 			parkour.stats.Text = "Best --  ·  0 clears"
 			parkour.reward.Text = ""
 			return
 		end
-		levelName.Text = string.format("Level %d  ·  %s", selected, tostring(lv.name or ""))
-		local difficulty = math.clamp(tonumber(lv.difficulty) or selected, 1, PIP_COUNT)
-		for i, pip in pips do
-			local on = i <= difficulty
-			pip.BackgroundColor3 = if on then C.Gold:Lerp(C.Bad, (i - 1) / (PIP_COUNT - 1)) else C.Well
-			pip.BackgroundTransparency = if on then 0 else 0.3
-		end
-		pipText.Text = string.format("%d/%d", difficulty, PIP_COUNT)
+		local icon = if type(lv.icon) == "string" and lv.icon ~= "" then lv.icon .. " " else ""
+		levelName.Text = string.format("Level %d  ·  %s%s", selected, icon, tostring(lv.name or ""))
+		setPips(tonumber(lv.difficulty) or selected)
 		local best = tonumber(lv.best) or 0
 		local clears = tonumber(lv.clears) or 0
 		parkour.stats.Text = string.format("Best %s  ·  %s", if best > 0 then runTime(best) else "--", plural(clears, "clear"))
-		-- rewardPreview is priced for info.level; rescale its cash to the selected level's bonus.
-		local preview = info.rewardPreview
-		if type(preview) ~= "table" then
-			parkour.reward.Text = ""
-		else
-			local current = list[tonumber(info.level) or 1]
-			local currentBonus = if type(current) == "table" then tonumber(current.bonus) or 1 else 1
-			local bonus = tonumber(lv.bonus) or 1
-			local cash = math.floor((tonumber(preview.packCash) or 0) / math.max(currentBonus, 0.01) * bonus + 0.5)
-			-- A level's first clear always pays in full (and adds the first-clear Rizz).
-			local first = clears == 0
-			local cooldownEnds = tonumber(info.cooldownEnds) or 0
-			local full = first or cooldownEnds <= os.time()
-			setRewardLine(parkour.reward, cash, if first then Economy.MODE_FIRST_CLEAR_GEMS else 0, full, cooldownEnds, bonus)
-		end
+		parkourReward(parkour.reward, info, selected)
 		local runningHere = info.running and tonumber(info.level) == selected
 		Kit.setButton(parkour.play, if runningHere then "RESTART" else "PLAY")
 	end
@@ -3706,7 +3610,7 @@ local function buildModes(screen: ScreenGui)
 		Kit.setEnabled(mog.play, not info.running)
 	end
 
-	refresh = function()
+	local function refresh()
 		refreshParkour()
 		refreshMog()
 	end
@@ -3744,6 +3648,17 @@ function Windows.build(screen: ScreenGui)
 	buildRanking(screen)
 	buildSettings(screen)
 	buildModes(screen)
+	local picker = MapPicker.build(screen, {
+		register = register,
+		closeAll = Windows.closeAll,
+		parkourReward = parkourReward,
+		pips = difficultyPips,
+		runTime = runTime,
+		plural = plural,
+		ripple = ripple,
+	})
+	maps = picker
+	beforeOpen.Maps = picker.beforeOpen
 
 	UserInputService.InputBegan:Connect(function(input)
 		if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.ButtonB then
