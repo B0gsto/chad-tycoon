@@ -83,6 +83,8 @@ Animator.start()
 Popups.build(screen, Sounds)
 Windows.build(screen)
 MogHud.build(screen)
+-- The Modes window's MOG TEST PLAY opens the VS RIVALS / 1v1 DUEL picker.
+Windows.onMogPlay = MogHud.choose
 Guide.build()
 Hud.build(screen, {
 	openWindow = Windows.open,
@@ -223,7 +225,8 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 	elseif payload.kind == "Tutorial" then
 		Tutorial.onNotify(payload)
 	elseif payload.kind == "Mode" and payload.mode == "mog" then
-		-- MOG TEST: the skill-check ring, hearts and finish card (Fx.Mog does the 3D side).
+		-- MOG TEST (vs rivals or a 1v1 duel): the picker, queue panel, ring, HP and finish card
+		-- (Fx.Mog does the 3D side).
 		MogHud.onNotify(payload)
 		if payload.event == "stop" and payload.reason == "full" then
 			-- All six duel spots are taken: the test never started.

@@ -59,13 +59,20 @@ export type Profile = {
 	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
 	-- of the last full cash reward (Economy.modeReward cooldown).
 	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
-	-- passed.
+	-- passed (and PvP wins paid), pvpWins / pvpPlayed = PvP duels won / fought.
 	-- Parkour per level (dense, PARKOUR_LEVELS long, 0 = never): best seconds and finishes.
 	-- modes.parkour keeps the shared reward cooldown and mirrors level 1 for the old UI.
 	parkour: { best: { number }, clears: { number } },
 	modes: {
 		parkour: { best: number, clears: number, lastRewardAt: number },
-		mog: { best: number, rivals: number, clears: number, lastRewardAt: number },
+		mog: {
+			best: number,
+			rivals: number,
+			clears: number,
+			lastRewardAt: number,
+			pvpWins: number,
+			pvpPlayed: number,
+		},
 	},
 }
 
@@ -117,7 +124,7 @@ function DataService.defaultProfile(): Profile
 		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS) },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
-			mog = { best = 0, rivals = 0, clears = 0, lastRewardAt = 0 },
+			mog = { best = 0, rivals = 0, clears = 0, lastRewardAt = 0, pvpWins = 0, pvpPlayed = 0 },
 		},
 	}
 end

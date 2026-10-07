@@ -81,7 +81,10 @@ sand island in the sea.
   (`Modes/MogRules.luau`, `Mog.luau`, `World/MogStage.luau`, `UI/MogHud.luau`, `Fx/Mog.luau`): press
   Space / click / tap / A when the needle is in the zone; the window shrinks and the needle speeds up every
   check; mogging 3 rivals passes the test and pays the mode reward, then the run goes on for a high score
-  with 3 lives. Gate 3 says COMING SOON.
+  with 3 lives. Entering asks **vs rivals** (that run) or **PvP**: a 1v1 against a real player from a
+  45 s queue, both answering the same checks with 8 HP each (hit 1 damage, perfect 2, a miss hurts yourself;
+  a KO tie goes to sudden death). The winner gets the mode reward; leaving mid-duel forfeits. PvP wins and
+  duels fought are saved, but only PvE scores go on the TOP MOGGERS board. Gate 3 says COMING SOON.
 - **Shop packs scale with progression.** Cash packs pay 15 min / 1 h / 5 h / 24 h of your income and aura
   packs put 15 min / 1 h / 5 h / 24 h of your aura production straight into your tank, each with a minimum
   per pack; Rizz packs grow from x1 at tier 1 up to x4 (`Economy.progression`). The shop shows each player

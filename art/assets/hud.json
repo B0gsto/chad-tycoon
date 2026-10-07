@@ -2,6 +2,17 @@
   "domain": "hud",
   "assets": [
     {"name": "Dumbbell", "file": "art/out/ui/HudDumbbell.png", "kind": "Image"},
-    {"name": "DumbbellGlow", "file": "art/out/ui/HudDumbbellGlow.png", "kind": "Image"}
+    {"name": "DumbbellGlow", "file": "art/out/ui/HudDumbbellGlow.png", "kind": "Image"},
+    {"name": "MogRingBase", "file": "art/out/ui/MogRingBase.png", "kind": "Image"},
+    {"name": "MogRingHalo", "file": "art/out/ui/MogRingHalo.png", "kind": "Image"},
+    {"name": "MogRingFlash", "file": "art/out/ui/MogRingFlash.png", "kind": "Image"},
+    {"name": "MogRingArc", "file": "art/out/ui/MogRingArc.png", "kind": "Image"},
+    {"name": "MogRingArcWide", "file": "art/out/ui/MogRingArcWide.png", "kind": "Image"},
+    {"name": "MogRingArcGlow", "file": "art/out/ui/MogRingArcGlow.png", "kind": "Image"},
+    {"name": "MogRingEdge", "file": "art/out/ui/MogRingEdge.png", "kind": "Image"},
+    {"name": "MogRingNeedle", "file": "art/out/ui/MogRingNeedle.png", "kind": "Image"},
+    {"name": "MogRingTrailL", "file": "art/out/ui/MogRingTrailL.png", "kind": "Image"},
+    {"name": "MogRingTrailR", "file": "art/out/ui/MogRingTrailR.png", "kind": "Image"},
+    {"name": "MogRingBurst", "file": "art/out/ui/MogRingBurst.png", "kind": "Image"}
   ]
 }

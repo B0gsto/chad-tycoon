@@ -1,4 +1,40 @@
 {
+ "Image:084cad72e429f3b3000c2abbd9cce2e51574123248edd5a6f887cbdf617fa902": {
+  "assetId": "100186232964953",
+  "imageId": "100186232964953",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingBase",
+  "sha": "084cad72e429f3b3000c2abbd9cce2e51574123248edd5a6f887cbdf617fa902",
+  "source": "art/out/ui/MogRingBase.png",
+  "type": "Image"
+ },
+ "Image:0a4b779a8923ee75f15a1657b16a835878e0b39e0f61a7a87ce1f96dc0f81307": {
+  "assetId": "127720757284783",
+  "imageId": "127720757284783",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingArc",
+  "sha": "0a4b779a8923ee75f15a1657b16a835878e0b39e0f61a7a87ce1f96dc0f81307",
+  "source": "art/out/ui/MogRingArc.png",
+  "type": "Image"
+ },
+ "Image:0c0723a65d0ae42c39f2d1e93407814f00dddde2ce5c50eff47afcf77e925399": {
+  "assetId": "84510449747106",
+  "imageId": "84510449747106",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingTrailL",
+  "sha": "0c0723a65d0ae42c39f2d1e93407814f00dddde2ce5c50eff47afcf77e925399",
+  "source": "art/out/ui/MogRingTrailL.png",
+  "type": "Image"
+ },
+ "Image:0fb154003c858c34c8aa44d7c1f80529649a68605aa6a581d6f089470d626994": {
+  "assetId": "87835309047700",
+  "imageId": "87835309047700",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingEdge",
+  "sha": "0fb154003c858c34c8aa44d7c1f80529649a68605aa6a581d6f089470d626994",
+  "source": "art/out/ui/MogRingEdge.png",
+  "type": "Image"
+ },
  "Image:0fef3a441695a20948ed2130504b706e8798782a7f31ab1193ea80882bd7f11b": {
   "assetId": "88379991249124",
   "imageId": "88379991249124",
@@ -6,6 +42,33 @@
   "name": "faces__Idea",
   "sha": "0fef3a441695a20948ed2130504b706e8798782a7f31ab1193ea80882bd7f11b",
   "source": "art/out/faces/Idea.png",
+  "type": "Image"
+ },
+ "Image:122829c6331c00a070082dcf756bb2b7c3ff07bf050cf20284ac57951bfab83e": {
+  "assetId": "76038511343706",
+  "imageId": "76038511343706",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingArcWide",
+  "sha": "122829c6331c00a070082dcf756bb2b7c3ff07bf050cf20284ac57951bfab83e",
+  "source": "art/out/ui/MogRingArcWide.png",
+  "type": "Image"
+ },
+ "Image:13b85c82d6b97bddcebf58998d3ccd11850a19284857b05aa514b68681f8b6e5": {
+  "assetId": "128216691752716",
+  "imageId": "128216691752716",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingFlash",
+  "sha": "13b85c82d6b97bddcebf58998d3ccd11850a19284857b05aa514b68681f8b6e5",
+  "source": "art/out/ui/MogRingFlash.png",
+  "type": "Image"
+ },
+ "Image:14f4b74a31510fe494f9bdae6db0625406db545e4710b8324b447111c9c96d33": {
+  "assetId": "129249855571607",
+  "imageId": "129249855571607",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingNeedle",
+  "sha": "14f4b74a31510fe494f9bdae6db0625406db545e4710b8324b447111c9c96d33",
+  "source": "art/out/ui/MogRingNeedle.png",
   "type": "Image"
  },
  "Image:153a7b807d1ded031c61493bc508ea48ca66116784597b667d6a3b59364755b6": {
@@ -17,6 +80,42 @@
   "source": "art/out/vfx/CoinSpin.png",
   "type": "Image"
  },
+ "Image:18ef5ce743992c456f7d30de0ebac17e973d8b0e57fc3edd728b894b9dfd8523": {
+  "assetId": "140703410837019",
+  "imageId": "140703410837019",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingTrailL",
+  "sha": "18ef5ce743992c456f7d30de0ebac17e973d8b0e57fc3edd728b894b9dfd8523",
+  "source": "art/out/ui/MogRingTrailL.png",
+  "type": "Image"
+ },
+ "Image:1a4b483ac99b7794ed327f006c1f467b483c4bd68451d10fb34f917cc5bec64a": {
+  "assetId": "70835071439038",
+  "imageId": "70835071439038",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingArcGlow",
+  "sha": "1a4b483ac99b7794ed327f006c1f467b483c4bd68451d10fb34f917cc5bec64a",
+  "source": "art/out/ui/MogRingArcGlow.png",
+  "type": "Image"
+ },
+ "Image:1e84acbc90864b1ceaa201be5625cf210ab7223d50e6588eb1b4cfeb625166a5": {
+  "assetId": "72501502325053",
+  "imageId": "72501502325053",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingFlash",
+  "sha": "1e84acbc90864b1ceaa201be5625cf210ab7223d50e6588eb1b4cfeb625166a5",
+  "source": "art/out/ui/MogRingFlash.png",
+  "type": "Image"
+ },
+ "Image:1f164f60d0096757f0f3a045a66f439751d94a0433ba1a5b6850626c63a29f41": {
+  "assetId": "129394495451746",
+  "imageId": "129394495451746",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingBurst",
+  "sha": "1f164f60d0096757f0f3a045a66f439751d94a0433ba1a5b6850626c63a29f41",
+  "source": "art/out/ui/MogRingBurst.png",
+  "type": "Image"
+ },
  "Image:20ebf72396ffb65e11ca0b28179900f062b11e104ee396cc2d2f16c47ca47b3a": {
   "assetId": "84497601801102",
   "imageId": "84497601801102",
@@ -24,6 +123,24 @@
   "name": "ui__atlas_1",
   "sha": "20ebf72396ffb65e11ca0b28179900f062b11e104ee396cc2d2f16c47ca47b3a",
   "source": "art/out/atlas/ui_1.png",
+  "type": "Image"
+ },
+ "Image:251e32cf218f0afdc9ecaca5873a3ed386c1f031069649eb5ead9ae6ebc36de4": {
+  "assetId": "98813130695633",
+  "imageId": "98813130695633",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingEdge",
+  "sha": "251e32cf218f0afdc9ecaca5873a3ed386c1f031069649eb5ead9ae6ebc36de4",
+  "source": "art/out/ui/MogRingEdge.png",
+  "type": "Image"
+ },
+ "Image:27615be806cdff44b185488d22ac22f066893d1c9c0b27e9e708bf6209df4cd3": {
+  "assetId": "98679227629145",
+  "imageId": "98679227629145",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingArcWide",
+  "sha": "27615be806cdff44b185488d22ac22f066893d1c9c0b27e9e708bf6209df4cd3",
+  "source": "art/out/ui/MogRingArcWide.png",
   "type": "Image"
  },
  "Image:2a2e4837924127317455d95f7dad53e6a628d265e269e04a04a44e4c7b22b5c4": {
@@ -42,6 +159,15 @@
   "name": "ui__atlas_2",
   "sha": "31daf6e17be4430571ebbfe1ce7671d6f4c0d8c11c123c9f010aaeafd82a5e46",
   "source": "art/out/atlas/ui_2.png",
+  "type": "Image"
+ },
+ "Image:3c623f2d92e0490f218af8a0d7a8db7a43d36b9d02c5410d0b3988170c68ca30": {
+  "assetId": "98097843245042",
+  "imageId": "98097843245042",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingTrailR",
+  "sha": "3c623f2d92e0490f218af8a0d7a8db7a43d36b9d02c5410d0b3988170c68ca30",
+  "source": "art/out/ui/MogRingTrailR.png",
   "type": "Image"
  },
  "Image:3e565008867181aef94ff03685854580eba143439c50322b3aa8db6dec6f8dd9": {
@@ -98,6 +224,15 @@
   "source": "art/out/brand/TitleCard.png",
   "type": "Image"
  },
+ "Image:47826b4af46a160b6e56376eb409cde0dcb70faf7bc1608e916da4a76d5fe18f": {
+  "assetId": "75072872637044",
+  "imageId": "75072872637044",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingBase",
+  "sha": "47826b4af46a160b6e56376eb409cde0dcb70faf7bc1608e916da4a76d5fe18f",
+  "source": "art/out/ui/MogRingBase.png",
+  "type": "Image"
+ },
  "Image:48503f47bdea8331f0484ca431d8a1ba1495a8d91c76e57c3c6fcc8c9247cd34": {
   "assetId": "78333652861995",
   "imageId": "78333652861995",
@@ -107,6 +242,15 @@
   "source": "art/out/faces/Awe.png",
   "type": "Image"
  },
+ "Image:4ab8abc96560d67f7e3c02d6d1886da2e0657191a948ceebcb0881b893a4eb38": {
+  "assetId": "85948891832398",
+  "imageId": "85948891832398",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingArcGlow",
+  "sha": "4ab8abc96560d67f7e3c02d6d1886da2e0657191a948ceebcb0881b893a4eb38",
+  "source": "art/out/ui/MogRingArcGlow.png",
+  "type": "Image"
+ },
  "Image:508e2e1add3902f601ef0f08655c04557c51172ea15dabc988c17dba0910268f": {
   "assetId": "130902940677489",
   "imageId": "130902940677489",
@@ -114,6 +258,24 @@
   "name": "ui__atlas_2",
   "sha": "508e2e1add3902f601ef0f08655c04557c51172ea15dabc988c17dba0910268f",
   "source": "art/out/atlas/ui_2.png",
+  "type": "Image"
+ },
+ "Image:596937cf8fddff09529c5135ffb4cfff1b327769de5c6c7de2074c1bde6e7c0e": {
+  "assetId": "79440751500551",
+  "imageId": "79440751500551",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingArcGlow",
+  "sha": "596937cf8fddff09529c5135ffb4cfff1b327769de5c6c7de2074c1bde6e7c0e",
+  "source": "art/out/ui/MogRingArcGlow.png",
+  "type": "Image"
+ },
+ "Image:5a0f6d93ca9cffb0ac71aae94b2cc84ad93b0ff28de248483015e6085385fe0b": {
+  "assetId": "79027811318283",
+  "imageId": "79027811318283",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingNeedle",
+  "sha": "5a0f6d93ca9cffb0ac71aae94b2cc84ad93b0ff28de248483015e6085385fe0b",
+  "source": "art/out/ui/MogRingNeedle.png",
   "type": "Image"
  },
  "Image:5d1e3ddd081264193f5bf11834a5016cfd9554f168d354df5b024349e2802b4c": {
@@ -152,6 +314,15 @@
   "source": "art/out/vfx/StarPop.png",
   "type": "Image"
  },
+ "Image:7066537a9bfbdf9d878d1c2f1d819a55c33d6ab86c6cf398169107cb29ea3d12": {
+  "assetId": "135701424615603",
+  "imageId": "135701424615603",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingEdge",
+  "sha": "7066537a9bfbdf9d878d1c2f1d819a55c33d6ab86c6cf398169107cb29ea3d12",
+  "source": "art/out/ui/MogRingEdge.png",
+  "type": "Image"
+ },
  "Image:7102805ad42f5d2084b4c3a1968a68e838fc7a6530c14fde5e1db6c40866d169": {
   "assetId": "128398060676282",
   "imageId": "128398060676282",
@@ -188,6 +359,24 @@
   "source": "art/out/faces/Sad.png",
   "type": "Image"
  },
+ "Image:78c27329c90d96e9e1421bf3773f70281b024a3dabce1777fa60a5b7501314ed": {
+  "assetId": "104615914892441",
+  "imageId": "104615914892441",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingArcWide",
+  "sha": "78c27329c90d96e9e1421bf3773f70281b024a3dabce1777fa60a5b7501314ed",
+  "source": "art/out/ui/MogRingArcWide.png",
+  "type": "Image"
+ },
+ "Image:7af84ae3489975f50a52253f252a78a3a0c9e5207d31b51b62ad4827e1f14830": {
+  "assetId": "135325189070129",
+  "imageId": "135325189070129",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingArcGlow",
+  "sha": "7af84ae3489975f50a52253f252a78a3a0c9e5207d31b51b62ad4827e1f14830",
+  "source": "art/out/ui/MogRingArcGlow.png",
+  "type": "Image"
+ },
  "Image:85a83dd072c755871553ce549767d56127e5ed783bc595da696e85259880e6da": {
   "assetId": "139703345038304",
   "imageId": "139703345038304",
@@ -195,6 +384,15 @@
   "name": "hud__Dumbbell",
   "sha": "85a83dd072c755871553ce549767d56127e5ed783bc595da696e85259880e6da",
   "source": "art/out/ui/HudDumbbell.png",
+  "type": "Image"
+ },
+ "Image:89444b792383898df1440a2d80a2c7eef4b8face2bba5a92df63c1d49c882898": {
+  "assetId": "111013692402636",
+  "imageId": "111013692402636",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingTrailR",
+  "sha": "89444b792383898df1440a2d80a2c7eef4b8face2bba5a92df63c1d49c882898",
+  "source": "art/out/ui/MogRingTrailR.png",
   "type": "Image"
  },
  "Image:8d01dc00317d4f8be0af77009c5b8cfb6427234a2f500effd87bb64226bad4bd": {
@@ -215,6 +413,15 @@
   "source": "art/out/atlas/ui_2.png",
   "type": "Image"
  },
+ "Image:903f584dcbcdf12745993ddf8205faae8d344613b0dd5c6cb09b4249ce9c41e7": {
+  "assetId": "99554222089669",
+  "imageId": "99554222089669",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingTrailR",
+  "sha": "903f584dcbcdf12745993ddf8205faae8d344613b0dd5c6cb09b4249ce9c41e7",
+  "source": "art/out/ui/MogRingTrailR.png",
+  "type": "Image"
+ },
  "Image:9327a2e4ba1d9a6f28da3c0979518bb8b7c23aef682481d4c092fadcb0ea3c6a": {
   "assetId": "87522234834040",
   "imageId": "87522234834040",
@@ -231,6 +438,15 @@
   "name": "vfx__Confetti",
   "sha": "9c570423cc49d2f9d8235a87df66a2a81c0798ed3d01f91bb5f6a772b64cc089",
   "source": "art/out/vfx/Confetti.png",
+  "type": "Image"
+ },
+ "Image:9d3bd8450149b8f821628dd40aa676ca516892bd3f2029cf8e0028c29928272c": {
+  "assetId": "82444561760164",
+  "imageId": "82444561760164",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingArc",
+  "sha": "9d3bd8450149b8f821628dd40aa676ca516892bd3f2029cf8e0028c29928272c",
+  "source": "art/out/ui/MogRingArc.png",
   "type": "Image"
  },
  "Image:9ecfb0842dc5359bca0ddda15a357c0fa6a775e7b55d231def69c4eb4359c152": {
@@ -251,6 +467,24 @@
   "source": "art/out/ui/HudDumbbellGlow.png",
   "type": "Image"
  },
+ "Image:a8cb243ded3ccc760e3e2e68440771d20356863dcccabd9479d4a367980f8331": {
+  "assetId": "105508241468834",
+  "imageId": "105508241468834",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingTrailL",
+  "sha": "a8cb243ded3ccc760e3e2e68440771d20356863dcccabd9479d4a367980f8331",
+  "source": "art/out/ui/MogRingTrailL.png",
+  "type": "Image"
+ },
+ "Image:ac9a5cde08dc52984665df6b0337bd9a1b5a5df0d3ca2b13ee0705ba47492be3": {
+  "assetId": "131785542373584",
+  "imageId": "131785542373584",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingTrailR",
+  "sha": "ac9a5cde08dc52984665df6b0337bd9a1b5a5df0d3ca2b13ee0705ba47492be3",
+  "source": "art/out/ui/MogRingTrailR.png",
+  "type": "Image"
+ },
  "Image:ad0bc3ff6928705c34a14d1e5f37b37d0a6362699f77e9aad889bd961e10bd8d": {
   "assetId": "125895703113910",
   "imageId": "125895703113910",
@@ -258,6 +492,24 @@
   "name": "ui__atlas_1",
   "sha": "ad0bc3ff6928705c34a14d1e5f37b37d0a6362699f77e9aad889bd961e10bd8d",
   "source": "art/out/atlas/ui_1.png",
+  "type": "Image"
+ },
+ "Image:afd8092f807961ef2270c3b2a54c53a31fa1d47d39820a84a8c97f89c1986685": {
+  "assetId": "97657815454419",
+  "imageId": "97657815454419",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingEdge",
+  "sha": "afd8092f807961ef2270c3b2a54c53a31fa1d47d39820a84a8c97f89c1986685",
+  "source": "art/out/ui/MogRingEdge.png",
+  "type": "Image"
+ },
+ "Image:b07409df619f5ff8451af148f883a539727f64f366fd22181c2a7c45836c2d98": {
+  "assetId": "108183058858137",
+  "imageId": "108183058858137",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingArc",
+  "sha": "b07409df619f5ff8451af148f883a539727f64f366fd22181c2a7c45836c2d98",
+  "source": "art/out/ui/MogRingArc.png",
   "type": "Image"
  },
  "Image:b10b342970ad2b4ad415b5e49aa48f2603dbdef5f27bdaeceff3aa8cc00cdebd": {
@@ -269,6 +521,15 @@
   "source": "art/out/atlas/ui_3.png",
   "type": "Image"
  },
+ "Image:b18bdc42910c2fcc265ad39d96410fcdfbe472700382df50af9c6cad39350b76": {
+  "assetId": "93210801088982",
+  "imageId": "93210801088982",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingNeedle",
+  "sha": "b18bdc42910c2fcc265ad39d96410fcdfbe472700382df50af9c6cad39350b76",
+  "source": "art/out/ui/MogRingNeedle.png",
+  "type": "Image"
+ },
  "Image:b2f06689b215c802bfc80ca9f878acbc035fa03e4e29bdefd0e45cc8aae665c4": {
   "assetId": "129521157636475",
   "imageId": "129521157636475",
@@ -276,6 +537,15 @@
   "name": "vfx__Puff",
   "sha": "b2f06689b215c802bfc80ca9f878acbc035fa03e4e29bdefd0e45cc8aae665c4",
   "source": "art/out/vfx/Puff.png",
+  "type": "Image"
+ },
+ "Image:b40f83a2a3dee4fad2256eed610fbda05cfa99bd519bad6a6f158c2496758857": {
+  "assetId": "76890164476951",
+  "imageId": "76890164476951",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingArc",
+  "sha": "b40f83a2a3dee4fad2256eed610fbda05cfa99bd519bad6a6f158c2496758857",
+  "source": "art/out/ui/MogRingArc.png",
   "type": "Image"
  },
  "Image:b99c15c6e80b73e86bfdf83179a33a6b5ca05dc2c62be49bc34bd52fd421d165": {
@@ -296,6 +566,24 @@
   "source": "art/out/atlas/ui_3.png",
   "type": "Image"
  },
+ "Image:c43ee2f23dfa708b909237875349808c7c15dfab04419fea11fa1938ce499390": {
+  "assetId": "81600921432516",
+  "imageId": "81600921432516",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingHalo",
+  "sha": "c43ee2f23dfa708b909237875349808c7c15dfab04419fea11fa1938ce499390",
+  "source": "art/out/ui/MogRingHalo.png",
+  "type": "Image"
+ },
+ "Image:d4569e294f1cb41d89b473968fcb1074c475df8fcfbd8ed82ad009bf34b545a3": {
+  "assetId": "89825850684715",
+  "imageId": "89825850684715",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingNeedle",
+  "sha": "d4569e294f1cb41d89b473968fcb1074c475df8fcfbd8ed82ad009bf34b545a3",
+  "source": "art/out/ui/MogRingNeedle.png",
+  "type": "Image"
+ },
  "Image:e11267c22023a4932f1d9d86a2ef2d6900bfe76d9255eafdf703cde76fcb0e6c": {
   "assetId": "88854863588402",
   "imageId": "88854863588402",
@@ -303,6 +591,24 @@
   "name": "ui__atlas_2",
   "sha": "e11267c22023a4932f1d9d86a2ef2d6900bfe76d9255eafdf703cde76fcb0e6c",
   "source": "art/out/atlas/ui_2.png",
+  "type": "Image"
+ },
+ "Image:eb4123c7615b4fd04fcee4dea12bdd2f749fcf8732f26a0eebdf4c055f518911": {
+  "assetId": "122170789173968",
+  "imageId": "122170789173968",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingBase",
+  "sha": "eb4123c7615b4fd04fcee4dea12bdd2f749fcf8732f26a0eebdf4c055f518911",
+  "source": "art/out/ui/MogRingBase.png",
+  "type": "Image"
+ },
+ "Image:fdf379e8fe2186101e71916ef0dc997c16bdae5ee48b95382252905b2eda3732": {
+  "assetId": "84968781888357",
+  "imageId": "84968781888357",
+  "moderation": "Reviewing",
+  "name": "hud__MogRingTrailL",
+  "sha": "fdf379e8fe2186101e71916ef0dc997c16bdae5ee48b95382252905b2eda3732",
+  "source": "art/out/ui/MogRingTrailL.png",
   "type": "Image"
  },
  "Image:fe85d4392dc7521afea76d8cdd8d6f2828fbae076a7700f858ddc821b7023b07": {
