@@ -1,6 +1,6 @@
 --[[
-	Modes: the GAME MODES plaza on the hub's -X side and the Parkour sky obby high above the
-	clouds (docs/sky-obby.md).
+	Modes: the GAME MODES plaza on the hub's -X side (and its mirror, "Plaza2" on +X, when
+	Course.PLAZA2 exists) and the Parkour sky obby high above the clouds (docs/sky-obby.md).
 
 	Everything is placed from Server.Modes.Course (layout numbers) and Server.Modes.Catalog
 	(one gate per mode slot). The server builds every part at its rest pose and never moves
@@ -22,10 +22,15 @@
 	  Bounce pads: parts named "BouncePad" (tag "BouncePad"), attribute Bounce = upward launch
 	  speed in studs/s for the local player.
 
-	  Blink pads: "BlinkPad" box tops (tag "BlinkPad"; rim, underside, chevron and a Neon
-	  "BlinkGlow" band are its descendants), attributes BlinkOn, BlinkPeriod, BlinkPhase
+	  Blink pads: "BlinkPad" slabs (tag "BlinkPad"; the only part that fades, with four Neon
+	  "BlinkGlow" bars round it as descendants), attributes BlinkOn, BlinkPeriod, BlinkPhase
 	  (seconds): solid when ((t + BlinkPhase) % BlinkPeriod) < BlinkOn. The server never
 	  toggles them; Client.Fx.Modes sets CanCollide and the look locally.
+
+	  Kill bricks: "KillBrick" parts (tag "KillBrick", attribute Hazard = "kill"), a Neon Lava
+	  core with black diagonal stripe bars as children, CanCollide/CanQuery/CanTouch false (the
+	  server checks feet against Course.inKill). Sliding ones are the child of a "KillSlider"
+	  ModeMover slide root (same attributes as moving platforms).
 
 	Every level of Server.Modes.Course is built into Parkour/Level<i> (attributes Mode,
 	Level, Checkpoints, Title, LevelName, StageFirst, StageLast, and the map's Theme, Blurb,
@@ -218,7 +223,7 @@ local function adder(base: CFrame, parent: Instance): (props: { [string]: any },
 end
 
 -- A flag pole with a "Flag" card (swayed by Client.Fx.Ambient) showing `label`. `big` makes
--- the chunky checkpoint flag (larger cloth, number readable from the next platform).
+-- the chunky checkpoint flag (cloth 3.1x, number readable from a few platforms back).
 local function flagPole(
 	x: number,
 	y: number,
@@ -230,7 +235,7 @@ local function flagPole(
 	parent: Instance,
 	big: boolean?
 ): BasePart
-	local scale = if big then 1.55 else 1
+	local scale = if big then 3.1 else 1
 	make("Part", {
 		Name = "FlagPole",
 		Shape = CYLINDER,
@@ -271,7 +276,7 @@ local function flagPole(
 	}))
 	if label then
 		-- A white disc filling most of the cloth with a big Ink number (label ~100 px tall).
-		local pps = if big then 32 else 40
+		local pps = if big then 16 else 40
 		local dotW = clothSize.Y * 0.88 / clothSize.X
 		for _, face in { Enum.NormalId.Front, Enum.NormalId.Back } do
 			local root = surface(card, face, pps)
@@ -341,7 +346,11 @@ local function platform(e: Course.Element, name: string, parent: Instance, rimIn
 		else
 			local r = e.r :: number
 			for k = 0, 2 do
-				table.insert(pieces, { Vector3.new(r, 0, r * math.sqrt(3)), CFrame.Angles(0, k * math.pi / 3, 0) })
+				-- Each piece 0.05 lower than the last so the overlapping tops never share a plane.
+				table.insert(
+					pieces,
+					{ Vector3.new(r, 0, r * math.sqrt(3)), CFrame.new(0, -0.05 * k, 0) * CFrame.Angles(0, k * math.pi / 3, 0) }
+				)
 			end
 		end
 		for _, piece in pieces do
@@ -416,7 +425,8 @@ local function chevron(e: Course.Element, nextE: Course.Element, parent: Instanc
 		edge = math.min(if dx ~= 0 then hx / math.abs(dx) else math.huge, if dz ~= 0 then hz / math.abs(dz) else math.huge)
 	end
 	local reach = math.max(edge - 1.6, 0)
-	local at = Vector3.new(e.x + dx * reach, e.y + 0.06, e.z + dz * reach)
+	-- Bottom 0.05 above the top (no coplanar faces); the two arms differ by 0.02 in height.
+	local at = Vector3.new(e.x + dx * reach, e.y + 0.11, e.z + dz * reach)
 	local frame = CFrame.lookAt(at, at + Vector3.new(dx, 0, dz))
 	local a = CHEVRON_ARM
 	local arm = a * math.sqrt(2) + 0.35
@@ -425,7 +435,7 @@ local function chevron(e: Course.Element, nextE: Course.Element, parent: Instanc
 		decor(make("Part", {
 			Name = "Chevron",
 			Size = Vector3.new(arm, 0.12, 0.7),
-			CFrame = frame * CFrame.new(side * a / 2, 0, -0.8 + a / 2) * CFrame.Angles(0, -side * math.pi / 4, 0),
+			CFrame = frame * CFrame.new(side * a / 2, (side + 1) * 0.01, -0.8 + a / 2) * CFrame.Angles(0, -side * math.pi / 4, 0),
 			Color = W.Teal,
 			CastShadow = false,
 			Parent = parent,
@@ -500,7 +510,7 @@ local function checkpoint(e: Course.Element, parent: Instance, levelIndex: numbe
 		e.x + (dx - rx) * reach,
 		e.y,
 		e.z + (dz - rz) * reach,
-		12,
+		20,
 		FLAG_COLORS[(index - 1) % #FLAG_COLORS + 1],
 		tostring(stage),
 		math.atan2(rz, -rx),
@@ -512,21 +522,43 @@ local function checkpoint(e: Course.Element, parent: Instance, levelIndex: numbe
 	return top
 end
 
--- A pad that is solid only part of the time (Client.Fx.Modes toggles it locally): a normal
--- platform in the palette's blink colour with its rim and underside parented to the top,
--- plus a thin glowing Neon band round its edge so it reads as "this one blinks".
+-- A pad that is solid only part of the time (Client.Fx.Modes toggles it locally): one thick
+-- slab in the palette's blink colour (the only part whose Transparency fades, so no two
+-- translucent parts ever overlap) ringed by four thin glowing Neon "BlinkGlow" bars just
+-- outside its sides (the client dims them separately) so it reads as "this one blinks".
+local BLINK_H = TOP_H + 0.6
+local GLOW_W, GLOW_GAP = 0.3, 0.05
 local function blink(e: Course.Element, parent: Instance): BasePart
-	local top = platform(e, "BlinkPad", parent, true)
 	local sx, sz = e.sx :: number, e.sz :: number
-	decor(make("Part", {
-		Name = "BlinkGlow",
-		Size = Vector3.new(sx + 0.5, 0.3, sz + 0.5),
-		CFrame = CFrame.new(e.x, e.y - 0.3, e.z),
-		Color = color(e.color):Lerp(W.White, 0.35),
-		Material = Enum.Material.Neon,
-		CastShadow = false,
-		Parent = top,
-	}))
+	local top = make("Part", {
+		Name = "BlinkPad",
+		Size = Vector3.new(sx, BLINK_H, sz),
+		CFrame = CFrame.new(e.x, e.y - BLINK_H / 2, e.z),
+		Color = color(e.color),
+		Material = SMOOTH,
+		Parent = parent,
+	})
+	local glow = color(e.color):Lerp(W.White, 0.35)
+	local off = GLOW_GAP + GLOW_W / 2
+	-- Long bars along X cover the corners; the Z bars fit between them (no overlap).
+	for _, side in { -1, 1 } do
+		for _, bar in
+			{
+				{ Vector3.new(sx + 2 * (GLOW_GAP + GLOW_W), 0.3, GLOW_W), Vector3.new(0, 0, side * (sz / 2 + off)) },
+				{ Vector3.new(GLOW_W, 0.3, sz + 2 * GLOW_GAP), Vector3.new(side * (sx / 2 + off), 0, 0) },
+			}
+		do
+			decor(make("Part", {
+				Name = "BlinkGlow",
+				Size = bar[1],
+				CFrame = CFrame.new(e.x, e.y - 0.35, e.z) + bar[2],
+				Color = glow,
+				Material = Enum.Material.Neon,
+				CastShadow = false,
+				Parent = top,
+			}))
+		end
+	end
 	top:SetAttribute("BlinkOn", e.on)
 	top:SetAttribute("BlinkPeriod", e.period)
 	top:SetAttribute("BlinkPhase", e.phase or 0)
@@ -564,6 +596,75 @@ local function mover(e: Course.Element, parent: Instance): BasePart
 		})
 	end
 	return top
+end
+
+-- A lava kill strip lying on a pad top (docs/sky-obby.md round 3): a Neon core box from the
+-- pad top up `h`, with 3-5 thin black bars at 45 degrees across its top (each trimmed so it
+-- stays inside the box), 0.03 proud of the core's top face. Sliding ones hang under an
+-- invisible ModeMover slide root at the rest centre.
+local KILL_STRIPE_W = 0.45
+local function killBrick(e: Course.Element, parent: Instance)
+	local sx, sz = e.sx :: number, e.sz :: number
+	if not sx or not sz then
+		return
+	end
+	local h = e.h or 0.6
+	local holder: Instance = parent
+	if e.motion == "slide" and e.axis then
+		local axis = e.axis :: { number }
+		local root = decor(make("Part", {
+			Name = "KillSlider",
+			Size = cube(0.2),
+			CFrame = CFrame.new(e.x, e.y + h / 2, e.z),
+			Transparency = 1,
+			CastShadow = false,
+			Parent = parent,
+		}))
+		root:SetAttribute("Mover", "slide")
+		root:SetAttribute("MoveAxis", Vector3.new(axis[1], axis[2], axis[3]))
+		root:SetAttribute("MoveDistance", e.distance or 0)
+		root:SetAttribute("MovePeriod", e.period or 4)
+		root:SetAttribute("MovePhase", e.phase or 0)
+		root:SetAttribute("Hazard", "kill")
+		root:AddTag("ModeMover")
+		holder = root
+	end
+	local brick = decor(make("Part", {
+		Name = "KillBrick",
+		Size = Vector3.new(sx, h, sz),
+		CFrame = CFrame.new(e.x, e.y + h / 2, e.z),
+		Color = color(e.color or "Lava"),
+		Material = Enum.Material.Neon,
+		CastShadow = false,
+		Parent = holder,
+	}))
+	brick:SetAttribute("Hazard", "kill")
+	brick:AddTag("KillBrick")
+	-- Stripes along u = x - z (45 degrees): chord of the line u = c through the box, shortened
+	-- by the stripe width so the bar's corners stay inside.
+	local a, b = sx / 2, sz / 2
+	-- Spread over |c| <= max(a, b), where every chord is full length on a long strip.
+	local span = math.max(a, b)
+	local n = math.clamp(math.floor(2 * span / 2.8 + 0.5), 3, 5)
+	local stripeY = e.y + h + 0.03
+	for k = 1, n do
+		local c = -span + (k - 0.5) * 2 * span / n
+		-- Points (x, x - c) with x in [-a, a] and x - c in [-b, b].
+		local lo, hi = math.max(-a, c - b), math.min(a, c + b)
+		local length = (hi - lo) * math.sqrt(2) - KILL_STRIPE_W
+		if length > 0.4 then
+			local mid = (lo + hi) / 2
+			decor(make("Part", {
+				Name = "KillStripe",
+				Size = Vector3.new(length, 0.1, KILL_STRIPE_W),
+				CFrame = CFrame.new(e.x + mid, stripeY, e.z + mid - c) * CFrame.Angles(0, -math.pi / 4, 0),
+				Color = W.Ink:Lerp(Color3.new(0, 0, 0), 0.6),
+				Material = SMOOTH,
+				CastShadow = false,
+				Parent = brick,
+			}))
+		end
+	end
 end
 
 local function spinner(e: Course.Element, parent: Instance)
@@ -787,18 +888,34 @@ local function portal(base: CFrame, centreY: number, colors: { Color3 }, parent:
 	end
 end
 
--- A gate on the plaza's west edge, front facing the hub. Every enabled entry is a big open
+-- One GAME MODES plaza: its deck, spur, gate row and big sign, and `mirror` (1: the plaza on
+-- the hub's -X side, fronts facing +X; -1: the mirrored plaza on +X, fronts facing -X).
+-- `portal` is the plaza's number (attribute Portal on its ParkourStart trigger).
+type PlazaSpec = {
+	plaza: { x0: number, x1: number, z0: number, z1: number, top: number },
+	spur: { x0: number, x1: number, half: number, top: number },
+	gates: { [number]: { z: number } },
+	gateX: number,
+	sign: { x: number, z: number, width: number, height: number, bottom: number },
+	mirror: number,
+	portal: number,
+}
+
+-- A gate on the plaza's outer edge, front facing the hub. Every enabled entry is a big open
 -- gate in its catalog colour (gate 1 PARKOUR stays sunny) holding its start trigger, the
 -- hint arrow and a swirling portal (walking through teleports; the server handles it); locked gates are
 -- smaller, blue-grey, closed with bars and a friendly padlock under a COMING SOON card.
-local function gate(entry: Catalog.Entry, parent: Instance)
-	local spot = Course.GATES[entry.slot]
+local function gate(entry: Catalog.Entry, parent: Instance, spec: PlazaSpec)
+	local spot = spec.gates[entry.slot]
+	if spot == nil then
+		return
+	end
 	local folder = Instance.new("Model")
 	folder.Name = "Gate" .. entry.slot
 	folder:SetAttribute("Mode", entry.id)
 	folder:SetAttribute("Enabled", entry.enabled)
 	folder.Parent = parent
-	local base = CFrame.new(Course.GATE_X, Course.PLAZA.top, spot.z) * CFrame.Angles(0, FACE_HUB, 0)
+	local base = CFrame.new(spec.gateX, spec.plaza.top, spot.z) * CFrame.Angles(0, FACE_HUB * spec.mirror, 0)
 	local add = adder(base, folder)
 	local open = entry.enabled
 	local tint = color(entry.color)
@@ -859,12 +976,13 @@ local function gate(entry: Catalog.Entry, parent: Instance)
 		add({ Name = "StartLine", Size = Vector3.new(Course.GATE_HALF * 2, 0.12, 1.6), CFrame = CFrame.new(0, 0.06, 0), Color = W.Sunny })
 		gateArrow(add, 8.6, tint)
 		portal(base, 6.2, PORTAL_COLORS[entry.id] or { tint, W.White }, folder)
-		trigger(
+		local start = trigger(
 			entry.id == "parkour" and "ParkourStart" or "ModeStart",
 			base * CFrame.new(0, 5, 0),
 			Vector3.new(Course.GATE_HALF * 2, 10, 1),
 			folder
 		)
+		start:SetAttribute("Portal", spec.portal)
 		return
 	end
 	local title = string.gsub(entry.title, " ", "\n")
@@ -930,9 +1048,9 @@ end
 -- The big GAME MODES landmark high behind the gates: a cream card in a chunky sunny frame of
 -- rounded rails, on two teal posts. The coral header and the Ink title are separate text
 -- layers, each with its own resolution, so both stay crisp from the hub centre.
-local function bigSign(parent: Instance)
-	local s = Course.BIG_SIGN
-	local base = CFrame.new(s.x, 0, s.z) * CFrame.Angles(0, FACE_HUB, 0)
+local function bigSign(parent: Instance, spec: PlazaSpec)
+	local s = spec.sign
+	local base = CFrame.new(s.x, 0, s.z) * CFrame.Angles(0, FACE_HUB * spec.mirror, 0)
 	local add = adder(base, parent)
 	local w, h = s.width, s.height
 	local cy = s.bottom + h / 2
@@ -1026,10 +1144,10 @@ local function bigSign(parent: Instance)
 end
 
 -- Freestanding best-times card; returns the list label.
-local function bestBoard(parent: Instance): TextLabel
+local function bestBoard(parent: Instance, spec: PlazaSpec): TextLabel
 	local b = Course.BOARD
 	local yaw = math.atan2(-(b.faceX - b.x), -(b.faceZ - b.z))
-	local base = CFrame.new(b.x, Course.PLAZA.top, b.z) * CFrame.Angles(0, yaw, 0)
+	local base = CFrame.new(b.x, spec.plaza.top, b.z) * CFrame.Angles(0, yaw, 0)
 	local add = adder(base, parent)
 	-- Tall enough for one line per level (Modes.Parkour writes LEVEL_COUNT lines).
 	local w, h, bottom = 15, 16, 2.5
@@ -1081,12 +1199,14 @@ local function bestBoard(parent: Instance): TextLabel
 	return list
 end
 
--- A small arch over the spur where it leaves the hub ring.
-local function spurArch(parent: Instance)
-	local x = Course.SPUR.x1 - 5
-	local base = CFrame.new(x, Course.SPUR.top, 0) * CFrame.Angles(0, FACE_HUB, 0)
+-- A small arch over the spur where it leaves the hub ring (the spur end nearer x = 0).
+local function spurArch(parent: Instance, spec: PlazaSpec)
+	local s = spec.spur
+	local hubX = if math.abs(s.x0) < math.abs(s.x1) then s.x0 else s.x1
+	local x = hubX - 5 * spec.mirror
+	local base = CFrame.new(x, s.top, 0) * CFrame.Angles(0, FACE_HUB * spec.mirror, 0)
 	local add = adder(base, parent)
-	local half = Course.SPUR.half + 1.4
+	local half = s.half + 1.4
 	for _, sx in { -1, 1 } do
 		add({
 			Name = "ArchFoot",
@@ -1112,8 +1232,8 @@ end
 
 -- Plaza ---------------------------------------------------------------------------------
 
-local function buildPlaza(parent: Instance)
-	local p, s = Course.PLAZA, Course.SPUR
+local function buildPlaza(parent: Instance, spec: PlazaSpec)
+	local p, s = spec.plaza, spec.spur
 	local cx, cz = (p.x0 + p.x1) / 2, (p.z0 + p.z1) / 2
 	local sx, sz = p.x1 - p.x0, p.z1 - p.z0
 	make("Part", {
@@ -1136,7 +1256,7 @@ local function buildPlaza(parent: Instance)
 			Name = "PlazaInlay",
 			Shape = CYLINDER,
 			Size = Vector3.new(0.2, ring[1] * 2, ring[1] * 2),
-			CFrame = CFrame.new(cx, p.top + 0.02 * i, cz) * UPRIGHT,
+			CFrame = CFrame.new(cx, p.top + 0.05 * i, cz) * UPRIGHT,
 			Color = ring[2],
 			Parent = parent,
 		})
@@ -1152,10 +1272,12 @@ local function buildPlaza(parent: Instance)
 		Parent = parent,
 	})
 	for _, side in { -1, 1 } do
+		-- 0.05 shorter at each end, 0.05 proud of the side and 0.05 above the bottom, so no
+		-- face shares the boardwalk's planes.
 		make("Part", {
 			Name = "BoardwalkEdge",
-			Size = Vector3.new(length, 0.7, 0.7),
-			CFrame = CFrame.new((s.x0 + s.x1) / 2, s.top - 0.25, side * (s.half - 0.35)),
+			Size = Vector3.new(length - 0.1, 0.7, 0.7),
+			CFrame = CFrame.new((s.x0 + s.x1) / 2, s.top - 0.2, side * (s.half - 0.3)),
 			Color = W.WoodDark,
 			Parent = parent,
 		})
@@ -1179,7 +1301,7 @@ local function buildPlaza(parent: Instance)
 			})
 		end
 	end
-	spurArch(parent)
+	spurArch(parent, spec)
 	-- Flag posts on the plaza corners.
 	for i, corner in { { p.x1 - 2, p.z0 + 2 }, { p.x1 - 2, p.z1 - 2 }, { p.x0 + 2, p.z0 + 2 }, { p.x0 + 2, p.z1 - 2 } } do
 		flagPole(corner[1], p.top, corner[2], 10, FLAG_COLORS[i], nil, if corner[2] < 0 then 0 else math.pi, parent)
@@ -1188,8 +1310,8 @@ end
 
 -- Sky -------------------------------------------------------------------------------------
 
--- The cloud floor far under the map (Course.cloudLayer): 40-80 thin, wide, overlapping white
--- puffs with gaps of blue sky between them, never colliding (the ParkourWater catch volume at
+-- The cloud floor far under the map (Course.cloudLayer): 40-80 thin, wide, overlapping opaque
+-- white puffs (opaque: overlapping translucent parts flicker) with gaps of blue sky between them, never colliding (the ParkourWater catch volume at
 -- Course.FLOOR_Y handles falls).
 local function cloudFloor(level: Course.Level, parent: Instance)
 	local layer = (Course :: any).cloudLayer
@@ -1206,7 +1328,7 @@ local function cloudFloor(level: Course.Level, parent: Instance)
 			CFrame = CFrame.new(puff.x, puff.y, puff.z) * UPRIGHT,
 			Color = if i % 3 == 0 then W.Cloud:Lerp(W.Checkpoint, 0.06) else W.Cloud,
 			Material = SMOOTH,
-			Transparency = 0.15,
+			Transparency = 0,
 			CastShadow = false,
 			Parent = holder,
 		}))
@@ -1418,20 +1540,27 @@ local function startArch(level: Course.Level, deck: Course.Element, top: BasePar
 	local add = adder(base, parent)
 	local accent = color((level :: any).accent or "RainbowBlue")
 	archFrame(add, half, if lobby then W.RainbowRed else accent)
-	local sign =
-		decor(add({ Name = "StartSign", Size = Vector3.new(half * 2 + 3.4, 4.2, 1), CFrame = CFrame.new(0, 9, 0), Color = W.Cream }))
+	-- The big GO GO GO! card (1.6x the old 4.2-stud banner: wider and taller, text to match).
+	local signScale = 1.6
+	local sign = decor(add({
+		Name = "StartSign",
+		Size = Vector3.new((half * 2 + 3.4) * signScale, 4.2 * signScale, 1),
+		CFrame = CFrame.new(0, 9.5, 0),
+		Color = W.Cream,
+	}))
+	local pps = math.floor(44 / signScale + 0.5)
 	-- The card's Front face (-Z) looks along the course.
 	local first = (level :: any).STAGE_FIRST or 1
 	if lobby then
-		cardFace(sign, Enum.NormalId.Front, 44, W.Cream, W.RainbowGreen, "CHAD OBBY", "START")
-		cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.RainbowRed, "STAGE " .. first, "GO GO GO!")
+		cardFace(sign, Enum.NormalId.Front, pps, W.Cream, W.RainbowGreen, "CHAD OBBY", "START")
+		cardFace(sign, Enum.NormalId.Back, pps, W.Cream, W.RainbowRed, "STAGE " .. first, "GO GO GO!")
 		if top then
 			checker(top, sx, sz)
 		end
 		blockLetters("CHAD OBBY", base * CFrame.new(0, ARCH_SPRING + half + 5, 4), parent)
 	else
-		cardFace(sign, Enum.NormalId.Front, 44, W.Cream, accent, string.upper(level.name), "STAGE " .. first)
-		cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "STAGE " .. first, "GO GO GO!")
+		cardFace(sign, Enum.NormalId.Front, pps, W.Cream, accent, string.upper(level.name), "STAGE " .. first)
+		cardFace(sign, Enum.NormalId.Back, pps, W.Cream, W.Coral, "STAGE " .. first, "GO GO GO!")
 	end
 	local keys = { "RainbowRed", "RainbowYellow", "RainbowGreen", "RainbowBlue", "RainbowPurple" }
 	for i, key in keys do
@@ -1474,12 +1603,21 @@ local function buildCourse(level: Course.Level, parent: Instance)
 			wall(e, parent)
 		elseif e.kind == "slide" then
 			slide(e, parent)
+		elseif e.kind == "kill" then
+			killBrick(e, parent)
+		end
+	end
+	-- Kill strips kept outside ELEMENTS (if Course lists them separately).
+	for _, e in ((level :: any).KILLS or {}) :: { Course.Element } do
+		if not table.find(level.ELEMENTS, e) then
+			killBrick(e, parent)
 		end
 	end
 	-- A chevron on each top toward the next one (none on the bounce deck: its pad is the hint;
 	-- none on checkpoints: their big arrow is).
 	for i, e in level.PATH do
-		if e.kind ~= "slide" and e.kind ~= "checkpoint" then
+		-- (none on blink pads either: their slab is the only part that fades.)
+		if e.kind ~= "slide" and e.kind ~= "checkpoint" and e.kind ~= "blink" then
 			local nextE = level.PATH[i + 1]
 			if nextE and e.name ~= "BounceDeck" then
 				chevron(e, nextE, if e == deck then parent else tops[e] or parent)
@@ -1499,13 +1637,20 @@ local function buildCourse(level: Course.Level, parent: Instance)
 	local add = adder(base, parent)
 	local half = spanHalf(f, fa.faceX)
 	archFrame(add, half, W.Sunny)
-	local bannerY = 9
-	local sign =
-		decor(add({ Name = "FinishSign", Size = Vector3.new(half * 2 + 3.4, 4.2, 1), CFrame = CFrame.new(0, bannerY, 0), Color = W.Cream }))
-	cardFace(sign, Enum.NormalId.Front, 44, W.Cream, W.Teal, "YOU DID IT!", "FINISH")
-	cardFace(sign, Enum.NormalId.Back, 44, W.Cream, W.Coral, "WELL DONE!", "WORLD " .. level.index .. " CLEAR")
-	-- Chequered finish line on the deck.
-	local line = add({ Name = "FinishLine", Size = Vector3.new(half * 2 - 1, 0.12, 2.4), CFrame = CFrame.new(0, 0.06, 0), Color = W.White })
+	-- The FINISH banner, 1.4x the old 4.2-stud card (text to match).
+	local bannerScale = 1.4
+	local bannerY, bannerH = 9.5, 4.2 * bannerScale
+	local sign = decor(add({
+		Name = "FinishSign",
+		Size = Vector3.new((half * 2 + 3.4) * bannerScale, bannerH, 1),
+		CFrame = CFrame.new(0, bannerY, 0),
+		Color = W.Cream,
+	}))
+	local bannerPps = math.floor(44 / bannerScale + 0.5)
+	cardFace(sign, Enum.NormalId.Front, bannerPps, W.Cream, W.Teal, "YOU DID IT!", "FINISH")
+	cardFace(sign, Enum.NormalId.Back, bannerPps, W.Cream, W.Coral, "WELL DONE!", "WORLD " .. level.index .. " CLEAR")
+	-- Chequered finish line on the deck, its bottom 0.05 above the deck top.
+	local line = add({ Name = "FinishLine", Size = Vector3.new(half * 2 - 1, 0.12, 2.4), CFrame = CFrame.new(0, 0.11, 0), Color = W.White })
 	local cols = 12
 	local grid = surface(line, Enum.NormalId.Top, 10)
 	for row = 0, 1 do
@@ -1524,7 +1669,7 @@ local function buildCourse(level: Course.Level, parent: Instance)
 	local trophy = Instance.new("Model")
 	trophy.Name = "Trophy"
 	trophy:SetAttribute("Spin", 0.8)
-	local tBase = base * CFrame.new(0, bannerY + 2.1, 0)
+	local tBase = base * CFrame.new(0, bannerY + bannerH / 2, 0)
 	local root = decor(make("Part", {
 		Name = "TrophyBase",
 		Size = Vector3.new(2.6, 0.9, 2.6),
@@ -1587,25 +1732,72 @@ local function buildCourse(level: Course.Level, parent: Instance)
 	MapDecor.build(level, parent)
 end
 
+-- The plaza specs: the GAME MODES plaza on -X and, when Course has it, the mirrored one on +X
+-- (Course.PLAZA2 / SPUR2 / GATES2 / GATE2_X; the big sign is mirrored from BIG_SIGN).
+local function sorted<T>(box: T): T
+	local b = table.clone(box :: any)
+	b.x0, b.x1 = math.min(b.x0, b.x1), math.max(b.x0, b.x1)
+	if b.z0 and b.z1 then
+		b.z0, b.z1 = math.min(b.z0, b.z1), math.max(b.z0, b.z1)
+	end
+	return b :: any
+end
+
+local function plazaSpecs(): { PlazaSpec }
+	local specs: { PlazaSpec } = {
+		{
+			plaza = sorted(Course.PLAZA),
+			spur = sorted(Course.SPUR),
+			gates = Course.GATES,
+			gateX = Course.GATE_X,
+			sign = Course.BIG_SIGN,
+			mirror = 1,
+			portal = 1,
+		},
+	}
+	local c = Course :: any
+	if c.PLAZA2 and c.SPUR2 then
+		local sign = table.clone(Course.BIG_SIGN)
+		sign.x = -sign.x
+		table.insert(specs, {
+			plaza = sorted(c.PLAZA2),
+			spur = sorted(c.SPUR2),
+			gates = c.GATES2 or Course.GATES,
+			gateX = c.GATE2_X or -Course.GATE_X,
+			sign = sign,
+			mirror = -1,
+			portal = 2,
+		})
+	end
+	return specs
+end
+
 function Modes.build(): Built
 	local folder = Instance.new("Folder")
 	folder.Name = "GameModes"
 	folder.Parent = mapFolder
-	local plaza = Instance.new("Folder")
-	plaza.Name = "Plaza"
-	plaza.Parent = folder
 	local parkour = Instance.new("Folder")
 	parkour.Name = "Parkour"
 	parkour:SetAttribute("Mode", "parkour")
 	parkour:SetAttribute("Levels", Course.LEVEL_COUNT)
 	parkour.Parent = folder
 
-	buildPlaza(plaza)
-	for _, entry in Catalog do
-		gate(entry, plaza)
+	-- Plaza (and Plaza2, mirrored on the hub's +X side); one best-times board, on Plaza.
+	local list: TextLabel = nil :: any
+	for i, spec in plazaSpecs() do
+		local plaza = Instance.new("Folder")
+		plaza.Name = if i == 1 then "Plaza" else "Plaza" .. i
+		plaza:SetAttribute("Portal", spec.portal)
+		plaza.Parent = folder
+		buildPlaza(plaza, spec)
+		for _, entry in Catalog do
+			gate(entry, plaza, spec)
+		end
+		bigSign(plaza, spec)
+		if i == 1 then
+			list = bestBoard(plaza, spec)
+		end
 	end
-	bigSign(plaza)
-	local list = bestBoard(plaza)
 	skyClouds()
 	for i, level in Course.LEVELS do
 		local levelFolder = Instance.new("Folder")

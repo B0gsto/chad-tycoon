@@ -2896,6 +2896,7 @@ local function loadGameModes(): any
 		require = function(module)
 			return module
 		end,
+		Vector3 = roblox.Vector3,
 	}, { __index = _G })
 	local path = "src/server/GameModes.luau"
 	return luau.load(fs.readFile(path), { debugName = path, environment = env })()
@@ -2955,6 +2956,49 @@ test("Game modes: catalog and registry shape", function()
 	eq(GameModes.snapshot(player).parkour.running, false, "snapshot keyed by id")
 	GameModes.stop(player, "quit")
 	eq(GameModes.active(player), nil, "stopped")
+end)
+
+test("Game modes: toGates / toPlaza pick the nearer plaza", function()
+	local GameModes = loadGameModes()
+	local C = ModesCourse :: any
+	local savedQuit, savedArrival = C.nearestQuit, C.nearestArrival
+	local quit2 = { x = -C.QUIT.x, y = C.QUIT.y, z = C.QUIT.z }
+	local arrival2 = { x = -C.ARRIVAL.x, y = C.ARRIVAL.y, z = C.ARRIVAL.z }
+	C.nearestQuit = function(x)
+		return if x > 0 then quit2 else C.QUIT
+	end
+	C.nearestArrival = function(x)
+		return if x > 0 then arrival2 else C.ARRIVAL
+	end
+	local at = roblox.Vector3.new(0, 0, 0)
+	local moved: any, look: any = nil, nil
+	GameModes.root = function()
+		return { Position = at }
+	end
+	GameModes.teleport = function(_, feet, face)
+		moved, look = feet, face
+	end
+	local ok, err = pcall(function()
+		at = roblox.Vector3.new(150, 3, 0)
+		GameModes.toGates({})
+		eq(moved.X, quit2.x, "east of the hub: the mirrored plaza's quit spot")
+		eq(look.X, -1, "facing back toward the hub (west)")
+		GameModes.toPlaza({})
+		eq(moved.X, arrival2.x, "east of the hub: the mirrored arrival")
+		eq(look.X, 1, "arrival faces the mirrored gates (east)")
+		at = roblox.Vector3.new(-150, 3, 0)
+		GameModes.toGates({})
+		eq(moved.X, C.QUIT.x, "west of the hub: the original quit spot")
+		eq(look.X, 1, "facing the hub (east)")
+		C.nearestQuit = nil
+		at = roblox.Vector3.new(150, 3, 0)
+		GameModes.toGates({})
+		eq(moved.X, C.QUIT.x, "without nearestQuit: always the original spot")
+	end)
+	C.nearestQuit, C.nearestArrival = savedQuit, savedArrival
+	if not ok then
+		error(err, 0)
+	end
 end)
 
 test("Game modes: finish reward is sized like a cash pack, with a cooldown", function()
@@ -3126,7 +3170,7 @@ local function loadParkour(): (any, any)
 	local DataService = loadDataService()
 	local theme = loadRobloxTheme("src/themes/chad/Theme.luau")
 	local clock = { t = 1000 }
-	local rig: any = { notes = {}, toasts = {}, actions = {}, teleports = 0, clock = clock }
+	local rig: any = { notes = {}, toasts = {}, actions = {}, effects = {}, teleports = 0, clock = clock }
 	local character = fakeInstance("Model")
 	local humanoid = fakeInstance("Humanoid", { WalkSpeed = 16, JumpHeight = 7.2, JumpPower = 50, UseJumpPower = false })
 	humanoid.Parent = character
@@ -3150,13 +3194,16 @@ local function loadParkour(): (any, any)
 			note.event = event
 			table.insert(rig.notes, note)
 		end,
-		effect = function() end,
+		effect = function(_, kind, data)
+			table.insert(rig.effects, { kind = kind, data = data })
+		end,
 		refresh = function() end,
 		root = function()
 			return root
 		end,
-		teleport = function()
+		teleport = function(_, feet)
 			rig.teleports += 1
+			rig.teleportedTo = feet
 		end,
 		returnLater = function() end,
 		toGates = function() end,
@@ -3278,6 +3325,49 @@ test("Sky obby: stages, gear and the assisted flag", function()
 	eq(rig.last("start").assisted, true, "a geared start is assisted")
 	def.stop(player, "respawn")
 	eq(humanoid.JumpPower, 50, "removed on respawn")
+end)
+
+test("Sky obby: a kill brick sends the runner back to the checkpoint", function()
+	local def, rig = loadParkour()
+	local player = rig.player
+	local level = ModesCourse.LEVELS[1]
+	local C = ModesCourse :: any
+	local saved = C.inKill
+	local spot = level.START
+	C.inKill = function(lv, x, _, z)
+		return lv == level and math.abs(x - spot.x) < 0.01 and math.abs(z - spot.z) < 0.01
+	end
+	local ok, err = pcall(function()
+		def.start(player, true, { level = 1 })
+		rig.root.Position = roblox.Vector3.new(spot.x, spot.y + 3, spot.z)
+		local before = rig.teleports
+		rig.clock.t += 2
+		def.tick(player, rig.root, rig.clock.t)
+		local note = rig.last("respawn")
+		check(note ~= nil, "a respawn notify")
+		eq(note and note.reason, "kill", "reason kill")
+		eq(note and note.index, 0, "back to the start deck (no checkpoint yet)")
+		eq(rig.teleports, before + 1, "teleported once")
+		local at = ModesCourse.respawn(level, 0)
+		check(
+			rig.teleportedTo ~= nil and (rig.teleportedTo - roblox.Vector3.new(at[1], at[2], at[3])).Magnitude < 0.01,
+			"moved to the checkpoint"
+		)
+		local fx = rig.effects[#rig.effects]
+		eq(fx and fx.kind, "ModeKill", "ModeKill effect")
+		-- Grace: an immediate second tick does nothing.
+		def.tick(player, rig.root, rig.clock.t + 0.1)
+		eq(rig.teleports, before + 1, "grace after the respawn")
+		-- No inKill (older Course data): no kills.
+		C.inKill = nil
+		rig.clock.t += 2
+		def.tick(player, rig.root, rig.clock.t)
+		eq(rig.teleports, before + 1, "no inKill helper: no respawn")
+	end)
+	C.inKill = saved
+	if not ok then
+		error(err, 0)
+	end
 end)
 
 test("Sky obby: paid skips and an assisted finish", function()
@@ -4057,6 +4147,229 @@ end)
 
 -- Mog Test rules (tests/mog.luau).
 require("./mog")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
+
+test("Sky obby: lava kill strips and sliding bars on wide decks", function()
+	for li, level in ModesCourse.LEVELS do
+		local label = "level " .. li
+		local kills = {}
+		for _, e in level.ELEMENTS do
+			if e.kind == "kill" then
+				table.insert(kills, e)
+				check(not e.path, label .. ": kill elements are not path elements")
+			end
+		end
+		if li >= 2 then
+			check(#kills >= 1 and #kills <= 1 + li // 3, label .. " kill count is 1 .. 1 + difficulty // 3")
+		else
+			eq(#kills, 0, label .. " has no kill elements")
+		end
+		eq(#level.KILLS, #kills, label .. " KILLS lists them")
+		check(#kills <= ModesCourse.killCount(li), label .. " killCount is the cap")
+		local perDeck = {}
+		for ki, k in kills do
+			local what = string.format("%s kill %d", label, ki)
+			check(k.color == "Lava" and math.abs(k.h - 0.6) < 1e-6, what .. ": lava, 0.6 tall")
+			-- The deck it stands on: a box path pad whose top is the kill's y.
+			local deck, di
+			for i, p in level.PATH do
+				if
+					p.shape == "box"
+					and math.abs(p.y - k.y) < 0.01
+					and math.abs(k.x - p.x) <= p.sx / 2 + 1e-6
+					and math.abs(k.z - p.z) <= p.sz / 2 + 1e-6
+				then
+					deck, di = p, i
+				end
+			end
+			check(deck ~= nil, what .. ": sits on a path pad's top")
+			if not deck then
+				continue
+			end
+			perDeck[deck] = perDeck[deck] or {}
+			table.insert(perDeck[deck], k)
+			check(#perDeck[deck] <= 2, what .. ": at most 2 per deck")
+			for _, o in perDeck[deck] do
+				if o ~= k then
+					local gap = math.max(math.abs(o.x - k.x), math.abs(o.z - k.z)) - 1.6
+					check(o.motion == nil and k.motion == nil and gap >= 6 - 1e-6, what .. ": 6 studs from the deck's other strip")
+				end
+			end
+			local spun = false
+			for _, o in level.ELEMENTS do
+				if o.kind == "spinner" and math.abs(o.x - deck.x) <= deck.sx / 2 and math.abs(o.z - deck.z) <= deck.sz / 2 then
+					spun = true
+				end
+			end
+			if spun then
+				-- Only when the map has no other eligible deck: no kill on a spinner-free deck.
+				for _, o in kills do
+					local free = true
+					for _, sp in level.ELEMENTS do
+						if
+							sp.kind == "spinner"
+							and math.abs(sp.y - o.y) < 0.01
+							and math.abs(sp.x - o.x) < 20
+							and math.abs(sp.z - o.z) < 20
+						then
+							free = false
+						end
+					end
+					check(not free, what .. ": spinner decks only when nothing else is eligible")
+				end
+			end
+			check(
+				deck.kind == "pad" and deck.name ~= "StartDeck" and deck.name ~= "FinishDeck" and deck.name ~= "Bridge",
+				what .. ": not on the start/finish deck, a checkpoint, mover or blink pad"
+			)
+			local from = level.PATH[di - 1]
+			local alongX = math.abs(deck.x - from.x) >= math.abs(deck.z - from.z)
+			local length = if alongX then deck.sx else deck.sz
+			local across = if alongX then deck.sz else deck.sx
+			check(length >= 16, what .. ": deck is at least 16 long")
+			check(math.abs((if alongX then k.sx else k.sz) - 1.6) < 1e-6, what .. ": 1.6 across the walking axis")
+			check(math.abs((if alongX then k.sz else k.sx) - across) < 1e-6, what .. ": full deck width")
+			-- Along-axis span of the kill at a given offset, and the deck's.
+			local deckC = if alongX then deck.x else deck.z
+			local function spanAt(t: number): (number, number)
+				local c = if alongX then k.x else k.z
+				if k.motion == "slide" then
+					local a = if alongX then k.axis[1] else k.axis[3]
+					check(math.abs(math.abs(a) - 1) < 1e-6, what .. ": slides along the walking axis")
+					c += a * k.distance * math.sin(2 * math.pi * t / k.period + k.phase)
+				end
+				return c - 0.8, c + 0.8
+			end
+			if k.motion == "slide" then
+				check(length >= 20, what .. ": sliding bars on decks 20+ long")
+				check(math.abs(k.distance - (length / 2 - 4)) < 0.01, what .. ": slides extent/2 - 4")
+				check(k.period >= 4 and k.period <= 6, what .. ": period 4-6")
+				for step = 0, 40 do
+					local lo, hi = spanAt(step * k.period / 40)
+					check(lo >= deckC - length / 2 - 1e-6 and hi <= deckC + length / 2 + 1e-6, what .. ": bar stays on its deck")
+				end
+			else
+				local lo, hi = spanAt(0)
+				check(lo - (deckC - length / 2) >= 4 - 1e-6, what .. ": 4 studs clear before it")
+				check(deckC + length / 2 - hi >= 4 - 1e-6, what .. ": 4 studs clear after it")
+			end
+			-- Never within 2 studs of a wall or bounce pad on the deck (at any phase).
+			for _, o in level.ELEMENTS do
+				if (o.kind == "wall" or o.kind == "bounce") and math.abs(o.y - deck.y) < 0.01 then
+					local oc = if alongX then o.x else o.z
+					local half = if o.kind == "bounce" then o.r else (if alongX then o.sx else o.sz) / 2
+					local onDeck = math.abs(o.x - deck.x) <= deck.sx / 2 and math.abs(o.z - deck.z) <= deck.sz / 2
+					if onDeck then
+						for step = 0, 20 do
+							local lo, hi = spanAt(step * (k.period or 1) / 20)
+							local gap = math.max(lo - (oc + half), (oc - half) - hi)
+							check(gap >= 2 - 1e-6, what .. ": 2 studs from " .. o.kind)
+						end
+					end
+				end
+			end
+			-- inKill: on the strip yes, 3 studs beside it (along the walk) no.
+			for _, t in { 0, 0.7, 1.9, 3.3 } do
+				local lo, hi = spanAt(t)
+				local c = (lo + hi) / 2
+				local function at(off: number): (number, number)
+					if alongX then
+						return c + off, k.z
+					end
+					return k.x, c + off
+				end
+				local x, z = at(0)
+				check(ModesCourse.inKill(level, x, k.y + 0.1, z, t), what .. ": inKill on it")
+				check(ModesCourse.inKill(level, x, k.y + 2.5, z, t), what .. ": inKill when hopping low over it")
+				check(not ModesCourse.inKill(level, x, k.y + 4, z, t), what .. ": not when jumping high over it")
+				for _, side in { -3, 3 } do
+					local bx, bz = at(side)
+					local hit = ModesCourse.inKill(level, bx, k.y + 0.1, bz, t)
+					-- (unless another strip lies there)
+					local other = false
+					for _, o in kills do
+						if o ~= k and o.motion == nil and math.abs(bx - o.x) <= o.sx / 2 and math.abs(bz - o.z) <= o.sz / 2 then
+							other = true
+						end
+					end
+					check(other or not hit, what .. ": not 3 studs beside it")
+				end
+			end
+		end
+		-- Start, finish and checkpoints are always safe.
+		local spots = { { level.START.x, level.START.y, level.START.z } }
+		for _, cp in level.CHECKPOINTS do
+			table.insert(spots, { cp.x, cp.y, cp.z })
+		end
+		local fin = level.PATH[#level.PATH]
+		table.insert(spots, { fin.x, fin.y, fin.z })
+		for _, s in spots do
+			for step = 0, 24 do
+				check(not ModesCourse.inKill(level, s[1], s[2] + 0.1, s[3], step * 0.25), label .. ": start/checkpoints/finish are safe")
+			end
+		end
+	end
+	local a, b = ModesCourse.generate(9), ModesCourse.generate(9)
+	check(#a.KILLS == #b.KILLS and a.KILLS[1].x == b.KILLS[1].x and a.KILLS[#a.KILLS].z == b.KILLS[#b.KILLS].z, "kills are deterministic")
+end)
+
+test("Game modes: a second plaza mirrored on the hub's +X side", function()
+	local C = ModesCourse
+	local p, q = C.PLAZA, C.PLAZA2
+	eq(q.x0, -p.x1, "plaza2 x0")
+	eq(q.x1, -p.x0, "plaza2 x1")
+	check(q.z0 == p.z0 and q.z1 == p.z1 and q.top == p.top, "plaza2 z and top")
+	check(C.SPUR2.x0 == -C.SPUR.x1 and C.SPUR2.x1 == -C.SPUR.x0 and C.SPUR2.half == C.SPUR.half, "spur2 mirrored")
+	eq(C.GATE2_X, -C.GATE_X, "gate2 x")
+	eq(C.START_LINE2_X, -C.START_LINE_X, "start line 2")
+	for slot, g in C.GATES do
+		eq(C.GATES2[slot].z, g.z, "gate2 " .. slot .. " z")
+	end
+	check(C.ARRIVAL2.x == -C.ARRIVAL.x and C.QUIT2.x == -C.QUIT.x, "arrival/quit mirrored")
+	check(C.QUIT.faceX == 1 and C.QUIT2.faceX == -1, "quit spots face the hub")
+	check(C.ARRIVAL.faceX == -1 and C.ARRIVAL2.faceX == 1, "arrival spots face the gates")
+	-- Portals: west through gate 1 at -X, east through the mirrored gate 1 at +X.
+	local L1, L2 = C.START_LINE_X, C.START_LINE2_X
+	check(C.crossedStart(L1 + 1, L1 - 1, 0), "west through gate 1 starts")
+	check(not C.crossedStart(L1 - 1, L1 + 1, 0), "walking back out at -X does not")
+	check(C.crossedStart(L2 - 1, L2 + 1, 0), "east through the mirrored gate 1 starts")
+	check(not C.crossedStart(L2 + 1, L2 - 1, 0), "walking back out at +X does not")
+	check(not C.crossedStart(L2 - 1, L2 + 1, C.GATES2[2].z), "the mirrored gate 2 is not the portal")
+	check(not C.crossedStart(L1 + 1, L1 - 1, C.GATES[3].z), "gate 3 is not the portal")
+	check(not C.crossedStart(0, 1, 0) and not C.crossedStart(-1, 1, 0), "walking about the hub does not")
+	-- Nearest spots.
+	check(C.nearestQuit(-150, 5) == C.QUIT and C.nearestQuit(150, -5) == C.QUIT2, "nearest quit")
+	check(C.nearestArrival(-30, 0) == C.ARRIVAL and C.nearestArrival(30, 0) == C.ARRIVAL2, "nearest arrival")
+	check(C.nearestQuit(-1, 80) == C.QUIT and C.nearestQuit(1, -80) == C.QUIT2, "the player's x decides")
+	-- CLEAR covers both plazas (and mirrors itself).
+	for _, r in { p, q } do
+		for _, x in { r.x0, (r.x0 + r.x1) / 2, r.x1 } do
+			for _, z in { r.z0, 0, r.z1 } do
+				check(not C.isClear(x, z), string.format("CLEAR covers (%g, %g)", x, z))
+			end
+		end
+	end
+	check(not C.isClear(C.BIG_SIGN2.x, C.BIG_SIGN2.z), "CLEAR covers the second big sign")
+	for _, r in C.CLEAR do
+		local mirrored = false
+		for _, o in C.CLEAR do
+			mirrored = mirrored or (o.x0 == -r.x1 and o.x1 == -r.x0 and o.z0 == r.z0 and o.z1 == r.z1)
+		end
+		check(mirrored, "every CLEAR rectangle has its mirror")
+	end
+	-- The second plaza (and its spur) overlap no plot (World.Common: plots of half PLOT_HALF at
+	-- (col * PLOT_SPACING_X, row * PLOT_ROW_Z)) and stay outside the hub ring.
+	local half = Layout.PLOT_HALF
+	local spacing, rowZ = half * 2 + 10, 32 + 12 + 10 + half
+	for index = 1, 6 do
+		local row = if index <= 3 then 1 else -1
+		local px, pz = (((index - 1) % 3) - 1) * spacing, row * rowZ
+		for _, r in { q, { x0 = C.SPUR2.x0, x1 = C.SPUR2.x1, z0 = -C.SPUR2.half, z1 = C.SPUR2.half } } do
+			check(r.x1 < px - half or r.x0 > px + half or r.z1 < pz - half or r.z0 > pz + half, "plaza 2 clear of plot " .. index)
+		end
+	end
+	check(C.SPUR2.x0 >= spacing + 19 + 5 - 1e-6, "spur 2 starts at the hub ring's outer edge")
+	check(q.x1 + 20 < 219, "plaza 2 stays on the island")
+end)
 
 test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", function()
 	(_G :: any).SIMULATE_AS_LIBRARY = true

@@ -18,7 +18,8 @@
 	               speed (double jump still works in the air), squash the pad, Puff sprite.
 	  Effects      ModeCheckpoint (flag cap pop + star), ModeSplash (fell through
 	               the cloud floor: a white cloud poof and a short camera dip), ModeFinish
-	               (stars and confetti). Spin movers with SpinAxis = "Z" (windmill blades)
+	               (stars and confetti), ModeKill (touched a kill brick: a red/black
+	               burst and a short red screen flash). Spin movers with SpinAxis = "Z" (windmill blades)
 	               turn about the root's look vector instead of world up.
 	  Levels       a parkour run's start payload carries its level; hints and flags look in
 	               Map.GameModes.Parkour.Level<level>. Mode notifications of other modes
@@ -508,6 +509,8 @@ end
 --   MapLightning  a neon bolt: hidden (Transparency 1), flashing in 2-3 pulse bursts every
 --                 4-9 s (own random timer per bolt).
 --   MapGlow       a neon part whose colour slowly breathes between dimmer and brighter.
+--   KillBrick     a lava bar / strip: its Neon colour pulses between Lava red and a darker
+--                 red, a bit faster than a glow (same near-player lists, no embers).
 -- Which items are near is refreshed MAP_REFRESH times a second into reused lists; items
 -- that drift out of range go back to their rest look. Nothing runs when none are near.
 --
@@ -582,10 +585,12 @@ local bubbles: { Bubble } = {}
 local bobs: { Bob } = {}
 local bolts: { Bolt } = {}
 local glows: { Glow } = {}
+local kills: { Glow } = {}
 local nearBubbles: { Bubble } = {}
 local nearBobs: { Bob } = {}
 local nearBolts: { Bolt } = {}
 local nearGlows: { Glow } = {}
+local nearKills: { Glow } = {}
 local mapTracked: { [Instance]: boolean } = {}
 local moveParts: { BasePart } = {}
 local moveFrames: { CFrame } = {}
@@ -658,6 +663,25 @@ local function addGlow(part: Instance)
 	})
 end
 
+local LAVA = if typeof(W.Lava) == "Color3" then W.Lava else Color3.fromRGB(255, 60, 40)
+local LAVA_DARK = Color3.fromRGB(120, 16, 10)
+
+local function addKill(part: Instance)
+	if not part:IsA("BasePart") or mapTracked[part] then
+		return
+	end
+	mapTracked[part] = true
+	table.insert(kills, {
+		part = part,
+		base = part.Color,
+		dim = LAVA_DARK,
+		bright = LAVA,
+		phase = math.random() * TAU,
+		speed = TAU / (0.9 + math.random() * 0.3),
+		live = false,
+	})
+end
+
 -- Drops a removed (or streamed-out) instance from a scenery list and its near list.
 local function dropFrom(list: { any }, near: { any }, inst: Instance)
 	if not mapTracked[inst] then
@@ -703,6 +727,7 @@ local function refreshNear(pos: Vector3)
 	table.clear(nearBobs)
 	table.clear(nearBolts)
 	table.clear(nearGlows)
+	table.clear(nearKills)
 	for _, b in bubbles do
 		local near = (b.rest - pos).Magnitude <= MAP_NEAR
 		if near then
@@ -745,6 +770,15 @@ local function refreshNear(pos: Vector3)
 		local near = (g.part.Position - pos).Magnitude <= MAP_NEAR
 		if near then
 			table.insert(nearGlows, g)
+		elseif g.live then
+			g.part.Color = g.base
+		end
+		g.live = near
+	end
+	for _, g in kills do
+		local near = (g.part.Position - pos).Magnitude <= MAP_NEAR
+		if near then
+			table.insert(nearKills, g)
 		elseif g.live then
 			g.part.Color = g.base
 		end
@@ -809,9 +843,12 @@ local function stepScenery(pos: Vector3)
 		end
 		boltLit = boltLit or lit
 	end
-	if #nearGlows > 0 and now >= nextGlow then
+	if (#nearGlows > 0 or #nearKills > 0) and now >= nextGlow then
 		nextGlow = now + GLOW_STEP
 		for _, g in nearGlows do
+			g.part.Color = g.dim:Lerp(g.bright, 0.5 + 0.5 * math.sin(now * g.speed + g.phase))
+		end
+		for _, g in nearKills do
 			g.part.Color = g.dim:Lerp(g.bright, 0.5 + 0.5 * math.sin(now * g.speed + g.phase))
 		end
 	end
@@ -1564,6 +1601,70 @@ local function splash(position: Vector3)
 	end
 end
 
+local KILL_LIFE = 0.6
+local FLASH_FROM = 0.35
+local FLASH_TIME = 0.35
+local flashFrame: Frame? = nil
+
+-- The full-screen red flash frame, made lazily on its own ScreenGui.
+local function flash()
+	local frame = flashFrame
+	if not frame or not frame.Parent then
+		local gui = Instance.new("ScreenGui")
+		gui.Name = "ModeKillFlash"
+		gui.IgnoreGuiInset = true
+		gui.ResetOnSpawn = false
+		gui.DisplayOrder = 50
+		local f = Instance.new("Frame")
+		f.Name = "Flash"
+		f.Size = UDim2.fromScale(1, 1)
+		f.BorderSizePixel = 0
+		f.BackgroundColor3 = LAVA
+		f.BackgroundTransparency = 1
+		f.Active = false
+		f.Parent = gui
+		gui.Parent = player:WaitForChild("PlayerGui")
+		flashFrame = f
+		frame = f
+	end
+	local f = frame :: Frame
+	f.BackgroundTransparency = FLASH_FROM
+	TweenService:Create(f, TweenInfo.new(FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		BackgroundTransparency = 1,
+	}):Play()
+end
+
+-- Touched a kill brick: red and black shards burst out and shrink away, plus the flash.
+local function kill(position: Vector3)
+	local anchor = anchorAt(position, KILL_LIFE + 0.4)
+	local shards = Budget.count(10)
+	for i = 1, shards do
+		local a = i / shards * TAU + math.random() * 0.5
+		local shard = Instance.new("Part")
+		shard.Name = "KillShard"
+		shard.Anchored = true
+		shard.CanCollide = false
+		shard.CanQuery = false
+		shard.CanTouch = false
+		shard.CastShadow = false
+		shard.Material = if i % 3 == 0 then Enum.Material.SmoothPlastic else Enum.Material.Neon
+		shard.Color = if i % 3 == 0 then Color3.fromRGB(25, 20, 20) else LAVA
+		shard.Size = Vector3.one * (0.8 + math.random() * 0.7)
+		local spin = CFrame.Angles(math.random() * TAU, math.random() * TAU, 0)
+		shard.CFrame = CFrame.new(position) * spin
+		shard.Parent = anchor
+		local reach = 4 + math.random() * 3
+		local to = position + Vector3.new(math.cos(a) * reach, 1 + math.random() * 4, math.sin(a) * reach)
+		TweenService:Create(shard, TweenInfo.new(KILL_LIFE, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			CFrame = CFrame.new(to) * spin * CFrame.Angles(math.pi, math.pi / 2, 0),
+			Size = Vector3.one * 0.1,
+			Transparency = 1,
+		}):Play()
+	end
+	Sprites.billboard(anchor, "Ring", { position = position, size = 7, life = KILL_LIFE, rise = Vector3.zero, color = LAVA })
+	flash()
+end
+
 local function finish(position: Vector3)
 	local anchor = anchorAt(position, 3)
 	local pops = Budget.count(8)
@@ -1601,7 +1702,9 @@ function ModesFx.init()
 		addArrow(arrow)
 	end
 	CollectionService:GetInstanceAddedSignal("ModeHintArrow"):Connect(addArrow)
-	for tag, add in { MapBubble = addBubble, MapBob = addBob, MapLightning = addBolt, MapGlow = addGlow } :: { [string]: (Instance) -> () } do
+	for tag, add in
+		{ MapBubble = addBubble, MapBob = addBob, MapLightning = addBolt, MapGlow = addGlow, KillBrick = addKill } :: { [string]: (Instance) -> () }
+	do
 		for _, part in CollectionService:GetTagged(tag) do
 			add(part)
 		end
@@ -1619,6 +1722,9 @@ function ModesFx.init()
 	CollectionService:GetInstanceRemovedSignal("MapGlow"):Connect(function(inst)
 		dropFrom(glows, nearGlows, inst)
 		embers[inst :: BasePart] = nil
+	end)
+	CollectionService:GetInstanceRemovedSignal("KillBrick"):Connect(function(inst)
+		dropFrom(kills, nearKills, inst)
 	end)
 	-- A respawn ends the themed look (the old root's sparkles go with the old character).
 	player.CharacterAdded:Connect(endAmbience)
@@ -1652,6 +1758,8 @@ function ModesFx.init()
 			checkpointPop(data.pos)
 		elseif kind == "ModeSplash" then
 			splash(data.pos)
+		elseif kind == "ModeKill" then
+			kill(data.pos)
 		elseif kind == "ModeFinish" then
 			finish(data.pos)
 		end

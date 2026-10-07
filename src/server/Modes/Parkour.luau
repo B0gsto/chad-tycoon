@@ -42,7 +42,8 @@
 	    stage, stageCount, gear, assisted }
 	  { event = "checkpoint", index, checkpoints, split, stage, stageCount }
 	                                                             split = seconds since start
-	  { event = "respawn", index, stage, stageCount }            back at checkpoint `index`
+	  { event = "respawn", index, stage, stageCount, reason? }   back at checkpoint `index`
+	                                                             reason = "kill" after lava
 	  { event = "skip", stage, stageCount, index, checkpoints }  paid skip to `stage`
 	  { event = "finish", time, best, newBest, first, cash, full, cooldownEnds, rank?,
 	    level, levelName, nextLevel?, unlockedNew, unlocked, levels, stage, stageCount,
@@ -50,7 +51,8 @@
 	`stage` is the global stage (start deck / checkpoint / finish deck) the runner stands on.
 	  { event = "invalid", reason }                              "checkpoints" | "fast"
 	  { event = "stop", reason }                                 run ended without a finish
-	Effects: "ModeSplash" { pos } where the player hit the water; "ModeCheckpoint"
+	Effects: "ModeSplash" { pos } where the player hit the water; "ModeKill" { pos } where a
+	kill brick (Course.inKill) caught them; "ModeCheckpoint"
 	{ pos, index }; "ModeFinish" { pos, newBest }; plus the usual "Cash" { amount,
 	source = "Mode", padPos } when cash is paid.
 ]]
@@ -509,6 +511,20 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		end
 		if Course.inBounds(level, x, y, z) then
 			state.outsideSince = nil
+			-- Lava bars and strips (read defensively: older Course data has no kill elements).
+			local inKill = (Course :: any).inKill
+			if inKill and inKill(level, x, y, z, t) then
+				GameModes.effect(player, "ModeKill", { pos = pos })
+				state.graceUntil = t + TELEPORT_GRACE
+				teleportTo(player, level, state.run.checkpoint)
+				GameModes.notify(player, "respawn", ID, {
+					index = state.run.checkpoint,
+					stage = stageAt(level, state.run.checkpoint),
+					stageCount = stageCount(),
+					reason = "kill",
+				})
+				return
+			end
 		else
 			state.outsideSince = state.outsideSince or t
 			if t - (state.outsideSince :: number) >= Course.LEAVE_SECONDS then

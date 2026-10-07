@@ -287,9 +287,13 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			end
 			Sounds.play("Step")
 		elseif event == "respawn" then
-			-- Fell through the clouds: back on the last checkpoint, the run goes on.
+			-- Fell through the clouds (or touched lava): back on the last checkpoint, the run goes on.
 			if payload.stage ~= nil then
 				ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
+			end
+			if payload.reason == "kill" then
+				Sounds.play("Error")
+				Popups.toast("Ouch! Back to your checkpoint", "bad")
 			end
 		elseif event == "skip" then
 			-- Paid a stage skip: on to the next checkpoint (the run is now assisted).
