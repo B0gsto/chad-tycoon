@@ -1438,7 +1438,6 @@ local function touchedFloor(fx: OrbFx, pos: Vector3, impact: number)
 		Orbs.ring(floor, fx.color, 2.8, 0.55, 0.3)
 		Orbs.sparkle(pos, fx.color, 10, 0.8)
 		Orbs.sparkle(pos, WHITE, 4, 0.6)
-		landSound(0.3)
 		return
 	end
 	local floor = pos - Vector3.new(0, fx.part.Size.Y * 0.45, 0)
