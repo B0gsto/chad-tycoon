@@ -306,7 +306,7 @@ local WALLET = UDim2.new(0, 150, 1, -110)
 Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 	data = if type(data) == "table" then data else {}
 	if kind == "Collect" then
-		Sounds.play("Collect", 0.3)
+		-- Silent: Fx.Orbs already popped for each pickup.
 		Hud.pulseTank()
 		Popups.float("+" .. I.Orb .. Format.short(data.amount or 0), C.Orb, TANK)
 	elseif kind == "Cash" then

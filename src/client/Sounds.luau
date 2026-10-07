@@ -65,7 +65,6 @@ local COIN_COLLECT = lib(135483737426662) -- Coin Collect
 local ERROR_BUZZ = lib(91501650514390) -- Error Buzz
 
 -- This game's own uploads.
-local POP_PLUCK = lib(110564740926229)
 local POP_MARIMBA = lib(82880781602391)
 local POP_BELL = lib(108513451493306)
 local TICK_A = lib(95444478167276)
@@ -147,7 +146,7 @@ local DEFS: { [string]: Def } = {
 	Upgrade = { ids = { LEVELUP, UNLOCK_STINGER }, volume = 0.45 },
 	Pickup = { ids = { GUI_BUBBLE, UI_CUTE_POP }, volume = 0.45 },
 	-- Orbs
-	OrbPickup = { ids = { POP_PLUCK, POP_MARIMBA }, volume = 0.22, gap = 0.03 },
+	OrbPickup = { ids = { UI_CUTE_POP, POP_BELL }, volume = 0.35, gap = 0.08 },
 	-- Merges
 	MergeCharge = { ids = { CRACKLE_A, CRACKLE_B }, volume = 0.4 },
 	MergeBoom = { ids = { HIT_A, HIT_B, HIT_C }, volume = 0.55, rotate = true },
