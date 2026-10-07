@@ -536,10 +536,6 @@ local function onDeposit(data: any)
 	local amount = tonumber(data.amount) or 0
 	local count = math.clamp(8 + math.floor(math.log10(math.max(1, amount)) * 2), 8, 16)
 	local first = true
-	play("DepositStream", 0.05, 1)
-	task.delay(0.3, function()
-		play("DepositStream", 0.05, 1.15)
-	end)
 	for i = 1, count do
 		local jitter = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5) * 1.2
 		Orbs.fly({
