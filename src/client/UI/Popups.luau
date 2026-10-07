@@ -1694,7 +1694,8 @@ function Popups.offline(data: { [string]: any })
 			Color = C.Gold,
 			Breathe = true,
 			Size = UDim2.new(1, -40, 0, 58),
-			Position = UDim2.new(0, 20, 1, -76),
+			Position = UDim2.new(0.5, 0, 1, -18),
+			AnchorPoint = Vector2.new(0.5, 1),
 		}, close)
 		go:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
@@ -2421,7 +2422,8 @@ function Popups.starter(data: { [string]: any })
 			Color = C.Gold,
 			Breathe = true,
 			Size = UDim2.new(1, -40, 0, 58),
-			Position = UDim2.new(0, 20, 1, -76),
+			Position = UDim2.new(0.5, 0, 1, -18),
+			AnchorPoint = Vector2.new(0.5, 1),
 		}, close)
 		go:SetAttribute("FocusFirst", true)
 		Kit.appear(box)

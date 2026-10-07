@@ -71,7 +71,6 @@ local TICK_B = lib(104556737710683)
 local TICK_C = lib(111480305904301)
 local CRACKLE_A = lib(130988843893972)
 local CRACKLE_B = lib(109769434232691)
-local CRACKLE_C = lib(112005936752839)
 local HIT_A = lib(132346841133984)
 local HIT_B = lib(83739861834001)
 local HIT_C = lib(112084716984188)
@@ -131,7 +130,6 @@ local DEFS: { [string]: Def } = {
 	Pickup = { ids = { GUI_BUBBLE, UI_CUTE_POP }, volume = 0.45 },
 	-- Orbs
 	OrbPickup = { ids = { POP_PLUCK, POP_MARIMBA }, volume = 0.22, gap = 0.03 },
-	OrbLand = { ids = { CRACKLE_C, BUNDLED_TICK }, volume = 0.06, gap = 0.04 },
 	-- Merges
 	MergeCharge = { ids = { CRACKLE_A, CRACKLE_B }, volume = 0.4 },
 	MergeBoom = { ids = { HIT_A, HIT_B, HIT_C }, volume = 0.55, rotate = true },

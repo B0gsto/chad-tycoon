@@ -1920,7 +1920,8 @@ function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> 
 		Name = "Base",
 		BackgroundColor3 = Kit.lip(color),
 		Size = UDim2.new(1, 0, 1, -depth),
-		Position = UDim2.fromOffset(0, depth),
+		Position = UDim2.new(0.5, 0, 0, depth),
+		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = button,
 	})
 	Kit.corner(base, radius)
@@ -1929,6 +1930,9 @@ function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> 
 		Name = "Face",
 		BackgroundColor3 = WHITE,
 		Size = UDim2.new(1, 0, 1, -depth),
+		-- Centred so Breathe's UIScale grows both sides evenly, not off the right edge.
+		Position = UDim2.fromScale(0.5, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = button,
 	})
 	Kit.corner(face, radius)
@@ -2046,7 +2050,7 @@ function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> 
 
 	local scale = scaleOf(button)
 	local function rest()
-		face.Position = UDim2.new()
+		face.Position = UDim2.fromScale(0.5, 0)
 		base.Visible = true
 	end
 	Kit.selectable(button)
@@ -2066,12 +2070,12 @@ function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> 
 	local function press()
 		if state.enabled then
 			Kit.tween(scale, 0.07, { Scale = 0.94 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-			Kit.tween(face, 0.07, { Position = UDim2.fromOffset(0, depth - 1) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			Kit.tween(face, 0.07, { Position = UDim2.new(0.5, 0, 0, depth - 1) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		end
 	end
 	local function release()
 		Kit.tween(scale, 0.28, { Scale = if state.hover then 1.03 else 1 }, Enum.EasingStyle.Back)
-		Kit.tween(face, 0.22, { Position = UDim2.new() }, Enum.EasingStyle.Back)
+		Kit.tween(face, 0.22, { Position = UDim2.fromScale(0.5, 0) }, Enum.EasingStyle.Back)
 	end
 	-- A finger tap fires MouseEnter but not always MouseLeave, so touch never hovers
 	-- (a stuck hover would leave the button enlarged and lit after the tap).
