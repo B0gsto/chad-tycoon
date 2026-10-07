@@ -25,7 +25,9 @@
 	Fans are built with CharacterFactory (manual rigs, not the Animator) and
 	posed here with RigPose: one RenderStepped loop, at most MAX_ANIMATED fans
 	near the camera (the rest hold still, re-placed once per state change),
-	everything written with one BulkMoveTo.
+	everything written with one BulkMoveTo. On "mid" / "low" devices (Fx.Budget)
+	fewer fans are posed (MAX_ANIMATED and MAX_PARTICLES scaled by Budget.count)
+	and on low the posed ones update every 2nd frame (every 3rd past NEAR).
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -42,6 +44,7 @@ local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 
 local State = require(script.Parent.Parent.State)
 local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
 
 local Fans = {}
 
@@ -557,10 +560,11 @@ local function rank()
 			table.insert(ranked, fan)
 		end
 	end
-	if #ranked > MAX_ANIMATED then
+	local most = Budget.count(MAX_ANIMATED)
+	if #ranked > most then
 		table.sort(ranked, closer)
 	end
-	for i = 1, math.min(#ranked, MAX_ANIMATED) do
+	for i = 1, math.min(#ranked, most) do
 		ranked[i].animated = true
 	end
 end
@@ -588,12 +592,14 @@ local function step()
 	end
 	table.clear(bulkParts)
 	table.clear(bulkCFrames)
+	local low = Budget.low()
 	local i = 1
 	while i <= #allFans do
 		local fan = allFans[i]
 		if advance(fan, now) then
 			if fan.animated then
-				if fan.dist < NEAR or (frameCount + fan.slot) % 2 == 0 then
+				local rate = if fan.dist < NEAR then (if low then 2 else 1) else (if low then 3 else 2)
+				if rate == 1 or (frameCount + fan.slot) % rate == 0 then
 					draw(fan)
 				end
 			elseif fan.drawnState ~= fan.state then
@@ -629,8 +635,9 @@ local function burst(position: Vector3, count: number)
 		fxAnchor = part
 		anchor = part
 	end
-	for _ = 1, count do
-		if particles >= MAX_PARTICLES then
+	local cap = Budget.count(MAX_PARTICLES)
+	for _ = 1, Budget.count(count) do
+		if particles >= cap then
 			return
 		end
 		particles += 1

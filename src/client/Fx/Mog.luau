@@ -39,6 +39,7 @@ local Theme = require(ReplicatedStorage:WaitForChild("Theme")) :: any
 local Client = script.Parent.Parent
 local Sounds = require(Client.Sounds) :: any
 local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
 local Animator = require(Client.Animator) :: any
 
 local MogFx = {}
@@ -263,8 +264,12 @@ local function moggedPop()
 	task.delay(0.7, function()
 		sprite("Puff", head, { size = 7, life = 0.8, rise = Vector3.new(0, 2, 0) })
 		sprite("Ring", head, { size = 8, life = 0.6, rise = Vector3.zero, color = W.Sunny })
-		for i = 1, 6 do
-			local angle = i / 6 * math.pi * 2
+		local pops = Budget.count(6) -- decorative: fewer on phones (Fx.Budget)
+		for i = 1, pops do
+			if not Sprites.room() then
+				break -- decorative: the device's sprite budget is full
+			end
+			local angle = i / pops * math.pi * 2
 			local offset = Vector3.new(math.cos(angle) * 1.5, math.sin(angle) * 1.2, 0)
 			sprite(if i % 2 == 0 then "StarPop" else "Confetti", head + offset, {
 				size = 2.6,
@@ -474,8 +479,12 @@ end
 local function duelFinish(won: boolean, foeHead: Vector3)
 	if won then
 		sprite("Ring", foeHead, { size = 7, life = 0.6, rise = Vector3.zero, color = W.Sunny })
-		for i = 1, 6 do
-			local angle = i / 6 * math.pi * 2
+		local pops = Budget.count(6) -- decorative: fewer on phones (Fx.Budget)
+		for i = 1, pops do
+			if not Sprites.room() then
+				break -- decorative: the device's sprite budget is full
+			end
+			local angle = i / pops * math.pi * 2
 			local offset = Vector3.new(math.cos(angle) * 1.5, math.sin(angle) * 1.2, 0)
 			sprite(if i % 2 == 0 then "StarPop" else "Confetti", foeHead + offset, {
 				size = 2.6,

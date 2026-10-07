@@ -42,6 +42,7 @@ local Client = script.Parent.Parent
 local State = require(Client.State)
 local Sounds = require(Client.Sounds)
 local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
 
 local player = Players.LocalPlayer
 local C = Theme.Colors
@@ -157,7 +158,7 @@ function Orbs.sparkle(pos: Vector3, color: Color3?, count: number?, speed: numbe
 	if now - sparkleWindow > SPARKLE_WINDOW then
 		sparkleWindow, sparkleSpent = now, 0
 	end
-	local n = math.min(count or 8, SPARKLE_BUDGET - sparkleSpent)
+	local n = math.min(Budget.count(count or 8), Budget.count(SPARKLE_BUDGET) - sparkleSpent)
 	if n <= 0 then
 		return
 	end
@@ -211,7 +212,7 @@ function Orbs.puff(pos: Vector3, count: number?): boolean
 	end
 	local e = entry :: { part: BasePart, emitter: ParticleEmitter }
 	e.part.CFrame = CFrame.new(pos)
-	e.emitter:Emit(math.min(count or 3, 12))
+	e.emitter:Emit(Budget.count(math.min(count or 3, 12)))
 	return true
 end
 
@@ -493,7 +494,7 @@ export type CoinOptions = {
 -- Spawns gold coins at `pos` (a puff when speed is high, a shower when height is high).
 function Orbs.coins(pos: Vector3, opts: CoinOptions?)
 	local o = opts or {}
-	local count = math.clamp(o.count or 6, 1, 40)
+	local count = Budget.count(math.clamp(o.count or 6, 1, 40))
 	local speed = o.speed or 18
 	local spread = o.spread or 0.4
 	local height = o.height or 0
@@ -501,7 +502,7 @@ function Orbs.coins(pos: Vector3, opts: CoinOptions?)
 	local stagger = o.stagger or 0
 	for i = 1, count do
 		local function spawnCoin()
-			if #coinList >= MAX_COINS then
+			if #coinList >= Budget.count(MAX_COINS) then
 				local old = table.remove(coinList, 1)
 				if old then
 					old.part:Destroy()
@@ -928,7 +929,7 @@ Orbs.readRoute = readRoute
 -- Queues a roll behind the orbs already heading for the chute. False = the wait would be too
 -- long (or too many rolls are running): show the orb without the trip.
 local function scheduleRoll(r: Roll, now: number): boolean
-	if activeRolls >= MAX_ROLLS then
+	if activeRolls >= Budget.count(MAX_ROLLS) then
 		return false
 	end
 	local reach = r.dHop + r.dFall + r.dGutter

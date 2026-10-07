@@ -2591,13 +2591,37 @@ end
 
 do
 	local function stubChild(name: string): any
-		return {
+		local stub = {
 			Name = name,
 			WaitForChild = function(_, child: string)
 				return stubChild(child)
 			end,
 		}
+		-- `script.Parent.Fx.Budget` and similar dotted paths resolve to more stubs.
+		return setmetatable(stub, {
+			__index = function(_, child: string)
+				return stubChild(child)
+			end,
+		})
 	end
+	-- Fx.Budget is a client module (it needs Kit); the Animator only asks it for a tier.
+	local budgetStub = {
+		tier = function()
+			return "high"
+		end,
+		scale = function()
+			return 1
+		end,
+		count = function(n: number)
+			return n
+		end,
+		low = function()
+			return false
+		end,
+		onChange = function()
+			return function() end
+		end,
+	}
 	local env = robloxEnv()
 	env.game = {
 		GetService = function(_, name: string)
@@ -2605,6 +2629,9 @@ do
 		end,
 	}
 	env.require = function(target: any)
+		if target.Name == "Budget" then
+			return budgetStub
+		end
 		return loadShared(target.Name)
 	end
 	env.script = stubChild("Animator")

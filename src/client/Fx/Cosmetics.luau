@@ -13,6 +13,11 @@
 
 	Nothing runs per frame: every connection is event-driven and only exists while
 	its cosmetic is on.
+
+	Device budget (Fx.Budget): on "mid" / "low" devices every character's
+	server-made trail stars and aura particles (CosTrailStars, CosAura*) emit at
+	Budget.scale() of their rate locally, the speed puffs follow Sprites.emitter's
+	scaling, and the double-jump burst throws fewer puffs.
 ]]
 
 local Players = game:GetService("Players")
@@ -20,6 +25,7 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
 
 local CosmeticsFx = {}
 
@@ -70,8 +76,12 @@ local function burst(root: BasePart, humanoid: Humanoid)
 		spin = 90,
 		maxDistance = 60,
 	})
-	for i = 1, 3 do
-		local angle = (i / 3 + math.random() * 0.2) * math.pi * 2
+	local puffs = Budget.count(3)
+	for i = 1, puffs do
+		if not Sprites.room() then
+			break
+		end
+		local angle = (i / puffs + math.random() * 0.2) * math.pi * 2
 		Sprites.billboard(root, "Puff", {
 			position = feet,
 			size = 1.3,
@@ -211,6 +221,56 @@ local function clearSpeed()
 	end
 end
 
+-- Everyone's trail / aura particles on a budget ------------------------------------------
+
+local fullRate: { [ParticleEmitter]: number } = setmetatable({}, { __mode = "k" }) :: any
+
+local function budgetEmitter(emitter: Instance)
+	if not emitter:IsA("ParticleEmitter") then
+		return
+	end
+	local name = emitter.Name
+	if name ~= "CosTrailStars" and string.sub(name, 1, 6) ~= "CosAura" then
+		return
+	end
+	local full = fullRate[emitter]
+	if not full then
+		full = emitter.Rate
+		fullRate[emitter] = full
+	end
+	emitter.Rate = full * Budget.scale()
+end
+
+local function watchCharacter(character: Model)
+	for _, d in character:GetDescendants() do
+		budgetEmitter(d)
+	end
+	character.DescendantAdded:Connect(budgetEmitter)
+end
+
+local function watchPlayer(other: Player)
+	if other.Character then
+		watchCharacter(other.Character)
+	end
+	other.CharacterAdded:Connect(watchCharacter)
+end
+
+local function budgetCosmetics()
+	pcall(function()
+		for _, other in Players:GetPlayers() do
+			watchPlayer(other)
+		end
+		Players.PlayerAdded:Connect(watchPlayer)
+	end)
+	Budget.onChange(function()
+		for emitter in fullRate do
+			if emitter.Parent then
+				budgetEmitter(emitter)
+			end
+		end
+	end)
+end
+
 -- Wiring ----------------------------------------------------------------------------------
 
 local function refresh()
@@ -230,6 +290,7 @@ local function refresh()
 end
 
 function CosmeticsFx.init()
+	budgetCosmetics()
 	if not player then
 		return
 	end

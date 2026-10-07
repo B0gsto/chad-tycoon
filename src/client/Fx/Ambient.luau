@@ -17,10 +17,14 @@
 	One Heartbeat loop moves everything with a single BulkMoveTo. Things far
 	from the camera (clouds excepted) hold still, mid-range ones update every
 	few frames, and every motion is a function of time, so nothing drifts.
+	On "mid" / "low" devices (Fx.Budget) the moving radius shrinks and updates
+	thin out further (low: nothing past 120 studs, near things every 2nd frame).
 ]]
 
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+
+local Budget = require(script.Parent.Budget)
 
 local Ambient = {}
 
@@ -29,6 +33,12 @@ local NEAR = 90 -- studs: closer than this things update every frame
 local MID_RATE = 3 -- frames between updates beyond NEAR
 local CLOUD_RATE = 4 -- frames between cloud updates
 local BEHIND = -40 -- studs behind the camera plane still updated
+-- Per device tier: { far, near, near rate, mid rate, cloud rate } ("high" is the values above).
+local TIERS: { [string]: { number } } = {
+	high = { FAR, NEAR, 1, MID_RATE, CLOUD_RATE },
+	mid = { 170, 70, 1, MID_RATE, 6 },
+	low = { 120, 50, 2, 4, 8 },
+}
 local MODEL_DELAY = 0.5 -- seconds to let a model's parts arrive before capturing it
 
 local FLAG_SWAY = math.rad(6)
@@ -311,22 +321,25 @@ local function step()
 	local camera = Workspace.CurrentCamera
 	local camPos = if camera then camera.CFrame.Position else Vector3.zero
 	local camLook = if camera then camera.CFrame.LookVector else Vector3.new(0, 0, -1)
+	local tier = TIERS[Budget.tier()]
+	local far, near, nearRate, midRate, cloudRate = tier[1], tier[2], tier[3], tier[4], tier[5]
 	table.clear(bulkParts)
 	table.clear(bulkCFrames)
 	local n = 0
 	for i = 1, count do
 		local target = targets[i]
 		if target.sky then
-			if (frameCount + target.slot) % CLOUD_RATE ~= 0 then
+			if (frameCount + target.slot) % cloudRate ~= 0 then
 				continue
 			end
 		else
 			local offset = target.hinge.Position - camPos
 			local distance = offset.Magnitude
-			if distance > FAR or offset:Dot(camLook) < BEHIND then
+			if distance > far or offset:Dot(camLook) < BEHIND then
 				continue
 			end
-			if distance > NEAR and (frameCount + target.slot) % MID_RATE ~= 0 then
+			local rate = if distance > near then midRate else nearRate
+			if rate > 1 and (frameCount + target.slot) % rate ~= 0 then
 				continue
 			end
 		end

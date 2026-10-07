@@ -16,6 +16,8 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local GuiService = game:GetService("GuiService")
+local ContextActionService = game:GetService("ContextActionService")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
@@ -96,6 +98,7 @@ local function catcher(parent: Instance, zindex: number): TextButton
 		Name = "Skip",
 		AutoButtonColor = false,
 		BackgroundTransparency = 1,
+		Selectable = false,
 		Text = "",
 		Size = UDim2.fromOffset(6000, 6000),
 		Position = UDim2.fromScale(0.5, 0.5),
@@ -415,8 +418,117 @@ end
 	Kit.appear(box). `close()` eases it out with Kit.disappear and calls
 	`onClosed` once it is gone.
 ]]
+-- Gamepad and keyboard "back" ------------------------------------------------------------------
+--[[
+	Every open overlay (modal, reward card, crate reveal) pushes a Back entry. B /
+	Escape runs the top-most one (highest ZIndex, newest first); an entry with no
+	`fn` swallows the press (nothing dismissable). The ScreenGui's ModalOpen
+	attribute is true while any entry is up, so Windows leaves its own B / Escape
+	alone underneath a modal.
+]]
+type Back = { z: number, seq: number, fn: (() -> ())? }
+local backStack: { Back } = {}
+local backSeq = 0
+local BACK_ACTION = "PopupsBack"
+local backBound = false
+local runBack: () -> ()
+local function syncModalFlag()
+	local up = #backStack > 0
+	if screen then
+		screen:SetAttribute("ModalOpen", up)
+	end
+	if up == backBound or PREVIEW then
+		return
+	end
+	backBound = up
+	-- B / Escape bound (sunk, high priority) only while an overlay is up.
+	pcall(function()
+		if up then
+			ContextActionService:BindActionAtPriority(BACK_ACTION, function(_, state)
+				if state ~= Enum.UserInputState.Begin then
+					return Enum.ContextActionResult.Pass
+				end
+				runBack()
+				return Enum.ContextActionResult.Sink
+			end, false, Enum.ContextActionPriority.High.Value + 10, Enum.KeyCode.ButtonB, Enum.KeyCode.Escape)
+		else
+			ContextActionService:UnbindAction(BACK_ACTION)
+		end
+	end)
+end
+local function pushBack(z: number, fn: (() -> ())?): Back
+	backSeq += 1
+	local entry: Back = { z = z, seq = backSeq, fn = fn }
+	table.insert(backStack, entry)
+	syncModalFlag()
+	return entry
+end
+local function dropBack(entry: Back)
+	local i = table.find(backStack, entry)
+	if i then
+		table.remove(backStack, i)
+		syncModalFlag()
+	end
+end
+local function topBack(): Back?
+	local top: Back? = nil
+	for _, entry in backStack do
+		if not top or entry.z > top.z or (entry.z == top.z and entry.seq > top.seq) then
+			top = entry
+		end
+	end
+	return top
+end
+
+-- Runs the top-most overlay's back action (deferred, so Windows still sees ModalOpen
+-- for this same press and leaves the window under the modal open).
+runBack = function()
+	local top = topBack()
+	local fn = top and top.fn
+	if fn then
+		task.defer(fn)
+	end
+end
+
+local function selectedNow(): GuiObject?
+	local ok, selected = pcall(function()
+		return GuiService.SelectedObject
+	end)
+	return if ok then selected else nil
+end
+
+-- Gamepad: once the caller has filled the card (next frame), select its FocusFirst
+-- button, or its first button, and keep the selection inside it.
+local function focusCard(card: GuiObject)
+	if PREVIEW then
+		return
+	end
+	task.defer(function()
+		if card.Parent then
+			Kit.confine(card)
+			Kit.focus(card)
+		end
+	end)
+end
+
+-- Drops the selection out of a closing card and hands it back to what was selected
+-- before it opened (a button in an open window), if that is still on screen.
+local function release(card: GuiObject, previous: GuiObject?)
+	if PREVIEW then
+		return
+	end
+	Kit.unfocus(card)
+	if previous and previous ~= card and previous.Visible and previous:IsDescendantOf(game) and not previous:IsDescendantOf(card) then
+		local current = selectedNow()
+		if current == nil or current == card or current:IsDescendantOf(card) then
+			Kit.select(previous)
+		end
+	end
+end
+
 local modalCount = 0
 local openModals: { [() -> ()]: boolean } = {}
+local backOf: { [() -> ()]: Back } = {}
 local function modal(name: string, size: Vector2, zindex: number, onBackdrop: (() -> ())?, onClosed: (() -> ())?): (Frame, () -> ())
 	modalCount += 1
 	local openKey = "Modal:" .. name .. modalCount
@@ -447,12 +559,19 @@ local function modal(name: string, size: Vector2, zindex: number, onBackdrop: ((
 		ZIndex = zindex,
 	})
 	local closed = false
+	local previous = selectedNow()
+	local back: Back? = nil
 	local function close()
 		if closed then
 			return
 		end
 		closed = true
 		openModals[close] = nil
+		backOf[close] = nil
+		if back then
+			dropBack(back)
+		end
+		release(box, previous)
 		Kit.setBlur(false)
 		Kit.markOpen(screen, openKey, false)
 		Kit.fadeBackdrop(dim, false)
@@ -471,14 +590,27 @@ local function modal(name: string, size: Vector2, zindex: number, onBackdrop: ((
 			task.delay(0.15, onClosed)
 		end
 	end
-	dim.Activated:Connect(function()
+	local function backdropTap()
 		if onBackdrop then
 			onBackdrop()
 		end
 		close()
-	end)
+	end
+	dim.Activated:Connect(backdropTap)
 	openModals[close] = true
+	-- B / Escape acts like a backdrop tap unless the card overrides it (onBack).
+	back = pushBack(zindex, backdropTap)
+	backOf[close] = back :: Back
+	focusCard(box)
 	return box, close
+end
+
+-- Overrides what B / Escape does on the modal `close` belongs to (nil: ignore it).
+local function onBack(close: () -> (), fn: (() -> ())?)
+	local entry = backOf[close]
+	if entry then
+		entry.fn = fn
+	end
 end
 
 -- Closes every open modal (Studio capture hook "UiPreview" = "close").
@@ -988,6 +1120,8 @@ local function showRewardCard(reward: { [string]: any }, done: () -> ())
 
 	local closed = false
 	local spin: RBXScriptConnection? = nil
+	local previous = selectedNow()
+	local back: Back? = nil
 	local function alive(): boolean
 		return not closed and root.Parent ~= nil
 	end
@@ -999,6 +1133,10 @@ local function showRewardCard(reward: { [string]: any }, done: () -> ())
 		if spin then
 			spin:Disconnect()
 		end
+		if back then
+			dropBack(back)
+		end
+		release(holder, previous)
 		Kit.markOpen(screen, openKey, false)
 		Kit.disappear(holder, {
 			time = 0.18,
@@ -1011,6 +1149,7 @@ local function showRewardCard(reward: { [string]: any }, done: () -> ())
 		task.delay(0.4, done)
 	end
 	catcher(holder, 5).Activated:Connect(close)
+	back = pushBack(30, close)
 
 	-- Step 2: the unit turns in on its stage. It starts a little past its rest
 	-- pose (never side-on or from behind), eases to the front three-quarter
@@ -1141,7 +1280,11 @@ local function showRewardCard(reward: { [string]: any }, done: () -> ())
 			AnchorPoint = Vector2.new(0.5, 1),
 			ZIndex = 6,
 		}, close)
+		button:SetAttribute("FocusFirst", true)
 		Kit.appear(button, { from = 0.6, time = 0.28 })
+		if not PREVIEW then
+			Kit.focus(holder, button)
+		end
 	end)
 
 	if #extras > 0 then
@@ -1243,17 +1386,25 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 
 	local skipped = false
 	local finished = false
+	local skipBack: Back? = nil
 	local function finish()
 		if finished then
 			return
 		end
 		finished = true
+		if skipBack then
+			dropBack(skipBack)
+		end
 		Kit.disappear(holder, { to = 1.08, time = 0.2, destroy = true })
 		task.delay(0.1, function()
 			showRewardCard(reward, done)
 		end)
 	end
 	catcher(holder, 6).Activated:Connect(function()
+		skipped = true
+		finish()
+	end)
+	skipBack = pushBack(30, function()
 		skipped = true
 		finish()
 	end)
@@ -1468,6 +1619,8 @@ function Popups.confirm(text: string, onYes: () -> (), options: { [string]: any 
 			Position = UDim2.new(0.5, 8, 1, -76),
 			Sound = "Close",
 		}, close)
+		-- Gamepad lands on the safe answer; B also answers "No".
+		no:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		local buttons: { GuiObject } = { yes, no }
@@ -1543,6 +1696,7 @@ function Popups.offline(data: { [string]: any })
 			Size = UDim2.new(1, -40, 0, 58),
 			Position = UDim2.new(0, 20, 1, -76),
 		}, close)
+		go:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		Kit.appear(go, { from = 0.8, time = 0.26, delay = 0.14 })
@@ -1720,6 +1874,13 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			close()
 			onHome()
 		end)
+		-- Gamepad starts on the loud button; B is "Back to my gym".
+		local primary: GuiObject = nextButton or again
+		primary:SetAttribute("FocusFirst", true)
+		onBack(close, function()
+			close()
+			onHome()
+		end)
 		Kit.appear(box)
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		if nextButton then
@@ -1885,6 +2046,11 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			close()
 			onHome()
 		end)
+		again:SetAttribute("FocusFirst", true)
+		onBack(close, function()
+			close()
+			onHome()
+		end)
 		Kit.appear(box)
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		Kit.appear(again, { from = 0.8, time = 0.26, delay = 0.14 })
@@ -2020,6 +2186,7 @@ function Popups.mogChoose(onRivals: () -> (), onPvp: () -> (), onClosed: (() -> 
 		local duel, duelGo =
 			card(0.5, "⚔️", C.Bad, "1v1 DUEL", "Out-mog a real player! PERFECT hits twice. Winner gets the reward.", "FIND DUEL", onPvp)
 		Kit.breathe(duelGo)
+		rivalsGo:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		Kit.appear(rivals, { from = 0.8, time = 0.26, delay = 0.1 })
@@ -2189,6 +2356,7 @@ function Popups.starterOffer()
 			close()
 			Net.event("Action"):FireServer({ action = "PromptPass", name = STARTER.Pass })
 		end)
+		buy:SetAttribute("FocusFirst", true)
 		local later = Kit.button(box, {
 			Name = "Later",
 			Text = "Not now",
@@ -2255,6 +2423,7 @@ function Popups.starter(data: { [string]: any })
 			Size = UDim2.new(1, -40, 0, 58),
 			Position = UDim2.new(0, 20, 1, -76),
 		}, close)
+		go:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
 		Kit.appear(art, { from = 0.4, time = 0.34, delay = 0.06 })
 		Kit.appear(go, { from = 0.8, time = 0.26, delay = 0.2 })
@@ -2444,6 +2613,7 @@ local function buildChestPanel()
 	}, function()
 		action:FireServer({ action = "OpenCrateNow" })
 	end)
+	openButton:SetAttribute("FocusFirst", true)
 	local masterTag = Kit.pill(panel, {
 		Name = "MasterTag",
 		Text = string.upper(crateKey.Title),
@@ -2468,7 +2638,15 @@ local function buildChestPanel()
 		StrokeThickness = 0,
 	})
 	-- Quiet text link: the pass that opens every crate free.
-	local function textLink(name: string, text: string, color: Color3, hover: Color3, y: number, width: number): TextButton
+	local function textLink(
+		name: string,
+		text: string,
+		color: Color3,
+		hover: Color3,
+		y: number,
+		width: number,
+		onClick: () -> ()
+	): TextButton
 		local link = Kit.new("TextButton", {
 			Name = name,
 			BackgroundTransparency = 1,
@@ -2484,12 +2662,36 @@ local function buildChestPanel()
 			Parent = panel,
 		})
 		Kit.bouncy(link, 1.04)
+		local function lit(on: boolean)
+			Kit.tween(link, 0.12, { TextColor3 = if on then hover else color })
+		end
 		link.MouseEnter:Connect(function()
-			Kit.tween(link, 0.12, { TextColor3 = hover })
+			lit(true)
 		end)
 		link.MouseLeave:Connect(function()
-			Kit.tween(link, 0.12, { TextColor3 = color })
+			lit(false)
 		end)
+		link.SelectionGained:Connect(function()
+			lit(true)
+		end)
+		link.SelectionLost:Connect(function()
+			lit(false)
+		end)
+		link.Activated:Connect(onClick)
+		-- The link reads 30 px tall; its tap area is 44 (an invisible strip over it).
+		local hit = Kit.new("TextButton", {
+			Name = "Hit",
+			BackgroundTransparency = 1,
+			AutoButtonColor = false,
+			Selectable = false,
+			Text = "",
+			Size = UDim2.new(1, 0, 0, 44),
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = link.ZIndex + 1,
+			Parent = link,
+		})
+		hit.Activated:Connect(onClick)
 		return link
 	end
 	local passLink = textLink(
@@ -2498,12 +2700,12 @@ local function buildChestPanel()
 		C.TextDim,
 		C.GoldLight,
 		BUTTON_Y + 88,
-		PANEL_W - 40
+		PANEL_W - 40,
+		function()
+			Kit.sound("Click")
+			action:FireServer({ action = "PromptPass", name = "CrateKey" })
+		end
 	)
-	passLink.Activated:Connect(function()
-		Kit.sound("Click")
-		action:FireServer({ action = "PromptPass", name = "CrateKey" })
-	end)
 	-- Discard: a red button at the bottom of the card, DISCARD_GAP below the rows above it.
 	-- It discards the held crate at once, whatever its rarity.
 	local DISCARD_H, DISCARD_GAP = 44, 14
@@ -2669,6 +2871,7 @@ local function buildChestPanel()
 			shownFor = ""
 			if open then
 				open = false
+				Kit.unfocus(panel)
 				Kit.disappear(panel)
 				Kit.hidePlayerList("crate", false)
 				screen:SetAttribute("CratePanelOpen", false)

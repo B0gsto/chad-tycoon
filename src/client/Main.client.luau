@@ -47,8 +47,9 @@ end)
 screen.Parent = player:WaitForChild("PlayerGui")
 
 -- Scale the whole UI from a 1280x720 design size. Touch screens get a little
--- extra so buttons stay comfortably tappable; short screens switch the HUD to
--- its compact layout.
+-- extra so buttons stay comfortably tappable; a TV (10-foot console, or a
+-- gamepad on a big screen) gets extra for the viewing distance and may go up
+-- to 3x on 4K; short screens switch the HUD to its compact layout.
 local uiScale = Instance.new("UIScale")
 uiScale.Parent = screen
 local function rescale()
@@ -65,12 +66,25 @@ local function rescale()
 	local fit = math.min(size.X / 1280, size.Y / 720)
 	if Kit.touch then
 		fit *= 1.15
+	elseif Kit.tenFoot or (Kit.gamepad and size.X >= 1600) then
+		fit *= 1.12
 	end
-	uiScale.Scale = math.clamp(fit, 0.5, 1.5)
+	uiScale.Scale = math.clamp(fit, 0.5, if Kit.tenFoot then 3 else 1.5)
 	screen:SetAttribute("Compact", (size.Y - topInset) / uiScale.Scale < 600)
 end
 rescale()
-Kit.onInput(rescale)
+-- Modules that only hold the ScreenGui read the input mode from its Input attribute.
+Kit.onInput(function(mode)
+	screen:SetAttribute("Input", mode)
+	rescale()
+end)
+-- Console navigation: the D-pad / left stick moves the selection between buttons.
+pcall(function()
+	GuiService.AutoSelectGuiEnabled = true
+end)
+pcall(function()
+	GuiService.GuiNavigationEnabled = true
+end)
 Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(rescale)
 if Workspace.CurrentCamera then
 	Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescale)

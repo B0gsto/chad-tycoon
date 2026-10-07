@@ -60,6 +60,7 @@ local W = Theme.World
 
 local RING = 180 -- ring diameter (px, design space)
 local ACTION = "MogPress"
+local QUIT_ACTION = "MogQuit"
 local PRIORITY = 3000
 local RESULT_WORDS = { perfect = "PERFECT", hit = "HIT", miss = "MISS" }
 
@@ -109,6 +110,16 @@ local shownScore = 0
 local lives, maxLives = 3, 3
 local passedShown = false
 local quitArmed = false
+-- Which input prompt the ring centre shows ("idle", "check"), so it re-reads when the
+-- player switches between touch, keyboard and gamepad; nil while it shows something else.
+local centreHint: string? = nil
+-- The resting quit label: a close "X", or "Y" on a controller (the button that quits).
+local function quitLabel(): string
+	return if Kit.gamepad then "Y" else "X"
+end
+
+-- The quit button's press (first arms "QUIT?", the second quits); set in build.
+local quitPress: () -> () = function() end
 local warned = false
 local bannerToken = 0
 local stepConn: RBXScriptConnection? = nil
@@ -226,11 +237,13 @@ local function setIdle()
 	check, pressed, frozenTravel = nil, false, nil
 	ring:idle()
 	ring:setNeedle(nil, 1)
-	ring:setCentre(if Kit.touch then "TAP" else "SPACE", C.TextDim)
+	centreHint = "idle"
+	ring:setCentre(Kit.keyHint("confirm"), C.TextDim)
 end
 
 local function wobble()
 	-- "Wait..." : a little side-to-side shake of the ring, no camera shake.
+	centreHint = nil
 	ring:setCentre("wait…", C.TextDim)
 	local frame: Frame = ring.frame
 	local base = UDim2.fromScale(0.5, 0.5)
@@ -279,6 +292,7 @@ local function step()
 	end
 	if not warned then
 		warned = true
+		centreHint = nil
 		ring:setCentre("#" .. tostring(c.n), C.Text)
 	end
 	ring:setNeedle(frozenTravel or travelNow(c), c.dir)
@@ -299,7 +313,8 @@ local function onCheck(p: any)
 	-- The DBD-style warning: tick, and MogRing swells the ring in with the new zone.
 	ring:setCheck({ zoneStart = c.zoneStart, zoneSize = c.zoneSize, perfectSize = c.perfectSize, dir = c.dir, n = c.n })
 	ring:setNeedle(nil, c.dir)
-	ring:setCentre(if Kit.touch then "TAP!" else "SPACE", C.Gold)
+	centreHint = "check"
+	ring:setCentre(Kit.keyHint("confirm") .. (if Kit.touch then "!" else ""), C.Gold)
 	Sounds.play("Tick")
 end
 
@@ -491,6 +506,13 @@ local function bind()
 		Enum.KeyCode.Return,
 		Enum.KeyCode.ButtonA
 	)
+	-- Gamepad quit: Y (or B) presses the quit button (arm, then confirm).
+	ContextActionService:BindActionAtPriority(QUIT_ACTION, function(_, state)
+		if state == Enum.UserInputState.Begin then
+			quitPress()
+		end
+		return Enum.ContextActionResult.Sink
+	end, false, PRIORITY, Enum.KeyCode.ButtonY, Enum.KeyCode.ButtonB)
 	if not stepConn then
 		stepConn = RunService.RenderStepped:Connect(step)
 	end
@@ -498,6 +520,7 @@ end
 
 local function unbind()
 	ContextActionService:UnbindAction(ACTION)
+	ContextActionService:UnbindAction(QUIT_ACTION)
 	if stepConn then
 		stepConn:Disconnect()
 		stepConn = nil
@@ -525,7 +548,7 @@ local function onStart(p: any)
 	shownScore = num(p.score, 0)
 	scoreLabel.Text = Format.short(shownScore)
 	comboChip.Visible = false
-	Kit.setButton(quitButton, "X", C.SurfaceHi)
+	Kit.setButton(quitButton, quitLabel(), C.SurfaceHi)
 	quitButton.Size = UDim2.fromOffset(30, 28)
 	heartsRow.Visible = not pvp
 	youPanel.Visible = pvp
@@ -663,6 +686,27 @@ function MogHud.build(screenGui: ScreenGui)
 		Depth = 2,
 		ZIndex = 4,
 	}, function()
+		quitPress()
+	end)
+	Kit.selectable(quitButton)
+	-- The X reads 30 x 28; on touch it takes taps over 48 px.
+	local quitHit = Kit.hitArea(quitButton, 48, function()
+		Kit.sound("Click")
+		quitPress()
+	end)
+	quitHit.Visible = Kit.touch
+	Kit.onInput(function()
+		quitHit.Visible = Kit.touch
+		if active then
+			tapHint.Visible = Kit.touch
+			if centreHint == "idle" then
+				ring:setCentre(Kit.keyHint("confirm"), C.TextDim)
+			elseif centreHint == "check" then
+				ring:setCentre(Kit.keyHint("confirm") .. (if Kit.touch then "!" else ""), C.Gold)
+			end
+		end
+	end)
+	quitPress = function()
 		if quitArmed then
 			quitArmed = false
 			action:FireServer({ action = "ModeQuit" })
@@ -675,11 +719,11 @@ function MogHud.build(screenGui: ScreenGui)
 		task.delay(3, function()
 			if quitArmed then
 				quitArmed = false
-				Kit.setButton(quitButton, "X", C.SurfaceHi)
+				Kit.setButton(quitButton, quitLabel(), C.SurfaceHi)
 				Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(30, 28) })
 			end
 		end)
-	end)
+	end
 	comboChip = Kit.text(root, {
 		Name = "Combo",
 		Text = "x2 COMBO",
@@ -776,6 +820,8 @@ function MogHud.build(screenGui: ScreenGui)
 		Name = "Tap",
 		Text = "",
 		BackgroundTransparency = 1,
+		-- Gamepad presses with A (ContextActionService); the selection never lands here.
+		Selectable = false,
 		Size = UDim2.fromOffset(RING + 40, RING + 40),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
