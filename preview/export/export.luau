@@ -1224,7 +1224,15 @@ local function main()
 	clearTransient()
 	settle(stateNormal)
 	Popups.reward({ tier = 15, new = true })
+	-- Mid-hold the HUD is off its edges (attribute signals only fire by hand here); it
+	-- is put back for the shots that follow.
+	local windowOpen = signalFor(screen, "attr:WindowOpen")
+	local wasOpen = screen:GetAttribute("WindowOpen")
+	windowOpen:Fire()
 	shot("reward")
+	screen:SetAttribute("WindowOpen", false)
+	windowOpen:Fire()
+	screen:SetAttribute("WindowOpen", wasOpen)
 
 	clearTransient()
 	settle(stateNormal)
