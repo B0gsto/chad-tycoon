@@ -78,21 +78,12 @@ type Card = {
 	state: string,
 }
 
--- Repaints a Kit.panel body (gradient, outline and lip) in `color`.
-local function paint(frame: Frame, color: Color3, strokeColor: Color3?, thickness: number?)
-	local lipColor = Kit.lip(color)
-	local gradient = frame:FindFirstChildOfClass("UIGradient")
-	if gradient then
-		gradient.Color = ColorSequence.new(Kit.lighten(color, 0.1), color:Lerp(lipColor, 0.12))
-	end
+-- Repaints a day card's glass: plain, or tinted `tint` with a solid `edge` outline.
+local function paint(frame: Frame, tint: Color3?, transparency: number?, edge: Color3?, thickness: number?)
+	Kit.paintGlass(frame, tint, transparency, edge)
 	local stroke = frame:FindFirstChildOfClass("UIStroke")
 	if stroke then
-		stroke.Color = strokeColor or lipColor
-		stroke.Thickness = thickness or 1.5
-	end
-	local lip = frame:FindFirstChild("Lip")
-	if lip and lip:IsA("Frame") then
-		lip.BackgroundColor3 = lipColor
+		stroke.Thickness = thickness or 1
 	end
 end
 
@@ -147,7 +138,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	local cards: { Card } = {}
 	local frames: { GuiObject } = {}
 	for day, reward in DailyReward.REWARDS do
-		local frame = Kit.panel(grid, { Name = "Day" .. day, Elevated = true, Radius = Kit.RADIUS.M })
+		local frame = Kit.glass(grid, { Name = "Day" .. day, Radius = Kit.RADIUS.M })
 		local header = Kit.text(frame, {
 			Name = "Header",
 			Text = "DAY " .. day,
@@ -338,12 +329,13 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		if card.extra then
 			card.extra.TextTransparency = if claimed then 0.4 else 0
 		end
+		-- Today: sunny glass in a gold outline. Claimed: a fainter pane. Ahead: plain glass.
 		if state == "today" then
-			paint(card.frame, C.SurfaceHiTop, C.Gold, 3)
+			paint(card.frame, C.Gold, Theme.Glass.Tinted, C.Gold, 2.5)
 		elseif claimed then
-			paint(card.frame, C.Surface:Lerp(C.Well, 0.5))
+			paint(card.frame, nil, 0.95)
 		else
-			paint(card.frame, C.SurfaceHi)
+			paint(card.frame)
 		end
 		Kit.setGlow(card.frame, state == "today", C.Gold)
 	end

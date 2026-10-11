@@ -201,6 +201,39 @@ Theme.Colors = {
 	},
 }
 
+-- Glass windows (Kit.window, Kit.glass): translucent panes over the blurred, lightly dimmed
+-- world. Every number except Radius, EdgeThickness and Blur is a transparency (0.6 = 40 %
+-- opaque), tuned so white text keeps about 5:1 on the pane and its rows over sunlit sand and sky.
+Theme.Glass = {
+	-- Window body: a deep-blue tint, lighter at the top.
+	Tint = rgb(18, 30, 92),
+	TintTop = rgb(46, 74, 164),
+	Body = 0.6,
+	Radius = 26,
+	-- The glass edge: a thin light stroke, bright along the top, fading out toward the bottom.
+	Edge = rgb(255, 255, 255),
+	EdgeThickness = 1.5,
+	EdgeTop = 0.25,
+	EdgeBottom = 0.85,
+	-- Inner highlight line along the top edge and the soft navy halo round a window.
+	Highlight = 0.5,
+	Shadow = 0.8,
+	-- Inner surfaces (rows, cells, stat boxes): white glass, brighter when raised, with a thin
+	-- light edge. Tinted is a surface carrying a colour (a found Index tile, today's reward).
+	Surface = 0.92,
+	SurfaceHi = 0.86,
+	SurfaceEdge = 0.7,
+	Tinted = 0.72,
+	-- Insets (tab bars, bar tracks, wallet chips): a darker pane of Colors.Ink.
+	Inset = 0.7,
+	-- Coloured cards (shop banners and packs): the card's own colour as glass, with a glow.
+	Card = 0.38,
+	CardGlow = 0.7,
+	-- The world behind an open window: BlurEffect size and the backdrop's dim.
+	Blur = 12,
+	Dim = 0.5,
+}
+
 -- The 3D world's palette: a sunny "Muscle Beach" gym in clear afternoon light. Teal and blue
 -- dominate (mats, walls, fences, machines, display), sunny yellow is the accent (awnings, chute,
 -- buy pads, crates) and red-orange is the sparing pop (sign headers, special pads, Chad shirts).

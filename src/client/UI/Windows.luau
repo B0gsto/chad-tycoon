@@ -5,11 +5,13 @@
 	Only one is open at a time. A dimmed backdrop sits behind the open window;
 	clicking it, the X button, Escape or the gamepad B button closes it.
 
-	Look: lighter-blue raised tiles on the window's deep-blue well, one accent
-	colour per window. Every shop price sits on the same mint button (one
-	height, one text size) with an idle sheen.
-	Motion: cards ripple in when a window or tab opens, shop tabs cross-fade
-	and slide from the side of the tab, numbers count, bars and switches ease.
+	Look: glass. Each window is a translucent pane over the blurred, lightly
+	dimmed world (Kit.window); rows and tiles are lighter glass and shop cards
+	are glass in their own colour, with one accent colour per window. Every shop
+	price sits on the same solid mint button (one height, one text size) with an
+	idle sheen.
+	Motion: a window pops open; its cards ripple in the first time it opens,
+	numbers count, bars and switches ease.
 ]]
 
 local Players = game:GetService("Players")
@@ -100,7 +102,7 @@ function Windows.open(name: string, opts: { focus: string? }?)
 	if target and target.isOpen() then
 		focusWindow(name)
 	end
-	Kit.fadeBackdrop(backdrop, anyOpen())
+	Kit.fadeBackdrop(backdrop, anyOpen(), Kit.GLASS_DIM)
 	Windows.changed:Fire()
 	if name == "Shop" and target and target.isOpen() then
 		-- Shop funnel step 1 (Server.Analytics).
@@ -121,7 +123,7 @@ end
 local function register(name: string, window: Kit.Window)
 	windows[name] = window
 	window.onClose.Event:Connect(function()
-		Kit.fadeBackdrop(backdrop, anyOpen())
+		Kit.fadeBackdrop(backdrop, anyOpen(), Kit.GLASS_DIM)
 		Windows.changed:Fire()
 	end)
 end
@@ -135,31 +137,28 @@ local function clearChildren(parent: Instance, className: string?)
 	end
 end
 
---[[
-	Cards ease in one after another, 25 ms apart (scale only: the window's own
-	fade covers transparency, so a card never keeps a half-faded look when the
-	window closes mid-animation).
-]]
-local function ripple(cards: { GuiObject })
-	for i, gui in cards do
-		Kit.appear(gui, { from = 0.9, time = 0.26, delay = math.min(i - 1, 12) * 0.025, fade = false })
+-- Cards that have made their entrance: each one eases in the first time its
+-- window opens and is simply there on every later open.
+local entered: { [Instance]: boolean } = setmetatable({}, { __mode = "k" }) :: any
+local function firstTime(cards: { GuiObject }): { GuiObject }
+	local fresh: { GuiObject } = {}
+	for _, gui in cards do
+		if not entered[gui] then
+			entered[gui] = true
+			table.insert(fresh, gui)
+		end
 	end
+	return fresh
 end
 
--- Repaints a Kit.panel body (gradient, outline and lip) in `color`.
-local function paintPanel(frame: Frame, color: Color3, strokeColor: Color3?)
-	local lipColor = Kit.lip(color)
-	local gradient = frame:FindFirstChildOfClass("UIGradient")
-	if gradient then
-		gradient.Color = ColorSequence.new(Kit.lighten(color, 0.1), color:Lerp(lipColor, 0.12))
-	end
-	local stroke = frame:FindFirstChildOfClass("UIStroke")
-	if stroke then
-		stroke.Color = strokeColor or lipColor
-	end
-	local lip = frame:FindFirstChild("Lip")
-	if lip and lip:IsA("Frame") then
-		lip.BackgroundColor3 = lipColor
+--[[
+	Cards ease in one after another, 25 ms apart, the first time they are shown
+	(scale only: the window's own fade covers transparency, so a card never
+	keeps a half-faded look when the window closes mid-animation).
+]]
+local function ripple(cards: { GuiObject })
+	for i, gui in firstTime(cards) do
+		Kit.appear(gui, { from = 0.9, time = 0.26, delay = math.min(i - 1, 12) * 0.025, fade = false })
 	end
 end
 
@@ -365,6 +364,7 @@ local PRICE_H = 42 -- every price button
 local PRICE_TEXT = 20
 local FADE_H = 30 -- soft fade along the bottom edge of the page
 local MIN_TEXT = 14 -- no shop text renders smaller (TextScaled labels included)
+local INSET = 0.4 -- darker panes inside a glass card (descriptions, contents chips)
 
 -- TextScaled labels in the shop never shrink below MIN_TEXT.
 local function minText(label: TextLabel): TextLabel
@@ -388,9 +388,11 @@ end
 
 --[[
 	Banner look shared by the pass banners, the Starter and All Cosmetics cards
-	and the pack cards: a diagonal two-tone candy gradient, a thick darker
-	outline, and a clipped holder for the idle sheen. The holder is inset by
-	half the corner radius so the sheen never pokes past the rounded corners.
+	and the pack cards, on top of Kit.panel's coloured glass card: a diagonal
+	two-tone candy tint that thins out toward the far corner (so more of the
+	world shows through there), a light edge in the card's colour, and a clipped
+	holder for the idle sheen. The holder is inset by half the corner radius so
+	the sheen never pokes past the rounded corners.
 ]]
 local function bannerPaint(body: Frame, tint: Color3, radius: number, strokeColor: Color3?): Frame
 	local gradient = body:FindFirstChildOfClass("UIGradient")
@@ -400,12 +402,13 @@ local function bannerPaint(body: Frame, tint: Color3, radius: number, strokeColo
 			ColorSequenceKeypoint.new(0.5, tint),
 			ColorSequenceKeypoint.new(1, Kit.darken(tint, 0.16)),
 		})
+		gradient.Transparency = NumberSequence.new(0, 0.3)
 		gradient.Rotation = 24
 	end
 	local stroke = body:FindFirstChildOfClass("UIStroke")
 	if stroke then
-		stroke.Thickness = 3
-		stroke.Color = strokeColor or Kit.darken(tint, 0.38)
+		stroke.Thickness = 2
+		stroke.Color = strokeColor or Kit.lighten(tint, 0.55)
 	end
 	return Kit.new("Frame", {
 		Name = "SheenClip",
@@ -493,7 +496,7 @@ local DRIFT_SPOTS = {
 	{ 0.86, 0.9, 8 },
 }
 
--- Candy colours the header band drifts through.
+-- Candy colours the header divider drifts through.
 local CANDY = ColorSequence.new({
 	ColorSequenceKeypoint.new(0, Theme.World.Pink),
 	ColorSequenceKeypoint.new(0.25, Theme.World.Sunny),
@@ -514,7 +517,7 @@ local function buildShop(screen: ScreenGui)
 	-- Every open/close starts a new session; idle loops and delayed steps stop when it changes.
 	local session = 0
 	local idleStops: { () -> () } = {}
-	-- Repeating idle tweens (header drift, sparkles, glows): played on open; on close they
+	-- Repeating idle tweens (header divider, sparkles, glows): played on open; on close they
 	-- stop and snap back to their resting values, so every open starts from the same look.
 	local idleTweens: { { tween: Tween, gui: Instance, rest: { [string]: any } } } = {}
 	local function idleTween(gui: Instance, time: number, props: { [string]: any }, delay: number?)
@@ -536,7 +539,7 @@ local function buildShop(screen: ScreenGui)
 	end
 	local headerTitle = window.header:FindFirstChild("Title")
 	if headerTitle and headerTitle:IsA("TextLabel") then
-		headerTitle.Position = UDim2.fromOffset(84, 1)
+		headerTitle.Position = UDim2.fromOffset(84, 2)
 		headerTitle.Size = UDim2.new(0, 120, 1, 0)
 		headerTitle.TextSize = 33
 	end
@@ -551,43 +554,25 @@ local function buildShop(screen: ScreenGui)
 	local cartScale = Kit.new("UIScale", { Parent = cart })
 	productArt(cart, "Shop", "Shop", C.Gold, 88)
 
-	-- Header polish: candy colours drift slowly across the band, the accent strip under it
-	-- runs as a rainbow, and a sheen sweeps the band now and then (all only while open).
-	-- The tint keeps the band's rounded top corners and its square bottom: a rounded frame
-	-- taller than the band, cut off at the band's bottom edge by a clipping holder.
-	local driftClip = Kit.new("Frame", {
-		Name = "CandyClip",
-		BackgroundTransparency = 1,
-		ClipsDescendants = true,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 2,
-		Parent = window.header,
-	})
-	local drift = Kit.new("Frame", {
-		Name = "CandyDrift",
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		BackgroundTransparency = 0.8,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, 0, 1, Kit.RADIUS.XL + 8),
-		ZIndex = 2,
-		Parent = driftClip,
-	})
-	Kit.corner(drift, Kit.RADIUS.XL)
-	local driftGradient = Kit.new("UIGradient", { Color = CANDY, Offset = Vector2.new(-0.3, 0), Parent = drift })
-	idleTween(driftGradient, 7, { Offset = Vector2.new(0.3, 0) })
+	-- Header polish: the divider under the title runs as a slow rainbow and a sheen sweeps the
+	-- top of the glass now and then (both only while open).
 	local shade = window.header:FindFirstChild("Shade")
 	if shade and shade:IsA("Frame") then
-		shade.BackgroundColor3 = Color3.new(1, 1, 1)
-		shade.Size = UDim2.new(1, 0, 0, 5)
-		local shadeGradient = Kit.new("UIGradient", { Color = CANDY, Offset = Vector2.new(-0.25, 0), Parent = shade })
-		idleTween(shadeGradient, 4, { Offset = Vector2.new(0.25, 0) })
+		shade.Size = UDim2.new(1, -28, 0, 3)
+		local shadeGradient = shade:FindFirstChildOfClass("UIGradient")
+		if shadeGradient then
+			shadeGradient.Color = CANDY
+			shadeGradient.Transparency = NumberSequence.new(0.1, 0.45)
+			shadeGradient.Offset = Vector2.new(-0.25, 0)
+			idleTween(shadeGradient, 4, { Offset = Vector2.new(0.25, 0) })
+		end
 	end
 	local headerSheen = Kit.new("Frame", {
 		Name = "SheenClip",
 		BackgroundTransparency = 1,
 		ClipsDescendants = true,
-		Size = UDim2.new(1, -Kit.RADIUS.XL, 1, -6),
-		Position = UDim2.fromOffset(Kit.RADIUS.XL // 2, 3),
+		Size = UDim2.new(1, -Theme.Glass.Radius, 1, -6),
+		Position = UDim2.fromOffset(Theme.Glass.Radius // 2, 3),
 		ZIndex = 2,
 		Parent = window.header,
 	})
@@ -644,6 +629,7 @@ local function buildShop(screen: ScreenGui)
 		AnchorPoint = Vector2.new(0.5, 0),
 		Radius = SWITCH_H // 2,
 		ZIndex = 2,
+		Glass = true,
 	})
 	local function slot(i: number): (UDim2, UDim2)
 		return UDim2.new((i - 1) / count, 4, 0, 4), UDim2.new(1 / count, -8, 1, -8)
@@ -703,7 +689,7 @@ local function buildShop(screen: ScreenGui)
 	-- Gamepad selection moves between the cards; the engine scrolls the page to them.
 	scroll.Selectable = false
 
-	-- Soft fade along the bottom edge of the page (stacked strips of the well colour, so it
+	-- Soft shade along the bottom edge of the page (stacked strips of the glass tint, so it
 	-- also renders without gradient transparency); it fades out at the end of the page.
 	local fade = Kit.new("Frame", {
 		Name = "Fade",
@@ -719,8 +705,8 @@ local function buildShop(screen: ScreenGui)
 	for i = 1, FADE_STEPS do
 		local strip = Kit.new("Frame", {
 			Name = "Strip" .. i,
-			BackgroundColor3 = C.Well,
-			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.6 * 0.9,
+			BackgroundColor3 = Theme.Glass.Tint,
+			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.6 * 0.5,
 			BorderSizePixel = 0,
 			Size = UDim2.new(1, 0, 1 / FADE_STEPS, 0),
 			Position = UDim2.fromScale(0, (i - 1) / FADE_STEPS),
@@ -1003,11 +989,10 @@ local function buildShop(screen: ScreenGui)
 		local cell = Kit.new("Frame", { Name = name, BackgroundTransparency = 1, LayoutOrder = order, Parent = parent })
 		local body = Kit.panel(cell, {
 			Name = "Body",
+			Glass = true,
 			Color = color,
 			Size = UDim2.fromScale(1, 1),
 			Radius = Kit.RADIUS.M + 4,
-			StrokeColor = Kit.lighten(color, 0.45),
-			StrokeThickness = 2,
 		})
 		local artHolder = Kit.new("Frame", {
 			Name = "ArtHolder",
@@ -1136,8 +1121,8 @@ local function buildShop(screen: ScreenGui)
 		Kit.new("UIStroke", { Thickness = 2.5, Color = lipColor, Parent = titleLabel })
 		local inset = Kit.new("Frame", {
 			Name = "Inset",
-			BackgroundColor3 = Kit.darken(tint, 0.28),
-			BackgroundTransparency = 0.1,
+			BackgroundColor3 = Kit.darken(tint, 0.34),
+			BackgroundTransparency = INSET,
 			Size = UDim2.new(1, -20, 0, 40),
 			Position = UDim2.fromOffset(10, 110),
 			ZIndex = 3,
@@ -1251,8 +1236,8 @@ local function buildShop(screen: ScreenGui)
 	local function contentChip(order: number, icon: string, fallback: string, color: Color3, caption: string): TextLabel
 		local chip = Kit.new("Frame", {
 			Name = "Chip" .. order,
-			BackgroundColor3 = Kit.darken(starterTint, 0.3),
-			BackgroundTransparency = 0.05,
+			BackgroundColor3 = Kit.darken(starterTint, 0.34),
+			BackgroundTransparency = INSET,
 			Size = UDim2.new(1 / 2, -4, 1, 0),
 			LayoutOrder = order,
 			ZIndex = 3,
@@ -1347,15 +1332,15 @@ local function buildShop(screen: ScreenGui)
 			Size = UDim2.new(1, 0, 0, BANNER_H),
 			Parent = passList,
 		})
-		local body = Kit.panel(cell, { Name = "Body", Color = tint, Size = UDim2.fromScale(1, 1), Radius = BANNER_R })
+		local body = Kit.panel(cell, { Name = "Body", Glass = true, Color = tint, Size = UDim2.fromScale(1, 1), Radius = BANNER_R })
 		local clip = bannerPaint(body, tint, BANNER_R)
-		-- The stage: a lit window in the banner's own tint (a diagonal light-to-deep
+		-- The stage: a lit pane in the banner's own tint (a diagonal light-to-deep
 		-- gradient, a lighter rim and a glassy sheen along its top) the pass's little
 		-- scene plays in. It clips the scene, so nothing it draws reaches the text.
 		local stage = Kit.new("Frame", {
 			Name = "Stage",
 			BackgroundColor3 = Color3.new(1, 1, 1),
-			BackgroundTransparency = 0,
+			BackgroundTransparency = 0.25,
 			ClipsDescendants = true,
 			Size = UDim2.fromOffset(STAGE_W, BANNER_H - 18),
 			Position = UDim2.fromOffset(9, 9),
@@ -1526,8 +1511,8 @@ local function buildShop(screen: ScreenGui)
 	end
 	local includes = Kit.new("Frame", {
 		Name = "Includes",
-		BackgroundColor3 = Kit.darken(bundleTint, 0.28),
-		BackgroundTransparency = 0.1,
+		BackgroundColor3 = Kit.darken(bundleTint, 0.34),
+		BackgroundTransparency = INSET,
 		Size = UDim2.fromOffset(included * 40 - 6 + 16, 44),
 		Position = UDim2.fromOffset(WIDE_LEFT, 64),
 		ZIndex = 4,
@@ -1631,8 +1616,8 @@ local function buildShop(screen: ScreenGui)
 			-- Owned perk / wearable: "ACTIVE" with an on/off switch where the price was.
 			local control = Kit.new("Frame", {
 				Name = "Control",
-				BackgroundColor3 = Kit.darken(tint, 0.28),
-				BackgroundTransparency = 0.1,
+				BackgroundColor3 = Kit.darken(tint, 0.34),
+				BackgroundTransparency = INSET,
 				Size = UDim2.new(1, -20, 0, 42),
 				Position = UDim2.new(0, 10, 1, -10),
 				AnchorPoint = Vector2.new(0, 1),
@@ -1745,9 +1730,16 @@ local function buildShop(screen: ScreenGui)
 		local cell = Kit.new("Frame", { Name = kind .. index, BackgroundTransparency = 1, LayoutOrder = index, Parent = grid })
 		local radius = Kit.RADIUS.L
 		local deep = Kit.darken(accent, 0.45)
-		local body = Kit.panel(cell, { Name = "Body", Color = deep, Size = UDim2.fromScale(1, 1), Radius = radius })
+		local body = Kit.panel(cell, {
+			Name = "Body",
+			Glass = true,
+			Color = deep,
+			GlowColor = accent,
+			Size = UDim2.fromScale(1, 1),
+			Radius = radius,
+		})
 		local clip = bannerPaint(body, deep, radius, Kit.lighten(accent, 0.15))
-		-- Moulded-plastic highlight along the top of the card.
+		-- Glassy highlight along the top of the card.
 		local shine = Kit.new("Frame", {
 			Name = "Shine",
 			BackgroundColor3 = Color3.new(1, 1, 1),
@@ -2464,7 +2456,7 @@ local function buildShop(screen: ScreenGui)
 			end
 		end
 
-		-- Opening choreography: section headers slide in, cards and banners ripple in (scale +
+		-- Opening choreography: section headers slide in, cards and banners ripple in the first time (scale +
 		-- fade, 28 ms apart), the cart lands a beat later with an overshoot and wiggle.
 		for i, head in heads do
 			if not PREVIEW then
@@ -2480,7 +2472,7 @@ local function buildShop(screen: ScreenGui)
 				table.insert(shown, cell)
 			end
 		end
-		Kit.stagger(shown, 0.028)
+		Kit.stagger(firstTime(shown), 0.028)
 		if not PREVIEW then
 			cartScale.Scale = 0
 			cart.Rotation = -18
@@ -2561,6 +2553,7 @@ local function buildIndex(screen: ScreenGui)
 	-- Discovered count: a compact bar in the header row, left of the close button.
 	local _, setProgress, progressLabel = Kit.progress(window.header, {
 		Name = "Found",
+		Glass = true,
 		Color = C.Window.Index,
 		Size = UDim2.fromOffset(210, 28),
 		Position = UDim2.new(1, -62, 0.5, -1),
@@ -2622,7 +2615,7 @@ local function buildIndex(screen: ScreenGui)
 	local cards: { { frame: Frame, shown: string } } = {}
 	local cardFrames: { GuiObject } = {}
 	for tier = 1, Economy.MAX_TIER do
-		local frame = Kit.panel(scroll, { Name = "Tier" .. tier, Elevated = true, LayoutOrder = tier, Radius = Kit.RADIUS.M + 2 })
+		local frame = Kit.glass(scroll, { Name = "Tier" .. tier, LayoutOrder = tier, Radius = Kit.RADIUS.M + 2, StrokeThickness = 1.5 })
 		cards[tier] = { frame = frame, shown = "" }
 		cardFrames[tier] = frame
 	end
@@ -2646,11 +2639,11 @@ local function buildIndex(screen: ScreenGui)
 		local band = Economy.tierBand(tier)
 		local rarity = C.Rarity[band]
 		local known = discoveredAt > 0
-		-- Found: a raised tile with a rarity outline. Unknown: a quieter flat tile.
+		-- Found: brighter glass with a rarity outline. Unknown: a fainter pane.
 		if known then
-			paintPanel(frame, C.SurfaceHi, rarity:Lerp(C.Edge, 0.3))
+			Kit.paintGlass(frame, nil, Theme.Glass.SurfaceHi, rarity)
 		else
-			paintPanel(frame, C.Surface)
+			Kit.paintGlass(frame, nil, 0.94)
 		end
 
 		Kit.number(frame, {
@@ -2678,7 +2671,8 @@ local function buildIndex(screen: ScreenGui)
 			-- Soft rarity-tinted spot behind the character.
 			local spot = Kit.new("Frame", {
 				Name = "Spot",
-				BackgroundColor3 = C.Well:Lerp(rarity, 0.22),
+				BackgroundColor3 = rarity,
+				BackgroundTransparency = 0.78,
 				Size = UDim2.new(1, -40, 1, -40),
 				Position = UDim2.new(0.5, 0, 0, 86),
 				AnchorPoint = Vector2.new(0.5, 0.5),
@@ -2954,6 +2948,7 @@ local function buildRanking(screen: ScreenGui)
 	-- The player's own row, pinned under the list with a sunny outline (one face per board).
 	local mine = Kit.panel(window.content, {
 		Name = "Mine",
+		Glass = true,
 		Elevated = true,
 		StrokeColor = C.Gold,
 		StrokeThickness = 2.5,
@@ -2980,7 +2975,8 @@ local function buildRanking(screen: ScreenGui)
 		local color = rank and MEDAL_COLORS[rank]
 		local rankChip = Kit.new("Frame", {
 			Name = "Rank",
-			BackgroundColor3 = color or C.Well,
+			BackgroundColor3 = color or C.Ink,
+			BackgroundTransparency = if color then 0 else Theme.Glass.Inset,
 			Size = UDim2.fromOffset(if color then 34 else 46, if color then 34 else 30),
 			Position = UDim2.new(0.02, if color then 6 else 0, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
@@ -2993,7 +2989,7 @@ local function buildRanking(screen: ScreenGui)
 			Kit.new("UIStroke", { Thickness = 2, Color = Kit.lip(color), Parent = rankChip })
 		else
 			Kit.corner(rankChip, 10)
-			Kit.new("UIStroke", { Thickness = 1, Color = C.Edge, Transparency = 0.3, Parent = rankChip })
+			Kit.new("UIStroke", { Thickness = 1, Color = Theme.Glass.Edge, Transparency = 0.8, Parent = rankChip })
 		end
 		local rankLabel = Kit.number(rankChip, {
 			Text = if color then tostring(rank) else rankText,
@@ -3089,7 +3085,8 @@ local function buildRanking(screen: ScreenGui)
 			local rank = tonumber(entry.rank) or i
 			local frame = Kit.panel(list, {
 				Name = "Row" .. i,
-				Elevated = true,
+				Glass = true,
+				Elevated = isMe,
 				StrokeColor = if isMe then C.Gold else nil,
 				StrokeThickness = if isMe then 2.5 else nil,
 				Size = UDim2.new(1, 0, 0, 46),
@@ -3256,23 +3253,24 @@ local function buildSettings(screen: ScreenGui)
 	local function toggle(order: number, icon: string, text: string, desc: string, key: string)
 		local row = Kit.panel(window.content, {
 			Name = key,
-			Elevated = true,
+			Glass = true,
 			Size = UDim2.new(1, 0, 0, 70),
 			LayoutOrder = order,
 			Radius = Kit.RADIUS.M + 2,
 		})
 		table.insert(rows, row)
-		-- Icon tile: deep blue, warms to the window's teal while the setting is on.
+		-- Icon tile: a dark pane that warms to the window's teal while the setting is on.
 		local medal = Kit.new("Frame", {
 			Name = "Medal",
-			BackgroundColor3 = C.Well,
+			BackgroundColor3 = C.Ink,
+			BackgroundTransparency = Theme.Glass.Inset,
 			Size = UDim2.fromOffset(46, 46),
 			Position = UDim2.new(0, 12, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
 			Parent = row,
 		})
 		Kit.corner(medal, 14)
-		Kit.new("UIStroke", { Thickness = 1.5, Color = C.Edge, Transparency = 0.2, Parent = medal })
+		Kit.new("UIStroke", { Thickness = 1.5, Color = Theme.Glass.Edge, Transparency = 0.75, Parent = medal })
 		Kit.icon(medal, icon, 26, Kit.ICON_COLORS[icon] or C.Text, {
 			Position = UDim2.fromScale(0.5, 0.5),
 			AnchorPoint = Vector2.new(0.5, 0.5),
@@ -3318,7 +3316,7 @@ local function buildSettings(screen: ScreenGui)
 	toggle(3, "Hash", "Full Numbers", "Show 1,234,567 instead of 1.23M", "fullNumbers")
 	toggle(4, "Merge", "Auto Merge", "Merge pairs automatically", "autoMerge")
 
-	local ON_TILE = C.Well:Lerp(C.Window.Settings, 0.4)
+	local ON_TILE = C.Ink:Lerp(C.Window.Settings, 0.55)
 	local function refresh()
 		local data = State.data
 		if not data then
@@ -3343,7 +3341,10 @@ local function buildSettings(screen: ScreenGui)
 				on = data.settings[t.key] == true
 				t.set(on)
 			end
-			Kit.tween(t.medal, 0.2, { BackgroundColor3 = if on then ON_TILE else C.Well })
+			Kit.tween(t.medal, 0.2, {
+				BackgroundColor3 = if on then ON_TILE else C.Ink,
+				BackgroundTransparency = if on then 0.25 else Theme.Glass.Inset,
+			})
 		end
 	end
 	State.changed.Event:Connect(refresh)
@@ -3474,7 +3475,7 @@ type ModeRow = { panel: Frame, stats: TextLabel, reward: TextLabel, play: TextBu
 local function modeRow(parent: Instance, props: { [string]: any }, accent: Color3, onPlay: () -> ()): ModeRow
 	local panel = Kit.panel(parent, {
 		Name = props.Name,
-		Elevated = true,
+		Glass = true,
 		Size = UDim2.new(1, 0, 0, props.Height),
 		LayoutOrder = props.LayoutOrder,
 		Radius = Kit.RADIUS.M + 2,
@@ -3482,7 +3483,8 @@ local function modeRow(parent: Instance, props: { [string]: any }, accent: Color
 	-- Quiet medal (an accent rim only), so the PLAY button is the one loud thing here.
 	local medal = Kit.new("Frame", {
 		Name = "Medal",
-		BackgroundColor3 = C.Well,
+		BackgroundColor3 = C.Ink,
+		BackgroundTransparency = Theme.Glass.Inset,
 		Size = UDim2.fromOffset(46, 46),
 		Position = UDim2.fromOffset(12, 14),
 		Parent = panel,
@@ -3658,10 +3660,11 @@ local function buildModes(screen: ScreenGui)
 	-- Every other mode: one slim, quiet row.
 	local soon = Kit.panel(window.content, {
 		Name = "ComingSoon",
+		Glass = true,
 		Size = UDim2.new(1, 0, 0, 44),
 		LayoutOrder = 3,
 		Radius = Kit.RADIUS.M,
-		Transparency = 0.35,
+		Transparency = 0.94,
 	})
 	table.insert(rows, soon)
 	Kit.icon(soon, "Lock", 18, C.TextMute, {

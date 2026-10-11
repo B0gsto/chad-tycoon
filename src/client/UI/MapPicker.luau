@@ -241,13 +241,8 @@ type Card = {
 	body: CanvasGroup,
 	chevron: TextLabel,
 	stroke: UIStroke?,
-	fill: UIGradient?,
 	setPips: (number) -> (),
 }
-
--- Card body fills: the panel's own ramp, and a lighter one for the selected card.
-local CARD_FILL = ColorSequence.new(Kit.lighten(C.SurfaceHi, 0.1), C.SurfaceHi:Lerp(Kit.lip(C.SurfaceHi), 0.12))
-local CARD_FILL_SELECTED = ColorSequence.new(Kit.lighten(C.SurfaceHi, 0.26), Kit.lighten(C.SurfaceHi, 0.12))
 
 -- Grey version of an accent for locked bands: its luminance, pulled toward a cool slate.
 local function desaturate(color: Color3): Color3
@@ -292,7 +287,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 
 	local side = Kit.panel(window.content, {
 		Name = "Side",
-		Elevated = true,
+		Glass = true,
 		Size = UDim2.new(0, SIDE_W, 1, 0),
 		Position = UDim2.fromScale(1, 0),
 		AnchorPoint = Vector2.new(1, 0),
@@ -543,7 +538,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 	for i = 1, MAP_COUNT do
 		local frame = Kit.panel(grid, {
 			Name = "Map" .. i,
-			Elevated = true,
+			Glass = true,
 			Size = UDim2.fromScale(1, 1),
 			LayoutOrder = i,
 			Radius = Kit.RADIUS.M,
@@ -696,7 +691,6 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			body = body,
 			chevron = chevron,
 			stroke = frame:FindFirstChildOfClass("UIStroke"),
-			fill = frame:FindFirstChildOfClass("UIGradient"),
 			setPips = setPips,
 		}
 		cards[i] = card
@@ -747,15 +741,13 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		else
 			card.stats.Text = if best > 0 then "Best " .. deps.runTime(best) else deps.plural(clears, "clear")
 		end
-		-- Selected: thick gold rim, a lighter body and a gold chevron.
+		-- Selected: a gold rim, brighter glass and a gold chevron.
 		local isSelected = i == selected
 		local stroke = card.stroke
-		if stroke then
-			stroke.Color = if isSelected then C.Gold else Kit.lip(C.SurfaceHi)
-			stroke.Thickness = if isSelected then 4 else 1.5
-		end
-		if card.fill then
-			card.fill.Color = if isSelected then CARD_FILL_SELECTED else CARD_FILL
+		local pane = stroke and stroke.Parent
+		if stroke and pane and pane:IsA("GuiObject") then
+			Kit.paintGlass(pane, nil, if isSelected then Theme.Glass.SurfaceHi - 0.08 else nil, if isSelected then C.Gold else nil)
+			stroke.Thickness = if isSelected then 3 else 1
 		end
 		card.chevron.Visible = isSelected
 	end

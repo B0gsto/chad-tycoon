@@ -461,6 +461,26 @@ local GUI_CLASSES = {
 	CanvasGroup = true,
 }
 
+-- UIGradient -> { stops = {{t, r, g, b}}, transparency = {{t, a}}?, rotation }.
+local function exportGradient(gradient)
+	local stops = {}
+	for _, kp in gradient.Color.Keypoints do
+		local c = rgb(kp.Value)
+		table.insert(stops, { kp.Time, c[1], c[2], c[3] })
+	end
+	local transparency = nil
+	for _, kp in gradient.Transparency.Keypoints do
+		if kp.Value > 0 then
+			transparency = {}
+			for _, point in gradient.Transparency.Keypoints do
+				table.insert(transparency, { point.Time, point.Value })
+			end
+			break
+		end
+	end
+	return { stops = stops, transparency = transparency, rotation = gradient.Rotation }
+end
+
 local function exportGui(inst)
 	local node: { [string]: any } = { class = inst.ClassName, name = inst.Name, children = {} }
 	local isRoot = inst:IsA("LayerCollector")
@@ -525,6 +545,7 @@ local function exportGui(inst)
 	end
 	if inst:IsA("ScrollingFrame") then
 		node.scrollBarColor = rgb(inst.ScrollBarImageColor3)
+		node.scrollBarTransparency = prop(inst, "ScrollBarImageTransparency", 0)
 		node.clips = true
 	end
 
@@ -539,13 +560,13 @@ local function exportGui(inst)
 				transparency = child.Transparency,
 				mode = child.ApplyStrokeMode.Name,
 			}
-		elseif cls == "UIGradient" then
-			local stops = {}
-			for _, kp in child.Color.Keypoints do
-				local c = rgb(kp.Value)
-				table.insert(stops, { kp.Time, c[1], c[2], c[3] })
+			-- A gradient inside the stroke (the glass edge fades toward the bottom).
+			local strokeGradient = child:FindFirstChildOfClass("UIGradient")
+			if strokeGradient then
+				node.stroke.gradient = exportGradient(strokeGradient)
 			end
-			node.gradient = { stops = stops, rotation = child.Rotation }
+		elseif cls == "UIGradient" then
+			node.gradient = exportGradient(child)
 		elseif cls == "UIPadding" then
 			node.padding = { udim(child.PaddingTop), udim(child.PaddingBottom), udim(child.PaddingLeft), udim(child.PaddingRight) }
 		elseif cls == "UIListLayout" then
@@ -1132,8 +1153,14 @@ local function main()
 		task.wait(0.3)
 	end
 
+	-- `blur` is the scene blur an open window asks for (Kit.setBlur), drawn by the renderer.
 	local function shot(name)
-		writeJson(OUT .. "/gui/" .. name .. ".json", { viewport = { VIEW_W, VIEW_H }, root = exportGui(screen) })
+		local effect = game:GetService("Lighting"):FindFirstChild("UiBlur")
+		writeJson(OUT .. "/gui/" .. name .. ".json", {
+			viewport = { VIEW_W, VIEW_H },
+			blur = if effect then effect.Size else 0,
+			root = exportGui(screen),
+		})
 	end
 
 	-- Daily reward: day 3 of a streak is waiting (the preview runs no Server.Daily).

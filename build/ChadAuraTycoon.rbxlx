@@ -19846,6 +19846,39 @@ Theme.Colors = {
 	},
 }
 
+-- Glass windows (Kit.window, Kit.glass): translucent panes over the blurred, lightly dimmed
+-- world. Every number except Radius, EdgeThickness and Blur is a transparency (0.6 = 40 %
+-- opaque), tuned so white text keeps about 5:1 on the pane and its rows over sunlit sand and sky.
+Theme.Glass = {
+	-- Window body: a deep-blue tint, lighter at the top.
+	Tint = rgb(18, 30, 92),
+	TintTop = rgb(46, 74, 164),
+	Body = 0.6,
+	Radius = 26,
+	-- The glass edge: a thin light stroke, bright along the top, fading out toward the bottom.
+	Edge = rgb(255, 255, 255),
+	EdgeThickness = 1.5,
+	EdgeTop = 0.25,
+	EdgeBottom = 0.85,
+	-- Inner highlight line along the top edge and the soft navy halo round a window.
+	Highlight = 0.5,
+	Shadow = 0.8,
+	-- Inner surfaces (rows, cells, stat boxes): white glass, brighter when raised, with a thin
+	-- light edge. Tinted is a surface carrying a colour (a found Index tile, today's reward).
+	Surface = 0.92,
+	SurfaceHi = 0.86,
+	SurfaceEdge = 0.7,
+	Tinted = 0.72,
+	-- Insets (tab bars, bar tracks, wallet chips): a darker pane of Colors.Ink.
+	Inset = 0.7,
+	-- Coloured cards (shop banners and packs): the card's own colour as glass, with a glow.
+	Card = 0.38,
+	CardGlow = 0.7,
+	-- The world behind an open window: BlurEffect size and the backdrop's dim.
+	Blur = 12,
+	Dim = 0.5,
+}
+
 -- The 3D world's palette: a sunny "Muscle Beach" gym in clear afternoon light. Teal and blue
 -- dominate (mats, walls, fences, machines, display), sunny yellow is the accent (awnings, chute,
 -- buy pads, crates) and red-orange is the sparing pop (sign headers, special pads, Chad shirts).
@@ -66154,21 +66187,12 @@ type Card = {
 	state: string,
 }
 
--- Repaints a Kit.panel body (gradient, outline and lip) in `color`.
-local function paint(frame: Frame, color: Color3, strokeColor: Color3?, thickness: number?)
-	local lipColor = Kit.lip(color)
-	local gradient = frame:FindFirstChildOfClass("UIGradient")
-	if gradient then
-		gradient.Color = ColorSequence.new(Kit.lighten(color, 0.1), color:Lerp(lipColor, 0.12))
-	end
+-- Repaints a day card's glass: plain, or tinted `tint` with a solid `edge` outline.
+local function paint(frame: Frame, tint: Color3?, transparency: number?, edge: Color3?, thickness: number?)
+	Kit.paintGlass(frame, tint, transparency, edge)
 	local stroke = frame:FindFirstChildOfClass("UIStroke")
 	if stroke then
-		stroke.Color = strokeColor or lipColor
-		stroke.Thickness = thickness or 1.5
-	end
-	local lip = frame:FindFirstChild("Lip")
-	if lip and lip:IsA("Frame") then
-		lip.BackgroundColor3 = lipColor
+		stroke.Thickness = thickness or 1
 	end
 end
 
@@ -66223,7 +66247,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	local cards: { Card } = {}
 	local frames: { GuiObject } = {}
 	for day, reward in DailyReward.REWARDS do
-		local frame = Kit.panel(grid, { Name = "Day" .. day, Elevated = true, Radius = Kit.RADIUS.M })
+		local frame = Kit.glass(grid, { Name = "Day" .. day, Radius = Kit.RADIUS.M })
 		local header = Kit.text(frame, {
 			Name = "Header",
 			Text = "DAY " .. day,
@@ -66414,12 +66438,13 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		if card.extra then
 			card.extra.TextTransparency = if claimed then 0.4 else 0
 		end
+		-- Today: sunny glass in a gold outline. Claimed: a fainter pane. Ahead: plain glass.
 		if state == "today" then
-			paint(card.frame, C.SurfaceHiTop, C.Gold, 3)
+			paint(card.frame, C.Gold, Theme.Glass.Tinted, C.Gold, 2.5)
 		elseif claimed then
-			paint(card.frame, C.Surface:Lerp(C.Well, 0.5))
+			paint(card.frame, nil, 0.95)
 		else
-			paint(card.frame, C.SurfaceHi)
+			paint(card.frame)
 		end
 		Kit.setGlow(card.frame, state == "today", C.Gold)
 	end
@@ -68433,7 +68458,10 @@ return Hud
               <string name="Source"><![CDATA[--[[
 	Kit: the design system for the code-built UI.
 
-	Visual language: "bright toy". Royal-blue panels that read as chunky
+	Visual language: glass windows, toy controls. Windows are translucent
+	blue-tinted panes with a thin light edge over the blurred world, and their
+	rows and cards are lighter glass (Kit.window, Kit.glass, Kit.panel Glass;
+	tokens in Theme.Glass). HUD panels, popups and buttons read as chunky
 	moulded plastic: lighter at the top, a thin white highlight along the top
 	inner edge, a darker blue lip along the bottom and a soft navy shadow.
 	Wells are a deeper blue. Sunny yellow (orange lip, Ink text) is the one
@@ -68633,6 +68661,7 @@ local WHITE = Color3.new(1, 1, 1)
 local BLACK = Color3.new(0, 0, 0)
 local C = Kit.C
 local F = Kit.F
+local G = Theme.Glass
 
 -- Face colour of disabled buttons (a quiet blue-grey that still reads as plastic).
 local DISABLED = Color3.fromRGB(150, 166, 212)
@@ -70607,6 +70636,151 @@ function Kit.hitArea(button: GuiButton, size: number, onClick: () -> ()): TextBu
 	return hit
 end
 
+-- Glass ---------------------------------------------------------------------------------
+--[[
+	Windows are glass: translucent panes over the world, which Kit.setBlur blurs
+	and the caller's backdrop dims lightly while one is open (Roblox has no
+	backdrop blur per frame, so the frosting is the world blur under a tint).
+	All of it is static instances: nothing here runs per frame. Tokens live in
+	Theme.Glass. Text on glass is white; primary buttons, rarity colours,
+	currency chips and badges stay solid so the eye lands on them.
+]]
+
+-- The glass edge: a thin stroke, brightest along the top (`top` transparency)
+-- and fading toward `bottom`. The fade lives in the stroke's UIGradient, so
+-- Color and Transparency may be repainted.
+local function glassEdge(parent: Instance, color: Color3, thickness: number, top: number, bottom: number): UIStroke
+	local stroke = Kit.new("UIStroke", {
+		Name = "Edge",
+		Thickness = thickness,
+		Color = color,
+		Transparency = top,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
+		Parent = parent,
+	})
+	local fade = 1 - (1 - math.max(bottom, top)) / math.max(1 - top, 0.01)
+	Kit.new("UIGradient", { Rotation = 90, Transparency = NumberSequence.new(0, fade), Parent = stroke })
+	return stroke
+end
+
+-- Soft ring just outside the edge of `parent` (a coloured glow, or a pane's
+-- navy halo): a hollow frame with a wide faint stroke, so nothing is drawn
+-- behind the translucent body.
+local function halo(parent: GuiObject, name: string, radius: number, color: Color3, thickness: number, transparency: number): Frame
+	local ring = Kit.new("Frame", {
+		Name = name,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 4, 1, 4),
+		Position = UDim2.fromOffset(-2, -2),
+		ZIndex = parent.ZIndex,
+		Parent = parent,
+	})
+	Kit.corner(ring, radius + 2)
+	Kit.new("UIStroke", { Thickness = thickness, Color = color, Transparency = transparency, Parent = ring })
+	chrome(ring)
+	return ring
+end
+
+--[[
+	Kit.paintGlass(frame, tint?, transparency?, edge?): repaints a glass surface
+	(Kit.glass, or a Kit.panel built with Glass). tint nil = plain white glass,
+	else glass in that colour (G.Tinted). `transparency` overrides the fill.
+	`edge` is a solid outline colour (a rarity, the player's own row); without
+	it the edge is the faint light one (white, or the tint lightened).
+]]
+local GLASS_FILL = ColorSequence.new(WHITE, Color3.new(0.84, 0.9, 1))
+function Kit.paintGlass(frame: GuiObject, tint: Color3?, transparency: number?, edge: Color3?)
+	frame.BackgroundTransparency = transparency or (if tint then G.Tinted else G.Surface)
+	local gradient = frame:FindFirstChildOfClass("UIGradient")
+	if gradient then
+		gradient.Color = if tint then ColorSequence.new(Kit.lighten(tint, 0.2), tint) else GLASS_FILL
+	end
+	local stroke = frame:FindFirstChildOfClass("UIStroke")
+	if stroke then
+		stroke.Color = edge or (if tint then Kit.lighten(tint, 0.5) else G.Edge)
+		stroke.Transparency = if edge then 0.05 elseif tint then 0.4 else G.SurfaceEdge
+	end
+end
+
+--[[
+	Glass surface for the rows, cells and stat boxes inside a window: white
+	glass with a thin light edge. props: Size, Position, AnchorPoint,
+	LayoutOrder, Visible, Name, ZIndex, Radius, Color (tints it), Transparency
+	(fill), Raised (a brighter pane), StrokeThickness, StrokeColor. As with
+	Kit.panel the fill colour lives in the frame's UIGradient (the frame itself
+	is white) and the edge is its UIStroke; Kit.paintGlass repaints both. Adds
+	no child frames, so it is safe as a layout container.
+]]
+function Kit.glass(parent: Instance, props: { [string]: any }): Frame
+	local frame = Kit.new("Frame", {
+		Name = props.Name or "Glass",
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+		Size = props.Size or UDim2.fromOffset(200, 100),
+		Position = props.Position or UDim2.new(),
+		AnchorPoint = props.AnchorPoint or Vector2.zero,
+		LayoutOrder = props.LayoutOrder or 0,
+		Visible = if props.Visible == nil then true else props.Visible,
+		ZIndex = props.ZIndex or 1,
+		Parent = parent,
+	})
+	Kit.corner(frame, props.Radius or Kit.RADIUS.M)
+	Kit.new("UIGradient", { Rotation = 90, Parent = frame })
+	glassEdge(frame, G.Edge, props.StrokeThickness or 1, G.SurfaceEdge, 0.9)
+	Kit.paintGlass(
+		frame,
+		props.Color,
+		props.Transparency or (if props.Raised and not props.Color then G.SurfaceHi else nil),
+		props.StrokeColor
+	)
+	return frame
+end
+
+-- Kit.panel's glass builds: "body" is a window pane, a Color makes a coloured
+-- card with a glow in its own colour, and anything else is a Kit.glass surface.
+local function glassPanel(parent: Instance, props: { [string]: any }): Frame
+	local body = props.Glass == "body"
+	local color: Color3? = props.Color
+	if not body and not color then
+		props.Name = props.Name or "Panel"
+		props.Radius = props.Radius or Kit.RADIUS.L
+		props.Raised = props.Elevated
+		return Kit.glass(parent, props)
+	end
+	local radius = props.Radius or (if body then G.Radius else Kit.RADIUS.L)
+	local frame = Kit.new("Frame", {
+		Name = props.Name or "Panel",
+		BackgroundColor3 = WHITE,
+		BackgroundTransparency = props.Transparency or (if body then G.Body else G.Card),
+		BorderSizePixel = 0,
+		Size = props.Size or UDim2.fromOffset(200, 100),
+		Position = props.Position or UDim2.new(),
+		AnchorPoint = props.AnchorPoint or Vector2.zero,
+		LayoutOrder = props.LayoutOrder or 0,
+		Visible = if props.Visible == nil then true else props.Visible,
+		ZIndex = props.ZIndex or 1,
+		Parent = parent,
+	})
+	Kit.corner(frame, radius)
+	if color then
+		Kit.gradient(frame, Kit.lighten(color, 0.2), Kit.darken(color, 0.1))
+		glassEdge(frame, props.StrokeColor or Kit.lighten(color, 0.5), props.StrokeThickness or 2, 0, 0.65)
+		highlight(frame, radius, G.Highlight)
+		halo(frame, "Aura", radius, props.GlowColor or color, 5, G.CardGlow)
+	else
+		Kit.gradient(frame, G.TintTop, G.Tint)
+		glassEdge(frame, props.StrokeColor or G.Edge, props.StrokeThickness or G.EdgeThickness, G.EdgeTop, G.EdgeBottom)
+		highlight(frame, radius, G.Highlight)
+		-- A soft navy halo, tighter near the edge, in place of the plastic lip.
+		halo(frame, "Halo", radius, C.Ink, 4, G.Shadow)
+		halo(frame, "HaloWide", radius, C.Ink, 10, 1 - (1 - G.Shadow) * 0.5)
+	end
+	if props.Shadow ~= false then
+		Kit.shadow(frame, radius, if body then 2 else 1, 0)
+	end
+	return frame
+end
+
 -- Panels / pills ----------------------------------------------------------------------
 
 --[[
@@ -70618,8 +70792,17 @@ end
 	Transparency. The body colour lives in the frame's UIGradient (the frame
 	itself is white) and the outline is its UIStroke; both may be recoloured.
 	Chrome children (Highlight, Lip, Shadow) carry the KitChrome attribute.
+
+	Glass = true builds the panel as glass instead, for anything inside a window
+	(HUD pieces over the unblurred world stay plastic): a Kit.glass surface, or
+	with a Color a coloured glass card (tinted gradient, light edge, a glow in
+	its own colour or GlowColor: chrome Highlight, Aura, Shadow). Glass = "body" is the
+	window pane itself (Kit.window).
 ]]
 function Kit.panel(parent: Instance, props: { [string]: any }): Frame
+	if props.Glass then
+		return glassPanel(parent, props)
+	end
 	local color: Color3 = props.Color or (if props.Elevated then C.SurfaceHi else C.Surface)
 	local frame = Kit.new("Frame", {
 		BackgroundColor3 = WHITE,
@@ -70651,11 +70834,14 @@ end
 -- Deeper-blue inset well inside a panel: slightly shaded along its top edge
 -- (a multiplying gradient, so BackgroundColor3 can be recoloured) and a thin
 -- darker outline. Adds no child frames, so it is safe as a layout container.
+-- Glass = true: the inset of a glass window (tab bars, tracks), a darker pane
+-- of Ink (G.Inset) with a faint light edge.
 function Kit.well(parent: Instance, props: { [string]: any }): Frame
+	local glass = props.Glass == true
 	local frame = Kit.new("Frame", {
 		Name = props.Name or "Well",
-		BackgroundColor3 = props.Color or C.Well,
-		BackgroundTransparency = props.Transparency or 0,
+		BackgroundColor3 = props.Color or (if glass then C.Ink else C.Well),
+		BackgroundTransparency = props.Transparency or (if glass then G.Inset else 0),
 		BorderSizePixel = 0,
 		Size = props.Size or UDim2.fromScale(1, 1),
 		Position = props.Position or UDim2.new(),
@@ -70677,8 +70863,8 @@ function Kit.well(parent: Instance, props: { [string]: any }): Frame
 	})
 	Kit.new("UIStroke", {
 		Thickness = 1,
-		Color = C.Edge,
-		Transparency = 0.3,
+		Color = if glass then G.Edge else C.Edge,
+		Transparency = if glass then 0.8 else 0.3,
 		ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
 		Parent = frame,
 	})
@@ -70823,14 +71009,17 @@ function Kit.setGlow(target: GuiObject, on: boolean, color: Color3?)
 	glowTweens[holder] = tween
 end
 
--- Horizontal progress bar in a deep-blue track: the fill is a moulded strip
--- (lighter on top, white highlight) that eases to each new value. Returns the
--- frame, a setter (0..1, instant?) and the label.
+-- Horizontal progress bar in a deep-blue track (props.Glass: a dark glass
+-- track): the fill is a moulded strip (lighter on top, white highlight) that
+-- eases to each new value. Returns the frame, a setter (0..1, instant?) and
+-- the label.
 function Kit.progress(parent: Instance, props: { [string]: any }): (Frame, (number) -> (), TextLabel)
 	local color: Color3 = props.Color or C.Good
+	local glass = props.Glass == true
 	local track = Kit.new("Frame", {
 		Name = props.Name or "Progress",
-		BackgroundColor3 = props.TrackColor or C.Well,
+		BackgroundColor3 = props.TrackColor or (if glass then C.Ink else C.Well),
+		BackgroundTransparency = if glass then G.Inset - 0.2 else 0,
 		BorderSizePixel = 0,
 		Size = props.Size or UDim2.new(1, 0, 0, 20),
 		Position = props.Position or UDim2.new(),
@@ -70840,7 +71029,12 @@ function Kit.progress(parent: Instance, props: { [string]: any }): (Frame, (numb
 		Parent = parent,
 	})
 	Kit.round(track)
-	Kit.new("UIStroke", { Thickness = 1.5, Color = C.Edge, Transparency = 0.15, Parent = track })
+	Kit.new("UIStroke", {
+		Thickness = 1.5,
+		Color = if glass then G.Edge else C.Edge,
+		Transparency = if glass then 0.6 else 0.15,
+		Parent = track,
+	})
 	local fill = Kit.new("Frame", {
 		Name = "Fill",
 		BackgroundColor3 = WHITE,
@@ -70883,16 +71077,18 @@ function Kit.progress(parent: Instance, props: { [string]: any }): (Frame, (numb
 	return track, set, label
 end
 
--- On/off switch: deep-blue track that turns mint when on, white knob that
--- springs across. props.Large: a 70x32 track with a 14 px ON/OFF label (else
+-- On/off switch: a dark glass track that turns solid mint when on, white knob
+-- that springs across. props.Large: a 70x32 track with a 14 px ON/OFF label (else
 -- 56x30 with a 10 px label). Returns the hit button and a setter (value, locked?).
+local SWITCH_OFF = G.Inset - 0.25
 function Kit.switch(parent: Instance, props: { [string]: any }, onToggle: () -> ()): (TextButton, (boolean, boolean?) -> ())
 	local large = props.Large == true
 	local w, h = if large then 70 else 56, if large then 32 else 30
 	local button = Kit.new("TextButton", {
 		Name = props.Name or "Switch",
 		AutoButtonColor = false,
-		BackgroundColor3 = C.Well,
+		BackgroundColor3 = C.Ink,
+		BackgroundTransparency = SWITCH_OFF,
 		Text = "",
 		Size = UDim2.fromOffset(w, h),
 		Position = props.Position or UDim2.new(),
@@ -70901,7 +71097,7 @@ function Kit.switch(parent: Instance, props: { [string]: any }, onToggle: () -> 
 		Parent = parent,
 	})
 	Kit.round(button)
-	local edge = Kit.new("UIStroke", { Thickness = 1.5, Color = C.Edge, Parent = button })
+	local edge = Kit.new("UIStroke", { Thickness = 1.5, Color = G.Edge, Transparency = 0.6, Parent = button })
 	local stateLabel = Kit.text(button, {
 		Name = "State",
 		Text = "",
@@ -70939,14 +71135,19 @@ function Kit.switch(parent: Instance, props: { [string]: any }, onToggle: () -> 
 		locked = isLocked == true
 		lockIcon.Visible = locked
 		if locked then
-			Kit.tween(button, 0.18, { BackgroundColor3 = C.Well })
-			edge.Color = C.Edge
+			Kit.tween(button, 0.18, { BackgroundColor3 = C.Ink, BackgroundTransparency = SWITCH_OFF })
+			edge.Color = G.Edge
+			edge.Transparency = 0.6
 			stateLabel.Text = ""
 			Kit.tween(knob, 0.22, { Position = UDim2.new(0, 4, 0.5, 0) }, Enum.EasingStyle.Back)
 			return
 		end
-		Kit.tween(button, 0.18, { BackgroundColor3 = if value then C.Cash else C.Well })
-		edge.Color = if value then C.CashDeep else C.Edge
+		Kit.tween(button, 0.18, {
+			BackgroundColor3 = if value then C.Cash else C.Ink,
+			BackgroundTransparency = if value then 0 else SWITCH_OFF,
+		})
+		edge.Color = if value then C.CashDeep else G.Edge
+		edge.Transparency = if value then 0 else 0.6
 		stateLabel.Text = if value then "ON" else "OFF"
 		stateLabel.TextColor3 = if value then C.GoldInk else C.TextDim
 		stateLabel.Position = if value then UDim2.fromOffset(4, 0) else UDim2.fromOffset(h - 4, 0)
@@ -70962,8 +71163,8 @@ function Kit.switch(parent: Instance, props: { [string]: any }, onToggle: () -> 
 end
 
 --[[
-	Segmented tab bar in a well. The selected tab is a moulded pill in the
-	accent colour that glides between slots. props:
+	Segmented tab bar: a dark glass pill. The selected tab is a solid, bright
+	moulded pill in the accent colour that glides between slots. props:
 	  Items = { { key = "Passes", text = "Passes", icon = "Star"? }, ... }
 	  Color (indicator), Size, Position, AnchorPoint, LayoutOrder, TextSize
 	Returns the bar and a `select(key)` function; `onSelect(key)` fires on change.
@@ -70978,6 +71179,7 @@ function Kit.tabs(parent: Instance, props: { [string]: any }, onSelect: (string)
 		AnchorPoint = props.AnchorPoint or Vector2.zero,
 		LayoutOrder = props.LayoutOrder or 0,
 		Radius = 20,
+		Glass = true,
 	})
 	local n = #items
 	local function slot(i: number): (UDim2, UDim2)
@@ -71008,7 +71210,7 @@ function Kit.tabs(parent: Instance, props: { [string]: any }, onSelect: (string)
 		local pos, size = slot(index)
 		Kit.tween(indicator, 0.24, { Position = pos, Size = size }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 		for k, label in labels do
-			Kit.tween(label, 0.18, { TextColor3 = if k == key then Kit.inkOn(color) else C.TextDim })
+			Kit.tween(label, 0.18, { TextColor3 = if k == key then Kit.inkOn(color) else C.Text })
 		end
 		if selected ~= key then
 			selected = key
@@ -71032,7 +71234,7 @@ function Kit.tabs(parent: Instance, props: { [string]: any }, onSelect: (string)
 			Text = string.upper(item.text),
 			Font = F.UI,
 			TextSize = props.TextSize or Kit.TEXT.Small,
-			TextColor3 = C.TextDim,
+			TextColor3 = C.Text,
 			TextWrapped = false,
 			ZIndex = 3,
 			StrokeThickness = 0,
@@ -71097,7 +71299,9 @@ end
 
 -- Windows ------------------------------------------------------------------------------
 
--- Scene blur while any window or modal is open (reference counted).
+-- Scene blur while any window or modal is open: one shared BlurEffect,
+-- reference counted (every opener calls it once with true and once with false),
+-- so nested windows and popups ease it in and out once.
 local blurCount = 0
 local blur: BlurEffect? = nil
 function Kit.setBlur(on: boolean)
@@ -71110,7 +71314,7 @@ function Kit.setBlur(on: boolean)
 			effect.Parent = Lighting
 			blur = effect
 		end
-		Kit.tween(blur :: BlurEffect, 0.22, { Size = 8 })
+		Kit.tween(blur :: BlurEffect, 0.22, { Size = G.Blur })
 	elseif blur then
 		Kit.tween(blur :: BlurEffect, 0.18, { Size = 0 })
 	end
@@ -71281,19 +71485,24 @@ export type Window = {
 }
 
 --[[
-	Standard window: a moulded blue panel under one shared royal-blue header
-	band (white highlight, white title); only the round icon chip and the thin
-	strip under the band carry the window's accent `color`. Coral close button,
-	deep-blue content well. Opens with Kit.appear (scale + fade, 0.22 s Back)
-	and closes with Kit.disappear (0.14 s). Blurs the scene while open and sets
-	the WindowOpen attribute; the caller owns the dimming backdrop
-	(Kit.backdrop + Kit.fadeBackdrop).
+	Standard window: a glass pane (Kit.panel Glass = "body": translucent blue
+	tint, light edge, soft halo) the blurred world shows through. No title bar:
+	the icon and the chunky outlined title sit straight on the glass over a thin
+	divider line that starts in the window's accent `color`. Coral close button;
+	the content area is clear, so rows and cards (Kit.glass, Kit.panel Glass)
+	sit on the pane itself. Opens with a quick pop (Kit.appear: scale + fade,
+	0.2 s Back) and closes faster (Kit.disappear, 0.11 s); input is live from
+	the first frame. Blurs the scene while open and sets the WindowOpen
+	attribute; the caller owns the dimming backdrop (Kit.backdrop +
+	Kit.fadeBackdrop at Kit.GLASS_DIM).
 
-	The panel ("Panel") sits in a centred holder named `name` that Kit.fit
+	The pane ("Panel") sits in a centred holder named `name` that Kit.fit
 	keeps inside the visible area: it narrows toward `minSize` first (content
 	built with scale sizes reflows; listen to onResize for column counts), then
-	scales down as a whole.
+	scales down as a whole. Header children: Chip (the icon), Title, Shade (the
+	divider), Close.
 ]]
+Kit.GLASS_DIM = 1 - G.Dim
 function Kit.window(screen: ScreenGui, name: string, title: string, icon: string, color: Color3, size: Vector2, minSize: Vector2?): Window
 	local holder = Kit.new("Frame", {
 		Name = name,
@@ -71307,100 +71516,85 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 	})
 	local frame = Kit.panel(holder, {
 		Name = "Panel",
+		Glass = "body",
 		Size = UDim2.fromScale(1, 1),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Visible = false,
-		StrokeThickness = 2,
-		Radius = Kit.RADIUS.XL,
 	})
 	frame.ZIndex = 10
 	scaleOf(frame)
 
-	-- Shared header: royal blue, lighter at the top.
-	local bandTop, bandBottom = C.SurfaceHiTop, C.SurfaceHi
+	-- Header row: clear, so the title reads as HUD text on the glass.
 	local header = Kit.new("Frame", {
 		Name = "Header",
-		BackgroundColor3 = WHITE,
-		BorderSizePixel = 0,
+		BackgroundTransparency = 1,
 		Size = UDim2.new(1, 0, 0, 56),
 		ZIndex = 2,
 		Parent = frame,
 	})
-	Kit.corner(header, Kit.RADIUS.XL)
-	Kit.new("UIGradient", { Color = ColorSequence.new(Kit.lighten(bandTop, 0.08), bandBottom), Rotation = 90, Parent = header })
-	-- Square off the bottom corners of the band.
-	local cover = Kit.new("Frame", {
-		Name = "Cover",
+	-- Divider: a thin line under the row, the accent colour running out into clear glass.
+	local shade = Kit.new("Frame", {
+		Name = "Shade",
 		BackgroundColor3 = WHITE,
 		BorderSizePixel = 0,
-		Size = UDim2.new(1, 0, 0, 24),
-		Position = UDim2.new(0, 0, 1, -24),
+		Size = UDim2.new(1, -28, 0, 2),
+		Position = UDim2.new(0, 14, 1, 3),
 		ZIndex = 2,
 		Parent = header,
 	})
+	Kit.round(shade)
 	Kit.new("UIGradient", {
-		Color = ColorSequence.new(Kit.lighten(bandTop, 0.08):Lerp(bandBottom, 32 / 56), bandBottom),
-		Rotation = 90,
-		Parent = cover,
-	})
-	-- White highlight along the top inner edge of the band.
-	highlight(header, Kit.RADIUS.XL, 0.3).ZIndex = 3
-	-- Thin accent strip under the band (the window's small accent).
-	Kit.new("Frame", {
-		Name = "Shade",
-		BackgroundColor3 = color,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, 0, 0, 4),
-		Position = UDim2.new(0, 0, 1, 0),
-		ZIndex = 2,
-		Parent = header,
+		Color = ColorSequence.new(Kit.lighten(color, 0.2), WHITE),
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.05),
+			NumberSequenceKeypoint.new(0.45, 0.55),
+			NumberSequenceKeypoint.new(1, 0.9),
+		}),
+		Parent = shade,
 	})
 
-	-- Round icon chip in the accent colour with a white rim.
+	-- The icon, straight on the glass with a soft shadow (no chip behind it).
 	local chip = Kit.new("Frame", {
 		Name = "Chip",
-		BackgroundColor3 = WHITE,
-		BorderSizePixel = 0,
+		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(42, 42),
-		Position = UDim2.new(0, 10, 0.5, 0),
+		Position = UDim2.new(0, 14, 0.5, 1),
 		AnchorPoint = Vector2.new(0, 0.5),
 		ZIndex = 3,
 		Parent = header,
 	})
-	Kit.round(chip)
-	Kit.gradient(chip, Kit.lighten(color, 0.3), color)
-	Kit.new("UIStroke", { Thickness = 2.5, Color = WHITE, Transparency = 0.05, Parent = chip })
 	local iconName = Kit.iconName(icon)
 	if iconName then
-		Kit.icon(chip, iconName, 30, Kit.inkOn(color), {
+		Kit.hudIcon(chip, iconName, 38, Kit.lighten(color, 0.15), {
 			Name = "Icon",
 			Position = UDim2.fromScale(0.5, 0.5),
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			ZIndex = 4,
 		})
 	else
-		Kit.text(chip, { Name = "Icon", Text = icon, TextSize = 24, Size = UDim2.fromScale(1, 1), StrokeThickness = 0, ZIndex = 4 })
+		Kit.text(chip, { Name = "Icon", Text = icon, TextSize = 30, Size = UDim2.fromScale(1, 1), StrokeThickness = 0, ZIndex = 4 })
 	end
 
-	Kit.title(header, {
+	Kit.hudText(header, {
 		Name = "Title",
 		Text = string.upper(title),
-		TextSize = Kit.TEXT.H1,
+		TextSize = Kit.TEXT.H1 + 2,
 		TextColor3 = C.Text,
-		TextWrapped = false,
-		Size = UDim2.new(1, -130, 1, 0),
-		Position = UDim2.fromOffset(64, 1),
+		Size = UDim2.new(1, -134, 1, 0),
+		Position = UDim2.fromOffset(66, 2),
 		TextXAlignment = Enum.TextXAlignment.Left,
-		StrokeThickness = 0,
 		ZIndex = 3,
 	})
 
-	local content = Kit.well(frame, {
+	-- Content: clear glass (the pane is the surface), same box and padding as ever.
+	local content = Kit.new("Frame", {
 		Name = "Content",
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
 		Size = UDim2.new(1, -24, 1, -84),
 		Position = UDim2.fromOffset(12, 72),
-		Radius = Kit.RADIUS.M,
+		Parent = frame,
 	})
 	Kit.padding(content, 10)
 
@@ -71424,7 +71618,7 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 		Kit.markOpen(screen, "Window:" .. name, value)
 		if value then
 			holder.Visible = true
-			Kit.appear(frame)
+			Kit.appear(frame, { from = 0.9, time = 0.2 })
 			Kit.setBlur(true)
 			Kit.sound("Open")
 			onOpen:Fire()
@@ -71437,6 +71631,7 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 		else
 			Kit.unfocus(holder)
 			Kit.disappear(frame, {
+				time = 0.11,
 				onDone = function()
 					holder.Visible = false
 				end,
@@ -71451,7 +71646,7 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 		IconColor = C.Text,
 		Color = C.Danger,
 		Size = UDim2.fromOffset(40, 40),
-		Position = UDim2.new(1, -10, 0.5, -1),
+		Position = UDim2.new(1, -12, 0.5, 1),
 		AnchorPoint = Vector2.new(1, 0.5),
 		Radius = 20,
 		Depth = 4,
@@ -71499,8 +71694,9 @@ function Kit.scrolling(parent: Instance, props: { [string]: any }?): ScrollingFr
 		BorderSizePixel = 0,
 		Size = p.Size or UDim2.fromScale(1, 1),
 		Position = p.Position or UDim2.new(),
-		ScrollBarThickness = 5,
-		ScrollBarImageColor3 = C.SurfaceHiTop,
+		ScrollBarThickness = 4,
+		ScrollBarImageColor3 = WHITE,
+		ScrollBarImageTransparency = 0.45,
 		VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 		CanvasSize = UDim2.new(),
@@ -71912,13 +72108,8 @@ type Card = {
 	body: CanvasGroup,
 	chevron: TextLabel,
 	stroke: UIStroke?,
-	fill: UIGradient?,
 	setPips: (number) -> (),
 }
-
--- Card body fills: the panel's own ramp, and a lighter one for the selected card.
-local CARD_FILL = ColorSequence.new(Kit.lighten(C.SurfaceHi, 0.1), C.SurfaceHi:Lerp(Kit.lip(C.SurfaceHi), 0.12))
-local CARD_FILL_SELECTED = ColorSequence.new(Kit.lighten(C.SurfaceHi, 0.26), Kit.lighten(C.SurfaceHi, 0.12))
 
 -- Grey version of an accent for locked bands: its luminance, pulled toward a cool slate.
 local function desaturate(color: Color3): Color3
@@ -71963,7 +72154,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 
 	local side = Kit.panel(window.content, {
 		Name = "Side",
-		Elevated = true,
+		Glass = true,
 		Size = UDim2.new(0, SIDE_W, 1, 0),
 		Position = UDim2.fromScale(1, 0),
 		AnchorPoint = Vector2.new(1, 0),
@@ -72214,7 +72405,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 	for i = 1, MAP_COUNT do
 		local frame = Kit.panel(grid, {
 			Name = "Map" .. i,
-			Elevated = true,
+			Glass = true,
 			Size = UDim2.fromScale(1, 1),
 			LayoutOrder = i,
 			Radius = Kit.RADIUS.M,
@@ -72367,7 +72558,6 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			body = body,
 			chevron = chevron,
 			stroke = frame:FindFirstChildOfClass("UIStroke"),
-			fill = frame:FindFirstChildOfClass("UIGradient"),
 			setPips = setPips,
 		}
 		cards[i] = card
@@ -72418,15 +72608,13 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		else
 			card.stats.Text = if best > 0 then "Best " .. deps.runTime(best) else deps.plural(clears, "clear")
 		end
-		-- Selected: thick gold rim, a lighter body and a gold chevron.
+		-- Selected: a gold rim, brighter glass and a gold chevron.
 		local isSelected = i == selected
 		local stroke = card.stroke
-		if stroke then
-			stroke.Color = if isSelected then C.Gold else Kit.lip(C.SurfaceHi)
-			stroke.Thickness = if isSelected then 4 else 1.5
-		end
-		if card.fill then
-			card.fill.Color = if isSelected then CARD_FILL_SELECTED else CARD_FILL
+		local pane = stroke and stroke.Parent
+		if stroke and pane and pane:IsA("GuiObject") then
+			Kit.paintGlass(pane, nil, if isSelected then Theme.Glass.SurfaceHi - 0.08 else nil, if isSelected then C.Gold else nil)
+			stroke.Thickness = if isSelected then 3 else 1
 		end
 		card.chevron.Visible = isSelected
 	end
@@ -80528,11 +80716,13 @@ return Tutorial
 	Only one is open at a time. A dimmed backdrop sits behind the open window;
 	clicking it, the X button, Escape or the gamepad B button closes it.
 
-	Look: lighter-blue raised tiles on the window's deep-blue well, one accent
-	colour per window. Every shop price sits on the same mint button (one
-	height, one text size) with an idle sheen.
-	Motion: cards ripple in when a window or tab opens, shop tabs cross-fade
-	and slide from the side of the tab, numbers count, bars and switches ease.
+	Look: glass. Each window is a translucent pane over the blurred, lightly
+	dimmed world (Kit.window); rows and tiles are lighter glass and shop cards
+	are glass in their own colour, with one accent colour per window. Every shop
+	price sits on the same solid mint button (one height, one text size) with an
+	idle sheen.
+	Motion: a window pops open; its cards ripple in the first time it opens,
+	numbers count, bars and switches ease.
 ]]
 
 local Players = game:GetService("Players")
@@ -80623,7 +80813,7 @@ function Windows.open(name: string, opts: { focus: string? }?)
 	if target and target.isOpen() then
 		focusWindow(name)
 	end
-	Kit.fadeBackdrop(backdrop, anyOpen())
+	Kit.fadeBackdrop(backdrop, anyOpen(), Kit.GLASS_DIM)
 	Windows.changed:Fire()
 	if name == "Shop" and target and target.isOpen() then
 		-- Shop funnel step 1 (Server.Analytics).
@@ -80644,7 +80834,7 @@ end
 local function register(name: string, window: Kit.Window)
 	windows[name] = window
 	window.onClose.Event:Connect(function()
-		Kit.fadeBackdrop(backdrop, anyOpen())
+		Kit.fadeBackdrop(backdrop, anyOpen(), Kit.GLASS_DIM)
 		Windows.changed:Fire()
 	end)
 end
@@ -80658,31 +80848,28 @@ local function clearChildren(parent: Instance, className: string?)
 	end
 end
 
---[[
-	Cards ease in one after another, 25 ms apart (scale only: the window's own
-	fade covers transparency, so a card never keeps a half-faded look when the
-	window closes mid-animation).
-]]
-local function ripple(cards: { GuiObject })
-	for i, gui in cards do
-		Kit.appear(gui, { from = 0.9, time = 0.26, delay = math.min(i - 1, 12) * 0.025, fade = false })
+-- Cards that have made their entrance: each one eases in the first time its
+-- window opens and is simply there on every later open.
+local entered: { [Instance]: boolean } = setmetatable({}, { __mode = "k" }) :: any
+local function firstTime(cards: { GuiObject }): { GuiObject }
+	local fresh: { GuiObject } = {}
+	for _, gui in cards do
+		if not entered[gui] then
+			entered[gui] = true
+			table.insert(fresh, gui)
+		end
 	end
+	return fresh
 end
 
--- Repaints a Kit.panel body (gradient, outline and lip) in `color`.
-local function paintPanel(frame: Frame, color: Color3, strokeColor: Color3?)
-	local lipColor = Kit.lip(color)
-	local gradient = frame:FindFirstChildOfClass("UIGradient")
-	if gradient then
-		gradient.Color = ColorSequence.new(Kit.lighten(color, 0.1), color:Lerp(lipColor, 0.12))
-	end
-	local stroke = frame:FindFirstChildOfClass("UIStroke")
-	if stroke then
-		stroke.Color = strokeColor or lipColor
-	end
-	local lip = frame:FindFirstChild("Lip")
-	if lip and lip:IsA("Frame") then
-		lip.BackgroundColor3 = lipColor
+--[[
+	Cards ease in one after another, 25 ms apart, the first time they are shown
+	(scale only: the window's own fade covers transparency, so a card never
+	keeps a half-faded look when the window closes mid-animation).
+]]
+local function ripple(cards: { GuiObject })
+	for i, gui in firstTime(cards) do
+		Kit.appear(gui, { from = 0.9, time = 0.26, delay = math.min(i - 1, 12) * 0.025, fade = false })
 	end
 end
 
@@ -80888,6 +81075,7 @@ local PRICE_H = 42 -- every price button
 local PRICE_TEXT = 20
 local FADE_H = 30 -- soft fade along the bottom edge of the page
 local MIN_TEXT = 14 -- no shop text renders smaller (TextScaled labels included)
+local INSET = 0.4 -- darker panes inside a glass card (descriptions, contents chips)
 
 -- TextScaled labels in the shop never shrink below MIN_TEXT.
 local function minText(label: TextLabel): TextLabel
@@ -80911,9 +81099,11 @@ end
 
 --[[
 	Banner look shared by the pass banners, the Starter and All Cosmetics cards
-	and the pack cards: a diagonal two-tone candy gradient, a thick darker
-	outline, and a clipped holder for the idle sheen. The holder is inset by
-	half the corner radius so the sheen never pokes past the rounded corners.
+	and the pack cards, on top of Kit.panel's coloured glass card: a diagonal
+	two-tone candy tint that thins out toward the far corner (so more of the
+	world shows through there), a light edge in the card's colour, and a clipped
+	holder for the idle sheen. The holder is inset by half the corner radius so
+	the sheen never pokes past the rounded corners.
 ]]
 local function bannerPaint(body: Frame, tint: Color3, radius: number, strokeColor: Color3?): Frame
 	local gradient = body:FindFirstChildOfClass("UIGradient")
@@ -80923,12 +81113,13 @@ local function bannerPaint(body: Frame, tint: Color3, radius: number, strokeColo
 			ColorSequenceKeypoint.new(0.5, tint),
 			ColorSequenceKeypoint.new(1, Kit.darken(tint, 0.16)),
 		})
+		gradient.Transparency = NumberSequence.new(0, 0.3)
 		gradient.Rotation = 24
 	end
 	local stroke = body:FindFirstChildOfClass("UIStroke")
 	if stroke then
-		stroke.Thickness = 3
-		stroke.Color = strokeColor or Kit.darken(tint, 0.38)
+		stroke.Thickness = 2
+		stroke.Color = strokeColor or Kit.lighten(tint, 0.55)
 	end
 	return Kit.new("Frame", {
 		Name = "SheenClip",
@@ -81016,7 +81207,7 @@ local DRIFT_SPOTS = {
 	{ 0.86, 0.9, 8 },
 }
 
--- Candy colours the header band drifts through.
+-- Candy colours the header divider drifts through.
 local CANDY = ColorSequence.new({
 	ColorSequenceKeypoint.new(0, Theme.World.Pink),
 	ColorSequenceKeypoint.new(0.25, Theme.World.Sunny),
@@ -81037,7 +81228,7 @@ local function buildShop(screen: ScreenGui)
 	-- Every open/close starts a new session; idle loops and delayed steps stop when it changes.
 	local session = 0
 	local idleStops: { () -> () } = {}
-	-- Repeating idle tweens (header drift, sparkles, glows): played on open; on close they
+	-- Repeating idle tweens (header divider, sparkles, glows): played on open; on close they
 	-- stop and snap back to their resting values, so every open starts from the same look.
 	local idleTweens: { { tween: Tween, gui: Instance, rest: { [string]: any } } } = {}
 	local function idleTween(gui: Instance, time: number, props: { [string]: any }, delay: number?)
@@ -81059,7 +81250,7 @@ local function buildShop(screen: ScreenGui)
 	end
 	local headerTitle = window.header:FindFirstChild("Title")
 	if headerTitle and headerTitle:IsA("TextLabel") then
-		headerTitle.Position = UDim2.fromOffset(84, 1)
+		headerTitle.Position = UDim2.fromOffset(84, 2)
 		headerTitle.Size = UDim2.new(0, 120, 1, 0)
 		headerTitle.TextSize = 33
 	end
@@ -81074,43 +81265,25 @@ local function buildShop(screen: ScreenGui)
 	local cartScale = Kit.new("UIScale", { Parent = cart })
 	productArt(cart, "Shop", "Shop", C.Gold, 88)
 
-	-- Header polish: candy colours drift slowly across the band, the accent strip under it
-	-- runs as a rainbow, and a sheen sweeps the band now and then (all only while open).
-	-- The tint keeps the band's rounded top corners and its square bottom: a rounded frame
-	-- taller than the band, cut off at the band's bottom edge by a clipping holder.
-	local driftClip = Kit.new("Frame", {
-		Name = "CandyClip",
-		BackgroundTransparency = 1,
-		ClipsDescendants = true,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 2,
-		Parent = window.header,
-	})
-	local drift = Kit.new("Frame", {
-		Name = "CandyDrift",
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		BackgroundTransparency = 0.8,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, 0, 1, Kit.RADIUS.XL + 8),
-		ZIndex = 2,
-		Parent = driftClip,
-	})
-	Kit.corner(drift, Kit.RADIUS.XL)
-	local driftGradient = Kit.new("UIGradient", { Color = CANDY, Offset = Vector2.new(-0.3, 0), Parent = drift })
-	idleTween(driftGradient, 7, { Offset = Vector2.new(0.3, 0) })
+	-- Header polish: the divider under the title runs as a slow rainbow and a sheen sweeps the
+	-- top of the glass now and then (both only while open).
 	local shade = window.header:FindFirstChild("Shade")
 	if shade and shade:IsA("Frame") then
-		shade.BackgroundColor3 = Color3.new(1, 1, 1)
-		shade.Size = UDim2.new(1, 0, 0, 5)
-		local shadeGradient = Kit.new("UIGradient", { Color = CANDY, Offset = Vector2.new(-0.25, 0), Parent = shade })
-		idleTween(shadeGradient, 4, { Offset = Vector2.new(0.25, 0) })
+		shade.Size = UDim2.new(1, -28, 0, 3)
+		local shadeGradient = shade:FindFirstChildOfClass("UIGradient")
+		if shadeGradient then
+			shadeGradient.Color = CANDY
+			shadeGradient.Transparency = NumberSequence.new(0.1, 0.45)
+			shadeGradient.Offset = Vector2.new(-0.25, 0)
+			idleTween(shadeGradient, 4, { Offset = Vector2.new(0.25, 0) })
+		end
 	end
 	local headerSheen = Kit.new("Frame", {
 		Name = "SheenClip",
 		BackgroundTransparency = 1,
 		ClipsDescendants = true,
-		Size = UDim2.new(1, -Kit.RADIUS.XL, 1, -6),
-		Position = UDim2.fromOffset(Kit.RADIUS.XL // 2, 3),
+		Size = UDim2.new(1, -Theme.Glass.Radius, 1, -6),
+		Position = UDim2.fromOffset(Theme.Glass.Radius // 2, 3),
 		ZIndex = 2,
 		Parent = window.header,
 	})
@@ -81167,6 +81340,7 @@ local function buildShop(screen: ScreenGui)
 		AnchorPoint = Vector2.new(0.5, 0),
 		Radius = SWITCH_H // 2,
 		ZIndex = 2,
+		Glass = true,
 	})
 	local function slot(i: number): (UDim2, UDim2)
 		return UDim2.new((i - 1) / count, 4, 0, 4), UDim2.new(1 / count, -8, 1, -8)
@@ -81226,7 +81400,7 @@ local function buildShop(screen: ScreenGui)
 	-- Gamepad selection moves between the cards; the engine scrolls the page to them.
 	scroll.Selectable = false
 
-	-- Soft fade along the bottom edge of the page (stacked strips of the well colour, so it
+	-- Soft shade along the bottom edge of the page (stacked strips of the glass tint, so it
 	-- also renders without gradient transparency); it fades out at the end of the page.
 	local fade = Kit.new("Frame", {
 		Name = "Fade",
@@ -81242,8 +81416,8 @@ local function buildShop(screen: ScreenGui)
 	for i = 1, FADE_STEPS do
 		local strip = Kit.new("Frame", {
 			Name = "Strip" .. i,
-			BackgroundColor3 = C.Well,
-			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.6 * 0.9,
+			BackgroundColor3 = Theme.Glass.Tint,
+			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.6 * 0.5,
 			BorderSizePixel = 0,
 			Size = UDim2.new(1, 0, 1 / FADE_STEPS, 0),
 			Position = UDim2.fromScale(0, (i - 1) / FADE_STEPS),
@@ -81526,11 +81700,10 @@ local function buildShop(screen: ScreenGui)
 		local cell = Kit.new("Frame", { Name = name, BackgroundTransparency = 1, LayoutOrder = order, Parent = parent })
 		local body = Kit.panel(cell, {
 			Name = "Body",
+			Glass = true,
 			Color = color,
 			Size = UDim2.fromScale(1, 1),
 			Radius = Kit.RADIUS.M + 4,
-			StrokeColor = Kit.lighten(color, 0.45),
-			StrokeThickness = 2,
 		})
 		local artHolder = Kit.new("Frame", {
 			Name = "ArtHolder",
@@ -81659,8 +81832,8 @@ local function buildShop(screen: ScreenGui)
 		Kit.new("UIStroke", { Thickness = 2.5, Color = lipColor, Parent = titleLabel })
 		local inset = Kit.new("Frame", {
 			Name = "Inset",
-			BackgroundColor3 = Kit.darken(tint, 0.28),
-			BackgroundTransparency = 0.1,
+			BackgroundColor3 = Kit.darken(tint, 0.34),
+			BackgroundTransparency = INSET,
 			Size = UDim2.new(1, -20, 0, 40),
 			Position = UDim2.fromOffset(10, 110),
 			ZIndex = 3,
@@ -81774,8 +81947,8 @@ local function buildShop(screen: ScreenGui)
 	local function contentChip(order: number, icon: string, fallback: string, color: Color3, caption: string): TextLabel
 		local chip = Kit.new("Frame", {
 			Name = "Chip" .. order,
-			BackgroundColor3 = Kit.darken(starterTint, 0.3),
-			BackgroundTransparency = 0.05,
+			BackgroundColor3 = Kit.darken(starterTint, 0.34),
+			BackgroundTransparency = INSET,
 			Size = UDim2.new(1 / 2, -4, 1, 0),
 			LayoutOrder = order,
 			ZIndex = 3,
@@ -81870,15 +82043,15 @@ local function buildShop(screen: ScreenGui)
 			Size = UDim2.new(1, 0, 0, BANNER_H),
 			Parent = passList,
 		})
-		local body = Kit.panel(cell, { Name = "Body", Color = tint, Size = UDim2.fromScale(1, 1), Radius = BANNER_R })
+		local body = Kit.panel(cell, { Name = "Body", Glass = true, Color = tint, Size = UDim2.fromScale(1, 1), Radius = BANNER_R })
 		local clip = bannerPaint(body, tint, BANNER_R)
-		-- The stage: a lit window in the banner's own tint (a diagonal light-to-deep
+		-- The stage: a lit pane in the banner's own tint (a diagonal light-to-deep
 		-- gradient, a lighter rim and a glassy sheen along its top) the pass's little
 		-- scene plays in. It clips the scene, so nothing it draws reaches the text.
 		local stage = Kit.new("Frame", {
 			Name = "Stage",
 			BackgroundColor3 = Color3.new(1, 1, 1),
-			BackgroundTransparency = 0,
+			BackgroundTransparency = 0.25,
 			ClipsDescendants = true,
 			Size = UDim2.fromOffset(STAGE_W, BANNER_H - 18),
 			Position = UDim2.fromOffset(9, 9),
@@ -82049,8 +82222,8 @@ local function buildShop(screen: ScreenGui)
 	end
 	local includes = Kit.new("Frame", {
 		Name = "Includes",
-		BackgroundColor3 = Kit.darken(bundleTint, 0.28),
-		BackgroundTransparency = 0.1,
+		BackgroundColor3 = Kit.darken(bundleTint, 0.34),
+		BackgroundTransparency = INSET,
 		Size = UDim2.fromOffset(included * 40 - 6 + 16, 44),
 		Position = UDim2.fromOffset(WIDE_LEFT, 64),
 		ZIndex = 4,
@@ -82154,8 +82327,8 @@ local function buildShop(screen: ScreenGui)
 			-- Owned perk / wearable: "ACTIVE" with an on/off switch where the price was.
 			local control = Kit.new("Frame", {
 				Name = "Control",
-				BackgroundColor3 = Kit.darken(tint, 0.28),
-				BackgroundTransparency = 0.1,
+				BackgroundColor3 = Kit.darken(tint, 0.34),
+				BackgroundTransparency = INSET,
 				Size = UDim2.new(1, -20, 0, 42),
 				Position = UDim2.new(0, 10, 1, -10),
 				AnchorPoint = Vector2.new(0, 1),
@@ -82268,9 +82441,16 @@ local function buildShop(screen: ScreenGui)
 		local cell = Kit.new("Frame", { Name = kind .. index, BackgroundTransparency = 1, LayoutOrder = index, Parent = grid })
 		local radius = Kit.RADIUS.L
 		local deep = Kit.darken(accent, 0.45)
-		local body = Kit.panel(cell, { Name = "Body", Color = deep, Size = UDim2.fromScale(1, 1), Radius = radius })
+		local body = Kit.panel(cell, {
+			Name = "Body",
+			Glass = true,
+			Color = deep,
+			GlowColor = accent,
+			Size = UDim2.fromScale(1, 1),
+			Radius = radius,
+		})
 		local clip = bannerPaint(body, deep, radius, Kit.lighten(accent, 0.15))
-		-- Moulded-plastic highlight along the top of the card.
+		-- Glassy highlight along the top of the card.
 		local shine = Kit.new("Frame", {
 			Name = "Shine",
 			BackgroundColor3 = Color3.new(1, 1, 1),
@@ -82987,7 +83167,7 @@ local function buildShop(screen: ScreenGui)
 			end
 		end
 
-		-- Opening choreography: section headers slide in, cards and banners ripple in (scale +
+		-- Opening choreography: section headers slide in, cards and banners ripple in the first time (scale +
 		-- fade, 28 ms apart), the cart lands a beat later with an overshoot and wiggle.
 		for i, head in heads do
 			if not PREVIEW then
@@ -83003,7 +83183,7 @@ local function buildShop(screen: ScreenGui)
 				table.insert(shown, cell)
 			end
 		end
-		Kit.stagger(shown, 0.028)
+		Kit.stagger(firstTime(shown), 0.028)
 		if not PREVIEW then
 			cartScale.Scale = 0
 			cart.Rotation = -18
@@ -83084,6 +83264,7 @@ local function buildIndex(screen: ScreenGui)
 	-- Discovered count: a compact bar in the header row, left of the close button.
 	local _, setProgress, progressLabel = Kit.progress(window.header, {
 		Name = "Found",
+		Glass = true,
 		Color = C.Window.Index,
 		Size = UDim2.fromOffset(210, 28),
 		Position = UDim2.new(1, -62, 0.5, -1),
@@ -83145,7 +83326,7 @@ local function buildIndex(screen: ScreenGui)
 	local cards: { { frame: Frame, shown: string } } = {}
 	local cardFrames: { GuiObject } = {}
 	for tier = 1, Economy.MAX_TIER do
-		local frame = Kit.panel(scroll, { Name = "Tier" .. tier, Elevated = true, LayoutOrder = tier, Radius = Kit.RADIUS.M + 2 })
+		local frame = Kit.glass(scroll, { Name = "Tier" .. tier, LayoutOrder = tier, Radius = Kit.RADIUS.M + 2, StrokeThickness = 1.5 })
 		cards[tier] = { frame = frame, shown = "" }
 		cardFrames[tier] = frame
 	end
@@ -83169,11 +83350,11 @@ local function buildIndex(screen: ScreenGui)
 		local band = Economy.tierBand(tier)
 		local rarity = C.Rarity[band]
 		local known = discoveredAt > 0
-		-- Found: a raised tile with a rarity outline. Unknown: a quieter flat tile.
+		-- Found: brighter glass with a rarity outline. Unknown: a fainter pane.
 		if known then
-			paintPanel(frame, C.SurfaceHi, rarity:Lerp(C.Edge, 0.3))
+			Kit.paintGlass(frame, nil, Theme.Glass.SurfaceHi, rarity)
 		else
-			paintPanel(frame, C.Surface)
+			Kit.paintGlass(frame, nil, 0.94)
 		end
 
 		Kit.number(frame, {
@@ -83201,7 +83382,8 @@ local function buildIndex(screen: ScreenGui)
 			-- Soft rarity-tinted spot behind the character.
 			local spot = Kit.new("Frame", {
 				Name = "Spot",
-				BackgroundColor3 = C.Well:Lerp(rarity, 0.22),
+				BackgroundColor3 = rarity,
+				BackgroundTransparency = 0.78,
 				Size = UDim2.new(1, -40, 1, -40),
 				Position = UDim2.new(0.5, 0, 0, 86),
 				AnchorPoint = Vector2.new(0.5, 0.5),
@@ -83477,6 +83659,7 @@ local function buildRanking(screen: ScreenGui)
 	-- The player's own row, pinned under the list with a sunny outline (one face per board).
 	local mine = Kit.panel(window.content, {
 		Name = "Mine",
+		Glass = true,
 		Elevated = true,
 		StrokeColor = C.Gold,
 		StrokeThickness = 2.5,
@@ -83503,7 +83686,8 @@ local function buildRanking(screen: ScreenGui)
 		local color = rank and MEDAL_COLORS[rank]
 		local rankChip = Kit.new("Frame", {
 			Name = "Rank",
-			BackgroundColor3 = color or C.Well,
+			BackgroundColor3 = color or C.Ink,
+			BackgroundTransparency = if color then 0 else Theme.Glass.Inset,
 			Size = UDim2.fromOffset(if color then 34 else 46, if color then 34 else 30),
 			Position = UDim2.new(0.02, if color then 6 else 0, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
@@ -83516,7 +83700,7 @@ local function buildRanking(screen: ScreenGui)
 			Kit.new("UIStroke", { Thickness = 2, Color = Kit.lip(color), Parent = rankChip })
 		else
 			Kit.corner(rankChip, 10)
-			Kit.new("UIStroke", { Thickness = 1, Color = C.Edge, Transparency = 0.3, Parent = rankChip })
+			Kit.new("UIStroke", { Thickness = 1, Color = Theme.Glass.Edge, Transparency = 0.8, Parent = rankChip })
 		end
 		local rankLabel = Kit.number(rankChip, {
 			Text = if color then tostring(rank) else rankText,
@@ -83612,7 +83796,8 @@ local function buildRanking(screen: ScreenGui)
 			local rank = tonumber(entry.rank) or i
 			local frame = Kit.panel(list, {
 				Name = "Row" .. i,
-				Elevated = true,
+				Glass = true,
+				Elevated = isMe,
 				StrokeColor = if isMe then C.Gold else nil,
 				StrokeThickness = if isMe then 2.5 else nil,
 				Size = UDim2.new(1, 0, 0, 46),
@@ -83779,23 +83964,24 @@ local function buildSettings(screen: ScreenGui)
 	local function toggle(order: number, icon: string, text: string, desc: string, key: string)
 		local row = Kit.panel(window.content, {
 			Name = key,
-			Elevated = true,
+			Glass = true,
 			Size = UDim2.new(1, 0, 0, 70),
 			LayoutOrder = order,
 			Radius = Kit.RADIUS.M + 2,
 		})
 		table.insert(rows, row)
-		-- Icon tile: deep blue, warms to the window's teal while the setting is on.
+		-- Icon tile: a dark pane that warms to the window's teal while the setting is on.
 		local medal = Kit.new("Frame", {
 			Name = "Medal",
-			BackgroundColor3 = C.Well,
+			BackgroundColor3 = C.Ink,
+			BackgroundTransparency = Theme.Glass.Inset,
 			Size = UDim2.fromOffset(46, 46),
 			Position = UDim2.new(0, 12, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
 			Parent = row,
 		})
 		Kit.corner(medal, 14)
-		Kit.new("UIStroke", { Thickness = 1.5, Color = C.Edge, Transparency = 0.2, Parent = medal })
+		Kit.new("UIStroke", { Thickness = 1.5, Color = Theme.Glass.Edge, Transparency = 0.75, Parent = medal })
 		Kit.icon(medal, icon, 26, Kit.ICON_COLORS[icon] or C.Text, {
 			Position = UDim2.fromScale(0.5, 0.5),
 			AnchorPoint = Vector2.new(0.5, 0.5),
@@ -83841,7 +84027,7 @@ local function buildSettings(screen: ScreenGui)
 	toggle(3, "Hash", "Full Numbers", "Show 1,234,567 instead of 1.23M", "fullNumbers")
 	toggle(4, "Merge", "Auto Merge", "Merge pairs automatically", "autoMerge")
 
-	local ON_TILE = C.Well:Lerp(C.Window.Settings, 0.4)
+	local ON_TILE = C.Ink:Lerp(C.Window.Settings, 0.55)
 	local function refresh()
 		local data = State.data
 		if not data then
@@ -83866,7 +84052,10 @@ local function buildSettings(screen: ScreenGui)
 				on = data.settings[t.key] == true
 				t.set(on)
 			end
-			Kit.tween(t.medal, 0.2, { BackgroundColor3 = if on then ON_TILE else C.Well })
+			Kit.tween(t.medal, 0.2, {
+				BackgroundColor3 = if on then ON_TILE else C.Ink,
+				BackgroundTransparency = if on then 0.25 else Theme.Glass.Inset,
+			})
 		end
 	end
 	State.changed.Event:Connect(refresh)
@@ -83997,7 +84186,7 @@ type ModeRow = { panel: Frame, stats: TextLabel, reward: TextLabel, play: TextBu
 local function modeRow(parent: Instance, props: { [string]: any }, accent: Color3, onPlay: () -> ()): ModeRow
 	local panel = Kit.panel(parent, {
 		Name = props.Name,
-		Elevated = true,
+		Glass = true,
 		Size = UDim2.new(1, 0, 0, props.Height),
 		LayoutOrder = props.LayoutOrder,
 		Radius = Kit.RADIUS.M + 2,
@@ -84005,7 +84194,8 @@ local function modeRow(parent: Instance, props: { [string]: any }, accent: Color
 	-- Quiet medal (an accent rim only), so the PLAY button is the one loud thing here.
 	local medal = Kit.new("Frame", {
 		Name = "Medal",
-		BackgroundColor3 = C.Well,
+		BackgroundColor3 = C.Ink,
+		BackgroundTransparency = Theme.Glass.Inset,
 		Size = UDim2.fromOffset(46, 46),
 		Position = UDim2.fromOffset(12, 14),
 		Parent = panel,
@@ -84181,10 +84371,11 @@ local function buildModes(screen: ScreenGui)
 	-- Every other mode: one slim, quiet row.
 	local soon = Kit.panel(window.content, {
 		Name = "ComingSoon",
+		Glass = true,
 		Size = UDim2.new(1, 0, 0, 44),
 		LayoutOrder = 3,
 		Radius = Kit.RADIUS.M,
-		Transparency = 0.35,
+		Transparency = 0.94,
 	})
 	table.insert(rows, soon)
 	Kit.icon(soon, "Lock", 18, C.TextMute, {
