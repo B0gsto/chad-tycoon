@@ -4171,6 +4171,8 @@ require("./mog")({ test = test, check = check, eq = eq, near = near, seeded = se
 require("./cardio")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
 -- Cardio chaser Chads (tests/cardio_chase.luau).
 require("./cardio_chase")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
+-- Daily reward rules, the HUD's next goal and the saved daily field (tests/daily.luau).
+require("./daily")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared, loadDataService = loadDataService })
 
 test("Sky obby: lava kill strips and sliding bars on wide decks", function()
 	for li, level in ModesCourse.LEVELS do

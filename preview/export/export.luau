@@ -1136,6 +1136,8 @@ local function main()
 		writeJson(OUT .. "/gui/" .. name .. ".json", { viewport = { VIEW_W, VIEW_H }, root = exportGui(screen) })
 	end
 
+	-- Daily reward: day 3 of a streak is waiting (the preview runs no Server.Daily).
+	stateNormal.daily = { claimable = true, day = 3, claimed = 2, streak = 2, nextIn = 5 * 3600 + 12 * 60 + 33 }
 	settle(stateNormal)
 	clearTransient()
 	Popups.toast("Merged 12 times! Best: " .. Theme.Tiers[14].Name, "good")
@@ -1183,6 +1185,10 @@ local function main()
 	clearTransient()
 	Windows.open("Settings")
 	shot("settings")
+
+	clearTransient()
+	Windows.open("Daily")
+	shot("daily")
 
 	clearTransient()
 	settle(stateHeld)

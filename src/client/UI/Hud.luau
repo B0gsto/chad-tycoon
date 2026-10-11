@@ -7,8 +7,12 @@
 	  top centre     Chad icon + unit count "37/100" (sunny + "RACK FULL" when full)
 	                 under it a low dark strip "Deposit bonus: x1.3 · 12s"
 	                 ("AURA SURGE x2 · 1:23" in orange during a surge); the
-	                 tutorial quest pill and the parkour run pill dock under that
+	                 tutorial quest pill and the parkour run pill dock under that,
+	                 and once the tutorial is done the "Next:" goal strip takes
+	                 that slot ("Next: Protein Bro 1/2" over "merge 2x Gym Rookie",
+	                 Shared.NextGoal; above the dumbbell on compact screens)
 	  left edge      icon grid with captions: Home Ranking Modes / Index Shop Invite
+	                 Daily (a dot while a daily reward waits, else its countdown)
 	                 promo under it: tilted "PERMANENT" tag, wide 2X CASH (or
 	                 STARTER PACK) button, "Only 199 R$"
 	  bottom left    status row (Premium, Friends, Boost), "Cash [ x1.0 ]",
@@ -40,6 +44,7 @@ local Workspace = game:GetService("Workspace")
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
+local NextGoal = require(ReplicatedStorage.Shared.NextGoal)
 
 local Kit = require(script.Parent.Kit)
 local State = require(script.Parent.Parent.State)
@@ -57,7 +62,7 @@ export type Handlers = {
 	toast: ((string, string?) -> ())?,
 }
 
--- Buttons by name (Shop, Index, Ranking, Free, Home, Invite, Settings, Modes) so
+-- Buttons by name (Shop, Index, Ranking, Free, Home, Invite, Daily, Settings, Modes) so
 -- other modules (tutorial, guide) can badge, glow or aim coin bursts at them.
 Hud.buttons = {} :: { [string]: TextButton }
 
@@ -92,6 +97,9 @@ local UNITS_Y = 4 -- unit counter row: y 4..48
 local STRIP_Y = 54 -- deposit strip: y 54..84
 local STRIP_H = 30
 local RUN_Y = 92 -- tutorial / run pill slot (Tutorial.luau TOP_Y matches)
+local GOAL_H = 46 -- "Next:" goal strip (the same slot once the tutorial is done)
+local GOAL_MAX_W = 380
+local GOAL_TEXT_X = 50
 local GRID_Y = 104 -- left icon grid, first row
 local GRID_ICON = 64
 local GRID_ICON_COMPACT = 48
@@ -240,7 +248,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	Hud.buttons.Settings = gear
 
 	-- Left edge: icon grid with captions --------------------------------------------------
-	local GRID_ROWS = { { "Home", "Ranking", "Modes" }, { "Index", "Shop", "Invite" } }
+	local GRID_ROWS = { { "Home", "Ranking", "Modes" }, { "Index", "Shop", "Invite", "Daily" } }
 	local CAPTIONS: { [string]: string } = {
 		Home = "Home",
 		Ranking = "Ranking",
@@ -248,9 +256,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Index = "Index",
 		Shop = "Shop",
 		Invite = "Invite",
+		Daily = "Daily",
 	}
-	-- Modes draws the rendered finish-flag image; Star stands in if it is missing.
-	local ICON_FOR: { [string]: string } = { Modes = Kit.pickIcon("Modes", "Star") }
+	-- Modes draws the rendered finish-flag image; Star stands in if it is missing. Daily
+	-- is the second gift of the atlas (the FREE gift keeps the first).
+	local ICON_FOR: { [string]: string } = { Modes = Kit.pickIcon("Modes", "Star"), Daily = Kit.pickIcon("Gift2", "Free") }
 	local grid = group("Menu", { Position = UDim2.fromOffset(EDGE_X, GRID_Y) })
 	local captions: { TextLabel } = {}
 	local function gridButton(name: string, onClick: () -> ()): TextButton
@@ -301,7 +311,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Kit.setGlow(Hud.buttons.Modes, false)
 		handlers.openWindow("Modes")
 	end)
-	gridButton("Index", function()
+	local function openIndex()
 		Kit.setGlow(Hud.buttons.Index, false)
 		local data = State.data
 		if data then
@@ -309,7 +319,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			refreshIndexBadge()
 		end
 		handlers.openWindow("Index")
-	end)
+	end
+	gridButton("Index", openIndex)
 	gridButton("Shop", function()
 		handlers.openWindow("Shop")
 	end)
@@ -318,6 +329,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			SocialService:PromptGameInvite(Players.LocalPlayer)
 		end)
 	end)
+	local dailyButton = gridButton("Daily", function()
+		handlers.openWindow("Daily")
+	end)
+	local dailyCaption = dailyButton:FindFirstChild("Caption") :: TextLabel
 	-- Right after the tutorial finishes (watched live this session), one toast and a
 	-- soft glow point at the Modes button.
 	local tutorialWasOpen = false
@@ -806,6 +821,193 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		})
 	end
 
+	-- Next goal: "Next: Protein Bro 1/2" over "merge 2x Gym Rookie" ------------------------
+	-- One dark strip like the deposit strip, in the tutorial pill's slot once the tutorial
+	-- is done (above the dumbbell on compact screens): the target's thumbnail (a silhouette
+	-- until it is discovered), its name and count, what to do under them, and a thin bar
+	-- along the bottom. The target comes from Shared.NextGoal; the strip opens the Index.
+	local goal = Kit.new("TextButton", {
+		Name = "NextGoal",
+		Text = "",
+		AutoButtonColor = false,
+		BackgroundColor3 = C.Ink,
+		BackgroundTransparency = 0.45,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(280, GOAL_H),
+		Position = UDim2.new(0.5, 0, 0, RUN_Y),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Visible = false,
+		Parent = screen,
+	})
+	Kit.corner(goal, 8)
+	Kit.selectable(goal)
+	local goalThumb = group("Thumb", {
+		Size = UDim2.fromOffset(42, 42),
+		Position = UDim2.new(0, 4, 0.5, -2),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 2,
+		Parent = goal,
+	})
+	local function goalText(name: string, size: number, color: Color3, font: Enum.Font?): TextLabel
+		return Kit.hudText(goal, {
+			Name = name,
+			Text = "",
+			Font = font,
+			TextSize = size,
+			TextColor3 = color,
+			StrokeThickness = 2,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Size = UDim2.fromOffset(10, 22),
+			ZIndex = 3,
+		})
+	end
+	local goalLead = goalText("Lead", 17, C.Gold)
+	goalLead.Text = "Next:"
+	local goalTitle = goalText("Title", 17, Color3.new(1, 1, 1))
+	local goalCount = goalText("Count", 15, Color3.new(1, 1, 1), F.Number)
+	local goalHint = goalText("Hint", 14, Color3.fromRGB(225, 230, 250), F.UI)
+	goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, 23)
+	goalHint.Size = UDim2.fromOffset(10, 16)
+	local goalBar = Kit.new("Frame", {
+		Name = "Bar",
+		BackgroundColor3 = C.Gold,
+		BorderSizePixel = 0,
+		Size = UDim2.new(0, 0, 0, 3),
+		Position = UDim2.new(0, 8, 1, -5),
+		ZIndex = 2,
+		Parent = goal,
+	})
+	Kit.round(goalBar)
+	-- Touch: an invisible pad grows the low strip to a full tap target (sized in applyCompact).
+	local goalPad = Kit.new("TextButton", {
+		Name = "Hit",
+		Text = "",
+		AutoButtonColor = false,
+		BackgroundTransparency = 1,
+		Selectable = false,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromScale(1, 1),
+		Visible = false,
+		ZIndex = 30,
+		Parent = goal,
+	})
+	for _, button in { goal, goalPad } do
+		button.Activated:Connect(function()
+			Kit.sound("Click")
+			openIndex()
+		end)
+	end
+	goal.MouseEnter:Connect(function()
+		Kit.tween(goal, 0.12, { BackgroundTransparency = 0.25 })
+	end)
+	goal.MouseLeave:Connect(function()
+		Kit.tween(goal, 0.12, { BackgroundTransparency = 0.45 })
+	end)
+	local function tierName(tier: number): string
+		local entry = Theme.Tiers[tier]
+		return if entry then entry.Name else ("Tier " .. tier)
+	end
+	local goalKey = ""
+	local goalTitleShown = ""
+	local goalThumbKey = ""
+	local goalWidth = 280
+	local function paintGoal(data: { [string]: any })
+		if type(data.discovered) ~= "table" or type(data.units) ~= "table" then
+			return
+		end
+		local picked = NextGoal.pick({
+			discovered = data.discovered,
+			units = data.units,
+			buyTier = tonumber(data.buyTier) or 1,
+			boughtAtTier = tonumber(data.boughtAtTier) or 0,
+			money = tonumber(data.money) or 0,
+		})
+		local title, hint, count = NextGoal.text(picked, tierName, State.money)
+		local key = title .. "|" .. hint .. "|" .. count
+		if key == goalKey then
+			Kit.tween(goalBar, 0.3, { Size = UDim2.new(0, math.floor((goalWidth - 16) * picked.progress), 0, 3) })
+			return
+		end
+		goalKey = key
+		-- Line 1: "Next:", the target and the count; line 2: what to do. The strip hugs the
+		-- wider line; past GOAL_MAX_W the name and the hint truncate.
+		local room = GOAL_MAX_W - GOAL_TEXT_X - 12
+		local leadW = textWidth(goalLead.Text, goalLead.TextSize, goalLead.Font)
+		local countW = textWidth(count, goalCount.TextSize, goalCount.Font)
+		local titleW = math.min(textWidth(title, goalTitle.TextSize, goalTitle.Font), room - leadW - countW - 14)
+		local hintW = math.min(textWidth(hint, goalHint.TextSize, goalHint.Font), room)
+		local x = GOAL_TEXT_X
+		local function put(label: TextLabel, text: string, width: number, gap: number)
+			label.Text = text
+			label.Size = UDim2.fromOffset(width + 2, 22)
+			label.Position = UDim2.fromOffset(x, 3)
+			x += width + gap
+		end
+		put(goalLead, goalLead.Text, leadW, 6)
+		put(goalTitle, title, titleW, 8)
+		put(goalCount, count, countW, 0)
+		goalCount.TextColor3 = if picked.ready then C.MoneyText else Color3.new(1, 1, 1)
+		goalHint.Text = string.upper(string.sub(hint, 1, 1)) .. string.sub(hint, 2)
+		goalHint.Size = UDim2.fromOffset(hintW + 2, 16)
+		goalWidth = math.max(x, GOAL_TEXT_X + hintW) + 12
+		goal.Size = UDim2.fromOffset(goalWidth, GOAL_H)
+		goalBar.Size = UDim2.new(0, math.floor((goalWidth - 16) * picked.progress), 0, 3)
+		-- A new target (not just a new count) gets a fresh thumbnail and a pop.
+		local thumbKey = picked.kind .. picked.tier
+		if thumbKey ~= goalThumbKey then
+			goalThumbKey = thumbKey
+			for _, child in goalThumb:GetChildren() do
+				child:Destroy()
+			end
+			pcall(Kit.unitViewport, goalThumb, picked.tier, { Size = UDim2.fromScale(1, 1) }, picked.kind == "merge")
+		end
+		if title ~= goalTitleShown then
+			goalTitleShown = title
+			Kit.pop(goal, 0.6)
+		end
+	end
+	-- Shown once the tutorial is done, outside the intro and game-mode runs. A tutorial
+	-- finished this session first lets its quest pill slide out of the slot.
+	local goalShown = false
+	local goalHoldUntil = 0
+	local goalSawTutorial = false
+	local function updateGoal()
+		local data = State.data
+		local player = Players.LocalPlayer
+		local show = data ~= nil
+			and data.tutorialDone == true
+			and os.clock() >= goalHoldUntil
+			and screen:GetAttribute("RunActive") ~= true
+			and screen:GetAttribute("ObbyMode") ~= true
+			and screen:GetAttribute("CardioActive") ~= true
+			and not (player ~= nil and player:GetAttribute("IntroPlaying") == true)
+		if show and data then
+			paintGoal(data)
+		end
+		if show ~= goalShown then
+			goalShown = show
+			goal.Visible = show
+		end
+	end
+	State.changed.Event:Connect(function(data)
+		if data.tutorialDone ~= true then
+			goalSawTutorial = true
+		elseif goalSawTutorial then
+			goalSawTutorial = false
+			goalHoldUntil = os.clock() + 1.5
+			task.delay(1.6, updateGoal)
+		end
+		updateGoal()
+	end)
+	for _, name in { "RunActive", "ObbyMode", "CardioActive" } do
+		screen:GetAttributeChangedSignal(name):Connect(updateGoal)
+	end
+	pcall(function()
+		Players.LocalPlayer:GetAttributeChangedSignal("IntroPlaying"):Connect(updateGoal)
+	end)
+
 	-- Bottom centre: the dumbbell with "AURA" and the carried amount ----------------------
 	local Assets = (function(): any
 		local shared = ReplicatedStorage:FindFirstChild("Shared")
@@ -1001,7 +1203,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local L = { edge = EDGE_X, bottom = -6, walletTop = false, walletY = 0, gridY = GRID_Y, tap = 0, tankX = 0, freeY = -20 }
 	local function gridRows(): { { string } }
 		if oneRow then
-			return { { "Home", "Ranking", "Modes", "Index", "Shop", "Invite" } }
+			return { { "Home", "Ranking", "Modes", "Index", "Shop", "Invite", "Daily" } }
 		end
 		return GRID_ROWS
 	end
@@ -1084,6 +1286,15 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end, function()
 		return UDim2.new(0.5, 0, 0, -140)
 	end)
+	-- The goal strip: under the deposit strip, or just above the (compact) dumbbell.
+	slot(goal, function()
+		if compact then
+			return UDim2.new(0.5, L.tankX, 1, L.bottom - math.ceil(DUMBBELL_W_COMPACT * DUMBBELL_ASPECT) - 8)
+		end
+		return UDim2.new(0.5, 0, 0, RUN_Y)
+	end, function()
+		return if compact then UDim2.new(0.5, L.tankX, 1, 200) else UDim2.new(0.5, 0, 0, -140)
+	end)
 	local targets: { [GuiObject]: UDim2 } = {}
 	local function place(animate: boolean)
 		local away = screen:GetAttribute("WindowOpen") == true
@@ -1129,6 +1340,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		local width = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
 		tank.Size = UDim2.fromOffset(width, width * DUMBBELL_ASPECT)
+		goal.AnchorPoint = Vector2.new(0.5, if compact then 1 else 0)
+		goalPad.Size = UDim2.new(1, 0, 0, math.max(GOAL_H, L.tap))
+		goalPad.Visible = Kit.touch
 		-- Gear: on the top bar's line with a mouse; below it (never on Roblox's bar) otherwise.
 		local gearSize = math.max(GEAR, L.tap)
 		gear.Size = UDim2.fromOffset(gearSize, gearSize)
@@ -1147,7 +1361,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		place(next(targets) ~= nil)
 	end
 	-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
-	local selectables: { GuiObject } = { promoButton, addButton, quitButton }
+	local selectables: { GuiObject } = { promoButton, addButton, quitButton, goal }
 	for _, button in Hud.buttons do
 		table.insert(selectables, button)
 	end
@@ -1475,6 +1689,26 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		freeTimer.Text = text
 	end
+	-- Daily reward: a dot, a sunny caption and a gentle bounce while a reward waits; the
+	-- countdown to the next one as the caption otherwise.
+	local dailyText = ""
+	local dailyReady: boolean? = nil
+	local stopDailyBounce: (() -> ())? = nil
+	local function paintDaily(text: string, ready: boolean)
+		if ready ~= dailyReady then
+			dailyReady = ready
+			Kit.setBadge(dailyButton, if ready then "!" else nil)
+			dailyCaption.TextColor3 = if ready then C.Gold else Color3.new(1, 1, 1)
+			if ready then
+				Kit.pop(dailyButton, 0.8)
+				stopDailyBounce = Kit.breathe(dailyButton, 0.06)
+			elseif stopDailyBounce then
+				stopDailyBounce()
+				stopDailyBounce = nil
+			end
+		end
+		dailyCaption.Text = text
+	end
 	local nextText = ""
 	RunService.Heartbeat:Connect(function()
 		local now = Workspace:GetServerTimeNow()
@@ -1509,6 +1743,18 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			if label ~= freeText then
 				freeText = label
 				paintFree(label, ready)
+			end
+			local daily = data.daily
+			if type(daily) == "table" then
+				-- The dot and the bounce wait for the tutorial, like the window itself.
+				local dailyNow = daily.claimable == true and data.tutorialDone == true
+				local dailyLabel = if daily.claimable == true
+					then CAPTIONS.Daily
+					else Format.time(math.max(0, (tonumber(daily.nextIn) or 0) - State.age()))
+				if dailyLabel ~= dailyText or dailyNow ~= dailyReady then
+					dailyText = dailyLabel
+					paintDaily(dailyLabel, dailyNow)
+				end
 			end
 		end
 	end)

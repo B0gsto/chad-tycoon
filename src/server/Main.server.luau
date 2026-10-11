@@ -18,6 +18,7 @@ local GameModes = require(Server.GameModes)
 local Cosmetics = require(Server.Cosmetics)
 local Analytics = require(Server.Analytics)
 local Badges = require(Server.Badges)
+local Daily = require(Server.Daily)
 
 local AUTOSAVE_SECONDS = 90
 
@@ -34,6 +35,7 @@ Cosmetics.init(Theme)
 Ranking.init(Theme, world.ranking)
 Analytics.init()
 Badges.init(Theme)
+Daily.init(Theme)
 
 local saving: { [Player]: boolean } = {}
 
@@ -77,6 +79,7 @@ local function onPlayerAdded(player: Player)
 		Cosmetics.onSessionStart(session)
 		Analytics.onSessionStart(session)
 		Badges.onSessionStart(session)
+		Daily.onSessionStart(session)
 	end
 end
 
