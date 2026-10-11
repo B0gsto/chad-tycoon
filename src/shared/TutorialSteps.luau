@@ -91,6 +91,14 @@ function TutorialSteps.catchUp(step: number, profile: ProfileView): number
 	return step
 end
 
+-- True for the deposit that completes the "deposit" step: the server turns it into cash
+-- at once instead of queueing it in the converter, so the "collect" step has cash waiting
+-- when a new player gets to the pad.
+function TutorialSteps.instantDeposit(step: number, done: boolean?): boolean
+	local current = TutorialSteps.STEPS[step]
+	return not done and current ~= nil and current.id == "deposit"
+end
+
 -- True when some tier has at least two units (a merge is possible).
 function TutorialSteps.hasPair(units: { number }?): boolean
 	if not units then

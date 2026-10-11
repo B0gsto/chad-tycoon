@@ -114,7 +114,7 @@ function DataService.defaultProfile(): Profile
 	discovered[1] = os.time()
 	return {
 		version = 1,
-		money = 50,
+		money = Economy.START_CASH,
 		carried = 0,
 		queue = 0,
 		pending = 0,
@@ -123,7 +123,7 @@ function DataService.defaultProfile(): Profile
 		totalObtained = 1,
 		buyTier = 1,
 		boughtAtTier = 0,
-		processLevel = 0,
+		processLevel = Economy.START_PROCESS_LEVEL,
 		heldChest = "",
 		pendingCrate = "",
 		pendingUnlocker = 0,
@@ -229,6 +229,8 @@ local function reconcile(data: any): Profile
 	-- Purchases past the upgrade requirement only count once (Economy.unitPrice grows with
 	-- them); a save made under a larger requirement would otherwise price units out of reach.
 	data.boughtAtTier = math.clamp(math.floor(data.boughtAtTier), 0, Economy.buyTierRequirement(data.buyTier))
+	-- The converter starts at START_PROCESS_LEVEL; saves from before that are lifted to it.
+	data.processLevel = math.max(math.floor(data.processLevel), Economy.START_PROCESS_LEVEL)
 	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
 	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
 		data.heldChest = ""

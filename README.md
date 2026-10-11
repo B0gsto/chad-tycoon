@@ -29,13 +29,21 @@ are in `preview/screenshots/chad/`.
 Six plots (one per player) sit around a hub plaza with a golden Chad statue and two ranking boards, on a
 sand island in the sea.
 
-- **Intro cutscene.** New players watch a short story once (`profile.introSeen`), starring their own
+- **Intro cutscene.** New players watch a 15-second story once (`profile.introSeen`), starring their own
   Roblox avatar: the hero curls a candy dumbbell while his #1 fan cheers, MAX GIGA CHAD strides in and the
   fans leave with him, the hero sits under a rain cloud, gets the idea, and the camera flies to the
-  player's real plot. It can be skipped. Server: `src/server/Intro.luau`; client: `src/client/Intro/*`.
+  player's real plot. The Skip button is on screen from the first frame (Esc and gamepad B or A skip
+  too). Server: `src/server/Intro.luau`; client: `src/client/Intro/*`.
 - **Tutorial.** A slim, skippable checklist of 5 steps: buy a unit, pick up orbs, deposit, collect cash,
   merge. A quest pill under the top HUD and a small bobbing chevron over the target show the current
-  step. Each step completes on the real server event. Finishing pays $25.
+  step. Each step completes on the real server event. The tutorial's deposit turns into cash at once,
+  and finishing pays $200.
+- **First minutes.** A new player starts with $100 and a level 16 converter (`Economy.START_CASH`,
+  `START_PROCESS_LEVEL`), and the first 60 units of buy tier 1 are cheap ($50, then +$5 each;
+  `Economy.BUY_EASY_UNITS`). The buy tier unlocks once they are bought. Following the tutorial at
+  walking pace this gives tier 2 after about 20 s, tier 3 after 30 s, tier 5 by 3 minutes and tier 6 by
+  5 minutes, with something to buy on every lap (`lune run scripts/simulate --first`). From then on
+  prices are the normal ones.
 - **Rack.** Units stand on a display rack of up to 10 shelves and 100 slots (`Economy.UNIT_CAP`), each
   with a name plate that glows more at higher tiers. Two units of a tier merge into one of the next tier
   (2.2x output) on the Merge pad or with the Auto Merge game pass. At the cap, a new unit first auto-merges
@@ -111,10 +119,14 @@ sand island in the sea.
   finished, not skipped), Certified Chad (tier 10), Absolute Chad (tier 25) and Parkour Master (level 10).
   `tools/badges.py ensure` creates missing ones from `art/out/badges/<Key>.png` (rendered by
   `art/blender/badges/`).
-- **Analytics** (`src/server/Analytics.luau`) for the Creator Dashboard: the onboarding funnel (Joined, Intro
-  Done, then each tutorial step, logged once per new player), a recurring "Shop" funnel (Opened, Prompted,
-  Purchased) and a "TutorialSkipped" custom event. Use them to judge ad traffic: where new players stop and
-  how many shop visits end in a purchase.
+- **Analytics** (`src/server/Analytics.luau`, steps in `src/shared/Funnel.luau`) for the Creator Dashboard:
+  the onboarding funnel, logged once per new player (1 Joined, 2 Intro Done, 3-7 the tutorial steps, then
+  8 Tier 3, 9 Tier 5, 10 Tier 7, 11 Tier 10 for the highest tier discovered), a recurring "Shop" funnel
+  (Opened, Prompted, Purchased) and custom events. "TutorialSkipped" ends the funnel for that player, so
+  the tutorial steps stay honest; their tier milestones are logged as "SkipperTier3" / "5" / "7" / "10"
+  instead (everyone who reached a tier = the funnel step plus the Skipper event). "IntroSkipped" and
+  "IntroWatched" carry the seconds of the intro that played. Use them to judge ad traffic: where new
+  players stop and how many shop visits end in a purchase.
 
 ## Publish
 
@@ -164,6 +176,7 @@ scripts/check.sh                         # format check, lint, type-check, unit 
 scripts/lint-files.sh src/a.luau [...]   # the same checks on just these files (work in progress)
 rojo serve chad.project.json             # live-sync into Studio
 lune run scripts/simulate                # when a greedy no-pass player reaches each tier (600 h)
+lune run scripts/simulate --first        # a new player's first 10 minutes, in seconds (tutorial, then the loop)
 lune run scripts/simulate --extras --aura --cash   # with free reward, parkour, surge, crates and passes
 preview/render.sh                        # regenerate preview/screenshots/chad/
 ```
@@ -220,6 +233,7 @@ through `tools/studio.py execute_luau`:
 | `Poses.luau`, `RigPose.luau` | Procedural pose library and its application to a rig |
 | `SessionLock.luau` | DataStore session-lock decisions |
 | `TutorialSteps.luau` | Tutorial steps and their rules |
+| `Funnel.luau` | Onboarding funnel steps and what each profile logs next |
 | **src/server** | |
 | `Main.server.luau` | Entry point: builds the map, wires services, join/leave/saving |
 | `Tycoon.luau` | Core loop: pads, orbs, crates, merging, processing, state, debug hook |

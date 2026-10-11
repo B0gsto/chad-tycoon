@@ -167,9 +167,9 @@ local function maybePlayIntro()
 			waited += task.wait(0.1)
 		end
 		Cutscene.play({
-			delay = 1.4,
-			onDone = function()
-				action:FireServer({ action = "IntroSeen" })
+			delay = 0.6,
+			onDone = function(skipped: boolean, watched: number)
+				action:FireServer({ action = "IntroSeen", skipped = skipped, seconds = watched })
 			end,
 		})
 	end)

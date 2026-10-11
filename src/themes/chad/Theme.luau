@@ -665,7 +665,7 @@ Theme.Fans = {
 -- The opening story, played once for new players (see Client.Intro; the beats and
 -- their timing are in Client.Intro.Timeline). A fan-club story: no romance.
 Theme.Intro = {
-	Skip = "Skip",
+	Skip = "SKIP",
 	HeroName = "YOU",
 	FanName = "YOUR #1 FAN",
 	RivalName = "MAX GIGA CHAD",
@@ -681,20 +681,14 @@ Theme.Intro = {
 		Giga = "GIGA!!",
 		Cool = "SO COOL! ★",
 		Stars = "★ ★ ★",
-		Dots = "...",
-		Huh = "?!",
 	},
 	Lines = {
-		Meet = "This is you. And this is your #1 fan!",
-		Good = "Life at the gym was pretty good...",
+		Meet = "This is you and your #1 fan!",
 		Arrive = "...until HE showed up.",
-		Wow = "WOW! Look at all that AURA!",
-		Leave = "And just like that, she joined HIS fan club.",
-		Sad = "Aura: zero. Even the dumbbell is leaving!",
-		Idea1 = "Wait a second...",
-		Idea2 = "Chads make aura. And aura makes CASH!",
-		Plan = "Time to open your OWN gym, full of Chads!",
-		Go = "Get Chads. Farm aura. Get rich. Win your fan back!",
+		Leave = "WOW! Your fan joined HIS fan club!",
+		Sad = "Your aura: ZERO.",
+		Plan = "Idea! Open your OWN gym, full of Chads!",
+		Go = "Get Chads. Farm aura. Win your fan back!",
 	},
 }
 

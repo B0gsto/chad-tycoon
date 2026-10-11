@@ -6,15 +6,18 @@
 	While it plays: the player's "IntroPlaying" attribute is true (the tutorial
 	and guide hide on it), the HUD and the Roblox player list are hidden, the
 	character's controls are off and the camera is Scriptable. Finishing or
-	skipping (button, Esc, gamepad B) puts all of that back. Any error, or the
-	45 s watchdog, ends it the same way, so it can never lock the player in.
+	skipping puts all of that back. Skip is on screen from the first frame (button
+	for mouse and touch; Esc, gamepad B, or A on the selected button) and works
+	after SKIP_GUARD seconds. Any error, or the 45 s watchdog, ends it the same
+	way, so it can never lock the player in.
 
 	  Cutscene.play(opts?) -> boolean   false if one is already playing
 	    opts.delay      seconds to hold the first shot before the story starts
 	                    (the loading screen fades out over it)
 	    opts.startBeat  beat index to start from (earlier beats fast-forward)
 	    opts.pauseAt    freeze the story this many seconds into startBeat
-	    opts.onDone     fn(skipped) after everything is restored
+	    opts.onDone     fn(skipped, watched) after everything is restored; watched =
+	                    story seconds played
 	  Cutscene.preview(beatIndex, pauseAt?)  play from a beat (review tool)
 	  Cutscene.skip()                        end it now
 	  Cutscene.isPlaying() -> boolean
@@ -42,7 +45,9 @@ local FxCamera = require(Intro.Parent.Fx.Camera)
 local Cutscene = {}
 
 local WATCHDOG = 45
-local SKIP_AFTER = 1
+-- Skip ignores input for this long after the cutscene starts, so a tap or button press
+-- left over from the loading screen cannot end it.
+local SKIP_GUARD = 0.4
 local BIND_NAME = "IntroCutscene"
 local DEFAULT_FOV = 70
 -- Matches Fx.Camera's spawn framing, so the hand-off to the follow camera is seamless.
@@ -53,7 +58,7 @@ export type Options = {
 	delay: number?,
 	startBeat: number?,
 	pauseAt: number?,
-	onDone: ((skipped: boolean) -> ())?,
+	onDone: ((skipped: boolean, watched: number) -> ())?,
 }
 
 type Session = {
@@ -65,7 +70,6 @@ type Session = {
 	beat: number,
 	fired: { [any]: boolean },
 	pausedAt: number?,
-	skipShown: boolean,
 	stage: Stage.Stage?,
 	fx: Effects.Effects?,
 	cast: Actors.Cast?,
@@ -350,7 +354,9 @@ local function teardown(s: Session, skipped: boolean)
 	local onDone = s.opts.onDone
 	if onDone then
 		try("onDone", function()
-			onDone(skipped)
+			-- Story seconds played: the beats before the current one plus its clock.
+			local beat = math.min(s.beat, #Timeline.BEATS + 1)
+			onDone(skipped, math.min(Timeline.startOf(beat) + s.clock, Timeline.total()))
 		end)
 	end
 end
@@ -596,13 +602,6 @@ local function step(s: Session, dt: number)
 	dt = math.min(dt, 1 / 15)
 	local beats = Timeline.BEATS
 
-	if not s.skipShown and os.clock() - s.started >= (s.opts.delay or 0) + SKIP_AFTER then
-		s.skipShown = true
-		if s.ui then
-			s.ui:showSkip()
-		end
-	end
-
 	-- Advance the story clock (held during the preroll and at pauseAt).
 	if s.preroll > 0 then
 		s.preroll -= dt
@@ -677,6 +676,13 @@ function Cutscene.skip()
 	end
 end
 
+-- Skip from the player's own input (button, Esc, gamepad B).
+local function skipByInput(s: Session)
+	if os.clock() - s.started >= SKIP_GUARD then
+		Cutscene.skip()
+	end
+end
+
 local function setup(s: Session)
 	local player = Players.LocalPlayer
 	player:SetAttribute("IntroPlaying", true)
@@ -712,7 +718,7 @@ local function setup(s: Session)
 	local fx = Effects.new(stage.model, stage.cframe, Theme)
 	s.fx = fx
 	s.ui = Ui.new(Theme, stage.model, function()
-		Cutscene.skip()
+		skipByInput(s)
 	end)
 	local cast = Actors.new(stage.cframe, stage.model)
 	s.cast = cast
@@ -738,6 +744,7 @@ local function setup(s: Session)
 		ui:heroTag(hero.rig.root, hero.height + 1.6, player.DisplayName, Theme.Intro.HeroAura)
 	end
 	ui:letterbox(true, (s.opts.startBeat or 1) > 1)
+	ui:focusSkip()
 
 	-- Fast-forward to the start beat (the dumbbell starts in the hero's hand).
 	Actors.update(cast, 0)
@@ -751,8 +758,8 @@ local function setup(s: Session)
 	fx:update(0, hero and hero.hand)
 
 	ContextActionService:BindActionAtPriority(BIND_NAME, function(_, state)
-		if state == Enum.UserInputState.Begin and s.skipShown then
-			Cutscene.skip()
+		if state == Enum.UserInputState.Begin then
+			skipByInput(s)
 		end
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.ContextActionPriority.High.Value + 100, Enum.KeyCode.Escape, Enum.KeyCode.ButtonB)
@@ -771,7 +778,6 @@ function Cutscene.play(opts: Options?): boolean
 		beat = 1,
 		fired = {},
 		pausedAt = nil,
-		skipShown = false,
 		stage = nil,
 		fx = nil,
 		cast = nil,

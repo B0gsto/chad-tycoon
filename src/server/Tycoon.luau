@@ -20,6 +20,7 @@ local OrbLook = require(Shared.OrbLook)
 local CratePickup = require(Shared.CratePickup)
 local Format = require(Shared.Format)
 local Net = require(Shared.Net)
+local TutorialSteps = require(Shared.TutorialSteps)
 local CharacterFactory = require(Shared.CharacterFactory)
 
 local WorldBuilder = require(script.Parent.WorldBuilder)
@@ -137,7 +138,8 @@ Tycoon.hooks = {
 }
 
 -- Gameplay event listeners (used by the tutorial): fn(session, name, data).
--- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge".
+-- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge", and "Discover" (a tier was discovered
+-- for the first time; Analytics counts its milestones).
 Tycoon.listeners = {} :: { (Session, string, { [string]: any }) -> () }
 
 local function emit(session: Session, name: string, data: { [string]: any })
@@ -529,6 +531,7 @@ local function discoverAll(session: Session, extra: { number }?)
 	if newest > 0 then
 		table.sort(found)
 		notify(session, { kind = "Reward", tier = newest, tiers = found, new = true })
+		emit(session, "Discover", { tier = newest })
 	end
 end
 
@@ -1327,7 +1330,13 @@ padHandlers.Deposit = function(session)
 	end
 	local mult = ReplicatedStorage:GetAttribute("DepositMult") or 1
 	local amount = p.carried * mult
-	p.queue += amount
+	-- First run: the deposit that completes the tutorial's step becomes cash at once, so
+	-- its Collect step never waits for the converter.
+	if TutorialSteps.instantDeposit(p.tutorialStep, p.tutorialDone) then
+		p.pending += amount * Economy.CASH_PER_POINT * Tycoon.moneyMultiplier(session)
+	else
+		p.queue += amount
+	end
 	p.carried = 0
 	local root = rootPart(session)
 	local to = converterPos(session)

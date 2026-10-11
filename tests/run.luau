@@ -290,12 +290,49 @@ test("buy pricing", function()
 		end
 		check(Economy.buyTierUpgradeCost(buyTier) > 0, "upgrade cost positive")
 		check(Economy.buyTierRequirement(buyTier) >= 1, "requirement")
-		if buyTier > 1 then
+		-- Buy tier 1 holds the easy units, so its requirement stands apart.
+		if buyTier > 2 then
 			check(Economy.buyTierRequirement(buyTier) >= Economy.buyTierRequirement(buyTier - 1), "requirement grows")
+		end
+		if buyTier > 1 then
 			check(Economy.buyTierUpgradeCost(buyTier) > Economy.buyTierUpgradeCost(buyTier - 1), "upgrade cost grows")
+			near(
+				Economy.unitPrice(buyTier, Economy.buyTierRequirement(buyTier)),
+				2 * Economy.basePrice(buyTier),
+				"price doubles at requirement " .. buyTier
+			)
 		end
 	end
-	near(Economy.unitPrice(1, Economy.buyTierRequirement(1)), 2 * Economy.basePrice(1), "price doubles at requirement")
+end)
+
+test("buy pricing: a new player's easy units", function()
+	local easy, req, base = Economy.BUY_EASY_UNITS, Economy.BUY_EASY_REQ, Economy.basePrice(1)
+	eq(Economy.buyTierRequirement(1), easy, "the buy tier unlocks once the easy units are bought")
+	near(Economy.unitPrice(1, 0), base, "the first unit costs the base price")
+	near(Economy.unitPrice(1, req), 2 * base, "an easy unit adds 1 / BUY_EASY_REQ of the base")
+	local last = Economy.unitPrice(1, easy)
+	near(last, base * (1 + easy / req), "price once the easy units are bought")
+	-- After them every purchase adds the whole base price again, as before the easy units.
+	near(Economy.unitPrice(1, easy + 1) - last, base, "normal growth after the easy units")
+	near(Economy.unitPrice(1, easy + 7) - last, 7 * base, "normal growth keeps going")
+	-- Every batch equals its single purchases, across the boundary too.
+	for _, start in { 0, easy - 3, easy - 1, easy, easy + 4 } do
+		for _, amount in Economy.BUY_AMOUNTS do
+			local sum = 0
+			for k = 0, amount - 1 do
+				local n = start + k
+				sum += base * (1 + math.min(n, easy) / req + math.max(0, n - easy))
+			end
+			near(Economy.bulkPrice(1, start, amount), sum, string.format("easy bulk start %d x%d", start, amount))
+		end
+	end
+	-- All of them together cost less than a single unit bought at buy tier 5.
+	local all = Economy.bulkPrice(1, 0, easy)
+	near(all, base * (easy + easy * (easy - 1) / 2 / req), "price of every easy unit")
+	check(all < Economy.basePrice(5), "the easy units are an early-game sum")
+	-- Other buy tiers are untouched.
+	near(Economy.unitPrice(2, 3), Economy.basePrice(2) * 4, "buy tier 2 has no easy units")
+	near(Economy.buyTierUpgradeCost(1), Economy.basePrice(2) * Economy.BUY_TIER_UPGRADE_SHARE, "first upgrade cost")
 end)
 
 test("processing", function()
@@ -573,6 +610,22 @@ test("tutorial step progression", function()
 	for index, entry in TutorialSteps.STEPS do
 		eq(entry.event, order[index], "step " .. index .. " event")
 	end
+end)
+
+test("tutorial: the deposit step is converted at once", function()
+	for step = 1, TutorialSteps.DONE do
+		local current = TutorialSteps.get(step)
+		eq(TutorialSteps.instantDeposit(step, false), current ~= nil and current.id == "deposit", "step " .. step)
+		eq(TutorialSteps.instantDeposit(step, true), false, "never after the tutorial, step " .. step)
+	end
+	-- The deposit itself moves the tutorial on, so only one deposit is ever instant.
+	local deposit = 0
+	for index, step in TutorialSteps.STEPS do
+		if step.id == "deposit" then
+			deposit = index
+		end
+	end
+	eq(TutorialSteps.instantDeposit(TutorialSteps.onEvent(deposit, "Deposit"), false), false, "the next deposit queues")
 end)
 
 test("tutorial clamp", function()
@@ -1859,6 +1912,23 @@ test("intro seen flag", function()
 	eq(DataService.reconcile({ money = 10, buyTier = 3, boughtAtTier = 1 }).boughtAtTier, 1, "purchases under it are kept")
 end)
 
+test("new player start: cash, converter and tutorial reward", function()
+	local DataService = loadDataService()
+	local fresh = DataService.defaultProfile()
+	eq(fresh.money, Economy.START_CASH, "starting cash")
+	eq(fresh.processLevel, Economy.START_PROCESS_LEVEL, "starting converter level")
+	-- The first Buy 1 leaves cash for a second unit, and the tutorial reward buys a few more.
+	check(Economy.START_CASH >= Economy.bulkPrice(1, 0, 2) - Economy.unitPrice(1, 1), "cash for the first unit")
+	check(Economy.START_CASH - Economy.unitPrice(1, 0) > 0, "cash left after the first unit")
+	check(Economy.TUTORIAL_REWARD_CASH >= Economy.bulkPrice(1, 1, 3), "the reward buys three more units")
+	-- The starting converter keeps up with one unit of tier 5 and no more than that.
+	check(Economy.processRate(Economy.START_PROCESS_LEVEL) >= Economy.unitRate(5), "converter covers tier 5")
+	check(Economy.processRate(Economy.START_PROCESS_LEVEL) < Economy.unitRate(6), "converter is upgraded for tier 6")
+	-- Old saves are lifted to the starting level; higher levels are kept.
+	eq(DataService.reconcile({ money = 10, processLevel = 3 }).processLevel, Economy.START_PROCESS_LEVEL, "low level lifted")
+	eq(DataService.reconcile({ money = 10, processLevel = 40 }).processLevel, 40, "high level kept")
+end)
+
 test("onboarding funnel and badges fields", function()
 	local DataService = loadDataService()
 	eq(DataService.reconcile(nil).onboarding, 0, "new players start the onboarding funnel")
@@ -1870,6 +1940,67 @@ test("onboarding funnel and badges fields", function()
 	eq(badges[1], nil, "non-string keys are dropped")
 	eq(badges.Bad, nil, "non-boolean values are dropped")
 	eq(DataService.reconcile({ money = 10, badges = "x" }).badges.Welcome, nil, "a broken badges field resets")
+end)
+
+test("onboarding funnel: tier milestones", function()
+	local Funnel = require("../src/shared/Funnel")
+	local DataService = loadDataService()
+	eq(Funnel.TUTORIAL_END, 2 + TutorialSteps.COUNT, "the tutorial ends on step 7")
+	eq(Funnel.LAST, 11, "four milestones after the tutorial")
+	eq(DataService.reconcile({ money = 10 }).onboarding, Funnel.LEGACY, "DataService's legacy value")
+	check(Funnel.LAST < Funnel.SKIPPED and Funnel.SKIPPED + #Funnel.MILESTONES < Funnel.LEGACY, "the ranges stay apart")
+	eq(Funnel.milestoneName(1), "Tier 3")
+	eq(Funnel.milestoneName(4), "Tier 10")
+	for tier, count in { [1] = 0, [2] = 0, [3] = 1, [4] = 1, [5] = 2, [6] = 2, [7] = 3, [9] = 3, [10] = 4, [25] = 4 } do
+		eq(Funnel.reached(tier), count, "milestones reached at tier " .. tier)
+	end
+
+	-- Tutorial still running: nothing yet, whatever the tier.
+	for onboarding = 0, Funnel.TUTORIAL_END - 1 do
+		local plan = Funnel.tiers(onboarding, 10)
+		eq(plan.onboarding, onboarding, "waits for the tutorial at " .. onboarding)
+		eq(#plan.steps + #plan.events, 0, "logs nothing at " .. onboarding)
+	end
+	-- Finished: funnel steps 8..11, each once and in order.
+	local plan = Funnel.tiers(7, 2)
+	eq(#plan.steps, 0, "tier 2 is no milestone")
+	plan = Funnel.tiers(7, 3)
+	eq(table.concat(plan.steps, ","), "8", "tier 3 logs step 8")
+	eq(plan.onboarding, 8)
+	plan = Funnel.tiers(8, 7)
+	eq(table.concat(plan.steps, ","), "9,10", "a jump logs every step it passed")
+	eq(plan.onboarding, 10)
+	eq(#Funnel.tiers(10, 9).steps, 0, "no step twice")
+	plan = Funnel.tiers(7, 25)
+	eq(table.concat(plan.steps, ","), "8,9,10,11", "all four")
+	eq(#plan.events, 0, "finishers log no custom events")
+	eq(#Funnel.tiers(11, 25).steps, 0, "nothing past the last step")
+
+	-- Skipped: the funnel stops; milestones become one-time custom events.
+	for onboarding = 0, Funnel.TUTORIAL_END - 1 do
+		eq(Funnel.skip(onboarding), Funnel.SKIPPED, "skipping at " .. onboarding)
+	end
+	eq(Funnel.skip(7), 7, "a finished tutorial cannot be skipped")
+	eq(Funnel.skip(9), 9)
+	eq(Funnel.skip(Funnel.SKIPPED + 2), Funnel.SKIPPED + 2, "skipping twice changes nothing")
+	eq(Funnel.skip(Funnel.LEGACY), Funnel.LEGACY, "legacy saves stay legacy")
+	plan = Funnel.tiers(Funnel.SKIPPED, 5)
+	eq(#plan.steps, 0, "skippers log no funnel steps")
+	eq(table.concat(plan.events, ","), "SkipperTier3,SkipperTier5")
+	eq(plan.onboarding, Funnel.SKIPPED + 2)
+	plan = Funnel.tiers(Funnel.SKIPPED + 2, 12)
+	eq(table.concat(plan.events, ","), "SkipperTier7,SkipperTier10", "only the new ones")
+	eq(plan.onboarding, Funnel.SKIPPED + 4)
+	eq(#Funnel.tiers(Funnel.SKIPPED + 4, 25).events, 0, "each event once")
+
+	-- Saves from before the funnel never log.
+	plan = Funnel.tiers(Funnel.LEGACY, 25)
+	eq(#plan.steps + #plan.events, 0, "legacy logs nothing")
+	eq(plan.onboarding, Funnel.LEGACY)
+	-- Whatever is saved survives a reload.
+	for _, value in { 9, Funnel.SKIPPED, Funnel.SKIPPED + 3 } do
+		eq(DataService.reconcile({ money = 10, onboarding = value }).onboarding, value, "kept " .. value)
+	end
 end)
 
 -- Cosmetics ----------------------------------------------------------------------------
@@ -2111,7 +2242,28 @@ test("intro timeline", function()
 		end
 	end
 	local total = Timeline.total()
-	check(total >= 24 and total <= 32, "about 25-30 seconds (" .. total .. ")")
+	check(total >= 12 and total <= 15, "about 12-15 seconds (" .. total .. ")")
+	-- One line per beat at most, and each line stays up long enough to read.
+	local lines = 0
+	for i, beat in Timeline.BEATS do
+		local shown = 0
+		for _, caption in beat.captions do
+			if caption.key then
+				shown += 1
+				lines += 1
+				local untilNext = beat.duration - caption.t
+				local nextBeat = Timeline.BEATS[i + 1]
+				if nextBeat and nextBeat.captions[1] then
+					untilNext += nextBeat.captions[1].t
+				end
+				check(untilNext >= 1.5, beat.name .. " line stays up 1.5 s (" .. untilNext .. ")")
+				local words = select(2, string.gsub(intro.Lines[caption.key], "%S+", ""))
+				check(words <= 8, beat.name .. " line is short (" .. words .. " words)")
+			end
+		end
+		check(shown <= 1, beat.name .. " has one line")
+	end
+	eq(lines, #Timeline.BEATS, "every beat has its line")
 	near(Timeline.startOf(#Timeline.BEATS) + Timeline.BEATS[#Timeline.BEATS].duration, total)
 end)
 
@@ -4409,10 +4561,41 @@ test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", 
 	eq(Simulate.SMALL_PACK_SECONDS, pack.Seconds, "simulated parkour reward uses the mode reward's seconds")
 	eq(Simulate.SMALL_PACK_MIN, pack.Min, "simulated parkour reward uses the mode reward's minimum")
 
-	local reached = Simulate.run({ hours = 3, step = 5 }).reached
+	-- The first tiers come fast (see the first-minutes test); from tier 8 on the curve is the
+	-- old one, about 40 minutes earlier.
+	local reached = Simulate.run({ hours = 5, step = 5 }).reached
 	check(reached[2] ~= nil and reached[2] <= 60, "tier 2 within the first minute")
-	check(reached[6] ~= nil and reached[6] >= 25 * 60 and reached[6] <= 60 * 60, "tier 6 after 25 to 60 minutes")
-	check(reached[10] == nil, "tier 10 not before 3 hours")
+	check(reached[6] ~= nil and reached[6] <= 20 * 60, "tier 6 within 20 minutes")
+	check(reached[8] ~= nil and reached[8] >= 60 * 60 and reached[8] <= 100 * 60, "tier 8 after 60 to 100 minutes")
+	check(reached[10] ~= nil and reached[10] >= 3 * 3600, "tier 10 not before 3 hours")
+	check(reached[11] == nil, "tier 11 not before 5 hours")
+end)
+
+test("first minutes: a new player merges early and always has something to buy", function()
+	(_G :: any).SIMULATE_AS_LIBRARY = true
+	local Simulate = require("../scripts/simulate")
+	local result = Simulate.firstMinutes({ minutes = 12 })
+	local reached = result.reached
+	check(result.tutorialDone ~= nil and result.tutorialDone <= 45, "tutorial and first merge within 45 s")
+	check(reached[2] ~= nil and reached[2] <= 45, "tier 2 by 45 s")
+	check(reached[3] ~= nil and reached[3] <= 90, "tier 3 by 90 s")
+	check(reached[4] ~= nil and reached[4] <= 150, "tier 4 by 2.5 min")
+	check(reached[5] ~= nil and reached[5] <= 200, "tier 5 soon after 3 min")
+	check(reached[6] ~= nil and reached[6] <= 360, "tier 6 by 6 min")
+	check(reached[7] ~= nil and reached[7] >= 360, "tier 7 is past the first minutes")
+	check(reached[8] == nil, "tier 8 is not an early tier")
+	check(result.longestGap <= 25, "never over 25 s without a purchase in the first 6 minutes (" .. result.longestGap .. ")")
+	eq(result.buyTier <= 3, true, "the buy tier stays low while the easy units last")
+
+	-- A slower player (longer paths, more reading) still gets there.
+	local speed, read = Simulate.PATH_SLACK, Simulate.STEP_READ
+	Simulate.PATH_SLACK, Simulate.STEP_READ = 1.6, 4
+	local slow = Simulate.firstMinutes({ minutes = 8, introSeconds = 2 })
+	Simulate.PATH_SLACK, Simulate.STEP_READ = speed, read
+	check(slow.reached[2] ~= nil and slow.reached[2] <= 45, "slow player: tier 2 by 45 s")
+	check(slow.reached[3] ~= nil and slow.reached[3] <= 90, "slow player: tier 3 by 90 s")
+	check(slow.reached[5] ~= nil and slow.reached[5] <= 240, "slow player: tier 5 by 4 min")
+	check(slow.reached[6] ~= nil and slow.reached[6] <= 420, "slow player: tier 6 by 7 min")
 end)
 
 test("loading screen brand matches the theme and assets", function()
