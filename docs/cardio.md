@@ -21,18 +21,31 @@ you stand still. Stages need more and more Speed. In Chad Aura Tycoon it is the 
    0 = none): the base WalkSpeed is then `min(walkSpeed(speed), cap)`. The HUD shows it as a small
    "Custom Speed" chip on every screen; tapping it opens the box, OK and the run's end fold it.
 4. **Stages 1..10** run in a line along the runway. Each stage is keyboard platforms with gaps
-   and ends in a **safe zone**: a wide key deck with treadmills (no pads to step on).
+   and ends in a **safe zone**: a key deck as wide as the stage's room (45 x 16 keys = 126 x 44.8
+   studs; the old one was 29 x 11 keys = 81.2 x 30.8, so about 2.3x the floor; the last zone is
+   45 x 20 keys). Across it run three bands: a free lane in the middle that both doorways open
+   into (every doorway is 9 keys = 25.2 studs wide, `CardioLayout.DOOR`, at most `DOOR_REACH` off
+   the centre line), the gold **WIN plate** on one side and four treadmills on the other, so
+   running from door to door touches neither.
    Each stage has `need` Speed, shown on a big sign at its entrance ("NEED 1,200 SPEED"). Its
    longest gap is clearable at walkSpeed(need) with the default jump, and NOT clearable at
    walkSpeed(previous stage's need). Physics decides; there are no walls.
    Later stages also add: narrower key bridges, step-ups (≤ 5 studs), blinking keys (on/off by
    server time from stage 4), sliding keys (moving platforms from stage 6). There are
-   no checkpoints anywhere. Stage 10 ends at the FINISH podium.
-5. **Stage rewards** are automatic: reaching stage n's safe zone deck the first time ever pays a first clear
-   (Economy.modeReward with firstClear, times `CardioRules.stageBonus(n)`) and raises
-   `bestStage`. Later arrivals pay through the normal mode reward cooldown
-   (`profile.modes.cardio.lastRewardAt`). Every first clear also raises the permanent
-   **step multiplier** (`CardioRules.stepMultiplier(bestStage, treadmill level)`).
+   no checkpoints anywhere. Stage 10's zone holds the last WIN plate, in front of the FINISH podium.
+5. **You cash out only on a WIN plate.** Reaching a safe zone pays nothing. Every safe zone
+   1..10 has a WIN plate (`zone.winPad`, 5 x 5 keys, tag `CardioWinPad`) with a floating label
+   showing what it pays you right now ("WIN  +$12.4K"). Stepping on it pays that stage
+   (Economy.modeReward times `CardioRules.stageBonus(n)`), records `bestStage`, ends the run and
+   puts you back in the lobby. Walking past it keeps the run going toward the next plate, which
+   pays more. Anti-farm rule: a claim is a **first clear** when n > `bestStage` (always paid;
+   raises `bestStage` and the permanent **step multiplier**,
+   `CardioRules.stepMultiplier(bestStage, treadmill level)`); any other claim pays only once per
+   `Economy.MODE_REWARD_COOLDOWN` (`profile.modes.cardio.lastRewardAt`, shared by all ten plates)
+   and $0 inside it. The server decides: the runner must be in a run, alive, with the feet on
+   the plate (`CardioLayout.onWinPad`; jumping over it does not count), in a zone reached this
+   run. Zones are reached in order and on foot (zone n counts on its deck after bridge room n was
+   entered this run with zone n - 1 reached), and the claim clears them, so one run pays once.
 6. **Treadmills.** Stand on one and your character runs in place. You gain
    `CardioRules.treadmillRate(zone, level, speed)` Speed per second, server-ticked: lobby
    treadmills are tier 1, the treadmills in deeper safe zones are stronger, and every treadmill
@@ -43,20 +56,23 @@ you stand still. Stages need more and more Speed. In Chad Aura Tycoon it is the 
    (`profile.cardio.treadmill`, max 10, cost `CardioRules.treadmillCost(level, income)`,
    scaled on income so it stays a real sink). This is the "increase the treadmill speed" part.
 7. **Falling** (below the room's killY) or being **caught** by the chaser sends you back to the
-   start of the stage you are running: the spawn of the safe zone before it (zone n-1 for
-   stage n, the lobby for stage 1; `CardioLayout.startStageAt(x)` + `CardioLayout.spawn(stage)`). Quitting (HUD button, Home, respawn) ends the run. The **Start at** picker lets you begin
-   at the safe zone of any stage up to bestStage.
+   **lobby, the start of stage 1**, wherever you were (`CardioLayout.spawn(0)`). The run starts
+   over: no safe zone reached, chasers ready again. Speed, the treadmill level and `bestStage`
+   are permanent and stay. Quitting (HUD button, Home, respawn) ends the run. Every run
+   **starts at stage 1** (the lobby): there is no stage picker, and the server ignores any start
+   stage a client sends. `bestStage` is only a record (first-clear rewards, the step multiplier,
+   the ranking).
 
 ## Module map (all new files unless marked)
 
 | File | Role |
 |---|---|
 | `src/server/Modes/CardioRules.luau` | Pure numbers (no Roblox APIs): walkSpeed, airtime/maxGap, stepMultiplier, treadmillRate, treadmillCost, stageBonus, the STAGES table (need, gap, width, blink, movers...) |
-| `src/server/Modes/CardioLayout.luau` | Pure, deterministic layout: Cardio.generate() → keys, safe zones, treadmills, the upgrade pad, signs, zone spawns, bounds; ORIGIN, KILL_Y |
-| `tests/cardio.luau` (+ 1 line in `tests/run.luau`) | Curve, monotonicity and fairness tests (every gap clearable at need, not clearable at the previous need, no overlaps, inside the bounds) |
-| `src/server/World/CardioTrack.luau` (+ `WorldBuilder` hook) | Builds the arena from CardioLayout: keycaps (`AssetModels` keycap mesh with part fallback), treadmills, pads, signs, arches, decor |
-| `src/server/Modes/Cardio.luau` (+ `Catalog`, `GameModes.BUILTIN`, `DataService`) | The ModeDef: runs, steps, treadmills, falls, rewards, upgrade action, snapshot |
-| `src/client/UI/CardioHud.luau`, `src/client/Fx/Cardio.luau` (+ `Main.client` wiring) | Speed counter, +N popups, stage progress, need hint, treadmill upgrade card, start picker, stage clear/finish cards; key press-down + glow under feet, letter labels on nearby keys only (pooled), treadmill belt scroll + run-in-place, speed lines/FOV at high speed |
+| `src/server/Modes/CardioLayout.luau` | Pure, deterministic layout: Cardio.generate() → keys, safe zones, treadmills, the upgrade pad, WIN plates, signs, zone spawns, bounds; ORIGIN, KILL_Y |
+| `tests/cardio.luau` (+ 1 line in `tests/run.luau`) | Curve, monotonicity and fairness tests (every gap clearable at need, not clearable at the previous need, no overlaps, inside the bounds, zone sizes, WIN plates), and the run rules against a stub server (stage 1 start, pay only on a WIN plate, fall = stage 1) |
+| `src/server/World/CardioTrack.luau` (+ `WorldBuilder` hook) | Builds the arena from CardioLayout: keycaps (`AssetModels` keycap mesh with part fallback), treadmills, pads (SPEED UP, WIN plates), signs, arches, decor |
+| `src/server/Modes/Cardio.luau` (+ `Catalog`, `GameModes.BUILTIN`, `DataService`) | The ModeDef: runs, steps, treadmills, falls, WIN plate claims, upgrade action, snapshot |
+| `src/client/UI/CardioHud.luau`, `src/client/Fx/Cardio.luau` (+ `Main.client` wiring) | Speed counter, +N popups, stage progress, need hint, pending win line and WIN plate labels, treadmill upgrade card, stage clear / win banners and the finish card; key press-down + glow under feet, letter labels on nearby keys only (pooled), treadmill belt scroll + run-in-place, speed lines/FOV at high speed |
 | `art/blender/cardio/*` | Keycap mesh, arcade treadmill, Cardio icon |
 
 ## Placement
@@ -67,15 +83,16 @@ x ≈ -1300 to +1300 at most, deck tops around y = 20 above the sea. It is reach
 
 ## Remotes / notify (kind = "Mode", mode = "cardio")
 
-- Actions: `ModeStart { mode = "cardio", stage? }` (stage = start at that safe zone, 0 = lobby),
+- Actions: `ModeStart { mode = "cardio" }` (always starts in the lobby; other fields are ignored),
   `CardioUpgrade` (buy treadmill level), `CardioSpeedCap { cap? }` (own max WalkSpeed; nil / 0 /
   invalid clears it, else rounded and clamped to [16, walkSpeed(speed)]), and the existing `ModeQuit`.
-- Notify events: `start { stage, speed, walkSpeed, bestStage, multiplier }`,
-  `stage { stage, first, cash, full }` (reached a safe zone),
-  `fall { stage }` (back at that safe zone), `finish { cash, full }`, `upgrade { level, cost }`,
-  `stop { reason }`.
+- Notify events: `start { speed, walkSpeed, bestStage, multiplier }`,
+  `zone { stage, first, cash, full }` (reached a safe zone; cash = what its WIN plate pays now,
+  nothing is paid yet), `win { stage, final, first, cash, full }` (claimed a WIN plate: paid and
+  back in the lobby; final = stage 10), `fall { stage = 0, from, reason }` (back in the lobby
+  from stage `from`; reason "fall" or "caught"), `upgrade { level, cost }`, `stop { reason }`.
 - Speed changes travel in the State snapshot (`modes.cardio`: speed, walkSpeed, multiplier,
   maxWalkSpeed (uncapped), speedCap (nil when none), bestStage, treadmill, treadmillRate,
-  nextCost, stage, running, onTreadmill). The server also fires
+  nextCost, stage, reached, wins (per plate, in a run), running, onTreadmill). The server also fires
   `Effect("CardioSteps", { gained, speed, walkSpeed, treadmill, multiplier, rate })` (rate = the current treadmillRate) at most ~4 times a second so the HUD can count
   up smoothly without a full refresh every tick.

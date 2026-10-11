@@ -23343,8 +23343,8 @@ end)
 	Cardio: the CARDIO game mode (gate 3), a keyboard runner out at sea (docs/cardio.md).
 	Numbers in Modes.CardioRules, the runway in Modes.CardioLayout (built by World.CardioTrack).
 
-	- "ModeStart" { mode = "cardio", stage? } starts a run at the safe zone of `stage`
-	  (0 = the Warm-Up lobby, default; at most profile.cardio.bestStage). Starting again restarts.
+	- "ModeStart" { mode = "cardio" } starts a run in the Warm-Up lobby (stage 1), always: the
+	  action's other fields are ignored, so no client can start deeper. Starting again restarts.
 	- Steps: every CardioRules.KEY_STEP studs of ground run over a key (server-measured, clamped
 	  to what the current WalkSpeed allows) add stepMultiplier(bestStage, treadmill) Speed.
 	  Standing on a treadmill adds treadmillRate(zone, treadmill, speed) Speed per second instead
@@ -23358,33 +23358,46 @@ end)
 	- Steps are measured on the dense key carpet (CardioLayout.KEY.size studs) but paid per
 	  CardioRules.KEY_STEP (8) studs, i.e. one step per ~two keys. Every key counts: bridge
 	  sills, run-up pieces, jump / blink / mover / end platforms and decor blocks.
-	- No mid-stage checkpoints: feet below CardioLayout.killYAt(x) (the room's killY, just
-	  above a bridge room's hazard floor, so landing on the hazard is a fall) send the player
-	  back to the start of the stage being run, i.e. the spawn of the safe zone before it
-	  (zone n - 1 for bridge room n; the lobby for stage 1). Reaching safe zone n (once per run) pays Economy.modeReward x
-	  stageBonus(n): the first time ever (n > bestStage) is a first clear (raises bestStage and with it the
-	  step multiplier), later arrivals pay on the shared cooldown (modes.cardio.lastRewardAt).
-	  Safe zone 10 is the FINISH; the run goes on after it.
+	- No checkpoints at all: feet below CardioLayout.killYAt(x) (the room's killY, just above
+	  a bridge room's hazard floor, so landing on the hazard is a fall) or a chaser's catch send
+	  the player back to the lobby (the start of stage 1) and the run starts over: nothing
+	  reached, chasers reset. Speed, the treadmill level and bestStage are permanent.
+	- Reaching a safe zone pays nothing. Zones are reached in order from the lobby, on foot
+	  (zone n counts only on its deck, after bridge room n was entered this run with zone
+	  n - 1 reached, so a teleport deeper or a late position report reaches nothing). Cash is paid only on a WIN pad (CardioLayout zone.winPad, one per safe zone
+	  1..10; zone 10's is the finish): the server sees a living runner's feet on the pad of a
+	  zone reached this run (CardioLayout.onWinPad) and pays Economy.modeReward x
+	  stageBonus(n) for that zone: a first clear when n > bestStage (always paid; raises
+	  bestStage and with it the step multiplier), else only once per
+	  Economy.MODE_REWARD_COOLDOWN (modes.cardio.lastRewardAt, shared by all ten pads; a pad
+	  inside the cooldown pays $0). The claim ends the run: back to the lobby with nothing
+	  reached, so one run pays at most once and a pad cannot be stepped on again without
+	  running its stages again. Walking past a pad keeps the run going toward a bigger one.
 	- Leaving the runway any other way (Home, GoModes...) ends the run ("left").
 	- "CardioUpgrade": on the lobby SPEED UP pad, spends treadmillCost(level, income) cash for
 	  treadmill level + 1 (max CardioRules.TREADMILL_MAX).
 
 	Notify payloads (kind = "Mode", mode = "cardio"):
-	  { event = "start", stage, speed, walkSpeed, bestStage, multiplier }
-	  { event = "stage", stage, name, first, cash, full, cooldownEnds, bestStage, multiplier }
-	  { event = "finish", stage = 10, first, cash, full, cooldownEnds, bestStage, multiplier }
-	                                  (safe zone 10 sends "finish" instead of "stage")
-	  { event = "fall", stage }                   back at safe zone `stage`'s spawn
+	  { event = "start", speed, walkSpeed, bestStage, multiplier }      always in the lobby
+	  { event = "zone", stage, name, first, cash, full, cooldownEnds }
+	                                  reached safe zone `stage`; cash = what its WIN pad pays
+	                                  right now (nothing is paid yet)
+	  { event = "win", stage, name, final, first, cash, full, cooldownEnds, bestStage, multiplier }
+	                                  claimed `stage`'s WIN pad (final = stage 10): paid, back
+	                                  in the lobby
+	  { event = "fall", stage = 0, from, reason }  back in the lobby from stage `from`;
+	                                  reason "fall" | "caught"
 	  { event = "upgrade", level, cost, rate, multiplier, nextCost? }
 	  { event = "refused", reason, cost? }        upgrade refused: "run" | "far" | "max" | "cash"
 	  { event = "stop", reason }
 	Snapshot: running, speed, walkSpeed (effective base, capped), maxWalkSpeed (uncapped),
 	speedCap (nil when none), multiplier, bestStage, treadmill, treadmillMax, treadmillRate,
-	nextCost, stage, onTreadmill, cooldownEnds, stageCount, needs, names.
+	nextCost, stage, reached (safe zones reached this run), wins (in a run: wins[n] = cash safe
+	zone n's WIN pad pays right now), onTreadmill, cooldownEnds, stageCount, needs, names.
 	Effects: "CardioSteps" { gained, speed, walkSpeed, treadmill, multiplier, rate } (at most ~4
 	per second while gaining; speed and gained are whole Speed, treadmill is true on a belt,
 	multiplier is the step multiplier, rate the current treadmillRate), "ModeSplash" { pos } on a fall, "ModeFinish" { pos, newBest } on a first clear,
-	"Cash" { amount, source = "Mode", padPos } when cash is paid.
+	"Cash" { amount, source = "Mode", padPos } when a WIN pad pays.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -23432,8 +23445,10 @@ for n, s in CardioRules.STAGES do
 end
 
 type State = {
-	-- Safe zones reached this run (reward once per run each).
-	arrived: { [number]: boolean },
+	-- Highest safe zone reached this run, in order from the lobby (0 = none yet), and the
+	-- bridge room entered toward the next one (reached + 1, or 0).
+	reached: number,
+	crossing: number,
 	lastPos: Vector3?,
 	lastT: number,
 	graceUntil: number,
@@ -23454,10 +23469,8 @@ local function vec(p: { x: number, y: number, z: number }): Vector3
 	return Vector3.new(p.x, p.y, p.z)
 end
 
--- Spawn point of safe zone `stage` (0 = lobby): the start of stage + 1.
-local function zoneSpawn(stage: number): CardioLayout.Point
-	return CardioLayout.spawn(stage) or LAYOUT.zones[1].spawn
-end
+-- Where every run starts and every fall, catch and WIN pad claim ends: the lobby's spawn.
+local LOBBY_SPAWN: CardioLayout.Point = CardioLayout.spawn(0) or LAYOUT.zones[1].spawn
 
 local function inBounds(x: number, z: number, margin: number): boolean
 	return x >= BOUNDS.x0 - margin and x <= BOUNDS.x1 + margin and z >= BOUNDS.z0 - margin and z <= BOUNDS.z1 + margin
@@ -23520,6 +23533,11 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		return character and character:FindFirstChildOfClass("Humanoid")
 	end
 
+	local function alive(player: Player): boolean
+		local humanoid = humanoidOf(player)
+		return humanoid ~= nil and humanoid.Health > 0
+	end
+
 	-- Feet below the root's centre: hip height + half the root on R15 (scaled avatars too),
 	-- FEET_BELOW_ROOT otherwise. Keeps a body standing on a hazard floor below its killY.
 	local function feetBelow(player: Player, root: BasePart): number
@@ -23560,11 +23578,30 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		return r
 	end
 
+	-- What safe zone `stage`'s WIN pad pays right now, and whether it would be a first clear
+	-- (it beats bestStage: always paid; anything else pays once per cooldown).
+	local function winReward(session: any, stage: number): (Economy.ModeReward, boolean)
+		local first = stage > record(session).bestStage
+		return rewardFor(session, stage, first), first
+	end
+
 	local function teleportTo(player: Player, state: State, c: CardioLayout.Point)
 		GameModes.teleport(player, vec(c), FORWARD)
 		state.lastPos = nil
 		state.stepDist = 0
 		state.graceUntil = now() + TELEPORT_GRACE
+	end
+
+	-- The run starts over (a fall, a catch, a WIN pad claim): back on the lobby spawn with no
+	-- safe zone reached and every chaser ready again.
+	local function restart(player: Player, state: State, reason: string)
+		chaser.stop(player, reason) -- CardioChase hook
+		chaser.forget(player) -- CardioChase hook
+		state.reached = 0
+		state.crossing = 0
+		state.stage = 0
+		state.onTreadmill = false
+		teleportTo(player, state, LOBBY_SPAWN)
 	end
 
 	-- Last X seen while not running (plaza gate crossing).
@@ -23577,23 +23614,20 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		return runs[player] ~= nil
 	end
 
-	function def.start(player: Player, _teleport: boolean, options: { [string]: any }?): boolean
+	-- Every run starts in the lobby (safe zone 0), whatever the "ModeStart" data says: reached
+	-- stages (bestStage) are a record, not a place to start from.
+	function def.start(player: Player, _teleport: boolean, _options: { [string]: any }?): boolean
 		local session = GameModes.session(player)
 		if not session then
 			return false
 		end
 		local rec = record(session)
-		local stage = 0
-		local asked = options and options.stage
-		if type(asked) == "number" then
-			if asked ~= asked or asked < 0 or asked > rec.bestStage then
-				return false
-			end
-			stage = math.floor(asked)
-		end
 		local t = now()
+		chaser.stop(player, "restart") -- CardioChase hook
+		chaser.forget(player) -- CardioChase hook
 		local state: State = {
-			arrived = { [stage] = true },
+			reached = 0,
+			crossing = 0,
 			lastPos = nil,
 			lastT = t,
 			graceUntil = t + TELEPORT_GRACE,
@@ -23602,20 +23636,19 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			walk = walkOf(session),
 			shownSpeed = math.floor(rec.speed),
 			lastEffectAt = 0,
-			stage = stage,
+			stage = 0,
 			onTreadmill = false,
-			treadmillZone = stage,
+			treadmillZone = 0,
 		}
 		runs[player] = state
 		-- The arena is far out at sea: a run always begins on its deck.
-		teleportTo(player, state, zoneSpawn(stage))
+		teleportTo(player, state, LOBBY_SPAWN)
 		local humanoid = humanoidOf(player)
 		if humanoid then
 			humanoid:SetAttribute("BaseWalkSpeed", state.walk)
 		end
 		Cosmetics.refresh(player)
 		GameModes.notify(player, "start", ID, {
-			stage = stage,
 			speed = math.floor(rec.speed),
 			walkSpeed = state.walk,
 			bestStage = rec.bestStage,
@@ -23643,8 +23676,25 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		end
 	end
 
-	-- Reached safe zone `stage` (>= 1) for the first time this run.
-	local function arrive(player: Player, session: any, root: BasePart, stage: number)
+	-- Reached safe zone `stage` (>= 1) this run. Nothing is paid here: the HUD learns what the
+	-- zone's WIN pad would pay.
+	local function reach(player: Player, session: any, stage: number)
+		local reward, first = winReward(session, stage)
+		local s = CardioRules.STAGES[stage]
+		GameModes.notify(player, "zone", ID, {
+			stage = stage,
+			name = s and s.name,
+			first = first,
+			cash = reward.cash,
+			full = reward.full,
+			cooldownEnds = cooldownEnds(session),
+		})
+		GameModes.refresh(player)
+	end
+
+	-- Stepped on safe zone `stage`'s WIN pad: pays that stage, records it and ends the run
+	-- (back to the lobby, nothing reached: one claim per run).
+	local function win(player: Player, session: any, state: State, root: BasePart, stage: number)
 		local rec = record(session)
 		local shared = cooldown(session)
 		local first = stage > rec.bestStage
@@ -23667,10 +23717,12 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		if first then
 			GameModes.effect(player, "ModeFinish", { pos = root.Position, newBest = true })
 		end
+		restart(player, state, "win")
 		local s = CardioRules.STAGES[stage]
-		GameModes.notify(player, if stage >= CardioRules.STAGE_COUNT then "finish" else "stage", ID, {
+		GameModes.notify(player, "win", ID, {
 			stage = stage,
 			name = s and s.name,
+			final = stage >= CardioRules.STAGE_COUNT,
 			first = first,
 			cash = reward.cash,
 			full = reward.full,
@@ -23730,22 +23782,21 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		-- The last safe zone passed (the HUD shows stage + 1 as the stage being run).
 		state.stage = CardioLayout.startStageAt(x)
 		local killY = CardioLayout.killYAt(x)
+		-- No checkpoints: a fall or a catch (CardioChase hook) starts the run over in the lobby.
+		local failed: string? = nil
 		if y < killY then
-			-- No checkpoints: back to the start of the stage, the safe zone before it.
 			GameModes.effect(player, "ModeSplash", { pos = Vector3.new(x, killY - CardioLayout.KILL_ABOVE, z) })
-			teleportTo(player, state, zoneSpawn(state.stage))
-			chaser.stop(player, "fall") -- CardioChase hook
-			GameModes.notify(player, "fall", ID, { stage = state.stage })
+			failed = "fall"
+		elseif chaser.tick(player, x, z, t) then
+			failed = "caught"
+		end
+		if failed then
+			local from = state.stage + 1
+			restart(player, state, failed)
+			GameModes.notify(player, "fall", ID, { stage = 0, from = from, reason = failed })
+			GameModes.refresh(player)
 			return
 		end
-		-- CardioChase hook begin: caught by the chaser -> back to the previous safe zone.
-		local caughtTo = chaser.tick(player, x, z, t)
-		if caughtTo then
-			state.stage = caughtTo
-			teleportTo(player, state, zoneSpawn(caughtTo))
-			return
-		end
-		-- CardioChase hook end
 
 		-- Speed: treadmill or steps on keys.
 		local rec = record(session)
@@ -23794,23 +23845,33 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			end
 		end
 
-		-- Safe-zone arrivals (paid on reaching the deck; there is no pad to step on).
+		-- Safe zones are reached in order and on foot: the next zone counts on its deck once its
+		-- bridge room was entered this run (a teleport deeper reaches nothing).
+		local room = CardioLayout.roomAt(x)
+		if room and room.kind == "bridge" and room.stage == state.reached + 1 then
+			state.crossing = room.stage
+		end
 		local zone = CardioLayout.zoneAt(x, z, y)
-		if zone and zone.stage >= 1 and not state.arrived[zone.stage] then
-			state.arrived[zone.stage] = true
-			arrive(player, session, root, zone.stage)
+		if zone and zone.stage == state.reached + 1 and state.crossing == zone.stage then
+			state.reached = zone.stage
+			reach(player, session, zone.stage)
+		end
+		-- WIN pad: a living runner on the pad of a zone reached this run cashes out. The claim
+		-- restarts the run (nothing reached), so the pad cannot pay twice.
+		local padStage = CardioLayout.onWinPad(x, y, z)
+		if padStage and padStage <= state.reached and alive(player) then
+			win(player, session, state, root, padStage)
 		end
 	end
 
-	-- What reaching the next new safe zone would pay right now.
+	-- What the WIN pad of the next new stage would pay right now.
 	function def.rewardPreview(player: Player): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
 			return { cash = 0, full = false, packCash = 0 }
 		end
 		local rec = record(session)
-		local stage = math.min(rec.bestStage + 1, CardioRules.STAGE_COUNT)
-		local r = rewardFor(session, stage, rec.bestStage < CardioRules.STAGE_COUNT)
+		local r = winReward(session, math.min(rec.bestStage + 1, CardioRules.STAGE_COUNT))
 		return { cash = r.cash, full = r.full, packCash = r.packCash }
 	end
 
@@ -23820,6 +23881,15 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		local rec = session and record(session)
 		local speed = if rec then rec.speed else 0
 		local level = if rec then rec.treadmill else 0
+		-- In a run: what each safe zone's WIN pad pays right now (the pads' floating labels).
+		local wins: { number }? = nil
+		if session and state then
+			local list = {}
+			for n = 1, CardioRules.STAGE_COUNT do
+				list[n] = (winReward(session, n)).cash
+			end
+			wins = list
+		end
 		return {
 			running = state ~= nil,
 			speed = math.floor(speed),
@@ -23833,6 +23903,8 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			treadmillRate = CardioRules.treadmillRate(if state then state.treadmillZone else 0, level, speed),
 			nextCost = if session then nextCostOf(session) else nil,
 			stage = if state then state.stage else 0,
+			reached = if state then state.reached else 0,
+			wins = wins,
 			onTreadmill = if state then state.onTreadmill else false,
 			cooldownEnds = if session then cooldownEnds(session) else 0,
 			stageCount = CardioRules.STAGE_COUNT,
@@ -23948,7 +24020,7 @@ return Cardio
 	STOP_SHORT studs before the end platform (stopS). A runner at walkSpeed(need_n) along the
 	same line stays ahead with >= MIN_SLACK seconds to spare; anyone slower
 	(walkSpeed(need_n-1) can't clear the stage's longest gap) gets caught.
-	  caught    chaser x >= player x - catchRadius  -> back to safe zone n-1 (Modes.Cardio)
+	  caught    chaser x >= player x - catchRadius  -> back to the lobby (Modes.Cardio)
 	  escaped   player x >= endX (ESCAPE_IN studs onto the end platform, before the timed exit
 	            door; not chased again this run)
 	  retreat   player x < x0 - 1 (back in the west doorway; re-entering restarts it)
@@ -24238,12 +24310,12 @@ function CardioChase.payload(chase: Chase): { [string]: any }
 end
 
 export type Server = {
-	-- Feed a running player's feet each tick; returns the safe zone to send them back to when
-	-- the chaser caught them this tick.
-	tick: (player: any, x: number, z: number, t: number) -> number?,
+	-- Feed a running player's feet each tick; true when the chaser caught them this tick (the
+	-- run starts over in the lobby).
+	tick: (player: any, x: number, z: number, t: number) -> boolean,
 	-- Ends the player's chase (if any) with `reason`; "chaseEnd" unless silent.
 	stop: (player: any, reason: string, silent: boolean?) -> (),
-	-- The run ended: also forget which chases were escaped.
+	-- The run ended or started over: also forget which chases were escaped.
 	forget: (player: any) -> (),
 	active: (player: any) -> Chase?,
 }
@@ -24255,14 +24327,14 @@ function CardioChase.serve(notify: (any, string, { [string]: any }) -> ()): Serv
 	local escaped: { [any]: { [number]: boolean } } = {}
 	local server = {} :: Server
 
-	function server.tick(player: any, x: number, z: number, t: number): number?
+	function server.tick(player: any, x: number, z: number, t: number): boolean
 		local c = chases[player]
 		if c then
 			local result = CardioChase.update(c, x, z, t)
 			if result == "caught" then
 				chases[player] = nil
 				notify(player, "caught", { stage = c.stage })
-				return c.stage - 1
+				return true
 			elseif result then
 				chases[player] = nil
 				if result == "escaped" then
@@ -24271,7 +24343,7 @@ function CardioChase.serve(notify: (any, string, { [string]: any }) -> ()): Serv
 				end
 				notify(player, "chaseEnd", { stage = c.stage, reason = result })
 			end
-			return nil
+			return false
 		end
 		local n = Layout.stageAt(x)
 		local done = escaped[player]
@@ -24282,7 +24354,7 @@ function CardioChase.serve(notify: (any, string, { [string]: any }) -> ()): Serv
 				notify(player, "chase", CardioChase.payload(chase))
 			end
 		end
-		return nil
+		return false
 	end
 
 	function server.stop(player: any, reason: string, silent: boolean?)
@@ -24329,11 +24401,18 @@ return CardioChase
 	                    chocolate / candy tiles / ...) ROOM.floorDrop studs below the deck
 	                    height, crossed by a NARROW KEY BRIDGE Rules.STAGES[n].width wide
 	                    (9 keys on stage 1 .. 4 keys from stage 8). Its west and east walls are
-	                    DOOR_WALL (= one key) thick with a doorway each (`doors`);
-	    safe zone n     a full key-carpet room (treadmills; zone 10 = FINISH) between
-	                    bridge room n's east wall and bridge room n+1's west wall.
+	                    DOOR_WALL (= one key) thick with a doorway each (`doors`), DOOR.keys
+	                    wide and at most DOOR_REACH off the centre line;
+	    safe zone n     a full key-carpet room as wide as the bridge rooms (ZONE_KEYS; zone
+	                    10 = FINISH_KEYS) between bridge room n's east wall and bridge room
+	                    n+1's west wall. Across Z it has three bands: the LANE in the middle
+	                    (every doorway opens inside it, so the run from door to door is
+	                    free), the WIN pad (`winPad`, WIN_PAD square) in the north band and
+	                    four treadmills in the south band. Zone 10's WIN pad is the finish: it
+	                    sits on the centre line in front of the podium (`finish`).
 	A bridge room's walkable path, in order (all `platforms`, x-disjoint and increasing):
-	  "sill"  one key long, door-width wide: the floor of the west doorway (inside the wall);
+	  "sill"  one key long, door-width wide: the floor of the west doorway (inside the wall;
+	          a porch wider than the bridge on every stage but the first);
 	  "run"   the run-up (index 0) as three pieces: a straight run along X, a sideways LEG (a
 	          90-degree jog: the leg is `width` long along X and spans both runs across Z),
 	          then a second straight run at another lateral offset. Steps are farmed here;
@@ -24387,8 +24466,9 @@ local Rules = require(script.Parent.CardioRules)
 local CardioLayout = {}
 
 CardioLayout.ORIGIN = { x = -1296, y = 20, z = 1150 }
--- The finish deck's far edge never passes this X (the east cap wall stands just past it).
-CardioLayout.X_END = 1262
+-- The finish deck's far edge never passes this X (the east cap wall stands just past it):
+-- the runway mirrors ORIGIN.x about x = 0.
+CardioLayout.X_END = 1296
 -- Key pitch (studs), keycap height and the visible cap size (keys touch at the pitch; the
 -- thin seams show the base). The props/Key_A..Z meshes are scaled to (cap, height, cap).
 CardioLayout.KEY = { size = 2.8, height = 1.16, cap = 2.72 }
@@ -24397,12 +24477,15 @@ CardioLayout.KEY = { size = 2.8, height = 1.16, cap = 2.72 }
 -- CardioTrack sets it as the CardioTrack folder's PressDepth attribute), so feet rest on
 -- pressed keys and the character never rides keys up and down (~0.85 x KEY.height: a key bottoms out almost flush with its base).
 CardioLayout.PRESS = 1
--- Lobby / safe zone width (studs, keys); bridge rooms are ROOM.width wide.
+-- Lobby width (studs, keys); bridge rooms and safe zones are ROOM.width wide.
 CardioLayout.CORRIDOR = { width = 29 * CardioLayout.KEY.size, lanes = 29 }
--- Deck sizes in keys (along X, across Z).
+-- Deck sizes in keys (along X, across Z). Safe zones span the bridge rooms' full width.
 CardioLayout.LOBBY_KEYS = { long = 20, wide = 29 }
-CardioLayout.ZONE_KEYS = { long = 11, wide = 29 }
-CardioLayout.FINISH_KEYS = { long = 20, wide = 29 }
+CardioLayout.ZONE_KEYS = { long = 16, wide = 45 }
+CardioLayout.FINISH_KEYS = { long = 20, wide = 45 }
+-- Safe zones: the middle band across Z (studs) that every doorway opens into. The WIN pad
+-- and the treadmills stand outside it, so running from door to door touches neither.
+CardioLayout.LANE = 25 * CardioLayout.KEY.size
 -- The raised landing platform at a bridge room's far end (keys).
 CardioLayout.END_KEYS = { long = 5, wide = 19 }
 -- Bridge rooms: width between the side walls' inner faces, wall top above ORIGIN.y, hazard
@@ -24421,8 +24504,13 @@ CardioLayout.RUNUP_MIN = 48
 CardioLayout.WALL = { thick = 2, bottom = 4 }
 -- Bridge room end walls are one key thick so a sill key row fills each doorway.
 CardioLayout.DOOR_WALL = CardioLayout.KEY.size
--- Exit doorways: width in keys, height above the sill top; timing per stage (from stage 3).
-CardioLayout.DOOR = { keys = 5, height = 14 }
+-- Doorways (both end walls): width in keys, height above the sill top; exit door timing per
+-- stage (from stage 3).
+CardioLayout.DOOR = { keys = 9, height = 14 }
+-- Farthest a doorway's centre sits from the centre line (studs, whole keys): the doorway
+-- stays inside the LANE, which is narrower than the lobby.
+CardioLayout.DOOR_REACH = math.floor((CardioLayout.LANE / CardioLayout.KEY.size - CardioLayout.DOOR.keys) / 2 + 1e-6)
+	* CardioLayout.KEY.size
 CardioLayout.DOOR_TIMES = {
 	[3] = { open = 4, period = 6 },
 	[4] = { open = 3.8, period = 6 },
@@ -24445,6 +24533,11 @@ CardioLayout.PROPS = { floor = 26, wall = 8, blocks = 4, edgeFloor = 9, wallGrou
 CardioLayout.PROP_CLEAR = 4
 CardioLayout.TREADMILL = { length = 10, width = 6, height = 1.2 }
 CardioLayout.UPGRADE_PAD = 6
+-- WIN pad side (studs, whole keys) and, in keys from the centre line, where its centre and
+-- the two treadmill rows sit across Z in safe zones 1..9 (zone 10's pad is on the centre line).
+CardioLayout.WIN_PAD = 5 * CardioLayout.KEY.size
+CardioLayout.WIN_PAD_SIDE = 18
+CardioLayout.TREADMILL_ROWS = { 15.5, 19.5 }
 -- Stage banner centre height above the deck (over the west doorway).
 CardioLayout.SIGN_HEIGHT = 24
 CardioLayout.ARCH = { frame = 2 }
@@ -24659,10 +24752,13 @@ export type Zone = {
 	z0: number,
 	z1: number,
 	top: number,
-	-- Where a run started here, a fall in stage + 1 and a catch put you (on a key centre).
+	-- A key centre near the zone's entrance, on the centre line (the lobby's is where every
+	-- run starts and where a fall, a catch and a WIN pad claim put you).
 	spawn: Point,
 	treadmills: { Treadmill },
 	upgradePad: Pad?,
+	-- Safe zones 1..10: the square WIN pad (cash out here; Modes.Cardio).
+	winPad: Pad?,
 }
 
 export type Platform = {
@@ -25024,12 +25120,13 @@ function CardioLayout.generate(): Layout
 			spawn = { x = x0 + 6, y = O.y + 3, z = O.z },
 			treadmills = {},
 			upgradePad = nil,
+			winPad = nil,
 		}
 		table.insert(zones, zone)
 		local box = { x0 = zone.x0, x1 = zone.x1, z0 = zone.z0, z1 = zone.z1, top = O.y, stage = stage }
 		addBase(box, 0)
 		zone.spawn = spawnOn(box, zone.spawn.x, zone.spawn.y, zone.spawn.z)
-		addRoom(if stage == 0 then "lobby" else "zone", stage, zone.x0, zone.x1, HALF, O.y + CardioLayout.ZONE_WALL_HEIGHT)
+		addRoom(if stage == 0 then "lobby" else "zone", stage, zone.x0, zone.x1, wide * K / 2, O.y + CardioLayout.ZONE_WALL_HEIGHT)
 		return zone
 	end
 
@@ -25182,13 +25279,14 @@ function CardioLayout.generate(): Layout
 		}
 		table.insert(rooms, room)
 		local reach = math.floor((RHALF - R.margin - w / 2) / K) * K
-		local doorMax = math.floor((HALF - CardioLayout.DOOR.keys * K / 2 - K) / K) * K
+		local doorMax = CardioLayout.DOOR_REACH
+		local doorWide = CardioLayout.DOOR.keys * K
 		local first = #platforms + 1
 
 		-- West doorway and run-up: a straight run, a sideways leg, a second run.
 		local latA = gridLat((rand() * 2 - 1) * math.min(doorMax, reach))
 		local cur = room.x0
-		platform(endWall(cur, room, "west", O.z + latA, w, n, nil))
+		platform(endWall(cur, room, "west", O.z + latA, math.max(w, doorWide), n, nil))
 		local sillIn = doors[#doors]
 		cur += DW
 		local shift = (2 + math.floor(rand() * 5)) * K
@@ -25300,7 +25398,7 @@ function CardioLayout.generate(): Layout
 			kind = "end",
 		})
 		cur += CardioLayout.END_KEYS.long * K
-		local sillOut = endWall(cur, room, "east", O.z + latE, CardioLayout.DOOR.keys * K, n, CardioLayout.DOOR_TIMES[n])
+		local sillOut = endWall(cur, room, "east", O.z + latE, doorWide, n, CardioLayout.DOOR_TIMES[n])
 		sillOut.index = #jumps
 		platform(sillOut)
 		cur += DW
@@ -25512,13 +25610,24 @@ function CardioLayout.generate(): Layout
 			end
 		end
 
-		-- Safe zone n.
-		local size = if n == Rules.STAGE_COUNT then CardioLayout.FINISH_KEYS else CardioLayout.ZONE_KEYS
+		-- Safe zone n: the WIN pad in the north band (the last zone's on the centre line, in
+		-- front of the finish podium), two rows of two treadmills in the south band.
+		local final = n == Rules.STAGE_COUNT
+		local size = if final then CardioLayout.FINISH_KEYS else CardioLayout.ZONE_KEYS
 		local zone = deck(n, cur, size.long, size.wide)
 		local mid = zone.x0 + CardioLayout.ZONE_KEYS.long * K / 2
-		for _, dz in { -29, -17, 17, 29 } do
-			table.insert(zone.treadmills, { x = mid, y = belt, z = O.z + dz, yaw = face })
+		for _, row in CardioLayout.TREADMILL_ROWS do
+			for _, dx in { -3.5 * K, 3.5 * K } do
+				table.insert(zone.treadmills, { x = mid + dx, y = belt, z = O.z - row * K, yaw = face })
+			end
 		end
+		local pad = CardioLayout.WIN_PAD
+		local padCol = math.floor((size.long * K - pad) / 2 / K)
+		zone.winPad = {
+			x = zone.x0 + padCol * K + pad / 2,
+			z = if final then O.z else O.z + CardioLayout.WIN_PAD_SIDE * K,
+			size = pad,
+		}
 		prevZone = zone
 	end
 	local last = zones[#zones]
@@ -25527,8 +25636,8 @@ function CardioLayout.generate(): Layout
 		last.x1 + W.thick,
 		W.bottom,
 		rooms[#rooms].wallTop,
-		O.z - HALF - W.thick,
-		O.z + HALF + W.thick,
+		last.z0 - W.thick,
+		last.z1 + W.thick,
 		Rules.STAGE_COUNT,
 		#rooms,
 		"east",
@@ -25602,15 +25711,15 @@ function CardioLayout.zone(stage: number): Zone?
 	return LAYOUT.zones[stage + 1]
 end
 
--- The spawn of the safe zone of `stage` (0 = lobby): where "Start at" stage puts you, and
--- where a fall or a catch in stage + 1 sends you back (there are no mid-stage checkpoints).
+-- The spawn of the safe zone of `stage` (0 = lobby). Modes.Cardio only uses the lobby's: every
+-- run starts there, and a fall, a catch and a WIN pad claim all send you back to it.
 function CardioLayout.spawn(stage: number): Point?
 	local z = LAYOUT.zones[stage + 1]
 	return if z then z.spawn else nil
 end
 
 -- The last safe zone passed at this X (the HUD runs stage + 1): n - 1 in bridge room n (not
--- stageAt's n), else stageAt(x). A fall or a catch here respawns at spawn(startStageAt(x)).
+-- stageAt's n), else stageAt(x).
 function CardioLayout.startStageAt(x: number): number
 	local room = CardioLayout.roomAt(x)
 	return if room and room.kind == "bridge" then room.stage - 1 else CardioLayout.stageAt(x)
@@ -25686,6 +25795,22 @@ function CardioLayout.onTreadmill(x: number, y: number, z: number): (number?, nu
 		end
 	end
 	return nil, nil
+end
+
+-- Stage of the safe zone whose WIN pad is under feet at (x, y, z): inside the pad's square,
+-- feet between the deck and WIN_PAD_ABOVE studs over it (a jump across the pad does not count).
+CardioLayout.WIN_PAD_ABOVE = 4
+function CardioLayout.onWinPad(x: number, y: number, z: number): number?
+	local zone = CardioLayout.zoneAt(x, z)
+	local pad = zone and zone.winPad
+	if not zone or not pad then
+		return nil
+	end
+	local half = pad.size / 2
+	if math.abs(x - pad.x) <= half and math.abs(z - pad.z) <= half and y >= zone.top - 2 and y <= zone.top + CardioLayout.WIN_PAD_ABOVE then
+		return zone.stage
+	end
+	return nil
 end
 
 -- The room spanning this X (lobby, bridge room or safe zone), if any.
@@ -33683,6 +33808,14 @@ return Tycoon
 	                      runner's forward (+X) and whose Top face carries a Texture
 	                      "BeltTexture" for the client to scroll (OffsetStudsV).
 	    UpgradePad        (lobby) tag "CardioUpgradePad" with the "SPEED UP" UpgradeConsole.
+	    WinPad            (zones 1..10) the gold WIN pad on LAYOUT zone.winPad, in the game's
+	                      pad style (WinRim base, WinGlow Neon border, WinPost corner lights, a
+	                      printed "WIN"): tag "CardioWinPad", attributes Stage and ZoneX0 /
+	                      ZoneX1 / ZoneZ0 / ZoneZ1 (its safe zone's deck). Its BillboardGui
+	                      "WinLabel" holds TextLabels "Title" ("WIN") and "Amount" (default
+	                      "CASH OUT"): the client writes what the pad pays that player right
+	                      now into Amount (UI.CardioHud). Stepping on it is the server's
+	                      position check (Modes.Cardio, CardioLayout.onWinPad).
 	    LobbyDecor        (lobby) orange Neon X trusses on its three walls and roof joists, the
 	                      back-wall CARDIO title, candy clusters and warm lamps; decor only.
 	  Room<n>             Model per bridge room (n = stage), attributes Stage, Theme:
@@ -33714,7 +33847,7 @@ return Tycoon
 	                      doorway: "STAGE n" / name / "NEED x SPEED" on both faces; the lobby
 	                      side of room 1 also carries the giant CARDIO title; FinishSign on the
 	                      finish cap wall.
-	  FinishPodium        Model on the stage-10 deck (LAYOUT.finish).
+	  FinishPodium        Model on the stage-10 deck (LAYOUT.finish), behind its WIN pad.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -33745,6 +33878,8 @@ export type Built = {
 	zones: { [number]: Model },
 	decks: { [number]: BasePart },
 	upgradePad: BasePart,
+	-- WIN pads by safe zone stage (1..10).
+	winPads: { [number]: BasePart },
 	treadmills: { Model },
 	-- Bridge room models and hazard slabs by stage; timed door slabs by LAYOUT.doors index.
 	rooms: { [number]: Model },
@@ -34419,6 +34554,84 @@ local function upgradePad(parent: Instance, zone: Layout.Zone): BasePart
 	return part
 end
 
+-- The WIN pad of a safe zone: a big gold button in the game's pad style (a low rim, a gold
+-- top with a printed "WIN" inside a Neon border) with a Neon post on each corner, under a
+-- floating label whose "Amount" line the client writes per player.
+local function winPad(parent: Instance, zone: Layout.Zone): BasePart
+	local pad = zone.winPad :: Layout.Pad
+	local s = pad.size
+	local gold = W.Sunny
+	add(parent, {
+		Name = "WinRim",
+		Size = Vector3.new(s + 2.4, 0.3, s + 2.4),
+		CFrame = CFrame.new(pad.x, TOP + 0.15, pad.z),
+		Color = W.PadRim or W.Teal,
+	})
+	glow(parent, {
+		Name = "WinGlow",
+		Size = Vector3.new(s + 1.2, 0.36, s + 1.2),
+		CFrame = CFrame.new(pad.x, TOP + 0.18, pad.z),
+		Color = gold:Lerp(W.White, 0.35),
+	})
+	local part = add(parent, {
+		Name = "WinPad",
+		Size = Vector3.new(s, 0.5, s),
+		-- Front toward +X so the Top-face print reads for runners arriving from the west.
+		CFrame = CFrame.new(pad.x, TOP + 0.25, pad.z) * CFrame.Angles(0, -math.pi / 2, 0),
+		Color = gold,
+	})
+	part:SetAttribute("Stage", zone.stage)
+	part:SetAttribute("ZoneX0", zone.x0)
+	part:SetAttribute("ZoneX1", zone.x1)
+	part:SetAttribute("ZoneZ0", zone.z0)
+	part:SetAttribute("ZoneZ1", zone.z1)
+	part:AddTag("CardioWinPad")
+	light(part, gold, 22, 1.6)
+	outline(
+		text(surface(part, Enum.NormalId.Top, 20), {
+			Text = "WIN",
+			TextColor3 = W.White,
+			Size = UDim2.fromScale(0.8, 0.5),
+			Position = UDim2.fromScale(0.1, 0.25),
+		}),
+		W.Ink,
+		5
+	)
+	for _, dx in { -1, 1 } do
+		for _, dz in { -1, 1 } do
+			glow(parent, {
+				Name = "WinPost",
+				Size = Vector3.new(0.9, 5, 0.9),
+				CFrame = CFrame.new(pad.x + dx * (s / 2 + 0.75), TOP + 2.5, pad.z + dz * (s / 2 + 0.75)),
+				Color = gold,
+			})
+		end
+	end
+	-- Floating label, readable from the zone's doorways.
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "WinLabel"
+	gui.Adornee = part
+	gui.Size = UDim2.fromScale(20, 9)
+	gui.StudsOffsetWorldSpace = Vector3.new(0, 10.5, 0)
+	gui.MaxDistance = 260
+	gui.LightInfluence = 0
+	gui.Parent = part
+	outline(text(gui, { Name = "Title", Text = "WIN", TextColor3 = gold, Size = UDim2.fromScale(1, 0.52) }), W.Ink, 4)
+	outline(
+		text(gui, {
+			Name = "Amount",
+			Text = "CASH OUT",
+			Font = theme.Fonts.Number,
+			TextColor3 = theme.Colors.MoneyText,
+			Size = UDim2.fromScale(1, 0.44),
+			Position = UDim2.fromScale(0, 0.54),
+		}),
+		W.Ink,
+		3
+	)
+	return part
+end
+
 local function fallbackTreadmill(model: Model, cf: CFrame)
 	add(model, {
 		Name = "TreadmillBase",
@@ -34950,6 +35163,7 @@ function CardioTrack.build(): Built
 	local decks: { [number]: BasePart } = {}
 	local treadmills: { Model } = {}
 	local upgrade: BasePart? = nil
+	local winPads: { [number]: BasePart } = {}
 	for _, zone in LAYOUT.zones do
 		local model = folderIn(folder, "Zone" .. zone.stage, "Model") :: Model
 		model:SetAttribute("Stage", zone.stage)
@@ -34959,6 +35173,9 @@ function CardioTrack.build(): Built
 		end
 		if zone.upgradePad then
 			upgrade = upgradePad(model, zone)
+		end
+		if zone.winPad then
+			winPads[zone.stage] = winPad(model, zone)
 		end
 		if zone.stage == 0 then
 			lobbyRoom(model, zone)
@@ -35002,6 +35219,7 @@ function CardioTrack.build(): Built
 		zones = zones,
 		decks = decks,
 		upgradePad = upgrade :: BasePart,
+		winPads = winPads,
 		treadmills = treadmills,
 		rooms = rooms,
 		hazards = hazards,
@@ -44868,7 +45086,7 @@ return Camera
 	Runs only while the local player is in a run (snapshot modes.cardio.running or a
 	"start" Notify); everything is restored on "stop" / "finish".
 
-	  Key presses   the floor is ~6900 keycap MeshParts (tag "CardioKey", attrs Letter, Stage,
+	  Key presses   the floor is ~12,000 keycap MeshParts (tag "CardioKey", attrs Letter, Stage,
 	                Index, Kind "space" for spacebars; the letter is baked into the mesh).
 	                Keys never collide: an invisible slab per surface (CardioTrack/Colliders)
 	                sits the CardioTrack folder's PressDepth attribute below the key tops.
@@ -44893,8 +45111,8 @@ return Camera
 	  Speed         radial speed lines (a pooled ScreenGui under the HUD) and a gentle FOV
 	                kick, both scaling with the horizontal speed above ~50 studs/s; reduced
 	                motion skips the FOV and halves the lines.
-	  Bursts        stage clear: stars and confetti (bigger on a first clear), finish: a
-	                large ring of both, fall: a landing ring + puff,
+	  Bursts        safe zone reached: stars and confetti; WIN pad claimed: a bigger ring of
+	                both (largest on the last pad); fall: a landing ring + puff,
 	                upgrade: sparkles over the upgrade pad (Fx.Sprites, budgeted).
 	  Doors         timed exit doors (parts tagged "CardioDoor", attrs DoorOpen, DoorPeriod,
 	                DoorPhase: open while ((t + phase) % period) < open, t = server time) drive
@@ -46078,10 +46296,17 @@ function CardioFx.onNotify(p: any)
 	if event == "start" then
 		activate()
 		startedAt = os.clock()
-	elseif event == "stage" then
+	elseif event == "zone" then
 		local pos = playerPos()
 		if pos then
-			burst(pos, if p.first == true then 14 else 7, if p.first == true then 6 else 4, p.first == true)
+			burst(pos, 7, 4, false)
+		end
+	elseif event == "win" then
+		-- Cashed out on a WIN pad (the last one is the finish); the run goes on in the lobby.
+		local pos = playerPos()
+		if pos then
+			local final = p.final == true
+			burst(pos, if final then 20 else 14, if final then 8 else 6, true)
 		end
 	elseif event == "fall" then
 		task.delay(0.35, function()
@@ -46092,12 +46317,6 @@ function CardioFx.onNotify(p: any)
 				Sprites.billboard(anchor, "Puff", { position = pos, size = 3.5, life = 0.8, rise = Vector3.new(0, 2.5, 0) })
 			end
 		end)
-	elseif event == "finish" then
-		local pos = playerPos()
-		if pos then
-			burst(pos, 20, 8, true)
-		end
-		deactivate()
 	elseif event == "upgrade" then
 		if p.reason == nil and p.ok ~= false then
 			local pos = playerPos()
@@ -64827,11 +65046,16 @@ return State
 	                next stage's need ("Stage 3 · 968 / 1.88K", gold until the need is met,
 	                then mint), and small lines beside it ("Multiplier x1.25 (Stages)",
 	                "Treadmill Lv 3"); on narrow screens those lines sit above the number.
-	  Stage line    top centre in the run-pill slot (y 92): a persistent "STAGE 4 · NAME"
-	                and, while Speed < need, a pulsing coral "Need more speed!" hint.
+	  Stage line    top centre in the run-pill slot (y 92): a persistent "STAGE 4 · NAME";
+	                in a safe zone a gold "Step on the WIN plate: +$12.4K" (what that zone's
+	                WIN pad pays right now, or when it pays again); while Speed < need, a
+	                pulsing coral "Need more speed!" hint.
 	  Title         a big bubbly "STAGE n" (plus the stage's name) under it whenever you
-	                enter a stage; also "STAGE 3 CLEAR!", "OOPS!",
-	                "TREADMILL LV 4!" banners (the stage title follows a clear).
+	                enter a stage; also "STAGE 3 CLEAR!" (reaching a safe zone: nothing is
+	                paid until you step on its WIN plate), "YOU WIN!" (cashed out), "OOPS!" /
+	                "CAUGHT!" (back to stage 1), "TREADMILL LV 4!" banners.
+	  WIN plates    the floating "Amount" line over every WIN pad (tag "CardioWinPad",
+	                World.CardioTrack) is written here: "+$12.4K" or "IN 12:30".
 	  Right column  centre right: Custom Speed (title, "Your Max Speed: N", a number box
 	                + green OK that fires CardioSpeedCap { cap } with 0 / empty = no cap,
 	                "Current speed: N"; a small "Custom Speed" chip by default on every
@@ -64839,13 +65063,11 @@ return State
 	                the treadmill card (on / near a treadmill), SPEED UP
 	                (near the upgrade pad, fires CardioUpgrade) and a QUIT pill that asks
 	                "QUIT?" before ModeQuit.
-	  Start picker  centre: when a run starts in the lobby and bestStage > 0, buttons
-	                for stages 1..bestStage (ModeStart { mode = "cardio", stage = n }) and
-	                START HERE. Closes itself after a while or once the run moves on.
-	  Finish card   centre: CARDIO CHAMPION!, the reward, RUN AGAIN / HOME, confetti.
+	  Finish card   centre, on the last WIN plate: CARDIO CHAMPION!, the reward, RUN AGAIN /
+	                HOME, confetti.
 
 	Snapshot fields read (modes.cardio): running, speed, walkSpeed, maxWalkSpeed?,
-	speedCap?, multiplier, bestStage, treadmill, treadmillRate, nextCost, stage,
+	speedCap?, multiplier, treadmill, treadmillRate, nextCost, stage, wins?, cooldownEnds,
 	onTreadmill, stageCount, needs, names. Main routes Notify (kind "Mode", mode "cardio")
 	to CardioHud.onNotify, every State snapshot to CardioHud.onState and the "CardioSteps"
 	effect to CardioHud.onSteps.
@@ -64893,7 +65115,8 @@ local WALLET_RIGHT = 340 -- px the desktop wallet (bottom left) reaches
 local NEAR_PAD = 16 -- studs (flat) from the upgrade pad that show the SPEED UP card
 local NEAR_TREADMILL = 14
 local PROXIMITY_EVERY = 0.15
-local PICKER_HOLD = 15 -- seconds the start picker waits before closing itself
+local PADS_EVERY = 1 -- seconds between repaints of the WIN pads' floating amounts
+local WIN_TAG = "CardioWinPad"
 local MAX_LEVEL = 10
 local MAX_CAP = 100000
 
@@ -64942,13 +65165,12 @@ local upButton: TextButton
 -- Stage line
 local stageLine: Frame
 local stageLabel: TextLabel
+local winLabel: TextLabel
 local hintLabel: TextLabel
--- Banner, picker, finish
+-- Banner, finish
 local banner: Frame
 local bannerTitle: TextLabel
 local bannerSub: TextLabel
-local picker: Frame
-local pickerGrid: Frame
 local finishCard: Frame
 local finishSub: TextLabel
 local finishReward: TextLabel
@@ -64962,13 +65184,16 @@ local shownSpeed = 0
 local walkSpeed = 16
 local maxSeen = 16
 local stage = 0
-local bestStage = 0
 local stageCount = 10
 local nearPad = false
 local nearTreadmill = false
+-- Safe zone the player stands in (0 = none), and what each zone's WIN pad paid when its
+-- "zone" Notify came (used until a snapshot brings `wins`).
+local zoneIn = 0
+local zoneCash: { [number]: number } = {}
+local padsAt = 0
 local quitArmed = false
 local bannerToken = 0
-local pickerToken = 0
 local renderConn: RBXScriptConnection? = nil
 local proximityAt = 0
 local hintShown = false
@@ -65061,6 +65286,78 @@ local function rewardText(p: any): string?
 		text ..= "  (cooling down)"
 	end
 	return text
+end
+
+-- WIN plates ----------------------------------------------------------------------------------
+
+-- What safe zone n's WIN pad pays right now (0 inside the reward cooldown), if known.
+local function winCash(n: number): number?
+	local wins = snap.wins
+	if type(wins) == "table" and type(wins[n]) == "number" then
+		return wins[n]
+	end
+	return zoneCash[n]
+end
+
+-- Seconds until a WIN pad that pays nothing pays again (0 when it should pay already).
+local function cooldownLeft(): number
+	return math.max(0, math.ceil(num(snap.cooldownEnds, 0) - os.time()))
+end
+
+-- The stage line's "Step on the WIN plate: +$X" while standing in a safe zone.
+local function paintWin()
+	local cash = if zoneIn > 0 then winCash(zoneIn) else nil
+	local show = active and cash ~= nil
+	if show then
+		local left = cooldownLeft()
+		if (cash :: number) > 0 then
+			winLabel.Text = "Step on the WIN plate: +" .. Format.money(cash)
+		elseif left > 0 then
+			winLabel.Text = "WIN plate pays again in " .. Format.time(left)
+		else
+			winLabel.Text = "Step on the WIN plate!"
+		end
+		winLabel.TextColor3 = if (cash :: number) > 0 or left <= 0 then GOLD else WHITE
+	end
+	if show ~= winLabel.Visible then
+		winLabel.Visible = show
+		if show then
+			Kit.appear(winLabel, { from = 0.7 })
+		end
+		-- The need hint steps down a line while the win line is up.
+		hintLabel.Position = UDim2.fromOffset(0, if show then 52 else 30)
+	end
+end
+
+-- The floating amount over every WIN pad: what it pays this player right now.
+local function paintPads()
+	for _, pad in CollectionService:GetTagged(WIN_TAG) do
+		local gui = pad:FindFirstChild("WinLabel")
+		local amount = gui and gui:FindFirstChild("Amount")
+		if amount and amount:IsA("TextLabel") then
+			local cash = winCash(math.floor(num(pad:GetAttribute("Stage"), 0)))
+			local text = "CASH OUT"
+			if active and cash then
+				local left = cooldownLeft()
+				text = if cash > 0 then "+" .. Format.money(cash) elseif left > 0 then "IN " .. Format.time(left) else "CASH OUT"
+			end
+			if amount.Text ~= text then
+				amount.Text = text
+			end
+		end
+	end
+end
+
+-- The safe zone (1..10) whose deck is under `pos`, from the WIN pads' zone attributes.
+local function zoneAt(pos: Vector3): number
+	for _, pad in CollectionService:GetTagged(WIN_TAG) do
+		local x0, x1 = num(pad:GetAttribute("ZoneX0"), 0), num(pad:GetAttribute("ZoneX1"), 0)
+		local z0, z1 = num(pad:GetAttribute("ZoneZ0"), 0), num(pad:GetAttribute("ZoneZ1"), 0)
+		if pos.X >= x0 and pos.X <= x1 and pos.Z >= z0 and pos.Z <= z1 then
+			return math.floor(num(pad:GetAttribute("Stage"), 0))
+		end
+	end
+	return 0
 end
 
 -- Speed box, stage line, custom speed ---------------------------------------------------------
@@ -65252,10 +65549,13 @@ local function checkProximity()
 	local char = player.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	local pad, tread = false, false
+	zoneIn = 0
 	if hrp and hrp:IsA("BasePart") then
 		pad = nearTagged("CardioUpgradePad", hrp.Position, NEAR_PAD)
 		tread = nearTagged("CardioTreadmill", hrp.Position, NEAR_TREADMILL)
+		zoneIn = zoneAt(hrp.Position)
 	end
+	paintWin()
 	if pad ~= nearPad then
 		nearPad = pad
 		paintUpgrade()
@@ -65299,57 +65599,11 @@ local function render(dt: number)
 		proximityAt = now
 		checkProximity()
 	end
-end
-
--- Picker --------------------------------------------------------------------------------------
-
-local function hidePicker()
-	pickerToken += 1
-	if picker.Visible then
-		Kit.disappear(picker)
+	-- The pads' cooldown countdowns tick on their own.
+	if now - padsAt >= PADS_EVERY then
+		padsAt = now
+		paintPads()
 	end
-end
-
-local function showPicker(best: number)
-	pickerToken += 1
-	local mine = pickerToken
-	for _, child in pickerGrid:GetChildren() do
-		if child:IsA("GuiButton") then
-			child:Destroy()
-		end
-	end
-	local count = math.clamp(math.floor(best), 1, stageCount)
-	local first: GuiObject? = nil
-	for n = 1, count do
-		local isBest = n == count
-		local button = Kit.button(pickerGrid, {
-			Name = "Stage" .. n,
-			Text = tostring(n),
-			Color = if isBest then GOLD else MINT,
-			Font = F.Display,
-			TextSize = 26,
-			Size = UDim2.fromOffset(50, 50),
-			LayoutOrder = n,
-			Radius = 14,
-			ZIndex = 42,
-		}, function()
-			hidePicker()
-			action:FireServer({ action = "ModeStart", mode = "cardio", stage = n })
-		end)
-		Kit.selectable(button)
-		first = first or button
-	end
-	picker.Size = UDim2.fromOffset(math.clamp(count * 58 + 48, 320, 640), 186)
-	Kit.appear(picker, { from = 0.7, time = 0.3 })
-	Kit.stagger(pickerGrid, 0.03)
-	if Kit.gamepad and first then
-		Kit.select(first)
-	end
-	task.delay(PICKER_HOLD, function()
-		if pickerToken == mine then
-			hidePicker()
-		end
-	end)
 end
 
 -- Show / hide ---------------------------------------------------------------------------------
@@ -65398,6 +65652,10 @@ local function show()
 	hintShown = false
 	hintLabel.Visible = false
 	nearPad, nearTreadmill = false, false
+	zoneIn = 0
+	table.clear(zoneCash)
+	paintWin()
+	paintPads()
 	treadCard.Visible = false
 	upCard.Visible = false
 	root.Visible = true
@@ -65423,9 +65681,11 @@ local function hide()
 		renderConn:Disconnect()
 		renderConn = nil
 	end
+	zoneIn = 0
+	paintWin()
+	paintPads()
 	capBox:ReleaseFocus()
 	setCustomOpen(false)
-	hidePicker()
 	Kit.disappear(stageLine)
 	Kit.disappear(boxBody)
 	Kit.disappear(customCard)
@@ -65437,20 +65697,24 @@ end
 local function applySnapshot(s: { [string]: any }, exact: boolean)
 	snap = s
 	stageCount = math.clamp(math.floor(num(s.stageCount, 10)), 1, 10)
-	bestStage = math.floor(num(s.bestStage, bestStage))
-	local newStage = math.floor(num(s.stage, stage))
-	if newStage ~= stage then
-		stage = newStage
-		if stage > 0 then
-			hidePicker()
-		end
-	end
+	stage = math.floor(num(s.stage, stage))
 	setTarget(num(s.speed, targetSpeed), exact)
 	setWalk(num(s.walkSpeed, walkSpeed))
 	setMultiplier(num(s.multiplier, 1))
 	if active then
 		paintTreadmill()
 		paintUpgrade()
+		paintWin()
+		paintPads()
+	end
+end
+
+-- Closes the finish card and drops a gamepad selection left on its buttons, so the stick
+-- goes back to running.
+local function hideFinish()
+	Kit.unfocus(finishCard)
+	if finishCard.Visible then
+		Kit.disappear(finishCard)
 	end
 end
 
@@ -65475,45 +65739,57 @@ function CardioHud.onNotify(p: any)
 	local event = tostring(p.event)
 	if event == "start" then
 		startedAt = os.clock()
-		if finishCard.Visible then
-			Kit.disappear(finishCard)
-		end
-		stage = math.floor(num(p.stage, 0))
-		bestStage = math.floor(num(p.bestStage, bestStage))
+		hideFinish()
+		-- A run always starts in the lobby (stage 1).
+		stage = 0
 		setTarget(num(p.speed, targetSpeed), true)
 		setWalk(num(p.walkSpeed, walkSpeed))
 		setMultiplier(num(p.multiplier, 1))
 		show()
 		Sounds.play("Ready")
-		if stage <= 0 then
-			showBanner("CARDIO!", "Every key you step on = +Speed!", MINT, 2)
-			stageTitle(2.4)
-			if bestStage > 0 then
-				showPicker(bestStage)
-			end
-		else
-			stageTitle()
-		end
-	elseif event == "stage" then
+		showBanner("CARDIO!", "Every key you step on = +Speed!", MINT, 2)
+		stageTitle(2.4)
+	elseif event == "zone" then
+		-- Reached a safe zone: nothing is paid yet, its WIN plate shows what it would pay.
 		local n = math.floor(num(p.stage, stage))
-		stage = math.max(stage, n)
-		if p.first == true then
-			bestStage = math.max(bestStage, n)
-		end
-		hidePicker()
-		local title = if p.first == true then "STAGE " .. n .. " CLEAR!" else "STAGE " .. n .. "!"
-		showBanner(title, rewardText(p), if p.first == true then GOLD else MINT, 2.4)
+		stage = n
+		local cash = num(p.cash, 0)
+		zoneCash[n] = cash
+		local sub = if cash > 0
+			then "Step on the WIN plate: +" .. Format.money(cash)
+			elseif n >= stageCount then "Step on the WIN plate!"
+			else "Keep running for a bigger win!"
+		showBanner("STAGE " .. n .. " CLEAR!", sub, MINT, 2.4)
 		stageTitle(2.8)
-		Sounds.play(if p.first == true then "Reward" else "Step")
-		if p.first == true and screen then
-			Kit.confetti(screen, { Count = 18, Origin = UDim2.fromScale(0.5, 0.3) })
+		Sounds.play("Step")
+		paintWin()
+		paintPads()
+	elseif event == "win" then
+		-- Cashed out on a WIN plate: paid, and back in the lobby for the next run.
+		stage = 0
+		zoneIn = 0
+		table.clear(zoneCash)
+		paintWin()
+		if p.final == true then
+			showFinish(p)
+		else
+			showBanner("YOU WIN!", rewardText(p), GOLD, 2.4)
+			stageTitle(2.8)
+			Sounds.play("Reward")
+			if screen then
+				Kit.confetti(screen, { Count = 18, Origin = UDim2.fromScale(0.5, 0.3) })
+			end
 		end
 	elseif event == "fall" then
-		showBanner("OOPS!", "Back to the start of the stage. Build more Speed!", CORAL, 1.6)
+		-- A fall or a catch: the run starts over in the lobby (the chaser's own "MOGGED!"
+		-- splash plays first on a catch).
+		stage = 0
+		zoneIn = 0
+		table.clear(zoneCash)
+		paintWin()
+		local caught = p.reason == "caught"
+		showBanner(if caught then "CAUGHT!" else "OOPS!", "Back to Stage 1. Build more Speed!", CORAL, 1.8, if caught then 1.2 else nil)
 		Sounds.play("Error")
-	elseif event == "finish" then
-		hide()
-		showFinish(p)
 	elseif event == "refused" then
 		-- The server already toasted why; just shake the button.
 		Sounds.play("Error")
@@ -66039,6 +66315,17 @@ local function buildStageLine()
 		ZIndex = 22,
 		StrokeThickness = 3,
 	})
+	winLabel = Kit.hudText(stageLine, {
+		Name = "Win",
+		Text = "",
+		TextSize = 18,
+		TextColor3 = GOLD,
+		Size = UDim2.new(1, 0, 0, 22),
+		Position = UDim2.fromOffset(0, 29),
+		Visible = false,
+		ZIndex = 22,
+		StrokeThickness = 3,
+	})
 	hintLabel = Kit.hudText(stageLine, {
 		Name = "Hint",
 		Text = "Need more speed! Run on keys or hop on a treadmill",
@@ -66082,60 +66369,6 @@ local function buildBanner(screenGui: ScreenGui)
 		ZIndex = 31,
 		StrokeThickness = 3,
 	})
-end
-
-local function buildPicker(screenGui: ScreenGui)
-	picker = Kit.panel(screenGui, {
-		Name = "CardioStartAt",
-		Size = UDim2.fromOffset(420, 186),
-		Position = UDim2.new(0.5, 0, 0.5, 20),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Visible = false,
-		ZIndex = 40,
-		Elevated = true,
-	})
-	Kit.title(picker, {
-		Name = "Title",
-		Text = "START AT STAGE",
-		TextSize = 28,
-		TextColor3 = GOLD,
-		Size = UDim2.new(1, 0, 0, 32),
-		Position = UDim2.fromOffset(0, 12),
-		ZIndex = 41,
-	})
-	Kit.text(picker, {
-		Name = "Sub",
-		Text = "Skip to a safe zone you already reached",
-		Font = F.UI,
-		TextSize = 15,
-		TextColor3 = C.TextDim,
-		Size = UDim2.new(1, 0, 0, 18),
-		Position = UDim2.fromOffset(0, 44),
-		ZIndex = 41,
-	})
-	pickerGrid = Kit.new("Frame", {
-		Name = "Grid",
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -24, 0, 56),
-		Position = UDim2.fromOffset(12, 70),
-		ZIndex = 41,
-		Parent = picker,
-	})
-	Kit.list(pickerGrid, 8, true, Enum.HorizontalAlignment.Center)
-	local stay = Kit.button(picker, {
-		Name = "Stay",
-		Text = "START HERE",
-		Color = C.SurfaceHi,
-		TextSize = 15,
-		Size = UDim2.fromOffset(150, 36),
-		Position = UDim2.new(0.5, 0, 1, -12),
-		AnchorPoint = Vector2.new(0.5, 1),
-		Radius = 12,
-		ZIndex = 42,
-	}, function()
-		hidePicker()
-	end)
-	Kit.selectable(stay)
 end
 
 local function buildFinish(screenGui: ScreenGui)
@@ -66195,8 +66428,8 @@ local function buildFinish(screenGui: ScreenGui)
 		ZIndex = 52,
 		Breathe = true,
 	}, function()
-		Kit.disappear(finishCard)
-		action:FireServer({ action = "ModeStart", mode = "cardio", stage = 0 })
+		hideFinish()
+		action:FireServer({ action = "ModeStart", mode = "cardio" })
 	end)
 	local home = Kit.button(finishCard, {
 		Name = "Home",
@@ -66209,7 +66442,7 @@ local function buildFinish(screenGui: ScreenGui)
 		AnchorPoint = Vector2.new(0, 1),
 		ZIndex = 52,
 	}, function()
-		Kit.disappear(finishCard)
+		hideFinish()
 		action:FireServer({ action = "Home" })
 	end)
 	Kit.selectable(again)
@@ -66242,7 +66475,6 @@ function CardioHud.build(screenGui: ScreenGui)
 	buildUpgradeCard()
 	buildStageLine()
 	buildBanner(screenGui)
-	buildPicker(screenGui)
 	buildFinish(screenGui)
 
 	-- Layout: compact screens shrink the box and the column; the desktop wallet (bottom

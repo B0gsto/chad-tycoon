@@ -1,11 +1,16 @@
 --[[
-	Unit tests for the CARDIO rules (src/server/Modes/CardioRules.luau) and the keyboard runway
-	layout (src/server/Modes/CardioLayout.luau).
+	Unit tests for the CARDIO rules (src/server/Modes/CardioRules.luau), the keyboard runway
+	layout (src/server/Modes/CardioLayout.luau) and the run's rules (src/server/Modes/Cardio.luau):
+	every run starts at stage 1, cash is paid only on a WIN plate, a fall or a catch goes back
+	to stage 1.
 	Loaded by tests/run.luau with its harness: { test, check, eq, near, seeded }.
 ]]
 
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
+local roblox = require("@lune/roblox")
+
+local Economy = require("../src/shared/Economy")
 
 local MODES_DIR = "src/server/Modes/"
 
@@ -260,7 +265,7 @@ return function(h: { [string]: any })
 
 	test("Cardio: key budget, bounds and key shapes", function()
 		local keys = L.keys
-		check(#keys <= 9000, "key budget (" .. #keys .. " keys)")
+		check(#keys <= 12500, "key budget (" .. #keys .. " keys)")
 		check(#keys >= 3000, "a real course (" .. #keys .. " keys)")
 		local b = L.bounds
 		check(b.x0 >= -1300 and b.x1 <= 1300, "course inside x -1300..1300")
@@ -320,7 +325,8 @@ return function(h: { [string]: any })
 		end
 		for _, z in L.zones do
 			near(area["z" .. z.stage], (z.x1 - z.x0) * (z.z1 - z.z0), "deck " .. z.stage .. " fully carpeted")
-			near(z.z1 - z.z0, Layout.CORRIDOR.width, "deck " .. z.stage .. " is full width")
+			local width = if z.stage == 0 then Layout.CORRIDOR.width else Layout.ROOM.width
+			near(z.z1 - z.z0, width, "deck " .. z.stage .. " is full width")
 		end
 		for _, p in L.platforms do
 			near(area["p" .. p.id], (p.x1 - p.x0) * (p.z1 - p.z0), "platform " .. p.id .. " fully carpeted")
@@ -576,6 +582,12 @@ return function(h: { [string]: any })
 			)
 			local zone = L.zones[if d.side == "west" then d.stage else d.stage + 1]
 			check(d.z - d.width / 2 >= zone.z0 - eps and d.z + d.width / 2 <= zone.z1 + eps, "doorway opens onto the deck " .. i)
+			-- Wide doorways (no pinch between rooms), all inside the safe zones' free lane.
+			near(d.width, Layout.DOOR.keys * K, "doorway width " .. i)
+			check(d.width >= 9 * K - eps, "doorway at least 9 keys wide " .. i)
+			check(d.width >= Rules.STAGES[d.stage].width - eps, "doorway as wide as its bridge " .. i)
+			check(math.abs(d.z - O.z) <= Layout.DOOR_REACH + eps, "doorway within DOOR_REACH " .. i)
+			check(math.abs(d.z - O.z) + d.width / 2 <= Layout.LANE / 2 + eps, "doorway inside the lane " .. i)
 			eq(d.timed, d.side == "east" and d.stage >= 3, "timed exit doors from stage 3 " .. i)
 			if d.timed then
 				check(d.open >= 2.5 and d.period <= 6, "door open >= 2.5 s of <= 6 s " .. i)
@@ -694,19 +706,97 @@ return function(h: { [string]: any })
 			check(x >= b.x0 and x <= b.x1 and z >= b.z0 and z <= b.z1, what .. " inside bounds")
 		end
 		local T = Layout.TREADMILL
+		local function tmBox(tm: any): any
+			return { x0 = tm.x - T.length / 2, x1 = tm.x + T.length / 2, z0 = tm.z - T.width / 2, z1 = tm.z + T.width / 2 }
+		end
 		for _, z in L.zones do
 			check(#z.treadmills >= 2, "treadmills in zone " .. z.stage)
-			for _, tm in z.treadmills do
-				check(tm.x - T.length / 2 >= z.x0 and tm.x + T.length / 2 <= z.x1, "treadmill on its deck (x)")
-				check(tm.z - T.width / 2 >= z.z0 and tm.z + T.width / 2 <= z.z1, "treadmill on its deck (z)")
+			for i, tm in z.treadmills do
+				local box = tmBox(tm)
+				check(box.x0 >= z.x0 + 4 and box.x1 <= z.x1 - 4, "treadmill on its deck (x)")
+				check(box.z0 >= z.z0 + 4 and box.z1 <= z.z1 - 4, "treadmill on its deck (z)")
 				check(math.abs(tm.z - O.z) >= 8 + T.width / 2, "treadmills leave the running lane free")
+				for j = i + 1, #z.treadmills do
+					check(dist(box, tmBox(z.treadmills[j])) >= 1 - eps, "treadmills apart in zone " .. z.stage)
+				end
+				check(dist(box, { x0 = z.spawn.x, x1 = z.spawn.x, z0 = z.spawn.z, z1 = z.spawn.z }) >= 8, "spawn clear of the treadmills")
 			end
-			check((z :: any).winPad == nil, "no win pad in zone " .. z.stage)
 			check(z.spawn.x > z.x0 and z.spawn.x < z.x1, "spawn on its deck")
 			check(z.spawn.z > z.z0 and z.spawn.z < z.z1, "spawn on its deck (z)")
+			check(Layout.isOverKey(z.spawn.x, z.top, z.spawn.z) ~= nil, "spawn on a key " .. z.stage)
+			near(z.spawn.z, O.z, "spawn on the centre line " .. z.stage)
 		end
+		eq(L.zones[1].winPad, nil, "no WIN pad in the lobby")
 		check(L.zones[1].upgradePad ~= nil and #L.zones[1].treadmills >= 2, "lobby has treadmills and the upgrade pad")
-		check((Layout :: any).WIN_PAD == nil, "no WIN pads")
+
+		-- Safe zones: about twice the old 11 x 29 key deck, as wide as the bridge rooms.
+		local old = 11 * K * 29 * K
+		for n = 1, Rules.STAGE_COUNT do
+			local z = L.zones[n + 1]
+			local size = if n == Rules.STAGE_COUNT then Layout.FINISH_KEYS else Layout.ZONE_KEYS
+			near(z.x1 - z.x0, size.long * K, "zone " .. n .. " length")
+			near(z.z1 - z.z0, size.wide * K, "zone " .. n .. " width")
+			near(z.z1 - z.z0, Layout.ROOM.width, "zone " .. n .. " as wide as the bridge rooms")
+			check(z.x1 - z.x0 >= 16 * K - eps, "zone " .. n .. " at least 16 keys long")
+			check((z.x1 - z.x0) * (z.z1 - z.z0) >= 2 * old, "zone " .. n .. " has twice the old area")
+			-- The lane between its two doorways runs the whole zone, clear of pad and treadmills.
+			for _, tm in z.treadmills do
+				check(tm.z + T.width / 2 <= O.z - Layout.LANE / 2 - 4, "treadmill south of the lane in zone " .. n)
+			end
+			check(#z.treadmills == 4, "four treadmills in zone " .. n)
+		end
+
+		-- WIN pads: one per safe zone, a whole-key square with clear deck around it.
+		eq(Layout.WIN_PAD, 5 * K, "WIN pad is 5 keys square")
+		for n = 1, Rules.STAGE_COUNT do
+			local z = L.zones[n + 1]
+			local pad = z.winPad
+			check(pad ~= nil, "WIN pad in zone " .. n)
+			eq(pad.size, Layout.WIN_PAD, "WIN pad size " .. n)
+			local half = pad.size / 2
+			local box = { x0 = pad.x - half, x1 = pad.x + half, z0 = pad.z - half, z1 = pad.z + half }
+			inside(pad.x, pad.z, "WIN pad")
+			check(box.x0 >= z.x0 + 2 * K - eps and box.x1 <= z.x1 - 2 * K + eps, "WIN pad clear of the end walls " .. n)
+			check(box.z0 >= z.z0 + 2 * K - eps and box.z1 <= z.z1 - 2 * K + eps, "WIN pad clear of the side walls " .. n)
+			local function onGrid(v: number): boolean
+				return math.abs(v / K - math.floor(v / K + 0.5)) < 1e-6
+			end
+			check(onGrid(box.x0 - z.x0) and onGrid(box.z0 - z.z0), "WIN pad covers whole keys " .. n)
+			for _, tm in z.treadmills do
+				check(dist(box, tmBox(tm)) >= 20, "WIN pad far from the treadmills " .. n)
+			end
+			check(dist(box, { x0 = z.spawn.x, x1 = z.spawn.x, z0 = z.spawn.z, z1 = z.spawn.z }) >= 10, "spawn clear of the WIN pad " .. n)
+			if n < Rules.STAGE_COUNT then
+				-- Walking from door to door never crosses the pad: it sits outside the lane.
+				check(box.z0 >= O.z + Layout.LANE / 2 + 2 * K - eps, "WIN pad north of the lane " .. n)
+				for _, d in L.doors do
+					if (d.side == "east" and d.stage == n) or (d.side == "west" and d.stage == n + 1) then
+						check(box.z0 - (d.z + d.width / 2) >= 2 * K - eps, "WIN pad beside the doorways of zone " .. n)
+					end
+				end
+			else
+				-- The last pad is the finish: on the centre line, in front of the podium.
+				near(pad.z, O.z, "final WIN pad on the centre line")
+				check(box.x1 < L.finish.x - 7, "final WIN pad in front of the podium")
+			end
+			-- Standing on it (feet on the pressed keys or on the pad), not flying over it.
+			eq(Layout.onWinPad(pad.x, z.top, pad.z), n, "onWinPad centre " .. n)
+			eq(Layout.onWinPad(box.x0 + 0.1, z.top - Layout.PRESS, box.z1 - 0.1), n, "onWinPad corner " .. n)
+			eq(Layout.onWinPad(box.x0 - 0.5, z.top, pad.z), nil, "off the pad (x) " .. n)
+			eq(Layout.onWinPad(pad.x, z.top, box.z1 + 0.5), nil, "off the pad (z) " .. n)
+			eq(Layout.onWinPad(pad.x, z.top + Layout.WIN_PAD_ABOVE + 1, pad.z), nil, "jumping over the pad " .. n)
+			eq(Layout.onWinPad(z.spawn.x, z.top, z.spawn.z), nil, "the spawn is not on the pad " .. n)
+		end
+		eq(Layout.onWinPad(L.zones[1].spawn.x, O.y, L.zones[1].spawn.z), nil, "no WIN pad in the lobby")
+
+		-- Rooms never overlap: they tile X in order, and no bridge surface reaches into a deck.
+		for i = 2, #L.rooms do
+			check(L.rooms[i].x0 >= L.rooms[i - 1].x1 - eps, "room " .. i .. " starts after room " .. (i - 1))
+			check(L.rooms[i].x1 > L.rooms[i].x0, "room " .. i .. " has length")
+		end
+		for _, p in L.platforms do
+			check(p.x0 >= L.zones[p.stage].x1 - eps and p.x1 <= L.zones[p.stage + 1].x0 + eps, "platform " .. p.id .. " between its zones")
+		end
 		for _, s in L.signs do
 			inside(s.x, s.z, "sign")
 			eq(s.need, Rules.STAGES[s.stage].need, "sign shows the need")
@@ -839,28 +929,406 @@ return function(h: { [string]: any })
 		local z5 = L.zones[6]
 		local tm5 = z5.treadmills[2]
 		eq((Layout.onTreadmill(tm5.x, tm5.y, tm5.z)), 5, "deeper treadmill zone")
-		-- No checkpoints: a fall anywhere in stage n (its bridge room) returns you to safe zone
-		-- n - 1's spawn (the lobby for stage 1); in safe zone n you stay at zone n.
+		-- No checkpoints: a fall anywhere returns you to the lobby's spawn (Modes.Cardio);
+		-- startStageAt is the last safe zone passed (the HUD runs stage + 1).
 		check((L :: any).checkpoints == nil and (Layout :: any).checkpointAt == nil, "no checkpoints")
 		for _, s in Rules.STAGES do
 			check((s :: any).checkpointEvery == nil, "no checkpointEvery")
 		end
+		check((Layout.zoneAt(cp.x, cp.z, cp.y - 3) or {}).stage == 0, "the lobby spawn is on the lobby deck")
 		for _, p in L.platforms do
-			local back = Layout.startStageAt((p.x0 + p.x1) / 2)
-			eq(back, p.stage - 1, "a fall on platform " .. p.id .. " goes back one zone")
-			local sp = Layout.spawn(back)
-			local zone = L.zones[back + 1]
-			check(sp.x == zone.spawn.x and sp.x < p.x0, "respawn behind the stage " .. p.stage)
-			check((Layout.zoneAt(sp.x, sp.z, sp.y - 3) or {}).stage == back, "respawn on zone " .. back .. "'s deck")
-			check(Layout.isOverKey(sp.x, zone.top, sp.z) ~= nil, "respawn on a key " .. back)
+			eq(Layout.startStageAt((p.x0 + p.x1) / 2), p.stage - 1, "platform " .. p.id .. " runs stage " .. p.stage)
+			check(cp.x < p.x0, "the lobby spawn is behind stage " .. p.stage)
 		end
 		for _, z in L.zones do
-			eq(Layout.startStageAt(z.spawn.x), z.stage, "a fall in zone " .. z.stage .. " stays there")
+			eq(Layout.startStageAt(z.spawn.x), z.stage, "zone " .. z.stage .. " is the last zone passed on its deck")
+			local sp = Layout.spawn(z.stage)
+			check(sp ~= nil and sp.x == z.spawn.x, "spawn of zone " .. z.stage)
 		end
 		check(L.finish.x > L.zones[#L.zones].x0, "finish on the last deck")
 		eq(Layout.killYAt(-5000), Layout.KILL_Y, "killYAt outside the rooms")
 		local r3 = Layout.room(3)
 		check(r3 ~= nil and Layout.roomAt((r3.x0 + r3.x1) / 2) == r3 and r3.stage == 3, "roomAt")
 		eq(Layout.stageAt(r3.x0 + 1), 3, "stageAt in bridge room 3")
+	end)
+
+	-- Loads Modes.Cardio against stub GameModes / Tycoon for a living player whose record is
+	-- `bestStage` (real Economy rewards; rig.humanoid.Health = 0 kills them). Returns the mode
+	-- def and a rig.
+	local function loadCardio(bestStage: number): (any, any)
+		local env = function(parent: { [string]: any })
+			return setmetatable({
+				script = { Parent = parent },
+				require = function(module)
+					return module
+				end,
+			}, { __index = _G })
+		end
+		local Chase = luau.load(fs.readFile(MODES_DIR .. "CardioChase.luau"), {
+			debugName = "CardioChase",
+			environment = env({ CardioRules = Rules, CardioLayout = Layout }),
+		})()
+		local Course = luau.load(fs.readFile(MODES_DIR .. "Course.luau"), { debugName = "Course" })()
+		local clock = { t = 1000 }
+		local rig: any = { notes = {}, teleports = 0, clock = clock }
+		local attributes = {}
+		local humanoid = {
+			Health = 100,
+			WalkSpeed = 16,
+			SetAttribute = function(_, name, value)
+				attributes[name] = value
+			end,
+			GetAttribute = function(_, name)
+				return attributes[name]
+			end,
+		}
+		local player = {
+			Character = {
+				FindFirstChildOfClass = function()
+					return humanoid
+				end,
+			},
+		}
+		local root = { Position = roblox.Vector3.new(0, 0, 0) }
+		local session = {
+			player = player,
+			profile = {
+				money = 0,
+				totalEarned = 0,
+				discovered = {},
+				processLevel = 0,
+				cardio = { speed = 0, bestStage = bestStage, treadmill = 0, clears = 0, speedCap = 0 },
+				modes = { cardio = { best = bestStage, clears = 0, lastRewardAt = 0 } },
+			},
+		}
+		rig.humanoid = humanoid
+		rig.player, rig.root, rig.session = player, root, session
+		local GameModes = {
+			session = function()
+				return session
+			end,
+			notify = function(_, event, _, data)
+				local note = table.clone(data or {})
+				note.event = event
+				table.insert(rig.notes, note)
+			end,
+			effect = function() end,
+			refresh = function() end,
+			teleport = function(_, feet)
+				rig.teleports += 1
+				rig.teleportedTo = feet
+			end,
+			hooks = {
+				reward = function(_, _, reward)
+					return reward
+				end,
+				rewarded = function() end,
+			},
+		}
+		local Tycoon = {
+			income = function()
+				return 0
+			end,
+			markDirty = function() end,
+			toast = function() end,
+			addAction = function() end,
+		}
+		local services = {
+			ReplicatedStorage = { Shared = { Economy = Economy } },
+			Players = { PlayerRemoving = { Connect = function() end } },
+		}
+		local modes = { CardioLayout = Layout, CardioRules = Rules, CardioChase = Chase, Course = Course }
+		local cardioEnv = env(modes)
+		modes.Parent = { Cosmetics = { refresh = function() end } }
+		cardioEnv.game = {
+			GetService = function(_, name)
+				return services[name]
+			end,
+		}
+		cardioEnv.workspace = {
+			GetServerTimeNow = function()
+				return clock.t
+			end,
+		}
+		cardioEnv.Vector3 = roblox.Vector3
+		cardioEnv.Enum = roblox.Enum
+		local path = MODES_DIR .. "Cardio.luau"
+		local Cardio = luau.load(fs.readFile(path), { debugName = path, environment = cardioEnv })()
+		local theme = { Modes = { Reward = { Seconds = 300, Min = 750 } }, Cosmetics = { BaseWalkSpeed = 16 } }
+		local def = Cardio.create(GameModes, { built = nil, theme = theme, Tycoon = Tycoon })
+		rig.chase = Chase
+		function rig.last(event: string): any
+			for i = #rig.notes, 1, -1 do
+				if rig.notes[i].event == event then
+					return rig.notes[i]
+				end
+			end
+			return nil
+		end
+		function rig.count(event: string): number
+			local n = 0
+			for _, note in rig.notes do
+				if note.event == event then
+					n += 1
+				end
+			end
+			return n
+		end
+		-- One server tick, a second later, with the feet at (x, y, z).
+		function rig.feet(x: number, y: number, z: number)
+			root.Position = roblox.Vector3.new(x, y + 3, z)
+			clock.t += 1
+			def.tick(player, root, clock.t)
+		end
+		-- Runs stages `from`..`to` in order: through each bridge room (its middle, past where a
+		-- chase may start) onto the next safe zone's deck (its spawn).
+		function rig.reach(from: number, to: number)
+			for n = from, to do
+				local room = Layout.room(n)
+				rig.feet((room.x0 + room.x1) / 2, O.y, O.z)
+				local sp = Layout.spawn(n)
+				rig.feet(sp.x, O.y, sp.z)
+			end
+		end
+		-- Steps on safe zone n's WIN plate.
+		function rig.plate(n: number)
+			local pad = L.zones[n + 1].winPad
+			rig.feet(pad.x, O.y, pad.z)
+		end
+		-- Vector3 holds 32-bit floats: compare the teleport target loosely.
+		function rig.inLobby(): boolean
+			local at, sp = rig.teleportedTo, Layout.spawn(0)
+			return at ~= nil and (at - roblox.Vector3.new(sp.x, sp.y, sp.z)).Magnitude < 0.01
+		end
+		return def, rig
+	end
+
+	test("Cardio: a run always starts at stage 1, whatever the client asks", function()
+		local def, rig = loadCardio(5)
+		local player = rig.player
+		-- Vector3 holds 32-bit floats: compare the teleport target loosely.
+		local function landedOn(spawn: { x: number, y: number, z: number }): boolean
+			local at = rig.teleportedTo
+			return at ~= nil and (at - roblox.Vector3.new(spawn.x, spawn.y, spawn.z)).Magnitude < 0.01
+		end
+		local lobby = Layout.spawn(0)
+		-- `false` = no data at all (the gate), then the old "Start at" requests and junk.
+		local asks: { any } = { false, {}, { stage = 0 }, { stage = 1 }, { stage = 5 }, { stage = 4.5 }, { stage = 9 } }
+		table.insert(asks, { stage = -1 })
+		table.insert(asks, { stage = 0 / 0 })
+		table.insert(asks, { stage = math.huge })
+		table.insert(asks, { stage = "5" })
+		for i, ask in asks do
+			rig.teleportedTo = nil
+			table.clear(rig.notes)
+			check(def.start(player, true, ask or nil), "request " .. i .. " starts a run")
+			check(landedOn(lobby), "request " .. i .. " lands on the lobby spawn")
+			eq(def.snapshot(player).stage, 0, "request " .. i .. " runs stage 1")
+			check(rig.last("start") ~= nil and rig.last("start").stage == nil, "request " .. i .. ": a start notify with no stage")
+		end
+		eq(rig.session.profile.cardio.bestStage, 5, "bestStage stays as the record")
+		eq(def.snapshot(player).bestStage, 5, "and stays in the snapshot")
+
+		-- Starting again mid-run is a restart in the lobby with nothing reached.
+		rig.reach(1, 2)
+		eq(def.snapshot(player).reached, 2, "two safe zones reached")
+		check(def.start(player, true, { stage = 2 }), "restart")
+		eq(def.snapshot(player).stage, 0, "the restart is at stage 1")
+		eq(def.snapshot(player).reached, 0, "the restart has reached nothing")
+	end)
+
+	test("Cardio: cash is paid only on a WIN plate, once per run", function()
+		local def, rig = loadCardio(0)
+		local player, profile = rig.player, rig.session.profile
+		local rec = profile.cardio
+		check(def.start(player, true), "start")
+		eq(def.snapshot(player).reached, 0, "nothing reached at the start")
+
+		-- Reaching a safe zone pays nothing and records nothing.
+		rig.reach(1, 1)
+		local zone = rig.last("zone")
+		check(zone ~= nil and zone.stage == 1 and zone.first == true, "zone 1 reached")
+		eq(profile.money, 0, "reaching zone 1 pays nothing")
+		eq(rec.bestStage, 0, "reaching zone 1 is not a record yet")
+		eq(rec.clears, 0, "no clear yet")
+		eq(rig.count("win"), 0, "no win yet")
+		check(rig.last("stage") == nil and rig.last("finish") == nil, "no automatic stage reward events")
+		local snap = def.snapshot(player)
+		eq(snap.reached, 1, "snapshot: zone 1 reached")
+		check(zone.cash > 0 and snap.wins[1] == zone.cash, "the plate's pending win is announced")
+		for n = 2, Rules.STAGE_COUNT do
+			check(snap.wins[n] > snap.wins[n - 1], "deeper plates pay more at " .. n)
+		end
+		check(math.abs(snap.wins[10] / snap.wins[1] - Rules.stageBonus(10)) < 0.01, "plate 10 pays the stage 10 bonus")
+		-- Standing still on the deck (off the plate) keeps paying nothing.
+		rig.reach(1, 1)
+		eq(rig.count("zone"), 1, "a zone is reached once per run")
+		eq(profile.money, 0, "still nothing paid")
+
+		-- Stepping on the plate pays that stage, records it and ends the run in the lobby.
+		rig.teleportedTo = nil
+		rig.plate(1)
+		local win = rig.last("win")
+		check(win ~= nil and win.stage == 1 and win.first == true and win.final == false, "win on plate 1")
+		eq(win.cash, zone.cash, "the plate pays what it showed")
+		eq(profile.money, zone.cash, "cash paid")
+		eq(profile.totalEarned, zone.cash, "counted as earned")
+		eq(rec.bestStage, 1, "bestStage recorded")
+		eq(rec.clears, 1, "one clear")
+		check(profile.modes.cardio.lastRewardAt > 0, "the reward cooldown starts")
+		check(rig.inLobby(), "back in the lobby")
+		check(def.running(player), "ready for the next run")
+		eq(def.snapshot(player).reached, 0, "the next run has reached nothing")
+		eq(def.snapshot(player).stage, 0, "the next run is at stage 1")
+
+		-- The same plate again without running the stage (a late position report, a teleport).
+		rig.plate(1)
+		rig.plate(1)
+		eq(rig.count("win"), 1, "one payout per run")
+		eq(profile.money, zone.cash, "no second payout")
+
+		-- Running stage 1 again inside the cooldown: the plate pays nothing (no farming).
+		rig.reach(1, 1)
+		local again = rig.last("zone")
+		check(again.first == false and again.full == false and again.cash == 0, "plate 1 is cooling down")
+		rig.plate(1)
+		eq(rig.count("win"), 2, "the claim still ends the run")
+		eq(rig.last("win").cash, 0, "no cash inside the cooldown")
+		eq(profile.money, zone.cash, "nothing farmed")
+		eq(rec.bestStage, 1, "the record stays")
+		check(rig.inLobby(), "back in the lobby again")
+
+		-- Walking past plate 1 keeps the run going; plate 2 is a first clear and pays more.
+		rig.reach(1, 2)
+		eq(profile.money, zone.cash, "walking past pays nothing")
+		local z2 = rig.last("zone")
+		check(z2.stage == 2 and z2.first == true and z2.cash > zone.cash, "plate 2 pays more")
+		rig.plate(2)
+		eq(rig.last("win").stage, 2, "win on plate 2")
+		eq(profile.money, zone.cash + z2.cash, "plate 2 paid once")
+		eq(rec.bestStage, 2, "bestStage 2")
+
+		-- An earlier plate of this run can still be claimed (stage 1's reward, on the cooldown).
+		rig.reach(1, 2)
+		rig.plate(1)
+		check(rig.last("win").stage == 1 and rig.last("win").cash == 0, "going back to plate 1 claims stage 1")
+
+		-- After the cooldown a repeat pays again, once.
+		profile.modes.cardio.lastRewardAt = os.time() - Economy.MODE_REWARD_COOLDOWN - 1
+		rig.reach(1, 1)
+		local cooled = rig.last("zone")
+		check(cooled.first == false and cooled.full == true and cooled.cash == zone.cash, "plate 1 pays again after the cooldown")
+		rig.plate(1)
+		eq(profile.money, 2 * zone.cash + z2.cash, "paid after the cooldown")
+		rig.reach(1, 1)
+		rig.plate(1)
+		eq(profile.money, 2 * zone.cash + z2.cash, "and not twice")
+
+		-- The last plate is the finish.
+		rig.reach(1, Rules.STAGE_COUNT)
+		rig.plate(Rules.STAGE_COUNT)
+		local final = rig.last("win")
+		check(final.stage == Rules.STAGE_COUNT and final.final == true and final.first == true, "plate 10 is the final win")
+		eq(rec.bestStage, Rules.STAGE_COUNT, "all stages recorded")
+		check(rig.inLobby(), "the finish also returns to the lobby")
+	end)
+
+	test("Cardio: the WIN plate is checked by the server", function()
+		local def, rig = loadCardio(0)
+		local player, profile = rig.player, rig.session.profile
+
+		-- No run: nothing.
+		rig.plate(1)
+		eq(rig.count("win"), 0, "no run, no win")
+		check(def.start(player, true), "start")
+
+		-- A plate of a zone not reached this run (a teleport onto it or deeper) pays nothing.
+		rig.plate(1)
+		rig.plate(3)
+		eq(def.snapshot(player).reached, 0, "a teleport onto a deck reaches nothing")
+		rig.reach(1, 1)
+		rig.plate(5)
+		local sp3 = Layout.spawn(3)
+		rig.feet(sp3.x, O.y, sp3.z)
+		eq(def.snapshot(player).reached, 1, "zones are reached in order, through their bridge rooms")
+		eq(rig.count("win"), 0, "no win on a plate that was not reached")
+		eq(profile.money, 0, "nothing paid")
+
+		-- Off the plate, over the plate, or dead on the plate: nothing.
+		local z1 = L.zones[2]
+		local pad = z1.winPad
+		rig.feet(pad.x - pad.size / 2 - 1, O.y, pad.z)
+		rig.feet(pad.x, O.y + Layout.WIN_PAD_ABOVE + 2, pad.z)
+		rig.humanoid.Health = 0
+		rig.plate(1)
+		eq(rig.count("win"), 0, "beside, above or dead: no win")
+		eq(profile.money, 0, "still nothing paid")
+
+		-- Alive on the plate of the zone reached this run: paid.
+		rig.humanoid.Health = 100
+		rig.plate(1)
+		eq(rig.count("win"), 1, "win")
+		check(profile.money > 0, "paid")
+	end)
+
+	test("Cardio: a fall or a catch sends you back to stage 1", function()
+		local def, rig = loadCardio(4)
+		local player, profile = rig.player, rig.session.profile
+		local rec = profile.cardio
+		rec.treadmill = 3
+		check(def.start(player, true), "start")
+		rig.reach(1, 2)
+		eq(def.snapshot(player).reached, 2, "two safe zones reached")
+		local speed = rec.speed
+
+		-- A fall in stage 3: the lobby, not safe zone 2.
+		local r3 = Layout.room(3)
+		local x = (r3.x0 + r3.x1) / 2
+		rig.teleportedTo = nil
+		rig.feet(x, Layout.killYAt(x) - 10, O.z)
+		local fall = rig.last("fall")
+		check(fall ~= nil and fall.stage == 0 and fall.from == 3 and fall.reason == "fall", "a fall in stage 3 goes back to stage 1")
+		check(rig.inLobby(), "to the lobby spawn")
+		check(def.running(player), "the run goes on from the lobby")
+		local snap = def.snapshot(player)
+		eq(snap.stage, 0, "running stage 1 again")
+		eq(snap.reached, 0, "the run's progress is gone")
+		-- What is permanent stays.
+		check(rec.speed >= speed, "Speed kept")
+		eq(rec.treadmill, 3, "treadmill level kept")
+		eq(rec.bestStage, 4, "bestStage kept")
+		eq(profile.money, 0, "a fall pays nothing")
+		-- The plates reached before the fall no longer pay.
+		rig.plate(2)
+		eq(rig.count("win"), 0, "no win on an old zone's plate after a fall")
+
+		-- Caught by the stage 3 chaser: the lobby too, and the chaser is ready again.
+		local sec = rig.chase.section(3)
+		local at = sec.x0 + rig.chase.TRIGGER + 1
+		local _, lz = rig.chase.lineAt(sec.line, rig.chase.arcAt(sec.line, at))
+		rig.reach(1, 2)
+		rig.feet(at, O.y, lz)
+		eq(rig.count("chase"), 1, "the chase starts")
+		rig.teleportedTo = nil
+		rig.clock.t += 20
+		rig.feet(at, O.y, lz)
+		eq(rig.count("caught"), 1, "caught standing still")
+		fall = rig.last("fall")
+		check(fall.stage == 0 and fall.from == 3 and fall.reason == "caught", "a catch goes back to stage 1")
+		check(rig.inLobby(), "to the lobby spawn")
+		eq(def.snapshot(player).reached, 0, "progress gone after a catch")
+		eq(rec.bestStage, 4, "bestStage kept after a catch")
+		rig.reach(1, 2)
+		rig.feet(at, O.y, lz)
+		eq(rig.count("chase"), 2, "the chaser hunts again on the next run")
+
+		-- Escaping a chase is forgotten by a fall as well.
+		rig.feet(sec.endX + 1, O.y, lz)
+		eq(rig.last("chaseEnd").reason, "escaped", "escaped")
+		rig.feet(x, Layout.killYAt(x) - 10, O.z)
+		eq(rig.last("fall").reason, "fall", "then a fall")
+		rig.reach(1, 2)
+		rig.feet(at, O.y, lz)
+		eq(rig.count("chase"), 3, "chased again after the fall")
 	end)
 end
