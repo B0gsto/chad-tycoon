@@ -35,6 +35,14 @@
 	                      runner's forward (+X) and whose Top face carries a Texture
 	                      "BeltTexture" for the client to scroll (OffsetStudsV).
 	    UpgradePad        (lobby) tag "CardioUpgradePad" with the "SPEED UP" UpgradeConsole.
+	    WinPad            (zones 1..10) the gold WIN pad on LAYOUT zone.winPad, in the game's
+	                      pad style (WinRim base, WinGlow Neon border, WinPost corner lights, a
+	                      printed "WIN"): tag "CardioWinPad", attributes Stage and ZoneX0 /
+	                      ZoneX1 / ZoneZ0 / ZoneZ1 (its safe zone's deck). Its BillboardGui
+	                      "WinLabel" holds TextLabels "Title" ("WIN") and "Amount" (default
+	                      "CASH OUT"): the client writes what the pad pays that player right
+	                      now into Amount (UI.CardioHud). Stepping on it is the server's
+	                      position check (Modes.Cardio, CardioLayout.onWinPad).
 	    LobbyDecor        (lobby) orange Neon X trusses on its three walls and roof joists, the
 	                      back-wall CARDIO title, candy clusters and warm lamps; decor only.
 	  Room<n>             Model per bridge room (n = stage), attributes Stage, Theme:
@@ -66,7 +74,7 @@
 	                      doorway: "STAGE n" / name / "NEED x SPEED" on both faces; the lobby
 	                      side of room 1 also carries the giant CARDIO title; FinishSign on the
 	                      finish cap wall.
-	  FinishPodium        Model on the stage-10 deck (LAYOUT.finish).
+	  FinishPodium        Model on the stage-10 deck (LAYOUT.finish), behind its WIN pad.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -97,6 +105,8 @@ export type Built = {
 	zones: { [number]: Model },
 	decks: { [number]: BasePart },
 	upgradePad: BasePart,
+	-- WIN pads by safe zone stage (1..10).
+	winPads: { [number]: BasePart },
 	treadmills: { Model },
 	-- Bridge room models and hazard slabs by stage; timed door slabs by LAYOUT.doors index.
 	rooms: { [number]: Model },
@@ -771,6 +781,84 @@ local function upgradePad(parent: Instance, zone: Layout.Zone): BasePart
 	return part
 end
 
+-- The WIN pad of a safe zone: a big gold button in the game's pad style (a low rim, a gold
+-- top with a printed "WIN" inside a Neon border) with a Neon post on each corner, under a
+-- floating label whose "Amount" line the client writes per player.
+local function winPad(parent: Instance, zone: Layout.Zone): BasePart
+	local pad = zone.winPad :: Layout.Pad
+	local s = pad.size
+	local gold = W.Sunny
+	add(parent, {
+		Name = "WinRim",
+		Size = Vector3.new(s + 2.4, 0.3, s + 2.4),
+		CFrame = CFrame.new(pad.x, TOP + 0.15, pad.z),
+		Color = W.PadRim or W.Teal,
+	})
+	glow(parent, {
+		Name = "WinGlow",
+		Size = Vector3.new(s + 1.2, 0.36, s + 1.2),
+		CFrame = CFrame.new(pad.x, TOP + 0.18, pad.z),
+		Color = gold:Lerp(W.White, 0.35),
+	})
+	local part = add(parent, {
+		Name = "WinPad",
+		Size = Vector3.new(s, 0.5, s),
+		-- Front toward +X so the Top-face print reads for runners arriving from the west.
+		CFrame = CFrame.new(pad.x, TOP + 0.25, pad.z) * CFrame.Angles(0, -math.pi / 2, 0),
+		Color = gold,
+	})
+	part:SetAttribute("Stage", zone.stage)
+	part:SetAttribute("ZoneX0", zone.x0)
+	part:SetAttribute("ZoneX1", zone.x1)
+	part:SetAttribute("ZoneZ0", zone.z0)
+	part:SetAttribute("ZoneZ1", zone.z1)
+	part:AddTag("CardioWinPad")
+	light(part, gold, 22, 1.6)
+	outline(
+		text(surface(part, Enum.NormalId.Top, 20), {
+			Text = "WIN",
+			TextColor3 = W.White,
+			Size = UDim2.fromScale(0.8, 0.5),
+			Position = UDim2.fromScale(0.1, 0.25),
+		}),
+		W.Ink,
+		5
+	)
+	for _, dx in { -1, 1 } do
+		for _, dz in { -1, 1 } do
+			glow(parent, {
+				Name = "WinPost",
+				Size = Vector3.new(0.9, 5, 0.9),
+				CFrame = CFrame.new(pad.x + dx * (s / 2 + 0.75), TOP + 2.5, pad.z + dz * (s / 2 + 0.75)),
+				Color = gold,
+			})
+		end
+	end
+	-- Floating label, readable from the zone's doorways.
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "WinLabel"
+	gui.Adornee = part
+	gui.Size = UDim2.fromScale(20, 9)
+	gui.StudsOffsetWorldSpace = Vector3.new(0, 10.5, 0)
+	gui.MaxDistance = 260
+	gui.LightInfluence = 0
+	gui.Parent = part
+	outline(text(gui, { Name = "Title", Text = "WIN", TextColor3 = gold, Size = UDim2.fromScale(1, 0.52) }), W.Ink, 4)
+	outline(
+		text(gui, {
+			Name = "Amount",
+			Text = "CASH OUT",
+			Font = theme.Fonts.Number,
+			TextColor3 = theme.Colors.MoneyText,
+			Size = UDim2.fromScale(1, 0.44),
+			Position = UDim2.fromScale(0, 0.54),
+		}),
+		W.Ink,
+		3
+	)
+	return part
+end
+
 local function fallbackTreadmill(model: Model, cf: CFrame)
 	add(model, {
 		Name = "TreadmillBase",
@@ -1302,6 +1390,7 @@ function CardioTrack.build(): Built
 	local decks: { [number]: BasePart } = {}
 	local treadmills: { Model } = {}
 	local upgrade: BasePart? = nil
+	local winPads: { [number]: BasePart } = {}
 	for _, zone in LAYOUT.zones do
 		local model = folderIn(folder, "Zone" .. zone.stage, "Model") :: Model
 		model:SetAttribute("Stage", zone.stage)
@@ -1311,6 +1400,9 @@ function CardioTrack.build(): Built
 		end
 		if zone.upgradePad then
 			upgrade = upgradePad(model, zone)
+		end
+		if zone.winPad then
+			winPads[zone.stage] = winPad(model, zone)
 		end
 		if zone.stage == 0 then
 			lobbyRoom(model, zone)
@@ -1354,6 +1446,7 @@ function CardioTrack.build(): Built
 		zones = zones,
 		decks = decks,
 		upgradePad = upgrade :: BasePart,
+		winPads = winPads,
 		treadmills = treadmills,
 		rooms = rooms,
 		hazards = hazards,

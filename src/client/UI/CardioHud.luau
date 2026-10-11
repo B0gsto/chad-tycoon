@@ -10,11 +10,16 @@
 	                next stage's need ("Stage 3 · 968 / 1.88K", gold until the need is met,
 	                then mint), and small lines beside it ("Multiplier x1.25 (Stages)",
 	                "Treadmill Lv 3"); on narrow screens those lines sit above the number.
-	  Stage line    top centre in the run-pill slot (y 92): a persistent "STAGE 4 · NAME"
-	                and, while Speed < need, a pulsing coral "Need more speed!" hint.
+	  Stage line    top centre in the run-pill slot (y 92): a persistent "STAGE 4 · NAME";
+	                in a safe zone a gold "Step on the WIN plate: +$12.4K" (what that zone's
+	                WIN pad pays right now, or when it pays again); while Speed < need, a
+	                pulsing coral "Need more speed!" hint.
 	  Title         a big bubbly "STAGE n" (plus the stage's name) under it whenever you
-	                enter a stage; also "STAGE 3 CLEAR!", "OOPS!",
-	                "TREADMILL LV 4!" banners (the stage title follows a clear).
+	                enter a stage; also "STAGE 3 CLEAR!" (reaching a safe zone: nothing is
+	                paid until you step on its WIN plate), "YOU WIN!" (cashed out), "OOPS!" /
+	                "CAUGHT!" (back to stage 1), "TREADMILL LV 4!" banners.
+	  WIN plates    the floating "Amount" line over every WIN pad (tag "CardioWinPad",
+	                World.CardioTrack) is written here: "+$12.4K" or "IN 12:30".
 	  Right column  centre right: Custom Speed (title, "Your Max Speed: N", a number box
 	                + green OK that fires CardioSpeedCap { cap } with 0 / empty = no cap,
 	                "Current speed: N"; a small "Custom Speed" chip by default on every
@@ -22,10 +27,11 @@
 	                the treadmill card (on / near a treadmill), SPEED UP
 	                (near the upgrade pad, fires CardioUpgrade) and a QUIT pill that asks
 	                "QUIT?" before ModeQuit.
-	  Finish card   centre: CARDIO CHAMPION!, the reward, RUN AGAIN / HOME, confetti.
+	  Finish card   centre, on the last WIN plate: CARDIO CHAMPION!, the reward, RUN AGAIN /
+	                HOME, confetti.
 
 	Snapshot fields read (modes.cardio): running, speed, walkSpeed, maxWalkSpeed?,
-	speedCap?, multiplier, treadmill, treadmillRate, nextCost, stage,
+	speedCap?, multiplier, treadmill, treadmillRate, nextCost, stage, wins?, cooldownEnds,
 	onTreadmill, stageCount, needs, names. Main routes Notify (kind "Mode", mode "cardio")
 	to CardioHud.onNotify, every State snapshot to CardioHud.onState and the "CardioSteps"
 	effect to CardioHud.onSteps.
@@ -73,6 +79,8 @@ local WALLET_RIGHT = 340 -- px the desktop wallet (bottom left) reaches
 local NEAR_PAD = 16 -- studs (flat) from the upgrade pad that show the SPEED UP card
 local NEAR_TREADMILL = 14
 local PROXIMITY_EVERY = 0.15
+local PADS_EVERY = 1 -- seconds between repaints of the WIN pads' floating amounts
+local WIN_TAG = "CardioWinPad"
 local MAX_LEVEL = 10
 local MAX_CAP = 100000
 
@@ -121,6 +129,7 @@ local upButton: TextButton
 -- Stage line
 local stageLine: Frame
 local stageLabel: TextLabel
+local winLabel: TextLabel
 local hintLabel: TextLabel
 -- Banner, finish
 local banner: Frame
@@ -142,6 +151,11 @@ local stage = 0
 local stageCount = 10
 local nearPad = false
 local nearTreadmill = false
+-- Safe zone the player stands in (0 = none), and what each zone's WIN pad paid when its
+-- "zone" Notify came (used until a snapshot brings `wins`).
+local zoneIn = 0
+local zoneCash: { [number]: number } = {}
+local padsAt = 0
 local quitArmed = false
 local bannerToken = 0
 local renderConn: RBXScriptConnection? = nil
@@ -236,6 +250,78 @@ local function rewardText(p: any): string?
 		text ..= "  (cooling down)"
 	end
 	return text
+end
+
+-- WIN plates ----------------------------------------------------------------------------------
+
+-- What safe zone n's WIN pad pays right now (0 inside the reward cooldown), if known.
+local function winCash(n: number): number?
+	local wins = snap.wins
+	if type(wins) == "table" and type(wins[n]) == "number" then
+		return wins[n]
+	end
+	return zoneCash[n]
+end
+
+-- Seconds until a WIN pad that pays nothing pays again (0 when it should pay already).
+local function cooldownLeft(): number
+	return math.max(0, math.ceil(num(snap.cooldownEnds, 0) - os.time()))
+end
+
+-- The stage line's "Step on the WIN plate: +$X" while standing in a safe zone.
+local function paintWin()
+	local cash = if zoneIn > 0 then winCash(zoneIn) else nil
+	local show = active and cash ~= nil
+	if show then
+		local left = cooldownLeft()
+		if (cash :: number) > 0 then
+			winLabel.Text = "Step on the WIN plate: +" .. Format.money(cash)
+		elseif left > 0 then
+			winLabel.Text = "WIN plate pays again in " .. Format.time(left)
+		else
+			winLabel.Text = "Step on the WIN plate!"
+		end
+		winLabel.TextColor3 = if (cash :: number) > 0 or left <= 0 then GOLD else WHITE
+	end
+	if show ~= winLabel.Visible then
+		winLabel.Visible = show
+		if show then
+			Kit.appear(winLabel, { from = 0.7 })
+		end
+		-- The need hint steps down a line while the win line is up.
+		hintLabel.Position = UDim2.fromOffset(0, if show then 52 else 30)
+	end
+end
+
+-- The floating amount over every WIN pad: what it pays this player right now.
+local function paintPads()
+	for _, pad in CollectionService:GetTagged(WIN_TAG) do
+		local gui = pad:FindFirstChild("WinLabel")
+		local amount = gui and gui:FindFirstChild("Amount")
+		if amount and amount:IsA("TextLabel") then
+			local cash = winCash(math.floor(num(pad:GetAttribute("Stage"), 0)))
+			local text = "CASH OUT"
+			if active and cash then
+				local left = cooldownLeft()
+				text = if cash > 0 then "+" .. Format.money(cash) elseif left > 0 then "IN " .. Format.time(left) else "CASH OUT"
+			end
+			if amount.Text ~= text then
+				amount.Text = text
+			end
+		end
+	end
+end
+
+-- The safe zone (1..10) whose deck is under `pos`, from the WIN pads' zone attributes.
+local function zoneAt(pos: Vector3): number
+	for _, pad in CollectionService:GetTagged(WIN_TAG) do
+		local x0, x1 = num(pad:GetAttribute("ZoneX0"), 0), num(pad:GetAttribute("ZoneX1"), 0)
+		local z0, z1 = num(pad:GetAttribute("ZoneZ0"), 0), num(pad:GetAttribute("ZoneZ1"), 0)
+		if pos.X >= x0 and pos.X <= x1 and pos.Z >= z0 and pos.Z <= z1 then
+			return math.floor(num(pad:GetAttribute("Stage"), 0))
+		end
+	end
+	return 0
 end
 
 -- Speed box, stage line, custom speed ---------------------------------------------------------
@@ -427,10 +513,13 @@ local function checkProximity()
 	local char = player.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	local pad, tread = false, false
+	zoneIn = 0
 	if hrp and hrp:IsA("BasePart") then
 		pad = nearTagged("CardioUpgradePad", hrp.Position, NEAR_PAD)
 		tread = nearTagged("CardioTreadmill", hrp.Position, NEAR_TREADMILL)
+		zoneIn = zoneAt(hrp.Position)
 	end
+	paintWin()
 	if pad ~= nearPad then
 		nearPad = pad
 		paintUpgrade()
@@ -473,6 +562,11 @@ local function render(dt: number)
 	if now - proximityAt >= PROXIMITY_EVERY then
 		proximityAt = now
 		checkProximity()
+	end
+	-- The pads' cooldown countdowns tick on their own.
+	if now - padsAt >= PADS_EVERY then
+		padsAt = now
+		paintPads()
 	end
 end
 
@@ -522,6 +616,10 @@ local function show()
 	hintShown = false
 	hintLabel.Visible = false
 	nearPad, nearTreadmill = false, false
+	zoneIn = 0
+	table.clear(zoneCash)
+	paintWin()
+	paintPads()
 	treadCard.Visible = false
 	upCard.Visible = false
 	root.Visible = true
@@ -547,6 +645,9 @@ local function hide()
 		renderConn:Disconnect()
 		renderConn = nil
 	end
+	zoneIn = 0
+	paintWin()
+	paintPads()
 	capBox:ReleaseFocus()
 	setCustomOpen(false)
 	Kit.disappear(stageLine)
@@ -567,6 +668,8 @@ local function applySnapshot(s: { [string]: any }, exact: boolean)
 	if active then
 		paintTreadmill()
 		paintUpgrade()
+		paintWin()
+		paintPads()
 	end
 end
 
@@ -610,22 +713,47 @@ function CardioHud.onNotify(p: any)
 		Sounds.play("Ready")
 		showBanner("CARDIO!", "Every key you step on = +Speed!", MINT, 2)
 		stageTitle(2.4)
-	elseif event == "stage" then
+	elseif event == "zone" then
+		-- Reached a safe zone: nothing is paid yet, its WIN plate shows what it would pay.
 		local n = math.floor(num(p.stage, stage))
-		stage = math.max(stage, n)
-		local title = if p.first == true then "STAGE " .. n .. " CLEAR!" else "STAGE " .. n .. "!"
-		showBanner(title, rewardText(p), if p.first == true then GOLD else MINT, 2.4)
+		stage = n
+		local cash = num(p.cash, 0)
+		zoneCash[n] = cash
+		local sub = if cash > 0
+			then "Step on the WIN plate: +" .. Format.money(cash)
+			elseif n >= stageCount then "Step on the WIN plate!"
+			else "Keep running for a bigger win!"
+		showBanner("STAGE " .. n .. " CLEAR!", sub, MINT, 2.4)
 		stageTitle(2.8)
-		Sounds.play(if p.first == true then "Reward" else "Step")
-		if p.first == true and screen then
-			Kit.confetti(screen, { Count = 18, Origin = UDim2.fromScale(0.5, 0.3) })
+		Sounds.play("Step")
+		paintWin()
+		paintPads()
+	elseif event == "win" then
+		-- Cashed out on a WIN plate: paid, and back in the lobby for the next run.
+		stage = 0
+		zoneIn = 0
+		table.clear(zoneCash)
+		paintWin()
+		if p.final == true then
+			showFinish(p)
+		else
+			showBanner("YOU WIN!", rewardText(p), GOLD, 2.4)
+			stageTitle(2.8)
+			Sounds.play("Reward")
+			if screen then
+				Kit.confetti(screen, { Count = 18, Origin = UDim2.fromScale(0.5, 0.3) })
+			end
 		end
 	elseif event == "fall" then
-		showBanner("OOPS!", "Back to the start of the stage. Build more Speed!", CORAL, 1.6)
+		-- A fall or a catch: the run starts over in the lobby (the chaser's own "MOGGED!"
+		-- splash plays first on a catch).
+		stage = 0
+		zoneIn = 0
+		table.clear(zoneCash)
+		paintWin()
+		local caught = p.reason == "caught"
+		showBanner(if caught then "CAUGHT!" else "OOPS!", "Back to Stage 1. Build more Speed!", CORAL, 1.8, if caught then 1.2 else nil)
 		Sounds.play("Error")
-	elseif event == "finish" then
-		hide()
-		showFinish(p)
 	elseif event == "refused" then
 		-- The server already toasted why; just shake the button.
 		Sounds.play("Error")
@@ -1148,6 +1276,17 @@ local function buildStageLine()
 		Text = "",
 		TextSize = 24,
 		Size = UDim2.new(1, 0, 0, 28),
+		ZIndex = 22,
+		StrokeThickness = 3,
+	})
+	winLabel = Kit.hudText(stageLine, {
+		Name = "Win",
+		Text = "",
+		TextSize = 18,
+		TextColor3 = GOLD,
+		Size = UDim2.new(1, 0, 0, 22),
+		Position = UDim2.fromOffset(0, 29),
+		Visible = false,
 		ZIndex = 22,
 		StrokeThickness = 3,
 	})

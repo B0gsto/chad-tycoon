@@ -20,7 +20,7 @@
 	STOP_SHORT studs before the end platform (stopS). A runner at walkSpeed(need_n) along the
 	same line stays ahead with >= MIN_SLACK seconds to spare; anyone slower
 	(walkSpeed(need_n-1) can't clear the stage's longest gap) gets caught.
-	  caught    chaser x >= player x - catchRadius  -> back to safe zone n-1 (Modes.Cardio)
+	  caught    chaser x >= player x - catchRadius  -> back to the lobby (Modes.Cardio)
 	  escaped   player x >= endX (ESCAPE_IN studs onto the end platform, before the timed exit
 	            door; not chased again this run)
 	  retreat   player x < x0 - 1 (back in the west doorway; re-entering restarts it)
@@ -310,12 +310,12 @@ function CardioChase.payload(chase: Chase): { [string]: any }
 end
 
 export type Server = {
-	-- Feed a running player's feet each tick; returns the safe zone to send them back to when
-	-- the chaser caught them this tick.
-	tick: (player: any, x: number, z: number, t: number) -> number?,
+	-- Feed a running player's feet each tick; true when the chaser caught them this tick (the
+	-- run starts over in the lobby).
+	tick: (player: any, x: number, z: number, t: number) -> boolean,
 	-- Ends the player's chase (if any) with `reason`; "chaseEnd" unless silent.
 	stop: (player: any, reason: string, silent: boolean?) -> (),
-	-- The run ended: also forget which chases were escaped.
+	-- The run ended or started over: also forget which chases were escaped.
 	forget: (player: any) -> (),
 	active: (player: any) -> Chase?,
 }
@@ -327,14 +327,14 @@ function CardioChase.serve(notify: (any, string, { [string]: any }) -> ()): Serv
 	local escaped: { [any]: { [number]: boolean } } = {}
 	local server = {} :: Server
 
-	function server.tick(player: any, x: number, z: number, t: number): number?
+	function server.tick(player: any, x: number, z: number, t: number): boolean
 		local c = chases[player]
 		if c then
 			local result = CardioChase.update(c, x, z, t)
 			if result == "caught" then
 				chases[player] = nil
 				notify(player, "caught", { stage = c.stage })
-				return c.stage - 1
+				return true
 			elseif result then
 				chases[player] = nil
 				if result == "escaped" then
@@ -343,7 +343,7 @@ function CardioChase.serve(notify: (any, string, { [string]: any }) -> ()): Serv
 				end
 				notify(player, "chaseEnd", { stage = c.stage, reason = result })
 			end
-			return nil
+			return false
 		end
 		local n = Layout.stageAt(x)
 		local done = escaped[player]
@@ -354,7 +354,7 @@ function CardioChase.serve(notify: (any, string, { [string]: any }) -> ()): Serv
 				notify(player, "chase", CardioChase.payload(chase))
 			end
 		end
-		return nil
+		return false
 	end
 
 	function server.stop(player: any, reason: string, silent: boolean?)

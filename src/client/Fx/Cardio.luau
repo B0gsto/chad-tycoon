@@ -4,7 +4,7 @@
 	Runs only while the local player is in a run (snapshot modes.cardio.running or a
 	"start" Notify); everything is restored on "stop" / "finish".
 
-	  Key presses   the floor is ~6900 keycap MeshParts (tag "CardioKey", attrs Letter, Stage,
+	  Key presses   the floor is ~12,000 keycap MeshParts (tag "CardioKey", attrs Letter, Stage,
 	                Index, Kind "space" for spacebars; the letter is baked into the mesh).
 	                Keys never collide: an invisible slab per surface (CardioTrack/Colliders)
 	                sits the CardioTrack folder's PressDepth attribute below the key tops.
@@ -29,8 +29,8 @@
 	  Speed         radial speed lines (a pooled ScreenGui under the HUD) and a gentle FOV
 	                kick, both scaling with the horizontal speed above ~50 studs/s; reduced
 	                motion skips the FOV and halves the lines.
-	  Bursts        stage clear: stars and confetti (bigger on a first clear), finish: a
-	                large ring of both, fall: a landing ring + puff,
+	  Bursts        safe zone reached: stars and confetti; WIN pad claimed: a bigger ring of
+	                both (largest on the last pad); fall: a landing ring + puff,
 	                upgrade: sparkles over the upgrade pad (Fx.Sprites, budgeted).
 	  Doors         timed exit doors (parts tagged "CardioDoor", attrs DoorOpen, DoorPeriod,
 	                DoorPhase: open while ((t + phase) % period) < open, t = server time) drive
@@ -1214,10 +1214,17 @@ function CardioFx.onNotify(p: any)
 	if event == "start" then
 		activate()
 		startedAt = os.clock()
-	elseif event == "stage" then
+	elseif event == "zone" then
 		local pos = playerPos()
 		if pos then
-			burst(pos, if p.first == true then 14 else 7, if p.first == true then 6 else 4, p.first == true)
+			burst(pos, 7, 4, false)
+		end
+	elseif event == "win" then
+		-- Cashed out on a WIN pad (the last one is the finish); the run goes on in the lobby.
+		local pos = playerPos()
+		if pos then
+			local final = p.final == true
+			burst(pos, if final then 20 else 14, if final then 8 else 6, true)
 		end
 	elseif event == "fall" then
 		task.delay(0.35, function()
@@ -1228,12 +1235,6 @@ function CardioFx.onNotify(p: any)
 				Sprites.billboard(anchor, "Puff", { position = pos, size = 3.5, life = 0.8, rise = Vector3.new(0, 2.5, 0) })
 			end
 		end)
-	elseif event == "finish" then
-		local pos = playerPos()
-		if pos then
-			burst(pos, 20, 8, true)
-		end
-		deactivate()
 	elseif event == "upgrade" then
 		if p.reason == nil and p.ok ~= false then
 			local pos = playerPos()

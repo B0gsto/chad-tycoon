@@ -13,11 +13,18 @@
 	                    chocolate / candy tiles / ...) ROOM.floorDrop studs below the deck
 	                    height, crossed by a NARROW KEY BRIDGE Rules.STAGES[n].width wide
 	                    (9 keys on stage 1 .. 4 keys from stage 8). Its west and east walls are
-	                    DOOR_WALL (= one key) thick with a doorway each (`doors`);
-	    safe zone n     a full key-carpet room (treadmills; zone 10 = FINISH) between
-	                    bridge room n's east wall and bridge room n+1's west wall.
+	                    DOOR_WALL (= one key) thick with a doorway each (`doors`), DOOR.keys
+	                    wide and at most DOOR_REACH off the centre line;
+	    safe zone n     a full key-carpet room as wide as the bridge rooms (ZONE_KEYS; zone
+	                    10 = FINISH_KEYS) between bridge room n's east wall and bridge room
+	                    n+1's west wall. Across Z it has three bands: the LANE in the middle
+	                    (every doorway opens inside it, so the run from door to door is
+	                    free), the WIN pad (`winPad`, WIN_PAD square) in the north band and
+	                    four treadmills in the south band. Zone 10's WIN pad is the finish: it
+	                    sits on the centre line in front of the podium (`finish`).
 	A bridge room's walkable path, in order (all `platforms`, x-disjoint and increasing):
-	  "sill"  one key long, door-width wide: the floor of the west doorway (inside the wall);
+	  "sill"  one key long, door-width wide: the floor of the west doorway (inside the wall;
+	          a porch wider than the bridge on every stage but the first);
 	  "run"   the run-up (index 0) as three pieces: a straight run along X, a sideways LEG (a
 	          90-degree jog: the leg is `width` long along X and spans both runs across Z),
 	          then a second straight run at another lateral offset. Steps are farmed here;
@@ -71,8 +78,9 @@ local Rules = require(script.Parent.CardioRules)
 local CardioLayout = {}
 
 CardioLayout.ORIGIN = { x = -1296, y = 20, z = 1150 }
--- The finish deck's far edge never passes this X (the east cap wall stands just past it).
-CardioLayout.X_END = 1262
+-- The finish deck's far edge never passes this X (the east cap wall stands just past it):
+-- the runway mirrors ORIGIN.x about x = 0.
+CardioLayout.X_END = 1296
 -- Key pitch (studs), keycap height and the visible cap size (keys touch at the pitch; the
 -- thin seams show the base). The props/Key_A..Z meshes are scaled to (cap, height, cap).
 CardioLayout.KEY = { size = 2.8, height = 1.16, cap = 2.72 }
@@ -81,12 +89,15 @@ CardioLayout.KEY = { size = 2.8, height = 1.16, cap = 2.72 }
 -- CardioTrack sets it as the CardioTrack folder's PressDepth attribute), so feet rest on
 -- pressed keys and the character never rides keys up and down (~0.85 x KEY.height: a key bottoms out almost flush with its base).
 CardioLayout.PRESS = 1
--- Lobby / safe zone width (studs, keys); bridge rooms are ROOM.width wide.
+-- Lobby width (studs, keys); bridge rooms and safe zones are ROOM.width wide.
 CardioLayout.CORRIDOR = { width = 29 * CardioLayout.KEY.size, lanes = 29 }
--- Deck sizes in keys (along X, across Z).
+-- Deck sizes in keys (along X, across Z). Safe zones span the bridge rooms' full width.
 CardioLayout.LOBBY_KEYS = { long = 20, wide = 29 }
-CardioLayout.ZONE_KEYS = { long = 11, wide = 29 }
-CardioLayout.FINISH_KEYS = { long = 20, wide = 29 }
+CardioLayout.ZONE_KEYS = { long = 16, wide = 45 }
+CardioLayout.FINISH_KEYS = { long = 20, wide = 45 }
+-- Safe zones: the middle band across Z (studs) that every doorway opens into. The WIN pad
+-- and the treadmills stand outside it, so running from door to door touches neither.
+CardioLayout.LANE = 25 * CardioLayout.KEY.size
 -- The raised landing platform at a bridge room's far end (keys).
 CardioLayout.END_KEYS = { long = 5, wide = 19 }
 -- Bridge rooms: width between the side walls' inner faces, wall top above ORIGIN.y, hazard
@@ -105,8 +116,13 @@ CardioLayout.RUNUP_MIN = 48
 CardioLayout.WALL = { thick = 2, bottom = 4 }
 -- Bridge room end walls are one key thick so a sill key row fills each doorway.
 CardioLayout.DOOR_WALL = CardioLayout.KEY.size
--- Exit doorways: width in keys, height above the sill top; timing per stage (from stage 3).
-CardioLayout.DOOR = { keys = 5, height = 14 }
+-- Doorways (both end walls): width in keys, height above the sill top; exit door timing per
+-- stage (from stage 3).
+CardioLayout.DOOR = { keys = 9, height = 14 }
+-- Farthest a doorway's centre sits from the centre line (studs, whole keys): the doorway
+-- stays inside the LANE, which is narrower than the lobby.
+CardioLayout.DOOR_REACH = math.floor((CardioLayout.LANE / CardioLayout.KEY.size - CardioLayout.DOOR.keys) / 2 + 1e-6)
+	* CardioLayout.KEY.size
 CardioLayout.DOOR_TIMES = {
 	[3] = { open = 4, period = 6 },
 	[4] = { open = 3.8, period = 6 },
@@ -129,6 +145,11 @@ CardioLayout.PROPS = { floor = 26, wall = 8, blocks = 4, edgeFloor = 9, wallGrou
 CardioLayout.PROP_CLEAR = 4
 CardioLayout.TREADMILL = { length = 10, width = 6, height = 1.2 }
 CardioLayout.UPGRADE_PAD = 6
+-- WIN pad side (studs, whole keys) and, in keys from the centre line, where its centre and
+-- the two treadmill rows sit across Z in safe zones 1..9 (zone 10's pad is on the centre line).
+CardioLayout.WIN_PAD = 5 * CardioLayout.KEY.size
+CardioLayout.WIN_PAD_SIDE = 18
+CardioLayout.TREADMILL_ROWS = { 15.5, 19.5 }
 -- Stage banner centre height above the deck (over the west doorway).
 CardioLayout.SIGN_HEIGHT = 24
 CardioLayout.ARCH = { frame = 2 }
@@ -343,10 +364,13 @@ export type Zone = {
 	z0: number,
 	z1: number,
 	top: number,
-	-- Where a run started here, a fall in stage + 1 and a catch put you (on a key centre).
+	-- A key centre near the zone's entrance, on the centre line (the lobby's is where every
+	-- run starts and where a fall, a catch and a WIN pad claim put you).
 	spawn: Point,
 	treadmills: { Treadmill },
 	upgradePad: Pad?,
+	-- Safe zones 1..10: the square WIN pad (cash out here; Modes.Cardio).
+	winPad: Pad?,
 }
 
 export type Platform = {
@@ -708,12 +732,13 @@ function CardioLayout.generate(): Layout
 			spawn = { x = x0 + 6, y = O.y + 3, z = O.z },
 			treadmills = {},
 			upgradePad = nil,
+			winPad = nil,
 		}
 		table.insert(zones, zone)
 		local box = { x0 = zone.x0, x1 = zone.x1, z0 = zone.z0, z1 = zone.z1, top = O.y, stage = stage }
 		addBase(box, 0)
 		zone.spawn = spawnOn(box, zone.spawn.x, zone.spawn.y, zone.spawn.z)
-		addRoom(if stage == 0 then "lobby" else "zone", stage, zone.x0, zone.x1, HALF, O.y + CardioLayout.ZONE_WALL_HEIGHT)
+		addRoom(if stage == 0 then "lobby" else "zone", stage, zone.x0, zone.x1, wide * K / 2, O.y + CardioLayout.ZONE_WALL_HEIGHT)
 		return zone
 	end
 
@@ -866,13 +891,14 @@ function CardioLayout.generate(): Layout
 		}
 		table.insert(rooms, room)
 		local reach = math.floor((RHALF - R.margin - w / 2) / K) * K
-		local doorMax = math.floor((HALF - CardioLayout.DOOR.keys * K / 2 - K) / K) * K
+		local doorMax = CardioLayout.DOOR_REACH
+		local doorWide = CardioLayout.DOOR.keys * K
 		local first = #platforms + 1
 
 		-- West doorway and run-up: a straight run, a sideways leg, a second run.
 		local latA = gridLat((rand() * 2 - 1) * math.min(doorMax, reach))
 		local cur = room.x0
-		platform(endWall(cur, room, "west", O.z + latA, w, n, nil))
+		platform(endWall(cur, room, "west", O.z + latA, math.max(w, doorWide), n, nil))
 		local sillIn = doors[#doors]
 		cur += DW
 		local shift = (2 + math.floor(rand() * 5)) * K
@@ -984,7 +1010,7 @@ function CardioLayout.generate(): Layout
 			kind = "end",
 		})
 		cur += CardioLayout.END_KEYS.long * K
-		local sillOut = endWall(cur, room, "east", O.z + latE, CardioLayout.DOOR.keys * K, n, CardioLayout.DOOR_TIMES[n])
+		local sillOut = endWall(cur, room, "east", O.z + latE, doorWide, n, CardioLayout.DOOR_TIMES[n])
 		sillOut.index = #jumps
 		platform(sillOut)
 		cur += DW
@@ -1196,13 +1222,24 @@ function CardioLayout.generate(): Layout
 			end
 		end
 
-		-- Safe zone n.
-		local size = if n == Rules.STAGE_COUNT then CardioLayout.FINISH_KEYS else CardioLayout.ZONE_KEYS
+		-- Safe zone n: the WIN pad in the north band (the last zone's on the centre line, in
+		-- front of the finish podium), two rows of two treadmills in the south band.
+		local final = n == Rules.STAGE_COUNT
+		local size = if final then CardioLayout.FINISH_KEYS else CardioLayout.ZONE_KEYS
 		local zone = deck(n, cur, size.long, size.wide)
 		local mid = zone.x0 + CardioLayout.ZONE_KEYS.long * K / 2
-		for _, dz in { -29, -17, 17, 29 } do
-			table.insert(zone.treadmills, { x = mid, y = belt, z = O.z + dz, yaw = face })
+		for _, row in CardioLayout.TREADMILL_ROWS do
+			for _, dx in { -3.5 * K, 3.5 * K } do
+				table.insert(zone.treadmills, { x = mid + dx, y = belt, z = O.z - row * K, yaw = face })
+			end
 		end
+		local pad = CardioLayout.WIN_PAD
+		local padCol = math.floor((size.long * K - pad) / 2 / K)
+		zone.winPad = {
+			x = zone.x0 + padCol * K + pad / 2,
+			z = if final then O.z else O.z + CardioLayout.WIN_PAD_SIDE * K,
+			size = pad,
+		}
 		prevZone = zone
 	end
 	local last = zones[#zones]
@@ -1211,8 +1248,8 @@ function CardioLayout.generate(): Layout
 		last.x1 + W.thick,
 		W.bottom,
 		rooms[#rooms].wallTop,
-		O.z - HALF - W.thick,
-		O.z + HALF + W.thick,
+		last.z0 - W.thick,
+		last.z1 + W.thick,
 		Rules.STAGE_COUNT,
 		#rooms,
 		"east",
@@ -1286,15 +1323,15 @@ function CardioLayout.zone(stage: number): Zone?
 	return LAYOUT.zones[stage + 1]
 end
 
--- The spawn of the safe zone of `stage` (0 = lobby): where a run starts (always the lobby) and
--- where a fall or a catch in stage + 1 sends you back (there are no mid-stage checkpoints).
+-- The spawn of the safe zone of `stage` (0 = lobby). Modes.Cardio only uses the lobby's: every
+-- run starts there, and a fall, a catch and a WIN pad claim all send you back to it.
 function CardioLayout.spawn(stage: number): Point?
 	local z = LAYOUT.zones[stage + 1]
 	return if z then z.spawn else nil
 end
 
 -- The last safe zone passed at this X (the HUD runs stage + 1): n - 1 in bridge room n (not
--- stageAt's n), else stageAt(x). A fall or a catch here respawns at spawn(startStageAt(x)).
+-- stageAt's n), else stageAt(x).
 function CardioLayout.startStageAt(x: number): number
 	local room = CardioLayout.roomAt(x)
 	return if room and room.kind == "bridge" then room.stage - 1 else CardioLayout.stageAt(x)
@@ -1370,6 +1407,22 @@ function CardioLayout.onTreadmill(x: number, y: number, z: number): (number?, nu
 		end
 	end
 	return nil, nil
+end
+
+-- Stage of the safe zone whose WIN pad is under feet at (x, y, z): inside the pad's square,
+-- feet between the deck and WIN_PAD_ABOVE studs over it (a jump across the pad does not count).
+CardioLayout.WIN_PAD_ABOVE = 4
+function CardioLayout.onWinPad(x: number, y: number, z: number): number?
+	local zone = CardioLayout.zoneAt(x, z)
+	local pad = zone and zone.winPad
+	if not zone or not pad then
+		return nil
+	end
+	local half = pad.size / 2
+	if math.abs(x - pad.x) <= half and math.abs(z - pad.z) <= half and y >= zone.top - 2 and y <= zone.top + CardioLayout.WIN_PAD_ABOVE then
+		return zone.stage
+	end
+	return nil
 end
 
 -- The room spanning this X (lobby, bridge room or safe zone), if any.
