@@ -14,6 +14,7 @@ local RunService = game:GetService("RunService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Economy = require(ReplicatedStorage.Shared.Economy)
+local Funnel = require(ReplicatedStorage.Shared.Funnel)
 local SessionLock = require(ReplicatedStorage.Shared.SessionLock)
 local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
 
@@ -21,6 +22,11 @@ local DataService = {}
 
 local STORE_NAME = "TycoonProfiles_v1"
 local MAX_RETRIES = 4
+-- Profile.version of a save written by this code. reconcile migrates older saves once:
+--   2  buy tier 1 upgrades after Economy.BUY_EASY_UNITS purchases (it was one), and the
+--      onboarding funnel counts tier milestones (Shared.Funnel)
+local VERSION = 2
+DataService.VERSION = VERSION
 
 export type Unlocker = { rarity: string, endsAt: number }
 
@@ -118,7 +124,7 @@ function DataService.defaultProfile(): Profile
 	local discovered = zeros(Economy.MAX_TIER)
 	discovered[1] = os.time()
 	return {
-		version = 1,
+		version = VERSION,
 		money = Economy.START_CASH,
 		carried = 0,
 		queue = 0,
@@ -170,6 +176,8 @@ local function reconcile(data: any): Profile
 	if type(data) ~= "table" then
 		return default
 	end
+	-- Read before the defaults below fill a missing version in.
+	local version = if type(data.version) == "number" then data.version else 1
 	-- Saves from before Parkour levels: the old single record becomes level 1's.
 	if type(data.parkour) ~= "table" then
 		local old = type(data.modes) == "table" and data.modes.parkour
@@ -318,6 +326,16 @@ local function reconcile(data: any): Profile
 	if data.pendingUnlocker ~= 1 and data.pendingUnlocker ~= 2 then
 		data.pendingUnlocker = 0
 	end
+	if version < 2 then
+		-- Buy tier 1 used to upgrade after BUY_REQ_BASE purchases. A player who was past the
+		-- tutorial and could already upgrade still can, without buying the easy units first.
+		if data.tutorialDone and data.buyTier == 1 and data.boughtAtTier >= Economy.BUY_REQ_BASE then
+			data.boughtAtTier = Economy.buyTierRequirement(1)
+		end
+		-- Returning players' tier milestones count as logged, with nothing sent.
+		data.onboarding = Funnel.returning(data.onboarding, data.tutorialDone)
+	end
+	data.version = math.max(version, VERSION)
 	return data :: Profile
 end
 

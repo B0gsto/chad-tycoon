@@ -19,6 +19,10 @@
 	                milestones are logged as one-time custom events instead
 	                ("SkipperTier3", ...); n counts the ones already logged
 	  LEGACY        a save from before the funnel: not a new player, never logs
+
+	The tier milestones (steps 8..11 and the Skipper events) were added later. A save from
+	before them whose tutorial is over is a returning player: Funnel.returning marks every
+	milestone as logged without sending anything, so only new players' tiers are counted.
 ]]
 
 local Funnel = {}
@@ -59,6 +63,22 @@ end
 -- finished, already skipped, or the save is a legacy one).
 function Funnel.skip(onboarding: number): number
 	return if onboarding < Funnel.TUTORIAL_END then Funnel.SKIPPED else onboarding
+end
+
+-- profile.onboarding for a save from before the tier milestones, on its first load since
+-- (DataService). A tutorial that is over (finished, or skipped: `tutorialDone` below the
+-- tutorial's last step is a skip from before skips were marked) leaves the funnel with
+-- every milestone marked as logged, so tiers reached long ago are never sent as new. A
+-- tutorial still running goes on as before.
+function Funnel.returning(onboarding: number, tutorialDone: boolean): number
+	if onboarding >= Funnel.LEGACY then
+		return onboarding
+	elseif onboarding >= Funnel.SKIPPED or (tutorialDone and onboarding < Funnel.TUTORIAL_END) then
+		return Funnel.SKIPPED + #Funnel.MILESTONES
+	elseif onboarding >= Funnel.TUTORIAL_END then
+		return Funnel.LAST
+	end
+	return onboarding
 end
 
 -- What a profile at `onboarding` logs now that its best tier is `highestTier`. Nothing

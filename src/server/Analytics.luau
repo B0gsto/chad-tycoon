@@ -14,7 +14,8 @@
 	it never shows tutorial steps the player did not do. Their tier milestones are
 	logged as one-time custom events instead: "SkipperTier3", "SkipperTier5",
 	"SkipperTier7", "SkipperTier10". Everyone who reached a tier = its funnel step + its
-	Skipper event.
+	Skipper event. Profiles from before the milestones whose tutorial was already over
+	log none of them (Funnel.returning): the tiers they reached long ago are not news.
 
 	Intro: the first-run cutscene logs one custom event when it ends, "IntroSkipped" or
 	"IntroWatched", with the story seconds played as its value.
@@ -127,12 +128,9 @@ end
 
 function Analytics.onSessionStart(session: Tycoon.Session)
 	local player = session.player
-	local p = session.profile
-	-- A tutorial skipped before skips were marked in profile.onboarding.
-	if p.tutorialDone and Funnel.skip(p.onboarding) ~= p.onboarding then
-		p.onboarding = Funnel.skip(p.onboarding)
-		Tycoon.markDirty(session)
-	end
+	-- Returning players never log here: a save from before the tier milestones arrives with
+	-- all of them marked as logged (DataService's migration, Funnel.returning), so these
+	-- two calls only send what a new profile has not sent yet.
 	Analytics.onboard(session, 1)
 	Analytics.tiers(session)
 	if player:GetAttribute("IntroSeen") == true then

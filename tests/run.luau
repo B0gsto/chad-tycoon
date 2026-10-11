@@ -1880,7 +1880,14 @@ local function loadDataService(): any
 				return true
 			end,
 		},
-		ReplicatedStorage = { Shared = { Economy = Economy, SessionLock = SessionLock, TutorialSteps = TutorialSteps } },
+		ReplicatedStorage = {
+			Shared = {
+				Economy = Economy,
+				Funnel = require("../src/shared/Funnel"),
+				SessionLock = SessionLock,
+				TutorialSteps = TutorialSteps,
+			},
+		},
 	}
 	local env = setmetatable({
 		game = {
@@ -1999,8 +2006,76 @@ test("onboarding funnel: tier milestones", function()
 	eq(plan.onboarding, Funnel.LEGACY)
 	-- Whatever is saved survives a reload.
 	for _, value in { 9, Funnel.SKIPPED, Funnel.SKIPPED + 3 } do
-		eq(DataService.reconcile({ money = 10, onboarding = value }).onboarding, value, "kept " .. value)
+		local saved = { money = 10, version = DataService.VERSION, onboarding = value }
+		eq(DataService.reconcile(saved).onboarding, value, "kept " .. value)
 	end
+end)
+
+test("onboarding funnel: returning players log no tier milestones", function()
+	local Funnel = require("../src/shared/Funnel")
+	local DataService = loadDataService()
+	local done = Funnel.SKIPPED + #Funnel.MILESTONES
+	-- A tutorial finished before the milestones existed: all four count as logged.
+	eq(Funnel.returning(Funnel.TUTORIAL_END, true), Funnel.LAST, "finished tutorial")
+	-- A skipped one, marked or not (skips were not marked at first).
+	eq(Funnel.returning(Funnel.SKIPPED, true), done, "marked skip")
+	for onboarding = 0, Funnel.TUTORIAL_END - 1 do
+		eq(Funnel.returning(onboarding, true), done, "unmarked skip at " .. onboarding)
+		eq(Funnel.returning(onboarding, false), onboarding, "a running tutorial goes on at " .. onboarding)
+	end
+	eq(Funnel.returning(Funnel.LEGACY, true), Funnel.LEGACY, "legacy stays legacy")
+	-- Whatever tier such a profile is on, now or later, nothing is sent.
+	for _, onboarding in { Funnel.returning(Funnel.TUTORIAL_END, true), Funnel.returning(3, true) } do
+		for _, tier in { 1, 3, 10, 25 } do
+			local plan = Funnel.tiers(onboarding, tier)
+			eq(#plan.steps + #plan.events, 0, "nothing logged at tier " .. tier)
+			eq(plan.onboarding, onboarding, "unchanged at tier " .. tier)
+		end
+	end
+	-- DataService migrates a save from before the milestones once, on load.
+	eq(DataService.defaultProfile().version, DataService.VERSION, "new profiles carry the current version")
+	eq(DataService.reconcile(nil).onboarding, 0, "a new profile starts the funnel")
+	local finished = DataService.reconcile({ money = 10, version = 1, tutorialDone = true, onboarding = Funnel.TUTORIAL_END })
+	eq(finished.onboarding, Funnel.LAST, "returning player past every milestone")
+	eq(finished.version, DataService.VERSION, "migrated saves carry the current version")
+	eq(DataService.reconcile({ money = 10, tutorialDone = true, onboarding = 4 }).onboarding, done, "returning skipper")
+	eq(DataService.reconcile({ money = 10, tutorialDone = false, onboarding = 4 }).onboarding, 4, "mid-tutorial save goes on")
+	-- A profile created after the change keeps logging: its tiers are new.
+	local fresh =
+		DataService.reconcile({ money = 10, version = DataService.VERSION, tutorialDone = true, onboarding = Funnel.TUTORIAL_END })
+	eq(fresh.onboarding, Funnel.TUTORIAL_END, "a new profile's progress is kept")
+	eq(#Funnel.tiers(fresh.onboarding, 5).steps, 2, "and its milestones are logged")
+	eq(DataService.reconcile(finished).onboarding, Funnel.LAST, "migrating twice changes nothing")
+end)
+
+test("buy tier 1: old saves that could upgrade still can", function()
+	local DataService = loadDataService()
+	local need = Economy.buyTierRequirement(1)
+	check(need > Economy.BUY_REQ_BASE, "buy tier 1 asks for more purchases than it used to")
+	local function bought(save: { [string]: any }): number
+		save.money = 10
+		return DataService.reconcile(save).boughtAtTier
+	end
+	-- Past the tutorial with the old requirement met: lifted to the new one.
+	eq(bought({ version = 1, tutorialDone = true, buyTier = 1, boughtAtTier = 1 }), need, "lifted")
+	eq(bought({ tutorialDone = true, buyTier = 1, boughtAtTier = 7 }), need, "a save without a version is an old one")
+	eq(bought({ tutorialDone = true, buyTier = 1, boughtAtTier = 500 }), need, "never above the requirement")
+	-- Not able to upgrade before, still in the tutorial, or on another buy tier: unchanged.
+	eq(bought({ version = 1, tutorialDone = true, buyTier = 1, boughtAtTier = 0 }), 0, "nothing bought yet")
+	eq(bought({ version = 1, tutorialDone = false, buyTier = 1, boughtAtTier = 3 }), 3, "tutorial still running")
+	eq(bought({ version = 1, tutorialDone = true, buyTier = 4, boughtAtTier = 1 }), 1, "other buy tiers")
+	-- A profile made under the new rules buys its easy units.
+	eq(bought({ version = DataService.VERSION, tutorialDone = true, buyTier = 1, boughtAtTier = 5 }), 5, "new profiles")
+end)
+
+test("tutorial: no 'nothing to merge' toast before the merge step", function()
+	for step, info in TutorialSteps.STEPS do
+		eq(TutorialSteps.mergeToast(step, false), info.id == "merge", "step " .. info.id)
+	end
+	eq(TutorialSteps.mergeToast(1, false), false, "a new player walking onto the Merge pad")
+	eq(TutorialSteps.mergeToast(TutorialSteps.DONE, false), true, "past the last step")
+	eq(TutorialSteps.mergeToast(1, true), true, "tutorial finished or skipped")
+	eq(TutorialSteps.mergeToast(TutorialSteps.DONE, true), true, "finished")
 end)
 
 -- Cosmetics ----------------------------------------------------------------------------

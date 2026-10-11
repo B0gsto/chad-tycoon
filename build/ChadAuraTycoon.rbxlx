@@ -16866,6 +16866,10 @@ return CratePickup
 	(Economy.moneyPackAmount: seconds of the player's income, never below the
 	day's minimum), so a reward matters at every stage. Days 3 and 7 also open a
 	crate on the spot.
+
+	A player's first day is the exception: minutes of income would jump a brand-new
+	player over the tuned first tiers, so that day pays no more than the next
+	FIRST_DAY_UNITS units cost (firstDayCap).
 ]]
 
 local Economy = require(script.Parent.Economy)
@@ -16940,10 +16944,31 @@ function DailyReward.claim(lastDay: number, streak: number, today: number): (num
 	return status.streak + 1, status.day
 end
 
--- Cash of card `day` for a player earning `income` cash/s at `progression`.
-function DailyReward.cash(day: number, income: number, progression: Economy.Progression): number
+-- Units whose price is the most a player's first day pays.
+DailyReward.FIRST_DAY_UNITS = 4
+
+-- The most card `day` pays on a player's first day: what their next FIRST_DAY_UNITS units
+-- cost (a few hundred cash in the first minutes), never below the day's minimum. A boost,
+-- not a tier skip.
+function DailyReward.firstDayCap(day: number, buyTier: number, boughtAtTier: number): number
 	local reward = DailyReward.REWARDS[DailyReward.card(day)]
-	return Economy.moneyPackAmount(income, reward.seconds, reward.min, progression)
+	return math.max(reward.min, math.floor(Economy.bulkPrice(buyTier, boughtAtTier, DailyReward.FIRST_DAY_UNITS)))
+end
+
+-- Cash of card `day` for a player earning `income` cash/s at `progression`, at most `cap`
+-- (firstDayCap on a player's first day, nil after it).
+function DailyReward.cash(day: number, income: number, progression: Economy.Progression, cap: number?): number
+	local reward = DailyReward.REWARDS[DailyReward.card(day)]
+	local amount = Economy.moneyPackAmount(income, reward.seconds, reward.min, progression)
+	return if cap then math.min(amount, cap) else amount
+end
+
+-- What card `day` pays on top of its cash when the rack has no room for the crate's unit:
+-- the cash that unit is worth on average (0 on a day without a crate), so the crate is
+-- never lost.
+function DailyReward.crateCash(day: number, highestTier: number): number
+	local crate = DailyReward.REWARDS[DailyReward.card(day)].crate
+	return if crate then math.floor(Economy.chestExpectedValue(crate, highestTier)) else 0
 end
 
 -- One line naming card `day`'s reward: "$1.20K" or "Rare Crate + $1.20K" (`cashText` is the
@@ -16954,6 +16979,38 @@ function DailyReward.describe(day: number, cashText: string, chestWord: string):
 		return string.format("%s %s + %s", reward.crate, chestWord, cashText)
 	end
 	return cashText
+end
+
+-- Opening by itself (Client.UI.DailyWindow) ------------------------------------------
+
+-- The Daily window opens by itself after some calm seconds. A held crate (its panel is up)
+-- is not calm, so the window waits for it to be dealt with; but a crate can be carried for
+-- minutes, so once the crate alone has kept the window back for CRATE_PATIENCE seconds it
+-- stops counting.
+DailyReward.CRATE_PATIENCE = 10
+
+-- Seconds of calm so far, and seconds spent waiting for nothing but the held crate.
+export type AutoOpen = { calm: number, crate: number }
+
+function DailyReward.autoOpen(): AutoOpen
+	return { calm = 0, crate = 0 }
+end
+
+-- One tick of `step` seconds; true when the window should open now. `blocked` = something
+-- the window must never cover (the intro, the tutorial, a window, a popup, a mode run):
+-- the calm starts over. `crate` = the held-crate panel is up. `needed` = calm seconds asked.
+function DailyReward.autoOpenTick(state: AutoOpen, step: number, blocked: boolean, crate: boolean, needed: number): boolean
+	if blocked then
+		state.calm = 0
+		return false
+	end
+	if crate and state.crate < DailyReward.CRATE_PATIENCE then
+		state.crate += step
+		state.calm = 0
+		return false
+	end
+	state.calm += step
+	return state.calm >= needed
 end
 
 return DailyReward
@@ -17674,6 +17731,10 @@ return Format
 	                milestones are logged as one-time custom events instead
 	                ("SkipperTier3", ...); n counts the ones already logged
 	  LEGACY        a save from before the funnel: not a new player, never logs
+
+	The tier milestones (steps 8..11 and the Skipper events) were added later. A save from
+	before them whose tutorial is over is a returning player: Funnel.returning marks every
+	milestone as logged without sending anything, so only new players' tiers are counted.
 ]]
 
 local Funnel = {}
@@ -17714,6 +17775,22 @@ end
 -- finished, already skipped, or the save is a legacy one).
 function Funnel.skip(onboarding: number): number
 	return if onboarding < Funnel.TUTORIAL_END then Funnel.SKIPPED else onboarding
+end
+
+-- profile.onboarding for a save from before the tier milestones, on its first load since
+-- (DataService). A tutorial that is over (finished, or skipped: `tutorialDone` below the
+-- tutorial's last step is a skip from before skips were marked) leaves the funnel with
+-- every milestone marked as logged, so tiers reached long ago are never sent as new. A
+-- tutorial still running goes on as before.
+function Funnel.returning(onboarding: number, tutorialDone: boolean): number
+	if onboarding >= Funnel.LEGACY then
+		return onboarding
+	elseif onboarding >= Funnel.SKIPPED or (tutorialDone and onboarding < Funnel.TUTORIAL_END) then
+		return Funnel.SKIPPED + #Funnel.MILESTONES
+	elseif onboarding >= Funnel.TUTORIAL_END then
+		return Funnel.LAST
+	end
+	return onboarding
 end
 
 -- What a profile at `onboarding` logs now that its best tier is `highestTier`. Nothing
@@ -19608,6 +19685,13 @@ function TutorialSteps.instantDeposit(step: number, done: boolean?): boolean
 	return not done and current ~= nil and current.id == "deposit"
 end
 
+-- True when a refused merge ("Nothing to merge yet") should say so: once the tutorial is over
+-- or has reached its merge step. Before that the tutorial is asking for something else.
+function TutorialSteps.mergeToast(step: number, done: boolean?): boolean
+	local current = TutorialSteps.STEPS[step]
+	return done == true or current == nil or current.id == "merge"
+end
+
 -- True when some tier has at least two units (a merge is possible).
 function TutorialSteps.hasPair(units: { number }?): boolean
 	if not units then
@@ -21106,7 +21190,8 @@ return Theme
 	it never shows tutorial steps the player did not do. Their tier milestones are
 	logged as one-time custom events instead: "SkipperTier3", "SkipperTier5",
 	"SkipperTier7", "SkipperTier10". Everyone who reached a tier = its funnel step + its
-	Skipper event.
+	Skipper event. Profiles from before the milestones whose tutorial was already over
+	log none of them (Funnel.returning): the tiers they reached long ago are not news.
 
 	Intro: the first-run cutscene logs one custom event when it ends, "IntroSkipped" or
 	"IntroWatched", with the story seconds played as its value.
@@ -21219,12 +21304,9 @@ end
 
 function Analytics.onSessionStart(session: Tycoon.Session)
 	local player = session.player
-	local p = session.profile
-	-- A tutorial skipped before skips were marked in profile.onboarding.
-	if p.tutorialDone and Funnel.skip(p.onboarding) ~= p.onboarding then
-		p.onboarding = Funnel.skip(p.onboarding)
-		Tycoon.markDirty(session)
-	end
+	-- Returning players never log here: a save from before the tier milestones arrives with
+	-- all of them marked as logged (DataService's migration, Funnel.returning), so these
+	-- two calls only send what a new profile has not sent yet.
 	Analytics.onboard(session, 1)
 	Analytics.tiers(session)
 	if player:GetAttribute("IntroSeen") == true then
@@ -22016,12 +22098,15 @@ return Cosmetics
 	The saved profile field `daily` holds the UTC day of the last claim and the
 	streak at that claim. The State snapshot's `daily` field tells the client
 	what today looks like: { claimable, day (today's card 1..7), claimed (cards
-	ticked), streak, nextIn (seconds to the next UTC day) }. The "ClaimDaily"
-	action pays today's card: cash sized by the player's income right now (the
-	amounts the window shows) and, on days 3 and 7, a crate opened on the spot.
+	ticked), streak, nextIn (seconds to the next UTC day), firstDay (today is the
+	player's first day: today's card is capped, DailyReward.firstDayCap) }. The
+	"ClaimDaily" action pays today's card: cash sized by the player's income right
+	now (the amounts the window shows) and, on days 3 and 7, a crate opened on the
+	spot. With no room on the rack for the crate's unit, the crate is paid as cash.
 
 	Notify payloads (client shows them):
-	  { kind = "Daily", event = "claimed", day = n, cash = c, crate = rarity?, streak = s }
+	  { kind = "Daily", event = "claimed", day = n, cash = c, crate = rarity?, streak = s,
+	    crateCash = part of `cash` paid instead of the crate (rack full)? }
 
 	First day: once a player has finished the tutorial, has claimed and has been
 	playing for a few minutes, one toast names tomorrow's reward.
@@ -22053,10 +22138,12 @@ local function today(): number
 end
 
 -- Cash of card `day` for this player right now (the same formula the window shows).
-local function cashFor(session: Tycoon.Session, day: number): number
+-- `firstDay` = paid on the player's first day (capped).
+local function cashFor(session: Tycoon.Session, day: number, firstDay: boolean): number
 	local p = session.profile
 	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
-	return DailyReward.cash(day, Tycoon.income(session), progression)
+	local cap = if firstDay then DailyReward.firstDayCap(day, p.buyTier, p.boughtAtTier) else nil
+	return DailyReward.cash(day, Tycoon.income(session), progression, cap)
 end
 
 local function snapshot(session: Tycoon.Session): { [string]: any }
@@ -22069,6 +22156,7 @@ local function snapshot(session: Tycoon.Session): { [string]: any }
 		claimed = status.claimed,
 		streak = status.streak,
 		nextIn = DailyReward.secondsLeft(now),
+		firstDay = d.firstDay == DailyReward.dayNumber(now),
 	}
 end
 
@@ -22083,15 +22171,34 @@ function Daily.claim(session: Tycoon.Session)
 		return
 	end
 	-- Sized before anything is granted, so the crate's unit does not change the cash.
-	local cash = cashFor(session, day)
-	local crate = DailyReward.REWARDS[day].crate
+	local cash = cashFor(session, day, d.firstDay == today())
+	local crate: string? = DailyReward.REWARDS[day].crate
+	-- Rolled before the claim is announced: with no room on the rack for its unit, the crate
+	-- is paid as cash instead of being lost.
+	local tier = if crate then Tycoon.rollCrate(session, crate) else nil
+	local crateCash: number? = nil
+	if crate and not tier then
+		crateCash = DailyReward.crateCash(day, Economy.highestTier(session.profile.discovered))
+		cash += crateCash
+	end
 	d.day = today()
 	d.streak = streak
 	claimedAt[session] = os.clock()
-	Tycoon.notify(session, { kind = "Daily", event = "claimed", day = day, cash = cash, crate = crate, streak = streak })
+	Tycoon.notify(session, {
+		kind = "Daily",
+		event = "claimed",
+		day = day,
+		cash = cash,
+		crate = if tier then crate else nil,
+		streak = streak,
+		crateCash = crateCash,
+	})
 	Tycoon.grantMoney(session, cash, "Daily")
-	if crate then
-		Tycoon.grantCrate(session, crate)
+	if crate and tier then
+		Tycoon.grantCrate(session, crate, tier)
+	elseif crate and crateCash then
+		local text = "Your rack is full: the %s %s paid %s instead"
+		Tycoon.toast(session, string.format(text, crate, theme.Words.Chest, Format.money(crateCash)), "info")
 	end
 end
 
@@ -22108,9 +22215,21 @@ local function hint(session: Tycoon.Session, now: number)
 	end
 	d.hinted = true
 	local nextDay = DailyReward.card(d.streak + 1)
-	local reward = DailyReward.describe(nextDay, Format.money(cashFor(session, nextDay)), theme.Words.Chest)
+	local reward = DailyReward.describe(nextDay, Format.money(cashFor(session, nextDay, false)), theme.Words.Chest)
 	Tycoon.toast(session, string.format("Come back tomorrow for Day %d: %s", nextDay, reward), "good")
 	Tycoon.markDirty(session)
+end
+
+-- The loop's work for one session. `newDay` = a new UTC day began since the last check.
+local function check(session: Tycoon.Session, now: number, newDay: boolean)
+	if not session.alive then
+		return
+	end
+	if newDay then
+		-- The snapshot's `claimable` changes for everyone online.
+		Tycoon.markDirty(session)
+	end
+	hint(session, now)
 end
 
 -- Call right after Tycoon.addPlayer: starts the play-time clock and stamps the first day.
@@ -22136,12 +22255,11 @@ function Daily.init(themeModule: any)
 			task.wait(CHECK_SECONDS)
 			local now = today()
 			for _, session in Tycoon.allSessions() do
-				if session.alive then
-					if now ~= lastDay then
-						-- A new UTC day: the snapshot's `claimable` changes for everyone online.
-						Tycoon.markDirty(session)
-					end
-					hint(session, now)
+				-- One session's error (a player leaving mid-check) must not stop the loop
+				-- for the whole server.
+				local ok, err = pcall(check, session, now, now ~= lastDay)
+				if not ok then
+					warn("[Daily] check:", err)
 				end
 			end
 			lastDay = now
@@ -22172,6 +22290,7 @@ local RunService = game:GetService("RunService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Economy = require(ReplicatedStorage.Shared.Economy)
+local Funnel = require(ReplicatedStorage.Shared.Funnel)
 local SessionLock = require(ReplicatedStorage.Shared.SessionLock)
 local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
 
@@ -22179,6 +22298,11 @@ local DataService = {}
 
 local STORE_NAME = "TycoonProfiles_v1"
 local MAX_RETRIES = 4
+-- Profile.version of a save written by this code. reconcile migrates older saves once:
+--   2  buy tier 1 upgrades after Economy.BUY_EASY_UNITS purchases (it was one), and the
+--      onboarding funnel counts tier milestones (Shared.Funnel)
+local VERSION = 2
+DataService.VERSION = VERSION
 
 export type Unlocker = { rarity: string, endsAt: number }
 
@@ -22276,7 +22400,7 @@ function DataService.defaultProfile(): Profile
 	local discovered = zeros(Economy.MAX_TIER)
 	discovered[1] = os.time()
 	return {
-		version = 1,
+		version = VERSION,
 		money = Economy.START_CASH,
 		carried = 0,
 		queue = 0,
@@ -22328,6 +22452,8 @@ local function reconcile(data: any): Profile
 	if type(data) ~= "table" then
 		return default
 	end
+	-- Read before the defaults below fill a missing version in.
+	local version = if type(data.version) == "number" then data.version else 1
 	-- Saves from before Parkour levels: the old single record becomes level 1's.
 	if type(data.parkour) ~= "table" then
 		local old = type(data.modes) == "table" and data.modes.parkour
@@ -22476,6 +22602,16 @@ local function reconcile(data: any): Profile
 	if data.pendingUnlocker ~= 1 and data.pendingUnlocker ~= 2 then
 		data.pendingUnlocker = 0
 	end
+	if version < 2 then
+		-- Buy tier 1 used to upgrade after BUY_REQ_BASE purchases. A player who was past the
+		-- tutorial and could already upgrade still can, without buying the easy units first.
+		if data.tutorialDone and data.buyTier == 1 and data.boughtAtTier >= Economy.BUY_REQ_BASE then
+			data.boughtAtTier = Economy.buyTierRequirement(1)
+		end
+		-- Returning players' tier milestones count as logged, with nothing sent.
+		data.onboarding = Funnel.returning(data.onboarding, data.tutorialDone)
+	end
+	data.version = math.max(version, VERSION)
 	return data :: Profile
 end
 
@@ -32393,7 +32529,11 @@ local function doMerge(session: Session, verbose: boolean, auto: boolean)
 		end
 		markDirty(session)
 	elseif verbose then
-		toast(session, "Nothing to merge yet. You need 2 of the same tier.", "info")
+		-- First run: a new player spawns facing this pad and walks onto it before the
+		-- tutorial has asked for a merge, so the toast waits for that step.
+		if TutorialSteps.mergeToast(p.tutorialStep, p.tutorialDone) then
+			toast(session, "Nothing to merge yet. You need 2 of the same tier.", "info")
+		end
 		refusePad(session, "Merge", "locked")
 	end
 end
@@ -33341,9 +33481,18 @@ function Tycoon.grantMoney(session: Session, amount: number, source: string?)
 	flush(session)
 end
 
--- A free crate of `rarity` opened on the spot with the crate reveal (daily reward).
-function Tycoon.grantCrate(session: Session, rarity: string)
-	openChest(session, rarity, "unlock")
+-- A free crate of `rarity` opened on the spot (daily reward), in two steps so the caller
+-- can pay something else when it does not fit: rollCrate returns the tier of its unit, or
+-- nil when the rack has no room for that unit (full, and nothing can merge)...
+function Tycoon.rollCrate(session: Session, rarity: string): number?
+	local tier = Economy.rollChest(rarity, highestTier(session), random)
+	return if Economy.addUnitsCapped(session.profile.units, tier, 1).accepted > 0 then tier else nil
+end
+
+-- ...and grantCrate gives that unit with the crate reveal.
+function Tycoon.grantCrate(session: Session, rarity: string, tier: number)
+	awardUnit(session, tier, "unlock")
+	effect(session, "ChestOpen", { rarity = rarity, tier = tier })
 	markDirty(session)
 	flush(session)
 end
@@ -66090,7 +66239,8 @@ return CardioHud
 
 	The window opens by itself once per session when a reward is waiting, after a
 	calm moment: never during the intro or the tutorial, a game-mode run, or
-	under another window or popup.
+	under another window or popup. A held crate makes it wait too, but not for
+	ever (DailyReward.autoOpenTick): a crate can be carried for minutes.
 ]]
 
 local Players = game:GetService("Players")
@@ -66140,8 +66290,9 @@ local ONE_ROW_MIN = 700
 -- whose reward cards are still on their way).
 local CALM = 2
 local CALM_AFTER_TUTORIAL = 8
--- ScreenGui attributes that mean "busy": a window, a popup, the crate panel or a mode run.
-local BUSY = { "WindowOpen", "ModalOpen", "CratePanelOpen", "RunActive", "ObbyMode", "CardioActive" }
+-- ScreenGui attributes that mean "busy": a window, a popup or a mode run. The held-crate
+-- panel ("CratePanelOpen") only holds the window back for a while.
+local BUSY = { "WindowOpen", "ModalOpen", "RunActive", "ObbyMode", "CardioActive" }
 
 -- Art per card: the cash packs grow with the days; days 3 and 7 show their crate.
 local ART = { "CashPack1", "CashPack2", "CrateRare", "CashPack3", "CashPack4", "CashPack5", "CrateLegendary" }
@@ -66462,8 +66613,12 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		tomorrowCard = if day < DailyReward.DAYS then day + 1 else 0
 		local progression = Economy.progression(tonumber(data.highestTier) or 1, tonumber(data.processLevel) or 0)
 		local income = tonumber(data.income) or 0
+		-- A player's first day pays today's card up to a cap (Server.Daily does the same).
+		local cap = if daily.firstDay == true
+			then DailyReward.firstDayCap(day, tonumber(data.buyTier) or 1, tonumber(data.boughtAtTier) or 0)
+			else nil
 		for i, card in cards do
-			card.amount.Text = "+" .. State.money(DailyReward.cash(i, income, progression))
+			card.amount.Text = "+" .. State.money(DailyReward.cash(i, income, progression, if i == day then cap else nil))
 			local state = if i <= claimed
 				then "claimed"
 				elseif i == day and canClaim then "today"
@@ -66558,7 +66713,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		end)
 		task.spawn(function()
 			local player = Players.LocalPlayer
-			local calm = 0
+			local auto = DailyReward.autoOpen()
 			local needed = CALM
 			while not opened do
 				local step = task.wait(0.5)
@@ -66580,8 +66735,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				for _, name in BUSY do
 					ready = ready and screen:GetAttribute(name) ~= true
 				end
-				calm = if ready then calm + step else 0
-				if calm >= needed and not opened then
+				-- A held crate is waited for, then the window stops waiting for it.
+				local crate = screen:GetAttribute("CratePanelOpen") == true
+				if DailyReward.autoOpenTick(auto, step, not ready, crate, needed) and not opened then
 					deps.open()
 					return
 				end

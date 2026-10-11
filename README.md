@@ -43,7 +43,8 @@ sand island in the sea.
   `Economy.BUY_EASY_UNITS`). The buy tier unlocks once they are bought. Following the tutorial at
   walking pace this gives tier 2 after about 20 s, tier 3 after 30 s, tier 5 by 3 minutes and tier 6 by
   5 minutes, with something to buy on every lap (`lune run scripts/simulate --first`). From then on
-  prices are the normal ones.
+  prices are the normal ones. Saves from before this (profile `version` 1) that were past the tutorial
+  and could already upgrade buy tier 1 keep that: their purchase count is lifted to the 60.
 - **Rack.** Units stand on a display rack of up to 10 shelves and 100 slots (`Economy.UNIT_CAP`), each
   with a name plate that glows more at higher tiers. Two units of a tier merge into one of the next tier
   (2.2x output) on the Merge pad or with the Auto Merge game pass. At the cap, a new unit first auto-merges
@@ -129,10 +130,15 @@ sand island in the sea.
   | At least | $250 | $500 | $1,000 | $2,000 | $4,000 | $8,000 | $15,000 |
   | Also | | | Rare crate | | | | Legendary crate |
 
+  A player's first day is capped: Day 1 pays at most the price of their next 4 units (`DailyReward.firstDayCap`,
+  about $250-$450 in the first minutes, never below the $250 minimum), a boost that does not skip the first
+  tiers. From the second day on the table applies as it is. If the rack has no room for a crate's unit, the
+  crate is paid as cash instead (what its unit is worth on average) and a toast says so.
+
   The Daily window shows the seven cards (claimed ones ticked, today's glowing, tomorrow's with "Come back
   tomorrow" and a countdown). It opens by itself once per session when a reward is waiting, never during the
-  intro, the tutorial or a game-mode run; the HUD's Daily button shows a dot while a reward waits and the
-  countdown otherwise. On a player's first day, a few minutes in, one toast says "Come back tomorrow for
+  intro, the tutorial or a game-mode run; a held crate makes it wait up to 10 s, then it opens anyway. The
+  HUD's Daily button shows a dot while a reward waits and the countdown otherwise. On a player's first day, a few minutes in, one toast says "Come back tomorrow for
   Day 2: ...".
 - **Extras:** Index of all 25 tiers, global ranking, a free gift every 10 minutes, offline earnings up to
   8 h, friend (+10% each, max +50%) and Premium (+10%) bonuses, settings, and a loading screen.
@@ -145,7 +151,8 @@ sand island in the sea.
   8 Tier 3, 9 Tier 5, 10 Tier 7, 11 Tier 10 for the highest tier discovered), a recurring "Shop" funnel
   (Opened, Prompted, Purchased) and custom events. "TutorialSkipped" ends the funnel for that player, so
   the tutorial steps stay honest; their tier milestones are logged as "SkipperTier3" / "5" / "7" / "10"
-  instead (everyone who reached a tier = the funnel step plus the Skipper event). "IntroSkipped" and
+  instead (everyone who reached a tier = the funnel step plus the Skipper event). Saves from before the
+  tier milestones whose tutorial was over are marked as past all four and send nothing. "IntroSkipped" and
   "IntroWatched" carry the seconds of the intro that played. Use them to judge ad traffic: where new
   players stop and how many shop visits end in a purchase.
 
