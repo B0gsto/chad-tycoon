@@ -134,8 +134,9 @@ Theme.Colors = {
 	Good = rgb(98, 224, 160),
 	Bad = rgb(255, 112, 100),
 	Text = rgb(255, 255, 255),
-	TextDim = rgb(212, 224, 255),
-	TextMute = rgb(160, 180, 232),
+	-- Captions: white at about 90 % / 85 % over the dark glass (never grey).
+	TextDim = rgb(232, 234, 244),
+	TextMute = rgb(220, 222, 232),
 	-- UI surfaces: "bright toy". Royal-blue moulded plastic panels (lighter at
 	-- the top, a darker blue lip below), deeper blue wells, a soft navy shadow.
 	-- PanelDark is an alias of Well.
@@ -199,6 +200,75 @@ Theme.Colors = {
 		Legendary = rgb(255, 200, 56),
 		Mythic = rgb(255, 104, 164),
 	},
+}
+
+-- Glass windows (Kit.window, Kit.glass): dark translucent panes over the blurred, dimmed world.
+-- Every number except Radius, EdgeThickness, the Blur sizes, the Fit shares and TextMin is a
+-- transparency (0.4 = 60 % opaque). One body token for every window, modal and side panel.
+Theme.Glass = {
+	-- Window body: a deep navy / violet tint, a touch lighter at the top.
+	Tint = rgb(14, 14, 48),
+	TintTop = rgb(24, 20, 70),
+	Body = 0.4,
+	Radius = 26,
+	-- The glass edge: a thin white stroke, brightest along the top, fading out toward the bottom.
+	Edge = rgb(255, 255, 255),
+	EdgeThickness = 1.5,
+	EdgeTop = 0.3,
+	EdgeBottom = 0.85,
+	-- Inner highlight line along the top edge and the soft dark halo round a window.
+	Highlight = 0.6,
+	Shadow = 0.8,
+	-- Content cards inside a window (rows, tiles, cells, stat boxes): a dark, nearly solid fill
+	-- (Cell, lighter at the top) with a thin edge. Raised cards are a step more solid. A card
+	-- that carries a colour (a rarity, a state) mixes TintMix of it into the fill and wears it
+	-- on its edge (TintedEdge); a dimmed one (claimed, locked) uses Dimmed.
+	Cell = rgb(18, 16, 56),
+	CellTop = rgb(34, 30, 92),
+	Surface = 0.22,
+	SurfaceHi = 0.15,
+	SurfaceEdge = 0.72,
+	Tinted = 0.18,
+	TintMix = 0.24,
+	TintedEdge = 0.2,
+	Dimmed = 0.5,
+	-- Insets (tab bars, bar tracks, wallet chips): a darker pane of Colors.Ink.
+	Inset = 0.55,
+	-- Coloured cards (shop banners and packs): the card's own colour as glass, with a glow.
+	Card = 0.38,
+	CardGlow = 0.7,
+	-- Over the unblurred world: Pill is a notification (toasts, the quest pill), Quiet the
+	-- permanent HUD strips (deposit, "Next:"), which sit back; the text on both is outlined.
+	Pill = 0.3,
+	Quiet = 0.55,
+	-- Text on glass: outline thickness and transparency, the smallest body / caption size in
+	-- screen pixels (desktop, phone) and the opacity of a caption (white, never grey).
+	TextInk = rgb(8, 8, 30),
+	TextStroke = 2,
+	TextStrokeFade = 0.25,
+	-- The outline follows the text size: none under TextStrokeFrom px (small text sits on a
+	-- dark card or chip instead), then 1 px of outline per TextStrokePer px of text, between
+	-- TextStrokeThin and TextStrokeMax.
+	TextStrokeFrom = 18,
+	TextStrokePer = 12,
+	TextStrokeThin = 1.5,
+	TextStrokeMax = 3,
+	TextMin = 14,
+	TextMinPhone = 12,
+	Caption = 0.15,
+	-- The world behind an open window: BlurEffect size and the black backdrop's transparency.
+	-- The discovery reveal keeps a lighter frost (BlurLight) so the Chad's plot stays readable.
+	Blur = 23,
+	BlurLight = 12,
+	Dim = 0.55,
+	DimColor = rgb(0, 0, 0),
+	-- Share of the safe area a window may cover (Kit.fit), and how far a phone window may
+	-- scale up past its design size so its text grows with it.
+	Fit = 0.92,
+	FitTouch = 0.94,
+	FitGrow = 1.3,
+	-- Windows opened from a HUD button start at this scale on the button.
+	OriginScale = 0.3,
 }
 
 -- The 3D world's palette: a sunny "Muscle Beach" gym in clear afternoon light. Teal and blue

@@ -777,11 +777,22 @@ function renderBox(box, parentEl, ctx) {
 	if (stroke && !textStroke && num(stroke.thickness, 0) > 0) {
 		const t = num(stroke.thickness, 1);
 		const sd = div('rbx-stroke');
+		const strokeAlpha = 1 - clamp01(num(stroke.transparency, 0));
 		Object.assign(sd.style, {
 			left: px(-t), top: px(-t), width: px(w + 2 * t), height: px(h + 2 * t),
-			boxSizing: 'border-box', border: `${px(t)} solid ${rgba(stroke.color, 1 - clamp01(num(stroke.transparency, 0)))}`,
-			borderRadius: px(radius + t), pointerEvents: 'none',
+			boxSizing: 'border-box', borderRadius: px(radius + t), pointerEvents: 'none',
 		});
+		if (stroke.gradient) {
+			// A UIGradient inside the stroke: paint the gradient and keep only the ring
+			// (a border cannot carry a gradient and rounded corners at once).
+			const ring = 'linear-gradient(#000 0 0)';
+			Object.assign(sd.style, {
+				padding: px(t), backgroundImage: gradientCss(stroke.gradient, stroke.color, strokeAlpha),
+				webkitMask: `${ring} content-box, ${ring}`, webkitMaskComposite: 'xor', maskComposite: 'exclude',
+			});
+		} else {
+			sd.style.border = `${px(t)} solid ${rgba(stroke.color, strokeAlpha)}`;
+		}
 		el.appendChild(sd);
 	}
 

@@ -192,6 +192,9 @@ async function renderThumbs(page, variant, showcase) {
 		for (const sil of [0, 1]) {
 			const file = join(dir, `${tier}_${sil}.png`);
 			map[`thumb:${variant}:${tier}:${sil}`] = `/out/${variant}/thumbs/${tier}_${sil}.png`;
+			// The exported UI names thumbnails by the base variant ("thumb:chad:12:0") even in a
+			// device export (out/chad-844x390-touch), so unit portraits resolve there too.
+			map[`thumb:${variant.split("-")[0]}:${tier}:${sil}`] = `/out/${variant}/thumbs/${tier}_${sil}.png`;
 			// REUSE_THUMBS=1 skips re-rendering existing thumbnails (fast UI iteration).
 			if (process.env.REUSE_THUMBS && existsSync(file)) continue;
 			await page.evaluate(([scene, group, s, cam]) => window.renderThumb(scene, group, s === 1, cam, 320), [showcase, tier, sil, camera]);

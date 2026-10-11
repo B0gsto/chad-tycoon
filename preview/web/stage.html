@@ -98,6 +98,9 @@ window.renderShot = async (scene, textures, camera, gui, extra) => {
 		overlay.style.background = "linear-gradient(#7ec8f2 0%, #bfe6fb 55%, #8fcf6f 56%, #6cb455 100%)";
 	}
 	overlay.innerHTML = "";
+	// Kit.setBlur: the world behind an open window is blurred (BlurEffect.Size is roughly
+	// twice a CSS blur radius at this resolution).
+	canvas.style.filter = gui && gui.blur > 0 ? `blur(${gui.blur / 2}px)` : "";
 	if (gui) {
 		await renderGui(gui, overlay, {
 			imageResolver: (image) => {

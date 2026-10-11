@@ -2,12 +2,14 @@
 	DailyWindow: the Daily Reward window (rules: Shared.DailyReward; server:
 	Server.Daily; the HUD's Daily button opens it).
 
-	Seven day cards in a row (two rows when the window narrows, Day 7 double
-	width): each shows its art (a growing cash pack, a crate on days 3 and 7) and
-	what it pays at the player's income right now. Claimed cards are muted and
-	ticked, today's is gold and glowing (tap it or CLAIM), tomorrow's says "Come
-	back tomorrow" with a countdown to the next UTC day. The footer names what to
-	do next.
+	Seven day cards in a row (4 + 3 when the window narrows and always on a phone,
+	Day 7 double width). A card is sized to its content: the day, its art (a growing
+	cash pack, a crate on days 3 and 7), what it pays at the player's income right now
+	(the second-largest thing on the card after the art) and, on a crate day, a chip in
+	the crate's rarity colour. Claimed cards are dimmed and ticked; today's says TODAY
+	in gold and glows (tap it or the CLAIM button); tomorrow's says TOMORROW. The footer
+	row names what to do next on the left, with the countdown to the next UTC day, and
+	holds the one button on the right.
 
 	The window opens by itself once per session when a reward is waiting, after a
 	calm moment: never during the intro or the tutorial, a game-mode run, or
@@ -28,6 +30,7 @@ local Kit = require(script.Parent.Kit)
 local State = require(script.Parent.Parent.State)
 
 local Theme = Kit.Theme
+local G = Theme.Glass
 local C = Kit.C
 local T = Kit.TEXT
 local F = Kit.F
@@ -54,10 +57,33 @@ export type Daily = {
 
 local ACCENT = Theme.World.Sunny
 local GAP = 8
-local HERO_H = 50
-local FOOTER_H = 56
+-- Space between the streak line, the cards and the footer row (one row of cards).
+local SECTION = 16
+local HERO_H = 40
+local FOOTER_H = 72
+local FOOTER_COMPACT = 60
+-- One row of tall cards: the day (HEAD_H) under CARD_TOP, then the art, the amount and the
+-- crate chip stacked HEAD_GAP / STACK_GAP apart, CARD_BOTTOM above the card's edge.
+local CARD_TOP = 10
+local HEAD_H = 18
+local HEAD_GAP = 8
+local STACK_GAP = 6
+local CARD_BOTTOM = 12
+local ART_MAX = 96
+local AMOUNT_H = 26
+local AMOUNT_MAX = 22
+local CHIP_H = 22
+-- The design window holds exactly that: chrome (104) + streak + cards + footer.
+local CARD_H = CARD_TOP + HEAD_H + HEAD_GAP + ART_MAX + STACK_GAP + AMOUNT_H + STACK_GAP + CHIP_H + CARD_BOTTOM
+local DESIGN = Vector2.new(880, 104 + HERO_H + SECTION + CARD_H + SECTION + FOOTER_H)
 -- Narrower than this (content width, design px) the cards wrap onto two rows.
 local ONE_ROW_MIN = 700
+-- Two rows of low, wide cards (a phone's short window): under SIDE_MAX_H tall and at least
+-- SIDE_MIN_W wide, a card puts its art (SIDE_ART) beside a SIDE_TEXT wide text column.
+local SIDE_MAX_H = 124
+local SIDE_MIN_W = 180
+local SIDE_ART = 56
+local SIDE_TEXT = 112
 -- Seconds of calm before the window opens by itself (longer right after the tutorial,
 -- whose reward cards are still on their way).
 local CALM = 2
@@ -74,33 +100,43 @@ type Card = {
 	header: TextLabel,
 	art: Frame,
 	amount: TextLabel,
-	extra: TextLabel?,
-	status: TextLabel,
+	-- Crate days: a chip in the rarity colour ("RARE CRATE", or just "RARE" on a narrow card).
+	chip: TextLabel?,
+	chipFull: string,
+	chipShort: string,
 	tick: Frame,
 	state: string,
 }
 
--- Repaints a Kit.panel body (gradient, outline and lip) in `color`.
-local function paint(frame: Frame, color: Color3, strokeColor: Color3?, thickness: number?)
-	local lipColor = Kit.lip(color)
-	local gradient = frame:FindFirstChildOfClass("UIGradient")
-	if gradient then
-		gradient.Color = ColorSequence.new(Kit.lighten(color, 0.1), color:Lerp(lipColor, 0.12))
+-- Width of a chip that says `text` (TextService when available, else an estimate).
+local function chipWidth(text: string): number
+	local width = 0
+	pcall(function()
+		local TextService = game:GetService("TextService")
+		width = TextService:GetTextSize(text, T.Small, F.UI, Vector2.new(1000, 40)).X
+	end)
+	if width <= 0 then
+		width = (utf8.len(text) or #text) * T.Small * 0.62
 	end
+	return math.ceil(width) + 20
+end
+
+-- Repaints a day card: the plain dark card, or tinted `tint`, with an `edge` outline in the
+-- state's colour (`edgeFade`: its transparency, for a dimmed card).
+local function paint(frame: Frame, tint: Color3?, transparency: number?, edge: Color3?, thickness: number?, edgeFade: number?)
+	Kit.paintGlass(frame, tint, transparency, edge)
 	local stroke = frame:FindFirstChildOfClass("UIStroke")
 	if stroke then
-		stroke.Color = strokeColor or lipColor
-		stroke.Thickness = thickness or 1.5
-	end
-	local lip = frame:FindFirstChild("Lip")
-	if lip and lip:IsA("Frame") then
-		lip.BackgroundColor3 = lipColor
+		stroke.Thickness = thickness or 1
+		if edgeFade then
+			stroke.Transparency = edgeFade
+		end
 	end
 end
 
 function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
-	local window =
-		Kit.window(screen, "Daily", "Daily Reward", Kit.pickIcon("Gift2", "Free"), ACCENT, Vector2.new(880, 436), Vector2.new(500, 436))
+	-- Minimum 386 tall: a phone gets that window at x1.3, with the cards in two low rows.
+	local window = Kit.window(screen, "Daily", "Daily Reward", Kit.pickIcon("Gift2", "Free"), ACCENT, DESIGN, Vector2.new(500, 386))
 	deps.register("Daily", window)
 	local action = Net.event("Action")
 
@@ -111,9 +147,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Size = UDim2.new(1, 0, 0, HERO_H),
 		Parent = window.content,
 	})
-	Kit.icon(hero, Kit.pickIcon("Fire", "Star"), 40, C.Amber, {
+	Kit.icon(hero, Kit.pickIcon("Fire", "Star"), 36, C.Amber, {
 		Name = "Icon",
-		Position = UDim2.new(0, 4, 0.5, 0),
+		Position = UDim2.new(0, 2, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
 		ZIndex = 2,
 	})
@@ -124,8 +160,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		TextColor3 = C.Gold,
 		TextWrapped = false,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(0.5, -52, 1, 0),
-		Position = UDim2.fromOffset(52, 1),
+		Size = UDim2.new(0.5, -48, 1, 0),
+		Position = UDim2.fromOffset(48, 1),
 		ZIndex = 2,
 	})
 	Kit.text(hero, {
@@ -134,7 +170,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		TextSize = T.Small,
 		TextColor3 = C.TextDim,
 		TextXAlignment = Enum.TextXAlignment.Right,
-		Size = UDim2.new(0.5, -8, 1, 0),
+		Size = UDim2.new(0.5, -2, 1, 0),
 		Position = UDim2.new(0.5, 0, 0, 0),
 		ZIndex = 2,
 	})
@@ -149,62 +185,55 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	local cards: { Card } = {}
 	local frames: { GuiObject } = {}
 	for day, reward in DailyReward.REWARDS do
-		local frame = Kit.panel(grid, { Name = "Day" .. day, Elevated = true, Radius = Kit.RADIUS.M })
+		local frame = Kit.glass(grid, { Name = "Day" .. day, Radius = Kit.RADIUS.M })
 		local header = Kit.text(frame, {
 			Name = "Header",
 			Text = "DAY " .. day,
 			Font = F.UI,
 			TextSize = T.Small,
 			TextWrapped = false,
-			Size = UDim2.new(1, 0, 0, 18),
-			Position = UDim2.fromOffset(0, 8),
+			Size = UDim2.new(1, 0, 0, HEAD_H),
+			Position = UDim2.fromOffset(0, CARD_TOP),
 			ZIndex = 3,
 		})
 		local art: Frame
 		if Kit.hasImageIcon(ART[day]) then
-			art = Kit.icon(frame, ART[day], 64, nil, { Name = "Art", ZIndex = 3 })
+			art = Kit.icon(frame, ART[day], ART_MAX, nil, { Name = "Art", ZIndex = 3 })
 		else
-			art = Kit.icon(frame, if reward.crate then "Free" else "Coin", 64, if reward.crate then C.Cash else C.Gold, {
+			art = Kit.icon(frame, if reward.crate then "Free" else "Coin", ART_MAX, if reward.crate then C.Cash else C.Gold, {
 				Name = "Art",
 				ZIndex = 3,
 			})
 		end
 		art.AnchorPoint = Vector2.new(0.5, 0)
-		-- Scaled down to fit: full numbers ("+$1,234,567") are much longer than "+$1.23M".
+		-- The amount: bold, outlined, the biggest text on the card, with no "+" in front so a
+		-- long one ("$179.52M") still fits at 18 px. Scaled down further only when it has to:
+		-- full numbers ("$1,234,567") are much longer.
 		local amount = Kit.number(frame, {
 			Name = "Amount",
 			Text = "",
-			MaxTextSize = 17,
+			MaxTextSize = AMOUNT_MAX,
 			TextColor3 = C.MoneyText,
-			Size = UDim2.new(1, -8, 0, 22),
+			Size = UDim2.new(1, -6, 0, AMOUNT_H),
 			AnchorPoint = Vector2.new(0.5, 0),
 			ZIndex = 3,
 		})
-		local extra: TextLabel? = nil
+		local chip: TextLabel? = nil
+		local chipFull, chipShort = "", ""
 		if reward.crate then
-			extra = Kit.text(frame, {
+			chipFull = string.upper(reward.crate .. " " .. W.Chest)
+			chipShort = string.upper(reward.crate)
+			chip = Kit.pill(frame, {
 				Name = "Crate",
-				Text = string.upper(string.format("+ %s %s", reward.crate, W.Chest)),
-				Font = F.UI,
-				MaxTextSize = T.Tiny,
-				TextColor3 = C.Rarity[reward.crate] or C.Gold,
-				TextWrapped = false,
-				Size = UDim2.new(1, -4, 0, 16),
+				Text = chipFull,
+				Color = C.Rarity[reward.crate] or C.Gold,
+				Solid = true,
+				TextSize = T.Small,
+				Size = UDim2.fromOffset(chipWidth(chipFull), CHIP_H),
 				AnchorPoint = Vector2.new(0.5, 0),
 				ZIndex = 3,
 			})
 		end
-		local status = Kit.text(frame, {
-			Name = "Status",
-			Text = "",
-			Font = F.UI,
-			TextSize = T.Tiny,
-			TextYAlignment = Enum.TextYAlignment.Bottom,
-			Size = UDim2.new(1, -10, 0, 44),
-			Position = UDim2.new(0.5, 0, 1, -8),
-			AnchorPoint = Vector2.new(0.5, 1),
-			ZIndex = 3,
-		})
 		-- Mint tick on the corner of a claimed card.
 		local tick = Kit.new("Frame", {
 			Name = "Tick",
@@ -217,7 +246,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			Parent = frame,
 		})
 		Kit.round(tick)
-		Kit.new("UIStroke", { Thickness = 2, Color = Color3.new(1, 1, 1), Parent = tick })
+		Kit.new("UIStroke", { Thickness = 2, Color = C.Text, Parent = tick })
 		Kit.icon(tick, "Check", 16, Kit.inkOn(C.Good), {
 			Position = UDim2.fromScale(0.5, 0.5),
 			AnchorPoint = Vector2.new(0.5, 0.5),
@@ -228,8 +257,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			header = header,
 			art = art,
 			amount = amount,
-			extra = extra,
-			status = status,
+			chip = chip,
+			chipFull = chipFull,
+			chipShort = chipShort,
 			tick = tick,
 			state = "",
 		}
@@ -254,27 +284,35 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		frames[day] = frame
 	end
 
-	-- Footer: what to do next + the one button ---------------------------------------------
-	local footer = Kit.new("Frame", {
+	-- Footer row: what to do next on the left, the one button on the right ------------------
+	local footer = Kit.well(window.content, {
 		Name = "Footer",
-		BackgroundTransparency = 1,
+		Glass = true,
 		Size = UDim2.new(1, 0, 0, FOOTER_H),
 		Position = UDim2.fromScale(0, 1),
 		AnchorPoint = Vector2.new(0, 1),
-		Parent = window.content,
 	})
-	local headline = Kit.title(footer, {
+	local BUTTON_W = 200
+	-- Headline over detail, centred as a pair on the row's middle line.
+	local words = Kit.new("Frame", {
+		Name = "Words",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -(16 + 16 + BUTTON_W + 12), 0, 48),
+		Position = UDim2.new(0, 16, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 2,
+		Parent = footer,
+	})
+	local headline = Kit.title(words, {
 		Name = "Headline",
 		Text = "",
-		TextSize = T.H2,
+		MaxTextSize = T.H2,
 		TextWrapped = false,
-		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -236, 0, 26),
-		Position = UDim2.fromOffset(6, 4),
+		Size = UDim2.new(1, 0, 0, 26),
 		ZIndex = 2,
 	})
-	local detail = Kit.text(footer, {
+	local detail = Kit.text(words, {
 		Name = "Detail",
 		Text = "",
 		TextSize = T.Small,
@@ -282,8 +320,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		TextWrapped = false,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -236, 0, 20),
-		Position = UDim2.fromOffset(6, 31),
+		Size = UDim2.new(1, 0, 0, 20),
+		Position = UDim2.fromOffset(0, 28),
 		ZIndex = 2,
 	})
 	local button = Kit.button(footer, {
@@ -292,8 +330,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Font = F.Display,
 		TextSize = 24,
 		Color = C.Gold,
-		Size = UDim2.fromOffset(216, 50),
-		Position = UDim2.new(1, -2, 0.5, -2),
+		Size = UDim2.fromOffset(BUTTON_W, 48),
+		Position = UDim2.new(1, -12, 0.5, -2),
 		AnchorPoint = Vector2.new(1, 0.5),
 		ZIndex = 2,
 	}, function()
@@ -302,10 +340,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	button:SetAttribute("FocusFirst", true)
 
 	-- State ---------------------------------------------------------------------------------
-	local big = true -- one row of tall cards
 	local canClaim = false
 	local claimSentAt = 0
-	local tomorrowCard = 0
 	local todayClaimed = false
 
 	local function dailyOf(data: { [string]: any }?): { [string]: any }?
@@ -335,26 +371,34 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		card.tick.Visible = claimed
 		card.header.Text = if state == "today" then "TODAY" elseif state == "tomorrow" then "TOMORROW" else "DAY " .. day
 		card.header.TextColor3 = if state == "today" then C.Gold else C.Text
-		card.header.TextTransparency = if claimed then 0.4 else 0
-		card.amount.TextTransparency = if claimed then 0.4 else 0
-		if card.extra then
-			card.extra.TextTransparency = if claimed then 0.4 else 0
+		local fade = if claimed then G.Dimmed else 0
+		card.header.TextTransparency = fade
+		card.amount.TextTransparency = fade
+		if card.chip then
+			card.chip.TextTransparency = fade
+			card.chip.BackgroundTransparency = fade
+			local edge = card.chip:FindFirstChild("Edge")
+			if edge and edge:IsA("UIStroke") then
+				edge.Transparency = fade
+			end
 		end
+		-- Today: a gold card in a gold outline. Claimed: dimmed, in a faint mint edge under
+		-- its tick. Ahead (locked): the plain dark card, as solid as any other.
 		if state == "today" then
-			paint(card.frame, C.SurfaceHiTop, C.Gold, 3)
+			paint(card.frame, C.Gold, nil, C.Gold, 2.5)
 		elseif claimed then
-			paint(card.frame, C.Surface:Lerp(C.Well, 0.5))
+			paint(card.frame, nil, G.Dimmed, C.Good, 1, G.Dimmed)
 		else
-			paint(card.frame, C.SurfaceHi)
+			paint(card.frame)
 		end
 		Kit.setGlow(card.frame, state == "today", C.Gold)
 	end
 
-	-- The countdown texts (tomorrow's card and the footer), once a second while open.
+	-- The footer's countdown to the next reward, once a second while open.
 	local clockText = ""
 	local function updateClock()
 		local daily = dailyOf(State.data)
-		if not daily then
+		if not daily or not todayClaimed then
 			return
 		end
 		local text = Format.time(secondsLeft(daily))
@@ -362,13 +406,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			return
 		end
 		clockText = text
-		local card = cards[tomorrowCard]
-		if card and todayClaimed then
-			card.status.Text = if big then "COME BACK TOMORROW\n" .. text else text
-		end
-		if todayClaimed then
-			detail.Text = "Next reward in " .. text
-		end
+		detail.Text = "Next reward in " .. text
 	end
 
 	local function render()
@@ -382,7 +420,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		local streak = math.max(0, math.floor(tonumber(daily.streak) or 0))
 		canClaim = daily.claimable == true
 		todayClaimed = not canClaim
-		tomorrowCard = if day < DailyReward.DAYS then day + 1 else 0
+		local tomorrowCard = if day < DailyReward.DAYS then day + 1 else 0
 		local progression = Economy.progression(tonumber(data.highestTier) or 1, tonumber(data.processLevel) or 0)
 		local income = tonumber(data.income) or 0
 		-- A player's first day pays today's card up to a cap (Server.Daily does the same).
@@ -390,7 +428,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			then DailyReward.firstDayCap(day, tonumber(data.buyTier) or 1, tonumber(data.boughtAtTier) or 0)
 			else nil
 		for i, card in cards do
-			card.amount.Text = "+" .. State.money(DailyReward.cash(i, income, progression, if i == day then cap else nil))
+			card.amount.Text = State.money(DailyReward.cash(i, income, progression, if i == day then cap else nil))
 			local state = if i <= claimed
 				then "claimed"
 				elseif i == day and canClaim then "today"
@@ -399,8 +437,6 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			if state ~= card.state then
 				dress(card, i, state)
 			end
-			card.status.TextColor3 = if state == "today" then C.Gold elseif state == "claimed" then C.Good else C.TextDim
-			card.status.Text = if state == "today" then "CLAIM!" elseif state == "claimed" then "CLAIMED" else ""
 		end
 		streakTitle.Text = if streak >= 2
 			then string.format("%d DAY STREAK", streak)
@@ -420,40 +456,88 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		updateClock()
 	end
 
-	-- Layout: one row of seven, or 4 + 3 with Day 7 double width -----------------------------
-	local function layout(size: Vector2)
+	-- Layout: one row of seven, or 4 + 3 with Day 7 double width (a narrow window, and
+	-- always a phone: touch on a Compact screen, whose window is short and scaled up) -------
+	local function layout()
+		local size = window.size()
 		-- Window chrome (24 wide, 84 tall) and the content well's padding (10 a side).
 		local width, height = size.X - 44, size.Y - 104
-		big = width >= ONE_ROW_MIN
+		local phone = Kit.touch and screen:GetAttribute("Compact") == true
+		local big = width >= ONE_ROW_MIN and not phone
 		hero.Visible = big
-		local top = if big then HERO_H + GAP else 0
-		local gridH = height - top - FOOTER_H - GAP
+		local between = if big then SECTION else GAP
+		local top = if big then HERO_H + between else 0
+		local footerH = if big then FOOTER_H else FOOTER_COMPACT
+		footer.Size = UDim2.new(1, 0, 0, footerH)
+		local gridH = height - top - footerH - between
 		grid.Position = UDim2.fromOffset(0, top)
 		grid.Size = UDim2.new(1, 0, 0, gridH)
 		local columns = if big then DailyReward.DAYS else 4
 		local rows = if big then 1 else 2
 		local cellW = (width - (columns - 1) * GAP) / columns
 		local cellH = (gridH - (rows - 1) * GAP) / rows
-		local artSize = if big then 64 else 40
+		-- Low, wide cards: the art on the left, the amount and the chip stacked beside it.
+		local side = not big and cellH < SIDE_MAX_H and cellW >= SIDE_MIN_W
+		local headY = if big then CARD_TOP else 6
+		local bodyTop = headY + HEAD_H + (if big then HEAD_GAP else 4)
+		local bodyH = cellH - bodyTop - (if big then CARD_BOTTOM else 8)
+		local stackGap = if big then STACK_GAP else 4
+		local amountH = if big then AMOUNT_H else 22
+		local chipH = if big then CHIP_H else 20
+		-- Every card wears the same art: what a crate day's stack leaves it.
+		local artSize = if side
+			then math.floor(math.min(SIDE_ART, bodyH))
+			else math.floor(math.clamp(bodyH - amountH - chipH - stackGap * 2, 28, math.min(ART_MAX, cellW - 16)))
 		for day, card in cards do
 			local column = (day - 1) % columns
 			local row = (day - 1) // columns
 			local wide = not big and day == DailyReward.DAYS
+			local cardW = math.floor(if wide then cellW * 2 + GAP else cellW)
 			card.frame.Position = UDim2.fromOffset(math.floor(column * (cellW + GAP)), math.floor(row * (cellH + GAP)))
-			card.frame.Size = UDim2.fromOffset(math.floor(if wide then cellW * 2 + GAP else cellW), math.floor(cellH))
+			card.frame.Size = UDim2.fromOffset(cardW, math.floor(cellH))
+			card.header.Position = UDim2.fromOffset(0, headY)
 			card.art.Size = UDim2.fromOffset(artSize, artSize)
-			card.art.Position = UDim2.new(0.5, 0, 0, 30)
-			card.amount.Position = UDim2.new(0.5, 0, 0, 34 + artSize)
-			if card.extra then
-				card.extra.Position = UDim2.new(0.5, 0, 0, 55 + artSize)
+			local chip = card.chip
+			local textW = if side then SIDE_TEXT else cardW - 8
+			if chip then
+				-- The whole name when the card has room for it, else the rarity alone.
+				local full = chipWidth(card.chipFull) <= textW
+				chip.Text = if full then card.chipFull else card.chipShort
+				chip.Size = UDim2.fromOffset(math.min(chipWidth(chip.Text), textW), chipH)
 			end
-			card.status.Size = UDim2.new(1, -10, 0, if big then 44 else 14)
+			if side then
+				-- Art and text column, centred together in the card under its header.
+				local left = (cardW - (artSize + GAP + SIDE_TEXT)) // 2
+				local textX = left + artSize + GAP + SIDE_TEXT // 2
+				local stack = amountH + (if chip then stackGap + chipH else 0)
+				local y = bodyTop + math.floor((bodyH - stack) / 2)
+				card.art.Position = UDim2.fromOffset(left + artSize // 2, bodyTop + math.floor((bodyH - artSize) / 2))
+				card.amount.Size = UDim2.fromOffset(SIDE_TEXT, amountH)
+				card.amount.Position = UDim2.fromOffset(textX, y)
+				if chip then
+					chip.Position = UDim2.fromOffset(textX, y + amountH + stackGap)
+				end
+			else
+				-- Art, amount and chip as one stack, centred in the card under its header.
+				local stack = artSize + stackGap + amountH + (if chip then stackGap + chipH else 0)
+				local y = bodyTop + math.max(math.floor((bodyH - stack) / 2), 0)
+				card.art.Position = UDim2.new(0.5, 0, 0, y)
+				card.amount.Size = UDim2.new(1, -6, 0, amountH)
+				card.amount.Position = UDim2.new(0.5, 0, 0, y + artSize + stackGap)
+				if chip then
+					chip.Position = UDim2.new(0.5, 0, 0, y + artSize + stackGap + amountH + stackGap)
+				end
+			end
 		end
 		clockText = ""
 		render()
 	end
-	layout(window.size())
+	layout()
 	window.onResize.Event:Connect(layout)
+	screen:GetAttributeChangedSignal("Compact"):Connect(layout)
+	Kit.onInput(function()
+		layout()
+	end)
 	State.changed.Event:Connect(render)
 
 	if not PREVIEW then

@@ -5,7 +5,7 @@
 
 	  top bar right  Settings gear alone (Roblox's player list sits under it)
 	  top centre     Chad icon + unit count "37/100" (sunny + "RACK FULL" when full)
-	                 under it a low dark strip "Deposit bonus: x1.3 · 12s"
+	                 under it a low glass strip "Deposit bonus: x1.3 · 12s"
 	                 ("AURA SURGE x2 · 1:23" in orange during a surge); the
 	                 tutorial quest pill and the parkour run pill dock under that,
 	                 and once the tutorial is done the "Next:" goal strip takes
@@ -21,7 +21,10 @@
 	  bottom right   FREE gift with its countdown, version in the corner
 
 	Numbers roll, things pop and the HUD staggers in when it is built. While a
-	window is open (attribute "WindowOpen") the groups slide off their edges.
+	window, modal or reveal is open (Kit.onWindowOpen, the one count behind the
+	"WindowOpen" attribute) every group fades out in 0.15 s, parks off its edge
+	so it takes no input or gamepad selection, and fades back on close. Toasts
+	and the tutorial pill are not the HUD's: they stay.
 	Short screens (attribute "Compact") get smaller grid icons, drop the status
 	captions and the promo, and hide Roblox's player list.
 
@@ -51,13 +54,14 @@ local State = require(script.Parent.Parent.State)
 
 local Theme = Kit.Theme
 local C = Kit.C
+local G = Theme.Glass
 local F = Kit.F
 local W = Theme.Words
 
 local Hud = {}
 
 export type Handlers = {
-	openWindow: (string, { focus: string? }?) -> (),
+	openWindow: (string, { focus: string?, origin: GuiObject? }?) -> (),
 	guide: ((string?) -> ())?,
 	toast: ((string, string?) -> ())?,
 }
@@ -90,16 +94,26 @@ Hud.tank = nil :: Frame?
 Hud.walletIdle = function(): boolean
 	return true
 end
+-- Where a discovery flies to (Popups): the centre of the Index button at rest, in screen
+-- pixels. nil while it is no landing spot (a window keeps the HUD away, the menu is hidden
+-- or off screen).
+Hud.indexPoint = function(): Vector2?
+	return nil
+end
+-- A discovery landed on the Index button: it bounces, flashes and counts "+1".
+Hud.punchIndex = function() end
 
 -- Layout (design px). The top centre group sits just under the top bar.
 local EDGE_X = 14
 local UNITS_Y = 4 -- unit counter row: y 4..48
-local STRIP_Y = 54 -- deposit strip: y 54..84
-local STRIP_H = 30
+local STRIP_Y = 54 -- deposit strip: y 54..80 (slim and quiet: notifications outrank it)
+local STRIP_H = 26
 local RUN_Y = 92 -- tutorial / run pill slot (Tutorial.luau TOP_Y matches)
-local GOAL_H = 46 -- "Next:" goal strip (the same slot once the tutorial is done)
+local GOAL_H = 42 -- "Next:" goal strip (the same slot once the tutorial is done)
+local HIDE_TIME = 0.15 -- the HUD's fade while a window is open
 local GOAL_MAX_W = 380
 local GOAL_TEXT_X = 50
+local GOAL_BAR_X = 12 -- the progress bar's inset, clear of the strip's round corners
 local GRID_Y = 104 -- left icon grid, first row
 local GRID_ICON = 64
 local GRID_ICON_COMPACT = 48
@@ -239,8 +253,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- Top bar, far right: the Settings gear alone ----------------------------------------
 	-- It sits on the top bar's line (above our safe area) so Roblox's player list,
 	-- which starts under the top bar, never covers it.
-	local gear = bareButton(screen, "Settings", GEAR, function()
-		handlers.openWindow("Settings")
+	local gear: TextButton
+	gear = bareButton(screen, "Settings", GEAR, function()
+		handlers.openWindow("Settings", { origin = gear })
 	end)
 	gear.AnchorPoint = Vector2.new(1, 0)
 	gear.Position = UDim2.new(1, -10, 0, -GEAR - 7)
@@ -305,11 +320,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		action:FireServer({ action = "Home" })
 	end)
 	gridButton("Ranking", function()
-		handlers.openWindow("Ranking")
+		handlers.openWindow("Ranking", { origin = Hud.buttons.Ranking })
 	end)
 	gridButton("Modes", function()
 		Kit.setGlow(Hud.buttons.Modes, false)
-		handlers.openWindow("Modes")
+		handlers.openWindow("Modes", { origin = Hud.buttons.Modes })
 	end)
 	local function openIndex()
 		Kit.setGlow(Hud.buttons.Index, false)
@@ -318,11 +333,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			seenDiscoveries = discoveredCount(data)
 			refreshIndexBadge()
 		end
-		handlers.openWindow("Index")
+		handlers.openWindow("Index", { origin = Hud.buttons.Index })
 	end
 	gridButton("Index", openIndex)
 	gridButton("Shop", function()
-		handlers.openWindow("Shop")
+		handlers.openWindow("Shop", { origin = Hud.buttons.Shop })
 	end)
 	gridButton("Invite", function()
 		pcall(function()
@@ -330,7 +345,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end)
 	end)
 	local dailyButton = gridButton("Daily", function()
-		handlers.openWindow("Daily")
+		handlers.openWindow("Daily", { origin = Hud.buttons.Daily })
 	end)
 	local dailyCaption = dailyButton:FindFirstChild("Caption") :: TextLabel
 	-- Right after the tutorial finishes (watched live this session), one toast and a
@@ -357,7 +372,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local PROMO_W, PROMO_H = 3 * GRID_ICON + 2 * GRID_GAP_X, 44
 	local promo = group("Promo", { Size = UDim2.fromOffset(PROMO_W, PROMO_H + 40), Visible = false })
 	local promoMode = "DoubleMoney"
-	local promoButton = Kit.button(promo, {
+	local promoButton: TextButton
+	promoButton = Kit.button(promo, {
 		Name = "Button",
 		Text = "2X CASH",
 		Font = F.Display,
@@ -369,7 +385,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Radius = 12,
 		Depth = 4,
 	}, function()
-		handlers.openWindow("Shop", { focus = PROMOS[promoMode].focus })
+		handlers.openWindow("Shop", { focus = PROMOS[promoMode].focus, origin = promoButton })
 	end)
 	local promoLabel = Kit.buttonLabel(promoButton)
 	if promoLabel then
@@ -527,16 +543,16 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- slot; ScreenGui attribute "RunActive" tells Tutorial to step aside). Timer from the
 	-- server clock, checkpoint n/N, and an "x" that asks "QUIT?" before firing ModeQuit.
 	-- A gold "L3" chip on the left names the Parkour level (the Star shows without one).
+	-- Glass like the other top-centre notifications (Kit.hudGlass), with an outlined clock.
 	local RUN_W, RUN_H = 236, 36
 	local RUN_ANCHOR = Vector2.new(0.5, 0)
 	local runRest = UDim2.new(0.5, 0, 0, RUN_Y)
 	local runAway = UDim2.new(0.5, 0, 0, -RUN_H - 20)
-	local runPill = Kit.panel(screen, {
+	local runPill = Kit.hudGlass(screen, {
 		Name = "RunPill",
 		Size = UDim2.fromOffset(RUN_W, RUN_H),
 		Position = runAway,
 		AnchorPoint = Vector2.new(0.5, 0),
-		Radius = RUN_H // 2,
 		Visible = false,
 	})
 	local runStar =
@@ -558,10 +574,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		ZIndex = 3,
 	})
 	Kit.round(runLevel)
-	local runClock = Kit.number(runPill, {
+	local runClock = Kit.hudText(runPill, {
 		Name = "Clock",
 		Text = "0:00.0",
+		Font = F.Number,
 		TextSize = 20,
+		StrokeThickness = 2,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.fromOffset(82, RUN_H),
 		Position = UDim2.fromOffset(42, 0),
@@ -755,17 +773,15 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 
 	-- The strip under it: "Deposit bonus: x1.3 · 12s" ------------------------------------
-	local strip = Kit.new("Frame", {
+	-- A quiet glass pill (Kit.hudGlass Quiet: permanent, so it sits back behind toasts and
+	-- the quest pill); an Aura Surge turns its tint amber and brings it forward.
+	local strip = Kit.hudGlass(screen, {
 		Name = "DepositStrip",
-		BackgroundColor3 = C.Ink,
-		BackgroundTransparency = 0.45,
-		BorderSizePixel = 0,
-		Size = UDim2.fromOffset(340, STRIP_H),
+		Quiet = true,
+		Size = UDim2.fromOffset(300, STRIP_H),
 		Position = UDim2.new(0.5, 0, 0, STRIP_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
-		Parent = screen,
 	})
-	Kit.corner(strip, 8)
 	local stripRow = Kit.new("Frame", {
 		Name = "Row",
 		BackgroundTransparency = 1,
@@ -792,11 +808,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			ZIndex = 3,
 		})
 	end
-	local stripLead = stripText("Lead", 1, 20)
+	local stripLead = stripText("Lead", 1, 16)
 	stripLead.Text = "Deposit bonus:"
-	local gaugeValue = stripText("Value", 2, 22)
-	local gaugeNext = stripText("Next", 3, 15)
-	gaugeNext.TextColor3 = Color3.fromRGB(225, 230, 250)
+	local gaugeValue = stripText("Value", 2, 18)
+	local gaugeNext = stripText("Next", 3, 14)
+	gaugeNext.TextColor3 = C.TextDim
 	local surgeActiveNow = false
 	-- Big-roll cheer: pops out to the right of the strip for a moment.
 	local niceLabel = Kit.hudText(strip, {
@@ -816,34 +832,30 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		surgeActiveNow = active
 		stripLead.Text = if active then "AURA SURGE" else "Deposit bonus:"
 		Kit.tween(strip, 0.3, {
-			BackgroundColor3 = if active then C.Amber else C.Ink,
-			BackgroundTransparency = if active then 0.15 else 0.45,
+			BackgroundColor3 = if active then C.Amber else G.TintTop,
+			BackgroundTransparency = if active then G.Pill else G.Quiet,
 		})
 	end
 
 	-- Next goal: "Next: Protein Bro 1/2" over "merge 2x Gym Rookie" ------------------------
-	-- One dark strip like the deposit strip, in the tutorial pill's slot once the tutorial
+	-- One glass strip like the deposit strip, in the tutorial pill's slot once the tutorial
 	-- is done (above the dumbbell on compact screens): the target's thumbnail (a silhouette
 	-- until it is discovered), its name and count, what to do under them, and a thin bar
 	-- along the bottom. The target comes from Shared.NextGoal; the strip opens the Index.
-	local goal = Kit.new("TextButton", {
+	local goal = Kit.hudGlass(screen, {
 		Name = "NextGoal",
-		Text = "",
-		AutoButtonColor = false,
-		BackgroundColor3 = C.Ink,
-		BackgroundTransparency = 0.45,
-		BorderSizePixel = 0,
+		Button = true,
+		Quiet = true,
 		Size = UDim2.fromOffset(280, GOAL_H),
 		Position = UDim2.new(0.5, 0, 0, RUN_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
+		Radius = Kit.RADIUS.M,
 		Visible = false,
-		Parent = screen,
-	})
-	Kit.corner(goal, 8)
+	}) :: TextButton
 	Kit.selectable(goal)
 	local goalThumb = group("Thumb", {
-		Size = UDim2.fromOffset(42, 42),
-		Position = UDim2.new(0, 4, 0.5, -2),
+		Size = UDim2.fromOffset(36, 36),
+		Position = UDim2.new(0, 7, 0.5, -2),
 		AnchorPoint = Vector2.new(0, 0.5),
 		ZIndex = 2,
 		Parent = goal,
@@ -862,19 +874,19 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			ZIndex = 3,
 		})
 	end
-	local goalLead = goalText("Lead", 17, C.Gold)
+	local goalLead = goalText("Lead", 16, C.Gold)
 	goalLead.Text = "Next:"
-	local goalTitle = goalText("Title", 17, Color3.new(1, 1, 1))
-	local goalCount = goalText("Count", 15, Color3.new(1, 1, 1), F.Number)
-	local goalHint = goalText("Hint", 14, Color3.fromRGB(225, 230, 250), F.UI)
-	goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, 23)
+	local goalTitle = goalText("Title", 16, C.Text)
+	local goalCount = goalText("Count", 14, C.Text, F.Number)
+	local goalHint = goalText("Hint", 14, C.TextDim, F.UI)
+	goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, 20)
 	goalHint.Size = UDim2.fromOffset(10, 16)
 	local goalBar = Kit.new("Frame", {
 		Name = "Bar",
 		BackgroundColor3 = C.Gold,
 		BorderSizePixel = 0,
 		Size = UDim2.new(0, 0, 0, 3),
-		Position = UDim2.new(0, 8, 1, -5),
+		Position = UDim2.new(0, GOAL_BAR_X, 1, -5),
 		ZIndex = 2,
 		Parent = goal,
 	})
@@ -900,10 +912,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end)
 	end
 	goal.MouseEnter:Connect(function()
-		Kit.tween(goal, 0.12, { BackgroundTransparency = 0.25 })
+		Kit.tween(goal, 0.12, { BackgroundTransparency = G.Quiet - 0.2 })
 	end)
 	goal.MouseLeave:Connect(function()
-		Kit.tween(goal, 0.12, { BackgroundTransparency = 0.45 })
+		Kit.tween(goal, 0.12, { BackgroundTransparency = G.Quiet })
 	end)
 	local function tierName(tier: number): string
 		local entry = Theme.Tiers[tier]
@@ -927,7 +939,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local title, hint, count = NextGoal.text(picked, tierName, State.money)
 		local key = title .. "|" .. hint .. "|" .. count
 		if key == goalKey then
-			Kit.tween(goalBar, 0.3, { Size = UDim2.new(0, math.floor((goalWidth - 16) * picked.progress), 0, 3) })
+			Kit.tween(goalBar, 0.3, { Size = UDim2.new(0, math.floor((goalWidth - GOAL_BAR_X * 2) * picked.progress), 0, 3) })
 			return
 		end
 		goalKey = key
@@ -941,19 +953,19 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local x = GOAL_TEXT_X
 		local function put(label: TextLabel, text: string, width: number, gap: number)
 			label.Text = text
-			label.Size = UDim2.fromOffset(width + 2, 22)
-			label.Position = UDim2.fromOffset(x, 3)
+			label.Size = UDim2.fromOffset(width + 2, 20)
+			label.Position = UDim2.fromOffset(x, 2)
 			x += width + gap
 		end
 		put(goalLead, goalLead.Text, leadW, 6)
 		put(goalTitle, title, titleW, 8)
 		put(goalCount, count, countW, 0)
-		goalCount.TextColor3 = if picked.ready then C.MoneyText else Color3.new(1, 1, 1)
+		goalCount.TextColor3 = if picked.ready then C.MoneyText else C.Text
 		goalHint.Text = string.upper(string.sub(hint, 1, 1)) .. string.sub(hint, 2)
 		goalHint.Size = UDim2.fromOffset(hintW + 2, 16)
 		goalWidth = math.max(x, GOAL_TEXT_X + hintW) + 12
 		goal.Size = UDim2.fromOffset(goalWidth, GOAL_H)
-		goalBar.Size = UDim2.new(0, math.floor((goalWidth - 16) * picked.progress), 0, 3)
+		goalBar.Size = UDim2.new(0, math.floor((goalWidth - GOAL_BAR_X * 2) * picked.progress), 0, 3)
 		-- A new target (not just a new count) gets a fresh thumbnail and a pop.
 		local thumbKey = picked.kind .. picked.tier
 		if thumbKey ~= goalThumbKey then
@@ -1296,13 +1308,14 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		return if compact then UDim2.new(0.5, L.tankX, 1, 200) else UDim2.new(0.5, 0, 0, -140)
 	end)
 	local targets: { [GuiObject]: UDim2 } = {}
+	-- Groups that have faded out for an open window sit at their away spot.
+	local parked: { [GuiObject]: boolean } = {}
 	local function place(animate: boolean)
-		local away = screen:GetAttribute("WindowOpen") == true
 		-- The crate panel (Popups, attribute "CratePanelOpen") covers the right edge
 		-- down to the FREE gift, so the gift steps aside while it is up.
 		local crate = screen:GetAttribute("CratePanelOpen") == true
 		for _, s in slots do
-			local pos = if away or (crate and s.gui == corner) then s.away() else s.rest()
+			local pos = if parked[s.gui] or (crate and s.gui == corner) then s.away() else s.rest()
 			if targets[s.gui] ~= pos then
 				targets[s.gui] = pos
 				if animate then
@@ -1371,8 +1384,39 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			Kit.selectable(button, not blocked)
 		end
 	end
-	screen:GetAttributeChangedSignal("WindowOpen"):Connect(function()
-		place(true)
+	-- A window, modal or reveal is up: the HUD fades out where it stands, then parks off
+	-- screen (so nothing in it takes a tap) with its resting look back for whatever changes
+	-- meanwhile; closing puts it back and fades it in. The promo eases itself out and in
+	-- (updatePromo); toasts and the tutorial pill belong to their own modules and stay.
+	local faders: { GuiObject } = { grid, wallet, tank, corner, units, strip, goal, gear }
+	local hudHidden = false
+	local function setHudHidden(hidden: boolean)
+		if hidden == hudHidden then
+			return
+		end
+		hudHidden = hidden
+		if hidden then
+			for _, gui in faders do
+				Kit.fade(gui, false, HIDE_TIME, function()
+					if gui == gear then
+						gear.Visible = false
+					else
+						parked[gui] = true
+						place(false)
+					end
+				end)
+			end
+		else
+			table.clear(parked)
+			gear.Visible = true
+			place(false)
+			for _, gui in faders do
+				Kit.fade(gui, true, HIDE_TIME)
+			end
+		end
+	end
+	Kit.onWindowOpen(function(open: boolean)
+		setHudHidden(open)
 		updatePromo()
 		updateSelectable()
 	end)
@@ -1603,6 +1647,75 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	Hud.walletIdle = function(): boolean
 		return os.clock() >= moneyRollEnd
+	end
+
+	-- Discoveries land on the Index button -----------------------------------------------
+	Hud.indexPoint = function(): Vector2?
+		local button = Hud.buttons.Index
+		if screen:GetAttribute("WindowOpen") == true or not (screen.Enabled and grid.Visible and button.Visible) then
+			return nil
+		end
+		-- The rest position, not the current one: the menu may still be sliding back in.
+		local scale = if screenScale then screenScale.Scale else 1
+		local rest = Vector2.new(
+			L.edge + button.Position.X.Offset + button.Size.X.Offset / 2,
+			L.gridY + button.Position.Y.Offset + button.Size.Y.Offset / 2
+		)
+		local point = rest * scale
+		local size = screen.AbsoluteSize
+		if point.X < 0 or point.Y < 0 or point.X > size.X or point.Y > size.Y then
+			return nil
+		end
+		return screen.AbsolutePosition + point
+	end
+	Hud.punchIndex = function()
+		local button = Hud.buttons.Index
+		Kit.pop(button, 2.4)
+		sounds.play("Collect", 0.04, 1.25)
+		-- A white ring spreads from the icon.
+		local ring = Kit.new("Frame", {
+			Name = "Punch",
+			BackgroundColor3 = Color3.new(1, 1, 1),
+			BackgroundTransparency = 0.3,
+			Size = UDim2.fromScale(0.8, 0.8),
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 3,
+			Parent = button,
+		})
+		Kit.round(ring)
+		local edge = Kit.new("UIStroke", { Thickness = 4, Color = Color3.new(1, 1, 1), Transparency = 0.1, Parent = ring })
+		Kit.tween(ring, 0.4, { Size = UDim2.fromScale(2, 2), BackgroundTransparency = 1 }, Enum.EasingStyle.Quart)
+		Kit.tween(edge, 0.4, { Transparency = 1, Thickness = 1 }, Enum.EasingStyle.Quart)
+		-- "+1" rises off the button and fades.
+		local plus = Kit.hudText(button, {
+			Name = "Plus",
+			Text = "+1",
+			TextSize = 26,
+			TextColor3 = C.Gold,
+			Size = UDim2.new(1, 40, 0, 28),
+			Position = UDim2.new(0.5, 0, 0, 4),
+			AnchorPoint = Vector2.new(0.5, 1),
+			ZIndex = 6,
+		})
+		Kit.tween(plus, 0.7, { Position = UDim2.new(0.5, 0, 0, -26) }, Enum.EasingStyle.Quad)
+		local outline = plus:FindFirstChild("Outline")
+		task.delay(0.4, function()
+			Kit.tween(plus, 0.3, { TextTransparency = 1 })
+			if outline then
+				Kit.tween(outline, 0.3, { Transparency = 1 })
+			end
+		end)
+		task.delay(0.75, function()
+			ring:Destroy()
+			plus:Destroy()
+		end)
+		-- The badge (new since the Index was last opened) pops with it.
+		refreshIndexBadge()
+		local badge = button:FindFirstChild("Badge")
+		if badge and badge:IsA("GuiObject") and badge.Visible then
+			Kit.pop(badge, 1.4)
+		end
 	end
 
 	-- Deposit multiplier re-roll: the value flickers like a slot machine ------------------
