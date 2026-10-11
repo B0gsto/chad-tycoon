@@ -133,9 +133,11 @@ end
 
 -- Toasts ------------------------------------------------------------------------
 --[[
-	A short stack under the top bar, newest on top. Each toast is a glass pill
-	(Kit.hudGlass: the world shows through, no blur) with an icon chip in the
-	notification's colour and outlined HUD text. It drops in 12 px with a fade
+	A short stack under the HUD's top strips, newest on top. Each toast is a glass
+	card (Kit.hudGlass: the world shows through, no blur) a tier above those quiet
+	strips: denser, with an accent bar down its left edge and an icon chip in the
+	notification's colour (green success, gold info, orange warning, coral error,
+	a crate's rarity) and outlined HUD text a size up from the strips'. It drops in 12 px with a fade
 	and a slight scale, the others glide down to make room, and it fades up and
 	away after 3 s. A toast that names a crate ("A Rare Crate is on its way!")
 	carries that rarity's colour and a little crate instead of the tone's chip.
@@ -152,8 +154,9 @@ local TOAST_H = 44
 local TOAST_STEP = 52 -- toast + shadow + gap
 local TOAST_SLIDE = 12
 local TOAST_IN = 0.18
-local TOAST_TEXT = 17
-local TOAST_TEXT_X = 48
+local TOAST_TEXT = 18
+local TOAST_TEXT_X = 60
+local TOAST_ICON_X = 19 -- past the accent bar
 local MAX_TOASTS = 4
 
 local toasts: { Frame } = {}
@@ -221,13 +224,13 @@ function Popups.toast(text: string, tone: string?)
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = toastHolder,
 	})
-	local card = Kit.hudGlass(toast, { Name = "Card", Size = UDim2.new(1, 0, 0, TOAST_H) })
+	local card = Kit.hudGlass(toast, { Name = "Card", Size = UDim2.new(1, 0, 0, TOAST_H), Radius = Kit.RADIUS.M, Accent = color })
 	if rarity then
 		-- The crate itself, in its rarity's colour.
 		crateIcon(card, color, 32, {
 			Name = "Icon",
 			Rarity = rarity,
-			Position = UDim2.new(0, 22, 0.5, 0),
+			Position = UDim2.new(0, TOAST_ICON_X + 15, 0.5, 0),
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			ZIndex = 2,
 		})
@@ -236,7 +239,7 @@ function Popups.toast(text: string, tone: string?)
 			Name = "Icon",
 			BackgroundColor3 = WHITE,
 			Size = UDim2.fromOffset(30, 30),
-			Position = UDim2.new(0, 7, 0.5, 0),
+			Position = UDim2.new(0, TOAST_ICON_X, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
 			ZIndex = 2,
 			Parent = card,
@@ -1029,6 +1032,8 @@ local function statPair(parent: Instance, icon: string, iconColor: Color3, final
 		Position = UDim2.fromOffset(36, 1),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = color,
+		StrokeColor = Theme.Glass.TextInk,
+		StrokeThickness = 3,
 		ZIndex = 2,
 	})
 end
@@ -1184,7 +1189,8 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	local deep = if screen:GetAttribute("WindowOpen") == true then 0.3 else 0
 	local openKey = "Reward:" .. tostring(os.clock())
 	Kit.markOpen(screen, openKey, true)
-	Kit.setBlur(true)
+	-- The lighter frost: the Chad's plot stays readable behind the reveal.
+	Kit.setBlur(true, true)
 
 	local root = Kit.new("Frame", {
 		Name = "Reward",
@@ -1397,6 +1403,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 			Text = if isNew then "NEW " .. string.upper(W.Unit) .. "!" else "YOU GOT",
 			TextSize = 30,
 			TextColor3 = if isNew then C.Gold else C.Text,
+			StrokeColor = Theme.Glass.TextInk,
 			Size = UDim2.new(1, 0, 0, 36),
 			ZIndex = 5,
 		}))
@@ -1405,6 +1412,12 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		if not alive() then
 			return
 		end
+		-- A soft dark plate behind the name and the stats (no box, no border: a tinted
+		-- soft dot stretched wide) so they hold over a busy plot.
+		local plate = softDot(stage, "Plate", Theme.Glass.Tint, UDim2.fromOffset(STAGE_W, 250), 0.22, 2)
+		plate.Position = UDim2.new(0.5, 0, 0, HERO_Y + HERO / 2 + 64)
+		table.insert(lines, plate)
+		Kit.appear(plate, { from = 0.9, time = 0.3 })
 		-- Big name in the rarity colour, scaled down to fit on one line.
 		arrive(Kit.hudText(stage, {
 			Name = "UnitName",
@@ -1413,6 +1426,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 			TextScaled = true,
 			MaxTextSize = 48,
 			TextColor3 = Kit.lighten(color, 0.15),
+			StrokeColor = Theme.Glass.TextInk,
 			Size = UDim2.new(1, -40, 0, 54),
 			Position = UDim2.fromOffset(20, HERO_Y + HERO / 2),
 			StrokeThickness = 3,
@@ -1427,11 +1441,12 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		arrive(Kit.hudText(stage, {
 			Name = "Tier",
 			Text = string.format("TIER %d  •  %s", tier, string.upper(band)),
-			TextSize = 20,
+			TextSize = 22,
 			TextColor3 = Kit.lighten(color, 0.55),
+			StrokeColor = Theme.Glass.TextInk,
 			Size = UDim2.new(1, 0, 0, 26),
 			Position = UDim2.fromOffset(0, HERO_Y + HERO / 2 + 56),
-			StrokeThickness = 2,
+			StrokeThickness = 2.5,
 			ZIndex = 5,
 		}))
 	end)
@@ -1484,6 +1499,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 			return
 		end
 		closed = true
+		openModals[leave] = nil
 		if spin then
 			spin:Disconnect()
 		end
@@ -1492,7 +1508,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		end
 		release(root, previous)
 		skip:Destroy()
-		Kit.setBlur(false)
+		Kit.setBlur(false, true)
 		Kit.markOpen(screen, openKey, false)
 		Kit.tween(veil, 0.35, { BackgroundTransparency = 1 })
 		for _, gui in lines do
@@ -1570,6 +1586,8 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		end
 	end
 	skip.Activated:Connect(dismiss)
+	-- Popups.closeModals (the capture hook, the preview) ends a reveal too.
+	openModals[leave] = true
 	back = pushBack(30, dismiss)
 	if not PREVIEW and (Kit.gamepad or Kit.tenFoot) then
 		-- Gamepad: the catcher holds the selection (with no ring), so A continues too.
@@ -2843,12 +2861,11 @@ local function buildChestPanel()
 		Parent = screen,
 	})
 	local compactScale = Kit.new("UIScale", { Name = "Compact", Parent = holder })
-	-- A glass pane over the unblurred world, denser than a window's (Glass.Side) so the
-	-- plain body text on it stays readable; the rarity band and the buttons stay solid.
+	-- The same glass pane as every window and modal (one body token), over the unblurred
+	-- world; the rarity band and the buttons stay solid.
 	local panel = Kit.panel(holder, {
 		Name = "Card",
 		Glass = "body",
-		Transparency = Theme.Glass.Side,
 		Size = UDim2.fromScale(1, 1),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),

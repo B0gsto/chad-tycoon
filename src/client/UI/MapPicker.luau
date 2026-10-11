@@ -66,8 +66,9 @@ export type Picker = {
 local MAP_COUNT = 10
 local SIDE_W = 300
 -- Card height: fills the grid column so all ten cards show without scrolling, within these
--- bounds (CARD_MIN is also the height in the stacked phone layout).
-local CARD_MIN = 60
+-- bounds (CARD_MIN is also the height in the stacked layout and on a phone's short window,
+-- where the grid scrolls: the band plus a body that holds the name and pip rows unclipped).
+local CARD_MIN = 64
 local CARD_MAX = 84
 local CARD_GAP = 8
 local BAND_H = 28
@@ -234,6 +235,7 @@ type Card = {
 	band: Frame,
 	icon: TextLabel,
 	levelLabel: TextLabel,
+	levelInk: UIStroke,
 	name: TextLabel,
 	stats: TextLabel,
 	check: Frame,
@@ -252,7 +254,9 @@ end
 
 function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 	local accent = Theme.World.Mint
-	local window = Kit.window(screen, "Maps", "Pick a Map", "🗺️", accent, Vector2.new(880, 560), Vector2.new(420, 480))
+	-- Minimum 400 tall: a phone gets that window at x1.25 (side by side, the grid scrolling
+	-- its last row); the side panel's fixed rows and a slim preview still fit.
+	local window = Kit.window(screen, "Maps", "Pick a Map", "🗺️", accent, Vector2.new(880, 560), Vector2.new(420, 400))
 	deps.register("Maps", window)
 	local action = Net.event("Action")
 
@@ -384,7 +388,6 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Position = UDim2.new(0, 12, 1, -STATS_BOTTOM),
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.Text,
-		StrokeThickness = 0,
 	})
 	local blurb = Kit.text(side, {
 		Name = "Blurb",
@@ -412,7 +415,6 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Position = UDim2.new(0, 12, 1, -REWARD_BOTTOM),
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.MoneyText,
-		StrokeThickness = 0,
 	})
 	local play = Kit.button(side, {
 		Name = "Play",
@@ -585,12 +587,17 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			StrokeThickness = 0,
 			ZIndex = 3,
 		})
+		-- White on a locked (grey) band wears the dark outline of text on glass; ink text on
+		-- an accent band has none.
+		local levelInk = Kit.textStroke(levelLabel, Theme.Glass.TextStroke, Theme.Glass.TextStrokeFade)
+		levelInk.Color = Theme.Glass.TextInk
+		levelInk.Enabled = false
 		-- Best time on the right of the band, then the cleared check or the lock.
 		local stats = Kit.text(band, {
 			Name = "Stats",
 			Text = "",
 			Font = F.UI,
-			TextSize = T.Tiny,
+			TextSize = T.Small,
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			TextXAlignment = Enum.TextXAlignment.Right,
@@ -633,7 +640,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			ZIndex = 2,
 			Parent = frame,
 		}) :: CanvasGroup
-		Kit.list(body, 4).VerticalAlignment = Enum.VerticalAlignment.Center
+		Kit.list(body, 2).VerticalAlignment = Enum.VerticalAlignment.Center
 		Kit.padding(body, 0, 10)
 		local name = Kit.title(body, {
 			Name = "MapName",
@@ -684,6 +691,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			band = band,
 			icon = icon,
 			levelLabel = levelLabel,
+			levelInk = levelInk,
 			name = name,
 			stats = stats,
 			check = check,
@@ -728,6 +736,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		local ink = if locked then C.Text else Kit.inkOn(color)
 		card.levelLabel.TextColor3 = ink
 		card.levelLabel.TextTransparency = 0
+		card.levelInk.Enabled = locked
 		card.stats.TextColor3 = ink
 		card.icon.Text = iconOf(lv, i)
 		card.icon.TextTransparency = 0
@@ -741,12 +750,12 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		else
 			card.stats.Text = if best > 0 then "Best " .. deps.runTime(best) else deps.plural(clears, "clear")
 		end
-		-- Selected: a gold rim, brighter glass and a gold chevron.
+		-- Selected: a gold rim, the raised card fill and a gold chevron.
 		local isSelected = i == selected
 		local stroke = card.stroke
 		local pane = stroke and stroke.Parent
 		if stroke and pane and pane:IsA("GuiObject") then
-			Kit.paintGlass(pane, nil, if isSelected then Theme.Glass.SurfaceHi - 0.08 else nil, if isSelected then C.Gold else nil)
+			Kit.paintGlass(pane, nil, if isSelected then Theme.Glass.SurfaceHi else nil, if isSelected then C.Gold else nil)
 			stroke.Thickness = if isSelected then 3 else 1
 		end
 		card.chevron.Visible = isSelected

@@ -1120,6 +1120,9 @@ local function main()
 	end
 
 	local function clearTransient()
+		-- Modals and the reveal close through their own paths, so the blur, the dim and the
+		-- hidden HUD are released as they are in the game.
+		pcall(Popups.closeModals)
 		local holder = screen:FindFirstChild("Toasts")
 		if holder then
 			for _, child in holder:GetChildren() do
@@ -1224,15 +1227,8 @@ local function main()
 	clearTransient()
 	settle(stateNormal)
 	Popups.reward({ tier = 15, new = true })
-	-- Mid-hold the HUD is off its edges (attribute signals only fire by hand here); it
-	-- is put back for the shots that follow.
-	local windowOpen = signalFor(screen, "attr:WindowOpen")
-	local wasOpen = screen:GetAttribute("WindowOpen")
-	windowOpen:Fire()
+	-- Mid-hold the HUD is hidden (Kit.onWindowOpen); clearTransient closes the reveal.
 	shot("reward")
-	screen:SetAttribute("WindowOpen", false)
-	windowOpen:Fire()
-	screen:SetAttribute("WindowOpen", wasOpen)
 
 	clearTransient()
 	settle(stateNormal)

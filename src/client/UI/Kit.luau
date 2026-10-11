@@ -37,6 +37,7 @@
 ]]
 
 local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local GuiService = game:GetService("GuiService")
@@ -674,6 +675,13 @@ end
 
 -- Text ----------------------------------------------------------------------------------
 
+-- The dark outline of light text on glass.
+local function inkStroke(label: Instance, thickness: number): UIStroke
+	local stroke = Kit.textStroke(label, thickness, Theme.Glass.TextStrokeFade)
+	stroke.Color = Theme.Glass.TextInk
+	return stroke
+end
+
 --[[
 	Text. Pass TextSize for a fixed size from the type scale (preferred), or
 	leave it out for TextScaled (optionally capped with MaxTextSize).
@@ -701,16 +709,34 @@ function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
 			(label :: any)[key] = value
 		end
 	end
-	if maxSize then
-		Kit.new("UITextSizeConstraint", { MaxTextSize = maxSize, MinTextSize = 8, Parent = label })
+	-- Nothing under the smallest readable size (Theme.Glass.TextMin).
+	local floor = if Kit.touch then Theme.Glass.TextMin + 1 else Theme.Glass.TextMin
+	if fixed then
+		label.TextSize = math.max(label.TextSize, floor)
 	end
+	if maxSize then
+		Kit.new("UITextSizeConstraint", {
+			MaxTextSize = math.max(maxSize, floor),
+			MinTextSize = Theme.Glass.TextMinPhone,
+			Parent = label,
+		})
+	end
+	-- Light text sits on glass: titles, names, prices and numbers get a dark outline
+	-- (Theme.Glass.TextStroke). Dark text (on a solid button or chip) keeps the faint edge.
+	local light = luminance(label.TextColor3) >= 0.45
 	if strokeThickness and strokeThickness > 0 then
-		Kit.textStroke(label, math.clamp(strokeThickness * 0.6, 1, 2.5), 0.35)
+		if light then
+			inkStroke(label, math.clamp(strokeThickness, Theme.Glass.TextStroke, 3))
+		else
+			Kit.textStroke(label, math.clamp(strokeThickness * 0.6, 1, 2.5), 0.35)
+		end
 	elseif strokeThickness == nil and shadow then
 		-- Text over the 3D world: a readable navy outline.
 		Kit.textStroke(label, if shadow == true then 1.8 else 1.3, 0.3)
+	elseif strokeThickness == nil and light and label.Font ~= F.Body then
+		inkStroke(label, Theme.Glass.TextStroke)
 	elseif strokeThickness == nil and label.Font == F.Display then
-		-- Display titles on panels: a faint embossed edge, not an outline.
+		-- Dark display titles on solid faces: a faint embossed edge, not an outline.
 		Kit.textStroke(label, 1.4, 0.65)
 	end
 	return label
@@ -1620,6 +1646,47 @@ function Kit.disappear(gui: GuiObject, opts: { [string]: any }?)
 end
 
 --[[
+	Kit.fade(gui, show, time?, onHidden?): fades everything inside `gui` out or
+	back in (0.15 s) without touching its Visible or scale, for groups whose
+	owner manages those (the HUD while a window is open). Once faded out
+	`onHidden` runs (park the group off screen there) and the resting look is
+	restored, so whatever changes while it is away is painted normally.
+	Cancel-safe both ways, like Kit.appear / Kit.disappear.
+]]
+function Kit.fade(gui: GuiObject, show: boolean, time: number?, onHidden: (() -> ())?)
+	local m = motionOf(gui)
+	m.token += 1
+	local mine = m.token
+	local t = time or 0.15
+	local resuming = m.entries ~= nil
+	local entries = m.entries or collectFade(gui)
+	m.entries = entries
+	if show and not resuming then
+		setFade(entries, true)
+	end
+	for _, entry in entries do
+		Kit.tween(entry.inst, t, { [entry.prop] = if show then entry.value else 1 })
+	end
+	local function finish()
+		if m.token ~= mine then
+			return
+		end
+		m.entries = nil
+		if not show then
+			if onHidden then
+				onHidden()
+			end
+			setFade(entries, false)
+		end
+	end
+	if PREVIEW then
+		finish()
+	else
+		task.delay(t + 0.03, finish)
+	end
+end
+
+--[[
 	Kit.stagger(children, step?): eases rows in one after another, `step`
 	seconds apart (0.025). Rows past the 12th share the last delay so long lists
 	stay quick. `children` is an array of GuiObjects, or a container whose
@@ -2229,19 +2296,21 @@ end
 	(Kit.glass, or a Kit.panel built with Glass). tint nil = plain white glass,
 	else glass in that colour (G.Tinted). `transparency` overrides the fill.
 	`edge` is a solid outline colour (a rarity, the player's own row); without
-	it the edge is the faint light one (white, or the tint lightened).
+	it the edge is the faint white one, or the tint itself. The fill is the dark
+	card fill (G.Cell) with a share of the tint mixed in; it is never more
+	see-through than G.Dimmed, so a card always holds its text.
 ]]
-local GLASS_FILL = ColorSequence.new(WHITE, Color3.new(0.84, 0.9, 1))
+local GLASS_FILL = ColorSequence.new(G.CellTop, G.Cell)
 function Kit.paintGlass(frame: GuiObject, tint: Color3?, transparency: number?, edge: Color3?)
-	frame.BackgroundTransparency = transparency or (if tint then G.Tinted else G.Surface)
+	frame.BackgroundTransparency = math.min(transparency or (if tint then G.Tinted else G.Surface), G.Dimmed)
 	local gradient = frame:FindFirstChildOfClass("UIGradient")
 	if gradient then
-		gradient.Color = if tint then ColorSequence.new(Kit.lighten(tint, 0.2), tint) else GLASS_FILL
+		gradient.Color = if tint then ColorSequence.new(G.CellTop:Lerp(tint, G.TintMix), G.Cell:Lerp(tint, G.TintMix)) else GLASS_FILL
 	end
 	local stroke = frame:FindFirstChildOfClass("UIStroke")
 	if stroke then
-		stroke.Color = edge or (if tint then Kit.lighten(tint, 0.5) else G.Edge)
-		stroke.Transparency = if edge then 0.05 elseif tint then 0.4 else G.SurfaceEdge
+		stroke.Color = edge or tint or G.Edge
+		stroke.Transparency = if edge then 0.05 elseif tint then G.TintedEdge else G.SurfaceEdge
 	end
 end
 
@@ -2269,7 +2338,7 @@ function Kit.glass(parent: Instance, props: { [string]: any }): Frame
 	})
 	Kit.corner(frame, props.Radius or Kit.RADIUS.M)
 	Kit.new("UIGradient", { Rotation = 90, Parent = frame })
-	glassEdge(frame, G.Edge, props.StrokeThickness or 1, G.SurfaceEdge, 0.9)
+	glassEdge(frame, G.Edge, props.StrokeThickness or 1, G.SurfaceEdge, G.SurfaceEdge + 0.1)
 	Kit.paintGlass(
 		frame,
 		props.Color,
@@ -2286,7 +2355,9 @@ end
 	edge and a soft navy halo and shadow. Text on it is Kit.hudText (outlined).
 	props: Size (its offset height rounds the ends), Position, AnchorPoint,
 	LayoutOrder, Visible, Name, ZIndex, Radius, Color (tint), Transparency,
-	Edge (edge colour), Shadow (false = none), Button (true = a TextButton). The tint is the
+	Edge (edge colour), Shadow (false = none), Button (true = a TextButton), Accent (a
+	coloured bar down the left edge: the notification's tier), Quiet (true = a permanent
+	strip: more see-through, no halo or shadow). The tint is the
 	BackgroundColor3, shaded toward the bottom by a multiplying gradient, so it
 	may be tweened to another colour. Chrome children: Halo, Shadow.
 ]]
@@ -2297,7 +2368,7 @@ function Kit.hudGlass(parent: Instance, props: { [string]: any }): GuiObject
 	local frame = Kit.new(if props.Button then "TextButton" else "Frame", {
 		Name = props.Name or "Pill",
 		BackgroundColor3 = props.Color or G.TintTop,
-		BackgroundTransparency = props.Transparency or G.Pill,
+		BackgroundTransparency = props.Transparency or (if props.Quiet then G.Quiet else G.Pill),
 		BorderSizePixel = 0,
 		Size = size,
 		Position = props.Position or UDim2.new(),
@@ -2315,9 +2386,24 @@ function Kit.hudGlass(parent: Instance, props: { [string]: any }): GuiObject
 	Kit.new("UIGradient", { Rotation = 90, Color = HUD_SHADE, Parent = frame })
 	-- Border mode: on a TextButton a contextual stroke would outline the text instead.
 	glassEdge(frame, props.Edge or G.Edge, G.EdgeThickness, G.EdgeTop, G.EdgeBottom).ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-	if props.Shadow ~= false then
-		halo(frame, "Halo", radius, C.Ink, 3, G.Shadow)
+	if props.Shadow ~= false and not props.Quiet then
+		halo(frame, "Halo", radius, G.Tint, 3, G.Shadow)
 		Kit.shadow(frame, radius, 1, 0)
+	end
+	if props.Accent then
+		-- Notification tier: a bar in the notification's colour down the left edge.
+		local bar = Kit.new("Frame", {
+			Name = "Accent",
+			BackgroundColor3 = props.Accent,
+			BorderSizePixel = 0,
+			Size = UDim2.new(0, 5, 1, -math.max(radius, 12)),
+			Position = UDim2.new(0, math.max(radius // 2, 6), 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ZIndex = frame.ZIndex + 1,
+			Parent = frame,
+		})
+		Kit.round(bar)
+		chrome(bar)
 	end
 	return frame
 end
@@ -2337,7 +2423,8 @@ local function glassPanel(parent: Instance, props: { [string]: any }): Frame
 	local frame = Kit.new("Frame", {
 		Name = props.Name or "Panel",
 		BackgroundColor3 = WHITE,
-		BackgroundTransparency = props.Transparency or (if body then G.Body else G.Card),
+		-- Every body pane wears the same token: no per-window opacity.
+		BackgroundTransparency = if body then G.Body else (props.Transparency or G.Card),
 		BorderSizePixel = 0,
 		Size = props.Size or UDim2.fromOffset(200, 100),
 		Position = props.Position or UDim2.new(),
@@ -2358,8 +2445,8 @@ local function glassPanel(parent: Instance, props: { [string]: any }): Frame
 		glassEdge(frame, props.StrokeColor or G.Edge, props.StrokeThickness or G.EdgeThickness, G.EdgeTop, G.EdgeBottom)
 		highlight(frame, radius, G.Highlight)
 		-- A soft navy halo, tighter near the edge, in place of the plastic lip.
-		halo(frame, "Halo", radius, C.Ink, 4, G.Shadow)
-		halo(frame, "HaloWide", radius, C.Ink, 10, 1 - (1 - G.Shadow) * 0.5)
+		halo(frame, "Halo", radius, G.Tint, 4, G.Shadow)
+		halo(frame, "HaloWide", radius, G.Tint, 10, 1 - (1 - G.Shadow) * 0.5)
 	end
 	if props.Shadow ~= false then
 		Kit.shadow(frame, radius, if body then 2 else 1, 0)
@@ -2888,11 +2975,19 @@ end
 -- Scene blur while any window or modal is open: one shared BlurEffect,
 -- reference counted (every opener calls it once with true and once with false),
 -- so nested windows and popups ease it in and out once.
+-- `light` openers (the discovery reveal) ask for the lighter frost; any window wins.
 local blurCount = 0
+local blurLight = 0
 local blur: BlurEffect? = nil
-function Kit.setBlur(on: boolean)
-	blurCount = math.max(0, blurCount + (if on then 1 else -1))
-	if blurCount > 0 then
+function Kit.setBlur(on: boolean, light: boolean?)
+	local step = if on then 1 else -1
+	if light then
+		blurLight = math.max(0, blurLight + step)
+	else
+		blurCount = math.max(0, blurCount + step)
+	end
+	local size = if blurCount > 0 then G.Blur elseif blurLight > 0 then G.BlurLight else 0
+	if size > 0 then
 		if not blur then
 			local effect = Instance.new("BlurEffect")
 			effect.Name = "UiBlur"
@@ -2900,14 +2995,14 @@ function Kit.setBlur(on: boolean)
 			effect.Parent = Lighting
 			blur = effect
 		end
-		Kit.tween(blur :: BlurEffect, 0.22, { Size = G.Blur })
+		Kit.tween(blur :: BlurEffect, 0.22, { Size = size })
 	elseif blur then
 		Kit.tween(blur :: BlurEffect, 0.18, { Size = 0 })
 	end
 end
 
--- Share of the visible design area a window or modal may cover.
-local FIT_MARGIN = 0.92
+-- Roblox's top bar (the preview has no layout, so its safe area is worked out by hand).
+local TOP_BAR_PX = 58
 
 --[[
 	Visible design area of a ScreenGui: its AbsoluteSize (already inside the
@@ -2919,7 +3014,12 @@ function Kit.designArea(screen: Instance): Vector2?
 		return (screen :: any).AbsoluteSize
 	end)
 	if not ok or typeof(absolute) ~= "Vector2" or absolute.X < 1 or absolute.Y < 1 then
-		return nil
+		if not PREVIEW then
+			return nil
+		end
+		-- The preview exporter patches the viewport size into this expression.
+		local view = Workspace.CurrentCamera.ViewportSize
+		absolute = Vector2.new(view.X, view.Y - TOP_BAR_PX)
 	end
 	local uiScale = screen:FindFirstChildOfClass("UIScale")
 	local scale = if uiScale and uiScale.Scale > 0 then uiScale.Scale else 1
@@ -2928,9 +3028,12 @@ end
 
 --[[
 	Kit.fit(holder, screen, design, minSize?, onResize?): keeps a centred
-	holder inside 92% of the screen's visible design area. The holder first
-	narrows / shortens toward `minSize` (so its content can reflow), then
-	shrinks as a whole with its own UIScale ("Fit"). Re-fits whenever the
+	holder inside G.Fit (92%, touch G.FitTouch 94%) of the screen's visible
+	design area. The holder first narrows / shortens toward `minSize` (so its
+	content can reflow), then shrinks as a whole with its own UIScale ("Fit").
+	On a phone (touch + Compact) it goes on toward `minSize` so the UIScale can
+	grow past 1 (up to G.FitGrow): the window fills the safe area and its text
+	grows with it. Re-fits whenever the
 	viewport or the screen's UIScale changes. `onResize(size)` runs with the
 	holder's design size after every change (and once at the start). The holder
 	must not be animated with Kit.appear (a gui honours one UIScale): animate a
@@ -2945,10 +3048,19 @@ function Kit.fit(holder: GuiObject, screen: Instance, design: Vector2, minSize: 
 		local w, h, s = design.X, design.Y, 1
 		local area = Kit.designArea(screen)
 		if area then
-			local maxW, maxH = area.X * FIT_MARGIN, area.Y * FIT_MARGIN
+			local share = if Kit.touch then G.FitTouch else G.Fit
+			local maxW, maxH = area.X * share, area.Y * share
 			w = math.floor(math.clamp(maxW, minW, design.X))
 			h = math.floor(math.clamp(maxH, minH, design.Y))
 			s = math.min(1, maxW / w, maxH / h)
+			if Kit.touch and screen:GetAttribute("Compact") == true then
+				local grow = math.min(G.FitGrow, maxW / minW, maxH / minH)
+				if grow > s then
+					w = math.floor(math.clamp(maxW / grow, minW, design.X))
+					h = math.floor(math.clamp(maxH / grow, minH, design.Y))
+					s = math.min(maxW / w, maxH / h)
+				end
+			end
 		end
 		fitScale.Scale = s
 		local size = Vector2.new(w, h)
@@ -2964,6 +3076,7 @@ function Kit.fit(holder: GuiObject, screen: Instance, design: Vector2, minSize: 
 	pcall(function()
 		local connections: { RBXScriptConnection } = {}
 		table.insert(connections, (screen :: any):GetPropertyChangedSignal("AbsoluteSize"):Connect(apply))
+		table.insert(connections, screen:GetAttributeChangedSignal("Compact"):Connect(apply))
 		local uiScale = screen:FindFirstChildOfClass("UIScale")
 		if uiScale then
 			table.insert(connections, uiScale:GetPropertyChangedSignal("Scale"):Connect(apply))
@@ -2987,15 +3100,26 @@ end
 	`key` names the opener; the flag clears once every opener has closed.
 ]]
 local openers: { [Instance]: { [string]: boolean } } = setmetatable({}, { __mode = "k" }) :: any
+local openListeners: { (boolean) -> () } = {}
 function Kit.markOpen(screen: Instance, key: string, on: boolean)
 	local set = openers[screen] or {}
 	openers[screen] = set
 	set[key] = if on then true else nil
 	local any = next(set) ~= nil
-	if screen:GetAttribute("WindowOpen") ~= any then
+	if (screen:GetAttribute("WindowOpen") == true) ~= any then
 		screen:SetAttribute("WindowOpen", any)
+		for _, fn in openListeners do
+			fn(any)
+		end
 	end
 	Kit.hidePlayerList("window", any)
+end
+
+-- Kit.onWindowOpen(fn): fn(open) runs when the first window or modal opens and when the
+-- last one closes (the one reference count behind WindowOpen). The HUD hides on it, so no
+-- window, popup or reveal has to remember the HUD.
+function Kit.onWindowOpen(fn: (boolean) -> ())
+	table.insert(openListeners, fn)
 end
 
 --[[
@@ -3058,7 +3182,9 @@ export type Window = {
 	frame: Frame,
 	content: Frame,
 	header: Frame,
-	setOpen: (boolean) -> (),
+	-- `origin` (screen pixels, the centre of the button that opened it): the window
+	-- scales up from that point and closes back into it; nil pops at the centre.
+	setOpen: (boolean, Vector2?) -> (),
 	isOpen: () -> boolean,
 	onOpen: BindableEvent,
 	onClose: BindableEvent,
@@ -3167,6 +3293,7 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 		Text = string.upper(title),
 		TextSize = Kit.TEXT.H1 + 2,
 		TextColor3 = C.Text,
+		StrokeColor = G.TextInk,
 		Size = UDim2.new(1, -134, 1, 0),
 		Position = UDim2.fromOffset(66, 2),
 		TextXAlignment = Enum.TextXAlignment.Left,
@@ -3196,7 +3323,27 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 		current = fitted
 		onResize:Fire(fitted)
 	end)
-	local function setOpen(value: boolean)
+	-- Where the window grew from: the opening button's offset from the window centre, in
+	-- the pane's own design pixels.
+	local CENTRE = UDim2.fromScale(0.5, 0.5)
+	local from: UDim2? = nil
+	local function originOf(point: Vector2?): UDim2?
+		if not point then
+			return nil
+		end
+		local ok, centre = pcall(function()
+			return screen.AbsolutePosition + screen.AbsoluteSize / 2
+		end)
+		if not ok or typeof(centre) ~= "Vector2" then
+			return nil
+		end
+		local uiScale = screen:FindFirstChildOfClass("UIScale")
+		local fitScale = holder:FindFirstChild("Fit")
+		local scale = (if uiScale then uiScale.Scale else 1) * (if fitScale and fitScale:IsA("UIScale") then fitScale.Scale else 1)
+		local offset = (point - centre) / math.max(scale, 0.01)
+		return UDim2.new(0.5, offset.X, 0.5, offset.Y)
+	end
+	local function setOpen(value: boolean, origin: Vector2?)
 		if value == open then
 			return
 		end
@@ -3204,7 +3351,15 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 		Kit.markOpen(screen, "Window:" .. name, value)
 		if value then
 			holder.Visible = true
-			Kit.appear(frame, { from = 0.9, time = 0.2 })
+			from = originOf(origin)
+			if from then
+				frame.Position = from
+				Kit.tween(frame, 0.24, { Position = CENTRE }, Enum.EasingStyle.Quint)
+				Kit.appear(frame, { from = G.OriginScale, time = 0.24 })
+			else
+				frame.Position = CENTRE
+				Kit.appear(frame, { from = 0.9, time = 0.2 })
+			end
 			Kit.setBlur(true)
 			Kit.sound("Open")
 			onOpen:Fire()
@@ -3216,25 +3371,32 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 			end)
 		else
 			Kit.unfocus(holder)
+			if from then
+				Kit.tween(frame, 0.16, { Position = from }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			end
 			Kit.disappear(frame, {
-				time = 0.11,
+				time = if from then 0.16 else 0.11,
+				to = if from then G.OriginScale else nil,
 				onDone = function()
 					holder.Visible = false
+					frame.Position = CENTRE
 				end,
 			})
 			Kit.setBlur(false)
 			onClose:Fire()
 		end
 	end
+	-- Touch: a 44 px button under a pad that is 44 screen px on the smallest phone scale.
+	local closeSize = if Kit.touch then 44 else 40
 	local close = Kit.button(header, {
 		Name = "Close",
 		Icon = "Close",
 		IconColor = C.Text,
 		Color = C.Danger,
-		Size = UDim2.fromOffset(40, 40),
+		Size = UDim2.fromOffset(closeSize, closeSize),
 		Position = UDim2.new(1, -12, 0.5, 1),
 		AnchorPoint = Vector2.new(1, 0.5),
-		Radius = 20,
+		Radius = closeSize // 2,
 		Depth = 4,
 		Sound = "Close",
 		ZIndex = 3,
@@ -3245,7 +3407,7 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 	closeIcon.Position = UDim2.fromScale(0.5, 0.5)
 	closeIcon.AnchorPoint = Vector2.new(0.5, 0.5)
 	closeIcon.Size = UDim2.fromOffset(16, 16)
-	Kit.hitArea(close, 52, function()
+	Kit.hitArea(close, if Kit.touch then 72 else 52, function()
 		Kit.sound("Close")
 		setOpen(false)
 	end)
@@ -3361,14 +3523,14 @@ function Kit.confetti(parent: Instance, options: { [string]: any }?)
 	end
 end
 
--- Full-screen soft navy dimmer; returns the (clickable) frame. Starts hidden;
+-- Full-screen black dimmer (G.DimColor); returns the (clickable) frame. Starts hidden;
 -- show and hide it with Kit.fadeBackdrop.
 function Kit.backdrop(parent: Instance, zindex: number, onClick: (() -> ())?): TextButton
 	local dim = Kit.new("TextButton", {
 		Name = "Backdrop",
 		AutoButtonColor = false,
 		Text = "",
-		BackgroundColor3 = C.Ink,
+		BackgroundColor3 = G.DimColor,
 		BackgroundTransparency = 1,
 		Size = UDim2.new(2, 0, 2, 0),
 		Position = UDim2.fromScale(-0.5, -0.5),
@@ -3383,7 +3545,7 @@ function Kit.backdrop(parent: Instance, zindex: number, onClick: (() -> ())?): T
 	return dim
 end
 
--- Eases a backdrop in (to `opacity`, default 0.55) or out, then hides it.
+-- Eases a backdrop in (to `opacity`, default Kit.GLASS_DIM) or out, then hides it.
 local fadeTokens: { [Instance]: number } = setmetatable({}, { __mode = "k" }) :: any
 function Kit.fadeBackdrop(dim: GuiObject, show: boolean, opacity: number?)
 	local token = (fadeTokens[dim] or 0) + 1
@@ -3393,7 +3555,7 @@ function Kit.fadeBackdrop(dim: GuiObject, show: boolean, opacity: number?)
 			dim.BackgroundTransparency = 1
 		end
 		dim.Visible = true
-		Kit.tween(dim, 0.22, { BackgroundTransparency = 1 - (opacity or 0.55) }, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		Kit.tween(dim, 0.22, { BackgroundTransparency = 1 - (opacity or Kit.GLASS_DIM) }, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 	else
 		Kit.tween(dim, 0.16, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 		task.delay(0.17, function()
@@ -3409,6 +3571,8 @@ end
 -- sky, sand or a busy plot alike.
 function Kit.hudText(parent: Instance, props: { [string]: any }): TextLabel
 	local thickness = props.StrokeThickness or 2.5
+	local strokeColor: Color3? = props.StrokeColor
+	props.StrokeColor = nil
 	props.Font = props.Font or F.Display
 	props.TextColor3 = props.TextColor3 or Color3.new(1, 1, 1)
 	props.TextWrapped = if props.TextWrapped == nil then false else props.TextWrapped
@@ -3416,6 +3580,9 @@ function Kit.hudText(parent: Instance, props: { [string]: any }): TextLabel
 	local label = Kit.text(parent, props)
 	local stroke = Kit.textStroke(label, thickness, 0)
 	stroke.Name = "Outline"
+	if strokeColor then
+		stroke.Color = strokeColor
+	end
 	return label
 end
 

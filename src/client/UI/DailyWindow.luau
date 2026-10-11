@@ -2,12 +2,12 @@
 	DailyWindow: the Daily Reward window (rules: Shared.DailyReward; server:
 	Server.Daily; the HUD's Daily button opens it).
 
-	Seven day cards in a row (two rows when the window narrows, Day 7 double
-	width): each shows its art (a growing cash pack, a crate on days 3 and 7) and
-	what it pays at the player's income right now. Claimed cards are muted and
-	ticked, today's is gold and glowing (tap it or CLAIM), tomorrow's says "Come
-	back tomorrow" with a countdown to the next UTC day. The footer names what to
-	do next.
+	Seven day cards in a row (4 + 3 when the window narrows and always on a phone,
+	Day 7 double width): each shows its art (a growing cash pack, a crate on days
+	3 and 7) and what it pays at the player's income right now. Claimed cards are
+	dimmed and ticked, today's is gold and glowing (tap it or CLAIM), tomorrow's
+	says "Come back tomorrow" with a countdown to the next UTC day. The footer
+	names what to do next.
 
 	The window opens by itself once per session when a reward is waiting, after a
 	calm moment: never during the intro or the tutorial, a game-mode run, or
@@ -28,6 +28,7 @@ local Kit = require(script.Parent.Kit)
 local State = require(script.Parent.Parent.State)
 
 local Theme = Kit.Theme
+local G = Theme.Glass
 local C = Kit.C
 local T = Kit.TEXT
 local F = Kit.F
@@ -58,6 +59,12 @@ local HERO_H = 50
 local FOOTER_H = 56
 -- Narrower than this (content width, design px) the cards wrap onto two rows.
 local ONE_ROW_MIN = 700
+-- Two rows of low, wide cards (a phone's short window): under SIDE_MAX_H tall and at least
+-- SIDE_MIN_W wide, a card puts its art (SIDE_ART) beside a SIDE_TEXT wide text column.
+local SIDE_MAX_H = 124
+local SIDE_MIN_W = 180
+local SIDE_ART = 56
+local SIDE_TEXT = 112
 -- Seconds of calm before the window opens by itself (longer right after the tutorial,
 -- whose reward cards are still on their way).
 local CALM = 2
@@ -80,18 +87,23 @@ type Card = {
 	state: string,
 }
 
--- Repaints a day card's glass: plain, or tinted `tint` with a solid `edge` outline.
-local function paint(frame: Frame, tint: Color3?, transparency: number?, edge: Color3?, thickness: number?)
+-- Repaints a day card: the plain dark card, or tinted `tint`, with an `edge` outline in the
+-- state's colour (`edgeFade`: its transparency, for a dimmed card).
+local function paint(frame: Frame, tint: Color3?, transparency: number?, edge: Color3?, thickness: number?, edgeFade: number?)
 	Kit.paintGlass(frame, tint, transparency, edge)
 	local stroke = frame:FindFirstChildOfClass("UIStroke")
 	if stroke then
 		stroke.Thickness = thickness or 1
+		if edgeFade then
+			stroke.Transparency = edgeFade
+		end
 	end
 end
 
 function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
+	-- Minimum 386 tall: a phone gets that window at x1.3, with the cards in two low rows.
 	local window =
-		Kit.window(screen, "Daily", "Daily Reward", Kit.pickIcon("Gift2", "Free"), ACCENT, Vector2.new(880, 436), Vector2.new(500, 436))
+		Kit.window(screen, "Daily", "Daily Reward", Kit.pickIcon("Gift2", "Free"), ACCENT, Vector2.new(880, 436), Vector2.new(500, 386))
 	deps.register("Daily", window)
 	local action = Net.event("Action")
 
@@ -177,7 +189,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				Name = "Crate",
 				Text = string.upper(string.format("+ %s %s", reward.crate, W.Chest)),
 				Font = F.UI,
-				MaxTextSize = T.Tiny,
+				MaxTextSize = T.Small,
 				TextColor3 = C.Rarity[reward.crate] or C.Gold,
 				TextWrapped = false,
 				Size = UDim2.new(1, -4, 0, 16),
@@ -189,9 +201,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			Name = "Status",
 			Text = "",
 			Font = F.UI,
-			TextSize = T.Tiny,
+			TextSize = T.Small,
 			TextYAlignment = Enum.TextYAlignment.Bottom,
-			Size = UDim2.new(1, -10, 0, 44),
+			Size = UDim2.new(1, -10, 0, 54),
 			Position = UDim2.new(0.5, 0, 1, -8),
 			AnchorPoint = Vector2.new(0.5, 1),
 			ZIndex = 3,
@@ -208,7 +220,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			Parent = frame,
 		})
 		Kit.round(tick)
-		Kit.new("UIStroke", { Thickness = 2, Color = Color3.new(1, 1, 1), Parent = tick })
+		Kit.new("UIStroke", { Thickness = 2, Color = C.Text, Parent = tick })
 		Kit.icon(tick, "Check", 16, Kit.inkOn(C.Good), {
 			Position = UDim2.fromScale(0.5, 0.5),
 			AnchorPoint = Vector2.new(0.5, 0.5),
@@ -326,16 +338,18 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		card.tick.Visible = claimed
 		card.header.Text = if state == "today" then "TODAY" elseif state == "tomorrow" then "TOMORROW" else "DAY " .. day
 		card.header.TextColor3 = if state == "today" then C.Gold else C.Text
-		card.header.TextTransparency = if claimed then 0.4 else 0
-		card.amount.TextTransparency = if claimed then 0.4 else 0
+		local fade = if claimed then G.Dimmed else 0
+		card.header.TextTransparency = fade
+		card.amount.TextTransparency = fade
 		if card.extra then
-			card.extra.TextTransparency = if claimed then 0.4 else 0
+			card.extra.TextTransparency = fade
 		end
-		-- Today: sunny glass in a gold outline. Claimed: a fainter pane. Ahead: plain glass.
+		-- Today: a gold card in a gold outline. Claimed: dimmed, in a faint mint edge under
+		-- its tick. Ahead (locked): the plain dark card, as solid as any other.
 		if state == "today" then
-			paint(card.frame, C.Gold, Theme.Glass.Tinted, C.Gold, 2.5)
+			paint(card.frame, C.Gold, nil, C.Gold, 2.5)
 		elseif claimed then
-			paint(card.frame, nil, 0.95)
+			paint(card.frame, nil, G.Dimmed, C.Good, 1, G.Dimmed)
 		else
 			paint(card.frame)
 		end
@@ -412,11 +426,14 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		updateClock()
 	end
 
-	-- Layout: one row of seven, or 4 + 3 with Day 7 double width -----------------------------
-	local function layout(size: Vector2)
+	-- Layout: one row of seven, or 4 + 3 with Day 7 double width (a narrow window, and
+	-- always a phone: touch on a Compact screen, whose window is short and scaled up) -------
+	local function layout()
+		local size = window.size()
 		-- Window chrome (24 wide, 84 tall) and the content well's padding (10 a side).
 		local width, height = size.X - 44, size.Y - 104
-		big = width >= ONE_ROW_MIN
+		local phone = Kit.touch and screen:GetAttribute("Compact") == true
+		big = width >= ONE_ROW_MIN and not phone
 		hero.Visible = big
 		local top = if big then HERO_H + GAP else 0
 		local gridH = height - top - FOOTER_H - GAP
@@ -426,26 +443,52 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		local rows = if big then 1 else 2
 		local cellW = (width - (columns - 1) * GAP) / columns
 		local cellH = (gridH - (rows - 1) * GAP) / rows
-		local artSize = if big then 64 else 40
+		-- Low, wide cards: the art on the left, amount, crate and status stacked beside it.
+		local side = not big and cellH < SIDE_MAX_H and cellW >= SIDE_MIN_W
+		local artSize = if big then 64 elseif side then SIDE_ART else 40
 		for day, card in cards do
 			local column = (day - 1) % columns
 			local row = (day - 1) // columns
 			local wide = not big and day == DailyReward.DAYS
+			local cardW = math.floor(if wide then cellW * 2 + GAP else cellW)
 			card.frame.Position = UDim2.fromOffset(math.floor(column * (cellW + GAP)), math.floor(row * (cellH + GAP)))
-			card.frame.Size = UDim2.fromOffset(math.floor(if wide then cellW * 2 + GAP else cellW), math.floor(cellH))
+			card.frame.Size = UDim2.fromOffset(cardW, math.floor(cellH))
 			card.art.Size = UDim2.fromOffset(artSize, artSize)
-			card.art.Position = UDim2.new(0.5, 0, 0, 30)
-			card.amount.Position = UDim2.new(0.5, 0, 0, 34 + artSize)
-			if card.extra then
-				card.extra.Position = UDim2.new(0.5, 0, 0, 55 + artSize)
+			if side then
+				-- Art and text column, centred together in the card under its header.
+				local left = (cardW - (artSize + GAP + SIDE_TEXT)) // 2
+				local textX = left + artSize + GAP + SIDE_TEXT // 2
+				card.art.Position = UDim2.fromOffset(left + artSize // 2, 30)
+				card.amount.Size = UDim2.fromOffset(SIDE_TEXT, 22)
+				card.amount.Position = UDim2.fromOffset(textX, 32)
+				if card.extra then
+					card.extra.Size = UDim2.fromOffset(SIDE_TEXT, 16)
+					card.extra.Position = UDim2.fromOffset(textX, 54)
+				end
+				card.status.Size = UDim2.fromOffset(SIDE_TEXT, 18)
+				card.status.Position = UDim2.new(0, textX, 1, -9)
+			else
+				card.art.Position = UDim2.new(0.5, 0, 0, 30)
+				card.amount.Size = UDim2.new(1, -8, 0, 22)
+				card.amount.Position = UDim2.new(0.5, 0, 0, 34 + artSize)
+				if card.extra then
+					card.extra.Size = UDim2.new(1, -4, 0, 16)
+					card.extra.Position = UDim2.new(0.5, 0, 0, 55 + artSize)
+				end
+				-- One row: room for "COME BACK TOMORROW" on two lines over the countdown.
+				card.status.Size = UDim2.new(1, -10, 0, if big then 54 else 18)
+				card.status.Position = UDim2.new(0.5, 0, 1, -8)
 			end
-			card.status.Size = UDim2.new(1, -10, 0, if big then 44 else 14)
 		end
 		clockText = ""
 		render()
 	end
-	layout(window.size())
+	layout()
 	window.onResize.Event:Connect(layout)
+	screen:GetAttributeChangedSignal("Compact"):Connect(layout)
+	Kit.onInput(function()
+		layout()
+	end)
 	State.changed.Event:Connect(render)
 
 	if not PREVIEW then
