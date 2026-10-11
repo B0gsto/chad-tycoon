@@ -545,7 +545,12 @@ local function exportGui(inst)
 				local c = rgb(kp.Value)
 				table.insert(stops, { kp.Time, c[1], c[2], c[3] })
 			end
-			node.gradient = { stops = stops, rotation = child.Rotation }
+			-- Transparency keypoints too (veils and light rays fade along the gradient).
+			local fade = {}
+			for _, kp in child.Transparency.Keypoints do
+				table.insert(fade, { kp.Time, kp.Value })
+			end
+			node.gradient = { stops = stops, transparency = fade, rotation = child.Rotation }
 		elseif cls == "UIPadding" then
 			node.padding = { udim(child.PaddingTop), udim(child.PaddingBottom), udim(child.PaddingLeft), udim(child.PaddingRight) }
 		elseif cls == "UIListLayout" then
@@ -1197,7 +1202,15 @@ local function main()
 	clearTransient()
 	settle(stateNormal)
 	Popups.reward({ tier = 15, new = true })
+	-- Mid-hold the HUD is off its edges (attribute signals only fire by hand here); it
+	-- is put back for the shots that follow.
+	local windowOpen = signalFor(screen, "attr:WindowOpen")
+	local wasOpen = screen:GetAttribute("WindowOpen")
+	windowOpen:Fire()
 	shot("reward")
+	screen:SetAttribute("WindowOpen", false)
+	windowOpen:Fire()
+	screen:SetAttribute("WindowOpen", wasOpen)
 
 	clearTransient()
 	settle(stateNormal)

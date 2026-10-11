@@ -90,6 +90,14 @@ Hud.tank = nil :: Frame?
 Hud.walletIdle = function(): boolean
 	return true
 end
+-- Where a discovery flies to (Popups): the centre of the Index button at rest, in screen
+-- pixels. nil while it is no landing spot (a window keeps the HUD away, the menu is hidden
+-- or off screen).
+Hud.indexPoint = function(): Vector2?
+	return nil
+end
+-- A discovery landed on the Index button: it bounces, flashes and counts "+1".
+Hud.punchIndex = function() end
 
 -- Layout (design px). The top centre group sits just under the top bar.
 local EDGE_X = 14
@@ -1603,6 +1611,75 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	Hud.walletIdle = function(): boolean
 		return os.clock() >= moneyRollEnd
+	end
+
+	-- Discoveries land on the Index button -----------------------------------------------
+	Hud.indexPoint = function(): Vector2?
+		local button = Hud.buttons.Index
+		if screen:GetAttribute("WindowOpen") == true or not (screen.Enabled and grid.Visible and button.Visible) then
+			return nil
+		end
+		-- The rest position, not the current one: the menu may still be sliding back in.
+		local scale = if screenScale then screenScale.Scale else 1
+		local rest = Vector2.new(
+			L.edge + button.Position.X.Offset + button.Size.X.Offset / 2,
+			L.gridY + button.Position.Y.Offset + button.Size.Y.Offset / 2
+		)
+		local point = rest * scale
+		local size = screen.AbsoluteSize
+		if point.X < 0 or point.Y < 0 or point.X > size.X or point.Y > size.Y then
+			return nil
+		end
+		return screen.AbsolutePosition + point
+	end
+	Hud.punchIndex = function()
+		local button = Hud.buttons.Index
+		Kit.pop(button, 2.4)
+		sounds.play("Collect", 0.04, 1.25)
+		-- A white ring spreads from the icon.
+		local ring = Kit.new("Frame", {
+			Name = "Punch",
+			BackgroundColor3 = Color3.new(1, 1, 1),
+			BackgroundTransparency = 0.3,
+			Size = UDim2.fromScale(0.8, 0.8),
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 3,
+			Parent = button,
+		})
+		Kit.round(ring)
+		local edge = Kit.new("UIStroke", { Thickness = 4, Color = Color3.new(1, 1, 1), Transparency = 0.1, Parent = ring })
+		Kit.tween(ring, 0.4, { Size = UDim2.fromScale(2, 2), BackgroundTransparency = 1 }, Enum.EasingStyle.Quart)
+		Kit.tween(edge, 0.4, { Transparency = 1, Thickness = 1 }, Enum.EasingStyle.Quart)
+		-- "+1" rises off the button and fades.
+		local plus = Kit.hudText(button, {
+			Name = "Plus",
+			Text = "+1",
+			TextSize = 26,
+			TextColor3 = C.Gold,
+			Size = UDim2.new(1, 40, 0, 28),
+			Position = UDim2.new(0.5, 0, 0, 4),
+			AnchorPoint = Vector2.new(0.5, 1),
+			ZIndex = 6,
+		})
+		Kit.tween(plus, 0.7, { Position = UDim2.new(0.5, 0, 0, -26) }, Enum.EasingStyle.Quad)
+		local outline = plus:FindFirstChild("Outline")
+		task.delay(0.4, function()
+			Kit.tween(plus, 0.3, { TextTransparency = 1 })
+			if outline then
+				Kit.tween(outline, 0.3, { Transparency = 1 })
+			end
+		end)
+		task.delay(0.75, function()
+			ring:Destroy()
+			plus:Destroy()
+		end)
+		-- The badge (new since the Index was last opened) pops with it.
+		refreshIndexBadge()
+		local badge = button:FindFirstChild("Badge")
+		if badge and badge:IsA("GuiObject") and badge.Visible then
+			Kit.pop(badge, 1.4)
+		end
 	end
 
 	-- Deposit multiplier re-roll: the value flickers like a slot machine ------------------
