@@ -1,8 +1,12 @@
 --[[
-	Unit tests for the daily reward rules (src/shared/DailyReward.luau), the HUD's next-goal
-	pick (src/shared/NextGoal.luau) and the saved `daily` profile field (DataService).
+	Unit tests for the daily reward rules (src/shared/DailyReward.luau), its server
+	(src/server/Daily.luau, run against a stub Tycoon), the HUD's next-goal pick
+	(src/shared/NextGoal.luau) and the saved `daily` profile field (DataService).
 	Loaded by tests/run.luau with its harness: { test, check, eq, near, loadShared, loadDataService }.
 ]]
+
+local fs = require("@lune/fs")
+local luau = require("@lune/luau")
 
 return function(h: { [string]: any })
 	local test, check, eq, near = h.test, h.check, h.eq, h.near
@@ -142,6 +146,274 @@ return function(h: { [string]: any })
 		eq(DataService.reconcile({ money = 10, daily = "x" }).daily.streak, 0, "a broken daily field resets")
 		local status = DailyReward.status(legacy.day, legacy.streak, TODAY)
 		check(status.claimable and status.day == 1, "an old save starts on day 1")
+	end)
+
+	test("Daily: a first day pays a boost, not a tier skip", function()
+		-- The playtest's new player: tier 4 a minute in, a dozen units bought, $18/s.
+		local progression = Economy.progression(4, Economy.START_PROCESS_LEVEL)
+		local open = DailyReward.cash(1, 18, progression)
+		for bought = 0, 20 do
+			local cap = DailyReward.firstDayCap(1, 1, bought)
+			local cash = DailyReward.cash(1, 18, progression, cap)
+			check(cash >= DailyReward.REWARDS[1].min, "never below day 1's minimum at " .. bought)
+			check(cash <= 1000, "a few hundred cash at " .. bought)
+			check(cash < open / 4, "far below the income-sized reward at " .. bought)
+			-- Three to five of the units the player is buying.
+			check(cash >= Economy.bulkPrice(1, bought, 3) or cash == DailyReward.REWARDS[1].min, "buys three units at " .. bought)
+			check(cash <= math.max(DailyReward.REWARDS[1].min, Economy.bulkPrice(1, bought, 5)), "not six units at " .. bought)
+		end
+		eq(DailyReward.firstDayCap(1, 1, 5), math.floor(Economy.bulkPrice(1, 5, DailyReward.FIRST_DAY_UNITS)), "the next units' price")
+		eq(DailyReward.firstDayCap(1, 1, 0), DailyReward.REWARDS[1].min, "the minimum when units cost less")
+		-- The cap only ever lowers the reward, and a later day has none.
+		eq(
+			DailyReward.cash(1, 0, Economy.progression(1, 0), 1e9),
+			DailyReward.cash(1, 0, Economy.progression(1, 0)),
+			"cap above the reward"
+		)
+		eq(DailyReward.cash(1, 18, progression, nil), open, "no cap after the first day")
+	end)
+
+	test("Daily: a crate that does not fit is paid as cash", function()
+		eq(DailyReward.crateCash(1, 10), 0, "no crate on day 1")
+		for _, day in { 3, 7, 10 } do
+			local crate = DailyReward.REWARDS[DailyReward.card(day)].crate
+			for _, tier in { 1, 8, 25 } do
+				local cash = DailyReward.crateCash(day, tier)
+				check(cash > 0, "worth something on day " .. day)
+				eq(cash, math.floor(Economy.chestExpectedValue(crate, tier)), "the crate's average unit on day " .. day)
+			end
+		end
+		check(DailyReward.crateCash(7, 12) > DailyReward.crateCash(3, 12), "the Legendary crate is worth more")
+	end)
+
+	test("Daily: the window waits for a held crate, then opens anyway", function()
+		local function run(needed: number, at: (number) -> (boolean, boolean)): number?
+			local state = DailyReward.autoOpen()
+			for tick = 1, 400 do
+				local blocked, crate = at(tick * 0.5)
+				if DailyReward.autoOpenTick(state, 0.5, blocked, crate, needed) then
+					return tick * 0.5
+				end
+			end
+			return nil
+		end
+		eq(
+			run(2, function()
+				return false, false
+			end),
+			2,
+			"opens after the calm"
+		)
+		eq(
+			run(2, function()
+				return true, false
+			end),
+			nil,
+			"never while blocked"
+		)
+		-- A crate held from the start and dealt with at 6 s: the calm starts there.
+		eq(
+			run(2, function(t)
+				return false, t <= 6
+			end),
+			8,
+			"opens once the crate is gone"
+		)
+		-- A crate never dealt with: the window gives it CRATE_PATIENCE, then opens over it.
+		eq(
+			run(2, function()
+				return false, true
+			end),
+			DailyReward.CRATE_PATIENCE + 2,
+			"stops waiting for the crate"
+		)
+		-- The tutorial blocks for 30 s with a crate in hand the whole time: only the time
+		-- after it counts, and it never opens during it.
+		eq(
+			run(8, function(t)
+				return t <= 30, true
+			end),
+			30 + DailyReward.CRATE_PATIENCE + 8,
+			"the tutorial comes first"
+		)
+		-- A popup during the calm starts it over.
+		eq(
+			run(2, function(t)
+				return t == 1.5, false
+			end),
+			3.5,
+			"an interruption restarts the calm"
+		)
+	end)
+
+	-- Server.Daily against a stub Tycoon ------------------------------------------------
+
+	local function loadDaily(now: { time: number, clock: number })
+		local Format = h.loadShared("Format")
+		local shared = { DailyReward = DailyReward, Economy = Economy, Format = Format }
+		local log = { notifies = {}, toasts = {}, money = 0, crates = {}, dirty = {}, warns = 0, room = true }
+		local sessions = {}
+		local Tycoon = {
+			hooks = {},
+			actions = {},
+			income = function(session)
+				return session.income
+			end,
+			toast = function(_, text)
+				table.insert(log.toasts, text)
+			end,
+			notify = function(_, payload)
+				table.insert(log.notifies, payload)
+			end,
+			grantMoney = function(_, amount)
+				log.money += amount
+			end,
+			rollCrate = function()
+				return if log.room then 5 else nil
+			end,
+			grantCrate = function(_, rarity, tier)
+				table.insert(log.crates, rarity .. tier)
+			end,
+			markDirty = function(session)
+				log.dirty[session] = (log.dirty[session] or 0) + 1
+			end,
+			allSessions = function()
+				return sessions
+			end,
+		}
+		Tycoon.addAction = function(name, fn)
+			Tycoon.actions[name] = fn
+		end
+		local loop: (() -> ())?
+		local env = setmetatable({
+			game = {
+				GetService = function()
+					return {
+						WaitForChild = function()
+							return shared
+						end,
+					}
+				end,
+			},
+			script = { Parent = { Tycoon = Tycoon } },
+			require = function(module)
+				return module
+			end,
+			os = {
+				time = function()
+					return now.time
+				end,
+				clock = function()
+					return now.clock
+				end,
+			},
+			task = {
+				spawn = function(fn)
+					loop = fn
+				end,
+				wait = function()
+					coroutine.yield()
+				end,
+			},
+			warn = function()
+				log.warns += 1
+			end,
+		}, { __index = _G })
+		local path = "src/server/Daily.luau"
+		local Daily = luau.load(fs.readFile(path), { debugName = path, environment = env })()
+		Daily.init({ Words = { Chest = "Crate" } })
+		return Daily, Tycoon, log, sessions, coroutine.wrap(loop :: any)
+	end
+	local function session(firstDay: number, streak: number, lastDay: number): { [string]: any }
+		local discovered = table.create(Economy.MAX_TIER, 0)
+		for tier = 1, 4 do
+			discovered[tier] = 1
+		end
+		return {
+			alive = true,
+			income = 18,
+			profile = {
+				discovered = discovered,
+				processLevel = Economy.START_PROCESS_LEVEL,
+				buyTier = 1,
+				boughtAtTier = 8,
+				tutorialDone = true,
+				daily = { day = lastDay, streak = streak, firstDay = firstDay, hinted = true },
+			},
+		}
+	end
+
+	test("Daily server: a first-day claim is capped, a later one is not", function()
+		local now = { time = TODAY * DAY + 60, clock = 0 }
+		local Daily, Tycoon, log = loadDaily(now)
+		local progression = Economy.progression(4, Economy.START_PROCESS_LEVEL)
+		local new = session(TODAY, 0, 0)
+		eq(Tycoon.hooks.daily(new).firstDay, true, "the snapshot says it is the first day")
+		Daily.claim(new)
+		eq(log.money, DailyReward.firstDayCap(1, 1, 8), "paid the next units' price")
+		check(log.money < DailyReward.cash(1, 18, progression) / 4, "not the income-sized reward")
+		eq(log.notifies[1].cash, log.money, "the notify names what was paid")
+		eq(new.profile.daily.streak, 1, "the claim counts")
+		Daily.claim(new)
+		eq(#log.notifies, 1, "one claim a day")
+
+		log.money = 0
+		local old = session(1, 0, 0)
+		eq(Tycoon.hooks.daily(old).firstDay, false, "an old save is not on its first day")
+		Daily.claim(old)
+		eq(log.money, DailyReward.cash(1, 18, progression), "established players get the income-sized reward")
+	end)
+
+	test("Daily server: a full rack turns the crate into cash", function()
+		local now = { time = TODAY * DAY + 60, clock = 0 }
+		local Daily, _, log = loadDaily(now)
+		local progression = Economy.progression(4, Economy.START_PROCESS_LEVEL)
+		-- Day 3 with room: cash and the crate.
+		local player = session(TODAY - 2, 2, TODAY - 1)
+		Daily.claim(player)
+		eq(log.money, DailyReward.cash(3, 18, progression), "day 3's cash")
+		eq(log.crates[1], "Rare5", "the crate is opened")
+		eq(log.notifies[1].crate, "Rare", "the notify names the crate")
+		eq(log.notifies[1].crateCash, nil, "nothing swapped")
+		eq(#log.toasts, 0, "no toast")
+		-- Day 3 with no room: the claim is used and the crate's worth is paid on top.
+		log.room, log.money = false, 0
+		local full = session(TODAY - 2, 2, TODAY - 1)
+		Daily.claim(full)
+		local extra = DailyReward.crateCash(3, 4)
+		check(extra > 0, "the crate is worth something")
+		eq(log.money, DailyReward.cash(3, 18, progression) + extra, "cash plus the crate's worth")
+		eq(#log.crates, 1, "no crate is opened")
+		eq(log.notifies[2].crate, nil, "the notify shows no crate")
+		eq(log.notifies[2].crateCash, extra, "the notify names the swap")
+		eq(log.notifies[2].cash, log.money, "the notify's cash is what was paid")
+		eq(#log.toasts, 1, "the player is told")
+		check(string.find(log.toasts[1], "Rare Crate", 1, true) ~= nil, "the toast names the crate")
+		eq(full.profile.daily.streak, 3, "the claim counts")
+	end)
+
+	test("Daily server: one session's error does not stop the loop", function()
+		local now = { time = TODAY * DAY + 60, clock = 0 }
+		local _, _, log, sessions, step = loadDaily(now)
+		-- A session torn down mid-check: reading its profile throws.
+		local broken = setmetatable({ alive = true }, {
+			__index = function()
+				error("session is gone")
+			end,
+		})
+		local healthy = session(TODAY, 1, TODAY)
+		sessions[1], sessions[2] = broken, healthy
+		step()
+		step()
+		eq(log.warns, 1, "the error is reported")
+		eq(log.dirty[healthy], nil, "nothing to refresh on the same day")
+		-- The next UTC day: the loop is still running and refreshes the healthy session.
+		now.time += DAY
+		step()
+		eq(log.warns, 2, "still checking the broken session")
+		eq(log.dirty[healthy], 1, "the healthy session is refreshed at the day change")
+		step()
+		eq(log.dirty[healthy], 1, "once per day change")
 	end)
 
 	-- Next goal -------------------------------------------------------------------------

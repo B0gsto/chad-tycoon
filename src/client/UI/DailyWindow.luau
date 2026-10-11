@@ -11,7 +11,8 @@
 
 	The window opens by itself once per session when a reward is waiting, after a
 	calm moment: never during the intro or the tutorial, a game-mode run, or
-	under another window or popup.
+	under another window or popup. A held crate makes it wait too, but not for
+	ever (DailyReward.autoOpenTick): a crate can be carried for minutes.
 ]]
 
 local Players = game:GetService("Players")
@@ -61,8 +62,9 @@ local ONE_ROW_MIN = 700
 -- whose reward cards are still on their way).
 local CALM = 2
 local CALM_AFTER_TUTORIAL = 8
--- ScreenGui attributes that mean "busy": a window, a popup, the crate panel or a mode run.
-local BUSY = { "WindowOpen", "ModalOpen", "CratePanelOpen", "RunActive", "ObbyMode", "CardioActive" }
+-- ScreenGui attributes that mean "busy": a window, a popup or a mode run. The held-crate
+-- panel ("CratePanelOpen") only holds the window back for a while.
+local BUSY = { "WindowOpen", "ModalOpen", "RunActive", "ObbyMode", "CardioActive" }
 
 -- Art per card: the cash packs grow with the days; days 3 and 7 show their crate.
 local ART = { "CashPack1", "CashPack2", "CrateRare", "CashPack3", "CashPack4", "CashPack5", "CrateLegendary" }
@@ -375,8 +377,12 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		tomorrowCard = if day < DailyReward.DAYS then day + 1 else 0
 		local progression = Economy.progression(tonumber(data.highestTier) or 1, tonumber(data.processLevel) or 0)
 		local income = tonumber(data.income) or 0
+		-- A player's first day pays today's card up to a cap (Server.Daily does the same).
+		local cap = if daily.firstDay == true
+			then DailyReward.firstDayCap(day, tonumber(data.buyTier) or 1, tonumber(data.boughtAtTier) or 0)
+			else nil
 		for i, card in cards do
-			card.amount.Text = "+" .. State.money(DailyReward.cash(i, income, progression))
+			card.amount.Text = "+" .. State.money(DailyReward.cash(i, income, progression, if i == day then cap else nil))
 			local state = if i <= claimed
 				then "claimed"
 				elseif i == day and canClaim then "today"
@@ -471,7 +477,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		end)
 		task.spawn(function()
 			local player = Players.LocalPlayer
-			local calm = 0
+			local auto = DailyReward.autoOpen()
 			local needed = CALM
 			while not opened do
 				local step = task.wait(0.5)
@@ -493,8 +499,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				for _, name in BUSY do
 					ready = ready and screen:GetAttribute(name) ~= true
 				end
-				calm = if ready then calm + step else 0
-				if calm >= needed and not opened then
+				-- A held crate is waited for, then the window stops waiting for it.
+				local crate = screen:GetAttribute("CratePanelOpen") == true
+				if DailyReward.autoOpenTick(auto, step, not ready, crate, needed) and not opened then
 					deps.open()
 					return
 				end

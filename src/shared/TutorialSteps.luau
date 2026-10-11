@@ -99,6 +99,13 @@ function TutorialSteps.instantDeposit(step: number, done: boolean?): boolean
 	return not done and current ~= nil and current.id == "deposit"
 end
 
+-- True when a refused merge ("Nothing to merge yet") should say so: once the tutorial is over
+-- or has reached its merge step. Before that the tutorial is asking for something else.
+function TutorialSteps.mergeToast(step: number, done: boolean?): boolean
+	local current = TutorialSteps.STEPS[step]
+	return done == true or current == nil or current.id == "merge"
+end
+
 -- True when some tier has at least two units (a merge is possible).
 function TutorialSteps.hasPair(units: { number }?): boolean
 	if not units then

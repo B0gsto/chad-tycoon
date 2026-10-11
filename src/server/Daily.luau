@@ -5,12 +5,15 @@
 	The saved profile field `daily` holds the UTC day of the last claim and the
 	streak at that claim. The State snapshot's `daily` field tells the client
 	what today looks like: { claimable, day (today's card 1..7), claimed (cards
-	ticked), streak, nextIn (seconds to the next UTC day) }. The "ClaimDaily"
-	action pays today's card: cash sized by the player's income right now (the
-	amounts the window shows) and, on days 3 and 7, a crate opened on the spot.
+	ticked), streak, nextIn (seconds to the next UTC day), firstDay (today is the
+	player's first day: today's card is capped, DailyReward.firstDayCap) }. The
+	"ClaimDaily" action pays today's card: cash sized by the player's income right
+	now (the amounts the window shows) and, on days 3 and 7, a crate opened on the
+	spot. With no room on the rack for the crate's unit, the crate is paid as cash.
 
 	Notify payloads (client shows them):
-	  { kind = "Daily", event = "claimed", day = n, cash = c, crate = rarity?, streak = s }
+	  { kind = "Daily", event = "claimed", day = n, cash = c, crate = rarity?, streak = s,
+	    crateCash = part of `cash` paid instead of the crate (rack full)? }
 
 	First day: once a player has finished the tutorial, has claimed and has been
 	playing for a few minutes, one toast names tomorrow's reward.
@@ -42,10 +45,12 @@ local function today(): number
 end
 
 -- Cash of card `day` for this player right now (the same formula the window shows).
-local function cashFor(session: Tycoon.Session, day: number): number
+-- `firstDay` = paid on the player's first day (capped).
+local function cashFor(session: Tycoon.Session, day: number, firstDay: boolean): number
 	local p = session.profile
 	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
-	return DailyReward.cash(day, Tycoon.income(session), progression)
+	local cap = if firstDay then DailyReward.firstDayCap(day, p.buyTier, p.boughtAtTier) else nil
+	return DailyReward.cash(day, Tycoon.income(session), progression, cap)
 end
 
 local function snapshot(session: Tycoon.Session): { [string]: any }
@@ -58,6 +63,7 @@ local function snapshot(session: Tycoon.Session): { [string]: any }
 		claimed = status.claimed,
 		streak = status.streak,
 		nextIn = DailyReward.secondsLeft(now),
+		firstDay = d.firstDay == DailyReward.dayNumber(now),
 	}
 end
 
@@ -72,15 +78,34 @@ function Daily.claim(session: Tycoon.Session)
 		return
 	end
 	-- Sized before anything is granted, so the crate's unit does not change the cash.
-	local cash = cashFor(session, day)
-	local crate = DailyReward.REWARDS[day].crate
+	local cash = cashFor(session, day, d.firstDay == today())
+	local crate: string? = DailyReward.REWARDS[day].crate
+	-- Rolled before the claim is announced: with no room on the rack for its unit, the crate
+	-- is paid as cash instead of being lost.
+	local tier = if crate then Tycoon.rollCrate(session, crate) else nil
+	local crateCash: number? = nil
+	if crate and not tier then
+		crateCash = DailyReward.crateCash(day, Economy.highestTier(session.profile.discovered))
+		cash += crateCash
+	end
 	d.day = today()
 	d.streak = streak
 	claimedAt[session] = os.clock()
-	Tycoon.notify(session, { kind = "Daily", event = "claimed", day = day, cash = cash, crate = crate, streak = streak })
+	Tycoon.notify(session, {
+		kind = "Daily",
+		event = "claimed",
+		day = day,
+		cash = cash,
+		crate = if tier then crate else nil,
+		streak = streak,
+		crateCash = crateCash,
+	})
 	Tycoon.grantMoney(session, cash, "Daily")
-	if crate then
-		Tycoon.grantCrate(session, crate)
+	if crate and tier then
+		Tycoon.grantCrate(session, crate, tier)
+	elseif crate and crateCash then
+		local text = "Your rack is full: the %s %s paid %s instead"
+		Tycoon.toast(session, string.format(text, crate, theme.Words.Chest, Format.money(crateCash)), "info")
 	end
 end
 
@@ -97,9 +122,21 @@ local function hint(session: Tycoon.Session, now: number)
 	end
 	d.hinted = true
 	local nextDay = DailyReward.card(d.streak + 1)
-	local reward = DailyReward.describe(nextDay, Format.money(cashFor(session, nextDay)), theme.Words.Chest)
+	local reward = DailyReward.describe(nextDay, Format.money(cashFor(session, nextDay, false)), theme.Words.Chest)
 	Tycoon.toast(session, string.format("Come back tomorrow for Day %d: %s", nextDay, reward), "good")
 	Tycoon.markDirty(session)
+end
+
+-- The loop's work for one session. `newDay` = a new UTC day began since the last check.
+local function check(session: Tycoon.Session, now: number, newDay: boolean)
+	if not session.alive then
+		return
+	end
+	if newDay then
+		-- The snapshot's `claimable` changes for everyone online.
+		Tycoon.markDirty(session)
+	end
+	hint(session, now)
 end
 
 -- Call right after Tycoon.addPlayer: starts the play-time clock and stamps the first day.
@@ -125,12 +162,11 @@ function Daily.init(themeModule: any)
 			task.wait(CHECK_SECONDS)
 			local now = today()
 			for _, session in Tycoon.allSessions() do
-				if session.alive then
-					if now ~= lastDay then
-						-- A new UTC day: the snapshot's `claimable` changes for everyone online.
-						Tycoon.markDirty(session)
-					end
-					hint(session, now)
+				-- One session's error (a player leaving mid-check) must not stop the loop
+				-- for the whole server.
+				local ok, err = pcall(check, session, now, now ~= lastDay)
+				if not ok then
+					warn("[Daily] check:", err)
 				end
 			end
 			lastDay = now
