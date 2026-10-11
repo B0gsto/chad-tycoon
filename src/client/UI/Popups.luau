@@ -56,6 +56,9 @@ local sounds: any
 
 local TOAST_Y = 146
 
+-- Defined with the held-crate art below; toasts that name a crate draw it too.
+local crateIcon: (parent: Instance, color: Color3, size: number, props: { [string]: any }?) -> Frame
+
 -- Motion helpers -------------------------------------------------------------------
 
 -- Runs `fn` after `t` seconds (at once in the preview).
@@ -130,19 +133,27 @@ end
 
 -- Toasts ------------------------------------------------------------------------
 --[[
-	A short stack under the top bar, newest on top. Each toast is a small blue
-	panel with a coloured icon chip; it slides down into place, the others
-	slide to make room, and it fades up and away after 3 s.
+	A short stack under the top bar, newest on top. Each toast is a glass pill
+	(Kit.hudGlass: the world shows through, no blur) with an icon chip in the
+	notification's colour and outlined HUD text. It drops in 12 px with a fade
+	and a slight scale, the others glide down to make room, and it fades up and
+	away after 3 s. A toast that names a crate ("A Rare Crate is on its way!")
+	carries that rarity's colour and a little crate instead of the tone's chip.
 ]]
 
 local TONES = {
 	good = { color = C.Cash, icon = "Check" },
 	bad = { color = C.Danger, icon = "!" },
 	info = { color = C.Gold, icon = "i" },
+	warn = { color = C.Amber, icon = "!" },
 }
 
 local TOAST_H = 44
-local TOAST_STEP = 54 -- toast + lip/shadow + gap
+local TOAST_STEP = 52 -- toast + shadow + gap
+local TOAST_SLIDE = 12
+local TOAST_IN = 0.18
+local TOAST_TEXT = 17
+local TOAST_TEXT_X = 48
 local MAX_TOASTS = 4
 
 local toasts: { Frame } = {}
@@ -152,22 +163,38 @@ local function toastWidth(text: string): number
 	local width = 0
 	pcall(function()
 		local TextService = game:GetService("TextService")
-		width = TextService:GetTextSize(text, 16, Theme.Fonts.UI, Vector2.new(1000, 40)).X
+		width = TextService:GetTextSize(text, TOAST_TEXT, Theme.Fonts.Display, Vector2.new(1000, 40)).X
 	end)
 	if width <= 0 then
-		width = (utf8.len(text) or #text) * 8.5
+		width = (utf8.len(text) or #text) * 9.2
 	end
-	return math.clamp(math.ceil(width) + 72, 220, 520)
+	return math.clamp(math.ceil(width) + TOAST_TEXT_X + 28, 220, 540)
 end
 
-local function placeToasts()
+-- The rarity a toast's text names next to the crate word, if any.
+local function toastRarity(text: string): string?
+	for rarity in C.Rarity do
+		if string.find(text, rarity .. " " .. W.Chest, 1, true) then
+			return rarity
+		end
+	end
+	return nil
+end
+
+-- Glides every toast to its slot; `fresh` (the one dropping in) takes the quicker ease.
+local function placeToasts(fresh: Frame?)
 	for i = #toasts, 1, -1 do
 		if toasts[i].Parent ~= toastHolder then
 			table.remove(toasts, i)
 		end
 	end
 	for index, toast in toasts do
-		Kit.tween(toast, 0.3, { Position = UDim2.new(0.5, 0, 0, (index - 1) * TOAST_STEP) }, Enum.EasingStyle.Quint)
+		local goal = { Position = UDim2.new(0.5, 0, 0, (index - 1) * TOAST_STEP) }
+		if toast == fresh then
+			Kit.tween(toast, TOAST_IN, goal, Enum.EasingStyle.Quad)
+		else
+			Kit.tween(toast, 0.26, goal, Enum.EasingStyle.Quint)
+		end
 	end
 end
 
@@ -177,64 +204,71 @@ local function dismissToast(toast: Frame)
 		return
 	end
 	table.remove(toasts, index)
-	Kit.tween(toast, 0.18, { Position = toast.Position + UDim2.fromOffset(0, -12) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-	Kit.disappear(toast, { time = 0.18, destroy = true })
+	Kit.tween(toast, 0.2, { Position = toast.Position + UDim2.fromOffset(0, -TOAST_SLIDE) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	Kit.disappear(toast, { time = 0.2, to = 0.97, destroy = true })
 	placeToasts()
 end
 
 function Popups.toast(text: string, tone: string?)
 	local style = TONES[tone or "info"] or TONES.info
+	local rarity = toastRarity(text)
+	local color: Color3 = if rarity then C.Rarity[rarity] else style.color
 	local toast = Kit.new("Frame", {
 		Name = "Toast",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(toastWidth(text), TOAST_H),
-		Position = UDim2.new(0.5, 0, 0, -16),
+		Position = UDim2.new(0.5, 0, 0, -TOAST_SLIDE),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = toastHolder,
 	})
-	local card = Kit.panel(toast, {
-		Name = "Card",
-		Size = UDim2.fromScale(1, 1),
-		Radius = Kit.RADIUS.M,
-	})
-	local chip = Kit.new("Frame", {
-		Name = "Icon",
-		BackgroundColor3 = WHITE,
-		Size = UDim2.fromOffset(30, 30),
-		Position = UDim2.new(0, 8, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ZIndex = 2,
-		Parent = card,
-	})
-	Kit.round(chip)
-	Kit.gradient(chip, Kit.lighten(style.color, 0.25), style.color)
-	Kit.stroke(chip, 2, Kit.lip(style.color))
-	local ink = Kit.inkOn(style.color)
-	if Kit.ICONS[style.icon] then
-		Kit.icon(chip, style.icon, 16, ink, { Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 3 })
-	else
-		Kit.text(chip, {
-			Text = style.icon,
-			Font = Theme.Fonts.Display,
-			TextSize = 18,
-			TextColor3 = ink,
-			Size = UDim2.fromScale(1, 1),
-			Position = UDim2.fromOffset(0, 1),
-			StrokeThickness = 0,
-			ZIndex = 3,
+	local card = Kit.hudGlass(toast, { Name = "Card", Size = UDim2.new(1, 0, 0, TOAST_H) })
+	if rarity then
+		-- The crate itself, in its rarity's colour.
+		crateIcon(card, color, 32, {
+			Name = "Icon",
+			Rarity = rarity,
+			Position = UDim2.new(0, 22, 0.5, 0),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 2,
 		})
+	else
+		local chip = Kit.new("Frame", {
+			Name = "Icon",
+			BackgroundColor3 = WHITE,
+			Size = UDim2.fromOffset(30, 30),
+			Position = UDim2.new(0, 7, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ZIndex = 2,
+			Parent = card,
+		})
+		Kit.round(chip)
+		Kit.gradient(chip, Kit.lighten(color, 0.25), color)
+		Kit.stroke(chip, 2, Kit.lip(color))
+		local ink = Kit.inkOn(color)
+		if Kit.ICONS[style.icon] then
+			Kit.icon(chip, style.icon, 16, ink, { Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 3 })
+		else
+			Kit.text(chip, {
+				Text = style.icon,
+				Font = Theme.Fonts.Display,
+				TextSize = 18,
+				TextColor3 = ink,
+				Size = UDim2.fromScale(1, 1),
+				Position = UDim2.fromOffset(0, 1),
+				StrokeThickness = 0,
+				ZIndex = 3,
+			})
+		end
 	end
-	Kit.text(card, {
+	Kit.hudText(card, {
 		Name = "Text",
 		Text = text,
-		Font = Theme.Fonts.UI,
-		TextSize = 16,
-		TextWrapped = false,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		Size = UDim2.new(1, -60, 1, -4),
-		Position = UDim2.fromOffset(48, 1),
+		MaxTextSize = TOAST_TEXT,
+		Size = UDim2.new(1, -(TOAST_TEXT_X + 14), 0, TOAST_TEXT + 6),
+		Position = UDim2.new(0, TOAST_TEXT_X, 0.5, 1),
+		AnchorPoint = Vector2.new(0, 0.5),
 		TextXAlignment = Enum.TextXAlignment.Left,
-		StrokeThickness = 0,
+		StrokeThickness = 2,
 		ZIndex = 2,
 	})
 
@@ -242,8 +276,8 @@ function Popups.toast(text: string, tone: string?)
 	while #toasts > MAX_TOASTS do
 		dismissToast(toasts[#toasts])
 	end
-	placeToasts()
-	Kit.appear(toast, { from = 0.9, time = 0.24 })
+	placeToasts(toast)
+	Kit.appear(toast, { from = 0.94, time = TOAST_IN, style = Enum.EasingStyle.Quad })
 	if tone == "bad" then
 		sounds.play("Error")
 	else
@@ -539,7 +573,7 @@ local function modal(name: string, size: Vector2, zindex: number, onBackdrop: ((
 	local openKey = "Modal:" .. name .. modalCount
 	local dim = Kit.backdrop(screen, zindex - 1)
 	dim.Name = name .. "Backdrop"
-	Kit.fadeBackdrop(dim, true, 0.55)
+	Kit.fadeBackdrop(dim, true, Kit.GLASS_DIM)
 	Kit.setBlur(true)
 	Kit.markOpen(screen, openKey, true)
 	-- Centred holder (named `name`) that Kit.fit keeps on screen; it leaves
@@ -554,13 +588,13 @@ local function modal(name: string, size: Vector2, zindex: number, onBackdrop: ((
 		Parent = screen,
 	})
 	Kit.fit(holder, screen, Vector2.new(size.X, size.Y + 96))
+	-- The card is a glass pane like the windows (over the blurred, dimmed world).
 	local box = Kit.panel(holder, {
 		Name = "Box",
+		Glass = "body",
 		Size = UDim2.fromOffset(size.X, size.Y),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
-		StrokeThickness = 2,
-		Radius = Kit.RADIUS.XL,
 		ZIndex = zindex,
 	})
 	local closed = false
@@ -743,7 +777,7 @@ local CRATE_ART: { [string]: string } = {
 	the art loaded, else drawn from frames: a rounded box in `color` (lighter at
 	the top) on a darker lip, a lid band, two straps and a sunny clasp.
 ]]
-local function crateIcon(parent: Instance, color: Color3, size: number, props: { [string]: any }?): Frame
+function crateIcon(parent: Instance, color: Color3, size: number, props: { [string]: any }?): Frame
 	local p = props or {}
 	-- The Blender crate for this rarity from the icon atlas (p.Rarity), drawn a
 	-- little larger since the art has its own padding.
@@ -1926,7 +1960,7 @@ function Popups.offline(data: { [string]: any })
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,
 		})
-		local well = Kit.well(box, { Size = UDim2.new(1, -40, 0, 66), Position = UDim2.fromOffset(20, 120) })
+		local well = Kit.well(box, { Glass = true, Size = UDim2.new(1, -40, 0, 66), Position = UDim2.fromOffset(20, 120) })
 		local function amount(icon: string, iconColor: Color3, x: number, textColor: Color3): TextLabel
 			local cell = Kit.new("Frame", {
 				BackgroundTransparency = 1,
@@ -2103,7 +2137,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			TextColor3 = if assisted then C.Rizz else C.TextDim,
 			StrokeThickness = 0,
 		})
-		local well = Kit.well(box, { Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, 184) })
+		local well = Kit.well(box, { Glass = true, Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, 184) })
 		-- Runs inside the reward cooldown pay nothing: no empty "+$0" row.
 		well.Visible = cashTotal > 0
 		local cashLabel = cashRow(well, cashTotal)
@@ -2305,7 +2339,7 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,
 		})
-		local well = Kit.well(box, { Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, 164) })
+		local well = Kit.well(box, { Glass = true, Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, 164) })
 		well.Visible = cashTotal > 0
 		local cashLabel = cashRow(well, cashTotal)
 		local note = Kit.text(box, {
@@ -2423,6 +2457,7 @@ function Popups.mogChoose(onRivals: () -> (), onPvp: () -> (), onClosed: (() -> 
 		): (Frame, TextButton)
 			local panel = Kit.panel(box, {
 				Name = title,
+				Glass = true,
 				Elevated = true,
 				Size = UDim2.new(0.5, -28, 0, 226),
 				Position = UDim2.new(x, if x == 0 then 20 else 8, 0, 128),
@@ -2503,7 +2538,7 @@ local CALM = 4
 -- The two things in the pack in a well: cash and the Rookie Trail. Returns the cash
 -- amount label and the trail's icon (for the celebration's pop-in).
 local function starterContents(box: Frame, y: number, trailCaption: string): (TextLabel, Frame)
-	local well = Kit.well(box, { Name = "Contents", Size = UDim2.new(1, -40, 0, 100), Position = UDim2.fromOffset(20, y) })
+	local well = Kit.well(box, { Name = "Contents", Glass = true, Size = UDim2.new(1, -40, 0, 100), Position = UDim2.fromOffset(20, y) })
 	local function cell(
 		index: number,
 		icon: string,
@@ -2808,14 +2843,16 @@ local function buildChestPanel()
 		Parent = screen,
 	})
 	local compactScale = Kit.new("UIScale", { Name = "Compact", Parent = holder })
+	-- A glass pane over the unblurred world, denser than a window's (Glass.Side) so the
+	-- plain body text on it stays readable; the rarity band and the buttons stay solid.
 	local panel = Kit.panel(holder, {
 		Name = "Card",
+		Glass = "body",
+		Transparency = Theme.Glass.Side,
 		Size = UDim2.fromScale(1, 1),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Visible = false,
-		StrokeThickness = 2,
-		Radius = Kit.RADIUS.XL,
 	})
 	local band = Kit.new("Frame", {
 		Name = "Band",
@@ -2871,7 +2908,8 @@ local function buildChestPanel()
 		TextColor3 = C.TextDim,
 		StrokeThickness = 0,
 	})
-	local oddsWell = Kit.well(panel, { Name = "Odds", Size = UDim2.new(1, -24, 0, ODDS_H), Position = UDim2.fromOffset(12, ODDS_Y) })
+	local oddsWell =
+		Kit.well(panel, { Name = "Odds", Glass = true, Size = UDim2.new(1, -24, 0, ODDS_H), Position = UDim2.fromOffset(12, ODDS_Y) })
 	local odds = Kit.scrolling(oddsWell, { Name = "List", Size = UDim2.new(1, -8, 1, -8), Position = UDim2.fromOffset(4, 4) })
 	Kit.padding(odds, 2, 4)
 	Kit.list(odds, 3)

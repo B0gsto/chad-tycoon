@@ -5,7 +5,7 @@
 
 	  top bar right  Settings gear alone (Roblox's player list sits under it)
 	  top centre     Chad icon + unit count "37/100" (sunny + "RACK FULL" when full)
-	                 under it a low dark strip "Deposit bonus: x1.3 · 12s"
+	                 under it a low glass strip "Deposit bonus: x1.3 · 12s"
 	                 ("AURA SURGE x2 · 1:23" in orange during a surge); the
 	                 tutorial quest pill and the parkour run pill dock under that,
 	                 and once the tutorial is done the "Next:" goal strip takes
@@ -51,6 +51,7 @@ local State = require(script.Parent.Parent.State)
 
 local Theme = Kit.Theme
 local C = Kit.C
+local G = Theme.Glass
 local F = Kit.F
 local W = Theme.Words
 
@@ -108,6 +109,7 @@ local RUN_Y = 92 -- tutorial / run pill slot (Tutorial.luau TOP_Y matches)
 local GOAL_H = 46 -- "Next:" goal strip (the same slot once the tutorial is done)
 local GOAL_MAX_W = 380
 local GOAL_TEXT_X = 50
+local GOAL_BAR_X = 12 -- the progress bar's inset, clear of the strip's round corners
 local GRID_Y = 104 -- left icon grid, first row
 local GRID_ICON = 64
 local GRID_ICON_COMPACT = 48
@@ -535,16 +537,16 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- slot; ScreenGui attribute "RunActive" tells Tutorial to step aside). Timer from the
 	-- server clock, checkpoint n/N, and an "x" that asks "QUIT?" before firing ModeQuit.
 	-- A gold "L3" chip on the left names the Parkour level (the Star shows without one).
+	-- Glass like the other top-centre notifications (Kit.hudGlass), with an outlined clock.
 	local RUN_W, RUN_H = 236, 36
 	local RUN_ANCHOR = Vector2.new(0.5, 0)
 	local runRest = UDim2.new(0.5, 0, 0, RUN_Y)
 	local runAway = UDim2.new(0.5, 0, 0, -RUN_H - 20)
-	local runPill = Kit.panel(screen, {
+	local runPill = Kit.hudGlass(screen, {
 		Name = "RunPill",
 		Size = UDim2.fromOffset(RUN_W, RUN_H),
 		Position = runAway,
 		AnchorPoint = Vector2.new(0.5, 0),
-		Radius = RUN_H // 2,
 		Visible = false,
 	})
 	local runStar =
@@ -566,10 +568,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		ZIndex = 3,
 	})
 	Kit.round(runLevel)
-	local runClock = Kit.number(runPill, {
+	local runClock = Kit.hudText(runPill, {
 		Name = "Clock",
 		Text = "0:00.0",
+		Font = F.Number,
 		TextSize = 20,
+		StrokeThickness = 2,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.fromOffset(82, RUN_H),
 		Position = UDim2.fromOffset(42, 0),
@@ -763,17 +767,13 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 
 	-- The strip under it: "Deposit bonus: x1.3 · 12s" ------------------------------------
-	local strip = Kit.new("Frame", {
+	-- A glass pill (Kit.hudGlass); an Aura Surge turns its tint amber.
+	local strip = Kit.hudGlass(screen, {
 		Name = "DepositStrip",
-		BackgroundColor3 = C.Ink,
-		BackgroundTransparency = 0.45,
-		BorderSizePixel = 0,
 		Size = UDim2.fromOffset(340, STRIP_H),
 		Position = UDim2.new(0.5, 0, 0, STRIP_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
-		Parent = screen,
 	})
-	Kit.corner(strip, 8)
 	local stripRow = Kit.new("Frame", {
 		Name = "Row",
 		BackgroundTransparency = 1,
@@ -824,30 +824,25 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		surgeActiveNow = active
 		stripLead.Text = if active then "AURA SURGE" else "Deposit bonus:"
 		Kit.tween(strip, 0.3, {
-			BackgroundColor3 = if active then C.Amber else C.Ink,
-			BackgroundTransparency = if active then 0.15 else 0.45,
+			BackgroundColor3 = if active then C.Amber else G.TintTop,
+			BackgroundTransparency = if active then G.Pill - 0.4 else G.Pill,
 		})
 	end
 
 	-- Next goal: "Next: Protein Bro 1/2" over "merge 2x Gym Rookie" ------------------------
-	-- One dark strip like the deposit strip, in the tutorial pill's slot once the tutorial
+	-- One glass strip like the deposit strip, in the tutorial pill's slot once the tutorial
 	-- is done (above the dumbbell on compact screens): the target's thumbnail (a silhouette
 	-- until it is discovered), its name and count, what to do under them, and a thin bar
 	-- along the bottom. The target comes from Shared.NextGoal; the strip opens the Index.
-	local goal = Kit.new("TextButton", {
+	local goal = Kit.hudGlass(screen, {
 		Name = "NextGoal",
-		Text = "",
-		AutoButtonColor = false,
-		BackgroundColor3 = C.Ink,
-		BackgroundTransparency = 0.45,
-		BorderSizePixel = 0,
+		Button = true,
 		Size = UDim2.fromOffset(280, GOAL_H),
 		Position = UDim2.new(0.5, 0, 0, RUN_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
+		Radius = Kit.RADIUS.M,
 		Visible = false,
-		Parent = screen,
-	})
-	Kit.corner(goal, 8)
+	}) :: TextButton
 	Kit.selectable(goal)
 	local goalThumb = group("Thumb", {
 		Size = UDim2.fromOffset(42, 42),
@@ -882,7 +877,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		BackgroundColor3 = C.Gold,
 		BorderSizePixel = 0,
 		Size = UDim2.new(0, 0, 0, 3),
-		Position = UDim2.new(0, 8, 1, -5),
+		Position = UDim2.new(0, GOAL_BAR_X, 1, -6),
 		ZIndex = 2,
 		Parent = goal,
 	})
@@ -908,10 +903,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end)
 	end
 	goal.MouseEnter:Connect(function()
-		Kit.tween(goal, 0.12, { BackgroundTransparency = 0.25 })
+		Kit.tween(goal, 0.12, { BackgroundTransparency = G.Pill - 0.2 })
 	end)
 	goal.MouseLeave:Connect(function()
-		Kit.tween(goal, 0.12, { BackgroundTransparency = 0.45 })
+		Kit.tween(goal, 0.12, { BackgroundTransparency = G.Pill })
 	end)
 	local function tierName(tier: number): string
 		local entry = Theme.Tiers[tier]
@@ -935,7 +930,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local title, hint, count = NextGoal.text(picked, tierName, State.money)
 		local key = title .. "|" .. hint .. "|" .. count
 		if key == goalKey then
-			Kit.tween(goalBar, 0.3, { Size = UDim2.new(0, math.floor((goalWidth - 16) * picked.progress), 0, 3) })
+			Kit.tween(goalBar, 0.3, { Size = UDim2.new(0, math.floor((goalWidth - GOAL_BAR_X * 2) * picked.progress), 0, 3) })
 			return
 		end
 		goalKey = key
@@ -961,7 +956,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		goalHint.Size = UDim2.fromOffset(hintW + 2, 16)
 		goalWidth = math.max(x, GOAL_TEXT_X + hintW) + 12
 		goal.Size = UDim2.fromOffset(goalWidth, GOAL_H)
-		goalBar.Size = UDim2.new(0, math.floor((goalWidth - 16) * picked.progress), 0, 3)
+		goalBar.Size = UDim2.new(0, math.floor((goalWidth - GOAL_BAR_X * 2) * picked.progress), 0, 3)
 		-- A new target (not just a new count) gets a fresh thumbnail and a pop.
 		local thumbKey = picked.kind .. picked.tier
 		if thumbKey ~= goalThumbKey then

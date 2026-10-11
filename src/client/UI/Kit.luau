@@ -2279,6 +2279,49 @@ function Kit.glass(parent: Instance, props: { [string]: any }): Frame
 	return frame
 end
 
+--[[
+	Kit.hudGlass(parent, props): the glass pill of a notification that sits
+	straight over the unblurred world (toasts, the quest pill, the HUD strips):
+	the window tint as glass the world shows through (G.Pill), the thin light
+	edge and a soft navy halo and shadow. Text on it is Kit.hudText (outlined).
+	props: Size (its offset height rounds the ends), Position, AnchorPoint,
+	LayoutOrder, Visible, Name, ZIndex, Radius, Color (tint), Transparency,
+	Edge (edge colour), Shadow (false = none), Button (true = a TextButton). The tint is the
+	BackgroundColor3, shaded toward the bottom by a multiplying gradient, so it
+	may be tweened to another colour. Chrome children: Halo, Shadow.
+]]
+local HUD_SHADE = ColorSequence.new(WHITE, WHITE:Lerp(G.Tint, 0.45))
+function Kit.hudGlass(parent: Instance, props: { [string]: any }): GuiObject
+	local size: UDim2 = props.Size or UDim2.fromOffset(240, 44)
+	local radius: number = props.Radius or math.max(size.Y.Offset // 2, 8)
+	local frame = Kit.new(if props.Button then "TextButton" else "Frame", {
+		Name = props.Name or "Pill",
+		BackgroundColor3 = props.Color or G.TintTop,
+		BackgroundTransparency = props.Transparency or G.Pill,
+		BorderSizePixel = 0,
+		Size = size,
+		Position = props.Position or UDim2.new(),
+		AnchorPoint = props.AnchorPoint or Vector2.zero,
+		LayoutOrder = props.LayoutOrder or 0,
+		Visible = if props.Visible == nil then true else props.Visible,
+		ZIndex = props.ZIndex or 1,
+		Parent = parent,
+	})
+	if props.Button then
+		frame.Text = ""
+		frame.AutoButtonColor = false
+	end
+	Kit.corner(frame, radius)
+	Kit.new("UIGradient", { Rotation = 90, Color = HUD_SHADE, Parent = frame })
+	-- Border mode: on a TextButton a contextual stroke would outline the text instead.
+	glassEdge(frame, props.Edge or G.Edge, G.EdgeThickness, G.EdgeTop, G.EdgeBottom).ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	if props.Shadow ~= false then
+		halo(frame, "Halo", radius, C.Ink, 3, G.Shadow)
+		Kit.shadow(frame, radius, 1, 0)
+	end
+	return frame
+end
+
 -- Kit.panel's glass builds: "body" is a window pane, a Color makes a coloured
 -- card with a glow in its own colour, and anything else is a Kit.glass surface.
 local function glassPanel(parent: Instance, props: { [string]: any }): Frame
@@ -2337,7 +2380,7 @@ end
 	Chrome children (Highlight, Lip, Shadow) carry the KitChrome attribute.
 
 	Glass = true builds the panel as glass instead, for anything inside a window
-	(HUD pieces over the unblurred world stay plastic): a Kit.glass surface, or
+	(notifications over the unblurred world use Kit.hudGlass): a Kit.glass surface, or
 	with a Color a coloured glass card (tinted gradient, light edge, a glow in
 	its own colour or GlowColor: chrome Highlight, Aura, Shadow). Glass = "body" is the
 	window pane itself (Kit.window).

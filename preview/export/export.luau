@@ -1256,6 +1256,8 @@ local function main()
 	stateDone.tutorialStep = 6
 	settle(stateDone)
 	TutorialUI.onNotify({ kind = "Tutorial", event = "done", cash = 250 })
+	-- The quest pill ticks and slides out, then the "complete" banner drops into its slot.
+	task.wait(0.9)
 	shot("tutorial_done")
 	Kit.setGlow(Hud.buttons.Index, false)
 	localIndex = 1

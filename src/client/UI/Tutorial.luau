@@ -4,17 +4,19 @@
 	ServerScriptService.Server.Tutorial); this only reads the State snapshot
 	(tutorialStep, tutorialDone) and the "Tutorial" Notify payloads.
 
-	The quest pill is one slim line (step chip "2/5", the short instruction,
-	a quiet "x" to skip) docked top-centre under the multiplier gauge, or
+	The quest pill is one slim glass line (Kit.hudGlass: step chip "2/5", the
+	short instruction as outlined HUD text, a quiet "x" to skip) docked
+	top-centre under the multiplier gauge, or
 	bottom-centre above the dumbbell meter on compact screens, so it never covers the
 	play area. Theme.Tutorial.Steps[i].ShortHint, when present, shows as a
 	small second line for the first few seconds of a step. Docked at the top
 	it sets the ScreenGui attribute "TopCardHeight" so toasts sit below it.
 
-	A new step slides/fades in with one soft pulse; a finished step ticks a
-	check mark on the chip, slides out, then the next one slides in. The pill
-	(and the 3D guide, see Guide) stays hidden while the intro cutscene plays
-	(Players.LocalPlayer attribute "IntroPlaying").
+	The pill drops in 12 px with a fade and one soft pulse. A finished step
+	ticks a check mark on the chip, then the next step's text cross-fades in
+	place with another soft pulse (the pill is not rebuilt); only the last step
+	slides it out. The pill (and the 3D guide, see Guide) stays hidden while the
+	intro cutscene plays (Players.LocalPlayer attribute "IntroPlaying").
 
 	The completion reward is a toast-sized banner shown through the popup
 	queue once the wallet has finished counting up the first collect.
@@ -52,7 +54,7 @@ export type Deps = {
 -- centre; the compact dumbbell's top edge sits about 94 px above the bottom.
 local PILL_HEIGHT = 44
 local PILL_MIN_WIDTH = 220
-local PILL_MAX_WIDTH = 360
+local PILL_MAX_WIDTH = 420
 local TOP_Y = 92
 local BOTTOM_GAP = 102
 -- The pill lives in a CanvasGroup (for the fade) padded so its shadow is not clipped.
@@ -63,9 +65,11 @@ local SLIDE = 12
 local CHIP_WIDTH = 38
 local TEXT_X = 54
 local CLOSE_WIDTH = 38
-local TEXT_SIZE = 16
+local TEXT_SIZE = 17
 local HINT_SIZE = 14
+local HINT_FADED = 0.1
 local HINT_SECONDS = 4
+local IN_TIME = 0.18
 local TICK_HOLD = 0.45
 
 local screen: ScreenGui
@@ -83,7 +87,7 @@ local hintLabel: TextLabel
 local shownStep = 0
 local shownHint: string? = nil
 local onScreen = false
--- True while a finished step ticks and slides out (its text must not change).
+-- True while a finished step ticks and its text swaps or slides out (the text must not change).
 local leaving = false
 -- Bumped by every show/hide/transition so stale delayed steps bail out.
 local token = 0
@@ -141,43 +145,76 @@ local function stepWords(step: number, data: { [string]: any }): (string, string
 	return words.Short or words.Title, hint
 end
 
+-- Eases `props` over `time`, or sets them at once when `time` is 0.
+local function ease(obj: Instance, time: number, props: { [string]: any })
+	if time > 0 then
+		Kit.tween(obj, time, props, Enum.EasingStyle.Quad)
+		return
+	end
+	for key, value in props do
+		(obj :: any)[key] = value
+	end
+end
+
+-- Fades a HUD label together with its outline (a UIStroke ignores TextTransparency).
+local function fadeText(label: TextLabel, time: number, transparency: number)
+	ease(label, time, { TextTransparency = transparency })
+	local outline = label:FindFirstChild("Outline")
+	if outline then
+		ease(outline, time, { Transparency = transparency })
+	end
+end
+
 -- Shows the small second line for a few seconds, then eases the main line back to centre.
 local function showHint(hint: string?)
 	shownHint = hint
 	hintSerial += 1
 	local mine = hintSerial
 	if not hint then
-		Kit.tween(hintLabel, 0.25, { TextTransparency = 1 })
+		fadeText(hintLabel, 0.25, 1)
 		Kit.tween(mainLabel, 0.25, { Position = UDim2.new(0, TEXT_X, 0.5, 0) })
 		return
 	end
 	hintLabel.Text = hint
-	hintLabel.TextTransparency = 1
+	fadeText(hintLabel, 0, 1)
 	mainLabel.Position = UDim2.new(0, TEXT_X, 0.5, -8)
-	Kit.tween(hintLabel, 0.3, { TextTransparency = 0.15 })
+	fadeText(hintLabel, 0.3, HINT_FADED)
 	task.delay(HINT_SECONDS, function()
 		if hintSerial == mine then
-			Kit.tween(hintLabel, 0.35, { TextTransparency = 1 })
+			fadeText(hintLabel, 0.35, 1)
 			Kit.tween(mainLabel, 0.35, { Position = UDim2.new(0, TEXT_X, 0.5, 0) })
 		end
 	end)
 end
 
--- Fills the pill for `step` (while it is off screen or about to slide in).
-local function setContent(step: number, data: { [string]: any })
+-- Fills the pill for `step`. `live` is a step change while it is on screen: the pill eases
+-- to its new width and the chip back to gold instead of jumping (the caller fades the text).
+local function setContent(step: number, data: { [string]: any }, live: boolean?)
 	local text, hint = stepWords(step, data)
+	local time = if live then 0.2 else 0
 	shownStep = step
 	chipLabel.Text = string.format("%d/%d", step, TutorialSteps.COUNT)
-	chipLabel.TextTransparency = 0
-	chip.BackgroundColor3 = C.Gold
-	checkScale.Scale = 0
+	ease(chipLabel, time, { TextTransparency = 0 })
+	ease(chip, time, { BackgroundColor3 = C.Gold })
+	ease(checkScale, time * 0.6, { Scale = 0 })
 	mainLabel.Text = text
-	local width = math.max(textWidth(text, TEXT_SIZE, F.Bold), if hint then textWidth(hint, HINT_SIZE, F.Body) else 0)
-	local pillWidth = math.clamp(math.ceil(width) + TEXT_X + CLOSE_WIDTH + 8, PILL_MIN_WIDTH, PILL_MAX_WIDTH)
-	group.Size = UDim2.fromOffset(pillWidth + PAD_X * 2, PILL_HEIGHT + PAD_TOP + PAD_BOTTOM)
-	hintLabel.TextTransparency = 1
+	local width = math.max(textWidth(text, TEXT_SIZE, F.Display), if hint then textWidth(hint, HINT_SIZE, F.UI) else 0)
+	local pillWidth = math.clamp(math.ceil(width) + TEXT_X + CLOSE_WIDTH + 12, PILL_MIN_WIDTH, PILL_MAX_WIDTH)
+	ease(group, time, { Size = UDim2.fromOffset(pillWidth + PAD_X * 2, PILL_HEIGHT + PAD_TOP + PAD_BOTTOM) })
+	fadeText(hintLabel, 0, 1)
 	mainLabel.Position = UDim2.new(0, TEXT_X, 0.5, 0)
+	fadeText(mainLabel, time, 0)
 	showHint(hint)
+end
+
+-- One soft pulse: the pill has landed, or shows a new step.
+local function pulse(mine: number)
+	Kit.tween(pulseScale, 0.14, { Scale = 1.04 }, Enum.EasingStyle.Quad)
+	task.delay(0.14, function()
+		if token == mine then
+			Kit.tween(pulseScale, 0.26, { Scale = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+		end
+	end)
 end
 
 local function slideIn()
@@ -190,17 +227,13 @@ local function slideIn()
 	group.AnchorPoint = Vector2.new(0.5, if compact() then 1 else 0)
 	group.GroupTransparency = 1
 	group.Position = awayPosition()
-	pulseScale.Scale = 1
-	Kit.tween(group, 0.3, { GroupTransparency = 0, Position = restPosition() }, Enum.EasingStyle.Quad)
-	-- One soft pulse once it has landed.
-	task.delay(0.3, function()
-		if token ~= mine then
-			return
+	pulseScale.Scale = 0.96
+	Kit.tween(group, IN_TIME, { GroupTransparency = 0, Position = restPosition() }, Enum.EasingStyle.Quad)
+	Kit.tween(pulseScale, IN_TIME, { Scale = 1 }, Enum.EasingStyle.Quad)
+	task.delay(IN_TIME + 0.04, function()
+		if token == mine then
+			pulse(mine)
 		end
-		Kit.tween(pulseScale, 0.14, { Scale = 1.04 }, Enum.EasingStyle.Quad)
-		task.delay(0.14, function()
-			Kit.tween(pulseScale, 0.26, { Scale = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
-		end)
 	end)
 end
 
@@ -242,6 +275,38 @@ local function completeAndLeave(after: (() -> ())?)
 	end)
 end
 
+-- A finished step with more to come: ticks the chip, then cross-fades the pill's text to
+-- the latest step in place, with one soft pulse. Slides out instead if the tutorial ended
+-- (or its slot was taken) meanwhile.
+local function advance()
+	token += 1
+	local mine = token
+	leaving = true
+	tick()
+	task.delay(TICK_HOLD, function()
+		if token ~= mine then
+			return
+		end
+		hintSerial += 1
+		fadeText(mainLabel, 0.12, 1)
+		fadeText(hintLabel, 0.12, 1)
+		task.delay(0.12, function()
+			if token ~= mine then
+				return
+			end
+			local latest = lastData
+			local step = if latest then TutorialSteps.clamp(latest.tutorialStep) else 0
+			if not latest or latest.tutorialDone == true or step > TutorialSteps.COUNT or slotTaken() then
+				slideOut()
+				return
+			end
+			leaving = false
+			setContent(step, latest, true)
+			pulse(mine)
+		end)
+	end)
+end
+
 local function render(data: { [string]: any })
 	lastData = data
 	local step = TutorialSteps.clamp(data.tutorialStep)
@@ -277,13 +342,7 @@ local function render(data: { [string]: any })
 
 	if step ~= shownStep then
 		if onScreen and shownStep > 0 and step > shownStep then
-			completeAndLeave(function()
-				local latest = lastData
-				if latest and not slotTaken() then
-					setContent(TutorialSteps.clamp(latest.tutorialStep), latest)
-					slideIn()
-				end
-			end)
+			advance()
 			shownStep = step
 		else
 			setContent(step, data)
@@ -328,12 +387,11 @@ local function showCelebrate(cash: number, done: () -> ())
 		ZIndex = 21,
 		Parent = holder,
 	})
-	local card = Kit.panel(fade, {
+	local card = Kit.hudGlass(fade, {
 		Name = "Card",
 		Size = UDim2.new(1, -PAD_X * 2, 0, 60),
 		Position = UDim2.fromOffset(PAD_X, PAD_TOP),
-		StrokeColor = C.Gold,
-		Radius = 30,
+		Edge = C.Gold,
 		ZIndex = 21,
 	})
 	local medal = Kit.new("Frame", {
@@ -347,19 +405,19 @@ local function showCelebrate(cash: number, done: () -> ())
 	})
 	Kit.round(medal)
 	Kit.gradient(medal, Kit.lighten(C.Gold, 0.35), C.Gold)
+	Kit.stroke(medal, 2, Kit.lip(C.Gold))
 	Kit.icon(medal, "Ranking", 24, C.GoldInk, { Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 23 })
 	local medalScale = Kit.new("UIScale", { Scale = 0.4, Parent = medal })
 
-	Kit.title(card, {
+	Kit.hudText(card, {
 		Name = "Title",
 		Text = Words.DoneTitle,
 		TextSize = T.H3,
-		TextWrapped = false,
 		Size = UDim2.new(1, -64, 0, 22),
-		Position = UDim2.fromOffset(56, 6),
+		Position = UDim2.fromOffset(56, 7),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = C.Primary,
-		StrokeThickness = 1.5,
+		StrokeThickness = 2,
 		ZIndex = 22,
 	})
 	local rewards = Kit.new("Frame", {
@@ -378,6 +436,7 @@ local function showCelebrate(cash: number, done: () -> ())
 		Kit.pill(rewards, {
 			Text = info.text,
 			Color = info.color,
+			Solid = true,
 			TextSize = T.Small,
 			Size = UDim2.fromOffset(0, 22),
 			AutomaticSize = Enum.AutomaticSize.X,
@@ -389,8 +448,8 @@ local function showCelebrate(cash: number, done: () -> ())
 		end)
 	end
 
-	Kit.tween(fade, 0.3, { GroupTransparency = 0 }, Enum.EasingStyle.Quad)
-	Kit.tween(holder, 0.3, { Position = rest }, Enum.EasingStyle.Quad)
+	Kit.tween(fade, IN_TIME, { GroupTransparency = 0 }, Enum.EasingStyle.Quad)
+	Kit.tween(holder, IN_TIME, { Position = rest }, Enum.EasingStyle.Quad)
 	Kit.tween(medalScale, 0.4, { Scale = 1 }, Enum.EasingStyle.Back)
 	Kit.confetti(holder, {
 		Origin = UDim2.new(0, PAD_X + 28, 0, PAD_TOP + 28),
@@ -481,12 +540,11 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		Parent = screen,
 	})
 	pulseScale = Kit.new("UIScale", { Parent = group })
-	local pill = Kit.panel(group, {
+	-- Glass over the unblurred world: the step chip carries the colour, the text is outlined.
+	local pill = Kit.hudGlass(group, {
 		Name = "Pill",
 		Size = UDim2.new(1, -PAD_X * 2, 0, PILL_HEIGHT),
 		Position = UDim2.fromOffset(PAD_X, PAD_TOP),
-		Transparency = 0.08,
-		Radius = PILL_HEIGHT // 2,
 		ZIndex = 6,
 	})
 
@@ -500,6 +558,7 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		Parent = pill,
 	})
 	Kit.round(chip)
+	Kit.stroke(chip, 2, Kit.lip(C.Gold))
 	chipLabel = Kit.number(chip, {
 		Name = "Step",
 		Text = "",
@@ -516,33 +575,33 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 	})
 	checkScale = Kit.new("UIScale", { Scale = 0, Parent = chipCheck })
 
-	mainLabel = Kit.text(pill, {
+	mainLabel = Kit.hudText(pill, {
 		Name = "Text",
 		Text = "",
-		Font = F.Bold,
 		TextSize = TEXT_SIZE,
-		TextWrapped = false,
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		Size = UDim2.new(1, -(TEXT_X + CLOSE_WIDTH), 0, 20),
+		Size = UDim2.new(1, -(TEXT_X + CLOSE_WIDTH), 0, 22),
 		Position = UDim2.new(0, TEXT_X, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
 		TextXAlignment = Enum.TextXAlignment.Left,
+		StrokeThickness = 2,
 		ZIndex = 7,
 	})
-	hintLabel = Kit.text(pill, {
+	hintLabel = Kit.hudText(pill, {
 		Name = "Hint",
 		Text = "",
+		Font = F.UI,
 		TextSize = HINT_SIZE,
-		TextWrapped = false,
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		TextTransparency = 1,
 		Size = UDim2.new(1, -(TEXT_X + CLOSE_WIDTH), 0, 17),
-		Position = UDim2.new(0, TEXT_X, 0.5, 10),
+		Position = UDim2.new(0, TEXT_X, 0.5, 11),
 		AnchorPoint = Vector2.new(0, 0.5),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = C.TextDim,
+		StrokeThickness = 2,
 		ZIndex = 7,
 	})
+	fadeText(hintLabel, 0, 1)
 
 	-- Quiet skip: a small "x" (44 px hit area, centred where the 36 px one was) that asks
 	-- before skipping.
@@ -557,7 +616,7 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		ZIndex = 8,
 		Parent = pill,
 	})
-	local cross = Kit.icon(skip, "Close", 12, C.TextMute, {
+	local cross = Kit.icon(skip, "Close", 12, C.TextDim, {
 		Name = "Cross",
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
@@ -568,7 +627,7 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 	local function lit(on: boolean)
 		for _, part in cross:GetChildren() do
 			if part:IsA("Frame") then
-				Kit.tween(part, 0.12, { BackgroundColor3 = if on then C.TextDim else C.TextMute })
+				Kit.tween(part, 0.12, { BackgroundColor3 = if on then C.Text else C.TextDim })
 			end
 		end
 	end

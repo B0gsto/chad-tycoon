@@ -229,6 +229,11 @@ Theme.Glass = {
 	-- Coloured cards (shop banners and packs): the card's own colour as glass, with a glow.
 	Card = 0.38,
 	CardGlow = 0.7,
+	-- Over the unblurred world: Pill is a notification (toasts, the quest pill, the HUD
+	-- strips; the text on it is outlined), Side a denser pane that carries plain body text
+	-- (the held-crate panel).
+	Pill = 0.58,
+	Side = 0.34,
 	-- The world behind an open window: BlurEffect size and the backdrop's dim.
 	Blur = 12,
 	Dim = 0.5,
