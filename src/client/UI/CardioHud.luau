@@ -22,13 +22,10 @@
 	                the treadmill card (on / near a treadmill), SPEED UP
 	                (near the upgrade pad, fires CardioUpgrade) and a QUIT pill that asks
 	                "QUIT?" before ModeQuit.
-	  Start picker  centre: when a run starts in the lobby and bestStage > 0, buttons
-	                for stages 1..bestStage (ModeStart { mode = "cardio", stage = n }) and
-	                START HERE. Closes itself after a while or once the run moves on.
 	  Finish card   centre: CARDIO CHAMPION!, the reward, RUN AGAIN / HOME, confetti.
 
 	Snapshot fields read (modes.cardio): running, speed, walkSpeed, maxWalkSpeed?,
-	speedCap?, multiplier, bestStage, treadmill, treadmillRate, nextCost, stage,
+	speedCap?, multiplier, treadmill, treadmillRate, nextCost, stage,
 	onTreadmill, stageCount, needs, names. Main routes Notify (kind "Mode", mode "cardio")
 	to CardioHud.onNotify, every State snapshot to CardioHud.onState and the "CardioSteps"
 	effect to CardioHud.onSteps.
@@ -76,7 +73,6 @@ local WALLET_RIGHT = 340 -- px the desktop wallet (bottom left) reaches
 local NEAR_PAD = 16 -- studs (flat) from the upgrade pad that show the SPEED UP card
 local NEAR_TREADMILL = 14
 local PROXIMITY_EVERY = 0.15
-local PICKER_HOLD = 15 -- seconds the start picker waits before closing itself
 local MAX_LEVEL = 10
 local MAX_CAP = 100000
 
@@ -126,12 +122,10 @@ local upButton: TextButton
 local stageLine: Frame
 local stageLabel: TextLabel
 local hintLabel: TextLabel
--- Banner, picker, finish
+-- Banner, finish
 local banner: Frame
 local bannerTitle: TextLabel
 local bannerSub: TextLabel
-local picker: Frame
-local pickerGrid: Frame
 local finishCard: Frame
 local finishSub: TextLabel
 local finishReward: TextLabel
@@ -145,13 +139,11 @@ local shownSpeed = 0
 local walkSpeed = 16
 local maxSeen = 16
 local stage = 0
-local bestStage = 0
 local stageCount = 10
 local nearPad = false
 local nearTreadmill = false
 local quitArmed = false
 local bannerToken = 0
-local pickerToken = 0
 local renderConn: RBXScriptConnection? = nil
 local proximityAt = 0
 local hintShown = false
@@ -484,57 +476,6 @@ local function render(dt: number)
 	end
 end
 
--- Picker --------------------------------------------------------------------------------------
-
-local function hidePicker()
-	pickerToken += 1
-	if picker.Visible then
-		Kit.disappear(picker)
-	end
-end
-
-local function showPicker(best: number)
-	pickerToken += 1
-	local mine = pickerToken
-	for _, child in pickerGrid:GetChildren() do
-		if child:IsA("GuiButton") then
-			child:Destroy()
-		end
-	end
-	local count = math.clamp(math.floor(best), 1, stageCount)
-	local first: GuiObject? = nil
-	for n = 1, count do
-		local isBest = n == count
-		local button = Kit.button(pickerGrid, {
-			Name = "Stage" .. n,
-			Text = tostring(n),
-			Color = if isBest then GOLD else MINT,
-			Font = F.Display,
-			TextSize = 26,
-			Size = UDim2.fromOffset(50, 50),
-			LayoutOrder = n,
-			Radius = 14,
-			ZIndex = 42,
-		}, function()
-			hidePicker()
-			action:FireServer({ action = "ModeStart", mode = "cardio", stage = n })
-		end)
-		Kit.selectable(button)
-		first = first or button
-	end
-	picker.Size = UDim2.fromOffset(math.clamp(count * 58 + 48, 320, 640), 186)
-	Kit.appear(picker, { from = 0.7, time = 0.3 })
-	Kit.stagger(pickerGrid, 0.03)
-	if Kit.gamepad and first then
-		Kit.select(first)
-	end
-	task.delay(PICKER_HOLD, function()
-		if pickerToken == mine then
-			hidePicker()
-		end
-	end)
-end
-
 -- Show / hide ---------------------------------------------------------------------------------
 
 -- The Hud's bottom-centre dumbbell steps aside for the speed box during a run.
@@ -608,7 +549,6 @@ local function hide()
 	end
 	capBox:ReleaseFocus()
 	setCustomOpen(false)
-	hidePicker()
 	Kit.disappear(stageLine)
 	Kit.disappear(boxBody)
 	Kit.disappear(customCard)
@@ -620,20 +560,22 @@ end
 local function applySnapshot(s: { [string]: any }, exact: boolean)
 	snap = s
 	stageCount = math.clamp(math.floor(num(s.stageCount, 10)), 1, 10)
-	bestStage = math.floor(num(s.bestStage, bestStage))
-	local newStage = math.floor(num(s.stage, stage))
-	if newStage ~= stage then
-		stage = newStage
-		if stage > 0 then
-			hidePicker()
-		end
-	end
+	stage = math.floor(num(s.stage, stage))
 	setTarget(num(s.speed, targetSpeed), exact)
 	setWalk(num(s.walkSpeed, walkSpeed))
 	setMultiplier(num(s.multiplier, 1))
 	if active then
 		paintTreadmill()
 		paintUpgrade()
+	end
+end
+
+-- Closes the finish card and drops a gamepad selection left on its buttons, so the stick
+-- goes back to running.
+local function hideFinish()
+	Kit.unfocus(finishCard)
+	if finishCard.Visible then
+		Kit.disappear(finishCard)
 	end
 end
 
@@ -658,32 +600,19 @@ function CardioHud.onNotify(p: any)
 	local event = tostring(p.event)
 	if event == "start" then
 		startedAt = os.clock()
-		if finishCard.Visible then
-			Kit.disappear(finishCard)
-		end
-		stage = math.floor(num(p.stage, 0))
-		bestStage = math.floor(num(p.bestStage, bestStage))
+		hideFinish()
+		-- A run always starts in the lobby (stage 1).
+		stage = 0
 		setTarget(num(p.speed, targetSpeed), true)
 		setWalk(num(p.walkSpeed, walkSpeed))
 		setMultiplier(num(p.multiplier, 1))
 		show()
 		Sounds.play("Ready")
-		if stage <= 0 then
-			showBanner("CARDIO!", "Every key you step on = +Speed!", MINT, 2)
-			stageTitle(2.4)
-			if bestStage > 0 then
-				showPicker(bestStage)
-			end
-		else
-			stageTitle()
-		end
+		showBanner("CARDIO!", "Every key you step on = +Speed!", MINT, 2)
+		stageTitle(2.4)
 	elseif event == "stage" then
 		local n = math.floor(num(p.stage, stage))
 		stage = math.max(stage, n)
-		if p.first == true then
-			bestStage = math.max(bestStage, n)
-		end
-		hidePicker()
 		local title = if p.first == true then "STAGE " .. n .. " CLEAR!" else "STAGE " .. n .. "!"
 		showBanner(title, rewardText(p), if p.first == true then GOLD else MINT, 2.4)
 		stageTitle(2.8)
@@ -1267,60 +1196,6 @@ local function buildBanner(screenGui: ScreenGui)
 	})
 end
 
-local function buildPicker(screenGui: ScreenGui)
-	picker = Kit.panel(screenGui, {
-		Name = "CardioStartAt",
-		Size = UDim2.fromOffset(420, 186),
-		Position = UDim2.new(0.5, 0, 0.5, 20),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Visible = false,
-		ZIndex = 40,
-		Elevated = true,
-	})
-	Kit.title(picker, {
-		Name = "Title",
-		Text = "START AT STAGE",
-		TextSize = 28,
-		TextColor3 = GOLD,
-		Size = UDim2.new(1, 0, 0, 32),
-		Position = UDim2.fromOffset(0, 12),
-		ZIndex = 41,
-	})
-	Kit.text(picker, {
-		Name = "Sub",
-		Text = "Skip to a safe zone you already reached",
-		Font = F.UI,
-		TextSize = 15,
-		TextColor3 = C.TextDim,
-		Size = UDim2.new(1, 0, 0, 18),
-		Position = UDim2.fromOffset(0, 44),
-		ZIndex = 41,
-	})
-	pickerGrid = Kit.new("Frame", {
-		Name = "Grid",
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -24, 0, 56),
-		Position = UDim2.fromOffset(12, 70),
-		ZIndex = 41,
-		Parent = picker,
-	})
-	Kit.list(pickerGrid, 8, true, Enum.HorizontalAlignment.Center)
-	local stay = Kit.button(picker, {
-		Name = "Stay",
-		Text = "START HERE",
-		Color = C.SurfaceHi,
-		TextSize = 15,
-		Size = UDim2.fromOffset(150, 36),
-		Position = UDim2.new(0.5, 0, 1, -12),
-		AnchorPoint = Vector2.new(0.5, 1),
-		Radius = 12,
-		ZIndex = 42,
-	}, function()
-		hidePicker()
-	end)
-	Kit.selectable(stay)
-end
-
 local function buildFinish(screenGui: ScreenGui)
 	finishCard = Kit.panel(screenGui, {
 		Name = "CardioFinish",
@@ -1378,8 +1253,8 @@ local function buildFinish(screenGui: ScreenGui)
 		ZIndex = 52,
 		Breathe = true,
 	}, function()
-		Kit.disappear(finishCard)
-		action:FireServer({ action = "ModeStart", mode = "cardio", stage = 0 })
+		hideFinish()
+		action:FireServer({ action = "ModeStart", mode = "cardio" })
 	end)
 	local home = Kit.button(finishCard, {
 		Name = "Home",
@@ -1392,7 +1267,7 @@ local function buildFinish(screenGui: ScreenGui)
 		AnchorPoint = Vector2.new(0, 1),
 		ZIndex = 52,
 	}, function()
-		Kit.disappear(finishCard)
+		hideFinish()
 		action:FireServer({ action = "Home" })
 	end)
 	Kit.selectable(again)
@@ -1425,7 +1300,6 @@ function CardioHud.build(screenGui: ScreenGui)
 	buildUpgradeCard()
 	buildStageLine()
 	buildBanner(screenGui)
-	buildPicker(screenGui)
 	buildFinish(screenGui)
 
 	-- Layout: compact screens shrink the box and the column; the desktop wallet (bottom

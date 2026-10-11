@@ -1,11 +1,14 @@
 --[[
-	Unit tests for the CARDIO rules (src/server/Modes/CardioRules.luau) and the keyboard runway
-	layout (src/server/Modes/CardioLayout.luau).
+	Unit tests for the CARDIO rules (src/server/Modes/CardioRules.luau), the keyboard runway
+	layout (src/server/Modes/CardioLayout.luau) and where a run starts (src/server/Modes/Cardio.luau).
 	Loaded by tests/run.luau with its harness: { test, check, eq, near, seeded }.
 ]]
 
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
+local roblox = require("@lune/roblox")
+
+local Economy = require("../src/shared/Economy")
 
 local MODES_DIR = "src/server/Modes/"
 
@@ -862,5 +865,133 @@ return function(h: { [string]: any })
 		local r3 = Layout.room(3)
 		check(r3 ~= nil and Layout.roomAt((r3.x0 + r3.x1) / 2) == r3 and r3.stage == 3, "roomAt")
 		eq(Layout.stageAt(r3.x0 + 1), 3, "stageAt in bridge room 3")
+	end)
+
+	-- Loads Modes.Cardio against stub GameModes / Tycoon for a player whose record is
+	-- `bestStage`. Returns the mode def and a rig.
+	local function loadCardio(bestStage: number): (any, any)
+		local env = function(parent: { [string]: any })
+			return setmetatable({
+				script = { Parent = parent },
+				require = function(module)
+					return module
+				end,
+			}, { __index = _G })
+		end
+		local Chase = luau.load(fs.readFile(MODES_DIR .. "CardioChase.luau"), {
+			debugName = "CardioChase",
+			environment = env({ CardioRules = Rules, CardioLayout = Layout }),
+		})()
+		local Course = luau.load(fs.readFile(MODES_DIR .. "Course.luau"), { debugName = "Course" })()
+		local clock = { t = 1000 }
+		local rig: any = { notes = {}, teleports = 0, clock = clock }
+		local player = {}
+		local root = { Position = roblox.Vector3.new(0, 0, 0) }
+		local session = {
+			player = player,
+			profile = {
+				money = 0,
+				cardio = { speed = 0, bestStage = bestStage, treadmill = 0, clears = 0, speedCap = 0 },
+				modes = { cardio = { best = bestStage, clears = 0, lastRewardAt = 0 } },
+			},
+		}
+		rig.player, rig.root, rig.session = player, root, session
+		local GameModes = {
+			session = function()
+				return session
+			end,
+			notify = function(_, event, _, data)
+				local note = table.clone(data or {})
+				note.event = event
+				table.insert(rig.notes, note)
+			end,
+			effect = function() end,
+			refresh = function() end,
+			teleport = function(_, feet)
+				rig.teleports += 1
+				rig.teleportedTo = feet
+			end,
+		}
+		local Tycoon = {
+			income = function()
+				return 0
+			end,
+			markDirty = function() end,
+			toast = function() end,
+			addAction = function() end,
+		}
+		local services = {
+			ReplicatedStorage = { Shared = { Economy = Economy } },
+			Players = { PlayerRemoving = { Connect = function() end } },
+		}
+		local modes = { CardioLayout = Layout, CardioRules = Rules, CardioChase = Chase, Course = Course }
+		local cardioEnv = env(modes)
+		modes.Parent = { Cosmetics = { refresh = function() end } }
+		cardioEnv.game = {
+			GetService = function(_, name)
+				return services[name]
+			end,
+		}
+		cardioEnv.workspace = {
+			GetServerTimeNow = function()
+				return clock.t
+			end,
+		}
+		cardioEnv.Vector3 = roblox.Vector3
+		local path = MODES_DIR .. "Cardio.luau"
+		local Cardio = luau.load(fs.readFile(path), { debugName = path, environment = cardioEnv })()
+		local def = Cardio.create(GameModes, { built = nil, theme = {}, Tycoon = Tycoon })
+		function rig.last(event: string): any
+			for i = #rig.notes, 1, -1 do
+				if rig.notes[i].event == event then
+					return rig.notes[i]
+				end
+			end
+			return nil
+		end
+		return def, rig
+	end
+
+	test("Cardio: a run always starts at stage 1, whatever the client asks", function()
+		local def, rig = loadCardio(5)
+		local player = rig.player
+		-- Vector3 holds 32-bit floats: compare the teleport target loosely.
+		local function landedOn(spawn: { x: number, y: number, z: number }): boolean
+			local at = rig.teleportedTo
+			return at ~= nil and (at - roblox.Vector3.new(spawn.x, spawn.y, spawn.z)).Magnitude < 0.01
+		end
+		local lobby = Layout.spawn(0)
+		-- `false` = no data at all (the gate), then the old "Start at" requests and junk.
+		local asks: { any } = { false, {}, { stage = 0 }, { stage = 1 }, { stage = 5 }, { stage = 4.5 }, { stage = 9 } }
+		table.insert(asks, { stage = -1 })
+		table.insert(asks, { stage = 0 / 0 })
+		table.insert(asks, { stage = math.huge })
+		table.insert(asks, { stage = "5" })
+		for i, ask in asks do
+			rig.teleportedTo = nil
+			table.clear(rig.notes)
+			check(def.start(player, true, ask or nil), "request " .. i .. " starts a run")
+			check(landedOn(lobby), "request " .. i .. " lands on the lobby spawn")
+			eq(def.snapshot(player).stage, 0, "request " .. i .. " runs stage 1")
+			check(rig.last("start") ~= nil and rig.last("start").stage == nil, "request " .. i .. ": a start notify with no stage")
+		end
+		eq(rig.session.profile.cardio.bestStage, 5, "bestStage stays as the record")
+		eq(def.snapshot(player).bestStage, 5, "and stays in the snapshot")
+
+		-- Mid-run rule unchanged: a fall in stage 3 goes back to the start of stage 3 (safe
+		-- zone 2), not to the lobby.
+		local r3 = Layout.room(3)
+		local x = (r3.x0 + r3.x1) / 2
+		local back = Layout.spawn(2)
+		rig.root.Position = roblox.Vector3.new(x, Layout.killYAt(x) - 10, back.z)
+		rig.clock.t += 2
+		def.tick(player, rig.root, rig.clock.t)
+		local fall = rig.last("fall")
+		check(fall ~= nil and fall.stage == 2, "a fall in stage 3 goes back to safe zone 2")
+		check(landedOn(back), "to its spawn")
+		check(def.running(player), "the run goes on")
+		-- Starting again from there is a restart in the lobby.
+		check(def.start(player, true, { stage = 2 }), "restart")
+		eq(def.snapshot(player).stage, 0, "the restart is at stage 1")
 	end)
 end

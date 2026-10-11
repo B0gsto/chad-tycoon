@@ -1286,7 +1286,7 @@ function CardioLayout.zone(stage: number): Zone?
 	return LAYOUT.zones[stage + 1]
 end
 
--- The spawn of the safe zone of `stage` (0 = lobby): where "Start at" stage puts you, and
+-- The spawn of the safe zone of `stage` (0 = lobby): where a run starts (always the lobby) and
 -- where a fall or a catch in stage + 1 sends you back (there are no mid-stage checkpoints).
 function CardioLayout.spawn(stage: number): Point?
 	local z = LAYOUT.zones[stage + 1]

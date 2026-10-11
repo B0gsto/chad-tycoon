@@ -44,8 +44,9 @@ you stand still. Stages need more and more Speed. In Chad Aura Tycoon it is the 
    scaled on income so it stays a real sink). This is the "increase the treadmill speed" part.
 7. **Falling** (below the room's killY) or being **caught** by the chaser sends you back to the
    start of the stage you are running: the spawn of the safe zone before it (zone n-1 for
-   stage n, the lobby for stage 1; `CardioLayout.startStageAt(x)` + `CardioLayout.spawn(stage)`). Quitting (HUD button, Home, respawn) ends the run. The **Start at** picker lets you begin
-   at the safe zone of any stage up to bestStage.
+   stage n, the lobby for stage 1; `CardioLayout.startStageAt(x)` + `CardioLayout.spawn(stage)`). Quitting (HUD button, Home, respawn) ends the run. Every run **starts at stage 1** (the
+   lobby): there is no stage picker, and the server ignores any start stage a client sends.
+   `bestStage` is only a record (first-clear rewards, the step multiplier, the ranking).
 
 ## Module map (all new files unless marked)
 
@@ -56,7 +57,7 @@ you stand still. Stages need more and more Speed. In Chad Aura Tycoon it is the 
 | `tests/cardio.luau` (+ 1 line in `tests/run.luau`) | Curve, monotonicity and fairness tests (every gap clearable at need, not clearable at the previous need, no overlaps, inside the bounds) |
 | `src/server/World/CardioTrack.luau` (+ `WorldBuilder` hook) | Builds the arena from CardioLayout: keycaps (`AssetModels` keycap mesh with part fallback), treadmills, pads, signs, arches, decor |
 | `src/server/Modes/Cardio.luau` (+ `Catalog`, `GameModes.BUILTIN`, `DataService`) | The ModeDef: runs, steps, treadmills, falls, rewards, upgrade action, snapshot |
-| `src/client/UI/CardioHud.luau`, `src/client/Fx/Cardio.luau` (+ `Main.client` wiring) | Speed counter, +N popups, stage progress, need hint, treadmill upgrade card, start picker, stage clear/finish cards; key press-down + glow under feet, letter labels on nearby keys only (pooled), treadmill belt scroll + run-in-place, speed lines/FOV at high speed |
+| `src/client/UI/CardioHud.luau`, `src/client/Fx/Cardio.luau` (+ `Main.client` wiring) | Speed counter, +N popups, stage progress, need hint, treadmill upgrade card, stage clear/finish cards; key press-down + glow under feet, letter labels on nearby keys only (pooled), treadmill belt scroll + run-in-place, speed lines/FOV at high speed |
 | `art/blender/cardio/*` | Keycap mesh, arcade treadmill, Cardio icon |
 
 ## Placement
@@ -67,10 +68,10 @@ x ≈ -1300 to +1300 at most, deck tops around y = 20 above the sea. It is reach
 
 ## Remotes / notify (kind = "Mode", mode = "cardio")
 
-- Actions: `ModeStart { mode = "cardio", stage? }` (stage = start at that safe zone, 0 = lobby),
+- Actions: `ModeStart { mode = "cardio" }` (always starts in the lobby; other fields are ignored),
   `CardioUpgrade` (buy treadmill level), `CardioSpeedCap { cap? }` (own max WalkSpeed; nil / 0 /
   invalid clears it, else rounded and clamped to [16, walkSpeed(speed)]), and the existing `ModeQuit`.
-- Notify events: `start { stage, speed, walkSpeed, bestStage, multiplier }`,
+- Notify events: `start { speed, walkSpeed, bestStage, multiplier }`,
   `stage { stage, first, cash, full }` (reached a safe zone),
   `fall { stage }` (back at that safe zone), `finish { cash, full }`, `upgrade { level, cost }`,
   `stop { reason }`.

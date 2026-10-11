@@ -2,8 +2,8 @@
 	Cardio: the CARDIO game mode (gate 3), a keyboard runner out at sea (docs/cardio.md).
 	Numbers in Modes.CardioRules, the runway in Modes.CardioLayout (built by World.CardioTrack).
 
-	- "ModeStart" { mode = "cardio", stage? } starts a run at the safe zone of `stage`
-	  (0 = the Warm-Up lobby, default; at most profile.cardio.bestStage). Starting again restarts.
+	- "ModeStart" { mode = "cardio" } starts a run in the Warm-Up lobby (stage 1), always: the
+	  action's other fields are ignored, so no client can start deeper. Starting again restarts.
 	- Steps: every CardioRules.KEY_STEP studs of ground run over a key (server-measured, clamped
 	  to what the current WalkSpeed allows) add stepMultiplier(bestStage, treadmill) Speed.
 	  Standing on a treadmill adds treadmillRate(zone, treadmill, speed) Speed per second instead
@@ -29,7 +29,7 @@
 	  treadmill level + 1 (max CardioRules.TREADMILL_MAX).
 
 	Notify payloads (kind = "Mode", mode = "cardio"):
-	  { event = "start", stage, speed, walkSpeed, bestStage, multiplier }
+	  { event = "start", speed, walkSpeed, bestStage, multiplier }      always in the lobby
 	  { event = "stage", stage, name, first, cash, full, cooldownEnds, bestStage, multiplier }
 	  { event = "finish", stage = 10, first, cash, full, cooldownEnds, bestStage, multiplier }
 	                                  (safe zone 10 sends "finish" instead of "stage")
@@ -236,23 +236,17 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		return runs[player] ~= nil
 	end
 
-	function def.start(player: Player, _teleport: boolean, options: { [string]: any }?): boolean
+	-- Every run starts in the lobby (safe zone 0), whatever the "ModeStart" data says: reached
+	-- stages (bestStage) are a record, not a place to start from.
+	function def.start(player: Player, _teleport: boolean, _options: { [string]: any }?): boolean
 		local session = GameModes.session(player)
 		if not session then
 			return false
 		end
 		local rec = record(session)
-		local stage = 0
-		local asked = options and options.stage
-		if type(asked) == "number" then
-			if asked ~= asked or asked < 0 or asked > rec.bestStage then
-				return false
-			end
-			stage = math.floor(asked)
-		end
 		local t = now()
 		local state: State = {
-			arrived = { [stage] = true },
+			arrived = {},
 			lastPos = nil,
 			lastT = t,
 			graceUntil = t + TELEPORT_GRACE,
@@ -261,20 +255,19 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			walk = walkOf(session),
 			shownSpeed = math.floor(rec.speed),
 			lastEffectAt = 0,
-			stage = stage,
+			stage = 0,
 			onTreadmill = false,
-			treadmillZone = stage,
+			treadmillZone = 0,
 		}
 		runs[player] = state
 		-- The arena is far out at sea: a run always begins on its deck.
-		teleportTo(player, state, zoneSpawn(stage))
+		teleportTo(player, state, zoneSpawn(0))
 		local humanoid = humanoidOf(player)
 		if humanoid then
 			humanoid:SetAttribute("BaseWalkSpeed", state.walk)
 		end
 		Cosmetics.refresh(player)
 		GameModes.notify(player, "start", ID, {
-			stage = stage,
 			speed = math.floor(rec.speed),
 			walkSpeed = state.walk,
 			bestStage = rec.bestStage,
