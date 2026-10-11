@@ -4,8 +4,9 @@
 
 	Screen (ScreenGui "IntroUI", DisplayOrder 80: above the HUD, below the loading screen):
 	letterbox bars, the subtitle card (cream card with Ink text, sized to its line and
-	kept just above the bottom bar), a quiet Skip button bottom-right, the MAX GIGA CHAD
-	name card, the game title card, a white flash and a full-screen fade.
+	kept just above the bottom bar), the Skip button bottom-right (a white pill, on screen
+	from the first frame), the MAX GIGA CHAD name card, the game title card, a white flash
+	and a full-screen fade.
 
 	Layout is computed in pixels from the real screen size (and recomputed when it
 	changes): every card is clamped inside a safe area (6% / 5% margins plus the Roblox
@@ -241,36 +242,36 @@ function Ui.new(theme: any, worldParent: Instance, onSkip: () -> ()): Ui
 	}, 26)
 	fadeTree(caption, false, 0)
 
-	-- Skip: small and quiet, bottom-right inside the letterbox bar.
+	-- Skip: a white pill bottom-right on the letterbox bar, there from the first frame
+	-- (sized and placed in _relayout).
 	local skip = new("TextButton", {
 		Name = "Skip",
 		AutoButtonColor = false,
 		BackgroundColor3 = W.White,
-		BackgroundTransparency = 1,
+		BackgroundTransparency = 0.05,
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1 - SAFE_X, 0, 1 - BAR / 2, 0),
-		Size = UDim2.fromOffset(92, 34),
+		Size = UDim2.fromOffset(128, 44),
 		Font = F.UI,
 		TextScaled = true,
 		TextColor3 = W.Ink,
-		TextTransparency = 1,
 		Text = theme.Intro.Skip .. "  »",
-		Visible = false,
 		ZIndex = 18,
 	}, gui)
 	new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, skip)
+	new("UIStroke", { Color = W.Ink, Thickness = 2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, skip)
 	new("UIPadding", {
 		PaddingTop = UDim.new(0.2, 0),
 		PaddingBottom = UDim.new(0.2, 0),
 		PaddingLeft = UDim.new(0.12, 0),
 		PaddingRight = UDim.new(0.12, 0),
 	}, skip)
-	new("UITextSizeConstraint", { MaxTextSize = 20, MinTextSize = 10 }, skip)
+	new("UITextSizeConstraint", { MaxTextSize = 22, MinTextSize = 10 }, skip)
 	skip.Activated:Connect(onSkip)
 	-- Gamepad: Skip takes the shared selection ring (B also skips, see Cutscene).
 	pcall(Kit.selectable, skip)
 	-- Touch: an invisible hit area at least 48 px each way, centred on the pill (sized in
-	-- _layout), so the quiet button keeps its look but takes a thumb.
+	-- _relayout), so even the smallest pill takes a thumb.
 	local skipHit = new("TextButton", {
 		Name = "Hit",
 		AutoButtonColor = false,
@@ -375,11 +376,15 @@ function Ui._relayout(self: Ui)
 	self.k = math.clamp(math.min(w / 1280, h / 720), 0.6, 1.6)
 	self.safe = Rect.new(w * SAFE_X, math.max(h * SAFE_Y, insetTop), w * (1 - SAFE_X), h * (1 - SAFE_Y))
 
+	-- Skip never shrinks below 112 x 40 px. It sits centred in the bottom bar; on a small
+	-- phone the bar is lower than the pill, which then rises out of it.
 	local k = self.k
-	local skipW, skipH = math.floor(96 * k), math.floor(math.min(36 * k, h * BAR * 0.7))
+	local skipW, skipH = math.floor(math.max(128 * k, 112)), math.floor(math.max(44 * k, 40))
+	local skipY = h - math.max((h * BAR - skipH) / 2, 6) - skipH / 2
 	self.skip.Size = UDim2.fromOffset(skipW, skipH)
+	self.skip.Position = UDim2.new(1 - SAFE_X, 0, 0, math.floor(skipY))
 	self.skipHit.Size = UDim2.fromOffset(math.max(skipW + 8, 48), math.max(skipH + 12, 48))
-	setMaxText(self.skip, 20 * k)
+	setMaxText(self.skip, math.max(22 * k, 16))
 
 	self:_layoutCaption()
 	if self.nameCardGui then
@@ -498,14 +503,11 @@ end
 
 -- Skip button ---------------------------------------------------------------------------
 
-function Ui.showSkip(self: Ui)
-	local skip = self.skip
-	skip.Visible = true
-	Kit.tween(skip, 0.35, { BackgroundTransparency = 0.25, TextTransparency = 0.1 }, OUT)
-	-- On a controller the selection sits on Skip, so A skips as well as B.
+-- On a controller the selection sits on Skip, so A skips as well as B.
+function Ui.focusSkip(self: Ui)
 	if Kit.gamepad or Kit.tenFoot then
 		pcall(function()
-			GuiService.SelectedObject = skip
+			GuiService.SelectedObject = self.skip
 		end)
 	end
 end

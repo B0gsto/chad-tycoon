@@ -14,6 +14,7 @@ local RunService = game:GetService("RunService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Economy = require(ReplicatedStorage.Shared.Economy)
+local Funnel = require(ReplicatedStorage.Shared.Funnel)
 local SessionLock = require(ReplicatedStorage.Shared.SessionLock)
 local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
 
@@ -21,6 +22,11 @@ local DataService = {}
 
 local STORE_NAME = "TycoonProfiles_v1"
 local MAX_RETRIES = 4
+-- Profile.version of a save written by this code. reconcile migrates older saves once:
+--   2  buy tier 1 upgrades after Economy.BUY_EASY_UNITS purchases (it was one), and the
+--      onboarding funnel counts tier milestones (Shared.Funnel)
+local VERSION = 2
+DataService.VERSION = VERSION
 
 export type Unlocker = { rarity: string, endsAt: number }
 
@@ -62,6 +68,11 @@ export type Profile = {
 	onboarding: number,
 	-- Roblox badges: true = awarded, false = earned and waiting to be awarded (Badges).
 	badges: { [string]: boolean },
+	-- Daily reward (Server.Daily, Shared.DailyReward): UTC day number of the last claim
+	-- (0 = never), days claimed in a row at that claim, UTC day number of the player's first
+	-- day (0 = not started yet, 1 = saves from before the daily reward) and whether the
+	-- first-day "come back tomorrow" toast was shown.
+	daily: { day: number, streak: number, firstDay: number, hinted: boolean },
 	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
 	-- of the last full cash reward (Economy.modeReward cooldown).
 	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
@@ -113,8 +124,8 @@ function DataService.defaultProfile(): Profile
 	local discovered = zeros(Economy.MAX_TIER)
 	discovered[1] = os.time()
 	return {
-		version = 1,
-		money = 50,
+		version = VERSION,
+		money = Economy.START_CASH,
 		carried = 0,
 		queue = 0,
 		pending = 0,
@@ -123,7 +134,7 @@ function DataService.defaultProfile(): Profile
 		totalObtained = 1,
 		buyTier = 1,
 		boughtAtTier = 0,
-		processLevel = 0,
+		processLevel = Economy.START_PROCESS_LEVEL,
 		heldChest = "",
 		pendingCrate = "",
 		pendingUnlocker = 0,
@@ -145,6 +156,7 @@ function DataService.defaultProfile(): Profile
 		starterGranted = false,
 		onboarding = 0,
 		badges = {},
+		daily = { day = 0, streak = 0, firstDay = 0, hinted = false },
 		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, stageMaps = true, gear = "none" },
 		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0 },
 		modes = {
@@ -164,6 +176,8 @@ local function reconcile(data: any): Profile
 	if type(data) ~= "table" then
 		return default
 	end
+	-- Read before the defaults below fill a missing version in.
+	local version = if type(data.version) == "number" then data.version else 1
 	-- Saves from before Parkour levels: the old single record becomes level 1's.
 	if type(data.parkour) ~= "table" then
 		local old = type(data.modes) == "table" and data.modes.parkour
@@ -189,6 +203,10 @@ local function reconcile(data: any): Profile
 	-- Saves from before the onboarding funnel: those players are not new, so they never log it.
 	if data.onboarding == nil then
 		data.onboarding = 99
+	end
+	-- Saves from before the daily reward: day 1 is waiting, but today is not a "first day".
+	if data.daily == nil then
+		data.daily = { day = 0, streak = 0, firstDay = 1, hinted = true }
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
@@ -229,6 +247,8 @@ local function reconcile(data: any): Profile
 	-- Purchases past the upgrade requirement only count once (Economy.unitPrice grows with
 	-- them); a save made under a larger requirement would otherwise price units out of reach.
 	data.boughtAtTier = math.clamp(math.floor(data.boughtAtTier), 0, Economy.buyTierRequirement(data.buyTier))
+	-- The converter starts at START_PROCESS_LEVEL; saves from before that are lifted to it.
+	data.processLevel = math.max(math.floor(data.processLevel), Economy.START_PROCESS_LEVEL)
 	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
 	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
 		data.heldChest = ""
@@ -295,9 +315,27 @@ local function reconcile(data: any): Profile
 	if data.pendingCrate ~= "" and not Economy.isRarity(data.pendingCrate) then
 		data.pendingCrate = ""
 	end
+	for key, value in default.daily :: any do
+		local v = data.daily[key]
+		if type(v) ~= type(value) or (type(v) == "number" and (v ~= v or v < 0 or v == math.huge)) then
+			data.daily[key] = value
+		elseif type(v) == "number" then
+			data.daily[key] = math.floor(v)
+		end
+	end
 	if data.pendingUnlocker ~= 1 and data.pendingUnlocker ~= 2 then
 		data.pendingUnlocker = 0
 	end
+	if version < 2 then
+		-- Buy tier 1 used to upgrade after BUY_REQ_BASE purchases. A player who was past the
+		-- tutorial and could already upgrade still can, without buying the easy units first.
+		if data.tutorialDone and data.buyTier == 1 and data.boughtAtTier >= Economy.BUY_REQ_BASE then
+			data.boughtAtTier = Economy.buyTierRequirement(1)
+		end
+		-- Returning players' tier milestones count as logged, with nothing sent.
+		data.onboarding = Funnel.returning(data.onboarding, data.tutorialDone)
+	end
+	data.version = math.max(version, VERSION)
 	return data :: Profile
 end
 

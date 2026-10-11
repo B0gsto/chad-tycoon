@@ -117,8 +117,6 @@ local WALK_IN = { subjects = { "Rival", "Hero", "Fan" }, size = "wide", angle = 
 -- name card in the upper left.
 local GIANT = { subjects = { "Rival", "Hero" }, size = "full", angle = "ground", yaw = -25, focus = "Rival", place = "right" }
 local GIANT_IN = { subjects = { "Rival", "Hero" }, size = "medium", angle = "ground", yaw = -25, focus = "Rival", place = "right" }
-local TRIO = { subjects = { "Rival", "Fan", "Hero" }, size = "full", angle = "eye", yaw = -10 }
-local TRIO_IN = { subjects = { "Rival", "Fan", "Hero" }, size = "medium", angle = "eye", yaw = -10 }
 local EXODUS = {
 	subjects = { "Rival", "Fan", "Crowd1", "Crowd2", "Crowd3", "Crowd4" },
 	size = "full",
@@ -127,96 +125,84 @@ local EXODUS = {
 }
 -- The fan and her sign as it flips to TEAM GIGA (the hero beside her).
 local FLIP = { subjects = { "Fan", "Hero" }, size = "medium", angle = "eye", yaw = -10, focus = "Fan", place = "right" }
--- The hero's face as the crowd leaves, then a pull back to the empty yard.
-local REACT = { subjects = { "Hero" }, size = "medium", place = "center", angle = "eye", yaw = -40 }
-local ALONE = { subjects = { "Hero" }, size = "wide", place = "right", angle = "eye", yaw = -40 }
 -- The hero in the lower left third, headroom for the cloud, the empty yard behind.
 local SAD = { subjects = { "Hero" }, size = "medium", place = "left", angle = "high", yaw = -30, headroom = 4 }
 local SAD_START = { subjects = { "Hero" }, size = "medium", place = "left", angle = "high", yaw = -30, headroom = 4, push = 1.25 }
-local NOTICE = { subjects = { "Hero" }, size = "full", place = "right", angle = "eye", yaw = -60, push = 1.4 }
 local IDEA = { subjects = { "Hero" }, size = "medium", place = "left", angle = "low", yaw = -30, headroom = 6.5, lift = 0.08 }
 local IDEA_IN = { subjects = { "Hero" }, size = "medium", place = "left", angle = "low", yaw = -30, headroom = 6.5, lift = 0.08, fov = 34 }
 
+-- About 14 seconds: one line and one idea per beat, so a new player is on their plot
+-- within a quarter of a minute even without pressing Skip.
 Timeline.BEATS = {
 	-- 1. A sunny little gym yard: the hero curls a big candy dumbbell, his #1 fan cheers.
 	{
 		name = "Gym",
-		duration = 4.2,
+		duration = 2,
 		camera = {
 			{ t = 0, shot = GYM_WIDE, cut = true },
-			{ t = 4.2, shot = GYM_TIGHT, ease = "Sine" },
+			{ t = 2, shot = GYM_TIGHT, ease = "Sine" },
 		},
 		captions = {
 			{ t = 0.1, key = "Meet" },
-			{ t = 2.4, key = "Good" },
 		},
 		actions = {
 			{ t = 0, act = "curl", actor = "Hero", on = true },
 			{ t = 0, act = "sweat", actor = "Hero", on = true },
 			{ t = 0, act = "expr", actor = "Hero", name = "Proud" },
-			{ t = 2.4, act = "expr", actor = "Hero", name = "Happy" },
 			{ t = 0, act = "pose", actor = "Fan", pose = "SignUp" },
-			{ t = 1.4, act = "pose", actor = "Fan", pose = "Cheer", blend = 0.4 },
-			{ t = 1.6, act = "bubble", actor = "Fan", key = "Stars", dur = 1.6 },
+			{ t = 0.6, act = "pose", actor = "Fan", pose = "Cheer", blend = 0.3 },
+			{ t = 0.7, act = "bubble", actor = "Fan", key = "Stars", dur = 1.2 },
 		},
 	},
-	-- 2. Thump, thump: MAX GIGA CHAD strides in and flexes in slow motion.
+	-- 2. Thump, thump: MAX GIGA CHAD strides in and flexes under his name card.
 	{
 		name = "Arrive",
-		duration = 5.2,
+		duration = 2.7,
 		camera = {
 			{ t = 0, shot = GYM_TIGHT },
-			{ t = 0.9, shot = GYM_WIDE, ease = "Quad" },
-			{ t = 1.6, shot = WALK_IN, ease = "Quad" },
-			{ t = 2.9, shot = WALK_IN },
-			{ t = 2.95, shot = GIANT, cut = true },
-			{ t = 5.2, shot = GIANT_IN, ease = "Sine" },
+			{ t = 0.5, shot = WALK_IN, ease = "Quad" },
+			{ t = 1.4, shot = WALK_IN },
+			{ t = 1.45, shot = GIANT, cut = true },
+			{ t = 2.7, shot = GIANT_IN, ease = "Sine" },
 		},
 		captions = {
 			{ t = 0.1, key = "Arrive" },
 		},
 		actions = {
-			{ t = 0, act = "thump", at = { 1.8, 1.5 } },
+			{ t = 0, act = "thump", at = { -2, 1 } },
 			{ t = 0.05, act = "dumbbell", state = "rattle" },
-			{ t = 0.15, act = "expr", actor = "Hero", name = "Shock" },
-			{ t = 0.2, act = "pose", actor = "Fan", pose = "Shock", blend = 0.2 },
-			{ t = 0.6, act = "sweat", actor = "Hero", on = false },
-			{ t = 0.75, act = "thump", at = { -2, 1 } },
-			{ t = 0.75, act = "curl", actor = "Hero", on = false },
-			{ t = 0.75, act = "pose", actor = "Hero", pose = "Shock", blend = 0.2 },
-			{ t = 0.8, act = "dumbbell", state = "drop" },
-			{ t = 1, act = "show", actor = "Rival" },
-			{ t = 1, act = "move", actor = "Rival", to = { -8, 1.5 }, dur = 2, gait = "Strut", face = { -5, -10 }, trail = true },
-			{ t = 1.5, act = "thump", at = "Rival" },
-			{ t = 1.6, act = "turn", actor = "Hero", face = { -8, 1.5 }, dur = 0.5 },
-			{ t = 1.7, act = "turn", actor = "Fan", face = { -8, 1.5 }, dur = 0.5 },
-			{ t = 2.25, act = "thump", at = "Rival" },
-			{ t = 2.95, act = "thump", at = "Rival" },
-			{ t = 2.95, act = "tag", on = false },
-			{ t = 3, act = "pose", actor = "Rival", pose = "Flex", blend = 1, speed = 0.35 },
-			{ t = 3.05, act = "aura", actor = "Rival" },
-			{ t = 3.1, act = "namecard" },
-			{ t = 3.1, act = "sound", name = "SurgeStart" },
-			{ t = 5.15, act = "namecard", on = false },
+			{ t = 0.1, act = "expr", actor = "Hero", name = "Shock" },
+			{ t = 0.15, act = "pose", actor = "Fan", pose = "Shock", blend = 0.2 },
+			{ t = 0.25, act = "sweat", actor = "Hero", on = false },
+			{ t = 0.25, act = "show", actor = "Rival" },
+			{ t = 0.25, act = "move", actor = "Rival", to = { -8, 1.5 }, dur = 1.2, gait = "Strut", face = { -5, -10 }, trail = true },
+			{ t = 0.35, act = "curl", actor = "Hero", on = false },
+			{ t = 0.35, act = "pose", actor = "Hero", pose = "Shock", blend = 0.2 },
+			{ t = 0.4, act = "dumbbell", state = "drop" },
+			{ t = 0.5, act = "turn", actor = "Hero", face = { -8, 1.5 }, dur = 0.4 },
+			{ t = 0.55, act = "turn", actor = "Fan", face = { -8, 1.5 }, dur = 0.4 },
+			{ t = 0.75, act = "thump", at = "Rival" },
+			{ t = 1.45, act = "thump", at = "Rival" },
+			{ t = 1.45, act = "tag", on = false },
+			{ t = 1.5, act = "pose", actor = "Rival", pose = "Flex", blend = 0.6, speed = 0.5 },
+			{ t = 1.55, act = "aura", actor = "Rival" },
+			{ t = 1.6, act = "namecard" },
+			{ t = 1.6, act = "sound", name = "SurgeStart" },
+			{ t = 2.65, act = "namecard", on = false },
 		},
 	},
 	-- 3. Starry eyes, the sign flips to TEAM GIGA, and the fans leave with him.
 	{
 		name = "Wow",
-		duration = 5,
+		duration = 3,
 		camera = {
-			{ t = 0, shot = TRIO, cut = true },
-			{ t = 0.55, shot = TRIO_IN, ease = "Sine" },
-			{ t = 0.6, shot = FLIP, cut = true },
-			{ t = 1.45, shot = FLIP },
-			{ t = 1.5, shot = EXODUS, cut = true },
-			{ t = 4.3, shot = EXODUS },
-			{ t = 4.3, shot = REACT, cut = true },
-			{ t = 5, shot = ALONE, ease = "Sine" },
+			{ t = 0, shot = FLIP, cut = true },
+			{ t = 0.95, shot = FLIP },
+			{ t = 1, shot = EXODUS, cut = true },
+			{ t = 3, shot = EXODUS },
 		},
 		captions = {
-			{ t = 0.1, key = "Wow" },
-			{ t = 2.6, key = "Leave" },
+			{ t = 0.1, key = "Leave" },
 		},
 		actions = {
 			{ t = 0, act = "tag", on = true },
@@ -226,124 +212,111 @@ Timeline.BEATS = {
 			{ t = 0, act = "expr", actor = "Hero", name = "Awe" },
 			{ t = 0, act = "expr", actor = "Fan", name = "Starry" },
 			{ t = 0, act = "pose", actor = "Fan", pose = "Swoon", blend = 0.3 },
-			{ t = 0.05, act = "stars", actor = "Fan", dur = 1.8 },
-			{ t = 0.05, act = "bubble", actor = "Fan", key = "Wow", dur = 1.3 },
-			{ t = 0.05, act = "sound", name = "Pickup" },
-			{ t = 0.75, act = "sign", actor = "Fan", key = "SignAfter" },
-			{ t = 1.5, act = "tag", on = false },
-			{ t = 1.5, act = "move", actor = "Fan", to = { -4.8, -0.8 }, dur = 0.85, gait = "Run", face = { -7, -6 } },
-			{ t = 1.6, act = "pop", actor = "Crowd1", at = { -12, -0.5 }, face = { -9, -8 }, pose = "Cheer" },
-			{ t = 1.75, act = "pop", actor = "Crowd2", at = { -4.4, 2.8 }, face = { -8, -8 }, pose = "Jump" },
-			{ t = 1.9, act = "pop", actor = "Crowd3", at = { -11.2, 3.6 }, face = { -8, -6 }, pose = "SignUp" },
-			{ t = 2.05, act = "pop", actor = "Crowd4", at = { -13.8, 1.6 }, face = { -10, -8 }, pose = "Clap" },
-			{ t = 2.1, act = "bubble", actor = "Crowd1", key = "Giga", dur = 1.2 },
-			{ t = 2.35, act = "pose", actor = "Fan", pose = "Cheer", blend = 0.3 },
-			{ t = 2.4, act = "bubble", actor = "Crowd2", key = "Cool", dur = 1.2 },
-			{ t = 2.5, act = "pose", actor = "Rival", pose = "HandsOnHips", blend = 0.4 },
+			{ t = 0.05, act = "stars", actor = "Fan", dur = 1 },
+			{ t = 0.05, act = "bubble", actor = "Fan", key = "Wow", dur = 0.9 },
+			{ t = 0.3, act = "sign", actor = "Fan", key = "SignAfter" },
+			{ t = 1, act = "tag", on = false },
+			{ t = 1, act = "move", actor = "Fan", to = { -4.8, -0.8 }, dur = 0.6, gait = "Run", face = { -7, -6 } },
+			{ t = 1.05, act = "pop", actor = "Crowd1", at = { -12, -0.5 }, face = { -9, -8 }, pose = "Cheer" },
+			{ t = 1.15, act = "pop", actor = "Crowd2", at = { -4.4, 2.8 }, face = { -8, -8 }, pose = "Jump" },
+			{ t = 1.25, act = "pop", actor = "Crowd3", at = { -11.2, 3.6 }, face = { -8, -6 }, pose = "SignUp" },
+			{ t = 1.35, act = "pop", actor = "Crowd4", at = { -13.8, 1.6 }, face = { -10, -8 }, pose = "Clap" },
+			{ t = 1.4, act = "bubble", actor = "Crowd1", key = "Giga", dur = 1 },
+			{ t = 1.6, act = "bubble", actor = "Crowd2", key = "Cool", dur = 1 },
 			{
-				t = 2.9,
+				t = 1.8,
 				act = "move",
 				actor = "Rival",
 				to = { -38, 3 },
-				dur = 3.4,
+				dur = 3,
 				gait = "Strut",
 				face = EXIT_FACE,
 				trail = true,
 				vanish = true,
 			},
-			{ t = 3.05, act = "move", actor = "Crowd4", to = { -42, 2 }, dur = 3.2, gait = "Walk", face = EXIT_FACE, vanish = true },
-			{ t = 3.15, act = "move", actor = "Crowd1", to = { -40, 0 }, dur = 3.4, gait = "Walk", face = EXIT_FACE, vanish = true },
-			{ t = 3.2, act = "move", actor = "Crowd3", to = { -41, 4.5 }, dur = 3.3, gait = "Walk", face = EXIT_FACE, vanish = true },
-			{ t = 3.3, act = "bubble", actor = "Crowd3", key = "Stars", dur = 1.2 },
-			{ t = 3.35, act = "move", actor = "Fan", to = { -38, -0.5 }, dur = 3.4, gait = "Run", face = EXIT_FACE, vanish = true },
-			{ t = 3.4, act = "move", actor = "Crowd2", to = { -40, 3 }, dur = 3.6, gait = "Walk", face = EXIT_FACE, vanish = true },
-			{ t = 3.4, act = "expr", actor = "Hero", name = "Sad" },
-			{ t = 4.3, act = "tag", on = true },
+			{ t = 1.9, act = "move", actor = "Crowd4", to = { -42, 2 }, dur = 2.9, gait = "Walk", face = EXIT_FACE, vanish = true },
+			{ t = 1.95, act = "move", actor = "Crowd1", to = { -40, 0 }, dur = 3, gait = "Walk", face = EXIT_FACE, vanish = true },
+			{ t = 2, act = "move", actor = "Crowd3", to = { -41, 4.5 }, dur = 3, gait = "Walk", face = EXIT_FACE, vanish = true },
+			{ t = 2.05, act = "move", actor = "Fan", to = { -38, -0.5 }, dur = 3, gait = "Run", face = EXIT_FACE, vanish = true },
+			{ t = 2.1, act = "move", actor = "Crowd2", to = { -40, 3 }, dur = 3.2, gait = "Walk", face = EXIT_FACE, vanish = true },
+			{ t = 2.2, act = "expr", actor = "Hero", name = "Sad" },
 		},
 	},
-	-- 4. Alone in an empty yard: a rain cloud, the aura tag counts down to 0, a
-	-- tumbleweed rolls by. Silly, not upsetting.
+	-- 4. Alone in an empty yard: a rain cloud, the aura tag counts down to 0 and even
+	-- the dumbbell rolls away. Silly, not upsetting.
 	{
 		name = "Sad",
-		duration = 4.2,
+		duration = 1.7,
 		camera = {
 			{ t = 0, shot = SAD_START, cut = true },
-			{ t = 4.2, shot = SAD, ease = "Sine" },
+			{ t = 1.7, shot = SAD, ease = "Sine" },
 		},
 		captions = {
 			{ t = 0.1, key = "Sad" },
 		},
 		actions = {
-			{ t = 0, act = "turn", actor = "Hero", face = { 6, -10 }, dur = 0.6 },
-			{ t = 0, act = "pose", actor = "Hero", pose = "Sad", blend = 0.8 },
+			{ t = 0, act = "tag", on = true },
+			{ t = 0, act = "turn", actor = "Hero", face = { 6, -10 }, dur = 0.4 },
+			{ t = 0, act = "pose", actor = "Hero", pose = "Sad", blend = 0.5 },
 			{ t = 0, act = "expr", actor = "Hero", name = "Sad" },
-			{ t = 0.1, act = "sound", name = "Close", pitch = 0.7 },
-			{ t = 0.4, act = "cloud", state = "form" },
-			{ t = 0.8, act = "stat", from = 12, to = 0, dur = 2 },
-			{ t = 1, act = "tumbleweed", from = { -16, 3 }, to = { 0, 1.5 }, dur = 3 },
-			{ t = 1.4, act = "dumbbell", state = "roll", to = { 0.5, -1.5 } },
-			{ t = 2.6, act = "bubble", actor = "Hero", key = "Dots", dur = 1.5, thought = true },
+			{ t = 0.05, act = "sound", name = "Close", pitch = 0.7 },
+			{ t = 0.15, act = "cloud", state = "form" },
+			{ t = 0.3, act = "stat", from = 12, to = 0, dur = 1 },
+			{ t = 0.4, act = "dumbbell", state = "roll", to = { 0.5, -1.5 }, dur = 1.2 },
 		},
 	},
-	-- 5. The idea: the aura trail, a lightbulb, the cloud bursts, he pumps his fist.
+	-- 5. The idea: a lightbulb, the cloud bursts, he pumps his fist.
 	{
 		name = "Idea",
-		duration = 5,
+		duration = 2.2,
 		camera = {
-			{ t = 0, shot = NOTICE, cut = true },
-			{ t = 1.45, shot = NOTICE, ease = "Sine" },
-			{ t = 1.5, shot = IDEA, cut = true },
-			{ t = 5, shot = IDEA_IN, ease = "Sine" },
+			{ t = 0, shot = IDEA, cut = true },
+			{ t = 2.2, shot = IDEA_IN, ease = "Sine" },
 		},
 		captions = {
-			{ t = 0.1, key = "Idea1" },
-			{ t = 1.6, key = "Idea2" },
-			{ t = 3.3, key = "Plan" },
+			{ t = 0.1, key = "Plan" },
 		},
 		actions = {
-			{ t = 0, act = "turn", actor = "Hero", face = { -10, 1 }, dur = 0.7 },
-			{ t = 0.6, act = "bubble", actor = "Hero", key = "Huh", dur = 0.85, thought = true },
-			{ t = 1.5, act = "turn", actor = "Hero", face = { 6, -10 }, dur = 0.25 },
-			{ t = 1.5, act = "expr", actor = "Hero", name = "Idea" },
-			{ t = 1.5, act = "pose", actor = "Hero", pose = "Idea", blend = 0.25 },
-			{ t = 1.55, act = "bulb" },
-			{ t = 2.2, act = "cloud", state = "burst" },
-			{ t = 2.3, act = "expr", actor = "Hero", name = "Fury" },
-			{ t = 2.3, act = "pose", actor = "Hero", pose = "Cheer", blend = 0.25 },
-			{ t = 2.35, act = "confetti", at = "Hero" },
-			{ t = 2.7, act = "stat", from = 0, to = 1, dur = 0.3 },
-			{ t = 3.9, act = "pose", actor = "Hero", pose = "Flex", blend = 0.35 },
+			{ t = 0, act = "expr", actor = "Hero", name = "Idea" },
+			{ t = 0, act = "pose", actor = "Hero", pose = "Idea", blend = 0.25 },
+			{ t = 0.05, act = "bulb" },
+			{ t = 0.6, act = "cloud", state = "burst" },
+			{ t = 0.7, act = "expr", actor = "Hero", name = "Fury" },
+			{ t = 0.7, act = "pose", actor = "Hero", pose = "Cheer", blend = 0.25 },
+			{ t = 0.75, act = "confetti", at = "Hero" },
+			{ t = 1, act = "stat", from = 0, to = 1, dur = 0.3 },
+			{ t = 1.5, act = "pose", actor = "Hero", pose = "Flex", blend = 0.35 },
 		},
 	},
 	-- 6. Up and over to the player's real plot: a low, straight view, the title card
 	-- and a bouncing marker on the plot, then gameplay.
 	{
 		name = "Go",
-		duration = 5.4,
+		duration = 3,
 		camera = {
 			{ t = 0, shot = IDEA_IN },
-			{ t = 1.1, pos = { 3, 30, -24 }, look = { 3, 60, 30 }, fov = 55, ease = "QuadIn" },
+			{ t = 0.6, pos = { 3, 30, -24 }, look = { 3, 60, 30 }, fov = 55, ease = "QuadIn" },
 			-- Plot space: the spawn point facing the pen; the entrance arch and owner
 			-- sign are ~19 studs behind it, so the camera stays inside them.
-			{ t = 1.15, pos = { 0, 30, 12 }, look = { 0, 2, -22 }, fov = 50, cut = true, space = "plot" },
-			{ t = 3.6, pos = { 0, 16, 12 }, look = { 0, 3, -12 }, fov = 58, ease = "Sine", space = "plot" },
-			{ t = 5.4, fov = 70, ease = "Cubic", space = "behind" },
+			{ t = 0.65, pos = { 0, 30, 12 }, look = { 0, 2, -22 }, fov = 50, cut = true, space = "plot" },
+			{ t = 2, pos = { 0, 16, 12 }, look = { 0, 3, -12 }, fov = 58, ease = "Sine", space = "plot" },
+			{ t = 3, fov = 70, ease = "Cubic", space = "behind" },
 		},
 		captions = {
-			{ t = 1.3, key = "Go" },
-			{ t = 4.5, hide = true },
+			{ t = 0.75, key = "Go" },
+			{ t = 2.6, hide = true },
 		},
 		actions = {
 			{ t = 0, act = "expr", actor = "Hero", name = "Smirk" },
-			{ t = 0.1, act = "sound", name = "Open" },
-			{ t = 0.75, act = "flash", dur = 0.8 },
-			{ t = 1.2, act = "marker", on = true },
-			{ t = 1.3, act = "title", on = true },
-			{ t = 1.3, act = "sound", name = "Celebrate" },
-			{ t = 1.3, act = "expr", actor = "Hero", name = "Happy" },
-			{ t = 4.3, act = "title", on = false },
-			{ t = 4.6, act = "marker", on = false },
-			{ t = 4.6, act = "letterbox", on = false },
+			{ t = 0.05, act = "sound", name = "Open" },
+			{ t = 0.35, act = "flash", dur = 0.6 },
+			{ t = 0.7, act = "marker", on = true },
+			{ t = 0.75, act = "title", on = true },
+			{ t = 0.75, act = "sound", name = "Celebrate" },
+			{ t = 0.75, act = "expr", actor = "Hero", name = "Happy" },
+			{ t = 2.3, act = "title", on = false },
+			{ t = 2.5, act = "marker", on = false },
+			{ t = 2.5, act = "letterbox", on = false },
 		},
 	},
 } :: { Beat }

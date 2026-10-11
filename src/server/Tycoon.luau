@@ -20,6 +20,7 @@ local OrbLook = require(Shared.OrbLook)
 local CratePickup = require(Shared.CratePickup)
 local Format = require(Shared.Format)
 local Net = require(Shared.Net)
+local TutorialSteps = require(Shared.TutorialSteps)
 local CharacterFactory = require(Shared.CharacterFactory)
 
 local WorldBuilder = require(script.Parent.WorldBuilder)
@@ -134,10 +135,15 @@ Tycoon.hooks = {
 	end,
 	-- Called before the "Home" action moves the player (GameModes ends any run first).
 	leavingForHome = function(_session: Session) end,
+	-- The State snapshot's `daily` field (filled in by Daily).
+	daily = function(_session: Session): { [string]: any }?
+		return nil
+	end,
 }
 
 -- Gameplay event listeners (used by the tutorial): fn(session, name, data).
--- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge".
+-- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge", and "Discover" (a tier was discovered
+-- for the first time; Analytics counts its milestones).
 Tycoon.listeners = {} :: { (Session, string, { [string]: any }) -> () }
 
 local function emit(session: Session, name: string, data: { [string]: any })
@@ -529,6 +535,7 @@ local function discoverAll(session: Session, extra: { number }?)
 	if newest > 0 then
 		table.sort(found)
 		notify(session, { kind = "Reward", tier = newest, tiers = found, new = true })
+		emit(session, "Discover", { tier = newest })
 	end
 end
 
@@ -817,7 +824,9 @@ local function spawnFloorChest(session: Session)
 	model.Parent = plot.chestFolder
 	table.insert(session.floorChests, chest)
 	if rarity ~= "Common" then
-		toast(session, string.format("A %s %s is on its way!", rarity, theme.Words.Chest), "good")
+		-- "An Uncommon Crate", "An Epic Crate", "A Rare Crate".
+		local article = if string.find(rarity, "^[AEIOU]") then "An" else "A"
+		toast(session, string.format("%s %s %s is on its way!", article, rarity, theme.Words.Chest), "good")
 	end
 end
 
@@ -1262,11 +1271,16 @@ local function doMerge(session: Session, verbose: boolean, auto: boolean)
 		discoverAll(session, stepTiers(steps))
 		emit(session, "Merge", { merges = merges, top = top })
 		if verbose then
-			toast(session, string.format("Merged %s times! Best: %s", Format.short(merges), tierName(top)), "good")
+			local times = if merges == 1 then "once" else Format.short(merges) .. " times"
+			toast(session, string.format("Merged %s! Best: %s", times, tierName(top)), "good")
 		end
 		markDirty(session)
 	elseif verbose then
-		toast(session, "Nothing to merge yet. You need 2 of the same tier.", "info")
+		-- First run: a new player spawns facing this pad and walks onto it before the
+		-- tutorial has asked for a merge, so the toast waits for that step.
+		if TutorialSteps.mergeToast(p.tutorialStep, p.tutorialDone) then
+			toast(session, "Nothing to merge yet. You need 2 of the same tier.", "info")
+		end
 		refusePad(session, "Merge", "locked")
 	end
 end
@@ -1327,7 +1341,13 @@ padHandlers.Deposit = function(session)
 	end
 	local mult = ReplicatedStorage:GetAttribute("DepositMult") or 1
 	local amount = p.carried * mult
-	p.queue += amount
+	-- First run: the deposit that completes the tutorial's step becomes cash at once, so
+	-- its Collect step never waits for the converter.
+	if TutorialSteps.instantDeposit(p.tutorialStep, p.tutorialDone) then
+		p.pending += amount * Economy.CASH_PER_POINT * Tycoon.moneyMultiplier(session)
+	else
+		p.queue += amount
+	end
 	p.carried = 0
 	local root = rootPart(session)
 	local to = converterPos(session)
@@ -1591,6 +1611,7 @@ local function snapshot(session: Session): { [string]: any }
 		tutorialDone = p.tutorialDone,
 		cosmetics = Tycoon.hooks.cosmetics(session),
 		modes = Tycoon.hooks.modes(session),
+		daily = Tycoon.hooks.daily(session),
 	}
 end
 
@@ -2197,10 +2218,28 @@ function Tycoon.refresh(player: Player)
 	end
 end
 
-function Tycoon.grantMoney(session: Session, amount: number)
+-- `source` names the "Cash" effect for the client ("Purchase" = a cash pack's celebration,
+-- "Daily" = the daily reward).
+function Tycoon.grantMoney(session: Session, amount: number, source: string?)
 	addMoney(session, amount)
 	local root = rootPart(session)
-	effect(session, "Cash", { amount = amount, source = "Purchase", padPos = root and root.Position })
+	effect(session, "Cash", { amount = amount, source = source or "Purchase", padPos = root and root.Position })
+	markDirty(session)
+	flush(session)
+end
+
+-- A free crate of `rarity` opened on the spot (daily reward), in two steps so the caller
+-- can pay something else when it does not fit: rollCrate returns the tier of its unit, or
+-- nil when the rack has no room for that unit (full, and nothing can merge)...
+function Tycoon.rollCrate(session: Session, rarity: string): number?
+	local tier = Economy.rollChest(rarity, highestTier(session), random)
+	return if Economy.addUnitsCapped(session.profile.units, tier, 1).accepted > 0 then tier else nil
+end
+
+-- ...and grantCrate gives that unit with the crate reveal.
+function Tycoon.grantCrate(session: Session, rarity: string, tier: number)
+	awardUnit(session, tier, "unlock")
+	effect(session, "ChestOpen", { rarity = rarity, tier = tier })
 	markDirty(session)
 	flush(session)
 end

@@ -16854,6 +16854,171 @@ return CratePickup
       </Item>
       <Item class="ModuleScript" referent="157">
         <Properties>
+          <string name="Name">DailyReward</string>
+          <string name="Source"><![CDATA[--!strict
+--[[
+	DailyReward: pure rules of the 7-day daily reward (no Roblox dependencies,
+	unit-tested with Lune; Server.Daily applies them, the Daily window shows them).
+
+	One claim per UTC day. Claiming on the day after the last claim continues the
+	streak; missing a day starts again at day 1; after day 7 the cards loop while
+	the streak keeps counting. Every day pays cash sized like a shop cash pack
+	(Economy.moneyPackAmount: seconds of the player's income, never below the
+	day's minimum), so a reward matters at every stage. Days 3 and 7 also open a
+	crate on the spot.
+
+	A player's first day is the exception: minutes of income would jump a brand-new
+	player over the tuned first tiers, so that day pays no more than the next
+	FIRST_DAY_UNITS units cost (firstDayCap).
+]]
+
+local Economy = require(script.Parent.Economy)
+
+local DailyReward = {}
+
+DailyReward.DAY_SECONDS = 86400
+
+-- `seconds` of income, at least `min` cash; `crate` = rarity of the crate opened with it.
+export type Reward = { seconds: number, min: number, crate: string? }
+
+DailyReward.REWARDS = {
+	{ seconds = 5 * 60, min = 250 },
+	{ seconds = 10 * 60, min = 500 },
+	{ seconds = 15 * 60, min = 1000, crate = "Rare" },
+	{ seconds = 20 * 60, min = 2000 },
+	{ seconds = 30 * 60, min = 4000 },
+	{ seconds = 45 * 60, min = 8000 },
+	{ seconds = 60 * 60, min = 15000, crate = "Legendary" },
+} :: { Reward }
+
+DailyReward.DAYS = #DailyReward.REWARDS
+
+-- UTC day number of a unix time (days since 1970-01-01).
+function DailyReward.dayNumber(now: number): number
+	return math.floor(now / DailyReward.DAY_SECONDS)
+end
+
+-- Seconds until the next UTC day starts (1..DAY_SECONDS).
+function DailyReward.secondsLeft(now: number): number
+	return DailyReward.DAY_SECONDS - math.floor(now) % DailyReward.DAY_SECONDS
+end
+
+-- The card (1..DAYS) a streak of `streak` claims ends on.
+function DailyReward.card(streak: number): number
+	return (math.max(streak, 1) - 1) % DailyReward.DAYS + 1
+end
+
+export type Status = {
+	-- A reward can be claimed today.
+	claimable: boolean,
+	-- Today's card: the one to claim now, or the one already claimed today.
+	day: number,
+	-- Cards ticked in the current run of seven (0..DAYS).
+	claimed: number,
+	-- Days claimed in a row so far (0 after a missed day).
+	streak: number,
+}
+
+-- `lastDay` = day number of the last claim (0 = never), `streak` = days in a row at that
+-- claim, `today` = today's day number. A last claim "in the future" (a server clock ahead
+-- of this one) counts as claimed today, so a reward is never paid twice for one day.
+function DailyReward.status(lastDay: number, streak: number, today: number): Status
+	if lastDay >= today and streak >= 1 then
+		local day = DailyReward.card(streak)
+		return { claimable = false, day = day, claimed = day, streak = streak }
+	end
+	if lastDay == today - 1 and streak >= 1 then
+		local day = DailyReward.card(streak + 1)
+		return { claimable = true, day = day, claimed = day - 1, streak = streak }
+	end
+	return { claimable = true, day = 1, claimed = 0, streak = 0 }
+end
+
+-- Claims today's reward: returns the new streak and the card it pays, or nil when today's
+-- reward was already claimed.
+function DailyReward.claim(lastDay: number, streak: number, today: number): (number?, number?)
+	local status = DailyReward.status(lastDay, streak, today)
+	if not status.claimable then
+		return nil, nil
+	end
+	return status.streak + 1, status.day
+end
+
+-- Units whose price is the most a player's first day pays.
+DailyReward.FIRST_DAY_UNITS = 4
+
+-- The most card `day` pays on a player's first day: what their next FIRST_DAY_UNITS units
+-- cost (a few hundred cash in the first minutes), never below the day's minimum. A boost,
+-- not a tier skip.
+function DailyReward.firstDayCap(day: number, buyTier: number, boughtAtTier: number): number
+	local reward = DailyReward.REWARDS[DailyReward.card(day)]
+	return math.max(reward.min, math.floor(Economy.bulkPrice(buyTier, boughtAtTier, DailyReward.FIRST_DAY_UNITS)))
+end
+
+-- Cash of card `day` for a player earning `income` cash/s at `progression`, at most `cap`
+-- (firstDayCap on a player's first day, nil after it).
+function DailyReward.cash(day: number, income: number, progression: Economy.Progression, cap: number?): number
+	local reward = DailyReward.REWARDS[DailyReward.card(day)]
+	local amount = Economy.moneyPackAmount(income, reward.seconds, reward.min, progression)
+	return if cap then math.min(amount, cap) else amount
+end
+
+-- What card `day` pays on top of its cash when the rack has no room for the crate's unit:
+-- the cash that unit is worth on average (0 on a day without a crate), so the crate is
+-- never lost.
+function DailyReward.crateCash(day: number, highestTier: number): number
+	local crate = DailyReward.REWARDS[DailyReward.card(day)].crate
+	return if crate then math.floor(Economy.chestExpectedValue(crate, highestTier)) else 0
+end
+
+-- One line naming card `day`'s reward: "$1.20K" or "Rare Crate + $1.20K" (`cashText` is the
+-- formatted cash, `chestWord` the theme's word for a crate).
+function DailyReward.describe(day: number, cashText: string, chestWord: string): string
+	local reward = DailyReward.REWARDS[DailyReward.card(day)]
+	if reward.crate then
+		return string.format("%s %s + %s", reward.crate, chestWord, cashText)
+	end
+	return cashText
+end
+
+-- Opening by itself (Client.UI.DailyWindow) ------------------------------------------
+
+-- The Daily window opens by itself after some calm seconds. A held crate (its panel is up)
+-- is not calm, so the window waits for it to be dealt with; but a crate can be carried for
+-- minutes, so once the crate alone has kept the window back for CRATE_PATIENCE seconds it
+-- stops counting.
+DailyReward.CRATE_PATIENCE = 10
+
+-- Seconds of calm so far, and seconds spent waiting for nothing but the held crate.
+export type AutoOpen = { calm: number, crate: number }
+
+function DailyReward.autoOpen(): AutoOpen
+	return { calm = 0, crate = 0 }
+end
+
+-- One tick of `step` seconds; true when the window should open now. `blocked` = something
+-- the window must never cover (the intro, the tutorial, a window, a popup, a mode run):
+-- the calm starts over. `crate` = the held-crate panel is up. `needed` = calm seconds asked.
+function DailyReward.autoOpenTick(state: AutoOpen, step: number, blocked: boolean, crate: boolean, needed: number): boolean
+	if blocked then
+		state.calm = 0
+		return false
+	end
+	if crate and state.crate < DailyReward.CRATE_PATIENCE then
+		state.crate += step
+		state.calm = 0
+		return false
+	end
+	state.calm += step
+	return state.calm >= needed
+end
+
+return DailyReward
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="158">
+        <Properties>
           <string name="Name">Economy</string>
           <string name="Source"><![CDATA[--!strict
 --[[
@@ -17041,31 +17206,63 @@ Economy.BUY_REQ_BASE = 1
 Economy.BUY_REQ_GROWTH = 1.5
 -- A buy tier upgrade costs this share of buying the requirement at the next tier's base price.
 Economy.BUY_TIER_UPGRADE_SHARE = 0.5
+-- A new player's first units are cheap: the first BUY_EASY_UNITS bought at buy tier 1 raise
+-- the price by only 1 / BUY_EASY_REQ of the base each (the normal rate comes back after
+-- them), and the buy tier cannot be upgraded before they are bought. Together with the
+-- starter unit they are worth one tier-6 unit and most of a tier-7 one: a fixed head
+-- start, after which every price is what it always was.
+Economy.BUY_EASY_UNITS = 60
+Economy.BUY_EASY_REQ = 10
 
 function Economy.basePrice(buyTier: number): number
 	return Economy.BUY_BASE_PRICE * Economy.BUY_PRICE_GROWTH ^ (buyTier - 1)
 end
 
--- Units that must be bought at the current buy tier before it can be upgraded.
-function Economy.buyTierRequirement(buyTier: number): number
+-- Purchases at a buy tier that double its base price.
+local function rampUnits(buyTier: number): number
 	return math.floor(Economy.BUY_REQ_BASE * Economy.BUY_REQ_GROWTH ^ (buyTier - 1))
 end
 
--- Price of the next single unit. Grows linearly with purchases made at this
--- tier (2x once the upgrade requirement is reached) to push tier upgrades.
+-- Units that must be bought at the current buy tier before it can be upgraded.
+function Economy.buyTierRequirement(buyTier: number): number
+	return if buyTier == 1 then math.max(rampUnits(1), Economy.BUY_EASY_UNITS) else rampUnits(buyTier)
+end
+
+-- Sum of `n` consecutive purchase counts starting at `from`.
+local function span(from: number, n: number): number
+	return n * from + n * (n - 1) / 2
+end
+
+-- Exact price of `amount` consecutive purchases, the first made with `boughtAtTier` units
+-- already bought at this tier. Each purchase costs the base price times 1 + its growth:
+-- every earlier purchase adds 1 / rampUnits, or 1 / BUY_EASY_REQ while it is an easy one.
+local function price(buyTier: number, boughtAtTier: number, amount: number): number
+	local easyCap = if buyTier == 1 then Economy.BUY_EASY_UNITS else 0
+	-- Purchases of this batch whose price still counts only easy units, then the rest.
+	local easy = math.clamp(easyCap - boughtAtTier, 0, amount)
+	local rest = amount - easy
+	local growth = span(boughtAtTier, easy) / Economy.BUY_EASY_REQ
+	if rest > 0 then
+		local start = boughtAtTier + easy
+		local easyBefore = math.min(start, easyCap)
+		growth += rest * easyBefore / Economy.BUY_EASY_REQ + span(start - easyBefore, rest) / rampUnits(buyTier)
+	end
+	return Economy.basePrice(buyTier) * (amount + growth)
+end
+
+-- Price of the next single unit. Grows linearly with purchases made at this tier (2x after
+-- rampUnits of them, the easy ones aside) to push tier upgrades.
 function Economy.unitPrice(buyTier: number, boughtAtTier: number): number
-	return Economy.basePrice(buyTier) * (1 + boughtAtTier / Economy.buyTierRequirement(buyTier))
+	return price(buyTier, boughtAtTier, 1)
 end
 
 -- Exact sum of unitPrice for `amount` consecutive purchases.
 function Economy.bulkPrice(buyTier: number, boughtAtTier: number, amount: number): number
-	local req = Economy.buyTierRequirement(buyTier)
-	local linear = amount * boughtAtTier + amount * (amount - 1) / 2
-	return Economy.basePrice(buyTier) * (amount + linear / req)
+	return price(buyTier, boughtAtTier, amount)
 end
 
 function Economy.buyTierUpgradeCost(buyTier: number): number
-	return Economy.basePrice(buyTier + 1) * Economy.buyTierRequirement(buyTier) * Economy.BUY_TIER_UPGRADE_SHARE
+	return Economy.basePrice(buyTier + 1) * rampUnits(buyTier) * Economy.BUY_TIER_UPGRADE_SHARE
 end
 
 -- Processing (the converter that turns deposited orbs into cash) ---------------
@@ -17262,8 +17459,15 @@ Economy.FREE_REWARD_COOLDOWN = 600
 Economy.FREE_REWARD_SECONDS = 120
 Economy.FREE_REWARD_MIN = 100
 
--- One-time reward for finishing the onboarding tutorial.
-Economy.TUTORIAL_REWARD_CASH = 25
+-- A new profile's cash and converter level (DataService.defaultProfile). The converter
+-- starts a few levels up so it keeps pace with the first tiers; later levels cost what they
+-- always did.
+Economy.START_CASH = 100
+Economy.START_PROCESS_LEVEL = 16
+
+-- One-time reward for finishing the onboarding tutorial: enough for the next few units,
+-- so the first merge is followed by a second one straight away.
+Economy.TUTORIAL_REWARD_CASH = 200
 
 Economy.OFFLINE_CAP_SECONDS = 8 * 3600
 Economy.OFFLINE_EFFICIENCY = 0.25
@@ -17388,7 +17592,7 @@ return Economy
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="158">
+      <Item class="ModuleScript" referent="159">
         <Properties>
           <string name="Name">Format</string>
           <string name="Source"><![CDATA[--!strict
@@ -17503,7 +17707,119 @@ return Format
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="159">
+      <Item class="ModuleScript" referent="160">
+        <Properties>
+          <string name="Name">Funnel</string>
+          <string name="Source"><![CDATA[--!strict
+--[[
+	Funnel: the onboarding funnel's steps and rules as pure data + functions.
+
+	No Roblox dependencies, so it is unit-tested with Lune (tests/run.luau).
+	Server.Analytics does the logging.
+
+	Steps, logged once per new player. The Creator Dashboard keeps its history by
+	step number, so steps are only ever appended:
+	  1 Joined         first session starts
+	  2 Intro Done     the cutscene finished or was skipped
+	  3..7             each tutorial step finished (buy, orbs, deposit, collect, merge)
+	  8..11            highest tier discovered: Tier 3, Tier 5, Tier 7, Tier 10
+
+	profile.onboarding says where a player is:
+	  0..11         the highest step logged
+	  SKIPPED + n   the tutorial was skipped. The funnel stops there: logging the rest
+	                of it would count tutorial steps the player never did. Their tier
+	                milestones are logged as one-time custom events instead
+	                ("SkipperTier3", ...); n counts the ones already logged
+	  LEGACY        a save from before the funnel: not a new player, never logs
+
+	The tier milestones (steps 8..11 and the Skipper events) were added later. A save from
+	before them whose tutorial is over is a returning player: Funnel.returning marks every
+	milestone as logged without sending anything, so only new players' tiers are counted.
+]]
+
+local Funnel = {}
+
+Funnel.LEGACY = 99
+Funnel.SKIPPED = 50
+-- The step that finishing the tutorial logs (2 + TutorialSteps.COUNT).
+Funnel.TUTORIAL_END = 7
+-- Tiers whose first discovery is a step, in order.
+Funnel.MILESTONES = { 3, 5, 7, 10 }
+Funnel.LAST = Funnel.TUTORIAL_END + #Funnel.MILESTONES
+
+export type Plan = {
+	-- The new profile.onboarding.
+	onboarding: number,
+	-- Funnel steps to log, in order.
+	steps: { number },
+	-- Custom events to log, in order.
+	events: { string },
+}
+
+-- How many milestones a player whose best tier is `highestTier` has reached.
+function Funnel.reached(highestTier: number): number
+	local count = 0
+	for _, tier in Funnel.MILESTONES do
+		if highestTier >= tier then
+			count += 1
+		end
+	end
+	return count
+end
+
+function Funnel.milestoneName(index: number): string
+	return "Tier " .. Funnel.MILESTONES[index]
+end
+
+-- profile.onboarding after the tutorial is skipped (unchanged when the tutorial was
+-- finished, already skipped, or the save is a legacy one).
+function Funnel.skip(onboarding: number): number
+	return if onboarding < Funnel.TUTORIAL_END then Funnel.SKIPPED else onboarding
+end
+
+-- profile.onboarding for a save from before the tier milestones, on its first load since
+-- (DataService). A tutorial that is over (finished, or skipped: `tutorialDone` below the
+-- tutorial's last step is a skip from before skips were marked) leaves the funnel with
+-- every milestone marked as logged, so tiers reached long ago are never sent as new. A
+-- tutorial still running goes on as before.
+function Funnel.returning(onboarding: number, tutorialDone: boolean): number
+	if onboarding >= Funnel.LEGACY then
+		return onboarding
+	elseif onboarding >= Funnel.SKIPPED or (tutorialDone and onboarding < Funnel.TUTORIAL_END) then
+		return Funnel.SKIPPED + #Funnel.MILESTONES
+	elseif onboarding >= Funnel.TUTORIAL_END then
+		return Funnel.LAST
+	end
+	return onboarding
+end
+
+-- What a profile at `onboarding` logs now that its best tier is `highestTier`. Nothing
+-- while the tutorial is still running: the milestones follow once it is finished or
+-- skipped.
+function Funnel.tiers(onboarding: number, highestTier: number): Plan
+	local plan: Plan = { onboarding = onboarding, steps = {}, events = {} }
+	local reached = Funnel.reached(highestTier)
+	if onboarding >= Funnel.LEGACY then
+		return plan
+	elseif onboarding >= Funnel.SKIPPED then
+		for index = onboarding - Funnel.SKIPPED + 1, reached do
+			table.insert(plan.events, "SkipperTier" .. Funnel.MILESTONES[index])
+			plan.onboarding = Funnel.SKIPPED + index
+		end
+	elseif onboarding >= Funnel.TUTORIAL_END then
+		for step = onboarding + 1, Funnel.TUTORIAL_END + reached do
+			table.insert(plan.steps, step)
+			plan.onboarding = step
+		end
+	end
+	return plan
+end
+
+return Funnel
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="161">
         <Properties>
           <string name="Name">Net</string>
           <string name="Source"><![CDATA[-- Remote events/functions. The server creates them, clients wait for them.
@@ -17571,7 +17887,135 @@ return Net
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="160">
+      <Item class="ModuleScript" referent="162">
+        <Properties>
+          <string name="Name">NextGoal</string>
+          <string name="Source"><![CDATA[--!strict
+--[[
+	NextGoal: picks the one concrete target the HUD's "Next:" line names (pure,
+	unit-tested with Lune; Client.UI.Hud draws it once the tutorial is done).
+
+	In order:
+	  merge    the next undiscovered tier: merge two units of the best tier found
+	  buyTier  every tier is discovered: unlock the next buy tier (buy the
+	           required units, then save up for the upgrade)
+	  rack     nothing is left to unlock: stack units of the top tier
+]]
+
+local Economy = require(script.Parent.Economy)
+
+local NextGoal = {}
+
+export type Goal = {
+	kind: "merge" | "buyTier" | "rack",
+	-- merge: the tier to discover; buyTier: the buy tier to unlock; rack: the top tier.
+	tier: number,
+	-- merge: the tier to merge two of; buyTier: the tier bought right now; rack: the top tier.
+	from: number,
+	-- Units counted toward the goal and how many it takes.
+	have: number,
+	need: number,
+	-- buyTier: cash the upgrade costs once the units are bought (0 for the other kinds).
+	cost: number,
+	-- 0..1 for a progress bar; `ready` = one step on a pad finishes it.
+	progress: number,
+	ready: boolean,
+}
+
+-- The fields of the State snapshot (or a saved profile) the pick reads.
+export type Input = {
+	discovered: { number },
+	units: { number },
+	buyTier: number,
+	boughtAtTier: number,
+	money: number,
+}
+
+local function count(units: { number }, tier: number): number
+	local n = units[tier]
+	return if type(n) == "number" and n == n and n > 0 then math.floor(n) else 0
+end
+
+function NextGoal.pick(input: Input): Goal
+	local best = Economy.highestTier(input.discovered)
+	if best < Economy.MAX_TIER then
+		-- Everything owned up to `best`, counted in units of `best` (two of a tier make one
+		-- of the next), so buying and merging lower tiers moves the bar too.
+		local worth = 0
+		for tier = 1, best do
+			worth += count(input.units, tier) / Economy.MERGE_RATIO ^ (best - tier)
+		end
+		local have = count(input.units, best)
+		return {
+			kind = "merge",
+			tier = best + 1,
+			from = best,
+			have = math.min(have, Economy.MERGE_RATIO),
+			need = Economy.MERGE_RATIO,
+			cost = 0,
+			progress = math.clamp(worth / Economy.MERGE_RATIO, 0, 1),
+			ready = have >= Economy.MERGE_RATIO,
+		}
+	end
+	local buyTier = math.clamp(math.floor(input.buyTier), 1, Economy.MAX_BUY_TIER)
+	if buyTier < Economy.MAX_BUY_TIER then
+		local need = Economy.buyTierRequirement(buyTier)
+		local have = math.clamp(math.floor(input.boughtAtTier), 0, need)
+		local cost = Economy.buyTierUpgradeCost(buyTier)
+		local bought = have >= need
+		-- Half the bar for the units, half for the cash.
+		local progress = if bought then 0.5 + 0.5 * math.clamp(input.money / cost, 0, 1) else 0.5 * have / need
+		return {
+			kind = "buyTier",
+			tier = buyTier + 1,
+			from = buyTier,
+			have = have,
+			need = need,
+			cost = cost,
+			progress = progress,
+			ready = bought and input.money >= cost,
+		}
+	end
+	local top = count(input.units, Economy.MAX_TIER)
+	return {
+		kind = "rack",
+		tier = Economy.MAX_TIER,
+		from = Economy.MAX_TIER,
+		have = math.min(top, Economy.UNIT_CAP),
+		need = Economy.UNIT_CAP,
+		cost = 0,
+		progress = math.clamp(top / Economy.UNIT_CAP, 0, 1),
+		ready = false,
+	}
+end
+
+--[[
+	The goal in words: (title, hint, count), e.g. ("Protein Bro", "merge 2x Gym
+	Rookie", "1/2"). `nameOf(tier)` names a unit tier, `money(n)` formats cash.
+	The HUD shows "Next: <title> (<hint>) <count>" and drops the hint when short of room.
+]]
+function NextGoal.text(goal: Goal, nameOf: (number) -> string, money: (number) -> string): (string, string, string)
+	if goal.kind == "merge" then
+		local hint = string.format("merge %dx %s", goal.need, nameOf(goal.from))
+		return nameOf(goal.tier), hint, string.format("%d/%d", goal.have, goal.need)
+	elseif goal.kind == "buyTier" then
+		local title = "Buy Tier " .. goal.tier
+		if goal.have < goal.need then
+			local hint = string.format("buy %d more %s", goal.need - goal.have, nameOf(goal.from))
+			return title, hint, string.format("%d/%d", goal.have, goal.need)
+		elseif goal.ready then
+			return title, "step on the BUY TIER pad", "READY"
+		end
+		return title, "save " .. money(goal.cost), string.format("%d%%", math.floor((goal.progress - 0.5) * 200))
+	end
+	return nameOf(goal.tier), "fill your rack", string.format("%d/%d", goal.have, goal.need)
+end
+
+return NextGoal
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="163">
         <Properties>
           <string name="Name">OrbLook</string>
           <string name="Source"><![CDATA[--!strict
@@ -17693,7 +18137,7 @@ return OrbLook
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="161">
+      <Item class="ModuleScript" referent="164">
         <Properties>
           <string name="Name">Poses</string>
           <string name="Source"><![CDATA[--[[
@@ -18915,7 +19359,7 @@ return Poses
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="162">
+      <Item class="ModuleScript" referent="165">
         <Properties>
           <string name="Name">RigPose</string>
           <string name="Source"><![CDATA[--[[
@@ -19084,7 +19528,7 @@ return RigPose
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="163">
+      <Item class="ModuleScript" referent="166">
         <Properties>
           <string name="Name">SessionLock</string>
           <string name="Source"><![CDATA[--!strict
@@ -19137,7 +19581,7 @@ return SessionLock
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="164">
+      <Item class="ModuleScript" referent="167">
         <Properties>
           <string name="Name">TutorialSteps</string>
           <string name="Source"><![CDATA[--!strict
@@ -19233,6 +19677,21 @@ function TutorialSteps.catchUp(step: number, profile: ProfileView): number
 	return step
 end
 
+-- True for the deposit that completes the "deposit" step: the server turns it into cash
+-- at once instead of queueing it in the converter, so the "collect" step has cash waiting
+-- when a new player gets to the pad.
+function TutorialSteps.instantDeposit(step: number, done: boolean?): boolean
+	local current = TutorialSteps.STEPS[step]
+	return not done and current ~= nil and current.id == "deposit"
+end
+
+-- True when a refused merge ("Nothing to merge yet") should say so: once the tutorial is over
+-- or has reached its merge step. Before that the tutorial is asking for something else.
+function TutorialSteps.mergeToast(step: number, done: boolean?): boolean
+	local current = TutorialSteps.STEPS[step]
+	return done == true or current == nil or current.id == "merge"
+end
+
 -- True when some tier has at least two units (a merge is possible).
 function TutorialSteps.hasPair(units: { number }?): boolean
 	if not units then
@@ -19265,7 +19724,7 @@ return TutorialSteps
         </Properties>
       </Item>
     </Item>
-    <Item class="ModuleScript" referent="165">
+    <Item class="ModuleScript" referent="168">
       <Properties>
         <string name="Name">Theme</string>
         <string name="Source"><![CDATA[--[[
@@ -19935,7 +20394,7 @@ Theme.Fans = {
 -- The opening story, played once for new players (see Client.Intro; the beats and
 -- their timing are in Client.Intro.Timeline). A fan-club story: no romance.
 Theme.Intro = {
-	Skip = "Skip",
+	Skip = "SKIP",
 	HeroName = "YOU",
 	FanName = "YOUR #1 FAN",
 	RivalName = "MAX GIGA CHAD",
@@ -19951,20 +20410,14 @@ Theme.Intro = {
 		Giga = "GIGA!!",
 		Cool = "SO COOL! ★",
 		Stars = "★ ★ ★",
-		Dots = "...",
-		Huh = "?!",
 	},
 	Lines = {
-		Meet = "This is you. And this is your #1 fan!",
-		Good = "Life at the gym was pretty good...",
+		Meet = "This is you and your #1 fan!",
 		Arrive = "...until HE showed up.",
-		Wow = "WOW! Look at all that AURA!",
-		Leave = "And just like that, she joined HIS fan club.",
-		Sad = "Aura: zero. Even the dumbbell is leaving!",
-		Idea1 = "Wait a second...",
-		Idea2 = "Chads make aura. And aura makes CASH!",
-		Plan = "Time to open your OWN gym, full of Chads!",
-		Go = "Get Chads. Farm aura. Get rich. Win your fan back!",
+		Leave = "WOW! Your fan joined HIS fan club!",
+		Sad = "Your aura: ZERO.",
+		Plan = "Idea! Open your OWN gym, full of Chads!",
+		Go = "Get Chads. Farm aura. Win your fan back!",
 	},
 }
 
@@ -20710,15 +21163,15 @@ return Theme
       </Properties>
     </Item>
   </Item>
-  <Item class="ServerScriptService" referent="166">
+  <Item class="ServerScriptService" referent="169">
     <Properties>
       <string name="Name">ServerScriptService</string>
     </Properties>
-    <Item class="Folder" referent="167">
+    <Item class="Folder" referent="170">
       <Properties>
         <string name="Name">Server</string>
       </Properties>
-      <Item class="ModuleScript" referent="168">
+      <Item class="ModuleScript" referent="171">
         <Properties>
           <string name="Name">Analytics</string>
           <string name="Source"><![CDATA[--[[
@@ -20726,12 +21179,22 @@ return Theme
 	judged by where new players stop and how often the shop turns into a purchase.
 
 	Onboarding funnel (Dashboard > Analytics > Funnels > Onboarding), once per player.
-	The highest step logged is saved in profile.onboarding; saves from before this
-	module start at ONBOARDING_LEGACY and never log.
+	Shared.Funnel has the step numbers and rules; progress is saved in
+	profile.onboarding, and saves from before this module start at ONBOARDING_LEGACY
+	and never log.
 	  1 Joined            first session starts
 	  2 Intro Done        the cutscene finished or was skipped (Player attribute IntroSeen)
 	  3..7                each tutorial step reached / finished (Buy, Orbs, Deposit, Collect, Merge)
-	A skipped tutorial logs the custom event "TutorialSkipped" and stops the funnel.
+	  8..11               highest tier discovered: Tier 3, Tier 5, Tier 7, Tier 10
+	A skipped tutorial logs the custom event "TutorialSkipped" and stops the funnel, so
+	it never shows tutorial steps the player did not do. Their tier milestones are
+	logged as one-time custom events instead: "SkipperTier3", "SkipperTier5",
+	"SkipperTier7", "SkipperTier10". Everyone who reached a tier = its funnel step + its
+	Skipper event. Profiles from before the milestones whose tutorial was already over
+	log none of them (Funnel.returning): the tiers they reached long ago are not news.
+
+	Intro: the first-run cutscene logs one custom event when it ends, "IntroSkipped" or
+	"IntroWatched", with the story seconds played as its value.
 
 	Shop funnel (recurring "Shop"): 1 Opened, 2 Prompted, 3 Purchased. One funnel session
 	per shop visit; a prompt from outside the shop (pads, crate panel) starts a new one.
@@ -20742,17 +21205,22 @@ local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local Economy = require(ReplicatedStorage.Shared.Economy)
+local Funnel = require(ReplicatedStorage.Shared.Funnel)
 local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
 
 local Tycoon = require(script.Parent.Tycoon)
 
 local Analytics = {}
 
-Analytics.ONBOARDING_LEGACY = 99
+Analytics.ONBOARDING_LEGACY = Funnel.LEGACY
 
 local ONBOARDING_NAMES = { "Joined", "Intro Done" }
 for i, step in TutorialSteps.STEPS do
 	ONBOARDING_NAMES[2 + i] = "Tutorial " .. i .. " " .. step.id
+end
+for i in Funnel.MILESTONES do
+	ONBOARDING_NAMES[Funnel.TUTORIAL_END + i] = Funnel.milestoneName(i)
 end
 
 -- Player -> current shop funnel session id and its last step.
@@ -20765,16 +21233,42 @@ local function safely(fn: (...any) -> (), ...: any)
 	end
 end
 
--- Logs onboarding steps up to `step` that this player has not logged yet.
+local function logStep(session: Tycoon.Session, step: number)
+	safely(AnalyticsService.LogOnboardingFunnelStepEvent, AnalyticsService, session.player, step, ONBOARDING_NAMES[step])
+end
+
+-- Logs onboarding steps up to `step` that this player has not logged yet. A profile that
+-- skipped the tutorial (Funnel.SKIPPED and up) or predates the funnel is past every step.
 function Analytics.onboard(session: Tycoon.Session, step: number)
 	local p = session.profile
-	if not session.alive or step <= p.onboarding or p.onboarding >= Analytics.ONBOARDING_LEGACY then
+	if not session.alive or step <= p.onboarding then
 		return
 	end
 	for s = p.onboarding + 1, math.min(step, #ONBOARDING_NAMES) do
-		safely(AnalyticsService.LogOnboardingFunnelStepEvent, AnalyticsService, session.player, s, ONBOARDING_NAMES[s])
+		logStep(session, s)
 	end
 	p.onboarding = step
+	Tycoon.markDirty(session)
+end
+
+-- Tier milestones the player's best tier has reached and not logged yet (Funnel.tiers):
+-- funnel steps after a finished tutorial, "SkipperTier<n>" custom events after a skipped one.
+function Analytics.tiers(session: Tycoon.Session)
+	local p = session.profile
+	if not session.alive then
+		return
+	end
+	local plan = Funnel.tiers(p.onboarding, Economy.highestTier(p.discovered))
+	if plan.onboarding == p.onboarding then
+		return
+	end
+	for _, step in plan.steps do
+		logStep(session, step)
+	end
+	for _, name in plan.events do
+		safely(AnalyticsService.LogCustomEvent, AnalyticsService, session.player, name)
+	end
+	p.onboarding = plan.onboarding
 	Tycoon.markDirty(session)
 end
 
@@ -20782,10 +21276,20 @@ end
 function Analytics.tutorial(session: Tycoon.Session, step: number, skipped: boolean?)
 	if skipped then
 		safely(AnalyticsService.LogCustomEvent, AnalyticsService, session.player, "TutorialSkipped", step)
-		return
+		session.profile.onboarding = Funnel.skip(session.profile.onboarding)
+		Tycoon.markDirty(session)
+	else
+		-- Step n current means steps 1..n-1 are done: funnel step 2 + (n - 1).
+		Analytics.onboard(session, 1 + step)
 	end
-	-- Step n current means steps 1..n-1 are done: funnel step 2 + (n - 1).
-	Analytics.onboard(session, 1 + step)
+	-- Tiers discovered during the tutorial count from the moment it ends.
+	Analytics.tiers(session)
+end
+
+-- The first-run cutscene ended after `seconds` of its story.
+function Analytics.intro(session: Tycoon.Session, skipped: boolean, seconds: number)
+	local name = if skipped then "IntroSkipped" else "IntroWatched"
+	safely(AnalyticsService.LogCustomEvent, AnalyticsService, session.player, name, seconds)
 end
 
 function Analytics.shop(player: Player, step: number, name: string)
@@ -20800,7 +21304,11 @@ end
 
 function Analytics.onSessionStart(session: Tycoon.Session)
 	local player = session.player
+	-- Returning players never log here: a save from before the tier milestones arrives with
+	-- all of them marked as logged (DataService's migration, Funnel.returning), so these
+	-- two calls only send what a new profile has not sent yet.
 	Analytics.onboard(session, 1)
+	Analytics.tiers(session)
 	if player:GetAttribute("IntroSeen") == true then
 		Analytics.onboard(session, 2)
 	else
@@ -20819,6 +21327,11 @@ function Analytics.init()
 	Tycoon.addAction("ShopOpened", function(session)
 		Analytics.shop(session.player, 1, "Opened")
 	end)
+	table.insert(Tycoon.listeners, function(session, name)
+		if name == "Discover" then
+			Analytics.tiers(session)
+		end
+	end)
 	Players.PlayerRemoving:Connect(function(player)
 		shopFunnel[player] = nil
 	end)
@@ -20828,7 +21341,7 @@ return Analytics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="169">
+      <Item class="ModuleScript" referent="172">
         <Properties>
           <string name="Name">Badges</string>
           <string name="Source"><![CDATA[--[[
@@ -20941,7 +21454,7 @@ return Badges
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="170">
+      <Item class="ModuleScript" referent="173">
         <Properties>
           <string name="Name">Cosmetics</string>
           <string name="Source"><![CDATA[--[[
@@ -21575,7 +22088,190 @@ return Cosmetics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="171">
+      <Item class="ModuleScript" referent="174">
+        <Properties>
+          <string name="Name">Daily</string>
+          <string name="Source"><![CDATA[--[[
+	Daily: server side of the daily reward (rules: Shared.DailyReward; client:
+	Client.UI.DailyWindow and the HUD's Daily button).
+
+	The saved profile field `daily` holds the UTC day of the last claim and the
+	streak at that claim. The State snapshot's `daily` field tells the client
+	what today looks like: { claimable, day (today's card 1..7), claimed (cards
+	ticked), streak, nextIn (seconds to the next UTC day), firstDay (today is the
+	player's first day: today's card is capped, DailyReward.firstDayCap) }. The
+	"ClaimDaily" action pays today's card: cash sized by the player's income right
+	now (the amounts the window shows) and, on days 3 and 7, a crate opened on the
+	spot. With no room on the rack for the crate's unit, the crate is paid as cash.
+
+	Notify payloads (client shows them):
+	  { kind = "Daily", event = "claimed", day = n, cash = c, crate = rarity?, streak = s,
+	    crateCash = part of `cash` paid instead of the crate (rack full)? }
+
+	First day: once a player has finished the tutorial, has claimed and has been
+	playing for a few minutes, one toast names tomorrow's reward.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local DailyReward = require(Shared.DailyReward)
+local Economy = require(Shared.Economy)
+local Format = require(Shared.Format)
+
+local Tycoon = require(script.Parent.Tycoon)
+
+local Daily = {}
+
+local CHECK_SECONDS = 5
+-- The first-day toast waits for this much play time, and this long after the claim.
+local HINT_AFTER_JOIN = 180
+local HINT_AFTER_CLAIM = 30
+
+local theme: any
+-- os.clock() of the session's start and of its claim (sessions are weak keys).
+local startedAt: { [any]: number } = setmetatable({}, { __mode = "k" }) :: any
+local claimedAt: { [any]: number } = setmetatable({}, { __mode = "k" }) :: any
+
+local function today(): number
+	return DailyReward.dayNumber(os.time())
+end
+
+-- Cash of card `day` for this player right now (the same formula the window shows).
+-- `firstDay` = paid on the player's first day (capped).
+local function cashFor(session: Tycoon.Session, day: number, firstDay: boolean): number
+	local p = session.profile
+	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
+	local cap = if firstDay then DailyReward.firstDayCap(day, p.buyTier, p.boughtAtTier) else nil
+	return DailyReward.cash(day, Tycoon.income(session), progression, cap)
+end
+
+local function snapshot(session: Tycoon.Session): { [string]: any }
+	local d = session.profile.daily
+	local now = os.time()
+	local status = DailyReward.status(d.day, d.streak, DailyReward.dayNumber(now))
+	return {
+		claimable = status.claimable,
+		day = status.day,
+		claimed = status.claimed,
+		streak = status.streak,
+		nextIn = DailyReward.secondsLeft(now),
+		firstDay = d.firstDay == DailyReward.dayNumber(now),
+	}
+end
+
+function Daily.claim(session: Tycoon.Session)
+	if not session.alive then
+		return
+	end
+	local d = session.profile.daily
+	local streak, day = DailyReward.claim(d.day, d.streak, today())
+	if not streak or not day then
+		Tycoon.toast(session, "Next daily reward in " .. Format.time(DailyReward.secondsLeft(os.time())), "info")
+		return
+	end
+	-- Sized before anything is granted, so the crate's unit does not change the cash.
+	local cash = cashFor(session, day, d.firstDay == today())
+	local crate: string? = DailyReward.REWARDS[day].crate
+	-- Rolled before the claim is announced: with no room on the rack for its unit, the crate
+	-- is paid as cash instead of being lost.
+	local tier = if crate then Tycoon.rollCrate(session, crate) else nil
+	local crateCash: number? = nil
+	if crate and not tier then
+		crateCash = DailyReward.crateCash(day, Economy.highestTier(session.profile.discovered))
+		cash += crateCash
+	end
+	d.day = today()
+	d.streak = streak
+	claimedAt[session] = os.clock()
+	Tycoon.notify(session, {
+		kind = "Daily",
+		event = "claimed",
+		day = day,
+		cash = cash,
+		crate = if tier then crate else nil,
+		streak = streak,
+		crateCash = crateCash,
+	})
+	Tycoon.grantMoney(session, cash, "Daily")
+	if crate and tier then
+		Tycoon.grantCrate(session, crate, tier)
+	elseif crate and crateCash then
+		local text = "Your rack is full: the %s %s paid %s instead"
+		Tycoon.toast(session, string.format(text, crate, theme.Words.Chest, Format.money(crateCash)), "info")
+	end
+end
+
+-- The first-day "come back tomorrow" toast (once per player, saved).
+local function hint(session: Tycoon.Session, now: number)
+	local p = session.profile
+	local d = p.daily
+	if d.hinted or not p.tutorialDone or d.firstDay ~= now or d.day ~= now then
+		return
+	end
+	local clock = os.clock()
+	if clock - (startedAt[session] or clock) < HINT_AFTER_JOIN or clock - (claimedAt[session] or 0) < HINT_AFTER_CLAIM then
+		return
+	end
+	d.hinted = true
+	local nextDay = DailyReward.card(d.streak + 1)
+	local reward = DailyReward.describe(nextDay, Format.money(cashFor(session, nextDay, false)), theme.Words.Chest)
+	Tycoon.toast(session, string.format("Come back tomorrow for Day %d: %s", nextDay, reward), "good")
+	Tycoon.markDirty(session)
+end
+
+-- The loop's work for one session. `newDay` = a new UTC day began since the last check.
+local function check(session: Tycoon.Session, now: number, newDay: boolean)
+	if not session.alive then
+		return
+	end
+	if newDay then
+		-- The snapshot's `claimable` changes for everyone online.
+		Tycoon.markDirty(session)
+	end
+	hint(session, now)
+end
+
+-- Call right after Tycoon.addPlayer: starts the play-time clock and stamps the first day.
+function Daily.onSessionStart(session: Tycoon.Session)
+	startedAt[session] = os.clock()
+	local d = session.profile.daily
+	if d.firstDay == 0 then
+		d.firstDay = today()
+		Tycoon.markDirty(session)
+	end
+end
+
+function Daily.init(themeModule: any)
+	theme = themeModule
+	Tycoon.hooks.daily = snapshot
+	Tycoon.addAction("ClaimDaily", function(session)
+		Daily.claim(session)
+	end)
+
+	task.spawn(function()
+		local lastDay = today()
+		while true do
+			task.wait(CHECK_SECONDS)
+			local now = today()
+			for _, session in Tycoon.allSessions() do
+				-- One session's error (a player leaving mid-check) must not stop the loop
+				-- for the whole server.
+				local ok, err = pcall(check, session, now, now ~= lastDay)
+				if not ok then
+					warn("[Daily] check:", err)
+				end
+			end
+			lastDay = now
+		end
+	end)
+end
+
+return Daily
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="175">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -21594,6 +22290,7 @@ local RunService = game:GetService("RunService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Economy = require(ReplicatedStorage.Shared.Economy)
+local Funnel = require(ReplicatedStorage.Shared.Funnel)
 local SessionLock = require(ReplicatedStorage.Shared.SessionLock)
 local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
 
@@ -21601,6 +22298,11 @@ local DataService = {}
 
 local STORE_NAME = "TycoonProfiles_v1"
 local MAX_RETRIES = 4
+-- Profile.version of a save written by this code. reconcile migrates older saves once:
+--   2  buy tier 1 upgrades after Economy.BUY_EASY_UNITS purchases (it was one), and the
+--      onboarding funnel counts tier milestones (Shared.Funnel)
+local VERSION = 2
+DataService.VERSION = VERSION
 
 export type Unlocker = { rarity: string, endsAt: number }
 
@@ -21642,6 +22344,11 @@ export type Profile = {
 	onboarding: number,
 	-- Roblox badges: true = awarded, false = earned and waiting to be awarded (Badges).
 	badges: { [string]: boolean },
+	-- Daily reward (Server.Daily, Shared.DailyReward): UTC day number of the last claim
+	-- (0 = never), days claimed in a row at that claim, UTC day number of the player's first
+	-- day (0 = not started yet, 1 = saves from before the daily reward) and whether the
+	-- first-day "come back tomorrow" toast was shown.
+	daily: { day: number, streak: number, firstDay: number, hinted: boolean },
 	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
 	-- of the last full cash reward (Economy.modeReward cooldown).
 	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
@@ -21693,8 +22400,8 @@ function DataService.defaultProfile(): Profile
 	local discovered = zeros(Economy.MAX_TIER)
 	discovered[1] = os.time()
 	return {
-		version = 1,
-		money = 50,
+		version = VERSION,
+		money = Economy.START_CASH,
 		carried = 0,
 		queue = 0,
 		pending = 0,
@@ -21703,7 +22410,7 @@ function DataService.defaultProfile(): Profile
 		totalObtained = 1,
 		buyTier = 1,
 		boughtAtTier = 0,
-		processLevel = 0,
+		processLevel = Economy.START_PROCESS_LEVEL,
 		heldChest = "",
 		pendingCrate = "",
 		pendingUnlocker = 0,
@@ -21725,6 +22432,7 @@ function DataService.defaultProfile(): Profile
 		starterGranted = false,
 		onboarding = 0,
 		badges = {},
+		daily = { day = 0, streak = 0, firstDay = 0, hinted = false },
 		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, stageMaps = true, gear = "none" },
 		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0 },
 		modes = {
@@ -21744,6 +22452,8 @@ local function reconcile(data: any): Profile
 	if type(data) ~= "table" then
 		return default
 	end
+	-- Read before the defaults below fill a missing version in.
+	local version = if type(data.version) == "number" then data.version else 1
 	-- Saves from before Parkour levels: the old single record becomes level 1's.
 	if type(data.parkour) ~= "table" then
 		local old = type(data.modes) == "table" and data.modes.parkour
@@ -21769,6 +22479,10 @@ local function reconcile(data: any): Profile
 	-- Saves from before the onboarding funnel: those players are not new, so they never log it.
 	if data.onboarding == nil then
 		data.onboarding = 99
+	end
+	-- Saves from before the daily reward: day 1 is waiting, but today is not a "first day".
+	if data.daily == nil then
+		data.daily = { day = 0, streak = 0, firstDay = 1, hinted = true }
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
@@ -21809,6 +22523,8 @@ local function reconcile(data: any): Profile
 	-- Purchases past the upgrade requirement only count once (Economy.unitPrice grows with
 	-- them); a save made under a larger requirement would otherwise price units out of reach.
 	data.boughtAtTier = math.clamp(math.floor(data.boughtAtTier), 0, Economy.buyTierRequirement(data.buyTier))
+	-- The converter starts at START_PROCESS_LEVEL; saves from before that are lifted to it.
+	data.processLevel = math.max(math.floor(data.processLevel), Economy.START_PROCESS_LEVEL)
 	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
 	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
 		data.heldChest = ""
@@ -21875,9 +22591,27 @@ local function reconcile(data: any): Profile
 	if data.pendingCrate ~= "" and not Economy.isRarity(data.pendingCrate) then
 		data.pendingCrate = ""
 	end
+	for key, value in default.daily :: any do
+		local v = data.daily[key]
+		if type(v) ~= type(value) or (type(v) == "number" and (v ~= v or v < 0 or v == math.huge)) then
+			data.daily[key] = value
+		elseif type(v) == "number" then
+			data.daily[key] = math.floor(v)
+		end
+	end
 	if data.pendingUnlocker ~= 1 and data.pendingUnlocker ~= 2 then
 		data.pendingUnlocker = 0
 	end
+	if version < 2 then
+		-- Buy tier 1 used to upgrade after BUY_REQ_BASE purchases. A player who was past the
+		-- tutorial and could already upgrade still can, without buying the easy units first.
+		if data.tutorialDone and data.buyTier == 1 and data.boughtAtTier >= Economy.BUY_REQ_BASE then
+			data.boughtAtTier = Economy.buyTierRequirement(1)
+		end
+		-- Returning players' tier milestones count as logged, with nothing sent.
+		data.onboarding = Funnel.returning(data.onboarding, data.tutorialDone)
+	end
+	data.version = math.max(version, VERSION)
 	return data :: Profile
 end
 
@@ -22004,7 +22738,7 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="172">
+      <Item class="ModuleScript" referent="176">
         <Properties>
           <string name="Name">GameModes</string>
           <string name="Source"><![CDATA[--[[
@@ -22346,7 +23080,7 @@ return GameModes
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="173">
+      <Item class="ModuleScript" referent="177">
         <Properties>
           <string name="Name">Intro</string>
           <string name="Source"><![CDATA[--[[
@@ -22355,10 +23089,16 @@ return GameModes
 	The saved profile field introSeen says whether the player has watched it.
 	When a session starts it is copied to the Player attribute "IntroSeen";
 	the client plays the cutscene when that is false and sends the "IntroSeen"
-	action when it ends (finished or skipped), which saves it as true.
+	action when it ends (finished or skipped), which saves it as true. The action
+	also says how it ended ({ skipped = boolean, seconds = story seconds played }),
+	which goes to Analytics once.
 ]]
 
+local Analytics = require(script.Parent.Analytics)
 local Tycoon = require(script.Parent.Tycoon)
+
+-- Longest story time the client may report (the cutscene's watchdog ends it by then).
+local MAX_SECONDS = 60
 
 local Intro = {}
 
@@ -22368,13 +23108,17 @@ function Intro.onSessionStart(player: Player, profile: { [string]: any })
 end
 
 function Intro.init()
-	Tycoon.addAction("IntroSeen", function(session)
+	Tycoon.addAction("IntroSeen", function(session, data)
 		if not session.alive then
 			return
 		end
 		session.player:SetAttribute("IntroSeen", true)
 		if session.profile.introSeen ~= true then
 			session.profile.introSeen = true
+			local seconds = data.seconds
+			if type(data.skipped) == "boolean" and type(seconds) == "number" and seconds == seconds then
+				Analytics.intro(session, data.skipped, math.clamp(seconds, 0, MAX_SECONDS))
+			end
 			Tycoon.markDirty(session)
 		end
 	end)
@@ -22384,7 +23128,7 @@ return Intro
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Script" referent="174">
+      <Item class="Script" referent="178">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -22408,6 +23152,7 @@ local GameModes = require(Server.GameModes)
 local Cosmetics = require(Server.Cosmetics)
 local Analytics = require(Server.Analytics)
 local Badges = require(Server.Badges)
+local Daily = require(Server.Daily)
 
 local AUTOSAVE_SECONDS = 90
 
@@ -22424,6 +23169,7 @@ Cosmetics.init(Theme)
 Ranking.init(Theme, world.ranking)
 Analytics.init()
 Badges.init(Theme)
+Daily.init(Theme)
 
 local saving: { [Player]: boolean } = {}
 
@@ -22467,6 +23213,7 @@ local function onPlayerAdded(player: Player)
 		Cosmetics.onSessionStart(session)
 		Analytics.onSessionStart(session)
 		Badges.onSessionStart(session)
+		Daily.onSessionStart(session)
 	end
 end
 
@@ -22515,11 +23262,11 @@ end)
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="175">
+      <Item class="Folder" referent="179">
         <Properties>
           <string name="Name">Modes</string>
         </Properties>
-        <Item class="ModuleScript" referent="176">
+        <Item class="ModuleScript" referent="180">
           <Properties>
             <string name="Name">Cardio</string>
             <string name="Source"><![CDATA[--[[
@@ -23106,7 +23853,7 @@ return Cardio
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="177">
+        <Item class="ModuleScript" referent="181">
           <Properties>
             <string name="Name">CardioChase</string>
             <string name="Source"><![CDATA[--!strict
@@ -23494,7 +24241,7 @@ return CardioChase
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="178">
+        <Item class="ModuleScript" referent="182">
           <Properties>
             <string name="Name">CardioLayout</string>
             <string name="Source"><![CDATA[--!strict
@@ -24906,7 +25653,7 @@ return CardioLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="179">
+        <Item class="ModuleScript" referent="183">
           <Properties>
             <string name="Name">CardioRules</string>
             <string name="Source"><![CDATA[--!strict
@@ -25189,7 +25936,7 @@ return CardioRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="180">
+        <Item class="ModuleScript" referent="184">
           <Properties>
             <string name="Name">Catalog</string>
             <string name="Source"><![CDATA[--!strict
@@ -25229,7 +25976,7 @@ return Catalog
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="181">
+        <Item class="ModuleScript" referent="185">
           <Properties>
             <string name="Name">Course</string>
             <string name="Source"><![CDATA[--!strict
@@ -27259,7 +28006,7 @@ return Course
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="182">
+        <Item class="ModuleScript" referent="186">
           <Properties>
             <string name="Name">Mog</string>
             <string name="Source"><![CDATA[--[[
@@ -28176,7 +28923,7 @@ return { create = create }
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="183">
+        <Item class="ModuleScript" referent="187">
           <Properties>
             <string name="Name">MogLayout</string>
             <string name="Source"><![CDATA[--[[
@@ -28253,7 +29000,7 @@ return MogLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="184">
+        <Item class="ModuleScript" referent="188">
           <Properties>
             <string name="Name">MogRules</string>
             <string name="Source"><![CDATA[--[[
@@ -28582,7 +29329,7 @@ return MogRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="185">
+        <Item class="ModuleScript" referent="189">
           <Properties>
             <string name="Name">Parkour</string>
             <string name="Source"><![CDATA[--[[
@@ -29228,7 +29975,7 @@ return Parkour
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="186">
+        <Item class="ModuleScript" referent="190">
           <Properties>
             <string name="Name">Rules</string>
             <string name="Source"><![CDATA[--!strict
@@ -29321,7 +30068,7 @@ return Rules
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="187">
+      <Item class="ModuleScript" referent="191">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -29617,7 +30364,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="188">
+      <Item class="ModuleScript" referent="192">
         <Properties>
           <string name="Name">PlotLayout</string>
           <string name="Source"><![CDATA[--!strict
@@ -30135,7 +30882,7 @@ return Layout
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="189">
+      <Item class="ModuleScript" referent="193">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -30384,7 +31131,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="190">
+      <Item class="ModuleScript" referent="194">
         <Properties>
           <string name="Name">Tutorial</string>
           <string name="Source"><![CDATA[--[[
@@ -30501,7 +31248,7 @@ return Tutorial
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="191">
+      <Item class="ModuleScript" referent="195">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -30526,6 +31273,7 @@ local OrbLook = require(Shared.OrbLook)
 local CratePickup = require(Shared.CratePickup)
 local Format = require(Shared.Format)
 local Net = require(Shared.Net)
+local TutorialSteps = require(Shared.TutorialSteps)
 local CharacterFactory = require(Shared.CharacterFactory)
 
 local WorldBuilder = require(script.Parent.WorldBuilder)
@@ -30640,10 +31388,15 @@ Tycoon.hooks = {
 	end,
 	-- Called before the "Home" action moves the player (GameModes ends any run first).
 	leavingForHome = function(_session: Session) end,
+	-- The State snapshot's `daily` field (filled in by Daily).
+	daily = function(_session: Session): { [string]: any }?
+		return nil
+	end,
 }
 
 -- Gameplay event listeners (used by the tutorial): fn(session, name, data).
--- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge".
+-- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge", and "Discover" (a tier was discovered
+-- for the first time; Analytics counts its milestones).
 Tycoon.listeners = {} :: { (Session, string, { [string]: any }) -> () }
 
 local function emit(session: Session, name: string, data: { [string]: any })
@@ -31035,6 +31788,7 @@ local function discoverAll(session: Session, extra: { number }?)
 	if newest > 0 then
 		table.sort(found)
 		notify(session, { kind = "Reward", tier = newest, tiers = found, new = true })
+		emit(session, "Discover", { tier = newest })
 	end
 end
 
@@ -31323,7 +32077,9 @@ local function spawnFloorChest(session: Session)
 	model.Parent = plot.chestFolder
 	table.insert(session.floorChests, chest)
 	if rarity ~= "Common" then
-		toast(session, string.format("A %s %s is on its way!", rarity, theme.Words.Chest), "good")
+		-- "An Uncommon Crate", "An Epic Crate", "A Rare Crate".
+		local article = if string.find(rarity, "^[AEIOU]") then "An" else "A"
+		toast(session, string.format("%s %s %s is on its way!", article, rarity, theme.Words.Chest), "good")
 	end
 end
 
@@ -31768,11 +32524,16 @@ local function doMerge(session: Session, verbose: boolean, auto: boolean)
 		discoverAll(session, stepTiers(steps))
 		emit(session, "Merge", { merges = merges, top = top })
 		if verbose then
-			toast(session, string.format("Merged %s times! Best: %s", Format.short(merges), tierName(top)), "good")
+			local times = if merges == 1 then "once" else Format.short(merges) .. " times"
+			toast(session, string.format("Merged %s! Best: %s", times, tierName(top)), "good")
 		end
 		markDirty(session)
 	elseif verbose then
-		toast(session, "Nothing to merge yet. You need 2 of the same tier.", "info")
+		-- First run: a new player spawns facing this pad and walks onto it before the
+		-- tutorial has asked for a merge, so the toast waits for that step.
+		if TutorialSteps.mergeToast(p.tutorialStep, p.tutorialDone) then
+			toast(session, "Nothing to merge yet. You need 2 of the same tier.", "info")
+		end
 		refusePad(session, "Merge", "locked")
 	end
 end
@@ -31833,7 +32594,13 @@ padHandlers.Deposit = function(session)
 	end
 	local mult = ReplicatedStorage:GetAttribute("DepositMult") or 1
 	local amount = p.carried * mult
-	p.queue += amount
+	-- First run: the deposit that completes the tutorial's step becomes cash at once, so
+	-- its Collect step never waits for the converter.
+	if TutorialSteps.instantDeposit(p.tutorialStep, p.tutorialDone) then
+		p.pending += amount * Economy.CASH_PER_POINT * Tycoon.moneyMultiplier(session)
+	else
+		p.queue += amount
+	end
 	p.carried = 0
 	local root = rootPart(session)
 	local to = converterPos(session)
@@ -32097,6 +32864,7 @@ local function snapshot(session: Session): { [string]: any }
 		tutorialDone = p.tutorialDone,
 		cosmetics = Tycoon.hooks.cosmetics(session),
 		modes = Tycoon.hooks.modes(session),
+		daily = Tycoon.hooks.daily(session),
 	}
 end
 
@@ -32703,10 +33471,28 @@ function Tycoon.refresh(player: Player)
 	end
 end
 
-function Tycoon.grantMoney(session: Session, amount: number)
+-- `source` names the "Cash" effect for the client ("Purchase" = a cash pack's celebration,
+-- "Daily" = the daily reward).
+function Tycoon.grantMoney(session: Session, amount: number, source: string?)
 	addMoney(session, amount)
 	local root = rootPart(session)
-	effect(session, "Cash", { amount = amount, source = "Purchase", padPos = root and root.Position })
+	effect(session, "Cash", { amount = amount, source = source or "Purchase", padPos = root and root.Position })
+	markDirty(session)
+	flush(session)
+end
+
+-- A free crate of `rarity` opened on the spot (daily reward), in two steps so the caller
+-- can pay something else when it does not fit: rollCrate returns the tier of its unit, or
+-- nil when the rack has no room for that unit (full, and nothing can merge)...
+function Tycoon.rollCrate(session: Session, rarity: string): number?
+	local tier = Economy.rollChest(rarity, highestTier(session), random)
+	return if Economy.addUnitsCapped(session.profile.units, tier, 1).accepted > 0 then tier else nil
+end
+
+-- ...and grantCrate gives that unit with the crate reveal.
+function Tycoon.grantCrate(session: Session, rarity: string, tier: number)
+	awardUnit(session, tier, "unlock")
+	effect(session, "ChestOpen", { rarity = rarity, tier = tier })
 	markDirty(session)
 	flush(session)
 end
@@ -32783,11 +33569,11 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="192">
+      <Item class="Folder" referent="196">
         <Properties>
           <string name="Name">World</string>
         </Properties>
-        <Item class="ModuleScript" referent="193">
+        <Item class="ModuleScript" referent="197">
           <Properties>
             <string name="Name">CardioTrack</string>
             <string name="Source"><![CDATA[--[[
@@ -34157,7 +34943,7 @@ return CardioTrack
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="194">
+        <Item class="ModuleScript" referent="198">
           <Properties>
             <string name="Name">Common</string>
             <string name="Source"><![CDATA[--[[
@@ -34332,7 +35118,7 @@ return Common
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="195">
+        <Item class="ModuleScript" referent="199">
           <Properties>
             <string name="Name">Decor</string>
             <string name="Source"><![CDATA[--[[
@@ -35005,7 +35791,7 @@ return Decor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="196">
+        <Item class="ModuleScript" referent="200">
           <Properties>
             <string name="Name">Hub</string>
             <string name="Source"><![CDATA[--[[
@@ -36109,7 +36895,7 @@ return Hub
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="197">
+        <Item class="ModuleScript" referent="201">
           <Properties>
             <string name="Name">Machines</string>
             <string name="Source"><![CDATA[--[[
@@ -36927,7 +37713,7 @@ return Machines
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="198">
+        <Item class="ModuleScript" referent="202">
           <Properties>
             <string name="Name">MapDecor</string>
             <string name="Source"><![CDATA[--[[
@@ -37890,7 +38676,7 @@ return MapDecor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="199">
+        <Item class="ModuleScript" referent="203">
           <Properties>
             <string name="Name">Modes</string>
             <string name="Source"><![CDATA[--[[
@@ -39634,7 +40420,7 @@ return Modes
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="200">
+        <Item class="ModuleScript" referent="204">
           <Properties>
             <string name="Name">MogStage</string>
             <string name="Source"><![CDATA[--[[
@@ -39975,7 +40761,7 @@ return MogStage
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="201">
+        <Item class="ModuleScript" referent="205">
           <Properties>
             <string name="Name">Pads</string>
             <string name="Source"><![CDATA[--[[
@@ -40289,7 +41075,7 @@ return Pads
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="202">
+        <Item class="ModuleScript" referent="206">
           <Properties>
             <string name="Name">Pen</string>
             <string name="Source"><![CDATA[--[[
@@ -40608,7 +41394,7 @@ return Pen
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="203">
+        <Item class="ModuleScript" referent="207">
           <Properties>
             <string name="Name">Props</string>
             <string name="Source"><![CDATA[--!strict
@@ -40879,7 +41665,7 @@ return Props
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="204">
+        <Item class="ModuleScript" referent="208">
           <Properties>
             <string name="Name">Shell</string>
             <string name="Source"><![CDATA[--[[
@@ -41335,7 +42121,7 @@ return Shell
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="205">
+        <Item class="ModuleScript" referent="209">
           <Properties>
             <string name="Name">Shelves</string>
             <string name="Source"><![CDATA[--[[
@@ -42045,7 +42831,7 @@ return Shelves
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="206">
+      <Item class="ModuleScript" referent="210">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -42417,26 +43203,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="207">
+  <Item class="SoundService" referent="211">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="208">
+  <Item class="StarterPlayer" referent="212">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="209">
+    <Item class="StarterPlayerScripts" referent="213">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="210">
+      <Item class="Folder" referent="214">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="ModuleScript" referent="211">
+        <Item class="ModuleScript" referent="215">
           <Properties>
             <string name="Name">Animator</string>
             <string name="Source"><![CDATA[--[[
@@ -43116,11 +43902,11 @@ return Animator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="212">
+        <Item class="Folder" referent="216">
           <Properties>
             <string name="Name">Fx</string>
           </Properties>
-          <Item class="ModuleScript" referent="213">
+          <Item class="ModuleScript" referent="217">
             <Properties>
               <string name="Name">Ambient</string>
               <string name="Source"><![CDATA[--[[
@@ -43500,7 +44286,7 @@ return Ambient
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="214">
+          <Item class="ModuleScript" referent="218">
             <Properties>
               <string name="Name">Budget</string>
               <string name="Source"><![CDATA[--[[
@@ -43677,7 +44463,7 @@ return Budget
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="215">
+          <Item class="ModuleScript" referent="219">
             <Properties>
               <string name="Name">Camera</string>
               <string name="Source"><![CDATA[--[[
@@ -44003,7 +44789,7 @@ return Camera
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="216">
+          <Item class="ModuleScript" referent="220">
             <Properties>
               <string name="Name">Cardio</string>
               <string name="Source"><![CDATA[--!strict
@@ -45328,7 +46114,7 @@ return CardioFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="217">
+          <Item class="ModuleScript" referent="221">
             <Properties>
               <string name="Name">CardioChase</string>
               <string name="Source"><![CDATA[--!strict
@@ -45969,7 +46755,7 @@ return ChaseFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="218">
+          <Item class="ModuleScript" referent="222">
             <Properties>
               <string name="Name">Cosmetics</string>
               <string name="Source"><![CDATA[--[[
@@ -46286,7 +47072,7 @@ return CosmeticsFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="219">
+          <Item class="ModuleScript" referent="223">
             <Properties>
               <string name="Name">Crates</string>
               <string name="Source"><![CDATA[--[[
@@ -47163,7 +47949,7 @@ return Crates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="220">
+          <Item class="ModuleScript" referent="224">
             <Properties>
               <string name="Name">Fans</string>
               <string name="Source"><![CDATA[--[[
@@ -48158,7 +48944,7 @@ return Fans
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="221">
+          <Item class="ModuleScript" referent="225">
             <Properties>
               <string name="Name">Machines</string>
               <string name="Source"><![CDATA[-- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow):
@@ -49694,7 +50480,7 @@ return Machines
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="222">
+          <Item class="ModuleScript" referent="226">
             <Properties>
               <string name="Name">Modes</string>
               <string name="Source"><![CDATA[--!strict
@@ -51359,7 +52145,7 @@ return ModesFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="223">
+          <Item class="ModuleScript" referent="227">
             <Properties>
               <string name="Name">Mog</string>
               <string name="Source"><![CDATA[--!strict
@@ -51984,7 +52770,7 @@ return MogFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="224">
+          <Item class="ModuleScript" referent="228">
             <Properties>
               <string name="Name">Orbs</string>
               <string name="Source"><![CDATA[-- Client-side aura orb visuals for the local player's own plot.
@@ -54050,7 +54836,7 @@ return Orbs
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="225">
+          <Item class="ModuleScript" referent="229">
             <Properties>
               <string name="Name">PlateStyle</string>
               <string name="Source"><![CDATA[--!strict
@@ -54299,7 +55085,7 @@ return PlateStyle
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="226">
+          <Item class="ModuleScript" referent="230">
             <Properties>
               <string name="Name">Plates</string>
               <string name="Source"><![CDATA[--!strict
@@ -55130,7 +55916,7 @@ return Plates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="227">
+          <Item class="ModuleScript" referent="231">
             <Properties>
               <string name="Name">PlayerPose</string>
               <string name="Source"><![CDATA[--!strict
@@ -55284,7 +56070,7 @@ return PlayerPose
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="228">
+          <Item class="ModuleScript" referent="232">
             <Properties>
               <string name="Name">Shelf</string>
               <string name="Source"><![CDATA[--[[
@@ -56908,7 +57694,7 @@ return Shelf
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="229">
+          <Item class="ModuleScript" referent="233">
             <Properties>
               <string name="Name">Sprites</string>
               <string name="Source"><![CDATA[--[[
@@ -57113,7 +57899,7 @@ return Sprites
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="230">
+          <Item class="ModuleScript" referent="234">
             <Properties>
               <string name="Name">Surge</string>
               <string name="Source"><![CDATA[--[[
@@ -57398,7 +58184,7 @@ return Surge
             </Properties>
           </Item>
         </Item>
-        <Item class="ModuleScript" referent="231">
+        <Item class="ModuleScript" referent="235">
           <Properties>
             <string name="Name">Guide</string>
             <string name="Source"><![CDATA[--[[
@@ -57840,11 +58626,11 @@ return Guide
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="232">
+        <Item class="Folder" referent="236">
           <Properties>
             <string name="Name">Intro</string>
           </Properties>
-          <Item class="ModuleScript" referent="233">
+          <Item class="ModuleScript" referent="237">
             <Properties>
               <string name="Name">Actors</string>
               <string name="Source"><![CDATA[--!strict
@@ -58513,7 +59299,7 @@ return Actors
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="234">
+          <Item class="ModuleScript" referent="238">
             <Properties>
               <string name="Name">Avatar</string>
               <string name="Source"><![CDATA[--!strict
@@ -59156,7 +59942,7 @@ return Avatar
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="235">
+          <Item class="ModuleScript" referent="239">
             <Properties>
               <string name="Name">AvatarRig</string>
               <string name="Source"><![CDATA[--!strict
@@ -59387,7 +60173,7 @@ return AvatarRig
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="236">
+          <Item class="ModuleScript" referent="240">
             <Properties>
               <string name="Name">Cutscene</string>
               <string name="Source"><![CDATA[--[[
@@ -59398,15 +60184,18 @@ return AvatarRig
 	While it plays: the player's "IntroPlaying" attribute is true (the tutorial
 	and guide hide on it), the HUD and the Roblox player list are hidden, the
 	character's controls are off and the camera is Scriptable. Finishing or
-	skipping (button, Esc, gamepad B) puts all of that back. Any error, or the
-	45 s watchdog, ends it the same way, so it can never lock the player in.
+	skipping puts all of that back. Skip is on screen from the first frame (button
+	for mouse and touch; Esc, gamepad B, or A on the selected button) and works
+	after SKIP_GUARD seconds. Any error, or the 45 s watchdog, ends it the same
+	way, so it can never lock the player in.
 
 	  Cutscene.play(opts?) -> boolean   false if one is already playing
 	    opts.delay      seconds to hold the first shot before the story starts
 	                    (the loading screen fades out over it)
 	    opts.startBeat  beat index to start from (earlier beats fast-forward)
 	    opts.pauseAt    freeze the story this many seconds into startBeat
-	    opts.onDone     fn(skipped) after everything is restored
+	    opts.onDone     fn(skipped, watched) after everything is restored; watched =
+	                    story seconds played
 	  Cutscene.preview(beatIndex, pauseAt?)  play from a beat (review tool)
 	  Cutscene.skip()                        end it now
 	  Cutscene.isPlaying() -> boolean
@@ -59434,7 +60223,9 @@ local FxCamera = require(Intro.Parent.Fx.Camera)
 local Cutscene = {}
 
 local WATCHDOG = 45
-local SKIP_AFTER = 1
+-- Skip ignores input for this long after the cutscene starts, so a tap or button press
+-- left over from the loading screen cannot end it.
+local SKIP_GUARD = 0.4
 local BIND_NAME = "IntroCutscene"
 local DEFAULT_FOV = 70
 -- Matches Fx.Camera's spawn framing, so the hand-off to the follow camera is seamless.
@@ -59445,7 +60236,7 @@ export type Options = {
 	delay: number?,
 	startBeat: number?,
 	pauseAt: number?,
-	onDone: ((skipped: boolean) -> ())?,
+	onDone: ((skipped: boolean, watched: number) -> ())?,
 }
 
 type Session = {
@@ -59457,7 +60248,6 @@ type Session = {
 	beat: number,
 	fired: { [any]: boolean },
 	pausedAt: number?,
-	skipShown: boolean,
 	stage: Stage.Stage?,
 	fx: Effects.Effects?,
 	cast: Actors.Cast?,
@@ -59742,7 +60532,9 @@ local function teardown(s: Session, skipped: boolean)
 	local onDone = s.opts.onDone
 	if onDone then
 		try("onDone", function()
-			onDone(skipped)
+			-- Story seconds played: the beats before the current one plus its clock.
+			local beat = math.min(s.beat, #Timeline.BEATS + 1)
+			onDone(skipped, math.min(Timeline.startOf(beat) + s.clock, Timeline.total()))
 		end)
 	end
 end
@@ -59988,13 +60780,6 @@ local function step(s: Session, dt: number)
 	dt = math.min(dt, 1 / 15)
 	local beats = Timeline.BEATS
 
-	if not s.skipShown and os.clock() - s.started >= (s.opts.delay or 0) + SKIP_AFTER then
-		s.skipShown = true
-		if s.ui then
-			s.ui:showSkip()
-		end
-	end
-
 	-- Advance the story clock (held during the preroll and at pauseAt).
 	if s.preroll > 0 then
 		s.preroll -= dt
@@ -60069,6 +60854,13 @@ function Cutscene.skip()
 	end
 end
 
+-- Skip from the player's own input (button, Esc, gamepad B).
+local function skipByInput(s: Session)
+	if os.clock() - s.started >= SKIP_GUARD then
+		Cutscene.skip()
+	end
+end
+
 local function setup(s: Session)
 	local player = Players.LocalPlayer
 	player:SetAttribute("IntroPlaying", true)
@@ -60104,7 +60896,7 @@ local function setup(s: Session)
 	local fx = Effects.new(stage.model, stage.cframe, Theme)
 	s.fx = fx
 	s.ui = Ui.new(Theme, stage.model, function()
-		Cutscene.skip()
+		skipByInput(s)
 	end)
 	local cast = Actors.new(stage.cframe, stage.model)
 	s.cast = cast
@@ -60130,6 +60922,7 @@ local function setup(s: Session)
 		ui:heroTag(hero.rig.root, hero.height + 1.6, player.DisplayName, Theme.Intro.HeroAura)
 	end
 	ui:letterbox(true, (s.opts.startBeat or 1) > 1)
+	ui:focusSkip()
 
 	-- Fast-forward to the start beat (the dumbbell starts in the hero's hand).
 	Actors.update(cast, 0)
@@ -60143,8 +60936,8 @@ local function setup(s: Session)
 	fx:update(0, hero and hero.hand)
 
 	ContextActionService:BindActionAtPriority(BIND_NAME, function(_, state)
-		if state == Enum.UserInputState.Begin and s.skipShown then
-			Cutscene.skip()
+		if state == Enum.UserInputState.Begin then
+			skipByInput(s)
 		end
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.ContextActionPriority.High.Value + 100, Enum.KeyCode.Escape, Enum.KeyCode.ButtonB)
@@ -60163,7 +60956,6 @@ function Cutscene.play(opts: Options?): boolean
 		beat = 1,
 		fired = {},
 		pausedAt = nil,
-		skipShown = false,
 		stage = nil,
 		fx = nil,
 		cast = nil,
@@ -60223,7 +61015,7 @@ return Cutscene
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="237">
+          <Item class="ModuleScript" referent="241">
             <Properties>
               <string name="Name">Effects</string>
               <string name="Source"><![CDATA[--!strict
@@ -61148,7 +61940,7 @@ return Effects
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="238">
+          <Item class="ModuleScript" referent="242">
             <Properties>
               <string name="Name">Framing</string>
               <string name="Source"><![CDATA[--!strict
@@ -61355,7 +62147,7 @@ return Framing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="239">
+          <Item class="ModuleScript" referent="243">
             <Properties>
               <string name="Name">Stage</string>
               <string name="Source"><![CDATA[--!strict
@@ -61641,7 +62433,7 @@ return Stage
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="240">
+          <Item class="ModuleScript" referent="244">
             <Properties>
               <string name="Name">Timeline</string>
               <string name="Source"><![CDATA[--!strict
@@ -61763,8 +62555,6 @@ local WALK_IN = { subjects = { "Rival", "Hero", "Fan" }, size = "wide", angle = 
 -- name card in the upper left.
 local GIANT = { subjects = { "Rival", "Hero" }, size = "full", angle = "ground", yaw = -25, focus = "Rival", place = "right" }
 local GIANT_IN = { subjects = { "Rival", "Hero" }, size = "medium", angle = "ground", yaw = -25, focus = "Rival", place = "right" }
-local TRIO = { subjects = { "Rival", "Fan", "Hero" }, size = "full", angle = "eye", yaw = -10 }
-local TRIO_IN = { subjects = { "Rival", "Fan", "Hero" }, size = "medium", angle = "eye", yaw = -10 }
 local EXODUS = {
 	subjects = { "Rival", "Fan", "Crowd1", "Crowd2", "Crowd3", "Crowd4" },
 	size = "full",
@@ -61773,96 +62563,84 @@ local EXODUS = {
 }
 -- The fan and her sign as it flips to TEAM GIGA (the hero beside her).
 local FLIP = { subjects = { "Fan", "Hero" }, size = "medium", angle = "eye", yaw = -10, focus = "Fan", place = "right" }
--- The hero's face as the crowd leaves, then a pull back to the empty yard.
-local REACT = { subjects = { "Hero" }, size = "medium", place = "center", angle = "eye", yaw = -40 }
-local ALONE = { subjects = { "Hero" }, size = "wide", place = "right", angle = "eye", yaw = -40 }
 -- The hero in the lower left third, headroom for the cloud, the empty yard behind.
 local SAD = { subjects = { "Hero" }, size = "medium", place = "left", angle = "high", yaw = -30, headroom = 4 }
 local SAD_START = { subjects = { "Hero" }, size = "medium", place = "left", angle = "high", yaw = -30, headroom = 4, push = 1.25 }
-local NOTICE = { subjects = { "Hero" }, size = "full", place = "right", angle = "eye", yaw = -60, push = 1.4 }
 local IDEA = { subjects = { "Hero" }, size = "medium", place = "left", angle = "low", yaw = -30, headroom = 6.5, lift = 0.08 }
 local IDEA_IN = { subjects = { "Hero" }, size = "medium", place = "left", angle = "low", yaw = -30, headroom = 6.5, lift = 0.08, fov = 34 }
 
+-- About 14 seconds: one line and one idea per beat, so a new player is on their plot
+-- within a quarter of a minute even without pressing Skip.
 Timeline.BEATS = {
 	-- 1. A sunny little gym yard: the hero curls a big candy dumbbell, his #1 fan cheers.
 	{
 		name = "Gym",
-		duration = 4.2,
+		duration = 2,
 		camera = {
 			{ t = 0, shot = GYM_WIDE, cut = true },
-			{ t = 4.2, shot = GYM_TIGHT, ease = "Sine" },
+			{ t = 2, shot = GYM_TIGHT, ease = "Sine" },
 		},
 		captions = {
 			{ t = 0.1, key = "Meet" },
-			{ t = 2.4, key = "Good" },
 		},
 		actions = {
 			{ t = 0, act = "curl", actor = "Hero", on = true },
 			{ t = 0, act = "sweat", actor = "Hero", on = true },
 			{ t = 0, act = "expr", actor = "Hero", name = "Proud" },
-			{ t = 2.4, act = "expr", actor = "Hero", name = "Happy" },
 			{ t = 0, act = "pose", actor = "Fan", pose = "SignUp" },
-			{ t = 1.4, act = "pose", actor = "Fan", pose = "Cheer", blend = 0.4 },
-			{ t = 1.6, act = "bubble", actor = "Fan", key = "Stars", dur = 1.6 },
+			{ t = 0.6, act = "pose", actor = "Fan", pose = "Cheer", blend = 0.3 },
+			{ t = 0.7, act = "bubble", actor = "Fan", key = "Stars", dur = 1.2 },
 		},
 	},
-	-- 2. Thump, thump: MAX GIGA CHAD strides in and flexes in slow motion.
+	-- 2. Thump, thump: MAX GIGA CHAD strides in and flexes under his name card.
 	{
 		name = "Arrive",
-		duration = 5.2,
+		duration = 2.7,
 		camera = {
 			{ t = 0, shot = GYM_TIGHT },
-			{ t = 0.9, shot = GYM_WIDE, ease = "Quad" },
-			{ t = 1.6, shot = WALK_IN, ease = "Quad" },
-			{ t = 2.9, shot = WALK_IN },
-			{ t = 2.95, shot = GIANT, cut = true },
-			{ t = 5.2, shot = GIANT_IN, ease = "Sine" },
+			{ t = 0.5, shot = WALK_IN, ease = "Quad" },
+			{ t = 1.4, shot = WALK_IN },
+			{ t = 1.45, shot = GIANT, cut = true },
+			{ t = 2.7, shot = GIANT_IN, ease = "Sine" },
 		},
 		captions = {
 			{ t = 0.1, key = "Arrive" },
 		},
 		actions = {
-			{ t = 0, act = "thump", at = { 1.8, 1.5 } },
+			{ t = 0, act = "thump", at = { -2, 1 } },
 			{ t = 0.05, act = "dumbbell", state = "rattle" },
-			{ t = 0.15, act = "expr", actor = "Hero", name = "Shock" },
-			{ t = 0.2, act = "pose", actor = "Fan", pose = "Shock", blend = 0.2 },
-			{ t = 0.6, act = "sweat", actor = "Hero", on = false },
-			{ t = 0.75, act = "thump", at = { -2, 1 } },
-			{ t = 0.75, act = "curl", actor = "Hero", on = false },
-			{ t = 0.75, act = "pose", actor = "Hero", pose = "Shock", blend = 0.2 },
-			{ t = 0.8, act = "dumbbell", state = "drop" },
-			{ t = 1, act = "show", actor = "Rival" },
-			{ t = 1, act = "move", actor = "Rival", to = { -8, 1.5 }, dur = 2, gait = "Strut", face = { -5, -10 }, trail = true },
-			{ t = 1.5, act = "thump", at = "Rival" },
-			{ t = 1.6, act = "turn", actor = "Hero", face = { -8, 1.5 }, dur = 0.5 },
-			{ t = 1.7, act = "turn", actor = "Fan", face = { -8, 1.5 }, dur = 0.5 },
-			{ t = 2.25, act = "thump", at = "Rival" },
-			{ t = 2.95, act = "thump", at = "Rival" },
-			{ t = 2.95, act = "tag", on = false },
-			{ t = 3, act = "pose", actor = "Rival", pose = "Flex", blend = 1, speed = 0.35 },
-			{ t = 3.05, act = "aura", actor = "Rival" },
-			{ t = 3.1, act = "namecard" },
-			{ t = 3.1, act = "sound", name = "SurgeStart" },
-			{ t = 5.15, act = "namecard", on = false },
+			{ t = 0.1, act = "expr", actor = "Hero", name = "Shock" },
+			{ t = 0.15, act = "pose", actor = "Fan", pose = "Shock", blend = 0.2 },
+			{ t = 0.25, act = "sweat", actor = "Hero", on = false },
+			{ t = 0.25, act = "show", actor = "Rival" },
+			{ t = 0.25, act = "move", actor = "Rival", to = { -8, 1.5 }, dur = 1.2, gait = "Strut", face = { -5, -10 }, trail = true },
+			{ t = 0.35, act = "curl", actor = "Hero", on = false },
+			{ t = 0.35, act = "pose", actor = "Hero", pose = "Shock", blend = 0.2 },
+			{ t = 0.4, act = "dumbbell", state = "drop" },
+			{ t = 0.5, act = "turn", actor = "Hero", face = { -8, 1.5 }, dur = 0.4 },
+			{ t = 0.55, act = "turn", actor = "Fan", face = { -8, 1.5 }, dur = 0.4 },
+			{ t = 0.75, act = "thump", at = "Rival" },
+			{ t = 1.45, act = "thump", at = "Rival" },
+			{ t = 1.45, act = "tag", on = false },
+			{ t = 1.5, act = "pose", actor = "Rival", pose = "Flex", blend = 0.6, speed = 0.5 },
+			{ t = 1.55, act = "aura", actor = "Rival" },
+			{ t = 1.6, act = "namecard" },
+			{ t = 1.6, act = "sound", name = "SurgeStart" },
+			{ t = 2.65, act = "namecard", on = false },
 		},
 	},
 	-- 3. Starry eyes, the sign flips to TEAM GIGA, and the fans leave with him.
 	{
 		name = "Wow",
-		duration = 5,
+		duration = 3,
 		camera = {
-			{ t = 0, shot = TRIO, cut = true },
-			{ t = 0.55, shot = TRIO_IN, ease = "Sine" },
-			{ t = 0.6, shot = FLIP, cut = true },
-			{ t = 1.45, shot = FLIP },
-			{ t = 1.5, shot = EXODUS, cut = true },
-			{ t = 4.3, shot = EXODUS },
-			{ t = 4.3, shot = REACT, cut = true },
-			{ t = 5, shot = ALONE, ease = "Sine" },
+			{ t = 0, shot = FLIP, cut = true },
+			{ t = 0.95, shot = FLIP },
+			{ t = 1, shot = EXODUS, cut = true },
+			{ t = 3, shot = EXODUS },
 		},
 		captions = {
-			{ t = 0.1, key = "Wow" },
-			{ t = 2.6, key = "Leave" },
+			{ t = 0.1, key = "Leave" },
 		},
 		actions = {
 			{ t = 0, act = "tag", on = true },
@@ -61872,124 +62650,111 @@ Timeline.BEATS = {
 			{ t = 0, act = "expr", actor = "Hero", name = "Awe" },
 			{ t = 0, act = "expr", actor = "Fan", name = "Starry" },
 			{ t = 0, act = "pose", actor = "Fan", pose = "Swoon", blend = 0.3 },
-			{ t = 0.05, act = "stars", actor = "Fan", dur = 1.8 },
-			{ t = 0.05, act = "bubble", actor = "Fan", key = "Wow", dur = 1.3 },
-			{ t = 0.05, act = "sound", name = "Pickup" },
-			{ t = 0.75, act = "sign", actor = "Fan", key = "SignAfter" },
-			{ t = 1.5, act = "tag", on = false },
-			{ t = 1.5, act = "move", actor = "Fan", to = { -4.8, -0.8 }, dur = 0.85, gait = "Run", face = { -7, -6 } },
-			{ t = 1.6, act = "pop", actor = "Crowd1", at = { -12, -0.5 }, face = { -9, -8 }, pose = "Cheer" },
-			{ t = 1.75, act = "pop", actor = "Crowd2", at = { -4.4, 2.8 }, face = { -8, -8 }, pose = "Jump" },
-			{ t = 1.9, act = "pop", actor = "Crowd3", at = { -11.2, 3.6 }, face = { -8, -6 }, pose = "SignUp" },
-			{ t = 2.05, act = "pop", actor = "Crowd4", at = { -13.8, 1.6 }, face = { -10, -8 }, pose = "Clap" },
-			{ t = 2.1, act = "bubble", actor = "Crowd1", key = "Giga", dur = 1.2 },
-			{ t = 2.35, act = "pose", actor = "Fan", pose = "Cheer", blend = 0.3 },
-			{ t = 2.4, act = "bubble", actor = "Crowd2", key = "Cool", dur = 1.2 },
-			{ t = 2.5, act = "pose", actor = "Rival", pose = "HandsOnHips", blend = 0.4 },
+			{ t = 0.05, act = "stars", actor = "Fan", dur = 1 },
+			{ t = 0.05, act = "bubble", actor = "Fan", key = "Wow", dur = 0.9 },
+			{ t = 0.3, act = "sign", actor = "Fan", key = "SignAfter" },
+			{ t = 1, act = "tag", on = false },
+			{ t = 1, act = "move", actor = "Fan", to = { -4.8, -0.8 }, dur = 0.6, gait = "Run", face = { -7, -6 } },
+			{ t = 1.05, act = "pop", actor = "Crowd1", at = { -12, -0.5 }, face = { -9, -8 }, pose = "Cheer" },
+			{ t = 1.15, act = "pop", actor = "Crowd2", at = { -4.4, 2.8 }, face = { -8, -8 }, pose = "Jump" },
+			{ t = 1.25, act = "pop", actor = "Crowd3", at = { -11.2, 3.6 }, face = { -8, -6 }, pose = "SignUp" },
+			{ t = 1.35, act = "pop", actor = "Crowd4", at = { -13.8, 1.6 }, face = { -10, -8 }, pose = "Clap" },
+			{ t = 1.4, act = "bubble", actor = "Crowd1", key = "Giga", dur = 1 },
+			{ t = 1.6, act = "bubble", actor = "Crowd2", key = "Cool", dur = 1 },
 			{
-				t = 2.9,
+				t = 1.8,
 				act = "move",
 				actor = "Rival",
 				to = { -38, 3 },
-				dur = 3.4,
+				dur = 3,
 				gait = "Strut",
 				face = EXIT_FACE,
 				trail = true,
 				vanish = true,
 			},
-			{ t = 3.05, act = "move", actor = "Crowd4", to = { -42, 2 }, dur = 3.2, gait = "Walk", face = EXIT_FACE, vanish = true },
-			{ t = 3.15, act = "move", actor = "Crowd1", to = { -40, 0 }, dur = 3.4, gait = "Walk", face = EXIT_FACE, vanish = true },
-			{ t = 3.2, act = "move", actor = "Crowd3", to = { -41, 4.5 }, dur = 3.3, gait = "Walk", face = EXIT_FACE, vanish = true },
-			{ t = 3.3, act = "bubble", actor = "Crowd3", key = "Stars", dur = 1.2 },
-			{ t = 3.35, act = "move", actor = "Fan", to = { -38, -0.5 }, dur = 3.4, gait = "Run", face = EXIT_FACE, vanish = true },
-			{ t = 3.4, act = "move", actor = "Crowd2", to = { -40, 3 }, dur = 3.6, gait = "Walk", face = EXIT_FACE, vanish = true },
-			{ t = 3.4, act = "expr", actor = "Hero", name = "Sad" },
-			{ t = 4.3, act = "tag", on = true },
+			{ t = 1.9, act = "move", actor = "Crowd4", to = { -42, 2 }, dur = 2.9, gait = "Walk", face = EXIT_FACE, vanish = true },
+			{ t = 1.95, act = "move", actor = "Crowd1", to = { -40, 0 }, dur = 3, gait = "Walk", face = EXIT_FACE, vanish = true },
+			{ t = 2, act = "move", actor = "Crowd3", to = { -41, 4.5 }, dur = 3, gait = "Walk", face = EXIT_FACE, vanish = true },
+			{ t = 2.05, act = "move", actor = "Fan", to = { -38, -0.5 }, dur = 3, gait = "Run", face = EXIT_FACE, vanish = true },
+			{ t = 2.1, act = "move", actor = "Crowd2", to = { -40, 3 }, dur = 3.2, gait = "Walk", face = EXIT_FACE, vanish = true },
+			{ t = 2.2, act = "expr", actor = "Hero", name = "Sad" },
 		},
 	},
-	-- 4. Alone in an empty yard: a rain cloud, the aura tag counts down to 0, a
-	-- tumbleweed rolls by. Silly, not upsetting.
+	-- 4. Alone in an empty yard: a rain cloud, the aura tag counts down to 0 and even
+	-- the dumbbell rolls away. Silly, not upsetting.
 	{
 		name = "Sad",
-		duration = 4.2,
+		duration = 1.7,
 		camera = {
 			{ t = 0, shot = SAD_START, cut = true },
-			{ t = 4.2, shot = SAD, ease = "Sine" },
+			{ t = 1.7, shot = SAD, ease = "Sine" },
 		},
 		captions = {
 			{ t = 0.1, key = "Sad" },
 		},
 		actions = {
-			{ t = 0, act = "turn", actor = "Hero", face = { 6, -10 }, dur = 0.6 },
-			{ t = 0, act = "pose", actor = "Hero", pose = "Sad", blend = 0.8 },
+			{ t = 0, act = "tag", on = true },
+			{ t = 0, act = "turn", actor = "Hero", face = { 6, -10 }, dur = 0.4 },
+			{ t = 0, act = "pose", actor = "Hero", pose = "Sad", blend = 0.5 },
 			{ t = 0, act = "expr", actor = "Hero", name = "Sad" },
-			{ t = 0.1, act = "sound", name = "Close", pitch = 0.7 },
-			{ t = 0.4, act = "cloud", state = "form" },
-			{ t = 0.8, act = "stat", from = 12, to = 0, dur = 2 },
-			{ t = 1, act = "tumbleweed", from = { -16, 3 }, to = { 0, 1.5 }, dur = 3 },
-			{ t = 1.4, act = "dumbbell", state = "roll", to = { 0.5, -1.5 } },
-			{ t = 2.6, act = "bubble", actor = "Hero", key = "Dots", dur = 1.5, thought = true },
+			{ t = 0.05, act = "sound", name = "Close", pitch = 0.7 },
+			{ t = 0.15, act = "cloud", state = "form" },
+			{ t = 0.3, act = "stat", from = 12, to = 0, dur = 1 },
+			{ t = 0.4, act = "dumbbell", state = "roll", to = { 0.5, -1.5 }, dur = 1.2 },
 		},
 	},
-	-- 5. The idea: the aura trail, a lightbulb, the cloud bursts, he pumps his fist.
+	-- 5. The idea: a lightbulb, the cloud bursts, he pumps his fist.
 	{
 		name = "Idea",
-		duration = 5,
+		duration = 2.2,
 		camera = {
-			{ t = 0, shot = NOTICE, cut = true },
-			{ t = 1.45, shot = NOTICE, ease = "Sine" },
-			{ t = 1.5, shot = IDEA, cut = true },
-			{ t = 5, shot = IDEA_IN, ease = "Sine" },
+			{ t = 0, shot = IDEA, cut = true },
+			{ t = 2.2, shot = IDEA_IN, ease = "Sine" },
 		},
 		captions = {
-			{ t = 0.1, key = "Idea1" },
-			{ t = 1.6, key = "Idea2" },
-			{ t = 3.3, key = "Plan" },
+			{ t = 0.1, key = "Plan" },
 		},
 		actions = {
-			{ t = 0, act = "turn", actor = "Hero", face = { -10, 1 }, dur = 0.7 },
-			{ t = 0.6, act = "bubble", actor = "Hero", key = "Huh", dur = 0.85, thought = true },
-			{ t = 1.5, act = "turn", actor = "Hero", face = { 6, -10 }, dur = 0.25 },
-			{ t = 1.5, act = "expr", actor = "Hero", name = "Idea" },
-			{ t = 1.5, act = "pose", actor = "Hero", pose = "Idea", blend = 0.25 },
-			{ t = 1.55, act = "bulb" },
-			{ t = 2.2, act = "cloud", state = "burst" },
-			{ t = 2.3, act = "expr", actor = "Hero", name = "Fury" },
-			{ t = 2.3, act = "pose", actor = "Hero", pose = "Cheer", blend = 0.25 },
-			{ t = 2.35, act = "confetti", at = "Hero" },
-			{ t = 2.7, act = "stat", from = 0, to = 1, dur = 0.3 },
-			{ t = 3.9, act = "pose", actor = "Hero", pose = "Flex", blend = 0.35 },
+			{ t = 0, act = "expr", actor = "Hero", name = "Idea" },
+			{ t = 0, act = "pose", actor = "Hero", pose = "Idea", blend = 0.25 },
+			{ t = 0.05, act = "bulb" },
+			{ t = 0.6, act = "cloud", state = "burst" },
+			{ t = 0.7, act = "expr", actor = "Hero", name = "Fury" },
+			{ t = 0.7, act = "pose", actor = "Hero", pose = "Cheer", blend = 0.25 },
+			{ t = 0.75, act = "confetti", at = "Hero" },
+			{ t = 1, act = "stat", from = 0, to = 1, dur = 0.3 },
+			{ t = 1.5, act = "pose", actor = "Hero", pose = "Flex", blend = 0.35 },
 		},
 	},
 	-- 6. Up and over to the player's real plot: a low, straight view, the title card
 	-- and a bouncing marker on the plot, then gameplay.
 	{
 		name = "Go",
-		duration = 5.4,
+		duration = 3,
 		camera = {
 			{ t = 0, shot = IDEA_IN },
-			{ t = 1.1, pos = { 3, 30, -24 }, look = { 3, 60, 30 }, fov = 55, ease = "QuadIn" },
+			{ t = 0.6, pos = { 3, 30, -24 }, look = { 3, 60, 30 }, fov = 55, ease = "QuadIn" },
 			-- Plot space: the spawn point facing the pen; the entrance arch and owner
 			-- sign are ~19 studs behind it, so the camera stays inside them.
-			{ t = 1.15, pos = { 0, 30, 12 }, look = { 0, 2, -22 }, fov = 50, cut = true, space = "plot" },
-			{ t = 3.6, pos = { 0, 16, 12 }, look = { 0, 3, -12 }, fov = 58, ease = "Sine", space = "plot" },
-			{ t = 5.4, fov = 70, ease = "Cubic", space = "behind" },
+			{ t = 0.65, pos = { 0, 30, 12 }, look = { 0, 2, -22 }, fov = 50, cut = true, space = "plot" },
+			{ t = 2, pos = { 0, 16, 12 }, look = { 0, 3, -12 }, fov = 58, ease = "Sine", space = "plot" },
+			{ t = 3, fov = 70, ease = "Cubic", space = "behind" },
 		},
 		captions = {
-			{ t = 1.3, key = "Go" },
-			{ t = 4.5, hide = true },
+			{ t = 0.75, key = "Go" },
+			{ t = 2.6, hide = true },
 		},
 		actions = {
 			{ t = 0, act = "expr", actor = "Hero", name = "Smirk" },
-			{ t = 0.1, act = "sound", name = "Open" },
-			{ t = 0.75, act = "flash", dur = 0.8 },
-			{ t = 1.2, act = "marker", on = true },
-			{ t = 1.3, act = "title", on = true },
-			{ t = 1.3, act = "sound", name = "Celebrate" },
-			{ t = 1.3, act = "expr", actor = "Hero", name = "Happy" },
-			{ t = 4.3, act = "title", on = false },
-			{ t = 4.6, act = "marker", on = false },
-			{ t = 4.6, act = "letterbox", on = false },
+			{ t = 0.05, act = "sound", name = "Open" },
+			{ t = 0.35, act = "flash", dur = 0.6 },
+			{ t = 0.7, act = "marker", on = true },
+			{ t = 0.75, act = "title", on = true },
+			{ t = 0.75, act = "sound", name = "Celebrate" },
+			{ t = 0.75, act = "expr", actor = "Hero", name = "Happy" },
+			{ t = 2.3, act = "title", on = false },
+			{ t = 2.5, act = "marker", on = false },
+			{ t = 2.5, act = "letterbox", on = false },
 		},
 	},
 } :: { Beat }
@@ -62016,7 +62781,7 @@ return Timeline
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="241">
+          <Item class="ModuleScript" referent="245">
             <Properties>
               <string name="Name">Ui</string>
               <string name="Source"><![CDATA[--!strict
@@ -62025,8 +62790,9 @@ return Timeline
 
 	Screen (ScreenGui "IntroUI", DisplayOrder 80: above the HUD, below the loading screen):
 	letterbox bars, the subtitle card (cream card with Ink text, sized to its line and
-	kept just above the bottom bar), a quiet Skip button bottom-right, the MAX GIGA CHAD
-	name card, the game title card, a white flash and a full-screen fade.
+	kept just above the bottom bar), the Skip button bottom-right (a white pill, on screen
+	from the first frame), the MAX GIGA CHAD name card, the game title card, a white flash
+	and a full-screen fade.
 
 	Layout is computed in pixels from the real screen size (and recomputed when it
 	changes): every card is clamped inside a safe area (6% / 5% margins plus the Roblox
@@ -62262,36 +63028,36 @@ function Ui.new(theme: any, worldParent: Instance, onSkip: () -> ()): Ui
 	}, 26)
 	fadeTree(caption, false, 0)
 
-	-- Skip: small and quiet, bottom-right inside the letterbox bar.
+	-- Skip: a white pill bottom-right on the letterbox bar, there from the first frame
+	-- (sized and placed in _relayout).
 	local skip = new("TextButton", {
 		Name = "Skip",
 		AutoButtonColor = false,
 		BackgroundColor3 = W.White,
-		BackgroundTransparency = 1,
+		BackgroundTransparency = 0.05,
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1 - SAFE_X, 0, 1 - BAR / 2, 0),
-		Size = UDim2.fromOffset(92, 34),
+		Size = UDim2.fromOffset(128, 44),
 		Font = F.UI,
 		TextScaled = true,
 		TextColor3 = W.Ink,
-		TextTransparency = 1,
 		Text = theme.Intro.Skip .. "  »",
-		Visible = false,
 		ZIndex = 18,
 	}, gui)
 	new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, skip)
+	new("UIStroke", { Color = W.Ink, Thickness = 2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, skip)
 	new("UIPadding", {
 		PaddingTop = UDim.new(0.2, 0),
 		PaddingBottom = UDim.new(0.2, 0),
 		PaddingLeft = UDim.new(0.12, 0),
 		PaddingRight = UDim.new(0.12, 0),
 	}, skip)
-	new("UITextSizeConstraint", { MaxTextSize = 20, MinTextSize = 10 }, skip)
+	new("UITextSizeConstraint", { MaxTextSize = 22, MinTextSize = 10 }, skip)
 	skip.Activated:Connect(onSkip)
 	-- Gamepad: Skip takes the shared selection ring (B also skips, see Cutscene).
 	pcall(Kit.selectable, skip)
 	-- Touch: an invisible hit area at least 48 px each way, centred on the pill (sized in
-	-- _layout), so the quiet button keeps its look but takes a thumb.
+	-- _relayout), so even the smallest pill takes a thumb.
 	local skipHit = new("TextButton", {
 		Name = "Hit",
 		AutoButtonColor = false,
@@ -62396,11 +63162,15 @@ function Ui._relayout(self: Ui)
 	self.k = math.clamp(math.min(w / 1280, h / 720), 0.6, 1.6)
 	self.safe = Rect.new(w * SAFE_X, math.max(h * SAFE_Y, insetTop), w * (1 - SAFE_X), h * (1 - SAFE_Y))
 
+	-- Skip never shrinks below 112 x 40 px. It sits centred in the bottom bar; on a small
+	-- phone the bar is lower than the pill, which then rises out of it.
 	local k = self.k
-	local skipW, skipH = math.floor(96 * k), math.floor(math.min(36 * k, h * BAR * 0.7))
+	local skipW, skipH = math.floor(math.max(128 * k, 112)), math.floor(math.max(44 * k, 40))
+	local skipY = h - math.max((h * BAR - skipH) / 2, 6) - skipH / 2
 	self.skip.Size = UDim2.fromOffset(skipW, skipH)
+	self.skip.Position = UDim2.new(1 - SAFE_X, 0, 0, math.floor(skipY))
 	self.skipHit.Size = UDim2.fromOffset(math.max(skipW + 8, 48), math.max(skipH + 12, 48))
-	setMaxText(self.skip, 20 * k)
+	setMaxText(self.skip, math.max(22 * k, 16))
 
 	self:_layoutCaption()
 	if self.nameCardGui then
@@ -62519,14 +63289,11 @@ end
 
 -- Skip button ---------------------------------------------------------------------------
 
-function Ui.showSkip(self: Ui)
-	local skip = self.skip
-	skip.Visible = true
-	Kit.tween(skip, 0.35, { BackgroundTransparency = 0.25, TextTransparency = 0.1 }, OUT)
-	-- On a controller the selection sits on Skip, so A skips as well as B.
+-- On a controller the selection sits on Skip, so A skips as well as B.
+function Ui.focusSkip(self: Ui)
 	if Kit.gamepad or Kit.tenFoot then
 		pcall(function()
-			GuiService.SelectedObject = skip
+			GuiService.SelectedObject = self.skip
 		end)
 	end
 end
@@ -62890,7 +63657,7 @@ return Ui
             </Properties>
           </Item>
         </Item>
-        <Item class="LocalScript" referent="242">
+        <Item class="LocalScript" referent="246">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -63062,9 +63829,9 @@ local function maybePlayIntro()
 			waited += task.wait(0.1)
 		end
 		Cutscene.play({
-			delay = 1.4,
-			onDone = function()
-				action:FireServer({ action = "IntroSeen" })
+			delay = 0.6,
+			onDone = function(skipped: boolean, watched: number)
+				action:FireServer({ action = "IntroSeen", skipped = skipped, seconds = watched })
 			end,
 		})
 	end)
@@ -63273,6 +64040,13 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 			Hud.coinBurst(amount, nil)
 			return
 		end
+		if data.source == "Daily" then
+			-- Daily reward: the amount pops over the Daily window and the coins fly out of it.
+			Sounds.play("Cash")
+			Popups.float("+" .. Format.money(amount), C.Good, UDim2.fromScale(0.5, 0.42))
+			Hud.coinBurst(amount, nil, nil)
+			return
+		end
 		Sounds.play("Cash")
 		Popups.float("+" .. Format.money(amount), C.Good, WALLET)
 		-- Claimed from the Free menu button: coins fly from the button.
@@ -63347,7 +64121,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="243">
+        <Item class="ModuleScript" referent="247">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects plus background music.
@@ -63915,7 +64689,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="244">
+        <Item class="ModuleScript" referent="248">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -63964,11 +64738,11 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="245">
+        <Item class="Folder" referent="249">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="246">
+          <Item class="ModuleScript" referent="250">
             <Properties>
               <string name="Name">CardioHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -65449,7 +66223,542 @@ return CardioHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="247">
+          <Item class="ModuleScript" referent="251">
+            <Properties>
+              <string name="Name">DailyWindow</string>
+              <string name="Source"><![CDATA[--[[
+	DailyWindow: the Daily Reward window (rules: Shared.DailyReward; server:
+	Server.Daily; the HUD's Daily button opens it).
+
+	Seven day cards in a row (two rows when the window narrows, Day 7 double
+	width): each shows its art (a growing cash pack, a crate on days 3 and 7) and
+	what it pays at the player's income right now. Claimed cards are muted and
+	ticked, today's is gold and glowing (tap it or CLAIM), tomorrow's says "Come
+	back tomorrow" with a countdown to the next UTC day. The footer names what to
+	do next.
+
+	The window opens by itself once per session when a reward is waiting, after a
+	calm moment: never during the intro or the tutorial, a game-mode run, or
+	under another window or popup. A held crate makes it wait too, but not for
+	ever (DailyReward.autoOpenTick): a crate can be carried for minutes.
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local DailyReward = require(ReplicatedStorage.Shared.DailyReward)
+local Economy = require(ReplicatedStorage.Shared.Economy)
+local Format = require(ReplicatedStorage.Shared.Format)
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Kit = require(script.Parent.Kit)
+local State = require(script.Parent.Parent.State)
+
+local Theme = Kit.Theme
+local C = Kit.C
+local T = Kit.TEXT
+local F = Kit.F
+local W = Theme.Words
+
+-- The Lune preview exporter has no real tweens or frame time.
+local PREVIEW = typeof(TweenInfo.new(0)) ~= "TweenInfo"
+
+local DailyWindow = {}
+
+export type Deps = {
+	register: (string, Kit.Window) -> (),
+	ripple: ({ GuiObject }) -> (),
+	-- Opens this window through Windows.open (one window at a time, backdrop).
+	open: () -> (),
+	close: () -> (),
+}
+
+export type Daily = {
+	window: Kit.Window,
+	-- Runs before the window opens: refresh and card ripple.
+	beforeOpen: () -> (),
+}
+
+local ACCENT = Theme.World.Sunny
+local GAP = 8
+local HERO_H = 50
+local FOOTER_H = 56
+-- Narrower than this (content width, design px) the cards wrap onto two rows.
+local ONE_ROW_MIN = 700
+-- Seconds of calm before the window opens by itself (longer right after the tutorial,
+-- whose reward cards are still on their way).
+local CALM = 2
+local CALM_AFTER_TUTORIAL = 8
+-- ScreenGui attributes that mean "busy": a window, a popup or a mode run. The held-crate
+-- panel ("CratePanelOpen") only holds the window back for a while.
+local BUSY = { "WindowOpen", "ModalOpen", "RunActive", "ObbyMode", "CardioActive" }
+
+-- Art per card: the cash packs grow with the days; days 3 and 7 show their crate.
+local ART = { "CashPack1", "CashPack2", "CrateRare", "CashPack3", "CashPack4", "CashPack5", "CrateLegendary" }
+
+type Card = {
+	frame: Frame,
+	header: TextLabel,
+	art: Frame,
+	amount: TextLabel,
+	extra: TextLabel?,
+	status: TextLabel,
+	tick: Frame,
+	state: string,
+}
+
+-- Repaints a Kit.panel body (gradient, outline and lip) in `color`.
+local function paint(frame: Frame, color: Color3, strokeColor: Color3?, thickness: number?)
+	local lipColor = Kit.lip(color)
+	local gradient = frame:FindFirstChildOfClass("UIGradient")
+	if gradient then
+		gradient.Color = ColorSequence.new(Kit.lighten(color, 0.1), color:Lerp(lipColor, 0.12))
+	end
+	local stroke = frame:FindFirstChildOfClass("UIStroke")
+	if stroke then
+		stroke.Color = strokeColor or lipColor
+		stroke.Thickness = thickness or 1.5
+	end
+	local lip = frame:FindFirstChild("Lip")
+	if lip and lip:IsA("Frame") then
+		lip.BackgroundColor3 = lipColor
+	end
+end
+
+function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
+	local window =
+		Kit.window(screen, "Daily", "Daily Reward", Kit.pickIcon("Gift2", "Free"), ACCENT, Vector2.new(880, 436), Vector2.new(500, 436))
+	deps.register("Daily", window)
+	local action = Net.event("Action")
+
+	-- Streak line -------------------------------------------------------------------------
+	local hero = Kit.new("Frame", {
+		Name = "Streak",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, HERO_H),
+		Parent = window.content,
+	})
+	Kit.icon(hero, Kit.pickIcon("Fire", "Star"), 40, C.Amber, {
+		Name = "Icon",
+		Position = UDim2.new(0, 4, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 2,
+	})
+	local streakTitle = Kit.title(hero, {
+		Name = "Title",
+		Text = "",
+		TextSize = T.H2 + 2,
+		TextColor3 = C.Gold,
+		TextWrapped = false,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(0.5, -52, 1, 0),
+		Position = UDim2.fromOffset(52, 1),
+		ZIndex = 2,
+	})
+	Kit.text(hero, {
+		Name = "Rule",
+		Text = "Come back every day. Miss one and it starts again at Day 1!",
+		TextSize = T.Small,
+		TextColor3 = C.TextDim,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Size = UDim2.new(0.5, -8, 1, 0),
+		Position = UDim2.new(0.5, 0, 0, 0),
+		ZIndex = 2,
+	})
+
+	-- Day cards ---------------------------------------------------------------------------
+	local grid = Kit.new("Frame", {
+		Name = "Days",
+		BackgroundTransparency = 1,
+		Parent = window.content,
+	})
+	local claim: () -> ()
+	local cards: { Card } = {}
+	local frames: { GuiObject } = {}
+	for day, reward in DailyReward.REWARDS do
+		local frame = Kit.panel(grid, { Name = "Day" .. day, Elevated = true, Radius = Kit.RADIUS.M })
+		local header = Kit.text(frame, {
+			Name = "Header",
+			Text = "DAY " .. day,
+			Font = F.UI,
+			TextSize = T.Small,
+			TextWrapped = false,
+			Size = UDim2.new(1, 0, 0, 18),
+			Position = UDim2.fromOffset(0, 8),
+			ZIndex = 3,
+		})
+		local art: Frame
+		if Kit.hasImageIcon(ART[day]) then
+			art = Kit.icon(frame, ART[day], 64, nil, { Name = "Art", ZIndex = 3 })
+		else
+			art = Kit.icon(frame, if reward.crate then "Free" else "Coin", 64, if reward.crate then C.Cash else C.Gold, {
+				Name = "Art",
+				ZIndex = 3,
+			})
+		end
+		art.AnchorPoint = Vector2.new(0.5, 0)
+		-- Scaled down to fit: full numbers ("+$1,234,567") are much longer than "+$1.23M".
+		local amount = Kit.number(frame, {
+			Name = "Amount",
+			Text = "",
+			MaxTextSize = 17,
+			TextColor3 = C.MoneyText,
+			Size = UDim2.new(1, -8, 0, 22),
+			AnchorPoint = Vector2.new(0.5, 0),
+			ZIndex = 3,
+		})
+		local extra: TextLabel? = nil
+		if reward.crate then
+			extra = Kit.text(frame, {
+				Name = "Crate",
+				Text = string.upper(string.format("+ %s %s", reward.crate, W.Chest)),
+				Font = F.UI,
+				MaxTextSize = T.Tiny,
+				TextColor3 = C.Rarity[reward.crate] or C.Gold,
+				TextWrapped = false,
+				Size = UDim2.new(1, -4, 0, 16),
+				AnchorPoint = Vector2.new(0.5, 0),
+				ZIndex = 3,
+			})
+		end
+		local status = Kit.text(frame, {
+			Name = "Status",
+			Text = "",
+			Font = F.UI,
+			TextSize = T.Tiny,
+			TextYAlignment = Enum.TextYAlignment.Bottom,
+			Size = UDim2.new(1, -10, 0, 44),
+			Position = UDim2.new(0.5, 0, 1, -8),
+			AnchorPoint = Vector2.new(0.5, 1),
+			ZIndex = 3,
+		})
+		-- Mint tick on the corner of a claimed card.
+		local tick = Kit.new("Frame", {
+			Name = "Tick",
+			BackgroundColor3 = C.Good,
+			Size = UDim2.fromOffset(26, 26),
+			Position = UDim2.new(1, -4, 0, 4),
+			AnchorPoint = Vector2.new(1, 0),
+			Visible = false,
+			ZIndex = 6,
+			Parent = frame,
+		})
+		Kit.round(tick)
+		Kit.new("UIStroke", { Thickness = 2, Color = Color3.new(1, 1, 1), Parent = tick })
+		Kit.icon(tick, "Check", 16, Kit.inkOn(C.Good), {
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 7,
+		})
+		local card: Card = {
+			frame = frame,
+			header = header,
+			art = art,
+			amount = amount,
+			extra = extra,
+			status = status,
+			tick = tick,
+			state = "",
+		}
+		-- Tapping today's card claims it (gamepads use the CLAIM button).
+		local hit = Kit.new("TextButton", {
+			Name = "Hit",
+			Text = "",
+			AutoButtonColor = false,
+			BackgroundTransparency = 1,
+			Selectable = false,
+			Size = UDim2.fromScale(1, 1),
+			ZIndex = 8,
+			Parent = frame,
+		})
+		hit.Activated:Connect(function()
+			if card.state == "today" then
+				Kit.sound("Click")
+				claim()
+			end
+		end)
+		cards[day] = card
+		frames[day] = frame
+	end
+
+	-- Footer: what to do next + the one button ---------------------------------------------
+	local footer = Kit.new("Frame", {
+		Name = "Footer",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, FOOTER_H),
+		Position = UDim2.fromScale(0, 1),
+		AnchorPoint = Vector2.new(0, 1),
+		Parent = window.content,
+	})
+	local headline = Kit.title(footer, {
+		Name = "Headline",
+		Text = "",
+		TextSize = T.H2,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -236, 0, 26),
+		Position = UDim2.fromOffset(6, 4),
+		ZIndex = 2,
+	})
+	local detail = Kit.text(footer, {
+		Name = "Detail",
+		Text = "",
+		TextSize = T.Small,
+		TextColor3 = C.TextDim,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -236, 0, 20),
+		Position = UDim2.fromOffset(6, 31),
+		ZIndex = 2,
+	})
+	local button = Kit.button(footer, {
+		Name = "Claim",
+		Text = "CLAIM",
+		Font = F.Display,
+		TextSize = 24,
+		Color = C.Gold,
+		Size = UDim2.fromOffset(216, 50),
+		Position = UDim2.new(1, -2, 0.5, -2),
+		AnchorPoint = Vector2.new(1, 0.5),
+		ZIndex = 2,
+	}, function()
+		claim()
+	end)
+	button:SetAttribute("FocusFirst", true)
+
+	-- State ---------------------------------------------------------------------------------
+	local big = true -- one row of tall cards
+	local canClaim = false
+	local claimSentAt = 0
+	local tomorrowCard = 0
+	local todayClaimed = false
+
+	local function dailyOf(data: { [string]: any }?): { [string]: any }?
+		local daily = data and data.daily
+		return if type(daily) == "table" then daily else nil
+	end
+	local function secondsLeft(daily: { [string]: any }): number
+		return math.max(0, (tonumber(daily.nextIn) or 0) - State.age())
+	end
+
+	claim = function()
+		if not canClaim then
+			deps.close()
+			return
+		end
+		-- One request per press; the State snapshot that follows flips the button.
+		if os.clock() - claimSentAt < 1.5 then
+			return
+		end
+		claimSentAt = os.clock()
+		action:FireServer({ action = "ClaimDaily" })
+	end
+
+	local function dress(card: Card, day: number, state: string)
+		card.state = state
+		local claimed = state == "claimed"
+		card.tick.Visible = claimed
+		card.header.Text = if state == "today" then "TODAY" elseif state == "tomorrow" then "TOMORROW" else "DAY " .. day
+		card.header.TextColor3 = if state == "today" then C.Gold else C.Text
+		card.header.TextTransparency = if claimed then 0.4 else 0
+		card.amount.TextTransparency = if claimed then 0.4 else 0
+		if card.extra then
+			card.extra.TextTransparency = if claimed then 0.4 else 0
+		end
+		if state == "today" then
+			paint(card.frame, C.SurfaceHiTop, C.Gold, 3)
+		elseif claimed then
+			paint(card.frame, C.Surface:Lerp(C.Well, 0.5))
+		else
+			paint(card.frame, C.SurfaceHi)
+		end
+		Kit.setGlow(card.frame, state == "today", C.Gold)
+	end
+
+	-- The countdown texts (tomorrow's card and the footer), once a second while open.
+	local clockText = ""
+	local function updateClock()
+		local daily = dailyOf(State.data)
+		if not daily then
+			return
+		end
+		local text = Format.time(secondsLeft(daily))
+		if text == clockText then
+			return
+		end
+		clockText = text
+		local card = cards[tomorrowCard]
+		if card and todayClaimed then
+			card.status.Text = if big then "COME BACK TOMORROW\n" .. text else text
+		end
+		if todayClaimed then
+			detail.Text = "Next reward in " .. text
+		end
+	end
+
+	local function render()
+		local data = State.data
+		local daily = dailyOf(data)
+		if not data or not daily then
+			return
+		end
+		local day = math.clamp(math.floor(tonumber(daily.day) or 1), 1, DailyReward.DAYS)
+		local claimed = math.clamp(math.floor(tonumber(daily.claimed) or 0), 0, DailyReward.DAYS)
+		local streak = math.max(0, math.floor(tonumber(daily.streak) or 0))
+		canClaim = daily.claimable == true
+		todayClaimed = not canClaim
+		tomorrowCard = if day < DailyReward.DAYS then day + 1 else 0
+		local progression = Economy.progression(tonumber(data.highestTier) or 1, tonumber(data.processLevel) or 0)
+		local income = tonumber(data.income) or 0
+		-- A player's first day pays today's card up to a cap (Server.Daily does the same).
+		local cap = if daily.firstDay == true
+			then DailyReward.firstDayCap(day, tonumber(data.buyTier) or 1, tonumber(data.boughtAtTier) or 0)
+			else nil
+		for i, card in cards do
+			card.amount.Text = "+" .. State.money(DailyReward.cash(i, income, progression, if i == day then cap else nil))
+			local state = if i <= claimed
+				then "claimed"
+				elseif i == day and canClaim then "today"
+				elseif i == tomorrowCard then "tomorrow"
+				else "later"
+			if state ~= card.state then
+				dress(card, i, state)
+			end
+			card.status.TextColor3 = if state == "today" then C.Gold elseif state == "claimed" then C.Good else C.TextDim
+			card.status.Text = if state == "today" then "CLAIM!" elseif state == "claimed" then "CLAIMED" else ""
+		end
+		streakTitle.Text = if streak >= 2
+			then string.format("%d DAY STREAK", streak)
+			elseif streak == 1 then "1 DAY STREAK"
+			else "START YOUR STREAK"
+		if canClaim then
+			headline.Text = string.format("Your Day %d reward is ready!", day)
+			detail.Text = "Rewards grow every day, up to the big Day 7 gift"
+			Kit.setButton(button, "CLAIM", C.Gold)
+		else
+			local nextDay = DailyReward.card(day + 1)
+			local cash = State.money(DailyReward.cash(nextDay, income, progression))
+			headline.Text = string.format("Come back tomorrow for Day %d: %s", nextDay, DailyReward.describe(nextDay, cash, W.Chest))
+			Kit.setButton(button, "GOT IT", C.SurfaceHi)
+		end
+		clockText = ""
+		updateClock()
+	end
+
+	-- Layout: one row of seven, or 4 + 3 with Day 7 double width -----------------------------
+	local function layout(size: Vector2)
+		-- Window chrome (24 wide, 84 tall) and the content well's padding (10 a side).
+		local width, height = size.X - 44, size.Y - 104
+		big = width >= ONE_ROW_MIN
+		hero.Visible = big
+		local top = if big then HERO_H + GAP else 0
+		local gridH = height - top - FOOTER_H - GAP
+		grid.Position = UDim2.fromOffset(0, top)
+		grid.Size = UDim2.new(1, 0, 0, gridH)
+		local columns = if big then DailyReward.DAYS else 4
+		local rows = if big then 1 else 2
+		local cellW = (width - (columns - 1) * GAP) / columns
+		local cellH = (gridH - (rows - 1) * GAP) / rows
+		local artSize = if big then 64 else 40
+		for day, card in cards do
+			local column = (day - 1) % columns
+			local row = (day - 1) // columns
+			local wide = not big and day == DailyReward.DAYS
+			card.frame.Position = UDim2.fromOffset(math.floor(column * (cellW + GAP)), math.floor(row * (cellH + GAP)))
+			card.frame.Size = UDim2.fromOffset(math.floor(if wide then cellW * 2 + GAP else cellW), math.floor(cellH))
+			card.art.Size = UDim2.fromOffset(artSize, artSize)
+			card.art.Position = UDim2.new(0.5, 0, 0, 30)
+			card.amount.Position = UDim2.new(0.5, 0, 0, 34 + artSize)
+			if card.extra then
+				card.extra.Position = UDim2.new(0.5, 0, 0, 55 + artSize)
+			end
+			card.status.Size = UDim2.new(1, -10, 0, if big then 44 else 14)
+		end
+		clockText = ""
+		render()
+	end
+	layout(window.size())
+	window.onResize.Event:Connect(layout)
+	State.changed.Event:Connect(render)
+
+	if not PREVIEW then
+		RunService.Heartbeat:Connect(function()
+			if window.isOpen() then
+				updateClock()
+			end
+		end)
+
+		-- The claim landed: today's card pops under a burst of confetti (the cash, its coins
+		-- and the crate reveal come through the usual Cash effect and Reward popup).
+		Net.event("Notify").OnClientEvent:Connect(function(payload)
+			if type(payload) ~= "table" or payload.kind ~= "Daily" or payload.event ~= "claimed" then
+				return
+			end
+			Kit.sound("Reward")
+			local card = cards[tonumber(payload.day) or 0]
+			if card and window.isOpen() then
+				Kit.pop(card.frame, 1)
+				Kit.confetti(window.frame, { Origin = UDim2.fromScale(0.5, 0.45), Count = 24, ZIndex = 12 })
+			end
+		end)
+
+		-- Opens by itself once per session when a reward is waiting and the screen is calm
+		-- (not at all once the player has opened it from the HUD).
+		local opened = false
+		window.onOpen.Event:Connect(function()
+			opened = true
+		end)
+		task.spawn(function()
+			local player = Players.LocalPlayer
+			local auto = DailyReward.autoOpen()
+			local needed = CALM
+			while not opened do
+				local step = task.wait(0.5)
+				local data = State.data
+				local daily = dailyOf(data)
+				if data and data.tutorialDone ~= true then
+					needed = CALM_AFTER_TUTORIAL
+				end
+				local ready = data ~= nil
+					and daily ~= nil
+					and daily.claimable == true
+					and data.tutorialDone == true
+					and player:GetAttribute("IntroPlaying") ~= true
+					and player:GetAttribute("GameReady") == true
+				if ready then
+					local playerGui = player:FindFirstChildOfClass("PlayerGui")
+					ready = not (playerGui and playerGui:FindFirstChild("LoadingScreen"))
+				end
+				for _, name in BUSY do
+					ready = ready and screen:GetAttribute(name) ~= true
+				end
+				-- A held crate is waited for, then the window stops waiting for it.
+				local crate = screen:GetAttribute("CratePanelOpen") == true
+				if DailyReward.autoOpenTick(auto, step, not ready, crate, needed) and not opened then
+					deps.open()
+					return
+				end
+			end
+		end)
+	end
+
+	return {
+		window = window,
+		beforeOpen = function()
+			render()
+			deps.ripple(frames)
+		end,
+	}
+end
+
+return DailyWindow
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="252">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -65461,8 +66770,12 @@ return CardioHud
 	  top centre     Chad icon + unit count "37/100" (sunny + "RACK FULL" when full)
 	                 under it a low dark strip "Deposit bonus: x1.3 · 12s"
 	                 ("AURA SURGE x2 · 1:23" in orange during a surge); the
-	                 tutorial quest pill and the parkour run pill dock under that
+	                 tutorial quest pill and the parkour run pill dock under that,
+	                 and once the tutorial is done the "Next:" goal strip takes
+	                 that slot ("Next: Protein Bro 1/2" over "merge 2x Gym Rookie",
+	                 Shared.NextGoal; above the dumbbell on compact screens)
 	  left edge      icon grid with captions: Home Ranking Modes / Index Shop Invite
+	                 Daily (a dot while a daily reward waits, else its countdown)
 	                 promo under it: tilted "PERMANENT" tag, wide 2X CASH (or
 	                 STARTER PACK) button, "Only 199 R$"
 	  bottom left    status row (Premium, Friends, Boost), "Cash [ x1.0 ]",
@@ -65494,6 +66807,7 @@ local Workspace = game:GetService("Workspace")
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
+local NextGoal = require(ReplicatedStorage.Shared.NextGoal)
 
 local Kit = require(script.Parent.Kit)
 local State = require(script.Parent.Parent.State)
@@ -65511,7 +66825,7 @@ export type Handlers = {
 	toast: ((string, string?) -> ())?,
 }
 
--- Buttons by name (Shop, Index, Ranking, Free, Home, Invite, Settings, Modes) so
+-- Buttons by name (Shop, Index, Ranking, Free, Home, Invite, Daily, Settings, Modes) so
 -- other modules (tutorial, guide) can badge, glow or aim coin bursts at them.
 Hud.buttons = {} :: { [string]: TextButton }
 
@@ -65546,6 +66860,9 @@ local UNITS_Y = 4 -- unit counter row: y 4..48
 local STRIP_Y = 54 -- deposit strip: y 54..84
 local STRIP_H = 30
 local RUN_Y = 92 -- tutorial / run pill slot (Tutorial.luau TOP_Y matches)
+local GOAL_H = 46 -- "Next:" goal strip (the same slot once the tutorial is done)
+local GOAL_MAX_W = 380
+local GOAL_TEXT_X = 50
 local GRID_Y = 104 -- left icon grid, first row
 local GRID_ICON = 64
 local GRID_ICON_COMPACT = 48
@@ -65694,7 +67011,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	Hud.buttons.Settings = gear
 
 	-- Left edge: icon grid with captions --------------------------------------------------
-	local GRID_ROWS = { { "Home", "Ranking", "Modes" }, { "Index", "Shop", "Invite" } }
+	local GRID_ROWS = { { "Home", "Ranking", "Modes" }, { "Index", "Shop", "Invite", "Daily" } }
 	local CAPTIONS: { [string]: string } = {
 		Home = "Home",
 		Ranking = "Ranking",
@@ -65702,9 +67019,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Index = "Index",
 		Shop = "Shop",
 		Invite = "Invite",
+		Daily = "Daily",
 	}
-	-- Modes draws the rendered finish-flag image; Star stands in if it is missing.
-	local ICON_FOR: { [string]: string } = { Modes = Kit.pickIcon("Modes", "Star") }
+	-- Modes draws the rendered finish-flag image; Star stands in if it is missing. Daily
+	-- is the second gift of the atlas (the FREE gift keeps the first).
+	local ICON_FOR: { [string]: string } = { Modes = Kit.pickIcon("Modes", "Star"), Daily = Kit.pickIcon("Gift2", "Free") }
 	local grid = group("Menu", { Position = UDim2.fromOffset(EDGE_X, GRID_Y) })
 	local captions: { TextLabel } = {}
 	local function gridButton(name: string, onClick: () -> ()): TextButton
@@ -65755,7 +67074,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Kit.setGlow(Hud.buttons.Modes, false)
 		handlers.openWindow("Modes")
 	end)
-	gridButton("Index", function()
+	local function openIndex()
 		Kit.setGlow(Hud.buttons.Index, false)
 		local data = State.data
 		if data then
@@ -65763,7 +67082,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			refreshIndexBadge()
 		end
 		handlers.openWindow("Index")
-	end)
+	end
+	gridButton("Index", openIndex)
 	gridButton("Shop", function()
 		handlers.openWindow("Shop")
 	end)
@@ -65772,6 +67092,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			SocialService:PromptGameInvite(Players.LocalPlayer)
 		end)
 	end)
+	local dailyButton = gridButton("Daily", function()
+		handlers.openWindow("Daily")
+	end)
+	local dailyCaption = dailyButton:FindFirstChild("Caption") :: TextLabel
 	-- Right after the tutorial finishes (watched live this session), one toast and a
 	-- soft glow point at the Modes button.
 	local tutorialWasOpen = false
@@ -66260,6 +67584,193 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		})
 	end
 
+	-- Next goal: "Next: Protein Bro 1/2" over "merge 2x Gym Rookie" ------------------------
+	-- One dark strip like the deposit strip, in the tutorial pill's slot once the tutorial
+	-- is done (above the dumbbell on compact screens): the target's thumbnail (a silhouette
+	-- until it is discovered), its name and count, what to do under them, and a thin bar
+	-- along the bottom. The target comes from Shared.NextGoal; the strip opens the Index.
+	local goal = Kit.new("TextButton", {
+		Name = "NextGoal",
+		Text = "",
+		AutoButtonColor = false,
+		BackgroundColor3 = C.Ink,
+		BackgroundTransparency = 0.45,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(280, GOAL_H),
+		Position = UDim2.new(0.5, 0, 0, RUN_Y),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Visible = false,
+		Parent = screen,
+	})
+	Kit.corner(goal, 8)
+	Kit.selectable(goal)
+	local goalThumb = group("Thumb", {
+		Size = UDim2.fromOffset(42, 42),
+		Position = UDim2.new(0, 4, 0.5, -2),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 2,
+		Parent = goal,
+	})
+	local function goalText(name: string, size: number, color: Color3, font: Enum.Font?): TextLabel
+		return Kit.hudText(goal, {
+			Name = name,
+			Text = "",
+			Font = font,
+			TextSize = size,
+			TextColor3 = color,
+			StrokeThickness = 2,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Size = UDim2.fromOffset(10, 22),
+			ZIndex = 3,
+		})
+	end
+	local goalLead = goalText("Lead", 17, C.Gold)
+	goalLead.Text = "Next:"
+	local goalTitle = goalText("Title", 17, Color3.new(1, 1, 1))
+	local goalCount = goalText("Count", 15, Color3.new(1, 1, 1), F.Number)
+	local goalHint = goalText("Hint", 14, Color3.fromRGB(225, 230, 250), F.UI)
+	goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, 23)
+	goalHint.Size = UDim2.fromOffset(10, 16)
+	local goalBar = Kit.new("Frame", {
+		Name = "Bar",
+		BackgroundColor3 = C.Gold,
+		BorderSizePixel = 0,
+		Size = UDim2.new(0, 0, 0, 3),
+		Position = UDim2.new(0, 8, 1, -5),
+		ZIndex = 2,
+		Parent = goal,
+	})
+	Kit.round(goalBar)
+	-- Touch: an invisible pad grows the low strip to a full tap target (sized in applyCompact).
+	local goalPad = Kit.new("TextButton", {
+		Name = "Hit",
+		Text = "",
+		AutoButtonColor = false,
+		BackgroundTransparency = 1,
+		Selectable = false,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromScale(1, 1),
+		Visible = false,
+		ZIndex = 30,
+		Parent = goal,
+	})
+	for _, button in { goal, goalPad } do
+		button.Activated:Connect(function()
+			Kit.sound("Click")
+			openIndex()
+		end)
+	end
+	goal.MouseEnter:Connect(function()
+		Kit.tween(goal, 0.12, { BackgroundTransparency = 0.25 })
+	end)
+	goal.MouseLeave:Connect(function()
+		Kit.tween(goal, 0.12, { BackgroundTransparency = 0.45 })
+	end)
+	local function tierName(tier: number): string
+		local entry = Theme.Tiers[tier]
+		return if entry then entry.Name else ("Tier " .. tier)
+	end
+	local goalKey = ""
+	local goalTitleShown = ""
+	local goalThumbKey = ""
+	local goalWidth = 280
+	local function paintGoal(data: { [string]: any })
+		if type(data.discovered) ~= "table" or type(data.units) ~= "table" then
+			return
+		end
+		local picked = NextGoal.pick({
+			discovered = data.discovered,
+			units = data.units,
+			buyTier = tonumber(data.buyTier) or 1,
+			boughtAtTier = tonumber(data.boughtAtTier) or 0,
+			money = tonumber(data.money) or 0,
+		})
+		local title, hint, count = NextGoal.text(picked, tierName, State.money)
+		local key = title .. "|" .. hint .. "|" .. count
+		if key == goalKey then
+			Kit.tween(goalBar, 0.3, { Size = UDim2.new(0, math.floor((goalWidth - 16) * picked.progress), 0, 3) })
+			return
+		end
+		goalKey = key
+		-- Line 1: "Next:", the target and the count; line 2: what to do. The strip hugs the
+		-- wider line; past GOAL_MAX_W the name and the hint truncate.
+		local room = GOAL_MAX_W - GOAL_TEXT_X - 12
+		local leadW = textWidth(goalLead.Text, goalLead.TextSize, goalLead.Font)
+		local countW = textWidth(count, goalCount.TextSize, goalCount.Font)
+		local titleW = math.min(textWidth(title, goalTitle.TextSize, goalTitle.Font), room - leadW - countW - 14)
+		local hintW = math.min(textWidth(hint, goalHint.TextSize, goalHint.Font), room)
+		local x = GOAL_TEXT_X
+		local function put(label: TextLabel, text: string, width: number, gap: number)
+			label.Text = text
+			label.Size = UDim2.fromOffset(width + 2, 22)
+			label.Position = UDim2.fromOffset(x, 3)
+			x += width + gap
+		end
+		put(goalLead, goalLead.Text, leadW, 6)
+		put(goalTitle, title, titleW, 8)
+		put(goalCount, count, countW, 0)
+		goalCount.TextColor3 = if picked.ready then C.MoneyText else Color3.new(1, 1, 1)
+		goalHint.Text = string.upper(string.sub(hint, 1, 1)) .. string.sub(hint, 2)
+		goalHint.Size = UDim2.fromOffset(hintW + 2, 16)
+		goalWidth = math.max(x, GOAL_TEXT_X + hintW) + 12
+		goal.Size = UDim2.fromOffset(goalWidth, GOAL_H)
+		goalBar.Size = UDim2.new(0, math.floor((goalWidth - 16) * picked.progress), 0, 3)
+		-- A new target (not just a new count) gets a fresh thumbnail and a pop.
+		local thumbKey = picked.kind .. picked.tier
+		if thumbKey ~= goalThumbKey then
+			goalThumbKey = thumbKey
+			for _, child in goalThumb:GetChildren() do
+				child:Destroy()
+			end
+			pcall(Kit.unitViewport, goalThumb, picked.tier, { Size = UDim2.fromScale(1, 1) }, picked.kind == "merge")
+		end
+		if title ~= goalTitleShown then
+			goalTitleShown = title
+			Kit.pop(goal, 0.6)
+		end
+	end
+	-- Shown once the tutorial is done, outside the intro and game-mode runs. A tutorial
+	-- finished this session first lets its quest pill slide out of the slot.
+	local goalShown = false
+	local goalHoldUntil = 0
+	local goalSawTutorial = false
+	local function updateGoal()
+		local data = State.data
+		local player = Players.LocalPlayer
+		local show = data ~= nil
+			and data.tutorialDone == true
+			and os.clock() >= goalHoldUntil
+			and screen:GetAttribute("RunActive") ~= true
+			and screen:GetAttribute("ObbyMode") ~= true
+			and screen:GetAttribute("CardioActive") ~= true
+			and not (player ~= nil and player:GetAttribute("IntroPlaying") == true)
+		if show and data then
+			paintGoal(data)
+		end
+		if show ~= goalShown then
+			goalShown = show
+			goal.Visible = show
+		end
+	end
+	State.changed.Event:Connect(function(data)
+		if data.tutorialDone ~= true then
+			goalSawTutorial = true
+		elseif goalSawTutorial then
+			goalSawTutorial = false
+			goalHoldUntil = os.clock() + 1.5
+			task.delay(1.6, updateGoal)
+		end
+		updateGoal()
+	end)
+	for _, name in { "RunActive", "ObbyMode", "CardioActive" } do
+		screen:GetAttributeChangedSignal(name):Connect(updateGoal)
+	end
+	pcall(function()
+		Players.LocalPlayer:GetAttributeChangedSignal("IntroPlaying"):Connect(updateGoal)
+	end)
+
 	-- Bottom centre: the dumbbell with "AURA" and the carried amount ----------------------
 	local Assets = (function(): any
 		local shared = ReplicatedStorage:FindFirstChild("Shared")
@@ -66455,7 +67966,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local L = { edge = EDGE_X, bottom = -6, walletTop = false, walletY = 0, gridY = GRID_Y, tap = 0, tankX = 0, freeY = -20 }
 	local function gridRows(): { { string } }
 		if oneRow then
-			return { { "Home", "Ranking", "Modes", "Index", "Shop", "Invite" } }
+			return { { "Home", "Ranking", "Modes", "Index", "Shop", "Invite", "Daily" } }
 		end
 		return GRID_ROWS
 	end
@@ -66538,6 +68049,15 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end, function()
 		return UDim2.new(0.5, 0, 0, -140)
 	end)
+	-- The goal strip: under the deposit strip, or just above the (compact) dumbbell.
+	slot(goal, function()
+		if compact then
+			return UDim2.new(0.5, L.tankX, 1, L.bottom - math.ceil(DUMBBELL_W_COMPACT * DUMBBELL_ASPECT) - 8)
+		end
+		return UDim2.new(0.5, 0, 0, RUN_Y)
+	end, function()
+		return if compact then UDim2.new(0.5, L.tankX, 1, 200) else UDim2.new(0.5, 0, 0, -140)
+	end)
 	local targets: { [GuiObject]: UDim2 } = {}
 	local function place(animate: boolean)
 		local away = screen:GetAttribute("WindowOpen") == true
@@ -66583,6 +68103,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		local width = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
 		tank.Size = UDim2.fromOffset(width, width * DUMBBELL_ASPECT)
+		goal.AnchorPoint = Vector2.new(0.5, if compact then 1 else 0)
+		goalPad.Size = UDim2.new(1, 0, 0, math.max(GOAL_H, L.tap))
+		goalPad.Visible = Kit.touch
 		-- Gear: on the top bar's line with a mouse; below it (never on Roblox's bar) otherwise.
 		local gearSize = math.max(GEAR, L.tap)
 		gear.Size = UDim2.fromOffset(gearSize, gearSize)
@@ -66601,7 +68124,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		place(next(targets) ~= nil)
 	end
 	-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
-	local selectables: { GuiObject } = { promoButton, addButton, quitButton }
+	local selectables: { GuiObject } = { promoButton, addButton, quitButton, goal }
 	for _, button in Hud.buttons do
 		table.insert(selectables, button)
 	end
@@ -66929,6 +68452,26 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		freeTimer.Text = text
 	end
+	-- Daily reward: a dot, a sunny caption and a gentle bounce while a reward waits; the
+	-- countdown to the next one as the caption otherwise.
+	local dailyText = ""
+	local dailyReady: boolean? = nil
+	local stopDailyBounce: (() -> ())? = nil
+	local function paintDaily(text: string, ready: boolean)
+		if ready ~= dailyReady then
+			dailyReady = ready
+			Kit.setBadge(dailyButton, if ready then "!" else nil)
+			dailyCaption.TextColor3 = if ready then C.Gold else Color3.new(1, 1, 1)
+			if ready then
+				Kit.pop(dailyButton, 0.8)
+				stopDailyBounce = Kit.breathe(dailyButton, 0.06)
+			elseif stopDailyBounce then
+				stopDailyBounce()
+				stopDailyBounce = nil
+			end
+		end
+		dailyCaption.Text = text
+	end
 	local nextText = ""
 	RunService.Heartbeat:Connect(function()
 		local now = Workspace:GetServerTimeNow()
@@ -66963,6 +68506,18 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			if label ~= freeText then
 				freeText = label
 				paintFree(label, ready)
+			end
+			local daily = data.daily
+			if type(daily) == "table" then
+				-- The dot and the bounce wait for the tutorial, like the window itself.
+				local dailyNow = daily.claimable == true and data.tutorialDone == true
+				local dailyLabel = if daily.claimable == true
+					then CAPTIONS.Daily
+					else Format.time(math.max(0, (tonumber(daily.nextIn) or 0) - State.age()))
+				if dailyLabel ~= dailyText or dailyNow ~= dailyReady then
+					dailyText = dailyLabel
+					paintDaily(dailyLabel, dailyNow)
+				end
 			end
 		end
 	end)
@@ -67031,7 +68586,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="248">
+          <Item class="ModuleScript" referent="253">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -70270,7 +71825,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="249">
+          <Item class="ModuleScript" referent="254">
             <Properties>
               <string name="Name">MapPicker</string>
               <string name="Source"><![CDATA[--[[
@@ -71175,7 +72730,7 @@ return MapPicker
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="250">
+          <Item class="ModuleScript" referent="255">
             <Properties>
               <string name="Name">MogHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -72214,7 +73769,7 @@ return MogHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="251">
+          <Item class="ModuleScript" referent="256">
             <Properties>
               <string name="Name">MogRing</string>
               <string name="Source"><![CDATA[--!strict
@@ -72720,7 +74275,7 @@ return MogRing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="252">
+          <Item class="ModuleScript" referent="257">
             <Properties>
               <string name="Name">ObbyHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -73455,7 +75010,7 @@ return ObbyHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="253">
+          <Item class="ModuleScript" referent="258">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -76572,7 +78127,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="254">
+          <Item class="ModuleScript" referent="259">
             <Properties>
               <string name="Name">ShopScenes</string>
               <string name="Source"><![CDATA[--[[
@@ -78491,7 +80046,7 @@ return ShopScenes
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="255">
+          <Item class="ModuleScript" referent="260">
             <Properties>
               <string name="Name">Tutorial</string>
               <string name="Source"><![CDATA[--[[
@@ -79122,11 +80677,12 @@ return Tutorial
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="256">
+          <Item class="ModuleScript" referent="261">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
-	Windows: Shop, Index, Ranking and Settings.
+	Windows: Shop, Index, Ranking and Settings (Maps and Daily Reward live in
+	MapPicker.luau and DailyWindow.luau and register here).
 
 	Only one is open at a time. A dimmed backdrop sits behind the open window;
 	clicking it, the X button, Escape or the gamepad B button closes it.
@@ -79149,6 +80705,7 @@ local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
 local Kit = require(script.Parent.Kit)
+local DailyWindow = require(script.Parent.DailyWindow)
 local MapPicker = require(script.Parent.MapPicker)
 local ShopScenes = require(script.Parent.ShopScenes)
 local Sprites = require(script.Parent.Parent.Fx.Sprites)
@@ -82912,6 +84469,16 @@ function Windows.build(screen: ScreenGui)
 	})
 	maps = picker
 	beforeOpen.Maps = picker.beforeOpen
+	-- Daily Reward (DailyWindow.luau): opens from the HUD and by itself once per session.
+	local daily = DailyWindow.build(screen, {
+		register = register,
+		ripple = ripple,
+		open = function()
+			Windows.open("Daily")
+		end,
+		close = Windows.closeAll,
+	})
+	beforeOpen.Daily = daily.beforeOpen
 
 	-- B / Escape closes the open window. gameProcessedEvent is not checked: ButtonB
 	-- comes in processed while a button is selected, and that is when it matters.
@@ -82937,7 +84504,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="257">
+  <Item class="Workspace" referent="262">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>
