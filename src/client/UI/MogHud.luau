@@ -656,19 +656,20 @@ function MogHud.build(screenGui: ScreenGui)
 		Parent = screenGui,
 	})
 
-	-- Score panel with the quiet quit button on its right end.
-	local scorePanel = Kit.panel(root, {
+	-- Score pill (glass, like the HUD's run pill) with the quiet quit button on its right end.
+	local scorePanel = Kit.hudGlass(root, {
 		Name = "Score",
 		Size = UDim2.fromOffset(200, 44),
 		Position = UDim2.new(0.5, 0, 0, 0),
 		AnchorPoint = Vector2.new(0.5, 0),
-		Radius = 22,
 	})
 	Kit.icon(scorePanel, "Star", 26, C.Gold, { Position = UDim2.new(0, 10, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), ZIndex = 3 })
-	scoreLabel = Kit.number(scorePanel, {
+	scoreLabel = Kit.hudText(scorePanel, {
 		Name = "Value",
 		Text = "0",
+		Font = F.Number,
 		TextSize = 26,
+		StrokeThickness = 2,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.new(1, -84, 1, 0),
 		Position = UDim2.fromOffset(42, 0),
