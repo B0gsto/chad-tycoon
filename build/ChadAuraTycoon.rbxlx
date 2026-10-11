@@ -19975,6 +19975,13 @@ Theme.Glass = {
 	TextInk = rgb(8, 8, 30),
 	TextStroke = 2,
 	TextStrokeFade = 0.25,
+	-- The outline follows the text size: none under TextStrokeFrom px (small text sits on a
+	-- dark card or chip instead), then 1 px of outline per TextStrokePer px of text, between
+	-- TextStrokeThin and TextStrokeMax.
+	TextStrokeFrom = 18,
+	TextStrokePer = 12,
+	TextStrokeThin = 1.5,
+	TextStrokeMax = 3,
 	TextMin = 14,
 	TextMinPhone = 12,
 	Caption = 0.15,
@@ -66294,11 +66301,13 @@ return CardioHud
 	Server.Daily; the HUD's Daily button opens it).
 
 	Seven day cards in a row (4 + 3 when the window narrows and always on a phone,
-	Day 7 double width): each shows its art (a growing cash pack, a crate on days
-	3 and 7) and what it pays at the player's income right now. Claimed cards are
-	dimmed and ticked, today's is gold and glowing (tap it or CLAIM), tomorrow's
-	says "Come back tomorrow" with a countdown to the next UTC day. The footer
-	names what to do next.
+	Day 7 double width). A card is sized to its content: the day, its art (a growing
+	cash pack, a crate on days 3 and 7), what it pays at the player's income right now
+	(the second-largest thing on the card after the art) and, on a crate day, a chip in
+	the crate's rarity colour. Claimed cards are dimmed and ticked; today's says TODAY
+	in gold and glows (tap it or the CLAIM button); tomorrow's says TOMORROW. The footer
+	row names what to do next on the left, with the countdown to the next UTC day, and
+	holds the one button on the right.
 
 	The window opens by itself once per session when a reward is waiting, after a
 	calm moment: never during the intro or the tutorial, a game-mode run, or
@@ -66346,8 +66355,25 @@ export type Daily = {
 
 local ACCENT = Theme.World.Sunny
 local GAP = 8
-local HERO_H = 50
-local FOOTER_H = 56
+-- Space between the streak line, the cards and the footer row (one row of cards).
+local SECTION = 16
+local HERO_H = 40
+local FOOTER_H = 72
+local FOOTER_COMPACT = 60
+-- One row of tall cards: the day (HEAD_H) under CARD_TOP, then the art, the amount and the
+-- crate chip stacked HEAD_GAP / STACK_GAP apart, CARD_BOTTOM above the card's edge.
+local CARD_TOP = 10
+local HEAD_H = 18
+local HEAD_GAP = 8
+local STACK_GAP = 6
+local CARD_BOTTOM = 12
+local ART_MAX = 96
+local AMOUNT_H = 26
+local AMOUNT_MAX = 22
+local CHIP_H = 22
+-- The design window holds exactly that: chrome (104) + streak + cards + footer.
+local CARD_H = CARD_TOP + HEAD_H + HEAD_GAP + ART_MAX + STACK_GAP + AMOUNT_H + STACK_GAP + CHIP_H + CARD_BOTTOM
+local DESIGN = Vector2.new(880, 104 + HERO_H + SECTION + CARD_H + SECTION + FOOTER_H)
 -- Narrower than this (content width, design px) the cards wrap onto two rows.
 local ONE_ROW_MIN = 700
 -- Two rows of low, wide cards (a phone's short window): under SIDE_MAX_H tall and at least
@@ -66372,11 +66398,26 @@ type Card = {
 	header: TextLabel,
 	art: Frame,
 	amount: TextLabel,
-	extra: TextLabel?,
-	status: TextLabel,
+	-- Crate days: a chip in the rarity colour ("RARE CRATE", or just "RARE" on a narrow card).
+	chip: TextLabel?,
+	chipFull: string,
+	chipShort: string,
 	tick: Frame,
 	state: string,
 }
+
+-- Width of a chip that says `text` (TextService when available, else an estimate).
+local function chipWidth(text: string): number
+	local width = 0
+	pcall(function()
+		local TextService = game:GetService("TextService")
+		width = TextService:GetTextSize(text, T.Small, F.UI, Vector2.new(1000, 40)).X
+	end)
+	if width <= 0 then
+		width = (utf8.len(text) or #text) * T.Small * 0.62
+	end
+	return math.ceil(width) + 20
+end
 
 -- Repaints a day card: the plain dark card, or tinted `tint`, with an `edge` outline in the
 -- state's colour (`edgeFade`: its transparency, for a dimmed card).
@@ -66393,8 +66434,7 @@ end
 
 function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	-- Minimum 386 tall: a phone gets that window at x1.3, with the cards in two low rows.
-	local window =
-		Kit.window(screen, "Daily", "Daily Reward", Kit.pickIcon("Gift2", "Free"), ACCENT, Vector2.new(880, 436), Vector2.new(500, 386))
+	local window = Kit.window(screen, "Daily", "Daily Reward", Kit.pickIcon("Gift2", "Free"), ACCENT, DESIGN, Vector2.new(500, 386))
 	deps.register("Daily", window)
 	local action = Net.event("Action")
 
@@ -66405,9 +66445,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Size = UDim2.new(1, 0, 0, HERO_H),
 		Parent = window.content,
 	})
-	Kit.icon(hero, Kit.pickIcon("Fire", "Star"), 40, C.Amber, {
+	Kit.icon(hero, Kit.pickIcon("Fire", "Star"), 36, C.Amber, {
 		Name = "Icon",
-		Position = UDim2.new(0, 4, 0.5, 0),
+		Position = UDim2.new(0, 2, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
 		ZIndex = 2,
 	})
@@ -66418,8 +66458,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		TextColor3 = C.Gold,
 		TextWrapped = false,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(0.5, -52, 1, 0),
-		Position = UDim2.fromOffset(52, 1),
+		Size = UDim2.new(0.5, -48, 1, 0),
+		Position = UDim2.fromOffset(48, 1),
 		ZIndex = 2,
 	})
 	Kit.text(hero, {
@@ -66428,7 +66468,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		TextSize = T.Small,
 		TextColor3 = C.TextDim,
 		TextXAlignment = Enum.TextXAlignment.Right,
-		Size = UDim2.new(0.5, -8, 1, 0),
+		Size = UDim2.new(0.5, -2, 1, 0),
 		Position = UDim2.new(0.5, 0, 0, 0),
 		ZIndex = 2,
 	})
@@ -66450,55 +66490,48 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			Font = F.UI,
 			TextSize = T.Small,
 			TextWrapped = false,
-			Size = UDim2.new(1, 0, 0, 18),
-			Position = UDim2.fromOffset(0, 8),
+			Size = UDim2.new(1, 0, 0, HEAD_H),
+			Position = UDim2.fromOffset(0, CARD_TOP),
 			ZIndex = 3,
 		})
 		local art: Frame
 		if Kit.hasImageIcon(ART[day]) then
-			art = Kit.icon(frame, ART[day], 64, nil, { Name = "Art", ZIndex = 3 })
+			art = Kit.icon(frame, ART[day], ART_MAX, nil, { Name = "Art", ZIndex = 3 })
 		else
-			art = Kit.icon(frame, if reward.crate then "Free" else "Coin", 64, if reward.crate then C.Cash else C.Gold, {
+			art = Kit.icon(frame, if reward.crate then "Free" else "Coin", ART_MAX, if reward.crate then C.Cash else C.Gold, {
 				Name = "Art",
 				ZIndex = 3,
 			})
 		end
 		art.AnchorPoint = Vector2.new(0.5, 0)
-		-- Scaled down to fit: full numbers ("+$1,234,567") are much longer than "+$1.23M".
+		-- The amount: bold, outlined, the biggest text on the card, with no "+" in front so a
+		-- long one ("$179.52M") still fits at 18 px. Scaled down further only when it has to:
+		-- full numbers ("$1,234,567") are much longer.
 		local amount = Kit.number(frame, {
 			Name = "Amount",
 			Text = "",
-			MaxTextSize = 17,
+			MaxTextSize = AMOUNT_MAX,
 			TextColor3 = C.MoneyText,
-			Size = UDim2.new(1, -8, 0, 22),
+			Size = UDim2.new(1, -6, 0, AMOUNT_H),
 			AnchorPoint = Vector2.new(0.5, 0),
 			ZIndex = 3,
 		})
-		local extra: TextLabel? = nil
+		local chip: TextLabel? = nil
+		local chipFull, chipShort = "", ""
 		if reward.crate then
-			extra = Kit.text(frame, {
+			chipFull = string.upper(reward.crate .. " " .. W.Chest)
+			chipShort = string.upper(reward.crate)
+			chip = Kit.pill(frame, {
 				Name = "Crate",
-				Text = string.upper(string.format("+ %s %s", reward.crate, W.Chest)),
-				Font = F.UI,
-				MaxTextSize = T.Small,
-				TextColor3 = C.Rarity[reward.crate] or C.Gold,
-				TextWrapped = false,
-				Size = UDim2.new(1, -4, 0, 16),
+				Text = chipFull,
+				Color = C.Rarity[reward.crate] or C.Gold,
+				Solid = true,
+				TextSize = T.Small,
+				Size = UDim2.fromOffset(chipWidth(chipFull), CHIP_H),
 				AnchorPoint = Vector2.new(0.5, 0),
 				ZIndex = 3,
 			})
 		end
-		local status = Kit.text(frame, {
-			Name = "Status",
-			Text = "",
-			Font = F.UI,
-			TextSize = T.Small,
-			TextYAlignment = Enum.TextYAlignment.Bottom,
-			Size = UDim2.new(1, -10, 0, 54),
-			Position = UDim2.new(0.5, 0, 1, -8),
-			AnchorPoint = Vector2.new(0.5, 1),
-			ZIndex = 3,
-		})
 		-- Mint tick on the corner of a claimed card.
 		local tick = Kit.new("Frame", {
 			Name = "Tick",
@@ -66522,8 +66555,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			header = header,
 			art = art,
 			amount = amount,
-			extra = extra,
-			status = status,
+			chip = chip,
+			chipFull = chipFull,
+			chipShort = chipShort,
 			tick = tick,
 			state = "",
 		}
@@ -66548,27 +66582,35 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		frames[day] = frame
 	end
 
-	-- Footer: what to do next + the one button ---------------------------------------------
-	local footer = Kit.new("Frame", {
+	-- Footer row: what to do next on the left, the one button on the right ------------------
+	local footer = Kit.well(window.content, {
 		Name = "Footer",
-		BackgroundTransparency = 1,
+		Glass = true,
 		Size = UDim2.new(1, 0, 0, FOOTER_H),
 		Position = UDim2.fromScale(0, 1),
 		AnchorPoint = Vector2.new(0, 1),
-		Parent = window.content,
 	})
-	local headline = Kit.title(footer, {
+	local BUTTON_W = 200
+	-- Headline over detail, centred as a pair on the row's middle line.
+	local words = Kit.new("Frame", {
+		Name = "Words",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -(16 + 16 + BUTTON_W + 12), 0, 48),
+		Position = UDim2.new(0, 16, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 2,
+		Parent = footer,
+	})
+	local headline = Kit.title(words, {
 		Name = "Headline",
 		Text = "",
-		TextSize = T.H2,
+		MaxTextSize = T.H2,
 		TextWrapped = false,
-		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -236, 0, 26),
-		Position = UDim2.fromOffset(6, 4),
+		Size = UDim2.new(1, 0, 0, 26),
 		ZIndex = 2,
 	})
-	local detail = Kit.text(footer, {
+	local detail = Kit.text(words, {
 		Name = "Detail",
 		Text = "",
 		TextSize = T.Small,
@@ -66576,8 +66618,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		TextWrapped = false,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -236, 0, 20),
-		Position = UDim2.fromOffset(6, 31),
+		Size = UDim2.new(1, 0, 0, 20),
+		Position = UDim2.fromOffset(0, 28),
 		ZIndex = 2,
 	})
 	local button = Kit.button(footer, {
@@ -66586,8 +66628,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Font = F.Display,
 		TextSize = 24,
 		Color = C.Gold,
-		Size = UDim2.fromOffset(216, 50),
-		Position = UDim2.new(1, -2, 0.5, -2),
+		Size = UDim2.fromOffset(BUTTON_W, 48),
+		Position = UDim2.new(1, -12, 0.5, -2),
 		AnchorPoint = Vector2.new(1, 0.5),
 		ZIndex = 2,
 	}, function()
@@ -66596,10 +66638,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	button:SetAttribute("FocusFirst", true)
 
 	-- State ---------------------------------------------------------------------------------
-	local big = true -- one row of tall cards
 	local canClaim = false
 	local claimSentAt = 0
-	local tomorrowCard = 0
 	local todayClaimed = false
 
 	local function dailyOf(data: { [string]: any }?): { [string]: any }?
@@ -66632,8 +66672,13 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		local fade = if claimed then G.Dimmed else 0
 		card.header.TextTransparency = fade
 		card.amount.TextTransparency = fade
-		if card.extra then
-			card.extra.TextTransparency = fade
+		if card.chip then
+			card.chip.TextTransparency = fade
+			card.chip.BackgroundTransparency = fade
+			local edge = card.chip:FindFirstChild("Edge")
+			if edge and edge:IsA("UIStroke") then
+				edge.Transparency = fade
+			end
 		end
 		-- Today: a gold card in a gold outline. Claimed: dimmed, in a faint mint edge under
 		-- its tick. Ahead (locked): the plain dark card, as solid as any other.
@@ -66647,11 +66692,11 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Kit.setGlow(card.frame, state == "today", C.Gold)
 	end
 
-	-- The countdown texts (tomorrow's card and the footer), once a second while open.
+	-- The footer's countdown to the next reward, once a second while open.
 	local clockText = ""
 	local function updateClock()
 		local daily = dailyOf(State.data)
-		if not daily then
+		if not daily or not todayClaimed then
 			return
 		end
 		local text = Format.time(secondsLeft(daily))
@@ -66659,13 +66704,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			return
 		end
 		clockText = text
-		local card = cards[tomorrowCard]
-		if card and todayClaimed then
-			card.status.Text = if big then "COME BACK TOMORROW\n" .. text else text
-		end
-		if todayClaimed then
-			detail.Text = "Next reward in " .. text
-		end
+		detail.Text = "Next reward in " .. text
 	end
 
 	local function render()
@@ -66679,7 +66718,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		local streak = math.max(0, math.floor(tonumber(daily.streak) or 0))
 		canClaim = daily.claimable == true
 		todayClaimed = not canClaim
-		tomorrowCard = if day < DailyReward.DAYS then day + 1 else 0
+		local tomorrowCard = if day < DailyReward.DAYS then day + 1 else 0
 		local progression = Economy.progression(tonumber(data.highestTier) or 1, tonumber(data.processLevel) or 0)
 		local income = tonumber(data.income) or 0
 		-- A player's first day pays today's card up to a cap (Server.Daily does the same).
@@ -66687,7 +66726,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			then DailyReward.firstDayCap(day, tonumber(data.buyTier) or 1, tonumber(data.boughtAtTier) or 0)
 			else nil
 		for i, card in cards do
-			card.amount.Text = "+" .. State.money(DailyReward.cash(i, income, progression, if i == day then cap else nil))
+			card.amount.Text = State.money(DailyReward.cash(i, income, progression, if i == day then cap else nil))
 			local state = if i <= claimed
 				then "claimed"
 				elseif i == day and canClaim then "today"
@@ -66696,8 +66735,6 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			if state ~= card.state then
 				dress(card, i, state)
 			end
-			card.status.TextColor3 = if state == "today" then C.Gold elseif state == "claimed" then C.Good else C.TextDim
-			card.status.Text = if state == "today" then "CLAIM!" elseif state == "claimed" then "CLAIMED" else ""
 		end
 		streakTitle.Text = if streak >= 2
 			then string.format("%d DAY STREAK", streak)
@@ -66724,19 +66761,31 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		-- Window chrome (24 wide, 84 tall) and the content well's padding (10 a side).
 		local width, height = size.X - 44, size.Y - 104
 		local phone = Kit.touch and screen:GetAttribute("Compact") == true
-		big = width >= ONE_ROW_MIN and not phone
+		local big = width >= ONE_ROW_MIN and not phone
 		hero.Visible = big
-		local top = if big then HERO_H + GAP else 0
-		local gridH = height - top - FOOTER_H - GAP
+		local between = if big then SECTION else GAP
+		local top = if big then HERO_H + between else 0
+		local footerH = if big then FOOTER_H else FOOTER_COMPACT
+		footer.Size = UDim2.new(1, 0, 0, footerH)
+		local gridH = height - top - footerH - between
 		grid.Position = UDim2.fromOffset(0, top)
 		grid.Size = UDim2.new(1, 0, 0, gridH)
 		local columns = if big then DailyReward.DAYS else 4
 		local rows = if big then 1 else 2
 		local cellW = (width - (columns - 1) * GAP) / columns
 		local cellH = (gridH - (rows - 1) * GAP) / rows
-		-- Low, wide cards: the art on the left, amount, crate and status stacked beside it.
+		-- Low, wide cards: the art on the left, the amount and the chip stacked beside it.
 		local side = not big and cellH < SIDE_MAX_H and cellW >= SIDE_MIN_W
-		local artSize = if big then 64 elseif side then SIDE_ART else 40
+		local headY = if big then CARD_TOP else 6
+		local bodyTop = headY + HEAD_H + (if big then HEAD_GAP else 4)
+		local bodyH = cellH - bodyTop - (if big then CARD_BOTTOM else 8)
+		local stackGap = if big then STACK_GAP else 4
+		local amountH = if big then AMOUNT_H else 22
+		local chipH = if big then CHIP_H else 20
+		-- Every card wears the same art: what a crate day's stack leaves it.
+		local artSize = if side
+			then math.floor(math.min(SIDE_ART, bodyH))
+			else math.floor(math.clamp(bodyH - amountH - chipH - stackGap * 2, 28, math.min(ART_MAX, cellW - 16)))
 		for day, card in cards do
 			local column = (day - 1) % columns
 			local row = (day - 1) // columns
@@ -66744,31 +66793,38 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			local cardW = math.floor(if wide then cellW * 2 + GAP else cellW)
 			card.frame.Position = UDim2.fromOffset(math.floor(column * (cellW + GAP)), math.floor(row * (cellH + GAP)))
 			card.frame.Size = UDim2.fromOffset(cardW, math.floor(cellH))
+			card.header.Position = UDim2.fromOffset(0, headY)
 			card.art.Size = UDim2.fromOffset(artSize, artSize)
+			local chip = card.chip
+			local textW = if side then SIDE_TEXT else cardW - 8
+			if chip then
+				-- The whole name when the card has room for it, else the rarity alone.
+				local full = chipWidth(card.chipFull) <= textW
+				chip.Text = if full then card.chipFull else card.chipShort
+				chip.Size = UDim2.fromOffset(math.min(chipWidth(chip.Text), textW), chipH)
+			end
 			if side then
 				-- Art and text column, centred together in the card under its header.
 				local left = (cardW - (artSize + GAP + SIDE_TEXT)) // 2
 				local textX = left + artSize + GAP + SIDE_TEXT // 2
-				card.art.Position = UDim2.fromOffset(left + artSize // 2, 30)
-				card.amount.Size = UDim2.fromOffset(SIDE_TEXT, 22)
-				card.amount.Position = UDim2.fromOffset(textX, 32)
-				if card.extra then
-					card.extra.Size = UDim2.fromOffset(SIDE_TEXT, 16)
-					card.extra.Position = UDim2.fromOffset(textX, 54)
+				local stack = amountH + (if chip then stackGap + chipH else 0)
+				local y = bodyTop + math.floor((bodyH - stack) / 2)
+				card.art.Position = UDim2.fromOffset(left + artSize // 2, bodyTop + math.floor((bodyH - artSize) / 2))
+				card.amount.Size = UDim2.fromOffset(SIDE_TEXT, amountH)
+				card.amount.Position = UDim2.fromOffset(textX, y)
+				if chip then
+					chip.Position = UDim2.fromOffset(textX, y + amountH + stackGap)
 				end
-				card.status.Size = UDim2.fromOffset(SIDE_TEXT, 18)
-				card.status.Position = UDim2.new(0, textX, 1, -9)
 			else
-				card.art.Position = UDim2.new(0.5, 0, 0, 30)
-				card.amount.Size = UDim2.new(1, -8, 0, 22)
-				card.amount.Position = UDim2.new(0.5, 0, 0, 34 + artSize)
-				if card.extra then
-					card.extra.Size = UDim2.new(1, -4, 0, 16)
-					card.extra.Position = UDim2.new(0.5, 0, 0, 55 + artSize)
+				-- Art, amount and chip as one stack, centred in the card under its header.
+				local stack = artSize + stackGap + amountH + (if chip then stackGap + chipH else 0)
+				local y = bodyTop + math.max(math.floor((bodyH - stack) / 2), 0)
+				card.art.Position = UDim2.new(0.5, 0, 0, y)
+				card.amount.Size = UDim2.new(1, -6, 0, amountH)
+				card.amount.Position = UDim2.new(0.5, 0, 0, y + artSize + stackGap)
+				if chip then
+					chip.Position = UDim2.new(0.5, 0, 0, y + artSize + stackGap + amountH + stackGap)
 				end
-				-- One row: room for "COME BACK TOMORROW" on two lines over the countdown.
-				card.status.Size = UDim2.new(1, -10, 0, if big then 54 else 18)
-				card.status.Position = UDim2.new(0.5, 0, 1, -8)
 			end
 		end
 		clockText = ""
@@ -69489,9 +69545,22 @@ end
 	leave it out for TextScaled (optionally capped with MaxTextSize).
 	  Font            any Theme.Fonts role (Display, UI, Bold, Body, Number)
 	  Shadow = true   navy outline (only for text directly over the 3D world)
-	  StrokeThickness explicit halo thickness (0 = none)
-	Body text on panels gets no halo; Display text gets a faint embossed edge.
+	  StrokeThickness explicit outline thickness (0 = none)
+	The outline follows the size of the text (Kit.outlineFor): titles, prices and
+	big numbers get the thick one, mid sizes a thin one, and small text (under
+	Theme.Glass.TextStrokeFrom) none, or a 1 px hairline when the caller asked for
+	an outline. Small text therefore belongs on a card or a chip dark enough to
+	read; only text over the bare world (Shadow, Kit.hudText) is outlined at any size.
 ]]
+
+-- Outline thickness for light text `size` px tall on glass (0 = none).
+function Kit.outlineFor(size: number): number
+	if size < G.TextStrokeFrom then
+		return 0
+	end
+	return math.clamp(size / G.TextStrokePer, G.TextStrokeThin, G.TextStrokeMax)
+end
+
 function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
 	local fixed = props.TextSize ~= nil and props.TextScaled ~= true
 	local label = Kit.new("TextLabel", {
@@ -69523,21 +69592,39 @@ function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
 			Parent = label,
 		})
 	end
-	-- Light text sits on glass: titles, names, prices and numbers get a dark outline
-	-- (Theme.Glass.TextStroke). Dark text (on a solid button or chip) keeps the faint edge.
+	-- The tallest the glyphs can be: the fixed size, the cap of scaled text, or the
+	-- height of a fixed-height box. Unknown (a scaled label in a scaled box) counts as a title.
+	local size: number = if fixed
+		then label.TextSize
+		elseif maxSize then math.max(maxSize, floor)
+		elseif label.Size.Y.Scale == 0 and label.Size.Y.Offset > 0 then label.Size.Y.Offset
+		else G.TextStrokeFrom * 1.5
+	local outline = Kit.outlineFor(size)
 	local light = luminance(label.TextColor3) >= 0.45
-	if strokeThickness and strokeThickness > 0 then
-		if light then
-			inkStroke(label, math.clamp(strokeThickness, Theme.Glass.TextStroke, 3))
+	if strokeThickness == 0 then
+		return label
+	end
+	if shadow then
+		-- Text over the 3D world: a readable navy outline at any size.
+		if strokeThickness then
+			Kit.textStroke(label, math.clamp(strokeThickness, 1.3, 3), 0.3)
 		else
-			Kit.textStroke(label, math.clamp(strokeThickness * 0.6, 1, 2.5), 0.35)
+			Kit.textStroke(label, if shadow == true then 1.8 else 1.3, 0.3)
 		end
-	elseif strokeThickness == nil and shadow then
-		-- Text over the 3D world: a readable navy outline.
-		Kit.textStroke(label, if shadow == true then 1.8 else 1.3, 0.3)
-	elseif strokeThickness == nil and light and label.Font ~= F.Body then
-		inkStroke(label, Theme.Glass.TextStroke)
-	elseif strokeThickness == nil and label.Font == F.Display then
+	elseif strokeThickness then
+		-- An outline was asked for: never thicker than the size carries, a hairline on small text.
+		local thickness = math.min(strokeThickness, math.max(outline * 1.25, 1))
+		if light then
+			inkStroke(label, math.clamp(thickness, 1, G.TextStrokeMax))
+		else
+			Kit.textStroke(label, math.clamp(thickness * 0.6, 1, 2.5), 0.35)
+		end
+	elseif light and label.Font ~= F.Body then
+		-- Light titles, names, prices and numbers on glass: a dark outline from TextStrokeFrom up.
+		if outline > 0 then
+			inkStroke(label, outline)
+		end
+	elseif label.Font == F.Display then
 		-- Dark display titles on solid faces: a faint embossed edge, not an outline.
 		Kit.textStroke(label, 1.4, 0.65)
 	end
@@ -76272,7 +76359,10 @@ function Popups.closeModals()
 end
 
 -- Round toy badge: a coloured face with a white rim on a darker lip, sitting
--- across the top edge of a modal.
+-- across the top edge of a modal. It draws above the pane's own chrome (the
+-- highlight line shares the pane's ZIndex) on a collar in the body colour, so
+-- the pane's edge and highlight stop cleanly at a ring round the badge.
+local MEDAL_COLLAR = 8
 local function medallion(parent: Instance, icon: string, color: Color3, size: number, position: UDim2): Frame
 	local depth = math.max(math.floor(size * 0.06), 3)
 	local medal = Kit.new("Frame", {
@@ -76281,8 +76371,18 @@ local function medallion(parent: Instance, icon: string, color: Color3, size: nu
 		Size = UDim2.fromOffset(size, size),
 		Position = position,
 		AnchorPoint = Vector2.new(0.5, 0.5),
-		ZIndex = 3,
+		ZIndex = math.max((if parent:IsA("GuiObject") then parent.ZIndex else 0) + 1, 3),
 		Parent = parent,
+	})
+	local collar = circle(medal, "Collar", WHITE, 0, 0)
+	collar.Size = UDim2.new(1, MEDAL_COLLAR * 2, 1, MEDAL_COLLAR * 2 + depth)
+	collar.Position = UDim2.new(0.5, 0, 0.5, depth / 2)
+	Kit.gradient(collar, Theme.Glass.TintTop, Theme.Glass.Tint)
+	Kit.new("UIStroke", {
+		Thickness = Theme.Glass.EdgeThickness,
+		Color = Theme.Glass.Edge,
+		Transparency = Theme.Glass.EdgeTop + 0.25,
+		Parent = collar,
 	})
 	local shadow = circle(medal, "Shadow", C.Ink, 0.72, 1)
 	shadow.Size = UDim2.fromScale(0.92, 0.92)
@@ -77519,32 +77619,57 @@ end
 
 -- Confirm dialog ---------------------------------------------------------------------------
 
+-- Height of `text` wrapped to `width` in the body font (TextService when available, else an
+-- estimate from its length).
+local function bodyHeight(text: string, size: number, width: number): number
+	local height = 0
+	pcall(function()
+		local TextService = game:GetService("TextService")
+		height = TextService:GetTextSize(text, size, Kit.F.Body, Vector2.new(width, 1000)).Y
+	end)
+	if height <= 0 then
+		local lines = 0
+		for line in string.gmatch(text .. "\n", "(.-)\n") do
+			lines += math.max(1, math.ceil((utf8.len(line) or #line) * size * 0.5 / width))
+		end
+		height = lines * math.ceil(size * 1.25)
+	end
+	return math.ceil(height)
+end
+
+-- The card is as tall as its question: title, the text (one to five lines) and the two
+-- answers, 16 px apart, under the medallion's lower half.
 function Popups.confirm(text: string, onYes: () -> (), options: { [string]: any }?)
 	local opts = options or {}
 	Popups.enqueue("Confirm", Popups.PRIORITY.Normal, function(done)
-		local box, close = modal("Confirm", Vector2.new(460, 256), 50, nil, done)
+		local WIDTH, PAD, GAP = 460, 20, 16
+		local titleY = 50
+		local textY = titleY + 30 + 8
+		local textH = math.clamp(bodyHeight(text, T.Body, WIDTH - PAD * 2), 20, 104)
+		local buttonY = textY + textH + GAP
+		local box, close = modal("Confirm", Vector2.new(WIDTH, buttonY + 56 + PAD), 50, nil, done)
 		local medal = medallion(box, opts.icon or "?", C.Gold, 70, UDim2.new(0.5, 0, 0, 0))
 		Kit.title(box, {
 			Text = opts.title or "ARE YOU SURE?",
 			TextSize = T.H2,
 			TextWrapped = false,
-			Size = UDim2.new(1, -30, 0, 32),
-			Position = UDim2.fromOffset(15, 44),
+			Size = UDim2.new(1, -PAD * 2, 0, 30),
+			Position = UDim2.fromOffset(PAD, titleY),
 			TextColor3 = C.Gold,
 		})
 		Kit.text(box, {
 			Name = "Text",
 			Text = text,
 			TextSize = T.Body,
-			Size = UDim2.new(1, -40, 0, 70),
-			Position = UDim2.fromOffset(20, 80),
+			Size = UDim2.new(1, -PAD * 2, 0, textH),
+			Position = UDim2.fromOffset(PAD, textY),
 			StrokeThickness = 0,
 		})
 		local yes = Kit.button(box, {
 			Text = opts.yes or "Yes",
 			Color = C.Gold,
-			Size = UDim2.new(0.5, -24, 0, 58),
-			Position = UDim2.new(0, 16, 1, -76),
+			Size = UDim2.new(0.5, -PAD - 6, 0, 56),
+			Position = UDim2.fromOffset(PAD, buttonY),
 		}, function()
 			close()
 			onYes()
@@ -77552,8 +77677,8 @@ function Popups.confirm(text: string, onYes: () -> (), options: { [string]: any 
 		local no = Kit.button(box, {
 			Text = opts.no or "No",
 			Color = C.SurfaceHi,
-			Size = UDim2.new(0.5, -24, 0, 58),
-			Position = UDim2.new(0.5, 8, 1, -76),
+			Size = UDim2.new(0.5, -PAD - 6, 0, 56),
+			Position = UDim2.new(0.5, 6, 0, buttonY),
 			Sound = "Close",
 		}, close)
 		-- Gamepad lands on the safe answer; B also answers "No".
@@ -77567,61 +77692,130 @@ end
 
 -- Offline earnings ---------------------------------------------------------------------------
 
+-- Width of one line of Number text (TextService when available, else an estimate).
+local function numberWidth(text: string, size: number): number
+	local width = 0
+	pcall(function()
+		local TextService = game:GetService("TextService")
+		width = TextService:GetTextSize(text, size, Kit.F.Number, Vector2.new(2000, 80)).X
+	end)
+	if width <= 0 then
+		width = (utf8.len(text) or #text) * size * 0.66
+	end
+	return math.ceil(width)
+end
+
+--[[
+	"Welcome back": what the units earned while the player was away. The card is sized to
+	its content on one 16 px rhythm: medallion, title, the duration (secondary), the aura ->
+	cash row and the Collect hint, then the button. The cash is the hero: the biggest text,
+	rolling up from 0 with ticks. Each amount is centred in its half of the row, so the pair
+	sits symmetrically round the arrow whatever the numbers are.
+]]
+local OFFLINE = {
+	Width = 540,
+	Pad = 20,
+	Gap = 16,
+	Title = 56, -- under the medallion's lower half
+	Row = 92,
+	Arrow = 44,
+	Aura = 28,
+	Cash = Kit.TEXT.Hero,
+	Button = 58,
+	Roll = 0.6,
+}
+
 function Popups.offline(data: { [string]: any })
 	Popups.enqueue("Offline", Popups.PRIORITY.Normal, function(done)
-		local box, close = modal("Offline", Vector2.new(500, 330), 45, nil, done)
+		local L = OFFLINE
+		local subY = L.Title + 34 + 6
+		local rowY = subY + 22 + L.Gap
+		local noteY = rowY + L.Row + L.Gap
+		local buttonY = noteY + 20 + L.Gap
+		local height = buttonY + L.Button + L.Pad
+		local box, close = modal("Offline", Vector2.new(L.Width, height), 45, nil, done)
 		local medal = medallion(box, "💤", C.Rizz, 84, UDim2.new(0.5, 0, 0, 0))
 		Kit.title(box, {
 			Text = "WELCOME BACK!",
 			TextSize = T.H1,
 			TextWrapped = false,
-			Size = UDim2.new(1, -20, 0, 36),
-			Position = UDim2.fromOffset(10, 50),
+			Size = UDim2.new(1, -L.Pad * 2, 0, 34),
+			Position = UDim2.fromOffset(L.Pad, L.Title),
 			TextColor3 = C.Gold,
 		})
 		Kit.text(box, {
+			Name = "Away",
 			Text = string.format("Your %s kept grinding for %s.", W.Units, Format.time(data.seconds)),
 			TextSize = T.Body,
-			Size = UDim2.new(1, -30, 0, 24),
-			Position = UDim2.fromOffset(15, 88),
+			TextWrapped = false,
+			Size = UDim2.new(1, -L.Pad * 2, 0, 22),
+			Position = UDim2.fromOffset(L.Pad, subY),
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,
 		})
-		local well = Kit.well(box, { Glass = true, Size = UDim2.new(1, -40, 0, 66), Position = UDim2.fromOffset(20, 120) })
-		local function amount(icon: string, iconColor: Color3, x: number, textColor: Color3): TextLabel
+		local well = Kit.well(box, {
+			Name = "Earned",
+			Glass = true,
+			Size = UDim2.new(1, -L.Pad * 2, 0, L.Row),
+			Position = UDim2.fromOffset(L.Pad, rowY),
+		})
+		local orbTotal = tonumber(data.orbs) or 0
+		local cashTotal = tonumber(data.cash) or 0
+		local half = (L.Width - L.Pad * 2 - L.Arrow) / 2
+		-- One amount: an icon and a number as a group sized for the final text (so it holds
+		-- still while it rolls), centred in the half of the row on `side` (0 left, 1 right).
+		local function amount(
+			name: string,
+			icon: string,
+			iconColor: Color3,
+			side: number,
+			final: string,
+			size: number,
+			color: Color3
+		): TextLabel
+			local iconSize = math.floor(size * 0.9)
+			local room = half - 24 - iconSize - 8
+			local width = math.min(numberWidth(final, size) + 4, room)
 			local cell = Kit.new("Frame", {
+				Name = name,
 				BackgroundTransparency = 1,
-				Size = UDim2.new(0.42, 0, 1, 0),
-				Position = UDim2.fromScale(x, 0),
+				Size = UDim2.new(0, iconSize + 8 + width, 1, 0),
+				Position = UDim2.new(side, (0.5 - side) * half, 0, 0),
+				AnchorPoint = Vector2.new(0.5, 0),
 				Parent = well,
 			})
-			Kit.icon(cell, icon, 30, iconColor, { Position = UDim2.new(0, 14, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
+			Kit.icon(cell, icon, iconSize, iconColor, { Position = UDim2.new(0, 0, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
 			return Kit.number(cell, {
-				Text = "0",
-				TextSize = 26,
-				Size = UDim2.new(1, -54, 1, 0),
-				Position = UDim2.fromOffset(50, 0),
+				Name = "Value",
+				Text = final,
+				MaxTextSize = size,
+				Size = UDim2.new(0, width, 0, size + 8),
+				Position = UDim2.new(0, iconSize + 8, 0.5, 0),
+				AnchorPoint = Vector2.new(0, 0.5),
 				TextXAlignment = Enum.TextXAlignment.Left,
-				TextColor3 = textColor,
-				StrokeThickness = 0,
+				TextColor3 = color,
 			})
 		end
-		local orbs = amount("Orb", C.Orb, 0, Kit.lighten(C.Orb, 0.35))
+		local orbs = amount("Aura", "Orb", C.Orb, 0, Format.short(orbTotal), L.Aura, Kit.lighten(C.Orb, 0.35))
 		Kit.title(well, {
+			Name = "Arrow",
 			Text = "→",
-			TextSize = 28,
+			TextSize = 26,
 			TextWrapped = false,
-			Size = UDim2.new(0.16, 0, 1, 0),
-			Position = UDim2.fromScale(0.42, 0),
+			Size = UDim2.new(0, L.Arrow, 1, 0),
+			Position = UDim2.fromScale(0.5, 0),
+			AnchorPoint = Vector2.new(0.5, 0),
 			TextColor3 = C.TextMute,
 			StrokeThickness = 0,
 		})
-		local cash = amount("Coin", C.Gold, 0.58, C.MoneyText)
+		local cash = amount("Cash", "Coin", C.Gold, 1, Format.money(cashTotal), L.Cash, C.MoneyText)
 		Kit.text(box, {
+			Name = "Hint",
 			Text = "Your cash is waiting on the Collect pad.",
 			TextSize = T.Small,
-			Size = UDim2.new(1, -40, 0, 34),
-			Position = UDim2.fromOffset(20, 192),
+			TextWrapped = false,
+			Size = UDim2.new(1, -L.Pad * 2, 0, 20),
+			Position = UDim2.fromOffset(L.Pad, noteY),
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,
 		})
@@ -77630,21 +77824,34 @@ function Popups.offline(data: { [string]: any })
 			Font = Theme.Fonts.Display,
 			Color = C.Gold,
 			Breathe = true,
-			Size = UDim2.new(1, -40, 0, 58),
-			Position = UDim2.new(0.5, 0, 1, -18),
-			AnchorPoint = Vector2.new(0.5, 1),
+			Size = UDim2.new(1, -L.Pad * 2, 0, L.Button),
+			Position = UDim2.fromOffset(L.Pad, buttonY),
 		}, close)
 		go:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		Kit.appear(go, { from = 0.8, time = 0.26, delay = 0.14 })
-		local orbTotal = tonumber(data.orbs) or 0
-		local cashTotal = tonumber(data.cash) or 0
 		after(0.18, function()
-			Kit.countTo(orbs, 0, orbTotal, Format.short, 0.7)
+			Kit.countTo(orbs, 0, orbTotal, Format.short, L.Roll)
 		end)
-		after(0.32, function()
-			Kit.countTo(cash, 0, cashTotal, Format.money, 0.8)
+		after(0.3, function()
+			if not cash.Parent then
+				return
+			end
+			Kit.countTo(cash, 0, cashTotal, Format.money, L.Roll)
+			-- The cash rolls up with ticks that climb in pitch.
+			if cashTotal > 0 and not PREVIEW then
+				task.spawn(function()
+					local ticks = 8
+					for i = 1, ticks do
+						if not cash.Parent then
+							return
+						end
+						sounds.play("Tick", 0.03, 1 + i * 0.05)
+						task.wait(L.Roll / ticks)
+					end
+				end)
+			end
 		end)
 		sounds.play("Reward")
 	end)
@@ -78787,7 +78994,7 @@ local function buildChestPanel()
 				TextSize = T.Small,
 				TextWrapped = false,
 				TextTruncate = Enum.TextTruncate.AtEnd,
-				Size = UDim2.new(1, -118, 1, 0),
+				Size = UDim2.new(1, -126, 1, 0),
 				Position = UDim2.fromOffset(60, 0),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				TextColor3 = Kit.lighten(tierColor, 0.35),
@@ -78795,8 +79002,8 @@ local function buildChestPanel()
 			})
 			Kit.number(row, {
 				Text = entry.chance .. "%",
-				TextSize = T.Small,
-				Size = UDim2.new(0, 54, 1, 0),
+				TextSize = T.Body,
+				Size = UDim2.new(0, 60, 1, 0),
 				Position = UDim2.new(1, -4, 0, 0),
 				AnchorPoint = Vector2.new(1, 0),
 				TextXAlignment = Enum.TextXAlignment.Right,
@@ -79796,6 +80003,15 @@ PASSES.AutoLoot = function(ctx, _tint)
 			Position = at(0.5, 0.5),
 			ZIndex = 4,
 		}))
+		-- The art's dark plaque is blank (the HUD prints the carried amount on it): here it
+		-- carries the word, so it reads as the aura dumbbell and not as a missing picture.
+		-- Plaque in image pixels: x 310-714, y 66-316 of 1024 x 448 (art/out/ui/HudDumbbell.json).
+		sticker(hero, string.upper(Theme.Words.Orb), C.GoldLight, {
+			Name = "Label",
+			Size = UDim2.fromScale(0.34, 0.4),
+			Position = at(0.5, 0.426),
+			ZIndex = 5,
+		}, 2)
 	else
 		shade(icon(hero, { "Orb" }, C.Orb, { ZIndex = 4 }))
 	end
@@ -81955,9 +82171,8 @@ local function onPhone(screen: Instance, fn: () -> ())
 end
 
 --[[
-	Tinted tag on a glass card (a rarity, a state): Kit.pill's soft fill of `Color` with
-	the label in the dark outline of text on glass (a pill's stroke is its border, so its
-	text has none). Sizes to its text. props: Name, Text, Color, Position, AnchorPoint, ZIndex.
+	Tinted tag on a glass card (a rarity, a state): Kit.pill's soft fill of `Color` under
+	a light label in that colour (small text: no outline). Sizes to its text. props: Name, Text, Color, Position, AnchorPoint, ZIndex.
 ]]
 local function tag(parent: Instance, props: { [string]: any }): TextLabel
 	local color: Color3 = props.Color
@@ -82002,7 +82217,8 @@ local PASS_TINTS: { [string]: Color3 } = {
 	CrateKey = Theme.World.Orange,
 }
 
--- Ribbon candy colours, one per kind of tag (OWNED keeps the mint "good" green).
+-- Ribbon candy colours, one per kind of tag (a cosmetic's OWNED keeps the mint "good" green;
+-- passes and the bundle say OWNED on their button instead).
 local RIBBON_SUNNY = Theme.World.Sunny -- popular, savings
 local RIBBON_PINK = Color3.fromRGB(255, 84, 168) -- best seller, starter deal, exclusive
 local RIBBON_CORAL = Theme.World.Coral -- best value
@@ -82168,7 +82384,11 @@ end
 	the page (244 px under the pinned title and switcher) still shows the tallest
 	card, a pack, whole. A phone gets that short window scaled up x1.25.
 ]]
-local BANNER_H = 130 -- pass banner height
+local BANNER_H = 130 -- pass banner height: title 10-44, description inset 48-92, PERMANENT 98-118
+local BANNER_DESC_Y = 48
+local BANNER_DESC_H = 44
+local BANNER_PERK_Y = 98
+local BANNER_TEXT_X = 8 -- the title, the description and PERMANENT share this left text edge
 local STAGE_W = 230 -- a banner's animated stage, at the default window...
 local STAGE_MIN_W = 140 -- ...and the narrowest it shrinks to
 local COS_H = 204 -- cosmetic card height
@@ -82183,7 +82403,7 @@ local SWITCH_H = 44 -- section switcher bar (36 px pills inside)
 local PAGE_TOP = SWITCH_H + 8 -- the scrolling page starts below the switcher
 local PRICE_H = 42 -- every price button
 local PRICE_TEXT = 20
-local FADE_H = 30 -- soft fade along the bottom edge of the page
+local FADE_H = 56 -- fade along the bottom edge of the page: a cut-off card melts into the glass
 local MIN_TEXT = 14 -- no shop text renders smaller (TextScaled labels included)
 local CART = 52 -- header cart art (inside the pane)
 local WALLET_CASH = 140 -- header wallet pill: the cash half...
@@ -82199,10 +82419,11 @@ local function minText(label: TextLabel): TextLabel
 	return label
 end
 
--- Small text on a candy tint: white glyphs in a 1.5 px outline of the tint's deep tone.
+-- Small text on a candy tint: white glyphs in a 1 px outline of the tint's deep tone (a
+-- thicker one smudges text this size).
 local function outline(label: TextLabel, tint: Color3): UIStroke
 	return Kit.new("UIStroke", {
-		Thickness = 1.5,
+		Thickness = 1,
 		Color = Kit.darken(Kit.lip(tint), 0.3),
 		ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
 		LineJoinMode = Enum.LineJoinMode.Round,
@@ -82308,18 +82529,6 @@ Windows.shopFocus = nil :: string?
 -- (Windows cannot require MogHud: MogHud -> Popups -> Windows).
 Windows.onMogPlay = nil :: (() -> ())?
 
--- Faint sparkles drifting behind the page: scale position on the page and size in pixels.
-local DRIFT_SPOTS = {
-	{ 0.06, 0.2, 8 },
-	{ 0.3, 0.55, 6 },
-	{ 0.52, 0.12, 10 },
-	{ 0.74, 0.7, 7 },
-	{ 0.93, 0.32, 9 },
-	{ 0.18, 0.86, 7 },
-	{ 0.62, 0.42, 6 },
-	{ 0.86, 0.9, 8 },
-}
-
 -- Candy colours the header divider drifts through.
 local CANDY = ColorSequence.new({
 	ColorSequenceKeypoint.new(0, Theme.World.Pink),
@@ -82341,7 +82550,7 @@ local function buildShop(screen: ScreenGui)
 	-- Every open/close starts a new session; idle loops and delayed steps stop when it changes.
 	local session = 0
 	local idleStops: { () -> () } = {}
-	-- Repeating idle tweens (header divider, sparkles, glows): played on open; on close they
+	-- Repeating idle tweens (header divider, glows): played on open; on close they
 	-- stop and snap back to their resting values, so every open starts from the same look.
 	local idleTweens: { { tween: Tween, gui: Instance, rest: { [string]: any } } } = {}
 	local function idleTween(gui: Instance, time: number, props: { [string]: any }, delay: number?)
@@ -82480,37 +82689,6 @@ local function buildShop(screen: ScreenGui)
 	Kit.new("UIStroke", { Thickness = 1.5, Color = Kit.lip(C.Gold), Parent = highlight })
 	local SELECTED_TEXT = Kit.inkOn(C.Gold)
 
-	-- Faint sparkles drift behind the page (under the scroll, so cards always cover them).
-	local sparkles = Kit.new("Frame", {
-		Name = "Sparkles",
-		BackgroundTransparency = 1,
-		ClipsDescendants = true,
-		Size = UDim2.new(1, 0, 1, -PAGE_TOP),
-		Position = UDim2.fromOffset(0, PAGE_TOP),
-		ZIndex = 1,
-		Parent = content,
-	})
-	for i, spot in DRIFT_SPOTS do
-		local sparkle = Kit.new("Frame", {
-			Name = "Sparkle" .. i,
-			BackgroundColor3 = if i % 3 == 0 then C.GoldLight else Color3.new(1, 1, 1),
-			BackgroundTransparency = 0.8,
-			BorderSizePixel = 0,
-			Size = UDim2.fromOffset(spot[3], spot[3]),
-			Position = UDim2.fromScale(spot[1], spot[2]),
-			AnchorPoint = Vector2.new(0.5, 0.5),
-			Rotation = 45,
-			ZIndex = 1,
-			Parent = sparkles,
-		})
-		Kit.corner(sparkle, 2)
-		idleTween(sparkle, 3 + (i % 3) * 0.8, {
-			Position = UDim2.new(spot[1], 0, spot[2], -28),
-			Rotation = 135,
-			BackgroundTransparency = 0.5,
-		}, (i % 4) * 0.5)
-	end
-
 	local scroll = Kit.scrolling(content, {
 		Name = "Scroll",
 		Size = UDim2.new(1, 0, 1, -PAGE_TOP),
@@ -82532,15 +82710,16 @@ local function buildShop(screen: ScreenGui)
 		ZIndex = 9,
 		Parent = content,
 	})
-	local FADE_STEPS = 6
+	local FADE_STEPS = 14
 	local fadeStrips: { [Frame]: number } = {}
 	for i = 1, FADE_STEPS do
 		local strip = Kit.new("Frame", {
 			Name = "Strip" .. i,
 			BackgroundColor3 = Theme.Glass.Tint,
-			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.6 * 0.5,
+			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.5 * 0.94,
 			BorderSizePixel = 0,
-			Size = UDim2.new(1, 0, 1 / FADE_STEPS, 0),
+			-- One pixel of overlap, so no seam shows between two strips at a fractional scale.
+			Size = UDim2.new(1, 0, 1 / FADE_STEPS, 1),
 			Position = UDim2.fromScale(0, (i - 1) / FADE_STEPS),
 			ZIndex = 9,
 			Parent = fade,
@@ -83145,8 +83324,8 @@ local function buildShop(screen: ScreenGui)
 
 	--[[
 		Section 1: game passes, one full-width banner each. Left: the pass's
-		animated stage (ShopScenes.pass); middle: chunky outlined title, a
-		description and a PERMANENT pill; right: the price button. On a narrow
+		animated stage (ShopScenes.pass); middle: chunky outlined title, the
+		description on a dark inset and a quiet PERMANENT caption; right: the price button. On a narrow
 		window the stage gives up width first so the text column keeps its size.
 	]]
 	sectionHead(1)
@@ -83154,7 +83333,6 @@ local function buildShop(screen: ScreenGui)
 	Kit.list(passList, GAP)
 	type Banner = Entry & {
 		tag: TextLabel?,
-		owned: TextLabel,
 		desc: TextLabel,
 		info: Frame,
 		stage: Frame,
@@ -83241,8 +83419,8 @@ local function buildShop(screen: ScreenGui)
 			MaxTextSize = 30,
 			TextScaled = true,
 			TextWrapped = false,
-			Size = UDim2.new(1, 0, 0, 34),
-			Position = UDim2.fromOffset(0, 12),
+			Size = UDim2.new(1, -BANNER_TEXT_X, 0, 34),
+			Position = UDim2.fromOffset(BANNER_TEXT_X, 10),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextColor3 = Color3.new(1, 1, 1),
 			StrokeThickness = 0,
@@ -83254,34 +83432,49 @@ local function buildShop(screen: ScreenGui)
 			LineJoinMode = Enum.LineJoinMode.Round,
 			Parent = title,
 		})
-		local desc = Kit.text(info, {
+		-- The description sits on a darker inset of the banner's tint: plain white text, no
+		-- outline (small text smudges under one), two lines at most.
+		local inset = Kit.new("Frame", {
+			Name = "Inset",
+			BackgroundColor3 = Kit.darken(tint, 0.5),
+			BackgroundTransparency = INSET,
+			Size = UDim2.new(1, 0, 0, BANNER_DESC_H),
+			Position = UDim2.fromOffset(0, BANNER_DESC_Y),
+			ZIndex = 6,
+			Parent = info,
+		})
+		Kit.corner(inset, 10)
+		local desc = Kit.text(inset, {
 			Name = "Desc",
 			Text = pass.Desc,
 			Font = F.Bold,
 			TextSize = 16,
 			TextWrapped = true,
-			Size = UDim2.new(1, 0, 0, 40),
-			Position = UDim2.fromOffset(1, 49),
+			Size = UDim2.new(1, -BANNER_TEXT_X * 2, 1, -4),
+			Position = UDim2.fromOffset(BANNER_TEXT_X, 2),
 			TextXAlignment = Enum.TextXAlignment.Left,
-			TextYAlignment = Enum.TextYAlignment.Top,
 			TextColor3 = Color3.new(1, 1, 1),
+			StrokeThickness = 0,
 			ZIndex = 6,
 		})
-		outline(desc, tint)
-		-- PERMANENT: white on the tint's deep navy-leaning tone, so it reads on every banner.
-		Kit.pill(info, {
+		-- PERMANENT: a quiet tag on the same dark inset (no solid fill, no border), its text on
+		-- the description's left edge.
+		local perk = Kit.text(info, {
 			Name = "Perk",
 			Text = "PERMANENT",
-			Color = Kit.darken(Kit.lip(tint), 0.25),
-			Solid = true,
-			TextColor = Color3.new(1, 1, 1),
-			TextSize = 15,
-			Size = UDim2.fromOffset(0, 26),
-			AutomaticSize = Enum.AutomaticSize.X,
-			Position = UDim2.new(0, 0, 1, -12),
-			AnchorPoint = Vector2.new(0, 1),
+			Font = F.UI,
+			TextSize = MIN_TEXT,
+			TextWrapped = false,
+			TextColor3 = Color3.new(1, 1, 1),
+			TextTransparency = 0.1,
+			BackgroundColor3 = Kit.darken(tint, 0.5),
+			BackgroundTransparency = INSET,
+			Size = UDim2.fromOffset(math.ceil(ribbonTextWidth("PERMANENT") * MIN_TEXT / 16) + BANNER_TEXT_X * 2, 20),
+			Position = UDim2.fromOffset(0, BANNER_PERK_Y),
+			StrokeThickness = 0,
 			ZIndex = 6,
 		})
+		Kit.round(perk)
 		local button, sheen = priceButton(body, {
 			Text = price(pass.Price),
 			Size = UDim2.fromOffset(150, PRICE_H),
@@ -83290,9 +83483,8 @@ local function buildShop(screen: ScreenGui)
 		}, function()
 			action:FireServer({ action = "PromptPass", name = name })
 		end)
+		-- Owned shows once, on the button ("✓ OWNED", greyed): no ribbon repeats it.
 		local tagInfo = PASS_TAGS[name]
-		local owned = ribbon(body, "OWNED", C.Good)
-		owned.Visible = false
 		local banner: Banner = {
 			cell = cell,
 			body = body,
@@ -83302,7 +83494,6 @@ local function buildShop(screen: ScreenGui)
 			sheen = sheen,
 			clip = clip,
 			tag = if tagInfo then ribbon(body, tagInfo.text, tagInfo.color) else nil,
-			owned = owned,
 			desc = desc,
 			info = info,
 			stage = stage,
@@ -83319,7 +83510,7 @@ local function buildShop(screen: ScreenGui)
 	local function placeBanner(banner: Banner, stageW: number, priceW: number)
 		banner.stage.Size = UDim2.fromOffset(stageW, BANNER_H - 18)
 		-- A wide gap: the scene's counters stop at the stage edge, the title starts well clear of it.
-		local left = 9 + stageW + 28
+		local left = 9 + stageW + 28 - BANNER_TEXT_X
 		banner.info.Position = UDim2.fromOffset(left, 0)
 		banner.info.Size = UDim2.new(1, -(left + priceW + 16 + 14), 1, 0)
 		banner.button.Size = UDim2.fromOffset(priceW, PRICE_H)
@@ -83375,8 +83566,6 @@ local function buildShop(screen: ScreenGui)
 	local saving = bundleSaving()
 	local bundleSave = ribbon(bundleBody, string.format("SAVE %d%%", saving), RIBBON_SUNNY)
 	bundleSave.Visible = saving > 0
-	local bundleOwnedTag = ribbon(bundleBody, "OWNED", C.Good)
-	bundleOwnedTag.Visible = false
 	local bundleEntry: Entry = {
 		cell = bundleCell,
 		body = bundleBody,
@@ -84023,10 +84212,8 @@ local function buildShop(screen: ScreenGui)
 			local spot = centreOf(bundleCell)
 			Kit.pop(bundleCell, 1.6)
 			Kit.confetti(frame, { Origin = UDim2.fromOffset(spot.X, spot.Y), Count = 36, ZIndex = 45 })
-			Kit.appear(bundleOwnedTag, { from = 0.4, time = 0.3 })
+			Kit.pop(bundleButton, 1)
 			Kit.sound("Reward")
-		else
-			bundleOwnedTag.Visible = bundleOwned
 		end
 		bundleWasOwned = bundleOwned
 
@@ -84149,15 +84336,13 @@ local function buildShop(screen: ScreenGui)
 			Kit.setButton(banner.button, if owned then "✓ OWNED" elseif blocked then "UNAVAILABLE" else price(pass.Price))
 			banner.desc.Text = if blocked then "Not available here" else pass.Desc
 			if owned and banner.wasOwned == false and open then
-				-- Just bought: the banner celebrates, its scene throws a party and the OWNED ribbon lands.
+				-- Just bought: the banner celebrates, its scene throws a party and the button turns to OWNED.
 				Kit.pop(banner.cell, 1.2)
 				banner.scene.celebrate()
 				local spot = centreOf(banner.cell)
 				Kit.confetti(frame, { Origin = UDim2.fromOffset(spot.X, spot.Y), Count = 24, ZIndex = 45 })
-				Kit.appear(banner.owned, { from = 0.4, time = 0.3 })
+				Kit.pop(banner.button, 1)
 				Kit.sound("Reward")
-			else
-				banner.owned.Visible = owned
 			end
 			banner.wasOwned = owned
 		end
@@ -84167,7 +84352,7 @@ local function buildShop(screen: ScreenGui)
 
 	-- Idle motion while open: every scene plays, static art bobs out of phase, ribbons
 	-- breathe, banners catch a slow sheen, the header drifts through candy colours,
-	-- sparkles float behind the page, and one price button at a time gets a sheen.
+	-- and one price button at a time gets a sheen.
 	local function startIdle()
 		if PREVIEW then
 			return
@@ -84882,7 +85067,7 @@ local function buildRanking(screen: ScreenGui)
 		local valueLabel = Kit.number(parent, {
 			Name = "Value",
 			Text = value,
-			TextSize = T.Body,
+			TextSize = T.H3,
 			Size = UDim2.new(if extra then 0.16 else 0.34, 0, 1, 0),
 			Position = UDim2.new(if extra then 0.8 else 0.98, 0, 0, 0),
 			AnchorPoint = Vector2.new(1, 0),
@@ -85352,11 +85537,11 @@ local function modeRow(parent: Instance, props: { [string]: any }, accent: Color
 	Kit.text(medal, { Text = props.Medal, TextSize = 26, Size = UDim2.fromScale(1, 1), ZIndex = 2 })
 	Kit.title(panel, {
 		Text = props.Title,
-		TextSize = T.H3,
+		TextSize = T.H2,
 		TextWrapped = false,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -80, 0, 24),
-		Position = UDim2.fromOffset(70, 14),
+		Size = UDim2.new(1, -80, 0, 26),
+		Position = UDim2.fromOffset(70, 12),
 		TextColor3 = C.Text,
 	})
 	Kit.text(panel, {
@@ -85383,10 +85568,10 @@ local function modeRow(parent: Instance, props: { [string]: any }, accent: Color
 		Name = "Reward",
 		Text = "",
 		Font = F.UI,
-		TextSize = T.Small,
+		TextSize = T.Body,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = false,
-		Size = UDim2.new(1, -164, 0, 20),
+		Size = UDim2.new(1, -164, 0, 22),
 		Position = UDim2.new(0, 12, 1, -40),
 		AnchorPoint = Vector2.new(0, 0.5),
 		TextColor3 = C.MoneyText,

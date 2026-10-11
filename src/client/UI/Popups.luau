@@ -663,7 +663,10 @@ function Popups.closeModals()
 end
 
 -- Round toy badge: a coloured face with a white rim on a darker lip, sitting
--- across the top edge of a modal.
+-- across the top edge of a modal. It draws above the pane's own chrome (the
+-- highlight line shares the pane's ZIndex) on a collar in the body colour, so
+-- the pane's edge and highlight stop cleanly at a ring round the badge.
+local MEDAL_COLLAR = 8
 local function medallion(parent: Instance, icon: string, color: Color3, size: number, position: UDim2): Frame
 	local depth = math.max(math.floor(size * 0.06), 3)
 	local medal = Kit.new("Frame", {
@@ -672,8 +675,18 @@ local function medallion(parent: Instance, icon: string, color: Color3, size: nu
 		Size = UDim2.fromOffset(size, size),
 		Position = position,
 		AnchorPoint = Vector2.new(0.5, 0.5),
-		ZIndex = 3,
+		ZIndex = math.max((if parent:IsA("GuiObject") then parent.ZIndex else 0) + 1, 3),
 		Parent = parent,
+	})
+	local collar = circle(medal, "Collar", WHITE, 0, 0)
+	collar.Size = UDim2.new(1, MEDAL_COLLAR * 2, 1, MEDAL_COLLAR * 2 + depth)
+	collar.Position = UDim2.new(0.5, 0, 0.5, depth / 2)
+	Kit.gradient(collar, Theme.Glass.TintTop, Theme.Glass.Tint)
+	Kit.new("UIStroke", {
+		Thickness = Theme.Glass.EdgeThickness,
+		Color = Theme.Glass.Edge,
+		Transparency = Theme.Glass.EdgeTop + 0.25,
+		Parent = collar,
 	})
 	local shadow = circle(medal, "Shadow", C.Ink, 0.72, 1)
 	shadow.Size = UDim2.fromScale(0.92, 0.92)
@@ -1910,32 +1923,57 @@ end
 
 -- Confirm dialog ---------------------------------------------------------------------------
 
+-- Height of `text` wrapped to `width` in the body font (TextService when available, else an
+-- estimate from its length).
+local function bodyHeight(text: string, size: number, width: number): number
+	local height = 0
+	pcall(function()
+		local TextService = game:GetService("TextService")
+		height = TextService:GetTextSize(text, size, Kit.F.Body, Vector2.new(width, 1000)).Y
+	end)
+	if height <= 0 then
+		local lines = 0
+		for line in string.gmatch(text .. "\n", "(.-)\n") do
+			lines += math.max(1, math.ceil((utf8.len(line) or #line) * size * 0.5 / width))
+		end
+		height = lines * math.ceil(size * 1.25)
+	end
+	return math.ceil(height)
+end
+
+-- The card is as tall as its question: title, the text (one to five lines) and the two
+-- answers, 16 px apart, under the medallion's lower half.
 function Popups.confirm(text: string, onYes: () -> (), options: { [string]: any }?)
 	local opts = options or {}
 	Popups.enqueue("Confirm", Popups.PRIORITY.Normal, function(done)
-		local box, close = modal("Confirm", Vector2.new(460, 256), 50, nil, done)
+		local WIDTH, PAD, GAP = 460, 20, 16
+		local titleY = 50
+		local textY = titleY + 30 + 8
+		local textH = math.clamp(bodyHeight(text, T.Body, WIDTH - PAD * 2), 20, 104)
+		local buttonY = textY + textH + GAP
+		local box, close = modal("Confirm", Vector2.new(WIDTH, buttonY + 56 + PAD), 50, nil, done)
 		local medal = medallion(box, opts.icon or "?", C.Gold, 70, UDim2.new(0.5, 0, 0, 0))
 		Kit.title(box, {
 			Text = opts.title or "ARE YOU SURE?",
 			TextSize = T.H2,
 			TextWrapped = false,
-			Size = UDim2.new(1, -30, 0, 32),
-			Position = UDim2.fromOffset(15, 44),
+			Size = UDim2.new(1, -PAD * 2, 0, 30),
+			Position = UDim2.fromOffset(PAD, titleY),
 			TextColor3 = C.Gold,
 		})
 		Kit.text(box, {
 			Name = "Text",
 			Text = text,
 			TextSize = T.Body,
-			Size = UDim2.new(1, -40, 0, 70),
-			Position = UDim2.fromOffset(20, 80),
+			Size = UDim2.new(1, -PAD * 2, 0, textH),
+			Position = UDim2.fromOffset(PAD, textY),
 			StrokeThickness = 0,
 		})
 		local yes = Kit.button(box, {
 			Text = opts.yes or "Yes",
 			Color = C.Gold,
-			Size = UDim2.new(0.5, -24, 0, 58),
-			Position = UDim2.new(0, 16, 1, -76),
+			Size = UDim2.new(0.5, -PAD - 6, 0, 56),
+			Position = UDim2.fromOffset(PAD, buttonY),
 		}, function()
 			close()
 			onYes()
@@ -1943,8 +1981,8 @@ function Popups.confirm(text: string, onYes: () -> (), options: { [string]: any 
 		local no = Kit.button(box, {
 			Text = opts.no or "No",
 			Color = C.SurfaceHi,
-			Size = UDim2.new(0.5, -24, 0, 58),
-			Position = UDim2.new(0.5, 8, 1, -76),
+			Size = UDim2.new(0.5, -PAD - 6, 0, 56),
+			Position = UDim2.new(0.5, 6, 0, buttonY),
 			Sound = "Close",
 		}, close)
 		-- Gamepad lands on the safe answer; B also answers "No".
@@ -1958,61 +1996,130 @@ end
 
 -- Offline earnings ---------------------------------------------------------------------------
 
+-- Width of one line of Number text (TextService when available, else an estimate).
+local function numberWidth(text: string, size: number): number
+	local width = 0
+	pcall(function()
+		local TextService = game:GetService("TextService")
+		width = TextService:GetTextSize(text, size, Kit.F.Number, Vector2.new(2000, 80)).X
+	end)
+	if width <= 0 then
+		width = (utf8.len(text) or #text) * size * 0.66
+	end
+	return math.ceil(width)
+end
+
+--[[
+	"Welcome back": what the units earned while the player was away. The card is sized to
+	its content on one 16 px rhythm: medallion, title, the duration (secondary), the aura ->
+	cash row and the Collect hint, then the button. The cash is the hero: the biggest text,
+	rolling up from 0 with ticks. Each amount is centred in its half of the row, so the pair
+	sits symmetrically round the arrow whatever the numbers are.
+]]
+local OFFLINE = {
+	Width = 540,
+	Pad = 20,
+	Gap = 16,
+	Title = 56, -- under the medallion's lower half
+	Row = 92,
+	Arrow = 44,
+	Aura = 28,
+	Cash = Kit.TEXT.Hero,
+	Button = 58,
+	Roll = 0.6,
+}
+
 function Popups.offline(data: { [string]: any })
 	Popups.enqueue("Offline", Popups.PRIORITY.Normal, function(done)
-		local box, close = modal("Offline", Vector2.new(500, 330), 45, nil, done)
+		local L = OFFLINE
+		local subY = L.Title + 34 + 6
+		local rowY = subY + 22 + L.Gap
+		local noteY = rowY + L.Row + L.Gap
+		local buttonY = noteY + 20 + L.Gap
+		local height = buttonY + L.Button + L.Pad
+		local box, close = modal("Offline", Vector2.new(L.Width, height), 45, nil, done)
 		local medal = medallion(box, "💤", C.Rizz, 84, UDim2.new(0.5, 0, 0, 0))
 		Kit.title(box, {
 			Text = "WELCOME BACK!",
 			TextSize = T.H1,
 			TextWrapped = false,
-			Size = UDim2.new(1, -20, 0, 36),
-			Position = UDim2.fromOffset(10, 50),
+			Size = UDim2.new(1, -L.Pad * 2, 0, 34),
+			Position = UDim2.fromOffset(L.Pad, L.Title),
 			TextColor3 = C.Gold,
 		})
 		Kit.text(box, {
+			Name = "Away",
 			Text = string.format("Your %s kept grinding for %s.", W.Units, Format.time(data.seconds)),
 			TextSize = T.Body,
-			Size = UDim2.new(1, -30, 0, 24),
-			Position = UDim2.fromOffset(15, 88),
+			TextWrapped = false,
+			Size = UDim2.new(1, -L.Pad * 2, 0, 22),
+			Position = UDim2.fromOffset(L.Pad, subY),
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,
 		})
-		local well = Kit.well(box, { Glass = true, Size = UDim2.new(1, -40, 0, 66), Position = UDim2.fromOffset(20, 120) })
-		local function amount(icon: string, iconColor: Color3, x: number, textColor: Color3): TextLabel
+		local well = Kit.well(box, {
+			Name = "Earned",
+			Glass = true,
+			Size = UDim2.new(1, -L.Pad * 2, 0, L.Row),
+			Position = UDim2.fromOffset(L.Pad, rowY),
+		})
+		local orbTotal = tonumber(data.orbs) or 0
+		local cashTotal = tonumber(data.cash) or 0
+		local half = (L.Width - L.Pad * 2 - L.Arrow) / 2
+		-- One amount: an icon and a number as a group sized for the final text (so it holds
+		-- still while it rolls), centred in the half of the row on `side` (0 left, 1 right).
+		local function amount(
+			name: string,
+			icon: string,
+			iconColor: Color3,
+			side: number,
+			final: string,
+			size: number,
+			color: Color3
+		): TextLabel
+			local iconSize = math.floor(size * 0.9)
+			local room = half - 24 - iconSize - 8
+			local width = math.min(numberWidth(final, size) + 4, room)
 			local cell = Kit.new("Frame", {
+				Name = name,
 				BackgroundTransparency = 1,
-				Size = UDim2.new(0.42, 0, 1, 0),
-				Position = UDim2.fromScale(x, 0),
+				Size = UDim2.new(0, iconSize + 8 + width, 1, 0),
+				Position = UDim2.new(side, (0.5 - side) * half, 0, 0),
+				AnchorPoint = Vector2.new(0.5, 0),
 				Parent = well,
 			})
-			Kit.icon(cell, icon, 30, iconColor, { Position = UDim2.new(0, 14, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
+			Kit.icon(cell, icon, iconSize, iconColor, { Position = UDim2.new(0, 0, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
 			return Kit.number(cell, {
-				Text = "0",
-				TextSize = 26,
-				Size = UDim2.new(1, -54, 1, 0),
-				Position = UDim2.fromOffset(50, 0),
+				Name = "Value",
+				Text = final,
+				MaxTextSize = size,
+				Size = UDim2.new(0, width, 0, size + 8),
+				Position = UDim2.new(0, iconSize + 8, 0.5, 0),
+				AnchorPoint = Vector2.new(0, 0.5),
 				TextXAlignment = Enum.TextXAlignment.Left,
-				TextColor3 = textColor,
-				StrokeThickness = 0,
+				TextColor3 = color,
 			})
 		end
-		local orbs = amount("Orb", C.Orb, 0, Kit.lighten(C.Orb, 0.35))
+		local orbs = amount("Aura", "Orb", C.Orb, 0, Format.short(orbTotal), L.Aura, Kit.lighten(C.Orb, 0.35))
 		Kit.title(well, {
+			Name = "Arrow",
 			Text = "→",
-			TextSize = 28,
+			TextSize = 26,
 			TextWrapped = false,
-			Size = UDim2.new(0.16, 0, 1, 0),
-			Position = UDim2.fromScale(0.42, 0),
+			Size = UDim2.new(0, L.Arrow, 1, 0),
+			Position = UDim2.fromScale(0.5, 0),
+			AnchorPoint = Vector2.new(0.5, 0),
 			TextColor3 = C.TextMute,
 			StrokeThickness = 0,
 		})
-		local cash = amount("Coin", C.Gold, 0.58, C.MoneyText)
+		local cash = amount("Cash", "Coin", C.Gold, 1, Format.money(cashTotal), L.Cash, C.MoneyText)
 		Kit.text(box, {
+			Name = "Hint",
 			Text = "Your cash is waiting on the Collect pad.",
 			TextSize = T.Small,
-			Size = UDim2.new(1, -40, 0, 34),
-			Position = UDim2.fromOffset(20, 192),
+			TextWrapped = false,
+			Size = UDim2.new(1, -L.Pad * 2, 0, 20),
+			Position = UDim2.fromOffset(L.Pad, noteY),
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,
 		})
@@ -2021,21 +2128,34 @@ function Popups.offline(data: { [string]: any })
 			Font = Theme.Fonts.Display,
 			Color = C.Gold,
 			Breathe = true,
-			Size = UDim2.new(1, -40, 0, 58),
-			Position = UDim2.new(0.5, 0, 1, -18),
-			AnchorPoint = Vector2.new(0.5, 1),
+			Size = UDim2.new(1, -L.Pad * 2, 0, L.Button),
+			Position = UDim2.fromOffset(L.Pad, buttonY),
 		}, close)
 		go:SetAttribute("FocusFirst", true)
 		Kit.appear(box)
 		Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
 		Kit.appear(go, { from = 0.8, time = 0.26, delay = 0.14 })
-		local orbTotal = tonumber(data.orbs) or 0
-		local cashTotal = tonumber(data.cash) or 0
 		after(0.18, function()
-			Kit.countTo(orbs, 0, orbTotal, Format.short, 0.7)
+			Kit.countTo(orbs, 0, orbTotal, Format.short, L.Roll)
 		end)
-		after(0.32, function()
-			Kit.countTo(cash, 0, cashTotal, Format.money, 0.8)
+		after(0.3, function()
+			if not cash.Parent then
+				return
+			end
+			Kit.countTo(cash, 0, cashTotal, Format.money, L.Roll)
+			-- The cash rolls up with ticks that climb in pitch.
+			if cashTotal > 0 and not PREVIEW then
+				task.spawn(function()
+					local ticks = 8
+					for i = 1, ticks do
+						if not cash.Parent then
+							return
+						end
+						sounds.play("Tick", 0.03, 1 + i * 0.05)
+						task.wait(L.Roll / ticks)
+					end
+				end)
+			end
 		end)
 		sounds.play("Reward")
 	end)
@@ -3178,7 +3298,7 @@ local function buildChestPanel()
 				TextSize = T.Small,
 				TextWrapped = false,
 				TextTruncate = Enum.TextTruncate.AtEnd,
-				Size = UDim2.new(1, -118, 1, 0),
+				Size = UDim2.new(1, -126, 1, 0),
 				Position = UDim2.fromOffset(60, 0),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				TextColor3 = Kit.lighten(tierColor, 0.35),
@@ -3186,8 +3306,8 @@ local function buildChestPanel()
 			})
 			Kit.number(row, {
 				Text = entry.chance .. "%",
-				TextSize = T.Small,
-				Size = UDim2.new(0, 54, 1, 0),
+				TextSize = T.Body,
+				Size = UDim2.new(0, 60, 1, 0),
 				Position = UDim2.new(1, -4, 0, 0),
 				AnchorPoint = Vector2.new(1, 0),
 				TextXAlignment = Enum.TextXAlignment.Right,

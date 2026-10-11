@@ -246,6 +246,13 @@ Theme.Glass = {
 	TextInk = rgb(8, 8, 30),
 	TextStroke = 2,
 	TextStrokeFade = 0.25,
+	-- The outline follows the text size: none under TextStrokeFrom px (small text sits on a
+	-- dark card or chip instead), then 1 px of outline per TextStrokePer px of text, between
+	-- TextStrokeThin and TextStrokeMax.
+	TextStrokeFrom = 18,
+	TextStrokePer = 12,
+	TextStrokeThin = 1.5,
+	TextStrokeMax = 3,
 	TextMin = 14,
 	TextMinPhone = 12,
 	Caption = 0.15,

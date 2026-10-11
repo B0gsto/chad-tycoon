@@ -721,6 +721,15 @@ PASSES.AutoLoot = function(ctx, _tint)
 			Position = at(0.5, 0.5),
 			ZIndex = 4,
 		}))
+		-- The art's dark plaque is blank (the HUD prints the carried amount on it): here it
+		-- carries the word, so it reads as the aura dumbbell and not as a missing picture.
+		-- Plaque in image pixels: x 310-714, y 66-316 of 1024 x 448 (art/out/ui/HudDumbbell.json).
+		sticker(hero, string.upper(Theme.Words.Orb), C.GoldLight, {
+			Name = "Label",
+			Size = UDim2.fromScale(0.34, 0.4),
+			Position = at(0.5, 0.426),
+			ZIndex = 5,
+		}, 2)
 	else
 		shade(icon(hero, { "Orb" }, C.Orb, { ZIndex = 4 }))
 	end

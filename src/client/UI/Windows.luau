@@ -186,9 +186,8 @@ local function onPhone(screen: Instance, fn: () -> ())
 end
 
 --[[
-	Tinted tag on a glass card (a rarity, a state): Kit.pill's soft fill of `Color` with
-	the label in the dark outline of text on glass (a pill's stroke is its border, so its
-	text has none). Sizes to its text. props: Name, Text, Color, Position, AnchorPoint, ZIndex.
+	Tinted tag on a glass card (a rarity, a state): Kit.pill's soft fill of `Color` under
+	a light label in that colour (small text: no outline). Sizes to its text. props: Name, Text, Color, Position, AnchorPoint, ZIndex.
 ]]
 local function tag(parent: Instance, props: { [string]: any }): TextLabel
 	local color: Color3 = props.Color
@@ -233,7 +232,8 @@ local PASS_TINTS: { [string]: Color3 } = {
 	CrateKey = Theme.World.Orange,
 }
 
--- Ribbon candy colours, one per kind of tag (OWNED keeps the mint "good" green).
+-- Ribbon candy colours, one per kind of tag (a cosmetic's OWNED keeps the mint "good" green;
+-- passes and the bundle say OWNED on their button instead).
 local RIBBON_SUNNY = Theme.World.Sunny -- popular, savings
 local RIBBON_PINK = Color3.fromRGB(255, 84, 168) -- best seller, starter deal, exclusive
 local RIBBON_CORAL = Theme.World.Coral -- best value
@@ -399,7 +399,11 @@ end
 	the page (244 px under the pinned title and switcher) still shows the tallest
 	card, a pack, whole. A phone gets that short window scaled up x1.25.
 ]]
-local BANNER_H = 130 -- pass banner height
+local BANNER_H = 130 -- pass banner height: title 10-44, description inset 48-92, PERMANENT 98-118
+local BANNER_DESC_Y = 48
+local BANNER_DESC_H = 44
+local BANNER_PERK_Y = 98
+local BANNER_TEXT_X = 8 -- the title, the description and PERMANENT share this left text edge
 local STAGE_W = 230 -- a banner's animated stage, at the default window...
 local STAGE_MIN_W = 140 -- ...and the narrowest it shrinks to
 local COS_H = 204 -- cosmetic card height
@@ -414,7 +418,7 @@ local SWITCH_H = 44 -- section switcher bar (36 px pills inside)
 local PAGE_TOP = SWITCH_H + 8 -- the scrolling page starts below the switcher
 local PRICE_H = 42 -- every price button
 local PRICE_TEXT = 20
-local FADE_H = 30 -- soft fade along the bottom edge of the page
+local FADE_H = 56 -- fade along the bottom edge of the page: a cut-off card melts into the glass
 local MIN_TEXT = 14 -- no shop text renders smaller (TextScaled labels included)
 local CART = 52 -- header cart art (inside the pane)
 local WALLET_CASH = 140 -- header wallet pill: the cash half...
@@ -430,10 +434,11 @@ local function minText(label: TextLabel): TextLabel
 	return label
 end
 
--- Small text on a candy tint: white glyphs in a 1.5 px outline of the tint's deep tone.
+-- Small text on a candy tint: white glyphs in a 1 px outline of the tint's deep tone (a
+-- thicker one smudges text this size).
 local function outline(label: TextLabel, tint: Color3): UIStroke
 	return Kit.new("UIStroke", {
-		Thickness = 1.5,
+		Thickness = 1,
 		Color = Kit.darken(Kit.lip(tint), 0.3),
 		ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
 		LineJoinMode = Enum.LineJoinMode.Round,
@@ -539,18 +544,6 @@ Windows.shopFocus = nil :: string?
 -- (Windows cannot require MogHud: MogHud -> Popups -> Windows).
 Windows.onMogPlay = nil :: (() -> ())?
 
--- Faint sparkles drifting behind the page: scale position on the page and size in pixels.
-local DRIFT_SPOTS = {
-	{ 0.06, 0.2, 8 },
-	{ 0.3, 0.55, 6 },
-	{ 0.52, 0.12, 10 },
-	{ 0.74, 0.7, 7 },
-	{ 0.93, 0.32, 9 },
-	{ 0.18, 0.86, 7 },
-	{ 0.62, 0.42, 6 },
-	{ 0.86, 0.9, 8 },
-}
-
 -- Candy colours the header divider drifts through.
 local CANDY = ColorSequence.new({
 	ColorSequenceKeypoint.new(0, Theme.World.Pink),
@@ -572,7 +565,7 @@ local function buildShop(screen: ScreenGui)
 	-- Every open/close starts a new session; idle loops and delayed steps stop when it changes.
 	local session = 0
 	local idleStops: { () -> () } = {}
-	-- Repeating idle tweens (header divider, sparkles, glows): played on open; on close they
+	-- Repeating idle tweens (header divider, glows): played on open; on close they
 	-- stop and snap back to their resting values, so every open starts from the same look.
 	local idleTweens: { { tween: Tween, gui: Instance, rest: { [string]: any } } } = {}
 	local function idleTween(gui: Instance, time: number, props: { [string]: any }, delay: number?)
@@ -711,37 +704,6 @@ local function buildShop(screen: ScreenGui)
 	Kit.new("UIStroke", { Thickness = 1.5, Color = Kit.lip(C.Gold), Parent = highlight })
 	local SELECTED_TEXT = Kit.inkOn(C.Gold)
 
-	-- Faint sparkles drift behind the page (under the scroll, so cards always cover them).
-	local sparkles = Kit.new("Frame", {
-		Name = "Sparkles",
-		BackgroundTransparency = 1,
-		ClipsDescendants = true,
-		Size = UDim2.new(1, 0, 1, -PAGE_TOP),
-		Position = UDim2.fromOffset(0, PAGE_TOP),
-		ZIndex = 1,
-		Parent = content,
-	})
-	for i, spot in DRIFT_SPOTS do
-		local sparkle = Kit.new("Frame", {
-			Name = "Sparkle" .. i,
-			BackgroundColor3 = if i % 3 == 0 then C.GoldLight else Color3.new(1, 1, 1),
-			BackgroundTransparency = 0.8,
-			BorderSizePixel = 0,
-			Size = UDim2.fromOffset(spot[3], spot[3]),
-			Position = UDim2.fromScale(spot[1], spot[2]),
-			AnchorPoint = Vector2.new(0.5, 0.5),
-			Rotation = 45,
-			ZIndex = 1,
-			Parent = sparkles,
-		})
-		Kit.corner(sparkle, 2)
-		idleTween(sparkle, 3 + (i % 3) * 0.8, {
-			Position = UDim2.new(spot[1], 0, spot[2], -28),
-			Rotation = 135,
-			BackgroundTransparency = 0.5,
-		}, (i % 4) * 0.5)
-	end
-
 	local scroll = Kit.scrolling(content, {
 		Name = "Scroll",
 		Size = UDim2.new(1, 0, 1, -PAGE_TOP),
@@ -763,15 +725,16 @@ local function buildShop(screen: ScreenGui)
 		ZIndex = 9,
 		Parent = content,
 	})
-	local FADE_STEPS = 6
+	local FADE_STEPS = 14
 	local fadeStrips: { [Frame]: number } = {}
 	for i = 1, FADE_STEPS do
 		local strip = Kit.new("Frame", {
 			Name = "Strip" .. i,
 			BackgroundColor3 = Theme.Glass.Tint,
-			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.6 * 0.5,
+			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.5 * 0.94,
 			BorderSizePixel = 0,
-			Size = UDim2.new(1, 0, 1 / FADE_STEPS, 0),
+			-- One pixel of overlap, so no seam shows between two strips at a fractional scale.
+			Size = UDim2.new(1, 0, 1 / FADE_STEPS, 1),
 			Position = UDim2.fromScale(0, (i - 1) / FADE_STEPS),
 			ZIndex = 9,
 			Parent = fade,
@@ -1376,8 +1339,8 @@ local function buildShop(screen: ScreenGui)
 
 	--[[
 		Section 1: game passes, one full-width banner each. Left: the pass's
-		animated stage (ShopScenes.pass); middle: chunky outlined title, a
-		description and a PERMANENT pill; right: the price button. On a narrow
+		animated stage (ShopScenes.pass); middle: chunky outlined title, the
+		description on a dark inset and a quiet PERMANENT caption; right: the price button. On a narrow
 		window the stage gives up width first so the text column keeps its size.
 	]]
 	sectionHead(1)
@@ -1385,7 +1348,6 @@ local function buildShop(screen: ScreenGui)
 	Kit.list(passList, GAP)
 	type Banner = Entry & {
 		tag: TextLabel?,
-		owned: TextLabel,
 		desc: TextLabel,
 		info: Frame,
 		stage: Frame,
@@ -1472,8 +1434,8 @@ local function buildShop(screen: ScreenGui)
 			MaxTextSize = 30,
 			TextScaled = true,
 			TextWrapped = false,
-			Size = UDim2.new(1, 0, 0, 34),
-			Position = UDim2.fromOffset(0, 12),
+			Size = UDim2.new(1, -BANNER_TEXT_X, 0, 34),
+			Position = UDim2.fromOffset(BANNER_TEXT_X, 10),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextColor3 = Color3.new(1, 1, 1),
 			StrokeThickness = 0,
@@ -1485,34 +1447,49 @@ local function buildShop(screen: ScreenGui)
 			LineJoinMode = Enum.LineJoinMode.Round,
 			Parent = title,
 		})
-		local desc = Kit.text(info, {
+		-- The description sits on a darker inset of the banner's tint: plain white text, no
+		-- outline (small text smudges under one), two lines at most.
+		local inset = Kit.new("Frame", {
+			Name = "Inset",
+			BackgroundColor3 = Kit.darken(tint, 0.5),
+			BackgroundTransparency = INSET,
+			Size = UDim2.new(1, 0, 0, BANNER_DESC_H),
+			Position = UDim2.fromOffset(0, BANNER_DESC_Y),
+			ZIndex = 6,
+			Parent = info,
+		})
+		Kit.corner(inset, 10)
+		local desc = Kit.text(inset, {
 			Name = "Desc",
 			Text = pass.Desc,
 			Font = F.Bold,
 			TextSize = 16,
 			TextWrapped = true,
-			Size = UDim2.new(1, 0, 0, 40),
-			Position = UDim2.fromOffset(1, 49),
+			Size = UDim2.new(1, -BANNER_TEXT_X * 2, 1, -4),
+			Position = UDim2.fromOffset(BANNER_TEXT_X, 2),
 			TextXAlignment = Enum.TextXAlignment.Left,
-			TextYAlignment = Enum.TextYAlignment.Top,
 			TextColor3 = Color3.new(1, 1, 1),
+			StrokeThickness = 0,
 			ZIndex = 6,
 		})
-		outline(desc, tint)
-		-- PERMANENT: white on the tint's deep navy-leaning tone, so it reads on every banner.
-		Kit.pill(info, {
+		-- PERMANENT: a quiet tag on the same dark inset (no solid fill, no border), its text on
+		-- the description's left edge.
+		local perk = Kit.text(info, {
 			Name = "Perk",
 			Text = "PERMANENT",
-			Color = Kit.darken(Kit.lip(tint), 0.25),
-			Solid = true,
-			TextColor = Color3.new(1, 1, 1),
-			TextSize = 15,
-			Size = UDim2.fromOffset(0, 26),
-			AutomaticSize = Enum.AutomaticSize.X,
-			Position = UDim2.new(0, 0, 1, -12),
-			AnchorPoint = Vector2.new(0, 1),
+			Font = F.UI,
+			TextSize = MIN_TEXT,
+			TextWrapped = false,
+			TextColor3 = Color3.new(1, 1, 1),
+			TextTransparency = 0.1,
+			BackgroundColor3 = Kit.darken(tint, 0.5),
+			BackgroundTransparency = INSET,
+			Size = UDim2.fromOffset(math.ceil(ribbonTextWidth("PERMANENT") * MIN_TEXT / 16) + BANNER_TEXT_X * 2, 20),
+			Position = UDim2.fromOffset(0, BANNER_PERK_Y),
+			StrokeThickness = 0,
 			ZIndex = 6,
 		})
+		Kit.round(perk)
 		local button, sheen = priceButton(body, {
 			Text = price(pass.Price),
 			Size = UDim2.fromOffset(150, PRICE_H),
@@ -1521,9 +1498,8 @@ local function buildShop(screen: ScreenGui)
 		}, function()
 			action:FireServer({ action = "PromptPass", name = name })
 		end)
+		-- Owned shows once, on the button ("✓ OWNED", greyed): no ribbon repeats it.
 		local tagInfo = PASS_TAGS[name]
-		local owned = ribbon(body, "OWNED", C.Good)
-		owned.Visible = false
 		local banner: Banner = {
 			cell = cell,
 			body = body,
@@ -1533,7 +1509,6 @@ local function buildShop(screen: ScreenGui)
 			sheen = sheen,
 			clip = clip,
 			tag = if tagInfo then ribbon(body, tagInfo.text, tagInfo.color) else nil,
-			owned = owned,
 			desc = desc,
 			info = info,
 			stage = stage,
@@ -1550,7 +1525,7 @@ local function buildShop(screen: ScreenGui)
 	local function placeBanner(banner: Banner, stageW: number, priceW: number)
 		banner.stage.Size = UDim2.fromOffset(stageW, BANNER_H - 18)
 		-- A wide gap: the scene's counters stop at the stage edge, the title starts well clear of it.
-		local left = 9 + stageW + 28
+		local left = 9 + stageW + 28 - BANNER_TEXT_X
 		banner.info.Position = UDim2.fromOffset(left, 0)
 		banner.info.Size = UDim2.new(1, -(left + priceW + 16 + 14), 1, 0)
 		banner.button.Size = UDim2.fromOffset(priceW, PRICE_H)
@@ -1606,8 +1581,6 @@ local function buildShop(screen: ScreenGui)
 	local saving = bundleSaving()
 	local bundleSave = ribbon(bundleBody, string.format("SAVE %d%%", saving), RIBBON_SUNNY)
 	bundleSave.Visible = saving > 0
-	local bundleOwnedTag = ribbon(bundleBody, "OWNED", C.Good)
-	bundleOwnedTag.Visible = false
 	local bundleEntry: Entry = {
 		cell = bundleCell,
 		body = bundleBody,
@@ -2254,10 +2227,8 @@ local function buildShop(screen: ScreenGui)
 			local spot = centreOf(bundleCell)
 			Kit.pop(bundleCell, 1.6)
 			Kit.confetti(frame, { Origin = UDim2.fromOffset(spot.X, spot.Y), Count = 36, ZIndex = 45 })
-			Kit.appear(bundleOwnedTag, { from = 0.4, time = 0.3 })
+			Kit.pop(bundleButton, 1)
 			Kit.sound("Reward")
-		else
-			bundleOwnedTag.Visible = bundleOwned
 		end
 		bundleWasOwned = bundleOwned
 
@@ -2380,15 +2351,13 @@ local function buildShop(screen: ScreenGui)
 			Kit.setButton(banner.button, if owned then "✓ OWNED" elseif blocked then "UNAVAILABLE" else price(pass.Price))
 			banner.desc.Text = if blocked then "Not available here" else pass.Desc
 			if owned and banner.wasOwned == false and open then
-				-- Just bought: the banner celebrates, its scene throws a party and the OWNED ribbon lands.
+				-- Just bought: the banner celebrates, its scene throws a party and the button turns to OWNED.
 				Kit.pop(banner.cell, 1.2)
 				banner.scene.celebrate()
 				local spot = centreOf(banner.cell)
 				Kit.confetti(frame, { Origin = UDim2.fromOffset(spot.X, spot.Y), Count = 24, ZIndex = 45 })
-				Kit.appear(banner.owned, { from = 0.4, time = 0.3 })
+				Kit.pop(banner.button, 1)
 				Kit.sound("Reward")
-			else
-				banner.owned.Visible = owned
 			end
 			banner.wasOwned = owned
 		end
@@ -2398,7 +2367,7 @@ local function buildShop(screen: ScreenGui)
 
 	-- Idle motion while open: every scene plays, static art bobs out of phase, ribbons
 	-- breathe, banners catch a slow sheen, the header drifts through candy colours,
-	-- sparkles float behind the page, and one price button at a time gets a sheen.
+	-- and one price button at a time gets a sheen.
 	local function startIdle()
 		if PREVIEW then
 			return
@@ -3113,7 +3082,7 @@ local function buildRanking(screen: ScreenGui)
 		local valueLabel = Kit.number(parent, {
 			Name = "Value",
 			Text = value,
-			TextSize = T.Body,
+			TextSize = T.H3,
 			Size = UDim2.new(if extra then 0.16 else 0.34, 0, 1, 0),
 			Position = UDim2.new(if extra then 0.8 else 0.98, 0, 0, 0),
 			AnchorPoint = Vector2.new(1, 0),
@@ -3583,11 +3552,11 @@ local function modeRow(parent: Instance, props: { [string]: any }, accent: Color
 	Kit.text(medal, { Text = props.Medal, TextSize = 26, Size = UDim2.fromScale(1, 1), ZIndex = 2 })
 	Kit.title(panel, {
 		Text = props.Title,
-		TextSize = T.H3,
+		TextSize = T.H2,
 		TextWrapped = false,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -80, 0, 24),
-		Position = UDim2.fromOffset(70, 14),
+		Size = UDim2.new(1, -80, 0, 26),
+		Position = UDim2.fromOffset(70, 12),
 		TextColor3 = C.Text,
 	})
 	Kit.text(panel, {
@@ -3614,10 +3583,10 @@ local function modeRow(parent: Instance, props: { [string]: any }, accent: Color
 		Name = "Reward",
 		Text = "",
 		Font = F.UI,
-		TextSize = T.Small,
+		TextSize = T.Body,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = false,
-		Size = UDim2.new(1, -164, 0, 20),
+		Size = UDim2.new(1, -164, 0, 22),
 		Position = UDim2.new(0, 12, 1, -40),
 		AnchorPoint = Vector2.new(0, 0.5),
 		TextColor3 = C.MoneyText,

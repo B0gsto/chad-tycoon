@@ -687,9 +687,22 @@ end
 	leave it out for TextScaled (optionally capped with MaxTextSize).
 	  Font            any Theme.Fonts role (Display, UI, Bold, Body, Number)
 	  Shadow = true   navy outline (only for text directly over the 3D world)
-	  StrokeThickness explicit halo thickness (0 = none)
-	Body text on panels gets no halo; Display text gets a faint embossed edge.
+	  StrokeThickness explicit outline thickness (0 = none)
+	The outline follows the size of the text (Kit.outlineFor): titles, prices and
+	big numbers get the thick one, mid sizes a thin one, and small text (under
+	Theme.Glass.TextStrokeFrom) none, or a 1 px hairline when the caller asked for
+	an outline. Small text therefore belongs on a card or a chip dark enough to
+	read; only text over the bare world (Shadow, Kit.hudText) is outlined at any size.
 ]]
+
+-- Outline thickness for light text `size` px tall on glass (0 = none).
+function Kit.outlineFor(size: number): number
+	if size < G.TextStrokeFrom then
+		return 0
+	end
+	return math.clamp(size / G.TextStrokePer, G.TextStrokeThin, G.TextStrokeMax)
+end
+
 function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
 	local fixed = props.TextSize ~= nil and props.TextScaled ~= true
 	local label = Kit.new("TextLabel", {
@@ -721,21 +734,39 @@ function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
 			Parent = label,
 		})
 	end
-	-- Light text sits on glass: titles, names, prices and numbers get a dark outline
-	-- (Theme.Glass.TextStroke). Dark text (on a solid button or chip) keeps the faint edge.
+	-- The tallest the glyphs can be: the fixed size, the cap of scaled text, or the
+	-- height of a fixed-height box. Unknown (a scaled label in a scaled box) counts as a title.
+	local size: number = if fixed
+		then label.TextSize
+		elseif maxSize then math.max(maxSize, floor)
+		elseif label.Size.Y.Scale == 0 and label.Size.Y.Offset > 0 then label.Size.Y.Offset
+		else G.TextStrokeFrom * 1.5
+	local outline = Kit.outlineFor(size)
 	local light = luminance(label.TextColor3) >= 0.45
-	if strokeThickness and strokeThickness > 0 then
-		if light then
-			inkStroke(label, math.clamp(strokeThickness, Theme.Glass.TextStroke, 3))
+	if strokeThickness == 0 then
+		return label
+	end
+	if shadow then
+		-- Text over the 3D world: a readable navy outline at any size.
+		if strokeThickness then
+			Kit.textStroke(label, math.clamp(strokeThickness, 1.3, 3), 0.3)
 		else
-			Kit.textStroke(label, math.clamp(strokeThickness * 0.6, 1, 2.5), 0.35)
+			Kit.textStroke(label, if shadow == true then 1.8 else 1.3, 0.3)
 		end
-	elseif strokeThickness == nil and shadow then
-		-- Text over the 3D world: a readable navy outline.
-		Kit.textStroke(label, if shadow == true then 1.8 else 1.3, 0.3)
-	elseif strokeThickness == nil and light and label.Font ~= F.Body then
-		inkStroke(label, Theme.Glass.TextStroke)
-	elseif strokeThickness == nil and label.Font == F.Display then
+	elseif strokeThickness then
+		-- An outline was asked for: never thicker than the size carries, a hairline on small text.
+		local thickness = math.min(strokeThickness, math.max(outline * 1.25, 1))
+		if light then
+			inkStroke(label, math.clamp(thickness, 1, G.TextStrokeMax))
+		else
+			Kit.textStroke(label, math.clamp(thickness * 0.6, 1, 2.5), 0.35)
+		end
+	elseif light and label.Font ~= F.Body then
+		-- Light titles, names, prices and numbers on glass: a dark outline from TextStrokeFrom up.
+		if outline > 0 then
+			inkStroke(label, outline)
+		end
+	elseif label.Font == F.Display then
 		-- Dark display titles on solid faces: a faint embossed edge, not an outline.
 		Kit.textStroke(label, 1.4, 0.65)
 	end
