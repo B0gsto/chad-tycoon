@@ -16854,6 +16854,114 @@ return CratePickup
       </Item>
       <Item class="ModuleScript" referent="157">
         <Properties>
+          <string name="Name">DailyReward</string>
+          <string name="Source"><![CDATA[--!strict
+--[[
+	DailyReward: pure rules of the 7-day daily reward (no Roblox dependencies,
+	unit-tested with Lune; Server.Daily applies them, the Daily window shows them).
+
+	One claim per UTC day. Claiming on the day after the last claim continues the
+	streak; missing a day starts again at day 1; after day 7 the cards loop while
+	the streak keeps counting. Every day pays cash sized like a shop cash pack
+	(Economy.moneyPackAmount: seconds of the player's income, never below the
+	day's minimum), so a reward matters at every stage. Days 3 and 7 also open a
+	crate on the spot.
+]]
+
+local Economy = require(script.Parent.Economy)
+
+local DailyReward = {}
+
+DailyReward.DAY_SECONDS = 86400
+
+-- `seconds` of income, at least `min` cash; `crate` = rarity of the crate opened with it.
+export type Reward = { seconds: number, min: number, crate: string? }
+
+DailyReward.REWARDS = {
+	{ seconds = 5 * 60, min = 250 },
+	{ seconds = 10 * 60, min = 500 },
+	{ seconds = 15 * 60, min = 1000, crate = "Rare" },
+	{ seconds = 20 * 60, min = 2000 },
+	{ seconds = 30 * 60, min = 4000 },
+	{ seconds = 45 * 60, min = 8000 },
+	{ seconds = 60 * 60, min = 15000, crate = "Legendary" },
+} :: { Reward }
+
+DailyReward.DAYS = #DailyReward.REWARDS
+
+-- UTC day number of a unix time (days since 1970-01-01).
+function DailyReward.dayNumber(now: number): number
+	return math.floor(now / DailyReward.DAY_SECONDS)
+end
+
+-- Seconds until the next UTC day starts (1..DAY_SECONDS).
+function DailyReward.secondsLeft(now: number): number
+	return DailyReward.DAY_SECONDS - math.floor(now) % DailyReward.DAY_SECONDS
+end
+
+-- The card (1..DAYS) a streak of `streak` claims ends on.
+function DailyReward.card(streak: number): number
+	return (math.max(streak, 1) - 1) % DailyReward.DAYS + 1
+end
+
+export type Status = {
+	-- A reward can be claimed today.
+	claimable: boolean,
+	-- Today's card: the one to claim now, or the one already claimed today.
+	day: number,
+	-- Cards ticked in the current run of seven (0..DAYS).
+	claimed: number,
+	-- Days claimed in a row so far (0 after a missed day).
+	streak: number,
+}
+
+-- `lastDay` = day number of the last claim (0 = never), `streak` = days in a row at that
+-- claim, `today` = today's day number. A last claim "in the future" (a server clock ahead
+-- of this one) counts as claimed today, so a reward is never paid twice for one day.
+function DailyReward.status(lastDay: number, streak: number, today: number): Status
+	if lastDay >= today and streak >= 1 then
+		local day = DailyReward.card(streak)
+		return { claimable = false, day = day, claimed = day, streak = streak }
+	end
+	if lastDay == today - 1 and streak >= 1 then
+		local day = DailyReward.card(streak + 1)
+		return { claimable = true, day = day, claimed = day - 1, streak = streak }
+	end
+	return { claimable = true, day = 1, claimed = 0, streak = 0 }
+end
+
+-- Claims today's reward: returns the new streak and the card it pays, or nil when today's
+-- reward was already claimed.
+function DailyReward.claim(lastDay: number, streak: number, today: number): (number?, number?)
+	local status = DailyReward.status(lastDay, streak, today)
+	if not status.claimable then
+		return nil, nil
+	end
+	return status.streak + 1, status.day
+end
+
+-- Cash of card `day` for a player earning `income` cash/s at `progression`.
+function DailyReward.cash(day: number, income: number, progression: Economy.Progression): number
+	local reward = DailyReward.REWARDS[DailyReward.card(day)]
+	return Economy.moneyPackAmount(income, reward.seconds, reward.min, progression)
+end
+
+-- One line naming card `day`'s reward: "$1.20K" or "Rare Crate + $1.20K" (`cashText` is the
+-- formatted cash, `chestWord` the theme's word for a crate).
+function DailyReward.describe(day: number, cashText: string, chestWord: string): string
+	local reward = DailyReward.REWARDS[DailyReward.card(day)]
+	if reward.crate then
+		return string.format("%s %s + %s", reward.crate, chestWord, cashText)
+	end
+	return cashText
+end
+
+return DailyReward
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="158">
+        <Properties>
           <string name="Name">Economy</string>
           <string name="Source"><![CDATA[--!strict
 --[[
@@ -17427,7 +17535,7 @@ return Economy
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="158">
+      <Item class="ModuleScript" referent="159">
         <Properties>
           <string name="Name">Format</string>
           <string name="Source"><![CDATA[--!strict
@@ -17542,7 +17650,7 @@ return Format
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="159">
+      <Item class="ModuleScript" referent="160">
         <Properties>
           <string name="Name">Funnel</string>
           <string name="Source"><![CDATA[--!strict
@@ -17634,7 +17742,7 @@ return Funnel
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="160">
+      <Item class="ModuleScript" referent="161">
         <Properties>
           <string name="Name">Net</string>
           <string name="Source"><![CDATA[-- Remote events/functions. The server creates them, clients wait for them.
@@ -17702,7 +17810,135 @@ return Net
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="161">
+      <Item class="ModuleScript" referent="162">
+        <Properties>
+          <string name="Name">NextGoal</string>
+          <string name="Source"><![CDATA[--!strict
+--[[
+	NextGoal: picks the one concrete target the HUD's "Next:" line names (pure,
+	unit-tested with Lune; Client.UI.Hud draws it once the tutorial is done).
+
+	In order:
+	  merge    the next undiscovered tier: merge two units of the best tier found
+	  buyTier  every tier is discovered: unlock the next buy tier (buy the
+	           required units, then save up for the upgrade)
+	  rack     nothing is left to unlock: stack units of the top tier
+]]
+
+local Economy = require(script.Parent.Economy)
+
+local NextGoal = {}
+
+export type Goal = {
+	kind: "merge" | "buyTier" | "rack",
+	-- merge: the tier to discover; buyTier: the buy tier to unlock; rack: the top tier.
+	tier: number,
+	-- merge: the tier to merge two of; buyTier: the tier bought right now; rack: the top tier.
+	from: number,
+	-- Units counted toward the goal and how many it takes.
+	have: number,
+	need: number,
+	-- buyTier: cash the upgrade costs once the units are bought (0 for the other kinds).
+	cost: number,
+	-- 0..1 for a progress bar; `ready` = one step on a pad finishes it.
+	progress: number,
+	ready: boolean,
+}
+
+-- The fields of the State snapshot (or a saved profile) the pick reads.
+export type Input = {
+	discovered: { number },
+	units: { number },
+	buyTier: number,
+	boughtAtTier: number,
+	money: number,
+}
+
+local function count(units: { number }, tier: number): number
+	local n = units[tier]
+	return if type(n) == "number" and n == n and n > 0 then math.floor(n) else 0
+end
+
+function NextGoal.pick(input: Input): Goal
+	local best = Economy.highestTier(input.discovered)
+	if best < Economy.MAX_TIER then
+		-- Everything owned up to `best`, counted in units of `best` (two of a tier make one
+		-- of the next), so buying and merging lower tiers moves the bar too.
+		local worth = 0
+		for tier = 1, best do
+			worth += count(input.units, tier) / Economy.MERGE_RATIO ^ (best - tier)
+		end
+		local have = count(input.units, best)
+		return {
+			kind = "merge",
+			tier = best + 1,
+			from = best,
+			have = math.min(have, Economy.MERGE_RATIO),
+			need = Economy.MERGE_RATIO,
+			cost = 0,
+			progress = math.clamp(worth / Economy.MERGE_RATIO, 0, 1),
+			ready = have >= Economy.MERGE_RATIO,
+		}
+	end
+	local buyTier = math.clamp(math.floor(input.buyTier), 1, Economy.MAX_BUY_TIER)
+	if buyTier < Economy.MAX_BUY_TIER then
+		local need = Economy.buyTierRequirement(buyTier)
+		local have = math.clamp(math.floor(input.boughtAtTier), 0, need)
+		local cost = Economy.buyTierUpgradeCost(buyTier)
+		local bought = have >= need
+		-- Half the bar for the units, half for the cash.
+		local progress = if bought then 0.5 + 0.5 * math.clamp(input.money / cost, 0, 1) else 0.5 * have / need
+		return {
+			kind = "buyTier",
+			tier = buyTier + 1,
+			from = buyTier,
+			have = have,
+			need = need,
+			cost = cost,
+			progress = progress,
+			ready = bought and input.money >= cost,
+		}
+	end
+	local top = count(input.units, Economy.MAX_TIER)
+	return {
+		kind = "rack",
+		tier = Economy.MAX_TIER,
+		from = Economy.MAX_TIER,
+		have = math.min(top, Economy.UNIT_CAP),
+		need = Economy.UNIT_CAP,
+		cost = 0,
+		progress = math.clamp(top / Economy.UNIT_CAP, 0, 1),
+		ready = false,
+	}
+end
+
+--[[
+	The goal in words: (title, hint, count), e.g. ("Protein Bro", "merge 2x Gym
+	Rookie", "1/2"). `nameOf(tier)` names a unit tier, `money(n)` formats cash.
+	The HUD shows "Next: <title> (<hint>) <count>" and drops the hint when short of room.
+]]
+function NextGoal.text(goal: Goal, nameOf: (number) -> string, money: (number) -> string): (string, string, string)
+	if goal.kind == "merge" then
+		local hint = string.format("merge %dx %s", goal.need, nameOf(goal.from))
+		return nameOf(goal.tier), hint, string.format("%d/%d", goal.have, goal.need)
+	elseif goal.kind == "buyTier" then
+		local title = "Buy Tier " .. goal.tier
+		if goal.have < goal.need then
+			local hint = string.format("buy %d more %s", goal.need - goal.have, nameOf(goal.from))
+			return title, hint, string.format("%d/%d", goal.have, goal.need)
+		elseif goal.ready then
+			return title, "step on the BUY TIER pad", "READY"
+		end
+		return title, "save " .. money(goal.cost), string.format("%d%%", math.floor((goal.progress - 0.5) * 200))
+	end
+	return nameOf(goal.tier), "fill your rack", string.format("%d/%d", goal.have, goal.need)
+end
+
+return NextGoal
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="163">
         <Properties>
           <string name="Name">OrbLook</string>
           <string name="Source"><![CDATA[--!strict
@@ -17824,7 +18060,7 @@ return OrbLook
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="162">
+      <Item class="ModuleScript" referent="164">
         <Properties>
           <string name="Name">Poses</string>
           <string name="Source"><![CDATA[--[[
@@ -19046,7 +19282,7 @@ return Poses
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="163">
+      <Item class="ModuleScript" referent="165">
         <Properties>
           <string name="Name">RigPose</string>
           <string name="Source"><![CDATA[--[[
@@ -19215,7 +19451,7 @@ return RigPose
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="164">
+      <Item class="ModuleScript" referent="166">
         <Properties>
           <string name="Name">SessionLock</string>
           <string name="Source"><![CDATA[--!strict
@@ -19268,7 +19504,7 @@ return SessionLock
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="165">
+      <Item class="ModuleScript" referent="167">
         <Properties>
           <string name="Name">TutorialSteps</string>
           <string name="Source"><![CDATA[--!strict
@@ -19404,7 +19640,7 @@ return TutorialSteps
         </Properties>
       </Item>
     </Item>
-    <Item class="ModuleScript" referent="166">
+    <Item class="ModuleScript" referent="168">
       <Properties>
         <string name="Name">Theme</string>
         <string name="Source"><![CDATA[--[[
@@ -20843,15 +21079,15 @@ return Theme
       </Properties>
     </Item>
   </Item>
-  <Item class="ServerScriptService" referent="167">
+  <Item class="ServerScriptService" referent="169">
     <Properties>
       <string name="Name">ServerScriptService</string>
     </Properties>
-    <Item class="Folder" referent="168">
+    <Item class="Folder" referent="170">
       <Properties>
         <string name="Name">Server</string>
       </Properties>
-      <Item class="ModuleScript" referent="169">
+      <Item class="ModuleScript" referent="171">
         <Properties>
           <string name="Name">Analytics</string>
           <string name="Source"><![CDATA[--[[
@@ -21023,7 +21259,7 @@ return Analytics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="170">
+      <Item class="ModuleScript" referent="172">
         <Properties>
           <string name="Name">Badges</string>
           <string name="Source"><![CDATA[--[[
@@ -21136,7 +21372,7 @@ return Badges
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="171">
+      <Item class="ModuleScript" referent="173">
         <Properties>
           <string name="Name">Cosmetics</string>
           <string name="Source"><![CDATA[--[[
@@ -21770,7 +22006,154 @@ return Cosmetics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="172">
+      <Item class="ModuleScript" referent="174">
+        <Properties>
+          <string name="Name">Daily</string>
+          <string name="Source"><![CDATA[--[[
+	Daily: server side of the daily reward (rules: Shared.DailyReward; client:
+	Client.UI.DailyWindow and the HUD's Daily button).
+
+	The saved profile field `daily` holds the UTC day of the last claim and the
+	streak at that claim. The State snapshot's `daily` field tells the client
+	what today looks like: { claimable, day (today's card 1..7), claimed (cards
+	ticked), streak, nextIn (seconds to the next UTC day) }. The "ClaimDaily"
+	action pays today's card: cash sized by the player's income right now (the
+	amounts the window shows) and, on days 3 and 7, a crate opened on the spot.
+
+	Notify payloads (client shows them):
+	  { kind = "Daily", event = "claimed", day = n, cash = c, crate = rarity?, streak = s }
+
+	First day: once a player has finished the tutorial, has claimed and has been
+	playing for a few minutes, one toast names tomorrow's reward.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local DailyReward = require(Shared.DailyReward)
+local Economy = require(Shared.Economy)
+local Format = require(Shared.Format)
+
+local Tycoon = require(script.Parent.Tycoon)
+
+local Daily = {}
+
+local CHECK_SECONDS = 5
+-- The first-day toast waits for this much play time, and this long after the claim.
+local HINT_AFTER_JOIN = 180
+local HINT_AFTER_CLAIM = 30
+
+local theme: any
+-- os.clock() of the session's start and of its claim (sessions are weak keys).
+local startedAt: { [any]: number } = setmetatable({}, { __mode = "k" }) :: any
+local claimedAt: { [any]: number } = setmetatable({}, { __mode = "k" }) :: any
+
+local function today(): number
+	return DailyReward.dayNumber(os.time())
+end
+
+-- Cash of card `day` for this player right now (the same formula the window shows).
+local function cashFor(session: Tycoon.Session, day: number): number
+	local p = session.profile
+	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
+	return DailyReward.cash(day, Tycoon.income(session), progression)
+end
+
+local function snapshot(session: Tycoon.Session): { [string]: any }
+	local d = session.profile.daily
+	local now = os.time()
+	local status = DailyReward.status(d.day, d.streak, DailyReward.dayNumber(now))
+	return {
+		claimable = status.claimable,
+		day = status.day,
+		claimed = status.claimed,
+		streak = status.streak,
+		nextIn = DailyReward.secondsLeft(now),
+	}
+end
+
+function Daily.claim(session: Tycoon.Session)
+	if not session.alive then
+		return
+	end
+	local d = session.profile.daily
+	local streak, day = DailyReward.claim(d.day, d.streak, today())
+	if not streak or not day then
+		Tycoon.toast(session, "Next daily reward in " .. Format.time(DailyReward.secondsLeft(os.time())), "info")
+		return
+	end
+	-- Sized before anything is granted, so the crate's unit does not change the cash.
+	local cash = cashFor(session, day)
+	local crate = DailyReward.REWARDS[day].crate
+	d.day = today()
+	d.streak = streak
+	claimedAt[session] = os.clock()
+	Tycoon.notify(session, { kind = "Daily", event = "claimed", day = day, cash = cash, crate = crate, streak = streak })
+	Tycoon.grantMoney(session, cash, "Daily")
+	if crate then
+		Tycoon.grantCrate(session, crate)
+	end
+end
+
+-- The first-day "come back tomorrow" toast (once per player, saved).
+local function hint(session: Tycoon.Session, now: number)
+	local p = session.profile
+	local d = p.daily
+	if d.hinted or not p.tutorialDone or d.firstDay ~= now or d.day ~= now then
+		return
+	end
+	local clock = os.clock()
+	if clock - (startedAt[session] or clock) < HINT_AFTER_JOIN or clock - (claimedAt[session] or 0) < HINT_AFTER_CLAIM then
+		return
+	end
+	d.hinted = true
+	local nextDay = DailyReward.card(d.streak + 1)
+	local reward = DailyReward.describe(nextDay, Format.money(cashFor(session, nextDay)), theme.Words.Chest)
+	Tycoon.toast(session, string.format("Come back tomorrow for Day %d: %s", nextDay, reward), "good")
+	Tycoon.markDirty(session)
+end
+
+-- Call right after Tycoon.addPlayer: starts the play-time clock and stamps the first day.
+function Daily.onSessionStart(session: Tycoon.Session)
+	startedAt[session] = os.clock()
+	local d = session.profile.daily
+	if d.firstDay == 0 then
+		d.firstDay = today()
+		Tycoon.markDirty(session)
+	end
+end
+
+function Daily.init(themeModule: any)
+	theme = themeModule
+	Tycoon.hooks.daily = snapshot
+	Tycoon.addAction("ClaimDaily", function(session)
+		Daily.claim(session)
+	end)
+
+	task.spawn(function()
+		local lastDay = today()
+		while true do
+			task.wait(CHECK_SECONDS)
+			local now = today()
+			for _, session in Tycoon.allSessions() do
+				if session.alive then
+					if now ~= lastDay then
+						-- A new UTC day: the snapshot's `claimable` changes for everyone online.
+						Tycoon.markDirty(session)
+					end
+					hint(session, now)
+				end
+			end
+			lastDay = now
+		end
+	end)
+end
+
+return Daily
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="175">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -21837,6 +22220,11 @@ export type Profile = {
 	onboarding: number,
 	-- Roblox badges: true = awarded, false = earned and waiting to be awarded (Badges).
 	badges: { [string]: boolean },
+	-- Daily reward (Server.Daily, Shared.DailyReward): UTC day number of the last claim
+	-- (0 = never), days claimed in a row at that claim, UTC day number of the player's first
+	-- day (0 = not started yet, 1 = saves from before the daily reward) and whether the
+	-- first-day "come back tomorrow" toast was shown.
+	daily: { day: number, streak: number, firstDay: number, hinted: boolean },
 	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
 	-- of the last full cash reward (Economy.modeReward cooldown).
 	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
@@ -21920,6 +22308,7 @@ function DataService.defaultProfile(): Profile
 		starterGranted = false,
 		onboarding = 0,
 		badges = {},
+		daily = { day = 0, streak = 0, firstDay = 0, hinted = false },
 		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, stageMaps = true, gear = "none" },
 		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0 },
 		modes = {
@@ -21964,6 +22353,10 @@ local function reconcile(data: any): Profile
 	-- Saves from before the onboarding funnel: those players are not new, so they never log it.
 	if data.onboarding == nil then
 		data.onboarding = 99
+	end
+	-- Saves from before the daily reward: day 1 is waiting, but today is not a "first day".
+	if data.daily == nil then
+		data.daily = { day = 0, streak = 0, firstDay = 1, hinted = true }
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
@@ -22071,6 +22464,14 @@ local function reconcile(data: any): Profile
 	end
 	if data.pendingCrate ~= "" and not Economy.isRarity(data.pendingCrate) then
 		data.pendingCrate = ""
+	end
+	for key, value in default.daily :: any do
+		local v = data.daily[key]
+		if type(v) ~= type(value) or (type(v) == "number" and (v ~= v or v < 0 or v == math.huge)) then
+			data.daily[key] = value
+		elseif type(v) == "number" then
+			data.daily[key] = math.floor(v)
+		end
 	end
 	if data.pendingUnlocker ~= 1 and data.pendingUnlocker ~= 2 then
 		data.pendingUnlocker = 0
@@ -22201,7 +22602,7 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="173">
+      <Item class="ModuleScript" referent="176">
         <Properties>
           <string name="Name">GameModes</string>
           <string name="Source"><![CDATA[--[[
@@ -22543,7 +22944,7 @@ return GameModes
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="174">
+      <Item class="ModuleScript" referent="177">
         <Properties>
           <string name="Name">Intro</string>
           <string name="Source"><![CDATA[--[[
@@ -22591,7 +22992,7 @@ return Intro
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Script" referent="175">
+      <Item class="Script" referent="178">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -22615,6 +23016,7 @@ local GameModes = require(Server.GameModes)
 local Cosmetics = require(Server.Cosmetics)
 local Analytics = require(Server.Analytics)
 local Badges = require(Server.Badges)
+local Daily = require(Server.Daily)
 
 local AUTOSAVE_SECONDS = 90
 
@@ -22631,6 +23033,7 @@ Cosmetics.init(Theme)
 Ranking.init(Theme, world.ranking)
 Analytics.init()
 Badges.init(Theme)
+Daily.init(Theme)
 
 local saving: { [Player]: boolean } = {}
 
@@ -22674,6 +23077,7 @@ local function onPlayerAdded(player: Player)
 		Cosmetics.onSessionStart(session)
 		Analytics.onSessionStart(session)
 		Badges.onSessionStart(session)
+		Daily.onSessionStart(session)
 	end
 end
 
@@ -22722,11 +23126,11 @@ end)
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="176">
+      <Item class="Folder" referent="179">
         <Properties>
           <string name="Name">Modes</string>
         </Properties>
-        <Item class="ModuleScript" referent="177">
+        <Item class="ModuleScript" referent="180">
           <Properties>
             <string name="Name">Cardio</string>
             <string name="Source"><![CDATA[--[[
@@ -23313,7 +23717,7 @@ return Cardio
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="178">
+        <Item class="ModuleScript" referent="181">
           <Properties>
             <string name="Name">CardioChase</string>
             <string name="Source"><![CDATA[--!strict
@@ -23701,7 +24105,7 @@ return CardioChase
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="179">
+        <Item class="ModuleScript" referent="182">
           <Properties>
             <string name="Name">CardioLayout</string>
             <string name="Source"><![CDATA[--!strict
@@ -25113,7 +25517,7 @@ return CardioLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="180">
+        <Item class="ModuleScript" referent="183">
           <Properties>
             <string name="Name">CardioRules</string>
             <string name="Source"><![CDATA[--!strict
@@ -25396,7 +25800,7 @@ return CardioRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="181">
+        <Item class="ModuleScript" referent="184">
           <Properties>
             <string name="Name">Catalog</string>
             <string name="Source"><![CDATA[--!strict
@@ -25436,7 +25840,7 @@ return Catalog
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="182">
+        <Item class="ModuleScript" referent="185">
           <Properties>
             <string name="Name">Course</string>
             <string name="Source"><![CDATA[--!strict
@@ -27466,7 +27870,7 @@ return Course
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="183">
+        <Item class="ModuleScript" referent="186">
           <Properties>
             <string name="Name">Mog</string>
             <string name="Source"><![CDATA[--[[
@@ -28383,7 +28787,7 @@ return { create = create }
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="184">
+        <Item class="ModuleScript" referent="187">
           <Properties>
             <string name="Name">MogLayout</string>
             <string name="Source"><![CDATA[--[[
@@ -28460,7 +28864,7 @@ return MogLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="185">
+        <Item class="ModuleScript" referent="188">
           <Properties>
             <string name="Name">MogRules</string>
             <string name="Source"><![CDATA[--[[
@@ -28789,7 +29193,7 @@ return MogRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="186">
+        <Item class="ModuleScript" referent="189">
           <Properties>
             <string name="Name">Parkour</string>
             <string name="Source"><![CDATA[--[[
@@ -29435,7 +29839,7 @@ return Parkour
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="187">
+        <Item class="ModuleScript" referent="190">
           <Properties>
             <string name="Name">Rules</string>
             <string name="Source"><![CDATA[--!strict
@@ -29528,7 +29932,7 @@ return Rules
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="188">
+      <Item class="ModuleScript" referent="191">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -29824,7 +30228,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="189">
+      <Item class="ModuleScript" referent="192">
         <Properties>
           <string name="Name">PlotLayout</string>
           <string name="Source"><![CDATA[--!strict
@@ -30342,7 +30746,7 @@ return Layout
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="190">
+      <Item class="ModuleScript" referent="193">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -30591,7 +30995,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="191">
+      <Item class="ModuleScript" referent="194">
         <Properties>
           <string name="Name">Tutorial</string>
           <string name="Source"><![CDATA[--[[
@@ -30708,7 +31112,7 @@ return Tutorial
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="192">
+      <Item class="ModuleScript" referent="195">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -30848,6 +31252,10 @@ Tycoon.hooks = {
 	end,
 	-- Called before the "Home" action moves the player (GameModes ends any run first).
 	leavingForHome = function(_session: Session) end,
+	-- The State snapshot's `daily` field (filled in by Daily).
+	daily = function(_session: Session): { [string]: any }?
+		return nil
+	end,
 }
 
 -- Gameplay event listeners (used by the tutorial): fn(session, name, data).
@@ -32313,6 +32721,7 @@ local function snapshot(session: Session): { [string]: any }
 		tutorialDone = p.tutorialDone,
 		cosmetics = Tycoon.hooks.cosmetics(session),
 		modes = Tycoon.hooks.modes(session),
+		daily = Tycoon.hooks.daily(session),
 	}
 end
 
@@ -32919,10 +33328,19 @@ function Tycoon.refresh(player: Player)
 	end
 end
 
-function Tycoon.grantMoney(session: Session, amount: number)
+-- `source` names the "Cash" effect for the client ("Purchase" = a cash pack's celebration,
+-- "Daily" = the daily reward).
+function Tycoon.grantMoney(session: Session, amount: number, source: string?)
 	addMoney(session, amount)
 	local root = rootPart(session)
-	effect(session, "Cash", { amount = amount, source = "Purchase", padPos = root and root.Position })
+	effect(session, "Cash", { amount = amount, source = source or "Purchase", padPos = root and root.Position })
+	markDirty(session)
+	flush(session)
+end
+
+-- A free crate of `rarity` opened on the spot with the crate reveal (daily reward).
+function Tycoon.grantCrate(session: Session, rarity: string)
+	openChest(session, rarity, "unlock")
 	markDirty(session)
 	flush(session)
 end
@@ -32999,11 +33417,11 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="193">
+      <Item class="Folder" referent="196">
         <Properties>
           <string name="Name">World</string>
         </Properties>
-        <Item class="ModuleScript" referent="194">
+        <Item class="ModuleScript" referent="197">
           <Properties>
             <string name="Name">CardioTrack</string>
             <string name="Source"><![CDATA[--[[
@@ -34373,7 +34791,7 @@ return CardioTrack
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="195">
+        <Item class="ModuleScript" referent="198">
           <Properties>
             <string name="Name">Common</string>
             <string name="Source"><![CDATA[--[[
@@ -34548,7 +34966,7 @@ return Common
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="196">
+        <Item class="ModuleScript" referent="199">
           <Properties>
             <string name="Name">Decor</string>
             <string name="Source"><![CDATA[--[[
@@ -35221,7 +35639,7 @@ return Decor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="197">
+        <Item class="ModuleScript" referent="200">
           <Properties>
             <string name="Name">Hub</string>
             <string name="Source"><![CDATA[--[[
@@ -36325,7 +36743,7 @@ return Hub
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="198">
+        <Item class="ModuleScript" referent="201">
           <Properties>
             <string name="Name">Machines</string>
             <string name="Source"><![CDATA[--[[
@@ -37143,7 +37561,7 @@ return Machines
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="199">
+        <Item class="ModuleScript" referent="202">
           <Properties>
             <string name="Name">MapDecor</string>
             <string name="Source"><![CDATA[--[[
@@ -38106,7 +38524,7 @@ return MapDecor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="200">
+        <Item class="ModuleScript" referent="203">
           <Properties>
             <string name="Name">Modes</string>
             <string name="Source"><![CDATA[--[[
@@ -39850,7 +40268,7 @@ return Modes
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="201">
+        <Item class="ModuleScript" referent="204">
           <Properties>
             <string name="Name">MogStage</string>
             <string name="Source"><![CDATA[--[[
@@ -40191,7 +40609,7 @@ return MogStage
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="202">
+        <Item class="ModuleScript" referent="205">
           <Properties>
             <string name="Name">Pads</string>
             <string name="Source"><![CDATA[--[[
@@ -40505,7 +40923,7 @@ return Pads
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="203">
+        <Item class="ModuleScript" referent="206">
           <Properties>
             <string name="Name">Pen</string>
             <string name="Source"><![CDATA[--[[
@@ -40824,7 +41242,7 @@ return Pen
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="204">
+        <Item class="ModuleScript" referent="207">
           <Properties>
             <string name="Name">Props</string>
             <string name="Source"><![CDATA[--!strict
@@ -41095,7 +41513,7 @@ return Props
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="205">
+        <Item class="ModuleScript" referent="208">
           <Properties>
             <string name="Name">Shell</string>
             <string name="Source"><![CDATA[--[[
@@ -41551,7 +41969,7 @@ return Shell
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="206">
+        <Item class="ModuleScript" referent="209">
           <Properties>
             <string name="Name">Shelves</string>
             <string name="Source"><![CDATA[--[[
@@ -42261,7 +42679,7 @@ return Shelves
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="207">
+      <Item class="ModuleScript" referent="210">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -42633,26 +43051,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="208">
+  <Item class="SoundService" referent="211">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="209">
+  <Item class="StarterPlayer" referent="212">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="210">
+    <Item class="StarterPlayerScripts" referent="213">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="211">
+      <Item class="Folder" referent="214">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="ModuleScript" referent="212">
+        <Item class="ModuleScript" referent="215">
           <Properties>
             <string name="Name">Animator</string>
             <string name="Source"><![CDATA[--[[
@@ -43332,11 +43750,11 @@ return Animator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="213">
+        <Item class="Folder" referent="216">
           <Properties>
             <string name="Name">Fx</string>
           </Properties>
-          <Item class="ModuleScript" referent="214">
+          <Item class="ModuleScript" referent="217">
             <Properties>
               <string name="Name">Ambient</string>
               <string name="Source"><![CDATA[--[[
@@ -43716,7 +44134,7 @@ return Ambient
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="215">
+          <Item class="ModuleScript" referent="218">
             <Properties>
               <string name="Name">Budget</string>
               <string name="Source"><![CDATA[--[[
@@ -43893,7 +44311,7 @@ return Budget
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="216">
+          <Item class="ModuleScript" referent="219">
             <Properties>
               <string name="Name">Camera</string>
               <string name="Source"><![CDATA[--[[
@@ -44219,7 +44637,7 @@ return Camera
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="217">
+          <Item class="ModuleScript" referent="220">
             <Properties>
               <string name="Name">Cardio</string>
               <string name="Source"><![CDATA[--!strict
@@ -45544,7 +45962,7 @@ return CardioFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="218">
+          <Item class="ModuleScript" referent="221">
             <Properties>
               <string name="Name">CardioChase</string>
               <string name="Source"><![CDATA[--!strict
@@ -46185,7 +46603,7 @@ return ChaseFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="219">
+          <Item class="ModuleScript" referent="222">
             <Properties>
               <string name="Name">Cosmetics</string>
               <string name="Source"><![CDATA[--[[
@@ -46502,7 +46920,7 @@ return CosmeticsFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="220">
+          <Item class="ModuleScript" referent="223">
             <Properties>
               <string name="Name">Crates</string>
               <string name="Source"><![CDATA[--[[
@@ -47379,7 +47797,7 @@ return Crates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="221">
+          <Item class="ModuleScript" referent="224">
             <Properties>
               <string name="Name">Fans</string>
               <string name="Source"><![CDATA[--[[
@@ -48374,7 +48792,7 @@ return Fans
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="222">
+          <Item class="ModuleScript" referent="225">
             <Properties>
               <string name="Name">Machines</string>
               <string name="Source"><![CDATA[-- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow):
@@ -49910,7 +50328,7 @@ return Machines
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="223">
+          <Item class="ModuleScript" referent="226">
             <Properties>
               <string name="Name">Modes</string>
               <string name="Source"><![CDATA[--!strict
@@ -51575,7 +51993,7 @@ return ModesFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="224">
+          <Item class="ModuleScript" referent="227">
             <Properties>
               <string name="Name">Mog</string>
               <string name="Source"><![CDATA[--!strict
@@ -52200,7 +52618,7 @@ return MogFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="225">
+          <Item class="ModuleScript" referent="228">
             <Properties>
               <string name="Name">Orbs</string>
               <string name="Source"><![CDATA[-- Client-side aura orb visuals for the local player's own plot.
@@ -54266,7 +54684,7 @@ return Orbs
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="226">
+          <Item class="ModuleScript" referent="229">
             <Properties>
               <string name="Name">PlateStyle</string>
               <string name="Source"><![CDATA[--!strict
@@ -54515,7 +54933,7 @@ return PlateStyle
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="227">
+          <Item class="ModuleScript" referent="230">
             <Properties>
               <string name="Name">Plates</string>
               <string name="Source"><![CDATA[--!strict
@@ -55346,7 +55764,7 @@ return Plates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="228">
+          <Item class="ModuleScript" referent="231">
             <Properties>
               <string name="Name">PlayerPose</string>
               <string name="Source"><![CDATA[--!strict
@@ -55500,7 +55918,7 @@ return PlayerPose
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="229">
+          <Item class="ModuleScript" referent="232">
             <Properties>
               <string name="Name">Shelf</string>
               <string name="Source"><![CDATA[--[[
@@ -57124,7 +57542,7 @@ return Shelf
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="230">
+          <Item class="ModuleScript" referent="233">
             <Properties>
               <string name="Name">Sprites</string>
               <string name="Source"><![CDATA[--[[
@@ -57329,7 +57747,7 @@ return Sprites
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="231">
+          <Item class="ModuleScript" referent="234">
             <Properties>
               <string name="Name">Surge</string>
               <string name="Source"><![CDATA[--[[
@@ -57614,7 +58032,7 @@ return Surge
             </Properties>
           </Item>
         </Item>
-        <Item class="ModuleScript" referent="232">
+        <Item class="ModuleScript" referent="235">
           <Properties>
             <string name="Name">Guide</string>
             <string name="Source"><![CDATA[--[[
@@ -58056,11 +58474,11 @@ return Guide
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="233">
+        <Item class="Folder" referent="236">
           <Properties>
             <string name="Name">Intro</string>
           </Properties>
-          <Item class="ModuleScript" referent="234">
+          <Item class="ModuleScript" referent="237">
             <Properties>
               <string name="Name">Actors</string>
               <string name="Source"><![CDATA[--!strict
@@ -58729,7 +59147,7 @@ return Actors
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="235">
+          <Item class="ModuleScript" referent="238">
             <Properties>
               <string name="Name">Avatar</string>
               <string name="Source"><![CDATA[--!strict
@@ -59372,7 +59790,7 @@ return Avatar
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="236">
+          <Item class="ModuleScript" referent="239">
             <Properties>
               <string name="Name">AvatarRig</string>
               <string name="Source"><![CDATA[--!strict
@@ -59603,7 +60021,7 @@ return AvatarRig
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="237">
+          <Item class="ModuleScript" referent="240">
             <Properties>
               <string name="Name">Cutscene</string>
               <string name="Source"><![CDATA[--[[
@@ -60445,7 +60863,7 @@ return Cutscene
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="238">
+          <Item class="ModuleScript" referent="241">
             <Properties>
               <string name="Name">Effects</string>
               <string name="Source"><![CDATA[--!strict
@@ -61370,7 +61788,7 @@ return Effects
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="239">
+          <Item class="ModuleScript" referent="242">
             <Properties>
               <string name="Name">Framing</string>
               <string name="Source"><![CDATA[--!strict
@@ -61577,7 +61995,7 @@ return Framing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="240">
+          <Item class="ModuleScript" referent="243">
             <Properties>
               <string name="Name">Stage</string>
               <string name="Source"><![CDATA[--!strict
@@ -61863,7 +62281,7 @@ return Stage
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="241">
+          <Item class="ModuleScript" referent="244">
             <Properties>
               <string name="Name">Timeline</string>
               <string name="Source"><![CDATA[--!strict
@@ -62211,7 +62629,7 @@ return Timeline
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="242">
+          <Item class="ModuleScript" referent="245">
             <Properties>
               <string name="Name">Ui</string>
               <string name="Source"><![CDATA[--!strict
@@ -63087,7 +63505,7 @@ return Ui
             </Properties>
           </Item>
         </Item>
-        <Item class="LocalScript" referent="243">
+        <Item class="LocalScript" referent="246">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -63470,6 +63888,13 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 			Hud.coinBurst(amount, nil)
 			return
 		end
+		if data.source == "Daily" then
+			-- Daily reward: the amount pops over the Daily window and the coins fly out of it.
+			Sounds.play("Cash")
+			Popups.float("+" .. Format.money(amount), C.Good, UDim2.fromScale(0.5, 0.42))
+			Hud.coinBurst(amount, nil, nil)
+			return
+		end
 		Sounds.play("Cash")
 		Popups.float("+" .. Format.money(amount), C.Good, WALLET)
 		-- Claimed from the Free menu button: coins fly from the button.
@@ -63544,7 +63969,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="244">
+        <Item class="ModuleScript" referent="247">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects plus background music.
@@ -64112,7 +64537,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="245">
+        <Item class="ModuleScript" referent="248">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -64161,11 +64586,11 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="246">
+        <Item class="Folder" referent="249">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="247">
+          <Item class="ModuleScript" referent="250">
             <Properties>
               <string name="Name">CardioHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -65646,7 +66071,535 @@ return CardioHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="248">
+          <Item class="ModuleScript" referent="251">
+            <Properties>
+              <string name="Name">DailyWindow</string>
+              <string name="Source"><![CDATA[--[[
+	DailyWindow: the Daily Reward window (rules: Shared.DailyReward; server:
+	Server.Daily; the HUD's Daily button opens it).
+
+	Seven day cards in a row (two rows when the window narrows, Day 7 double
+	width): each shows its art (a growing cash pack, a crate on days 3 and 7) and
+	what it pays at the player's income right now. Claimed cards are muted and
+	ticked, today's is gold and glowing (tap it or CLAIM), tomorrow's says "Come
+	back tomorrow" with a countdown to the next UTC day. The footer names what to
+	do next.
+
+	The window opens by itself once per session when a reward is waiting, after a
+	calm moment: never during the intro or the tutorial, a game-mode run, or
+	under another window or popup.
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local DailyReward = require(ReplicatedStorage.Shared.DailyReward)
+local Economy = require(ReplicatedStorage.Shared.Economy)
+local Format = require(ReplicatedStorage.Shared.Format)
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Kit = require(script.Parent.Kit)
+local State = require(script.Parent.Parent.State)
+
+local Theme = Kit.Theme
+local C = Kit.C
+local T = Kit.TEXT
+local F = Kit.F
+local W = Theme.Words
+
+-- The Lune preview exporter has no real tweens or frame time.
+local PREVIEW = typeof(TweenInfo.new(0)) ~= "TweenInfo"
+
+local DailyWindow = {}
+
+export type Deps = {
+	register: (string, Kit.Window) -> (),
+	ripple: ({ GuiObject }) -> (),
+	-- Opens this window through Windows.open (one window at a time, backdrop).
+	open: () -> (),
+	close: () -> (),
+}
+
+export type Daily = {
+	window: Kit.Window,
+	-- Runs before the window opens: refresh and card ripple.
+	beforeOpen: () -> (),
+}
+
+local ACCENT = Theme.World.Sunny
+local GAP = 8
+local HERO_H = 50
+local FOOTER_H = 56
+-- Narrower than this (content width, design px) the cards wrap onto two rows.
+local ONE_ROW_MIN = 700
+-- Seconds of calm before the window opens by itself (longer right after the tutorial,
+-- whose reward cards are still on their way).
+local CALM = 2
+local CALM_AFTER_TUTORIAL = 8
+-- ScreenGui attributes that mean "busy": a window, a popup, the crate panel or a mode run.
+local BUSY = { "WindowOpen", "ModalOpen", "CratePanelOpen", "RunActive", "ObbyMode", "CardioActive" }
+
+-- Art per card: the cash packs grow with the days; days 3 and 7 show their crate.
+local ART = { "CashPack1", "CashPack2", "CrateRare", "CashPack3", "CashPack4", "CashPack5", "CrateLegendary" }
+
+type Card = {
+	frame: Frame,
+	header: TextLabel,
+	art: Frame,
+	amount: TextLabel,
+	extra: TextLabel?,
+	status: TextLabel,
+	tick: Frame,
+	state: string,
+}
+
+-- Repaints a Kit.panel body (gradient, outline and lip) in `color`.
+local function paint(frame: Frame, color: Color3, strokeColor: Color3?, thickness: number?)
+	local lipColor = Kit.lip(color)
+	local gradient = frame:FindFirstChildOfClass("UIGradient")
+	if gradient then
+		gradient.Color = ColorSequence.new(Kit.lighten(color, 0.1), color:Lerp(lipColor, 0.12))
+	end
+	local stroke = frame:FindFirstChildOfClass("UIStroke")
+	if stroke then
+		stroke.Color = strokeColor or lipColor
+		stroke.Thickness = thickness or 1.5
+	end
+	local lip = frame:FindFirstChild("Lip")
+	if lip and lip:IsA("Frame") then
+		lip.BackgroundColor3 = lipColor
+	end
+end
+
+function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
+	local window =
+		Kit.window(screen, "Daily", "Daily Reward", Kit.pickIcon("Gift2", "Free"), ACCENT, Vector2.new(880, 436), Vector2.new(500, 436))
+	deps.register("Daily", window)
+	local action = Net.event("Action")
+
+	-- Streak line -------------------------------------------------------------------------
+	local hero = Kit.new("Frame", {
+		Name = "Streak",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, HERO_H),
+		Parent = window.content,
+	})
+	Kit.icon(hero, Kit.pickIcon("Fire", "Star"), 40, C.Amber, {
+		Name = "Icon",
+		Position = UDim2.new(0, 4, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 2,
+	})
+	local streakTitle = Kit.title(hero, {
+		Name = "Title",
+		Text = "",
+		TextSize = T.H2 + 2,
+		TextColor3 = C.Gold,
+		TextWrapped = false,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(0.5, -52, 1, 0),
+		Position = UDim2.fromOffset(52, 1),
+		ZIndex = 2,
+	})
+	Kit.text(hero, {
+		Name = "Rule",
+		Text = "Come back every day. Miss one and it starts again at Day 1!",
+		TextSize = T.Small,
+		TextColor3 = C.TextDim,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Size = UDim2.new(0.5, -8, 1, 0),
+		Position = UDim2.new(0.5, 0, 0, 0),
+		ZIndex = 2,
+	})
+
+	-- Day cards ---------------------------------------------------------------------------
+	local grid = Kit.new("Frame", {
+		Name = "Days",
+		BackgroundTransparency = 1,
+		Parent = window.content,
+	})
+	local claim: () -> ()
+	local cards: { Card } = {}
+	local frames: { GuiObject } = {}
+	for day, reward in DailyReward.REWARDS do
+		local frame = Kit.panel(grid, { Name = "Day" .. day, Elevated = true, Radius = Kit.RADIUS.M })
+		local header = Kit.text(frame, {
+			Name = "Header",
+			Text = "DAY " .. day,
+			Font = F.UI,
+			TextSize = T.Small,
+			TextWrapped = false,
+			Size = UDim2.new(1, 0, 0, 18),
+			Position = UDim2.fromOffset(0, 8),
+			ZIndex = 3,
+		})
+		local art: Frame
+		if Kit.hasImageIcon(ART[day]) then
+			art = Kit.icon(frame, ART[day], 64, nil, { Name = "Art", ZIndex = 3 })
+		else
+			art = Kit.icon(frame, if reward.crate then "Free" else "Coin", 64, if reward.crate then C.Cash else C.Gold, {
+				Name = "Art",
+				ZIndex = 3,
+			})
+		end
+		art.AnchorPoint = Vector2.new(0.5, 0)
+		-- Scaled down to fit: full numbers ("+$1,234,567") are much longer than "+$1.23M".
+		local amount = Kit.number(frame, {
+			Name = "Amount",
+			Text = "",
+			MaxTextSize = 17,
+			TextColor3 = C.MoneyText,
+			Size = UDim2.new(1, -8, 0, 22),
+			AnchorPoint = Vector2.new(0.5, 0),
+			ZIndex = 3,
+		})
+		local extra: TextLabel? = nil
+		if reward.crate then
+			extra = Kit.text(frame, {
+				Name = "Crate",
+				Text = string.upper(string.format("+ %s %s", reward.crate, W.Chest)),
+				Font = F.UI,
+				MaxTextSize = T.Tiny,
+				TextColor3 = C.Rarity[reward.crate] or C.Gold,
+				TextWrapped = false,
+				Size = UDim2.new(1, -4, 0, 16),
+				AnchorPoint = Vector2.new(0.5, 0),
+				ZIndex = 3,
+			})
+		end
+		local status = Kit.text(frame, {
+			Name = "Status",
+			Text = "",
+			Font = F.UI,
+			TextSize = T.Tiny,
+			TextYAlignment = Enum.TextYAlignment.Bottom,
+			Size = UDim2.new(1, -10, 0, 44),
+			Position = UDim2.new(0.5, 0, 1, -8),
+			AnchorPoint = Vector2.new(0.5, 1),
+			ZIndex = 3,
+		})
+		-- Mint tick on the corner of a claimed card.
+		local tick = Kit.new("Frame", {
+			Name = "Tick",
+			BackgroundColor3 = C.Good,
+			Size = UDim2.fromOffset(26, 26),
+			Position = UDim2.new(1, -4, 0, 4),
+			AnchorPoint = Vector2.new(1, 0),
+			Visible = false,
+			ZIndex = 6,
+			Parent = frame,
+		})
+		Kit.round(tick)
+		Kit.new("UIStroke", { Thickness = 2, Color = Color3.new(1, 1, 1), Parent = tick })
+		Kit.icon(tick, "Check", 16, Kit.inkOn(C.Good), {
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 7,
+		})
+		local card: Card = {
+			frame = frame,
+			header = header,
+			art = art,
+			amount = amount,
+			extra = extra,
+			status = status,
+			tick = tick,
+			state = "",
+		}
+		-- Tapping today's card claims it (gamepads use the CLAIM button).
+		local hit = Kit.new("TextButton", {
+			Name = "Hit",
+			Text = "",
+			AutoButtonColor = false,
+			BackgroundTransparency = 1,
+			Selectable = false,
+			Size = UDim2.fromScale(1, 1),
+			ZIndex = 8,
+			Parent = frame,
+		})
+		hit.Activated:Connect(function()
+			if card.state == "today" then
+				Kit.sound("Click")
+				claim()
+			end
+		end)
+		cards[day] = card
+		frames[day] = frame
+	end
+
+	-- Footer: what to do next + the one button ---------------------------------------------
+	local footer = Kit.new("Frame", {
+		Name = "Footer",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, FOOTER_H),
+		Position = UDim2.fromScale(0, 1),
+		AnchorPoint = Vector2.new(0, 1),
+		Parent = window.content,
+	})
+	local headline = Kit.title(footer, {
+		Name = "Headline",
+		Text = "",
+		TextSize = T.H2,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -236, 0, 26),
+		Position = UDim2.fromOffset(6, 4),
+		ZIndex = 2,
+	})
+	local detail = Kit.text(footer, {
+		Name = "Detail",
+		Text = "",
+		TextSize = T.Small,
+		TextColor3 = C.TextDim,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -236, 0, 20),
+		Position = UDim2.fromOffset(6, 31),
+		ZIndex = 2,
+	})
+	local button = Kit.button(footer, {
+		Name = "Claim",
+		Text = "CLAIM",
+		Font = F.Display,
+		TextSize = 24,
+		Color = C.Gold,
+		Size = UDim2.fromOffset(216, 50),
+		Position = UDim2.new(1, -2, 0.5, -2),
+		AnchorPoint = Vector2.new(1, 0.5),
+		ZIndex = 2,
+	}, function()
+		claim()
+	end)
+	button:SetAttribute("FocusFirst", true)
+
+	-- State ---------------------------------------------------------------------------------
+	local big = true -- one row of tall cards
+	local canClaim = false
+	local claimSentAt = 0
+	local tomorrowCard = 0
+	local todayClaimed = false
+
+	local function dailyOf(data: { [string]: any }?): { [string]: any }?
+		local daily = data and data.daily
+		return if type(daily) == "table" then daily else nil
+	end
+	local function secondsLeft(daily: { [string]: any }): number
+		return math.max(0, (tonumber(daily.nextIn) or 0) - State.age())
+	end
+
+	claim = function()
+		if not canClaim then
+			deps.close()
+			return
+		end
+		-- One request per press; the State snapshot that follows flips the button.
+		if os.clock() - claimSentAt < 1.5 then
+			return
+		end
+		claimSentAt = os.clock()
+		action:FireServer({ action = "ClaimDaily" })
+	end
+
+	local function dress(card: Card, day: number, state: string)
+		card.state = state
+		local claimed = state == "claimed"
+		card.tick.Visible = claimed
+		card.header.Text = if state == "today" then "TODAY" elseif state == "tomorrow" then "TOMORROW" else "DAY " .. day
+		card.header.TextColor3 = if state == "today" then C.Gold else C.Text
+		card.header.TextTransparency = if claimed then 0.4 else 0
+		card.amount.TextTransparency = if claimed then 0.4 else 0
+		if card.extra then
+			card.extra.TextTransparency = if claimed then 0.4 else 0
+		end
+		if state == "today" then
+			paint(card.frame, C.SurfaceHiTop, C.Gold, 3)
+		elseif claimed then
+			paint(card.frame, C.Surface:Lerp(C.Well, 0.5))
+		else
+			paint(card.frame, C.SurfaceHi)
+		end
+		Kit.setGlow(card.frame, state == "today", C.Gold)
+	end
+
+	-- The countdown texts (tomorrow's card and the footer), once a second while open.
+	local clockText = ""
+	local function updateClock()
+		local daily = dailyOf(State.data)
+		if not daily then
+			return
+		end
+		local text = Format.time(secondsLeft(daily))
+		if text == clockText then
+			return
+		end
+		clockText = text
+		local card = cards[tomorrowCard]
+		if card and todayClaimed then
+			card.status.Text = if big then "COME BACK TOMORROW\n" .. text else text
+		end
+		if todayClaimed then
+			detail.Text = "Next reward in " .. text
+		end
+	end
+
+	local function render()
+		local data = State.data
+		local daily = dailyOf(data)
+		if not data or not daily then
+			return
+		end
+		local day = math.clamp(math.floor(tonumber(daily.day) or 1), 1, DailyReward.DAYS)
+		local claimed = math.clamp(math.floor(tonumber(daily.claimed) or 0), 0, DailyReward.DAYS)
+		local streak = math.max(0, math.floor(tonumber(daily.streak) or 0))
+		canClaim = daily.claimable == true
+		todayClaimed = not canClaim
+		tomorrowCard = if day < DailyReward.DAYS then day + 1 else 0
+		local progression = Economy.progression(tonumber(data.highestTier) or 1, tonumber(data.processLevel) or 0)
+		local income = tonumber(data.income) or 0
+		for i, card in cards do
+			card.amount.Text = "+" .. State.money(DailyReward.cash(i, income, progression))
+			local state = if i <= claimed
+				then "claimed"
+				elseif i == day and canClaim then "today"
+				elseif i == tomorrowCard then "tomorrow"
+				else "later"
+			if state ~= card.state then
+				dress(card, i, state)
+			end
+			card.status.TextColor3 = if state == "today" then C.Gold elseif state == "claimed" then C.Good else C.TextDim
+			card.status.Text = if state == "today" then "CLAIM!" elseif state == "claimed" then "CLAIMED" else ""
+		end
+		streakTitle.Text = if streak >= 2
+			then string.format("%d DAY STREAK", streak)
+			elseif streak == 1 then "1 DAY STREAK"
+			else "START YOUR STREAK"
+		if canClaim then
+			headline.Text = string.format("Your Day %d reward is ready!", day)
+			detail.Text = "Rewards grow every day, up to the big Day 7 gift"
+			Kit.setButton(button, "CLAIM", C.Gold)
+		else
+			local nextDay = DailyReward.card(day + 1)
+			local cash = State.money(DailyReward.cash(nextDay, income, progression))
+			headline.Text = string.format("Come back tomorrow for Day %d: %s", nextDay, DailyReward.describe(nextDay, cash, W.Chest))
+			Kit.setButton(button, "GOT IT", C.SurfaceHi)
+		end
+		clockText = ""
+		updateClock()
+	end
+
+	-- Layout: one row of seven, or 4 + 3 with Day 7 double width -----------------------------
+	local function layout(size: Vector2)
+		-- Window chrome (24 wide, 84 tall) and the content well's padding (10 a side).
+		local width, height = size.X - 44, size.Y - 104
+		big = width >= ONE_ROW_MIN
+		hero.Visible = big
+		local top = if big then HERO_H + GAP else 0
+		local gridH = height - top - FOOTER_H - GAP
+		grid.Position = UDim2.fromOffset(0, top)
+		grid.Size = UDim2.new(1, 0, 0, gridH)
+		local columns = if big then DailyReward.DAYS else 4
+		local rows = if big then 1 else 2
+		local cellW = (width - (columns - 1) * GAP) / columns
+		local cellH = (gridH - (rows - 1) * GAP) / rows
+		local artSize = if big then 64 else 40
+		for day, card in cards do
+			local column = (day - 1) % columns
+			local row = (day - 1) // columns
+			local wide = not big and day == DailyReward.DAYS
+			card.frame.Position = UDim2.fromOffset(math.floor(column * (cellW + GAP)), math.floor(row * (cellH + GAP)))
+			card.frame.Size = UDim2.fromOffset(math.floor(if wide then cellW * 2 + GAP else cellW), math.floor(cellH))
+			card.art.Size = UDim2.fromOffset(artSize, artSize)
+			card.art.Position = UDim2.new(0.5, 0, 0, 30)
+			card.amount.Position = UDim2.new(0.5, 0, 0, 34 + artSize)
+			if card.extra then
+				card.extra.Position = UDim2.new(0.5, 0, 0, 55 + artSize)
+			end
+			card.status.Size = UDim2.new(1, -10, 0, if big then 44 else 14)
+		end
+		clockText = ""
+		render()
+	end
+	layout(window.size())
+	window.onResize.Event:Connect(layout)
+	State.changed.Event:Connect(render)
+
+	if not PREVIEW then
+		RunService.Heartbeat:Connect(function()
+			if window.isOpen() then
+				updateClock()
+			end
+		end)
+
+		-- The claim landed: today's card pops under a burst of confetti (the cash, its coins
+		-- and the crate reveal come through the usual Cash effect and Reward popup).
+		Net.event("Notify").OnClientEvent:Connect(function(payload)
+			if type(payload) ~= "table" or payload.kind ~= "Daily" or payload.event ~= "claimed" then
+				return
+			end
+			Kit.sound("Reward")
+			local card = cards[tonumber(payload.day) or 0]
+			if card and window.isOpen() then
+				Kit.pop(card.frame, 1)
+				Kit.confetti(window.frame, { Origin = UDim2.fromScale(0.5, 0.45), Count = 24, ZIndex = 12 })
+			end
+		end)
+
+		-- Opens by itself once per session when a reward is waiting and the screen is calm
+		-- (not at all once the player has opened it from the HUD).
+		local opened = false
+		window.onOpen.Event:Connect(function()
+			opened = true
+		end)
+		task.spawn(function()
+			local player = Players.LocalPlayer
+			local calm = 0
+			local needed = CALM
+			while not opened do
+				local step = task.wait(0.5)
+				local data = State.data
+				local daily = dailyOf(data)
+				if data and data.tutorialDone ~= true then
+					needed = CALM_AFTER_TUTORIAL
+				end
+				local ready = data ~= nil
+					and daily ~= nil
+					and daily.claimable == true
+					and data.tutorialDone == true
+					and player:GetAttribute("IntroPlaying") ~= true
+					and player:GetAttribute("GameReady") == true
+				if ready then
+					local playerGui = player:FindFirstChildOfClass("PlayerGui")
+					ready = not (playerGui and playerGui:FindFirstChild("LoadingScreen"))
+				end
+				for _, name in BUSY do
+					ready = ready and screen:GetAttribute(name) ~= true
+				end
+				calm = if ready then calm + step else 0
+				if calm >= needed and not opened then
+					deps.open()
+					return
+				end
+			end
+		end)
+	end
+
+	return {
+		window = window,
+		beforeOpen = function()
+			render()
+			deps.ripple(frames)
+		end,
+	}
+end
+
+return DailyWindow
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="252">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -65658,8 +66611,12 @@ return CardioHud
 	  top centre     Chad icon + unit count "37/100" (sunny + "RACK FULL" when full)
 	                 under it a low dark strip "Deposit bonus: x1.3 · 12s"
 	                 ("AURA SURGE x2 · 1:23" in orange during a surge); the
-	                 tutorial quest pill and the parkour run pill dock under that
+	                 tutorial quest pill and the parkour run pill dock under that,
+	                 and once the tutorial is done the "Next:" goal strip takes
+	                 that slot ("Next: Protein Bro 1/2" over "merge 2x Gym Rookie",
+	                 Shared.NextGoal; above the dumbbell on compact screens)
 	  left edge      icon grid with captions: Home Ranking Modes / Index Shop Invite
+	                 Daily (a dot while a daily reward waits, else its countdown)
 	                 promo under it: tilted "PERMANENT" tag, wide 2X CASH (or
 	                 STARTER PACK) button, "Only 199 R$"
 	  bottom left    status row (Premium, Friends, Boost), "Cash [ x1.0 ]",
@@ -65691,6 +66648,7 @@ local Workspace = game:GetService("Workspace")
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
+local NextGoal = require(ReplicatedStorage.Shared.NextGoal)
 
 local Kit = require(script.Parent.Kit)
 local State = require(script.Parent.Parent.State)
@@ -65708,7 +66666,7 @@ export type Handlers = {
 	toast: ((string, string?) -> ())?,
 }
 
--- Buttons by name (Shop, Index, Ranking, Free, Home, Invite, Settings, Modes) so
+-- Buttons by name (Shop, Index, Ranking, Free, Home, Invite, Daily, Settings, Modes) so
 -- other modules (tutorial, guide) can badge, glow or aim coin bursts at them.
 Hud.buttons = {} :: { [string]: TextButton }
 
@@ -65743,6 +66701,9 @@ local UNITS_Y = 4 -- unit counter row: y 4..48
 local STRIP_Y = 54 -- deposit strip: y 54..84
 local STRIP_H = 30
 local RUN_Y = 92 -- tutorial / run pill slot (Tutorial.luau TOP_Y matches)
+local GOAL_H = 46 -- "Next:" goal strip (the same slot once the tutorial is done)
+local GOAL_MAX_W = 380
+local GOAL_TEXT_X = 50
 local GRID_Y = 104 -- left icon grid, first row
 local GRID_ICON = 64
 local GRID_ICON_COMPACT = 48
@@ -65891,7 +66852,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	Hud.buttons.Settings = gear
 
 	-- Left edge: icon grid with captions --------------------------------------------------
-	local GRID_ROWS = { { "Home", "Ranking", "Modes" }, { "Index", "Shop", "Invite" } }
+	local GRID_ROWS = { { "Home", "Ranking", "Modes" }, { "Index", "Shop", "Invite", "Daily" } }
 	local CAPTIONS: { [string]: string } = {
 		Home = "Home",
 		Ranking = "Ranking",
@@ -65899,9 +66860,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Index = "Index",
 		Shop = "Shop",
 		Invite = "Invite",
+		Daily = "Daily",
 	}
-	-- Modes draws the rendered finish-flag image; Star stands in if it is missing.
-	local ICON_FOR: { [string]: string } = { Modes = Kit.pickIcon("Modes", "Star") }
+	-- Modes draws the rendered finish-flag image; Star stands in if it is missing. Daily
+	-- is the second gift of the atlas (the FREE gift keeps the first).
+	local ICON_FOR: { [string]: string } = { Modes = Kit.pickIcon("Modes", "Star"), Daily = Kit.pickIcon("Gift2", "Free") }
 	local grid = group("Menu", { Position = UDim2.fromOffset(EDGE_X, GRID_Y) })
 	local captions: { TextLabel } = {}
 	local function gridButton(name: string, onClick: () -> ()): TextButton
@@ -65952,7 +66915,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Kit.setGlow(Hud.buttons.Modes, false)
 		handlers.openWindow("Modes")
 	end)
-	gridButton("Index", function()
+	local function openIndex()
 		Kit.setGlow(Hud.buttons.Index, false)
 		local data = State.data
 		if data then
@@ -65960,7 +66923,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			refreshIndexBadge()
 		end
 		handlers.openWindow("Index")
-	end)
+	end
+	gridButton("Index", openIndex)
 	gridButton("Shop", function()
 		handlers.openWindow("Shop")
 	end)
@@ -65969,6 +66933,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			SocialService:PromptGameInvite(Players.LocalPlayer)
 		end)
 	end)
+	local dailyButton = gridButton("Daily", function()
+		handlers.openWindow("Daily")
+	end)
+	local dailyCaption = dailyButton:FindFirstChild("Caption") :: TextLabel
 	-- Right after the tutorial finishes (watched live this session), one toast and a
 	-- soft glow point at the Modes button.
 	local tutorialWasOpen = false
@@ -66457,6 +67425,193 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		})
 	end
 
+	-- Next goal: "Next: Protein Bro 1/2" over "merge 2x Gym Rookie" ------------------------
+	-- One dark strip like the deposit strip, in the tutorial pill's slot once the tutorial
+	-- is done (above the dumbbell on compact screens): the target's thumbnail (a silhouette
+	-- until it is discovered), its name and count, what to do under them, and a thin bar
+	-- along the bottom. The target comes from Shared.NextGoal; the strip opens the Index.
+	local goal = Kit.new("TextButton", {
+		Name = "NextGoal",
+		Text = "",
+		AutoButtonColor = false,
+		BackgroundColor3 = C.Ink,
+		BackgroundTransparency = 0.45,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(280, GOAL_H),
+		Position = UDim2.new(0.5, 0, 0, RUN_Y),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Visible = false,
+		Parent = screen,
+	})
+	Kit.corner(goal, 8)
+	Kit.selectable(goal)
+	local goalThumb = group("Thumb", {
+		Size = UDim2.fromOffset(42, 42),
+		Position = UDim2.new(0, 4, 0.5, -2),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 2,
+		Parent = goal,
+	})
+	local function goalText(name: string, size: number, color: Color3, font: Enum.Font?): TextLabel
+		return Kit.hudText(goal, {
+			Name = name,
+			Text = "",
+			Font = font,
+			TextSize = size,
+			TextColor3 = color,
+			StrokeThickness = 2,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Size = UDim2.fromOffset(10, 22),
+			ZIndex = 3,
+		})
+	end
+	local goalLead = goalText("Lead", 17, C.Gold)
+	goalLead.Text = "Next:"
+	local goalTitle = goalText("Title", 17, Color3.new(1, 1, 1))
+	local goalCount = goalText("Count", 15, Color3.new(1, 1, 1), F.Number)
+	local goalHint = goalText("Hint", 14, Color3.fromRGB(225, 230, 250), F.UI)
+	goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, 23)
+	goalHint.Size = UDim2.fromOffset(10, 16)
+	local goalBar = Kit.new("Frame", {
+		Name = "Bar",
+		BackgroundColor3 = C.Gold,
+		BorderSizePixel = 0,
+		Size = UDim2.new(0, 0, 0, 3),
+		Position = UDim2.new(0, 8, 1, -5),
+		ZIndex = 2,
+		Parent = goal,
+	})
+	Kit.round(goalBar)
+	-- Touch: an invisible pad grows the low strip to a full tap target (sized in applyCompact).
+	local goalPad = Kit.new("TextButton", {
+		Name = "Hit",
+		Text = "",
+		AutoButtonColor = false,
+		BackgroundTransparency = 1,
+		Selectable = false,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromScale(1, 1),
+		Visible = false,
+		ZIndex = 30,
+		Parent = goal,
+	})
+	for _, button in { goal, goalPad } do
+		button.Activated:Connect(function()
+			Kit.sound("Click")
+			openIndex()
+		end)
+	end
+	goal.MouseEnter:Connect(function()
+		Kit.tween(goal, 0.12, { BackgroundTransparency = 0.25 })
+	end)
+	goal.MouseLeave:Connect(function()
+		Kit.tween(goal, 0.12, { BackgroundTransparency = 0.45 })
+	end)
+	local function tierName(tier: number): string
+		local entry = Theme.Tiers[tier]
+		return if entry then entry.Name else ("Tier " .. tier)
+	end
+	local goalKey = ""
+	local goalTitleShown = ""
+	local goalThumbKey = ""
+	local goalWidth = 280
+	local function paintGoal(data: { [string]: any })
+		if type(data.discovered) ~= "table" or type(data.units) ~= "table" then
+			return
+		end
+		local picked = NextGoal.pick({
+			discovered = data.discovered,
+			units = data.units,
+			buyTier = tonumber(data.buyTier) or 1,
+			boughtAtTier = tonumber(data.boughtAtTier) or 0,
+			money = tonumber(data.money) or 0,
+		})
+		local title, hint, count = NextGoal.text(picked, tierName, State.money)
+		local key = title .. "|" .. hint .. "|" .. count
+		if key == goalKey then
+			Kit.tween(goalBar, 0.3, { Size = UDim2.new(0, math.floor((goalWidth - 16) * picked.progress), 0, 3) })
+			return
+		end
+		goalKey = key
+		-- Line 1: "Next:", the target and the count; line 2: what to do. The strip hugs the
+		-- wider line; past GOAL_MAX_W the name and the hint truncate.
+		local room = GOAL_MAX_W - GOAL_TEXT_X - 12
+		local leadW = textWidth(goalLead.Text, goalLead.TextSize, goalLead.Font)
+		local countW = textWidth(count, goalCount.TextSize, goalCount.Font)
+		local titleW = math.min(textWidth(title, goalTitle.TextSize, goalTitle.Font), room - leadW - countW - 14)
+		local hintW = math.min(textWidth(hint, goalHint.TextSize, goalHint.Font), room)
+		local x = GOAL_TEXT_X
+		local function put(label: TextLabel, text: string, width: number, gap: number)
+			label.Text = text
+			label.Size = UDim2.fromOffset(width + 2, 22)
+			label.Position = UDim2.fromOffset(x, 3)
+			x += width + gap
+		end
+		put(goalLead, goalLead.Text, leadW, 6)
+		put(goalTitle, title, titleW, 8)
+		put(goalCount, count, countW, 0)
+		goalCount.TextColor3 = if picked.ready then C.MoneyText else Color3.new(1, 1, 1)
+		goalHint.Text = string.upper(string.sub(hint, 1, 1)) .. string.sub(hint, 2)
+		goalHint.Size = UDim2.fromOffset(hintW + 2, 16)
+		goalWidth = math.max(x, GOAL_TEXT_X + hintW) + 12
+		goal.Size = UDim2.fromOffset(goalWidth, GOAL_H)
+		goalBar.Size = UDim2.new(0, math.floor((goalWidth - 16) * picked.progress), 0, 3)
+		-- A new target (not just a new count) gets a fresh thumbnail and a pop.
+		local thumbKey = picked.kind .. picked.tier
+		if thumbKey ~= goalThumbKey then
+			goalThumbKey = thumbKey
+			for _, child in goalThumb:GetChildren() do
+				child:Destroy()
+			end
+			pcall(Kit.unitViewport, goalThumb, picked.tier, { Size = UDim2.fromScale(1, 1) }, picked.kind == "merge")
+		end
+		if title ~= goalTitleShown then
+			goalTitleShown = title
+			Kit.pop(goal, 0.6)
+		end
+	end
+	-- Shown once the tutorial is done, outside the intro and game-mode runs. A tutorial
+	-- finished this session first lets its quest pill slide out of the slot.
+	local goalShown = false
+	local goalHoldUntil = 0
+	local goalSawTutorial = false
+	local function updateGoal()
+		local data = State.data
+		local player = Players.LocalPlayer
+		local show = data ~= nil
+			and data.tutorialDone == true
+			and os.clock() >= goalHoldUntil
+			and screen:GetAttribute("RunActive") ~= true
+			and screen:GetAttribute("ObbyMode") ~= true
+			and screen:GetAttribute("CardioActive") ~= true
+			and not (player ~= nil and player:GetAttribute("IntroPlaying") == true)
+		if show and data then
+			paintGoal(data)
+		end
+		if show ~= goalShown then
+			goalShown = show
+			goal.Visible = show
+		end
+	end
+	State.changed.Event:Connect(function(data)
+		if data.tutorialDone ~= true then
+			goalSawTutorial = true
+		elseif goalSawTutorial then
+			goalSawTutorial = false
+			goalHoldUntil = os.clock() + 1.5
+			task.delay(1.6, updateGoal)
+		end
+		updateGoal()
+	end)
+	for _, name in { "RunActive", "ObbyMode", "CardioActive" } do
+		screen:GetAttributeChangedSignal(name):Connect(updateGoal)
+	end
+	pcall(function()
+		Players.LocalPlayer:GetAttributeChangedSignal("IntroPlaying"):Connect(updateGoal)
+	end)
+
 	-- Bottom centre: the dumbbell with "AURA" and the carried amount ----------------------
 	local Assets = (function(): any
 		local shared = ReplicatedStorage:FindFirstChild("Shared")
@@ -66652,7 +67807,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local L = { edge = EDGE_X, bottom = -6, walletTop = false, walletY = 0, gridY = GRID_Y, tap = 0, tankX = 0, freeY = -20 }
 	local function gridRows(): { { string } }
 		if oneRow then
-			return { { "Home", "Ranking", "Modes", "Index", "Shop", "Invite" } }
+			return { { "Home", "Ranking", "Modes", "Index", "Shop", "Invite", "Daily" } }
 		end
 		return GRID_ROWS
 	end
@@ -66735,6 +67890,15 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end, function()
 		return UDim2.new(0.5, 0, 0, -140)
 	end)
+	-- The goal strip: under the deposit strip, or just above the (compact) dumbbell.
+	slot(goal, function()
+		if compact then
+			return UDim2.new(0.5, L.tankX, 1, L.bottom - math.ceil(DUMBBELL_W_COMPACT * DUMBBELL_ASPECT) - 8)
+		end
+		return UDim2.new(0.5, 0, 0, RUN_Y)
+	end, function()
+		return if compact then UDim2.new(0.5, L.tankX, 1, 200) else UDim2.new(0.5, 0, 0, -140)
+	end)
 	local targets: { [GuiObject]: UDim2 } = {}
 	local function place(animate: boolean)
 		local away = screen:GetAttribute("WindowOpen") == true
@@ -66780,6 +67944,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		local width = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
 		tank.Size = UDim2.fromOffset(width, width * DUMBBELL_ASPECT)
+		goal.AnchorPoint = Vector2.new(0.5, if compact then 1 else 0)
+		goalPad.Size = UDim2.new(1, 0, 0, math.max(GOAL_H, L.tap))
+		goalPad.Visible = Kit.touch
 		-- Gear: on the top bar's line with a mouse; below it (never on Roblox's bar) otherwise.
 		local gearSize = math.max(GEAR, L.tap)
 		gear.Size = UDim2.fromOffset(gearSize, gearSize)
@@ -66798,7 +67965,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		place(next(targets) ~= nil)
 	end
 	-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
-	local selectables: { GuiObject } = { promoButton, addButton, quitButton }
+	local selectables: { GuiObject } = { promoButton, addButton, quitButton, goal }
 	for _, button in Hud.buttons do
 		table.insert(selectables, button)
 	end
@@ -67126,6 +68293,26 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		freeTimer.Text = text
 	end
+	-- Daily reward: a dot, a sunny caption and a gentle bounce while a reward waits; the
+	-- countdown to the next one as the caption otherwise.
+	local dailyText = ""
+	local dailyReady: boolean? = nil
+	local stopDailyBounce: (() -> ())? = nil
+	local function paintDaily(text: string, ready: boolean)
+		if ready ~= dailyReady then
+			dailyReady = ready
+			Kit.setBadge(dailyButton, if ready then "!" else nil)
+			dailyCaption.TextColor3 = if ready then C.Gold else Color3.new(1, 1, 1)
+			if ready then
+				Kit.pop(dailyButton, 0.8)
+				stopDailyBounce = Kit.breathe(dailyButton, 0.06)
+			elseif stopDailyBounce then
+				stopDailyBounce()
+				stopDailyBounce = nil
+			end
+		end
+		dailyCaption.Text = text
+	end
 	local nextText = ""
 	RunService.Heartbeat:Connect(function()
 		local now = Workspace:GetServerTimeNow()
@@ -67160,6 +68347,18 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			if label ~= freeText then
 				freeText = label
 				paintFree(label, ready)
+			end
+			local daily = data.daily
+			if type(daily) == "table" then
+				-- The dot and the bounce wait for the tutorial, like the window itself.
+				local dailyNow = daily.claimable == true and data.tutorialDone == true
+				local dailyLabel = if daily.claimable == true
+					then CAPTIONS.Daily
+					else Format.time(math.max(0, (tonumber(daily.nextIn) or 0) - State.age()))
+				if dailyLabel ~= dailyText or dailyNow ~= dailyReady then
+					dailyText = dailyLabel
+					paintDaily(dailyLabel, dailyNow)
+				end
 			end
 		end
 	end)
@@ -67228,7 +68427,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="249">
+          <Item class="ModuleScript" referent="253">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -70467,7 +71666,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="250">
+          <Item class="ModuleScript" referent="254">
             <Properties>
               <string name="Name">MapPicker</string>
               <string name="Source"><![CDATA[--[[
@@ -71372,7 +72571,7 @@ return MapPicker
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="251">
+          <Item class="ModuleScript" referent="255">
             <Properties>
               <string name="Name">MogHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -72411,7 +73610,7 @@ return MogHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="252">
+          <Item class="ModuleScript" referent="256">
             <Properties>
               <string name="Name">MogRing</string>
               <string name="Source"><![CDATA[--!strict
@@ -72917,7 +74116,7 @@ return MogRing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="253">
+          <Item class="ModuleScript" referent="257">
             <Properties>
               <string name="Name">ObbyHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -73652,7 +74851,7 @@ return ObbyHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="254">
+          <Item class="ModuleScript" referent="258">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -76769,7 +77968,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="255">
+          <Item class="ModuleScript" referent="259">
             <Properties>
               <string name="Name">ShopScenes</string>
               <string name="Source"><![CDATA[--[[
@@ -78688,7 +79887,7 @@ return ShopScenes
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="256">
+          <Item class="ModuleScript" referent="260">
             <Properties>
               <string name="Name">Tutorial</string>
               <string name="Source"><![CDATA[--[[
@@ -79319,11 +80518,12 @@ return Tutorial
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="257">
+          <Item class="ModuleScript" referent="261">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
-	Windows: Shop, Index, Ranking and Settings.
+	Windows: Shop, Index, Ranking and Settings (Maps and Daily Reward live in
+	MapPicker.luau and DailyWindow.luau and register here).
 
 	Only one is open at a time. A dimmed backdrop sits behind the open window;
 	clicking it, the X button, Escape or the gamepad B button closes it.
@@ -79346,6 +80546,7 @@ local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
 local Kit = require(script.Parent.Kit)
+local DailyWindow = require(script.Parent.DailyWindow)
 local MapPicker = require(script.Parent.MapPicker)
 local ShopScenes = require(script.Parent.ShopScenes)
 local Sprites = require(script.Parent.Parent.Fx.Sprites)
@@ -83109,6 +84310,16 @@ function Windows.build(screen: ScreenGui)
 	})
 	maps = picker
 	beforeOpen.Maps = picker.beforeOpen
+	-- Daily Reward (DailyWindow.luau): opens from the HUD and by itself once per session.
+	local daily = DailyWindow.build(screen, {
+		register = register,
+		ripple = ripple,
+		open = function()
+			Windows.open("Daily")
+		end,
+		close = Windows.closeAll,
+	})
+	beforeOpen.Daily = daily.beforeOpen
 
 	-- B / Escape closes the open window. gameProcessedEvent is not checked: ButtonB
 	-- comes in processed while a button is selected, and that is when it matters.
@@ -83134,7 +84345,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="258">
+  <Item class="Workspace" referent="262">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>

@@ -62,6 +62,11 @@ export type Profile = {
 	onboarding: number,
 	-- Roblox badges: true = awarded, false = earned and waiting to be awarded (Badges).
 	badges: { [string]: boolean },
+	-- Daily reward (Server.Daily, Shared.DailyReward): UTC day number of the last claim
+	-- (0 = never), days claimed in a row at that claim, UTC day number of the player's first
+	-- day (0 = not started yet, 1 = saves from before the daily reward) and whether the
+	-- first-day "come back tomorrow" toast was shown.
+	daily: { day: number, streak: number, firstDay: number, hinted: boolean },
 	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
 	-- of the last full cash reward (Economy.modeReward cooldown).
 	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
@@ -145,6 +150,7 @@ function DataService.defaultProfile(): Profile
 		starterGranted = false,
 		onboarding = 0,
 		badges = {},
+		daily = { day = 0, streak = 0, firstDay = 0, hinted = false },
 		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, stageMaps = true, gear = "none" },
 		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0 },
 		modes = {
@@ -189,6 +195,10 @@ local function reconcile(data: any): Profile
 	-- Saves from before the onboarding funnel: those players are not new, so they never log it.
 	if data.onboarding == nil then
 		data.onboarding = 99
+	end
+	-- Saves from before the daily reward: day 1 is waiting, but today is not a "first day".
+	if data.daily == nil then
+		data.daily = { day = 0, streak = 0, firstDay = 1, hinted = true }
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
@@ -296,6 +306,14 @@ local function reconcile(data: any): Profile
 	end
 	if data.pendingCrate ~= "" and not Economy.isRarity(data.pendingCrate) then
 		data.pendingCrate = ""
+	end
+	for key, value in default.daily :: any do
+		local v = data.daily[key]
+		if type(v) ~= type(value) or (type(v) == "number" and (v ~= v or v < 0 or v == math.huge)) then
+			data.daily[key] = value
+		elseif type(v) == "number" then
+			data.daily[key] = math.floor(v)
+		end
 	end
 	if data.pendingUnlocker ~= 1 and data.pendingUnlocker ~= 2 then
 		data.pendingUnlocker = 0

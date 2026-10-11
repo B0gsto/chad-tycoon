@@ -378,6 +378,13 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 			Hud.coinBurst(amount, nil)
 			return
 		end
+		if data.source == "Daily" then
+			-- Daily reward: the amount pops over the Daily window and the coins fly out of it.
+			Sounds.play("Cash")
+			Popups.float("+" .. Format.money(amount), C.Good, UDim2.fromScale(0.5, 0.42))
+			Hud.coinBurst(amount, nil, nil)
+			return
+		end
 		Sounds.play("Cash")
 		Popups.float("+" .. Format.money(amount), C.Good, WALLET)
 		-- Claimed from the Free menu button: coins fly from the button.

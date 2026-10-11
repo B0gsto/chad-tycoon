@@ -237,6 +237,7 @@ function shotList(world) {
 		{ name: "21-shop-cosmetics", scene: "world", gui: "shop_cosmetics", camera: play },
 		{ name: "22-shop-cash", scene: "world", gui: "shop_cash", camera: play },
 		{ name: "23-shop-aura", scene: "world", gui: "shop_aura", camera: play },
+		{ name: "24-daily-reward", scene: "world", gui: "daily", camera: play },
 	];
 }
 

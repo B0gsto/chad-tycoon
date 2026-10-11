@@ -1,5 +1,6 @@
 --[[
-	Windows: Shop, Index, Ranking and Settings.
+	Windows: Shop, Index, Ranking and Settings (Maps and Daily Reward live in
+	MapPicker.luau and DailyWindow.luau and register here).
 
 	Only one is open at a time. A dimmed backdrop sits behind the open window;
 	clicking it, the X button, Escape or the gamepad B button closes it.
@@ -22,6 +23,7 @@ local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
 local Kit = require(script.Parent.Kit)
+local DailyWindow = require(script.Parent.DailyWindow)
 local MapPicker = require(script.Parent.MapPicker)
 local ShopScenes = require(script.Parent.ShopScenes)
 local Sprites = require(script.Parent.Parent.Fx.Sprites)
@@ -3785,6 +3787,16 @@ function Windows.build(screen: ScreenGui)
 	})
 	maps = picker
 	beforeOpen.Maps = picker.beforeOpen
+	-- Daily Reward (DailyWindow.luau): opens from the HUD and by itself once per session.
+	local daily = DailyWindow.build(screen, {
+		register = register,
+		ripple = ripple,
+		open = function()
+			Windows.open("Daily")
+		end,
+		close = Windows.closeAll,
+	})
+	beforeOpen.Daily = daily.beforeOpen
 
 	-- B / Escape closes the open window. gameProcessedEvent is not checked: ButtonB
 	-- comes in processed while a button is selected, and that is when it matters.

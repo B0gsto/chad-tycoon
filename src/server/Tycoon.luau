@@ -135,6 +135,10 @@ Tycoon.hooks = {
 	end,
 	-- Called before the "Home" action moves the player (GameModes ends any run first).
 	leavingForHome = function(_session: Session) end,
+	-- The State snapshot's `daily` field (filled in by Daily).
+	daily = function(_session: Session): { [string]: any }?
+		return nil
+	end,
 }
 
 -- Gameplay event listeners (used by the tutorial): fn(session, name, data).
@@ -1600,6 +1604,7 @@ local function snapshot(session: Session): { [string]: any }
 		tutorialDone = p.tutorialDone,
 		cosmetics = Tycoon.hooks.cosmetics(session),
 		modes = Tycoon.hooks.modes(session),
+		daily = Tycoon.hooks.daily(session),
 	}
 end
 
@@ -2206,10 +2211,19 @@ function Tycoon.refresh(player: Player)
 	end
 end
 
-function Tycoon.grantMoney(session: Session, amount: number)
+-- `source` names the "Cash" effect for the client ("Purchase" = a cash pack's celebration,
+-- "Daily" = the daily reward).
+function Tycoon.grantMoney(session: Session, amount: number, source: string?)
 	addMoney(session, amount)
 	local root = rootPart(session)
-	effect(session, "Cash", { amount = amount, source = "Purchase", padPos = root and root.Position })
+	effect(session, "Cash", { amount = amount, source = source or "Purchase", padPos = root and root.Position })
+	markDirty(session)
+	flush(session)
+end
+
+-- A free crate of `rarity` opened on the spot with the crate reveal (daily reward).
+function Tycoon.grantCrate(session: Session, rarity: string)
+	openChest(session, rarity, "unlock")
 	markDirty(session)
 	flush(session)
 end

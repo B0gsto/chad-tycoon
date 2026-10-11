@@ -110,9 +110,30 @@ sand island in the sea.
   the same amounts the server grants.
 - **HUD** (`src/client/UI/Hud.luau`), laid out like the owner's reference game: chunky icons and outlined
   text straight over the world. Settings gear top right; unit count and deposit strip top centre; icon grid
-  (Home, Ranking, Modes, Index, Shop, Invite) and a 2X CASH / Starter Pack promo on the left; cash
+  (Home, Ranking, Modes, Index, Shop, Invite, Daily) and a 2X CASH / Starter Pack promo on the left; cash
   and bonuses bottom left; the Blender dumbbell with the carried aura bottom centre; the free gift bottom
   right.
+- **Next goal.** Once the tutorial is done, a small strip under the deposit strip (above the dumbbell on
+  short screens) names the next target and how far along it is: "Next: Protein Bro 1/2" over "Merge 2x Gym
+  Rookie", with the target's silhouette and a thin progress bar; tapping it opens the Index. The target is
+  the next undiscovered tier, then the next buy tier, then filling the rack with the top tier
+  (`src/shared/NextGoal.luau`). It hides during the intro and game-mode runs.
+- **Daily reward** (`src/shared/DailyReward.luau`, `src/server/Daily.luau`, `src/client/UI/DailyWindow.luau`):
+  one claim per UTC day on a 7-day streak. Each day pays cash sized like a shop cash pack (minutes of your
+  income, with a minimum), days 3 and 7 also open a crate on the spot. Missing a day restarts at Day 1; after
+  Day 7 the cards loop and the streak keeps counting.
+
+  | Day | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+  |---|---|---|---|---|---|---|---|
+  | Income | 5 min | 10 min | 15 min | 20 min | 30 min | 45 min | 60 min |
+  | At least | $250 | $500 | $1,000 | $2,000 | $4,000 | $8,000 | $15,000 |
+  | Also | | | Rare crate | | | | Legendary crate |
+
+  The Daily window shows the seven cards (claimed ones ticked, today's glowing, tomorrow's with "Come back
+  tomorrow" and a countdown). It opens by itself once per session when a reward is waiting, never during the
+  intro, the tutorial or a game-mode run; the HUD's Daily button shows a dot while a reward waits and the
+  countdown otherwise. On a player's first day, a few minutes in, one toast says "Come back tomorrow for
+  Day 2: ...".
 - **Extras:** Index of all 25 tiers, global ranking, a free gift every 10 minutes, offline earnings up to
   8 h, friend (+10% each, max +50%) and Premium (+10%) bonuses, settings, and a loading screen.
 - **Badges** (`src/server/Badges.luau`, ids in `Theme.Badges`): Welcome to the Gym, Gym Graduate (tutorial
@@ -232,6 +253,8 @@ through `tools/studio.py execute_luau`:
 | `CharacterFactory.luau` | Builds the part-built unit rigs from a theme look |
 | `Poses.luau`, `RigPose.luau` | Procedural pose library and its application to a rig |
 | `SessionLock.luau` | DataStore session-lock decisions |
+| `DailyReward.luau` | Daily reward rules: UTC days, the streak, the 7 rewards (unit-tested) |
+| `NextGoal.luau` | Picks the HUD's "Next:" goal (unit-tested) |
 | `TutorialSteps.luau` | Tutorial steps and their rules |
 | `Funnel.luau` | Onboarding funnel steps and what each profile logs next |
 | **src/server** | |
@@ -255,6 +278,7 @@ through `tools/studio.py execute_luau`:
 | `Cosmetics.luau` | Cosmetic passes and the Starter Pack |
 | `Intro.luau` | Saves whether the intro was seen |
 | `Tutorial.luau` | Tutorial progress and reward |
+| `Daily.luau` | Daily reward claims, the State snapshot's `daily` field, the first-day toast |
 | `Monetization.luau` | Passes, products, receipts, paid-random-items policy |
 | `DataService.luau` | DataStore profiles (retries, no overwrite after a failed load) |
 | `Ranking.luau` | OrderedDataStore leaderboard |
@@ -264,6 +288,7 @@ through `tools/studio.py execute_luau`:
 | `UI/Kit.luau` | UI design system (buttons, panels, icons, windows) |
 | `UI/Hud.luau` | Always-on HUD |
 | `UI/Windows.luau` | Shop, Index, Ranking, Settings, Game Modes |
+| `UI/DailyWindow.luau` | Daily Reward window (opens by itself once per session) |
 | `UI/Popups.luau` | Toasts, reward reveals, crate panel, dialogs, offline earnings |
 | `UI/Tutorial.luau` | Tutorial quest pill and completion banner |
 | `Guide.luau` | Bobbing chevron that points at a target |
@@ -285,7 +310,7 @@ through `tools/studio.py execute_luau`:
 | `Intro/Avatar.luau`, `AvatarRig.luau` | The player's avatar as an actor |
 | `Intro/Framing.luau`, `Ui.luau` | Shot maths; letterbox, subtitles, Skip |
 | **src/loader** | ReplicatedFirst loading screen |
-| `tests/run.luau` | Lune unit tests |
+| `tests/run.luau` | Lune unit tests (`tests/daily.luau`, `mog.luau`, `cardio*.luau` are loaded by it) |
 | `scripts/` | `check.sh`, `lint-files.sh`, `simulate.luau` |
 | `art/` | Blender scripts (`art/blender/<area>/`), outputs and asset specs (`art/assets/*.json`) |
 | `assets/` | Pins, upload manifest, downloaded `.rbxm` models |
