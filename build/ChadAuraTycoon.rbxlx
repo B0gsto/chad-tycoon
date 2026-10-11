@@ -31941,7 +31941,9 @@ local function spawnFloorChest(session: Session)
 	model.Parent = plot.chestFolder
 	table.insert(session.floorChests, chest)
 	if rarity ~= "Common" then
-		toast(session, string.format("A %s %s is on its way!", rarity, theme.Words.Chest), "good")
+		-- "An Uncommon Crate", "An Epic Crate", "A Rare Crate".
+		local article = if string.find(rarity, "^[AEIOU]") then "An" else "A"
+		toast(session, string.format("%s %s %s is on its way!", article, rarity, theme.Words.Chest), "good")
 	end
 end
 
@@ -32386,7 +32388,8 @@ local function doMerge(session: Session, verbose: boolean, auto: boolean)
 		discoverAll(session, stepTiers(steps))
 		emit(session, "Merge", { merges = merges, top = top })
 		if verbose then
-			toast(session, string.format("Merged %s times! Best: %s", Format.short(merges), tierName(top)), "good")
+			local times = if merges == 1 then "once" else Format.short(merges) .. " times"
+			toast(session, string.format("Merged %s! Best: %s", times, tierName(top)), "good")
 		end
 		markDirty(session)
 	elseif verbose then
