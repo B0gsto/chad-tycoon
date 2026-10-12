@@ -2608,7 +2608,9 @@ local function buildShop(screen: ScreenGui)
 		-- Opening choreography: section headers slide in, cards and banners ripple in the first time (scale +
 		-- fade, 28 ms apart), the cart lands a beat later with an overshoot and wiggle.
 		for i, head in heads do
-			if not PREVIEW and i == current then
+			-- Not a header the layout has hidden (a short page, a phone, has none): Kit.appear
+			-- would show it again, over the first card.
+			if not PREVIEW and i == current and head.Visible then
 				local target = head.Position
 				head.Position = target + UDim2.fromOffset(-24, 0)
 				Kit.tween(head, 0.32, { Position = target }, Enum.EasingStyle.Back)
