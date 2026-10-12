@@ -227,7 +227,7 @@ function shotList(world) {
 			{ name: "plot-3-left-wing", scene: "world", gui: "none", camera: { pos: P(-20, 21, -30), look: P(33, 1, -6), fov: 58 }, extra: span },
 			{ name: "plot-4-right-wing", scene: "world", gui: "none", camera: { pos: P(20, 21, -30), look: P(-33, 1, -6), fov: 58 }, extra: span },
 			{ name: "plot-5-from-rack", scene: "world", gui: "none", camera: { pos: P(0, 30, 32), look: P(0, 0, -24), fov: 62 }, extra: span },
-			{ name: "plot-6-plan", scene: "world", gui: "none", camera: { pos: P(0, 146, -17), look: P(0, 0, -2), fov: 42 }, extra: span },
+			{ name: "plot-6-plan", scene: "world", gui: "none", camera: { pos: P(0, 120, -14), look: P(0, 0, -2), fov: 51 }, extra: span },
 		];
 	}
 	return [
