@@ -326,22 +326,72 @@ test("processing", function()
 	near(Economy.processBulkCost(5, 10), sum, "bulk process cost")
 	eq(Economy.incomePerSecond(100, 40, 2), 80, "income bottlenecked by processing")
 	eq(Economy.incomePerSecond(30, 40, 1), 30, "income bottlenecked by production")
+	-- Every level is 25% faster and always costs 50 seconds of the converter's own output.
+	for _, level in { 0, 8, 39, 112, 150 } do
+		near(Economy.processRate(level + 1) / Economy.processRate(level), 1.25, "+25% speed at level " .. level)
+		near(Economy.processUpgradeCost(level) / Economy.processRate(level), 50, "50 s of output at level " .. level)
+	end
+	eq(Economy.CONVERTER_HEADROOM, 4, "upgrades stop at 4x the production")
+end)
+
+test("converter floor: a new tier never outruns the converter", function()
+	eq(Economy.minProcessLevel(1), 0, "no floor below the base rate")
+	eq(Economy.minProcessLevel(2), 0, "tier 2 is covered by the base rate")
+	eq(Economy.minProcessLevel(10), 39, "floor of tier 10")
+	eq(Economy.minProcessLevel(0), 0, "tiers are clamped (low)")
+	eq(Economy.minProcessLevel(99), Economy.minProcessLevel(Economy.MAX_TIER), "tiers are clamped (high)")
+	local rack = table.create(Economy.MAX_TIER, 0)
+	for tier = 1, Economy.MAX_TIER do
+		local floor = Economy.minProcessLevel(tier)
+		check(floor >= 0 and floor == math.floor(floor), "floor is a whole level at tier " .. tier)
+		check(Economy.processRate(floor) >= Economy.unitRate(tier), "floor covers one unit of tier " .. tier)
+		if floor > 0 then
+			check(Economy.processRate(floor - 1) < Economy.unitRate(tier), "floor is the lowest such level at tier " .. tier)
+		end
+		if tier > 3 then
+			local step = floor - Economy.minProcessLevel(tier - 1)
+			check(step == 4 or step == 5, "about 5 free levels per tier at " .. tier)
+		end
+		-- The most a merged rack makes (one unit of every tier up to the best) is under 2x
+		-- the floor's rate, so an un-upgraded converter passes at least half of it.
+		rack[tier] = 1
+		local production = Economy.productionPerSecond(rack)
+		check(production <= 2 * Economy.processRate(floor), "never short by more than 2x at tier " .. tier)
+		check(Economy.incomePerSecond(production, Economy.processRate(floor), 1) >= production / 2, "half the income at tier " .. tier)
+	end
+	-- A profile's level is lifted to the floor of its best tier and never lowered.
+	eq(math.max(16, Economy.minProcessLevel(10)), 39, "level lifted to the floor of the best tier")
+	eq(math.max(150, Economy.minProcessLevel(Economy.MAX_TIER)), 150, "a level above every floor is kept")
+	-- The start level covers the first three tiers; the floor takes over from tier 4.
+	check(Economy.START_PROCESS_LEVEL >= Economy.minProcessLevel(3), "start level covers tier 3")
+	check(Economy.START_PROCESS_LEVEL < Economy.minProcessLevel(4), "tier 4 brings the first free levels")
 end)
 
 test("deposit multiplier", function()
 	local rng = seeded(42)
 	local seen = {}
-	for _ = 1, 5000 do
+	local sum, rolls = 0, 10000
+	for _ = 1, rolls do
 		local m = Economy.rollDepositMultiplier(rng)
 		check(m >= Economy.DEPOSIT_MIN and m <= Economy.DEPOSIT_MAX, "multiplier in range " .. m)
+		check(m >= 1, "a deposit never loses aura " .. m)
 		seen[m] = true
+		sum += m
 	end
-	check(seen[1.0] == true and seen[0.5] == true, "covers low and neutral values")
+	eq(Economy.DEPOSIT_MIN, 1, "the lowest multiplier is x1")
+	check(seen[1.0] == true and seen[3.0] == true, "covers the neutral and the top value")
+	check(sum / rolls >= 1.10 and sum / rolls <= 1.20, "mean multiplier about 1.15 (" .. sum / rolls .. ")")
+	local lowest, highest = math.huge, 0
+	for _, entry in Economy.DEPOSIT_MULTIPLIERS do
+		lowest, highest = math.min(lowest, entry.value), math.max(highest, entry.value)
+	end
+	eq(lowest, Economy.DEPOSIT_MIN, "DEPOSIT_MIN matches the table")
+	eq(highest, Economy.DEPOSIT_MAX, "DEPOSIT_MAX matches the table")
 	eq(
 		Economy.rollDepositMultiplier(function()
 			return 0
 		end),
-		0.5,
+		1.0,
 		"roll 0 gives first entry"
 	)
 	eq(
@@ -351,6 +401,20 @@ test("deposit multiplier", function()
 		3.0,
 		"roll ~1 gives last entry"
 	)
+	-- The aura carried is queued whole; only the part above x1 is the bonus (paid as cash).
+	local queued, bonus = Economy.depositSplit(100, 1)
+	eq(queued, 100, "x1 queues everything")
+	eq(bonus, 0, "x1 has no bonus")
+	queued, bonus = Economy.depositSplit(100, 1.5)
+	eq(queued, 100, "x1.5 queues the aura carried")
+	near(bonus, 50, "x1.5 pays half as a bonus")
+	queued, bonus = Economy.depositSplit(100, 3)
+	near(queued + bonus, 300, "queue and bonus add up to the multiplied deposit")
+	queued, bonus = Economy.depositSplit(100, 0.5)
+	eq(queued, 100, "a multiplier below 1 takes nothing away")
+	eq(bonus, 0, "a multiplier below 1 pays no bonus")
+	queued, bonus = Economy.depositSplit(0, 3)
+	eq(queued + bonus, 0, "nothing carried, nothing paid")
 end)
 
 test("surge", function()
@@ -376,11 +440,29 @@ test("chests", function()
 		end
 		local rng = seeded(7)
 		for _ = 1, 500 do
-			-- Highest 10 anchors crates at tier 6.
+			-- Highest 10 anchors crates at tier 7.
 			local tier = Economy.rollChest(rarity, 10, rng)
-			check(tier >= 4 and tier <= 10, "roll near the crate anchor")
+			check(tier >= 5 and tier <= 10, "roll near the crate anchor")
 		end
 		check(Economy.unlockSeconds(rarity, true) < Economy.unlockSeconds(rarity, false), "premium is faster")
+	end
+	-- One to five minutes in the free Smasher; a profile's very first crate is faster still.
+	for index, seconds in { 60, 120, 180, 240, 300 } do
+		eq(Economy.unlockSeconds(Economy.CHEST_RARITIES[index], false), seconds, Economy.CHEST_RARITIES[index] .. " timer")
+	end
+	eq(Economy.FIRST_CRATE_SECONDS, 10, "first crate timer")
+	check(Economy.FIRST_CRATE_SECONDS < Economy.unlockSeconds("Common", true), "the first crate beats every timer")
+	-- Rarer is always better: the unit value a Smasher makes per second of its timer rises
+	-- with the rarity, so a rare crate is never a worse use of the slot than a common one.
+	for _, highest in { 5, 10, 17, 25 } do
+		for _, premium in { false, true } do
+			local prevPerSecond = 0
+			for _, rarity in Economy.CHEST_RARITIES do
+				local perSecond = Economy.chestExpectedValue(rarity, highest) / Economy.unlockSeconds(rarity, premium)
+				check(perSecond > prevPerSecond, rarity .. " beats the rarity below per Smasher second at " .. highest)
+				prevPerSecond = perSecond
+			end
+		end
 	end
 	check(not Economy.isRarity("Bogus"), "unknown rarity rejected")
 
@@ -393,9 +475,11 @@ test("chests", function()
 	end
 	-- Crates are anchored below the highest tier, further down the higher it is.
 	eq(Economy.chestAnchor(1), 1)
-	eq(Economy.chestAnchor(3), 2)
-	eq(Economy.chestAnchor(10), 6)
-	eq(Economy.chestAnchor(25), 13)
+	eq(Economy.chestAnchor(3), 3)
+	eq(Economy.chestAnchor(5), 4)
+	eq(Economy.chestAnchor(10), 7)
+	eq(Economy.chestAnchor(17), 12)
+	eq(Economy.chestAnchor(25), 17)
 	for highest = 2, 25 do
 		check(Economy.chestAnchor(highest) <= highest, "anchor at or below highest at " .. highest)
 		check(Economy.chestAnchor(highest) >= Economy.chestAnchor(highest - 1), "anchor never drops at " .. highest)
@@ -439,9 +523,9 @@ test("chests", function()
 	eq(earlyRare[#earlyRare].tier, 3)
 
 	local common = Economy.chestOdds("Common", 6)
-	eq(common[1].tier, 2)
+	eq(common[1].tier, 3)
 	eq(common[1].chance, 75)
-	eq(common[3].tier, 4)
+	eq(common[3].tier, 5)
 	eq(common[3].chance, 5)
 
 	local rng = seeded(99)
@@ -2072,9 +2156,11 @@ test("new player start: cash, converter and tutorial reward", function()
 	check(Economy.START_CASH >= Economy.bulkPrice(0, 2) - Economy.unitPrice(1), "cash for the first unit")
 	check(Economy.START_CASH - Economy.unitPrice(0) > 0, "cash left after the first unit")
 	check(Economy.TUTORIAL_REWARD_CASH >= Economy.bulkPrice(1, 3), "the reward buys three more units")
-	-- The starting converter keeps up with one unit of tier 5 and no more than that.
-	check(Economy.processRate(Economy.START_PROCESS_LEVEL) >= Economy.unitRate(5), "converter covers tier 5")
-	check(Economy.processRate(Economy.START_PROCESS_LEVEL) < Economy.unitRate(6), "converter is upgraded for tier 6")
+	eq(Economy.START_PROCESS_LEVEL, 8, "start level")
+	-- The converter covers one unit of every tier at that tier's free floor.
+	for tier = 1, Economy.MAX_TIER do
+		check(Economy.processRate(Economy.minProcessLevel(tier)) >= Economy.unitRate(tier), "converter floor covers tier " .. tier)
+	end
 	-- Old saves are lifted to the starting level; higher levels are kept.
 	eq(DataService.reconcile({ money = 10, processLevel = 3 }).processLevel, Economy.START_PROCESS_LEVEL, "low level lifted")
 	eq(DataService.reconcile({ money = 10, processLevel = 40 }).processLevel, 40, "high level kept")
@@ -3403,6 +3489,11 @@ test("Game modes: finish reward is sized like a cash pack, with a cooldown", fun
 	check(not early.full and early.cash == 0 and early.packCash > 0, "inside the cooldown a finish pays no cash")
 	local later = Economy.modeReward(0, progression, pack.Seconds, pack.Min, false, now - cooldown, now)
 	check(later.full and later.cash == later.packCash, "full pack again after the cooldown")
+	-- What a clean finish inside the cooldown is worth: a fifth of the pack, whole dollars.
+	eq(Economy.MODE_REPEAT_SHARE, 0.2, "repeat share")
+	eq(early.repeatCash, math.floor(early.packCash * 0.2), "repeat cash is 20% of the pack")
+	eq(later.repeatCash, early.repeatCash, "repeat cash does not depend on the cooldown")
+	check(early.repeatCash > 0 and early.repeatCash < early.packCash, "repeat cash is a part of the pack")
 end)
 
 test("Game modes: no checkpoints, one plausible start-to-finish time per level", function()
@@ -4794,13 +4885,29 @@ test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", 
 	eq(Simulate.SMALL_PACK_MIN, pack.Min, "simulated parkour reward uses the mode reward's minimum")
 
 	-- The first tiers come fast (see the first-minutes test); after them each tier takes
-	-- close to twice as long as the one before, since every unit is bought at the first tier.
-	local reached = Simulate.run({ hours = 5, step = 5 }).reached
-	check(reached[2] ~= nil and reached[2] <= 60, "tier 2 within the first minute")
-	check(reached[6] ~= nil and reached[6] <= 20 * 60, "tier 6 within 20 minutes")
-	check(reached[8] ~= nil and reached[8] >= 60 * 60 and reached[8] <= 100 * 60, "tier 8 after 60 to 100 minutes")
-	check(reached[9] ~= nil and reached[9] >= 2 * 3600, "tier 9 not before 2 hours")
-	check(reached[10] == nil, "tier 10 not before 5 hours")
+	-- about 1.4 times as long as the one before (every unit is bought at the first tier, and
+	-- a tier makes three times the aura of the one below).
+	local stock = Simulate.run({ hours = 5, step = 5 })
+	local reached = stock.reached
+	local function by(tier: number, seconds: number): boolean
+		return reached[tier] ~= nil and reached[tier] <= seconds
+	end
+	check(by(2, 60), "tier 2 within the first minute")
+	check(by(6, 10 * 60), "tier 6 by 10 minutes")
+	check(by(7, 15 * 60), "tier 7 by 15 minutes")
+	check(by(8, 25 * 60), "tier 8 by 25 minutes")
+	check(by(10, 60 * 60) and reached[10] >= 25 * 60, "tier 10 between 25 and 60 minutes")
+	check(by(12, 2 * 3600), "tier 12 by 2 hours")
+	check(by(15, 5 * 3600), "tier 15 by 5 hours")
+	check(stock.converterShare >= 0.5, "the converter passes at least half the production (" .. stock.converterShare .. ")")
+
+	-- With the periodic extras (free gift, mode reward, surge, crates).
+	local extras = Simulate.run({ hours = 2, step = 5, extras = true })
+	reached = extras.reached
+	check(by(10, 30 * 60), "extras: tier 10 by 30 minutes")
+	check(by(15, 2 * 3600), "extras: tier 15 by 2 hours")
+	check(extras.converterShare >= 0.5, "extras: the converter passes at least half the production")
+	near(Simulate.depositBonus(), 0.154, "average deposit bonus")
 end)
 
 test("first minutes: a new player merges early and always has something to buy", function()
@@ -4813,10 +4920,17 @@ test("first minutes: a new player merges early and always has something to buy",
 	check(reached[3] ~= nil and reached[3] <= 90, "tier 3 by 90 s")
 	check(reached[4] ~= nil and reached[4] <= 150, "tier 4 by 2.5 min")
 	check(reached[5] ~= nil and reached[5] <= 200, "tier 5 soon after 3 min")
-	check(reached[6] ~= nil and reached[6] <= 360, "tier 6 by 6 min")
-	check(reached[7] ~= nil and reached[7] >= 360, "tier 7 is past the first minutes")
-	check(reached[8] == nil, "tier 8 is not an early tier")
+	check(reached[6] ~= nil and reached[6] <= 300, "tier 6 by 5 min")
+	check(reached[7] ~= nil and reached[7] < 480, "tier 7 before minute 8")
+	check(reached[8] ~= nil and reached[8] >= 300 and reached[8] <= 600, "tier 8 between minute 5 and 10")
 	check(result.longestGap <= 25, "never over 25 s without a purchase in the first 6 minutes (" .. result.longestGap .. ")")
+	check(result.converterShare >= 0.5, "the converter passes at least half the production (" .. result.converterShare .. ")")
+
+	-- A player who never steps on an upgrade pad is carried by the free converter floor.
+	local idle = Simulate.firstMinutes({ minutes = 12, noUpgrades = true })
+	check(idle.reached[8] ~= nil and idle.reached[8] <= 600, "no converter upgrades: still tier 8 by minute 10")
+	check(idle.converterShare >= 0.5, "no converter upgrades: still at least half the production")
+	eq(idle.processLevel, Economy.minProcessLevel(Economy.highestTier(idle.reached)), "the floor of the best tier")
 
 	-- A slower player (longer paths, more reading) still gets there.
 	local speed, read = Simulate.PATH_SLACK, Simulate.STEP_READ

@@ -8,14 +8,17 @@
 
 	Core loop:
 	  buy units -> units drop orbs -> walk over orbs to carry them
-	  -> deposit at the converter (x random multiplier) -> processed into cash
+	  -> deposit at the converter: the aura carried is queued and processed into cash,
+	     and the random deposit multiplier's bonus part is paid as cash at once
 	  -> collect cash -> buy more / upgrade.
-	Two units of the same tier merge into one unit of the next tier.
+	Two units of the same tier merge into one unit of the next tier. The converter never
+	falls behind a new tier: discovering one lifts its level for free (minProcessLevel),
+	and paid levels only add speed on top.
 ]]
 
 local Economy = {}
 
-Economy.VERSION = "1.2.0"
+Economy.VERSION = "2.0.0"
 
 Economy.MAX_TIER = 25
 Economy.MERGE_RATIO = 2
@@ -30,7 +33,7 @@ Economy.DISPLAY_SLOTS = Economy.DISPLAY_ROWS * Economy.DISPLAY_COLS
 
 -- Each tier produces this many times more than the previous one. Must be greater
 -- than MERGE_RATIO so merging is always an upgrade.
-Economy.TIER_RATE_GROWTH = 2.2
+Economy.TIER_RATE_GROWTH = 3.0
 
 function Economy.unitRate(tier: number): number
 	return Economy.TIER_RATE_GROWTH ^ (tier - 1)
@@ -220,11 +223,16 @@ end
 
 -- Processing (the converter that turns deposited orbs into cash) ---------------
 
+-- Each level is 25% faster and costs 25% more than the one before, so a level always costs
+-- the same 50 seconds of the converter's own output.
 Economy.PROCESS_BASE = 4
-Economy.PROCESS_GROWTH = 1.12
+Economy.PROCESS_GROWTH = 1.25
 Economy.PROCESS_COST_BASE = 200
-Economy.PROCESS_COST_GROWTH = 1.18
+Economy.PROCESS_COST_GROWTH = 1.25
 Economy.PROCESS_BULK = 10
+-- An upgrade is refused (no charge) once the converter is this many times faster than the
+-- units produce: more speed would buy nothing.
+Economy.CONVERTER_HEADROOM = 4
 
 function Economy.processRate(level: number): number
 	return Economy.PROCESS_BASE * Economy.PROCESS_GROWTH ^ level
@@ -232,6 +240,15 @@ end
 
 function Economy.processUpgradeCost(level: number): number
 	return Economy.PROCESS_COST_BASE * Economy.PROCESS_COST_GROWTH ^ level
+end
+
+-- The free converter floor: the lowest level whose rate covers one unit of `tier`. A profile's
+-- level is never below the floor of its best tier (about 5 free levels per new tier). A rack
+-- with every pair merged produces 1x to 2x unitRate(best), so a converter nobody upgraded is
+-- never short by more than 2x.
+function Economy.minProcessLevel(tier: number): number
+	local needed = Economy.unitRate(math.clamp(tier, 1, Economy.MAX_TIER)) / Economy.PROCESS_BASE
+	return math.max(0, math.ceil(math.log(needed) / math.log(Economy.PROCESS_GROWTH)))
 end
 
 -- Cost of buying `amount` levels starting from `level` (geometric series).
@@ -245,22 +262,19 @@ Economy.CASH_PER_POINT = 1
 
 -- Deposit multiplier (global, rerolled on a timer) ------------------------------
 
+-- Never below x1 (a deposit is never a loss); the mean is about x1.15.
 Economy.DEPOSIT_REROLL_SECONDS = 20
 Economy.DEPOSIT_MULTIPLIERS = {
-	{ value = 0.5, weight = 6 },
-	{ value = 0.7, weight = 10 },
-	{ value = 0.8, weight = 12 },
-	{ value = 0.9, weight = 14 },
-	{ value = 1.0, weight = 16 },
-	{ value = 1.1, weight = 14 },
-	{ value = 1.2, weight = 10 },
+	{ value = 1.0, weight = 50 },
+	{ value = 1.1, weight = 18 },
+	{ value = 1.2, weight = 12 },
 	{ value = 1.3, weight = 8 },
-	{ value = 1.5, weight = 5 },
-	{ value = 1.8, weight = 3 },
-	{ value = 2.0, weight = 1.5 },
+	{ value = 1.5, weight = 6 },
+	{ value = 1.8, weight = 3.5 },
+	{ value = 2.0, weight = 2 },
 	{ value = 3.0, weight = 0.5 },
 }
-Economy.DEPOSIT_MIN = 0.5
+Economy.DEPOSIT_MIN = 1.0
 Economy.DEPOSIT_MAX = 3.0
 
 local function pickWeighted<T>(entries: { T }, weightOf: (T) -> number, roll: number): T
@@ -285,7 +299,15 @@ function Economy.rollDepositMultiplier(rng: () -> number): number
 	return entry.value
 end
 
+-- What a deposit of `carried` aura at multiplier `mult` gives: the aura queued in the
+-- converter (always all of it) and the bonus aura, which is paid as cash at once.
+function Economy.depositSplit(carried: number, mult: number): (number, number)
+	return carried, carried * (math.max(mult, 1) - 1)
+end
+
 -- Global "surge" event: double orbs for the last part of every cycle. ----------
+-- The converter runs at double speed too, so the cash earned really doubles. Rewards are
+-- sized with the income outside the surge.
 
 Economy.SURGE_CYCLE = 600
 Economy.SURGE_DURATION = 120
@@ -317,13 +339,13 @@ export type ChestInfo = {
 }
 
 Economy.CHEST_INFO = {
-	Common = { weight = 82, unlockSeconds = 180, offsets = { { -2, 75 }, { -1, 20 }, { 0, 5 } } },
-	Uncommon = { weight = 12, unlockSeconds = 480, offsets = { { -1, 60 }, { 0, 32 }, { 1, 8 } } },
-	Rare = { weight = 4.5, unlockSeconds = 1200, minAnchor = 2, offsets = { { -1, 20 }, { 0, 50 }, { 1, 30 } } },
-	Epic = { weight = 1.2, unlockSeconds = 2700, minAnchor = 2, offsets = { { 0, 30 }, { 1, 50 }, { 2, 20 } } },
+	Common = { weight = 82, unlockSeconds = 60, offsets = { { -2, 75 }, { -1, 20 }, { 0, 5 } } },
+	Uncommon = { weight = 12, unlockSeconds = 120, offsets = { { -1, 60 }, { 0, 32 }, { 1, 8 } } },
+	Rare = { weight = 4.5, unlockSeconds = 180, minAnchor = 2, offsets = { { -1, 20 }, { 0, 50 }, { 1, 30 } } },
+	Epic = { weight = 1.2, unlockSeconds = 240, minAnchor = 2, offsets = { { 0, 30 }, { 1, 50 }, { 2, 20 } } },
 	Legendary = {
 		weight = 0.3,
-		unlockSeconds = 5400,
+		unlockSeconds = 300,
 		minAnchor = 2,
 		offsets = { { 0, 15 }, { 1, 45 }, { 2, 30 }, { 3, 10 } },
 	},
@@ -333,12 +355,14 @@ Economy.CHEST_SPAWN_INTERVAL = 40
 Economy.CHEST_SPAWN_CHANCE = 0.45
 Economy.MAX_FLOOR_CHESTS = 3
 Economy.PREMIUM_UNLOCK_SPEED = 3
+-- The very first crate of a profile opens this fast, whatever its rarity.
+Economy.FIRST_CRATE_SECONDS = 10
 
 -- Crates are anchored this share of the way from the player's highest tier down to tier 1
 -- (rounded towards the highest tier). Late tiers take hours to reach while crates keep
 -- arriving every few minutes, so the gap grows with the tier to keep crates a bonus
--- rather than a shortcut: highest 3 -> anchor 2, 6 -> 4, 10 -> 6, 20 -> 11, 25 -> 13.
-Economy.CHEST_TIER_LAG = 0.5
+-- rather than a shortcut: highest 3 -> anchor 3, 5 -> 4, 10 -> 7, 17 -> 12, 25 -> 17.
+Economy.CHEST_TIER_LAG = 0.35
 
 function Economy.chestAnchor(highestTier: number): number
 	return highestTier - math.floor((highestTier - 1) * Economy.CHEST_TIER_LAG)
@@ -412,10 +436,10 @@ Economy.FREE_REWARD_SECONDS = 120
 Economy.FREE_REWARD_MIN = 100
 
 -- A new profile's cash and converter level (DataService.defaultProfile). The converter
--- starts a few levels up so it keeps pace with the first tiers; later levels cost what they
--- always did.
+-- starts a few levels up so it keeps pace with the first three tiers; from there the free
+-- floor (minProcessLevel) lifts it with every new tier.
 Economy.START_CASH = 100
-Economy.START_PROCESS_LEVEL = 16
+Economy.START_PROCESS_LEVEL = 8
 
 -- One-time reward for finishing the onboarding tutorial: enough for the next few units,
 -- so the first merge is followed by a second one straight away.
@@ -477,9 +501,11 @@ end
 
 -- Finishing a mode pays a cash pack's worth sized like the shop's (moneyPackAmount with the
 -- mode's own seconds and minimum, Theme.Modes): on the first finish ever and then
--- at most once per MODE_REWARD_COOLDOWN. Players may run again straight away, but finishes
--- inside the cooldown pay no cash.
+-- at most once per MODE_REWARD_COOLDOWN. Players may run again straight away; a finish
+-- inside the cooldown is worth MODE_REPEAT_SHARE of the pack (`repeatCash`), which the mode
+-- pays only for a clean, unassisted run.
 Economy.MODE_REWARD_COOLDOWN = 1800
+Economy.MODE_REPEAT_SHARE = 0.2
 -- Cash price of a Parkour "Skip Stage" (teleport to the next checkpoint; the run becomes
 -- assisted: it pays and unlocks but sets no best time): two minutes of income, at least $250.
 Economy.PARKOUR_SKIP_MIN = 250
@@ -493,6 +519,8 @@ export type ModeReward = {
 	cash: number,
 	full: boolean,
 	packCash: number,
+	-- What a clean finish inside the cooldown is worth (MODE_REPEAT_SHARE of the pack).
+	repeatCash: number,
 }
 
 function Economy.modeReward(
@@ -510,6 +538,7 @@ function Economy.modeReward(
 		cash = if full then packCash else 0,
 		full = full,
 		packCash = packCash,
+		repeatCash = math.floor(packCash * Economy.MODE_REPEAT_SHARE),
 	}
 end
 
