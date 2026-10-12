@@ -21,12 +21,14 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local GuiService = game:GetService("GuiService")
+local Workspace = game:GetService("Workspace")
 local ContextActionService = game:GetService("ContextActionService")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
+local Guide = require(script.Parent.Parent.Guide)
 local Hud = require(script.Parent.Hud)
 local Kit = require(script.Parent.Kit)
 local State = require(script.Parent.Parent.State)
@@ -427,16 +429,93 @@ function Popups.toast(text: string, tone: string?)
 	end)
 end
 
+--[[
+	Merge count on the reveal. Fx.Shelf floats "xN MERGES!" over the rack as world text
+	(Fx.Orbs.text: a "FloatText" part with a BillboardGui, in Workspace.ClientFx). A
+	discovery's reveal comes up a moment later and its "NEW CHAD!" banner landed on that
+	text. So while a reveal is up the world text is hidden, and the reveal shows the same
+	line under its name plate instead (showReveal).
+]]
+local MERGES_TEXT = "^x%d+ MERGES!$"
+local MERGES_FRESH = 4 -- seconds a merge count still belongs to the next reveal
+local MERGES_MIN = 3 -- Fx.Shelf floats no count under three merges
+local mergeTexts: { Instance } = {} -- the world texts still alive
+local mergesText, mergesAt = "", 0 -- the last one seen
+local mergeTally, mergeTallyAt = 0, 0 -- merges of the last batch ("Merge" effects)
+local mergesOnReveal: ((text: string) -> ())? = nil -- the reveal on screen takes the line
+
+-- Hides the live world texts (they fade and go by themselves) and forgets the dead ones.
+local function hideMergeTexts(hide: boolean)
+	for i = #mergeTexts, 1, -1 do
+		local part = mergeTexts[i]
+		local gui = if part.Parent then part:FindFirstChildWhichIsA("BillboardGui") else nil
+		if not gui then
+			table.remove(mergeTexts, i)
+		elseif hide then
+			gui.Enabled = false
+		end
+	end
+end
+
 -- A reveal starts or ends. While one is up the ScreenGui attribute "RevealOpen" is true
--- (the tutorial pill steps out on it) and the toast stack is hidden.
+-- (the tutorial pill steps out on it), the toast stack is hidden and so is the world's
+-- "xN MERGES!" text.
 local function setReveal(on: boolean)
 	revealCount = math.max(0, revealCount + (if on then 1 else -1))
 	local up = revealCount > 0
 	screen:SetAttribute("RevealOpen", up)
 	toastHolder.Visible = not up
-	if not up then
+	if up then
+		hideMergeTexts(true)
+	else
 		flushToasts()
 	end
+end
+
+-- Watches Fx.Orbs' folder for the "xN MERGES!" texts, and the "Merge" effects for the size
+-- of the batch (the text can land after the reveal has started).
+local function watchMerges()
+	local function onText(part: Instance)
+		if part.Name ~= "FloatText" then
+			return
+		end
+		-- Orbs.text parents the part first and fills it in the same step.
+		task.defer(function()
+			local label = part:FindFirstChildWhichIsA("TextLabel", true)
+			if not label or string.match(label.Text, MERGES_TEXT) == nil then
+				return
+			end
+			hideMergeTexts(false)
+			table.insert(mergeTexts, part)
+			mergesText, mergesAt = label.Text, os.clock()
+			if revealCount > 0 then
+				hideMergeTexts(true)
+				if mergesOnReveal then
+					mergesOnReveal(label.Text)
+				end
+			end
+		end)
+	end
+	local function bind(child: Instance)
+		if child.Name == "ClientFx" and child:IsA("Folder") then
+			child.ChildAdded:Connect(onText)
+		end
+	end
+	for _, child in Workspace:GetChildren() do
+		bind(child)
+	end
+	Workspace.ChildAdded:Connect(bind)
+	Net.event("Effect").OnClientEvent:Connect(function(kind, data)
+		if kind ~= "Merge" or type(data) ~= "table" or data.overflow == true then
+			return
+		end
+		local now = os.clock()
+		if now - mergeTallyAt > MERGES_FRESH then
+			mergeTally = 0
+		end
+		mergeTally += math.max(1, math.floor(tonumber(data.count) or 1))
+		mergeTallyAt = now
+	end)
 end
 
 -- Floating text -------------------------------------------------------------------
@@ -1362,13 +1441,19 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	local extras = if isNew then extraTiers(reward) else {}
 	local calm = reducedMotion()
 	local data = State.data
+	-- A merge batch brought this discovery: its "xN MERGES!" line gets a row under the
+	-- stats (the text itself may still be on its way: Fx.Shelf floats it at the last pop).
+	local now = os.clock()
+	local mergesSeen: string? = if isNew and now - mergesAt < MERGES_FRESH then mergesText else nil
+	local mergesRow = isNew and (mergesSeen ~= nil or (now - mergeTallyAt < MERGES_FRESH and mergeTally >= MERGES_MIN))
+	mergesAt, mergeTally = 0, 0
 	-- Text sizes held on the glass: a phone's UI scale would take the 30 px label to 19 and
 	-- the 22 px tier line to 14. What the text gains the unit gives up, so the stage keeps
 	-- its height (and Kit.fit does not shrink it all again).
 	-- Kit.fit may still scale the stage a little (a short screen): the sizes count that in.
 	local area = Kit.designArea(screen)
 	local share = if Kit.touch then Theme.Glass.FitTouch else Theme.Glass.Fit
-	local stageBase = 196 + HERO + (if #extras > 0 then EXTRAS_H else 0)
+	local stageBase = 196 + HERO + (if #extras > 0 then EXTRAS_H else 0) + (if mergesRow then 32 else 0)
 	local fit = if area then math.min(1, area.X * share / STAGE_W, area.Y * share / stageBase) else 1
 	local bannerSize = Kit.px(28 / fit, 30, screen)
 	local nameSize = Kit.px(30 / fit, 48, screen)
@@ -1379,7 +1464,8 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	local nameY = heroY + heroSize / 2
 	local tierY = nameY + nameSize + 8
 	local statsY = tierY + tierSize + 12
-	local stageH = statsY + statSize + 8 + 36
+	local mergesY = statsY + statSize + 10
+	local stageH = statsY + statSize + 8 + (if mergesRow then tierSize + 10 else 0) + 36
 	local height = stageH + (if #extras > 0 then EXTRAS_H else 0)
 
 	-- A window underneath (the shop, the Index) is busy: the veil goes deep and even over it,
@@ -1691,6 +1777,35 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		arrive(stats)
 		Kit.countTo(rate, 0, Economy.unitRate(tier), perSecond, 0.45)
 	end)
+	-- "xN MERGES!" under the name plate, never behind the banner: the world text of the
+	-- same batch (hidden while the reveal is up), once the stats are in and it is known.
+	local mergesReady = false
+	local function showMerges(text: string)
+		mergesSeen = text
+		if not mergesRow or not mergesReady or not alive() or stage:FindFirstChild("Merges") then
+			return
+		end
+		arrive(Kit.hudText(stage, {
+			Name = "Merges",
+			Text = text,
+			TextSize = tierSize,
+			TextColor3 = C.GoldLight,
+			StrokeColor = Theme.Glass.TextInk,
+			Size = UDim2.new(1, 0, 0, tierSize + 4),
+			Position = UDim2.fromOffset(0, mergesY),
+			StrokeThickness = 2.5,
+			ZIndex = 5,
+		}))
+	end
+	if mergesRow then
+		mergesOnReveal = showMerges
+		after(0.58, function()
+			mergesReady = true
+			if mergesSeen then
+				showMerges(mergesSeen)
+			end
+		end)
+	end
 	local portraits: { Portrait } = {}
 	if #extras > 0 then
 		portraits = extrasRow(stage, extras, stageH - 28, 0.6, alive)
@@ -1702,6 +1817,9 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	local function endReveal()
 		if revealed then
 			revealed = false
+			if mergesOnReveal == showMerges then
+				mergesOnReveal = nil
+			end
 			setReveal(false)
 		end
 	end
@@ -3185,60 +3303,73 @@ end
 
 -- Held crate panel -----------------------------------------------------------------------------
 
+-- The Crate Smasher's first pad (a Guide target) and how long the panel's arrow points at it.
+local SMASHER_PAD = "Unlock1"
+local SMASHER_ARROW = 30
+
 --[[
-	Side panel while the player carries a crate: rarity header, the crate, the
-	odds (a scrolling list of rarity-dot rows; bars fill), then one primary
-	"Open now" button, the free route as a plain line, a quiet text link to the
-	Crate Master pass, and at the bottom (well apart from "Open now") a red
-	Discard button (discards at once, any rarity). The "ChestPanel" holder carries the compact-mode
-	UIScale; the "Card" inside eases in and out with Kit.appear / Kit.disappear.
+	Side panel while the player carries a crate: the crate and its rarity in the
+	header, the odds (rarity-dot rows; bars fill), then the ways to open it, the free
+	one first. A gold "Carry it to the Crate Smasher / FREE" button with the Smasher's
+	timer for this rarity leads (tapping it points the guide arrow at the Smasher); the
+	paid "Open now" is a small neutral button under it, the Crate Master pass a quiet
+	text link, and at the bottom, well apart, sits a red Discard button (Rare and better
+	ask first, with Popups.confirm). A Crate Master owner opens free, so for them "Open
+	now" is the gold button and comes first. The card is solid (the world never shows
+	through it), PANEL_W wide and as tall as its rows. It never shows while the tutorial
+	is running. The "ChestPanel" holder carries the compact-mode UIScale; the "Card"
+	inside eases in and out with Kit.appear / Kit.disappear.
 	While it is up the ScreenGui attribute "CratePanelOpen" is true (the held
 	crate's world chip hides then, so the two labels never show together).
 ]]
 local function buildChestPanel()
 	local action = Net.event("Action")
-	-- Card geometry: header band, crate, odds well, then the button rows from BUTTON_Y.
-	-- A phone (touch on a Compact screen) gets a compact card sized to what the player acts
-	-- on: the rarity header and the buttons, narrower, with no crate art and no odds list,
-	-- so it sits between the gear and the jump button instead of down the right of the screen.
-	local PANEL_W = 320
-	local ODDS_Y = 172
-	local ODDS_H = 128
-	local BUTTON_Y = ODDS_Y + ODDS_H + 12
+	-- Card geometry: header (crate + rarity), the odds well, then the rows under it.
+	-- A phone (touch on a Compact screen) gets the header and the rows only, no odds
+	-- list, so the card sits between the gear and the jump button.
+	local PANEL_W = 240
+	local EDGE = 8
+	local HEAD_H = 44
+	local ODDS_Y = EDGE + HEAD_H + 24
+	local ODDS_ROW, ODDS_GAP = 26, 3
+	local FREE_H, OPEN_H, ROW_GAP = 60, 44, 8
+	local oddsRows = 1
 	local phone = false
 	local function measure()
 		phone = Kit.touch and screen:GetAttribute("Compact") == true
-		PANEL_W = if phone then 280 else 320
-		BUTTON_Y = if phone then 62 else ODDS_Y + ODDS_H + 12
 	end
 	measure()
+	-- The odds well is as tall as its rows (one row for a first crate, never a list of air).
+	local function oddsHeight(): number
+		local rows = math.clamp(oddsRows, 1, 4)
+		return rows * ODDS_ROW + (rows - 1) * ODDS_GAP + 12
+	end
 	local holder = Kit.new("Frame", {
 		Name = "ChestPanel",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(PANEL_W, 440),
+		Size = UDim2.fromOffset(PANEL_W, 300),
 		Position = UDim2.new(1, -12, 0.5, 30),
 		AnchorPoint = Vector2.new(1, 0.5),
 		Parent = screen,
 	})
 	local compactScale = Kit.new("UIScale", { Name = "Compact", Parent = holder })
-	-- The same glass pane as every window and modal (one body token), over the unblurred
-	-- world; only the buttons are solid.
+	-- A solid card, not the windows' glass: it stands over the plot's signs and price
+	-- pads all the time, and their text read through a glass pane.
 	local panel = Kit.panel(holder, {
 		Name = "Card",
-		Glass = "body",
+		Color = C.Surface,
 		Size = UDim2.fromScale(1, 1),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Visible = false,
 	})
-	-- Header: no slab of its own, just the pane's glass over a 1 px divider. The crate's
-	-- rarity is carried by the name (its colour, in the ink outline), the divider under it
-	-- and the crate itself (all painted per crate below).
+	-- Header: the crate on the left, its rarity beside it (the name's colour, the divider
+	-- under it and the crate itself are painted per crate below).
 	local band = Kit.new("Frame", {
 		Name = "Band",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -16, 0, 46),
-		Position = UDim2.fromOffset(8, 8),
+		Size = UDim2.new(1, -EDGE * 2, 0, HEAD_H),
+		Position = UDim2.fromOffset(EDGE, EDGE),
 		Parent = panel,
 	})
 	local divider = Kit.new("Frame", {
@@ -3246,27 +3377,29 @@ local function buildChestPanel()
 		BackgroundColor3 = C.Gold,
 		BackgroundTransparency = Theme.Glass.Divider,
 		BorderSizePixel = 0,
-		Size = UDim2.new(1, -12, 0, 1),
+		Size = UDim2.new(1, -4, 0, 1),
 		Position = UDim2.new(0.5, 0, 1, 0),
 		AnchorPoint = Vector2.new(0.5, 1),
 		Parent = band,
 	})
 	local title = Kit.title(band, {
 		Text = "",
-		TextSize = T.H2,
+		TextSize = T.H3,
 		MinPx = 16,
 		TextWrapped = false,
-		Size = UDim2.fromScale(1, 1),
-		Position = UDim2.fromOffset(0, 1),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -52, 1, -4),
+		Position = UDim2.fromOffset(50, 0),
 	})
 
+	local CRATE_AT = UDim2.fromOffset(EDGE + 24, EDGE + HEAD_H / 2 - 2)
 	local halo = Kit.new("Frame", {
 		Name = "IconGlow",
 		BackgroundColor3 = WHITE,
 		BackgroundTransparency = 0.6,
 		BorderSizePixel = 0,
-		Size = UDim2.fromOffset(88, 88),
-		Position = UDim2.new(0.5, 0, 0, 102),
+		Size = UDim2.fromOffset(42, 42),
+		Position = CRATE_AT,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Parent = panel,
 	})
@@ -3276,45 +3409,82 @@ local function buildChestPanel()
 		Name = "OddsTitle",
 		Text = "POSSIBLE " .. string.upper(W.Units),
 		Font = Theme.Fonts.UI,
-		TextSize = 15,
+		TextSize = 14,
 		MinPx = true,
 		TextWrapped = false,
-		Size = UDim2.new(1, -28, 0, 20),
-		Position = UDim2.fromOffset(14, ODDS_Y - 24),
+		Size = UDim2.new(1, -EDGE * 2 - 8, 0, 18),
+		Position = UDim2.fromOffset(EDGE + 4, ODDS_Y - 21),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = C.Text,
 		StrokeThickness = 0,
 	})
-	-- The odds sit on a faint inset (InsetSoft), not a dark slab: the rows carry their own bars.
 	local oddsWell = Kit.well(panel, {
 		Name = "Odds",
-		Glass = true,
-		Transparency = Theme.Glass.InsetSoft,
-		Size = UDim2.new(1, -24, 0, ODDS_H),
-		Position = UDim2.fromOffset(12, ODDS_Y),
+		Size = UDim2.new(1, -EDGE * 2, 0, oddsHeight()),
+		Position = UDim2.fromOffset(EDGE, ODDS_Y),
 	})
 	local odds = Kit.scrolling(oddsWell, { Name = "List", Size = UDim2.new(1, -8, 1, -8), Position = UDim2.fromOffset(4, 4) })
 	Kit.padding(odds, 2, 4)
-	Kit.list(odds, 3)
+	Kit.list(odds, ODDS_GAP)
+
+	-- The free route leads: one gold button, two lines ("Carry it to the Crate Smasher",
+	-- then FREE and the Smasher's timer for this rarity). Tapping it points the guide
+	-- arrow at the Smasher's pad for a while.
+	local crackerName = string.gsub(string.lower(W.Unlocker), "%f[%a]%a", string.upper)
+	local freeButton = Kit.button(panel, {
+		Name = "FreeRoute",
+		Text = "",
+		Color = C.Gold,
+		Size = UDim2.new(1, -EDGE * 2, 0, FREE_H),
+		Position = UDim2.fromOffset(EDGE, ODDS_Y),
+	}, function()
+		Guide.navigate(SMASHER_PAD, string.upper(W.Unlocker), SMASHER_ARROW)
+	end)
+	freeButton:SetAttribute("FocusFirst", true)
+	local freeFace: Instance = Kit.buttonFace(freeButton) or freeButton
+	local freeRoute = Kit.text(freeFace, {
+		Name = "Route",
+		Text = "Carry it to the " .. crackerName,
+		Font = Theme.Fonts.UI,
+		TextScaled = true,
+		MaxTextSize = 15,
+		TextWrapped = false,
+		TextColor3 = Kit.inkOn(C.Gold),
+		Size = UDim2.new(1, -16, 0.38, 0),
+		Position = UDim2.new(0, 8, 0.1, 0),
+		StrokeThickness = 0,
+		ZIndex = 2,
+	})
+	local freePrice = Kit.title(freeFace, {
+		Name = "Free",
+		Text = "FREE",
+		TextScaled = true,
+		MaxTextSize = 22,
+		TextWrapped = false,
+		TextColor3 = Kit.inkOn(C.Gold),
+		Size = UDim2.new(1, -16, 0.44, 0),
+		Position = UDim2.new(0, 8, 0.48, 0),
+		StrokeThickness = 0,
+		ZIndex = 2,
+	})
 
 	-- Instant open: free for Crate Master owners ("owner"); otherwise one developer
 	-- product (same price for every rarity) with the Crate Master pass as a quiet text
 	-- link under it ("buy"). Both purchases are hidden where paid random items are not
-	-- allowed ("none"). The free route is always a plain readable line.
+	-- allowed ("none"). For a buyer it is the small neutral button under the free route.
 	local crateOpen = Theme.Monetization.CrateOpen
 	local crateKey = Theme.Monetization.Passes.CrateKey
 	local mode = "none"
 	local openButton = Kit.button(panel, {
 		Name = "OpenNow",
 		Text = "Open now",
-		Color = C.Gold,
-		Size = UDim2.new(1, -24, 0, 56),
-		Position = UDim2.fromOffset(12, BUTTON_Y),
-		TextSize = 24,
+		Color = C.SurfaceHi,
+		Size = UDim2.new(1, -EDGE * 2, 0, OPEN_H),
+		Position = UDim2.fromOffset(EDGE, ODDS_Y),
+		TextSize = T.Body,
 	}, function()
 		action:FireServer({ action = "OpenCrateNow" })
 	end)
-	openButton:SetAttribute("FocusFirst", true)
 	local masterTag = Kit.pill(panel, {
 		Name = "MasterTag",
 		Text = string.upper(crateKey.Title),
@@ -3323,20 +3493,10 @@ local function buildChestPanel()
 		TextSize = T.Small,
 		Size = UDim2.fromOffset(0, 22),
 		AutomaticSize = Enum.AutomaticSize.X,
-		Position = UDim2.fromOffset(PANEL_W - 8, BUTTON_Y - 10),
+		Position = UDim2.fromOffset(PANEL_W - 4, ODDS_Y - 10),
 		AnchorPoint = Vector2.new(1, 0),
 		ZIndex = 6,
 		Visible = false,
-	})
-	local crackerName = string.gsub(string.lower(W.Unlocker), "%f[%a]%a", string.upper)
-	local freeLine = Kit.text(panel, {
-		Name = "FreeRoute",
-		Text = "Carry it to a " .. crackerName .. ": free",
-		TextSize = T.Small,
-		Size = UDim2.new(1, -32, 0, 22),
-		Position = UDim2.fromOffset(16, BUTTON_Y + 64),
-		TextColor3 = C.Text,
-		StrokeThickness = 0,
 	})
 	-- Quiet text link: the pass that opens every crate free.
 	local function textLink(
@@ -3401,16 +3561,21 @@ local function buildChestPanel()
 		"Open every crate free  " .. Kit.ROBUX .. " " .. crateKey.Price,
 		C.TextDim,
 		C.GoldLight,
-		BUTTON_Y + 88,
-		PANEL_W - 40,
+		ODDS_Y,
+		PANEL_W - EDGE * 3,
 		function()
 			Kit.sound("Click")
 			action:FireServer({ action = "PromptPass", name = "CrateKey" })
 		end
 	)
 	-- Discard: a red button at the bottom of the card, DISCARD_GAP below the rows above it.
-	-- It discards the held crate at once, whatever its rarity.
-	local DISCARD_H, DISCARD_GAP = 44, 14
+	-- A Common or Uncommon crate goes at once; Rare and better ask first (the same confirm
+	-- card as the Smasher's "Smash it now"), so one stray tap never throws away a good crate.
+	local DISCARD_H, DISCARD_GAP = 40, 12
+	local heldRarity = ""
+	local function discardNow()
+		action:FireServer({ action = "DiscardChest" })
+	end
 	local discard = Kit.button(panel, {
 		Name = "Discard",
 		Text = "Discard",
@@ -3418,54 +3583,68 @@ local function buildChestPanel()
 		IconColor = WHITE,
 		TextColor = WHITE,
 		Color = C.Danger,
-		Size = UDim2.fromOffset(150, DISCARD_H),
+		Size = UDim2.fromOffset(140, DISCARD_H),
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, BUTTON_Y + 48 + DISCARD_GAP),
+		Position = UDim2.new(0.5, 0, 0, ODDS_Y),
 		TextSize = T.Body,
 		Sound = "Close",
 	}, function()
-		action:FireServer({ action = "DiscardChest" })
+		local rarity = heldRarity
+		if (RARITY_RANK[rarity] or 0) < RARITY_RANK.Rare then
+			discardNow()
+			return
+		end
+		Popups.confirm(string.format("Discard this %s %s?", rarity, string.lower(W.Chest)), function()
+			-- Only the crate that was asked about: it may have been opened meanwhile.
+			if heldRarity == rarity then
+				discardNow()
+			end
+		end, { title = "DISCARD?", yes = "Discard", no = "Keep it" })
 	end)
 
-	-- Lays the rows out from BUTTON_Y down for the current mode: the open button, the
-	-- free-route line, the pass link (buy only), Discard. Without an open button the free
-	-- route takes the button's place at body size. Small text holds its size on the glass.
+	-- Lays the rows out under the odds for the current mode: the free route, the open
+	-- button (the other way round for a Crate Master owner), the pass link (buy only),
+	-- Discard; the card ends under Discard. Small text holds its size on the glass.
 	local function arrange(animate: boolean)
 		local hasButton = mode ~= "none"
-		local buying = mode == "buy"
+		local owner = mode == "owner"
 		local small = Kit.px(Kit.captionPx(), T.Small, holder)
 		local body = Kit.px(Kit.captionPx(), T.Body, holder)
-		local y = BUTTON_Y
-		openButton.Position = UDim2.fromOffset(12, y)
-		masterTag.Position = UDim2.fromOffset(PANEL_W - 8, y - 10)
-		if hasButton then
-			y += 56 + 8
+		local wellH = oddsHeight()
+		oddsWell.Size = UDim2.new(1, -EDGE * 2, 0, wellH)
+		local y = if phone then EDGE + HEAD_H + ROW_GAP else ODDS_Y + wellH + 10
+		local freeY, openY = y, y
+		if owner then
+			freeY = openY + OPEN_H + ROW_GAP
+			y = freeY + FREE_H
+		else
+			openY = freeY + FREE_H + ROW_GAP
+			y = if hasButton then openY + OPEN_H else freeY + FREE_H
 		end
-		-- One line beside a button, two when it stands alone or the card is narrow.
-		local freeSize = if hasButton then small else body
-		local freeHeight = if hasButton and not phone then freeSize + 8 else freeSize * 2 + 12
-		local freeGoal = { Position = UDim2.fromOffset(16, y), Size = UDim2.new(1, -32, 0, freeHeight), TextSize = freeSize }
-		y += freeHeight + 4
-		local linkH = if phone then small * 2 + 8 else 30
+		openButton.Position = UDim2.fromOffset(EDGE, openY)
+		masterTag.Position = UDim2.fromOffset(PANEL_W - 4, openY - 10)
+		y += 4
+		local linkH = small * 2 + 8
 		passLink.TextSize = small
-		passLink.Size = UDim2.fromOffset(PANEL_W - 40, linkH)
-		if buying then
+		passLink.Size = UDim2.fromOffset(PANEL_W - EDGE * 3, linkH)
+		if mode == "buy" then
 			passLink.Position = UDim2.new(0.5, 0, 0, y)
-			y += linkH + 2
+			y += linkH
 		end
 		y += DISCARD_GAP
 		local discardLabel = Kit.buttonLabel(discard)
 		if discardLabel then
 			discardLabel.TextSize = body
 		end
+		local freeGoal = { Position = UDim2.fromOffset(EDGE, freeY) }
 		local discardGoal = { Position = UDim2.new(0.5, 0, 0, y) }
-		local holderGoal = { Size = UDim2.fromOffset(PANEL_W, y + DISCARD_H + 12) }
+		local holderGoal = { Size = UDim2.fromOffset(PANEL_W, y + DISCARD_H + 10) }
 		if animate then
-			Kit.tween(freeLine, 0.25, freeGoal)
+			Kit.tween(freeButton, 0.25, freeGoal)
 			Kit.tween(discard, 0.25, discardGoal)
 			Kit.tween(holder, 0.25, holderGoal)
 		else
-			freeLine.Position, freeLine.Size, freeLine.TextSize = freeGoal.Position, freeGoal.Size, freeGoal.TextSize
+			freeButton.Position = freeGoal.Position
 			discard.Position = discardGoal.Position
 			holder.Size = holderGoal.Size
 		end
@@ -3477,16 +3656,25 @@ local function buildChestPanel()
 		local wasButton = mode ~= "none"
 		mode = newMode
 		local hasButton = newMode ~= "none"
+		local owner = newMode == "owner"
 		if hasButton and not wasButton then
 			Kit.appear(openButton, { from = 0.9, time = 0.2 })
 		elseif not hasButton and wasButton then
 			Kit.disappear(openButton)
 		end
-		if newMode == "owner" then
-			Kit.setButton(openButton, "Open now")
+		-- One gold button per card: the instant open for a Crate Master owner (it is free
+		-- for them), the walk to the Smasher for everyone else.
+		local freeColor = if owner then C.SurfaceHi else C.Gold
+		Kit.setButton(freeButton, nil, freeColor)
+		freeRoute.TextColor3 = Kit.inkOn(freeColor)
+		freePrice.TextColor3 = Kit.inkOn(freeColor)
+		freeButton:SetAttribute("FocusFirst", not owner)
+		openButton:SetAttribute("FocusFirst", owner)
+		if owner then
+			Kit.setButton(openButton, "Open now", C.Gold)
 			Kit.appear(masterTag, { from = 0.6, time = 0.25 })
 		else
-			Kit.setButton(openButton, "Open now   " .. Kit.ROBUX .. " " .. crateOpen.Price)
+			Kit.setButton(openButton, "Open now   " .. Kit.ROBUX .. " " .. crateOpen.Price, C.SurfaceHi)
 			if masterTag.Visible then
 				Kit.disappear(masterTag)
 			end
@@ -3507,7 +3695,7 @@ local function buildChestPanel()
 	local away = rest
 	local parked = false
 	-- Places everything that depends on the card's shape (desktop / phone); the Compact
-	-- scale shrinks the tall desktop card on a short window, the phone card is already small.
+	-- scale shrinks the desktop card on a short window, the phone card is already small.
 	local crate: Frame? = nil
 	local function place()
 		measure()
@@ -3515,12 +3703,8 @@ local function buildChestPanel()
 		rest = if phone then UDim2.new(1, -12, 0.5, -14) else UDim2.new(1, -12, 0.5, 30)
 		away = UDim2.new(1, PANEL_W + 40, rest.Y.Scale, rest.Y.Offset)
 		holder.Position = if parked then away else rest
-		halo.Visible = not phone
 		oddsTitle.Visible = not phone
 		oddsWell.Visible = not phone
-		if crate then
-			crate.Visible = not phone
-		end
 		arrange(false)
 	end
 	place()
@@ -3544,7 +3728,7 @@ local function buildChestPanel()
 			local row = Kit.new("Frame", {
 				Name = "Odds" .. order,
 				BackgroundTransparency = 1,
-				Size = UDim2.new(1, 0, 0, 26),
+				Size = UDim2.new(1, 0, 0, ODDS_ROW),
 				LayoutOrder = order,
 				Parent = odds,
 			})
@@ -3576,7 +3760,7 @@ local function buildChestPanel()
 				Text = "#" .. entry.tier,
 				TextSize = T.Small,
 				MinPx = true,
-				Size = UDim2.new(0, 36, 1, 0),
+				Size = UDim2.new(0, 28, 1, 0),
 				Position = UDim2.fromOffset(24, 0),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				TextColor3 = C.TextDim,
@@ -3585,12 +3769,12 @@ local function buildChestPanel()
 			Kit.text(row, {
 				Text = Theme.Tiers[entry.tier].Name,
 				Font = Theme.Fonts.UI,
-				TextSize = 15,
+				TextSize = 14,
 				MinPx = true,
 				TextWrapped = false,
 				TextTruncate = Enum.TextTruncate.AtEnd,
-				Size = UDim2.new(1, -126, 1, 0),
-				Position = UDim2.fromOffset(60, 0),
+				Size = UDim2.new(1, -100, 1, 0),
+				Position = UDim2.fromOffset(52, 0),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				TextColor3 = Kit.lighten(tierColor, 0.35),
 				StrokeThickness = 0,
@@ -3599,7 +3783,7 @@ local function buildChestPanel()
 				Text = entry.chance .. "%",
 				TextSize = T.Body,
 				MinPx = true,
-				Size = UDim2.new(0, 60, 1, 0),
+				Size = UDim2.new(0, 46, 1, 0),
 				Position = UDim2.new(1, -4, 0, 0),
 				AnchorPoint = Vector2.new(1, 0),
 				TextXAlignment = Enum.TextXAlignment.Right,
@@ -3608,16 +3792,23 @@ local function buildChestPanel()
 			table.insert(rows, row)
 		end
 		Kit.stagger(rows)
+		-- The well, and the rows under it, follow the number of odds rows.
+		oddsRows = #rows
+		arrange(false)
 	end
 
 	local shownFor = ""
 	local open = false
 	State.changed.Event:Connect(function(data)
-		local rarity = data.heldChest
+		-- No panel (and no Robux button) over the tutorial: a crate held then is still
+		-- carried to the Smasher by hand.
+		local rarity = if data.tutorialDone == true then data.heldChest else nil
 		if rarity == nil or rarity == "" then
 			shownFor = ""
+			heldRarity = ""
 			if open then
 				open = false
+				Guide.clearNavigate(SMASHER_PAD)
 				Kit.unfocus(panel)
 				Kit.disappear(panel)
 				Kit.hidePlayerList("crate", false)
@@ -3625,6 +3816,7 @@ local function buildChestPanel()
 			end
 			return
 		end
+		heldRarity = rarity
 		if not open then
 			open = true
 			-- Fx/Crates hides the held crate's own world chip while this is true.
@@ -3641,21 +3833,21 @@ local function buildChestPanel()
 			title.TextColor3 = Kit.lighten(color, 0.3)
 			divider.BackgroundColor3 = Kit.lighten(color, 0.2)
 			halo.BackgroundColor3 = Kit.lighten(color, 0.45)
+			-- The Smasher's timer for this rarity (its first slot).
+			freePrice.Text = if Economy.CHEST_INFO[rarity]
+				then "FREE  •  " .. Format.time(Economy.unlockSeconds(rarity, false))
+				else "FREE"
 			if crate then
 				crate:Destroy()
 			end
-			local icon = crateIcon(panel, color, 80, {
+			local icon = crateIcon(panel, color, 40, {
 				Rarity = rarity,
-				Position = UDim2.new(0.5, 0, 0, 102),
+				Position = CRATE_AT,
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				ZIndex = 2,
 			})
 			crate = icon
-			if phone then
-				icon.Visible = false
-			else
-				Kit.appear(icon, { from = 0.6, time = 0.3 })
-			end
+			Kit.appear(icon, { from = 0.6, time = 0.3 })
 			fillOdds(rarity, data.highestTier)
 		end
 		-- Pass owners open free; everyone else only where paid random items are allowed.
@@ -3899,6 +4091,7 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 				game:GetService("ContentProvider"):PreloadAsync(sprites)
 			end)
 		end)
+		watchMerges()
 		-- The server's one-time Starter grant (other Notify kinds are routed by Main).
 		Net.event("Notify").OnClientEvent:Connect(function(payload)
 			if type(payload) == "table" and payload.kind == "Starter" then
