@@ -54,6 +54,24 @@ ReplicatedFirst:RemoveDefaultLoadingScreen()
 
 local started = os.clock()
 
+-- Roblox's player list would draw over the splash's top right corner. Hide it
+-- while the player's "Loading" attribute is on; the client keeps it hidden as
+-- one of its own reasons (Kit.hidePlayerList) and puts it back afterwards.
+local StarterGui = game:GetService("StarterGui")
+player:SetAttribute("Loading", true)
+task.spawn(function()
+	-- CoreGui calls can fail this early: retry until one lands.
+	while player:GetAttribute("Loading") == true do
+		local set = pcall(function()
+			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
+		end)
+		if set then
+			break
+		end
+		task.wait(0.25)
+	end
+end)
+
 -- The brand art ships in ReplicatedFirst too, so it can show from the start
 -- instead of after ReplicatedStorage arrives; fetch it ahead of everything else.
 screen.applyArt({
@@ -137,4 +155,12 @@ end
 screen.finish()
 task.delay(if ok then 1 else 0, function()
 	gui:Destroy()
+	-- The list comes back only once the splash has faded out.
+	player:SetAttribute("Loading", false)
+	-- Without the client (it sets "GameReady") nobody else would bring it back.
+	if player:GetAttribute("GameReady") ~= true then
+		pcall(function()
+			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, true)
+		end)
+	end
 end)

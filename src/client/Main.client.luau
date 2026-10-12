@@ -158,6 +158,13 @@ end)
 player:GetAttributeChangedSignal("IntroPlaying"):Connect(function()
 	Kit.hidePlayerList("intro", player:GetAttribute("IntroPlaying") == true)
 end)
+-- The loading screen hides the list too (the loader sets "Loading" before this
+-- script exists); as a reason here, the list comes back once it has faded out.
+local function loadingList()
+	Kit.hidePlayerList("loading", player:GetAttribute("Loading") == true)
+end
+player:GetAttributeChangedSignal("Loading"):Connect(loadingList)
+loadingList()
 
 local action = Net.event("Action")
 
