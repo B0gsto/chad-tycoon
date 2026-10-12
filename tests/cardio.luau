@@ -1331,4 +1331,150 @@ return function(h: { [string]: any })
 		rig.feet(at, O.y, lz)
 		eq(rig.count("chase"), 3, "chased again after the fall")
 	end)
+
+	test("Cardio: stage 3 has room to spare and every stage a recommended Speed", function()
+		local s3 = Rules.STAGES[3]
+		-- Reach left over on the longest jump at exactly the need: well above SAFETY.
+		local reserve = s3.walk * Rules.airtime(0) - s3.gap
+		check(reserve >= 2.9, "stage 3 keeps 2.9 studs in reserve at its need (" .. reserve .. ")")
+		check(reserve >= 3 * Rules.SAFETY, "three times the safety margin")
+		for _, j in Rules.jumps(3) do
+			check(s3.walk * Rules.airtime(j.rise) - j.gap >= reserve - 1e-9, "no stage 3 jump is tighter than its longest")
+		end
+		eq(Rules.RECOMMEND, 1.15, "recommended = 15% above the need")
+		eq(Rules.recommended(1), 0, "stage 1 needs nothing")
+		eq(Rules.recommended(3), 1265, "stage 3: 1,100 x 1.15")
+		eq(Rules.recommended(99), 0, "no such stage")
+		for n = 2, Rules.STAGE_COUNT - 1 do
+			local s = Rules.STAGES[n]
+			local best = Rules.recommended(n)
+			eq(best, math.ceil(s.need * 1.15), "recommended 15% above the need at " .. n)
+			check(best < Rules.STAGES[n + 1].need, "below the next stage's need at " .. n)
+			-- More Speed, more room on the longest jump.
+			check(Rules.walkSpeed(best) * Rules.airtime(0) - s.gap > s.walk * Rules.airtime(0) - s.gap, "more reserve at " .. n)
+		end
+		-- The last stage's need is the Speed cap: nothing above it runs faster.
+		eq(Rules.recommended(Rules.STAGE_COUNT), Rules.STAGES[Rules.STAGE_COUNT].need, "stage 10 recommends its need")
+	end)
+
+	test("Cardio: first clears are kept per plate", function()
+		eq(Rules.firstsOf(nil, 0), 0, "a new save has taken none")
+		eq(Rules.firstsOf(nil, 3), 7, "an old save took every plate up to bestStage")
+		eq(Rules.firstsOf(nil, 99), 1023, "clamped to the ten plates")
+		eq(Rules.firstsOf(5, 9), 5, "a saved set wins over bestStage")
+		eq(Rules.firstsOf(5.7, 0), 5, "whole numbers only")
+		eq(Rules.firstsOf(1e9, 0), 1023, "never more than the ten plates")
+		eq(Rules.firstsOf(-4, 2), 3, "junk falls back to bestStage")
+		eq(Rules.firstsOf(0 / 0, 2), 3, "NaN falls back to bestStage")
+		local firsts = 0
+		for n = 1, Rules.STAGE_COUNT do
+			check(Rules.isFirst(firsts, n), "plate " .. n .. " starts as a first clear")
+		end
+		firsts = Rules.claimFirst(firsts, 5)
+		check(not Rules.isFirst(firsts, 5), "plate 5 taken")
+		for n = 1, Rules.STAGE_COUNT do
+			if n ~= 5 then
+				check(Rules.isFirst(firsts, n), "claiming plate 5 leaves plate " .. n)
+			end
+		end
+		eq(Rules.claimFirst(firsts, 5), firsts, "claiming twice changes nothing")
+		eq(Rules.claimFirst(firsts, 0), firsts, "no plate 0")
+		eq(Rules.claimFirst(firsts, 11), firsts, "no plate 11")
+		check(not Rules.isFirst(0, 0) and not Rules.isFirst(0, 11), "only plates 1..10 have a first clear")
+		for n = 1, Rules.STAGE_COUNT do
+			firsts = Rules.claimFirst(firsts, n)
+		end
+		eq(firsts, 1023, "all ten taken")
+	end)
+
+	test("Cardio: a skipped plate keeps its first clear", function()
+		local def, rig = loadCardio(0)
+		local player, profile = rig.player, rig.session.profile
+		local rec = profile.cardio
+		check(def.start(player, true), "start")
+		-- Run past plates 1 and 2, cash out on plate 3.
+		rig.reach(1, 3)
+		local snap = def.snapshot(player)
+		for n = 1, Rules.STAGE_COUNT do
+			eq(snap.firsts[n], true, "every plate is a first clear at " .. n)
+		end
+		eq(snap.recommended[3], Rules.recommended(3), "recommended Speed in the snapshot")
+		local pay1, pay2, pay3 = snap.wins[1], snap.wins[2], snap.wins[3]
+		rig.plate(3)
+		local win = rig.last("win")
+		check(win.stage == 3 and win.first == true and win.cash == pay3, "plate 3 pays its first clear")
+		eq(rec.bestStage, 3, "bestStage 3")
+		eq(profile.money, pay3, "paid once")
+		-- The reward cooldown is running, yet the skipped plates still pay: first clears.
+		rig.reach(1, 1)
+		local z1 = rig.last("zone")
+		check(z1.stage == 1 and z1.first == true and z1.cash == pay1, "skipped plate 1 is still a first clear")
+		snap = def.snapshot(player)
+		check(snap.firsts[1] and snap.firsts[2] and not snap.firsts[3], "the snapshot marks what is left")
+		eq(snap.wins[3], 0, "plate 3 is on the cooldown now")
+		rig.plate(1)
+		check(rig.last("win").first == true and rig.last("win").cash == pay1, "plate 1 pays its first clear later")
+		eq(profile.money, pay3 + pay1, "plate 1 paid")
+		eq(rec.bestStage, 3, "an earlier plate does not lower bestStage")
+		rig.reach(1, 2)
+		rig.plate(2)
+		check(rig.last("win").first == true and rig.last("win").cash == pay2, "so does plate 2")
+		eq(profile.money, pay3 + pay1 + pay2, "all three first clears paid, in any order")
+		-- Each first clear only once.
+		rig.reach(1, 2)
+		check(rig.last("zone").first == false and rig.last("zone").cash == 0, "plate 2 is a repeat now")
+		rig.plate(2)
+		eq(profile.money, pay3 + pay1 + pay2, "no second first clear")
+		eq(rec.firsts, 7, "plates 1-3 taken in the save")
+
+		-- A save from before per-plate firsts (bestStage 5): plates 1-5 count as taken, as they
+		-- did under the old rule; nothing is lost and 6+ are first clears.
+		def, rig = loadCardio(5)
+		check(def.start(rig.player, true), "start on an old save")
+		snap = def.snapshot(rig.player)
+		for n = 1, Rules.STAGE_COUNT do
+			eq(snap.firsts[n], n > 5, "old save: first clears from plate 6, at " .. n)
+		end
+		eq(rig.session.profile.cardio.firsts, 31, "the set is filled in from bestStage")
+		eq(rig.session.profile.cardio.bestStage, 5, "bestStage untouched")
+	end)
+
+	test("Cardio: a fall says whether the runner was too slow", function()
+		local def, rig = loadCardio(0)
+		local player, rec = rig.player, rig.session.profile.cardio
+		local r3 = Layout.room(3)
+		local x = (r3.x0 + r3.x1) / 2
+		local function fallIn3(): any
+			rig.reach(1, 2)
+			rig.feet(x, Layout.killYAt(x) - 10, O.z)
+			return rig.last("fall")
+		end
+		-- Below stage 3's need: too slow.
+		rec.speed = 200
+		check(def.start(player, true), "start")
+		local fall = fallIn3()
+		eq(fall.from, 3, "fell in stage 3")
+		eq(fall.need, Rules.STAGES[3].need, "stage 3's need")
+		check(fall.speed >= 200 and fall.speed < fall.need, "the runner's Speed")
+		check(fall.slow == true and fall.capped == false, "too slow for the stage")
+		-- Enough Speed: just a fall.
+		rec.speed = Rules.STAGES[3].need + 500
+		check(def.start(player, true), "restart with enough Speed")
+		fall = fallIn3()
+		check(fall.slow == false and fall.capped == false, "fast enough: a missed jump")
+		-- Enough Speed, but the player's own cap holds the run back.
+		rec.speedCap = 20
+		check(def.start(player, true), "restart with a speed cap")
+		fall = fallIn3()
+		check(fall.slow == true and fall.capped == true, "slow only because of the custom speed cap")
+		-- Stage 1 needs nothing: never "too slow".
+		rec.speedCap = 0
+		rec.speed = 0
+		check(def.start(player, true), "restart at 0 Speed")
+		local r1 = Layout.room(1)
+		local x1 = (r1.x0 + r1.x1) / 2
+		rig.feet(x1, Layout.killYAt(x1) - 10, O.z)
+		fall = rig.last("fall")
+		check(fall.from == 1 and fall.need == 0 and fall.slow == false, "a stage 1 fall is never about Speed")
+	end)
 end

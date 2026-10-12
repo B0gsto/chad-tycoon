@@ -14,15 +14,20 @@
 	               its swell-in cue, warn() runs every frame until the needle starts, then
 	               setNeedle(travel, dir) poses the needle from the server clock (travel =
 	               speed * (now - appearAt)), flash() on each result, idle() between checks.
+	               A duel's checks are hidden: "check" (hidden = true) only cues the empty
+	               ring, and the zone pops in with "zone" when the needle starts.
 	               The result word ("PERFECT!", "HIT", "MISS" / "TOO EARLY" / "TOO SLOW"
 	               in red) pops in on the ring's top edge and rises as it fades.
 	  Input        Space, Enter and gamepad A (ContextActionService, high priority, sunk
 	               so Space does not jump) and a big invisible button over the ring for
 	               mouse / touch. One MogPress per check, sent with the server time of the
-	               press; presses before the needle starts only give a small "wait..."
+	               press; presses before the needle starts (in a duel: before the zone
+	               shows and for a blink after, `pressFrom`) only give a small "wait..."
 	               wobble. The needle freezes where it was pressed until the result.
 	  Status       score (bouncy count) and the combo chip above the ring and a quiet "X"
-	               that asks "QUIT?" before firing ModeQuit. Vs rivals: hearts (maxLives)
+	               that asks "QUIT?" before firing ModeQuit. Vs rivals: beside the score the
+	               target "BEAT n" (the saved best from "start"; "NEW BEST!" in gold once the
+	               run's score passes it; hidden without a best), hearts (maxLives)
 	               under them and the rival's name and HP bar under the ring. In a duel the
 	               hearts become your own HP bar ("YOU", green, gold flash on perfect) and
 	               the bottom panel is the opponent's name and red HP bar, both moved by
@@ -75,6 +80,10 @@ type Check = {
 	zoneStart: number,
 	zoneSize: number,
 	perfectSize: number,
+	-- The zone is on the ring (a duel's comes later, with "zone"); no press counts before
+	-- `pressFrom` (server time).
+	known: boolean,
+	pressFrom: number,
 }
 
 local screen: ScreenGui? = nil
@@ -83,6 +92,7 @@ local ring: any -- MogRing
 local tapHint: TextLabel
 local resultLabel: TextLabel
 local scoreLabel: TextLabel
+local beatLabel: TextLabel
 local comboChip: TextLabel
 local heartsRow: Frame
 local youPanel: Frame
@@ -107,6 +117,8 @@ local check: Check? = nil
 local pressed = false -- this check's press is sent (input locked until the result)
 local frozenTravel: number? = nil
 local shownScore = 0
+-- The saved best score this PvE run tries to beat (0 = none: no target shown).
+local bestToBeat = 0
 local lives, maxLives = 3, 3
 local passedShown = false
 local quitArmed = false
@@ -262,7 +274,8 @@ local function press()
 		return
 	end
 	local now = Workspace:GetServerTimeNow()
-	if now < c.appearAt then
+	if now < c.appearAt or now < c.pressFrom or not c.known then
+		-- Too soon to count (the server ignores it too): no life lost.
 		wobble()
 		return
 	end
@@ -299,23 +312,63 @@ local function step()
 end
 
 local function onCheck(p: any)
+	local appearAt = num(p.appearAt, Workspace:GetServerTimeNow() + 1)
 	local c: Check = {
 		id = p.id,
 		n = num(p.n, 1),
-		appearAt = num(p.appearAt, Workspace:GetServerTimeNow() + 1),
+		appearAt = appearAt,
 		speed = math.max(num(p.speed, 180), 1),
 		dir = if p.dir == -1 then -1 else 1,
 		zoneStart = num(p.zoneStart, 180),
 		zoneSize = num(p.zoneSize, 40),
 		perfectSize = num(p.perfectSize, 10),
+		known = p.hidden ~= true,
+		pressFrom = num(p.pressFrom, appearAt),
 	}
 	check, pressed, frozenTravel, warned = c, false, nil, false
-	-- The DBD-style warning: tick, and MogRing swells the ring in with the new zone.
-	ring:setCheck({ zoneStart = c.zoneStart, zoneSize = c.zoneSize, perfectSize = c.perfectSize, dir = c.dir, n = c.n })
+	-- The DBD-style warning: tick, and MogRing swells the ring in, with the new zone unless
+	-- the check is hidden (a duel: the zone comes with "zone" when the needle starts).
+	if c.known then
+		ring:setCheck({ zoneStart = c.zoneStart, zoneSize = c.zoneSize, perfectSize = c.perfectSize, dir = c.dir, n = c.n })
+	else
+		ring:cue(c.dir)
+	end
 	ring:setNeedle(nil, c.dir)
 	centreHint = "check"
 	ring:setCentre(Kit.keyHint("confirm") .. (if Kit.touch then "!" else ""), C.Gold)
 	Sounds.play("Tick")
+end
+
+-- A hidden check's zone: sent when the needle starts.
+local function onZone(p: any)
+	local c = check
+	if not c or c.known or p.id ~= c.id then
+		return
+	end
+	c.zoneStart = num(p.zoneStart, c.zoneStart)
+	c.zoneSize = num(p.zoneSize, c.zoneSize)
+	c.perfectSize = num(p.perfectSize, c.perfectSize)
+	c.known = true
+	ring:setZone({ zoneStart = c.zoneStart, zoneSize = c.zoneSize, perfectSize = c.perfectSize, dir = c.dir, n = c.n })
+end
+
+-- "BEAT n" beside the score: the saved best this run is after, "NEW BEST!" once it is beaten.
+local function paintBeat(score: number)
+	local show = not pvp and bestToBeat > 0 and not quitArmed
+	beatLabel.Visible = show
+	if not show then
+		return
+	end
+	local beaten = score > bestToBeat
+	local text = if beaten then "NEW BEST!" else "BEAT " .. Format.short(bestToBeat)
+	if beatLabel.Text ~= text then
+		beatLabel.Text = text
+		beatLabel.TextColor3 = if beaten then C.Gold else C.TextDim
+		if beaten then
+			Kit.pop(beatLabel, 1.4)
+			Sounds.play("Coin", 0.05, 1.3)
+		end
+	end
 end
 
 -- An HP bar fill and its "hp/max" label; `flash` briefly tints the fill (a hit taken).
@@ -337,6 +390,7 @@ local function setScore(score: number, combo: number)
 		Kit.countTo(scoreLabel, shownScore, score, Format.short, 0.4)
 		Kit.pop(scoreLabel, 1.25)
 		shownScore = score
+		paintBeat(score)
 	end
 	if combo >= 2 then
 		comboChip.Text = "x" .. tostring(combo) .. " COMBO"
@@ -547,6 +601,9 @@ local function onStart(p: any)
 	pvp = p.vs == "pvp"
 	shownScore = num(p.score, 0)
 	scoreLabel.Text = Format.short(shownScore)
+	bestToBeat = if pvp then 0 else math.max(0, math.floor(num(p.best, 0)))
+	beatLabel.Text = ""
+	paintBeat(shownScore)
 	comboChip.Visible = false
 	Kit.setButton(quitButton, quitLabel(), C.SurfaceHi)
 	quitButton.Size = UDim2.fromOffset(30, 28)
@@ -598,6 +655,8 @@ function MogHud.onNotify(p: any)
 		return
 	elseif event == "check" then
 		onCheck(p)
+	elseif event == "zone" then
+		onZone(p)
 	elseif event == "result" then
 		onResult(p)
 	elseif event == "round" then
@@ -659,7 +718,7 @@ function MogHud.build(screenGui: ScreenGui)
 	-- Score pill (glass, like the HUD's run pill) with the quiet quit button on its right end.
 	local scorePanel = Kit.hudGlass(root, {
 		Name = "Score",
-		Size = UDim2.fromOffset(200, 44),
+		Size = UDim2.fromOffset(240, 44),
 		Position = UDim2.new(0.5, 0, 0, 0),
 		AnchorPoint = Vector2.new(0.5, 0),
 	})
@@ -673,6 +732,21 @@ function MogHud.build(screenGui: ScreenGui)
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.new(1, -84, 1, 0),
 		Position = UDim2.fromOffset(42, 0),
+		ZIndex = 3,
+	})
+	-- The target: between the score and the quit button (hidden while "QUIT?" is up).
+	beatLabel = Kit.hudText(scorePanel, {
+		Name = "Beat",
+		Text = "",
+		Font = F.Display,
+		TextSize = 14,
+		TextWrapped = false,
+		TextColor3 = C.TextDim,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Size = UDim2.fromOffset(86, 20),
+		Position = UDim2.new(1, -46, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Visible = false,
 		ZIndex = 3,
 	})
 	quitButton = Kit.button(scorePanel, {
@@ -715,6 +789,7 @@ function MogHud.build(screenGui: ScreenGui)
 		end
 		-- First tap arms it: "QUIT?" for a few seconds.
 		quitArmed = true
+		paintBeat(shownScore)
 		Kit.setButton(quitButton, "QUIT?", C.Bad)
 		Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(64, 28) }, Enum.EasingStyle.Back)
 		task.delay(3, function()
@@ -722,6 +797,9 @@ function MogHud.build(screenGui: ScreenGui)
 				quitArmed = false
 				Kit.setButton(quitButton, quitLabel(), C.SurfaceHi)
 				Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(30, 28) })
+				if active then
+					paintBeat(shownScore)
+				end
 			end
 		end)
 	end

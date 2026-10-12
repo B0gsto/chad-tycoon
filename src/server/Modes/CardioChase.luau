@@ -15,11 +15,14 @@
 	  s(t)  = min(stopS, startS + speed * max(0, t - startAt))
 	  x, pz, half = the line at s (linear between vertices)
 	  z(t)  = clamp(pz + clamp(playerZ - pz, -half, half) * min(1, run / LANE_EASE), zMin, zMax)
-	with speed = SPEED_FACTOR * walkSpeed(need_n) and zMin / zMax the room's side walls minus
-	WALL_MARGIN. It hovers / hops over gaps (the client draws a jump arc from `path`) and stops
+	with speed = factor * walkSpeed(need_n) (TUNING[n].factor, SPEED_FACTOR unless set) and
+	zMin / zMax the room's side walls minus WALL_MARGIN. It hovers / hops over gaps (the client draws a jump arc from `path`) and stops
 	STOP_SHORT studs before the end platform (stopS). A runner at walkSpeed(need_n) along the
 	same line stays ahead with >= MIN_SLACK seconds to spare; anyone slower
 	(walkSpeed(need_n-1) can't clear the stage's longest gap) gets caught.
+	Stage 3 is the first chase a runner meets, so its Chad is gentler (a 2 s head start at 0.85
+	of the walk speed, was 1.2 s at 0.9): a runner at exactly the need can lose FIRST_SLACK
+	(2) seconds there, against about 1.2 on stages 6 and 9.
 	  caught    chaser x >= player x - catchRadius  -> back to the lobby (Modes.Cardio)
 	  escaped   player x >= endX (ESCAPE_IN studs onto the end platform, before the timed exit
 	            door; not chased again this run)
@@ -50,19 +53,30 @@ CardioChase.WALL_MARGIN = 6
 -- Seconds a runner at exactly walkSpeed(need_n) may lose (blinking keys, a late jump) and
 -- still escape (checked in tests/cardio_chase.luau).
 CardioChase.MIN_SLACK = 1
+-- The same for the first chase stage (3), where a new runner hesitates before the jumps.
+CardioChase.FIRST_SLACK = 2
 
-export type Tuning = { tier: number, scale: number, headStart: number, catchRadius: number, speed: number }
+export type Tuning = {
+	tier: number,
+	scale: number,
+	headStart: number,
+	catchRadius: number,
+	speed: number,
+	factor: number?,
+}
 
 -- Per chase stage: Theme.Tiers index of the chaser's look, model scale, seconds of head
--- start, catch radius (studs along X). speed (studs/s) is set below from SPEED_FACTOR.
+-- start, catch radius (studs along X). speed (studs/s) is set below from `factor`
+-- (SPEED_FACTOR unless given).
 CardioChase.TUNING = {
-	[3] = { tier = 10, scale = 2.0, headStart = 1.2, catchRadius = 4, speed = 0 },
+	[3] = { tier = 10, scale = 2.0, headStart = 2.0, catchRadius = 4, speed = 0, factor = 0.85 },
 	[6] = { tier = 17, scale = 2.2, headStart = 1.2, catchRadius = 4.5, speed = 0 },
 	[9] = { tier = 24, scale = 2.4, headStart = 1.2, catchRadius = 5, speed = 0 },
 } :: { [number]: Tuning }
 
 for n, tune in CardioChase.TUNING do
-	tune.speed = math.floor(CardioChase.SPEED_FACTOR * Rules.walkSpeed(Rules.STAGES[n].need) * 10 + 0.5) / 10
+	local factor = tune.factor or CardioChase.SPEED_FACTOR
+	tune.speed = math.floor(factor * Rules.walkSpeed(Rules.STAGES[n].need) * 10 + 0.5) / 10
 end
 
 -- A walking surface along the section: [x0, x1] at height top, across [z0, z1].
