@@ -313,7 +313,6 @@ Layout.PAD_ORDER = {
 	"ProcUp1",
 	"ProcUp10",
 	"Collect",
-	"BuyTier",
 	"Unlock1",
 	"Unlock2",
 	"Free",
@@ -322,9 +321,8 @@ Layout.PAD_ORDER = {
 -- at least 3 studs of open floor between neighbouring bases and 6 between a pad and the pen.
 local BUY_Z = 16.5
 Layout.PADS = {
-	-- One row at the foot of the unit rack, level with the back of the pen, reading BuyTier,
-	-- Buy 1, Buy 5, [pen], Buy 25, Buy 100, Auto Merge from the player's left (+X) to right.
-	BuyTier = { x = 36.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
+	-- One row at the foot of the unit rack, level with the back of the pen, reading Buy 1,
+	-- Buy 5, [pen], Buy 25, Buy 100, Auto Merge from the player's left (+X) to right.
 	Buy1 = { x = 28.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
 	Buy5 = { x = 20.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
 	Buy25 = { x = -20.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },

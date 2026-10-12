@@ -187,24 +187,6 @@ local function buildPlot(index: number): Plot
 	-- Merge pad centred in front of the pen, at the end of the walkway.
 	pad("Merge", padColors.Merge, w.Merge, "Pairs merge into the next tier")
 
-	-- Buy tier upgrade: pad, with its sign card standing just behind it.
-	local tierSpot = Layout.PADS.BuyTier
-	pad("BuyTier", padColors.BuyTier, w.BuyTier, "")
-	do
-		local body, title = standingCard(B, tierSpot.x, behindPad(tierSpot), FACE_ENTRANCE, Vector2.new(7, 5.4), SIGN_BOTTOM, w.BuyTier)
-		labels.BuyTierTitle = title
-		-- Main line: units bought toward the next tier ("MAXED" at the top tier). The pad's own
-		-- sign shows the price.
-		labels.BuyTierProgress = text(body, {
-			Text = "",
-			Font = theme.Fonts.Number,
-			Size = UDim2.fromScale(0.9, 0.8),
-			Position = UDim2.fromScale(0.05, 0.1),
-		})
-		labels.BuyTierFromTo = hiddenLabel(body)
-		labels.BuyTierCost = hiddenLabel(body)
-	end
-
 	-- Deposit station: pad + converter machine. The pad's floating label already shows the
 	-- multiplier, so the multiplier labels Tycoon writes stay hidden on the pad.
 	local depositPad = pad("Deposit", padColors.Deposit, "DEPOSIT", w.Orb .. " x1.0")

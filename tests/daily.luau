@@ -153,17 +153,17 @@ return function(h: { [string]: any })
 		local progression = Economy.progression(4, Economy.START_PROCESS_LEVEL)
 		local open = DailyReward.cash(1, 18, progression)
 		for bought = 0, 20 do
-			local cap = DailyReward.firstDayCap(1, 1, bought)
+			local cap = DailyReward.firstDayCap(1, bought)
 			local cash = DailyReward.cash(1, 18, progression, cap)
 			check(cash >= DailyReward.REWARDS[1].min, "never below day 1's minimum at " .. bought)
 			check(cash <= 1000, "a few hundred cash at " .. bought)
 			check(cash < open / 4, "far below the income-sized reward at " .. bought)
 			-- Three to five of the units the player is buying.
-			check(cash >= Economy.bulkPrice(1, bought, 3) or cash == DailyReward.REWARDS[1].min, "buys three units at " .. bought)
-			check(cash <= math.max(DailyReward.REWARDS[1].min, Economy.bulkPrice(1, bought, 5)), "not six units at " .. bought)
+			check(cash >= Economy.bulkPrice(bought, 3) or cash == DailyReward.REWARDS[1].min, "buys three units at " .. bought)
+			check(cash <= math.max(DailyReward.REWARDS[1].min, Economy.bulkPrice(bought, 5)), "not six units at " .. bought)
 		end
-		eq(DailyReward.firstDayCap(1, 1, 5), math.floor(Economy.bulkPrice(1, 5, DailyReward.FIRST_DAY_UNITS)), "the next units' price")
-		eq(DailyReward.firstDayCap(1, 1, 0), DailyReward.REWARDS[1].min, "the minimum when units cost less")
+		eq(DailyReward.firstDayCap(1, 5), math.floor(Economy.bulkPrice(5, DailyReward.FIRST_DAY_UNITS)), "the next units' price")
+		eq(DailyReward.firstDayCap(1, 0), DailyReward.REWARDS[1].min, "the minimum when units cost less")
 		-- The cap only ever lowers the reward, and a later day has none.
 		eq(
 			DailyReward.cash(1, 0, Economy.progression(1, 0), 1e9),
@@ -335,8 +335,7 @@ return function(h: { [string]: any })
 			profile = {
 				discovered = discovered,
 				processLevel = Economy.START_PROCESS_LEVEL,
-				buyTier = 1,
-				boughtAtTier = 8,
+				bought = 8,
 				tutorialDone = true,
 				daily = { day = lastDay, streak = streak, firstDay = firstDay, hinted = true },
 			},
@@ -350,7 +349,7 @@ return function(h: { [string]: any })
 		local new = session(TODAY, 0, 0)
 		eq(Tycoon.hooks.daily(new).firstDay, true, "the snapshot says it is the first day")
 		Daily.claim(new)
-		eq(log.money, DailyReward.firstDayCap(1, 1, 8), "paid the next units' price")
+		eq(log.money, DailyReward.firstDayCap(1, 8), "paid the next units' price")
 		check(log.money < DailyReward.cash(1, 18, progression) / 4, "not the income-sized reward")
 		eq(log.notifies[1].cash, log.money, "the notify names what was paid")
 		eq(new.profile.daily.streak, 1, "the claim counts")
@@ -418,7 +417,7 @@ return function(h: { [string]: any })
 
 	-- Next goal -------------------------------------------------------------------------
 
-	local function profile(best: number, units: { number }, buyTier: number?, boughtAtTier: number?, money: number?)
+	local function profile(best: number, units: { number })
 		local discovered = table.create(Economy.MAX_TIER, 0)
 		for tier = 1, best do
 			discovered[tier] = 1
@@ -427,13 +426,10 @@ return function(h: { [string]: any })
 		for tier, n in units do
 			owned[tier] = n
 		end
-		return { discovered = discovered, units = owned, buyTier = buyTier or 1, boughtAtTier = boughtAtTier or 0, money = money or 0 }
+		return { discovered = discovered, units = owned }
 	end
 	local function nameOf(tier: number): string
 		return "T" .. tier
-	end
-	local function money(n: number): string
-		return "$" .. n
 	end
 
 	test("NextGoal: the next undiscovered tier", function()
@@ -445,7 +441,7 @@ return function(h: { [string]: any })
 		eq(goal.need, Economy.MERGE_RATIO, "two units merge")
 		near(goal.progress, 0.5, "half way")
 		check(not goal.ready, "not ready with one unit")
-		local title, hint, count = NextGoal.text(goal, nameOf, money)
+		local title, hint, count = NextGoal.text(goal, nameOf)
 		eq(title, "T2", "title names the target")
 		eq(hint, "merge 2x T1", "hint says what to merge")
 		eq(count, "1/2", "count")
@@ -453,7 +449,7 @@ return function(h: { [string]: any })
 		goal = NextGoal.pick(profile(1, { 2 }))
 		check(goal.ready, "ready with a pair")
 		near(goal.progress, 1, "full bar with a pair")
-		eq(select(3, NextGoal.text(goal, nameOf, money)), "2/2", "count with a pair")
+		eq(select(3, NextGoal.text(goal, nameOf)), "2/2", "count with a pair")
 
 		-- Lower tiers count toward the bar: 2 x T1 + 1 x T2 + 1 x T3 are two merges from a T3 pair.
 		goal = NextGoal.pick(profile(3, { 2, 1, 1 }))
@@ -466,9 +462,6 @@ return function(h: { [string]: any })
 		eq(NextGoal.pick(profile(3, { 0, 0, 9 })).have, 2, "have is capped at the pair")
 		near(NextGoal.pick(profile(4, { 400 })).progress, 1, "progress is capped at 1")
 
-		-- The merge goal comes first even when a buy tier upgrade is ready.
-		local cost = Economy.buyTierUpgradeCost(1)
-		eq(NextGoal.pick(profile(5, { 1 }, 1, Economy.buyTierRequirement(1), cost * 10)).kind, "merge", "merge goal first")
 		eq(NextGoal.pick(profile(24, { 1 })).tier, 25, "the last tier is a goal too")
 
 		-- Broken unit counts are ignored.
@@ -480,46 +473,17 @@ return function(h: { [string]: any })
 		near(goal.progress, 0, "no progress from bad counts")
 	end)
 
-	test("NextGoal: buy tier and full rack fallbacks", function()
+	test("NextGoal: full rack fallback", function()
 		local all = Economy.MAX_TIER
-		local need = Economy.buyTierRequirement(3)
-		local cost = Economy.buyTierUpgradeCost(3)
-		local goal = NextGoal.pick(profile(all, { 1 }, 3, 0, 0))
-		eq(goal.kind, "buyTier", "every tier found: unlock the next buy tier")
-		eq(goal.tier, 4, "next buy tier")
-		eq(goal.from, 3, "units bought at the current buy tier")
-		eq(goal.need, need, "the upgrade requirement")
-		eq(goal.have, 0, "none bought yet")
-		eq(goal.cost, cost, "upgrade cost")
-		near(goal.progress, 0, "empty bar")
-		local title, hint, count = NextGoal.text(goal, nameOf, money)
-		eq(title, "Buy Tier 4", "buy tier title")
-		eq(hint, string.format("buy %d more T3", need), "buy tier hint")
-		eq(count, "0/" .. need, "buy tier count")
-
-		goal = NextGoal.pick(profile(all, { 1 }, 3, need, cost / 2))
-		eq(goal.have, need, "requirement met")
-		near(goal.progress, 0.75, "half the cash is three quarters of the bar")
-		check(not goal.ready, "not ready without the cash")
-		title, hint, count = NextGoal.text(goal, nameOf, money)
-		eq(hint, "save $" .. cost, "saving hint")
-		eq(count, "50%", "saving count")
-
-		goal = NextGoal.pick(profile(all, { 1 }, 3, need + 50, cost))
-		check(goal.ready, "ready with the units and the cash")
-		eq(goal.have, need, "purchases past the requirement are capped")
-		near(goal.progress, 1, "full bar")
-		eq(select(3, NextGoal.text(goal, nameOf, money)), "READY", "ready count")
-
 		local units = table.create(all, 0)
 		units[all] = 37
-		goal = NextGoal.pick(profile(all, units, Economy.MAX_BUY_TIER, 0, 0))
-		eq(goal.kind, "rack", "nothing left to unlock: stack the top tier")
+		local goal = NextGoal.pick(profile(all, units))
+		eq(goal.kind, "rack", "every tier found: stack the top tier")
 		eq(goal.tier, all, "top tier")
 		eq(goal.have, 37, "top-tier units owned")
 		eq(goal.need, Economy.UNIT_CAP, "the rack's size")
 		near(goal.progress, 37 / Economy.UNIT_CAP, "rack bar")
-		title, hint, count = NextGoal.text(goal, nameOf, money)
+		local title, _, count = NextGoal.text(goal, nameOf)
 		eq(title, "T" .. all, "rack title")
 		eq(count, "37/" .. Economy.UNIT_CAP, "rack count")
 	end)

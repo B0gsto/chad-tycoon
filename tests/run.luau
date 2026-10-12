@@ -278,43 +278,27 @@ test("highestTier", function()
 end)
 
 test("buy pricing", function()
-	for buyTier = 1, Economy.MAX_BUY_TIER do
-		for _, start in { 0, 3, 77 } do
-			for _, amount in Economy.BUY_AMOUNTS do
-				local sum = 0
-				for k = 0, amount - 1 do
-					sum += Economy.unitPrice(buyTier, start + k)
-				end
-				near(Economy.bulkPrice(buyTier, start, amount), sum, string.format("bulk tier %d start %d x%d", buyTier, start, amount))
+	for _, start in { 0, 3, 77, 5000 } do
+		for _, amount in Economy.BUY_AMOUNTS do
+			local sum = 0
+			for k = 0, amount - 1 do
+				sum += Economy.unitPrice(start + k)
 			end
+			near(Economy.bulkPrice(start, amount), sum, string.format("bulk start %d x%d", start, amount))
 		end
-		check(Economy.buyTierUpgradeCost(buyTier) > 0, "upgrade cost positive")
-		check(Economy.buyTierRequirement(buyTier) >= 1, "requirement")
-		-- Buy tier 1 holds the easy units, so its requirement stands apart.
-		if buyTier > 2 then
-			check(Economy.buyTierRequirement(buyTier) >= Economy.buyTierRequirement(buyTier - 1), "requirement grows")
-		end
-		if buyTier > 1 then
-			check(Economy.buyTierUpgradeCost(buyTier) > Economy.buyTierUpgradeCost(buyTier - 1), "upgrade cost grows")
-			near(
-				Economy.unitPrice(buyTier, Economy.buyTierRequirement(buyTier)),
-				2 * Economy.basePrice(buyTier),
-				"price doubles at requirement " .. buyTier
-			)
-		end
+		check(Economy.unitPrice(start + 1) > Economy.unitPrice(start), "price grows from " .. start)
 	end
 end)
 
 test("buy pricing: a new player's easy units", function()
-	local easy, req, base = Economy.BUY_EASY_UNITS, Economy.BUY_EASY_REQ, Economy.basePrice(1)
-	eq(Economy.buyTierRequirement(1), easy, "the buy tier unlocks once the easy units are bought")
-	near(Economy.unitPrice(1, 0), base, "the first unit costs the base price")
-	near(Economy.unitPrice(1, req), 2 * base, "an easy unit adds 1 / BUY_EASY_REQ of the base")
-	local last = Economy.unitPrice(1, easy)
+	local easy, req, base = Economy.BUY_EASY_UNITS, Economy.BUY_EASY_REQ, Economy.BUY_BASE_PRICE
+	near(Economy.unitPrice(0), base, "the first unit costs the base price")
+	near(Economy.unitPrice(req), 2 * base, "an easy unit adds 1 / BUY_EASY_REQ of the base")
+	local last = Economy.unitPrice(easy)
 	near(last, base * (1 + easy / req), "price once the easy units are bought")
 	-- After them every purchase adds the whole base price again, as before the easy units.
-	near(Economy.unitPrice(1, easy + 1) - last, base, "normal growth after the easy units")
-	near(Economy.unitPrice(1, easy + 7) - last, 7 * base, "normal growth keeps going")
+	near(Economy.unitPrice(easy + 1) - last, base, "normal growth after the easy units")
+	near(Economy.unitPrice(easy + 7) - last, 7 * base, "normal growth keeps going")
 	-- Every batch equals its single purchases, across the boundary too.
 	for _, start in { 0, easy - 3, easy - 1, easy, easy + 4 } do
 		for _, amount in Economy.BUY_AMOUNTS do
@@ -323,16 +307,13 @@ test("buy pricing: a new player's easy units", function()
 				local n = start + k
 				sum += base * (1 + math.min(n, easy) / req + math.max(0, n - easy))
 			end
-			near(Economy.bulkPrice(1, start, amount), sum, string.format("easy bulk start %d x%d", start, amount))
+			near(Economy.bulkPrice(start, amount), sum, string.format("easy bulk start %d x%d", start, amount))
 		end
 	end
-	-- All of them together cost less than a single unit bought at buy tier 5.
-	local all = Economy.bulkPrice(1, 0, easy)
+	-- All of them together are an early-game sum.
+	local all = Economy.bulkPrice(0, easy)
 	near(all, base * (easy + easy * (easy - 1) / 2 / req), "price of every easy unit")
-	check(all < Economy.basePrice(5), "the easy units are an early-game sum")
-	-- Other buy tiers are untouched.
-	near(Economy.unitPrice(2, 3), Economy.basePrice(2) * 4, "buy tier 2 has no easy units")
-	near(Economy.buyTierUpgradeCost(1), Economy.basePrice(2) * Economy.BUY_TIER_UPGRADE_SHARE, "first upgrade cost")
+	check(all < Economy.unitValue(9), "the easy units are an early-game sum")
 end)
 
 test("processing", function()
@@ -715,7 +696,6 @@ local REQUIRED_WORDS = {
 	"Free",
 	"Surge",
 	"Multiplier",
-	"BuyTier",
 }
 local REQUIRED_COLORS = {
 	"Primary",
@@ -1373,7 +1353,7 @@ test("plot layout: pads", function()
 	for _, amount in Economy.BUY_AMOUNTS do
 		check(Layout.PADS["Buy" .. amount] ~= nil, "buy pad " .. amount)
 	end
-	for _, name in { "AutoMerge", "Merge", "Deposit", "ProcUp1", "ProcUp10", "Collect", "BuyTier", "Unlock1", "Unlock2", "Free" } do
+	for _, name in { "AutoMerge", "Merge", "Deposit", "ProcUp1", "ProcUp10", "Collect", "Unlock1", "Unlock2", "Free" } do
 		check(Layout.PADS[name] ~= nil, "pad " .. name)
 	end
 
@@ -1421,7 +1401,7 @@ test("plot layout: pads", function()
 	for _, name in { "Deposit", "ProcUp1", "ProcUp10", "Collect" } do
 		check(P[name].x < -20, name .. " on the -X side")
 	end
-	for _, name in { "BuyTier", "Unlock1", "Unlock2", "Free" } do
+	for _, name in { "Unlock1", "Unlock2", "Free" } do
 		check(P[name].x > 20, name .. " on the +X side")
 	end
 
@@ -1913,10 +1893,6 @@ test("intro seen flag", function()
 	eq(legacy.introSeen, true, "saves from before the intro skip it")
 	eq(DataService.reconcile({ money = 10, introSeen = false }).introSeen, false, "unwatched stays unwatched")
 	eq(DataService.reconcile({ money = 10, introSeen = true }).introSeen, true, "watched stays watched")
-	-- Purchase counts from a save made under a bigger upgrade requirement are capped to it.
-	local capped = DataService.reconcile({ money = 10, buyTier = 3, boughtAtTier = 400 })
-	eq(capped.boughtAtTier, Economy.buyTierRequirement(3), "purchases past the requirement are capped")
-	eq(DataService.reconcile({ money = 10, buyTier = 3, boughtAtTier = 1 }).boughtAtTier, 1, "purchases under it are kept")
 end)
 
 test("new player start: cash, converter and tutorial reward", function()
@@ -1925,9 +1901,9 @@ test("new player start: cash, converter and tutorial reward", function()
 	eq(fresh.money, Economy.START_CASH, "starting cash")
 	eq(fresh.processLevel, Economy.START_PROCESS_LEVEL, "starting converter level")
 	-- The first Buy 1 leaves cash for a second unit, and the tutorial reward buys a few more.
-	check(Economy.START_CASH >= Economy.bulkPrice(1, 0, 2) - Economy.unitPrice(1, 1), "cash for the first unit")
-	check(Economy.START_CASH - Economy.unitPrice(1, 0) > 0, "cash left after the first unit")
-	check(Economy.TUTORIAL_REWARD_CASH >= Economy.bulkPrice(1, 1, 3), "the reward buys three more units")
+	check(Economy.START_CASH >= Economy.bulkPrice(0, 2) - Economy.unitPrice(1), "cash for the first unit")
+	check(Economy.START_CASH - Economy.unitPrice(0) > 0, "cash left after the first unit")
+	check(Economy.TUTORIAL_REWARD_CASH >= Economy.bulkPrice(1, 3), "the reward buys three more units")
 	-- The starting converter keeps up with one unit of tier 5 and no more than that.
 	check(Economy.processRate(Economy.START_PROCESS_LEVEL) >= Economy.unitRate(5), "converter covers tier 5")
 	check(Economy.processRate(Economy.START_PROCESS_LEVEL) < Economy.unitRate(6), "converter is upgraded for tier 6")
@@ -2048,24 +2024,29 @@ test("onboarding funnel: returning players log no tier milestones", function()
 	eq(DataService.reconcile(finished).onboarding, Funnel.LAST, "migrating twice changes nothing")
 end)
 
-test("buy tier 1: old saves that could upgrade still can", function()
+test("buy tiers removed: old saves keep buying the first tier", function()
 	local DataService = loadDataService()
-	local need = Economy.buyTierRequirement(1)
-	check(need > Economy.BUY_REQ_BASE, "buy tier 1 asks for more purchases than it used to")
-	local function bought(save: { [string]: any }): number
+	local easy = Economy.BUY_EASY_UNITS
+	local function migrated(save: { [string]: any }): { [string]: any }
 		save.money = 10
-		return DataService.reconcile(save).boughtAtTier
+		return DataService.reconcile(save) :: any
 	end
-	-- Past the tutorial with the old requirement met: lifted to the new one.
-	eq(bought({ version = 1, tutorialDone = true, buyTier = 1, boughtAtTier = 1 }), need, "lifted")
-	eq(bought({ tutorialDone = true, buyTier = 1, boughtAtTier = 7 }), need, "a save without a version is an old one")
-	eq(bought({ tutorialDone = true, buyTier = 1, boughtAtTier = 500 }), need, "never above the requirement")
-	-- Not able to upgrade before, still in the tutorial, or on another buy tier: unchanged.
-	eq(bought({ version = 1, tutorialDone = true, buyTier = 1, boughtAtTier = 0 }), 0, "nothing bought yet")
-	eq(bought({ version = 1, tutorialDone = false, buyTier = 1, boughtAtTier = 3 }), 3, "tutorial still running")
-	eq(bought({ version = 1, tutorialDone = true, buyTier = 4, boughtAtTier = 1 }), 1, "other buy tiers")
-	-- A profile made under the new rules buys its easy units.
-	eq(bought({ version = DataService.VERSION, tutorialDone = true, buyTier = 1, boughtAtTier = 5 }), 5, "new profiles")
+	eq(DataService.defaultProfile().bought, 0, "a new profile has bought nothing")
+	-- A save that had upgraded its buy tier starts just past the easy units.
+	local upgraded = migrated({ buyTier = 6, boughtAtTier = 3 })
+	eq(upgraded.bought, easy, "an upgraded save has used its easy units")
+	eq(upgraded.buyTier, nil, "the buy tier is dropped")
+	eq(upgraded.boughtAtTier, nil, "the old count is dropped")
+	-- One still on the first buy tier keeps its count, capped as it was on every load.
+	eq(migrated({ buyTier = 1, boughtAtTier = 7 }).bought, 7, "purchases are kept")
+	eq(migrated({ buyTier = 1, boughtAtTier = 500 }).bought, easy, "never above the easy units")
+	eq(migrated({ buyTier = 1, boughtAtTier = 0 / 0 }).bought, 0, "a broken count reads as zero")
+	eq(migrated({}).bought, 0, "a save without either starts at zero")
+	-- Once migrated the count is the save's own and is not capped again.
+	eq(migrated({ bought = 4321 }).bought, 4321, "the new count is kept")
+	eq(migrated({ bought = 4321, buyTier = 9, boughtAtTier = 2 }).bought, 4321, "old fields do not override it")
+	eq(migrated({ bought = -3 }).bought, 0, "never negative")
+	eq(migrated({ bought = 0 / 0 }).bought, 0, "a broken new count reads as zero")
 end)
 
 test("tutorial: no 'nothing to merge' toast before the merge step", function()
@@ -4638,14 +4619,14 @@ test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", 
 	eq(Simulate.SMALL_PACK_SECONDS, pack.Seconds, "simulated parkour reward uses the mode reward's seconds")
 	eq(Simulate.SMALL_PACK_MIN, pack.Min, "simulated parkour reward uses the mode reward's minimum")
 
-	-- The first tiers come fast (see the first-minutes test); from tier 8 on the curve is the
-	-- old one, about 40 minutes earlier.
+	-- The first tiers come fast (see the first-minutes test); after them each tier takes
+	-- close to twice as long as the one before, since every unit is bought at the first tier.
 	local reached = Simulate.run({ hours = 5, step = 5 }).reached
 	check(reached[2] ~= nil and reached[2] <= 60, "tier 2 within the first minute")
 	check(reached[6] ~= nil and reached[6] <= 20 * 60, "tier 6 within 20 minutes")
 	check(reached[8] ~= nil and reached[8] >= 60 * 60 and reached[8] <= 100 * 60, "tier 8 after 60 to 100 minutes")
-	check(reached[10] ~= nil and reached[10] >= 3 * 3600, "tier 10 not before 3 hours")
-	check(reached[11] == nil, "tier 11 not before 5 hours")
+	check(reached[9] ~= nil and reached[9] >= 2 * 3600, "tier 9 not before 2 hours")
+	check(reached[10] == nil, "tier 10 not before 5 hours")
 end)
 
 test("first minutes: a new player merges early and always has something to buy", function()
@@ -4662,7 +4643,6 @@ test("first minutes: a new player merges early and always has something to buy",
 	check(reached[7] ~= nil and reached[7] >= 360, "tier 7 is past the first minutes")
 	check(reached[8] == nil, "tier 8 is not an early tier")
 	check(result.longestGap <= 25, "never over 25 s without a purchase in the first 6 minutes (" .. result.longestGap .. ")")
-	eq(result.buyTier <= 3, true, "the buy tier stays low while the easy units last")
 
 	-- A slower player (longer paths, more reading) still gets there.
 	local speed, read = Simulate.PATH_SLACK, Simulate.STEP_READ

@@ -434,9 +434,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		local progression = Economy.progression(tonumber(data.highestTier) or 1, tonumber(data.processLevel) or 0)
 		local income = tonumber(data.income) or 0
 		-- A player's first day pays today's card up to a cap (Server.Daily does the same).
-		local cap = if daily.firstDay == true
-			then DailyReward.firstDayCap(day, tonumber(data.buyTier) or 1, tonumber(data.boughtAtTier) or 0)
-			else nil
+		local cap = if daily.firstDay == true then DailyReward.firstDayCap(day, tonumber(data.bought) or 0) else nil
 		for i, card in cards do
 			card.amount.Text = State.money(DailyReward.cash(i, income, progression, if i == day then cap else nil))
 			local state = if i <= claimed

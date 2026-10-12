@@ -93,9 +93,9 @@ DailyReward.FIRST_DAY_UNITS = 4
 -- The most card `day` pays on a player's first day: what their next FIRST_DAY_UNITS units
 -- cost (a few hundred cash in the first minutes), never below the day's minimum. A boost,
 -- not a tier skip.
-function DailyReward.firstDayCap(day: number, buyTier: number, boughtAtTier: number): number
+function DailyReward.firstDayCap(day: number, bought: number): number
 	local reward = DailyReward.REWARDS[DailyReward.card(day)]
-	return math.max(reward.min, math.floor(Economy.bulkPrice(buyTier, boughtAtTier, DailyReward.FIRST_DAY_UNITS)))
+	return math.max(reward.min, math.floor(Economy.bulkPrice(bought, DailyReward.FIRST_DAY_UNITS)))
 end
 
 -- Cash of card `day` for a player earning `income` cash/s at `progression`, at most `cap`

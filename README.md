@@ -39,12 +39,13 @@ sand island in the sea.
   step. Each step completes on the real server event. The tutorial's deposit turns into cash at once,
   and finishing pays $200.
 - **First minutes.** A new player starts with $100 and a level 16 converter (`Economy.START_CASH`,
-  `START_PROCESS_LEVEL`), and the first 60 units of buy tier 1 are cheap ($50, then +$5 each;
-  `Economy.BUY_EASY_UNITS`). The buy tier unlocks once they are bought. Following the tutorial at
+  `START_PROCESS_LEVEL`), and the first 60 units bought are cheap ($50, then +$5 each;
+  `Economy.BUY_EASY_UNITS`). Following the tutorial at
   walking pace this gives tier 2 after about 20 s, tier 3 after 30 s, tier 5 by 3 minutes and tier 6 by
   5 minutes, with something to buy on every lap (`lune run scripts/simulate --first`). From then on
-  prices are the normal ones. Saves from before this (profile `version` 1) that were past the tutorial
-  and could already upgrade buy tier 1 keep that: their purchase count is lifted to the 60.
+  every unit bought adds $50 to the price of the next. The buy pads always sell the first tier; higher
+  tiers come from merging and crates. Saves from when the buy tier could be upgraded start just past
+  the 60 cheap units.
 - **Rack.** Units stand on a display rack of up to 10 shelves and 100 slots (`Economy.UNIT_CAP`), each
   with a name plate that glows more at higher tiers. Two units of a tier merge into one of the next tier
   (2.2x output) on the Merge pad or with the Auto Merge game pass. At the cap, a new unit first auto-merges
@@ -54,7 +55,7 @@ sand island in the sea.
   walled pen as balls coloured by tier. The pen holds 64 balls (`OrbLook.CAP`); after that new orbs count
   up existing balls (an "xN" tag). Walk into the pen (stairs on both sides) to collect them into the
   dumbbell at the bottom of the HUD.
-- **Pads** fire the moment you step on them (once per visit). Walking in from the hub: Buy Tier, Buy 1,
+- **Pads** fire the moment you step on them (once per visit). Walking in from the hub: Buy 1,
   Buy 5 on the left of the pen and Buy 25, Buy 100, Auto Merge on the right, all along the foot of the
   rack; Merge in front of the pen; on the right, the `+/sec` upgrades (x1, x10), the big Deposit pad by
   the blender converter and Collect by the vault; on the left, the Crate Smasher, the VIP Smasher and the
@@ -119,7 +120,7 @@ sand island in the sea.
 - **Next goal.** Once the tutorial is done, a small strip under the deposit strip (above the dumbbell on
   short screens) names the next target and how far along it is: "Next: Protein Bro 1/2" over "Merge 2x Gym
   Rookie", with the target's silhouette and a thin progress bar; tapping it opens the Index. The target is
-  the next undiscovered tier, then the next buy tier, then filling the rack with the top tier
+  the next undiscovered tier, then filling the rack with the top tier
   (`src/shared/NextGoal.luau`). It hides during the intro and game-mode runs.
 - **Daily reward** (`src/shared/DailyReward.luau`, `src/server/Daily.luau`, `src/client/UI/DailyWindow.luau`):
   one claim per UTC day on a 7-day streak. Each day pays cash sized like a shop cash pack (minutes of your
