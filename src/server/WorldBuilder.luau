@@ -122,25 +122,14 @@ local function makeCameraSafe(root: Instance)
 	end
 end
 
--- Faces for freestanding sign cards (0 faces the entrance, -Z).
-local FACE_ENTRANCE = 0
+-- Faces for freestanding sign cards (yaw 0 faces the entrance, -Z).
 local FACE_MINUS_X = math.pi / 2
 local FACE_PLUS_X = -math.pi / 2
--- Gap between a pad's rim and a sign card standing behind it.
-local SIGN_GAP = 1
--- Bottom edge of those cards: above the pads' floating labels (World.Pads), so from the spawn
--- camera a label never sits in front of the card behind its pad.
-local SIGN_BOTTOM = 6.4
 -- Bottom edge of the processor's board: above the smoothie cups riding its belt.
 local BOARD_BOTTOM = 7.2
 -- Bottom edge of the cards at the +X stations (crate crackers, free gift): above the crate
 -- plinth and the gift box in front of them.
 local STATION_SIGN_BOTTOM = 4
-
--- Plot-local Z just behind a pad's rim (+Z side), where its sign card stands.
-local function behindPad(spot: Layout.PadSpot): number
-	return spot.z + spot.sizeZ / 2 + Layout.PAD_RIM + SIGN_GAP
-end
 
 -- A label Server.Tycoon still writes to that its card no longer shows.
 local function hiddenLabel(parent: Instance): TextLabel
@@ -193,24 +182,6 @@ local function buildPlot(index: number): Plot
 
 	-- Merge pad centred in front of the pen, at the end of the walkway.
 	pad("Merge", padColors.Merge, w.Merge, "Pairs merge into the next tier")
-
-	-- Buy tier upgrade: pad, with its sign card standing just behind it.
-	local tierSpot = Layout.PADS.BuyTier
-	pad("BuyTier", padColors.BuyTier, w.BuyTier, "")
-	do
-		local body, title = standingCard(B, tierSpot.x, behindPad(tierSpot), FACE_ENTRANCE, Vector2.new(7, 5.4), SIGN_BOTTOM, w.BuyTier)
-		labels.BuyTierTitle = title
-		-- Main line: units bought toward the next tier ("MAXED" at the top tier). The pad's own
-		-- sign shows the price.
-		labels.BuyTierProgress = text(body, {
-			Text = "",
-			Font = theme.Fonts.Number,
-			Size = UDim2.fromScale(0.9, 0.8),
-			Position = UDim2.fromScale(0.05, 0.1),
-		})
-		labels.BuyTierFromTo = hiddenLabel(body)
-		labels.BuyTierCost = hiddenLabel(body)
-	end
 
 	-- Deposit station (-X court, level with the plaza): pad + converter machine. The pad's floating label already shows the
 	-- multiplier, so the multiplier labels Tycoon writes stay hidden on the pad.

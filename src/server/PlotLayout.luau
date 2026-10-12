@@ -44,7 +44,7 @@
 	  | fans    [ display rack: 10 shelves, 100 slots ]   fans  |
 	  | fans    [~~~~~~~~ gutter -> (x = 0) <- ~~~~~~~~]   fans  |
 	  |,--------------------- chute ---------------------------.|
-	  |: TIER   B1   B5   #==== PEN ====#   B25   B100   AUTO  :|  buy court
+	  |:        B1   B5   #==== PEN ====#   B25   B100   AUTO  :|  buy court
 	  |`------------------#             #----------------------'|
 	  | ,------------.   _|# (orbs)    #|_      ,------------.  |
 	  | :crk> UNLOCK1:    #  [crates]   #       :DEPOSIT<conv:  |
@@ -337,7 +337,6 @@ Layout.PAD_ORDER = {
 	"ProcUp1",
 	"ProcUp10",
 	"Collect",
-	"BuyTier",
 	"Unlock1",
 	"Unlock2",
 	"Free",
@@ -351,9 +350,8 @@ local ROW_BACK, ROW_MID, ROW_FRONT = 7, -14, -32
 -- The pad column of each side court (the machines stand behind it, toward the fence).
 local PAD_X = 34
 Layout.PADS = {
-	-- One row at the foot of the unit rack, level with the back of the pen, reading BuyTier,
-	-- Buy 1, Buy 5, [pen], Buy 25, Buy 100, Auto Merge from the player's left (+X) to right.
-	BuyTier = { x = 42, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
+	-- One row at the foot of the unit rack, level with the back of the pen, reading Buy 1,
+	-- Buy 5, [pen], Buy 25, Buy 100, Auto Merge from the player's left (+X) to right.
 	Buy1 = { x = 32, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
 	Buy5 = { x = 22, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
 	Buy25 = { x = -22, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
@@ -416,7 +414,7 @@ Layout.COURTS = {
 Layout.COURT_LINE = 0.6
 -- The pads and machines standing on each court.
 Layout.COURT_MEMBERS = {
-	Buy = { pads = { "BuyTier", "Buy1", "Buy5", "Buy25", "Buy100", "AutoMerge" }, machines = {} },
+	Buy = { pads = { "Buy1", "Buy5", "Buy25", "Buy100", "AutoMerge" }, machines = {} },
 	Cash = { pads = { "ProcUp1", "ProcUp10", "Deposit", "Collect" }, machines = { "Processor", "Converter", "Vault" } },
 	Crates = { pads = { "Unlock1", "Unlock2", "Free" }, machines = { "Unlocker1", "Unlocker2" } },
 } :: { [string]: { pads: { string }, machines: { string } } }

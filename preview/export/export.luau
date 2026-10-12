@@ -867,8 +867,7 @@ local function main()
 		end
 		p.units[highest] = 2
 		p.totalObtained = math.floor(2 ^ highest * 1.7)
-		p.buyTier = math.max(1, highest - 6)
-		p.boughtAtTier = math.floor(Economy.buyTierRequirement(p.buyTier) * 0.62)
+		p.bought = math.floor(2 ^ highest * 1.7)
 		p.processLevel = highest * 9
 		p.queue = Economy.processRate(p.processLevel) * 42
 		p.pending = Economy.processRate(p.processLevel) * 37
@@ -886,7 +885,7 @@ local function main()
 	local function freshProfile()
 		local p = DataService.defaultProfile()
 		p.units[1] = 2
-		p.boughtAtTier = 1
+		p.bought = 1
 		p.totalObtained = 2
 		p.money = 30
 		p.lastOnline = 0

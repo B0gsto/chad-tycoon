@@ -47,7 +47,7 @@ Existing kinds keep working; A adds the fields below (all Vector3 are world spac
   creates models for new units. New models get attribute `Spawned` = workspace:GetServerTimeNow().
   Count label updates in place (no rebuild). Attribute `Tier: number` on every unit model.
 - Pad parts `Pad_<Name>` get attribute `Dwell: number` (seconds you must stand on it; 0 = instant).
-  Purchases (Buy*, AutoMerge, BuyTier, ProcUp*) use 0.7 s; Deposit/Collect/Merge/Unlock*/Free use 0.
+  Purchases (Buy*, AutoMerge, ProcUp*) use 0.7 s; Deposit/Collect/Merge/Unlock*/Free use 0.
 - Floor crates are picked up with a ProximityPrompt (ActionText "Pick up", KeyCode E, HoldDuration 0,
   MaxActivationDistance 9, RequiresLineOfSight false). No more walk-over pickup.
 

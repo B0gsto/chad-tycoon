@@ -46,6 +46,7 @@ else
 		applyTheme = function() end,
 		applyArt = function() end,
 		setStatus = function() end,
+		setProgress = function() end,
 		finish = function() end,
 	} :: any
 end
@@ -53,12 +54,44 @@ ReplicatedFirst:RemoveDefaultLoadingScreen()
 
 local started = os.clock()
 
+-- Roblox's player list would draw over the splash's top right corner. Hide it
+-- while the player's "Loading" attribute is on; the client keeps it hidden as
+-- one of its own reasons (Kit.hidePlayerList) and puts it back afterwards.
+local StarterGui = game:GetService("StarterGui")
+player:SetAttribute("Loading", true)
+task.spawn(function()
+	-- CoreGui calls can fail this early: retry until one lands.
+	while player:GetAttribute("Loading") == true do
+		local set = pcall(function()
+			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
+		end)
+		if set then
+			break
+		end
+		task.wait(0.25)
+	end
+end)
+
 -- The brand art ships in ReplicatedFirst too, so it can show from the start
 -- instead of after ReplicatedStorage arrives; fetch it ahead of everything else.
-screen.applyArt({ keyArt = Brand.KeyArt, logo = Brand.Logo })
+screen.applyArt({
+	keyArt = Brand.KeyArt,
+	logo = Brand.Logo,
+	logoShine = Brand.LogoShine,
+	softDot = Brand.SoftDot,
+	sparkle = Brand.Sparkle,
+	orb = Brand.Orb,
+})
 task.spawn(function()
 	pcall(function()
-		game:GetService("ContentProvider"):PreloadAsync({ Brand.KeyArt, Brand.Logo })
+		game:GetService("ContentProvider"):PreloadAsync({
+			Brand.KeyArt,
+			Brand.Logo,
+			Brand.LogoShine,
+			Brand.SoftDot,
+			Brand.Sparkle,
+			Brand.Orb.image,
+		})
 	end)
 end)
 
@@ -79,15 +112,18 @@ task.spawn(function()
 	screen.applyArt(LoadingScreen.findArt(ART_TIMEOUT))
 end)
 
+-- The bar follows the stages of the join below.
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
+screen.setProgress(0.5)
 local function timeLeft(): boolean
 	return os.clock() - started < TIMEOUT
 end
 while player:GetAttribute("GameReady") ~= true and timeLeft() do
 	task.wait(0.1)
 end
+screen.setProgress(0.7)
 -- The character on its plot (the server moves it there after loading the save).
 local root: BasePart? = nil
 while timeLeft() do
@@ -99,12 +135,14 @@ while timeLeft() do
 	end
 	task.wait(0.1)
 end
+screen.setProgress(0.85)
 -- With streaming on, wait for the parts around the plot before showing it.
 if root and workspace.StreamingEnabled and timeLeft() then
 	pcall(function()
 		player:RequestStreamAroundAsync(root.Position, 10)
 	end)
 end
+screen.setProgress(0.95)
 -- A few frames for the camera to settle behind the character.
 for _ = 1, 3 do
 	RunService.RenderStepped:Wait()
@@ -117,4 +155,12 @@ end
 screen.finish()
 task.delay(if ok then 1 else 0, function()
 	gui:Destroy()
+	-- The list comes back only once the splash has faded out.
+	player:SetAttribute("Loading", false)
+	-- Without the client (it sets "GameReady") nobody else would bring it back.
+	if player:GetAttribute("GameReady") ~= true then
+		pcall(function()
+			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, true)
+		end)
+	end
 end)

@@ -23,8 +23,7 @@ local DataService = {}
 local STORE_NAME = "TycoonProfiles_v1"
 local MAX_RETRIES = 4
 -- Profile.version of a save written by this code. reconcile migrates older saves once:
---   2  buy tier 1 upgrades after Economy.BUY_EASY_UNITS purchases (it was one), and the
---      onboarding funnel counts tier milestones (Shared.Funnel)
+--   2  the onboarding funnel counts tier milestones (Shared.Funnel)
 local VERSION = 2
 DataService.VERSION = VERSION
 
@@ -39,8 +38,8 @@ export type Profile = {
 	units: { number },
 	discovered: { number },
 	totalObtained: number,
-	buyTier: number,
-	boughtAtTier: number,
+	-- Units bought on the buy pads so far (Economy.unitPrice grows with it).
+	bought: number,
 	processLevel: number,
 	heldChest: string,
 	-- Rarity of the crate the player was last prompted to open with Robux ("" = none);
@@ -132,8 +131,7 @@ function DataService.defaultProfile(): Profile
 		units = units,
 		discovered = discovered,
 		totalObtained = 1,
-		buyTier = 1,
-		boughtAtTier = 0,
+		bought = 0,
 		processLevel = Economy.START_PROCESS_LEVEL,
 		heldChest = "",
 		pendingCrate = "",
@@ -200,6 +198,15 @@ local function reconcile(data: any): Profile
 	end
 	-- Rizz (gems) was removed from the game: old balances are dropped.
 	data.gems = nil
+	-- Buy tiers were removed: the pads sell the first tier only. A save that had upgraded
+	-- starts just past the easy units; one that had not keeps its count, as capped as it was.
+	if data.bought == nil then
+		local old = if type(data.boughtAtTier) == "number" and data.boughtAtTier == data.boughtAtTier then data.boughtAtTier else 0
+		local upgraded = type(data.buyTier) == "number" and data.buyTier > 1
+		data.bought = if upgraded then Economy.BUY_EASY_UNITS else math.clamp(math.floor(old), 0, Economy.BUY_EASY_UNITS)
+	end
+	data.buyTier = nil
+	data.boughtAtTier = nil
 	-- Saves from before the onboarding funnel: those players are not new, so they never log it.
 	if data.onboarding == nil then
 		data.onboarding = 99
@@ -243,10 +250,7 @@ local function reconcile(data: any): Profile
 			data.cosmetics.toggles[key] = nil
 		end
 	end
-	data.buyTier = math.clamp(math.floor(data.buyTier), 1, Economy.MAX_BUY_TIER)
-	-- Purchases past the upgrade requirement only count once (Economy.unitPrice grows with
-	-- them); a save made under a larger requirement would otherwise price units out of reach.
-	data.boughtAtTier = math.clamp(math.floor(data.boughtAtTier), 0, Economy.buyTierRequirement(data.buyTier))
+	data.bought = if data.bought ~= data.bought or data.bought == math.huge then 0 else math.max(0, math.floor(data.bought))
 	-- The converter starts at START_PROCESS_LEVEL; saves from before that are lifted to it.
 	data.processLevel = math.max(math.floor(data.processLevel), Economy.START_PROCESS_LEVEL)
 	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
@@ -327,11 +331,6 @@ local function reconcile(data: any): Profile
 		data.pendingUnlocker = 0
 	end
 	if version < 2 then
-		-- Buy tier 1 used to upgrade after BUY_REQ_BASE purchases. A player who was past the
-		-- tutorial and could already upgrade still can, without buying the easy units first.
-		if data.tutorialDone and data.buyTier == 1 and data.boughtAtTier >= Economy.BUY_REQ_BASE then
-			data.boughtAtTier = Economy.buyTierRequirement(1)
-		end
 		-- Returning players' tier milestones count as logged, with nothing sent.
 		data.onboarding = Funnel.returning(data.onboarding, data.tutorialDone)
 	end

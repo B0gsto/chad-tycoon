@@ -53,7 +53,7 @@ Prop kinds (the world builder draws each with parts; unknown kinds are skipped w
 | `coral` | reef, coral | coral cluster (tubes + fans), `scale` |
 | `bubblefield` | bubble | spawner spot: world builds ~8 translucent balls tagged `MapBubble` |
 | `fin` | shark | shark fin circling a point: world builds a `ModeMover` root with `Mover = "spin"`, `MoveSpeed` = `speed` (default 0.6), and the fin `r` studs out from the root |
-| `cloud` | storm | dark storm cloud (puffs) with a neon bolt tagged `MapLightning` |
+| `cloud` | storm | storm cloud (puffs) |
 | `volcano` | volcano | cone with a glowing crater (tag `MapGlow`) |
 | `lavapool` | volcano | neon orange disc at water level (tag `MapGlow`), `r` |
 | `statue` | giga | gold Giga statue (Props.mesh("GigaStatue") when available, else part-built) |
@@ -72,7 +72,6 @@ Prop kinds (the world builder draws each with parts; unknown kinds are skipped w
   - `MapBubble` (BasePart): attribute `Rise` studs/s, `Top` world y where it pops and restarts at
     its rest y. Client bobs/raises them.
   - `MapBob` (BasePart, buoy root): gentle bob + tilt. Children move with it.
-  - `MapLightning` (Neon BasePart): client flashes it (transparency 1 → 0 bursts every few s).
   - `MapGlow` (Neon BasePart): client pulses its colour brightness.
   - Shark fins reuse the existing `ModeMover` / `Mover = "spin"` contract (client already animates).
 - Build cost: at most ~250 extra parts per map.
@@ -100,8 +99,8 @@ Prop kinds (the world builder draws each with parts; unknown kinds are skipped w
 
 - When a run starts on a level (start notify, `payload.level`), read the level folder's `Theme`
   and apply an ambience until the run ends or the player leaves the level bounds: storm = darker
-  sky tint + fog, occasional lightning flash sound + `MapLightning` bursts; volcano = warm tint
+  sky tint + fog (no lightning: the flashes annoyed players); volcano = warm tint
   + ember particles from `MapGlow` parts; reef/bubble = none beyond bubbles; giga = gold sparkles.
   Restore defaults on finish/stop/invalid and on leaving the bounds.
-- Animate `MapBubble`, `MapBob`, `MapLightning`, `MapGlow` only when within ~250 studs of the
+- Animate `MapBubble`, `MapBob`, `MapGlow` only when within ~250 studs of the
   player (like movers).

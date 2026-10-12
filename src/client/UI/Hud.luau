@@ -954,11 +954,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local picked = NextGoal.pick({
 			discovered = data.discovered,
 			units = data.units,
-			buyTier = tonumber(data.buyTier) or 1,
-			boughtAtTier = tonumber(data.boughtAtTier) or 0,
-			money = tonumber(data.money) or 0,
 		})
-		local title, hint, count = NextGoal.text(picked, tierName, State.money)
+		local title, hint, count = NextGoal.text(picked, tierName)
 		local key = title .. "|" .. hint .. "|" .. count
 		if key == goalKey then
 			Kit.tween(goalBar, 0.3, { Size = UDim2.new(0, math.floor((goalWidth - GOAL_BAR_X * 2) * picked.progress), 0, 3) })

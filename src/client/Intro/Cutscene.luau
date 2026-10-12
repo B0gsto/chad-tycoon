@@ -698,7 +698,8 @@ local function setup(s: Session)
 		end
 	end
 	try("player list", function()
-		s.playerList = StarterGui:GetCoreGuiEnabled(Enum.CoreGuiType.PlayerList)
+		-- Under the loading screen the list is off already, and not by the player.
+		s.playerList = StarterGui:GetCoreGuiEnabled(Enum.CoreGuiType.PlayerList) or Players.LocalPlayer:GetAttribute("Loading") == true
 		StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
 	end)
 	s.controls = playerControls()

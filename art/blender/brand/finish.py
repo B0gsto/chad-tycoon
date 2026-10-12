@@ -6,6 +6,9 @@ Run with the system python3:
 Logo.png       1024x512 transparent: one smooth thick white sticker contour round the whole wordmark,
                a light lilac sticker edge under it and a clean soft drop shadow
 LogoSmall.png  512x256 transparent: Logo.png scaled down
+LogoShine.png  1024x512, white everywhere; alpha = the opaque sticker of Logo.png (letters, white contour
+               and lilac edge, no drop shadow) pulled in 2 px. Drawn over the logo with a moving gradient
+               band for the shine sweep, so it lines up with Logo.png pixel for pixel
 TitleCard.png  1024x576 transparent: plaque with a soft drop shadow
 KeyArt.png     1024x576 opaque
 """
@@ -14,6 +17,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "vfx"))
+from PIL import ImageChops  # noqa: E402
+
 from imgutil import Image, ImageFilter, bleed, ck, dilate, erode, np, resize_rgba  # noqa: E402
 
 OUT = os.path.join(ck.ROOT, "art", "out", "brand")
@@ -38,7 +43,7 @@ def logo_sticker(im, scale=1.0):
     """One smooth, even white contour round the whole logo: a morphological closing (radius 160 px at
     2048 wide) fills the gaps between letters, lines and the dumbbell, then the outline sits 44 px out
     from the letters. Done at quarter size, smoothed back up. Then a lilac sticker edge below it and a
-    soft Ink drop shadow."""
+    soft Ink drop shadow. Returns the sticker and the mask of its opaque part (everything but the shadow)."""
     a = np.asarray(im.getchannel("A"), dtype=np.float32) / 255.0
     q = 4
     small = im.getchannel("A").resize((im.width // q, im.height // q), Image.BOX)
@@ -58,7 +63,7 @@ def logo_sticker(im, scale=1.0):
     canvas.alpha_composite(_layer(edge, (214, 216, 240)))
     canvas.alpha_composite(_layer(silm, (255, 255, 255)))
     canvas.alpha_composite(im)
-    return canvas
+    return canvas, ImageChops.lighter(silm, edge)
 
 
 def enclosed_holes(im, thresh=128):
@@ -88,21 +93,34 @@ if __name__ == "__main__":
     w, h = raw_logo.size
     roomy = Image.new("RGBA", (int(w * 1.3), int(h * 1.3)), (0, 0, 0, 0))
     roomy.paste(raw_logo, ((roomy.width - w) // 2, (roomy.height - h) // 2))
-    big = logo_sticker(roomy, w / 2048)
+    big, solid = logo_sticker(roomy, w / 2048)
     x0, y0, x1, y1 = big.getchannel("A").point(lambda v: 255 if v > 2 else 0).getbbox()
     m = int(0.02 * w)
-    big = big.crop((x0 - m, y0 - m, x1 + m, y1 + m))
+    box = (x0 - m, y0 - m, x1 + m, y1 + m)
+    big = big.crop(box)
     k = min(w / big.width, h / big.height)
     big = resize_rgba(big, (round(big.width * k), round(big.height * k)))
     fit = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     fit.paste(big, ((w - big.width) // 2, (h - big.height) // 2))
-    bleed(resize_rgba(fit, (1024, 512))).save(path("Logo"))
+    logo = bleed(resize_rgba(fit, (1024, 512)))
+    logo.save(path("Logo"))
     bleed(resize_rgba(fit, (512, 256))).save(path("LogoSmall"))
+
+    # Shine mask: the opaque sticker through the same crop / fit / downscale as the logo, pulled in 2 px
+    # (erode radius 3 moves the anti-aliased edge by 2) and kept under the logo's own alpha so the shine
+    # never pokes past the logo edge. RGB is white on every
+    # pixel, so there is nothing for bleed() to fill.
+    fit_solid = Image.new("L", (w, h), 0)
+    fit_solid.paste(solid.crop(box).resize(big.size, Image.LANCZOS), ((w - big.width) // 2, (h - big.height) // 2))
+    sm = np.asarray(fit_solid.resize((1024, 512), Image.LANCZOS), dtype=np.float32) / 255.0
+    shine = Image.new("RGBA", (1024, 512), (255, 255, 255, 0))
+    shine.putalpha(_mask(np.minimum(erode(sm, 3), np.asarray(logo.getchannel("A"), dtype=np.float32) / 255.0)))
+    shine.save(path("LogoShine"))
 
     resize_rgba(Image.open(path("TitleCard", True)), (1024, 576)).save(path("TitleCard_1x", True))
     ck.sticker(path("TitleCard_1x", True), path("TitleCard_shadow", True), outline=0, shadow=True, shadow_alpha=0.34)
     bleed(Image.open(path("TitleCard_shadow", True)).convert("RGBA")).save(path("TitleCard"))
 
     Image.open(path("KeyArt", True)).convert("RGB").resize((1024, 576), Image.LANCZOS).save(path("KeyArt"))
-    for n in ("Logo", "LogoSmall", "TitleCard", "KeyArt"):
+    for n in ("Logo", "LogoSmall", "LogoShine", "TitleCard", "KeyArt"):
         print("wrote", path(n))

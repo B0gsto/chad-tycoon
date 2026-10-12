@@ -36,7 +36,6 @@ Theme.Words = {
 	Free = "DAILY GAINS",
 	Surge = "AURA SURGE",
 	Multiplier = "Aura Multiplier",
-	BuyTier = "UPGRADE BUY TIER",
 }
 
 -- Onboarding tutorial (one entry per step in Shared.TutorialSteps) and the
@@ -416,7 +415,6 @@ Theme.World = {
 	-- upgrade, teal/blue move aura and cash, warm pops are the special pads.
 	Pads = {
 		Buy = BUTTER,
-		BuyTier = SUNNY,
 		Process = SUNNY,
 		Deposit = BLUE,
 		Collect = TEAL_LIGHT,
@@ -429,7 +427,6 @@ Theme.World = {
 	-- Icon print colour on each pad's face (same keys as Pads).
 	PadPrint = {
 		Buy = TEAL_INK,
-		BuyTier = TEAL_INK,
 		Process = TEAL_INK,
 		Deposit = TEAL_INK,
 		Collect = TEAL_INK,

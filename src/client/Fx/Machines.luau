@@ -998,16 +998,12 @@ local nextReadyCheck = 0
 local function computeReady(data: any): { [string]: boolean }
 	local out: { [string]: boolean } = {}
 	local money = tonumber(data.money) or 0
-	local buyTier = tonumber(data.buyTier) or 1
-	local bought = tonumber(data.boughtAtTier) or 0
+	local bought = tonumber(data.bought) or 0
 	for _, amount in Economy.BUY_AMOUNTS do
-		out["Buy" .. amount] = money >= Economy.bulkPrice(buyTier, bought, amount) - 1e-6
+		out["Buy" .. amount] = money >= Economy.bulkPrice(bought, amount) - 1e-6
 	end
 	-- Auto Merge is a game pass: the pad invites a tap until it is owned.
 	out.AutoMerge = not data.autoMergeOwned
-	if buyTier < Economy.MAX_BUY_TIER then
-		out.BuyTier = bought >= Economy.buyTierRequirement(buyTier) and money >= Economy.buyTierUpgradeCost(buyTier)
-	end
 	local level = tonumber(data.processLevel)
 	if level then
 		out.ProcUp1 = money >= Economy.processUpgradeCost(level)

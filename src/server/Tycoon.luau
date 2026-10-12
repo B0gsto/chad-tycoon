@@ -1222,13 +1222,13 @@ local function converterPos(session: Session): Vector3
 	return pos
 end
 
--- Buys up to `amount` units at the current buy tier. Past the unit cap the lowest pairs
+-- Buys up to `amount` units of the first tier. Past the unit cap the lowest pairs
 -- merge to make room (Economy.addUnitsCapped); units that still do not fit are not bought
 -- and not charged.
 local function buy(session: Session, amount: number)
 	local p = session.profile
 	local padName = "Buy" .. amount
-	local tier = p.buyTier
+	local tier = 1
 	local fit = Economy.addUnitsCapped(p.units, tier, amount)
 	local bought = fit.accepted
 	if bought == 0 then
@@ -1236,12 +1236,12 @@ local function buy(session: Session, amount: number)
 		refusePad(session, padName, "locked")
 		return
 	end
-	local cost = Economy.bulkPrice(p.buyTier, p.boughtAtTier, bought)
+	local cost = Economy.bulkPrice(p.bought, bought)
 	if not spend(session, cost, padName) then
 		return
 	end
 	applyCapped(session, fit)
-	p.boughtAtTier += bought
+	p.bought += bought
 	p.totalObtained += bought
 	local steps = autoMergeIfOn(session)
 	local diff = refreshDisplay(session)
@@ -1306,29 +1306,6 @@ padHandlers.AutoMerge = function(session)
 		doMerge(session, false, true)
 	end
 	toast(session, "Auto Merge " .. (if p.autoMerge then "ON" else "OFF"), "info")
-	markDirty(session)
-end
-
-padHandlers.BuyTier = function(session)
-	local p = session.profile
-	if p.buyTier >= Economy.MAX_BUY_TIER then
-		toast(session, "Buy tier is maxed out!", "info")
-		refusePad(session, "BuyTier", "locked")
-		return
-	end
-	local req = Economy.buyTierRequirement(p.buyTier)
-	if p.boughtAtTier < req then
-		toast(session, string.format("Buy %s more %s first!", Format.short(req - p.boughtAtTier), theme.Words.Units), "bad")
-		refusePad(session, "BuyTier", "locked")
-		return
-	end
-	if not spend(session, Economy.buyTierUpgradeCost(p.buyTier), "BuyTier") then
-		return
-	end
-	p.buyTier += 1
-	p.boughtAtTier = 0
-	toast(session, "You now buy " .. tierName(p.buyTier) .. "!", "good")
-	effect(session, "Upgrade", { pad = "BuyTier", padPos = padPos(session, "BuyTier"), level = p.buyTier })
 	markDirty(session)
 end
 
@@ -1470,29 +1447,14 @@ local function updateBoards(session: Session)
 	local now = os.time()
 
 	for _, amount in Economy.BUY_AMOUNTS do
-		local cost = Economy.bulkPrice(p.buyTier, p.boughtAtTier, amount)
-		setPad(session, "Buy" .. amount, "Buy " .. amount .. " " .. tierName(p.buyTier), Format.money(cost), canAfford(session, cost))
+		local cost = Economy.bulkPrice(p.bought, amount)
+		setPad(session, "Buy" .. amount, "Buy " .. amount .. " " .. tierName(1), Format.money(cost), canAfford(session, cost))
 	end
 
 	if ownsAutoMerge(session) then
 		setPad(session, "AutoMerge", "Auto Merge", if p.autoMerge then "ON" else "OFF", p.autoMerge)
 	else
 		setPad(session, "AutoMerge", "Auto Merge", Format.robux(theme.Monetization.Passes.AutoMerge.Price), true)
-	end
-
-	if p.buyTier >= Economy.MAX_BUY_TIER then
-		labels.BuyTierFromTo.Text = tierName(p.buyTier)
-		labels.BuyTierProgress.Text = "MAXED"
-		labels.BuyTierCost.Text = ""
-		setPad(session, "BuyTier", nil, "MAX", true)
-	else
-		local req = Economy.buyTierRequirement(p.buyTier)
-		local cost = Economy.buyTierUpgradeCost(p.buyTier)
-		labels.BuyTierFromTo.Text = tierName(p.buyTier) .. "  >>  " .. tierName(p.buyTier + 1)
-		labels.BuyTierProgress.Text =
-			string.format("%s %s / %s", theme.Icons.Unit, Format.short(math.min(p.boughtAtTier, req)), Format.short(req))
-		labels.BuyTierCost.Text = Format.money(cost)
-		setPad(session, "BuyTier", nil, Format.money(cost), p.boughtAtTier >= req and canAfford(session, cost))
 	end
 
 	local procCost = Economy.processUpgradeCost(p.processLevel)
@@ -1587,8 +1549,7 @@ local function snapshot(session: Session): { [string]: any }
 		-- Units owned right now (all shown on the rack) and the most a player can hold.
 		unitTotal = Economy.totalUnits(p.units),
 		unitCap = Economy.UNIT_CAP,
-		buyTier = p.buyTier,
-		boughtAtTier = p.boughtAtTier,
+		bought = p.bought,
 		processLevel = p.processLevel,
 		heldChest = p.heldChest,
 		crateRobux = Tycoon.hooks.crateRobuxAllowed(session.player),
@@ -1973,9 +1934,6 @@ local function setOwnerSign(plot: Plot, player: Player?)
 		-- Clear the previous owner's numbers from the dynamic boards.
 		for _, key in
 			{
-				"BuyTierFromTo",
-				"BuyTierProgress",
-				"BuyTierCost",
 				"ProcessQueue",
 				"ProcessRate",
 				"ProcessSpeed",

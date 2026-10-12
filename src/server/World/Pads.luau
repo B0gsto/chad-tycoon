@@ -53,7 +53,7 @@ local STATIC: { [string]: boolean } = { Merge = true }
 -- Which Theme.World.Pads colour each pad wears.
 local JOB_KEYS: { [string]: string } = { Unlock1 = "Unlock", Unlock2 = "UnlockVip" }
 local function jobKey(name: string): string
-	if string.sub(name, 1, 3) == "Buy" and name ~= "BuyTier" then
+	if string.sub(name, 1, 3) == "Buy" then
 		return "Buy"
 	elseif string.sub(name, 1, 6) == "ProcUp" then
 		return "Process"
@@ -64,13 +64,12 @@ end
 -- The big printed mark on each pad's top.
 local function iconText(name: string): string
 	local icons = theme.Icons
-	if string.sub(name, 1, 3) == "Buy" and name ~= "BuyTier" then
+	if string.sub(name, 1, 3) == "Buy" then
 		return "+" .. string.sub(name, 4)
 	end
 	local fixed = {
 		AutoMerge = "AUTO",
 		Merge = icons.Unit .. "+" .. icons.Unit,
-		BuyTier = "⬆️",
 		Deposit = icons.Orb,
 		ProcUp1 = "⬆️",
 		ProcUp10 = "⬆️x10",

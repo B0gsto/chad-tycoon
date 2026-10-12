@@ -18,7 +18,6 @@ local Economy = {}
 Economy.VERSION = "1.2.0"
 
 Economy.MAX_TIER = 25
-Economy.MAX_BUY_TIER = 15
 Economy.MERGE_RATIO = 2
 -- A player owns at most UNIT_CAP units, each shown as its own model on the display rack
 -- (DISPLAY_ROWS shelves, DISPLAY_COLS units per shelf on average). See addUnitsCapped.
@@ -177,70 +176,46 @@ end
 -- Buying ----------------------------------------------------------------------
 
 Economy.BUY_BASE_PRICE = 50
-Economy.BUY_PRICE_GROWTH = 4
 Economy.BUY_AMOUNTS = { 1, 5, 25, 100 }
--- Units to buy at buy tier 1 before upgrading, growing by BUY_REQ_GROWTH per buy tier.
-Economy.BUY_REQ_BASE = 1
-Economy.BUY_REQ_GROWTH = 1.5
--- A buy tier upgrade costs this share of buying the requirement at the next tier's base price.
-Economy.BUY_TIER_UPGRADE_SHARE = 0.5
--- A new player's first units are cheap: the first BUY_EASY_UNITS bought at buy tier 1 raise
--- the price by only 1 / BUY_EASY_REQ of the base each (the normal rate comes back after
--- them), and the buy tier cannot be upgraded before they are bought. Together with the
--- starter unit they are worth one tier-6 unit and most of a tier-7 one: a fixed head
--- start, after which every price is what it always was.
+-- Purchases that raise the price by one base price.
+Economy.BUY_RAMP_UNITS = 1
+-- A new player's first units are cheap: the first BUY_EASY_UNITS bought raise the price by
+-- only 1 / BUY_EASY_REQ of the base each (the normal rate comes back after them). Together
+-- with the starter unit they are worth one tier-6 unit and most of a tier-7 one: a fixed
+-- head start, after which every price is what it always was.
 Economy.BUY_EASY_UNITS = 60
 Economy.BUY_EASY_REQ = 10
-
-function Economy.basePrice(buyTier: number): number
-	return Economy.BUY_BASE_PRICE * Economy.BUY_PRICE_GROWTH ^ (buyTier - 1)
-end
-
--- Purchases at a buy tier that double its base price.
-local function rampUnits(buyTier: number): number
-	return math.floor(Economy.BUY_REQ_BASE * Economy.BUY_REQ_GROWTH ^ (buyTier - 1))
-end
-
--- Units that must be bought at the current buy tier before it can be upgraded.
-function Economy.buyTierRequirement(buyTier: number): number
-	return if buyTier == 1 then math.max(rampUnits(1), Economy.BUY_EASY_UNITS) else rampUnits(buyTier)
-end
 
 -- Sum of `n` consecutive purchase counts starting at `from`.
 local function span(from: number, n: number): number
 	return n * from + n * (n - 1) / 2
 end
 
--- Exact price of `amount` consecutive purchases, the first made with `boughtAtTier` units
--- already bought at this tier. Each purchase costs the base price times 1 + its growth:
--- every earlier purchase adds 1 / rampUnits, or 1 / BUY_EASY_REQ while it is an easy one.
-local function price(buyTier: number, boughtAtTier: number, amount: number): number
-	local easyCap = if buyTier == 1 then Economy.BUY_EASY_UNITS else 0
+-- Exact price of `amount` consecutive purchases, the first made with `bought` units already
+-- bought. Each purchase costs the base price times 1 + its growth: every earlier purchase
+-- adds 1 / BUY_RAMP_UNITS, or 1 / BUY_EASY_REQ while it is an easy one.
+local function price(bought: number, amount: number): number
 	-- Purchases of this batch whose price still counts only easy units, then the rest.
-	local easy = math.clamp(easyCap - boughtAtTier, 0, amount)
+	local easy = math.clamp(Economy.BUY_EASY_UNITS - bought, 0, amount)
 	local rest = amount - easy
-	local growth = span(boughtAtTier, easy) / Economy.BUY_EASY_REQ
+	local growth = span(bought, easy) / Economy.BUY_EASY_REQ
 	if rest > 0 then
-		local start = boughtAtTier + easy
-		local easyBefore = math.min(start, easyCap)
-		growth += rest * easyBefore / Economy.BUY_EASY_REQ + span(start - easyBefore, rest) / rampUnits(buyTier)
+		local start = bought + easy
+		local easyBefore = math.min(start, Economy.BUY_EASY_UNITS)
+		growth += rest * easyBefore / Economy.BUY_EASY_REQ + span(start - easyBefore, rest) / Economy.BUY_RAMP_UNITS
 	end
-	return Economy.basePrice(buyTier) * (amount + growth)
+	return Economy.BUY_BASE_PRICE * (amount + growth)
 end
 
--- Price of the next single unit. Grows linearly with purchases made at this tier (2x after
--- rampUnits of them, the easy ones aside) to push tier upgrades.
-function Economy.unitPrice(buyTier: number, boughtAtTier: number): number
-	return price(buyTier, boughtAtTier, 1)
+-- Price of the next single unit (always the first tier). Grows linearly with the units
+-- bought so far: 2x after BUY_RAMP_UNITS of them, the easy ones aside.
+function Economy.unitPrice(bought: number): number
+	return price(bought, 1)
 end
 
 -- Exact sum of unitPrice for `amount` consecutive purchases.
-function Economy.bulkPrice(buyTier: number, boughtAtTier: number, amount: number): number
-	return price(buyTier, boughtAtTier, amount)
-end
-
-function Economy.buyTierUpgradeCost(buyTier: number): number
-	return Economy.basePrice(buyTier + 1) * rampUnits(buyTier) * Economy.BUY_TIER_UPGRADE_SHARE
+function Economy.bulkPrice(bought: number, amount: number): number
+	return price(bought, amount)
 end
 
 -- Processing (the converter that turns deposited orbs into cash) ---------------
@@ -408,8 +383,7 @@ function Economy.rollChest(rarity: string, highestTier: number, rng: () -> numbe
 	return entry.tier
 end
 
--- What a unit of `tier` costs to make by buying tier-1 units and merging them up
--- (the cheapest way to get one, since higher buy tiers cost more per tier-1 unit).
+-- What a unit of `tier` costs to make by buying tier-1 units and merging them up.
 function Economy.unitValue(tier: number): number
 	return Economy.BUY_BASE_PRICE * Economy.MERGE_RATIO ^ (math.max(tier, 1) - 1)
 end
@@ -465,8 +439,6 @@ end
 
 -- Durable progress only: the highest tier ever discovered and the converter level. Neither
 -- can go down, so selling, merging or a bad multiplier moment never makes a pack worse.
--- Buy tier is left out: a player can only buy tiers they have already discovered, so it
--- never says more than `tier` does.
 export type Progression = { tier: number, processLevel: number }
 
 function Economy.progression(highestTier: number, processLevel: number): Progression

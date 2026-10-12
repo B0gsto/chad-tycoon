@@ -3445,13 +3445,15 @@ function Kit.hidePlayerList(reason: string, on: boolean)
 	end
 	local hide = next(listReasons) ~= nil
 	if hide and listBase == nil then
-		-- The intro hides the list itself and puts back what it found, so while
-		-- it plays the list's own state is not the player's.
+		-- The intro hides the list itself and puts back what it found, and the
+		-- loading screen hides it before this module exists, so while either is
+		-- up the list's own state is not the player's.
 		local player = game:GetService("Players").LocalPlayer
 		local ok, enabled = pcall(function()
 			return game:GetService("StarterGui"):GetCoreGuiEnabled(Enum.CoreGuiType.PlayerList)
 		end)
-		listBase = if player and player:GetAttribute("IntroPlaying") == true then true elseif ok then enabled else true
+		local taken = player ~= nil and (player:GetAttribute("IntroPlaying") == true or player:GetAttribute("Loading") == true)
+		listBase = if taken then true elseif ok then enabled else true
 	elseif not hide and listBase == nil then
 		return
 	end

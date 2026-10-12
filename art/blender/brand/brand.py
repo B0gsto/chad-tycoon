@@ -10,7 +10,8 @@ TitleCard  rounded royal-blue plaque with a raised gold rim and corner rivets, e
            the vinyl panel has a soft inner shadow under the top rim and a diagonal gloss stripe.
 KeyArt     loading-screen background: sunny beach gym (sand, sea, sky, puffy clouds, palms) with a
            flexing Chad on a posing stage, two cheering fans with heart signs, big candy dumbbells and
-           a few aura orbs, all in focus; the lower third is plain sand for text.
+           a few aura orbs, all in focus; the top third is clear sky for the logo, the hero group sits
+           in the middle and the bottom fifth is plain sand for the loading bar.
 """
 
 import math
@@ -21,9 +22,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "vfx"))
 import spritekit as sk  # noqa: E402
 from spritekit import ck  # noqa: E402
+import theme_palette  # noqa: E402
+
+theme_palette.fill(ck)  # Theme.World keys written as Luau constants (Sunny, Coral, White, ...)
 
 import bmesh  # noqa: E402
 import bpy  # noqa: E402
+from bpy_extras.object_utils import world_to_camera_view  # noqa: E402
 from mathutils import Matrix, Vector  # noqa: E402
 
 
@@ -322,7 +327,7 @@ def title_card():
 # ------------------------------------------------------------------------------------------------
 
 
-SHORE = 15.0  # mean distance of the waterline from the scene origin (camera at y = -16)
+SHORE = 15.0  # mean distance of the waterline from the scene origin (camera at y = -22.3)
 
 
 def shore(x):
@@ -363,16 +368,28 @@ def place(parts, loc, rot=(0, 0, 0), scale=1.0, name="Group"):
 def orb(i, loc, r, col, rim, cam_loc, glow=0.5):
     m = ck.gradient_material("Orb%d" % i, [(0.0, ck.mix(col, "White", 0.5)), (0.45, col), (1.0, rim)],
                              mode="FACING", emission=0.35, roughness=0.15, coat=0.9)
-    ck.sphere(r, 48, 24, m, "Orb%d" % i, loc).visible_shadow = False
+    ball = ck.sphere(r, 48, 24, m, "Orb%d" % i, loc)
+    ball.visible_shadow = False
     g = sk.glow_material("OrbGlow%d" % i, "halo", color=ck.mix(col, "White", 0.3), peak=glow, strength=1.2)
     sk.glow_disc(g, Vector(loc) + (Vector(loc) - cam_loc).normalized() * r * 1.2, r * 2.4, facing=cam_loc,
                  name="OrbGlow%d" % i)
+    return ball
+
+
+def frame_box(scene, cam, objs):
+    """Bounds of the objects' vertices in the camera frame: (left, right, top, bottom), as fractions of
+    the frame width from the left edge and of its height from the top edge."""
+    pts = [world_to_camera_view(scene, cam, ob.matrix_world @ v.co) for ob in objs for v in ob.data.vertices]
+    return min(p.x for p in pts), max(p.x for p in pts), min(1 - p.y for p in pts), max(1 - p.y for p in pts)
 
 
 def key_art():
     """Sunny beach gym: a flexing Chad on a sunny posing stage, two fans cheering with heart signs,
-    big candy dumbbells on the sand, palms, sea, sky and puffy clouds; all in focus. The lower third
-    is plain sand for the loading text."""
+    big candy dumbbells on the sand, palms, sea, sky and puffy clouds; all in focus. Composed for the
+    loading screen: the top third is clear sky with clouds for the logo, the hero group sits in the
+    middle (Chad's hair at ~37.5 % from the top, stage and feet at ~75.5 %, fans inside the central
+    75 % of the width for 4:3 crops) and the bottom fifth is plain sand for the loading bar and tip.
+    Prints the measured frame fractions as a KEYART_LAYOUT line."""
     from figures import chad, fan, place as fplace, stage, SKIN, SKIN_DEEP
 
     ck.reset_scene()
@@ -404,7 +421,7 @@ def key_art():
     cloud_m = ck.toy_material("Cloud", "White", roughness=0.7, coat=0.0, emission=0.22, rim=0.0)
     proto = sk.cloud(cloud_m, voxel=0.05, iters=12, name="Cloud", flat_bottom=-0.62)
     for i, (loc, s) in enumerate([((-62, 230, 34), 15), ((22, 265, 56), 20), ((78, 215, 30), 12),
-                                  ((-100, 205, 58), 13), ((-18, 300, 84), 12)]):
+                                  ((-100, 205, 58), 13), ((-18, 300, 84), 12), ((110, 240, 76), 14)]):
         c = proto if i == 0 else proto.copy()
         if i:
             ck._link(c)
@@ -420,26 +437,27 @@ def key_art():
 
     # Hero group: Chad flexing on the stage, a fan either side cheering with heart signs (signs on the
     # outer sides), big dumbbells resting on the sand.
-    fplace(stage(), (0, -1, 0))
-    fplace(chad(), (0, -1, 0.46), rot_z=0, scale=1.05)
-    fplace(fan("Pink", "Mint", ck.mix("Orange", "WoodDark", 0.4), SKIN, "HotPink", "FanA"), (-3.7, -2.6, 0),
-           rot_z=24, scale=1.0, mirror=True)
-    fplace(fan("Mint", "Blue", ck.mix("WoodDark", "Ink", 0.45), SKIN_DEEP, "Blue", "FanB"), (3.8, -2.4, 0),
-           rot_z=-24, scale=1.0)
+    stage_p = fplace(stage(), (0, -1, 0))
+    chad_p = fplace(chad(), (0, -1, 0.46), rot_z=0, scale=1.05)
+    fans = [fplace(fan("Pink", "Mint", ck.mix("Orange", "WoodDark", 0.4), SKIN, "HotPink", "FanA"), (-3.7, -2.6, 0),
+                   rot_z=24, scale=1.0, mirror=True),
+            fplace(fan("Mint", "Blue", ck.mix("WoodDark", "Ink", 0.45), SKIN_DEEP, "Blue", "FanB"), (3.8, -2.4, 0),
+                   rot_z=-24, scale=1.0)]
+    bells = []
     for i, (plate, grip, loc, rz, s) in enumerate([("Grape", "Sunny", (-6.9, 0.2, 0), 28, 1.55),
                                                    ("Coral", "Mint", (7.1, 1.0, 0), -32, 1.4)]):
         bell = sk.dumbbell(plate, "White", grip, name="Bell%d" % i)
-        fplace(bell, (loc[0], loc[1], 0.78 * s), rot_z=rz, scale=s)
+        bells += fplace(bell, (loc[0], loc[1], 0.78 * s), rot_z=rz, scale=s)
 
-    cam_loc = Vector((0, -16, 2.45))
+    cam_loc = Vector((0, -22.3, 2.45))
     # Aura: a soft warm glow behind Chad and a few crisp aura orbs floating round him.
-    sk.glow_disc(sk.glow_material("ChadAura", "halo", color=ck.mix("Sunny", "White", 0.55), peak=0.42),
-                 (0, 0.4, 2.6), 3.3, facing=cam_loc, name="ChadAura")
-    for i, (loc, r, col, rim) in enumerate([((-2.55, -0.6, 4.25), 0.3, "Grape", "Magenta"),
-                                            ((2.6, -0.4, 4.55), 0.34, "HotPink", "Grape"),
-                                            ((1.75, 0.3, 5.35), 0.22, "Mint", "Blue"),
-                                            ((-1.6, 0.4, 5.25), 0.2, "Sunny", "Orange")]):
-        orb(i, loc, r, col, rim, cam_loc)
+    aura = sk.glow_disc(sk.glow_material("ChadAura", "halo", color=ck.mix("Sunny", "White", 0.55), peak=0.42),
+                        (0, 0.4, 2.6), 3.3, facing=cam_loc, name="ChadAura")
+    orbs = [orb(i, loc, r, col, rim, cam_loc)
+            for i, (loc, r, col, rim) in enumerate([((-2.55, -0.6, 4.25), 0.3, "Grape", "Magenta"),
+                                                    ((2.6, -0.4, 4.55), 0.34, "HotPink", "Grape"),
+                                                    ((1.75, 0.3, 5.35), 0.22, "Mint", "Blue"),
+                                                    ((-1.6, 0.4, 5.25), 0.2, "Sunny", "Orange")])]
 
     cd = bpy.data.cameras.new("ChadRig_Cam")
     cd.lens = 30
@@ -447,12 +465,32 @@ def key_art():
     cd.sensor_width = 36
     cd.clip_start = 0.1
     cd.clip_end = 5000
-    cd.shift_y = -0.068  # horizon at ~38 % from the top, figures above the calm lower third
+    # Level camera with the view shifted up: horizon at ~57 % from the top, Chad's hair at ~37.5 %, the
+    # stage and the fans' feet at ~75.5 %. The top third stays clear sky for the logo, the bottom fifth
+    # calm sand for the loading bar.
+    cd.shift_y = 0.037
     cd.dof.use_dof = False
     cam = ck._link(bpy.data.objects.new("ChadRig_Cam", cd))
     cam.location = cam_loc
     cam.rotation_euler = (math.radians(90), 0, 0)
     scene.camera = cam
+
+    # Where things land in the frame (fractions of the width from the left, of the height from the top);
+    # the loading screen's Luau layout is built round these numbers.
+    bpy.context.view_layer.update()
+    chad_b = frame_box(scene, cam, chad_p)
+    fan_b = [frame_box(scene, cam, f) for f in fans]
+    ground = [frame_box(scene, cam, g)[3] for g in [stage_p] + fans]
+    bell_b = frame_box(scene, cam, bells)
+    orb_tops = [frame_box(scene, cam, [o])[2] for o in orbs]
+    aura_c = world_to_camera_view(scene, cam, aura.matrix_world.translation)
+    horizon = world_to_camera_view(scene, cam, Vector((0, SHORE + 3000, -0.02)))
+    print("KEYART_LAYOUT chad_top=%.3f chad_x=%.3f..%.3f group_bottom=%.3f (stage %.3f fans %.3f %.3f) "
+          "fans_x=%.3f..%.3f sign_top=%.3f orb_tops=%s aura_centre=%.3f horizon=%.3f bells_x=%.3f..%.3f "
+          "bells_y=%.3f..%.3f" % (chad_b[2], chad_b[0], chad_b[1], max(ground), ground[0], ground[1], ground[2],
+                                  min(f[0] for f in fan_b), max(f[1] for f in fan_b), min(f[2] for f in fan_b),
+                                  "/".join("%.3f" % t for t in orb_tops), 1 - aura_c.y, 1 - horizon.y,
+                                  bell_b[0], bell_b[1], bell_b[2], bell_b[3]))
     scene.render.filepath = raw("KeyArt")
     bpy.ops.render.render(write_still=True)
 
