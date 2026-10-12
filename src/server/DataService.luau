@@ -24,7 +24,10 @@ local STORE_NAME = "TycoonProfiles_v1"
 local MAX_RETRIES = 4
 -- Profile.version of a save written by this code. reconcile migrates older saves once:
 --   2  the onboarding funnel counts tier milestones (Shared.Funnel)
-local VERSION = 2
+--   3  Economy 2.0: the converter level is lifted to the free floor of the best tier
+--      (Economy.minProcessLevel), firstCrateDone and the parkour `skipped` record exist.
+--      Nothing saved is lowered or removed.
+local VERSION = 3
 DataService.VERSION = VERSION
 
 export type Unlocker = { rarity: string, endsAt: number }
@@ -42,6 +45,9 @@ export type Profile = {
 	bought: number,
 	processLevel: number,
 	heldChest: string,
+	-- The profile's first crate has been opened (until then a Smasher slot takes
+	-- Economy.FIRST_CRATE_SECONDS).
+	firstCrateDone: boolean,
 	-- Rarity of the crate the player was last prompted to open with Robux ("" = none);
 	-- the receipt opens this one if the crate is no longer held.
 	pendingCrate: string,
@@ -76,13 +82,14 @@ export type Profile = {
 	-- of the last full cash reward (Economy.modeReward cooldown).
 	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
 	-- passed (and PvP wins paid), pvpWins / pvpPlayed = PvP duels won / fought.
-	-- Parkour per level (dense, PARKOUR_LEVELS long, 0 = never): best seconds and finishes.
+	-- Parkour per level (dense, PARKOUR_LEVELS long, 0 = never): best seconds, finishes and
+	-- skipped (1 = the map was skipped for cash, which unlocks the next one).
 	-- modes.parkour keeps the shared reward cooldown and mirrors level 1 for the old UI.
 	-- stage = highest sky-obby stage reached (0 = never ran; one stage per map since the
 	-- checkpoints went: map n is stage n, finishing map 10 is 11); stageMaps = the stage is
 	-- in those units (older saves counted checkpoints and are rebuilt on load); gear = the
 	-- chosen coil ("none" | "speed" | "jump" | "gravity", worn only during runs).
-	parkour: { best: { number }, clears: { number }, stage: number, stageMaps: boolean, gear: string },
+	parkour: { best: { number }, clears: { number }, skipped: { number }, stage: number, stageMaps: boolean, gear: string },
 	-- Cardio (keyboard runner): Speed earned (permanent, never goes down), highest safe zone
 	-- reached (0..CARDIO_STAGES), treadmill level (0..CARDIO_TREADMILL_MAX), safe-zone arrivals
 	-- and the player's own max WalkSpeed (0 = none, else 16..CARDIO_WALK_CAP).
@@ -134,6 +141,7 @@ function DataService.defaultProfile(): Profile
 		bought = 0,
 		processLevel = Economy.START_PROCESS_LEVEL,
 		heldChest = "",
+		firstCrateDone = false,
 		pendingCrate = "",
 		pendingUnlocker = 0,
 		unlockers = {
@@ -155,7 +163,14 @@ function DataService.defaultProfile(): Profile
 		onboarding = 0,
 		badges = {},
 		daily = { day = 0, streak = 0, firstDay = 0, hinted = false },
-		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, stageMaps = true, gear = "none" },
+		parkour = {
+			best = zeros(PARKOUR_LEVELS),
+			clears = zeros(PARKOUR_LEVELS),
+			skipped = zeros(PARKOUR_LEVELS),
+			stage = 0,
+			stageMaps = true,
+			gear = "none",
+		},
 		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0 },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
@@ -211,6 +226,14 @@ local function reconcile(data: any): Profile
 	if data.onboarding == nil then
 		data.onboarding = 99
 	end
+	-- Saves from before the first-crate head start: anyone who has played already had their
+	-- first crate (or waits the normal time for it); only a brand-new profile gets the short one.
+	if type(data.firstCrateDone) ~= "boolean" then
+		local played = (type(data.bought) == "number" and data.bought > 0)
+			or (type(data.totalObtained) == "number" and data.totalObtained > 1)
+			or data.tutorialDone == true
+		data.firstCrateDone = played
+	end
 	-- Saves from before the daily reward: day 1 is waiting, but today is not a "first day".
 	if data.daily == nil then
 		data.daily = { day = 0, streak = 0, firstDay = 1, hinted = true }
@@ -253,6 +276,8 @@ local function reconcile(data: any): Profile
 	data.bought = if data.bought ~= data.bought or data.bought == math.huge then 0 else math.max(0, math.floor(data.bought))
 	-- The converter starts at START_PROCESS_LEVEL; saves from before that are lifted to it.
 	data.processLevel = math.max(math.floor(data.processLevel), Economy.START_PROCESS_LEVEL)
+	-- ...and it is never below the free floor of the best tier the player has discovered.
+	data.processLevel = math.max(data.processLevel, Economy.minProcessLevel(Economy.highestTier(data.discovered)))
 	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
 	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
 		data.heldChest = ""
@@ -270,14 +295,14 @@ local function reconcile(data: any): Profile
 			end
 		end
 	end
-	for _, key in { "best", "clears" } do
+	for _, key in { "best", "clears", "skipped" } do
 		local list = data.parkour[key]
 		local fixed = zeros(PARKOUR_LEVELS)
 		if type(list) == "table" then
 			for i = 1, PARKOUR_LEVELS do
 				local v = list[i]
 				if type(v) == "number" and v == v and v >= 0 and v ~= math.huge then
-					fixed[i] = if key == "clears" then math.floor(v) else v
+					fixed[i] = if key == "best" then v elseif key == "skipped" then math.min(math.floor(v), 1) else math.floor(v)
 				end
 			end
 		end

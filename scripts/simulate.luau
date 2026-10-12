@@ -1,18 +1,23 @@
 --[[
-	Progression simulation of a greedy active player (average deposit multiplier).
+	Progression simulation of a greedy active player (no deposit bonus: every orb is worth
+	its base cash).
 	Prints when each tier is first reached, one line per tier.
 	Run with:  lune run scripts/simulate [flags]
-	  --aura        owns the 2x aura pass
+	  --aura        owns the 2x aura pass (double orbs and double converter speed)
 	  --cash        owns the 2x cash pass
 	  --extras      a real player's periodic extras: the free reward every 10 minutes,
 	                the parkour finish reward once per MODE_REWARD_COOLDOWN, the Aura
-	                Surge (2 of every 10 minutes) and the crates from the free unlocker
+	                Surge (2 of every 10 minutes: double orbs and double converter speed)
+	                and the crates from the free unlocker
 	  --hours N     simulated hours (default 600)
 	  --first       the first minutes instead: a new player who follows the tutorial and then
 	                walks the loop between the real pads (Simulate.firstMinutes), in seconds
 	                from the end of the intro
 	  --minutes N   length of the --first run (default 10)
 	The first 2 hours run at 1 s steps, then 10 s up to 24 h, then 60 s.
+	In both models a new tier lifts the converter to its free floor (Economy.minProcessLevel).
+	Only the --first model walks to the deposit pad, so only it pays the deposit multiplier's
+	bonus (at its average, as cash at once).
 	The same loops are used by tests/run.luau through Simulate.run and Simulate.firstMinutes.
 ]]
 
@@ -38,6 +43,17 @@ local function averageUnlockSeconds(): number
 	return seconds / weights
 end
 
+-- Average bonus share of a deposit (Economy.depositSplit at the mean multiplier, about 0.15).
+function Simulate.depositBonus(): number
+	local weights, bonus = 0, 0
+	for _, entry in Economy.DEPOSIT_MULTIPLIERS do
+		local _, extra = Economy.depositSplit(1, entry.value)
+		weights += entry.weight
+		bonus += entry.weight * extra
+	end
+	return bonus / weights
+end
+
 export type Options = {
 	aura: boolean?,
 	cash: boolean?,
@@ -52,6 +68,8 @@ export type Result = {
 	money: number,
 	processLevel: number,
 	production: number,
+	-- Lowest share of the production the converter kept up with at any step (1 = all of it).
+	converterShare: number,
 }
 
 function Simulate.run(options: Options): Result
@@ -65,9 +83,11 @@ function Simulate.run(options: Options): Result
 	local highest = 1
 	local horizon = (options.hours or 600) * 3600
 	local efficiency = 0.85 -- the player is not always on the pads
+	-- The aura pass doubles the orbs and the converter's speed.
 	local orbMult = if options.aura then 2 else 1
 	local cashMult = if options.cash then 2 else 1
 	local extras = options.extras == true
+	local converterShare = 1
 	local nextFree = 0
 	local nextParkour = 0
 	local unlockSeconds = averageUnlockSeconds()
@@ -105,6 +125,8 @@ function Simulate.run(options: Options): Result
 			highest = math.max(highest, step.tier + 1)
 		end
 		record(t)
+		-- A new tier lifts the converter to its free floor.
+		processLevel = math.max(processLevel, Economy.minProcessLevel(highest))
 		return result.accepted
 	end
 
@@ -112,14 +134,17 @@ function Simulate.run(options: Options): Result
 	while t < horizon do
 		local dt = options.step or (if t < 2 * 3600 then 1 elseif t < 24 * 3600 then 10 else 60)
 		t += dt
-		local surge = extras and Economy.surgeState(t)
-		local production = Economy.productionPerSecond(units) * efficiency * orbMult * (if surge then Economy.SURGE_MULTIPLIER else 1)
-		local rate = Economy.processRate(processLevel)
+		-- The surge doubles the orbs and the converter; rewards are sized without it.
+		local surgeMult = if extras and Economy.surgeState(t) then Economy.SURGE_MULTIPLIER else 1
+		local full = Economy.productionPerSecond(units) * orbMult
+		local production = full * efficiency * surgeMult
+		local rate = Economy.processRate(processLevel) * orbMult
+		converterShare = math.min(converterShare, math.min(full, rate) / full)
 		queue += production * dt
-		local processed = math.min(queue, rate * dt)
+		local processed = math.min(queue, rate * surgeMult * dt)
 		queue -= processed
 		money += processed * Economy.CASH_PER_POINT * cashMult
-		local income = Economy.incomePerSecond(Economy.productionPerSecond(units) * orbMult, rate, cashMult)
+		local income = Economy.incomePerSecond(full, rate, cashMult)
 
 		-- The tutorial (buy, deposit, collect, merge) pays its reward after the first merge.
 		if not tutorialPaid and reached[2] then
@@ -146,7 +171,7 @@ function Simulate.run(options: Options): Result
 		-- Decide once every 5 seconds (every step when steps are coarser).
 		if t % 5 == 0 or dt > 5 then
 			for _ = 1, 50 do
-				rate = Economy.processRate(processLevel)
+				rate = Economy.processRate(processLevel) * orbMult
 				local bottlenecked = Economy.productionPerSecond(units) * efficiency * orbMult > rate * 0.9
 				if bottlenecked and money >= Economy.processUpgradeCost(processLevel) then
 					money -= Economy.processUpgradeCost(processLevel)
@@ -176,6 +201,7 @@ function Simulate.run(options: Options): Result
 		money = money,
 		processLevel = processLevel,
 		production = Economy.productionPerSecond(units),
+		converterShare = converterShare,
 	}
 end
 
@@ -196,6 +222,8 @@ export type FirstOptions = {
 	-- Seconds the starter unit has been dropping orbs before the player gets control
 	-- (default: the whole intro).
 	introSeconds: number?,
+	-- The player never steps on a converter upgrade pad: only the free floor lifts it.
+	noUpgrades: boolean?,
 }
 
 export type FirstEvent = { t: number, what: string }
@@ -213,6 +241,8 @@ export type FirstResult = {
 	events: { FirstEvent },
 	money: number,
 	processLevel: number,
+	-- Lowest share of the production the converter kept up with at any second (1 = all of it).
+	converterShare: number,
 }
 
 local function distance(a: { x: number, z: number }, b: { x: number, z: number }): number
@@ -249,8 +279,9 @@ end
 
 -- A new player from the moment the intro ends: does the five tutorial steps in order, then
 -- keeps walking the loop (buy what the cash allows, merge, pen, deposit, collect). No
--- passes, no free gift, no crates, the average deposit multiplier (x1). Orbs drop and the
--- converter works once a second, like Tycoon's slow tick.
+-- passes, no free gift, no crates, the average deposit multiplier (its bonus part lands in
+-- the vault at once). Orbs drop and the converter works once a second, like Tycoon's slow
+-- tick.
 function Simulate.firstMinutes(options: FirstOptions?): FirstResult
 	local opts: FirstOptions = options or {}
 	local horizon = (opts.minutes or 10) * 60
@@ -271,13 +302,17 @@ function Simulate.firstMinutes(options: FirstOptions?): FirstResult
 	local purchases: { number } = {}
 	local lastBuy: number? = nil
 	local longestGap, gapAt = 0, 0
+	local depositBonus = Simulate.depositBonus()
+	local converterShare = 1
 
 	local t, nextTick = 0, 1
 	local function wait(seconds: number)
 		t += seconds
 		while nextTick <= t do
 			nextTick += 1
-			pen += Economy.productionPerSecond(units)
+			local production = Economy.productionPerSecond(units)
+			pen += production
+			converterShare = math.min(converterShare, math.min(production, Economy.processRate(processLevel)) / production)
 			local processed = math.min(queue, Economy.processRate(processLevel))
 			queue -= processed
 			pending += processed * Economy.CASH_PER_POINT
@@ -306,7 +341,9 @@ function Simulate.firstMinutes(options: FirstOptions?): FirstResult
 		if not tutorialDone then
 			pending += carried * Economy.CASH_PER_POINT
 		else
-			queue += carried
+			local queued, bonus = Economy.depositSplit(carried, 1 + depositBonus)
+			queue += queued
+			pending += bonus * Economy.CASH_PER_POINT
 		end
 		carried = 0
 	end
@@ -320,6 +357,12 @@ function Simulate.firstMinutes(options: FirstOptions?): FirstResult
 			if not reached[step.tier + 1] then
 				reached[step.tier + 1] = t
 				log(string.format("tier %d", step.tier + 1))
+			end
+			-- A new tier lifts the converter to its free floor.
+			local floor = Economy.minProcessLevel(step.tier + 1)
+			if floor > processLevel then
+				processLevel = floor
+				log(string.format("converter lv %d (free)", processLevel))
 			end
 		end
 	end
@@ -354,7 +397,8 @@ function Simulate.firstMinutes(options: FirstOptions?): FirstResult
 	local function harvest()
 		pickup()
 		local rate = Economy.processRate(processLevel)
-		if Economy.productionPerSecond(units) > rate and money >= Economy.processUpgradeCost(processLevel) then
+		local short = not opts.noUpgrades and Economy.productionPerSecond(units) > rate
+		if short and money >= Economy.processUpgradeCost(processLevel) then
 			walk("PenProcUp")
 			money -= Economy.processUpgradeCost(processLevel)
 			processLevel += 1
@@ -420,6 +464,7 @@ function Simulate.firstMinutes(options: FirstOptions?): FirstResult
 		events = events,
 		money = money,
 		processLevel = processLevel,
+		converterShare = converterShare,
 	}
 end
 
@@ -437,7 +482,14 @@ local function printFirst(minutes: number?)
 			result.gapAt
 		)
 	)
-	print(string.format("End: money %s, converter lv %d", Format.short(result.money), result.processLevel))
+	print(
+		string.format(
+			"End: money %s, converter lv %d (kept up with at least %.0f%% of the production)",
+			Format.short(result.money),
+			result.processLevel,
+			result.converterShare * 100
+		)
+	)
 end
 
 local function main(args: { string })
@@ -487,9 +539,10 @@ local function main(args: { string })
 	end
 	print(
 		string.format(
-			"End: money %s, process lv %d, production %s/s",
+			"End: money %s, process lv %d (kept up with at least %.0f%% of the production), production %s/s",
 			Format.short(result.money),
 			result.processLevel,
+			result.converterShare * 100,
 			Format.short(result.production)
 		)
 	)

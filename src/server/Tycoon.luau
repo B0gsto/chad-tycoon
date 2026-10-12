@@ -43,6 +43,10 @@ type Orb = { part: BasePart, value: number, count: number, cell: number, tier: n
 type FloorChest = { model: Model, rarity: string, position: Vector3, landsAt: number, blocked: boolean }
 type DisplaySlot = { tier: number, model: Model }
 
+-- One stay on a pad: `since` = os.clock() of the step onto it, `fired` = its handler ran,
+-- `linger` = the handler asked for its padLingerHandlers entry if the player stays.
+type PadVisit = { since: number, fired: boolean, linger: boolean }
+
 export type Session = {
 	player: Player,
 	profile: Profile,
@@ -51,7 +55,7 @@ export type Session = {
 	passes: { [string]: boolean },
 	premium: boolean,
 	friendBonus: number,
-	inside: { [string]: boolean },
+	inside: { [string]: PadVisit },
 	converterPos: Vector3?,
 	orbs: { Orb },
 	floorChests: { FloorChest },
@@ -60,11 +64,17 @@ export type Session = {
 	displayCounts: string,
 	dirty: boolean,
 	chestTimer: number,
+	-- First run: no crates until the tutorial is done (`inTutorial` = it was still running on
+	-- the last slow tick); the first crate after it always drops (`chestCertain`).
+	inTutorial: boolean,
+	chestCertain: boolean,
 	collectBuffer: number,
 	actionBudget: number,
 	lastPickupFlush: number,
 	crateRearmUntil: number,
 	lastToast: { [string]: number },
+	-- os.clock() of the last "this is a game pass" toast per pad (PASS_HINT_INTERVAL).
+	lastPassHint: { [string]: number },
 	alive: boolean,
 }
 
@@ -104,6 +114,14 @@ local PICKUP_FLUSH_INTERVAL = 0.09
 -- pad (pads sit on the main floor at y = 0).
 local PAD_MIN_Y = 0.5
 local PAD_MAX_Y = 10
+-- Pads that fire only after the player has stood on them this long (seconds): the upgrade
+-- pads lie on the Deposit to Collect walking line, and a walker crosses a 4.2-stud pad in
+-- 0.26 s. Every other pad fires on entry.
+local PAD_DWELL = { ProcUp1 = 0.4, ProcUp10 = 0.4 }
+-- Standing this long on a busy Smasher pad (no crate in hand) offers the Robux smash.
+local SMASH_OFFER_DWELL = 1.5
+-- A pass pad says "this is a game pass" at most this often (seconds); it never opens a prompt.
+local PASS_HINT_INTERVAL = 60
 -- Orbs can be collected only from inside the pen (walls and stair tops included),
 -- up to this high above its floor.
 local POOL_REACH_Y = 12
@@ -228,9 +246,33 @@ function Tycoon.production(session: Session): number
 	return Economy.productionPerSecond(session.profile.units) * Tycoon.orbMultiplier(session)
 end
 
+-- Orbs per second the converter turns into cash: doubled by the Double Aura pass and, with
+-- `surge`, while the Aura Surge runs (both double the orbs too, so the cash really doubles).
+local function processRate(session: Session, surge: boolean): number
+	local rate = Economy.processRate(session.profile.processLevel)
+	if session.passes.DoubleAura then
+		rate *= 2
+	end
+	if surge and Economy.surgeState(serverNow()) then
+		rate *= Economy.SURGE_MULTIPLIER
+	end
+	return rate
+end
+
+-- Production without the Aura Surge (the Double Aura pass counts).
+local function steadyProduction(session: Session): number
+	return Economy.productionPerSecond(session.profile.units) * (if session.passes.DoubleAura then 2 else 1)
+end
+
+-- Cash per second without the Aura Surge: what every reward is sized with (free gift, daily,
+-- mode packs, Robux packs), so a reward is the same in and out of a surge.
 function Tycoon.income(session: Session): number
-	local p = session.profile
-	return Economy.incomePerSecond(Tycoon.production(session), Economy.processRate(p.processLevel), Tycoon.moneyMultiplier(session))
+	return Economy.incomePerSecond(steadyProduction(session), processRate(session, false), Tycoon.moneyMultiplier(session))
+end
+
+-- Cash per second right now, surge included (the HUD's number).
+function Tycoon.incomeNow(session: Session): number
+	return Economy.incomePerSecond(Tycoon.production(session), processRate(session, true), Tycoon.moneyMultiplier(session))
 end
 
 local function highestTier(session: Session): number
@@ -536,6 +578,15 @@ local function discoverAll(session: Session, extra: { number }?)
 		table.sort(found)
 		notify(session, { kind = "Reward", tier = newest, tiers = found, new = true })
 		emit(session, "Discover", { tier = newest })
+		-- The free converter floor: a new best tier lifts the converter to cover one of its units.
+		local floor = Economy.minProcessLevel(newest)
+		if floor > p.processLevel then
+			p.processLevel = floor
+			local pad = session.plot.padByName.ProcUp1
+			effect(session, "Upgrade", { pad = "ProcUp1", padPos = pad and pad.part.Position, level = floor, free = true })
+			toast(session, string.format("Blender upgraded for free: Lv %d", floor), "good")
+			markDirty(session)
+		end
 	end
 end
 
@@ -832,6 +883,8 @@ end
 
 local function openChest(session: Session, rarity: string, source: string)
 	local tier = Economy.rollChest(rarity, highestTier(session), random)
+	-- The profile's first crate has opened: later ones take their full Smasher time.
+	session.profile.firstCrateDone = true
 	awardUnit(session, tier, source)
 	effect(session, "ChestOpen", { rarity = rarity, tier = tier })
 end
@@ -1262,17 +1315,31 @@ for _, amount in Economy.BUY_AMOUNTS do
 	end
 end
 
+-- A per-second amount for toasts and pad titles: "1.20K", "37", and one decimal under 10
+-- ("0.5") so a small gain never reads as zero.
+local function perSecond(amount: number): string
+	return if amount < 10 then string.format("%.1f", amount) else Format.short(amount)
+end
+
 local function doMerge(session: Session, verbose: boolean, auto: boolean)
 	local p = session.profile
+	local before = Economy.productionPerSecond(p.units)
+	local bestBefore = highestTier(session)
 	local merges, top, steps = Economy.mergeAll(p.units)
 	if merges > 0 then
+		local after = Economy.productionPerSecond(p.units)
 		local diff = refreshDisplay(session)
 		sendMergeEffects(session, steps, auto, diff)
 		discoverAll(session, stepTiers(steps))
-		emit(session, "Merge", { merges = merges, top = top })
+		emit(session, "Merge", { merges = merges, top = top, before = before, after = after })
 		if verbose then
 			local times = if merges == 1 then "once" else Format.short(merges) .. " times"
-			toast(session, string.format("Merged %s! Best: %s", times, tierName(top)), "good")
+			local text = string.format("Merged %s! %s +%s/sec", times, theme.Words.Orb, perSecond(after - before))
+			-- Named only when this merge made a tier the player never had.
+			if top > bestBefore then
+				text ..= string.format(" New best: %s!", tierName(top))
+			end
+			toast(session, text, "good")
 		end
 		markDirty(session)
 	elseif verbose then
@@ -1295,10 +1362,24 @@ local function ownsAutoMerge(session: Session): boolean
 	return session.passes.AutoMerge == true or session.profile.autoMergeOwned == true
 end
 
+-- A pad that needs a game pass the player does not own: it never opens a purchase prompt
+-- (players cross these pads on foot all the time); it shakes and, at most once per
+-- PASS_HINT_INTERVAL, says where the pass is sold.
+local function passPadHint(session: Session, padName: string, text: string)
+	refusePad(session, padName, "locked")
+	local now = os.clock()
+	local last = session.lastPassHint[padName]
+	if last and now - last < PASS_HINT_INTERVAL then
+		return
+	end
+	session.lastPassHint[padName] = now
+	toast(session, text, "info")
+end
+
 padHandlers.AutoMerge = function(session)
 	local p = session.profile
 	if not ownsAutoMerge(session) then
-		Tycoon.hooks.promptPass(session.player, "AutoMerge")
+		passPadHint(session, "AutoMerge", "Auto Merge is a game pass. Find it in the Shop or Settings.")
 		return
 	end
 	p.autoMerge = not p.autoMerge
@@ -1317,18 +1398,24 @@ padHandlers.Deposit = function(session)
 		return
 	end
 	local mult = ReplicatedStorage:GetAttribute("DepositMult") or 1
-	local amount = p.carried * mult
+	-- All the aura goes into the converter; the multiplier's bonus part is cash in the vault
+	-- at once (Economy.depositSplit).
+	local amount, bonus = Economy.depositSplit(p.carried, mult)
+	local cashPerOrb = Economy.CASH_PER_POINT * Tycoon.moneyMultiplier(session)
+	local bonusCash = bonus * cashPerOrb
+	p.pending += bonusCash
 	-- First run: the deposit that completes the tutorial's step becomes cash at once, so
 	-- its Collect step never waits for the converter.
 	if TutorialSteps.instantDeposit(p.tutorialStep, p.tutorialDone) then
-		p.pending += amount * Economy.CASH_PER_POINT * Tycoon.moneyMultiplier(session)
+		p.pending += amount * cashPerOrb
 	else
 		p.queue += amount
 	end
 	p.carried = 0
 	local root = rootPart(session)
 	local to = converterPos(session)
-	effect(session, "Deposit", { amount = amount, mult = mult, from = if root then root.Position else to, to = to })
+	-- `amount` = aura queued, `bonus` = cash the multiplier paid on top.
+	effect(session, "Deposit", { amount = amount, mult = mult, bonus = bonusCash, from = if root then root.Position else to, to = to })
 	emit(session, "Deposit", { amount = amount })
 	markDirty(session)
 end
@@ -1348,11 +1435,45 @@ padHandlers.Collect = function(session)
 	markDirty(session)
 end
 
+-- "+25%" for one converter level, "+9.3x" for a bulk step.
+local function upgradeSpeed(amount: number): string
+	local growth = Economy.PROCESS_GROWTH ^ amount
+	return if amount == 1 then string.format("%d%%", math.floor((growth - 1) * 100 + 0.5)) else string.format("%.1fx", growth)
+end
+
+-- Cash per second `amount` more converter levels would add right now (0 while the converter
+-- already keeps up with the units). Sized without the Aura Surge so pad titles hold still.
+local function upgradeGain(session: Session, amount: number): number
+	local production = steadyProduction(session)
+	local rate = processRate(session, false)
+	local faster = rate * Economy.PROCESS_GROWTH ^ amount
+	return (math.min(production, faster) - math.min(production, rate)) * Economy.CASH_PER_POINT * Tycoon.moneyMultiplier(session)
+end
+
+-- The converter is so far ahead of the units that more speed would buy nothing: the upgrade
+-- pads refuse instead of charging.
+local function upgradeNotNeeded(session: Session): boolean
+	local p = session.profile
+	return Economy.processRate(p.processLevel) >= Economy.CONVERTER_HEADROOM * Economy.productionPerSecond(p.units)
+end
+
 local function procUpgrade(session: Session, amount: number, padName: string)
 	local p = session.profile
+	if upgradeNotNeeded(session) then
+		toast(
+			session,
+			string.format("Your blender is already faster than your %s. Buy or merge %s first!", theme.Words.Units, theme.Words.Units),
+			"info"
+		)
+		refusePad(session, padName, "locked")
+		return
+	end
+	local gain = upgradeGain(session, amount)
 	if spend(session, Economy.processBulkCost(p.processLevel, amount), padName) then
 		p.processLevel += amount
 		effect(session, "Upgrade", { pad = padName, padPos = padPos(session, padName), level = p.processLevel })
+		local what = if gain > 0 then "+$" .. perSecond(gain) .. "/sec" else string.format("+%s speed", upgradeSpeed(amount))
+		toast(session, string.format("Blender Lv %d: %s", p.processLevel, what), "good")
 		markDirty(session)
 	end
 end
@@ -1363,11 +1484,26 @@ padHandlers.ProcUp10 = function(session)
 	procUpgrade(session, Economy.PROCESS_BULK, "ProcUp10")
 end
 
+-- Puts the held crate in a Smasher slot and returns the seconds it will take. A profile's
+-- first crate opens after Economy.FIRST_CRATE_SECONDS.
+local function loadUnlocker(session: Session, slotIndex: number): number
+	local p = session.profile
+	local slot = p.unlockers[slotIndex]
+	local seconds = Economy.unlockSeconds(p.heldChest, slotIndex == 2)
+	if not p.firstCrateDone then
+		seconds = math.min(seconds, Economy.FIRST_CRATE_SECONDS)
+	end
+	slot.rarity = p.heldChest
+	slot.endsAt = os.time() + seconds
+	clearHeld(session)
+	return seconds
+end
+
 local function useUnlocker(session: Session, slotIndex: number)
 	local p = session.profile
+	local padName = "Unlock" .. slotIndex
 	if slotIndex == 2 and not session.passes.PremiumUnlocker then
-		refusePad(session, "Unlock2", "locked")
-		Tycoon.hooks.promptPass(session.player, "PremiumUnlocker")
+		passPadHint(session, padName, "VIP Crate Smasher is a game pass. Find it in the Shop.")
 		return
 	end
 	local slot = p.unlockers[slotIndex]
@@ -1379,29 +1515,66 @@ local function useUnlocker(session: Session, slotIndex: number)
 			slot.rarity = ""
 			slot.endsAt = 0
 			openChest(session, rarity, "unlocker")
-		elseif Tycoon.hooks.crateRobuxAllowed(session.player) then
-			notify(session, {
-				kind = "Confirm",
-				text = string.format("Smash it now for %s%d?", ROBUX, theme.Monetization.CrateOpen.Price),
-				action = { action = "FinishUnlocker", slot = slotIndex },
-			})
+			-- A crate in hand goes into the freed slot in the same visit.
+			if p.heldChest ~= "" then
+				toast(session, "Opened! Next crate is in: " .. Format.time(loadUnlocker(session, slotIndex)), "good")
+			end
+		elseif p.heldChest ~= "" then
+			toast(session, string.format("Smasher busy: ready in %s. Keep your crate, it goes in next.", Format.time(left)), "info")
+			refusePad(session, padName, "locked")
 		else
 			toast(session, "Ready in " .. Format.time(left) .. ". Come back when the timer ends!", "info")
+			-- The Robux smash is offered only to a player who stays on the pad (offerSmash).
+			local visit = session.inside[padName]
+			if visit then
+				visit.linger = true
+			end
 		end
 		markDirty(session)
 		return
 	end
 	if p.heldChest == "" then
 		toast(session, "Bring a " .. theme.Words.Chest .. " here to open it for free over time.", "info")
-		refusePad(session, "Unlock" .. slotIndex, "locked")
+		refusePad(session, padName, "locked")
 		return
 	end
-	slot.rarity = p.heldChest
-	slot.endsAt = os.time() + Economy.unlockSeconds(p.heldChest, slotIndex == 2)
-	clearHeld(session)
+	loadUnlocker(session, slotIndex)
 	toast(session, "Unlocking... come back when the timer ends!", "good")
 	markDirty(session)
 end
+
+-- Still on a busy Smasher pad after SMASH_OFFER_DWELL with empty hands: offer to smash the
+-- crate now for Robux. Walking across the pad never asks.
+local function offerSmash(session: Session, slotIndex: number)
+	local p = session.profile
+	local slot = p.unlockers[slotIndex]
+	if slotIndex == 2 and not session.passes.PremiumUnlocker then
+		return
+	end
+	if slot.rarity == "" or p.heldChest ~= "" or session.passes.CrateKey or slot.endsAt - os.time() <= 0 then
+		return
+	end
+	if not Tycoon.hooks.crateRobuxAllowed(session.player) then
+		return
+	end
+	notify(session, {
+		kind = "Confirm",
+		text = string.format("Smash it now for %s%d?", ROBUX, theme.Monetization.CrateOpen.Price),
+		action = { action = "FinishUnlocker", slot = slotIndex },
+	})
+end
+
+-- Run once when the player has stood on the pad for SMASH_OFFER_DWELL, if the pad's handler
+-- asked for it (PadVisit.linger).
+local padLingerHandlers: { [string]: (Session) -> () } = {
+	Unlock1 = function(session)
+		offerSmash(session, 1)
+	end,
+	Unlock2 = function(session)
+		offerSmash(session, 2)
+	end,
+}
+
 padHandlers.Unlock1 = function(session)
 	useUnlocker(session, 1)
 end
@@ -1457,24 +1630,20 @@ local function updateBoards(session: Session)
 		setPad(session, "AutoMerge", "Auto Merge", Format.robux(theme.Monetization.Passes.AutoMerge.Price), true)
 	end
 
-	local procCost = Economy.processUpgradeCost(p.processLevel)
-	local procBulk = Economy.processBulkCost(p.processLevel, Economy.PROCESS_BULK)
-	local rateNow = Economy.processRate(p.processLevel)
-	local growth = Economy.PROCESS_GROWTH
-	setPad(
-		session,
-		"ProcUp1",
-		string.format("+%d%% speed", math.floor((growth - 1) * 100 + 0.5)),
-		Format.money(procCost),
-		canAfford(session, procCost)
-	)
-	setPad(
-		session,
-		"ProcUp10",
-		string.format("+%.1fx speed", growth ^ Economy.PROCESS_BULK),
-		Format.money(procBulk),
-		canAfford(session, procBulk)
-	)
+	-- Upgrade pads: the cash an upgrade adds while the units out-produce the converter,
+	-- else the speed step; no price once the pads refuse (upgradeNotNeeded).
+	local rateNow = processRate(session, true)
+	local notNeeded = upgradeNotNeeded(session)
+	for padName, amount in { ProcUp1 = 1, ProcUp10 = Economy.PROCESS_BULK } do
+		local cost = Economy.processBulkCost(p.processLevel, amount)
+		local gain = upgradeGain(session, amount)
+		local title = if gain > 0 then "+$" .. perSecond(gain) .. "/sec" else string.format("+%s speed", upgradeSpeed(amount))
+		if notNeeded then
+			setPad(session, padName, title, "Not needed yet", false)
+		else
+			setPad(session, padName, title, Format.money(cost), canAfford(session, cost))
+		end
+	end
 
 	local moneyMult = Tycoon.moneyMultiplier(session)
 	labels.ProcessQueue.Text = theme.Icons.Orb .. " " .. Format.short(p.queue)
@@ -1487,7 +1656,7 @@ local function updateBoards(session: Session)
 	local mult = ReplicatedStorage:GetAttribute("DepositMult") or 1
 	local nextAt = ReplicatedStorage:GetAttribute("DepositNextAt") or 0
 	labels.DepositMult.Text = "x" .. string.format("%.1f", mult)
-	labels.DepositMult.TextColor3 = if mult >= 1.2 then theme.Colors.Good elseif mult < 1 then theme.Colors.Bad else theme.Colors.Primary
+	labels.DepositMult.TextColor3 = if mult >= 1.2 then theme.Colors.Good else theme.Colors.Primary
 	labels.DepositNext.Text = "next change in " .. math.max(0, math.ceil(nextAt - serverNow())) .. "s"
 	setPad(session, "Deposit", nil, theme.Icons.Orb .. Format.short(p.carried) .. "  x" .. string.format("%.1f", mult), p.carried > 0)
 
@@ -1535,7 +1704,7 @@ local function snapshot(session: Session): { [string]: any }
 		}
 	end
 	local production = Tycoon.production(session)
-	local rate = Economy.processRate(p.processLevel)
+	local rate = processRate(session, true)
 	local moneyMult = Tycoon.moneyMultiplier(session)
 	return {
 		now = now,
@@ -1565,7 +1734,7 @@ local function snapshot(session: Session): { [string]: any }
 		orbMult = Tycoon.orbMultiplier(session),
 		production = production,
 		processRate = rate,
-		income = Economy.incomePerSecond(production, rate, moneyMult),
+		income = Tycoon.incomeNow(session),
 		freeIn = math.max(0, p.lastFreeReward + Economy.FREE_REWARD_COOLDOWN - now),
 		plotIndex = session.plot.index,
 		tutorialStep = p.tutorialStep,
@@ -1686,8 +1855,8 @@ local function fastTick(session: Session)
 
 	local now = os.clock()
 
-	-- Pads fire once per visit, the moment the player steps on them; stepping off and
-	-- on again fires them again.
+	-- Pads fire once per visit, the moment the player steps on them (PAD_DWELL pads: once
+	-- the player has stood on them that long); stepping off and on again fires them again.
 	for _, pad in plot.pads do
 		local name = pad.name
 		local inside = not overPool
@@ -1696,12 +1865,25 @@ local function fastTick(session: Session)
 			and localPos.Y > PAD_MIN_Y
 			and localPos.Y < PAD_MAX_Y
 		if inside then
-			if not session.inside[name] then
-				session.inside[name] = true
+			local visit = session.inside[name]
+			if not visit then
+				visit = { since = now, fired = false, linger = false }
+				session.inside[name] = visit
+			end
+			local stood = now - visit.since
+			if not visit.fired and stood >= (PAD_DWELL[name] or 0) then
+				visit.fired = true
 				local handler = padHandlers[name]
 				if handler then
 					handler(session)
 					flush(session)
+				end
+			end
+			if visit.linger and stood >= SMASH_OFFER_DWELL then
+				visit.linger = false
+				local linger = padLingerHandlers[name]
+				if linger then
+					linger(session)
 				end
 			end
 		else
@@ -1749,7 +1931,7 @@ local function slowTick(session: Session)
 
 	produceOrbs(session, production)
 
-	local rate = Economy.processRate(p.processLevel)
+	local rate = processRate(session, true)
 	local processed = math.min(p.queue, rate)
 	if processed > 0 then
 		p.queue -= processed
@@ -1762,11 +1944,23 @@ local function slowTick(session: Session)
 		p.pending = 0
 	end
 
-	session.chestTimer += 1
-	if session.chestTimer >= Economy.CHEST_SPAWN_INTERVAL then
+	-- No crates during the tutorial; the first one drops for sure about 20 s after it ends.
+	if not p.tutorialDone then
+		session.inTutorial = true
 		session.chestTimer = 0
-		if rng:NextNumber() < Economy.CHEST_SPAWN_CHANCE then
-			spawnFloorChest(session)
+	else
+		if session.inTutorial then
+			session.inTutorial = false
+			session.chestTimer = Economy.CHEST_SPAWN_INTERVAL - 20
+			session.chestCertain = true
+		end
+		session.chestTimer += 1
+		if session.chestTimer >= Economy.CHEST_SPAWN_INTERVAL then
+			session.chestTimer = 0
+			if session.chestCertain or rng:NextNumber() < Economy.CHEST_SPAWN_CHANCE then
+				session.chestCertain = false
+				spawnFloorChest(session)
+			end
 		end
 	end
 
@@ -1993,7 +2187,7 @@ local function applyOffline(session: Session)
 		* elapsed
 		* Economy.OFFLINE_EFFICIENCY
 	p.queue += produced
-	local processed = math.min(p.queue, Economy.processRate(p.processLevel) * elapsed)
+	local processed = math.min(p.queue, processRate(session, false) * elapsed)
 	p.queue -= processed
 	local cash = processed * Economy.CASH_PER_POINT * (if session.passes.DoubleMoney then 2 else 1)
 	p.pending += cash
@@ -2026,11 +2220,14 @@ function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, pa
 		displayCounts = "",
 		dirty = true,
 		chestTimer = 0,
+		inTutorial = not profile.tutorialDone,
+		chestCertain = false,
 		collectBuffer = 0,
 		actionBudget = ACTIONS_PER_SECOND,
 		lastPickupFlush = 0,
 		crateRearmUntil = 0,
 		lastToast = {},
+		lastPassHint = {},
 		alive = true,
 	}
 	sessions[player] = session
