@@ -4684,6 +4684,12 @@ test("loading screen brand matches the theme and assets", function()
 	eq(Brand.Loading.Status, theme.Loading.Status, "Brand.Loading.Status")
 	eq(Brand.KeyArt, Assets.Images["brand/KeyArt"], "Brand.KeyArt")
 	eq(Brand.Logo, Assets.Images["brand/Logo"], "Brand.Logo")
+	eq(Brand.LogoShine, Assets.Images["brand/LogoShine"], "Brand.LogoShine")
+	eq(Brand.SoftDot, Assets.Images["vfx/SoftDot"], "Brand.SoftDot")
+	eq(Brand.Sparkle, Assets.Images["vfx/Sparkle"], "Brand.Sparkle")
+	for _, key in { "image", "x", "y", "w", "h" } do
+		eq(Brand.Orb[key], Assets.Icons.Orb[key], "Brand.Orb." .. key)
+	end
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

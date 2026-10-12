@@ -1,12 +1,12 @@
 {
   "pins": {
     "brand/KeyArt": {
-      "assetId": "71618244352821",
+      "assetId": "104998274435310",
       "kind": "Image",
       "moderation": "Approved",
-      "sha256": "6e0d234dd5c725841dde35c2b999d9ba8505a297bb4303645bd6a268eb4463fa",
+      "sha256": "e6f318bf49fa30b834e126db573e35c6e3df1c2aa01cb0ebfc1484a1719961fa",
       "source": "art/out/brand/KeyArt.png",
-      "updatedAt": "2026-10-06T11:53:02Z"
+      "updatedAt": "2026-10-12T16:01:57Z"
     },
     "brand/Logo": {
       "assetId": "128398060676282",
@@ -15,6 +15,14 @@
       "sha256": "7102805ad42f5d2084b4c3a1968a68e838fc7a6530c14fde5e1db6c40866d169",
       "source": "art/out/brand/Logo.png",
       "updatedAt": "2026-10-06T11:53:02Z"
+    },
+    "brand/LogoShine": {
+      "assetId": "110172388449160",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "07ad68e908dc8ecfde5e8276e2f5f653e2cb67274088f6a65691187f096b7b0a",
+      "source": "art/out/brand/LogoShine.png",
+      "updatedAt": "2026-10-12T16:01:57Z"
     },
     "brand/LogoSmall": {
       "assetId": "97449962729528",

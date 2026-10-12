@@ -48,6 +48,15 @@
   "source": "art/out/atlas/ui_2.png",
   "type": "Image"
  },
+ "Image:07ad68e908dc8ecfde5e8276e2f5f653e2cb67274088f6a65691187f096b7b0a": {
+  "assetId": "110172388449160",
+  "imageId": "110172388449160",
+  "moderation": "Reviewing",
+  "name": "brand__LogoShine",
+  "sha": "07ad68e908dc8ecfde5e8276e2f5f653e2cb67274088f6a65691187f096b7b0a",
+  "source": "art/out/brand/LogoShine.png",
+  "type": "Image"
+ },
  "Image:084cad72e429f3b3000c2abbd9cce2e51574123248edd5a6f887cbdf617fa902": {
   "assetId": "100186232964953",
   "imageId": "100186232964953",
@@ -694,6 +703,15 @@
   "name": "ui__atlas_2",
   "sha": "e11267c22023a4932f1d9d86a2ef2d6900bfe76d9255eafdf703cde76fcb0e6c",
   "source": "art/out/atlas/ui_2.png",
+  "type": "Image"
+ },
+ "Image:e6f318bf49fa30b834e126db573e35c6e3df1c2aa01cb0ebfc1484a1719961fa": {
+  "assetId": "104998274435310",
+  "imageId": "104998274435310",
+  "moderation": "Reviewing",
+  "name": "brand__KeyArt",
+  "sha": "e6f318bf49fa30b834e126db573e35c6e3df1c2aa01cb0ebfc1484a1719961fa",
+  "source": "art/out/brand/KeyArt.png",
   "type": "Image"
  },
  "Image:eb4123c7615b4fd04fcee4dea12bdd2f749fcf8732f26a0eebdf4c055f518911": {

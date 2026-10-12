@@ -30,6 +30,8 @@ jobs:
         run: scripts/check.sh
 
       - name: Upload place file
+        # A convenience copy: a full artifact quota must not fail the checks or the deploy.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: place-${{ github.sha }}

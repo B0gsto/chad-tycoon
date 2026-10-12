@@ -9,8 +9,9 @@ export type Mesh = { id: string, model: string, size: Vector3 }
 export type Icon = { image: string, x: number, y: number, w: number, h: number }
 
 local Images: { [string]: string } = {
-	["brand/KeyArt"] = "rbxassetid://71618244352821",
+	["brand/KeyArt"] = "rbxassetid://104998274435310",
 	["brand/Logo"] = "rbxassetid://128398060676282",
+	["brand/LogoShine"] = "rbxassetid://110172388449160",
 	["brand/LogoSmall"] = "rbxassetid://97449962729528",
 	["brand/TitleCard"] = "rbxassetid://99223113715315",
 	["cardio/Cardio"] = "rbxassetid://125742457379991",

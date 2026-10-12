@@ -63,6 +63,8 @@ jobs:
           fi
 
       - name: Upload release file and deploy history
+        # A convenience copy: a full artifact quota must not fail the checks or the deploy.
+        continue-on-error: true
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
