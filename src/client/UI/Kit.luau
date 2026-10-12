@@ -1639,9 +1639,15 @@ function Kit.disappear(gui: GuiObject, opts: { [string]: any }?)
 	local m = motionOf(gui)
 	m.token += 1
 	local mine = m.token
+	local tweens: { Tween } = {}
 	local function finish()
 		if m.token ~= mine then
 			return
+		end
+		-- A frame hitch can leave the tweens running past this timer: stop them, or they
+		-- would undo the restored look below (and the next Kit.appear would find nothing to fade in).
+		for _, tween in tweens do
+			tween:Cancel()
 		end
 		local entries = m.entries
 		m.entries = nil
@@ -1663,11 +1669,11 @@ function Kit.disappear(gui: GuiObject, opts: { [string]: any }?)
 		return
 	end
 	local time: number = o.time or 0.14
-	Kit.tween(scaleOf(gui), time, { Scale = o.to or 0.94 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	table.insert(tweens, Kit.tween(scaleOf(gui), time, { Scale = o.to or 0.94 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In))
 	local entries = m.entries or collectFade(gui)
 	m.entries = entries
 	for _, entry in entries do
-		Kit.tween(entry.inst, time, { [entry.prop] = 1 })
+		table.insert(tweens, Kit.tween(entry.inst, time, { [entry.prop] = 1 }))
 	end
 	if PREVIEW then
 		finish()
@@ -1695,20 +1701,25 @@ function Kit.fade(gui: GuiObject, show: boolean, time: number?, onHidden: (() ->
 	if show and not resuming then
 		setFade(entries, true)
 	end
+	local tweens: { Tween } = {}
 	for _, entry in entries do
-		Kit.tween(entry.inst, t, { [entry.prop] = if show then entry.value else 1 })
+		table.insert(tweens, Kit.tween(entry.inst, t, { [entry.prop] = if show then entry.value else 1 }))
 	end
 	local function finish()
 		if m.token ~= mine then
 			return
 		end
 		m.entries = nil
-		if not show then
-			if onHidden then
-				onHidden()
-			end
-			setFade(entries, false)
+		-- A frame hitch can leave the tweens running past this timer: stop them and set the
+		-- resting look by hand, or a late fade-out tween would undo it (and the next fade-in
+		-- would find nothing to show: the group stays invisible).
+		for _, tween in tweens do
+			tween:Cancel()
 		end
+		if not show and onHidden then
+			onHidden()
+		end
+		setFade(entries, false)
 	end
 	if PREVIEW then
 		finish()
