@@ -410,7 +410,9 @@ local STAGE_W = 230 -- a banner's animated stage, at the default window...
 local STAGE_MIN_W = 140 -- ...and the narrowest it shrinks to
 local COS_H = 204 -- cosmetic card height
 local PACK_H = 238 -- cash / aura card height (stage, amount, one-line caption, price)
-local PACK_STAGE = 125 -- pack card stage (square)
+local PACK_STAGE = 125 -- pack card stage (square) on a PACK_H card; it grows and shrinks with the card
+local PACK_MAX_H = 260 -- tallest a pack card grows to fill a page its row fits in
+local PACK_FILL = 0.9 -- share of the free page height such a card takes
 local PACK_ICON = 26 -- currency icon left of a pack's amount
 local STARTER_H = 120 -- Starter pack card at the top of the page
 local BUNDLE_H = 120 -- All Cosmetics card heading the cosmetics section
@@ -422,11 +424,18 @@ local PRICE_H = 42 -- every price button
 local PRICE_TEXT = 20
 local FADE_H = 10 -- shade along the bottom edge of the page: a hint that it scrolls on, never a smear over a card
 local PAGE_BOTTOM = 14 -- room under the last row of a section, clear of that shade
+local PAGE_PAD = 12 -- UIPadding over the first row: a ribbon overlaps its card's top edge by 8 px
+local PAGE_FIT_BOTTOM = 4 -- room under a row of cards that fills the page
+local PAGE_SHORT = 330 -- a page under this (a phone) drops the section header: the cards are the page
 local MIN_TEXT = 14 -- no shop text renders smaller (TextScaled labels included)
 local CART = 52 -- header cart art (inside the pane)
 local WALLET_CASH = 140 -- header wallet pill: the cash half...
 local WALLET_AURA = 112 -- ...and the tank half
 local INSET = 0.4 -- darker panes inside a glass card (descriptions, contents chips)
+-- The same panes on a bright banner (Theme.Glass.Banner): a deeper tone of its tint, more
+-- solid, so white text keeps its contrast on the saturated fill.
+local BANNER_INSET = Theme.Glass.BannerInset
+local BANNER_INSET_DEEP = Theme.Glass.BannerInsetDeep
 
 -- TextScaled labels in the shop never shrink below MIN_TEXT.
 local function minText(label: TextLabel): TextLabel
@@ -457,21 +466,31 @@ end
 	holder for the idle sheen. The holder is inset by half the corner radius so
 	the sheen never pokes past the rounded corners.
 ]]
-local function bannerPaint(body: Frame, tint: Color3, radius: number, strokeColor: Color3?): Frame
+local function bannerPaint(body: Frame, tint: Color3, radius: number, strokeColor: Color3?, bright: boolean?): Frame
 	local gradient = body:FindFirstChildOfClass("UIGradient")
 	if gradient then
 		gradient.Color = ColorSequence.new({
-			ColorSequenceKeypoint.new(0, Kit.lighten(tint, 0.24)),
+			ColorSequenceKeypoint.new(0, Kit.lighten(tint, if bright then 0.14 else 0.24)),
 			ColorSequenceKeypoint.new(0.5, tint),
 			ColorSequenceKeypoint.new(1, Kit.darken(tint, 0.16)),
 		})
-		gradient.Transparency = NumberSequence.new(0, 0.3)
+		-- A bright banner keeps its colour edge to edge (the blurred world under a thin
+		-- tint turns it muddy); the others thin out toward the far corner.
+		gradient.Transparency = if bright then NumberSequence.new(0) else NumberSequence.new(0, 0.3)
 		gradient.Rotation = 24
 	end
 	local stroke = body:FindFirstChildOfClass("UIStroke")
 	if stroke then
 		stroke.Thickness = 2
-		stroke.Color = strokeColor or Kit.lighten(tint, 0.55)
+		stroke.Color = strokeColor or Kit.lighten(tint, if bright then Theme.Glass.BannerEdge else 0.55)
+		if bright then
+			-- The lighter edge in the banner's hue runs all the way round.
+			stroke.Transparency = 0
+			local fade = stroke:FindFirstChildOfClass("UIGradient")
+			if fade then
+				fade.Transparency = NumberSequence.new(0)
+			end
+		end
 	end
 	return Kit.new("Frame", {
 		Name = "SheenClip",
@@ -714,6 +733,10 @@ local function buildShop(screen: ScreenGui)
 	})
 	scroll.ZIndex = 2
 	scroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+	local SCROLL_BAR = scroll.ScrollBarThickness
+	-- Ribbons (POPULAR, BEST VALUE, STARTER DEAL) overlap the top edge of their card by
+	-- 8 px: the page starts PAGE_PAD lower, so the first row's are not cut by the clip.
+	Kit.new("UIPadding", { PaddingTop = UDim.new(0, PAGE_PAD), Parent = scroll })
 	-- Gamepad selection moves between the cards; the engine scrolls the page to them.
 	scroll.Selectable = false
 
@@ -1042,6 +1065,7 @@ local function buildShop(screen: ScreenGui)
 				Name = "Body",
 				Glass = true,
 				Color = color,
+				Transparency = Theme.Glass.Banner,
 				Size = UDim2.fromScale(1, 1),
 				Radius = Kit.RADIUS.M + 4,
 			})
@@ -1236,7 +1260,7 @@ local function buildShop(screen: ScreenGui)
 			StrokeThickness = 0,
 			ZIndex = 4,
 		}))
-		Kit.new("UIStroke", { Thickness = 3, Color = Kit.lip(tint), Parent = titleLabel })
+		Kit.new("UIStroke", { Thickness = 3, Color = Kit.darken(Kit.lip(tint), 0.3), Parent = titleLabel })
 		if caption then
 			local captionLabel = Kit.text(body, {
 				Name = "Caption",
@@ -1271,7 +1295,7 @@ local function buildShop(screen: ScreenGui)
 	local starterTint = Theme.World.Mint
 	local starterCell, starterBody, starterArtHolder, starterArt =
 		makeEntry(scroll, "Starter", 0, starterTint, COS.Starter.Icon, "Star", 104, UDim2.new(0, 68, 0.5, 0))
-	local starterClip = bannerPaint(starterBody, starterTint, WIDE_R)
+	local starterClip = bannerPaint(starterBody, starterTint, WIDE_R, nil, true)
 	wideText(starterBody, starterTint, "STARTER PACK")
 	-- What is inside: two chips, this player's own cash amount and the exclusive trail.
 	local chips = Kit.new("Frame", {
@@ -1286,8 +1310,8 @@ local function buildShop(screen: ScreenGui)
 	local function contentChip(order: number, icon: string, fallback: string, color: Color3, caption: string): TextLabel
 		local chip = Kit.new("Frame", {
 			Name = "Chip" .. order,
-			BackgroundColor3 = Kit.darken(starterTint, 0.34),
-			BackgroundTransparency = INSET,
+			BackgroundColor3 = Kit.darken(starterTint, BANNER_INSET_DEEP),
+			BackgroundTransparency = BANNER_INSET,
 			Size = UDim2.new(1 / 2, -4, 1, 0),
 			LayoutOrder = order,
 			ZIndex = 3,
@@ -1381,8 +1405,17 @@ local function buildShop(screen: ScreenGui)
 			Size = UDim2.new(1, 0, 0, BANNER_H),
 			Parent = passList,
 		})
-		local body = Kit.panel(cell, { Name = "Body", Glass = true, Color = tint, Size = UDim2.fromScale(1, 1), Radius = BANNER_R })
-		local clip = bannerPaint(body, tint, BANNER_R)
+		-- The fill is the pass's saturated colour, nearly solid (Theme.Glass.Banner), inside a
+		-- lighter edge of the same hue: a thin tint over the blurred world reads as mud.
+		local body = Kit.panel(cell, {
+			Name = "Body",
+			Glass = true,
+			Color = tint,
+			Transparency = Theme.Glass.Banner,
+			Size = UDim2.fromScale(1, 1),
+			Radius = BANNER_R,
+		})
+		local clip = bannerPaint(body, tint, BANNER_R, nil, true)
 		-- The stage: a lit pane in the banner's own tint (a diagonal light-to-deep
 		-- gradient, a lighter rim and a glassy sheen along its top) the pass's little
 		-- scene plays in. It clips the scene, so nothing it draws reaches the text.
@@ -1457,7 +1490,7 @@ local function buildShop(screen: ScreenGui)
 		}))
 		Kit.new("UIStroke", {
 			Thickness = 3,
-			Color = Kit.lip(tint),
+			Color = Kit.darken(Kit.lip(tint), 0.3),
 			LineJoinMode = Enum.LineJoinMode.Round,
 			Parent = title,
 		})
@@ -1465,8 +1498,8 @@ local function buildShop(screen: ScreenGui)
 		-- outline (small text smudges under one), two lines at most.
 		local inset = Kit.new("Frame", {
 			Name = "Inset",
-			BackgroundColor3 = Kit.darken(tint, 0.5),
-			BackgroundTransparency = INSET,
+			BackgroundColor3 = Kit.darken(tint, BANNER_INSET_DEEP),
+			BackgroundTransparency = BANNER_INSET,
 			Size = UDim2.new(1, 0, 0, BANNER_DESC_H),
 			Position = UDim2.fromOffset(0, BANNER_DESC_Y),
 			ZIndex = 6,
@@ -1496,8 +1529,8 @@ local function buildShop(screen: ScreenGui)
 			TextWrapped = false,
 			TextColor3 = Color3.new(1, 1, 1),
 			TextTransparency = 0.1,
-			BackgroundColor3 = Kit.darken(tint, 0.5),
-			BackgroundTransparency = INSET,
+			BackgroundColor3 = Kit.darken(tint, BANNER_INSET_DEEP),
+			BackgroundTransparency = BANNER_INSET,
 			Size = UDim2.fromOffset(math.ceil(ribbonTextWidth("PERMANENT") * MIN_TEXT / 16) + BANNER_TEXT_X * 2, 20),
 			Position = UDim2.fromOffset(0, BANNER_PERK_Y),
 			StrokeThickness = 0,
@@ -1563,7 +1596,7 @@ local function buildShop(screen: ScreenGui)
 	local bundleTint = Theme.World.Coral
 	local bundleCell, bundleBody, bundleArtHolder, bundleArt =
 		makeEntry(scroll, "Bundle", 0, bundleTint, COS.BundleIcon, "Crown", 100, UDim2.new(0, 68, 0.5, 0))
-	local bundleClip = bannerPaint(bundleBody, bundleTint, WIDE_R)
+	local bundleClip = bannerPaint(bundleBody, bundleTint, WIDE_R, nil, true)
 	wideText(bundleBody, bundleTint, string.upper(bundlePass.Title), "Everything below, forever")
 	local included = 0
 	for _, name in COS_ORDER do
@@ -1573,8 +1606,8 @@ local function buildShop(screen: ScreenGui)
 	end
 	local includes = Kit.new("Frame", {
 		Name = "Includes",
-		BackgroundColor3 = Kit.darken(bundleTint, 0.34),
-		BackgroundTransparency = INSET,
+		BackgroundColor3 = Kit.darken(bundleTint, BANNER_INSET_DEEP),
+		BackgroundTransparency = BANNER_INSET,
 		Size = UDim2.fromOffset(included * 40 - 6 + 16, 44),
 		Position = UDim2.fromOffset(WIDE_LEFT, 64),
 		ZIndex = 4,
@@ -1735,7 +1768,7 @@ local function buildShop(screen: ScreenGui)
 		The cards sit on a deep version of the section colour so the mint price
 		buttons stay the brightest thing on them.
 	]]
-	type Pack = Entry & { amount: TextLabel, sub: TextLabel, scene: Scene }
+	type Pack = Entry & { amount: TextLabel, sub: TextLabel, scene: Scene, place: (number, number) -> () }
 	type PackGrid = {
 		grid: Frame,
 		layout: UIGridLayout,
@@ -1744,6 +1777,8 @@ local function buildShop(screen: ScreenGui)
 		narrow: number,
 		columns: number,
 		cardW: number,
+		cardH: number,
+		packs: { Pack },
 	}
 	local packGrids: { PackGrid } = {}
 	-- `wide` / `narrow`: columns on a wide / narrow window (the cell size follows them; a row
@@ -1757,21 +1792,32 @@ local function buildShop(screen: ScreenGui)
 			HorizontalAlignment = Enum.HorizontalAlignment.Center,
 			Parent = grid,
 		})
-		local packs: PackGrid =
-			{ grid = grid, layout = gridLayout, count = packCount, wide = wide, narrow = narrow, columns = wide, cardW = 180 }
+		local packs: PackGrid = {
+			grid = grid,
+			layout = gridLayout,
+			count = packCount,
+			wide = wide,
+			narrow = narrow,
+			columns = wide,
+			cardW = 180,
+			cardH = PACK_H,
+			packs = {},
+		}
 		table.insert(packGrids, packs)
 		return packs
 	end
 	--[[
 		Amounts are the hero of a pack card: the currency icon and a big bold number
 		in the pack colour with a dark outline. The number's size follows its length
-		and the card width (28 px, never under 24 px for the short number format).
+		and the card width (28 px, never under 24 px for the short number format), and grows
+		with a card taller than PACK_H.
 	]]
 	local amountGrid: { [TextLabel]: PackGrid } = {}
 	local function fitAmount(label: TextLabel, text: string)
 		local packs = amountGrid[label]
 		local room = (if packs then packs.cardW else 180) - 20 - PACK_ICON - 4
-		label.TextSize = math.clamp(math.floor(room / (0.68 * math.max(#text, 1))), 16, 28)
+		local top = math.floor(28 * math.clamp((if packs then packs.cardH else PACK_H) / PACK_H, 1, 1.25))
+		label.TextSize = math.clamp(math.floor(room / (0.68 * math.max(#text, 1))), 16, top)
 	end
 	local function setAmount(label: TextLabel, text: string)
 		fitAmount(label, text)
@@ -1824,17 +1870,20 @@ local function buildShop(screen: ScreenGui)
 			ZIndex = 3,
 			Parent = body,
 		}
+		local halo: GuiObject
 		if glowId then
 			local glow = Kit.new("ImageLabel", glowProps)
 			glow.Image = glowId
 			glow.ImageColor3 = Kit.lighten(accent, 0.2)
 			glow.ImageTransparency = math.max(0.1, 0.5 - 0.1 * index)
 			glow.ScaleType = Enum.ScaleType.Fit
+			halo = glow
 		else
 			local glow = Kit.new("Frame", glowProps)
 			glow.BackgroundColor3 = accent
 			glow.BackgroundTransparency = math.max(0.45, 0.8 - 0.08 * index)
 			Kit.round(glow)
+			halo = glow
 		end
 		local stage = Kit.new("Frame", {
 			Name = "Stage",
@@ -1899,6 +1948,21 @@ local function buildShop(screen: ScreenGui)
 			lastPrompt = { kind = kind, entry = pack, index = index, at = os.clock() }
 			action:FireServer({ action = "PromptProduct", kind = kind, index = index })
 		end)
+		-- The card takes the height its grid hands it: the stage (square, the scene inside is
+		-- laid out in scale) takes what the amount, caption and price leave, up to the card's
+		-- width, and the rest of the column follows it.
+		local function place(cardW: number, cardH: number)
+			local side = math.floor(math.clamp(cardH - (PACK_H - PACK_STAGE), 72, math.max(72, cardW - 16)))
+			-- Spare height (a card much taller than wide) goes above and below the column.
+			local top = 8 + math.max(0, cardH - (PACK_H - PACK_STAGE) - side) // 2
+			local haloSide = math.floor(side * (0.85 + 0.1 * index))
+			stage.Size = UDim2.fromOffset(side, side)
+			stage.Position = UDim2.new(0.5, 0, 0, top)
+			halo.Size = UDim2.fromOffset(haloSide, haloSide)
+			halo.Position = UDim2.new(0.5, 0, 0, top + side // 2)
+			amountRow.Position = UDim2.fromOffset(6, top + side)
+			sub.Position = UDim2.fromOffset(6, top + side + 33)
+		end
 		pack = {
 			cell = cell,
 			body = body,
@@ -1910,7 +1974,9 @@ local function buildShop(screen: ScreenGui)
 			amount = amount,
 			sub = sub,
 			scene = scene,
+			place = place,
 		}
+		table.insert(packs.packs, pack)
 		hoverable(pack)
 		table.insert(entries, pack)
 		table.insert(cascade, cell)
@@ -1977,10 +2043,27 @@ local function buildShop(screen: ScreenGui)
 		local columns = if wide then 3 else 2
 		columnsNow = columns
 		cosLayout.CellSize = cellSize(columns, COS_H)
-		for _, packs in packGrids do
+		-- A short page (a phone) has no room for a section header over its cards: the tab
+		-- already names the section, so the cards are the page.
+		local page = pageH()
+		local short = page < PAGE_SHORT
+		-- Free height for a row of pack cards: the page under its top padding and header.
+		local free = page - PAGE_PAD - PAGE_FIT_BOTTOM - (if short then 0 else HEAD_H + 14)
+		local packFits: { boolean } = {}
+		for i, packs in packGrids do
 			packs.columns = if wide then packs.wide else packs.narrow
-			packs.layout.CellSize = cellSize(packs.columns, PACK_H)
 			packs.cardW = (size.X - 62 - 18 - GAP * (packs.columns - 1)) / packs.columns
+			-- One row of packs fills the page instead of leaving its lower half empty: on a
+			-- short page the cards take all of it (buy button and ribbon in view, nothing to
+			-- scroll), otherwise PACK_FILL of it up to PACK_MAX_H, centred under the header.
+			packFits[i] = packs.count <= packs.columns
+			packs.cardH = if packFits[i]
+				then math.floor(math.clamp(if short then free else free * PACK_FILL, 180, PACK_MAX_H))
+				else math.min(PACK_H, math.max(180, free))
+			packs.layout.CellSize = cellSize(packs.columns, packs.cardH)
+			for _, pack in packs.packs do
+				pack.place(packs.cardW, packs.cardH)
+			end
 		end
 		for label in amountGrid do
 			if label.Text ~= "" then
@@ -1997,45 +2080,60 @@ local function buildShop(screen: ScreenGui)
 		end
 		-- One section per tab: the picked one is laid out from the top of the page, the others
 		-- are hidden. The Starter card heads the Passes tab.
-		type Block = { gui: GuiObject, h: number, gapAfter: number, head: boolean?, shown: boolean? }
+		-- `before`: room above the block (a row of cards centred in the page). `fills`: the
+		-- block was sized to the page, which then ends with it.
+		type Block = { gui: GuiObject, h: number, gapAfter: number, head: boolean?, shown: boolean?, before: number?, fills: boolean? }
 		local pages: { { Block } } = {
 			{
-				{ gui = starterCell, h = STARTER_H, gapAfter = 18, shown = starterShown },
-				{ gui = heads[1], h = HEAD_H, gapAfter = 14, head = true },
+				-- Without the header the Starter card is the first card of the one list.
+				{ gui = starterCell, h = STARTER_H, gapAfter = if short then GAP else 18, shown = starterShown },
+				{ gui = heads[1], h = HEAD_H, gapAfter = 14, head = true, shown = not short },
 				{ gui = passList, h = gridH(#bannerList, 1, BANNER_H), gapAfter = 26 },
 			},
 			{
-				{ gui = heads[2], h = HEAD_H, gapAfter = 14, head = true },
+				{ gui = heads[2], h = HEAD_H, gapAfter = 14, head = true, shown = not short },
 				{ gui = bundleCell, h = BUNDLE_H, gapAfter = GAP + 6 },
 				{ gui = cosGrid, h = gridH(#COS_ORDER, columns, COS_H), gapAfter = 26 },
 			},
 		}
 		for i, grid in { cashGrid, auraGrid } do
 			local packs = packGrids[i]
+			local fits = packFits[i]
 			table.insert(pages, {
-				{ gui = heads[2 + i], h = HEAD_H, gapAfter = 14, head = true },
-				{ gui = grid, h = gridH(packs.count, packs.columns, PACK_H), gapAfter = 26 },
+				{ gui = heads[2 + i], h = HEAD_H, gapAfter = 14, head = true, shown = not short },
+				{
+					gui = grid,
+					h = gridH(packs.count, packs.columns, packs.cardH),
+					gapAfter = 26,
+					before = if fits then math.max(0, free - packs.cardH) // 2 else 0,
+					fills = fits,
+				},
 			})
 		end
+		-- Rows are placed from 0: the page's UIPadding (PAGE_PAD) keeps a ribbon that
+		-- overlaps the top edge of the first card inside the clip.
 		local pageBottom = 0
+		local filled = false
 		for index, blocks in pages do
 			local picked = index == current
-			-- The Starter card's ribbon overlaps its top edge: start a little lower for it.
-			local y = if index == 1 and starterShown then 12 else 4
+			local y = 0
 			for _, block in blocks do
 				local shown = block.shown ~= false
 				block.gui.Visible = picked and shown
+				-- A hidden header hands its place (what a focus scrolls to) to the block after it.
+				if block.head then
+					headY[index] = y
+				end
 				if shown then
+					y += block.before or 0
 					block.gui.Position = UDim2.fromOffset(4, y - (if picked then previewShift else 0))
 					block.gui.Size = UDim2.new(1, -18, 0, block.h)
-					if block.head then
-						headY[index] = y
-					end
 					if block.gui:IsA("Frame") then
 						gridTop[block.gui] = y
 					end
 					if picked then
 						pageBottom = y + block.h
+						filled = block.fills == true
 					end
 					y += block.h + block.gapAfter
 				end
@@ -2044,12 +2142,16 @@ local function buildShop(screen: ScreenGui)
 			sectionY[index] = 0
 		end
 		-- Banner focus scrolls to the Passes header (under the Starter card).
-		passesY = (headY[1] or 4) - 4
+		passesY = headY[1] or 0
 		-- The canvas is the section and no more: the last row ends PAGE_BOTTOM above the edge
-		-- when scrolled to the end, and a section that fits does not scroll at all.
-		canvasH = pageBottom + PAGE_BOTTOM
-		pageEnd.Position = UDim2.fromOffset(0, canvasH - previewShift)
+		-- when scrolled to the end. A section that fits does not scroll at all: no wheel or
+		-- drag, no scroll bar.
+		canvasH = if filled then page else PAGE_PAD + pageBottom + PAGE_BOTTOM
+		local scrolls = canvasH > page + 1
+		pageEnd.Position = UDim2.fromOffset(0, canvasH - PAGE_PAD - previewShift)
 		scroll.CanvasSize = UDim2.fromOffset(0, canvasH)
+		scroll.ScrollingEnabled = scrolls
+		scroll.ScrollBarThickness = if scrolls then SCROLL_BAR else 0
 		-- The switcher keeps its pills roomy but never wider than the page; narrow pills
 		-- drop their icons so the labels stay at full size.
 		local switchW = math.min(150 * count, size.X - 44)
@@ -3398,10 +3500,13 @@ local function buildSettings(screen: ScreenGui)
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			ZIndex = 2,
 		})
+		-- The row's label is body text (18 px on a desktop screen), its sub-line a caption:
+		-- both are held on the glass, so a fitted window cannot shrink them under that.
 		Kit.text(row, {
 			Text = string.upper(text),
 			Font = F.UI,
 			TextSize = T.Body,
+			MinPx = if Kit.touch then Kit.captionPx() else T.H3,
 			TextWrapped = false,
 			Size = UDim2.new(1, -170, 0, 22),
 			Position = UDim2.new(0, 72, 0.5, -23),
@@ -3410,6 +3515,7 @@ local function buildSettings(screen: ScreenGui)
 		local sub = Kit.text(row, {
 			Text = desc,
 			TextSize = T.Small,
+			MinPx = true,
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Size = UDim2.new(1, -176, 0, 20),

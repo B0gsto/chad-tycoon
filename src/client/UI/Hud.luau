@@ -821,6 +821,19 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local gaugeValue = stripText("Value", 2, 18)
 	local gaugeNext = stripText("Next", 3, 14)
 	gaugeNext.TextColor3 = C.TextDim
+	local STRIP_TEXT: { [TextLabel]: number } = { [stripLead] = 16, [gaugeValue] = 18, [gaugeNext] = 14 }
+	-- The strip is as wide as its widest line (the longest value and countdown), never
+	-- under its 300 px: text held at a size on a phone needs more room than the design's.
+	local function fitStrip()
+		local width = textWidth(stripLead.Text, stripLead.TextSize, F.Display)
+			+ textWidth("x0.0", gaugeValue.TextSize, F.Display)
+			+ textWidth("· 0:00", gaugeNext.TextSize, F.Display)
+		strip.Size = UDim2.fromOffset(math.max(300, width + 6 * 2 + 20 * 2), STRIP_H)
+	end
+	-- A rescale re-sizes held text (Kit.reflowText): the strip follows.
+	for label in STRIP_TEXT do
+		label:GetPropertyChangedSignal("TextSize"):Connect(fitStrip)
+	end
 	local surgeActiveNow = false
 	-- Big-roll cheer: pops out to the right of the strip for a moment.
 	local niceLabel = Kit.hudText(strip, {
@@ -839,6 +852,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local function paintSurge(active: boolean)
 		surgeActiveNow = active
 		stripLead.Text = if active then "AURA SURGE" else "Deposit bonus:"
+		fitStrip()
 		Kit.tween(strip, 0.3, {
 			BackgroundColor3 = if active then C.Amber else G.TintTop,
 			BackgroundTransparency = if active then G.Pill else G.Quiet,
@@ -1093,10 +1107,14 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		})
 		Kit.corner(pill, 18)
 	end
+	-- Scaled to its line of the plaque, but never under a phone caption on the glass (the
+	-- compact dumbbell's line is 17 design px tall: 11 px on a phone).
 	local tankCaption = Kit.hudText(tank, {
 		Name = "Caption",
 		Text = string.upper(W.Orb),
 		TextScaled = true,
+		MaxTextSize = 200,
+		MinPx = G.TextMinPhone,
 		StrokeThickness = 2,
 		TextColor3 = C.GoldLight,
 		Size = captionSize,
@@ -1357,6 +1375,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			-- caption floor, so the size is held on the glass.
 			Kit.holdText(caption, Kit.captionPx(), if compact then CAPTION_COMPACT else CAPTION)
 		end
+		-- The deposit strip's three texts are held the same way (a hard floor: 16, 18 and 14
+		-- design px are 10 to 12 px on a phone), and the strip widens round them.
+		for label, design in STRIP_TEXT do
+			Kit.holdText(label, Kit.captionPx(), design, true)
+		end
+		fitStrip()
 		-- Status captions go first on short screens; the icons stay (not on a touch
 		-- phone, where the wallet sits in the top-left corner).
 		for _, label in { premiumText, friendsText, boostText } do

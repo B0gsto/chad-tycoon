@@ -158,12 +158,62 @@ local TOAST_TEXT = 18
 local TOAST_TEXT_X = 60
 local TOAST_ICON_X = 19 -- past the accent bar
 local MAX_TOASTS = 4
+-- While a window or modal is open the stack sits at the very top of the safe area, over
+-- the margin above the window: TOAST_TOP from the edge. A toast may reach HEADER_CLEAR into
+-- the window (the empty band of its title row, above the title), never further: its tabs
+-- and content stay clear.
+local TOAST_TOP = 6
+local HEADER_CLEAR = 16
 
+type HeldToast = { text: string, tone: string? }
 local toasts: { Frame } = {}
--- A unit reveal owns the screen (setReveal): the toasts on screen hide and new ones wait
--- (the last MAX_TOASTS), then drop in once it has gone.
+local toastInfo: { [Frame]: HeldToast } = {}
+-- Toasts that wait (the last MAX_TOASTS). A unit reveal owns the screen (setReveal): the
+-- toasts on screen hide and new ones wait, then drop in once it has gone. Over an open
+-- window, the ones there is no room for above it wait until it closes.
 local revealCount = 0
-local heldToasts: { { text: string, tone: string? } } = {}
+local heldToasts: { HeldToast } = {}
+
+-- Where the stack sits (y, design px) and how many toasts it may show there. Under the
+-- HUD's top strips (and the tutorial card) normally; while a window or modal is open, at
+-- the very top, as many as fit above it: none when the window reaches the top of the
+-- screen or the tutorial pill holds that slot.
+local function toastRoom(): (number, number)
+	local card = screen:GetAttribute("TopCardHeight")
+	local cardH: number = if type(card) == "number" then card else 0
+	if screen:GetAttribute("WindowOpen") ~= true then
+		return TOAST_Y + cardH, MAX_TOASTS
+	end
+	local top = Kit.openTop(screen)
+	if not top or cardH > 0 then
+		return TOAST_TOP, 0
+	end
+	local free = top + HEADER_CLEAR - TOAST_TOP
+	return TOAST_TOP, math.clamp(math.floor((free - TOAST_H) / TOAST_STEP) + 1, 0, MAX_TOASTS)
+end
+
+local function holdToast(held: HeldToast)
+	table.insert(heldToasts, held)
+	while #heldToasts > MAX_TOASTS do
+		table.remove(heldToasts, 1)
+	end
+end
+
+-- Drops in the toasts that waited, as far as there is room for them now.
+local function flushToasts()
+	if revealCount > 0 then
+		return
+	end
+	local _, room = toastRoom()
+	local released = 0
+	while #heldToasts > 0 and #toasts + released < room do
+		local held = table.remove(heldToasts, 1) :: HeldToast
+		task.delay(released * 0.12, function()
+			Popups.toast(held.text, held.tone)
+		end)
+		released += 1
+	end
+end
 
 -- Width that hugs the text (TextService when available, else an estimate).
 local function toastWidth(text: string): number
@@ -211,17 +261,20 @@ local function dismissToast(toast: Frame)
 		return
 	end
 	table.remove(toasts, index)
+	toastInfo[toast] = nil
 	Kit.tween(toast, 0.2, { Position = toast.Position + UDim2.fromOffset(0, -TOAST_SLIDE) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	Kit.disappear(toast, { time = 0.2, to = 0.97, destroy = true })
 	placeToasts()
+	-- Its slot is free once it has faded: the next waiting toast takes it.
+	if #heldToasts > 0 then
+		task.delay(0.22, flushToasts)
+	end
 end
 
 function Popups.toast(text: string, tone: string?)
-	if revealCount > 0 then
-		table.insert(heldToasts, { text = text, tone = tone })
-		while #heldToasts > MAX_TOASTS do
-			table.remove(heldToasts, 1)
-		end
+	local _, room = toastRoom()
+	if revealCount > 0 or (#toasts >= room and screen:GetAttribute("WindowOpen") == true) then
+		holdToast({ text = text, tone = tone })
 		return
 	end
 	local style = TONES[tone or "info"] or TONES.info
@@ -287,6 +340,7 @@ function Popups.toast(text: string, tone: string?)
 	})
 
 	table.insert(toasts, 1, toast)
+	toastInfo[toast] = { text = text, tone = tone }
 	while #toasts > MAX_TOASTS do
 		dismissToast(toasts[#toasts])
 	end
@@ -310,13 +364,7 @@ local function setReveal(on: boolean)
 	screen:SetAttribute("RevealOpen", up)
 	toastHolder.Visible = not up
 	if not up then
-		local waiting = heldToasts
-		heldToasts = {}
-		for i, held in waiting do
-			task.delay((i - 1) * 0.12, function()
-				Popups.toast(held.text, held.tone)
-			end)
-		end
+		flushToasts()
 	end
 end
 
@@ -2125,6 +2173,8 @@ local OFFLINE = {
 	Width = 540,
 	Pad = 20,
 	Gap = 16,
+	LineGap = 12, -- between a plain line of text and the amounts panel
+	Body = 18, -- the two one-line texts, in screen px on a desktop
 	Title = 56, -- under the medallion's lower half
 	Row = 92,
 	Arrow = 44,
@@ -2137,13 +2187,15 @@ local OFFLINE = {
 function Popups.offline(data: { [string]: any })
 	Popups.enqueue("Offline", Popups.PRIORITY.Normal, function(done)
 		local L = OFFLINE
-		-- The two sub-lines are held on the glass (a caption at least; 18 / 16 design px).
-		local subSize = Kit.px(Kit.captionPx(), T.H3, screen)
-		local noteSize = Kit.px(Kit.captionPx(), T.Body, screen)
+		-- The two one-line texts are held on the glass: body text (L.Body px) on a desktop, a
+		-- caption at least on a phone. They are plain lines; only the amounts sit on a panel.
+		local bodyPx = if Kit.touch then Kit.captionPx() else L.Body
+		local subSize = Kit.px(bodyPx, T.H3, screen)
+		local noteSize = Kit.px(bodyPx, if Kit.touch then T.Body else T.H3, screen)
 		local subY = L.Title + 34 + 6
-		local rowY = subY + subSize + 12 + L.Gap
-		local noteY = rowY + L.Row + L.Gap
-		local buttonY = noteY + noteSize + 12 + L.Gap
+		local rowY = subY + subSize + 6 + L.LineGap
+		local noteY = rowY + L.Row + L.LineGap
+		local buttonY = noteY + noteSize + 6 + L.Gap
 		local height = buttonY + L.Button + L.Pad
 		local box, close = modal("Offline", Vector2.new(L.Width, height), 45, nil, done)
 		local medal = medallion(box, "💤", C.Rizz, 84, UDim2.new(0.5, 0, 0, 0))
@@ -2155,29 +2207,24 @@ function Popups.offline(data: { [string]: any })
 			Position = UDim2.fromOffset(L.Pad, L.Title),
 			TextColor3 = C.Gold,
 		})
-		-- A line of small text on its own darker plate (the body glass alone is too light
-		-- for it over a bright world).
-		local function plateLine(name: string, line: string, size: number, y: number)
-			local plate = Kit.well(box, {
-				Name = name .. "Plate",
-				Glass = true,
-				Size = UDim2.new(1, -L.Pad * 2, 0, size + 12),
-				Position = UDim2.fromOffset(L.Pad, y),
-				Radius = Kit.RADIUS.S,
-			})
-			Kit.text(plate, {
+		-- A line of body text straight on the glass (no plate of its own: a full-width bar
+		-- behind one line reads as a box in a box), in a hairline of ink so it holds over a
+		-- bright world.
+		local function plainLine(name: string, line: string, size: number, y: number)
+			Kit.text(box, {
 				Name = name,
 				Text = line,
 				TextSize = size,
 				TextWrapped = false,
 				TextTruncate = Enum.TextTruncate.AtEnd,
-				Size = UDim2.new(1, -16, 1, 0),
-				Position = UDim2.fromOffset(8, 0),
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, -L.Pad * 2, 0, size + 6),
+				Position = UDim2.fromOffset(L.Pad, y),
 				TextColor3 = C.Text,
-				StrokeThickness = 0,
+				StrokeThickness = 1,
 			})
 		end
-		plateLine("Away", string.format("Your %s kept grinding for %s.", W.Units, Format.time(data.seconds)), subSize, subY)
+		plainLine("Away", string.format("Your %s kept grinding for %s.", W.Units, Format.time(data.seconds)), subSize, subY)
 		local well = Kit.well(box, {
 			Name = "Earned",
 			Glass = true,
@@ -2234,7 +2281,7 @@ function Popups.offline(data: { [string]: any })
 			StrokeThickness = 0,
 		})
 		local cash = amount("Cash", "Coin", C.Gold, 1, Format.money(cashTotal), L.Cash, C.MoneyText)
-		plateLine("Hint", "Your cash is waiting on the Collect pad.", noteSize, noteY)
+		plainLine("Hint", "Your cash is waiting on the Collect pad.", noteSize, noteY)
 		local go = Kit.button(box, {
 			Text = "Let's go!",
 			Font = Theme.Fonts.Display,
@@ -3104,7 +3151,7 @@ local function buildChestPanel()
 	})
 	local compactScale = Kit.new("UIScale", { Name = "Compact", Parent = holder })
 	-- The same glass pane as every window and modal (one body token), over the unblurred
-	-- world; the rarity band and the buttons stay solid.
+	-- world; only the buttons are solid.
 	local panel = Kit.panel(holder, {
 		Name = "Card",
 		Glass = "body",
@@ -3113,16 +3160,25 @@ local function buildChestPanel()
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Visible = false,
 	})
-	-- Header: glass tinted in the crate's rarity with that colour on its edge (painted per
-	-- crate below), the name in the light rarity colour with the ink outline.
-	local band = Kit.glass(panel, {
+	-- Header: no slab of its own, just the pane's glass over a 1 px divider. The crate's
+	-- rarity is carried by the name (its colour, in the ink outline), the divider under it
+	-- and the crate itself (all painted per crate below).
+	local band = Kit.new("Frame", {
 		Name = "Band",
-		Color = C.Gold,
-		StrokeColor = C.Gold,
-		StrokeThickness = 1.5,
+		BackgroundTransparency = 1,
 		Size = UDim2.new(1, -16, 0, 46),
 		Position = UDim2.fromOffset(8, 8),
-		Radius = Kit.RADIUS.L,
+		Parent = panel,
+	})
+	local divider = Kit.new("Frame", {
+		Name = "Divider",
+		BackgroundColor3 = C.Gold,
+		BackgroundTransparency = Theme.Glass.Divider,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, -12, 0, 1),
+		Position = UDim2.new(0.5, 0, 1, 0),
+		AnchorPoint = Vector2.new(0.5, 1),
+		Parent = band,
 	})
 	local title = Kit.title(band, {
 		Text = "",
@@ -3158,8 +3214,14 @@ local function buildChestPanel()
 		TextColor3 = C.Text,
 		StrokeThickness = 0,
 	})
-	local oddsWell =
-		Kit.well(panel, { Name = "Odds", Glass = true, Size = UDim2.new(1, -24, 0, ODDS_H), Position = UDim2.fromOffset(12, ODDS_Y) })
+	-- The odds sit on a faint inset (InsetSoft), not a dark slab: the rows carry their own bars.
+	local oddsWell = Kit.well(panel, {
+		Name = "Odds",
+		Glass = true,
+		Transparency = Theme.Glass.InsetSoft,
+		Size = UDim2.new(1, -24, 0, ODDS_H),
+		Position = UDim2.fromOffset(12, ODDS_Y),
+	})
 	local odds = Kit.scrolling(oddsWell, { Name = "List", Size = UDim2.new(1, -8, 1, -8), Position = UDim2.fromOffset(4, 4) })
 	Kit.padding(odds, 2, 4)
 	Kit.list(odds, 3)
@@ -3505,8 +3567,8 @@ local function buildChestPanel()
 		if key ~= shownFor then
 			shownFor = key
 			title.Text = string.upper(rarity .. " " .. W.Chest)
-			title.TextColor3 = Kit.lighten(color, 0.4)
-			Kit.paintGlass(band, color, nil, color)
+			title.TextColor3 = Kit.lighten(color, 0.3)
+			divider.BackgroundColor3 = Kit.lighten(color, 0.2)
 			halo.BackgroundColor3 = Kit.lighten(color, 0.45)
 			if crate then
 				crate:Destroy()
@@ -3709,13 +3771,34 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 		ZIndex = 25,
 		Parent = screen,
 	})
-	-- Slide toasts below the tutorial card while it sits at the top centre.
+	-- Slide toasts below the tutorial card while it sits at the top centre, and to the very
+	-- top of the screen while a window or modal is open (toastRoom).
 	local function placeHolder()
-		local offset = screen:GetAttribute("TopCardHeight")
-		local y = TOAST_Y + (if type(offset) == "number" then offset else 0)
+		local y = toastRoom()
 		Kit.tween(toastHolder, 0.3, { Position = UDim2.new(0.5, 0, 0, y) }, Enum.EasingStyle.Quad)
 	end
-	screen:GetAttributeChangedSignal("TopCardHeight"):Connect(placeHolder)
+	screen:GetAttributeChangedSignal("TopCardHeight"):Connect(function()
+		placeHolder()
+		flushToasts()
+	end)
+	Kit.onWindowOpen(function(up: boolean)
+		placeHolder()
+		if not up then
+			flushToasts()
+			return
+		end
+		-- A window opened under the stack: the toasts there is no room for above it (the
+		-- oldest first) step out and wait for it to close, so none covers its tabs.
+		local _, room = toastRoom()
+		for i = #toasts, room + 1, -1 do
+			local toast = toasts[i]
+			local info = toastInfo[toast]
+			if info then
+				holdToast(info)
+			end
+			dismissToast(toast)
+		end
+	end)
 	placeHolder()
 	buildChestPanel()
 	if not PREVIEW then
