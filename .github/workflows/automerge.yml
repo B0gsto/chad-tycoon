@@ -2,7 +2,7 @@
 # When the CI workflow finishes green for a pull request, the PR is merged into main with a merge commit
 # ("Merge pull request #N: <title>", like a manual merge) and the Deploy workflow is dispatched, because a
 # merge made with the Actions token does not fire deploy.yml's push trigger by itself. Drafts, PRs with
-# conflicts and PRs whose head moved on since the checked commit are left alone; a PR whose title or body
+# conflicts, PRs from forks and PRs whose head moved on since the checked commit are left alone; a PR whose title or body
 # contains "[skip deploy]" is merged but not published.
 name: Auto-merge
 
@@ -23,7 +23,10 @@ concurrency:
 
 jobs:
   merge:
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request' }}
+    # Only branches of this repository: a pull request from a fork is never merged (or published) by itself.
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.head_repository.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
