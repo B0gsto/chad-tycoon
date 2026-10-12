@@ -196,6 +196,13 @@ function GameModes.teleport(player: Player, feet: Vector3, look: Vector3)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local hip = if humanoid then humanoid.HipHeight else 2
 	local pos = feet + Vector3.new(0, hip + root.Size.Y / 2 + 0.2, 0)
+	-- A lifter on a plot's bench press is welded to its seat (World.Decor): let go first.
+	local seat = humanoid and humanoid.SeatPart
+	local weld = seat and seat:FindFirstChild("SeatWeld")
+	if humanoid and weld then
+		weld:Destroy()
+		humanoid.Sit = false
+	end
 	character:PivotTo(CFrame.lookAt(pos, pos + Vector3.new(look.X, 0, look.Z)))
 	root.AssemblyLinearVelocity = Vector3.zero
 end

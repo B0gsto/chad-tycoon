@@ -2,8 +2,8 @@
 	Decor: everything painted on a plot's floor (the courts under each group of pads, the cream
 	path from the entrance to the merge court and on to both side courts, its chevrons), the
 	sunny gym dressing in the areas the courts leave free (a palm each side of the entrance, a
-	bench press, a palm by each side fence), the interactive props along the front fence and
-	the two fan zones beside the display ledge. The plot is kept calm: few props, open floor.
+	palm by each side fence), the interactive props along the front fence and the two fan
+	zones beside the display ledge. The plot is kept calm: few props, open floor.
 	Part of the world generator; see Server.WorldBuilder for the overview and plot axes.
 
 	Gym props are Models named Prop_<Kind> with attribute Mesh = "<Kind>" (and Scale) whose
@@ -15,8 +15,18 @@
 	a crate area, a fan zone or the walkway.
 
 	Interactive props are Models named Interactive_<Kind> with attribute Interactive = "<kind>"
-	(trampoline, punchbag, podium) standing on a round sunny mat at Layout.INTERACTIVE. They are
-	only props for now: no prompts or scripts.
+	(trampoline, punchbag, bench, podium) standing on a mat at Layout.INTERACTIVE. Client.Fx.Interactive
+	plays them (the bounce, the punches, the reps) and finds its way by the invisible marker
+	parts built here, which stand beside the Prop_ models so World.Props never swaps them out:
+	  Interactive_Trampoline  "BounceAnchor" at the bounce pad's top centre (attribute Radius)
+	  Interactive_PunchBag    "BagPivot" where the bag hangs from the stand's arm; "HitZone", a
+	                          walk-through box round the bag holding the "PunchPrompt"
+	  Interactive_Bench       "BenchSeat", a Seat lying along the pad (its up axis toward the
+	                          rack, its front up) that holds one lifter flat on their back;
+	                          "LiftAnchor" over the pad holding the "LiftPrompt"; "StandSpot" on
+	                          the floor beside the bench, where the lifter gets up
+	The only server behaviour is the bench: its prompt seats the player who triggers it (welded
+	exactly onto BenchSeat) and lets its lifter go again. The podium is still only a prop.
 
 	Fan zones: each plot folder gets a "FanSpots" folder with one invisible "FanSpot" part per
 	Layout.fanSpots() entry (attribute Order, 1 = filled first) at ground level, its
@@ -555,13 +565,6 @@ local function buildGymProps(B: Builder, parent: Instance)
 		placeProp(B, parent, "PalmPlanter", side * (ENTRANCE_CLEAR + 3), fenceZ, side * 20, { tint = color("Sunny") })
 	end
 
-	-- Front fence, -X side: a bench press on a teal mat, its rack toward the fence, mirroring
-	-- the punch bag's mat on the +X side.
-	local bag = Layout.INTERACTIVE.PunchBag
-	floorMat(B, parent, -bag.x, bag.z, 8, 7.4, color("Mat"))
-	placeProp(B, parent, "Bench", -bag.x, bag.z + 0.5, 180, { tint = color("Coral") })
-	placeProp(B, parent, "Barbell", -bag.x, bag.z - 1.7, 0, { y = 2.6, tint = color("Sunny") })
-
 	-- By each side fence: one palm in the machine line, on the bay line between the back and
 	-- middle stations, leaning in toward the pen.
 	local backBay = bayLines()
@@ -571,6 +574,40 @@ local function buildGymProps(B: Builder, parent: Instance)
 end
 
 -- Interactive props -----------------------------------------------------------------------
+
+-- An invisible walk-through marker for Client.Fx.Interactive at world frame `cframe`.
+local function marker(B: Builder, parent: Instance, name: string, cframe: CFrame, size: Vector3?): BasePart
+	local p = B.P({
+		Name = name,
+		Size = size or Vector3.new(0.2, 0.2, 0.2),
+		CFrame = cframe,
+		Transparency = 1,
+		CanCollide = false,
+		Parent = parent,
+	})
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	return p
+end
+
+-- Prompts reach about a mat's width: tap on touch, E on a keyboard, X on a gamepad.
+local PROMPT_RANGE = 8
+
+local function prompt(parent: BasePart, name: string, action: string, object: string): ProximityPrompt
+	local p = Instance.new("ProximityPrompt")
+	p.Name = name
+	p.ActionText = action
+	p.ObjectText = object
+	p.MaxActivationDistance = PROMPT_RANGE
+	p.HoldDuration = 0
+	-- The markers sit inside the props' colliders.
+	p.RequiresLineOfSight = false
+	p.KeyboardKeyCode = Enum.KeyCode.E
+	p.GamepadKeyCode = Enum.KeyCode.ButtonX
+	p.Parent = parent
+	return p
+end
 
 -- Round trampoline, about 7 studs wide: a teal frame on six short legs round a coral bounce pad.
 local function buildTrampoline(k: Kit)
@@ -613,30 +650,114 @@ local function buildFlexPodium(k: Kit)
 	end
 end
 
--- Starts Interactive_<kind> (attribute Interactive = `use`) on its round sunny mat at the spot
--- Layout.INTERACTIVE gives it; the caller adds the prop. Behaviour comes later: for now the
--- mat only marks the prop as something to use.
-local function interactive(B: Builder, parent: Instance, kind: string, use: string): (Model, number, number)
+-- Starts Interactive_<kind> (attribute Interactive = `use`) at the spot Layout.INTERACTIVE gives
+-- it, on a round sunny mat (or, with `mat`, a teal rectangle of that size); the caller adds the
+-- prop and its markers. Client.Fx.Interactive brings it to life.
+local function interactive(B: Builder, parent: Instance, kind: string, use: string, mat: Vector2?): (Model, number, number)
 	local spot = Layout.INTERACTIVE[kind]
 	local x, z, radius = spot.x, spot.z, spot.radius
 	checkClear("Interactive_" .. kind, Layout.rect(x - radius, x + radius, z - radius, z + radius))
 	local model = Instance.new("Model")
 	model.Name = "Interactive_" .. kind
 	model:SetAttribute("Interactive", use)
-	paintRoundCourt(B, model, "InteractiveMat", x, z, radius, color("Sunny"))
+	if mat then
+		floorMat(B, model, x, z, mat.X, mat.Y, color("Mat"))
+	else
+		paintRoundCourt(B, model, "InteractiveMat", x, z, radius, color("Sunny"))
+	end
 	model.Parent = parent
 	return model, x, z
 end
 
--- The three props along the front fence: a trampoline in the +X corner with a punch bag beside
--- it, and a flex podium in the -X corner turned toward the display rack the fans cheer at.
+-- Where a lifter lies, in the bench prop's frame (base centre, rack at +Z): flat on the pad,
+-- head toward the rack. The seat's frame is the lifter's root frame: up axis along the bench,
+-- front facing the sky.
+local BENCH_LIE = CFrame.new(0, 2.4, -0.2) * CFrame.Angles(math.rad(90), 0, 0)
+
+-- Puts the lifter's root exactly onto the bench seat (a Seat's own weld would sit them up on it).
+local function lieFlat(seat: Seat)
+	local weld = seat:FindFirstChild("SeatWeld")
+	if weld and weld:IsA("Weld") then
+		weld.C0 = CFrame.identity
+		weld.C1 = CFrame.identity
+	end
+end
+
+-- Lets `humanoid` go from the bench seat it is welded to.
+local function releaseSeat(seat: Seat, humanoid: Humanoid)
+	local weld = seat:FindFirstChild("SeatWeld")
+	if weld then
+		weld:Destroy()
+	end
+	humanoid.Sit = false
+end
+
+-- The bench press: one lifter at a time lies on BenchSeat (the client poses and animates them).
+-- The prompt seats whoever triggers it while the bench is free and lets its own lifter go.
+local function buildBench(B: Builder, model: Model, x: number, z: number)
+	-- The rack stands toward the fence, the barbell resting on its hooks.
+	local bench = placeProp(B, model, "Bench", x, z + 0.5, 180, { tint = color("Coral") })
+	placeProp(B, model, "Barbell", x, z - 1.7, 0, { y = 2.6, tint = color("Sunny") })
+	local base = (bench.PrimaryPart :: BasePart).CFrame
+
+	local seat = Common.make("Seat", {
+		Name = "BenchSeat",
+		Size = Vector3.new(1.6, 0.2, 0.6),
+		CFrame = base * BENCH_LIE,
+		Transparency = 1,
+		CanCollide = false,
+		Parent = model,
+	}) :: Seat
+	-- Nobody sits by walking into it: only the prompt seats.
+	seat.CanTouch = false
+	seat.CanQuery = false
+	seat.CastShadow = false
+	marker(B, model, "StandSpot", base * CFrame.new(3, 0.1, -0.3))
+	local lift = prompt(marker(B, model, "LiftAnchor", base * CFrame.new(0, 2.6, -0.3)), "LiftPrompt", "Lift", "Bench")
+
+	-- pcall: the offline preview (Lune) has no instance signals.
+	pcall(function()
+		seat.ChildAdded:Connect(function()
+			lieFlat(seat)
+			task.defer(lieFlat, seat)
+		end)
+		lift.Triggered:Connect(function(player: Player)
+			local character = player.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			if not humanoid or humanoid.Health <= 0 then
+				return
+			end
+			local lifter = seat.Occupant
+			if lifter == humanoid then
+				releaseSeat(seat, humanoid)
+			elseif lifter == nil and humanoid.SeatPart == nil then
+				seat:Sit(humanoid)
+				lieFlat(seat)
+			end
+		end)
+	end)
+end
+
+-- The four props along the front fence: a trampoline in the +X corner with a punch bag beside
+-- it, a bench press mirroring the bag at -X, and a flex podium in the -X corner turned toward
+-- the display rack the fans cheer at.
 local function buildInteractive(B: Builder, parent: Instance)
 	local trampoline, tx, tz = interactive(B, parent, "Trampoline", "trampoline")
 	buildTrampoline({ B = B, parent = trampoline, base = B.L(tx, 0, tz), scale = 1, solid = true })
+	-- The bounce pad's top centre; standing a little onto the frame still bounces.
+	marker(B, trampoline, "BounceAnchor", B.L(tx, 1.34, tz)):SetAttribute("Radius", 2.9)
 
 	-- The bag hangs on the plot side of its post.
 	local punchBag, bx, bz = interactive(B, parent, "PunchBag", "punchbag")
-	placeProp(B, punchBag, "PunchBag", bx, bz - 0.6, 90, { tint = color("RedOrange") })
+	local bag = placeProp(B, punchBag, "PunchBag", bx, bz - 0.6, 90, { tint = color("RedOrange") })
+	local bagBase = (bag.PrimaryPart :: BasePart).CFrame
+	marker(B, punchBag, "BagPivot", bagBase * CFrame.new(-0.9, 6.5, 0))
+	-- A little wider than the bag's collider, so running into the bag reaches it.
+	local hitZone = marker(B, punchBag, "HitZone", bagBase * CFrame.new(-0.9, 3.5, 0), Vector3.new(4.2, 5.4, 4.4))
+	prompt(hitZone, "PunchPrompt", "Punch", "Punch bag")
+
+	local bench, benchX, benchZ = interactive(B, parent, "Bench", "bench", Vector2.new(8, 7.4))
+	buildBench(B, bench, benchX, benchZ)
 
 	local podium, px, pz = interactive(B, parent, "FlexPodium", "podium")
 	local facing = math.atan2(px - Layout.FAN_FOCUS.x, pz - Layout.FAN_FOCUS.z)

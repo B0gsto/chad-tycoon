@@ -1628,7 +1628,7 @@ test("plot layout: courts, plaza and interactive props", function()
 		check(not Layout.overlaps(plaza, rect), "plaza clear of " .. name)
 	end
 
-	-- Interactive props: three of them, each mat on free floor off the courts and the spawn view.
+	-- Interactive props: four of them, each mat on free floor off the courts and the spawn view.
 	local obstacles = layoutObstacles()
 	local kinds = {}
 	for kind, spot in Layout.INTERACTIVE do
@@ -1652,7 +1652,10 @@ test("plot layout: courts, plaza and interactive props", function()
 			check(not Layout.overlaps(r, zone.rect), kind .. " clear of the fan zones")
 		end
 	end
-	check(#kinds == 3, "three interactive props")
+	check(#kinds == 4, "four interactive props")
+	-- The bench press mirrors the punch bag across the entrance path.
+	eq(Layout.INTERACTIVE.Bench.x, -Layout.INTERACTIVE.PunchBag.x, "bench mirrors the punch bag")
+	eq(Layout.INTERACTIVE.Bench.z, Layout.INTERACTIVE.PunchBag.z, "bench in the punch bag's row")
 	for i, a in kinds do
 		for j = i + 1, #kinds do
 			local sa, sb = Layout.INTERACTIVE[a], Layout.INTERACTIVE[kinds[j]]
@@ -4546,6 +4549,8 @@ require("./cardio")({ test = test, check = check, eq = eq, near = near, seeded =
 require("./cardio_chase")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
 -- Daily reward rules, the HUD's next goal and the saved daily field (tests/daily.luau).
 require("./daily")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared, loadDataService = loadDataService })
+-- Interactive gym props: bounce, combo, swing and rep rules, and the gym poses (tests/interactive.luau).
+require("./interactive")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared })
 
 test("Sky obby: lava kill strips and sliding bars on wide decks", function()
 	for li, level in ModesCourse.LEVELS do

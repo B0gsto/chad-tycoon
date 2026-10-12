@@ -212,8 +212,8 @@ return {
 	Look: the key art covers the screen with its hero (Chad on the stage) kept
 	clear in the middle; the logo sits at the top centre over the sky, bobbing,
 	with twinkles and a shine sweep; one band along the bottom holds the
-	tagline, a chunky sunny progress bar (the status inside it, an aura orb
-	riding its leading edge) and the tip card. Aura orbs drift up round the
+	tagline, a chunky sunny progress bar (an aura orb riding its leading edge),
+	the status under it and the tip card. Aura orbs drift up round the
 	hero. Only the bottom of the art is shaded, so the beach keeps its colour.
 	Without art ids it keeps the code-drawn sky gradient, bands and title text.
 	Art fades in only once its image has loaded; the whole screen fades out.
@@ -266,11 +266,12 @@ local WHITE = Color3.new(1, 1, 1)
 local UNLOADED = 0.99
 
 -- Design pixels: the logo box (scaled to the viewport) and the bottom band
--- (tagline, bar, tip card; scaled a little larger on phones so it stays readable).
+-- (tagline, bar, status, tip card; scaled a little larger on phones so it stays readable).
 local LOGO = Vector2.new(430, 215)
-local BAND = Vector2.new(640, 134)
+local BAND = Vector2.new(640, 162)
 local BAR = Vector2.new(640, 36)
 local BAR_Y = 36
+local STATUS_Y = 82
 
 -- The key art: its aspect, and where the hero group (Chad's hair down to the
 -- stage) sits as fractions of its height. art/blender/brand/brand.py prints
@@ -528,7 +529,7 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	local titleStroke = stroke(title, 5, colors.Ink)
 	local titleGradient = new("UIGradient", { Rotation = 90, Parent = title })
 
-	-- Bottom band: tagline, progress bar, tip card.
+	-- Bottom band: tagline, progress bar, status, tip card.
 	local bottom = new("Frame", {
 		Name = "Bottom",
 		BackgroundTransparency = 1,
@@ -605,7 +606,8 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	})
 	local rider = image("Rider", bottom, { ImageTransparency = 1, Size = UDim2.fromOffset(50, 50) })
 
-	-- The status reads over the bar and the rider.
+	-- The status has its own line under the bar, clear of the rider (inside the
+	-- bar the orb crossed the words and the white text washed out on the fill).
 	local status = new("TextLabel", {
 		Name = "Status",
 		BackgroundTransparency = 1,
@@ -613,8 +615,8 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		Font = Enum.Font.FredokaOne,
 		TextSize = 18,
 		TextColor3 = WHITE,
-		Size = UDim2.fromOffset(BAR.X, BAR.Y),
-		Position = UDim2.new(0.5, 0, 0, BAR_Y),
+		Size = UDim2.fromOffset(BAR.X, 22),
+		Position = UDim2.new(0.5, 0, 0, STATUS_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = bottom,
 	})
@@ -18131,6 +18133,172 @@ return Funnel
       </Item>
       <Item class="ModuleScript" referent="161">
         <Properties>
+          <string name="Name">InteractiveRules</string>
+          <string name="Source"><![CDATA[--!strict
+-- Pure rules for the plot's interactive gym props (Client.Fx.Interactive plays them; the props
+-- themselves are built by World.Decor), shared with the unit tests. Cosmetic only: nothing
+-- here touches the economy.
+--
+--   * Trampoline: a bounce is a jump of BOUNCE_BASE x the normal jump height from standing,
+--     + BOUNCE_CHAIN for landing out of a full bounce, + BOUNCE_HOLD while jump is held: 3x to
+--     4x in all. A bounce is mostly straight up: it keeps at most BOUNCE_DRIFT studs/s sideways.
+--   * Punch bag: at most one hit every HIT_GAP seconds; a hit within COMBO_RESET seconds of
+--     the last one grows the combo, else it starts again at 1; MILESTONES get the big text.
+--     The bag is a damped pendulum: each hit kicks it (kick), swingStep moves it on.
+--   * A punch lasts PUNCH_TIME seconds: punch(t) gives how far the fist is out and how much
+--     of the pose shows over the avatar's own animation.
+--   * Bench press: a rep takes REP_TIME seconds, from arms out, down to the chest and back up
+--     (press); reps(t) counts the finished ones.
+
+local Rules = {}
+
+-- Trampoline -------------------------------------------------------------------------------
+
+Rules.BOUNCE_BASE = 3 -- x the normal jump height, bouncing from a standstill
+Rules.BOUNCE_CHAIN = 0.5 -- more for landing at a full bounce's speed
+Rules.BOUNCE_HOLD = 0.5 -- more for holding jump
+Rules.BOUNCE_GAP = 0.2 -- seconds between two bounces
+Rules.BOUNCE_DRIFT = 6 -- studs/s of sideways speed a bounce keeps
+
+-- Take-off speed of a jump that reaches `height` studs under `gravity`.
+function Rules.jumpSpeed(gravity: number, height: number): number
+	return math.sqrt(2 * math.max(0, gravity) * math.max(0, height))
+end
+
+-- How many normal jumps high a bounce goes: `jumpSpeed` is the avatar's normal take-off speed,
+-- `landingSpeed` how fast it came down onto the pad (0 when it just stands there).
+function Rules.bounceHeight(jumpSpeed: number, landingSpeed: number, holding: boolean): number
+	local full = jumpSpeed * math.sqrt(Rules.BOUNCE_BASE)
+	local chain = if full > 0 then math.clamp(landingSpeed / full, 0, 1) else 0
+	return Rules.BOUNCE_BASE + Rules.BOUNCE_CHAIN * chain + (if holding then Rules.BOUNCE_HOLD else 0)
+end
+
+-- Upward speed of that bounce.
+function Rules.bounceSpeed(jumpSpeed: number, landingSpeed: number, holding: boolean): number
+	return jumpSpeed * math.sqrt(Rules.bounceHeight(jumpSpeed, landingSpeed, holding))
+end
+
+-- The sideways velocity (x, z) a bounce keeps.
+function Rules.drift(x: number, z: number): (number, number)
+	local speed = math.sqrt(x * x + z * z)
+	if speed <= Rules.BOUNCE_DRIFT then
+		return x, z
+	end
+	local k = Rules.BOUNCE_DRIFT / speed
+	return x * k, z * k
+end
+
+-- Punch bag --------------------------------------------------------------------------------
+
+Rules.HIT_GAP = 0.25 -- seconds between two hits (4 a second)
+Rules.COMBO_RESET = 2 -- seconds without a hit before the combo starts over
+Rules.MILESTONES = { 10, 25, 50 }
+
+function Rules.canHit(lastHit: number?, now: number): boolean
+	return lastHit == nil or now - lastHit >= Rules.HIT_GAP
+end
+
+-- True while a hit at `now` would still add to the combo.
+function Rules.comboAlive(lastHit: number?, now: number): boolean
+	return lastHit ~= nil and now - lastHit <= Rules.COMBO_RESET
+end
+
+-- The combo after a hit at `now`.
+function Rules.combo(combo: number, lastHit: number?, now: number): number
+	return if Rules.comboAlive(lastHit, now) then combo + 1 else 1
+end
+
+function Rules.milestone(combo: number): boolean
+	return table.find(Rules.MILESTONES, combo) ~= nil
+end
+
+-- Size of the combo text: it grows a little with the combo and jumps on a milestone.
+function Rules.comboScale(combo: number): number
+	if Rules.milestone(combo) then
+		return 1.8
+	end
+	return 1 + 0.35 * math.clamp((combo - 1) / 49, 0, 1)
+end
+
+-- The bag's swing: an angle (radians, + is away from the puncher) and its speed.
+Rules.SWING_MAX = math.rad(34)
+local SWING_RATE = 7 -- rad/s: a swing there and back takes about 0.9 s
+local SWING_DAMPING = 0.14 -- of critical: settled about 4 s after the last hit
+local SWING_STEP = 1 / 120
+
+-- Angular speed one hit adds: a first hit swings the bag about 20 degrees, a long combo more.
+function Rules.kick(combo: number): number
+	return 2.9 + 1.1 * math.clamp((combo - 1) / 9, 0, 1)
+end
+
+-- Moves the swing on by `dt` seconds; the angle never passes SWING_MAX.
+function Rules.swingStep(angle: number, speed: number, dt: number): (number, number)
+	local left = math.clamp(dt, 0, 0.25)
+	while left > 0 do
+		local h = math.min(left, SWING_STEP)
+		left -= h
+		speed += (-SWING_RATE * SWING_RATE * angle - 2 * SWING_DAMPING * SWING_RATE * speed) * h
+		angle += speed * h
+		if math.abs(angle) > Rules.SWING_MAX then
+			angle = math.sign(angle) * Rules.SWING_MAX
+			speed = 0
+		end
+	end
+	return angle, speed
+end
+
+-- True once a swing is too small to see.
+function Rules.swingStill(angle: number, speed: number): boolean
+	return math.abs(angle) < math.rad(0.15) and math.abs(speed) < math.rad(1.5)
+end
+
+local function smooth(a: number): number
+	a = math.clamp(a, 0, 1)
+	return a * a * (3 - 2 * a)
+end
+
+Rules.PUNCH_TIME = 0.36
+local PUNCH_OUT = 0.1 -- seconds from the guard to the fist fully out
+local PUNCH_IN = 0.05 -- seconds for the pose to take over
+local PUNCH_FADE = 0.16 -- seconds for it to hand back at the end
+
+-- A punch `t` seconds in: reach (0 = on guard, 1 = fist out) and weight (0 = the avatar's own
+-- animation, 1 = the punch pose).
+function Rules.punch(t: number): (number, number)
+	if t < 0 or t >= Rules.PUNCH_TIME then
+		return 0, 0
+	end
+	local reach = smooth(t / PUNCH_OUT)
+	local weight = math.min(smooth(t / PUNCH_IN), smooth((Rules.PUNCH_TIME - t) / PUNCH_FADE))
+	return reach, weight
+end
+
+-- Bench press ------------------------------------------------------------------------------
+
+Rules.REP_TIME = 1.7
+local REP_DOWN = 0.55 -- share of a rep spent lowering the bar
+
+-- How far the bar is pushed out `t` seconds after lying down: 1 = arms straight, 0 = on the
+-- chest. Every rep lowers it gently and pushes it back up faster.
+function Rules.press(t: number): number
+	local u = (math.max(0, t) / Rules.REP_TIME) % 1
+	if u < REP_DOWN then
+		return 1 - smooth(u / REP_DOWN)
+	end
+	return smooth((u - REP_DOWN) / (1 - REP_DOWN))
+end
+
+-- Reps finished `t` seconds after lying down.
+function Rules.reps(t: number): number
+	return math.floor(math.max(0, t) / Rules.REP_TIME)
+end
+
+return Rules
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="162">
+        <Properties>
           <string name="Name">Net</string>
           <string name="Source"><![CDATA[-- Remote events/functions. The server creates them, clients wait for them.
 --
@@ -18197,7 +18365,7 @@ return Net
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="162">
+      <Item class="ModuleScript" referent="163">
         <Properties>
           <string name="Name">NextGoal</string>
           <string name="Source"><![CDATA[--!strict
@@ -18288,7 +18456,7 @@ return NextGoal
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="163">
+      <Item class="ModuleScript" referent="164">
         <Properties>
           <string name="Name">OrbLook</string>
           <string name="Source"><![CDATA[--!strict
@@ -18410,7 +18578,7 @@ return OrbLook
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="164">
+      <Item class="ModuleScript" referent="165">
         <Properties>
           <string name="Name">Poses</string>
           <string name="Source"><![CDATA[--[[
@@ -19286,6 +19454,64 @@ STORY.Strut = (function()
 	return def
 end)()
 
+-- Gym poses for a player's own avatar at a plot's interactive props (Client.Fx.Interactive
+-- blends between them itself, so they hold still).
+
+-- Boxing guard: both fists up by the chin, leaning in a little.
+STORY.PunchGuard = {
+	base = P({
+		UpperTorso = { -6, 0, 0 },
+		Head = { 4, 0, 0 },
+		RightUpperArm = { 35, 0, 14 },
+		RightLowerArm = { 115, 0, 0 },
+	}),
+}
+
+-- A straight right: the shoulder turned in behind the fist, the left staying on guard.
+STORY.PunchRight = {
+	base = P({
+		UpperTorso = { -8, 28, 0 },
+		Head = { 4, -24, 0 },
+		RightUpperArm = { 90, 0, 24 },
+		RightLowerArm = { 4, 0, 0 },
+		LeftUpperArm = { 40, 0, -14 },
+		LeftLowerArm = { 120, 0, 0 },
+	}),
+}
+
+-- The same punch thrown with the left.
+STORY.PunchLeft = {
+	base = P({
+		UpperTorso = { -8, -28, 0 },
+		Head = { 4, 24, 0 },
+		LeftUpperArm = { 90, 0, -24 },
+		LeftLowerArm = { 4, 0, 0 },
+		RightUpperArm = { 40, 0, 14 },
+		RightLowerArm = { 120, 0, 0 },
+	}),
+}
+
+-- Bench press, for a rig lying on its back (its front facing the sky): knees bent over the end
+-- of the bench. Up: both arms pushed straight out in front of the chest, a little wide.
+STORY.BenchUp = {
+	base = P({
+		RightUpperArm = { 90, 0, 25 },
+		RightUpperLeg = { 0, 0, 5 },
+		RightLowerLeg = { -85, 0, 0 },
+	}),
+}
+
+-- Down: elbows dropped out beside the chest, forearms still pointing up, hands the same
+-- width apart as in BenchUp.
+STORY.BenchDown = {
+	base = P({
+		RightUpperArm = { 0, -20, 45 },
+		RightLowerArm = { 100, 0, 0 },
+		RightUpperLeg = { 0, 0, 5 },
+		RightLowerLeg = { -85, 0, 0 },
+	}),
+}
+
 -- Animation sets -----------------------------------------------------------------
 
 type Set = {
@@ -19386,7 +19612,7 @@ local SETS: { [string]: Set } = {
 			add(v, "UpperTorso", b * 1.2, 0, 0)
 			add(v, "Head", -b * 0.8, 0, 0)
 		end,
-		extra = { "Walk", "Run", "Strut" },
+		extra = { "Walk", "Run", "Strut", "PunchGuard", "PunchRight", "PunchLeft", "BenchUp", "BenchDown" },
 	},
 }
 
@@ -19571,7 +19797,7 @@ function Poses.gaitTime(gait: string, distance: number, scale: number?): number
 end
 
 -- Every pose a set defines, including the ones never played in the rotation
--- (Story: Walk, Run, Strut).
+-- (Story: Walk, Run, Strut and the gym poses).
 function Poses.allPoseNames(animSet: string): { string }
 	local _, set = resolveSet(animSet)
 	local names = Poses.poseNames(animSet)
@@ -19632,7 +19858,7 @@ return Poses
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="165">
+      <Item class="ModuleScript" referent="166">
         <Properties>
           <string name="Name">RigPose</string>
           <string name="Source"><![CDATA[--[[
@@ -19801,7 +20027,7 @@ return RigPose
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="166">
+      <Item class="ModuleScript" referent="167">
         <Properties>
           <string name="Name">SessionLock</string>
           <string name="Source"><![CDATA[--!strict
@@ -19854,7 +20080,7 @@ return SessionLock
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="167">
+      <Item class="ModuleScript" referent="168">
         <Properties>
           <string name="Name">TutorialSteps</string>
           <string name="Source"><![CDATA[--!strict
@@ -19997,7 +20223,7 @@ return TutorialSteps
         </Properties>
       </Item>
     </Item>
-    <Item class="ModuleScript" referent="168">
+    <Item class="ModuleScript" referent="169">
       <Properties>
         <string name="Name">Theme</string>
         <string name="Source"><![CDATA[--[[
@@ -21521,15 +21747,15 @@ return Theme
       </Properties>
     </Item>
   </Item>
-  <Item class="ServerScriptService" referent="169">
+  <Item class="ServerScriptService" referent="170">
     <Properties>
       <string name="Name">ServerScriptService</string>
     </Properties>
-    <Item class="Folder" referent="170">
+    <Item class="Folder" referent="171">
       <Properties>
         <string name="Name">Server</string>
       </Properties>
-      <Item class="ModuleScript" referent="171">
+      <Item class="ModuleScript" referent="172">
         <Properties>
           <string name="Name">Analytics</string>
           <string name="Source"><![CDATA[--[[
@@ -21699,7 +21925,7 @@ return Analytics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="172">
+      <Item class="ModuleScript" referent="173">
         <Properties>
           <string name="Name">Badges</string>
           <string name="Source"><![CDATA[--[[
@@ -21812,7 +22038,7 @@ return Badges
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="173">
+      <Item class="ModuleScript" referent="174">
         <Properties>
           <string name="Name">Cosmetics</string>
           <string name="Source"><![CDATA[--[[
@@ -22446,7 +22672,7 @@ return Cosmetics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="174">
+      <Item class="ModuleScript" referent="175">
         <Properties>
           <string name="Name">Daily</string>
           <string name="Source"><![CDATA[--[[
@@ -22629,7 +22855,7 @@ return Daily
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="175">
+      <Item class="ModuleScript" referent="176">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -23095,7 +23321,7 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="176">
+      <Item class="ModuleScript" referent="177">
         <Properties>
           <string name="Name">GameModes</string>
           <string name="Source"><![CDATA[--[[
@@ -23296,6 +23522,13 @@ function GameModes.teleport(player: Player, feet: Vector3, look: Vector3)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local hip = if humanoid then humanoid.HipHeight else 2
 	local pos = feet + Vector3.new(0, hip + root.Size.Y / 2 + 0.2, 0)
+	-- A lifter on a plot's bench press is welded to its seat (World.Decor): let go first.
+	local seat = humanoid and humanoid.SeatPart
+	local weld = seat and seat:FindFirstChild("SeatWeld")
+	if humanoid and weld then
+		weld:Destroy()
+		humanoid.Sit = false
+	end
 	character:PivotTo(CFrame.lookAt(pos, pos + Vector3.new(look.X, 0, look.Z)))
 	root.AssemblyLinearVelocity = Vector3.zero
 end
@@ -23437,7 +23670,7 @@ return GameModes
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="177">
+      <Item class="ModuleScript" referent="178">
         <Properties>
           <string name="Name">Intro</string>
           <string name="Source"><![CDATA[--[[
@@ -23485,7 +23718,7 @@ return Intro
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Script" referent="178">
+      <Item class="Script" referent="179">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -23619,11 +23852,11 @@ end)
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="179">
+      <Item class="Folder" referent="180">
         <Properties>
           <string name="Name">Modes</string>
         </Properties>
-        <Item class="ModuleScript" referent="180">
+        <Item class="ModuleScript" referent="181">
           <Properties>
             <string name="Name">Cardio</string>
             <string name="Source"><![CDATA[--[[
@@ -24282,7 +24515,7 @@ return Cardio
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="181">
+        <Item class="ModuleScript" referent="182">
           <Properties>
             <string name="Name">CardioChase</string>
             <string name="Source"><![CDATA[--!strict
@@ -24670,7 +24903,7 @@ return CardioChase
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="182">
+        <Item class="ModuleScript" referent="183">
           <Properties>
             <string name="Name">CardioLayout</string>
             <string name="Source"><![CDATA[--!strict
@@ -26135,7 +26368,7 @@ return CardioLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="183">
+        <Item class="ModuleScript" referent="184">
           <Properties>
             <string name="Name">CardioRules</string>
             <string name="Source"><![CDATA[--!strict
@@ -26418,7 +26651,7 @@ return CardioRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="184">
+        <Item class="ModuleScript" referent="185">
           <Properties>
             <string name="Name">Catalog</string>
             <string name="Source"><![CDATA[--!strict
@@ -26458,7 +26691,7 @@ return Catalog
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="185">
+        <Item class="ModuleScript" referent="186">
           <Properties>
             <string name="Name">Course</string>
             <string name="Source"><![CDATA[--!strict
@@ -28489,7 +28722,7 @@ return Course
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="186">
+        <Item class="ModuleScript" referent="187">
           <Properties>
             <string name="Name">Mog</string>
             <string name="Source"><![CDATA[--[[
@@ -29406,7 +29639,7 @@ return { create = create }
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="187">
+        <Item class="ModuleScript" referent="188">
           <Properties>
             <string name="Name">MogLayout</string>
             <string name="Source"><![CDATA[--[[
@@ -29483,7 +29716,7 @@ return MogLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="188">
+        <Item class="ModuleScript" referent="189">
           <Properties>
             <string name="Name">MogRules</string>
             <string name="Source"><![CDATA[--[[
@@ -29812,7 +30045,7 @@ return MogRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="189">
+        <Item class="ModuleScript" referent="190">
           <Properties>
             <string name="Name">Parkour</string>
             <string name="Source"><![CDATA[--[[
@@ -30458,7 +30691,7 @@ return Parkour
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="190">
+        <Item class="ModuleScript" referent="191">
           <Properties>
             <string name="Name">Rules</string>
             <string name="Source"><![CDATA[--!strict
@@ -30551,7 +30784,7 @@ return Rules
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="191">
+      <Item class="ModuleScript" referent="192">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -30847,7 +31080,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="192">
+      <Item class="ModuleScript" referent="193">
         <Properties>
           <string name="Name">PlotLayout</string>
           <string name="Source"><![CDATA[--!strict
@@ -31276,11 +31509,13 @@ Layout.MERGE_COURT = { x = Layout.PADS.Merge.x, z = Layout.PADS.Merge.z, radius 
 Layout.PLAZA = rect(-COURT_INNER, COURT_INNER, MERGE_Z - 5, Layout.POOL.minZ - 0.9)
 
 -- Interactive props along the front fence, each on its own round mat of `radius` (World.Decor
--- builds them as Interactive_<Kind> models). They keep off the courts and the spawn view.
+-- builds them as Interactive_<Kind> models). They keep off the courts and the spawn view. The
+-- bench press mirrors the punch bag; its mat is a teal rectangle inside the same radius.
 local PROP_Z = -Layout.INNER_HALF + 6
 Layout.INTERACTIVE = {
 	Trampoline = { x = 42, z = PROP_Z, radius = 4 },
 	PunchBag = { x = 30.5, z = PROP_Z, radius = 3.5 },
+	Bench = { x = -30.5, z = PROP_Z, radius = 4 },
 	FlexPodium = { x = -42, z = PROP_Z, radius = 4 },
 } :: { [string]: { x: number, z: number, radius: number } }
 
@@ -31436,7 +31671,7 @@ return Layout
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="193">
+      <Item class="ModuleScript" referent="194">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -31685,7 +31920,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="194">
+      <Item class="ModuleScript" referent="195">
         <Properties>
           <string name="Name">Tutorial</string>
           <string name="Source"><![CDATA[--[[
@@ -31802,7 +32037,7 @@ return Tutorial
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="195">
+      <Item class="ModuleScript" referent="196">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -33691,6 +33926,14 @@ actionHandlers.Home = function(session)
 	Tycoon.hooks.leavingForHome(session)
 	local character = session.player.Character
 	if character then
+		-- A lifter on the bench press is welded to its seat (World.Decor): let go first.
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		local seat = humanoid and humanoid.SeatPart
+		local weld = seat and seat:FindFirstChild("SeatWeld")
+		if humanoid and weld then
+			weld:Destroy()
+			humanoid.Sit = false
+		end
 		character:PivotTo(session.plot.spawn)
 	end
 end
@@ -34081,11 +34324,11 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="196">
+      <Item class="Folder" referent="197">
         <Properties>
           <string name="Name">World</string>
         </Properties>
-        <Item class="ModuleScript" referent="197">
+        <Item class="ModuleScript" referent="198">
           <Properties>
             <string name="Name">CardioTrack</string>
             <string name="Source"><![CDATA[--[[
@@ -35548,7 +35791,7 @@ return CardioTrack
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="198">
+        <Item class="ModuleScript" referent="199">
           <Properties>
             <string name="Name">Common</string>
             <string name="Source"><![CDATA[--[[
@@ -35723,15 +35966,15 @@ return Common
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="199">
+        <Item class="ModuleScript" referent="200">
           <Properties>
             <string name="Name">Decor</string>
             <string name="Source"><![CDATA[--[[
 	Decor: everything painted on a plot's floor (the courts under each group of pads, the cream
 	path from the entrance to the merge court and on to both side courts, its chevrons), the
 	sunny gym dressing in the areas the courts leave free (a palm each side of the entrance, a
-	bench press, a palm by each side fence), the interactive props along the front fence and
-	the two fan zones beside the display ledge. The plot is kept calm: few props, open floor.
+	palm by each side fence), the interactive props along the front fence and the two fan
+	zones beside the display ledge. The plot is kept calm: few props, open floor.
 	Part of the world generator; see Server.WorldBuilder for the overview and plot axes.
 
 	Gym props are Models named Prop_<Kind> with attribute Mesh = "<Kind>" (and Scale) whose
@@ -35743,8 +35986,18 @@ return Common
 	a crate area, a fan zone or the walkway.
 
 	Interactive props are Models named Interactive_<Kind> with attribute Interactive = "<kind>"
-	(trampoline, punchbag, podium) standing on a round sunny mat at Layout.INTERACTIVE. They are
-	only props for now: no prompts or scripts.
+	(trampoline, punchbag, bench, podium) standing on a mat at Layout.INTERACTIVE. Client.Fx.Interactive
+	plays them (the bounce, the punches, the reps) and finds its way by the invisible marker
+	parts built here, which stand beside the Prop_ models so World.Props never swaps them out:
+	  Interactive_Trampoline  "BounceAnchor" at the bounce pad's top centre (attribute Radius)
+	  Interactive_PunchBag    "BagPivot" where the bag hangs from the stand's arm; "HitZone", a
+	                          walk-through box round the bag holding the "PunchPrompt"
+	  Interactive_Bench       "BenchSeat", a Seat lying along the pad (its up axis toward the
+	                          rack, its front up) that holds one lifter flat on their back;
+	                          "LiftAnchor" over the pad holding the "LiftPrompt"; "StandSpot" on
+	                          the floor beside the bench, where the lifter gets up
+	The only server behaviour is the bench: its prompt seats the player who triggers it (welded
+	exactly onto BenchSeat) and lets its lifter go again. The podium is still only a prop.
 
 	Fan zones: each plot folder gets a "FanSpots" folder with one invisible "FanSpot" part per
 	Layout.fanSpots() entry (attribute Order, 1 = filled first) at ground level, its
@@ -36283,13 +36536,6 @@ local function buildGymProps(B: Builder, parent: Instance)
 		placeProp(B, parent, "PalmPlanter", side * (ENTRANCE_CLEAR + 3), fenceZ, side * 20, { tint = color("Sunny") })
 	end
 
-	-- Front fence, -X side: a bench press on a teal mat, its rack toward the fence, mirroring
-	-- the punch bag's mat on the +X side.
-	local bag = Layout.INTERACTIVE.PunchBag
-	floorMat(B, parent, -bag.x, bag.z, 8, 7.4, color("Mat"))
-	placeProp(B, parent, "Bench", -bag.x, bag.z + 0.5, 180, { tint = color("Coral") })
-	placeProp(B, parent, "Barbell", -bag.x, bag.z - 1.7, 0, { y = 2.6, tint = color("Sunny") })
-
 	-- By each side fence: one palm in the machine line, on the bay line between the back and
 	-- middle stations, leaning in toward the pen.
 	local backBay = bayLines()
@@ -36299,6 +36545,40 @@ local function buildGymProps(B: Builder, parent: Instance)
 end
 
 -- Interactive props -----------------------------------------------------------------------
+
+-- An invisible walk-through marker for Client.Fx.Interactive at world frame `cframe`.
+local function marker(B: Builder, parent: Instance, name: string, cframe: CFrame, size: Vector3?): BasePart
+	local p = B.P({
+		Name = name,
+		Size = size or Vector3.new(0.2, 0.2, 0.2),
+		CFrame = cframe,
+		Transparency = 1,
+		CanCollide = false,
+		Parent = parent,
+	})
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	return p
+end
+
+-- Prompts reach about a mat's width: tap on touch, E on a keyboard, X on a gamepad.
+local PROMPT_RANGE = 8
+
+local function prompt(parent: BasePart, name: string, action: string, object: string): ProximityPrompt
+	local p = Instance.new("ProximityPrompt")
+	p.Name = name
+	p.ActionText = action
+	p.ObjectText = object
+	p.MaxActivationDistance = PROMPT_RANGE
+	p.HoldDuration = 0
+	-- The markers sit inside the props' colliders.
+	p.RequiresLineOfSight = false
+	p.KeyboardKeyCode = Enum.KeyCode.E
+	p.GamepadKeyCode = Enum.KeyCode.ButtonX
+	p.Parent = parent
+	return p
+end
 
 -- Round trampoline, about 7 studs wide: a teal frame on six short legs round a coral bounce pad.
 local function buildTrampoline(k: Kit)
@@ -36341,30 +36621,114 @@ local function buildFlexPodium(k: Kit)
 	end
 end
 
--- Starts Interactive_<kind> (attribute Interactive = `use`) on its round sunny mat at the spot
--- Layout.INTERACTIVE gives it; the caller adds the prop. Behaviour comes later: for now the
--- mat only marks the prop as something to use.
-local function interactive(B: Builder, parent: Instance, kind: string, use: string): (Model, number, number)
+-- Starts Interactive_<kind> (attribute Interactive = `use`) at the spot Layout.INTERACTIVE gives
+-- it, on a round sunny mat (or, with `mat`, a teal rectangle of that size); the caller adds the
+-- prop and its markers. Client.Fx.Interactive brings it to life.
+local function interactive(B: Builder, parent: Instance, kind: string, use: string, mat: Vector2?): (Model, number, number)
 	local spot = Layout.INTERACTIVE[kind]
 	local x, z, radius = spot.x, spot.z, spot.radius
 	checkClear("Interactive_" .. kind, Layout.rect(x - radius, x + radius, z - radius, z + radius))
 	local model = Instance.new("Model")
 	model.Name = "Interactive_" .. kind
 	model:SetAttribute("Interactive", use)
-	paintRoundCourt(B, model, "InteractiveMat", x, z, radius, color("Sunny"))
+	if mat then
+		floorMat(B, model, x, z, mat.X, mat.Y, color("Mat"))
+	else
+		paintRoundCourt(B, model, "InteractiveMat", x, z, radius, color("Sunny"))
+	end
 	model.Parent = parent
 	return model, x, z
 end
 
--- The three props along the front fence: a trampoline in the +X corner with a punch bag beside
--- it, and a flex podium in the -X corner turned toward the display rack the fans cheer at.
+-- Where a lifter lies, in the bench prop's frame (base centre, rack at +Z): flat on the pad,
+-- head toward the rack. The seat's frame is the lifter's root frame: up axis along the bench,
+-- front facing the sky.
+local BENCH_LIE = CFrame.new(0, 2.4, -0.2) * CFrame.Angles(math.rad(90), 0, 0)
+
+-- Puts the lifter's root exactly onto the bench seat (a Seat's own weld would sit them up on it).
+local function lieFlat(seat: Seat)
+	local weld = seat:FindFirstChild("SeatWeld")
+	if weld and weld:IsA("Weld") then
+		weld.C0 = CFrame.identity
+		weld.C1 = CFrame.identity
+	end
+end
+
+-- Lets `humanoid` go from the bench seat it is welded to.
+local function releaseSeat(seat: Seat, humanoid: Humanoid)
+	local weld = seat:FindFirstChild("SeatWeld")
+	if weld then
+		weld:Destroy()
+	end
+	humanoid.Sit = false
+end
+
+-- The bench press: one lifter at a time lies on BenchSeat (the client poses and animates them).
+-- The prompt seats whoever triggers it while the bench is free and lets its own lifter go.
+local function buildBench(B: Builder, model: Model, x: number, z: number)
+	-- The rack stands toward the fence, the barbell resting on its hooks.
+	local bench = placeProp(B, model, "Bench", x, z + 0.5, 180, { tint = color("Coral") })
+	placeProp(B, model, "Barbell", x, z - 1.7, 0, { y = 2.6, tint = color("Sunny") })
+	local base = (bench.PrimaryPart :: BasePart).CFrame
+
+	local seat = Common.make("Seat", {
+		Name = "BenchSeat",
+		Size = Vector3.new(1.6, 0.2, 0.6),
+		CFrame = base * BENCH_LIE,
+		Transparency = 1,
+		CanCollide = false,
+		Parent = model,
+	}) :: Seat
+	-- Nobody sits by walking into it: only the prompt seats.
+	seat.CanTouch = false
+	seat.CanQuery = false
+	seat.CastShadow = false
+	marker(B, model, "StandSpot", base * CFrame.new(3, 0.1, -0.3))
+	local lift = prompt(marker(B, model, "LiftAnchor", base * CFrame.new(0, 2.6, -0.3)), "LiftPrompt", "Lift", "Bench")
+
+	-- pcall: the offline preview (Lune) has no instance signals.
+	pcall(function()
+		seat.ChildAdded:Connect(function()
+			lieFlat(seat)
+			task.defer(lieFlat, seat)
+		end)
+		lift.Triggered:Connect(function(player: Player)
+			local character = player.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			if not humanoid or humanoid.Health <= 0 then
+				return
+			end
+			local lifter = seat.Occupant
+			if lifter == humanoid then
+				releaseSeat(seat, humanoid)
+			elseif lifter == nil and humanoid.SeatPart == nil then
+				seat:Sit(humanoid)
+				lieFlat(seat)
+			end
+		end)
+	end)
+end
+
+-- The four props along the front fence: a trampoline in the +X corner with a punch bag beside
+-- it, a bench press mirroring the bag at -X, and a flex podium in the -X corner turned toward
+-- the display rack the fans cheer at.
 local function buildInteractive(B: Builder, parent: Instance)
 	local trampoline, tx, tz = interactive(B, parent, "Trampoline", "trampoline")
 	buildTrampoline({ B = B, parent = trampoline, base = B.L(tx, 0, tz), scale = 1, solid = true })
+	-- The bounce pad's top centre; standing a little onto the frame still bounces.
+	marker(B, trampoline, "BounceAnchor", B.L(tx, 1.34, tz)):SetAttribute("Radius", 2.9)
 
 	-- The bag hangs on the plot side of its post.
 	local punchBag, bx, bz = interactive(B, parent, "PunchBag", "punchbag")
-	placeProp(B, punchBag, "PunchBag", bx, bz - 0.6, 90, { tint = color("RedOrange") })
+	local bag = placeProp(B, punchBag, "PunchBag", bx, bz - 0.6, 90, { tint = color("RedOrange") })
+	local bagBase = (bag.PrimaryPart :: BasePart).CFrame
+	marker(B, punchBag, "BagPivot", bagBase * CFrame.new(-0.9, 6.5, 0))
+	-- A little wider than the bag's collider, so running into the bag reaches it.
+	local hitZone = marker(B, punchBag, "HitZone", bagBase * CFrame.new(-0.9, 3.5, 0), Vector3.new(4.2, 5.4, 4.4))
+	prompt(hitZone, "PunchPrompt", "Punch", "Punch bag")
+
+	local bench, benchX, benchZ = interactive(B, parent, "Bench", "bench", Vector2.new(8, 7.4))
+	buildBench(B, bench, benchX, benchZ)
 
 	local podium, px, pz = interactive(B, parent, "FlexPodium", "podium")
 	local facing = math.atan2(px - Layout.FAN_FOCUS.x, pz - Layout.FAN_FOCUS.z)
@@ -36583,7 +36947,7 @@ return Decor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="200">
+        <Item class="ModuleScript" referent="201">
           <Properties>
             <string name="Name">Hub</string>
             <string name="Source"><![CDATA[--[[
@@ -37700,7 +38064,7 @@ return Hub
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="201">
+        <Item class="ModuleScript" referent="202">
           <Properties>
             <string name="Name">Machines</string>
             <string name="Source"><![CDATA[--[[
@@ -38518,7 +38882,7 @@ return Machines
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="202">
+        <Item class="ModuleScript" referent="203">
           <Properties>
             <string name="Name">MapDecor</string>
             <string name="Source"><![CDATA[--[[
@@ -39463,7 +39827,7 @@ return MapDecor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="203">
+        <Item class="ModuleScript" referent="204">
           <Properties>
             <string name="Name">Modes</string>
             <string name="Source"><![CDATA[--[[
@@ -41219,7 +41583,7 @@ return Modes
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="204">
+        <Item class="ModuleScript" referent="205">
           <Properties>
             <string name="Name">MogStage</string>
             <string name="Source"><![CDATA[--[[
@@ -41560,7 +41924,7 @@ return MogStage
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="205">
+        <Item class="ModuleScript" referent="206">
           <Properties>
             <string name="Name">Pads</string>
             <string name="Source"><![CDATA[--[[
@@ -41873,7 +42237,7 @@ return Pads
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="206">
+        <Item class="ModuleScript" referent="207">
           <Properties>
             <string name="Name">Pen</string>
             <string name="Source"><![CDATA[--[[
@@ -42192,7 +42556,7 @@ return Pen
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="207">
+        <Item class="ModuleScript" referent="208">
           <Properties>
             <string name="Name">Props</string>
             <string name="Source"><![CDATA[--!strict
@@ -42463,7 +42827,7 @@ return Props
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="208">
+        <Item class="ModuleScript" referent="209">
           <Properties>
             <string name="Name">Shell</string>
             <string name="Source"><![CDATA[--[[
@@ -42912,7 +43276,7 @@ return Shell
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="209">
+        <Item class="ModuleScript" referent="210">
           <Properties>
             <string name="Name">Shelves</string>
             <string name="Source"><![CDATA[--[[
@@ -43622,7 +43986,7 @@ return Shelves
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="210">
+      <Item class="ModuleScript" referent="211">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -43988,26 +44352,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="211">
+  <Item class="SoundService" referent="212">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="212">
+  <Item class="StarterPlayer" referent="213">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="213">
+    <Item class="StarterPlayerScripts" referent="214">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="214">
+      <Item class="Folder" referent="215">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="ModuleScript" referent="215">
+        <Item class="ModuleScript" referent="216">
           <Properties>
             <string name="Name">Animator</string>
             <string name="Source"><![CDATA[--[[
@@ -44687,11 +45051,11 @@ return Animator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="216">
+        <Item class="Folder" referent="217">
           <Properties>
             <string name="Name">Fx</string>
           </Properties>
-          <Item class="ModuleScript" referent="217">
+          <Item class="ModuleScript" referent="218">
             <Properties>
               <string name="Name">Ambient</string>
               <string name="Source"><![CDATA[--[[
@@ -45071,7 +45435,7 @@ return Ambient
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="218">
+          <Item class="ModuleScript" referent="219">
             <Properties>
               <string name="Name">Budget</string>
               <string name="Source"><![CDATA[--[[
@@ -45248,7 +45612,7 @@ return Budget
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="219">
+          <Item class="ModuleScript" referent="220">
             <Properties>
               <string name="Name">Camera</string>
               <string name="Source"><![CDATA[--[[
@@ -45574,7 +45938,7 @@ return Camera
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="220">
+          <Item class="ModuleScript" referent="221">
             <Properties>
               <string name="Name">Cardio</string>
               <string name="Source"><![CDATA[--!strict
@@ -46900,7 +47264,7 @@ return CardioFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="221">
+          <Item class="ModuleScript" referent="222">
             <Properties>
               <string name="Name">CardioChase</string>
               <string name="Source"><![CDATA[--!strict
@@ -47541,7 +47905,7 @@ return ChaseFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="222">
+          <Item class="ModuleScript" referent="223">
             <Properties>
               <string name="Name">Cosmetics</string>
               <string name="Source"><![CDATA[--[[
@@ -47858,7 +48222,7 @@ return CosmeticsFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="223">
+          <Item class="ModuleScript" referent="224">
             <Properties>
               <string name="Name">Crates</string>
               <string name="Source"><![CDATA[--[[
@@ -48735,7 +49099,7 @@ return Crates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="224">
+          <Item class="ModuleScript" referent="225">
             <Properties>
               <string name="Name">Fans</string>
               <string name="Source"><![CDATA[--[[
@@ -49730,7 +50094,1086 @@ return Fans
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="225">
+          <Item class="ModuleScript" referent="226">
+            <Properties>
+              <string name="Name">Interactive</string>
+              <string name="Source"><![CDATA[--!strict
+--[[
+	Fx.Interactive: brings the interactive gym props on every plot to life (World.Decor builds
+	them as Interactive_<Kind> models under Workspace.Map, with attribute Interactive and the
+	invisible marker parts named below). Cosmetic fun only: no remotes, no economy.
+
+	  trampoline  Standing or landing on the bounce pad ("BounceAnchor", attribute Radius)
+	              launches the local character 3-4 jumps high (InteractiveRules: higher out
+	              of a bounce and while jump is held), almost straight up. The pad squashes
+	              and springs back, with a puff and a pop.
+	  punchbag    The "PunchPrompt" (tap / E / gamepad X) or simply running into the bag
+	              ("HitZone") is a hit, at most 4 a second: the bag swings away from the
+	              player and settles like a damped pendulum, the local avatar throws a quick
+	              punch (alternating fists) and a combo counter pops over the bag. A part-built
+	              bag hangs from "BagPivot"; the one-piece Blender mesh (bag and stand in one)
+	              rocks on its base instead, more gently.
+	  bench       The "LiftPrompt" lies the player down on "BenchSeat" (the server seats
+	              them: one lifter at a time, seen by everyone). Every client poses whoever
+	              lies there in a bench press, moves a barbell with their hands and counts
+	              the reps. Jumping, moving or the prompt (now "Stop") ends it, and the lifter
+	              gets up on "StandSpot" beside the bench.
+
+	Avatars are posed like Fx.PlayerPose does it: Motor6D transforms overridden after the
+	avatar's own animations have run, from the gym poses in Shared.Poses (R15 only; an R6
+	avatar still bounces, hits and lifts, just without the pose).
+
+	Each client writes what it plays onto the Interactive_ model (local attributes, for
+	playtests): trampoline Bounces, BounceHeight (in jumps); punchbag Hits, Combo; bench
+	Lifting (the lifter's name, or nil) and Reps.
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Rules = require(Shared:WaitForChild("InteractiveRules"))
+local Poses = require(Shared:WaitForChild("Poses")) :: any
+local Theme = require(ReplicatedStorage:WaitForChild("Theme")) :: any
+local Sounds = require(script.Parent.Parent.Sounds) :: any
+local Sprites = require(script.Parent.Sprites)
+local Budget = require(script.Parent.Budget)
+
+local Interactive = {}
+
+local player = Players.LocalPlayer
+local W = Theme.World
+local INK: Color3 = Theme.Colors.Stroke
+
+local MODEL_DELAY = 0.5 -- seconds to let a model's parts arrive before setting it up
+local MARKER_WAIT = 5 -- seconds to wait for a marker part before giving up on a model
+local COUNTER_RANGE = 70 -- studs: the combo / rep counters fade out beyond this
+local NEAR = 14 -- studs from a prop within which the local character is checked every frame
+
+local PAD_SQUASH = 0.45 -- studs the bounce pad dips
+local BOUNCE_REACH = 8 -- studs above the pad a character's root still counts as on it
+local WALK_GAP = 0.5 -- seconds between hits while the player keeps pushing into the bag
+local MESH_ROCK = 0.3 -- share of the swing a one-piece bag-and-stand mesh rocks on its base
+local BLEND_IN = 0.25 -- seconds for a lifter to settle into the bench press
+local STAND_WAIT = 1.5 -- seconds to wait for the seat to let go before giving up on standing
+
+local UPPER_BODY = { "UpperTorso", "Head", "LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand" }
+
+-- The local character ------------------------------------------------------------------------
+
+type Joint = { motor: Motor6D, rot: CFrame, rotInv: CFrame }
+type Rig = { joints: { [string]: Joint }, scale: number }
+type Me = { model: Model, humanoid: Humanoid, root: BasePart }
+
+type Handler = {
+	destroy: () -> (),
+	step: ((now: number, dt: number) -> ())?,
+	pose: ((now: number) -> ())?,
+	jumped: ((me: Me) -> ())?,
+}
+
+local live: { [Instance]: Handler } = {}
+local pending: { [Instance]: boolean } = {}
+local me: Me? = nil
+local meConns: { RBXScriptConnection } = {}
+local lastJumpRequest = -math.huge
+local started = false
+
+local function dropMe()
+	for _, conn in meConns do
+		conn:Disconnect()
+	end
+	table.clear(meConns)
+	me = nil
+end
+
+-- The local character's humanoid and root, or nil while it is missing or still loading.
+local function localChar(): Me?
+	local character = player.Character
+	local current = me
+	if current and current.model == character and current.root.Parent and current.humanoid.Parent then
+		return current
+	end
+	dropMe()
+	if not character then
+		return nil
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or not root or not root:IsA("BasePart") then
+		return nil
+	end
+	local fresh: Me = { model = character, humanoid = humanoid, root = root }
+	me = fresh
+	-- Landing with jump held jumps before any frame sees the character on the ground.
+	table.insert(
+		meConns,
+		humanoid.StateChanged:Connect(function(_old, new)
+			if new == Enum.HumanoidStateType.Jumping then
+				for _, handler in live do
+					if handler.jumped then
+						handler.jumped(fresh)
+					end
+				end
+			end
+		end)
+	)
+	return fresh
+end
+
+local function holdingJump(humanoid: Humanoid): boolean
+	return humanoid.Jump or os.clock() - lastJumpRequest < 0.2
+end
+
+-- Normal take-off speed of the avatar's jump.
+local function jumpSpeed(humanoid: Humanoid): number
+	local speed = if humanoid.UseJumpPower then humanoid.JumpPower else Rules.jumpSpeed(Workspace.Gravity, humanoid.JumpHeight)
+	-- A mode may have switched jumping off: the pad still bounces like a default avatar.
+	return if speed >= 10 then speed else 50
+end
+
+-- Posing --------------------------------------------------------------------------------------
+
+local POSE: { [string]: { [string]: CFrame } } = {}
+local rigs: { [Model]: { rig: Rig?, at: number } } = setmetatable({}, { __mode = "k" }) :: any
+
+local function collectRig(character: Model): Rig?
+	local joints: { [string]: Joint } = {}
+	for _, d in character:GetDescendants() do
+		if d:IsA("Motor6D") and d.Part1 then
+			local limb = d.Part1.Name
+			if not joints[limb] and table.find(Poses.LIMBS, limb) then
+				local rot = d.C0.Rotation
+				joints[limb] = { motor = d, rot = rot, rotInv = rot:Inverse() }
+			end
+		end
+	end
+	if not joints.LowerTorso or not joints.UpperTorso then
+		return nil
+	end
+	return { joints = joints, scale = character:GetScale() }
+end
+
+-- The R15 joints of `character`, looked up again (at most once a second) when the avatar was
+-- rebuilt or had not finished loading; nil for an R6 or missing avatar.
+local function rigFor(character: Model, now: number): Rig?
+	local entry = rigs[character]
+	if entry then
+		local rig = entry.rig
+		if rig and rig.joints.UpperTorso.motor.Parent then
+			return rig
+		end
+		if now - entry.at < 1 then
+			return nil
+		end
+	end
+	local rig = collectRig(character)
+	rigs[character] = { rig = rig, at = now }
+	return rig
+end
+
+-- Poses `limbs` part way (alpha) from pose `a` to pose `b`, mixed over the avatar's own
+-- animation by `weight`. Call from PreSimulation, after the animations have run.
+local function poseRig(rig: Rig, a: { [string]: CFrame }, b: { [string]: CFrame }, alpha: number, weight: number, limbs: { string })
+	for _, limb in limbs do
+		local joint = rig.joints[limb]
+		if not joint or not joint.motor.Parent then
+			continue
+		end
+		local cf = a[limb]:Lerp(b[limb], alpha)
+		local transform = joint.rotInv * cf.Rotation * joint.rot
+		if limb == "LowerTorso" then
+			transform = CFrame.new(joint.rotInv * Vector3.new(0, cf.Y * rig.scale, 0)) * transform
+		end
+		joint.motor.Transform = if weight >= 1 then transform else joint.motor.Transform:Lerp(transform, weight)
+	end
+end
+
+-- Hands `limbs` back to the avatar's own animations.
+local function restRig(rig: Rig, limbs: { string })
+	for _, limb in limbs do
+		local joint = rig.joints[limb]
+		if joint and joint.motor.Parent then
+			joint.motor.Transform = CFrame.identity
+		end
+	end
+end
+
+-- The local avatar's punch: one at a time, alternating fists.
+local punchAt = -math.huge
+local punchSide = "Left"
+local punchRig: Rig? = nil
+
+local function throwPunch(who: Me, toward: Vector3?)
+	punchSide = if punchSide == "Right" then "Left" else "Right"
+	punchAt = os.clock()
+	-- A punch from the prompt while standing about: turn to face the bag first.
+	if toward and who.humanoid.MoveDirection.Magnitude < 0.1 and who.humanoid.SeatPart == nil then
+		local at = who.root.Position
+		who.root.CFrame = CFrame.lookAt(at, at + toward)
+	end
+end
+
+local function posePunch(now: number)
+	local t = now - punchAt
+	local who = if t < Rules.PUNCH_TIME then localChar() else nil
+	local rig = if who and who.humanoid.SeatPart == nil then rigFor(who.model, now) else nil
+	if not rig then
+		if punchRig then
+			restRig(punchRig, UPPER_BODY)
+			punchRig = nil
+		end
+		return
+	end
+	local reach, weight = Rules.punch(t)
+	poseRig(rig, POSE.PunchGuard, POSE["Punch" .. punchSide], reach, weight, UPPER_BODY)
+	punchRig = rig
+end
+
+-- Small pieces ----------------------------------------------------------------------------------
+
+local function flat(v: Vector3): Vector3
+	return Vector3.new(v.X, 0, v.Z)
+end
+
+local function marker(model: Instance, name: string): BasePart?
+	local found = model:WaitForChild(name, MARKER_WAIT)
+	return if found and found:IsA("BasePart") then found else nil
+end
+
+type Counter = {
+	show: (text: string, color: Color3, size: number) -> (),
+	hide: () -> (),
+	destroy: () -> (),
+}
+
+-- A number that pops over a prop: Display type in `color` with the world signs' ink outline.
+local function counter(adornee: BasePart, name: string, above: number): Counter
+	local gui = Instance.new("BillboardGui")
+	gui.Name = name
+	gui.Adornee = adornee
+	gui.Size = UDim2.fromScale(11, 3.8)
+	gui.StudsOffset = Vector3.new(0, above, 0)
+	gui.LightInfluence = 0
+	gui.MaxDistance = COUNTER_RANGE
+	gui.Enabled = false
+	gui.Parent = adornee
+	-- Half the board at size 1, so the milestone sizes still fit inside it.
+	local label = Instance.new("TextLabel")
+	label.Name = "Count"
+	label.BackgroundTransparency = 1
+	label.AnchorPoint = Vector2.new(0.5, 0.5)
+	label.Position = UDim2.fromScale(0.5, 0.5)
+	label.Size = UDim2.fromScale(0.5, 0.5)
+	label.Font = Theme.Fonts.Display
+	label.TextScaled = true
+	label.Text = ""
+	label.Parent = gui
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = INK
+	stroke.Thickness = 3
+	stroke.LineJoinMode = Enum.LineJoinMode.Round
+	stroke.Parent = label
+	local scale = Instance.new("UIScale")
+	scale.Parent = label
+	local token = 0
+
+	local self = {} :: Counter
+	function self.show(text: string, color: Color3, size: number)
+		token += 1
+		gui.Enabled = true
+		label.Text = text
+		label.TextColor3 = color
+		label.TextTransparency = 0
+		stroke.Transparency = 0
+		scale.Scale = size * 0.55
+		TweenService:Create(scale, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = size }):Play()
+	end
+	function self.hide()
+		if not gui.Enabled then
+			return
+		end
+		token += 1
+		local mine = token
+		local fade = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		TweenService:Create(label, fade, { TextTransparency = 1 }):Play()
+		TweenService:Create(stroke, fade, { Transparency = 1 }):Play()
+		task.delay(0.32, function()
+			if token == mine then
+				gui.Enabled = false
+			end
+		end)
+	end
+	function self.destroy()
+		token += 1
+		gui:Destroy()
+	end
+	return self
+end
+
+-- A burst of stars for a milestone; decorative, so it gives way on busy or small devices.
+local function starBurst(anchor: BasePart, at: Vector3, count: number)
+	for i = 1, Budget.count(count) do
+		if not Sprites.room() then
+			return
+		end
+		local a = (i / count) * 2 * math.pi + math.random()
+		Sprites.billboard(anchor, "StarPop", {
+			position = at,
+			size = 1 + math.random() * 0.5,
+			rise = Vector3.new(math.cos(a) * 2.2, 1.4 + math.random() * 1.6, math.sin(a) * 2.2),
+			life = 0.9,
+			spin = (math.random() - 0.5) * 120,
+		})
+	end
+end
+
+-- Trampoline ------------------------------------------------------------------------------------
+
+local function trampoline(model: Model): Handler?
+	local anchor = marker(model, "BounceAnchor")
+	if not anchor then
+		return nil
+	end
+	local top = anchor.Position
+	local radiusValue = anchor:GetAttribute("Radius")
+	local radius: number = if type(radiusValue) == "number" then radiusValue else 2.9
+
+	-- The part-built pad and the springs under it dip on a bounce (absent is fine).
+	local pads: { { part: BasePart, rest: CFrame, give: number } } = {}
+	for name, give in { TrampolinePad = 1, TrampolineSprings = 0.5 } :: { [string]: number } do
+		local part = model:FindFirstChild(name)
+		if part and part:IsA("BasePart") then
+			table.insert(pads, { part = part, rest = part.CFrame, give = give })
+		end
+	end
+
+	local lastBounce = -math.huge
+	local bounceSpeed = 0
+	local bounces = 0
+	local fallSpeed = 0 -- fastest the character has fallen since it last stood on something
+	local squashToken = 0
+	local emitter: ParticleEmitter? = nil
+	local triedEmitter = false
+
+	local function squash()
+		squashToken += 1
+		local mine = squashToken
+		local down = TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		for _, pad in pads do
+			if pad.part.Parent then
+				TweenService:Create(pad.part, down, { CFrame = pad.rest - Vector3.new(0, PAD_SQUASH * pad.give, 0) }):Play()
+			end
+		end
+		task.delay(0.06, function()
+			if mine ~= squashToken then
+				return
+			end
+			local back = TweenInfo.new(0.55, Enum.EasingStyle.Elastic, Enum.EasingDirection.Out)
+			for _, pad in pads do
+				if pad.part.Parent then
+					TweenService:Create(pad.part, back, { CFrame = pad.rest }):Play()
+				end
+			end
+		end)
+	end
+
+	local function puff()
+		if not triedEmitter then
+			triedEmitter = true
+			emitter = Sprites.emitter(anchor, "Puff", {
+				Color = ColorSequence.new(W.Cream),
+				EmissionDirection = Enum.NormalId.Top,
+				SpreadAngle = Vector2.new(75, 75),
+				Speed = NumberRange.new(5, 9),
+				Lifetime = NumberRange.new(0.35, 0.6),
+				Size = NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 0.3),
+					NumberSequenceKeypoint.new(0.3, 1.2),
+					NumberSequenceKeypoint.new(1, 0),
+				}),
+			})
+		end
+		if emitter then
+			emitter:Emit(Budget.count(8))
+		end
+	end
+
+	-- Over the pad: within its radius and no more than a jump's start above it.
+	local function over(root: BasePart): boolean
+		local d = root.Position - top
+		return d.X * d.X + d.Z * d.Z <= radius * radius and d.Y > 0.5 and d.Y < BOUNCE_REACH
+	end
+
+	local function launch(who: Me)
+		local v = who.root.AssemblyLinearVelocity
+		local x, z = Rules.drift(v.X, v.Z)
+		who.humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+		who.root.AssemblyLinearVelocity = Vector3.new(x, bounceSpeed, z)
+	end
+
+	local function bounce(who: Me, holding: boolean)
+		local now = os.clock()
+		if now - lastBounce < Rules.BOUNCE_GAP or who.humanoid.Health <= 0 or who.humanoid.SeatPart ~= nil then
+			return
+		end
+		lastBounce = now
+		local jump = jumpSpeed(who.humanoid)
+		local height = Rules.bounceHeight(jump, fallSpeed, holding)
+		bounceSpeed = Rules.bounceSpeed(jump, fallSpeed, holding)
+		fallSpeed = 0
+		launch(who)
+		squash()
+		puff()
+		Sounds.play("Pickup", 0.05, 0.85 + 0.3 * (height - Rules.BOUNCE_BASE))
+		bounces += 1
+		model:SetAttribute("Bounces", bounces)
+		model:SetAttribute("BounceHeight", height)
+	end
+
+	local handler: Handler = {
+		destroy = function()
+			squashToken += 1
+			if emitter then
+				emitter:Destroy()
+			end
+		end,
+		step = function(now: number)
+			local who = localChar()
+			if not who then
+				return
+			end
+			local root = who.root
+			if flat(root.Position - top).Magnitude > radius + NEAR then
+				fallSpeed = 0
+				return
+			end
+			local vy = root.AssemblyLinearVelocity.Y
+			-- The humanoid's landing or jump can swallow the launch on the frame it happens:
+			-- give it again while the character is clearly slower than the bounce.
+			local since = now - lastBounce
+			if since < 0.1 and vy < bounceSpeed - Workspace.Gravity * since - 15 then
+				launch(who)
+				return
+			end
+			local grounded = who.humanoid.FloorMaterial ~= Enum.Material.Air
+			if not grounded then
+				fallSpeed = math.max(fallSpeed, -vy)
+			elseif over(root) and vy < 1 then
+				bounce(who, holdingJump(who.humanoid))
+			else
+				fallSpeed = 0
+			end
+		end,
+		jumped = function(who: Me)
+			if over(who.root) then
+				bounce(who, true)
+			end
+		end,
+	}
+	return handler
+end
+
+-- Punch bag -------------------------------------------------------------------------------------
+
+local function punchBag(model: Model): Handler?
+	local pivot = marker(model, "BagPivot")
+	local zone = marker(model, "HitZone")
+	if not pivot or not zone then
+		return nil
+	end
+	local found = zone:WaitForChild("PunchPrompt", MARKER_WAIT)
+	local prompt = if found and found:IsA("ProximityPrompt") then found else nil
+
+	-- What swings: the part-built bag about the hook it hangs from, or (bag and stand in one
+	-- mesh) the whole body rocking on its base.
+	local parts: { BasePart } = {}
+	local rests: { CFrame } = {}
+	local cframes: { CFrame } = {}
+	local hinge = pivot.Position
+	local gain = 1
+	local tiltX, tiltZ = 0, 0 -- the swing, as a lean (radians) along world X and Z
+	local speedX, speedZ = 0, 0
+	local swinging = false
+	local captureToken = 0
+
+	local function settle()
+		tiltX, tiltZ, speedX, speedZ = 0, 0, 0, 0
+		swinging = false
+		for i, part in parts do
+			if part.Parent then
+				part.CFrame = rests[i]
+			end
+		end
+	end
+
+	local function capture()
+		settle()
+		table.clear(parts)
+		table.clear(rests)
+		table.clear(cframes)
+		local prop = model:FindFirstChild("Prop_PunchBag")
+		if not prop then
+			return
+		end
+		local bag: { BasePart } = {}
+		local body: { BasePart } = {}
+		for _, d in prop:GetDescendants() do
+			if d:IsA("BasePart") and d.Name ~= "PropRoot" and d.Name ~= "PropCollider" then
+				table.insert(body, d)
+				if string.sub(d.Name, 1, 3) == "Bag" and string.sub(d.Name, 1, 8) ~= "BagStand" then
+					table.insert(bag, d)
+				end
+			end
+		end
+		if #bag > 0 then
+			parts, hinge, gain = bag, pivot.Position, 1
+		else
+			local base = prop:FindFirstChild("PropRoot")
+			parts = body
+			hinge = if base and base:IsA("BasePart")
+				then base.Position
+				else Vector3.new(pivot.Position.X, zone.Position.Y - zone.Size.Y / 2, pivot.Position.Z)
+			gain = -MESH_ROCK
+		end
+		for i, part in parts do
+			rests[i] = part.CFrame
+		end
+	end
+
+	-- The body changed under us (its mesh arrived, a part streamed): start again from rest.
+	local function recapture(d: Instance)
+		if not d:IsA("BasePart") then
+			return
+		end
+		captureToken += 1
+		local mine = captureToken
+		settle()
+		task.delay(MODEL_DELAY, function()
+			if mine == captureToken and model.Parent then
+				capture()
+			end
+		end)
+	end
+
+	local function swing(dt: number)
+		tiltX, speedX = Rules.swingStep(tiltX, speedX, dt)
+		tiltZ, speedZ = Rules.swingStep(tiltZ, speedZ, dt)
+		local angle = math.sqrt(tiltX * tiltX + tiltZ * tiltZ)
+		if angle > Rules.SWING_MAX then
+			local k = Rules.SWING_MAX / angle
+			tiltX, tiltZ, angle = tiltX * k, tiltZ * k, Rules.SWING_MAX
+		end
+		if Rules.swingStill(tiltX, speedX) and Rules.swingStill(tiltZ, speedZ) then
+			settle()
+			return
+		end
+		-- Leaning toward (tiltX, tiltZ) is a turn about the level axis across it.
+		local turn = if angle > 1e-5
+			then CFrame.fromAxisAngle(Vector3.new(-tiltZ, 0, tiltX) * gain, angle * math.abs(gain))
+			else CFrame.identity
+		local frame = CFrame.new(hinge) * turn * CFrame.new(-hinge)
+		local n = 0
+		for i, part in parts do
+			if part.Parent then
+				n += 1
+				cframes[i] = frame * rests[i]
+			end
+		end
+		if n == #parts and n > 0 then
+			Workspace:BulkMoveTo(parts, cframes, Enum.BulkMoveMode.FireCFrameChanged)
+		end
+	end
+
+	local combo = 0
+	local hits = 0
+	local lastHit: number? = nil
+	local inside = false
+	local board = counter(pivot, "ComboCounter", 2.4)
+
+	local function hit(who: Me, viaPrompt: boolean)
+		local now = os.clock()
+		if not Rules.canHit(lastHit, now) or who.humanoid.Health <= 0 or who.humanoid.SeatPart ~= nil then
+			return
+		end
+		local away = flat(zone.Position - who.root.Position)
+		away = if away.Magnitude > 0.05 then away.Unit else flat(who.root.CFrame.LookVector).Unit
+		combo = Rules.combo(combo, lastHit, now)
+		lastHit = now
+		hits += 1
+		local kick = Rules.kick(combo)
+		speedX += away.X * kick
+		speedZ += away.Z * kick
+		swinging = true
+
+		throwPunch(who, if viaPrompt then away else nil)
+		local big = Rules.milestone(combo)
+		board.show("x" .. combo, if big then W.Sunny else W.White, Rules.comboScale(combo))
+		Sounds.play("Deposit", 0.06, 0.9 + 0.4 * math.clamp((combo - 1) / 24, 0, 1))
+		if big then
+			Sounds.play("Step")
+			starBurst(pivot, pivot.Position + Vector3.new(0, 2.4, 0), 8)
+		end
+		model:SetAttribute("Hits", hits)
+		model:SetAttribute("Combo", combo)
+	end
+
+	local conns: { RBXScriptConnection } = {}
+	if prompt then
+		table.insert(
+			conns,
+			prompt.Triggered:Connect(function(who: Player)
+				local mine = localChar()
+				if who == player and mine then
+					hit(mine, true)
+				end
+			end)
+		)
+	end
+	table.insert(conns, model.DescendantAdded:Connect(recapture))
+	table.insert(conns, model.DescendantRemoving:Connect(recapture))
+	capture()
+
+	local handler: Handler = {
+		destroy = function()
+			captureToken += 1
+			for _, conn in conns do
+				conn:Disconnect()
+			end
+			settle()
+			board.destroy()
+		end,
+		step = function(now: number, dt: number)
+			if swinging then
+				swing(dt)
+			end
+			if combo > 0 and not Rules.comboAlive(lastHit, now) then
+				combo = 0
+				board.hide()
+				model:SetAttribute("Combo", 0)
+			end
+			local who = localChar()
+			if not who or flat(who.root.Position - zone.Position).Magnitude > NEAR then
+				inside = false
+				return
+			end
+			-- Running into the bag: a hit on the way in, and again while pushing on into it.
+			local p = zone.CFrame:PointToObjectSpace(who.root.Position)
+			local half = zone.Size / 2
+			local nowInside = math.abs(p.X) <= half.X + 0.5 and math.abs(p.Z) <= half.Z + 0.5 and math.abs(p.Y) <= half.Y + 3
+			if nowInside then
+				local toward = flat(zone.Position - who.root.Position)
+				local pushing = toward.Magnitude > 0.05 and who.humanoid.MoveDirection:Dot(toward.Unit) > 0.3
+				if not inside or (pushing and now - (lastHit or -math.huge) >= WALK_GAP) then
+					hit(who, false)
+				end
+			end
+			inside = nowInside
+		end,
+	}
+	return handler
+end
+
+-- Bench press -----------------------------------------------------------------------------------
+
+type Lift = {
+	humanoid: Humanoid,
+	character: Model?,
+	mine: boolean,
+	startedAt: number,
+	reps: number,
+	bar: Model,
+	barParts: { BasePart },
+	barOffsets: { CFrame },
+}
+
+local function barPart(parent: Instance, name: string, length: number, diameter: number, tint: Color3): BasePart
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Shape = Enum.PartType.Cylinder
+	p.Size = Vector3.new(length, diameter, diameter)
+	p.Color = tint
+	p.Material = Enum.Material.SmoothPlastic
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.Parent = parent
+	return p
+end
+
+-- The barbell a lifter presses: a chrome bar along X with sunny plates outside the hands.
+local function buildBar(parent: Instance): (Model, { BasePart }, { CFrame })
+	local bar = Instance.new("Model")
+	bar.Name = "RepBarbell"
+	local parts: { BasePart } = { barPart(bar, "RepBar", 8, 0.3, W.Chrome) }
+	local offsets: { CFrame } = { CFrame.identity }
+	for _, side in { -1, 1 } do
+		for _, piece in
+			{
+				{ name = "RepPlate", x = 3.25, length = 0.4, diameter = 2.1, tint = W.Sunny },
+				{ name = "RepPlate", x = 3.62, length = 0.32, diameter = 1.5, tint = W.Sunny:Lerp(W.White, 0.35) },
+				{ name = "RepCollar", x = 3.88, length = 0.2, diameter = 0.55, tint = W.Chrome },
+			}
+		do
+			table.insert(parts, barPart(bar, piece.name, piece.length, piece.diameter, piece.tint))
+			table.insert(offsets, CFrame.new(side * piece.x, 0, 0))
+		end
+	end
+	bar.Parent = parent
+	return bar, parts, offsets
+end
+
+local function bench(model: Model): Handler?
+	local seatPart = marker(model, "BenchSeat")
+	local standSpot = marker(model, "StandSpot")
+	local liftAnchor = marker(model, "LiftAnchor")
+	if not seatPart or not seatPart:IsA("Seat") or not standSpot or not liftAnchor then
+		return nil
+	end
+	local seat: Seat = seatPart
+	local found = liftAnchor:WaitForChild("LiftPrompt", MARKER_WAIT)
+	local prompt = if found and found:IsA("ProximityPrompt") then found else nil
+	local board = counter(liftAnchor, "RepCounter", 4.2)
+
+	local lift: Lift? = nil
+	local armed = false -- the local lifter has let go of the stick since lying down
+	local leavingAt = -math.huge
+	local standBy: number? = nil -- the local lifter gets up once the seat has let go, until then
+
+	-- The barbell resting in the rack hides while somebody presses theirs.
+	local function showRack(shown: boolean)
+		local rack = model:FindFirstChild("Prop_Barbell")
+		if rack then
+			for _, d in rack:GetDescendants() do
+				if d:IsA("BasePart") then
+					d.LocalTransparencyModifier = if shown then 0 else 1
+				end
+			end
+		end
+	end
+
+	local function finish()
+		local current = lift
+		if not current then
+			return
+		end
+		lift = nil
+		local rig = if current.character then rigs[current.character] else nil
+		if rig and rig.rig then
+			restRig(rig.rig, Poses.LIMBS)
+		end
+		current.bar:Destroy()
+		showRack(true)
+		board.hide()
+		model:SetAttribute("Lifting", nil)
+		if current.mine then
+			standBy = os.clock() + STAND_WAIT
+		end
+	end
+
+	local function start(humanoid: Humanoid)
+		local character = humanoid.Parent
+		local bar, barParts, barOffsets = buildBar(model)
+		local now = os.clock()
+		local current: Lift = {
+			humanoid = humanoid,
+			character = if character and character:IsA("Model") then character else nil,
+			mine = character ~= nil and character == player.Character,
+			startedAt = now,
+			reps = 0,
+			bar = bar,
+			barParts = barParts,
+			barOffsets = barOffsets,
+		}
+		lift = current
+		showRack(false)
+		board.show("0 REPS", W.White, 1)
+		model:SetAttribute("Lifting", if character then character.Name else humanoid.Name)
+		model:SetAttribute("Reps", 0)
+		if current.mine then
+			armed = false
+			leavingAt = -math.huge
+			standBy = nil
+		end
+	end
+
+	local function refresh()
+		local who = seat.Occupant
+		local current = lift
+		if current and current.humanoid ~= who then
+			finish()
+		end
+		if who and not lift then
+			start(who)
+		end
+		if prompt then
+			local mine = lift ~= nil and lift.mine
+			prompt.ActionText = if mine then "Stop" else "Lift"
+			prompt.Enabled = mine or who == nil
+		end
+	end
+
+	-- Asks the seat to let the local lifter go; jumping is the fallback that always works.
+	local function leave(who: Me, now: number)
+		if now - leavingAt < 0.4 then
+			return
+		end
+		if leavingAt > -math.huge then
+			who.humanoid.Jump = true
+		end
+		leavingAt = now
+		who.humanoid.Sit = false
+	end
+
+	-- Stands the local lifter up beside the bench (never after the server has moved them away).
+	local function standUp(who: Me)
+		if who.humanoid.Health <= 0 or (who.root.Position - seat.Position).Magnitude > 6 then
+			return
+		end
+		local hip = if who.humanoid.RigType == Enum.HumanoidRigType.R15 then who.humanoid.HipHeight else 2
+		local at = standSpot.Position + Vector3.new(0, hip + who.root.Size.Y / 2 + 0.1, 0)
+		local look = flat(standSpot.CFrame.LookVector)
+		who.root.CFrame = CFrame.lookAt(at, at + (if look.Magnitude > 0.1 then look.Unit else Vector3.new(0, 0, -1)))
+		who.root.AssemblyLinearVelocity = Vector3.zero
+		who.root.AssemblyAngularVelocity = Vector3.zero
+		who.humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+	end
+
+	local conns: { RBXScriptConnection } = {
+		seat:GetPropertyChangedSignal("Occupant"):Connect(refresh),
+	}
+	if prompt then
+		table.insert(
+			conns,
+			prompt.Triggered:Connect(function(who: Player)
+				-- The server seats a new lifter and lets its own one go; this only hurries the "Stop".
+				local mine = localChar()
+				if who == player and mine and lift and lift.mine then
+					leave(mine, os.clock())
+				end
+			end)
+		)
+	end
+	refresh()
+
+	local handler: Handler = {
+		destroy = function()
+			for _, conn in conns do
+				conn:Disconnect()
+			end
+			finish()
+			standBy = nil
+			board.destroy()
+		end,
+		step = function(now: number)
+			local who = localChar()
+			local deadline = standBy
+			if deadline then
+				if not who or now > deadline then
+					standBy = nil
+				elseif who.humanoid.SeatPart == nil and seat:FindFirstChild("SeatWeld") == nil then
+					standBy = nil
+					standUp(who)
+				end
+			end
+			local current = lift
+			if not current then
+				return
+			end
+			-- A lifter who is gone, dead or no longer on this seat (a missed signal) is done.
+			if seat.Occupant ~= current.humanoid or current.humanoid.Health <= 0 or current.humanoid.Parent == nil then
+				refresh()
+				current = lift
+				if not current then
+					return
+				end
+			end
+			local t = now - current.startedAt
+			if current.mine and who then
+				-- Moving ends the lift, once the stick has been let go after lying down.
+				local moving = who.humanoid.MoveDirection.Magnitude
+				if not armed then
+					armed = moving < 0.1 and t > 0.3
+				elseif moving > 0.3 then
+					leave(who, now)
+				end
+			end
+
+			-- The bar rides between the hands; without hands (R6) it moves over the chest.
+			local character = current.character
+			local left = character and character:FindFirstChild("LeftHand")
+			local right = character and character:FindFirstChild("RightHand")
+			local frame = seat.CFrame
+			local centre
+			if left and right and left:IsA("BasePart") and right:IsA("BasePart") then
+				centre = (left.Position + right.Position) / 2
+			else
+				centre = frame * Vector3.new(0, 0.4, -(1 + 1.2 * Rules.press(t)))
+			end
+			local base = CFrame.fromMatrix(centre, frame.RightVector, frame.UpVector)
+			for i, part in current.barParts do
+				part.CFrame = base * current.barOffsets[i]
+			end
+
+			local reps = Rules.reps(t)
+			if reps ~= current.reps then
+				current.reps = reps
+				board.show(reps .. (if reps == 1 then " REP" else " REPS"), if reps % 10 == 0 then W.Sunny else W.White, 1)
+				model:SetAttribute("Reps", reps)
+				if current.mine then
+					Sounds.play("Tick", 0.04)
+					if reps % 10 == 0 then
+						Sounds.play("Step")
+						starBurst(liftAnchor, liftAnchor.Position + Vector3.new(0, 4.2, 0), 6)
+					end
+				end
+			end
+		end,
+		pose = function(now: number)
+			local current = lift
+			local character = current and current.character
+			if not current or not character then
+				return
+			end
+			local rig = rigFor(character, now)
+			if rig then
+				local t = now - current.startedAt
+				poseRig(rig, POSE.BenchDown, POSE.BenchUp, Rules.press(t), math.min(1, t / BLEND_IN), Poses.LIMBS)
+			end
+		end,
+	}
+	return handler
+end
+
+-- Models -----------------------------------------------------------------------------------------
+
+local BUILDERS: { [string]: (Model) -> Handler? } = {
+	trampoline = trampoline,
+	punchbag = punchBag,
+	bench = bench,
+}
+
+-- Sets `model` up (this waits for its marker parts, so it runs in its own thread).
+local function setup(model: Model)
+	pending[model] = nil
+	local kind = model:GetAttribute("Interactive")
+	local build = if type(kind) == "string" then BUILDERS[kind] else nil
+	if not build or live[model] or not model:IsDescendantOf(Workspace) then
+		return
+	end
+	local ok, result = pcall(build, model)
+	if not ok then
+		warn("[Fx.Interactive] " .. model.Name .. " failed: " .. tostring(result))
+		return
+	end
+	local handler = result :: Handler?
+	if not handler then
+		return
+	end
+	if live[model] or not model:IsDescendantOf(Workspace) then
+		handler.destroy()
+		return
+	end
+	live[model] = handler
+end
+
+local function consider(instance: Instance)
+	if instance:IsA("Model") and instance:GetAttribute("Interactive") ~= nil and not live[instance] and not pending[instance] then
+		pending[instance] = true
+		-- Give the model's parts a moment to arrive (building / streaming).
+		task.delay(MODEL_DELAY, setup, instance)
+	end
+end
+
+local function onRemoving(instance: Instance)
+	pending[instance] = nil
+	local handler = live[instance]
+	if handler then
+		live[instance] = nil
+		handler.destroy()
+	end
+end
+
+-- One warning per prop: a broken one must not flood the output every frame.
+local warned: { [string]: boolean } = {}
+local function report(name: string, err: any)
+	if not warned[name] then
+		warned[name] = true
+		warn("[Fx.Interactive] " .. name .. ": " .. tostring(err))
+	end
+end
+
+function Interactive.init()
+	if started then
+		return
+	end
+	started = true
+	for _, name in { "PunchGuard", "PunchRight", "PunchLeft", "BenchUp", "BenchDown" } do
+		POSE[name] = Poses.samplePose("Story", name, 0, 0)
+	end
+
+	UserInputService.JumpRequest:Connect(function()
+		lastJumpRequest = os.clock()
+	end)
+	-- A new character starts clean: its connections go with the old one.
+	player.CharacterRemoving:Connect(function()
+		dropMe()
+		punchAt = -math.huge
+		punchRig = nil
+	end)
+	RunService.Heartbeat:Connect(function(dt: number)
+		local now = os.clock()
+		for instance, handler in live do
+			if handler.step then
+				local ok, err = pcall(handler.step :: any, now, dt)
+				if not ok then
+					report(instance.Name, err)
+				end
+			end
+		end
+	end)
+	-- After the avatars' own animations, like Fx.PlayerPose.
+	RunService.PreSimulation:Connect(function()
+		local now = os.clock()
+		local ok, err = pcall(posePunch :: any, now)
+		if not ok then
+			report("punch", err)
+		end
+		for instance, handler in live do
+			if handler.pose then
+				ok, err = pcall(handler.pose :: any, now)
+				if not ok then
+					report(instance.Name, err)
+				end
+			end
+		end
+	end)
+
+	task.spawn(function()
+		local map = Workspace:WaitForChild("Map", 60)
+		if not map then
+			return
+		end
+		map.DescendantAdded:Connect(consider)
+		map.DescendantRemoving:Connect(onRemoving)
+		for _, d in map:GetDescendants() do
+			consider(d)
+		end
+	end)
+end
+
+return Interactive
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="227">
             <Properties>
               <string name="Name">Machines</string>
               <string name="Source"><![CDATA[-- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow):
@@ -51262,7 +52705,7 @@ return Machines
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="226">
+          <Item class="ModuleScript" referent="228">
             <Properties>
               <string name="Name">Modes</string>
               <string name="Source"><![CDATA[--!strict
@@ -52859,7 +54302,7 @@ return ModesFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="227">
+          <Item class="ModuleScript" referent="229">
             <Properties>
               <string name="Name">Mog</string>
               <string name="Source"><![CDATA[--!strict
@@ -53484,7 +54927,7 @@ return MogFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="228">
+          <Item class="ModuleScript" referent="230">
             <Properties>
               <string name="Name">Orbs</string>
               <string name="Source"><![CDATA[-- Client-side aura orb visuals for the local player's own plot.
@@ -55550,7 +56993,7 @@ return Orbs
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="229">
+          <Item class="ModuleScript" referent="231">
             <Properties>
               <string name="Name">PlateStyle</string>
               <string name="Source"><![CDATA[--!strict
@@ -55799,7 +57242,7 @@ return PlateStyle
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="230">
+          <Item class="ModuleScript" referent="232">
             <Properties>
               <string name="Name">Plates</string>
               <string name="Source"><![CDATA[--!strict
@@ -56630,7 +58073,7 @@ return Plates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="231">
+          <Item class="ModuleScript" referent="233">
             <Properties>
               <string name="Name">PlayerPose</string>
               <string name="Source"><![CDATA[--!strict
@@ -56784,7 +58227,7 @@ return PlayerPose
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="232">
+          <Item class="ModuleScript" referent="234">
             <Properties>
               <string name="Name">Shelf</string>
               <string name="Source"><![CDATA[--[[
@@ -58408,7 +59851,7 @@ return Shelf
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="233">
+          <Item class="ModuleScript" referent="235">
             <Properties>
               <string name="Name">Sprites</string>
               <string name="Source"><![CDATA[--[[
@@ -58613,7 +60056,7 @@ return Sprites
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="234">
+          <Item class="ModuleScript" referent="236">
             <Properties>
               <string name="Name">Surge</string>
               <string name="Source"><![CDATA[--[[
@@ -58898,7 +60341,7 @@ return Surge
             </Properties>
           </Item>
         </Item>
-        <Item class="ModuleScript" referent="235">
+        <Item class="ModuleScript" referent="237">
           <Properties>
             <string name="Name">Guide</string>
             <string name="Source"><![CDATA[--[[
@@ -59340,11 +60783,11 @@ return Guide
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="236">
+        <Item class="Folder" referent="238">
           <Properties>
             <string name="Name">Intro</string>
           </Properties>
-          <Item class="ModuleScript" referent="237">
+          <Item class="ModuleScript" referent="239">
             <Properties>
               <string name="Name">Actors</string>
               <string name="Source"><![CDATA[--!strict
@@ -60013,7 +61456,7 @@ return Actors
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="238">
+          <Item class="ModuleScript" referent="240">
             <Properties>
               <string name="Name">Avatar</string>
               <string name="Source"><![CDATA[--!strict
@@ -60656,7 +62099,7 @@ return Avatar
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="239">
+          <Item class="ModuleScript" referent="241">
             <Properties>
               <string name="Name">AvatarRig</string>
               <string name="Source"><![CDATA[--!strict
@@ -60887,7 +62330,7 @@ return AvatarRig
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="240">
+          <Item class="ModuleScript" referent="242">
             <Properties>
               <string name="Name">Cutscene</string>
               <string name="Source"><![CDATA[--[[
@@ -61730,7 +63173,7 @@ return Cutscene
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="241">
+          <Item class="ModuleScript" referent="243">
             <Properties>
               <string name="Name">Effects</string>
               <string name="Source"><![CDATA[--!strict
@@ -62655,7 +64098,7 @@ return Effects
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="242">
+          <Item class="ModuleScript" referent="244">
             <Properties>
               <string name="Name">Framing</string>
               <string name="Source"><![CDATA[--!strict
@@ -62862,7 +64305,7 @@ return Framing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="243">
+          <Item class="ModuleScript" referent="245">
             <Properties>
               <string name="Name">Stage</string>
               <string name="Source"><![CDATA[--!strict
@@ -63148,7 +64591,7 @@ return Stage
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="244">
+          <Item class="ModuleScript" referent="246">
             <Properties>
               <string name="Name">Timeline</string>
               <string name="Source"><![CDATA[--!strict
@@ -63496,7 +64939,7 @@ return Timeline
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="245">
+          <Item class="ModuleScript" referent="247">
             <Properties>
               <string name="Name">Ui</string>
               <string name="Source"><![CDATA[--!strict
@@ -64372,7 +65815,7 @@ return Ui
             </Properties>
           </Item>
         </Item>
-        <Item class="LocalScript" referent="246">
+        <Item class="LocalScript" referent="248">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -64838,6 +66281,7 @@ if fxFolder then
 			"Surge",
 			"Cardio",
 			"CardioChase",
+			"Interactive",
 		}
 	do
 		local moduleScript = fxFolder:FindFirstChild(name)
@@ -64860,7 +66304,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="247">
+        <Item class="ModuleScript" referent="249">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects plus background music.
@@ -65428,7 +66872,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="248">
+        <Item class="ModuleScript" referent="250">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -65477,11 +66921,11 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="249">
+        <Item class="Folder" referent="251">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="250">
+          <Item class="ModuleScript" referent="252">
             <Properties>
               <string name="Name">CardioHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -66975,7 +68419,7 @@ return CardioHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="251">
+          <Item class="ModuleScript" referent="253">
             <Properties>
               <string name="Name">DailyWindow</string>
               <string name="Source"><![CDATA[--[[
@@ -67604,7 +69048,7 @@ return DailyWindow
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="252">
+          <Item class="ModuleScript" referent="254">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -69609,7 +71053,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="253">
+          <Item class="ModuleScript" referent="255">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -73532,7 +74976,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="254">
+          <Item class="ModuleScript" referent="256">
             <Properties>
               <string name="Name">MapPicker</string>
               <string name="Source"><![CDATA[--[[
@@ -74438,7 +75882,7 @@ return MapPicker
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="255">
+          <Item class="ModuleScript" referent="257">
             <Properties>
               <string name="Name">MogHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -75478,7 +76922,7 @@ return MogHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="256">
+          <Item class="ModuleScript" referent="258">
             <Properties>
               <string name="Name">MogRing</string>
               <string name="Source"><![CDATA[--!strict
@@ -75984,7 +77428,7 @@ return MogRing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="257">
+          <Item class="ModuleScript" referent="259">
             <Properties>
               <string name="Name">ObbyHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -76719,7 +78163,7 @@ return ObbyHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="258">
+          <Item class="ModuleScript" referent="260">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -80637,7 +82081,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="259">
+          <Item class="ModuleScript" referent="261">
             <Properties>
               <string name="Name">ShopScenes</string>
               <string name="Source"><![CDATA[--[[
@@ -82565,7 +84009,7 @@ return ShopScenes
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="260">
+          <Item class="ModuleScript" referent="262">
             <Properties>
               <string name="Name">Tutorial</string>
               <string name="Source"><![CDATA[--[[
@@ -83390,7 +84834,7 @@ return Tutorial
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="261">
+          <Item class="ModuleScript" referent="263">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
@@ -87461,7 +88905,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="262">
+  <Item class="Workspace" referent="264">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>

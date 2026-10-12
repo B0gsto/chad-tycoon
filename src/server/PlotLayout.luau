@@ -424,11 +424,13 @@ Layout.MERGE_COURT = { x = Layout.PADS.Merge.x, z = Layout.PADS.Merge.z, radius 
 Layout.PLAZA = rect(-COURT_INNER, COURT_INNER, MERGE_Z - 5, Layout.POOL.minZ - 0.9)
 
 -- Interactive props along the front fence, each on its own round mat of `radius` (World.Decor
--- builds them as Interactive_<Kind> models). They keep off the courts and the spawn view.
+-- builds them as Interactive_<Kind> models). They keep off the courts and the spawn view. The
+-- bench press mirrors the punch bag; its mat is a teal rectangle inside the same radius.
 local PROP_Z = -Layout.INNER_HALF + 6
 Layout.INTERACTIVE = {
 	Trampoline = { x = 42, z = PROP_Z, radius = 4 },
 	PunchBag = { x = 30.5, z = PROP_Z, radius = 3.5 },
+	Bench = { x = -30.5, z = PROP_Z, radius = 4 },
 	FlexPodium = { x = -42, z = PROP_Z, radius = 4 },
 } :: { [string]: { x: number, z: number, radius: number } }
 

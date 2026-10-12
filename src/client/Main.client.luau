@@ -461,6 +461,7 @@ if fxFolder then
 			"Surge",
 			"Cardio",
 			"CardioChase",
+			"Interactive",
 		}
 	do
 		local moduleScript = fxFolder:FindFirstChild(name)
