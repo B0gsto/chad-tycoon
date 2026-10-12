@@ -528,9 +528,12 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 
 	local clock = 0
 	local logoShownAt: number? = nil
+	local alive = true
+	local fading = false
 
 	local function applyArt(art: Art?)
-		if not art then
+		-- Art arriving during the fade-out would fight its tweens.
+		if not art or not alive then
 			return
 		end
 		if art.keyArt and keyArt.Image ~= art.keyArt then
@@ -597,7 +600,6 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	-- Pick up art that is already there (in Studio and the preview it usually is).
 	applyArt(LoadingScreen.findArt(0))
 
-	local alive = true
 	local nextTip = 5
 	local progress = 0.06
 	local target = 0.3
@@ -666,7 +668,7 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		rider.Rotation = math.sin(clock * 2.6) * 10
 		riderGlow.Position = UDim2.fromOffset(edge, riderY)
 
-		if not alive then
+		if fading then
 			-- The fade-out tweens own every transparency from here on.
 			return
 		end
@@ -744,7 +746,9 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		end
 		alive = false
 		target = 1
+		table.clear(pending)
 		task.delay(0.3, function()
+			fading = true
 			fadeOut(root, 0.6)
 		end)
 		task.delay(0.95, function()
