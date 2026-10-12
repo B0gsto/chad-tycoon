@@ -77,6 +77,18 @@ local function rescale()
 	-- windows have re-fitted.
 	task.defer(Kit.reflowText)
 end
+-- The viewport is not sized yet in the first frames of a session (it reads 1 x 1): wait for
+-- it, or everything built below would be measured for the smallest scale.
+do
+	local started = os.clock()
+	while os.clock() - started < 5 do
+		local camera = Workspace.CurrentCamera
+		if camera and camera.ViewportSize.X > 1 and camera.ViewportSize.Y > 1 then
+			break
+		end
+		RunService.Heartbeat:Wait()
+	end
+end
 rescale()
 -- Kit.px reads the design scale from here, also for labels built off screen.
 Kit.pixelScale(screen)

@@ -752,10 +752,19 @@ function Kit.captionPx(): number
 	return if Kit.touch then G.TextMinPhone else G.TextMin
 end
 
+-- Held labels are kept by strong reference and dropped when they are destroyed: a weak
+-- table forgets an Instance as soon as no script holds it, though it is still on screen.
 type HeldText = { px: number, design: number }
-local heldText: { [TextLabel]: HeldText } = setmetatable({}, { __mode = "k" }) :: any
+local heldText: { [TextLabel]: HeldText } = {}
 function Kit.holdText(label: TextLabel, screenPx: number, design: number?)
 	local held: HeldText = { px = screenPx, design = design or label.TextSize }
+	if heldText[label] == nil then
+		pcall(function()
+			(label :: any).Destroying:Once(function()
+				heldText[label] = nil
+			end)
+		end)
+	end
 	heldText[label] = held
 	label.TextSize = Kit.px(held.px, held.design, label)
 end
@@ -763,9 +772,7 @@ end
 -- The screen was rescaled: every held label takes its size again.
 function Kit.reflowText()
 	for label, held in heldText do
-		if label.Parent then
-			label.TextSize = Kit.px(held.px, held.design, label)
-		end
+		label.TextSize = Kit.px(held.px, held.design, label)
 	end
 end
 
@@ -799,11 +806,13 @@ function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
 		end
 	end
 	if maxSize then
-		-- Scaled text may shrink to fit its box, but not under its size on the glass.
-		maxSize = if minPx then Kit.px(minPx, maxSize, label) else maxSize
+		-- Scaled text may shrink to fit its box, but not under its size on the glass. A
+		-- UITextSizeConstraint counts screen pixels (a UIScale above it does not change
+		-- them), so the floor is MinPx itself.
+		local cap = math.max(maxSize, floor, minPx or 0)
 		Kit.new("UITextSizeConstraint", {
-			MaxTextSize = math.max(maxSize, floor),
-			MinTextSize = if minPx then math.min(Kit.px(minPx, nil, label), math.max(maxSize, floor)) else Theme.Glass.TextMinPhone,
+			MaxTextSize = cap,
+			MinTextSize = if minPx then minPx else math.min(Theme.Glass.TextMinPhone, cap),
 			Parent = label,
 		})
 	end
@@ -851,10 +860,11 @@ function Kit.title(parent: Instance, props: { [string]: any }): TextLabel
 	return Kit.text(parent, props)
 end
 
--- Number label (tabular, never scaled).
+-- Number label (tabular). One line at a fixed TextSize; with only a MaxTextSize it is scaled
+-- to its box, and keeps TextWrapped for that (Roblox turns TextScaled off with TextWrapped).
 function Kit.number(parent: Instance, props: { [string]: any }): TextLabel
 	props.Font = props.Font or F.Number
-	props.TextWrapped = if props.TextWrapped == nil then false else props.TextWrapped
+	props.TextWrapped = if props.TextWrapped == nil then props.TextSize == nil else props.TextWrapped
 	return Kit.text(parent, props)
 end
 
@@ -3784,7 +3794,9 @@ function Kit.hudText(parent: Instance, props: { [string]: any }): TextLabel
 	props.StrokeColor = nil
 	props.Font = props.Font or F.Display
 	props.TextColor3 = props.TextColor3 or Color3.new(1, 1, 1)
-	props.TextWrapped = if props.TextWrapped == nil then false else props.TextWrapped
+	-- One line at a fixed TextSize; scaled text (only a MaxTextSize) keeps TextWrapped, or
+	-- Roblox turns TextScaled off with it.
+	props.TextWrapped = if props.TextWrapped == nil then props.TextSize == nil else props.TextWrapped
 	props.StrokeThickness = 0
 	local label = Kit.text(parent, props)
 	local stroke = Kit.textStroke(label, thickness, 0)
