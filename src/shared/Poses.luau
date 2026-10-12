@@ -871,6 +871,64 @@ STORY.Strut = (function()
 	return def
 end)()
 
+-- Gym poses for a player's own avatar at a plot's interactive props (Client.Fx.Interactive
+-- blends between them itself, so they hold still).
+
+-- Boxing guard: both fists up by the chin, leaning in a little.
+STORY.PunchGuard = {
+	base = P({
+		UpperTorso = { -6, 0, 0 },
+		Head = { 4, 0, 0 },
+		RightUpperArm = { 35, 0, 14 },
+		RightLowerArm = { 115, 0, 0 },
+	}),
+}
+
+-- A straight right: the shoulder turned in behind the fist, the left staying on guard.
+STORY.PunchRight = {
+	base = P({
+		UpperTorso = { -8, 28, 0 },
+		Head = { 4, -24, 0 },
+		RightUpperArm = { 90, 0, 24 },
+		RightLowerArm = { 4, 0, 0 },
+		LeftUpperArm = { 40, 0, -14 },
+		LeftLowerArm = { 120, 0, 0 },
+	}),
+}
+
+-- The same punch thrown with the left.
+STORY.PunchLeft = {
+	base = P({
+		UpperTorso = { -8, -28, 0 },
+		Head = { 4, 24, 0 },
+		LeftUpperArm = { 90, 0, -24 },
+		LeftLowerArm = { 4, 0, 0 },
+		RightUpperArm = { 40, 0, 14 },
+		RightLowerArm = { 120, 0, 0 },
+	}),
+}
+
+-- Bench press, for a rig lying on its back (its front facing the sky): knees bent over the end
+-- of the bench. Up: both arms pushed straight out in front of the chest, a little wide.
+STORY.BenchUp = {
+	base = P({
+		RightUpperArm = { 90, 0, 25 },
+		RightUpperLeg = { 0, 0, 5 },
+		RightLowerLeg = { -85, 0, 0 },
+	}),
+}
+
+-- Down: elbows dropped out beside the chest, forearms still pointing up, hands the same
+-- width apart as in BenchUp.
+STORY.BenchDown = {
+	base = P({
+		RightUpperArm = { 0, -20, 45 },
+		RightLowerArm = { 100, 0, 0 },
+		RightUpperLeg = { 0, 0, 5 },
+		RightLowerLeg = { -85, 0, 0 },
+	}),
+}
+
 -- Animation sets -----------------------------------------------------------------
 
 type Set = {
@@ -971,7 +1029,7 @@ local SETS: { [string]: Set } = {
 			add(v, "UpperTorso", b * 1.2, 0, 0)
 			add(v, "Head", -b * 0.8, 0, 0)
 		end,
-		extra = { "Walk", "Run", "Strut" },
+		extra = { "Walk", "Run", "Strut", "PunchGuard", "PunchRight", "PunchLeft", "BenchUp", "BenchDown" },
 	},
 }
 
@@ -1156,7 +1214,7 @@ function Poses.gaitTime(gait: string, distance: number, scale: number?): number
 end
 
 -- Every pose a set defines, including the ones never played in the rotation
--- (Story: Walk, Run, Strut).
+-- (Story: Walk, Run, Strut and the gym poses).
 function Poses.allPoseNames(animSet: string): { string }
 	local _, set = resolveSet(animSet)
 	local names = Poses.poseNames(animSet)

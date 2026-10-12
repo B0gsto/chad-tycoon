@@ -1884,6 +1884,14 @@ actionHandlers.Home = function(session)
 	Tycoon.hooks.leavingForHome(session)
 	local character = session.player.Character
 	if character then
+		-- A lifter on the bench press is welded to its seat (World.Decor): let go first.
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		local seat = humanoid and humanoid.SeatPart
+		local weld = seat and seat:FindFirstChild("SeatWeld")
+		if humanoid and weld then
+			weld:Destroy()
+			humanoid.Sit = false
+		end
 		character:PivotTo(session.plot.spawn)
 	end
 end
