@@ -13,8 +13,11 @@
 
 	The window opens by itself once per session when a reward is waiting, after a
 	calm moment: never during the intro or the tutorial, a game-mode run, or
-	under another window or popup. A held crate makes it wait too, but not for
+	under another window or popup, and never within REWARD_QUIET seconds of a
+	reward card. A player who finished the tutorial this session first walks one
+	full lap (collects cash once). A held crate makes it wait too, but not for
 	ever (DailyReward.autoOpenTick): a crate can be carried for minutes.
+	After a claim the window closes by itself, CLOSE_AFTER_CLAIM after the coins fly.
 ]]
 
 local Players = game:GetService("Players")
@@ -89,7 +92,11 @@ local SIDE_TEXT = 112
 -- Seconds of calm before the window opens by itself (longer right after the tutorial,
 -- whose reward cards are still on their way).
 local CALM = 2
-local CALM_AFTER_TUTORIAL = 8
+local CALM_AFTER_TUTORIAL = 20
+-- The window never opens by itself this soon after a reward card (a unit or crate reveal).
+local REWARD_QUIET = 20
+-- A claimed window closes by itself this long after the coins fly.
+local CLOSE_AFTER_CLAIM = 1.5
 -- ScreenGui attributes that mean "busy": a window, a popup or a mode run. The held-crate
 -- panel ("CratePanelOpen") only holds the window back for a while.
 local BUSY = { "WindowOpen", "ModalOpen", "RunActive", "ObbyMode", "CardioActive" }
@@ -168,7 +175,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	})
 	Kit.text(hero, {
 		Name = "Rule",
-		Text = "Come back every day. Miss one and it starts again at Day 1!",
+		Text = "Come back tomorrow for the next card.",
 		TextSize = T.Small,
 		MinPx = true,
 		TextColor3 = C.Text,
@@ -569,6 +576,12 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				Kit.pop(card.frame, 1)
 				Kit.confetti(window.frame, { Origin = UDim2.fromScale(0.5, 0.45), Count = 24, ZIndex = 12 })
 			end
+			-- Claimed: nothing is left to do here, so the window steps out by itself.
+			task.delay(CLOSE_AFTER_CLAIM, function()
+				if window.isOpen() then
+					deps.close()
+				end
+			end)
 		end)
 
 		-- Opens by itself once per session when a reward is waiting and the screen is calm
@@ -577,21 +590,49 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		window.onOpen.Event:Connect(function()
 			opened = true
 		end)
+		-- Reward cards: the Reward notify (its card may still be queued) and the reveal
+		-- itself, from start to end (ScreenGui attribute "RevealOpen", Popups).
+		local rewardAt = -math.huge
+		local function noteReward()
+			rewardAt = os.clock()
+		end
+		Net.event("Notify").OnClientEvent:Connect(function(payload)
+			if type(payload) == "table" and payload.kind == "Reward" then
+				noteReward()
+			end
+		end)
+		screen:GetAttributeChangedSignal("RevealOpen"):Connect(noteReward)
+		-- First full lap: cash collected (by hand or by Auto Cash) after the tutorial ended.
+		-- The collect that ends the tutorial arrives before its state does, so it never counts.
+		local lapped = false
+		Net.event("Effect").OnClientEvent:Connect(function(kind, effect)
+			if kind ~= "Cash" or type(effect) ~= "table" then
+				return
+			end
+			local data = State.data
+			if (effect.source == "Collect" or effect.source == "Auto") and data and data.tutorialDone == true then
+				lapped = true
+			end
+		end)
 		task.spawn(function()
 			local player = Players.LocalPlayer
 			local auto = DailyReward.autoOpen()
 			local needed = CALM
+			-- The tutorial was running this session: the window waits for the first lap.
+			local sawTutorial = false
 			while not opened do
 				local step = task.wait(0.5)
 				local data = State.data
 				local daily = dailyOf(data)
 				if data and data.tutorialDone ~= true then
+					sawTutorial = true
 					needed = CALM_AFTER_TUTORIAL
 				end
 				local ready = data ~= nil
 					and daily ~= nil
 					and daily.claimable == true
 					and data.tutorialDone == true
+					and (lapped or not sawTutorial)
 					and player:GetAttribute("IntroPlaying") ~= true
 					and player:GetAttribute("GameReady") == true
 				if ready then
@@ -603,7 +644,10 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				end
 				-- A held crate is waited for, then the window stops waiting for it.
 				local crate = screen:GetAttribute("CratePanelOpen") == true
-				if DailyReward.autoOpenTick(auto, step, not ready, crate, needed) and not opened then
+				-- A reward card does not restart the calm (the reveal itself does, as a popup):
+				-- the window only waits out the rest of REWARD_QUIET.
+				local quiet = os.clock() - rewardAt >= REWARD_QUIET
+				if DailyReward.autoOpenTick(auto, step, not ready, crate, needed) and quiet and not opened then
 					deps.open()
 					return
 				end
