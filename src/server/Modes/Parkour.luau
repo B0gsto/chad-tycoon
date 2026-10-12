@@ -2,8 +2,9 @@
 	Parkour: the first game mode. Timed runs over the ten levels in Modes.Course.
 
 	- Levels: every level is out at sea and reached only by teleport. A player has unlocked
-	  level 1 + (number of consecutive cleared levels from 1); "ModeStart" may pick any
-	  unlocked level (options.level), else the lowest level not yet cleared. Walking west
+	  level 1 + (number of consecutive cleared or skipped levels from 1); "ModeStart" may pick
+	  any unlocked level (options.level), else the lowest level not yet cleared or skipped
+	  (with none left: the lowest not yet cleared). Walking west
 	  through gate 1's portal (Course.crossedStart) does not start a run: it sends a "pick"
 	  notify so the client opens the Maps window on the default level. Starting again
 	  restarts.
@@ -18,14 +19,21 @@
 	  first clear OF THAT LEVEL and then once per
 	  Economy.MODE_REWARD_COOLDOWN (one cooldown shared by all levels, modes.parkour.
 	  lastRewardAt). After a remote
-	  finish the player is brought back to the gates (GameModes.returnLater).
+	  finish the player is brought back to the gates (GameModes.returnLater) wherever they
+	  stand on the sky course by then (the finish deck, a bridge, the next map's start deck).
 	- Leaving the level's bounds for Course.LEAVE_SECONDS ends the run ("left"); on a remote
 	  level the player goes back to the gates.
+	- Nobody stays on the sky course without a run: a player with no run who is below the
+	  cloud floor, or off every map's start and finish deck for STRANDED_SECONDS (a bridge, a
+	  map's path), is taken back to the gates with the toast "Back to the gates" (checked on
+	  every mode tick).
 	- Stages (docs/sky-obby.md): the ten maps are one chained sky obby; a stage is a map (map n
 	  is stage n, map 10's finish is Course.STAGE_COUNT = 11). Stage numbers are progress
 	  labels only, never a respawn spot. profile.parkour.stage keeps the highest stage
-	  reached (finishing map n reaches n + 1); Player attributes "ParkourStage" (this run's
-	  stage, 0 when not running) and "ParkourBestStage" feed the HUD's progress bar.
+	  reached (finishing map n reaches n + 1); it follows only the maps really cleared in a
+	  row from map 1, so a skipped map never counts (the STAGE board reads it). Player
+	  attributes "ParkourStage" (this run's stage, 0 when not running) and "ParkourBestStage"
+	  feed the HUD's progress bar.
 	- Gear: action "ParkourGear" { gear = "none" | "speed" | "jump" | "gravity" } saves the
 	  choice (profile.parkour.gear); it is worn only during a run (speed: WalkSpeed 16 -> 28
 	  through the Humanoid's BaseWalkSpeed; jump: JumpHeight 7.2 -> 14 or JumpPower 50 -> 70;
@@ -33,10 +41,13 @@
 	  on stop / finish / leave. A run that wore gear at any point is `assisted`.
 	- Skip Map: action "ParkourSkip" costs Economy.parkourSkipCost(income) cash (two minutes
 	  of income, at least Economy.PARKOUR_SKIP_MIN; the snapshot's `skipCost`; a cash action,
-	  no Robux receipt). It finishes the current map as an assisted run (teleport under the
-	  finish arch; it unlocks the next map) and starts a run on the next map's start deck
-	  (map 10: just the finish). Assisted runs pay, unlock and count clears but never record
-	  a best time or a board entry.
+	  no Robux receipt). It only unlocks the next map (profile.parkour.skipped[level] = 1): no
+	  reward, no clear, no best time, no stage and no board entry, so the map's real first
+	  clear still pays later. The run ends and the player stands in front of the gates with
+	  the Maps window opened on the next map (nothing starts by itself). With nothing to
+	  unlock (the last map, or the next map already unlocked) it is refused and costs nothing.
+	  Assisted runs (gear) pay, unlock and count clears but never record a best time or a
+	  board entry.
 
 	Notify payloads (kind = "Mode", mode = "parkour"):
 	  { event = "pick", level }                                  crossed gate 1: open the Maps
@@ -46,8 +57,11 @@
 	  { event = "respawn", index = 0, stage, stageCount, reason? }
 	                                                             back at the map's start deck
 	                                                             reason = "kill" after lava
-	  { event = "skip", stage, stageCount, index = 0, checkpoints = 0, level }
-	                                                             paid Skip Map of `level`
+	  { event = "skip", stage, stageCount, index = 0, checkpoints = 0, level, paid = 0,
+	    nextLevel, unlocked }                                    paid Skip Map of `level`: it
+	                                                             paid nothing; followed by
+	                                                             "stop" (reason "skip") and
+	                                                             "pick" (level = nextLevel)
 	(`checkpoints` / `index` stay 0 for older client code; there is no "checkpoint" event.)
 	  { event = "finish", time, best, newBest, first, cash, full, cooldownEnds, rank?,
 	    level, levelName, nextLevel?, unlockedNew, unlocked, levels, stage, stageCount,
@@ -78,6 +92,19 @@ local TELEPORT_GRACE = 0.6
 local FEET_BELOW_ROOT = 3
 -- Seconds after a remote finish before the player is taken back to the gates.
 local RETURN_SECONDS = 15
+-- Seconds a player with no run may stand off every start / finish deck of the sky course
+-- before they are taken back to the gates.
+local STRANDED_SECONDS = 2
+-- A player with no run is caught down to this far under the cloud floor (the hub lies under
+-- some maps, much lower: nobody down there is touched).
+local RESCUE_DEPTH = 150
+-- Studs around the maps' rectangles that still count as the sky course (the bridges between
+-- them, the drift of a fall).
+local SKY_MARGIN = 60
+-- A deck holds feet this far past its edge, under its top and over it (a jump).
+local DECK_EDGE = 1.5
+local DECK_UNDER = 2
+local DECK_OVER = 20
 
 -- Gear (coils) worn during runs.
 local GEARS = { none = true, speed = true, jump = true, gravity = true }
@@ -93,7 +120,7 @@ type State = {
 	run: Rules.Run,
 	outsideSince: number?,
 	graceUntil: number,
-	-- Gear was worn or a stage was skipped during this run.
+	-- Gear was worn during this run.
 	assisted: boolean,
 	-- The speed coil was worn during this run (looser anti-cheat minimums).
 	speedUsed: boolean,
@@ -101,7 +128,9 @@ type State = {
 
 type Worn = { gear: string, humanoid: any, root: any, base: any }
 
-type Record = { best: { number }, clears: { number }, stage: number, gear: string }
+-- `skipped` (1 = opened with a paid Skip Map, one slot per level like `clears`) is missing in
+-- saves from before it.
+type Record = { best: { number }, clears: { number }, stage: number, gear: string, skipped: { number }? }
 
 local function escape(s: string): string
 	return (string.gsub(s, "[&<>]", { ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;" }))
@@ -126,23 +155,76 @@ local function speedMultiplier(humanoid: any): number
 	return if type(mult) == "number" then mult else 1
 end
 
--- Levels unlocked: 1 + consecutive cleared levels from level 1 (at most LEVEL_COUNT).
+-- Was `level` opened with a paid Skip Map?
+local function skippedIn(rec: Record, level: number): boolean
+	local list = rec.skipped
+	return type(list) == "table" and (tonumber(list[level]) or 0) > 0
+end
+
+-- Levels unlocked: 1 + consecutive cleared or skipped levels from level 1 (at most
+-- LEVEL_COUNT).
 local function unlockedOf(rec: Record): number
 	local n = 1
-	while n < Course.LEVEL_COUNT and (rec.clears[n] or 0) > 0 do
+	while n < Course.LEVEL_COUNT and ((rec.clears[n] or 0) > 0 or skippedIn(rec, n)) do
 		n += 1
 	end
 	return n
 end
 
--- The lowest level not cleared yet (the last level once all are cleared).
+-- The lowest level not cleared or skipped yet; with none left, the lowest level not cleared
+-- (the last level once all are cleared).
 local function defaultOf(rec: Record): number
+	local uncleared: number? = nil
 	for i = 1, Course.LEVEL_COUNT do
 		if (rec.clears[i] or 0) == 0 then
-			return i
+			if not skippedIn(rec, i) then
+				return i
+			end
+			uncleared = uncleared or i
 		end
 	end
-	return Course.LEVEL_COUNT
+	return uncleared or Course.LEVEL_COUNT
+end
+
+-- The stage a record has earned: one past the maps really cleared in a row from map 1 (a
+-- skipped map stops the count).
+local function earnedStage(rec: Record): number
+	local n = 1
+	while n <= Course.LEVEL_COUNT and (rec.clears[n] or 0) > 0 do
+		n += 1
+	end
+	return n
+end
+
+-- Every map's start and finish deck: where a player with no run may stand.
+local DECKS: { Course.Element } = {}
+for _, level in Course.LEVELS do
+	table.insert(DECKS, level.PATH[1])
+	table.insert(DECKS, level.PATH[#level.PATH])
+end
+
+-- Are feet at (x, y, z) on one of the DECKS (or hopping over it)?
+local function onDeck(x: number, y: number, z: number): boolean
+	for _, deck in DECKS do
+		if y >= deck.y - DECK_UNDER and y <= deck.y + DECK_OVER and Course.footDistance(deck, x, z) <= DECK_EDGE then
+			return true
+		end
+	end
+	return false
+end
+
+-- The sky course volume: over any map's rectangle (SKY_MARGIN around it), from RESCUE_DEPTH
+-- under the cloud floor up.
+local function inSky(x: number, y: number, z: number): boolean
+	if y < Course.FLOOR_Y - RESCUE_DEPTH then
+		return false
+	end
+	for _, b in Course.REGIONS do
+		if x >= b.x0 - SKY_MARGIN and x <= b.x1 + SKY_MARGIN and z >= b.z0 - SKY_MARGIN and z <= b.z1 + SKY_MARGIN then
+			return true
+		end
+	end
+	return false
 end
 
 function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoon: any })
@@ -150,6 +232,11 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	local Tycoon = context.Tycoon
 	local runs: { [Player]: State } = {}
 	local lastX: { [Player]: number } = {}
+	-- Players with no run on the sky course: since when they stand off every deck, until
+	-- when their position is not trusted (just teleported), and their latest timed return.
+	local offDeckSince: { [Player]: number } = {}
+	local settleUntil: { [Player]: number } = {}
+	local returnTicket: { [Player]: number } = {}
 	-- Server best times per level (in memory; see Rules.recordBest for the OrderedDataStore
 	-- shape).
 	local serverBest: { { Rules.BestEntry } } = {}
@@ -207,15 +294,62 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		lastX[player] = at[1]
 	end
 
-	-- The runner now stands on global `stage` (0 = not running): attributes + saved best.
+	-- The runner now stands on global `stage` (a map's start or finish deck): attributes +
+	-- saved best. The saved best follows earnedStage, never the stage itself: the map after
+	-- a skipped one is not progress on the STAGE board.
 	local function reach(player: Player, session: any, stage: number)
 		setAttribute(player, "ParkourStage", stage)
 		local rec = levels(session)
-		if stage > rec.stage then
-			rec.stage = stage
+		local earned = earnedStage(rec)
+		if earned > rec.stage then
+			rec.stage = earned
 			Tycoon.markDirty(session)
 		end
 		setAttribute(player, "ParkourBestStage", rec.stage)
+	end
+
+	-- In front of the gates, off the sky course.
+	local function backToGates(player: Player, t: number)
+		offDeckSince[player] = nil
+		settleUntil[player] = t + TELEPORT_GRACE
+		GameModes.toGates(player)
+		lastX[player] = nil
+	end
+
+	-- Nobody stays on the sky course without a run: below the cloud floor, or off every
+	-- start / finish deck for STRANDED_SECONDS (a bridge, a map's path), back to the gates.
+	local function rescue(player: Player, x: number, y: number, z: number, t: number)
+		if t < (settleUntil[player] or 0) or not inSky(x, y, z) then
+			offDeckSince[player] = nil
+			return
+		end
+		if not Course.inWater(x, y, z) then
+			if onDeck(x, y, z) then
+				offDeckSince[player] = nil
+				return
+			end
+			local since = offDeckSince[player] or t
+			offDeckSince[player] = since
+			if t - since < STRANDED_SECONDS then
+				return
+			end
+		end
+		backToGates(player, t)
+		local session = GameModes.session(player)
+		if session then
+			Tycoon.toast(session, "Back to the gates", "info")
+		end
+	end
+
+	-- Back to the gates after `seconds`, wherever the player then stands on the sky course
+	-- (not if they went home, started a run, or a later return took over).
+	local function returnFromSky(player: Player, seconds: number)
+		local ticket = (returnTicket[player] or 0) + 1
+		returnTicket[player] = ticket
+		GameModes.returnLater(player, seconds, function(r: BasePart): boolean
+			local at = r.Position
+			return returnTicket[player] == ticket and inSky(at.X, at.Y - FEET_BELOW_ROOT, at.Z)
+		end)
 	end
 
 	-- Gear -------------------------------------------------------------------------------
@@ -362,6 +496,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		removeGear(player)
 		if reason ~= "leave" then
 			setAttribute(player, "ParkourStage", 0)
+			settleUntil[player] = now() + TELEPORT_GRACE
 		end
 		if reason ~= "leave" then
 			GameModes.notify(player, "stop", ID, { reason = reason })
@@ -447,10 +582,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		Tycoon.markDirty(session)
 		GameModes.refresh(player)
 		if level.remote then
-			GameModes.returnLater(player, RETURN_SECONDS, function(r: BasePart): boolean
-				local at = r.Position
-				return Course.inBounds(level, at.X, at.Y - FEET_BELOW_ROOT, at.Z)
-			end)
+			returnFromSky(player, RETURN_SECONDS)
 		end
 	end
 
@@ -467,7 +599,12 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			end
 			return
 		end
-		if not state or t < state.graceUntil then
+		if not state then
+			rescue(player, x, y, z, t)
+			return
+		end
+		offDeckSince[player] = nil
+		if t < state.graceUntil then
 			return
 		end
 		local level = state.run.level
@@ -592,8 +729,19 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	Tycoon.addAction("ParkourSkip", function(session: any)
 		local player = session.player
 		local state = runs[player]
-		local root = GameModes.root(player)
-		if not state or not root then
+		if not state or not GameModes.root(player) then
+			return
+		end
+		local level = state.run.level
+		local index = level.index
+		local rec = levels(session)
+		-- A skip only unlocks the next map: with nothing to unlock it is refused, not charged.
+		if index >= Course.LEVEL_COUNT then
+			Tycoon.toast(session, "This is the last map: there is no map to skip to", "info")
+			return
+		end
+		if unlockedOf(rec) > index then
+			Tycoon.toast(session, string.format("Map %d is already unlocked", index + 1), "info")
 			return
 		end
 		local p = session.profile
@@ -603,34 +751,39 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			return
 		end
 		p.money -= cost
+		-- Skip Map: the next map unlocks and nothing else. No finish: no reward, no clear, no
+		-- best, no stage and no board entry (the real first clear still pays later).
+		local skipped = {}
+		for i = 1, Course.LEVEL_COUNT do
+			skipped[i] = if skippedIn(rec, i) then 1 else 0
+		end
+		skipped[index] = 1
+		rec.skipped = skipped
 		Tycoon.markDirty(session)
-		-- Skip Map: finish this map as an assisted run (it unlocks the next one), then start
-		-- the next map from its start deck.
-		local t = now()
-		local level = state.run.level
-		state.assisted = true
-		state.graceUntil = t + TELEPORT_GRACE
-		state.outsideSince = nil
-		Rules.skip(state.run)
-		local arch = level.FINISH_ARCH
-		GameModes.teleport(player, Vector3.new(arch.x, arch.y, arch.z), Vector3.new(-arch.faceX, 0, -arch.faceZ))
-		lastX[player] = arch.x
 		GameModes.notify(player, "skip", ID, {
-			stage = level.STAGE_LAST,
+			stage = level.STAGE_FIRST,
 			stageCount = stageCount(),
 			index = 0,
 			checkpoints = 0,
-			level = level.index,
+			level = index,
+			paid = 0,
+			nextLevel = index + 1,
+			unlocked = unlockedOf(rec),
 		})
-		finish(player, state, root, t)
-		if level.index < Course.LEVEL_COUNT and not runs[player] then
-			def.start(player, true, { level = level.index + 1 })
-		end
+		-- The run is over: back to the gates with the Maps window on the next map, which
+		-- starts only when the player presses play (no card over a running clock).
+		def.stop(player, "skip")
+		backToGates(player, now())
+		Tycoon.toast(session, string.format("Map %d skipped. Map %d is unlocked!", index, index + 1), "good")
+		GameModes.notify(player, "pick", ID, { level = index + 1 })
 	end)
 
 	game:GetService("Players").PlayerRemoving:Connect(function(player)
 		runs[player] = nil
 		lastX[player] = nil
+		offDeckSince[player] = nil
+		settleUntil[player] = nil
+		returnTicket[player] = nil
 		removeGear(player)
 	end)
 	updateBoard()
