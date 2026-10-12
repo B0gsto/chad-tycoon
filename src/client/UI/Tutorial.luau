@@ -4,9 +4,9 @@
 	ServerScriptService.Server.Tutorial); this only reads the State snapshot
 	(tutorialStep, tutorialDone) and the "Tutorial" Notify payloads.
 
-	The quest pill is one slim glass line (Kit.hudGlass: step chip "2/5", the
-	short instruction as outlined HUD text, a quiet "x" to skip) docked
-	top-centre under the multiplier gauge, or
+	The quest pill is one slim dark plate (Kit.hudGlass, all but opaque: step chip
+	"2/5", the short instruction as outlined HUD text, a small grey "Skip" word at the
+	right) docked top-centre under the multiplier gauge, or
 	bottom-centre above the dumbbell meter on compact screens, so it never covers the
 	play area. Theme.Tutorial.Steps[i].ShortHint, when present, shows as a
 	small second line for the first few seconds of a step. Docked at the top
@@ -16,7 +16,11 @@
 	ticks a check mark on the chip, then the next step's text cross-fades in
 	place with another soft pulse (the pill is not rebuilt); only the last step
 	slides it out. The pill (and the 3D guide, see Guide) stays hidden while the
-	intro cutscene plays (Players.LocalPlayer attribute "IntroPlaying").
+	intro cutscene plays (Players.LocalPlayer attribute "IntroPlaying"). The pill also
+	steps out while anything else owns the screen: a window or a modal (the map picker,
+	a finish card, a confirm: ScreenGui attributes "WindowOpen" / "ModalOpen") and a
+	game-mode run ("RunActive", "ObbyMode", "CardioActive", the ones the HUD hides its
+	goal strip on); during a run the 3D guide is cleared too.
 
 	The completion reward is a toast-sized banner shown through the popup
 	queue once the wallet has finished counting up the first collect.
@@ -58,7 +62,7 @@ export type Deps = {
 -- Pill geometry (design pixels). The HUD's deposit strip spans y 54..84 at the top
 -- centre; the compact dumbbell's top edge sits about 94 px above the bottom.
 -- The text sizes are held on the glass (Tutorial.build: a phone's UI scale would shrink
--- 18 / 14 design px to 12 / 9), and the pill's height and widest width follow them.
+-- 22 / 14 design px to 13 / 9), and the pill's height and widths follow them.
 local PILL_HEIGHT = 44
 local PILL_MIN_WIDTH = 220
 local PILL_MAX_WIDTH = 440
@@ -72,12 +76,14 @@ local SLIDE = 12
 local CHIP_WIDTH = 38
 local TEXT_X = 64
 local CHIP_X = 18 -- past the gold accent bar
--- While a window is open the pill docks on the screen edge above it (and above its dim).
-local EDGE_GAP = 4
 local Z_REST = 6
-local Z_OVER_WINDOWS = 12
-local CLOSE_WIDTH = 38
-local TEXT_SIZE = 18
+-- The plate: the glass tint, dark enough for the text to read over any floor or sky.
+local PLATE = 0.1
+-- The "Skip" word's slot at the right end (Tutorial.build: its measured width and a margin).
+local SKIP_WIDTH = 52
+local SKIP_SIZE = 14
+local SKIP_REST = 0.35
+local TEXT_SIZE = 22
 local HINT_SIZE = 14
 local HINT_FADED = 0.1
 local HINT_SECONDS = 4
@@ -105,8 +111,6 @@ local leaving = false
 local token = 0
 local hintSerial = 0
 local lastData: { [string]: any }? = nil
--- A window or modal is open (Kit.onWindowOpen): the HUD is hidden, the pill stays.
-local windowUp = false
 
 local function compact(): boolean
 	return screen:GetAttribute("Compact") == true
@@ -117,17 +121,25 @@ local function introPlaying(): boolean
 	return player ~= nil and player:GetAttribute("IntroPlaying") == true
 end
 
--- A game-mode run timer (Hud, ScreenGui attribute "RunActive") takes the pill's slot.
+-- A game-mode run: its timer takes the pill's slot ("RunActive", set by Hud, MogHud and
+-- CardioHud) and its own HUD owns the screen ("ObbyMode", "CardioActive").
+local RUN_FLAGS = { "RunActive", "ObbyMode", "CardioActive" }
+local function runUp(): boolean
+	for _, name in RUN_FLAGS do
+		if screen:GetAttribute(name) == true then
+			return true
+		end
+	end
+	return false
+end
+
+-- Something else owns the screen: the intro, a run, or a window or modal (the map picker,
+-- a mode's finish card, a confirm). A tutorial line over those is noise.
 local function slotTaken(): boolean
-	return introPlaying() or screen:GetAttribute("RunActive") == true
+	return introPlaying() or runUp() or screen:GetAttribute("WindowOpen") == true or screen:GetAttribute("ModalOpen") == true
 end
 
 local function restPosition(): UDim2
-	if windowUp then
-		-- Clear of the window: the very top (the hidden unit counter's row), or the very
-		-- bottom on compact screens.
-		return if compact() then UDim2.new(0.5, 0, 1, PAD_BOTTOM - EDGE_GAP) else UDim2.new(0.5, 0, 0, EDGE_GAP - PAD_TOP)
-	end
 	if compact() then
 		return UDim2.new(0.5, 0, 1, -BOTTOM_GAP + PAD_BOTTOM)
 	end
@@ -218,7 +230,7 @@ local function setContent(step: number, data: { [string]: any }, live: boolean?)
 	ease(checkScale, time * 0.6, { Scale = 0 })
 	mainLabel.Text = text
 	local width = math.max(textWidth(text, TEXT_SIZE, F.Display), if hint then textWidth(hint, HINT_SIZE, F.UI) else 0)
-	local pillWidth = math.clamp(math.ceil(width) + TEXT_X + CLOSE_WIDTH + 12, PILL_MIN_WIDTH, PILL_MAX_WIDTH)
+	local pillWidth = math.clamp(math.ceil(width) + TEXT_X + SKIP_WIDTH + 12, PILL_MIN_WIDTH, PILL_MAX_WIDTH)
 	ease(group, time, { Size = UDim2.fromOffset(pillWidth + PAD_X * 2, PILL_HEIGHT + PAD_TOP + PAD_BOTTOM) })
 	fadeText(hintLabel, 0, 1)
 	mainLabel.Position = UDim2.new(0, TEXT_X, 0.5, 0)
@@ -347,14 +359,15 @@ local function render(data: { [string]: any })
 	end
 
 	if deps.guide then
-		deps.guide.setTutorialTarget(TutorialSteps.target(step, data.units))
+		-- A run is somewhere else entirely: no path home across the course.
+		deps.guide.setTutorialTarget(if runUp() then nil else TutorialSteps.target(step, data.units))
 	end
 
 	if slotTaken() then
 		if onScreen then
 			slideOut()
 		end
-		-- Re-shown fresh (with its hint) when the intro or the run ends.
+		-- Re-shown fresh (with its hint) when the intro, the run or the window is over.
 		shownStep = 0
 		return
 	end
@@ -635,10 +648,14 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 	screen = screenGui
 	deps = dependencies
 	local action = Net.event("Action")
-	-- The step (at least 16 px on the glass, 14 on a phone) and its hint (a caption).
-	TEXT_SIZE = Kit.px(if Kit.touch then 14 else 16, 18, screen)
+	-- The step (22 px at 720p; at least 18 px on the glass, 16 on a phone), its hint and the
+	-- "Skip" word (captions).
+	TEXT_SIZE = Kit.px(if Kit.touch then 16 else 18, 22, screen)
 	HINT_SIZE = Kit.px(Kit.captionPx(), 14, screen)
+	SKIP_SIZE = HINT_SIZE
+	SKIP_WIDTH = math.ceil(textWidth(Words.Skip, SKIP_SIZE, F.UI)) + 24
 	PILL_HEIGHT = math.max(44, TEXT_SIZE + HINT_SIZE + 12)
+	PILL_MIN_WIDTH = math.ceil(220 * TEXT_SIZE / 18)
 	PILL_MAX_WIDTH = math.ceil(440 * TEXT_SIZE / 18)
 
 	group = Kit.new("CanvasGroup", {
@@ -653,13 +670,15 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		Parent = screen,
 	})
 	pulseScale = Kit.new("UIScale", { Parent = group })
-	-- Glass over the unblurred world, a notification tier above the HUD strips: a gold
-	-- accent bar, the step chip carries the colour and the text is outlined.
+	-- A dark plate over the unblurred world, a notification tier above the HUD strips: a
+	-- gold accent bar, the step chip carries the colour and the text is outlined.
 	local pill = Kit.hudGlass(group, {
 		Name = "Pill",
 		Size = UDim2.new(1, -PAD_X * 2, 0, PILL_HEIGHT),
 		Position = UDim2.fromOffset(PAD_X, PAD_TOP),
 		Radius = Kit.RADIUS.M,
+		Color = G.Tint,
+		Transparency = PLATE,
 		Accent = C.Gold,
 		ZIndex = 6,
 	})
@@ -697,7 +716,7 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		Text = "",
 		TextSize = TEXT_SIZE,
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		Size = UDim2.new(1, -(TEXT_X + CLOSE_WIDTH), 0, TEXT_SIZE + 4),
+		Size = UDim2.new(1, -(TEXT_X + SKIP_WIDTH), 0, TEXT_SIZE + 4),
 		Position = UDim2.new(0, TEXT_X, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
 		TextXAlignment = Enum.TextXAlignment.Left,
@@ -710,7 +729,7 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		Font = F.UI,
 		TextSize = HINT_SIZE,
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		Size = UDim2.new(1, -(TEXT_X + CLOSE_WIDTH), 0, HINT_SIZE + 3),
+		Size = UDim2.new(1, -(TEXT_X + SKIP_WIDTH), 0, HINT_SIZE + 3),
 		Position = UDim2.new(0, TEXT_X, 0.5, TEXT_SIZE // 2 + 2),
 		AnchorPoint = Vector2.new(0, 0.5),
 		TextXAlignment = Enum.TextXAlignment.Left,
@@ -720,33 +739,33 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 	})
 	fadeText(hintLabel, 0, 1)
 
-	-- Quiet skip: a small "x" (44 px hit area, centred where the 36 px one was) that asks
-	-- before skipping.
+	-- Quiet skip: a small grey word at the right end (a 44 px tall hit area) that asks
+	-- before skipping. It turns white under the pointer or the gamepad selection.
 	local skip = Kit.new("TextButton", {
 		Name = "Skip",
 		BackgroundTransparency = 1,
 		Text = "",
 		AutoButtonColor = false,
-		Size = UDim2.fromOffset(44, 44),
-		Position = UDim2.new(1, 2, 0.5, 0),
+		Size = UDim2.fromOffset(SKIP_WIDTH, math.max(44, PILL_HEIGHT)),
+		Position = UDim2.new(1, 0, 0.5, 0),
 		AnchorPoint = Vector2.new(1, 0.5),
 		ZIndex = 8,
 		Parent = pill,
 	})
-	local cross = Kit.icon(skip, "Close", 12, C.TextDim, {
-		Name = "Cross",
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
+	local word = Kit.text(skip, {
+		Name = "Word",
+		Text = Words.Skip,
+		Font = F.UI,
+		TextSize = SKIP_SIZE,
+		TextColor3 = C.TextMute,
+		TextTransparency = SKIP_REST,
+		StrokeThickness = 0,
 		ZIndex = 9,
 	})
-	Kit.bouncy(skip, 1.12)
+	Kit.bouncy(skip, 1.08)
 	Kit.selectable(skip)
 	local function lit(on: boolean)
-		for _, part in cross:GetChildren() do
-			if part:IsA("Frame") then
-				Kit.tween(part, 0.12, { BackgroundColor3 = if on then C.Text else C.TextDim })
-			end
-		end
+		Kit.tween(word, 0.12, { TextTransparency = if on then 0 else SKIP_REST, TextColor3 = if on then C.Text else C.TextMute })
 	end
 	skip.MouseEnter:Connect(function()
 		lit(true)
@@ -775,16 +794,6 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 	screen:GetAttributeChangedSignal("RevealOpen"):Connect(hideForReveal)
 	hideForReveal()
 
-	-- The tutorial may be telling the player to use the window that just opened: the pill
-	-- stays, lifted over the window's dim and docked clear of the window.
-	Kit.onWindowOpen(function(open: boolean)
-		windowUp = open
-		group.ZIndex = if open then Z_OVER_WINDOWS else Z_REST
-		if onScreen then
-			Kit.tween(group, 0.2, { Position = restPosition() }, Enum.EasingStyle.Quad)
-		end
-	end)
-
 	screen:GetAttributeChangedSignal("Compact"):Connect(function()
 		group.AnchorPoint = Vector2.new(0.5, if compact() then 1 else 0)
 		if onScreen then
@@ -804,11 +813,14 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		end)
 	end
 
-	screen:GetAttributeChangedSignal("RunActive"):Connect(function()
-		if State.data then
-			render(State.data)
-		end
-	end)
+	-- Windows, modals and runs take the screen: the pill steps out, and comes back after.
+	for _, name in { "WindowOpen", "ModalOpen", table.unpack(RUN_FLAGS) } do
+		screen:GetAttributeChangedSignal(name):Connect(function()
+			if State.data then
+				render(State.data)
+			end
+		end)
+	end
 
 	State.changed.Event:Connect(render)
 	if State.data then
