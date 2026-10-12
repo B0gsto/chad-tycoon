@@ -1,22 +1,26 @@
 --[[
 	Hud: always-on screen elements (design space 1280x720, below the top bar).
-	Laid out like the owner's reference game: no panels or chips, just chunky
-	icons and bold white Ink-outlined text straight over the world.
+	Laid out like the owner's reference game: chunky icons and bold white
+	Ink-outlined text straight over the world; only the menu buttons sit on plates.
 
 	  top bar right  Settings gear alone (Roblox's player list sits under it)
-	  top centre     Chad icon + unit count "37/100" (sunny + "RACK FULL" when full)
-	                 under it a low glass strip "Deposit bonus: x1.3 · 12s"
-	                 ("AURA SURGE x2 · 1:23" in orange during a surge); the
-	                 tutorial quest pill and the parkour run pill dock under that,
-	                 and once the tutorial is done the "Next:" goal strip takes
-	                 that slot ("Next: Protein Bro 1/2" over "merge 2x Gym Rookie",
-	                 Shared.NextGoal; above the dumbbell on compact screens)
-	  left edge      icon grid with captions: Home Ranking Modes / Index Shop Invite
-	                 Daily (a dot while a daily reward waits, else its countdown)
-	                 promo under it: tilted "PERMANENT" tag over a green-tinted glass
-	                 card, 2X CASH (or STARTER PACK) with a solid price chip
-	  bottom left    status row (Premium, Friends, Boost), "Cash [ x1.0 ]",
-	                 the big cash amount + square "+"
+	  top centre     three rows at most, 6 px apart: Chad icon + unit count "37/100"
+	                 (sunny + "AUTO-MERGING" at 100/100), a low glass strip
+	                 "Deposit bonus: x1.3 · 12s" (never red; "AURA SURGE x2 · 1:23"
+	                 in orange during a surge) and, once the tutorial is done, the
+	                 "Next:" goal strip ("Next: Protein Bro 1/2" over "merge 2x Gym
+	                 Rookie", Shared.NextGoal; above the dumbbell on compact
+	                 screens). The tutorial quest pill and the parkour run pill use
+	                 the third row before that.
+	  left edge      menu grid: Home Ranking Modes / Index Shop Invite Daily, each an
+	                 icon and its caption on its own dark glass plate, all the same
+	                 size (Daily: a dot while a reward waits, else its countdown)
+	                 promo under it, only below tier 15 and until it is opened once:
+	                 a green-tinted glass card, STARTER PACK (then 2X CASH under a
+	                 tilted "PERMANENT" tag) with a solid price chip
+	  bottom left    bonus chips, each on screen only while it is on ("Premium
+	                 +10%", "Friends +20%", "SURGE x2"), "Cash [ x1.0 ]", the big
+	                 cash amount + square "+"
 	  bottom centre  the dumbbell: "AURA" + the carried amount on its plaque
 	  bottom right   FREE gift with its countdown, version in the corner
 
@@ -25,11 +29,12 @@
 	"WindowOpen" attribute) every group fades out in 0.15 s, parks off its edge
 	so it takes no input or gamepad selection, and fades back on close. Toasts
 	and the tutorial pill are not the HUD's: they stay.
-	Short screens (attribute "Compact") get smaller grid icons, drop the status
-	captions and the promo, and hide Roblox's player list.
+	Short screens (attribute "Compact") get smaller grid icons, drop the promo
+	and hide Roblox's player list.
 
 	Input (Kit.onInput, re-placed live): on touch the wallet moves to the top
-	left with the grid under it (one row on phones) so nothing sits on Roblox's
+	left with the grid under it (one row on phones, the bonus chips beside the
+	"Cash" line on tablets and gone on phones) so nothing sits on Roblox's
 	thumbstick (bottom-left third, lower half) or jump button, the FREE gift
 	rises above the jump button, the gear leaves the top bar and every button is
 	at least 44 screen px (invisible hit pads on the small ones). On gamepad / TV
@@ -109,18 +114,23 @@ local UNITS_Y = 4 -- unit counter row: y 4..48
 local STRIP_Y = 54 -- deposit strip: y 54..80 (slim and quiet: notifications outrank it)
 local STRIP_H = 26
 local RUN_Y = 92 -- tutorial / run pill slot (Tutorial.luau TOP_Y matches)
-local GOAL_H = 42 -- "Next:" goal strip (the same slot once the tutorial is done)
+local STACK_GAP = 6 -- between the rows of the top stack (count, strip, goal)
+local GOAL_H = 42 -- "Next:" goal strip (the third row once the tutorial is done)
 local HIDE_TIME = 0.15 -- the HUD's fade while a window is open
 local GOAL_MAX_W = 380
 local GOAL_TEXT_X = 50
 local GOAL_BAR_X = 12 -- the progress bar's inset, clear of the strip's round corners
-local GRID_Y = 104 -- left icon grid, first row
-local GRID_ICON = 64
-local GRID_ICON_COMPACT = 48
-local GRID_GAP_X = 10
-local GRID_GAP_Y = 18 -- room for the caption under each row
-local CAPTION = 20 -- icon captions (CAPTION_COMPACT on short screens); never under Kit.captionPx on the glass
-local CAPTION_COMPACT = 16
+local GRID_Y = 104 -- left menu grid, first row
+local GRID_ICON = 56 -- the icon on a menu plate
+local GRID_ICON_COMPACT = 44
+local GRID_GAP = 6 -- between two plates
+local GRID_PAD = 6 -- a plate's edge to its icon and caption
+local CAPTION = 14 -- plate captions; never under Kit.captionPx on the glass
+local PROMO_GAP = 4 -- the grid to the promo (whose tag overhangs its card by 12 more)
+local PROMO_MAX_TIER = 15 -- from this best tier on the HUD stops advertising (the Shop keeps the offers)
+local CHIP_H = 26 -- wallet bonus chips: icon + words
+local CHIP_ICON = 24
+local CHIP_TEXT = 16
 local GEAR = 44
 local DUMBBELL_W = 264
 local DUMBBELL_W_COMPACT = 200
@@ -165,6 +175,16 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			return Vector2.zero
 		end
 		return absolute / (if screenScale then screenScale.Scale else 1)
+	end
+	-- Text under the screen's UIScale is drawn at a whole pixel size, so on a small screen it
+	-- runs a little wider than its design width: measured as drawn.
+	local function drawnWidth(text: string, size: number, font: Enum.Font): number
+		local scale = if screenScale then screenScale.Scale else 1
+		local width = textWidth(text, size, font)
+		if scale < 1 then
+			width = math.max(width, math.ceil(textWidth(text, math.ceil(size * scale), font) / scale))
+		end
+		return width
 	end
 
 	-- Rolling numbers: each label counts from what it last showed to the new
@@ -213,17 +233,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end)
 		table.insert(pads, { pad = pad, button = button })
 	end
-	-- A panel-less tap target: icon + caption are children, the button itself is
-	-- the icon square (badges and glow rings sit on it).
-	local function bareButton(parent: Instance, name: string, size: number, onClick: () -> ()): TextButton
-		local button = Kit.new("TextButton", {
-			Name = name,
-			Text = "",
-			AutoButtonColor = false,
-			BackgroundTransparency = 1,
-			Size = UDim2.fromOffset(size, size),
-			Parent = parent,
-		})
+	-- A HUD button's feel: the hover lift (mouse or gamepad selection), the press squash
+	-- and the click.
+	local function wire(button: TextButton, onClick: () -> ()): TextButton
 		local scale = Kit.new("UIScale", { Parent = button })
 		Kit.selectable(button)
 		local function hover()
@@ -251,6 +263,21 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end)
 		return button
 	end
+	-- A panel-less tap target: the button itself is the icon square (badges and glow
+	-- rings sit on it).
+	local function bareButton(parent: Instance, name: string, size: number, onClick: () -> ()): TextButton
+		return wire(
+			Kit.new("TextButton", {
+				Name = name,
+				Text = "",
+				AutoButtonColor = false,
+				BackgroundTransparency = 1,
+				Size = UDim2.fromOffset(size, size),
+				Parent = parent,
+			}),
+			onClick
+		)
+	end
 
 	-- Top bar, far right: the Settings gear alone ----------------------------------------
 	-- It sits on the top bar's line (above our safe area) so Roblox's player list,
@@ -264,7 +291,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	Kit.hudIcon(gear, "Settings", GEAR, C.Text, { Name = "Icon", ZIndex = 2 }).Size = UDim2.fromScale(1, 1)
 	Hud.buttons.Settings = gear
 
-	-- Left edge: icon grid with captions --------------------------------------------------
+	-- Left edge: menu grid, a plate per button --------------------------------------------
+	-- Each button is its own dark glass plate (Kit.hudGlass, 70% opaque: world signs behind
+	-- the menu do not read through it) holding the icon and, inside it, the caption. The
+	-- plates share one size, set by the widest caption as drawn (applyCompact), so two
+	-- captions can never meet.
 	local GRID_ROWS = { { "Home", "Ranking", "Modes" }, { "Index", "Shop", "Invite", "Daily" } }
 	local CAPTIONS: { [string]: string } = {
 		Home = "Home",
@@ -280,17 +311,30 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local ICON_FOR: { [string]: string } = { Modes = Kit.pickIcon("Modes", "Star"), Daily = Kit.pickIcon("Gift2", "Free") }
 	local grid = group("Menu", { Position = UDim2.fromOffset(EDGE_X, GRID_Y) })
 	local captions: { TextLabel } = {}
+	local gridIcons: { [string]: Frame } = {}
 	local function gridButton(name: string, onClick: () -> ()): TextButton
-		local button = bareButton(grid, name, GRID_ICON, onClick)
-		local icon = Kit.hudIcon(button, ICON_FOR[name] or name, GRID_ICON, C.Text, { Name = "Icon", ZIndex = 2 })
-		icon.Size = UDim2.fromScale(1, 1)
+		local button = Kit.hudGlass(grid, {
+			Name = name,
+			Button = true,
+			Shadow = false,
+			Size = UDim2.fromOffset(GRID_ICON + GRID_PAD * 2, GRID_ICON + CAPTION + GRID_PAD * 2),
+			Radius = Kit.RADIUS.M,
+		}) :: TextButton
+		wire(button, onClick)
+		gridIcons[name] = Kit.hudIcon(button, ICON_FOR[name] or name, GRID_ICON, C.Text, {
+			Name = "Icon",
+			Position = UDim2.new(0.5, 0, 0, GRID_PAD),
+			AnchorPoint = Vector2.new(0.5, 0),
+			ZIndex = 2,
+		})
 		local caption = Kit.hudText(button, {
 			Name = "Caption",
 			Text = CAPTIONS[name],
 			TextSize = CAPTION,
 			MinPx = true,
-			Size = UDim2.new(1, 16, 0, CAPTION + 4),
-			Position = UDim2.new(0.5, 0, 1, 6),
+			StrokeThickness = 2,
+			Size = UDim2.new(1, 0, 0, CAPTION + 4),
+			Position = UDim2.new(0.5, 0, 1, -3),
 			AnchorPoint = Vector2.new(0.5, 1),
 			ZIndex = 4,
 		})
@@ -367,18 +411,21 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end)
 
 	-- Promo under the grid: tilted tag, wide button, price line ---------------------------
-	-- Starter pack until it is owned, then 2X CASH until that is owned, then nothing.
-	local PROMOS = {
-		Starter = { tag = "LIMITED", text = "STARTER PACK", price = 59, focus = Theme.Cosmetics.Starter.Pass },
+	-- Starter pack until it is owned, then 2X CASH until that is owned, then nothing. A tag
+	-- only says what is true: the Starter Pack has no deadline, so it wears none.
+	local PROMOS: { [string]: { tag: string?, text: string, price: number, focus: string } } = {
+		Starter = { text = "STARTER PACK", price = 59, focus = Theme.Cosmetics.Starter.Pass },
 		DoubleMoney = { tag = "PERMANENT", text = "2X CASH", price = 199, focus = "DoubleMoney" },
 	}
 	-- A glass card in the HUD's language: the window tint with the money green mixed in,
 	-- a green edge and a soft pulsing green glow; the offer's name is outlined HUD text and
 	-- only the price sits on a small solid chip.
-	local PROMO_W, PROMO_H = 4 * GRID_ICON + 3 * GRID_GAP_X, 50
+	local PROMO_W, PROMO_H = 286, 50
 	local PROMO_CHIP_W = 70
 	local promo = group("Promo", { Size = UDim2.fromOffset(PROMO_W, PROMO_H + 16), Visible = false })
 	local promoMode = "DoubleMoney"
+	-- Opened once: the offer has been seen, so it stays away until the next visit.
+	local promoOpened = false
 	local promoButton = Kit.hudGlass(promo, {
 		Name = "Button",
 		Button = true,
@@ -394,6 +441,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	Kit.bouncy(promoButton, 1.04)
 	promoButton.Activated:Connect(function()
 		Kit.sound("Click")
+		promoOpened = true
 		handlers.openWindow("Shop", { focus = PROMOS[promoMode].focus, origin = promoButton })
 	end)
 	local promoLabel = Kit.hudText(promoButton, {
@@ -435,14 +483,24 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		promoMode = mode
 		local look = PROMOS[mode]
 		promoLabel.Text = look.text
-		promoTag.Text = look.tag
+		promoTag.Text = look.tag or ""
+		promoTag.Visible = look.tag ~= nil
 		promoPrice.Text = string.format("%d %s", look.price, Kit.ROBUX)
 	end
 	local promoShown = false
+	-- An ad for a new player, not a fixture: gone from PROMO_MAX_TIER on and once it has
+	-- been opened this visit. The Shop keeps both offers.
 	local function wantedPromo(): string?
 		local data = State.data
-		if not data then
+		if not data or promoOpened then
 			return nil
+		end
+		if type(data.discovered) == "table" then
+			for tier = PROMO_MAX_TIER, Economy.MAX_TIER do
+				if (data.discovered[tier] or 0) > 0 then
+					return nil
+				end
+			end
 		end
 		local cosmetics = data.cosmetics
 		if not (type(cosmetics) == "table" and cosmetics.starterOwned == true) then
@@ -745,9 +803,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		LayoutOrder = 2,
 		ZIndex = 3,
 	})
+	-- A full rack is not a stop: buying goes on and the extra Chads merge on their own.
 	local counterCaption = Kit.hudText(units, {
 		Name = "Full",
-		Text = "RACK FULL",
+		Text = "AUTO-MERGING",
 		TextSize = 14,
 		TextColor3 = C.Gold,
 		AutomaticSize = Enum.AutomaticSize.X,
@@ -860,16 +919,22 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 
 	-- Next goal: "Next: Protein Bro 1/2" over "merge 2x Gym Rookie" ------------------------
-	-- One glass strip like the deposit strip, in the tutorial pill's slot once the tutorial
-	-- is done (above the dumbbell on compact screens): the target's thumbnail (a silhouette
-	-- until it is discovered), its name and count, what to do under them, and a thin bar
-	-- along the bottom. The target comes from Shared.NextGoal; the strip opens the Index.
+	-- One glass strip like the deposit strip, the third row of the top stack once the
+	-- tutorial is done (above the dumbbell on compact screens): the target's thumbnail (a
+	-- silhouette until it is discovered), its name and count, what to do under them, and a
+	-- thin bar along the bottom. The target comes from Shared.NextGoal; the strip opens the
+	-- Index.
+	-- STACK_GAP under the deposit strip, and never under that many pixels on the glass (a
+	-- small window's scale would close the gap).
+	local function goalY(): number
+		return STRIP_Y + STRIP_H + Kit.pxUp(STACK_GAP, STACK_GAP, screen)
+	end
 	local goal = Kit.hudGlass(screen, {
 		Name = "NextGoal",
 		Button = true,
 		Quiet = true,
 		Size = UDim2.fromOffset(280, GOAL_H),
-		Position = UDim2.new(0.5, 0, 0, RUN_Y),
+		Position = UDim2.new(0.5, 0, 0, goalY()),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Radius = Kit.RADIUS.M,
 		Visible = false,
@@ -891,7 +956,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			TextColor3 = color,
 			StrokeThickness = 2,
 			TextXAlignment = Enum.TextXAlignment.Left,
-			TextTruncate = Enum.TextTruncate.AtEnd,
 			Size = UDim2.fromOffset(10, 22),
 			ZIndex = 3,
 		})
@@ -899,6 +963,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local goalLead = goalText("Lead", 16, C.Gold)
 	goalLead.Text = "Next:"
 	local goalTitle = goalText("Title", 16, C.Text)
+	-- The name is never cut off: short of room it is scaled into its box (paintGoal).
+	local goalTitleFit = Kit.new("UITextSizeConstraint", { MinTextSize = 1, MaxTextSize = 200, Parent = goalTitle })
 	local goalCount = goalText("Count", 14, C.Text, F.Number)
 	local goalHint = goalText("Hint", 14, C.TextDim, F.UI)
 	goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, 20)
@@ -963,20 +1029,36 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		goalKey = key
 		-- Line 1: "Next:", the target and the count; line 2: what to do. The strip hugs the
-		-- wider line; past GOAL_MAX_W the name and the hint truncate.
+		-- wider line up to GOAL_MAX_W. Nothing is ever cut off with an ellipsis: short of room
+		-- the hint goes first, which leaves the name both lines to wrap onto, and only then
+		-- is the name scaled down (to the phone caption floor at the least).
 		local room = GOAL_MAX_W - GOAL_TEXT_X - 12
-		local leadW = textWidth(goalLead.Text, goalLead.TextSize, goalLead.Font)
-		local countW = textWidth(count, goalCount.TextSize, goalCount.Font)
-		local titleW = math.min(textWidth(title, goalTitle.TextSize, goalTitle.Font), room - leadW - countW - 14)
-		local hintW = math.min(textWidth(hint, goalHint.TextSize, goalHint.Font), room)
+		local leadW = drawnWidth(goalLead.Text, goalLead.TextSize, goalLead.Font)
+		local countW = drawnWidth(count, goalCount.TextSize, goalCount.Font)
+		local titleRoom = room - leadW - countW - 14
+		local titleNeed = drawnWidth(title, goalTitle.TextSize, goalTitle.Font)
+		local hintNeed = drawnWidth(hint, goalHint.TextSize, goalHint.Font)
+		local tight = titleNeed > titleRoom
+		local dropHint = tight or hintNeed > room
+		local titleW = math.min(titleNeed, titleRoom)
+		local hintW = if dropHint then 0 else hintNeed
 		local x = GOAL_TEXT_X
 		-- Text held at its size on a phone (applyCompact) is taller than the design's two
 		-- lines: they, and the strip, grow with it.
 		local lineH = math.max(20, goalTitle.TextSize + 2)
 		local hintH = math.max(16, goalHint.TextSize + 1)
+		local rowH = if dropHint then lineH + hintH else lineH
+		-- Scaled only when it has to shrink: text that fits keeps its exact size. The cap is
+		-- the size it would have had (a text size constraint counts screen pixels).
+		goalTitle.TextScaled = tight
+		goalTitle.TextWrapped = tight
+		local cap = if tight then math.ceil(goalTitle.TextSize * math.max(if screenScale then screenScale.Scale else 1, 1)) else 200
+		goalTitleFit.MinTextSize = 1
+		goalTitleFit.MaxTextSize = cap
+		goalTitleFit.MinTextSize = if tight then math.min(G.TextMinPhone, cap) else 1
 		local function put(label: TextLabel, text: string, width: number, gap: number)
 			label.Text = text
-			label.Size = UDim2.fromOffset(width + 2, lineH)
+			label.Size = UDim2.fromOffset(width + 4, rowH)
 			label.Position = UDim2.fromOffset(x, 2)
 			x += width + gap
 		end
@@ -986,7 +1068,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		goalCount.TextColor3 = if picked.ready then C.MoneyText else C.Text
 		goalHint.Text = string.upper(string.sub(hint, 1, 1)) .. string.sub(hint, 2)
 		goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, lineH)
-		goalHint.Size = UDim2.fromOffset(hintW + 2, hintH)
+		goalHint.Size = UDim2.fromOffset(hintW + 4, hintH)
+		goalHint.Visible = not dropHint
 		goalWidth = math.max(x, GOAL_TEXT_X + hintW) + 12
 		goal.Size = UDim2.fromOffset(goalWidth, GOAL_H + (lineH - 20) + (hintH - 16))
 		goalBar.Size = UDim2.new(0, math.floor((goalWidth - GOAL_BAR_X * 2) * picked.progress), 0, 3)
@@ -1164,38 +1247,72 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 	end
 
-	-- Bottom left: status row, cash multiplier line, cash amount + plus -------------------
+	-- Bottom left: bonus chips, cash multiplier line, cash amount + plus -------------------
+	-- The cash amount is the anchor: the biggest text, at the corner, and it never moves.
+	-- A bonus that is off shows nothing; one that is on is a small chip with its words.
 	local wallet = group("Wallet", {
 		Size = UDim2.fromOffset(420, 168),
 		Position = UDim2.new(0, EDGE_X, 1, -6),
 		AnchorPoint = Vector2.new(0, 1),
 	})
-	local function status(name: string, icon: string, color: Color3, x: number): (Frame, TextLabel)
-		local holder = group(name, { Size = UDim2.fromOffset(64, 56), Position = UDim2.fromOffset(x, 0), Parent = wallet })
-		Kit.hudIcon(holder, icon, 36, color, {
-			Name = "Icon",
-			Position = UDim2.fromScale(0.5, 0),
-			AnchorPoint = Vector2.new(0.5, 0),
-			ZIndex = 2,
+	local chips = group("Status", {
+		Size = UDim2.fromOffset(400, CHIP_H),
+		Position = UDim2.fromOffset(0, 62 - CHIP_H - 4),
+		Parent = wallet,
+	})
+	Kit.new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		Padding = UDim.new(0, 12),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = chips,
+	})
+	local chipTexts: { TextLabel } = {}
+	local function status(name: string, icon: string, color: Color3, order: number, text: string, textColor: Color3?): (Frame, TextLabel)
+		local holder = group(name, {
+			AutomaticSize = Enum.AutomaticSize.X,
+			Size = UDim2.fromOffset(0, CHIP_H),
+			LayoutOrder = order,
+			Visible = false,
+			Parent = chips,
 		})
+		Kit.new("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			VerticalAlignment = Enum.VerticalAlignment.Center,
+			Padding = UDim.new(0, 4),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Parent = holder,
+		})
+		Kit.hudIcon(holder, icon, CHIP_ICON, color, { Name = "Icon", LayoutOrder = 1, ZIndex = 2 })
 		local caption = Kit.hudText(holder, {
 			Name = "Caption",
-			Text = "",
+			Text = text,
 			Font = F.UI,
-			TextSize = CAPTION,
+			TextSize = CHIP_TEXT,
 			MinPx = true,
 			StrokeThickness = 2,
-			Size = UDim2.new(1, 12, 0, 22),
-			Position = UDim2.new(0.5, 0, 0, 36),
-			AnchorPoint = Vector2.new(0.5, 0),
+			TextColor3 = textColor,
+			AutomaticSize = Enum.AutomaticSize.X,
+			Size = UDim2.fromOffset(0, CHIP_H),
+			LayoutOrder = 2,
 			ZIndex = 3,
 		})
-		table.insert(captions, caption)
+		table.insert(chipTexts, caption)
 		return holder, caption
 	end
-	local premiumRow, premiumText = status("Premium", Kit.pickIcon("Crown", "Star"), C.Gold, 0)
-	local friendsRow, friendsText = status("Friends", Kit.pickIcon("Invite", "Fans"), C.Rizz, 70)
-	local boostRow, boostText = status("Boost", "Surge", C.Amber, 140)
+	local premiumRow = status("Premium", Kit.pickIcon("Crown", "Star"), C.Gold, 1, string.format("Premium +%d%%", PREMIUM_BONUS), C.Gold)
+	local friendsRow, friendsText = status("Friends", Kit.pickIcon("Invite", "Fans"), C.Rizz, 2, "Friends")
+	local boostRow = status("Boost", "Surge", C.Amber, 3, "SURGE x" .. Economy.SURGE_MULTIPLIER, C.Amber)
+	-- A chip comes on with a pop and goes off without a trace.
+	local function setStatus(row: Frame, on: boolean)
+		if row.Visible == on then
+			return
+		end
+		row.Visible = on
+		if on then
+			Kit.pop(row, 0.6)
+		end
+	end
 	local multLine = Kit.hudText(wallet, {
 		Name = "CashMult",
 		Text = "",
@@ -1235,22 +1352,28 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	hitPad(addButton, function()
 		handlers.openWindow("Shop", { focus = "Cash" })
 	end)
-	-- The plus follows the cash amount's width.
+	-- The plus follows the cash amount's width. The chips sit over the "Cash" line, or
+	-- beside it where the wallet is in the top-left corner (touch: nothing above it then).
 	local function layoutWallet()
 		local x = math.max(textWidth(moneyLabel.Text, moneyLabel.TextSize, moneyLabel.Font) + 4, 60)
 		addButton.Position = UDim2.fromOffset(x + 10, 92)
+		chips.Position = if Kit.touch
+			then UDim2.fromOffset(drawnWidth(multLine.Text, multLine.TextSize, multLine.Font) + 14, 60)
+			else UDim2.fromOffset(0, 62 - CHIP_H - 4)
 	end
 	moneyLabel:GetPropertyChangedSignal("Text"):Connect(layoutWallet)
 
 	-- Layout mode ------------------------------------------------------------------------
-	-- Compact screens: smaller grid icons, no status captions, no promo, a smaller
-	-- dumbbell. Touch (live, Kit.onInput): the wallet moves to the top left with the
-	-- grid under it (one row when compact) so the thumbstick's bottom-left third stays
-	-- clear, the FREE gift rises above the jump button, the gear leaves the top bar,
+	-- Compact screens: smaller grid icons, no promo, a smaller dumbbell. Touch (live,
+	-- Kit.onInput): the wallet moves to the top left with the grid under it (one row
+	-- when compact) so the thumbstick's bottom-left third stays clear, the bonus chips
+	-- move beside the "Cash" line, the FREE gift rises above the jump button, the gear
+	-- leaves the top bar,
 	-- and every button is >= TAP_PX on screen. Gamepad / TV: title-safe edges. While a
 	-- window is open the grid slides off the left edge, the bottom groups below the
 	-- bottom edge and the top groups up, and all glide back.
 	local gridIcon = GRID_ICON
+	local cellH = GRID_ICON + CAPTION + GRID_PAD * 2
 	local oneRow = false
 	local L = { edge = EDGE_X, bottom = -6, walletTop = false, walletY = 0, gridY = GRID_Y, tap = 0, tankX = 0, freeY = -20 }
 	local function gridRows(): { { string } }
@@ -1261,7 +1384,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	local function gridHeight(): number
 		local rows = #gridRows()
-		return rows * gridIcon + (rows - 1) * GRID_GAP_Y
+		return rows * cellH + (rows - 1) * GRID_GAP
 	end
 	-- Viewport (screen px) and the UI scale Main applied.
 	local function view(): (Vector2, number)
@@ -1283,15 +1406,19 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		L.tap = if touch then math.ceil(TAP_PX / scale) else 0
 		L.walletTop = touch
 		oneRow = touch and compact
-		gridIcon = math.max(if compact then GRID_ICON_COMPACT else GRID_ICON, L.tap)
-		-- Top-left wallet: compact screens drop the status row (its 62 px) there.
-		local skip = if touch and compact then 62 else 0
+		-- The plate is the tap target, so the icon keeps its size on touch; the plate holds
+		-- the icon and the caption at its held size (applyCompact holds it first).
+		gridIcon = if compact then GRID_ICON_COMPACT else GRID_ICON
+		cellH = math.max(GRID_PAD + gridIcon + captions[1].TextSize + 4 + 3, L.tap)
+		-- Top-left wallet: nothing sits over the "Cash" line there (the chips move beside
+		-- it), so the 62 px above it are dropped.
+		local skip = if touch then 62 else 0
 		L.walletY = 168 - skip
 		L.gridY = if touch then 138 - skip + 12 else GRID_Y
 		-- Thumbstick zone: left third, lower half of the screen (design px below the top bar).
 		local designW = size.X / scale
 		local halfY = (size.Y / 2 - TOP_BAR_PX) / scale
-		promoFits = not touch or L.gridY + gridHeight() + 26 + PROMO_H + 16 <= halfY
+		promoFits = not touch or L.gridY + gridHeight() + PROMO_GAP + PROMO_H + 16 <= halfY
 		local tankW = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
 		L.tankX = if touch then math.max(0, designW / 3 + 8 - (designW - tankW) / 2) else 0
 		-- Jump button: 70 px at 20 px from the corner on small screens, 120 px 90 px up otherwise.
@@ -1309,9 +1436,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		return UDim2.fromOffset(-600, L.gridY)
 	end)
 	slot(promo, function()
-		return UDim2.fromOffset(L.edge, L.gridY + gridHeight() + 26)
+		return UDim2.fromOffset(L.edge, L.gridY + gridHeight() + PROMO_GAP)
 	end, function()
-		return UDim2.fromOffset(-PROMO_W - 60, L.gridY + gridHeight() + 26)
+		return UDim2.fromOffset(-PROMO_W - 60, L.gridY + gridHeight() + PROMO_GAP)
 	end)
 	slot(wallet, function()
 		return if L.walletTop then UDim2.new(0, L.edge, 0, L.walletY) else UDim2.new(0, L.edge, 1, L.bottom)
@@ -1343,7 +1470,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		if compact then
 			return UDim2.new(0.5, L.tankX, 1, L.bottom - math.ceil(DUMBBELL_W_COMPACT * DUMBBELL_ASPECT) - 8)
 		end
-		return UDim2.new(0.5, 0, 0, RUN_Y)
+		return UDim2.new(0.5, 0, 0, goalY())
 	end, function()
 		return if compact then UDim2.new(0.5, L.tankX, 1, 200) else UDim2.new(0.5, 0, 0, -140)
 	end)
@@ -1368,25 +1495,42 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	local function applyCompact()
 		compact = screen:GetAttribute("Compact") == true
-		measure()
-		-- One row on a phone: the captions are held at a readable size there, so the icons
-		-- stand a little further apart.
-		local gapX = if oneRow then GRID_GAP_X + 6 else GRID_GAP_X
-		local step = gridIcon + gapX
-		local columns = 0
-		for row, names in gridRows() do
-			columns = math.max(columns, #names)
-			for column, name in names do
-				local button = Hud.buttons[name]
-				button.Size = UDim2.fromOffset(gridIcon, gridIcon)
-				button.Position = UDim2.fromOffset((column - 1) * step, (row - 1) * (gridIcon + GRID_GAP_Y))
-			end
-		end
-		grid.Size = UDim2.fromOffset(columns * step - gapX, gridHeight())
 		for _, caption in captions do
-			-- The compact size is in design px: a phone's UI scale would shrink it under the
+			-- The size is in design px: a small screen's UI scale would shrink it under the
 			-- caption floor, so the size is held on the glass.
-			Kit.holdText(caption, Kit.captionPx(), if compact then CAPTION_COMPACT else CAPTION)
+			Kit.holdText(caption, Kit.captionPx(), CAPTION)
+		end
+		measure()
+		-- Every plate is as wide as the widest caption as drawn (the Daily countdown
+		-- counts), so no caption can reach its neighbour. A phone's single row is the one
+		-- exception: there each plate hugs its own caption, or the row would run under the
+		-- top centre.
+		local textSize = captions[1].TextSize
+		local captionH = textSize + 4
+		local function captionWidth(name: string): number
+			local width = drawnWidth(CAPTIONS[name], textSize, F.Display)
+			return if name == "Daily" then math.max(width, drawnWidth("00:00:00", textSize, F.Display)) else width
+		end
+		local widest = 0
+		for name in CAPTIONS do
+			widest = math.max(widest, captionWidth(name))
+		end
+		local gridW = 0
+		for row, names in gridRows() do
+			local x = 0
+			for _, name in names do
+				local button = Hud.buttons[name]
+				local cellW = math.max((if oneRow then captionWidth(name) else widest) + GRID_PAD * 2, gridIcon + GRID_PAD * 2, L.tap)
+				button.Size = UDim2.fromOffset(cellW, cellH)
+				button.Position = UDim2.fromOffset(x, (row - 1) * (cellH + GRID_GAP))
+				gridIcons[name].Size = UDim2.fromOffset(gridIcon, gridIcon)
+				x += cellW + GRID_GAP
+			end
+			gridW = math.max(gridW, x - GRID_GAP)
+		end
+		grid.Size = UDim2.fromOffset(gridW, gridHeight())
+		for _, caption in captions do
+			caption.Size = UDim2.new(1, 0, 0, captionH)
 		end
 		-- The deposit strip's three texts are held the same way (a hard floor: 16, 18 and 14
 		-- design px are 10 to 12 px on a phone), and the strip widens round them.
@@ -1398,14 +1542,13 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		for label, design in GOAL_TEXT do
 			Kit.holdText(label, Kit.captionPx(), design, true)
 		end
-		-- Status captions go first on short screens; the icons stay (not on a touch
-		-- phone, where the wallet sits in the top-left corner).
-		for _, label in { premiumText, friendsText, boostText } do
-			label.Visible = not compact
+		-- The bonus chips keep their words at a readable size; a touch phone, where the
+		-- wallet shares the top-left corner with the menu row, goes without them.
+		for _, label in chipTexts do
+			Kit.holdText(label, Kit.captionPx(), CHIP_TEXT)
 		end
-		for _, row in { premiumRow, friendsRow, boostRow } do
-			row.Visible = not (Kit.touch and compact)
-		end
+		chips.Visible = not (Kit.touch and compact)
+		layoutWallet()
 		local width = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
 		tank.Size = UDim2.fromOffset(width, width * DUMBBELL_ASPECT)
 		-- The caption's line of the compact plaque is shorter than the caption held at its
@@ -1512,7 +1655,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local moneyRollEnd = 0
 	local lastMult: number? = nil
 	local lastCarried: number? = nil
-	local premiumOn: boolean? = nil
 	local function refresh()
 		local data = State.data
 		if not data then
@@ -1553,14 +1695,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		lastCarried = data.carried
 
-		local premium = data.premium == true
-		premiumText.Text = if premium then string.format("Active +%d%%", PREMIUM_BONUS) else "Inactive"
-		premiumText.TextColor3 = if premium then C.Gold else Color3.new(1, 1, 1)
-		if premiumOn ~= nil and premium ~= premiumOn then
-			Kit.pop(premiumRow, 0.6)
-		end
-		premiumOn = premium
-		friendsText.Text = string.format("+%d%%", math.floor((data.friendBonus or 0) * 100 + 0.5))
+		setStatus(premiumRow, data.premium == true)
+		local friends = math.floor((data.friendBonus or 0) * 100 + 0.5)
+		friendsText.Text = string.format("Friends +%d%%", friends)
+		setStatus(friendsRow, friends > 0)
 
 		if seenDiscoveries == nil then
 			seenDiscoveries = discoveredCount(data)
@@ -1784,8 +1922,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 
 	-- Deposit multiplier re-roll: the value flickers like a slot machine ------------------
 	local spinning = false
+	-- Never red: a deposit bonus is a bonus (x1 at the least).
 	local function multColor(mult: number): Color3
-		return if mult >= 1.2 then C.MoneyText elseif mult < 1 then C.Danger else C.Gold
+		return if mult >= 1.2 then C.MoneyText else C.Gold
 	end
 	local depositMult = ReplicatedStorage:GetAttribute("DepositMult") or 1
 	local function showMult(mult: number)
@@ -1808,9 +1947,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		task.spawn(function()
 			local elapsed = 0
 			local step = 0.035
-			-- Silent visual roll: the value flickers, then lands with a pop.
+			-- Silent visual roll: the value flickers (from x1 up), then lands with a pop.
+			local low = math.max(1, Economy.DEPOSIT_MIN)
 			while elapsed < 0.6 do
-				showMult(Economy.DEPOSIT_MIN + math.random() * (Economy.DEPOSIT_MAX - Economy.DEPOSIT_MIN))
+				showMult(low + math.random() * math.max(0, Economy.DEPOSIT_MAX - low))
 				task.wait(step)
 				elapsed += step
 				step *= 1.22
@@ -1830,20 +1970,17 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end)
 	end)
 
-	-- Aura Surge: the strip and boost icon change; the screen grade and music are Fx.Surge's.
+	-- Aura Surge: the strip changes and the "SURGE x2" chip joins the wallet; the screen grade
+	-- and music are Fx.Surge's.
 	local surgeActive: boolean? = nil
 	local lastSurgeSecond = -1
 
 	local function setSurge(active: boolean, announce: boolean)
 		paintSurge(active)
 		showMult(depositMult)
-		boostText.Text = if active then "200%" else "100%"
-		boostText.TextColor3 = if active then C.Amber else Color3.new(1, 1, 1)
+		setStatus(boostRow, active)
 		if announce then
 			Kit.pop(strip, if active then 0.8 else 0.4)
-			if active then
-				Kit.pop(boostRow, 0.8)
-			end
 		end
 	end
 
