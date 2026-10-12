@@ -50,7 +50,6 @@ export type Options = {
 export type Result = {
 	reached: { [number]: number },
 	money: number,
-	buyTier: number,
 	processLevel: number,
 	production: number,
 }
@@ -60,8 +59,7 @@ function Simulate.run(options: Options): Result
 	units[1] = 1
 	local money = Economy.START_CASH
 	local queue = 0
-	local buyTier = 1
-	local boughtAtTier = 0
+	local boughtUnits = 0
 	local processLevel = Economy.START_PROCESS_LEVEL
 	local reached: { [number]: number } = { [1] = 0 }
 	local highest = 1
@@ -150,29 +148,23 @@ function Simulate.run(options: Options): Result
 			for _ = 1, 50 do
 				rate = Economy.processRate(processLevel)
 				local bottlenecked = Economy.productionPerSecond(units) * efficiency * orbMult > rate * 0.9
-				local req = Economy.buyTierRequirement(buyTier)
-				local upgradeCost = Economy.buyTierUpgradeCost(buyTier)
-				if buyTier < Economy.MAX_BUY_TIER and boughtAtTier >= req and reached[buyTier + 1] and money >= upgradeCost then
-					money -= upgradeCost
-					buyTier += 1
-					boughtAtTier = 0
-				elseif bottlenecked and money >= Economy.processUpgradeCost(processLevel) then
+				if bottlenecked and money >= Economy.processUpgradeCost(processLevel) then
 					money -= Economy.processUpgradeCost(processLevel)
 					processLevel += 1
-				elseif not bottlenecked and money >= Economy.bulkPrice(buyTier, boughtAtTier, 1) then
+				elseif not bottlenecked and money >= Economy.bulkPrice(boughtUnits, 1) then
 					local amount = 1
 					for _, a in { 100, 25, 5 } do
-						if money >= Economy.bulkPrice(buyTier, boughtAtTier, a) then
+						if money >= Economy.bulkPrice(boughtUnits, a) then
 							amount = a
 							break
 						end
 					end
-					local accepted = addUnits(buyTier, amount, t)
+					local accepted = addUnits(1, amount, t)
 					if accepted == 0 then
 						break
 					end
-					money -= Economy.bulkPrice(buyTier, boughtAtTier, accepted)
-					boughtAtTier += accepted
+					money -= Economy.bulkPrice(boughtUnits, accepted)
+					boughtUnits += accepted
 				else
 					break
 				end
@@ -182,7 +174,6 @@ function Simulate.run(options: Options): Result
 	return {
 		reached = reached,
 		money = money,
-		buyTier = buyTier,
 		processLevel = processLevel,
 		production = Economy.productionPerSecond(units),
 	}
@@ -217,11 +208,10 @@ export type FirstResult = {
 	longestGap: number,
 	gapAt: number,
 	gapUntil: number,
-	-- When each purchase (units, buy tier, converter) was made.
+	-- When each purchase (units, converter) was made.
 	purchases: { number },
 	events: { FirstEvent },
 	money: number,
-	buyTier: number,
 	processLevel: number,
 }
 
@@ -272,7 +262,7 @@ function Simulate.firstMinutes(options: FirstOptions?): FirstResult
 	local money = Economy.START_CASH
 	local pen = (opts.introSeconds or Timeline.total()) * Economy.unitRate(1)
 	local carried, queue, pending = 0, 0, 0
-	local buyTier, boughtAtTier = 1, 0
+	local boughtUnits = 0
 	local processLevel = Economy.START_PROCESS_LEVEL
 	local tutorialDone: number? = nil
 	local reached: { [number]: number } = { [1] = 0 }
@@ -334,42 +324,25 @@ function Simulate.firstMinutes(options: FirstOptions?): FirstResult
 		end
 	end
 	local function buy(amount: number)
-		money -= Economy.bulkPrice(buyTier, boughtAtTier, amount)
-		units[buyTier] += amount
-		boughtAtTier += amount
-		if not reached[buyTier] then
-			reached[buyTier] = t
-			log(string.format("tier %d", buyTier))
-		end
+		money -= Economy.bulkPrice(boughtUnits, amount)
+		units[1] += amount
+		boughtUnits += amount
 		bought()
 	end
 	local function affordable(): boolean
-		return money >= Economy.bulkPrice(buyTier, boughtAtTier, 1)
-			or (boughtAtTier >= Economy.buyTierRequirement(buyTier) and money >= Economy.buyTierUpgradeCost(buyTier))
+		return money >= Economy.bulkPrice(boughtUnits, 1)
 	end
-	-- Everything the cash allows at the buy pads: the tier upgrade as soon as it unlocks,
-	-- then 5 at a time, then singles.
+	-- Everything the cash allows at the buy pads: 5 at a time, then singles.
 	local function shop()
 		local visits = 0
 		while true do
 			if visits > 0 then
 				wait(Simulate.REBUY)
 			end
-			if
-				buyTier < Economy.MAX_BUY_TIER
-				and boughtAtTier >= Economy.buyTierRequirement(buyTier)
-				and money >= Economy.buyTierUpgradeCost(buyTier)
-			then
-				walk("BuyPad")
-				money -= Economy.buyTierUpgradeCost(buyTier)
-				buyTier += 1
-				boughtAtTier = 0
-				log(string.format("buy tier %d", buyTier))
-				bought()
-			elseif money >= Economy.bulkPrice(buyTier, boughtAtTier, 5) then
+			if money >= Economy.bulkPrice(boughtUnits, 5) then
 				walk("BuyPad")
 				buy(5)
-			elseif money >= Economy.bulkPrice(buyTier, boughtAtTier, 1) then
+			elseif money >= Economy.bulkPrice(boughtUnits, 1) then
 				buy(1)
 			else
 				break
@@ -446,7 +419,6 @@ function Simulate.firstMinutes(options: FirstOptions?): FirstResult
 		purchases = purchases,
 		events = events,
 		money = money,
-		buyTier = buyTier,
 		processLevel = processLevel,
 	}
 end
@@ -465,7 +437,7 @@ local function printFirst(minutes: number?)
 			result.gapAt
 		)
 	)
-	print(string.format("End: money %s, buy tier %d, converter lv %d", Format.short(result.money), result.buyTier, result.processLevel))
+	print(string.format("End: money %s, converter lv %d", Format.short(result.money), result.processLevel))
 end
 
 local function main(args: { string })
@@ -515,9 +487,8 @@ local function main(args: { string })
 	end
 	print(
 		string.format(
-			"End: money %s, buy tier %d, process lv %d, production %s/s",
+			"End: money %s, process lv %d, production %s/s",
 			Format.short(result.money),
-			result.buyTier,
 			result.processLevel,
 			Format.short(result.production)
 		)

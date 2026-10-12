@@ -49,7 +49,7 @@ end
 local function cashFor(session: Tycoon.Session, day: number, firstDay: boolean): number
 	local p = session.profile
 	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
-	local cap = if firstDay then DailyReward.firstDayCap(day, p.buyTier, p.boughtAtTier) else nil
+	local cap = if firstDay then DailyReward.firstDayCap(day, p.bought) else nil
 	return DailyReward.cash(day, Tycoon.income(session), progression, cap)
 end
 

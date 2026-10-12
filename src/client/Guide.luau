@@ -133,7 +133,7 @@ local function colorFor(name: string): Color3
 	if name == "Orbs" then
 		return World.Pink
 	elseif string.sub(name, 1, 3) == "Buy" then
-		return if name == "BuyTier" then pads.BuyTier else pads.Buy
+		return pads.Buy
 	end
 	return pads[name] or World.Sunny
 end

@@ -17288,9 +17288,9 @@ DailyReward.FIRST_DAY_UNITS = 4
 -- The most card `day` pays on a player's first day: what their next FIRST_DAY_UNITS units
 -- cost (a few hundred cash in the first minutes), never below the day's minimum. A boost,
 -- not a tier skip.
-function DailyReward.firstDayCap(day: number, buyTier: number, boughtAtTier: number): number
+function DailyReward.firstDayCap(day: number, bought: number): number
 	local reward = DailyReward.REWARDS[DailyReward.card(day)]
-	return math.max(reward.min, math.floor(Economy.bulkPrice(buyTier, boughtAtTier, DailyReward.FIRST_DAY_UNITS)))
+	return math.max(reward.min, math.floor(Economy.bulkPrice(bought, DailyReward.FIRST_DAY_UNITS)))
 end
 
 -- Cash of card `day` for a player earning `income` cash/s at `progression`, at most `cap`
@@ -17378,7 +17378,6 @@ local Economy = {}
 Economy.VERSION = "1.2.0"
 
 Economy.MAX_TIER = 25
-Economy.MAX_BUY_TIER = 15
 Economy.MERGE_RATIO = 2
 -- A player owns at most UNIT_CAP units, each shown as its own model on the display rack
 -- (DISPLAY_ROWS shelves, DISPLAY_COLS units per shelf on average). See addUnitsCapped.
@@ -17537,70 +17536,46 @@ end
 -- Buying ----------------------------------------------------------------------
 
 Economy.BUY_BASE_PRICE = 50
-Economy.BUY_PRICE_GROWTH = 4
 Economy.BUY_AMOUNTS = { 1, 5, 25, 100 }
--- Units to buy at buy tier 1 before upgrading, growing by BUY_REQ_GROWTH per buy tier.
-Economy.BUY_REQ_BASE = 1
-Economy.BUY_REQ_GROWTH = 1.5
--- A buy tier upgrade costs this share of buying the requirement at the next tier's base price.
-Economy.BUY_TIER_UPGRADE_SHARE = 0.5
--- A new player's first units are cheap: the first BUY_EASY_UNITS bought at buy tier 1 raise
--- the price by only 1 / BUY_EASY_REQ of the base each (the normal rate comes back after
--- them), and the buy tier cannot be upgraded before they are bought. Together with the
--- starter unit they are worth one tier-6 unit and most of a tier-7 one: a fixed head
--- start, after which every price is what it always was.
+-- Purchases that raise the price by one base price.
+Economy.BUY_RAMP_UNITS = 1
+-- A new player's first units are cheap: the first BUY_EASY_UNITS bought raise the price by
+-- only 1 / BUY_EASY_REQ of the base each (the normal rate comes back after them). Together
+-- with the starter unit they are worth one tier-6 unit and most of a tier-7 one: a fixed
+-- head start, after which every price is what it always was.
 Economy.BUY_EASY_UNITS = 60
 Economy.BUY_EASY_REQ = 10
-
-function Economy.basePrice(buyTier: number): number
-	return Economy.BUY_BASE_PRICE * Economy.BUY_PRICE_GROWTH ^ (buyTier - 1)
-end
-
--- Purchases at a buy tier that double its base price.
-local function rampUnits(buyTier: number): number
-	return math.floor(Economy.BUY_REQ_BASE * Economy.BUY_REQ_GROWTH ^ (buyTier - 1))
-end
-
--- Units that must be bought at the current buy tier before it can be upgraded.
-function Economy.buyTierRequirement(buyTier: number): number
-	return if buyTier == 1 then math.max(rampUnits(1), Economy.BUY_EASY_UNITS) else rampUnits(buyTier)
-end
 
 -- Sum of `n` consecutive purchase counts starting at `from`.
 local function span(from: number, n: number): number
 	return n * from + n * (n - 1) / 2
 end
 
--- Exact price of `amount` consecutive purchases, the first made with `boughtAtTier` units
--- already bought at this tier. Each purchase costs the base price times 1 + its growth:
--- every earlier purchase adds 1 / rampUnits, or 1 / BUY_EASY_REQ while it is an easy one.
-local function price(buyTier: number, boughtAtTier: number, amount: number): number
-	local easyCap = if buyTier == 1 then Economy.BUY_EASY_UNITS else 0
+-- Exact price of `amount` consecutive purchases, the first made with `bought` units already
+-- bought. Each purchase costs the base price times 1 + its growth: every earlier purchase
+-- adds 1 / BUY_RAMP_UNITS, or 1 / BUY_EASY_REQ while it is an easy one.
+local function price(bought: number, amount: number): number
 	-- Purchases of this batch whose price still counts only easy units, then the rest.
-	local easy = math.clamp(easyCap - boughtAtTier, 0, amount)
+	local easy = math.clamp(Economy.BUY_EASY_UNITS - bought, 0, amount)
 	local rest = amount - easy
-	local growth = span(boughtAtTier, easy) / Economy.BUY_EASY_REQ
+	local growth = span(bought, easy) / Economy.BUY_EASY_REQ
 	if rest > 0 then
-		local start = boughtAtTier + easy
-		local easyBefore = math.min(start, easyCap)
-		growth += rest * easyBefore / Economy.BUY_EASY_REQ + span(start - easyBefore, rest) / rampUnits(buyTier)
+		local start = bought + easy
+		local easyBefore = math.min(start, Economy.BUY_EASY_UNITS)
+		growth += rest * easyBefore / Economy.BUY_EASY_REQ + span(start - easyBefore, rest) / Economy.BUY_RAMP_UNITS
 	end
-	return Economy.basePrice(buyTier) * (amount + growth)
+	return Economy.BUY_BASE_PRICE * (amount + growth)
 end
 
--- Price of the next single unit. Grows linearly with purchases made at this tier (2x after
--- rampUnits of them, the easy ones aside) to push tier upgrades.
-function Economy.unitPrice(buyTier: number, boughtAtTier: number): number
-	return price(buyTier, boughtAtTier, 1)
+-- Price of the next single unit (always the first tier). Grows linearly with the units
+-- bought so far: 2x after BUY_RAMP_UNITS of them, the easy ones aside.
+function Economy.unitPrice(bought: number): number
+	return price(bought, 1)
 end
 
 -- Exact sum of unitPrice for `amount` consecutive purchases.
-function Economy.bulkPrice(buyTier: number, boughtAtTier: number, amount: number): number
-	return price(buyTier, boughtAtTier, amount)
-end
-
-function Economy.buyTierUpgradeCost(buyTier: number): number
-	return Economy.basePrice(buyTier + 1) * rampUnits(buyTier) * Economy.BUY_TIER_UPGRADE_SHARE
+function Economy.bulkPrice(bought: number, amount: number): number
+	return price(bought, amount)
 end
 
 -- Processing (the converter that turns deposited orbs into cash) ---------------
@@ -17768,8 +17743,7 @@ function Economy.rollChest(rarity: string, highestTier: number, rng: () -> numbe
 	return entry.tier
 end
 
--- What a unit of `tier` costs to make by buying tier-1 units and merging them up
--- (the cheapest way to get one, since higher buy tiers cost more per tier-1 unit).
+-- What a unit of `tier` costs to make by buying tier-1 units and merging them up.
 function Economy.unitValue(tier: number): number
 	return Economy.BUY_BASE_PRICE * Economy.MERGE_RATIO ^ (math.max(tier, 1) - 1)
 end
@@ -17825,8 +17799,6 @@ end
 
 -- Durable progress only: the highest tier ever discovered and the converter level. Neither
 -- can go down, so selling, merging or a bad multiplier moment never makes a pack worse.
--- Buy tier is left out: a player can only buy tiers they have already discovered, so it
--- never says more than `tier` does.
 export type Progression = { tier: number, processLevel: number }
 
 function Economy.progression(highestTier: number, processLevel: number): Progression
@@ -18235,9 +18207,7 @@ return Net
 
 	In order:
 	  merge    the next undiscovered tier: merge two units of the best tier found
-	  buyTier  every tier is discovered: unlock the next buy tier (buy the
-	           required units, then save up for the upgrade)
-	  rack     nothing is left to unlock: stack units of the top tier
+	  rack     every tier is discovered: stack units of the top tier
 ]]
 
 local Economy = require(script.Parent.Economy)
@@ -18245,16 +18215,14 @@ local Economy = require(script.Parent.Economy)
 local NextGoal = {}
 
 export type Goal = {
-	kind: "merge" | "buyTier" | "rack",
-	-- merge: the tier to discover; buyTier: the buy tier to unlock; rack: the top tier.
+	kind: "merge" | "rack",
+	-- merge: the tier to discover; rack: the top tier.
 	tier: number,
-	-- merge: the tier to merge two of; buyTier: the tier bought right now; rack: the top tier.
+	-- merge: the tier to merge two of; rack: the top tier.
 	from: number,
 	-- Units counted toward the goal and how many it takes.
 	have: number,
 	need: number,
-	-- buyTier: cash the upgrade costs once the units are bought (0 for the other kinds).
-	cost: number,
 	-- 0..1 for a progress bar; `ready` = one step on a pad finishes it.
 	progress: number,
 	ready: boolean,
@@ -18264,9 +18232,6 @@ export type Goal = {
 export type Input = {
 	discovered: { number },
 	units: { number },
-	buyTier: number,
-	boughtAtTier: number,
-	money: number,
 }
 
 local function count(units: { number }, tier: number): number
@@ -18290,28 +18255,8 @@ function NextGoal.pick(input: Input): Goal
 			from = best,
 			have = math.min(have, Economy.MERGE_RATIO),
 			need = Economy.MERGE_RATIO,
-			cost = 0,
 			progress = math.clamp(worth / Economy.MERGE_RATIO, 0, 1),
 			ready = have >= Economy.MERGE_RATIO,
-		}
-	end
-	local buyTier = math.clamp(math.floor(input.buyTier), 1, Economy.MAX_BUY_TIER)
-	if buyTier < Economy.MAX_BUY_TIER then
-		local need = Economy.buyTierRequirement(buyTier)
-		local have = math.clamp(math.floor(input.boughtAtTier), 0, need)
-		local cost = Economy.buyTierUpgradeCost(buyTier)
-		local bought = have >= need
-		-- Half the bar for the units, half for the cash.
-		local progress = if bought then 0.5 + 0.5 * math.clamp(input.money / cost, 0, 1) else 0.5 * have / need
-		return {
-			kind = "buyTier",
-			tier = buyTier + 1,
-			from = buyTier,
-			have = have,
-			need = need,
-			cost = cost,
-			progress = progress,
-			ready = bought and input.money >= cost,
 		}
 	end
 	local top = count(input.units, Economy.MAX_TIER)
@@ -18321,7 +18266,6 @@ function NextGoal.pick(input: Input): Goal
 		from = Economy.MAX_TIER,
 		have = math.min(top, Economy.UNIT_CAP),
 		need = Economy.UNIT_CAP,
-		cost = 0,
 		progress = math.clamp(top / Economy.UNIT_CAP, 0, 1),
 		ready = false,
 	}
@@ -18329,22 +18273,13 @@ end
 
 --[[
 	The goal in words: (title, hint, count), e.g. ("Protein Bro", "merge 2x Gym
-	Rookie", "1/2"). `nameOf(tier)` names a unit tier, `money(n)` formats cash.
+	Rookie", "1/2"). `nameOf(tier)` names a unit tier.
 	The HUD shows "Next: <title> (<hint>) <count>" and drops the hint when short of room.
 ]]
-function NextGoal.text(goal: Goal, nameOf: (number) -> string, money: (number) -> string): (string, string, string)
+function NextGoal.text(goal: Goal, nameOf: (number) -> string): (string, string, string)
 	if goal.kind == "merge" then
 		local hint = string.format("merge %dx %s", goal.need, nameOf(goal.from))
 		return nameOf(goal.tier), hint, string.format("%d/%d", goal.have, goal.need)
-	elseif goal.kind == "buyTier" then
-		local title = "Buy Tier " .. goal.tier
-		if goal.have < goal.need then
-			local hint = string.format("buy %d more %s", goal.need - goal.have, nameOf(goal.from))
-			return title, hint, string.format("%d/%d", goal.have, goal.need)
-		elseif goal.ready then
-			return title, "step on the BUY TIER pad", "READY"
-		end
-		return title, "save " .. money(goal.cost), string.format("%d%%", math.floor((goal.progress - 0.5) * 200))
 	end
 	return nameOf(goal.tier), "fill your rack", string.format("%d/%d", goal.have, goal.need)
 end
@@ -20103,7 +20038,6 @@ Theme.Words = {
 	Free = "DAILY GAINS",
 	Surge = "AURA SURGE",
 	Multiplier = "Aura Multiplier",
-	BuyTier = "UPGRADE BUY TIER",
 }
 
 -- Onboarding tutorial (one entry per step in Shared.TutorialSteps) and the
@@ -20483,7 +20417,6 @@ Theme.World = {
 	-- upgrade, teal/blue move aura and cash, warm pops are the special pads.
 	Pads = {
 		Buy = BUTTER,
-		BuyTier = SUNNY,
 		Process = SUNNY,
 		Deposit = BLUE,
 		Collect = TEAL_LIGHT,
@@ -20496,7 +20429,6 @@ Theme.World = {
 	-- Icon print colour on each pad's face (same keys as Pads).
 	PadPrint = {
 		Buy = TEAL_INK,
-		BuyTier = TEAL_INK,
 		Process = TEAL_INK,
 		Deposit = TEAL_INK,
 		Collect = TEAL_INK,
@@ -22568,7 +22500,7 @@ end
 local function cashFor(session: Tycoon.Session, day: number, firstDay: boolean): number
 	local p = session.profile
 	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
-	local cap = if firstDay then DailyReward.firstDayCap(day, p.buyTier, p.boughtAtTier) else nil
+	local cap = if firstDay then DailyReward.firstDayCap(day, p.bought) else nil
 	return DailyReward.cash(day, Tycoon.income(session), progression, cap)
 end
 
@@ -22725,8 +22657,7 @@ local DataService = {}
 local STORE_NAME = "TycoonProfiles_v1"
 local MAX_RETRIES = 4
 -- Profile.version of a save written by this code. reconcile migrates older saves once:
---   2  buy tier 1 upgrades after Economy.BUY_EASY_UNITS purchases (it was one), and the
---      onboarding funnel counts tier milestones (Shared.Funnel)
+--   2  the onboarding funnel counts tier milestones (Shared.Funnel)
 local VERSION = 2
 DataService.VERSION = VERSION
 
@@ -22741,8 +22672,8 @@ export type Profile = {
 	units: { number },
 	discovered: { number },
 	totalObtained: number,
-	buyTier: number,
-	boughtAtTier: number,
+	-- Units bought on the buy pads so far (Economy.unitPrice grows with it).
+	bought: number,
 	processLevel: number,
 	heldChest: string,
 	-- Rarity of the crate the player was last prompted to open with Robux ("" = none);
@@ -22834,8 +22765,7 @@ function DataService.defaultProfile(): Profile
 		units = units,
 		discovered = discovered,
 		totalObtained = 1,
-		buyTier = 1,
-		boughtAtTier = 0,
+		bought = 0,
 		processLevel = Economy.START_PROCESS_LEVEL,
 		heldChest = "",
 		pendingCrate = "",
@@ -22902,6 +22832,15 @@ local function reconcile(data: any): Profile
 	end
 	-- Rizz (gems) was removed from the game: old balances are dropped.
 	data.gems = nil
+	-- Buy tiers were removed: the pads sell the first tier only. A save that had upgraded
+	-- starts just past the easy units; one that had not keeps its count, as capped as it was.
+	if data.bought == nil then
+		local old = if type(data.boughtAtTier) == "number" and data.boughtAtTier == data.boughtAtTier then data.boughtAtTier else 0
+		local upgraded = type(data.buyTier) == "number" and data.buyTier > 1
+		data.bought = if upgraded then Economy.BUY_EASY_UNITS else math.clamp(math.floor(old), 0, Economy.BUY_EASY_UNITS)
+	end
+	data.buyTier = nil
+	data.boughtAtTier = nil
 	-- Saves from before the onboarding funnel: those players are not new, so they never log it.
 	if data.onboarding == nil then
 		data.onboarding = 99
@@ -22945,10 +22884,7 @@ local function reconcile(data: any): Profile
 			data.cosmetics.toggles[key] = nil
 		end
 	end
-	data.buyTier = math.clamp(math.floor(data.buyTier), 1, Economy.MAX_BUY_TIER)
-	-- Purchases past the upgrade requirement only count once (Economy.unitPrice grows with
-	-- them); a save made under a larger requirement would otherwise price units out of reach.
-	data.boughtAtTier = math.clamp(math.floor(data.boughtAtTier), 0, Economy.buyTierRequirement(data.buyTier))
+	data.bought = if data.bought ~= data.bought or data.bought == math.huge then 0 else math.max(0, math.floor(data.bought))
 	-- The converter starts at START_PROCESS_LEVEL; saves from before that are lifted to it.
 	data.processLevel = math.max(math.floor(data.processLevel), Economy.START_PROCESS_LEVEL)
 	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
@@ -23029,11 +22965,6 @@ local function reconcile(data: any): Profile
 		data.pendingUnlocker = 0
 	end
 	if version < 2 then
-		-- Buy tier 1 used to upgrade after BUY_REQ_BASE purchases. A player who was past the
-		-- tutorial and could already upgrade still can, without buying the easy units first.
-		if data.tutorialDone and data.buyTier == 1 and data.boughtAtTier >= Economy.BUY_REQ_BASE then
-			data.boughtAtTier = Economy.buyTierRequirement(1)
-		end
 		-- Returning players' tier milestones count as logged, with nothing sent.
 		data.onboarding = Funnel.returning(data.onboarding, data.tutorialDone)
 	end
@@ -31233,7 +31164,6 @@ Layout.PAD_ORDER = {
 	"ProcUp1",
 	"ProcUp10",
 	"Collect",
-	"BuyTier",
 	"Unlock1",
 	"Unlock2",
 	"Free",
@@ -31242,9 +31172,8 @@ Layout.PAD_ORDER = {
 -- at least 3 studs of open floor between neighbouring bases and 6 between a pad and the pen.
 local BUY_Z = 16.5
 Layout.PADS = {
-	-- One row at the foot of the unit rack, level with the back of the pen, reading BuyTier,
-	-- Buy 1, Buy 5, [pen], Buy 25, Buy 100, Auto Merge from the player's left (+X) to right.
-	BuyTier = { x = 36.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
+	-- One row at the foot of the unit rack, level with the back of the pen, reading Buy 1,
+	-- Buy 5, [pen], Buy 25, Buy 100, Auto Merge from the player's left (+X) to right.
 	Buy1 = { x = 28.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
 	Buy5 = { x = 20.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
 	Buy25 = { x = -20.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
@@ -33026,13 +32955,13 @@ local function converterPos(session: Session): Vector3
 	return pos
 end
 
--- Buys up to `amount` units at the current buy tier. Past the unit cap the lowest pairs
+-- Buys up to `amount` units of the first tier. Past the unit cap the lowest pairs
 -- merge to make room (Economy.addUnitsCapped); units that still do not fit are not bought
 -- and not charged.
 local function buy(session: Session, amount: number)
 	local p = session.profile
 	local padName = "Buy" .. amount
-	local tier = p.buyTier
+	local tier = 1
 	local fit = Economy.addUnitsCapped(p.units, tier, amount)
 	local bought = fit.accepted
 	if bought == 0 then
@@ -33040,12 +32969,12 @@ local function buy(session: Session, amount: number)
 		refusePad(session, padName, "locked")
 		return
 	end
-	local cost = Economy.bulkPrice(p.buyTier, p.boughtAtTier, bought)
+	local cost = Economy.bulkPrice(p.bought, bought)
 	if not spend(session, cost, padName) then
 		return
 	end
 	applyCapped(session, fit)
-	p.boughtAtTier += bought
+	p.bought += bought
 	p.totalObtained += bought
 	local steps = autoMergeIfOn(session)
 	local diff = refreshDisplay(session)
@@ -33110,29 +33039,6 @@ padHandlers.AutoMerge = function(session)
 		doMerge(session, false, true)
 	end
 	toast(session, "Auto Merge " .. (if p.autoMerge then "ON" else "OFF"), "info")
-	markDirty(session)
-end
-
-padHandlers.BuyTier = function(session)
-	local p = session.profile
-	if p.buyTier >= Economy.MAX_BUY_TIER then
-		toast(session, "Buy tier is maxed out!", "info")
-		refusePad(session, "BuyTier", "locked")
-		return
-	end
-	local req = Economy.buyTierRequirement(p.buyTier)
-	if p.boughtAtTier < req then
-		toast(session, string.format("Buy %s more %s first!", Format.short(req - p.boughtAtTier), theme.Words.Units), "bad")
-		refusePad(session, "BuyTier", "locked")
-		return
-	end
-	if not spend(session, Economy.buyTierUpgradeCost(p.buyTier), "BuyTier") then
-		return
-	end
-	p.buyTier += 1
-	p.boughtAtTier = 0
-	toast(session, "You now buy " .. tierName(p.buyTier) .. "!", "good")
-	effect(session, "Upgrade", { pad = "BuyTier", padPos = padPos(session, "BuyTier"), level = p.buyTier })
 	markDirty(session)
 end
 
@@ -33274,29 +33180,14 @@ local function updateBoards(session: Session)
 	local now = os.time()
 
 	for _, amount in Economy.BUY_AMOUNTS do
-		local cost = Economy.bulkPrice(p.buyTier, p.boughtAtTier, amount)
-		setPad(session, "Buy" .. amount, "Buy " .. amount .. " " .. tierName(p.buyTier), Format.money(cost), canAfford(session, cost))
+		local cost = Economy.bulkPrice(p.bought, amount)
+		setPad(session, "Buy" .. amount, "Buy " .. amount .. " " .. tierName(1), Format.money(cost), canAfford(session, cost))
 	end
 
 	if ownsAutoMerge(session) then
 		setPad(session, "AutoMerge", "Auto Merge", if p.autoMerge then "ON" else "OFF", p.autoMerge)
 	else
 		setPad(session, "AutoMerge", "Auto Merge", Format.robux(theme.Monetization.Passes.AutoMerge.Price), true)
-	end
-
-	if p.buyTier >= Economy.MAX_BUY_TIER then
-		labels.BuyTierFromTo.Text = tierName(p.buyTier)
-		labels.BuyTierProgress.Text = "MAXED"
-		labels.BuyTierCost.Text = ""
-		setPad(session, "BuyTier", nil, "MAX", true)
-	else
-		local req = Economy.buyTierRequirement(p.buyTier)
-		local cost = Economy.buyTierUpgradeCost(p.buyTier)
-		labels.BuyTierFromTo.Text = tierName(p.buyTier) .. "  >>  " .. tierName(p.buyTier + 1)
-		labels.BuyTierProgress.Text =
-			string.format("%s %s / %s", theme.Icons.Unit, Format.short(math.min(p.boughtAtTier, req)), Format.short(req))
-		labels.BuyTierCost.Text = Format.money(cost)
-		setPad(session, "BuyTier", nil, Format.money(cost), p.boughtAtTier >= req and canAfford(session, cost))
 	end
 
 	local procCost = Economy.processUpgradeCost(p.processLevel)
@@ -33391,8 +33282,7 @@ local function snapshot(session: Session): { [string]: any }
 		-- Units owned right now (all shown on the rack) and the most a player can hold.
 		unitTotal = Economy.totalUnits(p.units),
 		unitCap = Economy.UNIT_CAP,
-		buyTier = p.buyTier,
-		boughtAtTier = p.boughtAtTier,
+		bought = p.bought,
 		processLevel = p.processLevel,
 		heldChest = p.heldChest,
 		crateRobux = Tycoon.hooks.crateRobuxAllowed(session.player),
@@ -33777,9 +33667,6 @@ local function setOwnerSign(plot: Plot, player: Player?)
 		-- Clear the previous owner's numbers from the dynamic boards.
 		for _, key in
 			{
-				"BuyTierFromTo",
-				"BuyTierProgress",
-				"BuyTierCost",
 				"ProcessQueue",
 				"ProcessRate",
 				"ProcessSpeed",
@@ -41445,7 +41332,7 @@ local STATIC: { [string]: boolean } = { Merge = true }
 -- Which Theme.World.Pads colour each pad wears.
 local JOB_KEYS: { [string]: string } = { Unlock1 = "Unlock", Unlock2 = "UnlockVip" }
 local function jobKey(name: string): string
-	if string.sub(name, 1, 3) == "Buy" and name ~= "BuyTier" then
+	if string.sub(name, 1, 3) == "Buy" then
 		return "Buy"
 	elseif string.sub(name, 1, 6) == "ProcUp" then
 		return "Process"
@@ -41456,13 +41343,12 @@ end
 -- The big printed mark on each pad's top.
 local function iconText(name: string): string
 	local icons = theme.Icons
-	if string.sub(name, 1, 3) == "Buy" and name ~= "BuyTier" then
+	if string.sub(name, 1, 3) == "Buy" then
 		return "+" .. string.sub(name, 4)
 	end
 	local fixed = {
 		AutoMerge = "AUTO",
 		Merge = icons.Unit .. "+" .. icons.Unit,
-		BuyTier = "⬆️",
 		Deposit = icons.Orb,
 		ProcUp1 = "⬆️",
 		ProcUp10 = "⬆️x10",
@@ -43648,24 +43534,6 @@ local function buildPlot(index: number): Plot
 
 	-- Merge pad centred in front of the pen, at the end of the walkway.
 	pad("Merge", padColors.Merge, w.Merge, "Pairs merge into the next tier")
-
-	-- Buy tier upgrade: pad, with its sign card standing just behind it.
-	local tierSpot = Layout.PADS.BuyTier
-	pad("BuyTier", padColors.BuyTier, w.BuyTier, "")
-	do
-		local body, title = standingCard(B, tierSpot.x, behindPad(tierSpot), FACE_ENTRANCE, Vector2.new(7, 5.4), SIGN_BOTTOM, w.BuyTier)
-		labels.BuyTierTitle = title
-		-- Main line: units bought toward the next tier ("MAXED" at the top tier). The pad's own
-		-- sign shows the price.
-		labels.BuyTierProgress = text(body, {
-			Text = "",
-			Font = theme.Fonts.Number,
-			Size = UDim2.fromScale(0.9, 0.8),
-			Position = UDim2.fromScale(0.05, 0.1),
-		})
-		labels.BuyTierFromTo = hiddenLabel(body)
-		labels.BuyTierCost = hiddenLabel(body)
-	end
 
 	-- Deposit station: pad + converter machine. The pad's floating label already shows the
 	-- multiplier, so the multiplier labels Tycoon writes stay hidden on the pad.
@@ -50574,16 +50442,12 @@ local nextReadyCheck = 0
 local function computeReady(data: any): { [string]: boolean }
 	local out: { [string]: boolean } = {}
 	local money = tonumber(data.money) or 0
-	local buyTier = tonumber(data.buyTier) or 1
-	local bought = tonumber(data.boughtAtTier) or 0
+	local bought = tonumber(data.bought) or 0
 	for _, amount in Economy.BUY_AMOUNTS do
-		out["Buy" .. amount] = money >= Economy.bulkPrice(buyTier, bought, amount) - 1e-6
+		out["Buy" .. amount] = money >= Economy.bulkPrice(bought, amount) - 1e-6
 	end
 	-- Auto Merge is a game pass: the pad invites a tap until it is owned.
 	out.AutoMerge = not data.autoMergeOwned
-	if buyTier < Economy.MAX_BUY_TIER then
-		out.BuyTier = bought >= Economy.buyTierRequirement(buyTier) and money >= Economy.buyTierUpgradeCost(buyTier)
-	end
 	local level = tonumber(data.processLevel)
 	if level then
 		out.ProcUp1 = money >= Economy.processUpgradeCost(level)
@@ -58881,7 +58745,7 @@ local function colorFor(name: string): Color3
 	if name == "Orbs" then
 		return World.Pink
 	elseif string.sub(name, 1, 3) == "Buy" then
-		return if name == "BuyTier" then pads.BuyTier else pads.Buy
+		return pads.Buy
 	end
 	return pads[name] or World.Sunny
 end
@@ -67259,9 +67123,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		local progression = Economy.progression(tonumber(data.highestTier) or 1, tonumber(data.processLevel) or 0)
 		local income = tonumber(data.income) or 0
 		-- A player's first day pays today's card up to a cap (Server.Daily does the same).
-		local cap = if daily.firstDay == true
-			then DailyReward.firstDayCap(day, tonumber(data.buyTier) or 1, tonumber(data.boughtAtTier) or 0)
-			else nil
+		local cap = if daily.firstDay == true then DailyReward.firstDayCap(day, tonumber(data.bought) or 0) else nil
 		for i, card in cards do
 			card.amount.Text = State.money(DailyReward.cash(i, income, progression, if i == day then cap else nil))
 			local state = if i <= claimed
@@ -68410,11 +68272,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local picked = NextGoal.pick({
 			discovered = data.discovered,
 			units = data.units,
-			buyTier = tonumber(data.buyTier) or 1,
-			boughtAtTier = tonumber(data.boughtAtTier) or 0,
-			money = tonumber(data.money) or 0,
 		})
-		local title, hint, count = NextGoal.text(picked, tierName, State.money)
+		local title, hint, count = NextGoal.text(picked, tierName)
 		local key = title .. "|" .. hint .. "|" .. count
 		if key == goalKey then
 			Kit.tween(goalBar, 0.3, { Size = UDim2.new(0, math.floor((goalWidth - GOAL_BAR_X * 2) * picked.progress), 0, 3) })
