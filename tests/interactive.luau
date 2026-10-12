@@ -106,7 +106,7 @@ return function(h: { [string]: any })
 		check(math.abs(angle) <= Rules.SWING_MAX and math.abs(speed) < 10, "huge dt is clamped")
 	end)
 
-	test("Interactive: punch and rep timing", function()
+	test("Interactive: punch timing", function()
 		local reach, weight = Rules.punch(-0.1)
 		check(reach == 0 and weight == 0, "before the punch")
 		reach, weight = Rules.punch(Rules.PUNCH_TIME)
@@ -123,25 +123,124 @@ return function(h: { [string]: any })
 		_, weight = Rules.punch(Rules.PUNCH_TIME - 0.005)
 		check(weight < 0.05, "the pose fades out, no snap")
 		check(Rules.PUNCH_TIME > Rules.HIT_GAP, "a punch outlasts the hit gap, so combos keep the fists up")
+	end)
 
-		eq(Rules.press(0), 1, "starts with the arms out")
-		eq(Rules.reps(0), 0, "no reps yet")
-		eq(Rules.reps(-3), 0, "no negative reps")
+	test("Interactive: jump presses", function()
+		check(Rules.newPress(nil, 0), "the first request is a press")
+		-- Held: a request every frame is one press, even at 10 fps.
+		local last: number? = nil
+		local presses = 0
+		for i = 0, 30 do
+			local t = i * 0.1
+			if Rules.newPress(last, t) then
+				presses += 1
+			end
+			last = t
+		end
+		eq(presses, 1, "holding jump is one press")
+		check(not Rules.newPress(1, 1 + 1 / 60), "the next frame is the same press")
+		check(Rules.newPress(1, 1 + Rules.PRESS_GAP + 0.01), "released and pressed again")
+		check(Rules.PRESS_GAP < Rules.HIT_GAP and Rules.PRESS_GAP < Rules.REP_GAP, "spam is never slowed by the press gap")
+	end)
+
+	test("Interactive: bench reps", function()
 		local T = Rules.REP_TIME
-		eq(Rules.reps(T * 3 + 0.01), 3, "three reps")
-		eq(Rules.reps(T - 0.01), 0, "not quite one")
-		near(Rules.press(T * 0.55), 0, "bar on the chest")
-		near(Rules.press(T * 2.55), 0, "bar on the chest on the third rep")
-		local last = 1
-		local lowest = 1
-		for i = 1, 400 do
-			local p = Rules.press(i * T * 3 / 400)
+		check(T >= 0.3 and T <= 0.6, "a rep is quick")
+		eq(Rules.press(0), 1, "starts with the arms out")
+		eq(Rules.press(-1), 1, "rests at arms' length before a rep")
+		eq(Rules.press(T), 1, "back at arms' length")
+		eq(Rules.press(T + 5), 1, "rests at arms' length after a rep")
+		local last, lowest, lowestAt = 1, 1, 0
+		for i = 1, 200 do
+			local t = i * T / 200
+			local p = Rules.press(t)
 			check(p >= 0 and p <= 1, "press in range")
 			check(math.abs(p - last) < 0.06, "the bar never jumps")
+			if p < lowest then
+				lowest, lowestAt = p, t
+			end
 			last = p
-			lowest = math.min(lowest, p)
 		end
 		check(lowest < 0.01, "every rep reaches the chest")
+		check(lowestAt > T * 0.3 and lowestAt < T * 0.6, "down, then up")
+
+		-- One press: one rep, then the bar rests.
+		local at, queued, started = Rules.repStep(nil, false, 10, true)
+		check(at == 10 and not queued and started, "a press at rest starts a rep")
+		at, queued, started = Rules.repStep(at, queued, 10 + T / 2, false)
+		check(at == 10 and not queued and not started, "the rep plays on")
+		at, queued, started = Rules.repStep(at, queued, 10 + T + 0.01, false)
+		check(at == nil and not queued and not started, "the bar rests after the rep")
+		at, queued, started = Rules.repStep(at, queued, 20, false)
+		check(at == nil and not started, "no press, no rep")
+
+		-- A press during a rep queues one more, which starts exactly when the first ends.
+		at, queued = Rules.repStep(nil, false, 0, true)
+		at, queued, started = Rules.repStep(at, queued, 0.1, true)
+		check(at == 0 and queued and not started, "a press during a rep queues one")
+		at, queued, started = Rules.repStep(at, queued, 0.2, true)
+		check(at == 0 and queued and not started, "at most one rep is queued")
+		at, queued, started = Rules.repStep(at, queued, T + 0.004, false)
+		check(started and not queued, "the queued rep starts")
+		near(at, T, "back to back: no frame lost between reps")
+		-- A stalled frame never leaves the queue playing in the past.
+		at, queued, started = Rules.repStep(0, true, 9, false)
+		check(at == 9 and started and not queued, "a late queued rep starts now")
+		-- The press that ends one rep's wait may queue the next on the same step.
+		at, queued, started = Rules.repStep(0, true, T + 0.01, true)
+		check(started and queued, "start one, queue the next")
+
+		-- Spamming faster than the reps play: reps chain at one per REP_TIME, none lost.
+		local function spam(pressEvery: number, seconds: number, fps: number): number
+			local a: number?, q, reps = nil, false, 0
+			local nextPress = 0
+			for i = 0, math.floor(seconds * fps) do
+				local t = i / fps
+				local pressed = t >= nextPress
+				if pressed then
+					nextPress += pressEvery
+				end
+				local s
+				a, q, s = Rules.repStep(a, q, t, pressed)
+				if s then
+					reps += 1
+				end
+			end
+			return reps
+		end
+		local fast = spam(0.1, 9, 60)
+		check(math.abs(fast - 9 / T) <= 1, "fast spam: a rep every REP_TIME (" .. fast .. ")")
+		check(math.abs(spam(0.1, 9, 20) - fast) <= 1, "the same rhythm at 20 fps")
+		eq(spam(1, 9.5, 60), 10, "slow presses: one rep each")
+		eq(spam(100, 9, 60), 1, "one press, one rep")
+
+		-- The server counts chained reps, with a rep of slack for jitter, and no more.
+		local nextAt: number? = nil
+		local ok
+		ok, nextAt = Rules.repAllowed(nextAt, 100)
+		check(ok, "first rep counts")
+		local counted = 1
+		for i = 1, 20 do
+			ok, nextAt = Rules.repAllowed(nextAt, 100 + i * T)
+			counted += if ok then 1 else 0
+		end
+		eq(counted, 21, "reps a REP_TIME apart all count")
+		-- Two reps arriving together (jitter) both count; a flood does not.
+		nextAt = nil
+		counted = 0
+		for _ = 1, 50 do
+			ok, nextAt = Rules.repAllowed(nextAt, 200)
+			counted += if ok then 1 else 0
+		end
+		eq(counted, 2, "one rep of slack")
+		counted = 0
+		nextAt = nil
+		for i = 0, 999 do
+			ok, nextAt = Rules.repAllowed(nextAt, 300 + i * 0.01)
+			counted += if ok then 1 else 0
+		end
+		check(counted <= 10 / Rules.REP_GAP + 2, "a flood counts at most one rep per REP_GAP (" .. counted .. ")")
+		check(Rules.REP_GAP < T, "chained reps are slower than the server's limit")
 	end)
 
 	test("Interactive: gym poses", function()

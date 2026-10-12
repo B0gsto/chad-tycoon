@@ -2,23 +2,38 @@
 --[[
 	Fx.Interactive: brings the interactive gym props on every plot to life (World.Decor builds
 	them as Interactive_<Kind> models under Workspace.Map, with attribute Interactive and the
-	invisible marker parts named below). Cosmetic fun only: no remotes, no economy.
+	invisible marker parts named below). Cosmetic fun only, nothing touches the economy; the one
+	thing the server takes part in is the bench press (who lies on it and their rep count).
 
 	  trampoline  Standing or landing on the bounce pad ("BounceAnchor", attribute Radius)
 	              launches the local character 3-4 jumps high (InteractiveRules: higher out
 	              of a bounce and while jump is held), almost straight up. The pad squashes
 	              and springs back, with a puff and a pop.
-	  punchbag    The "PunchPrompt" (tap / E / gamepad X) or simply running into the bag
-	              ("HitZone") is a hit, at most 4 a second: the bag swings away from the
-	              player and settles like a damped pendulum, the local avatar throws a quick
-	              punch (alternating fists) and a combo counter pops over the bag. A part-built
-	              bag hangs from "BagPivot"; the one-piece Blender mesh (bag and stand in one)
-	              rocks on its base instead, more gently.
-	  bench       The "LiftPrompt" lies the player down on "BenchSeat" (the server seats
-	              them: one lifter at a time, seen by everyone). Every client poses whoever
-	              lies there in a bench press, moves a barbell with their hands and counts
-	              the reps. Jumping, moving or the prompt (now "Stop") ends it, and the lifter
-	              gets up on "StandSpot" beside the bench.
+	  punchbag    A jump press (Space, gamepad A, the mobile jump button) within Reach studs of
+	              the bag's "HitZone", the "PunchPrompt" (tap / Space / gamepad X) or simply
+	              running into the bag is a hit, at most 4 a second: the bag swings away from
+	              the player and settles like a damped pendulum, the local avatar throws a
+	              quick punch (alternating fists) and a combo counter pops over the bag. At the
+	              bag the avatar does not hop: jump is a punch there. A part-built bag hangs
+	              from "BagPivot"; the one-piece Blender mesh (bag and stand in one) rocks on
+	              its base instead, more gently.
+	  bench       The "LiftPrompt" (E) lies the player down at "BenchSeat": the server anchors
+	              their root there and sets the model's attributes Lifter (UserId) and Reps.
+	              Every client poses that player in a bench press and gives them a barbell.
+	              The lifter spams jump: each press is one rep, a quick down-and-up of the bar
+	              (a press during a rep queues one more), played at once and sent to the server
+	              (action BenchRep), which counts it in Reps for everybody else to play. The
+	              bar moves on the rep itself, through the place the pose puts the hands, so
+	              it moves even on an avatar that cannot be posed. Moving (action BenchStop)
+	              or the prompt (now "Stop") ends it, and the server stands the lifter up on
+	              "StandSpot" beside the bench.
+
+	Jump presses come from UserInputService.JumpRequest, which fires every frame while jump is
+	held: only its rising edge counts (InteractiveRules.newPress). A prop that takes jump for
+	itself switches the local humanoid's Jumping state off through holdStates, which counts its
+	holders, so the bag and the bench never switch it back on under one another. Not on touch:
+	Roblox hides the jump button of a humanoid that cannot jump, so there the state stays on
+	(a lifter is anchored and cannot hop anyway; at the bag a touch player hops with the punch).
 
 	Avatars are posed like Fx.PlayerPose does it: Motor6D transforms overridden after the
 	avatar's own animations have run, from the gym poses in Shared.Poses (R15 only; an R6
@@ -26,7 +41,8 @@
 
 	Each client writes what it plays onto the Interactive_ model (local attributes, for
 	playtests): trampoline Bounces, BounceHeight (in jumps); punchbag Hits, Combo; bench
-	Lifting (the lifter's name, or nil) and Reps.
+	Lifting (the lifter's name, or nil), RepsPlayed (reps this client has animated) and
+	BarTravel (studs the bar moves in a rep).
 ]]
 
 local Players = game:GetService("Players")
@@ -38,6 +54,7 @@ local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Rules = require(Shared:WaitForChild("InteractiveRules"))
+local Net = require(Shared:WaitForChild("Net"))
 local Poses = require(Shared:WaitForChild("Poses")) :: any
 local Theme = require(ReplicatedStorage:WaitForChild("Theme")) :: any
 local Sounds = require(script.Parent.Parent.Sounds) :: any
@@ -59,8 +76,12 @@ local PAD_SQUASH = 0.45 -- studs the bounce pad dips
 local BOUNCE_REACH = 8 -- studs above the pad a character's root still counts as on it
 local WALK_GAP = 0.5 -- seconds between hits while the player keeps pushing into the bag
 local MESH_ROCK = 0.3 -- share of the swing a one-piece bag-and-stand mesh rocks on its base
+local PUNCH_REACH = 2.5 -- studs round the HitZone from which jump punches (its attribute Reach)
 local BLEND_IN = 0.25 -- seconds for a lifter to settle into the bench press
-local STAND_WAIT = 1.5 -- seconds to wait for the seat to let go before giving up on standing
+local STAND_TIME = 0.5 -- seconds a lifter needs to get up, before jump is theirs again
+local STOP_GAP = 0.4 -- seconds between two asks to stop lifting
+local BAR_TRAVEL = 1.2 -- studs the bar moves over the chest of an avatar that cannot be posed
+local MIN_TRAVEL = 1 -- studs the bar moves in a rep at the least, however short the arms
 
 local UPPER_BODY = { "UpperTorso", "Head", "LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand" }
 
@@ -75,13 +96,15 @@ type Handler = {
 	step: ((now: number, dt: number) -> ())?,
 	pose: ((now: number) -> ())?,
 	jumped: ((me: Me) -> ())?,
+	pressed: ((now: number) -> ())?, -- a new jump press (not a held one)
 }
 
 local live: { [Instance]: Handler } = {}
 local pending: { [Instance]: boolean } = {}
 local me: Me? = nil
 local meConns: { RBXScriptConnection } = {}
-local lastJumpRequest = -math.huge
+local lastJumpRequest: number? = nil
+local actionRemote: RemoteEvent? = nil
 local started = false
 
 local function dropMe()
@@ -127,7 +150,76 @@ local function localChar(): Me?
 end
 
 local function holdingJump(humanoid: Humanoid): boolean
-	return humanoid.Jump or os.clock() - lastJumpRequest < 0.2
+	return humanoid.Jump or os.clock() - (lastJumpRequest or -math.huge) < 0.2
+end
+
+-- The device in the player's hands, going by what they touched last.
+local function inputKind(): "keyboard" | "gamepad" | "touch"
+	local last = UserInputService:GetLastInputType()
+	if string.sub(last.Name, 1, 7) == "Gamepad" then
+		return "gamepad"
+	elseif last == Enum.UserInputType.Touch or (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) then
+		return "touch"
+	end
+	return "keyboard"
+end
+
+-- Humanoid states switched off on the local character, by how many props hold each one.
+local stateHolds: { [Enum.HumanoidStateType]: number } = {}
+local stateOff: { [Enum.HumanoidStateType]: Humanoid } = {}
+
+-- Brings the local humanoid in line with the holds (every frame): also after a respawn, and
+-- the old character gets its states back. On touch Jumping stays on: Roblox hides the jump
+-- button of a humanoid that cannot jump, and that button is how a touch player presses jump.
+local function syncStates()
+	local who = localChar()
+	local touch = inputKind() == "touch"
+	for state, holds in stateHolds do
+		local off = holds > 0 and not (touch and state == Enum.HumanoidStateType.Jumping)
+		local want = if off and who then who.humanoid else nil
+		local had = stateOff[state]
+		if had ~= want then
+			if had and had.Parent then
+				had:SetStateEnabled(state, true)
+			end
+			stateOff[state] = want :: Humanoid
+			if want then
+				want:SetStateEnabled(state, false)
+			end
+		end
+	end
+end
+
+-- Switches `states` off on the local humanoid until the returned function is called (calling
+-- it again does nothing). Holds are counted: a state comes back on with its last holder.
+local function holdStates(states: { Enum.HumanoidStateType }): () -> ()
+	for _, state in states do
+		stateHolds[state] = (stateHolds[state] or 0) + 1
+	end
+	syncStates()
+	local held = true
+	return function()
+		if held then
+			held = false
+			for _, state in states do
+				stateHolds[state] -= 1
+			end
+			syncStates()
+		end
+	end
+end
+
+local JUMP = { Enum.HumanoidStateType.Jumping }
+-- A lifter lies flat with an anchored root: the humanoid must not take that for a fall.
+local LYING = { Enum.HumanoidStateType.Jumping, Enum.HumanoidStateType.FallingDown, Enum.HumanoidStateType.Ragdoll }
+
+-- What spamming jump is called on that device.
+local JUMP_HINT = { keyboard = "SPAM SPACE", gamepad = "PRESS A", touch = "TAP JUMP" }
+
+local function send(action: string)
+	if actionRemote then
+		actionRemote:FireServer({ action = action })
+	end
 end
 
 -- Normal take-off speed of the avatar's jump.
@@ -177,6 +269,15 @@ local function rigFor(character: Model, now: number): Rig?
 	return rig
 end
 
+-- The Motor6D transform that puts `limb` in pose transform `cf`.
+local function jointTransform(rig: Rig, joint: Joint, limb: string, cf: CFrame): CFrame
+	local transform = joint.rotInv * cf.Rotation * joint.rot
+	if limb == "LowerTorso" then
+		transform = CFrame.new(joint.rotInv * Vector3.new(0, cf.Y * rig.scale, 0)) * transform
+	end
+	return transform
+end
+
 -- Poses `limbs` part way (alpha) from pose `a` to pose `b`, mixed over the avatar's own
 -- animation by `weight`. Call from PreSimulation, after the animations have run.
 local function poseRig(rig: Rig, a: { [string]: CFrame }, b: { [string]: CFrame }, alpha: number, weight: number, limbs: { string })
@@ -185,13 +286,32 @@ local function poseRig(rig: Rig, a: { [string]: CFrame }, b: { [string]: CFrame 
 		if not joint or not joint.motor.Parent then
 			continue
 		end
-		local cf = a[limb]:Lerp(b[limb], alpha)
-		local transform = joint.rotInv * cf.Rotation * joint.rot
-		if limb == "LowerTorso" then
-			transform = CFrame.new(joint.rotInv * Vector3.new(0, cf.Y * rig.scale, 0)) * transform
-		end
+		local transform = jointTransform(rig, joint, limb, a[limb]:Lerp(b[limb], alpha))
 		joint.motor.Transform = if weight >= 1 then transform else joint.motor.Transform:Lerp(transform, weight)
 	end
+end
+
+local ARM = { "LowerTorso", "UpperTorso", "UpperArm", "LowerArm", "Hand" }
+
+-- Where poseRig(rig, a, b, alpha, 1) puts the middle between the two hands, in the root's
+-- frame: worked out from the joints and the pose alone, so it holds whether or not the pose
+-- shows on the avatar. Nil when an arm is incomplete.
+local function handsCentre(rig: Rig, a: { [string]: CFrame }, b: { [string]: CFrame }, alpha: number): Vector3?
+	local sum = Vector3.zero
+	for _, side in { "Left", "Right" } do
+		local frame = CFrame.identity
+		for i, name in ARM do
+			local limb = if i > 2 then side .. name else name
+			local joint = rig.joints[limb]
+			if not joint or not joint.motor.Parent then
+				return nil
+			end
+			local motor = joint.motor
+			frame = frame * motor.C0 * jointTransform(rig, joint, limb, a[limb]:Lerp(b[limb], alpha)) * motor.C1:Inverse()
+		end
+		sum += frame.Position
+	end
+	return sum / 2
 end
 
 -- Hands `limbs` back to the avatar's own animations.
@@ -213,7 +333,7 @@ local function throwPunch(who: Me, toward: Vector3?)
 	punchSide = if punchSide == "Right" then "Left" else "Right"
 	punchAt = os.clock()
 	-- A punch from the prompt while standing about: turn to face the bag first.
-	if toward and who.humanoid.MoveDirection.Magnitude < 0.1 and who.humanoid.SeatPart == nil then
+	if toward and who.humanoid.MoveDirection.Magnitude < 0.1 and who.humanoid.SeatPart == nil and not who.root.Anchored then
 		local at = who.root.Position
 		who.root.CFrame = CFrame.lookAt(at, at + toward)
 	end
@@ -222,7 +342,7 @@ end
 local function posePunch(now: number)
 	local t = now - punchAt
 	local who = if t < Rules.PUNCH_TIME then localChar() else nil
-	local rig = if who and who.humanoid.SeatPart == nil then rigFor(who.model, now) else nil
+	local rig = if who and who.humanoid.SeatPart == nil and not who.root.Anchored then rigFor(who.model, now) else nil
 	if not rig then
 		if punchRig then
 			restRig(punchRig, UPPER_BODY)
@@ -248,11 +368,13 @@ end
 
 type Counter = {
 	show: (text: string, color: Color3, size: number) -> (),
+	hint: (text: string) -> (),
 	hide: () -> (),
 	destroy: () -> (),
 }
 
--- A number that pops over a prop: Display type in `color` with the world signs' ink outline.
+-- A number that pops over a prop: Display type in `color` with the world signs' ink outline,
+-- and under it a small second line (hint; empty until set).
 local function counter(adornee: BasePart, name: string, above: number): Counter
 	local gui = Instance.new("BillboardGui")
 	gui.Name = name
@@ -281,6 +403,20 @@ local function counter(adornee: BasePart, name: string, above: number): Counter
 	stroke.Parent = label
 	local scale = Instance.new("UIScale")
 	scale.Parent = label
+	local hint = Instance.new("TextLabel")
+	hint.Name = "Hint"
+	hint.BackgroundTransparency = 1
+	hint.AnchorPoint = Vector2.new(0.5, 0)
+	hint.Position = UDim2.fromScale(0.5, 0.79)
+	hint.Size = UDim2.fromScale(0.6, 0.19)
+	hint.Font = Theme.Fonts.Display
+	hint.TextScaled = true
+	hint.TextColor3 = W.Cream
+	hint.Text = ""
+	hint.Parent = gui
+	local hintStroke = stroke:Clone()
+	hintStroke.Thickness = 2
+	hintStroke.Parent = hint
 	local token = 0
 
 	local self = {} :: Counter
@@ -291,8 +427,13 @@ local function counter(adornee: BasePart, name: string, above: number): Counter
 		label.TextColor3 = color
 		label.TextTransparency = 0
 		stroke.Transparency = 0
+		hint.TextTransparency = 0
+		hintStroke.Transparency = 0
 		scale.Scale = size * 0.55
 		TweenService:Create(scale, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = size }):Play()
+	end
+	function self.hint(text: string)
+		hint.Text = text
 	end
 	function self.hide()
 		if not gui.Enabled then
@@ -303,6 +444,8 @@ local function counter(adornee: BasePart, name: string, above: number): Counter
 		local fade = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		TweenService:Create(label, fade, { TextTransparency = 1 }):Play()
 		TweenService:Create(stroke, fade, { Transparency = 1 }):Play()
+		TweenService:Create(hint, fade, { TextTransparency = 1 }):Play()
+		TweenService:Create(hintStroke, fade, { Transparency = 1 }):Play()
 		task.delay(0.32, function()
 			if token == mine then
 				gui.Enabled = false
@@ -489,6 +632,8 @@ local function punchBag(model: Model): Handler?
 	end
 	local found = zone:WaitForChild("PunchPrompt", MARKER_WAIT)
 	local prompt = if found and found:IsA("ProximityPrompt") then found else nil
+	local reachValue = zone:GetAttribute("Reach")
+	local reach: number = if type(reachValue) == "number" then reachValue else PUNCH_REACH
 
 	-- What swings: the part-built bag about the hook it hangs from, or (bag and stand in one
 	-- mesh) the whole body rocking on its base.
@@ -594,11 +739,34 @@ local function punchBag(model: Model): Handler?
 	local hits = 0
 	local lastHit: number? = nil
 	local inside = false
+	local atBag: (() -> ())? = nil -- set while the local character is in reach: gives jump back
 	local board = counter(pivot, "ComboCounter", 2.4)
 
-	local function hit(who: Me, viaPrompt: boolean)
+	-- Within `grow` studs of the zone (and no more than a jump above it).
+	local function within(who: Me, grow: number): boolean
+		local p = zone.CFrame:PointToObjectSpace(who.root.Position)
+		local half = zone.Size / 2
+		return math.abs(p.X) <= half.X + grow and math.abs(p.Z) <= half.Z + grow and math.abs(p.Y) <= half.Y + 3
+	end
+
+	-- In reach of the bag jump is a punch, so the avatar must not hop: Jumping is held off
+	-- from the frame the character comes in reach to the frame it leaves, dies or is gone.
+	local function reaching(who: Me?): boolean
+		local can = who ~= nil and who.humanoid.Health > 0 and within(who, reach)
+		if can and not atBag then
+			atBag = holdStates(JUMP)
+		elseif not can and atBag then
+			atBag()
+			atBag = nil
+		end
+		return can
+	end
+
+	-- `aimed` hits (the prompt, a jump press) turn a standing avatar to face the bag.
+	local function hit(who: Me, aimed: boolean)
 		local now = os.clock()
-		if not Rules.canHit(lastHit, now) or who.humanoid.Health <= 0 or who.humanoid.SeatPart ~= nil then
+		-- An anchored root lies on the bench press: its presses are reps.
+		if not Rules.canHit(lastHit, now) or who.humanoid.Health <= 0 or who.humanoid.SeatPart ~= nil or who.root.Anchored then
 			return
 		end
 		local away = flat(zone.Position - who.root.Position)
@@ -611,7 +779,7 @@ local function punchBag(model: Model): Handler?
 		speedZ += away.Z * kick
 		swinging = true
 
-		throwPunch(who, if viaPrompt then away else nil)
+		throwPunch(who, if aimed then away else nil)
 		local big = Rules.milestone(combo)
 		board.show("x" .. combo, if big then W.Sunny else W.White, Rules.comboScale(combo))
 		Sounds.play("Deposit", 0.06, 0.9 + 0.4 * math.clamp((combo - 1) / 24, 0, 1))
@@ -645,6 +813,7 @@ local function punchBag(model: Model): Handler?
 			for _, conn in conns do
 				conn:Disconnect()
 			end
+			reaching(nil)
 			settle()
 			board.destroy()
 		end,
@@ -660,12 +829,12 @@ local function punchBag(model: Model): Handler?
 			local who = localChar()
 			if not who or flat(who.root.Position - zone.Position).Magnitude > NEAR then
 				inside = false
+				reaching(nil)
 				return
 			end
+			reaching(who)
 			-- Running into the bag: a hit on the way in, and again while pushing on into it.
-			local p = zone.CFrame:PointToObjectSpace(who.root.Position)
-			local half = zone.Size / 2
-			local nowInside = math.abs(p.X) <= half.X + 0.5 and math.abs(p.Z) <= half.Z + 0.5 and math.abs(p.Y) <= half.Y + 3
+			local nowInside = within(who, 0.5)
 			if nowInside then
 				local toward = flat(zone.Position - who.root.Position)
 				local pushing = toward.Magnitude > 0.05 and who.humanoid.MoveDirection:Dot(toward.Unit) > 0.3
@@ -675,6 +844,13 @@ local function punchBag(model: Model): Handler?
 			end
 			inside = nowInside
 		end,
+		-- One press can come in twice, as the prompt (Space) and as a jump: HIT_GAP keeps it one hit.
+		pressed = function()
+			local who = localChar()
+			if who and reaching(who) then
+				hit(who, true)
+			end
+		end,
 	}
 	return handler
 end
@@ -682,14 +858,23 @@ end
 -- Bench press -----------------------------------------------------------------------------------
 
 type Lift = {
-	humanoid: Humanoid,
-	character: Model?,
+	userId: number,
 	mine: boolean,
 	startedAt: number,
-	reps: number,
+	repAt: number?, -- when the rep being played started, nil while the bar rests (Rules.repStep)
+	queued: boolean, -- one more rep waits behind it
+	played: number, -- reps this client has started for the lifter
+	seen: number, -- of the server's Reps, how many this client has turned into reps
+	shown: number, -- the count on the board
+	rig: Rig?, -- the lifter's joints, once posed
+	boost: number, -- studs the bar goes beyond the hands at the top, for arms too short for MIN_TRAVEL
+	boostRig: Rig?,
 	bar: Model,
 	barParts: { BasePart },
 	barOffsets: { CFrame },
+	armed: boolean, -- the local lifter has let go of the stick since lying down
+	stopAt: number,
+	release: (() -> ())?, -- the local lifter's hold on jumping
 }
 
 local function barPart(parent: Instance, name: string, length: number, diameter: number, tint: Color3): BasePart
@@ -732,21 +917,16 @@ local function buildBar(parent: Instance): (Model, { BasePart }, { CFrame })
 end
 
 local function bench(model: Model): Handler?
-	local seatPart = marker(model, "BenchSeat")
-	local standSpot = marker(model, "StandSpot")
+	local lieSpot = marker(model, "BenchSeat")
 	local liftAnchor = marker(model, "LiftAnchor")
-	if not seatPart or not seatPart:IsA("Seat") or not standSpot or not liftAnchor then
+	if not lieSpot or not liftAnchor then
 		return nil
 	end
-	local seat: Seat = seatPart
 	local found = liftAnchor:WaitForChild("LiftPrompt", MARKER_WAIT)
 	local prompt = if found and found:IsA("ProximityPrompt") then found else nil
 	local board = counter(liftAnchor, "RepCounter", 4.2)
 
 	local lift: Lift? = nil
-	local armed = false -- the local lifter has let go of the stick since lying down
-	local leavingAt = -math.huge
-	local standBy: number? = nil -- the local lifter gets up once the seat has let go, until then
 
 	-- The barbell resting in the rack hides while somebody presses theirs.
 	local function showRack(shown: boolean)
@@ -766,102 +946,86 @@ local function bench(model: Model): Handler?
 			return
 		end
 		lift = nil
-		local rig = if current.character then rigs[current.character] else nil
-		if rig and rig.rig then
-			restRig(rig.rig, Poses.LIMBS)
+		if current.rig then
+			restRig(current.rig, Poses.LIMBS)
 		end
 		current.bar:Destroy()
 		showRack(true)
 		board.hide()
 		model:SetAttribute("Lifting", nil)
-		if current.mine then
-			standBy = os.clock() + STAND_WAIT
+		-- The server stands the lifter up; jump is theirs again once they are on their feet.
+		if current.release then
+			task.delay(STAND_TIME, current.release)
 		end
 	end
 
-	local function start(humanoid: Humanoid)
-		local character = humanoid.Parent
+	local function start(userId: number)
+		local who = Players:GetPlayerByUserId(userId)
 		local bar, barParts, barOffsets = buildBar(model)
-		local now = os.clock()
-		local current: Lift = {
-			humanoid = humanoid,
-			character = if character and character:IsA("Model") then character else nil,
-			mine = character ~= nil and character == player.Character,
-			startedAt = now,
-			reps = 0,
+		local mine = userId == player.UserId
+		local reps = model:GetAttribute("Reps")
+		local seen: number = if type(reps) == "number" then reps else 0
+		lift = {
+			userId = userId,
+			mine = mine,
+			startedAt = os.clock(),
+			repAt = nil,
+			queued = false,
+			played = 0,
+			-- Joining a lift under way: its earlier reps are only counted, not replayed.
+			seen = seen,
+			shown = seen,
+			rig = nil,
+			boost = 0,
+			boostRig = nil,
 			bar = bar,
 			barParts = barParts,
 			barOffsets = barOffsets,
+			armed = false,
+			stopAt = -math.huge,
+			release = if mine then holdStates(LYING) else nil,
 		}
-		lift = current
 		showRack(false)
-		board.show("0 REPS", W.White, 1)
-		model:SetAttribute("Lifting", if character then character.Name else humanoid.Name)
-		model:SetAttribute("Reps", 0)
-		if current.mine then
-			armed = false
-			leavingAt = -math.huge
-			standBy = nil
-		end
+		board.hint(if mine then JUMP_HINT[inputKind()] else "")
+		board.show(seen .. (if seen == 1 then " REP" else " REPS"), W.White, 1)
+		model:SetAttribute("Lifting", if who then who.Name else tostring(userId))
+		model:SetAttribute("RepsPlayed", 0)
 	end
 
 	local function refresh()
-		local who = seat.Occupant
+		local value = model:GetAttribute("Lifter")
+		local userId: number? = if type(value) == "number" then value else nil
 		local current = lift
-		if current and current.humanoid ~= who then
+		if current and current.userId ~= userId then
 			finish()
 		end
-		if who and not lift then
-			start(who)
+		if userId and not lift then
+			start(userId)
 		end
 		if prompt then
 			local mine = lift ~= nil and lift.mine
 			prompt.ActionText = if mine then "Stop" else "Lift"
-			prompt.Enabled = mine or who == nil
+			prompt.Enabled = mine or userId == nil
 		end
 	end
 
-	-- Asks the seat to let the local lifter go; jumping is the fallback that always works.
-	local function leave(who: Me, now: number)
-		if now - leavingAt < 0.4 then
-			return
+	-- Moves the lifter's rep queue on: `pressed` is the local lifter's jump press, or a rep
+	-- the server counted for somebody else's lifter.
+	local function advance(current: Lift, now: number, pressed: boolean)
+		local began
+		current.repAt, current.queued, began = Rules.repStep(current.repAt, current.queued, now, pressed)
+		if began then
+			current.played += 1
+			model:SetAttribute("RepsPlayed", current.played)
+			if current.mine then
+				send("BenchRep")
+			end
 		end
-		if leavingAt > -math.huge then
-			who.humanoid.Jump = true
-		end
-		leavingAt = now
-		who.humanoid.Sit = false
-	end
-
-	-- Stands the local lifter up beside the bench (never after the server has moved them away).
-	local function standUp(who: Me)
-		if who.humanoid.Health <= 0 or (who.root.Position - seat.Position).Magnitude > 6 then
-			return
-		end
-		local hip = if who.humanoid.RigType == Enum.HumanoidRigType.R15 then who.humanoid.HipHeight else 2
-		local at = standSpot.Position + Vector3.new(0, hip + who.root.Size.Y / 2 + 0.1, 0)
-		local look = flat(standSpot.CFrame.LookVector)
-		who.root.CFrame = CFrame.lookAt(at, at + (if look.Magnitude > 0.1 then look.Unit else Vector3.new(0, 0, -1)))
-		who.root.AssemblyLinearVelocity = Vector3.zero
-		who.root.AssemblyAngularVelocity = Vector3.zero
-		who.humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
 	end
 
 	local conns: { RBXScriptConnection } = {
-		seat:GetPropertyChangedSignal("Occupant"):Connect(refresh),
+		model:GetAttributeChangedSignal("Lifter"):Connect(refresh),
 	}
-	if prompt then
-		table.insert(
-			conns,
-			prompt.Triggered:Connect(function(who: Player)
-				-- The server seats a new lifter and lets its own one go; this only hurries the "Stop".
-				local mine = localChar()
-				if who == player and mine and lift and lift.mine then
-					leave(mine, os.clock())
-				end
-			end)
-		)
-	end
 	refresh()
 
 	local handler: Handler = {
@@ -869,68 +1033,82 @@ local function bench(model: Model): Handler?
 			for _, conn in conns do
 				conn:Disconnect()
 			end
+			local current = lift
 			finish()
-			standBy = nil
+			-- No standing up to wait for: the bench itself is gone.
+			if current and current.release then
+				current.release()
+			end
 			board.destroy()
 		end,
 		step = function(now: number)
-			local who = localChar()
-			local deadline = standBy
-			if deadline then
-				if not who or now > deadline then
-					standBy = nil
-				elseif who.humanoid.SeatPart == nil and seat:FindFirstChild("SeatWeld") == nil then
-					standBy = nil
-					standUp(who)
-				end
-			end
 			local current = lift
 			if not current then
 				return
 			end
-			-- A lifter who is gone, dead or no longer on this seat (a missed signal) is done.
-			if seat.Occupant ~= current.humanoid or current.humanoid.Health <= 0 or current.humanoid.Parent == nil then
-				refresh()
-				current = lift
-				if not current then
-					return
+			local counted = model:GetAttribute("Reps")
+			local reps: number = if type(counted) == "number" then counted else 0
+			if current.mine then
+				-- The local lifter's reps were played on the press: the server's count only
+				-- confirms them. Moving ends the lift, once the stick has been let go after
+				-- lying down.
+				local who = localChar()
+				local moving = if who then who.humanoid.MoveDirection.Magnitude else 0
+				if not current.armed then
+					current.armed = moving < 0.1 and now - current.startedAt > 0.3
+				elseif moving > 0.3 and now - current.stopAt >= STOP_GAP then
+					current.stopAt = now
+					send("BenchStop")
 				end
-			end
-			local t = now - current.startedAt
-			if current.mine and who then
-				-- Moving ends the lift, once the stick has been let go after lying down.
-				local moving = who.humanoid.MoveDirection.Magnitude
-				if not armed then
-					armed = moving < 0.1 and t > 0.3
-				elseif moving > 0.3 then
-					leave(who, now)
+				advance(current, now, false)
+				reps = math.max(reps, current.played)
+			else
+				-- Somebody else's reps play as the server counts them; a burst too long to
+				-- queue is only counted.
+				local pressed = reps > current.seen
+				if pressed then
+					current.seen = if reps - current.seen > 2 then reps - 1 else current.seen + 1
 				end
+				advance(current, now, pressed)
 			end
 
-			-- The bar rides between the hands; without hands (R6) it moves over the chest.
-			local character = current.character
-			local left = character and character:FindFirstChild("LeftHand")
-			local right = character and character:FindFirstChild("RightHand")
-			local frame = seat.CFrame
-			local centre
-			if left and right and left:IsA("BasePart") and right:IsA("BasePart") then
-				centre = (left.Position + right.Position) / 2
-			else
-				centre = frame * Vector3.new(0, 0.4, -(1 + 1.2 * Rules.press(t)))
+			-- The bar moves on the rep, through the middle between the posed hands (worked
+			-- out from the pose, not read off the avatar, so it moves whatever the avatar
+			-- shows); over the chest of an avatar that cannot be posed.
+			local out = Rules.press(if current.repAt then now - current.repAt else 0)
+			local frame = lieSpot.CFrame
+			local rig = current.rig
+			if rig and current.boostRig ~= rig then
+				current.boostRig = rig
+				local top = handsCentre(rig, POSE.BenchDown, POSE.BenchUp, 1)
+				local bottom = handsCentre(rig, POSE.BenchDown, POSE.BenchUp, 0)
+				-- The root's front (-Z) faces the sky.
+				local travel = if top and bottom then bottom.Z - top.Z else MIN_TRAVEL
+				current.boost = math.max(0, MIN_TRAVEL - travel)
+				model:SetAttribute("BarTravel", travel + current.boost)
+			end
+			local hands = if rig then handsCentre(rig, POSE.BenchDown, POSE.BenchUp, out) else nil
+			local centre = if hands
+				then frame * (hands - Vector3.new(0, 0, current.boost * out))
+				else frame * Vector3.new(0, 0.4, -(1 + BAR_TRAVEL * out))
+			if not hands and model:GetAttribute("BarTravel") ~= BAR_TRAVEL then
+				model:SetAttribute("BarTravel", BAR_TRAVEL)
 			end
 			local base = CFrame.fromMatrix(centre, frame.RightVector, frame.UpVector)
 			for i, part in current.barParts do
 				part.CFrame = base * current.barOffsets[i]
 			end
 
-			local reps = Rules.reps(t)
-			if reps ~= current.reps then
-				current.reps = reps
-				board.show(reps .. (if reps == 1 then " REP" else " REPS"), if reps % 10 == 0 then W.Sunny else W.White, 1)
-				model:SetAttribute("Reps", reps)
+			if reps ~= current.shown then
+				current.shown = reps
+				local big = reps > 0 and reps % 10 == 0
+				if current.mine then
+					board.hint(JUMP_HINT[inputKind()])
+				end
+				board.show(reps .. (if reps == 1 then " REP" else " REPS"), if big then W.Sunny else W.White, 1)
 				if current.mine then
 					Sounds.play("Tick", 0.04)
-					if reps % 10 == 0 then
+					if big then
 						Sounds.play("Step")
 						starBurst(liftAnchor, liftAnchor.Position + Vector3.new(0, 4.2, 0), 6)
 					end
@@ -939,14 +1117,27 @@ local function bench(model: Model): Handler?
 		end,
 		pose = function(now: number)
 			local current = lift
-			local character = current and current.character
-			if not current or not character then
+			if not current then
 				return
 			end
-			local rig = rigFor(character, now)
+			local who = Players:GetPlayerByUserId(current.userId)
+			local character = who and who.Character
+			local rig = if character then rigFor(character, now) else nil
+			if current.rig and current.rig ~= rig then
+				restRig(current.rig, Poses.LIMBS)
+			end
+			current.rig = rig
 			if rig then
-				local t = now - current.startedAt
-				poseRig(rig, POSE.BenchDown, POSE.BenchUp, Rules.press(t), math.min(1, t / BLEND_IN), Poses.LIMBS)
+				-- Every limb, at full weight once settled: nothing of the avatar's own
+				-- animations (idle, fall) shows on a lifter.
+				local out = Rules.press(if current.repAt then now - current.repAt else 0)
+				poseRig(rig, POSE.BenchDown, POSE.BenchUp, out, math.min(1, (now - current.startedAt) / BLEND_IN), Poses.LIMBS)
+			end
+		end,
+		pressed = function(now: number)
+			local current = lift
+			if current and current.mine then
+				advance(current, now, true)
 			end
 		end,
 	}
@@ -1020,8 +1211,25 @@ function Interactive.init()
 		POSE[name] = Poses.samplePose("Story", name, 0, 0)
 	end
 
+	task.spawn(function()
+		actionRemote = Net.event("Action")
+	end)
+	-- JumpRequest fires every frame while jump is held: props get its rising edge.
 	UserInputService.JumpRequest:Connect(function()
-		lastJumpRequest = os.clock()
+		local now = os.clock()
+		local fresh = Rules.newPress(lastJumpRequest, now)
+		lastJumpRequest = now
+		if not fresh then
+			return
+		end
+		for instance, handler in live do
+			if handler.pressed then
+				local ok, err = pcall(handler.pressed :: any, now)
+				if not ok then
+					report(instance.Name, err)
+				end
+			end
+		end
 	end)
 	-- A new character starts clean: its connections go with the old one.
 	player.CharacterRemoving:Connect(function()
@@ -1031,6 +1239,7 @@ function Interactive.init()
 	end)
 	RunService.Heartbeat:Connect(function(dt: number)
 		local now = os.clock()
+		syncStates()
 		for instance, handler in live do
 			if handler.step then
 				local ok, err = pcall(handler.step :: any, now, dt)

@@ -71,7 +71,9 @@ local Tycoon: any
 
 -- Reward hooks: `reward` may change a reward before it is paid (events, boosts);
 -- `rewarded` is told after it was paid. reward = { cash, full, packCash }.
+-- `teleporting` is told before a character is moved (init: World.Decor lets a bench lifter go).
 GameModes.hooks = {
+	teleporting = function(_player: Player) end,
 	reward = function(_session: any, _modeId: string, reward: { [string]: any }): { [string]: any }
 		return reward
 	end,
@@ -196,13 +198,8 @@ function GameModes.teleport(player: Player, feet: Vector3, look: Vector3)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local hip = if humanoid then humanoid.HipHeight else 2
 	local pos = feet + Vector3.new(0, hip + root.Size.Y / 2 + 0.2, 0)
-	-- A lifter on a plot's bench press is welded to its seat (World.Decor): let go first.
-	local seat = humanoid and humanoid.SeatPart
-	local weld = seat and seat:FindFirstChild("SeatWeld")
-	if humanoid and weld then
-		weld:Destroy()
-		humanoid.Sit = false
-	end
+	-- A lifter on a plot's bench press is anchored to it (World.Decor): let go first.
+	GameModes.hooks.teleporting(player)
 	character:PivotTo(CFrame.lookAt(pos, pos + Vector3.new(look.X, 0, look.Z)))
 	root.AssemblyLinearVelocity = Vector3.zero
 end
@@ -283,6 +280,7 @@ end
 
 function GameModes.init(built: any, theme: any, tycoon: any, world: any)
 	Tycoon = tycoon
+	GameModes.hooks.teleporting = (require :: any)(script.Parent.World.Decor).releaseLifter
 	for id, module in BUILTIN do
 		local impl = (require :: any)(module)
 		GameModes.register(impl.create(GameModes, { built = built, theme = theme, Tycoon = tycoon, world = world }))
