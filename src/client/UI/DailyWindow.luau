@@ -65,13 +65,15 @@ local FOOTER_COMPACT = 60
 -- One row of tall cards: the day (HEAD_H) under CARD_TOP, then the art, the amount and the
 -- crate chip stacked HEAD_GAP / STACK_GAP apart, CARD_BOTTOM above the card's edge.
 local CARD_TOP = 10
-local HEAD_H = 18
+local HEAD_H = 20
+local HEAD_TEXT = 16 -- the day label: bold, a step over a caption
 local HEAD_GAP = 8
 local STACK_GAP = 6
 local CARD_BOTTOM = 12
 local ART_MAX = 96
-local AMOUNT_H = 26
-local AMOUNT_MAX = 22
+local AMOUNT_H = 28
+local AMOUNT_MAX = 24
+local AMOUNT_MIN_PX = 18 -- the amount is the card's key number: never under this on the glass
 local CHIP_H = 22
 -- The design window holds exactly that: chrome (104) + streak + cards + footer.
 local CARD_H = CARD_TOP + HEAD_H + HEAD_GAP + ART_MAX + STACK_GAP + AMOUNT_H + STACK_GAP + CHIP_H + CARD_BOTTOM
@@ -168,7 +170,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Name = "Rule",
 		Text = "Come back every day. Miss one and it starts again at Day 1!",
 		TextSize = T.Small,
-		TextColor3 = C.TextDim,
+		MinPx = true,
+		TextColor3 = C.Text,
 		TextXAlignment = Enum.TextXAlignment.Right,
 		Size = UDim2.new(0.5, -2, 1, 0),
 		Position = UDim2.new(0.5, 0, 0, 0),
@@ -190,7 +193,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			Name = "Header",
 			Text = "DAY " .. day,
 			Font = F.UI,
-			TextSize = T.Small,
+			TextSize = HEAD_TEXT,
+			MinPx = true,
 			TextWrapped = false,
 			Size = UDim2.new(1, 0, 0, HEAD_H),
 			Position = UDim2.fromOffset(0, CARD_TOP),
@@ -213,6 +217,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			Name = "Amount",
 			Text = "",
 			MaxTextSize = AMOUNT_MAX,
+			MinPx = AMOUNT_MIN_PX,
 			TextColor3 = C.MoneyText,
 			Size = UDim2.new(1, -6, 0, AMOUNT_H),
 			AnchorPoint = Vector2.new(0.5, 0),
@@ -229,6 +234,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				Color = C.Rarity[reward.crate] or C.Gold,
 				Solid = true,
 				TextSize = T.Small,
+				MinPx = true,
 				Size = UDim2.fromOffset(chipWidth(chipFull), CHIP_H),
 				AnchorPoint = Vector2.new(0.5, 0),
 				ZIndex = 3,
@@ -293,7 +299,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		AnchorPoint = Vector2.new(0, 1),
 	})
 	local BUTTON_W = 200
-	-- Headline over detail, centred as a pair on the row's middle line.
+	-- Headline over detail, centred as a pair on the row's middle line. While today's reward
+	-- waits, the card (TODAY) and the CLAIM button already say so: the row keeps only the
+	-- detail line. Once claimed, the headline is the countdown to the next one.
 	local words = Kit.new("Frame", {
 		Name = "Words",
 		BackgroundTransparency = 1,
@@ -307,6 +315,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Name = "Headline",
 		Text = "",
 		MaxTextSize = T.H2,
+		MinPx = 16,
 		TextWrapped = false,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.new(1, 0, 0, 26),
@@ -315,8 +324,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	local detail = Kit.text(words, {
 		Name = "Detail",
 		Text = "",
-		TextSize = T.Small,
-		TextColor3 = C.TextDim,
+		TextSize = 15,
+		MinPx = true,
+		TextColor3 = C.Text,
 		TextWrapped = false,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextXAlignment = Enum.TextXAlignment.Left,
@@ -406,7 +416,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			return
 		end
 		clockText = text
-		detail.Text = "Next reward in " .. text
+		headline.Text = "Next reward in " .. text
 	end
 
 	local function render()
@@ -442,14 +452,16 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			then string.format("%d DAY STREAK", streak)
 			elseif streak == 1 then "1 DAY STREAK"
 			else "START YOUR STREAK"
+		headline.Visible = not canClaim
+		detail.AnchorPoint = Vector2.new(0, if canClaim then 0.5 else 0)
+		detail.Position = if canClaim then UDim2.fromScale(0, 0.5) else UDim2.fromOffset(0, 28)
 		if canClaim then
-			headline.Text = string.format("Your Day %d reward is ready!", day)
 			detail.Text = "Rewards grow every day, up to the big Day 7 gift"
 			Kit.setButton(button, "CLAIM", C.Gold)
 		else
 			local nextDay = DailyReward.card(day + 1)
 			local cash = State.money(DailyReward.cash(nextDay, income, progression))
-			headline.Text = string.format("Come back tomorrow for Day %d: %s", nextDay, DailyReward.describe(nextDay, cash, W.Chest))
+			detail.Text = string.format("Tomorrow, Day %d: %s", nextDay, DailyReward.describe(nextDay, cash, W.Chest))
 			Kit.setButton(button, "GOT IT", C.SurfaceHi)
 		end
 		clockText = ""

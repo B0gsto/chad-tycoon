@@ -73,8 +73,13 @@ local function rescale()
 	end
 	uiScale.Scale = math.clamp(fit, 0.5, if Kit.tenFoot then 3 else 1.5)
 	screen:SetAttribute("Compact", (size.Y - topInset) / uiScale.Scale < 600)
+	-- Text held at a size on the glass (Kit.holdText) follows the new scale, once the
+	-- windows have re-fitted.
+	task.defer(Kit.reflowText)
 end
 rescale()
+-- Kit.px reads the design scale from here, also for labels built off screen.
+Kit.pixelScale(screen)
 -- Modules that only hold the ScreenGui read the input mode from its Input attribute.
 Kit.onInput(function(mode)
 	screen:SetAttribute("Input", mode)

@@ -13,8 +13,8 @@
 	                 Shared.NextGoal; above the dumbbell on compact screens)
 	  left edge      icon grid with captions: Home Ranking Modes / Index Shop Invite
 	                 Daily (a dot while a daily reward waits, else its countdown)
-	                 promo under it: tilted "PERMANENT" tag, wide 2X CASH (or
-	                 STARTER PACK) button, "Only 199 R$"
+	                 promo under it: tilted "PERMANENT" tag over a green-tinted glass
+	                 card, 2X CASH (or STARTER PACK) with a solid price chip
 	  bottom left    status row (Premium, Friends, Boost), "Cash [ x1.0 ]",
 	                 the big cash amount + square "+"
 	  bottom centre  the dumbbell: "AURA" + the carried amount on its plaque
@@ -119,6 +119,8 @@ local GRID_ICON = 64
 local GRID_ICON_COMPACT = 48
 local GRID_GAP_X = 10
 local GRID_GAP_Y = 18 -- room for the caption under each row
+local CAPTION = 20 -- icon captions (CAPTION_COMPACT on short screens); never under Kit.captionPx on the glass
+local CAPTION_COMPACT = 16
 local GEAR = 44
 local DUMBBELL_W = 264
 local DUMBBELL_W_COMPACT = 200
@@ -285,8 +287,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local caption = Kit.hudText(button, {
 			Name = "Caption",
 			Text = CAPTIONS[name],
-			TextSize = 18,
-			Size = UDim2.new(1, 16, 0, 20),
+			TextSize = CAPTION,
+			MinPx = true,
+			Size = UDim2.new(1, 16, 0, CAPTION + 4),
 			Position = UDim2.new(0.5, 0, 1, 6),
 			AnchorPoint = Vector2.new(0.5, 1),
 			ZIndex = 4,
@@ -369,59 +372,72 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Starter = { tag = "LIMITED", text = "STARTER PACK", price = 59, focus = Theme.Cosmetics.Starter.Pass },
 		DoubleMoney = { tag = "PERMANENT", text = "2X CASH", price = 199, focus = "DoubleMoney" },
 	}
-	local PROMO_W, PROMO_H = 3 * GRID_ICON + 2 * GRID_GAP_X, 44
-	local promo = group("Promo", { Size = UDim2.fromOffset(PROMO_W, PROMO_H + 40), Visible = false })
+	-- A glass card in the HUD's language: the window tint with the money green mixed in,
+	-- a green edge and a soft pulsing green glow; the offer's name is outlined HUD text and
+	-- only the price sits on a small solid chip.
+	local PROMO_W, PROMO_H = 4 * GRID_ICON + 3 * GRID_GAP_X, 50
+	local PROMO_CHIP_W = 70
+	local promo = group("Promo", { Size = UDim2.fromOffset(PROMO_W, PROMO_H + 16), Visible = false })
 	local promoMode = "DoubleMoney"
-	local promoButton: TextButton
-	promoButton = Kit.button(promo, {
+	local promoButton = Kit.hudGlass(promo, {
 		Name = "Button",
-		Text = "2X CASH",
-		Font = F.Display,
-		TextSize = 24,
-		TextColor = Color3.new(1, 1, 1),
-		Color = C.Cash,
+		Button = true,
+		Color = G.TintTop:Lerp(C.CashDeep, 0.4),
+		Transparency = G.Tinted,
+		Edge = C.Cash,
 		Size = UDim2.fromOffset(PROMO_W, PROMO_H),
 		Position = UDim2.fromOffset(0, 12),
-		Radius = 12,
-		Depth = 4,
-	}, function()
+		Radius = Kit.RADIUS.M,
+	}) :: TextButton
+	Kit.setGlow(promoButton, true, C.Cash)
+	Kit.selectable(promoButton)
+	Kit.bouncy(promoButton, 1.04)
+	promoButton.Activated:Connect(function()
+		Kit.sound("Click")
 		handlers.openWindow("Shop", { focus = PROMOS[promoMode].focus, origin = promoButton })
 	end)
-	local promoLabel = Kit.buttonLabel(promoButton)
-	if promoLabel then
-		local stroke = promoLabel:FindFirstChildOfClass("UIStroke") or Kit.textStroke(promoLabel, 2.5, 0)
-		stroke.Color = C.Ink
-		stroke.Thickness = 2.5
-		stroke.Transparency = 0
-	end
+	local promoLabel = Kit.hudText(promoButton, {
+		Name = "Label",
+		Text = "2X CASH",
+		MaxTextSize = 22,
+		MinPx = true,
+		Size = UDim2.new(1, -(PROMO_CHIP_W + 30), 1, -14),
+		Position = UDim2.new(0, 14, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		StrokeColor = G.TextInk,
+		ZIndex = 3,
+	})
 	local promoTag = Kit.hudText(promo, {
 		Name = "Tag",
 		Text = "PERMANENT",
 		TextSize = 15,
+		MinPx = true,
 		TextColor3 = C.Gold,
 		Size = UDim2.fromOffset(110, 18),
 		Position = UDim2.fromOffset(-4, 2),
 		Rotation = -8,
 		ZIndex = 8,
 	})
-	local promoPrice = Kit.hudText(promo, {
+	local promoPrice = Kit.pill(promoButton, {
 		Name = "Price",
-		Text = "Only 199 " .. Kit.ROBUX,
-		TextSize = 18,
-		Size = UDim2.fromOffset(PROMO_W, 22),
-		Position = UDim2.fromOffset(0, PROMO_H + 18),
+		Text = "199 " .. Kit.ROBUX,
+		Color = C.Cash,
+		Solid = true,
+		TextSize = 16,
+		MinPx = true,
+		Size = UDim2.fromOffset(PROMO_CHIP_W, 30),
+		Position = UDim2.new(1, -10, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
 		ZIndex = 3,
 	})
 	local function dressPromo(mode: string)
 		promoMode = mode
 		local look = PROMOS[mode]
-		if promoLabel then
-			promoLabel.Text = look.text
-		end
+		promoLabel.Text = look.text
 		promoTag.Text = look.tag
-		promoPrice.Text = string.format("Only %d %s", look.price, Kit.ROBUX)
+		promoPrice.Text = string.format("%d %s", look.price, Kit.ROBUX)
 	end
-	local stopPromoShine: (() -> ())? = nil
 	local promoShown = false
 	local function wantedPromo(): string?
 		local data = State.data
@@ -466,16 +482,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		promoShown = show
 		if show then
 			Kit.appear(promo, { from = 0.8, time = 0.26 })
-			local face = Kit.buttonFace(promoButton)
-			if face and not stopPromoShine then
-				stopPromoShine = Kit.shimmer(face, 7, 5)
-			end
 		else
 			Kit.disappear(promo, { to = 0.85, time = 0.18 })
-			if mode == nil and stopPromoShine then
-				stopPromoShine()
-				stopPromoShine = nil
-			end
 		end
 	end
 	dressPromo("DoubleMoney")
@@ -1143,10 +1151,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			Name = "Caption",
 			Text = "",
 			Font = F.UI,
-			TextSize = 14,
+			TextSize = CAPTION,
+			MinPx = true,
 			StrokeThickness = 2,
-			Size = UDim2.new(1, 12, 0, 16),
-			Position = UDim2.new(0.5, 0, 0, 38),
+			Size = UDim2.new(1, 12, 0, 22),
+			Position = UDim2.new(0.5, 0, 0, 36),
 			AnchorPoint = Vector2.new(0.5, 0),
 			ZIndex = 3,
 		})
@@ -1251,7 +1260,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		-- Thumbstick zone: left third, lower half of the screen (design px below the top bar).
 		local designW = size.X / scale
 		local halfY = (size.Y / 2 - TOP_BAR_PX) / scale
-		promoFits = not touch or L.gridY + gridHeight() + 26 + PROMO_H + 40 <= halfY
+		promoFits = not touch or L.gridY + gridHeight() + 26 + PROMO_H + 16 <= halfY
 		local tankW = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
 		L.tankX = if touch then math.max(0, designW / 3 + 8 - (designW - tankW) / 2) else 0
 		-- Jump button: 70 px at 20 px from the corner on small screens, 120 px 90 px up otherwise.
@@ -1271,7 +1280,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	slot(promo, function()
 		return UDim2.fromOffset(L.edge, L.gridY + gridHeight() + 26)
 	end, function()
-		return UDim2.fromOffset(-260, L.gridY + gridHeight() + 26)
+		return UDim2.fromOffset(-PROMO_W - 60, L.gridY + gridHeight() + 26)
 	end)
 	slot(wallet, function()
 		return if L.walletTop then UDim2.new(0, L.edge, 0, L.walletY) else UDim2.new(0, L.edge, 1, L.bottom)
@@ -1329,7 +1338,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local function applyCompact()
 		compact = screen:GetAttribute("Compact") == true
 		measure()
-		local step = gridIcon + GRID_GAP_X
+		-- One row on a phone: the captions are held at a readable size there, so the icons
+		-- stand a little further apart.
+		local gapX = if oneRow then GRID_GAP_X + 6 else GRID_GAP_X
+		local step = gridIcon + gapX
 		local columns = 0
 		for row, names in gridRows() do
 			columns = math.max(columns, #names)
@@ -1339,9 +1351,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				button.Position = UDim2.fromOffset((column - 1) * step, (row - 1) * (gridIcon + GRID_GAP_Y))
 			end
 		end
-		grid.Size = UDim2.fromOffset(columns * step - GRID_GAP_X, gridHeight())
+		grid.Size = UDim2.fromOffset(columns * step - gapX, gridHeight())
 		for _, caption in captions do
-			caption.TextSize = if compact then 15 else 18
+			-- The compact size is in design px: a phone's UI scale would shrink it under the
+			-- caption floor, so the size is held on the glass.
+			Kit.holdText(caption, Kit.captionPx(), if compact then CAPTION_COMPACT else CAPTION)
 		end
 		-- Status captions go first on short screens; the icons stay (not on a touch
 		-- phone, where the wallet sits in the top-left corner).
@@ -1687,18 +1701,22 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local edge = Kit.new("UIStroke", { Thickness = 4, Color = Color3.new(1, 1, 1), Transparency = 0.1, Parent = ring })
 		Kit.tween(ring, 0.4, { Size = UDim2.fromScale(2, 2), BackgroundTransparency = 1 }, Enum.EasingStyle.Quart)
 		Kit.tween(edge, 0.4, { Transparency = 1, Thickness = 1 }, Enum.EasingStyle.Quart)
-		-- "+1" rises off the button and fades.
+		-- "+1" pops over the icon itself, big and gold, and rises only as far as the icon's
+		-- top: the caption of the button above (Home) sits in the gap over it.
 		local plus = Kit.hudText(button, {
 			Name = "Plus",
 			Text = "+1",
-			TextSize = 26,
+			TextSize = 38,
+			MinPx = 22,
 			TextColor3 = C.Gold,
-			Size = UDim2.new(1, 40, 0, 28),
-			Position = UDim2.new(0.5, 0, 0, 4),
-			AnchorPoint = Vector2.new(0.5, 1),
+			StrokeColor = G.TextInk,
+			StrokeThickness = 3,
+			Size = UDim2.new(1, 40, 0, 40),
+			Position = UDim2.fromScale(0.5, 0.62),
+			AnchorPoint = Vector2.new(0.5, 0.5),
 			ZIndex = 6,
 		})
-		Kit.tween(plus, 0.7, { Position = UDim2.new(0.5, 0, 0, -26) }, Enum.EasingStyle.Quad)
+		Kit.tween(plus, 0.7, { Position = UDim2.fromScale(0.5, 0.34) }, Enum.EasingStyle.Quad)
 		local outline = plus:FindFirstChild("Outline")
 		task.delay(0.4, function()
 			Kit.tween(plus, 0.3, { TextTransparency = 1 })

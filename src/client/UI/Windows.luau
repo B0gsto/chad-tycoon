@@ -195,11 +195,12 @@ local function tag(parent: Instance, props: { [string]: any }): TextLabel
 		Name = props.Name or "Tag",
 		Text = props.Text,
 		Font = F.UI,
-		TextSize = T.Small,
-		TextColor3 = Kit.lighten(color, 0.55),
+		TextSize = 15,
+		MinPx = true,
+		TextColor3 = Kit.lighten(color, 0.65),
 		TextWrapped = false,
 		BackgroundColor3 = color,
-		BackgroundTransparency = 0.7,
+		BackgroundTransparency = 0.6,
 		Size = UDim2.fromOffset(0, 24),
 		AutomaticSize = Enum.AutomaticSize.X,
 		Position = props.Position or UDim2.new(),
@@ -214,10 +215,11 @@ end
 -- Shop ------------------------------------------------------------------------------
 
 --[[
-	One long page under a pill switcher, top to bottom: the Starter Pack hero
-	card (until owned), a full-width animated banner per game pass, the
-	cosmetics (All Cosmetics bundle + a card grid), then cash and aura pack
-	cards. Every banner and pack card has a ShopScenes stage that plays
+	Four tabs under a pill switcher, each its own scrolling page: Passes (the
+	Starter Pack hero card until owned, then a full-width animated banner per
+	game pass), Cosmetics (All Cosmetics bundle + a card grid), Cash and Aura
+	(pack cards). A tab shows its section and nothing else; its canvas ends
+	PAGE_BOTTOM under its last row. Every banner and pack card has a ShopScenes stage that plays
 	only while the shop is open, so a closed shop costs nothing per frame.
 ]]
 
@@ -418,7 +420,8 @@ local SWITCH_H = 44 -- section switcher bar (36 px pills inside)
 local PAGE_TOP = SWITCH_H + 8 -- the scrolling page starts below the switcher
 local PRICE_H = 42 -- every price button
 local PRICE_TEXT = 20
-local FADE_H = 56 -- fade along the bottom edge of the page: a cut-off card melts into the glass
+local FADE_H = 10 -- shade along the bottom edge of the page: a hint that it scrolls on, never a smear over a card
+local PAGE_BOTTOM = 14 -- room under the last row of a section, clear of that shade
 local MIN_TEXT = 14 -- no shop text renders smaller (TextScaled labels included)
 local CART = 52 -- header cart art (inside the pane)
 local WALLET_CASH = 140 -- header wallet pill: the cash half...
@@ -714,8 +717,9 @@ local function buildShop(screen: ScreenGui)
 	-- Gamepad selection moves between the cards; the engine scrolls the page to them.
 	scroll.Selectable = false
 
-	-- Soft shade along the bottom edge of the page (stacked strips of the glass tint, so it
-	-- also renders without gradient transparency); it fades out at the end of the page.
+	-- A thin shade along the bottom edge of the page while it scrolls on (stacked strips of
+	-- the glass tint, so it also renders without gradient transparency): FADE_H px, so a card
+	-- under it is cut cleanly. It fades out at the end of the page.
 	local fade = Kit.new("Frame", {
 		Name = "Fade",
 		BackgroundTransparency = 1,
@@ -725,13 +729,13 @@ local function buildShop(screen: ScreenGui)
 		ZIndex = 9,
 		Parent = content,
 	})
-	local FADE_STEPS = 14
+	local FADE_STEPS = 5
 	local fadeStrips: { [Frame]: number } = {}
 	for i = 1, FADE_STEPS do
 		local strip = Kit.new("Frame", {
 			Name = "Strip" .. i,
 			BackgroundColor3 = Theme.Glass.Tint,
-			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.5 * 0.94,
+			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.5 * 0.7,
 			BorderSizePixel = 0,
 			-- One pixel of overlap, so no seam shows between two strips at a fractional scale.
 			Size = UDim2.new(1, 0, 1 / FADE_STEPS, 1),
@@ -820,9 +824,19 @@ local function buildShop(screen: ScreenGui)
 			end
 		end
 	end
+	-- A tab is its own page: only the picked section is laid out (layout), from the top.
+	local function showSection(index: number, animate: boolean)
+		local changed = index ~= current
+		setCurrent(index, animate)
+		if changed then
+			previewShift = 0
+			layout(window.size())
+		end
+	end
 	local function scrollToSection(index: number, instant: boolean?)
-		setCurrent(index, not instant)
-		scrollTo(sectionY[index] or 0, instant)
+		showSection(index, not instant)
+		scrollTo(0, true)
+		showFade(maxScroll() > 2)
 	end
 	for i, section in SECTIONS do
 		local pos, size = slot(i)
@@ -1981,44 +1995,59 @@ local function buildShop(screen: ScreenGui)
 		for _, banner in bannerList do
 			placeBanner(banner, stageW, priceW)
 		end
-		starterCell.Visible = starterShown
-		local blocks: { { gui: GuiObject, h: number, gapAfter: number, section: number? } } = {
-			{ gui = starterCell, h = if starterShown then STARTER_H else 0, gapAfter = if starterShown then 18 else 0 },
-			{ gui = heads[1], h = HEAD_H, gapAfter = 14, section = 1 },
-			{ gui = passList, h = gridH(#bannerList, 1, BANNER_H), gapAfter = 26 },
-			{ gui = heads[2], h = HEAD_H, gapAfter = 14, section = 2 },
-			{ gui = bundleCell, h = BUNDLE_H, gapAfter = GAP + 6 },
-			{ gui = cosGrid, h = gridH(#COS_ORDER, columns, COS_H), gapAfter = 26 },
+		-- One section per tab: the picked one is laid out from the top of the page, the others
+		-- are hidden. The Starter card heads the Passes tab.
+		type Block = { gui: GuiObject, h: number, gapAfter: number, head: boolean?, shown: boolean? }
+		local pages: { { Block } } = {
+			{
+				{ gui = starterCell, h = STARTER_H, gapAfter = 18, shown = starterShown },
+				{ gui = heads[1], h = HEAD_H, gapAfter = 14, head = true },
+				{ gui = passList, h = gridH(#bannerList, 1, BANNER_H), gapAfter = 26 },
+			},
+			{
+				{ gui = heads[2], h = HEAD_H, gapAfter = 14, head = true },
+				{ gui = bundleCell, h = BUNDLE_H, gapAfter = GAP + 6 },
+				{ gui = cosGrid, h = gridH(#COS_ORDER, columns, COS_H), gapAfter = 26 },
+			},
 		}
-		local packSections = { { 3, cashGrid }, { 4, auraGrid } }
-		for i, entry in packSections do
+		for i, grid in { cashGrid, auraGrid } do
 			local packs = packGrids[i]
-			table.insert(blocks, { gui = heads[entry[1]], h = HEAD_H, gapAfter = 14, section = entry[1] })
-			table.insert(blocks, {
-				gui = entry[2],
-				h = gridH(packs.count, packs.columns, PACK_H),
-				gapAfter = 26,
+			table.insert(pages, {
+				{ gui = heads[2 + i], h = HEAD_H, gapAfter = 14, head = true },
+				{ gui = grid, h = gridH(packs.count, packs.columns, PACK_H), gapAfter = 26 },
 			})
 		end
-		-- The Starter card's ribbon overlaps its top edge: start a little lower for it.
-		local y = if starterShown then 12 else 4
-		for _, block in blocks do
-			block.gui.Position = UDim2.fromOffset(4, y - previewShift)
-			block.gui.Size = UDim2.new(1, -18, 0, block.h)
-			if block.section then
-				headY[block.section] = y
-				sectionY[block.section] = y - 4
+		local pageBottom = 0
+		for index, blocks in pages do
+			local picked = index == current
+			-- The Starter card's ribbon overlaps its top edge: start a little lower for it.
+			local y = if index == 1 and starterShown then 12 else 4
+			for _, block in blocks do
+				local shown = block.shown ~= false
+				block.gui.Visible = picked and shown
+				if shown then
+					block.gui.Position = UDim2.fromOffset(4, y - (if picked then previewShift else 0))
+					block.gui.Size = UDim2.new(1, -18, 0, block.h)
+					if block.head then
+						headY[index] = y
+					end
+					if block.gui:IsA("Frame") then
+						gridTop[block.gui] = y
+					end
+					if picked then
+						pageBottom = y + block.h
+					end
+					y += block.h + block.gapAfter
+				end
 			end
-			if block.gui:IsA("Frame") then
-				gridTop[block.gui] = y
-			end
-			y += block.h + block.gapAfter
+			-- Every tab opens at its own top.
+			sectionY[index] = 0
 		end
-		-- The Passes pill opens the page at the very top, Starter card included.
-		passesY = sectionY[1]
-		sectionY[1] = 0
-		-- The last section is short: room below it lets its header scroll all the way to the top.
-		canvasH = math.max(y, sectionY[count] + pageH())
+		-- Banner focus scrolls to the Passes header (under the Starter card).
+		passesY = (headY[1] or 4) - 4
+		-- The canvas is the section and no more: the last row ends PAGE_BOTTOM above the edge
+		-- when scrolled to the end, and a section that fits does not scroll at all.
+		canvasH = pageBottom + PAGE_BOTTOM
 		pageEnd.Position = UDim2.fromOffset(0, canvasH - previewShift)
 		scroll.CanvasSize = UDim2.fromOffset(0, canvasH)
 		-- The switcher keeps its pills roomy but never wider than the page; narrow pills
@@ -2042,54 +2071,21 @@ local function buildShop(screen: ScreenGui)
 	end
 
 	--[[
-		Section in view: the last section whose header sits in the top part of the
-		visible page (at or above 40% of its height), measured from where the
-		headers really are on screen (so window and screen scaling cannot skew
-		it). Moving to another section needs its header 18 px past that line, so
-		the indicator does not flicker at a boundary. At the very bottom of the
-		page the last section wins. Also fades the bottom-edge hint out there.
+		The section in view is the picked tab (each tab is its own page). What scrolling
+		changes is the shade along the bottom edge: it shows while the page goes on and
+		fades out at its end, measured from where the page end really is on screen (so
+		window and screen scaling cannot skew it).
 	]]
-	local HYSTERESIS = 18
 	local function sectionInView(): number
 		local page = pageH()
-		local offsets: { number } = {}
 		local endOffset: number
 		local scale = if PREVIEW then 0 else scroll.AbsoluteSize.Y / math.max(1, page)
 		if scale > 0.05 then
-			local top = scroll.AbsolutePosition.Y
-			for i, head in heads do
-				offsets[i] = (head.AbsolutePosition.Y - top) / scale
-			end
-			endOffset = (pageEnd.AbsolutePosition.Y - top) / scale
+			endOffset = (pageEnd.AbsolutePosition.Y - scroll.AbsolutePosition.Y) / scale
 		else
-			local top = if PREVIEW then previewShift else scroll.CanvasPosition.Y
-			for i in heads do
-				offsets[i] = (headY[i] or 0) - top
-			end
-			endOffset = canvasH - top
+			endOffset = canvasH - (if PREVIEW then previewShift else scroll.CanvasPosition.Y)
 		end
-		local atBottom = endOffset <= page + 2
-		showFade(not atBottom)
-		if atBottom then
-			return count
-		end
-		local line = page * 0.4
-		local function lastAbove(y: number): number
-			local index = 1
-			for i, offset in offsets do
-				if offset <= y then
-					index = i
-				end
-			end
-			return index
-		end
-		local ahead = lastAbove(line - HYSTERESIS)
-		local back = lastAbove(line + HYSTERESIS)
-		if ahead > current then
-			return ahead
-		elseif back < current then
-			return back
-		end
+		showFade(endOffset > page + 2)
 		return current
 	end
 	function syncSection()
@@ -2462,28 +2458,37 @@ local function buildShop(screen: ScreenGui)
 		local index = 1
 		local y = 0
 		local focusCell: GuiObject? = nil
+		local passOrder: number? = nil
+		local cosOrder: number? = nil
 		if type(focus) == "string" then
 			for i, section in SECTIONS do
 				if section.key == focus then
 					index = i
-					y = sectionY[i] or 0
 				end
 			end
-			local passOrder = table.find(Theme.Monetization.PassOrder, focus)
-			local cosOrder = table.find(COS_ORDER, focus)
+			passOrder = table.find(Theme.Monetization.PassOrder, focus)
+			cosOrder = table.find(COS_ORDER, focus)
 			if passOrder and banners[focus] then
-				y = cardY(passList, passOrder, passesY, BANNER_H, 1)
 				focusCell = banners[focus].cell
 			elseif focus == COS.Starter.Pass and starterShown then
 				focusCell = starterCell
 			elseif focus == COS.Bundle then
-				index, y = 2, sectionY[2]
+				index = 2
 				focusCell = bundleCell
 			elseif cosOrder then
-				-- The first cosmetics row sits under the All Cosmetics card.
-				index, y = 2, cardY(cosGrid, cosOrder, sectionY[2], COS_H, columnsNow)
+				index = 2
 				focusCell = cosCards[focus].cell
 			end
+		end
+		-- The focused card's tab is laid out first: its rows are measured on that page.
+		previewShift = 0
+		current = index
+		layout(window.size())
+		if focusCell and passOrder and focusCell ~= starterCell then
+			y = cardY(passList, passOrder, passesY, BANNER_H, 1)
+		elseif focusCell and cosOrder then
+			-- The first cosmetics row sits under the All Cosmetics card.
+			y = cardY(cosGrid, cosOrder, 0, COS_H, columnsNow)
 		end
 		scrollTo(y, true)
 		setCurrent(index, false)
@@ -2501,11 +2506,11 @@ local function buildShop(screen: ScreenGui)
 		-- Opening choreography: section headers slide in, cards and banners ripple in the first time (scale +
 		-- fade, 28 ms apart), the cart lands a beat later with an overshoot and wiggle.
 		for i, head in heads do
-			if not PREVIEW then
+			if not PREVIEW and i == current then
 				local target = head.Position
 				head.Position = target + UDim2.fromOffset(-24, 0)
 				Kit.tween(head, 0.32, { Position = target }, Enum.EasingStyle.Back)
-				Kit.appear(head, { from = 1, time = 0.2, delay = (i - 1) * 0.05 })
+				Kit.appear(head, { from = 1, time = 0.2 })
 			end
 		end
 		local shown: { GuiObject } = {}
@@ -2621,7 +2626,8 @@ local function buildIndex(screen: ScreenGui)
 			Text = string.upper(band.name),
 			Color = C.Rarity[band.name],
 			Solid = true,
-			TextSize = T.Small,
+			TextSize = 15,
+			MinPx = true,
 			Size = UDim2.fromOffset(0, 24),
 			AutomaticSize = Enum.AutomaticSize.X,
 			LayoutOrder = order,
@@ -2990,28 +2996,17 @@ local function buildRanking(screen: ScreenGui)
 		Parent = list,
 	})
 	Kit.list(list, 8)
-	-- Short windows (a phone): the subtitle goes and the columns and list move up into its
-	-- row, so the list keeps two rows and a half above the pinned one.
-	local function layoutRows(size: Vector2)
-		local short = size.Y < 440
-		local top = if short then 48 else 72
-		subtitle.Visible = not short
-		header.Position = UDim2.fromOffset(0, top)
-		list.Position = UDim2.fromOffset(0, top + 28)
-		list.Size = UDim2.new(1, 0, 1, -(top + 102))
-	end
-	layoutRows(window.size())
-	window.onResize.Event:Connect(layoutRows)
 
-	-- The player's own row, pinned under the list with a sunny outline (one face per board).
+	-- The player's own row, pinned right under the list with a sunny outline (one face per
+	-- board). It only shows while the player is not in the list itself.
+	local MINE_H = 54
 	local mine = Kit.panel(window.content, {
 		Name = "Mine",
 		Glass = true,
 		Elevated = true,
 		StrokeColor = C.Gold,
 		StrokeThickness = 2.5,
-		Size = UDim2.new(1, -14, 0, 54),
-		Position = UDim2.new(0, 0, 1, -62),
+		Size = UDim2.new(1, -14, 0, MINE_H),
 		Radius = Kit.RADIUS.M,
 	})
 	local function mineFace(name: string): Frame
@@ -3019,6 +3014,72 @@ local function buildRanking(screen: ScreenGui)
 	end
 	local mineUnits = mineFace("Units")
 	local mineStage = mineFace("Stage")
+
+	-- A young board (under three rows): a friendly card takes the room below instead of
+	-- an empty list.
+	local empty = Kit.well(window.content, { Name = "Empty", Glass = true, Size = UDim2.new(1, -14, 0, 120), Radius = Kit.RADIUS.M })
+	empty.Visible = false
+	local emptyIcon = Kit.icon(empty, Kit.iconName(I.Ranking) or "Star", 44, C.Window.Ranking, {
+		Name = "Icon",
+		Position = UDim2.new(0.5, 0, 0.5, -38),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+	})
+	local emptyTitle = Kit.title(empty, {
+		Name = "Title",
+		Text = "",
+		TextSize = T.H2,
+		MinPx = 18,
+		TextWrapped = false,
+		TextColor3 = C.Gold,
+		Size = UDim2.new(1, -24, 0, 30),
+		Position = UDim2.new(0, 12, 0.5, -8),
+	})
+	local emptyLine = Kit.text(empty, {
+		Name = "Line",
+		Text = "",
+		TextSize = T.Body,
+		MinPx = true,
+		Size = UDim2.new(1, -24, 0, 24),
+		Position = UDim2.new(0, 12, 0.5, 24),
+		StrokeThickness = 0,
+	})
+
+	-- The list is as tall as its rows (it scrolls once they pass the room there is), the
+	-- pinned row sits right under it and the card for a young board fills what is left.
+	-- Short windows (a phone): the subtitle goes and the columns and list move up into its row.
+	local ROW_H, ROW_GAP = 46, 8
+	local rowCount = 0
+	local pinned = true
+	local function layoutRows(size: Vector2)
+		local short = size.Y < 440
+		local top = if short then 48 else 72
+		subtitle.Visible = not short
+		header.Position = UDim2.fromOffset(0, top)
+		header.Visible = rowCount > 0 or pinned
+		local inner = size.Y - 104 -- window chrome and the content padding
+		local y = top + 28
+		local pinH = if pinned then MINE_H + ROW_GAP else 0
+		-- Rows plus the list's own padding (4 above, 10 below).
+		local rowsH = if rowCount > 0 then rowCount * ROW_H + (rowCount - 1) * ROW_GAP + 14 else 0
+		local listH = math.max(0, math.min(inner - y - pinH, rowsH))
+		list.Position = UDim2.fromOffset(0, y)
+		list.Size = UDim2.new(1, 0, 0, listH)
+		list.Visible = listH > 0
+		y += listH
+		mine.Visible = pinned
+		mine.Position = UDim2.fromOffset(0, y)
+		y += pinH
+		local left = inner - y
+		empty.Visible = rowCount < 3 and left >= 72
+		empty.Position = UDim2.fromOffset(0, y)
+		empty.Size = UDim2.new(1, -14, 0, left)
+		emptyIcon.Visible = left >= 130
+		local lift = if emptyIcon.Visible then 0 else 22
+		emptyTitle.Position = UDim2.new(0, 12, 0.5, -8 - lift)
+		emptyLine.Position = UDim2.new(0, 12, 0.5, 24 - lift)
+	end
+	layoutRows(window.size())
+	window.onResize.Event:Connect(layoutRows)
 
 	-- One row: rank chip, name, the board value and (stage board) the clears column.
 	local function row(
@@ -3135,11 +3196,13 @@ local function buildRanking(screen: ScreenGui)
 		listFull = fullNumbers()
 		local rows: { GuiObject } = {}
 		local shown = if board == "stage" then stageEntries else entries
+		local listed = false
 		for i, entry in shown do
 			if type(entry) ~= "table" then
 				continue
 			end
 			local isMe = isMine(entry)
+			listed = listed or isMe
 			local rank = tonumber(entry.rank) or i
 			local frame = Kit.panel(list, {
 				Name = "Row" .. i,
@@ -3147,7 +3210,7 @@ local function buildRanking(screen: ScreenGui)
 				Elevated = isMe,
 				StrokeColor = if isMe then C.Gold else nil,
 				StrokeThickness = if isMe then 2.5 else nil,
-				Size = UDim2.new(1, 0, 0, 46),
+				Size = UDim2.new(1, 0, 0, ROW_H),
 				LayoutOrder = i,
 				Radius = Kit.RADIUS.M,
 			})
@@ -3160,15 +3223,15 @@ local function buildRanking(screen: ScreenGui)
 			end
 			table.insert(rows, frame)
 		end
-		if #rows == 0 then
-			local empty = Kit.text(list, {
-				Text = if loaded then "No rankings yet - be the first!" else "Loading...",
-				TextSize = T.Body,
-				Size = UDim2.new(1, 0, 0, 60),
-				TextColor3 = C.TextDim,
-			})
-			table.insert(rows, empty)
-		end
+		-- The player is in the list: no second, pinned copy of the same row.
+		rowCount = #rows
+		pinned = not listed
+		emptyTitle.Text = if not loaded then "Loading..." elseif rowCount == 0 then "No rankings yet" else "The board is wide open!"
+		emptyLine.Text = if not loaded
+			then "Fetching the top players"
+			elseif rowCount == 0 then "Be the first name on the board!"
+			else string.format("Keep collecting %s to climb it.", W.Units)
+		layoutRows(window.size())
 		if animate then
 			Kit.stagger(rows)
 		end
