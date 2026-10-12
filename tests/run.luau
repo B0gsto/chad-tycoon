@@ -2166,6 +2166,123 @@ test("new player start: cash, converter and tutorial reward", function()
 	eq(DataService.reconcile({ money = 10, processLevel = 40 }).processLevel, 40, "high level kept")
 end)
 
+test("Economy 2.0 migration: a save only gains", function()
+	local DataService = loadDataService()
+	eq(DataService.VERSION, 3, "profile version")
+	local function discoveredTo(best: number): { number }
+		local discovered = table.create(Economy.MAX_TIER, 0)
+		for tier = 1, best do
+			discovered[tier] = 1700000000 + tier
+		end
+		return discovered
+	end
+	-- The converter level is lifted to the free floor of the best discovered tier, never lowered.
+	local lifted = DataService.reconcile({ money = 10, bought = 5, processLevel = 16, discovered = discoveredTo(10) })
+	eq(lifted.processLevel, 39, "level 16 with best tier 10 becomes 39")
+	eq(lifted.processLevel, Economy.minProcessLevel(10), "which is the floor of tier 10")
+	local high = DataService.reconcile({ money = 10, bought = 5, processLevel = 150, discovered = discoveredTo(10) })
+	eq(high.processLevel, 150, "level 150 stays 150")
+	eq(DataService.reconcile({ money = 10, processLevel = 150, discovered = discoveredTo(25) }).processLevel, 150, "even at the last tier")
+	eq(
+		DataService.reconcile({ money = 10, processLevel = 16, discovered = discoveredTo(3) }).processLevel,
+		16,
+		"a level above the floor is kept"
+	)
+	eq(DataService.reconcile(lifted).processLevel, 39, "migrating twice changes nothing")
+
+	-- A version-2 save keeps everything it has.
+	local units = table.create(Economy.MAX_TIER, 0)
+	units[3] = 4
+	units[9] = 2
+	units[10] = 1
+	local saved = {
+		version = 2,
+		money = 123456,
+		carried = 77,
+		queue = 8900,
+		pending = 120,
+		units = table.clone(units),
+		discovered = discoveredTo(10),
+		totalObtained = 612,
+		bought = 550,
+		processLevel = 46,
+		heldChest = "Rare",
+		unlockers = { { rarity = "Epic", endsAt = 1900000000 }, { rarity = "Common", endsAt = 1900000500 } },
+		autoMergeOwned = true,
+		autoMerge = true,
+		totalEarned = 987654,
+		tutorialDone = true,
+		introSeen = true,
+		onboarding = 99,
+		parkour = { best = { 31.5, 40 }, clears = { 2, 1 }, stage = 3, stageMaps = true, gear = "jump" },
+		modes = { parkour = { best = 31.5, clears = 3, lastRewardAt = 1700000000 } },
+	}
+	local kept = DataService.reconcile(saved)
+	eq(kept.version, 3, "the save is now version 3")
+	for _, key in { "money", "carried", "queue", "pending", "totalObtained", "bought", "processLevel", "heldChest", "totalEarned" } do
+		eq(kept[key], saved[key], key .. " is kept")
+	end
+	eq(kept.autoMergeOwned, true, "the cash-bought Auto Merge is kept")
+	eq(kept.autoMerge, true, "and stays switched on")
+	for tier = 1, Economy.MAX_TIER do
+		eq(kept.units[tier], units[tier], "units of tier " .. tier)
+		eq(kept.discovered[tier], if tier <= 10 then 1700000000 + tier else 0, "discovery of tier " .. tier)
+	end
+	eq(kept.unlockers[1].rarity, "Epic", "Smasher slot 1 keeps its crate")
+	eq(kept.unlockers[1].endsAt, 1900000000, "and its end time")
+	eq(kept.unlockers[2].rarity, "Common", "Smasher slot 2 keeps its crate")
+	eq(kept.unlockers[2].endsAt, 1900000500, "and its end time")
+	eq(kept.parkour.best[1], 31.5, "parkour records are kept")
+	eq(kept.parkour.clears[2], 1, "parkour clears are kept")
+	eq(kept.parkour.stage, 3, "the sky obby stage is kept")
+	eq(kept.modes.parkour.lastRewardAt, 1700000000, "the reward cooldown is kept")
+	eq(kept.firstCrateDone, true, "an existing player waits the normal time for crates")
+	local production = Economy.productionPerSecond(kept.units)
+	check(Economy.processRate(kept.processLevel) >= Economy.unitRate(10), "the kept level covers the best unit")
+	check(production > 0, "the rack still produces")
+
+	-- The first-crate head start is for brand-new profiles only.
+	eq(DataService.defaultProfile().firstCrateDone, false, "a new profile has not opened a crate")
+	eq(DataService.reconcile(nil).firstCrateDone, false, "nor has a blank save")
+	eq(DataService.reconcile({ money = 10, bought = 3 }).firstCrateDone, true, "a save that bought units is not new")
+	eq(DataService.reconcile({ money = 10, totalObtained = 4 }).firstCrateDone, true, "nor is one that owned units")
+	eq(DataService.reconcile({ money = 10, bought = 3, firstCrateDone = false }).firstCrateDone, false, "a saved flag is kept")
+	eq(DataService.reconcile({ money = 10, firstCrateDone = "x" }).firstCrateDone, false, "a broken flag on an unplayed save resets")
+
+	-- Parkour: a skipped map is saved next to best / clears (dense, 0 or 1).
+	local fresh = DataService.defaultProfile()
+	eq(#fresh.parkour.skipped, DataService.PARKOUR_LEVELS, "one skipped entry per map")
+	eq(#kept.parkour.skipped, DataService.PARKOUR_LEVELS, "old saves get the list")
+	for level = 1, DataService.PARKOUR_LEVELS do
+		eq(fresh.parkour.skipped[level], 0, "nothing skipped on a new profile")
+		eq(kept.parkour.skipped[level], 0, "nothing skipped on an old save")
+	end
+	local skips =
+		DataService.reconcile({ money = 1, parkour = { best = {}, clears = {}, skipped = { 1, 0, "x", 5, -1, 0 / 0 }, stageMaps = true } })
+	eq(skips.parkour.skipped[1], 1, "a skip is kept")
+	eq(skips.parkour.skipped[2], 0, "an unskipped map stays unskipped")
+	eq(skips.parkour.skipped[3], 0, "junk is dropped")
+	eq(skips.parkour.skipped[4], 1, "a skip is 0 or 1")
+	eq(skips.parkour.skipped[5], 0, "negative is dropped")
+	eq(skips.parkour.skipped[6], 0, "NaN is dropped")
+	eq(DataService.reconcile(skips).parkour.skipped[1], 1, "and survives another load")
+end)
+
+test("Tycoon pads: no Robux prompt from walking, upgrade pads need a stop", function()
+	local source = fs.readFile("src/server/Tycoon.luau")
+	local function has(text: string): boolean
+		return string.find(source, text, 1, true) ~= nil
+	end
+	-- Pass prompts come from the client's buttons (PromptPass, the Settings switch) only.
+	check(not has('promptPass(session.player, "PremiumUnlocker")'), "the VIP Smasher pad opens no pass prompt")
+	local _, autoMergePrompts = string.gsub(source, 'promptPass%(session%.player, "AutoMerge"%)', "")
+	eq(autoMergePrompts, 1, "Auto Merge is prompted from the Settings switch only")
+	check(has("PAD_DWELL = { ProcUp1 = 0.4, ProcUp10 = 0.4 }"), "the upgrade pads fire after a 0.4 s stop")
+	check(has("Economy.CONVERTER_HEADROOM * Economy.productionPerSecond(p.units)"), "upgrades are refused past the headroom")
+	check(has("Economy.depositSplit(p.carried, mult)"), "the deposit bonus is split off as cash")
+	check(has("Economy.minProcessLevel(newest)"), "a new tier lifts the converter for free")
+end)
+
 test("onboarding funnel and badges fields", function()
 	local DataService = loadDataService()
 	eq(DataService.reconcile(nil).onboarding, 0, "new players start the onboarding funnel")
