@@ -197,12 +197,8 @@ local function floorPiece(B: Builder, name: string, r: Rect, top: number, thick:
 	return p
 end
 
--- A flat teal rubber mat covering `r`.
-local function mat(B: Builder, r: Rect)
-	floorPiece(B, "FloorMat", r, 0.11, 0.1, World.Mat)
-end
-
--- Floor slab, the path-stone border band and the deposit pad's mat.
+-- Floor slab and the path-stone border band. The courts, paths and mats painted on it are
+-- World.Decor's (each paint layer has its own height above this band).
 local function buildFloor(B: Builder)
 	B.P({
 		Name = "Floor",
@@ -220,9 +216,6 @@ local function buildFloor(B: Builder)
 		local x0, x1 = side * (inner - band), side * PLOT_HALF
 		floorPiece(B, "FloorBorder", Layout.rect(math.min(x0, x1), math.max(x0, x1), -inner + band, inner - band), 0.04, 0.04, World.Path)
 	end
-
-	-- The floor stays one open space: the only mat is a thin outline under the big deposit pad.
-	mat(B, Layout.padRect(Layout.PADS.Deposit, Layout.PAD_RIM + 0.6))
 end
 
 -- A teal round post with a sunny ball knob on top.

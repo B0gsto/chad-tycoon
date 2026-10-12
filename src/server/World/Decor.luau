@@ -1,16 +1,22 @@
 --[[
-	Decor: the sunny gym dressing around a plot (one accent group per free area: a weights
-	corner, a cardio corner, a water break, a boxing bag, palms and speakers at the entrance),
-	the cream entrance path with its chevrons, and the two fan zones beside the display ledge.
+	Decor: everything painted on a plot's floor (the courts under each group of pads, the cream
+	path from the entrance to the merge court and on to both side courts, its chevrons), the
+	sunny gym dressing in the areas the courts leave free (palms and speakers at the entrance, a
+	bench press, palms and water breaks between the machines), the interactive props along the
+	front fence and the two fan zones beside the display ledge.
 	Part of the world generator; see Server.WorldBuilder for the overview and plot axes.
 
 	Gym props are Models named Prop_<Kind> with attribute Mesh = "<Kind>" (and Scale) whose
 	PrimaryPart ("PropRoot", invisible) sits at the prop's base centre with the prop's front
 	along its -Z. World.Props swaps the chunky part-built body for the uploaded Blender mesh at the
 	same size (attribute MeshScale) and keeps it as the fallback when the mesh is missing. Props
-	stand only in the free areas PlotLayout leaves (corners and along the fences); every
+	stand only in the free areas PlotLayout leaves (along the fences, between the machines); every
 	placement is checked against the layout and warns if it touches a pad, the pen, a machine,
 	a crate area, a fan zone or the walkway.
+
+	Interactive props are Models named Interactive_<Kind> with attribute Interactive = "<kind>"
+	(trampoline, punchbag, podium) standing on a round sunny mat at Layout.INTERACTIVE. They are
+	only props for now: no prompts or scripts.
 
 	Fan zones: each plot folder gets a "FanSpots" folder with one invisible "FanSpot" part per
 	Layout.fanSpots() entry (attribute Order, 1 = filled first) at ground level, its
@@ -166,6 +172,7 @@ local FOOTPRINT: { [string]: Vector2 } = {
 	WaterCooler = Vector2.new(0.8, 1.2),
 	PalmPlanter = Vector2.new(1.6, 1.6),
 	Speaker = Vector2.new(1.0, 0.9),
+	TowelStack = Vector2.new(1.0, 0.75),
 }
 
 local function dumbbellParts(k: Kit, frame: CFrame, tint: Color3, d: number)
@@ -294,6 +301,14 @@ PROP_BUILDERS.Speaker = function(k, tint)
 	cyl(k, "SpeakerTweeter", 0.22, 0.45, at(0, 2.8, -0.78) * ALONG_Z, color("Sunny"))
 end
 
+-- Three folded towels, the folds on the -Z face.
+PROP_BUILDERS.TowelStack = function(k, tint)
+	for i, towel in { tint, color("White"), color("Sunny") } do
+		local inset = (i - 1) * 0.1
+		block(k, "Towel", Vector3.new(2 - inset, 0.7, 1.5 - inset), at(0, 0.35 + (i - 1) * 0.72, 0), towel, Enum.Material.Fabric)
+	end
+end
+
 -- Props that block the player; the rest are small and walk-through.
 local SOLID = {
 	DumbbellRack = true,
@@ -303,6 +318,7 @@ local SOLID = {
 	WaterCooler = true,
 	PalmPlanter = true,
 	Speaker = true,
+	TowelStack = true,
 }
 
 export type PropOptions = { y: number?, scale: number?, tint: Color3? }
@@ -350,111 +366,283 @@ local function placeProp(B: Builder, parent: Instance, kind: string, x: number, 
 	return model
 end
 
--- Gym corners -----------------------------------------------------------------------------
+-- Floor paint -------------------------------------------------------------------------------
 
--- A soft teal floor mat (walk-over, plot-local centre and size).
-local function floorMat(B: Builder, parent: Instance, x: number, z: number, sx: number, sz: number, tint: Color3)
-	checkClear("GymMat", Layout.rect(x - sx / 2, x + sx / 2, z - sz / 2, z + sz / 2))
-	B.P({
-		Name = "GymMat",
-		Size = Vector3.new(sx, 0.14, sz),
-		CFrame = B.L(x, 0.07, z),
-		Color = tint,
-		CanCollide = false,
-		Parent = parent,
-	})
-end
+-- Everything painted on the floor is a thin walk-through part. Each layer has its own height
+-- (its top surface above the floor, at most 0.12) so overlapping layers never z-fight; the
+-- fence band (World.Shell "FloorBorder") lies at 0.04, between the kerbs and the paths.
+local PAINT_THICK = 0.04
+local KERB_TOP = 0.02
+local PATH_TOP = 0.06
+local LINE_TOP = 0.08
+local COURT_TOP = 0.1
+local MARK_TOP = 0.12
 
--- One accent group per free area; the Blender meshes (World.Props) carry their own colours,
--- the tints paint the part-built fallbacks.
-local function buildGymProps(B: Builder, parent: Instance)
-	-- -X front corner (right of the entrance): a dumbbell rack and a bench press on a teal mat.
-	floorMat(B, parent, -27.3, -35.3, 12.6, 8.6, color("Mat"))
-	placeProp(B, parent, "DumbbellRack", -29, -38.4, 180, { tint = color("Teal") })
-	placeProp(B, parent, "Bench", -23.4, -34.6, 0, { tint = color("Coral") })
-	placeProp(B, parent, "Barbell", -23.4, -32.4, 0, { y = 2.6, tint = color("Sunny") })
-
-	-- -X fence between the converter and the vault: a treadmill.
-	placeProp(B, parent, "Treadmill", -37.2, -18.25, 90, { tint = color("TealLight") })
-
-	-- +X fence between the crate unlocker and the buy-tier pad: water cooler.
-	placeProp(B, parent, "WaterCooler", 38.4, 4.1, 90, { tint = color("Blue") })
-
-	-- +X front corner (left of the entrance): boxing bag.
-	placeProp(B, parent, "PunchBag", 37, -24.6, -90, { tint = color("RedOrange") })
-
-	-- Front fence: a palm and a speaker each side of the entrance, all at least ENTRANCE_CLEAR
-	-- studs off the centre line so the spawn camera (Fx.Camera) sees the pen past them.
-	for _, side in { 1, -1 } do
-		placeProp(B, parent, "PalmPlanter", side * (ENTRANCE_CLEAR + 1.6), -37.6, side * 20, { tint = color("Sunny") })
-		placeProp(B, parent, "Speaker", side * (ENTRANCE_CLEAR + 4.8), -38.8, 180 - side * 15, { tint = color("Teal") })
-	end
-end
-
--- Entrance path ---------------------------------------------------------------------------
-
--- A flat walk-over strip covering plot-local rect `r` with its top at `top`.
-local function pathPiece(B: Builder, parent: Instance, name: string, r: Rect, top: number, tint: Color3): BasePart
-	local thick = 0.04
-	local p = B.P({
-		Name = name,
-		Size = Vector3.new(r.maxX - r.minX, thick, r.maxZ - r.minZ),
-		CFrame = B.L((r.minX + r.maxX) / 2, top - thick / 2, (r.minZ + r.maxZ) / 2),
-		Color = tint,
-		CanCollide = false,
-		Parent = parent,
-	})
+local function paintPart(B: Builder, parent: Instance, props: { [string]: any }): BasePart
+	props.Parent = parent
+	props.CanCollide = false
+	local p = B.P(props)
 	p.CanQuery = false
 	p.CanTouch = false
 	p.CastShadow = false
 	return p
 end
 
--- One flat chevron pointing +Z (toward the pen), its tip at plot-local (0, tipZ).
-local function chevron(B: Builder, parent: Instance, tipZ: number, top: number, tint: Color3)
-	local spread, depth, thick = 1.7, 1.3, 0.03
-	local tip = Vector3.new(0, top - thick / 2, tipZ)
-	for _, side in { -1, 1 } do
-		local tail = Vector3.new(side * spread, top - thick / 2, tipZ - depth)
-		local length = (tip - tail).Magnitude + 0.3
-		local arm = B.P({
-			Name = "PathChevron",
-			Size = Vector3.new(0.6, thick, length),
-			CFrame = B.cf * CFrame.lookAt((tip + tail) / 2, tip),
-			Color = tint,
-			CanCollide = false,
-			Parent = parent,
-		})
-		arm.CanQuery = false
-		arm.CanTouch = false
-		arm.CastShadow = false
+-- A flat strip covering plot-local rect `r` with its top at `top`.
+local function paintRect(B: Builder, parent: Instance, name: string, r: Rect, top: number, tint: Color3): BasePart
+	return paintPart(B, parent, {
+		Name = name,
+		Size = Vector3.new(r.maxX - r.minX, PAINT_THICK, r.maxZ - r.minZ),
+		CFrame = B.L((r.minX + r.maxX) / 2, top - PAINT_THICK / 2, (r.minZ + r.maxZ) / 2),
+		Color = tint,
+	})
+end
+
+-- A flat disc of `radius` centred on plot-local (x, z).
+local function paintDisc(
+	B: Builder,
+	parent: Instance,
+	name: string,
+	x: number,
+	z: number,
+	radius: number,
+	top: number,
+	tint: Color3
+): BasePart
+	return paintPart(B, parent, {
+		Name = name,
+		Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(PAINT_THICK, radius * 2, radius * 2),
+		CFrame = B.L(x, top - PAINT_THICK / 2, z) * UPRIGHT,
+		Color = tint,
+	})
+end
+
+-- A rounded rectangle: two crossed strips plus a disc in each corner (like a pad's base).
+local function paintRounded(B: Builder, parent: Instance, name: string, r: Rect, radius: number, top: number, tint: Color3)
+	paintRect(B, parent, name, Layout.rect(r.minX, r.maxX, r.minZ + radius, r.maxZ - radius), top, tint)
+	paintRect(B, parent, name, Layout.rect(r.minX + radius, r.maxX - radius, r.minZ, r.maxZ), top, tint)
+	for _, x in { r.minX + radius, r.maxX - radius } do
+		for _, z in { r.minZ + radius, r.maxZ - radius } do
+			paintDisc(B, parent, name, x, z, radius, top, tint)
+		end
 	end
 end
 
--- A cream path from the entrance up to the merge pad (it ends the walkway), then a bar along
--- the pen's front wall behind the pad out to the foot of both pen stairs, with two soft
--- chevrons between the spawn point and the merge pad.
+-- Width of the white line round a court or mat.
+local COURT_LINE = 0.45
+local COURT_CORNER = 2.6
+
+-- A painted court covering `r`: a rounded mat with a white border line.
+local function paintCourt(B: Builder, parent: Instance, r: Rect, tint: Color3)
+	local i = COURT_LINE
+	paintRounded(B, parent, "CourtLine", r, COURT_CORNER, LINE_TOP, color("White"))
+	paintRounded(B, parent, "Court", Layout.rect(r.minX + i, r.maxX - i, r.minZ + i, r.maxZ - i), COURT_CORNER - i, COURT_TOP, tint)
+end
+
+-- A round painted mat of `radius` with the same white border line.
+local function paintRoundCourt(B: Builder, parent: Instance, name: string, x: number, z: number, radius: number, tint: Color3)
+	paintDisc(B, parent, name .. "Line", x, z, radius, LINE_TOP, color("White"))
+	paintDisc(B, parent, name, x, z, radius - COURT_LINE, COURT_TOP, tint)
+end
+
+-- One flat chevron with its tip at plot-local (tipX, tipZ), pointing along (dirX, dirZ) (a
+-- unit vector), painted on top of everything else.
+local function chevron(B: Builder, parent: Instance, tipX: number, tipZ: number, dirX: number, dirZ: number, tint: Color3)
+	local spread, depth = 1.7, 1.3
+	local y = MARK_TOP - PAINT_THICK / 2
+	local tip = Vector3.new(tipX, y, tipZ)
+	for _, side in { -1, 1 } do
+		local tail = tip - Vector3.new(dirX, 0, dirZ) * depth + Vector3.new(-dirZ, 0, dirX) * side * spread
+		local length = (tip - tail).Magnitude + 0.3
+		paintPart(B, parent, {
+			Name = "PathChevron",
+			Size = Vector3.new(0.6, PAINT_THICK, length),
+			CFrame = B.cf * CFrame.lookAt((tip + tail) / 2, tip),
+			Color = tint,
+		})
+	end
+end
+
+-- A pad colour softened toward cream: the fill of the court its pads stand on.
+local function courtTint(job: string, mix: number): Color3
+	local pads = theme.World and theme.World.Pads
+	local base: Color3 = if pads and pads[job] then pads[job] else WHITE
+	return base:Lerp(color("Cream"), mix)
+end
+
+-- The painted courts (Layout.COURTS): butter under the buy row, peach under the crate stations,
+-- aqua under the aura -> cash stations and a round coral one under the merge pad. White lines
+-- across the side courts split them into one bay per station.
+local function buildCourts(B: Builder, parent: Instance)
+	local courts = Layout.COURTS
+	paintCourt(B, parent, courts.Buy, courtTint("Buy", 0.45))
+	paintCourt(B, parent, courts.Crates, courtTint("Unlock", 0.6))
+	paintCourt(B, parent, courts.Cash, courtTint("Collect", 0.4))
+	local merge = Layout.MERGE_COURT
+	paintRoundCourt(B, parent, "MergeCourt", merge.x, merge.z, merge.radius, courtTint("Merge", 0.5))
+
+	-- Bay lines half-way between the deposit pad and its neighbours, mirrored on the +X court.
+	local pads = Layout.PADS
+	local deposit = Layout.padRect(pads.Deposit, Layout.PAD_RIM)
+	local backBay = (Layout.padRect(pads.ProcUp1, Layout.PAD_RIM).minZ + deposit.maxZ) / 2
+	local frontBay = (deposit.minZ + Layout.padRect(pads.Collect, Layout.PAD_RIM).maxZ) / 2
+	local inset = 1.4
+	for _, r in { courts.Cash, courts.Crates } do
+		for _, z in { backBay, frontBay } do
+			paintRect(B, parent, "CourtBayLine", Layout.rect(r.minX + inset, r.maxX - inset, z - 0.2, z + 0.2), MARK_TOP, color("White"))
+		end
+	end
+	-- The loop's last leg, deposit -> collect: two chevrons either side of the front bay line.
+	for _, tipZ in { frontBay + 1.4, frontBay - 2 } do
+		chevron(B, parent, pads.Collect.x, tipZ, 0, -1, color("White"))
+	end
+end
+
+-- Paths -------------------------------------------------------------------------------------
+
+-- The cream path with a thin teal kerb: a stem from the entrance to the plaza along the pen's
+-- front (Layout.PLAZA), which joins both side courts with the merge court on the junction.
+-- Chevrons show the way: up the stem to the merge pad, then out along the plaza to the deposit
+-- pad (-X) and the crate stations (+X).
 local function buildPath(B: Builder, parent: Instance)
 	local half = Layout.WALKWAY.maxX - 0.4
-	local frontZ = Layout.POOL.minZ - 0.9
-	local merge = Layout.padRect(Layout.PADS.Merge, Layout.PAD_RIM)
-	local barZ0 = math.min(merge.maxZ + 0.6, frontZ - 1.2)
-	local top = 0.15
-	local cream = color("Cream")
-	pathPiece(B, parent, "PathStrip", Layout.rect(-half, half, -Layout.PLOT_HALF, merge.minZ + 0.6), top, cream)
-	-- Along the pen's front wall, out to the stairs on both sides.
-	local stairs = Layout.PEN_STAIRS[1].rect
-	local stairOuter = math.max(math.abs(stairs.minX), math.abs(stairs.maxX))
-	pathPiece(B, parent, "PathStrip", Layout.rect(-stairOuter, stairOuter, barZ0, frontZ), top, cream)
-	for _, stair in Layout.PEN_STAIRS do
-		local r = stair.rect
-		local inner = Layout.POOL.maxX + 0.2
-		local x0, x1 = stair.side * inner, stair.side * stairOuter
-		pathPiece(B, parent, "PathStrip", Layout.rect(math.min(x0, x1), math.max(x0, x1), frontZ, r.minZ - 0.1), top, cream)
+	local plaza = Layout.PLAZA
+	local kerb = 0.35
+	-- The plaza's ends run a little way under the side courts' border lines.
+	local tuck = 0.3
+	local cream, edge = color("Cream"), color("Teal")
+	paintRect(B, parent, "PathKerb", Layout.rect(-half - kerb, half + kerb, -Layout.INNER_HALF, plaza.minZ - kerb), KERB_TOP, edge)
+	paintRect(B, parent, "PathStrip", Layout.rect(-half, half, -Layout.PLOT_HALF, plaza.minZ), PATH_TOP, cream)
+	paintRect(
+		B,
+		parent,
+		"PathKerb",
+		Layout.rect(plaza.minX - tuck, plaza.maxX + tuck, plaza.minZ - kerb, plaza.maxZ + kerb),
+		KERB_TOP,
+		edge
+	)
+	paintRect(B, parent, "PathStrip", Layout.rect(plaza.minX - tuck, plaza.maxX + tuck, plaza.minZ, plaza.maxZ), PATH_TOP, cream)
+
+	local mark = color("TealLight")
+	for _, tipZ in { -30, -23.5, -17 } do
+		chevron(B, parent, 0, tipZ, 0, 1, mark)
 	end
-	for _, tipZ in { -19, -14.5 } do
-		chevron(B, parent, tipZ, top + 0.02, color("PathEdge"))
+	local plazaZ = (plaza.minZ + plaza.maxZ) / 2
+	for _, side in { -1, 1 } do
+		for _, reach in { 1.6, 4.2 } do
+			chevron(B, parent, side * (plaza.maxX - reach), plazaZ, side, 0, mark)
+		end
 	end
+end
+
+-- Gym dressing ------------------------------------------------------------------------------
+
+-- A teal floor mat (walk-over, plot-local centre and size).
+local function floorMat(B: Builder, parent: Instance, x: number, z: number, sx: number, sz: number, tint: Color3)
+	local r = Layout.rect(x - sx / 2, x + sx / 2, z - sz / 2, z + sz / 2)
+	checkClear("GymMat", r)
+	paintRect(B, parent, "GymMat", r, COURT_TOP, tint)
+end
+
+-- Symmetric dressing in the areas the courts leave free; the Blender meshes (World.Props) carry
+-- their own colours, the tints paint the part-built fallbacks.
+local function buildGymProps(B: Builder, parent: Instance)
+	-- Front fence: a palm and a speaker each side of the entrance, all at least ENTRANCE_CLEAR
+	-- studs off the centre line so the spawn camera (Fx.Camera) sees the pen past them.
+	for _, side in { 1, -1 } do
+		placeProp(B, parent, "PalmPlanter", side * (ENTRANCE_CLEAR + 1.6), -37.6, side * 20, { tint = color("Sunny") })
+		placeProp(B, parent, "Speaker", side * (ENTRANCE_CLEAR + 4.8), -38.8, 180 - side * 15, { tint = color("Teal") })
+	end
+
+	-- Front fence, -X side: a bench press on a teal mat, its rack against the fence (the punch
+	-- bag's mat mirrors it on the +X side).
+	floorMat(B, parent, -25, -35.5, 8, 7.4, color("Mat"))
+	placeProp(B, parent, "Bench", -25, -35, 180, { tint = color("Coral") })
+	placeProp(B, parent, "Barbell", -25, -37.2, 0, { y = 2.6, tint = color("Sunny") })
+
+	-- Along both side fences, in the gaps between the machines: a palm between the back and
+	-- middle stations (leaning in toward the pen) and a water break between the middle and
+	-- front ones, facing the pads.
+	for _, side in { 1, -1 } do
+		local facing = side * 90
+		placeProp(B, parent, "PalmPlanter", side * 34.6, -5.35, 90 + facing, { scale = 0.9, tint = color("Sunny") })
+		placeProp(B, parent, "WaterCooler", side * 35.2, -19.6, facing, { tint = color("Blue") })
+		placeProp(B, parent, "TowelStack", side * 35.2, -21.9, facing, { tint = color("TealLight") })
+	end
+end
+
+-- Interactive props -----------------------------------------------------------------------
+
+-- Round trampoline, about 7 studs wide: a teal frame on six short legs round a coral bounce pad.
+local function buildTrampoline(k: Kit)
+	for i = 1, 6 do
+		local a = math.rad(i * 60)
+		cyl(k, "TrampolineLeg", 0.8, 0.5, at(math.cos(a) * 3, 0.4, math.sin(a) * 3) * UPRIGHT, color("White"))
+	end
+	cyl(k, "TrampolineFrame", 0.5, 7, at(0, 1.05, 0) * UPRIGHT, color("Teal"))
+	cyl(k, "TrampolineSprings", 0.5, 6, at(0, 1.07, 0) * UPRIGHT, color("Cream"))
+	cyl(k, "TrampolinePad", 0.5, 5.2, at(0, 1.09, 0) * UPRIGHT, color("Coral"))
+end
+
+-- Winner's podium, front along -Z: three cream steps (1st in the middle, 2nd at -X, 3rd at +X)
+-- with coloured tops and their place printed on the front.
+local function buildFlexPodium(k: Kit)
+	local steps = {
+		{ place = "1", x = 0, height = 2.2, tint = color("Sunny") },
+		{ place = "2", x = -2.4, height = 1.5, tint = color("TealLight") },
+		{ place = "3", x = 2.4, height = 0.9, tint = color("Coral") },
+	}
+	for _, step in steps do
+		local body =
+			block(k, "PodiumStep", Vector3.new(2.4, step.height - 0.25, 2.6), at(step.x, (step.height - 0.25) / 2, 0), color("Cream"))
+		block(k, "PodiumTop", Vector3.new(2.4, 0.25, 2.6), at(step.x, step.height - 0.125, 0), step.tint)
+		local gui = Instance.new("SurfaceGui")
+		gui.Face = Enum.NormalId.Front
+		gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+		gui.PixelsPerStud = 40
+		gui.LightInfluence = 1
+		gui.MaxDistance = Common.SIGN_FADE_CARD
+		gui.Parent = body
+		local place = Instance.new("TextLabel")
+		place.BackgroundTransparency = 1
+		place.Size = UDim2.fromScale(1, 1)
+		place.Font = theme.Fonts.Display
+		place.TextScaled = true
+		place.TextColor3 = color("TealInk")
+		place.Text = step.place
+		place.Parent = gui
+	end
+end
+
+-- Starts Interactive_<kind> (attribute Interactive = `use`) on its round sunny mat at the spot
+-- Layout.INTERACTIVE gives it; the caller adds the prop. Behaviour comes later: for now the
+-- mat only marks the prop as something to use.
+local function interactive(B: Builder, parent: Instance, kind: string, use: string): (Model, number, number)
+	local spot = Layout.INTERACTIVE[kind]
+	local x, z, radius = spot.x, spot.z, spot.radius
+	checkClear("Interactive_" .. kind, Layout.rect(x - radius, x + radius, z - radius, z + radius))
+	local model = Instance.new("Model")
+	model.Name = "Interactive_" .. kind
+	model:SetAttribute("Interactive", use)
+	paintRoundCourt(B, model, "InteractiveMat", x, z, radius, color("Sunny"))
+	model.Parent = parent
+	return model, x, z
+end
+
+-- The three props along the front fence: a trampoline in the +X corner with a punch bag beside
+-- it, and a flex podium in the -X corner turned toward the display rack the fans cheer at.
+local function buildInteractive(B: Builder, parent: Instance)
+	local trampoline, tx, tz = interactive(B, parent, "Trampoline", "trampoline")
+	buildTrampoline({ B = B, parent = trampoline, base = B.L(tx, 0, tz), scale = 1, solid = true })
+
+	-- The bag hangs on the plot side of its post.
+	local punchBag, bx, bz = interactive(B, parent, "PunchBag", "punchbag")
+	placeProp(B, punchBag, "PunchBag", bx, bz - 0.6, 90, { tint = color("RedOrange") })
+
+	local podium, px, pz = interactive(B, parent, "FlexPodium", "podium")
+	local facing = math.atan2(px - Layout.FAN_FOCUS.x, pz - Layout.FAN_FOCUS.z)
+	buildFlexPodium({ B = B, parent = podium, base = B.L(px, 0, pz) * CFrame.Angles(0, facing, 0), scale = 1, solid = true })
 end
 
 -- Fan zones -------------------------------------------------------------------------------
@@ -615,7 +803,7 @@ local function dressFanZone(B: Builder, parent: Instance, side: number)
 	local k: Kit = { B = B, parent = parent, base = B.cf, scale = 1, solid = true }
 
 	-- "FAN ZONE" card between a post just off the display side and one by the fence.
-	-- The card spans the full corner width, past the narrow -X zone's outer edge.
+	-- The card spans the full corner width.
 	local cardHeight = 6.9
 	local cardInnerX = innerX - side * 0.35
 	local cardOuterX = side * (Layout.INNER_HALF - 0.75)
@@ -654,8 +842,10 @@ local function buildGymDecor(B: Builder)
 	local parent = Instance.new("Folder")
 	parent.Name = "Decor"
 	parent.Parent = B.folder
-	buildGymProps(B, parent)
+	buildCourts(B, parent)
 	buildPath(B, parent)
+	buildGymProps(B, parent)
+	buildInteractive(B, parent)
 	for _, side in { 1, -1 } do
 		dressFanZone(B, parent, side)
 	end
