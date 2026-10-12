@@ -231,7 +231,7 @@ function shotList(world) {
 		];
 	}
 	return [
-		{ name: "01-overview", scene: "world", gui: "none", camera: { pos: [-29, 216, -282], look: [0, 0, 36], fov: 55 }, extra: { shadowSpan: 380 } },
+		{ name: "01-overview", scene: "world", gui: "none", camera: { pos: [-20, 105, -205], look: [0, 0, 10], fov: 76 }, extra: { shadowSpan: 380 } },
 		{ name: "02-your-plot", scene: "world", gui: "none", camera: { pos: P(0, 62, -84), look: P(0, 0, 10), fov: 60 }, extra: { shadowSpan: 150 } },
 		{ name: "03-gameplay-hud", scene: "world", gui: "hud", camera: play },
 		{ name: "04-shop", scene: "world", gui: "shop", camera: play },
@@ -250,7 +250,7 @@ function shotList(world) {
 		{ name: "17-stage", scene: "world", gui: "none", camera: { pos: P(0, 13, 11), look: P(0, 8, 42), fov: 62 }, extra: { shadowSpan: 90 } },
 		{ name: "18-machines", scene: "world", gui: "none", camera: { pos: P(-6, 17, -34), look: P(-40, 3, -10), fov: 58 }, extra: { shadowSpan: 90 } },
 		{ name: "19-entrance", scene: "world", gui: "none", camera: { pos: P(10, 9, -72), look: P(0, 6, -30), fov: 58 }, extra: { shadowSpan: 120 } },
-		{ name: "20-hub", scene: "world", gui: "none", camera: { pos: [22, 26, -58], look: [0, 8, 0], fov: 58 }, extra: { shadowSpan: 160 } },
+		{ name: "20-hub", scene: "world", gui: "none", camera: { pos: [14, 30, -44], look: [0, 8, 0], fov: 58 }, extra: { shadowSpan: 160 } },
 		{ name: "21-shop-cosmetics", scene: "world", gui: "shop_cosmetics", camera: play },
 		{ name: "22-shop-cash", scene: "world", gui: "shop_cash", camera: play },
 		{ name: "23-shop-aura", scene: "world", gui: "shop_aura", camera: play },
