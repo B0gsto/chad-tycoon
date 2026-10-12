@@ -3244,6 +3244,14 @@ local function buildChestPanel()
 	end)
 	compactScale.Scale = fullScale()
 
+	-- A window, modal or reveal is up: the card would show through its glass pane (and
+	-- the dim takes its taps anyway), so it parks off the right edge like the HUD groups.
+	local rest = holder.Position
+	local away = UDim2.new(1, PANEL_W + 40, rest.Y.Scale, rest.Y.Offset)
+	Kit.onWindowOpen(function(up: boolean)
+		Kit.tween(holder, 0.15, { Position = if up then away else rest }, Enum.EasingStyle.Quad)
+	end)
+
 	local function fillOdds(rarity: string, highestTier: number)
 		for _, child in odds:GetChildren() do
 			if child:IsA("Frame") then
