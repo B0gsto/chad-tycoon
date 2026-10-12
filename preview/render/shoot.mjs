@@ -216,6 +216,19 @@ function shotList(world) {
 	const fresh = world.plots[3];
 	const F = (x, y, z) => toWorld(fresh, [x, y, z]);
 	const tutorial = { pos: F(-4, 20, -36), look: F(12, 1, 8), fov: 56 };
+	// PLOT_SHOTS=1: six fixed views of the main player's plot, for comparing plot layouts
+	// (preview/plot-shots.sh).
+	if (process.env.PLOT_SHOTS) {
+		const span = { shadowSpan: 120 };
+		return [
+			{ name: "plot-1-overview", scene: "world", gui: "none", camera: { pos: P(0, 50, -68), look: P(0, 0, 8), fov: 60 }, extra: span },
+			{ name: "plot-2-play", scene: "world", gui: "none", camera: play, extra: span },
+			{ name: "plot-3-left-wing", scene: "world", gui: "none", camera: { pos: P(-16, 17, -24), look: P(26, 1, -4), fov: 58 }, extra: span },
+			{ name: "plot-4-right-wing", scene: "world", gui: "none", camera: { pos: P(16, 17, -24), look: P(-26, 1, -4), fov: 58 }, extra: span },
+			{ name: "plot-5-from-rack", scene: "world", gui: "none", camera: { pos: P(0, 24, 22), look: P(0, 0, -22), fov: 62 }, extra: span },
+			{ name: "plot-6-plan", scene: "world", gui: "none", camera: { pos: P(0, 118, -14), look: P(0, 0, -2), fov: 42 }, extra: span },
+		];
+	}
 	return [
 		{ name: "01-overview", scene: "world", gui: "none", camera: { pos: [-24, 180, -235], look: [0, 0, 30], fov: 55 }, extra: { shadowSpan: 320 } },
 		{ name: "02-your-plot", scene: "world", gui: "none", camera: { pos: P(0, 50, -68), look: P(0, 0, 8), fov: 60 }, extra: { shadowSpan: 120 } },
