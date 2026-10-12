@@ -19961,15 +19961,29 @@ Theme.Glass = {
 	TintMix = 0.24,
 	TintedEdge = 0.2,
 	Dimmed = 0.5,
-	-- Insets (tab bars, bar tracks, wallet chips): a darker pane of Colors.Ink.
+	-- Insets (tab bars, bar tracks, wallet chips): a darker pane of Colors.Ink. InsetSoft is
+	-- the fainter one of a box of rows on a card over the unblurred world (the held crate's
+	-- odds); Divider a 1 px rule in a card's colour, in place of a header band.
 	Inset = 0.55,
+	InsetSoft = 0.7,
+	Divider = 0.35,
 	-- Coloured cards (shop banners and packs): the card's own colour as glass, with a glow.
 	Card = 0.38,
 	CardGlow = 0.7,
+	-- Pass banners (and the Starter / All Cosmetics cards): the pass's saturated colour, nearly
+	-- solid, so the blurred world cannot muddy it. BannerEdge is how far the 2 px edge is
+	-- lightened from that colour; the panes behind small text on a banner are BannerInsetDeep
+	-- darker than it and BannerInset see-through.
+	Banner = 0.25,
+	BannerEdge = 0.4,
+	BannerInset = 0.25,
+	BannerInsetDeep = 0.6,
 	-- Over the unblurred world: Pill is a notification (toasts, the quest pill), Quiet the
 	-- permanent HUD strips (deposit, "Next:"), which sit back; the text on both is outlined.
 	Pill = 0.3,
 	Quiet = 0.55,
+	-- The "Training complete" banner: bright gold, all but opaque, on every screen.
+	Celebrate = 0.1,
 	-- Text on glass: outline thickness and transparency, the smallest body / caption size in
 	-- screen pixels (desktop, phone) and the opacity of a caption (white, never grey).
 	TextInk = rgb(8, 8, 30),
@@ -68003,6 +68017,19 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local gaugeValue = stripText("Value", 2, 18)
 	local gaugeNext = stripText("Next", 3, 14)
 	gaugeNext.TextColor3 = C.TextDim
+	local STRIP_TEXT: { [TextLabel]: number } = { [stripLead] = 16, [gaugeValue] = 18, [gaugeNext] = 14 }
+	-- The strip is as wide as its widest line (the longest value and countdown), never
+	-- under its 300 px: text held at a size on a phone needs more room than the design's.
+	local function fitStrip()
+		local width = textWidth(stripLead.Text, stripLead.TextSize, F.Display)
+			+ textWidth("x0.0", gaugeValue.TextSize, F.Display)
+			+ textWidth("· 0:00", gaugeNext.TextSize, F.Display)
+		strip.Size = UDim2.fromOffset(math.max(300, width + 6 * 2 + 20 * 2), STRIP_H)
+	end
+	-- A rescale re-sizes held text (Kit.reflowText): the strip follows.
+	for label in STRIP_TEXT do
+		label:GetPropertyChangedSignal("TextSize"):Connect(fitStrip)
+	end
 	local surgeActiveNow = false
 	-- Big-roll cheer: pops out to the right of the strip for a moment.
 	local niceLabel = Kit.hudText(strip, {
@@ -68021,6 +68048,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local function paintSurge(active: boolean)
 		surgeActiveNow = active
 		stripLead.Text = if active then "AURA SURGE" else "Deposit bonus:"
+		fitStrip()
 		Kit.tween(strip, 0.3, {
 			BackgroundColor3 = if active then C.Amber else G.TintTop,
 			BackgroundTransparency = if active then G.Pill else G.Quiet,
@@ -68275,10 +68303,14 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		})
 		Kit.corner(pill, 18)
 	end
+	-- Scaled to its line of the plaque, but never under a phone caption on the glass (the
+	-- compact dumbbell's line is 17 design px tall: 11 px on a phone).
 	local tankCaption = Kit.hudText(tank, {
 		Name = "Caption",
 		Text = string.upper(W.Orb),
 		TextScaled = true,
+		MaxTextSize = 200,
+		MinPx = G.TextMinPhone,
 		StrokeThickness = 2,
 		TextColor3 = C.GoldLight,
 		Size = captionSize,
@@ -68539,6 +68571,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			-- caption floor, so the size is held on the glass.
 			Kit.holdText(caption, Kit.captionPx(), if compact then CAPTION_COMPACT else CAPTION)
 		end
+		-- The deposit strip's three texts are held the same way (a hard floor: 16, 18 and 14
+		-- design px are 10 to 12 px on a phone), and the strip widens round them.
+		for label, design in STRIP_TEXT do
+			Kit.holdText(label, Kit.captionPx(), design, true)
+		end
+		fitStrip()
 		-- Status captions go first on short screens; the icons stay (not on a touch
 		-- phone, where the wallet sits in the top-left corner).
 		for _, label in { premiumText, friendsText, boostText } do
@@ -69852,10 +69890,14 @@ end
 	  Kit.pixelScale(gui)       screen px per design px at `gui` (the ScreenGui's UIScale
 	                            times the "Fit" / "Compact" scales above it)
 	  Kit.px(px, design?, gui?) the design size that shows at least `px` on screen there
-	                            (never under `design`)
+	                            (never under `design`), to the nearest design px: it may land
+	                            a fraction of a pixel under `px`
+	  Kit.pxUp(px, design?, gui?)  the same rounded up: never under `px` (a hard floor, for
+	                            small HUD text that is measured against it)
 	  Kit.captionPx()           the smallest caption: G.TextMin, G.TextMinPhone on touch
-	  Kit.holdText(label, px, design?)  sizes a fixed-size label that way and keeps it so when
-	                            the screen is rescaled (Kit.reflowText, called by Main)
+	  Kit.holdText(label, px, design?, up?)  sizes a fixed-size label that way (`up`: with
+	                            Kit.pxUp) and keeps it so when the screen is rescaled
+	                            (Kit.reflowText, called by Main and by Kit.fit)
 	Kit.text takes the same as the prop MinPx (a number, or true for a caption).
 ]]
 local LAYOUT_SCALES = { "Fit", "Compact" }
@@ -69889,32 +69931,69 @@ function Kit.px(screenPx: number, design: number?, from: Instance?): number
 	return math.max(design or 0, math.ceil(screenPx / Kit.pixelScale(from) - 0.5))
 end
 
+function Kit.pxUp(screenPx: number, design: number?, from: Instance?): number
+	return math.max(design or 0, math.ceil(screenPx / Kit.pixelScale(from) - 0.001))
+end
+
 function Kit.captionPx(): number
 	return if Kit.touch then G.TextMinPhone else G.TextMin
 end
 
 -- Held labels are kept by strong reference and dropped when they are destroyed: a weak
 -- table forgets an Instance as soon as no script holds it, though it is still on screen.
-type HeldText = { px: number, design: number }
+type HeldText = { px: number, design: number, up: boolean? }
 local heldText: { [TextLabel]: HeldText } = {}
-function Kit.holdText(label: TextLabel, screenPx: number, design: number?)
-	local held: HeldText = { px = screenPx, design = design or label.TextSize }
+local function heldSize(label: TextLabel, held: HeldText): number
+	return if held.up then Kit.pxUp(held.px, held.design, label) else Kit.px(held.px, held.design, label)
+end
+function Kit.holdText(label: TextLabel, screenPx: number, design: number?, up: boolean?)
+	local held: HeldText = { px = screenPx, design = design or label.TextSize, up = up }
 	if heldText[label] == nil then
 		pcall(function()
 			(label :: any).Destroying:Once(function()
 				heldText[label] = nil
 			end)
 		end)
+		-- Built off screen (a card filled before it is parented): only the screen's own scale
+		-- is known yet, so the label is sized again once it sits under its window's "Fit".
+		if not label:FindFirstAncestorOfClass("ScreenGui") then
+			pcall(function()
+				local connection: RBXScriptConnection
+				connection = label.AncestryChanged:Connect(function()
+					local now = heldText[label]
+					if not now then
+						connection:Disconnect()
+					elseif label:FindFirstAncestorOfClass("ScreenGui") then
+						connection:Disconnect()
+						label.TextSize = heldSize(label, now)
+					end
+				end)
+			end)
+		end
 	end
 	heldText[label] = held
-	label.TextSize = Kit.px(held.px, held.design, label)
+	label.TextSize = heldSize(label, held)
 end
 
 -- The screen was rescaled: every held label takes its size again.
 function Kit.reflowText()
 	for label, held in heldText do
-		label.TextSize = Kit.px(held.px, held.design, label)
+		label.TextSize = heldSize(label, held)
 	end
+end
+
+-- A window's own scale changed (Kit.fit): held labels are sized again, once, after every
+-- window that changed in the same step has settled.
+local reflowQueued = false
+local function queueReflow()
+	if reflowQueued then
+		return
+	end
+	reflowQueued = true
+	task.defer(function()
+		reflowQueued = false
+		Kit.reflowText()
+	end)
 end
 
 function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
@@ -71919,7 +71998,12 @@ function Kit.setBadge(target: GuiObject, text: string?)
 	local b = badge :: TextLabel
 	local changed = b.Text ~= text
 	b.Text = text
-	b.Size = UDim2.fromOffset(math.max(20, 8 + utf8.len(text) :: number * 8), 20)
+	-- The dot's text is a caption on the glass (a phone's UI scale would shrink 14 design px
+	-- under it), and the dot grows round it.
+	local size = Kit.pxUp(Kit.captionPx(), Kit.TEXT.Small, holder)
+	local side = math.max(20, size + 7)
+	b.TextSize = size
+	b.Size = UDim2.fromOffset(math.max(side, math.ceil(8 + utf8.len(text) :: number * size * 0.58)), side)
 	if not b.Visible then
 		b.Visible = true
 		local pop = b:FindFirstChild("Pop") :: UIScale
@@ -72357,7 +72441,12 @@ function Kit.fit(holder: GuiObject, screen: Instance, design: Vector2, minSize: 
 				end
 			end
 		end
-		fitScale.Scale = s
+		if fitScale.Scale ~= s then
+			fitScale.Scale = s
+			-- Text held at a size on the glass counts this scale: a window that is fitted
+			-- after its labels were built (the screen's size arrives late) re-sizes them.
+			queueReflow()
+		end
 		local size = Vector2.new(w, h)
 		if size ~= current then
 			current = size
@@ -72397,10 +72486,15 @@ end
 local openers: { [Instance]: { [string]: boolean } } = setmetatable({}, { __mode = "k" }) :: any
 local openListeners: { (boolean) -> () } = {}
 local openWatched: { [Instance]: string } = setmetatable({}, { __mode = "k" }) :: any
+-- The gui of each opener (its centred holder), for Kit.openTop.
+local openOwners: { [Instance]: { [string]: Instance } } = setmetatable({}, { __mode = "k" }) :: any
 function Kit.markOpen(screen: Instance, key: string, on: boolean, owner: Instance?)
 	local set = openers[screen] or {}
 	openers[screen] = set
 	set[key] = if on then true else nil
+	local owners = openOwners[screen] or {}
+	openOwners[screen] = owners
+	owners[key] = if on then owner else nil
 	local any = next(set) ~= nil
 	if (screen:GetAttribute("WindowOpen") == true) ~= any then
 		screen:SetAttribute("WindowOpen", any)
@@ -72427,6 +72521,30 @@ function Kit.markOpen(screen: Instance, key: string, on: boolean, owner: Instanc
 			end)
 		end)
 	end
+end
+
+--[[
+	Kit.openTop(screen): how far under the top of the screen (design px) the highest open
+	window or modal starts, from its holder's place, size and "Fit" scale; nil when nothing
+	is open or the screen's size is not known. Toasts stay above it.
+]]
+function Kit.openTop(screen: Instance): number?
+	local owners = openOwners[screen]
+	local area = Kit.designArea(screen)
+	if not owners or not area then
+		return nil
+	end
+	local top: number? = nil
+	for _, owner in owners do
+		if owner:IsA("GuiObject") then
+			local fit = owner:FindFirstChild("Fit")
+			local scale = if fit and fit:IsA("UIScale") then fit.Scale else 1
+			local height = (area.Y * owner.Size.Y.Scale + owner.Size.Y.Offset) * scale
+			local y = area.Y * owner.Position.Y.Scale + owner.Position.Y.Offset - owner.AnchorPoint.Y * height
+			top = if top then math.min(top, y) else y
+		end
+	end
+	return top
 end
 
 -- Kit.onWindowOpen(fn): fn(open) runs when the first window or modal opens and when the
@@ -76327,12 +76445,76 @@ local TOAST_TEXT = 18
 local TOAST_TEXT_X = 60
 local TOAST_ICON_X = 19 -- past the accent bar
 local MAX_TOASTS = 4
+-- While a window or modal is open the stack sits at the very top of the safe area, over
+-- the margin above the window: TOAST_TOP from the edge. A toast may reach HEADER_CLEAR into
+-- the window (the empty band of its title row, above the title), never further: its tabs
+-- and content stay clear.
+local TOAST_TOP = 6
+local HEADER_CLEAR = 16
+-- Errors and warnings ("Not enough cash", "Rack full") answer what the player just did:
+-- they never wait behind an open window. Over one they show at once on a layer above every
+-- window, modal and dim (TOAST_FRONT): in the top slot when a toast fits above the window
+-- (the informational ones there step out and wait), else along the bottom of the safe area.
+local URGENT: { [string]: boolean } = { bad = true, warn = true }
+local TOAST_FRONT = 100
 
+type HeldToast = { text: string, tone: string? }
 local toasts: { Frame } = {}
--- A unit reveal owns the screen (setReveal): the toasts on screen hide and new ones wait
--- (the last MAX_TOASTS), then drop in once it has gone.
+-- Urgent toasts along the bottom edge (newest lowest), in their own holder.
+local lowToasts: { Frame } = {}
+local toastInfo: { [Frame]: HeldToast } = {}
+local frontHolder: Frame
+local lowHolder: Frame
+
+local function isUrgent(tone: string?): boolean
+	return tone ~= nil and URGENT[tone] == true
+end
+-- Toasts that wait (the last MAX_TOASTS). A unit reveal owns the screen (setReveal): the
+-- toasts on screen hide and new ones wait, then drop in once it has gone. Over an open
+-- window, the ones there is no room for above it wait until it closes.
 local revealCount = 0
-local heldToasts: { { text: string, tone: string? } } = {}
+local heldToasts: { HeldToast } = {}
+
+-- Where the stack sits (y, design px) and how many toasts it may show there. Under the
+-- HUD's top strips (and the tutorial card) normally; while a window or modal is open, at
+-- the very top, as many as fit above it: none when the window reaches the top of the
+-- screen or the tutorial pill holds that slot.
+local function toastRoom(): (number, number)
+	local card = screen:GetAttribute("TopCardHeight")
+	local cardH: number = if type(card) == "number" then card else 0
+	if screen:GetAttribute("WindowOpen") ~= true then
+		return TOAST_Y + cardH, MAX_TOASTS
+	end
+	local top = Kit.openTop(screen)
+	if not top or cardH > 0 then
+		return TOAST_TOP, 0
+	end
+	local free = top + HEADER_CLEAR - TOAST_TOP
+	return TOAST_TOP, math.clamp(math.floor((free - TOAST_H) / TOAST_STEP) + 1, 0, MAX_TOASTS)
+end
+
+local function holdToast(held: HeldToast)
+	table.insert(heldToasts, held)
+	while #heldToasts > MAX_TOASTS do
+		table.remove(heldToasts, 1)
+	end
+end
+
+-- Drops in the toasts that waited, as far as there is room for them now.
+local function flushToasts()
+	if revealCount > 0 then
+		return
+	end
+	local _, room = toastRoom()
+	local released = 0
+	while #heldToasts > 0 and #toasts + released < room do
+		local held = table.remove(heldToasts, 1) :: HeldToast
+		task.delay(released * 0.12, function()
+			Popups.toast(held.text, held.tone)
+		end)
+		released += 1
+	end
+end
 
 -- Width that hugs the text (TextService when available, else an estimate).
 local function toastWidth(text: string): number
@@ -76359,40 +76541,95 @@ end
 
 -- Glides every toast to its slot; `fresh` (the one dropping in) takes the quicker ease.
 local function placeToasts(fresh: Frame?)
+	-- The top stack is one list in two holders of the same place and size (the usual one
+	-- and the front layer), so its toasts never overlap whichever they are in.
 	for i = #toasts, 1, -1 do
-		if toasts[i].Parent ~= toastHolder then
+		if toasts[i].Parent ~= toastHolder and toasts[i].Parent ~= frontHolder then
 			table.remove(toasts, i)
 		end
 	end
-	for index, toast in toasts do
-		local goal = { Position = UDim2.new(0.5, 0, 0, (index - 1) * TOAST_STEP) }
+	for i = #lowToasts, 1, -1 do
+		if lowToasts[i].Parent ~= lowHolder then
+			table.remove(lowToasts, i)
+		end
+	end
+	local function glide(toast: Frame, goal: { [string]: any })
 		if toast == fresh then
 			Kit.tween(toast, TOAST_IN, goal, Enum.EasingStyle.Quad)
 		else
 			Kit.tween(toast, 0.26, goal, Enum.EasingStyle.Quint)
 		end
 	end
+	for index, toast in toasts do
+		glide(toast, { Position = UDim2.new(0.5, 0, 0, (index - 1) * TOAST_STEP) })
+	end
+	-- The bottom stack grows upward from the edge.
+	for index, toast in lowToasts do
+		glide(toast, { Position = UDim2.new(0.5, 0, 1, -(index - 1) * TOAST_STEP) })
+	end
 end
 
 local function dismissToast(toast: Frame)
+	local low = false
 	local index = table.find(toasts, toast)
+	if not index then
+		index = table.find(lowToasts, toast)
+		low = true
+	end
 	if not index then
 		return
 	end
-	table.remove(toasts, index)
-	Kit.tween(toast, 0.2, { Position = toast.Position + UDim2.fromOffset(0, -TOAST_SLIDE) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	table.remove(if low then lowToasts else toasts, index)
+	toastInfo[toast] = nil
+	-- Out the way it came: up from the top stack, down from the bottom one.
+	local slide = if low then TOAST_SLIDE else -TOAST_SLIDE
+	Kit.tween(toast, 0.2, { Position = toast.Position + UDim2.fromOffset(0, slide) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	Kit.disappear(toast, { time = 0.2, to = 0.97, destroy = true })
 	placeToasts()
+	-- Its slot is free once it has faded: the next waiting toast takes it.
+	if #heldToasts > 0 then
+		task.delay(0.22, flushToasts)
+	end
+end
+
+-- Keeps the top stack inside its room over a window: the informational toasts past it
+-- (the oldest first) step out and wait; errors and warnings stay, on the front layer.
+local function clearForWindow(room: number)
+	local kept = 0
+	local waiting: { Frame } = {}
+	for _, toast in toasts do
+		local info = toastInfo[toast]
+		if info and isUrgent(info.tone) then
+			toast.Parent = frontHolder
+			kept += 1
+		elseif kept < room then
+			kept += 1
+		else
+			table.insert(waiting, 1, toast)
+		end
+	end
+	for _, toast in waiting do
+		local info = toastInfo[toast]
+		if info then
+			holdToast(info)
+		end
+		dismissToast(toast)
+	end
 end
 
 function Popups.toast(text: string, tone: string?)
-	if revealCount > 0 then
-		table.insert(heldToasts, { text = text, tone = tone })
-		while #heldToasts > MAX_TOASTS do
-			table.remove(heldToasts, 1)
-		end
+	local _, room = toastRoom()
+	local windowUp = screen:GetAttribute("WindowOpen") == true
+	local urgent = isUrgent(tone)
+	-- A reveal holds every toast for its few seconds; a window only the ones that can wait.
+	if revealCount > 0 or (windowUp and not urgent and #toasts >= room) then
+		holdToast({ text = text, tone = tone })
 		return
 	end
+	-- An error or warning over a window: on the front layer, at the bottom edge when no
+	-- toast fits above the window (a phone).
+	local front = windowUp and urgent
+	local low = front and room < 1
 	local style = TONES[tone or "info"] or TONES.info
 	local rarity = toastRarity(text)
 	local color: Color3 = if rarity then C.Rarity[rarity] else style.color
@@ -76400,9 +76637,9 @@ function Popups.toast(text: string, tone: string?)
 		Name = "Toast",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(toastWidth(text), TOAST_H),
-		Position = UDim2.new(0.5, 0, 0, -TOAST_SLIDE),
-		AnchorPoint = Vector2.new(0.5, 0),
-		Parent = toastHolder,
+		Position = if low then UDim2.new(0.5, 0, 1, TOAST_SLIDE) else UDim2.new(0.5, 0, 0, -TOAST_SLIDE),
+		AnchorPoint = Vector2.new(0.5, if low then 1 else 0),
+		Parent = if low then lowHolder elseif front then frontHolder else toastHolder,
 	})
 	local card = Kit.hudGlass(toast, { Name = "Card", Size = UDim2.new(1, 0, 0, TOAST_H), Radius = Kit.RADIUS.M, Accent = color })
 	if rarity then
@@ -76455,9 +76692,15 @@ function Popups.toast(text: string, tone: string?)
 		ZIndex = 2,
 	})
 
-	table.insert(toasts, 1, toast)
-	while #toasts > MAX_TOASTS do
-		dismissToast(toasts[#toasts])
+	local stack = if low then lowToasts else toasts
+	table.insert(stack, 1, toast)
+	toastInfo[toast] = { text = text, tone = tone }
+	if front and not low then
+		-- It takes the slot above the window: what was informational there waits.
+		clearForWindow(room)
+	end
+	while #stack > MAX_TOASTS do
+		dismissToast(stack[#stack])
 	end
 	placeToasts(toast)
 	Kit.appear(toast, { from = 0.94, time = TOAST_IN, style = Enum.EasingStyle.Quad })
@@ -76479,13 +76722,7 @@ local function setReveal(on: boolean)
 	screen:SetAttribute("RevealOpen", up)
 	toastHolder.Visible = not up
 	if not up then
-		local waiting = heldToasts
-		heldToasts = {}
-		for i, held in waiting do
-			task.delay((i - 1) * 0.12, function()
-				Popups.toast(held.text, held.tone)
-			end)
-		end
+		flushToasts()
 	end
 end
 
@@ -78294,6 +78531,8 @@ local OFFLINE = {
 	Width = 540,
 	Pad = 20,
 	Gap = 16,
+	LineGap = 12, -- between a plain line of text and the amounts panel
+	Body = 18, -- the two one-line texts, in screen px on a desktop
 	Title = 56, -- under the medallion's lower half
 	Row = 92,
 	Arrow = 44,
@@ -78306,13 +78545,15 @@ local OFFLINE = {
 function Popups.offline(data: { [string]: any })
 	Popups.enqueue("Offline", Popups.PRIORITY.Normal, function(done)
 		local L = OFFLINE
-		-- The two sub-lines are held on the glass (a caption at least; 18 / 16 design px).
-		local subSize = Kit.px(Kit.captionPx(), T.H3, screen)
-		local noteSize = Kit.px(Kit.captionPx(), T.Body, screen)
+		-- The two one-line texts are held on the glass: body text (L.Body px) on a desktop, a
+		-- caption at least on a phone. They are plain lines; only the amounts sit on a panel.
+		local bodyPx = if Kit.touch then Kit.captionPx() else L.Body
+		local subSize = Kit.px(bodyPx, T.H3, screen)
+		local noteSize = Kit.px(bodyPx, if Kit.touch then T.Body else T.H3, screen)
 		local subY = L.Title + 34 + 6
-		local rowY = subY + subSize + 12 + L.Gap
-		local noteY = rowY + L.Row + L.Gap
-		local buttonY = noteY + noteSize + 12 + L.Gap
+		local rowY = subY + subSize + 6 + L.LineGap
+		local noteY = rowY + L.Row + L.LineGap
+		local buttonY = noteY + noteSize + 6 + L.Gap
 		local height = buttonY + L.Button + L.Pad
 		local box, close = modal("Offline", Vector2.new(L.Width, height), 45, nil, done)
 		local medal = medallion(box, "💤", C.Rizz, 84, UDim2.new(0.5, 0, 0, 0))
@@ -78324,29 +78565,24 @@ function Popups.offline(data: { [string]: any })
 			Position = UDim2.fromOffset(L.Pad, L.Title),
 			TextColor3 = C.Gold,
 		})
-		-- A line of small text on its own darker plate (the body glass alone is too light
-		-- for it over a bright world).
-		local function plateLine(name: string, line: string, size: number, y: number)
-			local plate = Kit.well(box, {
-				Name = name .. "Plate",
-				Glass = true,
-				Size = UDim2.new(1, -L.Pad * 2, 0, size + 12),
-				Position = UDim2.fromOffset(L.Pad, y),
-				Radius = Kit.RADIUS.S,
-			})
-			Kit.text(plate, {
+		-- A line of body text straight on the glass (no plate of its own: a full-width bar
+		-- behind one line reads as a box in a box), in a hairline of ink so it holds over a
+		-- bright world.
+		local function plainLine(name: string, line: string, size: number, y: number)
+			Kit.text(box, {
 				Name = name,
 				Text = line,
 				TextSize = size,
 				TextWrapped = false,
 				TextTruncate = Enum.TextTruncate.AtEnd,
-				Size = UDim2.new(1, -16, 1, 0),
-				Position = UDim2.fromOffset(8, 0),
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, -L.Pad * 2, 0, size + 6),
+				Position = UDim2.fromOffset(L.Pad, y),
 				TextColor3 = C.Text,
-				StrokeThickness = 0,
+				StrokeThickness = 1,
 			})
 		end
-		plateLine("Away", string.format("Your %s kept grinding for %s.", W.Units, Format.time(data.seconds)), subSize, subY)
+		plainLine("Away", string.format("Your %s kept grinding for %s.", W.Units, Format.time(data.seconds)), subSize, subY)
 		local well = Kit.well(box, {
 			Name = "Earned",
 			Glass = true,
@@ -78403,7 +78639,7 @@ function Popups.offline(data: { [string]: any })
 			StrokeThickness = 0,
 		})
 		local cash = amount("Cash", "Coin", C.Gold, 1, Format.money(cashTotal), L.Cash, C.MoneyText)
-		plateLine("Hint", "Your cash is waiting on the Collect pad.", noteSize, noteY)
+		plainLine("Hint", "Your cash is waiting on the Collect pad.", noteSize, noteY)
 		local go = Kit.button(box, {
 			Text = "Let's go!",
 			Font = Theme.Fonts.Display,
@@ -79273,7 +79509,7 @@ local function buildChestPanel()
 	})
 	local compactScale = Kit.new("UIScale", { Name = "Compact", Parent = holder })
 	-- The same glass pane as every window and modal (one body token), over the unblurred
-	-- world; the rarity band and the buttons stay solid.
+	-- world; only the buttons are solid.
 	local panel = Kit.panel(holder, {
 		Name = "Card",
 		Glass = "body",
@@ -79282,16 +79518,25 @@ local function buildChestPanel()
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Visible = false,
 	})
-	-- Header: glass tinted in the crate's rarity with that colour on its edge (painted per
-	-- crate below), the name in the light rarity colour with the ink outline.
-	local band = Kit.glass(panel, {
+	-- Header: no slab of its own, just the pane's glass over a 1 px divider. The crate's
+	-- rarity is carried by the name (its colour, in the ink outline), the divider under it
+	-- and the crate itself (all painted per crate below).
+	local band = Kit.new("Frame", {
 		Name = "Band",
-		Color = C.Gold,
-		StrokeColor = C.Gold,
-		StrokeThickness = 1.5,
+		BackgroundTransparency = 1,
 		Size = UDim2.new(1, -16, 0, 46),
 		Position = UDim2.fromOffset(8, 8),
-		Radius = Kit.RADIUS.L,
+		Parent = panel,
+	})
+	local divider = Kit.new("Frame", {
+		Name = "Divider",
+		BackgroundColor3 = C.Gold,
+		BackgroundTransparency = Theme.Glass.Divider,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, -12, 0, 1),
+		Position = UDim2.new(0.5, 0, 1, 0),
+		AnchorPoint = Vector2.new(0.5, 1),
+		Parent = band,
 	})
 	local title = Kit.title(band, {
 		Text = "",
@@ -79327,8 +79572,14 @@ local function buildChestPanel()
 		TextColor3 = C.Text,
 		StrokeThickness = 0,
 	})
-	local oddsWell =
-		Kit.well(panel, { Name = "Odds", Glass = true, Size = UDim2.new(1, -24, 0, ODDS_H), Position = UDim2.fromOffset(12, ODDS_Y) })
+	-- The odds sit on a faint inset (InsetSoft), not a dark slab: the rows carry their own bars.
+	local oddsWell = Kit.well(panel, {
+		Name = "Odds",
+		Glass = true,
+		Transparency = Theme.Glass.InsetSoft,
+		Size = UDim2.new(1, -24, 0, ODDS_H),
+		Position = UDim2.fromOffset(12, ODDS_Y),
+	})
 	local odds = Kit.scrolling(oddsWell, { Name = "List", Size = UDim2.new(1, -8, 1, -8), Position = UDim2.fromOffset(4, 4) })
 	Kit.padding(odds, 2, 4)
 	Kit.list(odds, 3)
@@ -79674,8 +79925,8 @@ local function buildChestPanel()
 		if key ~= shownFor then
 			shownFor = key
 			title.Text = string.upper(rarity .. " " .. W.Chest)
-			title.TextColor3 = Kit.lighten(color, 0.4)
-			Kit.paintGlass(band, color, nil, color)
+			title.TextColor3 = Kit.lighten(color, 0.3)
+			divider.BackgroundColor3 = Kit.lighten(color, 0.2)
 			halo.BackgroundColor3 = Kit.lighten(color, 0.45)
 			if crate then
 				crate:Destroy()
@@ -79878,13 +80129,50 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 		ZIndex = 25,
 		Parent = screen,
 	})
-	-- Slide toasts below the tutorial card while it sits at the top centre.
+	-- The front layer of the same stack (errors and warnings over an open window), and the
+	-- bottom edge of the safe area for them when nothing fits above the window.
+	frontHolder = Kit.new("Frame", {
+		Name = "ToastsFront",
+		BackgroundTransparency = 1,
+		Size = toastHolder.Size,
+		Position = toastHolder.Position,
+		AnchorPoint = toastHolder.AnchorPoint,
+		ZIndex = TOAST_FRONT,
+		Parent = screen,
+	})
+	lowHolder = Kit.new("Frame", {
+		Name = "ToastsBottom",
+		BackgroundTransparency = 1,
+		Size = toastHolder.Size,
+		Position = UDim2.new(0.5, 0, 1, -TOAST_TOP),
+		AnchorPoint = Vector2.new(0.5, 1),
+		ZIndex = TOAST_FRONT,
+		Parent = screen,
+	})
+	-- Slide toasts below the tutorial card while it sits at the top centre, and to the very
+	-- top of the screen while a window or modal is open (toastRoom).
 	local function placeHolder()
-		local offset = screen:GetAttribute("TopCardHeight")
-		local y = TOAST_Y + (if type(offset) == "number" then offset else 0)
-		Kit.tween(toastHolder, 0.3, { Position = UDim2.new(0.5, 0, 0, y) }, Enum.EasingStyle.Quad)
+		local y = toastRoom()
+		for _, holder in { toastHolder, frontHolder } do
+			Kit.tween(holder, 0.3, { Position = UDim2.new(0.5, 0, 0, y) }, Enum.EasingStyle.Quad)
+		end
 	end
-	screen:GetAttributeChangedSignal("TopCardHeight"):Connect(placeHolder)
+	screen:GetAttributeChangedSignal("TopCardHeight"):Connect(function()
+		placeHolder()
+		flushToasts()
+	end)
+	Kit.onWindowOpen(function(up: boolean)
+		placeHolder()
+		if not up then
+			flushToasts()
+			return
+		end
+		-- A window opened under the stack: the informational toasts there is no room for
+		-- above it step out and wait for it to close, so none covers its tabs; an error
+		-- or warning already showing stays, above the window.
+		local _, room = toastRoom()
+		clearForWindow(room)
+	end)
 	placeHolder()
 	buildChestPanel()
 	if not PREVIEW then
@@ -82284,10 +82572,12 @@ local function showCelebrate(cash: number, done: () -> ())
 		ZIndex = 20,
 		Parent = screen,
 	})
-	local fade = Kit.new("CanvasGroup", {
+	-- A plain frame, faded by its elements' own transparency (Kit.fade): the banner is
+	-- painted straight to the screen, the same gold at the top of a desktop and in the
+	-- bottom slot of a phone, with no off-screen group texture between its fill and the world.
+	local fade = Kit.new("Frame", {
 		Name = "Fade",
 		BackgroundTransparency = 1,
-		GroupTransparency = 1,
 		Size = UDim2.fromScale(1, 1),
 		ZIndex = 21,
 		Parent = holder,
@@ -82298,10 +82588,12 @@ local function showCelebrate(cash: number, done: () -> ())
 	end
 	local bounce = Kit.new("UIScale", { Name = "Bounce", Scale = 0.6, Parent = holder })
 	-- The one solid banner: the bright gold of a primary button (sunny yellow down to
-	-- orange) on an orange lip, with a white highlight along the top inner edge.
+	-- orange, G.Celebrate: all but opaque) on an orange lip, with a white highlight along
+	-- the top inner edge.
 	local card = Kit.new("Frame", {
 		Name = "Card",
 		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = G.Celebrate,
 		BorderSizePixel = 0,
 		Size = UDim2.new(1, -PAD_X * 2, 0, BANNER_H),
 		Position = UDim2.fromOffset(PAD_X, PAD_TOP),
@@ -82390,7 +82682,7 @@ local function showCelebrate(cash: number, done: () -> ())
 		deps.sounds.play("Tick", 0.03, 1.12)
 	end)
 
-	Kit.tween(fade, IN_TIME, { GroupTransparency = 0 }, Enum.EasingStyle.Quad)
+	Kit.fade(fade, true, IN_TIME)
 	-- Bounce in: the banner drops into the slot and overshoots its size.
 	Kit.tween(holder, 0.34, { Position = rest }, Enum.EasingStyle.Back)
 	Kit.tween(bounce, 0.42, { Scale = 1 }, Enum.EasingStyle.Back)
@@ -82411,7 +82703,10 @@ local function showCelebrate(cash: number, done: () -> ())
 		end
 		closed = true
 		publishHeight()
-		Kit.tween(fade, 0.22, { GroupTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		-- Hidden once faded: Kit.fade restores the resting look just before the holder goes.
+		Kit.fade(fade, false, 0.2, function()
+			fade.Visible = false
+		end)
 		Kit.tween(holder, 0.22, { Position = away }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		task.delay(0.25, function()
 			holder:Destroy()
@@ -83073,7 +83368,9 @@ local STAGE_W = 230 -- a banner's animated stage, at the default window...
 local STAGE_MIN_W = 140 -- ...and the narrowest it shrinks to
 local COS_H = 204 -- cosmetic card height
 local PACK_H = 238 -- cash / aura card height (stage, amount, one-line caption, price)
-local PACK_STAGE = 125 -- pack card stage (square)
+local PACK_STAGE = 125 -- pack card stage (square) on a PACK_H card; it grows and shrinks with the card
+local PACK_MAX_H = 260 -- tallest a pack card grows to fill a page its row fits in
+local PACK_FILL = 0.9 -- share of the free page height such a card takes
 local PACK_ICON = 26 -- currency icon left of a pack's amount
 local STARTER_H = 120 -- Starter pack card at the top of the page
 local BUNDLE_H = 120 -- All Cosmetics card heading the cosmetics section
@@ -83085,11 +83382,18 @@ local PRICE_H = 42 -- every price button
 local PRICE_TEXT = 20
 local FADE_H = 10 -- shade along the bottom edge of the page: a hint that it scrolls on, never a smear over a card
 local PAGE_BOTTOM = 14 -- room under the last row of a section, clear of that shade
+local PAGE_PAD = 12 -- UIPadding over the first row: a ribbon overlaps its card's top edge by 8 px
+local PAGE_FIT_BOTTOM = 4 -- room under a row of cards that fills the page
+local PAGE_SHORT = 330 -- a page under this (a phone) drops the section header: the cards are the page
 local MIN_TEXT = 14 -- no shop text renders smaller (TextScaled labels included)
 local CART = 52 -- header cart art (inside the pane)
 local WALLET_CASH = 140 -- header wallet pill: the cash half...
 local WALLET_AURA = 112 -- ...and the tank half
 local INSET = 0.4 -- darker panes inside a glass card (descriptions, contents chips)
+-- The same panes on a bright banner (Theme.Glass.Banner): a deeper tone of its tint, more
+-- solid, so white text keeps its contrast on the saturated fill.
+local BANNER_INSET = Theme.Glass.BannerInset
+local BANNER_INSET_DEEP = Theme.Glass.BannerInsetDeep
 
 -- TextScaled labels in the shop never shrink below MIN_TEXT.
 local function minText(label: TextLabel): TextLabel
@@ -83120,21 +83424,31 @@ end
 	holder for the idle sheen. The holder is inset by half the corner radius so
 	the sheen never pokes past the rounded corners.
 ]]
-local function bannerPaint(body: Frame, tint: Color3, radius: number, strokeColor: Color3?): Frame
+local function bannerPaint(body: Frame, tint: Color3, radius: number, strokeColor: Color3?, bright: boolean?): Frame
 	local gradient = body:FindFirstChildOfClass("UIGradient")
 	if gradient then
 		gradient.Color = ColorSequence.new({
-			ColorSequenceKeypoint.new(0, Kit.lighten(tint, 0.24)),
+			ColorSequenceKeypoint.new(0, Kit.lighten(tint, if bright then 0.14 else 0.24)),
 			ColorSequenceKeypoint.new(0.5, tint),
 			ColorSequenceKeypoint.new(1, Kit.darken(tint, 0.16)),
 		})
-		gradient.Transparency = NumberSequence.new(0, 0.3)
+		-- A bright banner keeps its colour edge to edge (the blurred world under a thin
+		-- tint turns it muddy); the others thin out toward the far corner.
+		gradient.Transparency = if bright then NumberSequence.new(0) else NumberSequence.new(0, 0.3)
 		gradient.Rotation = 24
 	end
 	local stroke = body:FindFirstChildOfClass("UIStroke")
 	if stroke then
 		stroke.Thickness = 2
-		stroke.Color = strokeColor or Kit.lighten(tint, 0.55)
+		stroke.Color = strokeColor or Kit.lighten(tint, if bright then Theme.Glass.BannerEdge else 0.55)
+		if bright then
+			-- The lighter edge in the banner's hue runs all the way round.
+			stroke.Transparency = 0
+			local fade = stroke:FindFirstChildOfClass("UIGradient")
+			if fade then
+				fade.Transparency = NumberSequence.new(0)
+			end
+		end
 	end
 	return Kit.new("Frame", {
 		Name = "SheenClip",
@@ -83377,6 +83691,10 @@ local function buildShop(screen: ScreenGui)
 	})
 	scroll.ZIndex = 2
 	scroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+	local SCROLL_BAR = scroll.ScrollBarThickness
+	-- Ribbons (POPULAR, BEST VALUE, STARTER DEAL) overlap the top edge of their card by
+	-- 8 px: the page starts PAGE_PAD lower, so the first row's are not cut by the clip.
+	Kit.new("UIPadding", { PaddingTop = UDim.new(0, PAGE_PAD), Parent = scroll })
 	-- Gamepad selection moves between the cards; the engine scrolls the page to them.
 	scroll.Selectable = false
 
@@ -83705,6 +84023,7 @@ local function buildShop(screen: ScreenGui)
 				Name = "Body",
 				Glass = true,
 				Color = color,
+				Transparency = Theme.Glass.Banner,
 				Size = UDim2.fromScale(1, 1),
 				Radius = Kit.RADIUS.M + 4,
 			})
@@ -83899,7 +84218,7 @@ local function buildShop(screen: ScreenGui)
 			StrokeThickness = 0,
 			ZIndex = 4,
 		}))
-		Kit.new("UIStroke", { Thickness = 3, Color = Kit.lip(tint), Parent = titleLabel })
+		Kit.new("UIStroke", { Thickness = 3, Color = Kit.darken(Kit.lip(tint), 0.3), Parent = titleLabel })
 		if caption then
 			local captionLabel = Kit.text(body, {
 				Name = "Caption",
@@ -83934,7 +84253,7 @@ local function buildShop(screen: ScreenGui)
 	local starterTint = Theme.World.Mint
 	local starterCell, starterBody, starterArtHolder, starterArt =
 		makeEntry(scroll, "Starter", 0, starterTint, COS.Starter.Icon, "Star", 104, UDim2.new(0, 68, 0.5, 0))
-	local starterClip = bannerPaint(starterBody, starterTint, WIDE_R)
+	local starterClip = bannerPaint(starterBody, starterTint, WIDE_R, nil, true)
 	wideText(starterBody, starterTint, "STARTER PACK")
 	-- What is inside: two chips, this player's own cash amount and the exclusive trail.
 	local chips = Kit.new("Frame", {
@@ -83949,8 +84268,8 @@ local function buildShop(screen: ScreenGui)
 	local function contentChip(order: number, icon: string, fallback: string, color: Color3, caption: string): TextLabel
 		local chip = Kit.new("Frame", {
 			Name = "Chip" .. order,
-			BackgroundColor3 = Kit.darken(starterTint, 0.34),
-			BackgroundTransparency = INSET,
+			BackgroundColor3 = Kit.darken(starterTint, BANNER_INSET_DEEP),
+			BackgroundTransparency = BANNER_INSET,
 			Size = UDim2.new(1 / 2, -4, 1, 0),
 			LayoutOrder = order,
 			ZIndex = 3,
@@ -84044,8 +84363,17 @@ local function buildShop(screen: ScreenGui)
 			Size = UDim2.new(1, 0, 0, BANNER_H),
 			Parent = passList,
 		})
-		local body = Kit.panel(cell, { Name = "Body", Glass = true, Color = tint, Size = UDim2.fromScale(1, 1), Radius = BANNER_R })
-		local clip = bannerPaint(body, tint, BANNER_R)
+		-- The fill is the pass's saturated colour, nearly solid (Theme.Glass.Banner), inside a
+		-- lighter edge of the same hue: a thin tint over the blurred world reads as mud.
+		local body = Kit.panel(cell, {
+			Name = "Body",
+			Glass = true,
+			Color = tint,
+			Transparency = Theme.Glass.Banner,
+			Size = UDim2.fromScale(1, 1),
+			Radius = BANNER_R,
+		})
+		local clip = bannerPaint(body, tint, BANNER_R, nil, true)
 		-- The stage: a lit pane in the banner's own tint (a diagonal light-to-deep
 		-- gradient, a lighter rim and a glassy sheen along its top) the pass's little
 		-- scene plays in. It clips the scene, so nothing it draws reaches the text.
@@ -84120,7 +84448,7 @@ local function buildShop(screen: ScreenGui)
 		}))
 		Kit.new("UIStroke", {
 			Thickness = 3,
-			Color = Kit.lip(tint),
+			Color = Kit.darken(Kit.lip(tint), 0.3),
 			LineJoinMode = Enum.LineJoinMode.Round,
 			Parent = title,
 		})
@@ -84128,8 +84456,8 @@ local function buildShop(screen: ScreenGui)
 		-- outline (small text smudges under one), two lines at most.
 		local inset = Kit.new("Frame", {
 			Name = "Inset",
-			BackgroundColor3 = Kit.darken(tint, 0.5),
-			BackgroundTransparency = INSET,
+			BackgroundColor3 = Kit.darken(tint, BANNER_INSET_DEEP),
+			BackgroundTransparency = BANNER_INSET,
 			Size = UDim2.new(1, 0, 0, BANNER_DESC_H),
 			Position = UDim2.fromOffset(0, BANNER_DESC_Y),
 			ZIndex = 6,
@@ -84159,8 +84487,8 @@ local function buildShop(screen: ScreenGui)
 			TextWrapped = false,
 			TextColor3 = Color3.new(1, 1, 1),
 			TextTransparency = 0.1,
-			BackgroundColor3 = Kit.darken(tint, 0.5),
-			BackgroundTransparency = INSET,
+			BackgroundColor3 = Kit.darken(tint, BANNER_INSET_DEEP),
+			BackgroundTransparency = BANNER_INSET,
 			Size = UDim2.fromOffset(math.ceil(ribbonTextWidth("PERMANENT") * MIN_TEXT / 16) + BANNER_TEXT_X * 2, 20),
 			Position = UDim2.fromOffset(0, BANNER_PERK_Y),
 			StrokeThickness = 0,
@@ -84226,7 +84554,7 @@ local function buildShop(screen: ScreenGui)
 	local bundleTint = Theme.World.Coral
 	local bundleCell, bundleBody, bundleArtHolder, bundleArt =
 		makeEntry(scroll, "Bundle", 0, bundleTint, COS.BundleIcon, "Crown", 100, UDim2.new(0, 68, 0.5, 0))
-	local bundleClip = bannerPaint(bundleBody, bundleTint, WIDE_R)
+	local bundleClip = bannerPaint(bundleBody, bundleTint, WIDE_R, nil, true)
 	wideText(bundleBody, bundleTint, string.upper(bundlePass.Title), "Everything below, forever")
 	local included = 0
 	for _, name in COS_ORDER do
@@ -84236,8 +84564,8 @@ local function buildShop(screen: ScreenGui)
 	end
 	local includes = Kit.new("Frame", {
 		Name = "Includes",
-		BackgroundColor3 = Kit.darken(bundleTint, 0.34),
-		BackgroundTransparency = INSET,
+		BackgroundColor3 = Kit.darken(bundleTint, BANNER_INSET_DEEP),
+		BackgroundTransparency = BANNER_INSET,
 		Size = UDim2.fromOffset(included * 40 - 6 + 16, 44),
 		Position = UDim2.fromOffset(WIDE_LEFT, 64),
 		ZIndex = 4,
@@ -84398,7 +84726,7 @@ local function buildShop(screen: ScreenGui)
 		The cards sit on a deep version of the section colour so the mint price
 		buttons stay the brightest thing on them.
 	]]
-	type Pack = Entry & { amount: TextLabel, sub: TextLabel, scene: Scene }
+	type Pack = Entry & { amount: TextLabel, sub: TextLabel, scene: Scene, place: (number, number) -> () }
 	type PackGrid = {
 		grid: Frame,
 		layout: UIGridLayout,
@@ -84407,6 +84735,8 @@ local function buildShop(screen: ScreenGui)
 		narrow: number,
 		columns: number,
 		cardW: number,
+		cardH: number,
+		packs: { Pack },
 	}
 	local packGrids: { PackGrid } = {}
 	-- `wide` / `narrow`: columns on a wide / narrow window (the cell size follows them; a row
@@ -84420,21 +84750,32 @@ local function buildShop(screen: ScreenGui)
 			HorizontalAlignment = Enum.HorizontalAlignment.Center,
 			Parent = grid,
 		})
-		local packs: PackGrid =
-			{ grid = grid, layout = gridLayout, count = packCount, wide = wide, narrow = narrow, columns = wide, cardW = 180 }
+		local packs: PackGrid = {
+			grid = grid,
+			layout = gridLayout,
+			count = packCount,
+			wide = wide,
+			narrow = narrow,
+			columns = wide,
+			cardW = 180,
+			cardH = PACK_H,
+			packs = {},
+		}
 		table.insert(packGrids, packs)
 		return packs
 	end
 	--[[
 		Amounts are the hero of a pack card: the currency icon and a big bold number
 		in the pack colour with a dark outline. The number's size follows its length
-		and the card width (28 px, never under 24 px for the short number format).
+		and the card width (28 px, never under 24 px for the short number format), and grows
+		with a card taller than PACK_H.
 	]]
 	local amountGrid: { [TextLabel]: PackGrid } = {}
 	local function fitAmount(label: TextLabel, text: string)
 		local packs = amountGrid[label]
 		local room = (if packs then packs.cardW else 180) - 20 - PACK_ICON - 4
-		label.TextSize = math.clamp(math.floor(room / (0.68 * math.max(#text, 1))), 16, 28)
+		local top = math.floor(28 * math.clamp((if packs then packs.cardH else PACK_H) / PACK_H, 1, 1.25))
+		label.TextSize = math.clamp(math.floor(room / (0.68 * math.max(#text, 1))), 16, top)
 	end
 	local function setAmount(label: TextLabel, text: string)
 		fitAmount(label, text)
@@ -84487,17 +84828,20 @@ local function buildShop(screen: ScreenGui)
 			ZIndex = 3,
 			Parent = body,
 		}
+		local halo: GuiObject
 		if glowId then
 			local glow = Kit.new("ImageLabel", glowProps)
 			glow.Image = glowId
 			glow.ImageColor3 = Kit.lighten(accent, 0.2)
 			glow.ImageTransparency = math.max(0.1, 0.5 - 0.1 * index)
 			glow.ScaleType = Enum.ScaleType.Fit
+			halo = glow
 		else
 			local glow = Kit.new("Frame", glowProps)
 			glow.BackgroundColor3 = accent
 			glow.BackgroundTransparency = math.max(0.45, 0.8 - 0.08 * index)
 			Kit.round(glow)
+			halo = glow
 		end
 		local stage = Kit.new("Frame", {
 			Name = "Stage",
@@ -84562,6 +84906,21 @@ local function buildShop(screen: ScreenGui)
 			lastPrompt = { kind = kind, entry = pack, index = index, at = os.clock() }
 			action:FireServer({ action = "PromptProduct", kind = kind, index = index })
 		end)
+		-- The card takes the height its grid hands it: the stage (square, the scene inside is
+		-- laid out in scale) takes what the amount, caption and price leave, up to the card's
+		-- width, and the rest of the column follows it.
+		local function place(cardW: number, cardH: number)
+			local side = math.floor(math.clamp(cardH - (PACK_H - PACK_STAGE), 72, math.max(72, cardW - 16)))
+			-- Spare height (a card much taller than wide) goes above and below the column.
+			local top = 8 + math.max(0, cardH - (PACK_H - PACK_STAGE) - side) // 2
+			local haloSide = math.floor(side * (0.85 + 0.1 * index))
+			stage.Size = UDim2.fromOffset(side, side)
+			stage.Position = UDim2.new(0.5, 0, 0, top)
+			halo.Size = UDim2.fromOffset(haloSide, haloSide)
+			halo.Position = UDim2.new(0.5, 0, 0, top + side // 2)
+			amountRow.Position = UDim2.fromOffset(6, top + side)
+			sub.Position = UDim2.fromOffset(6, top + side + 33)
+		end
 		pack = {
 			cell = cell,
 			body = body,
@@ -84573,7 +84932,9 @@ local function buildShop(screen: ScreenGui)
 			amount = amount,
 			sub = sub,
 			scene = scene,
+			place = place,
 		}
+		table.insert(packs.packs, pack)
 		hoverable(pack)
 		table.insert(entries, pack)
 		table.insert(cascade, cell)
@@ -84640,10 +85001,27 @@ local function buildShop(screen: ScreenGui)
 		local columns = if wide then 3 else 2
 		columnsNow = columns
 		cosLayout.CellSize = cellSize(columns, COS_H)
-		for _, packs in packGrids do
+		-- A short page (a phone) has no room for a section header over its cards: the tab
+		-- already names the section, so the cards are the page.
+		local page = pageH()
+		local short = page < PAGE_SHORT
+		-- Free height for a row of pack cards: the page under its top padding and header.
+		local free = page - PAGE_PAD - PAGE_FIT_BOTTOM - (if short then 0 else HEAD_H + 14)
+		local packFits: { boolean } = {}
+		for i, packs in packGrids do
 			packs.columns = if wide then packs.wide else packs.narrow
-			packs.layout.CellSize = cellSize(packs.columns, PACK_H)
 			packs.cardW = (size.X - 62 - 18 - GAP * (packs.columns - 1)) / packs.columns
+			-- One row of packs fills the page instead of leaving its lower half empty: on a
+			-- short page the cards take all of it (buy button and ribbon in view, nothing to
+			-- scroll), otherwise PACK_FILL of it up to PACK_MAX_H, centred under the header.
+			packFits[i] = packs.count <= packs.columns
+			packs.cardH = if packFits[i]
+				then math.floor(math.clamp(if short then free else free * PACK_FILL, 180, PACK_MAX_H))
+				else math.min(PACK_H, math.max(180, free))
+			packs.layout.CellSize = cellSize(packs.columns, packs.cardH)
+			for _, pack in packs.packs do
+				pack.place(packs.cardW, packs.cardH)
+			end
 		end
 		for label in amountGrid do
 			if label.Text ~= "" then
@@ -84660,45 +85038,60 @@ local function buildShop(screen: ScreenGui)
 		end
 		-- One section per tab: the picked one is laid out from the top of the page, the others
 		-- are hidden. The Starter card heads the Passes tab.
-		type Block = { gui: GuiObject, h: number, gapAfter: number, head: boolean?, shown: boolean? }
+		-- `before`: room above the block (a row of cards centred in the page). `fills`: the
+		-- block was sized to the page, which then ends with it.
+		type Block = { gui: GuiObject, h: number, gapAfter: number, head: boolean?, shown: boolean?, before: number?, fills: boolean? }
 		local pages: { { Block } } = {
 			{
-				{ gui = starterCell, h = STARTER_H, gapAfter = 18, shown = starterShown },
-				{ gui = heads[1], h = HEAD_H, gapAfter = 14, head = true },
+				-- Without the header the Starter card is the first card of the one list.
+				{ gui = starterCell, h = STARTER_H, gapAfter = if short then GAP else 18, shown = starterShown },
+				{ gui = heads[1], h = HEAD_H, gapAfter = 14, head = true, shown = not short },
 				{ gui = passList, h = gridH(#bannerList, 1, BANNER_H), gapAfter = 26 },
 			},
 			{
-				{ gui = heads[2], h = HEAD_H, gapAfter = 14, head = true },
+				{ gui = heads[2], h = HEAD_H, gapAfter = 14, head = true, shown = not short },
 				{ gui = bundleCell, h = BUNDLE_H, gapAfter = GAP + 6 },
 				{ gui = cosGrid, h = gridH(#COS_ORDER, columns, COS_H), gapAfter = 26 },
 			},
 		}
 		for i, grid in { cashGrid, auraGrid } do
 			local packs = packGrids[i]
+			local fits = packFits[i]
 			table.insert(pages, {
-				{ gui = heads[2 + i], h = HEAD_H, gapAfter = 14, head = true },
-				{ gui = grid, h = gridH(packs.count, packs.columns, PACK_H), gapAfter = 26 },
+				{ gui = heads[2 + i], h = HEAD_H, gapAfter = 14, head = true, shown = not short },
+				{
+					gui = grid,
+					h = gridH(packs.count, packs.columns, packs.cardH),
+					gapAfter = 26,
+					before = if fits then math.max(0, free - packs.cardH) // 2 else 0,
+					fills = fits,
+				},
 			})
 		end
+		-- Rows are placed from 0: the page's UIPadding (PAGE_PAD) keeps a ribbon that
+		-- overlaps the top edge of the first card inside the clip.
 		local pageBottom = 0
+		local filled = false
 		for index, blocks in pages do
 			local picked = index == current
-			-- The Starter card's ribbon overlaps its top edge: start a little lower for it.
-			local y = if index == 1 and starterShown then 12 else 4
+			local y = 0
 			for _, block in blocks do
 				local shown = block.shown ~= false
 				block.gui.Visible = picked and shown
+				-- A hidden header hands its place (what a focus scrolls to) to the block after it.
+				if block.head then
+					headY[index] = y
+				end
 				if shown then
+					y += block.before or 0
 					block.gui.Position = UDim2.fromOffset(4, y - (if picked then previewShift else 0))
 					block.gui.Size = UDim2.new(1, -18, 0, block.h)
-					if block.head then
-						headY[index] = y
-					end
 					if block.gui:IsA("Frame") then
 						gridTop[block.gui] = y
 					end
 					if picked then
 						pageBottom = y + block.h
+						filled = block.fills == true
 					end
 					y += block.h + block.gapAfter
 				end
@@ -84707,12 +85100,16 @@ local function buildShop(screen: ScreenGui)
 			sectionY[index] = 0
 		end
 		-- Banner focus scrolls to the Passes header (under the Starter card).
-		passesY = (headY[1] or 4) - 4
+		passesY = headY[1] or 0
 		-- The canvas is the section and no more: the last row ends PAGE_BOTTOM above the edge
-		-- when scrolled to the end, and a section that fits does not scroll at all.
-		canvasH = pageBottom + PAGE_BOTTOM
-		pageEnd.Position = UDim2.fromOffset(0, canvasH - previewShift)
+		-- when scrolled to the end. A section that fits does not scroll at all: no wheel or
+		-- drag, no scroll bar.
+		canvasH = if filled then page else PAGE_PAD + pageBottom + PAGE_BOTTOM
+		local scrolls = canvasH > page + 1
+		pageEnd.Position = UDim2.fromOffset(0, canvasH - PAGE_PAD - previewShift)
 		scroll.CanvasSize = UDim2.fromOffset(0, canvasH)
+		scroll.ScrollingEnabled = scrolls
+		scroll.ScrollBarThickness = if scrolls then SCROLL_BAR else 0
 		-- The switcher keeps its pills roomy but never wider than the page; narrow pills
 		-- drop their icons so the labels stay at full size.
 		local switchW = math.min(150 * count, size.X - 44)
@@ -86061,10 +86458,13 @@ local function buildSettings(screen: ScreenGui)
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			ZIndex = 2,
 		})
+		-- The row's label is body text (18 px on a desktop screen), its sub-line a caption:
+		-- both are held on the glass, so a fitted window cannot shrink them under that.
 		Kit.text(row, {
 			Text = string.upper(text),
 			Font = F.UI,
 			TextSize = T.Body,
+			MinPx = if Kit.touch then Kit.captionPx() else T.H3,
 			TextWrapped = false,
 			Size = UDim2.new(1, -170, 0, 22),
 			Position = UDim2.new(0, 72, 0.5, -23),
@@ -86073,6 +86473,7 @@ local function buildSettings(screen: ScreenGui)
 		local sub = Kit.text(row, {
 			Text = desc,
 			TextSize = T.Small,
+			MinPx = true,
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Size = UDim2.new(1, -176, 0, 20),

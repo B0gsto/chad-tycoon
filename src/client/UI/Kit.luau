@@ -711,10 +711,14 @@ end
 	  Kit.pixelScale(gui)       screen px per design px at `gui` (the ScreenGui's UIScale
 	                            times the "Fit" / "Compact" scales above it)
 	  Kit.px(px, design?, gui?) the design size that shows at least `px` on screen there
-	                            (never under `design`)
+	                            (never under `design`), to the nearest design px: it may land
+	                            a fraction of a pixel under `px`
+	  Kit.pxUp(px, design?, gui?)  the same rounded up: never under `px` (a hard floor, for
+	                            small HUD text that is measured against it)
 	  Kit.captionPx()           the smallest caption: G.TextMin, G.TextMinPhone on touch
-	  Kit.holdText(label, px, design?)  sizes a fixed-size label that way and keeps it so when
-	                            the screen is rescaled (Kit.reflowText, called by Main)
+	  Kit.holdText(label, px, design?, up?)  sizes a fixed-size label that way (`up`: with
+	                            Kit.pxUp) and keeps it so when the screen is rescaled
+	                            (Kit.reflowText, called by Main and by Kit.fit)
 	Kit.text takes the same as the prop MinPx (a number, or true for a caption).
 ]]
 local LAYOUT_SCALES = { "Fit", "Compact" }
@@ -748,32 +752,69 @@ function Kit.px(screenPx: number, design: number?, from: Instance?): number
 	return math.max(design or 0, math.ceil(screenPx / Kit.pixelScale(from) - 0.5))
 end
 
+function Kit.pxUp(screenPx: number, design: number?, from: Instance?): number
+	return math.max(design or 0, math.ceil(screenPx / Kit.pixelScale(from) - 0.001))
+end
+
 function Kit.captionPx(): number
 	return if Kit.touch then G.TextMinPhone else G.TextMin
 end
 
 -- Held labels are kept by strong reference and dropped when they are destroyed: a weak
 -- table forgets an Instance as soon as no script holds it, though it is still on screen.
-type HeldText = { px: number, design: number }
+type HeldText = { px: number, design: number, up: boolean? }
 local heldText: { [TextLabel]: HeldText } = {}
-function Kit.holdText(label: TextLabel, screenPx: number, design: number?)
-	local held: HeldText = { px = screenPx, design = design or label.TextSize }
+local function heldSize(label: TextLabel, held: HeldText): number
+	return if held.up then Kit.pxUp(held.px, held.design, label) else Kit.px(held.px, held.design, label)
+end
+function Kit.holdText(label: TextLabel, screenPx: number, design: number?, up: boolean?)
+	local held: HeldText = { px = screenPx, design = design or label.TextSize, up = up }
 	if heldText[label] == nil then
 		pcall(function()
 			(label :: any).Destroying:Once(function()
 				heldText[label] = nil
 			end)
 		end)
+		-- Built off screen (a card filled before it is parented): only the screen's own scale
+		-- is known yet, so the label is sized again once it sits under its window's "Fit".
+		if not label:FindFirstAncestorOfClass("ScreenGui") then
+			pcall(function()
+				local connection: RBXScriptConnection
+				connection = label.AncestryChanged:Connect(function()
+					local now = heldText[label]
+					if not now then
+						connection:Disconnect()
+					elseif label:FindFirstAncestorOfClass("ScreenGui") then
+						connection:Disconnect()
+						label.TextSize = heldSize(label, now)
+					end
+				end)
+			end)
+		end
 	end
 	heldText[label] = held
-	label.TextSize = Kit.px(held.px, held.design, label)
+	label.TextSize = heldSize(label, held)
 end
 
 -- The screen was rescaled: every held label takes its size again.
 function Kit.reflowText()
 	for label, held in heldText do
-		label.TextSize = Kit.px(held.px, held.design, label)
+		label.TextSize = heldSize(label, held)
 	end
+end
+
+-- A window's own scale changed (Kit.fit): held labels are sized again, once, after every
+-- window that changed in the same step has settled.
+local reflowQueued = false
+local function queueReflow()
+	if reflowQueued then
+		return
+	end
+	reflowQueued = true
+	task.defer(function()
+		reflowQueued = false
+		Kit.reflowText()
+	end)
 end
 
 function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
@@ -2778,7 +2819,12 @@ function Kit.setBadge(target: GuiObject, text: string?)
 	local b = badge :: TextLabel
 	local changed = b.Text ~= text
 	b.Text = text
-	b.Size = UDim2.fromOffset(math.max(20, 8 + utf8.len(text) :: number * 8), 20)
+	-- The dot's text is a caption on the glass (a phone's UI scale would shrink 14 design px
+	-- under it), and the dot grows round it.
+	local size = Kit.pxUp(Kit.captionPx(), Kit.TEXT.Small, holder)
+	local side = math.max(20, size + 7)
+	b.TextSize = size
+	b.Size = UDim2.fromOffset(math.max(side, math.ceil(8 + utf8.len(text) :: number * size * 0.58)), side)
 	if not b.Visible then
 		b.Visible = true
 		local pop = b:FindFirstChild("Pop") :: UIScale
@@ -3216,7 +3262,12 @@ function Kit.fit(holder: GuiObject, screen: Instance, design: Vector2, minSize: 
 				end
 			end
 		end
-		fitScale.Scale = s
+		if fitScale.Scale ~= s then
+			fitScale.Scale = s
+			-- Text held at a size on the glass counts this scale: a window that is fitted
+			-- after its labels were built (the screen's size arrives late) re-sizes them.
+			queueReflow()
+		end
 		local size = Vector2.new(w, h)
 		if size ~= current then
 			current = size
@@ -3256,10 +3307,15 @@ end
 local openers: { [Instance]: { [string]: boolean } } = setmetatable({}, { __mode = "k" }) :: any
 local openListeners: { (boolean) -> () } = {}
 local openWatched: { [Instance]: string } = setmetatable({}, { __mode = "k" }) :: any
+-- The gui of each opener (its centred holder), for Kit.openTop.
+local openOwners: { [Instance]: { [string]: Instance } } = setmetatable({}, { __mode = "k" }) :: any
 function Kit.markOpen(screen: Instance, key: string, on: boolean, owner: Instance?)
 	local set = openers[screen] or {}
 	openers[screen] = set
 	set[key] = if on then true else nil
+	local owners = openOwners[screen] or {}
+	openOwners[screen] = owners
+	owners[key] = if on then owner else nil
 	local any = next(set) ~= nil
 	if (screen:GetAttribute("WindowOpen") == true) ~= any then
 		screen:SetAttribute("WindowOpen", any)
@@ -3286,6 +3342,30 @@ function Kit.markOpen(screen: Instance, key: string, on: boolean, owner: Instanc
 			end)
 		end)
 	end
+end
+
+--[[
+	Kit.openTop(screen): how far under the top of the screen (design px) the highest open
+	window or modal starts, from its holder's place, size and "Fit" scale; nil when nothing
+	is open or the screen's size is not known. Toasts stay above it.
+]]
+function Kit.openTop(screen: Instance): number?
+	local owners = openOwners[screen]
+	local area = Kit.designArea(screen)
+	if not owners or not area then
+		return nil
+	end
+	local top: number? = nil
+	for _, owner in owners do
+		if owner:IsA("GuiObject") then
+			local fit = owner:FindFirstChild("Fit")
+			local scale = if fit and fit:IsA("UIScale") then fit.Scale else 1
+			local height = (area.Y * owner.Size.Y.Scale + owner.Size.Y.Offset) * scale
+			local y = area.Y * owner.Position.Y.Scale + owner.Position.Y.Offset - owner.AnchorPoint.Y * height
+			top = if top then math.min(top, y) else y
+		end
+	end
+	return top
 end
 
 -- Kit.onWindowOpen(fn): fn(open) runs when the first window or modal opens and when the

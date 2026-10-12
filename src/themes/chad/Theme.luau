@@ -232,15 +232,29 @@ Theme.Glass = {
 	TintMix = 0.24,
 	TintedEdge = 0.2,
 	Dimmed = 0.5,
-	-- Insets (tab bars, bar tracks, wallet chips): a darker pane of Colors.Ink.
+	-- Insets (tab bars, bar tracks, wallet chips): a darker pane of Colors.Ink. InsetSoft is
+	-- the fainter one of a box of rows on a card over the unblurred world (the held crate's
+	-- odds); Divider a 1 px rule in a card's colour, in place of a header band.
 	Inset = 0.55,
+	InsetSoft = 0.7,
+	Divider = 0.35,
 	-- Coloured cards (shop banners and packs): the card's own colour as glass, with a glow.
 	Card = 0.38,
 	CardGlow = 0.7,
+	-- Pass banners (and the Starter / All Cosmetics cards): the pass's saturated colour, nearly
+	-- solid, so the blurred world cannot muddy it. BannerEdge is how far the 2 px edge is
+	-- lightened from that colour; the panes behind small text on a banner are BannerInsetDeep
+	-- darker than it and BannerInset see-through.
+	Banner = 0.25,
+	BannerEdge = 0.4,
+	BannerInset = 0.25,
+	BannerInsetDeep = 0.6,
 	-- Over the unblurred world: Pill is a notification (toasts, the quest pill), Quiet the
 	-- permanent HUD strips (deposit, "Next:"), which sit back; the text on both is outlined.
 	Pill = 0.3,
 	Quiet = 0.55,
+	-- The "Training complete" banner: bright gold, all but opaque, on every screen.
+	Celebrate = 0.1,
 	-- Text on glass: outline thickness and transparency, the smallest body / caption size in
 	-- screen pixels (desktop, phone) and the opacity of a caption (white, never grey).
 	TextInk = rgb(8, 8, 30),

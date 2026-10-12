@@ -6,6 +6,8 @@ sourcemap.json
 .cache/
 preview/node_modules/
 preview/out/
+# Device shots (shoot.mjs chad-<WxH>-<device>): review material; the kept ones are copied to preview/screenshots/mobile.
+preview/screenshots/chad-*/
 preview/render/node_modules/
 .claude/worktrees/
 __pycache__/

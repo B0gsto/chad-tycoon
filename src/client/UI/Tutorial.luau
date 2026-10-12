@@ -439,10 +439,12 @@ local function showCelebrate(cash: number, done: () -> ())
 		ZIndex = 20,
 		Parent = screen,
 	})
-	local fade = Kit.new("CanvasGroup", {
+	-- A plain frame, faded by its elements' own transparency (Kit.fade): the banner is
+	-- painted straight to the screen, the same gold at the top of a desktop and in the
+	-- bottom slot of a phone, with no off-screen group texture between its fill and the world.
+	local fade = Kit.new("Frame", {
 		Name = "Fade",
 		BackgroundTransparency = 1,
-		GroupTransparency = 1,
 		Size = UDim2.fromScale(1, 1),
 		ZIndex = 21,
 		Parent = holder,
@@ -453,10 +455,12 @@ local function showCelebrate(cash: number, done: () -> ())
 	end
 	local bounce = Kit.new("UIScale", { Name = "Bounce", Scale = 0.6, Parent = holder })
 	-- The one solid banner: the bright gold of a primary button (sunny yellow down to
-	-- orange) on an orange lip, with a white highlight along the top inner edge.
+	-- orange, G.Celebrate: all but opaque) on an orange lip, with a white highlight along
+	-- the top inner edge.
 	local card = Kit.new("Frame", {
 		Name = "Card",
 		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = G.Celebrate,
 		BorderSizePixel = 0,
 		Size = UDim2.new(1, -PAD_X * 2, 0, BANNER_H),
 		Position = UDim2.fromOffset(PAD_X, PAD_TOP),
@@ -545,7 +549,7 @@ local function showCelebrate(cash: number, done: () -> ())
 		deps.sounds.play("Tick", 0.03, 1.12)
 	end)
 
-	Kit.tween(fade, IN_TIME, { GroupTransparency = 0 }, Enum.EasingStyle.Quad)
+	Kit.fade(fade, true, IN_TIME)
 	-- Bounce in: the banner drops into the slot and overshoots its size.
 	Kit.tween(holder, 0.34, { Position = rest }, Enum.EasingStyle.Back)
 	Kit.tween(bounce, 0.42, { Scale = 1 }, Enum.EasingStyle.Back)
@@ -566,7 +570,10 @@ local function showCelebrate(cash: number, done: () -> ())
 		end
 		closed = true
 		publishHeight()
-		Kit.tween(fade, 0.22, { GroupTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		-- Hidden once faded: Kit.fade restores the resting look just before the holder goes.
+		Kit.fade(fade, false, 0.2, function()
+			fade.Visible = false
+		end)
 		Kit.tween(holder, 0.22, { Position = away }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		task.delay(0.25, function()
 			holder:Destroy()
