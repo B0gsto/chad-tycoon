@@ -443,8 +443,6 @@ end
 --                 at its rest y.
 --   MapBob        a buoy root: bobs BOB_HEIGHT studs and tilts a few degrees; every
 --                 descendant part moves rigidly with it (BulkMoveTo, like the movers).
---   MapLightning  a neon bolt: hidden (Transparency 1), flashing in 2-3 pulse bursts every
---                 4-9 s (own random timer per bolt).
 --   MapGlow       a neon part whose colour slowly breathes between dimmer and brighter.
 --   KillBrick     a lava bar / strip: its Neon colour pulses between Lava red and a darker
 --                 red, a bit faster than a glow (same near-player lists, no embers).
@@ -460,8 +458,7 @@ end
 --            thin pale Atmosphere (low density, horizon haze, a little glare), brighter
 --            Lighting and exposure, ClockTime 13 when the scene is outside 10-15, and a
 --            light ParkourBloom (made lazily, enabled only during runs).
---   storm    the same but a little cooler and dimmer; the grade flashes brighter while a
---            bolt near the player is lit.
+--   storm    the same but a little cooler and dimmer.
 --   volcano  a touch warmer, plus ember emitters (ParkourEmbers, made lazily) on the
 --            level's MapGlow parts, enabled only during the run.
 --   giga     the sunny look plus soft gold sparkles around the player's root
@@ -479,8 +476,6 @@ local BOB_TILT = math.rad(4)
 local BUBBLE_SWAY = 0.5
 local BUBBLE_FADE = 1.5 -- studs at each end of the climb over which a bubble fades
 local GLOW_STEP = 1 / 15 -- glow colour updates per second cap
-local BOLT_PULSE = 0.16 -- seconds per flash pulse (lit for the first BOLT_LIT of it)
-local BOLT_LIT = 0.07
 local AMBIENCE_FADE = 1
 local OUT_GRACE = 3
 local LEVEL_PAD_SIDE = 60 -- studs the level's bounds reach past its parts sideways
@@ -515,17 +510,14 @@ type Bob = {
 	speed: number,
 	live: boolean,
 }
-type Bolt = { part: BasePart, nextAt: number, start: number, pulses: number, lit: boolean, live: boolean }
 type Glow = { part: BasePart, base: Color3, dim: Color3, bright: Color3, phase: number, speed: number, live: boolean }
 
 local bubbles: { Bubble } = {}
 local bobs: { Bob } = {}
-local bolts: { Bolt } = {}
 local glows: { Glow } = {}
 local kills: { Glow } = {}
 local nearBubbles: { Bubble } = {}
 local nearBobs: { Bob } = {}
-local nearBolts: { Bolt } = {}
 local nearGlows: { Glow } = {}
 local nearKills: { Glow } = {}
 local mapTracked: { [Instance]: boolean } = {}
@@ -533,7 +525,6 @@ local moveParts: { BasePart } = {}
 local moveFrames: { CFrame } = {}
 local nextRefresh = 0
 local nextGlow = 0
-local boltLit = false -- some bolt near the player is lit this frame
 
 local function addBubble(part: Instance)
 	if not part:IsA("BasePart") or mapTracked[part] then
@@ -571,15 +562,6 @@ local function addBob(part: Instance)
 		speed = 1.1 + math.random() * 0.5,
 		live = false,
 	})
-end
-
-local function addBolt(part: Instance)
-	if not part:IsA("BasePart") or mapTracked[part] then
-		return
-	end
-	mapTracked[part] = true
-	part.Transparency = 1
-	table.insert(bolts, { part = part, nextAt = os.clock() + math.random() * 9, start = -1, pulses = 0, lit = false, live = false })
 end
 
 local function addGlow(part: Instance)
@@ -653,16 +635,9 @@ local function restBob(b: Bob)
 	end
 end
 
-local function restBolt(b: Bolt)
-	b.part.Transparency = 1
-	b.lit = false
-	b.start = -1
-end
-
 local function refreshNear(pos: Vector3)
 	table.clear(nearBubbles)
 	table.clear(nearBobs)
-	table.clear(nearBolts)
 	table.clear(nearGlows)
 	table.clear(nearKills)
 	for _, b in bubbles do
@@ -694,15 +669,6 @@ local function refreshNear(pos: Vector3)
 		end
 		b.live = near
 	end
-	for _, b in bolts do
-		local near = (b.part.Position - pos).Magnitude <= MAP_NEAR
-		if near then
-			table.insert(nearBolts, b)
-		elseif b.live then
-			restBolt(b)
-		end
-		b.live = near
-	end
 	for _, g in glows do
 		local near = (g.part.Position - pos).Magnitude <= MAP_NEAR
 		if near then
@@ -729,7 +695,6 @@ local function stepScenery(pos: Vector3)
 		nextRefresh = now + MAP_REFRESH
 		refreshNear(pos)
 	end
-	boltLit = false
 	for _, b in nearBubbles do
 		local travel = (now * b.rise + b.phase) % b.span
 		local sway = now * 1.3 + b.phase
@@ -758,27 +723,6 @@ local function stepScenery(pos: Vector3)
 		Workspace:BulkMoveTo(moveParts, moveFrames, Enum.BulkMoveMode.FireCFrameChanged)
 		table.clear(moveParts)
 		table.clear(moveFrames)
-	end
-	for _, b in nearBolts do
-		local lit = false
-		if b.start < 0 and now >= b.nextAt then
-			b.start, b.pulses = now, math.random(2, 3)
-		end
-		if b.start >= 0 then
-			local into = (now - b.start) / BOLT_PULSE
-			local pulse = math.floor(into)
-			if pulse >= b.pulses then
-				b.start = -1
-				b.nextAt = now + 4 + math.random() * 5
-			else
-				lit = (into - pulse) * BOLT_PULSE < BOLT_LIT
-			end
-		end
-		if lit ~= b.lit then
-			b.lit = lit
-			b.part.Transparency = if lit then 0 else 1
-		end
-		boltLit = boltLit or lit
 	end
 	if (#nearGlows > 0 or #nearKills > 0) and now >= nextGlow then
 		nextGlow = now + GLOW_STEP
@@ -810,7 +754,6 @@ type Look = {
 	light: number, -- added to Lighting.Brightness
 	exposure: number, -- added to Lighting.ExposureCompensation
 	bloom: number, -- ParkourBloom intensity
-	flash: number, -- grade brightness added while a near bolt is lit
 }
 
 -- The sky obby: one bright sunny midday look for every map (saturated cobalt sky, pale
@@ -865,7 +808,6 @@ local LOOKS: { [string]: Look } = {
 		light = 0.4,
 		exposure = 0.05,
 		bloom = BLOOM_INTENSITY * 0.8,
-		flash = 0.1,
 	},
 	volcano = { -- the sunny sky, a touch warmer
 		tint = Color3.fromRGB(250, 243, 236),
@@ -886,7 +828,6 @@ local LOOKS: { [string]: Look } = {
 		light = 0.6,
 		exposure = 0.15,
 		bloom = BLOOM_INTENSITY,
-		flash = 0,
 	},
 }
 
@@ -921,7 +862,6 @@ local ambFolder: Instance? = nil
 local ambTarget = 0
 local ambWeight = 0
 local ambExtra = 0 -- separate ramp for the embers / sparkles (restarts on a cross-fade)
-local ambFlash = 0
 local ambOutSince: number? = nil
 local ambFrom: Grade? = nil
 local ambTo: Grade? = nil
@@ -1107,16 +1047,15 @@ local function ease(w: number): number
 	return w * w * (3 - 2 * w)
 end
 
--- What is on screen right now (without the lightning flash).
+-- What is on screen right now.
 local function shownGrade(): Grade
 	local from, to = ambFrom or saved, ambTo or saved
 	return blend(from, to, ease(ambWeight))
 end
 
--- Writes the current blend plus a lightning flash (0..1).
-local function applyLook(flash: number)
+-- Writes the current blend.
+local function applyLook()
 	local g = shownGrade()
-	local look = if ambTheme then LOOKS[ambTheme] else nil
 	local cc = grade
 	if not cc then
 		local made = Instance.new("ColorCorrectionEffect")
@@ -1127,7 +1066,7 @@ local function applyLook(flash: number)
 	end
 	if cc then
 		cc.TintColor = g.tint
-		cc.Brightness = g.brightness + (if look then look.flash * flash else 0)
+		cc.Brightness = g.brightness
 		cc.Contrast = g.contrast
 		cc.Saturation = g.saturation
 	end
@@ -1237,7 +1176,7 @@ local function clearAmbience()
 	end
 	dropExtras()
 	grade, atmosphere, ambFolder, ambFrom, ambTo, ambFromBase = nil, nil, nil, nil, nil, true
-	ambTheme, ambTarget, ambWeight, ambExtra, ambFlash, ambOutSince = nil, 0, 0, 0, 0, nil
+	ambTheme, ambTarget, ambWeight, ambExtra, ambOutSince = nil, 0, 0, 0, nil
 end
 
 local function startAmbience(level: number)
@@ -1262,7 +1201,7 @@ local function startAmbience(level: number)
 			startExtras(theme, folder)
 		end
 		ambTheme, ambLevel, ambFolder, ambTarget, ambOutSince = theme, level, folder, 1, nil
-		applyLook(ambFlash)
+		applyLook()
 		return
 	end
 	ambTheme, ambLevel, ambFolder, ambTarget, ambWeight, ambExtra = theme, level, folder, 1, 0, 0
@@ -1284,7 +1223,7 @@ local function startAmbience(level: number)
 	end
 	ambFrom, ambTo, ambFromBase = saved, gradeFor(theme), true
 	startExtras(theme, folder)
-	applyLook(0)
+	applyLook()
 end
 
 -- Eases the look out (it is cleared once fully faded). Mid cross-fade, what is on screen
@@ -1321,10 +1260,8 @@ local function stepAmbience(dt: number, pos: Vector3?)
 		-- The cross-fade is done: the screen is ambTo, so fade later from the scene.
 		ambFrom, ambFromBase = saved, true
 	end
-	local flash = if boltLit then 1 else 0
-	if ambWeight ~= before or ambExtra ~= beforeExtra or flash ~= ambFlash then
-		ambFlash = flash
-		applyLook(flash)
+	if ambWeight ~= before or ambExtra ~= beforeExtra then
+		applyLook()
 	end
 	if ambWeight == 0 and ambTarget == 0 then
 		clearAmbience()
@@ -1597,9 +1534,7 @@ function ModesFx.init()
 		addArrow(arrow)
 	end
 	CollectionService:GetInstanceAddedSignal("ModeHintArrow"):Connect(addArrow)
-	for tag, add in
-		{ MapBubble = addBubble, MapBob = addBob, MapLightning = addBolt, MapGlow = addGlow, KillBrick = addKill } :: { [string]: (Instance) -> () }
-	do
+	for tag, add in { MapBubble = addBubble, MapBob = addBob, MapGlow = addGlow, KillBrick = addKill } :: { [string]: (Instance) -> () } do
 		for _, part in CollectionService:GetTagged(tag) do
 			add(part)
 		end
@@ -1610,9 +1545,6 @@ function ModesFx.init()
 	end)
 	CollectionService:GetInstanceRemovedSignal("MapBob"):Connect(function(inst)
 		dropFrom(bobs, nearBobs, inst)
-	end)
-	CollectionService:GetInstanceRemovedSignal("MapLightning"):Connect(function(inst)
-		dropFrom(bolts, nearBolts, inst)
 	end)
 	CollectionService:GetInstanceRemovedSignal("MapGlow"):Connect(function(inst)
 		dropFrom(glows, nearGlows, inst)

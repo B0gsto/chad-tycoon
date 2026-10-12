@@ -12,7 +12,6 @@
 
 	Tags / attributes the client animates (Client.Fx.Modes):
 	  MapBob        a hot-air balloon's envelope (root; the rest of the balloon is parented to it)
-	  MapLightning  Neon bolt segments of the storm landmark (built hidden, Transparency 1)
 	  MapGlow       Neon lava of the volcano landmark and the lighthouse lamp
 	  ModeMover     invisible spin roots with Mover = "spin", MoveSpeed, MovePhase (see
 	                World.Modes): the shark landmark's fins stand `r` studs out along the root's
@@ -47,7 +46,6 @@ local STORM = W.StormCloud
 local LAVA = W.Lava
 local LAVA_HOT = W.Sunny:Lerp(W.Lava, 0.35)
 local GOLD = W.Gold
-local BOLT = W.Volt:Lerp(W.White, 0.35)
 local FIN = W.TealDeep:Lerp(W.Ink, 0.35)
 -- Sky islands: bright candy grass, a dark-sand rim, brown trunks and wood.
 local GRASS = W.Grass:Lerp(W.RainbowGreen, 0.45)
@@ -787,8 +785,8 @@ LANDMARKS.shark = function(k, p)
 	end
 end
 
--- A rock spire with a lightning rod under a huge stacked storm cloud, three hidden Neon bolts
--- (MapLightning), a volt-yellow rod and cloud trim, and rain (33 parts).
+-- A rock spire with a lightning rod under a huge stacked storm cloud, a softly glowing
+-- volt-yellow rod and cloud trim (MapGlow), and rain (27 parts).
 LANDMARKS.storm = function(k, _p)
 	foundation(k, 24, 0.5, STORM_ROCK)
 	k.cyl("StormPuddle", 0.2, 20, up(0, 0.6, 0), W.Slate:Lerp(W.Ink, 0.3), { Reflectance = 0.25 })
@@ -803,7 +801,7 @@ LANDMARKS.storm = function(k, _p)
 			}
 		)
 	end
-	k.cyl("StormRod", 7, 0.7, up(0, 21, 0), W.Volt, { Material = NEON })
+	k.cyl("StormRod", 7, 0.7, up(0, 21, 0), W.Volt, { Material = NEON }):AddTag("MapGlow")
 	local puffs = {
 		{ 0, 34, 0, 14 },
 		{ -8, 33.5, 1, 10 },
@@ -824,23 +822,7 @@ LANDMARKS.storm = function(k, _p)
 	end
 	k.block("GiantStormBase", Vector3.new(26, 2, 9), at(0, 31.5, 0), STORM:Lerp(W.Steel, 0.25), { Material = Enum.Material.SmoothPlastic })
 	k.block("GiantStormTrim", Vector3.new(26.4, 0.6, 9.4), at(0, 30.6, 0), W.Volt, { Material = NEON, CastShadow = false })
-	local bolts = {
-		{ Vector3.new(-6, 30.5, 0), Vector3.new(-3, 21, 1), Vector3.new(-6, 10, 0) },
-		{ Vector3.new(0, 30.5, 0), Vector3.new(2, 27, 0), Vector3.new(0, 24.5, 0) },
-		{ Vector3.new(7, 30.5, -1), Vector3.new(4, 20, 0), Vector3.new(8, 8, 1) },
-	}
-	for _, zig in bolts do
-		for j = 1, 2 do
-			local a, b = zig[j], zig[j + 1]
-			local bolt =
-				k.block("GiantStormBolt", Vector3.new(1, 1, (b - a).Magnitude + 0.6), CFrame.lookAt((a + b) / 2, b, Vector3.zAxis), BOLT, {
-					Material = NEON,
-					Transparency = 1,
-					CastShadow = false,
-				})
-			bolt:AddTag("MapLightning")
-		end
-	end
+		:AddTag("MapGlow")
 	for i = 0, 5 do
 		k.block(
 			"GiantStormRain",
