@@ -24,9 +24,16 @@
 	  check at the same time (the first PVP_FIRST_LEAD later), press once each (judged like
 	  PvE), and the round ends when both answered or the needle lap timed out (MogRules
 	  duelPress / duelRound: hit 1 damage to the opponent, perfect 2, miss 1 to yourself, all
-	  at once; KO tie = sudden death at 1 HP). The winner is paid like a PvE pass (same
-	  cooldown and clears). Leaving, respawning, quitting or switching mode mid-duel forfeits:
-	  the other side wins at once. PvP never goes on the TOP MOGGERS board.
+	  at once; KO tie = sudden death at 1 HP). The winner is paid on the same cooldown as a PvE
+	  pass, but never as a first clear: that one belongs to the first PvE pass
+	  (MogRules.firstPass / countClear). Leaving, respawning, quitting or switching mode
+	  mid-duel forfeits: the other side wins at once. So does letting
+	  MogRules.PVP_IDLE_FORFEIT checks in a row time out (both sides idle: a draw, nobody
+	  wins), and a duel still open after PVP_MAX_ROUNDS rounds goes to the higher HP, then the
+	  higher score. PvP never goes on the TOP MOGGERS board.
+	- A duel's checks are hidden: "check" carries no zone, and the zone follows in "zone" when
+	  the needle starts (a client cannot work out the press before it can see the zone). A
+	  press stamped sooner than MogRules.MIN_REACTION after the zone was sent is ignored.
 
 	Notify payloads (kind = "Mode", mode = "mog"):
 	  { event = "choose" }                           no `vs` given: show the rivals / PvP picker
@@ -44,12 +51,18 @@
 	  { event = "queue", vs, since, timeout }        waiting for an opponent (since: server time)
 	  { event = "start", vs, startedAt, spot, playerPos, rivalPos, hp, maxHp,
 	    opponent = { userId, name, hp, maxHp }, score = 0, wins }   rivalPos: the opponent's feet
-	  { event = "check", vs, ...same fields as PvE }  the same check for both sides
+	  { event = "check", vs, hidden = true, pressFrom, id, n, appearAt, speed, dir, duration }
+	                                                 the same check for both sides, no zone yet;
+	                                                 pressFrom: presses stamped earlier are ignored
+	  { event = "zone", vs, id, zoneStart, zoneSize, perfectSize }   sent when the needle starts
 	  { event = "result", vs, id, result, reason?, travel?, score, combo }   own press, no HP change
 	  { event = "round", vs, id, you = { result, hp, maxHp, combo, score },
 	    opp = { result, hp, maxHp }, suddenDeath? }
 	  { event = "finish", vs, won, reason ("ko" | "forfeit"), opponent = { userId, name }, score,
-	    wins, played, cash, full, cooldownEnds }
+	    wins, played, cash, full, cooldownEnds, afk?, rounds?, draw? }
+	                                                 afk = true: an idle forfeit (reason "forfeit");
+	                                                 rounds = true: decided at the round cap (reason
+	                                                 "ko"); draw = true: nobody won (won is false)
 	Rival info: { index, name, tier, hp, maxHp } (tier = Theme.Tiers index the client dresses).
 	Effects: the usual "Cash" { amount, source = "Mode", padPos } when the pass pays cash.
 ]]
@@ -102,6 +115,8 @@ type Duel = {
 	check: MogRules.Check?,
 	checkId: number,
 	appearAt: number,
+	-- The current check's needle start once its zone was sent (math.huge until then).
+	revealAt: number,
 	pending: boolean,
 	saved: { [Player]: Saved? },
 	over: boolean,
@@ -154,12 +169,15 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		return session.profile.modes.mog
 	end
 
-	local function rewardFor(session: any): Economy.ModeReward
+	-- What a PvE pass (vs = "rivals") or a PvP win ("pvp") pays right now. Only a pass can be
+	-- the first clear; both share the cooldown.
+	local function rewardFor(session: any, vs: string): Economy.ModeReward
 		local p = session.profile
 		local rec = record(session)
 		local pack = theme.Modes.Reward
 		local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
-		return Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, rec.clears == 0, rec.lastRewardAt, os.time())
+		local first = vs == "rivals" and MogRules.firstPass(rec)
+		return Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, first, rec.lastRewardAt, os.time())
 	end
 
 	local function updateBoard()
@@ -285,16 +303,17 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		})
 	end
 
-	-- Pays the mode reward (a PvE pass or a PvP win): shares the clears / cooldown record.
-	-- `padPos` places the "Cash" effect when the character is gone.
-	local function payReward(player: Player, padPos: Vector3): Economy.ModeReward?
+	-- Pays the mode reward for a PvE pass (vs = "rivals") or a PvP win ("pvp"): one cooldown
+	-- for both, the first clear only for a pass. `padPos` places the "Cash" effect when the
+	-- character is gone.
+	local function payReward(player: Player, padPos: Vector3, vs: string): Economy.ModeReward?
 		local session = GameModes.session(player)
 		if not session then
 			return nil
 		end
 		local rec = record(session)
-		local reward = GameModes.hooks.reward(session, ID, rewardFor(session))
-		rec.clears += 1
+		local reward = GameModes.hooks.reward(session, ID, rewardFor(session, vs))
+		MogRules.countClear(rec, vs)
 		if reward.full then
 			rec.lastRewardAt = os.time()
 		end
@@ -315,7 +334,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 	end
 
 	local function payPass(player: Player, state: State): Economy.ModeReward?
-		local reward = payReward(player, vec(MogLayout.SPOTS[state.spot].player))
+		local reward = payReward(player, vec(MogLayout.SPOTS[state.spot].player), "rivals")
 		state.reward = reward
 		return reward
 	end
@@ -398,12 +417,14 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 	end
 
 	-- Judges a "MogPress" { id, at } against a check announced for `appearAt` with id `checkId`.
-	-- Returns nil for a stale, malformed or implausibly timed press.
+	-- Returns nil for a stale, malformed or implausibly timed press; in a duel that includes
+	-- one stamped before `from` (sooner after the zone was sent than anyone can react).
 	local function judgePress(
 		check: MogRules.Check,
 		checkId: number,
 		appearAt: number,
-		data: { [string]: any }
+		data: { [string]: any },
+		from: number?
 	): (string?, string?, number?)
 		local id, at = data.id, data.at
 		if type(id) ~= "number" or type(at) ~= "number" or at ~= at or id ~= checkId then
@@ -411,6 +432,9 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		end
 		local t = now()
 		if at < appearAt - LAP_SLACK or at > appearAt + check.duration + LAP_SLACK then
+			return nil
+		end
+		if from and at < from then
 			return nil
 		end
 		if at < t - PRESS_PAST or at > t + PRESS_FUTURE then
@@ -474,37 +498,57 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		end)
 	end
 
-	-- Both sides get the same check with the same id and appearAt.
+	-- Both sides get the same check with the same id and appearAt. It is hidden: the zone is
+	-- sent only when the needle starts, to both at once.
 	issueDuelCheck = function(duel: Duel)
 		local rules = duel.rules
 		rules.n += 1
 		local check = MogRules.check(rules.n, function()
 			return duel.rng:NextNumber()
-		end)
+		end, true)
 		nextCheckId += 1
+		local id = nextCheckId
+		local lead = check.lead + (if rules.n == 1 then MogRules.PVP_FIRST_LEAD else 0)
 		duel.check = check
-		duel.checkId = nextCheckId
-		duel.appearAt = now() + check.lead + (if rules.n == 1 then MogRules.PVP_FIRST_LEAD else 0)
+		duel.checkId = id
+		duel.appearAt = now() + lead
+		duel.revealAt = math.huge
 		duel.pending = true
 		for _, player in duel.players do
 			sendPvp(player, "check", {
-				id = duel.checkId,
+				id = id,
 				n = check.n,
 				appearAt = duel.appearAt,
 				speed = check.speed,
 				dir = check.dir,
-				zoneStart = check.zoneStart,
-				zoneSize = check.zoneSize,
-				perfectSize = check.perfectSize,
 				duration = check.duration,
+				hidden = true,
+				pressFrom = duel.appearAt + MogRules.MIN_REACTION,
 			})
 		end
+		task.delay(lead, function()
+			if duel.over or not duel.pending or duel.checkId ~= id then
+				return
+			end
+			-- task.delay never fires early; the stamp is the needle's start, which is also what
+			-- the clients' `pressFrom` counts from.
+			duel.revealAt = duel.appearAt
+			for _, player in duel.players do
+				sendPvp(player, "zone", {
+					id = id,
+					zoneStart = check.zoneStart,
+					zoneSize = check.zoneSize,
+					perfectSize = check.perfectSize,
+				})
+			end
+		end)
 	end
 
 	-- Ends the duel: releases both players, frees the spot (after RETURN_AFTER), counts it on
-	-- both records and pays `winner`. Everyone but `quitter` (who gets a stop from def.stop)
-	-- gets a finish and is sent back to the gates later.
-	local function endDuel(duel: Duel, winner: Player, reason: string, quitter: Player?)
+	-- both records and pays `winner` (nil = a draw: nobody wins). `reason` is "ko", "forfeit"
+	-- (left), "afk" (idle forfeit) or "rounds" (the round cap). Everyone but `quitter` (who
+	-- gets a stop from def.stop) gets a finish and is sent back to the gates later.
+	local function endDuel(duel: Duel, winner: Player?, reason: string, quitter: Player?)
 		if duel.over then
 			return
 		end
@@ -523,14 +567,14 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			if not session then
 				continue
 			end
-			local won = player == winner
+			local won = winner ~= nil and player == winner
 			local rec = record(session)
 			rec.pvpPlayed += 1
 			local reward = nil
 			if won then
 				rec.pvpWins += 1
 				if pays then
-					reward = payReward(player, padOf(duel, i))
+					reward = payReward(player, padOf(duel, i), "pvp")
 				end
 			end
 			Tycoon.markDirty(session)
@@ -538,7 +582,11 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 				local opponent = duel.players[3 - i]
 				sendPvp(player, "finish", {
 					won = won,
-					reason = reason,
+					-- The finish card knows "ko" and "forfeit"; the flags say which kind.
+					reason = if reason == "afk" then "forfeit" elseif reason == "rounds" then "ko" else reason,
+					afk = if reason == "afk" then true else nil,
+					rounds = if reason == "rounds" then true else nil,
+					draw = if winner == nil then true else nil,
 					opponent = { userId = opponent.UserId, name = opponent.DisplayName },
 					score = duel.rules.sides[i].score,
 					wins = rec.pvpWins,
@@ -587,7 +635,8 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			})
 		end
 		if round.finished then
-			endDuel(duel, duel.players[round.winner :: number], "ko", nil)
+			local winner = if round.winner then duel.players[round.winner] else nil
+			endDuel(duel, winner, round.reason or "ko", nil)
 		else
 			scheduleDuelCheck(duel, check.delay)
 		end
@@ -603,6 +652,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			check = nil,
 			checkId = 0,
 			appearAt = 0,
+			revealAt = math.huge,
 			pending = false,
 			saved = {},
 			over = false,
@@ -668,15 +718,23 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		startDuel(a, b, index)
 	end
 
-	-- Settles a duel's check once the needle's lap is over: missing answers are timeouts.
+	-- Settles a duel's check once the needle's lap is over: missing answers are timeouts
+	-- (MogRules.duelRound books them as misses and counts them toward the idle forfeit).
 	local function duelTimeout(duel: Duel, t: number)
 		local check = duel.check
 		if not duel.pending or not check or t <= duel.appearAt + check.duration + TIMEOUT_SLACK then
 			return
 		end
 		for i, player in duel.players do
-			if duel.rules.sides[i].result == nil then
-				answer(duel, player, "miss", "timeout", nil)
+			local d = duel.rules.sides[i]
+			if d.result == nil then
+				sendPvp(player, "result", {
+					id = duel.checkId,
+					result = "miss",
+					reason = "timeout",
+					score = d.score,
+					combo = 0,
+				})
 			end
 		end
 		endRound(duel)
@@ -840,7 +898,9 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			if not check or not duel.pending then
 				return
 			end
-			local result, reason, travel = judgePress(check, duel.checkId, duel.appearAt, data)
+			-- No press counts before the zone was sent, nor sooner after it than a reaction takes.
+			local from = duel.revealAt + MogRules.MIN_REACTION
+			local result, reason, travel = judgePress(check, duel.checkId, duel.appearAt, data, from)
 			if result then
 				answer(duel, player, result, reason, travel)
 				if duel.pending and MogRules.duelAnswered(duel.rules) then
@@ -874,7 +934,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		if not session then
 			return { cash = 0, full = false, packCash = 0 }
 		end
-		local r = rewardFor(session)
+		local r = rewardFor(session, "rivals")
 		return { cash = r.cash, full = r.full, packCash = r.packCash }
 	end
 

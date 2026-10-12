@@ -7,19 +7,28 @@
 	  Speed box     bottom centre, where the dumbbell sits (the Hud's "Dumbbell" group is
 	                hidden while a run is active and shown again after): a BIG outlined
 	                "12.85K Speed" that counts up smoothly, a chunky bar under it toward the
-	                next stage's need ("Stage 3 · 968 / 1.88K", gold until the need is met,
+	                next stage's need ("Stage 3 · 968 / 1.1K", gold until the need is met,
 	                then mint), and small lines beside it ("Multiplier x1.25 (Stages)",
 	                "Treadmill Lv 3"); on narrow screens those lines sit above the number.
+	                The bar runs on past the need to the recommended Speed (snapshot
+	                `recommended`, 15% above the need): a dark tick marks the need, and from
+	                there the text reads "Stage 3 · 1.12K · recommended 1.27K", then
+	                "... · ready!".
 	  Stage line    top centre in the run-pill slot (y 92): a persistent "STAGE 4 · NAME";
-	                in a safe zone a gold "Step on the WIN plate: +$12.4K" (what that zone's
-	                WIN pad pays right now, or when it pays again); while Speed < need, a
-	                pulsing coral "Need more speed!" hint.
+	                in a safe zone what its WIN pad does right now: gold "WIN plate: +$12.4K
+	                · it ends this run" (and, for a first clear, "Skip it and this first win
+	                stays for later": true in Modes.Cardio, first clears are kept per plate),
+	                or white "NO REWARD on this WIN plate right now" with when it pays again
+	                and the same warning; while Speed < need, a pulsing coral "Need more
+	                speed!" hint.
 	  Title         a big bubbly "STAGE n" (plus the stage's name) under it whenever you
 	                enter a stage; also "STAGE 3 CLEAR!" (reaching a safe zone: nothing is
-	                paid until you step on its WIN plate), "YOU WIN!" (cashed out), "OOPS!" /
-	                "CAUGHT!" (back to stage 1), "TREADMILL LV 4!" banners.
+	                paid until you step on its WIN plate), "YOU WIN!" (cashed out; "RUN
+	                OVER" when the plate paid nothing), and for a fall "TOO SLOW!" / "OOPS!"
+	                / "CAUGHT!" with what happened (Speed below the stage's need, the custom
+	                speed cap, a plain fall, the chaser), "TREADMILL LV 4!" banners.
 	  WIN plates    the floating "Amount" line over every WIN pad (tag "CardioWinPad",
-	                World.CardioTrack) is written here: "+$12.4K" or "IN 12:30".
+	                World.CardioTrack) is written here: "+$12.4K" or "NO REWARD".
 	  Right column  centre right: Custom Speed (title, "Your Max Speed: N", a number box
 	                + green OK that fires CardioSpeedCap { cap } with 0 / empty = no cap,
 	                "Current speed: N"; a small "Custom Speed" chip by default on every
@@ -31,8 +40,8 @@
 	                HOME, confetti.
 
 	Snapshot fields read (modes.cardio): running, speed, walkSpeed, maxWalkSpeed?,
-	speedCap?, multiplier, treadmill, treadmillRate, nextCost, stage, wins?, cooldownEnds,
-	onTreadmill, stageCount, needs, names. Main routes Notify (kind "Mode", mode "cardio")
+	speedCap?, multiplier, treadmill, treadmillRate, nextCost, stage, wins?, firsts?,
+	cooldownEnds, onTreadmill, stageCount, needs, recommended?, names. Main routes Notify (kind "Mode", mode "cardio")
 	to CardioHud.onNotify, every State snapshot to CardioHud.onState and the "CardioSteps"
 	effect to CardioHud.onSteps.
 ]]
@@ -96,6 +105,7 @@ local boxBody: Frame
 local boxScale: UIScale
 local speedLabel: TextLabel
 local barFill: Frame
+local barTick: Frame
 local barText: TextLabel
 local side: Frame
 local sideLayout: UIListLayout
@@ -130,6 +140,7 @@ local upButton: TextButton
 local stageLine: Frame
 local stageLabel: TextLabel
 local winLabel: TextLabel
+local winNote: TextLabel
 local hintLabel: TextLabel
 -- Banner, finish
 local banner: Frame
@@ -155,6 +166,9 @@ local nearTreadmill = false
 -- "zone" Notify came (used until a snapshot brings `wins`).
 local zoneIn = 0
 local zoneCash: { [number]: number } = {}
+local zoneFirst: { [number]: boolean } = {}
+-- Speed recommended for a stage when the snapshot has none: this far above its need.
+local RECOMMEND = 1.15
 local padsAt = 0
 local quitArmed = false
 local bannerToken = 0
@@ -189,6 +203,13 @@ local function needOf(index: number): number?
 		end
 	end
 	return nil
+end
+
+-- The Speed to run stage `index` with comfortably (>= its need).
+local function recommendedOf(index: number, need: number): number
+	local list = snap.recommended
+	local v = if type(list) == "table" then list[index] else nil
+	return math.max(need, if type(v) == "number" then v else math.ceil(need * RECOMMEND))
 end
 
 local function nameOf(index: number): string?
@@ -240,10 +261,16 @@ local function stageTitle(delay: number?)
 	showBanner("STAGE " .. n, if name then string.upper(name) else nil, WHITE, 1.8, delay)
 end
 
+-- "No reward this time: plates pay again in 12:30" for a WIN plate that paid nothing.
+local function noRewardText(p: any): string
+	local left = math.max(0, math.ceil(num(p.cooldownEnds, 0) - os.time()))
+	return if left > 0 then "No reward this time: plates pay again in " .. Format.time(left) else "No reward this time"
+end
+
 local function rewardText(p: any): string?
 	local cash = num(p.cash, 0)
 	if cash <= 0 then
-		return if p.full == false then "Reward is cooling down" else nil
+		return if p.full == false then noRewardText(p) else nil
 	end
 	local text = "+" .. Format.money(cash)
 	if p.full == false then
@@ -268,29 +295,59 @@ local function cooldownLeft(): number
 	return math.max(0, math.ceil(num(snap.cooldownEnds, 0) - os.time()))
 end
 
--- The stage line's "Step on the WIN plate: +$X" while standing in a safe zone.
+-- Is safe zone n's WIN pad still a first clear (always paid, and kept if you run past)?
+local function winFirst(n: number): boolean
+	local firsts = snap.firsts
+	if type(firsts) == "table" and type(firsts[n]) == "boolean" then
+		return firsts[n]
+	end
+	return zoneFirst[n] == true
+end
+
+-- Does a WIN pad deeper than zone n pay right now?
+local function deeperPays(n: number): boolean
+	for m = n + 1, stageCount do
+		local cash = winCash(m)
+		if cash and cash > 0 then
+			return true
+		end
+	end
+	return false
+end
+
+-- The stage line while standing in a safe zone: what its WIN plate pays right now, that
+-- stepping on it ends the run, and what happens to the reward if you run past.
 local function paintWin()
 	local cash = if zoneIn > 0 then winCash(zoneIn) else nil
 	local show = active and cash ~= nil
+	local note: string? = nil
 	if show then
 		local left = cooldownLeft()
-		if (cash :: number) > 0 then
-			winLabel.Text = "Step on the WIN plate: +" .. Format.money(cash)
-		elseif left > 0 then
-			winLabel.Text = "WIN plate pays again in " .. Format.time(left)
+		local pays = (cash :: number) > 0
+		if pays then
+			winLabel.Text = "WIN plate: +" .. Format.money(cash) .. "  ·  it ends this run"
+			-- True in Modes.Cardio: first clears are kept per plate (profile.cardio.firsts).
+			if winFirst(zoneIn) and zoneIn < stageCount then
+				note = "Skip it and this first win stays for later"
+			end
 		else
-			winLabel.Text = "Step on the WIN plate!"
+			winLabel.Text = "NO REWARD on this WIN plate right now"
+			note = if left > 0
+				then "Pays again in " .. Format.time(left) .. ". Stepping on it ends this run!"
+				else "Stepping on it ends this run!"
 		end
-		winLabel.TextColor3 = if (cash :: number) > 0 or left <= 0 then GOLD else WHITE
+		winLabel.TextColor3 = if pays then GOLD else WHITE
+		winNote.Text = note or ""
 	end
+	winNote.Visible = show and note ~= nil
 	if show ~= winLabel.Visible then
 		winLabel.Visible = show
 		if show then
 			Kit.appear(winLabel, { from = 0.7 })
 		end
-		-- The need hint steps down a line while the win line is up.
-		hintLabel.Position = UDim2.fromOffset(0, if show then 52 else 30)
 	end
+	-- The need hint steps down while the win lines are up.
+	hintLabel.Position = UDim2.fromOffset(0, if not show then 30 elseif note then 72 else 52)
 end
 
 -- The floating amount over every WIN pad: what it pays this player right now.
@@ -302,8 +359,8 @@ local function paintPads()
 			local cash = winCash(math.floor(num(pad:GetAttribute("Stage"), 0)))
 			local text = "CASH OUT"
 			if active and cash then
-				local left = cooldownLeft()
-				text = if cash > 0 then "+" .. Format.money(cash) elseif left > 0 then "IN " .. Format.time(left) else "CASH OUT"
+				-- A pad that pays nothing right now says so (stepping on it still ends the run).
+				text = if cash > 0 then "+" .. Format.money(cash) elseif cooldownLeft() > 0 then "NO REWARD" else "CASH OUT"
 			end
 			if amount.Text ~= text then
 				amount.Text = text
@@ -338,6 +395,7 @@ local function paintNeed()
 		barText.Text = "MAX STAGE!"
 		barFill.Size = UDim2.fromScale(1, 1)
 		barFill.BackgroundColor3 = MINT
+		barTick.Visible = false
 		hintLabel.Visible = false
 		hintShown = false
 		return
@@ -348,15 +406,29 @@ local function paintNeed()
 	if not need then
 		barText.Text = "Stage " .. next
 		barFill.Size = UDim2.fromScale(0, 1)
+		barTick.Visible = false
 		hintLabel.Visible = false
 		hintShown = false
 		return
 	end
-	barText.Text = string.format("Stage %d  ·  %s / %s", next, speedText(shownSpeed), speedText(need))
-	local k = math.clamp(shownSpeed / math.max(need, 1), 0, 1)
-	barFill.Size = UDim2.fromScale(math.max(k, 0.04), 1)
+	-- The bar runs to the recommended Speed; a tick marks the need on the way.
+	local best = recommendedOf(next, need)
+	local full = math.max(best, 1)
 	local ready = targetSpeed >= need
+	barText.Text = if not ready
+		then string.format("Stage %d  ·  %s / %s", next, speedText(shownSpeed), speedText(need))
+		elseif targetSpeed < best then string.format(
+			"Stage %d  ·  %s  ·  recommended %s",
+			next,
+			speedText(shownSpeed),
+			speedText(best)
+		)
+		else string.format("Stage %d  ·  %s  ·  ready!", next, speedText(shownSpeed))
+	local k = math.clamp(shownSpeed / full, 0, 1)
+	barFill.Size = UDim2.fromScale(math.max(k, 0.04), 1)
 	barFill.BackgroundColor3 = if ready then MINT else GOLD
+	barTick.Visible = best > need
+	barTick.Position = UDim2.fromScale(need / full, 0)
 	if (not ready) ~= hintShown then
 		hintShown = not ready
 		hintLabel.Visible = hintShown
@@ -618,6 +690,7 @@ local function show()
 	nearPad, nearTreadmill = false, false
 	zoneIn = 0
 	table.clear(zoneCash)
+	table.clear(zoneFirst)
 	paintWin()
 	paintPads()
 	treadCard.Visible = false
@@ -719,10 +792,17 @@ function CardioHud.onNotify(p: any)
 		stage = n
 		local cash = num(p.cash, 0)
 		zoneCash[n] = cash
-		local sub = if cash > 0
-			then "Step on the WIN plate: +" .. Format.money(cash)
-			elseif n >= stageCount then "Step on the WIN plate!"
-			else "Keep running for a bigger win!"
+		zoneFirst[n] = p.first == true
+		-- What this zone's WIN plate does right now; never a promise the plates can't keep.
+		local sub
+		if cash > 0 then
+			sub = "WIN plate: +" .. Format.money(cash) .. " (it ends this run)"
+		elseif deeperPays(n) then
+			sub = "No reward on this plate now. A deeper one pays!"
+		else
+			local left = math.max(0, math.ceil(num(p.cooldownEnds, 0) - os.time()))
+			sub = if left > 0 then "No reward right now: plates pay again in " .. Format.time(left) else "No reward on this plate right now"
+		end
 		showBanner("STAGE " .. n .. " CLEAR!", sub, MINT, 2.4)
 		stageTitle(2.8)
 		Sounds.play("Step")
@@ -733,9 +813,15 @@ function CardioHud.onNotify(p: any)
 		stage = 0
 		zoneIn = 0
 		table.clear(zoneCash)
+		table.clear(zoneFirst)
 		paintWin()
 		if p.final == true then
 			showFinish(p)
+		elseif num(p.cash, 0) <= 0 then
+			-- The plate paid nothing (the cooldown) and still ended the run: say so, no party.
+			showBanner("RUN OVER", noRewardText(p), WHITE, 2.4)
+			stageTitle(2.8)
+			Sounds.play("Step")
 		else
 			showBanner("YOU WIN!", rewardText(p), GOLD, 2.4)
 			stageTitle(2.8)
@@ -750,9 +836,29 @@ function CardioHud.onNotify(p: any)
 		stage = 0
 		zoneIn = 0
 		table.clear(zoneCash)
+		table.clear(zoneFirst)
 		paintWin()
 		local caught = p.reason == "caught"
-		showBanner(if caught then "CAUGHT!" else "OOPS!", "Back to Stage 1. Build more Speed!", CORAL, 1.8, if caught then 1.2 else nil)
+		-- What happened, from the server: the run was slower than the stage's need gives (not
+		-- enough Speed, or the player's own speed cap), or it was fast enough and just fell /
+		-- got caught.
+		local from = math.floor(num(p.from, 1))
+		local need = num(p.need, needOf(from) or 0)
+		local title, sub
+		if p.capped == true then
+			title = if caught then "CAUGHT!" else "TOO SLOW!"
+			sub = "Your Custom Speed is too low for Stage " .. from .. ". Raise it!"
+		elseif p.slow == true then
+			title = if caught then "CAUGHT!" else "TOO SLOW!"
+			sub = "Stage " .. from .. " needs " .. speedText(need) .. " Speed. Back to Stage 1."
+		elseif caught then
+			title = "CAUGHT!"
+			sub = "Keep running, don't stop! Back to Stage 1."
+		else
+			title = "OOPS!"
+			sub = "You fell in Stage " .. from .. ". Back to Stage 1."
+		end
+		showBanner(title, sub, CORAL, 2.2, if caught then 1.2 else nil)
 		Sounds.play("Error")
 	elseif event == "refused" then
 		-- The server already toasted why; just shake the button.
@@ -901,6 +1007,18 @@ local function buildBox()
 	})
 	Kit.round(barFill)
 	Kit.gradient(barFill, WHITE, Color3.new(0.78, 0.78, 0.84), 90)
+	-- The need: the bar itself runs on to the recommended Speed (paintNeed places the tick).
+	barTick = Kit.new("Frame", {
+		Name = "NeedTick",
+		BackgroundColor3 = C.Ink,
+		BorderSizePixel = 0,
+		Size = UDim2.new(0, 3, 1, 0),
+		Position = UDim2.fromScale(1 / RECOMMEND, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Visible = false,
+		ZIndex = 23,
+		Parent = inner,
+	})
 	barText = Kit.hudText(track, {
 		Name = "Need",
 		Text = "",
@@ -1289,6 +1407,16 @@ local function buildStageLine()
 		Visible = false,
 		ZIndex = 22,
 		StrokeThickness = 3,
+	})
+	-- Under the win line: what skipping the plate does, or when it pays again.
+	winNote = Kit.hudText(stageLine, {
+		Name = "WinNote",
+		Text = "",
+		TextSize = 15,
+		Size = UDim2.new(1, 0, 0, 20),
+		Position = UDim2.fromOffset(0, 51),
+		Visible = false,
+		ZIndex = 22,
 	})
 	hintLabel = Kit.hudText(stageLine, {
 		Name = "Hint",

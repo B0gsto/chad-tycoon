@@ -14,12 +14,17 @@
 	                       (the hitbox lets a body land partly over the edge)
 	Stage n's longest (flat) gap is <= maxGap(walkSpeed(need_n)) and > reach(walkSpeed(need_n-1)),
 	so the previous stage's Speed can never clear it, even with a perfect edge jump.
+	Stage 3 is the first with a chaser, so its gaps are shorter than the curve allows: at
+	exactly its need the longest jump keeps 2.9 studs of reach in reserve (2.4 with a 17), 3.5
+	at the recommended Speed.
+	The HUD also shows recommended(n) = RECOMMEND x need (15% more Speed) as the Speed to run a
+	stage with comfortably.
 
 	Stage table (gaps in studs, walk at exactly `need` Speed, no Sneakers):
 	  stage  need     walk   maxGap  prev reach  longest gap
 	    1        0    16.0     7.9        -          7
 	    2      150    25.9    13.2      10.2        12
-	    3    1,100    35.8    18.6      15.5        17
+	    3    1,100    35.8    18.6      15.5        16.5
 	    4    3,500    45.8    24.0      20.9        22.5
 	    5    8,000    55.7    29.4      26.3        28
 	    6   15,000    65.5    34.7      31.7        33
@@ -53,6 +58,8 @@ CardioRules.GRAVITY = 196.2
 CardioRules.JUMP_HEIGHT = 7.2
 -- Studs of reach kept in reserve on every designed jump (phones, late jumps).
 CardioRules.SAFETY = 0.8
+-- Speed the HUD recommends for a stage, as a multiple of its need.
+CardioRules.RECOMMEND = 1.15
 -- Studs past the pure take-off-to-landing travel a body can still clear (half the hitbox at
 -- each end). Used only to prove a gap is NOT clearable.
 CardioRules.REACH_SLACK = 1.5
@@ -140,7 +147,7 @@ CardioRules.STAGE_COUNT = 10
 CardioRules.STAGES = {
 	stage("Home Row",         "Mint",      0,      7,  25.2, 25.2, 4, 0,   nil,          nil),
 	stage("Shift Street",     "Sunny",     150,    12, 22.4, 25.2, 4, 1,   nil,          nil),
-	stage("Tab Tunnel",       "Teal",      1100,   17, 22.4, 22.4, 4, 2,   nil,          nil),
+	stage("Tab Tunnel",       "Teal",      1100,   16.5, 22.4, 22.4, 4, 2,   nil,          nil),
 	stage("Caps Lock Canyon", "Orange",    3500,   22.5, 16.8, 22.4, 3, 2.5, { 2.2, 3.2 }, nil),
 	stage("Enter Expressway", "Pink",      8000,   28, 16.8, 22.4, 3, 3,   { 2.0, 3.0 }, nil),
 	stage("Backspace Bridge", "Blue",      15000,  33, 14, 16.8, 3, 3.5, { 1.9, 2.9 }, { travel = 8, period = 5 }),
@@ -241,7 +248,46 @@ function CardioRules.stageFor(speed: number): number
 	return best
 end
 
--- Speed per counted step: grows with every first clear and every treadmill level.
+-- Speed the HUD recommends for stage n: RECOMMEND x its need, a whole number, and never past
+-- SPEED_AT_CAP (more Speed than that runs no faster, so the last stage recommends its need).
+function CardioRules.recommended(n: number): number
+	local s = CardioRules.STAGES[n]
+	if not s then
+		return 0
+	end
+	return math.max(s.need, math.min(math.ceil(s.need * CardioRules.RECOMMEND), CardioRules.SPEED_AT_CAP))
+end
+
+-- First clears are kept per WIN plate in a bit set (profile.cardio.firsts): bit n - 1 is set
+-- once plate n's first-clear pay was taken, so running past a plate never loses its first
+-- clear. Saves from before the set (nil) had one counter: every plate up to bestStage counts
+-- as taken, as it did then.
+local ALL_FIRSTS = 2 ^ CardioRules.STAGE_COUNT - 1
+
+function CardioRules.firstsOf(firsts: number?, bestStage: number): number
+	if type(firsts) == "number" and firsts == firsts and firsts >= 0 then
+		return bit32.band(math.floor(math.min(firsts, ALL_FIRSTS)), ALL_FIRSTS)
+	end
+	return 2 ^ math.clamp(math.floor(bestStage), 0, CardioRules.STAGE_COUNT) - 1
+end
+
+-- Is plate n's first-clear pay still there?
+function CardioRules.isFirst(firsts: number, n: number): boolean
+	if n < 1 or n > CardioRules.STAGE_COUNT then
+		return false
+	end
+	return not bit32.btest(firsts, bit32.lshift(1, n - 1))
+end
+
+-- The set after plate n's first-clear pay was taken.
+function CardioRules.claimFirst(firsts: number, n: number): number
+	if n < 1 or n > CardioRules.STAGE_COUNT then
+		return firsts
+	end
+	return bit32.bor(firsts, bit32.lshift(1, n - 1))
+end
+
+-- Speed per counted step: grows with the deepest plate claimed and every treadmill level.
 function CardioRules.stepMultiplier(bestStage: number, treadmillLevel: number): number
 	local b = math.clamp(math.floor(bestStage), 0, CardioRules.STAGE_COUNT)
 	local l = math.clamp(math.floor(treadmillLevel), 0, CardioRules.TREADMILL_MAX)

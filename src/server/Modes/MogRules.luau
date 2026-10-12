@@ -9,15 +9,22 @@
 	the Mog Test (the mode reward); the run goes on for a high score.
 
 	Difficulty for the n-th check of a run (n >= 1):
-	  window(n) = max(0.075, 0.30 * 0.93^(n - 1))   seconds of needle time inside the zone
-	  speed(n)  = min(540, 220 + 12 * (n - 1))       deg/s
-	  zoneSize  = max(16, window * speed)            degrees
-	  perfect   = max(6, 0.25 * zoneSize)            degrees
+	  speed(n)  = min(540, 220 + 12 * (n - 1))             deg/s
+	  zoneSize  = max(40, 0.37 * 0.945^(n - 1) * speed)    degrees; never grows (the floor holds from n = 30)
+	  window(n) = zoneSize / speed                         seconds of needle time inside the zone (370 ms .. 74 ms)
+	  perfect   = max(0.25 * zoneSize, 0.04 * speed)       degrees: at least 40 ms of needle travel (from n = 16)
 	  dir       = +1 for n <= 7, then random +-1
 	  zoneStart = random in [120, 330 - zoneSize] (n <= 11), [70, 330 - zoneSize] after
 	  lead      = max(0.6, 1.4 - 0.03 * (n - 1))     seconds between telling the client and the needle start
 	  delay     = random in [0.5, 1.4]               seconds before the next check after a result
+	A `hidden` check (PvP) keeps its zone secret until the needle starts, so the zone starts no
+	sooner than REVEAL_TIME seconds of needle travel (time to see it): zoneStart from
+	min(330 - zoneSize, max(the floor above, REVEAL_TIME * speed)).
 	All randomness comes from the `rand()` function passed in (values in [0, 1)).
+
+	Pass rate of the first PASS_RIVALS rivals for a player whose presses miss the zone centre by
+	a Gaussian timing error (4,000 runs each): 50 ms 100%, 70 ms 94%, 100 ms 57%, 140 ms 17%
+	(before this curve: 94%, 62%, 18%, 3%).
 ]]
 
 local MogRules = {}
@@ -32,15 +39,16 @@ MogRules.PERFECT_DAMAGE = 2
 -- Rival tiers when no tier name list is given (Theme.Tiers has 25).
 MogRules.DEFAULT_TIERS = 25
 
-MogRules.WINDOW_START = 0.30
-MogRules.WINDOW_DECAY = 0.93
-MogRules.WINDOW_MIN = 0.075
+MogRules.WINDOW_START = 0.37
+MogRules.WINDOW_DECAY = 0.945
 MogRules.SPEED_START = 220
 MogRules.SPEED_STEP = 12
 MogRules.SPEED_MAX = 540
-MogRules.ZONE_MIN = 16
-MogRules.PERFECT_MIN = 6
+-- Smallest zone, degrees (74 ms at SPEED_MAX): the zone shrinks to it and stays there.
+MogRules.ZONE_MIN = 40
+-- The perfect slice: a share of the zone, never less than this many seconds of needle travel.
 MogRules.PERFECT_SHARE = 0.25
+MogRules.PERFECT_MIN_TIME = 0.04
 MogRules.FIXED_DIR_CHECKS = 7
 MogRules.EASY_ZONE_CHECKS = 11
 MogRules.ZONE_FROM_EASY = 120
@@ -52,6 +60,15 @@ MogRules.DELAY_MAX = 1.4
 MogRules.PVP_HP = 8
 MogRules.PVP_MISS_DAMAGE = 1
 MogRules.PVP_FIRST_LEAD = 0.6
+-- PvP checks are hidden: the zone is sent when the needle starts and begins no sooner than
+-- REVEAL_TIME seconds later. A press sooner than MIN_REACTION seconds after the zone was sent
+-- is not a human reaction and is ignored.
+MogRules.REVEAL_TIME = 0.55
+MogRules.MIN_REACTION = 0.15
+-- PvP: a side that lets this many checks in a row time out forfeits; a duel that is still
+-- undecided after PVP_MAX_ROUNDS rounds goes to the higher HP, then the higher score.
+MogRules.PVP_IDLE_FORFEIT = 3
+MogRules.PVP_MAX_ROUNDS = 40
 
 export type Check = {
 	n: number,
@@ -84,24 +101,64 @@ export type Run = {
 
 export type Outcome = { moggedRival: Rival?, rival: Rival?, passed: boolean?, finished: boolean? }
 
--- One side of a PvP duel; `result` is this round's answer (nil = not answered yet).
-export type Duelist = { hp: number, maxHp: number, score: number, combo: number, bestCombo: number, result: string? }
+-- One side of a PvP duel; `result` is this round's answer (nil = not answered yet), `idle`
+-- the checks in a row this side let time out.
+export type Duelist = {
+	hp: number,
+	maxHp: number,
+	score: number,
+	combo: number,
+	bestCombo: number,
+	result: string?,
+	idle: number,
+}
 
--- A PvP duel: sides[1] and sides[2]; winner = 1 | 2 once finished.
-export type Duel = { n: number, sides: { Duelist }, finished: boolean, winner: number?, suddenDeath: boolean }
+-- A PvP duel: sides[1] and sides[2]; `rounds` played; once finished, winner = 1 | 2, or nil
+-- for a draw (both sides idle, or level on HP and score at the round cap).
+export type Duel = {
+	n: number,
+	rounds: number,
+	sides: { Duelist },
+	finished: boolean,
+	winner: number?,
+	suddenDeath: boolean,
+}
 
--- What a round did: each side's result (a missing answer counts as "miss"), the winner when
--- the duel is over, suddenDeath when a KO tie sent both back to 1 HP.
-export type Round = { results: { string }, finished: boolean, winner: number?, suddenDeath: boolean }
+-- What a round did: each side's result (a missing answer counts as "miss"), suddenDeath when
+-- a KO tie sent both back to 1 HP, and when the duel is over the winner (nil = draw) and why:
+-- "ko", "afk" (PVP_IDLE_FORFEIT timeouts in a row) or "rounds" (PVP_MAX_ROUNDS played).
+export type Round = {
+	results: { string },
+	finished: boolean,
+	winner: number?,
+	suddenDeath: boolean,
+	reason: string?,
+}
+
+-- The saved Mog record's fields the reward rules read (profile.modes.mog).
+export type Record = { clears: number, rivals: number }
 
 export type BestEntry = { userId: number, name: string, score: number, rivals: number }
 
-function MogRules.window(n: number): number
-	return math.max(MogRules.WINDOW_MIN, MogRules.WINDOW_START * MogRules.WINDOW_DECAY ^ (n - 1))
-end
-
 function MogRules.speed(n: number): number
 	return math.min(MogRules.SPEED_MAX, MogRules.SPEED_START + MogRules.SPEED_STEP * (n - 1))
+end
+
+-- Degrees of zone: the decaying window at the needle's speed, floored at ZONE_MIN. The decay
+-- outruns the speed-up, so the zone never grows from one check to the next.
+function MogRules.zoneSize(n: number): number
+	return math.max(MogRules.ZONE_MIN, MogRules.WINDOW_START * MogRules.WINDOW_DECAY ^ (n - 1) * MogRules.speed(n))
+end
+
+-- Seconds the needle spends inside the zone.
+function MogRules.window(n: number): number
+	return MogRules.zoneSize(n) / MogRules.speed(n)
+end
+
+-- Degrees of the zone's perfect part (at least PERFECT_MIN_TIME of needle travel).
+function MogRules.perfectSize(n: number): number
+	local zoneSize = MogRules.zoneSize(n)
+	return math.min(zoneSize, math.max(MogRules.PERFECT_SHARE * zoneSize, MogRules.PERFECT_MIN_TIME * MogRules.speed(n)))
 end
 
 function MogRules.lead(n: number): number
@@ -109,17 +166,21 @@ function MogRules.lead(n: number): number
 end
 
 -- The n-th check of a run. Calls rand() for the direction (n > FIXED_DIR_CHECKS only), the
--- zone start and the delay, in that order.
-function MogRules.check(n: number, rand: () -> number): Check
+-- zone start and the delay, in that order. `hidden` (PvP): the zone is only shown when the
+-- needle starts, so it starts at least REVEAL_TIME seconds of travel in.
+function MogRules.check(n: number, rand: () -> number, hidden: boolean?): Check
 	local window = MogRules.window(n)
 	local speed = MogRules.speed(n)
-	local zoneSize = math.max(MogRules.ZONE_MIN, window * speed)
-	local perfectSize = math.max(MogRules.PERFECT_MIN, MogRules.PERFECT_SHARE * zoneSize)
+	local zoneSize = MogRules.zoneSize(n)
+	local perfectSize = MogRules.perfectSize(n)
 	local dir = 1
 	if n > MogRules.FIXED_DIR_CHECKS then
 		dir = if rand() < 0.5 then -1 else 1
 	end
 	local from = if n <= MogRules.EASY_ZONE_CHECKS then MogRules.ZONE_FROM_EASY else MogRules.ZONE_FROM_HARD
+	if hidden then
+		from = math.min(MogRules.ZONE_UNTIL - zoneSize, math.max(from, MogRules.REVEAL_TIME * speed))
+	end
 	local to = math.max(from, MogRules.ZONE_UNTIL - zoneSize)
 	local zoneStart = from + (to - from) * rand()
 	local delay = MogRules.DELAY_MIN + (MogRules.DELAY_MAX - MogRules.DELAY_MIN) * rand()
@@ -242,23 +303,41 @@ function MogRules.recordBest(list: { BestEntry }, userId: number, name: string, 
 	return at
 end
 
+-- Is a PvE pass still this record's first clear (always paid)? Only a pass uses it up: a PvP
+-- win is paid on the cooldown alone. Saves whose `clears` was spent by a PvP win (the two
+-- used to share it) get it back: they never mogged PASS_RIVALS rivals in one run.
+function MogRules.firstPass(rec: Record): boolean
+	return rec.clears == 0 or rec.rivals < MogRules.PASS_RIVALS
+end
+
+-- Books a paid result on the record: a PvE pass ("rivals") counts as a clear and records its
+-- PASS_RIVALS rivals at once; a PvP win ("pvp") leaves both alone.
+function MogRules.countClear(rec: Record, vs: string)
+	if vs == "rivals" then
+		rec.clears += 1
+		rec.rivals = math.max(rec.rivals, MogRules.PASS_RIVALS)
+	end
+end
+
 local function duelist(): Duelist
-	return { hp = MogRules.PVP_HP, maxHp = MogRules.PVP_HP, score = 0, combo = 0, bestCombo = 0, result = nil }
+	return { hp = MogRules.PVP_HP, maxHp = MogRules.PVP_HP, score = 0, combo = 0, bestCombo = 0, result = nil, idle = 0 }
 end
 
 function MogRules.newDuel(): Duel
-	return { n = 0, sides = { duelist(), duelist() }, finished = false, winner = nil, suddenDeath = false }
+	return { n = 0, rounds = 0, sides = { duelist(), duelist() }, finished = false, winner = nil, suddenDeath = false }
 end
 
 -- Records side `side`'s answer ("perfect" | "hit" | "miss") to this round's check and
--- updates its score and combo. Returns false (and changes nothing) when that side already
--- answered or the duel is over. HP only changes in duelRound.
+-- updates its score and combo; a press of any kind ends that side's idle streak. Returns
+-- false (and changes nothing) when that side already answered or the duel is over. HP only
+-- changes in duelRound.
 function MogRules.duelPress(duel: Duel, side: number, result: string): boolean
 	local d = duel.sides[side]
 	if duel.finished or not d or d.result ~= nil then
 		return false
 	end
 	d.result = result
+	d.idle = 0
 	if result == "perfect" or result == "hit" then
 		d.score += if result == "perfect" then MogRules.PERFECT_SCORE else MogRules.HIT_SCORE
 		d.combo += 1
@@ -274,17 +353,33 @@ function MogRules.duelAnswered(duel: Duel): boolean
 	return duel.sides[1].result ~= nil and duel.sides[2].result ~= nil
 end
 
--- Ends the round: a side that has not answered misses (duelPress), then both sides' damage
--- lands at once and the duel is decided (or goes to sudden death). Clears the answers for
--- the next round.
+-- Ends the duel inside duelRound: `winner` nil is a draw.
+local function decide(duel: Duel, round: Round, winner: number?, reason: string)
+	duel.winner = winner
+	duel.finished = true
+	round.finished = true
+	round.winner = winner
+	round.reason = reason
+	round.suddenDeath = false
+end
+
+-- Ends the round: a side that has not answered misses by timeout (one more idle check), then
+-- both sides' damage lands at once and the duel is decided (or goes to sudden death). A KO
+-- comes first; then a side idle for PVP_IDLE_FORFEIT checks in a row forfeits (both idle: a
+-- draw), so two players who walked away cannot hold a duel spot; then the round cap. Clears
+-- the answers for the next round.
 function MogRules.duelRound(duel: Duel): Round
-	local round: Round = { results = {}, finished = false, winner = nil, suddenDeath = false }
+	local round: Round = { results = {}, finished = false, winner = nil, suddenDeath = false, reason = nil }
 	if duel.finished then
 		return round
 	end
+	duel.rounds += 1
 	for side = 1, 2 do
-		if duel.sides[side].result == nil then
+		local d = duel.sides[side]
+		if d.result == nil then
+			local idle = d.idle + 1
 			MogRules.duelPress(duel, side, "miss")
+			d.idle = idle
 		end
 	end
 	local damage = { 0, 0 }
@@ -310,11 +405,22 @@ function MogRules.duelRound(duel: Duel): Round
 			duel.suddenDeath = true
 			round.suddenDeath = true
 		else
-			duel.winner = if a.hp > b.hp then 1 else 2
-			duel.finished = true
-			round.finished = true
-			round.winner = duel.winner
+			decide(duel, round, if a.hp > b.hp then 1 else 2, "ko")
 			a.hp, b.hp = math.max(0, a.hp), math.max(0, b.hp)
+		end
+	end
+	if not duel.finished then
+		local idleA, idleB = a.idle >= MogRules.PVP_IDLE_FORFEIT, b.idle >= MogRules.PVP_IDLE_FORFEIT
+		if idleA or idleB then
+			decide(duel, round, if idleA and idleB then nil elseif idleB then 1 else 2, "afk")
+		elseif duel.rounds >= MogRules.PVP_MAX_ROUNDS then
+			local winner: number? = nil
+			if a.hp ~= b.hp then
+				winner = if a.hp > b.hp then 1 else 2
+			elseif a.score ~= b.score then
+				winner = if a.score > b.score then 1 else 2
+			end
+			decide(duel, round, winner, "rounds")
 		end
 	end
 	return round

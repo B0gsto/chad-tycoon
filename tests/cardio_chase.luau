@@ -89,6 +89,21 @@ return function(h: { [string]: any })
 		end
 	end)
 
+	test("Cardio chase: the first chaser (stage 3) is the gentlest", function()
+		local first = Chase.TUNING[3]
+		local walk = Rules.walkSpeed(Rules.STAGES[3].need)
+		check(Chase.FIRST_SLACK >= 2 * Chase.MIN_SLACK, "twice the slack of the later chases")
+		eq(simulate(3, walk, Chase.FIRST_SLACK), "escaped", `stage 3 with {Chase.FIRST_SLACK}s lost`)
+		eq(simulate(3, walk, Chase.FIRST_SLACK + 1), "caught", "but standing around still gets you caught")
+		check(first.speed <= 0.86 * walk, `stage 3's Chad runs at 0.85 of the walk speed ({first.speed} vs {walk})`)
+		for _, n in { 6, 9 } do
+			local tune = Chase.TUNING[n]
+			check(first.headStart > tune.headStart, `a longer head start than stage {n}`)
+			local share = tune.speed / Rules.walkSpeed(Rules.STAGES[n].need)
+			check(first.speed / walk < share, `a slower Chad for its stage than stage {n}`)
+		end
+	end)
+
 	test("Cardio chase: a runner at the previous stage's need is caught", function()
 		for _, n in Chase.STAGES do
 			local walk = Rules.walkSpeed(Rules.STAGES[n - 1].need)

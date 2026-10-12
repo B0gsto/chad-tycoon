@@ -26,10 +26,12 @@
 	  n - 1 reached, so a teleport deeper or a late position report reaches nothing). Cash is paid only on a WIN pad (CardioLayout zone.winPad, one per safe zone
 	  1..10; zone 10's is the finish): the server sees a living runner's feet on the pad of a
 	  zone reached this run (CardioLayout.onWinPad) and pays Economy.modeReward x
-	  stageBonus(n) for that zone: a first clear when n > bestStage (always paid; raises
-	  bestStage and with it the step multiplier), else only once per
+	  stageBonus(n) for that zone: a first clear the first time that pad is claimed (always
+	  paid; kept per pad in profile.cardio.firsts, CardioRules.firstsOf, so a pad that was run
+	  past keeps its first clear for later), else only once per
 	  Economy.MODE_REWARD_COOLDOWN (modes.cardio.lastRewardAt, shared by all ten pads; a pad
-	  inside the cooldown pays $0). The claim ends the run: back to the lobby with nothing
+	  inside the cooldown pays $0). A claim deeper than bestStage raises it and with it the
+	  step multiplier. The claim ends the run: back to the lobby with nothing
 	  reached, so one run pays at most once and a pad cannot be stepped on again without
 	  running its stages again. Walking past a pad keeps the run going toward a bigger one.
 	- Leaving the runway any other way (Home, GoModes...) ends the run ("left").
@@ -44,15 +46,20 @@
 	  { event = "win", stage, name, final, first, cash, full, cooldownEnds, bestStage, multiplier }
 	                                  claimed `stage`'s WIN pad (final = stage 10): paid, back
 	                                  in the lobby
-	  { event = "fall", stage = 0, from, reason }  back in the lobby from stage `from`;
-	                                  reason "fall" | "caught"
+	  { event = "fall", stage = 0, from, reason, speed, need, slow, capped }
+	                                  back in the lobby from stage `from`; reason "fall" |
+	                                  "caught"; speed = whole Speed, need = that stage's need,
+	                                  slow = the run's WalkSpeed was below what the need gives,
+	                                  capped = ...only because of the player's own speed cap
 	  { event = "upgrade", level, cost, rate, multiplier, nextCost? }
 	  { event = "refused", reason, cost? }        upgrade refused: "run" | "far" | "max" | "cash"
 	  { event = "stop", reason }
 	Snapshot: running, speed, walkSpeed (effective base, capped), maxWalkSpeed (uncapped),
 	speedCap (nil when none), multiplier, bestStage, treadmill, treadmillMax, treadmillRate,
 	nextCost, stage, reached (safe zones reached this run), wins (in a run: wins[n] = cash safe
-	zone n's WIN pad pays right now), onTreadmill, cooldownEnds, stageCount, needs, names.
+	zone n's WIN pad pays right now), firsts (in a run: firsts[n] = pad n's first clear is
+	still there), onTreadmill, cooldownEnds, stageCount, needs, recommended (Speed the HUD
+	recommends per stage, CardioRules.recommended), names.
 	Effects: "CardioSteps" { gained, speed, walkSpeed, treadmill, multiplier, rate } (at most ~4
 	per second while gaining; speed and gained are whole Speed, treadmill is true on a belt,
 	multiplier is the step multiplier, rate the current treadmillRate), "ModeSplash" { pos } on a fall, "ModeFinish" { pos, newBest } on a first clear,
@@ -97,9 +104,11 @@ local BOUNDS = LAYOUT.bounds
 local FORWARD = Vector3.new(1, 0, 0)
 
 local NEEDS = {}
+local RECOMMENDED = {}
 local NAMES = {}
 for n, s in CardioRules.STAGES do
 	NEEDS[n] = s.need
+	RECOMMENDED[n] = CardioRules.recommended(n)
 	NAMES[n] = s.name
 end
 
@@ -148,8 +157,18 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		return workspace:GetServerTimeNow()
 	end
 
-	local function record(session: any): { speed: number, bestStage: number, treadmill: number, clears: number, speedCap: number }
+	local function record(
+		session: any
+	): { speed: number, bestStage: number, treadmill: number, clears: number, speedCap: number, firsts: number? }
 		return session.profile.cardio
+	end
+
+	-- The WIN pads whose first clear was taken (a bit set; filled in on saves without it).
+	local function firstsOf(session: any): number
+		local rec = record(session)
+		local firsts = CardioRules.firstsOf(rec.firsts, rec.bestStage)
+		rec.firsts = firsts
+		return firsts
 	end
 
 	-- The player's own max WalkSpeed, or nil when none.
@@ -238,9 +257,9 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 	end
 
 	-- What safe zone `stage`'s WIN pad pays right now, and whether it would be a first clear
-	-- (it beats bestStage: always paid; anything else pays once per cooldown).
+	-- (this pad was never claimed: always paid; anything else pays once per cooldown).
 	local function winReward(session: any, stage: number): (Economy.ModeReward, boolean)
-		local first = stage > record(session).bestStage
+		local first = CardioRules.isFirst(firstsOf(session), stage)
 		return rewardFor(session, stage, first), first
 	end
 
@@ -356,11 +375,13 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 	local function win(player: Player, session: any, state: State, root: BasePart, stage: number)
 		local rec = record(session)
 		local shared = cooldown(session)
-		local first = stage > rec.bestStage
+		local firsts = firstsOf(session)
+		local first = CardioRules.isFirst(firsts, stage)
 		local reward = GameModes.hooks.reward(session, ID, rewardFor(session, stage, first))
 		rec.clears += 1
 		shared.clears = rec.clears
-		if first then
+		rec.firsts = CardioRules.claimFirst(firsts, stage)
+		if stage > rec.bestStage then
 			rec.bestStage = stage
 			shared.best = stage
 		end
@@ -451,8 +472,20 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		end
 		if failed then
 			local from = state.stage + 1
+			-- Why, for the HUD: was the run slower than the stage's need asks for?
+			local speed = record(session).speed
+			local need = NEEDS[from] or 0
+			local slow = state.walk < CardioRules.walkSpeed(need) - WALK_STEP
 			restart(player, state, failed)
-			GameModes.notify(player, "fall", ID, { stage = 0, from = from, reason = failed })
+			GameModes.notify(player, "fall", ID, {
+				stage = 0,
+				from = from,
+				reason = failed,
+				speed = math.floor(speed),
+				need = need,
+				slow = slow,
+				capped = slow and speed >= need,
+			})
 			GameModes.refresh(player)
 			return
 		end
@@ -540,14 +573,18 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		local rec = session and record(session)
 		local speed = if rec then rec.speed else 0
 		local level = if rec then rec.treadmill else 0
-		-- In a run: what each safe zone's WIN pad pays right now (the pads' floating labels).
+		-- In a run: what each safe zone's WIN pad pays right now (the pads' floating labels)
+		-- and whether its first clear is still there.
 		local wins: { number }? = nil
+		local firsts: { boolean }? = nil
 		if session and state then
-			local list = {}
+			local list, firstList = {}, {}
 			for n = 1, CardioRules.STAGE_COUNT do
-				list[n] = (winReward(session, n)).cash
+				local reward, first = winReward(session, n)
+				list[n] = reward.cash
+				firstList[n] = first
 			end
-			wins = list
+			wins, firsts = list, firstList
 		end
 		return {
 			running = state ~= nil,
@@ -564,10 +601,12 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			stage = if state then state.stage else 0,
 			reached = if state then state.reached else 0,
 			wins = wins,
+			firsts = firsts,
 			onTreadmill = if state then state.onTreadmill else false,
 			cooldownEnds = if session then cooldownEnds(session) else 0,
 			stageCount = CardioRules.STAGE_COUNT,
 			needs = NEEDS,
+			recommended = RECOMMENDED,
 			names = NAMES,
 		}
 	end
