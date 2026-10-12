@@ -95,6 +95,7 @@ local buildVault = Machines.buildVault
 local buildUnlocker = Machines.buildUnlocker
 local buildGymDecor = Decor.buildGymDecor
 local buildPad = Pads.buildPad
+local setPadClaimed = Pads.setClaimed
 
 local PLOT_COUNT = Common.PLOT_COUNT
 
@@ -131,6 +132,9 @@ local BOARD_BOTTOM = 7.2
 -- plinth and the gift box in front of them.
 local STATION_SIGN_BOTTOM = 4
 
+-- The owner card's text on a plot nobody owns.
+local FREE_PLOT = "FREE PLOT"
+
 -- A label Server.Tycoon still writes to that its card no longer shows.
 local function hiddenLabel(parent: Instance): TextLabel
 	return text(parent, { Text = "", Visible = false })
@@ -163,6 +167,7 @@ local function buildPlot(index: number): Plot
 	Pen.build(B)
 	local slots, championParts = buildShelves(B)
 	local ownerLabel, ownerImage = buildEntrance(B, index)
+	ownerLabel.Text = FREE_PLOT
 
 	local pads: { Pad } = {}
 	local padByName: { [string]: Pad } = {}
@@ -174,18 +179,23 @@ local function buildPlot(index: number): Plot
 		return record
 	end
 
-	-- Buy pads either side of the pen.
+	-- Until a player owns the plot (Server.Tycoon then writes every price and status), the pads
+	-- show their name only, with no price: a "$0" reads as a live offer.
+
+	-- Buy pads either side of the pen, named after the unit they sell like on an owned plot.
+	local firstTier = theme.Tiers[1]
+	local unitName = if firstTier then firstTier.Name else w.Unit
 	for _, amount in Economy.BUY_AMOUNTS do
-		pad("Buy" .. amount, padColors.Buy, "Buy " .. amount .. " " .. w.Unit, "$0")
+		pad("Buy" .. amount, padColors.Buy, "Buy " .. amount .. " " .. unitName, "")
 	end
-	pad("AutoMerge", padColors.AutoMerge, "Auto Merge", "$0")
+	pad("AutoMerge", padColors.AutoMerge, "Auto Merge", "Game pass")
 
 	-- Merge pad centred in front of the pen, at the end of the walkway.
 	pad("Merge", padColors.Merge, w.Merge, "Pairs merge into the next tier")
 
 	-- Deposit station (-X court, level with the plaza): pad + converter machine. The pad's floating label already shows the
 	-- multiplier, so the multiplier labels Tycoon writes stay hidden on the pad.
-	local depositPad = pad("Deposit", padColors.Deposit, "DEPOSIT", w.Orb .. " x1.0")
+	local depositPad = pad("Deposit", padColors.Deposit, "DEPOSIT", "")
 	do
 		local conv = Layout.MACHINES.Converter
 		buildConverter(B, (conv.minX + conv.maxX) / 2, (conv.minZ + conv.maxZ) / 2)
@@ -211,15 +221,15 @@ local function buildPlot(index: number): Plot
 		labels.ProcessTitle = title
 		-- Main line: the aura waiting to be converted.
 		labels.ProcessQueue =
-			text(body, { Text = "0", Font = theme.Fonts.Display, Size = UDim2.fromScale(0.9, 0.8), Position = UDim2.fromScale(0.05, 0.1) })
+			text(body, { Text = "", Font = theme.Fonts.Display, Size = UDim2.fromScale(0.9, 0.8), Position = UDim2.fromScale(0.05, 0.1) })
 		labels.ProcessRate = hiddenLabel(body)
 		labels.ProcessSpeed = hiddenLabel(body)
 	end
-	pad("ProcUp1", padColors.Process, "UPGRADE", "$0")
-	pad("ProcUp10", padColors.Process, "UPGRADE x" .. Economy.PROCESS_BULK, "$0")
+	pad("ProcUp1", padColors.Process, "UPGRADE", "")
+	pad("ProcUp10", padColors.Process, "UPGRADE x" .. Economy.PROCESS_BULK, "")
 
 	-- Collect cash pad + coin vault (-X court, front station).
-	pad("Collect", padColors.Collect, w.Collect, "$0")
+	pad("Collect", padColors.Collect, w.Collect, "")
 	buildVault(B)
 
 	-- Crate unlockers (+X court), each with a sign card standing at the machine's front.
@@ -242,14 +252,14 @@ local function buildPlot(index: number): Plot
 		)
 		-- Tycoon tints the status in the crate's rarity colour, so it keeps an Ink outline.
 		local statusLabel = text(body, {
-			Text = "EMPTY",
+			Text = "",
 			Size = UDim2.fromScale(0.96, 0.36),
 			Position = UDim2.fromScale(0.02, 0.02),
 			TextColor3 = Paint.White,
 			Outline = true,
 		})
 		local timerLabel = text(body, {
-			Text = "--:--:--",
+			Text = "",
 			Font = theme.Fonts.Number,
 			Size = UDim2.fromScale(0.9, 0.5),
 			Position = UDim2.fromScale(0.05, 0.46),
@@ -294,6 +304,20 @@ local function buildPlot(index: number): Plot
 	end
 
 	labels.Owner = ownerLabel
+
+	-- Server.Tycoon puts the owner's avatar on the entrance card and clears it when they leave:
+	-- with no avatar the plot is free, so its pad names are dimmed and its card says so.
+	local function showClaimed()
+		local claimed = ownerImage.Image ~= ""
+		for _, record in pads do
+			setPadClaimed(record, claimed)
+		end
+		if not claimed then
+			ownerLabel.Text = FREE_PLOT
+		end
+	end
+	ownerImage:GetPropertyChangedSignal("Image"):Connect(showClaimed)
+	showClaimed()
 
 	makeCameraSafe(folder)
 

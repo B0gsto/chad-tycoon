@@ -33,7 +33,7 @@ Theme.Words = {
 	Merge = "MOG MERGE",
 	Unlocker = "CRATE SMASHER",
 	PremiumUnlocker = "VIP CRATE SMASHER",
-	Free = "DAILY GAINS",
+	Free = "FREE GIFT",
 	Surge = "AURA SURGE",
 	Multiplier = "Aura Multiplier",
 }
@@ -91,6 +91,8 @@ Theme.Loading = {
 		"Tip: deposit when the Aura Multiplier is high for more cash.",
 		"Tip: during an Aura Surge every Chad drops double aura.",
 		"Tip: walk into a crate to pick it up, then carry it to the Crate Smasher to open it free.",
+		"Tip: rarer crates open better Chads.",
+		"Tip: a deposit bonus is extra cash, paid at once.",
 	},
 }
 
@@ -435,6 +437,13 @@ Theme.World = {
 		Unlock = PURE_WHITE,
 		UnlockVip = TEAL_INK,
 		Free = PURE_WHITE,
+	},
+	-- Plate behind a pad's floating price (white text): green when the player can afford it /
+	-- it is ready, soft red when not, dark for a plain status.
+	PadPlate = {
+		Good = rgb(40, 158, 98),
+		Bad = rgb(216, 96, 92),
+		Plain = rgb(58, 48, 96),
 	},
 }
 
