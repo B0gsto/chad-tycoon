@@ -37065,22 +37065,35 @@ local function rocks(x: number, z: number, spin: number)
 	part({ Name = "BeachRock", Shape = BALL, Size = cube(2.2), CFrame = base * CFrame.new(2.4, 0.5, 1), Color = W.PathEdge })
 end
 
+-- Reach of a beach spot around its parasol (towels, rocks and the palm included).
+local BEACH_SPOT_REACH = 12
+
+-- True when a beach spot at (x, z) stays outside every plot's fence.
+local function clearOfPlots(x: number, z: number): boolean
+	local insideX = math.abs(x) < PLOT_SPACING_X + PLOT_HALF + BEACH_SPOT_REACH
+	local insideZ = math.abs(math.abs(z) - PLOT_ROW_Z) < PLOT_HALF + BEACH_SPOT_REACH
+	return not (insideX and insideZ)
+end
+
 -- A sparse ring of beach spots (parasol and towels, rocks, a palm) in the open sand between
 -- the plot rows and the shore, so the island does not read as empty from above. Each spot is
--- skipped where it would land on the GAME MODES course.
+-- skipped where it would land on a plot or on the GAME MODES course.
 local function buildBeachSpots()
 	local spots = {
 		-- { x, z, canopy colour, towel colour, rocks, palm height (0 = none) }
-		{ -22, 180, W.Coral, W.Sunny, true, 0 },
-		{ 64, 170, W.Sunny, W.Blue, false, 17 },
-		{ 18, -182, W.Blue, W.Coral, true, 0 },
-		{ -70, -168, W.Pink, W.Mint, false, 16 },
+		{ -22, 186, W.Coral, W.Sunny, true, 0 },
+		{ 64, 184, W.Sunny, W.Blue, false, 17 },
+		{ 18, -186, W.Blue, W.Coral, true, 0 },
+		{ -70, -184, W.Pink, W.Mint, false, 16 },
 		{ 182, -20, W.Coral, W.Pink, true, 0 },
-		{ 170, 70, W.Mint, W.Sunny, false, 0 },
-		{ -162, -82, W.Sunny, W.Coral, true, 0 },
+		{ 192, 70, W.Mint, W.Sunny, false, 0 },
+		{ -192, -82, W.Sunny, W.Coral, true, 0 },
 	}
 	for i, spot in spots do
 		local x, z = spot[1], spot[2]
+		if not clearOfPlots(x, z) then
+			continue
+		end
 		if not ModesCourse.isClear(x, z) or not ModesCourse.isClear(x + 8, z + 8) or not ModesCourse.isClear(x - 8, z - 8) then
 			continue
 		end
