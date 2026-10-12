@@ -132,7 +132,9 @@ checkpoint, per-checkpoint stage and Skip Stage rule in the earlier sections.
   `Course.crossedStart(prevX, x, z)` is true for crossing either portal (west through gate 1,
   east through the mirrored gate 1); `Course.nearestQuit(x, z)` / `nearestArrival(x, z)` return the
   closer spot; GameModes.toGates / toPlaza use them (the player's current x decides).
-- **Bigger signs**: the start arch's "GO GO GO!" sign 1.6x taller/wider with text to match; every
+- **Bigger signs**: the start arch's "GO GO GO!" sign 1.4x taller with text to match, standing on
+  the arch's crown (across the opening the pillars cut through its text); the arch stands at the
+  start deck's leading edge, ahead of the spawn, so the runner starts looking through it; every
   checkpoint flag and its number sign 2x; the finish "FINISH" banner 1.4x.
 - **Flicker**: no two coplanar faces anywhere in the obby builders (lips, undersides, stripes,
   decals: offset by 0.05), no overlapping translucent parts (clouds and foam become opaque
