@@ -973,9 +973,13 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local titleW = math.min(textWidth(title, goalTitle.TextSize, goalTitle.Font), room - leadW - countW - 14)
 		local hintW = math.min(textWidth(hint, goalHint.TextSize, goalHint.Font), room)
 		local x = GOAL_TEXT_X
+		-- Text held at its size on a phone (applyCompact) is taller than the design's two
+		-- lines: they, and the strip, grow with it.
+		local lineH = math.max(20, goalTitle.TextSize + 2)
+		local hintH = math.max(16, goalHint.TextSize + 1)
 		local function put(label: TextLabel, text: string, width: number, gap: number)
 			label.Text = text
-			label.Size = UDim2.fromOffset(width + 2, 20)
+			label.Size = UDim2.fromOffset(width + 2, lineH)
 			label.Position = UDim2.fromOffset(x, 2)
 			x += width + gap
 		end
@@ -984,9 +988,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		put(goalCount, count, countW, 0)
 		goalCount.TextColor3 = if picked.ready then C.MoneyText else C.Text
 		goalHint.Text = string.upper(string.sub(hint, 1, 1)) .. string.sub(hint, 2)
-		goalHint.Size = UDim2.fromOffset(hintW + 2, 16)
+		goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, lineH)
+		goalHint.Size = UDim2.fromOffset(hintW + 2, hintH)
 		goalWidth = math.max(x, GOAL_TEXT_X + hintW) + 12
-		goal.Size = UDim2.fromOffset(goalWidth, GOAL_H)
+		goal.Size = UDim2.fromOffset(goalWidth, GOAL_H + (lineH - 20) + (hintH - 16))
 		goalBar.Size = UDim2.new(0, math.floor((goalWidth - GOAL_BAR_X * 2) * picked.progress), 0, 3)
 		-- A new target (not just a new count) gets a fresh thumbnail and a pop.
 		local thumbKey = picked.kind .. picked.tier
@@ -1001,6 +1006,17 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			goalTitleShown = title
 			Kit.pop(goal, 0.6)
 		end
+	end
+	-- The strip's texts are held at a readable size on a phone (applyCompact), where 16 and
+	-- 14 design px are 10 px: a new size lays the strip out again.
+	local GOAL_TEXT: { [TextLabel]: number } = { [goalLead] = 16, [goalTitle] = 16, [goalCount] = 14, [goalHint] = 14 }
+	for label in GOAL_TEXT do
+		label:GetPropertyChangedSignal("TextSize"):Connect(function()
+			goalKey = ""
+			if State.data then
+				paintGoal(State.data)
+			end
+		end)
 	end
 	-- Shown once the tutorial is done, outside the intro and game-mode runs. A tutorial
 	-- finished this session first lets its quest pill slide out of the slot.
@@ -1381,6 +1397,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			Kit.holdText(label, Kit.captionPx(), design, true)
 		end
 		fitStrip()
+		-- So are the goal strip's (it lays itself out again when a size changes).
+		for label, design in GOAL_TEXT do
+			Kit.holdText(label, Kit.captionPx(), design, true)
+		end
 		-- Status captions go first on short screens; the icons stay (not on a touch
 		-- phone, where the wallet sits in the top-left corner).
 		for _, label in { premiumText, friendsText, boostText } do
@@ -1391,6 +1411,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		local width = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
 		tank.Size = UDim2.fromOffset(width, width * DUMBBELL_ASPECT)
+		-- The caption's line of the compact plaque is shorter than the caption held at its
+		-- phone size (MinPx): its box grows round the line to hold it.
+		local captionRoom = math.max(0, math.ceil(Kit.pxUp(G.TextMinPhone, 0, tankCaption) - width * DUMBBELL_ASPECT * captionSize.Y.Scale))
+		tankCaption.Size = captionSize + UDim2.fromOffset(0, captionRoom)
+		tankCaption.Position = captionPos - UDim2.fromOffset(0, captionRoom // 2)
 		goal.AnchorPoint = Vector2.new(0.5, if compact then 1 else 0)
 		goalPad.Size = UDim2.new(1, 0, 0, math.max(GOAL_H, L.tap))
 		goalPad.Visible = Kit.touch
