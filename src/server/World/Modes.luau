@@ -1443,29 +1443,41 @@ local function checker(top: BasePart, sx: number, sz: number)
 	end
 end
 
--- A map's entrance: an arch over the start deck behind the spawn spot, its card facing along
--- the course so a player who just arrived reads it ("STAGE <first stage>" under the map name;
--- map 1 says CHAD OBBY / START), and five small rainbow flag poles along the deck's sides.
--- Map 1's deck is the green checkered lobby with "CHAD OBBY" block letters floating high
--- behind the arch.
+-- A map's entrance: an arch over the start deck's leading edge, ahead of the spawn spot,
+-- with a marquee card standing on its crown: "STAGE <first stage>" / GO GO GO! toward the
+-- runner on the deck, the map name over "STAGE <first stage>" toward the course (map 1:
+-- CHAD OBBY / START), and five small rainbow flag poles along the deck's sides. The card
+-- stays above the arch: across the opening the pillars cut through its text. Map 1's deck
+-- is the green checkered lobby with "CHAD OBBY" block letters floating high behind the
+-- arch.
 local function startArch(level: Course.Level, deck: Course.Element, top: BasePart?, parent: Instance)
 	local s = level.START
 	local sx, sz = deck.sx :: number, deck.sz :: number
 	local box = { x0 = deck.x - sx / 2, x1 = deck.x + sx / 2, z0 = deck.z - sz / 2, z1 = deck.z + sz / 2, y0 = 0, y1 = 0 }
 	local half = spanHalf(box, s.faceX)
 	local lobby = level.index == 1
-	-- Behind the spawn: half a deck back from the spawn spot, against the course direction.
-	local back = (if s.faceX ~= 0 then sx else sz) / 2 - 1.6
-	local base = facing(deck.x - s.faceX * back, deck.y, deck.z - s.faceZ * back, s.faceX, s.faceZ)
+	-- Ahead of the spawn, at the deck's leading edge: the runner starts looking through the
+	-- gate (behind the spawn its pillars and card filled the camera).
+	local ahead = (if s.faceX ~= 0 then sx else sz) / 2 - 1.6
+	local base = facing(deck.x + s.faceX * ahead, deck.y, deck.z + s.faceZ * ahead, s.faceX, s.faceZ)
 	local add = adder(base, parent)
 	local accent = color((level :: any).accent or "RainbowBlue")
 	archFrame(add, half, if lobby then W.RainbowRed else accent)
-	-- The big GO GO GO! card (1.6x the old 4.2-stud banner: wider and taller, text to match).
-	local signScale = 1.6
+	-- The big GO GO GO! marquee (1.4x the old 4.2-stud banner, text to match): as wide as
+	-- the arch, its bottom edge sunk into the crown, on a white ledge.
+	local signScale = 1.4
+	local signW, signH = half * 2 + 4.6, 4.2 * signScale
+	local signY = ARCH_SPRING + half + signH / 2
+	decor(add({
+		Name = "StartSignLedge",
+		Size = Vector3.new(signW + 1, 0.8, 2.2),
+		CFrame = CFrame.new(0, signY - signH / 2 + 0.4, 0),
+		Color = W.White,
+	}))
 	local sign = decor(add({
 		Name = "StartSign",
-		Size = Vector3.new((half * 2 + 3.4) * signScale, 4.2 * signScale, 1),
-		CFrame = CFrame.new(0, 9.5, 0),
+		Size = Vector3.new(signW, signH, 1),
+		CFrame = CFrame.new(0, signY, 0),
 		Color = W.Cream,
 	}))
 	local pps = math.floor(44 / signScale + 0.5)
@@ -1477,7 +1489,7 @@ local function startArch(level: Course.Level, deck: Course.Element, top: BasePar
 		if top then
 			checker(top, sx, sz)
 		end
-		blockLetters("CHAD OBBY", base * CFrame.new(0, ARCH_SPRING + half + 5, 4), parent)
+		blockLetters("CHAD OBBY", base * CFrame.new(0, signY + signH / 2 + 2.5, 4), parent)
 	else
 		cardFace(sign, Enum.NormalId.Front, pps, W.Cream, accent, string.upper(level.name), "STAGE " .. first)
 		cardFace(sign, Enum.NormalId.Back, pps, W.Cream, W.Coral, "STAGE " .. first, "GO GO GO!")
@@ -1485,7 +1497,7 @@ local function startArch(level: Course.Level, deck: Course.Element, top: BasePar
 	local keys = { "RainbowRed", "RainbowYellow", "RainbowGreen", "RainbowBlue", "RainbowPurple" }
 	for i, key in keys do
 		-- Spread along the deck's two side edges (parallel to the course direction).
-		local t = -0.5 + 1.5 * (i - 1) / (#keys - 1) -- clear of the arch pillars behind
+		local t = 0.5 - 1.5 * (i - 1) / (#keys - 1) -- clear of the arch pillars ahead
 		local side = if i % 2 == 0 then 1 else -1
 		local along, across = t * ((if s.faceX ~= 0 then sx else sz) / 2 - 1.2), side * ((if s.faceX ~= 0 then sz else sx) / 2 - 0.8)
 		local px = deck.x + (if s.faceX ~= 0 then along else across)
