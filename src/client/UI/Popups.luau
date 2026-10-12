@@ -160,6 +160,10 @@ local TOAST_ICON_X = 19 -- past the accent bar
 local MAX_TOASTS = 4
 
 local toasts: { Frame } = {}
+-- A unit reveal owns the screen (setReveal): the toasts on screen hide and new ones wait
+-- (the last MAX_TOASTS), then drop in once it has gone.
+local revealCount = 0
+local heldToasts: { { text: string, tone: string? } } = {}
 
 -- Width that hugs the text (TextService when available, else an estimate).
 local function toastWidth(text: string): number
@@ -213,6 +217,13 @@ local function dismissToast(toast: Frame)
 end
 
 function Popups.toast(text: string, tone: string?)
+	if revealCount > 0 then
+		table.insert(heldToasts, { text = text, tone = tone })
+		while #heldToasts > MAX_TOASTS do
+			table.remove(heldToasts, 1)
+		end
+		return
+	end
 	local style = TONES[tone or "info"] or TONES.info
 	local rarity = toastRarity(text)
 	local color: Color3 = if rarity then C.Rarity[rarity] else style.color
@@ -289,6 +300,24 @@ function Popups.toast(text: string, tone: string?)
 	task.delay(3, function()
 		dismissToast(toast)
 	end)
+end
+
+-- A reveal starts or ends. While one is up the ScreenGui attribute "RevealOpen" is true
+-- (the tutorial pill steps out on it) and the toast stack is hidden.
+local function setReveal(on: boolean)
+	revealCount = math.max(0, revealCount + (if on then 1 else -1))
+	local up = revealCount > 0
+	screen:SetAttribute("RevealOpen", up)
+	toastHolder.Visible = not up
+	if not up then
+		local waiting = heldToasts
+		heldToasts = {}
+		for i, held in waiting do
+			task.delay((i - 1) * 0.12, function()
+				Popups.toast(held.text, held.tone)
+			end)
+		end
+	end
 end
 
 -- Floating text -------------------------------------------------------------------
@@ -574,11 +603,13 @@ local backOf: { [() -> ()]: Back } = {}
 local function modal(name: string, size: Vector2, zindex: number, onBackdrop: (() -> ())?, onClosed: (() -> ())?): (Frame, () -> ())
 	modalCount += 1
 	local openKey = "Modal:" .. name .. modalCount
+	-- The dim sits above everything under the card (windows are at ZIndex 10). Over an open
+	-- window it goes deeper, so none of the window's text reads through the card's glass.
+	local over = screen:GetAttribute("WindowOpen") == true
 	local dim = Kit.backdrop(screen, zindex - 1)
 	dim.Name = name .. "Backdrop"
-	Kit.fadeBackdrop(dim, true, Kit.GLASS_DIM)
+	Kit.fadeBackdrop(dim, true, if over then 1 - Theme.Glass.DimOver else Kit.GLASS_DIM)
 	Kit.setBlur(true)
-	Kit.markOpen(screen, openKey, true)
 	-- Centred holder (named `name`) that Kit.fit keeps on screen; it leaves
 	-- room above for the medallion that overlaps the top edge.
 	local holder = Kit.new("Frame", {
@@ -591,6 +622,7 @@ local function modal(name: string, size: Vector2, zindex: number, onBackdrop: ((
 		Parent = screen,
 	})
 	Kit.fit(holder, screen, Vector2.new(size.X, size.Y + 96))
+	Kit.markOpen(screen, openKey, true, holder)
 	-- The card is a glass pane like the windows (over the blurred, dimmed world).
 	local box = Kit.panel(holder, {
 		Name = "Box",
@@ -925,9 +957,7 @@ local RING = Sprites.image("Ring")
 
 -- Stage layout (design px; Kit.fit shrinks the whole stage on small screens).
 local STAGE_W = 620
-local STAGE_H = 516
 local HERO = 320
-local HERO_Y = 36 + HERO / 2
 local EXTRAS_H = 66
 local EXTRA_SLOTS = 5
 local VEIL = Kit.darken(C.Ink, 0.4)
@@ -1023,12 +1053,20 @@ end
 
 -- One stat on the reveal: an icon and an outlined number, no box. `final` (the
 -- text it ends on) sizes the pair, so a rolling number does not shake the row.
-local function statPair(parent: Instance, icon: string, iconColor: Color3, final: string, color: Color3, order: number): TextLabel
-	local width = displayWidth(final, 26) + 6
+local function statPair(
+	parent: Instance,
+	icon: string,
+	iconColor: Color3,
+	final: string,
+	color: Color3,
+	order: number,
+	size: number
+): TextLabel
+	local width = displayWidth(final, size) + 6
 	local pair = Kit.new("Frame", {
 		Name = "Stat" .. order,
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(36 + width, 34),
+		Size = UDim2.fromOffset(36 + width, size + 8),
 		LayoutOrder = order,
 		Parent = parent,
 	})
@@ -1040,7 +1078,7 @@ local function statPair(parent: Instance, icon: string, iconColor: Color3, final
 	return Kit.hudText(pair, {
 		Name = "Value",
 		Text = final,
-		TextSize = 26,
+		TextSize = size,
 		Size = UDim2.new(0, width, 1, 0),
 		Position = UDim2.fromOffset(36, 1),
 		TextXAlignment = Enum.TextXAlignment.Left,
@@ -1116,9 +1154,17 @@ local function flyOrb(layer: Frame, from: Vector2, goal: Vector2, color: Color3,
 		ZIndex = 8,
 		Parent = layer,
 	})
+	-- A ball in the rarity colour (lighter on top, a light rim and a small highlight) in a
+	-- wide glow of the same colour: it reads as the unit's orb, not as a white spark.
 	local tint = Kit.lighten(color, 0.3)
-	softDot(orb, "Glow", tint, UDim2.fromScale(1, 1), 0.1, 1)
-	softDot(orb, "Core", WHITE, UDim2.fromScale(0.5, 0.5), 0, 2)
+	softDot(orb, "Glow", color, UDim2.fromScale(2.1, 2.1), 0.25, 1)
+	local ball = circle(orb, "Ball", WHITE, 0, 2)
+	ball.Size = UDim2.fromScale(0.62, 0.62)
+	Kit.gradient(ball, Kit.lighten(color, 0.45), color)
+	Kit.new("UIStroke", { Thickness = 3, Color = Kit.lighten(color, 0.7), Parent = ball })
+	local glint = circle(ball, "Glint", WHITE, 0.15, 3)
+	glint.Size = UDim2.fromScale(0.3, 0.3)
+	glint.Position = UDim2.fromScale(0.32, 0.3)
 	local scale = Kit.new("UIScale", { Scale = 0.2, Parent = orb })
 	Kit.tween(scale, ORB_MORPH, { Scale = 1 }, Enum.EasingStyle.Back)
 
@@ -1146,12 +1192,13 @@ local function flyOrb(layer: Frame, from: Vector2, goal: Vector2, color: Color3,
 		if u > 0 then
 			scale.Scale = 1 - 0.5 * eased
 		end
-		if (point - shedAt).Magnitude >= 16 then
-			-- Trail: a dot left behind that shrinks away (every fourth one a sparkle).
+		if (point - shedAt).Magnitude >= 14 then
+			-- Trail: a dot of the orb's colour left behind that shrinks away (every fourth
+			-- one a sparkle). Short: each lasts 0.3 s.
 			shedAt = point
 			shed += 1
-			local side = size * (0.55 - 0.25 * eased)
-			local ghost, fade = softDot(layer, "Trail", tint, UDim2.fromOffset(side, side), 0.35, 7)
+			local side = size * (0.8 - 0.35 * eased)
+			local ghost, fade = softDot(layer, "Trail", tint, UDim2.fromOffset(side, side), 0.15, 7)
 			if SPARKLE and shed % 4 == 0 and ghost:IsA("ImageLabel") then
 				ghost.Image = SPARKLE
 				ghost.ImageColor3 = WHITE
@@ -1196,12 +1243,32 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	local extras = if isNew then extraTiers(reward) else {}
 	local calm = reducedMotion()
 	local data = State.data
-	local height = STAGE_H + (if #extras > 0 then EXTRAS_H else 0)
+	-- Text sizes held on the glass: a phone's UI scale would take the 30 px label to 19 and
+	-- the 22 px tier line to 14. What the text gains the unit gives up, so the stage keeps
+	-- its height (and Kit.fit does not shrink it all again).
+	-- Kit.fit may still scale the stage a little (a short screen): the sizes count that in.
+	local area = Kit.designArea(screen)
+	local share = if Kit.touch then Theme.Glass.FitTouch else Theme.Glass.Fit
+	local stageBase = 196 + HERO + (if #extras > 0 then EXTRAS_H else 0)
+	local fit = if area then math.min(1, area.X * share / STAGE_W, area.Y * share / stageBase) else 1
+	local bannerSize = Kit.px(28 / fit, 30, screen)
+	local nameSize = Kit.px(30 / fit, 48, screen)
+	local tierSize = Kit.px(18 / fit, 22, screen)
+	local statSize = Kit.px(18 / fit, 26, screen)
+	local heroSize = math.max(HERO - (bannerSize - 30) - (nameSize - 48) - (tierSize - 22) - (statSize - 26), 200)
+	local heroY = bannerSize + 6 + heroSize / 2
+	local nameY = heroY + heroSize / 2
+	local tierY = nameY + nameSize + 8
+	local statsY = tierY + tierSize + 12
+	local stageH = statsY + statSize + 8 + 36
+	local height = stageH + (if #extras > 0 then EXTRAS_H else 0)
 
-	-- A window underneath (the shop, the Index) is busy: the veil goes deeper over it.
-	local deep = if screen:GetAttribute("WindowOpen") == true then 0.3 else 0
+	-- A window underneath (the shop, the Index) is busy: the veil goes deep and even over it,
+	-- the window dims to about Theme.Glass.RevealDim behind the name and comes back when the
+	-- veil lifts. Toasts and the tutorial pill step out (setReveal).
+	local overWindow = screen:GetAttribute("WindowOpen") == true
 	local openKey = "Reward:" .. tostring(os.clock())
-	Kit.markOpen(screen, openKey, true)
+	setReveal(true)
 	-- The lighter frost: the Chad's plot stays readable behind the reveal.
 	Kit.setBlur(true, true)
 
@@ -1224,16 +1291,26 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 0,
 		Parent = root,
 	})
+	local window = 1 - Theme.Glass.RevealDim
 	Kit.new("UIGradient", {
 		Rotation = 90,
-		Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.92 - deep),
-			NumberSequenceKeypoint.new(0.36, 0.62 - deep),
-			NumberSequenceKeypoint.new(0.74, 0.6 - deep),
-			NumberSequenceKeypoint.new(1, 0.78 - deep),
-		}),
+		Transparency = if overWindow
+			then NumberSequence.new({
+				NumberSequenceKeypoint.new(0, window),
+				NumberSequenceKeypoint.new(0.3, window * 0.5),
+				NumberSequenceKeypoint.new(0.8, window * 0.4),
+				NumberSequenceKeypoint.new(1, window),
+			})
+			else NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.92),
+				NumberSequenceKeypoint.new(0.36, 0.62),
+				NumberSequenceKeypoint.new(0.74, 0.6),
+				NumberSequenceKeypoint.new(1, 0.78),
+			}),
 		Parent = veil,
 	})
+	-- The count behind WindowOpen is given back if the reveal's gui is destroyed.
+	Kit.markOpen(screen, openKey, true, root)
 	Kit.tween(veil, 0.25, { BackgroundTransparency = 0 })
 
 	-- The stage sits a little lower while the tutorial card holds the top centre.
@@ -1249,13 +1326,13 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		Parent = root,
 	})
 	Kit.fit(stage, screen, Vector2.new(STAGE_W, height))
-	local heroAt = UDim2.new(0.5, 0, 0, HERO_Y)
+	local heroAt = UDim2.new(0.5, 0, 0, heroY)
 
 	-- Light behind the unit: a navy pool for contrast, rays, and the rarity glow.
 	local lights: { GuiObject } = {}
 	if SOFT_DOT then
 		local pool = softDot(stage, "Pool", VEIL, UDim2.fromOffset(980, 760), 0.8, 0)
-		pool.Position = UDim2.new(0.5, 0, 0, HERO_Y + 70)
+		pool.Position = UDim2.new(0.5, 0, 0, heroY + 70)
 		table.insert(lights, pool)
 	end
 	local rays = Popups.rays(stage, Kit.lighten(color, 0.55), 600 + rank * 24, heroAt, 1, 6 + rank)
@@ -1267,7 +1344,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		Kit.appear(inner, { from = 0.3, time = 0.55, style = Enum.EasingStyle.Quart })
 		table.insert(lights, inner)
 	end
-	local glow = softDot(stage, "Glow", Kit.lighten(color, 0.2), UDim2.fromOffset(HERO * 1.45, HERO * 1.45), 0.3, 2)
+	local glow = softDot(stage, "Glow", Kit.lighten(color, 0.2), UDim2.fromOffset(heroSize * 1.45, heroSize * 1.45), 0.3, 2)
 	glow.Position = heroAt
 	Kit.appear(glow, { from = 0.4, time = 0.4 })
 	table.insert(lights, glow)
@@ -1276,7 +1353,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	local hero = Kit.new("Frame", {
 		Name = "Hero",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(HERO, HERO),
+		Size = UDim2.fromOffset(heroSize, heroSize),
 		Position = heroAt,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 3,
@@ -1287,21 +1364,21 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	local twinkle = Kit.new("Frame", {
 		Name = "Sparkles",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(HERO, HERO),
+		Size = UDim2.fromOffset(heroSize, heroSize),
 		Position = heroAt,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 4,
 		Parent = stage,
 	})
-	sparkles(twinkle, Kit.lighten(color, 0.4), 5 + rank * 2, HERO * 0.5, calm)
+	sparkles(twinkle, Kit.lighten(color, 0.4), 5 + rank * 2, heroSize * 0.5, calm)
 	Kit.appear(twinkle, { from = 0.5, time = 0.4, delay = 0.1 })
 	table.insert(lights, twinkle)
 
 	if not calm and not PREVIEW then
 		-- A soft white bloom behind the pop (no full-screen flash), bigger for rarer units.
-		local bloom, fade = softDot(stage, "Bloom", WHITE, UDim2.fromOffset(HERO * 0.7, HERO * 0.7), 0.05, 4)
+		local bloom, fade = softDot(stage, "Bloom", WHITE, UDim2.fromOffset(heroSize * 0.7, heroSize * 0.7), 0.05, 4)
 		bloom.Position = heroAt
-		local reach = HERO * (1.5 + 0.2 * rank)
+		local reach = heroSize * (1.5 + 0.2 * rank)
 		Kit.tween(bloom, 0.34, { Size = UDim2.fromOffset(reach, reach), [fade] = 1 }, Enum.EasingStyle.Quart)
 		task.delay(0.36, function()
 			bloom:Destroy()
@@ -1315,14 +1392,14 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 				Image = RING,
 				ImageColor3 = if i == 1 then WHITE else Kit.lighten(color, 0.4),
 				ImageTransparency = 0.1,
-				Size = UDim2.fromOffset(HERO * 0.5, HERO * 0.5),
+				Size = UDim2.fromOffset(heroSize * 0.5, heroSize * 0.5),
 				Position = heroAt,
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				ZIndex = 2,
 				Visible = false,
 				Parent = stage,
 			})
-			local spread = HERO * (1.3 + 0.2 * rank)
+			local spread = heroSize * (1.3 + 0.2 * rank)
 			task.delay(0.1 + (i - 1) * 0.14, function()
 				ring.Visible = true
 				Kit.tween(ring, 0.55, { Size = UDim2.fromOffset(spread, spread), ImageTransparency = 1 }, Enum.EasingStyle.Quart)
@@ -1414,10 +1491,11 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		arrive(Kit.hudText(stage, {
 			Name = "Banner",
 			Text = if isNew then "NEW " .. string.upper(W.Unit) .. "!" else "YOU GOT",
-			TextSize = 30,
+			TextSize = bannerSize,
 			TextColor3 = if isNew then C.Gold else C.Text,
 			StrokeColor = Theme.Glass.TextInk,
-			Size = UDim2.new(1, 0, 0, 36),
+			StrokeThickness = 3,
+			Size = UDim2.new(1, 0, 0, bannerSize + 6),
 			ZIndex = 5,
 		}))
 	end)
@@ -1428,20 +1506,20 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		-- A soft dark plate behind the name and the stats (no box, no border: a tinted
 		-- soft dot stretched wide) so they hold over a busy plot.
 		local plate = softDot(stage, "Plate", Theme.Glass.Tint, UDim2.fromOffset(STAGE_W, 250), 0.22, 2)
-		plate.Position = UDim2.new(0.5, 0, 0, HERO_Y + HERO / 2 + 64)
+		plate.Position = UDim2.new(0.5, 0, 0, (nameY + statsY + statSize + 8) / 2)
 		table.insert(lines, plate)
 		Kit.appear(plate, { from = 0.9, time = 0.3 })
 		-- Big name in the rarity colour, scaled down to fit on one line.
 		arrive(Kit.hudText(stage, {
 			Name = "UnitName",
 			Text = string.upper(Theme.Tiers[tier].Name),
-			TextSize = 48,
+			TextSize = nameSize,
 			TextScaled = true,
-			MaxTextSize = 48,
+			MaxTextSize = nameSize,
 			TextColor3 = Kit.lighten(color, 0.15),
 			StrokeColor = Theme.Glass.TextInk,
-			Size = UDim2.new(1, -40, 0, 54),
-			Position = UDim2.fromOffset(20, HERO_Y + HERO / 2),
+			Size = UDim2.new(1, -40, 0, nameSize + 6),
+			Position = UDim2.fromOffset(20, nameY),
 			StrokeThickness = 3,
 			ZIndex = 5,
 		}))
@@ -1454,11 +1532,11 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		arrive(Kit.hudText(stage, {
 			Name = "Tier",
 			Text = string.format("TIER %d  •  %s", tier, string.upper(band)),
-			TextSize = 22,
+			TextSize = tierSize,
 			TextColor3 = Kit.lighten(color, 0.55),
 			StrokeColor = Theme.Glass.TextInk,
-			Size = UDim2.new(1, 0, 0, 26),
-			Position = UDim2.fromOffset(0, HERO_Y + HERO / 2 + 56),
+			Size = UDim2.new(1, 0, 0, tierSize + 4),
+			Position = UDim2.fromOffset(0, tierY),
 			StrokeThickness = 2.5,
 			ZIndex = 5,
 		}))
@@ -1472,8 +1550,8 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		local stats = Kit.new("Frame", {
 			Name = "Stats",
 			BackgroundTransparency = 1,
-			Size = UDim2.new(1, 0, 0, 34),
-			Position = UDim2.fromOffset(0, HERO_Y + HERO / 2 + 90),
+			Size = UDim2.new(1, 0, 0, statSize + 8),
+			Position = UDim2.fromOffset(0, statsY),
 			ZIndex = 5,
 			Parent = stage,
 		})
@@ -1481,7 +1559,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		local function perSecond(n: number): string
 			return Format.short(n) .. "/s"
 		end
-		local rate = statPair(stats, "Orb", C.Orb, perSecond(Economy.unitRate(tier)), Kit.lighten(C.Orb, 0.4), 1)
+		local rate = statPair(stats, "Orb", C.Orb, perSecond(Economy.unitRate(tier)), Kit.lighten(C.Orb, 0.4), 1, statSize)
 		if isNew and data and type(data.discovered) == "table" then
 			local found = 0
 			for t = 1, Economy.MAX_TIER do
@@ -1489,18 +1567,32 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 					found += 1
 				end
 			end
-			statPair(stats, "Index", C.Gold, string.format("%d/%d", found, Economy.MAX_TIER), C.GoldLight, 2)
+			statPair(stats, "Index", C.Gold, string.format("%d/%d", found, Economy.MAX_TIER), C.GoldLight, 2, statSize)
 		end
 		arrive(stats)
 		Kit.countTo(rate, 0, Economy.unitRate(tier), perSecond, 0.45)
 	end)
 	local portraits: { Portrait } = {}
 	if #extras > 0 then
-		portraits = extrasRow(stage, extras, STAGE_H - 28, 0.6, alive)
+		portraits = extrasRow(stage, extras, stageH - 28, 0.6, alive)
 	end
 
 	-- Leaving: input is released first, then the stage clears and the units go.
 	local skip = catcher(root, 6)
+	local revealed = true
+	local function endReveal()
+		if revealed then
+			revealed = false
+			setReveal(false)
+		end
+	end
+	if not PREVIEW then
+		root.AncestryChanged:Connect(function()
+			if not root:IsDescendantOf(game) then
+				endReveal()
+			end
+		end)
+	end
 	local function finish()
 		if root.Parent then
 			root:Destroy()
@@ -1523,6 +1615,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		skip:Destroy()
 		Kit.setBlur(false, true)
 		Kit.markOpen(screen, openKey, false)
+		endReveal()
 		Kit.tween(veil, 0.35, { BackgroundTransparency = 1 })
 		for _, gui in lines do
 			Kit.disappear(gui, { time = 0.16, to = 0.96 })
@@ -1619,7 +1712,8 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 			Text = Kit.hint("tap to continue", "click to continue", "press A to continue"),
 			Font = Theme.Fonts.UI,
 			TextSize = 15,
-			TextTransparency = 0.4,
+			MinPx = true,
+			TextTransparency = 0.25,
 			Size = UDim2.new(1, 0, 0, 20),
 			Position = UDim2.new(0, 0, 1, -22),
 			StrokeThickness = 1.5,
@@ -1947,26 +2041,37 @@ function Popups.confirm(text: string, onYes: () -> (), options: { [string]: any 
 	local opts = options or {}
 	Popups.enqueue("Confirm", Popups.PRIORITY.Normal, function(done)
 		local WIDTH, PAD, GAP = 460, 20, 16
+		-- Title and question sizes on the glass (22+ and 16): the card grows with them.
+		local titleSize = Kit.px(22, T.H2 + 2, screen)
+		local textSize = Kit.px(if Kit.touch then 14 else 16, T.H3, screen)
 		local titleY = 50
-		local textY = titleY + 30 + 8
-		local textH = math.clamp(bodyHeight(text, T.Body, WIDTH - PAD * 2), 20, 104)
-		local buttonY = textY + textH + GAP
+		local plateY = titleY + titleSize + 8 + 6
+		local textH = math.clamp(bodyHeight(text, textSize, WIDTH - PAD * 2 - 24), textSize + 4, textSize * 5 + 12)
+		local plateH = textH + 20
+		local buttonY = plateY + plateH + GAP
 		local box, close = modal("Confirm", Vector2.new(WIDTH, buttonY + 56 + PAD), 50, nil, done)
 		local medal = medallion(box, opts.icon or "?", C.Gold, 70, UDim2.new(0.5, 0, 0, 0))
 		Kit.title(box, {
 			Text = opts.title or "ARE YOU SURE?",
-			TextSize = T.H2,
+			TextSize = titleSize,
 			TextWrapped = false,
-			Size = UDim2.new(1, -PAD * 2, 0, 30),
+			Size = UDim2.new(1, -PAD * 2, 0, titleSize + 8),
 			Position = UDim2.fromOffset(PAD, titleY),
 			TextColor3 = C.Gold,
 		})
-		Kit.text(box, {
+		-- The question sits on a darker plate, like the amounts of the Welcome Back card.
+		local plate = Kit.well(box, {
+			Name = "Plate",
+			Glass = true,
+			Size = UDim2.new(1, -PAD * 2, 0, plateH),
+			Position = UDim2.fromOffset(PAD, plateY),
+		})
+		Kit.text(plate, {
 			Name = "Text",
 			Text = text,
-			TextSize = T.Body,
-			Size = UDim2.new(1, -PAD * 2, 0, textH),
-			Position = UDim2.fromOffset(PAD, textY),
+			TextSize = textSize,
+			Size = UDim2.new(1, -24, 1, -20),
+			Position = UDim2.fromOffset(12, 10),
 			StrokeThickness = 0,
 		})
 		local yes = Kit.button(box, {
@@ -2032,10 +2137,13 @@ local OFFLINE = {
 function Popups.offline(data: { [string]: any })
 	Popups.enqueue("Offline", Popups.PRIORITY.Normal, function(done)
 		local L = OFFLINE
+		-- The two sub-lines are held on the glass (a caption at least; 18 / 16 design px).
+		local subSize = Kit.px(Kit.captionPx(), T.H3, screen)
+		local noteSize = Kit.px(Kit.captionPx(), T.Body, screen)
 		local subY = L.Title + 34 + 6
-		local rowY = subY + 22 + L.Gap
+		local rowY = subY + subSize + 12 + L.Gap
 		local noteY = rowY + L.Row + L.Gap
-		local buttonY = noteY + 20 + L.Gap
+		local buttonY = noteY + noteSize + 12 + L.Gap
 		local height = buttonY + L.Button + L.Pad
 		local box, close = modal("Offline", Vector2.new(L.Width, height), 45, nil, done)
 		local medal = medallion(box, "💤", C.Rizz, 84, UDim2.new(0.5, 0, 0, 0))
@@ -2047,16 +2155,29 @@ function Popups.offline(data: { [string]: any })
 			Position = UDim2.fromOffset(L.Pad, L.Title),
 			TextColor3 = C.Gold,
 		})
-		Kit.text(box, {
-			Name = "Away",
-			Text = string.format("Your %s kept grinding for %s.", W.Units, Format.time(data.seconds)),
-			TextSize = T.Body,
-			TextWrapped = false,
-			Size = UDim2.new(1, -L.Pad * 2, 0, 22),
-			Position = UDim2.fromOffset(L.Pad, subY),
-			TextColor3 = C.TextDim,
-			StrokeThickness = 0,
-		})
+		-- A line of small text on its own darker plate (the body glass alone is too light
+		-- for it over a bright world).
+		local function plateLine(name: string, line: string, size: number, y: number)
+			local plate = Kit.well(box, {
+				Name = name .. "Plate",
+				Glass = true,
+				Size = UDim2.new(1, -L.Pad * 2, 0, size + 12),
+				Position = UDim2.fromOffset(L.Pad, y),
+				Radius = Kit.RADIUS.S,
+			})
+			Kit.text(plate, {
+				Name = name,
+				Text = line,
+				TextSize = size,
+				TextWrapped = false,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				Size = UDim2.new(1, -16, 1, 0),
+				Position = UDim2.fromOffset(8, 0),
+				TextColor3 = C.Text,
+				StrokeThickness = 0,
+			})
+		end
+		plateLine("Away", string.format("Your %s kept grinding for %s.", W.Units, Format.time(data.seconds)), subSize, subY)
 		local well = Kit.well(box, {
 			Name = "Earned",
 			Glass = true,
@@ -2113,16 +2234,7 @@ function Popups.offline(data: { [string]: any })
 			StrokeThickness = 0,
 		})
 		local cash = amount("Cash", "Coin", C.Gold, 1, Format.money(cashTotal), L.Cash, C.MoneyText)
-		Kit.text(box, {
-			Name = "Hint",
-			Text = "Your cash is waiting on the Collect pad.",
-			TextSize = T.Small,
-			TextWrapped = false,
-			Size = UDim2.new(1, -L.Pad * 2, 0, 20),
-			Position = UDim2.fromOffset(L.Pad, noteY),
-			TextColor3 = C.TextDim,
-			StrokeThickness = 0,
-		})
+		plateLine("Hint", "Your cash is waiting on the Collect pad.", noteSize, noteY)
 		local go = Kit.button(box, {
 			Text = "Let's go!",
 			Font = Theme.Fonts.Display,
@@ -2968,10 +3080,20 @@ end
 local function buildChestPanel()
 	local action = Net.event("Action")
 	-- Card geometry: header band, crate, odds well, then the button rows from BUTTON_Y.
+	-- A phone (touch on a Compact screen) gets a compact card sized to what the player acts
+	-- on: the rarity header and the buttons, narrower, with no crate art and no odds list,
+	-- so it sits between the gear and the jump button instead of down the right of the screen.
 	local PANEL_W = 320
 	local ODDS_Y = 172
 	local ODDS_H = 128
 	local BUTTON_Y = ODDS_Y + ODDS_H + 12
+	local phone = false
+	local function measure()
+		phone = Kit.touch and screen:GetAttribute("Compact") == true
+		PANEL_W = if phone then 280 else 320
+		BUTTON_Y = if phone then 62 else ODDS_Y + ODDS_H + 12
+	end
+	measure()
 	local holder = Kit.new("Frame", {
 		Name = "ChestPanel",
 		BackgroundTransparency = 1,
@@ -2991,34 +3113,24 @@ local function buildChestPanel()
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Visible = false,
 	})
-	local band = Kit.new("Frame", {
+	-- Header: glass tinted in the crate's rarity with that colour on its edge (painted per
+	-- crate below), the name in the light rarity colour with the ink outline.
+	local band = Kit.glass(panel, {
 		Name = "Band",
-		BackgroundColor3 = WHITE,
-		BorderSizePixel = 0,
+		Color = C.Gold,
+		StrokeColor = C.Gold,
+		StrokeThickness = 1.5,
 		Size = UDim2.new(1, -16, 0, 46),
 		Position = UDim2.fromOffset(8, 8),
-		Parent = panel,
+		Radius = Kit.RADIUS.L,
 	})
-	Kit.corner(band, Kit.RADIUS.L)
-	local bandStroke = Kit.stroke(band, 2, Kit.lip(C.Gold))
-	local bandGradient = Kit.gradient(band, C.Gold, C.Gold)
-	local bandShine = Kit.new("Frame", {
-		Name = "Highlight",
-		BackgroundColor3 = WHITE,
-		BackgroundTransparency = 0.4,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, -28, 0, 2),
-		Position = UDim2.fromOffset(14, 3),
-		Parent = band,
-	})
-	Kit.round(bandShine)
 	local title = Kit.title(band, {
 		Text = "",
 		TextSize = T.H2,
+		MinPx = 16,
 		TextWrapped = false,
 		Size = UDim2.fromScale(1, 1),
 		Position = UDim2.fromOffset(0, 1),
-		StrokeThickness = 0,
 	})
 
 	local halo = Kit.new("Frame", {
@@ -3032,17 +3144,18 @@ local function buildChestPanel()
 		Parent = panel,
 	})
 	Kit.round(halo)
-	local crate: Frame? = nil
 
-	Kit.title(panel, {
+	local oddsTitle = Kit.title(panel, {
+		Name = "OddsTitle",
 		Text = "POSSIBLE " .. string.upper(W.Units),
 		Font = Theme.Fonts.UI,
-		TextSize = T.Small,
+		TextSize = 15,
+		MinPx = true,
 		TextWrapped = false,
-		Size = UDim2.new(1, -28, 0, 18),
-		Position = UDim2.fromOffset(14, ODDS_Y - 22),
+		Size = UDim2.new(1, -28, 0, 20),
+		Position = UDim2.fromOffset(14, ODDS_Y - 24),
 		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = C.TextDim,
+		TextColor3 = C.Text,
 		StrokeThickness = 0,
 	})
 	local oddsWell =
@@ -3110,6 +3223,7 @@ local function buildChestPanel()
 			Text = "<u>" .. text .. "</u>",
 			Font = Theme.Fonts.UI,
 			TextSize = T.Small,
+			TextWrapped = true,
 			TextColor3 = color,
 			Size = UDim2.fromOffset(width, 30),
 			Position = UDim2.new(0.5, 0, 0, y),
@@ -3180,9 +3294,49 @@ local function buildChestPanel()
 		action:FireServer({ action = "DiscardChest" })
 	end)
 
-	-- Lays the panel out for `newMode` (rows from BUTTON_Y down): the open button, the
-	-- free-route line, the pass link (buy only), Discard. Without an open button the
-	-- free route takes the button's place at body size.
+	-- Lays the rows out from BUTTON_Y down for the current mode: the open button, the
+	-- free-route line, the pass link (buy only), Discard. Without an open button the free
+	-- route takes the button's place at body size. Small text holds its size on the glass.
+	local function arrange(animate: boolean)
+		local hasButton = mode ~= "none"
+		local buying = mode == "buy"
+		local small = Kit.px(Kit.captionPx(), T.Small, holder)
+		local body = Kit.px(Kit.captionPx(), T.Body, holder)
+		local y = BUTTON_Y
+		openButton.Position = UDim2.fromOffset(12, y)
+		masterTag.Position = UDim2.fromOffset(PANEL_W - 8, y - 10)
+		if hasButton then
+			y += 56 + 8
+		end
+		-- One line beside a button, two when it stands alone or the card is narrow.
+		local freeSize = if hasButton then small else body
+		local freeHeight = if hasButton and not phone then freeSize + 8 else freeSize * 2 + 12
+		local freeGoal = { Position = UDim2.fromOffset(16, y), Size = UDim2.new(1, -32, 0, freeHeight), TextSize = freeSize }
+		y += freeHeight + 4
+		local linkH = if phone then small * 2 + 8 else 30
+		passLink.TextSize = small
+		passLink.Size = UDim2.fromOffset(PANEL_W - 40, linkH)
+		if buying then
+			passLink.Position = UDim2.new(0.5, 0, 0, y)
+			y += linkH + 2
+		end
+		y += DISCARD_GAP
+		local discardLabel = Kit.buttonLabel(discard)
+		if discardLabel then
+			discardLabel.TextSize = body
+		end
+		local discardGoal = { Position = UDim2.new(0.5, 0, 0, y) }
+		local holderGoal = { Size = UDim2.fromOffset(PANEL_W, y + DISCARD_H + 12) }
+		if animate then
+			Kit.tween(freeLine, 0.25, freeGoal)
+			Kit.tween(discard, 0.25, discardGoal)
+			Kit.tween(holder, 0.25, holderGoal)
+		else
+			freeLine.Position, freeLine.Size, freeLine.TextSize = freeGoal.Position, freeGoal.Size, freeGoal.TextSize
+			discard.Position = discardGoal.Position
+			holder.Size = holderGoal.Size
+		end
+	end
 	local function setMode(newMode: string)
 		if newMode == mode then
 			return
@@ -3190,7 +3344,6 @@ local function buildChestPanel()
 		local wasButton = mode ~= "none"
 		mode = newMode
 		local hasButton = newMode ~= "none"
-		local buying = newMode == "buy"
 		if hasButton and not wasButton then
 			Kit.appear(openButton, { from = 0.9, time = 0.2 })
 		elseif not hasButton and wasButton then
@@ -3205,50 +3358,45 @@ local function buildChestPanel()
 				Kit.disappear(masterTag)
 			end
 		end
-		if buying then
+		if newMode == "buy" then
 			Kit.appear(passLink, { from = 0.9, time = 0.2, delay = 0.05 })
 		elseif passLink.Visible then
 			Kit.disappear(passLink)
 		end
-		local y = BUTTON_Y
-		if hasButton then
-			y += 56 + 8
-		end
-		local freeHeight = if hasButton then 22 else 44
-		Kit.tween(freeLine, 0.25, {
-			Position = UDim2.fromOffset(16, y),
-			Size = UDim2.new(1, -32, 0, freeHeight),
-			TextSize = if hasButton then T.Small else T.Body,
-		})
-		y += freeHeight + 4
-		if buying then
-			passLink.Position = UDim2.new(0.5, 0, 0, y)
-			y += 30 + 2
-		end
-		y += DISCARD_GAP
-		Kit.tween(discard, 0.25, { Position = UDim2.new(0.5, 0, 0, y) })
-		Kit.tween(holder, 0.25, { Size = UDim2.fromOffset(PANEL_W, y + DISCARD_H + 12) })
+		arrange(true)
 	end
 	openButton.Visible = false
 	passLink.Visible = false
-	freeLine.Position = UDim2.fromOffset(16, BUTTON_Y)
-	freeLine.Size = UDim2.new(1, -32, 0, 44)
-	freeLine.TextSize = T.Body
-	holder.Size = UDim2.fromOffset(PANEL_W, BUTTON_Y + 48 + DISCARD_GAP + DISCARD_H + 12)
-
-	local function fullScale(): number
-		return if screen:GetAttribute("Compact") == true then 0.8 else 1
-	end
-	screen:GetAttributeChangedSignal("Compact"):Connect(function()
-		compactScale.Scale = fullScale()
-	end)
-	compactScale.Scale = fullScale()
 
 	-- A window, modal or reveal is up: the card would show through its glass pane (and
 	-- the dim takes its taps anyway), so it parks off the right edge like the HUD groups.
 	local rest = holder.Position
-	local away = UDim2.new(1, PANEL_W + 40, rest.Y.Scale, rest.Y.Offset)
+	local away = rest
+	local parked = false
+	-- Places everything that depends on the card's shape (desktop / phone); the Compact
+	-- scale shrinks the tall desktop card on a short window, the phone card is already small.
+	local crate: Frame? = nil
+	local function place()
+		measure()
+		compactScale.Scale = if not phone and screen:GetAttribute("Compact") == true then 0.8 else 1
+		rest = if phone then UDim2.new(1, -12, 0.5, -14) else UDim2.new(1, -12, 0.5, 30)
+		away = UDim2.new(1, PANEL_W + 40, rest.Y.Scale, rest.Y.Offset)
+		holder.Position = if parked then away else rest
+		halo.Visible = not phone
+		oddsTitle.Visible = not phone
+		oddsWell.Visible = not phone
+		if crate then
+			crate.Visible = not phone
+		end
+		arrange(false)
+	end
+	place()
+	screen:GetAttributeChangedSignal("Compact"):Connect(place)
+	Kit.onInput(function()
+		place()
+	end)
 	Kit.onWindowOpen(function(up: boolean)
+		parked = up
 		Kit.tween(holder, 0.15, { Position = if up then away else rest }, Enum.EasingStyle.Quad)
 	end)
 
@@ -3263,7 +3411,7 @@ local function buildChestPanel()
 			local row = Kit.new("Frame", {
 				Name = "Odds" .. order,
 				BackgroundTransparency = 1,
-				Size = UDim2.new(1, 0, 0, 24),
+				Size = UDim2.new(1, 0, 0, 26),
 				LayoutOrder = order,
 				Parent = odds,
 			})
@@ -3294,6 +3442,7 @@ local function buildChestPanel()
 			Kit.number(row, {
 				Text = "#" .. entry.tier,
 				TextSize = T.Small,
+				MinPx = true,
 				Size = UDim2.new(0, 36, 1, 0),
 				Position = UDim2.fromOffset(24, 0),
 				TextXAlignment = Enum.TextXAlignment.Left,
@@ -3303,7 +3452,8 @@ local function buildChestPanel()
 			Kit.text(row, {
 				Text = Theme.Tiers[entry.tier].Name,
 				Font = Theme.Fonts.UI,
-				TextSize = T.Small,
+				TextSize = 15,
+				MinPx = true,
 				TextWrapped = false,
 				TextTruncate = Enum.TextTruncate.AtEnd,
 				Size = UDim2.new(1, -126, 1, 0),
@@ -3315,6 +3465,7 @@ local function buildChestPanel()
 			Kit.number(row, {
 				Text = entry.chance .. "%",
 				TextSize = T.Body,
+				MinPx = true,
 				Size = UDim2.new(0, 60, 1, 0),
 				Position = UDim2.new(1, -4, 0, 0),
 				AnchorPoint = Vector2.new(1, 0),
@@ -3354,9 +3505,8 @@ local function buildChestPanel()
 		if key ~= shownFor then
 			shownFor = key
 			title.Text = string.upper(rarity .. " " .. W.Chest)
-			title.TextColor3 = Kit.inkOn(color)
-			bandGradient.Color = ColorSequence.new(Kit.lighten(color, 0.22), color)
-			bandStroke.Color = Kit.lip(color)
+			title.TextColor3 = Kit.lighten(color, 0.4)
+			Kit.paintGlass(band, color, nil, color)
 			halo.BackgroundColor3 = Kit.lighten(color, 0.45)
 			if crate then
 				crate:Destroy()
@@ -3368,7 +3518,11 @@ local function buildChestPanel()
 				ZIndex = 2,
 			})
 			crate = icon
-			Kit.appear(icon, { from = 0.6, time = 0.3 })
+			if phone then
+				icon.Visible = false
+			else
+				Kit.appear(icon, { from = 0.6, time = 0.3 })
+			end
 			fillOdds(rarity, data.highestTier)
 		end
 		-- Pass owners open free; everyone else only where paid random items are allowed.

@@ -262,6 +262,10 @@ Theme.Glass = {
 	BlurLight = 12,
 	Dim = 0.55,
 	DimColor = rgb(0, 0, 0),
+	-- A dialog over an open window: its backdrop is deeper (DimOver), so nothing of the window
+	-- reads through the dialog's glass. A window under a reveal fades to RevealDim.
+	DimOver = 0.22,
+	RevealDim = 0.5,
 	-- Share of the safe area a window may cover (Kit.fit), and how far a phone window may
 	-- scale up past its design size so its text grows with it.
 	Fit = 0.92,

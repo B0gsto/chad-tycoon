@@ -703,6 +703,72 @@ function Kit.outlineFor(size: number): number
 	return math.clamp(size / G.TextStrokePer, G.TextStrokeThin, G.TextStrokeMax)
 end
 
+--[[
+	Sizes in screen pixels. A TextSize is in design px: the ScreenGui's UIScale shrinks the
+	1280x720 design on a small screen (x0.57 to 0.66 on a phone) and Kit.fit scales a holder
+	once more, so a 14 px caption can land at 8 px on the glass. Text that has to stay
+	readable names its size on the glass instead:
+	  Kit.pixelScale(gui)       screen px per design px at `gui` (the ScreenGui's UIScale
+	                            times the "Fit" / "Compact" scales above it)
+	  Kit.px(px, design?, gui?) the design size that shows at least `px` on screen there
+	                            (never under `design`)
+	  Kit.captionPx()           the smallest caption: G.TextMin, G.TextMinPhone on touch
+	  Kit.holdText(label, px, design?)  sizes a fixed-size label that way and keeps it so when
+	                            the screen is rescaled (Kit.reflowText, called by Main)
+	Kit.text takes the same as the prop MinPx (a number, or true for a caption).
+]]
+local LAYOUT_SCALES = { "Fit", "Compact" }
+local screenScale: UIScale? = nil
+function Kit.pixelScale(from: Instance?): number
+	local scale = 1
+	local current = from
+	while current do
+		if current.ClassName == "ScreenGui" then
+			-- The first ScreenGui seen (Main registers the game's own) is the one remembered.
+			local own = current:FindFirstChildOfClass("UIScale")
+			screenScale = screenScale or own
+			return math.max(scale * (if own then own.Scale else 1), 0.01)
+		end
+		for _, name in LAYOUT_SCALES do
+			local layout = current:FindFirstChild(name)
+			if layout and layout:IsA("UIScale") then
+				scale *= layout.Scale
+			end
+		end
+		current = current.Parent
+	end
+	-- A label built before its holder is on screen still counts the screen's own scale.
+	if screenScale then
+		scale *= screenScale.Scale
+	end
+	return math.max(scale, 0.01)
+end
+
+function Kit.px(screenPx: number, design: number?, from: Instance?): number
+	return math.max(design or 0, math.ceil(screenPx / Kit.pixelScale(from) - 0.5))
+end
+
+function Kit.captionPx(): number
+	return if Kit.touch then G.TextMinPhone else G.TextMin
+end
+
+type HeldText = { px: number, design: number }
+local heldText: { [TextLabel]: HeldText } = setmetatable({}, { __mode = "k" }) :: any
+function Kit.holdText(label: TextLabel, screenPx: number, design: number?)
+	local held: HeldText = { px = screenPx, design = design or label.TextSize }
+	heldText[label] = held
+	label.TextSize = Kit.px(held.px, held.design, label)
+end
+
+-- The screen was rescaled: every held label takes its size again.
+function Kit.reflowText()
+	for label, held in heldText do
+		if label.Parent then
+			label.TextSize = Kit.px(held.px, held.design, label)
+		end
+	end
+end
+
 function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
 	local fixed = props.TextSize ~= nil and props.TextScaled ~= true
 	local label = Kit.new("TextLabel", {
@@ -717,20 +783,27 @@ function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
 	local maxSize = props.MaxTextSize
 	local strokeThickness = props.StrokeThickness
 	local shadow = props.Shadow
+	local minPx: number? = if props.MinPx == true then Kit.captionPx() else props.MinPx
 	for key, value in props do
-		if key ~= "MaxTextSize" and key ~= "StrokeThickness" and key ~= "Shadow" then
+		if key ~= "MaxTextSize" and key ~= "StrokeThickness" and key ~= "Shadow" and key ~= "MinPx" then
 			(label :: any)[key] = value
 		end
 	end
-	-- Nothing under the smallest readable size (Theme.Glass.TextMin).
+	-- Nothing under the smallest readable size (Theme.Glass.TextMin, in design px; MinPx
+	-- holds a size on the glass).
 	local floor = if Kit.touch then Theme.Glass.TextMin + 1 else Theme.Glass.TextMin
 	if fixed then
 		label.TextSize = math.max(label.TextSize, floor)
+		if minPx then
+			Kit.holdText(label, minPx)
+		end
 	end
 	if maxSize then
+		-- Scaled text may shrink to fit its box, but not under its size on the glass.
+		maxSize = if minPx then Kit.px(minPx, maxSize, label) else maxSize
 		Kit.new("UITextSizeConstraint", {
 			MaxTextSize = math.max(maxSize, floor),
-			MinTextSize = Theme.Glass.TextMinPhone,
+			MinTextSize = if minPx then math.min(Kit.px(minPx, nil, label), math.max(maxSize, floor)) else Theme.Glass.TextMinPhone,
 			Parent = label,
 		})
 	end
@@ -1602,28 +1675,55 @@ function Kit.appear(gui: GuiObject, opts: { [string]: any }?)
 		scale.Scale = o.from or 0.92
 	end
 	gui.Visible = true
-	tweenAfter(scale, time, delay, { Scale = 1 }, o.style or Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-	if o.fade == false and not m.entries then
-		return
+	-- The scale tween is the longest one: the resting look is set when it completes.
+	local last = tweenAfter(scale, time, delay, { Scale = 1 }, o.style or Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+	local tweens: { Tween } = { last }
+	local entries: { FadeEntry }? = nil
+	if o.fade ~= false or m.entries then
+		local fading = m.entries or collectFade(gui)
+		if not resuming then
+			setFade(fading, true)
+		end
+		m.entries = fading
+		entries = fading
+		local fadeTime = time * 0.8
+		for _, entry in fading do
+			table.insert(tweens, tweenAfter(entry.inst, fadeTime, delay, { [entry.prop] = entry.value }))
+		end
 	end
-	local entries = m.entries or collectFade(gui)
-	if not resuming then
-		setFade(entries, true)
-	end
-	m.entries = entries
-	local fadeTime = time * 0.8
-	for _, entry in entries do
-		tweenAfter(entry.inst, fadeTime, delay, { [entry.prop] = entry.value })
-	end
+	-- A timer alone can fire before the tweens' last step after a frame hitch: the entries
+	-- would be dropped while the fade is still part-way, and the next fade or disappear would
+	-- record that half-faded look as the resting one. So the tweens are stopped and the
+	-- resting look is set by hand, once, when the scale tween completes (the timer is only
+	-- the net under a tween that never reports).
+	local settled = false
 	local function settle()
-		if m.token == mine then
+		if settled or m.token ~= mine then
+			return
+		end
+		settled = true
+		-- Another tween took the scale over (a Kit.pop on the way in): it is left alone.
+		local taken = not PREVIEW and last.PlaybackState == Enum.PlaybackState.Cancelled
+		for _, tween in tweens do
+			tween:Cancel()
+		end
+		if not taken then
+			scale.Scale = 1
+		end
+		if entries then
 			m.entries = nil
+			setFade(entries, false)
 		end
 	end
 	if PREVIEW then
 		settle()
 	else
-		task.delay(delay + fadeTime + 0.05, settle)
+		last.Completed:Connect(function(state)
+			if state == Enum.PlaybackState.Completed then
+				settle()
+			end
+		end)
+		task.delay(delay + time + 0.5, settle)
 	end
 end
 
@@ -2599,6 +2699,7 @@ function Kit.pill(parent: Instance, props: { [string]: any }): TextLabel
 		Text = props.Text or "",
 		Font = props.Font or F.UI,
 		TextSize = props.TextSize or Kit.TEXT.Tiny,
+		MinPx = props.MinPx,
 		TextColor3 = props.TextColor or (if solid then Kit.inkOn(color) else Kit.lighten(color, 0.55)),
 		TextWrapped = false,
 		BackgroundTransparency = if solid then 0 else 0.7,
@@ -3100,7 +3201,8 @@ function Kit.fit(holder: GuiObject, screen: Instance, design: Vector2, minSize: 
 				if grow > s then
 					w = math.floor(math.clamp(maxW / grow, minW, design.X))
 					h = math.floor(math.clamp(maxH / grow, minH, design.Y))
-					s = math.min(maxW / w, maxH / h)
+					-- Never past the grow share: a small card (a dialog) stays a card.
+					s = math.min(grow, maxW / w, maxH / h)
 				end
 			end
 		end
@@ -3143,7 +3245,8 @@ end
 ]]
 local openers: { [Instance]: { [string]: boolean } } = setmetatable({}, { __mode = "k" }) :: any
 local openListeners: { (boolean) -> () } = {}
-function Kit.markOpen(screen: Instance, key: string, on: boolean)
+local openWatched: { [Instance]: string } = setmetatable({}, { __mode = "k" }) :: any
+function Kit.markOpen(screen: Instance, key: string, on: boolean, owner: Instance?)
 	local set = openers[screen] or {}
 	openers[screen] = set
 	set[key] = if on then true else nil
@@ -3155,6 +3258,24 @@ function Kit.markOpen(screen: Instance, key: string, on: boolean)
 		end
 	end
 	Kit.hidePlayerList("window", any)
+	Kit.hideTouchControls("window", any)
+	-- `owner` (the opener's own gui) destroyed without closing: the count is given back,
+	-- so the HUD and the touch controls never stay hidden behind a window that is gone.
+	if on and owner and not PREVIEW and openWatched[owner] ~= key then
+		-- Once per owner: a window's holder opens many times under the same key.
+		openWatched[owner] = key
+		pcall(function()
+			local connection: RBXScriptConnection
+			connection = owner.AncestryChanged:Connect(function()
+				if not owner:IsDescendantOf(game) then
+					connection:Disconnect()
+					if set[key] then
+						Kit.markOpen(screen, key, false)
+					end
+				end
+			end)
+		end)
+	end
 end
 
 -- Kit.onWindowOpen(fn): fn(open) runs when the first window or modal opens and when the
@@ -3162,6 +3283,52 @@ end
 -- window, popup or reveal has to remember the HUD.
 function Kit.onWindowOpen(fn: (boolean) -> ())
 	table.insert(openListeners, fn)
+end
+
+--[[
+	Roblox's thumbstick and jump button sit over the lower corners of a phone screen: on a
+	window's footer, its CLAIM / GOT IT / buy buttons and the answers of a dialog. They are
+	hidden (GuiService.TouchControlsEnabled) while any `reason` is on ("window": the one
+	count behind WindowOpen) and the input is touch, and come back when the last reason
+	goes. The wanted state is applied again when the input mode changes and when the
+	character respawns, so a window closed, destroyed or left open across a respawn never
+	leaves the player without controls.
+]]
+local touchReasons: { [string]: boolean } = {}
+local touchHidden = false
+local function applyTouchControls(force: boolean?)
+	if PREVIEW then
+		return
+	end
+	local hide = Kit.touch and next(touchReasons) ~= nil
+	if hide == touchHidden and not force then
+		return
+	end
+	touchHidden = hide
+	pcall(function()
+		GuiService.TouchControlsEnabled = not hide
+	end)
+end
+function Kit.hideTouchControls(reason: string, on: boolean)
+	if on then
+		touchReasons[reason] = true
+	else
+		touchReasons[reason] = nil
+	end
+	applyTouchControls()
+end
+if not PREVIEW then
+	table.insert(inputListeners, function()
+		applyTouchControls()
+	end)
+	task.spawn(function()
+		local player = game:GetService("Players").LocalPlayer
+		if player then
+			player.CharacterAdded:Connect(function()
+				applyTouchControls(true)
+			end)
+		end
+	end)
 end
 
 --[[
@@ -3390,7 +3557,7 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 			return
 		end
 		open = value
-		Kit.markOpen(screen, "Window:" .. name, value)
+		Kit.markOpen(screen, "Window:" .. name, value, holder)
 		if value then
 			holder.Visible = true
 			from = originOf(origin)
