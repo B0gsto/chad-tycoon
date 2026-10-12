@@ -50270,13 +50270,15 @@ return Fans
 	              "StandSpot" beside the bench.
 
 	Jump presses come from UserInputService.JumpRequest, which fires every frame while jump is
-	held: only its rising edge counts (InteractiveRules.newPress). A prop that takes jump for
+	held: only its rising edge counts (InteractiveRules.newPress), and so does Space or gamepad
+	A going down, so that mashing faster than that edge can tell still counts. A prop that takes jump for
 	itself switches the local humanoid's Jumping state off through holdStates, which counts its
 	holders, so the bag and the bench never switch it back on under one another. Not on touch:
 	Roblox hides the jump button of a humanoid that cannot jump, so there the state stays on
 	(a lifter is anchored and cannot hop anyway; at the bag a touch player hops with the punch).
 
-	Avatars are posed like Fx.PlayerPose does it: Motor6D transforms overridden after the
+	Avatars are posed like Fx.PlayerPose does it: joint transforms (of the Motor6Ds, or of the
+	AnimationConstraints an avatar with upgraded joints has instead) overridden after the
 	avatar's own animations have run, from the gym poses in Shared.Poses (R15 only; an R6
 	avatar still bounces, hits and lifts, just without the pose).
 
@@ -50322,13 +50324,17 @@ local BLEND_IN = 0.25 -- seconds for a lifter to settle into the bench press
 local STAND_TIME = 0.5 -- seconds a lifter needs to get up, before jump is theirs again
 local STOP_GAP = 0.4 -- seconds between two asks to stop lifting
 local BAR_TRAVEL = 1.2 -- studs the bar moves over the chest of an avatar that cannot be posed
+local SAME_PRESS = 0.05 -- seconds within which JumpRequest and the key going down are one press
 local MIN_TRAVEL = 1 -- studs the bar moves in a rep at the least, however short the arms
 
 local UPPER_BODY = { "UpperTorso", "Head", "LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand" }
 
 -- The local character ------------------------------------------------------------------------
 
-type Joint = { motor: Motor6D, rot: CFrame, rotInv: CFrame }
+-- A limb's joint to its parent limb: the Motor6D, or on an avatar with upgraded joints the
+-- AnimationConstraint between two rig attachments that stands in for it (C0 = Attachment0,
+-- C1 = Attachment1). Both are animated, and posed, through their Transform.
+type Joint = { motor: Motor6D | AnimationConstraint, c0: CFrame, c1: CFrame, rot: CFrame, rotInv: CFrame }
 type Rig = { joints: { [string]: Joint }, scale: number }
 type Me = { model: Model, humanoid: Humanoid, root: BasePart }
 
@@ -50477,12 +50483,22 @@ local rigs: { [Model]: { rig: Rig?, at: number } } = setmetatable({}, { __mode =
 
 local function collectRig(character: Model): Rig?
 	local joints: { [string]: Joint } = {}
+	local function add(motor: Motor6D | AnimationConstraint, limb: string, c0: CFrame, c1: CFrame)
+		if not joints[limb] and table.find(Poses.LIMBS, limb) then
+			local rot = c0.Rotation
+			joints[limb] = { motor = motor, c0 = c0, c1 = c1, rot = rot, rotInv = rot:Inverse() }
+		end
+	end
 	for _, d in character:GetDescendants() do
-		if d:IsA("Motor6D") and d.Part1 then
-			local limb = d.Part1.Name
-			if not joints[limb] and table.find(Poses.LIMBS, limb) then
-				local rot = d.C0.Rotation
-				joints[limb] = { motor = d, rot = rot, rotInv = rot:Inverse() }
+		if d:IsA("Motor6D") then
+			if d.Part1 then
+				add(d, d.Part1.Name, d.C0, d.C1)
+			end
+		elseif d:IsA("AnimationConstraint") then
+			local a0, a1 = d.Attachment0, d.Attachment1
+			local limb = a1 and a1.Parent
+			if a0 and a1 and limb and limb:IsA("BasePart") then
+				add(d, limb.Name, a0.CFrame, a1.CFrame)
 			end
 		end
 	end
@@ -50492,7 +50508,7 @@ local function collectRig(character: Model): Rig?
 	return { joints = joints, scale = character:GetScale() }
 end
 
--- The R15 joints of `character`, looked up again (at most once a second) when the avatar was
+-- The R15 joints of `character` (Motor6Ds or AnimationConstraints), looked up again (at most once a second) when the avatar was
 -- rebuilt or had not finished loading; nil for an R6 or missing avatar.
 local function rigFor(character: Model, now: number): Rig?
 	local entry = rigs[character]
@@ -50528,7 +50544,9 @@ local function poseRig(rig: Rig, a: { [string]: CFrame }, b: { [string]: CFrame 
 			continue
 		end
 		local transform = jointTransform(rig, joint, limb, a[limb]:Lerp(b[limb], alpha))
-		joint.motor.Transform = if weight >= 1 then transform else joint.motor.Transform:Lerp(transform, weight)
+		-- Both joint classes have Transform; the union hides it from the type checker.
+		local motor = joint.motor :: any
+		motor.Transform = if weight >= 1 then transform else motor.Transform:Lerp(transform, weight)
 	end
 end
 
@@ -50547,8 +50565,7 @@ local function handsCentre(rig: Rig, a: { [string]: CFrame }, b: { [string]: CFr
 			if not joint or not joint.motor.Parent then
 				return nil
 			end
-			local motor = joint.motor
-			frame = frame * motor.C0 * jointTransform(rig, joint, limb, a[limb]:Lerp(b[limb], alpha)) * motor.C1:Inverse()
+			frame = frame * joint.c0 * jointTransform(rig, joint, limb, a[limb]:Lerp(b[limb], alpha)) * joint.c1:Inverse()
 		end
 		sum += frame.Position
 	end
@@ -50560,7 +50577,7 @@ local function restRig(rig: Rig, limbs: { string })
 	for _, limb in limbs do
 		local joint = rig.joints[limb]
 		if joint and joint.motor.Parent then
-			joint.motor.Transform = CFrame.identity
+			(joint.motor :: any).Transform = CFrame.identity
 		end
 	end
 end
@@ -51455,14 +51472,13 @@ function Interactive.init()
 	task.spawn(function()
 		actionRemote = Net.event("Action")
 	end)
-	-- JumpRequest fires every frame while jump is held: props get its rising edge.
-	UserInputService.JumpRequest:Connect(function()
-		local now = os.clock()
-		local fresh = Rules.newPress(lastJumpRequest, now)
-		lastJumpRequest = now
-		if not fresh then
+	-- Hands a new jump press to the props (once, when both signals below report it).
+	local lastPress = -math.huge
+	local function press(now: number)
+		if now - lastPress < SAME_PRESS then
 			return
 		end
+		lastPress = now
 		for instance, handler in live do
 			if handler.pressed then
 				local ok, err = pcall(handler.pressed :: any, now)
@@ -51470,6 +51486,25 @@ function Interactive.init()
 					report(instance.Name, err)
 				end
 			end
+		end
+	end
+	-- JumpRequest fires every frame while jump is held: props get its rising edge.
+	UserInputService.JumpRequest:Connect(function()
+		local now = os.clock()
+		local fresh = Rules.newPress(lastJumpRequest, now)
+		lastJumpRequest = now
+		if fresh then
+			press(now)
+		end
+	end)
+	-- The jump key or button going down is a new press however short the pause before it:
+	-- mashing can leave gaps too short to tell from a held key by JumpRequest alone.
+	UserInputService.InputBegan:Connect(function(input: InputObject)
+		local key = input.KeyCode
+		if (key == Enum.KeyCode.Space or key == Enum.KeyCode.ButtonA) and not UserInputService:GetFocusedTextBox() then
+			local now = os.clock()
+			lastJumpRequest = now
+			press(now)
 		end
 	end)
 	-- A new character starts clean: its connections go with the old one.
