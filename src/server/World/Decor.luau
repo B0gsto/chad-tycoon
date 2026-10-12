@@ -1,9 +1,9 @@
 --[[
 	Decor: everything painted on a plot's floor (the courts under each group of pads, the cream
 	path from the entrance to the merge court and on to both side courts, its chevrons), the
-	sunny gym dressing in the areas the courts leave free (palms and speakers at the entrance, a
-	bench press, palms and water breaks between the machines), the interactive props along the
-	front fence and the two fan zones beside the display ledge.
+	sunny gym dressing in the areas the courts leave free (a palm each side of the entrance, a
+	bench press, a palm by each side fence), the interactive props along the front fence and
+	the two fan zones beside the display ledge. The plot is kept calm: few props, open floor.
 	Part of the world generator; see Server.WorldBuilder for the overview and plot axes.
 
 	Gym props are Models named Prop_<Kind> with attribute Mesh = "<Kind>" (and Scale) whose
@@ -172,7 +172,6 @@ local FOOTPRINT: { [string]: Vector2 } = {
 	WaterCooler = Vector2.new(0.8, 1.2),
 	PalmPlanter = Vector2.new(1.6, 1.6),
 	Speaker = Vector2.new(1.0, 0.9),
-	TowelStack = Vector2.new(1.0, 0.75),
 }
 
 local function dumbbellParts(k: Kit, frame: CFrame, tint: Color3, d: number)
@@ -301,14 +300,6 @@ PROP_BUILDERS.Speaker = function(k, tint)
 	cyl(k, "SpeakerTweeter", 0.22, 0.45, at(0, 2.8, -0.78) * ALONG_Z, color("Sunny"))
 end
 
--- Three folded towels, the folds on the -Z face.
-PROP_BUILDERS.TowelStack = function(k, tint)
-	for i, towel in { tint, color("White"), color("Sunny") } do
-		local inset = (i - 1) * 0.1
-		block(k, "Towel", Vector3.new(2 - inset, 0.7, 1.5 - inset), at(0, 0.35 + (i - 1) * 0.72, 0), towel, Enum.Material.Fabric)
-	end
-end
-
 -- Props that block the player; the rest are small and walk-through.
 local SOLID = {
 	DumbbellRack = true,
@@ -318,7 +309,6 @@ local SOLID = {
 	WaterCooler = true,
 	PalmPlanter = true,
 	Speaker = true,
-	TowelStack = true,
 }
 
 export type PropOptions = { y: number?, scale: number?, tint: Color3? }
@@ -429,9 +419,9 @@ local function paintRounded(B: Builder, parent: Instance, name: string, r: Rect,
 	end
 end
 
--- Width of the white line round a court or mat.
-local COURT_LINE = 0.45
-local COURT_CORNER = 2.6
+-- Width of the white line round a court or mat, and a court's corner radius.
+local COURT_LINE = Layout.COURT_LINE
+local COURT_CORNER = 3
 
 -- A painted court covering `r`: a rounded mat with a white border line.
 local function paintCourt(B: Builder, parent: Instance, r: Rect, tint: Color3)
@@ -464,51 +454,58 @@ local function chevron(B: Builder, parent: Instance, tipX: number, tipZ: number,
 	end
 end
 
--- A pad colour softened toward cream: the fill of the court its pads stand on.
-local function courtTint(job: string, mix: number): Color3
-	local pads = theme.World and theme.World.Pads
-	local base: Color3 = if pads and pads[job] then pads[job] else WHITE
-	return base:Lerp(color("Cream"), mix)
+-- A court's fill: a palette colour taken a little toward cream, so it stays clearly coloured
+-- against the honey sand while the pads (in their own brighter colours, dark rims) still pop.
+local function courtTint(key: string, mix: number): Color3
+	return color(key):Lerp(color("Cream"), mix)
 end
 
--- The painted courts (Layout.COURTS): butter under the buy row, peach under the crate stations,
--- aqua under the aura -> cash stations and a round coral one under the merge pad. White lines
--- across the side courts split them into one bay per station.
+-- Plot-local Z of the two lines that split a side court into its three station bays: half-way
+-- between the pad bases of neighbouring stations on the -X court (the +X stations mirror them).
+local function bayLines(): (number, number)
+	local pads = Layout.PADS
+	local function rim(name: string): Rect
+		return Layout.padRect(pads[name], Layout.PAD_RIM)
+	end
+	return (rim("Deposit").minZ + rim("ProcUp10").maxZ) / 2, (rim("ProcUp1").minZ + rim("Collect").maxZ) / 2
+end
+
+-- The painted courts (Layout.COURTS): sunny yellow under the buy row, coral under the crate
+-- stations, teal under the aura -> cash stations and a round orange one under the merge pad.
+-- White lines across the side courts split them into one bay per station.
 local function buildCourts(B: Builder, parent: Instance)
 	local courts = Layout.COURTS
-	paintCourt(B, parent, courts.Buy, courtTint("Buy", 0.45))
-	paintCourt(B, parent, courts.Crates, courtTint("Unlock", 0.6))
-	paintCourt(B, parent, courts.Cash, courtTint("Collect", 0.4))
+	paintCourt(B, parent, courts.Buy, courtTint("Sunny", 0.12))
+	paintCourt(B, parent, courts.Crates, courtTint("Coral", 0.3))
+	paintCourt(B, parent, courts.Cash, courtTint("Teal", 0.22))
 	local merge = Layout.MERGE_COURT
-	paintRoundCourt(B, parent, "MergeCourt", merge.x, merge.z, merge.radius, courtTint("Merge", 0.5))
+	paintRoundCourt(B, parent, "MergeCourt", merge.x, merge.z, merge.radius, courtTint("Orange", 0.15))
 
-	-- Bay lines half-way between the deposit pad and its neighbours, mirrored on the +X court.
-	local pads = Layout.PADS
-	local deposit = Layout.padRect(pads.Deposit, Layout.PAD_RIM)
-	local backBay = (Layout.padRect(pads.ProcUp1, Layout.PAD_RIM).minZ + deposit.maxZ) / 2
-	local frontBay = (deposit.minZ + Layout.padRect(pads.Collect, Layout.PAD_RIM).maxZ) / 2
-	local inset = 1.4
+	local backBay, frontBay = bayLines()
+	local inset = 2
 	for _, r in { courts.Cash, courts.Crates } do
 		for _, z in { backBay, frontBay } do
-			paintRect(B, parent, "CourtBayLine", Layout.rect(r.minX + inset, r.maxX - inset, z - 0.2, z + 0.2), MARK_TOP, color("White"))
+			paintRect(B, parent, "CourtBayLine", Layout.rect(r.minX + inset, r.maxX - inset, z - 0.25, z + 0.25), MARK_TOP, color("White"))
 		end
 	end
-	-- The loop's last leg, deposit -> collect: two chevrons either side of the front bay line.
-	for _, tipZ in { frontBay + 1.4, frontBay - 2 } do
-		chevron(B, parent, pads.Collect.x, tipZ, 0, -1, color("White"))
+	-- The loop's last leg, down the court to the collect pad: two chevrons either side of the
+	-- front bay line.
+	for _, tipZ in { frontBay + 1.5, frontBay - 2.1 } do
+		chevron(B, parent, Layout.PADS.Collect.x, tipZ, 0, -1, color("White"))
 	end
 end
 
 -- Paths -------------------------------------------------------------------------------------
 
--- The cream path with a thin teal kerb: a stem from the entrance to the plaza along the pen's
--- front (Layout.PLAZA), which joins both side courts with the merge court on the junction.
--- Chevrons show the way: up the stem to the merge pad, then out along the plaza to the deposit
--- pad (-X) and the crate stations (+X).
+-- The cream path with a thin teal kerb: a wide stem from the entrance to the plaza along the
+-- pen's front (Layout.PLAZA), which joins both side courts with the merge court on the
+-- junction. Chevrons show the way: up the stem to the merge pad, then out along the plaza to
+-- the deposit pad (-X) and the crate stations (+X).
 local function buildPath(B: Builder, parent: Instance)
-	local half = Layout.WALKWAY.maxX - 0.4
+	-- Wider than the walkway PlotLayout keeps clear: the floor either side of it is open too.
+	local half = Layout.WALKWAY.maxX + 1.5
 	local plaza = Layout.PLAZA
-	local kerb = 0.35
+	local kerb = 0.45
 	-- The plaza's ends run a little way under the side courts' border lines.
 	local tuck = 0.3
 	local cream, edge = color("Cream"), color("Teal")
@@ -524,13 +521,16 @@ local function buildPath(B: Builder, parent: Instance)
 	)
 	paintRect(B, parent, "PathStrip", Layout.rect(plaza.minX - tuck, plaza.maxX + tuck, plaza.minZ, plaza.maxZ), PATH_TOP, cream)
 
+	-- Three chevrons up the stem, evenly spaced from the entrance to the merge court.
 	local mark = color("TealLight")
-	for _, tipZ in { -30, -23.5, -17 } do
-		chevron(B, parent, 0, tipZ, 0, 1, mark)
+	local stemEnd = Layout.MERGE_COURT.z - Layout.MERGE_COURT.radius
+	local step = (stemEnd + Layout.INNER_HALF) / 4
+	for i = 1, 3 do
+		chevron(B, parent, 0, -Layout.INNER_HALF + i * step, 0, 1, mark)
 	end
 	local plazaZ = (plaza.minZ + plaza.maxZ) / 2
 	for _, side in { -1, 1 } do
-		for _, reach in { 1.6, 4.2 } do
+		for _, reach in { 2, 5.5 } do
 			chevron(B, parent, side * (plaza.maxX - reach), plazaZ, side, 0, mark)
 		end
 	end
@@ -545,30 +545,28 @@ local function floorMat(B: Builder, parent: Instance, x: number, z: number, sx: 
 	paintRect(B, parent, "GymMat", r, COURT_TOP, tint)
 end
 
--- Symmetric dressing in the areas the courts leave free; the Blender meshes (World.Props) carry
--- their own colours, the tints paint the part-built fallbacks.
+-- A little symmetric dressing in the areas the courts leave free; the Blender meshes
+-- (World.Props) carry their own colours, the tints paint the part-built fallbacks.
 local function buildGymProps(B: Builder, parent: Instance)
-	-- Front fence: a palm and a speaker each side of the entrance, all at least ENTRANCE_CLEAR
-	-- studs off the centre line so the spawn camera (Fx.Camera) sees the pen past them.
+	-- Front fence: a palm each side of the entrance, at least ENTRANCE_CLEAR studs off the
+	-- centre line so the view up the path to the pen stays open.
+	local fenceZ = -Layout.INNER_HALF + 2.4
 	for _, side in { 1, -1 } do
-		placeProp(B, parent, "PalmPlanter", side * (ENTRANCE_CLEAR + 1.6), -37.6, side * 20, { tint = color("Sunny") })
-		placeProp(B, parent, "Speaker", side * (ENTRANCE_CLEAR + 4.8), -38.8, 180 - side * 15, { tint = color("Teal") })
+		placeProp(B, parent, "PalmPlanter", side * (ENTRANCE_CLEAR + 3), fenceZ, side * 20, { tint = color("Sunny") })
 	end
 
-	-- Front fence, -X side: a bench press on a teal mat, its rack against the fence (the punch
-	-- bag's mat mirrors it on the +X side).
-	floorMat(B, parent, -25, -35.5, 8, 7.4, color("Mat"))
-	placeProp(B, parent, "Bench", -25, -35, 180, { tint = color("Coral") })
-	placeProp(B, parent, "Barbell", -25, -37.2, 0, { y = 2.6, tint = color("Sunny") })
+	-- Front fence, -X side: a bench press on a teal mat, its rack toward the fence, mirroring
+	-- the punch bag's mat on the +X side.
+	local bag = Layout.INTERACTIVE.PunchBag
+	floorMat(B, parent, -bag.x, bag.z, 8, 7.4, color("Mat"))
+	placeProp(B, parent, "Bench", -bag.x, bag.z + 0.5, 180, { tint = color("Coral") })
+	placeProp(B, parent, "Barbell", -bag.x, bag.z - 1.7, 0, { y = 2.6, tint = color("Sunny") })
 
-	-- Along both side fences, in the gaps between the machines: a palm between the back and
-	-- middle stations (leaning in toward the pen) and a water break between the middle and
-	-- front ones, facing the pads.
+	-- By each side fence: one palm in the machine line, on the bay line between the back and
+	-- middle stations, leaning in toward the pen.
+	local backBay = bayLines()
 	for _, side in { 1, -1 } do
-		local facing = side * 90
-		placeProp(B, parent, "PalmPlanter", side * 34.6, -5.35, 90 + facing, { scale = 0.9, tint = color("Sunny") })
-		placeProp(B, parent, "WaterCooler", side * 35.2, -19.6, facing, { tint = color("Blue") })
-		placeProp(B, parent, "TowelStack", side * 35.2, -21.9, facing, { tint = color("TealLight") })
+		placeProp(B, parent, "PalmPlanter", side * 42.5, backBay, 90 + side * 90, { tint = color("Sunny") })
 	end
 end
 
@@ -802,11 +800,10 @@ local function dressFanZone(B: Builder, parent: Instance, side: number)
 	local frontZ = zone.minZ - 0.1
 	local k: Kit = { B = B, parent = parent, base = B.cf, scale = 1, solid = true }
 
-	-- "FAN ZONE" card between a post just off the display side and one by the fence.
-	-- The card spans the full corner width.
+	-- "FAN ZONE" card across the zone's front, between a post just off each of its sides.
 	local cardHeight = 6.9
 	local cardInnerX = innerX - side * 0.35
-	local cardOuterX = side * (Layout.INNER_HALF - 0.75)
+	local cardOuterX = (if side > 0 then zone.maxX else zone.minX) + side * 0.35
 	for _, px in { cardInnerX, cardOuterX } do
 		cardPost(k, px, frontZ, cardHeight)
 	end

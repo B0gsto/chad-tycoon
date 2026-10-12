@@ -1095,8 +1095,14 @@ local function insidePlot(r: any): boolean
 	return r.minX >= -inner and r.maxX <= inner and r.minZ >= -inner and r.maxZ <= inner
 end
 
-test("plot layout: compact plot and pen", function()
-	check(Layout.PLOT_HALF >= 38 and Layout.PLOT_HALF <= 42, "compact plot")
+test("plot layout: plot size and pen", function()
+	-- A roomy plot: about a quarter wider and deeper than the first, compact one (half 42).
+	check(Layout.PLOT_HALF >= 50 and Layout.PLOT_HALF <= 54, "roomy plot")
+	check(Layout.INNER_HALF >= Layout.PLOT_HALF - 3, "thin fences")
+	-- The rack still stands against the back fence, the gutter and pen right in front of it.
+	check(Layout.INNER_HALF - Layout.MACHINES.Shelves.maxZ <= 2, "rack against the back fence")
+	near(Layout.GUTTER.rect.maxZ, Layout.SHELF.frontZ, "gutter at the foot of the rack")
+	near(Layout.SHELF.frontZ - Layout.PEN.interior.maxZ, 6, "pen keeps its place in front of the rack")
 	check(Layout.INNER_HALF < Layout.PLOT_HALF, "fences inside the plot edge")
 	local pen = Layout.PEN
 	local inner = pen.interior
@@ -1553,7 +1559,7 @@ end)
 
 test("plot layout: courts, plaza and interactive props", function()
 	local P = Layout.PADS
-	local line = 0.45
+	local line = Layout.COURT_LINE
 	local onCourt: { [string]: string } = {}
 	local courtNames = {}
 	for name, court in Layout.COURTS do
@@ -1696,7 +1702,16 @@ test("plot layout: courts, plaza and interactive props", function()
 	end
 	-- The stations mirror each other across the centre line, row by row.
 	near(P.Unlock1.x, -P.ProcUp1.x, "back stations mirror")
-	near(P.Unlock2.z, P.Deposit.z, "middle stations level")
+	near(P.Unlock1.z, P.Deposit.z, "back stations level")
+	near(P.Unlock2.z, (P.ProcUp1.z + P.ProcUp10.z) / 2, "middle stations level")
+	-- The deposit pad, the first stop after merging, is level with the plaza.
+	check(P.Deposit.z > plaza.minZ and P.Deposit.z < plaza.maxZ, "deposit pad level with the plaza")
+	-- Open floor round the pen: the side courts stand well clear of its walls and stairs.
+	for _, stair in Layout.PEN_STAIRS do
+		for _, name in { "Cash", "Crates" } do
+			check(not Layout.overlaps(Layout.COURTS[name], stair.rect, 6), name .. " court well clear of the pen stairs")
+		end
+	end
 	near(P.Free.z, P.Collect.z, "front stations level")
 	near(P.Free.x, -P.Collect.x, "front stations mirror")
 end)
@@ -4776,8 +4791,12 @@ test("Game modes: a second plaza mirrored on the hub's +X side", function()
 			check(r.x1 < px - half or r.x0 > px + half or r.z1 < pz - half or r.z0 > pz + half, "plaza 2 clear of plot " .. index)
 		end
 	end
-	check(C.SPUR2.x0 >= spacing + 19 + 5 - 1e-6, "spur 2 starts at the hub ring's outer edge")
-	check(q.x1 + 20 < 219, "plaza 2 stays on the island")
+	near(C.SPUR2.x0, spacing + 19 + 5, "spur 2 starts at the hub ring's outer edge")
+	-- World.Hub ISLAND_RADIUS: past the far corners of the outer plots, plus the beach.
+	local island = math.ceil(math.sqrt((spacing + half) ^ 2 + (rowZ + half) ^ 2)) + 22
+	check(math.sqrt(q.x1 ^ 2 + q.z1 ^ 2) + 20 < island, "plaza 2 stays on the island")
+	check(math.abs(C.BIG_SIGN2.x) + 20 < island, "big sign 2 stays on the island")
+	check(C.WATER_RADIUS >= island and C.WATER_RADIUS <= island + 8, "the sea line follows the island's shore")
 end)
 
 test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", function()

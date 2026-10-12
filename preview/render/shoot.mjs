@@ -211,33 +211,34 @@ function shotList(world) {
 	const plot = world.plots[0];
 	const P = (x, y, z) => toWorld(plot, [x, y, z]);
 	// Behind the main player, who wades through the orb pool toward the bleachers.
-	const play = { pos: P(-5, 21, -31), look: P(0, 2, 17), fov: 58 };
+	const play = { pos: P(-5, 21, -21), look: P(0, 2, 27), fov: 58 };
 	// The fresh tutorial player owns plot 4.
 	const fresh = world.plots[3];
 	const F = (x, y, z) => toWorld(fresh, [x, y, z]);
-	const tutorial = { pos: F(-4, 20, -36), look: F(12, 1, 8), fov: 56 };
+	const tutorial = { pos: F(-4, 20, -26), look: F(12, 1, 18), fov: 56 };
 	// PLOT_SHOTS=1: six fixed views of the main player's plot, for comparing plot layouts
-	// (preview/plot-shots.sh).
+	// (preview/plot-shots.sh). Framed for the 104-stud plot (PlotLayout.PLOT_HALF = 52, the
+	// pen 10 studs in front of the plot's centre): scale them with the plot if it changes.
 	if (process.env.PLOT_SHOTS) {
-		const span = { shadowSpan: 120 };
+		const span = { shadowSpan: 150 };
 		return [
-			{ name: "plot-1-overview", scene: "world", gui: "none", camera: { pos: P(0, 50, -68), look: P(0, 0, 8), fov: 60 }, extra: span },
+			{ name: "plot-1-overview", scene: "world", gui: "none", camera: { pos: P(0, 62, -84), look: P(0, 0, 10), fov: 60 }, extra: span },
 			{ name: "plot-2-play", scene: "world", gui: "none", camera: play, extra: span },
-			{ name: "plot-3-left-wing", scene: "world", gui: "none", camera: { pos: P(-16, 17, -24), look: P(26, 1, -4), fov: 58 }, extra: span },
-			{ name: "plot-4-right-wing", scene: "world", gui: "none", camera: { pos: P(16, 17, -24), look: P(-26, 1, -4), fov: 58 }, extra: span },
-			{ name: "plot-5-from-rack", scene: "world", gui: "none", camera: { pos: P(0, 24, 22), look: P(0, 0, -22), fov: 62 }, extra: span },
-			{ name: "plot-6-plan", scene: "world", gui: "none", camera: { pos: P(0, 118, -14), look: P(0, 0, -2), fov: 42 }, extra: span },
+			{ name: "plot-3-left-wing", scene: "world", gui: "none", camera: { pos: P(-20, 21, -30), look: P(33, 1, -6), fov: 58 }, extra: span },
+			{ name: "plot-4-right-wing", scene: "world", gui: "none", camera: { pos: P(20, 21, -30), look: P(-33, 1, -6), fov: 58 }, extra: span },
+			{ name: "plot-5-from-rack", scene: "world", gui: "none", camera: { pos: P(0, 30, 32), look: P(0, 0, -24), fov: 62 }, extra: span },
+			{ name: "plot-6-plan", scene: "world", gui: "none", camera: { pos: P(0, 146, -17), look: P(0, 0, -2), fov: 42 }, extra: span },
 		];
 	}
 	return [
-		{ name: "01-overview", scene: "world", gui: "none", camera: { pos: [-24, 180, -235], look: [0, 0, 30], fov: 55 }, extra: { shadowSpan: 320 } },
-		{ name: "02-your-plot", scene: "world", gui: "none", camera: { pos: P(0, 50, -68), look: P(0, 0, 8), fov: 60 }, extra: { shadowSpan: 120 } },
+		{ name: "01-overview", scene: "world", gui: "none", camera: { pos: [-29, 216, -282], look: [0, 0, 36], fov: 55 }, extra: { shadowSpan: 380 } },
+		{ name: "02-your-plot", scene: "world", gui: "none", camera: { pos: P(0, 62, -84), look: P(0, 0, 10), fov: 60 }, extra: { shadowSpan: 150 } },
 		{ name: "03-gameplay-hud", scene: "world", gui: "hud", camera: play },
 		{ name: "04-shop", scene: "world", gui: "shop", camera: play },
 		{ name: "05-index", scene: "world", gui: "index", camera: play },
 		{ name: "06-ranking", scene: "world", gui: "ranking", camera: play },
 		{ name: "07-new-unit-reward", scene: "world", gui: "reward", camera: play },
-		{ name: "08-holding-crate", scene: "world_held", gui: "crate", camera: { pos: P(2, 9, -36), look: P(16, 2, -14), fov: 58 } },
+		{ name: "08-holding-crate", scene: "world_held", gui: "crate", camera: { pos: P(-1, 9, -31), look: P(13, 2, -9), fov: 58 } },
 		{ name: "09-settings", scene: "world", gui: "settings", camera: play },
 		{ name: "10-all-25-tiers", scene: "showcase", gui: "none", camera: { pos: [0, 23, 1000 - 61], look: [0, 7.5, 1004], fov: 56 }, extra: { shadowSpan: 80 } },
 		{ name: "11-tutorial", scene: "world_tutorial", gui: "tutorial", camera: tutorial },
@@ -245,10 +246,10 @@ function shotList(world) {
 		{ name: "13-loading-screen", scene: "world", gui: "loading", camera: play },
 		{ name: "14-offline-earnings", scene: "world", gui: "offline", camera: play },
 		// Close-ups for art review (no UI).
-		{ name: "16-pen", scene: "world", gui: "none", camera: { pos: P(19, 11, -9), look: P(0, 2, 15), fov: 55 }, extra: { shadowSpan: 90 } },
-		{ name: "17-stage", scene: "world", gui: "none", camera: { pos: P(0, 13, 1), look: P(0, 8, 32), fov: 62 }, extra: { shadowSpan: 90 } },
-		{ name: "18-machines", scene: "world", gui: "none", camera: { pos: P(-4, 14, -30), look: P(-34, 3, -8), fov: 58 }, extra: { shadowSpan: 90 } },
-		{ name: "19-entrance", scene: "world", gui: "none", camera: { pos: P(10, 9, -62), look: P(0, 6, -20), fov: 58 }, extra: { shadowSpan: 120 } },
+		{ name: "16-pen", scene: "world", gui: "none", camera: { pos: P(19, 11, 1), look: P(0, 2, 25), fov: 55 }, extra: { shadowSpan: 90 } },
+		{ name: "17-stage", scene: "world", gui: "none", camera: { pos: P(0, 13, 11), look: P(0, 8, 42), fov: 62 }, extra: { shadowSpan: 90 } },
+		{ name: "18-machines", scene: "world", gui: "none", camera: { pos: P(-6, 17, -34), look: P(-40, 3, -10), fov: 58 }, extra: { shadowSpan: 90 } },
+		{ name: "19-entrance", scene: "world", gui: "none", camera: { pos: P(10, 9, -72), look: P(0, 6, -30), fov: 58 }, extra: { shadowSpan: 120 } },
 		{ name: "20-hub", scene: "world", gui: "none", camera: { pos: [22, 26, -58], look: [0, 8, 0], fov: 58 }, extra: { shadowSpan: 160 } },
 		{ name: "21-shop-cosmetics", scene: "world", gui: "shop_cosmetics", camera: play },
 		{ name: "22-shop-cash", scene: "world", gui: "shop_cash", camera: play },

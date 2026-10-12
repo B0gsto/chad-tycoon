@@ -222,8 +222,8 @@ local function buildPlot(index: number): Plot
 		labels.DepositNext = hiddenLabel(depositPad.part)
 	end
 
-	-- Processing machine (-X court, beside the pen) with its upgrade pads in front of it. Its
-	-- board stands behind the counter, above the belt, facing the pads and the pen (+X).
+	-- Processing machine (-X court, middle station) with its upgrade pads in front of it. Its
+	-- board stands behind the counter, above the belt, facing the pads and the path (+X).
 	do
 		buildProcessor(B)
 		local proc = Layout.MACHINES.Processor
