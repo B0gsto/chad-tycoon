@@ -8,8 +8,8 @@
 	Look: the key art covers the screen with its hero (Chad on the stage) kept
 	clear in the middle; the logo sits at the top centre over the sky, bobbing,
 	with twinkles and a shine sweep; one band along the bottom holds the
-	tagline, a chunky sunny progress bar (the status inside it, an aura orb
-	riding its leading edge) and the tip card. Aura orbs drift up round the
+	tagline, a chunky sunny progress bar (an aura orb riding its leading edge),
+	the status under it and the tip card. Aura orbs drift up round the
 	hero. Only the bottom of the art is shaded, so the beach keeps its colour.
 	Without art ids it keeps the code-drawn sky gradient, bands and title text.
 	Art fades in only once its image has loaded; the whole screen fades out.
@@ -62,11 +62,12 @@ local WHITE = Color3.new(1, 1, 1)
 local UNLOADED = 0.99
 
 -- Design pixels: the logo box (scaled to the viewport) and the bottom band
--- (tagline, bar, tip card; scaled a little larger on phones so it stays readable).
+-- (tagline, bar, status, tip card; scaled a little larger on phones so it stays readable).
 local LOGO = Vector2.new(430, 215)
-local BAND = Vector2.new(640, 134)
+local BAND = Vector2.new(640, 162)
 local BAR = Vector2.new(640, 36)
 local BAR_Y = 36
+local STATUS_Y = 82
 
 -- The key art: its aspect, and where the hero group (Chad's hair down to the
 -- stage) sits as fractions of its height. art/blender/brand/brand.py prints
@@ -324,7 +325,7 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	local titleStroke = stroke(title, 5, colors.Ink)
 	local titleGradient = new("UIGradient", { Rotation = 90, Parent = title })
 
-	-- Bottom band: tagline, progress bar, tip card.
+	-- Bottom band: tagline, progress bar, status, tip card.
 	local bottom = new("Frame", {
 		Name = "Bottom",
 		BackgroundTransparency = 1,
@@ -401,7 +402,8 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	})
 	local rider = image("Rider", bottom, { ImageTransparency = 1, Size = UDim2.fromOffset(50, 50) })
 
-	-- The status reads over the bar and the rider.
+	-- The status has its own line under the bar, clear of the rider (inside the
+	-- bar the orb crossed the words and the white text washed out on the fill).
 	local status = new("TextLabel", {
 		Name = "Status",
 		BackgroundTransparency = 1,
@@ -409,8 +411,8 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		Font = Enum.Font.FredokaOne,
 		TextSize = 18,
 		TextColor3 = WHITE,
-		Size = UDim2.fromOffset(BAR.X, BAR.Y),
-		Position = UDim2.new(0.5, 0, 0, BAR_Y),
+		Size = UDim2.fromOffset(BAR.X, 22),
+		Position = UDim2.new(0.5, 0, 0, STATUS_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = bottom,
 	})
