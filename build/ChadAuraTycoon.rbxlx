@@ -76451,10 +76451,24 @@ local MAX_TOASTS = 4
 -- and content stay clear.
 local TOAST_TOP = 6
 local HEADER_CLEAR = 16
+-- Errors and warnings ("Not enough cash", "Rack full") answer what the player just did:
+-- they never wait behind an open window. Over one they show at once on a layer above every
+-- window, modal and dim (TOAST_FRONT): in the top slot when a toast fits above the window
+-- (the informational ones there step out and wait), else along the bottom of the safe area.
+local URGENT: { [string]: boolean } = { bad = true, warn = true }
+local TOAST_FRONT = 100
 
 type HeldToast = { text: string, tone: string? }
 local toasts: { Frame } = {}
+-- Urgent toasts along the bottom edge (newest lowest), in their own holder.
+local lowToasts: { Frame } = {}
 local toastInfo: { [Frame]: HeldToast } = {}
+local frontHolder: Frame
+local lowHolder: Frame
+
+local function isUrgent(tone: string?): boolean
+	return tone ~= nil and URGENT[tone] == true
+end
 -- Toasts that wait (the last MAX_TOASTS). A unit reveal owns the screen (setReveal): the
 -- toasts on screen hide and new ones wait, then drop in once it has gone. Over an open
 -- window, the ones there is no room for above it wait until it closes.
@@ -76527,29 +76541,49 @@ end
 
 -- Glides every toast to its slot; `fresh` (the one dropping in) takes the quicker ease.
 local function placeToasts(fresh: Frame?)
+	-- The top stack is one list in two holders of the same place and size (the usual one
+	-- and the front layer), so its toasts never overlap whichever they are in.
 	for i = #toasts, 1, -1 do
-		if toasts[i].Parent ~= toastHolder then
+		if toasts[i].Parent ~= toastHolder and toasts[i].Parent ~= frontHolder then
 			table.remove(toasts, i)
 		end
 	end
-	for index, toast in toasts do
-		local goal = { Position = UDim2.new(0.5, 0, 0, (index - 1) * TOAST_STEP) }
+	for i = #lowToasts, 1, -1 do
+		if lowToasts[i].Parent ~= lowHolder then
+			table.remove(lowToasts, i)
+		end
+	end
+	local function glide(toast: Frame, goal: { [string]: any })
 		if toast == fresh then
 			Kit.tween(toast, TOAST_IN, goal, Enum.EasingStyle.Quad)
 		else
 			Kit.tween(toast, 0.26, goal, Enum.EasingStyle.Quint)
 		end
 	end
+	for index, toast in toasts do
+		glide(toast, { Position = UDim2.new(0.5, 0, 0, (index - 1) * TOAST_STEP) })
+	end
+	-- The bottom stack grows upward from the edge.
+	for index, toast in lowToasts do
+		glide(toast, { Position = UDim2.new(0.5, 0, 1, -(index - 1) * TOAST_STEP) })
+	end
 end
 
 local function dismissToast(toast: Frame)
+	local low = false
 	local index = table.find(toasts, toast)
+	if not index then
+		index = table.find(lowToasts, toast)
+		low = true
+	end
 	if not index then
 		return
 	end
-	table.remove(toasts, index)
+	table.remove(if low then lowToasts else toasts, index)
 	toastInfo[toast] = nil
-	Kit.tween(toast, 0.2, { Position = toast.Position + UDim2.fromOffset(0, -TOAST_SLIDE) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	-- Out the way it came: up from the top stack, down from the bottom one.
+	local slide = if low then TOAST_SLIDE else -TOAST_SLIDE
+	Kit.tween(toast, 0.2, { Position = toast.Position + UDim2.fromOffset(0, slide) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	Kit.disappear(toast, { time = 0.2, to = 0.97, destroy = true })
 	placeToasts()
 	-- Its slot is free once it has faded: the next waiting toast takes it.
@@ -76558,12 +76592,44 @@ local function dismissToast(toast: Frame)
 	end
 end
 
+-- Keeps the top stack inside its room over a window: the informational toasts past it
+-- (the oldest first) step out and wait; errors and warnings stay, on the front layer.
+local function clearForWindow(room: number)
+	local kept = 0
+	local waiting: { Frame } = {}
+	for _, toast in toasts do
+		local info = toastInfo[toast]
+		if info and isUrgent(info.tone) then
+			toast.Parent = frontHolder
+			kept += 1
+		elseif kept < room then
+			kept += 1
+		else
+			table.insert(waiting, 1, toast)
+		end
+	end
+	for _, toast in waiting do
+		local info = toastInfo[toast]
+		if info then
+			holdToast(info)
+		end
+		dismissToast(toast)
+	end
+end
+
 function Popups.toast(text: string, tone: string?)
 	local _, room = toastRoom()
-	if revealCount > 0 or (#toasts >= room and screen:GetAttribute("WindowOpen") == true) then
+	local windowUp = screen:GetAttribute("WindowOpen") == true
+	local urgent = isUrgent(tone)
+	-- A reveal holds every toast for its few seconds; a window only the ones that can wait.
+	if revealCount > 0 or (windowUp and not urgent and #toasts >= room) then
 		holdToast({ text = text, tone = tone })
 		return
 	end
+	-- An error or warning over a window: on the front layer, at the bottom edge when no
+	-- toast fits above the window (a phone).
+	local front = windowUp and urgent
+	local low = front and room < 1
 	local style = TONES[tone or "info"] or TONES.info
 	local rarity = toastRarity(text)
 	local color: Color3 = if rarity then C.Rarity[rarity] else style.color
@@ -76571,9 +76637,9 @@ function Popups.toast(text: string, tone: string?)
 		Name = "Toast",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(toastWidth(text), TOAST_H),
-		Position = UDim2.new(0.5, 0, 0, -TOAST_SLIDE),
-		AnchorPoint = Vector2.new(0.5, 0),
-		Parent = toastHolder,
+		Position = if low then UDim2.new(0.5, 0, 1, TOAST_SLIDE) else UDim2.new(0.5, 0, 0, -TOAST_SLIDE),
+		AnchorPoint = Vector2.new(0.5, if low then 1 else 0),
+		Parent = if low then lowHolder elseif front then frontHolder else toastHolder,
 	})
 	local card = Kit.hudGlass(toast, { Name = "Card", Size = UDim2.new(1, 0, 0, TOAST_H), Radius = Kit.RADIUS.M, Accent = color })
 	if rarity then
@@ -76626,10 +76692,15 @@ function Popups.toast(text: string, tone: string?)
 		ZIndex = 2,
 	})
 
-	table.insert(toasts, 1, toast)
+	local stack = if low then lowToasts else toasts
+	table.insert(stack, 1, toast)
 	toastInfo[toast] = { text = text, tone = tone }
-	while #toasts > MAX_TOASTS do
-		dismissToast(toasts[#toasts])
+	if front and not low then
+		-- It takes the slot above the window: what was informational there waits.
+		clearForWindow(room)
+	end
+	while #stack > MAX_TOASTS do
+		dismissToast(stack[#stack])
 	end
 	placeToasts(toast)
 	Kit.appear(toast, { from = 0.94, time = TOAST_IN, style = Enum.EasingStyle.Quad })
@@ -80058,11 +80129,33 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 		ZIndex = 25,
 		Parent = screen,
 	})
+	-- The front layer of the same stack (errors and warnings over an open window), and the
+	-- bottom edge of the safe area for them when nothing fits above the window.
+	frontHolder = Kit.new("Frame", {
+		Name = "ToastsFront",
+		BackgroundTransparency = 1,
+		Size = toastHolder.Size,
+		Position = toastHolder.Position,
+		AnchorPoint = toastHolder.AnchorPoint,
+		ZIndex = TOAST_FRONT,
+		Parent = screen,
+	})
+	lowHolder = Kit.new("Frame", {
+		Name = "ToastsBottom",
+		BackgroundTransparency = 1,
+		Size = toastHolder.Size,
+		Position = UDim2.new(0.5, 0, 1, -TOAST_TOP),
+		AnchorPoint = Vector2.new(0.5, 1),
+		ZIndex = TOAST_FRONT,
+		Parent = screen,
+	})
 	-- Slide toasts below the tutorial card while it sits at the top centre, and to the very
 	-- top of the screen while a window or modal is open (toastRoom).
 	local function placeHolder()
 		local y = toastRoom()
-		Kit.tween(toastHolder, 0.3, { Position = UDim2.new(0.5, 0, 0, y) }, Enum.EasingStyle.Quad)
+		for _, holder in { toastHolder, frontHolder } do
+			Kit.tween(holder, 0.3, { Position = UDim2.new(0.5, 0, 0, y) }, Enum.EasingStyle.Quad)
+		end
 	end
 	screen:GetAttributeChangedSignal("TopCardHeight"):Connect(function()
 		placeHolder()
@@ -80074,17 +80167,11 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 			flushToasts()
 			return
 		end
-		-- A window opened under the stack: the toasts there is no room for above it (the
-		-- oldest first) step out and wait for it to close, so none covers its tabs.
+		-- A window opened under the stack: the informational toasts there is no room for
+		-- above it step out and wait for it to close, so none covers its tabs; an error
+		-- or warning already showing stays, above the window.
 		local _, room = toastRoom()
-		for i = #toasts, room + 1, -1 do
-			local toast = toasts[i]
-			local info = toastInfo[toast]
-			if info then
-				holdToast(info)
-			end
-			dismissToast(toast)
-		end
+		clearForWindow(room)
 	end)
 	placeHolder()
 	buildChestPanel()
