@@ -1075,8 +1075,14 @@ local function insidePlot(r: any): boolean
 	return r.minX >= -inner and r.maxX <= inner and r.minZ >= -inner and r.maxZ <= inner
 end
 
-test("plot layout: compact plot and pen", function()
-	check(Layout.PLOT_HALF >= 38 and Layout.PLOT_HALF <= 42, "compact plot")
+test("plot layout: plot size and pen", function()
+	-- A roomy plot: about a quarter wider and deeper than the first, compact one (half 42).
+	check(Layout.PLOT_HALF >= 50 and Layout.PLOT_HALF <= 54, "roomy plot")
+	check(Layout.INNER_HALF >= Layout.PLOT_HALF - 3, "thin fences")
+	-- The rack still stands against the back fence, the gutter and pen right in front of it.
+	check(Layout.INNER_HALF - Layout.MACHINES.Shelves.maxZ <= 2, "rack against the back fence")
+	near(Layout.GUTTER.rect.maxZ, Layout.SHELF.frontZ, "gutter at the foot of the rack")
+	near(Layout.SHELF.frontZ - Layout.PEN.interior.maxZ, 6, "pen keeps its place in front of the rack")
 	check(Layout.INNER_HALF < Layout.PLOT_HALF, "fences inside the plot edge")
 	local pen = Layout.PEN
 	local inner = pen.interior
@@ -1529,6 +1535,165 @@ test("plot layout: fan zones", function()
 	-- The first spots alternate sides.
 	check(spots[1].x * spots[2].x < 0, "first two fans on opposite sides")
 	check(spots[3].x * spots[4].x < 0, "next two fans on opposite sides")
+end)
+
+test("plot layout: courts, plaza and interactive props", function()
+	local P = Layout.PADS
+	local line = Layout.COURT_LINE
+	local onCourt: { [string]: string } = {}
+	local courtNames = {}
+	for name, court in Layout.COURTS do
+		table.insert(courtNames, name)
+		check(insidePlot(court), name .. " court inside the walls")
+		check(court.maxX - court.minX >= 6 and court.maxZ - court.minZ >= 6, name .. " court is a real area")
+		local members = Layout.COURT_MEMBERS[name]
+		check(members ~= nil, name .. " court lists its members")
+		-- Every pad base and machine stands inside its court's border line.
+		local inner = Layout.rect(court.minX + line, court.maxX - line, court.minZ + line, court.maxZ - line)
+		for _, padName in members.pads do
+			check(onCourt[padName] == nil, padName .. " stands on one court")
+			onCourt[padName] = name
+			local rim = Layout.padRect(P[padName], Layout.PAD_RIM)
+			check(
+				rim.minX >= inner.minX and rim.maxX <= inner.maxX and rim.minZ >= inner.minZ and rim.maxZ <= inner.maxZ,
+				padName .. " inside the " .. name .. " court"
+			)
+		end
+		for _, machine in members.machines do
+			local r = Layout.MACHINES[machine]
+			check(r ~= nil, "court machine exists: " .. machine)
+			check(
+				r.minX >= inner.minX and r.maxX <= inner.maxX and r.minZ >= inner.minZ and r.maxZ <= inner.maxZ,
+				machine .. " inside the " .. name .. " court"
+			)
+		end
+	end
+	-- Every pad but Merge has a court; Merge has its own round one.
+	for _, name in Layout.PAD_ORDER do
+		check((onCourt[name] ~= nil) == (name ~= "Merge"), name .. " has its court")
+	end
+	for name in Layout.MACHINES do
+		if name ~= "Shelves" then
+			local found = false
+			for _, members in Layout.COURT_MEMBERS do
+				found = found or table.find(members.machines, name) ~= nil
+			end
+			check(found, name .. " stands on a court")
+		end
+	end
+	-- Courts keep a sand joint between them and never run under the pen walls sideways or the rack.
+	for i, a in courtNames do
+		for j = i + 1, #courtNames do
+			check(not Layout.overlaps(Layout.COURTS[a], Layout.COURTS[courtNames[j]], 1), a .. " and " .. courtNames[j] .. " courts apart")
+		end
+	end
+	for _, name in { "Cash", "Crates" } do
+		local court = Layout.COURTS[name]
+		check(not Layout.overlaps(court, Layout.POOL), name .. " court beside the pen")
+		check(not Layout.overlaps(court, Layout.WALKWAY), name .. " court off the walkway")
+		for _, zone in Layout.FAN_ZONES do
+			check(not Layout.overlaps(court, zone.rect), name .. " court clear of the fan zones")
+		end
+	end
+	near(Layout.COURTS.Cash.minX, -Layout.COURTS.Crates.maxX, "side courts mirror each other")
+	near(Layout.COURTS.Cash.maxX, -Layout.COURTS.Crates.minX, "side courts mirror each other")
+	near(Layout.COURTS.Cash.minZ, Layout.COURTS.Crates.minZ, "side courts mirror each other")
+	near(Layout.COURTS.Cash.maxZ, Layout.COURTS.Crates.maxZ, "side courts mirror each other")
+	check(not Layout.overlaps(Layout.COURTS.Buy, Layout.GUTTER.rect), "buy court in front of the gutter")
+	for _, zone in Layout.FAN_ZONES do
+		check(not Layout.overlaps(Layout.COURTS.Buy, zone.rect), "buy court clear of the fan zones")
+	end
+
+	-- The round merge court covers the merge pad's base and stays in front of the pen.
+	local merge = Layout.MERGE_COURT
+	local rim = Layout.padRect(P.Merge, Layout.PAD_RIM)
+	local corner = math.sqrt((rim.maxX - merge.x) ^ 2 + (rim.maxZ - merge.z) ^ 2)
+	check(merge.x == P.Merge.x and merge.z == P.Merge.z, "merge court centred on the merge pad")
+	check(merge.radius - line >= corner, "merge court covers the pad base")
+	check(merge.z + merge.radius < Layout.POOL.minZ, "merge court in front of the pen")
+	check(merge.radius < Layout.COURTS.Crates.minX, "merge court clear of the side courts")
+
+	-- The plaza joins both side courts in front of the pen; only the merge pad stands on it.
+	local plaza = Layout.PLAZA
+	near(plaza.minX, Layout.COURTS.Cash.maxX, "plaza reaches the -X court")
+	near(plaza.maxX, Layout.COURTS.Crates.minX, "plaza reaches the +X court")
+	check(plaza.maxZ < Layout.POOL.minZ and plaza.minZ >= Layout.WALKWAY.maxZ - 4, "plaza along the pen's front")
+	check(Layout.contains(plaza, P.Merge.x, P.Merge.z), "merge pad on the plaza")
+	for _, name in Layout.PAD_ORDER do
+		if name ~= "Merge" then
+			check(not Layout.overlaps(plaza, Layout.padRect(P[name], Layout.PAD_RIM)), name .. " off the plaza")
+		end
+	end
+	for name, rect in layoutObstacles() do
+		check(not Layout.overlaps(plaza, rect), "plaza clear of " .. name)
+	end
+
+	-- Interactive props: three of them, each mat on free floor off the courts and the spawn view.
+	local obstacles = layoutObstacles()
+	local kinds = {}
+	for kind, spot in Layout.INTERACTIVE do
+		table.insert(kinds, kind)
+		local r = Layout.rect(spot.x - spot.radius, spot.x + spot.radius, spot.z - spot.radius, spot.z + spot.radius)
+		check(spot.radius >= 3, kind .. " mat is big enough to stand on")
+		check(insidePlot(r), kind .. " inside the walls")
+		check(math.abs(spot.x) - spot.radius >= 15, kind .. " off the spawn view")
+		check(not Layout.overlaps(r, Layout.WALKWAY), kind .. " off the walkway")
+		check(not Layout.overlaps(r, plaza), kind .. " off the plaza")
+		for name, court in Layout.COURTS do
+			check(not Layout.overlaps(r, court), kind .. " off the " .. name .. " court")
+		end
+		for name, rect in obstacles do
+			check(not Layout.overlaps(r, rect), kind .. " clear of " .. name)
+		end
+		for _, name in Layout.PAD_ORDER do
+			check(not Layout.overlaps(r, Layout.padRect(P[name], Layout.PAD_RIM)), kind .. " clear of " .. name)
+		end
+		for _, zone in Layout.FAN_ZONES do
+			check(not Layout.overlaps(r, zone.rect), kind .. " clear of the fan zones")
+		end
+	end
+	check(#kinds == 3, "three interactive props")
+	for i, a in kinds do
+		for j = i + 1, #kinds do
+			local sa, sb = Layout.INTERACTIVE[a], Layout.INTERACTIVE[kinds[j]]
+			local d = math.sqrt((sa.x - sb.x) ^ 2 + (sa.z - sb.z) ^ 2)
+			check(d >= sa.radius + sb.radius + 1, a .. " and " .. kinds[j] .. " mats apart")
+		end
+	end
+
+	-- Each machine stands right behind its own pad(s): at most 4 studs of floor between them.
+	local function gap(a: Layout.Rect, b: Layout.Rect): number
+		local dx = math.max(0, a.minX - b.maxX, b.minX - a.maxX)
+		local dz = math.max(0, a.minZ - b.maxZ, b.minZ - a.maxZ)
+		return math.sqrt(dx * dx + dz * dz)
+	end
+	local stations = {
+		Converter = { "Deposit" },
+		Processor = { "ProcUp1", "ProcUp10" },
+		Vault = { "Collect" },
+		Unlocker1 = { "Unlock1" },
+		Unlocker2 = { "Unlock2" },
+	}
+	for machine, padNames in stations do
+		for _, padName in padNames do
+			local g = gap(Layout.MACHINES[machine], Layout.padRect(P[padName], Layout.PAD_RIM))
+			check(g <= 4, padName .. " right in front of the " .. machine)
+		end
+	end
+	-- The stations mirror each other across the centre line, row by row.
+	near(P.Unlock1.x, -P.ProcUp1.x, "back stations mirror")
+	near(P.Unlock1.z, P.Deposit.z, "back stations level")
+	near(P.Unlock2.z, (P.ProcUp1.z + P.ProcUp10.z) / 2, "middle stations level")
+	-- The deposit pad, the first stop after merging, is level with the plaza.
+	check(P.Deposit.z > plaza.minZ and P.Deposit.z < plaza.maxZ, "deposit pad level with the plaza")
+	-- Open floor round the pen: the side courts stand well clear of its walls and stairs.
+	for _, stair in Layout.PEN_STAIRS do
+		for _, name in { "Cash", "Crates" } do
+			check(not Layout.overlaps(Layout.COURTS[name], stair.rect, 6), name .. " court well clear of the pen stairs")
+		end
+	end
+	near(P.Free.z, P.Collect.z, "front stations level")
+	near(P.Free.x, -P.Collect.x, "front stations mirror")
 end)
 
 -- Orb look and Auto Aura (src/shared/OrbLook.luau) ------------------------------------------
@@ -4607,8 +4772,12 @@ test("Game modes: a second plaza mirrored on the hub's +X side", function()
 			check(r.x1 < px - half or r.x0 > px + half or r.z1 < pz - half or r.z0 > pz + half, "plaza 2 clear of plot " .. index)
 		end
 	end
-	check(C.SPUR2.x0 >= spacing + 19 + 5 - 1e-6, "spur 2 starts at the hub ring's outer edge")
-	check(q.x1 + 20 < 219, "plaza 2 stays on the island")
+	near(C.SPUR2.x0, spacing + 19 + 5, "spur 2 starts at the hub ring's outer edge")
+	-- World.Hub ISLAND_RADIUS: past the far corners of the outer plots, plus the beach.
+	local island = math.ceil(math.sqrt((spacing + half) ^ 2 + (rowZ + half) ^ 2)) + 22
+	check(math.sqrt(q.x1 ^ 2 + q.z1 ^ 2) + 20 < island, "plaza 2 stays on the island")
+	check(math.abs(C.BIG_SIGN2.x) + 20 < island, "big sign 2 stays on the island")
+	check(C.WATER_RADIUS >= island and C.WATER_RADIUS <= island + 8, "the sea line follows the island's shore")
 end)
 
 test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", function()

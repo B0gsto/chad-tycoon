@@ -93,18 +93,19 @@
 
 local Course = {}
 
--- The plaza deck (x0..x1, z0..z1) and the spur that joins it to the hub ring at x = -118.
-Course.PLAZA = { x0 = -190, x1 = -140, z0 = -28, z1 = 28, top = 0.5 }
-Course.SPUR = { x0 = -140, x1 = -118, half = 6, top = 0.3 }
+-- The plaza deck (x0..x1, z0..z1) and the spur that joins it to the hub ring, whose outer edge
+-- is at x = -(2 * PlotLayout.PLOT_HALF + 34) = -138 (World.Hub RING_OUT; tests/run.luau checks it).
+Course.PLAZA = { x0 = -210, x1 = -160, z0 = -28, z1 = 28, top = 0.5 }
+Course.SPUR = { x0 = -160, x1 = -138, half = 6, top = 0.3 }
 -- Where GoModes / ModeQuit put the player (feet): the spur end facing the gates (-X), and
 -- in front of the gates facing back toward the hub (+X). faceX: the direction faced.
-Course.ARRIVAL = { x = -146, y = 0.5, z = 0, faceX = -1 }
-Course.QUIT = { x = -180, y = 0.5, z = 0, faceX = 1 }
+Course.ARRIVAL = { x = -166, y = 0.5, z = 0, faceX = -1 }
+Course.QUIT = { x = -200, y = 0.5, z = 0, faceX = 1 }
 
 -- Mode gates: one per catalog slot, in a row on the plaza's west edge, fronts facing the
 -- hub (+X). GATE_HALF is half the opening width of the open (slot 1) gate; locked gates are
 -- narrower (World.Modes).
-Course.GATE_X = -188
+Course.GATE_X = -208
 Course.GATES = {
 	[1] = { z = 0 },
 	[2] = { z = -19 },
@@ -112,9 +113,9 @@ Course.GATES = {
 }
 Course.GATE_HALF = 6
 -- The big GAME MODES sign high above and behind the gates (front faces +X).
-Course.BIG_SIGN = { x = -197, z = 0, width = 56, height = 15, bottom = 28 }
+Course.BIG_SIGN = { x = -217, z = 0, width = 56, height = 15, bottom = 28 }
 -- Best-times board on the plaza, facing the spur mouth.
-Course.BOARD = { x = -152, z = 20, faceX = -140, faceZ = 4 }
+Course.BOARD = { x = -172, z = 20, faceX = -160, faceZ = 4 }
 
 -- Walking west across this line inside gate 1's opening starts a Parkour run (the player
 -- is teleported onto the level's start deck).
@@ -147,7 +148,7 @@ Course.START_LINE2_X = Course.GATE2_X
 -- world origin greater than WATER_RADIUS) was the old sea fall (see SKY_Y / inWater).
 -- Holds for every level (all of them are far off the island).
 Course.WATER_Y = 1.5
-Course.WATER_RADIUS = 219
+Course.WATER_RADIUS = 255
 Course.LEAVE_SECONDS = 2.5
 
 -- Jump limits (default character: JumpHeight 7.2, WalkSpeed 16, Workspace.Gravity 196.2):
@@ -2017,8 +2018,8 @@ end
 -- Beach props the hub must not place here (palms, beach balls): both plazas, their spurs
 -- and the big signs behind the gates (the second mirrors the first).
 Course.CLEAR = {
-	{ x0 = -210, x1 = -138, z0 = -36, z1 = 36 },
-	{ x0 = 138, x1 = 210, z0 = -36, z1 = 36 },
+	{ x0 = -230, x1 = -138, z0 = -36, z1 = 36 },
+	{ x0 = 138, x1 = 230, z0 = -36, z1 = 36 },
 }
 
 return Course

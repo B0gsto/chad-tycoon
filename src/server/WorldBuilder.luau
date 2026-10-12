@@ -4,7 +4,8 @@
 	Six plots sit around a central hub plaza with a ranking tower. Every plot
 	uses the plot-local geometry in PlotLayout (see the diagram there): a stepped
 	display ledge at the back, a gutter and chute feeding a walled orb pen right in
-	front of it, buy pads either side of the pen and the stations along the side fences.
+	front of it, buy pads either side of the pen and the stations on a painted court down each
+	side, every machine right behind its own pad(s).
 	World.Shell builds the ground, the low fences, the low stage wall behind the rack and the
 	entrance arch; the boards are freestanding cream sign cards (Shell.standingCard) with one
 	main line each. Labels Server.Tycoon still writes but the cards no longer show are kept
@@ -121,19 +122,14 @@ local function makeCameraSafe(root: Instance)
 	end
 end
 
--- Faces for freestanding sign cards (0 faces the entrance, -Z).
-local FACE_ENTRANCE = 0
+-- Faces for freestanding sign cards (yaw 0 faces the entrance, -Z).
 local FACE_MINUS_X = math.pi / 2
--- Gap between a pad's rim and a sign card standing behind it.
-local SIGN_GAP = 1
--- Bottom edge of those cards: above the pads' floating labels (World.Pads), so from the spawn
--- camera a label never sits in front of the card behind its pad.
-local SIGN_BOTTOM = 6.4
-
--- Plot-local Z just behind a pad's rim (+Z side), where its sign card stands.
-local function behindPad(spot: Layout.PadSpot): number
-	return spot.z + spot.sizeZ / 2 + Layout.PAD_RIM + SIGN_GAP
-end
+local FACE_PLUS_X = -math.pi / 2
+-- Bottom edge of the processor's board: above the smoothie cups riding its belt.
+local BOARD_BOTTOM = 7.2
+-- Bottom edge of the cards at the +X stations (crate crackers, free gift): above the crate
+-- plinth and the gift box in front of them.
+local STATION_SIGN_BOTTOM = 4
 
 -- A label Server.Tycoon still writes to that its card no longer shows.
 local function hiddenLabel(parent: Instance): TextLabel
@@ -187,7 +183,7 @@ local function buildPlot(index: number): Plot
 	-- Merge pad centred in front of the pen, at the end of the walkway.
 	pad("Merge", padColors.Merge, w.Merge, "Pairs merge into the next tier")
 
-	-- Deposit station: pad + converter machine. The pad's floating label already shows the
+	-- Deposit station (-X court, level with the plaza): pad + converter machine. The pad's floating label already shows the
 	-- multiplier, so the multiplier labels Tycoon writes stay hidden on the pad.
 	local depositPad = pad("Deposit", padColors.Deposit, "DEPOSIT", w.Orb .. " x1.0")
 	do
@@ -197,13 +193,21 @@ local function buildPlot(index: number): Plot
 		labels.DepositNext = hiddenLabel(depositPad.part)
 	end
 
-	-- Processing machine (-X side, beside the ledge), its upgrade pads in front of it and the
-	-- sign card behind the bulk upgrade pad.
+	-- Processing machine (-X court, middle station) with its upgrade pads in front of it. Its
+	-- board stands behind the counter, above the belt, facing the pads and the path (+X).
 	do
 		buildProcessor(B)
-		local up = Layout.PADS.ProcUp10
-		local body, title =
-			standingCard(B, up.x, behindPad(up), FACE_ENTRANCE, Vector2.new(7, 5.6), SIGN_BOTTOM, "⚡ " .. w.Process .. " ⚡")
+		local proc = Layout.MACHINES.Processor
+		local body, title = standingCard(
+			B,
+			proc.minX - 0.4,
+			(proc.minZ + proc.maxZ) / 2,
+			FACE_PLUS_X,
+			Vector2.new(7, 5.6),
+			BOARD_BOTTOM,
+			"⚡ " .. w.Process .. " ⚡",
+			false
+		)
 		labels.ProcessTitle = title
 		-- Main line: the aura waiting to be converted.
 		labels.ProcessQueue =
@@ -214,11 +218,11 @@ local function buildPlot(index: number): Plot
 	pad("ProcUp1", padColors.Process, "UPGRADE", "$0")
 	pad("ProcUp10", padColors.Process, "UPGRADE x" .. Economy.PROCESS_BULK, "$0")
 
-	-- Collect cash pad + coin vault.
+	-- Collect cash pad + coin vault (-X court, front station).
 	pad("Collect", padColors.Collect, w.Collect, "$0")
 	buildVault(B)
 
-	-- Crate unlockers (+X side), each with a sign card standing at the machine's front.
+	-- Crate unlockers (+X court), each with a sign card standing at the machine's front.
 	local unlockerScreens = {}
 	for i = 1, 2 do
 		local name = if i == 1 then w.Unlocker else w.PremiumUnlocker
@@ -226,8 +230,16 @@ local function buildPlot(index: number): Plot
 		pad("Unlock" .. i, color, name, "")
 		local rect = Layout.MACHINES["Unlocker" .. i]
 		buildUnlocker(B, rect, color)
-		local body, titleLabel =
-			standingCard(B, rect.minX - 0.4, (rect.minZ + rect.maxZ) / 2, FACE_MINUS_X, Vector2.new(6.2, 4.6), 4, name, false)
+		local body, titleLabel = standingCard(
+			B,
+			rect.minX - 0.4,
+			(rect.minZ + rect.maxZ) / 2,
+			FACE_MINUS_X,
+			Vector2.new(6.2, 4.6),
+			STATION_SIGN_BOTTOM,
+			name,
+			false
+		)
 		-- Tycoon tints the status in the crate's rarity colour, so it keeps an Ink outline.
 		local statusLabel = text(body, {
 			Text = "EMPTY",
@@ -245,12 +257,13 @@ local function buildPlot(index: number): Plot
 		table.insert(unlockerScreens, { frame = body, title = titleLabel, status = statusLabel, timer = timerLabel })
 	end
 
-	-- Free reward pad + sign card + gift box (+X side, in front of the unlockers).
+	-- Free reward (+X court, front station): the pad, the gift box behind it and the sign card
+	-- over the gift, facing the pad like the crackers' cards.
 	local freeSpot = Layout.PADS.Free
-	local signX = Layout.INNER_HALF - 1.2
+	local gx, gz = freeSpot.x + freeSpot.sizeX / 2 + Layout.PAD_RIM + 2.65, freeSpot.z
 	pad("Free", padColors.Free, w.Free, "")
 	do
-		local body = standingCard(B, signX, freeSpot.z, FACE_MINUS_X, Vector2.new(5.4, 4.6), SIGN_BOTTOM, "🎁 " .. w.Free)
+		local body = standingCard(B, gx + 2.2, gz, FACE_MINUS_X, Vector2.new(5.4, 4.6), STATION_SIGN_BOTTOM + 0.4, "🎁 " .. w.Free)
 		-- Tycoon writes the countdown or "READY!" in white / green, so it keeps an Ink outline.
 		labels.FreeStatus = text(body, {
 			Text = "",
@@ -260,8 +273,7 @@ local function buildPlot(index: number): Plot
 			Outline = true,
 			TextColor3 = Paint.White,
 		})
-		-- Gift box beside the card, toward the front corner.
-		local gx, gz = signX - 1.4, freeSpot.z - freeSpot.sizeZ / 2 - 1.6
+		-- Gift box between the pad and the card's legs.
 		P({ Name = "Gift", Size = Vector3.new(2.8, 2.6, 2.8), CFrame = L(gx, 1.3, gz), Color = Paint.Coral })
 		for _, size in { Vector3.new(2.9, 2.7, 0.6), Vector3.new(0.6, 2.7, 2.9) } do
 			soft(P({ Name = "GiftRibbon", Size = size, CFrame = L(gx, 1.3, gz), Color = Paint.White }))

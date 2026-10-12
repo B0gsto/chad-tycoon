@@ -917,12 +917,12 @@ local function main()
 		local character = avatar(player.Name)
 		character.Parent = Workspace
 		player.Character = character
-		-- The main player wades through the orb pool; the others wait near their
-		-- entrance (off every pad so the simulation doesn't trigger them).
+		-- The main player wades through the orb pool; the others wait on their
+		-- entrance path (off every pad so the simulation doesn't trigger them).
 		local plot = session.plot
 		local spot = if i == 1
-			then CFrame.new(-7, plot.orbFloorY, 9) * CFrame.Angles(0, math.rad(195), 0)
-			else CFrame.new(-6 + i, 0, -36) * CFrame.Angles(0, math.rad(200), 0)
+			then CFrame.new(-7, plot.orbFloorY, plot.pool.minZ + 8.6) * CFrame.Angles(0, math.rad(195), 0)
+			else CFrame.new(-6 + i, 0, plot.pool.minZ - 36.4) * CFrame.Angles(0, math.rad(200), 0)
 		character:PivotTo(plot.cframe * spot)
 	end
 
@@ -989,7 +989,7 @@ local function main()
 
 	-- Pick up a crate for the "holding a crate" shot and carry it across the main
 	-- floor toward the crate unlockers.
-	mainCharacter:PivotTo(mainSession.plot.cframe * CFrame.new(30, 0, -27) * CFrame.Angles(0, math.rad(-140), 0))
+	mainCharacter:PivotTo(mainSession.plot.cframe * CFrame.new(27, 0, -22) * CFrame.Angles(0, math.rad(-140), 0))
 	mainSession.profile.heldChest = "Epic"
 	-- The crate that was "picked up" (and any others within reach) leave the floor.
 	local heldAt = mainCharacter:FindFirstChild("HumanoidRootPart").CFrame.Position

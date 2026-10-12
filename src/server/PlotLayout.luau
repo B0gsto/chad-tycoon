@@ -9,7 +9,7 @@
 
 	Plot-local axes: Z = toward the back fence, Y = up, and (Roblox being
 	right-handed) +X is on your LEFT when you walk in from the hub facing +Z.
-	The plot floor's top surface is y = 0; the entrance is at z = -42.
+	The plot floor's top surface is y = 0; the entrance is at z = -PLOT_HALF (-52).
 
 	Units stand on a tall display rack along the back: up to 10 shelves stacked
 	upward, each a little behind the one below, one model per unit (100 slots;
@@ -26,28 +26,41 @@
 	               |   ||=====|  shelf 3   (each shelf: board, rim, band,
 	               |  ||=====|   shelf 2    back panel, side posts)
 	   y = 3.8   ~~|=====| (*)   shelf 1, (*) = champion pedestal at x = 0
-	   gutter    \_/   z = 24 ->  1.1 studs further back per shelf, 6 up
+	   gutter    \_/   z = 34 ->  1.1 studs further back per shelf, 6 up
 
-	Top-down as seen walking in (hub at the bottom, +X on the left). Pads are small
-	(4 x 4.2 buy pads, 7 x 7 merge, 13 x 9 deposit) with open floor between them:
+	Top-down as seen walking in (hub at the bottom, +X on the left). The plot is roomy (100 studs
+	between the fences) and the room is spent on open floor: the rack stands against the back
+	fence with the gutter, chute and pen in front of it, and the middle of the plot is bare sand
+	around the pen. Every group of pads stands on its own painted court (COURTS) with at least 5
+	studs between neighbouring pad bases: the buy row on one long court across the back, either
+	side of the pen; the crate stations down the +X court; the aura -> cash stations down the -X
+	court, each machine right behind its own pad(s). A wide cream path runs from the entrance to
+	the round merge court and branches along the pen's front (PLAZA) to both side courts; the
+	main loop is pen -> merge -> deposit (level with the plaza) -> collect. The front fence holds
+	a little gym dressing and the interactive props (INTERACTIVE), each on its own round mat:
 
-	                       back fence (z = 42)
+	                       back fence (z = 52)
 	  +---------------------------------------------------------+
-	  | fans  [ display rack: 10 shelves, 100 slots ]     PROC  |
-	  | fans  [~~~~~~~~~~ gutter -> (x = 0) <- ~~~~~~~~~] fans  |
-	  |                          chute                          |
-	  | TIER  B1   B5   #===== PEN =====#   B25  B100  AUTO     |
-	  |                _|#             #|_          PROC^10     |
-	  |          stair |#  (orbs pile) #| stair                 |
-	  | UNLOCK1 <crk    #   [crates]   #            PROC^1      |
-	  |                 #==============#                        |
-	  |                     ( MERGE )                           |
-	  | UNLOCK2 <crk          |walk|        [ DEPOSIT ] <conv   |
-	  |                       |way |                            |
-	  |  FREE  gift           |    |              COLLECT vault>|
+	  | fans    [ display rack: 10 shelves, 100 slots ]   fans  |
+	  | fans    [~~~~~~~~ gutter -> (x = 0) <- ~~~~~~~~]   fans  |
+	  |,--------------------- chute ---------------------------.|
+	  |:        B1   B5   #==== PEN ====#   B25   B100   AUTO  :|  buy court
+	  |`------------------#             #----------------------'|
+	  | ,------------.   _|# (orbs)    #|_      ,------------.  |
+	  | :crk> UNLOCK1:    #  [crates]   #       :DEPOSIT<conv:  |
+	  | :            :    #=============#       :            :  |
+	  | :            :=======( MERGE )==========:            :  |  plaza
+	  | :palm        :        |    |            :        palm:  |
+	  | :crk> UNLOCK2:        |walk|            :PROC^10<proc:  |
+	  | :            :        |way |            :PROC^1 <proc:  |
+	  | :            :        |    |            :            :  |
+	  | :gift  FREE  :        |    |            :COLLECT<vlt :  |
+	  | `------------'        |    |            `------------'  |
+	  |                                                         |
+	  | (tramp)  (bag)  palm  |    |  palm  [bench]  (podium)   |
 	  |                  [ entrance arch ]                      |
 	  +---------------------------------------------------------+
-	 x = +42                                                x = -42
+	 x = +52                                                x = -52
 ]]
 
 export type Rect = { minX: number, maxX: number, minZ: number, maxZ: number }
@@ -64,16 +77,21 @@ local function rect(minX: number, maxX: number, minZ: number, maxZ: number): Rec
 	return { minX = minX, maxX = maxX, minZ = minZ, maxZ = maxZ }
 end
 
-Layout.PLOT_HALF = 42
+Layout.PLOT_HALF = 52
 -- Inner faces of the fences: nothing should be built past this.
-Layout.INNER_HALF = 40
+Layout.INNER_HALF = 50
+
+-- Front edge of the display rack (the gutter's back edge). The rack's footprint is 15 deep and
+-- ends a stud off the back fence; the gutter, chute and pen are all placed from this line, so
+-- the whole group keeps its shape wherever the plot's size puts it.
+local RACK_FRONT_Z = Layout.INNER_HALF - 16
 
 -- Radius of the orbs Tycoon places (ORB_SIZE / 2); orb paths are orb-centre positions.
 Layout.ORB_RADIUS = 0.8
 
 -- The walled orb pen, at ground level, directly in front of the display ledge.
 -- `interior` is the open floor inside the walls; the walls sit around it.
-local PEN_INTERIOR = rect(-10, 10, 2, 18)
+local PEN_INTERIOR = rect(-10, 10, RACK_FRONT_Z - 22, RACK_FRONT_Z - 6)
 local PEN_WALL_THICK = 1.6
 Layout.PEN = {
 	interior = PEN_INTERIOR,
@@ -102,7 +120,7 @@ Layout.POOL_CENTER_Z = (PEN_INTERIOR.minZ + PEN_INTERIOR.maxZ) / 2
 -- and one inner step down to the pen floor. `rect` covers the outer steps only.
 Layout.STAIR_RUN = 1.2
 Layout.STAIR_WIDTH = 4
-local STAIR_Z = 5.5
+local STAIR_Z = PEN_INTERIOR.minZ + 3.5
 Layout.PEN_STAIRS = {} :: { Stair }
 for _, side in { 1, -1 } do
 	local wallOuter = side * Layout.POOL.maxX
@@ -155,11 +173,11 @@ Layout.SHELF = {
 	-- Centre-to-centre distance of neighbouring units on a shelf (all shelves share the grid).
 	spacing = 5.3,
 	-- Front edge of the front shelf (the gutter's back edge) and every shelf board's depth.
-	frontZ = 24,
+	frontZ = RACK_FRONT_Z,
 	depth = 4,
 	stepBack = 1.1,
 	-- Centre Z of the front shelf (where its units stand).
-	firstZ = 26,
+	firstZ = RACK_FRONT_Z + 2,
 	-- Deck top of the front shelf; each shelf above is rowRise higher (see rowTop).
 	firstTop = 3.8,
 	rowRise = 6,
@@ -248,9 +266,14 @@ Layout.CHEST_AREAS = {
 	),
 }
 
+-- Centre of the merge pad: on the centre line, its base a little over 4 studs in front of the
+-- pen's front wall.
+local MERGE_Z = PEN_INTERIOR.minZ - 10
+
 -- The entrance walkway: kept clear of pads, crates and machines from the entrance to the
--- merge pad, which ends it in front of the pen (Layout.PADS.Merge: 7 + 2 * PAD_RIM wide).
-Layout.WALKWAY = rect(-4, 4, -Layout.INNER_HALF, -10.6)
+-- merge pad, which ends it in front of the pen (Layout.PADS.Merge: 7 + 2 * PAD_RIM wide). The
+-- path painted along it is wider (World.Decor).
+Layout.WALKWAY = rect(-4, 4, -Layout.INNER_HALF, MERGE_Z - 4)
 
 export type ShelfSlot = { x: number, y: number, z: number, row: number, best: boolean }
 
@@ -294,9 +317,10 @@ function Layout.shelfSlots(): { ShelfSlot }
 	return out
 end
 
--- On the walkway, facing the pen: far enough in that the spawn camera (Fx.Camera, about 15
--- studs behind and above) stays inside the entrance arch.
-Layout.SPAWN = { x = 0, z = -23 }
+-- On the walkway, facing the pen from as far in front of it as on the old, smaller plot, so
+-- the spawn view frames the pen and the rack the same way; the spawn camera (Fx.Camera, about
+-- 15 studs behind and above) is well inside the plot.
+Layout.SPAWN = { x = 0, z = MERGE_Z - 16 }
 
 -- A pad's thin base reaches this far past its coloured top on every side.
 Layout.PAD_RIM = 0.5
@@ -318,52 +342,101 @@ Layout.PAD_ORDER = {
 	"Free",
 }
 -- Small pads (4 x 4.2 tops, at least 4 studs on the short side so a walking character fits) with
--- at least 3 studs of open floor between neighbouring bases and 6 between a pad and the pen.
-local BUY_Z = 16.5
+-- at least 5 studs of open floor between neighbouring bases and 6 between a pad and the pen.
+local BUY_Z = PEN_INTERIOR.maxZ - 1.5
+-- The side courts hold three stations each, mirrored left and right: level with the plaza in
+-- front of the pen, half-way down, and by the front fence.
+local ROW_BACK, ROW_MID, ROW_FRONT = 7, -14, -32
+-- The pad column of each side court (the machines stand behind it, toward the fence).
+local PAD_X = 34
 Layout.PADS = {
 	-- One row at the foot of the unit rack, level with the back of the pen, reading Buy 1,
 	-- Buy 5, [pen], Buy 25, Buy 100, Auto Merge from the player's left (+X) to right.
-	Buy1 = { x = 28.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
-	Buy5 = { x = 20.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
-	Buy25 = { x = -20.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
-	Buy100 = { x = -28.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
-	AutoMerge = { x = -36.1, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
-	-- The merge pad closes the walkway, centred a few studs in front of the pen's front wall.
-	Merge = { x = 0, z = -6.6, sizeX = 7, sizeZ = 7 },
-	-- -X side (right when walking in): process upgrades along the fence, the big deposit pad
-	-- beside the converter on the way out, collect in front of the vault.
-	ProcUp10 = { x = -36.1, z = 4, sizeX = 4, sizeZ = 4.2 },
-	ProcUp1 = { x = -36.1, z = -4.2, sizeX = 4, sizeZ = 4.2 },
-	Deposit = { x = -23.5, z = -12, sizeX = 13, sizeZ = 9 },
-	Collect = { x = -30, z = -26, sizeX = 4.5, sizeZ = 4.5 },
-	-- +X side (left when walking in): crate unlockers and the free reward.
-	Unlock1 = { x = 28.5, z = -3, sizeX = 4.5, sizeZ = 4.5 },
-	Unlock2 = { x = 28.5, z = -16, sizeX = 4.5, sizeZ = 4.5 },
-	Free = { x = 30, z = -31, sizeX = 4.5, sizeZ = 4.5 },
+	Buy1 = { x = 32, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
+	Buy5 = { x = 22, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
+	Buy25 = { x = -22, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
+	Buy100 = { x = -32, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
+	AutoMerge = { x = -42, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
+	-- The merge pad closes the walkway, centred in front of the pen's front wall.
+	Merge = { x = 0, z = MERGE_Z, sizeX = 7, sizeZ = 7 },
+	-- -X court (right when walking in), back to front: the big deposit pad in front of the
+	-- converter, level with the plaza (the first stop after merging); the two process upgrades
+	-- in front of the processor; collect in front of the vault.
+	Deposit = { x = -31, z = ROW_BACK, sizeX = 10, sizeZ = 12 },
+	ProcUp10 = { x = -PAD_X, z = ROW_MID + 5.2, sizeX = 4, sizeZ = 4.2 },
+	ProcUp1 = { x = -PAD_X, z = ROW_MID - 5.2, sizeX = 4, sizeZ = 4.2 },
+	Collect = { x = -PAD_X, z = ROW_FRONT, sizeX = 4.5, sizeZ = 4.5 },
+	-- +X court (left when walking in): a crate cracker pad per station, then the free reward.
+	Unlock1 = { x = PAD_X, z = ROW_BACK, sizeX = 4.5, sizeZ = 4.5 },
+	Unlock2 = { x = PAD_X, z = ROW_MID, sizeX = 4.5, sizeZ = 4.5 },
+	Free = { x = PAD_X, z = ROW_FRONT, sizeX = 4.5, sizeZ = 4.5 },
 } :: { [string]: PadSpot }
 
 -- Open floor kept between pads: between neighbouring bases, and from any pad to the pen's
 -- walls and stairs (the merge pad, which ends the walkway, sits MERGE_PEN_GAP in front).
-Layout.PAD_GAP = 3
+Layout.PAD_GAP = 5
 Layout.PAD_PEN_GAP = 6
 Layout.MERGE_PEN_GAP = 3
 
--- Floor footprints of the big machines (pads, crates and fans must stay clear).
+-- Floor footprints of the big machines (pads, crates and fans must stay clear). Each stands on
+-- its side court right behind its own pad(s), its front toward the plot's centre line, its
+-- back about MACHINE_BACK from the centre, clear of the fence.
+local MACHINE_BACK = 45.5
 Layout.MACHINES = {
-	Converter = rect(-40, -33, -15.5, -8.5),
-	Processor = rect(-40, -35.5, 24, 38),
-	Vault = rect(-40, -35, -27, -21),
-	Unlocker1 = rect(34, 40, -7.5, 1.5),
-	Unlocker2 = rect(34, 40, -20.5, -11.5),
+	Converter = rect(-MACHINE_BACK, -MACHINE_BACK + 7, ROW_BACK - 3.5, ROW_BACK + 3.5),
+	-- The juice bar is a thin counter: it stands a stud in so its sign board fits behind it.
+	Processor = rect(-MACHINE_BACK + 1, -MACHINE_BACK + 5.5, ROW_MID - 7, ROW_MID + 7),
+	Vault = rect(-MACHINE_BACK + 0.5, -MACHINE_BACK + 5.5, ROW_FRONT - 3, ROW_FRONT + 3),
+	Unlocker1 = rect(MACHINE_BACK - 6, MACHINE_BACK, ROW_BACK - 4.5, ROW_BACK + 4.5),
+	Unlocker2 = rect(MACHINE_BACK - 6, MACHINE_BACK, ROW_MID - 4.5, ROW_MID + 4.5),
 	-- The display rack, side posts included.
-	Shelves = rect(-Layout.SHELF.width / 2 - Layout.SHELF.postWidth, Layout.SHELF.width / 2 + Layout.SHELF.postWidth, SHELF_FRONT_Z, 39),
+	Shelves = rect(
+		-Layout.SHELF.width / 2 - Layout.SHELF.postWidth,
+		Layout.SHELF.width / 2 + Layout.SHELF.postWidth,
+		SHELF_FRONT_Z,
+		SHELF_FRONT_Z + 15
+	),
 }
 
--- Where cheering fans stand: beside the display ledge, off every walkway. `side` is +1 for
--- the +X zone and -1 for the -X zone.
+-- Painted courts (flat floor paint, see World.Decor): one rounded mat per group of pads, in the
+-- group's pad colour family with a white border line and a clear margin round every pad. The
+-- buy court runs across the back (the pen stands on its middle); the side courts stand well
+-- off the pen (COURT_INNER from the centre line), so the pen and its stairs have open sand all
+-- round. Sand joints separate the courts from each other and from the fences.
+local COURT_INNER = 23
+local COURT_OUTER = MACHINE_BACK + 2
+Layout.COURTS = {
+	Buy = rect(-47, 47, BUY_Z - 5, BUY_Z + 4.8),
+	Cash = rect(-COURT_OUTER, -COURT_INNER, -38, 19),
+	Crates = rect(COURT_INNER, COURT_OUTER, -38, 19),
+} :: { [string]: Rect }
+-- Width of the white border line round every court.
+Layout.COURT_LINE = 0.6
+-- The pads and machines standing on each court.
+Layout.COURT_MEMBERS = {
+	Buy = { pads = { "Buy1", "Buy5", "Buy25", "Buy100", "AutoMerge" }, machines = {} },
+	Cash = { pads = { "ProcUp1", "ProcUp10", "Deposit", "Collect" }, machines = { "Processor", "Converter", "Vault" } },
+	Crates = { pads = { "Unlock1", "Unlock2", "Free" }, machines = { "Unlocker1", "Unlocker2" } },
+} :: { [string]: { pads: { string }, machines: { string } } }
+-- The round court under the merge pad (it covers the pad's whole base).
+Layout.MERGE_COURT = { x = Layout.PADS.Merge.x, z = Layout.PADS.Merge.z, radius = 7 }
+-- The cream plaza across the front of the pen: the walkway's crossbar, joining both side courts.
+Layout.PLAZA = rect(-COURT_INNER, COURT_INNER, MERGE_Z - 5, Layout.POOL.minZ - 0.9)
+
+-- Interactive props along the front fence, each on its own round mat of `radius` (World.Decor
+-- builds them as Interactive_<Kind> models). They keep off the courts and the spawn view.
+local PROP_Z = -Layout.INNER_HALF + 6
+Layout.INTERACTIVE = {
+	Trampoline = { x = 42, z = PROP_Z, radius = 4 },
+	PunchBag = { x = 30.5, z = PROP_Z, radius = 3.5 },
+	FlexPodium = { x = -42, z = PROP_Z, radius = 4 },
+} :: { [string]: { x: number, z: number, radius: number } }
+
+-- Where cheering fans stand: the back corners beside the display rack, off every walkway and
+-- behind the buy court. `side` is +1 for the +X zone and -1 for the -X zone.
 Layout.FAN_ZONES = {
-	{ rect = rect(31.5, 39.5, 23, 39), side = 1 },
-	{ rect = rect(-35, -31.5, 23, 39), side = -1 },
+	{ rect = rect(36, 44, SHELF_FRONT_Z + 1.5, SHELF_FRONT_Z + 15), side = 1 },
+	{ rect = rect(-44, -36, SHELF_FRONT_Z + 1.5, SHELF_FRONT_Z + 15), side = -1 },
 } :: { FanZone }
 
 -- The point fans face: the middle of the display rack's footprint.

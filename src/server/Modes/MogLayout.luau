@@ -2,8 +2,8 @@
 	MogLayout: pure layout numbers of the MOG STAGE (no Roblox APIs), shared by
 	World.MogStage (builds it) and Modes.Mog (teleports, spots, "still on the stage" checks).
 
-	The stage is a round floating disc out at sea, north (+Z) of the island (the island ends
-	~262 studs from the origin; the ocean top is at y = -1.2), reached only by teleport.
+	The stage is a round floating disc out at sea, north (+Z) of the island (the island's
+	shallows end ~286 studs from the origin; the ocean top is at y = -1.2), reached only by teleport.
 	CENTER is the middle of the stage's top surface. SPOTS duel spots sit evenly around it on
 	radial lines: the player's pad near the rim faces inward to the rival's pad DUEL studs
 	closer to the centre. A central tower carries the MOG TEST sign above everyone's heads.
