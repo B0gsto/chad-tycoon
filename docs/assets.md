@@ -11,7 +11,7 @@ have a `run_all.sh` and a `make_sheet.py` contact sheet).
 
 | Domain | Entries | Kind | Made by | Used by |
 |---|---|---|---|---|
-| `brand` | Logo, LogoSmall, KeyArt, TitleCard | Image | `art/blender/brand/` | loading screen |
+| `brand` | Logo, LogoShine, LogoSmall, KeyArt, TitleCard | Image | `art/blender/brand/` | loading screen |
 | `faces` | Happy, Proud, Shock, Awe, Sad, Idea, Fury, Smirk | Image | `art/blender/faces/` | intro cutscene avatar expressions |
 | `hud` | Dumbbell, DumbbellGlow, MogRing* | Image | `art/blender/ui/hud_*.py`, `mog_ring.py` | HUD dumbbell, MOG TEST ring |
 | `props` | 27 meshes (OrbBall, Crate, Converter, Vault, PalmTree, Crown, ...) | Model | `art/blender/props/`, `orbs/`, `cosmetics/` | `World/Props`, `Fx/Orbs`, `Cosmetics` (via `AssetModels`) |
