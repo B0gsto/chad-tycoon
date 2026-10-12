@@ -375,6 +375,8 @@ local function suite(h: { [string]: any })
 		local old = newWorld()
 		old.rec.clears = { 1, 1, 1, 1, 0, 0, 0, 0, 0, 0 }
 		old.rec.stage = 9
+		-- (A record read before DataService.reconcile padded it: no `skipped` list at all.)
+		old.rec.skipped = nil
 		eq(old.def.snapshot(old.player).unlocked, 5, "unlocks follow the saved clears")
 		check(old.start(5), "map 5 starts")
 		eq(old.rec.stage, 9, "the saved stage stays")
@@ -388,7 +390,7 @@ local function suite(h: { [string]: any })
 		w.skip()
 		local saved = serde.decode("json", serde.encode("json", w.session.profile))
 		local loaded = DataService.reconcile(saved)
-		eq(type(loaded.parkour.skipped), "table", "reconcile keeps the unknown key")
+		eq(type(loaded.parkour.skipped), "table", "reconcile keeps the list")
 		eq(loaded.parkour.skipped[1], 1, "map 1 skipped")
 		eq(loaded.parkour.skipped[2], 0, "map 2 not skipped")
 		local again = newWorld()

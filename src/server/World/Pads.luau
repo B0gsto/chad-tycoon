@@ -354,6 +354,9 @@ local function buildPad(B: Builder, name: string, color: Color3, title: string, 
 		part = padPart,
 		title = titleLabel,
 		sub = subLabel,
+		defaultTitle = titleLabel.Text,
+		defaultSub = sub,
+		defaultTint = subLabel.TextColor3,
 	}
 end
 

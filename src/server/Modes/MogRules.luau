@@ -69,6 +69,9 @@ MogRules.MIN_REACTION = 0.15
 -- undecided after PVP_MAX_ROUNDS rounds goes to the higher HP, then the higher score.
 MogRules.PVP_IDLE_FORFEIT = 3
 MogRules.PVP_MAX_ROUNDS = 40
+-- PvP: a decided duel was close when the winner ended at most this many HP ahead (or it went
+-- to sudden death); only then does the loser's card say "So close!".
+MogRules.PVP_CLOSE_MARGIN = 2
 
 export type Check = {
 	n: number,
@@ -424,6 +427,17 @@ function MogRules.duelRound(duel: Duel): Round
 		end
 	end
 	return round
+end
+
+-- Was a decided duel close? It went to sudden death, or the winner ended at most
+-- PVP_CLOSE_MARGIN HP ahead. False for a draw and for a duel that is not over (the caller
+-- leaves out forfeits: a side that left or stopped pressing did not lose a close duel).
+function MogRules.duelClose(duel: Duel): boolean
+	local winner = duel.winner
+	if not duel.finished or winner == nil then
+		return false
+	end
+	return duel.suddenDeath or duel.sides[winner].hp - duel.sides[3 - winner].hp <= MogRules.PVP_CLOSE_MARGIN
 end
 
 return MogRules

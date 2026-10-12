@@ -101,7 +101,9 @@ local function grantProduct(session: Tycoon.Session, kind: string, index: number
 		Tycoon.grantMoney(session, amount)
 	elseif kind == "Aura" then
 		local pack = theme.Monetization.AuraPacks[index]
-		local amount = Economy.auraPackAmount(Tycoon.production(session), pack.Seconds, pack.Min, progression)
+		-- Surge-free production (the shop card's State.rewardProduction): a pack bought during an
+		-- Aura Surge is not doubled by accident, and is what the card showed.
+		local amount = Economy.auraPackAmount(Tycoon.steadyProduction(session), pack.Seconds, pack.Min, progression)
 		Tycoon.grantAura(session, amount)
 	end
 end

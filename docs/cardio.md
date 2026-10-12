@@ -29,7 +29,10 @@ you stand still. Stages need more and more Speed. In Chad Aura Tycoon it is the 
    running from door to door touches neither.
    Each stage has `need` Speed, shown on a big sign at its entrance ("NEED 1,200 SPEED"). Its
    longest gap is clearable at walkSpeed(need) with the default jump, and NOT clearable at
-   walkSpeed(previous stage's need). Physics decides; there are no walls.
+   walkSpeed(previous stage's need). Physics decides; there are no walls. Every designed jump keeps
+   some reach in reserve for phones and late jumps: stage 3 (need 1,100) asks for 16.5 studs at
+   most, which leaves 2.9 studs at exactly the need (it was 17 studs and 2.4). The HUD's bar
+   recommends 15% more Speed than the need (`CardioRules.RECOMMEND`).
    Later stages also add: narrower key bridges, step-ups (≤ 5 studs), blinking keys (on/off by
    server time from stage 4), sliding keys (moving platforms from stage 6). There are
    no checkpoints anywhere. Stage 10's zone holds the last WIN plate, in front of the FINISH podium.
@@ -38,9 +41,12 @@ you stand still. Stages need more and more Speed. In Chad Aura Tycoon it is the 
    showing what it pays you right now ("WIN  +$12.4K"). Stepping on it pays that stage
    (Economy.modeReward times `CardioRules.stageBonus(n)`), records `bestStage`, ends the run and
    puts you back in the lobby. Walking past it keeps the run going toward the next plate, which
-   pays more. Anti-farm rule: a claim is a **first clear** when n > `bestStage` (always paid;
-   raises `bestStage` and the permanent **step multiplier**,
-   `CardioRules.stepMultiplier(bestStage, treadmill level)`); any other claim pays only once per
+   pays more. Anti-farm rule: a claim is a **first clear** the first time that plate is claimed
+   (always paid). First clears are kept per plate in a bit set (`profile.cardio.firsts`, bit n - 1
+   = plate n; `CardioRules.firstsOf`, `isFirst`, `claimFirst`), so a plate you ran past keeps its
+   first clear for later; a save from before the set counts every plate up to `bestStage` as
+   taken, as it did then. A claim deeper than `bestStage` raises it and the permanent **step
+   multiplier** (`CardioRules.stepMultiplier(bestStage, treadmill level)`). Any other claim pays only once per
    `Economy.MODE_REWARD_COOLDOWN` (`profile.modes.cardio.lastRewardAt`, shared by all ten plates)
    and $0 inside it. The server decides: the runner must be in a run, alive, with the feet on
    the plate (`CardioLayout.onWinPad`; jumping over it does not count), in a zone reached this
@@ -60,8 +66,13 @@ you stand still. Stages need more and more Speed. In Chad Aura Tycoon it is the 
    over: no safe zone reached, chasers ready again. Speed, the treadmill level and `bestStage`
    are permanent and stay. Quitting (HUD button, Home, respawn) ends the run. Every run
    **starts at stage 1** (the lobby): there is no stage picker, and the server ignores any start
-   stage a client sends. `bestStage` is only a record (first-clear rewards, the step multiplier,
-   the ranking).
+   stage a client sends. `bestStage` is only a record (the step multiplier, the ranking).
+8. **Chasers** (`CardioChase.luau`; stages 3, 6 and 9). Walking onto the stage's run-up starts a
+   chase: a big Chad appears in the west doorway and, after its head start, runs the path's centre
+   line at `factor x walkSpeed(need)` until it catches you (back to the lobby) or you reach the
+   end platform. Stage 3 is the first chase a runner meets, so its Chad is gentler: a 2 s head
+   start at 0.85 of the walk speed, which lets a runner at exactly the need lose 2 seconds on the
+   way. Stages 6 and 9 start after 1.2 s at the default `SPEED_FACTOR` and leave about 1.2 s.
 
 ## Module map (all new files unless marked)
 
@@ -69,6 +80,7 @@ you stand still. Stages need more and more Speed. In Chad Aura Tycoon it is the 
 |---|---|
 | `src/server/Modes/CardioRules.luau` | Pure numbers (no Roblox APIs): walkSpeed, airtime/maxGap, stepMultiplier, treadmillRate, treadmillCost, stageBonus, the STAGES table (need, gap, width, blink, movers...) |
 | `src/server/Modes/CardioLayout.luau` | Pure, deterministic layout: Cardio.generate() → keys, safe zones, treadmills, the upgrade pad, WIN plates, signs, zone spawns, bounds; ORIGIN, KILL_Y |
+| `src/server/Modes/CardioChase.luau`, `tests/cardio_chase.luau` | The chaser Chads: per-stage tuning (tier, size, head start, speed factor), the chase path and the catch / escape rules, with their tests |
 | `tests/cardio.luau` (+ 1 line in `tests/run.luau`) | Curve, monotonicity and fairness tests (every gap clearable at need, not clearable at the previous need, no overlaps, inside the bounds, zone sizes, WIN plates), and the run rules against a stub server (stage 1 start, pay only on a WIN plate, fall = stage 1) |
 | `src/server/World/CardioTrack.luau` (+ `WorldBuilder` hook) | Builds the arena from CardioLayout: keycaps (`AssetModels` keycap mesh with part fallback), treadmills, pads (SPEED UP, WIN plates), signs, arches, decor |
 | `src/server/Modes/Cardio.luau` (+ `Catalog`, `GameModes.BUILTIN`, `DataService`) | The ModeDef: runs, steps, treadmills, falls, WIN plate claims, upgrade action, snapshot |
@@ -93,6 +105,7 @@ x ≈ -1300 to +1300 at most, deck tops around y = 20 above the sea. It is reach
   from stage `from`; reason "fall" or "caught"), `upgrade { level, cost }`, `stop { reason }`.
 - Speed changes travel in the State snapshot (`modes.cardio`: speed, walkSpeed, multiplier,
   maxWalkSpeed (uncapped), speedCap (nil when none), bestStage, treadmill, treadmillRate,
-  nextCost, stage, reached, wins (per plate, in a run), running, onTreadmill). The server also fires
+  nextCost, stage, reached, wins and firsts (per plate, in a run: what the plate pays now and
+  whether its first clear is still there), running, onTreadmill). The server also fires
   `Effect("CardioSteps", { gained, speed, walkSpeed, treadmill, multiplier, rate })` (rate = the current treadmillRate) at most ~4 times a second so the HUD can count
   up smoothly without a full refresh every tick.

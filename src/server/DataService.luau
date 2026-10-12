@@ -90,10 +90,12 @@ export type Profile = {
 	-- in those units (older saves counted checkpoints and are rebuilt on load); gear = the
 	-- chosen coil ("none" | "speed" | "jump" | "gravity", worn only during runs).
 	parkour: { best: { number }, clears: { number }, skipped: { number }, stage: number, stageMaps: boolean, gear: string },
-	-- Cardio (keyboard runner): Speed earned (permanent, never goes down), highest safe zone
-	-- reached (0..CARDIO_STAGES), treadmill level (0..CARDIO_TREADMILL_MAX), safe-zone arrivals
-	-- and the player's own max WalkSpeed (0 = none, else 16..CARDIO_WALK_CAP).
-	cardio: { speed: number, bestStage: number, treadmill: number, clears: number, speedCap: number },
+	-- Cardio (keyboard runner): Speed earned (permanent, never goes down), deepest WIN plate
+	-- claimed (0..CARDIO_STAGES), treadmill level (0..CARDIO_TREADMILL_MAX), WIN plates claimed
+	-- in total (clears), the player's own max WalkSpeed (0 = none, else 16..CARDIO_WALK_CAP)
+	-- and the plates whose first-clear pay was taken (firsts: a bit set, bit n - 1 = plate n;
+	-- Modes.CardioRules.firstsOf).
+	cardio: { speed: number, bestStage: number, treadmill: number, clears: number, speedCap: number, firsts: number },
 	modes: {
 		parkour: { best: number, clears: number, lastRewardAt: number },
 		mog: {
@@ -171,7 +173,7 @@ function DataService.defaultProfile(): Profile
 			stageMaps = true,
 			gear = "none",
 		},
-		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0 },
+		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0, firsts = 0 },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
 			mog = { best = 0, rivals = 0, clears = 0, lastRewardAt = 0, pvpWins = 0, pvpPlayed = 0 },
@@ -325,6 +327,8 @@ local function reconcile(data: any): Profile
 	if not PARKOUR_GEARS[data.parkour.gear] then
 		data.parkour.gear = "none"
 	end
+	-- (Read before the defaults go in: a save without `firsts` is not a save that took none.)
+	local firsts = data.cardio.firsts
 	for key, value in default.cardio :: any do
 		local v = data.cardio[key]
 		if type(v) ~= "number" or v ~= v or v < 0 or v == math.huge then
@@ -336,6 +340,13 @@ local function reconcile(data: any): Profile
 	data.cardio.clears = math.floor(data.cardio.clears)
 	local cap = math.floor(data.cardio.speedCap + 0.5)
 	data.cardio.speedCap = if cap < CARDIO_WALK_MIN then 0 else math.min(cap, CARDIO_WALK_CAP)
+	-- Saves from before the per-plate set had one counter: every plate up to bestStage is taken
+	-- (the same rule as Modes.CardioRules.firstsOf).
+	data.cardio.firsts = if type(firsts) == "number"
+			and firsts == firsts
+			and firsts >= 0
+		then math.min(math.floor(firsts), 2 ^ CARDIO_STAGES - 1)
+		else 2 ^ data.cardio.bestStage - 1
 	for key, value in data.badges do
 		if type(key) ~= "string" or type(value) ~= "boolean" then
 			data.badges[key] = nil

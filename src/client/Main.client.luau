@@ -425,7 +425,13 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 		Hud.orbBurst(if type(data.amount) == "number" then data.amount else 0)
 	elseif kind == "Deposit" then
 		Sounds.play("Deposit")
-		Popups.float(string.format("%s%s x%.1f", I.Orb, Format.short(data.amount or 0), data.mult or 1), C.Primary, TANK)
+		-- `amount` is the aura queued in the converter; the deposit multiplier's part is `bonus`,
+		-- cash paid at once (Economy.depositSplit), so the float names it as cash.
+		local text = I.Orb .. Format.short(if type(data.amount) == "number" then data.amount else 0)
+		if type(data.bonus) == "number" and data.bonus >= 1 then
+			text ..= "  +" .. Format.money(data.bonus) .. " bonus"
+		end
+		Popups.float(text, C.Primary, TANK)
 	elseif kind == "Buy" then
 		Sounds.play("Buy", 0.1)
 	elseif kind == "Merge" then

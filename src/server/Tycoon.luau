@@ -259,10 +259,12 @@ local function processRate(session: Session, surge: boolean): number
 	return rate
 end
 
--- Production without the Aura Surge (the Double Aura pass counts).
-local function steadyProduction(session: Session): number
+-- Production without the Aura Surge (the Double Aura pass counts): what aura packs are sized
+-- with, so a pack is the same in and out of a surge.
+function Tycoon.steadyProduction(session: Session): number
 	return Economy.productionPerSecond(session.profile.units) * (if session.passes.DoubleAura then 2 else 1)
 end
+local steadyProduction = Tycoon.steadyProduction
 
 -- Cash per second without the Aura Surge: what every reward is sized with (free gift, daily,
 -- mode packs, Robux packs), so a reward is the same in and out of a surge.
@@ -1735,6 +1737,10 @@ local function snapshot(session: Session): { [string]: any }
 		production = production,
 		processRate = rate,
 		income = Tycoon.incomeNow(session),
+		-- What rewards and packs are sized with (no Aura Surge): the shop, Starter Pack and Daily
+		-- cards show the amounts the server grants, in and out of a surge.
+		rewardIncome = Tycoon.income(session),
+		rewardProduction = steadyProduction(session),
 		freeIn = math.max(0, p.lastFreeReward + Economy.FREE_REWARD_COOLDOWN - now),
 		plotIndex = session.plot.index,
 		tutorialStep = p.tutorialStep,
@@ -2124,10 +2130,14 @@ local function setOwnerSign(plot: Plot, player: Player?)
 		plot.labels.Owner.Text = player.DisplayName .. "'s " .. (if theme.Id == "chad" then "Gym" else "Factory")
 		plot.ownerImage.Image = string.format("rbxthumb://type=AvatarHeadShot&id=%d&w=150&h=150", player.UserId)
 	else
-		plot.labels.Owner.Text = "EMPTY PLOT"
+		plot.labels.Owner.Text = "FREE PLOT"
 		plot.ownerImage.Image = ""
+		-- Back to the pads Server.WorldBuilder built: names only, no prices, no "+N% speed"
+		-- titles, and "Game pass" on Auto Merge (nothing of the last owner stays).
 		for _, pad in plot.pads do
-			pad.sub.Text = ""
+			pad.title.Text = pad.defaultTitle
+			pad.sub.TextColor3 = pad.defaultTint
+			pad.sub.Text = pad.defaultSub
 		end
 		for _, screen in plot.unlockerScreens do
 			screen.status.Text = ""

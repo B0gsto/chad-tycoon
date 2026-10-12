@@ -431,12 +431,14 @@ end
 
 --[[
 	Merge count on the reveal. Fx.Shelf floats "xN MERGES!" over the rack as world text
-	(Fx.Orbs.text: a "FloatText" part with a BillboardGui, in Workspace.ClientFx). A
-	discovery's reveal comes up a moment later and its "NEW CHAD!" banner landed on that
-	text. So while a reveal is up the world text is hidden, and the reveal shows the same
-	line under its name plate instead (showReveal).
+	(Fx.Orbs.text: a part with a BillboardGui, in Workspace.ClientFx) and marks that part
+	with the attribute MERGES_ATTRIBUTE, which holds the text. A discovery's reveal comes up
+	a moment later and its "NEW CHAD!" banner landed on that text. So while a reveal is up
+	the world text is hidden, and the reveal shows the same line under its name plate
+	instead (showReveal).
 ]]
-local MERGES_TEXT = "^x%d+ MERGES!$"
+-- Fx.Shelf.MERGES_ATTRIBUTE (not required here: the Fx modules may be missing or fail).
+local MERGES_ATTRIBUTE = "MergesText"
 local MERGES_FRESH = 4 -- seconds a merge count still belongs to the next reveal
 local MERGES_MIN = 3 -- Fx.Shelf floats no count under three merges
 local mergeTexts: { Instance } = {} -- the world texts still alive
@@ -476,22 +478,20 @@ end
 -- of the batch (the text can land after the reveal has started).
 local function watchMerges()
 	local function onText(part: Instance)
-		if part.Name ~= "FloatText" then
+		-- Set by Fx.Shelf before the part is parented.
+		local text = part:GetAttribute(MERGES_ATTRIBUTE)
+		if type(text) ~= "string" or text == "" then
 			return
 		end
-		-- Orbs.text parents the part first and fills it in the same step.
+		-- Orbs.text parents the part first and builds its BillboardGui in the same step.
 		task.defer(function()
-			local label = part:FindFirstChildWhichIsA("TextLabel", true)
-			if not label or string.match(label.Text, MERGES_TEXT) == nil then
-				return
-			end
 			hideMergeTexts(false)
 			table.insert(mergeTexts, part)
-			mergesText, mergesAt = label.Text, os.clock()
+			mergesText, mergesAt = text, os.clock()
 			if revealCount > 0 then
 				hideMergeTexts(true)
 				if mergesOnReveal then
-					mergesOnReveal(label.Text)
+					mergesOnReveal(text)
 				end
 			end
 		end)
@@ -2512,7 +2512,7 @@ end
 -- Game mode finish ----------------------------------------------------------------------------
 --[[
 	The Parkour finish card: "LEVEL n CLEAR!" (or "NEW BEST!") over the level's name,
-	the run time, best and today's rank, the cash reward rolling up or a
+	the run time, best and the rank on this server's board, the cash reward rolling up or a
 	calm "Reward again in m:ss" line while the full reward is cooling down,
 	and a popping "Level n+1 unlocked!" chip when this clear opened the next level.
 	Buttons: "Next level" (gold, when there is one) beside "Run again", with slim "Choose
@@ -2607,11 +2607,11 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			Position = UDim2.fromOffset(10, 106),
 			TextColor3 = C.Text,
 		})
-		-- An assisted run (gear or a skipped stage) never sets a best or a board entry.
+		-- An assisted run (worn gear) never sets a best or a board entry.
 		local assisted = data.assisted == true
 		local sub = "Best " .. runTime(tonumber(data.best) or tonumber(data.time) or 0)
 		if type(data.rank) == "number" then
-			sub ..= "  ·  #" .. tostring(data.rank) .. " today"
+			sub ..= "  ·  #" .. tostring(data.rank) .. " on this server"
 		end
 		Kit.text(box, {
 			Name = if assisted then "Assisted" else "Best",
@@ -2765,15 +2765,18 @@ end
 
 --[[
 	The MOG TEST finish card, in the same language as the Parkour one: the score,
-	"NEW BEST!", rivals mogged, best and today's rank, the reward rolling up or the
+	"NEW BEST!", rivals mogged, best and the rank on this server's board, the reward rolling up or the
 	"Reward again in m:ss" line while the full reward cools down. "Mog again" and
 	"Back to my gym". `data` is the mog finish Notify payload (score, rivals, best,
 	newBest, passed, cash, full, cooldownEnds, rank?).
 
 	A 1v1 duel (data.vs == "pvp": won, reason "ko" | "forfeit", opponent { userId, name },
-	score, wins, played, cash, full, cooldownEnds) uses the same card: "YOU MOGGED
-	<name>!" in gold or "<name> MOGGED YOU" in red, duels won / played, the reward (the
-	winner's) and "Duel again" instead of "Mog again".
+	score, wins, played, cash, full, cooldownEnds, afk?, rounds?, draw?, close?) uses the
+	same card: "YOU MOGGED <name>!" in gold, "<name> MOGGED YOU" in red or a plain "DRAW!",
+	duels won / played, the reward (the winner's) and "Duel again" instead of "Mog again".
+	The line under the reward says how it ended: an idle forfeit (afk), a player who left
+	(forfeit), a draw, and "So close!" only for a loss the server calls close (data.close: a
+	small HP margin or sudden death).
 ]]
 function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> ())
 	Popups.enqueue("MogFinish", Popups.PRIORITY.Normal, function(done)
@@ -2782,18 +2785,21 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		local cooling = data.full == false and (tonumber(data.cooldownEnds) or 0) > os.time()
 		local duel = data.vs == "pvp"
 		local won = duel and data.won == true
+		local draw = duel and data.draw == true
+		local lost = duel and not won and not draw
 		local foe = if duel and type(data.opponent) == "table" then tostring(data.opponent.name or "Opponent") else "Opponent"
 		local box, close = modal("MogFinish", Vector2.new(480, 380), 45, nil, done)
 		local medal = medallion(
 			box,
-			if duel and not won then "😤" else "💪",
-			if duel and not won then C.Bad else C.Gold,
+			if lost then "😤" elseif draw then "🤝" else "💪",
+			if lost then C.Bad elseif draw then C.SurfaceHi else C.Gold,
 			84,
 			UDim2.new(0.5, 0, 0, 0)
 		)
 		Kit.title(box, {
-			Text = if duel
-				then (if won then "YOU MOGGED " .. string.upper(foe) .. "!" else string.upper(foe) .. " MOGGED YOU")
+			Text = if draw
+				then "DRAW!"
+				elseif duel then (if won then "YOU MOGGED " .. string.upper(foe) .. "!" else string.upper(foe) .. " MOGGED YOU")
 				elseif data.newBest then "NEW BEST!"
 				else "MOG TEST OVER",
 			TextScaled = duel,
@@ -2801,7 +2807,7 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			TextWrapped = false,
 			Size = UDim2.new(1, -20, 0, 34),
 			Position = UDim2.fromOffset(10, 48),
-			TextColor3 = if duel and not won then C.Bad else C.Gold,
+			TextColor3 = if lost then C.Bad elseif draw then C.Text else C.Gold,
 		})
 		local scoreLabel = Kit.number(box, {
 			Text = "0",
@@ -2815,7 +2821,7 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		if duel then
 			sub = "Duels won " .. tostring(tonumber(data.wins) or 0) .. "  ·  Played " .. tostring(tonumber(data.played) or 0)
 		elseif type(data.rank) == "number" then
-			sub ..= "  ·  #" .. tostring(data.rank) .. " today"
+			sub ..= "  ·  #" .. tostring(data.rank) .. " on this server"
 		end
 		Kit.text(box, {
 			Text = sub,
@@ -2829,9 +2835,16 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		well.Visible = cashTotal > 0
 		local cashLabel = cashRow(well, cashTotal)
 		local note = Kit.text(box, {
-			Text = if duel and data.reason == "forfeit"
-				then (if won then foe .. " left the duel. The win is yours!" else "You left the duel.")
-				elseif duel and not won then "So close! Hit PERFECT to deal double damage."
+			Text = if draw
+				then "Draw! Nobody won."
+				elseif duel and data.afk == true then (if won
+					then foe .. " stopped pressing. The win is yours!"
+					else "You stopped pressing, so the duel ended.")
+				elseif duel and data.reason == "forfeit" then (if won
+					then foe .. " left the duel. The win is yours!"
+					else "You left the duel.")
+				elseif lost and data.close == true then "So close! Hit PERFECT to deal double damage."
+				elseif lost then "Good duel! Hit PERFECT to deal double damage."
 				elseif cooling then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
 				elseif duel then "Total mog! Can you win another?"
 				elseif data.passed then "MOG TEST PASSED! Can you mog even more?"

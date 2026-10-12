@@ -897,6 +897,16 @@ local function cascadePop(pos: Vector3, tier: number, index: number, total: numb
 	end
 end
 
+-- The "xN MERGES!" world text. Its part carries the text in the attribute
+-- Shelf.MERGES_ATTRIBUTE: UI.Popups hides the text while a discovery reveal is up and shows
+-- the same line on the reveal, and finds it by that attribute.
+local MERGES_ATTRIBUTE = "MergesText"
+Shelf.MERGES_ATTRIBUTE = MERGES_ATTRIBUTE
+
+local function mergesText(pos: Vector3, count: number, color: Color3, scale: number, life: number)
+	Orbs.text(pos, "x" .. count .. " MERGES!", color, { scale = scale, rise = 4, life = life, tag = MERGES_ATTRIBUTE })
+end
+
 -- Big finish for a batch: a wide soft ring, palette confetti, "xN MERGES!".
 local function cascadeFinale(chest: Vector3, tier: number, count: number, auto: boolean)
 	local size = math.clamp(math.log(math.max(count, 2), 2) / 3, 0.6, 1.6)
@@ -919,12 +929,7 @@ local function cascadeFinale(chest: Vector3, tier: number, count: number, auto: 
 			})
 		end)
 	end
-	Orbs.text(
-		chest + Vector3.new(0, 3.5, 0),
-		"x" .. count .. " MERGES!",
-		color:Lerp(WHITE, 0.25),
-		{ scale = 1.4 + size * 0.6, rise = 4, life = 1.6 }
-	)
+	mergesText(chest + Vector3.new(0, 3.5, 0), count, color:Lerp(WHITE, 0.25), 1.4 + size * 0.6, 1.6)
 	if not auto and playerNear(chest, NEAR_PLOT) then
 		Camera.punch((0.9 + size * 0.4) * PUNCH_SCALE)
 	end
@@ -1167,12 +1172,7 @@ local function onMerge(data: { [string]: any })
 	-- When a chain of step merges ends, show its running total.
 	task.delay(impact - now + 0.25, function()
 		if lastImpact == impact and chainTotal >= 3 then
-			Orbs.text(
-				chest + Vector3.new(0, 4, 0),
-				"x" .. chainTotal .. " MERGES!",
-				tierColor(toTier):Lerp(WHITE, 0.25),
-				{ scale = 1.6, rise = 4, life = 1.5 }
-			)
+			mergesText(chest + Vector3.new(0, 4, 0), chainTotal, tierColor(toTier):Lerp(WHITE, 0.25), 1.6, 1.5)
 			chainTotal = 0
 		end
 	end)

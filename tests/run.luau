@@ -3681,6 +3681,20 @@ test("Game modes: profile defaults and per-level parkour records", function()
 	end
 end)
 
+test("Game modes: cardio first clears have a default and old saves keep theirs", function()
+	local DataService = loadDataService()
+	eq(DataService.defaultProfile().cardio.firsts, 0, "a new profile has taken no first clear")
+	eq(DataService.reconcile({ money = 1 }).cardio.firsts, 0, "a save without cardio has taken none")
+	local old = DataService.reconcile({ money = 1, cardio = { speed = 50, bestStage = 3, treadmill = 1, clears = 4, speedCap = 0 } })
+	eq(old.cardio.firsts, 7, "a save from before the set took every plate up to bestStage")
+	local kept = DataService.reconcile({ money = 1, cardio = { speed = 50, bestStage = 9, firsts = 5 } })
+	eq(kept.cardio.firsts, 5, "a saved set wins over bestStage")
+	eq(DataService.reconcile({ money = 1, cardio = { bestStage = 2, firsts = 5.7 } }).cardio.firsts, 5, "whole numbers only")
+	eq(DataService.reconcile({ money = 1, cardio = { bestStage = 2, firsts = 1e9 } }).cardio.firsts, 1023, "never more than the ten plates")
+	eq(DataService.reconcile({ money = 1, cardio = { bestStage = 2, firsts = -4 } }).cardio.firsts, 3, "junk falls back to bestStage")
+	eq(DataService.reconcile({ money = 1, cardio = { bestStage = 99, firsts = "x" } }).cardio.firsts, 1023, "clamped to the ten plates")
+end)
+
 -- Sky obby server (docs/sky-obby.md): stages, gear, skip, stage board ------------------
 
 -- A minimal Instance stand-in for the Parkour tests (children by name, attributes).
@@ -3762,7 +3776,8 @@ local function loadParkour(): (any, any)
 	local player = fakeInstance("Player", { UserId = 7, DisplayName = "Tester", Character = character })
 	local session = { player = player, profile = DataService.defaultProfile() }
 	rig.player, rig.humanoid, rig.root, rig.session = player, humanoid, root, session
-	local GameModes = {
+	local GameModes
+	GameModes = {
 		hooks = {
 			reward = function(_, _, reward)
 				return reward
@@ -3829,6 +3844,7 @@ local function loadParkour(): (any, any)
 	}, { __index = _G })
 	local path = MODES_DIR .. "Parkour.luau"
 	local Parkour = luau.load(fs.readFile(path), { debugName = path, environment = env })()
+	rig.GameModes = GameModes
 	local def = Parkour.create(GameModes, { built = nil, theme = theme, Tycoon = Tycoon })
 	function rig.last(event: string): any
 		for i = #rig.notes, 1, -1 do
@@ -3841,7 +3857,7 @@ local function loadParkour(): (any, any)
 	return def, rig
 end
 
-test("Sky obby: Rules skip and speed-scaled anti-cheat", function()
+test("Sky obby: speed-scaled anti-cheat", function()
 	local level = ModesCourse.LEVELS[1]
 	-- A run exactly as quick as the speed coil allows: too fast unscaled, fine at 28/16.
 	local run = ModesRules.newRun(0, level)
@@ -3849,11 +3865,10 @@ test("Sky obby: Rules skip and speed-scaled anti-cheat", function()
 	local plain = ModesRules.finish(run, finishAt)
 	eq(plain, false, "coil-fast runs fail at walking speed")
 	eq((ModesRules.finish(run, finishAt, 28 / 16)), true, "the speed coil scales the minimum")
-	-- A skipped map has no minimum.
-	local skipped = ModesRules.newRun(0, level)
-	ModesRules.skip(skipped)
-	eq(skipped.skipped, true, "the skip is recorded")
-	eq((ModesRules.finish(skipped, 0.02)), true, "a skipped map is not 'fast'")
+	-- A paid Skip Map is no finish: runs carry no skip flag and nothing waives the minimum.
+	eq((ModesRules :: any).skip, nil, "no Rules.skip")
+	eq((ModesRules.newRun(0, level) :: any).skipped, nil, "runs carry no skip flag")
+	eq((ModesRules.finish(ModesRules.newRun(0, level), 0.02)), false, "an instant finish is always 'fast'")
 end)
 
 test("Sky obby: stages, gear and the assisted flag", function()
@@ -3966,14 +3981,19 @@ test("Sky obby: falls and kill bricks send the runner back to the map's start de
 	end
 end)
 
-test("Sky obby: Skip Map finishes the map and starts the next one", function()
+test("Sky obby: Skip Map only unlocks the next map", function()
 	local def, rig = loadParkour()
 	local player, profile = rig.player, rig.session.profile
+	local rec = profile.parkour
 	local cost = Economy.parkourSkipCost(0)
 	eq(cost, Economy.PARKOUR_SKIP_MIN, "with no income a skip costs the minimum")
 	eq(Economy.parkourSkipCost(1), 250, "two minutes of $1/s is under the minimum")
 	eq(Economy.parkourSkipCost(10), 1200, "two minutes of income")
 	eq(def.snapshot(player).skipCost, cost, "the snapshot carries the cash cost")
+	local gates = 0
+	rig.GameModes.toGates = function()
+		gates += 1
+	end
 	def.start(player, true, { level = 1 })
 	profile.money = cost - 1
 	rig.actions.ParkourSkip(rig.session, {})
@@ -3981,46 +4001,71 @@ test("Sky obby: Skip Map finishes the map and starts the next one", function()
 	check(string.find(rig.toasts[1], "Not enough cash", 1, true) ~= nil, "toast says Not enough cash")
 	eq(profile.money, cost - 1, "nothing taken")
 	eq(rig.last("skip"), nil, "no skip")
+	check(def.running(player), "the run goes on")
+
 	profile.money = cost + 5
+	local earned = profile.totalEarned
 	rig.actions.ParkourSkip(rig.session, {})
 	local skip = rig.last("skip")
-	check(skip ~= nil and skip.level == 1 and skip.stage == 2, "skip notify: map 1 skipped, on to stage 2")
-	local finish = rig.last("finish")
-	check(finish ~= nil, "skipping a map finishes it")
-	eq(finish.gems, nil, "no Rizz in the finish")
-	eq(profile.money, 5 + finish.cash, "one skip paid (plus the finish cash)")
-	eq(finish.assisted, true, "a skipped map is assisted")
-	eq(finish.newBest, false, "assisted runs set no best")
-	eq(finish.rank, nil, "and no board entry")
-	eq(finish.stage, 2, "the finish reaches the next map's stage")
-	eq(profile.parkour.clears[1], 1, "the clear still counts")
-	eq(profile.parkour.best[1], 0, "no best time recorded")
-	eq(finish.unlocked, 2, "and it unlocks the next map")
-	check(finish.cash > 0, "and it pays")
-	local start = rig.last("start")
-	check(start ~= nil and start.level == 2 and start.stage == 2, "the next map starts")
-	check(def.running(player), "running map 2")
-	local at = ModesCourse.respawn(ModesCourse.LEVELS[2])
-	check(
-		rig.teleportedTo ~= nil and (rig.teleportedTo - roblox.Vector3.new(at[1], at[2], at[3])).Magnitude < 0.01,
-		"on map 2's start deck"
-	)
-	eq(profile.parkour.stage, 2, "best stage saved")
-	eq(player:GetAttribute("ParkourBestStage"), 2, "best stage attribute")
-	eq(player:GetAttribute("ParkourStage"), 2, "running on stage 2")
-	-- The last map: a skip just finishes.
-	for i = 2, ModesCourse.LEVEL_COUNT - 1 do
-		profile.parkour.clears[i] = 1
-	end
-	def.start(player, true, { level = ModesCourse.LEVEL_COUNT })
+	check(skip ~= nil and skip.level == 1 and skip.nextLevel == 2 and skip.unlocked == 2, "skip notify: map 1 skipped, map 2 unlocked")
+	eq(skip and skip.paid, 0, "the skip pays nothing")
+	eq(rig.last("finish"), nil, "a skip is no finish: no finish card")
+	eq(profile.money, 5, "the skip costs its price and pays no cash")
+	eq(profile.totalEarned, earned, "nothing earned")
+	eq(rec.clears[1], 0, "no clear")
+	eq(rec.best[1], 0, "no best time")
+	eq(rec.skipped[1], 1, "the skip is saved")
+	eq(#rec.skipped, ModesCourse.LEVEL_COUNT, "one skipped slot per level")
+	eq(profile.modes.parkour.lastRewardAt, 0, "no reward cooldown started")
+	eq(rec.stage, 1, "the saved stage does not rise")
+	eq(player:GetAttribute("ParkourBestStage"), 1, "nor the best stage attribute")
+	-- The run stops and the player is back at the gates with the picker on the next map.
+	check(not def.running(player), "the run stops")
+	eq(player:GetAttribute("ParkourStage"), 0, "no stage on the HUD")
+	eq(gates, 1, "taken back to the gates")
+	local stop, pick, start = rig.last("stop"), rig.last("pick"), rig.last("start")
+	eq(stop and stop.reason, "skip", "the HUD run ends with reason skip")
+	eq(pick and pick.level, 2, "the picker opens on the next map")
+	eq(start and start.level, 1, "the next map does not start by itself")
+	eq(rig.notes[#rig.notes], pick, "the picker is the last notify")
+	local snap = def.snapshot(player)
+	check(snap.unlocked == 2 and snap.level == 2, "map 2 is unlocked and the default pick")
+	-- No skips outside a run.
 	profile.money = cost
 	rig.actions.ParkourSkip(rig.session, {})
-	eq(rig.last("finish").level, ModesCourse.LEVEL_COUNT, "map 10 skipped")
-	check(not def.running(player), "no map after the last")
-	eq(profile.parkour.stage, ModesCourse.STAGE_COUNT, "the last stage reached")
-	local money = profile.money
+	eq(profile.money, cost, "no skips outside a run")
+
+	-- A later real first clear of the skipped map still pays in full.
+	local level = ModesCourse.LEVELS[1]
+	local preview = def.rewardPreview(player, 1)
+	check(preview.full and preview.cash > 0, "map 1's first clear still pays")
+	check(def.start(player, true, { level = 1 }), "the skipped map can be run")
+	rig.clock.t += level.MIN_SECONDS + 30
+	local last = level.PATH[#level.PATH]
+	rig.root.Position = roblox.Vector3.new(last.x, last.y + 3, last.z)
+	def.tick(player, rig.root, rig.clock.t)
+	local finish = rig.last("finish")
+	check(finish ~= nil and finish.first == true, "a real finish, counted as the first clear")
+	check(finish ~= nil and finish.full and finish.cash == preview.cash, "paid in full")
+	eq(finish and finish.gems, nil, "no Rizz in the finish")
+	eq(profile.money, cost + (finish and finish.cash or 0), "the cash arrives")
+	eq(rec.clears[1], 1, "one clear")
+	check(rec.best[1] > 0, "and a best time")
+	eq(rec.stage, 2, "finishing map 1 reaches stage 2")
+
+	-- Nothing to unlock: refused and not charged (next map already open, or the last map).
+	for i = 2, ModesCourse.LEVEL_COUNT - 1 do
+		rec.clears[i] = 1
+	end
+	local toasts = #rig.toasts
+	def.start(player, true, { level = 1 })
 	rig.actions.ParkourSkip(rig.session, {})
-	eq(profile.money, money, "no skips outside a run")
+	def.start(player, true, { level = ModesCourse.LEVEL_COUNT })
+	rig.actions.ParkourSkip(rig.session, {})
+	eq(profile.money, cost + (finish and finish.cash or 0), "not charged with nothing to unlock")
+	eq(#rig.toasts, toasts + 2, "each refusal says why")
+	eq(rec.clears[ModesCourse.LEVEL_COUNT], 0, "the last map is not cleared by a skip")
+	check(def.running(player), "the run on the last map goes on")
 end)
 
 test("Sky obby: profile fields and the stage board", function()
@@ -4759,6 +4804,8 @@ require("./cardio_chase")({ test = test, check = check, eq = eq, near = near, se
 require("./daily")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared, loadDataService = loadDataService })
 -- Interactive gym props: bounce, combo, swing and rep rules, and the gym poses (tests/interactive.luau).
 require("./interactive")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared })
+-- Parkour server: Skip Map, stranded rescue and the timed return (tests/parkour_bugs.luau).
+require("./parkour_bugs")({ test = test, check = check, eq = eq })
 
 test("Sky obby: lava kill strips and sliding bars on wide decks", function()
 	for li, level in ModesCourse.LEVELS do

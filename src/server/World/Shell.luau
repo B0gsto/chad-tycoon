@@ -409,7 +409,7 @@ local function buildEntrance(B: Builder, index: number): (TextLabel, ImageLabel)
 	ownerImage.Parent = body
 	local ownerLabel = text(body, {
 		Name = "Owner",
-		Text = "EMPTY PLOT",
+		Text = "FREE PLOT",
 		Font = theme.Fonts.Display,
 		Size = UDim2.fromScale(0.72, 0.8),
 		Position = UDim2.fromScale(0.27, 0.1),

@@ -59,10 +59,13 @@
 	  { event = "round", vs, id, you = { result, hp, maxHp, combo, score },
 	    opp = { result, hp, maxHp }, suddenDeath? }
 	  { event = "finish", vs, won, reason ("ko" | "forfeit"), opponent = { userId, name }, score,
-	    wins, played, cash, full, cooldownEnds, afk?, rounds?, draw? }
+	    wins, played, cash, full, cooldownEnds, afk?, rounds?, draw?, close? }
 	                                                 afk = true: an idle forfeit (reason "forfeit");
 	                                                 rounds = true: decided at the round cap (reason
-	                                                 "ko"); draw = true: nobody won (won is false)
+	                                                 "ko"); draw = true: nobody won (won is false);
+	                                                 close = true: a KO or round-cap result by a
+	                                                 small HP margin or in sudden death
+	                                                 (MogRules.duelClose)
 	Rival info: { index, name, tier, hp, maxHp } (tier = Theme.Tiers index the client dresses).
 	Effects: the usual "Cash" { amount, source = "Mode", padPos } when the pass pays cash.
 ]]
@@ -555,6 +558,8 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		duel.over = true
 		-- A forfeit before any round was played pays nothing (no win-trading by quitting).
 		local pays = reason ~= "forfeit" or duel.rules.n >= 2
+		-- Only a duel fought to the end can have been close (the loser's card says so).
+		local close = (reason == "ko" or reason == "rounds") and MogRules.duelClose(duel.rules)
 		duel.pending = false
 		for _, player in duel.players do
 			unhold(duel.saved[player])
@@ -587,6 +592,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 					afk = if reason == "afk" then true else nil,
 					rounds = if reason == "rounds" then true else nil,
 					draw = if winner == nil then true else nil,
+					close = if close then true else nil,
 					opponent = { userId = opponent.UserId, name = opponent.DisplayName },
 					score = duel.rules.sides[i].score,
 					wins = rec.pvpWins,

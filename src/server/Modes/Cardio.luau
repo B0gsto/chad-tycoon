@@ -163,7 +163,8 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		return session.profile.cardio
 	end
 
-	-- The WIN pads whose first clear was taken (a bit set; filled in on saves without it).
+	-- The WIN pads whose first clear was taken (a bit set; DataService.reconcile fills it in on
+	-- saves without it, and this read repairs a record that still lacks it).
 	local function firstsOf(session: any): number
 		local rec = record(session)
 		local firsts = CardioRules.firstsOf(rec.firsts, rec.bestStage)

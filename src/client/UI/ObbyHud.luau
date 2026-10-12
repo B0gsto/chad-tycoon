@@ -14,8 +14,8 @@
 	            left, "MAP n / N" in the centre (a stage is a map: N = stageCount - 1, map 10's
 	            finish being the last stage), SKIP MAP (pink, with a coin and the cash cost
 	            from State.data.modes.parkour.skipCost, refreshed on State.changed; fires
-	            ParkourSkip: the server finishes this map as assisted and starts the next one
-	            from its start deck) on the right. There are no checkpoints.
+	            ParkourSkip: the server only unlocks the next map, ends the run and opens the
+	            picker at the gates) on the right. There are no checkpoints.
 	  Gear      a 3-slot hotbar 8 px above the dumbbell (deps.tank): Speed, Jump and Gravity
 	            coils with key badges 1 / 2 / 3. Keys or a tap toggle; the chosen slot is
 	            outlined gold; tapping it again picks "none". Fires ParkourGear { gear } and

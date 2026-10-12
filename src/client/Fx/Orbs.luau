@@ -319,6 +319,9 @@ export type TextOptions = {
 	rise: number?, -- studs
 	life: number?, -- seconds
 	stroke: Color3?,
+	-- An attribute set to the text on the "FloatText" part before it is parented, so other
+	-- code can tell this text from the rest without reading its label.
+	tag: string?,
 }
 
 function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions?)
@@ -336,6 +339,9 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	holder.Size = Vector3.new(0.2, 0.2, 0.2)
 	holder.Transparency = 1
 	holder.CFrame = CFrame.new(pos)
+	if o.tag then
+		holder:SetAttribute(o.tag, text)
+	end
 	holder.Parent = fxFolder()
 	table.insert(texts, holder)
 

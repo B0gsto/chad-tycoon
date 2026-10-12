@@ -35,21 +35,25 @@ sand island in the sea.
   player's real plot. The Skip button is on screen from the first frame (Esc and gamepad B or A skip
   too). Server: `src/server/Intro.luau`; client: `src/client/Intro/*`.
 - **Tutorial.** A slim, skippable checklist of 5 steps: buy a unit, pick up orbs, deposit, collect cash,
-  merge. A quest pill under the top HUD and a small bobbing chevron over the target show the current
-  step. Each step completes on the real server event. The tutorial's deposit turns into cash at once,
-  and finishing pays $200.
-- **First minutes.** A new player starts with $100 and a level 16 converter (`Economy.START_CASH`,
+  merge. A quest pill under the top HUD (a dark plate with a small "Skip" word) names the current step, a
+  path of chevrons flows along the floor from the player to the step's pad (round the pen's corner posts
+  and over its stairs) and a tall soft beam stands over the pad so it is seen from the spawn
+  (`src/client/Guide.luau`). Each step completes on the real server event. The tutorial's deposit turns
+  into cash at once, and finishing pays $200. No crates drop during the tutorial; the first one comes
+  about 20 s after it.
+- **First minutes.** A new player starts with $100 and a level 8 converter (`Economy.START_CASH`,
   `START_PROCESS_LEVEL`), and the first 60 units bought are cheap ($50, then +$5 each;
   `Economy.BUY_EASY_UNITS`). Following the tutorial at
-  walking pace this gives tier 2 after about 20 s, tier 3 after 30 s, tier 5 by 3 minutes and tier 6 by
-  5 minutes, with something to buy on every lap (`lune run scripts/simulate --first`). From then on
+  walking pace this gives tier 2 after about 25 s, tier 3 after 35 s, tier 5 after about 2 minutes, tier 6
+  before minute 3 and tier 7 before minute 4, with something to buy on every lap
+  (`lune run scripts/simulate --first`). From then on
   every unit bought adds $50 to the price of the next. The buy pads always sell the first tier; higher
   tiers come from merging and crates. Saves from when the buy tier could be upgraded start just past
   the 60 cheap units.
 - **Rack.** Units stand on a display rack of up to 10 shelves and 100 slots (`Economy.UNIT_CAP`), each
   with a name plate that glows more at higher tiers. Two units of a tier merge into one of the next tier
-  (2.2x output) on the Merge pad or with the Auto Merge game pass. At the cap, a new unit first auto-merges
-  the lowest pair; units are refused only when nothing can merge. The HUD shows "37/100", or "RACK FULL"
+  (3x output) on the Merge pad or with the Auto Merge game pass. At the cap, a new unit first auto-merges
+  the lowest pair; units are refused only when nothing can merge. The HUD shows "37/100", or "AUTO-MERGING"
   when the rack is full.
 - **Orbs.** Each unit drops orbs that hop off its shelf, roll along the gutter and down the chute into the
   walled pen as balls coloured by tier. The pen holds 64 balls (`OrbLook.CAP`); after that new orbs count
@@ -59,22 +63,39 @@ sand island in the sea.
   Buy 5 on the left of the pen and Buy 25, Buy 100, Auto Merge on the right, all along the foot of the
   rack; Merge in front of the pen; on the right, the `+/sec` upgrades (x1, x10), the big Deposit pad by
   the blender converter and Collect by the vault; on the left, the Crate Smasher, the VIP Smasher and the
-  Free gift. Positions: `Layout.PADS` in `src/server/PlotLayout.luau`.
-- **Deposit bonus.** Depositing sends your aura to the blender, which turns it into cash at your
-  processing speed. The global deposit multiplier (x0.5 to x3) re-rolls every 20 s and shows under the
-  unit count as "Deposit bonus: x1.3 · 12s". Collect the cash on the Collect pad.
-- **Aura Surge.** The last 2 minutes of every 10 double all orbs. The strip turns orange ("AURA SURGE
+  FREE GIFT. Positions: `Layout.PADS` in `src/server/PlotLayout.luau`. A pad's price or status sits on a
+  rounded plate under its name: green when you can afford it or it is ready, soft red when not
+  (`Theme.World.PadPlate`). The upgrade pads fire only after a 0.4 s stop, so walking the Deposit to
+  Collect line never buys one, and they refuse without charging ("Not needed yet") while the converter is
+  already 4x ahead of the units (`Economy.CONVERTER_HEADROOM`). The game-pass pads (Auto Merge, VIP
+  Smasher) never open a purchase prompt from walking: they shake and say where the pass is sold, at most
+  once a minute. A plot nobody owns reads FREE PLOT: its pads show their names only, no prices, and Auto
+  Merge says "Game pass".
+- **Deposit bonus.** Depositing sends all your aura to the blender, which turns it into cash at your
+  processing speed. The global deposit multiplier (x1 to x3) re-rolls every 20 s and shows under the
+  unit count as "Deposit bonus: x1.3 · 12s". Its bonus part (aura x (multiplier - 1)) is paid as cash into
+  the vault at once (`Economy.depositSplit`); the float over the dumbbell names it ("+$120 bonus").
+  Collect the cash on the Collect pad.
+- **Converter.** Each level is +25% speed for +25% cost. Every new best tier lifts the converter for free
+  to that tier's floor (`Economy.minProcessLevel`, with a toast), so it never falls far behind the rack.
+- **Aura Surge.** The last 2 minutes of every 10 double all orbs and the converter's speed, so the cash
+  really doubles (the Double Aura pass doubles both too, all the time). Rewards and packs are sized with
+  the income without the surge. The strip turns orange ("AURA SURGE
   x2"), the client adds a warm golden-hour grade, soft bloom, sun rays and drifting gold sparkles, and the
   music cross-fades to the surge playlist (`src/client/Fx/Surge.luau`, `Theme.SurgeMusicId`).
-- **Crates** (Common to Legendary) slide down the same chute into the pen. Walk into one to pick it up
-  (within 4.5 studs, one at a time; `src/shared/CratePickup.luau`). Crates hold units around half-way
-  between tier 1 and your best tier (`Economy.chestAnchor`), so they help without skipping the curve. The
-  crate panel shows the odds for your best tier and offers:
-  - **Open now** with the "Open Crate" product (R$ 30, any rarity), or free and instant with the
-    **Crate Master** pass. Both are offered only where `PolicyService` allows paid random items.
-  - Carry it to the **Crate Smasher** to open it free on a timer (the VIP Smasher pass is 3x faster).
-    Smashing it before the timer ends takes the same "Open Crate" product, or is free with Crate Master.
-  - **Discard** it.
+- **Crates** (Common to Legendary) slide down the same chute into the pen (none during the tutorial). Walk
+  into one to pick it up (within 4.5 studs, one at a time; `src/shared/CratePickup.luau`). Crates hold
+  units a few tiers under your best tier (`Economy.chestAnchor`: best 10 gives tier 7, best 25 gives 17),
+  so they help without skipping the curve. The crate panel shows the odds for your best tier and leads
+  with the free route:
+  - The gold button, **Carry it to the Crate Smasher / FREE**, shows the Smasher's timer for the rarity
+    (1 minute for a Common up to 5 for a Legendary, `Economy.CHEST_INFO`; a player's first crate takes
+    10 s; the VIP Smasher pass is 3x faster) and points the guide at the Smasher. Smashing a crate before
+    its timer ends takes the "Open Crate" product, or is free with Crate Master.
+  - **Open now**, a small button under it: the "Open Crate" product (R$ 30, any rarity), or free and
+    instant with the **Crate Master** pass. Both are offered only where `PolicyService` allows paid random
+    items.
+  - **Discard** it. Rare and better ask first ("Discard this Rare crate?").
 - **Fans** are wholesome cheering fans around each plot: 3 + half your best tier, up to 12 on your own
   plot and 4 on others. They run in, clap, wave signs and cheer when you buy or merge.
 - **Cosmetics** (`src/server/Cosmetics.luau`): Speedy Sneakers, Double Jump, Rainbow / Star / Rookie
@@ -86,37 +107,58 @@ sand island in the sea.
   themed maps (Sunny Steps, Coconut Cove, Sweeper Bay, Blink Reef, Bubble Bounce, Coral Climb, Shark Fin
   Sprint, Thunder Tide, Volcano Vault, Giga Gauntlet; `Course.MAPS`, see
   [docs/sky-obby.md](docs/sky-obby.md) and [docs/parkour-maps.md](docs/parkour-maps.md)) are chained
-  end to end high above the clouds, with 70 numbered stages on blue arrow pads, rainbow tiles (square,
-  ring, hex, discs, beams, stairs), floating islands with landmarks, windmills, balloons and a cloud
-  floor; falling lands on the cloud catch volume and respawns you at your stage. Walking through gate 1's
+  end to end high above the clouds: rainbow tiles (square, ring, hex, discs, beams, stairs), floating
+  islands with landmarks, windmills, balloons and a cloud floor. There are no checkpoints: a map is one
+  leg from its start deck to its finish deck, and a fall or a kill brick puts you back on that start deck
+  with the clock still running. Walking through gate 1's
   portal, CHOOSE MAP in the Modes window or "Choose map" on the finish card opens the **map picker**
-  (`src/client/UI/MapPicker.luau`, a live 3D preview per map). During a run the HUD shows a rainbow
-  progress bar with every runner's avatar head, "STAGE n / 70", **SKIP STAGE** (cash: two minutes of income, at least $250, `ParkourSkip`)
-  and a 3-slot **gear hotbar** (Speed, Jump and Gravity coils, keys 1-3, `ParkourGear`): gear and skips
-  make the run "assisted" (it pays, unlocks and counts clears but never sets a best time or board entry).
-  The Ranking window has a STAGE board. Unit tests check every jump on every map is fair for the default
-  jump. Maps unlock in order, bests, clears and the best stage are saved, and a finish pays 5 minutes of
-  income (at least 750, `Theme.Modes.Reward`) times a per-map bonus (`Economy.parkourLevelBonus`) on the
-  first clear of a map and then at most once per
+  (`src/client/UI/MapPicker.luau`, a live 3D preview per map). During a run the HUD
+  (`src/client/UI/ObbyHud.luau`) shows a rainbow progress bar with every runner's avatar head,
+  "MAP n / 10", **SKIP MAP** (cash: two minutes of income, at least $250, `ParkourSkip`) and a 3-slot
+  **gear hotbar** (Speed, Jump and Gravity coils, keys 1-3, `ParkourGear`). SKIP MAP only unlocks the next
+  map: it pays nothing, counts no clear, sets no best time and starts no reward cooldown; the run ends and
+  you stand at the gates with the map picker on the next map. The skipped map's real first clear still
+  pays later, and a skip with nothing to unlock (the last map, or the next map is already open) is refused
+  and costs nothing. Gear makes a run "assisted" (it pays, unlocks and counts the clear but never sets a
+  best time or board entry). Nobody stays on the sky course without a run: off every start and finish deck
+  for 2 s, below the cloud floor, or 15 s after a finish, you are taken back to the gates.
+  The Ranking window has a STAGE board (one stage per map, counting only maps really cleared in a row from
+  map 1). Unit tests check every jump on every map is fair for the default
+  jump. Maps unlock in order, bests, clears, skips and the best stage are saved, and a finish pays 5
+  minutes of income (at least 750, `Theme.Modes.Reward`) times a per-map bonus
+  (`Economy.parkourLevelBonus`) on the first clear of a map and then at most once per
   cooldown. **Mog Test** is a skill-check duel on a floating stage
   (`Modes/MogRules.luau`, `Mog.luau`, `World/MogStage.luau`, `UI/MogHud.luau`, `Fx/Mog.luau`): press
-  Space / click / tap / A when the needle is in the zone; the window shrinks and the needle speeds up every
-  check; mogging 3 rivals passes the test and pays the mode reward, then the run goes on for a high score
+  Space / click / tap / A when the needle is in the zone; the zone shrinks and the needle speeds up every
+  check, but the zone is never under 40 degrees and the PERFECT slice never under 40 ms of needle travel
+  (`MogRules.ZONE_MIN`, `PERFECT_MIN_TIME`); mogging 3 rivals passes the test and pays the mode reward,
+  then the run goes on for a high score
   with 3 lives. Entering asks **vs rivals** (that run) or **PvP**: a 1v1 against a real player from a
   45 s queue, both answering the same checks with 8 HP each (hit 1 damage, perfect 2, a miss hurts yourself;
-  a KO tie goes to sudden death). The winner gets the mode reward; leaving mid-duel forfeits. PvP wins and
-  duels fought are saved, but only PvE scores go on the TOP MOGGERS board. Gate 3 is **Cardio**, a keyboard runner (`docs/cardio.md`):
+  a KO tie goes to sudden death). In PvP the zone stays hidden until the needle starts, so nobody can aim
+  ahead, and a press faster than a human reaction is ignored. Three timeouts in a row forfeit the duel
+  (both idle: a draw, nobody wins), and a duel still open after 40 rounds goes to the higher HP, then the
+  higher score. The winner gets the mode reward; leaving mid-duel forfeits. The finish card says how the
+  duel ended, and "So close!" only after a loss by 2 HP or less or in sudden death. PvP wins and
+  duels fought are saved and a PvP win leaves the vs-rivals first clear untouched, but only PvE scores go
+  on the TOP MOGGERS board (one board per server). Gate 3 is **Cardio**, a keyboard runner
+  (`docs/cardio.md`):
   build Speed, run ten stages, and cash out only by stepping on a safe zone's WIN plate (deeper plates pay
-  more); a fall or a chaser's catch sends you back to stage 1.
+  more; every plate keeps its own first clear, so a plate you ran past still pays it later); a fall or a
+  chaser's catch sends you back to stage 1. Stage 3, the first with a chaser, needs 1,100 Speed: its
+  longest gap is 16.5 studs and its Chad runs at 0.85 of the stage's walk speed after a 2 s head start.
 - **Shop packs scale with progression.** Cash packs pay 15 min / 1 h / 5 h / 24 h of your income and aura
   packs put 15 min / 1 h / 5 h / 24 h of your aura production straight into your tank, each with a minimum
-  per pack (`Economy.progression`). The shop shows each player
+  per pack (`Economy.progression`). Both are sized without the Aura Surge, so a pack is the same in and
+  out of a surge. The shop shows each player
   the same amounts the server grants.
 - **HUD** (`src/client/UI/Hud.luau`), laid out like the owner's reference game: chunky icons and outlined
   text straight over the world. Settings gear top right; unit count and deposit strip top centre; icon grid
-  (Home, Ranking, Modes, Index, Shop, Invite, Daily) and a 2X CASH / Starter Pack promo on the left; cash
-  and bonuses bottom left; the Blender dumbbell with the carried aura bottom centre; the free gift bottom
-  right.
+  (Home, Ranking, Modes, Index, Shop, Invite, Daily), every button on its own dark glass plate with its
+  caption, and a 2X CASH / Starter Pack promo on the left (only below best tier 15 and until it was opened
+  once in a visit; the Shop keeps the offers); cash bottom left with chips that show only while their
+  bonus is on ("Premium +10%", "Friends +20%", "SURGE x2"); the Blender dumbbell with the carried aura
+  bottom centre; the free gift bottom right.
 - **Next goal.** Once the tutorial is done, a small strip under the deposit strip (above the dumbbell on
   short screens) names the next target and how far along it is: "Next: Protein Bro 1/2" over "Merge 2x Gym
   Rookie", with the target's silhouette and a thin progress bar; tapping it opens the Index. The target is
@@ -140,10 +182,12 @@ sand island in the sea.
 
   The Daily window shows the seven cards (claimed ones ticked, today's glowing, tomorrow's with "Come back
   tomorrow" and a countdown). It opens by itself once per session when a reward is waiting, never during the
-  intro, the tutorial or a game-mode run; a held crate makes it wait up to 10 s, then it opens anyway. The
+  intro, the tutorial or a game-mode run: only once the tutorial is done and cash was collected after it,
+  20 s after the tutorial at the earliest and never within 20 s of a reward card; a held crate makes it
+  wait up to 10 s, then it opens anyway. It closes by itself 1.5 s after a claim. The
   HUD's Daily button shows a dot while a reward waits and the countdown otherwise. On a player's first day, a few minutes in, one toast says "Come back tomorrow for
   Day 2: ...".
-- **Extras:** Index of all 25 tiers, global ranking, a free gift every 10 minutes, offline earnings up to
+- **Extras:** Index of all 25 tiers, global ranking, a FREE GIFT every 10 minutes, offline earnings up to
   8 h, friend (+10% each, max +50%) and Premium (+10%) bonuses, settings, and a loading screen.
 - **Badges** (`src/server/Badges.luau`, ids in `Theme.Badges`): Welcome to the Gym, Gym Graduate (tutorial
   finished, not skipped), Certified Chad (tier 10), Absolute Chad (tier 25) and Parkour Master (level 10).
@@ -276,7 +320,7 @@ through `tools/studio.py execute_luau`:
 | `World/Shell.luau` | Plot ground, boundary, entrance and sign cards |
 | `World/Shelves.luau` | The display rack |
 | `World/Pen.luau` | Orb pen, its stairs, gutter and chute |
-| `World/Pads.luau` | Step-on pads and their signs |
+| `World/Pads.luau` | Step-on pads, their signs and price plates |
 | `World/Machines.luau` | Smoothie-blender converter, juice-bar processor, piggy-bank vault, high-striker crate smashers |
 | `World/Decor.luau` | Gym dressing, entrance path, fan zones |
 | `World/Hub.luau` | Lighting, island and sea, hub plaza |
@@ -285,12 +329,13 @@ through `tools/studio.py execute_luau`:
 | `GameModes.luau` | Game mode registry and shared plumbing |
 | `Modes/Catalog.luau`, `Course.luau`, `Rules.luau`, `Parkour.luau` | Mode list, level layouts and generator, run rules, Parkour |
 | `Modes/MogRules.luau`, `MogLayout.luau`, `Mog.luau` | Mog Test rules (unit-tested), stage layout, the mode |
+| `Modes/CardioRules.luau`, `CardioLayout.luau`, `CardioChase.luau`, `Cardio.luau` | Cardio numbers and runway layout (unit-tested), chaser Chads, the mode |
 | `Cosmetics.luau` | Cosmetic passes and the Starter Pack |
 | `Intro.luau` | Saves whether the intro was seen |
 | `Tutorial.luau` | Tutorial progress and reward |
 | `Daily.luau` | Daily reward claims, the State snapshot's `daily` field, the first-day toast |
 | `Monetization.luau` | Passes, products, receipts, paid-random-items policy |
-| `DataService.luau` | DataStore profiles (retries, no overwrite after a failed load) |
+| `DataService.luau` | DataStore profiles (retries, no overwrite after a failed load, migrations that never lower a save) |
 | `Ranking.luau` | OrderedDataStore leaderboard |
 | **src/client** | |
 | `Main.client.luau` | Entry point: builds the UI, routes server messages, Studio preview hooks |
@@ -301,7 +346,7 @@ through `tools/studio.py execute_luau`:
 | `UI/DailyWindow.luau` | Daily Reward window (opens by itself once per session) |
 | `UI/Popups.luau` | Toasts, reward reveals, crate panel, dialogs, offline earnings |
 | `UI/Tutorial.luau` | Tutorial quest pill and completion banner |
-| `Guide.luau` | Bobbing chevron that points at a target |
+| `Guide.luau` | Floor path of chevrons to a target and the beam over a tutorial pad |
 | `Animator.luau` | Unit animations on the rack and in viewports |
 | `Sounds.luau` | Sound effects and music (surge mood) |
 | `Fx/Orbs.luau`, `Fx/Crates.luau` | Orb and crate roll-in and pickup |
@@ -314,13 +359,15 @@ through `tools/studio.py execute_luau`:
 | `Fx/Cosmetics.luau` | Local double jump and speed puffs |
 | `Fx/Modes.luau` | Moving obstacles, blink pads and the Parkour client |
 | `UI/MogHud.luau`, `Fx/Mog.luau` | Mog Test ring, hearts and duel camera / rival |
+| `UI/ObbyHud.luau`, `UI/MapPicker.luau` | Parkour run HUD (progress bar, SKIP MAP, gear) and the map picker |
+| `UI/CardioHud.luau`, `Fx/Cardio.luau`, `Fx/CardioChase.luau` | Cardio HUD, keys and treadmills, the chaser Chads |
 | `Fx/Sprites.luau` | Blender effect sprites |
 | `Intro/Cutscene.luau`, `Timeline.luau` | Plays the intro; the story as data |
 | `Intro/Stage.luau`, `Actors.luau`, `Effects.luau` | Intro set, cast and effects |
 | `Intro/Avatar.luau`, `AvatarRig.luau` | The player's avatar as an actor |
 | `Intro/Framing.luau`, `Ui.luau` | Shot maths; letterbox, subtitles, Skip |
 | **src/loader** | ReplicatedFirst loading screen |
-| `tests/run.luau` | Lune unit tests (`tests/daily.luau`, `mog.luau`, `cardio*.luau` are loaded by it) |
+| `tests/run.luau` | Lune unit tests (`tests/daily.luau`, `mog.luau`, `cardio*.luau`, `interactive.luau`, `parkour_bugs.luau` are loaded by it) |
 | `scripts/` | `check.sh`, `lint-files.sh`, `simulate.luau` |
 | `art/` | Blender scripts (`art/blender/<area>/`), outputs and asset specs (`art/assets/*.json`) |
 | `assets/` | Pins, upload manifest, downloaded `.rbxm` models |

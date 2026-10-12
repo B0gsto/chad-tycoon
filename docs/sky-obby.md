@@ -163,11 +163,13 @@ picker picks where to start; falling sends the player back to the **start of the
 - **Anti-cheat**: `Rules.finish` checks one start-to-finish minimum, `MIN_SECONDS` (scaled by
   28/16 when the speed coil was worn); the only invalid reason is `"fast"`.
 - **Skip Map** (was Skip Stage): the same cash action `ParkourSkip` and cost
-  (`Economy.parkourSkipCost`). It finishes the current map as an assisted run (teleport under the
-  finish arch: it pays, counts the clear and unlocks the next map, no best time or board entry)
-  and then starts a run on the next map's start deck; on map 10 it just finishes. Notify
-  `{ event = "skip", level, stage = STAGE_LAST }`. It is a cash action, so no Robux receipts are
-  involved.
+  (`Economy.parkourSkipCost`). It only unlocks the next map (`profile.parkour.skipped[level] = 1`;
+  unlocks read "cleared or skipped"): no finish, so no reward, no clear, no best time, no stage and
+  no reward cooldown, and the map's real first clear still pays later. The run stops and the player
+  stands at the gates with the map picker on the next map (notifies `skip { level, paid = 0,
+  nextLevel, unlocked }`, `stop { reason = "skip" }`, `pick { level }`). With nothing to unlock
+  (map 10, or the next map is already open) it is refused and costs nothing. It is a cash action,
+  so no Robux receipts are involved.
 - **Saved data**: `profile.parkour.stage` is now in map units (0..11) and `stageMaps = true`
   marks it. Saves without the marker (checkpoint-era stages) are rebuilt on load from the maps
   cleared in a row from map 1 (cleared n: stage n + 1; none cleared but a stage: 1; never ran: 0).

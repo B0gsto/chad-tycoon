@@ -548,7 +548,7 @@ end
 function Windows.starterAmounts(data: { [string]: any }): number
 	local starter = COS.Starter
 	local progression = Economy.progression(data.highestTier or 1, data.processLevel or 0)
-	return Economy.moneyPackAmount(data.income or 0, starter.CashSeconds, starter.CashMin, progression)
+	return Economy.moneyPackAmount(data.rewardIncome or data.income or 0, starter.CashSeconds, starter.CashMin, progression)
 end
 
 -- The cosmetics part of a snapshot, empty when the server sent none.
@@ -2413,10 +2413,11 @@ local function buildShop(screen: ScreenGui)
 		end
 		chipMoney, chipAura = money, carried
 
-		-- Each player sees their own pack sizes (the server grants with the same functions).
+		-- Each player sees their own pack sizes (the server grants with the same functions and
+		-- the same surge-free income and production: State.rewardIncome / rewardProduction).
 		local progression = Economy.progression(data.highestTier or 1, data.processLevel or 0)
 		for index, pack in moneyPacks do
-			local amount = Economy.moneyPackAmount(data.income, pack.Seconds, pack.Min, progression)
+			local amount = Economy.moneyPackAmount(data.rewardIncome or data.income or 0, pack.Seconds, pack.Min, progression)
 			local shown = moneyShown[index]
 			moneyShown[index] = amount
 			if shown and shown ~= amount and open then
@@ -2427,7 +2428,7 @@ local function buildShop(screen: ScreenGui)
 			end
 		end
 		for index, pack in auraPacks do
-			local amount = Economy.auraPackAmount(data.production or 0, pack.Seconds, pack.Min, progression)
+			local amount = Economy.auraPackAmount(data.rewardProduction or data.production or 0, pack.Seconds, pack.Min, progression)
 			local shown = auraShown[index]
 			auraShown[index] = amount
 			if shown and shown ~= amount and open then

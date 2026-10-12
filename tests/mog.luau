@@ -315,6 +315,42 @@ return function(h: { [string]: any })
 		eq(round.winner, 1, "sudden death decided")
 	end)
 
+	test("Mog: a close duel is a small HP margin or sudden death", function()
+		eq(MogRules.PVP_CLOSE_MARGIN, 2, "two HP ahead or less is close")
+		-- KO with the winner `left` HP ahead.
+		local function ko(left: number): any
+			local duel = MogRules.newDuel()
+			duel.sides[1].hp, duel.sides[2].hp = left, 1
+			MogRules.duelPress(duel, 1, "hit")
+			MogRules.duelPress(duel, 2, "miss")
+			check(MogRules.duelRound(duel).finished, "KO")
+			return duel
+		end
+		check(not MogRules.duelClose(MogRules.newDuel()), "an open duel is not close")
+		check(MogRules.duelClose(ko(1)), "won with 1 HP left: close")
+		check(MogRules.duelClose(ko(2)), "won with 2 HP left: close")
+		check(not MogRules.duelClose(ko(3)), "won with 3 HP left: not close")
+		check(not MogRules.duelClose(ko(MogRules.PVP_HP)), "a clean sweep is not close")
+		-- Sudden death is always close.
+		local duel = MogRules.newDuel()
+		duel.sides[1].hp, duel.sides[2].hp = 1, 1
+		MogRules.duelPress(duel, 1, "hit")
+		MogRules.duelPress(duel, 2, "hit")
+		MogRules.duelRound(duel)
+		check(not MogRules.duelClose(duel), "not decided yet")
+		MogRules.duelPress(duel, 1, "hit")
+		MogRules.duelPress(duel, 2, "miss")
+		MogRules.duelRound(duel)
+		check(duel.finished and MogRules.duelClose(duel), "decided in sudden death: close")
+		-- A draw has no loser to console.
+		duel = MogRules.newDuel()
+		for _ = 1, MogRules.PVP_IDLE_FORFEIT do
+			MogRules.duelRound(duel)
+		end
+		check(duel.finished and duel.winner == nil, "both idle: a draw")
+		check(not MogRules.duelClose(duel), "a draw is not close")
+	end)
+
 	test("Mog: PvP idle forfeit", function()
 		eq(MogRules.PVP_IDLE_FORFEIT, 3, "three timeouts in a row")
 		-- B walked away: A wins on B's third timeout, long before a KO.

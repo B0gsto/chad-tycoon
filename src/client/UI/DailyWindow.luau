@@ -439,7 +439,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		todayClaimed = not canClaim
 		local tomorrowCard = if day < DailyReward.DAYS then day + 1 else 0
 		local progression = Economy.progression(tonumber(data.highestTier) or 1, tonumber(data.processLevel) or 0)
-		local income = tonumber(data.income) or 0
+		-- The surge-free income Server.Daily pays with.
+		local income = tonumber(data.rewardIncome) or tonumber(data.income) or 0
 		-- A player's first day pays today's card up to a cap (Server.Daily does the same).
 		local cap = if daily.firstDay == true then DailyReward.firstDayCap(day, tonumber(data.bought) or 0) else nil
 		for i, card in cards do

@@ -7,8 +7,8 @@
 	runner back to the start deck (the clock keeps running). The finish counts only when the
 	run took at least the level's MIN_SECONDS (its PATH_LENGTH at MAX_PLAUSIBLE_SPEED: nobody
 	crosses the map faster). That minimum assumes WalkSpeed 16: a run that wore the speed coil
-	passes `speedScale` (28/16) to Rules.finish so it may be that much quicker. A map bought
-	with a paid Skip Map (Rules.skip) has no minimum.
+	passes `speedScale` (28/16) to Rules.finish so it may be that much quicker. A paid Skip
+	Map is no finish at all (it only unlocks the next map), so it never reaches Rules.finish.
 ]]
 
 local Course = require(script.Parent.Course)
@@ -19,17 +19,10 @@ export type Run = {
 	-- The Course level being run (Course.LEVELS[i]).
 	level: Course.Level,
 	startedAt: number,
-	-- The map was skipped with a paid Skip Map: no minimum time.
-	skipped: boolean,
 }
 
 function Rules.newRun(now: number, level: Course.Level?): Run
-	return { level = level or Course.LEVELS[1], startedAt = now, skipped = false }
-end
-
--- Marks the run's map as skipped (paid Skip Map): Rules.finish accepts it at any time.
-function Rules.skip(run: Run)
-	run.skipped = true
+	return { level = level or Course.LEVELS[1], startedAt = now }
 end
 
 -- Validates a finish at `now`: (true, seconds) or (false, "fast") when the run was quicker
@@ -38,7 +31,7 @@ end
 function Rules.finish(run: Run, now: number, speedScale: number?): (boolean, number | string)
 	local scale = if type(speedScale) == "number" and speedScale >= 1 then speedScale else 1
 	local minimum = run.level.MIN_SECONDS
-	if not run.skipped and (type(minimum) ~= "number" or now - run.startedAt < minimum / scale) then
+	if type(minimum) ~= "number" or now - run.startedAt < minimum / scale then
 		return false, "fast"
 	end
 	return true, now - run.startedAt
