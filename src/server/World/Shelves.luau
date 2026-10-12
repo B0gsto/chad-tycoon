@@ -9,7 +9,8 @@
 	the client's name plates hang from (Fx.Plates), so nothing else is built there. Slot 1, at
 	the front shelf's centre, is a raised champion pedestal with gold rims and a gold star
 	plaque whose ring and top disc follow the best unit's tier colour. A sunny roof board
-	carrying the "YOUR CHADS" sign (cream card, red-orange header) tops the highest shelf.
+	tops the highest shelf and holds the small "YOUR CHADS" marquee (cream card, red-orange
+	header) on two posts, high enough to stay out of the pen view.
 	Two soft warm lights (one wash over the lower shelves, one spot on the champion) keep the
 	units the best-lit thing on the plot.
 
@@ -291,16 +292,21 @@ end
 
 -- The rack sign in the shared sign style (Common.SIGN): a cream card with a teal border and a
 -- red-orange header band, framed by a teal board on two teal posts, standing on the roof at
--- plot-local (0, base, z).
+-- plot-local (0, base, z). It is a small marquee held SIGN_CLEAR above the roof: from the pen
+-- (default camera, 15 studs behind the character and looking 20 degrees down) a sign sitting
+-- on the roof filled the top-centre of the screen, right behind the HUD's rows; this high it is
+-- past the top edge there, and from the walkway it is a small plate above the rack.
+local SIGN_W, SIGN_H = 16, 3.4
+local SIGN_CLEAR = 6.4
 local function buildSign(B: Builder, parent: Instance, z: number, base: number)
 	local L, P = B.L, B.P
-	local w, h = 20, 4.2
-	local cy = base + 3.4
+	local w, h = SIGN_W, SIGN_H
+	local cy = base + SIGN_CLEAR + (h + 0.5) / 2
 	for _, side in { -1, 1 } do
 		decorative(P({
 			Name = "SignPost",
 			Shape = Enum.PartType.Cylinder,
-			Size = Vector3.new(cy - base, 0.6, 0.6),
+			Size = Vector3.new(cy - base, 0.8, 0.8),
 			CFrame = L(side * (w / 2 - 1.5), (base + cy) / 2, z + 0.5) * UPRIGHT,
 			Color = SIGN.Border,
 			Parent = parent,
