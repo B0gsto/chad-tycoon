@@ -219,3 +219,37 @@ There are still no checkpoints.
   went from 78 to 94 and the landing deck above grew half a stud toward it (12 x 13): a runner
   launched at walking speed from either edge of the pad lands on that deck
   (tests/parkour_bugs.luau pins this).
+
+## Finish card states, the resting bonus, MAP n everywhere (round 6, wave 3)
+
+There are still no checkpoints.
+
+- **Finish card, four states** (`Popups.modeFinish`): a first clean clear (rays and sparkles round
+  the medal, confetti, a wide "MAP n+1 UNLOCKED!" banner), all maps cleared ("SKY OBBY COMPLETE!",
+  a star medal, "ALL 10 MAPS CLEARED!"), a repeat ("RUN AGAIN +$X +20%" in the reward well and the
+  cooldown as a clock bar under a padlock, "Full reward in m:ss") and an assisted run (grey medal,
+  "ASSISTED RUN · NO BEST TIME", no confetti).
+- **`complete`.** The finish payload says when a run made it all ten maps cleared without gear
+  for the first time (every map has a best time, which only a clean finish sets). The card goes by
+  that flag, not by "map 10's first clear", so a player whose first map 10 clear wore a coil gets
+  "SKY OBBY COMPLETE!" on the clean clear that completes the set, whichever map it is.
+- **The return waits for the card.** The card fires the action `ModeCard { mode, open }` when it
+  opens and when it closes. The 15 s return to the gates looks again every second while the card
+  is up, for 20 s more at the most (`CARD_HOLD_SECONDS`), so a client can never hold a player in
+  the sky. A new finish starts with no card up.
+- **The run again bonus rests.** After a map's run again bonus (20%) was paid, that map's bonus
+  rests for 120 s (`REPEAT_REST_SECONDS`, in memory per player and map, kept for the server's
+  life). A clean run inside the rest finishes as usual, counts its clear and can set a best time,
+  and pays nothing: `pay = "resting"` with `repeatRest` (seconds left) in the finish payload, and
+  the card reads "Run again bonus is resting on this map: back in m:ss". Other maps are not
+  affected, a first clear and the full reward never rest, and the snapshot's `rewardPreview` adds
+  `repeatRest` (its `cash` is 0 while the map rests).
+- **Modes window row.** Inside the cooldown the Parkour row names the bonus only when the server
+  would pay it: nothing with a coil chosen or worn, and for the map the server priced its own
+  number.
+- **MAP n.** The world's signs and the best-times board by the gates say "MAP n" (the board said
+  "L1" .. "L10").
+- **Look.** The start arch's marquee (tag `StartGantry`, attribute `Level`) fades out 0.9 s into a
+  run of that map and returns when it ends; sweepers are hazard-striped; path platforms have a
+  bright edge; a fall blinks the screen white and puffs at the runner's feet on the start deck (a
+  lava fall keeps its red flash).

@@ -495,7 +495,7 @@ local function grantStarter(session: Session, delayNotify: boolean)
 	if not Cosmetics.claimStarter(theme, profile, session.passes) then
 		return
 	end
-	local progression = Economy.progression(Economy.highestTier(profile.discovered), profile.processLevel)
+	local progression = Economy.progression(Economy.highestTier(profile.runDiscovered), profile.processLevel)
 	local cash = Cosmetics.starterCash(theme, Tycoon.income(session), progression)
 	local starter = theme.Cosmetics.Starter
 	Tycoon.grantMoney(session, cash)

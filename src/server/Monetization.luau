@@ -96,7 +96,7 @@ end
 -- the same shared functions the shop uses to show each player their own amounts.
 local function grantProduct(session: Tycoon.Session, kind: string, index: number)
 	local p = session.profile
-	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
+	local progression = Economy.progression(Economy.highestTier(p.runDiscovered), p.processLevel)
 	if kind == "Money" or kind == "LegacyMoney" then
 		local pack = (productList(kind) :: { any })[index]
 		local amount = Economy.moneyPackAmount(Tycoon.income(session), pack.Seconds, pack.Min, progression)

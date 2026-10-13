@@ -19,10 +19,13 @@
 	  first clear OF THAT LEVEL and then once per
 	  Economy.MODE_REWARD_COOLDOWN (one cooldown shared by all levels, modes.parkour.
 	  lastRewardAt). Inside the cooldown a clean finish (no gear worn) pays
-	  Economy.MODE_REPEAT_SHARE of that map's pack on every run; an assisted one pays
-	  nothing. After a remote
+	  Economy.MODE_REPEAT_SHARE of that map's pack, then that map's bonus rests for
+	  REPEAT_REST_SECONDS (in memory, per player and map: a run inside the rest finishes as
+	  usual and pays nothing); an assisted one pays nothing. After a remote
 	  finish the player is brought back to the gates (GameModes.returnLater) wherever they
-	  stand on the sky course by then (the finish deck, a bridge, the next map's start deck).
+	  stand on the sky course by then (the finish deck, a bridge, the next map's start deck);
+	  while the finish card is up (action "ModeCard" { mode, open }) the return waits, for
+	  CARD_HOLD_SECONDS at the most.
 	- Leaving the level's bounds for Course.LEAVE_SECONDS ends the run ("left"); on a remote
 	  level the player goes back to the gates.
 	- Nobody stays on the sky course without a run: a player with no run who is below the
@@ -69,17 +72,23 @@
 	(`checkpoints` / `index` stay 0 for older client code; there is no "checkpoint" event.)
 	  { event = "finish", time, best, newBest, first, cash, full, cooldownEnds, rank?,
 	    level, levelName, nextLevel?, unlockedNew, unlocked, levels, stage, stageCount,
-	    assisted, falls, pay, packCash, repeatCash, repeatShare }
+	    assisted, falls, pay, packCash, repeatCash, repeatShare, repeatRest, complete }
 	                                                             assisted: newBest false, no rank
 	                                                             pay: why `cash` is what it is:
 	                                                             "first" (the map's first clear),
 	                                                             "full" (the cooldown was over),
 	                                                             "repeat" (a clean run inside the
-	                                                             cooldown: repeatCash) or
+	                                                             cooldown: repeatCash),
+	                                                             "resting" (the same while the
+	                                                             map's bonus rests: 0; back in
+	                                                             repeatRest seconds) or
 	                                                             "assisted" (gear inside the
 	                                                             cooldown: 0); packCash and
 	                                                             repeatCash are this map's full
 	                                                             and repeat pay
+	                                                             complete: this run made it all
+	                                                             ten maps cleared without gear,
+	                                                             for the first time
 	`stage` is the global stage (the map being run; its finish deck: the next one).
 	  { event = "invalid", reason }                              "fast"
 	  { event = "stop", reason }                                 run ended without a finish
@@ -106,6 +115,14 @@ local TELEPORT_GRACE = 0.6
 local FEET_BELOW_ROOT = 3
 -- Seconds after a remote finish before the player is taken back to the gates.
 local RETURN_SECONDS = 15
+-- The return waits while the finish card is up (action "ModeCard"), checked every
+-- CARD_POLL_SECONDS and for CARD_HOLD_SECONDS at the most: a client that never says the card
+-- closed cannot keep its player in the sky.
+local CARD_HOLD_SECONDS = 20
+local CARD_POLL_SECONDS = 1
+-- Seconds a map's run again bonus rests after it was paid: runs inside it finish as usual
+-- and pay nothing, so the bonus cannot be farmed in a loop on one short map.
+local REPEAT_REST_SECONDS = 120
 -- Seconds a player with no run may stand off every start / finish deck of the sky course
 -- before they are taken back to the gates.
 local STRANDED_SECONDS = 2
@@ -214,6 +231,16 @@ local function earnedStage(rec: Record): number
 	return n
 end
 
+-- Has every map been cleared without gear? (Only a clean finish sets a map's best time.)
+local function allClean(rec: Record): boolean
+	for i = 1, Course.LEVEL_COUNT do
+		if (tonumber(rec.best[i]) or 0) <= 0 then
+			return false
+		end
+	end
+	return true
+end
+
 -- Every map's start and finish deck: where a player with no run may stand.
 local DECKS: { Course.Element } = {}
 for _, level in Course.LEVELS do
@@ -255,6 +282,11 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	local offDeckSince: { [Player]: number } = {}
 	local settleUntil: { [Player]: number } = {}
 	local returnTicket: { [Player]: number } = {}
+	-- Players whose finish card is up (the client's "ModeCard" action).
+	local cardOpen: { [Player]: boolean? } = {}
+	-- When each map's run again bonus was last paid, by UserId (kept for the server's life,
+	-- so leaving and joining again does not wake it).
+	local repeatPaidAt: { [number]: { [number]: number } } = {}
 	-- Server best times per level (in memory; see Rules.recordBest for the OrderedDataStore
 	-- shape).
 	local serverBest: { { Rules.BestEntry } } = {}
@@ -275,19 +307,26 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		return session.profile.parkour
 	end
 
+	-- Seconds until `level`'s run again bonus is paid again (0 = it is awake).
+	local function repeatRest(session: any, level: number): number
+		local paid = repeatPaidAt[session.player.UserId]
+		local at = paid and paid[level]
+		return if at then math.max(0, math.ceil(at + REPEAT_REST_SECONDS - now())) else 0
+	end
+
 	-- What finishing `level` pays now. Inside the cooldown only a `clean` run (no gear worn)
-	-- earns the repeat share of the map's pack.
+	-- earns the repeat share of the map's pack, and not while that map's bonus rests.
 	local function rewardFor(session: any, level: number, clean: boolean): Economy.ModeReward
 		local p = session.profile
 		local pack = theme.Modes.Reward
-		local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
+		local progression = Economy.progression(Economy.highestTier(p.runDiscovered), p.processLevel)
 		local first = (levels(session).clears[level] or 0) == 0
 		local r =
 			Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, first, shared(session).lastRewardAt, os.time())
 		local bonus = Economy.parkourLevelBonus(level)
 		r.packCash = math.floor(r.packCash * bonus + 0.5)
 		r.repeatCash = math.floor(r.packCash * Economy.MODE_REPEAT_SHARE)
-		r.cash = if r.full then r.packCash elseif clean then r.repeatCash else 0
+		r.cash = if r.full then r.packCash elseif clean and repeatRest(session, level) <= 0 then r.repeatCash else 0
 		return r
 	end
 
@@ -300,9 +339,9 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		for i = 1, Course.LEVEL_COUNT do
 			local top = serverBest[i][1]
 			if top then
-				table.insert(lines, string.format("L%d  %s  <b>%.2fs</b>", i, escape(top.name), top.time))
+				table.insert(lines, string.format("MAP %d  %s  <b>%.2fs</b>", i, escape(top.name), top.time))
 			else
-				table.insert(lines, string.format("L%d  —", i))
+				table.insert(lines, string.format("MAP %d  —", i))
 			end
 		end
 		label.Text = table.concat(lines, "\n")
@@ -363,14 +402,26 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	end
 
 	-- Back to the gates after `seconds`, wherever the player then stands on the sky course
-	-- (not if they went home, started a run, or a later return took over).
+	-- (not if they went home, started a run, or a later return took over). While the finish
+	-- card is up the return waits, CARD_HOLD_SECONDS at the most.
 	local function returnFromSky(player: Player, seconds: number)
 		local ticket = (returnTicket[player] or 0) + 1
 		returnTicket[player] = ticket
-		GameModes.returnLater(player, seconds, function(r: BasePart): boolean
-			local at = r.Position
-			return returnTicket[player] == ticket and inSky(at.X, at.Y - FEET_BELOW_ROOT, at.Z)
-		end)
+		local holdUntil = now() + seconds + CARD_HOLD_SECONDS
+		local function later(wait: number)
+			GameModes.returnLater(player, wait, function(r: BasePart): boolean
+				local at = r.Position
+				if returnTicket[player] ~= ticket or not inSky(at.X, at.Y - FEET_BELOW_ROOT, at.Z) then
+					return false
+				end
+				if cardOpen[player] and now() < holdUntil then
+					later(CARD_POLL_SECONDS)
+					return false
+				end
+				return true
+			end)
+		end
+		later(seconds)
 	end
 
 	-- Gear -------------------------------------------------------------------------------
@@ -556,11 +607,26 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		local first = rec.clears[index] == 0
 		local unlockedBefore = unlockedOf(rec)
 		local assisted = state.assisted
+		local cleanBefore = allClean(rec)
+		-- Inside the cooldown, a clean run while this map's bonus rests: it pays nothing.
+		local rest = repeatRest(session, index)
 		local reward = GameModes.hooks.reward(session, ID, rewardFor(session, index, not assisted))
+		local pay = if first
+			then "first"
+			elseif reward.full then "full"
+			elseif assisted then "assisted"
+			elseif rest > 0 then "resting"
+			else "repeat"
 		rec.clears[index] += 1
 		if reward.full then
 			cooldown.lastRewardAt = os.time()
+		elseif pay == "repeat" then
+			local paid = repeatPaidAt[player.UserId] or {}
+			repeatPaidAt[player.UserId] = paid
+			paid[index] = now()
 		end
+		-- A new finish, a new card: a card the client never closed holds nothing.
+		cardOpen[player] = nil
 		local newBest = not assisted and (rec.best[index] <= 0 or time < rec.best[index])
 		if newBest then
 			rec.best[index] = time
@@ -605,10 +671,14 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			assisted = assisted,
 			falls = state.falls,
 			-- For the finish card: why `cash` is what it is, and both of this map's prices.
-			pay = if first then "first" elseif reward.full then "full" elseif assisted then "assisted" else "repeat",
+			pay = pay,
 			packCash = reward.packCash,
 			repeatCash = reward.repeatCash,
 			repeatShare = Economy.MODE_REPEAT_SHARE,
+			-- Seconds until this map's run again bonus is awake again (0 = it is).
+			repeatRest = repeatRest(session, index),
+			-- This run made it all ten maps cleared without gear, for the first time.
+			complete = not cleanBefore and allClean(rec),
 		})
 		GameModes.hooks.rewarded(session, ID, reward)
 		Tycoon.markDirty(session)
@@ -697,18 +767,21 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	function def.rewardPreview(player: Player, level: number?): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, full = false, packCash = 0, repeatCash = 0, repeatShare = Economy.MODE_REPEAT_SHARE }
+			return { cash = 0, full = false, packCash = 0, repeatCash = 0, repeatShare = Economy.MODE_REPEAT_SHARE, repeatRest = 0 }
 		end
 		local rec = levels(session)
 		local state = runs[player]
 		local clean = if state then not state.assisted else rec.gear == "none"
-		local r = rewardFor(session, level or defaultOf(rec), clean)
+		local index = level or defaultOf(rec)
+		local r = rewardFor(session, index, clean)
 		return {
 			cash = r.cash,
 			full = r.full,
 			packCash = r.packCash,
 			repeatCash = r.repeatCash,
 			repeatShare = Economy.MODE_REPEAT_SHARE,
+			-- Seconds this map's run again bonus still rests (0 = awake).
+			repeatRest = if r.full then 0 else repeatRest(session, index),
 		}
 	end
 
@@ -768,6 +841,14 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	end
 
 	-- Actions ------------------------------------------------------------------------------
+
+	-- The finish card opened or closed (Client.UI.Popups.modeFinish): returnFromSky waits
+	-- while it is up.
+	Tycoon.addAction("ModeCard", function(session: any, data: { [string]: any })
+		if data.mode == ID then
+			cardOpen[session.player] = if data.open == true then true else nil
+		end
+	end)
 
 	Tycoon.addAction("ParkourGear", function(session: any, data: { [string]: any })
 		local gear = data.gear
@@ -842,6 +923,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		offDeckSince[player] = nil
 		settleUntil[player] = nil
 		returnTicket[player] = nil
+		cardOpen[player] = nil
 		removeGear(player)
 	end)
 	updateBoard()

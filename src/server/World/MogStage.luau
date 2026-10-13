@@ -8,7 +8,7 @@
 	- SPOT_COUNT duel spots: a Sunny pad for the player and a Grape pad for the rival, each on
 	  a glowing Neon ring.
 	- A central tower with a 4-sided "MOG TEST" sign (2-line card faces like the plaza gates)
-	  and a "TOP MOGGERS" board near the rim (its list label is returned as bestList).
+	  and a "TOP MOGGERS" board near the rim (its list label is returned as bestList, its subtitle as bestTitle).
 ]]
 
 local Common = require(script.Parent.Common)
@@ -26,6 +26,8 @@ local MogStage = {}
 export type Built = {
 	folder: Model,
 	bestList: TextLabel,
+	-- The board's subtitle: "SERVER HIGH SCORES" until Modes.Mog says "ALL-TIME BEST".
+	bestTitle: TextLabel,
 }
 
 local C = MogLayout.CENTER
@@ -264,8 +266,9 @@ local function buildTower(parent: Instance)
 	light(crown, 0.8, 30)
 end
 
--- The TOP MOGGERS board near the rim, facing the centre. Returns its list label.
-local function buildBoard(parent: Instance): TextLabel
+-- The TOP MOGGERS board near the rim, facing the centre. Returns its list label and its
+-- subtitle label.
+local function buildBoard(parent: Instance): (TextLabel, TextLabel)
 	local p = MogLayout.at(MogLayout.BOARD_ANGLE, MogLayout.BOARD_RING, TOP)
 	local base = CFrame.lookAt(Vector3.new(p.x, TOP, p.z), Vector3.new(C.x, TOP, C.z))
 	local w, h, bottom = 11, 12, 2.5
@@ -296,7 +299,7 @@ local function buildBoard(parent: Instance): TextLabel
 	local card = panel(root, W.Cream, UDim2.fromScale(0.03, 0.025), UDim2.fromScale(0.94, 0.95), 0.06)
 	local pill = panel(card, W.Grape, UDim2.fromScale(0.06, 0.03), UDim2.fromScale(0.88, 0.13), 0.5)
 	text(pill, { Text = "TOP MOGGERS", TextColor3 = W.White, Size = UDim2.fromScale(0.9, 0.74), Position = UDim2.fromScale(0.05, 0.13) })
-	text(card, {
+	local title = text(card, {
 		Text = "SERVER HIGH SCORES",
 		Font = theme.Fonts.Bold,
 		Size = UDim2.fromScale(0.8, 0.06),
@@ -317,7 +320,7 @@ local function buildBoard(parent: Instance): TextLabel
 	local back = surface(slab, Enum.NormalId.Back, 30)
 	local backCard = panel(back, W.Cream, UDim2.fromScale(0.03, 0.025), UDim2.fromScale(0.94, 0.95), 0.06)
 	text(backCard, { Text = "MOG TEST", Size = UDim2.fromScale(0.86, 0.3), Position = UDim2.fromScale(0.07, 0.35) })
-	return list
+	return list, title
 end
 
 function MogStage.build(): Built
@@ -328,8 +331,8 @@ function MogStage.build(): Built
 	buildRopes(folder)
 	buildPads(folder)
 	buildTower(folder)
-	local list = buildBoard(folder)
-	return { folder = folder, bestList = list }
+	local list, title = buildBoard(folder)
+	return { folder = folder, bestList = list, bestTitle = title }
 end
 
 return MogStage

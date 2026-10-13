@@ -2916,11 +2916,14 @@ end
 	`pay`, `assisted`, `level` / `levels`):
 	  first clean clear  rays and sparkles round the medal, rows of confetti, and a wide
 	                     "MAP n+1 UNLOCKED!" banner popping in when the clear opened a map;
-	  all maps cleared   the last map's first clean clear: "SKY OBBY COMPLETE!", a star
-	                     medal, more confetti and an "ALL 10 MAPS CLEARED!" banner;
+	  all maps cleared   the run that makes every map cleared without gear (payload
+	                     `complete`): "SKY OBBY COMPLETE!", a star medal, more confetti and
+	                     an "ALL 10 MAPS CLEARED!" banner;
 	  repeat             a clean run inside the cooldown: "RUN AGAIN  +$X  +20%" in the
 	                     reward well and the cooldown as a clock bar under a padlock
 	                     ("Full reward in m:ss", filling until the full reward is back);
+	                     while the map's bonus rests (pay "resting") no well, and a note
+	                     saying when it is back;
 	  assisted           gear on: grey medal, white title, an "ASSISTED RUN · NO BEST TIME"
 	                     ribbon instead of the best line, no confetti.
 	While the card is up the server holds the sky course's return to the gates: the card
@@ -3002,14 +3005,19 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		-- The card's state: a map's first clean clear is the loud one, the last map's the
 		-- loudest ("SKY OBBY COMPLETE!"); a clean run inside the cooldown shows its share and
 		-- the clock; an assisted run is grey and calm.
-		local firstClear = data.first == true and not assisted
-		local complete = firstClear and data.mode == "parkour" and level ~= nil and levels ~= nil and level >= levels
+		-- `complete` is the server's word: this run made it every map cleared without gear,
+		-- for the first time (so a map 10 first cleared with gear still gets its card later).
+		local complete = data.complete == true and not assisted
+		local firstClear = (data.first == true and not assisted) or complete
 		local repeatRun = data.pay == "repeat" and not assisted
+		-- A clean run while this map's run again bonus rests (it was paid a moment ago).
+		local resting = data.pay == "resting"
+		local restLeft = math.max(0, math.floor(tonumber(data.repeatRest) or 0))
 		local calm = reducedMotion()
 		-- Rows under the best line, top to bottom: reward well, cooldown clock, banner, note.
 		local hasWell = cashTotal > 0
 		local banner: string? = if complete
-			then string.format("ALL %d MAPS CLEARED!", levels :: number)
+			then string.format("ALL %d MAPS CLEARED!", levels or level or 10)
 			elseif unlockedNew then "MAP " .. tostring(nextLevel) .. " UNLOCKED!"
 			else nil
 		local y = 184
@@ -3200,6 +3208,8 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			Text = if complete
 				then "Every map cleared. Now beat your best times!"
 				elseif data.pay == "assisted" then "Gear on: no bonus"
+				elseif resting and restLeft > 0 then "Run again bonus is resting on this map: back in " .. Format.time(restLeft)
+				elseif resting then "Run again bonus is resting on this map."
 				elseif repeatRun then "The full reward comes back when the bar fills."
 				elseif firstClear then "First clear reward!"
 				else "Nice run! Try to beat your best.",
@@ -3341,10 +3351,12 @@ end
 
 --[[
 	The MOG TEST finish card, in the same language as the Parkour one: the score,
-	"NEW BEST!", rivals mogged, best and the rank on this server's board, the reward rolling up or the
-	"Reward again in m:ss" line while the full reward cools down. "Mog again" and
-	"Back to my gym". `data` is the mog finish Notify payload (score, rivals, best,
-	newBest, passed, cash, full, cooldownEnds, rank?).
+	"NEW BEST!", rivals mogged, best and the rank ("#N all-time" from `globalRank`, the saved
+	best's place on the all-time TOP MOGGERS list, else "#N on this server" from `rank`), the
+	reward rolling up, and under it "Run again bonus +$X (20%)" for a pass inside the cooldown
+	(`pay` = "repeat") or the "Reward again in m:ss" line while the full reward cools down.
+	"Mog again" and "Back to my gym". `data` is the mog finish Notify payload (score, rivals,
+	best, newBest, passed, cash, full, cooldownEnds, rank?, globalRank?, pay?, repeatShare?).
 
 	A 1v1 duel (data.vs == "pvp": won, reason "ko" | "forfeit", opponent { userId, name },
 	score, wins, played, cash, full, cooldownEnds, afk?, rounds?, draw?, close?) uses the
@@ -3358,7 +3370,14 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 	Popups.enqueue("MogFinish", Popups.PRIORITY.Normal, function(done)
 		local score = tonumber(data.score) or 0
 		local cashTotal = tonumber(data.cash) or 0
-		local cooling = data.full == false and (tonumber(data.cooldownEnds) or 0) > os.time()
+		local cooldownLeft = math.max(0, (tonumber(data.cooldownEnds) or 0) - os.time())
+		local cooling = data.full == false and cooldownLeft > 0
+		-- Inside the cooldown a pass (or a duel really fought and won) pays the run again bonus.
+		local repeatLine: string? = nil
+		if data.pay == "repeat" and cashTotal > 0 then
+			local share = math.floor((tonumber(data.repeatShare) or Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
+			repeatLine = string.format("Run again bonus +%s (%d%%)", Format.money(cashTotal), share)
+		end
 		local duel = data.vs == "pvp"
 		local won = duel and data.won == true
 		local draw = duel and data.draw == true
@@ -3396,6 +3415,9 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		sub ..= "  ·  Best " .. Format.short(math.max(tonumber(data.best) or 0, score))
 		if duel then
 			sub = "Duels won " .. tostring(tonumber(data.wins) or 0) .. "  ·  Played " .. tostring(tonumber(data.played) or 0)
+		elseif type(data.globalRank) == "number" then
+			-- The saved best's place on the all-time TOP MOGGERS list.
+			sub ..= "  ·  #" .. tostring(data.globalRank) .. " all-time"
 		elseif type(data.rank) == "number" then
 			sub ..= "  ·  #" .. tostring(data.rank) .. " on this server"
 		end
@@ -3421,7 +3443,9 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 					else "You left the duel.")
 				elseif lost and data.close == true then "So close! Hit PERFECT to deal double damage."
 				elseif lost then "Good duel! Hit PERFECT to deal double damage."
-				elseif cooling then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
+				elseif repeatLine and cooling then repeatLine .. "  ·  full reward in " .. Format.time(cooldownLeft)
+				elseif repeatLine then repeatLine
+				elseif cooling then "Reward again in " .. Format.time(cooldownLeft)
 				elseif duel then "Total mog! Can you win another?"
 				elseif data.passed then "MOG TEST PASSED! Can you mog even more?"
 				else "Nice try! Mog more rivals to pass.",

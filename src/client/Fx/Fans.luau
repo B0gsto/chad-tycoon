@@ -12,7 +12,8 @@
 
 	- Count: clamp(Base + floor(bestTier * PerTier), 1, Max) fans, at most MaxOther
 	  on other plots within ~150 studs of the camera; plots without units have
-	  none (Theme.Fans). The local player's own plot adds one fan per plot rank
+	  none (Theme.Fans). bestTier is the owner's all-time best (PlotRank.rankTier:
+	  the plot's "BestTier" attribute), so a rebirth keeps the crowd. The local player's own plot adds one fan per plot rank
 	  (Fx.PlotRank.ownFans) and goes up to PlotRank.CFG.OwnFansMax (20 at tier
 	  25; Max on a "low" device). The server builds 16 spots: the rest of the own
 	  crowd stands between them (PlotRank.extraSpots).
@@ -261,20 +262,6 @@ local function readSpots(rec: PlotRec, total: number)
 	else
 		rec.entrance = rec.center - forward * ENTRANCE_BACK
 	end
-end
-
-local function bestTier(rec: PlotRec): number
-	local units = rec.folder:FindFirstChild("Units")
-	local best = 0
-	if units then
-		for _, unit in units:GetChildren() do
-			local tier = unit:GetAttribute("Tier")
-			if type(tier) == "number" and tier > best then
-				best = tier
-			end
-		end
-	end
-	return best
 end
 
 -- Fans --------------------------------------------------------------------------------
@@ -881,7 +868,8 @@ local function syncPlot(rec: PlotRec, own: boolean, camPos: Vector3, now: number
 	readSpots(rec, if own then ownMax else 0)
 	local spots = rec.spots
 	local want = 0
-	local best = if #spots > 0 then bestTier(rec) else 0
+	-- The best tier the owner ever found (a rebirth empties the rack, not the stands).
+	local best = if #spots > 0 then PlotRank.rankTier(rec.folder) else 0
 	if best > 0 then
 		want = math.clamp(CFG.Base + math.floor(best * CFG.PerTier), 1, CFG.Max)
 		if own then

@@ -432,6 +432,7 @@ return function(h: { [string]: any })
 			income = 18,
 			profile = {
 				discovered = discovered,
+				runDiscovered = table.clone(discovered),
 				processLevel = Economy.START_PROCESS_LEVEL,
 				bought = 8,
 				tutorialDone = true,

@@ -4056,8 +4056,8 @@ local function paintReward(label: TextLabel, text: string, full: boolean)
 end
 
 -- "Finish: +$X" or the cooldown countdown; `bonus` adds a "(xB)" tag. `repeatCash`: what a
--- clean finish pays inside the cooldown (Parkour: a share of the map's reward), named
--- beside the countdown to the full reward.
+-- finish really pays inside the cooldown (the run again bonus: a share of the reward; 0 or
+-- nil when it pays nothing, e.g. Parkour gear), named beside the countdown to the full reward.
 local function setRewardLine(label: TextLabel, cash: number, full: boolean, cooldownEnds: number, bonus: number?, repeatCash: number?)
 	local left = cooldownEnds - os.time()
 	if not full and left > 0 then
@@ -4148,9 +4148,17 @@ local function parkourReward(label: TextLabel, info: { [string]: any }, level: n
 	local first = (tonumber(lv.clears) or 0) == 0
 	local cooldownEnds = tonumber(info.cooldownEnds) or 0
 	local full = first or cooldownEnds <= os.time()
-	-- Inside the cooldown a clean finish pays the repeat share of this map's reward.
+	-- Inside the cooldown a clean finish pays the repeat share of this map's reward: nothing
+	-- with gear chosen or worn, and for the map the server priced its own number (0 while
+	-- that map's bonus rests).
 	local share = tonumber(preview.repeatShare) or Economy.MODE_REPEAT_SHARE
-	setRewardLine(label, cash, full, cooldownEnds, bonus, math.floor(cash * share))
+	local repeatCash = math.floor(cash * share)
+	if (type(info.gear) == "string" and info.gear ~= "none") or info.assisted == true then
+		repeatCash = 0
+	elseif level == (tonumber(info.level) or 1) and preview.full == false then
+		repeatCash = tonumber(preview.cash) or repeatCash
+	end
+	setRewardLine(label, cash, full, cooldownEnds, bonus, repeatCash)
 end
 
 type ModeRow = {
@@ -4562,11 +4570,14 @@ local function buildModes(screen: ScreenGui)
 		if type(preview) ~= "table" then
 			paintReward(mog.reward, "", false)
 		else
+			-- Inside the cooldown a pass pays the run again bonus (the preview's own cash).
 			setRewardLine(
 				mog.reward,
 				tonumber(preview.packCash) or tonumber(preview.cash) or 0,
 				preview.full ~= false,
-				tonumber(info.cooldownEnds) or 0
+				tonumber(info.cooldownEnds) or 0,
+				nil,
+				if preview.full == false then tonumber(preview.cash) or tonumber(preview.repeatCash) else nil
 			)
 		end
 		Kit.setButton(mog.play, if info.running then "PLAYING" else "PLAY")

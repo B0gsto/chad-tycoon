@@ -952,8 +952,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- tutorial is done (above the dumbbell on compact screens): the target's thumbnail (a
 	-- silhouette until it is discovered), its name and how far along it is, what it still
 	-- takes under them (units to buy and an estimate from the price and the income), and a
-	-- progress bar along the bottom. The target comes from Shared.NextGoal; the strip opens
-	-- the Index. When one merge would find the tier the strip turns green, breathes and says
+	-- progress bar along the bottom. The target and its sums come from Shared.NextGoal (the
+	-- next tier of the current run; a plain "Next: Rebirth" line with its stars when a rebirth
+	-- is the goal, until the rebirth has a window of its own); the strip opens the Index.
+	-- When one merge would find the tier the strip turns green, breathes and says
 	-- "READY: step on MOG MERGE"; a tap then draws the path to that pad.
 	-- STACK_GAP under the deposit strip, and never under that many pixels on the glass (a
 	-- small window's scale would close the gap).
@@ -1060,36 +1062,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local function unitCount(n: number): string
 		return if n < 100000 then Format.commas(n) else State.num(n)
 	end
-	-- What the goal still takes, in first-tier units to buy (two of a tier make one of the
-	-- next, so everything owned counts): the snapshot's `nextTierUnits` when the server sends
-	-- it, else counted here from the rack.
-	local function unitsMissing(data: { [string]: any }, picked: NextGoal.Goal): number
-		local sent = tonumber(data.nextTierUnits)
-		if picked.kind == "merge" and sent and sent == sent and sent >= 0 then
-			return math.ceil(sent)
-		end
-		local ratio = Economy.MERGE_RATIO
-		local have = 0
-		for tier = 1, picked.from do
-			local n = tonumber(data.units[tier]) or 0
-			if n == n and n > 0 then
-				have += math.floor(n) * ratio ^ (tier - 1)
-			end
-		end
-		local need = if picked.kind == "merge" then ratio ^ picked.from else Economy.UNIT_CAP * ratio ^ (picked.from - 1)
-		return math.max(0, math.ceil(need - have))
-	end
-	-- Seconds until those units are paid for at the income the player has now (the steady
-	-- one: no Aura Surge), counting the cash in the wallet and the vault. 0 = affordable now,
-	-- nil = no income to go by.
-	local function secondsAway(data: { [string]: any }, missing: number): number?
-		local short = Economy.bulkPrice(tonumber(data.bought) or 0, missing) - (tonumber(data.money) or 0) - (tonumber(data.pending) or 0)
-		if missing <= 0 or short <= 0 then
-			return 0
-		end
-		local income = tonumber(data.rewardIncome) or tonumber(data.income) or 0
-		return if income > 0 and short == short then short / income else nil
-	end
 	-- An estimate, said as one: "about 2 h", never a number of seconds.
 	local function about(seconds: number?): string
 		if seconds == nil then
@@ -1140,17 +1112,28 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		if type(data.discovered) ~= "table" or type(data.units) ~= "table" then
 			return
 		end
+		-- The pick follows the current run (`runDiscovered`: after a rebirth the Index is ahead
+		-- of the rack) and brings what the tier still takes: first-tier units to buy (two of a
+		-- tier make one of the next, so everything owned counts) and the seconds of steady
+		-- income (no Aura Surge) until they are paid for, wallet and vault counted.
 		local picked = NextGoal.pick({
 			discovered = data.discovered,
+			runDiscovered = if type(data.runDiscovered) == "table" then data.runDiscovered else nil,
 			units = data.units,
+			bought = tonumber(data.bought),
+			money = tonumber(data.money),
+			pending = tonumber(data.pending),
+			income = tonumber(data.rewardIncome) or tonumber(data.income),
 		})
-		local missing = unitsMissing(data, picked)
-		local seconds = secondsAway(data, missing)
-		goalFar = seconds == nil or seconds > FAR_SECONDS
+		-- A rebirth is named when the next tier is the far one: the pill goes by that tier.
+		local chase: NextGoal.Goal? = if picked.kind == "rebirth" then picked.second else picked
+		local missing = picked.missing
+		local seconds = picked.seconds
+		goalFar = chase == nil or chase.seconds == nil or chase.seconds > FAR_SECONDS
 		-- One step on MOG MERGE merges every pair upward, so the tier is found as soon as
 		-- nothing is missing (not only with two of the best tier). Auto Merge does it alone.
 		local auto = data.autoMerge == true and data.autoMergeOwned == true
-		local ready = picked.kind == "merge" and (picked.ready or missing <= 0) and not auto
+		local ready = picked.kind == "merge" and picked.mergeReady and not auto
 		setGoalReady(ready)
 		-- Line 1: the lead, the target and how far along it is; line 2: what it still takes,
 		-- in fewer words when the strip is short of room (`hints`, longest first).
@@ -1159,17 +1142,22 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		if ready then
 			lead, title = "READY:", "step on " .. W.Merge
 			hints = { string.format("New %s: %s", W.Unit, tierName(picked.tier)) }
+		elseif picked.kind == "rebirth" then
+			-- A plain line until the rebirth has its own window: what it is worth.
+			local stars = string.format("+%d %s", picked.stars, if picked.stars == 1 then "star" else "stars")
+			title = "Rebirth"
+			hints = { string.format("%s · +%d%% cash forever", stars, math.floor(Economy.starBonus(picked.stars) * 100 + 0.5)), stars }
 		else
-			count = string.format("%d%%", math.clamp(math.floor(picked.progress * 100), 0, if missing > 0 then 99 else 100))
-			local eta = about(seconds)
-			local tail = if eta ~= "" then " · " .. eta else ""
+			count = string.format("%d%%", picked.percent)
 			if picked.kind == "merge" then
+				local eta = about(seconds)
+				local tail = if eta ~= "" then " · " .. eta else ""
 				local first = tierName(1)
 				local name = if missing == 1 or string.sub(first, -1) == "s" then first else first .. "s"
 				hints = { string.format("%s more %s%s", unitCount(missing), name, tail), unitCount(missing) .. " more" .. tail, eta }
 			else
 				local left = math.max(0, picked.need - picked.have)
-				hints = { string.format("%d more to fill your rack%s", left, tail), string.format("%d more%s", left, tail), eta }
+				hints = { string.format("%d more to fill your rack", left), string.format("%d more", left) }
 			end
 		end
 		local hint = hints[1]
@@ -1234,13 +1222,15 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		goalWidth = math.max(x, GOAL_TEXT_X + hintW) + 12
 		goal.Size = UDim2.fromOffset(goalWidth, GOAL_H + (lineH - 20) + (hintH - 16) + (if tall then lineH else 0))
 		-- A new target (not just a new count) gets a fresh thumbnail and a pop.
-		local thumbKey = picked.kind .. picked.tier
+		-- A silhouette until the Index has the tier (a new run meets tiers it already knows).
+		local unknown = picked.kind == "merge" and (tonumber(data.discovered[picked.tier]) or 0) <= 0
+		local thumbKey = picked.kind .. picked.tier .. (if unknown then "?" else "")
 		if thumbKey ~= goalThumbKey then
 			goalThumbKey = thumbKey
 			for _, child in goalThumb:GetChildren() do
 				child:Destroy()
 			end
-			pcall(Kit.unitViewport, goalThumb, picked.tier, { Size = UDim2.fromScale(1, 1) }, picked.kind == "merge")
+			pcall(Kit.unitViewport, goalThumb, picked.tier, { Size = UDim2.fromScale(1, 1) }, unknown)
 		end
 		if title ~= goalTitleShown then
 			goalTitleShown = title

@@ -2296,6 +2296,48 @@ test("Tycoon pads: no Robux prompt from walking, upgrade pads need a stop", func
 	end
 end)
 
+-- After a rebirth the Index (profile.discovered) is ahead of the run. Everything sized by
+-- income follows the run, like the amounts the client shows (the snapshot's highestTier);
+-- what a player has earned for good follows the Index.
+test("rebirth: who reads the run's tier and who reads the Index", function()
+	local run = {
+		"src/server/Monetization.luau",
+		"src/server/Cosmetics.luau",
+		"src/server/Daily.luau",
+		"src/server/Modes/Parkour.luau",
+		"src/server/Modes/Mog.luau",
+		"src/server/Modes/Cardio.luau",
+	}
+	for _, path in run do
+		local src = fs.readFile(path)
+		check(string.find(src, "Economy.progression(Economy.highestTier(p", 1, true) ~= nil, path .. " sizes a reward by tier")
+		check(string.find(src, "runDiscovered), p", 1, true) ~= nil, path .. " sizes it by the run's tier")
+		check(string.find(src, "Economy.highestTier(p.discovered)", 1, true) == nil, path .. " does not read the Index tier")
+		check(string.find(src, "profile.discovered)", 1, true) == nil, path .. " does not read the Index tier (profile)")
+	end
+	for _, path in { "src/server/Badges.luau", "src/server/Analytics.luau" } do
+		local src = fs.readFile(path)
+		check(string.find(src, "runDiscovered", 1, true) == nil, path .. " goes by the Index (badges and the funnel never go back)")
+	end
+	-- The plot's rank and its crowd are earned for good: the folder's BestTier attribute.
+	local rank = fs.readFile("src/client/Fx/PlotRank.luau")
+	check(string.find(rank, 'plot:GetAttribute("BestTier")', 1, true) ~= nil, "PlotRank reads the plot's BestTier")
+	check(string.find(rank, "syncDressing(rec, PlotRank.rankTier(rec.folder))", 1, true) ~= nil, "the dressing goes by the all-time best")
+	check(string.find(rank, "syncChampion(rec, PlotRank.bestTier(rec.folder))", 1, true) ~= nil, "the pedestal by the unit on it")
+	check(
+		string.find(fs.readFile("src/client/Fx/Fans.luau"), "PlotRank.rankTier(rec.folder)", 1, true) ~= nil,
+		"fans go by the all-time best"
+	)
+	-- The goal strip follows the run and lets NextGoal do the sums.
+	local hud = fs.readFile("src/client/UI/Hud.luau")
+	check(string.find(hud, "runDiscovered = if type(data.runDiscovered)", 1, true) ~= nil, "the goal strip sends the run's tiers")
+	check(string.find(hud, 'picked.kind == "rebirth"', 1, true) ~= nil, "the goal strip has a line for a rebirth")
+	check(
+		string.find(hud, "picked.mergeReady", 1, true) ~= nil and string.find(hud, "picked.percent", 1, true) ~= nil,
+		"it uses NextGoal's sums"
+	)
+end)
+
 test("rebirth: stars, what resets and what stays", function()
 	local DataService = loadDataService()
 	eq(Economy.REBIRTH_MIN_TIER, 15, "rebirth from tier 15")
@@ -5130,6 +5172,10 @@ require("./buymax")({ test = test, check = check, eq = eq })
 require("./shop")({ test = test, check = check, eq = eq })
 -- Analytics: funnel steps, the economy ledger and custom events (tests/analytics.luau).
 require("./analytics")({ test = test, check = check, eq = eq })
+-- The Ranking window's own row: place, and the nearest player to pass (tests/ranking.luau).
+require("./ranking")({ test = test, check = check, eq = eq })
+-- Plot rank: dressing per five best tiers, rarity bands, champion sizes, fans (tests/plot_rank.luau).
+require("./plot_rank")({ test = test, check = check, eq = eq })
 -- Every script compiles the way Studio compiles it: 200 locals per chunk (tests/fx_juice.luau).
 require("./fx_juice")({ test = test, check = check })
 

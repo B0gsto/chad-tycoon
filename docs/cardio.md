@@ -46,9 +46,13 @@ you stand still. Stages need more and more Speed. In Chad Aura Tycoon it is the 
    = plate n; `CardioRules.firstsOf`, `isFirst`, `claimFirst`), so a plate you ran past keeps its
    first clear for later; a save from before the set counts every plate up to `bestStage` as
    taken, as it did then. A claim deeper than `bestStage` raises it and the permanent **step
-   multiplier** (`CardioRules.stepMultiplier(bestStage, treadmill level)`). Any other claim pays only once per
-   `Economy.MODE_REWARD_COOLDOWN` (`profile.modes.cardio.lastRewardAt`, shared by all ten plates)
-   and $0 inside it. The server decides: the runner must be in a run, alive, with the feet on
+   multiplier** (`CardioRules.stepMultiplier(bestStage, treadmill level)`). Any other claim pays in full only once per
+   `Economy.MODE_REWARD_COOLDOWN` (`profile.modes.cardio.lastRewardAt`, shared by all ten plates).
+   Inside the cooldown a plate pays the **run again bonus**, `Economy.MODE_REPEAT_SHARE` (20%) of
+   its pack, but only for a real run (`CardioRules.repeatEarned`): on your best plate (`bestStage`)
+   or a deeper one, and no sooner than `CardioRules.REPEAT_GAP` (30 s) after the last plate that
+   paid. Any other plate inside the cooldown pays $0 and still ends the run; the HUD says from
+   which plate and when the bonus is back. The server decides: the runner must be in a run, alive, with the feet on
    the plate (`CardioLayout.onWinPad`; jumping over it does not count), in a zone reached this
    run. Zones are reached in order and on foot (zone n counts on its deck after bridge room n was
    entered this run with zone n - 1 reached), and the claim clears them, so one run pays once.
@@ -100,8 +104,12 @@ x ≈ -1300 to +1300 at most, deck tops around y = 20 above the sea. It is reach
   invalid clears it, else rounded and clamped to [16, walkSpeed(speed)]), and the existing `ModeQuit`.
 - Notify events: `start { speed, walkSpeed, bestStage, multiplier }`,
   `zone { stage, first, cash, full }` (reached a safe zone; cash = what its WIN plate pays now,
-  nothing is paid yet), `win { stage, final, first, cash, full }` (claimed a WIN plate: paid and
-  back in the lobby; final = stage 10), `fall { stage = 0, from, reason }` (back in the lobby
+  nothing is paid yet), `win { stage, final, first, cash, full, newBest, prevBest }` (claimed a WIN
+  plate: paid and back in the lobby; final = stage 10; newBest = deeper than the best plate
+  before). Both carry the pay fields: `pay` (`"first"`, `"full"`, `"repeat"` = the run again bonus,
+  or `"none"`), `packCash`, `repeatCash`, `repeatShare`, `repeatFrom` (the first plate that can pay
+  the bonus) and `repeatReadyAt` (os.time() from which it is paid again, 0 = now); the win banner
+  reads "Run again bonus +$X (20%)" for `"repeat"`, `fall { stage = 0, from, reason }` (back in the lobby
   from stage `from`; reason "fall" or "caught"), `upgrade { level, cost }`, `stop { reason }`.
 - Speed changes travel in the State snapshot (`modes.cardio`: speed, walkSpeed, multiplier,
   maxWalkSpeed (uncapped), speedCap (nil when none), bestStage, treadmill, treadmillRate,

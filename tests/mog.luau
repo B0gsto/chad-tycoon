@@ -853,6 +853,7 @@ return function(h: { [string]: any })
 					money = 0,
 					totalEarned = 0,
 					discovered = {},
+					runDiscovered = {},
 					processLevel = 0,
 					modes = { mog = { best = 0, rivals = 0, clears = 0, lastRewardAt = 0, pvpWins = 0, pvpPlayed = 0 } },
 				},

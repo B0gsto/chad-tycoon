@@ -198,7 +198,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		local p = session.profile
 		local rec = record(session)
 		local pack = theme.Modes.Reward
-		local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
+		local progression = Economy.progression(Economy.highestTier(p.runDiscovered), p.processLevel)
 		local first = vs == "rivals" and MogRules.firstPass(rec)
 		local r = Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, first, rec.lastRewardAt, os.time())
 		local kind = MogRules.payKind(first, r.full, earned)
@@ -216,22 +216,15 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		payload.repeatShare = Economy.MODE_REPEAT_SHARE
 	end
 
-	-- The board's subtitle, built by World.MogStage beside the list as "SERVER HIGH SCORES".
-	local boardTitle: TextLabel? = nil
-
 	local function updateBoard()
-		local label = context.world and context.world.mog and context.world.mog.bestList
+		local stage = context.world and context.world.mog
+		local label = stage and stage.bestList
 		if not label then
 			return
 		end
 		local entries, global = MogBoard.entries(board)
-		if not boardTitle and label.Parent then
-			for _, child in label.Parent:GetChildren() do
-				if child:IsA("TextLabel") and child.Text == "SERVER HIGH SCORES" then
-					boardTitle = child
-				end
-			end
-		end
+		-- The board's subtitle (World.MogStage builds it as "SERVER HIGH SCORES").
+		local boardTitle = stage.bestTitle
 		if boardTitle then
 			boardTitle.Text = if global then "ALL-TIME BEST" else "SERVER HIGH SCORES"
 		end

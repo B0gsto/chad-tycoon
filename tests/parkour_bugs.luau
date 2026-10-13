@@ -427,6 +427,8 @@ local function suite(h: { [string]: any })
 		-- Every clean run inside the cooldown pays the share, and never moves the cooldown.
 		for run = 2, 3 do
 			local before = p.money
+			-- (Past the map's rest: see "the run again bonus rests" below.)
+			w.clock += 120
 			w.clear(1)
 			local again = w.note("finish")
 			eq(again.full, false, "run " .. run .. ": not a full reward")
@@ -758,6 +760,146 @@ local function suite(h: { [string]: any })
 		w.onElement(map2.PATH[#map2.PATH])
 		eq(first.stillThere(w.root), false, "the older return is dropped")
 		eq(w.returns[2].stillThere(w.root), true, "the newer one holds")
+	end)
+
+	test("Parkour repeat pay: the run again bonus rests for two minutes per map", function()
+		local w = newWorld()
+		local p = w.session.profile
+		w.clear(1)
+		w.clear(2)
+		local share = w.def.rewardPreview(w.player, 1).repeatCash
+		eq(w.def.rewardPreview(w.player, 1).repeatRest, 0, "nothing rests before a bonus was paid")
+		w.clear(1)
+		local paid = w.note("finish")
+		eq(paid.pay, "repeat", "the first run again pays the bonus")
+		eq(paid.cash, share, "the share")
+		eq(paid.repeatRest, 120, "and the card knows the bonus now rests")
+		-- Straight away again: the run finishes as usual, the bonus rests.
+		local before, clears = p.money, w.rec.clears[1]
+		local preview = w.def.rewardPreview(w.player, 1)
+		eq(preview.cash, 0, "the preview pays nothing while it rests")
+		check(preview.repeatRest > 0 and preview.repeatRest <= 120, "the preview says for how long")
+		w.clear(1)
+		local rested = w.note("finish")
+		eq(rested.pay, "resting", "pay = resting")
+		eq(rested.cash, 0, "nothing paid")
+		eq(p.money, before, "the wallet is untouched")
+		eq(w.rec.clears[1], clears + 1, "the clear still counts")
+		check(rested.time > 0 and rested.best > 0, "the run finished normally")
+		check(rested.repeatRest > 0 and rested.repeatRest < 120, "the rest was not started again")
+		eq(rested.repeatCash, share, "the card still knows the bonus")
+		-- Another map has its own rest.
+		w.clear(2)
+		eq(w.note("finish").pay, "repeat", "map 2's bonus is awake")
+		-- Two minutes after the bonus was paid it is back.
+		w.clock += 120
+		eq(w.def.rewardPreview(w.player, 1).repeatRest, 0, "awake again")
+		w.clear(1)
+		local back = w.note("finish")
+		eq(back.pay, "repeat", "pay = repeat again")
+		eq(back.cash, share, "the share again")
+		-- A full reward never rests.
+		p.modes.parkour.lastRewardAt = os.time() - Economy.MODE_REWARD_COOLDOWN - 1
+		w.clear(1)
+		check(w.note("finish").pay == "full" and w.note("finish").cash == back.packCash, "the full reward is paid in the rest")
+	end)
+
+	test("Parkour return: the finish card holds the return, for 20 seconds at the most", function()
+		local w = newWorld()
+		w.rec.clears[1] = 1
+		check(w.actions.ModeCard ~= nil, "the ModeCard action is handled")
+		w.clear(2)
+		eq(#w.returns, 1, "one timed return")
+		-- The card is up when the 15 seconds are over: the return asks again a second later.
+		w.actions.ModeCard(w.session, { mode = "parkour", open = true })
+		w.clock += 15
+		eq(w.returns[1].stillThere(w.root), false, "held while the card is up")
+		eq(#w.returns, 2, "it looks again")
+		eq(w.returns[2].seconds, 1, "a second later")
+		-- Another mode's card holds nothing.
+		w.actions.ModeCard(w.session, { mode = "parkour", open = false })
+		w.actions.ModeCard(w.session, { mode = "mog", open = true })
+		w.clock += 1
+		eq(w.returns[2].stillThere(w.root), true, "the card closed: back to the gates")
+		eq(#w.returns, 2, "and nothing more is scheduled")
+		-- A client that never closes the card: 20 more seconds, then the return fires anyway.
+		w.clear(2)
+		local n = #w.returns
+		w.actions.ModeCard(w.session, { mode = "parkour", open = true })
+		w.clock += 15
+		local polls = 0
+		while not w.returns[#w.returns].stillThere(w.root) do
+			polls += 1
+			w.clock += 1
+			check(polls <= 25, "the hold ends")
+			if polls > 25 then
+				break
+			end
+		end
+		eq(polls, 20, "held for 20 seconds, no longer")
+		eq(#w.returns, n + 20, "one look a second")
+		-- A new finish starts with no card up, whatever the client last said.
+		w.clear(2)
+		w.clock += 15
+		eq(w.returns[#w.returns].stillThere(w.root), true, "the old card does not hold the next return")
+		-- A held return is still dropped when the player has left the sky.
+		w.clear(2)
+		w.actions.ModeCard(w.session, { mode = "parkour", open = true })
+		w.clock += 15
+		w.stand(0, 0, 0)
+		local count = #w.returns
+		eq(w.returns[count].stillThere(w.root), false, "not from the hub")
+		eq(#w.returns, count, "and it does not look again")
+	end)
+
+	test("Parkour finish: SKY OBBY COMPLETE is the run that makes all ten maps clean", function()
+		local w = newWorld()
+		-- Nine maps cleared clean, map 10 first cleared with gear: not complete.
+		for i = 1, Course.LEVEL_COUNT - 1 do
+			w.rec.clears[i] = 1
+			w.rec.best[i] = 60
+		end
+		local humanoid = {
+			UseJumpPower = false,
+			JumpHeight = 7.2,
+			GetAttribute = function()
+				return nil
+			end,
+		}
+		w.player.Character = {
+			FindFirstChildOfClass = function()
+				return humanoid
+			end,
+		}
+		w.actions.ParkourGear(w.session, { gear = "jump" })
+		w.clear(Course.LEVEL_COUNT)
+		local assisted = w.note("finish")
+		check(assisted.first and assisted.assisted, "map 10's first clear wore gear")
+		eq(assisted.complete, false, "an assisted clear does not complete the obby")
+		-- The clean clear later does, though it is not the map's first.
+		w.actions.ParkourGear(w.session, { gear = "none" })
+		w.clear(Course.LEVEL_COUNT)
+		local clean = w.note("finish")
+		check(not clean.first and not clean.assisted, "a clean second clear")
+		eq(clean.complete, true, "it completes the obby")
+		-- Only once.
+		w.clock += 120
+		w.clear(Course.LEVEL_COUNT)
+		eq(w.note("finish").complete, false, "the next clear is an ordinary one")
+		-- A plain first clear of an early map is not it either.
+		local fresh = newWorld()
+		fresh.clear(1)
+		eq(fresh.note("finish").complete, false, "map 1 of a new player")
+	end)
+
+	test("Parkour board: the best list says MAP n", function()
+		local src = fs.readFile(MODES_DIR .. "Parkour.luau")
+		check(string.find(src, '"MAP %d  %s  <b>%.2fs</b>"', 1, true) ~= nil, "a best time line")
+		check(string.find(src, '"MAP %d  —"', 1, true) ~= nil, "an empty line")
+		check(string.find(src, '"L%d', 1, true) == nil, "no L1 .. L10 left")
+		local popups = fs.readFile("src/client/UI/Popups.luau")
+		check(string.find(popups, "data.complete == true", 1, true) ~= nil, "the finish card goes by the server's complete flag")
+		check(string.find(popups, 'data.pay == "resting"', 1, true) ~= nil, "and says when the bonus rests")
 	end)
 end
 

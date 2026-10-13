@@ -59,6 +59,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Theme = require(ReplicatedStorage:WaitForChild("Theme")) :: any
+local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format) :: any
 local Net = require(ReplicatedStorage.Shared.Net)
 
@@ -291,7 +292,11 @@ local function rewardText(p: any): string?
 		return if p.full == false then noRewardText(p) else nil
 	end
 	-- Inside the reward cooldown a real run still pays its share (`pay` = "repeat").
-	return if p.pay == "repeat" or p.full == false then "Run again bonus +" .. Format.money(cash) else "+" .. Format.money(cash)
+	if p.pay == "repeat" or p.full == false then
+		local share = math.floor(num(p.repeatShare, Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
+		return string.format("Run again bonus +%s (%d%%)", Format.money(cash), share)
+	end
+	return "+" .. Format.money(cash)
 end
 
 -- "Best plate 5" beside the Speed: the personal best. `pop` marks a new one.

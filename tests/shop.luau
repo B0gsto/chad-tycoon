@@ -216,7 +216,7 @@ local function suite(h: { [string]: any })
 		end
 		return {
 			player = { UserId = userId },
-			profile = { discovered = discovered, processLevel = 12, receipts = {}, carried = 777 },
+			profile = { discovered = discovered, runDiscovered = table.clone(discovered), processLevel = 12, receipts = {}, carried = 777 },
 			production = production,
 			mult = mult,
 			canSave = canSave,

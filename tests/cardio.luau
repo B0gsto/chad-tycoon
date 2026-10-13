@@ -996,6 +996,7 @@ return function(h: { [string]: any })
 				money = 0,
 				totalEarned = 0,
 				discovered = {},
+				runDiscovered = {},
 				processLevel = 0,
 				cardio = { speed = 0, bestStage = bestStage, treadmill = 0, clears = 0, speedCap = 0 },
 				modes = { cardio = { best = bestStage, clears = 0, lastRewardAt = 0 } },

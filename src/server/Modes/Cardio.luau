@@ -270,7 +270,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 	local function rewardFor(session: any, stage: number, first: boolean): (Economy.ModeReward, string)
 		local p = session.profile
 		local pack = theme.Modes.Reward
-		local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
+		local progression = Economy.progression(Economy.highestTier(p.runDiscovered), p.processLevel)
 		local r = Economy.modeReward(
 			Tycoon.income(session),
 			progression,
