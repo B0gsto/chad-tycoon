@@ -56,7 +56,10 @@ export type Hooks = {
 local NAME = "Away"
 local ACCENT = C.Rizz
 local WIDTH = 560
-local ROW_H = 64
+local ROW_H = 68
+-- The rows' text on the glass, at least (px): the row title, and the detail and the note.
+local TITLE_PX = 15
+local TEXT_PX = 13
 local GAP = 8
 local SECTION = 14
 local NOTE_H = 22
@@ -114,7 +117,7 @@ local function buildRow(parent: Instance, row: Comeback.Row, y: number): TextLab
 		Text = row.title,
 		Font = F.UI,
 		TextSize = T.H3,
-		MinPx = true,
+		MinPx = math.max(Kit.captionPx(), TITLE_PX),
 		TextWrapped = false,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextXAlignment = Enum.TextXAlignment.Left,
@@ -125,14 +128,14 @@ local function buildRow(parent: Instance, row: Comeback.Row, y: number): TextLab
 	Kit.text(frame, {
 		Name = "Detail",
 		Text = row.detail,
-		TextSize = T.Small,
-		MinPx = true,
+		TextSize = T.Body,
+		MinPx = math.max(Kit.captionPx(), TEXT_PX),
 		TextColor3 = C.Text,
 		TextWrapped = false,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -(TEXT_LEFT + right), 0, 20),
-		Position = UDim2.fromOffset(TEXT_LEFT, 35),
+		Size = UDim2.new(1, -(TEXT_LEFT + right), 0, 22),
+		Position = UDim2.fromOffset(TEXT_LEFT, 36),
 		ZIndex = 2,
 	})
 	if not row.cash then
@@ -199,7 +202,7 @@ local function present(offline: { [string]: any }?): boolean
 			Name = "Note",
 			Text = Comeback.cashNote(data),
 			TextSize = T.Small,
-			MinPx = true,
+			MinPx = math.max(Kit.captionPx(), TEXT_PX),
 			TextColor3 = C.Text,
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,

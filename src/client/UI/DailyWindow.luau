@@ -120,9 +120,12 @@ local LAP_PATIENCE = 90
 local REWARD_QUIET = 20
 -- A claimed window closes by itself this long after the coins fly.
 local CLOSE_AFTER_CLAIM = 1.5
--- ScreenGui attributes that mean "busy": a window, a popup or a mode run. The held-crate
--- panel ("CratePanelOpen") only holds the window back for a while.
-local BUSY = { "WindowOpen", "ModalOpen", "RunActive", "ObbyMode", "CardioActive" }
+-- ScreenGui attributes that mean "busy": a window, a popup or a mode run. "PopupBusy"
+-- (Popups) is a card that is still waiting in the popup queue, or up: a reveal is held back
+-- for as long as the merges go on, which can outlast REWARD_QUIET, and the window used to
+-- open by itself in that gap, right under the reveal. It covers the free gift's card too.
+-- The held-crate panel ("CratePanelOpen") only holds the window back for a while.
+local BUSY = { "WindowOpen", "ModalOpen", "PopupBusy", "RunActive", "ObbyMode", "CardioActive" }
 
 -- The streak line's right half: the saver's rule, and what it says once the saver is spent.
 local SAVER_RULE = "Miss a day? Your streak is saved once a week."
