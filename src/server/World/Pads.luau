@@ -8,9 +8,10 @@
 	("+5", "$", a gift) in Theme.World.PadPrint. Above each pad floats its label (a
 	BillboardGui): the name (`title`) in white and, under it, the price or status Tycoon writes
 	into `sub`, in white on a small rounded plate (Theme.World.PadPlate: green when Tycoon
-	tints `sub` Good, soft red when Bad, dark otherwise), both with an Ink outline so they read
-	on every pad colour. Merge shows only its name in sunny yellow, bigger and over the pad's
-	far edge; Deposit's label floats above head height. On a plot nobody owns the names are
+	tints `sub` Good, soft red when Bad, dark otherwise; gold with dark print when it says the
+	pad needs a game pass), both with an Ink outline so they read on every pad colour. The
+	labels float above the head of a character standing on the pad. Merge shows only its name
+	in sunny yellow, bigger and over the pad's far edge. On a plot nobody owns the names are
 	dimmed (setClaimed). A disabled pad turns soft grey (Theme.Colors.PadDisabled).
 ]]
 
@@ -37,17 +38,19 @@ local TOP_RISE = 0.15
 -- The trigger reaches this far past the coloured top (still on the base), so a character whose
 -- root is over the top's edge counts as standing on it.
 local TRIGGER_GROW = 0.4
--- Floating label: height of its bottom above the pad top, width in studs (wider for big pads),
--- and the camera distance it stops drawing at.
-local LABEL_LIFT = 2.6
+-- Floating label: height of its bottom above the pad top (over the head of a character standing
+-- on the pad: lower, the head hid the name), width in studs (wider for big pads), and the
+-- camera distance it stops drawing at.
+local LABEL_LIFT = 5.6
 local LABEL_W = 6
 local LABEL_W_MAX = 8
 local LABEL_MAX_DISTANCE = 90
 -- Pads whose label sits at another height. The deposit label floats over the head of a player
 -- standing on its big pad (lower, the character and its dumbbell hid half of it) and clears the
--- Auto Merge label behind it in the spawn view; the bulk speed upgrade's clears the single
--- upgrade's; the merge label stays under the best unit's pedestal in the spawn view.
-local LABEL_LIFTS: { [string]: number } = { Deposit = 6.4, ProcUp10 = 4.2, Merge = 3.2 }
+-- Auto Merge label behind it in the spawn view, which is why Auto Merge's stays low; the bulk
+-- speed upgrade's clears the single upgrade's; the merge label (over the pad's far edge, so
+-- behind the character) stays under the best unit's pedestal in the spawn view.
+local LABEL_LIFTS: { [string]: number } = { Deposit = 6.4, AutoMerge = 2.6, ProcUp10 = 7.2, Merge = 3.2 }
 -- Pads whose label is wider or narrower than their size gives: the merge name is 1.5x larger,
 -- the deposit label a shorter line that fits in front of the converter's jar.
 local LABEL_GROW: { [string]: number } = { Merge = 1.5, Deposit = 0.8 }
@@ -63,6 +66,8 @@ local PLATE_H = 0.52
 local PLATE_PAD = 0.14
 local PLATE_CHAR = 0.09
 local PLATE_MIN = 0.32
+-- What Server.Tycoon and Server.WorldBuilder write (in any case) on a pad that needs a game pass.
+local PASS_WORDS = "game pass"
 -- Transparency of the name (and its outline) on a plot nobody owns.
 local UNCLAIMED_DIM = 0.55
 
@@ -255,17 +260,24 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number): (T
 end
 
 -- Shows what Server.Tycoon writes into the hidden `sub` label: its text as the white price,
--- its Good / Bad tint as the plate's colour. No text, no plate.
+-- its Good / Bad tint as the plate's colour. A pad that asks for a game pass (PASS_WORDS in
+-- the text) gets the gold plate with dark print whatever the tint: red reads as an error
+-- there. No text, no plate.
 local function bindPrice(sub: TextLabel, plate: Frame, price: TextLabel)
 	local plates = World.PadPlate or {}
 	local plain = plates.Plain or World.Ink
+	local white = price.TextColor3
 	local function show()
 		local shown = sub.Text
 		local tint = sub.TextColor3
+		local pass = plates.Pass ~= nil and string.find(string.lower(shown), PASS_WORDS, 1, true) ~= nil
 		price.Text = shown
+		price.TextColor3 = if pass then World.Ink else white
 		plate.Visible = shown ~= ""
 		plate.Size = UDim2.fromScale(math.clamp(PLATE_PAD + PLATE_CHAR * (utf8.len(shown) or #shown), PLATE_MIN, 1), PLATE_H)
-		if sameColor(tint, theme.Colors.Good) then
+		if pass then
+			plate.BackgroundColor3 = plates.Pass
+		elseif sameColor(tint, theme.Colors.Good) then
 			plate.BackgroundColor3 = plates.Good or plain
 		elseif sameColor(tint, theme.Colors.Bad) then
 			plate.BackgroundColor3 = plates.Bad or plain
