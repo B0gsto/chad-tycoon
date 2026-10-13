@@ -84,7 +84,7 @@ Prop kinds (the world builder draws each with parts; unknown kinds are skipped w
   client opens the Maps window with that map selected. (`ModeStart { mode = "parkour", level = n }`
   still starts and teleports; the player stands on the plaza while picking.)
 - New window `"Maps"` (`Windows.open("Maps")`): a header "PICK A MAP", a scrolling grid of 10
-  map cards (2 columns): accent band with icon and `Level n`, name, difficulty pips, best time
+  map cards (2 columns): accent band with icon and `MAP n`, name, "Difficulty n/10" with its pips, best time
   and clears, lock state (locked cards dim with a lock; tapping says "Clear <previous name> first!").
   Selecting a card shows it in a side panel: a `ViewportFrame` preview of that map (lazy clone of
   `Map/GameModes/Parkour/Level<n>` without triggers, cached per map, camera framed on the whole

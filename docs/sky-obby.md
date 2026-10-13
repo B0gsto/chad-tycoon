@@ -255,3 +255,52 @@ There are still no checkpoints.
   run of that map and returns when it ends; sweepers are hazard-striped; path platforms have a
   bright edge; a fall blinks the screen white and puffs at the runner's feet on the start deck (a
   lava fall keeps its red flash).
+
+## Bounce pads launch everyone, map 1's sweepers only shove (verification round 2)
+
+A tester played map 1 with real keys: walking onto its bounce pad never reached the upper lane
+(0 of 15), and the 1.5-stud rails did not hold a bumped runner. There are still no checkpoints.
+
+- **Bounce pads, every map** (`Shared.ParkourMoves`, applied by `Client.Fx.Modes`). A pad launches
+  on the first frame of every contact and nothing can refuse it: the old code refused a runner
+  who was rising faster than 5 studs/s (stepping up the pad's 0.7-stud lip gives 7 to 11) and
+  then held the contact, so a walk across the pad never launched. The touch zone is the pad's
+  top, 0.4 studs past its rim, from the deck up (`onPad`), so a runner beside the rim is launched
+  too. Contact ends when the feet leave the zone and the next contact launches again. The
+  launch is then held on its arc for 0.2 s (`heldSpeed`: upward speed at least power - gravity x
+  elapsed): a Humanoid launched from the ground answers with its own jump one frame later, which
+  replaced the pad's 94 with 50.
+- **Walked-on bounces are fair on every map** (`Course.bounceFair`, used by the generator and
+  pinned by the "every level's jumps are fair" test, which flies the launch out step by step). The
+  old rule measured the jump after a pad from the deck's edge with the launch's apex, as if the
+  runner had jumped; a pad launches where it is first touched, so a runner who walked on came
+  down short of the next element on maps 2 to 10 (gaps of 5 to 8 studs). Now the element after a
+  bounce deck stands 1.3 to 3.7 studs past it (2 studs for the usual 8-stud rise): launched at
+  the pad's near rim with the feet on the deck and holding forward, the runner comes down at
+  least 0.8 studs onto it; launched from the far rim they do not fly over it. Bounce decks are
+  10 x 10, and a ring (with its hole) never follows one. This moved the elements after each
+  bounce on maps 2 to 10 and with them the chain: every map's world position shifted (map 1 by
+  +24 studs in x and +1 in z). Nothing else about those maps' recipes changed.
+- **Map 1's sweepers shove** (`spinner.shove = 3`, attributes `BumpShove`, `ShoveMin`,
+  `ShoveMax` on the bar). A hit used to be a full jump (7.6 to 9.2 studs up, up to 3.1 sideways):
+  over any rail. On map 1 a hit now slides the runner 3 studs along the deck in 0.2 s with no
+  jump and no upward speed, and the slide stops at `Course.shoveKeep`: the deck less
+  `SHOVE_INSET = 3` studs on every side, which is 4 studs either side of the path line (the rails'
+  inner faces are 6.2 away) and 3 studs short of the deck's ends. Sweepers on maps 2 to 10 have
+  no `shove` and bump as before.
+- **Map 1's rails are 3 studs tall** (were 1.5). A Humanoid steps up onto anything lower than
+  its hips (about 2 studs), so the old rails were walked onto and along. The sweeper deck stays
+  14 wide and the bounce deck 12, pad 9, power 94.
+- **The timed return leaves a player who walked on.** 15 s after a finish the player goes back
+  to the gates only if they still stand where the finish left them (the finish deck, or off the
+  decks). On a bridge or on any map's start deck the return is dropped: they walked there on
+  purpose. The 2 s rule is unchanged (a wait on a bridge still ends at the gates).
+- **The picker and the Modes row show the rest.** The snapshot's `levels[i].repeatRest` is the
+  seconds map i's run again bonus still rests (its own 120 s or the 60 s after any map's bonus;
+  0 when awake or when the map pays in full). Both read "Bonus is resting, back in m:ss" for the
+  selected map, like the finish card, instead of promising "Run again: +$X".
+- **Naming.** The Modes row says "MAP n · name"; every difficulty row (Modes row, picker cards,
+  picker side panel) reads "Difficulty n/10" before its pips, and a row too narrow for both
+  hides the pips, never the words.
+- **SKIP MAP** is hidden where a skip has nothing to unlock: on the last map, and on a map whose
+  next map is already open (the server refused both already).

@@ -13,6 +13,7 @@ local Format = require("../src/shared/Format")
 local SessionLock = require("../src/shared/SessionLock")
 local TutorialSteps = require("../src/shared/TutorialSteps")
 local CratePickup = require("../src/shared/CratePickup")
+local ParkourMoves = require("../src/shared/ParkourMoves")
 
 local passed, failed = 0, 0
 local currentTest = ""
@@ -4541,7 +4542,7 @@ test("Game modes: maxGap matches the default jump", function()
 	check(ModesCourse.maxGap(8) < 0, "8 studs up is out of reach")
 end)
 
-test("Game modes: every level's jumps are fair with the default jump", function()
+test("Game modes: every level's jumps are fair with the default jump, walked-on bounces too", function()
 	local gravity = 196.2
 	local function poses(e: any, steps: number): { { number } }
 		if e.kind ~= "mover" then
@@ -4557,6 +4558,7 @@ test("Game modes: every level's jumps are fair with the default jump", function(
 	for li, level in ModesCourse.LEVELS do
 		local path = level.PATH
 		local bounceOn, bounces = {}, 0
+		local pads = {}
 		for _, e in level.ELEMENTS do
 			if e.kind == "bounce" then
 				for i, p in path do
@@ -4567,6 +4569,7 @@ test("Game modes: every level's jumps are fair with the default jump", function(
 						and math.abs(p.y - e.y) < 0.01
 					then
 						bounceOn[i] = e.power * e.power / (2 * gravity) - 3
+						pads[i] = e
 						bounces += 1
 					end
 				end
@@ -4575,6 +4578,62 @@ test("Game modes: every level's jumps are fair with the default jump", function(
 			end
 		end
 		check(bounces >= 1, "level " .. li .. ": the bounce pad sits on a path deck")
+		-- A WALKED-ON bounce is fair too. The pad launches on the first touch, PAD_REACH past
+		-- its rim, so a runner who walks onto it and just keeps walking is launched at the
+		-- rim's side away from the landing, feet on the deck: flown out step by step (no
+		-- formula of Course's), they come down on the landing. One launched from the rim's
+		-- near side, feet on the pad's top, does not fly over it.
+		for i, deck in path do
+			local pad = pads[i]
+			if pad then
+				local landing = path[i + 1]
+				local label = string.format("level %d bounce %d -> %d", li, i, i + 1)
+				check(landing.kind == "pad" and landing.shape ~= "ring", label .. ": the landing is a still, whole pad")
+				check(math.abs(pad.x - deck.x) < 0.01 and math.abs(pad.z - deck.z) < 0.01, label .. ": the pad is centred on its deck")
+				local dx, dz = landing.x - pad.x, landing.z - pad.z
+				local ux, uz = 0, 0
+				if math.abs(dx) >= math.abs(dz) then
+					ux = if dx >= 0 then 1 else -1
+				else
+					uz = if dz >= 0 then 1 else -1
+				end
+				-- Studs inside the landing's footprint where a launch from `along` (studs from
+				-- the pad's centre toward the landing) at feet height `y` comes back down to
+				-- its top, holding forward at walking speed; nil when it never gets that high.
+				local function comesDown(along: number, y: number): number?
+					local dt = 1 / 240
+					local vy, reached = pad.power, false
+					for _ = 1, 240 * 4 do
+						y += vy * dt
+						vy -= gravity * dt
+						along += ModesCourse.WALK_SPEED * dt
+						reached = reached or y >= landing.y
+						if reached and vy < 0 and y <= landing.y then
+							local x, z = pad.x + ux * along, pad.z + uz * along
+							if landing.sx then
+								return math.min(landing.sx / 2 - math.abs(x - landing.x), landing.sz / 2 - math.abs(z - landing.z))
+							end
+							local r = landing.r * (if landing.shape == "hex" then math.sqrt(3) / 2 else 1)
+							return r - math.sqrt((x - landing.x) ^ 2 + (z - landing.z) ^ 2)
+						end
+					end
+					return nil
+				end
+				local touch = pad.r + ParkourMoves.PAD_REACH
+				local walked = comesDown(-touch, deck.y)
+				check(
+					walked ~= nil and walked >= ModesCourse.SAFETY - 0.1,
+					string.format("%s: walked on, the runner lands on the next element (%s inside)", label, tostring(walked))
+				)
+				local long = comesDown(touch, deck.y + ModesCourse.PAD_LIP)
+				check(
+					long ~= nil and long >= 0.9,
+					string.format("%s: from the far rim they do not fly over it (%s inside)", label, tostring(long))
+				)
+				local okFair, why = ModesCourse.bounceFair(pad, landing)
+				check(okFair, label .. ": Course.bounceFair agrees (" .. tostring(why) .. ")")
+			end
+		end
 		for i = 1, #path - 1 do
 			local a, b = path[i], path[i + 1]
 			local label = string.format("level %d path %d -> %d", li, i, i + 1)

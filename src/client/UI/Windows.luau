@@ -4433,8 +4433,13 @@ end
 
 local PIP_COUNT = 10
 
--- Difficulty row: a fire icon, 10 pips (gold warming to red) and "n/10". props: Name, Size,
--- Position, Pip (pip size, default 10). Returns the setter.
+-- Width of a difficulty row's "Difficulty n/10" label and the gap between its items.
+local PIP_LABEL_W = 112
+local PIP_GAP = 3
+
+-- Difficulty row: a fire icon, "Difficulty n/10" and 10 pips (gold warming to red). The number
+-- always carries its word; in a row too narrow for everything the pips hide, never the
+-- words. props: Name, Size, Position, Pip (pip size, default 10). Returns the setter.
 local function difficultyPips(parent: Instance, props: { [string]: any }): (number) -> ()
 	local pipSize = props.Pip or 10
 	local row = Kit.new("Frame", {
@@ -4445,21 +4450,8 @@ local function difficultyPips(parent: Instance, props: { [string]: any }): (numb
 		ZIndex = 2,
 		Parent = parent,
 	})
-	Kit.list(row, 3, true).VerticalAlignment = Enum.VerticalAlignment.Center
+	Kit.list(row, PIP_GAP, true).VerticalAlignment = Enum.VerticalAlignment.Center
 	Kit.icon(row, "Fire", pipSize + 6, C.Gold, { LayoutOrder = 0, ZIndex = 2 })
-	local pips: { Frame } = {}
-	for i = 1, PIP_COUNT do
-		local pip = Kit.new("Frame", {
-			Name = "Pip" .. i,
-			BackgroundColor3 = C.Well,
-			Size = UDim2.fromOffset(pipSize, pipSize),
-			LayoutOrder = i,
-			ZIndex = 2,
-			Parent = row,
-		})
-		Kit.corner(pip, 3)
-		pips[i] = pip
-	end
 	local of = Kit.text(row, {
 		Name = "Of10",
 		Text = "",
@@ -4468,11 +4460,35 @@ local function difficultyPips(parent: Instance, props: { [string]: any }): (numb
 		MinPx = true,
 		TextWrapped = false,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.fromOffset(44, pipSize + 6),
-		LayoutOrder = PIP_COUNT + 1,
+		Size = UDim2.fromOffset(PIP_LABEL_W, pipSize + 6),
+		LayoutOrder = 1,
 		TextColor3 = C.TextDim,
 		ZIndex = 2,
 	})
+	local pips: { Frame } = {}
+	for i = 1, PIP_COUNT do
+		local pip = Kit.new("Frame", {
+			Name = "Pip" .. i,
+			BackgroundColor3 = C.Well,
+			Size = UDim2.fromOffset(pipSize, pipSize),
+			LayoutOrder = i + 1,
+			ZIndex = 2,
+			Parent = row,
+		})
+		Kit.corner(pip, 3)
+		pips[i] = pip
+	end
+	-- The pips show only while the whole row fits (a row not laid out yet counts as wide).
+	local need = (pipSize + 6) + PIP_GAP + PIP_LABEL_W + (pipSize + PIP_GAP) * PIP_COUNT
+	local function fitPips()
+		local width = row.AbsoluteSize.X
+		local fits = width <= 0 or width >= need
+		for _, pip in pips do
+			pip.Visible = fits
+		end
+	end
+	row:GetPropertyChangedSignal("AbsoluteSize"):Connect(fitPips)
+	fitPips()
 	return function(value: number)
 		local difficulty = math.clamp(math.floor(value), 1, PIP_COUNT)
 		for i, pip in pips do
@@ -4480,7 +4496,7 @@ local function difficultyPips(parent: Instance, props: { [string]: any }): (numb
 			pip.BackgroundColor3 = if on then C.Gold:Lerp(C.Bad, (i - 1) / (PIP_COUNT - 1)) else C.Well
 			pip.BackgroundTransparency = if on then 0 else 0.3
 		end
-		of.Text = string.format("%d/%d", difficulty, PIP_COUNT)
+		of.Text = string.format("Difficulty %d/%d", difficulty, PIP_COUNT)
 	end
 end
 
@@ -4510,8 +4526,13 @@ local function parkourReward(label: TextLabel, info: { [string]: any }, level: n
 	local rest = 0
 	if (type(info.gear) == "string" and info.gear ~= "none") or info.assisted == true then
 		repeatCash = 0
+	elseif type(lv.repeatRest) == "number" then
+		-- The server says how long each map's bonus still rests (this map's two minutes, or
+		-- the minute after any map's bonus).
+		rest = previewRest(lv)
 	elseif level == (tonumber(info.level) or 1) and preview.full == false then
-		-- A bonus that rested when the snapshot was taken is awake once its seconds are up.
+		-- (An older server priced only info.level.) A bonus that rested when the snapshot
+		-- was taken is awake once its seconds are up.
 		rest = previewRest(preview)
 		if (tonumber(preview.repeatRest) or 0) <= 0 then
 			repeatCash = tonumber(preview.cash) or repeatCash
@@ -4893,14 +4914,14 @@ local function buildModes(screen: ScreenGui)
 		selected = math.clamp(selected, 1, unlocked)
 		local lv = list[selected]
 		if type(info) ~= "table" or type(lv) ~= "table" then
-			levelName.Text = "Level 1"
+			levelName.Text = "MAP 1"
 			setPips(1)
 			parkour.stats.Text = "Best --  ·  0 clears"
 			paintReward(parkour.reward, "", false)
 			return
 		end
 		local icon = if type(lv.icon) == "string" and lv.icon ~= "" then lv.icon .. " " else ""
-		levelName.Text = string.format("Level %d  ·  %s%s", selected, icon, tostring(lv.name or ""))
+		levelName.Text = string.format("MAP %d  ·  %s%s", selected, icon, tostring(lv.name or ""))
 		setPips(tonumber(lv.difficulty) or selected)
 		local best = tonumber(lv.best) or 0
 		local clears = tonumber(lv.clears) or 0
