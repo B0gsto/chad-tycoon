@@ -11,8 +11,9 @@
 	                 "Next:" goal strip ("Next: Protein Bro 63%" over "1,240 more
 	                 Normies · about 2 h" and a progress bar, Shared.NextGoal; it
 	                 turns green, breathes and says "READY: step on MOG MERGE" when
-	                 one merge finds the tier; above the dumbbell on compact
-	                 screens). Under it, one "nearer goal" pill at a time ("Blender
+	                 one merge finds the tier, and reads "REBIRTH: +3 stars" with a
+	                 star when a rebirth is the goal: a tap opens the rebirth card;
+	                 above the dumbbell on compact screens). Under it, one "nearer goal" pill at a time ("Blender
 	                 is full: upgrade its speed", "Free gift ready", "Crate ready at
 	                 the Smasher", "Try a Game Mode: +$X"), which Client.Guide points
 	                 at on the plot. The tutorial quest pill and the parkour run pill
@@ -25,7 +26,9 @@
 	                 tilted "PERMANENT" tag) with a solid price chip
 	  bottom left    bonus chips, each on screen only while it is on ("Premium
 	                 +10%", "Friends +20%", "SURGE x2"), "Cash [ x1.0 ]", the big
-	                 cash amount + square "+"
+	                 cash amount + square "+" and, once there are rebirth stars or
+	                 a rebirth is on offer, the star counter ("3 +30% cash", a gold
+	                 "+2" tag while a rebirth would pay; a tap opens the rebirth card)
 	  bottom centre  the dumbbell: "AURA" + the carried amount on its plaque
 	  bottom right   FREE gift with its countdown, version in the corner
 
@@ -114,6 +117,9 @@ Hud.indexPoint = function(): Vector2?
 end
 -- A discovery landed on the Index button: it bounces, flashes and counts "+1".
 Hud.punchIndex = function() end
+-- Opens the rebirth card (Popups sets it): the goal strip's rebirth state and the star
+-- counter beside the cash amount call it.
+Hud.onRebirth = function() end
 
 -- Layout (design px). The top centre group sits just under the top bar.
 local EDGE_X = 14
@@ -147,6 +153,13 @@ local PROMO_MAX_TIER = 15 -- from this best tier on the HUD stops advertising (t
 local CHIP_H = 26 -- wallet bonus chips: icon + words
 local CHIP_ICON = 24
 local CHIP_TEXT = 16
+-- The rebirth star counter beside the cash amount's "+". Not judged on screen yet: adjust in Studio.
+local STAR_H = 44
+local STAR_ICON = 28
+local STAR_TEXT = 24 -- the stars held
+local STAR_CAPTION = 16 -- "+30% cash"
+local STAR_GAP = 10 -- the "+" to the counter
+local STAR_TAG = 14 -- the "+3" tag on its corner while a rebirth is on offer
 local GEAR = 44
 local DUMBBELL_W = 264
 local DUMBBELL_W_COMPACT = 200
@@ -953,8 +966,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- silhouette until it is discovered), its name and how far along it is, what it still
 	-- takes under them (units to buy and an estimate from the price and the income), and a
 	-- progress bar along the bottom. The target and its sums come from Shared.NextGoal (the
-	-- next tier of the current run; a plain "Next: Rebirth" line with its stars when a rebirth
-	-- is the goal, until the rebirth has a window of its own); the strip opens the Index.
+	-- next tier of the current run); the strip opens the Index. When a rebirth is the goal it
+	-- reads "REBIRTH: +3 stars" beside a star and a tap opens the rebirth card (Hud.onRebirth);
+	-- it stays as quiet as any other goal: no colour, no breathing, nothing that hurries.
 	-- When one merge would find the tier the strip turns green, breathes and says
 	-- "READY: step on MOG MERGE"; a tap then draws the path to that pad.
 	-- STACK_GAP under the deposit strip, and never under that many pixels on the glass (a
@@ -1038,11 +1052,15 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Parent = goal,
 	})
 	local goalReady = false
+	-- The strip names a rebirth (paintGoal): a tap opens its card.
+	local goalRebirth = false
 	for _, button in { goal, goalPad } do
 		button.Activated:Connect(function()
 			Kit.sound("Click")
 			if goalReady then
 				Guide.navigate("Merge", W.Merge, 30)
+			elseif goalRebirth then
+				Hud.onRebirth()
 			else
 				openIndex()
 			end
@@ -1143,10 +1161,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			lead, title = "READY:", "step on " .. W.Merge
 			hints = { string.format("New %s: %s", W.Unit, tierName(picked.tier)) }
 		elseif picked.kind == "rebirth" then
-			-- A plain line until the rebirth has its own window: what it is worth.
-			local stars = string.format("+%d %s", picked.stars, if picked.stars == 1 then "star" else "stars")
-			title = "Rebirth"
-			hints = { string.format("%s · +%d%% cash forever", stars, math.floor(Economy.starBonus(picked.stars) * 100 + 0.5)), stars }
+			-- "REBIRTH: +3 stars" over what the stars are worth; the card says the rest.
+			local bonus = string.format("+%d%% cash forever", math.floor(Economy.starBonus(picked.stars) * 100 + 0.5))
+			lead, title = "REBIRTH:", string.format("+%d %s", picked.stars, if picked.stars == 1 then "star" else "stars")
+			hints = { bonus .. " · " .. Kit.hint("tap to look", "click to look", "press to look"), bonus, "" }
 		else
 			count = string.format("%d%%", picked.percent)
 			if picked.kind == "merge" then
@@ -1160,6 +1178,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				hints = { string.format("%d more to fill your rack", left), string.format("%d more", left) }
 			end
 		end
+		goalRebirth = picked.kind == "rebirth"
 		local hint = hints[1]
 		local key = table.concat({ lead, title, count, tostring(compact), table.unpack(hints) }, "|")
 		Kit.tween(goalBar, 0.3, { Size = UDim2.fromScale(if ready then 1 else picked.progress, 1) })
@@ -1230,7 +1249,15 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			for _, child in goalThumb:GetChildren() do
 				child:Destroy()
 			end
-			pcall(Kit.unitViewport, goalThumb, picked.tier, { Size = UDim2.fromScale(1, 1) }, unknown)
+			if picked.kind == "rebirth" then
+				-- A rebirth is no unit: its star.
+				Kit.hudIcon(goalThumb, "Star", 30, C.Gold, {
+					Position = UDim2.fromScale(0.5, 0.5),
+					AnchorPoint = Vector2.new(0.5, 0.5),
+				})
+			else
+				pcall(Kit.unitViewport, goalThumb, picked.tier, { Size = UDim2.fromScale(1, 1) }, unknown)
+			end
 		end
 		if title ~= goalTitleShown then
 			goalTitleShown = title
@@ -2123,6 +2150,152 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		layoutWallet()
 	end
 	State.changed.Event:Connect(refresh)
+
+	-- Rebirth stars: a counter beside the cash amount's "+" --------------------------------
+	-- A star, the stars held and the cash bonus they give ("3 +30% cash": the snapshot's
+	-- `stars` and `starMult`). Not on screen while there are no stars and no rebirth is on
+	-- offer; while one is, a gold tag on its corner says what it would pay ("+2"), and that is
+	-- all: nothing blinks or counts down. A tap opens the rebirth card (Hud.onRebirth). It
+	-- follows the "+" (the cash amount's width) and steps out with it during a game-mode run.
+	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
+	do
+		local pill = Kit.hudGlass(wallet, {
+			Name = "Stars",
+			Button = true,
+			Size = UDim2.fromOffset(120, STAR_H),
+			Radius = Kit.RADIUS.M,
+			Visible = false,
+			ZIndex = 3,
+		}) :: TextButton
+		wire(pill, function()
+			Hud.onRebirth()
+		end)
+		Kit.hudIcon(pill, "Star", STAR_ICON, C.Gold, {
+			Name = "Icon",
+			Position = UDim2.new(0, 8, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ZIndex = 2,
+		})
+		local count = Kit.hudText(pill, {
+			Name = "Count",
+			Text = "0",
+			Font = F.Number,
+			TextSize = STAR_TEXT,
+			TextColor3 = C.Gold,
+			StrokeThickness = 2,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Size = UDim2.fromOffset(10, STAR_H),
+			ZIndex = 3,
+		})
+		local caption = Kit.hudText(pill, {
+			Name = "Caption",
+			Text = "",
+			Font = F.UI,
+			TextSize = STAR_CAPTION,
+			StrokeThickness = 2,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Size = UDim2.fromOffset(10, STAR_H),
+			ZIndex = 3,
+		})
+		-- What a rebirth would pay right now, on the top right corner.
+		local tag = Kit.pill(pill, {
+			Name = "Offer",
+			Text = "",
+			Solid = true,
+			Color = C.Gold,
+			TextSize = STAR_TAG,
+			Size = UDim2.fromOffset(34, STAR_TAG + 8),
+			Position = UDim2.new(1, 8, 0, -8),
+			AnchorPoint = Vector2.new(1, 0),
+			Visible = false,
+			ZIndex = 4,
+		})
+		-- Touch: an invisible pad grows the counter to a full tap target.
+		local pad = Kit.new("TextButton", {
+			Name = "Hit",
+			Text = "",
+			AutoButtonColor = false,
+			BackgroundTransparency = 1,
+			Selectable = false,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromScale(1, 1),
+			Visible = false,
+			ZIndex = 30,
+			Parent = pill,
+		})
+		pad.Activated:Connect(function()
+			Kit.sound("Click")
+			Hud.onRebirth()
+		end)
+		local wanted = false
+		local lastStars: number? = nil
+		-- The counter hugs its words (the caption held at a readable size on a phone) and sits
+		-- past the "+", clear of the tap target that grows round it on touch.
+		local function layout()
+			Kit.holdText(caption, Kit.captionPx(), STAR_CAPTION, true)
+			local x = 8 + STAR_ICON + 6
+			local countW = drawnWidth(count.Text, count.TextSize, count.Font)
+			count.Position = UDim2.fromOffset(x, 0)
+			count.Size = UDim2.fromOffset(countW + 4, STAR_H)
+			x += countW + 8
+			local captionW = drawnWidth(caption.Text, caption.TextSize, caption.Font)
+			caption.Position = UDim2.fromOffset(x, 0)
+			caption.Size = UDim2.fromOffset(captionW + 4, STAR_H)
+			x += captionW + 12
+			local reach = math.max(0, math.ceil((L.tap - addButton.Size.X.Offset) / 2))
+			pill.Size = UDim2.fromOffset(x, STAR_H)
+			pill.Position =
+				UDim2.fromOffset(addButton.Position.X.Offset + addButton.Size.X.Offset + STAR_GAP + reach, addButton.Position.Y.Offset)
+			tag.Size = UDim2.fromOffset(drawnWidth(tag.Text, tag.TextSize, tag.Font) + 16, tag.TextSize + 8)
+			pad.Size = UDim2.fromOffset(math.max(x, L.tap), math.max(STAR_H, L.tap))
+			pad.Visible = Kit.touch
+			pill.Visible = wanted and addButton.Visible
+		end
+		local function update()
+			local data = State.data
+			if not data then
+				return
+			end
+			local stars = math.max(0, math.floor(tonumber(data.stars) or 0))
+			local offer = if data.canRebirth == true then math.max(0, math.floor(tonumber(data.starsOnRebirth) or 0)) else 0
+			local bonus = math.floor(((tonumber(data.starMult) or 1) - 1) * 100 + 0.5)
+			local was = wanted
+			wanted = stars > 0 or offer > 0
+			count.Text = Format.commas(stars)
+			-- No stars yet: there is no bonus to show, so the counter says what it is for.
+			caption.Text = if stars > 0 then string.format("+%d%% cash", bonus) else "Rebirth"
+			tag.Text = "+" .. Format.commas(offer)
+			tag.Visible = offer > 0
+			layout()
+			-- It lands with a pop when it first shows and when a rebirth adds stars.
+			if (wanted and not was) or (lastStars ~= nil and stars > lastStars) then
+				Kit.pop(pill, 1)
+			end
+			lastStars = stars
+		end
+		-- Gamepad: out of the D-pad's reach while a window or dialog is up, like the rest.
+		local function updateSelectable()
+			Kit.selectable(pill, not (screen:GetAttribute("WindowOpen") == true or screen:GetAttribute("ModalOpen") == true))
+		end
+		for _, name in { "WindowOpen", "ModalOpen" } do
+			screen:GetAttributeChangedSignal(name):Connect(updateSelectable)
+		end
+		-- After the HUD has laid itself out again (its own listeners run first).
+		local function later()
+			task.defer(layout)
+		end
+		addButton:GetPropertyChangedSignal("Position"):Connect(layout)
+		addButton:GetPropertyChangedSignal("Visible"):Connect(layout)
+		screen:GetAttributeChangedSignal("Compact"):Connect(later)
+		if screenScale then
+			screenScale:GetPropertyChangedSignal("Scale"):Connect(later)
+		end
+		Kit.onInput(later)
+		State.changed.Event:Connect(update)
+		updateSelectable()
+		update()
+	end
 
 	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
 	do
