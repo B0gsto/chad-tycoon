@@ -21,6 +21,7 @@ local Animator = require(Client.Animator)
 local Hud = require(Client.UI.Hud)
 local Windows = require(Client.UI.Windows)
 local Popups = require(Client.UI.Popups)
+local AwayWindow = require(Client.UI.AwayWindow)
 local Tutorial = require(Client.UI.Tutorial)
 local MogHud = require(Client.UI.MogHud)
 local CardioHud = require(Client.UI.CardioHud)
@@ -120,6 +121,15 @@ MogHud.build(screen)
 CardioHud.build(screen)
 -- The Modes window's MOG TEST PLAY opens the VS RIVALS / 1v1 DUEL picker.
 Windows.onMogPlay = MogHud.choose
+-- "While you were away" (built with the Daily window) opens like any window; a player still
+-- in the tutorial gets the plain "Welcome back" popup, one busy for minutes a toast.
+AwayWindow.connect({
+	open = function(name)
+		Windows.open(name)
+	end,
+	fallback = Popups.offline,
+	toast = Popups.toast,
+})
 Guide.build()
 Hud.build(screen, {
 	openWindow = Windows.open,
@@ -223,7 +233,8 @@ if RunService:IsStudio() and Cutscene then
 	end)
 end
 -- Studio-only capture hook: "UiPreview" = "<WindowName>", "Shop,<focus>", "close", "starter",
--- "reward,<tier>", "rewards,<from>,<to>" (one reveal per tier), "gift", "surge" or "tutorialdone".
+-- "reward,<tier>", "rewards,<from>,<to>" (one reveal per tier), "gift", "surge", "tutorialdone"
+-- or "away" (the "While you were away" card, with made-up offline cash).
 if RunService:IsStudio() then
 	player:GetAttributeChangedSignal("UiPreview"):Connect(function()
 		local spec = player:GetAttribute("UiPreview")
@@ -261,6 +272,8 @@ if RunService:IsStudio() then
 			Popups.surge({ phase = "start" })
 		elseif spec == "tutorialdone" then
 			Popups.tutorialDone(200, function() end)
+		elseif spec == "away" then
+			AwayWindow.show({ kind = "Offline", seconds = 3 * 3600 + 720, orbs = 5200, cash = 12400 }, true)
 		elseif spec == "close" then
 			Windows.closeAll()
 			Popups.closeModals()
@@ -297,7 +310,8 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 	elseif payload.kind == "Reward" then
 		Popups.reward(payload)
 	elseif payload.kind == "Offline" then
-		Popups.offline(payload)
+		-- Back after a while: the "While you were away" card, once the screen is calm.
+		AwayWindow.show(payload)
 	elseif payload.kind == "Confirm" then
 		Popups.confirm(payload.text, function()
 			action:FireServer(payload.action)
