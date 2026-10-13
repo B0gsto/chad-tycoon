@@ -14,10 +14,16 @@
 	plays one reveal per tier, lowest first (revealChain).
 
 	Not modal, straight over the game: the free gift card (Popups.gift), the centre
-	banner (Popups.banner: surge start, tutorial done) and the surge countdown chip.
+	banner (Popups.banner: surge start, tutorial done; it waits for an open window to
+	close) and the surge countdown chip.
+
+	Every size, colour, duration and count of the reward moments (the reveal's escalation
+	per rarity band, the crate's rarity banner, the banners' entrance, the surge's gold
+	edge and coin rain) is in Popups.JUICE below.
 
 	Z order (ScreenGui uses Sibling ZIndex):
-	  floats 20, toasts and the surge chip 25, gift card 27, banner 28, reward 30,
+	  floats 20, toasts and the surge chip 25, gift card and the surge's gold edge 27,
+	  banner 28, reward 30,
 	  offline 44-45, starter 46-47, confirm 49-50, cash rain 50
 ]]
 
@@ -56,6 +62,171 @@ local CANDY = { World.Sunny, World.Pink, World.Mint, World.Blue, World.Grape, Wo
 local PREVIEW = typeof(TweenInfo.new(0)) ~= "TweenInfo"
 
 local Popups = {}
+
+--[[
+	Tunables of the reward moments: every size, colour, duration and count of the
+	escalating unit reveal, the crate's rarity banner, the centre banners and the surge's
+	gold edge and coin rain. A list of six is per rarity band, in RARITY_RANK order:
+	Common, Uncommon, Rare, Epic, Legendary, Mythic. (A field of Popups and not a set of
+	locals: this chunk sits at Luau's 200-locals limit.)
+]]
+Popups.JUICE = {
+	Reveal = {
+		-- The unit, drawn this much larger than its box (the box and the text keep their
+		-- places): it grows a little more upward than downward (HeroLift of the growth
+		-- moves its centre up), the "NEW CHAD!" line moves up out of its way by at most
+		-- LabelLift px, and the whole stage sits up to StageDrop px lower to make that room.
+		HeroScale = { 0.92, 0.96, 1.08, 1.2, 1.28, 1.36 },
+		HeroLift = 0.08,
+		LabelLift = 58,
+		StageDrop = 24,
+		-- Rays behind the unit: diameter (px), bars, seconds per turn; the lighter
+		-- counter-layer's diameter.
+		RaySize = { 560, 600, 700, 860, 1000, 1140 },
+		RayCount = { 6, 7, 9, 11, 13, 15 },
+		RaySpin = { 22, 22, 18, 13, 10, 8 },
+		InnerRaySize = { 420, 440, 500, 580, 660, 740 },
+		-- From Epic a third layer of wide white beams turns the other way.
+		OuterFrom = 4,
+		OuterSize = { 0, 0, 0, 1200, 1450, 1700 },
+		OuterCount = { 0, 0, 0, 5, 6, 8 },
+		OuterWidth = { 0, 0, 0, 80, 100, 120 },
+		OuterAlpha = { 0, 0, 0, 0.22, 0.28, 0.34 },
+		OuterSpin = { 0, 0, 0, 16, 12, 9 },
+		-- Opacity of the rarity colour washed over the whole screen, the glow's size
+		-- (x the unit) and the twinkling sparkles round the unit.
+		Wash = { 0.1, 0.12, 0.15, 0.2, 0.26, 0.32 },
+		Glow = 1.45,
+		Sparkles = { 7, 9, 11, 14, 18, 22 },
+		-- The white flash as the unit lands (from Epic): opacity, how long it stays at
+		-- full strength, its fade, and its share for a unit that is not new.
+		FlashFrom = 4,
+		FlashAlpha = { 0, 0, 0, 0.8, 0.9, 1 },
+		FlashHold = 0.12,
+		FlashFade = 0.28,
+		FlashOld = 0.6,
+		-- The pool of light on the ground under the unit (from Rare): opacity, width (x the
+		-- unit), height (x its width), where it sits (x the unit, below its centre), and its
+		-- breathing (size factor, seconds).
+		GroundAlpha = { 0, 0, 0.5, 0.65, 0.8, 0.92 },
+		GroundWidth = 1.25,
+		GroundFlat = 0.2,
+		GroundAt = 0.47,
+		GroundPulse = 1.16,
+		GroundPulseTime = 0.7,
+		-- Rings that spread over the ground from the landing (from Epic).
+		ShockRings = { 0, 0, 0, 1, 2, 3 },
+		ShockReach = 2.5,
+		ShockTime = 0.65,
+		ShockGap = 0.16,
+		-- Confetti of a new discovery: bursts (each up to Kit.confetti's 28 pieces), pieces
+		-- per burst, their power, seconds between bursts and how far to the sides they
+		-- start (px); then later showers while the card holds (count, seconds apart).
+		ConfettiBursts = { 1, 1, 1, 2, 4, 6 },
+		ConfettiCount = { 17, 22, 27, 28, 28, 28 },
+		ConfettiPower = { 1.03, 1.11, 1.19, 1.3, 1.42, 1.55 },
+		ConfettiGap = 0.14,
+		ConfettiSpread = 240,
+		Showers = { 0, 0, 0, 0, 3, 6 },
+		ShowerEvery = 0.55,
+		-- Seconds a rarer card holds longer (a chain's card, a unit that is not new, a card
+		-- with another one waiting), and how much later the first tap may dismiss it.
+		HoldExtra = { 0, 0, 0, 0, 0.4, 0.8 },
+		MinExtra = { 0, 0, 0, 0.1, 0.4, 0.8 },
+		-- The bar of light that sweeps the name (from Legendary).
+		SweepFrom = 5,
+		SweepColor = C.GoldLight,
+		SweepWidth = 120,
+		SweepAlpha = 0.6,
+		SweepTime = 0.7,
+		SweepEvery = 1.7,
+	},
+	-- The top tier only: crowns bursting out from behind the unit in waves, a gold ray
+	-- layer, and the name stamped in letter by letter in gold between two crowns.
+	Top = {
+		Color = C.Gold,
+		Crowns = 12,
+		CrownSize = 52,
+		CrownReach = 1.05,
+		CrownTime = 0.55,
+		CrownHold = 0.45,
+		CrownWaves = 3,
+		CrownWaveGap = 0.5,
+		RaySize = 900,
+		RayCount = 10,
+		RayWidth = 56,
+		RayAlpha = 0.4,
+		RaySpin = 14,
+		LetterFrom = 2.8,
+		LetterTime = 0.24,
+		LetterGap = 0.055,
+		LetterWave = 5,
+		LetterWaveTime = 0.55,
+		LetterTop = Color3.fromRGB(255, 250, 205),
+		LetterBottom = Color3.fromRGB(255, 176, 30),
+	},
+	-- The crate's own moment before its unit: "LEGENDARY CRATE!" in the rarity colour.
+	Crate = {
+		-- Fx.Crates' 3D burst: how long the 2D reveal waits for it, how long before the
+		-- reward a burst still counts, the names it may be exposed under, and how many
+		-- of the 2D shakes play after a 3D one was seen.
+		BurstWait = 0.8,
+		BurstLead = 1.5,
+		BurstSignals = { "burst", "burstDone", "burstSignal", "opened", "onBurst" },
+		ShakesAfterBurst = 2,
+		-- The banner: design px per band, the px it keeps on a phone's glass, how far above
+		-- the crate (px from the 420 px stage's top), the slam (start scale, seconds), the
+		-- shake (degrees, seconds), its confetti and the ring behind it (px).
+		TextSize = { 42, 46, 50, 56, 62, 66 },
+		TextPx = 30,
+		Y = -34,
+		Width = 900,
+		SlamFrom = 2.6,
+		SlamTime = 0.28,
+		Shake = { 3, 4, 6, 8, 10, 12 },
+		ShakeTime = 0.45,
+		Confetti = { 0, 10, 14, 20, 26, 28 },
+		Ring = { 260, 300, 360, 440, 520, 600 },
+		PlateAlpha = 0.8,
+	},
+	-- Popups.banner: the line slides in from the left past the middle and settles, the
+	-- band opens, a bar of light crosses it once; coins burst from the reward chip.
+	Banner = {
+		SlideFrom = -0.4,
+		SlideTime = 0.5,
+		BandTime = 0.3,
+		ShineAt = 0.4,
+		ShineTime = 0.55,
+		ShineWidth = 190,
+		ShineAlpha = 0.65,
+		BurstCoins = 16,
+		BurstReach = 260,
+		-- A banner never opens over a window, a modal or a reveal: it waits for them to
+		-- close, at most HoldMax seconds (then it is dropped), looking every Poll.
+		HoldMax = 15,
+		Poll = 0.2,
+	},
+	-- The surge banner's extras: a gold edge round the whole screen and a rain of coins.
+	Surge = {
+		Color = C.Gold,
+		EdgeAlpha = 0.62,
+		EdgeDepth = 0.26,
+		EdgeSide = 0.17,
+		EdgeIn = 0.3,
+		EdgeHold = 2.3,
+		EdgeOut = 0.6,
+		EdgePulse = 0.4,
+		Coins = 30,
+		CoinSize = 46,
+		RainFor = 1.1,
+		FallMin = 0.9,
+		FallMax = 1.5,
+		-- A banner held back by an open window still shows with this much surge left (s).
+		MinLeft = 5,
+	},
+	-- The held-crate panel's Crate Master button (a quiet secondary under the free route).
+	Pass = { Height = 48, TextSize = 14 },
+}
 
 local screen: ScreenGui
 local toastHolder: Frame
@@ -1714,6 +1885,365 @@ local function flyOrb(layer: Frame, from: Vector2, goal: Vector2, color: Color3,
 	end)
 end
 
+-- Reveal extras (Popups.JUICE.Reveal and .Top) ---------------------------------------------
+-- Fields of Popups, not locals: the chunk has no local registers to spare.
+
+-- Sets how fast a Popups.rays layer turns (seconds per turn).
+function Popups.spinRays(holder: Frame, period: number, reverse: boolean?)
+	if not PREVIEW then
+		local info = TweenInfo.new(period, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1)
+		TweenService:Create(holder, info, { Rotation = if reverse then -360 else 360 }):Play()
+	end
+end
+
+-- A layer of wide beams: Popups.rays with its bars widened to `width` px at opacity
+-- `alpha`, one turn every `period` seconds.
+function Popups.beams(
+	parent: Instance,
+	color: Color3,
+	size: number,
+	position: UDim2,
+	count: number,
+	width: number,
+	alpha: number,
+	period: number,
+	reverse: boolean?
+): Frame
+	local holder = Popups.rays(parent, color, size, position, 1, count, reverse)
+	for _, ray in holder:GetChildren() do
+		if ray:IsA("Frame") then
+			ray.Size = UDim2.new(0, width, 1, 0)
+			ray.BackgroundTransparency = 1 - alpha
+		end
+	end
+	Popups.spinRays(holder, period, reverse)
+	return holder
+end
+
+-- The top tier's crowns: waves of them fly out from behind the unit, spin and shrink away.
+function Popups.crownBurst(o: { [string]: any })
+	local top = Popups.JUICE.Top
+	local stage: Frame, heroAt: UDim2 = o.stage, o.heroAt
+	local icon = if Kit.iconName("Crown") then "Crown" else "Star"
+	local reach = o.heroSize * o.scale * top.CrownReach
+	for wave = 1, top.CrownWaves do
+		task.delay(0.1 + (wave - 1) * top.CrownWaveGap, function()
+			if not stage.Parent then
+				return
+			end
+			for i = 1, top.Crowns do
+				local angle = (i + (wave % 2) * 0.5) / top.Crowns * math.pi * 2
+				local size = math.floor(top.CrownSize * (0.8 + math.random() * 0.5))
+				local crown = Kit.icon(stage, icon, size, if icon == "Crown" then nil else top.Color, {
+					Name = "CrownPop",
+					Position = heroAt,
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					ZIndex = 2,
+				})
+				crown.Rotation = math.random(-40, 40)
+				local grow = Kit.new("UIScale", { Name = "Pop", Scale = 0.2, Parent = crown })
+				local goal = heroAt + UDim2.fromOffset(math.cos(angle) * reach, math.sin(angle) * reach * 0.62)
+				Kit.tween(
+					crown,
+					top.CrownTime,
+					{ Position = goal, Rotation = crown.Rotation + math.random(-60, 60) },
+					Enum.EasingStyle.Quart
+				)
+				Kit.tween(grow, top.CrownTime * 0.5, { Scale = 1 }, Enum.EasingStyle.Back)
+				task.delay(top.CrownTime + top.CrownHold, function()
+					Kit.tween(grow, 0.25, { Scale = 0 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+					task.delay(0.27, function()
+						crown:Destroy()
+					end)
+				end)
+			end
+		end)
+	end
+end
+
+--[[
+	What a rarer band adds to the reveal's stage, built before the unit so it all sits
+	behind it: the pool of light on the ground (from Rare), the wide counter-turning beams,
+	the white flash and the ground rings (from Epic), the confetti of a discovery (more
+	bursts per band, then showers while a Legendary or Mythic card holds), and for the top
+	tier a gold beam layer and the crowns. `o`: root, stage, heroAt, heroY, heroSize, scale,
+	color, rank, tier, isNew, calm, lights (what fades out with the stage).
+]]
+function Popups.revealExtras(o: { [string]: any })
+	local J = Popups.JUICE.Reveal
+	local rank: number, color: Color3, stage: Frame = o.rank, o.color, o.stage
+	local heroSize: number, heroAt: UDim2 = o.heroSize, o.heroAt
+	local lights: { GuiObject } = o.lights
+	local moving = not o.calm and not PREVIEW
+	local top = o.tier == Economy.MAX_TIER
+	local wide = heroSize * o.scale * J.GroundWidth
+	-- Under the feet of the unit as drawn (larger than its box, its centre moved up).
+	local feet = UDim2.new(0.5, 0, 0, o.heroY + heroSize * (o.scale * J.GroundAt - (o.scale - 1) * J.HeroLift))
+	local function flat(width: number): UDim2
+		return UDim2.fromOffset(width, width * J.GroundFlat)
+	end
+
+	local groundAlpha: number = J.GroundAlpha[rank] or 0
+	if groundAlpha > 0 then
+		local pool = softDot(stage, "Ground", Kit.lighten(color, 0.2), flat(wide), 1 - groundAlpha, 3)
+		local core = softDot(stage, "GroundCore", Kit.lighten(color, 0.75), flat(wide * 0.55), 1 - groundAlpha * 0.85, 3)
+		for _, light in { pool, core } do
+			light.Position = feet
+			Kit.appear(light, { from = 0.3, time = 0.4 })
+			table.insert(lights, light)
+		end
+		if moving then
+			local info = TweenInfo.new(J.GroundPulseTime, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+			TweenService:Create(pool, info, { Size = flat(wide * J.GroundPulse) }):Play()
+		end
+	end
+	if rank >= J.OuterFrom then
+		local outer = Popups.beams(
+			stage,
+			WHITE:Lerp(color, 0.3),
+			J.OuterSize[rank],
+			heroAt,
+			J.OuterCount[rank],
+			J.OuterWidth[rank],
+			J.OuterAlpha[rank],
+			J.OuterSpin[rank],
+			true
+		)
+		Kit.appear(outer, { from = 0.3, time = 0.6, style = Enum.EasingStyle.Quart })
+		table.insert(lights, outer)
+	end
+	if top then
+		local gold = Popups.JUICE.Top
+		local beams =
+			Popups.beams(stage, gold.Color, gold.RaySize, heroAt, gold.RayCount, gold.RayWidth, gold.RayAlpha, gold.RaySpin, false)
+		Kit.appear(beams, { from = 0.3, time = 0.6, style = Enum.EasingStyle.Quart })
+		table.insert(lights, beams)
+		if moving then
+			Popups.crownBurst(o)
+		end
+	end
+
+	if moving and rank >= J.FlashFrom then
+		-- The one whole-screen flash: white as the unit lands, held for a blink, then gone.
+		local flash = Kit.new("Frame", {
+			Name = "Flash",
+			BackgroundColor3 = WHITE,
+			BackgroundTransparency = 1 - J.FlashAlpha[rank] * (if o.isNew then 1 else J.FlashOld),
+			BorderSizePixel = 0,
+			Size = UDim2.new(3, 0, 1, 400),
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 9,
+			Parent = o.root,
+		})
+		task.delay(J.FlashHold, function()
+			Kit.tween(flash, J.FlashFade, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad)
+			task.delay(J.FlashFade + 0.05, function()
+				flash:Destroy()
+			end)
+		end)
+	end
+	if moving and RING then
+		for i = 1, J.ShockRings[rank] or 0 do
+			local ring = Kit.new("ImageLabel", {
+				Name = "Shock",
+				BackgroundTransparency = 1,
+				Image = RING,
+				ImageColor3 = if i % 2 == 1 then WHITE else Kit.lighten(color, 0.4),
+				ImageTransparency = 0.05,
+				Size = flat(wide * 0.3),
+				Position = feet,
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = 3,
+				Visible = false,
+				Parent = stage,
+			})
+			task.delay(0.12 + (i - 1) * J.ShockGap, function()
+				ring.Visible = true
+				Kit.tween(ring, J.ShockTime, { Size = flat(wide * J.ShockReach), ImageTransparency = 1 }, Enum.EasingStyle.Quart)
+				task.delay(J.ShockTime + 0.05, function()
+					ring:Destroy()
+				end)
+			end)
+		end
+	end
+
+	if o.isNew and not o.calm then
+		-- Confetti in the band's colour (its shades and white; gold too at the top tier).
+		local colors = { color, Kit.lighten(color, 0.35), WHITE, color, Kit.darken(color, 0.18), Kit.lighten(color, 0.6) }
+		if top then
+			colors[4], colors[5] = Popups.JUICE.Top.Color, Kit.lighten(Popups.JUICE.Top.Color, 0.4)
+		end
+		local function burst(dx: number, dy: number)
+			if stage.Parent then
+				Kit.confetti(stage, {
+					Origin = UDim2.new(0.5, dx, 0, o.heroY + dy),
+					Count = J.ConfettiCount[rank],
+					ZIndex = 4,
+					Colors = colors,
+					Power = J.ConfettiPower[rank],
+				})
+			end
+		end
+		burst(0, 0)
+		if not PREVIEW then
+			-- More bursts for rarer bands: left and right of the unit, then above it.
+			for i = 2, J.ConfettiBursts[rank] do
+				local side = if i % 2 == 0 then -1 else 1
+				local near = i > 3
+				task.delay((i - 1) * J.ConfettiGap, function()
+					burst(side * J.ConfettiSpread * (if near then 0.5 else 1), if near then -heroSize * 0.3 else heroSize * 0.1)
+				end)
+			end
+			for i = 1, J.Showers[rank] do
+				task.delay(0.9 + i * J.ShowerEvery, function()
+					burst(math.random(-J.ConfettiSpread, J.ConfettiSpread), -heroSize * 0.45)
+				end)
+			end
+		end
+	end
+end
+
+--[[
+	The top tier's name: gold letters stamped in one at a time between two crowns (each
+	lands from LetterFrom times its size and settles), then the line ripples. Returns the
+	row; it takes the plain name's place and name ("UnitName").
+]]
+function Popups.stampName(stage: Frame, text: string, size: number, y: number): Frame
+	local top = Popups.JUICE.Top
+	local row = Kit.new("Frame", {
+		Name = "UnitName",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -40, 0, size + 6),
+		Position = UDim2.fromOffset(20, y),
+		ZIndex = 5,
+		Parent = stage,
+	})
+	Kit.list(row, 0, true, Enum.HorizontalAlignment.Center)
+	local icon = if Kit.iconName("Crown") then "Crown" else "Star"
+	local letters: { string } = {}
+	for _, code in utf8.codes(text) do
+		table.insert(letters, utf8.char(code))
+	end
+	local function widthOf(ch: string, px: number): number
+		return if ch == " " then math.ceil(px * 0.32) else displayWidth(ch, px) + 1
+	end
+	-- One line: the letters shrink together when the name is wider than the stage.
+	local px = size
+	local total = 2 * (px + 12)
+	for _, ch in letters do
+		total += widthOf(ch, px)
+	end
+	if total > STAGE_W - 40 then
+		px = math.floor(px * (STAGE_W - 40) / total)
+	end
+	local stamps: { GuiObject } = {}
+	local function cell(order: number, width: number): Frame
+		return Kit.new("Frame", {
+			Name = "Cell",
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(width, size + 6),
+			LayoutOrder = order,
+			ZIndex = 5,
+			Parent = row,
+		})
+	end
+	local function crown(order: number)
+		table.insert(
+			stamps,
+			Kit.icon(cell(order, px + 12), icon, px, if icon == "Crown" then nil else top.Color, {
+				Name = "Crown",
+				Position = UDim2.fromScale(0.5, 0.5),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = 5,
+			})
+		)
+	end
+	crown(0)
+	for i, ch in letters do
+		local holder = cell(i, widthOf(ch, px))
+		if ch ~= " " then
+			local label = Kit.hudText(holder, {
+				Name = "Letter",
+				Text = ch,
+				TextSize = px,
+				StrokeColor = Theme.Glass.TextInk,
+				StrokeThickness = 4,
+				Size = UDim2.new(1, 40, 1, 0),
+				Position = UDim2.fromScale(0.5, 0.5),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = 5,
+			})
+			Kit.gradient(label, top.LetterTop, top.LetterBottom)
+			table.insert(stamps, label)
+		end
+	end
+	crown(#letters + 1)
+	for i, gui in stamps do
+		-- Scale 0 until its turn: the row's own fade-in (Kit.appear) runs meanwhile.
+		local stamp = Kit.new("UIScale", { Name = "Stamp", Scale = 0, Parent = gui })
+		task.delay(0.08 + (i - 1) * top.LetterGap, function()
+			if not gui.Parent then
+				return
+			end
+			stamp.Scale = top.LetterFrom
+			Kit.tween(stamp, top.LetterTime, { Scale = 1 }, Enum.EasingStyle.Back)
+			if i % 3 == 1 then
+				sounds.play("Tick", 0.02, 1 + i * 0.03)
+			end
+		end)
+		task.delay(0.08 + #stamps * top.LetterGap + top.LetterTime + i * 0.07, function()
+			if gui.Parent then
+				local info = TweenInfo.new(top.LetterWaveTime, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+				TweenService:Create(gui, info, { Position = UDim2.new(0.5, 0, 0.5, -top.LetterWave) }):Play()
+			end
+		end)
+	end
+	return row
+end
+
+-- A slanted bar of light that crosses the name again and again (Legendary and Mythic).
+-- Returns its clip frame, which leaves with the reveal's text.
+function Popups.nameSweep(stage: Frame, y: number, size: number): Frame
+	local J = Popups.JUICE.Reveal
+	local clip = Kit.new("Frame", {
+		Name = "Sweep",
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+		Size = UDim2.new(1, -40, 0, size + 10),
+		Position = UDim2.fromOffset(20, y - 2),
+		ZIndex = 6,
+		Parent = stage,
+	})
+	local bar = Kit.new("Frame", {
+		Name = "Bar",
+		BackgroundColor3 = J.SweepColor,
+		BorderSizePixel = 0,
+		Size = UDim2.new(0, J.SweepWidth, 1, 0),
+		Position = UDim2.fromOffset(-J.SweepWidth, 0),
+		ZIndex = 6,
+		Parent = clip,
+	})
+	Kit.new("UIGradient", {
+		Rotation = 20,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1),
+			NumberSequenceKeypoint.new(0.5, 1 - J.SweepAlpha),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+		Parent = bar,
+	})
+	task.spawn(function()
+		task.wait(0.5)
+		while clip.Parent do
+			bar.Position = UDim2.fromOffset(-J.SweepWidth, 0)
+			Kit.tween(bar, J.SweepTime, { Position = UDim2.fromScale(1, 0) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+			task.wait(J.SweepEvery)
+		end
+	end)
+	return clip
+end
+
 --[[
 	The reveal has no card and no button. The world stays in view under a soft
 	navy veil and a short blur, the HUD steps aside, and the unit floats in the
@@ -1725,8 +2255,12 @@ end
 
 	The rarity band (Economy.tierBand) colours it all: rays, glow, the plate behind
 	the name, the confetti and a thin wash over the whole screen; rarer bands turn
-	it up, and from Epic the landing comes with a short white flash and the longer
-	fanfare. The unit fills about half the screen's height and its camera pushes in.
+	it up (Popups.JUICE.Reveal, built by Popups.revealExtras): a bigger unit, bigger and
+	faster rays, a pool of light on the ground from Rare; from Epic a white flash as it
+	lands, wide counter-turning beams, ground rings, more confetti and the longer fanfare;
+	Legendary and Mythic hold longer, shower confetti and sweep the name with light; the
+	top tier bursts crowns and stamps its name in gold letters. The unit fills about half
+	the screen's height (more for a rarer band) and its camera pushes in.
 	Under the name, "+X Aura/sec" counts up: what the action added (reward.gain).
 
 	A new discovery then leaves for the Index. On any tap, click, A, B or Escape
@@ -1749,6 +2283,8 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	local isNew = reward.new == true
 	local extras = if isNew then extraTiers(reward) else {}
 	local calm = reducedMotion()
+	local J = Popups.JUICE.Reveal
+	local heroScale: number = J.HeroScale[rank] or 1
 	local data = State.data
 	local nextReveal: (() -> ())? = if type(reward._next) == "function" then reward._next else nil
 	local chained = nextReveal ~= nil
@@ -1785,6 +2321,10 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	local mergesY = statsY + statSize + 10
 	local stageH = statsY + statSize + 8 + (if mergesRow then tierSize + 10 else 0) + 36
 	local height = stageH + (if #extras > 0 then EXTRAS_H else 0)
+	-- A rarer band's unit is drawn larger than its box (J.HeroScale): how much it gains,
+	-- and how far that reaches above the box.
+	local heroGrow = heroSize * (heroScale - 1)
+	local heroUp = math.max(heroGrow * (0.5 + J.HeroLift), 0)
 
 	-- Toasts and the tutorial pill step out (setReveal); the veil below hides an open window.
 	local openKey = "Reward:" .. tostring(os.clock())
@@ -1855,11 +2395,13 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 0,
 		Parent = root,
 	})
-	Kit.tween(wash, 0.3, { BackgroundTransparency = 0.9 - 0.022 * rank })
+	Kit.tween(wash, 0.3, { BackgroundTransparency = 1 - J.Wash[rank] })
 
 	-- The stage sits a little lower while the tutorial card holds the top centre.
 	local topCard = screen:GetAttribute("TopCardHeight")
 	local shift = if type(topCard) == "number" and screen:GetAttribute("Compact") ~= true then math.min(topCard / 2, 40) else 0
+	-- ...and a little lower under a larger unit, so the label above it has somewhere to go.
+	shift = math.max(shift, math.min(heroUp * 0.4, J.StageDrop))
 	local stage = Kit.new("Frame", {
 		Name = "Stage",
 		BackgroundTransparency = 1,
@@ -1879,26 +2421,44 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		pool.Position = UDim2.new(0.5, 0, 0, heroY + 70)
 		table.insert(lights, pool)
 	end
-	local rays = Popups.rays(stage, Kit.lighten(color, 0.12), 640 + rank * 28, heroAt, 1, 6 + rank)
+	local rays = Popups.rays(stage, Kit.lighten(color, 0.12), J.RaySize[rank], heroAt, 1, J.RayCount[rank])
+	Popups.spinRays(rays, J.RaySpin[rank])
 	Kit.appear(rays, { from = 0.3, time = 0.5, style = Enum.EasingStyle.Quart })
 	table.insert(lights, rays)
 	if isNew then
 		-- A lighter counter-layer turning the other way for a fresh discovery (white from Epic).
-		local inner = Popups.rays(stage, if rank >= 4 then WHITE else Kit.lighten(color, 0.6), 470, heroAt, 1, 9, true)
+		local inner = Popups.rays(stage, if rank >= 4 then WHITE else Kit.lighten(color, 0.6), J.InnerRaySize[rank], heroAt, 1, 9, true)
 		Kit.appear(inner, { from = 0.3, time = 0.55, style = Enum.EasingStyle.Quart })
 		table.insert(lights, inner)
 	end
-	local glow = softDot(stage, "Glow", Kit.lighten(color, 0.2), UDim2.fromOffset(heroSize * 1.45, heroSize * 1.45), 0.3, 2)
+	local glowSize = heroSize * heroScale * J.Glow
+	local glow = softDot(stage, "Glow", Kit.lighten(color, 0.2), UDim2.fromOffset(glowSize, glowSize), 0.3, 2)
 	glow.Position = heroAt
 	Kit.appear(glow, { from = 0.4, time = 0.4 })
 	table.insert(lights, glow)
+	-- What the band adds behind the unit: ground light, beams, the flash, confetti, crowns.
+	Popups.revealExtras({
+		root = root,
+		stage = stage,
+		heroAt = heroAt,
+		heroY = heroY,
+		heroSize = heroSize,
+		scale = heroScale,
+		color = color,
+		rank = rank,
+		tier = tier,
+		isNew = isNew,
+		calm = calm,
+		lights = lights,
+	})
 
-	-- The unit: frameless, popping in with an overshoot.
+	-- The unit: frameless, popping in with an overshoot; larger than its box for a rarer
+	-- band, and the text under it keeps its place.
 	local hero = Kit.new("Frame", {
 		Name = "Hero",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(heroSize, heroSize),
-		Position = heroAt,
+		Size = UDim2.fromOffset(heroSize * heroScale, heroSize * heroScale),
+		Position = heroAt - UDim2.fromOffset(0, heroGrow * J.HeroLift),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 3,
 		Parent = stage,
@@ -1925,7 +2485,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 4,
 		Parent = stage,
 	})
-	sparkles(twinkle, Kit.lighten(color, 0.4), 5 + rank * 2, heroSize * 0.5, calm)
+	sparkles(twinkle, Kit.lighten(color, 0.4), J.Sparkles[rank], heroSize * heroScale * 0.5, calm)
 	Kit.appear(twinkle, { from = 0.5, time = 0.4, delay = 0.1 })
 	table.insert(lights, twinkle)
 
@@ -1963,41 +2523,14 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 				end)
 			end)
 		end
-		-- Epic and up land with a second bump, and a short white flash over the screen.
+		-- Epic and up land with a second bump (the white flash is Popups.revealExtras').
 		if rank >= 4 then
 			task.delay(0.5 + 0.02 * rank, function()
 				if hero.Parent then
 					Kit.pop(hero, 0.3 * (rank - 2))
 				end
 			end)
-			if isNew then
-				local flash = Kit.new("Frame", {
-					Name = "Flash",
-					BackgroundColor3 = WHITE,
-					BackgroundTransparency = 0.5 - 0.06 * (rank - 4),
-					BorderSizePixel = 0,
-					Size = UDim2.new(3, 0, 1, 400),
-					Position = UDim2.fromScale(0.5, 0.5),
-					AnchorPoint = Vector2.new(0.5, 0.5),
-					ZIndex = 9,
-					Parent = root,
-				})
-				Kit.tween(flash, 0.3 + 0.05 * (rank - 4), { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad)
-				task.delay(0.45, function()
-					flash:Destroy()
-				end)
-			end
 		end
-	end
-	if isNew and not calm then
-		-- Confetti in the band's colour (its shades and white), more of it for rarer bands.
-		Kit.confetti(stage, {
-			Origin = heroAt,
-			Count = 12 + rank * 5,
-			ZIndex = 4,
-			Colors = { color, Kit.lighten(color, 0.35), WHITE, color, Kit.darken(color, 0.18), Kit.lighten(color, 0.6) },
-			Power = 0.95 + 0.08 * rank,
-		})
 	end
 
 	if isNew then
@@ -2083,6 +2616,8 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 			StrokeColor = Theme.Glass.TextInk,
 			StrokeThickness = 3,
 			Size = UDim2.new(1, 0, 0, bannerSize + 6),
+			-- A larger unit reaches up here: the label makes room as far as the screen has it.
+			Position = UDim2.fromOffset(0, -math.min(heroUp, J.LabelLift)),
 			ZIndex = 5,
 		}))
 	end)
@@ -2102,20 +2637,29 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		-- rarity: a pale colour with little hue of its own (Common's grey) goes most of the
 		-- way to white, and every name wears a thick ink outline over the dark plate.
 		local _, saturation = color:ToHSV()
-		arrive(Kit.hudText(stage, {
-			Name = "UnitName",
-			Text = string.upper(Theme.Tiers[tier].Name),
-			TextSize = nameSize,
-			TextScaled = true,
-			MaxTextSize = nameSize,
-			TextColor3 = Kit.lighten(color, if saturation < 0.25 then 0.7 else 0.2),
-			StrokeColor = Theme.Glass.TextInk,
-			Size = UDim2.new(1, -40, 0, nameSize + 6),
-			Position = UDim2.fromOffset(20, nameY),
-			StrokeThickness = 4,
-			ZIndex = 5,
-		}))
-		sounds.play("Tick", 0.02, 1.2)
+		local unitName = string.upper(Theme.Tiers[tier].Name)
+		if tier == Economy.MAX_TIER and not calm and not PREVIEW then
+			-- The top tier's name is stamped in, a gold letter at a time (with its own ticks).
+			arrive(Popups.stampName(stage, unitName, nameSize, nameY))
+		else
+			arrive(Kit.hudText(stage, {
+				Name = "UnitName",
+				Text = unitName,
+				TextSize = nameSize,
+				TextScaled = true,
+				MaxTextSize = nameSize,
+				TextColor3 = Kit.lighten(color, if saturation < 0.25 then 0.7 else 0.2),
+				StrokeColor = Theme.Glass.TextInk,
+				Size = UDim2.new(1, -40, 0, nameSize + 6),
+				Position = UDim2.fromOffset(20, nameY),
+				StrokeThickness = 4,
+				ZIndex = 5,
+			}))
+			sounds.play("Tick", 0.02, 1.2)
+		end
+		if rank >= J.SweepFrom and not calm and not PREVIEW then
+			table.insert(lines, Popups.nameSweep(stage, nameY, nameSize))
+		end
 	end)
 	if gain then
 		-- What the action added to the aura made per second, counting up.
@@ -2352,7 +2896,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	end
 	-- Any tap, click, B or Escape continues, but never before the unit has popped in.
 	local function dismiss()
-		local wait = REVEAL_MIN - (os.clock() - startedAt)
+		local wait = REVEAL_MIN + J.MinExtra[rank] - (os.clock() - startedAt)
 		if wait > 0 then
 			task.delay(wait, leave)
 		else
@@ -2398,14 +2942,18 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 
 	if not PREVIEW then
 		local tutorial = data ~= nil and data.tutorialDone ~= true
-		local hold = if chained then REVEAL_CHAIN elseif isNew then REVEAL_IDLE else (if tutorial then REVEAL_HOLD_TUTORIAL else REVEAL_HOLD)
+		-- Legendary and Mythic cards hold a little longer (J.HoldExtra), also with a card waiting.
+		local holdExtra: number = J.HoldExtra[rank]
+		local hold = (
+			if chained then REVEAL_CHAIN elseif isNew then REVEAL_IDLE else (if tutorial then REVEAL_HOLD_TUTORIAL else REVEAL_HOLD)
+		) + holdExtra
 		task.delay(hold, leave)
 		-- The long hold is for the last card only: once something waits in the queue (the
 		-- tutorial's "YOU DID IT!", a finish card, the next reveal) this one makes room.
 		if hold > REVEAL_QUEUED then
 			task.spawn(function()
 				while not closed and root.Parent do
-					if #queue > 0 and os.clock() - startedAt >= REVEAL_QUEUED then
+					if #queue > 0 and os.clock() - startedAt >= REVEAL_QUEUED + holdExtra then
 						leave()
 						return
 					end
@@ -2495,13 +3043,192 @@ local function revealChain(reward: { [string]: any }, done: () -> ())
 	show(1)
 end
 
--- Crate reveal: rising shakes (more for rarer crates, with a halo and a soft
--- tint building up), a burst (white ring, rays, confetti; a held breath before
--- Legendary+), a quick roll through the possible units, then the unit reveal.
--- 1.5-3 s; tap to skip.
+--[[
+	Waits for Fx.Crates' 3D burst of the crate that just opened, at most
+	JUICE.Crate.BurstWait seconds (it yields), so the 2D reveal's veil does not cover it;
+	true when a burst was seen. Fx.Crates is another stream's module, read defensively. Any
+	of these is understood, and with none of them there is no wait at all:
+	  Crates.burstAt             os.clock() of the last burst (one from just before counts)
+	  Crates.waitBurst(seconds)  yields until the burst or the timeout
+	  Crates.burst (or a name in JUICE.Crate.BurstSignals)   a BindableEvent or a signal
+	Not waited for behind an open window: the Smasher is out of sight there.
+]]
+function Popups.awaitCrateBurst(reward: { [string]: any }): boolean
+	local J = Popups.JUICE.Crate
+	if screen:GetAttribute("WindowOpen") == true then
+		return false
+	end
+	local fx: any = nil
+	pcall(function()
+		local folder = script.Parent.Parent:FindFirstChild("Fx")
+		local module = folder and folder:FindFirstChild("Crates")
+		if module and module:IsA("ModuleScript") then
+			fx = require(module) :: any
+		end
+	end)
+	if type(fx) ~= "table" then
+		return false
+	end
+	local from = (if type(reward._at) == "number" then reward._at else os.clock()) - J.BurstLead
+	local function burstSeen(): boolean
+		return type(fx.burstAt) == "number" and fx.burstAt >= from
+	end
+	if burstSeen() then
+		return true
+	end
+	if type(fx.waitBurst) == "function" then
+		local ok, seen = pcall(fx.waitBurst, J.BurstWait)
+		return burstSeen() or (ok and seen ~= false)
+	end
+	local signal: any = nil
+	for _, name in J.BurstSignals do
+		local exposed = fx[name]
+		if typeof(exposed) == "Instance" and exposed:IsA("BindableEvent") then
+			signal = exposed.Event
+		elseif typeof(exposed) == "RBXScriptSignal" then
+			signal = exposed
+		end
+		if signal then
+			break
+		end
+	end
+	if not signal and type(fx.burstAt) ~= "number" then
+		return false
+	end
+	local fired = false
+	local connection: RBXScriptConnection? = if signal
+		then signal:Connect(function()
+			fired = true
+		end)
+		else nil
+	local waited = 0
+	while not fired and not burstSeen() and waited < J.BurstWait do
+		waited += task.wait(0.03)
+	end
+	if connection then
+		connection:Disconnect()
+	end
+	return fired or burstSeen()
+end
+
+--[[
+	The crate's own moment: "LEGENDARY CRATE!" in the rarity's colour over the crate reveal.
+	It slams in from JUICE.Crate.SlamFrom times its size, shakes (harder for a rarer
+	crate), and a ring and confetti in its colour burst from behind it. Returns the banner
+	(a child of the reveal's holder: it leaves with it).
+]]
+function Popups.crateBanner(holder: Frame, rarity: string, color: Color3, rank: number): Frame
+	local J = Popups.JUICE.Crate
+	local calm = reducedMotion()
+	local text = string.upper(rarity .. " " .. W.Chest) .. "!"
+	local size = Kit.px(J.TextPx, J.TextSize[rank] or J.TextSize[1], screen)
+	local at = UDim2.new(0.5, 0, 0, J.Y)
+	local banner = Kit.new("Frame", {
+		Name = "CrateBanner",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(J.Width, size + 16),
+		Position = at,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 5,
+		Parent = holder,
+	})
+	-- A soft dark plate so the colour holds over the plot, and the ring that bursts from it.
+	softDot(banner, "Plate", VEIL, UDim2.fromOffset(displayWidth(text, size) + 280, (size + 16) * 2.3), 1 - J.PlateAlpha, 5)
+	local _, saturation = color:ToHSV()
+	Kit.hudText(banner, {
+		Name = "Text",
+		Text = text,
+		TextSize = size,
+		TextScaled = true,
+		MaxTextSize = size,
+		TextColor3 = Kit.lighten(color, if saturation < 0.25 then 0.7 else 0.2),
+		StrokeColor = Theme.Glass.TextInk,
+		StrokeThickness = 5,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 6,
+	})
+	if calm then
+		Kit.appear(banner, { from = 0.9, time = 0.25 })
+		return banner
+	end
+	Kit.appear(banner, { from = J.SlamFrom, time = J.SlamTime })
+	task.delay(J.SlamTime * 0.6, function()
+		if not banner.Parent then
+			return
+		end
+		-- Landed: the burst behind it, then the shake dying away.
+		local reach: number = J.Ring[rank] or J.Ring[1]
+		if RING then
+			local ring = Kit.new("ImageLabel", {
+				Name = "Burst",
+				BackgroundTransparency = 1,
+				Image = RING,
+				ImageColor3 = Kit.lighten(color, 0.45),
+				ImageTransparency = 0.05,
+				Size = UDim2.fromOffset(reach * 0.5, reach * 0.2),
+				Position = at,
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = 4,
+				Parent = holder,
+			})
+			Kit.tween(ring, 0.5, { Size = UDim2.fromOffset(reach * 2.4, reach), ImageTransparency = 1 }, Enum.EasingStyle.Quart)
+			task.delay(0.55, function()
+				ring:Destroy()
+			end)
+		end
+		local pieces: number = J.Confetti[rank] or 0
+		if pieces > 0 then
+			Kit.confetti(holder, {
+				Origin = at,
+				Count = pieces,
+				ZIndex = 4,
+				Colors = { color, Kit.lighten(color, 0.4), WHITE, Kit.darken(color, 0.15) },
+				Power = 0.9 + rank * 0.08,
+			})
+		end
+		local amp: number = J.Shake[rank] or J.Shake[1]
+		local shaken = 0
+		while banner.Parent and shaken < J.ShakeTime do
+			local k = 1 - shaken / J.ShakeTime
+			banner.Rotation = (math.random() - 0.5) * 2 * amp * k
+			banner.Position = at + UDim2.fromOffset((math.random() - 0.5) * 2 * amp * k, (math.random() - 0.5) * amp * k)
+			shaken += task.wait(0.03)
+		end
+		if banner.Parent then
+			banner.Rotation = 0
+			banner.Position = at
+		end
+	end)
+	return banner
+end
+
+-- Crate reveal: the crate's rarity banner (Popups.crateBanner), rising shakes (more for
+-- rarer crates, with a halo and a soft tint building up), a burst (white ring, rays,
+-- confetti; a held breath before Legendary+), a quick roll through the possible units,
+-- then the unit reveal. 1.5-3 s; tap to skip. It starts after Fx.Crates' 3D burst when
+-- that module tells of one (Popups.awaitCrateBurst, at most 0.8 s), and then plays fewer
+-- of its own shakes.
 local function crateReveal(reward: { [string]: any }, done: () -> ())
 	if PREVIEW then
 		revealChain(reward, done)
+		return
+	end
+	if reward._burst == nil then
+		-- First the 3D burst on the Smasher, uncovered (no wait when Fx.Crates tells of none).
+		reward._burst = false
+		task.spawn(function()
+			local seen, burst = pcall(Popups.awaitCrateBurst, reward)
+			reward._burst = seen and burst == true
+			local ok, err = pcall(crateReveal, reward, done)
+			if not ok then
+				warn("[Popups] crate reveal failed: " .. tostring(err))
+				local stale = screen:FindFirstChild("CrateReveal")
+				if stale then
+					stale:Destroy()
+				end
+				done()
+			end
+		end)
 		return
 	end
 	local rarity = reward.crateRarity or Economy.tierBand(reward.tier)
@@ -2555,6 +3282,7 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 	})
 	local crateScale = Kit.new("UIScale", { Parent = crate })
 	Kit.appear(crate, { from = 0.4, time = 0.3 })
+	local crateBanner = Popups.crateBanner(holder, rarity, color, rank)
 	local rarityPill = Kit.pill(holder, {
 		Name = "Rarity",
 		Text = string.upper(rarity .. " " .. W.Chest),
@@ -2614,7 +3342,11 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 
 	task.spawn(function()
 		-- Rising shakes: 2 for Common up to 6 for Legendary/Mythic.
+		-- (Fewer after the crate was seen shaking and bursting on the Smasher.)
 		local shakes = math.min(rank + 1, 6)
+		if reward._burst == true then
+			shakes = math.min(shakes, Popups.JUICE.Crate.ShakesAfterBurst)
+		end
 		for i = 1, shakes do
 			local k = i / shakes
 			if pause(math.max(0.24 - i * 0.02, 0.13)) then
@@ -2681,6 +3413,7 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 			Kit.appear(inner, { from = 0.2, time = 0.45, style = Enum.EasingStyle.Quart })
 		end
 		Kit.pop(holder, 0.15 + 0.05 * rank)
+		Kit.pop(crateBanner, 1 + 0.25 * rank)
 		Kit.confetti(holder, {
 			Origin = UDim2.fromScale(0.5, 0.5),
 			Count = 12 + rank * 8,
@@ -4092,8 +4825,8 @@ local SMASHER_ARROW = 30
 	header, the odds (rarity-dot rows; bars fill), then the ways to open it, the free
 	one first. A gold "Carry it to the Crate Smasher / FREE" button with the Smasher's
 	timer for this rarity leads (tapping it points the guide arrow at the Smasher); the
-	paid "Open now" is a small neutral button under it, the Crate Master pass a quiet
-	text link, and at the bottom, well apart, sits a red Discard button (Rare and better
+	paid "Open now" is a small neutral button under it, the Crate Master pass a second
+	neutral button ("Open every crate free", 14 px or more), and at the bottom, well apart, sits a red Discard button (Rare and better
 	ask first, with Popups.confirm). A Crate Master owner opens free, so for them "Open
 	now" is the gold button and comes first. The card is solid (the world never shows
 	through it), PANEL_W wide and as tall as its rows. It never shows while the tutorial
@@ -4249,8 +4982,8 @@ local function buildChestPanel()
 	})
 
 	-- Instant open: free for Crate Master owners ("owner"); otherwise one developer
-	-- product (same price for every rarity) with the Crate Master pass as a quiet text
-	-- link under it ("buy"). Both purchases are hidden where paid random items are not
+	-- product (same price for every rarity) with the Crate Master pass as a second button
+	-- under it ("buy"). Both purchases are hidden where paid random items are not
 	-- allowed ("none"). For a buyer it is the small neutral button under the free route.
 	local crateOpen = Theme.Monetization.CrateOpen
 	local crateKey = Theme.Monetization.Passes.CrateKey
@@ -4278,76 +5011,35 @@ local function buildChestPanel()
 		ZIndex = 6,
 		Visible = false,
 	})
-	-- Quiet text link: the pass that opens every crate free.
-	local function textLink(
-		name: string,
-		text: string,
-		color: Color3,
-		hover: Color3,
-		y: number,
-		width: number,
-		onClick: () -> ()
-	): TextButton
-		local link = Kit.new("TextButton", {
-			Name = name,
-			BackgroundTransparency = 1,
-			AutoButtonColor = false,
-			RichText = true,
-			Text = "<u>" .. text .. "</u>",
+	-- The pass that opens every crate free: a real button (it was an 11 px text link), two
+	-- lines at JUICE.Pass.TextSize or more on the neutral face of "Open now", so the gold
+	-- free route above still leads.
+	local PASS_H: number = Popups.JUICE.Pass.Height
+	local passLink = Kit.button(panel, {
+		Name = "BuyCrateMaster",
+		Text = "",
+		Color = C.SurfaceHi,
+		Size = UDim2.new(1, -EDGE * 2, 0, PASS_H),
+		Position = UDim2.fromOffset(EDGE, ODDS_Y),
+	}, function()
+		action:FireServer({ action = "PromptPass", name = "CrateKey" })
+	end)
+	local passFace: Instance = Kit.buttonFace(passLink) or passLink
+	local passLines: { TextLabel } = {}
+	for i, line in { "Open every crate free", crateKey.Title .. "  " .. Kit.ROBUX .. " " .. crateKey.Price } do
+		passLines[i] = Kit.text(passFace, {
+			Name = if i == 1 then "Route" else "Price",
+			Text = line,
 			Font = Theme.Fonts.UI,
-			TextSize = T.Small,
-			TextWrapped = true,
-			TextColor3 = color,
-			Size = UDim2.fromOffset(width, 30),
-			Position = UDim2.new(0.5, 0, 0, y),
-			AnchorPoint = Vector2.new(0.5, 0),
-			Parent = panel,
+			TextSize = Popups.JUICE.Pass.TextSize,
+			TextWrapped = false,
+			TextColor3 = Kit.inkOn(C.SurfaceHi),
+			Size = UDim2.new(1, -12, 0.5, -3),
+			Position = UDim2.new(0, 6, (i - 1) * 0.5, if i == 1 then 3 else 0),
+			StrokeThickness = 0,
+			ZIndex = 2,
 		})
-		Kit.bouncy(link, 1.04)
-		local function lit(on: boolean)
-			Kit.tween(link, 0.12, { TextColor3 = if on then hover else color })
-		end
-		link.MouseEnter:Connect(function()
-			lit(true)
-		end)
-		link.MouseLeave:Connect(function()
-			lit(false)
-		end)
-		link.SelectionGained:Connect(function()
-			lit(true)
-		end)
-		link.SelectionLost:Connect(function()
-			lit(false)
-		end)
-		link.Activated:Connect(onClick)
-		-- The link reads 30 px tall; its tap area is 44 (an invisible strip over it).
-		local hit = Kit.new("TextButton", {
-			Name = "Hit",
-			BackgroundTransparency = 1,
-			AutoButtonColor = false,
-			Selectable = false,
-			Text = "",
-			Size = UDim2.new(1, 0, 0, 44),
-			Position = UDim2.fromScale(0.5, 0.5),
-			AnchorPoint = Vector2.new(0.5, 0.5),
-			ZIndex = link.ZIndex + 1,
-			Parent = link,
-		})
-		hit.Activated:Connect(onClick)
-		return link
 	end
-	local passLink = textLink(
-		"BuyCrateMaster",
-		"Open every crate free  " .. Kit.ROBUX .. " " .. crateKey.Price,
-		C.TextDim,
-		C.GoldLight,
-		ODDS_Y,
-		PANEL_W - EDGE * 3,
-		function()
-			Kit.sound("Click")
-			action:FireServer({ action = "PromptPass", name = "CrateKey" })
-		end
-	)
 	-- Discard: a red button at the bottom of the card, DISCARD_GAP below the rows above it.
 	-- A Common or Uncommon crate goes at once; Rare and better ask first (the same confirm
 	-- card as the Smasher's "Smash it now"), so one stray tap never throws away a good crate.
@@ -4383,7 +5075,7 @@ local function buildChestPanel()
 	end)
 
 	-- Lays the rows out under the odds for the current mode: the free route, the open
-	-- button (the other way round for a Crate Master owner), the pass link (buy only),
+	-- button (the other way round for a Crate Master owner), the pass button (buy only),
 	-- Discard; the card ends under Discard. Small text holds its size on the glass.
 	local function arrange(animate: boolean)
 		local hasButton = mode ~= "none"
@@ -4404,12 +5096,12 @@ local function buildChestPanel()
 		openButton.Position = UDim2.fromOffset(EDGE, openY)
 		masterTag.Position = UDim2.fromOffset(PANEL_W - 4, openY - 10)
 		y += 4
-		local linkH = small * 2 + 8
-		passLink.TextSize = small
-		passLink.Size = UDim2.fromOffset(PANEL_W - EDGE * 3, linkH)
+		for _, line in passLines do
+			line.TextSize = math.max(small, Popups.JUICE.Pass.TextSize)
+		end
 		if mode == "buy" then
-			passLink.Position = UDim2.new(0.5, 0, 0, y)
-			y += linkH
+			passLink.Position = UDim2.fromOffset(EDGE, y + ROW_GAP - 4)
+			y += ROW_GAP - 4 + PASS_H
 		end
 		y += DISCARD_GAP
 		local discardLabel = Kit.buttonLabel(discard)
@@ -4819,17 +5511,240 @@ local function inRun(): boolean
 	return false
 end
 
+-- Banner extras (Popups.JUICE.Banner and .Surge) ---------------------------------------------
+
+--[[
+	A banner asked for while a window, a modal or a reveal is up (attribute "WindowOpen")
+	waits for it to close, so it never sits over one. A newer banner takes its place; after
+	JUICE.Banner.HoldMax seconds, or when opts.Still() says its moment has passed, it is
+	dropped: opts.OnDropped runs, then opts.OnClosed.
+]]
+function Popups.holdBanner(opts: { [string]: any })
+	local J = Popups.JUICE.Banner
+	local function drop()
+		if opts.OnDropped then
+			opts.OnDropped()
+		end
+		if opts.OnClosed then
+			opts.OnClosed()
+		end
+	end
+	Popups.heldBanner = opts
+	task.spawn(function()
+		local waited = 0
+		while Popups.heldBanner == opts and screen:GetAttribute("WindowOpen") == true and waited < J.HoldMax do
+			waited += task.wait(J.Poll)
+		end
+		if Popups.heldBanner ~= opts then
+			drop()
+			return
+		end
+		Popups.heldBanner = nil
+		if screen:GetAttribute("WindowOpen") == true or (opts.Still and not opts.Still()) then
+			drop()
+			return
+		end
+		opts._held = true
+		Popups.banner(opts)
+	end)
+end
+
+-- The banner's entrance: the line slides in from the left, runs past the middle and
+-- settles (Back), the band opens from a line, and a slanted bar of light crosses it once.
+function Popups.bannerEntrance(holder: Frame, band: Frame)
+	local J = Popups.JUICE.Banner
+	if PREVIEW or reducedMotion() then
+		Kit.appear(holder, { from = 0.6, time = 0.32 })
+		return
+	end
+	Kit.appear(holder, { from = 1, time = 0.2 })
+	local rest = holder.Position
+	holder.Position = UDim2.new(J.SlideFrom, rest.X.Offset, rest.Y.Scale, rest.Y.Offset)
+	Kit.tween(holder, J.SlideTime, { Position = rest }, Enum.EasingStyle.Back)
+	local open = band.Size
+	band.Size = UDim2.new(open.X.Scale, open.X.Offset, 0, 0)
+	Kit.tween(band, J.BandTime, { Size = open }, Enum.EasingStyle.Back)
+	-- The shine: clipped to the band (three screens wide, the screen is its middle third).
+	local clip = Kit.new("Frame", {
+		Name = "Shine",
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+		Size = open,
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 29,
+		Parent = holder,
+	})
+	local bar = Kit.new("Frame", {
+		Name = "Bar",
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+		Size = UDim2.new(0, J.ShineWidth, 1, 0),
+		Position = UDim2.fromScale(0.3, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 29,
+		Parent = clip,
+	})
+	Kit.new("UIGradient", {
+		Rotation = 20,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1),
+			NumberSequenceKeypoint.new(0.5, 1 - J.ShineAlpha),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+		Parent = bar,
+	})
+	tweenAfter(bar, J.ShineTime, J.ShineAt, { Position = UDim2.fromScale(0.7, 0) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+	task.delay(J.ShineAt + J.ShineTime + 0.05, function()
+		clip:Destroy()
+	end)
+end
+
+-- Coins bursting up and out of `at` (the banner's reward chip), then falling away.
+function Popups.coinBurst(holder: Frame, at: UDim2, zindex: number)
+	local J = Popups.JUICE.Banner
+	for _ = 1, J.BurstCoins do
+		local coin = moneyPiece(holder, false, zindex)
+		coin.Position = at
+		local angle = math.rad(math.random(200, 340))
+		local reach = J.BurstReach * (0.5 + math.random() * 0.6)
+		local peak = at + UDim2.fromOffset(math.cos(angle) * reach, math.sin(angle) * reach)
+		Kit.tween(coin, 0.3, { Position = peak, Rotation = math.random(-90, 90) }, Enum.EasingStyle.Quad)
+		task.delay(0.3, function()
+			if not coin.Parent then
+				return
+			end
+			Kit.tween(
+				coin,
+				0.55,
+				{ Position = peak + UDim2.fromOffset(math.cos(angle) * reach * 0.4, 420) },
+				Enum.EasingStyle.Quad,
+				Enum.EasingDirection.In
+			)
+			if coin:IsA("ImageLabel") then
+				tweenAfter(coin, 0.2, 0.35, { ImageTransparency = 1 })
+			end
+			task.delay(0.57, function()
+				coin:Destroy()
+			end)
+		end)
+	end
+end
+
+--[[
+	The surge's gold look for a moment: a gold glow in from all four edges of the screen
+	(it pulses, then fades) and coins raining down the whole width. Under the banner, over
+	the HUD; takes no input. Reduced motion keeps the edge, still, and has no rain.
+]]
+function Popups.goldEdge()
+	local J = Popups.JUICE.Surge
+	local old = screen:FindFirstChild("SurgeEdge")
+	if old then
+		old:Destroy()
+	end
+	-- The whole glass, the top bar's strip too when the ScreenGui starts under it.
+	local inset = 0
+	pcall(function()
+		if not screen.IgnoreGuiInset then
+			inset = GuiService:GetGuiInset().Y / Kit.pixelScale(screen)
+		end
+	end)
+	local layer = Kit.new("Frame", {
+		Name = "SurgeEdge",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 1, inset),
+		Position = UDim2.fromOffset(0, -inset),
+		ZIndex = 27,
+		Parent = screen,
+	})
+	local calm = reducedMotion()
+	local glow = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1 - J.EdgeAlpha),
+		NumberSequenceKeypoint.new(0.45, 1 - J.EdgeAlpha * 0.35),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	-- Top, bottom, left, right: each fades from the screen's edge inward.
+	for i, turn in { 90, 270, 0, 180 } do
+		local across = i <= 2
+		local far = i == 2 or i == 4
+		local edge = Kit.new("Frame", {
+			Name = "Edge",
+			BackgroundColor3 = J.Color,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Size = if across then UDim2.fromScale(1, J.EdgeDepth) else UDim2.fromScale(J.EdgeSide, 1),
+			Position = if not far then UDim2.fromScale(0, 0) elseif across then UDim2.fromScale(0, 1) else UDim2.fromScale(1, 0),
+			AnchorPoint = if not far then Vector2.zero elseif across then Vector2.new(0, 1) else Vector2.new(1, 0),
+			ZIndex = 27,
+			Parent = layer,
+		})
+		Kit.new("UIGradient", { Rotation = turn, Transparency = glow, Parent = edge })
+		Kit.tween(edge, J.EdgeIn, { BackgroundTransparency = 0 })
+		if not calm then
+			task.delay(J.EdgeIn, function()
+				if edge.Parent then
+					local info = TweenInfo.new(J.EdgePulse, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+					TweenService:Create(edge, info, { BackgroundTransparency = 0.45 }):Play()
+				end
+			end)
+		end
+		task.delay(J.EdgeIn + J.EdgeHold, function()
+			if edge.Parent then
+				Kit.tween(edge, J.EdgeOut, { BackgroundTransparency = 1 })
+			end
+		end)
+	end
+	task.delay(J.EdgeIn + J.EdgeHold + J.EdgeOut + 0.1, function()
+		layer:Destroy()
+	end)
+	if calm then
+		return
+	end
+	for _ = 1, J.Coins do
+		task.delay(math.random() * J.RainFor, function()
+			if not layer.Parent then
+				return
+			end
+			local coin = moneyPiece(layer, false, 27)
+			local size = math.floor(J.CoinSize * (0.7 + math.random() * 0.6))
+			local x = math.random()
+			local fall = J.FallMin + math.random() * (J.FallMax - J.FallMin)
+			coin.Size = UDim2.fromOffset(size, size)
+			coin.Position = UDim2.new(x, 0, 0, -size)
+			coin.Rotation = math.random(-40, 40)
+			Kit.tween(coin, fall, {
+				Position = UDim2.new(x + (math.random() - 0.5) * 0.08, 0, 1, size),
+				Rotation = coin.Rotation + math.random(-260, 260),
+			}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			task.delay(fall + 0.05, function()
+				coin:Destroy()
+			end)
+		end)
+	end
+end
+
 --[[
 	Popups.banner(opts): a band of colour right across the screen with one big line on it,
-	for a moment that outranks a toast (the surge starting, the tutorial done). It pops in,
-	holds and fades by itself; nothing waits for it and it takes no input. opts:
+	for a moment that outranks a toast (the surge starting, the tutorial done). Its line
+	slides in past the middle and settles, the band opens and shines once
+	(Popups.bannerEntrance); it holds and fades by itself, nothing waits for it and it takes
+	no input. It never opens over a window, a modal or a reveal: it waits for them to close
+	(Popups.holdBanner). opts:
 	  Text      the line                    Color     the band (gold)
 	  Amount    cash counted up on a dark chip under the line
 	  Life      seconds on screen (2)       Confetti  pieces (0), none with reduced motion
-	  Sound     name, Pitch                 OnClosed  runs when it has gone
+	  Sound     name, Pitch                 OnClosed  runs when it has gone (or was dropped)
+	  CoinBurst coins burst from the Amount chip
+	  Edge      the surge's gold screen edge and coin rain (Popups.goldEdge)
+	  Still     () -> boolean: a held banner is dropped when this says false
+	  OnDropped runs when a held banner is dropped
 ]]
 local BANNER_Y = 0.34
 function Popups.banner(opts: { [string]: any })
+	if not PREVIEW and not opts._held and screen:GetAttribute("WindowOpen") == true then
+		Popups.holdBanner(opts)
+		return
+	end
 	local color: Color3 = opts.Color or C.Gold
 	local life: number = opts.Life or 2
 	local amount: number? = if type(opts.Amount) == "number" then opts.Amount else nil
@@ -4921,8 +5836,19 @@ function Popups.banner(opts: { [string]: any })
 				end, 0.8)
 			end
 		end)
+		if opts.CoinBurst and not PREVIEW and not reducedMotion() then
+			-- As the line settles: coins out of the chip, in front of the band.
+			task.delay(Popups.JUICE.Banner.SlideTime, function()
+				if holder.Parent then
+					Popups.coinBurst(holder, UDim2.new(0.5, 0, 0, 22 + titleSize + 14 + chipH / 2), 30)
+				end
+			end)
+		end
 	end
-	Kit.appear(holder, { from = 0.6, time = 0.32 })
+	Popups.bannerEntrance(holder, band)
+	if opts.Edge and not PREVIEW then
+		Popups.goldEdge()
+	end
 	local confetti: number = if reducedMotion() then 0 else (opts.Confetti or 0)
 	if confetti > 0 then
 		-- From both ends of the band and its middle.
@@ -4970,6 +5896,7 @@ function Popups.tutorialDone(cash: number, done: () -> ())
 		Color = C.Gold,
 		Life = 2.5,
 		Confetti = 42,
+		CoinBurst = true,
 		Sound = "Celebrate",
 		OnClosed = done,
 	})
@@ -5222,6 +6149,17 @@ local function surgeBanner()
 		Color = C.Amber,
 		Life = 2,
 		Confetti = 18,
+		Edge = true,
+		-- Held back by an open window (Popups.holdBanner): it still shows once the window
+		-- closes while enough of the surge is left; else the "is on: 0:40 left" toast of
+		-- surgeTick tells it instead (toasts keep clear of windows by themselves).
+		Still = function(): boolean
+			local active, left = Economy.surgeState(Workspace:GetServerTimeNow())
+			return active and left > Popups.JUICE.Surge.MinLeft and not surgeQuiet()
+		end,
+		OnDropped = function()
+			surgeToldUntil = -math.huge
+		end,
 	})
 end
 

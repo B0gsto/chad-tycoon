@@ -233,7 +233,8 @@ if RunService:IsStudio() and Cutscene then
 	end)
 end
 -- Studio-only capture hook: "UiPreview" = "<WindowName>", "Shop,<focus>", "close", "starter",
--- "reward,<tier>", "rewards,<from>,<to>" (one reveal per tier), "gift", "surge", "tutorialdone"
+-- "reward,<tier>", "rewards,<from>,<to>" (one reveal per tier), "crate,<Rarity>,<tier>" (the
+-- crate reveal with its rarity banner, then that unit), "gift", "surge", "tutorialdone"
 -- or "away" (the "While you were away" card, with made-up offline cash).
 if RunService:IsStudio() then
 	player:GetAttributeChangedSignal("UiPreview"):Connect(function()
@@ -243,7 +244,11 @@ if RunService:IsStudio() then
 		end
 		local tier = string.match(spec, "^reward,(%d+)$")
 		local from, to = string.match(spec, "^rewards,(%d+),(%d+)$")
-		if tier then
+		local crateRarity, crateTier = string.match(spec, "^crate,(%a+),(%d+)$")
+		if crateRarity then
+			Popups.noteChestOpen(crateRarity)
+			Popups.reward({ kind = "Reward", tier = tonumber(crateTier), tiers = { tonumber(crateTier) }, new = false, source = "unlock" })
+		elseif tier then
 			-- The production pair is made up here: the "+X Aura/sec" line needs a gain to show.
 			Popups.reward({
 				kind = "Reward",
