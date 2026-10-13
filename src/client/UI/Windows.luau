@@ -2839,43 +2839,104 @@ local function buildIndex(screen: ScreenGui)
 	local window = Kit.window(screen, "Index", "Index", I.Index, C.Window.Index, Vector2.new(880, 560), Vector2.new(560, 386))
 	register("Index", window)
 
-	-- Discovered count: a compact bar in the header row, left of the close button.
-	local _, setProgress, progressLabel = Kit.progress(window.header, {
+	-- Discovered count: a bar in the header row, left of the close button. It turns gold
+	-- once every tier is found.
+	local progress, setProgress, progressLabel = Kit.progress(window.header, {
 		Name = "Found",
 		Glass = true,
 		Color = C.Window.Index,
-		Size = UDim2.fromOffset(210, 28),
+		Size = UDim2.fromOffset(250, 32),
 		Position = UDim2.new(1, -62, 0.5, -1),
 		AnchorPoint = Vector2.new(1, 0.5),
-		TextSize = T.Small,
+		TextSize = T.Body,
 		MinFill = 0.08,
 	})
 	local function foundText(n: number): string
-		return string.format("%d / %d FOUND", n, Economy.MAX_TIER)
+		return if n >= Economy.MAX_TIER
+			then string.format("ALL %d FOUND!", Economy.MAX_TIER)
+			else string.format("%d / %d FOUND", n, Economy.MAX_TIER)
+	end
+	local function paintBar(bar: Frame, color: Color3)
+		local fill = bar:FindFirstChild("Fill")
+		local gradient = fill and fill:FindFirstChildOfClass("UIGradient")
+		if gradient then
+			gradient.Color = ColorSequence.new(Kit.lighten(color, 0.25), color)
+		end
 	end
 
-	-- Rarity legend: one slim row of tags above the grid.
+	-- The complete state: a gold ribbon over the legend once every tier is found (the
+	-- Index's rewards are claimed elsewhere; this only marks the feat).
+	local COMPLETE_H = 44
+	local complete = Kit.panel(window.content, {
+		Name = "Complete",
+		Color = C.Gold,
+		Size = UDim2.new(1, -14, 0, COMPLETE_H - 8),
+		Radius = Kit.RADIUS.M,
+		Visible = false,
+	})
+	Kit.icon(complete, Kit.pickIcon("Crown", "Star"), 30, C.GoldInk, {
+		Position = UDim2.new(0, 12, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 2,
+	})
+	Kit.title(complete, {
+		Name = "Title",
+		Text = "INDEX COMPLETE!",
+		TextSize = T.H2,
+		MinPx = 16,
+		TextWrapped = false,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.GoldInk,
+		Size = UDim2.new(0.5, -50, 1, 0),
+		Position = UDim2.fromOffset(50, 1),
+		ZIndex = 2,
+	})
+	Kit.text(complete, {
+		Name = "Line",
+		Text = string.format("You found every %s. Legend!", W.Unit),
+		Font = F.UI,
+		TextSize = T.Small,
+		MinPx = true,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		TextColor3 = C.GoldInk,
+		Size = UDim2.new(0.5, -14, 1, 0),
+		Position = UDim2.fromScale(0.5, 0),
+		StrokeThickness = 0,
+		ZIndex = 2,
+	})
+
+	-- Rarity legend: one slim row above the grid, a bar per band that fills with the tiers
+	-- found in it ("RARE 3/5"), so a finished rarity reads as a solid chip of its colour.
+	local LEGEND_H = 34
 	local legend = Kit.new("Frame", {
 		Name = "Legend",
 		BackgroundTransparency = 1,
 		Size = UDim2.new(1, -14, 0, 26),
 		Parent = window.content,
 	})
-	Kit.list(legend, 6, true, Enum.HorizontalAlignment.Left)
+	type BandBar = { name: string, from: number, upTo: number, set: (number) -> (), label: TextLabel, found: number }
+	local bands: { BandBar } = {}
+	local bandCount = #Economy.TIER_BANDS
 	for order, band in Economy.TIER_BANDS do
-		Kit.pill(legend, {
-			Text = string.upper(band.name),
+		local previous = Economy.TIER_BANDS[order - 1]
+		local _, set, label = Kit.progress(legend, {
+			Name = band.name,
+			Glass = true,
 			Color = C.Rarity[band.name],
-			Solid = true,
-			TextSize = 15,
-			MinPx = true,
-			Size = UDim2.fromOffset(0, 24),
-			AutomaticSize = Enum.AutomaticSize.X,
-			LayoutOrder = order,
+			Size = UDim2.new(1 / bandCount, -6, 1, 0),
+			Position = UDim2.fromScale((order - 1) / bandCount, 0),
+			TextSize = T.Small,
+			MinFill = 0.12,
 		})
+		label.TextWrapped = false
+		Kit.holdText(label, Kit.captionPx())
+		bands[order] =
+			{ name = band.name, from = if previous then previous.upTo + 1 else 1, upTo = band.upTo, set = set, label = label, found = -1 }
 	end
 
-	local scroll = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -30), Position = UDim2.fromOffset(0, 30) })
+	local scroll = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -LEGEND_H), Position = UDim2.fromOffset(0, LEGEND_H) })
 	-- The Index has no buttons: on gamepad the grid itself is selected so the stick scrolls it.
 	Kit.selectable(scroll)
 	focusPick.Index = function()
@@ -2896,10 +2957,30 @@ local function buildIndex(screen: ScreenGui)
 	})
 	-- 5 columns at full width, 4 or 3 as the window narrows on small screens; a phone
 	-- always shows 3, so the characters and their names stay big.
+	-- The legend's bars name their band where there is room for it, else only count.
+	local wideLegend = true
+	local function bandText(band: BandBar): string
+		local count = string.format("%d/%d", math.max(band.found, 0), band.upTo - band.from + 1)
+		return if wideLegend then string.upper(band.name) .. " " .. count else count
+	end
+	local isComplete = false
 	local function layoutGrid()
 		local width = window.size().X
 		local columns = if isPhone(screen) then 3 elseif width >= 820 then 5 elseif width >= 680 then 4 else 3
 		grid.CellSize = UDim2.new(1 / columns, -12, 0, CARD_H)
+		wideLegend = width >= 820 and not isPhone(screen)
+		for _, band in bands do
+			band.label.Text = bandText(band)
+		end
+		-- The ribbon takes its row above the legend only while it shows. A short window (a
+		-- phone) gives it the legend's row instead: every bar there is full by then.
+		local folded = isComplete and window.size().Y < 440
+		local top = (if isComplete then COMPLETE_H else 0) + (if folded then 0 else LEGEND_H)
+		complete.Visible = isComplete
+		legend.Visible = not folded
+		legend.Position = UDim2.fromOffset(0, if isComplete then COMPLETE_H else 0)
+		scroll.Position = UDim2.fromOffset(0, top)
+		scroll.Size = UDim2.new(1, 0, 1, -top)
 	end
 	layoutGrid()
 	window.onResize.Event:Connect(layoutGrid)
@@ -2932,21 +3013,27 @@ local function buildIndex(screen: ScreenGui)
 		local band = Economy.tierBand(tier)
 		local rarity = C.Rarity[band]
 		local known = discoveredAt > 0
-		-- Found: a raised card with a rarity outline. Unknown: the plain dark card.
+		-- Found: a card of glass in its rarity's colour with a bold outline of it. Unknown:
+		-- the plain dark card, so the page fills with colour as the Index does.
 		if known then
-			Kit.paintGlass(frame, nil, Theme.Glass.SurfaceHi, rarity)
+			Kit.paintGlass(frame, rarity, Theme.Glass.SurfaceHi, rarity)
 		else
 			Kit.paintGlass(frame)
+		end
+		local edge = frame:FindFirstChildOfClass("UIStroke")
+		if edge then
+			edge.Thickness = if known then 2.5 else 1.5
 		end
 
 		Kit.number(frame, {
 			Name = "Tier",
 			Text = "#" .. tier,
 			TextSize = T.Small,
+			MinPx = true,
 			Size = UDim2.new(0, 44, 0, 24),
 			Position = UDim2.fromOffset(12, 8),
 			TextXAlignment = Enum.TextXAlignment.Left,
-			TextColor3 = if known then C.TextDim else C.TextMute,
+			TextColor3 = if known then C.Text else C.TextMute,
 		})
 		-- Name under the character: 14 px, up to two lines (never scaled down).
 		Kit.text(frame, {
@@ -2954,6 +3041,7 @@ local function buildIndex(screen: ScreenGui)
 			Text = if known then string.upper(Theme.Tiers[tier].Name) else "???",
 			Font = F.UI,
 			TextSize = T.Small,
+			MinPx = true,
 			TextWrapped = true,
 			Size = UDim2.new(1, -16, 0, 36),
 			Position = UDim2.new(0, 8, 1, -70),
@@ -2964,8 +3052,8 @@ local function buildIndex(screen: ScreenGui)
 			-- Soft rarity-tinted spot behind the character.
 			local spot = Kit.new("Frame", {
 				Name = "Spot",
-				BackgroundColor3 = rarity,
-				BackgroundTransparency = 0.78,
+				BackgroundColor3 = Kit.lighten(rarity, 0.3),
+				BackgroundTransparency = 0.72,
 				Size = UDim2.new(1, -40, 1, -40),
 				Position = UDim2.new(0.5, 0, 0, 86),
 				AnchorPoint = Vector2.new(0.5, 0.5),
@@ -2995,15 +3083,17 @@ local function buildIndex(screen: ScreenGui)
 				ZIndex = 3,
 			})
 		else
+			-- Still to find: its rarity in a pale wash of that rarity's colour.
 			Kit.text(frame, {
 				Name = "Footer",
 				Text = string.upper(band),
 				Font = F.UI,
 				TextSize = T.Small,
+				MinPx = true,
 				TextWrapped = false,
 				Size = UDim2.new(1, -16, 0, 24),
 				Position = UDim2.new(0, 8, 1, -32),
-				TextColor3 = SMALL_TEXT,
+				TextColor3 = SMALL_TEXT:Lerp(rarity, 0.45),
 			})
 		end
 		if isNew then
@@ -3034,6 +3124,20 @@ local function buildIndex(screen: ScreenGui)
 
 	local found = 0
 	local prebuilt = false
+	-- The ribbon's entrance has played (once per session, the first time it is seen).
+	local celebrated = false
+	local function celebrate()
+		if celebrated or PREVIEW or not isComplete then
+			return
+		end
+		celebrated = true
+		task.delay(0.35, function()
+			if window.isOpen() then
+				sparkle(complete)
+				Kit.pop(progress, 0.5)
+			end
+		end)
+	end
 	local function refresh(force: boolean?)
 		local data = State.data
 		if not data or not (force or window.isOpen()) then
@@ -3051,6 +3155,20 @@ local function buildIndex(screen: ScreenGui)
 			local isNew = at > 0 and at >= (sessionStart :: number) and not seen[tier]
 			fillCard(tier, at, isNew)
 		end
+		-- Per rarity: the bar of each band fills with the tiers found in it.
+		for _, band in bands do
+			local inBand = 0
+			for tier = band.from, band.upTo do
+				if (data.discovered[tier] or 0) > 0 then
+					inBand += 1
+				end
+			end
+			if inBand ~= band.found then
+				band.found = inBand
+				band.label.Text = bandText(band)
+				band.set(inBand / (band.upTo - band.from + 1))
+			end
+		end
 		if count ~= found and window.isOpen() then
 			Kit.countTo(progressLabel, found, count, foundText)
 		elseif count ~= found or progressLabel.Text == "" then
@@ -3058,6 +3176,16 @@ local function buildIndex(screen: ScreenGui)
 		end
 		found = count
 		setProgress(count / Economy.MAX_TIER)
+		local done = count >= Economy.MAX_TIER
+		if done ~= isComplete then
+			isComplete = done
+			paintBar(progress, if done then C.Gold else C.Window.Index)
+			layoutGrid()
+			-- The last tier found with the Index open: the ribbon lands at once.
+			if window.isOpen() then
+				celebrate()
+			end
+		end
 	end
 	State.changed.Event:Connect(function()
 		refresh()
@@ -3069,6 +3197,7 @@ local function buildIndex(screen: ScreenGui)
 		-- The bar refills from empty each time the Index opens.
 		setProgress(0, true)
 		setProgress(found / Economy.MAX_TIER)
+		celebrate()
 		-- First look at tiers discovered since the last visit: sparkle once,
 		-- right after the card has rippled in.
 		local data = State.data
@@ -3136,6 +3265,26 @@ type RowLabels = { rank: TextLabel, chip: Frame, value: TextLabel, extra: TextLa
 -- Boards: total units (the original board) and the sky obby's highest stage (with clears).
 type Board = "units" | "stage"
 
+-- The next round count to aim for when there is nobody ahead to pass: 10, 25, 50, 100, 250 ...
+local function nextMilestone(n: number): number
+	if n ~= n or n >= 1e15 then
+		return n
+	end
+	local step = 10
+	while true do
+		for _, k in { 1, 2.5, 5 } do
+			if step * k > n then
+				return step * k
+			end
+		end
+		step *= 10
+	end
+end
+
+local function countOf(n: number, word: string): string
+	return string.format("%d more %s", n, if n == 1 then word else word .. "s")
+end
+
 -- The local player's highest obby stage and total clears, from the snapshot (falling back to
 -- the replicated ParkourBestStage attribute).
 local function myStage(): (number, number)
@@ -3187,14 +3336,16 @@ local function buildRanking(screen: ScreenGui)
 	})
 	local subtitle = Kit.text(window.content, {
 		Name = "Subtitle",
-		Text = "Top players by total " .. W.Units,
-		TextSize = T.Small,
+		Text = "Most " .. W.Units .. " collected",
+		Font = F.UI,
+		TextSize = T.Body,
+		MinPx = true,
 		TextWrapped = false,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Size = UDim2.new(1, -14, 0, 22),
 		Position = UDim2.fromOffset(4, 48),
 		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = C.TextDim,
+		TextColor3 = C.GoldLight,
 	})
 
 	local header = Kit.new("Frame", {
@@ -3210,6 +3361,7 @@ local function buildRanking(screen: ScreenGui)
 			Text = text,
 			Font = F.UI,
 			TextSize = T.Small,
+			MinPx = true,
 			TextWrapped = false,
 			Size = UDim2.new(w, 0, 1, 0),
 			Position = UDim2.fromScale(x, 0),
@@ -3222,7 +3374,7 @@ local function buildRanking(screen: ScreenGui)
 	end
 	headerText({ "units", "stage" }, "RANK", 0.02, 0.14, Enum.TextXAlignment.Left)
 	headerText({ "units", "stage" }, "PLAYER", 0.17, 0.4, Enum.TextXAlignment.Left)
-	headerText({ "units" }, string.upper(W.Units), 0.62, 0.36, Enum.TextXAlignment.Right)
+	headerText({ "units" }, "COLLECTED", 0.62, 0.36, Enum.TextXAlignment.Right)
 	headerText({ "stage" }, "STAGE", 0.64, 0.16, Enum.TextXAlignment.Right)
 	headerText({ "stage" }, "CLEARS", 0.82, 0.16, Enum.TextXAlignment.Right)
 
@@ -3238,31 +3390,45 @@ local function buildRanking(screen: ScreenGui)
 	})
 	Kit.list(list, 8)
 
-	-- The player's own row, pinned right under the list with a sunny outline (one face per
-	-- board). It only shows while the player is not in the list itself.
-	local MINE_H = 54
+	-- The player's own card, pinned right under the list with a sunny outline: their row (one
+	-- face per board, only while they are not in the list itself) over the goal bar, which
+	-- always names a target: "12 more to pass <name>", filled as far as they have come.
+	local MINE_H, GOAL_H = 54, 40
 	local mine = Kit.panel(window.content, {
 		Name = "Mine",
 		Glass = true,
 		Elevated = true,
 		StrokeColor = C.Gold,
 		StrokeThickness = 2.5,
-		Size = UDim2.new(1, -14, 0, MINE_H),
+		Size = UDim2.new(1, -14, 0, MINE_H + GOAL_H),
 		Radius = Kit.RADIUS.M,
 	})
 	local function mineFace(name: string): Frame
-		return Kit.new("Frame", { Name = name, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = mine })
+		return Kit.new("Frame", { Name = name, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, MINE_H), Parent = mine })
 	end
 	local mineUnits = mineFace("Units")
 	local mineStage = mineFace("Stage")
+	local _, setGoal, goalLabel = Kit.progress(mine, {
+		Name = "Goal",
+		Glass = true,
+		Color = C.Gold,
+		Size = UDim2.new(1, -20, 0, 24),
+		Position = UDim2.new(0, 10, 1, -8),
+		AnchorPoint = Vector2.new(0, 1),
+		TextSize = T.Small,
+		MinFill = 0.04,
+	})
+	goalLabel.TextWrapped = false
+	goalLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	Kit.holdText(goalLabel, Kit.captionPx())
 
 	-- A young board (under three rows): a friendly card takes the room below instead of
 	-- an empty list.
 	local empty = Kit.well(window.content, { Name = "Empty", Glass = true, Size = UDim2.new(1, -14, 0, 120), Radius = Kit.RADIUS.M })
 	empty.Visible = false
-	local emptyIcon = Kit.icon(empty, Kit.iconName(I.Ranking) or "Star", 44, C.Window.Ranking, {
+	local emptyIcon = Kit.icon(empty, Kit.iconName(I.Ranking) or "Star", 56, C.Window.Ranking, {
 		Name = "Icon",
-		Position = UDim2.new(0.5, 0, 0.5, -38),
+		Position = UDim2.new(0.5, 0, 0.5, -37),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 	})
 	local emptyTitle = Kit.title(empty, {
@@ -3273,20 +3439,21 @@ local function buildRanking(screen: ScreenGui)
 		TextWrapped = false,
 		TextColor3 = C.Gold,
 		Size = UDim2.new(1, -24, 0, 30),
-		Position = UDim2.new(0, 12, 0.5, -8),
+		Position = UDim2.new(0, 12, 0.5, -5),
 	})
+	-- Up to two lines: what to do next on a board this young.
 	local emptyLine = Kit.text(empty, {
 		Name = "Line",
 		Text = "",
 		TextSize = T.Body,
 		MinPx = true,
-		Size = UDim2.new(1, -24, 0, 24),
-		Position = UDim2.new(0, 12, 0.5, 24),
+		Size = UDim2.new(1, -24, 0, 40),
+		Position = UDim2.new(0, 12, 0.5, 25),
 		StrokeThickness = 0,
 	})
 
 	-- The list is as tall as its rows (it scrolls once they pass the room there is), the
-	-- pinned row sits right under it and the card for a young board fills what is left.
+	-- pinned card sits right under it and the card for a young board fills what is left.
 	-- Short windows (a phone): the subtitle goes and the columns and list move up into its row.
 	local ROW_H, ROW_GAP = 46, 8
 	local rowCount = 0
@@ -3296,10 +3463,11 @@ local function buildRanking(screen: ScreenGui)
 		local top = if short then 48 else 72
 		subtitle.Visible = not short
 		header.Position = UDim2.fromOffset(0, top)
-		header.Visible = rowCount > 0 or pinned
 		local inner = size.Y - 104 -- window chrome and the content padding
 		local y = top + 28
-		local pinH = if pinned then MINE_H + ROW_GAP else 0
+		-- The goal bar alone while the player's row is in the list.
+		local mineH = if pinned then MINE_H + GOAL_H else GOAL_H
+		local pinH = mineH + ROW_GAP
 		-- Rows plus the list's own padding (4 above, 10 below).
 		local rowsH = if rowCount > 0 then rowCount * ROW_H + (rowCount - 1) * ROW_GAP + 14 else 0
 		local listH = math.max(0, math.min(inner - y - pinH, rowsH))
@@ -3307,17 +3475,17 @@ local function buildRanking(screen: ScreenGui)
 		list.Size = UDim2.new(1, 0, 0, listH)
 		list.Visible = listH > 0
 		y += listH
-		mine.Visible = pinned
+		mine.Size = UDim2.new(1, -14, 0, mineH)
 		mine.Position = UDim2.fromOffset(0, y)
 		y += pinH
 		local left = inner - y
-		empty.Visible = rowCount < 3 and left >= 72
+		empty.Visible = rowCount < 3 and left >= 76
 		empty.Position = UDim2.fromOffset(0, y)
 		empty.Size = UDim2.new(1, -14, 0, left)
-		emptyIcon.Visible = left >= 130
-		local lift = if emptyIcon.Visible then 0 else 22
-		emptyTitle.Position = UDim2.new(0, 12, 0.5, -8 - lift)
-		emptyLine.Position = UDim2.new(0, 12, 0.5, 24 - lift)
+		emptyIcon.Visible = left >= 144
+		local lift = if emptyIcon.Visible then 0 else 30
+		emptyTitle.Position = UDim2.new(0, 12, 0.5, -5 - lift)
+		emptyLine.Position = UDim2.new(0, 12, 0.5, 25 - lift)
 	end
 	layoutRows(window.size())
 	window.onResize.Event:Connect(layoutRows)
@@ -3363,6 +3531,7 @@ local function buildRanking(screen: ScreenGui)
 			Text = name,
 			Font = F.UI,
 			TextSize = T.Body,
+			MinPx = true,
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Size = UDim2.new(0.38, 0, 1, 0),
@@ -3409,6 +3578,9 @@ local function buildRanking(screen: ScreenGui)
 
 	local entries: { any } = {}
 	local stageEntries: { any } = {}
+	-- The server's Standing per board (Ranking.standing): rank, the players right above and below.
+	local standing: { [string]: any } = {}
+	local global = true
 	local loaded = false
 	local updatedAt = 0
 	local listFull: boolean? = nil
@@ -3467,18 +3639,119 @@ local function buildRanking(screen: ScreenGui)
 		-- The player is in the list: no second, pinned copy of the same row.
 		rowCount = #rows
 		pinned = not listed
-		emptyTitle.Text = if not loaded then "Loading..." elseif rowCount == 0 then "No rankings yet" else "The board is wide open!"
-		emptyLine.Text = if not loaded
-			then "Fetching the top players"
-			elseif rowCount == 0 then "Be the first name on the board!"
-			else string.format("Keep collecting %s to climb it.", W.Units)
+		-- A young board says what there is to win on it, never just that it is empty.
+		local first = shown[1]
+		local leading = type(first) == "table" and isMine(first)
+		local second = shown[2]
+		if not loaded then
+			emptyTitle.Text = "Loading..."
+			emptyLine.Text = "Fetching the top players"
+		elseif board == "stage" and not listed then
+			emptyTitle.Text = if rowCount == 0 then "NO STAGES CLEARED YET" else "JOIN THE BOARD!"
+			emptyLine.Text = if rowCount == 0
+				then "Finish Parkour map 1 and your name is the first one here."
+				else "Finish Parkour map 1 to put your name on this board."
+		elseif leading then
+			emptyTitle.Text = "YOU'RE #1!"
+			emptyLine.Text = if type(second) == "table"
+				then string.format("%s is right behind you. Stay ahead!", tostring(second.name or "Someone"))
+				elseif board == "stage" then "Nobody else has cleared a stage yet. Clear more maps to stay on top!"
+				else string.format("Nobody else is on the board yet. Every %s you get counts: build your lead!", W.Unit)
+		else
+			emptyTitle.Text = "TAKE THE #1 SPOT!"
+			emptyLine.Text = if rowCount == 0
+				then "Be the first name on the board!"
+				else string.format(
+					"Only %d on the board so far: pass %s and the gold medal is yours.",
+					rowCount,
+					if type(first) == "table" then tostring(first.name or "them") else "them"
+				)
+		end
 		layoutRows(window.size())
 		if animate then
 			Kit.stagger(rows)
 		end
 	end
 
-	-- Pinned row, format button, column headers and subtitle.
+	local fetch: () -> ()
+	-- A target passed since the last fetch asks for fresh ranks, once per target.
+	local passedKey = ""
+	local function passed(name: string, score: number): (string, number)
+		local key = name .. ":" .. score
+		if passedKey ~= key and window.isOpen() then
+			passedKey = key
+			task.delay(3, function()
+				if window.isOpen() then
+					fetch()
+				end
+			end)
+		end
+		return string.format("You passed %s!", name), 1
+	end
+
+	-- Without a Standing from the server: the row above the player's own in the list.
+	local function rowAbove(rows: { any }): any
+		for i, entry in rows do
+			if type(entry) == "table" and isMine(entry) then
+				return rows[i - 1]
+			end
+		end
+		return nil
+	end
+
+	-- The goal bar of the units board: text and how far along (0..1). Somebody ahead: how
+	-- many more it takes to pass them. Nobody ahead: the next round count.
+	local function unitsGoal(total: number): (string, number)
+		local you = standing.units
+		local above = if type(you) == "table" then you.above else rowAbove(entries)
+		if type(above) == "table" then
+			local theirs = tonumber(above.value) or 0
+			local gap = theirs - total + 1
+			local name = tostring(above.name or "?")
+			if gap <= 0 then
+				return passed(name, theirs)
+			end
+			-- Under the listed top with nobody from this server in between: the last listed
+			-- place is the target.
+			local cap = if type(you) == "table" then tonumber(you.cap) or 0 else 0
+			local text = if cap > 0
+					and you.rank == nil
+					and not you.aboveHere
+				then string.format("%s more to reach the top %d", fmt(gap), cap)
+				else string.format("%s more to pass %s", fmt(gap), name)
+			return text, total / (theirs + 1)
+		end
+		local goal = nextMilestone(total)
+		if goal <= total then
+			return string.format("%s collected", fmt(total)), 1
+		end
+		return string.format("Next goal: %s more to reach %s collected", fmt(goal - total), fmt(goal)), total / goal
+	end
+
+	-- The same for the stage board: stages to catch the player ahead, then clears to pass them.
+	local function stageGoal(stage: number, clears: number): (string, number)
+		if stage <= 0 then
+			return "Finish Parkour map 1 to get on this board", 0
+		end
+		local you = standing.stage
+		local above = if type(you) == "table" then you.above else rowAbove(stageEntries)
+		if type(above) ~= "table" then
+			return "Clear more maps to stay ahead", 1
+		end
+		local name = tostring(above.name or "?")
+		local theirStage = tonumber(above.stage) or 0
+		local theirClears = tonumber(above.clears) or 0
+		if theirStage > stage then
+			return string.format("%s to catch %s", countOf(theirStage - stage, "stage"), name), stage / theirStage
+		end
+		local gap = theirClears - clears + 1
+		if theirStage < stage or gap <= 0 then
+			return passed(name, theirStage * 1e6 + theirClears)
+		end
+		return string.format("%s to pass %s", countOf(gap, "clear"), name), clears / (theirClears + 1)
+	end
+
+	-- Pinned card, format button, column headers and subtitle.
 	local function renderInfo()
 		local data = State.data
 		local myRank: number? = nil
@@ -3493,8 +3766,8 @@ local function buildRanking(screen: ScreenGui)
 				myStageRank = tonumber(entry.rank) or i
 			end
 		end
-		mineUnits.Visible = board == "units"
-		mineStage.Visible = board == "stage"
+		mineUnits.Visible = pinned and board == "units"
+		mineStage.Visible = pinned and board == "stage"
 		for _, labels in headers do
 			for _, label in labels do
 				label.Visible = false
@@ -3503,7 +3776,15 @@ local function buildRanking(screen: ScreenGui)
 		for _, label in headers[board] do
 			label.Visible = true
 		end
-		mineLabels.rank.Text = if myRank then "#" .. myRank else "--"
+		-- Under the listed top the place is not known: "50+".
+		local function rankText(rank: number?, you: any): string
+			if rank then
+				return "#" .. rank
+			end
+			local cap = if type(you) == "table" and not you.unranked then tonumber(you.cap) else nil
+			return if cap then cap .. "+" else "--"
+		end
+		mineLabels.rank.Text = rankText(myRank, standing.units)
 		local total = data and data.totalObtained or 0
 		if mineValue and mineValue ~= total and window.isOpen() then
 			Kit.countTo(mineLabels.value, mineValue, total, fmt)
@@ -3512,7 +3793,7 @@ local function buildRanking(screen: ScreenGui)
 		end
 		mineValue = total
 		local stage, clears = myStage()
-		mineStageLabels.rank.Text = if myStageRank then "#" .. myStageRank else "--"
+		mineStageLabels.rank.Text = rankText(myStageRank, standing.stage)
 		mineStageLabels.value.Text = tostring(stage)
 		local clearsLabel = mineStageLabels.extra
 		if clearsLabel then
@@ -3528,7 +3809,16 @@ local function buildRanking(screen: ScreenGui)
 				elseif ago < 3600 then string.format("  •  updated %dm ago", ago // 60)
 				else string.format("  •  updated %dh ago", ago // 3600)
 		end
-		subtitle.Text = (if board == "stage" then "Highest sky obby stage reached" else "Top players by total " .. W.Units) .. updated
+		local where = if loaded and not global then "  •  this server" else ""
+		subtitle.Text = (if board == "stage" then "Highest sky obby stage" else "Most " .. W.Units .. " collected") .. where .. updated
+		local goalText, ratio
+		if board == "stage" then
+			goalText, ratio = stageGoal(stage, clears)
+		else
+			goalText, ratio = unitsGoal(total)
+		end
+		goalLabel.Text = goalText
+		setGoal(if ratio == ratio then ratio else 0)
 	end
 
 	-- Board tabs (built after the rows' helpers: Kit.tabs selects the first one at once).
@@ -3557,7 +3847,7 @@ local function buildRanking(screen: ScreenGui)
 
 	local fetching = false
 	local lastFetch = -math.huge
-	local function fetch()
+	function fetch()
 		if fetching or os.clock() - lastFetch < 3 then
 			return
 		end
@@ -3571,6 +3861,8 @@ local function buildRanking(screen: ScreenGui)
 			if ok and type(result) == "table" then
 				entries = if type(result.entries) == "table" then result.entries else {}
 				stageEntries = if type(result.stage) == "table" then result.stage else {}
+				standing = if type(result.you) == "table" then result.you else {}
+				global = result.global ~= false
 				updatedAt = result.updatedAt or State.now()
 				loaded = true
 				if window.isOpen() then
@@ -3725,9 +4017,11 @@ end
 
 -- Game Modes --------------------------------------------------------------------------------
 --[[
-	The plaza game modes, one full row each in the same arrangement (quiet medal, title,
-	blurb, stats, reward line and a gold PLAY that fires ModeStart and closes the window;
-	PLAY is the one loud element per row), then one slim "More modes coming soon" row.
+	The plaza game modes, one card each in the same arrangement, tinted in the mode's own
+	colour: a thumbnail (a sea scene for Parkour, the player's best unit for MOG TEST; a
+	narrow window shrinks it to a medal), title, blurb, stats, the reward chip (solid mint
+	while the full reward is up, dim through the cooldown) and a gold PLAY that fires
+	ModeStart and closes the window, then one slim "More modes coming soon" row.
 
 	Parkour shows the preselected map (the player's unlocked level, re-synced whenever the
 	window opens): its name, difficulty (10 pips), best and clears and what finishing it
@@ -3746,24 +4040,41 @@ local function plural(n: number, word: string, many: string?): string
 	return string.format("%d %s", n, if n == 1 then word else many or word .. "s")
 end
 
+-- The reward chip of a mode card. `full`: the whole reward is up (solid mint, the card's
+-- one highlight beside PLAY); else the dim chip of a cooldown. No text hides it.
+local function paintReward(label: TextLabel, text: string, full: boolean)
+	label.Text = text
+	label.Visible = text ~= ""
+	label.BackgroundTransparency = if full then 0 else 0.72
+	label.BackgroundColor3 = if full then C.Good else C.Ink
+	label.TextColor3 = if full then Kit.inkOn(C.Good) else C.TextDim
+	local edge = label:FindFirstChild("Edge")
+	if edge and edge:IsA("UIStroke") then
+		edge.Color = if full then Kit.lip(C.Good) else Theme.Glass.Edge
+		edge.Transparency = if full then 0 else 0.7
+	end
+end
+
 -- "Finish: +$X" or the cooldown countdown; `bonus` adds a "(xB)" tag. `repeatCash`: what a
 -- clean finish pays inside the cooldown (Parkour: a share of the map's reward), named
 -- beside the countdown to the full reward.
 local function setRewardLine(label: TextLabel, cash: number, full: boolean, cooldownEnds: number, bonus: number?, repeatCash: number?)
 	local left = cooldownEnds - os.time()
 	if not full and left > 0 then
-		label.TextColor3 = C.TextDim
-		label.Text = if repeatCash and repeatCash >= 1
-			then string.format("Run again: +%s  ·  full reward in %s", Format.money(repeatCash), Format.time(left))
-			else "Reward again in " .. Format.time(left)
+		paintReward(
+			label,
+			if repeatCash and repeatCash >= 1
+				then string.format("Run again: +%s  ·  full reward in %s", Format.money(repeatCash), Format.time(left))
+				else "Reward again in " .. Format.time(left),
+			false
+		)
 		return
 	end
-	label.TextColor3 = C.MoneyText
 	local text = "Finish: +" .. Format.money(cash)
 	if bonus and bonus > 1.001 then
 		text ..= string.format("  (×%s)", (string.format("%.1f", bonus):gsub("%.0$", "")))
 	end
-	label.Text = text
+	paintReward(label, text, true)
 end
 
 local PIP_COUNT = 10
@@ -3800,6 +4111,7 @@ local function difficultyPips(parent: Instance, props: { [string]: any }): (numb
 		Text = "",
 		Font = F.UI,
 		TextSize = T.Small,
+		MinPx = true,
 		TextWrapped = false,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.fromOffset(44, pipSize + 6),
@@ -3825,7 +4137,7 @@ local function parkourReward(label: TextLabel, info: { [string]: any }, level: n
 	local lv = list[level]
 	local preview = info.rewardPreview
 	if type(preview) ~= "table" or type(lv) ~= "table" then
-		label.Text = ""
+		paintReward(label, "", false)
 		return
 	end
 	local current = list[tonumber(info.level) or 1]
@@ -3841,44 +4153,75 @@ local function parkourReward(label: TextLabel, info: { [string]: any }, level: n
 	setRewardLine(label, cash, full, cooldownEnds, bonus, math.floor(cash * share))
 end
 
-type ModeRow = { panel: Frame, stats: TextLabel, reward: TextLabel, play: TextButton }
+type ModeRow = {
+	panel: Frame,
+	thumb: Frame,
+	title: TextLabel,
+	blurb: TextLabel,
+	stats: TextLabel,
+	reward: TextLabel,
+	play: TextButton,
+}
 
--- One mode row: medal, title, blurb, stats line, reward line and the PLAY button.
-local function modeRow(parent: Instance, props: { [string]: any }, accent: Color3, onPlay: () -> ()): ModeRow
+-- A mode card's thumbnail is this wide where the window has room; a narrow window keeps
+-- the small medal by the title.
+local THUMB_W, MEDAL_W = 104, 46
+-- Under this window width the cards go narrow.
+local MODES_WIDE = 520
+
+-- One mode card: thumbnail, title, blurb, stats line, reward chip and the PLAY button.
+-- props: Name, Height, LayoutOrder, Medal (the emoji on the thumbnail), Title, Blurb, Tint
+-- (the card's colour), Sky (the thumbnail's top colour; it runs down into Tint).
+local function modeRow(parent: Instance, props: { [string]: any }, onPlay: () -> ()): ModeRow
+	local tint: Color3 = props.Tint
 	local panel = Kit.panel(parent, {
 		Name = props.Name,
 		Glass = true,
+		Color = tint,
 		Size = UDim2.new(1, 0, 0, props.Height),
 		LayoutOrder = props.LayoutOrder,
 		Radius = Kit.RADIUS.M + 2,
 	})
-	-- Quiet medal (an accent rim only), so the PLAY button is the one loud thing here.
-	local medal = Kit.new("Frame", {
-		Name = "Medal",
-		BackgroundColor3 = C.Ink,
-		BackgroundTransparency = Theme.Glass.Inset,
-		Size = UDim2.fromOffset(46, 46),
-		Position = UDim2.fromOffset(12, 14),
+	-- Thumbnail: a bright tile in the mode's colours with its emoji; buildModes adds the scene.
+	local thumb = Kit.new("Frame", {
+		Name = "Thumb",
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Size = UDim2.fromOffset(THUMB_W, props.Height - 24),
+		Position = UDim2.fromOffset(12, 12),
+		ClipsDescendants = true,
 		Parent = panel,
 	})
-	Kit.corner(medal, 14)
-	Kit.new("UIStroke", { Thickness = 2, Color = accent, Transparency = 0.2, Parent = medal })
-	Kit.text(medal, { Text = props.Medal, TextSize = 26, Size = UDim2.fromScale(1, 1), ZIndex = 2 })
-	Kit.title(panel, {
+	Kit.corner(thumb, 14)
+	Kit.gradient(thumb, props.Sky or Kit.lighten(tint, 0.35), tint, 90)
+	Kit.new("UIStroke", { Thickness = 2, Color = Kit.lighten(tint, 0.6), Transparency = 0.1, Parent = thumb })
+	Kit.text(thumb, {
+		Name = "Medal",
+		Text = props.Medal,
+		TextScaled = true,
+		Size = UDim2.fromScale(0.62, 0.5),
+		Position = UDim2.fromScale(0.5, 0.42),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		StrokeThickness = 0,
+		ZIndex = 3,
+	})
+	local title = Kit.title(panel, {
 		Text = props.Title,
 		TextSize = T.H2,
 		TextWrapped = false,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -80, 0, 26),
-		Position = UDim2.fromOffset(70, 12),
+		Size = UDim2.new(1, -140, 0, 26),
+		Position = UDim2.fromOffset(128, 12),
 		TextColor3 = C.Text,
 	})
-	Kit.text(panel, {
+	local blurb = Kit.text(panel, {
 		Text = props.Blurb,
 		TextSize = T.Small,
+		MinPx = true,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -80, 0, 20),
-		Position = UDim2.fromOffset(70, 38),
+		Size = UDim2.new(1, -140, 0, 20),
+		Position = UDim2.fromOffset(128, 38),
 		TextColor3 = C.TextDim,
 		StrokeThickness = 0,
 	})
@@ -3887,23 +4230,41 @@ local function modeRow(parent: Instance, props: { [string]: any }, accent: Color
 		Text = "",
 		Font = F.UI,
 		TextSize = T.Small,
+		MinPx = true,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = false,
-		Size = UDim2.new(1, -80, 0, 20),
-		Position = UDim2.fromOffset(70, 60),
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Size = UDim2.new(1, -140, 0, 20),
+		Position = UDim2.fromOffset(128, 62),
 		TextColor3 = C.Text,
 	})
+	-- Reward chip: sized to its text, bottom-left of the text column (see paintReward).
 	local reward = Kit.text(panel, {
 		Name = "Reward",
 		Text = "",
 		Font = F.UI,
 		TextSize = T.Body,
-		TextXAlignment = Enum.TextXAlignment.Left,
+		MinPx = true,
 		TextWrapped = false,
-		Size = UDim2.new(1, -164, 0, 22),
-		Position = UDim2.new(0, 12, 1, -40),
-		AnchorPoint = Vector2.new(0, 0.5),
-		TextColor3 = C.MoneyText,
+		BackgroundColor3 = C.Good,
+		BackgroundTransparency = 0,
+		Size = UDim2.fromOffset(0, 26),
+		AutomaticSize = Enum.AutomaticSize.X,
+		Position = UDim2.new(0, 128, 1, -10),
+		AnchorPoint = Vector2.new(0, 1),
+		TextColor3 = Kit.inkOn(C.Good),
+		StrokeThickness = 0,
+		Visible = false,
+		ZIndex = 2,
+	})
+	Kit.padding(reward, 0, 10)
+	Kit.round(reward)
+	Kit.new("UIStroke", {
+		Name = "Edge",
+		Thickness = 1.5,
+		Color = Kit.lip(C.Good),
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		Parent = reward,
 	})
 	local play = Kit.button(panel, {
 		Name = "Play",
@@ -3915,7 +4276,28 @@ local function modeRow(parent: Instance, props: { [string]: any }, accent: Color
 		Position = UDim2.new(1, -12, 1, -12),
 		AnchorPoint = Vector2.new(1, 1),
 	}, onPlay)
-	return { panel = panel, stats = stats, reward = reward, play = play }
+	return { panel = panel, thumb = thumb, title = title, blurb = blurb, stats = stats, reward = reward, play = play }
+end
+
+-- Sizes a mode card and its header for a wide or a narrow window: wide, the thumbnail fills
+-- the card's left edge and everything sits beside it; narrow, it is a medal by the title.
+-- Returns the x the card's text column starts at, and the x of the rows under the header.
+local function placeMode(row: ModeRow, wide: boolean, height: number): (number, number)
+	local x = (if wide then THUMB_W else MEDAL_W) + 24
+	row.panel.Size = UDim2.new(1, 0, 0, height)
+	row.thumb.Size = if wide then UDim2.fromOffset(THUMB_W, height - 24) else UDim2.fromOffset(MEDAL_W, MEDAL_W)
+	row.thumb.Position = UDim2.fromOffset(12, if wide then 12 else 14)
+	for _, child in row.thumb:GetChildren() do
+		-- The scene behind the emoji only reads at thumbnail size.
+		if child:IsA("GuiObject") and child:GetAttribute("Scene") then
+			child.Visible = wide
+		end
+	end
+	row.title.Position = UDim2.fromOffset(x, 12)
+	row.title.Size = UDim2.new(1, -(x + 12), 0, 26)
+	row.blurb.Position = UDim2.fromOffset(x, 38)
+	row.blurb.Size = UDim2.new(1, -(x + 12), 0, 20)
+	return x, if wide then x else 12
 end
 
 local maps: MapPicker.Picker? = nil
@@ -3942,7 +4324,7 @@ local function buildModes(screen: ScreenGui)
 	-- 168 (Parkour) + 10 + 150 (Mog) + 10 + 44 (coming soon) + 20 padding + 84 of header and
 	-- margins. Short screens get a tighter stack (layoutRows) down to the 400 minimum, which
 	-- a phone shows scaled up x1.25.
-	local window = Kit.window(screen, "Modes", "Game Modes", "🏁", accent, Vector2.new(540, 486), Vector2.new(420, 400))
+	local window = Kit.window(screen, "Modes", "Game Modes", "🏁", accent, Vector2.new(600, 486), Vector2.new(420, 400))
 	register("Modes", window)
 	local action = Net.event("Action")
 	Kit.list(window.content, 10)
@@ -3951,23 +4333,44 @@ local function buildModes(screen: ScreenGui)
 	local selected = 1
 
 	-- Parkour ---------------------------------------------------------------------------
-	local parkour = modeRow(
-		window.content,
-		{
-			Name = "PARKOUR",
-			Height = 168,
-			LayoutOrder = 1,
-			Medal = "🏃",
-			Title = "PARKOUR",
-			Blurb = "Ten sea maps: jump, bounce and slide!",
-		},
-		accent,
-		function()
-			action:FireServer({ action = "ModeStart", mode = "parkour", level = selected })
-			Windows.closeAll()
-		end
-	)
+	local parkour = modeRow(window.content, {
+		Name = "PARKOUR",
+		Height = 168,
+		LayoutOrder = 1,
+		Medal = "🏃",
+		Title = "PARKOUR",
+		Blurb = "Ten sea maps: jump, bounce and slide!",
+		Tint = Theme.World.Ocean,
+		Sky = Theme.World.Sky,
+	}, function()
+		action:FireServer({ action = "ModeStart", mode = "parkour", level = selected })
+		Windows.closeAll()
+	end)
 	table.insert(rows, parkour.panel)
+	-- Its thumbnail: three stepping platforms climbing out of the sea to the finish flag.
+	for i = 1, 3 do
+		local step = Kit.new("Frame", {
+			Name = "Step" .. i,
+			BackgroundColor3 = Theme.World.Path,
+			Size = UDim2.fromScale(0.3, 0.055),
+			Position = UDim2.fromScale(0.05 + (i - 1) * 0.31, 0.9 - (i - 1) * 0.09),
+			ZIndex = 2,
+			Parent = parkour.thumb,
+		})
+		step:SetAttribute("Scene", true)
+		Kit.round(step)
+		Kit.new("UIStroke", { Thickness = 1.5, Color = Theme.World.Mint, Parent = step })
+	end
+	Kit.text(parkour.thumb, {
+		Name = "Flag",
+		Text = "🏁",
+		TextScaled = true,
+		Size = UDim2.fromScale(0.3, 0.16),
+		Position = UDim2.fromScale(0.82, 0.62),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		StrokeThickness = 0,
+		ZIndex = 2,
+	}):SetAttribute("Scene", true)
 	-- CHOOSE MAP sits above PLAY and opens the Maps window on the preselected map.
 	Kit.button(parkour.panel, {
 		Name = "ChooseMap",
@@ -3981,11 +4384,12 @@ local function buildModes(screen: ScreenGui)
 	}, function()
 		Windows.openMaps(selected)
 	end)
-	-- The preselected map's details sit in the left column above the reward line.
+	-- The preselected map's details sit in the text column above the reward chip.
 	local levelName = Kit.title(parkour.panel, {
 		Name = "LevelName",
 		Text = "",
 		TextSize = T.Body,
+		MinPx = true,
 		TextWrapped = false,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextXAlignment = Enum.TextXAlignment.Left,
@@ -3998,35 +4402,58 @@ local function buildModes(screen: ScreenGui)
 		Size = UDim2.new(1, -164, 0, 16),
 		Position = UDim2.fromOffset(12, 90),
 	})
-	parkour.stats.Position = UDim2.fromOffset(12, 110)
-	parkour.stats.Size = UDim2.new(1, -164, 0, 20)
-	parkour.reward.Position = UDim2.new(0, 12, 1, -24)
+	local pipRow = parkour.panel:FindFirstChild("Difficulty") :: Frame
 
 	-- MOG TEST --------------------------------------------------------------------------
 	-- Gamepad starts on the loud PLAY of the first mode.
 	parkour.play:SetAttribute("FocusFirst", true)
-	local mog = modeRow(
-		window.content,
-		{
-			Name = "MOGTEST",
-			Height = 150,
-			LayoutOrder = 2,
-			Medal = "💪",
-			Title = "MOG TEST",
-			Blurb = "Out-mog 3 rivals, or duel a real player 1v1!",
-		},
-		accent,
-		function()
-			local pick = Windows.onMogPlay
-			if pick then
-				pick()
-			else
-				action:FireServer({ action = "ModeStart", mode = "mog", vs = "rivals" })
-			end
-			Windows.closeAll()
+	local mog = modeRow(window.content, {
+		Name = "MOGTEST",
+		Height = 150,
+		LayoutOrder = 2,
+		Medal = "💪",
+		Title = "MOG TEST",
+		Blurb = "Out-mog 3 rivals, or duel a real player 1v1!",
+		Tint = Theme.World.Grape,
+		Sky = Theme.World.Pink,
+	}, function()
+		local pick = Windows.onMogPlay
+		if pick then
+			pick()
+		else
+			action:FireServer({ action = "ModeStart", mode = "mog", vs = "rivals" })
 		end
-	)
+		Windows.closeAll()
+	end)
 	table.insert(rows, mog.panel)
+	-- Its thumbnail: the player's best unit, the one that walks into the test (the emoji
+	-- stays as a badge in the corner). Rebuilt when a better one is discovered.
+	local mogStar: ViewportFrame? = nil
+	local mogTier = 0
+	local function showMogStar()
+		local data = State.data
+		local best = 0
+		if data and type(data.discovered) == "table" then
+			for tier = 1, Economy.MAX_TIER do
+				if (tonumber(data.discovered[tier]) or 0) > 0 then
+					best = tier
+				end
+			end
+		end
+		if best == mogTier or best < 1 then
+			return
+		end
+		mogTier = best
+		if mogStar then
+			mogStar:Destroy()
+		end
+		local viewport = Kit.unitViewport(mog.thumb, best, { Size = UDim2.fromScale(1, 1) })
+		viewport.Name = "Star"
+		viewport.ZIndex = 2
+		viewport:SetAttribute("Scene", true)
+		viewport.Visible = window.size().X >= MODES_WIDE
+		mogStar = viewport
+	end
 
 	-- Every other mode: one slim, quiet row.
 	local soon = Kit.panel(window.content, {
@@ -4055,15 +4482,36 @@ local function buildModes(screen: ScreenGui)
 		ZIndex = 2,
 	})
 
-	-- Short windows: the Mog row folds its stats under the medal (like Parkour's, 118 px),
-	-- and the "coming soon" row goes while there is no room for it: 168 + 10 + 118 fills
-	-- the 400 minimum.
+	-- Wide windows: each card's thumbnail fills its left edge and the text sits beside it.
+	-- Narrow ones: the medal by the title, the map's details under it. Short windows: the
+	-- Mog card is 118 px (narrow too: its stats fold under the medal) and the "coming
+	-- soon" row goes while there is no room for it: 168 + 10 + 118 fills the 400 minimum.
 	local function layoutRows(size: Vector2)
 		local short = size.Y < 486
-		mog.panel.Size = UDim2.new(1, 0, 0, if short then 118 else 150)
-		mog.stats.Position = if short then UDim2.fromOffset(12, 66) else UDim2.fromOffset(70, 60)
-		mog.stats.Size = UDim2.new(1, if short then -164 else -80, 0, 20)
-		mog.reward.Position = UDim2.new(0, 12, 1, if short then -22 else -40)
+		local wide = size.X >= MODES_WIDE
+		local _, px = placeMode(parkour, wide, 168)
+		local top = if wide then 62 else 66
+		levelName.Position = UDim2.fromOffset(px, top)
+		levelName.Size = UDim2.new(1, -(px + 152), 0, 22)
+		pipRow.Position = UDim2.fromOffset(px, top + 24)
+		pipRow.Size = UDim2.new(1, -(px + 152), 0, 16)
+		parkour.stats.Position = UDim2.fromOffset(px, top + 44)
+		parkour.stats.Size = UDim2.new(1, -(px + 152), 0, 20)
+		parkour.reward.Position = UDim2.new(0, px, 1, -10)
+
+		local mx, under = placeMode(mog, wide, if short then 118 else 150)
+		-- A short card: the stats stop at PLAY. A tall one: they run over it, full width.
+		local sx = if short then under else mx
+		mog.stats.Position = UDim2.fromOffset(sx, if wide then 62 elseif short then 64 else 60)
+		mog.stats.Size = UDim2.new(1, -(sx + (if short then 152 else 12)), 0, 20)
+		mog.reward.Position = UDim2.new(0, under, 1, -10)
+		-- The medal is a corner badge only on the thumbnail; alone on the small tile it is centred.
+		local medal = mog.thumb:FindFirstChild("Medal")
+		if medal and medal:IsA("TextLabel") then
+			local badge = wide and mogStar ~= nil
+			medal.Size = if badge then UDim2.fromScale(0.34, 0.26) else UDim2.fromScale(0.62, 0.5)
+			medal.Position = if badge then UDim2.fromScale(0.8, 0.84) else UDim2.fromScale(0.5, 0.42)
+		end
 		soon.Visible = not short or size.Y >= 454
 	end
 	layoutRows(window.size())
@@ -4081,7 +4529,7 @@ local function buildModes(screen: ScreenGui)
 			levelName.Text = "Level 1"
 			setPips(1)
 			parkour.stats.Text = "Best --  ·  0 clears"
-			parkour.reward.Text = ""
+			paintReward(parkour.reward, "", false)
 			return
 		end
 		local icon = if type(lv.icon) == "string" and lv.icon ~= "" then lv.icon .. " " else ""
@@ -4100,7 +4548,7 @@ local function buildModes(screen: ScreenGui)
 		local info = data and data.modes and data.modes.mog
 		if type(info) ~= "table" then
 			mog.stats.Text = "Best score --  ·  0 rivals  ·  0 passes"
-			mog.reward.Text = ""
+			paintReward(mog.reward, "", false)
 			return
 		end
 		local best = tonumber(info.best) or 0
@@ -4112,7 +4560,7 @@ local function buildModes(screen: ScreenGui)
 		)
 		local preview = info.rewardPreview
 		if type(preview) ~= "table" then
-			mog.reward.Text = ""
+			paintReward(mog.reward, "", false)
 		else
 			setRewardLine(
 				mog.reward,
@@ -4128,6 +4576,11 @@ local function buildModes(screen: ScreenGui)
 	local function refresh()
 		refreshParkour()
 		refreshMog()
+		local had = mogStar
+		showMogStar()
+		if mogStar ~= had then
+			layoutRows(window.size())
+		end
 	end
 	-- Re-centre the selection on the level to play (the lowest unlocked, uncleared one).
 	local function resync()
