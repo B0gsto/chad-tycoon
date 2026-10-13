@@ -28,7 +28,9 @@
 	  Sounds       Celebrate when a rival is mogged; the UI sounds belong to MogHud.
 
 	Listens to Notify (kind "Mode", mode "mog") on its own; everything it makes is
-	removed on finish and stop.
+	removed by clear(), the one way out: "finish" and "stop" (a quit, Home, a mode switch,
+	a respawn), the character leaving, and the snapshot's modes.mog.running going false
+	while the stage is still up (a lost Notify never leaves the camera scripted).
 ]]
 
 local Players = game:GetService("Players")
@@ -45,6 +47,7 @@ local Sounds = require(Client.Sounds) :: any
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
 local Animator = require(Client.Animator) :: any
+local State = require(Client.State) :: any
 local PlayerPose = require(script.Parent.PlayerPose)
 
 local MogFx = {}
@@ -67,6 +70,8 @@ local auraLight: PointLight? = nil
 local playerPos = Vector3.zero
 local rivalPos = Vector3.new(0, 0, -12)
 local running = false
+local startedAt = 0
+local runId = 0 -- bumps on every start and clear, so a finished run's timers stop
 local duel = false -- a 1v1 duel: the opponent is a real player's character
 local opponentId = 0
 local cameraOn = false
@@ -438,8 +443,10 @@ end
 
 local function clear()
 	running, duel, opponentId = false, false, 0
-	stopPosers()
+	runId += 1
+	-- The camera first: whatever else fails, the player gets the follow camera back.
 	releaseCamera()
+	stopPosers()
 	removeRival()
 	if folder then
 		folder:Destroy()
@@ -451,6 +458,7 @@ end
 local function onStart(p: any)
 	clear()
 	running = true
+	startedAt = os.clock()
 	if typeof(p.playerPos) == "Vector3" then
 		playerPos = p.playerPos
 	else
@@ -589,8 +597,9 @@ function MogFx.onNotify(p: any)
 		strike(selfPoser, "Victory", 0.8, 1.6)
 		moggedPop()
 		local nextRival = p.rival
+		local run = runId
 		task.delay(1.1, function()
-			if running and type(nextRival) == "table" then
+			if running and run == runId and type(nextRival) == "table" then
 				spawnRival(nextRival)
 			end
 		end)
@@ -611,6 +620,13 @@ function MogFx.init()
 	end)
 	player.CharacterRemoving:Connect(function()
 		if running then
+			clear()
+		end
+	end)
+	-- The safety net: the server says no Mog run is on while the stage is still up here.
+	State.changed.Event:Connect(function(data: any)
+		local info = type(data) == "table" and type(data.modes) == "table" and data.modes.mog
+		if running and type(info) == "table" and info.running == false and os.clock() - startedAt > 2 then
 			clear()
 		end
 	end)

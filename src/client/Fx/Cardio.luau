@@ -56,6 +56,8 @@ local Client = script.Parent.Parent
 local State = require(Client.State) :: any
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
+local Camera = require(script.Parent.Camera) :: any
+local Chase = require(script.Parent.CardioChase) :: any
 local Sounds = require(Client.Sounds) :: any
 local Assets = require(ReplicatedStorage.Shared.Assets) :: any
 
@@ -150,7 +152,6 @@ local localKey: Key? = nil
 -- Keys under other players' feet this frame (kept pressed down).
 local heldOther: { Key } = {}
 local speedK = 0
-local fovBase: number? = nil
 local runTrack: AnimationTrack? = nil
 local runTrackOwner: Humanoid? = nil
 local puffAt = 0
@@ -653,20 +654,10 @@ local function ensureLines()
 	end
 end
 
+-- The widen is held by Fx.Camera, which owns the base FOV (its punch reads the same one), so
+-- nothing of it is left on the camera when the run ends.
 local function applyFov(delta: number)
-	local camera = Workspace.CurrentCamera
-	if not camera then
-		return
-	end
-	if delta > 0.01 then
-		if not fovBase then
-			fovBase = camera.FieldOfView
-		end
-		camera.FieldOfView = (fovBase :: number) + delta
-	elseif fovBase then
-		camera.FieldOfView = fovBase :: number
-		fovBase = nil
-	end
+	Camera.setFov("cardio", if delta > 0.01 then delta else 0)
 end
 
 local function stepSpeed(dt: number, root: BasePart?)
@@ -1190,7 +1181,11 @@ local function activate()
 	end
 end
 
+-- The one way out of a run (the "stop" Notify of a quit, Home, a mode switch, a respawn or
+-- leaving the track, and the snapshot's `running` going false): the glow, the widened FOV,
+-- the speed lines, the pops and pressed keys, and the chaser with its red vignette all go.
 local function deactivate()
+	Chase.stop()
 	if not active then
 		return
 	end

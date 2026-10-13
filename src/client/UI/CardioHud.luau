@@ -740,12 +740,16 @@ end
 
 -- Music level during a Cardio run (1 = normal).
 local MUSIC_DUCK = 0.25
+-- Seconds after a run ends before the root frame hides (past the blocks' Kit.disappear).
+local ROOT_HIDE = 0.3
+local hideToken = 0
 
 local function show()
 	if active then
 		return
 	end
 	active = true
+	hideToken += 1
 	-- Music a bit quieter during a run so the key clicks come through.
 	Sounds.setMusicDuck(MUSIC_DUCK)
 	quitArmed = false
@@ -772,11 +776,36 @@ local function show()
 	end
 end
 
+-- Closes the finish card and drops a gamepad selection left on its buttons, so the stick
+-- goes back to running.
+local function hideFinish()
+	Kit.unfocus(finishCard)
+	if finishCard.Visible then
+		Kit.disappear(finishCard)
+	end
+end
+
+-- The one way out of a run: the "stop" Notify (a quit, Home, a mode switch, a respawn,
+-- leaving the track) and the snapshot's `running` going false. Nothing of the run stays on
+-- screen: no banner (a queued "STAGE n" title included), no finish card, and the
+-- full-screen root goes once its blocks have eased out.
 local function hide()
+	bannerToken += 1
+	if banner.Visible then
+		Kit.disappear(banner)
+	end
+	hideFinish()
 	if not active then
 		return
 	end
 	active = false
+	hideToken += 1
+	local mine = hideToken
+	task.delay(ROOT_HIDE, function()
+		if hideToken == mine and not active then
+			root.Visible = false
+		end
+	end)
 	Sounds.setMusicDuck(1)
 	setRunActive(false)
 	if renderConn then
@@ -808,15 +837,6 @@ local function applySnapshot(s: { [string]: any }, exact: boolean)
 		paintUpgrade()
 		paintWin()
 		paintPads()
-	end
-end
-
--- Closes the finish card and drops a gamepad selection left on its buttons, so the stick
--- goes back to running.
-local function hideFinish()
-	Kit.unfocus(finishCard)
-	if finishCard.Visible then
-		Kit.disappear(finishCard)
 	end
 end
 

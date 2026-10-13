@@ -49,6 +49,7 @@ local Workspace = game:GetService("Workspace")
 local Net = require(ReplicatedStorage.Shared.Net)
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
+local State = require(script.Parent.Parent.State) :: any
 
 local ModesFx = {}
 
@@ -358,6 +359,7 @@ end
 
 -- Run state (from the "Mode" notifies) for the still-player hint.
 local running = false
+local runStartedAt = 0
 local stillSince = os.clock()
 local stillAt = Vector3.zero
 local lastHint = 0
@@ -1383,6 +1385,8 @@ end
 
 -- Effects -------------------------------------------------------------------------------
 
+local dipTween: Tween? = nil -- the camera dip of the last splash
+
 -- Fell through the cloud floor: a white cloud poof (Puff particles plus a few soft white balls
 -- that swell and fade, so it reads even without the sprite art) and a short camera dip.
 local CLOUD_WHITE = Color3.fromRGB(250, 250, 255)
@@ -1433,8 +1437,13 @@ local function splash(position: Vector3)
 	local humanoid = character()
 	if humanoid then
 		humanoid.CameraOffset = Vector3.new(0, -1.2, 0)
-		TweenService:Create(humanoid, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { CameraOffset = Vector3.zero })
-			:Play()
+		local tween = TweenService:Create(
+			humanoid,
+			TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ CameraOffset = Vector3.zero }
+		)
+		dipTween = tween
+		tween:Play()
 	end
 end
 
@@ -1442,6 +1451,7 @@ local KILL_LIFE = 0.6
 local FLASH_FROM = 0.35
 local FLASH_TIME = 0.35
 local flashFrame: Frame? = nil
+local flashTween: Tween? = nil
 
 -- The full-screen flash frame, made lazily on its own ScreenGui: red for lava, or `color`
 -- from transparency `from` over `time` seconds.
@@ -1468,9 +1478,11 @@ local function flash(color: Color3?, from: number?, time: number?)
 	local f = frame :: Frame
 	f.BackgroundColor3 = color or LAVA
 	f.BackgroundTransparency = from or FLASH_FROM
-	TweenService:Create(f, TweenInfo.new(time or FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+	local tween = TweenService:Create(f, TweenInfo.new(time or FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 		BackgroundTransparency = 1,
-	}):Play()
+	})
+	flashTween = tween
+	tween:Play()
 end
 
 -- Touched a kill brick: red and black shards burst out and shrink away, plus the flash.
@@ -1620,6 +1632,32 @@ local function hideGantry(level: number)
 	end)
 end
 
+-- The one way out of a Parkour run: "finish", "invalid" and "stop" (a quit, Home, a mode
+-- switch, a respawn, leaving the course) and the snapshot's modes.parkour.running going
+-- false. The themed look eases back to the scene's own Lighting (stepAmbience clears it at
+-- the end), the marquee returns, and what a fall left mid-tween (the full-screen flash, the
+-- camera dip) is put back at once.
+local function endRun()
+	running = false
+	endAmbience()
+	showGantry(GANTRY_BACK)
+	if flashTween then
+		flashTween:Cancel()
+		flashTween = nil
+	end
+	if flashFrame then
+		flashFrame.BackgroundTransparency = 1
+	end
+	if dipTween then
+		dipTween:Cancel()
+		dipTween = nil
+	end
+	local humanoid = character()
+	if humanoid then
+		humanoid.CameraOffset = Vector3.zero
+	end
+end
+
 function ModesFx.init()
 	for _, root in CollectionService:GetTagged("ModeMover") do
 		addMover(root)
@@ -1669,15 +1707,21 @@ function ModesFx.init()
 		if event == "start" then
 			currentLevel = math.floor(num(payload.level, 1))
 			running = true
+			runStartedAt = os.clock()
 			stillSince, lastHint = os.clock(), os.clock()
 			startAmbience(currentLevel)
 			hideGantry(currentLevel)
 		elseif event == "respawn" then
 			oops(payload.reason)
 		elseif event == "finish" or event == "invalid" or event == "stop" then
-			running = false
-			endAmbience()
-			showGantry(GANTRY_BACK)
+			endRun()
+		end
+	end)
+	-- The safety net: the server says no Parkour run is on while this one still counts here.
+	State.changed.Event:Connect(function(data: any)
+		local info = type(data) == "table" and type(data.modes) == "table" and data.modes.parkour
+		if running and type(info) == "table" and info.running == false and os.clock() - runStartedAt > 2 then
+			endRun()
 		end
 	end)
 

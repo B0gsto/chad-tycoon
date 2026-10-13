@@ -8,7 +8,13 @@
 	  and the rack's lower shelves in the upper middle of the screen with the buy pads either
 	  side. The follow camera keeps that angle; its zoom is set to FRAME_DISTANCE once.
 	  Camera.spawnShot(root) returns the same eye / focus for other camera code.
+	  In front of a mode gate (where ModeQuit puts the player, back to the gate) the shot is
+	  shortened so the eye never sits behind the gate's see-through portal; the zoom goes
+	  back to FRAME_DISTANCE once the player has walked clear of it.
 	- Camera.punch(intensity): FOV kick plus a tiny shake (intensity ~0.2..1.5).
+	- Camera.setFov(key, delta): a held FOV offset for `key` (Fx.Cardio's speed widen; 0
+	  drops it). The kick and every held offset are added to one base FOV here, so no effect
+	  reads another's widened value as its base and leaves it behind when it ends.
 	- Camera.shake(intensity, duration): positional shake only (no rotation,
 	  so the default camera scripts never drift).
 	- Camera.reducedMotion = true turns punches/shakes into no-ops.
@@ -34,6 +40,10 @@ local FRAME_DISTANCE = 15 -- studs from the camera to the character's head
 local FRAME_PITCH = math.rad(20) -- how far the camera looks down
 local HEAD_OFFSET = Vector3.new(0, 1.5, 0) -- the follow camera's focus above the root
 local MAX_FOV_KICK = 9
+local PORTAL_CLEAR = 2.5 -- studs the eye stays in front of a gate portal's disc
+local PORTAL_PAD = 3 -- studs past the disc's rim that still count as looking through it
+local MIN_FRAME = 5 -- the shortest shot in front of a portal
+local WIDEN_SCAN = 0.25
 
 local NEAR_TAG = "PadSignNear"
 local NEAR_SCAN = 0.15
@@ -41,12 +51,15 @@ local NEAR_BAND = 4 -- studs over which a near line fades
 local NEAR_TWEEN = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 local fovKick = 0 -- current extra FOV (decays)
-local baseFov: number? = nil -- FOV before the punch started
+local baseFov: number? = nil -- FOV before the punch (or the first held offset) started
+local fovHeld: { [string]: number } = {} -- Camera.setFov offsets by owner
+local fovExtra = 0 -- their sum
 local shakeAmp = 0
 local shakeUntil = 0
 local shakeLength = 0
 local started = false
 local zoomBusy = false
+local frameToken = 0 -- bumps on every spawn shot (a pending widen belongs to one)
 
 local function reduced(): boolean
 	if Camera.reducedMotion then
@@ -71,13 +84,66 @@ function Camera.spawnShot(root: BasePart): (Vector3?, Vector3?)
 	return focus - back + up, focus
 end
 
+-- Mode gates ---------------------------------------------------------------------------
+-- An open gate holds a swirling see-through portal (World.Modes: the "PortalVeil" disc and
+-- its Neon rings have no collision, so the follow camera's own occlusion ignores them).
+-- ModeQuit and the return from a far arena put the player a few studs in front of a gate
+-- with their back to it (Course.QUIT): the spawn shot's eye would sit behind the portal and
+-- the swirl would fill the screen.
+
+-- The portal discs of both plazas (Map.GameModes.Plaza*.Gate*.PortalVeil).
+local function portalVeils(): { BasePart }
+	local found: { BasePart } = {}
+	local map = Workspace:FindFirstChild("Map")
+	local modes = map and map:FindFirstChild("GameModes")
+	if not modes then
+		return found
+	end
+	for _, plaza in modes:GetChildren() do
+		if string.sub(plaza.Name, 1, 5) == "Plaza" then
+			for _, gate in plaza:GetChildren() do
+				local veil = gate:FindFirstChild("PortalVeil")
+				if veil and veil:IsA("BasePart") then
+					table.insert(found, veil)
+				end
+			end
+		end
+	end
+	return found
+end
+
+-- How far along the way from `focus` to `eye` the camera may go before it comes within
+-- PORTAL_CLEAR studs of a gate portal's disc (1 = all the way).
+local function portalLimit(focus: Vector3, eye: Vector3): number
+	local limit = 1
+	for _, veil in portalVeils() do
+		-- The disc is a cylinder: its axis (the part's X) points through the gate.
+		local normal = veil.CFrame.RightVector
+		local from = (focus - veil.Position):Dot(normal)
+		local to = (eye - veil.Position):Dot(normal)
+		local side = if from >= 0 then 1 else -1
+		local travel = from - to
+		if to * side < PORTAL_CLEAR and travel * side > 1e-3 then
+			-- Where the line meets the disc's plane (or ends just short of it): inside the rim?
+			local at = focus:Lerp(eye, math.clamp(from / travel, 0, 1))
+			local off = at - veil.Position
+			local radial = (off - normal * off:Dot(normal)).Magnitude
+			if radial <= math.max(veil.Size.Y, veil.Size.Z) / 2 + PORTAL_PAD then
+				limit = math.min(limit, math.clamp((from - side * PORTAL_CLEAR) / travel, 0, 1))
+			end
+		end
+	end
+	return limit
+end
+
 -- Sets the follow camera's zoom to `distance` by pinning the player's zoom limits to it for
--- a frame (the camera scripts clamp their zoom to the limits), then restoring them.
-local function setZoom(distance: number)
+-- a frame (the camera scripts clamp their zoom to the limits), then restoring them. Returns
+-- false when it could not (another zoom is being set, or the distance is outside the limits).
+local function setZoom(distance: number): boolean
 	local player = Players.LocalPlayer
 	local lo, hi = player.CameraMinZoomDistance, player.CameraMaxZoomDistance
 	if zoomBusy or distance < lo or distance > hi then
-		return
+		return false
 	end
 	zoomBusy = true
 	task.spawn(function()
@@ -93,6 +159,26 @@ local function setZoom(distance: number)
 		end
 		zoomBusy = false
 	end)
+	return true
+end
+
+-- A shot shortened in front of a portal: once the full shot along the camera's own view
+-- would clear every portal (the player walked on, or turned the camera), the zoom goes back
+-- to FRAME_DISTANCE. Ends with the next spawn shot, the character or a scripted camera.
+local function widenLater(root: BasePart, mine: number)
+	task.spawn(function()
+		while true do
+			task.wait(WIDEN_SCAN)
+			local camera = Workspace.CurrentCamera
+			if frameToken ~= mine or not root.Parent or not camera or camera.CameraType ~= Enum.CameraType.Custom then
+				return
+			end
+			local focus = root.Position + HEAD_OFFSET
+			if portalLimit(focus, focus - camera.CFrame.LookVector * FRAME_DISTANCE) >= 1 and setZoom(FRAME_DISTANCE) then
+				return
+			end
+		end
+	end)
 end
 
 -- Places the Custom camera on the spawn shot for `root`.
@@ -105,8 +191,16 @@ local function frameBehind(root: BasePart)
 	if not eye or not focus then
 		return
 	end
+	frameToken += 1
+	local distance = FRAME_DISTANCE
+	local limit = portalLimit(focus, eye)
+	if limit < 1 then
+		distance = math.max(MIN_FRAME, FRAME_DISTANCE * limit)
+		eye = focus + (eye - focus).Unit * distance
+		widenLater(root, frameToken)
+	end
 	camera.CFrame = CFrame.lookAt(eye, focus)
-	setZoom(FRAME_DISTANCE)
+	setZoom(distance)
 end
 
 local function onCharacter(character: Model)
@@ -251,6 +345,27 @@ function Camera.punch(intensity: number?)
 	Camera.shake(0.18 * k, 0.25 + 0.1 * k)
 end
 
+-- A held FOV offset for `key`, added to the base FOV with the punch's kick (0 drops it).
+function Camera.setFov(key: string, delta: number)
+	if (fovHeld[key] or 0) == delta then
+		return
+	end
+	if delta ~= 0 then
+		fovHeld[key] = delta
+	else
+		fovHeld[key] = nil
+	end
+	local sum = 0
+	for _, held in fovHeld do
+		sum += held
+	end
+	fovExtra = sum
+	local camera = Workspace.CurrentCamera
+	if sum ~= 0 and not baseFov and camera then
+		baseFov = camera.FieldOfView
+	end
+end
+
 -- Positional shake (studs) that fades out over `duration` seconds.
 function Camera.shake(intensity: number?, duration: number?)
 	if reduced() then
@@ -271,10 +386,10 @@ local function step(dt: number)
 		return
 	end
 	if baseFov then
-		if fovKick > 0.01 then
-			-- Fast spring back toward the base FOV.
-			fovKick *= math.exp(-dt * 7)
-			camera.FieldOfView = baseFov + fovKick
+		if fovKick > 0.01 or fovExtra ~= 0 then
+			-- Fast spring back toward the base FOV (plus whatever is held).
+			fovKick = if fovKick > 0.01 then fovKick * math.exp(-dt * 7) else 0
+			camera.FieldOfView = baseFov + fovKick + fovExtra
 		else
 			camera.FieldOfView = baseFov
 			baseFov = nil
