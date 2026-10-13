@@ -23,6 +23,7 @@ local UserInputService = game:GetService("UserInputService")
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
+local ShopMath = require(ReplicatedStorage.Shared.ShopMath)
 
 local Kit = require(script.Parent.Kit)
 local DailyWindow = require(script.Parent.DailyWindow)
@@ -375,7 +376,7 @@ local SECTIONS = {
 		key = "Aura",
 		pill = W.Orb,
 		title = string.upper(W.Orb),
-		caption = "Lands straight in your tank",
+		caption = "Blended into cash at once",
 		icon = "Orb",
 		color = C.Violet,
 	},
@@ -396,8 +397,9 @@ end
 
 --[[
 	Shop sizes (design pixels at the 860x600 window). At the default window the
-	Starter card, the GAME PASSES header and the first pass banner fit the
-	visible page; on the 620x400 minimum everything keeps one row per banner and
+	free card, the Starter card, the GAME PASSES header and the top of the first
+	pass banner fit the visible page (the shade along its bottom edge says it
+	scrolls on); on the 620x400 minimum everything keeps one row per banner and
 	the page (244 px under the pinned title and switcher) still shows the tallest
 	card, a pack, whole. A phone gets that short window scaled up x1.25.
 ]]
@@ -414,7 +416,8 @@ local PACK_STAGE = 125 -- pack card stage (square) on a PACK_H card; it grows an
 local PACK_MAX_H = 260 -- tallest a pack card grows to fill a page its row fits in
 local PACK_FILL = 0.9 -- share of the free page height such a card takes
 local PACK_ICON = 26 -- currency icon left of a pack's amount
-local STARTER_H = 120 -- Starter pack card at the top of the page
+local STARTER_H = 120 -- Starter pack card, under the free card
+local FREE_H = 120 -- free gift card heading the Passes page: never smaller than the paid card under it
 local BUNDLE_H = 120 -- All Cosmetics card heading the cosmetics section
 local GAP = 16
 local HEAD_H = 54 -- section header height (icon row + glowing underline)
@@ -422,7 +425,9 @@ local SWITCH_H = 44 -- section switcher bar (36 px pills inside)
 local PAGE_TOP = SWITCH_H + 8 -- the scrolling page starts below the switcher
 local PRICE_H = 42 -- every price button
 local PRICE_TEXT = 20
-local FADE_H = 10 -- shade along the bottom edge of the page: a hint that it scrolls on, never a smear over a card
+local FADE_H = 26 -- shade along the bottom edge of the page: the hint that it scrolls on
+local PACK_SUB = 16 -- a pack card's caption ("1 h of income"), design px...
+local PACK_SUB_PX = 12 -- ...and its floor on the glass, whatever the screen and window scale
 local PAGE_BOTTOM = 14 -- room under the last row of a section, clear of that shade
 local PAGE_PAD = 12 -- UIPadding over the first row: a ribbon overlaps its card's top edge by 8 px
 local PAGE_FIT_BOTTOM = 4 -- room under a row of cards that fills the page
@@ -740,9 +745,10 @@ local function buildShop(screen: ScreenGui)
 	-- Gamepad selection moves between the cards; the engine scrolls the page to them.
 	scroll.Selectable = false
 
-	-- A thin shade along the bottom edge of the page while it scrolls on (stacked strips of
-	-- the glass tint, so it also renders without gradient transparency): FADE_H px, so a card
-	-- under it is cut cleanly. It fades out at the end of the page.
+	-- A shade along the bottom edge of the page while it scrolls on (stacked strips of the
+	-- glass tint, so it also renders without gradient transparency): FADE_H px, clear at its
+	-- top and nearly solid at the edge, so the row under it visibly runs on. It fades out at
+	-- the end of the page.
 	local fade = Kit.new("Frame", {
 		Name = "Fade",
 		BackgroundTransparency = 1,
@@ -752,13 +758,13 @@ local function buildShop(screen: ScreenGui)
 		ZIndex = 9,
 		Parent = content,
 	})
-	local FADE_STEPS = 5
+	local FADE_STEPS = 8
 	local fadeStrips: { [Frame]: number } = {}
 	for i = 1, FADE_STEPS do
 		local strip = Kit.new("Frame", {
 			Name = "Strip" .. i,
 			BackgroundColor3 = Theme.Glass.Tint,
-			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.5 * 0.7,
+			BackgroundTransparency = 1 - (i / FADE_STEPS) ^ 1.5 * 0.88,
 			BorderSizePixel = 0,
 			-- One pixel of overlap, so no seam shows between two strips at a fractional scale.
 			Size = UDim2.new(1, 0, 1 / FADE_STEPS, 1),
@@ -1161,7 +1167,7 @@ local function buildShop(screen: ScreenGui)
 		end)
 	end
 
-	-- Purchases: the last product prompted, so landed cash or aura flies from its card.
+	-- The last product prompted (or free gift claimed), so the cash that lands flies from its card.
 	local lastPrompt: { kind: string, entry: Entry, index: number, at: number }? = nil
 
 	-- Cosmetic tile, a dark card in its candy colour: art, outlined title, an inset in the
@@ -1245,7 +1251,7 @@ local function buildShop(screen: ScreenGui)
 	local WIDE_R = Kit.RADIUS.M + 4
 
 	-- Wide card text: an outlined title and, when given, a one-line caption under it.
-	local function wideText(body: Frame, tint: Color3, title: string, caption: string?): TextLabel
+	local function wideText(body: Frame, tint: Color3, title: string, caption: string?): (TextLabel, TextLabel?)
 		local titleLabel = minText(Kit.title(body, {
 			Name = "Title",
 			Text = title,
@@ -1261,8 +1267,9 @@ local function buildShop(screen: ScreenGui)
 			ZIndex = 4,
 		}))
 		Kit.new("UIStroke", { Thickness = 3, Color = Kit.darken(Kit.lip(tint), 0.3), Parent = titleLabel })
+		local captionLabel: TextLabel? = nil
 		if caption then
-			local captionLabel = Kit.text(body, {
+			local label = Kit.text(body, {
 				Name = "Caption",
 				Text = caption,
 				Font = F.Bold,
@@ -1275,9 +1282,10 @@ local function buildShop(screen: ScreenGui)
 				TextColor3 = Color3.new(1, 1, 1),
 				ZIndex = 4,
 			})
-			outline(captionLabel, tint)
+			outline(label, tint)
+			captionLabel = label
 		end
-		return titleLabel
+		return titleLabel, captionLabel
 	end
 
 	-- The price button on the right of a wide card, vertically centred (same style as every card).
@@ -1290,7 +1298,114 @@ local function buildShop(screen: ScreenGui)
 		}, onClick)
 	end
 
-	-- Starter pack: a wide mint hero card at the very top while the player does not own it --
+	--[[
+		Free first: the page opens on what costs nothing. A wide sunny card as tall and as
+		bright as the paid Starter card under it: the free gift (this player's own amount,
+		the server's Free pad pays the same) with CLAIM or the time left on its button, and a
+		pill for the Daily Reward that opens its window. No countdown here is a sales timer:
+		both only say when the next free thing is ready.
+	]]
+	local freeTint = Theme.World.Sunny
+	local freeCell, freeBody, freeArtHolder, freeArt = makeEntry(scroll, "Free", 0, freeTint, "Free", "Star", 104, UDim2.new(0, 68, 0.5, 0))
+	local freeClip = bannerPaint(freeBody, freeTint, WIDE_R, nil, true)
+	local _, freeCaption = wideText(freeBody, freeTint, string.upper(W.Free), " ")
+	local dailyPill = Kit.new("TextButton", {
+		Name = "Daily",
+		AutoButtonColor = false,
+		Text = "",
+		BackgroundColor3 = Kit.darken(freeTint, BANNER_INSET_DEEP),
+		BackgroundTransparency = BANNER_INSET,
+		Size = UDim2.new(1, WIDE_TEXT_W, 0, 44),
+		Position = UDim2.fromOffset(WIDE_LEFT, 64),
+		ZIndex = 4,
+		Parent = freeBody,
+	})
+	Kit.corner(dailyPill, 12)
+	Kit.icon(dailyPill, Kit.pickIcon("Gift2", "Star"), 34, C.Gold, {
+		Name = "Icon",
+		Position = UDim2.new(0, 6, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 5,
+	})
+	local dailyLine = Kit.text(dailyPill, {
+		Name = "Label",
+		Text = "",
+		Font = F.Bold,
+		TextSize = 16,
+		MinPx = PACK_SUB_PX,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Size = UDim2.new(1, -54, 1, 0),
+		Position = UDim2.fromOffset(46, 0),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = Color3.new(1, 1, 1),
+		StrokeThickness = 0,
+		ZIndex = 5,
+	})
+	Kit.selectable(dailyPill)
+	dailyPill.Activated:Connect(function()
+		Kit.sound("Click")
+		Windows.open("Daily")
+	end)
+	local freeEntry: Entry
+	local freeButton, freeSheen = widePrice(freeBody, "CLAIM", function()
+		local data = State.data
+		if not data or (data.freeIn or 0) - State.age() > 0 then
+			return
+		end
+		-- The same action as the HUD's gift button; the cash that lands flies from this card.
+		lastPrompt = { kind = "Free", entry = freeEntry, index = 0, at = os.clock() }
+		action:FireServer({ action = "ClaimFree" })
+	end)
+	ribbon(freeBody, "FREE", C.Good)
+	freeEntry = {
+		cell = freeCell,
+		body = freeBody,
+		art = freeArt,
+		artHolder = freeArtHolder,
+		button = freeButton,
+		sheen = freeSheen,
+		clip = freeClip,
+	}
+	hoverable(freeEntry)
+	table.insert(entries, freeEntry)
+	local freeShownCash: number? = nil
+	local freeShownButton: string? = nil
+	local dailyShown: string? = nil
+	-- The gift's amount, its button (CLAIM or the time left) and the Daily line; runs with
+	-- every snapshot and twice a second while the shop is open (the countdowns).
+	local function refreshFree()
+		local data = State.data
+		if not data then
+			return
+		end
+		local cash = ShopMath.freeGiftCash(data.rewardIncome or data.income or 0)
+		if cash ~= freeShownCash and freeCaption then
+			freeShownCash = cash
+			freeCaption.Text = string.format("+%s every %s", State.money(cash), durationText(Economy.FREE_REWARD_COOLDOWN))
+		end
+		local left = math.max(0, (data.freeIn or 0) - State.age())
+		local buttonText = if left <= 0 then "CLAIM" else Format.time(left)
+		if buttonText ~= freeShownButton then
+			freeShownButton = buttonText
+			Kit.setEnabled(freeButton, left <= 0)
+			Kit.setButton(freeButton, buttonText)
+		end
+		local daily = data.daily
+		local dailyText = ""
+		if type(daily) == "table" then
+			dailyText = if daily.claimable == true
+				then "Daily Reward ready!"
+				else "Daily in " .. Format.time(math.max(0, (tonumber(daily.nextIn) or 0) - State.age()))
+		end
+		if dailyText ~= dailyShown then
+			dailyShown = dailyText
+			dailyLine.Text = dailyText
+			dailyPill.Visible = dailyText ~= ""
+		end
+	end
+
+	-- Starter pack: a wide mint hero card under the free card while the player does not own it --
 	local starterPass = Theme.Monetization.Passes[COS.Starter.Pass]
 	local starterTint = Theme.World.Mint
 	local starterCell, starterBody, starterArtHolder, starterArt =
@@ -1929,7 +2044,8 @@ local function buildShop(screen: ScreenGui)
 			Name = "Sub",
 			Text = "",
 			Font = F.Bold,
-			TextSize = 15,
+			TextSize = PACK_SUB,
+			MinPx = PACK_SUB_PX,
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Size = UDim2.new(1, -12, 0, 20),
@@ -2012,7 +2128,8 @@ local function buildShop(screen: ScreenGui)
 	local auraLabels: { TextLabel } = {}
 	local auraShown: { [number]: number } = {}
 	for index, pack in auraPacks do
-		local card = packCard(auraPackGrid, "Aura", index, pack.Price, C.Violet, Kit.lighten(C.Orb, 0.55), "Orb")
+		-- The stage shows the pack's aura; the number is the cash it is blended into.
+		local card = packCard(auraPackGrid, "Aura", index, pack.Price, C.Violet, C.MoneyText, "Coin")
 		auraLabels[index] = card.amount
 		card.sub.Text = string.format("%s of %s", durationText(pack.Seconds), string.lower(W.Orb))
 		packTags(card, index, #auraPacks)
@@ -2079,13 +2196,14 @@ local function buildShop(screen: ScreenGui)
 			placeBanner(banner, stageW, priceW)
 		end
 		-- One section per tab: the picked one is laid out from the top of the page, the others
-		-- are hidden. The Starter card heads the Passes tab.
+		-- are hidden. The free card heads the Passes tab, over the Starter card.
 		-- `before`: room above the block (a row of cards centred in the page). `fills`: the
 		-- block was sized to the page, which then ends with it.
 		type Block = { gui: GuiObject, h: number, gapAfter: number, head: boolean?, shown: boolean?, before: number?, fills: boolean? }
 		local pages: { { Block } } = {
 			{
-				-- Without the header the Starter card is the first card of the one list.
+				-- Free first, then the Starter card; without the header they lead the one list.
+				{ gui = freeCell, h = FREE_H, gapAfter = GAP },
 				{ gui = starterCell, h = STARTER_H, gapAfter = if short then GAP else 18, shown = starterShown },
 				{ gui = heads[1], h = HEAD_H, gapAfter = 14, head = true, shown = not short },
 				{ gui = passList, h = gridH(#bannerList, 1, BANNER_H), gapAfter = 26 },
@@ -2384,34 +2502,34 @@ local function buildShop(screen: ScreenGui)
 			return
 		end
 		local open = window.isOpen()
-		-- The wallet rolls; a landed purchase flies in from the card that was bought.
+		-- The wallet rolls; a landed purchase (cash and aura packs both pay cash) or free gift
+		-- flies in from its card. The wallet also grows from collecting, so only a jump of
+		-- about the card's size counts.
 		local money, carried = data.money, data.carried or 0
 		if chipMoney and money ~= chipMoney and open then
 			Kit.countTo(cashChip, chipMoney, money, State.money)
-			if money > chipMoney and lastPrompt and lastPrompt.kind == "Money" and os.clock() - lastPrompt.at < 120 then
-				flyTo(lastPrompt.entry.button, cashChip, "Coin", C.Gold)
-				lastPrompt = nil
+			local prompt = lastPrompt
+			if prompt and money > chipMoney then
+				local expected: number? = if prompt.kind == "Money"
+					then moneyShown[prompt.index]
+					elseif prompt.kind == "Aura" then auraShown[prompt.index]
+					else freeShownCash
+				local within = if prompt.kind == "Free" then 5 else 120
+				if os.clock() - prompt.at < within and money - chipMoney >= (expected or 0) * 0.5 then
+					flyTo(prompt.entry.button, cashChip, "Coin", C.Gold)
+					lastPrompt = nil
+				end
 			end
 		elseif money ~= chipMoney then
 			cashChip.Text = State.money(money)
 		end
-		-- The tank also fills from collecting, so only a jump of about a pack's size counts as the purchase.
 		if chipAura and carried ~= chipAura and open then
 			Kit.countTo(auraChip, chipAura, carried, State.num)
-			local prompt = lastPrompt
-			if
-				prompt
-				and prompt.kind == "Aura"
-				and os.clock() - prompt.at < 120
-				and carried - chipAura >= (auraShown[prompt.index] or 0) * 0.5
-			then
-				flyTo(prompt.entry.button, auraChip, "Orb", C.Orb)
-				lastPrompt = nil
-			end
 		elseif carried ~= chipAura then
 			auraChip.Text = State.num(carried)
 		end
 		chipMoney, chipAura = money, carried
+		refreshFree()
 
 		-- Each player sees their own pack sizes (the server grants with the same functions and
 		-- the same surge-free income and production: State.rewardIncome / rewardProduction).
@@ -2427,8 +2545,12 @@ local function buildShop(screen: ScreenGui)
 				setAmount(moneyLabels[index], State.num(amount))
 			end
 		end
+		-- An aura pack is blended into cash at once: the card shows that cash, with the same
+		-- money multiplier the server pays with (State.moneyMult).
+		local moneyMult = tonumber(data.moneyMult) or 1
 		for index, pack in auraPacks do
-			local amount = Economy.auraPackAmount(data.rewardProduction or data.production or 0, pack.Seconds, pack.Min, progression)
+			local aura = Economy.auraPackAmount(data.rewardProduction or data.production or 0, pack.Seconds, pack.Min, progression)
+			local amount = ShopMath.auraPackCash(aura, moneyMult)
 			local shown = auraShown[index]
 			auraShown[index] = amount
 			if shown and shown ~= amount and open then
@@ -2554,6 +2676,17 @@ local function buildShop(screen: ScreenGui)
 		stopIdle()
 		local mine = session
 		refresh()
+		-- The free card's countdowns tick between snapshots while the shop is open.
+		if not PREVIEW then
+			task.spawn(function()
+				while session == mine do
+					task.wait(0.5)
+					if session == mine then
+						refreshFree()
+					end
+				end
+			end)
+		end
 		local focus = Windows.shopFocus or screen:GetAttribute("ShopFocus")
 		Windows.shopFocus = nil
 		screen:SetAttribute("ShopFocus", nil)
@@ -2587,7 +2720,10 @@ local function buildShop(screen: ScreenGui)
 		previewShift = 0
 		current = index
 		layout(window.size())
-		if focusCell and passOrder and focusCell ~= starterCell then
+		if focusCell == starterCell then
+			-- Scrolled only as far as the whole Starter card needs: the free card stays over it when both fit.
+			y = math.max(0, PAGE_PAD + (gridTop[starterCell] or 0) + STARTER_H + PAGE_FIT_BOTTOM - pageH())
+		elseif focusCell and passOrder then
 			y = cardY(passList, passOrder, passesY, BANNER_H, 1)
 		elseif focusCell and cosOrder then
 			-- The first cosmetics row sits under the All Cosmetics card.

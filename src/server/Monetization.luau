@@ -2,8 +2,8 @@
 	Monetization: game passes and developer products.
 
 	Developer products: cash packs (Theme.Monetization.MoneyPacks),
-	aura packs (AuraPacks: aura straight into the tank, Tycoon.grantAura) and the instant
-	crate open. Pack amounts follow the buyer's progression (Shared.Economy).
+	aura packs (AuraPacks: the pack's aura blended into cash at once, Shared.ShopMath) and
+	the instant crate open. Pack amounts follow the buyer's progression (Shared.Economy).
 
 	IDs come from the theme. While an ID is 0:
 	  - in Studio, "buying" grants it immediately (so every feature is testable)
@@ -25,6 +25,8 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
+local Format = require(ReplicatedStorage.Shared.Format)
+local ShopMath = require(ReplicatedStorage.Shared.ShopMath)
 
 local Analytics = require(script.Parent.Analytics)
 local DataService = require(script.Parent.DataService)
@@ -103,8 +105,13 @@ local function grantProduct(session: Tycoon.Session, kind: string, index: number
 		local pack = theme.Monetization.AuraPacks[index]
 		-- Surge-free production (the shop card's State.rewardProduction): a pack bought during an
 		-- Aura Surge is not doubled by accident, and is what the card showed.
-		local amount = Economy.auraPackAmount(Tycoon.steadyProduction(session), pack.Seconds, pack.Min, progression)
-		Tycoon.grantAura(session, amount)
+		local aura = Economy.auraPackAmount(Tycoon.steadyProduction(session), pack.Seconds, pack.Min, progression)
+		-- Blended at once: the pack used to fill a tank the converter needed hours (the largest
+		-- pack, days) to empty. The buyer gets the cash that aura is worth, straight away. A
+		-- receipt for a pack sold before this change is paid the same way (same product ids).
+		local cash = ShopMath.auraPackCash(aura, Tycoon.moneyMultiplier(session))
+		Tycoon.grantMoney(session, cash)
+		Tycoon.toast(session, "Blended instantly! +" .. Format.money(cash), "good")
 	end
 end
 
