@@ -19,6 +19,7 @@ local Economy = require(Shared.Economy)
 local OrbLook = require(Shared.OrbLook)
 local CratePickup = require(Shared.CratePickup)
 local Format = require(Shared.Format)
+local IndexRewards = require(Shared.IndexRewards)
 local Net = require(Shared.Net)
 local TutorialSteps = require(Shared.TutorialSteps)
 local CharacterFactory = require(Shared.CharacterFactory)
@@ -162,7 +163,10 @@ Tycoon.hooks = {
 -- Gameplay event listeners (used by the tutorial): fn(session, name, data).
 -- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge", "Discover" (a tier was discovered
 -- for the first time; Analytics counts its milestones), "Rebirth" { gained, stars, rebirths,
--- tier } (the run was started again), and for Analytics alone "Earn"
+-- tier } (the run was started again), "IndexClaim" { found, cash, crate, tier, crateCash,
+-- champion } (an Index milestone was claimed: `tier` = the unit its crate gave, `crateCash` =
+-- the cash it paid instead on a full rack, `champion` = the Champion aura colour is now
+-- owned), and for Analytics alone "Earn"
 -- { source, amount }, "Spend" { sink, amount }, "Crate" { path, rarity } and "Notify" (every
 -- Notify payload sent to the player).
 Tycoon.listeners = {} :: { (Session, string, { [string]: any }) -> () }
@@ -588,6 +592,7 @@ local function discoverAll(session: Session, extra: { number }?, before: Earning
 	local runNewest = 0
 	local found: { number } = {}
 	local couldRebirth = Economy.canRebirth(highestTier(session))
+	local indexBefore = IndexRewards.found(p.discovered)
 	local function mark(tier: number)
 		if tier < 1 or tier > Economy.MAX_TIER then
 			return
@@ -640,6 +645,14 @@ local function discoverAll(session: Session, extra: { number }?, before: Earning
 			incomeAfter = after.income,
 		})
 		emit(session, "Discover", { tier = newest })
+		-- The Index has just reached a milestone: its reward waits in the Index window.
+		local indexNow = IndexRewards.found(p.discovered)
+		for _, milestone in IndexRewards.MILESTONES do
+			if milestone.found > indexBefore and milestone.found <= indexNow and p.tutorialDone then
+				local ready = "Index reward ready: %d %s found! Open the Index to claim it"
+				toast(session, string.format(ready, milestone.found, theme.Words.Units), "good")
+			end
+		end
 	end
 	if lifted then
 		local pad = session.plot.padByName.ProcUp1
@@ -1877,6 +1890,8 @@ local function snapshot(session: Session): { [string]: any }
 	local moneyMult = Tycoon.moneyMultiplier(session)
 	local runBest = highestTier(session)
 	local starsOnRebirth = Economy.rebirthStars(runBest)
+	local rewardIncome = Tycoon.income(session)
+	local index = IndexRewards.state(p, rewardIncome)
 	return {
 		now = now,
 		money = p.money,
@@ -1905,6 +1920,11 @@ local function snapshot(session: Session): { [string]: any }
 		-- tier ever found (the Index; what the plot shows off).
 		highestTier = runBest,
 		bestTier = Economy.highestTier(p.discovered),
+		-- Index milestones (Shared.IndexRewards.state): tiers found, every milestone with the
+		-- cash a claim pays right now, and `claimable` = how many wait to be claimed (also
+		-- `indexClaimable`, for the HUD's badge on the Index button).
+		index = index,
+		indexClaimable = index.claimable,
 		-- Rebirth: stars held (+10% cash each: `starMult`), runs started again, whether one is
 		-- on offer and the stars it would pay. `rebirth` is sent while it is on offer: what
 		-- the confirm lists (see rebirthOffer).
@@ -1929,7 +1949,7 @@ local function snapshot(session: Session): { [string]: any }
 		income = Tycoon.incomeNow(session),
 		-- What rewards and packs are sized with (no Aura Surge): the shop, Starter Pack and Daily
 		-- cards show the amounts the server grants, in and out of a surge.
-		rewardIncome = Tycoon.income(session),
+		rewardIncome = rewardIncome,
 		rewardProduction = steadyProduction(session),
 		freeIn = math.max(0, p.lastFreeReward + Economy.FREE_REWARD_COOLDOWN - now),
 		plotIndex = session.plot.index,
@@ -2329,6 +2349,51 @@ local function rebirth(session: Session)
 	flush(session)
 end
 actionHandlers.Rebirth = rebirth
+
+-- Claims the Index milestone of `data.found` tiers (the Index window's CLAIM buttons). The
+-- Index is every tier ever found, so a rebirth neither takes a milestone back nor offers it
+-- again; the cash is sized by the income of the run at this moment (Tycoon.income: no Aura
+-- Surge, the rebirth stars counted once, as in every other reward). IndexRewards.claim marks
+-- the milestone before anything is granted and nothing here yields, so a double tap or a
+-- second remote finds it claimed and pays nothing.
+actionHandlers.ClaimIndex = function(session, data)
+	local p = session.profile
+	local milestone = IndexRewards.milestone(data.found)
+	-- Sized before anything is granted, so the crate's unit does not change the cash.
+	local grant = IndexRewards.claim(p, data.found, Tycoon.income(session))
+	if not milestone or not grant then
+		return
+	end
+	local cash = grant.cash
+	local crate = grant.crate
+	-- With no room on the rack for its unit, the crate is paid as cash instead of being lost.
+	local tier = if crate then Tycoon.rollCrate(session, crate) else nil
+	local crateCash: number? = nil
+	if crate and not tier then
+		crateCash = IndexRewards.crateCash(milestone, highestTier(session))
+		cash += crateCash
+	end
+	emit(session, "IndexClaim", {
+		found = grant.found,
+		cash = cash,
+		crate = if tier then crate else nil,
+		tier = tier,
+		crateCash = crateCash,
+		champion = grant.champion,
+	})
+	local text = string.format("Index reward: %d %s found! +%s", grant.found, theme.Words.Units, Format.money(cash))
+	if grant.champion then
+		text ..= ", the Champion aura colour and the gold Index frame"
+	end
+	toast(session, text, "good")
+	Tycoon.grantMoney(session, cash, "Index")
+	if crate and tier then
+		Tycoon.grantCrate(session, crate, tier)
+	elseif crate and crateCash then
+		local full = "Your rack is full: the %s %s paid %s instead"
+		toast(session, string.format(full, crate, theme.Words.Chest, Format.money(crateCash)), "info")
+	end
+end
 
 -- Sent by the client once its UI is ready; the caller flushes fresh state.
 actionHandlers.Sync = function(_session) end

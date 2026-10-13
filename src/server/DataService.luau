@@ -51,6 +51,10 @@ export type Profile = {
 	-- Rebirths made and the stars they paid (Economy.STAR_BONUS cash each, for good).
 	rebirths: number,
 	stars: number,
+	-- Index milestones claimed (Shared.IndexRewards): the `found` of each one. Never reset: a
+	-- rebirth does not offer a milestone again. A save from before them has claimed none, so
+	-- every milestone it has already passed is waiting in the Index window.
+	indexClaimed: { number },
 	totalObtained: number,
 	-- Units bought on the buy pads so far (Economy.unitPrice grows with it).
 	bought: number,
@@ -76,8 +80,9 @@ export type Profile = {
 	tutorialStep: number,
 	tutorialDone: boolean,
 	introSeen: boolean,
-	-- Equipped trail ("" = none) and on/off switches of the toggle cosmetics (missing = on).
-	cosmetics: { trail: string, toggles: { [string]: boolean } },
+	-- Equipped trail ("" = none), on/off switches of the toggle cosmetics (missing = on) and
+	-- `champion`: the Champion aura colour is owned (the whole Index's milestone, claimed).
+	cosmetics: { trail: string, toggles: { [string]: boolean }, champion: boolean },
 	-- The Starter pack's one-time cash and trail have been given.
 	starterGranted: boolean,
 	-- Highest onboarding funnel step logged (Analytics; ONBOARDING_LEGACY = saves from before it).
@@ -154,6 +159,7 @@ function DataService.defaultProfile(): Profile
 		runDiscovered = table.clone(discovered),
 		rebirths = 0,
 		stars = 0,
+		indexClaimed = {},
 		totalObtained = 1,
 		bought = 0,
 		processLevel = Economy.START_PROCESS_LEVEL,
@@ -175,7 +181,7 @@ function DataService.defaultProfile(): Profile
 		tutorialStep = 1,
 		tutorialDone = false,
 		introSeen = false,
-		cosmetics = { trail = "", toggles = {} },
+		cosmetics = { trail = "", toggles = {}, champion = false },
 		starterGranted = false,
 		onboarding = 0,
 		badges = {},
@@ -282,6 +288,17 @@ local function reconcile(data: any): Profile
 		local v = data[key]
 		data[key] = if v ~= v or v < 0 or v == math.huge then 0 else math.floor(v)
 	end
+	-- Claimed Index milestones: whole tier counts, each once, in the order they were claimed.
+	-- Junk is dropped; a claim is never taken back.
+	local claimed: { number } = {}
+	for _, found in data.indexClaimed do
+		if type(found) == "number" and found == math.floor(found) and found >= 1 and found <= Economy.MAX_TIER then
+			if not table.find(claimed, found) then
+				table.insert(claimed, found)
+			end
+		end
+	end
+	data.indexClaimed = claimed
 	for i = 1, 2 do
 		local slot = data.unlockers[i]
 		if type(slot) ~= "table" or type(slot.rarity) ~= "string" or type(slot.endsAt) ~= "number" then
@@ -307,6 +324,12 @@ local function reconcile(data: any): Profile
 	end
 	if type(data.cosmetics.toggles) ~= "table" then
 		data.cosmetics.toggles = {}
+	end
+	-- The Champion aura colour comes with the whole Index's milestone: a save that claimed
+	-- it owns it, whatever the flag says.
+	local champion = table.find(data.indexClaimed, Economy.MAX_TIER) ~= nil
+	if champion or type(data.cosmetics.champion) ~= "boolean" then
+		data.cosmetics.champion = champion
 	end
 	for key, value in data.cosmetics.toggles do
 		if type(key) ~= "string" or type(value) ~= "boolean" then

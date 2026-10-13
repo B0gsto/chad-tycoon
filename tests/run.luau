@@ -5176,6 +5176,8 @@ require("./analytics")({ test = test, check = check, eq = eq })
 require("./ranking")({ test = test, check = check, eq = eq })
 -- Plot rank: dressing per five best tiers, rarity bands, champion sizes, fans (tests/plot_rank.luau).
 require("./plot_rank")({ test = test, check = check, eq = eq })
+-- Index milestones: rules, claims, rebirth and the saved field (tests/index_rewards.luau).
+require("./index_rewards")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared, loadDataService = loadDataService })
 -- Every script compiles the way Studio compiles it: 200 locals per chunk (tests/fx_juice.luau).
 require("./fx_juice")({ test = test, check = check })
 

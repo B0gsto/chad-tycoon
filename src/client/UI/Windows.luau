@@ -22,6 +22,7 @@ local UserInputService = game:GetService("UserInputService")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
+local IndexRewards = require(ReplicatedStorage.Shared.IndexRewards)
 local Net = require(ReplicatedStorage.Shared.Net)
 local ShopMath = require(ReplicatedStorage.Shared.ShopMath)
 
@@ -2838,6 +2839,7 @@ local function buildIndex(screen: ScreenGui)
 	-- Minimum 386 tall: a phone gets that window at x1.3, one row of cards and the top of the next.
 	local window = Kit.window(screen, "Index", "Index", I.Index, C.Window.Index, Vector2.new(880, 560), Vector2.new(560, 386))
 	register("Index", window)
+	local action = Net.event("Action")
 
 	-- Discovered count: a bar in the header row, left of the close button. It turns gold
 	-- once every tier is found.
@@ -2864,8 +2866,9 @@ local function buildIndex(screen: ScreenGui)
 		end
 	end
 
-	-- The complete state: a gold ribbon over the legend once every tier is found (the
-	-- Index's rewards are claimed elsewhere; this only marks the feat).
+	-- The complete state: a gold ribbon over the legend once every tier is found and every
+	-- milestone below is claimed (it takes the milestone track's row), and a gold frame
+	-- around the window: the last milestone's reward.
 	local COMPLETE_H = 44
 	local complete = Kit.panel(window.content, {
 		Name = "Complete",
@@ -2907,6 +2910,125 @@ local function buildIndex(screen: ScreenGui)
 		ZIndex = 2,
 	})
 
+	local paneCorner = window.frame:FindFirstChildOfClass("UICorner")
+	local goldFrame = Kit.new("Frame", {
+		Name = "GoldFrame",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1),
+		Visible = false,
+		ZIndex = 3,
+		Parent = window.frame,
+	})
+	Kit.new(
+		"UICorner",
+		{ CornerRadius = if paneCorner then paneCorner.CornerRadius else UDim.new(0, Theme.Glass.Radius), Parent = goldFrame }
+	)
+	Kit.new("UIStroke", {
+		Thickness = 3,
+		Color = C.Gold,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		Parent = goldFrame,
+	})
+
+	-- Milestone track: a cell per Index milestone (Shared.IndexRewards) in one row over the
+	-- legend. Each names what it asks for and its bonus over a button: the cash still to
+	-- earn (greyed), CLAIM once the Index is there, a gold CLAIMED tag after. The server
+	-- sends every amount (the snapshot's `index`), so a cell shows what a claim pays.
+	local TRACK_H = 62
+	local track = Kit.new("Frame", {
+		Name = "Rewards",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -14, 0, TRACK_H - 8),
+		Visible = false,
+		Parent = window.content,
+	})
+	type Cell = { frame: Frame, caption: TextLabel, button: TextButton, done: TextLabel, hit: TextButton, shown: string, state: string }
+	local cells: { Cell } = {}
+	-- os.clock() of the claim sent for each cell: its button waits for the server's answer.
+	local claimSent: { [number]: number } = {}
+	local CLAIM_WAIT = 2
+	local refreshTrack: () -> ()
+	local function claim(order: number)
+		local data = State.data
+		local index = data and data.index
+		local entry = if type(index) == "table" and type(index.milestones) == "table" then index.milestones[order] else nil
+		if type(entry) ~= "table" or entry.reached ~= true or entry.claimed == true then
+			return
+		end
+		if os.clock() - (claimSent[order] or -CLAIM_WAIT) < CLAIM_WAIT then
+			return
+		end
+		claimSent[order] = os.clock()
+		action:FireServer({ action = "ClaimIndex", found = entry.found })
+		refreshTrack()
+		-- No answer (a lost remote): the button comes back.
+		task.delay(CLAIM_WAIT + 0.1, refreshTrack)
+	end
+	local milestoneCount = #IndexRewards.MILESTONES
+	for order, milestone in IndexRewards.MILESTONES do
+		local cell = Kit.new("Frame", {
+			Name = "Milestone" .. milestone.found,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1 / milestoneCount, -6, 1, 0),
+			Position = UDim2.fromScale((order - 1) / milestoneCount, 0),
+			Parent = track,
+		})
+		local caption = Kit.text(cell, {
+			Name = "Caption",
+			Text = "",
+			Font = F.UI,
+			TextSize = T.Small,
+			MinPx = true,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextColor3 = SMALL_TEXT,
+			Size = UDim2.new(1, 0, 0, 18),
+			StrokeThickness = 0,
+		})
+		local button = Kit.button(cell, {
+			Name = "Claim",
+			Text = "",
+			Color = C.Good,
+			TextSize = 15,
+			Size = UDim2.new(1, 0, 0, 34),
+			Position = UDim2.fromOffset(0, 20),
+			Sound = "Reward",
+		}, function()
+			claim(order)
+		end)
+		local done = Kit.pill(cell, {
+			Name = "Done",
+			Text = "",
+			Color = C.Gold,
+			Solid = true,
+			TextColor = C.GoldInk,
+			TextSize = T.Small,
+			Size = UDim2.new(1, 0, 0, 28),
+			Position = UDim2.fromOffset(0, 22),
+			Visible = false,
+		})
+		-- Touch: the whole cell takes the tap (the button alone is a small target on a phone).
+		local hit = Kit.new("TextButton", {
+			Name = "Hit",
+			BackgroundTransparency = 1,
+			AutoButtonColor = false,
+			Text = "",
+			Size = UDim2.fromScale(1, 1),
+			ZIndex = 5,
+			Selectable = false,
+			Visible = false,
+			Parent = cell,
+		})
+		hit.Activated:Connect(function()
+			if cells[order].state == "ready" then
+				Kit.sound("Reward")
+				Kit.pop(button, 0.5)
+				claim(order)
+			end
+		end)
+		cells[order] = { frame = cell, caption = caption, button = button, done = done, hit = hit, shown = "", state = "" }
+	end
+
 	-- Rarity legend: one slim row above the grid, a bar per band that fills with the tiers
 	-- found in it ("RARE 3/5"), so a finished rarity reads as a solid chip of its colour.
 	local LEGEND_H = 34
@@ -2937,9 +3059,15 @@ local function buildIndex(screen: ScreenGui)
 	end
 
 	local scroll = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -LEGEND_H), Position = UDim2.fromOffset(0, LEGEND_H) })
-	-- The Index has no buttons: on gamepad the grid itself is selected so the stick scrolls it.
+	-- Gamepad: a milestone waiting to be claimed is selected first; with none the grid itself
+	-- is, so the stick scrolls it.
 	Kit.selectable(scroll)
 	focusPick.Index = function()
+		for _, cell in cells do
+			if cell.state == "ready" and track.Visible then
+				return cell.button
+			end
+		end
 		return scroll
 	end
 	Kit.new("UIPadding", {
@@ -2964,6 +3092,73 @@ local function buildIndex(screen: ScreenGui)
 		return if wideLegend then string.upper(band.name) .. " " .. count else count
 	end
 	local isComplete = false
+	-- The track shows while a milestone is still to claim; the ribbon takes over after the last.
+	local showTrack = false
+	-- Paints the track's cells from the snapshot's `index` (nothing is rebuilt: only what
+	-- changed is set). A cell claimed while the Index is open pops with confetti.
+	refreshTrack = function()
+		local data = State.data
+		local index = data and data.index
+		local milestones = if type(index) == "table" and type(index.milestones) == "table" then index.milestones else nil
+		local open = false
+		for order, cell in cells do
+			local entry = milestones and milestones[order]
+			if type(entry) ~= "table" then
+				continue
+			end
+			local waiting = os.clock() - (claimSent[order] or -CLAIM_WAIT) < CLAIM_WAIT
+			local state = if entry.claimed == true then "claimed" elseif entry.reached == true then "ready" else "locked"
+			open = open or state ~= "claimed"
+			local bonus: string? = nil
+			if type(entry.crate) == "string" then
+				bonus = if wideLegend then string.upper(entry.crate .. " " .. W.Chest) else "+" .. string.upper(W.Chest)
+			elseif entry.champion == true then
+				bonus = if wideLegend then "CHAMPION AURA" else "+AURA"
+			end
+			local found = tonumber(entry.found) or 0
+			local captionText = if not bonus
+				then string.format("%d FOUND", found)
+				elseif wideLegend then string.format("%d · %s", found, bonus)
+				else string.format("%d %s", found, bonus)
+			local cash = Format.money(tonumber(entry.cash) or 0)
+			local buttonText = if state == "claimed"
+				then (if wideLegend then "CLAIMED" else "DONE")
+				elseif state ~= "ready" then cash
+				elseif waiting then "..."
+				elseif wideLegend then "CLAIM " .. cash
+				else "CLAIM"
+			local key = state .. "|" .. captionText .. "|" .. buttonText
+			if cell.shown ~= key then
+				local was = cell.state
+				cell.shown = key
+				cell.state = state
+				cell.caption.Text = captionText
+				cell.caption.TextColor3 = if state == "locked" then SMALL_TEXT else C.GoldLight
+				cell.button.Visible = state ~= "claimed"
+				cell.done.Visible = state == "claimed"
+				cell.done.Text = buttonText
+				Kit.setButton(cell.button, buttonText)
+				Kit.setEnabled(cell.button, state == "ready" and not waiting)
+				if was == "ready" and state == "claimed" and window.isOpen() and not PREVIEW then
+					Kit.pop(cell.frame, 0.8)
+					local pane = window.frame
+					local scale = pane.AbsoluteSize.X / math.max(1, window.size().X)
+					local spot = (cell.frame.AbsolutePosition + cell.frame.AbsoluteSize / 2 - pane.AbsolutePosition) / math.max(scale, 0.01)
+					Kit.confetti(
+						pane,
+						{ Origin = UDim2.fromOffset(spot.X, spot.Y), Count = if entry.champion == true then 36 else 24, ZIndex = 45 }
+					)
+					-- Gamepad: the claimed button is gone, the selection moves to the next one.
+					if Kit.gamepad then
+						focusWindow("Index")
+					end
+				end
+			end
+			cell.hit.Visible = Kit.touch and state == "ready"
+		end
+		showTrack = open
+		goldFrame.Visible = type(index) == "table" and index.champion == true
+	end
 	local function layoutGrid()
 		local width = window.size().X
 		local columns = if isPhone(screen) then 3 elseif width >= 820 then 5 elseif width >= 680 then 4 else 3
@@ -2972,13 +3167,17 @@ local function buildIndex(screen: ScreenGui)
 		for _, band in bands do
 			band.label.Text = bandText(band)
 		end
-		-- The ribbon takes its row above the legend only while it shows. A short window (a
-		-- phone) gives it the legend's row instead: every bar there is full by then.
-		local folded = isComplete and window.size().Y < 440
-		local top = (if isComplete then COMPLETE_H else 0) + (if folded then 0 else LEGEND_H)
-		complete.Visible = isComplete
+		refreshTrack()
+		-- The track, or the ribbon after it, takes its row above the legend. A short window (a
+		-- phone) gives it the legend's row instead: the rarity is on every card.
+		local ribbon = isComplete and not showTrack
+		local strip = if showTrack then TRACK_H elseif ribbon then COMPLETE_H else 0
+		local folded = strip > 0 and window.size().Y < 440
+		local top = strip + (if folded then 0 else LEGEND_H)
+		complete.Visible = ribbon
+		track.Visible = showTrack
 		legend.Visible = not folded
-		legend.Position = UDim2.fromOffset(0, if isComplete then COMPLETE_H else 0)
+		legend.Position = UDim2.fromOffset(0, strip)
 		scroll.Position = UDim2.fromOffset(0, top)
 		scroll.Size = UDim2.new(1, 0, 1, -top)
 	end
@@ -3127,7 +3326,7 @@ local function buildIndex(screen: ScreenGui)
 	-- The ribbon's entrance has played (once per session, the first time it is seen).
 	local celebrated = false
 	local function celebrate()
-		if celebrated or PREVIEW or not isComplete then
+		if celebrated or PREVIEW or not complete.Visible then
 			return
 		end
 		celebrated = true
@@ -3177,12 +3376,16 @@ local function buildIndex(screen: ScreenGui)
 		found = count
 		setProgress(count / Economy.MAX_TIER)
 		local done = count >= Economy.MAX_TIER
-		if done ~= isComplete then
-			isComplete = done
-			paintBar(progress, if done then C.Gold else C.Window.Index)
+		local hadTrack, hadRibbon = showTrack, complete.Visible
+		refreshTrack()
+		if done ~= isComplete or showTrack ~= hadTrack then
+			if done ~= isComplete then
+				isComplete = done
+				paintBar(progress, if done then C.Gold else C.Window.Index)
+			end
 			layoutGrid()
-			-- The last tier found with the Index open: the ribbon lands at once.
-			if window.isOpen() then
+			-- The last milestone claimed with the Index open: the ribbon lands at once.
+			if window.isOpen() and complete.Visible and not hadRibbon then
 				celebrate()
 			end
 		end
