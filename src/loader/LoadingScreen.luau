@@ -12,7 +12,15 @@
 	the status under it and the tip card. Aura orbs drift up round the
 	hero. Only the bottom of the art is shaded, so the beach keeps its colour.
 	Without art ids it keeps the code-drawn sky gradient, bands and title text.
-	Art fades in only once its image has loaded; the whole screen fades out.
+	Art fades in only once its image has loaded.
+
+	Leaving (finish): the screen doesn't just fade. The bar fills, the logo
+	lifts off and the band drops away while the bar's aura orb leaps to the
+	middle of the screen and bursts into a sunny disc that covers everything;
+	that cover then opens as an iris on the player: a round window pops open
+	round the character, holds for a beat and widens until it is off the
+	screen. The loader moves the camera under it (see init). finish() without
+	a reveal keeps the plain fade (reduced motion).
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -35,13 +43,25 @@ export type Art = {
 	orb: Cell?,
 }
 
+export type Reveal = {
+	-- The world point the iris opens on (the player's head); the middle of the
+	-- screen without it.
+	focus: (() -> Vector3?)?,
+	-- Called once the burst covers the whole screen: what happens to the camera
+	-- from here on is hidden until the iris opens.
+	onCovered: (() -> ())?,
+	-- Time scale (1 = real time); the Studio capture hook slows it down.
+	speed: number?,
+}
+
 export type Handle = {
 	root: Frame,
 	applyTheme: (any) -> (),
 	applyArt: (Art?) -> (),
 	setStatus: (string) -> (),
 	setProgress: (number) -> (),
-	finish: () -> (),
+	-- Leaves the screen and returns the seconds until it is gone.
+	finish: (Reveal?) -> number,
 }
 
 local DEFAULT = {
@@ -102,6 +122,25 @@ local TWINKLES = {
 
 local SHINE_EVERY = 4.2
 local SHINE_TIME = 0.9
+
+-- The reveal's beats, in seconds: the bar fills, the orb leaps to the middle,
+-- the burst covers the screen and rests, the iris pops open on the player,
+-- holds, then widens off the screen.
+local FILL = 0.25
+local LEAP = 0.45
+local BURST = 0.4
+local REST = 0.06
+local POP = 0.32
+local HOLD = 0.28
+local WIDEN = 0.55
+local COVERED = FILL + LEAP + BURST
+local REVEAL_TIME = COVERED + REST + POP + HOLD + WIDEN
+-- The iris while it holds on the player, of the screen's shorter side.
+local IRIS_HOLD = 0.5
+local IRIS_SPARKLES = 8
+-- Soft dots trailing the orb in flight, each this far (of the leap) behind the last.
+local TRAIL = 4
+local TRAIL_GAP = 0.07
 
 local function new(className: string, props: { [string]: any }): any
 	local inst = Instance.new(className)
@@ -164,6 +203,20 @@ local function backOut(t: number): number
 	local c = 1.70158
 	local u = t - 1
 	return 1 + (c + 1) * u * u * u + c * u * u
+end
+
+-- Winds up the other way first: the logo and band dip before they leave.
+local function backIn(t: number): number
+	local c = 1.70158
+	return (c + 1) * t * t * t - c * t * t
+end
+
+local function smooth(t: number): number
+	return t * t * (3 - 2 * t)
+end
+
+local function phase(t: number, from: number, length: number): number
+	return math.clamp((t - from) / length, 0, 1)
 end
 
 --[[
@@ -459,6 +512,71 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		Parent = tipPill,
 	})
 
+	-- The reveal (see finish), hidden until then: the orb that leaves the bar,
+	-- the two discs of the burst, and the iris: a round frame whose stroke is
+	-- thick enough to cover the screen, so the frame itself is the window.
+	local trail = {}
+	for i = 1, TRAIL do
+		table.insert(trail, image("Trail" .. i, root, { ImageColor3 = colors.Primary, Visible = false }))
+	end
+	local burst = new("Frame", {
+		Name = "Burst",
+		BackgroundColor3 = colors.Primary,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Visible = false,
+		Parent = root,
+	})
+	round(burst)
+	local burstRim = stroke(burst, 1, WHITE)
+	local burstCore = new("Frame", {
+		Name = "Core",
+		BackgroundColor3 = colors.Primary:Lerp(WHITE, 0.6),
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Visible = false,
+		Parent = root,
+	})
+	round(burstCore)
+	-- The glow behind the orb; white-hot in the middle of the burst.
+	local sparkGlow = image("SparkGlow", root, { ImageColor3 = colors.Primary, ImageTransparency = 0.25, Visible = false })
+	local iris = new("Frame", {
+		Name = "Iris",
+		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Visible = false,
+		Parent = root,
+	})
+	round(iris)
+	local irisStroke = stroke(iris, 1, colors.Primary:Lerp(WHITE, 0.6))
+	local rims = {}
+	-- Round the window: a sunny band, an orange line inside it, a white lip.
+	for i, color in { colors.Primary, colors.PrimaryDeep, WHITE } do
+		local rim = new("Frame", {
+			Name = "Rim" .. i,
+			BackgroundTransparency = 1,
+			Size = UDim2.fromScale(1, 1),
+			Parent = iris,
+		})
+		round(rim)
+		table.insert(rims, stroke(rim, 1, color))
+	end
+	local irisSparkles = {}
+	for i = 1, IRIS_SPARKLES do
+		table.insert(irisSparkles, image("IrisSparkle" .. i, root, { Visible = false }))
+	end
+	local sparkDot = new("Frame", {
+		Name = "SparkDot",
+		BackgroundColor3 = colors.Primary,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Visible = false,
+		Parent = root,
+	})
+	round(sparkDot)
+	stroke(sparkDot, 3, WHITE)
+	local spark = image("Spark", root, { Visible = false })
+
 	local tips: { string } = {}
 	local tipIndex = 0
 	-- One line at full size; a long tip wraps onto two smaller lines.
@@ -499,6 +617,16 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		track.BackgroundColor3 = ink
 		tipPill.BackgroundColor3 = ink
 		riderGlow.ImageColor3 = primary
+		sparkGlow.ImageColor3 = primary
+		for _, dot in trail do
+			dot.ImageColor3 = primary
+		end
+		sparkDot.BackgroundColor3 = primary
+		burst.BackgroundColor3 = primary
+		burstCore.BackgroundColor3 = primary:Lerp(WHITE, 0.6)
+		irisStroke.Color = primary:Lerp(WHITE, 0.6)
+		rims[1].Color = primary
+		rims[2].Color = c.GoldDeep or DEFAULT.PrimaryDeep
 		fillGradient.Color = ColorSequence.new(primary:Lerp(WHITE, 0.35), primary)
 		lipFill.BackgroundColor3 = c.GoldDeep or DEFAULT.PrimaryDeep
 		local loading = t.Loading or {}
@@ -584,10 +712,17 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 				orb.core.Image = art.softDot
 			end
 			riderGlow.Image = art.softDot
+			sparkGlow.Image = art.softDot
+			for _, dot in trail do
+				dot.Image = art.softDot
+			end
 		end
 		if art.sparkle then
 			for _, twinkle in twinkles do
 				twinkle.label.Image = art.sparkle
+			end
+			for _, sparkle in irisSparkles do
+				sparkle.Image = art.sparkle
 			end
 		end
 		local cell = art.orb
@@ -597,6 +732,9 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 			rider.ImageRectSize = Vector2.new(cell.w, cell.h)
 			rider.ImageTransparency = 0
 			riderGlow.ImageTransparency = 0.35
+			spark.Image = cell.image
+			spark.ImageRectOffset = rider.ImageRectOffset
+			spark.ImageRectSize = rider.ImageRectSize
 		end
 	end
 	-- Pick up art that is already there (in Studio and the preview it usually is).
@@ -605,6 +743,148 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	local nextTip = 5
 	local progress = 0.06
 	local target = 0.3
+
+	-- The reveal: its options, the seconds since it began, where the orb left
+	-- the bar from, and whether the burst has covered the screen yet.
+	local reveal: Reveal? = nil
+	local revealT = 0
+	local sparkFrom: Vector2? = nil
+	local covered = false
+	local opened = false
+	local connection: RBXScriptConnection? = nil
+
+	local function drawReveal(options: Reveal, camera: Camera, w: number, h: number, scale: number, bandS: number)
+		local t = revealT
+		local middle = Vector2.new(w / 2, h / 2)
+		local diagonal = math.sqrt(w * w + h * h)
+
+		-- The orb leaves the bar's leading edge and arcs up to the middle.
+		local leap = phase(t, FILL, LEAP)
+		local burstK = phase(t, FILL + LEAP, BURST)
+		local sparkSize = (50 + 80 * smooth(leap)) * bandS
+		local function along(k: number): Vector2
+			return (sparkFrom :: Vector2):Lerp(middle, smooth(k)) - Vector2.new(0, math.sin(math.pi * k) * 0.16 * h)
+		end
+		if leap > 0 and not covered then
+			if not sparkFrom then
+				sparkFrom = rider.AbsolutePosition + rider.AbsoluteSize / 2 - root.AbsolutePosition
+				rider.Visible = false
+				riderGlow.Visible = false
+				spark.Visible = spark.Image ~= ""
+				sparkDot.Visible = not spark.Visible
+				sparkGlow.Visible = true
+			end
+			local at = along(leap)
+			local grown = sparkSize * (1 + 0.6 * burstK)
+			for _, part in { spark, sparkDot } do
+				part.Position = UDim2.fromOffset(at.X, at.Y)
+				part.Size = UDim2.fromOffset(grown, grown)
+			end
+			spark.Rotation = leap * 360
+			spark.ImageTransparency = burstK
+			sparkDot.BackgroundTransparency = burstK
+			for i, dot in trail do
+				local behind = leap - i * TRAIL_GAP
+				local spot = along(math.max(behind, 0))
+				local size = sparkSize * (1.5 - 0.25 * i)
+				dot.Visible = behind > 0 and burstK < 1 and dot.Image ~= ""
+				dot.Position = UDim2.fromOffset(spot.X, spot.Y)
+				dot.Size = UDim2.fromOffset(size, size)
+				dot.ImageTransparency = 1 - (0.75 - 0.15 * i) * (1 - burstK)
+			end
+		end
+		if leap > 0 and not opened then
+			local at = along(leap)
+			local glow = sparkSize * 2.6 * (1 + 2.2 * burstK)
+			sparkGlow.Position = UDim2.fromOffset(at.X, at.Y)
+			sparkGlow.Size = UDim2.fromOffset(glow, glow)
+			sparkGlow.ImageColor3 = burst.BackgroundColor3:Lerp(WHITE, burstK)
+		end
+
+		-- It bursts: a sunny disc, a paler one close behind, out past the corners.
+		if burstK > 0 and not opened then
+			local full = diagonal * 1.08
+			local outer = sparkSize + (full - sparkSize) * smooth(burstK)
+			local inner = full * smooth(phase(burstK, 0.22, 0.78))
+			burst.Visible = true
+			burst.Position = UDim2.fromOffset(middle.X, middle.Y)
+			burst.Size = UDim2.fromOffset(outer, outer)
+			burstRim.Thickness = math.max(4, 10 * scale)
+			-- Sparkles fly out on the shockwave's edge.
+			for i, sparkle in irisSparkles do
+				local angle = (i / IRIS_SPARKLES + burstK * 0.2) * 2 * math.pi
+				local size = 70 * scale * (0.5 + 0.5 * math.sin(math.pi * math.min(burstK * 1.4, 1)))
+				sparkle.Visible = sparkle.Image ~= "" and burstK < 1
+				sparkle.Position = UDim2.fromOffset(middle.X + math.cos(angle) * outer / 2, middle.Y + math.sin(angle) * outer / 2)
+				sparkle.Size = UDim2.fromOffset(size, size)
+				sparkle.Rotation = burstK * 90 + i * 30
+				sparkle.ImageTransparency = 0
+			end
+			burstCore.Visible = inner > 0
+			burstCore.Position = burst.Position
+			burstCore.Size = UDim2.fromOffset(inner, inner)
+		end
+		if burstK >= 1 and not covered then
+			covered = true
+			-- Only the cover is left: the splash under it goes, and so may the camera.
+			for _, child in root:GetChildren() do
+				if child:IsA("GuiObject") and child ~= burst and child ~= burstCore and child ~= iris and child ~= sparkGlow then
+					child.Visible = false
+				end
+			end
+			root.BackgroundTransparency = 1
+			if options.onCovered then
+				task.spawn(options.onCovered)
+			end
+		end
+
+		-- The iris: pops open round the player, holds, then widens off the screen.
+		local since = t - COVERED - REST
+		if since < 0 then
+			return
+		end
+		if not opened then
+			opened = true
+			burst.Visible = false
+			burstCore.Visible = false
+			sparkGlow.Visible = false
+			iris.Visible = true
+			for _, sparkle in irisSparkles do
+				sparkle.Visible = sparkle.Image ~= ""
+			end
+		end
+		local at = middle
+		local point = if options.focus then options.focus() else nil
+		if point then
+			local onScreen = camera:WorldToViewportPoint(point)
+			if onScreen.Z > 0 then
+				at = Vector2.new(math.clamp(onScreen.X, 0, w), math.clamp(onScreen.Y, 0, h))
+			end
+		end
+		local held = IRIS_HOLD * math.min(w, h)
+		local widen = phase(since, POP + HOLD, WIDEN)
+		local hole = held * (backOut(phase(since, 0, POP)) + 0.12 * phase(since, POP, HOLD))
+		-- From any point on the screen, twice the diagonal clears every corner.
+		hole += (diagonal * 2.05 - hole) * widen * widen
+		hole = math.max(hole, 2)
+		iris.Position = UDim2.fromOffset(at.X, at.Y)
+		iris.Size = UDim2.fromOffset(hole, hole)
+		irisStroke.Thickness = diagonal * 1.05
+		rims[1].Thickness = math.max(14, 44 * scale)
+		rims[2].Thickness = math.max(5, 14 * scale)
+		rims[3].Thickness = math.max(3, 7 * scale)
+		-- Sparkles ride the window's edge and go as it widens.
+		local shown = phase(since, 0, POP * 0.6) * (1 - phase(widen, 0, 0.5))
+		for i, sparkle in irisSparkles do
+			local angle = (i / IRIS_SPARKLES + since * 0.22) * 2 * math.pi
+			local pulse = 0.6 + 0.4 * math.sin(since * 9 + i * 2.1)
+			local size = 68 * scale * pulse * shown
+			sparkle.Position = UDim2.fromOffset(at.X + math.cos(angle) * hole / 2, at.Y + math.sin(angle) * hole / 2)
+			sparkle.Size = UDim2.fromOffset(size, size)
+			sparkle.Rotation = since * 120 + i * 30
+			sparkle.ImageTransparency = 1 - shown
+		end
+	end
 
 	local function layout()
 		local camera = workspace.CurrentCamera
@@ -643,7 +923,9 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		if short > 0 then
 			bandTop += BAR_Y * bandS
 		end
-		bottom.Position = UDim2.new(0.5, 0, 1, -margin)
+		-- Leaving: the band dips and drops off the bottom, the logo lifts off the top.
+		local away = if reveal then backIn(phase(revealT, FILL, LEAP)) else 0
+		bottom.Position = UDim2.new(0.5, 0, 1, -margin + away * (BAND.Y * bandS + margin + 40))
 		shade.Size = UDim2.new(1, 0, 0, h - bandTop + 90 * bandS)
 
 		local between = (top + logoH + bandTop) / 2
@@ -658,10 +940,11 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 			pop = 0.75 + 0.25 * backOut(math.clamp((clock - logoShownAt) / 0.45, 0, 1))
 		end
 		logo.Size = UDim2.fromOffset(LOGO.X * logoS * pop, logoH * pop)
-		logo.Position = UDim2.new(0.5, 0, 0, top + logoH / 2 + bob)
+		local logoY = top + logoH / 2 + bob - away * (top + logoH * 1.2 + 40)
+		logo.Position = UDim2.new(0.5, 0, 0, logoY)
 		logo.Rotation = math.sin(clock * 0.9) * 1.2
 		title.Size = UDim2.fromOffset(math.min(w * 0.92, 760 * scale), 84 * scale)
-		title.Position = UDim2.new(0.5, 0, 0, top + logoH / 2 + bob)
+		title.Position = UDim2.new(0.5, 0, 0, logoY)
 
 		-- The rider sits on the fill's leading edge.
 		local edge = (BAND.X - BAR.X) / 2 + 3 + progress * (BAR.X - 6)
@@ -703,6 +986,10 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 			shineGradient.Offset = Vector2.new(if t < 1 then -0.8 + 1.6 * t else -1.5, 0)
 		end
 		riderGlow.ImageTransparency = if rider.Image ~= "" then 0.35 + 0.2 * math.sin(clock * 3) else 1
+
+		if reveal then
+			drawReveal(reveal, camera, w, h, scale, bandS)
+		end
 	end
 
 	local function showProgress()
@@ -711,7 +998,18 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	end
 	showProgress()
 
-	local connection = RunService.RenderStepped:Connect(function(dt)
+	connection = RunService.RenderStepped:Connect(function(dt)
+		if reveal then
+			dt *= reveal.speed or 1
+			revealT += dt
+			if revealT >= REVEAL_TIME then
+				if connection then
+					connection:Disconnect()
+				end
+				root:Destroy()
+				return
+			end
+		end
 		clock += dt
 		-- The bar eases toward the stage the loader has reached and fills on finish.
 		progress += (target - progress) * math.min(1, dt * (if alive then 1.6 else 8))
@@ -742,21 +1040,28 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	end)
 	layout()
 
-	local function finish()
+	local function finish(options: Reveal?): number
 		if not alive then
-			return
+			return 0
 		end
 		alive = false
 		target = 1
 		table.clear(pending)
+		if options and not PREVIEW then
+			reveal = options
+			return REVEAL_TIME / (options.speed or 1)
+		end
 		task.delay(0.3, function()
 			fading = true
 			fadeOut(root, 0.6)
 		end)
 		task.delay(0.95, function()
-			connection:Disconnect()
+			if connection then
+				connection:Disconnect()
+			end
 			root:Destroy()
 		end)
+		return 0.95
 	end
 
 	return {
