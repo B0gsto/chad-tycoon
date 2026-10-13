@@ -37594,7 +37594,8 @@ actionHandlers.Rebirth = rebirth
 -- Claims the Index milestone of `data.found` tiers (the Index window's CLAIM buttons). The
 -- Index is every tier ever found, so a rebirth neither takes a milestone back nor offers it
 -- again; the cash is sized by the income of the run at this moment (Tycoon.income: no Aura
--- Surge, the rebirth stars counted once, as in every other reward). IndexRewards.claim marks
+-- Surge, the rebirth stars counted once, as in every other reward), with a floor from the best
+-- tier ever found so a claim right after a rebirth is not wasted. IndexRewards.claim marks
 -- the milestone before anything is granted and nothing here yields, so a double tap or a
 -- second remote finds it claimed and pays nothing.
 actionHandlers.ClaimIndex = function(session, data)

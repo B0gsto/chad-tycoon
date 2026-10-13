@@ -252,7 +252,8 @@ sand island in the sea.
   the "Before you go" line.
 - **Index rewards.** Finding 5 / 10 / 15 / 20 / 25 Chads pays 10 / 20 / 30 / 45 / 60 minutes of income,
   plus a Rare / Epic / Legendary crate at 10 / 15 / 20 and the Champion aura colour with a gold Index
-  frame at 25. Claimed in the Index window, once per account; a rebirth never resets them. The Index
+  frame at 25. Claimed in the Index window, once per account; a rebirth never resets them, and the cash
+  is never less than one Chad of your best tier ever found would earn. The Index
   button shows a "!" badge while a reward waits. Rules in `src/shared/IndexRewards.luau`, tests in
   `tests/index_rewards.luau`.
 - **Coming back.** Returning players get a "While you were away" card (away cash and its cap, Smasher
