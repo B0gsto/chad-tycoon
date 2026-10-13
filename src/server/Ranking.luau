@@ -14,7 +14,10 @@
 
 	Standing (Ranking.standing) is the asking player's place on a board and the nearest
 	players to pass and to stay ahead of: { rank (nil under the listed top), cap, above,
-	below, aboveHere, serverRank, serverCount, unranked }. `global` is false while the
+	below, aboveHere, serverRank, serverCount, unranked, count, edge }. `count` is how many
+	rows the board has (the window fills a young board with the player's own goal instead of
+	made-up names) and `edge` its last listed row once it is full: the score that gets a
+	player under it into the top `cap`. `global` is false while the
 	lists only hold this server's players (no DataStore, or before the first read).
 ]]
 
@@ -46,6 +49,8 @@ type Standing = {
 	serverRank: number,
 	serverCount: number,
 	unranked: boolean,
+	count: number,
+	edge: any?,
 }
 
 local ordered: OrderedDataStore? = nil
@@ -271,6 +276,8 @@ end
 	unknown) and `unranked` marks a player with no row at all (no stage yet): their target
 	is then the last row of the board. `here` holds the user ids in this server:
 	serverRank / serverCount place the player among them (count 0: not among them).
+	`count` is the number of rows on the board and `edge` row `cap` (nil while the board
+	has fewer): the one to beat to get into the listed top.
 ]]
 local function standing(list: { any }, userId: number, cap: number, here: { [number]: boolean }): Standing
 	local index: number? = nil
@@ -297,6 +304,8 @@ local function standing(list: { any }, userId: number, cap: number, here: { [num
 			serverRank = 0,
 			serverCount = serverCount,
 			unranked = true,
+			count = #list,
+			edge = list[cap],
 		}
 	end
 	local above = list[index - 1]
@@ -309,6 +318,8 @@ local function standing(list: { any }, userId: number, cap: number, here: { [num
 		serverRank = serverRank,
 		serverCount = serverCount,
 		unranked = false,
+		count = #list,
+		edge = list[cap],
 	}
 end
 

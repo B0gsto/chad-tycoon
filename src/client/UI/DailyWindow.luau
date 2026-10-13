@@ -98,7 +98,8 @@ local ART_MAX = 96
 local AMOUNT_H = 28
 local AMOUNT_MAX = 24
 local AMOUNT_MIN_PX = 18 -- the amount is the card's key number: never under this on the glass
-local CHIP_H = 22
+local CHIP_H = 24
+local CHIP_TEXT = math.max(T.Small, Kit.WINDOW.TextPx) -- the crate chip's text (a window caption)
 -- The design window holds exactly that: chrome (104) + streak + cards + footer.
 local CARD_H = CARD_TOP + HEAD_H + HEAD_GAP + ART_MAX + STACK_GAP + AMOUNT_H + STACK_GAP + CHIP_H + CARD_BOTTOM
 local DESIGN = Vector2.new(880, 104 + HERO_H + SECTION + CARD_H + SECTION + FOOTER_H)
@@ -150,15 +151,31 @@ type Card = {
 	state: string,
 }
 
+--[[
+	Idle motion, only while the window is open: today's card floats up and down and stars
+	twinkle over its art, the Day 7 chest sparkles until it is claimed, and the streak icon
+	breathes. Sizes in design px, times in seconds.
+]]
+local MOTION = {
+	TodayBob = 8, -- px today's card rises
+	TodayBeat = 0.7, -- seconds per half bob
+	TodayStar = 20, -- stars over today's art...
+	TodayEvery = 0.45, -- ...one every this many seconds
+	ChestStar = 22, -- stars over the Day 7 chest
+	ChestEvery = 0.28,
+	StarLife = 0.8,
+	StreakBreathe = 0.12, -- how far the streak icon swells
+}
+
 -- Width of a chip that says `text` (TextService when available, else an estimate).
 local function chipWidth(text: string): number
 	local width = 0
 	pcall(function()
 		local TextService = game:GetService("TextService")
-		width = TextService:GetTextSize(text, T.Small, F.UI, Vector2.new(1000, 40)).X
+		width = TextService:GetTextSize(text, CHIP_TEXT, F.UI, Vector2.new(1000, 40)).X
 	end)
 	if width <= 0 then
-		width = (utf8.len(text) or #text) * T.Small * 0.62
+		width = (utf8.len(text) or #text) * CHIP_TEXT * 0.62
 	end
 	return math.ceil(width) + 20
 end
@@ -273,7 +290,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				Text = chipFull,
 				Color = C.Rarity[reward.crate] or C.Gold,
 				Solid = true,
-				TextSize = T.Small,
+				TextSize = CHIP_TEXT,
 				MinPx = true,
 				Size = UDim2.fromOffset(chipWidth(chipFull), CHIP_H),
 				AnchorPoint = Vector2.new(0.5, 0),
@@ -497,6 +514,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Kit.setGlow(card.frame, state == "today", C.Gold)
 	end
 
+	-- Restarts the idle motion (set under the layout, which it depends on).
+	local restartMotion: () -> () = function() end
+
 	-- The footer's countdown to the next reward, once a second while open.
 	local clockText = ""
 	local function updateClock()
@@ -534,6 +554,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		local income = tonumber(data.rewardIncome) or tonumber(data.income) or 0
 		-- A player's first day pays today's card up to a cap (Server.Daily does the same).
 		local cap = if daily.firstDay == true then DailyReward.firstDayCap(day, tonumber(data.bought) or 0) else nil
+		local restyled = false
 		for i, card in cards do
 			card.amount.Text = State.money(DailyReward.cash(i, income, progression, if i == day then cap else nil))
 			local state = if i <= claimed
@@ -543,8 +564,13 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				else "later"
 			if state ~= card.state then
 				dress(card, i, state)
+				restyled = true
 			end
 			card.shield.Visible = i == savedCard
+		end
+		-- A card changed state with the window open (the claim landed): the motion follows it.
+		if restyled and window.isOpen() then
+			task.defer(restartMotion)
 		end
 		rule.Text = if saves then SAVER_SAVES elseif saverSpent then SAVER_SPENT else SAVER_RULE
 		streakTitle.Text = if streak >= 2
@@ -585,9 +611,53 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		updateClock()
 	end
 
+	-- Idle motion (MOTION): started when the window opens, a card changes state or the
+	-- cards are laid out again (a bob holds its card's place), stopped when it closes.
+	local motionStops: { () -> () } = {}
+	local function stopMotion()
+		for _, stop in motionStops do
+			stop()
+		end
+		table.clear(motionStops)
+	end
+	local function startMotion()
+		stopMotion()
+		if PREVIEW or not window.isOpen() then
+			return
+		end
+		for day, card in cards do
+			if card.state == "today" then
+				table.insert(motionStops, Kit.bob(card.frame, MOTION.TodayBob, MOTION.TodayBeat))
+				table.insert(
+					motionStops,
+					Kit.twinkle(
+						card.art,
+						{ Size = MOTION.TodayStar, Every = MOTION.TodayEvery, Life = MOTION.StarLife, Inset = 0, ZIndex = 5 }
+					)
+				)
+			elseif day == DailyReward.DAYS and card.state ~= "claimed" then
+				table.insert(
+					motionStops,
+					Kit.twinkle(
+						card.art,
+						{ Size = MOTION.ChestStar, Every = MOTION.ChestEvery, Life = MOTION.StarLife, Inset = 0, ZIndex = 5 }
+					)
+				)
+			end
+		end
+		local streakIcon = hero:FindFirstChild("Icon")
+		if streakIcon and streakIcon:IsA("GuiObject") and hero.Visible then
+			table.insert(motionStops, Kit.breathe(streakIcon, MOTION.StreakBreathe))
+		end
+	end
+	restartMotion = startMotion
+	window.onOpen.Event:Connect(startMotion)
+	window.onClose.Event:Connect(stopMotion)
+
 	-- Layout: one row of seven, or 4 + 3 with Day 7 double width (a narrow window, and
 	-- always a phone: touch on a Compact screen, whose window is short and scaled up) -------
 	local function layout()
+		stopMotion()
 		local size = window.size()
 		-- Window chrome (24 wide, 84 tall) and the content well's padding (10 a side).
 		local width, height = size.X - 44, size.Y - 104
@@ -661,6 +731,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		end
 		clockText = ""
 		render()
+		startMotion()
 	end
 	layout()
 	window.onResize.Event:Connect(layout)

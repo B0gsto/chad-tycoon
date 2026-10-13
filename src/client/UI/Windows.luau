@@ -212,7 +212,7 @@ local function tag(parent: Instance, props: { [string]: any }): TextLabel
 		TextWrapped = false,
 		BackgroundColor3 = color,
 		BackgroundTransparency = 0.6,
-		Size = UDim2.fromOffset(0, 24),
+		Size = UDim2.fromOffset(0, 26),
 		AutomaticSize = Enum.AutomaticSize.X,
 		Position = props.Position or UDim2.new(),
 		AnchorPoint = props.AnchorPoint or Vector2.zero,
@@ -295,6 +295,7 @@ local function ribbon(parent: Instance, text: string, color: Color3): TextLabel
 		Text = text,
 		Font = F.UI,
 		TextSize = 16,
+		MinPx = false, -- the ribbon is sized from its text at this size
 		TextTransparency = 1,
 		TextWrapped = false,
 		BackgroundColor3 = C.Ink,
@@ -312,6 +313,7 @@ local function ribbon(parent: Instance, text: string, color: Color3): TextLabel
 		Text = text,
 		Font = F.UI,
 		TextSize = 16,
+		MinPx = false, -- the ribbon is sized from its text at this size
 		TextWrapped = false,
 		TextColor3 = Color3.new(1, 1, 1),
 		BackgroundColor3 = color,
@@ -436,14 +438,18 @@ local SWITCH_H = 44 -- section switcher bar (36 px pills inside)
 local PAGE_TOP = SWITCH_H + 8 -- the scrolling page starts below the switcher
 local PRICE_H = 42 -- every price button
 local PRICE_TEXT = 20
-local FADE_H = 26 -- shade along the bottom edge of the page: the hint that it scrolls on
+local FADE_H = 56 -- shade along the bottom edge of the page: the hint that it scrolls on (with Kit.scrollCue's arrow)
+-- The slow sheen across each grid's BEST VALUE card: seconds between two, band width (px),
+-- the band's transparency at its brightest and seconds to cross the card.
+local BEST_SHINE = { Every = 3.4, Width = 90, Fade = 0.45, Time = 1.8 }
 local PACK_SUB = 16 -- a pack card's caption ("1 h of income"), design px...
 local PACK_SUB_PX = 12 -- ...and its floor on the glass, whatever the screen and window scale
 local PAGE_BOTTOM = 14 -- room under the last row of a section, clear of that shade
 local PAGE_PAD = 12 -- UIPadding over the first row: a ribbon overlaps its card's top edge by 8 px
 local PAGE_FIT_BOTTOM = 4 -- room under a row of cards that fills the page
 local PAGE_SHORT = 330 -- a page under this (a phone) drops the section header: the cards are the page
-local MIN_TEXT = 14 -- no shop text renders smaller (TextScaled labels included)
+local MIN_TEXT = 17 -- no fixed-size shop text is smaller (Kit.WINDOW.TextPx on a desktop screen)
+local MIN_SCALED = 14 -- ...and a TextScaled label never shrinks under this to fit its box
 local CART = 52 -- header cart art (inside the pane)
 local WALLET_CASH = 140 -- header wallet pill: the cash half...
 local WALLET_AURA = 112 -- ...and the tank half
@@ -453,11 +459,11 @@ local INSET = 0.4 -- darker panes inside a glass card (descriptions, contents ch
 local BANNER_INSET = Theme.Glass.BannerInset
 local BANNER_INSET_DEEP = Theme.Glass.BannerInsetDeep
 
--- TextScaled labels in the shop never shrink below MIN_TEXT.
+-- TextScaled labels in the shop never shrink below MIN_SCALED.
 local function minText(label: TextLabel): TextLabel
 	local constraint = label:FindFirstChildOfClass("UITextSizeConstraint")
 	if constraint then
-		constraint.MinTextSize = math.min(MIN_TEXT, constraint.MaxTextSize)
+		constraint.MinTextSize = math.min(MIN_SCALED, constraint.MaxTextSize)
 	end
 	return label
 end
@@ -785,6 +791,9 @@ local function buildShop(screen: ScreenGui)
 		})
 		fadeStrips[strip] = strip.BackgroundTransparency
 	end
+	-- ...and Kit.scrollCue's bouncing arrow over it, while the page runs on (the Passes tab's
+	-- game passes start under the fold).
+	Kit.scrollCue(scroll, { Fade = false, ZIndex = 10 })
 	local fadeShown = true
 	local function showFade(on: boolean)
 		if on == fadeShown then
@@ -1651,7 +1660,7 @@ local function buildShop(screen: ScreenGui)
 			TextTransparency = 0.1,
 			BackgroundColor3 = Kit.darken(tint, BANNER_INSET_DEEP),
 			BackgroundTransparency = BANNER_INSET,
-			Size = UDim2.fromOffset(math.ceil(ribbonTextWidth("PERMANENT") * MIN_TEXT / 16) + BANNER_TEXT_X * 2, 20),
+			Size = UDim2.fromOffset(math.ceil(ribbonTextWidth("PERMANENT") * MIN_TEXT / 16) + BANNER_TEXT_X * 2, 22),
 			Position = UDim2.fromOffset(0, BANNER_PERK_Y),
 			StrokeThickness = 0,
 			ZIndex = 6,
@@ -1871,10 +1880,10 @@ local function buildShop(screen: ScreenGui)
 				action:FireServer({ action = "ToggleCosmetic", name = name, value = value })
 				refresh()
 			end)
-			-- The switch's ON / OFF word at the shop's 14 px floor.
+			-- The switch's ON / OFF word at 14 px: all the small switch's track has room for.
 			local state = toggle:FindFirstChild("State")
 			if state and state:IsA("TextLabel") then
-				state.TextSize = MIN_TEXT
+				state.TextSize = MIN_SCALED
 				state.TextWrapped = false
 			end
 			card.control = control
@@ -2655,6 +2664,13 @@ local function buildShop(screen: ScreenGui)
 				table.insert(idleStops, Kit.shimmer(entry.clip, 5 + (i % 4) * 0.8, 3))
 			end
 		end
+		-- The BEST VALUE card of each pack grid: a wide, slow sheen on top of its own.
+		for _, grid in packGrids do
+			local best = grid.packs[#grid.packs]
+			if best and best.clip and best.cell.Visible then
+				table.insert(idleStops, Kit.shimmer(best.clip, BEST_SHINE.Every, 4, BEST_SHINE))
+			end
+		end
 		local tagged: { { tag: TextLabel? } } = {}
 		for _, banner in bannerList do
 			table.insert(tagged, banner)
@@ -2860,7 +2876,45 @@ local function sparkle(frame: Frame)
 end
 
 -- Index card height (design px): number row, character, two-line name, rarity tag.
-local CARD_H = 212
+local CARD_H = 218
+
+--[[
+	Every size, time and count of the Index's celebration (all tiers found), its claim
+	buttons and its NEW markers.
+]]
+local INDEX = {
+	-- All found: a crown sits on the corner of the progress pill and bobs, a sheen crosses
+	-- the pill and stars twinkle around it.
+	Crown = 40,
+	CrownTilt = -18,
+	CrownBob = 5,
+	CrownBeat = 0.55,
+	PillShine = 1.8, -- seconds between sheens
+	PillTwinkle = 0.3, -- seconds between stars
+	PillStar = 18,
+	-- A milestone to claim: a bright sheen sweeps its button.
+	ClaimShine = 1.4, -- seconds between sweeps
+	ClaimShineWidth = 30,
+	ClaimShineFade = 0.3, -- transparency of the band (lower = brighter)
+	ClaimShineTime = 0.6, -- seconds to cross the button
+	ClaimText = 15, -- "CLAIM $171.44T" has to fit a fifth of the track
+	-- CLAIM ALL: shown while more than one milestone waits; claims them one after another.
+	AllText = 22,
+	AllGap = 0.3, -- seconds between two claims
+	AllWait = 1.6, -- longest wait for the server's answer to one
+	-- NEW: cleared once its card has been in view this long (checked every NewCheck seconds),
+	-- one marker after another.
+	NewSeen = 2.5,
+	NewCheck = 0.5,
+	NewStep = 0.07,
+	NewPill = Vector2.new(58, 26),
+	NewText = 17,
+	-- Track heights: one-line captions (a narrow window, a phone) and two-line ones.
+	TrackLow = 66,
+	TrackTall = 90,
+	CaptionLow = 22,
+	CaptionTall = 44,
+}
 
 local function buildIndex(screen: ScreenGui)
 	-- Minimum 386 tall: a phone gets that window at x1.3, one row of cards and the top of the next.
@@ -2963,7 +3017,7 @@ local function buildIndex(screen: ScreenGui)
 	-- so it does not read as a button), a breathing CLAIM button once the Index is there, a
 	-- gold CLAIMED tag after. The server sends every amount (the snapshot's `index`), so a
 	-- cell shows what a claim pays.
-	local TRACK_H = { low = 62, tall = 80 } -- one-line captions (a narrow window, a phone) and two-line ones
+	local TRACK_H = { low = INDEX.TrackLow, tall = INDEX.TrackTall }
 	local trackH = TRACK_H.low
 	local track = Kit.new("Frame", {
 		Name = "Rewards",
@@ -2981,6 +3035,7 @@ local function buildIndex(screen: ScreenGui)
 		shown: string,
 		state: string,
 		stop: (() -> ())?,
+		shine: (() -> ())?,
 	}
 	local cells: { Cell } = {}
 	-- os.clock() of the claim sent for each cell: its button waits for the server's answer.
@@ -3029,8 +3084,8 @@ local function buildIndex(screen: ScreenGui)
 			Name = "Claim",
 			Text = "",
 			Color = C.Good,
-			TextSize = 15,
-			Size = UDim2.new(1, 0, 0, 34),
+			TextSize = INDEX.ClaimText,
+			Size = UDim2.new(1, 0, 0, 36),
 			Position = UDim2.fromOffset(0, 20),
 			Sound = "Reward",
 		}, function()
@@ -3072,6 +3127,116 @@ local function buildIndex(screen: ScreenGui)
 			end
 		end)
 		cells[order] = { frame = cell, caption = caption, button = button, done = done, hit = hit, shown = "", state = "" }
+	end
+
+	-- CLAIM ALL: the first column of the track while more than one milestone waits. The
+	-- server pays one milestone per request, so the waiting ones are claimed in order, each
+	-- after the answer to the one before (claim() ignores a milestone that is already paid).
+	local claimAll: TextButton
+	local claimingAll = false
+	local showAll = false
+	do
+		local function run()
+			if claimingAll then
+				return
+			end
+			claimingAll = true
+			task.spawn(function()
+				for order in cells do
+					local function entryOf(): any
+						local data = State.data
+						local index = data and data.index
+						return if type(index) == "table" and type(index.milestones) == "table" then index.milestones[order] else nil
+					end
+					local entry = entryOf()
+					if type(entry) == "table" and entry.reached == true and entry.claimed ~= true then
+						claim(order)
+						local sent = os.clock()
+						while os.clock() - sent < INDEX.AllWait do
+							task.wait(0.05)
+							local now = entryOf()
+							if type(now) == "table" and now.claimed == true then
+								break
+							end
+						end
+						task.wait(INDEX.AllGap)
+					end
+				end
+				claimingAll = false
+				refreshTrack()
+			end)
+		end
+		claimAll = Kit.button(track, {
+			Name = "ClaimAll",
+			Text = "CLAIM ALL",
+			Font = F.Display,
+			Color = C.Gold,
+			TextSize = INDEX.AllText,
+			Size = UDim2.new(1 / (milestoneCount + 1), -6, 1, 0),
+			Sound = "Reward",
+			Visible = false,
+		}, run)
+		local face = Kit.buttonFace(claimAll)
+		if face and not PREVIEW then
+			Kit.shimmer(
+				face,
+				INDEX.ClaimShine,
+				5,
+				{ Width = INDEX.ClaimShineWidth, Fade = INDEX.ClaimShineFade, Time = INDEX.ClaimShineTime }
+			)
+		end
+	end
+	-- The cells share the track with CLAIM ALL while it shows.
+	local function placeTrack()
+		local shift = if showAll then 1 else 0
+		local columns = milestoneCount + shift
+		for order, cell in cells do
+			cell.frame.Size = UDim2.new(1 / columns, -6, 1, 0)
+			cell.frame.Position = UDim2.fromScale((order - 1 + shift) / columns, 0)
+		end
+		claimAll.Visible = showAll
+	end
+
+	-- All found: the crown on the corner of the progress pill, a sheen across the pill and
+	-- stars around it, for as long as the Index is open (completeFx).
+	local completeFx: (boolean) -> ()
+	do
+		local crown = Kit.icon(window.header, Kit.pickIcon("Crown", "Star"), INDEX.Crown, C.Gold, {
+			Name = "Crown",
+			Position = UDim2.new(1, -62 - 250 + 8, 0.5, -13),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 6,
+		})
+		crown.Rotation = INDEX.CrownTilt
+		crown.Visible = false
+		local stars = Kit.new("Frame", {
+			Name = "FoundStars",
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(250 + 28, 52),
+			Position = UDim2.new(1, -62 + 14, 0.5, -1),
+			AnchorPoint = Vector2.new(1, 0.5),
+			ZIndex = 5,
+			Parent = window.header,
+		})
+		local stops: { () -> () } = {}
+		local running = false
+		completeFx = function(on: boolean)
+			crown.Visible = on
+			if on == running or PREVIEW then
+				return
+			end
+			running = on
+			for _, stop in stops do
+				stop()
+			end
+			table.clear(stops)
+			if on then
+				Kit.pop(crown, 0.9)
+				table.insert(stops, Kit.bob(crown, INDEX.CrownBob, INDEX.CrownBeat))
+				table.insert(stops, Kit.shimmer(progress, INDEX.PillShine, 4, { Fade = 0.4, Time = 0.8 }))
+				table.insert(stops, Kit.twinkle(stars, { Every = INDEX.PillTwinkle, Size = INDEX.PillStar, Inset = 0.04, ZIndex = 6 }))
+			end
+		end
 	end
 
 	-- Rarity legend: one slim row above the grid, a bar per band that fills with the tiers
@@ -3146,6 +3311,20 @@ local function buildIndex(screen: ScreenGui)
 		local index = data and data.index
 		local milestones = if type(index) == "table" and type(index.milestones) == "table" then index.milestones else nil
 		local open = false
+		-- More than one milestone waits: CLAIM ALL takes the first column (and stays through its run).
+		local ready = 0
+		for order in cells do
+			local entry = milestones and milestones[order]
+			if type(entry) == "table" and entry.reached == true and entry.claimed ~= true then
+				ready += 1
+			end
+		end
+		local all = ready > 1 or (claimingAll and ready > 0)
+		if all ~= showAll then
+			showAll = all
+			placeTrack()
+		end
+		Kit.setEnabled(claimAll, not claimingAll)
 		for order, cell in cells do
 			local entry = milestones and milestones[order]
 			if type(entry) ~= "table" then
@@ -3170,6 +3349,7 @@ local function buildIndex(screen: ScreenGui)
 				then (if wideLegend then "CLAIMED" else "DONE")
 				elseif state ~= "ready" then cash
 				elseif waiting then "..."
+				elseif wideLegend and showAll then "+" .. cash -- a narrower column: CLAIM ALL says the verb
 				elseif wideLegend then "CLAIM " .. cash
 				else "CLAIM"
 			local key = state .. "|" .. captionText .. "|" .. buttonText
@@ -3197,8 +3377,21 @@ local function buildIndex(screen: ScreenGui)
 						cell.stop()
 						cell.stop = nil
 					end
+					if cell.shine then
+						cell.shine()
+						cell.shine = nil
+					end
 					if state == "ready" then
 						cell.stop = Kit.breathe(cell.button)
+						local face = Kit.buttonFace(cell.button)
+						if face and not PREVIEW then
+							cell.shine = Kit.shimmer(
+								face,
+								INDEX.ClaimShine,
+								5,
+								{ Width = INDEX.ClaimShineWidth, Fade = INDEX.ClaimShineFade, Time = INDEX.ClaimShineTime }
+							)
+						end
 					end
 				end
 				Kit.setButton(cell.button, buttonText)
@@ -3233,7 +3426,7 @@ local function buildIndex(screen: ScreenGui)
 		end
 		refreshTrack()
 		-- A wide window's captions name the bonus in full and may take a second line.
-		local captionH = if wideLegend then 36 else 18
+		local captionH = if wideLegend then INDEX.CaptionTall else INDEX.CaptionLow
 		trackH = if wideLegend then TRACK_H.tall else TRACK_H.low
 		track.Size = UDim2.new(1, -14, 0, trackH - 8)
 		for _, cell in cells do
@@ -3241,6 +3434,7 @@ local function buildIndex(screen: ScreenGui)
 			cell.button.Position = UDim2.fromOffset(0, captionH + 2)
 			cell.done.Position = UDim2.fromOffset(0, captionH + 6)
 		end
+		placeTrack()
 		-- The track, or the ribbon after it, takes its row above the legend. A short window (a
 		-- phone) gives it the legend's row instead: the rarity is on every card.
 		local ribbon = isComplete and not showTrack
@@ -3315,8 +3509,8 @@ local function buildIndex(screen: ScreenGui)
 			TextSize = T.Small,
 			MinPx = true,
 			TextWrapped = true,
-			Size = UDim2.new(1, -16, 0, 36),
-			Position = UDim2.new(0, 8, 1, -70),
+			Size = UDim2.new(1, -16, 0, 42),
+			Position = UDim2.new(0, 8, 1, -78),
 			TextColor3 = if known then C.Text else C.TextMute,
 			ZIndex = 3,
 		})
@@ -3338,9 +3532,9 @@ local function buildIndex(screen: ScreenGui)
 		end
 		-- Unknown tiers: a smaller soft-blue silhouette (Kit.unitViewport tints it).
 		local viewport = if known
-			then Kit.unitViewport(frame, tier, { Size = UDim2.new(1, -16, 1, -112), Position = UDim2.fromOffset(8, 32) })
+			then Kit.unitViewport(frame, tier, { Size = UDim2.new(1, -16, 1, -118), Position = UDim2.fromOffset(8, 32) })
 			else Kit.unitViewport(frame, tier, {
-				Size = UDim2.new(1, -60, 1, -130),
+				Size = UDim2.new(1, -60, 1, -136),
 				Position = UDim2.new(0.5, 0, 0, 40),
 				AnchorPoint = Vector2.new(0.5, 0),
 			}, true)
@@ -3376,8 +3570,8 @@ local function buildIndex(screen: ScreenGui)
 				Color = C.Danger,
 				Solid = true,
 				TextColor = C.Text,
-				TextSize = T.Small,
-				Size = UDim2.fromOffset(48, 22),
+				TextSize = INDEX.NewText,
+				Size = UDim2.fromOffset(INDEX.NewPill.X, INDEX.NewPill.Y),
 				Position = UDim2.new(1, -8, 0, 8),
 				AnchorPoint = Vector2.new(1, 0),
 				ZIndex = 5,
@@ -3455,6 +3649,7 @@ local function buildIndex(screen: ScreenGui)
 			if done ~= isComplete then
 				isComplete = done
 				paintBar(progress, if done then C.Gold else C.Window.Index)
+				completeFx(done and window.isOpen())
 			end
 			layoutGrid()
 			-- The last milestone claimed with the Index open: the ribbon lands at once.
@@ -3495,7 +3690,53 @@ local function buildIndex(screen: ScreenGui)
 			end
 		end
 	end
+	-- NEW markers clear by themselves once their card has been looked at: in view for
+	-- INDEX.NewSeen seconds with the Index open (the rest go when it closes).
+	local watching = 0
+	window.onOpen.Event:Connect(function()
+		completeFx(isComplete)
+		if PREVIEW then
+			return
+		end
+		watching += 1
+		local mine = watching
+		task.spawn(function()
+			local inView: { [number]: number } = {}
+			while window.isOpen() and watching == mine do
+				task.wait(INDEX.NewCheck)
+				local top = scroll.AbsolutePosition.Y
+				local bottom = top + scroll.AbsoluteSize.Y
+				local cleared = 0
+				for tier, card in cards do
+					local pill = card.frame:FindFirstChild("New")
+					if not pill or not pill:IsA("GuiObject") or seen[tier] then
+						continue
+					end
+					local middle = card.frame.AbsolutePosition.Y + card.frame.AbsoluteSize.Y / 2
+					if middle < top or middle > bottom then
+						continue
+					end
+					inView[tier] = (inView[tier] or 0) + INDEX.NewCheck
+					if inView[tier] >= INDEX.NewSeen then
+						seen[tier] = true
+						-- The card keeps its look: only the marker goes (no rebuild on the next refresh).
+						card.shown = "known"
+						local marker = pill
+						task.delay(cleared * INDEX.NewStep, function()
+							if marker.Parent then
+								Kit.disappear(marker, { to = 0.3, time = 0.25, destroy = true })
+							end
+						end)
+						cleared += 1
+					end
+				end
+			end
+		end)
+	end)
+	Kit.scrollCue(scroll)
 	window.onClose.Event:Connect(function()
+		watching += 1
+		completeFx(false)
 		local data = State.data
 		if data then
 			for tier = 1, Economy.MAX_TIER do
@@ -3533,8 +3774,65 @@ end
 
 -- Ranking -----------------------------------------------------------------------------
 
--- Gold, silver and bronze medal chips for the top three.
-local MEDAL_COLORS = { C.Gold, C.Chrome, C.Amber }
+--[[
+	Every size, colour, time and count of the Ranking window (design px; text in the window
+	is also held at Kit.WINDOW.TextPx on the glass).
+]]
+local RANK = {
+	-- The podium: gold, silver and bronze rows, each taller and bolder than a plain row.
+	Medals = { C.Gold, C.Chrome, C.Amber },
+	PodiumH = { 68, 58, 58 },
+	MedalSize = { 50, 42, 42 }, -- the medal coin
+	MedalText = { 28, 22, 22 }, -- the place on it
+	PodiumName = { 22, 20, 20 },
+	PodiumValue = { 28, 24, 24 },
+	PodiumEdge = 2.5, -- outline of a podium row in its medal colour
+	GoldShine = 3.2, -- seconds between the sheens across the gold row
+	-- A plain row.
+	RowH = 50,
+	RowGap = 8,
+	NameText = 18,
+	ValueText = 20,
+	ExtraText = 18, -- the clears column
+	RankText = 17,
+	YouPill = Vector2.new(56, 26),
+	MineEdge = 3, -- gold outline of the player's own row
+	PinAfter = 5, -- the own row is also pinned under the list once it sits below this place
+	ButtonText = 17, -- tabs, number format, refresh
+	-- The pinned card: the own row over the goal pill and its bar.
+	MineH = 56,
+	GoalH = 60,
+	GoalPillH = 30,
+	GoalBarH = 10,
+	GoalText = 18,
+	-- The card under the list (headline, goal in full, the player's numbers). It takes all
+	-- the room that is left, so the window is never mostly blank.
+	InfoMin = 92, -- hidden under this height
+	InfoStats = 172, -- from this height the stat tiles show too
+	LeadKeep = 150, -- room kept for it while the player leads (the list gives way)
+	Art = 96, -- the trophy
+	ArtLead = 128, -- ... while the player is #1
+	TitleText = 26,
+	TitleLead = 40,
+	LineText = 18,
+	StatH = 64,
+	StatValue = 24,
+	StatCaption = 17,
+	-- #1: the trophy bobs in turning rays, stars twinkle, a sheen crosses the card.
+	TrophyBob = 9,
+	TrophyBeat = 0.65,
+	Rays = 6, -- bars through the trophy (two rays each)
+	RayWidth = 0.2, -- of the trophy's size
+	RayReach = 1.7, -- ray length, in trophy sizes
+	RayFade = 0.4, -- transparency of a ray at the trophy
+	RayTurn = 12, -- seconds per turn
+	GlowSize = 1.5,
+	GlowFade = { 0.55, 0.82 }, -- the glow disc pulses between these transparencies
+	GlowBeat = 0.9,
+	TwinkleEvery = 0.28,
+	ShineEvery = 2.2,
+}
+local MEDAL_COLORS = RANK.Medals
 
 type RowLabels = { rank: TextLabel, chip: Frame, value: TextLabel, extra: TextLabel? }
 
@@ -3583,6 +3881,264 @@ local function myStage(): (number, number)
 	return stage, clears
 end
 
+--[[
+	The card under the Ranking list: a trophy, a headline and the goal in full over three
+	tiles with the player's own numbers. It is given whatever height the list leaves
+	(layout), so a young board is shown as it is (no made-up names) and the window is still
+	full. While the player leads it is the loudest thing in the window: a gold card, the
+	trophy bigger and bobbing in turning rays, "YOU'RE #1!" in the biggest type, stars and a
+	sheen. All motion runs only while the window is open (play).
+]]
+type RankInfo = {
+	frame: Frame,
+	layout: (number) -> (),
+	paint: (string, string, boolean) -> (),
+	stat: (number, string, string) -> (),
+	play: (boolean) -> (),
+}
+local function rankingInfo(parent: Instance): RankInfo
+	local BASE = 100 -- the art is built at this size and scaled
+	local frame = Kit.glass(parent, {
+		Name = "Info",
+		Size = UDim2.new(1, -14, 0, RANK.InfoMin),
+		Radius = Kit.RADIUS.L,
+		StrokeThickness = 2,
+		Visible = false,
+	})
+	frame.ClipsDescendants = true
+	local art = Kit.new("Frame", {
+		Name = "Art",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(BASE, BASE),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 2,
+		Parent = frame,
+	})
+	local artScale = Kit.new("UIScale", { Name = "Size", Parent = art })
+	local rays = Kit.new("Frame", {
+		Name = "Rays",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromScale(RANK.RayReach * 2, RANK.RayReach * 2),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Visible = false,
+		ZIndex = 2,
+		Parent = art,
+	})
+	for i = 1, RANK.Rays do
+		local ray = Kit.new("Frame", {
+			Name = "Ray" .. i,
+			BackgroundColor3 = C.GoldLight,
+			BorderSizePixel = 0,
+			Size = UDim2.new(0, BASE * RANK.RayWidth, 1, 0),
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Rotation = (i - 1) * 180 / RANK.Rays,
+			ZIndex = 2,
+			Parent = rays,
+		})
+		-- Brightest at the trophy, gone at both ends.
+		Kit.new("UIGradient", {
+			Rotation = 90,
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 1),
+				NumberSequenceKeypoint.new(0.5, RANK.RayFade),
+				NumberSequenceKeypoint.new(1, 1),
+			}),
+			Parent = ray,
+		})
+	end
+	local glow = Kit.new("Frame", {
+		Name = "Glow",
+		BackgroundColor3 = C.Gold,
+		BackgroundTransparency = RANK.GlowFade[2],
+		Size = UDim2.fromScale(RANK.GlowSize, RANK.GlowSize),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 2,
+		Parent = art,
+	})
+	Kit.round(glow)
+	local icon = Kit.icon(art, Kit.iconName(I.Ranking) or "Star", BASE, C.Gold, {
+		Name = "Trophy",
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 4,
+	})
+	local title = Kit.title(frame, {
+		Name = "Title",
+		Text = "",
+		TextSize = RANK.TitleText,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = C.Gold,
+		ZIndex = 5,
+	})
+	local line = Kit.text(frame, {
+		Name = "Line",
+		Text = "",
+		Font = F.UI,
+		TextSize = RANK.LineText,
+		TextWrapped = true,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		TextColor3 = C.Text,
+		StrokeThickness = 1.5,
+		ZIndex = 5,
+	})
+	local stats = Kit.new("Frame", {
+		Name = "Stats",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -24, 0, RANK.StatH),
+		Position = UDim2.new(0, 12, 1, -12),
+		AnchorPoint = Vector2.new(0, 1),
+		ZIndex = 5,
+		Parent = frame,
+	})
+	local tiles: { { value: TextLabel, caption: TextLabel } } = {}
+	for i = 1, 3 do
+		local tile = Kit.new("Frame", {
+			Name = "Stat" .. i,
+			BackgroundColor3 = C.Ink,
+			BackgroundTransparency = Theme.Glass.Inset,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1 / 3, -6, 1, 0),
+			Position = UDim2.new((i - 1) / 3, 3, 0, 0),
+			ZIndex = 5,
+			Parent = stats,
+		})
+		Kit.corner(tile, Kit.RADIUS.M)
+		Kit.new("UIStroke", { Thickness = 1, Color = Theme.Glass.Edge, Transparency = 0.75, Parent = tile })
+		tiles[i] = {
+			value = Kit.number(tile, {
+				Name = "Value",
+				Text = "",
+				TextSize = RANK.StatValue,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				TextColor3 = C.GoldLight,
+				Size = UDim2.new(1, -12, 0, RANK.StatValue + 6),
+				Position = UDim2.fromOffset(6, 6),
+				ZIndex = 6,
+			}),
+			caption = Kit.text(tile, {
+				Name = "Caption",
+				Text = "",
+				Font = F.UI,
+				TextSize = RANK.StatCaption,
+				TextWrapped = false,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				TextColor3 = SMALL_TEXT,
+				Size = UDim2.new(1, -12, 0, RANK.StatCaption + 5),
+				Position = UDim2.new(0, 6, 1, -6),
+				AnchorPoint = Vector2.new(0, 1),
+				StrokeThickness = 0,
+				ZIndex = 6,
+			}),
+		}
+	end
+
+	local leading = false
+	local playing = false
+	local height = RANK.InfoMin
+	local stops: { () -> () } = {}
+	local function layout(h: number)
+		height = h
+		local withStats = h >= RANK.InfoStats
+		stats.Visible = withStats
+		-- The trophy and the words share what the tiles leave.
+		local top = h - (if withStats then RANK.StatH + 18 else 0)
+		local size = math.clamp(top - 20, 44, if leading then RANK.ArtLead else RANK.Art)
+		artScale.Scale = size / BASE
+		art.Position = UDim2.fromOffset(20 + size / 2, top / 2 + (if withStats then 4 else 0))
+		local x = 20 + size + 20
+		local titleSize = math.min(if leading then RANK.TitleLead else RANK.TitleText, math.max(RANK.TitleText - 4, top - 44))
+		title.TextSize = titleSize
+		-- Two lines of goal where there is room for them.
+		local lineH = if top - titleSize - 26 >= RANK.LineText * 2.4 then math.ceil(RANK.LineText * 2.5) else RANK.LineText + 6
+		local y = math.max(4, (top - (titleSize + 8 + lineH)) / 2) + (if withStats then 4 else 0)
+		title.Size = UDim2.new(1, -(x + 14), 0, titleSize + 6)
+		title.Position = UDim2.fromOffset(x, y)
+		line.TextWrapped = lineH > RANK.LineText + 6
+		line.Size = UDim2.new(1, -(x + 14), 0, lineH)
+		line.Position = UDim2.fromOffset(x, y + titleSize + 8)
+	end
+	local function motion()
+		for _, stop in stops do
+			stop()
+		end
+		table.clear(stops)
+		if not playing or PREVIEW then
+			return
+		end
+		-- The trophy always floats a little; the rest is the leader's.
+		table.insert(
+			stops,
+			Kit.bob(
+				icon,
+				if leading then RANK.TrophyBob else RANK.TrophyBob / 2,
+				if leading then RANK.TrophyBeat else RANK.TrophyBeat * 1.6
+			)
+		)
+		if not leading then
+			return
+		end
+		local turn = TweenService:Create(
+			rays,
+			TweenInfo.new(RANK.RayTurn, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1),
+			{ Rotation = rays.Rotation + 360 }
+		)
+		turn:Play()
+		local pulse = TweenService:Create(
+			glow,
+			TweenInfo.new(RANK.GlowBeat, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+			{ BackgroundTransparency = RANK.GlowFade[1] }
+		)
+		glow.BackgroundTransparency = RANK.GlowFade[2]
+		pulse:Play()
+		table.insert(stops, function()
+			turn:Cancel()
+			pulse:Cancel()
+			glow.BackgroundTransparency = RANK.GlowFade[2]
+		end)
+		-- Stars around the trophy (a little past its edges), clear of the words.
+		table.insert(stops, Kit.twinkle(art, { Every = RANK.TwinkleEvery, Inset = -0.3, ZIndex = 5 }))
+		table.insert(stops, Kit.shimmer(frame, RANK.ShineEvery, 6))
+	end
+	return {
+		frame = frame,
+		layout = layout,
+		paint = function(headline: string, goal: string, lead: boolean)
+			title.Text = headline
+			line.Text = goal
+			if lead == leading then
+				return
+			end
+			leading = lead
+			rays.Visible = lead
+			if lead then
+				Kit.paintGlass(frame, C.Gold, Theme.Glass.SurfaceHi, C.Gold)
+			else
+				Kit.paintGlass(frame)
+			end
+			layout(height)
+			motion()
+			if lead and playing and not PREVIEW then
+				Kit.pop(frame, 0.6)
+			end
+		end,
+		stat = function(i: number, value: string, caption: string)
+			tiles[i].value.Text = value
+			tiles[i].caption.Text = caption
+		end,
+		play = function(on: boolean)
+			playing = on
+			motion()
+		end,
+	}
+end
+
 local function buildRanking(screen: ScreenGui)
 	-- Minimum 386 tall: a phone gets that window at x1.3 (see layoutRows).
 	local window = Kit.window(screen, "Ranking", "Ranking", I.Ranking, C.Window.Ranking, Vector2.new(780, 560), Vector2.new(600, 386))
@@ -3599,7 +4155,7 @@ local function buildRanking(screen: ScreenGui)
 		Size = UDim2.fromOffset(150, 42),
 		Position = UDim2.new(1, -140, 0, 0),
 		AnchorPoint = Vector2.new(1, 0),
-		TextSize = 14,
+		TextSize = RANK.ButtonText,
 	})
 	local refreshButton = Kit.button(window.content, {
 		Name = "Refresh",
@@ -3608,7 +4164,7 @@ local function buildRanking(screen: ScreenGui)
 		Size = UDim2.fromOffset(130, 42),
 		Position = UDim2.new(1, 0, 0, 0),
 		AnchorPoint = Vector2.new(1, 0),
-		TextSize = 14,
+		TextSize = RANK.ButtonText,
 	})
 	local subtitle = Kit.text(window.content, {
 		Name = "Subtitle",
@@ -3670,7 +4226,7 @@ local function buildRanking(screen: ScreenGui)
 	-- face per board, only while they are not in the list itself) over the goal, which
 	-- always names a target: "12 more to pass <name>" on a dark pill, over a slim bar filled
 	-- as far as they have come.
-	local MINE_H, GOAL_H = 54, 52
+	local MINE_H, GOAL_H = RANK.MineH, RANK.GoalH
 	local mine = Kit.panel(window.content, {
 		Name = "Mine",
 		Glass = true,
@@ -3694,8 +4250,8 @@ local function buildRanking(screen: ScreenGui)
 			BackgroundColor3 = C.Ink,
 			BackgroundTransparency = 0.25,
 			BorderSizePixel = 0,
-			Size = UDim2.new(1, -20, 0, 26),
-			Position = UDim2.new(0, 10, 1, -21),
+			Size = UDim2.new(1, -20, 0, RANK.GoalPillH),
+			Position = UDim2.new(0, 10, 1, -(RANK.GoalBarH + 14)),
 			AnchorPoint = Vector2.new(0, 1),
 			Parent = mine,
 		})
@@ -3704,7 +4260,7 @@ local function buildRanking(screen: ScreenGui)
 			Name = "Label",
 			Text = "",
 			Font = F.Bold,
-			TextSize = T.Small,
+			TextSize = RANK.GoalText,
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			TextColor3 = Color3.new(1, 1, 1),
@@ -3716,7 +4272,7 @@ local function buildRanking(screen: ScreenGui)
 			Name = "Goal",
 			Glass = true,
 			Color = C.Gold,
-			Size = UDim2.new(1, -20, 0, 8),
+			Size = UDim2.new(1, -20, 0, RANK.GoalBarH),
 			Position = UDim2.new(0, 10, 1, -8),
 			AnchorPoint = Vector2.new(0, 1),
 			MinFill = 0.04,
@@ -3725,48 +4281,20 @@ local function buildRanking(screen: ScreenGui)
 		setGoal = set
 	end
 
-	-- A young board (under three rows): one slim strip under the pinned card says what there
-	-- is to win on it (a trophy, a gold title and one line), instead of an empty list.
-	local EMPTY_H = 68
-	local empty = Kit.well(window.content, { Name = "Empty", Glass = true, Size = UDim2.new(1, -14, 0, EMPTY_H), Radius = Kit.RADIUS.M })
-	empty.Visible = false
-	Kit.icon(empty, Kit.iconName(I.Ranking) or "Star", 40, C.Window.Ranking, {
-		Name = "Icon",
-		Position = UDim2.new(0, 14, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-	})
-	local emptyTitle = Kit.title(empty, {
-		Name = "Title",
-		Text = "",
-		TextSize = T.H3,
-		MinPx = 16,
-		TextWrapped = false,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = C.Gold,
-		Size = UDim2.new(1, -80, 0, 26),
-		Position = UDim2.fromOffset(66, 8),
-	})
-	-- One line: what to do next on a board this young.
-	local emptyLine = Kit.text(empty, {
-		Name = "Line",
-		Text = "",
-		TextSize = T.Small,
-		MinPx = true,
-		TextWrapped = false,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -80, 0, 22),
-		Position = UDim2.fromOffset(66, 36),
-		StrokeThickness = 0,
-	})
+	-- The card under the pinned one takes the room the list leaves (rankingInfo): a young
+	-- board is shown as it is, and its empty half goes to the player's own goal and numbers.
+	local info = rankingInfo(window.content)
 
 	-- The list is as tall as its rows (it scrolls once they pass the room there is), the
-	-- pinned card sits right under it and the strip for a young board under that.
+	-- pinned card sits right under it and the info card fills what is left under that.
 	-- Short windows (a phone): the subtitle goes and the columns and list move up into its row.
-	local ROW_H, ROW_GAP = 46, 8
+	local ROW_GAP = RANK.RowGap
 	local rowCount = 0
+	local rowsTall = 0 -- the rows' heights and the gaps between them
 	local pinned = true
+	-- The player's own row is on the board / is its first row.
+	local listed = false
+	local leading = false
 	local function layoutRows(size: Vector2)
 		local short = size.Y < 440
 		local top = if short then 48 else 72
@@ -3778,8 +4306,10 @@ local function buildRanking(screen: ScreenGui)
 		local mineH = if pinned then MINE_H + GOAL_H else GOAL_H
 		local pinH = mineH + ROW_GAP
 		-- Rows plus the list's own padding (4 above, 10 below).
-		local rowsH = if rowCount > 0 then rowCount * ROW_H + (rowCount - 1) * ROW_GAP + 14 else 0
-		local listH = math.max(0, math.min(inner - y - pinH, rowsH))
+		local rowsH = if rowCount > 0 then rowsTall + 14 else 0
+		-- The leader's trophy card keeps its room: a long list gives way to it.
+		local keep = if leading and not short then RANK.LeadKeep else 0
+		local listH = math.max(0, math.min(inner - y - pinH - keep, rowsH))
 		list.Position = UDim2.fromOffset(0, y)
 		list.Size = UDim2.new(1, 0, 0, listH)
 		list.Visible = listH > 0
@@ -3788,11 +4318,14 @@ local function buildRanking(screen: ScreenGui)
 		mine.Position = UDim2.fromOffset(0, y)
 		y += pinH
 		local left = inner - y
-		empty.Visible = rowCount < 3 and left >= EMPTY_H
-		empty.Position = UDim2.fromOffset(0, y)
+		info.frame.Visible = left >= RANK.InfoMin
+		info.frame.Position = UDim2.fromOffset(0, y)
+		info.frame.Size = UDim2.new(1, -14, 0, math.max(left, RANK.InfoMin))
+		info.layout(math.max(left, RANK.InfoMin))
 	end
 	layoutRows(window.size())
 	window.onResize.Event:Connect(layoutRows)
+	Kit.scrollCue(list)
 
 	-- One row: rank chip, name, the board value and (stage board) the clears column.
 	local function row(
@@ -3805,12 +4338,14 @@ local function buildRanking(screen: ScreenGui)
 		extra: string?
 	): RowLabels
 		local color = rank and MEDAL_COLORS[rank]
+		local place = if color then rank :: number else 0
+		local medal = if color then RANK.MedalSize[place] else 0
 		local rankChip = Kit.new("Frame", {
 			Name = "Rank",
 			BackgroundColor3 = color or C.Ink,
 			BackgroundTransparency = if color then 0 else Theme.Glass.Inset,
-			Size = UDim2.fromOffset(if color then 34 else 46, if color then 34 else 30),
-			Position = UDim2.new(0.02, if color then 6 else 0, 0.5, 0),
+			Size = UDim2.fromOffset(if color then medal else 52, if color then medal else 32),
+			Position = UDim2.new(0.02, if color then (52 - medal) // 2 else 0, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
 			Parent = parent,
 		})
@@ -3818,14 +4353,14 @@ local function buildRanking(screen: ScreenGui)
 			-- Solid medal coin, lighter on top, with a darker rim.
 			Kit.round(rankChip)
 			Kit.gradient(rankChip, Color3.new(1, 1, 1), Color3.new(0.86, 0.86, 0.9))
-			Kit.new("UIStroke", { Thickness = 2, Color = Kit.lip(color), Parent = rankChip })
+			Kit.new("UIStroke", { Thickness = 2.5, Color = Kit.lip(color), Parent = rankChip })
 		else
 			Kit.corner(rankChip, 10)
 			Kit.new("UIStroke", { Thickness = 1, Color = Theme.Glass.Edge, Transparency = 0.8, Parent = rankChip })
 		end
 		local rankLabel = Kit.number(rankChip, {
 			Text = if color then tostring(rank) else rankText,
-			TextSize = if color then T.Body else T.Small,
+			TextSize = if color then RANK.MedalText[place] else RANK.RankText,
 			Size = UDim2.fromScale(1, 1),
 			TextColor3 = if color then C.GoldInk else C.TextDim,
 			StrokeThickness = if color then 0 else nil,
@@ -3834,8 +4369,7 @@ local function buildRanking(screen: ScreenGui)
 			Name = "Name",
 			Text = name,
 			Font = F.UI,
-			TextSize = T.Body,
-			MinPx = true,
+			TextSize = if color then RANK.PodiumName[place] else RANK.NameText,
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Size = UDim2.new(0.38, 0, 1, 0),
@@ -3848,8 +4382,8 @@ local function buildRanking(screen: ScreenGui)
 				Text = "YOU",
 				Color = C.Gold,
 				Solid = true,
-				TextSize = T.Small,
-				Size = UDim2.fromOffset(46, 22),
+				TextSize = RANK.RankText,
+				Size = UDim2.fromOffset(RANK.YouPill.X, RANK.YouPill.Y),
 				Position = UDim2.new(0.62, 0, 0.5, 0),
 				AnchorPoint = Vector2.new(1, 0.5),
 			})
@@ -3857,7 +4391,7 @@ local function buildRanking(screen: ScreenGui)
 		local valueLabel = Kit.number(parent, {
 			Name = "Value",
 			Text = value,
-			TextSize = T.H3,
+			TextSize = if color then RANK.PodiumValue[place] else RANK.ValueText,
 			Size = UDim2.new(if extra then 0.16 else 0.34, 0, 1, 0),
 			Position = UDim2.new(if extra then 0.8 else 0.98, 0, 0, 0),
 			AnchorPoint = Vector2.new(1, 0),
@@ -3869,7 +4403,7 @@ local function buildRanking(screen: ScreenGui)
 			extraLabel = Kit.number(parent, {
 				Name = "Clears",
 				Text = extra,
-				TextSize = T.Body,
+				TextSize = RANK.ExtraText,
 				Size = UDim2.new(0.16, 0, 1, 0),
 				Position = UDim2.new(0.98, 0, 0, 0),
 				AnchorPoint = Vector2.new(1, 0),
@@ -3907,30 +4441,52 @@ local function buildRanking(screen: ScreenGui)
 		return entry.name == me.Name or entry.name == me.DisplayName
 	end
 
-	-- Rebuilds the leaderboard rows; `animate` ripples them in.
+	-- Rebuilds the leaderboard rows; `animate` ripples them in. The top three are the podium:
+	-- taller rows of glass in their medal's colour with a big medal coin, the gold one under a
+	-- passing sheen. The player's own row wears a thick gold outline wherever it is.
 	local function renderList(animate: boolean)
 		clearChildren(list)
 		listFull = fullNumbers()
 		local rows: { GuiObject } = {}
 		local shown = if board == "stage" then stageEntries else entries
-		local listed = false
+		local mineAt = 0
+		rowsTall = 0
 		for i, entry in shown do
 			if type(entry) ~= "table" then
 				continue
 			end
 			local isMe = isMine(entry)
-			listed = listed or isMe
 			local rank = tonumber(entry.rank) or i
-			local frame = Kit.panel(list, {
-				Name = "Row" .. i,
-				Glass = true,
-				Elevated = isMe,
-				StrokeColor = if isMe then C.Gold else nil,
-				StrokeThickness = if isMe then 2.5 else nil,
-				Size = UDim2.new(1, 0, 0, ROW_H),
-				LayoutOrder = i,
-				Radius = Kit.RADIUS.M,
-			})
+			local medal = MEDAL_COLORS[rank]
+			local frame: Frame
+			if medal then
+				frame = Kit.glass(list, {
+					Name = "Row" .. i,
+					Size = UDim2.new(1, 0, 0, RANK.PodiumH[rank]),
+					LayoutOrder = i,
+					Radius = Kit.RADIUS.M + 2,
+					StrokeThickness = if isMe then RANK.MineEdge else RANK.PodiumEdge,
+				})
+				Kit.paintGlass(frame, medal, Theme.Glass.SurfaceHi, if isMe then C.Gold else medal)
+				if rank == 1 and not PREVIEW then
+					Kit.shimmer(frame, RANK.GoldShine, 4)
+				end
+			else
+				frame = Kit.panel(list, {
+					Name = "Row" .. i,
+					Glass = true,
+					Elevated = isMe,
+					StrokeColor = if isMe then C.Gold else nil,
+					StrokeThickness = if isMe then RANK.MineEdge else nil,
+					Size = UDim2.new(1, 0, 0, RANK.RowH),
+					LayoutOrder = i,
+					Radius = Kit.RADIUS.M,
+				})
+			end
+			if isMe then
+				mineAt = #rows + 1
+			end
+			rowsTall += (if medal then RANK.PodiumH[rank] else RANK.RowH) + (if #rows > 0 then ROW_GAP else 0)
 			local name = tostring(entry.name or "?")
 			if board == "stage" then
 				local stage = tonumber(entry.stage) or tonumber(entry.value) or 0
@@ -3940,36 +4496,13 @@ local function buildRanking(screen: ScreenGui)
 			end
 			table.insert(rows, frame)
 		end
-		-- The player is in the list: no second, pinned copy of the same row.
 		rowCount = #rows
-		pinned = not listed
-		-- A young board says what there is to win on it, never just that it is empty.
+		listed = mineAt > 0
 		local first = shown[1]
-		local leading = type(first) == "table" and isMine(first)
-		local second = shown[2]
-		if not loaded then
-			emptyTitle.Text = "Loading..."
-			emptyLine.Text = "Fetching the top players"
-		elseif board == "stage" and not listed then
-			emptyTitle.Text = if rowCount == 0 then "NO STAGES CLEARED YET" else "JOIN THE BOARD!"
-			emptyLine.Text = if rowCount == 0
-				then "Finish Parkour map 1 and your name is the first one here."
-				else "Finish Parkour map 1 to put your name on this board."
-		elseif leading then
-			emptyTitle.Text = "YOU'RE #1!"
-			emptyLine.Text = if type(second) == "table"
-				then string.format("%s is right behind you. Stay ahead!", tostring(second.name or "Someone"))
-				elseif board == "stage" then "Nobody else has cleared a stage yet. Stay on top!"
-				else string.format("Nobody else is here yet. Every %s counts: build your lead!", W.Unit)
-		else
-			emptyTitle.Text = "TAKE THE #1 SPOT!"
-			emptyLine.Text = if rowCount == 0
-				then "Be the first name on the board!"
-				else string.format(
-					"Pass %s and the gold medal is yours.",
-					if type(first) == "table" then tostring(first.name or "them") else "them"
-				)
-		end
+		leading = type(first) == "table" and isMine(first)
+		-- High on the board the player's row is in sight: no second, pinned copy of it. Lower
+		-- down it scrolls away, so it is pinned under the list as well.
+		pinned = not listed or mineAt > RANK.PinAfter
 		layoutRows(window.size())
 		if animate then
 			Kit.stagger(rows)
@@ -4054,6 +4587,56 @@ local function buildRanking(screen: ScreenGui)
 		return string.format("%s to pass %s", countOf(gap, "clear"), name), clears / (theirClears + 1)
 	end
 
+	-- The info card's headline and its goal in full, for the board as it is: a young board is
+	-- not padded with made-up names, the player is told what to do on it.
+	local function infoWords(total: number): (string, string)
+		local shown = if board == "stage" then stageEntries else entries
+		local first, second = shown[1], shown[2]
+		local firstName = if type(first) == "table" then tostring(first.name or "them") else "them"
+		if not loaded then
+			return "LOADING...", "Fetching the top players"
+		elseif leading then
+			return "YOU'RE #1!",
+				if type(second) == "table"
+					then string.format("%s is right behind you. Stay ahead!", tostring(second.name or "Someone"))
+					elseif board == "stage" then "Nobody else has cleared a stage yet. Stay on top!"
+					else string.format("Nobody else is here yet. Every %s counts: build your lead!", W.Unit)
+		elseif board == "stage" then
+			if listed then
+				return "TAKE THE #1 SPOT!", string.format("Pass %s and the gold medal is yours.", firstName)
+			elseif rowCount == 0 then
+				return "NO STAGES CLEARED YET", "Finish Parkour map 1 and your name is the first one here."
+			end
+			return "JOIN THE BOARD!", "Finish Parkour map 1 to put your name on this board."
+		end
+		local you = standing.units
+		local cap = if type(you) == "table" then tonumber(you.cap) or 0 else 0
+		local count = if type(you) == "table" then tonumber(you.count) or rowCount else rowCount
+		local edge = if type(you) == "table" then you.edge else nil
+		-- Under a full board: the last listed row is the way in.
+		if not listed and type(edge) == "table" and cap > 0 then
+			local gap = math.max(1, (tonumber(edge.value) or 0) - total + 1)
+			return string.format("REACH THE TOP %d!", cap),
+				string.format("Collect %s more %s to reach the top %d.", fmt(gap), if gap == 1 then W.Unit else W.Units, cap)
+		elseif type(first) ~= "table" then
+			return "TAKE THE #1 SPOT!", "Be the first name on the board!"
+		end
+		local gap = (tonumber(first.value) or 0) - total + 1
+		local goal = if gap > 0
+			then string.format(
+				"Collect %s more %s to pass %s and take the gold medal.",
+				fmt(gap),
+				if gap == 1 then W.Unit else W.Units,
+				firstName
+			)
+			else string.format("Pass %s and the gold medal is yours.", firstName)
+		-- A young board: everybody on it is in the listed top already.
+		if listed and cap > 0 and count < cap then
+			goal ..= string.format(" Only %d on the board so far: you are in the top %d!", count, cap)
+		end
+		return "TAKE THE #1 SPOT!", goal
+	end
+
 	-- Pinned card, format button, column headers and subtitle.
 	local function renderInfo()
 		local data = State.data
@@ -4122,6 +4705,26 @@ local function buildRanking(screen: ScreenGui)
 		end
 		goalLabel.Text = goalText
 		setGoal(if ratio == ratio then ratio else 0)
+		-- The info card: headline and goal, then the player's own numbers.
+		do
+			local headline, goal = infoWords(total)
+			info.paint(headline, goal, leading and loaded)
+			if board == "stage" then
+				info.stat(1, tostring(stage), "BEST STAGE")
+				info.stat(2, Format.commas(clears), "MAP CLEARS")
+				info.stat(3, rankText(myStageRank, standing.stage), "YOUR RANK")
+			else
+				info.stat(1, fmt(total), "YOUR " .. string.upper(W.Units))
+				info.stat(2, rankText(myRank, standing.units), if global then "WORLD RANK" else "YOUR RANK")
+				local you = standing.units
+				local here = if type(you) == "table" then tonumber(you.serverCount) or 0 else 0
+				if global and here > 0 and (tonumber(you.serverRank) or 0) > 0 then
+					info.stat(3, string.format("#%d of %d", you.serverRank, here), "IN THIS SERVER")
+				else
+					info.stat(3, tostring(stage), "BEST STAGE")
+				end
+			end
+		end
 	end
 
 	-- Board tabs (built after the rows' helpers: Kit.tabs selects the first one at once).
@@ -4131,7 +4734,7 @@ local function buildRanking(screen: ScreenGui)
 		Items = { { key = "units", text = W.Units }, { key = "stage", text = "Stage" } },
 		Color = C.Window.Ranking,
 		Size = UDim2.fromOffset(230, 42),
-		TextSize = 14,
+		TextSize = RANK.ButtonText,
 	}, function(key: string)
 		board = if key == "stage" then "stage" else "units"
 		if tabsReady and window.isOpen() then
@@ -4182,7 +4785,11 @@ local function buildRanking(screen: ScreenGui)
 		-- the window's own fade starts, so they fade themselves.
 		renderList(true)
 		renderInfo()
+		info.play(true)
 		fetch()
+	end)
+	window.onClose.Event:Connect(function()
+		info.play(false)
 	end)
 	State.changed.Event:Connect(function()
 		if not window.isOpen() then
@@ -4197,6 +4804,7 @@ end
 
 -- Settings ------------------------------------------------------------------------------
 
+local SETTINGS_LABEL = 20 -- a setting's name, px on a desktop screen (its sub-line is a window caption)
 local function buildSettings(screen: ScreenGui)
 	-- Sized to its four rows and the two-line "Before you go" row: 4 x 70 + 40 + 4 x 10 gaps
 	-- + 20 padding + 84 of header and margins. The rows share the height left by that row,
@@ -4235,16 +4843,17 @@ local function buildSettings(screen: ScreenGui)
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			ZIndex = 2,
 		})
-		-- The row's label is body text (18 px on a desktop screen), its sub-line a caption:
-		-- both are held on the glass, so a fitted window cannot shrink them under that.
+		-- The row's label is body text (SETTINGS_LABEL px on a desktop screen), its sub-line a
+		-- caption (Kit.WINDOW.TextPx): both are held on the glass, so a fitted window cannot
+		-- shrink them under that.
 		Kit.text(row, {
 			Text = string.upper(text),
 			Font = F.UI,
 			TextSize = T.Body,
-			MinPx = if Kit.touch then Kit.captionPx() else T.H3,
+			MinPx = if Kit.touch then Kit.captionPx() + 2 else SETTINGS_LABEL,
 			TextWrapped = false,
-			Size = UDim2.new(1, -170, 0, 22),
-			Position = UDim2.new(0, 72, 0.5, -23),
+			Size = UDim2.new(1, -170, 0, 24),
+			Position = UDim2.new(0, 72, 0.5, -26),
 			TextXAlignment = Enum.TextXAlignment.Left,
 		})
 		local sub = Kit.text(row, {
@@ -4253,8 +4862,8 @@ local function buildSettings(screen: ScreenGui)
 			MinPx = true,
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,
-			Size = UDim2.new(1, -176, 0, 20),
-			Position = UDim2.new(0, 72, 0.5, 2),
+			Size = UDim2.new(1, -176, 0, 22),
+			Position = UDim2.new(0, 72, 0.5, 1),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextYAlignment = Enum.TextYAlignment.Top,
 			TextColor3 = C.TextDim,
@@ -4284,7 +4893,7 @@ local function buildSettings(screen: ScreenGui)
 	local leaveRow = Kit.new("Frame", {
 		Name = "Leave",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 40),
+		Size = UDim2.new(1, 0, 0, 44),
 		LayoutOrder = 5,
 		Visible = false,
 		Parent = window.content,

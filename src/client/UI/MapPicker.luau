@@ -75,7 +75,7 @@ local SIDE_W = 300
 -- Card height: fills the grid column so all ten cards show without scrolling, within these
 -- bounds (CARD_MIN is also the height in the stacked layout and on a phone's short window,
 -- where the grid scrolls: the band plus a body that holds the name and pip rows unclipped).
-local CARD_MIN = 68
+local CARD_MIN = 72
 local CARD_MAX = 84
 local CARD_GAP = 8
 local BAND_H = 28
@@ -89,9 +89,9 @@ local SIDE_STACK_H = 440
 local PLAY_H = 50
 local PLAY_BOTTOM = 12
 local REWARD_BOTTOM = PLAY_BOTTOM + PLAY_H + 8
-local BLURB_H = 40
+local BLURB_H = 44
 local BLURB_BOTTOM = REWARD_BOTTOM + 18 + 4
-local STATS_H = 20
+local STATS_H = 22
 local STATS_BOTTOM = BLURB_BOTTOM + BLURB_H + 4
 local PIPS_BOTTOM = STATS_BOTTOM + STATS_H + 4
 local NAME_H = 24
@@ -122,7 +122,10 @@ local ORBIT_SPEED = 0.12
 -- rounded up and never under 13 px (a phone's 12 px captions included), whatever the screen
 -- and the window's own scale (the same floor as Windows.luau's captions).
 local function readable(label: TextLabel, extra: number?): TextLabel
-	Kit.holdText(label, math.max(Kit.captionPx(), 13) + (extra or 0), nil, true)
+	-- Kit.WINDOW's caption size on the glass (Kit.text holds every label in a window at it
+	-- anyway): `extra` px over it for the labels that lead their card.
+	local floor = if Kit.touch then Kit.WINDOW.TextPxTouch else Kit.WINDOW.TextPx
+	Kit.holdText(label, math.max(Kit.captionPx(), floor) + (extra or 0), nil, true)
 	return label
 end
 
@@ -306,6 +309,8 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 	scroll.ScrollBarImageColor3 = C.Text
 	scroll.ScrollBarImageTransparency = 0.35
 	Kit.list(scroll, 10)
+	-- Stacked, the map's details are under the fold: a shade and a bouncing arrow say so.
+	Kit.scrollCue(scroll)
 	local grid = Kit.new("Frame", {
 		Name = "Grid",
 		BackgroundTransparency = 1,
@@ -688,7 +693,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 				TextTruncate = Enum.TextTruncate.AtEnd,
 				TextXAlignment = Enum.TextXAlignment.Left,
 				-- Leaves room on the right for the selected card's chevron.
-				Size = UDim2.new(1, -14, 0, 20),
+				Size = UDim2.new(1, -14, 0, 22),
 				LayoutOrder = 1,
 				TextColor3 = C.Text,
 				ZIndex = 2,
@@ -712,7 +717,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			TextXAlignment = Enum.TextXAlignment.Left,
-			Size = UDim2.new(1, 0, 0, 18),
+			Size = UDim2.new(1, 0, 0, 20),
 			LayoutOrder = 2,
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,

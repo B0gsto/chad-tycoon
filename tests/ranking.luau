@@ -126,6 +126,11 @@ local function suite(h: { [string]: any })
 		eq(dee.rank, nil, "no rank under the listed top")
 		eq(dee.cap, 3, "the cap is sent, for '3+'")
 		eq(dee.above.name, "Cy", "the nearest player above is still the target")
+		eq(dee.edge.name, "Cy", "the last listed row is the one to beat for the top 3")
+		eq(dee.count, 4, "the board's size is sent")
+		-- A young board (fewer rows than it lists): everybody is in the top, there is no edge.
+		eq(cy.edge, nil, "no edge while the board is not full")
+		eq(cy.count, 4, "four rows on the board")
 
 		-- No row at all (no stage cleared yet): the last row is the one to reach.
 		local none = Ranking.standing(list, 77, 50, here)
@@ -135,6 +140,7 @@ local function suite(h: { [string]: any })
 		eq(none.serverRank, 0, "not placed among the players here")
 		local empty = Ranking.standing({}, 77, 50, {})
 		check(empty.unranked and empty.above == nil, "an empty board has no target")
+		eq(empty.count, 0, "an empty board counts no rows")
 	end)
 
 	test("Ranking: Query answers with the list and the asker's standing", function()
@@ -186,6 +192,12 @@ local function suite(h: { [string]: any })
 		check(string.find(client, "more to pass %s", 1, true) ~= nil, "the own row says how many more to pass the next player")
 		check(string.find(client, '"Most " .. W.Units .. " collected"', 1, true) ~= nil, "the board is titled by what it counts")
 		check(string.find(client, "wide open", 1, true) == nil, "no empty-board line without a goal")
+		-- A young board is shown as it is (no made-up players): the room under it goes to the
+		-- player's own goal and numbers.
+		check(string.find(client, "more %s to reach the top %d", 1, true) ~= nil, "under the listed top the goal is the top N")
+		check(string.find(client, "YOU'RE #1!", 1, true) ~= nil, "leading the board has its own state")
+		check(string.find(client, "you.edge", 1, true) ~= nil, "the window reads the edge of the board")
+		check(string.find(client, "you.count", 1, true) ~= nil, "and how many rows it has")
 	end)
 end
 
