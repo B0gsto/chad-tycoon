@@ -6,19 +6,31 @@
 	piece of dressing to the display rack, kept for every later step:
 	  1 (tier 5)   Pennants   a sagging line of pennants between two masts on the rack's roof
 	  2 (tier 10)  GoldTrim   a gold fascia with studs round the roof, gold collars on the
-	                          front posts, a few glints
-	  3 (tier 15)  Trophies   two trophy shelves on the roof, either side of the marquee
+	                          front posts, a few glints, and a glowing gold tube along the top
+	                          of every fence round the plot (seen from the hub)
+	  3 (tier 15)  Trophies   two trophy shelves on the roof, either side of the marquee, a big
+	                          gold cup on each end of the roof and on both entrance pillars
 	  4 (tier 20)  NeonSign   a neon "GIGA GYM" board above the marquee
-	  5 (tier 25)  CrownBeam  a big gold crown turning over the sign in a shaft of light
+	  5 (tier 25)  CrownBeam  a huge gold crown turning over the sign in a wide gold shaft of
+	                          light, with sheets of light that turn with it
 	An unclaimed plot (no units) has rank 0 and stays bare. Everything on the roof stands on
-	the server's RackTopper.RackRoof and follows it as the rack grows or folds; nothing is built
-	on the floor, the shelf lips (Fx.Plates) or the fan zones.
+	the server's RackTopper.RackRoof and follows it as the rack grows or folds; the fence tubes
+	and the pillar cups stand on the server's FenceCap / ArchPillarKnob parts.
 
-	Champion (slot 1, every plot near the camera): the pedestal glows in the best unit's
-	rarity colour (a neon band round the drum, a halo on the board, a soft light). A tier 25
-	champion stands in a crowned pedestal (gold points with jewels round its rim) and wears a
-	cape. Other players' front-row units get a rarity ring under their feet; the own rack's
-	rings, sizes and aura are Fx.Shelf's.
+	Home shot: PlotRank.homeShot gives Fx.Camera the pitch and distance that put the whole
+	rack and its roof dressing (PlotRank.dressTop) in the spawn frame: the camera tilts up and
+	pulls back as shelves and dressing are added (CFG.Shot).
+
+	Champion (slot 1, every plot near the camera): the best unit stands CFG.Champion.Out in
+	front of its shelf pedestal on a gold stage over the gutter, where nothing is above it,
+	drawn CFG.Champion.Scale big (Fx.Shelf places the own plot's, this module the others'). A
+	dark panel with a gold frame and a gold back light stands behind it, a ring of gold tiles
+	turns over its head and a plaque on the stage's front names it. From Epic the stage
+	sparkles, from Legendary a beam rises to the sky; a tier 25 champion is bigger still, on
+	a wider crowned stage, in a cape, in front of a turning sunburst and under a wider beam
+	with turning sheets of light. The pedestal keeps its glow in the rarity colour. Other
+	players' front-row units get a rarity ring under their feet; the own rack's rings, sizes
+	and aura are Fx.Shelf's.
 
 	Rules other modules use (pure, covered by tests/plot_rank.luau):
 	  PlotRank.rank(bestTier)                          0 .. #CFG.RankTiers
@@ -30,6 +42,9 @@
 	  PlotRank.topTiers(tiers)                         best and second-best tier on a rack
 	  PlotRank.wantScale(tier, slot, best, second)     size a unit should have (Fx.Shelf)
 	  PlotRank.fitScale(want, height, room, cap)       ... limited to the room under the board
+	  PlotRank.dressTop(bestTier)                      height of the dressing above the roof
+	  PlotRank.homeShot(rise, run, fov)                the spawn camera's pitch and distance
+	  PlotRank.championScale(tier) / championPivot(rim) / championHome(rim)
 	PlotRank.dress(rank, roofTop, roofSize, parent) builds the dressing without starting it
 	(the tests count its parts with it).
 
@@ -49,6 +64,8 @@ local Economy = require(Shared:WaitForChild("Economy"))
 local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 
 local State = require(script.Parent.Parent.State)
+-- Only used to freeze a unit while it is resized (absent in the unit tests).
+local Animator = require(script.Parent.Parent.Animator) :: any
 local Budget = require(script.Parent.Budget)
 
 local PlotRank = {}
@@ -105,26 +122,86 @@ local CFG = {
 	GlowPulse = 1.4, -- seconds of one half of the glow's breath
 	GlowLight = { Range = 10, Brightness = 0.7 },
 	HaloMax = 3.96, -- the halo stays on the 4-stud-deep board
-	CrownPoints = 8, -- gold points round a tier 25 champion's pedestal
-	CrownPoint = 0.46,
-	Cape = { Strips = 5, Top = 3.3, Bottom = 0.25, TopZ = 0.5, BottomZ = 1.2, TopStep = 0.4, BottomStep = 0.64, Width = 0.6 },
+	CrownPoints = 12, -- gold points round a tier 25 champion's stage
+	CrownPoint = 0.7,
+	-- The cape, per unit of the champion's scale (its foot stays in front of the back panel).
+	Cape = { Strips = 5, Top = 3.3, Bottom = 0.25, TopZ = 0.5, BottomZ = 1.0, TopStep = 0.4, BottomStep = 0.64, Width = 0.6 },
+
+	-- Champion stage: where the best unit is shown, and everything round it.
+	Champion = {
+		Scale = 1.4, -- the champion's drawn size ...
+		MythicScale = 1.55, -- ... and a tier 25 champion's
+		UnitHeight = 5, -- a rack unit's height at scale 1 (PlotLayout.SHELF.unitMaxHeight)
+		Out = 4.3, -- studs in front of the shelf pedestal: over the gutter, clear of the roof's front edge
+		Rise = 1.2, -- studs above the pedestal's top
+		Stage = 4.6, -- stage disc diameter ...
+		MythicStage = 5.8, -- ... and a tier 25 champion's
+		StageThick = 0.5,
+		Neck = 2.2, -- width of the gold step from the pedestal to the stage
+		-- The dark panel behind the champion (a pale unit reads against it, not the white shelf).
+		Panel = {
+			Width = 7.4,
+			Back = 1.7, -- studs behind the champion: in front of the roof's front band
+			Thick = 0.25,
+			Head = 0.6, -- studs it stands above the champion's head
+			Foot = 0.5, -- studs it hangs below the stage's top
+			Frame = 0.3, -- gold neon frame bars
+			Color = Color3.fromRGB(34, 22, 64),
+		},
+		RimDisc = 3.6, -- gold back light disc on the panel, diameter per unit of scale
+		RimAlpha = 0.1,
+		RimPulse = 1.1,
+		RimLight = { Range = 14, Brightness = 2.2 },
+		-- Ring of gold tiles turning over the champion's head.
+		Halo = { Tiles = 12, Radius = 1.5, Above = 0.9, Tilt = 12, Thick = 0.24, Wide = 0.42, Spin = 1.2 },
+		-- Name plaque hanging from the stage's front edge.
+		Plaque = { Width = 8.4, Height = 2.2, Thick = 0.3, Drop = 0.1, Trim = 0.18 },
+		SparkleBand = 4, -- from this rarity band (Epic) the stage sparkles
+		Sparkles = 10,
+		MythicSparkles = 22,
+		BeamBand = 5, -- from this band (Legendary) a beam rises to the sky
+		BeamHeight = 90,
+		BeamWidth = { 4, 8 },
+		MythicBeamWidth = { 8, 17 },
+		BeamAlpha = 0.5,
+		Rays = 2, -- sheets of light turning in a tier 25 champion's beam
+		RaySpin = 0.8,
+		SunRays = 12, -- bars of the sunburst turning behind a tier 25 champion
+		SunRay = 3.1,
+		SunSpin = 0.5,
+	},
+
+	-- Home shot (Fx.Camera's spawn shot on the own plot): from Pitch / Distance over a bare
+	-- one-shelf rack the camera tilts to level while it pulls back to LevelDistance, then
+	-- looks up to UpPitch, until the top of the dressing is Margin under the screen's top.
+	Shot = {
+		Pitch = 20, -- degrees it looks down to start with (Fx.Camera's own FRAME_PITCH)
+		Distance = 15, -- studs behind the head to start with (Fx.Camera's FRAME_DISTANCE)
+		LevelDistance = 34, -- studs behind the head once level: still inside the entrance
+		UpPitch = 6, -- degrees it may look up for the tallest racks ...
+		UpDistance = 28, -- ... from this far, so the eye stays above the floor
+		Margin = 2.5, -- degrees between the dressing's top and the screen's top edge
+		Fov = 70,
+		Steps = 40,
+		Marquee = 11, -- top of the server's marquee above the roof (there at every rank)
+	},
 
 	Gold = uiColor("GoldDeep", Color3.fromRGB(244, 150, 44)):Lerp(uiColor("Gold", Color3.fromRGB(255, 212, 64)), 0.45),
 	GoldLight = uiColor("GoldLight", Color3.fromRGB(255, 236, 150)),
 
 	Pennants = {
-		Count = 19,
-		CountLow = 11,
-		MastInset = 3.4, -- from the roof's ends: clear of its white corner knobs
+		Count = 17,
+		CountLow = 9,
+		MastInset = 5.6, -- from the roof's ends: clear of its corner knobs and the big cups
 		FrontInset = 0.5, -- behind the roof's front edge
-		MastHeight = 4.6,
-		MastWidth = 0.45,
+		MastHeight = 6.2,
+		MastWidth = 0.5,
 		Drop = 0.25,
-		Sag = 2.4,
-		Width = 1.5,
-		Height = 1.7,
+		Sag = 2.6,
+		Width = 2.2,
+		Height = 2.6,
 		Thick = 0.12,
-		Line = 0.09,
+		Line = 0.1,
 	},
 	GoldTrim = {
 		Height = 0.5,
@@ -135,6 +212,10 @@ local CFG = {
 		Collar = 0.45,
 		CollarInset = 1.6, -- from a front post's ends: under the white knob of the shelf above
 		Glints = 4,
+		Rail = 0.7, -- diameter of the glowing tube along every fence cap
+		RailLift = 0.3, -- share of that diameter it sits above the cap's top
+		RailPulse = 1.3, -- seconds of one half of its breath ...
+		RailDim = 0.4, -- ... down to this transparency
 	},
 	Trophies = {
 		X = 17, -- shelf centre, either side of the marquee
@@ -145,6 +226,10 @@ local CFG = {
 		Step = 3.4,
 		Sizes = { 1, 1.3, 1 },
 		Metals = { Color3.fromRGB(208, 214, 226), Color3.fromRGB(255, 196, 48), Color3.fromRGB(214, 138, 82) },
+		Big = 3, -- size of the gold cup on each end of the roof (a cup is 2.1 studs tall at size 1)
+		BigInset = 1.6, -- from the roof's ends
+		BigZ = 0.8, -- behind the roof's white corner knobs
+		Pillar = 2.6, -- size of the gold cup on each entrance pillar
 	},
 	NeonSign = {
 		Text = "GIGA GYM",
@@ -161,19 +246,28 @@ local CFG = {
 		Light = { Range = 20, Brightness = 0.6 },
 	},
 	CrownBeam = {
-		Y = 20.2, -- crown band centre above the roof
-		Z = 0.2, -- over the roof: at ten shelves the crown still clears the back fence
-		Diameter = 6,
-		Band = 1.4,
-		Points = 6,
-		PointWidth = 1.9,
-		PointHeight = 2.1,
-		Spin = 0.35, -- radians per second
-		Bob = 0.45,
+		Y = 19.6, -- crown band centre above the roof: just over the neon sign
+		Z = 0.2, -- over the roof's middle
+		Diameter = 18,
+		Band = 4.2,
+		Rim = 0.7,
+		Points = 8,
+		PointWidth = 5.2,
+		PointHeight = 6.3,
+		PointThick = 1.2,
+		Jewel = 1.8, -- ball on every point's tip ...
+		Gem = 2.1, -- ... and on the band between two points
+		Spin = 0.6, -- radians per second
+		Bob = 0.6,
 		BobSpeed = 0.9,
-		BeamHeight = 140,
-		BeamWidth = { 4.5, 11 },
-		Sparkles = 8,
+		BeamHeight = 170,
+		BeamWidth = { 15, 34 }, -- the gold shaft that always faces the camera
+		BeamAlpha = 0.3, -- its transparency at the crown
+		Rays = 3, -- sheets of light that turn with the crown ...
+		RayWidth = { 12, 30 },
+		RayAlpha = 0.5,
+		Sparkles = 16,
+		SparkleSize = 2.6,
 	},
 }
 PlotRank.CFG = CFG
@@ -349,6 +443,69 @@ function PlotRank.fitScale(want: number, height: number, room: number?, cap: num
 	return math.max(1, math.floor(scale * 100 + 0.5) / 100)
 end
 
+-- How far the roof dressing of a rack whose best tier is `bestTier` reaches above the roof's
+-- top: the server's marquee, then the neon sign, then the crown's tips at the top of its bob.
+function PlotRank.dressTop(bestTier: number): number
+	local rank = PlotRank.rank(bestTier)
+	local top = CFG.Shot.Marquee
+	if rank >= 4 then
+		top = math.max(top, CFG.NeonSign.Y + CFG.NeonSign.Height / 2 + 0.4)
+	end
+	if rank >= 5 then
+		local c = CFG.CrownBeam
+		top = math.max(top, c.Y + c.Band / 2 + c.PointHeight + c.Jewel / 2 + c.Bob)
+	end
+	return top
+end
+
+-- The spawn camera's shot of a rack: how far it looks down (radians; negative = up) and how
+-- far behind the head it stands so that a point `rise` above the head and `run` studs in
+-- front of it (the top of the roof dressing) is CFG.Shot.Margin under the screen's top edge.
+-- The third result is false when even the widest shot crops it (a very tall rack).
+function PlotRank.homeShot(rise: number, run: number, fov: number?): (number, number, boolean)
+	local c = CFG.Shot
+	local limit = math.rad((fov or c.Fov) / 2 - c.Margin)
+	local pitch, distance = math.rad(c.Pitch), c.Distance
+	for i = 0, c.Steps do
+		local t = 2 * i / c.Steps
+		if t <= 1 then
+			pitch = math.rad(c.Pitch * (1 - t))
+			distance = c.Distance + (c.LevelDistance - c.Distance) * t
+		else
+			pitch = -math.rad(c.UpPitch * (t - 1))
+			distance = c.LevelDistance + (c.UpDistance - c.LevelDistance) * (t - 1)
+		end
+		-- Angle of the top above the camera's axis: the screen's top edge is half the FOV up.
+		local above = math.atan2(rise - distance * math.sin(pitch), run + distance * math.cos(pitch)) + pitch
+		if above <= limit then
+			return pitch, distance, true
+		end
+	end
+	return pitch, distance, false
+end
+
+-- The size the champion (slot 1) is drawn at.
+function PlotRank.championScale(tier: number): number
+	return if tier >= Economy.MAX_TIER then CFG.Champion.MythicScale else CFG.Champion.Scale
+end
+
+-- Where the server stands the champion: the middle of the pedestal rim's top (`rim` is the
+-- plot's ChampionTop, a cylinder lying along its X axis), Y up, facing -Z like every unit.
+function PlotRank.championHome(rim: BasePart): CFrame
+	return rim.CFrame * CFrame.Angles(0, 0, -math.pi / 2) * CFrame.new(0, rim.Size.X / 2, 0)
+end
+
+-- Where the champion is shown: on the stage in front of and above its pedestal.
+function PlotRank.championPivot(rim: BasePart): CFrame
+	return PlotRank.championHome(rim) * CFrame.new(0, CFG.Champion.Rise, -CFG.Champion.Out)
+end
+
+function PlotRank.tierName(tier: number): string
+	local tiers = (Theme :: any).Tiers
+	local entry = tiers and tiers[math.clamp(tier, 1, #tiers)]
+	return if entry and type(entry.Name) == "string" then entry.Name else "Tier " .. tier
+end
+
 -- The best tier standing on a plot's rack (0 for a plot without units).
 function PlotRank.bestTier(plot: Instance): number
 	local units = plot:FindFirstChild("Units")
@@ -373,7 +530,12 @@ type Kit = {
 	low: boolean,
 	parent: Instance,
 	posts: { BasePart }, -- the front shelf's side posts (they stand on the floor)
+	rails: { BasePart }, -- the caps along the top of the plot's fences
+	pillars: { BasePart }, -- the knobs on top of the entrance arch's pillars
 }
+
+-- A model that turns for ever about `axis` of `at` (world), `speed` radians per second.
+export type Spin = { model: Model, at: CFrame, axis: Vector3, speed: number }
 
 -- A piece of dressing: `roof` follows the rack's roof, `ground` stays put, `spin` turns
 -- about `spinAt` (relative to the roof's top) and `start` sets its tweens going.
@@ -471,6 +633,47 @@ local function sparkles(parent: Instance, color: Color3, rate: number, size: num
 	return emitter
 end
 
+-- A beam of light between two attachments on `part` (CFrames relative to it). Facing the
+-- camera it is a shaft seen from anywhere; otherwise it is a flat sheet, standing in the
+-- plane of the attachments' X axis (which points along the beam here) and one of the others.
+local function lightBeam(
+	part: BasePart,
+	name: string,
+	from: CFrame,
+	to: CFrame,
+	widths: { number },
+	color: ColorSequence,
+	alpha: number,
+	faceCamera: boolean
+): Beam
+	local a0 = Instance.new("Attachment")
+	a0.Name = name .. "0"
+	a0.CFrame = from
+	a0.Parent = part
+	local a1 = Instance.new("Attachment")
+	a1.Name = name .. "1"
+	a1.CFrame = to
+	a1.Parent = part
+	local beam = Instance.new("Beam")
+	beam.Name = name
+	beam.Attachment0 = a0
+	beam.Attachment1 = a1
+	beam.FaceCamera = faceCamera
+	beam.Segments = 4
+	beam.Width0 = widths[1]
+	beam.Width1 = widths[2]
+	beam.LightEmission = 0.7
+	beam.LightInfluence = 0
+	beam.Color = color
+	beam.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, alpha),
+		NumberSequenceKeypoint.new(0.45, alpha + (1 - alpha) * 0.55),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	beam.Parent = part
+	return beam
+end
+
 -- A tween that breathes one property back and forth for ever.
 local function breathe(inst: Instance, seconds: number, props: { [string]: any })
 	local info = TweenInfo.new(seconds, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
@@ -554,7 +757,24 @@ function BUILDERS.GoldTrim(k: Kit): Feature
 			metal(piece(ground, "GoldCollar", Vector3.new(size.X + 0.24, c.Collar, size.Z + 0.24), cf, CFG.Gold))
 		end
 	end
-	return { roof = model, ground = ground }
+	-- A glowing gold tube along the top of every fence: the plot's outline, seen from the hub.
+	local rails: { BasePart } = {}
+	for _, cap in k.rails do
+		local cf = cap.CFrame * CFrame.new(0, cap.Size.Y / 2 + c.Rail * c.RailLift, 0)
+		local rail = piece(ground, "GoldRail", Vector3.new(cap.Size.X + 0.5, c.Rail, c.Rail), cf, CFG.GoldLight, Enum.PartType.Cylinder)
+		table.insert(rails, neon(rail))
+	end
+	return {
+		roof = model,
+		ground = ground,
+		start = function()
+			if not k.low then
+				for _, rail in rails do
+					breathe(rail, c.RailPulse, { Transparency = c.RailDim })
+				end
+			end
+		end,
+	}
 end
 
 -- A cup on a stem and a dark base, `s` times the standard size, standing on `base`.
@@ -588,8 +808,15 @@ function BUILDERS.Trophies(k: Kit): Feature
 				trophy(model, shelf * CFrame.new((i - 2) * c.Step, 0, 0), size, c.Metals[i])
 			end
 		end
+		-- A big gold cup on each end of the roof, over the rack's side posts.
+		trophy(model, k.top * CFrame.new(side * (k.hw - c.BigInset), 0, c.BigZ), c.Big, c.Metals[2])
 	end
-	return { roof = model }
+	-- And one on each pillar of the entrance arch, for the hub side.
+	local ground = group("PillarTrophies", k.top, k.parent)
+	for _, knob in k.pillars do
+		trophy(ground, knob.CFrame * CFrame.new(0, knob.Size.Y / 2 - 0.25, 0), c.Pillar, c.Metals[2])
+	end
+	return { roof = model, ground = ground }
 end
 
 function BUILDERS.NeonSign(k: Kit): Feature
@@ -653,34 +880,15 @@ function BUILDERS.CrownBeam(k: Kit): Feature
 	-- The shaft of light and its sparkles stay put; the crown turns inside them.
 	local shaft = piece(model, "CrownShaft", Vector3.new(c.Diameter, 0.2, c.Diameter), k.top * at, WHITE)
 	shaft.Transparency = 1
-	local a0 = Instance.new("Attachment")
-	a0.Parent = shaft
-	local a1 = Instance.new("Attachment")
-	a1.Position = Vector3.new(0, c.BeamHeight, 0)
-	a1.Parent = shaft
-	local beam = Instance.new("Beam")
-	beam.Name = "CrownLight"
-	beam.Attachment0 = a0
-	beam.Attachment1 = a1
-	beam.FaceCamera = true
-	beam.Segments = 4
-	beam.Width0 = c.BeamWidth[1]
-	beam.Width1 = c.BeamWidth[2]
-	beam.LightEmission = 0.6
-	beam.LightInfluence = 0
-	beam.Color = ColorSequence.new(CFG.GoldLight, WHITE)
-	beam.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.5),
-		NumberSequenceKeypoint.new(0.4, 0.8),
-		NumberSequenceKeypoint.new(1, 1),
-	})
-	beam.Parent = shaft
+	local gold = ColorSequence.new(CFG.Gold:Lerp(CFG.GoldLight, 0.5), CFG.GoldLight)
+	local up = CFrame.new(0, c.BeamHeight, 0)
+	lightBeam(shaft, "CrownLight", CFrame.new(0, -c.Band, 0), up, c.BeamWidth, gold, c.BeamAlpha, true)
 	if not k.low then
-		local rising = sparkles(shaft, CFG.GoldLight, Budget.count(c.Sparkles), 1.1)
+		local rising = sparkles(shaft, CFG.GoldLight, Budget.count(c.Sparkles), c.SparkleSize)
 		rising.EmissionDirection = Enum.NormalId.Top
-		rising.Speed = NumberRange.new(3, 7)
-		rising.Lifetime = NumberRange.new(1.6, 2.6)
-		rising.SpreadAngle = Vector2.new(14, 14)
+		rising.Speed = NumberRange.new(5, 11)
+		rising.Lifetime = NumberRange.new(2, 3.4)
+		rising.SpreadAngle = Vector2.new(16, 16)
 	end
 
 	local crown = group("Crown", k.top * at, model)
@@ -688,7 +896,7 @@ function BUILDERS.CrownBeam(k: Kit): Feature
 	local band = Vector3.new(c.Band, c.Diameter, c.Diameter)
 	metal(piece(crown, "CrownBand", band, k.top * at * UPRIGHT, CFG.Gold, Enum.PartType.Cylinder))
 	for _, side in { -1, 1 } do
-		local rim = Vector3.new(0.26, c.Diameter + 0.3, c.Diameter + 0.3)
+		local rim = Vector3.new(c.Rim, c.Diameter + 0.8, c.Diameter + 0.8)
 		local cf = k.top * at * CFrame.new(0, side * c.Band / 2, 0) * UPRIGHT
 		metal(piece(crown, "CrownRim", rim, cf, CFG.GoldLight, Enum.PartType.Cylinder))
 	end
@@ -697,7 +905,7 @@ function BUILDERS.CrownBeam(k: Kit): Feature
 		local turn = CFrame.Angles(0, (i - 1) * 2 * math.pi / c.Points, 0)
 		-- One point: two triangles standing on the band, with a jewel on the tip and the band.
 		local frame = k.top * at * turn
-		local foot = Vector3.new(0, c.Band / 2, -r + 0.25)
+		local foot = Vector3.new(0, c.Band / 2, -r + c.PointThick / 2)
 		for _, side in { -1, 1 } do
 			metal(
 				triangle(
@@ -709,29 +917,43 @@ function BUILDERS.CrownBeam(k: Kit): Feature
 					Vector3.new(side, 0, 0),
 					c.PointHeight,
 					c.PointWidth / 2,
-					0.5,
+					c.PointThick,
 					CFG.Gold
 				)
 			)
 		end
-		local tip = frame * CFrame.new(0, c.Band / 2 + c.PointHeight, -r + 0.25)
-		neon(piece(crown, "CrownJewel", Vector3.one * 0.6, tip, jewels[1], Enum.PartType.Ball))
+		local tip = frame * CFrame.new(0, c.Band / 2 + c.PointHeight, -r + c.PointThick / 2)
+		neon(piece(crown, "CrownJewel", Vector3.one * c.Jewel, tip, jewels[1], Enum.PartType.Ball))
 		local gem = frame * CFrame.Angles(0, math.pi / c.Points, 0) * CFrame.new(0, 0, -r)
-		neon(piece(crown, "CrownGem", Vector3.one * 0.7, gem, jewels[i % 2 + 1], Enum.PartType.Ball))
+		neon(piece(crown, "CrownGem", Vector3.one * c.Gem, gem, jewels[i % 2 + 1], Enum.PartType.Ball))
+	end
+	-- Sheets of gold light standing in the shaft: they turn with the crown, so the beam is
+	-- seen to rotate from the hub.
+	local anchor = crown.PrimaryPart
+	if anchor and not k.low then
+		for i = 1, c.Rays do
+			local turn = CFrame.Angles(0, (i - 1) * math.pi / c.Rays, 0) * UPRIGHT
+			local top = CFrame.new(0, c.BeamHeight * 0.75, 0) * turn
+			lightBeam(anchor, "CrownRay", CFrame.new(0, c.Band, 0) * turn, top, c.RayWidth, gold, c.RayAlpha, false)
+		end
 	end
 	return { roof = model, spin = crown, spinAt = at }
 end
 
 -- Builds the dressing of plot rank `rank` on a rack roof (`roofTop` = its top centre, `roofSize`
 -- = the roof board's size) into `parent`, by feature name. Nothing is animated until a
--- feature's `start` runs. `posts` are the front shelf's side posts, for the gold collars.
+-- feature's `start` runs. `posts` are the front shelf's side posts, for the gold collars;
+-- `rails` the plot's fence caps, for the gold outline; `pillars` the entrance arch's pillar
+-- knobs, for the big cups.
 function PlotRank.dress(
 	rank: number,
 	roofTop: CFrame,
 	roofSize: Vector3,
 	parent: Instance,
 	low: boolean?,
-	posts: { BasePart }?
+	posts: { BasePart }?,
+	rails: { BasePart }?,
+	pillars: { BasePart }?
 ): { [string]: Feature }
 	local kit: Kit = {
 		top = roofTop,
@@ -740,6 +962,8 @@ function PlotRank.dress(
 		low = low == true,
 		parent = parent,
 		posts = posts or {},
+		rails = rails or {},
+		pillars = pillars or {},
 	}
 	local out: { [string]: Feature } = {}
 	for i = 1, math.min(rank, #CFG.Features) do
@@ -751,19 +975,32 @@ end
 
 -- Champion pedestal ---------------------------------------------------------------------
 
--- The glow (and, for a tier 25 champion, the crown points and the cape) on a plot's champion
--- pedestal: `drum`, `rim` and `foot` are the server's ChampionPedestal / Top / Foot parts.
--- Returns the model and the function that starts its glow breathing.
-function PlotRank.showcase(parent: Instance, drum: BasePart, rim: BasePart, foot: BasePart, tier: number): (Model, () -> ())
+-- The champion's stage on a plot: `drum`, `rim` and `foot` are the server's ChampionPedestal /
+-- Top / Foot parts. The pedestal keeps its glow; in front of it stand the stage the champion
+-- is shown on (PlotRank.championPivot), the dark panel and gold back light behind it, the
+-- ring of tiles over its head, the name plaque and, by rarity, sparkles, a sky beam and a
+-- tier 25 champion's crown, cape, sunburst and sheets of light. Returns the model, the
+-- function that starts its tweens and the models that turn (PlotRank's frame step turns them).
+function PlotRank.showcase(parent: Instance, drum: BasePart, rim: BasePart, foot: BasePart, tier: number): (Model, () -> (), { Spin })
+	local c = CFG.Champion
 	local color = PlotRank.bandColor(tier)
-	-- The pedestal's cylinders lie along their X axis: undo that for a frame with Y up, at
-	-- the middle of the rim's top (where the champion stands, facing -Z).
-	local stand = rim.CFrame * UPRIGHT:Inverse() * CFrame.new(0, rim.Size.X / 2, 0)
-	local model = group("Champion", stand, parent)
+	local band = PlotRank.bandIndex(tier)
+	local mythic = tier >= Economy.MAX_TIER
+	local low = Budget.low()
+	local scale = PlotRank.championScale(tier)
+	local tall = c.UnitHeight * scale
+	-- `stand`: where the server stands the champion; `stage`: where it is shown. Both have Y
+	-- up and -Z toward the plot's entrance.
+	local stand = PlotRank.championHome(rim)
+	local stage = PlotRank.championPivot(rim)
+	local model = group("Champion", stage, parent)
+	local spins: { Spin } = {}
+
+	-- The pedestal's glow.
 	local height = math.max(0.18, drum.Size.X * CFG.GlowBand)
-	local band =
+	local glow =
 		piece(model, "GlowBand", Vector3.new(height, drum.Size.Y + 0.16, drum.Size.Y + 0.16), drum.CFrame, color, Enum.PartType.Cylinder)
-	neon(band)
+	neon(glow)
 	local wide = math.min(foot.Size.Y + 0.36, CFG.HaloMax)
 	local under = foot.CFrame * CFrame.new(-foot.Size.X / 2 + 0.05, 0, 0)
 	neon(piece(model, "GlowHalo", Vector3.new(0.06, wide, wide), under, color, Enum.PartType.Cylinder), 0.25)
@@ -772,40 +1009,177 @@ function PlotRank.showcase(parent: Instance, drum: BasePart, rim: BasePart, foot
 	light.Range = CFG.GlowLight.Range
 	light.Brightness = CFG.GlowLight.Brightness
 	light.Shadows = false
-	light.Parent = band
+	light.Parent = glow
 
-	if tier >= Economy.MAX_TIER then
-		-- A crown round the champion's feet: points half sunk into the pedestal's gold rim.
-		local radius = rim.Size.Y / 2 - 0.1
+	-- The stage: a gold step off the pedestal and a gold disc over the gutter, on a glowing rim.
+	local diameter = if mythic then c.MythicStage else c.Stage
+	local r = diameter / 2
+	local reach = c.Out - r + 0.4
+	metal(
+		piece(
+			model,
+			"StageNeck",
+			Vector3.new(c.Neck, c.Rise - 0.04, reach),
+			stand * CFrame.new(0, (c.Rise - 0.04) / 2, -reach / 2),
+			CFG.Gold
+		)
+	)
+	local disc = Vector3.new(c.StageThick, diameter, diameter)
+	metal(piece(model, "StageDisc", disc, stage * CFrame.new(0, -c.StageThick / 2, 0) * UPRIGHT, CFG.Gold, Enum.PartType.Cylinder))
+	local rimGlow = Vector3.new(0.16, diameter + 0.6, diameter + 0.6)
+	neon(piece(model, "StageGlow", rimGlow, stage * CFrame.new(0, -c.StageThick - 0.04, 0) * UPRIGHT, color, Enum.PartType.Cylinder), 0.1)
+
+	-- The dark panel behind the champion, in a gold frame, with a gold disc of back light.
+	local p = c.Panel
+	local top = tall + p.Head
+	local back = stage * CFrame.new(0, 0, p.Back)
+	piece(model, "SpotPanel", Vector3.new(p.Width, top + p.Foot, p.Thick), back * CFrame.new(0, (top - p.Foot) / 2, 0), p.Color)
+	for _, side in { -1, 1 } do
+		local bar = Vector3.new(p.Frame, top + p.Foot, p.Thick + 0.1)
+		neon(piece(model, "PanelFrame", bar, back * CFrame.new(side * (p.Width / 2 + p.Frame / 2), (top - p.Foot) / 2, 0), CFG.GoldLight))
+	end
+	local lintel = Vector3.new(p.Width + p.Frame * 2, p.Frame, p.Thick + 0.1)
+	neon(piece(model, "PanelFrame", lintel, back * CFrame.new(0, top + p.Frame / 2, 0), CFG.GoldLight))
+	local face = -p.Thick / 2 - 0.05
+	local chest = tall * 0.6
+	-- A cylinder lies along its X axis: turned to face the entrance.
+	local facing = CFrame.Angles(0, math.pi / 2, 0)
+	local discSize = math.min(c.RimDisc * scale, p.Width - 0.4)
+	local rimDisc = piece(
+		model,
+		"RimGlow",
+		Vector3.new(0.06, discSize, discSize),
+		back * CFrame.new(0, chest, face) * facing,
+		CFG.GoldLight,
+		Enum.PartType.Cylinder
+	)
+	neon(rimDisc, c.RimAlpha)
+	local rimLight = Instance.new("PointLight")
+	rimLight.Name = "RimLight"
+	rimLight.Color = CFG.GoldLight
+	rimLight.Range = c.RimLight.Range
+	rimLight.Brightness = c.RimLight.Brightness
+	rimLight.Shadows = false
+	rimLight.Parent = rimDisc
+
+	-- A ring of gold tiles turning over the champion's head.
+	local h = c.Halo
+	local haloAt = stage * CFrame.new(0, tall + h.Above, 0) * CFrame.Angles(math.rad(h.Tilt), 0, 0)
+	local halo = group("HaloRing", haloAt, model)
+	local haloRadius = h.Radius * scale
+	local tiles = if low then h.Tiles / 2 else h.Tiles
+	local arc = 2 * math.pi * haloRadius / tiles * 0.7
+	for i = 1, tiles do
+		local spoke = haloAt * CFrame.Angles(0, i * 2 * math.pi / tiles, 0) * CFrame.new(0, 0, -haloRadius)
+		neon(piece(halo, "HaloTile", Vector3.new(arc, h.Thick, h.Wide), spoke, CFG.GoldLight))
+	end
+	table.insert(spins, { model = halo, at = haloAt, axis = Vector3.yAxis, speed = h.Spin })
+
+	-- The name plaque, hanging from the stage's front edge: read from the walkway.
+	local q = c.Plaque
+	local plaqueAt = stage * CFrame.new(0, -q.Drop - q.Height / 2, -(r + q.Thick / 2 + 0.05))
+	local plaque = piece(model, "NamePlaque", Vector3.new(q.Width, q.Height, q.Thick), plaqueAt, p.Color)
+	for _, side in { -1, 1 } do
+		local trim = Vector3.new(q.Width + 0.3, q.Trim, q.Thick + 0.1)
+		neon(piece(model, "PlaqueTrim", trim, plaqueAt * CFrame.new(0, side * (q.Height / 2 + q.Trim / 2), 0), CFG.GoldLight))
+	end
+	local gui = Instance.new("SurfaceGui")
+	gui.Name = "NameText"
+	gui.Face = Enum.NormalId.Front
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 40
+	gui.LightInfluence = 0
+	gui.Brightness = 1.4
+	gui.Parent = plaque
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.AnchorPoint = Vector2.new(0.5, 0.5)
+	label.Position = UDim2.fromScale(0.5, 0.5)
+	label.Size = UDim2.fromScale(0.94, 0.9)
+	label.Font = (Theme :: any).Fonts.Display
+	label.TextScaled = true
+	label.TextWrapped = true
+	label.TextColor3 = if mythic then WHITE else CFG.GoldLight
+	label.Text = string.upper(PlotRank.tierName(tier))
+	label.Parent = gui
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = if mythic then color else CFG.Gold
+	stroke.Thickness = 2
+	stroke.Parent = label
+
+	-- From Epic the stage sparkles; from Legendary a beam rises to the sky.
+	local emit = piece(model, "StageLight", Vector3.new(diameter, 0.1, diameter), stage * CFrame.new(0, 0.2, 0), WHITE)
+	emit.Transparency = 1
+	if band >= c.SparkleBand and not low then
+		local rising = sparkles(emit, color, Budget.count(if mythic then c.MythicSparkles else c.Sparkles), if mythic then 1.4 else 0.9)
+		rising.Name = "StageSparkles"
+		rising.EmissionDirection = Enum.NormalId.Top
+		rising.Speed = NumberRange.new(2, 5)
+		rising.Lifetime = NumberRange.new(1.4, 2.4)
+		rising.SpreadAngle = Vector2.new(12, 12)
+	end
+	if band >= c.BeamBand then
+		local widths = if mythic then c.MythicBeamWidth else c.BeamWidth
+		local shine = ColorSequence.new(if mythic then CFG.GoldLight else color, WHITE)
+		lightBeam(emit, "ChampionBeam", CFrame.new(), CFrame.new(0, c.BeamHeight, 0), widths, shine, c.BeamAlpha, true)
+	end
+
+	if mythic then
+		-- A sunburst turning on the panel behind the champion.
+		local sunAt = back * CFrame.new(0, chest, face - 0.06)
+		local sun = group("Sunburst", sunAt, model)
+		for i = 1, c.SunRays do
+			local ray = sunAt * CFrame.Angles(0, 0, i * 2 * math.pi / c.SunRays) * CFrame.new(0, c.SunRay / 2 + 0.5, 0)
+			neon(piece(sun, "SunRay", Vector3.new(0.34, c.SunRay, 0.06), ray, CFG.GoldLight), 0.2)
+		end
+		table.insert(spins, { model = sun, at = sunAt, axis = Vector3.zAxis, speed = c.SunSpin })
+		-- Sheets of light turning in the beam, over the champion's head.
+		if not low then
+			local raysAt = stage * CFrame.new(0, tall + h.Above + 1, 0)
+			local rays = group("BeamRays", raysAt, model)
+			local anchor = rays.PrimaryPart :: BasePart
+			local shine = ColorSequence.new(CFG.GoldLight, WHITE)
+			for i = 1, c.Rays do
+				local turn = CFrame.Angles(0, (i - 1) * math.pi / c.Rays, 0) * UPRIGHT
+				lightBeam(anchor, "ChampionRay", turn, CFrame.new(0, c.BeamHeight * 0.7, 0) * turn, c.MythicBeamWidth, shine, 0.55, false)
+			end
+			table.insert(spins, { model = rays, at = raysAt, axis = Vector3.yAxis, speed = c.RaySpin })
+		end
+		-- A crown round the champion's feet: points half sunk into the stage's rim.
+		local radius = r - 0.1
 		local tipY = CFG.CrownPoint * math.sqrt(2) / 2
 		for i = 1, CFG.CrownPoints do
-			local spoke = stand * CFrame.Angles(0, (i - 0.5) * 2 * math.pi / CFG.CrownPoints, 0) * CFrame.new(0, 0.03, -radius)
-			local point = Vector3.new(CFG.CrownPoint, CFG.CrownPoint, 0.1)
+			local spoke = stage * CFrame.Angles(0, (i - 0.5) * 2 * math.pi / CFG.CrownPoints, 0) * CFrame.new(0, 0.03, -radius)
+			local point = Vector3.new(CFG.CrownPoint, CFG.CrownPoint, 0.14)
 			metal(piece(model, "CrownPoint", point, spoke * CFrame.Angles(0, 0, math.pi / 4), CFG.Gold))
-			neon(piece(model, "CrownJewel", Vector3.one * 0.2, spoke * CFrame.new(0, tipY, 0), color, Enum.PartType.Ball))
+			neon(piece(model, "CrownJewel", Vector3.one * 0.3, spoke * CFrame.new(0, tipY, 0), color, Enum.PartType.Ball))
 		end
-		-- The cape: strips fanning out from the shoulders to the pedestal, behind the unit.
+		-- The cape: strips fanning out from the shoulders to the stage, behind the unit.
 		local cape = CFG.Cape
 		local half = (cape.Strips - 1) / 2
 		local cloth = color:Lerp(PAL.Ink, 0.3)
+		local footZ = math.min(cape.BottomZ * scale, p.Back - p.Thick / 2 - 0.15)
 		for i = 0, cape.Strips - 1 do
 			local n = i - half
-			local top = Vector3.new(n * cape.TopStep, cape.Top, cape.TopZ)
-			local bottom = Vector3.new(n * cape.BottomStep, cape.Bottom, cape.BottomZ)
-			local up = (top - bottom).Unit
+			local upper = Vector3.new(n * cape.TopStep * scale, cape.Top * scale, cape.TopZ * scale)
+			local lower = Vector3.new(n * cape.BottomStep * scale, cape.Bottom, footZ)
+			local up = (upper - lower).Unit
 			local across = up:Cross(Vector3.zAxis).Unit
-			local cf = stand * CFrame.fromMatrix((top + bottom) / 2, across, up)
+			local cf = stage * CFrame.fromMatrix((upper + lower) / 2, across, up)
 			local edge = i == 0 or i == cape.Strips - 1
-			piece(model, "CapeStrip", Vector3.new(cape.Width, (top - bottom).Magnitude, 0.08), cf, if edge then CFG.Gold else cloth)
+			local strip = Vector3.new(cape.Width * scale, (upper - lower).Magnitude, 0.08)
+			piece(model, "CapeStrip", strip, cf, if edge then CFG.Gold else cloth)
 		end
-		local collar = Vector3.new(cape.TopStep * (cape.Strips - 1) + cape.Width, 0.3, 0.3)
-		metal(piece(model, "CapeCollar", collar, stand * CFrame.new(0, cape.Top, cape.TopZ), CFG.Gold))
+		local collar = Vector3.new((cape.TopStep * (cape.Strips - 1) + cape.Width) * scale, 0.3, 0.3)
+		metal(piece(model, "CapeCollar", collar, stage * CFrame.new(0, cape.Top * scale, cape.TopZ * scale), CFG.Gold))
 	end
 	return model,
 		function()
-			breathe(band, CFG.GlowPulse, { Transparency = 0.4 })
+			breathe(glow, CFG.GlowPulse, { Transparency = 0.4 })
 			breathe(light, CFG.GlowPulse, { Brightness = CFG.GlowLight.Brightness * 0.5 })
-		end
+			breathe(rimDisc, c.RimPulse, { Transparency = c.RimAlpha + 0.35 })
+		end,
+		spins
 end
 
 -- Plot scan -----------------------------------------------------------------------------
@@ -819,6 +1193,8 @@ type Rec = {
 	top: CFrame?, -- the roof top the roof models stand on now
 	champion: Model?,
 	championKey: string,
+	spins: { Spin }, -- the champion stage's turning models
+	staged: Model?, -- another player's champion this module moved onto its stage
 	rings: { Part },
 	near: boolean,
 	rank: number?, -- the rank last dressed while in range (nil = not dressed): a higher one is news
@@ -861,6 +1237,7 @@ local function clear(rec: Rec)
 		rec.champion:Destroy()
 		rec.champion = nil
 	end
+	table.clear(rec.spins)
 	rec.championKey = ""
 	rec.top = nil
 end
@@ -894,6 +1271,17 @@ local function frontPosts(plot: Instance): { BasePart }
 	return posts
 end
 
+-- The plot's parts called `name`, wherever the server put them in its folder.
+local function plotParts(plot: Instance, name: string): { BasePart }
+	local found: { BasePart } = {}
+	for _, d in plot:GetDescendants() do
+		if d.Name == name and d:IsA("BasePart") then
+			table.insert(found, d)
+		end
+	end
+	return found
+end
+
 local function syncDressing(rec: Rec, best: number)
 	local roof = rec.roof
 	local rank = if rec.near and roof then PlotRank.rank(best) else 0
@@ -913,20 +1301,26 @@ local function syncDressing(rec: Rec, best: number)
 		return
 	end
 	local top = roof.CFrame * CFrame.new(0, roof.Size.Y / 2, 0)
-	local kit: Kit = {
-		top = top,
-		hw = roof.Size.X / 2,
-		hd = roof.Size.Z / 2,
-		low = Budget.low(),
-		parent = rec.group,
-		posts = frontPosts(rec.folder),
-	}
+	local kit: Kit? = nil
 	for i = 1, rank do
 		local name = CFG.Features[i]
 		if not rec.features[name] then
+			-- The plot is only searched when there is something to build.
+			local made: Kit = kit
+				or {
+					top = top,
+					hw = roof.Size.X / 2,
+					hd = roof.Size.Z / 2,
+					low = Budget.low(),
+					parent = rec.group,
+					posts = frontPosts(rec.folder),
+					rails = plotParts(rec.folder, "FenceCap"),
+					pillars = plotParts(rec.folder, "ArchPillarKnob"),
+				}
+			kit = made
 			-- A piece that fails to build is kept as an empty one, so it is not tried again
 			-- on every scan.
-			local ok, built = pcall(BUILDERS[name], kit)
+			local ok, built = pcall(BUILDERS[name], made)
 			local feature: Feature = if ok then built else {}
 			rec.features[name] = feature
 			if not ok and not warned then
@@ -947,9 +1341,10 @@ end
 local function syncChampion(rec: Rec, best: number)
 	local plot = rec.folder
 	local drum, rim, foot = findPart(plot, "ChampionPedestal"), findPart(plot, "ChampionTop"), findPart(plot, "ChampionFoot")
+	-- The plaque names the tier: every new best tier builds the stage again.
 	local key = ""
 	if rec.near and best > 0 and drum and rim and foot then
-		key = PlotRank.bandIndex(best) .. (if best >= Economy.MAX_TIER then "+" else "")
+		key = tostring(best)
 	end
 	if key == rec.championKey then
 		return
@@ -959,10 +1354,60 @@ local function syncChampion(rec: Rec, best: number)
 		rec.champion:Destroy()
 		rec.champion = nil
 	end
+	table.clear(rec.spins)
 	if key ~= "" and drum and rim and foot then
-		local model, start = PlotRank.showcase(rec.group, drum, rim, foot, best)
+		local model, start, spins = PlotRank.showcase(rec.group, drum, rim, foot, best)
 		rec.champion = model
+		rec.spins = spins
 		start()
+	end
+end
+
+-- Draws `model` at `scale`, frozen while it is resized (Fx.Shelf does the same on the own rack).
+local function resize(model: Model, scale: number)
+	if Animator then
+		Animator.hold(model)
+	end
+	pcall(model.ScaleTo, model, scale)
+	if Animator then
+		Animator.release(model)
+	end
+end
+
+-- Another player's champion (the unit in slot 1) is moved onto its stage and drawn big; the
+-- one that stood there before goes back to its size. The own plot's is Fx.Shelf's (it also
+-- animates its arrival).
+local function stageChampion(rec: Rec, own: boolean)
+	local rim = findPart(rec.folder, "ChampionTop")
+	local units = rec.folder:FindFirstChild("Units")
+	local unit: Model? = nil
+	if not own and rec.champion and rim and units then
+		for _, child in units:GetChildren() do
+			if child:IsA("Model") and child:GetAttribute("Slot") == 1 then
+				unit = child
+				break
+			end
+		end
+	end
+	local old = rec.staged
+	if old and old ~= unit then
+		rec.staged = nil
+		if old.Parent then
+			if rim and old:GetAttribute("Slot") == 1 then
+				-- Its stage is gone (the plot is out of range): back onto the pedestal.
+				old:PivotTo(PlotRank.championHome(rim))
+			end
+			resize(old, 1)
+		end
+	end
+	if unit and rim then
+		local want = PlotRank.championPivot(rim)
+		if (unit:GetPivot().Position - want.Position).Magnitude > 0.05 then
+			unit:PivotTo(want)
+			local tier = unit:GetAttribute("Tier")
+			resize(unit, PlotRank.championScale(if type(tier) == "number" then tier else 1))
+		end
+		rec.staged = unit
 	end
 end
 
@@ -1022,6 +1467,7 @@ local function syncPlot(rec: Rec, own: boolean, camPos: Vector3)
 	local best = PlotRank.bestTier(rec.folder)
 	syncDressing(rec, best)
 	syncChampion(rec, best)
+	stageChampion(rec, own)
 	syncRings(rec, rec.near and not own)
 end
 
@@ -1057,6 +1503,8 @@ local function poll()
 						top = nil,
 						champion = nil,
 						championKey = "",
+						spins = {},
+						staged = nil,
 						rings = {},
 						near = false,
 						rank = nil,
@@ -1084,6 +1532,11 @@ local function step()
 	local c = CFG.CrownBeam
 	local skip = Budget.low() and frameCount % 2 == 0
 	for _, rec in plots do
+		if not skip then
+			for _, spin in rec.spins do
+				spin.model:PivotTo(spin.at * CFrame.fromAxisAngle(spin.axis, now * spin.speed))
+			end
+		end
 		local roof = rec.roof
 		if roof and roof.Parent and next(rec.features) then
 			local top = roof.CFrame * CFrame.new(0, roof.Size.Y / 2, 0)

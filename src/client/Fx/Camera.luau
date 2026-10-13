@@ -8,6 +8,11 @@
 	  and the rack's lower shelves in the upper middle of the screen with the buy pads either
 	  side. The follow camera keeps that angle; its zoom is set to FRAME_DISTANCE once.
 	  Camera.spawnShot(root) returns the same eye / focus for other camera code.
+	  On the own plot, facing the rack, the shot is the home shot instead: it tilts up and
+	  pulls back (Fx.PlotRank.homeShot, numbers in PlotRank.CFG.Shot) until the whole rack and
+	  its roof dressing (sign, pennants, crown) are in frame, as far as the rack's height
+	  allows. A spawn that comes before the plot is known is framed again once it is (if the
+	  player has not moved).
 	  In front of a mode gate (where ModeQuit puts the player, back to the gate) the shot is
 	  shortened so the eye never sits behind the gate's see-through portal; the zoom goes
 	  back to FRAME_DISTANCE once the player has walked clear of it.
@@ -30,6 +35,7 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local State = require(script.Parent.Parent.State)
+local PlotRank = require(script.Parent.PlotRank)
 
 local Camera = {}
 
@@ -44,6 +50,11 @@ local PORTAL_CLEAR = 2.5 -- studs the eye stays in front of a gate portal's disc
 local PORTAL_PAD = 3 -- studs past the disc's rim that still count as looking through it
 local MIN_FRAME = 5 -- the shortest shot in front of a portal
 local WIDEN_SCAN = 0.25
+-- Home shot (the own plot's rack; the angles and distances are PlotRank.CFG.Shot).
+local HOME_NEAR, HOME_FAR = 20, 140 -- studs from the rack inside which a spawn is a home spawn
+local HOME_FACING = 0.9 -- how squarely the character must face the rack (dot product)
+local HOME_RETRY = 10 -- seconds a spawn waits for the own plot to be known
+local HOME_STILL = 2 -- studs the player may have moved for the late re-frame to still happen
 
 local NEAR_TAG = "PadSignNear"
 local NEAR_SCAN = 0.15
@@ -69,19 +80,55 @@ local function reduced(): boolean
 	return data ~= nil and data.settings ~= nil and data.settings.reducedMotion == true
 end
 
--- The spawn shot for `root`: the camera's eye and the focus it looks at (the character's
--- head), behind the character and looking FRAME_PITCH down the way it faces.
-function Camera.spawnShot(root: BasePart): (Vector3?, Vector3?)
+-- The roof board of the local player's own rack, once the plot is known.
+local function ownRoof(): (BasePart?, Instance?)
+	local data = State.data
+	local map = Workspace:FindFirstChild("Map")
+	local plot = if data and map and data.plotIndex then map:FindFirstChild("Plot" .. data.plotIndex) else nil
+	local topper = plot and plot:FindFirstChild("RackTopper")
+	local roof = topper and topper:FindFirstChild("RackRoof")
+	if roof and roof:IsA("BasePart") then
+		return roof, plot
+	end
+	return nil, nil
+end
+
+-- How far down the spawn shot looks (radians, negative = up) and how far behind the head it
+-- stands: the home shot when `root` stands on the own plot facing the rack, so the rack's roof
+-- dressing is in frame; FRAME_PITCH / FRAME_DISTANCE anywhere else.
+local function shotFor(root: BasePart, flat: Vector3): (number, number)
+	local roof, plot = ownRoof()
+	if not roof or not plot then
+		return FRAME_PITCH, FRAME_DISTANCE
+	end
+	local focus = root.Position + HEAD_OFFSET
+	local top = roof.Position + Vector3.new(0, roof.Size.Y / 2, 0)
+	local to = Vector3.new(top.X - focus.X, 0, top.Z - focus.Z)
+	local run = to.Magnitude
+	if run < HOME_NEAR or run > HOME_FAR or to.Unit:Dot(flat) < HOME_FACING then
+		return FRAME_PITCH, FRAME_DISTANCE
+	end
+	local rise = top.Y + PlotRank.dressTop(PlotRank.bestTier(plot)) - focus.Y
+	local camera = Workspace.CurrentCamera
+	local fov = baseFov or (if camera then camera.FieldOfView else nil)
+	local pitch, distance = PlotRank.homeShot(rise, run, fov)
+	return pitch, distance
+end
+
+-- The spawn shot for `root`: the camera's eye, the focus it looks at (the character's head)
+-- and the distance between them; behind the character, looking the way it faces.
+function Camera.spawnShot(root: BasePart): (Vector3?, Vector3?, number?)
 	local look = root.CFrame.LookVector
 	local flat = Vector3.new(look.X, 0, look.Z)
 	if flat.Magnitude < 1e-3 then
-		return nil, nil
+		return nil, nil, nil
 	end
 	flat = flat.Unit
+	local pitch, distance = shotFor(root, flat)
 	local focus = root.Position + HEAD_OFFSET
-	local back = flat * (FRAME_DISTANCE * math.cos(FRAME_PITCH))
-	local up = Vector3.new(0, FRAME_DISTANCE * math.sin(FRAME_PITCH), 0)
-	return focus - back + up, focus
+	local back = flat * (distance * math.cos(pitch))
+	local up = Vector3.new(0, distance * math.sin(pitch), 0)
+	return focus - back + up, focus, distance
 end
 
 -- Mode gates ---------------------------------------------------------------------------
@@ -187,15 +234,15 @@ local function frameBehind(root: BasePart)
 	if not camera or camera.CameraType ~= Enum.CameraType.Custom then
 		return
 	end
-	local eye, focus = Camera.spawnShot(root)
+	local eye, focus, full = Camera.spawnShot(root)
 	if not eye or not focus then
 		return
 	end
 	frameToken += 1
-	local distance = FRAME_DISTANCE
+	local distance = full or FRAME_DISTANCE
 	local limit = portalLimit(focus, eye)
 	if limit < 1 then
-		distance = math.max(MIN_FRAME, FRAME_DISTANCE * limit)
+		distance = math.max(MIN_FRAME, distance * limit)
 		eye = focus + (eye - focus).Unit * distance
 		widenLater(root, frameToken)
 	end
@@ -220,6 +267,25 @@ local function onCharacter(character: Model)
 	end
 	RunService.RenderStepped:Wait()
 	frameBehind(root)
+	if not ownRoof() then
+		-- The plot is not known yet (the first snapshot is on its way): frame the rack once
+		-- it is, unless the player has walked off by then.
+		local at = root.Position
+		task.spawn(function()
+			local giveUp = os.clock() + HOME_RETRY
+			while os.clock() < giveUp and root.Parent do
+				task.wait(0.25)
+				if ownRoof() then
+					-- A beat for the rack's units (the best tier decides the dressing).
+					task.wait(0.5)
+					if root.Parent and (root.Position - at).Magnitude < HOME_STILL then
+						frameBehind(root)
+					end
+					return
+				end
+			end
+		end)
+	end
 	-- Re-frame after teleports (Home button, plot changes).
 	local last = root.Position
 	local connection

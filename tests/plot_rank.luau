@@ -2,7 +2,8 @@
 	Unit tests for the plot's visible progress (src/client/Fx/PlotRank.luau): the plot rank
 	steps, the own plot's fan count and extra standing spots (checked against the server's
 	fan zones), the rack units' sizes (checked against the rack's real head room), the dressing
-	built on the roof and the champion pedestal's glow, crown and cape. PlotRank is loaded with
+	built on the roof, the fences and the entrance pillars, the champion's stage in front of
+	its pedestal, and the home shot that keeps the roof dressing in the spawn frame. PlotRank is loaded with
 	@lune/roblox datatypes and stub services, so its parts are real instances.
 	Loaded by tests/run.luau with its harness: { test, check, eq }. Run alone with
 	`lune run tests/plot_rank` it uses the small harness at the end of this file.
@@ -326,7 +327,13 @@ local function suite(h: { [string]: any })
 				)
 				local at = top:PointToObjectSpace(part.CFrame.Position)
 				check(math.abs(at.X) <= size.X / 2 + 1, part.Name .. " stays within the rack's width")
-				check(at.Y >= -1 and math.abs(at.Z) <= size.Z / 2 + 1, part.Name .. " stays over the roof, never in front of the units")
+				if string.sub(part.Name, 1, 5) == "Crown" then
+					-- The crown is wider than the roof is deep: it floats over the neon sign.
+					check(at.Y > CFG.NeonSign.Y + CFG.NeonSign.Height / 2 - CFG.CrownBeam.Bob, part.Name .. " floats above the neon sign")
+					check(math.abs(at.Z) <= CFG.CrownBeam.Diameter / 2 + 1.5, part.Name .. " stays round the crown's centre")
+				else
+					check(at.Y >= -1 and math.abs(at.Z) <= size.Z / 2 + 1, part.Name .. " stays over the roof, never in front of the units")
+				end
 				-- The server's "YOUR CHADS" marquee: 16 wide, from 6.4 to 10.3 above the roof.
 				check(not (math.abs(at.X) < 8.3 and at.Y > 6.3 and at.Y < 10.4), part.Name .. " keeps clear of the marquee")
 			end
@@ -381,12 +388,65 @@ local function suite(h: { [string]: any })
 			check(y > 0 and y < 10, "a collar sits on its post")
 		end
 
+		-- Tier 10: a glowing gold tube along the top of every fence cap (World.Shell's FenceCap:
+		-- a cylinder lying along the fence), and tier 15: a big cup on each entrance pillar.
+		local caps, knobs = {}, {}
+		for i, run in { CFrame.new(-51.2, 3.35, 0) * CFrame.Angles(0, math.pi / 2, 0), CFrame.new(20, 3.35, -51.2) } do
+			local cap = Instance.new("Part")
+			cap.Size = Vector3.new(9.4, 1.3, 1.3)
+			cap.CFrame = run
+			caps[i] = cap
+		end
+		for i, x in { -8.2, 8.2 } do
+			local knob = Instance.new("Part")
+			knob.Size = Vector3.new(3.4, 3.4, 3.4)
+			knob.CFrame = CFrame.new(x, 12, -51.2)
+			knobs[i] = knob
+		end
+		local outlined = Instance.new("Folder")
+		local dressed = PlotRank.dress(3, top, size, outlined, false, { post }, caps, knobs)
+		local rails = named(dressed.GoldTrim.ground, "GoldRail")
+		eq(#rails, #caps, "a gold tube on every fence cap")
+		for i, rail in rails do
+			eq(rail.Material.Name, "Neon", "the tube glows")
+			check(rail.Size.X >= caps[i].Size.X, "it runs the cap's whole length")
+			check(rail.Size.Y >= 0.6, "it is thick enough to see from the hub")
+			local at = caps[i].CFrame:PointToObjectSpace(rail.CFrame.Position)
+			check(math.abs(at.X) < 0.01 and math.abs(at.Z) < 0.01, "it lies along its cap")
+			check(at.Y >= caps[i].Size.Y / 2, "on top of it, seen from both sides of the fence")
+		end
+		local early = Instance.new("Folder")
+		PlotRank.dress(1, top, size, early, false, { post }, caps, knobs)
+		eq(#named(early, "GoldRail"), 0, "no outline before tier 10")
+		local pillarCups = named(dressed.Trophies.ground, "TrophyCup")
+		eq(#pillarCups, #knobs, "a cup on each entrance pillar")
+		for i, cup in pillarCups do
+			check(cup.CFrame.Position.Y > knobs[i].CFrame.Position.Y + knobs[i].Size.Y / 2, "it stands on top of the pillar's knob")
+			check(cup.Size.Y >= 2.5, "it is a big cup")
+		end
+		-- And a big gold cup on each end of the roof.
+		local big = 0
+		for _, cup in named(dressed.Trophies.roof, "TrophyCup") do
+			if cup.Size.Y >= CFG.Trophies.Big then
+				big += 1
+				check(math.abs(top:PointToObjectSpace(cup.CFrame.Position).X) > s.width / 2 - 2, "a big cup stands over a side post")
+			end
+		end
+		eq(big, 2, "a big cup on each end of the roof")
+
 		-- The crown turns about its own centre, over the neon sign.
 		local crowned = Instance.new("Folder")
 		local crown = PlotRank.dress(5, top, size, crowned).CrownBeam
 		check(crown.spin ~= nil and crown.spinAt ~= nil, "the crown is a model of its own")
 		check(sameFrame(crown.spin.PrimaryPart.CFrame, top * crown.spinAt), "it pivots where it spins")
 		eq(#named(crown.spin, "CrownPoint"), CFG.CrownBeam.Points * 2, "two triangles per crown point")
+		check(CFG.CrownBeam.Diameter >= 18, "the crown is three times the old 6-stud one")
+		eq(#named(crowned, "CrownLight"), 1, "a shaft of light that faces the camera")
+		check(named(crowned, "CrownLight")[1].Width0 >= 12, "which is wide enough to read from the hub")
+		eq(#named(crown.spin, "CrownRay"), CFG.CrownBeam.Rays, "sheets of light that turn with the crown")
+		for _, ray in named(crown.spin, "CrownRay") do
+			eq(ray.FaceCamera, false, "a sheet does not face the camera: its turning is seen")
+		end
 		check(
 			CFG.CrownBeam.Y - CFG.CrownBeam.Band / 2 - CFG.CrownBeam.Bob > CFG.NeonSign.Y + CFG.NeonSign.Height / 2,
 			"the crown floats above the neon sign"
@@ -396,9 +456,10 @@ local function suite(h: { [string]: any })
 		eq(label.Text, "GIGA GYM", "the neon sign's words")
 	end)
 
-	test("PlotRank: the champion pedestal glows, tier 25 gets a crown and a cape", function()
+	test("PlotRank: the champion stands on a stage in front of its pedestal", function()
 		-- The pedestal as World.Shelves builds it at the front shelf's centre.
 		local s = Layout.SHELF
+		local c = CFG.Champion
 		local deck, stand = Layout.rowTop(1), Layout.rowTop(1) + s.championRise
 		local z = Layout.rowFrontZ(1) + s.depth / 2
 		local upright = CFrame.Angles(0, 0, math.pi / 2)
@@ -411,49 +472,195 @@ local function suite(h: { [string]: any })
 		local foot = cylinder(0.25, 3.6, deck + 0.125)
 		local drum = cylinder(stand - 0.3 - (deck + 0.25), 3, (deck + 0.25 + stand - 0.3) / 2)
 		local rim = cylinder(0.3, 3.4, stand - 0.15)
-		local feet = CFrame.new(0, stand, z)
-		local roomAbove = Layout.rowTop(2) - s.boardThick - stand
+
+		-- Where the champion is shown: in front of the pedestal, above it, facing the entrance.
+		local home, stage = PlotRank.championHome(rim), PlotRank.championPivot(rim)
+		check(sameFrame(home, CFrame.new(0, stand, z)), "the server stands the champion on the pedestal's rim")
+		check(sameFrame(stage, CFrame.new(0, stand + c.Rise, z - c.Out)), "it is shown Out in front of and Rise above it")
+		eq(PlotRank.championScale(12), c.Scale, "a champion is drawn 1.4x")
+		eq(c.Scale, 1.4, "which is the size asked for")
+		check(PlotRank.championScale(Economy.MAX_TIER) > c.Scale, "a tier 25 champion is bigger still")
+		-- The roof over a one-shelf rack (and every shelf board above) starts behind this line:
+		-- the stage and the champion stand in front of it, under open sky.
+		local roofFront = Layout.rowFrontZ(1) - 0.3 - 0.08
+		local gutter = Layout.GUTTER
+		check(stage.Position.Z > gutter.rect.minZ and stage.Position.Z < gutter.rect.maxZ, "the stage stands over the gutter")
+		local roofUnder = Layout.rowTop(2) - s.boardThick
+		local panelFace = stage.Position.Z + c.Panel.Back - c.Panel.Thick / 2
+		check(panelFace + c.Panel.Thick < roofFront, "the panel behind the champion stands in front of the roof")
+		for _, tier in { 12, Economy.MAX_TIER } do
+			local scale = PlotRank.championScale(tier)
+			-- A unit's back (hair, cape, props) is at most 0.9 studs behind its pivot at scale 1.
+			check(stage.Position.Z + 0.9 * scale < panelFace, "a " .. scale .. "x champion stands clear of the panel")
+			check(stand + c.Rise + c.UnitHeight * scale > roofUnder, "a " .. scale .. "x champion would not fit under the shelf above")
+		end
 
 		local parent = Instance.new("Folder")
-		local model = PlotRank.showcase(parent, drum, rim, foot, 12)
+		local model, start, spins = PlotRank.showcase(parent, drum, rim, foot, 12)
+		check(type(start) == "function", "it returns the function that starts its tweens")
 		eq(#named(model, "GlowBand"), 1, "a glow band round the drum")
 		eq(#named(model, "GlowHalo"), 1, "a halo on the board")
 		eq(named(model, "GlowBand")[1].Color, theme.Colors.Rarity[Economy.tierBand(12)], "the glow is the band's colour")
 		eq(named(model, "GlowBand")[1].Material.Name, "Neon", "the glow band is neon")
-		eq(#named(model, "CrownPoint"), 0, "no crown under the top tier")
-		eq(#named(model, "CapeStrip"), 0, "no cape under the top tier")
 		local halo = named(model, "GlowHalo")[1]
 		check(halo.Size.Y <= s.depth, "the halo stays on the shelf board")
 		check(math.abs(halo.CFrame.Position.Y - deck) < 0.1, "the halo lies on the deck")
+		eq(#named(model, "StageDisc"), 1, "a stage disc")
+		eq(#named(model, "SpotPanel"), 1, "a dark panel behind the champion")
+		eq(#named(model, "RimGlow"), 1, "a gold back light")
+		check(named(model, "RimGlow")[1]:FindFirstChildOfClass("PointLight") ~= nil, "which lights the champion's edges")
+		eq(#named(model, "HaloTile"), c.Halo.Tiles, "a ring of tiles over its head")
+		eq(#spins, 1, "which turns")
+		eq(#named(model, "CrownPoint"), 0, "no crown under the top tier")
+		eq(#named(model, "CapeStrip"), 0, "no cape under the top tier")
+		eq(#named(model, "ChampionBeam"), 0, "no sky beam at Rare")
+		eq(#named(model, "StageSparkles"), 0, "no sparkles at Rare")
+		local panel = named(model, "SpotPanel")[1]
+		local color = panel.Color
+		check(color.R + color.G + color.B < 0.8, "the panel is dark")
+		local behind = stage:PointToObjectSpace(panel.CFrame.Position)
+		check(
+			behind.Z > 1 and behind.Z + panel.Size.Z / 2 <= roofFront - stage.Position.Z,
+			"it stands behind the champion, in front of the roof"
+		)
+		check(panel.Size.X >= 6 and behind.Y + panel.Size.Y / 2 >= c.UnitHeight * c.Scale, "it is wider and taller than the champion")
+		-- The plaque names the unit.
+		local plaque = named(model, "NamePlaque")[1]
+		local label = named(model, "NameText")[1]:FindFirstChildOfClass("TextLabel")
+		eq(label.Text, string.upper(theme.Tiers[12].Name), "the plaque names the champion")
+		check(plaque.Size.X >= 8 and plaque.Size.Y >= 2, "it is big enough to read from the walkway")
+		-- Orbs roll under the stage along the gutter, and under the plaque down the chute.
+		local orb = Layout.ORB_RADIUS * 2
+		local disc = named(model, "StageDisc")[1]
+		check(disc.CFrame.Position.Y - disc.Size.X / 2 > Layout.gutterY(disc.Size.Y / 2) + orb + 0.5, "orbs roll under the stage")
+		local chute = Layout.CHUTE
+		local along = math.clamp((chute.topZ - plaque.CFrame.Position.Z) / (chute.topZ - chute.bottomZ), 0, 1)
+		local chuteY = chute.topY + (chute.bottomY - chute.topY) * along
+		check(plaque.CFrame.Position.Y - plaque.Size.Y / 2 > chuteY + orb + 0.2, "orbs roll under the plaque")
+		check(stage:PointToObjectSpace(plaque.CFrame.Position).Z < 0, "it hangs on the stage's front")
 
-		local top = PlotRank.showcase(parent, drum, rim, foot, Economy.MAX_TIER)
-		eq(#named(top, "CrownPoint"), CFG.CrownPoints, "a crown point every eighth of the rim")
+		-- Rarity: sparkles from Epic, a sky beam from Legendary.
+		local epic = PlotRank.showcase(parent, drum, rim, foot, 17)
+		eq(#named(epic, "StageSparkles"), 1, "an Epic stage sparkles")
+		eq(#named(epic, "ChampionBeam"), 0, "no sky beam at Epic")
+		local legend = PlotRank.showcase(parent, drum, rim, foot, 23)
+		eq(#named(legend, "ChampionBeam"), 1, "a Legendary champion stands in a sky beam")
+
+		-- Tier 25 is clearly grander than tier 23.
+		local top, _, topSpins = PlotRank.showcase(parent, drum, rim, foot, Economy.MAX_TIER)
+		eq(#named(top, "CrownPoint"), CFG.CrownPoints, "a crown round the stage")
 		eq(#named(top, "CapeStrip"), CFG.Cape.Strips, "the cape's strips")
+		eq(#named(top, "SunRay"), c.SunRays, "a sunburst behind it")
+		eq(#named(top, "ChampionRay"), c.Rays, "sheets of light in its beam")
+		eq(#topSpins, 3, "the ring, the sunburst and the sheets of light turn")
 		eq(named(top, "GlowBand")[1].Color, theme.Colors.Rarity.Mythic, "a Mythic glow")
-		for _, part in baseParts(top) do
-			check(
-				part.Anchored == true and part.CanCollide == false and part.CanQuery == false,
-				part.Name .. " never blocks the player or the camera"
-			)
-			local at = feet:PointToObjectSpace(part.CFrame.Position)
-			check(
-				math.abs(at.Z) <= s.depth / 2 and math.abs(at.X) <= s.spacing / 2,
-				part.Name .. " stays on the champion's own patch of board"
-			)
-			check(at.Y < roomAbove - 0.5, part.Name .. " stays under the shelf above")
+		check(#baseParts(top) > #baseParts(legend) + 20, "far more to it than a tier 23 stage")
+		check(named(top, "StageDisc")[1].Size.Y > named(legend, "StageDisc")[1].Size.Y, "a wider stage")
+		check(named(top, "ChampionBeam")[1].Width0 > named(legend, "ChampionBeam")[1].Width0, "a wider beam")
+		check(named(top, "SpotPanel")[1].Size.Y > named(legend, "SpotPanel")[1].Size.Y, "a taller panel for a bigger champion")
+		for _, built in { model, top } do
+			for _, part in baseParts(built) do
+				check(
+					part.Anchored == true and part.CanCollide == false and part.CanQuery == false,
+					part.Name .. " never blocks the player or the camera"
+				)
+				local at = part.CFrame.Position
+				-- Whatever reaches as high as the shelf above stands in front of it (the ring over
+				-- the champion's head may turn a little past the edge, short of the roof's pennants).
+				if at.Y + math.max(part.Size.X, part.Size.Y, part.Size.Z) / 2 > roofUnder then
+					local limit = if part.Name == "HaloTile" then roofFront + 0.45 else roofFront
+					check(at.Z <= limit, part.Name .. " stands in front of the roof's edge")
+				end
+				check(math.abs(at.X) <= s.spacing, part.Name .. " keeps off the neighbours' spots")
+			end
 		end
 		for _, strip in named(top, "CapeStrip") do
-			local at = feet:PointToObjectSpace(strip.CFrame.Position)
-			check(at.Z > 0.3, "the cape hangs behind the champion")
-			check(at.Y > 0 and at.Y < CFG.Cape.Top, "the cape hangs between the shoulders and the pedestal")
+			local at = stage:PointToObjectSpace(strip.CFrame.Position)
+			check(at.Z > 0.3 and at.Z < c.Panel.Back, "the cape hangs behind the champion, in front of the panel")
+			check(at.Y > 0 and at.Y < CFG.Cape.Top * c.MythicScale, "the cape hangs between the shoulders and the stage")
 		end
 		for _, point in named(top, "CrownPoint") do
-			local at = feet:PointToObjectSpace(point.CFrame.Position)
-			check(math.abs(at.Y) < 0.1, "a crown point sits on the pedestal's rim")
-			check(math.abs(math.sqrt(at.X * at.X + at.Z * at.Z) - (rim.Size.Y / 2 - 0.1)) < 0.01, "a crown point stands on the rim's edge")
+			local at = stage:PointToObjectSpace(point.CFrame.Position)
+			check(math.abs(at.Y) < 0.1, "a crown point sits on the stage's rim")
+			check(
+				math.abs(math.sqrt(at.X * at.X + at.Z * at.Z) - (c.MythicStage / 2 - 0.1)) < 0.01,
+				"a crown point stands on the rim's edge"
+			)
 		end
 		for _, d in parent:GetDescendants() do
 			check(d.ClassName ~= "Highlight", "no Highlight instances")
+		end
+	end)
+
+	test("PlotRank: the home shot frames the rack and its roof dressing", function()
+		local s = Layout.SHELF
+		local shot = CFG.Shot
+		-- The spawn: on the walkway facing the rack; the follow camera looks at the head.
+		local headY = 4.5
+		local function frame(rows: number, tier: number): (number, number, boolean, number)
+			local roofTop = Layout.rowTop(rows + 1)
+			local roofZ = Layout.rowFrontZ(rows) - 0.3 + (s.depth + 0.4 + 0.6) / 2
+			local rise = roofTop + PlotRank.dressTop(tier) - headY
+			local run = roofZ - Layout.SPAWN.z
+			local pitch, distance, fits = PlotRank.homeShot(rise, run, shot.Fov)
+			-- The angle of the dressing's top above the camera's axis, from where the eye ends up.
+			local above = math.atan2(rise - distance * math.sin(pitch), run + distance * math.cos(pitch)) + pitch
+			return pitch, distance, fits, math.deg(above)
+		end
+		check(PlotRank.dressTop(1) >= 10.6, "the server's marquee counts at every rank")
+		check(PlotRank.dressTop(20) > PlotRank.dressTop(19), "the neon sign raises the top")
+		check(PlotRank.dressTop(25) > PlotRank.dressTop(24) + 8, "the crown raises it a lot")
+		check(
+			PlotRank.dressTop(25) >= CFG.CrownBeam.Y + CFG.CrownBeam.Band / 2 + CFG.CrownBeam.PointHeight + CFG.CrownBeam.Bob,
+			"up to the crown's tips at the top of its bob"
+		)
+
+		local pitch, distance, fits = frame(1, 1)
+		check(fits, "a new plot fits")
+		eq(math.floor(math.deg(pitch) + 0.5), shot.Pitch, "a new plot keeps the old spawn pitch")
+		eq(distance, shot.Distance, "and the old spawn distance")
+
+		-- The shot never tilts down or closes in as the rack grows or gains dressing.
+		local lastPitch, lastDistance = math.huge, 0
+		for _, case in { { 1, 1 }, { 2, 8 }, { 3, 10 }, { 3, 15 }, { 3, 20 }, { 3, 25 }, { 4, 25 } } do
+			local p, d, ok, above = frame(case[1], case[2])
+			local label = case[1] .. " shelves at tier " .. case[2]
+			check(ok, label .. ": the whole rack and its dressing are in frame")
+			check(above <= shot.Fov / 2 - shot.Margin + 0.01, label .. ": the top is under the screen's top edge")
+			check(p <= lastPitch + 1e-6, label .. ": tilts up, never down")
+			check(d >= lastDistance - 1e-6, label .. ": pulls back, never in")
+			check(d <= shot.LevelDistance, label .. ": the eye stays inside the plot's entrance")
+			check(math.deg(p) >= 0, label .. ": the camera still looks down or level")
+			lastPitch, lastDistance = p, d
+		end
+		-- The tier 25 view is not the tier 10 view (the complaint this shot answers).
+		local p10, d10 = frame(3, 10)
+		local p25, d25 = frame(3, 25)
+		check(math.deg(p10 - p25) > 5 and d25 - d10 > 5, "tier 25 tilts up and pulls back well past tier 10")
+
+		-- Every rack height: the roof itself is always in frame, and the eye stays above the floor.
+		for rows = 1, s.rows do
+			for _, tier in { 1, 20, 25 } do
+				local p, d, ok, above = frame(rows, tier)
+				local eyeY = headY + d * math.sin(p)
+				check(eyeY > 1, rows .. " shelves: the eye is above the floor")
+				check(d >= shot.Distance and d <= shot.LevelDistance, rows .. " shelves: a sane distance")
+				if not ok then
+					-- The widest shot: level or looking up, as far back as it goes.
+					check(math.deg(p) <= 0, rows .. " shelves: the widest shot is used when the top is cropped")
+				end
+				check(above ~= nil, "a shot for every height")
+			end
+			local roofRise = Layout.rowTop(rows + 1) - headY
+			local run = Layout.rowFrontZ(rows) - Layout.SPAWN.z
+			local p, d = frame(rows, 25)
+			local roofAbove = math.deg(math.atan2(roofRise - d * math.sin(p), run + d * math.cos(p)) + p)
+			check(roofAbove < shot.Fov / 2, rows .. " shelves: the rack's roof is on screen")
+		end
+		-- Up to here the tier 25 crown is whole; a taller rack crops its tips (see the report).
+		for rows = 1, 5 do
+			local _, _, _, above = frame(rows, 25)
+			check(above < shot.Fov / 2, rows .. " shelves at tier 25: the crown is on screen")
 		end
 	end)
 
@@ -466,8 +673,19 @@ local function suite(h: { [string]: any })
 			"Fans counts the own crowd with PlotRank"
 		)
 		check(string.find(fs.readFile("src/client/Fx/Shelf.luau"), "PlotRank.fitScale(", 1, true) ~= nil, "Shelf sizes units with PlotRank")
+		local shelf = fs.readFile("src/client/Fx/Shelf.luau")
+		check(string.find(shelf, "PlotRank.championPivot(", 1, true) ~= nil, "Shelf shows the champion on its stage")
+		check(string.find(shelf, "PlotRank.championScale(", 1, true) ~= nil, "Shelf draws the champion at its size")
+		check(string.find(shelf, "Camera.punch(k.punch)", 1, true) ~= nil, "a merge punches the camera through Fx.Camera")
+		check(string.find(shelf, '"Highlight"', 1, true) == nil, "Shelf creates no Highlight")
+		local camera = fs.readFile("src/client/Fx/Camera.luau")
+		check(string.find(camera, "PlotRank.homeShot(", 1, true) ~= nil, "the spawn camera frames the rack with PlotRank")
+		check(string.find(camera, "PlotRank.dressTop(", 1, true) ~= nil, "up to the top of its dressing")
+		local fans = fs.readFile("src/client/Fx/Fans.luau")
+		check(string.find(fans, "PlotRank.championPivot(", 1, true) ~= nil, "fans face the champion's stage")
+		check(string.find(fans, '"Highlight"', 1, true) == nil, "Fans creates no Highlight")
 		-- Studio compiles with full debug info: at most 200 locals per function.
-		for _, name in { "Fx/PlotRank", "Fx/Fans", "Fx/Shelf", "Main.client" } do
+		for _, name in { "Fx/PlotRank", "Fx/Fans", "Fx/Shelf", "Fx/Camera", "Main.client" } do
 			local path = "src/client/" .. name .. ".luau"
 			local ok, err = pcall(luau.compile, fs.readFile(path), { optimizationLevel = 1, debugLevel = 2 })
 			check(ok, path .. ": " .. string.sub(tostring(err), 1, 160))

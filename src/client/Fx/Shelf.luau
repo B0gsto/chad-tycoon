@@ -40,6 +40,14 @@
 	  best tiers are drawn up to 1.3x where the board above leaves room and
 	  never bigger than the champion; low tiers behind the front shelf shrink
 	  to 0.85x. A few units are resized per frame (Animator.hold / release).
+	- Champion: the unit in slot 1 is shown on Fx.PlotRank's stage in front of
+	  its shelf pedestal (PlotRank.championPivot), 1.4x big (1.55x at tier 25),
+	  where no board is above it; it lands there when it arrives.
+	- Merge impact (the MERGE table): at the result unit, gold rings that face
+	  the camera, a gold spark burst and flash, the unit pops in with an
+	  overshoot, a "+TIER n" chip floats over it and the camera punches (with a
+	  short white screen pulse). Lighter for auto merges; bigger, with "NEW
+	  BEST!", a gold column and confetti, when the merge makes a new best tier.
 
 	Effects are painted, not glowing: SmoothPlastic parts in tier or palette
 	colours with eased fades, low particle light emission and no lights. Only
@@ -107,6 +115,79 @@ local MERGE_STAGGER = 0.2 -- chained merge steps play one after another
 local CHEST_HEIGHT = 3 -- impact point above the target's feet
 local NEAR_PLOT = 120 -- camera punch only if the player is this close
 local PUNCH_SCALE = 0.6 -- keeps camera punches and shakes gentle
+
+-- Merge impact at the result unit: every size, colour, duration and count of it. Three kinds:
+-- "auto" (the Auto Merge pass and a full rack's forced merges), "manual" (the Merge pad) and
+-- "best" (the merge made a new best tier).
+--   ring      a gold ring that always faces the camera: from / to size in studs
+--   rings     how many, RingGap seconds apart, each RingGrow times wider than the last
+--   sparks    gold spark burst: count (through Fx.Budget), particle size
+--   flash     diameter a neon gold ball swells to at the unit's chest
+--   pop       how far the result unit overshoots its size as it pops in (0.4 = 40 %)
+--   chip      the "+TIER n" chip over the unit: size in studs, seconds it stays
+--   punch     Camera.punch intensity (FOV kick of 5 degrees per 1.0, plus a small shake)
+--   pulse     transparency of the white screen pulse (1 = none)
+local MERGE = {
+	Gold = Color3.fromRGB(255, 200, 48),
+	GoldLight = Color3.fromRGB(255, 240, 170),
+	Ink = Color3.fromRGB(34, 22, 64),
+	Kinds = {
+		auto = {
+			ring = { 3, 10 },
+			ringTime = 0.5,
+			rings = 1,
+			sparks = 12,
+			sparkSize = 1.2,
+			flash = 3.5,
+			pop = 0.22,
+			chip = Vector2.new(8, 2.3),
+			chipLife = 1.1,
+			punch = 0,
+			pulse = 1,
+		},
+		manual = {
+			ring = { 4, 18 },
+			ringTime = 0.65,
+			rings = 2,
+			sparks = 28,
+			sparkSize = 1.8,
+			flash = 6.5,
+			pop = 0.42,
+			chip = Vector2.new(13, 3.6),
+			chipLife = 1.5,
+			punch = 0.8,
+			pulse = 0.9,
+		},
+		best = {
+			ring = { 5, 30 },
+			ringTime = 0.9,
+			rings = 3,
+			sparks = 52,
+			sparkSize = 2.4,
+			flash = 11,
+			pop = 0.6,
+			chip = Vector2.new(17, 6.2),
+			chipLife = 2.2,
+			punch = 1.5,
+			pulse = 0.78,
+		},
+	},
+	RingStroke = { 9, 2 }, -- the ring's line in pixels: at first, as it fades
+	RingGap = 0.13,
+	RingGrow = 1.25,
+	SparkSpeed = NumberRange.new(12, 26),
+	SparkLife = NumberRange.new(0.5, 1),
+	FlashTime = 0.32,
+	PopTime = 0.6, -- seconds of the result unit's overshoot
+	ChipAbove = 7.4, -- studs over the unit's feet the chip appears ...
+	ChipRise = 2.2, -- ... and how far it floats up
+	ChipFade = 0.35,
+	AutoChipGap = 0.6, -- seconds between the chips of auto merges
+	PulseTime = 0.16,
+	-- A new best tier: a gold column of light over the unit for a moment.
+	BestBeam = { Height = 70, Width = 8, Time = 1.4 },
+	BestDelay = 4, -- seconds a new best tier takes to stop being news
+}
 
 local fxFolder: Folder? = nil
 local started = false
@@ -698,14 +779,39 @@ local function boardAbove(plot: Instance?, feet: Vector3): number?
 	return best
 end
 
+-- Champion stage ------------------------------------------------------------------------
+-- The best unit (slot 1) is shown on Fx.PlotRank's stage in front of its shelf pedestal, not
+-- where the server stands it.
+
+local function championRim(): BasePart?
+	local plot = watched
+	local rim = plot and plot:FindFirstChild("ChampionTop")
+	return if rim and rim:IsA("BasePart") then rim else nil
+end
+
+-- Where a unit the server stands at `pos` is drawn: the stage for the champion's pedestal.
+local function shownAt(pos: Vector3): Vector3
+	local rim = championRim()
+	if rim and (PlotRank.championHome(rim).Position - pos).Magnitude < 1 then
+		return PlotRank.championPivot(rim).Position
+	end
+	return pos
+end
+
 -- Arrival -----------------------------------------------------------------------------
 
 local popTimes: { number } = {}
 local lastDropStart = 0
 
--- Pending merge impacts: a unit spawning here lands on the impact.
-type Pending = { pos: Vector3, impact: number }
+-- Pending merge impacts: a unit spawning here lands on the impact (and pops in with `pop`
+-- overshoot). `pos` is where the server stands it.
+type Pending = { pos: Vector3, impact: number, pop: number }
 local pendingMerges: { Pending } = {}
+
+-- 1 at both ends, swelling by `amount` on the way: the result unit's pop.
+local function overshoot(q: number, amount: number): number
+	return 1 + amount * math.exp(-4 * q) * math.sin(q * 9)
+end
 
 local function pop(tier: number)
 	local now = os.clock()
@@ -746,11 +852,22 @@ end
 
 -- Moves a unit in: `peak` = nil falls from DROP_HEIGHT above (nothing overhead); otherwise
 -- it hops from HOP_FORWARD in front of its spot in an arc no higher than `peak`, so it never
--- passes through the board above. Then a squash, the landing puff and a power pose.
-local function arrive(model: Model, target: CFrame, baseScale: number, startAt: number, tier: number, quiet: boolean, peak: number?)
+-- passes through the board above. Then a squash (a merge's result pops with `popAmount`
+-- overshoot instead), the landing puff and a power pose.
+local function arrive(
+	model: Model,
+	target: CFrame,
+	baseScale: number,
+	startAt: number,
+	tier: number,
+	quiet: boolean,
+	peak: number?,
+	popAmount: number?
+)
 	local landed = false
 	local puffed = false
 	local flight = if peak then HOP else FALL
+	local settle = if popAmount then MERGE.PopTime else SETTLE
 	addJob(function(now: number): boolean
 		if not model.Parent then
 			Animator.release(model)
@@ -787,11 +904,15 @@ local function arrive(model: Model, target: CFrame, baseScale: number, startAt: 
 			landed = true
 			land(target, tier, quiet)
 		end
-		local q = (t - flight) / SETTLE
+		local q = (t - flight) / settle
 		if q < 1 then
-			-- Uniform squash: dip below full size, overshoot, settle.
-			local wobble = -0.16 * math.exp(-5 * q) * math.cos(q * 15)
-			safeScale(model, baseScale * (1 + math.min(wobble, 0.04)))
+			if popAmount then
+				safeScale(model, baseScale * overshoot(q, popAmount))
+			else
+				-- Uniform squash: dip below full size, overshoot, settle.
+				local wobble = -0.16 * math.exp(-5 * q) * math.cos(q * 15)
+				safeScale(model, baseScale * (1 + math.min(wobble, 0.04)))
+			end
 			model:PivotTo(target)
 			return false
 		end
@@ -817,9 +938,17 @@ local function onUnitAdded(model: Instance)
 	local tierValue = model:GetAttribute("Tier")
 	local tier = if type(tierValue) == "number" then tierValue else 1
 	local target = model:GetPivot()
+	-- Where the server stands it: merge impacts are matched by this spot.
+	local home = target.Position
 	local okScale, baseScale = pcall(model.GetScale, model)
 	if not okScale or type(baseScale) ~= "number" then
 		baseScale = 1
+	end
+	-- The champion lands on its stage, at its full size.
+	local rim = championRim()
+	if rim and model:GetAttribute("Slot") == 1 then
+		target = PlotRank.championPivot(rim)
+		baseScale = PlotRank.championScale(tier)
 	end
 	-- Room under the shelf board (or roof) above decides between a hop in and a drop.
 	local plot = watched
@@ -839,16 +968,18 @@ local function onUnitAdded(model: Instance)
 		local now = os.clock()
 		local startAt = math.max(now, lastDropStart + STAGGER, rowReadyAt(plot, target.Position))
 		local quiet = false
+		local popAmount: number? = nil
 		local flight = if peak then HOP else FALL
 		for _, pending in pendingMerges do
-			if (pending.pos - target.Position).Magnitude < 3 and pending.impact > now - 0.2 then
+			if (pending.pos - home).Magnitude < 3 and pending.impact > now - 0.2 then
 				startAt = math.max(now, pending.impact - flight)
 				quiet = true -- the merge boom covers it
+				popAmount = pending.pop
 				break
 			end
 		end
 		lastDropStart = math.max(lastDropStart, startAt)
-		arrive(model, target, baseScale, startAt, tier, quiet, peak)
+		arrive(model, target, baseScale, startAt, tier, quiet, peak, popAmount)
 	end)
 end
 
@@ -859,6 +990,270 @@ local lastBoom = 0
 local lastImpact = 0
 local chainIndex = 0
 local chainTotal = 0
+-- The best tier the rack is known to hold (a merge past it is the "best" kind); a new best
+-- unit only counts MERGE.BestDelay later, so the merge that made it is still news.
+local knownBest = 0
+local pendingBest = 0
+local seenTop = 0 -- the highest tier any merge has made so far
+local lastAutoChip = 0
+
+-- A gold ring that always faces the camera, growing from `from` to `to` studs as it fades.
+local function goldRing(pos: Vector3, from: number, to: number, time: number, delay: number)
+	local holder = fxPart(Enum.PartType.Block, Vector3.one * 0.2, CFrame.new(pos), WHITE, 1)
+	holder.Name = "MergeRing"
+	local gui = Instance.new("BillboardGui")
+	gui.AlwaysOnTop = true
+	gui.LightInfluence = 0
+	gui.MaxDistance = 400
+	gui.Size = UDim2.fromScale(from, from)
+	gui.Enabled = delay <= 0
+	gui.Parent = holder
+	local circle = Instance.new("Frame")
+	circle.BackgroundTransparency = 1
+	circle.Size = UDim2.fromScale(1, 1)
+	circle.Parent = gui
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0.5, 0)
+	corner.Parent = circle
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = MERGE.Gold
+	stroke.Thickness = MERGE.RingStroke[1]
+	stroke.Parent = circle
+	task.delay(delay, function()
+		gui.Enabled = true
+		tween(gui, time, { Size = UDim2.fromScale(to, to) })
+		tween(stroke, time, { Transparency = 1, Thickness = MERGE.RingStroke[2] }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	end)
+	cleanup(holder, delay + time + 0.05)
+end
+
+-- The "+TIER n" chip over the result unit: a dark pill in the tier's rarity outline that pops
+-- in, floats up and fades. The "best" kind adds a "NEW BEST!" line.
+local function tierChip(pos: Vector3, tier: number, kind: string)
+	local k = MERGE.Kinds[kind]
+	local rarity = PlotRank.bandColor(tier)
+	local best = kind == "best"
+	local holder = fxPart(Enum.PartType.Block, Vector3.one * 0.2, CFrame.new(pos), WHITE, 1)
+	holder.Name = "TierChip"
+	local gui = Instance.new("BillboardGui")
+	gui.AlwaysOnTop = true
+	gui.LightInfluence = 0
+	gui.MaxDistance = 400
+	gui.Size = UDim2.fromScale(k.chip.X, k.chip.Y)
+	gui.Parent = holder
+	local scale = Instance.new("UIScale")
+	scale.Scale = 0.2
+	scale.Parent = gui
+	local pill = Instance.new("Frame")
+	pill.Size = UDim2.fromScale(1, 1)
+	pill.BackgroundColor3 = MERGE.Ink
+	pill.BackgroundTransparency = 0.08
+	pill.BorderSizePixel = 0
+	pill.Parent = gui
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(if best then 0.3 else 0.5, 0)
+	corner.Parent = pill
+	local outline = Instance.new("UIStroke")
+	outline.Color = rarity
+	outline.Thickness = if best then 6 else 4
+	outline.Parent = pill
+	local labels: { TextLabel } = {}
+	local function line(text: string, y: number, height: number, color: Color3)
+		local label = Instance.new("TextLabel")
+		label.BackgroundTransparency = 1
+		label.AnchorPoint = Vector2.new(0.5, 0)
+		label.Position = UDim2.fromScale(0.5, y)
+		label.Size = UDim2.fromScale(0.9, height)
+		label.Font = Theme.Fonts.Display
+		label.TextScaled = true
+		label.TextColor3 = color
+		label.TextStrokeColor3 = MERGE.Ink
+		label.TextStrokeTransparency = 0.2
+		label.Text = text
+		label.Parent = pill
+		table.insert(labels, label)
+	end
+	if best then
+		line("NEW BEST!", 0.07, 0.3, rarity:Lerp(WHITE, 0.35))
+		line("+TIER " .. tier, 0.36, 0.58, MERGE.GoldLight)
+	else
+		line("+TIER " .. tier, 0.1, 0.8, WHITE)
+	end
+	tween(scale, 0.22, { Scale = 1 }, Enum.EasingStyle.Back)
+	tween(holder, k.chipLife, { CFrame = CFrame.new(pos + Vector3.new(0, MERGE.ChipRise, 0)) })
+	task.delay(k.chipLife - MERGE.ChipFade, function()
+		local style, dir = Enum.EasingStyle.Quad, Enum.EasingDirection.In
+		tween(pill, MERGE.ChipFade, { BackgroundTransparency = 1 }, style, dir)
+		tween(outline, MERGE.ChipFade, { Transparency = 1 }, style, dir)
+		for _, label in labels do
+			tween(label, MERGE.ChipFade, { TextTransparency = 1, TextStrokeTransparency = 1 }, style, dir)
+		end
+	end)
+	cleanup(holder, k.chipLife + 0.05)
+end
+
+-- A short white pulse over the whole screen (not with reduced motion).
+local function screenPulse(transparency: number)
+	local data = State.data
+	if transparency >= 1 or Camera.reducedMotion or (data and data.settings and data.settings.reducedMotion == true) then
+		return
+	end
+	pcall(function()
+		local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+		if not playerGui then
+			return
+		end
+		local gui = Instance.new("ScreenGui")
+		gui.Name = "MergePulse"
+		gui.IgnoreGuiInset = true
+		gui.ResetOnSpawn = false
+		gui.DisplayOrder = 40
+		local sheet = Instance.new("Frame")
+		sheet.Size = UDim2.fromScale(1, 1)
+		sheet.BackgroundColor3 = WHITE
+		sheet.BackgroundTransparency = transparency
+		sheet.BorderSizePixel = 0
+		sheet.Active = false
+		sheet.Parent = gui
+		gui.Parent = playerGui
+		tween(sheet, MERGE.PulseTime, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		cleanup(gui, MERGE.PulseTime + 0.05)
+	end)
+end
+
+-- The own rack's unit drawn at `pos`, if any.
+local function unitAt(pos: Vector3): Model?
+	local units = watched and watched:FindFirstChild("Units")
+	if units then
+		for _, child in units:GetChildren() do
+			if child:IsA("Model") and (child:GetPivot().Position - pos).Magnitude < 1.2 then
+				return child
+			end
+		end
+	end
+	return nil
+end
+
+-- A unit that already stood there pops like a fresh result (one that is arriving pops in
+-- `arrive`).
+local function popUnit(model: Model, amount: number)
+	if Animator.isHeld(model) then
+		return
+	end
+	local okScale, base = pcall(model.GetScale, model)
+	if not okScale or type(base) ~= "number" then
+		return
+	end
+	local startAt = os.clock()
+	Animator.hold(model)
+	addJob(function(now: number): boolean
+		if not model.Parent then
+			Animator.release(model)
+			return true
+		end
+		local q = (now - startAt) / MERGE.PopTime
+		if q >= 1 then
+			safeScale(model, base)
+			Animator.release(model)
+			return true
+		end
+		safeScale(model, base * overshoot(q, amount))
+		return false
+	end)
+end
+
+-- The merge's impact on the rack, at the result unit drawn with its feet at `feet`: gold
+-- rings, a spark burst and a flash, the unit's pop, the "+TIER n" chip and a camera punch.
+-- `kind` is a key of MERGE.Kinds.
+local function resultFx(feet: Vector3, tier: number, kind: string)
+	local k = MERGE.Kinds[kind]
+	local chest = feet + Vector3.new(0, CHEST_HEIGHT, 0)
+	local to = k.ring[2]
+	for i = 1, k.rings do
+		goldRing(chest, k.ring[1], to, k.ringTime, (i - 1) * MERGE.RingGap)
+		to *= MERGE.RingGrow
+	end
+	local flash = fxPart(Enum.PartType.Ball, Vector3.one, CFrame.new(chest), MERGE.GoldLight, 0.1, Enum.Material.Neon)
+	tween(flash, MERGE.FlashTime, { Size = Vector3.one * k.flash, Transparency = 1 })
+	cleanup(flash, MERGE.FlashTime + 0.05)
+	burst(chest, MERGE.Gold, Budget.count(k.sparks), {
+		speed = MERGE.SparkSpeed,
+		size = k.sparkSize,
+		life = MERGE.SparkLife,
+		gravity = 18,
+		drag = 2,
+	})
+	local unit = unitAt(feet)
+	if unit then
+		popUnit(unit, k.pop)
+	end
+	local now = os.clock()
+	if kind ~= "auto" or now - lastAutoChip >= MERGE.AutoChipGap then
+		if kind == "auto" then
+			lastAutoChip = now
+		end
+		tierChip(feet + Vector3.new(0, MERGE.ChipAbove, 0), tier, kind)
+	end
+	if kind == "best" then
+		-- A gold column of light over the new best unit.
+		local b = MERGE.BestBeam
+		local holder = fxPart(Enum.PartType.Block, Vector3.one * 0.2, CFrame.new(feet), WHITE, 1)
+		local a0 = Instance.new("Attachment")
+		a0.Parent = holder
+		local a1 = Instance.new("Attachment")
+		a1.Position = Vector3.new(0, b.Height, 0)
+		a1.Parent = holder
+		local beam = Instance.new("Beam")
+		beam.Attachment0 = a0
+		beam.Attachment1 = a1
+		beam.FaceCamera = true
+		beam.Segments = 4
+		beam.Width0 = b.Width
+		beam.Width1 = b.Width * 1.6
+		beam.LightEmission = 0.7
+		beam.LightInfluence = 0
+		beam.Color = ColorSequence.new(MERGE.GoldLight, WHITE)
+		beam.Transparency = NumberSequence.new(0.25, 1)
+		beam.Parent = holder
+		tween(beam, b.Time, { Width0 = 0, Width1 = 0 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		cleanup(holder, b.Time + 0.05)
+		for i, confetti in CONFETTI do
+			task.delay(0.04 * i, function()
+				burst(chest + Vector3.new(0, 1, 0), confetti, Budget.count(10), {
+					speed = NumberRange.new(12, 24),
+					size = 1.1,
+					life = NumberRange.new(0.9, 1.5),
+					spread = 60,
+					gravity = 18,
+					drag = 2,
+				})
+			end)
+		end
+	end
+	if playerNear(feet, NEAR_PLOT) then
+		if k.punch > 0 then
+			Camera.punch(k.punch)
+		end
+		screenPulse(k.pulse)
+	end
+end
+
+-- Which kind of impact a merge to `toTier` gets, asked at its impact (a new best tier then
+-- stops being news). Of a chain of step merges only the last, highest step is the "best".
+local function mergeKind(toTier: number, auto: boolean): string
+	if knownBest > 0 and toTier > knownBest and toTier >= seenTop then
+		knownBest = toTier
+		return "best"
+	end
+	return if auto then "auto" else "manual"
+end
+
+-- A merge to `toTier` was announced: how far its result unit will overshoot as it pops in.
+local function announce(toTier: number, auto: boolean): number
+	seenTop = math.max(seenTop, toTier)
+	local news = knownBest > 0 and toTier > knownBest
+	return MERGE.Kinds[if news then "best" elseif auto then "auto" else "manual"].pop
+end
 
 local function impactFx(pos: Vector3, tier: number, auto: boolean, boost: number?, pitch: number?)
 	local color = tierColor(tier)
@@ -883,9 +1278,7 @@ local function impactFx(pos: Vector3, tier: number, auto: boolean, boost: number
 			Sounds.play("MergeBoom", 0.05, (1.1 - math.min(tier, 25) * 0.012) * (pitch or 1))
 		end
 	end
-	if not auto and playerNear(pos, NEAR_PLOT) then
-		Camera.punch((0.35 + math.min(tier, 25) * 0.035) * math.min(boost or 1, 2) * PUNCH_SCALE)
-	end
+	-- The camera punch is resultFx's.
 end
 
 -- One quick fusion pop in a cascade: a soft bubble, ring, sparks, rising pitch.
@@ -917,9 +1310,10 @@ local function mergesText(pos: Vector3, count: number, color: Color3, scale: num
 end
 
 -- Big finish for a batch: a wide soft ring, palette confetti, "xN MERGES!".
-local function cascadeFinale(chest: Vector3, tier: number, count: number, auto: boolean)
+local function cascadeFinale(chest: Vector3, tier: number, count: number, auto: boolean, kind: string)
 	local size = math.clamp(math.log(math.max(count, 2), 2) / 3, 0.6, 1.6)
 	impactFx(chest, tier, auto, 1 + size * 0.6, 0.9)
+	resultFx(chest - Vector3.new(0, CHEST_HEIGHT, 0), tier, kind)
 	local color = tierColor(tier)
 	local feet = chest - Vector3.new(0, CHEST_HEIGHT - 0.25, 0)
 	task.delay(0.08, function()
@@ -938,10 +1332,8 @@ local function cascadeFinale(chest: Vector3, tier: number, count: number, auto: 
 			})
 		end)
 	end
-	mergesText(chest + Vector3.new(0, 3.5, 0), count, color:Lerp(WHITE, 0.25), 1.4 + size * 0.6, 1.6)
-	if not auto and playerNear(chest, NEAR_PLOT) then
-		Camera.punch((0.9 + size * 0.4) * PUNCH_SCALE)
-	end
+	-- Over the "+TIER n" chip.
+	mergesText(chest + Vector3.new(0, 8.5, 0), count, color:Lerp(WHITE, 0.25), 1.4 + size * 0.6, 1.6)
 end
 
 local function soulOrbs(from: Vector3, to: Vector3, color: Color3, startAt: number, duration: number, auto: boolean)
@@ -1054,8 +1446,10 @@ local function onOverflow(data: { [string]: any }, target: Vector3, fromTier: nu
 	local flyAt = startAt + OVERFLOW_PULSE
 	local impact = flyAt + CHARGE_AUTO
 	lastMergeAt = flyAt
-	local pending = { pos = target, impact = impact }
+	local pending = { pos = target, impact = impact, pop = announce(toTier, true) }
 	table.insert(pendingMerges, pending)
+	-- Everything from here on is drawn where the units are shown.
+	target = shownAt(target)
 	task.delay(impact - now + 0.5, function()
 		local index = table.find(pendingMerges, pending)
 		if index then
@@ -1067,8 +1461,8 @@ local function onOverflow(data: { [string]: any }, target: Vector3, fromTier: nu
 	if type(data.from) == "table" then
 		for index, pos in data.from do
 			if typeof(pos) == "Vector3" and index <= 4 then
-				spotPulse(pos, color, startAt)
-				soulOrbs(pos, chest, color, flyAt, CHARGE_AUTO, true)
+				spotPulse(shownAt(pos), color, startAt)
+				soulOrbs(shownAt(pos), chest, color, flyAt, CHARGE_AUTO, true)
 			end
 		end
 	end
@@ -1077,8 +1471,10 @@ local function onOverflow(data: { [string]: any }, target: Vector3, fromTier: nu
 	end)
 	task.delay(impact - now, function()
 		impactFx(chest, toTier, true, 1.1, 1.1)
+		resultFx(target, toTier, mergeKind(toTier, true))
 		ring(target + Vector3.new(0, 0.15, 0), worldColor("Sunny", WHITE), 1.5, 9, 0.45, 0.35)
-		fullFloat(chest + Vector3.new(0, 2.5, 0), count)
+		-- Over the "+TIER n" chip.
+		fullFloat(chest + Vector3.new(0, 7.5, 0), count)
 	end)
 end
 
@@ -1129,22 +1525,25 @@ local function onMerge(data: { [string]: any })
 		chainTotal = count
 	end
 	local myChain = chainIndex
-	table.insert(pendingMerges, { pos = target, impact = impact })
+	local slotPos = target
+	table.insert(pendingMerges, { pos = slotPos, impact = impact, pop = announce(toTier, auto) })
 	task.delay(impact - now + 0.5, function()
 		for i, pending in pendingMerges do
-			if pending.impact == impact and pending.pos == target then
+			if pending.impact == impact and pending.pos == slotPos then
 				table.remove(pendingMerges, i)
 				break
 			end
 		end
 	end)
+	-- Everything from here on is drawn where the units are shown.
+	target = shownAt(target)
 
 	local chest = target + Vector3.new(0, CHEST_HEIGHT, 0)
 	local color = tierColor(fromTier)
 	if type(from) == "table" then
 		for index, pos in from do
 			if typeof(pos) == "Vector3" and index <= 4 then
-				soulOrbs(pos, chest, color, startAt, duration, auto)
+				soulOrbs(shownAt(pos), chest, color, startAt, duration, auto)
 			end
 		end
 	end
@@ -1165,7 +1564,7 @@ local function onMerge(data: { [string]: any })
 			at += math.max(0.06, 0.14 - i * 0.012)
 		end
 		task.delay(impact - now, function()
-			cascadeFinale(chest, toTier, count, auto)
+			cascadeFinale(chest, toTier, count, auto, mergeKind(toTier, auto))
 		end)
 		lastImpact = impact
 		chainTotal = 0
@@ -1173,15 +1572,17 @@ local function onMerge(data: { [string]: any })
 	end
 	task.delay(impact - now, function()
 		impactFx(chest, toTier, auto, nil, 1 + math.min(myChain, 6) * 0.06)
+		resultFx(target, toTier, mergeKind(toTier, auto))
 		if count >= 2 then
-			Orbs.text(chest + Vector3.new(0, 2.5, 0), "x" .. count, tierColor(toTier), { scale = 0.9, rise = 2.5 })
+			-- Beside the "+TIER n" chip.
+			Orbs.text(chest + Vector3.new(0, 7.5, 0), "x" .. count, tierColor(toTier), { scale = 0.9, rise = 2.5 })
 		end
 	end)
 	lastImpact = impact
 	-- When a chain of step merges ends, show its running total.
 	task.delay(impact - now + 0.25, function()
 		if lastImpact == impact and chainTotal >= 3 then
-			mergesText(chest + Vector3.new(0, 4, 0), chainTotal, tierColor(toTier):Lerp(WHITE, 0.25), 1.6, 1.5)
+			mergesText(chest + Vector3.new(0, 9, 0), chainTotal, tierColor(toTier):Lerp(WHITE, 0.25), 1.6, 1.5)
 			chainTotal = 0
 		end
 	end)
@@ -1397,6 +1798,14 @@ local function pickHero()
 		table.insert(tiers, deco.tier)
 	end
 	standing.best, standing.second = PlotRank.topTiers(tiers)
+	-- A new best tier is known a moment later: the merge that made it gets the big impact.
+	local top = standing.best
+	if top > knownBest and top ~= pendingBest then
+		pendingBest = top
+		task.delay(MERGE.BestDelay, function()
+			knownBest = math.max(knownBest, top)
+		end)
+	end
 	if best ~= hero then
 		local old = hero
 		if old then
@@ -1460,12 +1869,26 @@ local function applyStanding(model: Model, deco: Deco)
 		aura.Rate = Budget.count(cfg.AuraRate)
 	end
 
+	-- The champion stands on its stage in front of the pedestal (the server stands it on the
+	-- pedestal, and puts it back there whenever it moves the unit).
+	local rim = if champion then championRim() else nil
+	if rim then
+		local stage = PlotRank.championPivot(rim)
+		if (model:GetPivot().Position - stage.Position).Magnitude > 0.05 then
+			model:PivotTo(stage)
+			deco.measured = false
+		end
+	end
 	local feet = model:GetPivot().Position
 	local heightValue = model:GetAttribute("Height")
 	local height = if type(heightValue) == "number" then heightValue else 5
 	local ceiling = boardAbove(watched, feet)
 	local want = PlotRank.wantScale(deco.tier, deco.slot, standing.best, standing.second)
 	local target = PlotRank.fitScale(want, height, if ceiling then ceiling - feet.Y else nil, if champion then nil else standing.champion)
+	if rim then
+		-- Nothing is above the stage: the champion gets its full size.
+		target = PlotRank.championScale(deco.tier)
+	end
 	if champion then
 		standing.champion = target
 	end
@@ -1624,6 +2047,9 @@ local function bindUnits(units: Instance)
 	end
 	hideHero()
 	unitsFolder = units
+	-- What already stands on the rack is not news.
+	knownBest = PlotRank.bestTier(units.Parent or units)
+	pendingBest = knownBest
 	for _, child in units:GetChildren() do
 		addDeco(child)
 	end
