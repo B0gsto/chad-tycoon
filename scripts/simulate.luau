@@ -10,7 +10,17 @@
 	                the parkour finish reward once per MODE_REWARD_COOLDOWN, the Aura
 	                Surge (2 of every 10 minutes: double orbs and double converter speed)
 	                and the crates from the free unlocker
-	  --hours N     simulated hours (default 600)
+	  --hours N     simulated hours of play (default 600)
+	  --stars N     rebirth stars held: +10% cash each (Economy.starMultiplier)
+	  --day M       plays M minutes a day and is away for the rest: offline cash on return
+	                (Economy.OFFLINE_*), and the free gift, the mode reward and a crate are
+	                ready again
+	  --stop T      stops when tier T is reached
+	  --rebirths N  the long loop: N runs in a row, each ended by a rebirth when the HUD
+	                would name it as the goal (Economy.rebirthIsGoal: every tier found, or
+	                the next tier more than REBIRTH_GOAL_SECONDS of income away), or at
+	                tier T with --stop T. Prints one line per run; implies --extras, and
+	                --day 30 unless --day is given
 	  --first       the first minutes instead: a new player who follows the tutorial and then
 	                walks the loop between the real pads (Simulate.firstMinutes), in seconds
 	                from the end of the intro
@@ -60,6 +70,16 @@ export type Options = {
 	cash: boolean?,
 	extras: boolean?,
 	hours: number?,
+	-- Rebirth stars held (+10% cash each, offline cash included).
+	stars: number?,
+	-- Minutes played per day (nil = one endless session, no offline cash).
+	minutesPerDay: number?,
+	-- The run ends when this tier is reached, or (rebirthGoal) when a rebirth becomes the
+	-- goal (Economy.rebirthIsGoal).
+	stopTier: number?,
+	rebirthGoal: boolean?,
+	-- A run after a rebirth: the tutorial reward was paid long ago.
+	veteran: boolean?,
 	-- Fixed step in seconds for every phase (tests use a coarse one); default is phased.
 	step: number?,
 }
@@ -71,6 +91,15 @@ export type Result = {
 	production: number,
 	-- Lowest share of the production the converter kept up with at any step (1 = all of it).
 	converterShare: number,
+	-- Best tier of the run, and the seconds played and on the calendar (equal without
+	-- minutesPerDay) when it ended.
+	best: number,
+	play: number,
+	wall: number,
+	-- Longest calendar wait for a new tier (or, at the end, for the rebirth) and the tier
+	-- the wait started at.
+	longestWait: number,
+	waitAt: number,
 }
 
 function Simulate.run(options: Options): Result
@@ -86,7 +115,7 @@ function Simulate.run(options: Options): Result
 	local efficiency = 0.85 -- the player is not always on the pads
 	-- The aura pass doubles the orbs and the converter's speed.
 	local orbMult = if options.aura then 2 else 1
-	local cashMult = if options.cash then 2 else 1
+	local cashMult = (if options.cash then 2 else 1) * Economy.starMultiplier(options.stars or 0)
 	local extras = options.extras == true
 	local converterShare = 1
 	local nextFree = 0
@@ -98,12 +127,27 @@ function Simulate.run(options: Options): Result
 		seed = (seed * 1103515245 + 12345) % 2147483648
 		return seed / 2147483648
 	end
-	local tutorialPaid = false
+	local tutorialPaid = options.veteran == true
+	-- Seconds spent away between sessions so far (calendar time = play time + away).
+	local away = 0
+	local sessionSeconds = if options.minutesPerDay then options.minutesPerDay * 60 else math.huge
+	local sessionLeft = sessionSeconds
+	local lastNew, longestWait, waitAt = 0, 0, 1
+	local function waited(t: number)
+		if t + away - lastNew > longestWait then
+			longestWait, waitAt = t + away - lastNew, highest
+		end
+	end
+	local function reach(tier: number, t: number)
+		reached[tier] = t
+		waited(t)
+		lastNew = t + away
+	end
 
 	local function record(t: number)
 		for tier = 1, Economy.MAX_TIER do
 			if units[tier] > 0 and not reached[tier] then
-				reached[tier] = t
+				reach(tier, t)
 			end
 			if units[tier] > 0 and tier > highest then
 				highest = tier
@@ -114,7 +158,7 @@ function Simulate.run(options: Options): Result
 	local function merged(steps: { Economy.MergeStep }, t: number)
 		for _, step in steps do
 			if not reached[step.tier + 1] then
-				reached[step.tier + 1] = t
+				reach(step.tier + 1, t)
 			end
 			highest = math.max(highest, step.tier + 1)
 		end
@@ -135,7 +179,8 @@ function Simulate.run(options: Options): Result
 	end
 
 	local t = 0
-	while t < horizon do
+	local ended = false
+	while t < horizon and not ended do
 		local dt = options.step or (if t < 2 * 3600 then 1 elseif t < 24 * 3600 then 10 else 60)
 		t += dt
 		-- The surge doubles the orbs and the converter; rewards are sized without it.
@@ -207,15 +252,84 @@ function Simulate.run(options: Options): Result
 					break
 				end
 			end
+			-- The same estimate the HUD's goal strip shows: the cash still missing for the
+			-- next tier over the income.
+			if options.rebirthGoal then
+				local now = Economy.incomePerSecond(
+					Economy.productionPerSecond(units) * orbMult,
+					Economy.processRate(processLevel) * orbMult,
+					cashMult
+				)
+				local missing = Economy.unitsToNextTier(units, highest)
+				ended = Economy.rebirthIsGoal(highest, Economy.secondsToUnits(boughtUnits, missing, money, now))
+			end
+		end
+		if options.stopTier and highest >= options.stopTier then
+			ended = true
+		end
+
+		-- The day's session is over: away until the same time tomorrow.
+		sessionLeft -= dt
+		if sessionLeft <= 0 and not ended then
+			sessionLeft = sessionSeconds
+			local gap = 86400 - sessionSeconds
+			away += gap
+			-- Tycoon.applyOffline: a share of the production, through the converter.
+			local elapsed = math.min(gap, Economy.OFFLINE_CAP_SECONDS)
+			queue += Economy.productionPerSecond(units) * orbMult * elapsed * Economy.OFFLINE_EFFICIENCY
+			local done = math.min(queue, Economy.processRate(processLevel) * orbMult * elapsed)
+			queue -= done
+			money += done * Economy.CASH_PER_POINT * cashMult
+			-- The cooldowns ran out and the Smasher finished while away.
+			nextFree = math.min(nextFree, t)
+			nextParkour = math.min(nextParkour, t)
+			nextCrate = math.min(nextCrate, t)
 		end
 	end
+	waited(t)
 	return {
+		best = highest,
+		play = t,
+		wall = t + away,
+		longestWait = longestWait,
+		waitAt = waitAt,
 		reached = reached,
 		money = money,
 		processLevel = processLevel,
 		production = Economy.productionPerSecond(units),
 		converterShare = converterShare,
 	}
+end
+
+-- The long loop --------------------------------------------------------------------------
+
+export type Run = {
+	-- Stars held during the run and gained by the rebirth that ended it.
+	stars: number,
+	gained: number,
+	result: Result,
+}
+
+-- `count` runs in a row by the same player, each ended by a rebirth (at `options.stopTier`,
+-- else when Economy.rebirthIsGoal names it); the stars carry over. Stops early when a run
+-- ends without a rebirth on offer (the horizon was too short).
+function Simulate.rebirths(options: Options, count: number): { Run }
+	local runs: { Run } = {}
+	local stars = options.stars or 0
+	for index = 1, count do
+		local o = table.clone(options)
+		o.stars = stars
+		o.rebirthGoal = options.stopTier == nil
+		o.veteran = options.veteran or index > 1
+		local result = Simulate.run(o)
+		local gained = Economy.rebirthStars(result.best)
+		table.insert(runs, { stars = stars, gained = gained, result = result })
+		if gained == 0 then
+			break
+		end
+		stars += gained
+	end
+	return runs
 end
 
 -- First minutes --------------------------------------------------------------------------
@@ -505,9 +619,46 @@ local function printFirst(minutes: number?)
 	)
 end
 
+local function printRebirths(options: Options, count: number)
+	options.extras = true
+	options.minutesPerDay = options.minutesPerDay or 30
+	options.hours = options.hours or 600
+	print(
+		string.format(
+			"%d rebirths, %d min a day, rebirth %s",
+			count,
+			options.minutesPerDay :: number,
+			if options.stopTier then "at tier " .. options.stopTier else "when it becomes the goal"
+		)
+	)
+	local first: number? = nil
+	for index, run in Simulate.rebirths(options, count) do
+		local result = run.result
+		first = first or result.play
+		print(
+			string.format(
+				"Run %d  %3d stars (x%.1f cash)  tier %d after %4.1f h of play  tier %2d after %5.1f h of play, %5.1f days (%3.0f%% of run 1)  longest wait %.1f days (at tier %d)  rebirth: +%d stars",
+				index,
+				run.stars,
+				Economy.starMultiplier(run.stars),
+				Economy.REBIRTH_MIN_TIER,
+				(result.reached[Economy.REBIRTH_MIN_TIER] or 0) / 3600,
+				result.best,
+				result.play / 3600,
+				result.wall / 86400,
+				result.play / (first :: number) * 100,
+				result.longestWait / 86400,
+				result.waitAt,
+				run.gained
+			)
+		)
+	end
+end
+
 local function main(args: { string })
 	local options: Options = {}
 	local first, minutes = false, nil
+	local rebirths: number? = nil
 	local i = 1
 	while i <= #args do
 		local a = args[i]
@@ -520,6 +671,18 @@ local function main(args: { string })
 		elseif a == "--hours" then
 			i += 1
 			options.hours = tonumber(args[i])
+		elseif a == "--stars" then
+			i += 1
+			options.stars = tonumber(args[i])
+		elseif a == "--day" then
+			i += 1
+			options.minutesPerDay = tonumber(args[i])
+		elseif a == "--stop" then
+			i += 1
+			options.stopTier = tonumber(args[i])
+		elseif a == "--rebirths" then
+			i += 1
+			rebirths = tonumber(args[i])
 		elseif a == "--first" then
 			first = true
 		elseif a == "--minutes" then
@@ -531,14 +694,19 @@ local function main(args: { string })
 	if first then
 		printFirst(minutes)
 		return
+	elseif rebirths then
+		printRebirths(options, rebirths)
+		return
 	end
 	local result = Simulate.run(options)
 	print(
 		string.format(
-			"aura %s, cash %s, extras %s, %d h",
+			"aura %s, cash %s, extras %s, %d stars, %s, %d h of play",
 			if options.aura then "2x" else "1x",
 			if options.cash then "2x" else "1x",
 			if options.extras then "on" else "off",
+			options.stars or 0,
+			if options.minutesPerDay then options.minutesPerDay .. " min a day" else "one session",
 			options.hours or 600
 		)
 	)
@@ -547,6 +715,10 @@ local function main(args: { string })
 		local text = "not reached"
 		if at then
 			text = if at < 3600 then string.format("%6.1f min", at / 60) else string.format("%6.1f h", at / 3600)
+			if options.minutesPerDay then
+				-- Play time, and the day it falls on.
+				text ..= string.format("  day %d", math.floor(at / (options.minutesPerDay * 60)) + 1)
+			end
 		end
 		print(string.format("Tier %2d  %s", tier, text))
 	end

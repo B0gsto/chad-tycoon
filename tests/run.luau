@@ -2168,7 +2168,7 @@ end)
 
 test("Economy 2.0 migration: a save only gains", function()
 	local DataService = loadDataService()
-	eq(DataService.VERSION, 3, "profile version")
+	eq(DataService.VERSION, 4, "profile version")
 	local function discoveredTo(best: number): { number }
 		local discovered = table.create(Economy.MAX_TIER, 0)
 		for tier = 1, best do
@@ -2218,7 +2218,7 @@ test("Economy 2.0 migration: a save only gains", function()
 		modes = { parkour = { best = 31.5, clears = 3, lastRewardAt = 1700000000 } },
 	}
 	local kept = DataService.reconcile(saved)
-	eq(kept.version, 3, "the save is now version 3")
+	eq(kept.version, DataService.VERSION, "the save is now the current version")
 	for _, key in { "money", "carried", "queue", "pending", "totalObtained", "bought", "processLevel", "heldChest", "totalEarned" } do
 		eq(kept[key], saved[key], key .. " is kept")
 	end
@@ -2280,7 +2280,325 @@ test("Tycoon pads: no Robux prompt from walking, upgrade pads need a stop", func
 	check(has("PAD_DWELL = { ProcUp1 = 0.4, ProcUp10 = 0.4 }"), "the upgrade pads fire after a 0.4 s stop")
 	check(has("Economy.CONVERTER_HEADROOM * Economy.productionPerSecond(p.units)"), "upgrades are refused past the headroom")
 	check(has("Economy.depositSplit(p.carried, mult)"), "the deposit bonus is split off as cash")
-	check(has("Economy.minProcessLevel(newest)"), "a new tier lifts the converter for free")
+	check(has("Economy.minProcessLevel(math.max(runNewest, 1))"), "a new tier of the run lifts the converter for free")
+	-- Rebirth: one rule (Economy.rebirth), stars in the cash multiplier, the run's tiers for crates.
+	check(has("actionHandlers.Rebirth = rebirth"), "the Rebirth action")
+	check(has("Economy.rebirth(p, os.time())"), "the action applies Economy.rebirth")
+	check(has("Economy.starBonus(session.profile.stars)"), "stars add to the cash multiplier")
+	check(has("return Economy.highestTier(session.profile.runDiscovered)"), "crates and goals follow the run's best tier")
+	check(has('kind = "Rebirth"') and has('kind = "RebirthReady"'), "the rebirth notifies")
+	check(
+		has('folder:SetAttribute("BestTier"') and has('folder:SetAttribute("Stars"'),
+		"the plot shows the all-time best tier and the stars"
+	)
+	for _, key in { "canRebirth", "starsOnRebirth", "stars", "starMult", "rebirths", "runDiscovered", "bestTier", "rebirth" } do
+		check(string.find(source, "\n\t\t" .. key .. " = ") ~= nil, "snapshot field " .. key)
+	end
+end)
+
+test("rebirth: stars, what resets and what stays", function()
+	local DataService = loadDataService()
+	eq(Economy.REBIRTH_MIN_TIER, 15, "rebirth from tier 15")
+	eq(Economy.STAR_BONUS, 0.1, "+10% cash per star")
+	check(not Economy.canRebirth(14), "not at tier 14")
+	check(Economy.canRebirth(15) and Economy.canRebirth(25), "from tier 15 to the top")
+	eq(Economy.rebirthStars(1), 0, "no stars at the start")
+	eq(Economy.rebirthStars(14), 0, "no stars at tier 14")
+	eq(Economy.rebirthStars(15), 1, "tier 15: 1 star")
+	eq(Economy.rebirthStars(20), 6, "tier 20: 6 stars")
+	eq(Economy.rebirthStars(25), 11, "tier 25: 11 stars")
+	eq(Economy.rebirthStars(99), 11, "never more than the top tier pays")
+	near(Economy.starMultiplier(0), 1, "no stars: x1")
+	near(Economy.starMultiplier(11), 2.1, "11 stars: x2.1")
+	near(Economy.starBonus(3), 0.3, "the bonus adds to friends and Premium")
+	eq(Economy.starBonus(-2), 0, "bad star counts read as none")
+	eq(Economy.starBonus(0 / 0), 0, "NaN stars read as none")
+
+	-- A played profile with something in every field a rebirth could touch.
+	local function played(best: number): any
+		local p = DataService.defaultProfile()
+		for tier = 1, best do
+			p.discovered[tier] = 1700000000 + tier
+			p.runDiscovered[tier] = 1700000000 + tier
+		end
+		p.units[best] = 3
+		p.units[best - 2] = 1
+		p.money, p.carried, p.queue, p.pending = 5e9, 1200, 3400, 5600
+		p.bought, p.processLevel = 80000, 96
+		p.totalObtained, p.totalEarned = 90000, 7e10
+		p.heldChest = "Epic"
+		p.unlockers[1] = { rarity = "Legendary", endsAt = 1900000000, seconds = 300 }
+		p.autoMergeOwned, p.autoMerge = true, true
+		p.tutorialDone, p.introSeen, p.firstCrateDone, p.starterGranted = true, true, true, true
+		p.cosmetics.trail = "Fire"
+		p.cosmetics.toggles.Aura = false
+		p.badges.CertifiedChad = true
+		p.daily.day, p.daily.streak = 20000, 6
+		p.lastFreeReward = 1700000100
+		p.parkour.best[1], p.parkour.clears[1], p.parkour.stage, p.parkour.gear = 31.5, 4, 3, "jump"
+		p.cardio.speed, p.cardio.bestStage = 5000, 4
+		p.modes.mog.best, p.modes.parkour.lastRewardAt = 12, 1700000200
+		p.receipts = { "r1", "r2" }
+		p.settings.music = false
+		return p
+	end
+
+	-- Below tier 15 nothing happens at all.
+	local early = played(14)
+	local untouched = DataService.reconcile(played(14))
+	eq(Economy.rebirth(early, 1800000000), 0, "no rebirth at tier 14")
+	eq(early.money, untouched.money, "and the cash is untouched")
+	eq(early.units[14], 3, "and so are the units")
+	eq(early.stars, 0, "and no star is paid")
+
+	local p = played(20)
+	local units, run, index = p.units, p.runDiscovered, p.discovered
+	local snapshot = played(20)
+	eq(Economy.rebirth(p, 1800000000), 6, "tier 20 pays 6 stars")
+	eq(p.stars, 6, "stars held")
+	eq(p.rebirths, 1, "rebirths made")
+	-- What resets (Economy.REBIRTH_RESETS).
+	check(p.units == units and p.runDiscovered == run, "the tables are kept (the State snapshot shares them)")
+	for tier = 1, Economy.MAX_TIER do
+		eq(p.units[tier], if tier == 1 then 1 else 0, "units of tier " .. tier)
+		eq(p.runDiscovered[tier], if tier == 1 then 1800000000 else 0, "run tier " .. tier)
+	end
+	eq(p.money, Economy.START_CASH, "cash back to the start")
+	eq(p.carried + p.queue + p.pending, 0, "carried, queued and vault cash are gone")
+	eq(p.bought, 0, "units are cheap again")
+	eq(p.processLevel, Economy.START_PROCESS_LEVEL, "the converter starts again")
+	eq(#Economy.REBIRTH_RESETS, 5, "five things reset")
+	-- What stays (Economy.REBIRTH_KEEPS): every other field of the profile, exactly.
+	check(p.discovered == index, "the Index table is the same one")
+	local reset = { units = true, runDiscovered = true, money = true, carried = true, queue = true, pending = true, bought = true }
+	reset.processLevel, reset.stars, reset.rebirths = true, true, true
+	local function same(a: any, b: any, path: string)
+		if type(a) == "table" and type(b) == "table" then
+			for key, value in b do
+				same(a[key], value, path .. "." .. tostring(key))
+			end
+			for key in a do
+				check(b[key] ~= nil, path .. "." .. tostring(key) .. " appeared")
+			end
+		else
+			eq(a, b, path .. " is kept")
+		end
+	end
+	local kept = 0
+	for key, value in snapshot do
+		if not reset[key] then
+			same(p[key], value, key)
+			kept += 1
+		end
+	end
+	check(kept >= 25, "every other profile field was compared (" .. kept .. ")")
+	eq(Economy.highestTier(p.discovered), 20, "the Index still shows tier 20")
+	eq(Economy.highestTier(p.runDiscovered), 1, "the run is at tier 1")
+	eq(Economy.rebirth(p, 1800000001), 0, "no second rebirth until tier 15 again")
+	eq(p.stars, 6, "and the stars stay")
+
+	-- Loading the save again changes nothing: the converter follows the run, not the Index.
+	local loaded = DataService.reconcile(p)
+	eq(loaded.processLevel, Economy.START_PROCESS_LEVEL, "the converter is not lifted to the Index's best tier")
+	eq(loaded.stars, 6, "stars survive a load")
+	eq(loaded.rebirths, 1, "rebirths survive a load")
+	eq(Economy.highestTier(loaded.runDiscovered), 1, "the run survives a load")
+	eq(Economy.highestTier(loaded.discovered), 20, "the Index survives a load")
+	-- Crates are anchored to the run, so a kept crate cannot skip the new run.
+	eq(Economy.chestAnchor(Economy.highestTier(loaded.runDiscovered)), 1, "crate anchor of a new run")
+
+	-- A second run adds its stars.
+	for tier = 1, 25 do
+		p.runDiscovered[tier] = 1800000100 + tier
+	end
+	eq(Economy.rebirth(p, 1800001000), 11, "the top tier pays 11")
+	eq(p.stars, 17, "stars add up")
+	eq(p.rebirths, 2, "second rebirth")
+end)
+
+test("rebirth: profile fields and migration", function()
+	local DataService = loadDataService()
+	local fresh = DataService.defaultProfile()
+	eq(fresh.stars, 0, "a new profile has no stars")
+	eq(fresh.rebirths, 0, "and no rebirths")
+	eq(#fresh.runDiscovered, Economy.MAX_TIER, "one run entry per tier")
+	check(fresh.runDiscovered ~= fresh.discovered, "the run has its own table")
+	check(fresh.runDiscovered[1] > 0 and fresh.runDiscovered[2] == 0, "a new run has found tier 1")
+
+	-- A save from before rebirth: its run has found what its Index has, and it has no stars.
+	local discovered = table.create(Economy.MAX_TIER, 0)
+	for tier = 1, 18 do
+		discovered[tier] = 1700000000 + tier
+	end
+	local old = DataService.reconcile({ version = 3, money = 777, bought = 900, processLevel = 90, discovered = table.clone(discovered) })
+	eq(old.version, DataService.VERSION, "migrated to the current version")
+	eq(old.stars, 0, "existing saves start with no stars")
+	eq(old.rebirths, 0, "and no rebirths")
+	check(old.runDiscovered ~= old.discovered, "the run is a copy, not the Index itself")
+	for tier = 1, Economy.MAX_TIER do
+		eq(old.runDiscovered[tier], discovered[tier], "run tier " .. tier)
+		eq(old.discovered[tier], discovered[tier], "Index tier " .. tier)
+	end
+	eq(old.money, 777, "cash is kept")
+	eq(old.processLevel, 90, "the converter level is kept")
+	check(Economy.canRebirth(Economy.highestTier(old.runDiscovered)), "a tier-18 save may rebirth at once")
+
+	-- Bad values are cleaned; the Index never has less than the run.
+	local odd = DataService.reconcile({
+		money = 1,
+		stars = -3,
+		rebirths = 0 / 0,
+		discovered = { 5, 0, 0 },
+		runDiscovered = { 5, 6, "x", 0 / 0 },
+	})
+	eq(odd.stars, 0, "negative stars read as none")
+	eq(odd.rebirths, 0, "NaN rebirths read as none")
+	eq(odd.runDiscovered[2], 6, "a run tier is kept")
+	eq(odd.discovered[2], 6, "and the Index gets it")
+	eq(odd.runDiscovered[3], 0, "junk in the run is dropped")
+	eq(odd.runDiscovered[4], 0, "NaN in the run is dropped")
+	eq(DataService.reconcile({ money = 1, stars = 12.9, rebirths = 2 }).stars, 12, "stars are whole")
+	eq(DataService.reconcile({ money = 1, stars = "many" }).stars, 0, "a broken star count resets")
+
+	-- Smasher slots saved before the whole timer was kept get one on load, so the progress
+	-- ring fills steadily to the saved end time (which is never changed).
+	local now = os.time()
+	local slots = DataService.reconcile({
+		money = 1,
+		unlockers = { { rarity = "Legendary", endsAt = now + 4000 }, { rarity = "Common", endsAt = now + 5 } },
+	}).unlockers
+	eq(slots[1].endsAt, now + 4000, "the end time is kept")
+	check(slots[1].seconds >= 3999 and slots[1].seconds <= 4000, "a long old timer: the time left is the whole ring")
+	eq(slots[2].seconds, Economy.unlockSeconds("Common", true), "a short one: the rarity's timer")
+	eq(
+		DataService.reconcile({ money = 1, unlockers = { { rarity = "Rare", endsAt = now + 50, seconds = 60 } } }).unlockers[1].seconds,
+		60,
+		"a saved timer is kept"
+	)
+	eq(DataService.reconcile({ money = 1 }).unlockers[1].seconds, nil, "an empty slot has none")
+	local again = DataService.reconcile({ money = 1, unlockers = { { rarity = "Legendary", endsAt = now + 4000, seconds = 4000 } } })
+	eq(again.unlockers[1].seconds, 4000, "and it does not shrink on the next load")
+end)
+
+test("NextGoal: one merge step, the real percent and the rebirth goal", function()
+	local NextGoal = loadShared("NextGoal")
+	local function input(best: number, units: { number }, runBest: number?): any
+		local discovered = table.create(Economy.MAX_TIER, 0)
+		local run = table.create(Economy.MAX_TIER, 0)
+		for tier = 1, Economy.MAX_TIER do
+			discovered[tier] = if tier <= best then 1 else 0
+			run[tier] = if tier <= (runBest or best) then 1 else 0
+		end
+		local owned = table.create(Economy.MAX_TIER, 0)
+		for tier, n in units do
+			owned[tier] = n
+		end
+		return { discovered = discovered, units = owned, runDiscovered = if runBest then run else nil }
+	end
+	local function nameOf(tier: number): string
+		return "T" .. tier
+	end
+
+	-- mergeReady: one step on the merge pad reaches the tier, pair or no pair.
+	local goal = NextGoal.pick(input(3, { 2, 1, 1 }))
+	check(goal.mergeReady, "2 x T1 + T2 + T3 merge up to a T4")
+	check(not goal.ready, "though the T3 pair is not on the rack")
+	eq(goal.percent, 100, "100% when one step does it")
+	eq(goal.missing, 0, "nothing left to buy")
+	eq(goal.seconds, 0, "and no wait")
+	eq(select(4, NextGoal.text(goal, nameOf)), "100%", "the text carries the percent")
+	-- The server agrees: a full merge makes the tier.
+	local units = input(3, { 2, 1, 1 }).units
+	Economy.mergeAll(units)
+	eq(units[4], 1, "mergeAll makes the T4")
+	goal = NextGoal.pick(input(3, { 1, 1, 1 }))
+	check(not goal.mergeReady, "one T1 short")
+	eq(goal.missing, 1, "one more T1")
+	eq(goal.percent, 87, "7/8 of the way is 87%, not rounded up")
+	eq(select(4, NextGoal.text(goal, nameOf)), "87%", "percent text")
+	eq(NextGoal.pick(input(12, { [12] = 1, [11] = 1, [1] = 1023 })).percent, 99, "never 100% while a unit is missing")
+	check(NextGoal.pick(input(1, { 2 })).mergeReady, "a plain pair is ready too")
+	eq(NextGoal.pick(input(1, { 1 })).percent, 50, "half way")
+	-- Every rack agrees with the server's count and with a real merge.
+	local rng = seeded(7)
+	for _ = 1, 300 do
+		local best = 1 + math.floor(rng() * 12)
+		local rack: { number } = {}
+		for tier = 1, best do
+			rack[tier] = math.floor(rng() * 3)
+		end
+		local picked = NextGoal.pick(input(best, rack))
+		local owned = input(best, rack).units
+		eq(picked.missing, Economy.unitsToNextTier(owned, best), "missing matches the snapshot's nextTierUnits")
+		Economy.mergeAll(owned)
+		eq(picked.mergeReady, owned[best + 1] > 0, "mergeReady matches a real merge")
+		check(picked.percent < 100 or picked.mergeReady, "100% only when ready")
+	end
+
+	-- The time estimate (the snapshot's bought, money, pending, rewardIncome).
+	local timed = input(10, { [10] = 1 })
+	timed.bought, timed.money, timed.pending, timed.income = 600, 1000, 500, 250
+	goal = NextGoal.pick(timed)
+	eq(goal.missing, 512, "half a pair of T10 is 512 T1")
+	near(goal.seconds :: number, (Economy.bulkPrice(600, 512) - 1500) / 250, "cash still missing over the income")
+	timed.money = 1e12
+	eq(NextGoal.pick(timed).seconds, 0, "affordable now")
+	eq(NextGoal.pick(input(10, { [10] = 1 })).seconds, nil, "no income, no estimate")
+
+	-- Rebirth. A caller that does not send the run's tiers never gets it.
+	eq(NextGoal.pick(input(20, { [20] = 1 })).stars, 0, "no run tiers: no rebirth")
+	eq(NextGoal.pick(input(20, { [20] = 1 })).second, nil, "and no second goal")
+	eq(NextGoal.pick(input(25, { [25] = 3 })).kind, "rack", "the old rack goal stays for such a caller")
+	-- Below tier 15: the merge, nothing else.
+	goal = NextGoal.pick(input(14, { [14] = 1 }, 14))
+	eq(goal.kind, "merge", "tier 14: the next tier")
+	eq(goal.stars, 0, "no stars on offer")
+	eq(goal.second, nil, "no second goal")
+	-- From tier 15 the rebirth is the second option while the next tier is near.
+	local near15 = input(15, { [15] = 1 }, 15)
+	near15.bought, near15.money, near15.pending = 30000, 0, 0
+	near15.income = Economy.bulkPrice(30000, 2 ^ 14) / 3600 -- an hour away
+	goal = NextGoal.pick(near15)
+	eq(goal.kind, "merge", "an hour from tier 16: go for the tier")
+	eq(goal.tier, 16, "target")
+	eq(goal.stars, 1, "one star on offer")
+	check(goal.second ~= nil and goal.second.kind == "rebirth", "rebirth is the second option")
+	eq((goal.second :: any).stars, 1, "with its star")
+	eq((goal.second :: any).second, nil, "the second goal has none of its own")
+	-- It becomes the goal when the next tier is further off than REBIRTH_GOAL_SECONDS.
+	near15.income = Economy.bulkPrice(30000, 2 ^ 14) / (Economy.REBIRTH_GOAL_SECONDS + 60)
+	goal = NextGoal.pick(near15)
+	eq(goal.kind, "rebirth", "over four hours from tier 16: rebirth")
+	eq(goal.stars, 1, "for one star")
+	eq(goal.tier, 15, "from the run's best tier")
+	check(goal.ready and goal.mergeReady and goal.percent == 100, "a rebirth is ready now")
+	check(goal.second ~= nil and (goal.second :: any).kind == "merge" and (goal.second :: any).tier == 16, "the tier is the second option")
+	local title, hint, count, percent = NextGoal.text(goal, nameOf)
+	eq(title, "Rebirth", "rebirth title")
+	eq(hint, "+1 star", "one star")
+	eq(count, "+1", "rebirth count")
+	eq(percent, "100%", "rebirth percent")
+	-- A tier one merge away always comes first.
+	local oneStep = input(15, { [15] = 2 }, 15)
+	oneStep.bought, oneStep.income = 30000, 0.001
+	eq(NextGoal.pick(oneStep).kind, "merge", "a ready merge beats the rebirth")
+	-- No income to go by: the tier stays the goal.
+	eq(NextGoal.pick(input(15, { [15] = 1 }, 15)).kind, "merge", "no estimate: the tier")
+	-- Every tier found in the run: rebirth, not "fill your rack".
+	goal = NextGoal.pick(input(25, { [25] = 3 }, 25))
+	eq(goal.kind, "rebirth", "the top tier: rebirth")
+	eq(goal.stars, 11, "for 11 stars")
+	eq(goal.second, nil, "nothing else to aim at")
+	eq(select(2, NextGoal.text(goal, nameOf)), "+11 stars", "stars in words")
+	-- After a rebirth the goal counts from the run, not from the Index.
+	goal = NextGoal.pick(input(25, { 1 }, 1))
+	eq(goal.kind, "merge", "a new run merges again")
+	eq(goal.tier, 2, "towards tier 2")
+	eq(goal.stars, 0, "no stars on offer yet")
+	eq(Economy.rebirthIsGoal(14, 1e9), false, "never before tier 15")
+	eq(Economy.rebirthIsGoal(25, nil), true, "always at the top")
+	eq(Economy.rebirthIsGoal(18, nil), false, "not without an estimate")
+	eq(Economy.REBIRTH_GOAL_SECONDS, 4 * 3600, "four hours of income")
 end)
 
 test("onboarding funnel and badges fields", function()
@@ -5080,6 +5398,61 @@ test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", 
 	check(by(15, 2 * 3600), "extras: tier 15 by 2 hours")
 	check(extras.converterShare >= 0.5, "extras: the converter passes at least half the production")
 	near(Simulate.depositBonus(), 0.154, "average deposit bonus")
+end)
+
+test("rebirth pacing (scripts/simulate): stars make every run faster", function()
+	(_G :: any).SIMULATE_AS_LIBRARY = true
+	local Simulate = require("../scripts/simulate")
+	-- The same player in one long session: with 11 stars the top tier comes again in at
+	-- most 60% of the first run's play time.
+	local first = Simulate.run({ hours = 80, step = 30, stopTier = Economy.MAX_TIER })
+	local second = Simulate.run({ hours = 80, step = 30, stopTier = Economy.MAX_TIER, stars = 11, veteran = true })
+	eq(first.best, Economy.MAX_TIER, "the first run reaches the top tier")
+	eq(second.best, Economy.MAX_TIER, "so does the second")
+	check(second.play <= first.play * 0.6, string.format("11 stars: %.0f%% of the first run", second.play / first.play * 100))
+	eq(first.wall, first.play, "one session: no time away")
+
+	-- Half an hour a day, rebirth at the top tier every time: each run is shorter than the last.
+	local toTop = Simulate.rebirths({ extras = true, minutesPerDay = 30, stopTier = Economy.MAX_TIER }, 5)
+	eq(#toTop, 5, "five runs to the top")
+	local days = toTop[1].result.wall / 86400
+	check(days >= 12 and days <= 22, string.format("the first run takes two to three weeks (%.0f days)", days))
+	for index = 2, 5 do
+		local run, last = toTop[index], toTop[index - 1]
+		eq(run.stars, 11 * (index - 1), "11 stars per run")
+		check(run.result.play < last.result.play, "run " .. index .. " is shorter than run " .. index - 1)
+		check(run.result.longestWait <= 3 * 86400, "run " .. index .. ": a new tier at least every 3 days")
+	end
+	check(toTop[2].result.play <= toTop[1].result.play * 0.7, "the second run takes at most 70% of the first")
+	check(toTop[5].result.play <= toTop[1].result.play * 0.45, "the fifth at most 45%")
+
+	-- The same player following the HUD's goal: rebirth when the next tier is further off
+	-- than Economy.REBIRTH_GOAL_SECONDS of income. Something new within 2 days, always; every
+	-- run goes at least as far as the last, pays more stars and unlocks the rebirth sooner.
+	local goal = Simulate.rebirths({ extras = true, minutesPerDay = 30 }, 5)
+	eq(#goal, 5, "five runs by the goal")
+	local unlock = Economy.REBIRTH_MIN_TIER
+	for index, run in goal do
+		local result = run.result
+		check(run.gained > 0, "run " .. index .. " ends in a rebirth")
+		check(result.longestWait <= 2 * 86400, string.format("run %d: longest wait %.1f days", index, result.longestWait / 86400))
+		check(result.wall <= 9 * 86400, string.format("run %d takes %.0f days", index, result.wall / 86400))
+		if index > 1 then
+			local last = goal[index - 1]
+			check(result.best >= last.result.best, "run " .. index .. " goes at least as far")
+			check(run.gained >= last.gained, "and pays at least as many stars")
+			check(result.reached[unlock] <= last.result.reached[unlock], "and unlocks the rebirth no later")
+		end
+	end
+	check(goal[1].result.best >= 19 and goal[1].result.best <= 23, "the first rebirth comes around tier 21 (" .. goal[1].result.best .. ")")
+	check(goal[1].result.wall <= 8 * 86400, "within about a week")
+	check(goal[5].result.reached[unlock] <= goal[1].result.reached[unlock] * 0.6, "run 5 unlocks the rebirth in at most 60% of the time")
+	eq(goal[5].result.best, Economy.MAX_TIER, "by the fifth run the Index is complete")
+
+	-- A quarter of an hour a day still has something new within 3 days.
+	for index, run in Simulate.rebirths({ extras = true, minutesPerDay = 15 }, 3) do
+		check(run.result.longestWait <= 3 * 86400, "15 min a day, run " .. index .. ": a goal within 3 days")
+	end
 end)
 
 test("first minutes: a new player merges early and always has something to buy", function()
