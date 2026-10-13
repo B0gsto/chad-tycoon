@@ -73,7 +73,7 @@ local SIDE_W = 300
 -- Card height: fills the grid column so all ten cards show without scrolling, within these
 -- bounds (CARD_MIN is also the height in the stacked layout and on a phone's short window,
 -- where the grid scrolls: the band plus a body that holds the name and pip rows unclipped).
-local CARD_MIN = 64
+local CARD_MIN = 68
 local CARD_MAX = 84
 local CARD_GAP = 8
 local BAND_H = 28
@@ -114,6 +114,14 @@ local PREVIEW_FOV = 40
 local PREVIEW_PITCH = 40
 local PREVIEW_MARGIN = 1.12
 local ORBIT_SPEED = 0.12
+
+-- Captions and map names stay readable: held on the glass at the caption size plus `extra`,
+-- rounded up and never under 13 px (a phone's 12 px captions included), whatever the screen
+-- and the window's own scale (the same floor as Windows.luau's captions).
+local function readable(label: TextLabel, extra: number?): TextLabel
+	Kit.holdText(label, math.max(Kit.captionPx(), 13) + (extra or 0), nil, true)
+	return label
+end
 
 local function parkourInfo(): { [string]: any }?
 	local data = State.data
@@ -365,6 +373,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Position = UDim2.fromOffset(PREVIEW_INSET + 8, PREVIEW_INSET + 8),
 		ZIndex = 4,
 	})
+	readable(levelChip)
 
 	-- About 45% of the side panel's height, capped so the rows below always fit.
 	local function sizePreview()
@@ -411,7 +420,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			sideOf.Text = "Difficulty " .. sideOf.Text
 		end
 	end
-	local sideStats = Kit.text(side, {
+	local sideStats = readable(Kit.text(side, {
 		Name = "Stats",
 		Text = "",
 		Font = F.UI,
@@ -423,8 +432,8 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Position = UDim2.new(0, 12, 1, -STATS_BOTTOM),
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.Text,
-	})
-	local blurb = Kit.text(side, {
+	}))
+	local blurb = readable(Kit.text(side, {
 		Name = "Blurb",
 		Text = "",
 		TextSize = T.Body,
@@ -437,8 +446,8 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.TextDim,
 		StrokeThickness = 0,
-	})
-	local reward = Kit.text(side, {
+	}))
+	local reward = readable(Kit.text(side, {
 		Name = "Reward",
 		Text = "",
 		Font = F.UI,
@@ -450,7 +459,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Position = UDim2.new(0, 12, 1, -REWARD_BOTTOM),
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.MoneyText,
-	})
+	}))
 	local play = Kit.button(side, {
 		Name = "Play",
 		Text = "PLAY",
@@ -482,6 +491,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Visible = false,
 		ZIndex = 20,
 	})
+	readable(hint)
 	local hintToken = 0
 	local function showHint(text: string)
 		hintToken += 1
@@ -611,7 +621,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			StrokeThickness = 0,
 			ZIndex = 3,
 		})
-		local levelLabel = Kit.title(band, {
+		local levelLabel = readable(Kit.title(band, {
 			Name = "Level",
 			Text = "MAP " .. i,
 			TextSize = T.Small,
@@ -621,14 +631,14 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			Position = UDim2.fromOffset(34, 0),
 			StrokeThickness = 0,
 			ZIndex = 3,
-		})
+		}))
 		-- White on a locked (grey) band wears the dark outline of text on glass; ink text on
 		-- an accent band has none.
 		local levelInk = Kit.textStroke(levelLabel, Theme.Glass.TextStroke, Theme.Glass.TextStrokeFade)
 		levelInk.Color = Theme.Glass.TextInk
 		levelInk.Enabled = false
 		-- Best time on the right of the band, then the cleared check or the lock.
-		local stats = Kit.text(band, {
+		local stats = readable(Kit.text(band, {
 			Name = "Stats",
 			Text = "",
 			Font = F.UI,
@@ -641,7 +651,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			AnchorPoint = Vector2.new(1, 0),
 			StrokeThickness = 0,
 			ZIndex = 3,
-		})
+		}))
 		local check = Kit.icon(band, "Check", 16, C.Good, {
 			Position = UDim2.new(1, -8, 0.5, 0),
 			AnchorPoint = Vector2.new(1, 0.5),
@@ -677,19 +687,23 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		}) :: CanvasGroup
 		Kit.list(body, 2).VerticalAlignment = Enum.VerticalAlignment.Center
 		Kit.padding(body, 0, 10)
-		local name = Kit.title(body, {
-			Name = "MapName",
-			Text = "",
-			TextSize = T.Body,
-			TextWrapped = false,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			-- Leaves room on the right for the selected card's chevron.
-			Size = UDim2.new(1, -14, 0, 18),
-			LayoutOrder = 1,
-			TextColor3 = C.Text,
-			ZIndex = 2,
-		})
+		-- Map names are the biggest text on a card: two px over the captions.
+		local name = readable(
+			Kit.title(body, {
+				Name = "MapName",
+				Text = "",
+				TextSize = T.Body,
+				TextWrapped = false,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				-- Leaves room on the right for the selected card's chevron.
+				Size = UDim2.new(1, -14, 0, 20),
+				LayoutOrder = 1,
+				TextColor3 = C.Text,
+				ZIndex = 2,
+			}),
+			2
+		)
 		local setPips = deps.pips(body, {
 			Name = "Difficulty",
 			Pip = 8,
@@ -699,7 +713,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		if pipRow and pipRow:IsA("GuiObject") then
 			pipRow.LayoutOrder = 2
 		end
-		local lockedLine = Kit.text(body, {
+		local lockedLine = readable(Kit.text(body, {
 			Name = "Locked",
 			Text = "",
 			Font = F.UI,
@@ -707,13 +721,13 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			TextXAlignment = Enum.TextXAlignment.Left,
-			Size = UDim2.new(1, 0, 0, 14),
+			Size = UDim2.new(1, 0, 0, 18),
 			LayoutOrder = 2,
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,
 			Visible = false,
 			ZIndex = 2,
-		})
+		}))
 		-- Small gold chevron on the right of the selected card's body.
 		local chevron = Kit.text(frame, {
 			Name = "Chevron",

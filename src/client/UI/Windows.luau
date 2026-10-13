@@ -188,6 +188,14 @@ local function onPhone(screen: Instance, fn: () -> ())
 	screen:GetAttributeChangedSignal("Compact"):Connect(fn)
 end
 
+-- A caption that has to be read (a goal line, a milestone, "Before you go"): held on the
+-- glass at the caption size, rounded up and never under 13 px (a phone's 12 px captions
+-- included), whatever the screen and the window's own scale.
+local function readable(label: TextLabel): TextLabel
+	Kit.holdText(label, math.max(Kit.captionPx(), 13), nil, true)
+	return label
+end
+
 --[[
 	Tinted tag on a glass card (a rarity, a state): Kit.pill's soft fill of `Color` under
 	a light label in that colour (small text: no outline). Sizes to its text. props: Name, Text, Color, Position, AnchorPoint, ZIndex.
@@ -413,6 +421,7 @@ local BANNER_TEXT_X = 8 -- the title, the description and PERMANENT share this l
 local STAGE_W = 230 -- a banner's animated stage, at the default window...
 local STAGE_MIN_W = 140 -- ...and the narrowest it shrinks to
 local COS_H = 204 -- cosmetic card height
+local COS_SWITCH_W = 72 -- a cosmetic's on/off switch on its own pane, left of the price button
 local PACK_H = 238 -- cash / aura card height (stage, amount, one-line caption, price)
 local PACK_STAGE = 125 -- pack card stage (square) on a PACK_H card; it grows and shrinks with the card
 local PACK_MAX_H = 260 -- tallest a pack card grows to fill a page its row fits in
@@ -1300,110 +1309,156 @@ local function buildShop(screen: ScreenGui)
 		}, onClick)
 	end
 
+	-- What is inside a wide card: a row of two chips on the card's own dark inset under the
+	-- title, each an icon, an amount and a caption. Returns the function that adds a chip
+	-- (its amount label, its caption and the chip itself).
+	local function contentChips(body: Frame, tint: Color3): (number, string, string, Color3, string) -> (TextLabel, TextLabel, Frame)
+		local chips = Kit.new("Frame", {
+			Name = "Contents",
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, WIDE_TEXT_W, 0, 56),
+			Position = UDim2.fromOffset(WIDE_LEFT, 50),
+			ZIndex = 4,
+			Parent = body,
+		})
+		Kit.list(chips, 8, true)
+		return function(order: number, icon: string, fallback: string, color: Color3, caption: string): (TextLabel, TextLabel, Frame)
+			local chip = Kit.new("Frame", {
+				Name = "Chip" .. order,
+				BackgroundColor3 = Kit.darken(tint, BANNER_INSET_DEEP),
+				BackgroundTransparency = BANNER_INSET,
+				Size = UDim2.new(1 / 2, -4, 1, 0),
+				LayoutOrder = order,
+				ZIndex = 3,
+				Parent = chips,
+			})
+			Kit.corner(chip, 12)
+			Kit.icon(chip, Kit.pickIcon(icon, fallback), 34, color, {
+				Name = "Icon",
+				Position = UDim2.new(0, 6, 0.5, 0),
+				AnchorPoint = Vector2.new(0, 0.5),
+				ZIndex = 4,
+			})
+			local amount = minText(Kit.number(chip, {
+				Name = "Amount",
+				Text = "",
+				TextSize = 20,
+				MaxTextSize = 20,
+				TextScaled = true,
+				Size = UDim2.new(1, -50, 0, 24),
+				Position = UDim2.fromOffset(44, 6),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextColor3 = Color3.new(1, 1, 1),
+				ZIndex = 4,
+			}))
+			local captionLabel = Kit.text(chip, {
+				Name = "Caption",
+				Text = caption,
+				Font = F.Bold,
+				TextSize = 14,
+				TextWrapped = false,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				Size = UDim2.new(1, -50, 0, 18),
+				Position = UDim2.fromOffset(44, 31),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextColor3 = C.Text,
+				ZIndex = 4,
+			})
+			return amount, captionLabel, chip
+		end
+	end
+
 	--[[
-		Free first: the page opens on what costs nothing. A wide sunny card as tall and as
-		bright as the paid Starter card under it: the free gift (this player's own amount,
-		the server's Free pad pays the same) with CLAIM or the time left on its button, and a
-		pill for the Daily Reward that opens its window. No countdown here is a sales timer:
-		both only say when the next free thing is ready.
+		Free first: the page opens on what costs nothing. A wide sunny card built like the
+		paid Starter card under it (same height, title and two contents chips): the free gift
+		(this player's own amount, the server's Free pad pays the same, and how often) with
+		CLAIM or the time left on its button, and the Daily Reward, whose chip opens its
+		window. No countdown here is a sales timer: both only say when the next free thing is
+		ready.
 	]]
 	local freeTint = Theme.World.Sunny
 	local freeCell, freeBody, freeArtHolder, freeArt = makeEntry(scroll, "Free", 0, freeTint, "Free", "Star", 104, UDim2.new(0, 68, 0.5, 0))
-	local freeClip = bannerPaint(freeBody, freeTint, WIDE_R, nil, true)
-	local _, freeCaption = wideText(freeBody, freeTint, string.upper(W.Free), " ")
-	local dailyPill = Kit.new("TextButton", {
-		Name = "Daily",
-		AutoButtonColor = false,
-		Text = "",
-		BackgroundColor3 = Kit.darken(freeTint, BANNER_INSET_DEEP),
-		BackgroundTransparency = BANNER_INSET,
-		Size = UDim2.new(1, WIDE_TEXT_W, 0, 44),
-		Position = UDim2.fromOffset(WIDE_LEFT, 64),
-		ZIndex = 4,
-		Parent = freeBody,
-	})
-	Kit.corner(dailyPill, 12)
-	Kit.icon(dailyPill, Kit.pickIcon("Gift2", "Star"), 34, C.Gold, {
-		Name = "Icon",
-		Position = UDim2.new(0, 6, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ZIndex = 5,
-	})
-	local dailyLine = Kit.text(dailyPill, {
-		Name = "Label",
-		Text = "",
-		Font = F.Bold,
-		TextSize = 16,
-		MinPx = PACK_SUB_PX,
-		TextWrapped = false,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		Size = UDim2.new(1, -54, 1, 0),
-		Position = UDim2.fromOffset(46, 0),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = Color3.new(1, 1, 1),
-		StrokeThickness = 0,
-		ZIndex = 5,
-	})
-	Kit.selectable(dailyPill)
-	dailyPill.Activated:Connect(function()
-		Kit.sound("Click")
-		Windows.open("Daily")
-	end)
 	local freeEntry: Entry
-	local freeButton, freeSheen = widePrice(freeBody, "CLAIM", function()
-		local data = State.data
-		if not data or (data.freeIn or 0) - State.age() > 0 then
-			return
-		end
-		-- The same action as the HUD's gift button; the cash that lands flies from this card.
-		lastPrompt = { kind = "Free", entry = freeEntry, index = 0, at = os.clock() }
-		action:FireServer({ action = "ClaimFree" })
-	end)
-	ribbon(freeBody, "FREE", C.Good)
-	freeEntry = {
-		cell = freeCell,
-		body = freeBody,
-		art = freeArt,
-		artHolder = freeArtHolder,
-		button = freeButton,
-		sheen = freeSheen,
-		clip = freeClip,
-	}
-	hoverable(freeEntry)
-	table.insert(entries, freeEntry)
 	local freeShownCash: number? = nil
-	local freeShownButton: string? = nil
-	local dailyShown: string? = nil
-	-- The gift's amount, its button (CLAIM or the time left) and the Daily line; runs with
+	-- The gift's amount, its button (CLAIM or the time left) and the Daily chip; runs with
 	-- every snapshot and twice a second while the shop is open (the countdowns).
-	local function refreshFree()
-		local data = State.data
-		if not data then
-			return
-		end
-		local cash = ShopMath.freeGiftCash(data.rewardIncome or data.income or 0)
-		if cash ~= freeShownCash and freeCaption then
-			freeShownCash = cash
-			freeCaption.Text = string.format("+%s every %s", State.money(cash), durationText(Economy.FREE_REWARD_COOLDOWN))
-		end
-		local left = math.max(0, (data.freeIn or 0) - State.age())
-		local buttonText = if left <= 0 then "CLAIM" else Format.time(left)
-		if buttonText ~= freeShownButton then
-			freeShownButton = buttonText
-			Kit.setEnabled(freeButton, left <= 0)
-			Kit.setButton(freeButton, buttonText)
-		end
-		local daily = data.daily
-		local dailyText = ""
-		if type(daily) == "table" then
-			dailyText = if daily.claimable == true
-				then "Daily Reward ready!"
-				else "Daily in " .. Format.time(math.max(0, (tonumber(daily.nextIn) or 0) - State.age()))
-		end
-		if dailyText ~= dailyShown then
-			dailyShown = dailyText
-			dailyLine.Text = dailyText
-			dailyPill.Visible = dailyText ~= ""
+	local refreshFree: () -> ()
+	do
+		local clip = bannerPaint(freeBody, freeTint, WIDE_R, nil, true)
+		wideText(freeBody, freeTint, string.upper(W.Free))
+		local addChip = contentChips(freeBody, freeTint)
+		local giftAmount = addChip(1, "Coin", "Coin", C.Gold, "every " .. durationText(Economy.FREE_REWARD_COOLDOWN))
+		local dailyAmount, dailyCaption, dailyChip = addChip(2, "Gift2", "Star", C.Gold, "")
+		dailyAmount.Text = "DAILY REWARD"
+		dailyChip.Visible = false
+		local dailyHit = Kit.new("TextButton", {
+			Name = "Daily",
+			AutoButtonColor = false,
+			Text = "",
+			BackgroundTransparency = 1,
+			Size = UDim2.fromScale(1, 1),
+			ZIndex = 6,
+			Parent = dailyChip,
+		})
+		Kit.corner(dailyHit, 12)
+		Kit.selectable(dailyHit)
+		dailyHit.Activated:Connect(function()
+			Kit.sound("Click")
+			Windows.open("Daily")
+		end)
+		local button, sheen = widePrice(freeBody, "CLAIM", function()
+			local data = State.data
+			if not data or (data.freeIn or 0) - State.age() > 0 then
+				return
+			end
+			-- The same action as the HUD's gift button; the cash that lands flies from this card.
+			lastPrompt = { kind = "Free", entry = freeEntry, index = 0, at = os.clock() }
+			action:FireServer({ action = "ClaimFree" })
+		end)
+		ribbon(freeBody, "FREE", C.Good)
+		freeEntry = {
+			cell = freeCell,
+			body = freeBody,
+			art = freeArt,
+			artHolder = freeArtHolder,
+			button = button,
+			sheen = sheen,
+			clip = clip,
+		}
+		hoverable(freeEntry)
+		table.insert(entries, freeEntry)
+		local shownButton: string? = nil
+		local dailyShown: string? = nil
+		refreshFree = function()
+			local data = State.data
+			if not data then
+				return
+			end
+			local cash = ShopMath.freeGiftCash(data.rewardIncome or data.income or 0)
+			if cash ~= freeShownCash then
+				freeShownCash = cash
+				giftAmount.Text = "+" .. State.money(cash)
+			end
+			local left = math.max(0, (data.freeIn or 0) - State.age())
+			local buttonText = if left <= 0 then "CLAIM" else Format.time(left)
+			if buttonText ~= shownButton then
+				shownButton = buttonText
+				Kit.setEnabled(button, left <= 0)
+				Kit.setButton(button, buttonText)
+			end
+			local daily = data.daily
+			local dailyText = ""
+			if type(daily) == "table" then
+				dailyText = if daily.claimable == true
+					then "Ready to claim!"
+					else "in " .. Format.time(math.max(0, (tonumber(daily.nextIn) or 0) - State.age()))
+			end
+			if dailyText ~= dailyShown then
+				dailyShown = dailyText
+				dailyCaption.Text = dailyText
+				dailyCaption.TextColor3 = if dailyText == "Ready to claim!" then C.GoldLight else C.Text
+				dailyChip.Visible = dailyText ~= ""
+			end
 		end
 	end
 
@@ -1415,59 +1470,7 @@ local function buildShop(screen: ScreenGui)
 	local starterClip = bannerPaint(starterBody, starterTint, WIDE_R, nil, true)
 	wideText(starterBody, starterTint, "STARTER PACK")
 	-- What is inside: two chips, this player's own cash amount and the exclusive trail.
-	local chips = Kit.new("Frame", {
-		Name = "Contents",
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, WIDE_TEXT_W, 0, 56),
-		Position = UDim2.fromOffset(WIDE_LEFT, 50),
-		ZIndex = 4,
-		Parent = starterBody,
-	})
-	Kit.list(chips, 8, true)
-	local function contentChip(order: number, icon: string, fallback: string, color: Color3, caption: string): TextLabel
-		local chip = Kit.new("Frame", {
-			Name = "Chip" .. order,
-			BackgroundColor3 = Kit.darken(starterTint, BANNER_INSET_DEEP),
-			BackgroundTransparency = BANNER_INSET,
-			Size = UDim2.new(1 / 2, -4, 1, 0),
-			LayoutOrder = order,
-			ZIndex = 3,
-			Parent = chips,
-		})
-		Kit.corner(chip, 12)
-		Kit.icon(chip, Kit.pickIcon(icon, fallback), 34, color, {
-			Name = "Icon",
-			Position = UDim2.new(0, 6, 0.5, 0),
-			AnchorPoint = Vector2.new(0, 0.5),
-			ZIndex = 4,
-		})
-		local amount = minText(Kit.number(chip, {
-			Name = "Amount",
-			Text = "",
-			TextSize = 20,
-			MaxTextSize = 20,
-			TextScaled = true,
-			Size = UDim2.new(1, -50, 0, 24),
-			Position = UDim2.fromOffset(44, 6),
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextColor3 = Color3.new(1, 1, 1),
-			ZIndex = 4,
-		}))
-		Kit.text(chip, {
-			Name = "Caption",
-			Text = caption,
-			Font = F.Bold,
-			TextSize = 14,
-			TextWrapped = false,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-			Size = UDim2.new(1, -50, 0, 18),
-			Position = UDim2.fromOffset(44, 31),
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextColor3 = C.Text,
-			ZIndex = 4,
-		})
-		return amount
-	end
+	local contentChip = contentChips(starterBody, starterTint)
 	local starterCash = contentChip(1, "Coin", "Coin", C.Gold, "cash")
 	local rookie = COS.Items[COS.Starter.Item]
 	local rookieLabel = contentChip(2, rookie.Icon, "Star", rookie.Color, "exclusive")
@@ -1772,6 +1775,8 @@ local function buildShop(screen: ScreenGui)
 		control: Frame?,
 		setSwitch: ((boolean, boolean?) -> ())?,
 		switchShown: boolean?,
+		-- The switch beside the price (true) or in its place (false): see refreshCosmetics.
+		beside: boolean?,
 	}
 	local cosCards: { [string]: CosCard } = {}
 	local function cosTap(name: string)
@@ -2457,8 +2462,10 @@ local function buildShop(screen: ScreenGui)
 			local item = COS.Items[name]
 			local owned = cos.owned[name] == true
 			-- The switch is the owner's and, on the Chad Aura, a Champion's too (the server's
-			-- `canSwitch`): the Index's aura goes off here without the pass.
+			-- `canSwitch`): the Index's aura goes off here without the pass. A Champion who has
+			-- not bought the pass keeps its price button: the switch moves to the left of it.
 			local switched = owned or cos.canSwitch[name] == true
+			local beside = switched and not owned and item.Pass ~= nil and card.control ~= nil
 			if card.lock then
 				card.lock.Visible = not owned
 			end
@@ -2477,6 +2484,10 @@ local function buildShop(screen: ScreenGui)
 					card.switchShown = on
 					card.setSwitch(on)
 				end
+				if beside then
+					Kit.setEnabled(card.button, true)
+					Kit.setButton(card.button, price(Theme.Monetization.Passes[item.Pass].Price), C.Cash)
+				end
 			elseif item.Pass then
 				local pass = Theme.Monetization.Passes[item.Pass]
 				Kit.setEnabled(card.button, true)
@@ -2485,9 +2496,21 @@ local function buildShop(screen: ScreenGui)
 				Kit.setEnabled(card.button, true)
 				Kit.setButton(card.button, "STARTER PACK", C.SurfaceHi)
 			end
-			card.button.Visible = not (switched and control ~= nil)
+			card.button.Visible = beside or not (switched and control ~= nil)
 			if control then
 				control.Visible = switched
+				if card.beside ~= beside then
+					-- Beside the price: the switch alone on its dark pane (COS_SWITCH_W wide), the
+					-- button on the rest of the row. Alone: the pane spans the row, with ACTIVE.
+					card.beside = beside
+					local label = control:FindFirstChild("Label")
+					if label and label:IsA("GuiObject") then
+						label.Visible = not beside
+					end
+					control.Size = if beside then UDim2.fromOffset(COS_SWITCH_W, PRICE_H) else UDim2.new(1, -20, 0, PRICE_H)
+					card.button.Size = if beside then UDim2.new(1, -(COS_SWITCH_W + 28), 0, PRICE_H) else UDim2.new(1, -20, 0, PRICE_H)
+					card.button.Position = if beside then UDim2.new(0, COS_SWITCH_W + 18, 1, -10) else UDim2.new(0, 10, 1, -10)
+				end
 			end
 			if owned and card.wasOwned == false and open then
 				-- With the bundle, every card flips in one wave; a single purchase bursts on its own
@@ -2935,18 +2958,30 @@ local function buildIndex(screen: ScreenGui)
 	})
 
 	-- Milestone track: a cell per Index milestone (Shared.IndexRewards) in one row over the
-	-- legend. Each names what it asks for and its bonus over a button: the cash still to
-	-- earn (greyed), CLAIM once the Index is there, a gold CLAIMED tag after. The server
-	-- sends every amount (the snapshot's `index`), so a cell shows what a claim pays.
-	local TRACK_H = 62
+	-- legend. Each names what it asks for and its bonus (two lines on a wide window: "20 ·
+	-- LEGENDARY CRATE" wraps) over what it pays: a dim chip with the cash still to earn (flat,
+	-- so it does not read as a button), a breathing CLAIM button once the Index is there, a
+	-- gold CLAIMED tag after. The server sends every amount (the snapshot's `index`), so a
+	-- cell shows what a claim pays.
+	local TRACK_H = { low = 62, tall = 80 } -- one-line captions (a narrow window, a phone) and two-line ones
+	local trackH = TRACK_H.low
 	local track = Kit.new("Frame", {
 		Name = "Rewards",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -14, 0, TRACK_H - 8),
+		Size = UDim2.new(1, -14, 0, trackH - 8),
 		Visible = false,
 		Parent = window.content,
 	})
-	type Cell = { frame: Frame, caption: TextLabel, button: TextButton, done: TextLabel, hit: TextButton, shown: string, state: string }
+	type Cell = {
+		frame: Frame,
+		caption: TextLabel,
+		button: TextButton,
+		done: TextLabel,
+		hit: TextButton,
+		shown: string,
+		state: string,
+		stop: (() -> ())?,
+	}
 	local cells: { Cell } = {}
 	-- os.clock() of the claim sent for each cell: its button waits for the server's answer.
 	local claimSent: { [number]: number } = {}
@@ -2977,18 +3012,19 @@ local function buildIndex(screen: ScreenGui)
 			Position = UDim2.fromScale((order - 1) / milestoneCount, 0),
 			Parent = track,
 		})
-		local caption = Kit.text(cell, {
+		-- Bottom-aligned: a one-line caption sits on its button, a second line goes above it.
+		local caption = readable(Kit.text(cell, {
 			Name = "Caption",
 			Text = "",
 			Font = F.UI,
 			TextSize = T.Small,
-			MinPx = true,
-			TextWrapped = false,
+			TextWrapped = true,
 			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextYAlignment = Enum.TextYAlignment.Bottom,
 			TextColor3 = SMALL_TEXT,
 			Size = UDim2.new(1, 0, 0, 18),
 			StrokeThickness = 0,
-		})
+		}))
 		local button = Kit.button(cell, {
 			Name = "Claim",
 			Text = "",
@@ -3007,10 +3043,15 @@ local function buildIndex(screen: ScreenGui)
 			Solid = true,
 			TextColor = C.GoldInk,
 			TextSize = T.Small,
-			Size = UDim2.new(1, 0, 0, 28),
-			Position = UDim2.fromOffset(0, 22),
+			Size = UDim2.new(1, 0, 0, 26),
+			Position = UDim2.fromOffset(0, 24),
 			Visible = false,
 		})
+		readable(done)
+		local buttonLabel = Kit.buttonLabel(button)
+		if buttonLabel then
+			readable(buttonLabel)
+		end
 		-- Touch: the whole cell takes the tap (the button alone is a small target on a phone).
 		local hit = Kit.new("TextButton", {
 			Name = "Hit",
@@ -3138,9 +3179,28 @@ local function buildIndex(screen: ScreenGui)
 				cell.state = state
 				cell.caption.Text = captionText
 				cell.caption.TextColor3 = if state == "locked" then SMALL_TEXT else C.GoldLight
-				cell.button.Visible = state ~= "claimed"
-				cell.done.Visible = state == "claimed"
+				-- Only a milestone that can be claimed shows a button, and that one breathes.
+				cell.button.Visible = state == "ready"
+				cell.done.Visible = state ~= "ready"
 				cell.done.Text = buttonText
+				if was ~= state then
+					local locked = state == "locked"
+					cell.done.BackgroundColor3 = if locked then C.Ink else C.Gold
+					cell.done.BackgroundTransparency = if locked then 0.6 else 0
+					cell.done.TextColor3 = if locked then SMALL_TEXT else C.GoldInk
+					cell.done.TextTransparency = if locked then 0.25 else 0
+					local edge = cell.done:FindFirstChild("Edge")
+					if edge and edge:IsA("UIStroke") then
+						edge.Transparency = if locked then 0.8 else 0
+					end
+					if cell.stop then
+						cell.stop()
+						cell.stop = nil
+					end
+					if state == "ready" then
+						cell.stop = Kit.breathe(cell.button)
+					end
+				end
 				Kit.setButton(cell.button, buttonText)
 				Kit.setEnabled(cell.button, state == "ready" and not waiting)
 				if was == "ready" and state == "claimed" and window.isOpen() and not PREVIEW then
@@ -3172,10 +3232,19 @@ local function buildIndex(screen: ScreenGui)
 			band.label.Text = bandText(band)
 		end
 		refreshTrack()
+		-- A wide window's captions name the bonus in full and may take a second line.
+		local captionH = if wideLegend then 36 else 18
+		trackH = if wideLegend then TRACK_H.tall else TRACK_H.low
+		track.Size = UDim2.new(1, -14, 0, trackH - 8)
+		for _, cell in cells do
+			cell.caption.Size = UDim2.new(1, 0, 0, captionH)
+			cell.button.Position = UDim2.fromOffset(0, captionH + 2)
+			cell.done.Position = UDim2.fromOffset(0, captionH + 6)
+		end
 		-- The track, or the ribbon after it, takes its row above the legend. A short window (a
 		-- phone) gives it the legend's row instead: the rarity is on every card.
 		local ribbon = isComplete and not showTrack
-		local strip = if showTrack then TRACK_H elseif ribbon then COMPLETE_H else 0
+		local strip = if showTrack then trackH elseif ribbon then COMPLETE_H else 0
 		local folded = strip > 0 and window.size().Y < 440
 		local top = strip + (if folded then 0 else LEGEND_H)
 		complete.Visible = ribbon
@@ -3598,9 +3667,10 @@ local function buildRanking(screen: ScreenGui)
 	Kit.list(list, 8)
 
 	-- The player's own card, pinned right under the list with a sunny outline: their row (one
-	-- face per board, only while they are not in the list itself) over the goal bar, which
-	-- always names a target: "12 more to pass <name>", filled as far as they have come.
-	local MINE_H, GOAL_H = 54, 40
+	-- face per board, only while they are not in the list itself) over the goal, which
+	-- always names a target: "12 more to pass <name>" on a dark pill, over a slim bar filled
+	-- as far as they have come.
+	local MINE_H, GOAL_H = 54, 52
 	local mine = Kit.panel(window.content, {
 		Name = "Mine",
 		Glass = true,
@@ -3615,52 +3685,84 @@ local function buildRanking(screen: ScreenGui)
 	end
 	local mineUnits = mineFace("Units")
 	local mineStage = mineFace("Stage")
-	local _, setGoal, goalLabel = Kit.progress(mine, {
-		Name = "Goal",
-		Glass = true,
-		Color = C.Gold,
-		Size = UDim2.new(1, -20, 0, 24),
-		Position = UDim2.new(0, 10, 1, -8),
-		AnchorPoint = Vector2.new(0, 1),
-		TextSize = T.Small,
-		MinFill = 0.04,
-	})
-	goalLabel.TextWrapped = false
-	goalLabel.TextTruncate = Enum.TextTruncate.AtEnd
-	Kit.holdText(goalLabel, Kit.captionPx())
+	local goalLabel: TextLabel
+	local setGoal: (number, boolean?) -> ()
+	do
+		-- The text is not on the bar: over the gold fill it could not be read.
+		local pill = Kit.new("Frame", {
+			Name = "GoalLine",
+			BackgroundColor3 = C.Ink,
+			BackgroundTransparency = 0.25,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, -20, 0, 26),
+			Position = UDim2.new(0, 10, 1, -21),
+			AnchorPoint = Vector2.new(0, 1),
+			Parent = mine,
+		})
+		Kit.round(pill)
+		goalLabel = readable(Kit.text(pill, {
+			Name = "Label",
+			Text = "",
+			Font = F.Bold,
+			TextSize = T.Small,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextColor3 = Color3.new(1, 1, 1),
+			Size = UDim2.new(1, -24, 1, 0),
+			Position = UDim2.fromOffset(12, 0),
+			StrokeThickness = 0,
+		}))
+		local _, set, barLabel = Kit.progress(mine, {
+			Name = "Goal",
+			Glass = true,
+			Color = C.Gold,
+			Size = UDim2.new(1, -20, 0, 8),
+			Position = UDim2.new(0, 10, 1, -8),
+			AnchorPoint = Vector2.new(0, 1),
+			MinFill = 0.04,
+		})
+		barLabel.Visible = false
+		setGoal = set
+	end
 
-	-- A young board (under three rows): a friendly card takes the room below instead of
-	-- an empty list.
-	local empty = Kit.well(window.content, { Name = "Empty", Glass = true, Size = UDim2.new(1, -14, 0, 120), Radius = Kit.RADIUS.M })
+	-- A young board (under three rows): one slim strip under the pinned card says what there
+	-- is to win on it (a trophy, a gold title and one line), instead of an empty list.
+	local EMPTY_H = 68
+	local empty = Kit.well(window.content, { Name = "Empty", Glass = true, Size = UDim2.new(1, -14, 0, EMPTY_H), Radius = Kit.RADIUS.M })
 	empty.Visible = false
-	local emptyIcon = Kit.icon(empty, Kit.iconName(I.Ranking) or "Star", 56, C.Window.Ranking, {
+	Kit.icon(empty, Kit.iconName(I.Ranking) or "Star", 40, C.Window.Ranking, {
 		Name = "Icon",
-		Position = UDim2.new(0.5, 0, 0.5, -37),
-		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, 14, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
 	})
 	local emptyTitle = Kit.title(empty, {
 		Name = "Title",
 		Text = "",
-		TextSize = T.H2,
-		MinPx = 18,
+		TextSize = T.H3,
+		MinPx = 16,
 		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = C.Gold,
-		Size = UDim2.new(1, -24, 0, 30),
-		Position = UDim2.new(0, 12, 0.5, -5),
+		Size = UDim2.new(1, -80, 0, 26),
+		Position = UDim2.fromOffset(66, 8),
 	})
-	-- Up to two lines: what to do next on a board this young.
+	-- One line: what to do next on a board this young.
 	local emptyLine = Kit.text(empty, {
 		Name = "Line",
 		Text = "",
-		TextSize = T.Body,
+		TextSize = T.Small,
 		MinPx = true,
-		Size = UDim2.new(1, -24, 0, 40),
-		Position = UDim2.new(0, 12, 0.5, 25),
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -80, 0, 22),
+		Position = UDim2.fromOffset(66, 36),
 		StrokeThickness = 0,
 	})
 
 	-- The list is as tall as its rows (it scrolls once they pass the room there is), the
-	-- pinned card sits right under it and the card for a young board fills what is left.
+	-- pinned card sits right under it and the strip for a young board under that.
 	-- Short windows (a phone): the subtitle goes and the columns and list move up into its row.
 	local ROW_H, ROW_GAP = 46, 8
 	local rowCount = 0
@@ -3686,13 +3788,8 @@ local function buildRanking(screen: ScreenGui)
 		mine.Position = UDim2.fromOffset(0, y)
 		y += pinH
 		local left = inner - y
-		empty.Visible = rowCount < 3 and left >= 76
+		empty.Visible = rowCount < 3 and left >= EMPTY_H
 		empty.Position = UDim2.fromOffset(0, y)
-		empty.Size = UDim2.new(1, -14, 0, left)
-		emptyIcon.Visible = left >= 144
-		local lift = if emptyIcon.Visible then 0 else 30
-		emptyTitle.Position = UDim2.new(0, 12, 0.5, -5 - lift)
-		emptyLine.Position = UDim2.new(0, 12, 0.5, 25 - lift)
 	end
 	layoutRows(window.size())
 	window.onResize.Event:Connect(layoutRows)
@@ -3862,15 +3959,14 @@ local function buildRanking(screen: ScreenGui)
 			emptyTitle.Text = "YOU'RE #1!"
 			emptyLine.Text = if type(second) == "table"
 				then string.format("%s is right behind you. Stay ahead!", tostring(second.name or "Someone"))
-				elseif board == "stage" then "Nobody else has cleared a stage yet. Clear more maps to stay on top!"
-				else string.format("Nobody else is on the board yet. Every %s you get counts: build your lead!", W.Unit)
+				elseif board == "stage" then "Nobody else has cleared a stage yet. Stay on top!"
+				else string.format("Nobody else is here yet. Every %s counts: build your lead!", W.Unit)
 		else
 			emptyTitle.Text = "TAKE THE #1 SPOT!"
 			emptyLine.Text = if rowCount == 0
 				then "Be the first name on the board!"
 				else string.format(
-					"Only %d on the board so far: pass %s and the gold medal is yours.",
-					rowCount,
+					"Pass %s and the gold medal is yours.",
 					if type(first) == "table" then tostring(first.name or "them") else "them"
 				)
 		end
@@ -4102,10 +4198,10 @@ end
 -- Settings ------------------------------------------------------------------------------
 
 local function buildSettings(screen: ScreenGui)
-	-- Sized to its four rows and the "Before you go" line: 4 x 70 + 20 + 4 x 10 gaps + 20
-	-- padding + 84 of header and margins. The rows share the height left by the line, so
-	-- the 386 minimum (a phone, scaled up x1.3) has 56 px rows.
-	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(560, 444), Vector2.new(560, 386))
+	-- Sized to its four rows and the two-line "Before you go" row: 4 x 70 + 40 + 4 x 10 gaps
+	-- + 20 padding + 84 of header and margins. The rows share the height left by that row,
+	-- so the 386 minimum (a phone, scaled up x1.3) has 50 px rows.
+	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(560, 464), Vector2.new(560, 386))
 	register("Settings", window)
 	local action = Net.event("Action")
 
@@ -4117,7 +4213,7 @@ local function buildSettings(screen: ScreenGui)
 		local row = Kit.panel(window.content, {
 			Name = key,
 			Glass = true,
-			Size = UDim2.new(1, 0, 0.25, -15),
+			Size = UDim2.new(1, 0, 0.25, -20),
 			LayoutOrder = order,
 			Radius = Kit.RADIUS.M + 2,
 		})
@@ -4182,20 +4278,34 @@ local function buildSettings(screen: ScreenGui)
 	toggle(2, "Sound", "Sound Effects", "Clicks, pickups and rewards", "sfx")
 	toggle(3, "Hash", "Full Numbers", "Show 1,234,567 instead of 1.23M", "fullNumbers")
 	toggle(4, "Merge", "Auto Merge", "Merge pairs automatically", "autoMerge")
-	-- "Before you go" (Shared.Comeback): what waits for the player next time, as one quiet
-	-- line under the switches. Settings is where a player goes last.
-	local leave = Kit.text(window.content, {
+	-- "Before you go" (Shared.Comeback): what waits for the player next time, under the
+	-- switches (Settings is where a player goes last): a gift icon and up to two lines of
+	-- light text, since it explains what a child comes back to.
+	local leaveRow = Kit.new("Frame", {
 		Name = "Leave",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 40),
+		LayoutOrder = 5,
+		Visible = false,
+		Parent = window.content,
+	})
+	Kit.icon(leaveRow, Kit.pickIcon("Gift2", "Star"), 26, C.Gold, {
+		Name = "Icon",
+		Position = UDim2.new(0, 6, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+	})
+	local leave = readable(Kit.text(leaveRow, {
+		Name = "Line",
 		Text = "",
 		TextSize = T.Small,
-		MinPx = true,
-		TextColor3 = C.TextMute,
-		TextWrapped = false,
+		TextColor3 = C.Text,
+		TextWrapped = true,
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		Size = UDim2.new(1, 0, 0, 20),
-		LayoutOrder = 5,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -44, 1, 0),
+		Position = UDim2.fromOffset(40, 0),
 		StrokeThickness = 0,
-	})
+	}))
 
 	local ON_TILE = C.Ink:Lerp(C.Window.Settings, 0.55)
 	local function refresh()
@@ -4204,6 +4314,7 @@ local function buildSettings(screen: ScreenGui)
 			return
 		end
 		leave.Text = Comeback.leaveLine(data, { money = State.money, words = W, age = State.age() })
+		leaveRow.Visible = leave.Text ~= ""
 		for _, t in toggles do
 			local on: boolean
 			if t.key == "autoMerge" then
