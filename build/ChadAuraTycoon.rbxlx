@@ -7,11 +7,14 @@
       <Properties>
         <string name="Name">Loader</string>
         <string name="Source"><![CDATA[-- Loader (ReplicatedFirst): replaces Roblox's default loading screen with the
--- game's own splash and keeps it up until the player is really in the game:
--- the first State snapshot has arrived (the client sets the player's
--- "GameReady" attribute), the character stands on its plot (the server sets
--- its "OnPlot" attribute), and the world around it has streamed in. Without
--- that the screen faded out over an empty blue sky while the save loaded.
+-- game's own, which is an animation and not a picture. A sky cover with the
+-- logo and the progress bar holds until the map has arrived; then the camera
+-- circles high over the map while the rest loads: the first State snapshot
+-- (the client sets the player's "GameReady" attribute), the character on its
+-- plot (the server sets its "OnPlot" attribute) and the world round it. Then
+-- the logo and bar leave and the camera comes down to the spawn shot behind
+-- the character (LoadingScreen, Flyover). The HUD and the controls stay off
+-- until it has landed.
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -20,80 +23,203 @@ local RunService = game:GetService("RunService")
 
 local LoadingScreen = require(script:WaitForChild("LoadingScreen"))
 local Brand = require(script:WaitForChild("Brand"))
+local Flyover = require(script:WaitForChild("Flyover"))
 
 local TIMEOUT = 45
 local ART_TIMEOUT = 8
+-- The least time the camera circles before it comes down (seconds).
+local MIN_FLIGHT = 3
 
 local player = Players.LocalPlayer
-local gui = Instance.new("ScreenGui")
-gui.Name = "LoadingScreen"
-gui.IgnoreGuiInset = true
-gui.ResetOnSpawn = false
--- A script-made ScreenGui defaults to Global z-order, which drew the splash's
--- whole contents behind its own background: players saw only the gradient.
-gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-gui.DisplayOrder = 100
-pcall(function()
-	gui.ScreenInsets = Enum.ScreenInsets.None
-end)
-gui.Parent = player:WaitForChild("PlayerGui")
+local StarterGui = game:GetService("StarterGui")
 
--- If the splash ever fails to build, a plain dark cover still hides the sky.
-local ok, built = pcall(LoadingScreen.build, gui, Brand)
-local screen: LoadingScreen.Handle
-if ok then
-	screen = built
-else
-	warn("LoadingScreen failed:", built)
-	local cover = Instance.new("Frame")
-	cover.BackgroundColor3 = Color3.fromRGB(46, 62, 136)
-	cover.BorderSizePixel = 0
-	cover.Size = UDim2.fromScale(1, 1)
-	cover.Parent = gui
-	screen = {
-		applyTheme = function() end,
-		applyArt = function() end,
-		setStatus = function() end,
-		setProgress = function() end,
-		finish = function() end,
-	} :: any
+-- Puts the loading screen up. Returns its gui and its handle.
+local function show(): (ScreenGui, LoadingScreen.Handle)
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "LoadingScreen"
+	gui.IgnoreGuiInset = true
+	gui.ResetOnSpawn = false
+	-- A script-made ScreenGui defaults to Global z-order, which drew the splash's
+	-- whole contents behind its own background: players saw only the gradient.
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.DisplayOrder = 100
+	pcall(function()
+		gui.ScreenInsets = Enum.ScreenInsets.None
+	end)
+	gui.Parent = player:WaitForChild("PlayerGui")
+
+	-- If the splash ever fails to build, a plain dark cover still hides the sky.
+	local ok, built = pcall(LoadingScreen.build, gui, Brand)
+	local screen: LoadingScreen.Handle
+	if ok then
+		screen = built
+	else
+		warn("LoadingScreen failed:", built)
+		local cover = Instance.new("Frame")
+		cover.BackgroundColor3 = Color3.fromRGB(46, 62, 136)
+		cover.BorderSizePixel = 0
+		cover.Size = UDim2.fromScale(1, 1)
+		cover.Parent = gui
+		screen = {
+			applyTheme = function() end,
+			applyArt = function() end,
+			setStatus = function() end,
+			setProgress = function() end,
+			open = function()
+				cover:Destroy()
+			end,
+			finish = function()
+				return 0
+			end,
+		} :: any
+	end
+
+	-- Roblox's player list would draw over the splash's top right corner. Hide it
+	-- while the player's "Loading" attribute is on; the client keeps it hidden as
+	-- one of its own reasons (Kit.hidePlayerList) and puts it back afterwards.
+	player:SetAttribute("Loading", true)
+	task.spawn(function()
+		-- CoreGui calls can fail this early: retry until one lands.
+		while player:GetAttribute("Loading") == true do
+			local set = pcall(function()
+				StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
+			end)
+			if set then
+				break
+			end
+			task.wait(0.25)
+		end
+	end)
+
+	-- The logo and sprites ship in ReplicatedFirst too, so they can show from
+	-- the start instead of after ReplicatedStorage arrives.
+	screen.applyArt({
+		logo = Brand.Logo,
+		logoShine = Brand.LogoShine,
+		softDot = Brand.SoftDot,
+		sparkle = Brand.Sparkle,
+		orb = Brand.Orb,
+	})
+	return gui, screen
 end
+
+-- The game's own screens (the HUD) would sit on top of the flight: keep them
+-- off until it has landed. Returns the function that puts them back.
+local function hideGame(own: ScreenGui): () -> ()
+	local hidden: { ScreenGui } = {}
+	local connection = RunService.RenderStepped:Connect(function()
+		local playerGui = player:FindFirstChild("PlayerGui")
+		for _, child in if playerGui then playerGui:GetChildren() else {} do
+			if child:IsA("ScreenGui") and child ~= own and child.Enabled and child.DisplayOrder < 100 then
+				child.Enabled = false
+				table.insert(hidden, child)
+			end
+		end
+	end)
+	return function()
+		connection:Disconnect()
+		for _, child in hidden do
+			child.Enabled = true
+		end
+	end
+end
+
+-- Walking about under a camera that is somewhere else: the controls stay off
+-- until the flight has landed. Returns the function that puts them back.
+local function lockControls(): () -> ()
+	local controls: any = nil
+	local released = false
+	task.spawn(function()
+		local scripts = player:WaitForChild("PlayerScripts", TIMEOUT)
+		local module = scripts and scripts:WaitForChild("PlayerModule", TIMEOUT)
+		if released or not module or not module:IsA("ModuleScript") then
+			return
+		end
+		local ok, found = pcall(function()
+			return (require(module) :: any):GetControls()
+		end)
+		if ok and found and not released then
+			controls = found
+			controls:Disable()
+		end
+	end)
+	return function()
+		released = true
+		if controls then
+			controls:Enable()
+		end
+	end
+end
+
+-- The player's "reduced motion" setting, from the client's State once it is there.
+local function reducedMotion(): boolean
+	local scripts = player:FindFirstChild("PlayerScripts")
+	local client = scripts and scripts:FindFirstChild("Client")
+	local module = client and client:FindFirstChild("State")
+	if not module or not module:IsA("ModuleScript") then
+		return false
+	end
+	local ok, state = pcall(require, module :: any)
+	local data = if ok and type(state) == "table" then (state :: any).data else nil
+	return type(data) == "table" and type(data.settings) == "table" and data.settings.reducedMotion == true
+end
+
+-- One loading screen from the moment the world may be seen: the sky cover
+-- fades off the camera circling the map; `ready` yields until the player is
+-- in the game and returns the character's root part; then the logo and band
+-- leave and the camera comes down to the character.
+local function fly(gui: ScreenGui, screen: LoadingScreen.Handle, ready: () -> BasePart?, speed: number)
+	local showGame = hideGame(gui)
+	local freeControls = lockControls()
+	local flight = Flyover.start(speed)
+	screen.open(speed)
+	local opened = os.clock()
+	local root = ready()
+	-- Long enough over the map to read as a flight, even on a fast join.
+	local short = MIN_FLIGHT / speed - (os.clock() - opened)
+	if short > 0 then
+		task.wait(short)
+	end
+	screen.finish(speed)
+	if reducedMotion() then
+		flight.stop()
+	else
+		flight.land(root, speed)
+	end
+	freeControls()
+	showGame()
+	gui:Destroy()
+	-- The list comes back only once the flight has landed.
+	player:SetAttribute("Loading", false)
+	-- Without the client (it sets "GameReady") nobody else would bring it back.
+	if player:GetAttribute("GameReady") ~= true then
+		pcall(function()
+			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, true)
+		end)
+	end
+end
+
+-- The character's root part once the character stands on its plot.
+local function rootOnPlot(): BasePart?
+	local character = player.Character
+	local part = character and character:FindFirstChild("HumanoidRootPart")
+	if part and part:IsA("BasePart") and character:GetAttribute("OnPlot") == true then
+		return part
+	end
+	return nil
+end
+
+local gui, screen = show()
 ReplicatedFirst:RemoveDefaultLoadingScreen()
 
 local started = os.clock()
+local function timeLeft(): boolean
+	return os.clock() - started < TIMEOUT
+end
 
--- Roblox's player list would draw over the splash's top right corner. Hide it
--- while the player's "Loading" attribute is on; the client keeps it hidden as
--- one of its own reasons (Kit.hidePlayerList) and puts it back afterwards.
-local StarterGui = game:GetService("StarterGui")
-player:SetAttribute("Loading", true)
-task.spawn(function()
-	-- CoreGui calls can fail this early: retry until one lands.
-	while player:GetAttribute("Loading") == true do
-		local set = pcall(function()
-			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
-		end)
-		if set then
-			break
-		end
-		task.wait(0.25)
-	end
-end)
-
--- The brand art ships in ReplicatedFirst too, so it can show from the start
--- instead of after ReplicatedStorage arrives; fetch it ahead of everything else.
-screen.applyArt({
-	keyArt = Brand.KeyArt,
-	logo = Brand.Logo,
-	logoShine = Brand.LogoShine,
-	softDot = Brand.SoftDot,
-	sparkle = Brand.Sparkle,
-	orb = Brand.Orb,
-})
 task.spawn(function()
 	pcall(function()
 		game:GetService("ContentProvider"):PreloadAsync({
-			Brand.KeyArt,
 			Brand.Logo,
 			Brand.LogoShine,
 			Brand.SoftDot,
@@ -113,65 +239,74 @@ task.spawn(function()
 	end
 end)
 
--- Brand art: ReplicatedFirst runs before ReplicatedStorage is guaranteed, so
--- wait (briefly) for Shared.Assets and read the brand/KeyArt and brand/Logo
--- ids from it; without them the code-drawn splash stays.
+-- ReplicatedFirst runs before ReplicatedStorage is guaranteed, so wait
+-- (briefly) for Shared.Assets and take the art ids from it as well.
 task.spawn(function()
 	screen.applyArt(LoadingScreen.findArt(ART_TIMEOUT))
 end)
 
--- The bar follows the stages of the join below.
+-- The bar follows the stages of the join below. Under the sky cover: the map.
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
-screen.setProgress(0.5)
-local function timeLeft(): boolean
-	return os.clock() - started < TIMEOUT
-end
-while player:GetAttribute("GameReady") ~= true and timeLeft() do
-	task.wait(0.1)
-end
-screen.setProgress(0.7)
--- The character on its plot (the server moves it there after loading the save).
-local root: BasePart? = nil
 while timeLeft() do
-	local character = player.Character
-	local part = character and character:FindFirstChild("HumanoidRootPart")
-	if part and part:IsA("BasePart") and character:GetAttribute("OnPlot") == true then
-		root = part
+	local map = workspace:FindFirstChild("Map")
+	if map and #map:GetChildren() > 0 then
 		break
 	end
 	task.wait(0.1)
 end
-screen.setProgress(0.85)
--- With streaming on, wait for the parts around the plot before showing it.
-if root and workspace.StreamingEnabled and timeLeft() then
-	pcall(function()
-		player:RequestStreamAroundAsync(root.Position, 10)
-	end)
-end
-screen.setProgress(0.95)
--- A few frames for the camera to settle behind the character.
-for _ = 1, 3 do
-	RunService.RenderStepped:Wait()
-end
--- Keep the splash up briefly so it doesn't just flash on fast joins.
-local shown = os.clock() - started
-if shown < 1.2 then
-	task.wait(1.2 - shown)
-end
-screen.finish()
-task.delay(if ok then 1 else 0, function()
-	gui:Destroy()
-	-- The list comes back only once the splash has faded out.
-	player:SetAttribute("Loading", false)
-	-- Without the client (it sets "GameReady") nobody else would bring it back.
-	if player:GetAttribute("GameReady") ~= true then
+screen.setProgress(0.4)
+fly(gui, screen, function(): BasePart?
+	while player:GetAttribute("GameReady") ~= true and timeLeft() do
+		task.wait(0.1)
+	end
+	screen.setProgress(0.7)
+	-- The character on its plot (the server moves it there after loading the save).
+	local root: BasePart? = nil
+	while timeLeft() do
+		root = rootOnPlot()
+		if root then
+			break
+		end
+		task.wait(0.1)
+	end
+	screen.setProgress(0.85)
+	-- With streaming on, wait for the parts around the plot before landing there.
+	if root and workspace.StreamingEnabled and timeLeft() then
 		pcall(function()
-			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, true)
+			player:RequestStreamAroundAsync(root.Position, 10)
 		end)
 	end
-end)
+	screen.setProgress(0.95)
+	return root
+end, 1)
+
+-- Studio-only capture hook: setting the LocalPlayer attribute "LoadingPreview"
+-- to "<seconds>,<speed>" plays the loading screen again: that long under the
+-- sky cover, then the flight and the landing at that time scale (e.g. "1,0.2"
+-- for slow motion).
+if RunService:IsStudio() then
+	player:GetAttributeChangedSignal("LoadingPreview"):Connect(function()
+		local spec = player:GetAttribute("LoadingPreview")
+		local hold, speed = string.match(if typeof(spec) == "string" then spec else "", "^([%d%.]+),([%d%.]+)$")
+		local playerGui = player:FindFirstChild("PlayerGui")
+		if not hold or not playerGui or playerGui:FindFirstChild("LoadingScreen") then
+			return
+		end
+		local againGui, again = show()
+		local theme = ReplicatedStorage:FindFirstChild("Theme")
+		if theme and theme:IsA("ModuleScript") then
+			again.applyTheme(require(theme) :: any)
+		end
+		again.setProgress(0.4)
+		task.wait(tonumber(hold) or 0)
+		fly(againGui, again, function()
+			again.setProgress(0.95)
+			return rootOnPlot()
+		end, math.max(tonumber(speed) or 1, 0.01))
+	end)
+end
 ]]></string>
       </Properties>
       <Item class="ModuleScript" referent="2">
@@ -201,22 +336,143 @@ return {
       </Item>
       <Item class="ModuleScript" referent="3">
         <Properties>
+          <string name="Name">Flyover</string>
+          <string name="Source"><![CDATA[--[[
+	Flyover: the loading screen's camera. While the game loads it circles high
+	over the map; once the player's character stands on its plot it comes down
+	in one move, still turning, to the follow camera's spawn shot behind the
+	character, so the game starts where the flight lands.
+]]
+
+local RunService = game:GetService("RunService")
+
+local Flyover = {}
+
+export type Flight = {
+	-- Comes down to `root` (the character's root part) and hands the camera
+	-- back; yields until then. Without a root it hands back at once.
+	land: (root: BasePart?, speed: number?) -> (),
+	-- Hands the camera back where it is.
+	stop: () -> (),
+}
+
+-- The circle: round the middle of the island (the hub plaza), looking down at it.
+local CENTER = Vector3.new(0, 6, 0)
+local ORBIT_DISTANCE = 210
+local ORBIT_PITCH = math.rad(34)
+local ORBIT_TURN = math.rad(14) -- per second
+local START_YAW = math.rad(200)
+
+-- The shot it lands on is Fx.Camera's spawn framing: the client puts the
+-- follow camera there when a scripted camera hands back, so the hand-over
+-- doesn't jump. Keep these three in step with FRAME_DISTANCE, FRAME_PITCH and
+-- HEAD_OFFSET in src/client/Fx/Camera.luau.
+local END_DISTANCE = 15
+local END_PITCH = math.rad(20)
+local HEAD_OFFSET = Vector3.new(0, 1.5, 0)
+local LAND_TIME = 2.2
+
+local function smoother(t: number): number
+	return t * t * t * (t * (t * 6 - 15) + 10)
+end
+
+-- The camera `distance` from `focus`, `pitch` above it, on the side `yaw` points to.
+local function place(focus: Vector3, distance: number, pitch: number, yaw: number)
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return
+	end
+	if camera.CameraType ~= Enum.CameraType.Scriptable then
+		camera.CameraType = Enum.CameraType.Scriptable
+	end
+	local side = Vector3.new(math.cos(yaw), 0, math.sin(yaw))
+	local eye = focus + side * (distance * math.cos(pitch)) + Vector3.yAxis * (distance * math.sin(pitch))
+	camera.CFrame = CFrame.lookAt(eye, focus)
+	camera.Focus = CFrame.new(focus)
+end
+
+-- Takes the camera and starts circling. `speed` scales time (1 = real time).
+function Flyover.start(speed: number?): Flight
+	local yaw = START_YAW
+	local circling = true
+	local over = false
+	local rate = speed or 1
+
+	place(CENTER, ORBIT_DISTANCE, ORBIT_PITCH, yaw)
+	local connection = RunService.RenderStepped:Connect(function(dt)
+		if circling then
+			yaw += ORBIT_TURN * dt * rate
+			place(CENTER, ORBIT_DISTANCE, ORBIT_PITCH, yaw)
+		end
+	end)
+
+	local function stop()
+		if over then
+			return
+		end
+		over = true
+		circling = false
+		connection:Disconnect()
+		local camera = workspace.CurrentCamera
+		if camera and camera.CameraType == Enum.CameraType.Scriptable then
+			camera.CameraType = Enum.CameraType.Custom
+		end
+	end
+
+	local function land(root: BasePart?, landSpeed: number?)
+		if over then
+			return
+		end
+		circling = false
+		local from = yaw
+		-- The turn per unit of landing time: the move starts at the circle's pace.
+		local pace = ORBIT_TURN * LAND_TIME
+		local t = 0
+		while root and root.Parent and t < LAND_TIME do
+			t += RunService.RenderStepped:Wait() * (landSpeed or rate)
+			local k = math.min(t / LAND_TIME, 1)
+			local eased = smoother(k)
+			-- Behind the character, the way it faces.
+			local look = root.CFrame.LookVector
+			local to = math.atan2(-look.Z, -look.X)
+			-- Of the ways round, the one nearest to carrying on as it was going.
+			to += math.round((from + pace * 0.5 - to) / (2 * math.pi)) * 2 * math.pi
+			local turn = from + pace * (k - 2 * k * k + k * k * k) + (to - from) * (3 * k * k - 2 * k * k * k)
+			place(
+				CENTER:Lerp(root.Position + HEAD_OFFSET, eased),
+				ORBIT_DISTANCE + (END_DISTANCE - ORBIT_DISTANCE) * eased,
+				ORBIT_PITCH + (END_PITCH - ORBIT_PITCH) * eased,
+				turn
+			)
+		end
+		stop()
+	end
+
+	return { land = land, stop = stop }
+end
+
+return Flyover
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="4">
+        <Properties>
           <string name="Name">LoadingScreen</string>
           <string name="Source"><![CDATA[--[[
-	LoadingScreen: full-screen splash shown from ReplicatedFirst until the
-	player is in the game. Standalone (the client Kit isn't replicated yet
-	when this runs): it takes the theme later, once ReplicatedStorage has
-	arrived, for the game name, tagline, tips and colours, and the Blender art
-	(brand/KeyArt background, brand/Logo wordmark) once Shared.Assets is there.
+	LoadingScreen: what is drawn over the join, from ReplicatedFirst until the
+	player is in the game. There is no splash picture: the loading screen is
+	the camera circling high over the map (Flyover) and this is only what sits
+	on top of it. Standalone (the client Kit isn't replicated yet when this
+	runs): it takes the theme later, once ReplicatedStorage has arrived, for
+	the game name, tagline, tips and colours.
 
-	Look: the key art covers the screen with its hero (Chad on the stage) kept
-	clear in the middle; the logo sits at the top centre over the sky, bobbing,
-	with twinkles and a shine sweep; one band along the bottom holds the
-	tagline, a chunky sunny progress bar (an aura orb riding its leading edge),
-	the status under it and the tip card. Aura orbs drift up round the
-	hero. Only the bottom of the art is shaded, so the beach keeps its colour.
-	Without art ids it keeps the code-drawn sky gradient, bands and title text.
-	Art fades in only once its image has loaded; the whole screen fades out.
+	Look: until the world has arrived a sky gradient covers the screen; open()
+	fades it off the flight. The logo sits at the top centre, bobbing, with
+	twinkles and a shine sweep; one band along the bottom holds the tagline, a
+	chunky sunny progress bar (an aura orb riding its leading edge), the status
+	under it and the tip card, over a soft navy shade. Without a logo id it
+	shows the title text. finish() lifts the logo off the top and drops the
+	band off the bottom while the camera comes down to the player.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -231,7 +487,6 @@ local LoadingScreen = {}
 export type Cell = { image: string, x: number, y: number, w: number, h: number }
 
 export type Art = {
-	keyArt: string?,
 	logo: string?,
 	logoShine: string?,
 	softDot: string?,
@@ -245,7 +500,12 @@ export type Handle = {
 	applyArt: (Art?) -> (),
 	setStatus: (string) -> (),
 	setProgress: (number) -> (),
-	finish: () -> (),
+	-- The world is there: fades the sky cover off the camera's flight. `speed`
+	-- scales time from here on (1 = real time).
+	open: (number?) -> (),
+	-- Takes the logo and the band off the screen at `speed` (1 = real time)
+	-- and returns the seconds until they are gone.
+	finish: (number?) -> number,
 }
 
 local DEFAULT = {
@@ -273,27 +533,10 @@ local BAR = Vector2.new(640, 36)
 local BAR_Y = 36
 local STATUS_Y = 82
 
--- The key art: its aspect, and where the hero group (Chad's hair down to the
--- stage) sits as fractions of its height. art/blender/brand/brand.py prints
--- these as KEYART_LAYOUT; the art is slid so that span shows between the logo
--- and the bottom band on every screen shape.
-local ART_ASPECT = 16 / 9
-local HERO_TOP = 0.375
-local HERO_BOTTOM = 0.754
-
--- Aura orbs drifting up round the hero: x offset from the art's centre (in art
--- widths; clear of the three faces at 0 and +-0.165), size (design px), seconds
--- per rise, phase, colour.
-local ORBS = {
-	{ dx = -0.260, size = 30, period = 6.5, phase = 0.05, color = Color3.fromRGB(176, 128, 255) },
-	{ dx = 0.240, size = 26, period = 5.6, phase = 0.40, color = Color3.fromRGB(255, 112, 184) },
-	{ dx = -0.090, size = 20, period = 4.8, phase = 0.72, color = Color3.fromRGB(255, 216, 72) },
-	{ dx = 0.300, size = 22, period = 7.2, phase = 0.18, color = Color3.fromRGB(104, 232, 192) },
-	{ dx = -0.330, size = 18, period = 5.2, phase = 0.58, color = Color3.fromRGB(104, 232, 192) },
-	{ dx = 0.085, size = 18, period = 6.0, phase = 0.86, color = Color3.fromRGB(176, 128, 255) },
-	{ dx = -0.225, size = 24, period = 7.6, phase = 0.33, color = Color3.fromRGB(255, 112, 184) },
-	{ dx = 0.215, size = 16, period = 4.4, phase = 0.64, color = Color3.fromRGB(255, 216, 72) },
-}
+-- Seconds: the sky cover's fade once the world is there, and the logo and
+-- band leaving the screen.
+local OPEN = 0.9
+local LEAVE = 0.55
 
 -- Twinkles round the logo: position in the logo box, size (of its height),
 -- speed, phase.
@@ -347,27 +590,21 @@ local function tween(obj: Instance, time: number, props: { [string]: any }, styl
 	TweenService:Create(obj, TweenInfo.new(time, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
 end
 
--- Fades a whole tree out (what GroupTransparency did on a CanvasGroup).
-local function fadeOut(root: Instance, time: number)
-	for _, obj in { root, table.unpack(root:GetDescendants()) } do
-		if obj:IsA("GuiObject") then
-			tween(obj, time, { BackgroundTransparency = 1 })
-		end
-		if obj:IsA("TextLabel") then
-			tween(obj, time, { TextTransparency = 1 })
-		elseif obj:IsA("ImageLabel") then
-			tween(obj, time, { ImageTransparency = 1 })
-		elseif obj:IsA("UIStroke") then
-			tween(obj, time, { Transparency = 1 })
-		end
-	end
-end
-
 -- Overshooting ease for the logo's pop-in.
 local function backOut(t: number): number
 	local c = 1.70158
 	local u = t - 1
 	return 1 + (c + 1) * u * u * u + c * u * u
+end
+
+-- Winds up the other way first: the logo and band dip before they leave.
+local function backIn(t: number): number
+	local c = 1.70158
+	return (c + 1) * t * t * t - c * t * t
+end
+
+local function smooth(t: number): number
+	return t * t * (3 - 2 * t)
 end
 
 --[[
@@ -398,14 +635,13 @@ function LoadingScreen.findArt(timeout: number?): Art?
 	local icons = (assets :: any).Icons
 	local orb = if type(icons) == "table" and type(icons.Orb) == "table" then icons.Orb else nil
 	local art: Art = {
-		keyArt = id("brand/KeyArt"),
 		logo = id("brand/Logo"),
 		logoShine = id("brand/LogoShine"),
 		softDot = id("vfx/SoftDot"),
 		sparkle = id("vfx/Sparkle"),
 		orb = orb,
 	}
-	if not art.keyArt and not art.logo then
+	if not art.logo then
 		return nil
 	end
 	return art
@@ -417,49 +653,20 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	-- high-DPI window drew only its own gradient and none of its children.
 	local root = new("Frame", {
 		Name = "Loading",
-		BackgroundColor3 = WHITE,
-		BorderSizePixel = 0,
+		BackgroundTransparency = 1,
 		ClipsDescendants = true,
 		Size = UDim2.fromScale(1, 1),
 		Parent = parent,
 	})
-	local background = new("UIGradient", { Rotation = 90, Parent = root })
-
-	-- Code-drawn backdrop: big soft diagonal bands over the sky gradient.
-	local bands = {}
-	for i = 1, 4 do
-		local band = new("Frame", {
-			Name = "Band",
-			BackgroundColor3 = WHITE,
-			BackgroundTransparency = 0.92,
-			BorderSizePixel = 0,
-			Size = UDim2.new(0.16, 0, 2.5, 0),
-			Position = UDim2.fromScale(-0.2 + i * 0.3, -0.7),
-			Rotation = 28,
-			Parent = root,
-		})
-		table.insert(bands, band)
-	end
-
-	-- Key art, faded in once loaded. Sized and slid every frame (see layout)
-	-- instead of ScaleType.Crop, which would centre it and hide the hero.
-	local keyArt = image("KeyArt", root, {
-		AnchorPoint = Vector2.zero,
-		ImageTransparency = UNLOADED,
+	-- The sky cover: all there is to see until the world has arrived.
+	local cover = new("Frame", {
+		Name = "Cover",
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
 		Size = UDim2.fromScale(1, 1),
-		Visible = false,
+		Parent = root,
 	})
-
-	local orbs = {}
-	for i, spec in ORBS do
-		local glow = image("Orb" .. i, root, { ImageColor3 = spec.color, ImageTransparency = 1 })
-		local core = image("Core", glow, {
-			ImageTransparency = 1,
-			Size = UDim2.fromScale(0.42, 0.42),
-			Position = UDim2.fromScale(0.5, 0.5),
-		})
-		table.insert(orbs, { spec = spec, glow = glow, core = core })
-	end
+	local background = new("UIGradient", { Rotation = 90, Parent = cover })
 
 	-- Readability shade under the bottom band only: clear at its top edge.
 	local shade = new("Frame", {
@@ -735,28 +942,19 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	local clock = 0
 	local logoShownAt: number? = nil
 	local alive = true
-	local fading = false
+	-- The sky cover fades once the world may be seen (open); leaving takes the
+	-- logo and the band off the screen (finish).
+	local opened = false
+	local coverK = 0
+	local leaving = false
+	local leaveT = 0
+	local rate = 1
+	local connection: RBXScriptConnection? = nil
 
 	local function applyArt(art: Art?)
 		-- Art arriving during the fade-out would fight its tweens.
 		if not art or not alive then
 			return
-		end
-		if art.keyArt and keyArt.Image ~= art.keyArt then
-			keyArt.Image = art.keyArt
-			keyArt.Visible = true
-			whenLoaded(keyArt, function()
-				if PREVIEW then
-					keyArt.ImageTransparency = 0
-					shade.BackgroundTransparency = 0
-				else
-					tween(keyArt, 0.5, { ImageTransparency = 0 })
-					tween(shade, 0.5, { BackgroundTransparency = 0 })
-				end
-				for _, band in bands do
-					band.Visible = false
-				end
-			end)
 		end
 		if art.logo and logo.Image ~= art.logo then
 			logo.Image = art.logo
@@ -783,10 +981,6 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 			shine.Image = art.logoShine
 		end
 		if art.softDot then
-			for _, orb in orbs do
-				orb.glow.Image = art.softDot
-				orb.core.Image = art.softDot
-			end
 			riderGlow.Image = art.softDot
 		end
 		if art.sparkle then
@@ -825,35 +1019,14 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		local bandS = math.max(scale, math.min(1, w / 800, h / 480))
 		bandScale.Scale = bandS
 
-		-- Logo at the top, band at the bottom, the hero between them.
-		local logoS = scale
+		-- Leaving: the band dips and drops off the bottom, the logo lifts off the top.
+		local away = if leaving then backIn(math.clamp(leaveT / LEAVE, 0, 1)) else 0
 		local logoH = LOGO.Y * scale
 		local top = math.max(10 * scale, 6)
 		local margin = 16 * bandS
-		local bandTop = h - margin - BAND.Y * bandS
-		local artW = math.max(w, h * ART_ASPECT)
-		local artH = artW / ART_ASPECT
-		local artX = (w - artW) / 2
-		-- Short screens (phones) can't fit all three: shrink the logo by up to a
-		-- quarter, then drop the tagline, so the hero stays clear.
-		local short = (HERO_BOTTOM - HERO_TOP) * artH + 18 * bandS - (bandTop - top - logoH)
-		if short > 0 then
-			local cut = math.min(short, logoH * 0.25)
-			logoS *= 1 - cut / logoH
-			logoH -= cut
-			short -= cut
-		end
-		tagline.Visible = short <= 0
-		if short > 0 then
-			bandTop += BAR_Y * bandS
-		end
-		bottom.Position = UDim2.new(0.5, 0, 1, -margin)
-		shade.Size = UDim2.new(1, 0, 0, h - bandTop + 90 * bandS)
-
-		local between = (top + logoH + bandTop) / 2
-		local artY = math.clamp(between - (HERO_TOP + HERO_BOTTOM) / 2 * artH, h - artH, 0)
-		keyArt.Size = UDim2.fromOffset(artW, artH)
-		keyArt.Position = UDim2.fromOffset(artX, artY)
+		bottom.Position = UDim2.new(0.5, 0, 1, -margin + away * (BAND.Y * bandS + margin + 40))
+		shade.Size = UDim2.new(1, 0, 0, BAND.Y * bandS + margin + 90 * bandS)
+		shade.BackgroundTransparency = math.clamp(away, 0, 1)
 
 		-- Gentle bob for the logo and title; the logo pops in when it arrives.
 		local bob = math.sin(clock * 1.8) * 5 * scale
@@ -861,11 +1034,12 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		if logoShownAt then
 			pop = 0.75 + 0.25 * backOut(math.clamp((clock - logoShownAt) / 0.45, 0, 1))
 		end
-		logo.Size = UDim2.fromOffset(LOGO.X * logoS * pop, logoH * pop)
-		logo.Position = UDim2.new(0.5, 0, 0, top + logoH / 2 + bob)
+		local logoY = top + logoH / 2 + bob - away * (top + logoH * 1.2 + 40)
+		logo.Size = UDim2.fromOffset(LOGO.X * scale * pop, logoH * pop)
+		logo.Position = UDim2.new(0.5, 0, 0, logoY)
 		logo.Rotation = math.sin(clock * 0.9) * 1.2
 		title.Size = UDim2.fromOffset(math.min(w * 0.92, 760 * scale), 84 * scale)
-		title.Position = UDim2.new(0.5, 0, 0, top + logoH / 2 + bob)
+		title.Position = UDim2.new(0.5, 0, 0, logoY)
 
 		-- The rider sits on the fill's leading edge.
 		local edge = (BAND.X - BAR.X) / 2 + 3 + progress * (BAR.X - 6)
@@ -873,24 +1047,7 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		rider.Position = UDim2.fromOffset(edge, riderY)
 		rider.Rotation = math.sin(clock * 2.6) * 10
 		riderGlow.Position = UDim2.fromOffset(edge, riderY)
-
-		if fading then
-			-- The fade-out tweens own every transparency from here on.
-			return
-		end
-
-		for _, orb in orbs do
-			local spec = orb.spec
-			local t = (clock / spec.period + spec.phase) % 1
-			local seen = math.sin(math.pi * t)
-			local d = spec.size * scale * (0.7 + 0.3 * seen)
-			local x = w / 2 + artW * (spec.dx + 0.012 * math.sin(clock * 1.3 + spec.phase * 6.28))
-			local y = artY + artH * (HERO_BOTTOM - 0.04 + (HERO_TOP - 0.1 - HERO_BOTTOM + 0.04) * t)
-			orb.glow.Size = UDim2.fromOffset(d * 2.2, d * 2.2)
-			orb.glow.Position = UDim2.fromOffset(x, y)
-			orb.glow.ImageTransparency = 1 - 0.62 * seen
-			orb.core.ImageTransparency = 1 - 0.9 * seen
-		end
+		riderGlow.ImageTransparency = if rider.Image ~= "" then 0.35 + 0.2 * math.sin(clock * 3) else 1
 
 		for _, twinkle in twinkles do
 			local spec = twinkle.spec
@@ -906,7 +1063,6 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 			local t = ((clock - logoShownAt) % SHINE_EVERY) / SHINE_TIME
 			shineGradient.Offset = Vector2.new(if t < 1 then -0.8 + 1.6 * t else -1.5, 0)
 		end
-		riderGlow.ImageTransparency = if rider.Image ~= "" then 0.35 + 0.2 * math.sin(clock * 3) else 1
 	end
 
 	local function showProgress()
@@ -915,8 +1071,24 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	end
 	showProgress()
 
-	local connection = RunService.RenderStepped:Connect(function(dt)
+	connection = RunService.RenderStepped:Connect(function(dt)
+		dt *= rate
 		clock += dt
+		if opened and coverK < 1 then
+			coverK = math.min(1, coverK + dt / OPEN)
+			cover.BackgroundTransparency = smooth(coverK)
+			cover.Visible = coverK < 1
+		end
+		if leaving then
+			leaveT += dt
+			if leaveT >= LEAVE then
+				if connection then
+					connection:Disconnect()
+				end
+				root:Destroy()
+				return
+			end
+		end
 		-- The bar eases toward the stage the loader has reached and fills on finish.
 		progress += (target - progress) * math.min(1, dt * (if alive then 1.6 else 8))
 		showProgress()
@@ -946,21 +1118,17 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	end)
 	layout()
 
-	local function finish()
+	local function finish(speed: number?): number
 		if not alive then
-			return
+			return 0
 		end
 		alive = false
 		target = 1
 		table.clear(pending)
-		task.delay(0.3, function()
-			fading = true
-			fadeOut(root, 0.6)
-		end)
-		task.delay(0.95, function()
-			connection:Disconnect()
-			root:Destroy()
-		end)
+		opened = true
+		leaving = true
+		rate = speed or 1
+		return LEAVE / rate
 	end
 
 	return {
@@ -976,6 +1144,10 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 				target = math.max(target, math.clamp(p, 0, 0.97))
 			end
 		end,
+		open = function(speed: number?)
+			opened = true
+			rate = speed or 1
+		end,
 		finish = finish,
 	}
 end
@@ -986,15 +1158,15 @@ return LoadingScreen
       </Item>
     </Item>
   </Item>
-  <Item class="ReplicatedStorage" referent="4">
+  <Item class="ReplicatedStorage" referent="5">
     <Properties>
       <string name="Name">ReplicatedStorage</string>
     </Properties>
-    <Item class="Folder" referent="5">
+    <Item class="Folder" referent="6">
       <Properties>
         <string name="Name">AssetModels</string>
       </Properties>
-      <Item class="Model" referent="6">
+      <Item class="Model" referent="7">
         <Properties>
           <string name="Name">proof__cube</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1044,7 +1216,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="7">
+        <Item class="MeshPart" referent="8">
           <Properties>
             <string name="Name">ProofCube</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1185,7 +1357,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="8">
+      <Item class="Model" referent="9">
         <Properties>
           <string name="Name">props__Barbell</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1235,7 +1407,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="9">
+        <Item class="MeshPart" referent="10">
           <Properties>
             <string name="Name">Barbell</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1376,7 +1548,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="10">
+      <Item class="Model" referent="11">
         <Properties>
           <string name="Name">props__BeachBall</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1426,7 +1598,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="11">
+        <Item class="MeshPart" referent="12">
           <Properties>
             <string name="Name">BeachBall.001</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1567,7 +1739,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="12">
+      <Item class="Model" referent="13">
         <Properties>
           <string name="Name">props__Bench</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1617,7 +1789,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="13">
+        <Item class="MeshPart" referent="14">
           <Properties>
             <string name="Name">Bench</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1758,7 +1930,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="14">
+      <Item class="Model" referent="15">
         <Properties>
           <string name="Name">props__CandyBar</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1808,7 +1980,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="15">
+        <Item class="MeshPart" referent="16">
           <Properties>
             <string name="Name">CandyBar</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -1949,7 +2121,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="16">
+      <Item class="Model" referent="17">
         <Properties>
           <string name="Name">props__CandyCane</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -1999,7 +2171,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="17">
+        <Item class="MeshPart" referent="18">
           <Properties>
             <string name="Name">CandyCane</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2140,7 +2312,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="18">
+      <Item class="Model" referent="19">
         <Properties>
           <string name="Name">props__CandyCone</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2190,7 +2362,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="19">
+        <Item class="MeshPart" referent="20">
           <Properties>
             <string name="Name">CandyCone</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2331,7 +2503,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="20">
+      <Item class="Model" referent="21">
         <Properties>
           <string name="Name">props__CandyCookie</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2381,7 +2553,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="21">
+        <Item class="MeshPart" referent="22">
           <Properties>
             <string name="Name">CandyCookie</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2522,7 +2694,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="22">
+      <Item class="Model" referent="23">
         <Properties>
           <string name="Name">props__CandyCottonCloud</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2572,7 +2744,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="23">
+        <Item class="MeshPart" referent="24">
           <Properties>
             <string name="Name">CandyCottonCloud</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2713,7 +2885,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="24">
+      <Item class="Model" referent="25">
         <Properties>
           <string name="Name">props__CandyCupcake</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2763,7 +2935,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="25">
+        <Item class="MeshPart" referent="26">
           <Properties>
             <string name="Name">CandyCupcake</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -2904,7 +3076,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="26">
+      <Item class="Model" referent="27">
         <Properties>
           <string name="Name">props__CandyDonut</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -2954,7 +3126,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="27">
+        <Item class="MeshPart" referent="28">
           <Properties>
             <string name="Name">CandyDonut</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3095,7 +3267,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="28">
+      <Item class="Model" referent="29">
         <Properties>
           <string name="Name">props__CandyGummyBear</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3145,7 +3317,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="29">
+        <Item class="MeshPart" referent="30">
           <Properties>
             <string name="Name">CandyGummyBear</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3286,7 +3458,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="30">
+      <Item class="Model" referent="31">
         <Properties>
           <string name="Name">props__CandyIceCube</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3336,7 +3508,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="31">
+        <Item class="MeshPart" referent="32">
           <Properties>
             <string name="Name">CandyIceCube</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3477,7 +3649,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="32">
+      <Item class="Model" referent="33">
         <Properties>
           <string name="Name">props__CandyLollipop</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3527,7 +3699,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="33">
+        <Item class="MeshPart" referent="34">
           <Properties>
             <string name="Name">CandyLollipop</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3668,7 +3840,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="34">
+      <Item class="Model" referent="35">
         <Properties>
           <string name="Name">props__CandyMacaron</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3718,7 +3890,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="35">
+        <Item class="MeshPart" referent="36">
           <Properties>
             <string name="Name">CandyMacaron</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -3859,7 +4031,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="36">
+      <Item class="Model" referent="37">
         <Properties>
           <string name="Name">props__CandyStrawberry</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -3909,7 +4081,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="37">
+        <Item class="MeshPart" referent="38">
           <Properties>
             <string name="Name">CandyStrawberry</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4050,7 +4222,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="38">
+      <Item class="Model" referent="39">
         <Properties>
           <string name="Name">props__CandySwirl</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4100,7 +4272,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="39">
+        <Item class="MeshPart" referent="40">
           <Properties>
             <string name="Name">CandySwirl</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4241,7 +4413,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="40">
+      <Item class="Model" referent="41">
         <Properties>
           <string name="Name">props__CandyTruffle</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4291,7 +4463,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="41">
+        <Item class="MeshPart" referent="42">
           <Properties>
             <string name="Name">CandyTruffle</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4432,7 +4604,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="42">
+      <Item class="Model" referent="43">
         <Properties>
           <string name="Name">props__CardioTreadmill</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4482,7 +4654,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="43">
+        <Item class="MeshPart" referent="44">
           <Properties>
             <string name="Name">CardioTreadmill</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4623,7 +4795,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="44">
+      <Item class="Model" referent="45">
         <Properties>
           <string name="Name">props__Converter</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4673,7 +4845,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="45">
+        <Item class="MeshPart" referent="46">
           <Properties>
             <string name="Name">Converter</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -4814,7 +4986,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="46">
+      <Item class="Model" referent="47">
         <Properties>
           <string name="Name">props__Crate</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -4864,7 +5036,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="47">
+        <Item class="MeshPart" referent="48">
           <Properties>
             <string name="Name">Crate</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5005,7 +5177,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="48">
+      <Item class="Model" referent="49">
         <Properties>
           <string name="Name">props__CrateCracker</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5055,7 +5227,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="49">
+        <Item class="MeshPart" referent="50">
           <Properties>
             <string name="Name">CrateCracker</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5196,7 +5368,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="50">
+      <Item class="Model" referent="51">
         <Properties>
           <string name="Name">props__CrateCrackerVip</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5246,7 +5418,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="51">
+        <Item class="MeshPart" referent="52">
           <Properties>
             <string name="Name">CrateCrackerVip</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5387,7 +5559,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="52">
+      <Item class="Model" referent="53">
         <Properties>
           <string name="Name">props__Crown</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5437,7 +5609,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="53">
+        <Item class="MeshPart" referent="54">
           <Properties>
             <string name="Name">Crown</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5578,7 +5750,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="54">
+      <Item class="Model" referent="55">
         <Properties>
           <string name="Name">props__Dumbbell</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5628,7 +5800,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="55">
+        <Item class="MeshPart" referent="56">
           <Properties>
             <string name="Name">Dumbbell</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5769,7 +5941,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="56">
+      <Item class="Model" referent="57">
         <Properties>
           <string name="Name">props__DumbbellRack</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -5819,7 +5991,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="57">
+        <Item class="MeshPart" referent="58">
           <Properties>
             <string name="Name">DumbbellRack</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -5960,7 +6132,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="58">
+      <Item class="Model" referent="59">
         <Properties>
           <string name="Name">props__GigaStatue</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -6010,7 +6182,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="59">
+        <Item class="MeshPart" referent="60">
           <Properties>
             <string name="Name">GigaStatue</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -6151,7 +6323,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="60">
+      <Item class="Model" referent="61">
         <Properties>
           <string name="Name">props__HubBench</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -6201,7 +6373,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="61">
+        <Item class="MeshPart" referent="62">
           <Properties>
             <string name="Name">HubBench</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -6342,7 +6514,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="62">
+      <Item class="Model" referent="63">
         <Properties>
           <string name="Name">props__JuiceBar</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -6392,7 +6564,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="63">
+        <Item class="MeshPart" referent="64">
           <Properties>
             <string name="Name">JuiceBar</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -6533,7 +6705,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="64">
+      <Item class="Model" referent="65">
         <Properties>
           <string name="Name">props__Kettlebell</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -6583,7 +6755,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="65">
+        <Item class="MeshPart" referent="66">
           <Properties>
             <string name="Name">Kettlebell</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -6724,7 +6896,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="66">
+      <Item class="Model" referent="67">
         <Properties>
           <string name="Name">props__KeyBlank</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -6774,7 +6946,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="67">
+        <Item class="MeshPart" referent="68">
           <Properties>
             <string name="Name">KeyBlank</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -6915,7 +7087,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="68">
+      <Item class="Model" referent="69">
         <Properties>
           <string name="Name">props__KeySpace</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -6965,7 +7137,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="69">
+        <Item class="MeshPart" referent="70">
           <Properties>
             <string name="Name">KeySpace</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -7106,7 +7278,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="70">
+      <Item class="Model" referent="71">
         <Properties>
           <string name="Name">props__Key_A</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -7156,7 +7328,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="71">
+        <Item class="MeshPart" referent="72">
           <Properties>
             <string name="Name">Key_A</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -7297,7 +7469,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="72">
+      <Item class="Model" referent="73">
         <Properties>
           <string name="Name">props__Key_B</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -7347,7 +7519,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="73">
+        <Item class="MeshPart" referent="74">
           <Properties>
             <string name="Name">Key_B</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -7488,7 +7660,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="74">
+      <Item class="Model" referent="75">
         <Properties>
           <string name="Name">props__Key_C</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -7538,7 +7710,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="75">
+        <Item class="MeshPart" referent="76">
           <Properties>
             <string name="Name">Key_C</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -7679,7 +7851,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="76">
+      <Item class="Model" referent="77">
         <Properties>
           <string name="Name">props__Key_D</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -7729,7 +7901,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="77">
+        <Item class="MeshPart" referent="78">
           <Properties>
             <string name="Name">Key_D</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -7870,7 +8042,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="78">
+      <Item class="Model" referent="79">
         <Properties>
           <string name="Name">props__Key_E</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -7920,7 +8092,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="79">
+        <Item class="MeshPart" referent="80">
           <Properties>
             <string name="Name">Key_E</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -8061,7 +8233,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="80">
+      <Item class="Model" referent="81">
         <Properties>
           <string name="Name">props__Key_F</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -8111,7 +8283,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="81">
+        <Item class="MeshPart" referent="82">
           <Properties>
             <string name="Name">Key_F</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -8252,7 +8424,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="82">
+      <Item class="Model" referent="83">
         <Properties>
           <string name="Name">props__Key_G</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -8302,7 +8474,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="83">
+        <Item class="MeshPart" referent="84">
           <Properties>
             <string name="Name">Key_G</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -8443,7 +8615,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="84">
+      <Item class="Model" referent="85">
         <Properties>
           <string name="Name">props__Key_H</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -8493,7 +8665,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="85">
+        <Item class="MeshPart" referent="86">
           <Properties>
             <string name="Name">Key_H</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -8634,7 +8806,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="86">
+      <Item class="Model" referent="87">
         <Properties>
           <string name="Name">props__Key_I</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -8684,7 +8856,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="87">
+        <Item class="MeshPart" referent="88">
           <Properties>
             <string name="Name">Key_I</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -8825,7 +8997,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="88">
+      <Item class="Model" referent="89">
         <Properties>
           <string name="Name">props__Key_J</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -8875,7 +9047,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="89">
+        <Item class="MeshPart" referent="90">
           <Properties>
             <string name="Name">Key_J</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -9016,7 +9188,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="90">
+      <Item class="Model" referent="91">
         <Properties>
           <string name="Name">props__Key_K</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -9066,7 +9238,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="91">
+        <Item class="MeshPart" referent="92">
           <Properties>
             <string name="Name">Key_K</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -9207,7 +9379,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="92">
+      <Item class="Model" referent="93">
         <Properties>
           <string name="Name">props__Key_L</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -9257,7 +9429,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="93">
+        <Item class="MeshPart" referent="94">
           <Properties>
             <string name="Name">Key_L</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -9398,7 +9570,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="94">
+      <Item class="Model" referent="95">
         <Properties>
           <string name="Name">props__Key_M</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -9448,7 +9620,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="95">
+        <Item class="MeshPart" referent="96">
           <Properties>
             <string name="Name">Key_M</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -9589,7 +9761,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="96">
+      <Item class="Model" referent="97">
         <Properties>
           <string name="Name">props__Key_N</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -9639,7 +9811,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="97">
+        <Item class="MeshPart" referent="98">
           <Properties>
             <string name="Name">Key_N</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -9780,7 +9952,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="98">
+      <Item class="Model" referent="99">
         <Properties>
           <string name="Name">props__Key_O</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -9830,7 +10002,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="99">
+        <Item class="MeshPart" referent="100">
           <Properties>
             <string name="Name">Key_O</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -9971,7 +10143,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="100">
+      <Item class="Model" referent="101">
         <Properties>
           <string name="Name">props__Key_P</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -10021,7 +10193,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="101">
+        <Item class="MeshPart" referent="102">
           <Properties>
             <string name="Name">Key_P</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -10162,7 +10334,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="102">
+      <Item class="Model" referent="103">
         <Properties>
           <string name="Name">props__Key_Q</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -10212,7 +10384,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="103">
+        <Item class="MeshPart" referent="104">
           <Properties>
             <string name="Name">Key_Q</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -10353,7 +10525,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="104">
+      <Item class="Model" referent="105">
         <Properties>
           <string name="Name">props__Key_R</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -10403,7 +10575,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="105">
+        <Item class="MeshPart" referent="106">
           <Properties>
             <string name="Name">Key_R</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -10544,7 +10716,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="106">
+      <Item class="Model" referent="107">
         <Properties>
           <string name="Name">props__Key_S</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -10594,7 +10766,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="107">
+        <Item class="MeshPart" referent="108">
           <Properties>
             <string name="Name">Key_S</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -10735,7 +10907,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="108">
+      <Item class="Model" referent="109">
         <Properties>
           <string name="Name">props__Key_T</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -10785,7 +10957,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="109">
+        <Item class="MeshPart" referent="110">
           <Properties>
             <string name="Name">Key_T</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -10926,7 +11098,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="110">
+      <Item class="Model" referent="111">
         <Properties>
           <string name="Name">props__Key_U</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -10976,7 +11148,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="111">
+        <Item class="MeshPart" referent="112">
           <Properties>
             <string name="Name">Key_U</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -11117,7 +11289,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="112">
+      <Item class="Model" referent="113">
         <Properties>
           <string name="Name">props__Key_V</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -11167,7 +11339,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="113">
+        <Item class="MeshPart" referent="114">
           <Properties>
             <string name="Name">Key_V</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -11308,7 +11480,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="114">
+      <Item class="Model" referent="115">
         <Properties>
           <string name="Name">props__Key_W</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -11358,7 +11530,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="115">
+        <Item class="MeshPart" referent="116">
           <Properties>
             <string name="Name">Key_W</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -11499,7 +11671,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="116">
+      <Item class="Model" referent="117">
         <Properties>
           <string name="Name">props__Key_X</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -11549,7 +11721,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="117">
+        <Item class="MeshPart" referent="118">
           <Properties>
             <string name="Name">Key_X</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -11690,7 +11862,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="118">
+      <Item class="Model" referent="119">
         <Properties>
           <string name="Name">props__Key_Y</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -11740,7 +11912,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="119">
+        <Item class="MeshPart" referent="120">
           <Properties>
             <string name="Name">Key_Y</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -11881,7 +12053,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="120">
+      <Item class="Model" referent="121">
         <Properties>
           <string name="Name">props__Key_Z</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -11931,7 +12103,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="121">
+        <Item class="MeshPart" referent="122">
           <Properties>
             <string name="Name">Key_Z</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -12072,7 +12244,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="122">
+      <Item class="Model" referent="123">
         <Properties>
           <string name="Name">props__Keycap</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -12122,7 +12294,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="123">
+        <Item class="MeshPart" referent="124">
           <Properties>
             <string name="Name">Keycap.001</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -12263,7 +12435,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="124">
+      <Item class="Model" referent="125">
         <Properties>
           <string name="Name">props__KeycapWide</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -12313,7 +12485,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="125">
+        <Item class="MeshPart" referent="126">
           <Properties>
             <string name="Name">KeycapWide.001</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -12454,7 +12626,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="126">
+      <Item class="Model" referent="127">
         <Properties>
           <string name="Name">props__OrbBall</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -12504,7 +12676,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="127">
+        <Item class="MeshPart" referent="128">
           <Properties>
             <string name="Name">OrbBall</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -12645,7 +12817,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="128">
+      <Item class="Model" referent="129">
         <Properties>
           <string name="Name">props__OrbShine</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -12695,7 +12867,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="129">
+        <Item class="MeshPart" referent="130">
           <Properties>
             <string name="Name">OrbShine</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -12836,7 +13008,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="130">
+      <Item class="Model" referent="131">
         <Properties>
           <string name="Name">props__PalmPlanter</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -12886,7 +13058,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="131">
+        <Item class="MeshPart" referent="132">
           <Properties>
             <string name="Name">PalmPlanter</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -13027,7 +13199,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="132">
+      <Item class="Model" referent="133">
         <Properties>
           <string name="Name">props__PalmTree</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -13077,7 +13249,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="133">
+        <Item class="MeshPart" referent="134">
           <Properties>
             <string name="Name">PalmTree</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -13218,7 +13390,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="134">
+      <Item class="Model" referent="135">
         <Properties>
           <string name="Name">props__PunchBag</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -13268,7 +13440,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="135">
+        <Item class="MeshPart" referent="136">
           <Properties>
             <string name="Name">PunchBag</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -13409,7 +13581,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="136">
+      <Item class="Model" referent="137">
         <Properties>
           <string name="Name">props__Speaker</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -13459,7 +13631,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="137">
+        <Item class="MeshPart" referent="138">
           <Properties>
             <string name="Name">Speaker</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -13600,7 +13772,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="138">
+      <Item class="Model" referent="139">
         <Properties>
           <string name="Name">props__TowelStack</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -13650,7 +13822,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="139">
+        <Item class="MeshPart" referent="140">
           <Properties>
             <string name="Name">TowelStack</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -13791,7 +13963,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="140">
+      <Item class="Model" referent="141">
         <Properties>
           <string name="Name">props__Treadmill</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -13841,7 +14013,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="141">
+        <Item class="MeshPart" referent="142">
           <Properties>
             <string name="Name">Treadmill</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -13982,7 +14154,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="142">
+      <Item class="Model" referent="143">
         <Properties>
           <string name="Name">props__Trophy</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -14032,7 +14204,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="143">
+        <Item class="MeshPart" referent="144">
           <Properties>
             <string name="Name">Trophy</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -14173,7 +14345,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="144">
+      <Item class="Model" referent="145">
         <Properties>
           <string name="Name">props__TrophyPodium</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -14223,7 +14395,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="145">
+        <Item class="MeshPart" referent="146">
           <Properties>
             <string name="Name">TrophyPodium</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -14364,7 +14536,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="146">
+      <Item class="Model" referent="147">
         <Properties>
           <string name="Name">props__Vault</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -14414,7 +14586,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="147">
+        <Item class="MeshPart" referent="148">
           <Properties>
             <string name="Name">Vault</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -14555,7 +14727,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="148">
+      <Item class="Model" referent="149">
         <Properties>
           <string name="Name">props__WaterCooler</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -14605,7 +14777,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="149">
+        <Item class="MeshPart" referent="150">
           <Properties>
             <string name="Name">WaterCooler</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -14746,7 +14918,7 @@ return LoadingScreen
           </Properties>
         </Item>
       </Item>
-      <Item class="Model" referent="150">
+      <Item class="Model" referent="151">
         <Properties>
           <string name="Name">props__YogaBall</string>
           <BinaryString name="AttributesSerialize"></BinaryString>
@@ -14796,7 +14968,7 @@ return LoadingScreen
             </CFrame>
           </OptionalCoordinateFrame>
         </Properties>
-        <Item class="MeshPart" referent="151">
+        <Item class="MeshPart" referent="152">
           <Properties>
             <string name="Name">YogaBall</string>
             <SharedString name="AeroMeshData">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
@@ -14938,11 +15110,11 @@ return LoadingScreen
         </Item>
       </Item>
     </Item>
-    <Item class="Folder" referent="152">
+    <Item class="Folder" referent="153">
       <Properties>
         <string name="Name">Shared</string>
       </Properties>
-      <Item class="ModuleScript" referent="153">
+      <Item class="ModuleScript" referent="154">
         <Properties>
           <string name="Name">AssetModels</string>
           <string name="Source"><![CDATA[--!strict
@@ -14989,7 +15161,7 @@ return AssetModels
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="154">
+      <Item class="ModuleScript" referent="155">
         <Properties>
           <string name="Name">Assets</string>
           <string name="Source"><![CDATA[--!strict
@@ -15350,7 +15522,7 @@ return Assets
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="155">
+      <Item class="ModuleScript" referent="156">
         <Properties>
           <string name="Name">CharacterFactory</string>
           <string name="Source"><![CDATA[--[[
@@ -17123,7 +17295,7 @@ return CharacterFactory
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="156">
+      <Item class="ModuleScript" referent="157">
         <Properties>
           <string name="Name">CratePickup</string>
           <string name="Source"><![CDATA[--!strict
@@ -17192,7 +17364,7 @@ return CratePickup
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="157">
+      <Item class="ModuleScript" referent="158">
         <Properties>
           <string name="Name">DailyReward</string>
           <string name="Source"><![CDATA[--!strict
@@ -17357,7 +17529,7 @@ return DailyReward
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="158">
+      <Item class="ModuleScript" referent="159">
         <Properties>
           <string name="Name">Economy</string>
           <string name="Source"><![CDATA[--!strict
@@ -17904,7 +18076,7 @@ return Economy
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="159">
+      <Item class="ModuleScript" referent="160">
         <Properties>
           <string name="Name">Format</string>
           <string name="Source"><![CDATA[--!strict
@@ -18019,7 +18191,7 @@ return Format
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="160">
+      <Item class="ModuleScript" referent="161">
         <Properties>
           <string name="Name">Funnel</string>
           <string name="Source"><![CDATA[--!strict
@@ -18131,7 +18303,7 @@ return Funnel
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="161">
+      <Item class="ModuleScript" referent="162">
         <Properties>
           <string name="Name">InteractiveRules</string>
           <string name="Source"><![CDATA[--!strict
@@ -18352,7 +18524,7 @@ return Rules
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="162">
+      <Item class="ModuleScript" referent="163">
         <Properties>
           <string name="Name">Net</string>
           <string name="Source"><![CDATA[-- Remote events/functions. The server creates them, clients wait for them.
@@ -18420,7 +18592,7 @@ return Net
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="163">
+      <Item class="ModuleScript" referent="164">
         <Properties>
           <string name="Name">NextGoal</string>
           <string name="Source"><![CDATA[--!strict
@@ -18511,7 +18683,7 @@ return NextGoal
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="164">
+      <Item class="ModuleScript" referent="165">
         <Properties>
           <string name="Name">OrbLook</string>
           <string name="Source"><![CDATA[--!strict
@@ -18633,7 +18805,7 @@ return OrbLook
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="165">
+      <Item class="ModuleScript" referent="166">
         <Properties>
           <string name="Name">Poses</string>
           <string name="Source"><![CDATA[--[[
@@ -19913,7 +20085,7 @@ return Poses
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="166">
+      <Item class="ModuleScript" referent="167">
         <Properties>
           <string name="Name">RigPose</string>
           <string name="Source"><![CDATA[--[[
@@ -20082,7 +20254,7 @@ return RigPose
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="167">
+      <Item class="ModuleScript" referent="168">
         <Properties>
           <string name="Name">SessionLock</string>
           <string name="Source"><![CDATA[--!strict
@@ -20135,7 +20307,7 @@ return SessionLock
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="168">
+      <Item class="ModuleScript" referent="169">
         <Properties>
           <string name="Name">TutorialSteps</string>
           <string name="Source"><![CDATA[--!strict
@@ -20278,7 +20450,7 @@ return TutorialSteps
         </Properties>
       </Item>
     </Item>
-    <Item class="ModuleScript" referent="169">
+    <Item class="ModuleScript" referent="170">
       <Properties>
         <string name="Name">Theme</string>
         <string name="Source"><![CDATA[--[[
@@ -21802,15 +21974,15 @@ return Theme
       </Properties>
     </Item>
   </Item>
-  <Item class="ServerScriptService" referent="170">
+  <Item class="ServerScriptService" referent="171">
     <Properties>
       <string name="Name">ServerScriptService</string>
     </Properties>
-    <Item class="Folder" referent="171">
+    <Item class="Folder" referent="172">
       <Properties>
         <string name="Name">Server</string>
       </Properties>
-      <Item class="ModuleScript" referent="172">
+      <Item class="ModuleScript" referent="173">
         <Properties>
           <string name="Name">Analytics</string>
           <string name="Source"><![CDATA[--[[
@@ -21980,7 +22152,7 @@ return Analytics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="173">
+      <Item class="ModuleScript" referent="174">
         <Properties>
           <string name="Name">Badges</string>
           <string name="Source"><![CDATA[--[[
@@ -22093,7 +22265,7 @@ return Badges
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="174">
+      <Item class="ModuleScript" referent="175">
         <Properties>
           <string name="Name">Cosmetics</string>
           <string name="Source"><![CDATA[--[[
@@ -22727,7 +22899,7 @@ return Cosmetics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="175">
+      <Item class="ModuleScript" referent="176">
         <Properties>
           <string name="Name">Daily</string>
           <string name="Source"><![CDATA[--[[
@@ -22910,7 +23082,7 @@ return Daily
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="176">
+      <Item class="ModuleScript" referent="177">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -23376,7 +23548,7 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="177">
+      <Item class="ModuleScript" referent="178">
         <Properties>
           <string name="Name">GameModes</string>
           <string name="Source"><![CDATA[--[[
@@ -23723,7 +23895,7 @@ return GameModes
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="178">
+      <Item class="ModuleScript" referent="179">
         <Properties>
           <string name="Name">Intro</string>
           <string name="Source"><![CDATA[--[[
@@ -23771,7 +23943,7 @@ return Intro
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Script" referent="179">
+      <Item class="Script" referent="180">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -23905,11 +24077,11 @@ end)
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="180">
+      <Item class="Folder" referent="181">
         <Properties>
           <string name="Name">Modes</string>
         </Properties>
-        <Item class="ModuleScript" referent="181">
+        <Item class="ModuleScript" referent="182">
           <Properties>
             <string name="Name">Cardio</string>
             <string name="Source"><![CDATA[--[[
@@ -24568,7 +24740,7 @@ return Cardio
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="182">
+        <Item class="ModuleScript" referent="183">
           <Properties>
             <string name="Name">CardioChase</string>
             <string name="Source"><![CDATA[--!strict
@@ -24956,7 +25128,7 @@ return CardioChase
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="183">
+        <Item class="ModuleScript" referent="184">
           <Properties>
             <string name="Name">CardioLayout</string>
             <string name="Source"><![CDATA[--!strict
@@ -26421,7 +26593,7 @@ return CardioLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="184">
+        <Item class="ModuleScript" referent="185">
           <Properties>
             <string name="Name">CardioRules</string>
             <string name="Source"><![CDATA[--!strict
@@ -26704,7 +26876,7 @@ return CardioRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="185">
+        <Item class="ModuleScript" referent="186">
           <Properties>
             <string name="Name">Catalog</string>
             <string name="Source"><![CDATA[--!strict
@@ -26744,7 +26916,7 @@ return Catalog
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="186">
+        <Item class="ModuleScript" referent="187">
           <Properties>
             <string name="Name">Course</string>
             <string name="Source"><![CDATA[--!strict
@@ -28775,7 +28947,7 @@ return Course
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="187">
+        <Item class="ModuleScript" referent="188">
           <Properties>
             <string name="Name">Mog</string>
             <string name="Source"><![CDATA[--[[
@@ -29692,7 +29864,7 @@ return { create = create }
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="188">
+        <Item class="ModuleScript" referent="189">
           <Properties>
             <string name="Name">MogLayout</string>
             <string name="Source"><![CDATA[--[[
@@ -29769,7 +29941,7 @@ return MogLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="189">
+        <Item class="ModuleScript" referent="190">
           <Properties>
             <string name="Name">MogRules</string>
             <string name="Source"><![CDATA[--[[
@@ -30098,7 +30270,7 @@ return MogRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="190">
+        <Item class="ModuleScript" referent="191">
           <Properties>
             <string name="Name">Parkour</string>
             <string name="Source"><![CDATA[--[[
@@ -30744,7 +30916,7 @@ return Parkour
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="191">
+        <Item class="ModuleScript" referent="192">
           <Properties>
             <string name="Name">Rules</string>
             <string name="Source"><![CDATA[--!strict
@@ -30837,7 +31009,7 @@ return Rules
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="192">
+      <Item class="ModuleScript" referent="193">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -31133,7 +31305,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="193">
+      <Item class="ModuleScript" referent="194">
         <Properties>
           <string name="Name">PlotLayout</string>
           <string name="Source"><![CDATA[--!strict
@@ -31724,7 +31896,7 @@ return Layout
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="194">
+      <Item class="ModuleScript" referent="195">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -31973,7 +32145,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="195">
+      <Item class="ModuleScript" referent="196">
         <Properties>
           <string name="Name">Tutorial</string>
           <string name="Source"><![CDATA[--[[
@@ -32090,7 +32262,7 @@ return Tutorial
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="196">
+      <Item class="ModuleScript" referent="197">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -34387,11 +34559,11 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="197">
+      <Item class="Folder" referent="198">
         <Properties>
           <string name="Name">World</string>
         </Properties>
-        <Item class="ModuleScript" referent="198">
+        <Item class="ModuleScript" referent="199">
           <Properties>
             <string name="Name">CardioTrack</string>
             <string name="Source"><![CDATA[--[[
@@ -35854,7 +36026,7 @@ return CardioTrack
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="199">
+        <Item class="ModuleScript" referent="200">
           <Properties>
             <string name="Name">Common</string>
             <string name="Source"><![CDATA[--[[
@@ -36029,7 +36201,7 @@ return Common
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="200">
+        <Item class="ModuleScript" referent="201">
           <Properties>
             <string name="Name">Decor</string>
             <string name="Source"><![CDATA[--[[
@@ -37096,7 +37268,7 @@ return Decor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="201">
+        <Item class="ModuleScript" referent="202">
           <Properties>
             <string name="Name">Hub</string>
             <string name="Source"><![CDATA[--[[
@@ -38213,7 +38385,7 @@ return Hub
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="202">
+        <Item class="ModuleScript" referent="203">
           <Properties>
             <string name="Name">Machines</string>
             <string name="Source"><![CDATA[--[[
@@ -39031,7 +39203,7 @@ return Machines
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="203">
+        <Item class="ModuleScript" referent="204">
           <Properties>
             <string name="Name">MapDecor</string>
             <string name="Source"><![CDATA[--[[
@@ -39976,7 +40148,7 @@ return MapDecor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="204">
+        <Item class="ModuleScript" referent="205">
           <Properties>
             <string name="Name">Modes</string>
             <string name="Source"><![CDATA[--[[
@@ -41732,7 +41904,7 @@ return Modes
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="205">
+        <Item class="ModuleScript" referent="206">
           <Properties>
             <string name="Name">MogStage</string>
             <string name="Source"><![CDATA[--[[
@@ -42073,7 +42245,7 @@ return MogStage
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="206">
+        <Item class="ModuleScript" referent="207">
           <Properties>
             <string name="Name">Pads</string>
             <string name="Source"><![CDATA[--[[
@@ -42386,7 +42558,7 @@ return Pads
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="207">
+        <Item class="ModuleScript" referent="208">
           <Properties>
             <string name="Name">Pen</string>
             <string name="Source"><![CDATA[--[[
@@ -42705,7 +42877,7 @@ return Pen
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="208">
+        <Item class="ModuleScript" referent="209">
           <Properties>
             <string name="Name">Props</string>
             <string name="Source"><![CDATA[--!strict
@@ -42976,7 +43148,7 @@ return Props
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="209">
+        <Item class="ModuleScript" referent="210">
           <Properties>
             <string name="Name">Shell</string>
             <string name="Source"><![CDATA[--[[
@@ -43425,7 +43597,7 @@ return Shell
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="210">
+        <Item class="ModuleScript" referent="211">
           <Properties>
             <string name="Name">Shelves</string>
             <string name="Source"><![CDATA[--[[
@@ -44135,7 +44307,7 @@ return Shelves
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="211">
+      <Item class="ModuleScript" referent="212">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -44501,26 +44673,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="212">
+  <Item class="SoundService" referent="213">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="213">
+  <Item class="StarterPlayer" referent="214">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="214">
+    <Item class="StarterPlayerScripts" referent="215">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="215">
+      <Item class="Folder" referent="216">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="ModuleScript" referent="216">
+        <Item class="ModuleScript" referent="217">
           <Properties>
             <string name="Name">Animator</string>
             <string name="Source"><![CDATA[--[[
@@ -45200,11 +45372,11 @@ return Animator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="217">
+        <Item class="Folder" referent="218">
           <Properties>
             <string name="Name">Fx</string>
           </Properties>
-          <Item class="ModuleScript" referent="218">
+          <Item class="ModuleScript" referent="219">
             <Properties>
               <string name="Name">Ambient</string>
               <string name="Source"><![CDATA[--[[
@@ -45584,7 +45756,7 @@ return Ambient
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="219">
+          <Item class="ModuleScript" referent="220">
             <Properties>
               <string name="Name">Budget</string>
               <string name="Source"><![CDATA[--[[
@@ -45761,7 +45933,7 @@ return Budget
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="220">
+          <Item class="ModuleScript" referent="221">
             <Properties>
               <string name="Name">Camera</string>
               <string name="Source"><![CDATA[--[[
@@ -46087,7 +46259,7 @@ return Camera
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="221">
+          <Item class="ModuleScript" referent="222">
             <Properties>
               <string name="Name">Cardio</string>
               <string name="Source"><![CDATA[--!strict
@@ -47413,7 +47585,7 @@ return CardioFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="222">
+          <Item class="ModuleScript" referent="223">
             <Properties>
               <string name="Name">CardioChase</string>
               <string name="Source"><![CDATA[--!strict
@@ -48054,7 +48226,7 @@ return ChaseFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="223">
+          <Item class="ModuleScript" referent="224">
             <Properties>
               <string name="Name">Cosmetics</string>
               <string name="Source"><![CDATA[--[[
@@ -48372,7 +48544,7 @@ return CosmeticsFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="224">
+          <Item class="ModuleScript" referent="225">
             <Properties>
               <string name="Name">Crates</string>
               <string name="Source"><![CDATA[--[[
@@ -49249,7 +49421,7 @@ return Crates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="225">
+          <Item class="ModuleScript" referent="226">
             <Properties>
               <string name="Name">Fans</string>
               <string name="Source"><![CDATA[--[[
@@ -50244,7 +50416,7 @@ return Fans
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="226">
+          <Item class="ModuleScript" referent="227">
             <Properties>
               <string name="Name">Interactive</string>
               <string name="Source"><![CDATA[--!strict
@@ -51570,7 +51742,7 @@ return Interactive
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="227">
+          <Item class="ModuleScript" referent="228">
             <Properties>
               <string name="Name">Machines</string>
               <string name="Source"><![CDATA[-- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow):
@@ -53102,7 +53274,7 @@ return Machines
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="228">
+          <Item class="ModuleScript" referent="229">
             <Properties>
               <string name="Name">Modes</string>
               <string name="Source"><![CDATA[--!strict
@@ -54699,7 +54871,7 @@ return ModesFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="229">
+          <Item class="ModuleScript" referent="230">
             <Properties>
               <string name="Name">Mog</string>
               <string name="Source"><![CDATA[--!strict
@@ -55324,7 +55496,7 @@ return MogFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="230">
+          <Item class="ModuleScript" referent="231">
             <Properties>
               <string name="Name">Orbs</string>
               <string name="Source"><![CDATA[-- Client-side aura orb visuals for the local player's own plot.
@@ -57390,7 +57562,7 @@ return Orbs
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="231">
+          <Item class="ModuleScript" referent="232">
             <Properties>
               <string name="Name">PlateStyle</string>
               <string name="Source"><![CDATA[--!strict
@@ -57639,7 +57811,7 @@ return PlateStyle
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="232">
+          <Item class="ModuleScript" referent="233">
             <Properties>
               <string name="Name">Plates</string>
               <string name="Source"><![CDATA[--!strict
@@ -58470,7 +58642,7 @@ return Plates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="233">
+          <Item class="ModuleScript" referent="234">
             <Properties>
               <string name="Name">PlayerPose</string>
               <string name="Source"><![CDATA[--!strict
@@ -58624,7 +58796,7 @@ return PlayerPose
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="234">
+          <Item class="ModuleScript" referent="235">
             <Properties>
               <string name="Name">Shelf</string>
               <string name="Source"><![CDATA[--[[
@@ -60248,7 +60420,7 @@ return Shelf
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="235">
+          <Item class="ModuleScript" referent="236">
             <Properties>
               <string name="Name">Sprites</string>
               <string name="Source"><![CDATA[--[[
@@ -60453,7 +60625,7 @@ return Sprites
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="236">
+          <Item class="ModuleScript" referent="237">
             <Properties>
               <string name="Name">Surge</string>
               <string name="Source"><![CDATA[--[[
@@ -60738,7 +60910,7 @@ return Surge
             </Properties>
           </Item>
         </Item>
-        <Item class="ModuleScript" referent="237">
+        <Item class="ModuleScript" referent="238">
           <Properties>
             <string name="Name">Guide</string>
             <string name="Source"><![CDATA[--[[
@@ -61180,11 +61352,11 @@ return Guide
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="238">
+        <Item class="Folder" referent="239">
           <Properties>
             <string name="Name">Intro</string>
           </Properties>
-          <Item class="ModuleScript" referent="239">
+          <Item class="ModuleScript" referent="240">
             <Properties>
               <string name="Name">Actors</string>
               <string name="Source"><![CDATA[--!strict
@@ -61853,7 +62025,7 @@ return Actors
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="240">
+          <Item class="ModuleScript" referent="241">
             <Properties>
               <string name="Name">Avatar</string>
               <string name="Source"><![CDATA[--!strict
@@ -62496,7 +62668,7 @@ return Avatar
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="241">
+          <Item class="ModuleScript" referent="242">
             <Properties>
               <string name="Name">AvatarRig</string>
               <string name="Source"><![CDATA[--!strict
@@ -62727,7 +62899,7 @@ return AvatarRig
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="242">
+          <Item class="ModuleScript" referent="243">
             <Properties>
               <string name="Name">Cutscene</string>
               <string name="Source"><![CDATA[--[[
@@ -63570,7 +63742,7 @@ return Cutscene
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="243">
+          <Item class="ModuleScript" referent="244">
             <Properties>
               <string name="Name">Effects</string>
               <string name="Source"><![CDATA[--!strict
@@ -64495,7 +64667,7 @@ return Effects
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="244">
+          <Item class="ModuleScript" referent="245">
             <Properties>
               <string name="Name">Framing</string>
               <string name="Source"><![CDATA[--!strict
@@ -64702,7 +64874,7 @@ return Framing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="245">
+          <Item class="ModuleScript" referent="246">
             <Properties>
               <string name="Name">Stage</string>
               <string name="Source"><![CDATA[--!strict
@@ -64988,7 +65160,7 @@ return Stage
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="246">
+          <Item class="ModuleScript" referent="247">
             <Properties>
               <string name="Name">Timeline</string>
               <string name="Source"><![CDATA[--!strict
@@ -65336,7 +65508,7 @@ return Timeline
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="247">
+          <Item class="ModuleScript" referent="248">
             <Properties>
               <string name="Name">Ui</string>
               <string name="Source"><![CDATA[--!strict
@@ -66212,7 +66384,7 @@ return Ui
             </Properties>
           </Item>
         </Item>
-        <Item class="LocalScript" referent="248">
+        <Item class="LocalScript" referent="249">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -66701,7 +66873,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="249">
+        <Item class="ModuleScript" referent="250">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects plus background music.
@@ -67269,7 +67441,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="250">
+        <Item class="ModuleScript" referent="251">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -67318,11 +67490,11 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="251">
+        <Item class="Folder" referent="252">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="252">
+          <Item class="ModuleScript" referent="253">
             <Properties>
               <string name="Name">CardioHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -68816,7 +68988,7 @@ return CardioHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="253">
+          <Item class="ModuleScript" referent="254">
             <Properties>
               <string name="Name">DailyWindow</string>
               <string name="Source"><![CDATA[--[[
@@ -69445,7 +69617,7 @@ return DailyWindow
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="254">
+          <Item class="ModuleScript" referent="255">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -71450,7 +71622,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="255">
+          <Item class="ModuleScript" referent="256">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -75373,7 +75545,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="256">
+          <Item class="ModuleScript" referent="257">
             <Properties>
               <string name="Name">MapPicker</string>
               <string name="Source"><![CDATA[--[[
@@ -76279,7 +76451,7 @@ return MapPicker
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="257">
+          <Item class="ModuleScript" referent="258">
             <Properties>
               <string name="Name">MogHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -77319,7 +77491,7 @@ return MogHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="258">
+          <Item class="ModuleScript" referent="259">
             <Properties>
               <string name="Name">MogRing</string>
               <string name="Source"><![CDATA[--!strict
@@ -77825,7 +77997,7 @@ return MogRing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="259">
+          <Item class="ModuleScript" referent="260">
             <Properties>
               <string name="Name">ObbyHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -78560,7 +78732,7 @@ return ObbyHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="260">
+          <Item class="ModuleScript" referent="261">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -82478,7 +82650,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="261">
+          <Item class="ModuleScript" referent="262">
             <Properties>
               <string name="Name">ShopScenes</string>
               <string name="Source"><![CDATA[--[[
@@ -84406,7 +84578,7 @@ return ShopScenes
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="262">
+          <Item class="ModuleScript" referent="263">
             <Properties>
               <string name="Name">Tutorial</string>
               <string name="Source"><![CDATA[--[[
@@ -85231,7 +85403,7 @@ return Tutorial
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="263">
+          <Item class="ModuleScript" referent="264">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
@@ -89302,7 +89474,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="264">
+  <Item class="Workspace" referent="265">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>
