@@ -793,6 +793,17 @@ local function schedule(delay: number)
 	task.delay(math.max(delay, 0), pump)
 end
 
+-- ScreenGui attribute "PopupBusy": a queued card is waiting or up, or the free gift's card
+-- is on screen. The Daily window and the "While you were away" card never open by
+-- themselves meanwhile (a reveal can wait in the queue for as long as the merges go on,
+-- much longer than the Daily window's own quiet time after a Reward notify).
+Popups.giftUntil = 0
+function Popups.syncBusy()
+	if screen then
+		screen:SetAttribute("PopupBusy", busy or #queue > 0 or os.clock() < Popups.giftUntil)
+	end
+end
+
 pump = function()
 	if busy or #queue == 0 then
 		return
@@ -828,6 +839,7 @@ pump = function()
 		finished = true
 		busy = false
 		lastModalAt = os.clock()
+		Popups.syncBusy()
 		schedule(0.05)
 	end
 	-- A card that throws half-way must not stay up: its modal, its dim and its Back entry
@@ -869,7 +881,65 @@ function Popups.enqueue(kind: string, priority: number, show: (done: () -> ()) -
 		show = show,
 		data = data,
 	})
+	Popups.syncBusy()
 	schedule(GATHER + 0.01)
+end
+
+--[[
+	Finish cards (Popups.modeFinish, Popups.mogFinish). A card that is up is in
+	Popups.finishCards under its own token, as its close function. Popups.closeFinish
+	closes them all and drops the ones still waiting in the queue: Main calls it when a
+	mode starts or stops (the card's mode is over, or another one has begun), and
+	Popups.watchFinish when the player is back on their own plot (the Home button, or a
+	walk home), so a card never stays up, with its dim and its blur, over another mode or
+	the gym.
+]]
+Popups.finishCards = {} :: { [any]: () -> () }
+function Popups.closeFinish()
+	for i = #queue, 1, -1 do
+		local kind = queue[i].kind
+		if kind == "ModeFinish" or kind == "MogFinish" then
+			table.remove(queue, i)
+		end
+	end
+	for token, close in table.clone(Popups.finishCards) do
+		Popups.finishCards[token] = nil
+		close()
+	end
+	Popups.syncBusy()
+end
+
+-- The player's character stands on their own plot (its "Floor" slab, World.Shell).
+function Popups.atHome(): boolean
+	local data = State.data
+	local map = Workspace:FindFirstChild("Map")
+	local plot = if data and map and data.plotIndex then map:FindFirstChild("Plot" .. tostring(data.plotIndex)) else nil
+	local floor = plot and plot:FindFirstChild("Floor", true)
+	local character = Players.LocalPlayer.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not floor or not floor:IsA("BasePart") or not root or not root:IsA("BasePart") then
+		return false
+	end
+	local at = floor.CFrame:PointToObjectSpace(root.Position)
+	return math.abs(at.X) <= floor.Size.X / 2 and math.abs(at.Z) <= floor.Size.Z / 2 and at.Y > -8 and at.Y < 60
+end
+
+-- The finish card `token` just opened as `close`: it is closed with the others, and by
+-- itself once the player is Home.
+function Popups.watchFinish(token: any, close: () -> ())
+	Popups.finishCards[token] = close
+	if PREVIEW then
+		return
+	end
+	task.spawn(function()
+		while Popups.finishCards[token] do
+			task.wait(0.25)
+			if Popups.finishCards[token] and Popups.atHome() then
+				Popups.closeFinish()
+				return
+			end
+		end
+	end)
 end
 
 -- Main calls this on every "Merge" effect.
@@ -1715,13 +1785,10 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	local stageH = statsY + statSize + 8 + (if mergesRow then tierSize + 10 else 0) + 36
 	local height = stageH + (if #extras > 0 then EXTRAS_H else 0)
 
-	-- A window underneath (the shop, the Index) is busy: the veil goes deep and even over it,
-	-- the window dims to about Theme.Glass.RevealDim behind the name and comes back when the
-	-- veil lifts. Toasts and the tutorial pill step out (setReveal).
-	local overWindow = screen:GetAttribute("WindowOpen") == true
+	-- Toasts and the tutorial pill step out (setReveal); the veil below hides an open window.
 	local openKey = "Reward:" .. tostring(os.clock())
 	setReveal(true)
-	-- The lighter frost: the Chad's plot stays readable behind the reveal.
+	-- The lighter frost, under a dark veil.
 	Kit.setBlur(true, true)
 
 	local root = Kit.new("Frame", {
@@ -1731,7 +1798,8 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 30,
 		Parent = screen,
 	})
-	-- Veil: navy across the middle band (about 40 %), thinning out toward the edges.
+	-- Veil: navy, about 80 % across the middle band and a little thinner toward the edges, so
+	-- the unit and its name stand on a dark stage whatever the plot shows behind them.
 	local veil = Kit.new("Frame", {
 		Name = "Dim",
 		BackgroundColor3 = VEIL,
@@ -1743,24 +1811,34 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 0,
 		Parent = root,
 	})
-	local window = 1 - Theme.Glass.RevealDim
-	Kit.new("UIGradient", {
-		Rotation = 90,
-		Transparency = if overWindow
-			then NumberSequence.new({
-				NumberSequenceKeypoint.new(0, window),
-				NumberSequenceKeypoint.new(0.3, window * 0.5),
-				NumberSequenceKeypoint.new(0.8, window * 0.4),
-				NumberSequenceKeypoint.new(1, window),
-			})
-			else NumberSequence.new({
-				NumberSequenceKeypoint.new(0, 0.92),
-				NumberSequenceKeypoint.new(0.36, 0.62),
-				NumberSequenceKeypoint.new(0.74, 0.6),
-				NumberSequenceKeypoint.new(1, 0.78),
-			}),
-		Parent = veil,
-	})
+	do
+		-- An open window (the Shop, the Daily window, the Index) is hidden for as long as the
+		-- reveal or its chain plays: over one the veil is solid, also when the window opens
+		-- half-way through, and the window is back as the veil lifts. Nothing of it reads
+		-- through behind the unit.
+		local gradient = Kit.new("UIGradient", { Rotation = 90, Parent = veil })
+		local function paint()
+			gradient.Transparency = if Windows.isAnyOpen()
+				then NumberSequence.new(0)
+				else NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 0.3),
+					NumberSequenceKeypoint.new(0.3, 0.2),
+					NumberSequenceKeypoint.new(0.8, 0.18),
+					NumberSequenceKeypoint.new(1, 0.26),
+				})
+		end
+		paint()
+		if not PREVIEW then
+			local watch: RBXScriptConnection
+			watch = Windows.changed.Event:Connect(function()
+				if root:IsDescendantOf(game) then
+					paint()
+				else
+					watch:Disconnect()
+				end
+			end)
+		end
+	end
 	-- The count behind WindowOpen is given back if the reveal's gui is destroyed.
 	Kit.markOpen(screen, openKey, true, root)
 	Kit.tween(veil, 0.25, { BackgroundTransparency = 0 })
@@ -2015,22 +2093,25 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		-- stretched wide, the glass tint with the rarity colour in it) so they hold over a
 		-- busy plot.
 		local plateH = statsY + statSize - nameY + 110
-		local plate = softDot(stage, "Plate", Theme.Glass.Tint:Lerp(color, 0.3), UDim2.fromOffset(STAGE_W, plateH), 0.2, 2)
+		local plate = softDot(stage, "Plate", VEIL:Lerp(color, 0.12), UDim2.fromOffset(STAGE_W, plateH), 0.1, 2)
 		plate.Position = UDim2.new(0.5, 0, 0, (nameY + statsY + statSize + 8) / 2)
 		table.insert(lines, plate)
 		Kit.appear(plate, { from = 0.9, time = 0.3 })
-		-- Big name in the rarity colour, scaled down to fit on one line.
+		-- Big name in the rarity colour, scaled down to fit on one line. It reads on every
+		-- rarity: a pale colour with little hue of its own (Common's grey) goes most of the
+		-- way to white, and every name wears a thick ink outline over the dark plate.
+		local _, saturation = color:ToHSV()
 		arrive(Kit.hudText(stage, {
 			Name = "UnitName",
 			Text = string.upper(Theme.Tiers[tier].Name),
 			TextSize = nameSize,
 			TextScaled = true,
 			MaxTextSize = nameSize,
-			TextColor3 = Kit.lighten(color, 0.15),
+			TextColor3 = Kit.lighten(color, if saturation < 0.25 then 0.7 else 0.2),
 			StrokeColor = Theme.Glass.TextInk,
 			Size = UDim2.new(1, -40, 0, nameSize + 6),
 			Position = UDim2.fromOffset(20, nameY),
-			StrokeThickness = 3,
+			StrokeThickness = 4,
 			ZIndex = 5,
 		}))
 		sounds.play("Tick", 0.02, 1.2)
@@ -2422,7 +2503,9 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 30,
 		Parent = screen,
 	})
-	local dim = cover(holder, "Dim", C.Ink, 0.66)
+	-- As dark as the unit reveal's veil that follows, and solid over an open window (the
+	-- window is hidden for the whole reveal).
+	local dim = cover(holder, "Dim", VEIL, if Windows.isAnyOpen() then 0 else 0.2)
 	Kit.appear(dim, { from = 1, time = 0.25 })
 	local tint: Frame? = if rank >= 3 then cover(holder, "Tint", color, 1) else nil
 
@@ -3074,9 +3157,12 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		-- when it opens and when it closes.
 		local action = Net.event("Action")
 		local box, close = modal("ModeFinish", Vector2.new(480, noteY + 22 + 14 + buttonsH), 45, nil, function()
+			Popups.finishCards[done] = nil
 			action:FireServer({ action = "ModeCard", mode = data.mode, open = false })
 			done()
 		end)
+		-- Closed with the mode's next start or stop, and once the player is Home.
+		Popups.watchFinish(done, close)
 		action:FireServer({ action = "ModeCard", mode = data.mode, open = true })
 		local medalAt = UDim2.new(0.5, 0, 0, 0)
 		if firstClear then
@@ -3403,6 +3489,19 @@ end
 	small HP margin or sudden death).
 ]]
 function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> ())
+	-- Nothing to show: the player left the duel themselves, or the test ended with no score,
+	-- no pass and no cash. A line says so; no card stands in the way out.
+	if not PREVIEW then
+		if data.vs == "pvp" then
+			if data.won ~= true and data.draw ~= true and data.reason == "forfeit" and data.afk ~= true then
+				Popups.toast("You left the duel", "info")
+				return
+			end
+		elseif (tonumber(data.score) or 0) <= 0 and data.passed ~= true and (tonumber(data.cash) or 0) <= 0 then
+			Popups.toast("Mog test over. Try again at the gate!", "info")
+			return
+		end
+	end
 	Popups.enqueue("MogFinish", Popups.PRIORITY.Normal, function(done)
 		local score = tonumber(data.score) or 0
 		local cashTotal = tonumber(data.cash) or 0
@@ -3428,7 +3527,11 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		local draw = duel and data.draw == true
 		local lost = duel and not won and not draw
 		local foe = if duel and type(data.opponent) == "table" then tostring(data.opponent.name or "Opponent") else "Opponent"
-		local box, close = modal("MogFinish", Vector2.new(480, 380), 45, nil, done)
+		local box, close = modal("MogFinish", Vector2.new(480, 380), 45, nil, function()
+			Popups.finishCards[done] = nil
+			done()
+		end)
+		Popups.watchFinish(done, close)
 		local medal = medallion(
 			box,
 			if lost then "😤" elseif draw then "🤝" else "💪",
@@ -4857,14 +4960,15 @@ function Popups.tutorialDone(cash: number, done: () -> ())
 end
 
 --[[
-	The free gift: a small glass card in the middle of the screen with the gift badge, the
-	cash counting up over a toss of coins, and when the next one is due. Not modal and it
-	takes no input: it goes by itself after GIFT_LIFE. data: cash, nextIn (seconds; the
+	The free gift: a small solid card in the middle of the screen (the crate panel's solid
+	style: it stands over the plot's signs, and their text read through glass) with the gift
+	badge, the cash counting up over a toss of coins, and when the next one is due. Not modal
+	and it takes no input: it goes by itself after GIFT_LIFE. data: cash, nextIn (seconds; the
 	cooldown when absent): the server's Gift notify. The "Cash" effect of the same claim
 	brings the sound and the coins (Main), not a second card.
 ]]
 local GIFT_LIFE = 3.2
-local GIFT_W, GIFT_H = 380, 168
+local GIFT_W, GIFT_H = 360, 168
 function Popups.gift(data: { [string]: any })
 	local now = os.clock()
 	local cash = math.max(tonumber(data.cash) or 0, 0)
@@ -4877,7 +4981,8 @@ function Popups.gift(data: { [string]: any })
 		Name = "GiftCard",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(GIFT_W, GIFT_H),
-		Position = UDim2.fromScale(0.5, 0.36),
+		-- Centred, a little low: the badge on its top edge stays clear of the HUD's top strips.
+		Position = UDim2.fromScale(0.5, 0.44),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 27,
 		Parent = screen,
@@ -4889,12 +4994,18 @@ function Popups.gift(data: { [string]: any })
 				Kit.disappear(holder, { time = 0.22, to = 0.9, destroy = true })
 			end
 		end)
+		-- A reward card is on screen: nothing opens by itself over it ("PopupBusy").
+		Popups.giftUntil = os.clock() + GIFT_LIFE + 0.25
+		Popups.syncBusy()
+		task.delay(GIFT_LIFE + 0.3, Popups.syncBusy)
 	end
-	local card = Kit.hudGlass(holder, {
+	local card = Kit.panel(holder, {
 		Name = "Card",
+		Color = C.Surface,
+		StrokeColor = C.Cash,
+		StrokeThickness = 2,
 		Size = UDim2.fromOffset(GIFT_W, GIFT_H),
 		Radius = Kit.RADIUS.L,
-		Edge = C.Cash,
 		ZIndex = 2,
 	})
 	medallion(card, Theme.Icons.Free, C.Cash, 68, UDim2.new(0.5, 0, 0, 0))
@@ -5186,14 +5297,16 @@ function Popups.defineRebirth()
 		RowIcon = 16,
 		RowGap = 6,
 		RowPad = 12,
-		KeepColor = C.Cash,
-		ResetColor = C.Amber,
+		Rows = 4, -- lines a list shows (what starts again is never cut)
+		RowPx = 14, -- a row's text on the glass, at least
+		KeepColor = C.Cash, -- green: what stays
+		ResetColor = C.Amber, -- orange: what starts again
 		Arm = 0.8, -- seconds before the second question takes a "Yes"
 		Wait = 5, -- seconds the card waits for the server's answer
 		-- Ready
 		ReadyWidth = 500,
-		LaterColor = C.Primary, -- "Later" and "Show me" are the same size on purpose
-		ShowColor = C.Gold,
+		LaterColor = C.SurfaceHi, -- neutral, and the same size as "Show me" on purpose
+		ShowColor = C.Gold, -- the primary
 		-- Reveal
 		DoneWidth = 500,
 		DoneMedal = 96,
@@ -5228,6 +5341,29 @@ function Popups.defineRebirth()
 			end
 		end
 		return rows
+	end
+	-- What stays, in at most `room` lines: the stars and the paid passes lead (the rows a
+	-- player would miss most), the rest follow in the server's order, and a list that is cut
+	-- ends in one honest line for everything left out (all that does not start again stays:
+	-- Economy.REBIRTH_KEEPS).
+	local function keepRows(list: any, room: number): { string }
+		local first: { string } = {}
+		local rest: { string } = {}
+		if type(list) == "table" then
+			for _, entry in list do
+				if type(entry) == "table" and type(entry.text) == "string" and entry.text ~= "" then
+					table.insert(if entry.key == "stars" or entry.key == "passes" then first else rest, entry.text)
+				end
+			end
+		end
+		table.move(rest, 1, #rest, #first + 1, first)
+		if #first > room then
+			for i = #first, room, -1 do
+				table.remove(first, i)
+			end
+			table.insert(first, "And everything else you own")
+		end
+		return first
 	end
 	-- The offer in the snapshot, while the server has one.
 	local function liveOffer(): { [string]: any }?
@@ -5285,12 +5421,14 @@ function Popups.defineRebirth()
 			local gained = math.max(1, whole(offer.gained))
 			local before = tonumber(offer.starMult) or 1
 			local multAfter = tonumber(offer.starMultAfter) or before
-			local keeps = rowsOf(offer.keeps)
+			-- Short lists, L.Rows lines each. What starts again is never cut (it is what the
+			-- player agrees to): when it runs longer, the list of what stays gives up lines.
 			local resets = rowsOf(offer.resets)
+			local keeps = keepRows(offer.keeps, math.clamp(L.Rows * 2 - #resets, 2, L.Rows))
 			-- Two columns of rows, each as tall as its text wraps; the cash warning closes the
 			-- right one.
 			local colW = (L.Width - L.Pad * 2 - L.Gap) / 2
-			local rowSize = Kit.px(if Kit.touch then 12 else 14, T.Small, screen)
+			local rowSize = Kit.px(L.RowPx, T.Small, screen)
 			local textW = colW - L.RowPad * 2 - L.RowIcon - 8
 			local function columnHeight(rows: { string }): number
 				local height = L.Head + 6
@@ -5301,13 +5439,27 @@ function Popups.defineRebirth()
 			end
 			local warnText = "Your cash starts again too, even cash you bought in packs."
 			local warnW = colW - 16 - 34 - 10
-			local warnH = bodyHeight(warnText, rowSize, warnW) + 16
-			local listH = math.max(columnHeight(keeps), columnHeight(resets) + 8 + warnH + 8 - L.RowPad)
 			local noteSize = Kit.px(if Kit.touch then 13 else 16, T.Body, screen)
 			local gainY = L.Title + 34 + 8
 			local listY = gainY + L.Gain + L.Gap
-			local noteY = listY + listH + 10
-			local buttonY = noteY + noteSize + 8 + 10
+			local warnH, listH, noteY, buttonY = 0, 0, 0, 0
+			-- A tall card on a short screen is shrunk by Kit.fit (the modal's "Fit" scale): the
+			-- rows grow by what the fit takes and the card is measured again, so they stay
+			-- L.RowPx on the glass (three rounds settle it).
+			for _ = 1, 3 do
+				warnH = bodyHeight(warnText, rowSize, warnW) + 16
+				listH = math.max(columnHeight(keeps), columnHeight(resets) + 8 + warnH + 8 - L.RowPad)
+				noteY = listY + listH + 10
+				buttonY = noteY + noteSize + 8 + 10
+				local area = Kit.designArea(screen)
+				local share = if Kit.touch then Theme.Glass.FitTouch else Theme.Glass.Fit
+				local fit = if area then math.min(1, area.X * share / L.Width, area.Y * share / (buttonY + L.Button + L.Pad + 96)) else 1
+				local wanted = Kit.px(L.RowPx / fit, T.Small, screen)
+				if wanted <= rowSize then
+					break
+				end
+				rowSize = wanted
+			end
 			local close: () -> ()
 			local box, closeModal = modal("Rebirth", Vector2.new(L.Width, buttonY + L.Button + L.Pad), L.Z, nil, function()
 				S.open = false
@@ -5403,6 +5555,7 @@ function Popups.defineRebirth()
 						dot.Size = UDim2.fromOffset(8, 8)
 						dot.Position = UDim2.fromOffset(L.RowPad + L.RowIcon / 2, y + math.floor(rowSize * 0.65))
 					end
+					-- The rows wear their list's colour too (green stays, orange starts again).
 					Kit.text(well, {
 						Name = "Row" .. i,
 						Text = text,
@@ -5411,6 +5564,7 @@ function Popups.defineRebirth()
 						TextYAlignment = Enum.TextYAlignment.Top,
 						Size = UDim2.fromOffset(textW, height + 2),
 						Position = UDim2.fromOffset(L.RowPad + L.RowIcon + 8, y),
+						TextColor3 = Kit.lighten(color, 0.4),
 						StrokeThickness = 0,
 					})
 					y += height + L.RowGap
@@ -5447,28 +5601,38 @@ function Popups.defineRebirth()
 				TextXAlignment = Enum.TextXAlignment.Left,
 				Size = UDim2.new(0, warnW, 1, -12),
 				Position = UDim2.fromOffset(34, 6),
+				TextColor3 = Kit.lighten(L.ResetColor, 0.4),
 				StrokeThickness = 0,
 			})
 			local note = plainLine(box, "Note", "", noteSize, noteY, L.Pad)
 			-- Two steps. 1: "Rebirth" | "Not now". 2: "No, go back" | "Yes, rebirth!", the
 			-- answers on the other sides, so the tap that asked can never be the one that agrees.
+			-- On step 2 the way back is the big primary button and "Yes" a smaller neutral one.
 			local step = 1
 			local armed = false
 			local token = 0
 			local left: TextButton
 			local right: TextButton
+			-- `share` of the row for the left button; the right one is `drop` px shorter.
+			local function weigh(share: number, drop: number)
+				left.Size = UDim2.new(share, -L.Pad - 6, 0, L.Button)
+				right.Size = UDim2.new(1 - share, -L.Pad - 6, 0, L.Button - drop)
+				right.Position = UDim2.new(share, 6, 0, buttonY + drop / 2)
+			end
 			local function paint()
 				token += 1
 				local mine = token
 				armed = false
 				if step == 1 then
+					weigh(0.5, 0)
 					Kit.setButton(left, "Rebirth", C.Gold)
 					Kit.setButton(right, "Not now", C.SurfaceHi)
 					note.Text = "No rush: you can rebirth whenever you like."
 					note.TextColor3 = C.TextDim
 				elseif step == 2 then
-					Kit.setButton(left, "No, go back", C.SurfaceHi)
-					Kit.setButton(right, "Yes, rebirth!", C.Gold)
+					weigh(0.62, 12)
+					Kit.setButton(left, "No, go back", C.Primary)
+					Kit.setButton(right, "Yes, rebirth!", C.SurfaceHi)
 					note.Text = "Really start again? A rebirth can't be undone."
 					note.TextColor3 = C.Gold
 					Kit.pop(note, 0.8)
@@ -5615,8 +5779,8 @@ function Popups.defineRebirth()
 				TextColor3 = C.TextDim,
 				StrokeThickness = 1,
 			})
-			-- Two equal answers: the same size, neither breathes, and "Later" is as good as the
-			-- other (the gamepad starts on it; B and a tap beside the card mean it too).
+			-- "Show me" is the primary; "Later" is neutral but just as big and as easy to tap
+			-- (the gamepad starts on it; B and a tap beside the card mean it too).
 			local later = Kit.button(box, {
 				Name = "Later",
 				Text = "Later",

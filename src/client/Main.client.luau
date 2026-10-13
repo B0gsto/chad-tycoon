@@ -304,9 +304,26 @@ Net.event("State").OnClientEvent:Connect(function(data)
 	end
 end)
 
+-- Mode events that end what a finish card was about: a run (or a duel queue, or the map and
+-- Mog pickers) began, or the mode stopped. The card of a finish that is still on its way in
+-- the same burst (a duel the player left) goes with it.
+local FINISH_OVER = { start = true, stop = true, choose = true, queue = true, pick = true }
+
 Net.event("Notify").OnClientEvent:Connect(function(payload)
 	if type(payload) ~= "table" then
 		return
+	end
+	if payload.kind == "Mode" and FINISH_OVER[payload.event] then
+		-- A finish card never stays up over another mode or after its own has ended (Popups
+		-- closes it too once the player is Home).
+		Popups.closeFinish()
+		-- CardioHud's own finish card is a plain frame of the screen: its "start" hides it,
+		-- its "stop" does not.
+		local card = screen:FindFirstChild("CardioFinish")
+		if card and card:IsA("GuiObject") and card.Visible and not (payload.mode == "cardio" and payload.event == "start") then
+			Kit.unfocus(card)
+			Kit.disappear(card)
+		end
 	end
 	if payload.kind == "Toast" then
 		Popups.toast(payload.text, payload.tone)
