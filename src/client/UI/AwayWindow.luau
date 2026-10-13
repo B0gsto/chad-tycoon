@@ -10,8 +10,8 @@
 	player gets one card, not two.
 
 	It waits for a calm screen (`free`: the loading screen and the intro are gone, no
-	window, popup, reward card or mode run is up), so it never sits on the Daily window
-	or a reward card, and the Daily window's own auto-open waits for it
+	window, popup, reward card, held-crate panel or mode run is up), so it never sits on
+	the Daily window, a reward card or the crate panel, and the Daily window's own auto-open waits for it
 	(AwayWindow.holding). A player still in the tutorial gets the plain popup as before
 	(`fallback`); one who stays busy for PATIENCE seconds gets a toast instead of a card
 	that is no longer news.
@@ -318,12 +318,17 @@ function AwayWindow.show(offline: { [string]: any }, now: boolean?)
 			end
 			if calm >= CALM then
 				waiting = false
-				present(offline)
+				-- A card that fails to build never opened: the plain popup says it instead.
+				local ok, err = pcall(present, offline)
+				if not ok then
+					warn("[AwayWindow] card failed: " .. tostring(err))
+					h.fallback(offline)
+				end
 				return
 			end
 			if waited >= PATIENCE then
-				-- Busy for minutes (a mode run, the shop): the card would be old news. The
-				-- cash is still named once, quietly.
+				-- Busy for minutes (a mode run, the shop, a crate held on): the card would be old
+				-- news. The cash is still named once, quietly.
 				waiting = false
 				local cash = tonumber(offline.cash) or 0
 				if cash >= 1 then

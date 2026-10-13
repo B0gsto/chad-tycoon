@@ -756,6 +756,15 @@ end
 ]]
 
 Popups.PRIORITY = { NewTier = 3, Tutorial = 2, Normal = 1 }
+-- Per kind of card: what its caller takes back when `show` threw (its own "a card is open"
+-- state). The queue runs it after closing what the card had built.
+Popups.FAILED = {} :: { [string]: () -> () }
+-- The modals open right now, and closing the ones opened since (set under `modal`, which
+-- keeps the list): the queue takes down what a card that threw half-way left on screen.
+Popups.modalsNow = function(): { [() -> ()]: boolean }
+	return {}
+end
+Popups.closeModalsSince = function(_before: { [() -> ()]: boolean }) end
 
 type Entry = {
 	kind: string,
@@ -821,20 +830,33 @@ pump = function()
 		lastModalAt = os.clock()
 		schedule(0.05)
 	end
+	-- A card that throws half-way must not stay up: its modal, its dim and its Back entry
+	-- (ModalOpen) go, the caller resets its own state (Popups.FAILED) and the queue moves on.
+	local before = Popups.modalsNow()
 	local ok, err = pcall(entry.show, done)
 	if not ok then
 		warn("[Popups] " .. entry.kind .. " failed: " .. tostring(err))
+		Popups.closeModalsSince(before)
+		local failed = Popups.FAILED[entry.kind]
+		if failed then
+			pcall(failed)
+		end
 		done()
 	end
 end
 
--- Queue a modal. `show(done)` builds it and must call `done()` once it closes.
+-- Queue a modal. `show(done)` builds it and must call `done()` once it closes. If it throws,
+-- the queue closes what it built and runs Popups.FAILED[kind].
 function Popups.enqueue(kind: string, priority: number, show: (done: () -> ()) -> (), data: { [string]: any }?)
 	if PREVIEW then
 		-- The preview captures right after the call: show it at once.
 		local ok, err = pcall(show, function() end)
 		if not ok then
 			warn("[Popups] " .. kind .. " failed: " .. tostring(err))
+			local failed = Popups.FAILED[kind]
+			if failed then
+				pcall(failed)
+			end
 		end
 		return
 	end
@@ -1079,6 +1101,18 @@ end
 function Popups.closeModals()
 	for close in openModals do
 		close()
+	end
+end
+
+-- For the queue (`pump`, declared above with the queue's own state).
+Popups.modalsNow = function(): { [() -> ()]: boolean }
+	return table.clone(openModals)
+end
+Popups.closeModalsSince = function(before: { [() -> ()]: boolean })
+	for close in table.clone(openModals) do
+		if not before[close] then
+			close()
+		end
 	end
 end
 
@@ -4848,6 +4882,14 @@ function Popups.gift(data: { [string]: any })
 		ZIndex = 27,
 		Parent = screen,
 	})
+	if not PREVIEW then
+		-- Set before the card is filled, so one that fails half-way still goes by itself.
+		task.delay(GIFT_LIFE, function()
+			if holder.Parent then
+				Kit.disappear(holder, { time = 0.22, to = 0.9, destroy = true })
+			end
+		end)
+	end
 	local card = Kit.hudGlass(holder, {
 		Name = "Card",
 		Size = UDim2.fromOffset(GIFT_W, GIFT_H),
@@ -4950,11 +4992,6 @@ function Popups.gift(data: { [string]: any })
 				end)
 			end
 		end
-		task.delay(GIFT_LIFE, function()
-			if holder.Parent then
-				Kit.disappear(holder, { time = 0.22, to = 0.9, destroy = true })
-			end
-		end)
 	end
 end
 
@@ -5495,6 +5532,12 @@ function Popups.defineRebirth()
 			Kit.stagger(staged, 0.04)
 			sounds.play("Open")
 		end)
+	end
+	-- The card threw while it was being built (the queue closed what there was of it): the
+	-- star counter and the goal strip can ask again.
+	Popups.FAILED.Rebirth = function()
+		S.open = false
+		S.settle = nil
 	end
 
 	Popups.rebirthReady = function(payload: { [string]: any })

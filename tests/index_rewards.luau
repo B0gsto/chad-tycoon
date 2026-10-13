@@ -143,6 +143,20 @@ return function(h: { [string]: any })
 			"five stars: x1.5, once"
 		)
 
+		-- The floor is the player's best, not the run's: every tier ever found counts, and a
+		-- converter the rebirth reset is read as the one that tier had for free.
+		local reborn = played(12)
+		reborn.runDiscovered = foundTo(1)
+		reborn.processLevel = Economy.START_PROCESS_LEVEL
+		local bestOf = IndexRewards.progression(reborn)
+		eq(bestOf.tier, 12, "the best tier ever found")
+		eq(bestOf.processLevel, Economy.minProcessLevel(12), "with the converter that tier lifts for free")
+		reborn.processLevel = Economy.minProcessLevel(12) + 7
+		eq(IndexRewards.progression(reborn).processLevel, Economy.minProcessLevel(12) + 7, "a better converter is kept")
+		-- A run that earns more than the floor is still paid its income.
+		local over = Economy.progressionIncome(bestOf) * 4
+		eq(IndexRewards.claim(reborn, 5, over).cash, math.floor(over * milestone.seconds), "income over the floor wins")
+
 		-- The same milestone claimed in a richer run pays more.
 		local early, late = played(5), played(5)
 		local a = IndexRewards.claim(early, 5, 1e6)
@@ -203,7 +217,9 @@ return function(h: { [string]: any })
 			eq(entry.reached, milestone.found <= 18, "state reached " .. milestone.found)
 			eq(entry.claimed, false, "state claimed " .. milestone.found)
 			eq(entry.crate, milestone.crate, "state crate " .. milestone.found)
-			eq(entry.cash, IndexRewards.cash(milestone, 1000, Economy.progression(6, old.processLevel)), "state cash " .. milestone.found)
+			-- Floored by the best tier ever found (18), not by the run's (6).
+			eq(entry.cash, IndexRewards.cash(milestone, 1000, IndexRewards.progression(old)), "state cash " .. milestone.found)
+			check(entry.cash >= math.floor(Economy.unitRate(18) * Economy.CASH_PER_POINT * milestone.seconds), "at least one tier-18 unit")
 		end
 
 		-- Claimed in any order, each once; the ones not reached stay shut.
@@ -238,17 +254,25 @@ return function(h: { [string]: any })
 		eq(#p.indexClaimed, 2, "the claims stay")
 		eq(IndexRewards.claim(p, 5, RICH), nil, "5 is not offered again")
 		eq(IndexRewards.claim(p, 10, RICH), nil, "nor is 10")
-		-- The ones never claimed are still there, sized by the new run.
+		-- The ones never claimed are still there, and pay no less than at the player's best:
+		-- the new run earns next to nothing, so the floor of the best tier ever found sizes them.
 		local ready = IndexRewards.ready(p.discovered, p.indexClaimed)
 		eq(#ready, 2, "15 and 20 still wait")
+		eq(p.processLevel, Economy.START_PROCESS_LEVEL, "the rebirth reset the converter")
+		local best = Economy.progression(20, Economy.minProcessLevel(20))
+		local floor = math.floor(Economy.progressionIncome(best) * IndexRewards.MILESTONES[3].seconds)
+		near(Economy.progressionIncome(best), Economy.unitRate(20) * Economy.CASH_PER_POINT, "the floor: one unit of the best tier")
+		-- The window shows what the server grants: the snapshot and the claim use one function.
+		local shown = IndexRewards.state(p, 2).milestones[3].cash
 		local fresh = IndexRewards.claim(p, 15, 2)
 		check(fresh ~= nil, "15 claimed after the rebirth")
-		eq(
-			fresh.cash,
-			IndexRewards.cash(IndexRewards.MILESTONES[3], 2, Economy.progression(1, p.processLevel)),
-			"sized by the new run, not the old one"
+		eq(fresh.cash, floor, "sized by the best tier ever found, not by the new run")
+		eq(fresh.cash, shown, "the CLAIM button named exactly that")
+		check(fresh.cash > 1800 * 1000, "not a tier-1 amount")
+		check(
+			fresh.cash > IndexRewards.cash(IndexRewards.MILESTONES[3], 2, Economy.progression(1, p.processLevel)) * 1000,
+			"far over what the new run alone would pay"
 		)
-		check(fresh.cash < 1800 * 1000, "a tier-1 run is paid a tier-1 amount")
 		-- Finding the tiers again in the new run pays nothing new.
 		p.runDiscovered = foundTo(20)
 		eq(IndexRewards.claim(p, 15, RICH), nil, "the new run does not offer 15 again")

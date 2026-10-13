@@ -9,7 +9,8 @@
 	A milestone counts the Index (profile.discovered: every tier ever found, which a rebirth
 	never touches) and is claimed by hand, once per save (profile.indexClaimed): a rebirth
 	never offers it again. A save from before the milestones has claimed none, so every one it
-	has already passed is waiting for it.
+	has already passed is waiting for it. The cash is the run's income or, when that is less
+	(a run that has just started again), the income of one unit of the best tier ever found.
 ]]
 
 local Economy = require(script.Parent.Economy)
@@ -29,8 +30,8 @@ IndexRewards.MILESTONES = {
 	{ found = 25, seconds = 60 * 60, champion = true },
 } :: { Milestone }
 
--- The least a milestone pays, in cash per second of its `seconds` (only matters to a run
--- that earns next to nothing: the first minutes after a rebirth).
+-- The least a milestone pays, in cash per second of its `seconds` (only matters to a save
+-- whose best tier earns next to nothing).
 IndexRewards.MIN_INCOME = 1
 
 -- The fields of a saved profile the milestones read and write.
@@ -89,7 +90,7 @@ end
 -- The cash of `milestone` for a run that earns `income` cash per second at `progression`
 -- (Tycoon.income: no Aura Surge; passes, friends, Premium and the rebirth stars are in it
 -- once, as in every other reward). Sized like a cash pack: never under the progression
--- floor of the run.
+-- floor (IndexRewards.progression: the one of the player's best, not of the run).
 function IndexRewards.cash(milestone: Milestone, income: number, progression: Economy.Progression): number
 	local perSecond = if income == income and income > 0 and income ~= math.huge then income else 0
 	return Economy.moneyPackAmount(perSecond, milestone.seconds, milestone.seconds * IndexRewards.MIN_INCOME, progression)
@@ -102,12 +103,19 @@ function IndexRewards.crateCash(milestone: Milestone, runBest: number): number
 	return if crate then math.floor(Economy.chestExpectedValue(crate, runBest)) else 0
 end
 
-local function progressionOf(profile: Profile): Economy.Progression
-	return Economy.progression(Economy.highestTier(profile.runDiscovered), profile.processLevel)
+-- The progression a claim is floored by: the ALL-TIME best tier (the Index, which a rebirth
+-- never touches) and a converter that covers one unit of it (the free floor every player had
+-- at that tier, Economy.minProcessLevel; a rebirth resets the real level). The floor is then
+-- the one shop packs use (Economy.progressionIncome) at the player's best, so a milestone
+-- claimed in the first minutes after a rebirth pays no less than it did the day before.
+function IndexRewards.progression(profile: Profile): Economy.Progression
+	local best = Economy.highestTier(profile.discovered)
+	return Economy.progression(best, math.max(profile.processLevel, Economy.minProcessLevel(best)))
 end
 
 -- Claims the milestone of `found` tiers, in place, for a run that earns `income` cash per
--- second right now. Returns what to grant, or nil when there is nothing to claim: no such
+-- second right now (the cash is the better of that and the floor of the player's best: the
+-- same IndexRewards.cash the State snapshot shows on the CLAIM button). Returns what to grant, or nil when there is nothing to claim: no such
 -- milestone, the Index is not there yet, or it is claimed already. The milestone is marked
 -- before this returns, so a second call (a double tap, two remotes in a row) pays nothing.
 function IndexRewards.claim(profile: Profile, found: any, income: number): Grant?
@@ -124,7 +132,7 @@ function IndexRewards.claim(profile: Profile, found: any, income: number): Grant
 	end
 	return {
 		found = milestone.found,
-		cash = IndexRewards.cash(milestone, income, progressionOf(profile)),
+		cash = IndexRewards.cash(milestone, income, IndexRewards.progression(profile)),
 		crate = milestone.crate,
 		champion = milestone.champion == true,
 	}
@@ -141,7 +149,7 @@ function IndexRewards.state(
 	income: number
 ): { found: number, claimable: number, champion: boolean, milestones: { Entry } }
 	local have = IndexRewards.found(profile.discovered)
-	local progression = progressionOf(profile)
+	local progression = IndexRewards.progression(profile)
 	local claimable = 0
 	local milestones: { Entry } = {}
 	for i, milestone in IndexRewards.MILESTONES do

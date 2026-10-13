@@ -559,7 +559,7 @@ function Windows.starterAmounts(data: { [string]: any }): number
 end
 
 -- The cosmetics part of a snapshot, empty when the server sent none.
-local NO_COSMETICS = { owned = {}, trail = "", toggles = {}, bundleOwned = false, starterOwned = false }
+local NO_COSMETICS = { owned = {}, trail = "", toggles = {}, canSwitch = {}, bundleOwned = false, starterOwned = false }
 local function cosmeticsOf(data: { [string]: any }): { [string]: any }
 	local cosmetics = data.cosmetics
 	return if type(cosmetics) == "table" then cosmetics else NO_COSMETICS
@@ -1858,7 +1858,7 @@ local function buildShop(screen: ScreenGui)
 					return
 				end
 				local cos = cosmeticsOf(data)
-				if not cos.owned[name] then
+				if not (cos.owned[name] or cos.canSwitch[name]) then
 					return
 				end
 				local value = not shownChoice(name, cos.toggles[name] ~= false)
@@ -2456,6 +2456,9 @@ local function buildShop(screen: ScreenGui)
 			local card = cosCards[name]
 			local item = COS.Items[name]
 			local owned = cos.owned[name] == true
+			-- The switch is the owner's and, on the Chad Aura, a Champion's too (the server's
+			-- `canSwitch`): the Index's aura goes off here without the pass.
+			local switched = owned or cos.canSwitch[name] == true
 			if card.lock then
 				card.lock.Visible = not owned
 			end
@@ -2468,7 +2471,7 @@ local function buildShop(screen: ScreenGui)
 				local on = trail == name
 				Kit.setEnabled(card.button, true)
 				Kit.setButton(card.button, if on then "✓ EQUIPPED" else "EQUIP", if on then C.Gold else C.Cash)
-			elseif owned and control and card.setSwitch then
+			elseif switched and control and card.setSwitch then
 				local on = shownChoice(name, cos.toggles[name] ~= false) == true
 				if card.switchShown ~= on then
 					card.switchShown = on
@@ -2482,9 +2485,9 @@ local function buildShop(screen: ScreenGui)
 				Kit.setEnabled(card.button, true)
 				Kit.setButton(card.button, "STARTER PACK", C.SurfaceHi)
 			end
-			card.button.Visible = not (owned and control ~= nil)
+			card.button.Visible = not (switched and control ~= nil)
 			if control then
-				control.Visible = owned
+				control.Visible = switched
 			end
 			if owned and card.wasOwned == false and open then
 				-- With the bundle, every card flips in one wave; a single purchase bursts on its own

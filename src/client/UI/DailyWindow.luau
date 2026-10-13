@@ -747,7 +747,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			openDaily = deps.open,
 			close = deps.close,
 			free = function(): boolean
-				return screenFree() and os.clock() - rewardAt >= REWARD_QUIET
+				-- The held-crate panel too (it is not in BUSY): the card would sit on it on a
+				-- phone. AwayWindow's own patience ends the wait with a toast.
+				return screenFree() and screen:GetAttribute("CratePanelOpen") ~= true and os.clock() - rewardAt >= REWARD_QUIET
 			end,
 		})
 		task.spawn(function()

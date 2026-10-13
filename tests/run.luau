@@ -2937,6 +2937,32 @@ test("cosmetics profile and state", function()
 	eq(state.toggles.SpeedBoost, true, "state toggle default on")
 	eq(state.toggles.TrailStar, nil, "trails are not toggles")
 	eq(state.starterOwned, false, "state starter owned")
+
+	-- Who may use a switch: its owner and, for the Chad Aura, a Champion without the pass.
+	check(Cosmetics.canSwitch(theme, profile, passes, "Crown"), "an owner switches")
+	check(not Cosmetics.canSwitch(theme, profile, passes, "AuraGlow"), "no pass, no Champion: no aura switch")
+	check(not Cosmetics.canSwitch(theme, profile, passes, "TrailStar"), "a trail is not a switch")
+	check(not Cosmetics.canSwitch(theme, profile, passes, "Nope"), "nor is an unknown item")
+	check(state.canSwitch.Crown == true and state.canSwitch.AuraGlow == nil, "state: the switches the player may use")
+	profile.cosmetics.champion = true
+	check(Cosmetics.canSwitch(theme, profile, passes, "AuraGlow"), "a Champion switches the aura without the pass")
+	check(not Cosmetics.canSwitch(theme, profile, passes, "SpeedBoost"), "but nothing else it does not own")
+	check(not Cosmetics.owns(theme, passes, "AuraGlow"), "and still does not own the Chad Aura")
+	local champion = Cosmetics.state(theme, profile, passes)
+	eq(champion.canSwitch.AuraGlow, true, "state: the Champion's aura switch")
+	eq(champion.owned.AuraGlow, nil, "state: not owned")
+	eq(champion.toggles.AuraGlow, true, "state: the aura starts on")
+	profile.cosmetics.toggles.AuraGlow = false
+	eq(Cosmetics.state(theme, profile, passes).toggles.AuraGlow, false, "state: and can be off")
+	local source = fs.readFile("src/server/Cosmetics.luau")
+	check(
+		string.find(source, 'if champion and Cosmetics.toggleOn(profile, "AuraGlow") then', 1, true) ~= nil,
+		"the Champion aura follows the switch, pass or not"
+	)
+	check(
+		string.find(source, "if not Cosmetics.canSwitch(theme, session.profile, session.passes, name) then", 1, true) ~= nil,
+		"ToggleCosmetic lets a Champion through"
+	)
 end)
 
 test("starter pack grant", function()

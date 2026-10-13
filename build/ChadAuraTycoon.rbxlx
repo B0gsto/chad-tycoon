@@ -18795,7 +18795,8 @@ return Funnel
 	A milestone counts the Index (profile.discovered: every tier ever found, which a rebirth
 	never touches) and is claimed by hand, once per save (profile.indexClaimed): a rebirth
 	never offers it again. A save from before the milestones has claimed none, so every one it
-	has already passed is waiting for it.
+	has already passed is waiting for it. The cash is the run's income or, when that is less
+	(a run that has just started again), the income of one unit of the best tier ever found.
 ]]
 
 local Economy = require(script.Parent.Economy)
@@ -18815,8 +18816,8 @@ IndexRewards.MILESTONES = {
 	{ found = 25, seconds = 60 * 60, champion = true },
 } :: { Milestone }
 
--- The least a milestone pays, in cash per second of its `seconds` (only matters to a run
--- that earns next to nothing: the first minutes after a rebirth).
+-- The least a milestone pays, in cash per second of its `seconds` (only matters to a save
+-- whose best tier earns next to nothing).
 IndexRewards.MIN_INCOME = 1
 
 -- The fields of a saved profile the milestones read and write.
@@ -18875,7 +18876,7 @@ end
 -- The cash of `milestone` for a run that earns `income` cash per second at `progression`
 -- (Tycoon.income: no Aura Surge; passes, friends, Premium and the rebirth stars are in it
 -- once, as in every other reward). Sized like a cash pack: never under the progression
--- floor of the run.
+-- floor (IndexRewards.progression: the one of the player's best, not of the run).
 function IndexRewards.cash(milestone: Milestone, income: number, progression: Economy.Progression): number
 	local perSecond = if income == income and income > 0 and income ~= math.huge then income else 0
 	return Economy.moneyPackAmount(perSecond, milestone.seconds, milestone.seconds * IndexRewards.MIN_INCOME, progression)
@@ -18888,12 +18889,19 @@ function IndexRewards.crateCash(milestone: Milestone, runBest: number): number
 	return if crate then math.floor(Economy.chestExpectedValue(crate, runBest)) else 0
 end
 
-local function progressionOf(profile: Profile): Economy.Progression
-	return Economy.progression(Economy.highestTier(profile.runDiscovered), profile.processLevel)
+-- The progression a claim is floored by: the ALL-TIME best tier (the Index, which a rebirth
+-- never touches) and a converter that covers one unit of it (the free floor every player had
+-- at that tier, Economy.minProcessLevel; a rebirth resets the real level). The floor is then
+-- the one shop packs use (Economy.progressionIncome) at the player's best, so a milestone
+-- claimed in the first minutes after a rebirth pays no less than it did the day before.
+function IndexRewards.progression(profile: Profile): Economy.Progression
+	local best = Economy.highestTier(profile.discovered)
+	return Economy.progression(best, math.max(profile.processLevel, Economy.minProcessLevel(best)))
 end
 
 -- Claims the milestone of `found` tiers, in place, for a run that earns `income` cash per
--- second right now. Returns what to grant, or nil when there is nothing to claim: no such
+-- second right now (the cash is the better of that and the floor of the player's best: the
+-- same IndexRewards.cash the State snapshot shows on the CLAIM button). Returns what to grant, or nil when there is nothing to claim: no such
 -- milestone, the Index is not there yet, or it is claimed already. The milestone is marked
 -- before this returns, so a second call (a double tap, two remotes in a row) pays nothing.
 function IndexRewards.claim(profile: Profile, found: any, income: number): Grant?
@@ -18910,7 +18918,7 @@ function IndexRewards.claim(profile: Profile, found: any, income: number): Grant
 	end
 	return {
 		found = milestone.found,
-		cash = IndexRewards.cash(milestone, income, progressionOf(profile)),
+		cash = IndexRewards.cash(milestone, income, IndexRewards.progression(profile)),
 		crate = milestone.crate,
 		champion = milestone.champion == true,
 	}
@@ -18927,7 +18935,7 @@ function IndexRewards.state(
 	income: number
 ): { found: number, claimable: number, champion: boolean, milestones: { Entry } }
 	local have = IndexRewards.found(profile.discovered)
-	local progression = progressionOf(profile)
+	local progression = IndexRewards.progression(profile)
 	local claimable = 0
 	local milestones: { Entry } = {}
 	for i, milestone in IndexRewards.MILESTONES do
@@ -23910,6 +23918,16 @@ function Cosmetics.toggleOn(profile: any, name: string): boolean
 	return profile.cosmetics.toggles[name] ~= false
 end
 
+-- May this player switch toggle item `name` on and off: its owner and, for the Chad Aura,
+-- a Champion too (the whole Index's aura needs no pass and hangs on the same switch).
+function Cosmetics.canSwitch(t: any, profile: any, passes: { [string]: boolean }, name: string): boolean
+	local c = config(t)
+	if not c or not isToggle(c.Items[name]) then
+		return false
+	end
+	return Cosmetics.owns(t, passes, name) or (name == "AuraGlow" and profile.cosmetics.champion == true)
+end
+
 -- Is cosmetic `name` owned and in use (equipped trail / toggle switched on)?
 function Cosmetics.active(t: any, profile: any, passes: { [string]: boolean }, name: string): boolean
 	local c = config(t)
@@ -23952,15 +23970,21 @@ end
 function Cosmetics.state(t: any, profile: any, passes: { [string]: boolean }): { [string]: any }
 	local c = config(t)
 	local toggles = {}
+	-- { [name] = true } for every switch the player may use (the shop shows those).
+	local canSwitch = {}
 	for name, item in c.Items do
 		if isToggle(item) then
 			toggles[name] = Cosmetics.toggleOn(profile, name)
+			if Cosmetics.canSwitch(t, profile, passes, name) then
+				canSwitch[name] = true
+			end
 		end
 	end
 	return {
 		owned = Cosmetics.ownedSet(t, passes),
 		trail = Cosmetics.trail(t, profile, passes),
 		toggles = toggles,
+		canSwitch = canSwitch,
 		bundleOwned = passes[c.Bundle] == true,
 		starterOwned = passes[c.Starter.Pass] == true,
 		starterGranted = profile.starterGranted == true,
@@ -24267,10 +24291,10 @@ local function apply(session: Session)
 		addTrail(player, root, items[trail])
 	end
 	-- One aura: the Champion colour (the whole Index's reward, no pass needed) goes in front
-	-- of the Chad Aura's own. Its owner's Chad Aura switch still turns it off.
+	-- of the Chad Aura's own. The Chad Aura switch turns it off, pass or no pass
+	-- (Cosmetics.canSwitch).
 	local champion = profile.cosmetics.champion == true
-	local auraOff = Cosmetics.owns(theme, passes, "AuraGlow") and not Cosmetics.toggleOn(profile, "AuraGlow")
-	if champion and not auraOff then
+	if champion and Cosmetics.toggleOn(profile, "AuraGlow") then
 		addAura(player, root, CHAMPION_AURA)
 	elseif Cosmetics.active(theme, profile, passes, "AuraGlow") then
 		addAura(player, root, items.AuraGlow)
@@ -24419,7 +24443,7 @@ function Cosmetics.init(themeModule: any)
 		if not isToggle(item) then
 			return
 		end
-		if not Cosmetics.owns(theme, session.passes, name) then
+		if not Cosmetics.canSwitch(theme, session.profile, session.passes, name) then
 			Tycoon.toast(session, "Unlock " .. item.Title .. " in the shop first!", "info")
 			return
 		end
@@ -73922,8 +73946,8 @@ return State
 	player gets one card, not two.
 
 	It waits for a calm screen (`free`: the loading screen and the intro are gone, no
-	window, popup, reward card or mode run is up), so it never sits on the Daily window
-	or a reward card, and the Daily window's own auto-open waits for it
+	window, popup, reward card, held-crate panel or mode run is up), so it never sits on
+	the Daily window, a reward card or the crate panel, and the Daily window's own auto-open waits for it
 	(AwayWindow.holding). A player still in the tutorial gets the plain popup as before
 	(`fallback`); one who stays busy for PATIENCE seconds gets a toast instead of a card
 	that is no longer news.
@@ -74230,12 +74254,17 @@ function AwayWindow.show(offline: { [string]: any }, now: boolean?)
 			end
 			if calm >= CALM then
 				waiting = false
-				present(offline)
+				-- A card that fails to build never opened: the plain popup says it instead.
+				local ok, err = pcall(present, offline)
+				if not ok then
+					warn("[AwayWindow] card failed: " .. tostring(err))
+					h.fallback(offline)
+				end
 				return
 			end
 			if waited >= PATIENCE then
-				-- Busy for minutes (a mode run, the shop): the card would be old news. The
-				-- cash is still named once, quietly.
+				-- Busy for minutes (a mode run, the shop, a crate held on): the card would be old
+				-- news. The cash is still named once, quietly.
 				waiting = false
 				local cash = tonumber(offline.cash) or 0
 				if cash >= 1 then
@@ -76722,7 +76751,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			openDaily = deps.open,
 			close = deps.close,
 			free = function(): boolean
-				return screenFree() and os.clock() - rewardAt >= REWARD_QUIET
+				-- The held-crate panel too (it is not in BUSY): the card would sit on it on a
+				-- phone. AwayWindow's own patience ends the wait with a toast.
+				return screenFree() and screen:GetAttribute("CratePanelOpen") ~= true and os.clock() - rewardAt >= REWARD_QUIET
 			end,
 		})
 		task.spawn(function()
@@ -87873,6 +87904,15 @@ end
 ]]
 
 Popups.PRIORITY = { NewTier = 3, Tutorial = 2, Normal = 1 }
+-- Per kind of card: what its caller takes back when `show` threw (its own "a card is open"
+-- state). The queue runs it after closing what the card had built.
+Popups.FAILED = {} :: { [string]: () -> () }
+-- The modals open right now, and closing the ones opened since (set under `modal`, which
+-- keeps the list): the queue takes down what a card that threw half-way left on screen.
+Popups.modalsNow = function(): { [() -> ()]: boolean }
+	return {}
+end
+Popups.closeModalsSince = function(_before: { [() -> ()]: boolean }) end
 
 type Entry = {
 	kind: string,
@@ -87938,20 +87978,33 @@ pump = function()
 		lastModalAt = os.clock()
 		schedule(0.05)
 	end
+	-- A card that throws half-way must not stay up: its modal, its dim and its Back entry
+	-- (ModalOpen) go, the caller resets its own state (Popups.FAILED) and the queue moves on.
+	local before = Popups.modalsNow()
 	local ok, err = pcall(entry.show, done)
 	if not ok then
 		warn("[Popups] " .. entry.kind .. " failed: " .. tostring(err))
+		Popups.closeModalsSince(before)
+		local failed = Popups.FAILED[entry.kind]
+		if failed then
+			pcall(failed)
+		end
 		done()
 	end
 end
 
--- Queue a modal. `show(done)` builds it and must call `done()` once it closes.
+-- Queue a modal. `show(done)` builds it and must call `done()` once it closes. If it throws,
+-- the queue closes what it built and runs Popups.FAILED[kind].
 function Popups.enqueue(kind: string, priority: number, show: (done: () -> ()) -> (), data: { [string]: any }?)
 	if PREVIEW then
 		-- The preview captures right after the call: show it at once.
 		local ok, err = pcall(show, function() end)
 		if not ok then
 			warn("[Popups] " .. kind .. " failed: " .. tostring(err))
+			local failed = Popups.FAILED[kind]
+			if failed then
+				pcall(failed)
+			end
 		end
 		return
 	end
@@ -88196,6 +88249,18 @@ end
 function Popups.closeModals()
 	for close in openModals do
 		close()
+	end
+end
+
+-- For the queue (`pump`, declared above with the queue's own state).
+Popups.modalsNow = function(): { [() -> ()]: boolean }
+	return table.clone(openModals)
+end
+Popups.closeModalsSince = function(before: { [() -> ()]: boolean })
+	for close in table.clone(openModals) do
+		if not before[close] then
+			close()
+		end
 	end
 end
 
@@ -91965,6 +92030,14 @@ function Popups.gift(data: { [string]: any })
 		ZIndex = 27,
 		Parent = screen,
 	})
+	if not PREVIEW then
+		-- Set before the card is filled, so one that fails half-way still goes by itself.
+		task.delay(GIFT_LIFE, function()
+			if holder.Parent then
+				Kit.disappear(holder, { time = 0.22, to = 0.9, destroy = true })
+			end
+		end)
+	end
 	local card = Kit.hudGlass(holder, {
 		Name = "Card",
 		Size = UDim2.fromOffset(GIFT_W, GIFT_H),
@@ -92067,11 +92140,6 @@ function Popups.gift(data: { [string]: any })
 				end)
 			end
 		end
-		task.delay(GIFT_LIFE, function()
-			if holder.Parent then
-				Kit.disappear(holder, { time = 0.22, to = 0.9, destroy = true })
-			end
-		end)
 	end
 end
 
@@ -92612,6 +92680,12 @@ function Popups.defineRebirth()
 			Kit.stagger(staged, 0.04)
 			sounds.play("Open")
 		end)
+	end
+	-- The card threw while it was being built (the queue closed what there was of it): the
+	-- star counter and the goal strip can ask again.
+	Popups.FAILED.Rebirth = function()
+		S.open = false
+		S.settle = nil
 	end
 
 	Popups.rebirthReady = function(payload: { [string]: any })
@@ -96156,7 +96230,7 @@ function Windows.starterAmounts(data: { [string]: any }): number
 end
 
 -- The cosmetics part of a snapshot, empty when the server sent none.
-local NO_COSMETICS = { owned = {}, trail = "", toggles = {}, bundleOwned = false, starterOwned = false }
+local NO_COSMETICS = { owned = {}, trail = "", toggles = {}, canSwitch = {}, bundleOwned = false, starterOwned = false }
 local function cosmeticsOf(data: { [string]: any }): { [string]: any }
 	local cosmetics = data.cosmetics
 	return if type(cosmetics) == "table" then cosmetics else NO_COSMETICS
@@ -97455,7 +97529,7 @@ local function buildShop(screen: ScreenGui)
 					return
 				end
 				local cos = cosmeticsOf(data)
-				if not cos.owned[name] then
+				if not (cos.owned[name] or cos.canSwitch[name]) then
 					return
 				end
 				local value = not shownChoice(name, cos.toggles[name] ~= false)
@@ -98053,6 +98127,9 @@ local function buildShop(screen: ScreenGui)
 			local card = cosCards[name]
 			local item = COS.Items[name]
 			local owned = cos.owned[name] == true
+			-- The switch is the owner's and, on the Chad Aura, a Champion's too (the server's
+			-- `canSwitch`): the Index's aura goes off here without the pass.
+			local switched = owned or cos.canSwitch[name] == true
 			if card.lock then
 				card.lock.Visible = not owned
 			end
@@ -98065,7 +98142,7 @@ local function buildShop(screen: ScreenGui)
 				local on = trail == name
 				Kit.setEnabled(card.button, true)
 				Kit.setButton(card.button, if on then "✓ EQUIPPED" else "EQUIP", if on then C.Gold else C.Cash)
-			elseif owned and control and card.setSwitch then
+			elseif switched and control and card.setSwitch then
 				local on = shownChoice(name, cos.toggles[name] ~= false) == true
 				if card.switchShown ~= on then
 					card.switchShown = on
@@ -98079,9 +98156,9 @@ local function buildShop(screen: ScreenGui)
 				Kit.setEnabled(card.button, true)
 				Kit.setButton(card.button, "STARTER PACK", C.SurfaceHi)
 			end
-			card.button.Visible = not (owned and control ~= nil)
+			card.button.Visible = not (switched and control ~= nil)
 			if control then
-				control.Visible = owned
+				control.Visible = switched
 			end
 			if owned and card.wasOwned == false and open then
 				-- With the bundle, every card flips in one wave; a single purchase bursts on its own

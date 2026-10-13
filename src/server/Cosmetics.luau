@@ -115,6 +115,16 @@ function Cosmetics.toggleOn(profile: any, name: string): boolean
 	return profile.cosmetics.toggles[name] ~= false
 end
 
+-- May this player switch toggle item `name` on and off: its owner and, for the Chad Aura,
+-- a Champion too (the whole Index's aura needs no pass and hangs on the same switch).
+function Cosmetics.canSwitch(t: any, profile: any, passes: { [string]: boolean }, name: string): boolean
+	local c = config(t)
+	if not c or not isToggle(c.Items[name]) then
+		return false
+	end
+	return Cosmetics.owns(t, passes, name) or (name == "AuraGlow" and profile.cosmetics.champion == true)
+end
+
 -- Is cosmetic `name` owned and in use (equipped trail / toggle switched on)?
 function Cosmetics.active(t: any, profile: any, passes: { [string]: boolean }, name: string): boolean
 	local c = config(t)
@@ -157,15 +167,21 @@ end
 function Cosmetics.state(t: any, profile: any, passes: { [string]: boolean }): { [string]: any }
 	local c = config(t)
 	local toggles = {}
+	-- { [name] = true } for every switch the player may use (the shop shows those).
+	local canSwitch = {}
 	for name, item in c.Items do
 		if isToggle(item) then
 			toggles[name] = Cosmetics.toggleOn(profile, name)
+			if Cosmetics.canSwitch(t, profile, passes, name) then
+				canSwitch[name] = true
+			end
 		end
 	end
 	return {
 		owned = Cosmetics.ownedSet(t, passes),
 		trail = Cosmetics.trail(t, profile, passes),
 		toggles = toggles,
+		canSwitch = canSwitch,
 		bundleOwned = passes[c.Bundle] == true,
 		starterOwned = passes[c.Starter.Pass] == true,
 		starterGranted = profile.starterGranted == true,
@@ -472,10 +488,10 @@ local function apply(session: Session)
 		addTrail(player, root, items[trail])
 	end
 	-- One aura: the Champion colour (the whole Index's reward, no pass needed) goes in front
-	-- of the Chad Aura's own. Its owner's Chad Aura switch still turns it off.
+	-- of the Chad Aura's own. The Chad Aura switch turns it off, pass or no pass
+	-- (Cosmetics.canSwitch).
 	local champion = profile.cosmetics.champion == true
-	local auraOff = Cosmetics.owns(theme, passes, "AuraGlow") and not Cosmetics.toggleOn(profile, "AuraGlow")
-	if champion and not auraOff then
+	if champion and Cosmetics.toggleOn(profile, "AuraGlow") then
 		addAura(player, root, CHAMPION_AURA)
 	elseif Cosmetics.active(theme, profile, passes, "AuraGlow") then
 		addAura(player, root, items.AuraGlow)
@@ -624,7 +640,7 @@ function Cosmetics.init(themeModule: any)
 		if not isToggle(item) then
 			return
 		end
-		if not Cosmetics.owns(theme, session.passes, name) then
+		if not Cosmetics.canSwitch(theme, session.profile, session.passes, name) then
 			Tycoon.toast(session, "Unlock " .. item.Title .. " in the shop first!", "info")
 			return
 		end
