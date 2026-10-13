@@ -134,8 +134,24 @@ ObbyHud.build(screen, { sounds = Sounds, dockRun = Hud.dockRun, tank = Hud.tank 
 -- Last "Cash" effect: the tutorial reward waits for the wallet count-up.
 local lastCashAt = 0
 
+-- The tutorial queues its own small "done" card through Popups.enqueue; here that entry is
+-- swapped for the full-width "YOU DID IT!" banner (Popups.tutorialDone), which keeps its
+-- place in the queue. `tutorialCash` is the cash of the last "done" notify.
+local tutorialCash = 0
+local tutorialPopups = setmetatable({
+	enqueue = function(kind: string, priority: number, show: (done: () -> ()) -> (), data: { [string]: any }?)
+		if kind == "Tutorial" then
+			Popups.enqueue(kind, priority, function(done)
+				Popups.tutorialDone(tutorialCash, done)
+			end, data)
+		else
+			Popups.enqueue(kind, priority, show, data)
+		end
+	end,
+}, { __index = Popups })
+
 Tutorial.build(screen, {
-	popups = Popups,
+	popups = tutorialPopups,
 	sounds = Sounds,
 	guide = Guide,
 	walletIdle = function(): boolean
@@ -222,7 +238,8 @@ if RunService:IsStudio() and Cutscene then
 		end
 	end)
 end
--- Studio-only capture hook: "UiPreview" = "<WindowName>", "Shop,<focus>", "close", "starter" or "reward,<tier>".
+-- Studio-only capture hook: "UiPreview" = "<WindowName>", "Shop,<focus>", "close", "starter",
+-- "reward,<tier>", "rewards,<from>,<to>" (one reveal per tier), "gift", "surge" or "tutorialdone".
 if RunService:IsStudio() then
 	player:GetAttributeChangedSignal("UiPreview"):Connect(function()
 		local spec = player:GetAttribute("UiPreview")
@@ -230,8 +247,29 @@ if RunService:IsStudio() then
 			return
 		end
 		local tier = string.match(spec, "^reward,(%d+)$")
+		local from, to = string.match(spec, "^rewards,(%d+),(%d+)$")
 		if tier then
-			Popups.reward({ kind = "Reward", tier = tonumber(tier), tiers = { tonumber(tier) }, new = true })
+			-- `before` / `after` are made up here: the "+X Aura/sec" line needs a gain to show.
+			Popups.reward({
+				kind = "Reward",
+				tier = tonumber(tier),
+				tiers = { tonumber(tier) },
+				new = true,
+				before = 0,
+				after = 12 * 2.4 ^ (tonumber(tier) :: number),
+			})
+		elseif from and to then
+			local tiers = {}
+			for t = tonumber(from) :: number, tonumber(to) :: number do
+				table.insert(tiers, t)
+			end
+			Popups.reward({ kind = "Reward", tier = tonumber(to), tiers = tiers, new = true, before = 0, after = 12 * 2.4 ^ #tiers })
+		elseif spec == "gift" then
+			Popups.gift({ cash = 3290 })
+		elseif spec == "surge" then
+			Popups.surge({ phase = "start" })
+		elseif spec == "tutorialdone" then
+			Popups.tutorialDone(200, function() end)
 		elseif spec == "close" then
 			Windows.closeAll()
 			Popups.closeModals()
@@ -274,7 +312,16 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			action:FireServer(payload.action)
 		end)
 	elseif payload.kind == "Tutorial" then
+		if payload.event == "done" then
+			tutorialCash = tonumber(payload.cash) or 0
+		end
 		Tutorial.onNotify(payload)
+	elseif payload.kind == "Gift" then
+		-- The free gift's card (the "Cash" effect of the same claim brings the coins).
+		Popups.gift(payload)
+	elseif payload.kind == "Surge" then
+		-- Aura Surge: the countdown chip 30 s ahead and the banner at the start.
+		Popups.surge(payload)
 	elseif payload.kind == "Mode" and payload.mode == "mog" then
 		-- MOG TEST (vs rivals or a 1v1 duel): the picker, queue panel, ring, HP and finish card
 		-- (Fx.Mog does the 3D side).
@@ -410,7 +457,12 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 			return
 		end
 		Sounds.play("Cash")
-		Popups.float("+" .. Format.money(amount), C.Good, WALLET)
+		if data.source == "Free" then
+			-- The free gift gets a card with the amount instead of the small float.
+			Popups.gift({ cash = amount })
+		else
+			Popups.float("+" .. Format.money(amount), C.Good, WALLET)
+		end
 		-- Claimed from the Free menu button: coins fly from the button.
 		local fromMenu = data.source == "Free" and os.clock() - Hud.freeClaimedAt < 3
 		Hud.coinBurst(amount, if typeof(data.padPos) == "Vector3" then data.padPos else nil, if fromMenu then Hud.buttons.Free else nil)
