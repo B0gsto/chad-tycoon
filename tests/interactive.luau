@@ -106,7 +106,7 @@ return function(h: { [string]: any })
 		check(math.abs(angle) <= Rules.SWING_MAX and math.abs(speed) < 10, "huge dt is clamped")
 	end)
 
-	test("Interactive: punch and rep timing", function()
+	test("Interactive: punch timing", function()
 		local reach, weight = Rules.punch(-0.1)
 		check(reach == 0 and weight == 0, "before the punch")
 		reach, weight = Rules.punch(Rules.PUNCH_TIME)
@@ -123,25 +123,142 @@ return function(h: { [string]: any })
 		_, weight = Rules.punch(Rules.PUNCH_TIME - 0.005)
 		check(weight < 0.05, "the pose fades out, no snap")
 		check(Rules.PUNCH_TIME > Rules.HIT_GAP, "a punch outlasts the hit gap, so combos keep the fists up")
+	end)
 
-		eq(Rules.press(0), 1, "starts with the arms out")
-		eq(Rules.reps(0), 0, "no reps yet")
-		eq(Rules.reps(-3), 0, "no negative reps")
+	test("Interactive: jump presses", function()
+		check(Rules.newPress(nil, 0), "the first request is a press")
+		-- Held: a request every frame is one press, even at 10 fps.
+		local last: number? = nil
+		local presses = 0
+		for i = 0, 30 do
+			local t = i * 0.1
+			if Rules.newPress(last, t) then
+				presses += 1
+			end
+			last = t
+		end
+		eq(presses, 1, "holding jump is one press")
+		check(not Rules.newPress(1, 1 + 1 / 60), "the next frame is the same press")
+		check(Rules.newPress(1, 1 + Rules.PRESS_GAP + 0.01), "released and pressed again")
+		check(Rules.PRESS_GAP < Rules.HIT_GAP and Rules.PRESS_GAP < Rules.REP_GAP, "spam is never slowed by the press gap")
+	end)
+
+	test("Interactive: bench reps", function()
 		local T = Rules.REP_TIME
-		eq(Rules.reps(T * 3 + 0.01), 3, "three reps")
-		eq(Rules.reps(T - 0.01), 0, "not quite one")
-		near(Rules.press(T * 0.55), 0, "bar on the chest")
-		near(Rules.press(T * 2.55), 0, "bar on the chest on the third rep")
-		local last = 1
-		local lowest = 1
-		for i = 1, 400 do
-			local p = Rules.press(i * T * 3 / 400)
+		check(T >= 0.3 and T <= 0.6, "a rep is quick")
+		eq(Rules.press(0), 1, "starts with the arms out")
+		eq(Rules.press(-1), 1, "rests at arms' length before a rep")
+		eq(Rules.press(T), 1, "back at arms' length")
+		eq(Rules.press(T + 5), 1, "rests at arms' length after a rep")
+		local last, lowest, lowestAt = 1, 1, 0
+		for i = 1, 200 do
+			local t = i * T / 200
+			local p = Rules.press(t)
 			check(p >= 0 and p <= 1, "press in range")
 			check(math.abs(p - last) < 0.06, "the bar never jumps")
+			if p < lowest then
+				lowest, lowestAt = p, t
+			end
 			last = p
-			lowest = math.min(lowest, p)
 		end
 		check(lowest < 0.01, "every rep reaches the chest")
+		check(lowestAt > T * 0.3 and lowestAt < T * 0.6, "down, then up")
+
+		-- One press: one rep, then the bar rests.
+		local at, length, queued, started = Rules.repStep(nil, T, 0, 10, true)
+		check(at == 10 and length == T and queued == 0 and started, "a press at rest starts a rep")
+		at, length, queued, started = Rules.repStep(at, length, queued, 10 + T / 2, false)
+		check(at == 10 and queued == 0 and not started, "the rep plays on")
+		at, length, queued, started = Rules.repStep(at, length, queued, 10 + T + 0.01, false)
+		check(at == nil and queued == 0 and not started, "the bar rests after the rep")
+		at, length, queued, started = Rules.repStep(at, length, queued, 20, false)
+		check(at == nil and not started, "no press, no rep")
+
+		-- Presses during a rep wait behind it; the first starts exactly when the rep ends.
+		at, length, queued = Rules.repStep(nil, T, 0, 0, true)
+		at, length, queued, started = Rules.repStep(at, length, queued, 0.1, true)
+		check(at == 0 and length == T and queued == 1 and not started, "a press during a rep waits")
+		at, length, queued, started = Rules.repStep(at, length, queued, 0.2, true)
+		check(at == 0 and queued == 2 and not started, "so does the next")
+		at, length, queued, started = Rules.repStep(at, length, queued, T + 0.004, false)
+		check(started and queued == 1, "the first waiting rep starts")
+		near(at :: number, T, "back to back: no frame lost between reps")
+		check(length < T, "a rep with a press waiting behind it is quicker")
+		-- A stalled frame never leaves the queue playing in the past.
+		at, length, queued, started = Rules.repStep(0, T, 1, 9, false)
+		check(at == 9 and length == T and started and queued == 0, "a late waiting rep starts now")
+		-- The press that ends one rep's wait may queue the next on the same step.
+		at, length, queued, started = Rules.repStep(0, T, 1, T + 0.01, true)
+		check(started and queued == 1, "start one, queue the next")
+		-- The queue is bounded.
+		at, length, queued = Rules.repStep(nil, T, 0, 0, true)
+		for i = 1, 3 * Rules.REP_QUEUE do
+			at, length, queued = Rules.repStep(at, length, queued, i * 0.001, true)
+		end
+		eq(queued, Rules.REP_QUEUE, "at most REP_QUEUE presses wait")
+
+		-- Mashing speeds the reps up, down to REP_FAST.
+		eq(Rules.repTime(0), T, "nothing waiting: a full rep")
+		check(Rules.repTime(1) < T and Rules.repTime(1) > Rules.REP_FAST, "one waiting: quicker")
+		eq(Rules.repTime(Rules.REP_QUEUE), Rules.REP_FAST, "a full queue: as quick as reps get")
+		eq(Rules.press(Rules.REP_FAST, Rules.REP_FAST), 1, "a quick rep ends at arms' length")
+		check(Rules.press(Rules.REP_FAST * 0.45, Rules.REP_FAST) < 0.01, "a quick rep reaches the chest too")
+
+		-- Spamming: every press becomes a rep, however fast the presses come (up to one every
+		-- REP_FAST for good; a short burst faster still waits in the queue).
+		local function spam(pressEvery: number, presses: number, seconds: number, fps: number): number
+			local a: number?, l, q, reps = nil, T, 0, 0
+			local nextPress, sent = 0, 0
+			for i = 0, math.floor(seconds * fps) do
+				local t = i / fps
+				local pressed = sent < presses and t >= nextPress
+				if pressed then
+					nextPress += pressEvery
+					sent += 1
+				end
+				local s
+				a, l, q, s = Rules.repStep(a, l, q, t, pressed)
+				if s then
+					reps += 1
+				end
+			end
+			return reps
+		end
+		eq(spam(0.1, 10, 9, 60), 10, "ten fast presses: ten reps")
+		eq(spam(0.1, 10, 9, 20), 10, "the same at 20 fps")
+		eq(spam(0.2, 40, 12, 60), 40, "steady mashing: a rep a press")
+		eq(spam(1, 10, 12, 60), 10, "slow presses: one rep each")
+		eq(spam(100, 1, 9, 60), 1, "one press, one rep")
+		local flood = spam(0.02, 400, 8, 60)
+		check(flood <= 8 / Rules.REP_FAST + 1, "a flood plays a rep every REP_FAST at the most (" .. flood .. ")")
+
+		-- The server counts chained reps, with a rep of slack for jitter, and no more.
+		local nextAt: number? = nil
+		local ok
+		ok, nextAt = Rules.repAllowed(nextAt, 100)
+		check(ok, "first rep counts")
+		local counted = 1
+		for i = 1, 20 do
+			ok, nextAt = Rules.repAllowed(nextAt, 100 + i * Rules.REP_FAST)
+			counted += if ok then 1 else 0
+		end
+		eq(counted, 21, "reps a REP_FAST apart all count")
+		-- Two reps arriving together (jitter) both count; a flood does not.
+		nextAt = nil
+		counted = 0
+		for _ = 1, 50 do
+			ok, nextAt = Rules.repAllowed(nextAt, 200)
+			counted += if ok then 1 else 0
+		end
+		eq(counted, 2, "one rep of slack")
+		counted = 0
+		nextAt = nil
+		for i = 0, 999 do
+			ok, nextAt = Rules.repAllowed(nextAt, 300 + i * 0.01)
+			counted += if ok then 1 else 0
+		end
+		check(counted <= 10 / Rules.REP_GAP + 2, "a flood counts at most one rep per REP_GAP (" .. counted .. ")")
+		check(Rules.REP_GAP < Rules.REP_FAST, "the quickest chained reps are slower than the server's limit")
 	end)
 
 	test("Interactive: gym poses", function()

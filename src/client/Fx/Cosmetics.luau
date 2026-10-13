@@ -132,7 +132,8 @@ local function hookJump(humanoid: Humanoid)
 				return
 			end
 			local _, root = characterParts()
-			if not root then
+			-- An anchored root is held in place (the bench press, a duel): nothing to jump with.
+			if not root or root.Anchored then
 				return
 			end
 			used = true
