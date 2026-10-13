@@ -20,13 +20,20 @@
 	parts built here, which stand beside the Prop_ models so World.Props never swaps them out:
 	  Interactive_Trampoline  "BounceAnchor" at the bounce pad's top centre (attribute Radius)
 	  Interactive_PunchBag    "BagPivot" where the bag hangs from the stand's arm; "HitZone", a
-	                          walk-through box round the bag holding the "PunchPrompt"
-	  Interactive_Bench       "BenchSeat", a Seat lying along the pad (its up axis toward the
-	                          rack, its front up) that holds one lifter flat on their back;
+	                          walk-through box round the bag (attribute Reach: studs round it
+	                          from which jump punches) holding the "PunchPrompt"
+	  Interactive_Bench       "BenchSeat", a marker at the frame a lifter's root lies in (flat on
+	                          the pad, up axis toward the rack, front facing the sky);
 	                          "LiftAnchor" over the pad holding the "LiftPrompt"; "StandSpot" on
-	                          the floor beside the bench, where the lifter gets up
-	The only server behaviour is the bench: its prompt seats the player who triggers it (welded
-	exactly onto BenchSeat) and lets its lifter go again. The podium is still only a prop.
+	                          the floor beside the bench, facing it, where the lifter gets up
+	The only server behaviour is the bench, and there is no Seat in it: the server anchors a
+	lifter's root on BenchSeat and owns the lift on the model's attributes, Lifter (the lifter's
+	UserId, nil while the bench is free) and Reps (counted from the lifter's BenchRep actions,
+	at most one per InteractiveRules.REP_GAP). The prompt starts a lift on a free bench and
+	stops the lifter's own; Decor.releaseLifter stands a lifter up on StandSpot and un-anchors
+	them, and runs as well when they move (BenchStop), die, respawn, leave or are teleported
+	(Home, the game modes). One lifter per bench, one bench per lifter. The podium is still
+	only a prop.
 
 	Fan zones: each plot folder gets a "FanSpots" folder with one invisible "FanSpot" part per
 	Layout.fanSpots() entry (attribute Order, 1 = filled first) at ground level, its
@@ -35,6 +42,10 @@
 	card on two posts and heart / star cut-outs; the spots themselves stay clear.
 ]]
 
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Rules = require(ReplicatedStorage.Shared.InteractiveRules)
 local Layout = require(script.Parent.Parent.PlotLayout)
 local Common = require(script.Parent.Common)
 
@@ -591,19 +602,23 @@ local function marker(B: Builder, parent: Instance, name: string, cframe: CFrame
 	return p
 end
 
--- Prompts reach about a mat's width: tap on touch, E on a keyboard, X on a gamepad.
+-- Studs round the punch bag's HitZone from which a jump press punches.
+local PUNCH_REACH = 2.5
+
+-- Prompts reach about a mat's width (`range` studs): tap on touch, `key` on a keyboard, X on
+-- a gamepad.
 local PROMPT_RANGE = 8
 
-local function prompt(parent: BasePart, name: string, action: string, object: string): ProximityPrompt
+local function prompt(parent: BasePart, name: string, action: string, object: string, key: Enum.KeyCode, range: number?): ProximityPrompt
 	local p = Instance.new("ProximityPrompt")
 	p.Name = name
 	p.ActionText = action
 	p.ObjectText = object
-	p.MaxActivationDistance = PROMPT_RANGE
+	p.MaxActivationDistance = range or PROMPT_RANGE
 	p.HoldDuration = 0
 	-- The markers sit inside the props' colliders.
 	p.RequiresLineOfSight = false
-	p.KeyboardKeyCode = Enum.KeyCode.E
+	p.KeyboardKeyCode = key
 	p.GamepadKeyCode = Enum.KeyCode.ButtonX
 	p.Parent = parent
 	return p
@@ -670,69 +685,136 @@ local function interactive(B: Builder, parent: Instance, kind: string, use: stri
 end
 
 -- Where a lifter lies, in the bench prop's frame (base centre, rack at +Z): flat on the pad,
--- head toward the rack. The seat's frame is the lifter's root frame: up axis along the bench,
--- front facing the sky.
+-- head toward the rack. This is the lifter's root frame: up axis along the bench, front facing
+-- the sky.
 local BENCH_LIE = CFrame.new(0, 2.4, -0.2) * CFrame.Angles(math.rad(90), 0, 0)
 
--- Puts the lifter's root exactly onto the bench seat (a Seat's own weld would sit them up on it).
-local function lieFlat(seat: Seat)
-	local weld = seat:FindFirstChild("SeatWeld")
-	if weld and weld:IsA("Weld") then
-		weld.C0 = CFrame.identity
-		weld.C1 = CFrame.identity
+-- Bench press lifts: the server holds each lifter's root anchored on its bench.
+type Bench = { model: Model, lie: CFrame, stand: CFrame, lifter: Player? }
+type Lift = {
+	bench: Bench,
+	character: Model,
+	root: BasePart,
+	reps: number,
+	nextRep: number?, -- when the next rep may count (Rules.repAllowed)
+	conns: { RBXScriptConnection },
+}
+
+local lifts: { [Player]: Lift } = {}
+local watchingPlayers = false
+
+-- Lets `player` go from the bench they lift on, if any: upright on its StandSpot facing the
+-- bench, un-anchored, the bench free again. Call before moving a character elsewhere.
+function Decor.releaseLifter(player: Player)
+	local lift = lifts[player]
+	if not lift then
+		return
+	end
+	lifts[player] = nil
+	for _, conn in lift.conns do
+		conn:Disconnect()
+	end
+	local bench = lift.bench
+	bench.lifter = nil
+	bench.model:SetAttribute("Lifter", nil)
+
+	local root = lift.root
+	if not root.Parent then
+		return
+	end
+	local humanoid = lift.character:FindFirstChildOfClass("Humanoid")
+	-- A dead lifter is only let go: the body falls where it lies.
+	if humanoid and humanoid.Health > 0 then
+		local hip = if humanoid.RigType == Enum.HumanoidRigType.R15 then humanoid.HipHeight else 2
+		root.CFrame = bench.stand + Vector3.new(0, hip + root.Size.Y / 2 + 0.1, 0)
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+	end
+	root.Anchored = false
+end
+
+-- Counts one rep for `player` (action BenchRep): only while they lift, at the pace of the reps.
+function Decor.benchRep(player: Player)
+	local lift = lifts[player]
+	if not lift then
+		return
+	end
+	local counts
+	counts, lift.nextRep = Rules.repAllowed(lift.nextRep, os.clock())
+	if counts then
+		lift.reps += 1
+		lift.bench.model:SetAttribute("Reps", lift.reps)
 	end
 end
 
--- Lets `humanoid` go from the bench seat it is welded to.
-local function releaseSeat(seat: Seat, humanoid: Humanoid)
-	local weld = seat:FindFirstChild("SeatWeld")
-	if weld then
-		weld:Destroy()
+-- Lies `player` down on `bench`: only a living character that is free to move, on a free bench.
+local function startLift(bench: Bench, player: Player)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not character or not humanoid or not root or not root:IsA("BasePart") then
+		return
 	end
-	humanoid.Sit = false
+	-- An anchored root is held by something else (a game mode): leave it alone.
+	if bench.lifter or lifts[player] or humanoid.Health <= 0 or humanoid.SeatPart ~= nil or root.Anchored then
+		return
+	end
+	if not watchingPlayers then
+		watchingPlayers = true
+		Players.PlayerRemoving:Connect(Decor.releaseLifter)
+	end
+	local function release()
+		Decor.releaseLifter(player)
+	end
+	-- Nobody stays anchored: dying, respawning and losing the character all end the lift.
+	lifts[player] = {
+		bench = bench,
+		character = character,
+		root = root,
+		reps = 0,
+		nextRep = nil,
+		conns = {
+			humanoid.Died:Connect(release),
+			player.CharacterRemoving:Connect(release),
+			character.AncestryChanged:Connect(function()
+				if not character:IsDescendantOf(game) then
+					release()
+				end
+			end),
+		},
+	}
+	bench.lifter = player
+	root.Anchored = true
+	root.CFrame = bench.lie
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+	bench.model:SetAttribute("Reps", 0)
+	bench.model:SetAttribute("Lifter", player.UserId)
 end
 
 -- The bench press: one lifter at a time lies on BenchSeat (the client poses and animates them).
--- The prompt seats whoever triggers it while the bench is free and lets its own lifter go.
+-- The prompt lies whoever triggers it down while the bench is free and lets its own lifter go.
 local function buildBench(B: Builder, model: Model, x: number, z: number)
 	-- The rack stands toward the fence, the barbell resting on its hooks.
-	local bench = placeProp(B, model, "Bench", x, z + 0.5, 180, { tint = color("Coral") })
+	local prop = placeProp(B, model, "Bench", x, z + 0.5, 180, { tint = color("Coral") })
 	placeProp(B, model, "Barbell", x, z - 1.7, 0, { y = 2.6, tint = color("Sunny") })
-	local base = (bench.PrimaryPart :: BasePart).CFrame
+	local base = (prop.PrimaryPart :: BasePart).CFrame
 
-	local seat = Common.make("Seat", {
-		Name = "BenchSeat",
-		Size = Vector3.new(1.6, 0.2, 0.6),
-		CFrame = base * BENCH_LIE,
-		Transparency = 1,
-		CanCollide = false,
-		Parent = model,
-	}) :: Seat
-	-- Nobody sits by walking into it: only the prompt seats.
-	seat.CanTouch = false
-	seat.CanQuery = false
-	seat.CastShadow = false
-	marker(B, model, "StandSpot", base * CFrame.new(3, 0.1, -0.3))
-	local lift = prompt(marker(B, model, "LiftAnchor", base * CFrame.new(0, 2.6, -0.3)), "LiftPrompt", "Lift", "Bench")
+	local lie = base * BENCH_LIE
+	marker(B, model, "BenchSeat", lie, Vector3.new(1.6, 0.2, 0.6))
+	local standAt = base * Vector3.new(3, 0.1, -0.3)
+	local stand = CFrame.lookAt(standAt, Vector3.new(lie.X, standAt.Y, lie.Z))
+	marker(B, model, "StandSpot", stand)
+	local lift = prompt(marker(B, model, "LiftAnchor", base * CFrame.new(0, 2.6, -0.3)), "LiftPrompt", "Lift", "Bench", Enum.KeyCode.E)
 
+	local bench: Bench = { model = model, lie = lie, stand = stand, lifter = nil }
 	-- pcall: the offline preview (Lune) has no instance signals.
 	pcall(function()
-		seat.ChildAdded:Connect(function()
-			lieFlat(seat)
-			task.defer(lieFlat, seat)
-		end)
 		lift.Triggered:Connect(function(player: Player)
-			local character = player.Character
-			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-			if not humanoid or humanoid.Health <= 0 then
-				return
-			end
-			local lifter = seat.Occupant
-			if lifter == humanoid then
-				releaseSeat(seat, humanoid)
-			elseif lifter == nil and humanoid.SeatPart == nil then
-				seat:Sit(humanoid)
-				lieFlat(seat)
+			if bench.lifter == player then
+				Decor.releaseLifter(player)
+			else
+				startLift(bench, player)
 			end
 		end)
 	end)
@@ -754,7 +836,11 @@ local function buildInteractive(B: Builder, parent: Instance)
 	marker(B, punchBag, "BagPivot", bagBase * CFrame.new(-0.9, 6.5, 0))
 	-- A little wider than the bag's collider, so running into the bag reaches it.
 	local hitZone = marker(B, punchBag, "HitZone", bagBase * CFrame.new(-0.9, 3.5, 0), Vector3.new(4.2, 5.4, 4.4))
-	prompt(hitZone, "PunchPrompt", "Punch", "Punch bag")
+	-- Jump punches from PUNCH_REACH studs round the zone, where the client also keeps the avatar
+	-- from hopping. The prompt shows the same key (Space) and reaches no further than that, so
+	-- wherever it shows, a press is a punch and never a jump.
+	hitZone:SetAttribute("Reach", PUNCH_REACH)
+	prompt(hitZone, "PunchPrompt", "Punch", "Punch bag", Enum.KeyCode.Space, math.min(hitZone.Size.X, hitZone.Size.Z) / 2 + PUNCH_REACH)
 
 	local bench, benchX, benchZ = interactive(B, parent, "Bench", "bench", Vector2.new(8, 7.4))
 	buildBench(B, bench, benchX, benchZ)

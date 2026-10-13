@@ -26,6 +26,7 @@ local CharacterFactory = require(Shared.CharacterFactory)
 
 local WorldBuilder = require(script.Parent.WorldBuilder)
 local Layout = require(script.Parent.PlotLayout)
+local Decor = require(script.Parent.World.Decor)
 local Shelves = require(script.Parent.World.Shelves)
 local Props = require(script.Parent.World.Props)
 
@@ -2307,14 +2308,8 @@ actionHandlers.Home = function(session)
 	Tycoon.hooks.leavingForHome(session)
 	local character = session.player.Character
 	if character then
-		-- A lifter on the bench press is welded to its seat (World.Decor): let go first.
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		local seat = humanoid and humanoid.SeatPart
-		local weld = seat and seat:FindFirstChild("SeatWeld")
-		if humanoid and weld then
-			weld:Destroy()
-			humanoid.Sit = false
-		end
+		-- A lifter on the bench press is anchored to it (World.Decor): let go first.
+		Decor.releaseLifter(session.player)
 		character:PivotTo(session.plot.spawn)
 	end
 end
@@ -2401,6 +2396,18 @@ actionHandlers.ClaimIndex = function(session, data)
 		toast(session, string.format(full, crate, theme.Words.Chest, Format.money(crateCash)), "info")
 	end
 end
+
+-- The plot's bench press (World.Decor owns the lifts): a rep from the lifter's jump press, and
+-- the lifter moving the stick to get up. Cosmetic: nothing in the tycoon changes.
+actionHandlers.BenchRep = function(session)
+	Decor.benchRep(session.player)
+end
+
+actionHandlers.BenchStop = function(session)
+	Decor.releaseLifter(session.player)
+end
+
+local COSMETIC_ACTIONS = { BenchRep = true, BenchStop = true }
 
 -- Sent by the client once its UI is ready; the caller flushes fresh state.
 actionHandlers.Sync = function(_session) end
@@ -2762,8 +2769,11 @@ function Tycoon.init(builtWorld: WorldBuilder.World, themeModule: any)
 		local handler = actionHandlers[data.action]
 		if handler then
 			handler(session, data)
-			markDirty(session)
-			flush(session)
+			-- A rep changes no tycoon state: no snapshot for it.
+			if not COSMETIC_ACTIONS[data.action] then
+				markDirty(session)
+				flush(session)
+			end
 		end
 	end)
 
