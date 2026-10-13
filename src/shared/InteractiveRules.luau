@@ -15,8 +15,10 @@
 --     request is a new press only when none came in the PRESS_GAP seconds before it (newPress).
 --   * Bench press: one jump press is one rep. A rep takes REP_TIME seconds, the bar going down
 --     to the chest and back up to arms' length, where it rests until the next one (press). A
---     press during a rep queues one more, so spamming chains reps back to back (repStep).
---     The server counts a rep at most every REP_GAP seconds, with one rep of slack (repAllowed).
+--     press during a rep waits behind it (up to REP_QUEUE of them) and reps with presses
+--     waiting play faster, down to REP_FAST seconds (repTime), so mashing loses no press
+--     (repStep). The server counts a rep at most every REP_GAP seconds, with one rep of slack
+--     (repAllowed).
 
 local Rules = {}
 
@@ -153,13 +155,21 @@ end
 -- Bench press ------------------------------------------------------------------------------
 
 Rules.REP_TIME = 0.45
-Rules.REP_GAP = Rules.REP_TIME * 0.8 -- seconds between two reps the server counts
+Rules.REP_FAST = 0.16 -- seconds a rep takes at the least, with presses waiting behind it
+Rules.REP_QUEUE = 6 -- presses that wait behind the rep being played, at the most
+Rules.REP_GAP = Rules.REP_FAST * 0.8 -- seconds between two reps the server counts
 local REP_DOWN = 0.45 -- share of a rep spent lowering the bar
 
--- How far the bar is pushed out `t` seconds into a rep: 1 = arms straight, 0 = on the chest.
--- Before and after the rep it rests at arms' length.
-function Rules.press(t: number): number
-	local u = t / Rules.REP_TIME
+-- Seconds a rep takes with `queued` presses waiting behind it: mashing speeds the reps up.
+function Rules.repTime(queued: number): number
+	return math.max(Rules.REP_FAST, Rules.REP_TIME / (1 + math.max(0, queued)))
+end
+
+-- How far the bar is pushed out `t` seconds into a rep of `length` seconds (REP_TIME when
+-- left out): 1 = arms straight, 0 = on the chest. Before and after the rep it rests at arms'
+-- length.
+function Rules.press(t: number, length: number?): number
+	local u = t / (length or Rules.REP_TIME)
 	if u <= 0 or u >= 1 then
 		return 1
 	elseif u < REP_DOWN then
@@ -169,29 +179,27 @@ function Rules.press(t: number): number
 end
 
 -- One step of a lifter's rep queue. `at` is when the rep being played started (nil while the
--- bar rests), `queued` whether one more waits behind it and `pressed` whether a press came
--- at `now`. Returns the new `at` and `queued`, and whether a rep started on this step. A
--- queued rep starts the moment the one before it ends, so spamming keeps the rhythm; a press
--- while one is already queued is dropped.
-function Rules.repStep(at: number?, queued: boolean, now: number, pressed: boolean): (number?, boolean, boolean)
-	local started = false
-	if at and now - at >= Rules.REP_TIME then
-		if queued then
-			-- Back to back, unless a stalled frame left the queue more than a rep behind.
-			at = if now - at >= 2 * Rules.REP_TIME then now else at + Rules.REP_TIME
-			queued, started = false, true
-		else
-			at = nil
-		end
-	end
+-- bar rests), `length` how long that rep takes, `queued` how many presses wait behind it and
+-- `pressed` whether a press came at `now`. Returns the new `at`, `length` and `queued`, and
+-- whether a rep started on this step. A waiting press starts its rep the moment the one
+-- before it ends, so spamming keeps the rhythm; a press beyond REP_QUEUE is dropped.
+function Rules.repStep(at: number?, length: number, queued: number, now: number, pressed: boolean): (number?, number, number, boolean)
 	if pressed then
-		if at == nil then
-			at, started = now, true
-		else
-			queued = true
-		end
+		queued = math.min(queued + 1, Rules.REP_QUEUE)
 	end
-	return at, queued, started
+	local from: number? = nil
+	if at == nil then
+		from = now
+	elseif now - at >= length then
+		-- Back to back, unless a stalled frame left the queue more than a rep behind.
+		from = if now - at >= 2 * length then now else at + length
+		at = nil
+	end
+	if from and queued > 0 then
+		queued -= 1
+		return from, Rules.repTime(queued), queued, true
+	end
+	return at, length, queued, false
 end
 
 -- The server's limit on counted reps: `nextAt` is when the lifter's next rep may come (nil

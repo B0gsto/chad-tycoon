@@ -21,7 +21,7 @@
 	              their root there and sets the model's attributes Lifter (UserId) and Reps.
 	              Every client poses that player in a bench press and gives them a barbell.
 	              The lifter spams jump: each press is one rep, a quick down-and-up of the bar
-	              (a press during a rep queues one more), played at once and sent to the server
+	              (presses during a rep wait behind it and speed the reps up), played at once and sent to the server
 	              (action BenchRep), which counts it in Reps for everybody else to play. The
 	              bar moves on the rep itself, through the place the pose puts the hands, so
 	              it moves even on an avatar that cannot be posed. Moving (action BenchStop)
@@ -879,7 +879,8 @@ type Lift = {
 	mine: boolean,
 	startedAt: number,
 	repAt: number?, -- when the rep being played started, nil while the bar rests (Rules.repStep)
-	queued: boolean, -- one more rep waits behind it
+	repTime: number, -- seconds the rep being played takes (Rules.repTime)
+	queued: number, -- presses waiting behind it
 	played: number, -- reps this client has started for the lifter
 	seen: number, -- of the server's Reps, how many this client has turned into reps
 	shown: number, -- the count on the board
@@ -987,7 +988,8 @@ local function bench(model: Model): Handler?
 			mine = mine,
 			startedAt = os.clock(),
 			repAt = nil,
-			queued = false,
+			repTime = Rules.REP_TIME,
+			queued = 0,
 			played = 0,
 			-- Joining a lift under way: its earlier reps are only counted, not replayed.
 			seen = seen,
@@ -1030,7 +1032,7 @@ local function bench(model: Model): Handler?
 	-- the server counted for somebody else's lifter.
 	local function advance(current: Lift, now: number, pressed: boolean)
 		local began
-		current.repAt, current.queued, began = Rules.repStep(current.repAt, current.queued, now, pressed)
+		current.repAt, current.repTime, current.queued, began = Rules.repStep(current.repAt, current.repTime, current.queued, now, pressed)
 		if began then
 			current.played += 1
 			model:SetAttribute("RepsPlayed", current.played)
@@ -1078,13 +1080,14 @@ local function bench(model: Model): Handler?
 					send("BenchStop")
 				end
 				advance(current, now, false)
-				reps = math.max(reps, current.played)
+				-- Presses still waiting for their rep count at once: every press shows.
+				reps = math.max(reps, current.played + current.queued)
 			else
 				-- Somebody else's reps play as the server counts them; a burst too long to
 				-- queue is only counted.
 				local pressed = reps > current.seen
 				if pressed then
-					current.seen = if reps - current.seen > 2 then reps - 1 else current.seen + 1
+					current.seen = if reps - current.seen > Rules.REP_QUEUE then reps - 1 else current.seen + 1
 				end
 				advance(current, now, pressed)
 			end
@@ -1092,7 +1095,7 @@ local function bench(model: Model): Handler?
 			-- The bar moves on the rep, through the middle between the posed hands (worked
 			-- out from the pose, not read off the avatar, so it moves whatever the avatar
 			-- shows); over the chest of an avatar that cannot be posed.
-			local out = Rules.press(if current.repAt then now - current.repAt else 0)
+			local out = Rules.press(if current.repAt then now - current.repAt else 0, current.repTime)
 			local frame = lieSpot.CFrame
 			local rig = current.rig
 			if rig and current.boostRig ~= rig then
@@ -1147,7 +1150,7 @@ local function bench(model: Model): Handler?
 			if rig then
 				-- Every limb, at full weight once settled: nothing of the avatar's own
 				-- animations (idle, fall) shows on a lifter.
-				local out = Rules.press(if current.repAt then now - current.repAt else 0)
+				local out = Rules.press(if current.repAt then now - current.repAt else 0, current.repTime)
 				poseRig(rig, POSE.BenchDown, POSE.BenchUp, out, math.min(1, (now - current.startedAt) / BLEND_IN), Poses.LIMBS)
 			end
 		end,
