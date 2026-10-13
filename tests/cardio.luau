@@ -2,7 +2,7 @@
 	Unit tests for the CARDIO rules (src/server/Modes/CardioRules.luau), the keyboard runway
 	layout (src/server/Modes/CardioLayout.luau) and the run's rules (src/server/Modes/Cardio.luau):
 	every run starts at stage 1, cash is paid only on a WIN plate, a fall or a catch goes back
-	to stage 1.
+	to stage 1, and inside the reward cooldown only a real run earns the run again bonus.
 	Loaded by tests/run.luau with its harness: { test, check, eq, near, seeded }.
 ]]
 
@@ -1187,13 +1187,16 @@ return function(h: { [string]: any })
 		eq(rig.count("win"), 1, "one payout per run")
 		eq(profile.money, zone.cash, "no second payout")
 
-		-- Running stage 1 again inside the cooldown: the plate pays nothing (no farming).
+		-- Running stage 1 again right away, inside the cooldown: the run again bonus is not paid
+		-- seconds after a paid plate, so the plate pays nothing (no farming).
 		rig.reach(1, 1)
 		local again = rig.last("zone")
 		check(again.first == false and again.full == false and again.cash == 0, "plate 1 is cooling down")
+		eq(again.pay, "none", "and says so")
 		rig.plate(1)
 		eq(rig.count("win"), 2, "the claim still ends the run")
 		eq(rig.last("win").cash, 0, "no cash inside the cooldown")
+		eq(rig.last("win").pay, "none", "the win says it paid nothing")
 		eq(profile.money, zone.cash, "nothing farmed")
 		eq(rec.bestStage, 1, "the record stays")
 		check(rig.inLobby(), "back in the lobby again")
@@ -1212,6 +1215,7 @@ return function(h: { [string]: any })
 		rig.reach(1, 2)
 		rig.plate(1)
 		check(rig.last("win").stage == 1 and rig.last("win").cash == 0, "going back to plate 1 claims stage 1")
+		eq(rig.last("win").repeatFrom, 2, "the run again bonus starts at the best plate")
 
 		-- After the cooldown a repeat pays again, once.
 		profile.modes.cardio.lastRewardAt = os.time() - Economy.MODE_REWARD_COOLDOWN - 1
@@ -1437,6 +1441,149 @@ return function(h: { [string]: any })
 		end
 		eq(rig.session.profile.cardio.firsts, 31, "the set is filled in from bestStage")
 		eq(rig.session.profile.cardio.bestStage, 5, "bestStage untouched")
+	end)
+
+	test("Cardio: run again bonus rules", function()
+		eq(Rules.REPEAT_GAP, 30, "the bonus is paid at most every 30 s")
+		eq(Rules.repeatFrom(0), 1, "no best yet: plate 1")
+		eq(Rules.repeatFrom(4), 4, "the best plate")
+		eq(Rules.repeatFrom(4.9), 4, "whole plates")
+		eq(Rules.repeatFrom(99), Rules.STAGE_COUNT, "clamped to the last plate")
+		for best = 0, Rules.STAGE_COUNT do
+			for n = 1, Rules.STAGE_COUNT do
+				local want = n >= math.max(best, 1)
+				eq(Rules.repeatEarned(n, best, Rules.REPEAT_GAP), want, "plate " .. n .. " with best " .. best)
+				eq(Rules.repeatEarned(n, best, math.huge), want, "long after the last pay, plate " .. n .. " with best " .. best)
+				check(not Rules.repeatEarned(n, best, Rules.REPEAT_GAP - 0.01), "never inside the gap at " .. n .. "/" .. best)
+				check(not Rules.repeatEarned(n, best, 0), "never right after a paid plate at " .. n .. "/" .. best)
+			end
+		end
+		eq(Rules.payKind(true, true, false), "first", "a first clear")
+		eq(Rules.payKind(true, true, true), "first", "a first clear is never a repeat")
+		eq(Rules.payKind(false, true, true), "full", "the cooldown is over")
+		eq(Rules.payKind(false, false, true), "repeat", "an earned repeat")
+		eq(Rules.payKind(false, false, false), "none", "a repeat that was not earned")
+	end)
+
+	test("Cardio: the run again bonus needs a real run", function()
+		local def, rig = loadCardio(0)
+		local player, profile = rig.player, rig.session.profile
+		local rec = profile.cardio
+		local share = Economy.MODE_REPEAT_SHARE
+		check(def.start(player, true), "start")
+		-- First clears of plates 1 and 2 (best plate 2); the reward cooldown is running.
+		rig.reach(1, 1)
+		rig.plate(1)
+		local pack1 = rig.last("win").cash
+		eq(rig.last("win").pay, "first", "plate 1: a first clear")
+		check(rig.last("win").newBest == true and rig.last("win").prevBest == 0, "the first plate is a new best")
+		rig.reach(1, 2)
+		rig.plate(2)
+		local first2 = rig.last("win")
+		local pack2 = first2.cash
+		check(first2.pay == "first" and first2.newBest == true and first2.prevBest == 1, "plate 2: a first clear and a new best")
+		eq(first2.bestStage, 2, "best plate 2")
+		local paid = pack1 + pack2
+		eq(profile.money, paid, "two first clears paid")
+		local lastRewardAt = profile.modes.cardio.lastRewardAt
+
+		-- Looping in seconds pays nothing: quick runs to the best plate, 3 s apart.
+		for _ = 1, 4 do
+			rig.reach(1, 2)
+			rig.plate(2)
+			eq(rig.last("win").pay, "none", "inside the gap: nothing")
+			check(rig.last("win").repeatReadyAt > 0, "the win says when the bonus is back")
+		end
+		eq(profile.money, paid, "nothing farmed in seconds")
+
+		-- After the gap, a run to the best plate pays the share of that plate's pack, once.
+		rig.clock.t += Rules.REPEAT_GAP
+		rig.reach(1, 2)
+		local zone = rig.last("zone")
+		local bonus2 = math.floor(pack2 * share)
+		check(zone.pay == "repeat" and zone.cash == bonus2 and zone.full == false, "the zone announces the bonus")
+		check(zone.packCash == pack2 and zone.repeatCash == bonus2 and zone.repeatShare == share, "with the plate's prices")
+		eq(zone.repeatFrom, 2, "from the best plate")
+		local snap = def.snapshot(player)
+		eq(snap.wins[2], bonus2, "snapshot: plate 2 pays the bonus now")
+		eq(snap.wins[1], 0, "snapshot: plate 1 is before the best plate")
+		eq(snap.repeats[1], 0, "no bonus on plate 1")
+		eq(snap.repeats[2], bonus2, "the bonus on plate 2")
+		check(snap.repeats[3] == 0 and snap.firsts[3] == true, "plate 3 is still a first clear, not a repeat")
+		check(snap.repeatFrom == 2 and snap.repeatReadyAt == 0 and snap.repeatShare == share, "snapshot: the bonus is ready")
+		rig.plate(2)
+		local win = rig.last("win")
+		check(win.pay == "repeat" and win.cash == bonus2 and win.full == false, "the run again bonus is paid")
+		check(win.newBest == false and win.prevBest == 2, "a repeat is no new best")
+		check(win.packCash == pack2 and win.repeatCash == bonus2 and win.repeatShare == share, "the card's fields")
+		paid += bonus2
+		eq(profile.money, paid, "paid once")
+		eq(profile.totalEarned, paid, "and counted as earned")
+		eq(profile.modes.cardio.lastRewardAt, lastRewardAt, "the bonus does not restart the cooldown")
+		eq(rec.bestStage, 2, "nor change the best plate")
+		check(rig.inLobby(), "the claim still ends the run")
+		-- The same plate again without running to it, even after the gap: nothing reached.
+		rig.clock.t += Rules.REPEAT_GAP
+		rig.plate(2)
+		rig.plate(2)
+		eq(profile.money, paid, "a plate cannot be stepped on again without running to it")
+		-- A real run after the gap is paid again...
+		rig.reach(1, 2)
+		rig.plate(2)
+		paid += bonus2
+		eq(profile.money, paid, "the next real run after the gap is paid")
+		-- ...and right away again: inside the gap.
+		rig.reach(1, 2)
+		eq(rig.last("zone").pay, "none", "seconds later the bonus is gone")
+		snap = def.snapshot(player)
+		check(snap.wins[2] == 0 and snap.repeats[2] == bonus2 and snap.repeatReadyAt > 0, "the snapshot says the bonus is waiting")
+		rig.plate(2)
+		eq(profile.money, paid, "not twice in a row")
+
+		-- A plate before the best one never pays the bonus, however long the wait.
+		rig.clock.t += 10 * Rules.REPEAT_GAP
+		rig.reach(1, 1)
+		check(rig.last("zone").pay == "none" and rig.last("zone").cash == 0, "plate 1 is before the best plate")
+		rig.plate(1)
+		check(rig.last("win").pay == "none" and rig.last("win").cash == 0, "plate 1 pays nothing")
+		eq(profile.money, paid, "no bonus for a shorter run")
+
+		-- A plate beyond the best one whose first clear is gone pays the bonus too.
+		rec.firsts = Rules.claimFirst(rec.firsts, 3)
+		rig.reach(1, 3)
+		check(rig.last("zone").pay == "repeat", "a plate beyond the best one earns the bonus")
+		rig.plate(3)
+		local deep = rig.last("win")
+		check(deep.pay == "repeat" and deep.cash == deep.repeatCash and deep.cash > bonus2, "paid on its bigger pack")
+		check(deep.newBest == true and deep.bestStage == 3, "and it is the new best plate")
+		paid += deep.cash
+		eq(profile.money, paid, "paid")
+
+		-- Ten minutes of looping the best plate: at most one bonus per gap.
+		local before, runs = profile.money, 0
+		local t0 = rig.clock.t
+		while rig.clock.t - t0 < 600 do
+			rig.reach(1, 3)
+			rig.plate(3)
+			runs += 1
+		end
+		local bonus3 = deep.cash
+		check(runs >= 80, "many quick runs (" .. runs .. ")")
+		check(profile.money - before <= (600 / Rules.REPEAT_GAP) * bonus3, "ten minutes of looping pay at most 20 bonuses")
+		check(profile.money - before >= 10 * bonus3, "and a steady runner does get them")
+
+		-- After the cooldown the plate pays in full again (not the bonus).
+		profile.modes.cardio.lastRewardAt = os.time() - Economy.MODE_REWARD_COOLDOWN - 1
+		rig.clock.t += Rules.REPEAT_GAP
+		rig.reach(1, 3)
+		check(rig.last("zone").pay == "full" and rig.last("zone").cash == deep.packCash, "the full pack after the cooldown")
+		eq(def.snapshot(player).repeats[3], 0, "no bonus to show while the plate pays in full")
+		rig.plate(3)
+		eq(rig.last("win").pay, "full", "paid in full")
+
+		-- The Modes window's preview carries the bonus fields.
+		local preview = def.rewardPreview(player)
+		check(preview.repeatShare == share and preview.repeatCash == math.floor(preview.packCash * share), "preview fields")
 	end)
 
 	test("Cardio: a fall says whether the runner was too slow", function()
