@@ -535,6 +535,12 @@ return function(h: { [string]: any })
 		eq(MogRules.payKind(false, true, false), "full", "the cooldown is over")
 		eq(MogRules.payKind(false, false, true), "repeat", "an earned repeat")
 		eq(MogRules.payKind(false, false, false), "none", "a repeat that was not earned")
+		eq(MogRules.REPEAT_GAP, 90, "the repeat share is paid at most every 90 s")
+		eq(MogRules.payKind(false, false, true, MogRules.REPEAT_GAP - 0.01), "resting", "an earned repeat inside the gap rests")
+		eq(MogRules.payKind(false, false, true, MogRules.REPEAT_GAP), "repeat", "and is paid once the gap is over")
+		eq(MogRules.payKind(false, false, false, 0), "none", "what was not earned is not resting")
+		eq(MogRules.payKind(false, true, true, 0), "full", "the full reward never rests")
+		eq(MogRules.payKind(true, true, true, 0), "first", "nor does the first pass")
 	end)
 
 	test("Mog: only a duel really fought earns the repeat share", function()
@@ -1021,14 +1027,41 @@ return function(h: { [string]: any })
 		end
 		eq(cashEffects, 2, "two cash effects: the pack and one bonus")
 
-		-- Every bonus needs its own whole run.
+		check(again.repeatRest > 0 and again.repeatRest <= MogRules.REPEAT_GAP, "the card knows the bonus now rests")
+
+		-- Straight away again: a real pass, but the bonus rests (MogRules.REPEAT_GAP).
 		local money = profile.money
+		local rested = w.run(player, perfects)
+		check(rested.passed == true and rested.pay == "resting" and rested.cash == 0, "a pass inside the gap pays nothing")
+		check(rested.repeatRest > 0 and rested.repeatRest < MogRules.REPEAT_GAP, "the card says for how long")
+		check(rested.repeatCash == bonus and rested.full == false, "and still knows the bonus")
+		eq(profile.money, money, "the wallet is untouched")
+		eq(rec.clears, 3, "the pass still counts")
+		preview = w.def.rewardPreview(player)
+		check(preview.cash == 0 and preview.repeatRest > 0 and preview.repeatCash == bonus, "preview: resting")
+
+		-- Every bonus needs its own whole run, and the gap since the last one.
 		t0 = w.clock
 		for i = 1, 3 do
+			w.advance(MogRules.REPEAT_GAP)
+			eq(w.def.rewardPreview(player).repeatRest, 0, "awake again")
 			check(w.run(player, perfects).pay == "repeat", "pass " .. i .. " pays the bonus")
 		end
 		eq(profile.money, money + 3 * bonus, "three passes, three bonuses")
-		check(w.clock - t0 >= 3 * MogRules.minPassSeconds(), "each took a real run")
+		check(w.clock - t0 >= 3 * (MogRules.minPassSeconds() + MogRules.REPEAT_GAP), "each took a real run and its gap")
+
+		-- Looping fast passes for ten minutes: one bonus per gap at the most.
+		money = profile.money
+		t0 = w.clock
+		local passes = 0
+		while w.clock - t0 < 600 do
+			local looped = w.run(player, perfects)
+			check(looped.pay == "repeat" or looped.pay == "resting", "a pass inside the cooldown is a repeat or rests")
+			passes += 1
+		end
+		check(passes > 600 / MogRules.REPEAT_GAP + 2, "more passes than gaps")
+		check(profile.money - money <= ((w.clock - t0) // MogRules.REPEAT_GAP + 1) * bonus, "ten minutes of looping pay at most 7 bonuses")
+		check(profile.money - money >= 3 * bonus, "and the bonus still comes back")
 
 		-- After the cooldown a pass pays the pack again.
 		rec.lastRewardAt = os.time() - Economy.MODE_REWARD_COOLDOWN - 1
@@ -1105,5 +1138,57 @@ return function(h: { [string]: any })
 		check(paid.pay == "full" and paid.cash == 750 and paid.full == true, "the full reward after the cooldown")
 		eq(profile.money, bonus + 750, "paid in full")
 		eq(rec.clears, 1, "a PvP win is never a clear")
+	end)
+
+	test("Mog: the repeat share rests per player, PvE and PvP together", function()
+		local w = world()
+		local a, b = w.add(1), w.add(2)
+		local pa, pb = w.sessions[a].profile, w.sessions[b].profile
+		local bonus = math.floor(750 * Economy.MODE_REPEAT_SHARE)
+		-- Both passed before and are inside the cooldown.
+		for _, profile in { pa, pb } do
+			local rec = profile.modes.mog
+			rec.clears, rec.rivals, rec.lastRewardAt = 1, MogRules.PASS_RIVALS, os.time()
+		end
+		-- A fought duel, won by `winner` in three rounds.
+		local function fight(winner: any, loser: any): any
+			w.duel(a, b)
+			for _ = 1, 3 do
+				w.round(a, b, if winner == a then "perfect" else "miss", if winner == b then "perfect" else "miss")
+			end
+			local won = w.last(winner, "finish")
+			check(won.won == true and won.reason == "ko" and w.last(loser, "finish").won == false, "a KO")
+			w.advance(10)
+			return won
+		end
+
+		-- Two accounts trading fought wins: each is paid once, then both rest.
+		local t0 = w.clock
+		check(fight(a, b).pay == "repeat", "A's win pays the bonus")
+		local second = fight(b, a)
+		check(second.pay == "repeat" and second.cash == bonus, "B's first win too: the gap is per player")
+		local third = fight(a, b)
+		check(w.clock - t0 < MogRules.REPEAT_GAP, "all inside the gap")
+		check(third.pay == "resting" and third.cash == 0 and third.repeatRest > 0, "A's second win rests")
+		check(fight(b, a).pay == "resting", "and so does B's")
+		check(pa.money == bonus and pb.money == bonus, "one bonus each")
+		eq(w.def.snapshot(a).pvpWins, 2, "the wins still count")
+
+		-- A pass straight after shares the gap with the duel win.
+		w.clock = t0 + MogRules.REPEAT_GAP + 20
+		check(fight(a, b).pay == "repeat", "after the gap a fought win pays again")
+		local pass = w.run(a, MogRules.minPassChecks())
+		check(pass.passed == true and pass.pay == "resting" and pass.cash == 0, "a PvE pass inside the same gap rests")
+		eq(pa.money, 2 * bonus, "two bonuses, not three")
+		-- A win that was not earned is "none", resting or not.
+		w.duel(a, b)
+		for _ = 1, 3 do
+			w.round(a, b, "perfect", nil)
+		end
+		eq(w.last(a, "finish").pay, "none", "a walkover is none, not resting")
+		-- The full reward never rests.
+		pa.modes.mog.lastRewardAt = os.time() - Economy.MODE_REWARD_COOLDOWN - 1
+		w.advance(10)
+		check(fight(a, b).pay == "full", "the full reward is paid inside the gap")
 	end)
 end

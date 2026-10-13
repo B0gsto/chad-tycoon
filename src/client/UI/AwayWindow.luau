@@ -23,6 +23,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Comeback = require(ReplicatedStorage.Shared.Comeback)
+local Net = require(ReplicatedStorage.Shared.Net)
 
 local Kit = require(script.Parent.Kit)
 local State = require(script.Parent.Parent.State)
@@ -246,6 +247,16 @@ local function present(offline: { [string]: any }?): boolean
 		end)
 	end
 	h.open(NAME)
+	-- Tells Analytics what the card listed (the server counts it once per session).
+	local listed: { [string]: any } = { action = "AwayShown", cash = cash, crate = false, daily = false }
+	for _, row in rows do
+		if row.kind == "crate" then
+			listed.crate = row.rarity or true
+		elseif row.kind == "daily" then
+			listed.daily = true
+		end
+	end
+	Net.event("Action"):FireServer(listed)
 	return true
 end
 

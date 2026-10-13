@@ -20,6 +20,7 @@ local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
+local Comeback = require(ReplicatedStorage.Shared.Comeback)
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
 local IndexRewards = require(ReplicatedStorage.Shared.IndexRewards)
@@ -4098,9 +4099,10 @@ end
 -- Settings ------------------------------------------------------------------------------
 
 local function buildSettings(screen: ScreenGui)
-	-- Sized to its four rows: 4 x 70 + 3 x 10 gaps + 20 padding + 84 of header and margins.
-	-- The rows share the height, so the 386 minimum (a phone, scaled up x1.3) has 63 px rows.
-	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(560, 414), Vector2.new(560, 386))
+	-- Sized to its four rows and the "Before you go" line: 4 x 70 + 20 + 4 x 10 gaps + 20
+	-- padding + 84 of header and margins. The rows share the height left by the line, so
+	-- the 386 minimum (a phone, scaled up x1.3) has 56 px rows.
+	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(560, 444), Vector2.new(560, 386))
 	register("Settings", window)
 	local action = Net.event("Action")
 
@@ -4112,7 +4114,7 @@ local function buildSettings(screen: ScreenGui)
 		local row = Kit.panel(window.content, {
 			Name = key,
 			Glass = true,
-			Size = UDim2.new(1, 0, 0.25, -8),
+			Size = UDim2.new(1, 0, 0.25, -15),
 			LayoutOrder = order,
 			Radius = Kit.RADIUS.M + 2,
 		})
@@ -4177,6 +4179,20 @@ local function buildSettings(screen: ScreenGui)
 	toggle(2, "Sound", "Sound Effects", "Clicks, pickups and rewards", "sfx")
 	toggle(3, "Hash", "Full Numbers", "Show 1,234,567 instead of 1.23M", "fullNumbers")
 	toggle(4, "Merge", "Auto Merge", "Merge pairs automatically", "autoMerge")
+	-- "Before you go" (Shared.Comeback): what waits for the player next time, as one quiet
+	-- line under the switches. Settings is where a player goes last.
+	local leave = Kit.text(window.content, {
+		Name = "Leave",
+		Text = "",
+		TextSize = T.Small,
+		MinPx = true,
+		TextColor3 = C.TextMute,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Size = UDim2.new(1, 0, 0, 20),
+		LayoutOrder = 5,
+		StrokeThickness = 0,
+	})
 
 	local ON_TILE = C.Ink:Lerp(C.Window.Settings, 0.55)
 	local function refresh()
@@ -4184,6 +4200,7 @@ local function buildSettings(screen: ScreenGui)
 		if not data then
 			return
 		end
+		leave.Text = Comeback.leaveLine(data, { money = State.money, words = W, age = State.age() })
 		for _, t in toggles do
 			local on: boolean
 			if t.key == "autoMerge" then
@@ -4258,16 +4275,36 @@ local function paintReward(label: TextLabel, text: string, full: boolean)
 	end
 end
 
+-- Seconds a reward preview's run again bonus still rests (`repeatRest`, counted down by the
+-- snapshot's age); 0 = awake.
+local function previewRest(preview: { [string]: any }): number
+	return math.max(0, math.ceil((tonumber(preview.repeatRest) or 0) - State.age()))
+end
+
 -- "Finish: +$X" or the cooldown countdown; `bonus` adds a "(xB)" tag. `repeatCash`: what a
 -- finish really pays inside the cooldown (the run again bonus: a share of the reward; 0 or
 -- nil when it pays nothing, e.g. Parkour gear), named beside the countdown to the full reward.
-local function setRewardLine(label: TextLabel, cash: number, full: boolean, cooldownEnds: number, bonus: number?, repeatCash: number?)
+-- `rest`: seconds that bonus still rests (it was paid a moment ago), said instead.
+local function setRewardLine(
+	label: TextLabel,
+	cash: number,
+	full: boolean,
+	cooldownEnds: number,
+	bonus: number?,
+	repeatCash: number?,
+	rest: number?
+)
 	local left = cooldownEnds - os.time()
 	if not full and left > 0 then
 		paintReward(
 			label,
-			if repeatCash and repeatCash >= 1
-				then string.format("Run again: +%s  ·  full reward in %s", Format.money(repeatCash), Format.time(left))
+			if rest and rest > 0
+				then "Bonus is resting, back in " .. Format.time(rest)
+				elseif repeatCash and repeatCash >= 1 then string.format(
+					"Run again: +%s  ·  full reward in %s",
+					Format.money(repeatCash),
+					Format.time(left)
+				)
 				else "Reward again in " .. Format.time(left),
 			false
 		)
@@ -4356,12 +4393,17 @@ local function parkourReward(label: TextLabel, info: { [string]: any }, level: n
 	-- that map's bonus rests).
 	local share = tonumber(preview.repeatShare) or Economy.MODE_REPEAT_SHARE
 	local repeatCash = math.floor(cash * share)
+	local rest = 0
 	if (type(info.gear) == "string" and info.gear ~= "none") or info.assisted == true then
 		repeatCash = 0
 	elseif level == (tonumber(info.level) or 1) and preview.full == false then
-		repeatCash = tonumber(preview.cash) or repeatCash
+		-- A bonus that rested when the snapshot was taken is awake once its seconds are up.
+		rest = previewRest(preview)
+		if (tonumber(preview.repeatRest) or 0) <= 0 then
+			repeatCash = tonumber(preview.cash) or repeatCash
+		end
 	end
-	setRewardLine(label, cash, full, cooldownEnds, bonus, repeatCash)
+	setRewardLine(label, cash, full, cooldownEnds, bonus, repeatCash, rest)
 end
 
 type ModeRow = {
@@ -4773,14 +4815,15 @@ local function buildModes(screen: ScreenGui)
 		if type(preview) ~= "table" then
 			paintReward(mog.reward, "", false)
 		else
-			-- Inside the cooldown a pass pays the run again bonus (the preview's own cash).
+			-- Inside the cooldown a pass pays the run again bonus, unless it rests.
 			setRewardLine(
 				mog.reward,
 				tonumber(preview.packCash) or tonumber(preview.cash) or 0,
 				preview.full ~= false,
 				tonumber(info.cooldownEnds) or 0,
 				nil,
-				if preview.full == false then tonumber(preview.cash) or tonumber(preview.repeatCash) else nil
+				if preview.full == false then tonumber(preview.repeatCash) or tonumber(preview.cash) else nil,
+				if preview.full == false then previewRest(preview) else 0
 			)
 		end
 		Kit.setButton(mog.play, if info.running then "PLAYING" else "PLAY")

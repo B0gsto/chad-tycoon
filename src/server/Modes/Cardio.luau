@@ -53,9 +53,10 @@
 	                                  claimed `stage`'s WIN pad (final = stage 10): paid, back
 	                                  in the lobby; newBest = deeper than prevBest, the best
 	                                  plate before this claim
-	  Pay fields (as Parkour's finish): pay = "first" | "full" | "repeat" | "none" says why
-	  `cash` is what it is ("repeat": the run again bonus, repeatShare of packCash =
-	  repeatCash); repeatFrom = the first plate that can pay the bonus (the best plate);
+	  Pay fields (as Parkour's finish): pay = "first" | "full" | "repeat" | "resting" | "none"
+	  says why `cash` is what it is ("repeat": the run again bonus, repeatShare of packCash =
+	  repeatCash; "resting": a plate that would pay it, inside CardioRules.REPEAT_GAP of the
+	  last one); repeatFrom = the first plate that can pay the bonus (the best plate);
 	  repeatReadyAt = os.time() from which the bonus is paid again (0 = now).
 	  { event = "fall", stage = 0, from, reason, speed, need, slow, capped }
 	                                  back in the lobby from stage `from`; reason "fall" |
@@ -283,8 +284,11 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		r.packCash = math.floor(r.packCash * CardioRules.stageBonus(stage) + 0.5)
 		r.repeatCash = math.floor(r.packCash * Economy.MODE_REPEAT_SHARE)
 		local sincePaid = CardioRules.REPEAT_GAP - repeatLeft(session)
-		local earned = CardioRules.repeatEarned(stage, record(session).bestStage, sincePaid)
-		local kind = CardioRules.payKind(first, r.full, earned)
+		local best = record(session).bestStage
+		local earned = CardioRules.repeatEarned(stage, best, sincePaid)
+		-- A plate deep enough for the bonus, only too soon after the last one: it rests.
+		local resting = not earned and CardioRules.repeatEarned(stage, best, CardioRules.REPEAT_GAP)
+		local kind = CardioRules.payKind(first, r.full, earned, resting)
 		r.cash = if r.full then r.packCash elseif kind == "repeat" then r.repeatCash else 0
 		return r, kind
 	end

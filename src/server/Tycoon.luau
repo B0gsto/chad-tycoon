@@ -163,8 +163,9 @@ Tycoon.hooks = {
 -- Gameplay event listeners (used by the tutorial): fn(session, name, data).
 -- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge", "Discover" (a tier was discovered
 -- for the first time; Analytics counts its milestones), "Rebirth" { gained, stars, rebirths,
--- tier } (the run was started again), "IndexClaim" { found, cash, crate, tier, crateCash,
--- champion } (an Index milestone was claimed: `tier` = the unit its crate gave, `crateCash` =
+-- tier, startedAt } (the run was started again; `startedAt` = os.time() the ended run began),
+-- "IndexClaim" { milestone, found, cash, crate, tier, crateCash,
+-- champion } (an Index milestone was claimed: `milestone` = `found` = its tier count, `tier` = the unit its crate gave, `crateCash` =
 -- the cash it paid instead on a full rack, `champion` = the Champion aura colour is now
 -- owned), and for Analytics alone "Earn"
 -- { source, amount }, "Spend" { sink, amount }, "Crate" { path, rarity } and "Notify" (every
@@ -666,6 +667,8 @@ local function discoverAll(session: Session, extra: { number }?, before: Earning
 			tier = runNewest,
 			starsOnRebirth = Economy.rebirthStars(runNewest),
 			stars = p.stars,
+			-- os.time() the run started (its first tier's stamp), for Analytics.
+			startedAt = p.runDiscovered[1],
 		})
 	end
 	if runNewest > 0 then
@@ -2324,6 +2327,8 @@ local function rebirth(session: Session)
 	local p = session.profile
 	local tier = highestTier(session)
 	local before = Economy.starMultiplier(p.stars)
+	-- os.time() the run that ends here started (Economy.rebirth stamps the next one over it).
+	local startedAt = p.runDiscovered[1]
 	local gained = Economy.rebirth(p, os.time())
 	if gained <= 0 then
 		toast(session, string.format("Reach %s to rebirth for stars!", tierName(Economy.REBIRTH_MIN_TIER)), "info")
@@ -2344,7 +2349,7 @@ local function rebirth(session: Session)
 		multiplierBefore = before,
 		moneyMult = Tycoon.moneyMultiplier(session),
 	})
-	emit(session, "Rebirth", { gained = gained, stars = p.stars, rebirths = p.rebirths, tier = tier })
+	emit(session, "Rebirth", { gained = gained, stars = p.stars, rebirths = p.rebirths, tier = tier, startedAt = startedAt })
 	markDirty(session)
 	flush(session)
 end
@@ -2374,6 +2379,7 @@ actionHandlers.ClaimIndex = function(session, data)
 		cash += crateCash
 	end
 	emit(session, "IndexClaim", {
+		milestone = grant.found,
 		found = grant.found,
 		cash = cash,
 		crate = if tier then crate else nil,
@@ -2501,7 +2507,14 @@ local function applyOffline(session: Session)
 	-- Rebirth stars count while away too (friends and Premium do not).
 	local cash = processed * Economy.CASH_PER_POINT * (if session.passes.DoubleMoney then 2 else 1) * Economy.starMultiplier(p.stars)
 	p.pending += cash
-	notify(session, { kind = "Offline", seconds = elapsed, orbs = produced, cash = cash })
+	-- The crates the Smasher finished during the absence (the away card says "finished").
+	local crates: { string } = {}
+	for _, slot in p.unlockers do
+		if slot.rarity ~= "" and slot.endsAt > p.lastOnline and slot.endsAt <= os.time() then
+			table.insert(crates, slot.rarity)
+		end
+	end
+	notify(session, { kind = "Offline", seconds = elapsed, orbs = produced, cash = cash, crates = if #crates > 0 then crates else nil })
 end
 
 function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, passes: { [string]: boolean }): Session?

@@ -3208,8 +3208,8 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			Text = if complete
 				then "Every map cleared. Now beat your best times!"
 				elseif data.pay == "assisted" then "Gear on: no bonus"
-				elseif resting and restLeft > 0 then "Run again bonus is resting on this map: back in " .. Format.time(restLeft)
-				elseif resting then "Run again bonus is resting on this map."
+				elseif resting and restLeft > 0 then "Bonus is resting, back in " .. Format.time(restLeft)
+				elseif resting then "Bonus is resting"
 				elseif repeatRun then "The full reward comes back when the bar fills."
 				elseif firstClear then "First clear reward!"
 				else "Nice run! Try to beat your best.",
@@ -3354,7 +3354,9 @@ end
 	"NEW BEST!", rivals mogged, best and the rank ("#N all-time" from `globalRank`, the saved
 	best's place on the all-time TOP MOGGERS list, else "#N on this server" from `rank`), the
 	reward rolling up, and under it "Run again bonus +$X (20%)" for a pass inside the cooldown
-	(`pay` = "repeat") or the "Reward again in m:ss" line while the full reward cools down.
+	(`pay` = "repeat"), "Bonus is resting, back in m:ss" for one inside the repeat gap (`pay` =
+	"resting", `repeatRest` seconds) or the "Reward again in m:ss" line while the full reward
+	cools down.
 	"Mog again" and "Back to my gym". `data` is the mog finish Notify payload (score, rivals,
 	best, newBest, passed, cash, full, cooldownEnds, rank?, globalRank?, pay?, repeatShare?).
 
@@ -3377,6 +3379,15 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		if data.pay == "repeat" and cashTotal > 0 then
 			local share = math.floor((tonumber(data.repeatShare) or Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
 			repeatLine = string.format("Run again bonus +%s (%d%%)", Format.money(cashTotal), share)
+		end
+		-- Earned, but the last bonus was paid a moment ago (the server's repeat gap).
+		local restEnds = os.clock() + math.max(0, tonumber(data.repeatRest) or 0)
+		local function restLine(): string
+			local left = math.ceil(restEnds - os.clock())
+			return if left > 0 then "Bonus is resting, back in " .. Format.time(left) else "Bonus is resting"
+		end
+		if data.pay == "resting" then
+			repeatLine = restLine()
 		end
 		local duel = data.vs == "pvp"
 		local won = duel and data.won == true
@@ -3502,7 +3513,12 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			task.spawn(function()
 				while note.Parent do
 					local left = (tonumber(data.cooldownEnds) or 0) - os.time()
-					note.Text = if left > 0 then "Reward again in " .. Format.time(left) else "Reward ready next run!"
+					-- The bonus line stays in front of the clock (a resting one counts down too).
+					local lead = if data.pay == "resting" then restLine() else repeatLine
+					note.Text = if lead and left > 0
+						then lead .. "  ·  full reward in " .. Format.time(left)
+						elseif left > 0 then "Reward again in " .. Format.time(left)
+						else "Reward ready next run!"
 					task.wait(1)
 				end
 			end)
@@ -5482,10 +5498,14 @@ function Popups.defineRebirth()
 	end
 
 	Popups.rebirthReady = function(payload: { [string]: any })
-		-- Never over a run on a course: the card waits for it to end.
-		if not PREVIEW and inRun() then
+		-- Never over a run on a course or an open window (the "While you were away" card, the
+		-- Daily window, the Index): the card waits for it to end.
+		local function held(): boolean
+			return inRun() or screen:GetAttribute("WindowOpen") == true
+		end
+		if not PREVIEW and held() then
 			task.spawn(function()
-				while inRun() do
+				while held() do
 					task.wait(0.5)
 				end
 				task.wait(1)

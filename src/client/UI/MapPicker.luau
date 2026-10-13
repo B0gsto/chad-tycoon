@@ -841,9 +841,15 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			return
 		end
 		local geared = info.gear ~= nil and info.gear ~= "none"
-		reward.TextColor3 = if geared then C.TextDim else C.MoneyText
+		-- The run again bonus rests after it was paid (the server prices one map: info.level).
+		local rest = 0
+		if type(preview) == "table" and preview.full == false and selected == (tonumber(info.level) or 1) then
+			rest = math.max(0, math.ceil((tonumber(preview.repeatRest) or 0) - State.age()))
+		end
+		reward.TextColor3 = if geared or rest > 0 then C.TextDim else C.MoneyText
 		reward.Text = if geared
 			then string.format("Gear on: no reward · full in %s", Format.time(left))
+			elseif rest > 0 then "Bonus is resting, back in " .. Format.time(rest)
 			else string.format("Run again: +%s · full in %s", Format.money(math.floor(pack * share)), Format.time(left))
 	end
 

@@ -278,7 +278,9 @@ local function noRewardText(p: any): string
 	local left = math.max(0, math.ceil(num(p.cooldownEnds, 0) - os.time()))
 	local from = math.floor(num(p.repeatFrom, 0))
 	local wait = math.max(0, math.ceil(num(p.repeatReadyAt, 0) - os.time()))
-	if left > 0 and num(p.stage, from) < from then
+	if p.pay == "resting" then
+		return if wait > 0 then "Bonus is resting, back in " .. Format.time(wait) else "Bonus is resting"
+	elseif left > 0 and num(p.stage, from) < from then
 		return "No reward: the run again bonus starts at plate " .. from
 	elseif left > 0 and wait > 0 then
 		return "No reward this time: run again bonus in " .. Format.time(wait)

@@ -5178,6 +5178,8 @@ require("./ranking")({ test = test, check = check, eq = eq })
 require("./plot_rank")({ test = test, check = check, eq = eq })
 -- Index milestones: rules, claims, rebirth and the saved field (tests/index_rewards.luau).
 require("./index_rewards")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared, loadDataService = loadDataService })
+-- Comeback hooks: the "While you were away" rows and the "Before you go" line (tests/comeback.luau).
+require("./comeback")({ test = test, check = check, eq = eq, loadShared = loadShared })
 -- Every script compiles the way Studio compiles it: 200 locals per chunk (tests/fx_juice.luau).
 require("./fx_juice")({ test = test, check = check })
 

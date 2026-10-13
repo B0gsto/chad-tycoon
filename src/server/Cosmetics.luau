@@ -47,6 +47,9 @@ local CROWN_WIDTH = 1.05
 local CROWN_SINK = 0.18
 -- Seconds before the join-time Starter popup is sent, so the client UI is listening.
 local STARTER_NOTIFY_DELAY = 4
+-- The Champion aura (the reward for the whole Index, profile.cosmetics.champion): a deeper
+-- gold than the Chad Aura's own colour, and a richer sparkle.
+local CHAMPION_AURA = { Color = Color3.fromRGB(255, 176, 24), Rich = true }
 
 local theme: any
 -- Per player: the cosmetic instances on the current character, and its connections.
@@ -304,7 +307,7 @@ local function addAura(player: Player, root: BasePart, item: any)
 	local color = item.Color
 	auraEmitter(player, root, "Sparkle", {
 		Color = ColorSequence.new(color, theme.World.Cream),
-		Rate = 6,
+		Rate = if item.Rich then 10 else 6,
 		Lifetime = NumberRange.new(0.9, 1.4),
 		Speed = NumberRange.new(1, 2),
 		Drag = 1,
@@ -468,7 +471,13 @@ local function apply(session: Session)
 	if trail ~= "" then
 		addTrail(player, root, items[trail])
 	end
-	if Cosmetics.active(theme, profile, passes, "AuraGlow") then
+	-- One aura: the Champion colour (the whole Index's reward, no pass needed) goes in front
+	-- of the Chad Aura's own. Its owner's Chad Aura switch still turns it off.
+	local champion = profile.cosmetics.champion == true
+	local auraOff = Cosmetics.owns(theme, passes, "AuraGlow") and not Cosmetics.toggleOn(profile, "AuraGlow")
+	if champion and not auraOff then
+		addAura(player, root, CHAMPION_AURA)
+	elseif Cosmetics.active(theme, profile, passes, "AuraGlow") then
 		addAura(player, root, items.AuraGlow)
 	end
 	local head = character:FindFirstChild("Head")
@@ -579,6 +588,12 @@ function Cosmetics.init(themeModule: any)
 	end
 
 	Tycoon.hooks.passGranted = onPassGranted
+	-- The whole Index was just claimed: the Champion aura colour goes on at once.
+	table.insert(Tycoon.listeners, function(session: Session, name: string, data: { [string]: any })
+		if name == "IndexClaim" and data.champion == true then
+			apply(session)
+		end
+	end)
 	Tycoon.hooks.cosmetics = function(session)
 		return Cosmetics.state(theme, session.profile, session.passes)
 	end

@@ -241,9 +241,11 @@ There are still no checkpoints.
   rests for 120 s (`REPEAT_REST_SECONDS`, in memory per player and map, kept for the server's
   life). A clean run inside the rest finishes as usual, counts its clear and can set a best time,
   and pays nothing: `pay = "resting"` with `repeatRest` (seconds left) in the finish payload, and
-  the card reads "Run again bonus is resting on this map: back in m:ss". Other maps are not
-  affected, a first clear and the full reward never rest, and the snapshot's `rewardPreview` adds
-  `repeatRest` (its `cash` is 0 while the map rests).
+  the card reads "Bonus is resting, back in m:ss". Every other map's bonus rests for 60 s after
+  any map's was paid (`REPEAT_GAP_SECONDS`, per player), so cycling the maps pays one bonus a
+  minute at the most. A first clear and the full reward never rest, and the snapshot's
+  `rewardPreview` adds `repeatRest` (its `cash` is 0 while the map rests; the Modes row and the map
+  picker then read "Bonus is resting, back in m:ss").
 - **Modes window row.** Inside the cooldown the Parkour row names the bonus only when the server
   would pay it: nothing with a coil chosen or worn, and for the map the server priced its own
   number.

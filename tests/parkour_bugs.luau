@@ -774,6 +774,7 @@ local function suite(h: { [string]: any })
 		eq(paid.pay, "repeat", "the first run again pays the bonus")
 		eq(paid.cash, share, "the share")
 		eq(paid.repeatRest, 120, "and the card knows the bonus now rests")
+		local paidAt = w.clock
 		-- Straight away again: the run finishes as usual, the bonus rests.
 		local before, clears = p.money, w.rec.clears[1]
 		local preview = w.def.rewardPreview(w.player, 1)
@@ -788,9 +789,17 @@ local function suite(h: { [string]: any })
 		check(rested.time > 0 and rested.best > 0, "the run finished normally")
 		check(rested.repeatRest > 0 and rested.repeatRest < 120, "the rest was not started again")
 		eq(rested.repeatCash, share, "the card still knows the bonus")
-		-- Another map has its own rest.
+		-- Another map has its own two minutes, but any bonus rests every map for a minute.
+		local other = w.def.rewardPreview(w.player, 2)
+		check(w.clock < paidAt + 60, "still inside the minute")
+		eq(other.cash, 0, "map 2 pays nothing inside the minute")
+		check(other.repeatRest > 0 and other.repeatRest <= 60, "and rests for the rest of the minute, not two")
+		w.clock = paidAt + 60
+		eq(w.def.rewardPreview(w.player, 2).repeatRest, 0, "a minute later map 2 is awake")
+		check(w.def.rewardPreview(w.player, 1).repeatRest > 0, "map 1 still rests")
 		w.clear(2)
-		eq(w.note("finish").pay, "repeat", "map 2's bonus is awake")
+		eq(w.note("finish").pay, "repeat", "map 2's bonus is paid")
+		eq(w.def.rewardPreview(w.player, 2).repeatRest, 120, "and rests for its own two minutes")
 		-- Two minutes after the bonus was paid it is back.
 		w.clock += 120
 		eq(w.def.rewardPreview(w.player, 1).repeatRest, 0, "awake again")
@@ -802,6 +811,30 @@ local function suite(h: { [string]: any })
 		p.modes.parkour.lastRewardAt = os.time() - Economy.MODE_REWARD_COOLDOWN - 1
 		w.clear(1)
 		check(w.note("finish").pay == "full" and w.note("finish").cash == back.packCash, "the full reward is paid in the rest")
+	end)
+
+	test("Parkour repeat pay: cycling the maps pays one bonus a minute at the most", function()
+		local w = newWorld()
+		local p = w.session.profile
+		for level = 1, 3 do
+			w.rec.clears[level] = 1
+		end
+		p.modes.parkour.lastRewardAt = os.time()
+		local share = w.def.rewardPreview(w.player, 1).repeatCash
+		check(share > 0, "a bonus to farm")
+		local from, money, paid, rested = w.clock, p.money, 0, 0
+		while w.clock - from < 600 do
+			for level = 1, 3 do
+				w.clear(level)
+				local pay = w.note("finish").pay
+				check(pay == "repeat" or pay == "resting", "inside the cooldown a clean run is a repeat or rests")
+				paid += if pay == "repeat" then 1 else 0
+				rested += if pay == "resting" then 1 else 0
+			end
+		end
+		check(paid >= 2 and rested >= 1, "some paid, some rested")
+		check(paid <= (w.clock - from) // 60 + 1, "one bonus a minute at the most, whatever the map")
+		check(p.money - money <= paid * w.def.rewardPreview(w.player, 3).repeatCash, "and no more cash than that")
 	end)
 
 	test("Parkour return: the finish card holds the return, for 20 seconds at the most", function()

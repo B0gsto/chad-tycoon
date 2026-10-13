@@ -279,6 +279,9 @@ if RunService:IsStudio() then
 			Popups.closeModals()
 		elseif spec == "starter" then
 			Popups.starterOffer()
+		elseif string.match(spec, "^rebirth") then
+			-- "rebirthready", "rebirth", "rebirthdone,<n>": Popups' own hook shows these cards.
+			return
 		elseif string.match(spec, "^Shop,") then
 			Windows.open("Shop", { focus = string.sub(spec, 6) })
 		else

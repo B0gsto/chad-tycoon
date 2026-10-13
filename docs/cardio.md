@@ -107,7 +107,7 @@ x ≈ -1300 to +1300 at most, deck tops around y = 20 above the sea. It is reach
   nothing is paid yet), `win { stage, final, first, cash, full, newBest, prevBest }` (claimed a WIN
   plate: paid and back in the lobby; final = stage 10; newBest = deeper than the best plate
   before). Both carry the pay fields: `pay` (`"first"`, `"full"`, `"repeat"` = the run again bonus,
-  or `"none"`), `packCash`, `repeatCash`, `repeatShare`, `repeatFrom` (the first plate that can pay
+  `"resting"` = a plate that would pay it, inside the 30 s gap, or `"none"`), `packCash`, `repeatCash`, `repeatShare`, `repeatFrom` (the first plate that can pay
   the bonus) and `repeatReadyAt` (os.time() from which it is paid again, 0 = now); the win banner
   reads "Run again bonus +$X (20%)" for `"repeat"`, `fall { stage = 0, from, reason }` (back in the lobby
   from stage `from`; reason "fall" or "caught"), `upgrade { level, cost }`, `stop { reason }`.

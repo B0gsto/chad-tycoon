@@ -675,8 +675,9 @@ function MogHud.onNotify(p: any)
 			passedShown = true
 			local cash = num(p.cash, 0)
 			-- A pass inside the reward cooldown pays the run again bonus (`pay` = "repeat").
-			local sub = if cash <= 0
-				then "Keep mogging!"
+			local sub = if p.pay == "resting"
+				then "Bonus is resting. Keep mogging!"
+				elseif cash <= 0 then "Keep mogging!"
 				elseif p.pay == "repeat" then "Run again bonus +" .. Format.money(cash)
 				else "+" .. Format.money(cash)
 			showBanner("MOG TEST PASSED!", sub, C.Gold, 2.4)

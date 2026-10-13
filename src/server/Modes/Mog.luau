@@ -15,7 +15,8 @@
 	  MogRules.PASS_RIVALS rivals passes the test and pays Economy.modeReward (same rules as
 	  Parkour: the whole pack for the first pass ever and then once per
 	  Economy.MODE_REWARD_COOLDOWN; a pass inside the cooldown pays the repeat share,
-	  Economy.MODE_REPEAT_SHARE of the pack, once per run). The run then goes
+	  Economy.MODE_REPEAT_SHARE of the pack, once per run and per player no sooner than
+	  MogRules.REPEAT_GAP seconds after their last one, PvE or PvP). The run then goes
 	  on for a high score until the lives run out; afterwards the player is sent back to the
 	  gates (GameModes.returnLater).
 	- vs = "pvp": 1v1 against a real player. A player waiting in the queue is matched at once;
@@ -51,15 +52,18 @@
 	    duration }                                   sent `lead` seconds before appearAt
 	  { event = "result", id, result, reason?, travel?, score, combo, lives, rivalHp, rivalMax }
 	  { event = "rival", mogged, rival, rivals, passed, cash?, full?, pay?, packCash?, repeatCash?,
-	    repeatShare? }                               the pay fields come with passed = true
+	    repeatShare?, repeatRest? }                  the pay fields come with passed = true
 	  { event = "finish", score, rivals, best, prevBest, newBest, passed, cash, full,
-	    cooldownEnds, rank?, globalRank?, board, pay, packCash, repeatCash, repeatShare }
+	    cooldownEnds, rank?, globalRank?, board, pay, packCash, repeatCash, repeatShare,
+	    repeatRest }
 	                                                 rank: on this server's list; globalRank: on
 	                                                 the all-time list; board: "global" | "server"
 	                                                 (what the TOP MOGGERS board shows now)
-	Pay fields (as Parkour's finish): pay = "first" | "full" | "repeat" | "none" says why `cash`
-	is what it is ("repeat": the run again bonus, repeatShare of packCash = repeatCash; "none":
-	nothing earned, e.g. a run that did not pass or a win by forfeit inside the cooldown).
+	Pay fields (as Parkour's finish): pay = "first" | "full" | "repeat" | "resting" | "none" says
+	why `cash` is what it is ("repeat": the run again bonus, repeatShare of packCash =
+	repeatCash; "resting": it was earned, but the player's last one was paid less than
+	MogRules.REPEAT_GAP seconds ago, back in repeatRest seconds; "none": nothing earned, e.g. a
+	run that did not pass or a win by forfeit inside the cooldown).
 	  { event = "stop", reason }                     ended without a finish ("full" = no free spot,
 	                                                 "noOpponent" = queue timed out, "cancel")
 	PvP payloads (every one carries vs = "pvp"; hp values are after the round):
@@ -74,8 +78,8 @@
 	  { event = "round", vs, id, you = { result, hp, maxHp, combo, score },
 	    opp = { result, hp, maxHp }, suddenDeath? }
 	  { event = "finish", vs, won, reason ("ko" | "forfeit"), opponent = { userId, name }, score,
-	    wins, played, cash, full, cooldownEnds, pay, packCash, repeatCash, repeatShare, afk?,
-	    rounds?, draw?, close? }
+	    wins, played, cash, full, cooldownEnds, pay, packCash, repeatCash, repeatShare,
+	    repeatRest, afk?, rounds?, draw?, close? }
 	                                                 afk = true: an idle forfeit (reason "forfeit");
 	                                                 rounds = true: decided at the round cap (reason
 	                                                 "ko"); draw = true: nobody won (won is false);
@@ -168,6 +172,9 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 	local spotGen: { [number]: number } = {}
 	local duels: { [Player]: Duel } = {}
 	local queue: { QueueEntry } = {}
+	-- When each player's repeat share was last paid, by UserId (PvE and PvP together; kept for
+	-- the server's life, so leaving and joining again does not wake it).
+	local repeatPaidAt: { [number]: number } = {}
 	local board = MogBoard.new(BEST_SIZE, MogBoard.open())
 	local nextCheckId = 0
 
@@ -191,9 +198,16 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		return session.profile.modes.mog
 	end
 
+	-- Seconds until `player`'s repeat share is paid again (0 = it is awake).
+	local function repeatRest(player: Player): number
+		local at = repeatPaidAt[player.UserId]
+		return if at then math.max(0, math.ceil(at + MogRules.REPEAT_GAP - now())) else 0
+	end
+
 	-- What a PvE pass (vs = "rivals") or a PvP win ("pvp") pays right now, and why
 	-- (MogRules.payKind). Only a pass can be the first clear; both share the cooldown, and
-	-- inside it only an `earned` one (a real run, a duel really fought) pays the repeat share.
+	-- inside it only an `earned` one (a real run, a duel really fought) pays the repeat share,
+	-- and not while the player's share rests (MogRules.REPEAT_GAP after the last one paid).
 	local function rewardFor(session: any, vs: string, earned: boolean): (Economy.ModeReward, string)
 		local p = session.profile
 		local rec = record(session)
@@ -201,19 +215,22 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		local progression = Economy.progression(Economy.highestTier(p.runDiscovered), p.processLevel)
 		local first = vs == "rivals" and MogRules.firstPass(rec)
 		local r = Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, first, rec.lastRewardAt, os.time())
-		local kind = MogRules.payKind(first, r.full, earned)
+		local at = repeatPaidAt[session.player.UserId]
+		local kind = MogRules.payKind(first, r.full, earned, if at then now() - at else nil)
 		r.cash = if r.full then r.packCash elseif kind == "repeat" then r.repeatCash else 0
 		return r, kind
 	end
 
-	-- The pay fields of a "rival" (passed) or "finish" payload.
-	local function payFields(payload: { [string]: any }, reward: Economy.ModeReward?, kind: string)
+	-- The pay fields of `player`'s "rival" (passed) or "finish" payload.
+	local function payFields(payload: { [string]: any }, player: Player, reward: Economy.ModeReward?, kind: string)
 		payload.cash = if reward then reward.cash else 0
 		payload.full = if reward then reward.full else false
 		payload.pay = kind
 		payload.packCash = if reward then reward.packCash else 0
 		payload.repeatCash = if reward then reward.repeatCash else 0
 		payload.repeatShare = Economy.MODE_REPEAT_SHARE
+		-- Seconds the repeat share still rests (0 = awake, or the full reward is what counts).
+		payload.repeatRest = if kind == "repeat" or kind == "resting" then repeatRest(player) else 0
 	end
 
 	local function updateBoard()
@@ -361,6 +378,8 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		MogRules.countClear(rec, vs)
 		if reward.full then
 			rec.lastRewardAt = os.time()
+		elseif kind == "repeat" then
+			repeatPaidAt[player.UserId] = now()
 		end
 		local p = session.profile
 		if reward.cash > 0 then
@@ -416,7 +435,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			globalRank = globalRank,
 			board = if global then "global" else "server",
 		}
-		payFields(payload, state.reward, state.pay)
+		payFields(payload, player, state.reward, state.pay)
 		GameModes.notify(player, "finish", ID, payload)
 		Tycoon.markDirty(session)
 		GameModes.refresh(player)
@@ -452,7 +471,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			}
 			if outcome.passed then
 				payPass(player, state)
-				payFields(payload, state.reward, state.pay)
+				payFields(payload, player, state.reward, state.pay)
 			end
 			GameModes.notify(player, "rival", ID, payload)
 			GameModes.refresh(player)
@@ -646,7 +665,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 					played = rec.pvpPlayed,
 					cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 				}
-				payFields(payload, reward, kind)
+				payFields(payload, player, reward, kind)
 				sendPvp(player, "finish", payload)
 				GameModes.refresh(player)
 				GameModes.returnLater(player, RETURN_AFTER, function(root: BasePart): boolean
@@ -988,7 +1007,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 	function def.rewardPreview(player: Player): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, full = false, packCash = 0, repeatCash = 0, repeatShare = Economy.MODE_REPEAT_SHARE }
+			return { cash = 0, full = false, packCash = 0, repeatCash = 0, repeatShare = Economy.MODE_REPEAT_SHARE, repeatRest = 0 }
 		end
 		local r = rewardFor(session, "rivals", true)
 		return {
@@ -997,6 +1016,8 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			packCash = r.packCash,
 			repeatCash = r.repeatCash,
 			repeatShare = Economy.MODE_REPEAT_SHARE,
+			-- Seconds the player's repeat share still rests (0 = awake).
+			repeatRest = if r.full then 0 else repeatRest(player),
 		}
 	end
 

@@ -17125,6 +17125,266 @@ return CharacterFactory
       </Item>
       <Item class="ModuleScript" referent="156">
         <Properties>
+          <string name="Name">Comeback</string>
+          <string name="Source"><![CDATA[--!strict
+--[[
+	Comeback: what a returning player is told and what a leaving one can read (pure
+	rules, no Roblox dependencies, unit-tested with Lune; Client.UI.AwayWindow shows
+	the first, the Daily window's footer the second).
+
+	"While you were away" (Comeback.away): one row per thing that is true right now, in
+	this order: the cash the units earned while away (the Offline notify of
+	Server.Tycoon) with its cap, the crate the Smasher has finished (or the one still in
+	it), today's daily card, the streak (kept, saved by the streak saver, or ended) and
+	the free gift. Nothing to say = no rows = no card.
+
+	"Before you go" (Comeback.leave): the crate timer, how long away cash keeps filling
+	and the next daily card, as plain facts. Times are rounded to the minute on purpose:
+	a line to read, not a countdown.
+
+	Both read the State snapshot only (unlockers, daily, freeIn, passes and the income
+	fields), so they never promise what the server does not know.
+]]
+
+local DailyReward = require(script.Parent.DailyReward)
+local Economy = require(script.Parent.Economy)
+
+local Comeback = {}
+
+export type Words = { Units: string, Chest: string }
+
+export type Options = {
+	-- Formats cash ("$12.4K"; the client's honours the full-numbers setting).
+	money: (number) -> string,
+	words: Words,
+	-- Seconds since the snapshot arrived (its timers have run that long).
+	age: number?,
+}
+
+export type Row = {
+	-- "cash" | "crate" | "daily" | "streak" | "free"
+	kind: string,
+	title: string,
+	detail: string,
+	-- Cash row: the amount (shown big). Crate row: its rarity (the art).
+	cash: number?,
+	rarity: string?,
+}
+
+-- A relaxed duration, to the minute: 45 -> "1 min", 754 -> "13 min", 11520 -> "3h 12m",
+-- 28800 -> "8h". Rounded up (a timer never promises less than is left); `down` rounds
+-- down instead, for time that has passed.
+function Comeback.span(seconds: number, down: boolean?): string
+	local exact = math.max(0, seconds) / 60
+	local minutes = math.max(1, if down then math.floor(exact) else math.ceil(exact))
+	if minutes < 60 then
+		return minutes .. " min"
+	end
+	local hours, rest = minutes // 60, minutes % 60
+	return if rest == 0 then hours .. "h" else string.format("%dh %dm", hours, rest)
+end
+
+type Crates = {
+	-- Rarities of the crates that can be opened now.
+	ready: { string },
+	-- The crate that finishes first, and the seconds it still needs.
+	nextRarity: string?,
+	nextIn: number,
+}
+
+-- The Smasher slots of the snapshot, `age` seconds after it arrived. With the Crate Key
+-- pass a crate opens at once, timer or not.
+local function crates(data: { [string]: any }, age: number): Crates
+	local found: Crates = { ready = {}, nextRarity = nil, nextIn = math.huge }
+	local slots = data.unlockers
+	if type(slots) ~= "table" then
+		return found
+	end
+	local keyed = type(data.passes) == "table" and data.passes.CrateKey == true
+	for _, slot in slots do
+		if type(slot) == "table" and type(slot.rarity) == "string" and slot.rarity ~= "" then
+			local left = (tonumber(slot.secondsLeft) or 0) - age
+			if left <= 0 or keyed then
+				table.insert(found.ready, slot.rarity)
+			elseif left < found.nextIn then
+				found.nextRarity, found.nextIn = slot.rarity, left
+			end
+		end
+	end
+	return found
+end
+
+local function dailyOf(data: { [string]: any }): { [string]: any }?
+	local daily = data.daily
+	return if type(daily) == "table" then daily else nil
+end
+
+-- Seconds until the next daily card, `age` seconds after the snapshot arrived.
+local function nextDaily(daily: { [string]: any }, age: number): number
+	return math.max(0, (tonumber(daily.nextIn) or 0) - age)
+end
+
+-- What today's card pays this player right now (the amounts the Daily window shows).
+local function dailyReward(data: { [string]: any }, daily: { [string]: any }, options: Options): (number, string)
+	local day = math.clamp(math.floor(tonumber(daily.day) or 1), 1, DailyReward.DAYS)
+	local progression = Economy.progression(tonumber(data.highestTier) or 1, tonumber(data.processLevel) or 0)
+	local income = tonumber(data.rewardIncome) or tonumber(data.income) or 0
+	local cap = if daily.firstDay == true then DailyReward.firstDayCap(day, tonumber(data.bought) or 0) else nil
+	local cash = options.money(DailyReward.cash(day, income, progression, cap))
+	return day, DailyReward.describe(day, cash, options.words.Chest)
+end
+
+-- "3 day streak" / "1 day streak".
+local function streakText(streak: number): string
+	return string.format("%d day streak", streak)
+end
+
+--[[
+	The rows of the "While you were away" card. `offline` = the Offline notify
+	({ seconds, cash }: `seconds` is already capped at Economy.OFFLINE_CAP_SECONDS), or nil
+	when there is none. `offline.crates` (rarities of the crates that finished during the
+	absence) is optional: without it a finished crate is "ready", which is true whenever
+	it finished.
+]]
+function Comeback.away(data: { [string]: any }, offline: { [string]: any }?, options: Options): { Row }
+	local rows: { Row } = {}
+	local age = options.age or 0
+	local words = options.words
+	local cap = Economy.OFFLINE_CAP_SECONDS
+
+	local cash = if offline then tonumber(offline.cash) or 0 else 0
+	if offline and cash >= 1 then
+		local seconds = tonumber(offline.seconds) or 0
+		table.insert(rows, {
+			kind = "cash",
+			title = string.format("Your %s kept earning", words.Units),
+			detail = if seconds >= cap
+				then string.format("Away cash was full: it fills up in %s.", Comeback.span(cap))
+				else string.format("%s away. Away cash fills up in %s.", Comeback.span(seconds, true), Comeback.span(cap)),
+			cash = cash,
+		})
+	end
+
+	local smasher = crates(data, age)
+	if #smasher.ready > 0 then
+		local finished = offline ~= nil and type(offline.crates) == "table" and #offline.crates > 0
+		local what = if #smasher.ready == 1
+			then smasher.ready[1] .. " " .. words.Chest
+			else string.format("%d %ss", #smasher.ready, words.Chest)
+		table.insert(rows, {
+			kind = "crate",
+			title = what .. (if finished then " finished" else " ready"),
+			detail = (if #smasher.ready == 1 then "Open it" else "Open them") .. " at the Smasher.",
+			rarity = smasher.ready[1],
+		})
+	elseif smasher.nextRarity then
+		table.insert(rows, {
+			kind = "crate",
+			title = string.format("%s %s: %s to go", smasher.nextRarity, words.Chest, Comeback.span(smasher.nextIn)),
+			detail = "Still in the Smasher.",
+			rarity = smasher.nextRarity,
+		})
+	end
+
+	local daily = dailyOf(data)
+	if daily then
+		local streak = math.max(0, math.floor(tonumber(daily.streak) or 0))
+		local lapsed = math.max(0, math.floor(tonumber(daily.lapsed) or 0))
+		if daily.claimable == true then
+			local day, reward = dailyReward(data, daily, options)
+			table.insert(rows, {
+				kind = "daily",
+				title = "Daily reward ready",
+				detail = string.format("Day %d: %s", day, reward),
+			})
+			if daily.saves == true then
+				table.insert(rows, {
+					kind = "streak",
+					title = "Streak saved",
+					detail = string.format("You missed a day, but your %s goes on.", streakText(streak)),
+				})
+			elseif streak >= 1 then
+				table.insert(rows, {
+					kind = "streak",
+					title = streakText(streak),
+					detail = string.format("Today's reward makes it %d.", streak + 1),
+				})
+			elseif lapsed >= 2 then
+				table.insert(rows, {
+					kind = "streak",
+					title = "New streak",
+					detail = string.format("Your %s ended. A new one starts today.", streakText(lapsed)),
+				})
+			end
+		elseif streak >= 1 then
+			table.insert(rows, {
+				kind = "streak",
+				title = streakText(streak),
+				detail = string.format("Today's reward is claimed. Next one in %s.", Comeback.span(nextDaily(daily, age))),
+			})
+		end
+	end
+
+	if data.freeIn ~= nil and (tonumber(data.freeIn) or 0) - age <= 0 then
+		table.insert(rows, { kind = "free", title = "Free gift ready", detail = "It is waiting for you." })
+	end
+	return rows
+end
+
+-- Where the away cash is: on the Collect pad, or (Auto Cash) already in the wallet.
+function Comeback.cashNote(data: { [string]: any }): string
+	local auto = type(data.passes) == "table" and data.passes.AutoCash == true
+	return if auto then "Auto Cash put it in your wallet." else "Your cash is waiting on the Collect pad."
+end
+
+--[[
+	The "Before you go" facts, most useful first: the crate in the Smasher, how long away
+	cash keeps filling (only for a player whose units earn something) and the daily card.
+	`withDaily = false` leaves the daily card out (the Daily window says it itself).
+]]
+function Comeback.leave(data: { [string]: any }, options: Options, withDaily: boolean?): { string }
+	local parts: { string } = {}
+	local age = options.age or 0
+	local words = options.words
+
+	local smasher = crates(data, age)
+	if #smasher.ready > 0 then
+		table.insert(parts, string.format("%s %s ready to open", smasher.ready[1], words.Chest))
+	elseif smasher.nextRarity then
+		table.insert(parts, string.format("%s %s ready in %s", smasher.nextRarity, words.Chest, Comeback.span(smasher.nextIn)))
+	end
+
+	if (tonumber(data.rewardProduction) or tonumber(data.production) or 0) > 0 then
+		table.insert(parts, string.format("away cash fills up in %s", Comeback.span(Economy.OFFLINE_CAP_SECONDS)))
+	end
+
+	local daily = dailyOf(data)
+	if daily and withDaily ~= false then
+		if daily.claimable == true then
+			table.insert(parts, "daily reward ready")
+		else
+			table.insert(parts, string.format("next daily reward in %s", Comeback.span(nextDaily(daily, age))))
+		end
+	end
+	return parts
+end
+
+-- The facts as one line ("Before you go: Rare Crate ready in 12 min  |  ..."), "" when
+-- there is nothing to say.
+function Comeback.leaveLine(data: { [string]: any }, options: Options, withDaily: boolean?): string
+	local parts = Comeback.leave(data, options, withDaily)
+	if #parts == 0 then
+		return ""
+	end
+	return "Before you go: " .. table.concat(parts, "  |  ")
+end
+
+return Comeback
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="157">
+        <Properties>
           <string name="Name">CratePickup</string>
           <string name="Source"><![CDATA[--!strict
 -- Pure rules for the automatic crate pickup, shared by the server (Tycoon fast tick), the
@@ -17192,7 +17452,7 @@ return CratePickup
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="157">
+      <Item class="ModuleScript" referent="158">
         <Properties>
           <string name="Name">DailyReward</string>
           <string name="Source"><![CDATA[--!strict
@@ -17422,7 +17682,7 @@ return DailyReward
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="158">
+      <Item class="ModuleScript" referent="159">
         <Properties>
           <string name="Name">Economy</string>
           <string name="Source"><![CDATA[--!strict
@@ -18252,7 +18512,7 @@ return Economy
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="159">
+      <Item class="ModuleScript" referent="160">
         <Properties>
           <string name="Name">Format</string>
           <string name="Source"><![CDATA[--!strict
@@ -18367,7 +18627,7 @@ return Format
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="160">
+      <Item class="ModuleScript" referent="161">
         <Properties>
           <string name="Name">Funnel</string>
           <string name="Source"><![CDATA[--!strict
@@ -18402,6 +18662,13 @@ return Format
 	a late tier a profile already had when its session started is marked without being
 	sent (Funnel.late), for the same reason. Everyone's tiers from 11 up are also custom
 	events (Server.Analytics, "TierReached"), so skippers need no extra event names.
+
+	Rebirth: `highestTier` below is always the best tier EVER found (profile.discovered, the
+	Index), never the current run's (profile.runDiscovered). A rebirth starts the run again
+	but lowers neither that nor profile.onboarding, and no rule here ever returns a lower
+	onboarding than it was given, so a tier found again in a later run is not a step (or a
+	Skipper event) a second time. A late tier first found in a later run is still a step:
+	it is the first time for that player.
 ]]
 
 local Funnel = {}
@@ -18514,7 +18781,178 @@ return Funnel
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="161">
+      <Item class="ModuleScript" referent="162">
+        <Properties>
+          <string name="Name">IndexRewards</string>
+          <string name="Source"><![CDATA[--!strict
+--[[
+	IndexRewards: pure rules of the Index milestones (no Roblox dependencies, unit-tested
+	with Lune: tests/index_rewards.luau; Server.Tycoon applies them, the Index window shows
+	them).
+
+	Finding 5 / 10 / 15 / 20 / 25 tiers pays 10 / 20 / 30 / 45 / 60 minutes of income, a crate
+	from 10 on and, for the whole Index, the Champion aura colour and the gold Index frame.
+	A milestone counts the Index (profile.discovered: every tier ever found, which a rebirth
+	never touches) and is claimed by hand, once per save (profile.indexClaimed): a rebirth
+	never offers it again. A save from before the milestones has claimed none, so every one it
+	has already passed is waiting for it.
+]]
+
+local Economy = require(script.Parent.Economy)
+
+local IndexRewards = {}
+
+-- `found`: tiers in the Index the milestone asks for. `seconds`: the cash, in seconds of the
+-- claimer's income. `crate`: a crate of that rarity on top, opened on the spot. `champion`:
+-- the Champion aura colour and the gold Index frame.
+export type Milestone = { found: number, seconds: number, crate: string?, champion: boolean? }
+
+IndexRewards.MILESTONES = {
+	{ found = 5, seconds = 10 * 60 },
+	{ found = 10, seconds = 20 * 60, crate = "Rare" },
+	{ found = 15, seconds = 30 * 60, crate = "Epic" },
+	{ found = 20, seconds = 45 * 60, crate = "Legendary" },
+	{ found = 25, seconds = 60 * 60, champion = true },
+} :: { Milestone }
+
+-- The least a milestone pays, in cash per second of its `seconds` (only matters to a run
+-- that earns next to nothing: the first minutes after a rebirth).
+IndexRewards.MIN_INCOME = 1
+
+-- The fields of a saved profile the milestones read and write.
+export type Profile = {
+	discovered: { number },
+	runDiscovered: { number },
+	processLevel: number,
+	-- `found` of every milestone claimed, in the order they were claimed.
+	indexClaimed: { number },
+	-- `champion`: the Champion aura colour is owned (Server.Cosmetics shows it).
+	cosmetics: { champion: boolean, [string]: any },
+}
+
+-- What a claim pays: the caller grants it (Tycoon's ClaimIndex action).
+export type Grant = { found: number, cash: number, crate: string?, champion: boolean }
+
+-- Tiers in the Index.
+function IndexRewards.found(discovered: { number }): number
+	local count = 0
+	for tier = 1, Economy.MAX_TIER do
+		local at = discovered[tier]
+		if type(at) == "number" and at > 0 then
+			count += 1
+		end
+	end
+	return count
+end
+
+-- The milestone that asks for exactly `found` tiers (nil = there is none; a client may send
+-- anything).
+function IndexRewards.milestone(found: any): Milestone?
+	for _, milestone in IndexRewards.MILESTONES do
+		if milestone.found == found then
+			return milestone
+		end
+	end
+	return nil
+end
+
+function IndexRewards.isClaimed(claimed: { number }, found: number): boolean
+	return table.find(claimed, found) ~= nil
+end
+
+-- `found` of every milestone the Index has reached and the save has not claimed, lowest first.
+function IndexRewards.ready(discovered: { number }, claimed: { number }): { number }
+	local have = IndexRewards.found(discovered)
+	local list: { number } = {}
+	for _, milestone in IndexRewards.MILESTONES do
+		if have >= milestone.found and not IndexRewards.isClaimed(claimed, milestone.found) then
+			table.insert(list, milestone.found)
+		end
+	end
+	return list
+end
+
+-- The cash of `milestone` for a run that earns `income` cash per second at `progression`
+-- (Tycoon.income: no Aura Surge; passes, friends, Premium and the rebirth stars are in it
+-- once, as in every other reward). Sized like a cash pack: never under the progression
+-- floor of the run.
+function IndexRewards.cash(milestone: Milestone, income: number, progression: Economy.Progression): number
+	local perSecond = if income == income and income > 0 and income ~= math.huge then income else 0
+	return Economy.moneyPackAmount(perSecond, milestone.seconds, milestone.seconds * IndexRewards.MIN_INCOME, progression)
+end
+
+-- What `milestone` pays on top of its cash when the rack has no room for its crate's unit:
+-- the cash that unit is worth on average (0 without a crate), so the crate is never lost.
+function IndexRewards.crateCash(milestone: Milestone, runBest: number): number
+	local crate = milestone.crate
+	return if crate then math.floor(Economy.chestExpectedValue(crate, runBest)) else 0
+end
+
+local function progressionOf(profile: Profile): Economy.Progression
+	return Economy.progression(Economy.highestTier(profile.runDiscovered), profile.processLevel)
+end
+
+-- Claims the milestone of `found` tiers, in place, for a run that earns `income` cash per
+-- second right now. Returns what to grant, or nil when there is nothing to claim: no such
+-- milestone, the Index is not there yet, or it is claimed already. The milestone is marked
+-- before this returns, so a second call (a double tap, two remotes in a row) pays nothing.
+function IndexRewards.claim(profile: Profile, found: any, income: number): Grant?
+	local milestone = IndexRewards.milestone(found)
+	if not milestone or IndexRewards.isClaimed(profile.indexClaimed, milestone.found) then
+		return nil
+	end
+	if IndexRewards.found(profile.discovered) < milestone.found then
+		return nil
+	end
+	table.insert(profile.indexClaimed, milestone.found)
+	if milestone.champion then
+		profile.cosmetics.champion = true
+	end
+	return {
+		found = milestone.found,
+		cash = IndexRewards.cash(milestone, income, progressionOf(profile)),
+		crate = milestone.crate,
+		champion = milestone.champion == true,
+	}
+end
+
+-- One milestone of the State snapshot: `cash` is what a claim would pay right now (0 once
+-- claimed), `reached` = the Index has that many tiers.
+export type Entry = { found: number, cash: number, crate: string?, champion: boolean, reached: boolean, claimed: boolean }
+
+-- The State snapshot's `index` field: tiers in the Index, milestones waiting to be claimed
+-- (the HUD's badge), whether the Champion reward is owned, and every milestone in order.
+function IndexRewards.state(
+	profile: Profile,
+	income: number
+): { found: number, claimable: number, champion: boolean, milestones: { Entry } }
+	local have = IndexRewards.found(profile.discovered)
+	local progression = progressionOf(profile)
+	local claimable = 0
+	local milestones: { Entry } = {}
+	for i, milestone in IndexRewards.MILESTONES do
+		local claimed = IndexRewards.isClaimed(profile.indexClaimed, milestone.found)
+		local reached = have >= milestone.found
+		if reached and not claimed then
+			claimable += 1
+		end
+		milestones[i] = {
+			found = milestone.found,
+			cash = if claimed then 0 else IndexRewards.cash(milestone, income, progression),
+			crate = milestone.crate,
+			champion = milestone.champion == true,
+			reached = reached,
+			claimed = claimed,
+		}
+	end
+	return { found = have, claimable = claimable, champion = profile.cosmetics.champion == true, milestones = milestones }
+end
+
+return IndexRewards
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="163">
         <Properties>
           <string name="Name">InteractiveRules</string>
           <string name="Source"><![CDATA[--!strict
@@ -18680,7 +19118,7 @@ return Rules
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="162">
+      <Item class="ModuleScript" referent="164">
         <Properties>
           <string name="Name">Net</string>
           <string name="Source"><![CDATA[-- Remote events/functions. The server creates them, clients wait for them.
@@ -18748,7 +19186,7 @@ return Net
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="163">
+      <Item class="ModuleScript" referent="165">
         <Properties>
           <string name="Name">NextGoal</string>
           <string name="Source"><![CDATA[--!strict
@@ -18938,7 +19376,7 @@ return NextGoal
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="164">
+      <Item class="ModuleScript" referent="166">
         <Properties>
           <string name="Name">OrbLook</string>
           <string name="Source"><![CDATA[--!strict
@@ -19060,7 +19498,7 @@ return OrbLook
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="165">
+      <Item class="ModuleScript" referent="167">
         <Properties>
           <string name="Name">Poses</string>
           <string name="Source"><![CDATA[--[[
@@ -20340,7 +20778,7 @@ return Poses
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="166">
+      <Item class="ModuleScript" referent="168">
         <Properties>
           <string name="Name">RigPose</string>
           <string name="Source"><![CDATA[--[[
@@ -20509,7 +20947,7 @@ return RigPose
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="167">
+      <Item class="ModuleScript" referent="169">
         <Properties>
           <string name="Name">SessionLock</string>
           <string name="Source"><![CDATA[--!strict
@@ -20562,7 +21000,7 @@ return SessionLock
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="168">
+      <Item class="ModuleScript" referent="170">
         <Properties>
           <string name="Name">ShopMath</string>
           <string name="Source"><![CDATA[--!strict
@@ -20594,7 +21032,7 @@ return ShopMath
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="169">
+      <Item class="ModuleScript" referent="171">
         <Properties>
           <string name="Name">Telemetry</string>
           <string name="Source"><![CDATA[--!strict
@@ -20607,8 +21045,8 @@ return ShopMath
 	    together. Telemetry.take gives each player their own minute of at most
 	    CAPS.Economy calls (under their 20), so the shared 120 stays spare. Cash moves are
 	    summed in a Ledger and sent at most once a minute per source or sink.
-	  - 100 custom event names, 3 custom fields per event, 8,000 custom field values in
-	    all: every label below comes from a short fixed list (tiers, bands, buckets).
+	  - 100 custom event names (22 are used), 3 custom fields per event, 8,000 custom field
+	    values in all: every label below comes from a short fixed list (tiers, bands, buckets).
 	  - 10 currencies (one is used: "Cash"), 20 transaction types (the six of
 	    Enum.AnalyticsEconomyTransactionType), 100 item SKUs (SOURCES + SINKS).
 	Nothing personal is ever a label: no names, ids or text typed by a player.
@@ -20656,6 +21094,33 @@ function Telemetry.weekBucket(streak: number): string
 	return bucket(streak, { 8, 15, 29 }, { "Week 1", "Week 2", "Week 3-4", "Week 5+" })
 end
 
+-- Which run of the tycoon a player is in, from the rebirths made: "Run 1" until the first.
+function Telemetry.runLabel(rebirths: any): string
+	local made = if type(rebirths) == "number" and rebirths == rebirths then math.max(0, math.floor(rebirths)) else 0
+	return if made >= 9 then "Run 10+" else "Run " .. (made + 1)
+end
+
+-- Hours since a run started at os.time() `startedAt`; nil when the save does not say (0).
+function Telemetry.runHours(startedAt: any, now: number): number?
+	if type(startedAt) ~= "number" or startedAt ~= startedAt or startedAt <= 0 then
+		return nil
+	end
+	return math.max(0, now - startedAt) / 3600
+end
+
+-- How long a run has lasted, on the clock (days away count: a run is days of short sessions).
+function Telemetry.runBucket(hours: number?): string
+	if not hours then
+		return "Unknown"
+	end
+	return bucket(hours, { 1, 6, 24, 72, 168, 336 }, { "0-1 h", "1-6 h", "6-24 h", "1-3 days", "3-7 days", "7-14 days", "14+ days" })
+end
+
+-- An Index milestone (tiers found: 5, 10, ...).
+function Telemetry.indexLabel(milestone: number): string
+	return "Index " .. math.clamp(math.floor(milestone), 0, 99)
+end
+
 -- A short server-side word (a mode id, a stop reason, a rarity) as a label; anything
 -- else (not a string, too long, not just letters) is "Other".
 function Telemetry.word(value: any): string
@@ -20678,6 +21143,51 @@ function Telemetry.modeDetail(data: { [string]: any }?): string
 		return Telemetry.word(data.vs)
 	end
 	return "None"
+end
+
+-- Why a mode's finish paid what it did, from its Notify payload's `pay`. "RunAgain" is the
+-- run again bonus (pay = "repeat"): a clean run inside the cooldown. A payload without `pay`
+-- says First / Repeat from `first` as every finish did before the pay kinds, where "Repeat"
+-- was any finish after the first; nil when it says neither.
+local PAY: { [string]: string } = {
+	first = "First",
+	full = "Full",
+	["repeat"] = "RunAgain",
+	assisted = "Assisted",
+	resting = "Resting",
+	none = "None",
+}
+
+function Telemetry.payLabel(data: { [string]: any }?): string?
+	if not data then
+		return nil
+	elseif data.pay ~= nil then
+		return PAY[data.pay] or "Other"
+	elseif data.first ~= nil then
+		return if data.first then "First" else "Repeat"
+	end
+	return nil
+end
+
+-- Whether a "while you were away" card had this line: true, a number above 0 or a word (a
+-- crate's rarity).
+local function listed(value: any): boolean
+	return value == true or (type(value) == "number" and value > 0) or (type(value) == "string" and value ~= "")
+end
+
+-- What a "while you were away" card listed, in a fixed order: "Cash+Crate+Daily", ..., "None".
+function Telemetry.awayLabel(cash: any, crate: any, daily: any): string
+	local parts = {}
+	if listed(cash) then
+		table.insert(parts, "Cash")
+	end
+	if listed(crate) then
+		table.insert(parts, "Crate")
+	end
+	if listed(daily) then
+		table.insert(parts, "Daily")
+	end
+	return if #parts > 0 then table.concat(parts, "+") else "None"
 end
 
 -- What became of a crate. `path` is Tycoon's: "unlocker" (opened in a Smasher slot),
@@ -20704,6 +21214,7 @@ Telemetry.SOURCES = {
 	Offline = "TimedReward",
 	Free = "TimedReward",
 	Daily = "TimedReward",
+	Index = "Gameplay",
 	ModeParkour = "Gameplay",
 	ModeMog = "Gameplay",
 	ModeCardio = "Gameplay",
@@ -20724,7 +21235,7 @@ local ALIASES: { [string]: string } = { Purchase = "Pack" }
 -- The order entries are sent in: sinks, then sources.
 local ORDER: { [string]: { string } } = {
 	Sink = { "Units", "Converter", "Treadmill", "Skip", "Other" },
-	Source = { "Collect", "Offline", "Free", "Daily", "ModeParkour", "ModeMog", "ModeCardio", "Mode", "Pack", "Tutorial", "Other" },
+	Source = { "Collect", "Offline", "Free", "Daily", "Index", "ModeParkour", "ModeMog", "ModeCardio", "Mode", "Pack", "Tutorial", "Other" },
 }
 
 export type Entry = {
@@ -20820,8 +21331,10 @@ export type Window = { start: number, used: number }
 Telemetry.WINDOW_SECONDS = 60
 -- Calls a player may have made this minute for one more of a kind to go out. "Event" =
 -- custom events and the shop funnel (a player can cause these at will), "Economy" = the
--- ledger, which so always has room left. Kinds without a cap (onboarding steps, the
--- session's end) always go out; they are rare.
+-- ledger, which so always has room left. Kinds without a cap always go out; they are rare:
+-- "Step" (onboarding steps, a purchase), "Rare" (what the server lets a player do a few
+-- times a day at most: a rebirth, an Index claim, the streak saver) and "Final" (the
+-- session's end).
 Telemetry.CAPS = { Event = 12, Economy = 18 } :: { [string]: number }
 
 function Telemetry.newWindow(now: number): Window
@@ -20851,7 +21364,7 @@ return Telemetry
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="170">
+      <Item class="ModuleScript" referent="172">
         <Properties>
           <string name="Name">TutorialSteps</string>
           <string name="Source"><![CDATA[--!strict
@@ -20994,7 +21507,7 @@ return TutorialSteps
         </Properties>
       </Item>
     </Item>
-    <Item class="ModuleScript" referent="171">
+    <Item class="ModuleScript" referent="173">
       <Properties>
         <string name="Name">Theme</string>
         <string name="Source"><![CDATA[--[[
@@ -22527,15 +23040,15 @@ return Theme
       </Properties>
     </Item>
   </Item>
-  <Item class="ServerScriptService" referent="172">
+  <Item class="ServerScriptService" referent="174">
     <Properties>
       <string name="Name">ServerScriptService</string>
     </Properties>
-    <Item class="Folder" referent="173">
+    <Item class="Folder" referent="175">
       <Properties>
         <string name="Name">Server</string>
       </Properties>
-      <Item class="ModuleScript" referent="174">
+      <Item class="ModuleScript" referent="176">
         <Properties>
           <string name="Name">Analytics</string>
           <string name="Source"><![CDATA[--[[
@@ -22565,28 +23078,57 @@ return Theme
 	Shop funnel (recurring "Shop"): 1 Opened, 2 Prompted, 3 Purchased. One funnel session
 	per shop visit; a prompt from outside the shop (pads, crate panel) starts a new one.
 
+	Rebirth: a rebirth starts the run again, but the funnel and "TierReached" read the best
+	tier EVER found (profile.discovered, the Index), which a rebirth never lowers, and
+	profile.onboarding only goes up. So a tier found again in a later run is no funnel step
+	and no "TierReached" a second time: both stay "first time ever", once per player.
+	"TierReached" says in its third field which run the tier was first found in. What each
+	run does is told by "RebirthReady" (the run reached the tier a rebirth is offered from)
+	and "Rebirth" (it was taken), both with the hours the run has lasted on the clock:
+	compare them by "Run 1", "Run 2", ... to see whether runs get shorter. This module reads
+	the Index only, never the run's own tier list (tests/run.luau pins that), so a run's
+	start is: the Index stamp of tier 1 for the first run, the rebirth itself for a run that
+	started in this session, and otherwise the `startedAt` Tycoon sends with both events.
+	Without it such a run is "Unknown", with 0 hours.
+
 	Custom events (value; custom fields 1, 2, 3). Shared.Telemetry has the labels:
-	  TierReached   tier; "Tier 12", player age        a best tier from 11 up, when discovered
-	  SessionEnd    seconds played; length bucket, best tier, player age
-	  ReturnGap     hours since the last session; gap bucket, tier band
+	  TierReached   tier; "Tier 12", player age, "Run 2"   a tier from 11 up, found for the first
+	                                                   time ever
+	  RebirthReady  hours into the run; "Run 2", run length bucket, player age
+	  Rebirth       hours the run took; "Run 2" (the run that ended), its best tier, run length
+	                bucket                             stars paid = that tier - 14
+	  SessionEnd    seconds played; length bucket, best tier ever, player age
+	  ReturnGap     hours since the last session; gap bucket, tier band (best tier ever)
+	  AwayCard      hours since the last session; gap bucket, what the card listed
+	                ("Cash+Crate+Daily", ..., "None"), tier band      once a session
 	  DailyClaim    streak; "Day 3", streak week, Cash / Crate / CrateAsCash
+	  StreakSaved   streak; streak week, "Day 3"       that claim used the streak saver
+	  StreakLost    the streak that ended; its streak week      that claim started again at 1
+	  IndexClaim    milestone (tiers found); "Index 10", "Run 2", player age
 	  Crate         1; Smasher / Pass / PaidSmasher / PaidHeld / Discard, rarity
 	  ModeStart     1; mode, map / stage / duel kind
-	  ModeFinish    1; mode, map / stage, First / Repeat
+	  ModeFinish    1; mode, map / stage, why it paid: First / Full / RunAgain (the run again
+	                bonus) / Assisted / Resting / None. Until the pay kinds this field was
+	                First / Repeat, "Repeat" being any finish after the first
 	  ModeSkip      1; mode, map
 	  ModeStop      1; mode, reason                    every end of a run, finishes included
 
-	Economy events (currency "Cash"; custom field 1 = tier band), summed per player in a
+	Economy events (currency "Cash"; custom field 1 = tier band of the best tier ever, so
+	after a rebirth a run's small sums are in its player's high band), summed per player in a
 	Telemetry.Ledger and sent once a minute and when the session ends, one event per source
 	or sink that moved, with the wallet at that moment as the ending balance:
-	  sources  Collect, Offline, Free, Daily, ModeParkour / ModeMog / ModeCardio, Pack, Tutorial
+	  sources  Collect, Offline, Free, Daily, Index, ModeParkour / ModeMog / ModeCardio, Pack,
+	           Tutorial
 	  sinks    Units, Converter, Treadmill (Cardio), Skip (Parkour's Skip Map)
 
 	Where they come from: Tycoon's listener events "Discover", "Cash", "Buy" { amount,
-	cost? }, "Earn" { source, amount }, "Spend" { sink, amount }, "Crate" { path, rarity }
-	and "Notify" (each Notify payload: the daily claim, the offline return and every mode
-	event), plus GameModes.hooks.rewarded. Other modules can call Analytics.earn / spend /
-	daily / crate / mode / offline directly instead.
+	cost? }, "Earn" { source, amount }, "Spend" { sink, amount }, "Crate" { path, rarity },
+	"Rebirth" { tier, rebirths, startedAt? }, "IndexClaim" { milestone } and "Notify" (each
+	Notify payload: the daily claim, the offline return, "RebirthReady" { startedAt? } and
+	every mode event), plus
+	GameModes.hooks.rewarded and the client action "AwayShown" { cash, crate, daily }. Other
+	modules can call Analytics.earn / spend / daily / crate / mode / offline / rebirth /
+	index / away directly instead.
 
 	Every call goes through `send`, which keeps each player inside Telemetry's per-minute
 	caps. With the Workspace attribute "AnalyticsDebug" = true every call is printed too
@@ -22664,6 +23206,14 @@ type State = {
 	window: Telemetry.Window,
 	-- A crate receipt is being paid out: the crate that opens next is the paid one.
 	paidCrate: boolean,
+	-- Hours since the last session when this one started (nil = a first session), and
+	-- whether "AwayCard" has been sent.
+	away: number?,
+	awayLogged: boolean,
+	-- os.time() the current run started (0 = not known: a later run from another session).
+	runStart: number,
+	-- The daily streak at the last claim.
+	streak: number,
 	ended: boolean,
 }
 local states: { [Tycoon.Session]: State } = setmetatable({}, { __mode = "k" }) :: any
@@ -22678,12 +23228,19 @@ local function stateOf(session: Tycoon.Session): State?
 			return nil
 		end
 		local now = os.clock()
+		local p = session.profile
 		state = {
 			startedAt = now,
-			bestTier = Economy.highestTier(session.profile.discovered),
+			bestTier = Economy.highestTier(p.discovered),
 			ledger = Telemetry.newLedger(),
 			window = Telemetry.newWindow(now),
 			paidCrate = false,
+			-- Read now: a save during the session moves lastOnline.
+			away = if p.lastOnline > 0 then math.max(0, os.time() - p.lastOnline) / 3600 else nil,
+			awayLogged = false,
+			-- The first run started when the Index got its first tier.
+			runStart = if p.rebirths == 0 then p.discovered[1] or 0 else 0,
+			streak = p.daily.streak or 0,
 			ended = false,
 		}
 		states[session] = state
@@ -22719,16 +23276,35 @@ local function custom(state: State, kind: string, player: Player, name: string, 
 	send(state, kind, "LogCustomEvent", player, name, value, if labels then fields else nil)
 end
 
--- A custom event with up to three labels (custom fields 1..3).
-local function event(session: Tycoon.Session, name: string, value: number?, labels: { string }?)
+-- A custom event with up to three labels (custom fields 1..3). `kind` is its rate class:
+-- "Event" unless the server already keeps it rare (Telemetry.CAPS).
+local function event(session: Tycoon.Session, name: string, value: number?, labels: { string }?, kind: string?)
 	local state = stateOf(session)
 	if state then
-		custom(state, "Event", session.player, name, value, labels)
+		custom(state, kind or "Event", session.player, name, value, labels)
 	end
 end
 
+-- The best tier ever found (the Index): a rebirth never lowers it.
 local function bestTier(session: Tycoon.Session): number
 	return Economy.highestTier(session.profile.discovered)
+end
+
+local function tenths(value: number): number
+	return math.floor(value * 10 + 0.5) / 10
+end
+
+-- The run the player is in ("Run 1" until the first rebirth).
+local function run(session: Tycoon.Session): string
+	return Telemetry.runLabel(session.profile.rebirths)
+end
+
+-- How long the current run has lasted: hours for an event's value (0 when its start is not
+-- known) and the bucket ("Unknown" then). `startedAt` = os.time() it started, when Tycoon
+-- says; what this session knows otherwise.
+local function runTime(state: State, startedAt: number?): (number, string)
+	local hours = Telemetry.runHours(startedAt, os.time()) or Telemetry.runHours(state.runStart, os.time())
+	return tenths(hours or 0), Telemetry.runBucket(hours)
 end
 
 -- How long the player has had the game, in days, as a label.
@@ -22783,7 +23359,9 @@ function Analytics.tiers(session: Tycoon.Session, old: boolean?)
 	Tycoon.markDirty(session)
 end
 
--- "TierReached" for each tier from TIER_EVENTS_FROM up that became the best tier just now.
+-- "TierReached" for each tier from TIER_EVENTS_FROM up that became the best tier ever just
+-- now, with the run it was found in. `state.bestTier` only goes up, so a tier found again
+-- after a rebirth is never reached twice.
 local function reached(session: Tycoon.Session)
 	local state = stateOf(session)
 	if not state then
@@ -22791,7 +23369,7 @@ local function reached(session: Tycoon.Session)
 	end
 	local highest = bestTier(session)
 	for tier = math.max(state.bestTier + 1, TIER_EVENTS_FROM), highest do
-		event(session, "TierReached", tier, { Telemetry.tierLabel(tier), age(session) })
+		event(session, "TierReached", tier, { Telemetry.tierLabel(tier), age(session), run(session) })
 	end
 	state.bestTier = math.max(state.bestTier, highest)
 end
@@ -22859,9 +23437,67 @@ end
 
 -- The daily reward of card `day` (1..7) was claimed, making the streak `streak`.
 -- `reward`: "Cash", "Crate" or "CrateAsCash" (the rack had no room for the crate's unit).
-function Analytics.daily(session: Tycoon.Session, day: number, streak: number, reward: string?)
-	local labels = { "Day " .. math.clamp(math.floor(day), 1, 7), Telemetry.weekBucket(streak), reward or "Cash" }
-	event(session, "DailyClaim", streak, labels)
+-- `saved` = the streak saver forgave a missed day: "StreakSaved". A claim that starts again
+-- at 1 after a longer streak is "StreakLost", with the streak that ended.
+function Analytics.daily(session: Tycoon.Session, day: number, streak: number, reward: string?, saved: boolean?)
+	local state = stateOf(session)
+	if not state then
+		return
+	end
+	local card = "Day " .. math.clamp(math.floor(day), 1, 7)
+	event(session, "DailyClaim", streak, { card, Telemetry.weekBucket(streak), reward or "Cash" })
+	if saved then
+		event(session, "StreakSaved", streak, { Telemetry.weekBucket(streak), card }, "Rare")
+	elseif streak <= 1 and state.streak > 1 then
+		event(session, "StreakLost", state.streak, { Telemetry.weekBucket(state.streak) }, "Rare")
+	end
+	state.streak = streak
+end
+
+-- The run reached the tier a rebirth is offered from (Tycoon's "RebirthReady", once a run).
+function Analytics.rebirthReady(session: Tycoon.Session, startedAt: number?)
+	local state = stateOf(session)
+	if state then
+		local hours, length = runTime(state, startedAt)
+		event(session, "RebirthReady", hours, { run(session), length, age(session) }, "Rare")
+	end
+end
+
+-- A rebirth started the run again. `tier` was the best tier of the run that ended,
+-- `rebirths` counts it (the profile's count by now) and `startedAt` is when it started.
+function Analytics.rebirth(session: Tycoon.Session, tier: number, rebirths: number?, startedAt: number?)
+	local state = stateOf(session)
+	if not state then
+		return
+	end
+	local hours, length = runTime(state, startedAt)
+	local ended = Telemetry.runLabel((rebirths or session.profile.rebirths) - 1)
+	event(session, "Rebirth", hours, { ended, Telemetry.tierLabel(tier), length }, "Rare")
+	-- The next run starts now.
+	state.runStart = os.time()
+end
+
+-- An Index milestone (`milestone` tiers found: 5, 10, ...) was claimed. Its cash is the
+-- "Index" source (Tycoon.grantMoney(session, cash, "Index")).
+function Analytics.index(session: Tycoon.Session, milestone: number)
+	if type(milestone) == "number" and milestone == milestone then
+		event(session, "IndexClaim", milestone, { Telemetry.indexLabel(milestone), run(session), age(session) }, "Rare")
+	end
+end
+
+-- The "while you were away" card was shown. `info` says what it listed: cash (an amount or
+-- true), crate (a crate finished: true, a count or its rarity) and daily (the daily reward
+-- is ready). Once a session, so a client cannot repeat it.
+function Analytics.away(session: Tycoon.Session, info: { [string]: any }?)
+	local state = stateOf(session)
+	if not state or state.awayLogged then
+		return
+	end
+	state.awayLogged = true
+	local card = info or {}
+	local hours = state.away or 0
+	local listed = Telemetry.awayLabel(card.cash, card.crate, card.daily)
+	event(session, "AwayCard", tenths(hours), { Telemetry.gapBucket(hours), listed, Telemetry.tierBand(bestTier(session)) })
 end
 
 -- What became of a crate: `path` is "unlocker", "unlock" or "discard" (Telemetry.cratePath).
@@ -22896,8 +23532,8 @@ function Analytics.mode(session: Tycoon.Session, modeId: string, what: string, d
 	local labels = { Telemetry.word(modeId), Telemetry.modeDetail(data) }
 	if what == "stop" then
 		labels[2] = Telemetry.word(info.reason)
-	elseif name == "ModeFinish" and info.first ~= nil then
-		labels[3] = if info.first then "First" else "Repeat"
+	elseif name == "ModeFinish" then
+		labels[3] = Telemetry.payLabel(data)
 	end
 	event(session, name, 1, labels)
 end
@@ -22926,13 +23562,12 @@ end
 function Analytics.onSessionStart(session: Tycoon.Session)
 	local player = session.player
 	-- The session's clock and best tier start here, whatever happens first.
-	stateOf(session)
+	local state = stateOf(session)
 	-- No gap for a new player: there is no last session.
-	local last = session.profile.lastOnline
-	if last > 0 then
-		local hours = math.max(0, os.time() - last) / 3600
+	local hours = state and state.away
+	if hours then
 		local labels = { Telemetry.gapBucket(hours), Telemetry.tierBand(bestTier(session)) }
-		event(session, "ReturnGap", math.floor(hours * 10 + 0.5) / 10, labels)
+		event(session, "ReturnGap", tenths(hours), labels)
 	end
 	-- Returning players never log here: a save from before the tier milestones arrives with
 	-- all of them marked as logged (DataService's migration, Funnel.returning), so these
@@ -22976,9 +23611,11 @@ local function onNotify(session: Tycoon.Session, payload: { [string]: any })
 		Analytics.mode(session, payload.mode, payload.event, payload)
 	elseif kind == "Daily" and payload.event == "claimed" then
 		local reward = if payload.crateCash then "CrateAsCash" elseif payload.crate then "Crate" else "Cash"
-		Analytics.daily(session, payload.day, payload.streak, reward)
+		Analytics.daily(session, payload.day, payload.streak, reward, payload.saved == true)
 	elseif kind == "Offline" then
 		Analytics.offline(session, payload.cash)
+	elseif kind == "RebirthReady" then
+		Analytics.rebirthReady(session, payload.startedAt)
 	end
 end
 
@@ -23002,6 +23639,10 @@ local function onEvent(session: Tycoon.Session, name: string, data: { [string]: 
 		Analytics.spend(session, data.sink, data.amount)
 	elseif name == "Crate" then
 		Analytics.crate(session, data.path, data.rarity)
+	elseif name == "Rebirth" then
+		Analytics.rebirth(session, data.tier, data.rebirths, data.startedAt)
+	elseif name == "IndexClaim" then
+		Analytics.index(session, data.milestone)
 	elseif name == "Notify" then
 		onNotify(session, data)
 	end
@@ -23012,6 +23653,8 @@ function Analytics.init()
 	Tycoon.addAction("ShopOpened", function(session)
 		Analytics.shop(session.player, 1, "Opened")
 	end)
+	-- So does the "while you were away" card, with what it lists.
+	Tycoon.addAction("AwayShown", Analytics.away)
 	table.insert(Tycoon.listeners, onEvent)
 	-- Mode rewards are paid by the modes themselves; GameModes tells after each one.
 	local rewarded = GameModes.hooks.rewarded
@@ -23034,7 +23677,7 @@ return Analytics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="175">
+      <Item class="ModuleScript" referent="177">
         <Properties>
           <string name="Name">Badges</string>
           <string name="Source"><![CDATA[--[[
@@ -23147,7 +23790,7 @@ return Badges
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="176">
+      <Item class="ModuleScript" referent="178">
         <Properties>
           <string name="Name">Cosmetics</string>
           <string name="Source"><![CDATA[--[[
@@ -23199,6 +23842,9 @@ local CROWN_WIDTH = 1.05
 local CROWN_SINK = 0.18
 -- Seconds before the join-time Starter popup is sent, so the client UI is listening.
 local STARTER_NOTIFY_DELAY = 4
+-- The Champion aura (the reward for the whole Index, profile.cosmetics.champion): a deeper
+-- gold than the Chad Aura's own colour, and a richer sparkle.
+local CHAMPION_AURA = { Color = Color3.fromRGB(255, 176, 24), Rich = true }
 
 local theme: any
 -- Per player: the cosmetic instances on the current character, and its connections.
@@ -23456,7 +24102,7 @@ local function addAura(player: Player, root: BasePart, item: any)
 	local color = item.Color
 	auraEmitter(player, root, "Sparkle", {
 		Color = ColorSequence.new(color, theme.World.Cream),
-		Rate = 6,
+		Rate = if item.Rich then 10 else 6,
 		Lifetime = NumberRange.new(0.9, 1.4),
 		Speed = NumberRange.new(1, 2),
 		Drag = 1,
@@ -23620,7 +24266,13 @@ local function apply(session: Session)
 	if trail ~= "" then
 		addTrail(player, root, items[trail])
 	end
-	if Cosmetics.active(theme, profile, passes, "AuraGlow") then
+	-- One aura: the Champion colour (the whole Index's reward, no pass needed) goes in front
+	-- of the Chad Aura's own. Its owner's Chad Aura switch still turns it off.
+	local champion = profile.cosmetics.champion == true
+	local auraOff = Cosmetics.owns(theme, passes, "AuraGlow") and not Cosmetics.toggleOn(profile, "AuraGlow")
+	if champion and not auraOff then
+		addAura(player, root, CHAMPION_AURA)
+	elseif Cosmetics.active(theme, profile, passes, "AuraGlow") then
 		addAura(player, root, items.AuraGlow)
 	end
 	local head = character:FindFirstChild("Head")
@@ -23731,6 +24383,12 @@ function Cosmetics.init(themeModule: any)
 	end
 
 	Tycoon.hooks.passGranted = onPassGranted
+	-- The whole Index was just claimed: the Champion aura colour goes on at once.
+	table.insert(Tycoon.listeners, function(session: Session, name: string, data: { [string]: any })
+		if name == "IndexClaim" and data.champion == true then
+			apply(session)
+		end
+	end)
 	Tycoon.hooks.cosmetics = function(session)
 		return Cosmetics.state(theme, session.profile, session.passes)
 	end
@@ -23781,7 +24439,7 @@ return Cosmetics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="177">
+      <Item class="ModuleScript" referent="179">
         <Properties>
           <string name="Name">Daily</string>
           <string name="Source"><![CDATA[--[[
@@ -23796,7 +24454,8 @@ return Cosmetics
 	(seconds to the next UTC day), firstDay (today is the player's first day:
 	today's card is capped, DailyReward.firstDayCap), saves (today's claim uses
 	the saver), savedCard (the card wearing the saver's shield, 0 = none), saver
-	(the saver is still there for the next missed day) }. The
+	(the saver is still there for the next missed day), lapsed (the streak that ended
+	with the missed days, 0 = none: the "While you were away" card says so once) }. The
 	"ClaimDaily" action pays today's card: cash sized by the player's income right
 	now (the amounts the window shows) and, on days 3 and 7, a crate opened on the
 	spot. With no room on the rack for the crate's unit, the crate is paid as cash.
@@ -23858,6 +24517,8 @@ local function snapshot(session: Tycoon.Session): { [string]: any }
 		saves = status.saves,
 		savedCard = status.savedCard,
 		saver = status.saver,
+		-- A saved streak the rules no longer count: it ended with the days missed.
+		lapsed = if status.claimable and status.streak == 0 then d.streak else 0,
 	}
 end
 
@@ -23982,7 +24643,7 @@ return Daily
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="178">
+      <Item class="ModuleScript" referent="180">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -24038,6 +24699,10 @@ export type Profile = {
 	-- Rebirths made and the stars they paid (Economy.STAR_BONUS cash each, for good).
 	rebirths: number,
 	stars: number,
+	-- Index milestones claimed (Shared.IndexRewards): the `found` of each one. Never reset: a
+	-- rebirth does not offer a milestone again. A save from before them has claimed none, so
+	-- every milestone it has already passed is waiting in the Index window.
+	indexClaimed: { number },
 	totalObtained: number,
 	-- Units bought on the buy pads so far (Economy.unitPrice grows with it).
 	bought: number,
@@ -24063,8 +24728,9 @@ export type Profile = {
 	tutorialStep: number,
 	tutorialDone: boolean,
 	introSeen: boolean,
-	-- Equipped trail ("" = none) and on/off switches of the toggle cosmetics (missing = on).
-	cosmetics: { trail: string, toggles: { [string]: boolean } },
+	-- Equipped trail ("" = none), on/off switches of the toggle cosmetics (missing = on) and
+	-- `champion`: the Champion aura colour is owned (the whole Index's milestone, claimed).
+	cosmetics: { trail: string, toggles: { [string]: boolean }, champion: boolean },
 	-- The Starter pack's one-time cash and trail have been given.
 	starterGranted: boolean,
 	-- Highest onboarding funnel step logged (Analytics; ONBOARDING_LEGACY = saves from before it).
@@ -24141,6 +24807,7 @@ function DataService.defaultProfile(): Profile
 		runDiscovered = table.clone(discovered),
 		rebirths = 0,
 		stars = 0,
+		indexClaimed = {},
 		totalObtained = 1,
 		bought = 0,
 		processLevel = Economy.START_PROCESS_LEVEL,
@@ -24162,7 +24829,7 @@ function DataService.defaultProfile(): Profile
 		tutorialStep = 1,
 		tutorialDone = false,
 		introSeen = false,
-		cosmetics = { trail = "", toggles = {} },
+		cosmetics = { trail = "", toggles = {}, champion = false },
 		starterGranted = false,
 		onboarding = 0,
 		badges = {},
@@ -24269,6 +24936,17 @@ local function reconcile(data: any): Profile
 		local v = data[key]
 		data[key] = if v ~= v or v < 0 or v == math.huge then 0 else math.floor(v)
 	end
+	-- Claimed Index milestones: whole tier counts, each once, in the order they were claimed.
+	-- Junk is dropped; a claim is never taken back.
+	local claimed: { number } = {}
+	for _, found in data.indexClaimed do
+		if type(found) == "number" and found == math.floor(found) and found >= 1 and found <= Economy.MAX_TIER then
+			if not table.find(claimed, found) then
+				table.insert(claimed, found)
+			end
+		end
+	end
+	data.indexClaimed = claimed
 	for i = 1, 2 do
 		local slot = data.unlockers[i]
 		if type(slot) ~= "table" or type(slot.rarity) ~= "string" or type(slot.endsAt) ~= "number" then
@@ -24294,6 +24972,12 @@ local function reconcile(data: any): Profile
 	end
 	if type(data.cosmetics.toggles) ~= "table" then
 		data.cosmetics.toggles = {}
+	end
+	-- The Champion aura colour comes with the whole Index's milestone: a save that claimed
+	-- it owns it, whatever the flag says.
+	local champion = table.find(data.indexClaimed, Economy.MAX_TIER) ~= nil
+	if champion or type(data.cosmetics.champion) ~= "boolean" then
+		data.cosmetics.champion = champion
 	end
 	for key, value in data.cosmetics.toggles do
 		if type(key) ~= "string" or type(value) ~= "boolean" then
@@ -24523,7 +25207,7 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="179">
+      <Item class="ModuleScript" referent="181">
         <Properties>
           <string name="Name">GameModes</string>
           <string name="Source"><![CDATA[--[[
@@ -24872,7 +25556,7 @@ return GameModes
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="180">
+      <Item class="ModuleScript" referent="182">
         <Properties>
           <string name="Name">Intro</string>
           <string name="Source"><![CDATA[--[[
@@ -24920,7 +25604,7 @@ return Intro
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Script" referent="181">
+      <Item class="Script" referent="183">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
@@ -25054,11 +25738,11 @@ end)
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="182">
+      <Item class="Folder" referent="184">
         <Properties>
           <string name="Name">Modes</string>
         </Properties>
-        <Item class="ModuleScript" referent="183">
+        <Item class="ModuleScript" referent="185">
           <Properties>
             <string name="Name">Cardio</string>
             <string name="Source"><![CDATA[--[[
@@ -25116,9 +25800,10 @@ end)
 	                                  claimed `stage`'s WIN pad (final = stage 10): paid, back
 	                                  in the lobby; newBest = deeper than prevBest, the best
 	                                  plate before this claim
-	  Pay fields (as Parkour's finish): pay = "first" | "full" | "repeat" | "none" says why
-	  `cash` is what it is ("repeat": the run again bonus, repeatShare of packCash =
-	  repeatCash); repeatFrom = the first plate that can pay the bonus (the best plate);
+	  Pay fields (as Parkour's finish): pay = "first" | "full" | "repeat" | "resting" | "none"
+	  says why `cash` is what it is ("repeat": the run again bonus, repeatShare of packCash =
+	  repeatCash; "resting": a plate that would pay it, inside CardioRules.REPEAT_GAP of the
+	  last one); repeatFrom = the first plate that can pay the bonus (the best plate);
 	  repeatReadyAt = os.time() from which the bonus is paid again (0 = now).
 	  { event = "fall", stage = 0, from, reason, speed, need, slow, capped }
 	                                  back in the lobby from stage `from`; reason "fall" |
@@ -25346,8 +26031,11 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		r.packCash = math.floor(r.packCash * CardioRules.stageBonus(stage) + 0.5)
 		r.repeatCash = math.floor(r.packCash * Economy.MODE_REPEAT_SHARE)
 		local sincePaid = CardioRules.REPEAT_GAP - repeatLeft(session)
-		local earned = CardioRules.repeatEarned(stage, record(session).bestStage, sincePaid)
-		local kind = CardioRules.payKind(first, r.full, earned)
+		local best = record(session).bestStage
+		local earned = CardioRules.repeatEarned(stage, best, sincePaid)
+		-- A plate deep enough for the bonus, only too soon after the last one: it rests.
+		local resting = not earned and CardioRules.repeatEarned(stage, best, CardioRules.REPEAT_GAP)
+		local kind = CardioRules.payKind(first, r.full, earned, resting)
 		r.cash = if r.full then r.packCash elseif kind == "repeat" then r.repeatCash else 0
 		return r, kind
 	end
@@ -25820,7 +26508,7 @@ return Cardio
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="184">
+        <Item class="ModuleScript" referent="186">
           <Properties>
             <string name="Name">CardioChase</string>
             <string name="Source"><![CDATA[--!strict
@@ -26222,7 +26910,7 @@ return CardioChase
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="185">
+        <Item class="ModuleScript" referent="187">
           <Properties>
             <string name="Name">CardioLayout</string>
             <string name="Source"><![CDATA[--!strict
@@ -27687,7 +28375,7 @@ return CardioLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="186">
+        <Item class="ModuleScript" referent="188">
           <Properties>
             <string name="Name">CardioRules</string>
             <string name="Source"><![CDATA[--!strict
@@ -28025,14 +28713,17 @@ function CardioRules.repeatEarned(stage: number, bestStage: number, sincePaid: n
 end
 
 -- What a WIN plate pays: "first" (its first clear) and "full" (the cooldown is over) the
--- whole pack, "repeat" (inside the cooldown, `earned`) the run again bonus, "none" nothing.
-function CardioRules.payKind(first: boolean, full: boolean, earned: boolean): string
+-- whole pack, "repeat" (inside the cooldown, `earned`) the run again bonus, "resting" (a
+-- plate that would earn it, but inside REPEAT_GAP: `resting`) and "none" nothing.
+function CardioRules.payKind(first: boolean, full: boolean, earned: boolean, resting: boolean?): string
 	if first then
 		return "first"
 	elseif full then
 		return "full"
+	elseif earned then
+		return "repeat"
 	end
-	return if earned then "repeat" else "none"
+	return if resting then "resting" else "none"
 end
 
 -- Cash multiplier on stage n's reward (+25% per stage: stage 10 pays 3.25x the pack).
@@ -28044,7 +28735,7 @@ return CardioRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="187">
+        <Item class="ModuleScript" referent="189">
           <Properties>
             <string name="Name">Catalog</string>
             <string name="Source"><![CDATA[--!strict
@@ -28084,7 +28775,7 @@ return Catalog
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="188">
+        <Item class="ModuleScript" referent="190">
           <Properties>
             <string name="Name">Course</string>
             <string name="Source"><![CDATA[--!strict
@@ -30157,7 +30848,7 @@ return Course
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="189">
+        <Item class="ModuleScript" referent="191">
           <Properties>
             <string name="Name">Mog</string>
             <string name="Source"><![CDATA[--[[
@@ -30177,7 +30868,8 @@ return Course
 	  MogRules.PASS_RIVALS rivals passes the test and pays Economy.modeReward (same rules as
 	  Parkour: the whole pack for the first pass ever and then once per
 	  Economy.MODE_REWARD_COOLDOWN; a pass inside the cooldown pays the repeat share,
-	  Economy.MODE_REPEAT_SHARE of the pack, once per run). The run then goes
+	  Economy.MODE_REPEAT_SHARE of the pack, once per run and per player no sooner than
+	  MogRules.REPEAT_GAP seconds after their last one, PvE or PvP). The run then goes
 	  on for a high score until the lives run out; afterwards the player is sent back to the
 	  gates (GameModes.returnLater).
 	- vs = "pvp": 1v1 against a real player. A player waiting in the queue is matched at once;
@@ -30213,15 +30905,18 @@ return Course
 	    duration }                                   sent `lead` seconds before appearAt
 	  { event = "result", id, result, reason?, travel?, score, combo, lives, rivalHp, rivalMax }
 	  { event = "rival", mogged, rival, rivals, passed, cash?, full?, pay?, packCash?, repeatCash?,
-	    repeatShare? }                               the pay fields come with passed = true
+	    repeatShare?, repeatRest? }                  the pay fields come with passed = true
 	  { event = "finish", score, rivals, best, prevBest, newBest, passed, cash, full,
-	    cooldownEnds, rank?, globalRank?, board, pay, packCash, repeatCash, repeatShare }
+	    cooldownEnds, rank?, globalRank?, board, pay, packCash, repeatCash, repeatShare,
+	    repeatRest }
 	                                                 rank: on this server's list; globalRank: on
 	                                                 the all-time list; board: "global" | "server"
 	                                                 (what the TOP MOGGERS board shows now)
-	Pay fields (as Parkour's finish): pay = "first" | "full" | "repeat" | "none" says why `cash`
-	is what it is ("repeat": the run again bonus, repeatShare of packCash = repeatCash; "none":
-	nothing earned, e.g. a run that did not pass or a win by forfeit inside the cooldown).
+	Pay fields (as Parkour's finish): pay = "first" | "full" | "repeat" | "resting" | "none" says
+	why `cash` is what it is ("repeat": the run again bonus, repeatShare of packCash =
+	repeatCash; "resting": it was earned, but the player's last one was paid less than
+	MogRules.REPEAT_GAP seconds ago, back in repeatRest seconds; "none": nothing earned, e.g. a
+	run that did not pass or a win by forfeit inside the cooldown).
 	  { event = "stop", reason }                     ended without a finish ("full" = no free spot,
 	                                                 "noOpponent" = queue timed out, "cancel")
 	PvP payloads (every one carries vs = "pvp"; hp values are after the round):
@@ -30236,8 +30931,8 @@ return Course
 	  { event = "round", vs, id, you = { result, hp, maxHp, combo, score },
 	    opp = { result, hp, maxHp }, suddenDeath? }
 	  { event = "finish", vs, won, reason ("ko" | "forfeit"), opponent = { userId, name }, score,
-	    wins, played, cash, full, cooldownEnds, pay, packCash, repeatCash, repeatShare, afk?,
-	    rounds?, draw?, close? }
+	    wins, played, cash, full, cooldownEnds, pay, packCash, repeatCash, repeatShare,
+	    repeatRest, afk?, rounds?, draw?, close? }
 	                                                 afk = true: an idle forfeit (reason "forfeit");
 	                                                 rounds = true: decided at the round cap (reason
 	                                                 "ko"); draw = true: nobody won (won is false);
@@ -30330,6 +31025,9 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 	local spotGen: { [number]: number } = {}
 	local duels: { [Player]: Duel } = {}
 	local queue: { QueueEntry } = {}
+	-- When each player's repeat share was last paid, by UserId (PvE and PvP together; kept for
+	-- the server's life, so leaving and joining again does not wake it).
+	local repeatPaidAt: { [number]: number } = {}
 	local board = MogBoard.new(BEST_SIZE, MogBoard.open())
 	local nextCheckId = 0
 
@@ -30353,9 +31051,16 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		return session.profile.modes.mog
 	end
 
+	-- Seconds until `player`'s repeat share is paid again (0 = it is awake).
+	local function repeatRest(player: Player): number
+		local at = repeatPaidAt[player.UserId]
+		return if at then math.max(0, math.ceil(at + MogRules.REPEAT_GAP - now())) else 0
+	end
+
 	-- What a PvE pass (vs = "rivals") or a PvP win ("pvp") pays right now, and why
 	-- (MogRules.payKind). Only a pass can be the first clear; both share the cooldown, and
-	-- inside it only an `earned` one (a real run, a duel really fought) pays the repeat share.
+	-- inside it only an `earned` one (a real run, a duel really fought) pays the repeat share,
+	-- and not while the player's share rests (MogRules.REPEAT_GAP after the last one paid).
 	local function rewardFor(session: any, vs: string, earned: boolean): (Economy.ModeReward, string)
 		local p = session.profile
 		local rec = record(session)
@@ -30363,19 +31068,22 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		local progression = Economy.progression(Economy.highestTier(p.runDiscovered), p.processLevel)
 		local first = vs == "rivals" and MogRules.firstPass(rec)
 		local r = Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, first, rec.lastRewardAt, os.time())
-		local kind = MogRules.payKind(first, r.full, earned)
+		local at = repeatPaidAt[session.player.UserId]
+		local kind = MogRules.payKind(first, r.full, earned, if at then now() - at else nil)
 		r.cash = if r.full then r.packCash elseif kind == "repeat" then r.repeatCash else 0
 		return r, kind
 	end
 
-	-- The pay fields of a "rival" (passed) or "finish" payload.
-	local function payFields(payload: { [string]: any }, reward: Economy.ModeReward?, kind: string)
+	-- The pay fields of `player`'s "rival" (passed) or "finish" payload.
+	local function payFields(payload: { [string]: any }, player: Player, reward: Economy.ModeReward?, kind: string)
 		payload.cash = if reward then reward.cash else 0
 		payload.full = if reward then reward.full else false
 		payload.pay = kind
 		payload.packCash = if reward then reward.packCash else 0
 		payload.repeatCash = if reward then reward.repeatCash else 0
 		payload.repeatShare = Economy.MODE_REPEAT_SHARE
+		-- Seconds the repeat share still rests (0 = awake, or the full reward is what counts).
+		payload.repeatRest = if kind == "repeat" or kind == "resting" then repeatRest(player) else 0
 	end
 
 	local function updateBoard()
@@ -30523,6 +31231,8 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		MogRules.countClear(rec, vs)
 		if reward.full then
 			rec.lastRewardAt = os.time()
+		elseif kind == "repeat" then
+			repeatPaidAt[player.UserId] = now()
 		end
 		local p = session.profile
 		if reward.cash > 0 then
@@ -30578,7 +31288,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			globalRank = globalRank,
 			board = if global then "global" else "server",
 		}
-		payFields(payload, state.reward, state.pay)
+		payFields(payload, player, state.reward, state.pay)
 		GameModes.notify(player, "finish", ID, payload)
 		Tycoon.markDirty(session)
 		GameModes.refresh(player)
@@ -30614,7 +31324,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			}
 			if outcome.passed then
 				payPass(player, state)
-				payFields(payload, state.reward, state.pay)
+				payFields(payload, player, state.reward, state.pay)
 			end
 			GameModes.notify(player, "rival", ID, payload)
 			GameModes.refresh(player)
@@ -30808,7 +31518,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 					played = rec.pvpPlayed,
 					cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 				}
-				payFields(payload, reward, kind)
+				payFields(payload, player, reward, kind)
 				sendPvp(player, "finish", payload)
 				GameModes.refresh(player)
 				GameModes.returnLater(player, RETURN_AFTER, function(root: BasePart): boolean
@@ -31150,7 +31860,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 	function def.rewardPreview(player: Player): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, full = false, packCash = 0, repeatCash = 0, repeatShare = Economy.MODE_REPEAT_SHARE }
+			return { cash = 0, full = false, packCash = 0, repeatCash = 0, repeatShare = Economy.MODE_REPEAT_SHARE, repeatRest = 0 }
 		end
 		local r = rewardFor(session, "rivals", true)
 		return {
@@ -31159,6 +31869,8 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 			packCash = r.packCash,
 			repeatCash = r.repeatCash,
 			repeatShare = Economy.MODE_REPEAT_SHARE,
+			-- Seconds the player's repeat share still rests (0 = awake).
+			repeatRest = if r.full then 0 else repeatRest(player),
 		}
 	end
 
@@ -31218,7 +31930,7 @@ return { create = create }
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="190">
+        <Item class="ModuleScript" referent="192">
           <Properties>
             <string name="Name">MogBoard</string>
             <string name="Source"><![CDATA[--[[
@@ -31433,7 +32145,7 @@ return MogBoard
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="191">
+        <Item class="ModuleScript" referent="193">
           <Properties>
             <string name="Name">MogLayout</string>
             <string name="Source"><![CDATA[--[[
@@ -31510,7 +32222,7 @@ return MogLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="192">
+        <Item class="ModuleScript" referent="194">
           <Properties>
             <string name="Name">MogRules</string>
             <string name="Source"><![CDATA[--[[
@@ -31543,7 +32255,9 @@ return MogLayout
 	    takes less than minPassSeconds() of checks (about 15 s; a kid needs about 35 s).
 	  - a PvP win: a duel fought to the end (a KO or the round cap, never a forfeit of any
 	    kind) in which the loser pressed on PVP_REPEAT_PRESSES checks or more (duelFought).
-	payKind names what a pass or win pays: "first" | "full" | "repeat" | "none".
+	  - and per player no sooner than REPEAT_GAP seconds after their last repeat share (a pass
+	    and a PvP win share the gap): an earned one inside it pays nothing and is "resting".
+	payKind names what a pass or win pays: "first" | "full" | "repeat" | "resting" | "none".
 
 	Pass rate of the first PASS_RIVALS rivals for a player whose presses miss the zone centre by
 	a Gaussian timing error (4,000 runs each): 50 ms 100%, 70 ms 94%, 100 ms 57%, 140 ms 17%
@@ -31598,6 +32312,10 @@ MogRules.PVP_CLOSE_MARGIN = 2
 -- PvP: a win inside the reward cooldown pays the repeat share only when the loser really
 -- pressed (a timeout is not a press) on this many checks. A KO takes 3 rounds at the least.
 MogRules.PVP_REPEAT_PRESSES = 3
+-- The repeat share (a pass or a fought PvP win inside the reward cooldown) is paid to a player
+-- no sooner than this many seconds after their last one, PvE and PvP together: a fast pass
+-- cannot be looped for it and two accounts cannot trade duel wins for it.
+MogRules.REPEAT_GAP = 90
 
 export type Check = {
 	n: number,
@@ -31888,14 +32606,17 @@ end
 
 -- What a pass or a PvP win pays: "first" (the first pass ever) and "full" (the cooldown is
 -- over) pay the whole pack, "repeat" (inside the cooldown, `earned` by a real run) the repeat
--- share, "none" nothing.
-function MogRules.payKind(first: boolean, full: boolean, earned: boolean): string
+-- share, "resting" (the same, but `sincePaid` seconds after the player's last repeat share is
+-- inside REPEAT_GAP) and "none" nothing.
+function MogRules.payKind(first: boolean, full: boolean, earned: boolean, sincePaid: number?): string
 	if first then
 		return "first"
 	elseif full then
 		return "full"
+	elseif not earned then
+		return "none"
 	end
-	return if earned then "repeat" else "none"
+	return if sincePaid and sincePaid < MogRules.REPEAT_GAP then "resting" else "repeat"
 end
 
 local function duelist(): Duelist
@@ -32051,7 +32772,7 @@ return MogRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="193">
+        <Item class="ModuleScript" referent="195">
           <Properties>
             <string name="Name">Parkour</string>
             <string name="Source"><![CDATA[--[[
@@ -32076,8 +32797,9 @@ return MogRules
 	  Economy.MODE_REWARD_COOLDOWN (one cooldown shared by all levels, modes.parkour.
 	  lastRewardAt). Inside the cooldown a clean finish (no gear worn) pays
 	  Economy.MODE_REPEAT_SHARE of that map's pack, then that map's bonus rests for
-	  REPEAT_REST_SECONDS (in memory, per player and map: a run inside the rest finishes as
-	  usual and pays nothing); an assisted one pays nothing. After a remote
+	  REPEAT_REST_SECONDS and every map's for REPEAT_GAP_SECONDS (in memory, per player: a
+	  run inside the rest finishes as usual and pays nothing); an assisted one pays nothing.
+	  After a remote
 	  finish the player is brought back to the gates (GameModes.returnLater) wherever they
 	  stand on the sky course by then (the finish deck, a bridge, the next map's start deck);
 	  while the finish card is up (action "ModeCard" { mode, open }) the return waits, for
@@ -32179,6 +32901,9 @@ local CARD_POLL_SECONDS = 1
 -- Seconds a map's run again bonus rests after it was paid: runs inside it finish as usual
 -- and pay nothing, so the bonus cannot be farmed in a loop on one short map.
 local REPEAT_REST_SECONDS = 120
+-- ...and after any map's run again bonus every map's rests this long for that player, so
+-- cycling the maps does not multiply the rate.
+local REPEAT_GAP_SECONDS = 60
 -- Seconds a player with no run may stand off every start / finish deck of the sky course
 -- before they are taken back to the gates.
 local STRANDED_SECONDS = 2
@@ -32343,6 +33068,8 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	-- When each map's run again bonus was last paid, by UserId (kept for the server's life,
 	-- so leaving and joining again does not wake it).
 	local repeatPaidAt: { [number]: { [number]: number } } = {}
+	-- When any map's run again bonus was last paid, by UserId.
+	local repeatPaidAny: { [number]: number } = {}
 	-- Server best times per level (in memory; see Rules.recordBest for the OrderedDataStore
 	-- shape).
 	local serverBest: { { Rules.BestEntry } } = {}
@@ -32365,9 +33092,12 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 
 	-- Seconds until `level`'s run again bonus is paid again (0 = it is awake).
 	local function repeatRest(session: any, level: number): number
-		local paid = repeatPaidAt[session.player.UserId]
+		local userId = session.player.UserId
+		local paid = repeatPaidAt[userId]
 		local at = paid and paid[level]
-		return if at then math.max(0, math.ceil(at + REPEAT_REST_SECONDS - now())) else 0
+		local any = repeatPaidAny[userId]
+		local left = math.max(if at then at + REPEAT_REST_SECONDS - now() else 0, if any then any + REPEAT_GAP_SECONDS - now() else 0)
+		return math.max(0, math.ceil(left))
 	end
 
 	-- What finishing `level` pays now. Inside the cooldown only a `clean` run (no gear worn)
@@ -32680,6 +33410,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			local paid = repeatPaidAt[player.UserId] or {}
 			repeatPaidAt[player.UserId] = paid
 			paid[index] = now()
+			repeatPaidAny[player.UserId] = now()
 		end
 		-- A new finish, a new card: a card the client never closed holds nothing.
 		cardOpen[player] = nil
@@ -32990,7 +33721,7 @@ return Parkour
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="194">
+        <Item class="ModuleScript" referent="196">
           <Properties>
             <string name="Name">Rules</string>
             <string name="Source"><![CDATA[--!strict
@@ -33076,7 +33807,7 @@ return Rules
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="195">
+      <Item class="ModuleScript" referent="197">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -33381,7 +34112,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="196">
+      <Item class="ModuleScript" referent="198">
         <Properties>
           <string name="Name">PlotLayout</string>
           <string name="Source"><![CDATA[--!strict
@@ -33972,7 +34703,7 @@ return Layout
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="197">
+      <Item class="ModuleScript" referent="199">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -34359,7 +35090,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="198">
+      <Item class="ModuleScript" referent="200">
         <Properties>
           <string name="Name">Tutorial</string>
           <string name="Source"><![CDATA[--[[
@@ -34476,7 +35207,7 @@ return Tutorial
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="199">
+      <Item class="ModuleScript" referent="201">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -34500,6 +35231,7 @@ local Economy = require(Shared.Economy)
 local OrbLook = require(Shared.OrbLook)
 local CratePickup = require(Shared.CratePickup)
 local Format = require(Shared.Format)
+local IndexRewards = require(Shared.IndexRewards)
 local Net = require(Shared.Net)
 local TutorialSteps = require(Shared.TutorialSteps)
 local CharacterFactory = require(Shared.CharacterFactory)
@@ -34643,7 +35375,11 @@ Tycoon.hooks = {
 -- Gameplay event listeners (used by the tutorial): fn(session, name, data).
 -- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge", "Discover" (a tier was discovered
 -- for the first time; Analytics counts its milestones), "Rebirth" { gained, stars, rebirths,
--- tier } (the run was started again), and for Analytics alone "Earn"
+-- tier, startedAt } (the run was started again; `startedAt` = os.time() the ended run began),
+-- "IndexClaim" { milestone, found, cash, crate, tier, crateCash,
+-- champion } (an Index milestone was claimed: `milestone` = `found` = its tier count, `tier` = the unit its crate gave, `crateCash` =
+-- the cash it paid instead on a full rack, `champion` = the Champion aura colour is now
+-- owned), and for Analytics alone "Earn"
 -- { source, amount }, "Spend" { sink, amount }, "Crate" { path, rarity } and "Notify" (every
 -- Notify payload sent to the player).
 Tycoon.listeners = {} :: { (Session, string, { [string]: any }) -> () }
@@ -35069,6 +35805,7 @@ local function discoverAll(session: Session, extra: { number }?, before: Earning
 	local runNewest = 0
 	local found: { number } = {}
 	local couldRebirth = Economy.canRebirth(highestTier(session))
+	local indexBefore = IndexRewards.found(p.discovered)
 	local function mark(tier: number)
 		if tier < 1 or tier > Economy.MAX_TIER then
 			return
@@ -35121,6 +35858,14 @@ local function discoverAll(session: Session, extra: { number }?, before: Earning
 			incomeAfter = after.income,
 		})
 		emit(session, "Discover", { tier = newest })
+		-- The Index has just reached a milestone: its reward waits in the Index window.
+		local indexNow = IndexRewards.found(p.discovered)
+		for _, milestone in IndexRewards.MILESTONES do
+			if milestone.found > indexBefore and milestone.found <= indexNow and p.tutorialDone then
+				local ready = "Index reward ready: %d %s found! Open the Index to claim it"
+				toast(session, string.format(ready, milestone.found, theme.Words.Units), "good")
+			end
+		end
 	end
 	if lifted then
 		local pad = session.plot.padByName.ProcUp1
@@ -35134,6 +35879,8 @@ local function discoverAll(session: Session, extra: { number }?, before: Earning
 			tier = runNewest,
 			starsOnRebirth = Economy.rebirthStars(runNewest),
 			stars = p.stars,
+			-- os.time() the run started (its first tier's stamp), for Analytics.
+			startedAt = p.runDiscovered[1],
 		})
 	end
 	if runNewest > 0 then
@@ -36358,6 +37105,8 @@ local function snapshot(session: Session): { [string]: any }
 	local moneyMult = Tycoon.moneyMultiplier(session)
 	local runBest = highestTier(session)
 	local starsOnRebirth = Economy.rebirthStars(runBest)
+	local rewardIncome = Tycoon.income(session)
+	local index = IndexRewards.state(p, rewardIncome)
 	return {
 		now = now,
 		money = p.money,
@@ -36386,6 +37135,11 @@ local function snapshot(session: Session): { [string]: any }
 		-- tier ever found (the Index; what the plot shows off).
 		highestTier = runBest,
 		bestTier = Economy.highestTier(p.discovered),
+		-- Index milestones (Shared.IndexRewards.state): tiers found, every milestone with the
+		-- cash a claim pays right now, and `claimable` = how many wait to be claimed (also
+		-- `indexClaimable`, for the HUD's badge on the Index button).
+		index = index,
+		indexClaimable = index.claimable,
 		-- Rebirth: stars held (+10% cash each: `starMult`), runs started again, whether one is
 		-- on offer and the stars it would pay. `rebirth` is sent while it is on offer: what
 		-- the confirm lists (see rebirthOffer).
@@ -36410,7 +37164,7 @@ local function snapshot(session: Session): { [string]: any }
 		income = Tycoon.incomeNow(session),
 		-- What rewards and packs are sized with (no Aura Surge): the shop, Starter Pack and Daily
 		-- cards show the amounts the server grants, in and out of a surge.
-		rewardIncome = Tycoon.income(session),
+		rewardIncome = rewardIncome,
 		rewardProduction = steadyProduction(session),
 		freeIn = math.max(0, p.lastFreeReward + Economy.FREE_REWARD_COOLDOWN - now),
 		plotIndex = session.plot.index,
@@ -36785,6 +37539,8 @@ local function rebirth(session: Session)
 	local p = session.profile
 	local tier = highestTier(session)
 	local before = Economy.starMultiplier(p.stars)
+	-- os.time() the run that ends here started (Economy.rebirth stamps the next one over it).
+	local startedAt = p.runDiscovered[1]
 	local gained = Economy.rebirth(p, os.time())
 	if gained <= 0 then
 		toast(session, string.format("Reach %s to rebirth for stars!", tierName(Economy.REBIRTH_MIN_TIER)), "info")
@@ -36805,11 +37561,57 @@ local function rebirth(session: Session)
 		multiplierBefore = before,
 		moneyMult = Tycoon.moneyMultiplier(session),
 	})
-	emit(session, "Rebirth", { gained = gained, stars = p.stars, rebirths = p.rebirths, tier = tier })
+	emit(session, "Rebirth", { gained = gained, stars = p.stars, rebirths = p.rebirths, tier = tier, startedAt = startedAt })
 	markDirty(session)
 	flush(session)
 end
 actionHandlers.Rebirth = rebirth
+
+-- Claims the Index milestone of `data.found` tiers (the Index window's CLAIM buttons). The
+-- Index is every tier ever found, so a rebirth neither takes a milestone back nor offers it
+-- again; the cash is sized by the income of the run at this moment (Tycoon.income: no Aura
+-- Surge, the rebirth stars counted once, as in every other reward). IndexRewards.claim marks
+-- the milestone before anything is granted and nothing here yields, so a double tap or a
+-- second remote finds it claimed and pays nothing.
+actionHandlers.ClaimIndex = function(session, data)
+	local p = session.profile
+	local milestone = IndexRewards.milestone(data.found)
+	-- Sized before anything is granted, so the crate's unit does not change the cash.
+	local grant = IndexRewards.claim(p, data.found, Tycoon.income(session))
+	if not milestone or not grant then
+		return
+	end
+	local cash = grant.cash
+	local crate = grant.crate
+	-- With no room on the rack for its unit, the crate is paid as cash instead of being lost.
+	local tier = if crate then Tycoon.rollCrate(session, crate) else nil
+	local crateCash: number? = nil
+	if crate and not tier then
+		crateCash = IndexRewards.crateCash(milestone, highestTier(session))
+		cash += crateCash
+	end
+	emit(session, "IndexClaim", {
+		milestone = grant.found,
+		found = grant.found,
+		cash = cash,
+		crate = if tier then crate else nil,
+		tier = tier,
+		crateCash = crateCash,
+		champion = grant.champion,
+	})
+	local text = string.format("Index reward: %d %s found! +%s", grant.found, theme.Words.Units, Format.money(cash))
+	if grant.champion then
+		text ..= ", the Champion aura colour and the gold Index frame"
+	end
+	toast(session, text, "good")
+	Tycoon.grantMoney(session, cash, "Index")
+	if crate and tier then
+		Tycoon.grantCrate(session, crate, tier)
+	elseif crate and crateCash then
+		local full = "Your rack is full: the %s %s paid %s instead"
+		toast(session, string.format(full, crate, theme.Words.Chest, Format.money(crateCash)), "info")
+	end
+end
 
 -- Sent by the client once its UI is ready; the caller flushes fresh state.
 actionHandlers.Sync = function(_session) end
@@ -36917,7 +37719,14 @@ local function applyOffline(session: Session)
 	-- Rebirth stars count while away too (friends and Premium do not).
 	local cash = processed * Economy.CASH_PER_POINT * (if session.passes.DoubleMoney then 2 else 1) * Economy.starMultiplier(p.stars)
 	p.pending += cash
-	notify(session, { kind = "Offline", seconds = elapsed, orbs = produced, cash = cash })
+	-- The crates the Smasher finished during the absence (the away card says "finished").
+	local crates: { string } = {}
+	for _, slot in p.unlockers do
+		if slot.rarity ~= "" and slot.endsAt > p.lastOnline and slot.endsAt <= os.time() then
+			table.insert(crates, slot.rarity)
+		end
+	end
+	notify(session, { kind = "Offline", seconds = elapsed, orbs = produced, cash = cash, crates = if #crates > 0 then crates else nil })
 end
 
 function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, passes: { [string]: boolean }): Session?
@@ -37219,11 +38028,11 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="200">
+      <Item class="Folder" referent="202">
         <Properties>
           <string name="Name">World</string>
         </Properties>
-        <Item class="ModuleScript" referent="201">
+        <Item class="ModuleScript" referent="203">
           <Properties>
             <string name="Name">CardioTrack</string>
             <string name="Source"><![CDATA[--[[
@@ -38686,7 +39495,7 @@ return CardioTrack
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="202">
+        <Item class="ModuleScript" referent="204">
           <Properties>
             <string name="Name">Common</string>
             <string name="Source"><![CDATA[--[[
@@ -38866,7 +39675,7 @@ return Common
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="203">
+        <Item class="ModuleScript" referent="205">
           <Properties>
             <string name="Name">Decor</string>
             <string name="Source"><![CDATA[--[[
@@ -39847,7 +40656,7 @@ return Decor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="204">
+        <Item class="ModuleScript" referent="206">
           <Properties>
             <string name="Name">Hub</string>
             <string name="Source"><![CDATA[--[[
@@ -40964,7 +41773,7 @@ return Hub
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="205">
+        <Item class="ModuleScript" referent="207">
           <Properties>
             <string name="Name">Machines</string>
             <string name="Source"><![CDATA[--[[
@@ -41782,7 +42591,7 @@ return Machines
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="206">
+        <Item class="ModuleScript" referent="208">
           <Properties>
             <string name="Name">MapDecor</string>
             <string name="Source"><![CDATA[--[[
@@ -42727,7 +43536,7 @@ return MapDecor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="207">
+        <Item class="ModuleScript" referent="209">
           <Properties>
             <string name="Name">Modes</string>
             <string name="Source"><![CDATA[--[[
@@ -44548,7 +45357,7 @@ return Modes
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="208">
+        <Item class="ModuleScript" referent="210">
           <Properties>
             <string name="Name">MogStage</string>
             <string name="Source"><![CDATA[--[[
@@ -44892,7 +45701,7 @@ return MogStage
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="209">
+        <Item class="ModuleScript" referent="211">
           <Properties>
             <string name="Name">Pads</string>
             <string name="Source"><![CDATA[--[[
@@ -45289,7 +46098,7 @@ return Pads
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="210">
+        <Item class="ModuleScript" referent="212">
           <Properties>
             <string name="Name">Pen</string>
             <string name="Source"><![CDATA[--[[
@@ -45608,7 +46417,7 @@ return Pen
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="211">
+        <Item class="ModuleScript" referent="213">
           <Properties>
             <string name="Name">Props</string>
             <string name="Source"><![CDATA[--!strict
@@ -45879,7 +46688,7 @@ return Props
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="212">
+        <Item class="ModuleScript" referent="214">
           <Properties>
             <string name="Name">Shell</string>
             <string name="Source"><![CDATA[--[[
@@ -46328,7 +47137,7 @@ return Shell
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="213">
+        <Item class="ModuleScript" referent="215">
           <Properties>
             <string name="Name">Shelves</string>
             <string name="Source"><![CDATA[--[[
@@ -47044,7 +47853,7 @@ return Shelves
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="214">
+      <Item class="ModuleScript" referent="216">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -47434,26 +48243,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="215">
+  <Item class="SoundService" referent="217">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="216">
+  <Item class="StarterPlayer" referent="218">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="217">
+    <Item class="StarterPlayerScripts" referent="219">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="218">
+      <Item class="Folder" referent="220">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="ModuleScript" referent="219">
+        <Item class="ModuleScript" referent="221">
           <Properties>
             <string name="Name">Animator</string>
             <string name="Source"><![CDATA[--[[
@@ -48133,11 +48942,11 @@ return Animator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="220">
+        <Item class="Folder" referent="222">
           <Properties>
             <string name="Name">Fx</string>
           </Properties>
-          <Item class="ModuleScript" referent="221">
+          <Item class="ModuleScript" referent="223">
             <Properties>
               <string name="Name">Ambient</string>
               <string name="Source"><![CDATA[--[[
@@ -48517,7 +49326,7 @@ return Ambient
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="222">
+          <Item class="ModuleScript" referent="224">
             <Properties>
               <string name="Name">Budget</string>
               <string name="Source"><![CDATA[--[[
@@ -48694,7 +49503,7 @@ return Budget
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="223">
+          <Item class="ModuleScript" referent="225">
             <Properties>
               <string name="Name">Camera</string>
               <string name="Source"><![CDATA[--[[
@@ -49020,7 +49829,7 @@ return Camera
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="224">
+          <Item class="ModuleScript" referent="226">
             <Properties>
               <string name="Name">Cardio</string>
               <string name="Source"><![CDATA[--!strict
@@ -50346,7 +51155,7 @@ return CardioFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="225">
+          <Item class="ModuleScript" referent="227">
             <Properties>
               <string name="Name">CardioChase</string>
               <string name="Source"><![CDATA[--!strict
@@ -50987,7 +51796,7 @@ return ChaseFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="226">
+          <Item class="ModuleScript" referent="228">
             <Properties>
               <string name="Name">Cosmetics</string>
               <string name="Source"><![CDATA[--[[
@@ -51304,7 +52113,7 @@ return CosmeticsFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="227">
+          <Item class="ModuleScript" referent="229">
             <Properties>
               <string name="Name">Crates</string>
               <string name="Source"><![CDATA[--[[
@@ -52771,7 +53580,7 @@ return Crates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="228">
+          <Item class="ModuleScript" referent="230">
             <Properties>
               <string name="Name">Fans</string>
               <string name="Source"><![CDATA[--[[
@@ -53772,7 +54581,7 @@ return Fans
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="229">
+          <Item class="ModuleScript" referent="231">
             <Properties>
               <string name="Name">Interactive</string>
               <string name="Source"><![CDATA[--!strict
@@ -54851,7 +55660,7 @@ return Interactive
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="230">
+          <Item class="ModuleScript" referent="232">
             <Properties>
               <string name="Name">Machines</string>
               <string name="Source"><![CDATA[-- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow
@@ -56809,7 +57618,7 @@ return Machines
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="231">
+          <Item class="ModuleScript" referent="233">
             <Properties>
               <string name="Name">Modes</string>
               <string name="Source"><![CDATA[--!strict
@@ -58513,7 +59322,7 @@ return ModesFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="232">
+          <Item class="ModuleScript" referent="234">
             <Properties>
               <string name="Name">Mog</string>
               <string name="Source"><![CDATA[--!strict
@@ -59138,7 +59947,7 @@ return MogFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="233">
+          <Item class="ModuleScript" referent="235">
             <Properties>
               <string name="Name">Orbs</string>
               <string name="Source"><![CDATA[-- Client-side aura orb visuals for the local player's own plot.
@@ -61361,7 +62170,7 @@ return Orbs
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="234">
+          <Item class="ModuleScript" referent="236">
             <Properties>
               <string name="Name">PlateStyle</string>
               <string name="Source"><![CDATA[--!strict
@@ -61610,7 +62419,7 @@ return PlateStyle
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="235">
+          <Item class="ModuleScript" referent="237">
             <Properties>
               <string name="Name">Plates</string>
               <string name="Source"><![CDATA[--!strict
@@ -62441,7 +63250,7 @@ return Plates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="236">
+          <Item class="ModuleScript" referent="238">
             <Properties>
               <string name="Name">PlayerPose</string>
               <string name="Source"><![CDATA[--!strict
@@ -62595,7 +63404,7 @@ return PlayerPose
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="237">
+          <Item class="ModuleScript" referent="239">
             <Properties>
               <string name="Name">PlotRank</string>
               <string name="Source"><![CDATA[--[[
@@ -63753,7 +64562,7 @@ return PlotRank
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="238">
+          <Item class="ModuleScript" referent="240">
             <Properties>
               <string name="Name">Shelf</string>
               <string name="Source"><![CDATA[--[[
@@ -65480,7 +66289,7 @@ return Shelf
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="239">
+          <Item class="ModuleScript" referent="241">
             <Properties>
               <string name="Name">Sprites</string>
               <string name="Source"><![CDATA[--[[
@@ -65685,7 +66494,7 @@ return Sprites
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="240">
+          <Item class="ModuleScript" referent="242">
             <Properties>
               <string name="Name">Surge</string>
               <string name="Source"><![CDATA[--[[
@@ -65970,7 +66779,7 @@ return Surge
             </Properties>
           </Item>
         </Item>
-        <Item class="ModuleScript" referent="241">
+        <Item class="ModuleScript" referent="243">
           <Properties>
             <string name="Name">Guide</string>
             <string name="Source"><![CDATA[--[[
@@ -66891,11 +67700,11 @@ return Guide
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="242">
+        <Item class="Folder" referent="244">
           <Properties>
             <string name="Name">Intro</string>
           </Properties>
-          <Item class="ModuleScript" referent="243">
+          <Item class="ModuleScript" referent="245">
             <Properties>
               <string name="Name">Actors</string>
               <string name="Source"><![CDATA[--!strict
@@ -67564,7 +68373,7 @@ return Actors
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="244">
+          <Item class="ModuleScript" referent="246">
             <Properties>
               <string name="Name">Avatar</string>
               <string name="Source"><![CDATA[--!strict
@@ -68207,7 +69016,7 @@ return Avatar
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="245">
+          <Item class="ModuleScript" referent="247">
             <Properties>
               <string name="Name">AvatarRig</string>
               <string name="Source"><![CDATA[--!strict
@@ -68438,7 +69247,7 @@ return AvatarRig
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="246">
+          <Item class="ModuleScript" referent="248">
             <Properties>
               <string name="Name">Cutscene</string>
               <string name="Source"><![CDATA[--[[
@@ -69281,7 +70090,7 @@ return Cutscene
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="247">
+          <Item class="ModuleScript" referent="249">
             <Properties>
               <string name="Name">Effects</string>
               <string name="Source"><![CDATA[--!strict
@@ -70206,7 +71015,7 @@ return Effects
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="248">
+          <Item class="ModuleScript" referent="250">
             <Properties>
               <string name="Name">Framing</string>
               <string name="Source"><![CDATA[--!strict
@@ -70413,7 +71222,7 @@ return Framing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="249">
+          <Item class="ModuleScript" referent="251">
             <Properties>
               <string name="Name">Stage</string>
               <string name="Source"><![CDATA[--!strict
@@ -70699,7 +71508,7 @@ return Stage
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="250">
+          <Item class="ModuleScript" referent="252">
             <Properties>
               <string name="Name">Timeline</string>
               <string name="Source"><![CDATA[--!strict
@@ -71047,7 +71856,7 @@ return Timeline
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="251">
+          <Item class="ModuleScript" referent="253">
             <Properties>
               <string name="Name">Ui</string>
               <string name="Source"><![CDATA[--!strict
@@ -71923,7 +72732,7 @@ return Ui
             </Properties>
           </Item>
         </Item>
-        <Item class="LocalScript" referent="252">
+        <Item class="LocalScript" referent="254">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -71949,6 +72758,7 @@ local Animator = require(Client.Animator)
 local Hud = require(Client.UI.Hud)
 local Windows = require(Client.UI.Windows)
 local Popups = require(Client.UI.Popups)
+local AwayWindow = require(Client.UI.AwayWindow)
 local Tutorial = require(Client.UI.Tutorial)
 local MogHud = require(Client.UI.MogHud)
 local CardioHud = require(Client.UI.CardioHud)
@@ -72048,6 +72858,15 @@ MogHud.build(screen)
 CardioHud.build(screen)
 -- The Modes window's MOG TEST PLAY opens the VS RIVALS / 1v1 DUEL picker.
 Windows.onMogPlay = MogHud.choose
+-- "While you were away" (built with the Daily window) opens like any window; a player still
+-- in the tutorial gets the plain "Welcome back" popup, one busy for minutes a toast.
+AwayWindow.connect({
+	open = function(name)
+		Windows.open(name)
+	end,
+	fallback = Popups.offline,
+	toast = Popups.toast,
+})
 Guide.build()
 Hud.build(screen, {
 	openWindow = Windows.open,
@@ -72151,7 +72970,8 @@ if RunService:IsStudio() and Cutscene then
 	end)
 end
 -- Studio-only capture hook: "UiPreview" = "<WindowName>", "Shop,<focus>", "close", "starter",
--- "reward,<tier>", "rewards,<from>,<to>" (one reveal per tier), "gift", "surge" or "tutorialdone".
+-- "reward,<tier>", "rewards,<from>,<to>" (one reveal per tier), "gift", "surge", "tutorialdone"
+-- or "away" (the "While you were away" card, with made-up offline cash).
 if RunService:IsStudio() then
 	player:GetAttributeChangedSignal("UiPreview"):Connect(function()
 		local spec = player:GetAttribute("UiPreview")
@@ -72189,11 +73009,16 @@ if RunService:IsStudio() then
 			Popups.surge({ phase = "start" })
 		elseif spec == "tutorialdone" then
 			Popups.tutorialDone(200, function() end)
+		elseif spec == "away" then
+			AwayWindow.show({ kind = "Offline", seconds = 3 * 3600 + 720, orbs = 5200, cash = 12400 }, true)
 		elseif spec == "close" then
 			Windows.closeAll()
 			Popups.closeModals()
 		elseif spec == "starter" then
 			Popups.starterOffer()
+		elseif string.match(spec, "^rebirth") then
+			-- "rebirthready", "rebirth", "rebirthdone,<n>": Popups' own hook shows these cards.
+			return
 		elseif string.match(spec, "^Shop,") then
 			Windows.open("Shop", { focus = string.sub(spec, 6) })
 		else
@@ -72225,7 +73050,8 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 	elseif payload.kind == "Reward" then
 		Popups.reward(payload)
 	elseif payload.kind == "Offline" then
-		Popups.offline(payload)
+		-- Back after a while: the "While you were away" card, once the screen is calm.
+		AwayWindow.show(payload)
 	elseif payload.kind == "Confirm" then
 		Popups.confirm(payload.text, function()
 			action:FireServer(payload.action)
@@ -72460,7 +73286,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="253">
+        <Item class="ModuleScript" referent="255">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects plus background music.
@@ -73028,7 +73854,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="254">
+        <Item class="ModuleScript" referent="256">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -73077,11 +73903,356 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="255">
+        <Item class="Folder" referent="257">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="256">
+          <Item class="ModuleScript" referent="258">
+            <Properties>
+              <string name="Name">AwayWindow</string>
+              <string name="Source"><![CDATA[--[[
+	AwayWindow: the "While you were away" card (rules: Shared.Comeback; built by
+	DailyWindow, which owns the calm-screen gate the two share; Main routes the
+	Offline notify here).
+
+	Shown once per join to a player who was away long enough to earn something
+	(Server.Tycoon's Offline notify): the cash the units earned, the crate the Smasher
+	finished, today's daily card, the streak and the free gift, one row each and only
+	the ones that are true. It stands in for the "Welcome back" popup, so a returning
+	player gets one card, not two.
+
+	It waits for a calm screen (`free`: the loading screen and the intro are gone, no
+	window, popup, reward card or mode run is up), so it never sits on the Daily window
+	or a reward card, and the Daily window's own auto-open waits for it
+	(AwayWindow.holding). A player still in the tutorial gets the plain popup as before
+	(`fallback`); one who stays busy for PATIENCE seconds gets a toast instead of a card
+	that is no longer news.
+
+	The one button leads on: CLAIM DAILY opens the Daily window when today's card is
+	waiting, otherwise it closes the card.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Comeback = require(ReplicatedStorage.Shared.Comeback)
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Kit = require(script.Parent.Kit)
+local State = require(script.Parent.Parent.State)
+
+local Theme = Kit.Theme
+local C = Kit.C
+local T = Kit.TEXT
+local F = Kit.F
+local W = Theme.Words
+
+local AwayWindow = {}
+
+export type Deps = {
+	register: (string, Kit.Window) -> (),
+	-- Opens the Daily window (through Windows.open).
+	openDaily: () -> (),
+	close: () -> (),
+	-- True while nothing the card may not cover is on screen.
+	free: () -> boolean,
+}
+
+export type Hooks = {
+	-- Opens a registered window by name (Windows.open).
+	open: (string) -> (),
+	-- The plain offline popup (Popups.offline), for a player still in the tutorial.
+	fallback: ({ [string]: any }) -> (),
+	toast: (string, string?) -> (),
+}
+
+local NAME = "Away"
+local ACCENT = C.Rizz
+local WIDTH = 560
+local ROW_H = 64
+local GAP = 8
+local SECTION = 14
+local NOTE_H = 22
+local BUTTON_H = 56
+local ICON = 44
+local TEXT_LEFT = 12 + ICON + 12
+local AMOUNT_W = 170
+-- Seconds of calm before the card opens, and how long it waits for them.
+local CALM = 1
+local PATIENCE = 120
+local ROLL = 0.6
+
+-- Art per row: the atlas icon, the shape icon behind it when the atlas failed to load,
+-- and that shape's colour.
+type Art = { icon: string, fallback: string, color: Color3 }
+local ART: { [string]: Art } = {
+	cash = { icon = "Coin", fallback = "Coin", color = C.Gold },
+	crate = { icon = "Free", fallback = "Free", color = C.Gold },
+	daily = { icon = "Gift2", fallback = "Free", color = C.Gold },
+	streak = { icon = "Fire", fallback = "Star", color = C.Amber },
+	free = { icon = "Free", fallback = "Free", color = C.Good },
+}
+
+local screen: ScreenGui? = nil
+local deps: Deps? = nil
+local hooks: Hooks? = nil
+local window: Kit.Window? = nil
+-- A card is waiting for its calm moment.
+local waiting = false
+
+local function options(): Comeback.Options
+	return { money = State.money, words = W, age = State.age() }
+end
+
+local function buildRow(parent: Instance, row: Comeback.Row, y: number): TextLabel?
+	local art = ART[row.kind] or ART.free
+	local frame = Kit.glass(parent, {
+		Name = "Row" .. row.kind,
+		Radius = Kit.RADIUS.M,
+		Size = UDim2.new(1, 0, 0, ROW_H),
+		Position = UDim2.fromOffset(0, y),
+	})
+	-- A crate row wears its rarity's crate and colour.
+	local preferred = if row.rarity then "Crate" .. row.rarity else art.icon
+	local tint: Color3 = if row.rarity then C.Rarity[row.rarity] or art.color else art.color
+	Kit.icon(frame, Kit.pickIcon(preferred, art.fallback), ICON, tint, {
+		Name = "Art",
+		Position = UDim2.new(0, 12, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = 2,
+	})
+	local right = if row.cash then AMOUNT_W + 20 else 12
+	Kit.text(frame, {
+		Name = "Title",
+		Text = row.title,
+		Font = F.UI,
+		TextSize = T.H3,
+		MinPx = true,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -(TEXT_LEFT + right), 0, 24),
+		Position = UDim2.fromOffset(TEXT_LEFT, 9),
+		ZIndex = 2,
+	})
+	Kit.text(frame, {
+		Name = "Detail",
+		Text = row.detail,
+		TextSize = T.Small,
+		MinPx = true,
+		TextColor3 = C.Text,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -(TEXT_LEFT + right), 0, 20),
+		Position = UDim2.fromOffset(TEXT_LEFT, 35),
+		ZIndex = 2,
+	})
+	if not row.cash then
+		return nil
+	end
+	-- The cash is the card's key number: big, on the right, rolling up as the card opens.
+	return Kit.number(frame, {
+		Name = "Amount",
+		Text = "+" .. State.money(row.cash),
+		MaxTextSize = 28,
+		MinPx = 18,
+		TextColor3 = C.MoneyText,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Size = UDim2.new(0, AMOUNT_W, 0, 36),
+		Position = UDim2.new(1, -12, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		ZIndex = 2,
+	})
+end
+
+-- Builds the card for what is true right now and opens it. False when there is nothing
+-- to say (or nothing to show it with).
+local function present(offline: { [string]: any }?): boolean
+	local data = State.data
+	local gui, d, h = screen, deps, hooks
+	if not data or not gui or not d or not h then
+		return false
+	end
+	if window then
+		-- Built already (the Studio preview hook asked again): the same card.
+		if not window.isOpen() then
+			h.open(NAME)
+		end
+		return true
+	end
+	local rows = Comeback.away(data, offline, options())
+	if #rows == 0 then
+		return false
+	end
+	local cash: number? = rows[1].cash
+	local claimable = type(data.daily) == "table" and data.daily.claimable == true
+	local listH = #rows * ROW_H + (#rows - 1) * GAP
+	local noteH = if cash then GAP + NOTE_H else 0
+	-- Window chrome (104) + rows + the note + the button on its lip.
+	local height = 104 + listH + noteH + SECTION + BUTTON_H + 6
+	local built = Kit.window(
+		gui,
+		NAME,
+		"While you were away",
+		Kit.pickIcon("Timer", "Home"),
+		ACCENT,
+		Vector2.new(WIDTH, height),
+		Vector2.new(420, height)
+	)
+	window = built
+	d.register(NAME, built)
+
+	local amount: TextLabel? = nil
+	for i, row in rows do
+		amount = buildRow(built.content, row, (i - 1) * (ROW_H + GAP)) or amount
+	end
+	if cash then
+		Kit.text(built.content, {
+			Name = "Note",
+			Text = Comeback.cashNote(data),
+			TextSize = T.Small,
+			MinPx = true,
+			TextColor3 = C.Text,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Size = UDim2.new(1, 0, 0, NOTE_H),
+			Position = UDim2.fromOffset(0, listH + GAP),
+			StrokeThickness = 1,
+			ZIndex = 2,
+		})
+	end
+	local button = Kit.button(built.content, {
+		Name = "Go",
+		Text = if claimable then "CLAIM DAILY" else "LET'S GO!",
+		Font = F.Display,
+		TextSize = 24,
+		Color = C.Gold,
+		Size = UDim2.new(1, 0, 0, BUTTON_H),
+		Position = UDim2.new(0, 0, 1, -6),
+		AnchorPoint = Vector2.new(0, 1),
+		ZIndex = 2,
+	}, function()
+		-- Read again at the press: the card may have been open over midnight or a claim.
+		local now = State.data
+		if now and type(now.daily) == "table" and now.daily.claimable == true then
+			d.openDaily()
+		else
+			d.close()
+		end
+	end)
+	button:SetAttribute("FocusFirst", true)
+	-- Today's card was claimed (or a new day began) while the card was up: the button follows.
+	State.changed.Event:Connect(function()
+		local now = State.data
+		local ready = now ~= nil and type(now.daily) == "table" and now.daily.claimable == true
+		if ready ~= claimable then
+			claimable = ready
+			Kit.setButton(button, if ready then "CLAIM DAILY" else "LET'S GO!", C.Gold)
+		end
+	end)
+	if amount and cash then
+		local label, total = amount, cash
+		built.onOpen.Event:Connect(function()
+			Kit.countTo(label, 0, total, function(value: number): string
+				return "+" .. State.money(value)
+			end, ROLL)
+		end)
+	end
+	h.open(NAME)
+	-- Tells Analytics what the card listed (the server counts it once per session).
+	local listed: { [string]: any } = { action = "AwayShown", cash = cash, crate = false, daily = false }
+	for _, row in rows do
+		if row.kind == "crate" then
+			listed.crate = row.rarity or true
+		elseif row.kind == "daily" then
+			listed.daily = true
+		end
+	end
+	Net.event("Action"):FireServer(listed)
+	return true
+end
+
+-- A card is waiting for a calm screen: the Daily window does not open by itself ahead of it.
+function AwayWindow.holding(): boolean
+	return waiting
+end
+
+-- Called by DailyWindow.build (it holds the window registry and the calm-screen gate).
+function AwayWindow.build(screenGui: ScreenGui, buildDeps: Deps)
+	screen = screenGui
+	deps = buildDeps
+end
+
+-- Called by Main once the windows and popups exist.
+function AwayWindow.connect(mainHooks: Hooks)
+	hooks = mainHooks
+end
+
+--[[
+	The Offline notify arrived ({ seconds, cash, orbs }): show the card at the next calm
+	moment. `now` (the Studio preview hook) skips the wait.
+]]
+function AwayWindow.show(offline: { [string]: any }, now: boolean?)
+	local d, h = deps, hooks
+	if not h then
+		return
+	end
+	if not d then
+		-- No windows to build it in (the Lune preview): the plain popup.
+		h.fallback(offline)
+		return
+	end
+	if now then
+		present(offline)
+		return
+	end
+	if waiting or window then
+		return
+	end
+	waiting = true
+	task.spawn(function()
+		local calm, waited = 0, 0
+		while true do
+			local step = task.wait(0.25)
+			local data = State.data
+			if data and data.tutorialDone ~= true then
+				-- Back in the middle of the tutorial: the plain popup in the popup queue, which
+				-- knows how to wait for the tutorial's own cards.
+				waiting = false
+				h.fallback(offline)
+				return
+			end
+			if data and d.free() then
+				calm += step
+			else
+				calm = 0
+				waited += if data then step else 0
+			end
+			if calm >= CALM then
+				waiting = false
+				present(offline)
+				return
+			end
+			if waited >= PATIENCE then
+				-- Busy for minutes (a mode run, the shop): the card would be old news. The
+				-- cash is still named once, quietly.
+				waiting = false
+				local cash = tonumber(offline.cash) or 0
+				if cash >= 1 then
+					local text = "Your %s earned %s while you were away"
+					h.toast(string.format(text, W.Units, State.money(cash)), "good")
+				end
+				return
+			end
+		end
+	end)
+end
+
+return AwayWindow
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="259">
             <Properties>
               <string name="Name">CardioHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -73364,7 +74535,9 @@ local function noRewardText(p: any): string
 	local left = math.max(0, math.ceil(num(p.cooldownEnds, 0) - os.time()))
 	local from = math.floor(num(p.repeatFrom, 0))
 	local wait = math.max(0, math.ceil(num(p.repeatReadyAt, 0) - os.time()))
-	if left > 0 and num(p.stage, from) < from then
+	if p.pay == "resting" then
+		return if wait > 0 then "Bonus is resting, back in " .. Format.time(wait) else "Bonus is resting"
+	elseif left > 0 and num(p.stage, from) < from then
 		return "No reward: the run again bonus starts at plate " .. from
 	elseif left > 0 and wait > 0 then
 		return "No reward this time: run again bonus in " .. Format.time(wait)
@@ -74797,7 +75970,7 @@ return CardioHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="257">
+          <Item class="ModuleScript" referent="260">
             <Properties>
               <string name="Name">DailyWindow</string>
               <string name="Source"><![CDATA[--[[
@@ -74811,7 +75984,11 @@ return CardioHud
 	the crate's rarity colour. Claimed cards are dimmed and ticked; today's says TODAY
 	in gold and glows (tap it or the CLAIM button); tomorrow's says TOMORROW. The footer
 	row names what to do next on the left, with the countdown to the next UTC day, and
-	holds the one button on the right.
+	holds the one button on the right. Its last line is "Before you go"
+	(Shared.Comeback.leaveLine): the crate in the Smasher and how long away cash keeps
+	filling, as plain facts rounded to the minute (no countdown, nothing flashes). A low
+	window (a phone) has room for two lines: there it stands in for the "Tomorrow" line,
+	which the TOMORROW card says anyway.
 
 	The streak saver (DailyReward.status) is free and automatic: the streak line says
 	"Miss a day? Your streak is saved once a week.", the card whose claim used it wears
@@ -74826,17 +76003,23 @@ return CardioHud
 	(a skipped tutorial, a player who never collects). A held crate makes it wait
 	too, but not for ever (DailyReward.autoOpenTick): a crate can be carried for minutes.
 	After a claim the window closes by itself, CLOSE_AFTER_CLAIM after the coins fly.
+
+	The "While you were away" card (AwayWindow) is built from here, because it shares
+	this gate: it goes first, and the window never opens by itself while that card is
+	waiting or up.
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local Comeback = require(ReplicatedStorage.Shared.Comeback)
 local DailyReward = require(ReplicatedStorage.Shared.DailyReward)
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
+local AwayWindow = require(script.Parent.AwayWindow)
 local Kit = require(script.Parent.Kit)
 local State = require(script.Parent.Parent.State)
 
@@ -74871,8 +76054,13 @@ local GAP = 8
 -- Space between the streak line, the cards and the footer row (one row of cards).
 local SECTION = 16
 local HERO_H = 40
-local FOOTER_H = 72
+-- The footer's lines (headline, detail, "Before you go") stack LINE_GAP apart, centred in
+-- its words box: three lines in one row of cards, two in the low window.
+local LINE_GAP = 2
+local LEAVE_H = 18
+local FOOTER_H = 72 + LINE_GAP + LEAVE_H
 local FOOTER_COMPACT = 60
+local WORDS_H = 48
 -- One row of tall cards: the day (HEAD_H) under CARD_TOP, then the art, the amount and the
 -- crate chip stacked HEAD_GAP / STACK_GAP apart, CARD_BOTTOM above the card's edge.
 local CARD_TOP = 10
@@ -75161,11 +76349,12 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	local BUTTON_W = 200
 	-- Headline over detail, centred as a pair on the row's middle line. While today's reward
 	-- waits, the card (TODAY) and the CLAIM button already say so: the row keeps only the
-	-- detail line. Once claimed, the headline is the countdown to the next one.
+	-- detail line. Once claimed, the headline is the countdown to the next one. The lines that
+	-- show are stacked by render().
 	local words = Kit.new("Frame", {
 		Name = "Words",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -(16 + 16 + BUTTON_W + 12), 0, 48),
+		Size = UDim2.new(1, -(16 + 16 + BUTTON_W + 12), 0, WORDS_H),
 		Position = UDim2.new(0, 16, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
 		ZIndex = 2,
@@ -75192,6 +76381,20 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.new(1, 0, 0, 20),
 		Position = UDim2.fromOffset(0, 28),
+		ZIndex = 2,
+	})
+	-- "Before you go": quieter than the lines above it.
+	local leave = Kit.text(words, {
+		Name = "Leave",
+		Text = "",
+		TextSize = T.Small,
+		MinPx = true,
+		TextColor3 = C.TextMute,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, 0, 0, LEAVE_H),
+		Visible = false,
 		ZIndex = 2,
 	})
 	local button = Kit.button(footer, {
@@ -75318,9 +76521,23 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			then string.format("%d DAY STREAK", streak)
 			elseif streak == 1 then "1 DAY STREAK"
 			else "START YOUR STREAK"
+		-- "Before you go" without the daily card: the headline and the cards say that part.
+		leave.Text = Comeback.leaveLine(data, { money = State.money, words = W, age = State.age() }, false)
 		headline.Visible = not canClaim
-		detail.AnchorPoint = Vector2.new(0, if canClaim then 0.5 else 0)
-		detail.Position = if canClaim then UDim2.fromScale(0, 0.5) else UDim2.fromOffset(0, 28)
+		leave.Visible = leave.Text ~= ""
+		-- The low window's second line is "Before you go" once today's card is claimed.
+		detail.Visible = canClaim or hero.Visible or not leave.Visible
+		local y = -LINE_GAP
+		for _, line in { headline, detail, leave } do
+			y += if line.Visible then line.Size.Y.Offset + LINE_GAP else 0
+		end
+		y = (words.Size.Y.Offset - y) // 2
+		for _, line in { headline, detail, leave } do
+			if line.Visible then
+				line.Position = UDim2.fromOffset(0, y)
+				y += line.Size.Y.Offset + LINE_GAP
+			end
+		end
 		if canClaim then
 			-- A short window has no streak line: the saver's news goes here instead.
 			detail.Text = if saves
@@ -75351,6 +76568,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		local top = if big then HERO_H + between else 0
 		local footerH = if big then FOOTER_H else FOOTER_COMPACT
 		footer.Size = UDim2.new(1, 0, 0, footerH)
+		words.Size = UDim2.new(words.Size.X.Scale, words.Size.X.Offset, 0, if big then WORDS_H + LINE_GAP + LEAVE_H else WORDS_H)
 		local gridH = height - top - footerH - between
 		grid.Position = UDim2.fromOffset(0, top)
 		grid.Size = UDim2.new(1, 0, 0, gridH)
@@ -75479,8 +76697,35 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				lapped = true
 			end
 		end)
+		-- Nothing a card may cover is on screen: the loading screen and the intro are gone, and
+		-- no window, popup or mode run is up.
+		local player = Players.LocalPlayer
+		local function screenFree(): boolean
+			if player:GetAttribute("IntroPlaying") == true or player:GetAttribute("GameReady") ~= true then
+				return false
+			end
+			local playerGui = player:FindFirstChildOfClass("PlayerGui")
+			if playerGui and playerGui:FindFirstChild("LoadingScreen") then
+				return false
+			end
+			for _, name in BUSY do
+				if screen:GetAttribute(name) == true then
+					return false
+				end
+			end
+			return true
+		end
+		-- "While you were away" opens under the same gate, and keeps clear of a reward card
+		-- for as long as this window does.
+		AwayWindow.build(screen, {
+			register = deps.register,
+			openDaily = deps.open,
+			close = deps.close,
+			free = function(): boolean
+				return screenFree() and os.clock() - rewardAt >= REWARD_QUIET
+			end,
+		})
 		task.spawn(function()
-			local player = Players.LocalPlayer
 			local auto = DailyReward.autoOpen()
 			local needed = CALM
 			-- The tutorial was running this session: the window waits for the first lap, but
@@ -75505,15 +76750,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 					and daily.claimable == true
 					and data.tutorialDone == true
 					and (lapped or not sawTutorial)
-					and player:GetAttribute("IntroPlaying") ~= true
-					and player:GetAttribute("GameReady") == true
-				if ready then
-					local playerGui = player:FindFirstChildOfClass("PlayerGui")
-					ready = not (playerGui and playerGui:FindFirstChild("LoadingScreen"))
-				end
-				for _, name in BUSY do
-					ready = ready and screen:GetAttribute(name) ~= true
-				end
+					-- "While you were away" goes first.
+					and not AwayWindow.holding()
+					and screenFree()
 				-- A held crate is waited for, then the window stops waiting for it.
 				local crate = screen:GetAttribute("CratePanelOpen") == true
 				-- A reward card does not restart the calm (the reveal itself does, as a popup):
@@ -75540,7 +76779,7 @@ return DailyWindow
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="258">
+          <Item class="ModuleScript" referent="261">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -75556,8 +76795,9 @@ return DailyWindow
 	                 "Next:" goal strip ("Next: Protein Bro 63%" over "1,240 more
 	                 Normies · about 2 h" and a progress bar, Shared.NextGoal; it
 	                 turns green, breathes and says "READY: step on MOG MERGE" when
-	                 one merge finds the tier; above the dumbbell on compact
-	                 screens). Under it, one "nearer goal" pill at a time ("Blender
+	                 one merge finds the tier, and reads "REBIRTH: +3 stars" with a
+	                 star when a rebirth is the goal: a tap opens the rebirth card;
+	                 above the dumbbell on compact screens). Under it, one "nearer goal" pill at a time ("Blender
 	                 is full: upgrade its speed", "Free gift ready", "Crate ready at
 	                 the Smasher", "Try a Game Mode: +$X"), which Client.Guide points
 	                 at on the plot. The tutorial quest pill and the parkour run pill
@@ -75570,7 +76810,9 @@ return DailyWindow
 	                 tilted "PERMANENT" tag) with a solid price chip
 	  bottom left    bonus chips, each on screen only while it is on ("Premium
 	                 +10%", "Friends +20%", "SURGE x2"), "Cash [ x1.0 ]", the big
-	                 cash amount + square "+"
+	                 cash amount + square "+" and, once there are rebirth stars or
+	                 a rebirth is on offer, the star counter ("3 +30% cash", a gold
+	                 "+2" tag while a rebirth would pay; a tap opens the rebirth card)
 	  bottom centre  the dumbbell: "AURA" + the carried amount on its plaque
 	  bottom right   FREE gift with its countdown, version in the corner
 
@@ -75659,6 +76901,9 @@ Hud.indexPoint = function(): Vector2?
 end
 -- A discovery landed on the Index button: it bounces, flashes and counts "+1".
 Hud.punchIndex = function() end
+-- Opens the rebirth card (Popups sets it): the goal strip's rebirth state and the star
+-- counter beside the cash amount call it.
+Hud.onRebirth = function() end
 
 -- Layout (design px). The top centre group sits just under the top bar.
 local EDGE_X = 14
@@ -75692,6 +76937,13 @@ local PROMO_MAX_TIER = 15 -- from this best tier on the HUD stops advertising (t
 local CHIP_H = 26 -- wallet bonus chips: icon + words
 local CHIP_ICON = 24
 local CHIP_TEXT = 16
+-- The rebirth star counter beside the cash amount's "+". Not judged on screen yet: adjust in Studio.
+local STAR_H = 44
+local STAR_ICON = 28
+local STAR_TEXT = 24 -- the stars held
+local STAR_CAPTION = 16 -- "+30% cash"
+local STAR_GAP = 10 -- the "+" to the counter
+local STAR_TAG = 14 -- the "+3" tag on its corner while a rebirth is on offer
 local GEAR = 44
 local DUMBBELL_W = 264
 local DUMBBELL_W_COMPACT = 200
@@ -75911,6 +77163,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 
 	-- New discoveries since the Index was last opened (badge).
 	local seenDiscoveries: number? = nil
+	-- Index milestone rewards waiting, as last painted (the glow follows its changes only).
+	local indexClaimable = 0
 	local function discoveredCount(data: { [string]: any }): number
 		local found = 0
 		for tier = 1, Economy.MAX_TIER do
@@ -75926,7 +77180,14 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			return
 		end
 		local fresh = discoveredCount(data) - seenDiscoveries
-		Kit.setBadge(Hud.buttons.Index, if fresh > 0 then tostring(fresh) else nil)
+		-- A milestone reward waiting in the Index window (the snapshot's `indexClaimable`)
+		-- goes in front of the count of new finds, and the button glows until the Index is opened.
+		local claimable = math.max(0, math.floor(tonumber(data.indexClaimable) or 0))
+		Kit.setBadge(Hud.buttons.Index, if claimable > 0 then "!" elseif fresh > 0 then tostring(fresh) else nil)
+		if claimable ~= indexClaimable then
+			indexClaimable = claimable
+			Kit.setGlow(Hud.buttons.Index, claimable > 0)
+		end
 	end
 	gridButton("Home", function()
 		action:FireServer({ action = "Home" })
@@ -76498,8 +77759,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- silhouette until it is discovered), its name and how far along it is, what it still
 	-- takes under them (units to buy and an estimate from the price and the income), and a
 	-- progress bar along the bottom. The target and its sums come from Shared.NextGoal (the
-	-- next tier of the current run; a plain "Next: Rebirth" line with its stars when a rebirth
-	-- is the goal, until the rebirth has a window of its own); the strip opens the Index.
+	-- next tier of the current run); the strip opens the Index. When a rebirth is the goal it
+	-- reads "REBIRTH: +3 stars" beside a star and a tap opens the rebirth card (Hud.onRebirth);
+	-- it stays as quiet as any other goal: no colour, no breathing, nothing that hurries.
 	-- When one merge would find the tier the strip turns green, breathes and says
 	-- "READY: step on MOG MERGE"; a tap then draws the path to that pad.
 	-- STACK_GAP under the deposit strip, and never under that many pixels on the glass (a
@@ -76583,11 +77845,15 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Parent = goal,
 	})
 	local goalReady = false
+	-- The strip names a rebirth (paintGoal): a tap opens its card.
+	local goalRebirth = false
 	for _, button in { goal, goalPad } do
 		button.Activated:Connect(function()
 			Kit.sound("Click")
 			if goalReady then
 				Guide.navigate("Merge", W.Merge, 30)
+			elseif goalRebirth then
+				Hud.onRebirth()
 			else
 				openIndex()
 			end
@@ -76688,10 +77954,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			lead, title = "READY:", "step on " .. W.Merge
 			hints = { string.format("New %s: %s", W.Unit, tierName(picked.tier)) }
 		elseif picked.kind == "rebirth" then
-			-- A plain line until the rebirth has its own window: what it is worth.
-			local stars = string.format("+%d %s", picked.stars, if picked.stars == 1 then "star" else "stars")
-			title = "Rebirth"
-			hints = { string.format("%s · +%d%% cash forever", stars, math.floor(Economy.starBonus(picked.stars) * 100 + 0.5)), stars }
+			-- "REBIRTH: +3 stars" over what the stars are worth; the card says the rest.
+			local bonus = string.format("+%d%% cash forever", math.floor(Economy.starBonus(picked.stars) * 100 + 0.5))
+			lead, title = "REBIRTH:", string.format("+%d %s", picked.stars, if picked.stars == 1 then "star" else "stars")
+			hints = { bonus .. " · " .. Kit.hint("tap to look", "click to look", "press to look"), bonus, "" }
 		else
 			count = string.format("%d%%", picked.percent)
 			if picked.kind == "merge" then
@@ -76705,6 +77971,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				hints = { string.format("%d more to fill your rack", left), string.format("%d more", left) }
 			end
 		end
+		goalRebirth = picked.kind == "rebirth"
 		local hint = hints[1]
 		local key = table.concat({ lead, title, count, tostring(compact), table.unpack(hints) }, "|")
 		Kit.tween(goalBar, 0.3, { Size = UDim2.fromScale(if ready then 1 else picked.progress, 1) })
@@ -76775,7 +78042,15 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			for _, child in goalThumb:GetChildren() do
 				child:Destroy()
 			end
-			pcall(Kit.unitViewport, goalThumb, picked.tier, { Size = UDim2.fromScale(1, 1) }, unknown)
+			if picked.kind == "rebirth" then
+				-- A rebirth is no unit: its star.
+				Kit.hudIcon(goalThumb, "Star", 30, C.Gold, {
+					Position = UDim2.fromScale(0.5, 0.5),
+					AnchorPoint = Vector2.new(0.5, 0.5),
+				})
+			else
+				pcall(Kit.unitViewport, goalThumb, picked.tier, { Size = UDim2.fromScale(1, 1) }, unknown)
+			end
 		end
 		if title ~= goalTitleShown then
 			goalTitleShown = title
@@ -77669,6 +78944,152 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	State.changed.Event:Connect(refresh)
 
+	-- Rebirth stars: a counter beside the cash amount's "+" --------------------------------
+	-- A star, the stars held and the cash bonus they give ("3 +30% cash": the snapshot's
+	-- `stars` and `starMult`). Not on screen while there are no stars and no rebirth is on
+	-- offer; while one is, a gold tag on its corner says what it would pay ("+2"), and that is
+	-- all: nothing blinks or counts down. A tap opens the rebirth card (Hud.onRebirth). It
+	-- follows the "+" (the cash amount's width) and steps out with it during a game-mode run.
+	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
+	do
+		local pill = Kit.hudGlass(wallet, {
+			Name = "Stars",
+			Button = true,
+			Size = UDim2.fromOffset(120, STAR_H),
+			Radius = Kit.RADIUS.M,
+			Visible = false,
+			ZIndex = 3,
+		}) :: TextButton
+		wire(pill, function()
+			Hud.onRebirth()
+		end)
+		Kit.hudIcon(pill, "Star", STAR_ICON, C.Gold, {
+			Name = "Icon",
+			Position = UDim2.new(0, 8, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ZIndex = 2,
+		})
+		local count = Kit.hudText(pill, {
+			Name = "Count",
+			Text = "0",
+			Font = F.Number,
+			TextSize = STAR_TEXT,
+			TextColor3 = C.Gold,
+			StrokeThickness = 2,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Size = UDim2.fromOffset(10, STAR_H),
+			ZIndex = 3,
+		})
+		local caption = Kit.hudText(pill, {
+			Name = "Caption",
+			Text = "",
+			Font = F.UI,
+			TextSize = STAR_CAPTION,
+			StrokeThickness = 2,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Size = UDim2.fromOffset(10, STAR_H),
+			ZIndex = 3,
+		})
+		-- What a rebirth would pay right now, on the top right corner.
+		local tag = Kit.pill(pill, {
+			Name = "Offer",
+			Text = "",
+			Solid = true,
+			Color = C.Gold,
+			TextSize = STAR_TAG,
+			Size = UDim2.fromOffset(34, STAR_TAG + 8),
+			Position = UDim2.new(1, 8, 0, -8),
+			AnchorPoint = Vector2.new(1, 0),
+			Visible = false,
+			ZIndex = 4,
+		})
+		-- Touch: an invisible pad grows the counter to a full tap target.
+		local pad = Kit.new("TextButton", {
+			Name = "Hit",
+			Text = "",
+			AutoButtonColor = false,
+			BackgroundTransparency = 1,
+			Selectable = false,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromScale(1, 1),
+			Visible = false,
+			ZIndex = 30,
+			Parent = pill,
+		})
+		pad.Activated:Connect(function()
+			Kit.sound("Click")
+			Hud.onRebirth()
+		end)
+		local wanted = false
+		local lastStars: number? = nil
+		-- The counter hugs its words (the caption held at a readable size on a phone) and sits
+		-- past the "+", clear of the tap target that grows round it on touch.
+		local function layout()
+			Kit.holdText(caption, Kit.captionPx(), STAR_CAPTION, true)
+			local x = 8 + STAR_ICON + 6
+			local countW = drawnWidth(count.Text, count.TextSize, count.Font)
+			count.Position = UDim2.fromOffset(x, 0)
+			count.Size = UDim2.fromOffset(countW + 4, STAR_H)
+			x += countW + 8
+			local captionW = drawnWidth(caption.Text, caption.TextSize, caption.Font)
+			caption.Position = UDim2.fromOffset(x, 0)
+			caption.Size = UDim2.fromOffset(captionW + 4, STAR_H)
+			x += captionW + 12
+			local reach = math.max(0, math.ceil((L.tap - addButton.Size.X.Offset) / 2))
+			pill.Size = UDim2.fromOffset(x, STAR_H)
+			pill.Position =
+				UDim2.fromOffset(addButton.Position.X.Offset + addButton.Size.X.Offset + STAR_GAP + reach, addButton.Position.Y.Offset)
+			tag.Size = UDim2.fromOffset(drawnWidth(tag.Text, tag.TextSize, tag.Font) + 16, tag.TextSize + 8)
+			pad.Size = UDim2.fromOffset(math.max(x, L.tap), math.max(STAR_H, L.tap))
+			pad.Visible = Kit.touch
+			pill.Visible = wanted and addButton.Visible
+		end
+		local function update()
+			local data = State.data
+			if not data then
+				return
+			end
+			local stars = math.max(0, math.floor(tonumber(data.stars) or 0))
+			local offer = if data.canRebirth == true then math.max(0, math.floor(tonumber(data.starsOnRebirth) or 0)) else 0
+			local bonus = math.floor(((tonumber(data.starMult) or 1) - 1) * 100 + 0.5)
+			local was = wanted
+			wanted = stars > 0 or offer > 0
+			count.Text = Format.commas(stars)
+			-- No stars yet: there is no bonus to show, so the counter says what it is for.
+			caption.Text = if stars > 0 then string.format("+%d%% cash", bonus) else "Rebirth"
+			tag.Text = "+" .. Format.commas(offer)
+			tag.Visible = offer > 0
+			layout()
+			-- It lands with a pop when it first shows and when a rebirth adds stars.
+			if (wanted and not was) or (lastStars ~= nil and stars > lastStars) then
+				Kit.pop(pill, 1)
+			end
+			lastStars = stars
+		end
+		-- Gamepad: out of the D-pad's reach while a window or dialog is up, like the rest.
+		local function updateSelectable()
+			Kit.selectable(pill, not (screen:GetAttribute("WindowOpen") == true or screen:GetAttribute("ModalOpen") == true))
+		end
+		for _, name in { "WindowOpen", "ModalOpen" } do
+			screen:GetAttributeChangedSignal(name):Connect(updateSelectable)
+		end
+		-- After the HUD has laid itself out again (its own listeners run first).
+		local function later()
+			task.defer(layout)
+		end
+		addButton:GetPropertyChangedSignal("Position"):Connect(layout)
+		addButton:GetPropertyChangedSignal("Visible"):Connect(layout)
+		screen:GetAttributeChangedSignal("Compact"):Connect(later)
+		if screenScale then
+			screenScale:GetPropertyChangedSignal("Scale"):Connect(later)
+		end
+		Kit.onInput(later)
+		State.changed.Event:Connect(update)
+		updateSelectable()
+		update()
+	end
+
 	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
 	do
 		-- Coin burst to the wallet ------------------------------------------------------------
@@ -78072,7 +79493,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="259">
+          <Item class="ModuleScript" referent="262">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -81995,7 +83416,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="260">
+          <Item class="ModuleScript" referent="263">
             <Properties>
               <string name="Name">MapPicker</string>
               <string name="Source"><![CDATA[--[[
@@ -82841,9 +84262,15 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			return
 		end
 		local geared = info.gear ~= nil and info.gear ~= "none"
-		reward.TextColor3 = if geared then C.TextDim else C.MoneyText
+		-- The run again bonus rests after it was paid (the server prices one map: info.level).
+		local rest = 0
+		if type(preview) == "table" and preview.full == false and selected == (tonumber(info.level) or 1) then
+			rest = math.max(0, math.ceil((tonumber(preview.repeatRest) or 0) - State.age()))
+		end
+		reward.TextColor3 = if geared or rest > 0 then C.TextDim else C.MoneyText
 		reward.Text = if geared
 			then string.format("Gear on: no reward · full in %s", Format.time(left))
+			elseif rest > 0 then "Bonus is resting, back in " .. Format.time(rest)
 			else string.format("Run again: +%s · full in %s", Format.money(math.floor(pack * share)), Format.time(left))
 	end
 
@@ -82980,7 +84407,7 @@ return MapPicker
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="261">
+          <Item class="ModuleScript" referent="264">
             <Properties>
               <string name="Name">MogHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -83660,8 +85087,9 @@ function MogHud.onNotify(p: any)
 			passedShown = true
 			local cash = num(p.cash, 0)
 			-- A pass inside the reward cooldown pays the run again bonus (`pay` = "repeat").
-			local sub = if cash <= 0
-				then "Keep mogging!"
+			local sub = if p.pay == "resting"
+				then "Bonus is resting. Keep mogging!"
+				elseif cash <= 0 then "Keep mogging!"
 				elseif p.pay == "repeat" then "Run again bonus +" .. Format.money(cash)
 				else "+" .. Format.money(cash)
 			showBanner("MOG TEST PASSED!", sub, C.Gold, 2.4)
@@ -84112,7 +85540,7 @@ return MogHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="262">
+          <Item class="ModuleScript" referent="265">
             <Properties>
               <string name="Name">MogRing</string>
               <string name="Source"><![CDATA[--!strict
@@ -84642,7 +86070,7 @@ return MogRing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="263">
+          <Item class="ModuleScript" referent="266">
             <Properties>
               <string name="Name">ObbyHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -85684,12 +87112,12 @@ return ObbyHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="264">
+          <Item class="ModuleScript" referent="267">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
 	Popups: toasts, reward reveals, the held-crate panel, confirm dialogs,
-	offline earnings and floating "+X" text.
+	offline earnings, the rebirth cards and floating "+X" text.
 
 	Everything eases: popups come in with Kit.appear and leave with
 	Kit.disappear, toasts slide into a stack, floats rise on an arc, numbers
@@ -85707,7 +87135,7 @@ return ObbyHud
 
 	Z order (ScreenGui uses Sibling ZIndex):
 	  floats 20, toasts and the surge chip 25, gift card 27, banner 28, reward 30,
-	  offline 44-45, starter 46-47, confirm 49-50, cash rain 50
+	  offline 44-45, starter and the rebirth cards 46-47, confirm 49-50, cash rain 50
 ]]
 
 local Players = game:GetService("Players")
@@ -88897,8 +90325,8 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			Text = if complete
 				then "Every map cleared. Now beat your best times!"
 				elseif data.pay == "assisted" then "Gear on: no bonus"
-				elseif resting and restLeft > 0 then "Run again bonus is resting on this map: back in " .. Format.time(restLeft)
-				elseif resting then "Run again bonus is resting on this map."
+				elseif resting and restLeft > 0 then "Bonus is resting, back in " .. Format.time(restLeft)
+				elseif resting then "Bonus is resting"
 				elseif repeatRun then "The full reward comes back when the bar fills."
 				elseif firstClear then "First clear reward!"
 				else "Nice run! Try to beat your best.",
@@ -89043,7 +90471,9 @@ end
 	"NEW BEST!", rivals mogged, best and the rank ("#N all-time" from `globalRank`, the saved
 	best's place on the all-time TOP MOGGERS list, else "#N on this server" from `rank`), the
 	reward rolling up, and under it "Run again bonus +$X (20%)" for a pass inside the cooldown
-	(`pay` = "repeat") or the "Reward again in m:ss" line while the full reward cools down.
+	(`pay` = "repeat"), "Bonus is resting, back in m:ss" for one inside the repeat gap (`pay` =
+	"resting", `repeatRest` seconds) or the "Reward again in m:ss" line while the full reward
+	cools down.
 	"Mog again" and "Back to my gym". `data` is the mog finish Notify payload (score, rivals,
 	best, newBest, passed, cash, full, cooldownEnds, rank?, globalRank?, pay?, repeatShare?).
 
@@ -89066,6 +90496,15 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		if data.pay == "repeat" and cashTotal > 0 then
 			local share = math.floor((tonumber(data.repeatShare) or Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
 			repeatLine = string.format("Run again bonus +%s (%d%%)", Format.money(cashTotal), share)
+		end
+		-- Earned, but the last bonus was paid a moment ago (the server's repeat gap).
+		local restEnds = os.clock() + math.max(0, tonumber(data.repeatRest) or 0)
+		local function restLine(): string
+			local left = math.ceil(restEnds - os.clock())
+			return if left > 0 then "Bonus is resting, back in " .. Format.time(left) else "Bonus is resting"
+		end
+		if data.pay == "resting" then
+			repeatLine = restLine()
 		end
 		local duel = data.vs == "pvp"
 		local won = duel and data.won == true
@@ -89191,7 +90630,12 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			task.spawn(function()
 				while note.Parent do
 					local left = (tonumber(data.cooldownEnds) or 0) - os.time()
-					note.Text = if left > 0 then "Reward again in " .. Format.time(left) else "Reward ready next run!"
+					-- The bonus line stays in front of the clock (a resting one counts down too).
+					local lead = if data.pay == "resting" then restLine() else repeatLine
+					note.Text = if lead and left > 0
+						then lead .. "  ·  full reward in " .. Format.time(left)
+						elseif left > 0 then "Reward again in " .. Format.time(left)
+						else "Reward ready next run!"
 					task.wait(1)
 				end
 			end)
@@ -90776,9 +92220,685 @@ local function watchSurge()
 	end)
 end
 
+-- Rebirth ------------------------------------------------------------------------------------
+--[[
+	Three cards round the server's rebirth (Tycoon: the action "Rebirth", the notifies
+	"RebirthReady" and "Rebirth", the snapshot's `rebirth` offer). The server decides
+	everything; these only show and ask, and nothing here hurries: no timer, no countdown.
+
+	  ready    Popups.rebirthReady, on "RebirthReady" (a run reached the rebirth tier). The
+	           first time, with no stars yet: one sentence on what a rebirth is, what it
+	           would pay now, and two equal answers, "Later" and "Show me". Someone who
+	           has stars knows it: a toast.
+	  confirm  Popups.rebirth (the HUD's goal strip and star counter). The stars gained and
+	           the cash bonus before -> after, then the server's own lists: what stays
+	           first, what starts again beside it, with one more plain line that the cash
+	           goes too, bought cash included. Two steps, never one tap: "Rebirth" only
+	           asks again, and the second question has its answers on the other sides (a
+	           double tap lands on "No, go back") and takes no "Yes" for REBIRTH.Arm
+	           seconds. "Yes" sends the action and waits; the card closes on the server's
+	           "Rebirth" notify, or quietly after REBIRTH.Wait seconds if it said no (the
+	           server toasts why). With nothing on offer the call is a toast instead.
+	  reveal   Popups.rebirthDone, on "Rebirth": rays, sparkles and confetti round a star,
+	           the stars counting up and the cash bonus rolling from the old value to the
+	           new one. One confetti-free still card with reduced motion.
+
+	Defined inside a function of their own (Popups.defineRebirth, called once right under
+	it): this chunk has no room left in Luau's 200 locals, not even for a block's.
+]]
+Popups.rebirth = function(_sample: { [string]: any }?) end
+Popups.rebirthReady = function(_payload: { [string]: any }) end
+Popups.rebirthDone = function(_payload: { [string]: any }) end
+function Popups.defineRebirth()
+	-- Tuning. Nothing here was judged on screen yet: adjust in Studio.
+	local REBIRTH = {
+		Z = 47, -- the three cards (their dim one under)
+		Pad = 20,
+		Gap = 14,
+		Button = 56,
+		-- Confirm
+		Width = 760,
+		Medal = 76,
+		Title = 52, -- under the medallion's lower half
+		Gain = 66, -- the "+3 stars | x1.2 -> x1.5" panel
+		GainText = 30,
+		Head = 26, -- a list's heading
+		RowIcon = 16,
+		RowGap = 6,
+		RowPad = 12,
+		KeepColor = C.Cash,
+		ResetColor = C.Amber,
+		Arm = 0.8, -- seconds before the second question takes a "Yes"
+		Wait = 5, -- seconds the card waits for the server's answer
+		-- Ready
+		ReadyWidth = 500,
+		LaterColor = C.Primary, -- "Later" and "Show me" are the same size on purpose
+		ShowColor = C.Gold,
+		-- Reveal
+		DoneWidth = 500,
+		DoneMedal = 96,
+		Rays = 280,
+		Sparkles = 8,
+		Well = 100,
+		Bursts = 3, -- confetti bursts (none with reduced motion)
+		BurstGap = 0.35,
+		Roll = 0.9, -- seconds the stars count up; the cash bonus rolls after them
+		BigStars = 5, -- from this many stars in one rebirth the louder fanfare plays
+	}
+	-- The card that asks is queued or up; `settle` closes it once the server has answered.
+	local S: { open: boolean, settle: (() -> ())? } = { open = false, settle = nil }
+
+	local function starWord(n: number): string
+		return if n == 1 then "star" else "stars"
+	end
+	local function whole(value: any): number
+		return math.max(0, math.floor((tonumber(value) or 0) + 0.5))
+	end
+	local function multText(mult: number): string
+		return string.format("x%.1f", mult)
+	end
+	-- The texts of one of the server's lists ({ key, text } rows), in its order.
+	local function rowsOf(list: any): { string }
+		local rows: { string } = {}
+		if type(list) == "table" then
+			for _, entry in list do
+				if type(entry) == "table" and type(entry.text) == "string" and entry.text ~= "" then
+					table.insert(rows, entry.text)
+				end
+			end
+		end
+		return rows
+	end
+	-- The offer in the snapshot, while the server has one.
+	local function liveOffer(): { [string]: any }?
+		local data = State.data
+		if data and data.canRebirth == true and type(data.rebirth) == "table" then
+			return data.rebirth
+		end
+		return nil
+	end
+	local function plainLine(box: Frame, name: string, text: string, size: number, y: number, pad: number, color: Color3?): TextLabel
+		return Kit.text(box, {
+			Name = name,
+			Text = text,
+			TextSize = size,
+			TextWrapped = false,
+			Size = UDim2.new(1, -pad * 2, 0, size + 8),
+			Position = UDim2.fromOffset(pad, y),
+			TextColor3 = color or C.Text,
+			StrokeThickness = 1,
+		})
+	end
+
+	-- `sample`: an offer to show instead of the snapshot's (the Studio capture hook); its
+	-- "Yes" sends nothing.
+	Popups.rebirth = function(sample: { [string]: any }?)
+		if not (sample or liveOffer()) then
+			-- Nothing on offer: what the stars do and where the next ones are.
+			local data = State.data
+			local stars = whole(data and data.stars)
+			local tier = whole(data and data.rebirthTier)
+			local entry = Theme.Tiers[if tier > 0 then tier else Economy.REBIRTH_MIN_TIER]
+			local name = if entry then entry.Name else "a higher tier"
+			if stars > 0 then
+				local bonus = math.floor(((tonumber(data and data.starMult) or 1) - 1) * 100 + 0.5)
+				local line = "Your %d %s give +%d%% cash. Reach %s to rebirth for more!"
+				Popups.toast(string.format(line, stars, starWord(stars), bonus, name), "info")
+			else
+				Popups.toast(string.format("Reach %s to rebirth for stars!", name), "info")
+			end
+			return
+		end
+		if S.open then
+			return
+		end
+		S.open = true
+		Popups.enqueue("Rebirth", Popups.PRIORITY.Normal, function(done)
+			-- The offer as it is now: the run may have moved on while the card waited its turn.
+			local offer = sample or liveOffer()
+			if not offer then
+				S.open = false
+				done()
+				return
+			end
+			local L = REBIRTH
+			local gained = math.max(1, whole(offer.gained))
+			local before = tonumber(offer.starMult) or 1
+			local multAfter = tonumber(offer.starMultAfter) or before
+			local keeps = rowsOf(offer.keeps)
+			local resets = rowsOf(offer.resets)
+			-- Two columns of rows, each as tall as its text wraps; the cash warning closes the
+			-- right one.
+			local colW = (L.Width - L.Pad * 2 - L.Gap) / 2
+			local rowSize = Kit.px(if Kit.touch then 12 else 14, T.Small, screen)
+			local textW = colW - L.RowPad * 2 - L.RowIcon - 8
+			local function columnHeight(rows: { string }): number
+				local height = L.Head + 6
+				for _, text in rows do
+					height += bodyHeight(text, rowSize, textW) + L.RowGap
+				end
+				return height + L.RowPad - L.RowGap
+			end
+			local warnText = "Your cash starts again too, even cash you bought in packs."
+			local warnW = colW - 16 - 34 - 10
+			local warnH = bodyHeight(warnText, rowSize, warnW) + 16
+			local listH = math.max(columnHeight(keeps), columnHeight(resets) + 8 + warnH + 8 - L.RowPad)
+			local noteSize = Kit.px(if Kit.touch then 13 else 16, T.Body, screen)
+			local gainY = L.Title + 34 + 8
+			local listY = gainY + L.Gain + L.Gap
+			local noteY = listY + listH + 10
+			local buttonY = noteY + noteSize + 8 + 10
+			local close: () -> ()
+			local box, closeModal = modal("Rebirth", Vector2.new(L.Width, buttonY + L.Button + L.Pad), L.Z, nil, function()
+				S.open = false
+				if S.settle == close then
+					S.settle = nil
+				end
+				done()
+			end)
+			close = closeModal
+			local medal = medallion(box, "⭐", C.Gold, L.Medal, UDim2.new(0.5, 0, 0, 0))
+			Kit.title(box, {
+				Text = "REBIRTH FOR STARS?",
+				TextSize = T.H1,
+				TextWrapped = false,
+				Size = UDim2.new(1, -L.Pad * 2, 0, 34),
+				Position = UDim2.fromOffset(L.Pad, L.Title),
+				TextColor3 = C.Gold,
+			})
+			-- What it pays: the stars, and the cash bonus they make of the one held now.
+			local gain = Kit.well(box, {
+				Name = "Gain",
+				Glass = true,
+				Size = UDim2.new(1, -L.Pad * 2, 0, L.Gain),
+				Position = UDim2.fromOffset(L.Pad, gainY),
+			})
+			local gainText = string.format("+%s %s", Format.commas(gained), starWord(gained))
+			local gainW = displayWidth(gainText, L.GainText) + 6
+			local starCell = Kit.new("Frame", {
+				Name = "Stars",
+				BackgroundTransparency = 1,
+				Size = UDim2.new(0, 40 + 8 + gainW, 1, 0),
+				Position = UDim2.fromScale(0.25, 0),
+				AnchorPoint = Vector2.new(0.5, 0),
+				Parent = gain,
+			})
+			Kit.icon(starCell, "Star", 40, C.Gold, { Position = UDim2.new(0, 0, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
+			Kit.title(starCell, {
+				Name = "Value",
+				Text = gainText,
+				TextSize = L.GainText,
+				TextWrapped = false,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Size = UDim2.new(0, gainW, 1, 0),
+				Position = UDim2.fromOffset(48, 0),
+				TextColor3 = C.Gold,
+			})
+			Kit.text(gain, {
+				Name = "BonusCaption",
+				Text = "Cash bonus, forever",
+				Font = Kit.F.UI,
+				TextSize = T.Small,
+				TextWrapped = false,
+				Size = UDim2.new(0.5, -12, 0, 18),
+				Position = UDim2.new(0.5, 6, 0, 8),
+				TextColor3 = C.TextDim,
+				StrokeThickness = 0,
+			})
+			Kit.title(gain, {
+				Name = "Bonus",
+				Text = string.format('%s  →  <font color="#%s">%s</font>', multText(before), C.MoneyText:ToHex(), multText(multAfter)),
+				RichText = true,
+				TextSize = 26,
+				TextWrapped = false,
+				Size = UDim2.new(0.5, -12, 0, 32),
+				Position = UDim2.new(0.5, 6, 0, 28),
+				TextColor3 = C.TextDim,
+			})
+			-- The server's lists, word for word: what stays first, what starts again beside it.
+			local function column(name: string, x: number, heading: string, color: Color3, rows: { string }, check: boolean): Frame
+				local well = Kit.well(box, {
+					Name = name,
+					Glass = true,
+					Size = UDim2.fromOffset(colW, listH),
+					Position = UDim2.fromOffset(x, listY),
+				})
+				Kit.title(well, {
+					Name = "Head",
+					Text = heading,
+					TextSize = T.Body,
+					TextWrapped = false,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					Size = UDim2.new(1, -L.RowPad * 2, 0, L.Head),
+					Position = UDim2.fromOffset(L.RowPad, 4),
+					TextColor3 = color,
+				})
+				local y = L.Head + 6
+				for i, text in rows do
+					local height = bodyHeight(text, rowSize, textW)
+					if check then
+						Kit.icon(well, "Check", L.RowIcon, color, { Name = "Mark" .. i, Position = UDim2.fromOffset(L.RowPad, y + 1) })
+					else
+						local dot = circle(well, "Mark" .. i, color, 0, 1)
+						dot.Size = UDim2.fromOffset(8, 8)
+						dot.Position = UDim2.fromOffset(L.RowPad + L.RowIcon / 2, y + math.floor(rowSize * 0.65))
+					end
+					Kit.text(well, {
+						Name = "Row" .. i,
+						Text = text,
+						TextSize = rowSize,
+						TextXAlignment = Enum.TextXAlignment.Left,
+						TextYAlignment = Enum.TextYAlignment.Top,
+						Size = UDim2.fromOffset(textW, height + 2),
+						Position = UDim2.fromOffset(L.RowPad + L.RowIcon + 8, y),
+						StrokeThickness = 0,
+					})
+					y += height + L.RowGap
+				end
+				return well
+			end
+			local kept = column("Keeps", L.Pad, "YOU KEEP", L.KeepColor, keeps, true)
+			local again = column("Resets", L.Pad + colW + L.Gap, "STARTS AGAIN", L.ResetColor, resets, false)
+			-- One more plain line: the wallet goes too, whatever it was paid for.
+			local warn = Kit.new("Frame", {
+				Name = "CashWarning",
+				BackgroundColor3 = L.ResetColor,
+				BackgroundTransparency = 0.8,
+				BorderSizePixel = 0,
+				Size = UDim2.new(1, -16, 0, warnH),
+				Position = UDim2.new(0, 8, 1, -8),
+				AnchorPoint = Vector2.new(0, 1),
+				Parent = again,
+			})
+			Kit.corner(warn, 8)
+			Kit.new("UIStroke", { Thickness = 1, Color = L.ResetColor, Transparency = 0.45, Parent = warn })
+			Kit.title(warn, {
+				Name = "Mark",
+				Text = "!",
+				TextSize = 20,
+				Size = UDim2.new(0, 34, 1, 0),
+				TextColor3 = L.ResetColor,
+			})
+			Kit.text(warn, {
+				Name = "Text",
+				Text = warnText,
+				Font = Kit.F.UI,
+				TextSize = rowSize,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Size = UDim2.new(0, warnW, 1, -12),
+				Position = UDim2.fromOffset(34, 6),
+				StrokeThickness = 0,
+			})
+			local note = plainLine(box, "Note", "", noteSize, noteY, L.Pad)
+			-- Two steps. 1: "Rebirth" | "Not now". 2: "No, go back" | "Yes, rebirth!", the
+			-- answers on the other sides, so the tap that asked can never be the one that agrees.
+			local step = 1
+			local armed = false
+			local token = 0
+			local left: TextButton
+			local right: TextButton
+			local function paint()
+				token += 1
+				local mine = token
+				armed = false
+				if step == 1 then
+					Kit.setButton(left, "Rebirth", C.Gold)
+					Kit.setButton(right, "Not now", C.SurfaceHi)
+					note.Text = "No rush: you can rebirth whenever you like."
+					note.TextColor3 = C.TextDim
+				elseif step == 2 then
+					Kit.setButton(left, "No, go back", C.SurfaceHi)
+					Kit.setButton(right, "Yes, rebirth!", C.Gold)
+					note.Text = "Really start again? A rebirth can't be undone."
+					note.TextColor3 = C.Gold
+					Kit.pop(note, 0.8)
+					after(L.Arm, function()
+						armed = token == mine
+					end)
+				else
+					Kit.setButton(right, "One moment...")
+					Kit.setEnabled(left, false)
+					Kit.setEnabled(right, false)
+					note.Text = "Starting your new gym..."
+					note.TextColor3 = C.TextDim
+				end
+			end
+			left = Kit.button(box, {
+				Name = "Left",
+				Text = "Rebirth",
+				Color = C.Gold,
+				Size = UDim2.new(0.5, -L.Pad - 6, 0, L.Button),
+				Position = UDim2.fromOffset(L.Pad, buttonY),
+			}, function()
+				if step == 1 or step == 2 then
+					step = if step == 1 then 2 else 1
+					paint()
+				end
+			end)
+			right = Kit.button(box, {
+				Name = "Right",
+				Text = "Not now",
+				Color = C.SurfaceHi,
+				Size = UDim2.new(0.5, -L.Pad - 6, 0, L.Button),
+				Position = UDim2.new(0.5, 6, 0, buttonY),
+			}, function()
+				if step == 1 then
+					close()
+				elseif step == 2 and armed then
+					step = 3
+					paint()
+					if sample then
+						after(0.4, close)
+						return
+					end
+					-- The server answers with the "Rebirth" notify (Popups.rebirthDone closes this
+					-- card); a refusal is its own toast, and the card just goes.
+					S.settle = close
+					Net.event("Action"):FireServer({ action = "Rebirth" })
+					task.delay(L.Wait, function()
+						if S.settle == close then
+							S.settle = nil
+							close()
+						end
+					end)
+				end
+			end)
+			-- Gamepad lands on the safe answer; B and a tap beside the card also say "Not now".
+			right:SetAttribute("FocusFirst", true)
+			paint()
+			Kit.appear(box)
+			Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
+			local staged: { GuiObject } = { gain, kept, again, left, right }
+			Kit.stagger(staged, 0.04)
+			sounds.play("Open")
+		end)
+	end
+
+	Popups.rebirthReady = function(payload: { [string]: any })
+		-- Never over a run on a course or an open window (the "While you were away" card, the
+		-- Daily window, the Index): the card waits for it to end.
+		local function held(): boolean
+			return inRun() or screen:GetAttribute("WindowOpen") == true
+		end
+		if not PREVIEW and held() then
+			task.spawn(function()
+				while held() do
+					task.wait(0.5)
+				end
+				task.wait(1)
+				Popups.rebirthReady(payload)
+			end)
+			return
+		end
+		local gain = math.max(1, whole(payload.starsOnRebirth))
+		if whole(payload.stars) > 0 then
+			Popups.toast(string.format("Rebirth is ready again: +%d %s, whenever you like", gain, starWord(gain)), "info")
+			return
+		end
+		Popups.enqueue("RebirthReady", Popups.PRIORITY.Normal, function(done)
+			local L = REBIRTH
+			local textSize = Kit.px(if Kit.touch then 15 else 18, T.H3, screen)
+			local smallSize = Kit.px(if Kit.touch then 13 else 16, T.Body, screen)
+			local inner = L.ReadyWidth - L.Pad * 2
+			-- The whole idea in one sentence.
+			local text = "Rebirth starts your gym again and gives you a gold star: every star makes all your cash bigger, forever!"
+			local nowLine = "Right now it gives +%d %s. Find bigger %s first and it gives more. No rush!"
+			local now = string.format(nowLine, gain, starWord(gain), W.Units)
+			local plateY = L.Title + 34 + 10
+			local plateH = bodyHeight(text, textSize, inner - 28) + 24
+			local nowY = plateY + plateH + 12
+			local nowH = bodyHeight(now, smallSize, inner - 8) + 4
+			local buttonY = nowY + nowH + L.Gap
+			local wanted = false
+			local box, close = modal("RebirthReady", Vector2.new(L.ReadyWidth, buttonY + L.Button + L.Pad), L.Z, nil, function()
+				done()
+				if wanted then
+					Popups.rebirth()
+				end
+			end)
+			local medal = medallion(box, "⭐", C.Gold, L.Medal, UDim2.new(0.5, 0, 0, 0))
+			Kit.title(box, {
+				Text = "REBIRTH UNLOCKED!",
+				TextSize = T.H1,
+				TextWrapped = false,
+				Size = UDim2.new(1, -L.Pad * 2, 0, 34),
+				Position = UDim2.fromOffset(L.Pad, L.Title),
+				TextColor3 = C.Gold,
+			})
+			local plate = Kit.well(box, {
+				Name = "Plate",
+				Glass = true,
+				Size = UDim2.new(1, -L.Pad * 2, 0, plateH),
+				Position = UDim2.fromOffset(L.Pad, plateY),
+			})
+			Kit.text(plate, {
+				Name = "Text",
+				Text = text,
+				TextSize = textSize,
+				Size = UDim2.new(1, -28, 1, -20),
+				Position = UDim2.fromOffset(14, 10),
+				StrokeThickness = 0,
+			})
+			Kit.text(box, {
+				Name = "Now",
+				Text = now,
+				Font = Kit.F.UI,
+				TextSize = smallSize,
+				Size = UDim2.new(1, -L.Pad * 2 - 8, 0, nowH),
+				Position = UDim2.fromOffset(L.Pad + 4, nowY),
+				TextColor3 = C.TextDim,
+				StrokeThickness = 1,
+			})
+			-- Two equal answers: the same size, neither breathes, and "Later" is as good as the
+			-- other (the gamepad starts on it; B and a tap beside the card mean it too).
+			local later = Kit.button(box, {
+				Name = "Later",
+				Text = "Later",
+				Color = L.LaterColor,
+				Size = UDim2.new(0.5, -L.Pad - 6, 0, L.Button),
+				Position = UDim2.fromOffset(L.Pad, buttonY),
+			}, close)
+			local show = Kit.button(box, {
+				Name = "Show",
+				Text = "Show me",
+				Color = L.ShowColor,
+				Size = UDim2.new(0.5, -L.Pad - 6, 0, L.Button),
+				Position = UDim2.new(0.5, 6, 0, buttonY),
+			}, function()
+				wanted = true
+				close()
+			end)
+			later:SetAttribute("FocusFirst", true)
+			Kit.appear(box)
+			Kit.appear(medal, { from = 0.4, time = 0.32, delay = 0.06 })
+			local buttons: { GuiObject } = { later, show }
+			Kit.stagger(buttons, 0.04)
+			sounds.play("Reward")
+		end)
+	end
+
+	Popups.rebirthDone = function(payload: { [string]: any })
+		-- The card that asked has its answer.
+		local settle = S.settle
+		S.settle = nil
+		if settle then
+			settle()
+		end
+		Popups.enqueue("RebirthDone", Popups.PRIORITY.Normal, function(done)
+			local L = REBIRTH
+			local gained = whole(payload.gained)
+			local stars = math.max(gained, whole(payload.stars))
+			local multAfter = tonumber(payload.multiplier) or 1
+			local before = math.min(tonumber(payload.multiplierBefore) or 1, multAfter)
+			local calm = reducedMotion()
+			local subSize = Kit.px(if Kit.touch then 13 else 16, T.Body, screen)
+			local subY = L.Title + 8 + 34 + 4
+			local wellY = subY + subSize + 8 + 10
+			local totalY = wellY + L.Well + 10
+			local buttonY = totalY + subSize + 8 + L.Gap
+			local box, close = modal("RebirthDone", Vector2.new(L.DoneWidth, buttonY + L.Button + 2 + L.Pad), L.Z, nil, done)
+			local medalAt = UDim2.new(0.5, 0, 0, 0)
+			-- Behind the medal and (made first) under the title: rays and twinkles.
+			if not calm then
+				Popups.rays(box, Kit.lighten(C.Gold, 0.3), L.Rays, medalAt, 1, 9)
+			end
+			local twinkle = Kit.new("Frame", {
+				Name = "MedalSparkles",
+				BackgroundTransparency = 1,
+				Size = UDim2.fromOffset(L.DoneMedal, L.DoneMedal),
+				Position = UDim2.new(0.5, 0, 0, -math.floor(L.DoneMedal * 0.35)),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Parent = box,
+			})
+			sparkles(twinkle, Kit.lighten(C.Gold, 0.5), L.Sparkles, L.DoneMedal * 0.85, calm)
+			local medal = medallion(box, "⭐", C.Gold, L.DoneMedal, medalAt)
+			Kit.title(box, {
+				Text = "REBIRTH!",
+				TextSize = T.H1,
+				TextWrapped = false,
+				Size = UDim2.new(1, -L.Pad * 2, 0, 34),
+				Position = UDim2.fromOffset(L.Pad, L.Title + 8),
+				TextColor3 = C.Gold,
+			})
+			plainLine(box, "Sub", "A fresh gym, and your stars stay forever.", subSize, subY, L.Pad)
+			local well = Kit.well(box, {
+				Name = "Gained",
+				Glass = true,
+				Size = UDim2.new(1, -L.Pad * 2, 0, L.Well),
+				Position = UDim2.fromOffset(L.Pad, wellY),
+			})
+			local function caption(name: string, text: string, side: number)
+				Kit.text(well, {
+					Name = name,
+					Text = text,
+					Font = Kit.F.UI,
+					TextSize = T.Small,
+					TextWrapped = false,
+					Size = UDim2.new(0.5, -12, 0, 18),
+					Position = UDim2.new(side * 0.5, 6, 0, 10),
+					TextColor3 = C.TextDim,
+					StrokeThickness = 0,
+				})
+			end
+			caption("StarsCaption", if gained == 1 then "New star" else "New stars", 0)
+			caption("BonusCaption", "Cash bonus", 1)
+			-- The stars: an icon and the number, sized for the final text so it holds still
+			-- while it counts.
+			local function starsText(n: number): string
+				return "+" .. Format.commas(n)
+			end
+			local starsW = numberWidth(starsText(gained), T.Hero) + 6
+			local cell = Kit.new("Frame", {
+				Name = "Stars",
+				BackgroundTransparency = 1,
+				Size = UDim2.fromOffset(42 + 8 + starsW, 50),
+				Position = UDim2.new(0.25, 0, 0, 34),
+				AnchorPoint = Vector2.new(0.5, 0),
+				Parent = well,
+			})
+			Kit.icon(cell, "Star", 42, C.Gold, { Position = UDim2.new(0, 0, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
+			local starsLabel = Kit.number(cell, {
+				Name = "Value",
+				Text = starsText(gained),
+				TextSize = T.Hero,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Size = UDim2.new(0, starsW, 1, 0),
+				Position = UDim2.fromOffset(50, 0),
+				TextColor3 = C.Gold,
+			})
+			-- The cash bonus, in tenths so it rolls a step at a time.
+			local function tenths(n: number): string
+				return multText(n / 10)
+			end
+			local multLabel = Kit.number(well, {
+				Name = "Bonus",
+				Text = multText(before),
+				TextSize = 34,
+				Size = UDim2.new(0.5, -12, 0, 40),
+				Position = UDim2.new(0.5, 6, 0, 30),
+				TextColor3 = C.MoneyText,
+			})
+			Kit.text(well, {
+				Name = "Was",
+				Text = "was " .. multText(before),
+				Font = Kit.F.UI,
+				TextSize = T.Small,
+				TextWrapped = false,
+				Size = UDim2.new(0.5, -12, 0, 18),
+				Position = UDim2.new(0.5, 6, 0, 72),
+				TextColor3 = C.TextMute,
+				StrokeThickness = 0,
+				Visible = multAfter > before,
+			})
+			plainLine(
+				box,
+				"Total",
+				string.format("You have %s %s now!", Format.commas(stars), starWord(stars)),
+				subSize,
+				totalY,
+				L.Pad,
+				C.Gold
+			)
+			local go = Kit.button(box, {
+				Name = "Go",
+				Text = "Let's go!",
+				Font = Theme.Fonts.Display,
+				Color = C.Gold,
+				Breathe = true,
+				Size = UDim2.new(1, -L.Pad * 2, 0, L.Button + 2),
+				Position = UDim2.fromOffset(L.Pad, buttonY),
+			}, close)
+			go:SetAttribute("FocusFirst", true)
+			Kit.appear(box)
+			Kit.appear(medal, { from = 0.4, time = 0.34, delay = 0.06 })
+			Kit.appear(go, { from = 0.8, time = 0.26, delay = 0.2 })
+			for i = 1, if calm then 0 else L.Bursts do
+				local x = if i == 1 then 0.5 elseif i % 2 == 0 then 0.14 else 0.86
+				after((i - 1) * L.BurstGap, function()
+					if box.Parent and not PREVIEW then
+						Kit.confetti(box, { Origin = UDim2.fromScale(x, 0.1), Count = 28, ZIndex = 60, Power = 1.15 })
+					end
+				end)
+			end
+			after(0.25, function()
+				if not starsLabel.Parent then
+					return
+				end
+				Kit.countTo(starsLabel, 0, gained, starsText, L.Roll)
+				-- The stars count up with ticks that climb in pitch.
+				if gained > 0 and not PREVIEW then
+					task.spawn(function()
+						local ticks = math.min(gained, 8)
+						for i = 1, ticks do
+							if not starsLabel.Parent then
+								return
+							end
+							sounds.play("Tick", 0.03, 1 + i * 0.05)
+							task.wait(L.Roll / ticks)
+						end
+					end)
+				end
+			end)
+			-- Then the bonus rolls from what it was to what it is, and lands with a pop.
+			after(0.25 + L.Roll + 0.15, function()
+				if not multLabel.Parent then
+					return
+				end
+				Kit.countTo(multLabel, math.floor(before * 10 + 0.5), math.floor(multAfter * 10 + 0.5), tenths, 0.6)
+				sounds.play("Upgrade")
+			end)
+			sounds.play(if gained >= L.BigStars then "CelebrateLegendary" else "Celebrate")
+		end)
+	end
+end
+Popups.defineRebirth()
+
 function Popups.build(screenGui: ScreenGui, soundModule: any)
 	screen = screenGui
 	sounds = soundModule
+	Hud.onRebirth = function()
+		Popups.rebirth()
+	end
 	toastHolder = Kit.new("Frame", {
 		Name = "Toasts",
 		BackgroundTransparency = 1,
@@ -90858,12 +92978,64 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 		end)
 		watchMerges()
 		watchSurge()
-		-- The server's one-time Starter grant (other Notify kinds are routed by Main).
+		-- The server's one-time Starter grant and the two rebirth notifies (other Notify kinds
+		-- are routed by Main).
 		Net.event("Notify").OnClientEvent:Connect(function(payload)
-			if type(payload) == "table" and payload.kind == "Starter" then
+			if type(payload) ~= "table" then
+				return
+			end
+			if payload.kind == "Starter" then
 				Popups.starter(payload)
+			elseif payload.kind == "RebirthReady" then
+				Popups.rebirthReady(payload)
+			elseif payload.kind == "Rebirth" then
+				Popups.rebirthDone(payload)
 			end
 		end)
+		-- Studio-only capture hook, beside Main's: "UiPreview" = "rebirthready", "rebirth"
+		-- (the snapshot's offer, or a made-up one whose "Yes" sends nothing) or
+		-- "rebirthdone,<stars gained>".
+		local player = Players.LocalPlayer
+		if RunService:IsStudio() and player then
+			player:GetAttributeChangedSignal("UiPreview"):Connect(function()
+				local spec = player:GetAttribute("UiPreview")
+				if typeof(spec) ~= "string" then
+					return
+				end
+				local gained = tonumber(string.match(spec, "^rebirthdone,?(%d*)$"))
+				if spec == "rebirthready" then
+					Popups.rebirthReady({ kind = "RebirthReady", tier = Economy.REBIRTH_MIN_TIER, starsOnRebirth = 1, stars = 0 })
+				elseif spec == "rebirth" then
+					local data = State.data
+					local live = data ~= nil and data.canRebirth == true and type(data.rebirth) == "table"
+					-- The rows only stand in for the server's (never shown to a player).
+					local row = { key = "sample", text = "Sample row: the server's own words go here" }
+					Popups.rebirth(if live
+						then nil
+						else {
+							tier = 17,
+							gained = 3,
+							stars = 2,
+							starsAfter = 5,
+							starMult = 1.2,
+							starMultAfter = 1.5,
+							keeps = table.create(8, row),
+							resets = table.create(5, row),
+						})
+				elseif gained or spec == "rebirthdone" then
+					local n = gained or 3
+					Popups.rebirthDone({
+						kind = "Rebirth",
+						gained = n,
+						stars = n + 2,
+						rebirths = 2,
+						tier = 14 + n,
+						multiplier = 1.2 + Economy.STAR_BONUS * n,
+						multiplierBefore = 1.2,
+					})
+				end
+			end)
+		end
 	end
 	watchStarterOffer()
 end
@@ -90872,7 +93044,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="265">
+          <Item class="ModuleScript" referent="268">
             <Properties>
               <string name="Name">ShopScenes</string>
               <string name="Source"><![CDATA[--[[
@@ -92800,7 +94972,7 @@ return ShopScenes
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="266">
+          <Item class="ModuleScript" referent="269">
             <Properties>
               <string name="Name">Tutorial</string>
               <string name="Source"><![CDATA[--[[
@@ -93420,7 +95592,7 @@ return Tutorial
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="267">
+          <Item class="ModuleScript" referent="270">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
@@ -93445,8 +95617,10 @@ local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
+local Comeback = require(ReplicatedStorage.Shared.Comeback)
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
+local IndexRewards = require(ReplicatedStorage.Shared.IndexRewards)
 local Net = require(ReplicatedStorage.Shared.Net)
 local ShopMath = require(ReplicatedStorage.Shared.ShopMath)
 
@@ -96263,6 +98437,7 @@ local function buildIndex(screen: ScreenGui)
 	-- Minimum 386 tall: a phone gets that window at x1.3, one row of cards and the top of the next.
 	local window = Kit.window(screen, "Index", "Index", I.Index, C.Window.Index, Vector2.new(880, 560), Vector2.new(560, 386))
 	register("Index", window)
+	local action = Net.event("Action")
 
 	-- Discovered count: a bar in the header row, left of the close button. It turns gold
 	-- once every tier is found.
@@ -96289,8 +98464,9 @@ local function buildIndex(screen: ScreenGui)
 		end
 	end
 
-	-- The complete state: a gold ribbon over the legend once every tier is found (the
-	-- Index's rewards are claimed elsewhere; this only marks the feat).
+	-- The complete state: a gold ribbon over the legend once every tier is found and every
+	-- milestone below is claimed (it takes the milestone track's row), and a gold frame
+	-- around the window: the last milestone's reward.
 	local COMPLETE_H = 44
 	local complete = Kit.panel(window.content, {
 		Name = "Complete",
@@ -96332,6 +98508,125 @@ local function buildIndex(screen: ScreenGui)
 		ZIndex = 2,
 	})
 
+	local paneCorner = window.frame:FindFirstChildOfClass("UICorner")
+	local goldFrame = Kit.new("Frame", {
+		Name = "GoldFrame",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1),
+		Visible = false,
+		ZIndex = 3,
+		Parent = window.frame,
+	})
+	Kit.new(
+		"UICorner",
+		{ CornerRadius = if paneCorner then paneCorner.CornerRadius else UDim.new(0, Theme.Glass.Radius), Parent = goldFrame }
+	)
+	Kit.new("UIStroke", {
+		Thickness = 3,
+		Color = C.Gold,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		Parent = goldFrame,
+	})
+
+	-- Milestone track: a cell per Index milestone (Shared.IndexRewards) in one row over the
+	-- legend. Each names what it asks for and its bonus over a button: the cash still to
+	-- earn (greyed), CLAIM once the Index is there, a gold CLAIMED tag after. The server
+	-- sends every amount (the snapshot's `index`), so a cell shows what a claim pays.
+	local TRACK_H = 62
+	local track = Kit.new("Frame", {
+		Name = "Rewards",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -14, 0, TRACK_H - 8),
+		Visible = false,
+		Parent = window.content,
+	})
+	type Cell = { frame: Frame, caption: TextLabel, button: TextButton, done: TextLabel, hit: TextButton, shown: string, state: string }
+	local cells: { Cell } = {}
+	-- os.clock() of the claim sent for each cell: its button waits for the server's answer.
+	local claimSent: { [number]: number } = {}
+	local CLAIM_WAIT = 2
+	local refreshTrack: () -> ()
+	local function claim(order: number)
+		local data = State.data
+		local index = data and data.index
+		local entry = if type(index) == "table" and type(index.milestones) == "table" then index.milestones[order] else nil
+		if type(entry) ~= "table" or entry.reached ~= true or entry.claimed == true then
+			return
+		end
+		if os.clock() - (claimSent[order] or -CLAIM_WAIT) < CLAIM_WAIT then
+			return
+		end
+		claimSent[order] = os.clock()
+		action:FireServer({ action = "ClaimIndex", found = entry.found })
+		refreshTrack()
+		-- No answer (a lost remote): the button comes back.
+		task.delay(CLAIM_WAIT + 0.1, refreshTrack)
+	end
+	local milestoneCount = #IndexRewards.MILESTONES
+	for order, milestone in IndexRewards.MILESTONES do
+		local cell = Kit.new("Frame", {
+			Name = "Milestone" .. milestone.found,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1 / milestoneCount, -6, 1, 0),
+			Position = UDim2.fromScale((order - 1) / milestoneCount, 0),
+			Parent = track,
+		})
+		local caption = Kit.text(cell, {
+			Name = "Caption",
+			Text = "",
+			Font = F.UI,
+			TextSize = T.Small,
+			MinPx = true,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextColor3 = SMALL_TEXT,
+			Size = UDim2.new(1, 0, 0, 18),
+			StrokeThickness = 0,
+		})
+		local button = Kit.button(cell, {
+			Name = "Claim",
+			Text = "",
+			Color = C.Good,
+			TextSize = 15,
+			Size = UDim2.new(1, 0, 0, 34),
+			Position = UDim2.fromOffset(0, 20),
+			Sound = "Reward",
+		}, function()
+			claim(order)
+		end)
+		local done = Kit.pill(cell, {
+			Name = "Done",
+			Text = "",
+			Color = C.Gold,
+			Solid = true,
+			TextColor = C.GoldInk,
+			TextSize = T.Small,
+			Size = UDim2.new(1, 0, 0, 28),
+			Position = UDim2.fromOffset(0, 22),
+			Visible = false,
+		})
+		-- Touch: the whole cell takes the tap (the button alone is a small target on a phone).
+		local hit = Kit.new("TextButton", {
+			Name = "Hit",
+			BackgroundTransparency = 1,
+			AutoButtonColor = false,
+			Text = "",
+			Size = UDim2.fromScale(1, 1),
+			ZIndex = 5,
+			Selectable = false,
+			Visible = false,
+			Parent = cell,
+		})
+		hit.Activated:Connect(function()
+			if cells[order].state == "ready" then
+				Kit.sound("Reward")
+				Kit.pop(button, 0.5)
+				claim(order)
+			end
+		end)
+		cells[order] = { frame = cell, caption = caption, button = button, done = done, hit = hit, shown = "", state = "" }
+	end
+
 	-- Rarity legend: one slim row above the grid, a bar per band that fills with the tiers
 	-- found in it ("RARE 3/5"), so a finished rarity reads as a solid chip of its colour.
 	local LEGEND_H = 34
@@ -96362,9 +98657,15 @@ local function buildIndex(screen: ScreenGui)
 	end
 
 	local scroll = Kit.scrolling(window.content, { Size = UDim2.new(1, 0, 1, -LEGEND_H), Position = UDim2.fromOffset(0, LEGEND_H) })
-	-- The Index has no buttons: on gamepad the grid itself is selected so the stick scrolls it.
+	-- Gamepad: a milestone waiting to be claimed is selected first; with none the grid itself
+	-- is, so the stick scrolls it.
 	Kit.selectable(scroll)
 	focusPick.Index = function()
+		for _, cell in cells do
+			if cell.state == "ready" and track.Visible then
+				return cell.button
+			end
+		end
 		return scroll
 	end
 	Kit.new("UIPadding", {
@@ -96389,6 +98690,73 @@ local function buildIndex(screen: ScreenGui)
 		return if wideLegend then string.upper(band.name) .. " " .. count else count
 	end
 	local isComplete = false
+	-- The track shows while a milestone is still to claim; the ribbon takes over after the last.
+	local showTrack = false
+	-- Paints the track's cells from the snapshot's `index` (nothing is rebuilt: only what
+	-- changed is set). A cell claimed while the Index is open pops with confetti.
+	refreshTrack = function()
+		local data = State.data
+		local index = data and data.index
+		local milestones = if type(index) == "table" and type(index.milestones) == "table" then index.milestones else nil
+		local open = false
+		for order, cell in cells do
+			local entry = milestones and milestones[order]
+			if type(entry) ~= "table" then
+				continue
+			end
+			local waiting = os.clock() - (claimSent[order] or -CLAIM_WAIT) < CLAIM_WAIT
+			local state = if entry.claimed == true then "claimed" elseif entry.reached == true then "ready" else "locked"
+			open = open or state ~= "claimed"
+			local bonus: string? = nil
+			if type(entry.crate) == "string" then
+				bonus = if wideLegend then string.upper(entry.crate .. " " .. W.Chest) else "+" .. string.upper(W.Chest)
+			elseif entry.champion == true then
+				bonus = if wideLegend then "CHAMPION AURA" else "+AURA"
+			end
+			local found = tonumber(entry.found) or 0
+			local captionText = if not bonus
+				then string.format("%d FOUND", found)
+				elseif wideLegend then string.format("%d · %s", found, bonus)
+				else string.format("%d %s", found, bonus)
+			local cash = Format.money(tonumber(entry.cash) or 0)
+			local buttonText = if state == "claimed"
+				then (if wideLegend then "CLAIMED" else "DONE")
+				elseif state ~= "ready" then cash
+				elseif waiting then "..."
+				elseif wideLegend then "CLAIM " .. cash
+				else "CLAIM"
+			local key = state .. "|" .. captionText .. "|" .. buttonText
+			if cell.shown ~= key then
+				local was = cell.state
+				cell.shown = key
+				cell.state = state
+				cell.caption.Text = captionText
+				cell.caption.TextColor3 = if state == "locked" then SMALL_TEXT else C.GoldLight
+				cell.button.Visible = state ~= "claimed"
+				cell.done.Visible = state == "claimed"
+				cell.done.Text = buttonText
+				Kit.setButton(cell.button, buttonText)
+				Kit.setEnabled(cell.button, state == "ready" and not waiting)
+				if was == "ready" and state == "claimed" and window.isOpen() and not PREVIEW then
+					Kit.pop(cell.frame, 0.8)
+					local pane = window.frame
+					local scale = pane.AbsoluteSize.X / math.max(1, window.size().X)
+					local spot = (cell.frame.AbsolutePosition + cell.frame.AbsoluteSize / 2 - pane.AbsolutePosition) / math.max(scale, 0.01)
+					Kit.confetti(
+						pane,
+						{ Origin = UDim2.fromOffset(spot.X, spot.Y), Count = if entry.champion == true then 36 else 24, ZIndex = 45 }
+					)
+					-- Gamepad: the claimed button is gone, the selection moves to the next one.
+					if Kit.gamepad then
+						focusWindow("Index")
+					end
+				end
+			end
+			cell.hit.Visible = Kit.touch and state == "ready"
+		end
+		showTrack = open
+		goldFrame.Visible = type(index) == "table" and index.champion == true
+	end
 	local function layoutGrid()
 		local width = window.size().X
 		local columns = if isPhone(screen) then 3 elseif width >= 820 then 5 elseif width >= 680 then 4 else 3
@@ -96397,13 +98765,17 @@ local function buildIndex(screen: ScreenGui)
 		for _, band in bands do
 			band.label.Text = bandText(band)
 		end
-		-- The ribbon takes its row above the legend only while it shows. A short window (a
-		-- phone) gives it the legend's row instead: every bar there is full by then.
-		local folded = isComplete and window.size().Y < 440
-		local top = (if isComplete then COMPLETE_H else 0) + (if folded then 0 else LEGEND_H)
-		complete.Visible = isComplete
+		refreshTrack()
+		-- The track, or the ribbon after it, takes its row above the legend. A short window (a
+		-- phone) gives it the legend's row instead: the rarity is on every card.
+		local ribbon = isComplete and not showTrack
+		local strip = if showTrack then TRACK_H elseif ribbon then COMPLETE_H else 0
+		local folded = strip > 0 and window.size().Y < 440
+		local top = strip + (if folded then 0 else LEGEND_H)
+		complete.Visible = ribbon
+		track.Visible = showTrack
 		legend.Visible = not folded
-		legend.Position = UDim2.fromOffset(0, if isComplete then COMPLETE_H else 0)
+		legend.Position = UDim2.fromOffset(0, strip)
 		scroll.Position = UDim2.fromOffset(0, top)
 		scroll.Size = UDim2.new(1, 0, 1, -top)
 	end
@@ -96552,7 +98924,7 @@ local function buildIndex(screen: ScreenGui)
 	-- The ribbon's entrance has played (once per session, the first time it is seen).
 	local celebrated = false
 	local function celebrate()
-		if celebrated or PREVIEW or not isComplete then
+		if celebrated or PREVIEW or not complete.Visible then
 			return
 		end
 		celebrated = true
@@ -96602,12 +98974,16 @@ local function buildIndex(screen: ScreenGui)
 		found = count
 		setProgress(count / Economy.MAX_TIER)
 		local done = count >= Economy.MAX_TIER
-		if done ~= isComplete then
-			isComplete = done
-			paintBar(progress, if done then C.Gold else C.Window.Index)
+		local hadTrack, hadRibbon = showTrack, complete.Visible
+		refreshTrack()
+		if done ~= isComplete or showTrack ~= hadTrack then
+			if done ~= isComplete then
+				isComplete = done
+				paintBar(progress, if done then C.Gold else C.Window.Index)
+			end
 			layoutGrid()
-			-- The last tier found with the Index open: the ribbon lands at once.
-			if window.isOpen() then
+			-- The last milestone claimed with the Index open: the ribbon lands at once.
+			if window.isOpen() and complete.Visible and not hadRibbon then
 				celebrate()
 			end
 		end
@@ -97320,9 +99696,10 @@ end
 -- Settings ------------------------------------------------------------------------------
 
 local function buildSettings(screen: ScreenGui)
-	-- Sized to its four rows: 4 x 70 + 3 x 10 gaps + 20 padding + 84 of header and margins.
-	-- The rows share the height, so the 386 minimum (a phone, scaled up x1.3) has 63 px rows.
-	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(560, 414), Vector2.new(560, 386))
+	-- Sized to its four rows and the "Before you go" line: 4 x 70 + 20 + 4 x 10 gaps + 20
+	-- padding + 84 of header and margins. The rows share the height left by the line, so
+	-- the 386 minimum (a phone, scaled up x1.3) has 56 px rows.
+	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(560, 444), Vector2.new(560, 386))
 	register("Settings", window)
 	local action = Net.event("Action")
 
@@ -97334,7 +99711,7 @@ local function buildSettings(screen: ScreenGui)
 		local row = Kit.panel(window.content, {
 			Name = key,
 			Glass = true,
-			Size = UDim2.new(1, 0, 0.25, -8),
+			Size = UDim2.new(1, 0, 0.25, -15),
 			LayoutOrder = order,
 			Radius = Kit.RADIUS.M + 2,
 		})
@@ -97399,6 +99776,20 @@ local function buildSettings(screen: ScreenGui)
 	toggle(2, "Sound", "Sound Effects", "Clicks, pickups and rewards", "sfx")
 	toggle(3, "Hash", "Full Numbers", "Show 1,234,567 instead of 1.23M", "fullNumbers")
 	toggle(4, "Merge", "Auto Merge", "Merge pairs automatically", "autoMerge")
+	-- "Before you go" (Shared.Comeback): what waits for the player next time, as one quiet
+	-- line under the switches. Settings is where a player goes last.
+	local leave = Kit.text(window.content, {
+		Name = "Leave",
+		Text = "",
+		TextSize = T.Small,
+		MinPx = true,
+		TextColor3 = C.TextMute,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Size = UDim2.new(1, 0, 0, 20),
+		LayoutOrder = 5,
+		StrokeThickness = 0,
+	})
 
 	local ON_TILE = C.Ink:Lerp(C.Window.Settings, 0.55)
 	local function refresh()
@@ -97406,6 +99797,7 @@ local function buildSettings(screen: ScreenGui)
 		if not data then
 			return
 		end
+		leave.Text = Comeback.leaveLine(data, { money = State.money, words = W, age = State.age() })
 		for _, t in toggles do
 			local on: boolean
 			if t.key == "autoMerge" then
@@ -97480,16 +99872,36 @@ local function paintReward(label: TextLabel, text: string, full: boolean)
 	end
 end
 
+-- Seconds a reward preview's run again bonus still rests (`repeatRest`, counted down by the
+-- snapshot's age); 0 = awake.
+local function previewRest(preview: { [string]: any }): number
+	return math.max(0, math.ceil((tonumber(preview.repeatRest) or 0) - State.age()))
+end
+
 -- "Finish: +$X" or the cooldown countdown; `bonus` adds a "(xB)" tag. `repeatCash`: what a
 -- finish really pays inside the cooldown (the run again bonus: a share of the reward; 0 or
 -- nil when it pays nothing, e.g. Parkour gear), named beside the countdown to the full reward.
-local function setRewardLine(label: TextLabel, cash: number, full: boolean, cooldownEnds: number, bonus: number?, repeatCash: number?)
+-- `rest`: seconds that bonus still rests (it was paid a moment ago), said instead.
+local function setRewardLine(
+	label: TextLabel,
+	cash: number,
+	full: boolean,
+	cooldownEnds: number,
+	bonus: number?,
+	repeatCash: number?,
+	rest: number?
+)
 	local left = cooldownEnds - os.time()
 	if not full and left > 0 then
 		paintReward(
 			label,
-			if repeatCash and repeatCash >= 1
-				then string.format("Run again: +%s  ·  full reward in %s", Format.money(repeatCash), Format.time(left))
+			if rest and rest > 0
+				then "Bonus is resting, back in " .. Format.time(rest)
+				elseif repeatCash and repeatCash >= 1 then string.format(
+					"Run again: +%s  ·  full reward in %s",
+					Format.money(repeatCash),
+					Format.time(left)
+				)
 				else "Reward again in " .. Format.time(left),
 			false
 		)
@@ -97578,12 +99990,17 @@ local function parkourReward(label: TextLabel, info: { [string]: any }, level: n
 	-- that map's bonus rests).
 	local share = tonumber(preview.repeatShare) or Economy.MODE_REPEAT_SHARE
 	local repeatCash = math.floor(cash * share)
+	local rest = 0
 	if (type(info.gear) == "string" and info.gear ~= "none") or info.assisted == true then
 		repeatCash = 0
 	elseif level == (tonumber(info.level) or 1) and preview.full == false then
-		repeatCash = tonumber(preview.cash) or repeatCash
+		-- A bonus that rested when the snapshot was taken is awake once its seconds are up.
+		rest = previewRest(preview)
+		if (tonumber(preview.repeatRest) or 0) <= 0 then
+			repeatCash = tonumber(preview.cash) or repeatCash
+		end
 	end
-	setRewardLine(label, cash, full, cooldownEnds, bonus, repeatCash)
+	setRewardLine(label, cash, full, cooldownEnds, bonus, repeatCash, rest)
 end
 
 type ModeRow = {
@@ -97995,14 +100412,15 @@ local function buildModes(screen: ScreenGui)
 		if type(preview) ~= "table" then
 			paintReward(mog.reward, "", false)
 		else
-			-- Inside the cooldown a pass pays the run again bonus (the preview's own cash).
+			-- Inside the cooldown a pass pays the run again bonus, unless it rests.
 			setRewardLine(
 				mog.reward,
 				tonumber(preview.packCash) or tonumber(preview.cash) or 0,
 				preview.full ~= false,
 				tonumber(info.cooldownEnds) or 0,
 				nil,
-				if preview.full == false then tonumber(preview.cash) or tonumber(preview.repeatCash) else nil
+				if preview.full == false then tonumber(preview.repeatCash) or tonumber(preview.cash) else nil,
+				if preview.full == false then previewRest(preview) else 0
 			)
 		end
 		Kit.setButton(mog.play, if info.running then "PLAYING" else "PLAY")
@@ -98098,7 +100516,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="268">
+  <Item class="Workspace" referent="271">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>

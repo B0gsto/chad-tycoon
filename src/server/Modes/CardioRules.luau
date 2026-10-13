@@ -333,14 +333,17 @@ function CardioRules.repeatEarned(stage: number, bestStage: number, sincePaid: n
 end
 
 -- What a WIN plate pays: "first" (its first clear) and "full" (the cooldown is over) the
--- whole pack, "repeat" (inside the cooldown, `earned`) the run again bonus, "none" nothing.
-function CardioRules.payKind(first: boolean, full: boolean, earned: boolean): string
+-- whole pack, "repeat" (inside the cooldown, `earned`) the run again bonus, "resting" (a
+-- plate that would earn it, but inside REPEAT_GAP: `resting`) and "none" nothing.
+function CardioRules.payKind(first: boolean, full: boolean, earned: boolean, resting: boolean?): string
 	if first then
 		return "first"
 	elseif full then
 		return "full"
+	elseif earned then
+		return "repeat"
 	end
-	return if earned then "repeat" else "none"
+	return if resting then "resting" else "none"
 end
 
 -- Cash multiplier on stage n's reward (+25% per stage: stage 10 pays 3.25x the pack).

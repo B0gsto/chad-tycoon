@@ -20,8 +20,9 @@
 	  Economy.MODE_REWARD_COOLDOWN (one cooldown shared by all levels, modes.parkour.
 	  lastRewardAt). Inside the cooldown a clean finish (no gear worn) pays
 	  Economy.MODE_REPEAT_SHARE of that map's pack, then that map's bonus rests for
-	  REPEAT_REST_SECONDS (in memory, per player and map: a run inside the rest finishes as
-	  usual and pays nothing); an assisted one pays nothing. After a remote
+	  REPEAT_REST_SECONDS and every map's for REPEAT_GAP_SECONDS (in memory, per player: a
+	  run inside the rest finishes as usual and pays nothing); an assisted one pays nothing.
+	  After a remote
 	  finish the player is brought back to the gates (GameModes.returnLater) wherever they
 	  stand on the sky course by then (the finish deck, a bridge, the next map's start deck);
 	  while the finish card is up (action "ModeCard" { mode, open }) the return waits, for
@@ -123,6 +124,9 @@ local CARD_POLL_SECONDS = 1
 -- Seconds a map's run again bonus rests after it was paid: runs inside it finish as usual
 -- and pay nothing, so the bonus cannot be farmed in a loop on one short map.
 local REPEAT_REST_SECONDS = 120
+-- ...and after any map's run again bonus every map's rests this long for that player, so
+-- cycling the maps does not multiply the rate.
+local REPEAT_GAP_SECONDS = 60
 -- Seconds a player with no run may stand off every start / finish deck of the sky course
 -- before they are taken back to the gates.
 local STRANDED_SECONDS = 2
@@ -287,6 +291,8 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	-- When each map's run again bonus was last paid, by UserId (kept for the server's life,
 	-- so leaving and joining again does not wake it).
 	local repeatPaidAt: { [number]: { [number]: number } } = {}
+	-- When any map's run again bonus was last paid, by UserId.
+	local repeatPaidAny: { [number]: number } = {}
 	-- Server best times per level (in memory; see Rules.recordBest for the OrderedDataStore
 	-- shape).
 	local serverBest: { { Rules.BestEntry } } = {}
@@ -309,9 +315,12 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 
 	-- Seconds until `level`'s run again bonus is paid again (0 = it is awake).
 	local function repeatRest(session: any, level: number): number
-		local paid = repeatPaidAt[session.player.UserId]
+		local userId = session.player.UserId
+		local paid = repeatPaidAt[userId]
 		local at = paid and paid[level]
-		return if at then math.max(0, math.ceil(at + REPEAT_REST_SECONDS - now())) else 0
+		local any = repeatPaidAny[userId]
+		local left = math.max(if at then at + REPEAT_REST_SECONDS - now() else 0, if any then any + REPEAT_GAP_SECONDS - now() else 0)
+		return math.max(0, math.ceil(left))
 	end
 
 	-- What finishing `level` pays now. Inside the cooldown only a `clean` run (no gear worn)
@@ -624,6 +633,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			local paid = repeatPaidAt[player.UserId] or {}
 			repeatPaidAt[player.UserId] = paid
 			paid[index] = now()
+			repeatPaidAny[player.UserId] = now()
 		end
 		-- A new finish, a new card: a card the client never closed holds nothing.
 		cardOpen[player] = nil

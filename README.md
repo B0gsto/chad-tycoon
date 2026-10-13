@@ -93,9 +93,12 @@ sand island in the sea.
   the Starter Pack, daily rewards, Game Mode rewards, the free converter floor and the next goal. What
   was earned for good follows the Index (the snapshot's `bestTier`, the plot's `BestTier` attribute):
   the Index window, badges, the analytics funnel, the HUD promo, plot rank and the fan club. A tier
-  reached again in a new run is not announced as a new Chad. The server side is done (action
-  `Rebirth`, notifies `RebirthReady` and `Rebirth`, the snapshot's `rebirth` offer); the window that
-  asks "are you sure" is not built yet, so for now the HUD only names it.
+  reached again in a new run is not announced as a new Chad. From tier 15 the star counter by the
+  wallet and the goal strip ("REBIRTH: +N stars") open a card listing what stays and what starts again
+  (the snapshot's `rebirth` offer). Two taps on opposite sides confirm (action `Rebirth`). The first
+  time a run reaches tier 15 a card explains it (notify `RebirthReady`; a toast for players who already
+  have stars), and the rebirth itself ends with a reveal (notify `Rebirth`). The cards are in
+  `Popups.defineRebirth` (`src/client/UI/Popups.luau`).
   `lune run scripts/simulate --rebirths N` plays N runs in a row (`--stars N`, `--day M`, `--stop T`).
 - **Aura Surge.** The last 2 minutes of every 10 double all orbs and the converter's speed, so the cash
   really doubles (the Double Aura pass doubles both too, all the time). Rewards and packs are sized with
@@ -157,8 +160,9 @@ sand island in the sea.
   minutes of income (at least 750, `Theme.Modes.Reward`) times a per-map bonus
   (`Economy.parkourLevelBonus`) on the first clear of a map and then at most once per
   cooldown. Parkour pays a run again bonus: 20% of the map's reward for a clean finish inside the 30 minute
-  cooldown (nothing with gear), after which that map's bonus rests for 2 minutes (a run inside the rest
-  finishes as usual and pays nothing). The run HUD shows your position in the map, best time and falls; Skip
+  cooldown (nothing with gear), after which that map's bonus rests for 2 minutes and every other map's
+  for 1 minute (a run inside the rest finishes as usual and pays nothing; the card says "Bonus is
+  resting, back in m:ss"). The run HUD shows your position in the map, best time and falls; Skip
   Map asks first. Map 1 has a wider bounce pad and side rails. The finish card has four states: a first
   clear (rays, confetti, "MAP n+1 UNLOCKED!"), all maps cleared ("SKY OBBY COMPLETE!", on the run that
   makes all ten maps cleared without gear), a repeat (the bonus and the cooldown as a clock bar) and an
@@ -181,8 +185,9 @@ sand island in the sea.
   on the TOP MOGGERS board: an all-time board of saved bests (OrderedDataStore `MogBest_v1`,
   `Modes/MogBoard.luau`; this server's scores while DataStores are unavailable), and the finish card
   says "#N all-time". Mog and Cardio pay a run again bonus too (20% of the pack) inside the 30 minute
-  cooldown: a Mog pass or a duel really fought and won, and a Cardio WIN plate at or beyond your best
-  plate (at most every 30 s). Gate 3 is **Cardio**, a keyboard runner
+  cooldown: a Mog pass or a duel really fought and won (at most every 90 s per player, PvE and PvP
+  together: `MogRules.REPEAT_GAP`), and a Cardio WIN plate at or beyond your best plate (at most every
+  30 s). A finish inside the gap says the bonus is resting (`pay = "resting"`). Gate 3 is **Cardio**, a keyboard runner
   (`docs/cardio.md`):
   build Speed, run ten stages, and cash out only by stepping on a safe zone's WIN plate (deeper plates pay
   more; every plate keeps its own first clear, so a plate you ran past still pays it later); a fall or a
@@ -242,8 +247,19 @@ sand island in the sea.
   wears a glowing band per 5 levels (`src/client/Fx/Machines.luau`).
 - **Windows** (`src/client/UI/Windows.luau`): the Ranking shows your own place and how many more Chads
   it takes to pass the next player. Game Modes are cards with a thumbnail and a reward chip (inside the
-  cooldown the chip names the run again bonus the server would really pay). The Index fills with
-  rarity colour, counts each rarity and marks 25/25 as complete.
+  cooldown the chip names the run again bonus the server would really pay, or that it is resting). The
+  Index fills with rarity colour, counts each rarity and marks 25/25 as complete. Settings ends with
+  the "Before you go" line.
+- **Index rewards.** Finding 5 / 10 / 15 / 20 / 25 Chads pays 10 / 20 / 30 / 45 / 60 minutes of income,
+  plus a Rare / Epic / Legendary crate at 10 / 15 / 20 and the Champion aura colour with a gold Index
+  frame at 25. Claimed in the Index window, once per account; a rebirth never resets them. The Index
+  button shows a "!" badge while a reward waits. Rules in `src/shared/IndexRewards.luau`, tests in
+  `tests/index_rewards.luau`.
+- **Coming back.** Returning players get a "While you were away" card (away cash and its cap, Smasher
+  crate, daily card, streak, free gift) instead of the Welcome back popup, once the screen is calm; a
+  player still in the tutorial gets the plain popup. The Daily window footer and Settings have a
+  "Before you go" line. Rules: `src/shared/Comeback.luau`; card: `src/client/UI/AwayWindow.luau`;
+  tests: `tests/comeback.luau`.
 - **Extras:** Index of all 25 tiers, global ranking, a FREE GIFT every 10 minutes (it shows a card with
   the cash and the time to the next one), offline earnings up to
   8 h, friend (+10% each, max +50%) and Premium (+10%) bonuses, settings, and a loading screen.
@@ -256,7 +272,10 @@ sand island in the sea.
   8 Tier 3, 9 Tier 5, 10 Tier 7, 11 Tier 10 and 12-15 Tier 12 / 15 / 20 / 25 for the highest tier
   discovered), a recurring "Shop" funnel (Opened, Prompted, Purchased), custom events (TierReached,
   SessionEnd, ReturnGap, DailyClaim, Crate, ModeStart / Finish / Skip / Stop) and economy events for the
-  Cash sources and sinks, sent once a minute per player. Set the Workspace attribute `AnalyticsDebug =
+  Cash sources and sinks, sent once a minute per player. It also logs rebirth runs (RebirthReady,
+  Rebirth with run hours), StreakSaved / StreakLost, IndexClaim, AwayCard (once per session), and why a
+  mode finish paid (First, Full, RunAgain, Resting, Assisted, None). Funnel steps and TierReached are
+  first-time-ever. Set the Workspace attribute `AnalyticsDebug =
   true` to print every call. "TutorialSkipped" ends the funnel for that player, so
   the tutorial steps stay honest; their tier milestones are logged as "SkipperTier3" / "5" / "7" / "10"
   instead (everyone who reached a tier = the funnel step plus the Skipper event). Saves from before the
@@ -370,6 +389,8 @@ through `tools/studio.py execute_luau`:
 | `Poses.luau`, `RigPose.luau` | Procedural pose library and its application to a rig |
 | `SessionLock.luau` | DataStore session-lock decisions |
 | `DailyReward.luau` | Daily reward rules: UTC days, the streak, the 7 rewards (unit-tested) |
+| `IndexRewards.luau` | Index milestones: what each pays and the once-per-account claim (unit-tested) |
+| `Comeback.luau` | Rows of the "While you were away" card and the "Before you go" line (unit-tested) |
 | `NextGoal.luau` | Picks the HUD's "Next:" goal (next tier of the run or a rebirth) and its sums (unit-tested) |
 | `ShopMath.luau` | What an aura pack pays in cash (unit-tested) |
 | `Telemetry.luau` | Analytics labels and the per-player economy ledger (unit-tested) |
@@ -408,7 +429,8 @@ through `tools/studio.py execute_luau`:
 | `UI/Hud.luau` | Always-on HUD |
 | `UI/Windows.luau` | Shop, Index, Ranking, Settings, Game Modes |
 | `UI/DailyWindow.luau` | Daily Reward window (opens by itself once per session) |
-| `UI/Popups.luau` | Toasts, reward reveals, merge float, gift card, surge chip and banners, crate panel, dialogs, offline earnings |
+| `UI/AwayWindow.luau` | "While you were away" card for returning players |
+| `UI/Popups.luau` | Toasts, reward reveals, merge float, gift card, surge chip and banners, crate panel, dialogs, rebirth cards, the tutorial's offline popup |
 | `UI/Tutorial.luau` | Tutorial quest pill (the "YOU DID IT!" banner is `Popups.tutorialDone`) |
 | `Guide.luau` | Floor path of chevrons to a target and the beam over a tutorial pad |
 | `Animator.luau` | Unit animations on the rack and in viewports |
@@ -433,7 +455,7 @@ through `tools/studio.py execute_luau`:
 | `Intro/Avatar.luau`, `AvatarRig.luau` | The player's avatar as an actor |
 | `Intro/Framing.luau`, `Ui.luau` | Shot maths; letterbox, subtitles, Skip |
 | **src/loader** | ReplicatedFirst loading screen |
-| `tests/run.luau` | Lune unit tests (`tests/daily.luau`, `mog.luau`, `cardio*.luau`, `interactive.luau`, `parkour_bugs.luau`, `buymax.luau`, `shop.luau`, `analytics.luau`, `ranking.luau`, `plot_rank.luau`, `fx_juice.luau` are loaded by it) |
+| `tests/run.luau` | Lune unit tests (`tests/daily.luau`, `mog.luau`, `cardio*.luau`, `interactive.luau`, `parkour_bugs.luau`, `buymax.luau`, `shop.luau`, `analytics.luau`, `ranking.luau`, `plot_rank.luau`, `index_rewards.luau`, `comeback.luau`, `fx_juice.luau` are loaded by it) |
 | `scripts/` | `check.sh`, `lint-files.sh`, `simulate.luau` |
 | `art/` | Blender scripts (`art/blender/<area>/`), outputs and asset specs (`art/assets/*.json`) |
 | `assets/` | Pins, upload manifest, downloaded `.rbxm` models |

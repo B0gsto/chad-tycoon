@@ -379,6 +379,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 
 	-- New discoveries since the Index was last opened (badge).
 	local seenDiscoveries: number? = nil
+	-- Index milestone rewards waiting, as last painted (the glow follows its changes only).
+	local indexClaimable = 0
 	local function discoveredCount(data: { [string]: any }): number
 		local found = 0
 		for tier = 1, Economy.MAX_TIER do
@@ -394,7 +396,14 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			return
 		end
 		local fresh = discoveredCount(data) - seenDiscoveries
-		Kit.setBadge(Hud.buttons.Index, if fresh > 0 then tostring(fresh) else nil)
+		-- A milestone reward waiting in the Index window (the snapshot's `indexClaimable`)
+		-- goes in front of the count of new finds, and the button glows until the Index is opened.
+		local claimable = math.max(0, math.floor(tonumber(data.indexClaimable) or 0))
+		Kit.setBadge(Hud.buttons.Index, if claimable > 0 then "!" elseif fresh > 0 then tostring(fresh) else nil)
+		if claimable ~= indexClaimable then
+			indexClaimable = claimable
+			Kit.setGlow(Hud.buttons.Index, claimable > 0)
+		end
 	end
 	gridButton("Home", function()
 		action:FireServer({ action = "Home" })

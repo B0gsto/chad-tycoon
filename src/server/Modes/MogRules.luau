@@ -28,7 +28,9 @@
 	    takes less than minPassSeconds() of checks (about 15 s; a kid needs about 35 s).
 	  - a PvP win: a duel fought to the end (a KO or the round cap, never a forfeit of any
 	    kind) in which the loser pressed on PVP_REPEAT_PRESSES checks or more (duelFought).
-	payKind names what a pass or win pays: "first" | "full" | "repeat" | "none".
+	  - and per player no sooner than REPEAT_GAP seconds after their last repeat share (a pass
+	    and a PvP win share the gap): an earned one inside it pays nothing and is "resting".
+	payKind names what a pass or win pays: "first" | "full" | "repeat" | "resting" | "none".
 
 	Pass rate of the first PASS_RIVALS rivals for a player whose presses miss the zone centre by
 	a Gaussian timing error (4,000 runs each): 50 ms 100%, 70 ms 94%, 100 ms 57%, 140 ms 17%
@@ -83,6 +85,10 @@ MogRules.PVP_CLOSE_MARGIN = 2
 -- PvP: a win inside the reward cooldown pays the repeat share only when the loser really
 -- pressed (a timeout is not a press) on this many checks. A KO takes 3 rounds at the least.
 MogRules.PVP_REPEAT_PRESSES = 3
+-- The repeat share (a pass or a fought PvP win inside the reward cooldown) is paid to a player
+-- no sooner than this many seconds after their last one, PvE and PvP together: a fast pass
+-- cannot be looped for it and two accounts cannot trade duel wins for it.
+MogRules.REPEAT_GAP = 90
 
 export type Check = {
 	n: number,
@@ -373,14 +379,17 @@ end
 
 -- What a pass or a PvP win pays: "first" (the first pass ever) and "full" (the cooldown is
 -- over) pay the whole pack, "repeat" (inside the cooldown, `earned` by a real run) the repeat
--- share, "none" nothing.
-function MogRules.payKind(first: boolean, full: boolean, earned: boolean): string
+-- share, "resting" (the same, but `sincePaid` seconds after the player's last repeat share is
+-- inside REPEAT_GAP) and "none" nothing.
+function MogRules.payKind(first: boolean, full: boolean, earned: boolean, sincePaid: number?): string
 	if first then
 		return "first"
 	elseif full then
 		return "full"
+	elseif not earned then
+		return "none"
 	end
-	return if earned then "repeat" else "none"
+	return if sincePaid and sincePaid < MogRules.REPEAT_GAP then "resting" else "repeat"
 end
 
 local function duelist(): Duelist

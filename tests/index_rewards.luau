@@ -333,5 +333,14 @@ return function(h: { [string]: any })
 		has(client, 'action:FireServer({ action = "ClaimIndex", found = entry.found })', "the window sends ClaimIndex")
 		has(client, "IndexRewards.MILESTONES", "the track has a cell per milestone")
 		check(string.find(client, "indexClaimed", 1, true) == nil, "the window reads the server's `index`, not the save")
+
+		-- What the other modules hang on the claim.
+		has(handler, "milestone = grant.found", "the IndexClaim event names its milestone (Analytics.index reads it)")
+		has(handler, 'Tycoon.grantMoney(session, cash, "Index")', "the cash is the Index source, not a Robux pack")
+		has(fs.readFile("src/server/Analytics.luau"), "Analytics.index(session, data.milestone)", "Analytics logs the claim")
+		local cosmetics = fs.readFile("src/server/Cosmetics.luau")
+		has(cosmetics, 'name == "IndexClaim" and data.champion == true', "the Champion aura goes on with the claim")
+		has(cosmetics, "profile.cosmetics.champion == true", "and on every later character")
+		has(fs.readFile("src/client/UI/Hud.luau"), "data.indexClaimable", "the HUD badge reads the snapshot's count")
 	end)
 end
