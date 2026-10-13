@@ -1,8 +1,10 @@
 --[[
 	Unit tests for the Parkour server (src/server/Modes/Parkour.luau, run against stub
 	GameModes / Tycoon tables): a paid Skip Map only unlocks (no reward, no clear, no stage),
-	it ends at the gates with the map picker, and nobody is left on the sky course without a
-	run (stranded rescue, the timed return after a finish).
+	it ends at the gates with the map picker, a clean finish inside the reward cooldown pays
+	the repeat share (an assisted one nothing), falls and path progress reach the HUD, map 1's
+	safer sweeper / bounce decks, and nobody is left on the sky course without a run (stranded
+	rescue, the timed return after a finish).
 	Loaded by tests/run.luau with its harness: { test, check, eq }. Run alone with
 	`lune run tests/parkour_bugs` it uses the small harness at the end of this file.
 ]]
@@ -400,6 +402,255 @@ local function suite(h: { [string]: any })
 		-- A broken list unlocks nothing and breaks nothing.
 		loaded.parkour.skipped = { "x", -1, 0 / 0 }
 		eq(again.def.snapshot(again.player).unlocked, 1, "junk in the list is ignored")
+	end)
+
+	test("Parkour repeat pay: a clean finish inside the cooldown pays the repeat share", function()
+		local w = newWorld()
+		local p = w.session.profile
+		w.clear(1)
+		local first = w.note("finish")
+		check(first.full and first.first, "the first clear pays in full")
+		eq(first.pay, "first", "finish payload: pay = first")
+		eq(first.cash, first.packCash, "the whole pack")
+		eq(first.repeatShare, Economy.MODE_REPEAT_SHARE, "the share is sent for the card")
+		local pack = first.packCash
+		local share = math.floor(pack * Economy.MODE_REPEAT_SHARE)
+		check(share > 0 and share < pack, "the repeat share is a part of the pack")
+		eq(first.repeatCash, share, "finish payload: repeatCash")
+		local stamp = p.modes.parkour.lastRewardAt
+		check(stamp > 0, "the full reward starts the cooldown")
+		local preview = w.def.rewardPreview(w.player, 1)
+		eq(preview.full, false, "inside the cooldown")
+		eq(preview.cash, share, "the preview shows the repeat share")
+		eq(preview.repeatCash, share, "preview: repeatCash")
+		eq(preview.packCash, pack, "preview: packCash")
+		-- Every clean run inside the cooldown pays the share, and never moves the cooldown.
+		for run = 2, 3 do
+			local before = p.money
+			w.clear(1)
+			local again = w.note("finish")
+			eq(again.full, false, "run " .. run .. ": not a full reward")
+			eq(again.pay, "repeat", "run " .. run .. ": pay = repeat")
+			eq(again.cash, share, "run " .. run .. ": pays the repeat share")
+			eq(p.money, before + share, "run " .. run .. ": the wallet got it")
+			eq(p.modes.parkour.lastRewardAt, stamp, "run " .. run .. ": the cooldown is untouched")
+		end
+		eq(w.rec.clears[1], 3, "every finish counts a clear")
+		-- Another map's first clear inside the cooldown still pays in full, with its bonus.
+		w.clear(2)
+		local second = w.note("finish")
+		eq(second.pay, "first", "map 2's first clear")
+		eq(second.cash, math.floor(pack * Economy.parkourLevelBonus(2) + 0.5), "pays map 2's whole pack")
+		eq(second.repeatCash, math.floor(second.packCash * Economy.MODE_REPEAT_SHARE), "map 2's repeat share follows its pack")
+		-- The 30 minute full reward stays.
+		p.modes.parkour.lastRewardAt = os.time() - Economy.MODE_REWARD_COOLDOWN - 1
+		w.clear(1)
+		local full = w.note("finish")
+		check(full.full and not full.first, "the cooldown is over: a full reward")
+		eq(full.pay, "full", "pay = full")
+		eq(full.cash, pack, "the whole pack again")
+	end)
+
+	test("Parkour repeat pay: an assisted finish inside the cooldown pays nothing", function()
+		local w = newWorld()
+		local p = w.session.profile
+		-- A character whose humanoid can wear the jump coil.
+		local humanoid = {
+			UseJumpPower = false,
+			JumpHeight = 7.2,
+			GetAttribute = function()
+				return nil
+			end,
+		}
+		w.player.Character = {
+			FindFirstChildOfClass = function()
+				return humanoid
+			end,
+		}
+		w.actions.ParkourGear(w.session, { gear = "jump" })
+		eq(w.def.rewardPreview(w.player, 1).full, true, "the first clear pays whatever is worn")
+		w.clear(1)
+		local first = w.note("finish")
+		check(first.assisted and first.pay == "first" and first.cash == first.packCash, "an assisted first clear pays in full")
+		eq(w.def.rewardPreview(w.player, 1).cash, 0, "preview with a coil chosen: nothing inside the cooldown")
+		local before = p.money
+		w.clear(1)
+		local again = w.note("finish")
+		check(again.assisted, "the second run wore the coil too")
+		eq(again.pay, "assisted", "pay = assisted")
+		eq(again.cash, 0, "assisted inside the cooldown pays 0")
+		eq(p.money, before, "nothing paid")
+		check(again.repeatCash > 0, "the card still knows what a clean run pays")
+		eq(w.rec.clears[1], 2, "the clear still counts")
+		-- Coil off: the next run is clean and pays the share.
+		w.actions.ParkourGear(w.session, { gear = "none" })
+		eq(w.def.rewardPreview(w.player, 1).cash, again.repeatCash, "preview without gear: the repeat share")
+		w.clear(1)
+		local clean = w.note("finish")
+		check(not clean.assisted and clean.pay == "repeat" and clean.cash == again.repeatCash, "a clean run pays the share")
+		-- Putting a coil on in the middle of a run makes it assisted: no share.
+		check(w.start(1), "map 1 starts")
+		w.actions.ParkourGear(w.session, { gear = "jump" })
+		local l = Course.level(1)
+		w.clock += l.MIN_SECONDS + 5
+		w.onElement(l.PATH[#l.PATH])
+		w.wait(TICK)
+		eq(w.note("finish").cash, 0, "gear worn mid-run: nothing inside the cooldown")
+	end)
+
+	test("Parkour HUD data: falls are counted and progress follows the path", function()
+		-- Course.progress: 0 at the start deck, 1 at the finish deck, never backwards along
+		-- the path line (every map).
+		for n, level in Course.LEVELS do
+			local path = level.PATH
+			eq(Course.progress(level, path[1].x, path[1].z), 0, "map " .. n .. ": 0 on the start deck")
+			eq(Course.progress(level, path[#path].x, path[#path].z), 1, "map " .. n .. ": 1 on the finish deck")
+			local last, monotone = 0, true
+			for i = 1, #path - 1 do
+				local a, b = path[i], path[i + 1]
+				for step = 0, 8 do
+					local t = step / 8
+					local at = Course.progress(level, a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t)
+					monotone = monotone and at >= last - 1e-9 and at >= 0 and at <= 1
+					last = at
+				end
+			end
+			check(monotone, "map " .. n .. ": progress is monotone along the path")
+			-- Standing beside the line (a wide deck) reads like standing on it.
+			local mid = path[#path // 2]
+			check(
+				math.abs(Course.progress(level, mid.x + 1, mid.z + 1) - Course.progress(level, mid.x, mid.z)) < 0.02,
+				"map " .. n .. ": a step off the line barely moves it"
+			)
+		end
+		-- The server publishes it (hundredths) and counts the falls of a run.
+		local w = newWorld()
+		local level = Course.level(1)
+		local path = level.PATH
+		check(w.start(1), "map 1 starts")
+		eq(w.attributes.ParkourProgress, 0, "a run starts at 0")
+		eq(w.def.snapshot(w.player).falls, 0, "and with no falls")
+		local seen = 0
+		for i = 2, #path - 1 do
+			local e = path[i]
+			if e.kind == "pad" then
+				w.onElement(e)
+				w.wait(1)
+				local at = w.attributes.ParkourProgress
+				check(at >= seen and at > 0 and at < 1, "the attribute rises along the path (element " .. i .. ")")
+				eq(at, math.floor(Course.progress(level, e.x, e.z) * 100 + 0.5) / 100, "in hundredths of Course.progress")
+				seen = at
+			end
+		end
+		eq(w.def.snapshot(w.player).progress, seen, "the snapshot carries it")
+		-- A fall: back to the start, progress 0, one fall counted; lava counts too.
+		w.stand(path[4].x, Course.FLOOR_Y - 5, path[4].z)
+		w.wait(TICK)
+		local fell = w.note("respawn")
+		check(fell ~= nil and fell.falls == 1, "the respawn notify counts the fall")
+		eq(w.attributes.ParkourProgress, 0, "back at 0")
+		w.wait(1)
+		w.stand(path[6].x, Course.FLOOR_Y - 5, path[6].z)
+		w.wait(TICK)
+		eq(w.note("respawn").falls, 2, "the second fall")
+		eq(w.def.snapshot(w.player).falls, 2, "the snapshot carries the falls")
+		check(w.def.running(w.player), "the run goes on (no checkpoints, no reset)")
+		w.clock += level.MIN_SECONDS + 5
+		w.onElement(path[#path])
+		w.wait(TICK)
+		eq(w.note("finish").falls, 2, "the finish payload carries the falls")
+		eq(w.attributes.ParkourProgress, 0, "no run: progress 0")
+		-- A new run starts its own count.
+		check(w.start(1), "map 1 starts again")
+		eq(w.def.snapshot(w.player).falls, 0, "falls start at 0 again")
+		w.def.stop(w.player, "quit")
+		eq(w.attributes.ParkourProgress, 0, "quit: progress 0")
+	end)
+
+	test("Parkour map 1: a wide centred bounce pad, side rails and a slower first sweeper", function()
+		local level = Course.level(1)
+		local function named(name: string): any
+			for _, e in level.PATH do
+				if e.name == name then
+					return e
+				end
+			end
+			error("map 1 has no " .. name)
+		end
+		local function on(deck: any, kind: string): { any }
+			local found = {}
+			for _, e in level.ELEMENTS do
+				if
+					e.kind == kind
+					and math.abs(e.y - deck.y) < 0.01
+					and math.abs(e.x - deck.x) <= deck.sx / 2
+					and math.abs(e.z - deck.z) <= deck.sz / 2
+				then
+					table.insert(found, e)
+				end
+			end
+			return found
+		end
+		local sweeperDeck, bounceDeck = named("SweeperDeck"), named("BounceDeck")
+		-- The path runs along Z over both decks: "wide" is X.
+		local bounces = on(bounceDeck, "bounce")
+		eq(#bounces, 1, "one bounce pad")
+		local pad = bounces[1]
+		eq(pad.r * 2, 9, "the pad is 9 studs wide")
+		check(math.abs(pad.x - bounceDeck.x) < 0.01 and math.abs(pad.z - bounceDeck.z) < 0.01, "centred on the path line")
+		for _, deck in { sweeperDeck, bounceDeck } do
+			local rails = on(deck, "wall")
+			eq(#rails, 2, deck.name .. ": two side rails")
+			local sides = 0
+			for _, rail in rails do
+				eq(rail.name, "Rail", deck.name .. ": a rail, not a hop wall")
+				eq(rail.h, 1.5, deck.name .. ": rails are 1.5 studs high")
+				eq(rail.sz, deck.sz, deck.name .. ": the rail runs the deck's length")
+				local edge = math.abs(rail.x - deck.x) + rail.sx / 2
+				check(edge <= deck.sx / 2 + 1e-6 and edge >= deck.sx / 2 - 0.5, deck.name .. ": the rail stands on the deck's side edge")
+				sides += if rail.x > deck.x then 1 else -1
+			end
+			eq(sides, 0, deck.name .. ": one rail on each side")
+			local inner = math.abs(rails[1].x - deck.x) - rails[1].sx / 2
+			if deck == bounceDeck then
+				check(pad.r + 0.5 <= inner, "the pad and its ring fit between the rails")
+				check(inner - pad.r <= 1, "no room to walk past the pad between the rails")
+			else
+				for _, bar in on(deck, "spinner") do
+					-- A bar's end caps are balls 1.7 across (World.Modes spinner).
+					check(bar.length / 2 + 0.85 <= inner, "sweeper bars turn inside the rails")
+				end
+			end
+		end
+		local sweepers = on(sweeperDeck, "spinner")
+		eq(#sweepers, 2, "two sweepers")
+		-- The first one met (nearest the deck before) turns 30% slower than it did (1.2 rad/s).
+		local before = level.PATH[table.find(level.PATH, sweeperDeck) - 1]
+		table.sort(sweepers, function(a, b)
+			return math.abs(a.z - before.z) < math.abs(b.z - before.z)
+		end)
+		check(math.abs(math.abs(sweepers[1].speed) - 1.2 * 0.7) < 1e-9, "the first sweeper is 30% slower")
+		check(math.abs(sweepers[1].speed) < math.abs(sweepers[2].speed), "and slower than the second")
+		-- The bounce still works from anywhere on the wider pad at walking speed: launched at
+		-- its near edge the runner comes down on the landing deck, launched at its far edge
+		-- they are above the lane before reaching that deck (Fx.Modes: the pad is touched
+		-- 0.4 studs past its rim; its top is 0.7 over the deck).
+		local landing = level.PATH[table.find(level.PATH, bounceDeck) + 1]
+		local g, v = Course.GRAVITY, pad.power
+		local rise = landing.y - (bounceDeck.y + 0.7)
+		local apex = v * v / (2 * g)
+		check(apex > rise, "the bounce clears the landing deck")
+		local air = v / g + math.sqrt(2 * (apex - rise) / g)
+		local reach = Course.WALK_SPEED * air
+		local climb = Course.WALK_SPEED * (v - math.sqrt(v * v - 2 * g * rise)) / g
+		local dir = if landing.z > bounceDeck.z then 1 else -1
+		local nearEdge = (landing.z - pad.z) * dir - landing.sz / 2
+		local farEdge = nearEdge + landing.sz
+		local touch = pad.r + 0.4
+		check(nearEdge + touch + 0.3 <= reach, "a launch from the pad's near edge reaches the landing deck")
+		check(touch + reach <= farEdge - 1, "a launch from its far edge does not overshoot it")
+		check(nearEdge - touch - 1 >= climb, "a launch from its far edge is above the lane before the deck's edge")
+		check(math.abs(landing.x - pad.x) + touch <= landing.sx / 2, "the landing deck is as wide as the pad's reach")
 	end)
 
 	test("Parkour rescue: a player with no run is not left on the sky course", function()
