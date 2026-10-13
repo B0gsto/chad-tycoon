@@ -31,7 +31,7 @@ local START_YAW = math.rad(200)
 local END_DISTANCE = 15
 local END_PITCH = math.rad(20)
 local HEAD_OFFSET = Vector3.new(0, 1.5, 0)
-local LAND_TIME = 3
+local LAND_TIME = 2.2
 
 local function smoother(t: number): number
 	return t * t * t * (t * (t * 6 - 15) + 10)

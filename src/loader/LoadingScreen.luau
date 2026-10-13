@@ -76,7 +76,7 @@ local STATUS_Y = 82
 -- Seconds: the sky cover's fade once the world is there, and the logo and
 -- band leaving the screen.
 local OPEN = 0.9
-local LEAVE = 0.7
+local LEAVE = 0.55
 
 -- Twinkles round the logo: position in the logo box, size (of its height),
 -- speed, phase.
