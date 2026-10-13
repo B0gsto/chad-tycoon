@@ -2547,7 +2547,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				updateNear()
 			end
 			local now = Workspace:GetServerTimeNow()
-			local active, left = Economy.surgeState(now)
+			-- No surge strip or chip for a player still in the tutorial (the server gives
+			-- them no surge either).
+			local surgeData = State.data
+			local active, left = Economy.surgeFor(now, surgeData ~= nil and surgeData.tutorialDone == true)
 			if active ~= surgeActive then
 				-- Announce only real transitions, not the state found on join.
 				setSurge(active, surgeActive ~= nil)

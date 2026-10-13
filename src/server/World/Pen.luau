@@ -276,17 +276,19 @@ local function buildGutterAndChute(B: Builder)
 	end
 
 	-- Chute: a smooth sunny slide bed with raised sunny side walls and butter round rails,
-	-- resting on the pen's back wall.
+	-- resting on the pen's back wall. Nothing of it collides: it bridges the narrow lane
+	-- between the pen and the gutter, the way from Buy 5 to Buy 25 behind the pen, and a
+	-- walker got stuck on it (orbs and crates ride it as client animation only).
 	local top = Vector3.new(ch.x, ch.topY, ch.topZ)
 	local bottom = Vector3.new(ch.x, ch.bottomY, ch.bottomZ)
-	slope(B, "Chute", top, bottom, ch.width, 0.4, slideColor)
+	slope(B, "Chute", top, bottom, ch.width, 0.4, slideColor).CanCollide = false
 	-- The side walls start at the gutter's front edge so orbs turning into the chute stay clear.
 	local railRise = 0.6
 	local railStart = bottom:Lerp(top, (r.minZ - ch.bottomZ) / (ch.topZ - ch.bottomZ))
 	for _, side in { -1, 1 } do
 		local offset = Vector3.new(side * (ch.width / 2 + 0.2), railRise, 0)
-		slope(B, "ChuteRail", railStart + offset, bottom + offset, 0.4, railRise + 0.4, slideColor)
-		rod(B, "ChuteRailTop", railStart + offset, bottom + offset, 0.5, rodColor)
+		slope(B, "ChuteRail", railStart + offset, bottom + offset, 0.4, railRise + 0.4, slideColor).CanCollide = false
+		rod(B, "ChuteRailTop", railStart + offset, bottom + offset, 0.5, rodColor).CanCollide = false
 	end
 	-- Support under the chute between the gutter and the pen wall.
 	local wallZ = Layout.POOL.maxZ
@@ -298,7 +300,8 @@ local function buildGutterAndChute(B: Builder)
 			Size = Vector3.new(ch.width - 0.6, supportTop, supportDepth),
 			CFrame = L(ch.x, supportTop / 2, (wallZ + r.minZ) / 2),
 			Color = worldColor("Teal", B.c.WallTrim),
-		})
+		}).CanCollide =
+			false
 	end
 end
 

@@ -410,6 +410,17 @@ function Economy.depositSplit(carried: number, mult: number): (number, number)
 	return carried, carried * (math.max(mult, 1) - 1)
 end
 
+-- Whether a converter pad's title shows cash per second (else its speed step). `gain` is the
+-- cash per second `amount` levels would add now, `singleGain` the same for one level. The
+-- cash gain stops at what the units produce, so once one level catches up the bulk pad would
+-- read the same as the single pad at many times the price: it shows its own speed instead.
+function Economy.upgradeShowsCash(amount: number, gain: number, singleGain: number): boolean
+	if gain <= 0 then
+		return false
+	end
+	return amount == 1 or gain > singleGain * 1.005
+end
+
 -- Global "surge" event: double orbs for the last part of every cycle. ----------
 -- The converter runs at double speed too, so the cash earned really doubles. Rewards are
 -- sized with the income outside the surge.
@@ -426,6 +437,14 @@ function Economy.surgeState(now: number): (boolean, number)
 		return true, Economy.SURGE_CYCLE - t
 	end
 	return false, start - t
+end
+
+-- The surge as one player lives it: none until the tutorial is done or skipped (no doubled
+-- aura or cash on the server, no strip, chip, screen grade or music on the client). Inactive
+-- with the clock's own seconds until then.
+function Economy.surgeFor(now: number, tutorialDone: boolean?): (boolean, number)
+	local active, left = Economy.surgeState(now)
+	return active and tutorialDone == true, left
 end
 
 -- Players are told this many seconds before a surge starts.
@@ -490,6 +509,8 @@ Economy.MAX_FLOOR_CHESTS = 3
 Economy.PREMIUM_UNLOCK_SPEED = 3
 -- The very first crate of a profile opens this fast, whatever its rarity.
 Economy.FIRST_CRATE_SECONDS = 10
+-- The guide shows the path to the Crate Smasher by itself for a profile's first crates.
+Economy.CRATE_GUIDE_HOLDS = 3
 
 -- Crates are anchored this share of the way from the player's highest tier down to tier 1
 -- (rounded towards the highest tier). Late tiers take hours to reach while crates keep

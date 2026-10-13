@@ -70,9 +70,14 @@ sand island in the sea.
   the blender converter and Collect by the vault; on the left, the Crate Smasher, the VIP Smasher and the
   FREE GIFT. Positions: `Layout.PADS` in `src/server/PlotLayout.luau`. A pad's price or status sits on a
   rounded plate under its name: green when you can afford it or it is ready, soft red when not
-  (`Theme.World.PadPlate`). The upgrade pads fire only after a 0.4 s stop, so walking the Deposit to
-  Collect line never buys one, and they refuse without charging ("Not needed yet") while the converter is
-  already 4x ahead of the units (`Economy.CONVERTER_HEADROOM`). The game-pass pads (Auto Merge, VIP
+  (`Theme.World.PadPlate`). Pad names float above head height (Auto Merge and Merge stay low). The
+  walkway has no painted arrows. Crate Smasher cards are small and show READY! as an upright pill.
+  Game-pass pads show a gold plate. The upgrade pads fire only after a 0.6 s stop, so walking the
+  Deposit to Collect line never buys one, and they refuse without charging ("Not needed yet") while the
+  converter is already 4x ahead of the units (`Economy.CONVERTER_HEADROOM`). Each upgrade pad's title is
+  its own gain: cash per second, or for the x10 pad its speed step ("+9.3x speed") when one level would
+  already add the same cash (`Economy.upgradeShowsCash`). The chute into the pen does not collide, so
+  the lane behind the pen (Buy 5 to Buy 25) is open. The game-pass pads (Auto Merge, VIP
   Smasher) never open a purchase prompt from walking: they shake and say where the pass is sold, at most
   once a minute. A plot nobody owns reads FREE PLOT: its pads show their names only, no prices, and Auto
   Merge says "Game pass".
@@ -107,16 +112,25 @@ sand island in the sea.
   music cross-fades to the surge playlist (`src/client/Fx/Surge.luau`, `Theme.SurgeMusicId`). The surge
   is announced 30 seconds ahead with a countdown chip at the head of the toasts, and a banner crosses
   the screen when it starts; a surge found already running (on join, back from a course) gets a toast
-  with the time left. None of it shows during the tutorial.
-- **Crates** (Common to Legendary) slide down the same chute into the pen (none during the tutorial). Walk
+  with the time left. A player still in the tutorial has no surge at all (`Economy.surgeFor`): nothing
+  is doubled on the server, and the client shows no strip, chip, grade or sparkles and plays no surge
+  music; the surge applies from the moment the tutorial is done or skipped.
+- **Crates** (Common to Legendary) slide down the same chute into the pen (none during the tutorial).
+  Every arrival is told with a toast: "An Epic Crate is on its way!" for Uncommon and better, "A crate
+  rolled into your pen!" for a Common one (that one at most every 30 s). Walk
   into one to pick it up (within 4.5 studs, one at a time; `src/shared/CratePickup.luau`). Crates hold
   units a few tiers under the best tier of your run (`Economy.chestAnchor`: best 10 gives tier 7, best 25
   gives 17), so they help without skipping the curve. The crate panel shows the odds for that tier and leads
   with the free route:
-  - The gold button, **Carry it to the Crate Smasher / FREE**, shows the Smasher's timer for the rarity
-    (1 minute for a Common up to 5 for a Legendary, `Economy.CHEST_INFO`; a player's first crate takes
-    10 s; the VIP Smasher pass is 3x faster) and points the guide at the Smasher. Smashing a crate before
-    its timer ends takes the "Open Crate" product, or is free with Crate Master.
+  - The gold button, **Carry it to the Crate Smasher / FREE**, shows the Smasher's real time for this
+    crate (the snapshot's `heldSeconds`: 1 minute for a Common up to 5 for a Legendary,
+    `Economy.CHEST_INFO`; a player's first crate takes 10 s; the VIP Smasher pass is 3x faster) and
+    points the guide at the Smasher for 30 s (marker, floor trail and beam). The first three crates a
+    player ever holds get that path by themselves (`Economy.CRATE_GUIDE_HOLDS`). A crate whose timer
+    ends while its owner stands on the Smasher's pad opens by itself. Smashing a crate before its timer
+    ends takes the "Open Crate" product, or is free with Crate Master: the offer is a small "Smash now"
+    button on the crate in the Smasher (it asks before the Robux prompt) and never pops up from
+    standing on the pad.
   - **Open now**, a small button under it: the "Open Crate" product (R$ 30, any rarity), or free and
     instant with the **Crate Master** pass. Both are offered only where `PolicyService` allows paid random
     items.
@@ -146,7 +160,8 @@ sand island in the sea.
   (`src/client/UI/MapPicker.luau`, a live 3D preview per map). During a run the HUD
   (`src/client/UI/ObbyHud.luau`) shows a rainbow progress bar with every runner's avatar head,
   "MAP n / 10", **SKIP MAP** (cash: two minutes of income, at least $250, `ParkourSkip`) and a 3-slot
-  **gear hotbar** (Speed, Jump and Gravity coils, keys 1-3, `ParkourGear`). SKIP MAP only unlocks the next
+  **gear hotbar** (Speed, Jump and Gravity coils, keys 1-3, `ParkourGear`); the gear hotbar sits bottom
+  centre (above the jump button's row on touch). SKIP MAP only unlocks the next
   map: it pays nothing, counts no clear, sets no best time and starts no reward cooldown; the run ends and
   you stand at the gates with the map picker on the next map. The skipped map's real first clear still
   pays later, and a skip with nothing to unlock (the last map, or the next map is already open) is refused
@@ -214,9 +229,20 @@ sand island in the sea.
   percent). From tier 15 it names the rebirth instead ("Next: Rebirth", "+3 stars · +30% cash forever")
   when the next tier is more than 4 hours of income away or the run has every tier
   (`Economy.rebirthIsGoal`). The strip shows real progress, the units still
-  missing and a time estimate, and pulses READY when one merge finds the tier. A pill under it names a
-  nearer goal (blender upgrade, free gift, crate, Game Mode), with a chevron on the plot. It hides
+  missing and a time estimate, and pulses READY when one merge finds the tier. The top centre is three
+  rows (count, status strip, goal strip). A nearer goal (blender upgrade, crate, Game Mode) takes the
+  goal strip's second line and a tap on the strip does it, with a chevron on the plot. The free gift is
+  announced only by the pulsing CLAIM! gift in the bottom-right corner. It hides
   during the intro, and during a game-mode run only the cash stays on screen.
+- **Windows.** Window captions are held at 13 px or more on screen. The Ranking goal is a dark pill over
+  a slim bar. The Index's locked milestones are dim chips and only a claimable one is a button. The
+  Shop's FREE GIFT card shows the gift and the Daily Reward as two chips. A Champion without the Chad
+  Aura pass sees the aura switch beside the price.
+- **Cards.** Finish cards close when a mode starts or stops and when the player is home. The free gift
+  card is solid. A reveal hides any open window behind a dark veil. Nothing opens by itself while a card
+  is queued or showing (PopupBusy). A NEW CHAD reveal stays 10 s if nobody taps, but only 3 s once
+  another card waits behind it (the tutorial's "YOU DID IT!"). Quitting a mode puts the player 20 studs
+  in front of the gates, facing the plaza.
 - **Daily reward** (`src/shared/DailyReward.luau`, `src/server/Daily.luau`, `src/client/UI/DailyWindow.luau`):
   one claim per UTC day on a 7-day streak. Each day pays cash sized like a shop cash pack (minutes of your
   income, with a minimum), days 3 and 7 also open a crate on the spot. Daily streak saver: miss one day

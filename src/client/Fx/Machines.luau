@@ -14,7 +14,8 @@
 --   * Upgrade / buy / deny feedback: dust puffs, confetti, stars, coins; a buy's price is a
 --     small red line over the wallet; a converter upgrade sends orbs from the pad to the jar.
 --   * Crate Smasher: a local crate rattles as its timer runs out; when ready the striker puck
---     rides up its track, the bell rings and a READY! card pops up.
+--     rides up its track and the bell rings (the station sign shows READY!). While the timer
+--     runs a small "Smash now" button sits on the crate (Robux; asks before it prompts).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -49,6 +50,7 @@ end
 
 -- Palette: teal/blue dominant, sunny the accent, coral the sparing pop; grape is the aura
 -- colour (orbs going into the converter).
+local ROBUX = utf8.char(0xE002)
 local INK = worldColor("Ink", Color3.fromRGB(58, 48, 96))
 local CREAM = worldColor("Cream", WHITE)
 local SUNNY = worldColor("Sunny", C.Primary)
@@ -1518,8 +1520,8 @@ type Cracker = {
 	body: Part?,
 	parts: { Part },
 	offsets: { CFrame },
+	-- The "Smash now" button (PlayerGui), while a crate is in the slot.
 	gui: BillboardGui?,
-	card: Frame?,
 	rarity: string,
 	ready: boolean,
 	shakeUntil: number,
@@ -1661,14 +1663,17 @@ local function destroyCrate(cr: Cracker, burst: boolean)
 	if cr.model then
 		cr.model:Destroy()
 	end
-	cr.model, cr.body, cr.gui, cr.card = nil, nil, nil, nil
+	if cr.gui then
+		cr.gui:Destroy()
+	end
+	cr.model, cr.body, cr.gui = nil, nil, nil
 	table.clear(cr.parts)
 	table.clear(cr.offsets)
 	cr.rarity = ""
 	cr.ready = false
 end
 
-local function buildCrate(cr: Cracker, rarity: string)
+local function buildCrate(cr: Cracker, rarity: string, slotIndex: number)
 	local color = rarityColor(rarity)
 	local model = Instance.new("Model")
 	model.Name = "CrackerCrate"
@@ -1680,39 +1685,49 @@ local function buildCrate(cr: Cracker, rarity: string)
 	local bandB = newPart(Enum.PartType.Block, "Band", color, Vector3.new(1.76, 1.56, 0.28))
 	bandB.Parent = model
 
-	-- READY! card: cream pill with a rarity-coloured outline and Ink text.
-	local gui = Instance.new("BillboardGui")
-	gui.Name = "Ready"
-	gui.LightInfluence = 0
-	gui.MaxDistance = 45
-	gui.Size = UDim2.fromOffset(120, 44)
-	gui.StudsOffset = Vector3.new(0, 2.6, 0)
-	gui.Enabled = false
-	gui.Parent = body
-	local card = Instance.new("Frame")
-	card.AnchorPoint = Vector2.new(0.5, 0.5)
-	card.Position = UDim2.fromScale(0.5, 0.5)
-	card.Size = UDim2.fromScale(1, 1)
-	card.BackgroundColor3 = CREAM
-	card.Parent = gui
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0.5, 0)
-	corner.Parent = card
-	local outline = Instance.new("UIStroke")
-	outline.Thickness = 3
-	outline.Color = color
-	outline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-	outline.Parent = card
-	local label = Instance.new("TextLabel")
-	label.BackgroundTransparency = 1
-	label.AnchorPoint = Vector2.new(0.5, 0.5)
-	label.Position = UDim2.fromScale(0.5, 0.5)
-	label.Size = UDim2.fromScale(0.86, 0.72)
-	label.Font = Theme.Fonts.Title
-	label.TextScaled = true
-	label.Text = "READY!"
-	label.TextColor3 = INK
-	label.Parent = card
+	-- "Smash now" button over the crate while its timer runs (the station sign shows the
+	-- timer and READY!): the only place the Robux smash is offered, and only on a tap. In
+	-- PlayerGui so that it takes input; stepCrackers shows and hides it.
+	local gui: BillboardGui? = nil
+	local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	if playerGui then
+		local smash = Instance.new("BillboardGui")
+		smash.Name = "SmashNow" .. slotIndex
+		smash.Adornee = body
+		smash.Active = true
+		smash.AlwaysOnTop = true
+		smash.ResetOnSpawn = false
+		smash.LightInfluence = 0
+		smash.MaxDistance = 28
+		smash.Size = UDim2.fromOffset(156, 38)
+		smash.StudsOffsetWorldSpace = Vector3.new(0, 0.2, 0)
+		smash.Enabled = false
+		local button = Instance.new("TextButton")
+		button.Name = "Button"
+		button.Size = UDim2.fromScale(1, 1)
+		button.BackgroundColor3 = INK
+		button.BackgroundTransparency = 0.15
+		button.AutoButtonColor = true
+		button.Font = Theme.Fonts.Title
+		button.TextSize = 17
+		button.TextColor3 = WHITE
+		button.Text = string.format("Smash now  %s %d", ROBUX, Theme.Monetization.CrateOpen.Price)
+		button.Parent = smash
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0.5, 0)
+		corner.Parent = button
+		local outline = Instance.new("UIStroke")
+		outline.Thickness = 2
+		outline.Color = color
+		outline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		outline.Parent = button
+		button.Activated:Connect(function()
+			-- The server answers with its "Smash it now for R$..?" confirm card.
+			Net.event("Action"):FireServer({ action = "OfferSmash", slot = slotIndex })
+		end)
+		smash.Parent = playerGui
+		gui = smash
+	end
 
 	model.Parent = fxFolder
 	cr.model = model
@@ -1720,7 +1735,6 @@ local function buildCrate(cr: Cracker, rarity: string)
 	cr.parts = { body, bandA, bandB }
 	cr.offsets = { CFrame.identity, CFrame.identity, CFrame.identity }
 	cr.gui = gui
-	cr.card = card
 	cr.rarity = rarity
 	cr.ready = false
 	cr.shakeUntil = 0
@@ -1748,7 +1762,7 @@ local function syncCrackers(fromSnapshot: boolean)
 		if rarity ~= cr.rarity then
 			destroyCrate(cr, fromSnapshot and cr.rarity ~= "" and rarity == "")
 			if rarity ~= "" and holos[i] then
-				buildCrate(cr, rarity)
+				buildCrate(cr, rarity, i)
 			end
 		end
 		local holo = holos[i]
@@ -1801,18 +1815,22 @@ local function stepCrackers(now: number)
 		local left = if type(slot) == "table" then tonumber(slot.secondsLeft) or 0 else 0
 		left = math.max(0, left - State.age())
 		local ready = left <= 0
+		-- The Robux smash: only while the timer runs, with empty hands, where Robux crate
+		-- opens are allowed and not for a Crate Master (theirs opens free on the pad).
+		local smash = cr.gui
+		if smash then
+			local passes = data and data.passes
+			local offer = not ready
+				and data ~= nil
+				and data.crateRobux == true
+				and (data.heldChest == nil or data.heldChest == "")
+				and not (type(passes) == "table" and passes.CrateKey == true)
+			if smash.Enabled ~= offer then
+				smash.Enabled = offer
+			end
+		end
 		if ready ~= cr.ready then
 			cr.ready = ready
-			local gui, card = cr.gui, cr.card
-			if gui then
-				gui.Enabled = ready
-			end
-			if ready and card then
-				card.Size = UDim2.fromScale(0.2, 0.2)
-				TweenService
-					:Create(card, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = UDim2.fromScale(1, 1) })
-					:Play()
-			end
 			if ready then
 				local color = rarityColor(cr.rarity)
 				confettiBurst(holo.Position + UP, 16, 0.9, { color, SUNNY, WHITE })
@@ -1834,9 +1852,6 @@ local function stepCrackers(now: number)
 			-- Calm happy hop and a slow turn.
 			local hopY = math.abs(math.sin(now * 3)) * 0.3
 			shake = CFrame.new(0, hopY, 0) * CFrame.Angles(0, now * 0.8, math.sin(now * 6) * 0.05)
-			if cr.gui then
-				cr.gui.StudsOffset = Vector3.new(0, 2.6 + math.sin(now * 2.5) * 0.15, 0)
-			end
 		else
 			if now >= cr.nextShake then
 				cr.shakeUntil = now + 0.25 + urgency * 0.2

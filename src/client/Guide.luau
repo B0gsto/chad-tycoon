@@ -41,8 +41,8 @@ local Guide = {}
 -- Marker: size in studs, opacity at full fade-in, height above the target's top.
 local MARKER_STUDS = 2.2
 local MARKER_OPACITY = 0.7
--- Clears the pads' floating labels (World.Pads: about 2.6..6 studs above the top).
-local MARKER_HEIGHT = 7
+-- Clears the pads' floating titles (World.Pads: LABEL_LIFT 5.6, up to 7.2, plus their height).
+local MARKER_HEIGHT = 10.5
 local MARKER_BOB = 0.3
 local MAX_DISTANCE = 120
 -- Trail: chevron count, spacing along the route, first chevron's distance ahead of the player,
@@ -868,8 +868,11 @@ function Guide.update(clock: number, dt: number?)
 		-- The tutorial's path is always there; a "navigate" one only when it is needed; a
 		-- hint's only while it is new, or for a player who stands still.
 		local far = distance > TRAIL_DISTANCE and not (fromHint and os.clock() - hintSince > HINT_TRAIL_SECONDS)
-		wantTrail = fromTutorial or far or idleFor >= IDLE_SECONDS
-		wantBeam = fromTutorial and distance > BEAM_NEAR
+		-- A "navigate" request was asked for (the crate panel's "Carry it to the Crate
+		-- Smasher"): it gets the whole path, floor trail and beam, like a tutorial step.
+		local asked = fromTutorial or not fromHint
+		wantTrail = asked or far or idleFor >= IDLE_SECONDS
+		wantBeam = asked and distance > BEAM_NEAR
 	end
 	trailAlpha = approach(trailAlpha, if wantTrail then 1 else 0, dt)
 	beamAlpha = approach(beamAlpha, if wantBeam then 1 else 0, dt)

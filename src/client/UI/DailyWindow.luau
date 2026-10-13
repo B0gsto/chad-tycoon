@@ -425,6 +425,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Visible = false,
 		ZIndex = 2,
 	})
+	-- A caption like the other windows' captions: never under 13 px on screen.
+	Kit.holdText(leave, math.max(Kit.captionPx(), 13), nil, true)
 	local button = Kit.button(footer, {
 		Name = "Claim",
 		Text = "CLAIM",

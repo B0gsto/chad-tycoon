@@ -101,7 +101,9 @@ Course.SPUR = { x0 = -160, x1 = -138, half = 6, top = 0.3 }
 -- Where GoModes / ModeQuit put the player (feet): the spur end facing the gates (-X), and
 -- in front of the gates facing back toward the hub (+X). faceX: the direction faced.
 Course.ARRIVAL = { x = -166, y = 0.5, z = 0, faceX = -1 }
-Course.QUIT = { x = -200, y = 0.5, z = 0, faceX = 1 }
+-- QUIT stands well clear of the gates (12 studs more than it used to): the camera sits behind
+-- the player, and from closer it looked out through a portal's swirl.
+Course.QUIT = { x = -188, y = 0.5, z = 0, faceX = 1 }
 
 -- Mode gates: one per catalog slot, in a row on the plaza's west edge, fronts facing the
 -- hub (+X). GATE_HALF is half the opening width of the open (slot 1) gate; locked gates are

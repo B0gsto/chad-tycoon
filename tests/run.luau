@@ -2248,6 +2248,10 @@ test("Economy 2.0 migration: a save only gains", function()
 	eq(DataService.reconcile({ money = 10, totalObtained = 4 }).firstCrateDone, true, "nor is one that owned units")
 	eq(DataService.reconcile({ money = 10, bought = 3, firstCrateDone = false }).firstCrateDone, false, "a saved flag is kept")
 	eq(DataService.reconcile({ money = 10, firstCrateDone = "x" }).firstCrateDone, false, "a broken flag on an unplayed save resets")
+	-- The Smasher path shows by itself for a profile's first crates only.
+	eq(DataService.defaultProfile().cratesHeld, 0, "a new profile has held no crate")
+	eq(DataService.reconcile({ money = 10, bought = 3 }).cratesHeld, Economy.CRATE_GUIDE_HOLDS, "an existing player knows the way")
+	eq(DataService.reconcile({ money = 10, bought = 3, cratesHeld = 1 }).cratesHeld, 1, "a saved count is kept")
 
 	-- Parkour: a skipped map is saved next to best / clears (dense, 0 or 1).
 	local fresh = DataService.defaultProfile()
@@ -2277,7 +2281,7 @@ test("Tycoon pads: no Robux prompt from walking, upgrade pads need a stop", func
 	check(not has('promptPass(session.player, "PremiumUnlocker")'), "the VIP Smasher pad opens no pass prompt")
 	local _, autoMergePrompts = string.gsub(source, 'promptPass%(session%.player, "AutoMerge"%)', "")
 	eq(autoMergePrompts, 1, "Auto Merge is prompted from the Settings switch only")
-	check(has("PAD_DWELL = { ProcUp1 = 0.4, ProcUp10 = 0.4 }"), "the upgrade pads fire after a 0.4 s stop")
+	check(has("PAD_DWELL = { ProcUp1 = 0.6, ProcUp10 = 0.6 }"), "the upgrade pads fire after a 0.6 s stop")
 	check(has("Economy.CONVERTER_HEADROOM * Economy.productionPerSecond(p.units)"), "upgrades are refused past the headroom")
 	check(has("Economy.depositSplit(p.carried, mult)"), "the deposit bonus is split off as cash")
 	check(has("Economy.minProcessLevel(math.max(runNewest, 1))"), "a new tier of the run lifts the converter for free")
@@ -5393,6 +5397,8 @@ test("Game modes: a second plaza mirrored on the hub's +X side", function()
 	end
 	check(C.ARRIVAL2.x == -C.ARRIVAL.x and C.QUIT2.x == -C.QUIT.x, "arrival/quit mirrored")
 	check(C.QUIT.faceX == 1 and C.QUIT2.faceX == -1, "quit spots face the hub")
+	check(C.QUIT.x - C.GATE_X >= 18, "quit spot stands clear of the gates (the camera is behind the player)")
+	check(C.QUIT.x < C.ARRIVAL.x and C.QUIT.x > C.PLAZA.x0 and C.QUIT.x < C.PLAZA.x1, "and on the plaza")
 	check(C.ARRIVAL.faceX == -1 and C.ARRIVAL2.faceX == 1, "arrival spots face the gates")
 	-- Portals: west through gate 1 at -X, east through the mirrored gate 1 at +X.
 	local L1, L2 = C.START_LINE_X, C.START_LINE2_X

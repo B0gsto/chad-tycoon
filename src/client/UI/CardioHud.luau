@@ -997,6 +997,13 @@ function CardioHud.onNotify(p: any)
 	end
 end
 
+-- Another mode started or stopped (Main): the finish card never stays up over it.
+function CardioHud.closeFinish()
+	if screen then
+		hideFinish()
+	end
+end
+
 function CardioHud.onState(data: any)
 	if not screen or type(data) ~= "table" then
 		return

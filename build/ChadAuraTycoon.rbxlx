@@ -18097,6 +18097,17 @@ function Economy.depositSplit(carried: number, mult: number): (number, number)
 	return carried, carried * (math.max(mult, 1) - 1)
 end
 
+-- Whether a converter pad's title shows cash per second (else its speed step). `gain` is the
+-- cash per second `amount` levels would add now, `singleGain` the same for one level. The
+-- cash gain stops at what the units produce, so once one level catches up the bulk pad would
+-- read the same as the single pad at many times the price: it shows its own speed instead.
+function Economy.upgradeShowsCash(amount: number, gain: number, singleGain: number): boolean
+	if gain <= 0 then
+		return false
+	end
+	return amount == 1 or gain > singleGain * 1.005
+end
+
 -- Global "surge" event: double orbs for the last part of every cycle. ----------
 -- The converter runs at double speed too, so the cash earned really doubles. Rewards are
 -- sized with the income outside the surge.
@@ -18113,6 +18124,14 @@ function Economy.surgeState(now: number): (boolean, number)
 		return true, Economy.SURGE_CYCLE - t
 	end
 	return false, start - t
+end
+
+-- The surge as one player lives it: none until the tutorial is done or skipped (no doubled
+-- aura or cash on the server, no strip, chip, screen grade or music on the client). Inactive
+-- with the clock's own seconds until then.
+function Economy.surgeFor(now: number, tutorialDone: boolean?): (boolean, number)
+	local active, left = Economy.surgeState(now)
+	return active and tutorialDone == true, left
 end
 
 -- Players are told this many seconds before a surge starts.
@@ -18177,6 +18196,8 @@ Economy.MAX_FLOOR_CHESTS = 3
 Economy.PREMIUM_UNLOCK_SPEED = 3
 -- The very first crate of a profile opens this fast, whatever its rarity.
 Economy.FIRST_CRATE_SECONDS = 10
+-- The guide shows the path to the Crate Smasher by itself for a profile's first crates.
+Economy.CRATE_GUIDE_HOLDS = 3
 
 -- Crates are anchored this share of the way from the player's highest tier down to tier 1
 -- (rounded towards the highest tier). Late tiers take hours to reach while crates keep
@@ -22014,11 +22035,13 @@ Theme.World = {
 		Free = PURE_WHITE,
 	},
 	-- Plate behind a pad's floating price (white text): green when the player can afford it /
-	-- it is ready, soft red when not, dark for a plain status.
+	-- it is ready, soft red when not, dark for a plain status, gold (Ink text) on a pad that
+	-- needs a game pass.
 	PadPlate = {
 		Good = rgb(40, 158, 98),
 		Bad = rgb(216, 96, 92),
 		Plain = rgb(58, 48, 96),
+		Pass = rgb(255, 196, 40),
 	},
 }
 
@@ -24790,6 +24813,9 @@ export type Profile = {
 	-- The profile's first crate has been opened (until then a Smasher slot takes
 	-- Economy.FIRST_CRATE_SECONDS).
 	firstCrateDone: boolean,
+	-- Crates picked up so far, counted to Economy.CRATE_GUIDE_HOLDS only: the first ones get
+	-- the guide's path to the Crate Smasher by themselves.
+	cratesHeld: number,
 	-- Rarity of the crate the player was last prompted to open with Robux ("" = none);
 	-- the receipt opens this one if the crate is no longer held.
 	pendingCrate: string,
@@ -24892,6 +24918,7 @@ function DataService.defaultProfile(): Profile
 		processLevel = Economy.START_PROCESS_LEVEL,
 		heldChest = "",
 		firstCrateDone = false,
+		cratesHeld = 0,
 		pendingCrate = "",
 		pendingUnlocker = 0,
 		unlockers = {
@@ -24983,6 +25010,10 @@ local function reconcile(data: any): Profile
 			or (type(data.totalObtained) == "number" and data.totalObtained > 1)
 			or data.tutorialDone == true
 		data.firstCrateDone = played
+	end
+	-- Saves from before the Smasher path: a profile that has had a crate knows the way.
+	if type(data.cratesHeld) ~= "number" then
+		data.cratesHeld = if data.firstCrateDone then Economy.CRATE_GUIDE_HOLDS else 0
 	end
 	-- Saves from before the daily reward: day 1 is waiting, but today is not a "first day".
 	if data.daily == nil then
@@ -28958,7 +28989,9 @@ Course.SPUR = { x0 = -160, x1 = -138, half = 6, top = 0.3 }
 -- Where GoModes / ModeQuit put the player (feet): the spur end facing the gates (-X), and
 -- in front of the gates facing back toward the hub (+X). faceX: the direction faced.
 Course.ARRIVAL = { x = -166, y = 0.5, z = 0, faceX = -1 }
-Course.QUIT = { x = -200, y = 0.5, z = 0, faceX = 1 }
+-- QUIT stands well clear of the gates (12 studs more than it used to): the camera sits behind
+-- the player, and from closer it looked out through a portal's swirl.
+Course.QUIT = { x = -188, y = 0.5, z = 0, faceX = 1 }
 
 -- Mode gates: one per catalog slot, in a row on the plaza's west edge, fronts facing the
 -- hub (+X). GATE_HALF is half the opening width of the open (slot 1) gate; locked gates are
@@ -35334,9 +35367,8 @@ type Orb = { part: BasePart, value: number, count: number, cell: number, tier: n
 type FloorChest = { model: Model, rarity: string, position: Vector3, landsAt: number, blocked: boolean }
 type DisplaySlot = { tier: number, model: Model }
 
--- One stay on a pad: `since` = os.clock() of the step onto it, `fired` = its handler ran,
--- `linger` = the handler asked for its padLingerHandlers entry if the player stays.
-type PadVisit = { since: number, fired: boolean, linger: boolean }
+-- One stay on a pad: `since` = os.clock() of the step onto it, `fired` = its handler ran.
+type PadVisit = { since: number, fired: boolean }
 
 export type Session = {
 	player: Player,
@@ -35358,6 +35390,8 @@ export type Session = {
 	-- First run: no crates until the tutorial is done (`inTutorial` = it was still running on
 	-- the last slow tick); the first crate after it always drops (`chestCertain`).
 	inTutorial: boolean,
+	-- os.clock() of the last "a crate is here" toast (a Common one: CRATE_TOAST_GAP apart).
+	crateToastAt: number,
 	chestCertain: boolean,
 	collectBuffer: number,
 	actionBudget: number,
@@ -35408,9 +35442,9 @@ local PAD_MAX_Y = 10
 -- Pads that fire only after the player has stood on them this long (seconds): the upgrade
 -- pads lie on the Deposit to Collect walking line, and a walker crosses a 4.2-stud pad in
 -- 0.26 s. Every other pad fires on entry.
-local PAD_DWELL = { ProcUp1 = 0.4, ProcUp10 = 0.4 }
--- Standing this long on a busy Smasher pad (no crate in hand) offers the Robux smash.
-local SMASH_OFFER_DWELL = 1.5
+local PAD_DWELL = { ProcUp1 = 0.6, ProcUp10 = 0.6 }
+-- A Common crate's arrival toast comes at most this often (seconds).
+local CRATE_TOAST_GAP = 30
 -- A pass pad says "this is a game pass" at most this often (seconds); it never opens a prompt.
 local PASS_HINT_INTERVAL = 60
 -- Orbs can be collected only from inside the pen (walls and stair tops included),
@@ -35535,7 +35569,8 @@ end
 
 function Tycoon.orbMultiplier(session: Session): number
 	local mult = if session.passes.DoubleAura then 2 else 1
-	local surge = Economy.surgeState(serverNow())
+	-- No Aura Surge for a session still in the tutorial (Economy.surgeFor).
+	local surge = Economy.surgeFor(serverNow(), session.profile.tutorialDone)
 	if surge then
 		mult *= Economy.SURGE_MULTIPLIER
 	end
@@ -35553,7 +35588,7 @@ local function processRate(session: Session, surge: boolean): number
 	if session.passes.DoubleAura then
 		rate *= 2
 	end
-	if surge and Economy.surgeState(serverNow()) then
+	if surge and Economy.surgeFor(serverNow(), session.profile.tutorialDone) then
 		rate *= Economy.SURGE_MULTIPLIER
 	end
 	return rate
@@ -36154,6 +36189,8 @@ local function pickUpChest(session: Session, chest: FloorChest)
 	chest.model:Destroy()
 	table.remove(session.floorChests, index)
 	session.profile.heldChest = chest.rarity
+	-- The first few holds get the path to the Smasher (the snapshot's `crateGuide`).
+	session.profile.cratesHeld = math.min(session.profile.cratesHeld + 1, Economy.CRATE_GUIDE_HOLDS + 1)
 	attachHeldModel(session)
 	effect(session, "ChestPickup", { rarity = chest.rarity })
 	markDirty(session)
@@ -36255,6 +36292,11 @@ local function spawnFloorChest(session: Session)
 		-- "An Uncommon Crate", "An Epic Crate", "A Rare Crate".
 		local article = if string.find(rarity, "^[AEIOU]") then "An" else "A"
 		toast(session, string.format("%s %s %s is on its way!", article, rarity, theme.Words.Chest), "good")
+		session.crateToastAt = os.clock()
+	elseif os.clock() - session.crateToastAt >= CRATE_TOAST_GAP then
+		-- A Common one is told too (a small toast, nothing to tap), but not every time.
+		session.crateToastAt = os.clock()
+		toast(session, string.format("A %s rolled into your pen!", string.lower(theme.Words.Chest)), "info")
 	end
 end
 
@@ -36887,15 +36929,23 @@ padHandlers.ProcUp10 = function(session)
 	procUpgrade(session, Economy.PROCESS_BULK, "ProcUp10")
 end
 
--- Puts the held crate in a Smasher slot and returns the seconds it will take. A profile's
--- first crate opens after Economy.FIRST_CRATE_SECONDS.
-local function loadUnlocker(session: Session, slotIndex: number): number
+-- Seconds the held crate would take in a Smasher slot. A profile's first crate opens after
+-- Economy.FIRST_CRATE_SECONDS. The crate panel shows this for slot 1 (the snapshot's
+-- `heldSeconds`), so what it promises is what the Smasher does.
+local function unlockerSeconds(session: Session, slotIndex: number): number
 	local p = session.profile
-	local slot = p.unlockers[slotIndex]
 	local seconds = Economy.unlockSeconds(p.heldChest, slotIndex == 2)
 	if not p.firstCrateDone then
 		seconds = math.min(seconds, Economy.FIRST_CRATE_SECONDS)
 	end
+	return seconds
+end
+
+-- Puts the held crate in a Smasher slot and returns the seconds it will take.
+local function loadUnlocker(session: Session, slotIndex: number): number
+	local p = session.profile
+	local slot = p.unlockers[slotIndex]
+	local seconds = unlockerSeconds(session, slotIndex)
 	-- Only that one: a second crate loaded before the first opens takes its full time.
 	p.firstCrateDone = true
 	slot.rarity = p.heldChest
@@ -36929,12 +36979,10 @@ local function useUnlocker(session: Session, slotIndex: number)
 			toast(session, string.format("Smasher busy: ready in %s. Keep your crate, it goes in next.", Format.time(left)), "info")
 			refusePad(session, padName, "locked")
 		else
+			-- The Robux smash is never offered here: it is a button on the Smasher's crate
+			-- (the "OfferSmash" action). The crate opens by itself if the player waits on
+			-- the pad (fastTick).
 			toast(session, "Ready in " .. Format.time(left) .. ". Come back when the timer ends!", "info")
-			-- The Robux smash is offered only to a player who stays on the pad (offerSmash).
-			local visit = session.inside[padName]
-			if visit then
-				visit.linger = true
-			end
 		end
 		markDirty(session)
 		return
@@ -36949,8 +36997,8 @@ local function useUnlocker(session: Session, slotIndex: number)
 	markDirty(session)
 end
 
--- Still on a busy Smasher pad after SMASH_OFFER_DWELL with empty hands: offer to smash the
--- crate now for Robux. Walking across the pad never asks.
+-- The "Smash now" button on a busy Smasher's crate (empty hands): ask before the Robux
+-- prompt. Standing on or walking across the pad never asks.
 local function offerSmash(session: Session, slotIndex: number)
 	local p = session.profile
 	local slot = p.unlockers[slotIndex]
@@ -36970,16 +37018,16 @@ local function offerSmash(session: Session, slotIndex: number)
 	})
 end
 
--- Run once when the player has stood on the pad for SMASH_OFFER_DWELL, if the pad's handler
--- asked for it (PadVisit.linger).
-local padLingerHandlers: { [string]: (Session) -> () } = {
-	Unlock1 = function(session)
-		offerSmash(session, 1)
-	end,
-	Unlock2 = function(session)
-		offerSmash(session, 2)
-	end,
-}
+-- A crate whose timer ends while its owner stands on the Smasher's pad opens by itself
+-- (fastTick): the pad's handler runs again, as on a fresh step onto the pad.
+local function unlockerDue(session: Session, name: string): boolean
+	local slotIndex = if name == "Unlock1" then 1 elseif name == "Unlock2" then 2 else 0
+	if slotIndex == 0 or (slotIndex == 2 and not session.passes.PremiumUnlocker) then
+		return false
+	end
+	local slot = session.profile.unlockers[slotIndex]
+	return slot.rarity ~= "" and slot.endsAt - os.time() <= 0
+end
 
 padHandlers.Unlock1 = function(session)
 	useUnlocker(session, 1)
@@ -37048,10 +37096,15 @@ local function updateBoards(session: Session)
 	-- else the speed step; no price once the pads refuse (upgradeNotNeeded).
 	local rateNow = processRate(session, true)
 	local notNeeded = upgradeNotNeeded(session)
+	local singleGain = upgradeGain(session, 1)
 	for padName, amount in { ProcUp1 = 1, ProcUp10 = Economy.PROCESS_BULK } do
 		local cost = Economy.processBulkCost(p.processLevel, amount)
 		local gain = upgradeGain(session, amount)
-		local title = if gain > 0 then "+$" .. perSecond(gain) .. "/sec" else string.format("+%s speed", upgradeSpeed(amount))
+		-- Each pad shows its own gain: when one level already catches up with the units the
+		-- bulk pad would promise the same cash, so it shows its speed step instead.
+		local title = if Economy.upgradeShowsCash(amount, gain, singleGain)
+			then "+$" .. perSecond(gain) .. "/sec"
+			else string.format("+%s speed", upgradeSpeed(amount))
 		if notNeeded then
 			setPad(session, padName, title, "Not needed yet", false)
 		else
@@ -37117,11 +37170,14 @@ local function rebirthWords()
 	end
 	local W = theme.Words
 	local text = {
-		units = string.format("Your %s: you start again with 1 %s", W.Units, tierName(1)),
-		money = string.format("Your cash, the uncollected cash too: back to %s", Format.money(Economy.START_CASH)),
-		aura = string.format("%s you carry and %s in the Blender", W.Orb, W.Orb),
+		-- One line each on the confirm card (about 28 characters): short, but nothing left
+		-- out. "All cash" is the wallet (cash from packs is in it) and the cash waiting in
+		-- the Blender.
+		units = string.format("%s: back to 1 %s", W.Units, tierName(1)),
+		money = "All cash (packs, Blender too)",
+		aura = string.format("%s: carried and in Blender", W.Orb),
 		price = string.format("%s prices: cheap again", W.Unit),
-		converter = string.format("Blender level: back to Lv %d (new %s lift it for free)", Economy.START_PROCESS_LEVEL, W.Units),
+		converter = string.format("Blender: back to Lv %d", Economy.START_PROCESS_LEVEL),
 		stars = string.format("Your stars: +%d%% cash each, forever", Economy.STAR_BONUS * 100),
 		index = string.format("Your Index: every %s you ever found", W.Unit),
 		passes = "Every game pass you own",
@@ -37208,6 +37264,10 @@ local function snapshot(session: Session): { [string]: any }
 		-- Cash per second the next converter level adds (0 while the converter keeps up).
 		upgradeGain = upgradeGain(session, 1),
 		heldChest = p.heldChest,
+		-- The free Smasher's real time for the held crate (10 s for a profile's first one) and
+		-- whether the guide shows the way there by itself (the first few crates ever held).
+		heldSeconds = if p.heldChest ~= "" and Economy.CHEST_INFO[p.heldChest] then unlockerSeconds(session, 1) else nil,
+		crateGuide = p.heldChest ~= "" and p.cratesHeld <= Economy.CRATE_GUIDE_HOLDS,
 		crateRobux = Tycoon.hooks.crateRobuxAllowed(session.player),
 		-- Best tier of the current run (crate odds, pack sizes, the next goal) and the best
 		-- tier ever found (the Index; what the plot shows off).
@@ -37385,7 +37445,7 @@ local function fastTick(session: Session)
 		if inside then
 			local visit = session.inside[name]
 			if not visit then
-				visit = { since = now, fired = false, linger = false }
+				visit = { since = now, fired = false }
 				session.inside[name] = visit
 			end
 			local stood = now - visit.since
@@ -37397,12 +37457,10 @@ local function fastTick(session: Session)
 					flush(session)
 				end
 			end
-			if visit.linger and stood >= SMASH_OFFER_DWELL then
-				visit.linger = false
-				local linger = padLingerHandlers[name]
-				if linger then
-					linger(session)
-				end
+			-- Waiting on the Smasher's pad: the crate opens the moment its timer ends.
+			if visit.fired and unlockerDue(session, name) then
+				padHandlers[name](session)
+				flush(session)
 			end
 		else
 			session.inside[name] = nil
@@ -37544,6 +37602,14 @@ end
 -- Smashes the crate in an unlocker slot early. Crate Master owners (and finished timers)
 -- open it free; everyone else is prompted the same "Open Crate" product as a held crate,
 -- and the slot is emptied only when the receipt arrives (Tycoon.openCrateProduct).
+-- The "Smash now" button on a Smasher's crate: the confirm card, then FinishUnlocker.
+actionHandlers.OfferSmash = function(session, data)
+	local slotIndex = data.slot
+	if slotIndex == 1 or slotIndex == 2 then
+		offerSmash(session, slotIndex)
+	end
+end
+
 actionHandlers.FinishUnlocker = function(session, data)
 	local slotIndex = data.slot
 	if slotIndex ~= 1 and slotIndex ~= 2 then
@@ -37841,6 +37907,7 @@ function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, pa
 		dirty = true,
 		chestTimer = 0,
 		inTutorial = not profile.tutorialDone,
+		crateToastAt = -math.huge,
 		chestCertain = false,
 		collectBuffer = 0,
 		actionBudget = ACTIONS_PER_SECOND,
@@ -39768,7 +39835,7 @@ return Common
             <string name="Name">Decor</string>
             <string name="Source"><![CDATA[--[[
 	Decor: everything painted on a plot's floor (the courts under each group of pads, the cream
-	path from the entrance to the merge court and on to both side courts, its chevrons), the
+	path from the entrance to the merge court and on to both side courts), the
 	sunny gym dressing in the areas the courts leave free (a palm each side of the entrance, a
 	palm by each side fence), the interactive props along the front fence and the two fan
 	zones beside the display ledge. The plot is kept calm: few props, open floor.
@@ -40288,8 +40355,7 @@ end
 
 -- The cream path with a thin teal kerb: a wide stem from the entrance to the plaza along the
 -- pen's front (Layout.PLAZA), which joins both side courts with the merge court on the
--- junction. Chevrons show the way: up the stem to the merge pad, then out along the plaza to
--- the deposit pad (-X) and the crate stations (+X).
+-- junction. It carries no painted arrows: the guide's floor path (Client.Guide) shows the way.
 local function buildPath(B: Builder, parent: Instance)
 	-- Wider than the walkway PlotLayout keeps clear: the floor either side of it is open too.
 	local half = Layout.WALKWAY.maxX + 1.5
@@ -40309,20 +40375,6 @@ local function buildPath(B: Builder, parent: Instance)
 		edge
 	)
 	paintRect(B, parent, "PathStrip", Layout.rect(plaza.minX - tuck, plaza.maxX + tuck, plaza.minZ, plaza.maxZ), PATH_TOP, cream)
-
-	-- Three chevrons up the stem, evenly spaced from the entrance to the merge court.
-	local mark = color("TealLight")
-	local stemEnd = Layout.MERGE_COURT.z - Layout.MERGE_COURT.radius
-	local step = (stemEnd + Layout.INNER_HALF) / 4
-	for i = 1, 3 do
-		chevron(B, parent, 0, -Layout.INNER_HALF + i * step, 0, 1, mark)
-	end
-	local plazaZ = (plaza.minZ + plaza.maxZ) / 2
-	for _, side in { -1, 1 } do
-		for _, reach in { 2, 5.5 } do
-			chevron(B, parent, side * (plaza.maxX - reach), plazaZ, side, 0, mark)
-		end
-	end
 end
 
 -- Gym dressing ------------------------------------------------------------------------------
@@ -45888,9 +45940,10 @@ return MogStage
 	("+5", "$", a gift) in Theme.World.PadPrint. Above each pad floats its label (a
 	BillboardGui): the name (`title`) in white and, under it, the price or status Tycoon writes
 	into `sub`, in white on a small rounded plate (Theme.World.PadPlate: green when Tycoon
-	tints `sub` Good, soft red when Bad, dark otherwise), both with an Ink outline so they read
-	on every pad colour. Merge shows only its name in sunny yellow, bigger and over the pad's
-	far edge; Deposit's label floats above head height. On a plot nobody owns the names are
+	tints `sub` Good, soft red when Bad, dark otherwise; gold with dark print when it says the
+	pad needs a game pass), both with an Ink outline so they read on every pad colour. The
+	labels float above the head of a character standing on the pad. Merge shows only its name
+	in sunny yellow, bigger and over the pad's far edge. On a plot nobody owns the names are
 	dimmed (setClaimed). A disabled pad turns soft grey (Theme.Colors.PadDisabled).
 ]]
 
@@ -45917,17 +45970,19 @@ local TOP_RISE = 0.15
 -- The trigger reaches this far past the coloured top (still on the base), so a character whose
 -- root is over the top's edge counts as standing on it.
 local TRIGGER_GROW = 0.4
--- Floating label: height of its bottom above the pad top, width in studs (wider for big pads),
--- and the camera distance it stops drawing at.
-local LABEL_LIFT = 2.6
+-- Floating label: height of its bottom above the pad top (over the head of a character standing
+-- on the pad: lower, the head hid the name), width in studs (wider for big pads), and the
+-- camera distance it stops drawing at.
+local LABEL_LIFT = 5.6
 local LABEL_W = 6
 local LABEL_W_MAX = 8
 local LABEL_MAX_DISTANCE = 90
 -- Pads whose label sits at another height. The deposit label floats over the head of a player
 -- standing on its big pad (lower, the character and its dumbbell hid half of it) and clears the
--- Auto Merge label behind it in the spawn view; the bulk speed upgrade's clears the single
--- upgrade's; the merge label stays under the best unit's pedestal in the spawn view.
-local LABEL_LIFTS: { [string]: number } = { Deposit = 6.4, ProcUp10 = 4.2, Merge = 3.2 }
+-- Auto Merge label behind it in the spawn view, which is why Auto Merge's stays low; the bulk
+-- speed upgrade's clears the single upgrade's; the merge label (over the pad's far edge, so
+-- behind the character) stays under the best unit's pedestal in the spawn view.
+local LABEL_LIFTS: { [string]: number } = { Deposit = 6.4, AutoMerge = 2.6, ProcUp10 = 7.2, Merge = 3.2 }
 -- Pads whose label is wider or narrower than their size gives: the merge name is 1.5x larger,
 -- the deposit label a shorter line that fits in front of the converter's jar.
 local LABEL_GROW: { [string]: number } = { Merge = 1.5, Deposit = 0.8 }
@@ -45943,6 +45998,8 @@ local PLATE_H = 0.52
 local PLATE_PAD = 0.14
 local PLATE_CHAR = 0.09
 local PLATE_MIN = 0.32
+-- What Server.Tycoon and Server.WorldBuilder write (in any case) on a pad that needs a game pass.
+local PASS_WORDS = "game pass"
 -- Transparency of the name (and its outline) on a plot nobody owns.
 local UNCLAIMED_DIM = 0.55
 
@@ -46135,17 +46192,24 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number): (T
 end
 
 -- Shows what Server.Tycoon writes into the hidden `sub` label: its text as the white price,
--- its Good / Bad tint as the plate's colour. No text, no plate.
+-- its Good / Bad tint as the plate's colour. A pad that asks for a game pass (PASS_WORDS in
+-- the text) gets the gold plate with dark print whatever the tint: red reads as an error
+-- there. No text, no plate.
 local function bindPrice(sub: TextLabel, plate: Frame, price: TextLabel)
 	local plates = World.PadPlate or {}
 	local plain = plates.Plain or World.Ink
+	local white = price.TextColor3
 	local function show()
 		local shown = sub.Text
 		local tint = sub.TextColor3
+		local pass = plates.Pass ~= nil and string.find(string.lower(shown), PASS_WORDS, 1, true) ~= nil
 		price.Text = shown
+		price.TextColor3 = if pass then World.Ink else white
 		plate.Visible = shown ~= ""
 		plate.Size = UDim2.fromScale(math.clamp(PLATE_PAD + PLATE_CHAR * (utf8.len(shown) or #shown), PLATE_MIN, 1), PLATE_H)
-		if sameColor(tint, theme.Colors.Good) then
+		if pass then
+			plate.BackgroundColor3 = plates.Pass
+		elseif sameColor(tint, theme.Colors.Good) then
 			plate.BackgroundColor3 = plates.Good or plain
 		elseif sameColor(tint, theme.Colors.Bad) then
 			plate.BackgroundColor3 = plates.Bad or plain
@@ -46553,17 +46617,19 @@ local function buildGutterAndChute(B: Builder)
 	end
 
 	-- Chute: a smooth sunny slide bed with raised sunny side walls and butter round rails,
-	-- resting on the pen's back wall.
+	-- resting on the pen's back wall. Nothing of it collides: it bridges the narrow lane
+	-- between the pen and the gutter, the way from Buy 5 to Buy 25 behind the pen, and a
+	-- walker got stuck on it (orbs and crates ride it as client animation only).
 	local top = Vector3.new(ch.x, ch.topY, ch.topZ)
 	local bottom = Vector3.new(ch.x, ch.bottomY, ch.bottomZ)
-	slope(B, "Chute", top, bottom, ch.width, 0.4, slideColor)
+	slope(B, "Chute", top, bottom, ch.width, 0.4, slideColor).CanCollide = false
 	-- The side walls start at the gutter's front edge so orbs turning into the chute stay clear.
 	local railRise = 0.6
 	local railStart = bottom:Lerp(top, (r.minZ - ch.bottomZ) / (ch.topZ - ch.bottomZ))
 	for _, side in { -1, 1 } do
 		local offset = Vector3.new(side * (ch.width / 2 + 0.2), railRise, 0)
-		slope(B, "ChuteRail", railStart + offset, bottom + offset, 0.4, railRise + 0.4, slideColor)
-		rod(B, "ChuteRailTop", railStart + offset, bottom + offset, 0.5, rodColor)
+		slope(B, "ChuteRail", railStart + offset, bottom + offset, 0.4, railRise + 0.4, slideColor).CanCollide = false
+		rod(B, "ChuteRailTop", railStart + offset, bottom + offset, 0.5, rodColor).CanCollide = false
 	end
 	-- Support under the chute between the gutter and the pen wall.
 	local wallZ = Layout.POOL.maxZ
@@ -46575,7 +46641,8 @@ local function buildGutterAndChute(B: Builder)
 			Size = Vector3.new(ch.width - 0.6, supportTop, supportDepth),
 			CFrame = L(ch.x, supportTop / 2, (wallZ + r.minZ) / 2),
 			Color = worldColor("Teal", B.c.WallTrim),
-		})
+		}).CanCollide =
+			false
 	end
 end
 
@@ -48164,12 +48231,71 @@ local BOARD_BOTTOM = 7.2
 -- plinth and the gift box in front of them.
 local STATION_SIGN_BOTTOM = 4
 
+-- The crate crackers' cards: smaller than the other station cards, as they stand right behind
+-- their pad (2.4 studs from its base) and a full-size card fills the view from there.
+local CRACKER_SIGN = Vector2.new(4.4, 3.2)
+-- What Server.Tycoon writes into a cracker's timer once its crate can be opened.
+local READY_TEXT = "READY!"
+-- The upright "READY!" pill: its size in studs (plus a fixed pixel part, so it stays readable
+-- across the plot) and the gap between the card's top and its bottom edge.
+local READY_SIZE = Vector2.new(3, 1)
+local READY_PX = Vector2.new(24, 10)
+local READY_GAP = 0.3
+
 -- The owner card's text on a plot nobody owns.
 local FREE_PLOT = "FREE PLOT"
 
 -- A label Server.Tycoon still writes to that its card no longer shows.
 local function hiddenLabel(parent: Instance): TextLabel
 	return text(parent, { Text = "", Visible = false })
+end
+
+-- The "READY!" pill floating over a crate cracker's card (`body` is the card's body frame): a
+-- BillboardGui, so it stands upright and faces the camera from anywhere on the court, in the
+-- pads' green "ready" plate. It shows while `timer` says READY_TEXT; the card then drops its
+-- timer line and shows the crate's name (`status`) alone.
+local function buildReadyFlag(body: Frame, cardHeight: number, status: TextLabel, timer: TextLabel)
+	local card = body:FindFirstAncestorWhichIsA("BasePart") :: BasePart
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "ReadyFlag"
+	gui.Adornee = card
+	gui.Size = UDim2.new(READY_SIZE.X, READY_PX.X, READY_SIZE.Y, READY_PX.Y)
+	gui.StudsOffsetWorldSpace = Vector3.new(0, cardHeight / 2 + READY_GAP + READY_SIZE.Y / 2, 0)
+	gui.MaxDistance = Common.SIGN_FADE_CARD
+	gui.LightInfluence = 0
+	gui.Enabled = false
+	gui.Parent = card
+	local pill = Instance.new("Frame")
+	pill.Size = UDim2.fromScale(1, 1)
+	pill.BackgroundColor3 = (Paint.PadPlate and Paint.PadPlate.Good) or theme.Colors.Good
+	pill.BorderSizePixel = 0
+	pill.Parent = gui
+	local round = Instance.new("UICorner")
+	round.CornerRadius = UDim.new(0.5, 0)
+	round.Parent = pill
+	local rim = Instance.new("UIStroke")
+	rim.Color = Paint.Ink
+	rim.Thickness = 1.5
+	rim.Parent = pill
+	text(pill, {
+		Text = READY_TEXT,
+		Font = theme.Fonts.Display,
+		Size = UDim2.fromScale(0.86, 0.8),
+		Position = UDim2.fromScale(0.07, 0.1),
+		TextColor3 = Paint.White,
+		Outline = true,
+	})
+
+	local statusSize, statusPosition = status.Size, status.Position
+	local function show()
+		local ready = timer.Text == READY_TEXT
+		gui.Enabled = ready
+		timer.Visible = not ready
+		status.Size = if ready then UDim2.fromScale(statusSize.X.Scale, 0.8) else statusSize
+		status.Position = if ready then UDim2.fromScale(statusPosition.X.Scale, 0.1) else statusPosition
+	end
+	timer:GetPropertyChangedSignal("Text"):Connect(show)
+	show()
 end
 
 local function buildPlot(index: number): Plot
@@ -48264,7 +48390,8 @@ local function buildPlot(index: number): Plot
 	pad("Collect", padColors.Collect, w.Collect, "")
 	buildVault(B)
 
-	-- Crate unlockers (+X court), each with a sign card standing at the machine's front.
+	-- Crate unlockers (+X court), each with a small sign card standing at the machine's front,
+	-- square to its pad and the walkway beyond it (-X).
 	local unlockerScreens = {}
 	for i = 1, 2 do
 		local name = if i == 1 then w.Unlocker else w.PremiumUnlocker
@@ -48272,16 +48399,8 @@ local function buildPlot(index: number): Plot
 		pad("Unlock" .. i, color, name, "")
 		local rect = Layout.MACHINES["Unlocker" .. i]
 		buildUnlocker(B, rect, color)
-		local body, titleLabel = standingCard(
-			B,
-			rect.minX - 0.4,
-			(rect.minZ + rect.maxZ) / 2,
-			FACE_MINUS_X,
-			Vector2.new(6.2, 4.6),
-			STATION_SIGN_BOTTOM,
-			name,
-			false
-		)
+		local body, titleLabel =
+			standingCard(B, rect.minX - 0.4, (rect.minZ + rect.maxZ) / 2, FACE_MINUS_X, CRACKER_SIGN, STATION_SIGN_BOTTOM, name, false)
 		-- Tycoon tints the status in the crate's rarity colour, so it keeps an Ink outline.
 		local statusLabel = text(body, {
 			Text = "",
@@ -48296,6 +48415,7 @@ local function buildPlot(index: number): Plot
 			Size = UDim2.fromScale(0.9, 0.5),
 			Position = UDim2.fromScale(0.05, 0.46),
 		})
+		buildReadyFlag(body, CRACKER_SIGN.Y, statusLabel, timerLabel)
 		table.insert(unlockerScreens, { frame = body, title = titleLabel, status = statusLabel, timer = timerLabel })
 	end
 
@@ -49690,7 +49810,13 @@ return Budget
 	  and the rack's lower shelves in the upper middle of the screen with the buy pads either
 	  side. The follow camera keeps that angle; its zoom is set to FRAME_DISTANCE once.
 	  Camera.spawnShot(root) returns the same eye / focus for other camera code.
+	  In front of a mode gate (where ModeQuit puts the player, back to the gate) the shot is
+	  shortened so the eye never sits behind the gate's see-through portal; the zoom goes
+	  back to FRAME_DISTANCE once the player has walked clear of it.
 	- Camera.punch(intensity): FOV kick plus a tiny shake (intensity ~0.2..1.5).
+	- Camera.setFov(key, delta): a held FOV offset for `key` (Fx.Cardio's speed widen; 0
+	  drops it). The kick and every held offset are added to one base FOV here, so no effect
+	  reads another's widened value as its base and leaves it behind when it ends.
 	- Camera.shake(intensity, duration): positional shake only (no rotation,
 	  so the default camera scripts never drift).
 	- Camera.reducedMotion = true turns punches/shakes into no-ops.
@@ -49716,6 +49842,10 @@ local FRAME_DISTANCE = 15 -- studs from the camera to the character's head
 local FRAME_PITCH = math.rad(20) -- how far the camera looks down
 local HEAD_OFFSET = Vector3.new(0, 1.5, 0) -- the follow camera's focus above the root
 local MAX_FOV_KICK = 9
+local PORTAL_CLEAR = 2.5 -- studs the eye stays in front of a gate portal's disc
+local PORTAL_PAD = 3 -- studs past the disc's rim that still count as looking through it
+local MIN_FRAME = 5 -- the shortest shot in front of a portal
+local WIDEN_SCAN = 0.25
 
 local NEAR_TAG = "PadSignNear"
 local NEAR_SCAN = 0.15
@@ -49723,12 +49853,15 @@ local NEAR_BAND = 4 -- studs over which a near line fades
 local NEAR_TWEEN = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 local fovKick = 0 -- current extra FOV (decays)
-local baseFov: number? = nil -- FOV before the punch started
+local baseFov: number? = nil -- FOV before the punch (or the first held offset) started
+local fovHeld: { [string]: number } = {} -- Camera.setFov offsets by owner
+local fovExtra = 0 -- their sum
 local shakeAmp = 0
 local shakeUntil = 0
 local shakeLength = 0
 local started = false
 local zoomBusy = false
+local frameToken = 0 -- bumps on every spawn shot (a pending widen belongs to one)
 
 local function reduced(): boolean
 	if Camera.reducedMotion then
@@ -49753,13 +49886,66 @@ function Camera.spawnShot(root: BasePart): (Vector3?, Vector3?)
 	return focus - back + up, focus
 end
 
+-- Mode gates ---------------------------------------------------------------------------
+-- An open gate holds a swirling see-through portal (World.Modes: the "PortalVeil" disc and
+-- its Neon rings have no collision, so the follow camera's own occlusion ignores them).
+-- ModeQuit and the return from a far arena put the player a few studs in front of a gate
+-- with their back to it (Course.QUIT): the spawn shot's eye would sit behind the portal and
+-- the swirl would fill the screen.
+
+-- The portal discs of both plazas (Map.GameModes.Plaza*.Gate*.PortalVeil).
+local function portalVeils(): { BasePart }
+	local found: { BasePart } = {}
+	local map = Workspace:FindFirstChild("Map")
+	local modes = map and map:FindFirstChild("GameModes")
+	if not modes then
+		return found
+	end
+	for _, plaza in modes:GetChildren() do
+		if string.sub(plaza.Name, 1, 5) == "Plaza" then
+			for _, gate in plaza:GetChildren() do
+				local veil = gate:FindFirstChild("PortalVeil")
+				if veil and veil:IsA("BasePart") then
+					table.insert(found, veil)
+				end
+			end
+		end
+	end
+	return found
+end
+
+-- How far along the way from `focus` to `eye` the camera may go before it comes within
+-- PORTAL_CLEAR studs of a gate portal's disc (1 = all the way).
+local function portalLimit(focus: Vector3, eye: Vector3): number
+	local limit = 1
+	for _, veil in portalVeils() do
+		-- The disc is a cylinder: its axis (the part's X) points through the gate.
+		local normal = veil.CFrame.RightVector
+		local from = (focus - veil.Position):Dot(normal)
+		local to = (eye - veil.Position):Dot(normal)
+		local side = if from >= 0 then 1 else -1
+		local travel = from - to
+		if to * side < PORTAL_CLEAR and travel * side > 1e-3 then
+			-- Where the line meets the disc's plane (or ends just short of it): inside the rim?
+			local at = focus:Lerp(eye, math.clamp(from / travel, 0, 1))
+			local off = at - veil.Position
+			local radial = (off - normal * off:Dot(normal)).Magnitude
+			if radial <= math.max(veil.Size.Y, veil.Size.Z) / 2 + PORTAL_PAD then
+				limit = math.min(limit, math.clamp((from - side * PORTAL_CLEAR) / travel, 0, 1))
+			end
+		end
+	end
+	return limit
+end
+
 -- Sets the follow camera's zoom to `distance` by pinning the player's zoom limits to it for
--- a frame (the camera scripts clamp their zoom to the limits), then restoring them.
-local function setZoom(distance: number)
+-- a frame (the camera scripts clamp their zoom to the limits), then restoring them. Returns
+-- false when it could not (another zoom is being set, or the distance is outside the limits).
+local function setZoom(distance: number): boolean
 	local player = Players.LocalPlayer
 	local lo, hi = player.CameraMinZoomDistance, player.CameraMaxZoomDistance
 	if zoomBusy or distance < lo or distance > hi then
-		return
+		return false
 	end
 	zoomBusy = true
 	task.spawn(function()
@@ -49775,6 +49961,26 @@ local function setZoom(distance: number)
 		end
 		zoomBusy = false
 	end)
+	return true
+end
+
+-- A shot shortened in front of a portal: once the full shot along the camera's own view
+-- would clear every portal (the player walked on, or turned the camera), the zoom goes back
+-- to FRAME_DISTANCE. Ends with the next spawn shot, the character or a scripted camera.
+local function widenLater(root: BasePart, mine: number)
+	task.spawn(function()
+		while true do
+			task.wait(WIDEN_SCAN)
+			local camera = Workspace.CurrentCamera
+			if frameToken ~= mine or not root.Parent or not camera or camera.CameraType ~= Enum.CameraType.Custom then
+				return
+			end
+			local focus = root.Position + HEAD_OFFSET
+			if portalLimit(focus, focus - camera.CFrame.LookVector * FRAME_DISTANCE) >= 1 and setZoom(FRAME_DISTANCE) then
+				return
+			end
+		end
+	end)
 end
 
 -- Places the Custom camera on the spawn shot for `root`.
@@ -49787,8 +49993,16 @@ local function frameBehind(root: BasePart)
 	if not eye or not focus then
 		return
 	end
+	frameToken += 1
+	local distance = FRAME_DISTANCE
+	local limit = portalLimit(focus, eye)
+	if limit < 1 then
+		distance = math.max(MIN_FRAME, FRAME_DISTANCE * limit)
+		eye = focus + (eye - focus).Unit * distance
+		widenLater(root, frameToken)
+	end
 	camera.CFrame = CFrame.lookAt(eye, focus)
-	setZoom(FRAME_DISTANCE)
+	setZoom(distance)
 end
 
 local function onCharacter(character: Model)
@@ -49933,6 +50147,27 @@ function Camera.punch(intensity: number?)
 	Camera.shake(0.18 * k, 0.25 + 0.1 * k)
 end
 
+-- A held FOV offset for `key`, added to the base FOV with the punch's kick (0 drops it).
+function Camera.setFov(key: string, delta: number)
+	if (fovHeld[key] or 0) == delta then
+		return
+	end
+	if delta ~= 0 then
+		fovHeld[key] = delta
+	else
+		fovHeld[key] = nil
+	end
+	local sum = 0
+	for _, held in fovHeld do
+		sum += held
+	end
+	fovExtra = sum
+	local camera = Workspace.CurrentCamera
+	if sum ~= 0 and not baseFov and camera then
+		baseFov = camera.FieldOfView
+	end
+end
+
 -- Positional shake (studs) that fades out over `duration` seconds.
 function Camera.shake(intensity: number?, duration: number?)
 	if reduced() then
@@ -49953,10 +50188,10 @@ local function step(dt: number)
 		return
 	end
 	if baseFov then
-		if fovKick > 0.01 then
-			-- Fast spring back toward the base FOV.
-			fovKick *= math.exp(-dt * 7)
-			camera.FieldOfView = baseFov + fovKick
+		if fovKick > 0.01 or fovExtra ~= 0 then
+			-- Fast spring back toward the base FOV (plus whatever is held).
+			fovKick = if fovKick > 0.01 then fovKick * math.exp(-dt * 7) else 0
+			camera.FieldOfView = baseFov + fovKick + fovExtra
 		else
 			camera.FieldOfView = baseFov
 			baseFov = nil
@@ -50064,6 +50299,8 @@ local Client = script.Parent.Parent
 local State = require(Client.State) :: any
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
+local Camera = require(script.Parent.Camera) :: any
+local Chase = require(script.Parent.CardioChase) :: any
 local Sounds = require(Client.Sounds) :: any
 local Assets = require(ReplicatedStorage.Shared.Assets) :: any
 
@@ -50158,7 +50395,6 @@ local localKey: Key? = nil
 -- Keys under other players' feet this frame (kept pressed down).
 local heldOther: { Key } = {}
 local speedK = 0
-local fovBase: number? = nil
 local runTrack: AnimationTrack? = nil
 local runTrackOwner: Humanoid? = nil
 local puffAt = 0
@@ -50661,20 +50897,10 @@ local function ensureLines()
 	end
 end
 
+-- The widen is held by Fx.Camera, which owns the base FOV (its punch reads the same one), so
+-- nothing of it is left on the camera when the run ends.
 local function applyFov(delta: number)
-	local camera = Workspace.CurrentCamera
-	if not camera then
-		return
-	end
-	if delta > 0.01 then
-		if not fovBase then
-			fovBase = camera.FieldOfView
-		end
-		camera.FieldOfView = (fovBase :: number) + delta
-	elseif fovBase then
-		camera.FieldOfView = fovBase :: number
-		fovBase = nil
-	end
+	Camera.setFov("cardio", if delta > 0.01 then delta else 0)
 end
 
 local function stepSpeed(dt: number, root: BasePart?)
@@ -51198,7 +51424,11 @@ local function activate()
 	end
 end
 
+-- The one way out of a run (the "stop" Notify of a quit, Home, a mode switch, a respawn or
+-- leaving the track, and the snapshot's `running` going false): the glow, the widened FOV,
+-- the speed lines, the pops and pressed keys, and the chaser with its red vignette all go.
 local function deactivate()
+	Chase.stop()
 	if not active then
 		return
 	end
@@ -51647,6 +51877,18 @@ local function clear()
 	setDanger(0)
 end
 
+-- The run itself is over: the big words ("RUN!", "MOGGED!") go with the chase.
+local function stop()
+	clear()
+	if gui then
+		for _, child in gui:GetChildren() do
+			if child.Name == "Splash" then
+				child:Destroy()
+			end
+		end
+	end
+end
+
 local function warnMark(model: Model, height: number)
 	local head = model.PrimaryPart
 	if not head then
@@ -51953,9 +52195,13 @@ function ChaseFx.onNotify(p: any)
 	elseif event == "chaseEnd" then
 		onEnd(p)
 	elseif event == "stop" then
-		clear()
+		stop()
 	end
 end
+
+-- Fx.Cardio calls this on every way out of a run (its own "stop" and the snapshot's
+-- `running` going false), so the chaser, the meter and the red vignette never outlive it.
+ChaseFx.stop = stop
 
 function ChaseFx.init()
 	Net.event("Notify").OnClientEvent:Connect(function(payload)
@@ -51963,7 +52209,7 @@ function ChaseFx.init()
 			ChaseFx.onNotify(payload)
 		end
 	end)
-	player.CharacterRemoving:Connect(clear)
+	player.CharacterRemoving:Connect(stop)
 end
 
 return ChaseFx
@@ -56101,7 +56347,8 @@ return Interactive
 --   * Upgrade / buy / deny feedback: dust puffs, confetti, stars, coins; a buy's price is a
 --     small red line over the wallet; a converter upgrade sends orbs from the pad to the jar.
 --   * Crate Smasher: a local crate rattles as its timer runs out; when ready the striker puck
---     rides up its track, the bell rings and a READY! card pops up.
+--     rides up its track and the bell rings (the station sign shows READY!). While the timer
+--     runs a small "Smash now" button sits on the crate (Robux; asks before it prompts).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -56136,6 +56383,7 @@ end
 
 -- Palette: teal/blue dominant, sunny the accent, coral the sparing pop; grape is the aura
 -- colour (orbs going into the converter).
+local ROBUX = utf8.char(0xE002)
 local INK = worldColor("Ink", Color3.fromRGB(58, 48, 96))
 local CREAM = worldColor("Cream", WHITE)
 local SUNNY = worldColor("Sunny", C.Primary)
@@ -57605,8 +57853,8 @@ type Cracker = {
 	body: Part?,
 	parts: { Part },
 	offsets: { CFrame },
+	-- The "Smash now" button (PlayerGui), while a crate is in the slot.
 	gui: BillboardGui?,
-	card: Frame?,
 	rarity: string,
 	ready: boolean,
 	shakeUntil: number,
@@ -57748,14 +57996,17 @@ local function destroyCrate(cr: Cracker, burst: boolean)
 	if cr.model then
 		cr.model:Destroy()
 	end
-	cr.model, cr.body, cr.gui, cr.card = nil, nil, nil, nil
+	if cr.gui then
+		cr.gui:Destroy()
+	end
+	cr.model, cr.body, cr.gui = nil, nil, nil
 	table.clear(cr.parts)
 	table.clear(cr.offsets)
 	cr.rarity = ""
 	cr.ready = false
 end
 
-local function buildCrate(cr: Cracker, rarity: string)
+local function buildCrate(cr: Cracker, rarity: string, slotIndex: number)
 	local color = rarityColor(rarity)
 	local model = Instance.new("Model")
 	model.Name = "CrackerCrate"
@@ -57767,39 +58018,49 @@ local function buildCrate(cr: Cracker, rarity: string)
 	local bandB = newPart(Enum.PartType.Block, "Band", color, Vector3.new(1.76, 1.56, 0.28))
 	bandB.Parent = model
 
-	-- READY! card: cream pill with a rarity-coloured outline and Ink text.
-	local gui = Instance.new("BillboardGui")
-	gui.Name = "Ready"
-	gui.LightInfluence = 0
-	gui.MaxDistance = 45
-	gui.Size = UDim2.fromOffset(120, 44)
-	gui.StudsOffset = Vector3.new(0, 2.6, 0)
-	gui.Enabled = false
-	gui.Parent = body
-	local card = Instance.new("Frame")
-	card.AnchorPoint = Vector2.new(0.5, 0.5)
-	card.Position = UDim2.fromScale(0.5, 0.5)
-	card.Size = UDim2.fromScale(1, 1)
-	card.BackgroundColor3 = CREAM
-	card.Parent = gui
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0.5, 0)
-	corner.Parent = card
-	local outline = Instance.new("UIStroke")
-	outline.Thickness = 3
-	outline.Color = color
-	outline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-	outline.Parent = card
-	local label = Instance.new("TextLabel")
-	label.BackgroundTransparency = 1
-	label.AnchorPoint = Vector2.new(0.5, 0.5)
-	label.Position = UDim2.fromScale(0.5, 0.5)
-	label.Size = UDim2.fromScale(0.86, 0.72)
-	label.Font = Theme.Fonts.Title
-	label.TextScaled = true
-	label.Text = "READY!"
-	label.TextColor3 = INK
-	label.Parent = card
+	-- "Smash now" button over the crate while its timer runs (the station sign shows the
+	-- timer and READY!): the only place the Robux smash is offered, and only on a tap. In
+	-- PlayerGui so that it takes input; stepCrackers shows and hides it.
+	local gui: BillboardGui? = nil
+	local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	if playerGui then
+		local smash = Instance.new("BillboardGui")
+		smash.Name = "SmashNow" .. slotIndex
+		smash.Adornee = body
+		smash.Active = true
+		smash.AlwaysOnTop = true
+		smash.ResetOnSpawn = false
+		smash.LightInfluence = 0
+		smash.MaxDistance = 28
+		smash.Size = UDim2.fromOffset(156, 38)
+		smash.StudsOffsetWorldSpace = Vector3.new(0, 0.2, 0)
+		smash.Enabled = false
+		local button = Instance.new("TextButton")
+		button.Name = "Button"
+		button.Size = UDim2.fromScale(1, 1)
+		button.BackgroundColor3 = INK
+		button.BackgroundTransparency = 0.15
+		button.AutoButtonColor = true
+		button.Font = Theme.Fonts.Title
+		button.TextSize = 17
+		button.TextColor3 = WHITE
+		button.Text = string.format("Smash now  %s %d", ROBUX, Theme.Monetization.CrateOpen.Price)
+		button.Parent = smash
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0.5, 0)
+		corner.Parent = button
+		local outline = Instance.new("UIStroke")
+		outline.Thickness = 2
+		outline.Color = color
+		outline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		outline.Parent = button
+		button.Activated:Connect(function()
+			-- The server answers with its "Smash it now for R$..?" confirm card.
+			Net.event("Action"):FireServer({ action = "OfferSmash", slot = slotIndex })
+		end)
+		smash.Parent = playerGui
+		gui = smash
+	end
 
 	model.Parent = fxFolder
 	cr.model = model
@@ -57807,7 +58068,6 @@ local function buildCrate(cr: Cracker, rarity: string)
 	cr.parts = { body, bandA, bandB }
 	cr.offsets = { CFrame.identity, CFrame.identity, CFrame.identity }
 	cr.gui = gui
-	cr.card = card
 	cr.rarity = rarity
 	cr.ready = false
 	cr.shakeUntil = 0
@@ -57835,7 +58095,7 @@ local function syncCrackers(fromSnapshot: boolean)
 		if rarity ~= cr.rarity then
 			destroyCrate(cr, fromSnapshot and cr.rarity ~= "" and rarity == "")
 			if rarity ~= "" and holos[i] then
-				buildCrate(cr, rarity)
+				buildCrate(cr, rarity, i)
 			end
 		end
 		local holo = holos[i]
@@ -57888,18 +58148,22 @@ local function stepCrackers(now: number)
 		local left = if type(slot) == "table" then tonumber(slot.secondsLeft) or 0 else 0
 		left = math.max(0, left - State.age())
 		local ready = left <= 0
+		-- The Robux smash: only while the timer runs, with empty hands, where Robux crate
+		-- opens are allowed and not for a Crate Master (theirs opens free on the pad).
+		local smash = cr.gui
+		if smash then
+			local passes = data and data.passes
+			local offer = not ready
+				and data ~= nil
+				and data.crateRobux == true
+				and (data.heldChest == nil or data.heldChest == "")
+				and not (type(passes) == "table" and passes.CrateKey == true)
+			if smash.Enabled ~= offer then
+				smash.Enabled = offer
+			end
+		end
 		if ready ~= cr.ready then
 			cr.ready = ready
-			local gui, card = cr.gui, cr.card
-			if gui then
-				gui.Enabled = ready
-			end
-			if ready and card then
-				card.Size = UDim2.fromScale(0.2, 0.2)
-				TweenService
-					:Create(card, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = UDim2.fromScale(1, 1) })
-					:Play()
-			end
 			if ready then
 				local color = rarityColor(cr.rarity)
 				confettiBurst(holo.Position + UP, 16, 0.9, { color, SUNNY, WHITE })
@@ -57921,9 +58185,6 @@ local function stepCrackers(now: number)
 			-- Calm happy hop and a slow turn.
 			local hopY = math.abs(math.sin(now * 3)) * 0.3
 			shake = CFrame.new(0, hopY, 0) * CFrame.Angles(0, now * 0.8, math.sin(now * 6) * 0.05)
-			if cr.gui then
-				cr.gui.StudsOffset = Vector3.new(0, 2.6 + math.sin(now * 2.5) * 0.15, 0)
-			end
 		else
 			if now >= cr.nextShake then
 				cr.shakeUntil = now + 0.25 + urgency * 0.2
@@ -58094,6 +58355,7 @@ local Workspace = game:GetService("Workspace")
 local Net = require(ReplicatedStorage.Shared.Net)
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
+local State = require(script.Parent.Parent.State) :: any
 
 local ModesFx = {}
 
@@ -58403,6 +58665,7 @@ end
 
 -- Run state (from the "Mode" notifies) for the still-player hint.
 local running = false
+local runStartedAt = 0
 local stillSince = os.clock()
 local stillAt = Vector3.zero
 local lastHint = 0
@@ -59428,6 +59691,8 @@ end
 
 -- Effects -------------------------------------------------------------------------------
 
+local dipTween: Tween? = nil -- the camera dip of the last splash
+
 -- Fell through the cloud floor: a white cloud poof (Puff particles plus a few soft white balls
 -- that swell and fade, so it reads even without the sprite art) and a short camera dip.
 local CLOUD_WHITE = Color3.fromRGB(250, 250, 255)
@@ -59478,8 +59743,13 @@ local function splash(position: Vector3)
 	local humanoid = character()
 	if humanoid then
 		humanoid.CameraOffset = Vector3.new(0, -1.2, 0)
-		TweenService:Create(humanoid, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { CameraOffset = Vector3.zero })
-			:Play()
+		local tween = TweenService:Create(
+			humanoid,
+			TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ CameraOffset = Vector3.zero }
+		)
+		dipTween = tween
+		tween:Play()
 	end
 end
 
@@ -59487,6 +59757,7 @@ local KILL_LIFE = 0.6
 local FLASH_FROM = 0.35
 local FLASH_TIME = 0.35
 local flashFrame: Frame? = nil
+local flashTween: Tween? = nil
 
 -- The full-screen flash frame, made lazily on its own ScreenGui: red for lava, or `color`
 -- from transparency `from` over `time` seconds.
@@ -59513,9 +59784,11 @@ local function flash(color: Color3?, from: number?, time: number?)
 	local f = frame :: Frame
 	f.BackgroundColor3 = color or LAVA
 	f.BackgroundTransparency = from or FLASH_FROM
-	TweenService:Create(f, TweenInfo.new(time or FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+	local tween = TweenService:Create(f, TweenInfo.new(time or FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 		BackgroundTransparency = 1,
-	}):Play()
+	})
+	flashTween = tween
+	tween:Play()
 end
 
 -- Touched a kill brick: red and black shards burst out and shrink away, plus the flash.
@@ -59665,6 +59938,32 @@ local function hideGantry(level: number)
 	end)
 end
 
+-- The one way out of a Parkour run: "finish", "invalid" and "stop" (a quit, Home, a mode
+-- switch, a respawn, leaving the course) and the snapshot's modes.parkour.running going
+-- false. The themed look eases back to the scene's own Lighting (stepAmbience clears it at
+-- the end), the marquee returns, and what a fall left mid-tween (the full-screen flash, the
+-- camera dip) is put back at once.
+local function endRun()
+	running = false
+	endAmbience()
+	showGantry(GANTRY_BACK)
+	if flashTween then
+		flashTween:Cancel()
+		flashTween = nil
+	end
+	if flashFrame then
+		flashFrame.BackgroundTransparency = 1
+	end
+	if dipTween then
+		dipTween:Cancel()
+		dipTween = nil
+	end
+	local humanoid = character()
+	if humanoid then
+		humanoid.CameraOffset = Vector3.zero
+	end
+end
+
 function ModesFx.init()
 	for _, root in CollectionService:GetTagged("ModeMover") do
 		addMover(root)
@@ -59714,15 +60013,21 @@ function ModesFx.init()
 		if event == "start" then
 			currentLevel = math.floor(num(payload.level, 1))
 			running = true
+			runStartedAt = os.clock()
 			stillSince, lastHint = os.clock(), os.clock()
 			startAmbience(currentLevel)
 			hideGantry(currentLevel)
 		elseif event == "respawn" then
 			oops(payload.reason)
 		elseif event == "finish" or event == "invalid" or event == "stop" then
-			running = false
-			endAmbience()
-			showGantry(GANTRY_BACK)
+			endRun()
+		end
+	end)
+	-- The safety net: the server says no Parkour run is on while this one still counts here.
+	State.changed.Event:Connect(function(data: any)
+		local info = type(data) == "table" and type(data.modes) == "table" and data.modes.parkour
+		if running and type(info) == "table" and info.running == false and os.clock() - runStartedAt > 2 then
+			endRun()
 		end
 	end)
 
@@ -59777,7 +60082,9 @@ return ModesFx
 	  Sounds       Celebrate when a rival is mogged; the UI sounds belong to MogHud.
 
 	Listens to Notify (kind "Mode", mode "mog") on its own; everything it makes is
-	removed on finish and stop.
+	removed by clear(), the one way out: "finish" and "stop" (a quit, Home, a mode switch,
+	a respawn), the character leaving, and the snapshot's modes.mog.running going false
+	while the stage is still up (a lost Notify never leaves the camera scripted).
 ]]
 
 local Players = game:GetService("Players")
@@ -59794,6 +60101,7 @@ local Sounds = require(Client.Sounds) :: any
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
 local Animator = require(Client.Animator) :: any
+local State = require(Client.State) :: any
 local PlayerPose = require(script.Parent.PlayerPose)
 
 local MogFx = {}
@@ -59816,6 +60124,8 @@ local auraLight: PointLight? = nil
 local playerPos = Vector3.zero
 local rivalPos = Vector3.new(0, 0, -12)
 local running = false
+local startedAt = 0
+local runId = 0 -- bumps on every start and clear, so a finished run's timers stop
 local duel = false -- a 1v1 duel: the opponent is a real player's character
 local opponentId = 0
 local cameraOn = false
@@ -60187,8 +60497,10 @@ end
 
 local function clear()
 	running, duel, opponentId = false, false, 0
-	stopPosers()
+	runId += 1
+	-- The camera first: whatever else fails, the player gets the follow camera back.
 	releaseCamera()
+	stopPosers()
 	removeRival()
 	if folder then
 		folder:Destroy()
@@ -60200,6 +60512,7 @@ end
 local function onStart(p: any)
 	clear()
 	running = true
+	startedAt = os.clock()
 	if typeof(p.playerPos) == "Vector3" then
 		playerPos = p.playerPos
 	else
@@ -60338,8 +60651,9 @@ function MogFx.onNotify(p: any)
 		strike(selfPoser, "Victory", 0.8, 1.6)
 		moggedPop()
 		local nextRival = p.rival
+		local run = runId
 		task.delay(1.1, function()
-			if running and type(nextRival) == "table" then
+			if running and run == runId and type(nextRival) == "table" then
 				spawnRival(nextRival)
 			end
 		end)
@@ -60360,6 +60674,13 @@ function MogFx.init()
 	end)
 	player.CharacterRemoving:Connect(function()
 		if running then
+			clear()
+		end
+	end)
+	-- The safety net: the server says no Mog run is on while the stage is still up here.
+	State.changed.Event:Connect(function(data: any)
+		local info = type(data) == "table" and type(data.modes) == "table" and data.modes.mog
+		if running and type(info) == "table" and info.running == false and os.clock() - startedAt > 2 then
 			clear()
 		end
 	end)
@@ -67162,14 +67483,18 @@ function Surge.init()
 
 	RunService.Heartbeat:Connect(function()
 		local now = Workspace:GetServerTimeNow()
-		local active, left = Economy.surgeState(now)
+		-- A player still in the tutorial has no surge (Economy.surgeFor): no grade, no
+		-- sparkles, no music, not even the fade-out of one that just ended.
+		local data = State.data
+		local met = data ~= nil and data.tutorialDone == true
+		local active, left = Economy.surgeFor(now, met)
 		local wantMood = if active then "surge" else nil
 		if wantMood ~= mood then
 			mood = wantMood
 			Sounds.setMood(mood)
 		end
 
-		local weight = Surge.weight(active, left, Economy.SURGE_DURATION, Economy.SURGE_CYCLE)
+		local weight = if met then Surge.weight(active, left, Economy.SURGE_DURATION, Economy.SURGE_CYCLE) else 0
 		if weight <= 0.001 then
 			if grade or sparkPart then
 				clearEffects()
@@ -67247,8 +67572,8 @@ local Guide = {}
 -- Marker: size in studs, opacity at full fade-in, height above the target's top.
 local MARKER_STUDS = 2.2
 local MARKER_OPACITY = 0.7
--- Clears the pads' floating labels (World.Pads: about 2.6..6 studs above the top).
-local MARKER_HEIGHT = 7
+-- Clears the pads' floating titles (World.Pads: LABEL_LIFT 5.6, up to 7.2, plus their height).
+local MARKER_HEIGHT = 10.5
 local MARKER_BOB = 0.3
 local MAX_DISTANCE = 120
 -- Trail: chevron count, spacing along the route, first chevron's distance ahead of the player,
@@ -68074,8 +68399,11 @@ function Guide.update(clock: number, dt: number?)
 		-- The tutorial's path is always there; a "navigate" one only when it is needed; a
 		-- hint's only while it is new, or for a player who stands still.
 		local far = distance > TRAIL_DISTANCE and not (fromHint and os.clock() - hintSince > HINT_TRAIL_SECONDS)
-		wantTrail = fromTutorial or far or idleFor >= IDLE_SECONDS
-		wantBeam = fromTutorial and distance > BEAM_NEAR
+		-- A "navigate" request was asked for (the crate panel's "Carry it to the Crate
+		-- Smasher"): it gets the whole path, floor trail and beam, like a tutorial step.
+		local asked = fromTutorial or not fromHint
+		wantTrail = asked or far or idleFor >= IDLE_SECONDS
+		wantBeam = asked and distance > BEAM_NEAR
 	end
 	trailAlpha = approach(trailAlpha, if wantTrail then 1 else 0, dt)
 	beamAlpha = approach(beamAlpha, if wantBeam then 1 else 0, dt)
@@ -73449,9 +73777,21 @@ if RunService:IsStudio() then
 	end)
 end
 
+-- Parkour's HUD normally leaves on the run's "finish" / "stop" / "invalid" Notify. Safety
+-- net: the snapshot says the run is over (a Notify that never arrived) and the HUD goes too.
+local parkourRunning = false
+
 Net.event("State").OnClientEvent:Connect(function(data)
 	State.set(data)
 	CardioHud.onState(data)
+	local parkour = type(data.modes) == "table" and data.modes.parkour
+	local running = type(parkour) == "table" and parkour.running == true
+	if parkourRunning and not running then
+		Hud.setObbyMode(false)
+		Hud.runStop()
+		ObbyHud.hide()
+	end
+	parkourRunning = running
 	maybePlayIntro()
 	Sounds.updateMusic()
 	if data.freeIn and data.freeIn > 0 then
@@ -73463,9 +73803,21 @@ Net.event("State").OnClientEvent:Connect(function(data)
 	end
 end)
 
+-- Mode events that end what a finish card was about: a run (or a duel queue, or the map and
+-- Mog pickers) began, or the mode stopped. The card of a finish that is still on its way in
+-- the same burst (a duel the player left) goes with it.
+local FINISH_OVER = { start = true, stop = true, choose = true, queue = true, pick = true }
+
 Net.event("Notify").OnClientEvent:Connect(function(payload)
 	if type(payload) ~= "table" then
 		return
+	end
+	if payload.kind == "Mode" and FINISH_OVER[payload.event] then
+		-- A finish card never stays up over another mode or after its own has ended (Popups
+		-- closes it too once the player is Home).
+		Popups.closeFinish()
+		-- CardioHud's own finish card too (its own "start" and "stop" hide it already).
+		CardioHud.closeFinish()
 	end
 	if payload.kind == "Toast" then
 		Popups.toast(payload.text, payload.tone)
@@ -74390,7 +74742,10 @@ export type Hooks = {
 local NAME = "Away"
 local ACCENT = C.Rizz
 local WIDTH = 560
-local ROW_H = 64
+local ROW_H = 68
+-- The rows' text on the glass, at least (px): the row title, and the detail and the note.
+local TITLE_PX = 15
+local TEXT_PX = 13
 local GAP = 8
 local SECTION = 14
 local NOTE_H = 22
@@ -74448,7 +74803,7 @@ local function buildRow(parent: Instance, row: Comeback.Row, y: number): TextLab
 		Text = row.title,
 		Font = F.UI,
 		TextSize = T.H3,
-		MinPx = true,
+		MinPx = math.max(Kit.captionPx(), TITLE_PX),
 		TextWrapped = false,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextXAlignment = Enum.TextXAlignment.Left,
@@ -74459,14 +74814,14 @@ local function buildRow(parent: Instance, row: Comeback.Row, y: number): TextLab
 	Kit.text(frame, {
 		Name = "Detail",
 		Text = row.detail,
-		TextSize = T.Small,
-		MinPx = true,
+		TextSize = T.Body,
+		MinPx = math.max(Kit.captionPx(), TEXT_PX),
 		TextColor3 = C.Text,
 		TextWrapped = false,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -(TEXT_LEFT + right), 0, 20),
-		Position = UDim2.fromOffset(TEXT_LEFT, 35),
+		Size = UDim2.new(1, -(TEXT_LEFT + right), 0, 22),
+		Position = UDim2.fromOffset(TEXT_LEFT, 36),
 		ZIndex = 2,
 	})
 	if not row.cash then
@@ -74533,7 +74888,7 @@ local function present(offline: { [string]: any }?): boolean
 			Name = "Note",
 			Text = Comeback.cashNote(data),
 			TextSize = T.Small,
-			MinPx = true,
+			MinPx = math.max(Kit.captionPx(), TEXT_PX),
 			TextColor3 = C.Text,
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,
@@ -75424,12 +75779,16 @@ end
 
 -- Music level during a Cardio run (1 = normal).
 local MUSIC_DUCK = 0.25
+-- Seconds after a run ends before the root frame hides (past the blocks' Kit.disappear).
+local ROOT_HIDE = 0.3
+local hideToken = 0
 
 local function show()
 	if active then
 		return
 	end
 	active = true
+	hideToken += 1
 	-- Music a bit quieter during a run so the key clicks come through.
 	Sounds.setMusicDuck(MUSIC_DUCK)
 	quitArmed = false
@@ -75456,11 +75815,36 @@ local function show()
 	end
 end
 
+-- Closes the finish card and drops a gamepad selection left on its buttons, so the stick
+-- goes back to running.
+local function hideFinish()
+	Kit.unfocus(finishCard)
+	if finishCard.Visible then
+		Kit.disappear(finishCard)
+	end
+end
+
+-- The one way out of a run: the "stop" Notify (a quit, Home, a mode switch, a respawn,
+-- leaving the track) and the snapshot's `running` going false. Nothing of the run stays on
+-- screen: no banner (a queued "STAGE n" title included), no finish card, and the
+-- full-screen root goes once its blocks have eased out.
 local function hide()
+	bannerToken += 1
+	if banner.Visible then
+		Kit.disappear(banner)
+	end
+	hideFinish()
 	if not active then
 		return
 	end
 	active = false
+	hideToken += 1
+	local mine = hideToken
+	task.delay(ROOT_HIDE, function()
+		if hideToken == mine and not active then
+			root.Visible = false
+		end
+	end)
 	Sounds.setMusicDuck(1)
 	setRunActive(false)
 	if renderConn then
@@ -75492,15 +75876,6 @@ local function applySnapshot(s: { [string]: any }, exact: boolean)
 		paintUpgrade()
 		paintWin()
 		paintPads()
-	end
-end
-
--- Closes the finish card and drops a gamepad selection left on its buttons, so the stick
--- goes back to running.
-local function hideFinish()
-	Kit.unfocus(finishCard)
-	if finishCard.Visible then
-		Kit.disappear(finishCard)
 	end
 end
 
@@ -75658,6 +76033,13 @@ function CardioHud.onNotify(p: any)
 		elseif reason == "quit" then
 			Popups.toast("Cardio run ended", "info")
 		end
+	end
+end
+
+-- Another mode started or stopped (Main): the finish card never stays up over it.
+function CardioHud.closeFinish()
+	if screen then
+		hideFinish()
 	end
 end
 
@@ -76522,9 +76904,12 @@ local LAP_PATIENCE = 90
 local REWARD_QUIET = 20
 -- A claimed window closes by itself this long after the coins fly.
 local CLOSE_AFTER_CLAIM = 1.5
--- ScreenGui attributes that mean "busy": a window, a popup or a mode run. The held-crate
--- panel ("CratePanelOpen") only holds the window back for a while.
-local BUSY = { "WindowOpen", "ModalOpen", "RunActive", "ObbyMode", "CardioActive" }
+-- ScreenGui attributes that mean "busy": a window, a popup or a mode run. "PopupBusy"
+-- (Popups) is a card that is still waiting in the popup queue, or up: a reveal is held back
+-- for as long as the merges go on, which can outlast REWARD_QUIET, and the window used to
+-- open by itself in that gap, right under the reveal. It covers the free gift's card too.
+-- The held-crate panel ("CratePanelOpen") only holds the window back for a while.
+local BUSY = { "WindowOpen", "ModalOpen", "PopupBusy", "RunActive", "ObbyMode", "CardioActive" }
 
 -- The streak line's right half: the saver's rule, and what it says once the saver is spent.
 local SAVER_RULE = "Miss a day? Your streak is saved once a week."
@@ -76824,6 +77209,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Visible = false,
 		ZIndex = 2,
 	})
+	-- A caption like the other windows' captions: never under 13 px on screen.
+	Kit.holdText(leave, math.max(Kit.captionPx(), 13), nil, true)
 	local button = Kit.button(footer, {
 		Name = "Claim",
 		Text = "CLAIM",
@@ -77217,8 +77604,9 @@ return DailyWindow
 	Ink-outlined text straight over the world; only the menu buttons sit on plates.
 
 	  top bar right  Settings gear alone (Roblox's player list sits under it)
-	  top centre     three rows at most, 6 px apart: Chad icon + unit count "37/100"
-	                 (sunny + "AUTO-MERGING" at 100/100), a low glass strip
+	  top centre     three rows and no more, 6 px apart, y 4 to 128 at 720p (world labels
+	                 behind it stay readable): Chad icon + unit count "37/100"
+	                 (sunny + "AUTO-MERGING" at 100/100), one low glass status strip
 	                 "Deposit bonus: x1.3 · 12s" (never red; "AURA SURGE x2 · 1:23"
 	                 in orange during a surge) and, once the tutorial is done, the
 	                 "Next:" goal strip ("Next: Protein Bro 63%" over "1,240 more
@@ -77226,10 +77614,12 @@ return DailyWindow
 	                 turns green, breathes and says "READY: step on MOG MERGE" when
 	                 one merge finds the tier, and reads "REBIRTH: +3 stars" with a
 	                 star when a rebirth is the goal: a tap opens the rebirth card;
-	                 above the dumbbell on compact screens). Under it, one "nearer goal" pill at a time ("Blender
-	                 is full: upgrade its speed", "Free gift ready", "Crate ready at
-	                 the Smasher", "Try a Game Mode: +$X"), which Client.Guide points
-	                 at on the plot. The tutorial quest pill and the parkour run pill
+	                 above the dumbbell on compact screens). A "nearer goal" takes
+	                 the strip's second line, one at a time, behind its icon ("Blender
+	                 is full: upgrade its speed", "Crate ready at the Smasher", "Try a
+	                 Game Mode: +$X"): a tap on the strip then does it, and
+	                 Client.Guide points at its pad on the plot. No row is ever added
+	                 under the strip. The tutorial quest pill and the parkour run pill
 	                 use the third row before that.
 	  left edge      menu grid: Home Ranking Modes / Index Shop Invite Daily, each an
 	                 icon and its caption on its own dark glass plate, all the same
@@ -77243,7 +77633,9 @@ return DailyWindow
 	                 a rebirth is on offer, the star counter ("3 +30% cash", a gold
 	                 "+2" tag while a rebirth would pay; a tap opens the rebirth card)
 	  bottom centre  the dumbbell: "AURA" + the carried amount on its plaque
-	  bottom right   FREE gift with its countdown, version in the corner
+	  bottom right   FREE gift with its countdown (ready: a "!" dot and a sunny "CLAIM!",
+	                 both pulsing: the gift is announced here and nowhere else),
+	                 version in the corner
 
 	Numbers roll, things pop and the HUD staggers in when it is built. While a
 	window, modal or reveal is open (Kit.onWindowOpen, the one count behind the
@@ -77347,11 +77739,9 @@ local GOAL_MAX_W = 380
 local GOAL_TEXT_X = 50
 local GOAL_BAR_X = 12 -- the progress bar's inset, clear of the strip's round corners
 local GOAL_BAR_H = 4
-local PILL_H = 28 -- the "nearer goal" pill: the row under the goal strip
-local PILL_TEXT = 14
-local PILL_ICON = 20
-local PILL_TICK = 0.5 -- seconds between two looks at what the pill should say
-local PILL_SNOOZE = 300 -- a pill the player tapped stays away this long
+local NEAR_GAP = 4 -- the "nearer goal" on the strip's second line: its icon to its words
+local NEAR_TICK = 0.5 -- seconds between two looks at what the nearer goal should be
+local NEAR_SNOOZE = 300 -- a nearer goal the player tapped stays away this long
 local BLENDER_FULL_SECONDS = 60 -- aura waiting in the blender for longer than this: "full"
 local BROKE_SECONDS = 60 -- nothing affordable for this long: a Game Mode pays sooner
 local FAR_SECONDS = 300 -- so does it when the next tier is further off than a mode's pay (5 min of income)
@@ -77852,9 +78242,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Name = "Version",
 		Text = "v" .. Economy.VERSION,
 		Font = F.UI,
-		TextSize = 12,
+		TextSize = G.TextMin,
 		StrokeThickness = 1.5,
-		Size = UDim2.fromOffset(80, 14),
+		Size = UDim2.fromOffset(80, 16),
 		Position = UDim2.new(1, -8, 1, -4),
 		AnchorPoint = Vector2.new(1, 1),
 		TextXAlignment = Enum.TextXAlignment.Right,
@@ -78238,6 +78628,14 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local goalHint = goalText("Hint", 14, C.TextDim, F.UI)
 	goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, 20)
 	goalHint.Size = UDim2.fromOffset(10, 16)
+	-- The nearer goal's icon, in front of the second line while it names one (paintGoal).
+	local goalNearIcon = group("NearIcon", {
+		Size = UDim2.fromOffset(16, 16),
+		Position = UDim2.fromOffset(GOAL_TEXT_X, 20),
+		Visible = false,
+		ZIndex = 3,
+		Parent = goal,
+	})
 	-- A real bar: a dark track the whole width with the gold fill inside it.
 	local goalTrack = Kit.new("Frame", {
 		Name = "Track",
@@ -78276,18 +78674,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local goalReady = false
 	-- The strip names a rebirth (paintGoal): a tap opens its card.
 	local goalRebirth = false
-	for _, button in { goal, goalPad } do
-		button.Activated:Connect(function()
-			Kit.sound("Click")
-			if goalReady then
-				Guide.navigate("Merge", W.Merge, 30)
-			elseif goalRebirth then
-				Hud.onRebirth()
-			else
-				openIndex()
-			end
-		end)
-	end
+	-- Something closer than the next tier (pickNear, below): `nearShown` is the pick,
+	-- `goalNear` the one the strip's second line is showing, which a tap on the strip does.
+	type Near = { kind: string, text: string, short: string, icon: string, color: Color3, pad: string?, tag: string? }
+	local nearShown: Near? = nil
+	local goalNear: Near? = nil
 	goal.MouseEnter:Connect(function()
 		Kit.tween(goal, 0.12, { BackgroundTransparency = (if goalReady then G.Pill else G.Quiet) - 0.2 })
 	end)
@@ -78346,7 +78737,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local goalTitleShown = ""
 	local goalThumbKey = ""
 	local goalWidth = 280
-	-- The next tier is further off than a Game Mode's reward is worth (the pill reads it).
+	-- The next tier is further off than a Game Mode's reward is worth (pickNear reads it).
 	local goalFar = false
 	local function paintGoal(data: { [string]: any })
 		if type(data.discovered) ~= "table" or type(data.units) ~= "table" then
@@ -78365,7 +78756,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			pending = tonumber(data.pending),
 			income = tonumber(data.rewardIncome) or tonumber(data.income),
 		})
-		-- A rebirth is named when the next tier is the far one: the pill goes by that tier.
+		-- A rebirth is named when the next tier is the far one: pickNear goes by that tier.
 		local chase: NextGoal.Goal? = if picked.kind == "rebirth" then picked.second else picked
 		local missing = picked.missing
 		local seconds = picked.seconds
@@ -78401,6 +78792,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end
 		end
 		goalRebirth = picked.kind == "rebirth"
+		-- A nearer goal takes the second line (READY and a rebirth keep their own words and
+		-- their own tap), in fewer words when the strip is short of room.
+		local near = if ready or goalRebirth then nil else nearShown
+		if near then
+			hints = { near.text, near.short }
+		end
 		local hint = hints[1]
 		local key = table.concat({ lead, title, count, tostring(compact), table.unpack(hints) }, "|")
 		Kit.tween(goalBar, 0.3, { Size = UDim2.fromScale(if ready then 1 else picked.progress, 1) })
@@ -78410,17 +78807,24 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		goalKey = key
 		-- The strip hugs the wider line up to GOAL_MAX_W. Nothing is ever cut off with an
 		-- ellipsis: short of room the second line says less, then goes, which leaves the name
-		-- both lines to wrap onto, and only then is the name scaled down (to the phone caption
-		-- floor at the least).
+		-- both lines to wrap onto, and only then is the name scaled down (to the caption floor
+		-- at the least).
 		goalLead.Text = lead
 		local room = GOAL_MAX_W - GOAL_TEXT_X - 12
+		-- Text held at its size on a phone (applyCompact) is taller than the design's two
+		-- lines: they, and the strip, grow with it.
+		local lineH = math.max(20, goalTitle.TextSize + 2)
+		local hintH = math.max(16, goalHint.TextSize + 1)
+		-- The nearer goal's icon stands in front of its words, as tall as their line.
+		local nearX = if near then hintH + NEAR_GAP else 0
+		local hintRoom = room - nearX
 		local leadW = drawnWidth(goalLead.Text, goalLead.TextSize, goalLead.Font)
 		local countW = if count ~= "" then drawnWidth(count, goalCount.TextSize, goalCount.Font) else 0
 		local titleRoom = room - leadW - countW - 14
 		local titleNeed = drawnWidth(title, goalTitle.TextSize, goalTitle.Font)
 		local hintNeed = drawnWidth(hint, goalHint.TextSize, goalHint.Font)
 		for i = 2, #hints do
-			if hintNeed <= room or hints[i] == "" then
+			if hintNeed <= hintRoom or hints[i] == "" then
 				break
 			end
 			hint = hints[i]
@@ -78429,15 +78833,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local tight = titleNeed > titleRoom
 		-- Above the dumbbell (compact) the strip may grow a line instead: a name that needs
 		-- two lines keeps the estimate under it, which is what the strip is for.
-		local tall = tight and compact and hint ~= "" and hintNeed <= room
-		local dropHint = (tight and not tall) or hintNeed > room or hint == ""
+		local tall = tight and compact and hint ~= "" and hintNeed <= hintRoom
+		local dropHint = (tight and not tall) or hintNeed > hintRoom or hint == ""
 		local titleW = math.min(titleNeed, titleRoom)
-		local hintW = if dropHint then 0 else hintNeed
+		local hintW = if dropHint then 0 else nearX + hintNeed
 		local x = GOAL_TEXT_X
-		-- Text held at its size on a phone (applyCompact) is taller than the design's two
-		-- lines: they, and the strip, grow with it.
-		local lineH = math.max(20, goalTitle.TextSize + 2)
-		local hintH = math.max(16, goalHint.TextSize + 1)
 		local rowH = if tall then lineH * 2 elseif dropHint then lineH + hintH else lineH
 		-- Scaled only when it has to shrink: text that fits keeps its exact size. The cap is
 		-- the size it would have had (a text size constraint counts screen pixels).
@@ -78446,7 +78846,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local cap = if tight then math.ceil(goalTitle.TextSize * math.max(if screenScale then screenScale.Scale else 1, 1)) else 200
 		goalTitleFit.MinTextSize = 1
 		goalTitleFit.MaxTextSize = cap
-		goalTitleFit.MinTextSize = if tight then math.min(G.TextMinPhone, cap) else 1
+		goalTitleFit.MinTextSize = if tight then math.min(Kit.captionPx(), cap) else 1
 		local function put(label: TextLabel, text: string, width: number, gap: number)
 			label.Text = text
 			label.Size = UDim2.fromOffset(width + 4, rowH)
@@ -78456,10 +78856,29 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		put(goalLead, goalLead.Text, leadW, 6)
 		put(goalTitle, title, titleW, 8)
 		put(goalCount, count, countW, 0)
+		local hintY = if tall then lineH * 2 else lineH
 		goalHint.Text = string.upper(string.sub(hint, 1, 1)) .. string.sub(hint, 2)
-		goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, if tall then lineH * 2 else lineH)
-		goalHint.Size = UDim2.fromOffset(hintW + 4, hintH)
+		goalHint.TextColor3 = if near then C.Text else C.TextDim
+		goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X + nearX, hintY)
+		goalHint.Size = UDim2.fromOffset(hintNeed + 4, hintH)
 		goalHint.Visible = not dropHint
+		-- The nearer goal as drawn: the strip's tap goes by it, so one that found no room
+		-- (a long name took both lines) is not acted on unseen.
+		goalNear = if dropHint then nil else near
+		goalNearIcon.Visible = goalNear ~= nil
+		if near and goalNear then
+			goalNearIcon.Position = UDim2.fromOffset(GOAL_TEXT_X, hintY)
+			goalNearIcon.Size = UDim2.fromOffset(hintH, hintH)
+			if goalNearIcon:GetAttribute("Kind") ~= near.kind then
+				goalNearIcon:SetAttribute("Kind", near.kind)
+				local old = goalNearIcon:FindFirstChild("Image")
+				if old then
+					old:Destroy()
+				end
+				Kit.hudIcon(goalNearIcon, near.icon, hintH, near.color, { Name = "Image", ZIndex = 2 }).Size = UDim2.fromScale(1, 1)
+				Kit.pop(goalNearIcon, 0.8)
+			end
+		end
 		goalWidth = math.max(x, GOAL_TEXT_X + hintW) + 12
 		goal.Size = UDim2.fromOffset(goalWidth, GOAL_H + (lineH - 20) + (hintH - 16) + (if tall then lineH else 0))
 		-- A new target (not just a new count) gets a fresh thumbnail and a pop.
@@ -78490,72 +78909,23 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 	end
 
-	-- The nearer goal: one pill under the strip (over it where the strip sits above the
-	-- dumbbell) ----------------------------------------------------------------------------
+	-- The nearer goal: the strip's second line (paintGoal) ----------------------------------
 	-- While the next tier is a long way off there is nearly always something closer worth
-	-- doing. One pill at a time, by priority: the blender is full and a faster one is
-	-- affordable; the free gift is ready; a crate has finished in the Smasher; a Game Mode
-	-- pays out and nothing is affordable (or the tier is far); last, the blender is full and
-	-- the upgrade is still out of reach. A tap does it (claims the gift, opens Modes) or
-	-- draws the path to the pad; Client.Guide keeps a chevron over a pad the pill names.
-	type Near = { kind: string, text: string, icon: string, color: Color3, pad: string?, tag: string? }
-	local nearPill = Kit.hudGlass(goal, {
-		Name = "Nearer",
-		Button = true,
-		Size = UDim2.fromOffset(240, PILL_H),
-		Position = UDim2.new(0.5, 0, 1, STACK_GAP),
-		AnchorPoint = Vector2.new(0.5, 0),
-		Visible = false,
-		-- Over the strip's touch pad, which reaches past the strip's edge on a phone.
-		ZIndex = 31,
-	}) :: TextButton
-	Kit.selectable(nearPill)
-	local pillIcon = group("Icon", {
-		Size = UDim2.fromOffset(PILL_ICON, PILL_ICON),
-		Position = UDim2.new(0, 8, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ZIndex = 2,
-		Parent = nearPill,
-	})
-	local pillLabel = Kit.hudText(nearPill, {
-		Name = "Text",
-		Text = "",
-		Font = F.UI,
-		TextSize = PILL_TEXT,
-		StrokeThickness = 2,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.fromOffset(10, PILL_H),
-		Position = UDim2.fromOffset(8 + PILL_ICON + 6, 0),
-		ZIndex = 3,
-	})
-	-- Touch: a pad grows the low pill to a full tap target, away from the strip (placePill).
-	local pillPad = Kit.new("TextButton", {
-		Name = "Hit",
-		Text = "",
-		AutoButtonColor = false,
-		BackgroundTransparency = 1,
-		Selectable = false,
-		Size = UDim2.fromScale(1, 1),
-		Visible = false,
-		ZIndex = 30,
-		Parent = nearPill,
-	})
-	-- The pill hugs its words, at whatever size they are held on a phone.
-	local function layoutPill()
-		local width = drawnWidth(pillLabel.Text, pillLabel.TextSize, pillLabel.Font)
-		local height = math.max(PILL_H, pillLabel.TextSize + 10)
-		pillLabel.Size = UDim2.fromOffset(width + 4, height)
-		nearPill.Size = UDim2.fromOffset(8 + PILL_ICON + 6 + width + 14, height)
-	end
-	pillLabel:GetPropertyChangedSignal("TextSize"):Connect(layoutPill)
-	local pillNear: Near? = nil
-	local pillSnooze: { [string]: number } = {}
+	-- doing. One at a time, by priority: the blender is full and a faster one is affordable;
+	-- a crate has finished in the Smasher; a Game Mode pays out and nothing is affordable (or
+	-- the tier is far); last, the blender is full and the upgrade is still out of reach. It
+	-- takes the place of the estimate and never a row of its own: the top stack ends with
+	-- the strip, so the plot's labels behind it stay readable. A tap on the strip does it
+	-- (opens Modes) or draws the path to the pad; Client.Guide keeps a chevron over a pad it
+	-- names. The free gift is not one of them: its own button in the corner pulses "CLAIM!"
+	-- (paintFree).
+	local nearSnooze: { [string]: number } = {}
 	local brokeSince: number? = nil
 	local goalShown = false
 	local function pickNear(data: { [string]: any }): Near?
 		local now = os.clock()
 		local function awake(kind: string): boolean
-			return now >= (pillSnooze[kind] or 0)
+			return now >= (nearSnooze[kind] or 0)
 		end
 		local money = tonumber(data.money) or 0
 		local rate = tonumber(data.processRate) or 0
@@ -78578,14 +78948,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			return {
 				kind = "blender",
 				text = "Blender is full: upgrade its speed",
+				short = "Upgrade the blender",
 				icon = "Orb",
 				color = C.Orb,
 				pad = "ProcUp1",
 				tag = "UPGRADE",
 			}
-		end
-		if (tonumber(data.freeIn) or 0) - State.age() <= 0 and awake("free") then
-			return { kind = "free", text = "Free gift ready", icon = Kit.pickIcon("Free", "Gift2"), color = C.Gold }
 		end
 		if type(data.unlockers) == "table" and awake("crate") then
 			for i, slot in data.unlockers do
@@ -78598,6 +78966,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 					return {
 						kind = "crate",
 						text = W.Chest .. " ready at the Smasher",
+						short = W.Chest .. " ready",
 						icon = Kit.pickIcon("Crate" .. slot.rarity, "Gift2"),
 						color = C.Gold,
 						pad = "Unlock" .. i,
@@ -78616,45 +78985,31 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end
 		end
 		if pays > 0 and (goalFar or (brokeSince ~= nil and now - brokeSince >= BROKE_SECONDS)) and awake("mode") then
-			return { kind = "mode", text = "Try a Game Mode: +" .. State.money(pays), icon = Kit.pickIcon("Modes", "Star"), color = C.Gold }
+			return {
+				kind = "mode",
+				text = "Try a Game Mode: +" .. State.money(pays),
+				short = "Try a Game Mode",
+				icon = Kit.pickIcon("Modes", "Star"),
+				color = C.Gold,
+			}
 		end
 		if full and awake("save") then
 			return {
 				kind = "save",
 				text = string.format("Blender is full: save %s for more speed", State.money(upgradeCost)),
+				short = "Blender is full",
 				icon = "Orb",
 				color = C.Orb,
 			}
 		end
 		return nil
 	end
-	-- Toasts (Popups) sit under the top stack: the attribute "TopCardHeight" (the tutorial
-	-- card's, which is gone once the strip is up) moves them down by the pill's row. Not
-	-- while a window is open: there it would hold the toasts back.
-	local pillCard = 0
-	local function publishPill()
-		local want = if nearPill.Visible
-				and goalShown
-				and not compact
-				and screen:GetAttribute("WindowOpen") ~= true
-			then nearPill.Size.Y.Offset + STACK_GAP
-			else 0
-		local now = screen:GetAttribute("TopCardHeight")
-		if want > 0 then
-			if now ~= want and (now == nil or now == 0 or now == pillCard) then
-				screen:SetAttribute("TopCardHeight", want)
-			end
-		elseif pillCard > 0 and now == pillCard then
-			screen:SetAttribute("TopCardHeight", 0)
-		end
-		pillCard = want
-	end
-	local function updatePill()
+	local function updateNear()
 		local data = State.data
 		local near = if goalShown and data and not goalReady then pickNear(data) else nil
-		local last = pillNear
-		pillNear = near
-		-- The chevron on the plot: MOG MERGE while the goal is ready, else the pill's pad.
+		local last = nearShown
+		nearShown = near
+		-- The chevron on the plot: MOG MERGE while the goal is ready, else the nearer goal's pad.
 		if goalShown and goalReady then
 			Guide.setHint("Merge", W.Merge)
 		elseif near and near.pad then
@@ -78662,45 +79017,36 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		else
 			Guide.setHint(nil)
 		end
-		if near and (last == nil or last.text ~= near.text) then
-			pillLabel.Text = near.text
-			layoutPill()
+		-- Other words: the strip lays its second line out again.
+		if goalShown and data and (if near then near.text else "") ~= (if last then last.text else "") then
+			paintGoal(data)
 		end
-		if near and (last == nil or last.kind ~= near.kind) then
-			for _, child in pillIcon:GetChildren() do
-				child:Destroy()
+	end
+	for _, button in { goal, goalPad } do
+		button.Activated:Connect(function()
+			Kit.sound("Click")
+			local near = goalNear
+			if goalReady then
+				Guide.navigate("Merge", W.Merge, 30)
+			elseif near then
+				if near.kind == "mode" then
+					handlers.openWindow("Modes", { origin = goal })
+				else
+					Guide.navigate(near.pad or "ProcUp1", near.tag or "UPGRADE", 30)
+				end
+				-- Said and heard: the blender and crate ones stay (their chevron is the point),
+				-- the others give way to the next one for a while.
+				if near.kind == "mode" or near.kind == "save" then
+					nearSnooze[near.kind] = os.clock() + NEAR_SNOOZE
+				end
+				updateNear()
+			elseif goalRebirth then
+				Hud.onRebirth()
+			else
+				openIndex()
 			end
-			Kit.hudIcon(pillIcon, near.icon, PILL_ICON, near.color, { Name = "Image", ZIndex = 2 })
-			nearPill.Visible = true
-			Kit.pop(nearPill, 0.8)
-		elseif not near and last then
-			nearPill.Visible = false
-		end
-		publishPill()
+		end)
 	end
-	screen:GetAttributeChangedSignal("TopCardHeight"):Connect(publishPill)
-	local function onPill()
-		local near = pillNear
-		if not near then
-			return
-		end
-		Kit.sound("Click")
-		if near.kind == "free" then
-			claimFree()
-		elseif near.kind == "mode" then
-			handlers.openWindow("Modes", { origin = nearPill })
-		else
-			Guide.navigate(near.pad or "ProcUp1", near.tag or "UPGRADE", 30)
-		end
-		-- Said and heard: the blender and crate pills stay (their chevron is the point), the
-		-- others give way to the next one for a while.
-		if near.kind == "mode" or near.kind == "save" then
-			pillSnooze[near.kind] = os.clock() + PILL_SNOOZE
-		end
-		updatePill()
-	end
-	nearPill.Activated:Connect(onPill)
-	pillPad.Activated:Connect(onPill)
 	-- The strip's texts are held at a readable size on a phone (applyCompact), where 16 and
 	-- 14 design px are 10 px: a new size lays the strip out again.
 	local GOAL_TEXT: { [TextLabel]: number } = { [goalLead] = 16, [goalTitle] = 16, [goalCount] = 14, [goalHint] = 14 }
@@ -78735,7 +79081,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				goalShown = show
 				goal.Visible = show
 			end
-			updatePill()
+			updateNear()
 		end
 		State.changed.Event:Connect(function(data)
 			if data.tutorialDone ~= true then
@@ -79206,19 +79552,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			goal.AnchorPoint = Vector2.new(0.5, if compact then 1 else 0)
 			goalPad.Size = UDim2.new(1, 0, 0, math.max(GOAL_H, L.tap))
 			goalPad.Visible = Kit.touch
-			-- The pill: under the strip, or over it where the strip sits above the dumbbell; its
-			-- words held like the strip's, its touch pad growing away from the strip.
-			local pillGap = Kit.pxUp(STACK_GAP, STACK_GAP, screen)
-			local over = if compact then 1 else 0
-			Kit.holdText(pillLabel, Kit.captionPx(), PILL_TEXT, true)
-			layoutPill()
-			nearPill.AnchorPoint = Vector2.new(0.5, over)
-			nearPill.Position = if compact then UDim2.new(0.5, 0, 0, -pillGap) else UDim2.new(0.5, 0, 1, pillGap)
-			pillPad.AnchorPoint = Vector2.new(0.5, over)
-			pillPad.Position = UDim2.fromScale(0.5, over)
-			pillPad.Size = UDim2.new(1, 0, 0, math.max(PILL_H, L.tap))
-			pillPad.Visible = Kit.touch
-			publishPill()
 			-- Gear: on the top bar's line with a mouse; below it (never on Roblox's bar) otherwise.
 			local gearSize = math.max(GEAR, L.tap)
 			gear.Size = UDim2.fromOffset(gearSize, gearSize)
@@ -79239,7 +79572,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			place(next(targets) ~= nil)
 		end
 		-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
-		local selectables: { GuiObject } = { promoButton, addButton, quitButton, goal, nearPill }
+		local selectables: { GuiObject } = { promoButton, addButton, quitButton, goal }
 		for _, button in Hud.buttons do
 			table.insert(selectables, button)
 		end
@@ -79284,7 +79617,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			setHudHidden(open)
 			updatePromo()
 			updateSelectable()
-			publishPill()
 		end)
 		screen:GetAttributeChangedSignal("ModalOpen"):Connect(updateSelectable)
 		screen:GetAttributeChangedSignal("CardioActive"):Connect(updatePromo)
@@ -79761,7 +80093,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end
 		end
 
-		-- Free gift: countdown under it; sunny "CLAIM!" with a gentle bounce when ready.
+		-- Free gift: countdown under it; when ready a "!" dot and a sunny "CLAIM!", the gift
+		-- and the word both pulsing (this corner is the one place that announces it).
 		local freeText = ""
 		local freeReady: boolean? = nil
 		local stopFreeBounce: (() -> ())? = nil
@@ -79772,7 +80105,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				freeTimer.TextColor3 = if ready then C.Gold else Color3.new(1, 1, 1)
 				if ready then
 					Kit.pop(freeButton, 0.8)
-					stopFreeBounce = Kit.breathe(freeButton, 0.06)
+					local stopGift, stopWord = Kit.breathe(freeButton, 0.1), Kit.breathe(freeTimer, 0.08)
+					stopFreeBounce = function()
+						stopGift()
+						stopWord()
+					end
 				elseif stopFreeBounce then
 					stopFreeBounce()
 					stopFreeBounce = nil
@@ -79801,16 +80138,19 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			dailyCaption.Text = text
 		end
 		local nextText = ""
-		local pillAt = 0
+		local nearAt = 0
 		RunService.Heartbeat:Connect(function()
-			-- The pill's timers (gift, crate, "nothing affordable for a minute") run between
+			-- The nearer goal's timers (crate, "nothing affordable for a minute") run between
 			-- two snapshots.
-			if os.clock() - pillAt >= PILL_TICK then
-				pillAt = os.clock()
-				updatePill()
+			if os.clock() - nearAt >= NEAR_TICK then
+				nearAt = os.clock()
+				updateNear()
 			end
 			local now = Workspace:GetServerTimeNow()
-			local active, left = Economy.surgeState(now)
+			-- No surge strip or chip for a player still in the tutorial (the server gives
+			-- them no surge either).
+			local surgeData = State.data
+			local active, left = Economy.surgeFor(now, surgeData ~= nil and surgeData.tutorialDone == true)
 			if active ~= surgeActive then
 				-- Announce only real transitions, not the state found on join.
 				setSurge(active, surgeActive ~= nil)
@@ -83923,7 +84263,7 @@ local SIDE_W = 300
 -- Card height: fills the grid column so all ten cards show without scrolling, within these
 -- bounds (CARD_MIN is also the height in the stacked layout and on a phone's short window,
 -- where the grid scrolls: the band plus a body that holds the name and pip rows unclipped).
-local CARD_MIN = 64
+local CARD_MIN = 68
 local CARD_MAX = 84
 local CARD_GAP = 8
 local BAND_H = 28
@@ -83964,6 +84304,14 @@ local PREVIEW_FOV = 40
 local PREVIEW_PITCH = 40
 local PREVIEW_MARGIN = 1.12
 local ORBIT_SPEED = 0.12
+
+-- Captions and map names stay readable: held on the glass at the caption size plus `extra`,
+-- rounded up and never under 13 px (a phone's 12 px captions included), whatever the screen
+-- and the window's own scale (the same floor as Windows.luau's captions).
+local function readable(label: TextLabel, extra: number?): TextLabel
+	Kit.holdText(label, math.max(Kit.captionPx(), 13) + (extra or 0), nil, true)
+	return label
+end
 
 local function parkourInfo(): { [string]: any }?
 	local data = State.data
@@ -84215,6 +84563,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Position = UDim2.fromOffset(PREVIEW_INSET + 8, PREVIEW_INSET + 8),
 		ZIndex = 4,
 	})
+	readable(levelChip)
 
 	-- About 45% of the side panel's height, capped so the rows below always fit.
 	local function sizePreview()
@@ -84261,7 +84610,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			sideOf.Text = "Difficulty " .. sideOf.Text
 		end
 	end
-	local sideStats = Kit.text(side, {
+	local sideStats = readable(Kit.text(side, {
 		Name = "Stats",
 		Text = "",
 		Font = F.UI,
@@ -84273,8 +84622,8 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Position = UDim2.new(0, 12, 1, -STATS_BOTTOM),
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.Text,
-	})
-	local blurb = Kit.text(side, {
+	}))
+	local blurb = readable(Kit.text(side, {
 		Name = "Blurb",
 		Text = "",
 		TextSize = T.Body,
@@ -84287,8 +84636,8 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.TextDim,
 		StrokeThickness = 0,
-	})
-	local reward = Kit.text(side, {
+	}))
+	local reward = readable(Kit.text(side, {
 		Name = "Reward",
 		Text = "",
 		Font = F.UI,
@@ -84300,7 +84649,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Position = UDim2.new(0, 12, 1, -REWARD_BOTTOM),
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.MoneyText,
-	})
+	}))
 	local play = Kit.button(side, {
 		Name = "Play",
 		Text = "PLAY",
@@ -84332,6 +84681,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Visible = false,
 		ZIndex = 20,
 	})
+	readable(hint)
 	local hintToken = 0
 	local function showHint(text: string)
 		hintToken += 1
@@ -84461,7 +84811,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			StrokeThickness = 0,
 			ZIndex = 3,
 		})
-		local levelLabel = Kit.title(band, {
+		local levelLabel = readable(Kit.title(band, {
 			Name = "Level",
 			Text = "MAP " .. i,
 			TextSize = T.Small,
@@ -84471,14 +84821,14 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			Position = UDim2.fromOffset(34, 0),
 			StrokeThickness = 0,
 			ZIndex = 3,
-		})
+		}))
 		-- White on a locked (grey) band wears the dark outline of text on glass; ink text on
 		-- an accent band has none.
 		local levelInk = Kit.textStroke(levelLabel, Theme.Glass.TextStroke, Theme.Glass.TextStrokeFade)
 		levelInk.Color = Theme.Glass.TextInk
 		levelInk.Enabled = false
 		-- Best time on the right of the band, then the cleared check or the lock.
-		local stats = Kit.text(band, {
+		local stats = readable(Kit.text(band, {
 			Name = "Stats",
 			Text = "",
 			Font = F.UI,
@@ -84491,7 +84841,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			AnchorPoint = Vector2.new(1, 0),
 			StrokeThickness = 0,
 			ZIndex = 3,
-		})
+		}))
 		local check = Kit.icon(band, "Check", 16, C.Good, {
 			Position = UDim2.new(1, -8, 0.5, 0),
 			AnchorPoint = Vector2.new(1, 0.5),
@@ -84527,19 +84877,23 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		}) :: CanvasGroup
 		Kit.list(body, 2).VerticalAlignment = Enum.VerticalAlignment.Center
 		Kit.padding(body, 0, 10)
-		local name = Kit.title(body, {
-			Name = "MapName",
-			Text = "",
-			TextSize = T.Body,
-			TextWrapped = false,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			-- Leaves room on the right for the selected card's chevron.
-			Size = UDim2.new(1, -14, 0, 18),
-			LayoutOrder = 1,
-			TextColor3 = C.Text,
-			ZIndex = 2,
-		})
+		-- Map names are the biggest text on a card: two px over the captions.
+		local name = readable(
+			Kit.title(body, {
+				Name = "MapName",
+				Text = "",
+				TextSize = T.Body,
+				TextWrapped = false,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				-- Leaves room on the right for the selected card's chevron.
+				Size = UDim2.new(1, -14, 0, 20),
+				LayoutOrder = 1,
+				TextColor3 = C.Text,
+				ZIndex = 2,
+			}),
+			2
+		)
 		local setPips = deps.pips(body, {
 			Name = "Difficulty",
 			Pip = 8,
@@ -84549,7 +84903,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		if pipRow and pipRow:IsA("GuiObject") then
 			pipRow.LayoutOrder = 2
 		end
-		local lockedLine = Kit.text(body, {
+		local lockedLine = readable(Kit.text(body, {
 			Name = "Locked",
 			Text = "",
 			Font = F.UI,
@@ -84557,13 +84911,13 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			TextWrapped = false,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			TextXAlignment = Enum.TextXAlignment.Left,
-			Size = UDim2.new(1, 0, 0, 14),
+			Size = UDim2.new(1, 0, 0, 18),
 			LayoutOrder = 2,
 			TextColor3 = C.TextDim,
 			StrokeThickness = 0,
 			Visible = false,
 			ZIndex = 2,
-		})
+		}))
 		-- Small gold chevron on the right of the selected card's body.
 		local chevron = Kit.text(frame, {
 			Name = "Chevron",
@@ -84900,6 +85254,7 @@ local Kit = require(script.Parent.Kit) :: any
 local MogRing = require(script.Parent.MogRing) :: any
 local Popups = require(script.Parent.Popups) :: any
 local Sounds = require(Client.Sounds) :: any
+local State = require(Client.State) :: any
 
 local MogHud = {}
 
@@ -84908,6 +85263,21 @@ local F = Kit.F
 local W = Theme.World
 
 local RING = 180 -- ring diameter (px, design space)
+-- The run HUD's column (right edge, mid-height) and where the ring sits in it.
+local ROOT_W = 300
+local ROOT_H = 410
+local ROOT_RIGHT = 36
+local ROOT_DY = 6
+local RING_Y = 120
+local RING_TAP = 20 -- the tap target reaches this far past the ring
+-- The score pill: wide enough for a five-figure score beside "BEAT 12.5K" / "NEW BEST!".
+local SCORE_W = 268
+-- The banner (top centre) and the room it keeps to the ring where the two share a row.
+local BANNER_W = 560
+local BANNER_H = 90
+local BANNER_Y = 96
+local BANNER_GAP = 12
+local RESULT_RISE = 40 -- the result word rises this far above the ring
 local ACTION = "MogPress"
 local QUIT_ACTION = "MogQuit"
 local PRIORITY = 3000
@@ -84958,6 +85328,7 @@ local queueTime: TextLabel
 local queueSpinner: Frame
 
 local active = false
+local startedAt = 0
 local pvp = false -- this run is a 1v1 duel
 local check: Check? = nil
 local pressed = false -- this check's press is sent (input locked until the result)
@@ -85430,10 +85801,14 @@ local function unbind()
 	end
 end
 
+-- The one way out of a run: "finish" and "stop" (a quit, Home, a mode switch, a respawn)
+-- and the snapshot's modes.mog.running going false. Space / Enter go back to the game, the
+-- HUD gets its screen back (RunActive) and no ring, banner or queue panel stays up.
 local function hide()
 	active = false
 	unbind()
 	check = nil
+	quitArmed = false
 	hideQueue()
 	if screen then
 		screen:SetAttribute("RunActive", false)
@@ -85441,12 +85816,15 @@ local function hide()
 	if root.Visible then
 		Kit.disappear(root)
 	end
+	-- A banner on its way in or waiting to leave goes with the run.
+	bannerToken += 1
 	banner.Visible = false
 end
 
 local function onStart(p: any)
 	hideQueue()
 	active, passedShown, quitArmed = true, false, false
+	startedAt = os.clock()
 	pvp = p.vs == "pvp"
 	shownScore = num(p.score, 0)
 	scoreLabel.Text = Format.short(shownScore)
@@ -85562,8 +85940,8 @@ function MogHud.build(screenGui: ScreenGui)
 	root = Kit.new("Frame", {
 		Name = "MogHud",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(300, 410),
-		Position = UDim2.new(1, -36, 0.5, 6),
+		Size = UDim2.fromOffset(ROOT_W, ROOT_H),
+		Position = UDim2.new(1, -ROOT_RIGHT, 0.5, ROOT_DY),
 		AnchorPoint = Vector2.new(1, 0.5),
 		Visible = false,
 		ZIndex = 20,
@@ -85573,7 +85951,7 @@ function MogHud.build(screenGui: ScreenGui)
 	-- Score pill (glass, like the HUD's run pill) with the quiet quit button on its right end.
 	local scorePanel = Kit.hudGlass(root, {
 		Name = "Score",
-		Size = UDim2.fromOffset(240, 44),
+		Size = UDim2.fromOffset(SCORE_W, 44),
 		Position = UDim2.new(0.5, 0, 0, 0),
 		AnchorPoint = Vector2.new(0.5, 0),
 	})
@@ -85744,7 +86122,7 @@ function MogHud.build(screenGui: ScreenGui)
 		Name = "RingHolder",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(RING, RING),
-		Position = UDim2.new(0.5, 0, 0, 120),
+		Position = UDim2.new(0.5, 0, 0, RING_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = root,
 	})
@@ -85757,7 +86135,7 @@ function MogHud.build(screenGui: ScreenGui)
 		BackgroundTransparency = 1,
 		-- Gamepad presses with A (ContextActionService); the selection never lands here.
 		Selectable = false,
-		Size = UDim2.fromOffset(RING + 40, RING + 40),
+		Size = UDim2.fromOffset(RING + RING_TAP * 2, RING + RING_TAP * 2),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 12,
@@ -85940,8 +86318,8 @@ function MogHud.build(screenGui: ScreenGui)
 	banner = Kit.new("Frame", {
 		Name = "MogBanner",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(560, 90),
-		Position = UDim2.new(0.5, 0, 0, 96),
+		Size = UDim2.fromOffset(BANNER_W, BANNER_H),
+		Position = UDim2.new(0.5, 0, 0, BANNER_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Visible = false,
 		ZIndex = 30,
@@ -85963,6 +86341,41 @@ function MogHud.build(screenGui: ScreenGui)
 		Position = UDim2.fromOffset(0, 58),
 		ZIndex = 31,
 	})
+
+	-- Small screens: where the banner's row reaches down to the ring (its tap target and the
+	-- rising result word), the banner slides left just far enough to stay clear of it, so
+	-- "NEW BEST!" never lands on the ring. Roomy screens keep it centred.
+	local function placeBanner()
+		local shift = 0
+		local area = Kit.designArea(screenGui)
+		if area then
+			local ringLeft = area.X - ROOT_RIGHT - ROOT_W / 2 - RING / 2 - RING_TAP
+			local ringTop = area.Y / 2 + ROOT_DY - ROOT_H / 2 + RING_Y - RESULT_RISE
+			if BANNER_Y + BANNER_H > ringTop then
+				local room = ringLeft - BANNER_GAP - (area.X / 2 + BANNER_W / 2)
+				-- Never past the left edge: a screen too narrow for both keeps the banner whole.
+				shift = math.clamp(room, math.min(0, BANNER_W / 2 - area.X / 2), 0)
+			end
+		end
+		banner.Position = UDim2.new(0.5, shift, 0, BANNER_Y)
+	end
+	placeBanner()
+	pcall(function()
+		screenGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(placeBanner)
+		local uiScale = screenGui:FindFirstChildOfClass("UIScale")
+		if uiScale then
+			uiScale:GetPropertyChangedSignal("Scale"):Connect(placeBanner)
+		end
+	end)
+
+	-- The safety net: the server says no Mog run is on while the ring is still up here (a
+	-- lost "finish" / "stop"), so the keys and the HUD are never held by a run that is over.
+	State.changed.Event:Connect(function(data: any)
+		local info = type(data) == "table" and type(data.modes) == "table" and data.modes.mog
+		if active and type(info) == "table" and info.running == false and os.clock() - startedAt > 2 then
+			hide()
+		end
+	end)
 end
 
 return MogHud
@@ -86531,10 +86944,12 @@ return MogRing
 	            this run (the start Notify, the snapshot's `assisted`, or a coil picked here).
 	  Oops      "Oops! Back to the start" in the middle of the screen for 1.5 s on every
 	            respawn Notify (a fall or lava).
-	  Gear      a 3-slot hotbar 8 px above the dumbbell (deps.tank): Speed, Jump and Gravity
-	            coils with key badges 1 / 2 / 3. Keys or a tap toggle; the chosen slot is
-	            outlined gold; tapping it again picks "none". Fires ParkourGear { gear } and
-	            follows State.data.modes.parkour.gear.
+	  Gear      a 3-slot hotbar centred at the bottom of the screen (the HUD's dumbbell is
+	            hidden during a run): 16 px up on desktop, the title-safe margin on a
+	            gamepad / TV, and on touch just above the jump button's row, like the HUD's
+	            FREE gift. Speed, Jump and Gravity coils with key badges 1 / 2 / 3. Keys or
+	            a tap toggle; the chosen slot is outlined gold; tapping it again picks
+	            "none". Fires ParkourGear { gear } and follows State.data.modes.parkour.gear.
 
 	Phones (viewport under 700 px wide): the bar takes 70% of the width and the row wraps to
 	two lines (timer + "MAP n / N", then the map name with best / falls and skip). Every
@@ -86548,6 +86963,7 @@ return MogRing
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
@@ -86573,7 +86989,8 @@ export type Deps = {
 	sounds: any?,
 	-- Hud.dockRun: moves the run pill into the row (nil puts it back).
 	dockRun: ((UDim2?, Vector2?) -> ())?,
-	-- Hud's dumbbell group: the hotbar rides 8 px above it.
+	-- Hud's dumbbell group. No longer used: the dumbbell is hidden during a run, so the
+	-- hotbar takes the bottom centre itself.
 	tank: GuiObject?,
 }
 
@@ -86604,8 +87021,11 @@ local CONFIRM_SECONDS = 8
 local OOPS_SECONDS = 1.5
 local SLOT = 66
 local SLOT_GAP = 10
-local HOTBAR_GAP = 8
-local HOTBAR_BOTTOM = 129 -- fallback: Hud's dumbbell (264 * 448 / 1024 + 6) + 8
+-- The hotbar's bottom margin (design px): desktop, and the gamepad / TV title-safe edge
+-- (Hud's SAFE_BOTTOM). On touch it clears Roblox's jump button instead (placeHotbar).
+local HOTBAR_BOTTOM = 16
+local HOTBAR_BOTTOM_PAD = 24
+local HOTBAR_JUMP_GAP = 8 -- screen px between the jump button's top and the hotbar
 
 local RAINBOW_KEYS =
 	{ "RainbowRed", "RainbowOrange", "RainbowYellow", "RainbowGreen", "RainbowCyan", "RainbowBlue", "RainbowPurple", "RainbowPink" }
@@ -86760,7 +87180,6 @@ end
 
 function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 	local dockRun = deps and deps.dockRun
-	local tank = deps and deps.tank
 	local action = Net.event("Action")
 	local me = Players.LocalPlayer
 	local shown = false
@@ -87410,19 +87829,24 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		-- away from the stage counter.
 		return runPos, Vector2.new(1, 0)
 	end
+	-- Bottom centre. Touch: above the row of Roblox's jump button (70 px at 20 px from the
+	-- corner on small screens, 120 px 90 px up otherwise: the same rule as Hud's FREE gift),
+	-- so a thumb on the button never lands on a coil; the centre is clear of the thumbstick's
+	-- left third.
 	local function placeHotbar()
-		local y = -HOTBAR_BOTTOM
-		local x = 0
-		if tank then
-			local pos, size = tank.Position, tank.Size
-			-- The dumbbell is anchored bottom centre (Hud): its top is pos.Y - height.
-			y = pos.Y.Offset - size.Y.Offset * tank.AnchorPoint.Y - HOTBAR_GAP
-			x = pos.X.Offset
-			hotbar.Position = UDim2.new(pos.X.Scale, x, pos.Y.Scale, y)
-			return
+		local bottom = if Kit.gamepad or Kit.tenFoot then HOTBAR_BOTTOM_PAD else HOTBAR_BOTTOM
+		if Kit.touch then
+			local size = viewport()
+			pcall(function()
+				local camera = Workspace.CurrentCamera
+				if camera and camera.ViewportSize.X > 1 then
+					size = camera.ViewportSize
+				end
+			end)
+			local jumpTop = if math.min(size.X, size.Y) <= 500 then 90 else 210
+			bottom = math.ceil((jumpTop + HOTBAR_JUMP_GAP) / Kit.pixelScale(screen))
 		end
-		local compact = screen:GetAttribute("Compact") == true
-		hotbar.Position = UDim2.new(0.5, x, 1, if compact then -100 else y)
+		hotbar.Position = UDim2.new(0.5, 0, 1, -bottom)
 	end
 	local function relayout()
 		local runPos, runAnchor = rowLayout()
@@ -87436,11 +87860,8 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		screen:GetPropertyChangedSignal("AbsoluteSize"):Connect(relayout)
 	end)
 	screen:GetAttributeChangedSignal("Compact"):Connect(relayout)
-	if tank then
-		-- Follows the dumbbell as it resizes (compact) or slides away under a window.
-		tank:GetPropertyChangedSignal("Position"):Connect(placeHotbar)
-		tank:GetPropertyChangedSignal("Size"):Connect(placeHotbar)
-	end
+	-- Touch, keyboard or gamepad: the hotbar's margin follows the input in use.
+	Kit.onInput(placeHotbar)
 
 	-- API ----------------------------------------------------------------------------------
 	local function setCount(count: number?)
@@ -88339,6 +88760,17 @@ local function schedule(delay: number)
 	task.delay(math.max(delay, 0), pump)
 end
 
+-- ScreenGui attribute "PopupBusy": a queued card is waiting or up, or the free gift's card
+-- is on screen. The Daily window and the "While you were away" card never open by
+-- themselves meanwhile (a reveal can wait in the queue for as long as the merges go on,
+-- much longer than the Daily window's own quiet time after a Reward notify).
+Popups.giftUntil = 0
+function Popups.syncBusy()
+	if screen then
+		screen:SetAttribute("PopupBusy", busy or #queue > 0 or os.clock() < Popups.giftUntil)
+	end
+end
+
 pump = function()
 	if busy or #queue == 0 then
 		return
@@ -88374,6 +88806,7 @@ pump = function()
 		finished = true
 		busy = false
 		lastModalAt = os.clock()
+		Popups.syncBusy()
 		schedule(0.05)
 	end
 	-- A card that throws half-way must not stay up: its modal, its dim and its Back entry
@@ -88415,7 +88848,65 @@ function Popups.enqueue(kind: string, priority: number, show: (done: () -> ()) -
 		show = show,
 		data = data,
 	})
+	Popups.syncBusy()
 	schedule(GATHER + 0.01)
+end
+
+--[[
+	Finish cards (Popups.modeFinish, Popups.mogFinish). A card that is up is in
+	Popups.finishCards under its own token, as its close function. Popups.closeFinish
+	closes them all and drops the ones still waiting in the queue: Main calls it when a
+	mode starts or stops (the card's mode is over, or another one has begun), and
+	Popups.watchFinish when the player is back on their own plot (the Home button, or a
+	walk home), so a card never stays up, with its dim and its blur, over another mode or
+	the gym.
+]]
+Popups.finishCards = {} :: { [any]: () -> () }
+function Popups.closeFinish()
+	for i = #queue, 1, -1 do
+		local kind = queue[i].kind
+		if kind == "ModeFinish" or kind == "MogFinish" then
+			table.remove(queue, i)
+		end
+	end
+	for token, close in table.clone(Popups.finishCards) do
+		Popups.finishCards[token] = nil
+		close()
+	end
+	Popups.syncBusy()
+end
+
+-- The player's character stands on their own plot (its "Floor" slab, World.Shell).
+function Popups.atHome(): boolean
+	local data = State.data
+	local map = Workspace:FindFirstChild("Map")
+	local plot = if data and map and data.plotIndex then map:FindFirstChild("Plot" .. tostring(data.plotIndex)) else nil
+	local floor = plot and plot:FindFirstChild("Floor", true)
+	local character = Players.LocalPlayer.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not floor or not floor:IsA("BasePart") or not root or not root:IsA("BasePart") then
+		return false
+	end
+	local at = floor.CFrame:PointToObjectSpace(root.Position)
+	return math.abs(at.X) <= floor.Size.X / 2 and math.abs(at.Z) <= floor.Size.Z / 2 and at.Y > -8 and at.Y < 60
+end
+
+-- The finish card `token` just opened as `close`: it is closed with the others, and by
+-- itself once the player is Home.
+function Popups.watchFinish(token: any, close: () -> ())
+	Popups.finishCards[token] = close
+	if PREVIEW then
+		return
+	end
+	task.spawn(function()
+		while Popups.finishCards[token] do
+			task.wait(0.25)
+			if Popups.finishCards[token] and Popups.atHome() then
+				Popups.closeFinish()
+				return
+			end
+		end
+	end)
 end
 
 -- Main calls this on every "Merge" effect.
@@ -88937,6 +89428,7 @@ local REVEAL_MIN = 0.35 -- an earlier tap waits until the unit has popped in
 local REVEAL_HOLD = 1.9 -- entrance (0.3) + hold (1.6) before a unit that is not new leaves
 local REVEAL_CHAIN = 1.6 -- each discovery of a chain but the last
 local REVEAL_IDLE = 10 -- the last (or only) discovery, if nobody taps
+local REVEAL_QUEUED = 3 -- the same discovery once another card waits behind it ("YOU DID IT!")
 local CHAIN_MAX = 6 -- reveals in a row; older tiers of a bigger jump ride on the last one
 local REVEAL_HOLD_TUTORIAL = 1.3 -- shorter while the tutorial is pointing somewhere
 local REVEAL_HINT = 1.0 -- "tap to continue" only shows this late
@@ -89261,13 +89753,10 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	local stageH = statsY + statSize + 8 + (if mergesRow then tierSize + 10 else 0) + 36
 	local height = stageH + (if #extras > 0 then EXTRAS_H else 0)
 
-	-- A window underneath (the shop, the Index) is busy: the veil goes deep and even over it,
-	-- the window dims to about Theme.Glass.RevealDim behind the name and comes back when the
-	-- veil lifts. Toasts and the tutorial pill step out (setReveal).
-	local overWindow = screen:GetAttribute("WindowOpen") == true
+	-- Toasts and the tutorial pill step out (setReveal); the veil below hides an open window.
 	local openKey = "Reward:" .. tostring(os.clock())
 	setReveal(true)
-	-- The lighter frost: the Chad's plot stays readable behind the reveal.
+	-- The lighter frost, under a dark veil.
 	Kit.setBlur(true, true)
 
 	local root = Kit.new("Frame", {
@@ -89277,7 +89766,8 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 30,
 		Parent = screen,
 	})
-	-- Veil: navy across the middle band (about 40 %), thinning out toward the edges.
+	-- Veil: navy, about 80 % across the middle band and a little thinner toward the edges, so
+	-- the unit and its name stand on a dark stage whatever the plot shows behind them.
 	local veil = Kit.new("Frame", {
 		Name = "Dim",
 		BackgroundColor3 = VEIL,
@@ -89289,24 +89779,34 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 0,
 		Parent = root,
 	})
-	local window = 1 - Theme.Glass.RevealDim
-	Kit.new("UIGradient", {
-		Rotation = 90,
-		Transparency = if overWindow
-			then NumberSequence.new({
-				NumberSequenceKeypoint.new(0, window),
-				NumberSequenceKeypoint.new(0.3, window * 0.5),
-				NumberSequenceKeypoint.new(0.8, window * 0.4),
-				NumberSequenceKeypoint.new(1, window),
-			})
-			else NumberSequence.new({
-				NumberSequenceKeypoint.new(0, 0.92),
-				NumberSequenceKeypoint.new(0.36, 0.62),
-				NumberSequenceKeypoint.new(0.74, 0.6),
-				NumberSequenceKeypoint.new(1, 0.78),
-			}),
-		Parent = veil,
-	})
+	do
+		-- An open window (the Shop, the Daily window, the Index) is hidden for as long as the
+		-- reveal or its chain plays: over one the veil is solid, also when the window opens
+		-- half-way through, and the window is back as the veil lifts. Nothing of it reads
+		-- through behind the unit.
+		local gradient = Kit.new("UIGradient", { Rotation = 90, Parent = veil })
+		local function paint()
+			gradient.Transparency = if Windows.isAnyOpen()
+				then NumberSequence.new(0)
+				else NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 0.3),
+					NumberSequenceKeypoint.new(0.3, 0.2),
+					NumberSequenceKeypoint.new(0.8, 0.18),
+					NumberSequenceKeypoint.new(1, 0.26),
+				})
+		end
+		paint()
+		if not PREVIEW then
+			local watch: RBXScriptConnection
+			watch = Windows.changed.Event:Connect(function()
+				if root:IsDescendantOf(game) then
+					paint()
+				else
+					watch:Disconnect()
+				end
+			end)
+		end
+	end
 	-- The count behind WindowOpen is given back if the reveal's gui is destroyed.
 	Kit.markOpen(screen, openKey, true, root)
 	Kit.tween(veil, 0.25, { BackgroundTransparency = 0 })
@@ -89561,22 +90061,25 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		-- stretched wide, the glass tint with the rarity colour in it) so they hold over a
 		-- busy plot.
 		local plateH = statsY + statSize - nameY + 110
-		local plate = softDot(stage, "Plate", Theme.Glass.Tint:Lerp(color, 0.3), UDim2.fromOffset(STAGE_W, plateH), 0.2, 2)
+		local plate = softDot(stage, "Plate", VEIL:Lerp(color, 0.12), UDim2.fromOffset(STAGE_W, plateH), 0.1, 2)
 		plate.Position = UDim2.new(0.5, 0, 0, (nameY + statsY + statSize + 8) / 2)
 		table.insert(lines, plate)
 		Kit.appear(plate, { from = 0.9, time = 0.3 })
-		-- Big name in the rarity colour, scaled down to fit on one line.
+		-- Big name in the rarity colour, scaled down to fit on one line. It reads on every
+		-- rarity: a pale colour with little hue of its own (Common's grey) goes most of the
+		-- way to white, and every name wears a thick ink outline over the dark plate.
+		local _, saturation = color:ToHSV()
 		arrive(Kit.hudText(stage, {
 			Name = "UnitName",
 			Text = string.upper(Theme.Tiers[tier].Name),
 			TextSize = nameSize,
 			TextScaled = true,
 			MaxTextSize = nameSize,
-			TextColor3 = Kit.lighten(color, 0.15),
+			TextColor3 = Kit.lighten(color, if saturation < 0.25 then 0.7 else 0.2),
 			StrokeColor = Theme.Glass.TextInk,
 			Size = UDim2.new(1, -40, 0, nameSize + 6),
 			Position = UDim2.fromOffset(20, nameY),
-			StrokeThickness = 3,
+			StrokeThickness = 4,
 			ZIndex = 5,
 		}))
 		sounds.play("Tick", 0.02, 1.2)
@@ -89864,6 +90367,19 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		local tutorial = data ~= nil and data.tutorialDone ~= true
 		local hold = if chained then REVEAL_CHAIN elseif isNew then REVEAL_IDLE else (if tutorial then REVEAL_HOLD_TUTORIAL else REVEAL_HOLD)
 		task.delay(hold, leave)
+		-- The long hold is for the last card only: once something waits in the queue (the
+		-- tutorial's "YOU DID IT!", a finish card, the next reveal) this one makes room.
+		if hold > REVEAL_QUEUED then
+			task.spawn(function()
+				while not closed and root.Parent do
+					if #queue > 0 and os.clock() - startedAt >= REVEAL_QUEUED then
+						leave()
+						return
+					end
+					task.wait(0.25)
+				end
+			end)
+		end
 	end
 end
 
@@ -89968,7 +90484,9 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 30,
 		Parent = screen,
 	})
-	local dim = cover(holder, "Dim", C.Ink, 0.66)
+	-- As dark as the unit reveal's veil that follows, and solid over an open window (the
+	-- window is hidden for the whole reveal).
+	local dim = cover(holder, "Dim", VEIL, if Windows.isAnyOpen() then 0 else 0.2)
 	Kit.appear(dim, { from = 1, time = 0.25 })
 	local tint: Frame? = if rank >= 3 then cover(holder, "Tint", color, 1) else nil
 
@@ -90620,9 +91138,12 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		-- when it opens and when it closes.
 		local action = Net.event("Action")
 		local box, close = modal("ModeFinish", Vector2.new(480, noteY + 22 + 14 + buttonsH), 45, nil, function()
+			Popups.finishCards[done] = nil
 			action:FireServer({ action = "ModeCard", mode = data.mode, open = false })
 			done()
 		end)
+		-- Closed with the mode's next start or stop, and once the player is Home.
+		Popups.watchFinish(done, close)
 		action:FireServer({ action = "ModeCard", mode = data.mode, open = true })
 		local medalAt = UDim2.new(0.5, 0, 0, 0)
 		if firstClear then
@@ -90949,6 +91470,19 @@ end
 	small HP margin or sudden death).
 ]]
 function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> ())
+	-- Nothing to show: the player left the duel themselves, or the test ended with no score,
+	-- no pass and no cash. A line says so; no card stands in the way out.
+	if not PREVIEW then
+		if data.vs == "pvp" then
+			if data.won ~= true and data.draw ~= true and data.reason == "forfeit" and data.afk ~= true then
+				Popups.toast("You left the duel", "info")
+				return
+			end
+		elseif (tonumber(data.score) or 0) <= 0 and data.passed ~= true and (tonumber(data.cash) or 0) <= 0 then
+			Popups.toast("Mog test over. Try again at the gate!", "info")
+			return
+		end
+	end
 	Popups.enqueue("MogFinish", Popups.PRIORITY.Normal, function(done)
 		local score = tonumber(data.score) or 0
 		local cashTotal = tonumber(data.cash) or 0
@@ -90974,7 +91508,11 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		local draw = duel and data.draw == true
 		local lost = duel and not won and not draw
 		local foe = if duel and type(data.opponent) == "table" then tostring(data.opponent.name or "Opponent") else "Opponent"
-		local box, close = modal("MogFinish", Vector2.new(480, 380), 45, nil, done)
+		local box, close = modal("MogFinish", Vector2.new(480, 380), 45, nil, function()
+			Popups.finishCards[done] = nil
+			done()
+		end)
+		Popups.watchFinish(done, close)
 		local medal = medallion(
 			box,
 			if lost then "😤" elseif draw then "🤝" else "💪",
@@ -92033,19 +92571,24 @@ local function buildChestPanel()
 			Kit.appear(panel, { from = 0.85, time = 0.26 })
 			-- The default player list sits over the panel's header on short screens.
 			Kit.hidePlayerList("crate", true)
+			-- The first few crates a player ever holds: the path to the Smasher shows by
+			-- itself (later ones on a tap of the gold button).
+			if data.crateGuide == true then
+				Guide.navigate(SMASHER_PAD, string.upper(W.Unlocker), SMASHER_ARROW * 2)
+			end
 		end
 		local color = C.Rarity[rarity] or C.Gold
-		local key = rarity .. ":" .. data.highestTier
+		-- The Smasher's time for this very crate, from the server (a profile's first crate
+		-- opens in Economy.FIRST_CRATE_SECONDS, not in its rarity's time).
+		local freeSeconds = tonumber(data.heldSeconds)
+		local key = rarity .. ":" .. data.highestTier .. ":" .. (freeSeconds or -1)
 		if key ~= shownFor then
 			shownFor = key
 			title.Text = string.upper(rarity .. " " .. W.Chest)
 			title.TextColor3 = Kit.lighten(color, 0.3)
 			divider.BackgroundColor3 = Kit.lighten(color, 0.2)
 			halo.BackgroundColor3 = Kit.lighten(color, 0.45)
-			-- The Smasher's timer for this rarity (its first slot).
-			freePrice.Text = if Economy.CHEST_INFO[rarity]
-				then "FREE  •  " .. Format.time(Economy.unlockSeconds(rarity, false))
-				else "FREE"
+			freePrice.Text = if freeSeconds then "FREE  •  " .. Format.time(freeSeconds) else "FREE"
 			if crate then
 				crate:Destroy()
 			end
@@ -92403,14 +92946,15 @@ function Popups.tutorialDone(cash: number, done: () -> ())
 end
 
 --[[
-	The free gift: a small glass card in the middle of the screen with the gift badge, the
-	cash counting up over a toss of coins, and when the next one is due. Not modal and it
-	takes no input: it goes by itself after GIFT_LIFE. data: cash, nextIn (seconds; the
+	The free gift: a small solid card in the middle of the screen (the crate panel's solid
+	style: it stands over the plot's signs, and their text read through glass) with the gift
+	badge, the cash counting up over a toss of coins, and when the next one is due. Not modal
+	and it takes no input: it goes by itself after GIFT_LIFE. data: cash, nextIn (seconds; the
 	cooldown when absent): the server's Gift notify. The "Cash" effect of the same claim
 	brings the sound and the coins (Main), not a second card.
 ]]
 local GIFT_LIFE = 3.2
-local GIFT_W, GIFT_H = 380, 168
+local GIFT_W, GIFT_H = 360, 168
 function Popups.gift(data: { [string]: any })
 	local now = os.clock()
 	local cash = math.max(tonumber(data.cash) or 0, 0)
@@ -92423,7 +92967,8 @@ function Popups.gift(data: { [string]: any })
 		Name = "GiftCard",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(GIFT_W, GIFT_H),
-		Position = UDim2.fromScale(0.5, 0.36),
+		-- Centred, a little low: the badge on its top edge stays clear of the HUD's top strips.
+		Position = UDim2.fromScale(0.5, 0.44),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 27,
 		Parent = screen,
@@ -92435,12 +92980,18 @@ function Popups.gift(data: { [string]: any })
 				Kit.disappear(holder, { time = 0.22, to = 0.9, destroy = true })
 			end
 		end)
+		-- A reward card is on screen: nothing opens by itself over it ("PopupBusy").
+		Popups.giftUntil = os.clock() + GIFT_LIFE + 0.25
+		Popups.syncBusy()
+		task.delay(GIFT_LIFE + 0.3, Popups.syncBusy)
 	end
-	local card = Kit.hudGlass(holder, {
+	local card = Kit.panel(holder, {
 		Name = "Card",
+		Color = C.Surface,
+		StrokeColor = C.Cash,
+		StrokeThickness = 2,
 		Size = UDim2.fromOffset(GIFT_W, GIFT_H),
 		Radius = Kit.RADIUS.L,
-		Edge = C.Cash,
 		ZIndex = 2,
 	})
 	medallion(card, Theme.Icons.Free, C.Cash, 68, UDim2.new(0.5, 0, 0, 0))
@@ -92732,14 +93283,16 @@ function Popups.defineRebirth()
 		RowIcon = 16,
 		RowGap = 6,
 		RowPad = 12,
-		KeepColor = C.Cash,
-		ResetColor = C.Amber,
+		Rows = 4, -- lines a list shows (what starts again is never cut)
+		RowPx = 14, -- a row's text on the glass, at least
+		KeepColor = C.Cash, -- green: what stays
+		ResetColor = C.Amber, -- orange: what starts again
 		Arm = 0.8, -- seconds before the second question takes a "Yes"
 		Wait = 5, -- seconds the card waits for the server's answer
 		-- Ready
 		ReadyWidth = 500,
-		LaterColor = C.Primary, -- "Later" and "Show me" are the same size on purpose
-		ShowColor = C.Gold,
+		LaterColor = C.SurfaceHi, -- neutral, and the same size as "Show me" on purpose
+		ShowColor = C.Gold, -- the primary
 		-- Reveal
 		DoneWidth = 500,
 		DoneMedal = 96,
@@ -92774,6 +93327,29 @@ function Popups.defineRebirth()
 			end
 		end
 		return rows
+	end
+	-- What stays, in at most `room` lines: the stars and the paid passes lead (the rows a
+	-- player would miss most), the rest follow in the server's order, and a list that is cut
+	-- ends in one honest line for everything left out (all that does not start again stays:
+	-- Economy.REBIRTH_KEEPS).
+	local function keepRows(list: any, room: number): { string }
+		local first: { string } = {}
+		local rest: { string } = {}
+		if type(list) == "table" then
+			for _, entry in list do
+				if type(entry) == "table" and type(entry.text) == "string" and entry.text ~= "" then
+					table.insert(if entry.key == "stars" or entry.key == "passes" then first else rest, entry.text)
+				end
+			end
+		end
+		table.move(rest, 1, #rest, #first + 1, first)
+		if #first > room then
+			for i = #first, room, -1 do
+				table.remove(first, i)
+			end
+			table.insert(first, "And everything else you own")
+		end
+		return first
 	end
 	-- The offer in the snapshot, while the server has one.
 	local function liveOffer(): { [string]: any }?
@@ -92831,12 +93407,14 @@ function Popups.defineRebirth()
 			local gained = math.max(1, whole(offer.gained))
 			local before = tonumber(offer.starMult) or 1
 			local multAfter = tonumber(offer.starMultAfter) or before
-			local keeps = rowsOf(offer.keeps)
+			-- Short lists, L.Rows lines each. What starts again is never cut (it is what the
+			-- player agrees to): when it runs longer, the list of what stays gives up lines.
 			local resets = rowsOf(offer.resets)
+			local keeps = keepRows(offer.keeps, math.clamp(L.Rows * 2 - #resets, 2, L.Rows))
 			-- Two columns of rows, each as tall as its text wraps; the cash warning closes the
 			-- right one.
 			local colW = (L.Width - L.Pad * 2 - L.Gap) / 2
-			local rowSize = Kit.px(if Kit.touch then 12 else 14, T.Small, screen)
+			local rowSize = Kit.px(L.RowPx, T.Small, screen)
 			local textW = colW - L.RowPad * 2 - L.RowIcon - 8
 			local function columnHeight(rows: { string }): number
 				local height = L.Head + 6
@@ -92847,13 +93425,27 @@ function Popups.defineRebirth()
 			end
 			local warnText = "Your cash starts again too, even cash you bought in packs."
 			local warnW = colW - 16 - 34 - 10
-			local warnH = bodyHeight(warnText, rowSize, warnW) + 16
-			local listH = math.max(columnHeight(keeps), columnHeight(resets) + 8 + warnH + 8 - L.RowPad)
 			local noteSize = Kit.px(if Kit.touch then 13 else 16, T.Body, screen)
 			local gainY = L.Title + 34 + 8
 			local listY = gainY + L.Gain + L.Gap
-			local noteY = listY + listH + 10
-			local buttonY = noteY + noteSize + 8 + 10
+			local warnH, listH, noteY, buttonY = 0, 0, 0, 0
+			-- A tall card on a short screen is shrunk by Kit.fit (the modal's "Fit" scale): the
+			-- rows grow by what the fit takes and the card is measured again, so they stay
+			-- L.RowPx on the glass (three rounds settle it).
+			for _ = 1, 3 do
+				warnH = bodyHeight(warnText, rowSize, warnW) + 16
+				listH = math.max(columnHeight(keeps), columnHeight(resets) + 8 + warnH + 8 - L.RowPad)
+				noteY = listY + listH + 10
+				buttonY = noteY + noteSize + 8 + 10
+				local area = Kit.designArea(screen)
+				local share = if Kit.touch then Theme.Glass.FitTouch else Theme.Glass.Fit
+				local fit = if area then math.min(1, area.X * share / L.Width, area.Y * share / (buttonY + L.Button + L.Pad + 96)) else 1
+				local wanted = Kit.px(L.RowPx / fit, T.Small, screen)
+				if wanted <= rowSize then
+					break
+				end
+				rowSize = wanted
+			end
 			local close: () -> ()
 			local box, closeModal = modal("Rebirth", Vector2.new(L.Width, buttonY + L.Button + L.Pad), L.Z, nil, function()
 				S.open = false
@@ -92949,6 +93541,7 @@ function Popups.defineRebirth()
 						dot.Size = UDim2.fromOffset(8, 8)
 						dot.Position = UDim2.fromOffset(L.RowPad + L.RowIcon / 2, y + math.floor(rowSize * 0.65))
 					end
+					-- The rows wear their list's colour too (green stays, orange starts again).
 					Kit.text(well, {
 						Name = "Row" .. i,
 						Text = text,
@@ -92957,6 +93550,7 @@ function Popups.defineRebirth()
 						TextYAlignment = Enum.TextYAlignment.Top,
 						Size = UDim2.fromOffset(textW, height + 2),
 						Position = UDim2.fromOffset(L.RowPad + L.RowIcon + 8, y),
+						TextColor3 = Kit.lighten(color, 0.4),
 						StrokeThickness = 0,
 					})
 					y += height + L.RowGap
@@ -92993,28 +93587,38 @@ function Popups.defineRebirth()
 				TextXAlignment = Enum.TextXAlignment.Left,
 				Size = UDim2.new(0, warnW, 1, -12),
 				Position = UDim2.fromOffset(34, 6),
+				TextColor3 = Kit.lighten(L.ResetColor, 0.4),
 				StrokeThickness = 0,
 			})
 			local note = plainLine(box, "Note", "", noteSize, noteY, L.Pad)
 			-- Two steps. 1: "Rebirth" | "Not now". 2: "No, go back" | "Yes, rebirth!", the
 			-- answers on the other sides, so the tap that asked can never be the one that agrees.
+			-- On step 2 the way back is the big primary button and "Yes" a smaller neutral one.
 			local step = 1
 			local armed = false
 			local token = 0
 			local left: TextButton
 			local right: TextButton
+			-- `share` of the row for the left button; the right one is `drop` px shorter.
+			local function weigh(share: number, drop: number)
+				left.Size = UDim2.new(share, -L.Pad - 6, 0, L.Button)
+				right.Size = UDim2.new(1 - share, -L.Pad - 6, 0, L.Button - drop)
+				right.Position = UDim2.new(share, 6, 0, buttonY + drop / 2)
+			end
 			local function paint()
 				token += 1
 				local mine = token
 				armed = false
 				if step == 1 then
+					weigh(0.5, 0)
 					Kit.setButton(left, "Rebirth", C.Gold)
 					Kit.setButton(right, "Not now", C.SurfaceHi)
 					note.Text = "No rush: you can rebirth whenever you like."
 					note.TextColor3 = C.TextDim
 				elseif step == 2 then
-					Kit.setButton(left, "No, go back", C.SurfaceHi)
-					Kit.setButton(right, "Yes, rebirth!", C.Gold)
+					weigh(0.62, 12)
+					Kit.setButton(left, "No, go back", C.Primary)
+					Kit.setButton(right, "Yes, rebirth!", C.SurfaceHi)
 					note.Text = "Really start again? A rebirth can't be undone."
 					note.TextColor3 = C.Gold
 					Kit.pop(note, 0.8)
@@ -93161,8 +93765,8 @@ function Popups.defineRebirth()
 				TextColor3 = C.TextDim,
 				StrokeThickness = 1,
 			})
-			-- Two equal answers: the same size, neither breathes, and "Later" is as good as the
-			-- other (the gamepad starts on it; B and a tap beside the card mean it too).
+			-- "Show me" is the primary; "Later" is neutral but just as big and as easy to tap
+			-- (the gamepad starts on it; B and a tap beside the card mean it too).
 			local later = Kit.button(box, {
 				Name = "Later",
 				Text = "Later",
@@ -96257,6 +96861,14 @@ local function onPhone(screen: Instance, fn: () -> ())
 	screen:GetAttributeChangedSignal("Compact"):Connect(fn)
 end
 
+-- A caption that has to be read (a goal line, a milestone, "Before you go"): held on the
+-- glass at the caption size, rounded up and never under 13 px (a phone's 12 px captions
+-- included), whatever the screen and the window's own scale.
+local function readable(label: TextLabel): TextLabel
+	Kit.holdText(label, math.max(Kit.captionPx(), 13), nil, true)
+	return label
+end
+
 --[[
 	Tinted tag on a glass card (a rarity, a state): Kit.pill's soft fill of `Color` under
 	a light label in that colour (small text: no outline). Sizes to its text. props: Name, Text, Color, Position, AnchorPoint, ZIndex.
@@ -96482,6 +97094,7 @@ local BANNER_TEXT_X = 8 -- the title, the description and PERMANENT share this l
 local STAGE_W = 230 -- a banner's animated stage, at the default window...
 local STAGE_MIN_W = 140 -- ...and the narrowest it shrinks to
 local COS_H = 204 -- cosmetic card height
+local COS_SWITCH_W = 72 -- a cosmetic's on/off switch on its own pane, left of the price button
 local PACK_H = 238 -- cash / aura card height (stage, amount, one-line caption, price)
 local PACK_STAGE = 125 -- pack card stage (square) on a PACK_H card; it grows and shrinks with the card
 local PACK_MAX_H = 260 -- tallest a pack card grows to fill a page its row fits in
@@ -97369,110 +97982,156 @@ local function buildShop(screen: ScreenGui)
 		}, onClick)
 	end
 
+	-- What is inside a wide card: a row of two chips on the card's own dark inset under the
+	-- title, each an icon, an amount and a caption. Returns the function that adds a chip
+	-- (its amount label, its caption and the chip itself).
+	local function contentChips(body: Frame, tint: Color3): (number, string, string, Color3, string) -> (TextLabel, TextLabel, Frame)
+		local chips = Kit.new("Frame", {
+			Name = "Contents",
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, WIDE_TEXT_W, 0, 56),
+			Position = UDim2.fromOffset(WIDE_LEFT, 50),
+			ZIndex = 4,
+			Parent = body,
+		})
+		Kit.list(chips, 8, true)
+		return function(order: number, icon: string, fallback: string, color: Color3, caption: string): (TextLabel, TextLabel, Frame)
+			local chip = Kit.new("Frame", {
+				Name = "Chip" .. order,
+				BackgroundColor3 = Kit.darken(tint, BANNER_INSET_DEEP),
+				BackgroundTransparency = BANNER_INSET,
+				Size = UDim2.new(1 / 2, -4, 1, 0),
+				LayoutOrder = order,
+				ZIndex = 3,
+				Parent = chips,
+			})
+			Kit.corner(chip, 12)
+			Kit.icon(chip, Kit.pickIcon(icon, fallback), 34, color, {
+				Name = "Icon",
+				Position = UDim2.new(0, 6, 0.5, 0),
+				AnchorPoint = Vector2.new(0, 0.5),
+				ZIndex = 4,
+			})
+			local amount = minText(Kit.number(chip, {
+				Name = "Amount",
+				Text = "",
+				TextSize = 20,
+				MaxTextSize = 20,
+				TextScaled = true,
+				Size = UDim2.new(1, -50, 0, 24),
+				Position = UDim2.fromOffset(44, 6),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextColor3 = Color3.new(1, 1, 1),
+				ZIndex = 4,
+			}))
+			local captionLabel = Kit.text(chip, {
+				Name = "Caption",
+				Text = caption,
+				Font = F.Bold,
+				TextSize = 14,
+				TextWrapped = false,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				Size = UDim2.new(1, -50, 0, 18),
+				Position = UDim2.fromOffset(44, 31),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextColor3 = C.Text,
+				ZIndex = 4,
+			})
+			return amount, captionLabel, chip
+		end
+	end
+
 	--[[
-		Free first: the page opens on what costs nothing. A wide sunny card as tall and as
-		bright as the paid Starter card under it: the free gift (this player's own amount,
-		the server's Free pad pays the same) with CLAIM or the time left on its button, and a
-		pill for the Daily Reward that opens its window. No countdown here is a sales timer:
-		both only say when the next free thing is ready.
+		Free first: the page opens on what costs nothing. A wide sunny card built like the
+		paid Starter card under it (same height, title and two contents chips): the free gift
+		(this player's own amount, the server's Free pad pays the same, and how often) with
+		CLAIM or the time left on its button, and the Daily Reward, whose chip opens its
+		window. No countdown here is a sales timer: both only say when the next free thing is
+		ready.
 	]]
 	local freeTint = Theme.World.Sunny
 	local freeCell, freeBody, freeArtHolder, freeArt = makeEntry(scroll, "Free", 0, freeTint, "Free", "Star", 104, UDim2.new(0, 68, 0.5, 0))
-	local freeClip = bannerPaint(freeBody, freeTint, WIDE_R, nil, true)
-	local _, freeCaption = wideText(freeBody, freeTint, string.upper(W.Free), " ")
-	local dailyPill = Kit.new("TextButton", {
-		Name = "Daily",
-		AutoButtonColor = false,
-		Text = "",
-		BackgroundColor3 = Kit.darken(freeTint, BANNER_INSET_DEEP),
-		BackgroundTransparency = BANNER_INSET,
-		Size = UDim2.new(1, WIDE_TEXT_W, 0, 44),
-		Position = UDim2.fromOffset(WIDE_LEFT, 64),
-		ZIndex = 4,
-		Parent = freeBody,
-	})
-	Kit.corner(dailyPill, 12)
-	Kit.icon(dailyPill, Kit.pickIcon("Gift2", "Star"), 34, C.Gold, {
-		Name = "Icon",
-		Position = UDim2.new(0, 6, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ZIndex = 5,
-	})
-	local dailyLine = Kit.text(dailyPill, {
-		Name = "Label",
-		Text = "",
-		Font = F.Bold,
-		TextSize = 16,
-		MinPx = PACK_SUB_PX,
-		TextWrapped = false,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		Size = UDim2.new(1, -54, 1, 0),
-		Position = UDim2.fromOffset(46, 0),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = Color3.new(1, 1, 1),
-		StrokeThickness = 0,
-		ZIndex = 5,
-	})
-	Kit.selectable(dailyPill)
-	dailyPill.Activated:Connect(function()
-		Kit.sound("Click")
-		Windows.open("Daily")
-	end)
 	local freeEntry: Entry
-	local freeButton, freeSheen = widePrice(freeBody, "CLAIM", function()
-		local data = State.data
-		if not data or (data.freeIn or 0) - State.age() > 0 then
-			return
-		end
-		-- The same action as the HUD's gift button; the cash that lands flies from this card.
-		lastPrompt = { kind = "Free", entry = freeEntry, index = 0, at = os.clock() }
-		action:FireServer({ action = "ClaimFree" })
-	end)
-	ribbon(freeBody, "FREE", C.Good)
-	freeEntry = {
-		cell = freeCell,
-		body = freeBody,
-		art = freeArt,
-		artHolder = freeArtHolder,
-		button = freeButton,
-		sheen = freeSheen,
-		clip = freeClip,
-	}
-	hoverable(freeEntry)
-	table.insert(entries, freeEntry)
 	local freeShownCash: number? = nil
-	local freeShownButton: string? = nil
-	local dailyShown: string? = nil
-	-- The gift's amount, its button (CLAIM or the time left) and the Daily line; runs with
+	-- The gift's amount, its button (CLAIM or the time left) and the Daily chip; runs with
 	-- every snapshot and twice a second while the shop is open (the countdowns).
-	local function refreshFree()
-		local data = State.data
-		if not data then
-			return
-		end
-		local cash = ShopMath.freeGiftCash(data.rewardIncome or data.income or 0)
-		if cash ~= freeShownCash and freeCaption then
-			freeShownCash = cash
-			freeCaption.Text = string.format("+%s every %s", State.money(cash), durationText(Economy.FREE_REWARD_COOLDOWN))
-		end
-		local left = math.max(0, (data.freeIn or 0) - State.age())
-		local buttonText = if left <= 0 then "CLAIM" else Format.time(left)
-		if buttonText ~= freeShownButton then
-			freeShownButton = buttonText
-			Kit.setEnabled(freeButton, left <= 0)
-			Kit.setButton(freeButton, buttonText)
-		end
-		local daily = data.daily
-		local dailyText = ""
-		if type(daily) == "table" then
-			dailyText = if daily.claimable == true
-				then "Daily Reward ready!"
-				else "Daily in " .. Format.time(math.max(0, (tonumber(daily.nextIn) or 0) - State.age()))
-		end
-		if dailyText ~= dailyShown then
-			dailyShown = dailyText
-			dailyLine.Text = dailyText
-			dailyPill.Visible = dailyText ~= ""
+	local refreshFree: () -> ()
+	do
+		local clip = bannerPaint(freeBody, freeTint, WIDE_R, nil, true)
+		wideText(freeBody, freeTint, string.upper(W.Free))
+		local addChip = contentChips(freeBody, freeTint)
+		local giftAmount = addChip(1, "Coin", "Coin", C.Gold, "every " .. durationText(Economy.FREE_REWARD_COOLDOWN))
+		local dailyAmount, dailyCaption, dailyChip = addChip(2, "Gift2", "Star", C.Gold, "")
+		dailyAmount.Text = "DAILY REWARD"
+		dailyChip.Visible = false
+		local dailyHit = Kit.new("TextButton", {
+			Name = "Daily",
+			AutoButtonColor = false,
+			Text = "",
+			BackgroundTransparency = 1,
+			Size = UDim2.fromScale(1, 1),
+			ZIndex = 6,
+			Parent = dailyChip,
+		})
+		Kit.corner(dailyHit, 12)
+		Kit.selectable(dailyHit)
+		dailyHit.Activated:Connect(function()
+			Kit.sound("Click")
+			Windows.open("Daily")
+		end)
+		local button, sheen = widePrice(freeBody, "CLAIM", function()
+			local data = State.data
+			if not data or (data.freeIn or 0) - State.age() > 0 then
+				return
+			end
+			-- The same action as the HUD's gift button; the cash that lands flies from this card.
+			lastPrompt = { kind = "Free", entry = freeEntry, index = 0, at = os.clock() }
+			action:FireServer({ action = "ClaimFree" })
+		end)
+		ribbon(freeBody, "FREE", C.Good)
+		freeEntry = {
+			cell = freeCell,
+			body = freeBody,
+			art = freeArt,
+			artHolder = freeArtHolder,
+			button = button,
+			sheen = sheen,
+			clip = clip,
+		}
+		hoverable(freeEntry)
+		table.insert(entries, freeEntry)
+		local shownButton: string? = nil
+		local dailyShown: string? = nil
+		refreshFree = function()
+			local data = State.data
+			if not data then
+				return
+			end
+			local cash = ShopMath.freeGiftCash(data.rewardIncome or data.income or 0)
+			if cash ~= freeShownCash then
+				freeShownCash = cash
+				giftAmount.Text = "+" .. State.money(cash)
+			end
+			local left = math.max(0, (data.freeIn or 0) - State.age())
+			local buttonText = if left <= 0 then "CLAIM" else Format.time(left)
+			if buttonText ~= shownButton then
+				shownButton = buttonText
+				Kit.setEnabled(button, left <= 0)
+				Kit.setButton(button, buttonText)
+			end
+			local daily = data.daily
+			local dailyText = ""
+			if type(daily) == "table" then
+				dailyText = if daily.claimable == true
+					then "Ready to claim!"
+					else "in " .. Format.time(math.max(0, (tonumber(daily.nextIn) or 0) - State.age()))
+			end
+			if dailyText ~= dailyShown then
+				dailyShown = dailyText
+				dailyCaption.Text = dailyText
+				dailyCaption.TextColor3 = if dailyText == "Ready to claim!" then C.GoldLight else C.Text
+				dailyChip.Visible = dailyText ~= ""
+			end
 		end
 	end
 
@@ -97484,59 +98143,7 @@ local function buildShop(screen: ScreenGui)
 	local starterClip = bannerPaint(starterBody, starterTint, WIDE_R, nil, true)
 	wideText(starterBody, starterTint, "STARTER PACK")
 	-- What is inside: two chips, this player's own cash amount and the exclusive trail.
-	local chips = Kit.new("Frame", {
-		Name = "Contents",
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, WIDE_TEXT_W, 0, 56),
-		Position = UDim2.fromOffset(WIDE_LEFT, 50),
-		ZIndex = 4,
-		Parent = starterBody,
-	})
-	Kit.list(chips, 8, true)
-	local function contentChip(order: number, icon: string, fallback: string, color: Color3, caption: string): TextLabel
-		local chip = Kit.new("Frame", {
-			Name = "Chip" .. order,
-			BackgroundColor3 = Kit.darken(starterTint, BANNER_INSET_DEEP),
-			BackgroundTransparency = BANNER_INSET,
-			Size = UDim2.new(1 / 2, -4, 1, 0),
-			LayoutOrder = order,
-			ZIndex = 3,
-			Parent = chips,
-		})
-		Kit.corner(chip, 12)
-		Kit.icon(chip, Kit.pickIcon(icon, fallback), 34, color, {
-			Name = "Icon",
-			Position = UDim2.new(0, 6, 0.5, 0),
-			AnchorPoint = Vector2.new(0, 0.5),
-			ZIndex = 4,
-		})
-		local amount = minText(Kit.number(chip, {
-			Name = "Amount",
-			Text = "",
-			TextSize = 20,
-			MaxTextSize = 20,
-			TextScaled = true,
-			Size = UDim2.new(1, -50, 0, 24),
-			Position = UDim2.fromOffset(44, 6),
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextColor3 = Color3.new(1, 1, 1),
-			ZIndex = 4,
-		}))
-		Kit.text(chip, {
-			Name = "Caption",
-			Text = caption,
-			Font = F.Bold,
-			TextSize = 14,
-			TextWrapped = false,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-			Size = UDim2.new(1, -50, 0, 18),
-			Position = UDim2.fromOffset(44, 31),
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextColor3 = C.Text,
-			ZIndex = 4,
-		})
-		return amount
-	end
+	local contentChip = contentChips(starterBody, starterTint)
 	local starterCash = contentChip(1, "Coin", "Coin", C.Gold, "cash")
 	local rookie = COS.Items[COS.Starter.Item]
 	local rookieLabel = contentChip(2, rookie.Icon, "Star", rookie.Color, "exclusive")
@@ -97841,6 +98448,8 @@ local function buildShop(screen: ScreenGui)
 		control: Frame?,
 		setSwitch: ((boolean, boolean?) -> ())?,
 		switchShown: boolean?,
+		-- The switch beside the price (true) or in its place (false): see refreshCosmetics.
+		beside: boolean?,
 	}
 	local cosCards: { [string]: CosCard } = {}
 	local function cosTap(name: string)
@@ -98526,8 +99135,10 @@ local function buildShop(screen: ScreenGui)
 			local item = COS.Items[name]
 			local owned = cos.owned[name] == true
 			-- The switch is the owner's and, on the Chad Aura, a Champion's too (the server's
-			-- `canSwitch`): the Index's aura goes off here without the pass.
+			-- `canSwitch`): the Index's aura goes off here without the pass. A Champion who has
+			-- not bought the pass keeps its price button: the switch moves to the left of it.
 			local switched = owned or cos.canSwitch[name] == true
+			local beside = switched and not owned and item.Pass ~= nil and card.control ~= nil
 			if card.lock then
 				card.lock.Visible = not owned
 			end
@@ -98546,6 +99157,10 @@ local function buildShop(screen: ScreenGui)
 					card.switchShown = on
 					card.setSwitch(on)
 				end
+				if beside then
+					Kit.setEnabled(card.button, true)
+					Kit.setButton(card.button, price(Theme.Monetization.Passes[item.Pass].Price), C.Cash)
+				end
 			elseif item.Pass then
 				local pass = Theme.Monetization.Passes[item.Pass]
 				Kit.setEnabled(card.button, true)
@@ -98554,9 +99169,21 @@ local function buildShop(screen: ScreenGui)
 				Kit.setEnabled(card.button, true)
 				Kit.setButton(card.button, "STARTER PACK", C.SurfaceHi)
 			end
-			card.button.Visible = not (switched and control ~= nil)
+			card.button.Visible = beside or not (switched and control ~= nil)
 			if control then
 				control.Visible = switched
+				if card.beside ~= beside then
+					-- Beside the price: the switch alone on its dark pane (COS_SWITCH_W wide), the
+					-- button on the rest of the row. Alone: the pane spans the row, with ACTIVE.
+					card.beside = beside
+					local label = control:FindFirstChild("Label")
+					if label and label:IsA("GuiObject") then
+						label.Visible = not beside
+					end
+					control.Size = if beside then UDim2.fromOffset(COS_SWITCH_W, PRICE_H) else UDim2.new(1, -20, 0, PRICE_H)
+					card.button.Size = if beside then UDim2.new(1, -(COS_SWITCH_W + 28), 0, PRICE_H) else UDim2.new(1, -20, 0, PRICE_H)
+					card.button.Position = if beside then UDim2.new(0, COS_SWITCH_W + 18, 1, -10) else UDim2.new(0, 10, 1, -10)
+				end
 			end
 			if owned and card.wasOwned == false and open then
 				-- With the bundle, every card flips in one wave; a single purchase bursts on its own
@@ -99004,18 +99631,30 @@ local function buildIndex(screen: ScreenGui)
 	})
 
 	-- Milestone track: a cell per Index milestone (Shared.IndexRewards) in one row over the
-	-- legend. Each names what it asks for and its bonus over a button: the cash still to
-	-- earn (greyed), CLAIM once the Index is there, a gold CLAIMED tag after. The server
-	-- sends every amount (the snapshot's `index`), so a cell shows what a claim pays.
-	local TRACK_H = 62
+	-- legend. Each names what it asks for and its bonus (two lines on a wide window: "20 ·
+	-- LEGENDARY CRATE" wraps) over what it pays: a dim chip with the cash still to earn (flat,
+	-- so it does not read as a button), a breathing CLAIM button once the Index is there, a
+	-- gold CLAIMED tag after. The server sends every amount (the snapshot's `index`), so a
+	-- cell shows what a claim pays.
+	local TRACK_H = { low = 62, tall = 80 } -- one-line captions (a narrow window, a phone) and two-line ones
+	local trackH = TRACK_H.low
 	local track = Kit.new("Frame", {
 		Name = "Rewards",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -14, 0, TRACK_H - 8),
+		Size = UDim2.new(1, -14, 0, trackH - 8),
 		Visible = false,
 		Parent = window.content,
 	})
-	type Cell = { frame: Frame, caption: TextLabel, button: TextButton, done: TextLabel, hit: TextButton, shown: string, state: string }
+	type Cell = {
+		frame: Frame,
+		caption: TextLabel,
+		button: TextButton,
+		done: TextLabel,
+		hit: TextButton,
+		shown: string,
+		state: string,
+		stop: (() -> ())?,
+	}
 	local cells: { Cell } = {}
 	-- os.clock() of the claim sent for each cell: its button waits for the server's answer.
 	local claimSent: { [number]: number } = {}
@@ -99046,18 +99685,19 @@ local function buildIndex(screen: ScreenGui)
 			Position = UDim2.fromScale((order - 1) / milestoneCount, 0),
 			Parent = track,
 		})
-		local caption = Kit.text(cell, {
+		-- Bottom-aligned: a one-line caption sits on its button, a second line goes above it.
+		local caption = readable(Kit.text(cell, {
 			Name = "Caption",
 			Text = "",
 			Font = F.UI,
 			TextSize = T.Small,
-			MinPx = true,
-			TextWrapped = false,
+			TextWrapped = true,
 			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextYAlignment = Enum.TextYAlignment.Bottom,
 			TextColor3 = SMALL_TEXT,
 			Size = UDim2.new(1, 0, 0, 18),
 			StrokeThickness = 0,
-		})
+		}))
 		local button = Kit.button(cell, {
 			Name = "Claim",
 			Text = "",
@@ -99076,10 +99716,15 @@ local function buildIndex(screen: ScreenGui)
 			Solid = true,
 			TextColor = C.GoldInk,
 			TextSize = T.Small,
-			Size = UDim2.new(1, 0, 0, 28),
-			Position = UDim2.fromOffset(0, 22),
+			Size = UDim2.new(1, 0, 0, 26),
+			Position = UDim2.fromOffset(0, 24),
 			Visible = false,
 		})
+		readable(done)
+		local buttonLabel = Kit.buttonLabel(button)
+		if buttonLabel then
+			readable(buttonLabel)
+		end
 		-- Touch: the whole cell takes the tap (the button alone is a small target on a phone).
 		local hit = Kit.new("TextButton", {
 			Name = "Hit",
@@ -99207,9 +99852,28 @@ local function buildIndex(screen: ScreenGui)
 				cell.state = state
 				cell.caption.Text = captionText
 				cell.caption.TextColor3 = if state == "locked" then SMALL_TEXT else C.GoldLight
-				cell.button.Visible = state ~= "claimed"
-				cell.done.Visible = state == "claimed"
+				-- Only a milestone that can be claimed shows a button, and that one breathes.
+				cell.button.Visible = state == "ready"
+				cell.done.Visible = state ~= "ready"
 				cell.done.Text = buttonText
+				if was ~= state then
+					local locked = state == "locked"
+					cell.done.BackgroundColor3 = if locked then C.Ink else C.Gold
+					cell.done.BackgroundTransparency = if locked then 0.6 else 0
+					cell.done.TextColor3 = if locked then SMALL_TEXT else C.GoldInk
+					cell.done.TextTransparency = if locked then 0.25 else 0
+					local edge = cell.done:FindFirstChild("Edge")
+					if edge and edge:IsA("UIStroke") then
+						edge.Transparency = if locked then 0.8 else 0
+					end
+					if cell.stop then
+						cell.stop()
+						cell.stop = nil
+					end
+					if state == "ready" then
+						cell.stop = Kit.breathe(cell.button)
+					end
+				end
 				Kit.setButton(cell.button, buttonText)
 				Kit.setEnabled(cell.button, state == "ready" and not waiting)
 				if was == "ready" and state == "claimed" and window.isOpen() and not PREVIEW then
@@ -99241,10 +99905,19 @@ local function buildIndex(screen: ScreenGui)
 			band.label.Text = bandText(band)
 		end
 		refreshTrack()
+		-- A wide window's captions name the bonus in full and may take a second line.
+		local captionH = if wideLegend then 36 else 18
+		trackH = if wideLegend then TRACK_H.tall else TRACK_H.low
+		track.Size = UDim2.new(1, -14, 0, trackH - 8)
+		for _, cell in cells do
+			cell.caption.Size = UDim2.new(1, 0, 0, captionH)
+			cell.button.Position = UDim2.fromOffset(0, captionH + 2)
+			cell.done.Position = UDim2.fromOffset(0, captionH + 6)
+		end
 		-- The track, or the ribbon after it, takes its row above the legend. A short window (a
 		-- phone) gives it the legend's row instead: the rarity is on every card.
 		local ribbon = isComplete and not showTrack
-		local strip = if showTrack then TRACK_H elseif ribbon then COMPLETE_H else 0
+		local strip = if showTrack then trackH elseif ribbon then COMPLETE_H else 0
 		local folded = strip > 0 and window.size().Y < 440
 		local top = strip + (if folded then 0 else LEGEND_H)
 		complete.Visible = ribbon
@@ -99667,9 +100340,10 @@ local function buildRanking(screen: ScreenGui)
 	Kit.list(list, 8)
 
 	-- The player's own card, pinned right under the list with a sunny outline: their row (one
-	-- face per board, only while they are not in the list itself) over the goal bar, which
-	-- always names a target: "12 more to pass <name>", filled as far as they have come.
-	local MINE_H, GOAL_H = 54, 40
+	-- face per board, only while they are not in the list itself) over the goal, which
+	-- always names a target: "12 more to pass <name>" on a dark pill, over a slim bar filled
+	-- as far as they have come.
+	local MINE_H, GOAL_H = 54, 52
 	local mine = Kit.panel(window.content, {
 		Name = "Mine",
 		Glass = true,
@@ -99684,52 +100358,84 @@ local function buildRanking(screen: ScreenGui)
 	end
 	local mineUnits = mineFace("Units")
 	local mineStage = mineFace("Stage")
-	local _, setGoal, goalLabel = Kit.progress(mine, {
-		Name = "Goal",
-		Glass = true,
-		Color = C.Gold,
-		Size = UDim2.new(1, -20, 0, 24),
-		Position = UDim2.new(0, 10, 1, -8),
-		AnchorPoint = Vector2.new(0, 1),
-		TextSize = T.Small,
-		MinFill = 0.04,
-	})
-	goalLabel.TextWrapped = false
-	goalLabel.TextTruncate = Enum.TextTruncate.AtEnd
-	Kit.holdText(goalLabel, Kit.captionPx())
+	local goalLabel: TextLabel
+	local setGoal: (number, boolean?) -> ()
+	do
+		-- The text is not on the bar: over the gold fill it could not be read.
+		local pill = Kit.new("Frame", {
+			Name = "GoalLine",
+			BackgroundColor3 = C.Ink,
+			BackgroundTransparency = 0.25,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, -20, 0, 26),
+			Position = UDim2.new(0, 10, 1, -21),
+			AnchorPoint = Vector2.new(0, 1),
+			Parent = mine,
+		})
+		Kit.round(pill)
+		goalLabel = readable(Kit.text(pill, {
+			Name = "Label",
+			Text = "",
+			Font = F.Bold,
+			TextSize = T.Small,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextColor3 = Color3.new(1, 1, 1),
+			Size = UDim2.new(1, -24, 1, 0),
+			Position = UDim2.fromOffset(12, 0),
+			StrokeThickness = 0,
+		}))
+		local _, set, barLabel = Kit.progress(mine, {
+			Name = "Goal",
+			Glass = true,
+			Color = C.Gold,
+			Size = UDim2.new(1, -20, 0, 8),
+			Position = UDim2.new(0, 10, 1, -8),
+			AnchorPoint = Vector2.new(0, 1),
+			MinFill = 0.04,
+		})
+		barLabel.Visible = false
+		setGoal = set
+	end
 
-	-- A young board (under three rows): a friendly card takes the room below instead of
-	-- an empty list.
-	local empty = Kit.well(window.content, { Name = "Empty", Glass = true, Size = UDim2.new(1, -14, 0, 120), Radius = Kit.RADIUS.M })
+	-- A young board (under three rows): one slim strip under the pinned card says what there
+	-- is to win on it (a trophy, a gold title and one line), instead of an empty list.
+	local EMPTY_H = 68
+	local empty = Kit.well(window.content, { Name = "Empty", Glass = true, Size = UDim2.new(1, -14, 0, EMPTY_H), Radius = Kit.RADIUS.M })
 	empty.Visible = false
-	local emptyIcon = Kit.icon(empty, Kit.iconName(I.Ranking) or "Star", 56, C.Window.Ranking, {
+	Kit.icon(empty, Kit.iconName(I.Ranking) or "Star", 40, C.Window.Ranking, {
 		Name = "Icon",
-		Position = UDim2.new(0.5, 0, 0.5, -37),
-		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, 14, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
 	})
 	local emptyTitle = Kit.title(empty, {
 		Name = "Title",
 		Text = "",
-		TextSize = T.H2,
-		MinPx = 18,
+		TextSize = T.H3,
+		MinPx = 16,
 		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = C.Gold,
-		Size = UDim2.new(1, -24, 0, 30),
-		Position = UDim2.new(0, 12, 0.5, -5),
+		Size = UDim2.new(1, -80, 0, 26),
+		Position = UDim2.fromOffset(66, 8),
 	})
-	-- Up to two lines: what to do next on a board this young.
+	-- One line: what to do next on a board this young.
 	local emptyLine = Kit.text(empty, {
 		Name = "Line",
 		Text = "",
-		TextSize = T.Body,
+		TextSize = T.Small,
 		MinPx = true,
-		Size = UDim2.new(1, -24, 0, 40),
-		Position = UDim2.new(0, 12, 0.5, 25),
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -80, 0, 22),
+		Position = UDim2.fromOffset(66, 36),
 		StrokeThickness = 0,
 	})
 
 	-- The list is as tall as its rows (it scrolls once they pass the room there is), the
-	-- pinned card sits right under it and the card for a young board fills what is left.
+	-- pinned card sits right under it and the strip for a young board under that.
 	-- Short windows (a phone): the subtitle goes and the columns and list move up into its row.
 	local ROW_H, ROW_GAP = 46, 8
 	local rowCount = 0
@@ -99755,13 +100461,8 @@ local function buildRanking(screen: ScreenGui)
 		mine.Position = UDim2.fromOffset(0, y)
 		y += pinH
 		local left = inner - y
-		empty.Visible = rowCount < 3 and left >= 76
+		empty.Visible = rowCount < 3 and left >= EMPTY_H
 		empty.Position = UDim2.fromOffset(0, y)
-		empty.Size = UDim2.new(1, -14, 0, left)
-		emptyIcon.Visible = left >= 144
-		local lift = if emptyIcon.Visible then 0 else 30
-		emptyTitle.Position = UDim2.new(0, 12, 0.5, -5 - lift)
-		emptyLine.Position = UDim2.new(0, 12, 0.5, 25 - lift)
 	end
 	layoutRows(window.size())
 	window.onResize.Event:Connect(layoutRows)
@@ -99931,15 +100632,14 @@ local function buildRanking(screen: ScreenGui)
 			emptyTitle.Text = "YOU'RE #1!"
 			emptyLine.Text = if type(second) == "table"
 				then string.format("%s is right behind you. Stay ahead!", tostring(second.name or "Someone"))
-				elseif board == "stage" then "Nobody else has cleared a stage yet. Clear more maps to stay on top!"
-				else string.format("Nobody else is on the board yet. Every %s you get counts: build your lead!", W.Unit)
+				elseif board == "stage" then "Nobody else has cleared a stage yet. Stay on top!"
+				else string.format("Nobody else is here yet. Every %s counts: build your lead!", W.Unit)
 		else
 			emptyTitle.Text = "TAKE THE #1 SPOT!"
 			emptyLine.Text = if rowCount == 0
 				then "Be the first name on the board!"
 				else string.format(
-					"Only %d on the board so far: pass %s and the gold medal is yours.",
-					rowCount,
+					"Pass %s and the gold medal is yours.",
 					if type(first) == "table" then tostring(first.name or "them") else "them"
 				)
 		end
@@ -100171,10 +100871,10 @@ end
 -- Settings ------------------------------------------------------------------------------
 
 local function buildSettings(screen: ScreenGui)
-	-- Sized to its four rows and the "Before you go" line: 4 x 70 + 20 + 4 x 10 gaps + 20
-	-- padding + 84 of header and margins. The rows share the height left by the line, so
-	-- the 386 minimum (a phone, scaled up x1.3) has 56 px rows.
-	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(560, 444), Vector2.new(560, 386))
+	-- Sized to its four rows and the two-line "Before you go" row: 4 x 70 + 40 + 4 x 10 gaps
+	-- + 20 padding + 84 of header and margins. The rows share the height left by that row,
+	-- so the 386 minimum (a phone, scaled up x1.3) has 50 px rows.
+	local window = Kit.window(screen, "Settings", "Settings", I.Settings, C.Window.Settings, Vector2.new(560, 464), Vector2.new(560, 386))
 	register("Settings", window)
 	local action = Net.event("Action")
 
@@ -100186,7 +100886,7 @@ local function buildSettings(screen: ScreenGui)
 		local row = Kit.panel(window.content, {
 			Name = key,
 			Glass = true,
-			Size = UDim2.new(1, 0, 0.25, -15),
+			Size = UDim2.new(1, 0, 0.25, -20),
 			LayoutOrder = order,
 			Radius = Kit.RADIUS.M + 2,
 		})
@@ -100251,20 +100951,34 @@ local function buildSettings(screen: ScreenGui)
 	toggle(2, "Sound", "Sound Effects", "Clicks, pickups and rewards", "sfx")
 	toggle(3, "Hash", "Full Numbers", "Show 1,234,567 instead of 1.23M", "fullNumbers")
 	toggle(4, "Merge", "Auto Merge", "Merge pairs automatically", "autoMerge")
-	-- "Before you go" (Shared.Comeback): what waits for the player next time, as one quiet
-	-- line under the switches. Settings is where a player goes last.
-	local leave = Kit.text(window.content, {
+	-- "Before you go" (Shared.Comeback): what waits for the player next time, under the
+	-- switches (Settings is where a player goes last): a gift icon and up to two lines of
+	-- light text, since it explains what a child comes back to.
+	local leaveRow = Kit.new("Frame", {
 		Name = "Leave",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 40),
+		LayoutOrder = 5,
+		Visible = false,
+		Parent = window.content,
+	})
+	Kit.icon(leaveRow, Kit.pickIcon("Gift2", "Star"), 26, C.Gold, {
+		Name = "Icon",
+		Position = UDim2.new(0, 6, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+	})
+	local leave = readable(Kit.text(leaveRow, {
+		Name = "Line",
 		Text = "",
 		TextSize = T.Small,
-		MinPx = true,
-		TextColor3 = C.TextMute,
-		TextWrapped = false,
+		TextColor3 = C.Text,
+		TextWrapped = true,
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		Size = UDim2.new(1, 0, 0, 20),
-		LayoutOrder = 5,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -44, 1, 0),
+		Position = UDim2.fromOffset(40, 0),
 		StrokeThickness = 0,
-	})
+	}))
 
 	local ON_TILE = C.Ink:Lerp(C.Window.Settings, 0.55)
 	local function refresh()
@@ -100273,6 +100987,7 @@ local function buildSettings(screen: ScreenGui)
 			return
 		end
 		leave.Text = Comeback.leaveLine(data, { money = State.money, words = W, age = State.age() })
+		leaveRow.Visible = leave.Text ~= ""
 		for _, t in toggles do
 			local on: boolean
 			if t.key == "autoMerge" then

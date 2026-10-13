@@ -1461,6 +1461,7 @@ local REVEAL_MIN = 0.35 -- an earlier tap waits until the unit has popped in
 local REVEAL_HOLD = 1.9 -- entrance (0.3) + hold (1.6) before a unit that is not new leaves
 local REVEAL_CHAIN = 1.6 -- each discovery of a chain but the last
 local REVEAL_IDLE = 10 -- the last (or only) discovery, if nobody taps
+local REVEAL_QUEUED = 3 -- the same discovery once another card waits behind it ("YOU DID IT!")
 local CHAIN_MAX = 6 -- reveals in a row; older tiers of a bigger jump ride on the last one
 local REVEAL_HOLD_TUTORIAL = 1.3 -- shorter while the tutorial is pointing somewhere
 local REVEAL_HINT = 1.0 -- "tap to continue" only shows this late
@@ -2399,6 +2400,19 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		local tutorial = data ~= nil and data.tutorialDone ~= true
 		local hold = if chained then REVEAL_CHAIN elseif isNew then REVEAL_IDLE else (if tutorial then REVEAL_HOLD_TUTORIAL else REVEAL_HOLD)
 		task.delay(hold, leave)
+		-- The long hold is for the last card only: once something waits in the queue (the
+		-- tutorial's "YOU DID IT!", a finish card, the next reveal) this one makes room.
+		if hold > REVEAL_QUEUED then
+			task.spawn(function()
+				while not closed and root.Parent do
+					if #queue > 0 and os.clock() - startedAt >= REVEAL_QUEUED then
+						leave()
+						return
+					end
+					task.wait(0.25)
+				end
+			end)
+		end
 	end
 end
 
@@ -4590,19 +4604,24 @@ local function buildChestPanel()
 			Kit.appear(panel, { from = 0.85, time = 0.26 })
 			-- The default player list sits over the panel's header on short screens.
 			Kit.hidePlayerList("crate", true)
+			-- The first few crates a player ever holds: the path to the Smasher shows by
+			-- itself (later ones on a tap of the gold button).
+			if data.crateGuide == true then
+				Guide.navigate(SMASHER_PAD, string.upper(W.Unlocker), SMASHER_ARROW * 2)
+			end
 		end
 		local color = C.Rarity[rarity] or C.Gold
-		local key = rarity .. ":" .. data.highestTier
+		-- The Smasher's time for this very crate, from the server (a profile's first crate
+		-- opens in Economy.FIRST_CRATE_SECONDS, not in its rarity's time).
+		local freeSeconds = tonumber(data.heldSeconds)
+		local key = rarity .. ":" .. data.highestTier .. ":" .. (freeSeconds or -1)
 		if key ~= shownFor then
 			shownFor = key
 			title.Text = string.upper(rarity .. " " .. W.Chest)
 			title.TextColor3 = Kit.lighten(color, 0.3)
 			divider.BackgroundColor3 = Kit.lighten(color, 0.2)
 			halo.BackgroundColor3 = Kit.lighten(color, 0.45)
-			-- The Smasher's timer for this rarity (its first slot).
-			freePrice.Text = if Economy.CHEST_INFO[rarity]
-				then "FREE  •  " .. Format.time(Economy.unlockSeconds(rarity, false))
-				else "FREE"
+			freePrice.Text = if freeSeconds then "FREE  •  " .. Format.time(freeSeconds) else "FREE"
 			if crate then
 				crate:Destroy()
 			end

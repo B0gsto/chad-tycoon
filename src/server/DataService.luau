@@ -63,6 +63,9 @@ export type Profile = {
 	-- The profile's first crate has been opened (until then a Smasher slot takes
 	-- Economy.FIRST_CRATE_SECONDS).
 	firstCrateDone: boolean,
+	-- Crates picked up so far, counted to Economy.CRATE_GUIDE_HOLDS only: the first ones get
+	-- the guide's path to the Crate Smasher by themselves.
+	cratesHeld: number,
 	-- Rarity of the crate the player was last prompted to open with Robux ("" = none);
 	-- the receipt opens this one if the crate is no longer held.
 	pendingCrate: string,
@@ -165,6 +168,7 @@ function DataService.defaultProfile(): Profile
 		processLevel = Economy.START_PROCESS_LEVEL,
 		heldChest = "",
 		firstCrateDone = false,
+		cratesHeld = 0,
 		pendingCrate = "",
 		pendingUnlocker = 0,
 		unlockers = {
@@ -256,6 +260,10 @@ local function reconcile(data: any): Profile
 			or (type(data.totalObtained) == "number" and data.totalObtained > 1)
 			or data.tutorialDone == true
 		data.firstCrateDone = played
+	end
+	-- Saves from before the Smasher path: a profile that has had a crate knows the way.
+	if type(data.cratesHeld) ~= "number" then
+		data.cratesHeld = if data.firstCrateDone then Economy.CRATE_GUIDE_HOLDS else 0
 	end
 	-- Saves from before the daily reward: day 1 is waiting, but today is not a "first day".
 	if data.daily == nil then

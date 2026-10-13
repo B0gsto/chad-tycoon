@@ -241,14 +241,18 @@ function Surge.init()
 
 	RunService.Heartbeat:Connect(function()
 		local now = Workspace:GetServerTimeNow()
-		local active, left = Economy.surgeState(now)
+		-- A player still in the tutorial has no surge (Economy.surgeFor): no grade, no
+		-- sparkles, no music, not even the fade-out of one that just ended.
+		local data = State.data
+		local met = data ~= nil and data.tutorialDone == true
+		local active, left = Economy.surgeFor(now, met)
 		local wantMood = if active then "surge" else nil
 		if wantMood ~= mood then
 			mood = wantMood
 			Sounds.setMood(mood)
 		end
 
-		local weight = Surge.weight(active, left, Economy.SURGE_DURATION, Economy.SURGE_CYCLE)
+		local weight = if met then Surge.weight(active, left, Economy.SURGE_DURATION, Economy.SURGE_CYCLE) else 0
 		if weight <= 0.001 then
 			if grade or sparkPart then
 				clearEffects()

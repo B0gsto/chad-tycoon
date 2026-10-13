@@ -45,9 +45,8 @@ type Orb = { part: BasePart, value: number, count: number, cell: number, tier: n
 type FloorChest = { model: Model, rarity: string, position: Vector3, landsAt: number, blocked: boolean }
 type DisplaySlot = { tier: number, model: Model }
 
--- One stay on a pad: `since` = os.clock() of the step onto it, `fired` = its handler ran,
--- `linger` = the handler asked for its padLingerHandlers entry if the player stays.
-type PadVisit = { since: number, fired: boolean, linger: boolean }
+-- One stay on a pad: `since` = os.clock() of the step onto it, `fired` = its handler ran.
+type PadVisit = { since: number, fired: boolean }
 
 export type Session = {
 	player: Player,
@@ -69,6 +68,8 @@ export type Session = {
 	-- First run: no crates until the tutorial is done (`inTutorial` = it was still running on
 	-- the last slow tick); the first crate after it always drops (`chestCertain`).
 	inTutorial: boolean,
+	-- os.clock() of the last "a crate is here" toast (a Common one: CRATE_TOAST_GAP apart).
+	crateToastAt: number,
 	chestCertain: boolean,
 	collectBuffer: number,
 	actionBudget: number,
@@ -119,9 +120,9 @@ local PAD_MAX_Y = 10
 -- Pads that fire only after the player has stood on them this long (seconds): the upgrade
 -- pads lie on the Deposit to Collect walking line, and a walker crosses a 4.2-stud pad in
 -- 0.26 s. Every other pad fires on entry.
-local PAD_DWELL = { ProcUp1 = 0.4, ProcUp10 = 0.4 }
--- Standing this long on a busy Smasher pad (no crate in hand) offers the Robux smash.
-local SMASH_OFFER_DWELL = 1.5
+local PAD_DWELL = { ProcUp1 = 0.6, ProcUp10 = 0.6 }
+-- A Common crate's arrival toast comes at most this often (seconds).
+local CRATE_TOAST_GAP = 30
 -- A pass pad says "this is a game pass" at most this often (seconds); it never opens a prompt.
 local PASS_HINT_INTERVAL = 60
 -- Orbs can be collected only from inside the pen (walls and stair tops included),
@@ -246,7 +247,8 @@ end
 
 function Tycoon.orbMultiplier(session: Session): number
 	local mult = if session.passes.DoubleAura then 2 else 1
-	local surge = Economy.surgeState(serverNow())
+	-- No Aura Surge for a session still in the tutorial (Economy.surgeFor).
+	local surge = Economy.surgeFor(serverNow(), session.profile.tutorialDone)
 	if surge then
 		mult *= Economy.SURGE_MULTIPLIER
 	end
@@ -264,7 +266,7 @@ local function processRate(session: Session, surge: boolean): number
 	if session.passes.DoubleAura then
 		rate *= 2
 	end
-	if surge and Economy.surgeState(serverNow()) then
+	if surge and Economy.surgeFor(serverNow(), session.profile.tutorialDone) then
 		rate *= Economy.SURGE_MULTIPLIER
 	end
 	return rate
@@ -865,6 +867,8 @@ local function pickUpChest(session: Session, chest: FloorChest)
 	chest.model:Destroy()
 	table.remove(session.floorChests, index)
 	session.profile.heldChest = chest.rarity
+	-- The first few holds get the path to the Smasher (the snapshot's `crateGuide`).
+	session.profile.cratesHeld = math.min(session.profile.cratesHeld + 1, Economy.CRATE_GUIDE_HOLDS + 1)
 	attachHeldModel(session)
 	effect(session, "ChestPickup", { rarity = chest.rarity })
 	markDirty(session)
@@ -966,6 +970,11 @@ local function spawnFloorChest(session: Session)
 		-- "An Uncommon Crate", "An Epic Crate", "A Rare Crate".
 		local article = if string.find(rarity, "^[AEIOU]") then "An" else "A"
 		toast(session, string.format("%s %s %s is on its way!", article, rarity, theme.Words.Chest), "good")
+		session.crateToastAt = os.clock()
+	elseif os.clock() - session.crateToastAt >= CRATE_TOAST_GAP then
+		-- A Common one is told too (a small toast, nothing to tap), but not every time.
+		session.crateToastAt = os.clock()
+		toast(session, string.format("A %s rolled into your pen!", string.lower(theme.Words.Chest)), "info")
 	end
 end
 
@@ -1598,15 +1607,23 @@ padHandlers.ProcUp10 = function(session)
 	procUpgrade(session, Economy.PROCESS_BULK, "ProcUp10")
 end
 
--- Puts the held crate in a Smasher slot and returns the seconds it will take. A profile's
--- first crate opens after Economy.FIRST_CRATE_SECONDS.
-local function loadUnlocker(session: Session, slotIndex: number): number
+-- Seconds the held crate would take in a Smasher slot. A profile's first crate opens after
+-- Economy.FIRST_CRATE_SECONDS. The crate panel shows this for slot 1 (the snapshot's
+-- `heldSeconds`), so what it promises is what the Smasher does.
+local function unlockerSeconds(session: Session, slotIndex: number): number
 	local p = session.profile
-	local slot = p.unlockers[slotIndex]
 	local seconds = Economy.unlockSeconds(p.heldChest, slotIndex == 2)
 	if not p.firstCrateDone then
 		seconds = math.min(seconds, Economy.FIRST_CRATE_SECONDS)
 	end
+	return seconds
+end
+
+-- Puts the held crate in a Smasher slot and returns the seconds it will take.
+local function loadUnlocker(session: Session, slotIndex: number): number
+	local p = session.profile
+	local slot = p.unlockers[slotIndex]
+	local seconds = unlockerSeconds(session, slotIndex)
 	-- Only that one: a second crate loaded before the first opens takes its full time.
 	p.firstCrateDone = true
 	slot.rarity = p.heldChest
@@ -1640,12 +1657,10 @@ local function useUnlocker(session: Session, slotIndex: number)
 			toast(session, string.format("Smasher busy: ready in %s. Keep your crate, it goes in next.", Format.time(left)), "info")
 			refusePad(session, padName, "locked")
 		else
+			-- The Robux smash is never offered here: it is a button on the Smasher's crate
+			-- (the "OfferSmash" action). The crate opens by itself if the player waits on
+			-- the pad (fastTick).
 			toast(session, "Ready in " .. Format.time(left) .. ". Come back when the timer ends!", "info")
-			-- The Robux smash is offered only to a player who stays on the pad (offerSmash).
-			local visit = session.inside[padName]
-			if visit then
-				visit.linger = true
-			end
 		end
 		markDirty(session)
 		return
@@ -1660,8 +1675,8 @@ local function useUnlocker(session: Session, slotIndex: number)
 	markDirty(session)
 end
 
--- Still on a busy Smasher pad after SMASH_OFFER_DWELL with empty hands: offer to smash the
--- crate now for Robux. Walking across the pad never asks.
+-- The "Smash now" button on a busy Smasher's crate (empty hands): ask before the Robux
+-- prompt. Standing on or walking across the pad never asks.
 local function offerSmash(session: Session, slotIndex: number)
 	local p = session.profile
 	local slot = p.unlockers[slotIndex]
@@ -1681,16 +1696,16 @@ local function offerSmash(session: Session, slotIndex: number)
 	})
 end
 
--- Run once when the player has stood on the pad for SMASH_OFFER_DWELL, if the pad's handler
--- asked for it (PadVisit.linger).
-local padLingerHandlers: { [string]: (Session) -> () } = {
-	Unlock1 = function(session)
-		offerSmash(session, 1)
-	end,
-	Unlock2 = function(session)
-		offerSmash(session, 2)
-	end,
-}
+-- A crate whose timer ends while its owner stands on the Smasher's pad opens by itself
+-- (fastTick): the pad's handler runs again, as on a fresh step onto the pad.
+local function unlockerDue(session: Session, name: string): boolean
+	local slotIndex = if name == "Unlock1" then 1 elseif name == "Unlock2" then 2 else 0
+	if slotIndex == 0 or (slotIndex == 2 and not session.passes.PremiumUnlocker) then
+		return false
+	end
+	local slot = session.profile.unlockers[slotIndex]
+	return slot.rarity ~= "" and slot.endsAt - os.time() <= 0
+end
 
 padHandlers.Unlock1 = function(session)
 	useUnlocker(session, 1)
@@ -1759,10 +1774,15 @@ local function updateBoards(session: Session)
 	-- else the speed step; no price once the pads refuse (upgradeNotNeeded).
 	local rateNow = processRate(session, true)
 	local notNeeded = upgradeNotNeeded(session)
+	local singleGain = upgradeGain(session, 1)
 	for padName, amount in { ProcUp1 = 1, ProcUp10 = Economy.PROCESS_BULK } do
 		local cost = Economy.processBulkCost(p.processLevel, amount)
 		local gain = upgradeGain(session, amount)
-		local title = if gain > 0 then "+$" .. perSecond(gain) .. "/sec" else string.format("+%s speed", upgradeSpeed(amount))
+		-- Each pad shows its own gain: when one level already catches up with the units the
+		-- bulk pad would promise the same cash, so it shows its speed step instead.
+		local title = if Economy.upgradeShowsCash(amount, gain, singleGain)
+			then "+$" .. perSecond(gain) .. "/sec"
+			else string.format("+%s speed", upgradeSpeed(amount))
 		if notNeeded then
 			setPad(session, padName, title, "Not needed yet", false)
 		else
@@ -1828,11 +1848,14 @@ local function rebirthWords()
 	end
 	local W = theme.Words
 	local text = {
-		units = string.format("Your %s: you start again with 1 %s", W.Units, tierName(1)),
-		money = string.format("Your cash, the uncollected cash too: back to %s", Format.money(Economy.START_CASH)),
-		aura = string.format("%s you carry and %s in the Blender", W.Orb, W.Orb),
+		-- One line each on the confirm card (about 28 characters): short, but nothing left
+		-- out. "All cash" is the wallet (cash from packs is in it) and the cash waiting in
+		-- the Blender.
+		units = string.format("%s: back to 1 %s", W.Units, tierName(1)),
+		money = "All cash (packs, Blender too)",
+		aura = string.format("%s: carried and in Blender", W.Orb),
 		price = string.format("%s prices: cheap again", W.Unit),
-		converter = string.format("Blender level: back to Lv %d (new %s lift it for free)", Economy.START_PROCESS_LEVEL, W.Units),
+		converter = string.format("Blender: back to Lv %d", Economy.START_PROCESS_LEVEL),
 		stars = string.format("Your stars: +%d%% cash each, forever", Economy.STAR_BONUS * 100),
 		index = string.format("Your Index: every %s you ever found", W.Unit),
 		passes = "Every game pass you own",
@@ -1919,6 +1942,10 @@ local function snapshot(session: Session): { [string]: any }
 		-- Cash per second the next converter level adds (0 while the converter keeps up).
 		upgradeGain = upgradeGain(session, 1),
 		heldChest = p.heldChest,
+		-- The free Smasher's real time for the held crate (10 s for a profile's first one) and
+		-- whether the guide shows the way there by itself (the first few crates ever held).
+		heldSeconds = if p.heldChest ~= "" and Economy.CHEST_INFO[p.heldChest] then unlockerSeconds(session, 1) else nil,
+		crateGuide = p.heldChest ~= "" and p.cratesHeld <= Economy.CRATE_GUIDE_HOLDS,
 		crateRobux = Tycoon.hooks.crateRobuxAllowed(session.player),
 		-- Best tier of the current run (crate odds, pack sizes, the next goal) and the best
 		-- tier ever found (the Index; what the plot shows off).
@@ -2096,7 +2123,7 @@ local function fastTick(session: Session)
 		if inside then
 			local visit = session.inside[name]
 			if not visit then
-				visit = { since = now, fired = false, linger = false }
+				visit = { since = now, fired = false }
 				session.inside[name] = visit
 			end
 			local stood = now - visit.since
@@ -2108,12 +2135,10 @@ local function fastTick(session: Session)
 					flush(session)
 				end
 			end
-			if visit.linger and stood >= SMASH_OFFER_DWELL then
-				visit.linger = false
-				local linger = padLingerHandlers[name]
-				if linger then
-					linger(session)
-				end
+			-- Waiting on the Smasher's pad: the crate opens the moment its timer ends.
+			if visit.fired and unlockerDue(session, name) then
+				padHandlers[name](session)
+				flush(session)
 			end
 		else
 			session.inside[name] = nil
@@ -2255,6 +2280,14 @@ end
 -- Smashes the crate in an unlocker slot early. Crate Master owners (and finished timers)
 -- open it free; everyone else is prompted the same "Open Crate" product as a held crate,
 -- and the slot is emptied only when the receipt arrives (Tycoon.openCrateProduct).
+-- The "Smash now" button on a Smasher's crate: the confirm card, then FinishUnlocker.
+actionHandlers.OfferSmash = function(session, data)
+	local slotIndex = data.slot
+	if slotIndex == 1 or slotIndex == 2 then
+		offerSmash(session, slotIndex)
+	end
+end
+
 actionHandlers.FinishUnlocker = function(session, data)
 	local slotIndex = data.slot
 	if slotIndex ~= 1 and slotIndex ~= 2 then
@@ -2552,6 +2585,7 @@ function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, pa
 		dirty = true,
 		chestTimer = 0,
 		inTutorial = not profile.tutorialDone,
+		crateToastAt = -math.huge,
 		chestCertain = false,
 		collectBuffer = 0,
 		actionBudget = ACTIONS_PER_SECOND,

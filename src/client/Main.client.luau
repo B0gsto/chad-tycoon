@@ -290,9 +290,21 @@ if RunService:IsStudio() then
 	end)
 end
 
+-- Parkour's HUD normally leaves on the run's "finish" / "stop" / "invalid" Notify. Safety
+-- net: the snapshot says the run is over (a Notify that never arrived) and the HUD goes too.
+local parkourRunning = false
+
 Net.event("State").OnClientEvent:Connect(function(data)
 	State.set(data)
 	CardioHud.onState(data)
+	local parkour = type(data.modes) == "table" and data.modes.parkour
+	local running = type(parkour) == "table" and parkour.running == true
+	if parkourRunning and not running then
+		Hud.setObbyMode(false)
+		Hud.runStop()
+		ObbyHud.hide()
+	end
+	parkourRunning = running
 	maybePlayIntro()
 	Sounds.updateMusic()
 	if data.freeIn and data.freeIn > 0 then
@@ -317,13 +329,8 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 		-- A finish card never stays up over another mode or after its own has ended (Popups
 		-- closes it too once the player is Home).
 		Popups.closeFinish()
-		-- CardioHud's own finish card is a plain frame of the screen: its "start" hides it,
-		-- its "stop" does not.
-		local card = screen:FindFirstChild("CardioFinish")
-		if card and card:IsA("GuiObject") and card.Visible and not (payload.mode == "cardio" and payload.event == "start") then
-			Kit.unfocus(card)
-			Kit.disappear(card)
-		end
+		-- CardioHud's own finish card too (its own "start" and "stop" hide it already).
+		CardioHud.closeFinish()
 	end
 	if payload.kind == "Toast" then
 		Popups.toast(payload.text, payload.tone)

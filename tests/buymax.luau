@@ -320,11 +320,85 @@ local function suite(h: { [string]: any })
 			check(string.find(snapshot, field, 1, true) ~= nil, "snapshot has " .. field)
 		end
 
-		-- Only the first crate ever loaded gets the short timer.
+		-- Only the first crate ever loaded gets the short timer, and the crate panel is told
+		-- the same time (the snapshot's heldSeconds), not the rarity's.
+		local seconds = body("unlockerSeconds")
+		check(string.find(seconds, "Economy.FIRST_CRATE_SECONDS", 1, true) ~= nil, "the first crate's time is worked out in one place")
 		local load = body("loadUnlocker")
-		local short = string.find(load, "Economy.FIRST_CRATE_SECONDS", 1, true)
+		local short = string.find(load, "unlockerSeconds(session, slotIndex)", 1, true)
 		local done = string.find(load, "p.firstCrateDone = true", 1, true)
 		check(short ~= nil and done ~= nil and done > short, "loading a crate ends the first-crate timer for the next one")
+		check(string.find(snapshot, 'heldSeconds = if p.heldChest ~= ""', 1, true) ~= nil, "snapshot has the held crate's real time")
+		check(string.find(snapshot, "unlockerSeconds(session, 1)", 1, true) ~= nil, "from the same function the Smasher uses")
+		check(
+			string.find(snapshot, 'crateGuide = p.heldChest ~= "" and p.cratesHeld <= Economy.CRATE_GUIDE_HOLDS', 1, true) ~= nil,
+			"snapshot says when the Smasher path shows by itself"
+		)
+		local popups = fs.readFile("src/client/UI/Popups.luau")
+		check(string.find(popups, "tonumber(data.heldSeconds)", 1, true) ~= nil, "the crate panel shows the server's time")
+		check(string.find(popups, "Format.time(Economy.unlockSeconds(rarity", 1, true) == nil, "and never one worked out from the rarity")
+		check(
+			string.find(popups, "if data.crateGuide == true then\n\t\t\t\tGuide.navigate(SMASHER_PAD", 1, true) ~= nil,
+			"the path shows by itself"
+		)
+
+		-- The Aura Surge starts for a session when its tutorial is done.
+		check(not has("Economy.surgeState("), "Tycoon never reads the bare surge clock")
+		local _, gated = string.gsub(source, "Economy%.surgeFor%(serverNow%(%), session%.profile%.tutorialDone%)", "")
+		eq(gated, 2, "orbs and the converter both skip the surge during the tutorial")
+		for _, path in { "src/client/UI/Hud.luau", "src/client/Fx/Surge.luau" } do
+			local client = fs.readFile(path)
+			check(string.find(client, "Economy.surgeFor(now, ", 1, true) ~= nil, path .. " shows no surge during the tutorial")
+			check(string.find(client, "Economy.surgeState(", 1, true) == nil, path .. " never reads the bare clock")
+		end
+
+		-- Crate arrivals: every one is told, a Common one at most every 30 s.
+		check(has("local CRATE_TOAST_GAP = 30"), "Common crate toasts are 30 s apart")
+		check(has("elseif os.clock() - session.crateToastAt >= CRATE_TOAST_GAP then"), "a Common crate is told too")
+		check(has("rolled into your pen!"), "in plain words")
+
+		-- Smasher: the crate opens by itself under a waiting owner; the Robux smash is a button.
+		check(has("if visit.fired and unlockerDue(session, name) then\n\t\t\t\tpadHandlers[name](session)"), "auto-open at zero on the pad")
+		check(not has("SMASH_OFFER_DWELL") and not has("visit.linger"), "standing still never offers Robux")
+		check(has("actionHandlers.OfferSmash = function(session, data)"), "the Smash now button asks first")
+		local machines = fs.readFile("src/client/Fx/Machines.luau")
+		check(string.find(machines, 'action = "OfferSmash", slot = slotIndex', 1, true) ~= nil, "the button is on the Smasher's crate")
+		check(string.find(machines, '"READY!"', 1, true) == nil, "no second READY! card behind the sign")
+
+		-- Upgrade pads: own titles; rebirth: one line per reset.
+		check(has("Economy.upgradeShowsCash(amount, gain, singleGain)"), "each upgrade pad shows its own gain")
+		local words = body("rebirthWords")
+		local longest = 0
+		for line in string.gmatch(words, '\n\t\t%a+ = [^\n]-"([^"\n]*)"') do
+			longest = math.max(longest, #line)
+		end
+		check(longest > 0 and longest <= 40, "rebirth lines are short (longest format string: " .. longest .. ")")
+		check(string.find(words, 'money = "All cash (packs, Blender too)"', 1, true) ~= nil, "cash names the packs and the Blender")
+	end)
+
+	test("Aura Surge: none for a player still in the tutorial", function()
+		local at = Economy.SURGE_CYCLE - Economy.SURGE_DURATION + 15
+		local active, left = Economy.surgeState(at)
+		eq(active, true, "the clock says surge")
+		local mine, mineLeft = Economy.surgeFor(at, false)
+		eq(mine, false, "not for a tutorial player")
+		eq(mineLeft, left, "the clock's own seconds")
+		eq(Economy.surgeFor(at, nil), false, "nor before the first snapshot")
+		eq(Economy.surgeFor(at, true), true, "on once the tutorial is done or skipped")
+		eq(Economy.surgeFor(0, true), false, "and off outside the surge")
+	end)
+
+	test("upgrade pads: each title shows its own gain", function()
+		-- Far behind the units: both pads add different cash.
+		eq(Economy.upgradeShowsCash(1, 50, 50), true, "x1 shows cash")
+		eq(Economy.upgradeShowsCash(Economy.PROCESS_BULK, 400, 50), true, "x10 shows its bigger cash")
+		-- One level catches up: the x10 pad would read the same cash, so it shows its speed.
+		eq(Economy.upgradeShowsCash(1, 164, 164), true, "x1 still shows cash")
+		eq(Economy.upgradeShowsCash(Economy.PROCESS_BULK, 164, 164), false, "x10 shows speed, not the same cash")
+		-- Nothing to gain: both show speed.
+		eq(Economy.upgradeShowsCash(1, 0, 0), false, "no cash to show")
+		eq(Economy.upgradeShowsCash(Economy.PROCESS_BULK, 0, 0), false, "none on x10 either")
+		eq(Economy.CRATE_GUIDE_HOLDS, 3, "the first three crates get the Smasher path")
 	end)
 end
 
