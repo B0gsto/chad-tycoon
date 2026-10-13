@@ -4,8 +4,9 @@
 	Ink-outlined text straight over the world; only the menu buttons sit on plates.
 
 	  top bar right  Settings gear alone (Roblox's player list sits under it)
-	  top centre     three rows at most, 6 px apart: Chad icon + unit count "37/100"
-	                 (sunny + "AUTO-MERGING" at 100/100), a low glass strip
+	  top centre     three rows and no more, 6 px apart, y 4 to 128 at 720p (world labels
+	                 behind it stay readable): Chad icon + unit count "37/100"
+	                 (sunny + "AUTO-MERGING" at 100/100), one low glass status strip
 	                 "Deposit bonus: x1.3 · 12s" (never red; "AURA SURGE x2 · 1:23"
 	                 in orange during a surge) and, once the tutorial is done, the
 	                 "Next:" goal strip ("Next: Protein Bro 63%" over "1,240 more
@@ -13,10 +14,12 @@
 	                 turns green, breathes and says "READY: step on MOG MERGE" when
 	                 one merge finds the tier, and reads "REBIRTH: +3 stars" with a
 	                 star when a rebirth is the goal: a tap opens the rebirth card;
-	                 above the dumbbell on compact screens). Under it, one "nearer goal" pill at a time ("Blender
-	                 is full: upgrade its speed", "Free gift ready", "Crate ready at
-	                 the Smasher", "Try a Game Mode: +$X"), which Client.Guide points
-	                 at on the plot. The tutorial quest pill and the parkour run pill
+	                 above the dumbbell on compact screens). A "nearer goal" takes
+	                 the strip's second line, one at a time, behind its icon ("Blender
+	                 is full: upgrade its speed", "Crate ready at the Smasher", "Try a
+	                 Game Mode: +$X"): a tap on the strip then does it, and
+	                 Client.Guide points at its pad on the plot. No row is ever added
+	                 under the strip. The tutorial quest pill and the parkour run pill
 	                 use the third row before that.
 	  left edge      menu grid: Home Ranking Modes / Index Shop Invite Daily, each an
 	                 icon and its caption on its own dark glass plate, all the same
@@ -30,7 +33,9 @@
 	                 a rebirth is on offer, the star counter ("3 +30% cash", a gold
 	                 "+2" tag while a rebirth would pay; a tap opens the rebirth card)
 	  bottom centre  the dumbbell: "AURA" + the carried amount on its plaque
-	  bottom right   FREE gift with its countdown, version in the corner
+	  bottom right   FREE gift with its countdown (ready: a "!" dot and a sunny "CLAIM!",
+	                 both pulsing: the gift is announced here and nowhere else),
+	                 version in the corner
 
 	Numbers roll, things pop and the HUD staggers in when it is built. While a
 	window, modal or reveal is open (Kit.onWindowOpen, the one count behind the
@@ -134,11 +139,9 @@ local GOAL_MAX_W = 380
 local GOAL_TEXT_X = 50
 local GOAL_BAR_X = 12 -- the progress bar's inset, clear of the strip's round corners
 local GOAL_BAR_H = 4
-local PILL_H = 28 -- the "nearer goal" pill: the row under the goal strip
-local PILL_TEXT = 14
-local PILL_ICON = 20
-local PILL_TICK = 0.5 -- seconds between two looks at what the pill should say
-local PILL_SNOOZE = 300 -- a pill the player tapped stays away this long
+local NEAR_GAP = 4 -- the "nearer goal" on the strip's second line: its icon to its words
+local NEAR_TICK = 0.5 -- seconds between two looks at what the nearer goal should be
+local NEAR_SNOOZE = 300 -- a nearer goal the player tapped stays away this long
 local BLENDER_FULL_SECONDS = 60 -- aura waiting in the blender for longer than this: "full"
 local BROKE_SECONDS = 60 -- nothing affordable for this long: a Game Mode pays sooner
 local FAR_SECONDS = 300 -- so does it when the next tier is further off than a mode's pay (5 min of income)
@@ -639,9 +642,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Name = "Version",
 		Text = "v" .. Economy.VERSION,
 		Font = F.UI,
-		TextSize = 12,
+		TextSize = G.TextMin,
 		StrokeThickness = 1.5,
-		Size = UDim2.fromOffset(80, 14),
+		Size = UDim2.fromOffset(80, 16),
 		Position = UDim2.new(1, -8, 1, -4),
 		AnchorPoint = Vector2.new(1, 1),
 		TextXAlignment = Enum.TextXAlignment.Right,
@@ -1025,6 +1028,14 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local goalHint = goalText("Hint", 14, C.TextDim, F.UI)
 	goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, 20)
 	goalHint.Size = UDim2.fromOffset(10, 16)
+	-- The nearer goal's icon, in front of the second line while it names one (paintGoal).
+	local goalNearIcon = group("NearIcon", {
+		Size = UDim2.fromOffset(16, 16),
+		Position = UDim2.fromOffset(GOAL_TEXT_X, 20),
+		Visible = false,
+		ZIndex = 3,
+		Parent = goal,
+	})
 	-- A real bar: a dark track the whole width with the gold fill inside it.
 	local goalTrack = Kit.new("Frame", {
 		Name = "Track",
@@ -1063,18 +1074,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local goalReady = false
 	-- The strip names a rebirth (paintGoal): a tap opens its card.
 	local goalRebirth = false
-	for _, button in { goal, goalPad } do
-		button.Activated:Connect(function()
-			Kit.sound("Click")
-			if goalReady then
-				Guide.navigate("Merge", W.Merge, 30)
-			elseif goalRebirth then
-				Hud.onRebirth()
-			else
-				openIndex()
-			end
-		end)
-	end
+	-- Something closer than the next tier (pickNear, below): `nearShown` is the pick,
+	-- `goalNear` the one the strip's second line is showing, which a tap on the strip does.
+	type Near = { kind: string, text: string, short: string, icon: string, color: Color3, pad: string?, tag: string? }
+	local nearShown: Near? = nil
+	local goalNear: Near? = nil
 	goal.MouseEnter:Connect(function()
 		Kit.tween(goal, 0.12, { BackgroundTransparency = (if goalReady then G.Pill else G.Quiet) - 0.2 })
 	end)
@@ -1133,7 +1137,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local goalTitleShown = ""
 	local goalThumbKey = ""
 	local goalWidth = 280
-	-- The next tier is further off than a Game Mode's reward is worth (the pill reads it).
+	-- The next tier is further off than a Game Mode's reward is worth (pickNear reads it).
 	local goalFar = false
 	local function paintGoal(data: { [string]: any })
 		if type(data.discovered) ~= "table" or type(data.units) ~= "table" then
@@ -1152,7 +1156,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			pending = tonumber(data.pending),
 			income = tonumber(data.rewardIncome) or tonumber(data.income),
 		})
-		-- A rebirth is named when the next tier is the far one: the pill goes by that tier.
+		-- A rebirth is named when the next tier is the far one: pickNear goes by that tier.
 		local chase: NextGoal.Goal? = if picked.kind == "rebirth" then picked.second else picked
 		local missing = picked.missing
 		local seconds = picked.seconds
@@ -1188,6 +1192,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end
 		end
 		goalRebirth = picked.kind == "rebirth"
+		-- A nearer goal takes the second line (READY and a rebirth keep their own words and
+		-- their own tap), in fewer words when the strip is short of room.
+		local near = if ready or goalRebirth then nil else nearShown
+		if near then
+			hints = { near.text, near.short }
+		end
 		local hint = hints[1]
 		local key = table.concat({ lead, title, count, tostring(compact), table.unpack(hints) }, "|")
 		Kit.tween(goalBar, 0.3, { Size = UDim2.fromScale(if ready then 1 else picked.progress, 1) })
@@ -1197,17 +1207,24 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		goalKey = key
 		-- The strip hugs the wider line up to GOAL_MAX_W. Nothing is ever cut off with an
 		-- ellipsis: short of room the second line says less, then goes, which leaves the name
-		-- both lines to wrap onto, and only then is the name scaled down (to the phone caption
-		-- floor at the least).
+		-- both lines to wrap onto, and only then is the name scaled down (to the caption floor
+		-- at the least).
 		goalLead.Text = lead
 		local room = GOAL_MAX_W - GOAL_TEXT_X - 12
+		-- Text held at its size on a phone (applyCompact) is taller than the design's two
+		-- lines: they, and the strip, grow with it.
+		local lineH = math.max(20, goalTitle.TextSize + 2)
+		local hintH = math.max(16, goalHint.TextSize + 1)
+		-- The nearer goal's icon stands in front of its words, as tall as their line.
+		local nearX = if near then hintH + NEAR_GAP else 0
+		local hintRoom = room - nearX
 		local leadW = drawnWidth(goalLead.Text, goalLead.TextSize, goalLead.Font)
 		local countW = if count ~= "" then drawnWidth(count, goalCount.TextSize, goalCount.Font) else 0
 		local titleRoom = room - leadW - countW - 14
 		local titleNeed = drawnWidth(title, goalTitle.TextSize, goalTitle.Font)
 		local hintNeed = drawnWidth(hint, goalHint.TextSize, goalHint.Font)
 		for i = 2, #hints do
-			if hintNeed <= room or hints[i] == "" then
+			if hintNeed <= hintRoom or hints[i] == "" then
 				break
 			end
 			hint = hints[i]
@@ -1216,15 +1233,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local tight = titleNeed > titleRoom
 		-- Above the dumbbell (compact) the strip may grow a line instead: a name that needs
 		-- two lines keeps the estimate under it, which is what the strip is for.
-		local tall = tight and compact and hint ~= "" and hintNeed <= room
-		local dropHint = (tight and not tall) or hintNeed > room or hint == ""
+		local tall = tight and compact and hint ~= "" and hintNeed <= hintRoom
+		local dropHint = (tight and not tall) or hintNeed > hintRoom or hint == ""
 		local titleW = math.min(titleNeed, titleRoom)
-		local hintW = if dropHint then 0 else hintNeed
+		local hintW = if dropHint then 0 else nearX + hintNeed
 		local x = GOAL_TEXT_X
-		-- Text held at its size on a phone (applyCompact) is taller than the design's two
-		-- lines: they, and the strip, grow with it.
-		local lineH = math.max(20, goalTitle.TextSize + 2)
-		local hintH = math.max(16, goalHint.TextSize + 1)
 		local rowH = if tall then lineH * 2 elseif dropHint then lineH + hintH else lineH
 		-- Scaled only when it has to shrink: text that fits keeps its exact size. The cap is
 		-- the size it would have had (a text size constraint counts screen pixels).
@@ -1233,7 +1246,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local cap = if tight then math.ceil(goalTitle.TextSize * math.max(if screenScale then screenScale.Scale else 1, 1)) else 200
 		goalTitleFit.MinTextSize = 1
 		goalTitleFit.MaxTextSize = cap
-		goalTitleFit.MinTextSize = if tight then math.min(G.TextMinPhone, cap) else 1
+		goalTitleFit.MinTextSize = if tight then math.min(Kit.captionPx(), cap) else 1
 		local function put(label: TextLabel, text: string, width: number, gap: number)
 			label.Text = text
 			label.Size = UDim2.fromOffset(width + 4, rowH)
@@ -1243,10 +1256,29 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		put(goalLead, goalLead.Text, leadW, 6)
 		put(goalTitle, title, titleW, 8)
 		put(goalCount, count, countW, 0)
+		local hintY = if tall then lineH * 2 else lineH
 		goalHint.Text = string.upper(string.sub(hint, 1, 1)) .. string.sub(hint, 2)
-		goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, if tall then lineH * 2 else lineH)
-		goalHint.Size = UDim2.fromOffset(hintW + 4, hintH)
+		goalHint.TextColor3 = if near then C.Text else C.TextDim
+		goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X + nearX, hintY)
+		goalHint.Size = UDim2.fromOffset(hintNeed + 4, hintH)
 		goalHint.Visible = not dropHint
+		-- The nearer goal as drawn: the strip's tap goes by it, so one that found no room
+		-- (a long name took both lines) is not acted on unseen.
+		goalNear = if dropHint then nil else near
+		goalNearIcon.Visible = goalNear ~= nil
+		if near and goalNear then
+			goalNearIcon.Position = UDim2.fromOffset(GOAL_TEXT_X, hintY)
+			goalNearIcon.Size = UDim2.fromOffset(hintH, hintH)
+			if goalNearIcon:GetAttribute("Kind") ~= near.kind then
+				goalNearIcon:SetAttribute("Kind", near.kind)
+				local old = goalNearIcon:FindFirstChild("Image")
+				if old then
+					old:Destroy()
+				end
+				Kit.hudIcon(goalNearIcon, near.icon, hintH, near.color, { Name = "Image", ZIndex = 2 }).Size = UDim2.fromScale(1, 1)
+				Kit.pop(goalNearIcon, 0.8)
+			end
+		end
 		goalWidth = math.max(x, GOAL_TEXT_X + hintW) + 12
 		goal.Size = UDim2.fromOffset(goalWidth, GOAL_H + (lineH - 20) + (hintH - 16) + (if tall then lineH else 0))
 		-- A new target (not just a new count) gets a fresh thumbnail and a pop.
@@ -1277,72 +1309,23 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 	end
 
-	-- The nearer goal: one pill under the strip (over it where the strip sits above the
-	-- dumbbell) ----------------------------------------------------------------------------
+	-- The nearer goal: the strip's second line (paintGoal) ----------------------------------
 	-- While the next tier is a long way off there is nearly always something closer worth
-	-- doing. One pill at a time, by priority: the blender is full and a faster one is
-	-- affordable; the free gift is ready; a crate has finished in the Smasher; a Game Mode
-	-- pays out and nothing is affordable (or the tier is far); last, the blender is full and
-	-- the upgrade is still out of reach. A tap does it (claims the gift, opens Modes) or
-	-- draws the path to the pad; Client.Guide keeps a chevron over a pad the pill names.
-	type Near = { kind: string, text: string, icon: string, color: Color3, pad: string?, tag: string? }
-	local nearPill = Kit.hudGlass(goal, {
-		Name = "Nearer",
-		Button = true,
-		Size = UDim2.fromOffset(240, PILL_H),
-		Position = UDim2.new(0.5, 0, 1, STACK_GAP),
-		AnchorPoint = Vector2.new(0.5, 0),
-		Visible = false,
-		-- Over the strip's touch pad, which reaches past the strip's edge on a phone.
-		ZIndex = 31,
-	}) :: TextButton
-	Kit.selectable(nearPill)
-	local pillIcon = group("Icon", {
-		Size = UDim2.fromOffset(PILL_ICON, PILL_ICON),
-		Position = UDim2.new(0, 8, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ZIndex = 2,
-		Parent = nearPill,
-	})
-	local pillLabel = Kit.hudText(nearPill, {
-		Name = "Text",
-		Text = "",
-		Font = F.UI,
-		TextSize = PILL_TEXT,
-		StrokeThickness = 2,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.fromOffset(10, PILL_H),
-		Position = UDim2.fromOffset(8 + PILL_ICON + 6, 0),
-		ZIndex = 3,
-	})
-	-- Touch: a pad grows the low pill to a full tap target, away from the strip (placePill).
-	local pillPad = Kit.new("TextButton", {
-		Name = "Hit",
-		Text = "",
-		AutoButtonColor = false,
-		BackgroundTransparency = 1,
-		Selectable = false,
-		Size = UDim2.fromScale(1, 1),
-		Visible = false,
-		ZIndex = 30,
-		Parent = nearPill,
-	})
-	-- The pill hugs its words, at whatever size they are held on a phone.
-	local function layoutPill()
-		local width = drawnWidth(pillLabel.Text, pillLabel.TextSize, pillLabel.Font)
-		local height = math.max(PILL_H, pillLabel.TextSize + 10)
-		pillLabel.Size = UDim2.fromOffset(width + 4, height)
-		nearPill.Size = UDim2.fromOffset(8 + PILL_ICON + 6 + width + 14, height)
-	end
-	pillLabel:GetPropertyChangedSignal("TextSize"):Connect(layoutPill)
-	local pillNear: Near? = nil
-	local pillSnooze: { [string]: number } = {}
+	-- doing. One at a time, by priority: the blender is full and a faster one is affordable;
+	-- a crate has finished in the Smasher; a Game Mode pays out and nothing is affordable (or
+	-- the tier is far); last, the blender is full and the upgrade is still out of reach. It
+	-- takes the place of the estimate and never a row of its own: the top stack ends with
+	-- the strip, so the plot's labels behind it stay readable. A tap on the strip does it
+	-- (opens Modes) or draws the path to the pad; Client.Guide keeps a chevron over a pad it
+	-- names. The free gift is not one of them: its own button in the corner pulses "CLAIM!"
+	-- (paintFree).
+	local nearSnooze: { [string]: number } = {}
 	local brokeSince: number? = nil
 	local goalShown = false
 	local function pickNear(data: { [string]: any }): Near?
 		local now = os.clock()
 		local function awake(kind: string): boolean
-			return now >= (pillSnooze[kind] or 0)
+			return now >= (nearSnooze[kind] or 0)
 		end
 		local money = tonumber(data.money) or 0
 		local rate = tonumber(data.processRate) or 0
@@ -1365,14 +1348,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			return {
 				kind = "blender",
 				text = "Blender is full: upgrade its speed",
+				short = "Upgrade the blender",
 				icon = "Orb",
 				color = C.Orb,
 				pad = "ProcUp1",
 				tag = "UPGRADE",
 			}
-		end
-		if (tonumber(data.freeIn) or 0) - State.age() <= 0 and awake("free") then
-			return { kind = "free", text = "Free gift ready", icon = Kit.pickIcon("Free", "Gift2"), color = C.Gold }
 		end
 		if type(data.unlockers) == "table" and awake("crate") then
 			for i, slot in data.unlockers do
@@ -1385,6 +1366,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 					return {
 						kind = "crate",
 						text = W.Chest .. " ready at the Smasher",
+						short = W.Chest .. " ready",
 						icon = Kit.pickIcon("Crate" .. slot.rarity, "Gift2"),
 						color = C.Gold,
 						pad = "Unlock" .. i,
@@ -1403,45 +1385,31 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end
 		end
 		if pays > 0 and (goalFar or (brokeSince ~= nil and now - brokeSince >= BROKE_SECONDS)) and awake("mode") then
-			return { kind = "mode", text = "Try a Game Mode: +" .. State.money(pays), icon = Kit.pickIcon("Modes", "Star"), color = C.Gold }
+			return {
+				kind = "mode",
+				text = "Try a Game Mode: +" .. State.money(pays),
+				short = "Try a Game Mode",
+				icon = Kit.pickIcon("Modes", "Star"),
+				color = C.Gold,
+			}
 		end
 		if full and awake("save") then
 			return {
 				kind = "save",
 				text = string.format("Blender is full: save %s for more speed", State.money(upgradeCost)),
+				short = "Blender is full",
 				icon = "Orb",
 				color = C.Orb,
 			}
 		end
 		return nil
 	end
-	-- Toasts (Popups) sit under the top stack: the attribute "TopCardHeight" (the tutorial
-	-- card's, which is gone once the strip is up) moves them down by the pill's row. Not
-	-- while a window is open: there it would hold the toasts back.
-	local pillCard = 0
-	local function publishPill()
-		local want = if nearPill.Visible
-				and goalShown
-				and not compact
-				and screen:GetAttribute("WindowOpen") ~= true
-			then nearPill.Size.Y.Offset + STACK_GAP
-			else 0
-		local now = screen:GetAttribute("TopCardHeight")
-		if want > 0 then
-			if now ~= want and (now == nil or now == 0 or now == pillCard) then
-				screen:SetAttribute("TopCardHeight", want)
-			end
-		elseif pillCard > 0 and now == pillCard then
-			screen:SetAttribute("TopCardHeight", 0)
-		end
-		pillCard = want
-	end
-	local function updatePill()
+	local function updateNear()
 		local data = State.data
 		local near = if goalShown and data and not goalReady then pickNear(data) else nil
-		local last = pillNear
-		pillNear = near
-		-- The chevron on the plot: MOG MERGE while the goal is ready, else the pill's pad.
+		local last = nearShown
+		nearShown = near
+		-- The chevron on the plot: MOG MERGE while the goal is ready, else the nearer goal's pad.
 		if goalShown and goalReady then
 			Guide.setHint("Merge", W.Merge)
 		elseif near and near.pad then
@@ -1449,45 +1417,36 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		else
 			Guide.setHint(nil)
 		end
-		if near and (last == nil or last.text ~= near.text) then
-			pillLabel.Text = near.text
-			layoutPill()
+		-- Other words: the strip lays its second line out again.
+		if goalShown and data and (if near then near.text else "") ~= (if last then last.text else "") then
+			paintGoal(data)
 		end
-		if near and (last == nil or last.kind ~= near.kind) then
-			for _, child in pillIcon:GetChildren() do
-				child:Destroy()
+	end
+	for _, button in { goal, goalPad } do
+		button.Activated:Connect(function()
+			Kit.sound("Click")
+			local near = goalNear
+			if goalReady then
+				Guide.navigate("Merge", W.Merge, 30)
+			elseif near then
+				if near.kind == "mode" then
+					handlers.openWindow("Modes", { origin = goal })
+				else
+					Guide.navigate(near.pad or "ProcUp1", near.tag or "UPGRADE", 30)
+				end
+				-- Said and heard: the blender and crate ones stay (their chevron is the point),
+				-- the others give way to the next one for a while.
+				if near.kind == "mode" or near.kind == "save" then
+					nearSnooze[near.kind] = os.clock() + NEAR_SNOOZE
+				end
+				updateNear()
+			elseif goalRebirth then
+				Hud.onRebirth()
+			else
+				openIndex()
 			end
-			Kit.hudIcon(pillIcon, near.icon, PILL_ICON, near.color, { Name = "Image", ZIndex = 2 })
-			nearPill.Visible = true
-			Kit.pop(nearPill, 0.8)
-		elseif not near and last then
-			nearPill.Visible = false
-		end
-		publishPill()
+		end)
 	end
-	screen:GetAttributeChangedSignal("TopCardHeight"):Connect(publishPill)
-	local function onPill()
-		local near = pillNear
-		if not near then
-			return
-		end
-		Kit.sound("Click")
-		if near.kind == "free" then
-			claimFree()
-		elseif near.kind == "mode" then
-			handlers.openWindow("Modes", { origin = nearPill })
-		else
-			Guide.navigate(near.pad or "ProcUp1", near.tag or "UPGRADE", 30)
-		end
-		-- Said and heard: the blender and crate pills stay (their chevron is the point), the
-		-- others give way to the next one for a while.
-		if near.kind == "mode" or near.kind == "save" then
-			pillSnooze[near.kind] = os.clock() + PILL_SNOOZE
-		end
-		updatePill()
-	end
-	nearPill.Activated:Connect(onPill)
-	pillPad.Activated:Connect(onPill)
 	-- The strip's texts are held at a readable size on a phone (applyCompact), where 16 and
 	-- 14 design px are 10 px: a new size lays the strip out again.
 	local GOAL_TEXT: { [TextLabel]: number } = { [goalLead] = 16, [goalTitle] = 16, [goalCount] = 14, [goalHint] = 14 }
@@ -1522,7 +1481,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				goalShown = show
 				goal.Visible = show
 			end
-			updatePill()
+			updateNear()
 		end
 		State.changed.Event:Connect(function(data)
 			if data.tutorialDone ~= true then
@@ -1993,19 +1952,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			goal.AnchorPoint = Vector2.new(0.5, if compact then 1 else 0)
 			goalPad.Size = UDim2.new(1, 0, 0, math.max(GOAL_H, L.tap))
 			goalPad.Visible = Kit.touch
-			-- The pill: under the strip, or over it where the strip sits above the dumbbell; its
-			-- words held like the strip's, its touch pad growing away from the strip.
-			local pillGap = Kit.pxUp(STACK_GAP, STACK_GAP, screen)
-			local over = if compact then 1 else 0
-			Kit.holdText(pillLabel, Kit.captionPx(), PILL_TEXT, true)
-			layoutPill()
-			nearPill.AnchorPoint = Vector2.new(0.5, over)
-			nearPill.Position = if compact then UDim2.new(0.5, 0, 0, -pillGap) else UDim2.new(0.5, 0, 1, pillGap)
-			pillPad.AnchorPoint = Vector2.new(0.5, over)
-			pillPad.Position = UDim2.fromScale(0.5, over)
-			pillPad.Size = UDim2.new(1, 0, 0, math.max(PILL_H, L.tap))
-			pillPad.Visible = Kit.touch
-			publishPill()
 			-- Gear: on the top bar's line with a mouse; below it (never on Roblox's bar) otherwise.
 			local gearSize = math.max(GEAR, L.tap)
 			gear.Size = UDim2.fromOffset(gearSize, gearSize)
@@ -2026,7 +1972,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			place(next(targets) ~= nil)
 		end
 		-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
-		local selectables: { GuiObject } = { promoButton, addButton, quitButton, goal, nearPill }
+		local selectables: { GuiObject } = { promoButton, addButton, quitButton, goal }
 		for _, button in Hud.buttons do
 			table.insert(selectables, button)
 		end
@@ -2071,7 +2017,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			setHudHidden(open)
 			updatePromo()
 			updateSelectable()
-			publishPill()
 		end)
 		screen:GetAttributeChangedSignal("ModalOpen"):Connect(updateSelectable)
 		screen:GetAttributeChangedSignal("CardioActive"):Connect(updatePromo)
@@ -2548,7 +2493,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end
 		end
 
-		-- Free gift: countdown under it; sunny "CLAIM!" with a gentle bounce when ready.
+		-- Free gift: countdown under it; when ready a "!" dot and a sunny "CLAIM!", the gift
+		-- and the word both pulsing (this corner is the one place that announces it).
 		local freeText = ""
 		local freeReady: boolean? = nil
 		local stopFreeBounce: (() -> ())? = nil
@@ -2559,7 +2505,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				freeTimer.TextColor3 = if ready then C.Gold else Color3.new(1, 1, 1)
 				if ready then
 					Kit.pop(freeButton, 0.8)
-					stopFreeBounce = Kit.breathe(freeButton, 0.06)
+					local stopGift, stopWord = Kit.breathe(freeButton, 0.1), Kit.breathe(freeTimer, 0.08)
+					stopFreeBounce = function()
+						stopGift()
+						stopWord()
+					end
 				elseif stopFreeBounce then
 					stopFreeBounce()
 					stopFreeBounce = nil
@@ -2588,13 +2538,13 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			dailyCaption.Text = text
 		end
 		local nextText = ""
-		local pillAt = 0
+		local nearAt = 0
 		RunService.Heartbeat:Connect(function()
-			-- The pill's timers (gift, crate, "nothing affordable for a minute") run between
+			-- The nearer goal's timers (crate, "nothing affordable for a minute") run between
 			-- two snapshots.
-			if os.clock() - pillAt >= PILL_TICK then
-				pillAt = os.clock()
-				updatePill()
+			if os.clock() - nearAt >= NEAR_TICK then
+				nearAt = os.clock()
+				updateNear()
 			end
 			local now = Workspace:GetServerTimeNow()
 			local active, left = Economy.surgeState(now)
