@@ -164,8 +164,7 @@ Tycoon.hooks = {
 
 -- Gameplay event listeners (used by the tutorial): fn(session, name, data).
 -- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge", "Discover" (a tier was discovered
--- for the first time; Analytics counts its milestones), "Rebirth" { gained, stars, rebirths,
--- tier, startedAt } (the run was started again; `startedAt` = os.time() the ended run began),
+-- for the first time; Analytics counts its milestones),
 -- "IndexClaim" { milestone, found, cash, crate, tier, crateCash,
 -- champion } (an Index milestone was claimed: `milestone` = `found` = its tier count, `tier` = the unit its crate gave, `crateCash` =
 -- the cash it paid instead on a full rack, `champion` = the Champion aura colour is now
@@ -241,8 +240,7 @@ end
 function Tycoon.moneyMultiplier(session: Session): number
 	local mult = if session.passes.DoubleMoney then 2 else 1
 	local bonus = session.friendBonus + (if session.premium then Economy.PREMIUM_BONUS else 0)
-	-- Rebirth stars add to the same sum (+10% each, for good).
-	return mult * (1 + bonus + Economy.starBonus(session.profile.stars))
+	return mult * (1 + bonus)
 end
 
 function Tycoon.orbMultiplier(session: Session): number
@@ -297,10 +295,8 @@ local function earning(session: Session): Earning
 	return { production = steadyProduction(session), income = Tycoon.income(session) }
 end
 
--- The best tier of the current run (a rebirth starts it again): what crates are anchored
--- to and what the next goal counts from. The Index keeps `profile.discovered`.
 local function highestTier(session: Session): number
-	return Economy.highestTier(session.profile.runDiscovered)
+	return Economy.highestTier(session.profile.discovered)
 end
 
 local function canAfford(session: Session, cost: number): boolean
@@ -588,24 +584,13 @@ end
 -- Marks every owned tier (plus `extra` tiers, e.g. ones a merge passed through)
 -- as discovered and announces the newest one. `before` = earning() from before the action
 -- that made the units: the Reward notify then carries what it added per second.
--- A tier is marked for the run and for the Index: after a rebirth the run finds tiers the
--- Index already has, which lift the converter again but are not announced as new.
 local function discoverAll(session: Session, extra: { number }?, before: Earning?)
 	local p = session.profile
 	local newest = 0
-	local runNewest = 0
 	local found: { number } = {}
-	local couldRebirth = Economy.canRebirth(highestTier(session))
 	local indexBefore = IndexRewards.found(p.discovered)
 	local function mark(tier: number)
-		if tier < 1 or tier > Economy.MAX_TIER then
-			return
-		end
-		if p.runDiscovered[tier] == 0 then
-			p.runDiscovered[tier] = os.time()
-			runNewest = math.max(runNewest, tier)
-		end
-		if p.discovered[tier] == 0 then
+		if tier >= 1 and tier <= Economy.MAX_TIER and p.discovered[tier] == 0 then
 			p.discovered[tier] = os.time()
 			newest = math.max(newest, tier)
 			table.insert(found, tier)
@@ -619,15 +604,14 @@ local function discoverAll(session: Session, extra: { number }?, before: Earning
 			mark(tier)
 		end
 	end
-	-- The free converter floor: a new best tier of the run lifts the converter to cover one of
-	-- its units.
-	local floor = Economy.minProcessLevel(math.max(runNewest, 1))
-	local lifted = runNewest > 0 and floor > p.processLevel
-	if lifted then
-		p.processLevel = floor
-	end
 	if newest > 0 then
 		table.sort(found)
+		-- The free converter floor: a new best tier lifts the converter to cover one of its units.
+		local floor = Economy.minProcessLevel(newest)
+		local lifted = floor > p.processLevel
+		if lifted then
+			p.processLevel = floor
+		end
 		-- `rates[tier]` = aura per second of one unit of that tier (1..newest, Double Aura
 		-- counted); production is aura and income cash per second, both without the Aura Surge.
 		local rates = Economy.unitRates(newest)
@@ -657,24 +641,11 @@ local function discoverAll(session: Session, extra: { number }?, before: Earning
 				toast(session, string.format(ready, milestone.found, theme.Words.Units), "good")
 			end
 		end
-	end
-	if lifted then
-		local pad = session.plot.padByName.ProcUp1
-		effect(session, "Upgrade", { pad = "ProcUp1", padPos = pad and pad.part.Position, level = floor, free = true })
-		toast(session, string.format("Blender upgraded for free: Lv %d", floor), "good")
-	end
-	-- The run has just reached the tier a rebirth is offered from.
-	if runNewest > 0 and not couldRebirth and Economy.canRebirth(runNewest) then
-		notify(session, {
-			kind = "RebirthReady",
-			tier = runNewest,
-			starsOnRebirth = Economy.rebirthStars(runNewest),
-			stars = p.stars,
-			-- os.time() the run started (its first tier's stamp), for Analytics.
-			startedAt = p.runDiscovered[1],
-		})
-	end
-	if runNewest > 0 then
+		if lifted then
+			local pad = session.plot.padByName.ProcUp1
+			effect(session, "Upgrade", { pad = "ProcUp1", padPos = pad and pad.part.Position, level = floor, free = true })
+			toast(session, string.format("Blender upgraded for free: Lv %d", floor), "good")
+		end
 		markDirty(session)
 	end
 end
@@ -1838,61 +1809,6 @@ end
 
 -- State ------------------------------------------------------------------------------
 
--- What a rebirth resets and what it keeps, in words: the one list the confirm shows (the
--- keys and their order are Economy.REBIRTH_RESETS / REBIRTH_KEEPS, which Economy.rebirth
--- follows). Built once: nothing in it depends on the player.
-local rebirthLists: { resets: { { key: string, text: string } }, keeps: { { key: string, text: string } } }? = nil
-local function rebirthWords()
-	if rebirthLists then
-		return rebirthLists
-	end
-	local W = theme.Words
-	local text = {
-		-- One line each on the confirm card (about 28 characters): short, but nothing left
-		-- out. "All cash" is the wallet (cash from packs is in it) and the cash waiting in
-		-- the Blender.
-		units = string.format("%s: back to 1 %s", W.Units, tierName(1)),
-		money = "All cash (packs, Blender too)",
-		aura = string.format("%s: carried and in Blender", W.Orb),
-		price = string.format("%s prices: cheap again", W.Unit),
-		converter = string.format("Blender: back to Lv %d", Economy.START_PROCESS_LEVEL),
-		stars = string.format("Your stars: +%d%% cash each, forever", Economy.STAR_BONUS * 100),
-		index = string.format("Your Index: every %s you ever found", W.Unit),
-		passes = "Every game pass you own",
-		cosmetics = "Your trails, auras and other cosmetics",
-		crates = string.format("Your %ss (they open for your new run)", W.Chest),
-		daily = "Your daily streak and free gift timer",
-		modes = "Game Mode maps, records and best times",
-		badges = "Badges and settings",
-	}
-	local lists = { resets = {}, keeps = {} }
-	for _, key in Economy.REBIRTH_RESETS do
-		table.insert(lists.resets, { key = key, text = text[key] })
-	end
-	for _, key in Economy.REBIRTH_KEEPS do
-		table.insert(lists.keeps, { key = key, text = text[key] })
-	end
-	rebirthLists = lists
-	return lists
-end
-
--- The snapshot's `rebirth` field: the stars the rebirth pays, the stars and the cash
--- multiplier of the stars before and after it, and the two lists.
-local function rebirthOffer(session: Session, gained: number): { [string]: any }
-	local p = session.profile
-	local lists = rebirthWords()
-	return {
-		tier = highestTier(session),
-		gained = gained,
-		stars = p.stars,
-		starsAfter = p.stars + gained,
-		starMult = Economy.starMultiplier(p.stars),
-		starMultAfter = Economy.starMultiplier(p.stars + gained),
-		resets = lists.resets,
-		keeps = lists.keeps,
-	}
-end
-
 local function snapshot(session: Session): { [string]: any }
 	local p = session.profile
 	local now = os.time()
@@ -1915,8 +1831,6 @@ local function snapshot(session: Session): { [string]: any }
 	local production = Tycoon.production(session)
 	local rate = processRate(session, true)
 	local moneyMult = Tycoon.moneyMultiplier(session)
-	local runBest = highestTier(session)
-	local starsOnRebirth = Economy.rebirthStars(runBest)
 	local rewardIncome = Tycoon.income(session)
 	local index = IndexRewards.state(p, rewardIncome)
 	return {
@@ -1928,9 +1842,7 @@ local function snapshot(session: Session): { [string]: any }
 		queueSeconds = if p.queue > 0 then p.queue / rate else 0,
 		pending = p.pending,
 		units = p.units,
-		-- The Index (every tier ever found) and the tiers of the current run.
 		discovered = p.discovered,
-		runDiscovered = p.runDiscovered,
 		totalObtained = p.totalObtained,
 		-- Units owned right now (all shown on the rack) and the most a player can hold.
 		unitTotal = Economy.totalUnits(p.units),
@@ -1947,25 +1859,12 @@ local function snapshot(session: Session): { [string]: any }
 		heldSeconds = if p.heldChest ~= "" and Economy.CHEST_INFO[p.heldChest] then unlockerSeconds(session, 1) else nil,
 		crateGuide = p.heldChest ~= "" and p.cratesHeld <= Economy.CRATE_GUIDE_HOLDS,
 		crateRobux = Tycoon.hooks.crateRobuxAllowed(session.player),
-		-- Best tier of the current run (crate odds, pack sizes, the next goal) and the best
-		-- tier ever found (the Index; what the plot shows off).
-		highestTier = runBest,
-		bestTier = Economy.highestTier(p.discovered),
+		highestTier = highestTier(session),
 		-- Index milestones (Shared.IndexRewards.state): tiers found, every milestone with the
 		-- cash a claim pays right now, and `claimable` = how many wait to be claimed (also
 		-- `indexClaimable`, for the HUD's badge on the Index button).
 		index = index,
 		indexClaimable = index.claimable,
-		-- Rebirth: stars held (+10% cash each: `starMult`), runs started again, whether one is
-		-- on offer and the stars it would pay. `rebirth` is sent while it is on offer: what
-		-- the confirm lists (see rebirthOffer).
-		stars = p.stars,
-		starMult = Economy.starMultiplier(p.stars),
-		rebirths = p.rebirths,
-		rebirthTier = Economy.REBIRTH_MIN_TIER,
-		canRebirth = starsOnRebirth > 0,
-		starsOnRebirth = starsOnRebirth,
-		rebirth = if starsOnRebirth > 0 then rebirthOffer(session, starsOnRebirth) else nil,
 		unlockers = unlockers,
 		autoMergeOwned = ownsAutoMerge(session),
 		autoMerge = p.autoMerge,
@@ -1992,16 +1891,7 @@ local function snapshot(session: Session): { [string]: any }
 	}
 end
 
--- What the plot shows off to everyone, as attributes on its folder: the best tier its owner
--- ever found (the Index; a rebirth never lowers it) and the rebirth stars. Nil on a free plot.
-local function setPlotRank(session: Session, owned: boolean)
-	local folder = session.plot.folder
-	folder:SetAttribute("BestTier", if owned then Economy.highestTier(session.profile.discovered) else nil)
-	folder:SetAttribute("Stars", if owned then session.profile.stars else nil)
-end
-
 local function updateLeaderstats(session: Session)
-	setPlotRank(session, true)
 	local stats = session.player:FindFirstChild("leaderstats")
 	if not stats then
 		return
@@ -2347,49 +2237,11 @@ actionHandlers.Home = function(session)
 	end
 end
 
--- Starts the run again for stars (Economy.rebirth; the client asks "are you sure" first,
--- with the snapshot's `rebirth` lists). Units, cash, aura, the unit price and the converter
--- level go back to the start; the orbs in the pen belong to the old rack and go with it.
--- Everything else in the profile is left as it is.
-local function rebirth(session: Session)
-	local p = session.profile
-	local tier = highestTier(session)
-	local before = Economy.starMultiplier(p.stars)
-	-- os.time() the run that ends here started (Economy.rebirth stamps the next one over it).
-	local startedAt = p.runDiscovered[1]
-	local gained = Economy.rebirth(p, os.time())
-	if gained <= 0 then
-		toast(session, string.format("Reach %s to rebirth for stars!", tierName(Economy.REBIRTH_MIN_TIER)), "info")
-		return
-	end
-	clearOrbs(session)
-	session.collectBuffer = 0
-	refreshDisplay(session)
-	-- `gained` stars now, `stars` in total; `multiplier` = what the stars multiply cash by
-	-- (`multiplierBefore` until now) and `moneyMult` = every cash bonus together.
-	notify(session, {
-		kind = "Rebirth",
-		gained = gained,
-		stars = p.stars,
-		rebirths = p.rebirths,
-		tier = tier,
-		multiplier = Economy.starMultiplier(p.stars),
-		multiplierBefore = before,
-		moneyMult = Tycoon.moneyMultiplier(session),
-	})
-	emit(session, "Rebirth", { gained = gained, stars = p.stars, rebirths = p.rebirths, tier = tier, startedAt = startedAt })
-	markDirty(session)
-	flush(session)
-end
-actionHandlers.Rebirth = rebirth
-
 -- Claims the Index milestone of `data.found` tiers (the Index window's CLAIM buttons). The
--- Index is every tier ever found, so a rebirth neither takes a milestone back nor offers it
--- again; the cash is sized by the income of the run at this moment (Tycoon.income: no Aura
--- Surge, the rebirth stars counted once, as in every other reward), with a floor from the best
--- tier ever found so a claim right after a rebirth is not wasted. IndexRewards.claim marks
--- the milestone before anything is granted and nothing here yields, so a double tap or a
--- second remote finds it claimed and pays nothing.
+-- cash is sized by the player's income at this moment (Tycoon.income: no Aura Surge, as in
+-- every other reward), never under the progression floor the shop packs use.
+-- IndexRewards.claim marks the milestone before anything is granted and nothing here
+-- yields, so a double tap or a second remote finds it claimed and pays nothing.
 actionHandlers.ClaimIndex = function(session, data)
 	local p = session.profile
 	local milestone = IndexRewards.milestone(data.found)
@@ -2545,8 +2397,7 @@ local function applyOffline(session: Session)
 	p.queue += produced
 	local processed = math.min(p.queue, processRate(session, false) * elapsed)
 	p.queue -= processed
-	-- Rebirth stars count while away too (friends and Premium do not).
-	local cash = processed * Economy.CASH_PER_POINT * (if session.passes.DoubleMoney then 2 else 1) * Economy.starMultiplier(p.stars)
+	local cash = processed * Economy.CASH_PER_POINT * (if session.passes.DoubleMoney then 2 else 1)
 	p.pending += cash
 	-- The crates the Smasher finished during the absence (the away card says "finished").
 	local crates: { string } = {}
@@ -2636,7 +2487,7 @@ function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, pa
 
 	-- Studio-only test hook: a Server script sets the player attribute "DebugGrant" to
 	-- "cash,<n>", "units,<total>" (Tier 1..5 spread), "tier,<n>" (one unit of that tier),
-	-- "rebirth", "pass,<Name>", "crate" or "pickup".
+	-- "pass,<Name>", "crate" or "pickup".
 	if RunService:IsStudio() then
 		player:GetAttributeChangedSignal("DebugGrant"):Connect(function()
 			local kind, arg = string.match(tostring(player:GetAttribute("DebugGrant")), "^(%a+),?(.*)$")
@@ -2653,8 +2504,6 @@ function Tycoon.addPlayer(player: Player, profile: Profile, canSave: boolean, pa
 				refreshDisplay(session)
 			elseif kind == "tier" then
 				awardUnit(session, math.clamp(math.floor(n), 1, Economy.MAX_TIER), "debug")
-			elseif kind == "rebirth" then
-				rebirth(session)
 			elseif kind == "pass" then
 				Tycoon.setPass(player, arg)
 			elseif kind == "crate" then
@@ -2692,7 +2541,6 @@ function Tycoon.removePlayer(player: Player): Session?
 	Shelves.setRows(session.plot.folder, 1)
 	removeHeldModel(session)
 	setOwnerSign(session.plot, nil)
-	setPlotRank(session, false)
 	refreshFriendBonuses()
 	return session
 end

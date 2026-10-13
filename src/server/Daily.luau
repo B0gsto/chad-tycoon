@@ -54,7 +54,7 @@ end
 -- `firstDay` = paid on the player's first day (capped).
 local function cashFor(session: Tycoon.Session, day: number, firstDay: boolean): number
 	local p = session.profile
-	local progression = Economy.progression(Economy.highestTier(p.runDiscovered), p.processLevel)
+	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
 	local cap = if firstDay then DailyReward.firstDayCap(day, p.bought) else nil
 	return DailyReward.cash(day, Tycoon.income(session), progression, cap)
 end
@@ -96,7 +96,7 @@ function Daily.claim(session: Tycoon.Session)
 	local tier = if crate then Tycoon.rollCrate(session, crate) else nil
 	local crateCash: number? = nil
 	if crate and not tier then
-		crateCash = DailyReward.crateCash(day, Economy.highestTier(session.profile.runDiscovered))
+		crateCash = DailyReward.crateCash(day, Economy.highestTier(session.profile.discovered))
 		cash += crateCash
 	end
 	d.day = today()

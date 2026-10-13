@@ -2,8 +2,8 @@
 	Unit tests for the retention and economy analytics: the late funnel steps
 	(src/shared/Funnel.luau), the labels, ledger and rate caps (src/shared/Telemetry.luau)
 	and the server module (src/server/Analytics.luau, run against stub AnalyticsService,
-	Tycoon and GameModes tables), rebirth runs, the streak saver, Index claims and the away
-	card included.
+	Tycoon and GameModes tables), the streak saver, Index claims and the away card
+	included.
 	Loaded by tests/run.luau with its harness: { test, check, eq }. Run alone with
 	`lune run tests/analytics` it uses the small harness at the end of this file.
 ]]
@@ -170,10 +170,6 @@ local function loadAnalytics()
 		}
 		local p = {
 			discovered = discovered,
-			-- The first run: it has found what the Index has.
-			runDiscovered = table.clone(discovered),
-			rebirths = 0,
-			stars = 0,
 			units = table.create(Economy.MAX_TIER, 0),
 			carried = 0,
 			queue = 0,
@@ -194,29 +190,7 @@ local function loadAnalytics()
 	end
 	function world.discover(session: any, tier: number)
 		session.profile.discovered[tier] = 1
-		session.profile.runDiscovered[tier] = 1
 		world.emit(session, "Discover", { tier = tier })
-	end
-	-- The run finds `tier` the way Tycoon's discoverAll tells it: "Discover" only for a tier
-	-- new to the Index, "RebirthReady" when the run first reaches the rebirth tier.
-	function world.reach(session: any, tier: number)
-		local p = session.profile
-		local could = Economy.canRebirth(Economy.highestTier(p.runDiscovered))
-		p.runDiscovered[tier] = world.time
-		if p.discovered[tier] == 0 then
-			p.discovered[tier] = world.time
-			world.emit(session, "Discover", { tier = tier })
-		end
-		if not could and Economy.canRebirth(tier) then
-			world.emit(session, "Notify", { kind = "RebirthReady", tier = tier, stars = p.stars })
-		end
-	end
-	-- Tycoon's rebirth: the real Economy.rebirth, then the listener event.
-	function world.rebirth(session: any)
-		local p = session.profile
-		local tier = Economy.highestTier(p.runDiscovered)
-		local gained = Economy.rebirth(p, world.time)
-		world.emit(session, "Rebirth", { gained = gained, stars = p.stars, rebirths = p.rebirths, tier = tier })
 	end
 	function world.emit(session: any, name: string, data: { [string]: any })
 		for _, listener in Tycoon.listeners do
@@ -387,25 +361,6 @@ local function suite(h: { [string]: any })
 		eq(Telemetry.cratePath("unlock", false, true), "Pass")
 		eq(Telemetry.cratePath("discard", false, false), "Discard")
 		eq(Telemetry.cratePath("else", false, false), "Other")
-		eq(Telemetry.runLabel(0), "Run 1", "no rebirth yet")
-		eq(Telemetry.runLabel(1), "Run 2")
-		eq(Telemetry.runLabel(8), "Run 9")
-		eq(Telemetry.runLabel(9), "Run 10+")
-		eq(Telemetry.runLabel(1e9), "Run 10+", "a fixed list of runs")
-		eq(Telemetry.runLabel(nil), "Run 1")
-		eq(Telemetry.runLabel(0 / 0), "Run 1")
-		eq(Telemetry.runHours(1000, 1000 + 7200), 2)
-		eq(Telemetry.runHours(1000, 900), 0, "a clock a little behind is no negative run")
-		eq(Telemetry.runHours(0, 5000), nil, "a save without the run's start")
-		eq(Telemetry.runHours(nil, 5000), nil)
-		eq(Telemetry.runBucket(nil), "Unknown")
-		eq(Telemetry.runBucket(0.5), "0-1 h")
-		eq(Telemetry.runBucket(5), "1-6 h")
-		eq(Telemetry.runBucket(23), "6-24 h")
-		eq(Telemetry.runBucket(71), "1-3 days")
-		eq(Telemetry.runBucket(100), "3-7 days")
-		eq(Telemetry.runBucket(200), "7-14 days")
-		eq(Telemetry.runBucket(1e6), "14+ days")
 		eq(Telemetry.indexLabel(10), "Index 10")
 		eq(Telemetry.indexLabel(1e9), "Index 99")
 		eq(Telemetry.payLabel({ pay = "first", first = true }), "First")
@@ -436,7 +391,7 @@ local function suite(h: { [string]: any })
 			table.insert(marks, Funnel.SKIPPED + index)
 		end
 		for _, onboarding in marks do
-			-- The run's tier right after a rebirth, were it ever passed by mistake.
+			-- The first tier, were it ever passed by mistake.
 			local plan = Funnel.tiers(onboarding, 1)
 			local late = Funnel.late(plan.onboarding, 1, true)
 			eq(#plan.steps + #plan.events + #late.steps, 0, "tier 1 logs nothing at " .. onboarding)
@@ -575,7 +530,7 @@ local function suite(h: { [string]: any })
 		local reached = world.sent("LogCustomEvent", "TierReached")
 		eq(#reached, 1, "tier 14 reached")
 		eq(reached[1][3], 14, "the tier is the value")
-		eq(fields(reached[1]), "Tier 14,Day 2-6,Run 1", "with the run it was found in")
+		eq(fields(reached[1]), "Tier 14,Day 2-6")
 		-- A jump over a tier counts both, and logs the step it passed.
 		world.discover(old, 16)
 		reached = world.sent("LogCustomEvent", "TierReached")
@@ -725,107 +680,6 @@ local function suite(h: { [string]: any })
 		)
 	end)
 
-	test("Analytics server: rebirth runs, and tiers found again are not news", function()
-		local Analytics, world = loadAnalytics()
-		-- Two days in, on tier 14, in a first run: it started when the Index did, 50 hours ago.
-		local session = world.join(14, { daily = { firstDay = TODAY - 2 } })
-		session.profile.discovered[1] = world.time - 50 * 3600
-		Analytics.onSessionStart(session)
-		eq(session.profile.onboarding, 12, "tier 12 from before is marked")
-		world.calls = {}
-
-		world.reach(session, 15)
-		world.reach(session, 16)
-		eq(
-			events(world.sent("LogCustomEvent")),
-			"TierReached Tier 15,Day 2-6,Run 1; RebirthReady Run 1,1-3 days,Day 2-6; TierReached Tier 16,Day 2-6,Run 1",
-			"the rebirth tier is offered once"
-		)
-		eq(world.sent("LogCustomEvent", "RebirthReady")[1][3], 50, "hours into the run")
-		eq(#world.sent("LogOnboardingFunnelStepEvent"), 1, "tier 15 is a late step")
-
-		world.time += 2 * 3600
-		world.rebirth(session)
-		eq(session.profile.rebirths, 1, "the run started again")
-		local rebirths = world.sent("LogCustomEvent", "Rebirth")
-		eq(#rebirths, 1, "one Rebirth")
-		eq(rebirths[1][3], 52, "the hours the run took")
-		eq(fields(rebirths[1]), "Run 1,Tier 16,1-3 days", "the run that ended and its best tier")
-
-		-- The second run finds tiers 2..16 again, three hours later (the rebirth was in this
-		-- session, so its start is known): none is news.
-		world.calls = {}
-		world.time += 3 * 3600
-		for tier = 2, 16 do
-			world.reach(session, tier)
-		end
-		-- Not even when the server announced them as discovered.
-		world.discover(session, 12)
-		world.discover(session, 15)
-		eq(#world.sent("LogOnboardingFunnelStepEvent"), 0, "no funnel step twice")
-		eq(session.profile.onboarding, 13, "the funnel stays where it was")
-		eq(events(world.sent("LogCustomEvent")), "RebirthReady Run 2,1-6 h,Day 2-6", "only the run's own event")
-		eq(world.sent("LogCustomEvent", "RebirthReady")[1][3], 3)
-
-		-- Tiers the Index did not have are first times, whatever the run.
-		world.calls = {}
-		for tier = 17, 20 do
-			world.reach(session, tier)
-		end
-		local reached = world.sent("LogCustomEvent", "TierReached")
-		eq(#reached, 4, "tiers 17 to 20")
-		eq(fields(reached[4]), "Tier 20,Day 2-6,Run 2", "found in the second run")
-		local steps = world.sent("LogOnboardingFunnelStepEvent")
-		eq(#steps, 1, "tier 20 is a late step once")
-		eq(steps[1][2] .. " " .. steps[1][3], "14 Tier 20")
-
-		-- A rebirth is never lost to the player's cap.
-		for _ = 1, 40 do
-			world.emit(session, "Notify", { kind = "Mode", event = "start", mode = "mog", vs = "rivals" })
-		end
-		world.calls = {}
-		world.time += 3600
-		world.rebirth(session)
-		eq(events(world.sent("LogCustomEvent")), "Rebirth Run 2,Tier 20,1-6 h", "shorter than the first run")
-		eq(world.sent("LogCustomEvent")[1][3], 4)
-
-		-- Cash and the session go by the best tier ever, like the funnel (the Index, not the run).
-		world.clock += 60
-		world.emit(session, "Earn", { source = "Free", amount = 20 })
-		world.minute()
-		eq(fields(world.sent("LogEconomyEvent", "Free")[1]), "Tier 16-20", "not the third run's tier 1")
-		world.leave(session)
-		eq(fields(world.sent("LogCustomEvent", "SessionEnd")[1]), "0-2 min,Tier 20,Day 2-6")
-
-		-- A first run whose start was never saved says so instead of guessing.
-		local unknown = world.join(15)
-		unknown.profile.discovered[1] = 0
-		Analytics.onSessionStart(unknown)
-		world.calls = {}
-		world.rebirth(unknown)
-		eq(events(world.sent("LogCustomEvent")), "Rebirth Run 1,Tier 15,Unknown")
-		eq(world.sent("LogCustomEvent")[1][3], 0)
-		-- The next run's start is the rebirth.
-		world.time += 1800
-		world.reach(unknown, 15)
-		eq(events(world.sent("LogCustomEvent", "RebirthReady")), "RebirthReady Run 2,0-1 h,Day 0")
-
-		-- A later run from an earlier session: only Tycoon knows when it started.
-		local later = world.join(18, { rebirths = 2, stars = 3, daily = { firstDay = TODAY - 9 } })
-		Analytics.onSessionStart(later)
-		world.calls = {}
-		world.emit(later, "Notify", { kind = "RebirthReady", tier = 15 })
-		world.emit(later, "Notify", { kind = "RebirthReady", tier = 15, startedAt = world.time - 30 * 3600 })
-		world.emit(later, "Rebirth", { gained = 4, stars = 7, rebirths = 3, tier = 18, startedAt = world.time - 31 * 3600 })
-		eq(
-			events(world.sent("LogCustomEvent")),
-			"RebirthReady Run 3,Unknown,Day 7-29; RebirthReady Run 3,1-3 days,Day 7-29; Rebirth Run 3,Tier 18,1-3 days",
-			"unknown without `startedAt`, exact with it"
-		)
-		eq(world.sent("LogCustomEvent", "Rebirth")[1][3], 31)
-		inspect(world.calls, check)
-	end)
-
 	test("Analytics server: streak saver, Index claims, the away card and why a mode paid", function()
 		local Analytics, world, Tycoon = loadAnalytics()
 		local session = world.join(6, { lastOnline = world.time - 30 * 3600, daily = { firstDay = TODAY - 20, streak = 12 } })
@@ -856,7 +710,7 @@ local function suite(h: { [string]: any })
 		world.emit(session, "IndexClaim", { milestone = 10 })
 		world.emit(session, "IndexClaim", { milestone = "ten" })
 		world.emit(session, "IndexClaim", {})
-		eq(events(world.sent("LogCustomEvent")), "IndexClaim Index 5,Run 1,Day 7-29; IndexClaim Index 10,Run 1,Day 7-29")
+		eq(events(world.sent("LogCustomEvent")), "IndexClaim Index 5,Day 7-29; IndexClaim Index 10,Day 7-29")
 		eq(world.sent("LogCustomEvent")[2][3], 10, "the milestone is the value")
 		world.emit(session, "Earn", { source = "Index", amount = 640 })
 		world.clock += 60
@@ -896,6 +750,14 @@ local function suite(h: { [string]: any })
 			"the pay kind is the third field"
 		)
 		inspect(world.calls, check)
+
+		-- An Index claim is never lost to the player's cap.
+		for _ = 1, 40 do
+			world.emit(session, "Notify", { kind = "Mode", event = "start", mode = "mog", vs = "rivals" })
+		end
+		world.calls = {}
+		world.emit(session, "IndexClaim", { milestone = 15 })
+		eq(events(world.sent("LogCustomEvent")), "IndexClaim Index 15,Day 7-29", "what the server keeps rare always goes out")
 	end)
 
 	test("Analytics server: a player's minute is capped, purchases and steps are not", function()

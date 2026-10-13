@@ -365,15 +365,8 @@ local function suite(h: { [string]: any })
 		check(string.find(machines, 'action = "OfferSmash", slot = slotIndex', 1, true) ~= nil, "the button is on the Smasher's crate")
 		check(string.find(machines, '"READY!"', 1, true) == nil, "no second READY! card behind the sign")
 
-		-- Upgrade pads: own titles; rebirth: one line per reset.
+		-- Upgrade pads: own titles.
 		check(has("Economy.upgradeShowsCash(amount, gain, singleGain)"), "each upgrade pad shows its own gain")
-		local words = body("rebirthWords")
-		local longest = 0
-		for line in string.gmatch(words, '\n\t\t%a+ = [^\n]-"([^"\n]*)"') do
-			longest = math.max(longest, #line)
-		end
-		check(longest > 0 and longest <= 40, "rebirth lines are short (longest format string: " .. longest .. ")")
-		check(string.find(words, 'money = "All cash (packs, Blender too)"', 1, true) ~= nil, "cash names the packs and the Blender")
 	end)
 
 	test("Aura Surge: none for a player still in the tutorial", function()

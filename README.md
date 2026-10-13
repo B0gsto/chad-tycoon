@@ -88,23 +88,6 @@ sand island in the sea.
   Collect the cash on the Collect pad.
 - **Converter.** Each level is +25% speed for +25% cost. Every new best tier lifts the converter for free
   to that tier's floor (`Economy.minProcessLevel`, with a toast), so it never falls far behind the rack.
-- **Rebirth.** From tier 15 (`Economy.REBIRTH_MIN_TIER`) you can start the run again for stars: one star
-  per tier from 15 up (tier 15 pays 1, tier 25 pays 11), each worth +10% cash, forever, on top of the
-  friend and Premium bonuses. Units, cash, aura, the unit price and the Blender level reset; the Index,
-  passes, cosmetics, crates, the daily streak and every record stay (`Economy.rebirth`,
-  `REBIRTH_RESETS` / `REBIRTH_KEEPS`). A save keeps two tier lists: the Index (`profile.discovered`,
-  the best tier ever) and the current run (`profile.runDiscovered`). Everything sized by income follows
-  the run, and matches what the client shows from the snapshot's `highestTier`: crate odds, shop packs,
-  the Starter Pack, daily rewards, Game Mode rewards, the free converter floor and the next goal. What
-  was earned for good follows the Index (the snapshot's `bestTier`, the plot's `BestTier` attribute):
-  the Index window, badges, the analytics funnel, the HUD promo, plot rank and the fan club. A tier
-  reached again in a new run is not announced as a new Chad. From tier 15 the star counter by the
-  wallet and the goal strip ("REBIRTH: +N stars") open a card listing what stays and what starts again
-  (the snapshot's `rebirth` offer). Two taps on opposite sides confirm (action `Rebirth`). The first
-  time a run reaches tier 15 a card explains it (notify `RebirthReady`; a toast for players who already
-  have stars), and the rebirth itself ends with a reveal (notify `Rebirth`). The cards are in
-  `Popups.defineRebirth` (`src/client/UI/Popups.luau`).
-  `lune run scripts/simulate --rebirths N` plays N runs in a row (`--stars N`, `--day M`, `--stop T`).
 - **Aura Surge.** The last 2 minutes of every 10 double all orbs and the converter's speed, so the cash
   really doubles (the Double Aura pass doubles both too, all the time). Rewards and packs are sized with
   the income without the surge. The strip turns orange ("AURA SURGE
@@ -119,7 +102,7 @@ sand island in the sea.
   Every arrival is told with a toast: "An Epic Crate is on its way!" for Uncommon and better, "A crate
   rolled into your pen!" for a Common one (that one at most every 30 s). Walk
   into one to pick it up (within 4.5 studs, one at a time; `src/shared/CratePickup.luau`). Crates hold
-  units a few tiers under the best tier of your run (`Economy.chestAnchor`: best 10 gives tier 7, best 25
+  units a few tiers under your best tier (`Economy.chestAnchor`: best 10 gives tier 7, best 25
   gives 17), so they help without skipping the curve. The crate panel shows the odds for that tier and leads
   with the free route:
   - The gold button, **Carry it to the Crate Smasher / FREE**, shows the Smasher's real time for this
@@ -135,13 +118,12 @@ sand island in the sea.
     instant with the **Crate Master** pass. Both are offered only where `PolicyService` allows paid random
     items.
   - **Discard** it. Rare and better ask first ("Discard this Rare crate?").
-- **Fans** are wholesome cheering fans around each plot: 3 + half your best tier ever, up to 20 on your
+- **Fans** are wholesome cheering fans around each plot: 3 + half your best tier, up to 20 on your
   own plot (one more per plot rank; 12 on a low-end device) and 4 on others. They run in, clap, wave
-  signs and cheer when you buy or merge. A rebirth keeps the crowd.
+  signs and cheer when you buy or merge.
 - **Plot rank** (`src/client/Fx/PlotRank.luau`, tunables in `PlotRank.CFG`): progress you can see from
   the hub. Every five best tiers add dressing to the rack's roof (pennants at 5, gold trim at 10,
-  trophies at 15, a neon sign at 20, a crown beam at 25); it goes by the best tier ever, so a rebirth
-  never strips it. The champion pedestal glows in the rarity colour of the unit standing on it (tier
+  trophies at 15, a neon sign at 20, a crown beam at 25). The champion pedestal glows in the rarity colour of the unit standing on it (tier
   25 gets a crowned pedestal and a cape), and rack units stand on rarity rings.
 - **Cosmetics** (`src/server/Cosmetics.luau`): Speedy Sneakers, Double Jump, Rainbow / Star / Rookie
   trails, Chad Aura and Golden Crown. Each has its own pass (the Rookie Trail comes only with the Starter
@@ -210,26 +192,27 @@ sand island in the sea.
   longest gap is 16.5 studs and its Chad runs at 0.85 of the stage's walk speed after a 2 s head start.
 - **Shop packs scale with progression.** Cash packs pay 15 min / 1 h / 5 h / 24 h of your income, and aura
   packs turn 15 min / 1 h / 5 h / 24 h of your aura production into cash at once (x your cash multiplier,
-  `src/shared/ShopMath.luau`), each with a minimum per pack (`Economy.progression`: the best tier of
-  the run and the converter level). The Shop opens on
+  `src/shared/ShopMath.luau`), each with a minimum per pack (`Economy.progression`: your best tier
+  and the converter level). The Shop opens on
   the free gift and Daily Reward. Both are sized without the Aura Surge, so a pack is the same in and
   out of a surge. The shop shows each player
   the same amounts the server grants.
 - **HUD** (`src/client/UI/Hud.luau`), laid out like the owner's reference game: chunky icons and outlined
   text straight over the world. Settings gear top right; unit count and deposit strip top centre; icon grid
   (Home, Ranking, Modes, Index, Shop, Invite, Daily), every button on its own dark glass plate with its
-  caption, and a 2X CASH / Starter Pack promo on the left (only below best tier 15 ever and until it was opened
+  caption, and a 2X CASH / Starter Pack promo on the left (only below best tier 15 and until it was opened
   once in a visit; the Shop keeps the offers); cash bottom left with chips that show only while their
   bonus is on ("Premium +10%", "Friends +20%", "SURGE x2"); the Blender dumbbell with the carried aura
   bottom centre; the free gift bottom right.
 - **Next goal.** Once the tutorial is done, a small strip under the deposit strip (above the dumbbell on
   short screens) names the next target: "Next: Protein Bro" with the target's silhouette and a thin
-  progress bar; tapping it opens the Index. The target is the next tier the current run has not reached
+  progress bar; tapping it opens the Index. The target is the next tier you have not found
   (`src/shared/NextGoal.luau`, which also works out the units still missing, the time estimate and the
-  percent). From tier 15 it names the rebirth instead ("Next: Rebirth", "+3 stars · +30% cash forever")
-  when the next tier is more than 4 hours of income away or the run has every tier
-  (`Economy.rebirthIsGoal`). The strip shows real progress, the units still
-  missing and a time estimate, and pulses READY when one merge finds the tier. The top centre is three
+  percent). The strip shows real progress, the units still
+  missing and a time estimate, and pulses READY when one merge finds the tier. With all 25 tiers found
+  it names the next Index reward you have not claimed ("Next: Index reward", a tap opens the Index),
+  and once those are claimed it reads "All 25 Chads found!" over how many top-tier Chads stand on your
+  rack, with no progress bar: nothing is left to fill. The top centre is three
   rows (count, status strip, goal strip). A nearer goal (blender upgrade, crate, Game Mode) takes the
   goal strip's second line and a tap on the strip does it, with a chevron on the plot. The free gift is
   announced only by the pulsing CLAIM! gift in the bottom-right corner. It hides
@@ -278,8 +261,8 @@ sand island in the sea.
   the "Before you go" line.
 - **Index rewards.** Finding 5 / 10 / 15 / 20 / 25 Chads pays 10 / 20 / 30 / 45 / 60 minutes of income,
   plus a Rare / Epic / Legendary crate at 10 / 15 / 20 and the Champion aura colour with a gold Index
-  frame at 25. Claimed in the Index window, once per account; a rebirth never resets them, and the cash
-  is never less than one Chad of your best tier ever found would earn. The Index
+  frame at 25. Claimed in the Index window, once per account; the cash is sized like a shop cash pack
+  (your income, never less than one Chad of your best tier would earn through your Blender). The Index
   button shows a "!" badge while a reward waits. Rules in `src/shared/IndexRewards.luau`, tests in
   `tests/index_rewards.luau`.
 - **Coming back.** Returning players get a "While you were away" card (away cash and its cap, Smasher
@@ -299,10 +282,9 @@ sand island in the sea.
   8 Tier 3, 9 Tier 5, 10 Tier 7, 11 Tier 10 and 12-15 Tier 12 / 15 / 20 / 25 for the highest tier
   discovered), a recurring "Shop" funnel (Opened, Prompted, Purchased), custom events (TierReached,
   SessionEnd, ReturnGap, DailyClaim, Crate, ModeStart / Finish / Skip / Stop) and economy events for the
-  Cash sources and sinks, sent once a minute per player. It also logs rebirth runs (RebirthReady,
-  Rebirth with run hours), StreakSaved / StreakLost, IndexClaim, AwayCard (once per session), and why a
-  mode finish paid (First, Full, RunAgain, Resting, Assisted, None). Funnel steps and TierReached are
-  first-time-ever. Set the Workspace attribute `AnalyticsDebug =
+  Cash sources and sinks, sent once a minute per player. It also logs StreakSaved / StreakLost,
+  IndexClaim, AwayCard (once per session), and why a
+  mode finish paid (First, Full, RunAgain, Resting, Assisted, None). Set the Workspace attribute `AnalyticsDebug =
   true` to print every call. "TutorialSkipped" ends the funnel for that player, so
   the tutorial steps stay honest; their tier milestones are logged as "SkipperTier3" / "5" / "7" / "10"
   instead (everyone who reached a tier = the funnel step plus the Skipper event). Saves from before the
@@ -360,7 +342,7 @@ rojo serve chad.project.json             # live-sync into Studio
 lune run scripts/simulate                # when a greedy no-pass player reaches each tier (600 h)
 lune run scripts/simulate --first        # a new player's first 10 minutes, in seconds (tutorial, then the loop)
 lune run scripts/simulate --extras --aura --cash   # with free reward, parkour, surge, crates and passes
-lune run scripts/simulate --rebirths 5   # the long loop: five runs, each ended by a rebirth (--stars N, --day M, --stop T)
+lune run scripts/simulate --extras --day 30   # half an hour a day, with the cash made while away
 preview/render.sh                        # regenerate preview/screenshots/chad/
 ```
 
@@ -405,7 +387,7 @@ through `tools/studio.py execute_luau`:
 | `chad.project.json` | Rojo project (maps `assets/models` into `ReplicatedStorage.AssetModels`) |
 | `src/themes/chad/Theme.luau` | Names, words, palette (`Theme.World`), fonts, lighting, 25 tiers, fans, cosmetics, monetization ids |
 | **src/shared** | |
-| `Economy.luau` | Every balance number and pure formula, the rebirth rules (unit-tested) |
+| `Economy.luau` | Every balance number and pure formula (unit-tested) |
 | `Format.luau` | Number and time formatting |
 | `Net.luau` | Remotes (State, Notify, actions) |
 | `OrbLook.luau` | Orb colour per tier, the pen fill rule (64 balls), Auto Aura and roll-in timing |
@@ -418,7 +400,7 @@ through `tools/studio.py execute_luau`:
 | `DailyReward.luau` | Daily reward rules: UTC days, the streak, the 7 rewards (unit-tested) |
 | `IndexRewards.luau` | Index milestones: what each pays and the once-per-account claim (unit-tested) |
 | `Comeback.luau` | Rows of the "While you were away" card and the "Before you go" line (unit-tested) |
-| `NextGoal.luau` | Picks the HUD's "Next:" goal (next tier of the run or a rebirth) and its sums (unit-tested) |
+| `NextGoal.luau` | Picks the HUD's "Next:" goal (the next tier, then the Index rewards) and its sums (unit-tested) |
 | `ShopMath.luau` | What an aura pack pays in cash (unit-tested) |
 | `Telemetry.luau` | Analytics labels and the per-player economy ledger (unit-tested) |
 | `TutorialSteps.luau` | Tutorial steps and their rules |
@@ -457,7 +439,7 @@ through `tools/studio.py execute_luau`:
 | `UI/Windows.luau` | Shop, Index, Ranking, Settings, Game Modes |
 | `UI/DailyWindow.luau` | Daily Reward window (opens by itself once per session) |
 | `UI/AwayWindow.luau` | "While you were away" card for returning players |
-| `UI/Popups.luau` | Toasts, reward reveals, merge float, gift card, surge chip and banners, crate panel, dialogs, rebirth cards, the tutorial's offline popup |
+| `UI/Popups.luau` | Toasts, reward reveals, merge float, gift card, surge chip and banners, crate panel, dialogs, the tutorial's offline popup |
 | `UI/Tutorial.luau` | Tutorial quest pill (the "YOU DID IT!" banner is `Popups.tutorialDone`) |
 | `Guide.luau` | Floor path of chevrons to a target and the beam over a tutorial pad |
 | `Animator.luau` | Unit animations on the rack and in viewports |

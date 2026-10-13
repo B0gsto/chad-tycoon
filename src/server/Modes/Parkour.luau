@@ -328,7 +328,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 	local function rewardFor(session: any, level: number, clean: boolean): Economy.ModeReward
 		local p = session.profile
 		local pack = theme.Modes.Reward
-		local progression = Economy.progression(Economy.highestTier(p.runDiscovered), p.processLevel)
+		local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
 		local first = (levels(session).clears[level] or 0) == 0
 		local r =
 			Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, first, shared(session).lastRewardAt, os.time())

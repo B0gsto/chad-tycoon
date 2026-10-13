@@ -8,7 +8,7 @@
 	    together. Telemetry.take gives each player their own minute of at most
 	    CAPS.Economy calls (under their 20), so the shared 120 stays spare. Cash moves are
 	    summed in a Ledger and sent at most once a minute per source or sink.
-	  - 100 custom event names (22 are used), 3 custom fields per event, 8,000 custom field
+	  - 100 custom event names (20 are used), 3 custom fields per event, 8,000 custom field
 	    values in all: every label below comes from a short fixed list (tiers, bands, buckets).
 	  - 10 currencies (one is used: "Cash"), 20 transaction types (the six of
 	    Enum.AnalyticsEconomyTransactionType), 100 item SKUs (SOURCES + SINKS).
@@ -55,28 +55,6 @@ end
 -- A daily streak as the week it is in.
 function Telemetry.weekBucket(streak: number): string
 	return bucket(streak, { 8, 15, 29 }, { "Week 1", "Week 2", "Week 3-4", "Week 5+" })
-end
-
--- Which run of the tycoon a player is in, from the rebirths made: "Run 1" until the first.
-function Telemetry.runLabel(rebirths: any): string
-	local made = if type(rebirths) == "number" and rebirths == rebirths then math.max(0, math.floor(rebirths)) else 0
-	return if made >= 9 then "Run 10+" else "Run " .. (made + 1)
-end
-
--- Hours since a run started at os.time() `startedAt`; nil when the save does not say (0).
-function Telemetry.runHours(startedAt: any, now: number): number?
-	if type(startedAt) ~= "number" or startedAt ~= startedAt or startedAt <= 0 then
-		return nil
-	end
-	return math.max(0, now - startedAt) / 3600
-end
-
--- How long a run has lasted, on the clock (days away count: a run is days of short sessions).
-function Telemetry.runBucket(hours: number?): string
-	if not hours then
-		return "Unknown"
-	end
-	return bucket(hours, { 1, 6, 24, 72, 168, 336 }, { "0-1 h", "1-6 h", "6-24 h", "1-3 days", "3-7 days", "7-14 days", "14+ days" })
 end
 
 -- An Index milestone (tiers found: 5, 10, ...).
@@ -296,8 +274,7 @@ Telemetry.WINDOW_SECONDS = 60
 -- custom events and the shop funnel (a player can cause these at will), "Economy" = the
 -- ledger, which so always has room left. Kinds without a cap always go out; they are rare:
 -- "Step" (onboarding steps, a purchase), "Rare" (what the server lets a player do a few
--- times a day at most: a rebirth, an Index claim, the streak saver) and "Final" (the
--- session's end).
+-- times a day at most: an Index claim, the streak saver) and "Final" (the session's end).
 Telemetry.CAPS = { Event = 12, Economy = 18 } :: { [string]: number }
 
 function Telemetry.newWindow(now: number): Window

@@ -27,9 +27,7 @@ local MAX_RETRIES = 4
 --   3  Economy 2.0: the converter level is lifted to the free floor of the best tier
 --      (Economy.minProcessLevel), firstCrateDone and the parkour `skipped` record exist.
 --      Nothing saved is lowered or removed.
---   4  rebirth: `runDiscovered` starts as a copy of `discovered` (every save is in its first
---      run, with no stars) and the converter floor follows the run's best tier.
-local VERSION = 4
+local VERSION = 3
 DataService.VERSION = VERSION
 
 -- `seconds`: the crate's whole timer (the Smasher's progress ring). A slot saved before it
@@ -43,17 +41,11 @@ export type Profile = {
 	queue: number,
 	pending: number,
 	units: { number },
-	-- The Index: os.time() each tier was first found (0 = never). Never reset.
+	-- The Index: os.time() each tier was first found (0 = never).
 	discovered: { number },
-	-- The same for the current run: a rebirth starts it again (Economy.rebirth). The crate
-	-- anchor, the converter floor, the packs and the next goal read this one.
-	runDiscovered: { number },
-	-- Rebirths made and the stars they paid (Economy.STAR_BONUS cash each, for good).
-	rebirths: number,
-	stars: number,
-	-- Index milestones claimed (Shared.IndexRewards): the `found` of each one. Never reset: a
-	-- rebirth does not offer a milestone again. A save from before them has claimed none, so
-	-- every milestone it has already passed is waiting in the Index window.
+	-- Index milestones claimed (Shared.IndexRewards): the `found` of each one. A save from
+	-- before them has claimed none, so every milestone it has already passed is waiting in
+	-- the Index window.
 	indexClaimed: { number },
 	totalObtained: number,
 	-- Units bought on the buy pads so far (Economy.unitPrice grows with it).
@@ -159,9 +151,6 @@ function DataService.defaultProfile(): Profile
 		pending = 0,
 		units = units,
 		discovered = discovered,
-		runDiscovered = table.clone(discovered),
-		rebirths = 0,
-		stars = 0,
 		indexClaimed = {},
 		totalObtained = 1,
 		bought = 0,
@@ -269,32 +258,18 @@ local function reconcile(data: any): Profile
 	if data.daily == nil then
 		data.daily = { day = 0, streak = 0, firstDay = 1, hinted = true, saverUsedAt = 0 }
 	end
-	-- Saves from before rebirth are in their first run: it has found what the Index has.
-	if type(data.runDiscovered) ~= "table" and type(data.discovered) == "table" then
-		data.runDiscovered = table.clone(data.discovered)
-	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
 			data[key] = value
 		end
 	end
-	for _, key in { "units", "discovered", "runDiscovered" } do
+	for _, key in { "units", "discovered" } do
 		local list = data[key]
 		for tier = 1, Economy.MAX_TIER do
 			if type(list[tier]) ~= "number" or list[tier] ~= list[tier] then
 				list[tier] = 0
 			end
 		end
-	end
-	-- The Index holds every tier a run has found.
-	for tier = 1, Economy.MAX_TIER do
-		if data.runDiscovered[tier] > 0 and data.discovered[tier] <= 0 then
-			data.discovered[tier] = data.runDiscovered[tier]
-		end
-	end
-	for _, key in { "rebirths", "stars" } do
-		local v = data[key]
-		data[key] = if v ~= v or v < 0 or v == math.huge then 0 else math.floor(v)
 	end
 	-- Claimed Index milestones: whole tier counts, each once, in the order they were claimed.
 	-- Junk is dropped; a claim is never taken back.
@@ -347,9 +322,8 @@ local function reconcile(data: any): Profile
 	data.bought = if data.bought ~= data.bought or data.bought == math.huge then 0 else math.max(0, math.floor(data.bought))
 	-- The converter starts at START_PROCESS_LEVEL; saves from before that are lifted to it.
 	data.processLevel = math.max(math.floor(data.processLevel), Economy.START_PROCESS_LEVEL)
-	-- ...and it is never below the free floor of the best tier of the current run (a rebirth
-	-- takes the level back to the start, whatever the Index holds).
-	data.processLevel = math.max(data.processLevel, Economy.minProcessLevel(Economy.highestTier(data.runDiscovered)))
+	-- ...and it is never below the free floor of the best tier the player has discovered.
+	data.processLevel = math.max(data.processLevel, Economy.minProcessLevel(Economy.highestTier(data.discovered)))
 	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
 	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
 		data.heldChest = ""

@@ -212,7 +212,7 @@ local function create(GameModes: any, context: { built: any, theme: any, Tycoon:
 		local p = session.profile
 		local rec = record(session)
 		local pack = theme.Modes.Reward
-		local progression = Economy.progression(Economy.highestTier(p.runDiscovered), p.processLevel)
+		local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
 		local first = vs == "rivals" and MogRules.firstPass(rec)
 		local r = Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, first, rec.lastRewardAt, os.time())
 		local at = repeatPaidAt[session.player.UserId]

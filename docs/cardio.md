@@ -12,7 +12,7 @@ you stand still. Stages need more and more Speed. In Chad Aura Tycoon it is the 
    treadmills and the arch to stage 1.
 2. **Steps → Speed.** Every key you cross (server-measured ground distance while running on
    keys, KEY_STEP = 8 studs per step, i.e. one step per two 4-stud keys of the carpet) adds `+1 × stepMultiplier` Speed. Speed is a permanent saved
-   stat (`profile.cardio.speed`). It never goes down and there is no rebirth.
+   stat (`profile.cardio.speed`). It never goes down and is never reset.
 3. **Speed → walk speed.** Inside the mode only, WalkSpeed = `CardioRules.walkSpeed(speed)`:
    16 at 0, rising on a smooth, diminishing curve to a cap of about 120. It is set through the
    Humanoid `BaseWalkSpeed` attribute + `Cosmetics.refresh` and restored when the run stops.

@@ -12,7 +12,7 @@ return function(h: { [string]: any })
 	local Economy = h.loadShared("Economy")
 	local IndexRewards = h.loadShared("IndexRewards")
 
-	-- An Index (or a run) with its first `count` tiers found.
+	-- An Index with its first `count` tiers found.
 	local function foundTo(count: number): { number }
 		local list = table.create(Economy.MAX_TIER, 0)
 		for tier = 1, count do
@@ -21,11 +21,10 @@ return function(h: { [string]: any })
 		return list
 	end
 
-	-- A profile whose Index and run have the first `count` tiers.
+	-- A profile whose Index has the first `count` tiers.
 	local function played(count: number): any
 		local p = h.loadDataService().defaultProfile()
 		p.discovered = foundTo(count)
-		p.runDiscovered = foundTo(count)
 		p.processLevel = math.max(p.processLevel, Economy.minProcessLevel(count))
 		return p
 	end
@@ -115,53 +114,50 @@ return function(h: { [string]: any })
 		eq(#p.indexClaimed, 0, "nothing was marked")
 	end)
 
-	test("Index rewards: cash follows the run's income at the claim", function()
+	test("Index rewards: cash follows the income at the claim", function()
 		local milestone = IndexRewards.MILESTONES[1]
 		local progression = Economy.progression(5, Economy.minProcessLevel(5))
 		local floor = Economy.progressionIncome(progression)
 		-- Income over the floor: exactly seconds x income.
 		eq(IndexRewards.cash(milestone, floor * 10, progression), math.floor(floor * 10 * milestone.seconds), "income x seconds")
-		-- A run that earns less than its own progression floor is paid the floor, as with packs.
+		-- A player who earns less than the progression floor is paid the floor, as with packs.
 		eq(IndexRewards.cash(milestone, 0, progression), Economy.moneyPackAmount(0, milestone.seconds, 0, progression), "the floor")
 		-- Broken incomes pay the floor, never NaN.
 		for _, bad in { 0 / 0, -5, math.huge } do
 			local cash = IndexRewards.cash(milestone, bad, progression)
 			check(cash == cash and cash > 0 and cash ~= math.huge, "a usable amount for " .. tostring(bad))
 		end
-		-- The very start of a run: the minimum.
+		-- The very start: the minimum.
 		local start = Economy.progression(1, 0)
 		check(IndexRewards.cash(milestone, 0, start) >= milestone.seconds * IndexRewards.MIN_INCOME, "never under MIN_INCOME per second")
 
-		-- Stars: they are part of the income (Tycoon.moneyMultiplier), so they count once.
-		local production, rate = 5000, 4000
-		local plain = Economy.incomePerSecond(production, rate, 1)
-		local starred = Economy.incomePerSecond(production, rate, 1 + Economy.starBonus(5))
-		local big = Economy.progression(1, 0)
-		near(
-			IndexRewards.cash(milestone, starred, big) / IndexRewards.cash(milestone, plain, big),
-			Economy.starMultiplier(5),
-			"five stars: x1.5, once"
+		-- The floor is the one the shop packs use: the best tier found and the player's own
+		-- converter. An income over it is paid as it is.
+		local low = played(12)
+		local floorOf = Economy.progression(12, low.processLevel)
+		eq(
+			IndexRewards.claim(low, 5, 0).cash,
+			Economy.moneyPackAmount(0, milestone.seconds, milestone.seconds * IndexRewards.MIN_INCOME, floorOf),
+			"an income under the floor: the floor"
 		)
+		local over = Economy.progressionIncome(floorOf) * 4
+		eq(IndexRewards.claim(played(12), 5, over).cash, math.floor(over * milestone.seconds), "income over the floor wins")
 
-		-- The floor is the player's best, not the run's: every tier ever found counts, and a
-		-- converter the rebirth reset is read as the one that tier had for free.
-		local reborn = played(12)
-		reborn.runDiscovered = foundTo(1)
-		reborn.processLevel = Economy.START_PROCESS_LEVEL
-		local bestOf = IndexRewards.progression(reborn)
-		eq(bestOf.tier, 12, "the best tier ever found")
-		eq(bestOf.processLevel, Economy.minProcessLevel(12), "with the converter that tier lifts for free")
-		reborn.processLevel = Economy.minProcessLevel(12) + 7
-		eq(IndexRewards.progression(reborn).processLevel, Economy.minProcessLevel(12) + 7, "a better converter is kept")
-		-- A run that earns more than the floor is still paid its income.
-		local over = Economy.progressionIncome(bestOf) * 4
-		eq(IndexRewards.claim(reborn, 5, over).cash, math.floor(over * milestone.seconds), "income over the floor wins")
-
-		-- The same milestone claimed in a richer run pays more.
+		-- The same milestone claimed by a richer player pays more.
 		local early, late = played(5), played(5)
 		local a = IndexRewards.claim(early, 5, 1e6)
 		local b = IndexRewards.claim(late, 5, 3e6)
 		near(b.cash / a.cash, 3, "three times the income, three times the cash")
+
+		-- The window shows what the server grants: the snapshot and the claim use one sum.
+		local p = played(20)
+		local shown = IndexRewards.state(p, 2).milestones[3].cash
+		local third = IndexRewards.MILESTONES[3]
+		local best = Economy.progression(20, p.processLevel)
+		eq(shown, math.floor(Economy.progressionIncome(best) * third.seconds), "an income of 2 is floored by tier 20")
+		eq(IndexRewards.claim(p, 15, 2).cash, shown, "the CLAIM button named exactly that")
+		shown = IndexRewards.state(p, RICH).milestones[4].cash
+		eq(IndexRewards.claim(p, 20, RICH).cash, shown, "and so it does over the floor")
 	end)
 
 	test("Index rewards: a crate that does not fit is paid as cash", function()
@@ -180,14 +176,11 @@ return function(h: { [string]: any })
 		local DataService = h.loadDataService()
 		-- A save from before the milestones, 18 tiers found.
 		local old = DataService.reconcile({
-			version = 4,
+			version = 2,
 			money = 4321,
 			bought = 700,
 			processLevel = 90,
-			stars = 2,
-			rebirths = 1,
 			discovered = foundTo(18),
-			runDiscovered = foundTo(6),
 			cosmetics = { trail = "Gold", toggles = { AuraGlow = false } },
 		})
 		eq(type(old.indexClaimed), "table", "the field exists")
@@ -195,12 +188,9 @@ return function(h: { [string]: any })
 		eq(old.cosmetics.champion, false, "no Champion yet")
 		-- Nothing is lost.
 		eq(old.money, 4321, "cash is kept")
-		eq(old.stars, 2, "stars are kept")
-		eq(old.rebirths, 1, "rebirths are kept")
 		eq(old.cosmetics.trail, "Gold", "the trail is kept")
 		eq(old.cosmetics.toggles.AuraGlow, false, "the switches are kept")
 		eq(IndexRewards.found(old.discovered), 18, "the Index is kept")
-		eq(Economy.highestTier(old.runDiscovered), 6, "the run is kept")
 
 		local ready = IndexRewards.ready(old.discovered, old.indexClaimed)
 		eq(#ready, 3, "three milestones are waiting")
@@ -217,8 +207,8 @@ return function(h: { [string]: any })
 			eq(entry.reached, milestone.found <= 18, "state reached " .. milestone.found)
 			eq(entry.claimed, false, "state claimed " .. milestone.found)
 			eq(entry.crate, milestone.crate, "state crate " .. milestone.found)
-			-- Floored by the best tier ever found (18), not by the run's (6).
-			eq(entry.cash, IndexRewards.cash(milestone, 1000, IndexRewards.progression(old)), "state cash " .. milestone.found)
+			-- Floored by the best tier found (18).
+			eq(entry.cash, IndexRewards.cash(milestone, 1000, Economy.progression(18, old.processLevel)), "state cash " .. milestone.found)
 			check(entry.cash >= math.floor(Economy.unitRate(18) * Economy.CASH_PER_POINT * milestone.seconds), "at least one tier-18 unit")
 		end
 
@@ -242,42 +232,6 @@ return function(h: { [string]: any })
 		eq(loaded.indexClaimed[2], 5, "order kept: 5")
 		eq(loaded.indexClaimed[3], 10, "order kept: 10")
 		eq(#IndexRewards.ready(loaded.discovered, loaded.indexClaimed), 0, "nothing to claim again after a load")
-	end)
-
-	test("Index rewards: a rebirth neither takes a milestone back nor offers it again", function()
-		local p = played(20)
-		check(IndexRewards.claim(p, 5, RICH) ~= nil, "5 claimed before the rebirth")
-		check(IndexRewards.claim(p, 10, RICH) ~= nil, "10 claimed before the rebirth")
-		check(Economy.rebirth(p, 1800000000) > 0, "the run starts again")
-		eq(Economy.highestTier(p.runDiscovered), 1, "the run is back at tier 1")
-		eq(IndexRewards.found(p.discovered), 20, "the Index still has 20")
-		eq(#p.indexClaimed, 2, "the claims stay")
-		eq(IndexRewards.claim(p, 5, RICH), nil, "5 is not offered again")
-		eq(IndexRewards.claim(p, 10, RICH), nil, "nor is 10")
-		-- The ones never claimed are still there, and pay no less than at the player's best:
-		-- the new run earns next to nothing, so the floor of the best tier ever found sizes them.
-		local ready = IndexRewards.ready(p.discovered, p.indexClaimed)
-		eq(#ready, 2, "15 and 20 still wait")
-		eq(p.processLevel, Economy.START_PROCESS_LEVEL, "the rebirth reset the converter")
-		local best = Economy.progression(20, Economy.minProcessLevel(20))
-		local floor = math.floor(Economy.progressionIncome(best) * IndexRewards.MILESTONES[3].seconds)
-		near(Economy.progressionIncome(best), Economy.unitRate(20) * Economy.CASH_PER_POINT, "the floor: one unit of the best tier")
-		-- The window shows what the server grants: the snapshot and the claim use one function.
-		local shown = IndexRewards.state(p, 2).milestones[3].cash
-		local fresh = IndexRewards.claim(p, 15, 2)
-		check(fresh ~= nil, "15 claimed after the rebirth")
-		eq(fresh.cash, floor, "sized by the best tier ever found, not by the new run")
-		eq(fresh.cash, shown, "the CLAIM button named exactly that")
-		check(fresh.cash > 1800 * 1000, "not a tier-1 amount")
-		check(
-			fresh.cash > IndexRewards.cash(IndexRewards.MILESTONES[3], 2, Economy.progression(1, p.processLevel)) * 1000,
-			"far over what the new run alone would pay"
-		)
-		-- Finding the tiers again in the new run pays nothing new.
-		p.runDiscovered = foundTo(20)
-		eq(IndexRewards.claim(p, 15, RICH), nil, "the new run does not offer 15 again")
-		check(IndexRewards.claim(p, 20, RICH) ~= nil, "20 was never claimed: still there")
-		eq(#IndexRewards.ready(p.discovered, p.indexClaimed), 0, "all four claimed, for good")
 	end)
 
 	test("Index rewards: the saved field and its migration", function()
@@ -335,9 +289,8 @@ return function(h: { [string]: any })
 			check(string.find(source, text, 1, true) ~= nil, message)
 		end
 		has(server, "actionHandlers.ClaimIndex = function(session, data)", "the ClaimIndex action exists")
-		-- Sized by the surge-free reward income (stars are inside Tycoon.moneyMultiplier, once).
+		-- Sized by the surge-free reward income.
 		has(server, "IndexRewards.claim(p, data.found, Tycoon.income(session))", "the claim is sized by Tycoon.income")
-		has(server, "Economy.starBonus(session.profile.stars)", "the stars are part of the money multiplier")
 		check(string.find(server, "IndexRewards.claim(p, data.found, Tycoon.incomeNow", 1, true) == nil, "not by the surge income")
 		has(server, 'Tycoon.grantMoney(session, cash, "Index")', "the cash is granted as Index cash")
 		has(server, "Tycoon.grantCrate(session, crate, tier)", "the crate is opened on the spot")
