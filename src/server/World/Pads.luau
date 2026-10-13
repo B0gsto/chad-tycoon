@@ -10,9 +10,11 @@
 	into `sub`, in white on a small rounded plate (Theme.World.PadPlate: green when Tycoon
 	tints `sub` Good, soft red when Bad, dark otherwise; gold with dark print when it says the
 	pad needs a game pass), both with an Ink outline so they read on every pad colour. The
-	labels float above the head of a character standing on the pad. Merge shows only its name
-	in sunny yellow, bigger and over the pad's far edge. On a plot nobody owns the names are
-	dimmed (setClaimed). A disabled pad turns soft grey (Theme.Colors.PadDisabled).
+	labels float above the head of a character standing on the pad; along the buy row they climb
+	outward (LABEL_LIFTS) so no tag covers its neighbour. Merge shows only its name in sunny
+	yellow, as a low tag standing at the pad's far left corner (LABEL_SHIFT), under the pen's crate
+	labels in the spawn view. On a plot nobody owns the names are dimmed (setClaimed). A disabled
+	pad turns soft grey (Theme.Colors.PadDisabled).
 ]]
 
 local Layout = require(script.Parent.Parent.PlotLayout)
@@ -46,17 +48,37 @@ local LABEL_W = 6
 local LABEL_W_MAX = 8
 local LABEL_MAX_DISTANCE = 90
 -- Pads whose label sits at another height. The deposit label floats over the head of a player
--- standing on its big pad (lower, the character and its dumbbell hid half of it) and clears the
--- Auto Merge label behind it in the spawn view, which is why Auto Merge's stays low; the bulk
--- speed upgrade's clears the single upgrade's; the merge label (over the pad's far edge, so
--- behind the character) stays under the best unit's pedestal in the spawn view.
-local LABEL_LIFTS: { [string]: number } = { Deposit = 6.4, AutoMerge = 2.6, ProcUp10 = 7.2, Merge = 3.2 }
--- Pads whose label is wider or narrower than their size gives: the merge name is 1.5x larger,
+-- standing on its big pad (lower, the character and its dumbbell hid half of it); the bulk
+-- speed upgrade's clears the single upgrade's.
+-- The buy row's tags climb outward from the pen (Buy 5 / Buy 25 at LABEL_LIFT, Buy 1 / Buy 100
+-- two studs higher, Auto Merge two more): a label is 2 studs tall, and from a camera above the
+-- row the farther tag is drawn higher on screen, so neighbours that climb outward never meet
+-- (Auto Merge used to hang low, right behind the Buy 25 / Buy 100 tags seen from the pen's
+-- side). The outer tags also float clear of the fan zones' cards and crowd behind them.
+-- From the spawn camera (Fx.Camera: eye 15 studs behind the head and 20 degrees up, at
+-- plot-local (0, 9.6, -28.1), FOV 70; pixels of a 1280 x 720 screen):
+--   Buy 5 / Buy 25      y 189..213, x 388..459 / 821..892
+--   Buy 1 / Buy 100     y 168..192, x 285..357 / 923..995
+--   Auto Merge          y 146..171, x 1028..1101
+--   Deposit             y 181..215, x 1064..1167 (10 px under Auto Merge)
+-- The merge tag stands just above its pad: see LABEL_SHIFT.
+local LABEL_LIFTS: { [string]: number } = {
+	Deposit = 6.4,
+	Buy1 = 7.6,
+	Buy100 = 7.6,
+	AutoMerge = 9.6,
+	ProcUp10 = 7.2,
+	Merge = 0.4,
+}
+-- Pads whose label is wider or narrower than their size gives: the merge name a compact tag,
 -- the deposit label a shorter line that fits in front of the converter's jar.
-local LABEL_GROW: { [string]: number } = { Merge = 1.5, Deposit = 0.8 }
--- Pads whose label stands over the far edge (see farDir) instead of the centre, so a
--- character on the pad is in front of it, not inside it.
-local LABEL_AT_FAR_EDGE: { [string]: boolean } = { Merge = true }
+local LABEL_GROW: { [string]: number } = { Merge = 0.85, Deposit = 0.8 }
+-- Pads whose label stands off the pad's centre, as plot-local (x, z) studs. The merge tag
+-- stands at the pad's far left corner: floating over the far edge it covered the pen's crate
+-- labels ("Common", at y 229..256 in the spawn view above) and, hung lower there, the walking
+-- character's own head. At the corner it is drawn at x 511..613, y 280..314: over the pen's
+-- front wall (y 286..312), under every crate label and left of the character (x 570..710).
+local LABEL_SHIFT: { [string]: Vector2 } = { Merge = Vector2.new(5.2, 3.5) }
 -- Share of the stud width that scales with distance, and the fixed pixel part added to it.
 local LABEL_SCALE = 0.8
 local LABEL_PX = 24
@@ -338,8 +360,9 @@ local function buildPad(B: Builder, name: string, color: Color3, title: string, 
 
 	local width = math.clamp(math.max(sx, sz) * 1.1, LABEL_W, LABEL_W_MAX) * (LABEL_GROW[name] or 1)
 	local offset = Vector3.new(0, LABEL_LIFTS[name] or LABEL_LIFT, 0)
-	if LABEL_AT_FAR_EDGE[name] then
-		offset += B.cf:VectorToWorldSpace(Vector3.new(far.X * sx / 2, 0, far.Y * sz / 2))
+	local shift = LABEL_SHIFT[name]
+	if shift then
+		offset += B.cf:VectorToWorldSpace(Vector3.new(shift.X, 0, shift.Y))
 	end
 	local titleLine, titleStroke, plate, price = buildLabel(padPart, offset, width)
 	painted[padPart] = { color = color, print = printColor, icon = icon, title = titleLine, titleStroke = titleStroke }
