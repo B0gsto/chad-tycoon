@@ -1,11 +1,18 @@
--- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow):
---   * Deposit: aura orbs stream into the blender's lid, which hops on a soft spring.
+-- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow
+-- except the converter's level bands):
+--   * Deposit: aura orbs stream into the blender's lid, which hops on a soft spring; the
+--     multiplier's cash pops up as "+$X BONUS" and its coins hop to the Collect pad.
+--   * Jar meter: a grape fill rises up the cup with the queue (TUNE.jar.fullSeconds of work fills
+--     it) and the cup wears a glowing band per TUNE.ring.levels converter levels.
 --   * Blender blades spin up while the queue has orbs; the smoothie swirls and coins hop from
 --     the blender to the Collect pad. The processor's cups ride the belt and its dots fill up.
 --   * A coin stack on the Collect pad grows with pending cash; collecting hops the coins into
---     the piggy bank, which bounces.
+--     the piggy bank, which bounces and throws a coin fountain that flies to the wallet.
 --   * Pads you can use right now (affordable / ready) breathe slowly brighter and back.
---   * Upgrade / buy / deny feedback: dust puffs, confetti, stars, coins and a gentle wobble.
+--   * A successful pad step (buy, deposit, collect, upgrade) presses the pad's top into its rim
+--     and springs it back, with a ring; a refused one wobbles it.
+--   * Upgrade / buy / deny feedback: dust puffs, confetti, stars, coins; a buy's price is a
+--     small red line over the wallet; a converter upgrade sends orbs from the pad to the jar.
 --   * Crate Smasher: a local crate rattles as its timer runs out; when ready the striker puck
 --     rides up its track, the bell rings and a READY! card pops up.
 
@@ -51,6 +58,73 @@ local CORAL = worldColor("Coral", C.Bad)
 local BLUE = worldColor("Blue", C.Secondary)
 local GRAPE = worldColor("Grape", C.Orb)
 local CONFETTI_COLORS = { SUNNY, TEAL_LIGHT, BLUE, SUNNY, WHITE, CORAL }
+
+-- Tunables of the buy / deposit / collect / upgrade feedback and the jar meter. One table, not
+-- a local each: a chunk holds 200 locals at most.
+local TUNE = {
+	-- Pad press: a successful step squashes the pad's top into its rim and springs it back.
+	press = {
+		depth = 0.6, -- share of the top's thickness lost at full squash
+		wide = 0.05, -- footprint growth at full squash (it narrows on the rebound)
+		lift = 0.25, -- studs the top lifts per unit of rebound (the stretch)
+		stiffness = 420,
+		damping = 15,
+		time = 0.8, -- seconds until the pad is put back exactly
+		ring = 1.15, -- pulse ring radius / the pad's half width
+		ringTime = 0.45,
+	},
+	-- Jar meter: the grape sleeve that rises up the cup with the queue.
+	jar = {
+		fullSeconds = 120, -- queue time that fills the cup to the lid
+		radius = 2.68, -- sleeve radius (the cup is 2.42 to 2.62 studs outside)
+		height = 5.4, -- sleeve height when full (it stops under the lid rim)
+		min = 0.15, -- sliver shown while anything is queued
+		follow = 3, -- how fast the level follows the queue (per second)
+		transparency = 0.15,
+		foam = 0.16, -- height of the light line on top of the fill
+		hold = 0.45, -- seconds a deposit's rise waits for its first orb to land
+		gulp = 0.6, -- studs the level jumps per stud of lid hop
+	},
+	-- Level bands around the cup.
+	ring = {
+		levels = 5, -- converter levels per band
+		max = 6,
+		radius = 2.86,
+		thick = 0.2,
+		first = 0.75, -- first band above the cup floor
+		step = 0.85, -- between bands
+		transparency = 0.1,
+		pulse = 0.6, -- how much thicker a band gets as the working pulse passes it
+		kick = 0.2, -- radius growth per unit of the upgrade bounce
+		kickSpeed = 6, -- bounce an upgrade gives the bands
+		popTime = 0.35,
+		-- Past `max` bands the set is earned again in the next colour.
+		colors = { SUNNY, CORAL, WHITE },
+	},
+	upgrade = {
+		orbs = 5, -- orbs that fly from the pad into the cup
+		textScale = 0.8, -- "LEVEL N" over the lid
+	},
+	deposit = {
+		stream = 0.8, -- seconds over which the orbs leave the player
+		flight = 0.5, -- seconds each orb flies
+		orb = 0.9, -- orb size leaving the player (half of it on arrival)
+		bonusTextScale = 0.9,
+		bonusCoins = 5, -- coins that hop from the lid to the Collect pad with a bonus
+	},
+	collect = {
+		coins = 10, -- fountain coins (a few more for big amounts, at most 16)
+		coinSize = 1.2, -- studs
+		coinSpeed = 17, -- launch speed
+		coinLife = 0.8, -- seconds; the coins turn for the wallet at 60 % of it
+		textScale = 0.9,
+	},
+	buy = {
+		coins = 6, -- coins from the pad (one more per digit of the price, at most 12)
+		coinSpeed = 15, -- launch speed (up to 1.5x for big prices)
+		stars = 3,
+	},
+}
 
 local Machines = {}
 
@@ -400,6 +474,89 @@ local function padTop(pad: BasePart): Vector3
 	return pad.Position + Vector3.new(0, thickness / 2, 0)
 end
 
+-- The own pad an effect is about: by `name`, else the nearest within 6 studs of `padPos`.
+local function findPad(data: any): BasePart?
+	local p = plot
+	if not p then
+		return nil
+	end
+	if type(data.name) == "string" then
+		local named = p:FindFirstChild("Pad_" .. data.name) or p:FindFirstChild(data.name)
+		if named and named:IsA("BasePart") then
+			return named
+		end
+	end
+	if typeof(data.padPos) == "Vector3" then
+		local best, bestDist = nil, 6
+		for _, pad in pads do
+			local d = (pad.Position - data.padPos).Magnitude
+			if d < bestDist then
+				best, bestDist = pad, d
+			end
+		end
+		return best
+	end
+	return nil
+end
+
+-- Pad press: a successful step squashes the pad's top into its rim and springs it back -----------
+
+type Squash = { cf: CFrame, size: Vector3, spring: Spring, t0: number }
+
+local squashes: { [BasePart]: Squash } = {}
+local denyToken: { [BasePart]: number } = {} -- pads in a deny wobble (it owns their CFrame)
+
+local function endSquash(pad: BasePart)
+	local s = squashes[pad]
+	if not s then
+		return
+	end
+	squashes[pad] = nil
+	if pad.Parent then
+		pad.Size = s.size
+		pad.CFrame = s.cf
+	end
+end
+
+-- Presses `pad` (from its resting size, also when it is still springing) and rings it.
+local function squashPad(pad: BasePart, color: Color3?)
+	if denyToken[pad] then
+		return
+	end
+	local s = squashes[pad]
+	if s then
+		s.spring.x, s.spring.v, s.t0 = 1, 0, os.clock()
+	else
+		local fresh: Squash = { cf = pad.CFrame, size = pad.Size, spring = { x = 1, v = 0 }, t0 = os.clock() }
+		squashes[pad] = fresh
+		s = fresh
+	end
+	local round = (pad :: Part).Shape == Enum.PartType.Cylinder
+	local thick = if round then s.size.X else s.size.Y
+	local half = if round then s.size.Y / 2 else math.max(s.size.X, s.size.Z) / 2
+	Orbs.ring(s.cf.Position + UP * (thick / 2 + 0.05), color or WHITE, half * TUNE.press.ring, TUNE.press.ringTime)
+end
+
+local function stepSquash(dt: number, now: number)
+	for pad, s in squashes do
+		local spring = s.spring
+		stepSpring(spring, dt, TUNE.press.stiffness, TUNE.press.damping)
+		local still = math.abs(spring.x) < 0.003 and math.abs(spring.v) < 0.05
+		if still or not pad.Parent or denyToken[pad] or now - s.t0 > TUNE.press.time then
+			endSquash(pad)
+			continue
+		end
+		local x = math.clamp(spring.x, -0.6, 1)
+		local round = (pad :: Part).Shape == Enum.PartType.Cylinder
+		local thick = if round then s.size.X else s.size.Y
+		local t = thick * (1 - TUNE.press.depth * x)
+		local wide = 1 + TUNE.press.wide * x
+		pad.Size = if round then Vector3.new(t, s.size.Y * wide, s.size.Z * wide) else Vector3.new(s.size.X * wide, t, s.size.Z * wide)
+		-- The bottom stays on the rim; the rebound lifts the whole top a little.
+		pad.CFrame = s.cf + UP * ((t - thick) / 2 + math.max(0, -x) * TUNE.press.lift)
+	end
+end
+
 local function childrenNamed(p: Instance, name: string): { BasePart }
 	local out = {}
 	for _, child in p:GetChildren() do
@@ -523,6 +680,214 @@ local function stepConverter(dt: number, now: number)
 	end
 end
 
+-- Jar meter: the cup fills with the queue and wears a glow band per 5 converter levels ----------
+-- The mesh cup is solid, so the smoothie inside it cannot be seen: a grape sleeve just outside
+-- the cup rises from its floor with the queue's seconds, and the level bands ring the cup.
+
+type Jar = {
+	floor: CFrame?, -- the cup floor on the cup's axis (an upright cylinder's frame)
+	fill: Part?,
+	foam: Part?,
+	level: number, -- shown fill, 0..1
+	shown: number, -- sleeve height last written
+	holdUntil: number,
+	rings: { Part },
+	ringColor: { number }, -- TUNE.ring.colors index each band wears (0 = hidden)
+	ringBusy: { number }, -- os.clock() until which a band's pop tween owns it
+	ringLevel: number,
+	kick: Spring,
+	rest: boolean,
+}
+
+local jar: Jar = {
+	floor = nil,
+	fill = nil,
+	foam = nil,
+	level = 0,
+	shown = -1,
+	holdUntil = 0,
+	rings = {},
+	ringColor = {},
+	ringBusy = {},
+	ringLevel = -1,
+	kick = { x = 0, v = 0 },
+	rest = true,
+}
+
+local function bindJar()
+	jar.floor = if juice then juiceCF - UP * (juiceSize.X / 2) elseif core then spinBase[1] - UP * 0.55 else nil
+	jar.shown = -1
+	jar.ringLevel = -1
+	if jar.fill then
+		jar.fill.CFrame = FAR
+	end
+	if jar.foam then
+		jar.foam.CFrame = FAR
+	end
+	for k, ring in jar.rings do
+		ring.CFrame = FAR
+		jar.ringColor[k] = 0
+	end
+end
+
+-- Seconds of work left in the queue: the snapshot's `queueSeconds` when the server sends it,
+-- else queue / rate; counted down between snapshots.
+local function queueSeconds(): number
+	local data = State.data
+	if not data then
+		return 0
+	end
+	local seconds = tonumber(data.queueSeconds)
+	if not seconds then
+		local rate = tonumber(data.processRate) or 0
+		seconds = if rate > 0 then (tonumber(data.queue) or 0) / rate else 0
+	end
+	if seconds ~= seconds or seconds <= 0 then
+		return 0
+	end
+	return math.max(0, math.min(seconds, 1e6) - State.age())
+end
+
+local function setRing(k: number, colorIndex: number, floor: CFrame, pop: boolean)
+	local existing = jar.rings[k]
+	if colorIndex == 0 then
+		if existing then
+			existing.CFrame = FAR
+		end
+		return
+	end
+	local d = TUNE.ring.radius * 2
+	local ring = existing or newPart(Enum.PartType.Cylinder, "JarRing", WHITE, Vector3.new(TUNE.ring.thick, d, d))
+	jar.rings[k] = ring
+	ring.Material = Enum.Material.Neon
+	ring.Color = TUNE.ring.colors[colorIndex]
+	ring.CFrame = floor + UP * (TUNE.ring.first + (k - 1) * TUNE.ring.step)
+	if not pop then
+		ring.Size = Vector3.new(TUNE.ring.thick, d, d)
+		ring.Transparency = TUNE.ring.transparency
+		return
+	end
+	-- A new band shrinks onto the cup out of a wider, fading one.
+	jar.ringBusy[k] = os.clock() + TUNE.ring.popTime + 0.05
+	ring.Size = Vector3.new(TUNE.ring.thick, d * 1.3, d * 1.3)
+	ring.Transparency = 1
+	TweenService:Create(
+		ring,
+		TweenInfo.new(TUNE.ring.popTime, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Size = Vector3.new(TUNE.ring.thick, d, d), Transparency = TUNE.ring.transparency }
+	):Play()
+	Orbs.sparkle(ring.Position, ring.Color, 8)
+end
+
+local function syncRings(level: number, floor: CFrame, pop: boolean)
+	local bands = math.floor(level / TUNE.ring.levels)
+	local lap = math.min(math.floor(bands / TUNE.ring.max), #TUNE.ring.colors - 1)
+	local inLap = math.min(bands - lap * TUNE.ring.max, TUNE.ring.max)
+	for k = 1, TUNE.ring.max do
+		local want = if k <= inLap then lap + 1 else lap
+		if want ~= (jar.ringColor[k] or 0) then
+			jar.ringColor[k] = want
+			setRing(k, want, floor, pop)
+		end
+	end
+end
+
+local function stepJar(dt: number, now: number)
+	local floor = jar.floor
+	if not floor then
+		return
+	end
+	-- Fill: follows the queue's seconds; a deposit's rise waits for its first orb.
+	local target = math.clamp(queueSeconds() / TUNE.jar.fullSeconds, 0, 1)
+	if now < jar.holdUntil then
+		target = math.min(target, jar.level)
+	end
+	jar.level += (target - jar.level) * math.min(1, dt * TUNE.jar.follow)
+	if math.abs(target - jar.level) < 0.001 then
+		jar.level = target
+	end
+	local h = 0
+	if jar.level > 0 then
+		local slosh = glow * math.sin(now * 3.2) * 0.03 + math.max(0, lid.x) * TUNE.jar.gulp
+		h = math.min(math.max(TUNE.jar.min, jar.level * TUNE.jar.height) + slosh, TUNE.jar.height + 0.1)
+	end
+	if math.abs(h - jar.shown) > 0.004 then
+		jar.shown = h
+		local d = TUNE.jar.radius * 2
+		local fill = jar.fill or newPart(Enum.PartType.Cylinder, "JarFill", GRAPE:Lerp(WHITE, 0.1), Vector3.new(1, d, d))
+		local foam = jar.foam
+			or newPart(Enum.PartType.Cylinder, "JarFoam", GRAPE:Lerp(WHITE, 0.6), Vector3.new(TUNE.jar.foam, d + 0.1, d + 0.1))
+		jar.fill, jar.foam = fill, foam
+		if h <= 0 then
+			fill.CFrame = FAR
+			foam.CFrame = FAR
+		else
+			fill.Transparency = TUNE.jar.transparency
+			fill.Size = Vector3.new(h, d, d)
+			fill.CFrame = floor + UP * (h / 2)
+			foam.CFrame = floor + UP * (h + TUNE.jar.foam / 2 - 0.02)
+		end
+	end
+
+	-- Level bands: synced when the level changes; a new band pops in.
+	local data = State.data
+	local level = if data then math.floor(tonumber(data.processLevel) or 0) else 0
+	if level ~= jar.ringLevel then
+		syncRings(level, floor, jar.ringLevel >= 0 and level > jar.ringLevel)
+		jar.ringLevel = level
+	end
+	-- A pulse climbs the bands while the converter works; upgrades bounce them outward.
+	stepSpring(jar.kick, dt, 220, 12)
+	local moving = glow > 0.02 or math.abs(jar.kick.x) > 0.002 or math.abs(jar.kick.v) > 0.02
+	if moving or not jar.rest then
+		jar.rest = not moving
+		for k, ring in jar.rings do
+			if (jar.ringColor[k] or 0) == 0 or now < (jar.ringBusy[k] or 0) then
+				continue
+			end
+			local wave = if moving then glow * (0.5 + 0.5 * math.sin(now * 4 - k * 0.9)) else 0
+			local d = TUNE.ring.radius * 2 * (1 + (if moving then jar.kick.x * TUNE.ring.kick else 0))
+			ring.Size = Vector3.new(TUNE.ring.thick * (1 + TUNE.ring.pulse * wave), d, d)
+		end
+	end
+end
+
+-- A converter upgrade: orbs fly from the pad into the cup, the bands bounce and the new level
+-- pops up over the lid.
+
+local function upgradeJar(from: Vector3, level: number?)
+	local floor = jar.floor
+	if not floor then
+		return
+	end
+	local base = floor.Position
+	local n = Budget.count(TUNE.upgrade.orbs)
+	for i = 1, n do
+		local jitter = Vector3.new(math.random() - 0.5, 0, math.random() - 0.5) * 1.5
+		Orbs.fly({
+			from = from + jitter,
+			to = base + UP * 2.7,
+			color = TEAL_LIGHT,
+			size = 0.6,
+			endSize = 0.3,
+			duration = 0.45,
+			delay = (i - 1) * 0.06,
+			arc = 4,
+			trail = true,
+			onDone = if i == n
+				then function()
+					jar.kick.v += TUNE.ring.kickSpeed
+					Orbs.sparkle(base + UP * 6.6, SUNNY, 10)
+					if level then
+						local text = "LEVEL " .. math.floor(level)
+						Orbs.text(base + UP * 9.4, text, TEAL_LIGHT, { scale = TUNE.upgrade.textScale, rise = 1.8, life = 1.1 })
+					end
+				end
+				else nil,
+		})
+	end
+end
+
 local function onDeposit(data: any)
 	local to: Vector3? = if typeof(data.to) == "Vector3"
 		then data.to
@@ -532,9 +897,14 @@ local function onDeposit(data: any)
 	if not to then
 		return
 	end
+	local pad = findPad({ name = "Deposit" })
+	if pad then
+		squashPad(pad, GRAPE)
+	end
+	jar.holdUntil = os.clock() + TUNE.jar.hold
 	local from: Vector3 = if typeof(data.from) == "Vector3" then data.from else to + Vector3.new(0, 6, 6)
 	local amount = tonumber(data.amount) or 0
-	local count = math.clamp(8 + math.floor(math.log10(math.max(1, amount)) * 2), 8, 16)
+	local count = Budget.count(math.clamp(8 + math.floor(math.log10(math.max(1, amount)) * 2), 8, 16))
 	local first = true
 	for i = 1, count do
 		local jitter = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5) * 1.2
@@ -542,11 +912,12 @@ local function onDeposit(data: any)
 			from = from + jitter,
 			to = to,
 			color = if i % 4 == 0 then C.OrbBig else C.Orb,
-			size = 0.7,
-			endSize = 0.35,
-			duration = 0.4,
-			delay = (i - 1) * (0.6 / count),
+			size = TUNE.deposit.orb,
+			endSize = TUNE.deposit.orb / 2,
+			duration = TUNE.deposit.flight,
+			delay = (i - 1) * (TUNE.deposit.stream / count),
 			arc = 3 + math.random() * 2,
+			trail = true,
 			onDone = function()
 				lid.v = math.min(lid.v + 1.6, 6)
 				if first then
@@ -556,10 +927,31 @@ local function onDeposit(data: any)
 			end,
 		})
 	end
-	task.delay(1, function()
+	task.delay(TUNE.deposit.stream + TUNE.deposit.flight - 0.1, function()
 		lid.v += 4
 		confettiBurst(to + UP * 0.5, 10, 0.8, { GRAPE, SUNNY, WHITE })
 		starBurst(to + UP, 2, GRAPE)
+		-- The multiplier's part is cash in the vault at once: name it and send its coins there.
+		local bonus = tonumber(data.bonus) or 0
+		if bonus < 1 then
+			return
+		end
+		local text = "+" .. Format.money(bonus) .. " BONUS"
+		Orbs.text(to + UP * 2.2, text, SUNNY, { scale = TUNE.deposit.bonusTextScale, rise = 2.2, life = 1.3 })
+		local target = collectPad
+		if target and target.Parent then
+			for i = 1, Budget.count(TUNE.deposit.bonusCoins) do
+				hop({
+					from = to,
+					to = padTop(target) + UP * 0.6,
+					delay = (i - 1) * 0.07,
+					duration = 0.8,
+					arc = 5,
+					size = 1,
+					endSize = 0.7,
+				})
+			end
+		end
 	end)
 end
 
@@ -825,6 +1217,25 @@ local function cashShower(amount: number, big: boolean)
 	end
 end
 
+-- Coins burst up out of `from`, bounce on `floorY` and fly to the wallet; "+$amount" over it.
+local function cashFountain(from: Vector3, floorY: number, amount: number)
+	local magnitude = math.log10(math.max(amount, 1))
+	Orbs.coins(from + UP * 0.6, {
+		count = math.clamp(TUNE.collect.coins + math.floor(magnitude), TUNE.collect.coins, 16),
+		speed = TUNE.collect.coinSpeed,
+		spread = 0.5,
+		floor = floorY,
+		life = TUNE.collect.coinLife,
+		toWallet = true,
+		stagger = 0.03,
+		size = TUNE.collect.coinSize,
+	})
+	if amount >= 1 then
+		local text = "+" .. Format.money(amount)
+		Orbs.text(from + UP * 2.6, text, C.Good, { scale = TUNE.collect.textScale, rise = 2, life = 1.1 })
+	end
+end
+
 local function onCash(data: any)
 	-- Auto Cash payouts are silent: no coin shower around the player.
 	if data.source == "Auto" then
@@ -836,8 +1247,15 @@ local function onCash(data: any)
 		return
 	end
 	local pos: Vector3 = data.padPos
+	local pad = findPad({ padPos = pos })
+	if pad then
+		squashPad(pad, SUNNY)
+	end
 	local n = math.min(math.max(shownCoins, 6), 12)
 	local target = slotPos
+	if not target then
+		cashFountain(pos + UP * 0.5, pos.Y, amount)
+	end
 	for i = 1, n do
 		local from = if i <= shownCoins then coinHomes[i].Position else pos + UP * 0.5
 		if target then
@@ -853,6 +1271,10 @@ local function onCash(data: any)
 				onDone = function()
 					pigHop.v = math.min(pigHop.v + (if i == 1 then 5 else 1.2), 9)
 					coinDip.v -= 1.5
+					if i == 1 then
+						-- The first coin in sets the piggy bank off: its fountain flies to the wallet.
+						cashFountain(target, pos.Y, amount)
+					end
 					if i == n then
 						confettiBurst(target + UP * 1.5, 14, 0.8, { SUNNY, TEAL_LIGHT, BLUE })
 						starBurst(target + UP * 1.5, 3, SUNNY)
@@ -872,28 +1294,41 @@ local function onCash(data: any)
 	puff(pos + UP * 0.4, TEAL_LIGHT, 3, 10)
 end
 
--- Buy: "-$cost" float and a coin puff at the pad ----------------------------------------------
+-- Buy: the price as a small red line over the wallet, a coin burst and a press at the pad -------
 
 local function onBuy(data: any)
+	local cost = tonumber(data.cost)
+	if cost and cost > 0 then
+		Orbs.walletText("-" .. Format.money(cost), CORAL)
+	end
 	if typeof(data.padPos) ~= "Vector3" then
 		return
 	end
+	local pad = findPad({ padPos = data.padPos })
+	if pad then
+		squashPad(pad, SUNNY)
+	end
 	local pos: Vector3 = data.padPos + Vector3.new(0, 0.5, 0)
-	local cost = tonumber(data.cost)
 	local magnitude = if cost then math.log10(math.max(cost, 1)) else 1
 	local k = math.clamp(0.9 + magnitude * 0.08, 0.9, 1.5)
-	if cost and cost > 0 then
-		Orbs.text(pos + Vector3.new(0, 3, 0), "-" .. Format.money(cost), CORAL, { scale = k, rise = 3 })
-	end
-	Orbs.coins(pos, { count = math.clamp(3 + math.floor(magnitude), 4, 8), speed = 14 * k, spread = 0.6, life = 0.8 })
+	Orbs.coins(pos, {
+		count = math.clamp(TUNE.buy.coins + math.floor(magnitude), TUNE.buy.coins, 12),
+		speed = TUNE.buy.coinSpeed * k,
+		spread = 0.8,
+		life = 0.9,
+	})
 	puff(pos, SUNNY, 2.4 * k, 8)
+	starBurst(pos + UP * 1.2, TUNE.buy.stars, SUNNY)
+	if data.max == true then
+		-- Buy Max spends the whole wallet: a little extra.
+		confettiBurst(pos + UP * 0.6, 16, 1)
+	end
 end
 
 -- Pad deny: soft coral tint and a damped wobble ------------------------------------------------
 
 local denyBase: { [BasePart]: CFrame } = {}
 local denyFlash: { [BasePart]: Part } = {}
-local denyToken: { [BasePart]: number } = {}
 local hudModule: any = nil
 
 local function shakeWallet()
@@ -906,30 +1341,6 @@ local function shakeWallet()
 	if hudModule and type(hudModule.shakeWallet) == "function" then
 		pcall(hudModule.shakeWallet)
 	end
-end
-
-local function findPad(data: any): BasePart?
-	local p = plot
-	if not p then
-		return nil
-	end
-	if type(data.name) == "string" then
-		local named = p:FindFirstChild("Pad_" .. data.name) or p:FindFirstChild(data.name)
-		if named and named:IsA("BasePart") then
-			return named
-		end
-	end
-	if typeof(data.padPos) == "Vector3" then
-		local best, bestDist = nil, 6
-		for _, pad in pads do
-			local d = (pad.Position - data.padPos).Magnitude
-			if d < bestDist then
-				best, bestDist = pad, d
-			end
-		end
-		return best
-	end
-	return nil
 end
 
 local function onPadDeny(data: any)
@@ -949,6 +1360,7 @@ local function onPadDeny(data: any)
 	if not pad then
 		return
 	end
+	endSquash(pad) -- the wobble starts from the pad's resting place
 	local base = denyBase[pad] or pad.CFrame
 	denyBase[pad] = base
 	-- Coral overlay that fades out while the pad wobbles side to side.
@@ -1064,6 +1476,10 @@ local function onUpgrade(data: any)
 		return
 	end
 	local pos: Vector3 = data.padPos + Vector3.new(0, 0.5, 0)
+	local pad = findPad({ name = data.pad, padPos = data.padPos })
+	if pad then
+		squashPad(pad, TEAL_LIGHT)
+	end
 	puff(pos, TEAL_LIGHT, 4.5, 12)
 	task.delay(0.1, function()
 		confettiBurst(pos + UP * 0.6, 18, 1)
@@ -1073,6 +1489,7 @@ local function onUpgrade(data: any)
 		lid.v += 5
 		cupHop.v += 5
 		lightFlash = 0.6
+		upgradeJar(pos, tonumber(data.level))
 	end
 end
 
@@ -1440,6 +1857,9 @@ end
 -- Wiring --------------------------------------------------------------------------------------
 
 local function bindPlot(p: Instance)
+	for pad in squashes do
+		endSquash(pad)
+	end
 	plot = p
 	table.clear(pads)
 	table.clear(padBase)
@@ -1452,6 +1872,7 @@ local function bindPlot(p: Instance)
 	end
 	collectPad = p:FindFirstChild("Pad_Collect") :: BasePart?
 	bindConverter(p)
+	bindJar()
 	bindProcessor(p)
 	bindVault(p)
 	bindCrackers(p)
@@ -1495,6 +1916,8 @@ function Machines.init()
 			return
 		end
 		stepConverter(dt, now)
+		stepJar(dt, now)
+		stepSquash(dt, now)
 		stepProcessor(dt, now)
 		stepVault(dt, now)
 		stepPads(dt, now)

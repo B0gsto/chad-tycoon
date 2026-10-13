@@ -29,7 +29,9 @@
 --
 -- Also exports small shared VFX helpers (fly / ring / sparkle / puff) used by Machines and
 -- Crates. They draw the Blender sprites (Fx.Sprites: Sparkle, Ring, Puff) when uploaded and
--- fall back to the built-in sparkle texture and a flat neon disc otherwise.
+-- fall back to the built-in sparkle texture and a flat neon disc otherwise. Orbs.coins can
+-- send its coins to the HUD's cash amount (bottom left), and Orbs.walletText floats a small
+-- line of text just above it.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -397,6 +399,150 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	end)
 end
 
+-- Wallet anchor: the HUD's cash amount (TycoonUI > Wallet > Money, bottom left) -------------
+-- Found by name, so this module needs nothing from the UI. Until the HUD exists (or while it
+-- hides the wallet) the anchor is a fixed point near the bottom-left corner.
+
+-- One table, not a local each: a chunk holds 200 locals at most.
+local WALLET = {
+	fallback = Vector2.new(150, 110), -- px in from the left edge, up from the bottom
+	depth = 7, -- studs in front of the camera that homing coins fly to
+	textSize = 22, -- design px (the cash amount itself is 46)
+	textLift = 12, -- design px between the cash amount's top and the text's centre
+	textRise = 34, -- design px it climbs while it fades
+	textLife = 0.9, -- seconds
+	textDrift = 24, -- design px of random sideways start, so repeats do not stack
+	maxTexts = 3,
+}
+
+local walletLabel: GuiObject? = nil
+local walletLayer: Frame? = nil
+local walletTexts: { TextLabel } = {}
+
+-- A full-viewport layer with no insets or scale, so its pixels are viewport pixels.
+local function walletFrame(): Frame?
+	local layer = walletLayer
+	if layer and layer.Parent then
+		return layer
+	end
+	local playerGui = player:FindFirstChildOfClass("PlayerGui")
+	if not playerGui then
+		return nil
+	end
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "FxWallet"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 5
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	pcall(function()
+		gui.ScreenInsets = Enum.ScreenInsets.None
+	end)
+	local frame = Instance.new("Frame")
+	frame.Name = "Layer"
+	frame.BackgroundTransparency = 1
+	frame.Size = UDim2.fromScale(1, 1)
+	frame.Parent = gui
+	gui.Parent = playerGui
+	walletLayer = frame
+	return frame
+end
+
+-- The cash amount label and the HUD's pixel scale; nil while the HUD hides its wallet.
+local function walletMoney(): (GuiObject?, number)
+	local playerGui = player:FindFirstChildOfClass("PlayerGui")
+	local screen = playerGui and playerGui:FindFirstChild("TycoonUI")
+	if not screen then
+		return nil, 1
+	end
+	local uiScale = screen:FindFirstChildOfClass("UIScale")
+	local scale = if uiScale then uiScale.Scale else 1
+	local label = walletLabel
+	if not label or not label:IsDescendantOf(screen) then
+		local wallet = screen:FindFirstChild("Wallet")
+		local money = wallet and wallet:FindFirstChild("Money")
+		label = if money and money:IsA("GuiObject") then money else nil
+		walletLabel = label
+	end
+	local wallet = label and label.Parent
+	if not label or not (wallet and wallet:IsA("GuiObject") and wallet.Visible) then
+		return nil, scale
+	end
+	return label, scale
+end
+
+-- Viewport pixel at the middle of the cash amount (its top edge with `top`).
+local function walletPixel(top: boolean?): (Vector2, number)
+	local layer = walletFrame()
+	local label, scale = walletMoney()
+	if layer and label then
+		local at = label.AbsolutePosition - layer.AbsolutePosition
+		local size = label.AbsoluteSize
+		return at + Vector2.new(size.X / 2, if top then 0 else size.Y / 2), scale
+	end
+	local camera = Workspace.CurrentCamera
+	local height = if camera then camera.ViewportSize.Y else 720
+	return Vector2.new(WALLET.fallback.X, height - WALLET.fallback.Y), scale
+end
+
+-- Small text over the wallet (what a pad just took): pops in, climbs a little and fades.
+function Orbs.walletText(text: string, color: Color3?)
+	local layer = walletFrame()
+	if not layer then
+		return
+	end
+	while #walletTexts >= WALLET.maxTexts do
+		local old = table.remove(walletTexts, 1)
+		if old then
+			old:Destroy()
+		end
+	end
+	local at, k = walletPixel(true)
+	local x = at.X + (math.random() * 2 - 1) * WALLET.textDrift * k
+	local y = at.Y - WALLET.textLift * k
+	local label = Instance.new("TextLabel")
+	label.Name = "WalletText"
+	label.BackgroundTransparency = 1
+	label.AnchorPoint = Vector2.new(0.5, 0.5)
+	label.Position = UDim2.fromOffset(x, y)
+	label.Size = UDim2.fromOffset(280 * k, WALLET.textSize * 1.4 * k)
+	label.Font = (Theme.Fonts :: any).Number or Theme.Fonts.Title
+	label.TextSize = math.max(10, math.floor(WALLET.textSize * k + 0.5))
+	label.Text = text
+	label.TextColor3 = color or C.Bad
+	label.ZIndex = 20
+	label.Parent = layer
+	table.insert(walletTexts, label)
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = math.max(1.5, 2 * k)
+	stroke.Color = C.Stroke or Color3.new(0, 0, 0)
+	stroke.Parent = label
+	local scale = Instance.new("UIScale")
+	scale.Scale = 0.5
+	scale.Parent = label
+
+	local life = WALLET.textLife
+	TweenService:Create(scale, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+	TweenService:Create(
+		label,
+		TweenInfo.new(life, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Position = UDim2.fromOffset(x, y - WALLET.textRise * k) }
+	):Play()
+	local fadeAt = life * 0.55
+	task.delay(fadeAt, function()
+		local info = TweenInfo.new(life - fadeAt, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		TweenService:Create(label, info, { TextTransparency = 1 }):Play()
+		TweenService:Create(stroke, info, { Transparency = 1 }):Play()
+	end)
+	task.delay(life + 0.05, function()
+		local i = table.find(walletTexts, label)
+		if i then
+			table.remove(walletTexts, i)
+		end
+		label:Destroy()
+	end)
+end
+
 -- 3D coins: ballistic spin, bounce, then fade or home to the wallet. Capped. ----------------
 
 local MAX_COINS = 70
@@ -405,6 +551,7 @@ local GRAVITY = Vector3.new(0, -70, 0)
 
 type Coin = {
 	part: Part,
+	size: number,
 	pos: Vector3,
 	vel: Vector3,
 	axis: Vector3,
@@ -423,14 +570,15 @@ local coinConn: RBXScriptConnection? = nil
 local coinParts: { BasePart } = {}
 local coinCFrames: { CFrame } = {}
 
--- World point just in front of the camera, under the top-left wallet.
+-- World point just in front of the camera, over the HUD's cash amount.
 local function walletPoint(): Vector3?
 	local camera = Workspace.CurrentCamera
 	if not camera then
 		return nil
 	end
-	local ray = camera:ViewportPointToRay(170, 70)
-	return ray.Origin + ray.Direction * 7
+	local at = walletPixel()
+	local ray = camera:ViewportPointToRay(at.X, at.Y)
+	return ray.Origin + ray.Direction * WALLET.depth
 end
 
 local function stepCoins(dt: number)
@@ -452,7 +600,7 @@ local function stepCoins(dt: number)
 			local e = t * t * t -- ease-in: whoosh into the wallet
 			local from = c.homeFrom :: Vector3
 			c.pos = from:Lerp(wallet, e) + Vector3.new(0, math.sin(t * math.pi) * 2, 0)
-			c.part.Size = Vector3.new(0.16, 1, 1) * (1 - 0.6 * e)
+			c.part.Size = Vector3.new(0.16, 1, 1) * (c.size * (1 - 0.6 * e))
 			done = t >= 1
 		else
 			c.vel += GRAVITY * dt
@@ -498,6 +646,7 @@ export type CoinOptions = {
 	life: number?,
 	toWallet: boolean?, -- fly to the wallet after bouncing
 	stagger: number?, -- seconds between coins
+	size: number?, -- coin diameter in studs (default 1)
 }
 
 -- Spawns gold coins at `pos` (a puff when speed is high, a shower when height is high).
@@ -509,6 +658,7 @@ function Orbs.coins(pos: Vector3, opts: CoinOptions?)
 	local height = o.height or 0
 	local life = o.life or 1.1
 	local stagger = o.stagger or 0
+	local size = math.clamp(o.size or 1, 0.5, 2)
 	for i = 1, count do
 		local function spawnCoin()
 			if #coinList >= Budget.count(MAX_COINS) then
@@ -521,7 +671,7 @@ function Orbs.coins(pos: Vector3, opts: CoinOptions?)
 			part.Material = Enum.Material.Metal
 			part.Reflectance = 0.25
 			part.Color = COIN_GOLD
-			part.Size = Vector3.new(0.16, 1, 1)
+			part.Size = Vector3.new(0.16, 1, 1) * size
 			part.Parent = fxFolder()
 			local angle = math.random() * math.pi * 2
 			local r = math.sqrt(math.random()) * spread
@@ -532,6 +682,7 @@ function Orbs.coins(pos: Vector3, opts: CoinOptions?)
 			local coinLife = life * (0.85 + math.random() * 0.3)
 			table.insert(coinList, {
 				part = part,
+				size = size,
 				pos = start,
 				vel = vel,
 				axis = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5).Unit,
