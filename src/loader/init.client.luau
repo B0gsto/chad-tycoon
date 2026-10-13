@@ -1,12 +1,12 @@
 -- Loader (ReplicatedFirst): replaces Roblox's default loading screen with the
--- game's own splash and keeps it up until the player is really in the game:
--- the first State snapshot has arrived (the client sets the player's
--- "GameReady" attribute), the character stands on its plot (the server sets
--- its "OnPlot" attribute), and the world around it has streamed in. Without
--- that the screen faded out over an empty blue sky while the save loaded.
--- It then leaves with a reveal instead of a fade: the splash bursts into a
--- cover that opens as an iris on the player while the camera sweeps in to the
--- spawn shot behind the character (LoadingScreen.finish, Swoop).
+-- game's own, which is an animation and not a picture. A sky cover with the
+-- logo and the progress bar holds until the map has arrived; then the camera
+-- circles high over the map while the rest loads: the first State snapshot
+-- (the client sets the player's "GameReady" attribute), the character on its
+-- plot (the server sets its "OnPlot" attribute) and the world round it. Then
+-- the logo and bar leave and the camera comes down to the spawn shot behind
+-- the character (LoadingScreen, Flyover). The HUD and the controls stay off
+-- until it has landed.
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -15,16 +15,18 @@ local RunService = game:GetService("RunService")
 
 local LoadingScreen = require(script:WaitForChild("LoadingScreen"))
 local Brand = require(script:WaitForChild("Brand"))
-local Swoop = require(script:WaitForChild("Swoop"))
+local Flyover = require(script:WaitForChild("Flyover"))
 
 local TIMEOUT = 45
 local ART_TIMEOUT = 8
+-- The least time the camera circles before it comes down (seconds).
+local MIN_FLIGHT = 3
 
 local player = Players.LocalPlayer
 local StarterGui = game:GetService("StarterGui")
 
--- Puts the splash up. Returns its gui, its handle and whether it built.
-local function show(): (ScreenGui, LoadingScreen.Handle, boolean)
+-- Puts the loading screen up. Returns its gui and its handle.
+local function show(): (ScreenGui, LoadingScreen.Handle)
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "LoadingScreen"
 	gui.IgnoreGuiInset = true
@@ -55,6 +57,9 @@ local function show(): (ScreenGui, LoadingScreen.Handle, boolean)
 			applyArt = function() end,
 			setStatus = function() end,
 			setProgress = function() end,
+			open = function()
+				cover:Destroy()
+			end,
 			finish = function()
 				return 0
 			end,
@@ -78,17 +83,64 @@ local function show(): (ScreenGui, LoadingScreen.Handle, boolean)
 		end
 	end)
 
-	-- The brand art ships in ReplicatedFirst too, so it can show from the start
-	-- instead of after ReplicatedStorage arrives; fetch it ahead of everything else.
+	-- The logo and sprites ship in ReplicatedFirst too, so they can show from
+	-- the start instead of after ReplicatedStorage arrives.
 	screen.applyArt({
-		keyArt = Brand.KeyArt,
 		logo = Brand.Logo,
 		logoShine = Brand.LogoShine,
 		softDot = Brand.SoftDot,
 		sparkle = Brand.Sparkle,
 		orb = Brand.Orb,
 	})
-	return gui, screen, ok
+	return gui, screen
+end
+
+-- The game's own screens (the HUD) would sit on top of the flight: keep them
+-- off until it has landed. Returns the function that puts them back.
+local function hideGame(own: ScreenGui): () -> ()
+	local hidden: { ScreenGui } = {}
+	local connection = RunService.RenderStepped:Connect(function()
+		local playerGui = player:FindFirstChild("PlayerGui")
+		for _, child in if playerGui then playerGui:GetChildren() else {} do
+			if child:IsA("ScreenGui") and child ~= own and child.Enabled and child.DisplayOrder < 100 then
+				child.Enabled = false
+				table.insert(hidden, child)
+			end
+		end
+	end)
+	return function()
+		connection:Disconnect()
+		for _, child in hidden do
+			child.Enabled = true
+		end
+	end
+end
+
+-- Walking about under a camera that is somewhere else: the controls stay off
+-- until the flight has landed. Returns the function that puts them back.
+local function lockControls(): () -> ()
+	local controls: any = nil
+	local released = false
+	task.spawn(function()
+		local scripts = player:WaitForChild("PlayerScripts", TIMEOUT)
+		local module = scripts and scripts:WaitForChild("PlayerModule", TIMEOUT)
+		if released or not module or not module:IsA("ModuleScript") then
+			return
+		end
+		local ok, found = pcall(function()
+			return (require(module) :: any):GetControls()
+		end)
+		if ok and found and not released then
+			controls = found
+			controls:Disable()
+		end
+	end)
+	return function()
+		released = true
+		if controls then
+			controls:Enable()
+		end
+	end
 end
 
 -- The player's "reduced motion" setting, from the client's State once it is there.
@@ -104,41 +156,39 @@ local function reducedMotion(): boolean
 	return type(data) == "table" and type(data.settings) == "table" and data.settings.reducedMotion == true
 end
 
--- Takes the splash down with the reveal (a plain fade with reduced motion).
--- `root` is the character's root part when it stands on its plot.
-local function leave(gui: ScreenGui, screen: LoadingScreen.Handle, root: BasePart?, speed: number)
-	local swooping = false
-	local gone = screen.finish(if reducedMotion()
-		then nil
-		else {
-			speed = speed,
-			focus = function()
-				return if root and root.Parent then Swoop.focus(root) else nil
-			end,
-			onCovered = function()
-				-- First-timers get the intro cutscene next: it takes the camera itself.
-				if root and root.Parent and player:GetAttribute("IntroSeen") ~= false then
-					swooping = true
-					Swoop.play(root, speed)
-					swooping = false
-				end
-			end,
-		})
-	task.delay(gone, function()
-		-- Popups and the intro wait for this gui to go: not before the camera lands.
-		while swooping do
-			task.wait()
-		end
-		gui:Destroy()
-		-- The list comes back only once the splash has gone.
-		player:SetAttribute("Loading", false)
-		-- Without the client (it sets "GameReady") nobody else would bring it back.
-		if player:GetAttribute("GameReady") ~= true then
-			pcall(function()
-				StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, true)
-			end)
-		end
-	end)
+-- One loading screen from the moment the world may be seen: the sky cover
+-- fades off the camera circling the map; `ready` yields until the player is
+-- in the game and returns the character's root part; then the logo and band
+-- leave and the camera comes down to the character.
+local function fly(gui: ScreenGui, screen: LoadingScreen.Handle, ready: () -> BasePart?, speed: number)
+	local showGame = hideGame(gui)
+	local freeControls = lockControls()
+	local flight = Flyover.start(speed)
+	screen.open(speed)
+	local opened = os.clock()
+	local root = ready()
+	-- Long enough over the map to read as a flight, even on a fast join.
+	local short = MIN_FLIGHT / speed - (os.clock() - opened)
+	if short > 0 then
+		task.wait(short)
+	end
+	screen.finish(speed)
+	if reducedMotion() then
+		flight.stop()
+	else
+		flight.land(root, speed)
+	end
+	freeControls()
+	showGame()
+	gui:Destroy()
+	-- The list comes back only once the flight has landed.
+	player:SetAttribute("Loading", false)
+	-- Without the client (it sets "GameReady") nobody else would bring it back.
+	if player:GetAttribute("GameReady") ~= true then
+		pcall(function()
+			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, true)
+		end)
+	end
 end
 
 -- The character's root part once the character stands on its plot.
@@ -155,11 +205,13 @@ local gui, screen = show()
 ReplicatedFirst:RemoveDefaultLoadingScreen()
 
 local started = os.clock()
+local function timeLeft(): boolean
+	return os.clock() - started < TIMEOUT
+end
 
 task.spawn(function()
 	pcall(function()
 		game:GetService("ContentProvider"):PreloadAsync({
-			Brand.KeyArt,
 			Brand.Logo,
 			Brand.LogoShine,
 			Brand.SoftDot,
@@ -179,56 +231,53 @@ task.spawn(function()
 	end
 end)
 
--- Brand art: ReplicatedFirst runs before ReplicatedStorage is guaranteed, so
--- wait (briefly) for Shared.Assets and read the brand/KeyArt and brand/Logo
--- ids from it; without them the code-drawn splash stays.
+-- ReplicatedFirst runs before ReplicatedStorage is guaranteed, so wait
+-- (briefly) for Shared.Assets and take the art ids from it as well.
 task.spawn(function()
 	screen.applyArt(LoadingScreen.findArt(ART_TIMEOUT))
 end)
 
--- The bar follows the stages of the join below.
+-- The bar follows the stages of the join below. Under the sky cover: the map.
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
-screen.setProgress(0.5)
-local function timeLeft(): boolean
-	return os.clock() - started < TIMEOUT
-end
-while player:GetAttribute("GameReady") ~= true and timeLeft() do
-	task.wait(0.1)
-end
-screen.setProgress(0.7)
--- The character on its plot (the server moves it there after loading the save).
-local root: BasePart? = nil
 while timeLeft() do
-	root = rootOnPlot()
-	if root then
+	local map = workspace:FindFirstChild("Map")
+	if map and #map:GetChildren() > 0 then
 		break
 	end
 	task.wait(0.1)
 end
-screen.setProgress(0.85)
--- With streaming on, wait for the parts around the plot before showing it.
-if root and workspace.StreamingEnabled and timeLeft() then
-	pcall(function()
-		player:RequestStreamAroundAsync(root.Position, 10)
-	end)
-end
-screen.setProgress(0.95)
--- A few frames for the camera to settle behind the character.
-for _ = 1, 3 do
-	RunService.RenderStepped:Wait()
-end
--- Keep the splash up briefly so it doesn't just flash on fast joins.
-local shown = os.clock() - started
-if shown < 1.2 then
-	task.wait(1.2 - shown)
-end
-leave(gui, screen, root, 1)
+screen.setProgress(0.4)
+fly(gui, screen, function(): BasePart?
+	while player:GetAttribute("GameReady") ~= true and timeLeft() do
+		task.wait(0.1)
+	end
+	screen.setProgress(0.7)
+	-- The character on its plot (the server moves it there after loading the save).
+	local root: BasePart? = nil
+	while timeLeft() do
+		root = rootOnPlot()
+		if root then
+			break
+		end
+		task.wait(0.1)
+	end
+	screen.setProgress(0.85)
+	-- With streaming on, wait for the parts around the plot before landing there.
+	if root and workspace.StreamingEnabled and timeLeft() then
+		pcall(function()
+			player:RequestStreamAroundAsync(root.Position, 10)
+		end)
+	end
+	screen.setProgress(0.95)
+	return root
+end, 1)
 
 -- Studio-only capture hook: setting the LocalPlayer attribute "LoadingPreview"
--- to "<holdSeconds>,<speed>" shows the splash again for that long and plays
--- the reveal at that time scale (e.g. "2,0.1" for slow motion).
+-- to "<seconds>,<speed>" plays the loading screen again: that long under the
+-- sky cover, then the flight and the landing at that time scale (e.g. "1,0.2"
+-- for slow motion).
 if RunService:IsStudio() then
 	player:GetAttributeChangedSignal("LoadingPreview"):Connect(function()
 		local spec = player:GetAttribute("LoadingPreview")
@@ -237,18 +286,16 @@ if RunService:IsStudio() then
 		if not hold or not playerGui or playerGui:FindFirstChild("LoadingScreen") then
 			return
 		end
-		local againGui, again, ok = show()
-		if not ok then
-			againGui:Destroy()
-			player:SetAttribute("Loading", false)
-			return
-		end
+		local againGui, again = show()
 		local theme = ReplicatedStorage:FindFirstChild("Theme")
 		if theme and theme:IsA("ModuleScript") then
 			again.applyTheme(require(theme) :: any)
 		end
-		again.setProgress(0.95)
+		again.setProgress(0.4)
 		task.wait(tonumber(hold) or 0)
-		leave(againGui, again, rootOnPlot(), math.max(tonumber(speed) or 1, 0.01))
+		fly(againGui, again, function()
+			again.setProgress(0.95)
+			return rootOnPlot()
+		end, math.max(tonumber(speed) or 1, 0.01))
 	end)
 end
