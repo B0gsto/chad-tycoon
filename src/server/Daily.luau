@@ -10,7 +10,8 @@
 	(seconds to the next UTC day), firstDay (today is the player's first day:
 	today's card is capped, DailyReward.firstDayCap), saves (today's claim uses
 	the saver), savedCard (the card wearing the saver's shield, 0 = none), saver
-	(the saver is still there for the next missed day) }. The
+	(the saver is still there for the next missed day), lapsed (the streak that ended
+	with the missed days, 0 = none: the "While you were away" card says so once) }. The
 	"ClaimDaily" action pays today's card: cash sized by the player's income right
 	now (the amounts the window shows) and, on days 3 and 7, a crate opened on the
 	spot. With no room on the rack for the crate's unit, the crate is paid as cash.
@@ -72,6 +73,8 @@ local function snapshot(session: Tycoon.Session): { [string]: any }
 		saves = status.saves,
 		savedCard = status.savedCard,
 		saver = status.saver,
+		-- A saved streak the rules no longer count: it ended with the days missed.
+		lapsed = if status.claimable and status.streak == 0 then d.streak else 0,
 	}
 end
 

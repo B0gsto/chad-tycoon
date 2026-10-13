@@ -9,7 +9,11 @@
 	the crate's rarity colour. Claimed cards are dimmed and ticked; today's says TODAY
 	in gold and glows (tap it or the CLAIM button); tomorrow's says TOMORROW. The footer
 	row names what to do next on the left, with the countdown to the next UTC day, and
-	holds the one button on the right.
+	holds the one button on the right. Its last line is "Before you go"
+	(Shared.Comeback.leaveLine): the crate in the Smasher and how long away cash keeps
+	filling, as plain facts rounded to the minute (no countdown, nothing flashes). A low
+	window (a phone) has room for two lines: there it stands in for the "Tomorrow" line,
+	which the TOMORROW card says anyway.
 
 	The streak saver (DailyReward.status) is free and automatic: the streak line says
 	"Miss a day? Your streak is saved once a week.", the card whose claim used it wears
@@ -24,17 +28,23 @@
 	(a skipped tutorial, a player who never collects). A held crate makes it wait
 	too, but not for ever (DailyReward.autoOpenTick): a crate can be carried for minutes.
 	After a claim the window closes by itself, CLOSE_AFTER_CLAIM after the coins fly.
+
+	The "While you were away" card (AwayWindow) is built from here, because it shares
+	this gate: it goes first, and the window never opens by itself while that card is
+	waiting or up.
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local Comeback = require(ReplicatedStorage.Shared.Comeback)
 local DailyReward = require(ReplicatedStorage.Shared.DailyReward)
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
+local AwayWindow = require(script.Parent.AwayWindow)
 local Kit = require(script.Parent.Kit)
 local State = require(script.Parent.Parent.State)
 
@@ -69,8 +79,13 @@ local GAP = 8
 -- Space between the streak line, the cards and the footer row (one row of cards).
 local SECTION = 16
 local HERO_H = 40
-local FOOTER_H = 72
+-- The footer's lines (headline, detail, "Before you go") stack LINE_GAP apart, centred in
+-- its words box: three lines in one row of cards, two in the low window.
+local LINE_GAP = 2
+local LEAVE_H = 18
+local FOOTER_H = 72 + LINE_GAP + LEAVE_H
 local FOOTER_COMPACT = 60
+local WORDS_H = 48
 -- One row of tall cards: the day (HEAD_H) under CARD_TOP, then the art, the amount and the
 -- crate chip stacked HEAD_GAP / STACK_GAP apart, CARD_BOTTOM above the card's edge.
 local CARD_TOP = 10
@@ -359,11 +374,12 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	local BUTTON_W = 200
 	-- Headline over detail, centred as a pair on the row's middle line. While today's reward
 	-- waits, the card (TODAY) and the CLAIM button already say so: the row keeps only the
-	-- detail line. Once claimed, the headline is the countdown to the next one.
+	-- detail line. Once claimed, the headline is the countdown to the next one. The lines that
+	-- show are stacked by render().
 	local words = Kit.new("Frame", {
 		Name = "Words",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -(16 + 16 + BUTTON_W + 12), 0, 48),
+		Size = UDim2.new(1, -(16 + 16 + BUTTON_W + 12), 0, WORDS_H),
 		Position = UDim2.new(0, 16, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
 		ZIndex = 2,
@@ -390,6 +406,20 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.new(1, 0, 0, 20),
 		Position = UDim2.fromOffset(0, 28),
+		ZIndex = 2,
+	})
+	-- "Before you go": quieter than the lines above it.
+	local leave = Kit.text(words, {
+		Name = "Leave",
+		Text = "",
+		TextSize = T.Small,
+		MinPx = true,
+		TextColor3 = C.TextMute,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, 0, 0, LEAVE_H),
+		Visible = false,
 		ZIndex = 2,
 	})
 	local button = Kit.button(footer, {
@@ -516,9 +546,23 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			then string.format("%d DAY STREAK", streak)
 			elseif streak == 1 then "1 DAY STREAK"
 			else "START YOUR STREAK"
+		-- "Before you go" without the daily card: the headline and the cards say that part.
+		leave.Text = Comeback.leaveLine(data, { money = State.money, words = W, age = State.age() }, false)
 		headline.Visible = not canClaim
-		detail.AnchorPoint = Vector2.new(0, if canClaim then 0.5 else 0)
-		detail.Position = if canClaim then UDim2.fromScale(0, 0.5) else UDim2.fromOffset(0, 28)
+		leave.Visible = leave.Text ~= ""
+		-- The low window's second line is "Before you go" once today's card is claimed.
+		detail.Visible = canClaim or hero.Visible or not leave.Visible
+		local y = -LINE_GAP
+		for _, line in { headline, detail, leave } do
+			y += if line.Visible then line.Size.Y.Offset + LINE_GAP else 0
+		end
+		y = (words.Size.Y.Offset - y) // 2
+		for _, line in { headline, detail, leave } do
+			if line.Visible then
+				line.Position = UDim2.fromOffset(0, y)
+				y += line.Size.Y.Offset + LINE_GAP
+			end
+		end
 		if canClaim then
 			-- A short window has no streak line: the saver's news goes here instead.
 			detail.Text = if saves
@@ -549,6 +593,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		local top = if big then HERO_H + between else 0
 		local footerH = if big then FOOTER_H else FOOTER_COMPACT
 		footer.Size = UDim2.new(1, 0, 0, footerH)
+		words.Size = UDim2.new(words.Size.X.Scale, words.Size.X.Offset, 0, if big then WORDS_H + LINE_GAP + LEAVE_H else WORDS_H)
 		local gridH = height - top - footerH - between
 		grid.Position = UDim2.fromOffset(0, top)
 		grid.Size = UDim2.new(1, 0, 0, gridH)
@@ -677,8 +722,35 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				lapped = true
 			end
 		end)
+		-- Nothing a card may cover is on screen: the loading screen and the intro are gone, and
+		-- no window, popup or mode run is up.
+		local player = Players.LocalPlayer
+		local function screenFree(): boolean
+			if player:GetAttribute("IntroPlaying") == true or player:GetAttribute("GameReady") ~= true then
+				return false
+			end
+			local playerGui = player:FindFirstChildOfClass("PlayerGui")
+			if playerGui and playerGui:FindFirstChild("LoadingScreen") then
+				return false
+			end
+			for _, name in BUSY do
+				if screen:GetAttribute(name) == true then
+					return false
+				end
+			end
+			return true
+		end
+		-- "While you were away" opens under the same gate, and keeps clear of a reward card
+		-- for as long as this window does.
+		AwayWindow.build(screen, {
+			register = deps.register,
+			openDaily = deps.open,
+			close = deps.close,
+			free = function(): boolean
+				return screenFree() and os.clock() - rewardAt >= REWARD_QUIET
+			end,
+		})
 		task.spawn(function()
-			local player = Players.LocalPlayer
 			local auto = DailyReward.autoOpen()
 			local needed = CALM
 			-- The tutorial was running this session: the window waits for the first lap, but
@@ -703,15 +775,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 					and daily.claimable == true
 					and data.tutorialDone == true
 					and (lapped or not sawTutorial)
-					and player:GetAttribute("IntroPlaying") ~= true
-					and player:GetAttribute("GameReady") == true
-				if ready then
-					local playerGui = player:FindFirstChildOfClass("PlayerGui")
-					ready = not (playerGui and playerGui:FindFirstChild("LoadingScreen"))
-				end
-				for _, name in BUSY do
-					ready = ready and screen:GetAttribute(name) ~= true
-				end
+					-- "While you were away" goes first.
+					and not AwayWindow.holding()
+					and screenFree()
 				-- A held crate is waited for, then the window stops waiting for it.
 				local crate = screen:GetAttribute("CratePanelOpen") == true
 				-- A reward card does not restart the calm (the reveal itself does, as a popup):
