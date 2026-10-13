@@ -4,38 +4,49 @@
 	Ink-outlined text straight over the world; only the menu buttons sit on plates.
 
 	  top bar right  Settings gear alone (Roblox's player list sits under it)
-	  top centre     three rows and no more, 6 px apart, y 4 to 128 at 720p (world labels
-	                 behind it stay readable): Chad icon + unit count "37/100"
-	                 (sunny + "AUTO-MERGING" at 100/100), one low glass status strip
-	                 "Deposit bonus: x1.3 · 12s" (never red; "AURA SURGE x2 · 1:23"
-	                 in orange during a surge) and, once the tutorial is done, the
-	                 "Next:" goal strip ("Next: Protein Bro 63%" over "1,240 more
-	                 Normies · about 2 h" and a progress bar, Shared.NextGoal; it
-	                 turns green, breathes and says "READY: step on MOG MERGE" when
-	                 one merge finds the tier; with every tier found it names the
-	                 next Index reward to claim, then "All 25 Chads found!" with no
-	                 bar; above the dumbbell on compact screens). A "nearer goal" takes
-	                 the strip's second line, one at a time, behind its icon ("Blender
-	                 is full: upgrade its speed", "Crate ready at the Smasher", "Try a
-	                 Game Mode: +$X"): a tap on the strip then does it, and
+	  top centre     two rows and no more, y 2 to 88 at 720p (the world's signs and Buy pad
+	                 labels start lower: nothing of the HUD overlays them). Every piece
+	                 sits on the same navy plate (`plate`: 90 % opaque, 2 px light edge)
+	                 so it reads over a crowded rack.
+	                 Row 1, side by side: the count plate (Chad icon + "37/100"; the number
+	                 ticks, the plate pops and the icon wiggles on every change; at
+	                 100/100 the plate turns orange-red with an "AUTO-MERGING" pill and
+	                 shakes on each buy that auto-merges) and the status plate ("Deposit
+	                 bonus: x1.3 · 12s", never red; during a surge a gold plate with the
+	                 bolt, "AURA SURGE x2 · 1:23", a pulsing edge and a sheen).
+	                 Row 2, once the tutorial is done: the "Next:" goal plate ("Next:
+	                 Protein Bro 63%" over "1,240 more Normies · about 2 h" and a
+	                 progress bar, Shared.NextGoal; it turns green, breathes and says
+	                 "READY: step on MOG MERGE" when one merge finds the tier). With every
+	                 tier found it is the gold CHAMPION plate: a crown, "CHAMPION" and the
+	                 count of top-tier Chads, over "Index reward: tap to claim it" behind
+	                 the Index icon and its red dot while a milestone is unclaimed, then
+	                 "All 25 Chads found!" (above the dumbbell on compact screens). A
+	                 "nearer goal" takes the plate's second line, one at a time, behind its
+	                 icon ("Blender is full: upgrade its speed", "Crate ready at the
+	                 Smasher", "Try a Game Mode: +$X"): a tap on the plate then does it, and
 	                 Client.Guide points at its pad on the plot. No row is ever added
-	                 under the strip. The tutorial quest pill and the parkour run pill
-	                 use the third row before that.
+	                 under the plate. The tutorial quest pill and the parkour run pill
+	                 have their own slot under the stack. On touch the wallet shares the
+	                 top left, so the three plates stack in one column instead.
 	  left edge      menu grid: Home Ranking Modes / Index Shop Invite Daily, each an
 	                 icon and its caption on its own dark glass plate, all the same
 	                 size (Daily: a dot while a reward waits, else its countdown)
-	                 promo under it, only below tier 15 and until it is opened once:
-	                 a green-tinted glass card, STARTER PACK (then 2X CASH under a
-	                 tilted "PERMANENT" tag) with a solid price chip
-	  bottom left    bonus chips, each on screen only while it is on ("Premium
-	                 +10%", "Friends +20%", "SURGE x2"), "Cash [ x1.0 ]", the big
-	                 cash amount + square "+"
+	                 promo under it, only after the tutorial, below tier 15 and until it
+	                 is opened once: a small green-tinted glass card three buttons wide,
+	                 STARTER PACK (then 2X CASH under a tilted "PERMANENT" tag) with a
+	                 solid price chip and a slow sheen (quieter than the menu plates)
+	  bottom left    bonus chips, each a small plate on screen only while it is on
+	                 ("Premium +10%", "Friends +20%", a gold "SURGE x2"), "Cash [ x1.0 ]",
+	                 the big cash amount + square "+" on the cash plate (it flashes green
+	                 and floats "+$X" on income, wears a pulsing gold edge during a surge)
 	  bottom centre  the dumbbell: "AURA" + the carried amount on its plaque
-	  bottom right   FREE gift with its countdown (ready: a "!" dot and a sunny "CLAIM!",
-	                 both pulsing: the gift is announced here and nowhere else),
+	  bottom right   FREE gift with its countdown (ready: a "!" dot, the gift hopping and
+	                 a sunny "CLAIM!": the gift is announced here and nowhere else),
 	                 version in the corner
 
-	Numbers roll, things pop and the HUD staggers in when it is built. While a
+	Numbers roll, things pop, every badge dot beats and the HUD staggers in when it is built
+	(sizes, colours and timings of all of it: TUNE, below). While a
 	window, modal or reveal is open (Kit.onWindowOpen, the one count behind the
 	"WindowOpen" attribute) every group fades out in 0.15 s, parks off its edge
 	so it takes no input or gamepad selection, and fades back on close. Toasts
@@ -61,6 +72,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local SocialService = game:GetService("SocialService")
 local TextService = game:GetService("TextService")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
@@ -121,16 +133,131 @@ end
 -- A discovery landed on the Index button: it bounces, flashes and counts "+1".
 Hud.punchIndex = function() end
 
--- Layout (design px). The top centre group sits just under the top bar.
+-- Tunables of the top stack's plates, the wallet's and the HUD's motion: every size (design
+-- px), colour, duration (seconds) and count in one place. The effects are judged on 1280x720
+-- stills and 3-frame bursts, so "on change" is meant to be seen; idle motion stays slow.
+local TUNE = {
+	-- The plate of the count, the status strip, the goal strip, the cash block and the chips:
+	-- navy, 90 % opaque, a 2 px light edge (fading a little toward the bottom).
+	PlateColor = G.TintTop,
+	PlateAlpha = 0.1,
+	PlateEdge = Color3.fromRGB(206, 220, 255),
+	PlateEdgeAlpha = 0.12,
+	PlateEdgeFade = 0.45,
+	PlateEdgeWidth = 2,
+	PlateRadius = 12,
+	-- The top stack: row 1 (count plate + status plate, side by side) is y 2..38 and the goal
+	-- plate under it y 42..88 at 720p (from TopY + RowH + StackGap, GoalH and 2 for its 17 px
+	-- second line; the CHAMPION plate's bigger title makes it y 42..90).
+	TopY = 2,
+	RowH = 36,
+	RowGap = 6, -- between the two plates of row 1
+	RowPad = 12, -- a plate's edge to its content
+	StackGap = 4, -- between the rows
+	GoalH = 44,
+	GoalMaxW = 440,
+	StripMinW = 230,
+	-- Text of the stack: nothing under 17.
+	CountText = 26,
+	CountIcon = 30,
+	StripLead = 18,
+	StripValue = 22,
+	StripNext = 17,
+	GoalLead = 18,
+	GoalTitle = 18,
+	GoalCount = 17,
+	GoalHint = 17,
+	-- The count changes: the plate pops, the number flashes and the Chad icon wiggles.
+	CountPop = 1.6, -- Kit.pop strength (1 = +12 %)
+	CountFlash = 0.55,
+	CountUp = C.Cash,
+	CountDown = C.Gold,
+	CountTilt = 16, -- degrees
+	CountEdgeFlash = 5, -- the edge's width at the flash
+	CountPlateFlash = Color3.fromRGB(84, 110, 224), -- the plate's fill at the flash
+	-- A full rack: an orange-red plate, the "AUTO-MERGING" pill and a shake on every buy.
+	FullPlate = Color3.fromRGB(236, 84, 38),
+	FullEdge = Color3.fromRGB(255, 214, 160),
+	FullFlash = Color3.fromRGB(255, 176, 64),
+	FullText = 15,
+	FullPillH = 24,
+	FullShake = { 8, -7, 6, -4, 2, 0 }, -- px, one per step
+	FullShakeStep = 0.04,
+	FullBeatPop = 0.9, -- the pill's idle beat
+	-- Aura Surge: the status plate in gold with the bolt and a big "x2"; the cash plate's edge
+	-- pulses gold; the SURGE chip is gold too.
+	SurgePlate = Color3.fromRGB(255, 186, 36),
+	SurgeEdge = Color3.fromRGB(255, 246, 204),
+	SurgeIcon = 28, -- the bolt's dark medallion (the bolt itself is 6 smaller)
+	SurgeValue = 26,
+	SurgeSheenEvery = 0.9, -- pause between two sheens
+	SurgeEdgeWidth = 5, -- the pulsing edges swell to this
+	SurgeEdgeBeat = 0.45,
+	SurgeChipText = 19,
+	SurgeChipEdge = 3,
+	SurgeChipBreathe = 0.08,
+	-- A sheen: a slanted light band that crosses a plate.
+	SheenTime = 1.1,
+	SheenAlpha = 0.5, -- the band's transparency at its brightest
+	SheenTilt = 20,
+	-- The cash plate behind the amount and the "+": a green flash and a floating "+$X" on
+	-- income, a red edge when something is too dear.
+	CashPlateH = 58,
+	CashFlash = C.CashDeep,
+	CashFlashTime = 0.45,
+	GainText = 22,
+	GainRise = 34,
+	GainTime = 0.9,
+	GainEvery = 0.9, -- at most one "+$X" in this long (gains in between add up)
+	-- Wallet chips: one plate height and text size for all of them.
+	ChipH = 32,
+	ChipIcon = 22,
+	ChipText = 17,
+	ChipGap = 8,
+	ChipPad = 10,
+	ChipRadius = 10,
+	-- The beat: every badge dot on a HUD button pops ("!" harder than a count), one button
+	-- after another; every PlusEvery-th beat the "+" pops too.
+	BeatEvery = 1.2,
+	BeatStagger = 0.1,
+	BadgePop = 2.6,
+	BadgePopCount = 1.5,
+	PlusEvery = 4,
+	PlusPop = 1.4,
+	-- The FREE gift while it waits: it hops (up, tilted, then down with a bounce) and its
+	-- "CLAIM!" breathes.
+	GiftHop = 16,
+	GiftTilt = 12,
+	GiftUp = 0.16,
+	GiftDown = 0.5,
+	GiftEvery = 1.2, -- rest between two hops
+	GiftWordBreathe = 0.12,
+	-- The promo card: three menu buttons wide, lower than a menu plate, a slow sheen.
+	PromoW = 216,
+	PromoH = 40,
+	PromoChipW = 62,
+	PromoChipH = 26,
+	PromoText = 18,
+	PromoPrice = 15,
+	PromoSheenEvery = 2.8,
+	-- CHAMPION (every tier found): the goal plate in gold with a rocking crown and a sheen.
+	ChampPlate = Color3.fromRGB(244, 170, 28),
+	ChampEdge = C.GoldLight,
+	ChampTitle = 20,
+	ChampCrown = 28, -- on the thumbnail's 36 px medallion
+	ChampCrownTilt = 9,
+	ChampCrownBeat = 0.8,
+	ChampSheenEvery = 2.2,
+	-- READY (one merge finds the tier): the green goal plate breathes under a quick sheen.
+	ReadyBreathe = 0.05,
+	ReadySheenEvery = 1.4,
+	IndexDot = 9, -- the red dot on the Index icon of an unclaimed milestone
+}
+
+-- Layout (design px). The top centre stack sits just under the top bar (TUNE).
 local EDGE_X = 14
-local UNITS_Y = 4 -- unit counter row: y 4..48
-local STRIP_Y = 54 -- deposit strip: y 54..80 (slim and quiet: notifications outrank it)
-local STRIP_H = 26
-local RUN_Y = 92 -- tutorial / run pill slot (Tutorial.luau TOP_Y matches)
-local STACK_GAP = 6 -- between the rows of the top stack (count, strip, goal)
-local GOAL_H = 42 -- "Next:" goal strip (the third row once the tutorial is done)
+local RUN_Y = 92 -- tutorial / run pill slot (Tutorial.luau TOP_Y matches), under the stack
 local HIDE_TIME = 0.15 -- the HUD's fade while a window is open
-local GOAL_MAX_W = 380
 local GOAL_TEXT_X = 50
 local GOAL_BAR_X = 12 -- the progress bar's inset, clear of the strip's round corners
 local GOAL_BAR_H = 4
@@ -148,9 +275,6 @@ local GRID_PAD = 6 -- a plate's edge to its icon and caption
 local CAPTION = 14 -- plate captions; never under Kit.captionPx on the glass
 local PROMO_GAP = 4 -- the grid to the promo (whose tag overhangs its card by 12 more)
 local PROMO_MAX_TIER = 15 -- from this best tier on the HUD stops advertising (the Shop keeps the offers)
-local CHIP_H = 26 -- wallet bonus chips: icon + words
-local CHIP_ICON = 24
-local CHIP_TEXT = 16
 local GEAR = 44
 local DUMBBELL_W = 264
 local DUMBBELL_W_COMPACT = 200
@@ -161,6 +285,180 @@ local TOP_BAR_PX = 58
 local SAFE_X = 40 -- gamepad / TV title-safe edge (design px)
 local SAFE_BOTTOM = 24
 local PREMIUM_BONUS = 10
+
+-- The menu grid's rows and captions; the promo's two offers (a tag only says what is true: the
+-- Starter Pack has no deadline, so it wears none); the run pill's sizes (the "MAP 3" chip of a
+-- run with levels, and where the clock starts beside the star otherwise).
+local GRID_ROWS = { { "Home", "Ranking", "Modes" }, { "Index", "Shop", "Invite", "Daily" } }
+local CAPTIONS: { [string]: string } = {
+	Home = "Home",
+	Ranking = "Ranking",
+	Modes = "Modes",
+	Index = "Index",
+	Shop = "Shop",
+	Invite = "Invite",
+	Daily = "Daily",
+}
+local PROMOS: { [string]: { tag: string?, text: string, price: number, focus: string } } = {
+	Starter = { text = "STARTER PACK", price = 59, focus = Theme.Cosmetics.Starter.Pass },
+	DoubleMoney = { tag = "PERMANENT", text = "2X CASH", price = 199, focus = "DoubleMoney" },
+}
+local RUN_W, RUN_H = 236, 36
+local RUN_MAP_W, RUN_CLOCK_X = 60, 42
+
+-- The preview stage has no tweens that repeat: endless motion is skipped there (as in Kit).
+local PREVIEW = typeof(TweenInfo.new(0)) ~= "TweenInfo"
+
+-- The HUD's plate: Kit.hudGlass at TUNE's opacity with the 2 px light edge. Its fill is the
+-- BackgroundColor3 (shaded toward the bottom), so `tint` and `flash` may recolour it.
+local function plate(parent: Instance, props: { [string]: any }): GuiObject
+	props.Color = props.Color or TUNE.PlateColor
+	props.Transparency = TUNE.PlateAlpha
+	props.Radius = props.Radius or TUNE.PlateRadius
+	props.Shadow = false
+	local frame = Kit.hudGlass(parent, props)
+	local edge = frame:FindFirstChild("Edge")
+	if edge and edge:IsA("UIStroke") then
+		edge.Color = TUNE.PlateEdge
+		edge.Thickness = TUNE.PlateEdgeWidth
+		edge.Transparency = TUNE.PlateEdgeAlpha
+		local fade = edge:FindFirstChildOfClass("UIGradient")
+		if fade then
+			fade.Transparency = NumberSequence.new(0, TUNE.PlateEdgeFade)
+		end
+	end
+	return frame
+end
+
+local function edgeOf(frame: Instance): UIStroke?
+	local edge = frame:FindFirstChild("Edge")
+	return if edge and edge:IsA("UIStroke") then edge else nil
+end
+
+-- A plate eases to another fill and edge colour (nil: the plain plate's).
+local function tint(frame: GuiObject, fill: Color3?, edge: Color3?)
+	Kit.tween(frame, 0.3, { BackgroundColor3 = fill or TUNE.PlateColor })
+	local stroke = edgeOf(frame)
+	if stroke then
+		Kit.tween(stroke, 0.3, { Color = edge or TUNE.PlateEdge })
+	end
+end
+
+-- A plate jumps to `color` (its edge to `edge`, swollen to `width`) and eases back to `rest`
+-- and `restEdge`. Colours and widths only: transparencies belong to Kit.fade, which hides the
+-- HUD behind a window.
+local function flash(frame: GuiObject, color: Color3, rest: Color3, time: number, edge: Color3?, restEdge: Color3?, width: number?)
+	frame.BackgroundColor3 = rest:Lerp(color, 0.7)
+	Kit.tween(frame, time, { BackgroundColor3 = rest }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	local stroke = edgeOf(frame)
+	if stroke and edge then
+		stroke.Color = edge
+		stroke.Thickness = width or TUNE.PlateEdgeWidth
+		Kit.tween(
+			stroke,
+			time,
+			{ Color = restEdge or TUNE.PlateEdge, Thickness = TUNE.PlateEdgeWidth },
+			Enum.EasingStyle.Quad,
+			Enum.EasingDirection.In
+		)
+	end
+end
+
+-- An endless there-and-back tween (nothing in the preview); Cancel() stops it.
+local function pulse(obj: Instance, beat: number, props: { [string]: any }): Tween?
+	if PREVIEW then
+		return nil
+	end
+	local tween = TweenService:Create(obj, TweenInfo.new(beat, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), props)
+	tween:Play()
+	return tween
+end
+
+-- A sheen for a rounded plate: a light overlay whose slanted band slides across it, drawn
+-- under the plate's content. No clipping and no rotated frame (a rotated child is not
+-- clipped): the band is the overlay's gradient, moved by its Offset. Returns the switch:
+-- (true, pause) runs it for ever with `pause` seconds between two passes, (false) stops it.
+local function sheen(face: GuiObject, radius: number, color: Color3?): (boolean, number?) -> ()
+	local overlay = Kit.new("Frame", {
+		Name = "Sheen",
+		BackgroundColor3 = color or Color3.new(1, 1, 1),
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(1, 1),
+		Visible = false,
+		ZIndex = 0,
+		Parent = face,
+	})
+	overlay:SetAttribute("KitChrome", true)
+	Kit.corner(overlay, radius)
+	local band = Kit.new("UIGradient", {
+		Rotation = TUNE.SheenTilt,
+		Offset = Vector2.new(-1, 0),
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1),
+			NumberSequenceKeypoint.new(0.36, 1),
+			NumberSequenceKeypoint.new(0.5, TUNE.SheenAlpha),
+			NumberSequenceKeypoint.new(0.64, 1),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+		Parent = overlay,
+	})
+	local turn = 0
+	return function(on: boolean, pause: number?)
+		turn += 1
+		local mine = turn
+		band.Offset = Vector2.new(-1, 0)
+		overlay.Visible = on and not PREVIEW
+		if not on or PREVIEW then
+			return
+		end
+		task.spawn(function()
+			while turn == mine and overlay.Parent do
+				band.Offset = Vector2.new(-1, 0)
+				Kit.tween(band, TUNE.SheenTime, { Offset = Vector2.new(1, 0) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+				task.wait(TUNE.SheenTime + (pause or 2))
+			end
+		end)
+	end
+end
+
+-- A waiting call to action hops for ever about `rest`: up GiftHop px with a tilt (to one side,
+-- then the other), down with a bounce, a pause, again. Returns a stop function that puts it back.
+local function hop(gui: GuiObject, rest: UDim2): () -> ()
+	local alive = not PREVIEW
+	task.spawn(function()
+		local side = 1
+		while alive and gui.Parent do
+			Kit.tween(gui, TUNE.GiftUp, { Position = rest - UDim2.fromOffset(0, TUNE.GiftHop), Rotation = side * TUNE.GiftTilt })
+			task.wait(TUNE.GiftUp)
+			if not alive then
+				break
+			end
+			Kit.tween(gui, TUNE.GiftDown, { Position = rest, Rotation = 0 }, Enum.EasingStyle.Bounce)
+			side = -side
+			task.wait(TUNE.GiftDown + TUNE.GiftEvery)
+		end
+	end)
+	return function()
+		alive = false
+		Kit.tween(gui, 0.15, { Position = rest, Rotation = 0 })
+	end
+end
+
+-- A short sideways shake about `rest` (`steps` px, `step` seconds each); one at a time.
+local function shake(gui: GuiObject, rest: UDim2, steps: { number }, step: number)
+	if gui:GetAttribute("Shaking") == true then
+		return
+	end
+	gui:SetAttribute("Shaking", true)
+	task.spawn(function()
+		for _, dx in steps do
+			Kit.tween(gui, step, { Position = rest + UDim2.fromOffset(dx, 0) }, Enum.EasingStyle.Sine)
+			task.wait(step)
+		end
+		gui.Position = rest
+		gui:SetAttribute("Shaking", nil)
+	end)
+end
 
 local function textWidth(text: string, size: number, font: Enum.Font): number
 	local plain = string.gsub(text, "<[^>]->", "")
@@ -191,6 +489,25 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			handlers.toast(text, tone)
 		end
 	end
+	-- Where things rest (design px): the edges, the wallet and the grid (measure, in the layout
+	-- block below) and the top stack's three plates (measureTop there: count and strip x from
+	-- the screen's centre, the strip's and the goal's y). `layoutTop` re-places the stack
+	-- after a plate changed its width; it is filled in by the layout block.
+	local L = {
+		edge = EDGE_X,
+		bottom = -6,
+		walletTop = false,
+		walletY = 0,
+		gridY = GRID_Y,
+		tap = 0,
+		tankX = 0,
+		freeY = -20,
+		countX = 0,
+		stripX = 0,
+		stripY = TUNE.TopY,
+		goalY = TUNE.TopY + TUNE.RowH + TUNE.StackGap,
+		layoutTop = function(_animate: boolean) end,
+	}
 	local function designSize(): Vector2
 		local ok, absolute = pcall(function()
 			return screen.AbsoluteSize
@@ -320,16 +637,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- the menu do not read through it) holding the icon and, inside it, the caption. The
 	-- plates share one size, set by the widest caption as drawn (applyCompact), so two
 	-- captions can never meet.
-	local GRID_ROWS = { { "Home", "Ranking", "Modes" }, { "Index", "Shop", "Invite", "Daily" } }
-	local CAPTIONS: { [string]: string } = {
-		Home = "Home",
-		Ranking = "Ranking",
-		Modes = "Modes",
-		Index = "Index",
-		Shop = "Shop",
-		Invite = "Invite",
-		Daily = "Daily",
-	}
 	-- Modes draws the rendered finish-flag image; Star stands in if it is missing. Daily
 	-- is the second gift of the atlas (the FREE gift keeps the first).
 	local ICON_FOR: { [string]: string } = { Modes = Kit.pickIcon("Modes", "Star"), Daily = Kit.pickIcon("Gift2", "Free") }
@@ -443,33 +750,29 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 	end)
 
-	-- Promo under the grid: tilted tag, wide button, price line ---------------------------
-	-- Starter pack until it is owned, then 2X CASH until that is owned, then nothing. A tag
-	-- only says what is true: the Starter Pack has no deadline, so it wears none.
-	local PROMOS: { [string]: { tag: string?, text: string, price: number, focus: string } } = {
-		Starter = { text = "STARTER PACK", price = 59, focus = Theme.Cosmetics.Starter.Pass },
-		DoubleMoney = { tag = "PERMANENT", text = "2X CASH", price = 199, focus = "DoubleMoney" },
-	}
-	-- A glass card in the HUD's language: the window tint with the money green mixed in,
-	-- a green edge and a soft pulsing green glow; the offer's name is outlined HUD text and
-	-- only the price sits on a small solid chip.
-	local PROMO_W, PROMO_H = 286, 50
-	local PROMO_CHIP_W = 70
-	local promo = group("Promo", { Size = UDim2.fromOffset(PROMO_W, PROMO_H + 16), Visible = false })
+	-- Promo under the grid: tilted tag, button, price chip ----------------------------------
+	-- Starter pack until it is owned, then 2X CASH until that is owned, then nothing (PROMOS).
+	-- A glass card in the HUD's language, kept quieter than the menu plates over it: three
+	-- buttons wide and lower than one, the window tint with the money green mixed in, a green
+	-- edge and no pulsing ring (the Modes button's glow is the loud one); a slow sheen crosses
+	-- it instead. The offer's name is outlined HUD text and only the price sits on a small
+	-- solid chip.
+	local promo = group("Promo", { Size = UDim2.fromOffset(TUNE.PromoW, TUNE.PromoH + 16), Visible = false })
 	local promoMode = "DoubleMoney"
 	-- Opened once: the offer has been seen, so it stays away until the next visit.
 	local promoOpened = false
 	local promoButton = Kit.hudGlass(promo, {
 		Name = "Button",
 		Button = true,
+		Shadow = false,
 		Color = G.TintTop:Lerp(C.CashDeep, 0.4),
 		Transparency = G.Tinted,
 		Edge = C.Cash,
-		Size = UDim2.fromOffset(PROMO_W, PROMO_H),
+		Size = UDim2.fromOffset(TUNE.PromoW, TUNE.PromoH),
 		Position = UDim2.fromOffset(0, 12),
 		Radius = Kit.RADIUS.M,
 	}) :: TextButton
-	Kit.setGlow(promoButton, true, C.Cash)
+	sheen(promoButton, Kit.RADIUS.M)(true, TUNE.PromoSheenEvery)
 	Kit.selectable(promoButton)
 	Kit.bouncy(promoButton, 1.04)
 	promoButton.Activated:Connect(function()
@@ -480,10 +783,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local promoLabel = Kit.hudText(promoButton, {
 		Name = "Label",
 		Text = "2X CASH",
-		MaxTextSize = 22,
+		MaxTextSize = TUNE.PromoText,
 		MinPx = true,
-		Size = UDim2.new(1, -(PROMO_CHIP_W + 30), 1, -14),
-		Position = UDim2.new(0, 14, 0.5, 0),
+		Size = UDim2.new(1, -(TUNE.PromoChipW + 26), 1, -12),
+		Position = UDim2.new(0, 12, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		StrokeColor = G.TextInk,
@@ -505,10 +808,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Text = "199 " .. Kit.ROBUX,
 		Color = C.Cash,
 		Solid = true,
-		TextSize = 16,
+		TextSize = TUNE.PromoPrice,
 		MinPx = true,
-		Size = UDim2.fromOffset(PROMO_CHIP_W, 30),
-		Position = UDim2.new(1, -10, 0.5, 0),
+		Size = UDim2.fromOffset(TUNE.PromoChipW, TUNE.PromoChipH),
+		Position = UDim2.new(1, -8, 0.5, 0),
 		AnchorPoint = Vector2.new(1, 0.5),
 		ZIndex = 3,
 	})
@@ -522,10 +825,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	local promoShown = false
 	-- An ad for a new player, not a fixture: gone from PROMO_MAX_TIER on and once it has
-	-- been opened this visit. The Shop keeps both offers.
+	-- been opened this visit, and not there at all during the tutorial (the quest pill is the
+	-- loudest thing on screen then). The Shop keeps both offers.
 	local function wantedPromo(): string?
 		local data = State.data
-		if not data or promoOpened then
+		if not data or promoOpened or data.tutorialDone ~= true then
 			return nil
 		end
 		if type(data.discovered) == "table" then
@@ -645,10 +949,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- server clock, checkpoint n/N, and an "x" that asks "QUIT?" before firing ModeQuit.
 	-- A gold "L3" chip on the left names the Parkour level (the Star shows without one).
 	-- Glass like the other top-centre notifications (Kit.hudGlass), with an outlined clock.
-	local RUN_W, RUN_H = 236, 36
-	-- The "MAP 3" chip of a run with levels, and where the clock starts beside it (beside
-	-- the star otherwise). Such a run has no checkpoints, so the n/N chip is not in the way.
-	local RUN_MAP_W, RUN_CLOCK_X = 60, 42
+	-- (RUN_MAP_W: a run with levels has no checkpoints, so the n/N chip is not in the "MAP 3"
+	-- chip's way.)
 	local RUN_ANCHOR = Vector2.new(0.5, 0)
 	local runRest = UDim2.new(0.5, 0, 0, RUN_Y)
 	local runAway = UDim2.new(0.5, 0, 0, -RUN_H - 20)
@@ -819,50 +1121,80 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 	end
 
-	-- Top centre: Chad icon + unit count ------------------------------------------------
+	-- Top centre, row 1: the count plate (Chad icon + unit count) ---------------------------
+	-- `units` is the slot the layout moves; the plate inside it pops, flashes and shakes.
 	local units = group("Units", {
-		Size = UDim2.fromOffset(300, 44),
-		Position = UDim2.new(0.5, 0, 0, UNITS_Y),
+		Size = UDim2.fromOffset(176, TUNE.RowH),
+		Position = UDim2.new(0.5, 0, 0, TUNE.TopY),
 		AnchorPoint = Vector2.new(0.5, 0),
 	})
-	local unitsRow = Kit.new("UIListLayout", {
+	local countPlate = plate(units, {
+		Name = "Plate",
+		Size = UDim2.fromScale(1, 1),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+	})
+	local unitsRow = Kit.new("Frame", {
+		Name = "Row",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 2,
+		Parent = countPlate,
+	})
+	Kit.new("UIListLayout", {
 		FillDirection = Enum.FillDirection.Horizontal,
 		HorizontalAlignment = Enum.HorizontalAlignment.Center,
 		VerticalAlignment = Enum.VerticalAlignment.Center,
 		Padding = UDim.new(0, 6),
 		SortOrder = Enum.SortOrder.LayoutOrder,
-		Parent = units,
+		Parent = unitsRow,
 	})
-	local counter = Kit.hudIcon(units, "Chad", 42, C.Rizz, { Name = "Counter", LayoutOrder = 1, ZIndex = 2 })
-	local counterLabel = Kit.hudText(units, {
+	local counter = Kit.hudIcon(unitsRow, "Chad", TUNE.CountIcon, C.Rizz, { Name = "Counter", LayoutOrder = 1, ZIndex = 2 })
+	local counterLabel = Kit.hudText(unitsRow, {
 		Name = "Count",
 		Text = "0/100",
 		Font = F.Number,
-		TextSize = 34,
-		StrokeThickness = 3,
-		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 40),
+		TextSize = TUNE.CountText,
+		StrokeThickness = 2.5,
+		Size = UDim2.fromOffset(110, TUNE.RowH),
 		LayoutOrder = 2,
 		ZIndex = 3,
 	})
-	-- A full rack is not a stop: buying goes on and the extra Chads merge on their own.
-	local counterCaption = Kit.hudText(units, {
+	-- A full rack is not a stop: buying goes on and the extra Chads merge on their own. Said
+	-- on a pill of its own, beside the count.
+	local counterCaption = Kit.pill(unitsRow, {
 		Name = "Full",
 		Text = "AUTO-MERGING",
-		TextSize = 14,
-		TextColor3 = C.Gold,
+		Font = F.Display,
+		Color = C.Gold,
+		Solid = true,
+		TextSize = TUNE.FullText,
+		MinPx = true,
 		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 18),
+		Size = UDim2.fromOffset(0, TUNE.FullPillH),
 		LayoutOrder = 3,
 		Visible = false,
 		ZIndex = 3,
 	})
-	unitsRow.Padding = UDim.new(0, 6)
 	local unitCap = 100
 	local function unitsText(n: number): string
 		return string.format("%d/%d", n, unitCap)
 	end
 	local rackFull: boolean? = nil
+	-- The plate is as wide as the fullest count, so it holds still while the number runs, and
+	-- grows by the pill at a full rack.
+	local function fitCount()
+		local numberW = drawnWidth(unitsText(unitCap), counterLabel.TextSize, counterLabel.Font) + 6
+		counterLabel.Size = UDim2.fromOffset(numberW, TUNE.RowH)
+		local width = TUNE.RowPad * 2 + TUNE.CountIcon + 6 + numberW
+		if rackFull then
+			width += 6 + drawnWidth(counterCaption.Text, counterCaption.TextSize, counterCaption.Font) + 20
+		end
+		units.Size = UDim2.fromOffset(width, TUNE.RowH)
+		L.layoutTop(true)
+	end
+	counterCaption:GetPropertyChangedSignal("TextSize"):Connect(fitCount)
+	-- 100/100 is a moment: the plate turns orange-red and the pill joins the count.
 	local function setRackFull(full: boolean)
 		if full == rackFull then
 			return
@@ -870,31 +1202,57 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local first = rackFull == nil
 		rackFull = full
 		counterCaption.Visible = full
-		local color = if full then C.Gold else Color3.new(1, 1, 1)
-		if first then
-			counterLabel.TextColor3 = color
-		else
-			Kit.tween(counterLabel, 0.3, { TextColor3 = color })
-			if full then
-				Kit.pop(counter, 0.6)
-			end
+		fitCount()
+		tint(countPlate, if full then TUNE.FullPlate else nil, if full then TUNE.FullEdge else nil)
+		if full and not first then
+			Kit.pop(countPlate, TUNE.CountPop)
 		end
 	end
+	-- The count changed by `delta`: the plate pops, its edge flashes, the number flashes
+	-- (green up, gold down: a merge) and the Chad icon wiggles. `mergedBuy`: a buy at a full
+	-- rack, which merges on its own: the plate shakes and flares.
+	local function countChanged(delta: number, mergedBuy: boolean)
+		if (delta == 0 and not mergedBuy) or screen:GetAttribute("WindowOpen") == true then
+			return
+		end
+		local full = rackFull == true
+		local fill = if full then TUNE.FullPlate else TUNE.PlateColor
+		local edge = if full then TUNE.FullEdge else TUNE.PlateEdge
+		local white = Color3.new(1, 1, 1)
+		if mergedBuy then
+			shake(countPlate, UDim2.fromScale(0.5, 0.5), TUNE.FullShake, TUNE.FullShakeStep)
+			Kit.pop(counterCaption, 1.5)
+		end
+		flash(
+			countPlate,
+			if mergedBuy then TUNE.FullFlash else TUNE.CountPlateFlash,
+			fill,
+			TUNE.CountFlash,
+			white,
+			edge,
+			TUNE.CountEdgeFlash
+		)
+		Kit.pop(countPlate, TUNE.CountPop)
+		counterLabel.TextColor3 = if delta < 0 then TUNE.CountDown else TUNE.CountUp
+		Kit.tween(counterLabel, TUNE.CountFlash, { TextColor3 = white }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		counter.Rotation = if delta < 0 then TUNE.CountTilt else -TUNE.CountTilt
+		Kit.tween(counter, 0.4, { Rotation = 0 }, Enum.EasingStyle.Back)
+	end
 
-	-- The strip under it: "Deposit bonus: x1.3 · 12s" ------------------------------------
-	-- A quiet glass pill (Kit.hudGlass Quiet: permanent, so it sits back behind toasts and
-	-- the quest pill); an Aura Surge turns its tint amber and brings it forward.
-	local strip = Kit.hudGlass(screen, {
+	-- Row 1, beside it: the status plate "Deposit bonus: x1.3 · 12s" ------------------------
+	-- The same plate. An Aura Surge turns it gold (paintSurge): the bolt, "AURA SURGE", a big
+	-- "x2" and the time left, a sheen crossing it and its edge pulsing.
+	local strip = plate(screen, {
 		Name = "DepositStrip",
-		Quiet = true,
-		Size = UDim2.fromOffset(300, STRIP_H),
-		Position = UDim2.new(0.5, 0, 0, STRIP_Y),
+		Size = UDim2.fromOffset(280, TUNE.RowH),
+		Position = UDim2.new(0.5, 0, 0, TUNE.TopY),
 		AnchorPoint = Vector2.new(0.5, 0),
 	})
 	local stripRow = Kit.new("Frame", {
 		Name = "Row",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromScale(1, 1),
+		ZIndex = 2,
 		Parent = strip,
 	})
 	Kit.new("UIListLayout", {
@@ -912,31 +1270,35 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			TextSize = size,
 			StrokeThickness = 2,
 			AutomaticSize = Enum.AutomaticSize.X,
-			Size = UDim2.fromOffset(0, STRIP_H),
+			Size = UDim2.fromOffset(0, TUNE.RowH),
 			LayoutOrder = order,
 			ZIndex = 3,
 		})
 	end
-	local stripLead = stripText("Lead", 1, 16)
+	local stripLead = stripText("Lead", 1, TUNE.StripLead)
 	stripLead.Text = "Deposit bonus:"
-	local gaugeValue = stripText("Value", 2, 18)
-	local gaugeNext = stripText("Next", 3, 14)
+	local gaugeValue = stripText("Value", 2, TUNE.StripValue)
+	local gaugeNext = stripText("Next", 3, TUNE.StripNext)
 	gaugeNext.TextColor3 = C.TextDim
-	local STRIP_TEXT: { [TextLabel]: number } = { [stripLead] = 16, [gaugeValue] = 18, [gaugeNext] = 14 }
-	-- The strip is as wide as its widest line (the longest value and countdown), never
-	-- under its 300 px: text held at a size on a phone needs more room than the design's.
+	local STRIP_TEXT: { [TextLabel]: number } =
+		{ [stripLead] = TUNE.StripLead, [gaugeValue] = TUNE.StripValue, [gaugeNext] = TUNE.StripNext }
+	local surgeActiveNow = false
+	-- The plate is as wide as its widest line (the longest value and countdown, and the bolt
+	-- of a surge), never under StripMinW: text held at a size on a phone needs more room than
+	-- the design's.
 	local function fitStrip()
 		local width = textWidth(stripLead.Text, stripLead.TextSize, F.Display)
 			+ textWidth("x0.0", gaugeValue.TextSize, F.Display)
 			+ textWidth("· 0:00", gaugeNext.TextSize, F.Display)
-		strip.Size = UDim2.fromOffset(math.max(300, width + 6 * 2 + 20 * 2), STRIP_H)
+			+ (if surgeActiveNow then TUNE.SurgeIcon + 6 else 0)
+		strip.Size = UDim2.fromOffset(math.max(TUNE.StripMinW, width + 6 * 2 + TUNE.RowPad * 2), TUNE.RowH)
+		L.layoutTop(true)
 	end
-	-- A rescale re-sizes held text (Kit.reflowText): the strip follows.
+	-- A rescale re-sizes held text (Kit.reflowText): the plate follows.
 	for label in STRIP_TEXT do
 		label:GetPropertyChangedSignal("TextSize"):Connect(fitStrip)
 	end
-	local surgeActiveNow = false
-	-- Big-roll cheer: pops out to the right of the strip for a moment.
+	-- Big-roll cheer: pops out to the right of the plate for a moment.
 	local niceLabel = Kit.hudText(strip, {
 		Name = "Nice",
 		Text = "NICE!",
@@ -950,40 +1312,74 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Visible = false,
 		ZIndex = 5,
 	})
-	local function paintSurge(active: boolean)
-		surgeActiveNow = active
-		stripLead.Text = if active then "AURA SURGE" else "Deposit bonus:"
-		fitStrip()
-		Kit.tween(strip, 0.3, {
-			BackgroundColor3 = if active then C.Amber else G.TintTop,
-			BackgroundTransparency = if active then G.Pill else G.Quiet,
+	local paintSurge: (boolean) -> ()
+	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
+	do
+		-- The bolt on a dark medallion, so it reads on the gold.
+		local bolt = Kit.new("Frame", {
+			Name = "Bolt",
+			BackgroundColor3 = TUNE.PlateColor,
+			BorderSizePixel = 0,
+			Size = UDim2.fromOffset(TUNE.SurgeIcon, TUNE.SurgeIcon),
+			LayoutOrder = 0,
+			Visible = false,
+			ZIndex = 2,
+			Parent = stripRow,
 		})
+		Kit.round(bolt)
+		Kit.new("UIStroke", { Thickness = 1.5, Color = TUNE.SurgeEdge, Parent = bolt })
+		Kit.icon(bolt, "Surge", TUNE.SurgeIcon - 6, C.Gold, {
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 2,
+		})
+		local shine = sheen(strip, TUNE.PlateRadius)
+		local beat: Tween? = nil
+		paintSurge = function(active: boolean)
+			surgeActiveNow = active
+			stripLead.Text = if active then "AURA SURGE" else "Deposit bonus:"
+			bolt.Visible = active
+			gaugeNext.TextColor3 = if active then Color3.new(1, 1, 1) else C.TextDim
+			-- "x2" is the headline of a surge: it is drawn bigger than a deposit bonus.
+			STRIP_TEXT[gaugeValue] = if active then TUNE.SurgeValue else TUNE.StripValue
+			Kit.holdText(gaugeValue, Kit.captionPx(), STRIP_TEXT[gaugeValue], true)
+			fitStrip()
+			tint(strip, if active then TUNE.SurgePlate else nil, if active then TUNE.SurgeEdge else nil)
+			shine(active, TUNE.SurgeSheenEvery)
+			if beat then
+				beat:Cancel()
+				beat = nil
+			end
+			local edge = edgeOf(strip)
+			if edge then
+				edge.Thickness = TUNE.PlateEdgeWidth
+				if active then
+					beat = pulse(edge, TUNE.SurgeEdgeBeat, { Thickness = TUNE.SurgeEdgeWidth })
+				end
+			end
+		end
 	end
 
 	-- Next goal: "Next: Protein Bro 63%" over "1,240 more Normies · about 2 h" --------------
-	-- One glass strip like the deposit strip, the third row of the top stack once the
-	-- tutorial is done (above the dumbbell on compact screens): the target's thumbnail (a
-	-- silhouette until it is discovered), its name and how far along it is, what it still
-	-- takes under them (units to buy and an estimate from the price and the income), and a
-	-- progress bar along the bottom. The target and its sums come from Shared.NextGoal; the
-	-- strip opens the Index. When one merge would find the tier the strip turns green,
-	-- breathes and says "READY: step on MOG MERGE"; a tap then draws the path to that pad.
-	-- With every tier found it names the next Index reward to claim and, once those are
-	-- claimed, "All 25 Chads found!" over the top tier's units on the rack, with no bar:
-	-- there is nothing left to fill.
-	-- STACK_GAP under the deposit strip, and never under that many pixels on the glass (a
-	-- small window's scale would close the gap).
-	local function goalY(): number
-		return STRIP_Y + STRIP_H + Kit.pxUp(STACK_GAP, STACK_GAP, screen)
-	end
-	local goal = Kit.hudGlass(screen, {
+	-- The same plate as row 1, in the fixed slot under it once the tutorial is done (above the
+	-- dumbbell on compact screens): the target's thumbnail (a silhouette until it is
+	-- discovered), its name and how far along it is, what it still takes under them (units to
+	-- buy and an estimate from the price and the income), and a progress bar along the
+	-- bottom. The target and its sums come from Shared.NextGoal; the plate opens the Index.
+	-- When one merge would find the tier it turns green, breathes and says "READY: step on
+	-- MOG MERGE"; a tap then draws the path to that pad. With every tier found it is the
+	-- CHAMPION's: gold, a crown on a dark medallion, "CHAMPION" and the top tier's units on the
+	-- rack, with no bar (there is nothing left to fill); its second line names an Index
+	-- milestone that is not claimed yet (the Index icon with a red dot; a tap opens the
+	-- Index), then "All 25 Chads found!".
+	-- The slot is L.goalY: StackGap under row 1, and never under that many pixels on the glass
+	-- (a small window's scale would close the gap).
+	local goal = plate(screen, {
 		Name = "NextGoal",
 		Button = true,
-		Quiet = true,
-		Size = UDim2.fromOffset(280, GOAL_H),
-		Position = UDim2.new(0.5, 0, 0, goalY()),
+		Size = UDim2.fromOffset(280, TUNE.GoalH),
+		Position = UDim2.new(0.5, 0, 0, L.goalY),
 		AnchorPoint = Vector2.new(0.5, 0),
-		Radius = Kit.RADIUS.M,
 		Visible = false,
 	}) :: TextButton
 	Kit.selectable(goal)
@@ -1007,15 +1403,18 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			ZIndex = 3,
 		})
 	end
-	local goalLead = goalText("Lead", 16, C.Gold)
+	local goalLead = goalText("Lead", TUNE.GoalLead, C.Gold)
 	goalLead.Text = "Next:"
-	local goalTitle = goalText("Title", 16, C.Text)
+	local goalTitle = goalText("Title", TUNE.GoalTitle, C.Text)
 	-- The name is never cut off: short of room it is scaled into its box (paintGoal).
 	local goalTitleFit = Kit.new("UITextSizeConstraint", { MinTextSize = 1, MaxTextSize = 200, Parent = goalTitle })
-	local goalCount = goalText("Count", 14, C.Text, F.Number)
-	local goalHint = goalText("Hint", 14, C.TextDim, F.UI)
+	local goalCount = goalText("Count", TUNE.GoalCount, C.Text, F.Number)
+	local goalHint = goalText("Hint", TUNE.GoalHint, C.TextDim, F.UI)
 	goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X, 20)
-	goalHint.Size = UDim2.fromOffset(10, 16)
+	goalHint.Size = UDim2.fromOffset(10, 18)
+	-- Each text's design size (held on a phone, applyCompact; the title's grows for "CHAMPION").
+	local GOAL_TEXT: { [TextLabel]: number } =
+		{ [goalLead] = TUNE.GoalLead, [goalTitle] = TUNE.GoalTitle, [goalCount] = TUNE.GoalCount, [goalHint] = TUNE.GoalHint }
 	-- The nearer goal's icon, in front of the second line while it names one (paintGoal).
 	local goalNearIcon = group("NearIcon", {
 		Size = UDim2.fromOffset(16, 16),
@@ -1066,10 +1465,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local nearShown: Near? = nil
 	local goalNear: Near? = nil
 	goal.MouseEnter:Connect(function()
-		Kit.tween(goal, 0.12, { BackgroundTransparency = (if goalReady then G.Pill else G.Quiet) - 0.2 })
+		Kit.tween(goal, 0.12, { BackgroundTransparency = 0 })
 	end)
 	goal.MouseLeave:Connect(function()
-		Kit.tween(goal, 0.12, { BackgroundTransparency = if goalReady then G.Pill else G.Quiet })
+		Kit.tween(goal, 0.12, { BackgroundTransparency = TUNE.PlateAlpha })
 	end)
 	local function tierName(tier: number): string
 		local entry = Theme.Tiers[tier]
@@ -1100,23 +1499,32 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		return "months away"
 	end
-	-- Ready: the strip comes forward in green and breathes until the merge is made.
-	local stopGoalPulse: (() -> ())? = nil
-	local function setGoalReady(ready: boolean)
-		if ready == goalReady then
-			return
-		end
-		goalReady = ready
-		Kit.tween(goal, 0.3, {
-			BackgroundColor3 = if ready then C.Good else G.TintTop,
-			BackgroundTransparency = if ready then G.Pill else G.Quiet,
-		})
-		goalBar.BackgroundColor3 = if ready then Color3.new(1, 1, 1) else C.Gold
-		if ready then
-			stopGoalPulse = Kit.breathe(goal, 0.03)
-		elseif stopGoalPulse then
-			stopGoalPulse()
-			stopGoalPulse = nil
+	-- Ready: the plate turns green, breathes and wears a sheen until the merge is made.
+	-- Champion (every tier found): it is gold for good, with a slower sheen.
+	local setGoalLook: (boolean, boolean) -> ()
+	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
+	do
+		local champNow = false
+		local stopBreath: (() -> ())? = nil
+		local shine = sheen(goal, TUNE.PlateRadius)
+		setGoalLook = function(ready: boolean, champ: boolean)
+			if ready == goalReady and champ == champNow then
+				return
+			end
+			goalReady, champNow = ready, champ
+			tint(goal, if ready then C.Good elseif champ then TUNE.ChampPlate else nil, if champ then TUNE.ChampEdge else nil)
+			goalBar.BackgroundColor3 = if ready then Color3.new(1, 1, 1) else C.Gold
+			shine(ready or champ, if champ then TUNE.ChampSheenEvery else TUNE.ReadySheenEvery)
+			-- "CHAMPION" is a title: a size up (the plate lays itself out again).
+			GOAL_TEXT[goalTitle] = if champ then TUNE.ChampTitle else TUNE.GoalTitle
+			Kit.holdText(goalTitle, Kit.captionPx(), GOAL_TEXT[goalTitle], true)
+			if stopBreath then
+				stopBreath()
+				stopBreath = nil
+			end
+			if ready then
+				stopBreath = Kit.breathe(goal, TUNE.ReadyBreathe)
+			end
 		end
 	end
 	local goalKey = ""
@@ -1159,7 +1567,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		-- nothing is missing (not only with two of the best tier). Auto Merge does it alone.
 		local auto = data.autoMerge == true and data.autoMergeOwned == true
 		local ready = picked.kind == "merge" and picked.mergeReady and not auto
-		setGoalReady(ready)
+		-- Every tier is found: the plate is the champion's from here on, and counts the top
+		-- tier's units on the rack.
+		local champ = picked.kind ~= "merge"
+		local top = if picked.kind == "done" then picked.have else math.max(0, math.floor(tonumber(data.units[Economy.MAX_TIER]) or 0))
+		local topCount = if top > 0 then string.format("%dx %s", top, tierName(Economy.MAX_TIER)) else ""
+		setGoalLook(ready, champ)
 		-- Line 1: the lead, the target and how far along it is; line 2: what it still takes,
 		-- in fewer words when the strip is short of room (`hints`, longest first).
 		local lead, title, count = "Next:", tierName(picked.tier), ""
@@ -1175,24 +1588,31 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			local name = if missing == 1 or string.sub(first, -1) == "s" then first else first .. "s"
 			hints = { string.format("%s more %s%s", unitCount(missing), name, tail), unitCount(missing) .. " more" .. tail, eta }
 		elseif picked.kind == "index" then
-			-- Every tier is found: the next thing within reach is an Index reward.
-			title = "Index reward"
+			-- An Index milestone is not claimed yet: the champion's second line says so, behind
+			-- the Index icon and its red dot (the nearer goal's place), and a tap opens the Index.
+			lead, title, count = "", "CHAMPION", topCount
 			if picked.ready then
 				local claim = Kit.hint("tap to claim it", "click to claim it", "press to claim it")
-				hints = { claim .. " in the Index", claim, "" }
+				hints = { "Index reward: " .. claim, "Index reward waiting" }
 			else
-				count = string.format("%d/%d", picked.have, picked.need)
-				hints = { string.format("find %d %s", picked.need, W.Units), "" }
+				local found = string.format("%d/%d", picked.have, picked.need)
+				hints = { string.format("Index reward: %s %s found", found, W.Units), "Index reward: " .. found }
 			end
 		else
-			-- Nothing is left to reach: no "Next:", only the top tier's units as a count.
-			lead, title = "", string.format("All %d %s found!", Economy.MAX_TIER, W.Units)
-			local top = string.format("%dx %s", picked.have, tierName(picked.tier))
-			hints = { top .. " on your rack", top, "" }
+			-- Nothing is left to reach: the champion's plate and how complete the Index is.
+			lead, title, count = "", "CHAMPION", topCount
+			local all = string.format("All %d %s found!", Economy.MAX_TIER, W.Units)
+			hints = { all .. " The gym is yours", all, "" }
 		end
-		-- A nearer goal takes the second line (READY and a reward to claim keep their own
-		-- words and their own tap), in fewer words when the strip is short of room.
-		local near = if ready or (picked.kind == "index" and picked.ready) then nil else nearShown
+		-- A nearer goal takes the second line (READY keeps its own words and its own tap), in
+		-- fewer words when the plate is short of room. An unclaimed Index milestone is one too,
+		-- and comes before the others.
+		local near: Near? = nearShown
+		if ready then
+			near = nil
+		elseif picked.kind == "index" then
+			near = { kind = "index", text = hints[1], short = hints[2], icon = "Index", color = C.Gold }
+		end
 		if near then
 			hints = { near.text, near.short }
 		end
@@ -1200,16 +1620,20 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local key = table.concat({ lead, title, count, tostring(compact), table.unpack(hints) }, "|")
 		Kit.tween(goalBar, 0.3, { Size = UDim2.fromScale(if ready then 1 else picked.progress, 1) })
 		goalTrack.Visible = picked.kind ~= "done"
+		if champ then
+			-- The champion's plate has no bar at all: a milestone waiting is no progress to fill.
+			goalTrack.Visible = false
+		end
 		if key == goalKey then
 			return
 		end
 		goalKey = key
-		-- The strip hugs the wider line up to GOAL_MAX_W. Nothing is ever cut off with an
+		-- The strip hugs the wider line up to TUNE.GoalMaxW. Nothing is ever cut off with an
 		-- ellipsis: short of room the second line says less, then goes, which leaves the name
 		-- both lines to wrap onto, and only then is the name scaled down (to the caption floor
 		-- at the least).
 		goalLead.Text = lead
-		local room = GOAL_MAX_W - GOAL_TEXT_X - 12
+		local room = TUNE.GoalMaxW - GOAL_TEXT_X - 12
 		-- Text held at its size on a phone (applyCompact) is taller than the design's two
 		-- lines: they, and the strip, grow with it.
 		local lineH = math.max(20, goalTitle.TextSize + 2)
@@ -1255,7 +1679,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		put(goalLead, goalLead.Text, leadW, if lead ~= "" then 6 else 0)
 		put(goalTitle, title, titleW, 8)
 		put(goalCount, count, countW, 0)
-		local hintY = if tall then lineH * 2 else lineH
+		-- (2 px under the first line: the plate is that much taller than its two lines.)
+		local hintY = (if tall then lineH * 2 else lineH) + 2
 		goalHint.Text = string.upper(string.sub(hint, 1, 1)) .. string.sub(hint, 2)
 		goalHint.TextColor3 = if near then C.Text else C.TextDim
 		goalHint.Position = UDim2.fromOffset(GOAL_TEXT_X + nearX, hintY)
@@ -1274,28 +1699,57 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				if old then
 					old:Destroy()
 				end
-				Kit.hudIcon(goalNearIcon, near.icon, hintH, near.color, { Name = "Image", ZIndex = 2 }).Size = UDim2.fromScale(1, 1)
+				local image = Kit.hudIcon(goalNearIcon, near.icon, hintH, near.color, { Name = "Image", ZIndex = 2 })
+				image.Size = UDim2.fromScale(1, 1)
+				if near.kind == "index" then
+					-- The Index button's badge in small: a red dot on the icon's corner.
+					local dot = Kit.new("Frame", {
+						Name = "Dot",
+						BackgroundColor3 = C.Danger,
+						BorderSizePixel = 0,
+						Size = UDim2.fromOffset(TUNE.IndexDot, TUNE.IndexDot),
+						Position = UDim2.new(1, -1, 0, 2),
+						AnchorPoint = Vector2.new(0.5, 0.5),
+						ZIndex = 4,
+						Parent = image,
+					})
+					Kit.round(dot)
+					Kit.new("UIStroke", { Thickness = 1.5, Color = Color3.new(1, 1, 1), Parent = dot })
+				end
 				Kit.pop(goalNearIcon, 0.8)
 			end
 		end
 		goalWidth = math.max(x, GOAL_TEXT_X + hintW) + 12
-		goal.Size = UDim2.fromOffset(goalWidth, GOAL_H + (lineH - 20) + (hintH - 16) + (if tall then lineH else 0))
+		goal.Size = UDim2.fromOffset(goalWidth, TUNE.GoalH + (lineH - 20) + (hintH - 16) + (if tall then lineH else 0))
 		-- A new target (not just a new count) gets a fresh thumbnail and a pop.
-		local thumbKey = picked.kind .. picked.tier
+		local thumbKey = if champ then "champ" else picked.kind .. picked.tier
 		if thumbKey ~= goalThumbKey then
 			goalThumbKey = thumbKey
 			for _, child in goalThumb:GetChildren() do
 				child:Destroy()
 			end
-			if picked.kind == "index" then
-				-- An Index reward is no unit: the Index's own icon.
-				Kit.hudIcon(goalThumb, "Index", 30, C.Gold, {
-					Position = UDim2.fromScale(0.5, 0.5),
-					AnchorPoint = Vector2.new(0.5, 0.5),
+			if champ then
+				-- The champion's crown, rocking on a dark medallion so it reads on the gold.
+				local medal = Kit.new("Frame", {
+					Name = "Medal",
+					BackgroundColor3 = TUNE.PlateColor,
+					BorderSizePixel = 0,
+					Size = UDim2.fromScale(1, 1),
+					Parent = goalThumb,
 				})
+				Kit.round(medal)
+				Kit.new("UIStroke", { Thickness = 2, Color = TUNE.ChampEdge, Parent = medal })
+				local crown = Kit.icon(medal, Kit.pickIcon("Crown", "Star"), TUNE.ChampCrown, C.Gold, {
+					Name = "Crown",
+					Position = UDim2.fromScale(0.5, 0.46),
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					ZIndex = 2,
+				})
+				crown.Rotation = -TUNE.ChampCrownTilt
+				pulse(crown, TUNE.ChampCrownBeat, { Rotation = TUNE.ChampCrownTilt })
 			else
 				-- A silhouette until the tier is discovered.
-				pcall(Kit.unitViewport, goalThumb, picked.tier, { Size = UDim2.fromScale(1, 1) }, picked.kind == "merge")
+				pcall(Kit.unitViewport, goalThumb, picked.tier, { Size = UDim2.fromScale(1, 1) }, true)
 			end
 		end
 		if title ~= goalTitleShown then
@@ -1427,7 +1881,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			if goalReady then
 				Guide.navigate("Merge", W.Merge, 30)
 			elseif near then
-				if near.kind == "mode" then
+				if near.kind == "index" then
+					openIndex()
+				elseif near.kind == "mode" then
 					handlers.openWindow("Modes", { origin = goal })
 				else
 					Guide.navigate(near.pad or "ProcUp1", near.tag or "UPGRADE", 30)
@@ -1443,9 +1899,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end
 		end)
 	end
-	-- The strip's texts are held at a readable size on a phone (applyCompact), where 16 and
-	-- 14 design px are 10 px: a new size lays the strip out again.
-	local GOAL_TEXT: { [TextLabel]: number } = { [goalLead] = 16, [goalTitle] = 16, [goalCount] = 14, [goalHint] = 14 }
+	-- The plate's texts are held at a readable size on a phone (applyCompact), where 18 and
+	-- 17 design px are 11 px: a new size lays the plate out again.
 	for label in GOAL_TEXT do
 		label:GetPropertyChangedSignal("TextSize"):Connect(function()
 			goalKey = ""
@@ -1607,69 +2062,92 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 
 	-- Bottom left: bonus chips, cash multiplier line, cash amount + plus -------------------
-	-- The cash amount is the anchor: the biggest text, at the corner, and it never moves.
-	-- A bonus that is off shows nothing; one that is on is a small chip with its words.
+	-- The cash amount is the anchor: the biggest text, at the corner, and it never moves. It
+	-- and the "+" sit on the cash plate. A bonus that is off shows nothing; one that is on is
+	-- a chip: a small plate with its icon and words, all chips one height and one text size
+	-- (the SURGE chip's words are gold and a size bolder, inside a gold edge).
 	local wallet = group("Wallet", {
 		Size = UDim2.fromOffset(420, 168),
 		Position = UDim2.new(0, EDGE_X, 1, -6),
 		AnchorPoint = Vector2.new(0, 1),
 	})
 	local chips = group("Status", {
-		Size = UDim2.fromOffset(400, CHIP_H),
-		Position = UDim2.fromOffset(0, 62 - CHIP_H - 4),
+		Size = UDim2.fromOffset(400, TUNE.ChipH),
+		Position = UDim2.fromOffset(0, 62 - TUNE.ChipH - 4),
 		Parent = wallet,
 	})
 	Kit.new("UIListLayout", {
 		FillDirection = Enum.FillDirection.Horizontal,
 		VerticalAlignment = Enum.VerticalAlignment.Center,
-		Padding = UDim.new(0, 12),
+		Padding = UDim.new(0, TUNE.ChipGap),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 		Parent = chips,
 	})
-	local chipTexts: { TextLabel } = {}
-	local function status(name: string, icon: string, color: Color3, order: number, text: string, textColor: Color3?): (Frame, TextLabel)
-		local holder = group(name, {
-			AutomaticSize = Enum.AutomaticSize.X,
-			Size = UDim2.fromOffset(0, CHIP_H),
+	-- Each chip's words and their design size (held on a phone, applyCompact).
+	local chipTexts: { [TextLabel]: number } = {}
+	local function status(
+		name: string,
+		icon: string,
+		color: Color3,
+		order: number,
+		text: string,
+		textColor: Color3?,
+		fill: Color3?,
+		size: number?
+	): (GuiObject, TextLabel)
+		local holder = plate(chips, {
+			Name = name,
+			Color = fill,
+			Radius = TUNE.ChipRadius,
+			Size = UDim2.fromOffset(0, TUNE.ChipH),
 			LayoutOrder = order,
 			Visible = false,
-			Parent = chips,
 		})
+		holder.AutomaticSize = Enum.AutomaticSize.X
+		Kit.padding(holder, 0, TUNE.ChipPad)
 		Kit.new("UIListLayout", {
 			FillDirection = Enum.FillDirection.Horizontal,
 			VerticalAlignment = Enum.VerticalAlignment.Center,
-			Padding = UDim.new(0, 4),
+			Padding = UDim.new(0, 5),
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			Parent = holder,
 		})
-		Kit.hudIcon(holder, icon, CHIP_ICON, color, { Name = "Icon", LayoutOrder = 1, ZIndex = 2 })
+		Kit.hudIcon(holder, icon, TUNE.ChipIcon, color, { Name = "Icon", LayoutOrder = 1, ZIndex = 2 })
 		local caption = Kit.hudText(holder, {
 			Name = "Caption",
 			Text = text,
 			Font = F.UI,
-			TextSize = CHIP_TEXT,
+			TextSize = size or TUNE.ChipText,
 			MinPx = true,
 			StrokeThickness = 2,
 			TextColor3 = textColor,
 			AutomaticSize = Enum.AutomaticSize.X,
-			Size = UDim2.fromOffset(0, CHIP_H),
+			Size = UDim2.fromOffset(0, TUNE.ChipH),
 			LayoutOrder = 2,
 			ZIndex = 3,
 		})
-		table.insert(chipTexts, caption)
+		chipTexts[caption] = size or TUNE.ChipText
 		return holder, caption
 	end
 	local premiumRow = status("Premium", Kit.pickIcon("Crown", "Star"), C.Gold, 1, string.format("Premium +%d%%", PREMIUM_BONUS), C.Gold)
 	local friendsRow, friendsText = status("Friends", Kit.pickIcon("Invite", "Fans"), C.Rizz, 2, "Friends")
-	local boostRow = status("Boost", "Surge", C.Amber, 3, "SURGE x" .. Economy.SURGE_MULTIPLIER, C.Amber)
+	local boostRow = status("Boost", "Surge", C.Amber, 3, "SURGE x" .. Economy.SURGE_MULTIPLIER, C.Gold, nil, TUNE.SurgeChipText)
+	-- In a block: its local stays out of build's 200.
+	do
+		local edge = edgeOf(boostRow)
+		if edge then
+			edge.Color = C.Gold
+			edge.Thickness = TUNE.SurgeChipEdge
+		end
+	end
 	-- A chip comes on with a pop and goes off without a trace.
-	local function setStatus(row: Frame, on: boolean)
+	local function setStatus(row: GuiObject, on: boolean)
 		if row.Visible == on then
 			return
 		end
 		row.Visible = on
 		if on then
-			Kit.pop(row, 0.6)
+			Kit.pop(row, 0.8)
 		end
 	end
 	local multLine = Kit.hudText(wallet, {
@@ -1681,6 +2159,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Position = UDim2.fromOffset(0, 62),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		ZIndex = 3,
+	})
+	-- The cash plate: behind the amount and the "+", as wide as they are (layoutWallet).
+	local cashPlate = plate(wallet, {
+		Name = "CashPlate",
+		Size = UDim2.fromOffset(200, TUNE.CashPlateH),
+		Position = UDim2.fromOffset(-8, 84),
 	})
 	local moneyLabel = Kit.hudText(wallet, {
 		Name = "Money",
@@ -1711,16 +2195,97 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	hitPad(addButton, function()
 		handlers.openWindow("Shop", { focus = "Cash" })
 	end)
-	-- The plus follows the cash amount's width. The chips sit over the "Cash" line, or
-	-- beside it where the wallet is in the top-left corner (touch: nothing above it then).
+	-- The plus follows the cash amount's width and the plate holds both (the amount alone
+	-- during a run, which hides the plus). The chips sit over the "Cash" line, or beside it
+	-- where the wallet is in the top-left corner (touch: nothing above it then).
 	local function layoutWallet()
 		local x = math.max(textWidth(moneyLabel.Text, moneyLabel.TextSize, moneyLabel.Font) + 4, 60)
 		addButton.Position = UDim2.fromOffset(x + 10, 92)
+		cashPlate.Size = UDim2.fromOffset(8 + x + (if addButton.Visible then 10 + 44 + 10 else 10), TUNE.CashPlateH)
 		chips.Position = if Kit.touch
-			then UDim2.fromOffset(drawnWidth(multLine.Text, multLine.TextSize, multLine.Font) + 14, 60)
-			else UDim2.fromOffset(0, 62 - CHIP_H - 4)
+			then UDim2.fromOffset(drawnWidth(multLine.Text, multLine.TextSize, multLine.Font) + 14, 73 - TUNE.ChipH // 2)
+			else UDim2.fromOffset(0, 62 - TUNE.ChipH - 4)
 	end
 	moneyLabel:GetPropertyChangedSignal("Text"):Connect(layoutWallet)
+	-- Income (`cashGain`, from refresh): the cash plate flashes green and a "+$X" floats up
+	-- beside it, at most once in GainEvery seconds (gains in between add up). An Aura Surge
+	-- (`surgeWallet`): the plate's edge turns gold and pulses, and the SURGE chip comes on
+	-- and breathes (not on touch, where the chips share the top of the screen with the status
+	-- plate that says the same).
+	local cashGain: (number) -> ()
+	local surgeWallet: (boolean) -> ()
+	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
+	do
+		local owed, lastAt = 0, 0
+		cashGain = function(gain: number)
+			if screen:GetAttribute("WindowOpen") == true then
+				owed = 0
+				return
+			end
+			owed += gain
+			local now = os.clock()
+			if now - lastAt < TUNE.GainEvery then
+				return
+			end
+			lastAt = now
+			-- (The edge is the surge's while one runs: its pulse is not to be cut short.)
+			flash(cashPlate, TUNE.CashFlash, TUNE.PlateColor, TUNE.CashFlashTime, if surgeActiveNow then nil else C.Cash, nil, 4)
+			local float = Kit.hudText(wallet, {
+				Name = "Gain",
+				Text = "+" .. State.money(owed),
+				Font = F.Number,
+				TextSize = TUNE.GainText,
+				TextColor3 = C.MoneyText,
+				StrokeThickness = 2.5,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Size = UDim2.fromOffset(220, TUNE.GainText + 4),
+				Position = UDim2.fromOffset(cashPlate.Size.X.Offset, 100),
+				ZIndex = 6,
+			})
+			owed = 0
+			Kit.pop(float, 1.5)
+			Kit.tween(float, TUNE.GainTime, { Position = float.Position - UDim2.fromOffset(0, TUNE.GainRise) })
+			local outline = float:FindFirstChild("Outline")
+			task.delay(TUNE.GainTime * 0.6, function()
+				Kit.tween(float, TUNE.GainTime * 0.4, { TextTransparency = 1 })
+				if outline then
+					Kit.tween(outline, TUNE.GainTime * 0.4, { Transparency = 1 })
+				end
+			end)
+			task.delay(TUNE.GainTime + 0.05, function()
+				float:Destroy()
+			end)
+		end
+		local stopChip: (() -> ())? = nil
+		local beat: Tween? = nil
+		surgeWallet = function(active: boolean)
+			setStatus(boostRow, active and not Kit.touch)
+			if stopChip then
+				stopChip()
+				stopChip = nil
+			end
+			if beat then
+				beat:Cancel()
+				beat = nil
+			end
+			local edge = edgeOf(cashPlate)
+			if edge then
+				edge.Thickness = TUNE.PlateEdgeWidth
+				Kit.tween(edge, 0.3, { Color = if active then C.Gold else TUNE.PlateEdge })
+				if active then
+					beat = pulse(edge, TUNE.SurgeEdgeBeat, { Thickness = TUNE.SurgeEdgeWidth })
+				end
+			end
+			if active then
+				-- After the chip's own pop (both move its scale).
+				task.delay(0.45, function()
+					if surgeActiveNow and not stopChip then
+						stopChip = Kit.breathe(boostRow, TUNE.SurgeChipBreathe)
+					end
+				end)
+			end
+		end
+	end
 
 	-- A game-mode run (attribute "RunActive": the run pill's modes and Mog) owns the screen:
 	-- the menu grid, the promo (updatePromo), the dumbbell and the wallet's rows above the
@@ -1742,6 +2307,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		multLine.Visible = not run
 		addButton.Visible = not run
 		chips.Visible = not run and not (Kit.touch and compact)
+		layoutWallet()
 	end
 	for _, name in { "RunActive", "CardioActive" } do
 		screen:GetAttributeChangedSignal(name):Connect(function()
@@ -1761,7 +2327,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local gridIcon = GRID_ICON
 	local cellH = GRID_ICON + CAPTION + GRID_PAD * 2
 	local oneRow = false
-	local L = { edge = EDGE_X, bottom = -6, walletTop = false, walletY = 0, gridY = GRID_Y, tap = 0, tankX = 0, freeY = -20 }
 	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
 	do
 		local function gridRows(): { { string } }
@@ -1806,7 +2371,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			-- Thumbstick zone: left third, lower half of the screen (design px below the top bar).
 			local designW = size.X / scale
 			local halfY = (size.Y / 2 - TOP_BAR_PX) / scale
-			promoFits = not touch or L.gridY + gridHeight() + PROMO_GAP + PROMO_H + 16 <= halfY
+			promoFits = not touch or L.gridY + gridHeight() + PROMO_GAP + TUNE.PromoH + 16 <= halfY
 			local tankW = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
 			L.tankX = if touch then math.max(0, designW / 3 + 8 - (designW - tankW) / 2) else 0
 			-- Jump button: 70 px at 20 px from the corner on small screens, 120 px 90 px up otherwise.
@@ -1826,7 +2391,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		slot(promo, function()
 			return UDim2.fromOffset(L.edge, L.gridY + gridHeight() + PROMO_GAP)
 		end, function()
-			return UDim2.fromOffset(-PROMO_W - 60, L.gridY + gridHeight() + PROMO_GAP)
+			return UDim2.fromOffset(-TUNE.PromoW - 60, L.gridY + gridHeight() + PROMO_GAP)
 		end)
 		slot(wallet, function()
 			return if L.walletTop then UDim2.new(0, L.edge, 0, L.walletY) else UDim2.new(0, L.edge, 1, L.bottom)
@@ -1843,22 +2408,39 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end, function()
 			return UDim2.new(1, 120, 1, L.freeY)
 		end)
+		-- Row 1 of the top stack: the count plate and the status plate side by side, centred
+		-- as a pair. On touch the wallet has the top left (its chips reach toward the centre),
+		-- so the plates stack in one column there: count, status, goal.
+		local function measureTop()
+			local gap = Kit.pxUp(TUNE.StackGap, TUNE.StackGap, screen)
+			local countW, stripW = units.Size.X.Offset, strip.Size.X.Offset
+			if Kit.touch then
+				L.countX, L.stripX = 0, 0
+				L.stripY = TUNE.TopY + TUNE.RowH + gap
+				L.goalY = L.stripY + TUNE.RowH + gap
+			else
+				local total = countW + TUNE.RowGap + stripW
+				L.countX, L.stripX = math.floor((countW - total) / 2 + 0.5), math.floor((total - stripW) / 2 + 0.5)
+				L.stripY = TUNE.TopY
+				L.goalY = TUNE.TopY + TUNE.RowH + gap
+			end
+		end
 		slot(units, function()
-			return UDim2.new(0.5, 0, 0, UNITS_Y)
+			return UDim2.new(0.5, L.countX, 0, TUNE.TopY)
 		end, function()
-			return UDim2.new(0.5, 0, 0, -140)
+			return UDim2.new(0.5, L.countX, 0, -140)
 		end)
 		slot(strip, function()
-			return UDim2.new(0.5, 0, 0, STRIP_Y)
+			return UDim2.new(0.5, L.stripX, 0, L.stripY)
 		end, function()
-			return UDim2.new(0.5, 0, 0, -140)
+			return UDim2.new(0.5, L.stripX, 0, -140)
 		end)
-		-- The goal strip: under the deposit strip, or just above the (compact) dumbbell.
+		-- The goal plate: its slot under row 1, or just above the (compact) dumbbell.
 		slot(goal, function()
 			if compact then
 				return UDim2.new(0.5, L.tankX, 1, L.bottom - math.ceil(DUMBBELL_W_COMPACT * DUMBBELL_ASPECT) - 8)
 			end
-			return UDim2.new(0.5, 0, 0, goalY())
+			return UDim2.new(0.5, 0, 0, L.goalY)
 		end, function()
 			return if compact then UDim2.new(0.5, L.tankX, 1, 200) else UDim2.new(0.5, 0, 0, -140)
 		end)
@@ -1880,6 +2462,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 					end
 				end
 			end
+		end
+		-- A plate of the top stack changed its width: the pair is centred again.
+		L.layoutTop = function(animate: boolean)
+			measureTop()
+			-- (Nothing glides before the first layout has put everything in its place.)
+			place(animate and next(targets) ~= nil)
 		end
 		local function applyCompact()
 			compact = screen:GetAttribute("Compact") == true
@@ -1920,22 +2508,25 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			for _, caption in captions do
 				caption.Size = UDim2.new(1, 0, 0, captionH)
 			end
-			-- The deposit strip's three texts are held the same way (a hard floor: 16, 18 and 14
-			-- design px are 10 to 12 px on a phone), and the strip widens round them.
+			-- The status plate's three texts are held the same way (a hard floor: 18, 22 and 17
+			-- design px are 11 to 14 px on a phone), and the plate widens round them; so does
+			-- the count plate round its pill.
 			for label, design in STRIP_TEXT do
 				Kit.holdText(label, Kit.captionPx(), design, true)
 			end
 			fitStrip()
+			fitCount()
 			-- So are the goal strip's (it lays itself out again when a size changes).
 			for label, design in GOAL_TEXT do
 				Kit.holdText(label, Kit.captionPx(), design, true)
 			end
 			-- The bonus chips keep their words at a readable size; a touch phone, where the
 			-- wallet shares the top-left corner with the menu row, goes without them.
-			for _, label in chipTexts do
-				Kit.holdText(label, Kit.captionPx(), CHIP_TEXT)
+			for label, design in chipTexts do
+				Kit.holdText(label, Kit.captionPx(), design)
 			end
 			chips.Visible = not runHid and not (Kit.touch and compact)
+			setStatus(boostRow, surgeActiveNow and not Kit.touch)
 			layoutWallet()
 			local width = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
 			tank.Size = UDim2.fromOffset(width, width * DUMBBELL_ASPECT)
@@ -1946,7 +2537,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			tankCaption.Size = captionSize + UDim2.fromOffset(0, captionRoom)
 			tankCaption.Position = captionPos - UDim2.fromOffset(0, captionRoom // 2)
 			goal.AnchorPoint = Vector2.new(0.5, if compact then 1 else 0)
-			goalPad.Size = UDim2.new(1, 0, 0, math.max(GOAL_H, L.tap))
+			goalPad.Size = UDim2.new(1, 0, 0, math.max(TUNE.GoalH, L.tap))
 			goalPad.Visible = Kit.touch
 			-- Gear: on the top bar's line with a mouse; below it (never on Roblox's bar) otherwise.
 			local gearSize = math.max(GEAR, L.tap)
@@ -1965,6 +2556,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				p.pad.Visible = Kit.touch and (w < L.tap or h < L.tap)
 			end
 			updatePromo()
+			measureTop()
 			place(next(targets) ~= nil)
 		end
 		-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
@@ -2048,17 +2640,22 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local moneyRollEnd = 0
 	local lastMult: number? = nil
 	local lastCarried: number? = nil
+	local lastBought: number? = nil
 	local function refresh()
 		local data = State.data
 		if not data then
 			return
 		end
-		-- Cash rolls up (longer for bigger gains) and quickly down when spent.
+		-- Cash rolls up (longer for bigger gains) and quickly down when spent; income flashes
+		-- the cash plate.
 		if moneyShown ~= nil and data.money ~= moneyShown then
 			local gain = data.money - (moneyShown :: number)
 			local time = if gain > 0 then math.clamp(0.4 + 0.08 * math.log10(math.max(gain, 1)), 0.45, 0.9) else 0.25
 			moneyRollEnd = os.clock() + time
 			roll(moneyLabel, data.money, State.money, time)
+			if gain > 0 then
+				cashGain(gain)
+			end
 		else
 			roll(moneyLabel, data.money, State.money)
 		end
@@ -2078,9 +2675,19 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				end
 			end
 		end
-		unitCap = if type(data.unitCap) == "number" then data.unitCap else unitCap
+		if type(data.unitCap) == "number" and data.unitCap ~= unitCap then
+			unitCap = data.unitCap
+			fitCount()
+		end
+		-- The count ticks to its new value; a buy at a full rack (it merges on its own) shakes it.
+		local before = rolled[counterLabel]
+		local bought = tonumber(data.bought) or 0
 		roll(counterLabel, owned, unitsText)
 		setRackFull(owned >= unitCap)
+		if before ~= nil then
+			countChanged(owned - before, owned >= unitCap and lastBought ~= nil and bought > lastBought)
+		end
+		lastBought = bought
 		roll(carriedLabel, data.carried, State.num, 0.3)
 		-- Carried aura dropping to nothing is a deposit: the bigger bounce.
 		if lastCarried ~= nil and lastCarried > 0 and data.carried <= 0 then
@@ -2190,6 +2797,12 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local home = moneyLabel.Position
 		moneyLabel.TextColor3 = C.Danger
 		Kit.pop(moneyLabel, 0.4)
+		-- The cash plate's edge flares red (not during a surge: the edge is its pulse then)
+		-- and the "+" pops: more cash is one tap away.
+		if not surgeActiveNow then
+			flash(cashPlate, C.Danger, TUNE.PlateColor, 0.5, C.Danger, nil, 4)
+		end
+		Kit.pop(addButton, 2)
 		task.spawn(function()
 			for _, dx in { 9, -8, 6, -4, 2, 0 } do
 				Kit.tween(moneyLabel, 0.045, { Position = home + UDim2.fromOffset(dx, 0) }, Enum.EasingStyle.Sine)
@@ -2329,22 +2942,23 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end)
 		end)
 
-		-- Aura Surge: the strip changes and the "SURGE x2" chip joins the wallet; the screen grade
-		-- and music are Fx.Surge's.
+		-- Aura Surge: the status plate turns gold (paintSurge), the cash plate's edge pulses gold
+		-- and the "SURGE x2" chip joins the wallet (surgeWallet); the screen grade and music are
+		-- Fx.Surge's.
 		local surgeActive: boolean? = nil
 		local lastSurgeSecond = -1
 
 		local function setSurge(active: boolean, announce: boolean)
 			paintSurge(active)
 			showMult(depositMult)
-			setStatus(boostRow, active)
+			surgeWallet(active)
 			if announce then
-				Kit.pop(strip, if active then 0.8 else 0.4)
+				Kit.pop(strip, if active then 1.6 else 0.6)
 			end
 		end
 
 		-- Free gift: countdown under it; when ready a "!" dot and a sunny "CLAIM!", the gift
-		-- and the word both pulsing (this corner is the one place that announces it).
+		-- hopping and the word breathing (this corner is the one place that announces it).
 		local freeText = ""
 		local freeReady: boolean? = nil
 		local stopFreeBounce: (() -> ())? = nil
@@ -2355,7 +2969,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				freeTimer.TextColor3 = if ready then C.Gold else Color3.new(1, 1, 1)
 				if ready then
 					Kit.pop(freeButton, 0.8)
-					local stopGift, stopWord = Kit.breathe(freeButton, 0.1), Kit.breathe(freeTimer, 0.08)
+					local stopGift = hop(freeButton, UDim2.fromScale(0.5, 0))
+					local stopWord = Kit.breathe(freeTimer, TUNE.GiftWordBreathe)
 					stopFreeBounce = function()
 						stopGift()
 						stopWord()
@@ -2386,6 +3001,40 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				end
 			end
 			dailyCaption.Text = text
+		end
+		-- The beat: every BeatEvery seconds each badge dot on a HUD button pops, one button
+		-- after another ("!" harder than a count: a reward to claim outranks news), the "+"
+		-- pops on every PlusEvery-th beat and the "AUTO-MERGING" pill on every other. Not
+		-- while a window covers the HUD.
+		if not PREVIEW then
+			task.spawn(function()
+				local beat = 0
+				while screen.Parent do
+					task.wait(TUNE.BeatEvery)
+					beat += 1
+					if screen:GetAttribute("WindowOpen") ~= true then
+						local nth = 0
+						for _, button in Hud.buttons do
+							local badge = button:FindFirstChild("Badge")
+							if badge and badge:IsA("TextLabel") and badge.Visible then
+								task.delay(
+									nth * TUNE.BeatStagger,
+									Kit.pop,
+									badge,
+									if badge.Text == "!" then TUNE.BadgePop else TUNE.BadgePopCount
+								)
+								nth += 1
+							end
+						end
+						if beat % TUNE.PlusEvery == 0 and addButton.Visible then
+							Kit.pop(addButton, TUNE.PlusPop)
+						end
+						if rackFull and beat % 2 == 0 then
+							Kit.pop(counterCaption, TUNE.FullBeatPop)
+						end
+					end
+				end
+			end)
 		end
 		local nextText = ""
 		local nearAt = 0
