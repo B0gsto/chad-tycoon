@@ -3746,12 +3746,16 @@ local function plural(n: number, word: string, many: string?): string
 	return string.format("%d %s", n, if n == 1 then word else many or word .. "s")
 end
 
--- "Finish: +$X" or the cooldown countdown; `bonus` adds a "(xB)" tag.
-local function setRewardLine(label: TextLabel, cash: number, full: boolean, cooldownEnds: number, bonus: number?)
+-- "Finish: +$X" or the cooldown countdown; `bonus` adds a "(xB)" tag. `repeatCash`: what a
+-- clean finish pays inside the cooldown (Parkour: a share of the map's reward), named
+-- beside the countdown to the full reward.
+local function setRewardLine(label: TextLabel, cash: number, full: boolean, cooldownEnds: number, bonus: number?, repeatCash: number?)
 	local left = cooldownEnds - os.time()
 	if not full and left > 0 then
 		label.TextColor3 = C.TextDim
-		label.Text = "Reward again in " .. Format.time(left)
+		label.Text = if repeatCash and repeatCash >= 1
+			then string.format("Run again: +%s  ·  full reward in %s", Format.money(repeatCash), Format.time(left))
+			else "Reward again in " .. Format.time(left)
 		return
 	end
 	label.TextColor3 = C.MoneyText
@@ -3832,7 +3836,9 @@ local function parkourReward(label: TextLabel, info: { [string]: any }, level: n
 	local first = (tonumber(lv.clears) or 0) == 0
 	local cooldownEnds = tonumber(info.cooldownEnds) or 0
 	local full = first or cooldownEnds <= os.time()
-	setRewardLine(label, cash, full, cooldownEnds, bonus)
+	-- Inside the cooldown a clean finish pays the repeat share of this map's reward.
+	local share = tonumber(preview.repeatShare) or Economy.MODE_REPEAT_SHARE
+	setRewardLine(label, cash, full, cooldownEnds, bonus, math.floor(cash * share))
 end
 
 type ModeRow = { panel: Frame, stats: TextLabel, reward: TextLabel, play: TextButton }

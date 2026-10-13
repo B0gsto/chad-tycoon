@@ -1116,9 +1116,14 @@ local function syncSmashers()
 			if s.seen and s.rarity ~= "" then
 				popOpen(s, s.rarity, s.color)
 			end
-			-- A load seen live starts at its full time. A crate already ticking when the
-			-- plot was bound has its rarity's time (the snapshot has no slot total).
-			local known = if not s.seen and Economy.isRarity(rarity) then Economy.unlockSeconds(rarity, i == 2) else 0
+			-- The slot's whole timer comes with the snapshot (`totalSeconds`), so a crate
+			-- already ticking when the plot was bound shows its real share. Without it: a
+			-- load seen live starts at its full time, any other has its rarity's.
+			local sent = if type(slot) == "table" then tonumber(slot.totalSeconds) or 0 else 0
+			local known = if sent > 0
+				then sent
+				elseif not s.seen and Economy.isRarity(rarity) then Economy.unlockSeconds(rarity, i == 2)
+				else 0
 			s.rarity = rarity
 			s.color = rarityColor(rarity)
 			s.total = math.max(left, known, 1)

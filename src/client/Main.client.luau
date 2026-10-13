@@ -134,24 +134,8 @@ ObbyHud.build(screen, { sounds = Sounds, dockRun = Hud.dockRun, tank = Hud.tank 
 -- Last "Cash" effect: the tutorial reward waits for the wallet count-up.
 local lastCashAt = 0
 
--- The tutorial queues its own small "done" card through Popups.enqueue; here that entry is
--- swapped for the full-width "YOU DID IT!" banner (Popups.tutorialDone), which keeps its
--- place in the queue. `tutorialCash` is the cash of the last "done" notify.
-local tutorialCash = 0
-local tutorialPopups = setmetatable({
-	enqueue = function(kind: string, priority: number, show: (done: () -> ()) -> (), data: { [string]: any }?)
-		if kind == "Tutorial" then
-			Popups.enqueue(kind, priority, function(done)
-				Popups.tutorialDone(tutorialCash, done)
-			end, data)
-		else
-			Popups.enqueue(kind, priority, show, data)
-		end
-	end,
-}, { __index = Popups })
-
 Tutorial.build(screen, {
-	popups = tutorialPopups,
+	popups = Popups,
 	sounds = Sounds,
 	guide = Guide,
 	walletIdle = function(): boolean
@@ -249,21 +233,28 @@ if RunService:IsStudio() then
 		local tier = string.match(spec, "^reward,(%d+)$")
 		local from, to = string.match(spec, "^rewards,(%d+),(%d+)$")
 		if tier then
-			-- `before` / `after` are made up here: the "+X Aura/sec" line needs a gain to show.
+			-- The production pair is made up here: the "+X Aura/sec" line needs a gain to show.
 			Popups.reward({
 				kind = "Reward",
 				tier = tonumber(tier),
 				tiers = { tonumber(tier) },
 				new = true,
-				before = 0,
-				after = 12 * 2.4 ^ (tonumber(tier) :: number),
+				productionBefore = 0,
+				productionAfter = 12 * 2.4 ^ (tonumber(tier) :: number),
 			})
 		elseif from and to then
 			local tiers = {}
 			for t = tonumber(from) :: number, tonumber(to) :: number do
 				table.insert(tiers, t)
 			end
-			Popups.reward({ kind = "Reward", tier = tonumber(to), tiers = tiers, new = true, before = 0, after = 12 * 2.4 ^ #tiers })
+			Popups.reward({
+				kind = "Reward",
+				tier = tonumber(to),
+				tiers = tiers,
+				new = true,
+				productionBefore = 0,
+				productionAfter = 12 * 2.4 ^ #tiers,
+			})
 		elseif spec == "gift" then
 			Popups.gift({ cash = 3290 })
 		elseif spec == "surge" then
@@ -312,12 +303,10 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			action:FireServer(payload.action)
 		end)
 	elseif payload.kind == "Tutorial" then
-		if payload.event == "done" then
-			tutorialCash = tonumber(payload.cash) or 0
-		end
 		Tutorial.onNotify(payload)
 	elseif payload.kind == "Gift" then
-		-- The free gift's card (the "Cash" effect of the same claim brings the coins).
+		-- The free gift's card: { cash, nextIn } (the "Cash" effect of the same claim brings
+		-- the sound and the coins).
 		Popups.gift(payload)
 	elseif payload.kind == "Surge" then
 		-- Aura Surge: the countdown chip 30 s ahead and the banner at the start.
@@ -365,13 +354,13 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			end
 			Sounds.play("Step")
 		elseif event == "respawn" then
-			-- Fell through the clouds (or touched lava): back to the start of the map, the run goes on.
+			-- Fell through the clouds (or touched lava): back to the start of the map, the run
+			-- goes on. The obby HUD says it ("Oops! Back to the start"); lava adds the sound.
 			if payload.stage ~= nil then
 				ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
 			end
 			if payload.reason == "kill" then
 				Sounds.play("Error")
-				Popups.toast("Ouch! Back to the start of the map", "bad")
 			end
 		elseif event == "skip" then
 			-- Paid a map skip: on to the next map (the run is now assisted).
@@ -457,14 +446,17 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 			return
 		end
 		Sounds.play("Cash")
-		if data.source == "Free" then
-			-- The free gift gets a card with the amount instead of the small float.
-			Popups.gift({ cash = amount })
-		else
+		-- The free gift's amount is on its card (the Gift notify), not in a small float.
+		if data.source ~= "Free" then
 			Popups.float("+" .. Format.money(amount), C.Good, WALLET)
 		end
 		-- Claimed from the Free menu button: coins fly from the button.
 		local fromMenu = data.source == "Free" and os.clock() - Hud.freeClaimedAt < 3
+		-- A pad's coins (Collect, the Free pad walked onto) are Fx.Machines' fountain, which
+		-- flies to the wallet: no second stream of flat coins from the same pad.
+		if data.source == "Collect" or (data.source == "Free" and not fromMenu) then
+			return
+		end
 		Hud.coinBurst(amount, if typeof(data.padPos) == "Vector3" then data.padPos else nil, if fromMenu then Hud.buttons.Free else nil)
 	elseif kind == "Pad" then
 		-- Fx.Machines plays the deny sound and pad wobble; the wallet shake
@@ -472,9 +464,6 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 		if data.ok == false and data.reason == "money" then
 			Hud.shakeWallet()
 		end
-	elseif kind == "AuraGrant" then
-		-- Aura pack: orbs fly into the tank (the server sends the "+X aura" toast).
-		Hud.orbBurst(if type(data.amount) == "number" then data.amount else 0)
 	elseif kind == "Deposit" then
 		Sounds.play("Deposit")
 		-- `amount` is the aura queued in the converter; the deposit multiplier's part is `bonus`,

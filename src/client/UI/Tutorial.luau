@@ -22,8 +22,8 @@
 	game-mode run ("RunActive", "ObbyMode", "CardioActive", the ones the HUD hides its
 	goal strip on); during a run the 3D guide is cleared too.
 
-	The completion reward is a toast-sized banner shown through the popup
-	queue once the wallet has finished counting up the first collect.
+	The completion reward is the "YOU DID IT!" banner (Popups.tutorialDone), shown through
+	the popup queue once the wallet has finished counting up the first collect.
 ]]
 
 local Players = game:GetService("Players")
@@ -34,11 +34,7 @@ local Net = require(ReplicatedStorage.Shared.Net)
 local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
 
 local Kit = require(script.Parent.Kit)
-local Sprites = require(script.Parent.Parent.Fx.Sprites)
 local State = require(script.Parent.Parent.State)
-
-local PREVIEW = typeof(TweenInfo.new(0)) ~= "TweenInfo"
-local SPARKLE = Sprites.image("Sparkle")
 
 local Theme = Kit.Theme
 local G = Theme.Glass
@@ -392,222 +388,9 @@ local function render(data: { [string]: any })
 	end
 end
 
--- A burst of sparkles from the middle of `holder`, flung out along a wide ellipse (the
--- Sparkle sprite; one tween each, nothing per frame). They clean themselves up.
-local function sparkleBurst(holder: Frame, count: number, zindex: number)
-	if not SPARKLE then
-		return
-	end
-	for i = 1, count do
-		local angle = (i + math.random() * 0.5) / count * math.pi * 2
-		local size = math.random(20, 34)
-		local star = Kit.new("ImageLabel", {
-			Name = "Sparkle",
-			BackgroundTransparency = 1,
-			Image = SPARKLE,
-			ImageColor3 = if i % 2 == 0 then C.GoldLight else Color3.new(1, 1, 1),
-			ImageTransparency = 0.05,
-			Size = UDim2.fromOffset(size * 0.4, size * 0.4),
-			Position = UDim2.fromScale(0.5, 0.45),
-			AnchorPoint = Vector2.new(0.5, 0.5),
-			Rotation = math.random(-25, 25),
-			ZIndex = zindex,
-			Parent = holder,
-		})
-		local reach = 0.86 + math.random() * 0.3
-		Kit.tween(star, 0.5, {
-			Size = UDim2.fromOffset(size, size),
-			Position = UDim2.new(0.5, math.cos(angle) * 250 * reach, 0.45, math.sin(angle) * 62 * reach),
-			Rotation = star.Rotation + 60,
-		}, Enum.EasingStyle.Quart)
-		if not PREVIEW then
-			task.delay(0.4, function()
-				Kit.tween(star, 0.35, { ImageTransparency = 1, Size = UDim2.fromOffset(size * 0.5, size * 0.5) })
-			end)
-			task.delay(0.8, function()
-				star:Destroy()
-			end)
-		end
-	end
-end
-
--- "Training complete": the top notification tier. A gold banner (bigger than a toast)
--- that bounces into the pill's slot with a sparkle burst, queued with the other popups.
--- Not modal: tap or wait to dismiss.
-local BANNER_W, BANNER_H = 468, 96
-local function showCelebrate(cash: number, done: () -> ())
-	local existing = screen:FindFirstChild("TutorialDone")
-	if existing then
-		existing:Destroy()
-	end
-	local atBottom = compact()
-	local rest = if atBottom then UDim2.new(0.5, 0, 1, -BOTTOM_GAP + PAD_BOTTOM) else UDim2.new(0.5, 0, 0, TOP_Y - PAD_TOP)
-	local away = rest + UDim2.fromOffset(0, if atBottom then SLIDE else -SLIDE)
-	local holder = Kit.new("Frame", {
-		Name = "TutorialDone",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(BANNER_W, BANNER_H + PAD_TOP + PAD_BOTTOM),
-		Position = away,
-		AnchorPoint = Vector2.new(0.5, if atBottom then 1 else 0),
-		ZIndex = 20,
-		Parent = screen,
-	})
-	-- A plain frame, faded by its elements' own transparency (Kit.fade): the banner is
-	-- painted straight to the screen, the same gold at the top of a desktop and in the
-	-- bottom slot of a phone, with no off-screen group texture between its fill and the world.
-	local fade = Kit.new("Frame", {
-		Name = "Fade",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 21,
-		Parent = holder,
-	})
-	-- Toasts queue under the banner while it holds the top slot.
-	if not atBottom then
-		screen:SetAttribute("TopCardHeight", BANNER_H + 8)
-	end
-	local bounce = Kit.new("UIScale", { Name = "Bounce", Scale = 0.6, Parent = holder })
-	-- The one solid banner: the bright gold of a primary button (sunny yellow down to
-	-- orange, G.Celebrate: all but opaque) on an orange lip, with a white highlight along
-	-- the top inner edge.
-	local card = Kit.new("Frame", {
-		Name = "Card",
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		BackgroundTransparency = G.Celebrate,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, -PAD_X * 2, 0, BANNER_H),
-		Position = UDim2.fromOffset(PAD_X, PAD_TOP),
-		ZIndex = 21,
-		Parent = fade,
-	})
-	Kit.corner(card, Kit.RADIUS.L)
-	Kit.new("UIGradient", {
-		Rotation = 90,
-		Color = ColorSequence.new({
-			ColorSequenceKeypoint.new(0, C.GoldLight),
-			ColorSequenceKeypoint.new(0.45, C.Gold),
-			ColorSequenceKeypoint.new(1, C.GoldDeep),
-		}),
-		Parent = card,
-	})
-	Kit.stroke(card, 2.5, Kit.lip(C.GoldDeep))
-	Kit.shadow(card, Kit.RADIUS.L, 1, 0)
-	local shine = Kit.new("Frame", {
-		Name = "Highlight",
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		BackgroundTransparency = 0.25,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, -28, 0, 3),
-		Position = UDim2.fromOffset(14, 4),
-		ZIndex = 22,
-		Parent = card,
-	})
-	Kit.round(shine)
-	local medal = Kit.new("Frame", {
-		Name = "Medal",
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		Size = UDim2.fromOffset(64, 64),
-		Position = UDim2.new(0, 16, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ZIndex = 22,
-		Parent = card,
-	})
-	Kit.round(medal)
-	Kit.gradient(medal, Color3.new(1, 1, 1), C.GoldLight)
-	Kit.stroke(medal, 2.5, Kit.lip(C.GoldDeep))
-	Kit.icon(medal, "Ranking", 38, C.GoldInk, { Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 23 })
-	local medalScale = Kit.new("UIScale", { Scale = 0.4, Parent = medal })
-
-	-- White title with the dark outline, the size of a window title.
-	Kit.hudText(card, {
-		Name = "Title",
-		Text = Words.DoneTitle,
-		TextSize = 28,
-		MinPx = 18,
-		Size = UDim2.new(1, -106, 0, 36),
-		Position = UDim2.fromOffset(94, 10),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = C.Text,
-		StrokeColor = G.TextInk,
-		StrokeThickness = 3,
-		ZIndex = 22,
-	})
-	-- The reward: a coin and the amount, large, on a dark chip so the green holds on gold.
-	local reward = Kit.new("Frame", {
-		Name = "Reward",
-		BackgroundColor3 = C.Ink,
-		BackgroundTransparency = 0.12,
-		Size = UDim2.fromOffset(0, 36),
-		AutomaticSize = Enum.AutomaticSize.X,
-		Position = UDim2.fromOffset(94, 50),
-		ZIndex = 22,
-		Parent = card,
-	})
-	Kit.round(reward)
-	Kit.padding(reward, 0, 12)
-	Kit.list(reward, 8, true)
-	Kit.icon(reward, "Coin", 26, C.Gold, { Name = "Coin", LayoutOrder = 1, ZIndex = 23 })
-	Kit.number(reward, {
-		Name = "Amount",
-		Text = "+" .. State.money(cash),
-		TextSize = 26,
-		MinPx = 18,
-		TextColor3 = C.MoneyText,
-		Size = UDim2.fromOffset(0, 36),
-		AutomaticSize = Enum.AutomaticSize.X,
-		LayoutOrder = 2,
-		ZIndex = 23,
-	})
-	task.delay(0.39, function()
-		deps.sounds.play("Tick", 0.03, 1.12)
-	end)
-
-	Kit.fade(fade, true, IN_TIME)
-	-- Bounce in: the banner drops into the slot and overshoots its size.
-	Kit.tween(holder, 0.34, { Position = rest }, Enum.EasingStyle.Back)
-	Kit.tween(bounce, 0.42, { Scale = 1 }, Enum.EasingStyle.Back)
-	Kit.tween(medalScale, 0.5, { Scale = 1 }, Enum.EasingStyle.Back)
-	sparkleBurst(holder, 12, 24)
-	Kit.confetti(holder, {
-		Origin = UDim2.new(0, PAD_X + 48, 0, PAD_TOP + BANNER_H // 2),
-		Count = 12,
-		Power = 0.45,
-		ZIndex = 24,
-	})
-	deps.sounds.play("Celebrate")
-
-	local closed = false
-	local function close()
-		if closed then
-			return
-		end
-		closed = true
-		publishHeight()
-		-- Hidden once faded: Kit.fade restores the resting look just before the holder goes.
-		Kit.fade(fade, false, 0.2, function()
-			fade.Visible = false
-		end)
-		Kit.tween(holder, 0.22, { Position = away }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		task.delay(0.25, function()
-			holder:Destroy()
-			done()
-		end)
-	end
-	local catcher = Kit.new("TextButton", {
-		Name = "Dismiss",
-		BackgroundTransparency = 1,
-		Selectable = false,
-		Text = "",
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 25,
-		Parent = holder,
-	})
-	catcher.Activated:Connect(close)
-	task.delay(4.5, close)
-end
-
 -- Waits for the first-collect cash to finish rolling into the wallet (the
--- "done" notify can arrive before or after the Cash effect), then queues the banner.
+-- "done" notify can arrive before or after the Cash effect), then queues the "YOU DID IT!"
+-- banner (Popups.tutorialDone) with the other popups.
 function Tutorial.celebrate(cash: number)
 	task.spawn(function()
 		task.wait(0.5)
@@ -618,7 +401,7 @@ function Tutorial.celebrate(cash: number)
 			waited += 0.1
 		end
 		deps.popups.enqueue("Tutorial", deps.popups.PRIORITY.Tutorial, function(done)
-			showCelebrate(cash, done)
+			deps.popups.tutorialDone(cash, done)
 		end)
 	end)
 end

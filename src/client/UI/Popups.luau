@@ -492,8 +492,9 @@ local mergesOnReveal: ((text: string) -> ())? = nil -- the reveal on screen take
 --[[
 	What a merge gained. The units' aura per second is worked out from every snapshot (from
 	the units, so a surge does not count) and kept for a few seconds; the gain of an action
-	is the newest value minus the one from just before it. The server may also send it
-	(`before` / `after` on the payload), which wins.
+	is the newest value minus the one from just before it. That is only the fallback: the
+	server sends the real numbers (`productionBefore` / `productionAfter`, aura per second
+	without the surge, on the Reward notify and on every "Merge" effect), which win.
 
 	A merge batch that discovers nothing gets no card: a float over the rack, "+24 merges ·
 	Aura +1.2K/sec", MERGE_SETTLE after its last "Merge" effect (by then its Reward notify
@@ -686,7 +687,8 @@ local function watchMerges()
 		if data.auto ~= true then
 			batch.manual = true
 		end
-		local before, after = tonumber(data.before), tonumber(data.after)
+		-- Every step of one action carries the same pair: what the whole action added.
+		local before, after = tonumber(data.productionBefore), tonumber(data.productionAfter)
 		if before and after then
 			batch.gain = after - before
 		end
@@ -2291,13 +2293,14 @@ end
 	CHAIN_MAX in a row: a bigger jump keeps its newest tiers and the older ones ride on the
 	last reveal as small portraits.
 
-	Optional payload fields (the server adds them; without them the client works them out):
-	  before, after  aura per second before and after the action (else from the snapshots)
-	  rates          { [tier] = aura per second of one unit } (else Economy.unitRate)
+	Payload fields the server adds (Tycoon.discoverAll); without them the client works them out:
+	  productionBefore, productionAfter  aura per second before and after the action, without
+	                 the surge (else from the snapshots; "before" is absent on a join or debug grant)
+	  rates          { [tier] = aura per second of one unit }, 1..newest (else Economy.unitRate)
 ]]
 local function revealChain(reward: { [string]: any }, done: () -> ())
 	local startedAt = os.clock()
-	local before, after = tonumber(reward.before), tonumber(reward.after)
+	local before, after = tonumber(reward.productionBefore), tonumber(reward.productionAfter)
 	local gain: number? = if before and after
 		then after - before
 		else productionGain((if type(reward._at) == "number" then reward._at else startedAt) - PROD_LEAD)
@@ -2907,14 +2910,17 @@ end
 
 -- Game mode finish ----------------------------------------------------------------------------
 --[[
-	The Parkour finish card: "LEVEL n CLEAR!" (or "NEW BEST!") over the level's name,
-	the run time, best and the rank on this server's board, the cash reward rolling up or a
-	calm "Reward again in m:ss" line while the full reward is cooling down,
-	and a popping "Level n+1 unlocked!" chip when this clear opened the next level.
+	The Parkour finish card: "MAP n CLEAR!" (or "NEW BEST!") over the map's name and the
+	falls of the run, the run time, best and the rank on this server's board, the cash
+	reward rolling up, a line saying why it is what it is (payload `pay`: "repeat" = "Run
+	again bonus +$X (20%)" inside the cooldown, "assisted" = "Gear on: no bonus"; any other
+	mode's card keeps the calm "Reward again in m:ss" countdown),
+	and a popping "Map n+1 unlocked!" chip when this clear opened the next map.
 	Buttons: "Next level" (gold, when there is one) beside "Run again", with slim "Choose
 	map" (opens the Maps window) and "Back to my gym" under them; on the last level "Run
 	again" beside "Back to my gym" with a slim "Choose map" under them. `data` is the finish Notify payload (time, best, newBest, rank?, cash, full,
-	cooldownEnds, level, levelName, nextLevel?, unlockedNew, assisted?). An assisted run (gear or a
+	cooldownEnds, level, levelName, nextLevel?, unlockedNew, assisted?, falls?, pay?, repeatShare?).
+	An assisted run (gear or a
 	skipped stage) shows "Assisted run" instead of the best / rank line.
 ]]
 
@@ -2973,7 +2979,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		Kit.title(box, {
 			Text = if data.newBest and data.assisted ~= true
 				then "NEW BEST!"
-				elseif level then "LEVEL " .. tostring(level) .. " CLEAR!"
+				elseif level then "MAP " .. tostring(level) .. " CLEAR!"
 				else "COURSE CLEAR!",
 			TextSize = T.H1,
 			TextWrapped = false,
@@ -2983,7 +2989,13 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		})
 		local levelLine = if type(data.levelName) == "string" then data.levelName else ""
 		if level and data.newBest and data.assisted ~= true then
-			levelLine = "Level " .. tostring(level) .. (if levelLine ~= "" then "  ·  " .. levelLine else "")
+			levelLine = "Map " .. tostring(level) .. (if levelLine ~= "" then "  ·  " .. levelLine else "")
+		end
+		-- The falls of the run (Parkour counts them; other modes send none).
+		local falls = tonumber(data.falls)
+		if falls then
+			local fallsText = if falls <= 0 then "No falls!" elseif falls == 1 then "1 fall" else string.format("%d falls", falls)
+			levelLine = if levelLine ~= "" then levelLine .. "  ·  " .. fallsText else fallsText
 		end
 		Kit.text(box, {
 			Name = "LevelName",
@@ -3023,9 +3035,19 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		-- Runs inside the reward cooldown pay nothing: no empty "+$0" row.
 		well.Visible = cashTotal > 0
 		local cashLabel = cashRow(well, cashTotal)
+		-- Parkour says why the cash is what it is (`pay`): a clean run inside the cooldown
+		-- pays a share of the map's reward, a run with gear on nothing.
+		local payNote: string? = nil
+		if data.pay == "repeat" then
+			local share = math.floor((tonumber(data.repeatShare) or Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
+			payNote = string.format("Run again bonus +%s (%d%%)", Format.money(cashTotal), share)
+		elseif data.pay == "assisted" then
+			payNote = "Gear on: no bonus"
+		end
 		local note = Kit.text(box, {
-			Text = if cooling
-				then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
+			Text = if payNote
+				then payNote
+				elseif cooling then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
 				else "Nice run! Try to beat your best.",
 			TextSize = T.Small,
 			Size = UDim2.new(1, -40, 0, 22),
@@ -3037,7 +3059,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		if unlockedNew then
 			unlockChip = Kit.pill(box, {
 				Name = "Unlocked",
-				Text = "Level " .. tostring(nextLevel) .. " unlocked!",
+				Text = "Map " .. tostring(nextLevel) .. " unlocked!",
 				Font = Theme.Fonts.Display,
 				TextSize = T.Small,
 				Color = C.Good,
@@ -3054,7 +3076,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		if hasNext then
 			nextButton = Kit.button(box, {
 				Name = "Next",
-				Text = "Next level ▶",
+				Text = "Next map ▶",
 				Font = Theme.Fonts.Display,
 				Color = C.Gold,
 				Breathe = true,
@@ -3145,7 +3167,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 				return "+" .. Format.money(n)
 			end, 0.8)
 		end)
-		if cooling then
+		if cooling and not payNote then
 			-- The countdown line ticks while the card is up.
 			task.spawn(function()
 				while note.Parent do
@@ -4606,19 +4628,14 @@ end
 	The free gift: a small glass card in the middle of the screen with the gift badge, the
 	cash counting up over a toss of coins, and when the next one is due. Not modal and it
 	takes no input: it goes by itself after GIFT_LIFE. data: cash, nextIn (seconds; the
-	cooldown when absent). The claim reaches the client twice (the "Cash" effect and the Gift notify):
-	the second one inside GIFT_LIFE is the same gift.
+	cooldown when absent): the server's Gift notify. The "Cash" effect of the same claim
+	brings the sound and the coins (Main), not a second card.
 ]]
 local GIFT_LIFE = 3.2
 local GIFT_W, GIFT_H = 380, 168
-local giftAt = -math.huge
 function Popups.gift(data: { [string]: any })
 	local now = os.clock()
-	if now - giftAt < GIFT_LIFE then
-		return
-	end
-	giftAt = now
-	local cash = math.max(tonumber(data.cash) or tonumber(data.amount) or 0, 0)
+	local cash = math.max(tonumber(data.cash) or 0, 0)
 	local nextIn = tonumber(data.nextIn) or Economy.FREE_REWARD_COOLDOWN
 	local old = screen:FindFirstChild("GiftCard")
 	if old then
@@ -4825,12 +4842,16 @@ local function setSurgeChip(seconds: number?)
 	end
 end
 
+-- A surge is told once: `surgeToldUntil` is the os.clock() its telling covers.
+local surgeToldUntil = -math.huge
+
 local function surgeBanner()
 	local now = os.clock()
 	if now - surgeBannerAt < 10 or surgeQuiet() then
 		return
 	end
 	surgeBannerAt = now
+	surgeToldUntil = now + Economy.SURGE_DURATION
 	Popups.banner({
 		Text = string.format("%s x%d: double cash!", W.Surge, Economy.SURGE_MULTIPLIER),
 		Color = C.Amber,
@@ -4840,11 +4861,17 @@ local function surgeBanner()
 end
 
 -- One look at the server clock: the chip while a surge is SURGE_WARN or less away, the
--- banner on the step into a surge (`wasActive` false: not for a surge found on join).
+-- banner on the step into a surge. A surge found already running (on join, when the
+-- tutorial ends, back from a course) gets a toast with the time left instead, as soon as
+-- the screen is free; the server sends nothing for it.
 local function surgeTick(wasActive: boolean?): boolean
 	local active, left = Economy.surgeState(Workspace:GetServerTimeNow())
 	if active and wasActive == false then
 		surgeBanner()
+	end
+	if active and left > 5 and os.clock() >= surgeToldUntil and not surgeQuiet() then
+		surgeToldUntil = os.clock() + left + 5
+		Popups.toast(string.format("%s x%d is on: %s left", W.Surge, Economy.SURGE_MULTIPLIER, Format.time(left)), "good")
 	end
 	if not active and left <= SURGE_WARN and not surgeQuiet() then
 		setSurgeChip(left)
@@ -4854,7 +4881,8 @@ local function surgeTick(wasActive: boolean?): boolean
 	return active
 end
 
--- The server's Surge notify: { phase = "soon", seconds = 30 } | "start" | "end".
+-- The server's Surge notify: { phase = "soon", seconds = 30 } | "start" | "end". It is not
+-- sent during the tutorial.
 function Popups.surge(payload: { [string]: any })
 	if payload.phase == "start" then
 		setSurgeChip(nil)

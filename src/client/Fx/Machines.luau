@@ -1824,7 +1824,10 @@ local function stepCrackers(now: number)
 			end
 		end
 
-		local urgency = 1 - math.clamp(left / 300, 0, 1)
+		-- Rattles harder over the last part of the crate's own timer (10 s to 5 min), not
+		-- of a fixed 5 minutes.
+		local total = if type(slot) == "table" then tonumber(slot.totalSeconds) or 0 else 0
+		local urgency = 1 - math.clamp(left / math.max(total, left, 1), 0, 1)
 		local base = CFrame.new(holo.Position + Vector3.new(0, -0.2, 0)) * CFrame.Angles(0, math.rad(20), 0)
 		local shake = CFrame.identity
 		if ready then
@@ -1837,7 +1840,7 @@ local function stepCrackers(now: number)
 		else
 			if now >= cr.nextShake then
 				cr.shakeUntil = now + 0.25 + urgency * 0.2
-				cr.nextShake = now + math.clamp(left / 30, 0.4, 2.5)
+				cr.nextShake = now + 0.4 + (1 - urgency) * 2.1
 			end
 			if now < cr.shakeUntil then
 				local amp = 0.03 + urgency * 0.08

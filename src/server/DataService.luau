@@ -30,7 +30,9 @@ local MAX_RETRIES = 4
 local VERSION = 3
 DataService.VERSION = VERSION
 
-export type Unlocker = { rarity: string, endsAt: number }
+-- `seconds`: the crate's whole timer (the Smasher's progress ring); absent on slots saved
+-- before it was kept.
+export type Unlocker = { rarity: string, endsAt: number, seconds: number? }
 
 export type Profile = {
 	version: number,
@@ -258,6 +260,8 @@ local function reconcile(data: any): Profile
 		local slot = data.unlockers[i]
 		if type(slot) ~= "table" or type(slot.rarity) ~= "string" or type(slot.endsAt) ~= "number" then
 			data.unlockers[i] = { rarity = "", endsAt = 0 }
+		elseif slot.seconds ~= nil and type(slot.seconds) ~= "number" then
+			slot.seconds = nil
 		end
 	end
 	for key, value in default.settings :: any do

@@ -160,8 +160,10 @@ Tycoon.hooks = {
 }
 
 -- Gameplay event listeners (used by the tutorial): fn(session, name, data).
--- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge", and "Discover" (a tier was discovered
--- for the first time; Analytics counts its milestones).
+-- Names: "Buy", "Pickup", "Deposit", "Cash", "Merge", "Discover" (a tier was discovered
+-- for the first time; Analytics counts its milestones), and for Analytics alone "Earn"
+-- { source, amount }, "Spend" { sink, amount }, "Crate" { path, rarity } and "Notify" (every
+-- Notify payload sent to the player).
 Tycoon.listeners = {} :: { (Session, string, { [string]: any }) -> () }
 
 local function emit(session: Session, name: string, data: { [string]: any })
@@ -199,21 +201,17 @@ end
 
 local function notify(session: Session, payload: { [string]: any })
 	NotifyRemote:FireClient(session.player, payload)
+	emit(session, "Notify", payload)
 end
 
--- `extra`: more fields for the Toast payload (the client may show them its own way).
-local function toast(session: Session, text: string, tone: string?, extra: { [string]: any }?)
+local function toast(session: Session, text: string, tone: string?)
 	-- Pads fire repeatedly if a player hops on them; avoid spamming the same text.
 	local now = os.clock()
 	if session.lastToast[text] and now - session.lastToast[text] < 1 then
 		return
 	end
 	session.lastToast[text] = now
-	local payload: { [string]: any } = { kind = "Toast", text = text, tone = tone or "info" }
-	for key, value in extra or ({} :: { [string]: any }) do
-		payload[key] = value
-	end
-	notify(session, payload)
+	notify(session, { kind = "Toast", text = text, tone = tone or "info" })
 end
 Tycoon.toast = toast
 Tycoon.notify = notify
@@ -467,11 +465,15 @@ local function mergeTarget(diff: ShelfDiff, tier: number): Vector3?
 end
 
 -- One "Merge" effect per merge step (fromTier -> fromTier + 1), or a single
--- summarised effect when a batch cascades through many tiers.
-local function sendMergeEffects(session: Session, steps: { Economy.MergeStep }, auto: boolean, diff: ShelfDiff)
+-- summarised effect when a batch cascades through many tiers. `before` = earning() from
+-- before the action: every effect then carries productionBefore / productionAfter (aura per
+-- second without the Aura Surge), what the whole action added, for the float over the rack.
+local function sendMergeEffects(session: Session, steps: { Economy.MergeStep }, auto: boolean, diff: ShelfDiff, before: Earning?)
 	if #steps == 0 then
 		return
 	end
+	local productionBefore = if before then before.production else nil
+	local productionAfter = if before then steadyProduction(session) else nil
 	if #steps > MAX_MERGE_EFFECTS then
 		local from: { Vector3 } = {}
 		local total = 0
@@ -493,6 +495,8 @@ local function sendMergeEffects(session: Session, steps: { Economy.MergeStep }, 
 			auto = auto,
 			count = total,
 			summary = true,
+			productionBefore = productionBefore,
+			productionAfter = productionAfter,
 		})
 		return
 	end
@@ -519,6 +523,8 @@ local function sendMergeEffects(session: Session, steps: { Economy.MergeStep }, 
 			to = to,
 			auto = auto,
 			count = step.made,
+			productionBefore = productionBefore,
+			productionAfter = productionAfter,
 		})
 		carry = to or from[1]
 	end
@@ -660,7 +666,7 @@ local function awardUnit(session: Session, tier: number, source: string)
 	local steps = autoMergeIfOn(session)
 	local diff = refreshDisplay(session)
 	sendOverflowEffect(session, fit.steps, diff)
-	sendMergeEffects(session, steps, true, diff)
+	sendMergeEffects(session, steps, true, diff, before)
 	if not isNew then
 		notify(session, { kind = "Reward", tier = tier, new = false, source = source })
 	end
@@ -920,6 +926,7 @@ local function spawnFloorChest(session: Session)
 end
 
 local function openChest(session: Session, rarity: string, source: string)
+	emit(session, "Crate", { path = source, rarity = rarity })
 	local tier = Economy.rollChest(rarity, highestTier(session), random)
 	-- The profile's first crate has opened: later ones take their full Smasher time.
 	session.profile.firstCrateDone = true
@@ -1339,12 +1346,12 @@ local function buy(session: Session, amount: number)
 	local diff = refreshDisplay(session)
 	effect(session, "Buy", { amount = bought, tier = tier, cost = cost, padPos = padPos(session, padName) })
 	sendOverflowEffect(session, fit.steps, diff)
-	sendMergeEffects(session, steps, true, diff)
+	sendMergeEffects(session, steps, true, diff, before)
 	discoverAll(session, stepTiers(steps, stepTiers(fit.steps, { tier })), before)
 	if bought < amount then
 		toast(session, string.format("Rack full: bought %d of %d", bought, amount), "info")
 	end
-	emit(session, "Buy", { amount = bought })
+	emit(session, "Buy", { amount = bought, cost = cost })
 	markDirty(session)
 end
 
@@ -1371,9 +1378,9 @@ local function buyMax(session: Session): boolean
 	p.totalObtained += plan.amount
 	local diff = refreshDisplay(session)
 	effect(session, "Buy", { amount = plan.amount, tier = 1, cost = plan.cost, padPos = padPos(session, BUY_MAX_PAD), max = true })
-	sendMergeEffects(session, plan.steps, true, diff)
+	sendMergeEffects(session, plan.steps, true, diff, before)
 	discoverAll(session, stepTiers(plan.steps, { 1 }), before)
-	emit(session, "Buy", { amount = plan.amount })
+	emit(session, "Buy", { amount = plan.amount, cost = plan.cost })
 	markDirty(session)
 	return true
 end
@@ -1394,34 +1401,15 @@ local function doMerge(session: Session, verbose: boolean, auto: boolean)
 	local p = session.profile
 	local before = Economy.productionPerSecond(p.units)
 	local earningBefore = earning(session)
-	local bestBefore = highestTier(session)
 	local merges, top, steps = Economy.mergeAll(p.units)
 	if merges > 0 then
 		local after = Economy.productionPerSecond(p.units)
 		local diff = refreshDisplay(session)
-		sendMergeEffects(session, steps, auto, diff)
+		-- No toast: the client floats the count and the aura gained over the rack, from the
+		-- "Merge" effects (or shows the reveal of a new tier, from the Reward notify).
+		sendMergeEffects(session, steps, auto, diff, earningBefore)
 		discoverAll(session, stepTiers(steps), earningBefore)
 		emit(session, "Merge", { merges = merges, top = top, before = before, after = after })
-		if verbose then
-			local times = if merges == 1 then "once" else Format.short(merges) .. " times"
-			local text = string.format("Merged %s! %s +%s/sec", times, theme.Words.Orb, perSecond(after - before))
-			-- Named only when this merge made a tier the player never had.
-			if top > bestBefore then
-				text ..= string.format(" New best: %s!", tierName(top))
-			end
-			-- `merge`: the same numbers for a client that shows them over the rack instead.
-			local earningAfter = earning(session)
-			toast(session, text, "good", {
-				merge = {
-					merges = merges,
-					productionBefore = earningBefore.production,
-					productionAfter = earningAfter.production,
-					incomeBefore = earningBefore.income,
-					incomeAfter = earningAfter.income,
-					newTier = top > bestBefore,
-				},
-			})
-		end
 		markDirty(session)
 	elseif verbose then
 		-- First run: a new player spawns facing this pad and walks onto it before the
@@ -1552,6 +1540,7 @@ local function procUpgrade(session: Session, amount: number, padName: string)
 	local gain = upgradeGain(session, amount)
 	if spend(session, Economy.processBulkCost(p.processLevel, amount), padName) then
 		p.processLevel += amount
+		emit(session, "Spend", { sink = "Converter", amount = Economy.processBulkCost(p.processLevel - amount, amount) })
 		effect(session, "Upgrade", { pad = padName, padPos = padPos(session, padName), level = p.processLevel })
 		local what = if gain > 0 then "+$" .. perSecond(gain) .. "/sec" else string.format("+%s speed", upgradeSpeed(amount))
 		toast(session, string.format("Blender Lv %d: %s", p.processLevel, what), "good")
@@ -1578,6 +1567,7 @@ local function loadUnlocker(session: Session, slotIndex: number): number
 	p.firstCrateDone = true
 	slot.rarity = p.heldChest
 	slot.endsAt = os.time() + seconds
+	slot.seconds = seconds
 	clearHeld(session)
 	return seconds
 end
@@ -1675,6 +1665,7 @@ padHandlers.Free = function(session)
 	end
 	local cash = math.max(Economy.FREE_REWARD_MIN, Tycoon.income(session) * Economy.FREE_REWARD_SECONDS)
 	addMoney(session, cash)
+	emit(session, "Earn", { source = "Free", amount = cash })
 	p.lastFreeReward = os.time()
 	-- A reward card on the client; `nextIn` = seconds until the next gift.
 	notify(session, { kind = "Gift", cash = cash, nextIn = Economy.FREE_REWARD_COOLDOWN })
@@ -1788,9 +1779,17 @@ local function snapshot(session: Session): { [string]: any }
 	local now = os.time()
 	local unlockers = {}
 	for i, slot in p.unlockers do
+		local left = if slot.rarity ~= "" then math.max(0, slot.endsAt - now) else 0
+		-- `totalSeconds`: the whole timer of the crate in the slot, for the progress ring. A
+		-- crate loaded before the slot kept its time has its rarity's.
+		local total = 0
+		if slot.rarity ~= "" then
+			total = slot.seconds or (if Economy.isRarity(slot.rarity) then Economy.unlockSeconds(slot.rarity, i == 2) else 0)
+		end
 		unlockers[i] = {
 			rarity = slot.rarity,
-			secondsLeft = if slot.rarity ~= "" then math.max(0, slot.endsAt - now) else 0,
+			secondsLeft = left,
+			totalSeconds = math.max(total, left),
 		}
 	end
 	local production = Tycoon.production(session)
@@ -2117,6 +2116,7 @@ end
 
 actionHandlers.DiscardChest = function(session)
 	if session.profile.heldChest ~= "" then
+		emit(session, "Crate", { path = "discard", rarity = session.profile.heldChest })
 		clearHeld(session)
 		toast(session, theme.Words.Chest .. " discarded.", "info")
 	end
@@ -2454,6 +2454,7 @@ end
 -- purchase always pays out.
 function Tycoon.openCrateProduct(session: Session)
 	local p = session.profile
+	emit(session, "Crate", { path = "paid" })
 	local slotIndex = p.pendingUnlocker
 	local slot = p.unlockers[slotIndex]
 	p.pendingUnlocker = 0
@@ -2489,6 +2490,7 @@ end
 -- "Daily" = the daily reward).
 function Tycoon.grantMoney(session: Session, amount: number, source: string?)
 	addMoney(session, amount)
+	emit(session, "Earn", { source = source or "Purchase", amount = amount })
 	local root = rootPart(session)
 	effect(session, "Cash", { amount = amount, source = source or "Purchase", padPos = root and root.Position })
 	markDirty(session)
@@ -2507,17 +2509,6 @@ end
 function Tycoon.grantCrate(session: Session, rarity: string, tier: number)
 	awardUnit(session, tier, "unlock")
 	effect(session, "ChestOpen", { rarity = rarity, tier = tier })
-	markDirty(session)
-	flush(session)
-end
-
--- Aura pack: aura straight into the tank, ready for the converter. Not a pickup (no
--- "Pickup" event, so quests and the orb collect counter ignore it); flush refreshes the
--- Deposit pad label (updateBoards) and the HUD tank (State).
-function Tycoon.grantAura(session: Session, amount: number)
-	session.profile.carried += amount
-	toast(session, "+" .. Format.short(amount) .. " " .. string.lower(theme.Words.Orb) .. " in your tank!", "good")
-	effect(session, "AuraGrant", { amount = amount })
 	markDirty(session)
 	flush(session)
 end
@@ -2576,8 +2567,13 @@ function Tycoon.init(builtWorld: WorldBuilder.World, themeModule: any)
 			if notice then
 				-- `seconds`: until the surge starts ("soon") or ends ("start"); 0 at its end.
 				local seconds = if notice == "end" then 0 else math.max(1, math.floor(left + 0.5))
+				-- Not during the tutorial: its player has not met the surge yet. A player who
+				-- joins (or ends the tutorial) mid-surge gets nothing here: the client reads
+				-- the same clock (Economy.surgeState) and shows the state it finds.
 				for _, session in sessions do
-					notify(session, { kind = "Surge", phase = notice, seconds = seconds, multiplier = Economy.SURGE_MULTIPLIER })
+					if session.profile.tutorialDone then
+						notify(session, { kind = "Surge", phase = notice, seconds = seconds, multiplier = Economy.SURGE_MULTIPLIER })
+					end
 				end
 			end
 			for _, session in sessions do

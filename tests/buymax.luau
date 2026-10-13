@@ -295,10 +295,21 @@ local function suite(h: { [string]: any })
 			check(string.find(body("discoverAll"), field, 1, true) ~= nil, "Reward notify has " .. field)
 		end
 		check(has("Economy.unitRates(newest)"), "rates are a dense list up to the newest tier")
-		check(has("merge = {"), "the merge toast carries its numbers")
+		-- Merges: no toast, every "Merge" effect carries the aura gained by the whole action.
+		check(not has('"Merged %s!'), "a merge sends no toast")
+		local mergeEffects = body("sendMergeEffects")
+		local _, pairsSent = string.gsub(mergeEffects, "productionBefore = productionBefore,\n%s*productionAfter = productionAfter,", "")
+		eq(pairsSent, 2, "both kinds of Merge effect carry the production before and after")
+		local _, withBefore = string.gsub(source, "sendMergeEffects%(session, [%w%.]+, %a+, diff, %a+%)", "")
+		eq(withBefore, 4, "every merging action passes its earning from before")
+		check(
+			string.find(body("doMerge"), "sendMergeEffects(session, steps, auto, diff, earningBefore)", 1, true) ~= nil,
+			"the Merge pad too"
+		)
 
 		-- Surge and gift notifies.
 		check(has('kind = "Surge", phase = notice, seconds = seconds'), "the surge is announced")
+		check(has('if session.profile.tutorialDone then\n\t\t\t\t\t\tnotify(session, { kind = "Surge"'), "but not during the tutorial")
 		check(has("Economy.surgeNotice(surgePhase, phase)"), "on a phase change only")
 		check(has('kind = "Gift", cash = cash'), "the free gift sends a Gift notify")
 		check(not has('"Free reward: +"'), "and no toast")

@@ -201,7 +201,12 @@ There are still no checkpoints.
   coil is worn; "Oops! Back to the start" shows for 1.5 s after a fall. SKIP MAP is a small grey
   button that opens a question ("Skip Sweeper Bay for $250? You get no reward for a skipped map.",
   YES, SKIP / NO, KEEP GOING); only YES fires `ParkourSkip`.
-- **One word: MAP.** The HUD and the picker say "MAP n" (the picker said "Level n").
+- **One word: MAP.** The HUD, the picker, the run pill's chip ("MAP 3") and the finish card
+  ("MAP 3 CLEAR!", "Map 4 unlocked!", "Next map") say "MAP n" (they said "Level n" / "L3").
+- **Finish card.** The map's name line adds the falls of the run ("No falls!", "2 falls"). Under
+  the cash, by `pay`: `"repeat"` reads "Run again bonus +$X (20%)", `"assisted"` reads "Gear on:
+  no bonus". The Modes window's Parkour row reads "Run again: +$X · full reward in m:ss" inside
+  the cooldown. A lava fall no longer adds a toast: the HUD's "Ouch! Back to the start" says it.
 - **Picker.** The side panel labels its pips "Difficulty n/10". A locked card shows "Clear
   <previous map> first" where its pips were and what its first clear pays beside the lock, and
   still shakes with the bubble when tapped. Inside the cooldown the reward line of a cleared map

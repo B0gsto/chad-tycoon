@@ -87,8 +87,6 @@ Hud.buttons = {} :: { [string]: TextButton }
 -- Filled in by build(); safe no-ops before that.
 Hud.pulseTank = function(_big: boolean?) end
 Hud.coinBurst = function(_amount: number, _padPos: Vector3?, _fromGui: GuiObject?) end
--- Aura orbs burst from the screen centre into the dumbbell tank (aura pack bought).
-Hud.orbBurst = function(_amount: number) end
 -- os.clock() of the last free-reward claim from the HUD (Main flies those coins from it).
 Hud.freeClaimedAt = 0
 -- Red shake on the cash amount ("can't afford").
@@ -175,6 +173,10 @@ end
 -- width, labels are measured. Hidden items take no space. Returns the end x.
 
 function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
+	-- Luau allows 200 locals in one function and this one is close to it (a chunk over the
+	-- limit does not load at all; tests/fx_juice.luau compiles every script to catch it).
+	-- Sections whose locals nothing later needs sit in `do ... end` blocks: keep new state
+	-- inside one, or in a block of its own.
 	local action = Net.event("Action")
 	local compact = false
 	local promoFits = true -- touch: the promo only shows where it clears the thumbstick
@@ -631,6 +633,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- A gold "L3" chip on the left names the Parkour level (the Star shows without one).
 	-- Glass like the other top-centre notifications (Kit.hudGlass), with an outlined clock.
 	local RUN_W, RUN_H = 236, 36
+	-- The "MAP 3" chip of a run with levels, and where the clock starts beside it (beside
+	-- the star otherwise). Such a run has no checkpoints, so the n/N chip is not in the way.
+	local RUN_MAP_W, RUN_CLOCK_X = 60, 42
 	local RUN_ANCHOR = Vector2.new(0.5, 0)
 	local runRest = UDim2.new(0.5, 0, 0, RUN_Y)
 	local runAway = UDim2.new(0.5, 0, 0, -RUN_H - 20)
@@ -645,11 +650,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Kit.icon(runPill, "Star", 22, C.Gold, { Position = UDim2.new(0, 10, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), ZIndex = 3 })
 	local runLevel = Kit.text(runPill, {
 		Name = "Level",
-		Text = "L1",
+		Text = "MAP 1",
 		Font = Theme.Fonts.Display,
-		TextSize = 15,
+		TextSize = 14,
 		TextWrapped = false,
-		Size = UDim2.fromOffset(34, 24),
+		Size = UDim2.fromOffset(RUN_MAP_W, 24),
 		Position = UDim2.new(0, 6, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
 		BackgroundColor3 = C.Gold,
@@ -668,7 +673,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		StrokeThickness = 2,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.fromOffset(82, RUN_H),
-		Position = UDim2.fromOffset(42, 0),
+		Position = UDim2.fromOffset(RUN_CLOCK_X, 0),
 		ZIndex = 3,
 	})
 	local runCheck = Kit.text(runPill, {
@@ -722,78 +727,82 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		ZIndex = 4,
 	}, onQuit)
 	hitPad(quitButton, onQuit)
-	local runStartedAt = 0
-	local runShown = false
-	local runConn: RBXScriptConnection? = nil
-	local lastClockText = ""
-	Hud.runStart = function(startedAt: number, checkpoint: number, checkpoints: number, level: number?)
-		runStartedAt = startedAt
-		runStar.Visible = level == nil
-		runLevel.Visible = level ~= nil
-		if level then
-			runLevel.Text = "L" .. tostring(level)
-		end
-		runCheck.Text = string.format("%d/%d", checkpoint, checkpoints)
-		-- Modes without checkpoints (the obby, since maps have none) hide the n/N chip.
-		runCheck.Visible = checkpoints > 0
-		quitArmed = false
-		Kit.setButton(quitButton, "X", C.SurfaceHi)
-		quitButton.Size = UDim2.fromOffset(30, 28)
-		runPill.Size = UDim2.fromOffset(RUN_W, RUN_H)
-		runPill.AnchorPoint = RUN_ANCHOR
-		screen:SetAttribute("RunActive", true)
-		if not runShown then
-			runShown = true
-			runPill.Visible = true
-			runPill.Position = runAway
-			Kit.tween(runPill, 0.3, { Position = runRest }, Enum.EasingStyle.Back)
-		end
-		if not runConn then
-			runConn = RunService.Heartbeat:Connect(function()
-				local tenths = math.floor(math.max(Workspace:GetServerTimeNow() - runStartedAt, 0) * 10)
-				local text = string.format("%d:%02d.%d", tenths // 600, (tenths // 10) % 60, tenths % 10)
-				if text ~= lastClockText then
-					lastClockText = text
-					runClock.Text = text
-				end
-			end)
-		end
-	end
-	Hud.runCheckpoint = function(index: number, checkpoints: number)
-		runCheck.Text = string.format("%d/%d", index, checkpoints)
-		runCheckScale.Scale = 1.35
-		Kit.tween(runCheckScale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
-		Kit.tween(runCheck, 0.12, { BackgroundColor3 = C.Good })
-		task.delay(0.35, function()
-			Kit.tween(runCheck, 0.3, { BackgroundColor3 = C.Well })
-		end)
-	end
-	Hud.runStop = function()
-		if runConn then
-			runConn:Disconnect()
-			runConn = nil
-		end
-		quitArmed = false
-		screen:SetAttribute("RunActive", false)
-		if runShown then
-			runShown = false
-			Kit.tween(runPill, 0.25, { Position = runAway }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-			task.delay(0.26, function()
-				if not runShown then
-					runPill.Visible = false
-				end
-			end)
-		end
-	end
-
-	Hud.dockRun = function(pos: UDim2?, anchor: Vector2?)
-		local rest = pos or UDim2.new(0.5, 0, 0, RUN_Y)
-		RUN_ANCHOR = anchor or Vector2.new(0.5, 0)
-		runRest = rest
-		runAway = UDim2.new(rest.X.Scale, rest.X.Offset, 0, -RUN_H - 20)
-		if runShown then
+	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
+	do
+		local runStartedAt = 0
+		local runShown = false
+		local runConn: RBXScriptConnection? = nil
+		local lastClockText = ""
+		Hud.runStart = function(startedAt: number, checkpoint: number, checkpoints: number, level: number?)
+			runStartedAt = startedAt
+			runStar.Visible = level == nil
+			runLevel.Visible = level ~= nil
+			runClock.Position = UDim2.fromOffset(if level then RUN_MAP_W + 12 else RUN_CLOCK_X, 0)
+			if level then
+				runLevel.Text = "MAP " .. tostring(level)
+			end
+			runCheck.Text = string.format("%d/%d", checkpoint, checkpoints)
+			-- Modes without checkpoints (the obby, since maps have none) hide the n/N chip.
+			runCheck.Visible = checkpoints > 0
+			quitArmed = false
+			Kit.setButton(quitButton, "X", C.SurfaceHi)
+			quitButton.Size = UDim2.fromOffset(30, 28)
+			runPill.Size = UDim2.fromOffset(RUN_W, RUN_H)
 			runPill.AnchorPoint = RUN_ANCHOR
-			Kit.tween(runPill, 0.25, { Position = runRest }, Enum.EasingStyle.Quad)
+			screen:SetAttribute("RunActive", true)
+			if not runShown then
+				runShown = true
+				runPill.Visible = true
+				runPill.Position = runAway
+				Kit.tween(runPill, 0.3, { Position = runRest }, Enum.EasingStyle.Back)
+			end
+			if not runConn then
+				runConn = RunService.Heartbeat:Connect(function()
+					local tenths = math.floor(math.max(Workspace:GetServerTimeNow() - runStartedAt, 0) * 10)
+					local text = string.format("%d:%02d.%d", tenths // 600, (tenths // 10) % 60, tenths % 10)
+					if text ~= lastClockText then
+						lastClockText = text
+						runClock.Text = text
+					end
+				end)
+			end
+		end
+		Hud.runCheckpoint = function(index: number, checkpoints: number)
+			runCheck.Text = string.format("%d/%d", index, checkpoints)
+			runCheckScale.Scale = 1.35
+			Kit.tween(runCheckScale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+			Kit.tween(runCheck, 0.12, { BackgroundColor3 = C.Good })
+			task.delay(0.35, function()
+				Kit.tween(runCheck, 0.3, { BackgroundColor3 = C.Well })
+			end)
+		end
+		Hud.runStop = function()
+			if runConn then
+				runConn:Disconnect()
+				runConn = nil
+			end
+			quitArmed = false
+			screen:SetAttribute("RunActive", false)
+			if runShown then
+				runShown = false
+				Kit.tween(runPill, 0.25, { Position = runAway }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+				task.delay(0.26, function()
+					if not runShown then
+						runPill.Visible = false
+					end
+				end)
+			end
+		end
+
+		Hud.dockRun = function(pos: UDim2?, anchor: Vector2?)
+			local rest = pos or UDim2.new(0.5, 0, 0, RUN_Y)
+			RUN_ANCHOR = anchor or Vector2.new(0.5, 0)
+			runRest = rest
+			runAway = UDim2.new(rest.X.Scale, rest.X.Offset, 0, -RUN_H - 20)
+			if runShown then
+				runPill.AnchorPoint = RUN_ANCHOR
+				Kit.tween(runPill, 0.25, { Position = runRest }, Enum.EasingStyle.Quad)
+			end
 		end
 	end
 
@@ -1464,45 +1473,48 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end
 		end)
 	end
-	-- Shown once the tutorial is done, outside the intro and game-mode runs. A tutorial
-	-- finished this session first lets its quest pill slide out of the slot.
-	local goalHoldUntil = 0
-	local goalSawTutorial = false
-	local function updateGoal()
-		local data = State.data
-		local player = Players.LocalPlayer
-		local show = data ~= nil
-			and data.tutorialDone == true
-			and os.clock() >= goalHoldUntil
-			and screen:GetAttribute("RunActive") ~= true
-			and screen:GetAttribute("ObbyMode") ~= true
-			and screen:GetAttribute("CardioActive") ~= true
-			and not (player ~= nil and player:GetAttribute("IntroPlaying") == true)
-		if show and data then
-			paintGoal(data)
+	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
+	do
+		-- Shown once the tutorial is done, outside the intro and game-mode runs. A tutorial
+		-- finished this session first lets its quest pill slide out of the slot.
+		local goalHoldUntil = 0
+		local goalSawTutorial = false
+		local function updateGoal()
+			local data = State.data
+			local player = Players.LocalPlayer
+			local show = data ~= nil
+				and data.tutorialDone == true
+				and os.clock() >= goalHoldUntil
+				and screen:GetAttribute("RunActive") ~= true
+				and screen:GetAttribute("ObbyMode") ~= true
+				and screen:GetAttribute("CardioActive") ~= true
+				and not (player ~= nil and player:GetAttribute("IntroPlaying") == true)
+			if show and data then
+				paintGoal(data)
+			end
+			if show ~= goalShown then
+				goalShown = show
+				goal.Visible = show
+			end
+			updatePill()
 		end
-		if show ~= goalShown then
-			goalShown = show
-			goal.Visible = show
+		State.changed.Event:Connect(function(data)
+			if data.tutorialDone ~= true then
+				goalSawTutorial = true
+			elseif goalSawTutorial then
+				goalSawTutorial = false
+				goalHoldUntil = os.clock() + 1.5
+				task.delay(1.6, updateGoal)
+			end
+			updateGoal()
+		end)
+		for _, name in { "RunActive", "ObbyMode", "CardioActive" } do
+			screen:GetAttributeChangedSignal(name):Connect(updateGoal)
 		end
-		updatePill()
+		pcall(function()
+			Players.LocalPlayer:GetAttributeChangedSignal("IntroPlaying"):Connect(updateGoal)
+		end)
 	end
-	State.changed.Event:Connect(function(data)
-		if data.tutorialDone ~= true then
-			goalSawTutorial = true
-		elseif goalSawTutorial then
-			goalSawTutorial = false
-			goalHoldUntil = os.clock() + 1.5
-			task.delay(1.6, updateGoal)
-		end
-		updateGoal()
-	end)
-	for _, name in { "RunActive", "ObbyMode", "CardioActive" } do
-		screen:GetAttributeChangedSignal(name):Connect(updateGoal)
-	end
-	pcall(function()
-		Players.LocalPlayer:GetAttributeChangedSignal("IntroPlaying"):Connect(updateGoal)
-	end)
 
 	-- Bottom centre: the dumbbell with "AURA" and the carried amount ----------------------
 	local Assets = (function(): any
@@ -1769,294 +1781,300 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	local cellH = GRID_ICON + CAPTION + GRID_PAD * 2
 	local oneRow = false
 	local L = { edge = EDGE_X, bottom = -6, walletTop = false, walletY = 0, gridY = GRID_Y, tap = 0, tankX = 0, freeY = -20 }
-	local function gridRows(): { { string } }
-		if oneRow then
-			return { { "Home", "Ranking", "Modes", "Index", "Shop", "Invite", "Daily" } }
+	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
+	do
+		local function gridRows(): { { string } }
+			if oneRow then
+				return { { "Home", "Ranking", "Modes", "Index", "Shop", "Invite", "Daily" } }
+			end
+			return GRID_ROWS
 		end
-		return GRID_ROWS
-	end
-	local function gridHeight(): number
-		local rows = #gridRows()
-		return rows * cellH + (rows - 1) * GRID_GAP
-	end
-	-- Viewport (screen px) and the UI scale Main applied.
-	local function view(): (Vector2, number)
-		local scale = if screenScale then screenScale.Scale else 1
-		local ok, size = pcall(function()
-			return Workspace.CurrentCamera.ViewportSize
-		end)
-		if not ok or typeof(size) ~= "Vector2" or size.X <= 0 then
-			size = Vector2.new(1280, 720)
+		local function gridHeight(): number
+			local rows = #gridRows()
+			return rows * cellH + (rows - 1) * GRID_GAP
 		end
-		return size, math.max(scale, 0.01)
-	end
-	local function measure()
-		local size, scale = view()
-		local touch = Kit.touch
-		local pad = Kit.gamepad or Kit.tenFoot
-		L.edge = if pad then SAFE_X else EDGE_X
-		L.bottom = if pad then -SAFE_BOTTOM else -6
-		L.tap = if touch then math.ceil(TAP_PX / scale) else 0
-		L.walletTop = touch
-		oneRow = touch and compact
-		-- The plate is the tap target, so the icon keeps its size on touch; the plate holds
-		-- the icon and the caption at its held size (applyCompact holds it first).
-		gridIcon = if compact then GRID_ICON_COMPACT else GRID_ICON
-		cellH = math.max(GRID_PAD + gridIcon + captions[1].TextSize + 4 + 3, L.tap)
-		-- Top-left wallet: nothing sits over the "Cash" line there (the chips move beside
-		-- it), so the 62 px above it are dropped.
-		local skip = if touch then 62 else 0
-		L.walletY = 168 - skip
-		L.gridY = if touch then 138 - skip + 12 else GRID_Y
-		-- Thumbstick zone: left third, lower half of the screen (design px below the top bar).
-		local designW = size.X / scale
-		local halfY = (size.Y / 2 - TOP_BAR_PX) / scale
-		promoFits = not touch or L.gridY + gridHeight() + PROMO_GAP + PROMO_H + 16 <= halfY
-		local tankW = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
-		L.tankX = if touch then math.max(0, designW / 3 + 8 - (designW - tankW) / 2) else 0
-		-- Jump button: 70 px at 20 px from the corner on small screens, 120 px 90 px up otherwise.
-		local jumpTop = if math.min(size.X, size.Y) <= 500 then 90 else 210
-		L.freeY = if touch then -math.ceil((jumpTop + 8) / scale) elseif pad then -SAFE_BOTTOM else -20
-	end
+		-- Viewport (screen px) and the UI scale Main applied.
+		local function view(): (Vector2, number)
+			local scale = if screenScale then screenScale.Scale else 1
+			local ok, size = pcall(function()
+				return Workspace.CurrentCamera.ViewportSize
+			end)
+			if not ok or typeof(size) ~= "Vector2" or size.X <= 0 then
+				size = Vector2.new(1280, 720)
+			end
+			return size, math.max(scale, 0.01)
+		end
+		local function measure()
+			local size, scale = view()
+			local touch = Kit.touch
+			local pad = Kit.gamepad or Kit.tenFoot
+			L.edge = if pad then SAFE_X else EDGE_X
+			L.bottom = if pad then -SAFE_BOTTOM else -6
+			L.tap = if touch then math.ceil(TAP_PX / scale) else 0
+			L.walletTop = touch
+			oneRow = touch and compact
+			-- The plate is the tap target, so the icon keeps its size on touch; the plate holds
+			-- the icon and the caption at its held size (applyCompact holds it first).
+			gridIcon = if compact then GRID_ICON_COMPACT else GRID_ICON
+			cellH = math.max(GRID_PAD + gridIcon + captions[1].TextSize + 4 + 3, L.tap)
+			-- Top-left wallet: nothing sits over the "Cash" line there (the chips move beside
+			-- it), so the 62 px above it are dropped.
+			local skip = if touch then 62 else 0
+			L.walletY = 168 - skip
+			L.gridY = if touch then 138 - skip + 12 else GRID_Y
+			-- Thumbstick zone: left third, lower half of the screen (design px below the top bar).
+			local designW = size.X / scale
+			local halfY = (size.Y / 2 - TOP_BAR_PX) / scale
+			promoFits = not touch or L.gridY + gridHeight() + PROMO_GAP + PROMO_H + 16 <= halfY
+			local tankW = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
+			L.tankX = if touch then math.max(0, designW / 3 + 8 - (designW - tankW) / 2) else 0
+			-- Jump button: 70 px at 20 px from the corner on small screens, 120 px 90 px up otherwise.
+			local jumpTop = if math.min(size.X, size.Y) <= 500 then 90 else 210
+			L.freeY = if touch then -math.ceil((jumpTop + 8) / scale) elseif pad then -SAFE_BOTTOM else -20
+		end
 
-	local slots: { { gui: GuiObject, rest: () -> UDim2, away: () -> UDim2 } } = {}
-	local function slot(gui: GuiObject, rest: () -> UDim2, away: () -> UDim2)
-		table.insert(slots, { gui = gui, rest = rest, away = away })
-	end
-	slot(grid, function()
-		return UDim2.fromOffset(L.edge, L.gridY)
-	end, function()
-		return UDim2.fromOffset(-600, L.gridY)
-	end)
-	slot(promo, function()
-		return UDim2.fromOffset(L.edge, L.gridY + gridHeight() + PROMO_GAP)
-	end, function()
-		return UDim2.fromOffset(-PROMO_W - 60, L.gridY + gridHeight() + PROMO_GAP)
-	end)
-	slot(wallet, function()
-		return if L.walletTop then UDim2.new(0, L.edge, 0, L.walletY) else UDim2.new(0, L.edge, 1, L.bottom)
-	end, function()
-		return if L.walletTop then UDim2.new(0, L.edge, 0, -60) else UDim2.new(0, L.edge, 1, 200)
-	end)
-	slot(tank, function()
-		return UDim2.new(0.5, L.tankX, 1, L.bottom)
-	end, function()
-		return UDim2.new(0.5, L.tankX, 1, 160)
-	end)
-	slot(corner, function()
-		return UDim2.new(1, -L.edge, 1, L.freeY)
-	end, function()
-		return UDim2.new(1, 120, 1, L.freeY)
-	end)
-	slot(units, function()
-		return UDim2.new(0.5, 0, 0, UNITS_Y)
-	end, function()
-		return UDim2.new(0.5, 0, 0, -140)
-	end)
-	slot(strip, function()
-		return UDim2.new(0.5, 0, 0, STRIP_Y)
-	end, function()
-		return UDim2.new(0.5, 0, 0, -140)
-	end)
-	-- The goal strip: under the deposit strip, or just above the (compact) dumbbell.
-	slot(goal, function()
-		if compact then
-			return UDim2.new(0.5, L.tankX, 1, L.bottom - math.ceil(DUMBBELL_W_COMPACT * DUMBBELL_ASPECT) - 8)
+		local slots: { { gui: GuiObject, rest: () -> UDim2, away: () -> UDim2 } } = {}
+		local function slot(gui: GuiObject, rest: () -> UDim2, away: () -> UDim2)
+			table.insert(slots, { gui = gui, rest = rest, away = away })
 		end
-		return UDim2.new(0.5, 0, 0, goalY())
-	end, function()
-		return if compact then UDim2.new(0.5, L.tankX, 1, 200) else UDim2.new(0.5, 0, 0, -140)
-	end)
-	local targets: { [GuiObject]: UDim2 } = {}
-	-- Groups that have faded out for an open window sit at their away spot.
-	local parked: { [GuiObject]: boolean } = {}
-	local function place(animate: boolean)
-		-- The crate panel (Popups, attribute "CratePanelOpen") covers the right edge
-		-- down to the FREE gift, so the gift steps aside while it is up.
-		local crate = screen:GetAttribute("CratePanelOpen") == true
-		for _, s in slots do
-			local pos = if parked[s.gui] or (crate and s.gui == corner) then s.away() else s.rest()
-			if targets[s.gui] ~= pos then
-				targets[s.gui] = pos
-				if animate then
-					Kit.tween(s.gui, 0.3, { Position = pos }, Enum.EasingStyle.Quad)
-				else
-					s.gui.Position = pos
+		slot(grid, function()
+			return UDim2.fromOffset(L.edge, L.gridY)
+		end, function()
+			return UDim2.fromOffset(-600, L.gridY)
+		end)
+		slot(promo, function()
+			return UDim2.fromOffset(L.edge, L.gridY + gridHeight() + PROMO_GAP)
+		end, function()
+			return UDim2.fromOffset(-PROMO_W - 60, L.gridY + gridHeight() + PROMO_GAP)
+		end)
+		slot(wallet, function()
+			return if L.walletTop then UDim2.new(0, L.edge, 0, L.walletY) else UDim2.new(0, L.edge, 1, L.bottom)
+		end, function()
+			return if L.walletTop then UDim2.new(0, L.edge, 0, -60) else UDim2.new(0, L.edge, 1, 200)
+		end)
+		slot(tank, function()
+			return UDim2.new(0.5, L.tankX, 1, L.bottom)
+		end, function()
+			return UDim2.new(0.5, L.tankX, 1, 160)
+		end)
+		slot(corner, function()
+			return UDim2.new(1, -L.edge, 1, L.freeY)
+		end, function()
+			return UDim2.new(1, 120, 1, L.freeY)
+		end)
+		slot(units, function()
+			return UDim2.new(0.5, 0, 0, UNITS_Y)
+		end, function()
+			return UDim2.new(0.5, 0, 0, -140)
+		end)
+		slot(strip, function()
+			return UDim2.new(0.5, 0, 0, STRIP_Y)
+		end, function()
+			return UDim2.new(0.5, 0, 0, -140)
+		end)
+		-- The goal strip: under the deposit strip, or just above the (compact) dumbbell.
+		slot(goal, function()
+			if compact then
+				return UDim2.new(0.5, L.tankX, 1, L.bottom - math.ceil(DUMBBELL_W_COMPACT * DUMBBELL_ASPECT) - 8)
+			end
+			return UDim2.new(0.5, 0, 0, goalY())
+		end, function()
+			return if compact then UDim2.new(0.5, L.tankX, 1, 200) else UDim2.new(0.5, 0, 0, -140)
+		end)
+		local targets: { [GuiObject]: UDim2 } = {}
+		-- Groups that have faded out for an open window sit at their away spot.
+		local parked: { [GuiObject]: boolean } = {}
+		local function place(animate: boolean)
+			-- The crate panel (Popups, attribute "CratePanelOpen") covers the right edge
+			-- down to the FREE gift, so the gift steps aside while it is up.
+			local crate = screen:GetAttribute("CratePanelOpen") == true
+			for _, s in slots do
+				local pos = if parked[s.gui] or (crate and s.gui == corner) then s.away() else s.rest()
+				if targets[s.gui] ~= pos then
+					targets[s.gui] = pos
+					if animate then
+						Kit.tween(s.gui, 0.3, { Position = pos }, Enum.EasingStyle.Quad)
+					else
+						s.gui.Position = pos
+					end
 				end
 			end
 		end
-	end
-	local function applyCompact()
-		compact = screen:GetAttribute("Compact") == true
-		for _, caption in captions do
-			-- The size is in design px: a small screen's UI scale would shrink it under the
-			-- caption floor, so the size is held on the glass.
-			Kit.holdText(caption, Kit.captionPx(), CAPTION)
-		end
-		measure()
-		-- Every plate is as wide as the widest caption as drawn (the Daily countdown
-		-- counts), so no caption can reach its neighbour. A phone's single row is the one
-		-- exception: there each plate hugs its own caption, or the row would run under the
-		-- top centre.
-		local textSize = captions[1].TextSize
-		local captionH = textSize + 4
-		local function captionWidth(name: string): number
-			local width = drawnWidth(CAPTIONS[name], textSize, F.Display)
-			return if name == "Daily" then math.max(width, drawnWidth("00:00:00", textSize, F.Display)) else width
-		end
-		local widest = 0
-		for name in CAPTIONS do
-			widest = math.max(widest, captionWidth(name))
-		end
-		local gridW = 0
-		for row, names in gridRows() do
-			local x = 0
-			for _, name in names do
-				local button = Hud.buttons[name]
-				local cellW = math.max((if oneRow then captionWidth(name) else widest) + GRID_PAD * 2, gridIcon + GRID_PAD * 2, L.tap)
-				button.Size = UDim2.fromOffset(cellW, cellH)
-				button.Position = UDim2.fromOffset(x, (row - 1) * (cellH + GRID_GAP))
-				gridIcons[name].Size = UDim2.fromOffset(gridIcon, gridIcon)
-				x += cellW + GRID_GAP
+		local function applyCompact()
+			compact = screen:GetAttribute("Compact") == true
+			for _, caption in captions do
+				-- The size is in design px: a small screen's UI scale would shrink it under the
+				-- caption floor, so the size is held on the glass.
+				Kit.holdText(caption, Kit.captionPx(), CAPTION)
 			end
-			gridW = math.max(gridW, x - GRID_GAP)
-		end
-		grid.Size = UDim2.fromOffset(gridW, gridHeight())
-		for _, caption in captions do
-			caption.Size = UDim2.new(1, 0, 0, captionH)
-		end
-		-- The deposit strip's three texts are held the same way (a hard floor: 16, 18 and 14
-		-- design px are 10 to 12 px on a phone), and the strip widens round them.
-		for label, design in STRIP_TEXT do
-			Kit.holdText(label, Kit.captionPx(), design, true)
-		end
-		fitStrip()
-		-- So are the goal strip's (it lays itself out again when a size changes).
-		for label, design in GOAL_TEXT do
-			Kit.holdText(label, Kit.captionPx(), design, true)
-		end
-		-- The bonus chips keep their words at a readable size; a touch phone, where the
-		-- wallet shares the top-left corner with the menu row, goes without them.
-		for _, label in chipTexts do
-			Kit.holdText(label, Kit.captionPx(), CHIP_TEXT)
-		end
-		chips.Visible = not runHid and not (Kit.touch and compact)
-		layoutWallet()
-		local width = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
-		tank.Size = UDim2.fromOffset(width, width * DUMBBELL_ASPECT)
-		-- The caption's line of the compact plaque is shorter than the caption held at its
-		-- phone size (MinPx): its box grows round the line to hold it.
-		local captionRoom = math.max(0, math.ceil(Kit.pxUp(G.TextMinPhone, 0, tankCaption) - width * DUMBBELL_ASPECT * captionSize.Y.Scale))
-		tankCaption.Size = captionSize + UDim2.fromOffset(0, captionRoom)
-		tankCaption.Position = captionPos - UDim2.fromOffset(0, captionRoom // 2)
-		goal.AnchorPoint = Vector2.new(0.5, if compact then 1 else 0)
-		goalPad.Size = UDim2.new(1, 0, 0, math.max(GOAL_H, L.tap))
-		goalPad.Visible = Kit.touch
-		-- The pill: under the strip, or over it where the strip sits above the dumbbell; its
-		-- words held like the strip's, its touch pad growing away from the strip.
-		local pillGap = Kit.pxUp(STACK_GAP, STACK_GAP, screen)
-		local over = if compact then 1 else 0
-		Kit.holdText(pillLabel, Kit.captionPx(), PILL_TEXT, true)
-		layoutPill()
-		nearPill.AnchorPoint = Vector2.new(0.5, over)
-		nearPill.Position = if compact then UDim2.new(0.5, 0, 0, -pillGap) else UDim2.new(0.5, 0, 1, pillGap)
-		pillPad.AnchorPoint = Vector2.new(0.5, over)
-		pillPad.Position = UDim2.fromScale(0.5, over)
-		pillPad.Size = UDim2.new(1, 0, 0, math.max(PILL_H, L.tap))
-		pillPad.Visible = Kit.touch
-		publishPill()
-		-- Gear: on the top bar's line with a mouse; below it (never on Roblox's bar) otherwise.
-		local gearSize = math.max(GEAR, L.tap)
-		gear.Size = UDim2.fromOffset(gearSize, gearSize)
-		gear.Position = if Kit.input == "keyboard" and not Kit.tenFoot then UDim2.new(1, -10, 0, -GEAR - 7) else UDim2.new(1, -L.edge, 0, 4)
-		-- FREE gift grows to a full touch target; the countdown follows it.
-		local freeSize = math.max(60, L.tap)
-		freeButton.Size = UDim2.fromOffset(freeSize, freeSize)
-		corner.Size = UDim2.fromOffset(math.max(84, freeSize + 16), freeSize + 32)
-		freeTimer.Position = UDim2.new(0.5, 0, 0, freeSize + 2)
-		for _, p in pads do
-			local w, h = p.button.Size.X.Offset, p.button.Size.Y.Offset
-			p.pad.Size = UDim2.fromOffset(math.max(w, L.tap), math.max(h, L.tap))
-			p.pad.Visible = Kit.touch and (w < L.tap or h < L.tap)
-		end
-		updatePromo()
-		place(next(targets) ~= nil)
-	end
-	-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
-	local selectables: { GuiObject } = { promoButton, addButton, quitButton, goal, nearPill }
-	for _, button in Hud.buttons do
-		table.insert(selectables, button)
-	end
-	local function updateSelectable()
-		local blocked = screen:GetAttribute("WindowOpen") == true or screen:GetAttribute("ModalOpen") == true
-		for _, button in selectables do
-			Kit.selectable(button, not blocked)
-		end
-	end
-	-- A window, modal or reveal is up: the HUD fades out where it stands, then parks off
-	-- screen (so nothing in it takes a tap) with its resting look back for whatever changes
-	-- meanwhile; closing puts it back and fades it in. The promo eases itself out and in
-	-- (updatePromo); toasts and the tutorial pill belong to their own modules and stay.
-	local faders: { GuiObject } = { grid, wallet, tank, corner, units, strip, goal, gear }
-	local hudHidden = false
-	local function setHudHidden(hidden: boolean)
-		if hidden == hudHidden then
-			return
-		end
-		hudHidden = hidden
-		if hidden then
-			for _, gui in faders do
-				Kit.fade(gui, false, HIDE_TIME, function()
-					if gui == gear then
-						gear.Visible = false
-					else
-						parked[gui] = true
-						place(false)
-					end
-				end)
+			measure()
+			-- Every plate is as wide as the widest caption as drawn (the Daily countdown
+			-- counts), so no caption can reach its neighbour. A phone's single row is the one
+			-- exception: there each plate hugs its own caption, or the row would run under the
+			-- top centre.
+			local textSize = captions[1].TextSize
+			local captionH = textSize + 4
+			local function captionWidth(name: string): number
+				local width = drawnWidth(CAPTIONS[name], textSize, F.Display)
+				return if name == "Daily" then math.max(width, drawnWidth("00:00:00", textSize, F.Display)) else width
 			end
-		else
-			table.clear(parked)
-			gear.Visible = true
-			place(false)
-			for _, gui in faders do
-				Kit.fade(gui, true, HIDE_TIME)
+			local widest = 0
+			for name in CAPTIONS do
+				widest = math.max(widest, captionWidth(name))
+			end
+			local gridW = 0
+			for row, names in gridRows() do
+				local x = 0
+				for _, name in names do
+					local button = Hud.buttons[name]
+					local cellW = math.max((if oneRow then captionWidth(name) else widest) + GRID_PAD * 2, gridIcon + GRID_PAD * 2, L.tap)
+					button.Size = UDim2.fromOffset(cellW, cellH)
+					button.Position = UDim2.fromOffset(x, (row - 1) * (cellH + GRID_GAP))
+					gridIcons[name].Size = UDim2.fromOffset(gridIcon, gridIcon)
+					x += cellW + GRID_GAP
+				end
+				gridW = math.max(gridW, x - GRID_GAP)
+			end
+			grid.Size = UDim2.fromOffset(gridW, gridHeight())
+			for _, caption in captions do
+				caption.Size = UDim2.new(1, 0, 0, captionH)
+			end
+			-- The deposit strip's three texts are held the same way (a hard floor: 16, 18 and 14
+			-- design px are 10 to 12 px on a phone), and the strip widens round them.
+			for label, design in STRIP_TEXT do
+				Kit.holdText(label, Kit.captionPx(), design, true)
+			end
+			fitStrip()
+			-- So are the goal strip's (it lays itself out again when a size changes).
+			for label, design in GOAL_TEXT do
+				Kit.holdText(label, Kit.captionPx(), design, true)
+			end
+			-- The bonus chips keep their words at a readable size; a touch phone, where the
+			-- wallet shares the top-left corner with the menu row, goes without them.
+			for _, label in chipTexts do
+				Kit.holdText(label, Kit.captionPx(), CHIP_TEXT)
+			end
+			chips.Visible = not runHid and not (Kit.touch and compact)
+			layoutWallet()
+			local width = if compact then DUMBBELL_W_COMPACT else DUMBBELL_W
+			tank.Size = UDim2.fromOffset(width, width * DUMBBELL_ASPECT)
+			-- The caption's line of the compact plaque is shorter than the caption held at its
+			-- phone size (MinPx): its box grows round the line to hold it.
+			local captionRoom =
+				math.max(0, math.ceil(Kit.pxUp(G.TextMinPhone, 0, tankCaption) - width * DUMBBELL_ASPECT * captionSize.Y.Scale))
+			tankCaption.Size = captionSize + UDim2.fromOffset(0, captionRoom)
+			tankCaption.Position = captionPos - UDim2.fromOffset(0, captionRoom // 2)
+			goal.AnchorPoint = Vector2.new(0.5, if compact then 1 else 0)
+			goalPad.Size = UDim2.new(1, 0, 0, math.max(GOAL_H, L.tap))
+			goalPad.Visible = Kit.touch
+			-- The pill: under the strip, or over it where the strip sits above the dumbbell; its
+			-- words held like the strip's, its touch pad growing away from the strip.
+			local pillGap = Kit.pxUp(STACK_GAP, STACK_GAP, screen)
+			local over = if compact then 1 else 0
+			Kit.holdText(pillLabel, Kit.captionPx(), PILL_TEXT, true)
+			layoutPill()
+			nearPill.AnchorPoint = Vector2.new(0.5, over)
+			nearPill.Position = if compact then UDim2.new(0.5, 0, 0, -pillGap) else UDim2.new(0.5, 0, 1, pillGap)
+			pillPad.AnchorPoint = Vector2.new(0.5, over)
+			pillPad.Position = UDim2.fromScale(0.5, over)
+			pillPad.Size = UDim2.new(1, 0, 0, math.max(PILL_H, L.tap))
+			pillPad.Visible = Kit.touch
+			publishPill()
+			-- Gear: on the top bar's line with a mouse; below it (never on Roblox's bar) otherwise.
+			local gearSize = math.max(GEAR, L.tap)
+			gear.Size = UDim2.fromOffset(gearSize, gearSize)
+			gear.Position = if Kit.input == "keyboard" and not Kit.tenFoot
+				then UDim2.new(1, -10, 0, -GEAR - 7)
+				else UDim2.new(1, -L.edge, 0, 4)
+			-- FREE gift grows to a full touch target; the countdown follows it.
+			local freeSize = math.max(60, L.tap)
+			freeButton.Size = UDim2.fromOffset(freeSize, freeSize)
+			corner.Size = UDim2.fromOffset(math.max(84, freeSize + 16), freeSize + 32)
+			freeTimer.Position = UDim2.new(0.5, 0, 0, freeSize + 2)
+			for _, p in pads do
+				local w, h = p.button.Size.X.Offset, p.button.Size.Y.Offset
+				p.pad.Size = UDim2.fromOffset(math.max(w, L.tap), math.max(h, L.tap))
+				p.pad.Visible = Kit.touch and (w < L.tap or h < L.tap)
+			end
+			updatePromo()
+			place(next(targets) ~= nil)
+		end
+		-- Gamepad: HUD buttons leave the D-pad's reach while a window or dialog is up.
+		local selectables: { GuiObject } = { promoButton, addButton, quitButton, goal, nearPill }
+		for _, button in Hud.buttons do
+			table.insert(selectables, button)
+		end
+		local function updateSelectable()
+			local blocked = screen:GetAttribute("WindowOpen") == true or screen:GetAttribute("ModalOpen") == true
+			for _, button in selectables do
+				Kit.selectable(button, not blocked)
 			end
 		end
-	end
-	Kit.onWindowOpen(function(open: boolean)
-		setHudHidden(open)
-		updatePromo()
+		-- A window, modal or reveal is up: the HUD fades out where it stands, then parks off
+		-- screen (so nothing in it takes a tap) with its resting look back for whatever changes
+		-- meanwhile; closing puts it back and fades it in. The promo eases itself out and in
+		-- (updatePromo); toasts and the tutorial pill belong to their own modules and stay.
+		local faders: { GuiObject } = { grid, wallet, tank, corner, units, strip, goal, gear }
+		local hudHidden = false
+		local function setHudHidden(hidden: boolean)
+			if hidden == hudHidden then
+				return
+			end
+			hudHidden = hidden
+			if hidden then
+				for _, gui in faders do
+					Kit.fade(gui, false, HIDE_TIME, function()
+						if gui == gear then
+							gear.Visible = false
+						else
+							parked[gui] = true
+							place(false)
+						end
+					end)
+				end
+			else
+				table.clear(parked)
+				gear.Visible = true
+				place(false)
+				for _, gui in faders do
+					Kit.fade(gui, true, HIDE_TIME)
+				end
+			end
+		end
+		Kit.onWindowOpen(function(open: boolean)
+			setHudHidden(open)
+			updatePromo()
+			updateSelectable()
+			publishPill()
+		end)
+		screen:GetAttributeChangedSignal("ModalOpen"):Connect(updateSelectable)
+		screen:GetAttributeChangedSignal("CardioActive"):Connect(updatePromo)
+		screen:GetAttributeChangedSignal("RunActive"):Connect(updatePromo)
+		screen:GetAttributeChangedSignal("CratePanelOpen"):Connect(function()
+			place(true)
+		end)
+		State.changed.Event:Connect(updatePromo)
+		-- Compact, narrow or touch screens: Roblox's player list would cover the top-right
+		-- corner (the gear on touch) and the unit counter, so it stays hidden there.
+		local function updatePlayerList()
+			local size = designSize()
+			local narrow = size.X > 0 and size.X * (if screenScale then screenScale.Scale else 1) < NARROW_PX
+			Kit.hidePlayerList("smallscreen", screen:GetAttribute("Compact") == true or narrow or Kit.touch)
+		end
+		local function relayout()
+			applyCompact()
+			updatePlayerList()
+		end
+		screen:GetAttributeChangedSignal("Compact"):Connect(relayout)
+		pcall(function()
+			screen:GetPropertyChangedSignal("AbsoluteSize"):Connect(updatePlayerList)
+		end)
+		if screenScale then
+			screenScale:GetPropertyChangedSignal("Scale"):Connect(relayout)
+		end
+		Kit.onInput(relayout)
 		updateSelectable()
-		publishPill()
-	end)
-	screen:GetAttributeChangedSignal("ModalOpen"):Connect(updateSelectable)
-	screen:GetAttributeChangedSignal("CardioActive"):Connect(updatePromo)
-	screen:GetAttributeChangedSignal("RunActive"):Connect(updatePromo)
-	screen:GetAttributeChangedSignal("CratePanelOpen"):Connect(function()
-		place(true)
-	end)
-	State.changed.Event:Connect(updatePromo)
-	-- Compact, narrow or touch screens: Roblox's player list would cover the top-right
-	-- corner (the gear on touch) and the unit counter, so it stays hidden there.
-	local function updatePlayerList()
-		local size = designSize()
-		local narrow = size.X > 0 and size.X * (if screenScale then screenScale.Scale else 1) < NARROW_PX
-		Kit.hidePlayerList("smallscreen", screen:GetAttribute("Compact") == true or narrow or Kit.touch)
 	end
-	local function relayout()
-		applyCompact()
-		updatePlayerList()
-	end
-	screen:GetAttributeChangedSignal("Compact"):Connect(relayout)
-	pcall(function()
-		screen:GetPropertyChangedSignal("AbsoluteSize"):Connect(updatePlayerList)
-	end)
-	if screenScale then
-		screenScale:GetPropertyChangedSignal("Scale"):Connect(relayout)
-	end
-	Kit.onInput(relayout)
-	updateSelectable()
 
 	-- Updates ------------------------------------------------------------------------------
 	local moneyShown: number? = nil
@@ -2116,119 +2134,83 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	State.changed.Event:Connect(refresh)
 
-	-- Coin burst to the wallet ------------------------------------------------------------
-	-- Its own ScreenGui with no insets/scale so world->viewport points map 1:1.
-	local fxGui = Instance.new("ScreenGui")
-	fxGui.Name = "HudFx"
-	fxGui.ResetOnSpawn = false
-	fxGui.IgnoreGuiInset = true
-	fxGui.DisplayOrder = 5
-	fxGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	pcall(function()
-		fxGui.ScreenInsets = Enum.ScreenInsets.None
-	end)
-	fxGui.Parent = screen.Parent
-	local fxLayer = Kit.new("Frame", {
-		Name = "Layer",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromScale(1, 1),
-		Parent = fxGui,
-	})
-	local uiScale = screen:FindFirstChildOfClass("UIScale")
-	local coinPitch = 1
-	local lastCoinAt = 0
+	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
+	do
+		-- Coin burst to the wallet ------------------------------------------------------------
+		-- Its own ScreenGui with no insets/scale so world->viewport points map 1:1.
+		local fxGui = Instance.new("ScreenGui")
+		fxGui.Name = "HudFx"
+		fxGui.ResetOnSpawn = false
+		fxGui.IgnoreGuiInset = true
+		fxGui.DisplayOrder = 5
+		fxGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+		pcall(function()
+			fxGui.ScreenInsets = Enum.ScreenInsets.None
+		end)
+		fxGui.Parent = screen.Parent
+		local fxLayer = Kit.new("Frame", {
+			Name = "Layer",
+			BackgroundTransparency = 1,
+			Size = UDim2.fromScale(1, 1),
+			Parent = fxGui,
+		})
+		local uiScale = screen:FindFirstChildOfClass("UIScale")
+		local coinPitch = 1
+		local lastCoinAt = 0
 
-	local function makeCoin(size: number): Frame
-		return Kit.icon(fxLayer, "Coin", size, C.Gold, { Name = "Coin", AnchorPoint = Vector2.new(0.5, 0.5) })
-	end
+		local function makeCoin(size: number): Frame
+			return Kit.icon(fxLayer, "Coin", size, C.Gold, { Name = "Coin", AnchorPoint = Vector2.new(0.5, 0.5) })
+		end
 
-	Hud.coinBurst = function(amount: number, padPos: Vector3?, fromGui: GuiObject?)
-		local layerAt = fxLayer.AbsolutePosition
-		local viewport = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
-		local origin = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
-		local camera = Workspace.CurrentCamera
-		if fromGui then
-			origin = fromGui.AbsolutePosition + fromGui.AbsoluteSize * 0.5 - layerAt
-		elseif padPos and camera then
-			local point, onScreen = camera:WorldToViewportPoint(padPos)
-			if onScreen and point.Z > 0 then
-				origin = Vector2.new(point.X, point.Y)
+		Hud.coinBurst = function(amount: number, padPos: Vector3?, fromGui: GuiObject?)
+			local layerAt = fxLayer.AbsolutePosition
+			local viewport = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+			local origin = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
+			local camera = Workspace.CurrentCamera
+			if fromGui then
+				origin = fromGui.AbsolutePosition + fromGui.AbsoluteSize * 0.5 - layerAt
+			elseif padPos and camera then
+				local point, onScreen = camera:WorldToViewportPoint(padPos)
+				if onScreen and point.Z > 0 then
+					origin = Vector2.new(point.X, point.Y)
+				end
 			end
-		end
-		local target = coin.AbsolutePosition + coin.AbsoluteSize * 0.5 - layerAt
-		local scale = if uiScale then uiScale.Scale else 1
-		local magnitude = math.log10(math.max(amount, 1))
-		local count = math.clamp(8 + math.floor(magnitude * 1.2), 8, 16)
-		local size = math.floor(30 * scale)
-		if os.clock() - lastCoinAt > 1 then
-			coinPitch = 1
-		end
-		for i = 1, count do
-			local c = makeCoin(size)
-			c.Position = UDim2.fromOffset(origin.X, origin.Y)
-			c.Size = UDim2.fromOffset(size * 0.4, size * 0.4)
-			local angle = math.random() * math.pi * 2
-			local radius = (40 + math.random() * 90) * scale
-			local spread = origin + Vector2.new(math.cos(angle), math.sin(angle) * 0.7 - 0.4) * radius
-			Kit.tween(
-				c,
-				0.3,
-				{ Position = UDim2.fromOffset(spread.X, spread.Y), Size = UDim2.fromOffset(size, size) },
-				Enum.EasingStyle.Back
-			)
-			task.delay(0.3 + i * 0.045, function()
-				local fly = 0.42 + math.random() * 0.08
-				Kit.tween(c, fly, {
-					Position = UDim2.fromOffset(target.X, target.Y),
-					Size = UDim2.fromOffset(size * 0.6, size * 0.6),
-				}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-				task.delay(fly, function()
-					c:Destroy()
-					lastCoinAt = os.clock()
-					sounds.play("Coin", 0.04, coinPitch)
-					coinPitch = math.min(coinPitch + 0.035, 1.5)
-					Kit.pop(moneyLabel, 0.4)
+			local target = coin.AbsolutePosition + coin.AbsoluteSize * 0.5 - layerAt
+			local scale = if uiScale then uiScale.Scale else 1
+			local magnitude = math.log10(math.max(amount, 1))
+			local count = math.clamp(8 + math.floor(magnitude * 1.2), 8, 16)
+			local size = math.floor(30 * scale)
+			if os.clock() - lastCoinAt > 1 then
+				coinPitch = 1
+			end
+			for i = 1, count do
+				local c = makeCoin(size)
+				c.Position = UDim2.fromOffset(origin.X, origin.Y)
+				c.Size = UDim2.fromOffset(size * 0.4, size * 0.4)
+				local angle = math.random() * math.pi * 2
+				local radius = (40 + math.random() * 90) * scale
+				local spread = origin + Vector2.new(math.cos(angle), math.sin(angle) * 0.7 - 0.4) * radius
+				Kit.tween(
+					c,
+					0.3,
+					{ Position = UDim2.fromOffset(spread.X, spread.Y), Size = UDim2.fromOffset(size, size) },
+					Enum.EasingStyle.Back
+				)
+				task.delay(0.3 + i * 0.045, function()
+					local fly = 0.42 + math.random() * 0.08
+					Kit.tween(c, fly, {
+						Position = UDim2.fromOffset(target.X, target.Y),
+						Size = UDim2.fromOffset(size * 0.6, size * 0.6),
+					}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+					task.delay(fly, function()
+						c:Destroy()
+						lastCoinAt = os.clock()
+						sounds.play("Coin", 0.04, coinPitch)
+						coinPitch = math.min(coinPitch + 0.035, 1.5)
+						Kit.pop(moneyLabel, 0.4)
+					end)
 				end)
-			end)
-		end
-	end
-
-	-- Aura pack: a handful of orbs pop out at the screen centre and fly into the tank, each
-	-- landing with the walk-over pickup pop at a rising pitch; the tank number rolls up from
-	-- the State refresh that follows the grant.
-	Hud.orbBurst = function(amount: number)
-		local layerAt = fxLayer.AbsolutePosition
-		local viewport = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
-		local origin = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
-		local target = carriedLabel.AbsolutePosition + carriedLabel.AbsoluteSize * 0.5 - layerAt
-		local scale = if uiScale then uiScale.Scale else 1
-		local count = math.clamp(6 + math.floor(math.log10(math.max(amount, 1))), 6, 12)
-		local size = math.floor(34 * scale)
-		for i = 1, count do
-			local orb = Kit.icon(fxLayer, "Orb", size, C.Orb, { Name = "Orb", AnchorPoint = Vector2.new(0.5, 0.5) })
-			orb.Position = UDim2.fromOffset(origin.X, origin.Y)
-			orb.Size = UDim2.fromOffset(size * 0.4, size * 0.4)
-			local angle = (i / count + math.random() * 0.1) * math.pi * 2
-			local radius = (50 + math.random() * 70) * scale
-			local spread = origin + Vector2.new(math.cos(angle), math.sin(angle) * 0.7) * radius
-			Kit.tween(
-				orb,
-				0.3,
-				{ Position = UDim2.fromOffset(spread.X, spread.Y), Size = UDim2.fromOffset(size, size) },
-				Enum.EasingStyle.Back
-			)
-			task.delay(0.3 + i * 0.06, function()
-				local fly = 0.45 + math.random() * 0.1
-				Kit.tween(orb, fly, {
-					Position = UDim2.fromOffset(target.X, target.Y),
-					Size = UDim2.fromOffset(size * 0.5, size * 0.5),
-				}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-				task.delay(fly, function()
-					orb:Destroy()
-					sounds.play("OrbPickup", 0, math.min(1 + i * 0.05, 1.6))
-					Hud.pulseTank(i == count)
-				end)
-			end)
+			end
 		end
 	end
 
@@ -2328,165 +2310,168 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 	end
 
-	-- Deposit multiplier re-roll: the value flickers like a slot machine ------------------
-	local spinning = false
-	-- Never red: a deposit bonus is a bonus (x1 at the least).
-	local function multColor(mult: number): Color3
-		return if mult >= 1.2 then C.MoneyText else C.Gold
-	end
-	local depositMult = ReplicatedStorage:GetAttribute("DepositMult") or 1
-	local function showMult(mult: number)
-		if surgeActiveNow then
-			gaugeValue.Text = "x" .. Economy.SURGE_MULTIPLIER
-			gaugeValue.TextColor3 = Color3.new(1, 1, 1)
-		else
-			gaugeValue.Text = string.format("x%.1f", mult)
-			gaugeValue.TextColor3 = multColor(mult)
+	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
+	do
+		-- Deposit multiplier re-roll: the value flickers like a slot machine ------------------
+		local spinning = false
+		-- Never red: a deposit bonus is a bonus (x1 at the least).
+		local function multColor(mult: number): Color3
+			return if mult >= 1.2 then C.MoneyText else C.Gold
 		end
-	end
-	showMult(depositMult)
-	ReplicatedStorage:GetAttributeChangedSignal("DepositMult"):Connect(function()
-		depositMult = ReplicatedStorage:GetAttribute("DepositMult") or 1
-		if spinning or surgeActiveNow then
-			showMult(depositMult)
-			return
+		local depositMult = ReplicatedStorage:GetAttribute("DepositMult") or 1
+		local function showMult(mult: number)
+			if surgeActiveNow then
+				gaugeValue.Text = "x" .. Economy.SURGE_MULTIPLIER
+				gaugeValue.TextColor3 = Color3.new(1, 1, 1)
+			else
+				gaugeValue.Text = string.format("x%.1f", mult)
+				gaugeValue.TextColor3 = multColor(mult)
+			end
 		end
-		spinning = true
-		task.spawn(function()
-			local elapsed = 0
-			local step = 0.035
-			-- Silent visual roll: the value flickers (from x1 up), then lands with a pop.
-			local low = math.max(1, Economy.DEPOSIT_MIN)
-			while elapsed < 0.6 do
-				showMult(low + math.random() * math.max(0, Economy.DEPOSIT_MAX - low))
-				task.wait(step)
-				elapsed += step
-				step *= 1.22
-			end
-			depositMult = ReplicatedStorage:GetAttribute("DepositMult") or depositMult
-			showMult(depositMult)
-			Kit.pop(gaugeValue, 1)
-			Kit.pop(strip, 0.4)
-			if depositMult >= 1.5 then
-				niceLabel.Text = if depositMult >= 2 then "HUGE!" else "NICE!"
-				Kit.appear(niceLabel, { from = 0.3, time = 0.3 })
-				task.delay(1.4, function()
-					Kit.disappear(niceLabel, { to = 1.1, time = 0.25 })
-				end)
-			end
-			spinning = false
-		end)
-	end)
-
-	-- Aura Surge: the strip changes and the "SURGE x2" chip joins the wallet; the screen grade
-	-- and music are Fx.Surge's.
-	local surgeActive: boolean? = nil
-	local lastSurgeSecond = -1
-
-	local function setSurge(active: boolean, announce: boolean)
-		paintSurge(active)
 		showMult(depositMult)
-		setStatus(boostRow, active)
-		if announce then
-			Kit.pop(strip, if active then 0.8 else 0.4)
-		end
-	end
+		ReplicatedStorage:GetAttributeChangedSignal("DepositMult"):Connect(function()
+			depositMult = ReplicatedStorage:GetAttribute("DepositMult") or 1
+			if spinning or surgeActiveNow then
+				showMult(depositMult)
+				return
+			end
+			spinning = true
+			task.spawn(function()
+				local elapsed = 0
+				local step = 0.035
+				-- Silent visual roll: the value flickers (from x1 up), then lands with a pop.
+				local low = math.max(1, Economy.DEPOSIT_MIN)
+				while elapsed < 0.6 do
+					showMult(low + math.random() * math.max(0, Economy.DEPOSIT_MAX - low))
+					task.wait(step)
+					elapsed += step
+					step *= 1.22
+				end
+				depositMult = ReplicatedStorage:GetAttribute("DepositMult") or depositMult
+				showMult(depositMult)
+				Kit.pop(gaugeValue, 1)
+				Kit.pop(strip, 0.4)
+				if depositMult >= 1.5 then
+					niceLabel.Text = if depositMult >= 2 then "HUGE!" else "NICE!"
+					Kit.appear(niceLabel, { from = 0.3, time = 0.3 })
+					task.delay(1.4, function()
+						Kit.disappear(niceLabel, { to = 1.1, time = 0.25 })
+					end)
+				end
+				spinning = false
+			end)
+		end)
 
-	-- Free gift: countdown under it; sunny "CLAIM!" with a gentle bounce when ready.
-	local freeText = ""
-	local freeReady: boolean? = nil
-	local stopFreeBounce: (() -> ())? = nil
-	local function paintFree(text: string, ready: boolean)
-		if ready ~= freeReady then
-			freeReady = ready
-			Kit.setBadge(freeButton, if ready then "!" else nil)
-			freeTimer.TextColor3 = if ready then C.Gold else Color3.new(1, 1, 1)
-			if ready then
-				Kit.pop(freeButton, 0.8)
-				stopFreeBounce = Kit.breathe(freeButton, 0.06)
-			elseif stopFreeBounce then
-				stopFreeBounce()
-				stopFreeBounce = nil
+		-- Aura Surge: the strip changes and the "SURGE x2" chip joins the wallet; the screen grade
+		-- and music are Fx.Surge's.
+		local surgeActive: boolean? = nil
+		local lastSurgeSecond = -1
+
+		local function setSurge(active: boolean, announce: boolean)
+			paintSurge(active)
+			showMult(depositMult)
+			setStatus(boostRow, active)
+			if announce then
+				Kit.pop(strip, if active then 0.8 else 0.4)
 			end
 		end
-		freeTimer.Text = text
-	end
-	-- Daily reward: a dot, a sunny caption and a gentle bounce while a reward waits; the
-	-- countdown to the next one as the caption otherwise.
-	local dailyText = ""
-	local dailyReady: boolean? = nil
-	local stopDailyBounce: (() -> ())? = nil
-	local function paintDaily(text: string, ready: boolean)
-		if ready ~= dailyReady then
-			dailyReady = ready
-			Kit.setBadge(dailyButton, if ready then "!" else nil)
-			dailyCaption.TextColor3 = if ready then C.Gold else Color3.new(1, 1, 1)
-			if ready then
-				Kit.pop(dailyButton, 0.8)
-				stopDailyBounce = Kit.breathe(dailyButton, 0.06)
-			elseif stopDailyBounce then
-				stopDailyBounce()
-				stopDailyBounce = nil
-			end
-		end
-		dailyCaption.Text = text
-	end
-	local nextText = ""
-	local pillAt = 0
-	RunService.Heartbeat:Connect(function()
-		-- The pill's timers (gift, crate, "nothing affordable for a minute") run between
-		-- two snapshots.
-		if os.clock() - pillAt >= PILL_TICK then
-			pillAt = os.clock()
-			updatePill()
-		end
-		local now = Workspace:GetServerTimeNow()
-		local active, left = Economy.surgeState(now)
-		if active ~= surgeActive then
-			-- Announce only real transitions, not the state found on join.
-			setSurge(active, surgeActive ~= nil)
-			surgeActive = active
-		end
-		local text
-		if active then
-			-- Countdown pop in the last 10 seconds.
-			local second = math.ceil(left)
-			if left <= 10 and second ~= lastSurgeSecond then
-				lastSurgeSecond = second
-				Kit.pop(gaugeNext, 0.8)
-			end
-			text = "· " .. Format.time(left)
-		else
-			local nextAt = ReplicatedStorage:GetAttribute("DepositNextAt") or now
-			text = string.format("· %ds", math.max(0, math.ceil(nextAt - now)))
-		end
-		if text ~= nextText then
-			nextText = text
-			gaugeNext.Text = text
-		end
-		local data = State.data
-		if data then
-			local freeLeft = math.max(0, (data.freeIn or 0) - State.age())
-			local ready = freeLeft <= 0
-			local label = if ready then "CLAIM!" else Format.time(freeLeft)
-			if label ~= freeText then
-				freeText = label
-				paintFree(label, ready)
-			end
-			local daily = data.daily
-			if type(daily) == "table" then
-				-- The dot and the bounce wait for the tutorial, like the window itself.
-				local dailyNow = daily.claimable == true and data.tutorialDone == true
-				local dailyLabel = if daily.claimable == true
-					then CAPTIONS.Daily
-					else Format.time(math.max(0, (tonumber(daily.nextIn) or 0) - State.age()))
-				if dailyLabel ~= dailyText or dailyNow ~= dailyReady then
-					dailyText = dailyLabel
-					paintDaily(dailyLabel, dailyNow)
+
+		-- Free gift: countdown under it; sunny "CLAIM!" with a gentle bounce when ready.
+		local freeText = ""
+		local freeReady: boolean? = nil
+		local stopFreeBounce: (() -> ())? = nil
+		local function paintFree(text: string, ready: boolean)
+			if ready ~= freeReady then
+				freeReady = ready
+				Kit.setBadge(freeButton, if ready then "!" else nil)
+				freeTimer.TextColor3 = if ready then C.Gold else Color3.new(1, 1, 1)
+				if ready then
+					Kit.pop(freeButton, 0.8)
+					stopFreeBounce = Kit.breathe(freeButton, 0.06)
+				elseif stopFreeBounce then
+					stopFreeBounce()
+					stopFreeBounce = nil
 				end
 			end
+			freeTimer.Text = text
 		end
-	end)
+		-- Daily reward: a dot, a sunny caption and a gentle bounce while a reward waits; the
+		-- countdown to the next one as the caption otherwise.
+		local dailyText = ""
+		local dailyReady: boolean? = nil
+		local stopDailyBounce: (() -> ())? = nil
+		local function paintDaily(text: string, ready: boolean)
+			if ready ~= dailyReady then
+				dailyReady = ready
+				Kit.setBadge(dailyButton, if ready then "!" else nil)
+				dailyCaption.TextColor3 = if ready then C.Gold else Color3.new(1, 1, 1)
+				if ready then
+					Kit.pop(dailyButton, 0.8)
+					stopDailyBounce = Kit.breathe(dailyButton, 0.06)
+				elseif stopDailyBounce then
+					stopDailyBounce()
+					stopDailyBounce = nil
+				end
+			end
+			dailyCaption.Text = text
+		end
+		local nextText = ""
+		local pillAt = 0
+		RunService.Heartbeat:Connect(function()
+			-- The pill's timers (gift, crate, "nothing affordable for a minute") run between
+			-- two snapshots.
+			if os.clock() - pillAt >= PILL_TICK then
+				pillAt = os.clock()
+				updatePill()
+			end
+			local now = Workspace:GetServerTimeNow()
+			local active, left = Economy.surgeState(now)
+			if active ~= surgeActive then
+				-- Announce only real transitions, not the state found on join.
+				setSurge(active, surgeActive ~= nil)
+				surgeActive = active
+			end
+			local text
+			if active then
+				-- Countdown pop in the last 10 seconds.
+				local second = math.ceil(left)
+				if left <= 10 and second ~= lastSurgeSecond then
+					lastSurgeSecond = second
+					Kit.pop(gaugeNext, 0.8)
+				end
+				text = "· " .. Format.time(left)
+			else
+				local nextAt = ReplicatedStorage:GetAttribute("DepositNextAt") or now
+				text = string.format("· %ds", math.max(0, math.ceil(nextAt - now)))
+			end
+			if text ~= nextText then
+				nextText = text
+				gaugeNext.Text = text
+			end
+			local data = State.data
+			if data then
+				local freeLeft = math.max(0, (data.freeIn or 0) - State.age())
+				local ready = freeLeft <= 0
+				local label = if ready then "CLAIM!" else Format.time(freeLeft)
+				if label ~= freeText then
+					freeText = label
+					paintFree(label, ready)
+				end
+				local daily = data.daily
+				if type(daily) == "table" then
+					-- The dot and the bounce wait for the tutorial, like the window itself.
+					local dailyNow = daily.claimable == true and data.tutorialDone == true
+					local dailyLabel = if daily.claimable == true
+						then CAPTIONS.Daily
+						else Format.time(math.max(0, (tonumber(daily.nextIn) or 0) - State.age()))
+					if dailyLabel ~= dailyText or dailyNow ~= dailyReady then
+						dailyText = dailyLabel
+						paintDaily(dailyLabel, dailyNow)
+					end
+				end
+			end
+		end)
+	end
 	refresh()
 	layoutWallet()
 

@@ -621,7 +621,8 @@ function Economy.moneyPackAmount(income: number, seconds: number, minimum: numbe
 	return math.max(minimum, math.floor(perSecond * seconds))
 end
 
--- Aura packs (aura straight into the tank): `seconds` of aura at the better of the live
+-- Aura packs (the aura a pack is worth; the buyer is paid its cash at once,
+-- ShopMath.auraPackCash): `seconds` of aura at the better of the live
 -- production (orbs per second, Tycoon.production) and the progression floor (one unit of the
 -- highest tier, the same floor progressionIncome uses), never below the pack's fixed
 -- `minimum` (which only matters for brand-new players).

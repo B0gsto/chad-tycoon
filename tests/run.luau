@@ -4806,6 +4806,14 @@ require("./daily")({ test = test, check = check, eq = eq, near = near, loadShare
 require("./interactive")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared })
 -- Parkour server: Skip Map, stranded rescue and the timed return (tests/parkour_bugs.luau).
 require("./parkour_bugs")({ test = test, check = check, eq = eq })
+-- Buy Max, the Aura Surge announcements and the events Tycoon sends (tests/buymax.luau).
+require("./buymax")({ test = test, check = check, eq = eq })
+-- Aura packs paid as cash, and the shop's free gift (tests/shop.luau).
+require("./shop")({ test = test, check = check, eq = eq })
+-- Analytics: funnel steps, the economy ledger and custom events (tests/analytics.luau).
+require("./analytics")({ test = test, check = check, eq = eq })
+-- Every script compiles the way Studio compiles it: 200 locals per chunk (tests/fx_juice.luau).
+require("./fx_juice")({ test = test, check = check })
 
 test("Sky obby: lava kill strips and sliding bars on wide decks", function()
 	for li, level in ModesCourse.LEVELS do
