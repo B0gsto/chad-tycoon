@@ -18,7 +18,9 @@
 	  Theme.Modes.Reward (Seconds of income, at least Min, sized like a cash pack) on the
 	  first clear OF THAT LEVEL and then once per
 	  Economy.MODE_REWARD_COOLDOWN (one cooldown shared by all levels, modes.parkour.
-	  lastRewardAt). After a remote
+	  lastRewardAt). Inside the cooldown a clean finish (no gear worn) pays
+	  Economy.MODE_REPEAT_SHARE of that map's pack on every run; an assisted one pays
+	  nothing. After a remote
 	  finish the player is brought back to the gates (GameModes.returnLater) wherever they
 	  stand on the sky course by then (the finish deck, a bridge, the next map's start deck).
 	- Leaving the level's bounds for Course.LEAVE_SECONDS ends the run ("left"); on a remote
@@ -32,8 +34,9 @@
 	  labels only, never a respawn spot. profile.parkour.stage keeps the highest stage
 	  reached (finishing map n reaches n + 1); it follows only the maps really cleared in a
 	  row from map 1, so a skipped map never counts (the STAGE board reads it). Player
-	  attributes "ParkourStage" (this run's stage, 0 when not running) and "ParkourBestStage"
-	  feed the HUD's progress bar.
+	  attributes "ParkourStage" (this run's stage, 0 when not running), "ParkourBestStage" and
+	  "ParkourProgress" (how far along the map's path the runner stands, 0..1 in hundredths
+	  from Course.progress, 0 when not running) feed the HUD's progress bar.
 	- Gear: action "ParkourGear" { gear = "none" | "speed" | "jump" | "gravity" } saves the
 	  choice (profile.parkour.gear); it is worn only during a run (speed: WalkSpeed 16 -> 28
 	  through the Humanoid's BaseWalkSpeed; jump: JumpHeight 7.2 -> 14 or JumpPower 50 -> 70;
@@ -54,9 +57,10 @@
 	                                                             window on `level` (the default)
 	  { event = "start", checkpoints = 0, startedAt, best?, level, levelName, levels, remote,
 	    stage, stageCount, gear, assisted }
-	  { event = "respawn", index = 0, stage, stageCount, reason? }
+	  { event = "respawn", index = 0, stage, stageCount, reason?, falls }
 	                                                             back at the map's start deck
-	                                                             reason = "kill" after lava
+	                                                             reason = "kill" after lava;
+	                                                             falls: this run's count
 	  { event = "skip", stage, stageCount, index = 0, checkpoints = 0, level, paid = 0,
 	    nextLevel, unlocked }                                    paid Skip Map of `level`: it
 	                                                             paid nothing; followed by
@@ -65,7 +69,17 @@
 	(`checkpoints` / `index` stay 0 for older client code; there is no "checkpoint" event.)
 	  { event = "finish", time, best, newBest, first, cash, full, cooldownEnds, rank?,
 	    level, levelName, nextLevel?, unlockedNew, unlocked, levels, stage, stageCount,
-	    assisted }                                               assisted: newBest false, no rank
+	    assisted, falls, pay, packCash, repeatCash, repeatShare }
+	                                                             assisted: newBest false, no rank
+	                                                             pay: why `cash` is what it is:
+	                                                             "first" (the map's first clear),
+	                                                             "full" (the cooldown was over),
+	                                                             "repeat" (a clean run inside the
+	                                                             cooldown: repeatCash) or
+	                                                             "assisted" (gear inside the
+	                                                             cooldown: 0); packCash and
+	                                                             repeatCash are this map's full
+	                                                             and repeat pay
 	`stage` is the global stage (the map being run; its finish deck: the next one).
 	  { event = "invalid", reason }                              "fast"
 	  { event = "stop", reason }                                 run ended without a finish
@@ -124,6 +138,10 @@ type State = {
 	assisted: boolean,
 	-- The speed coil was worn during this run (looser anti-cheat minimums).
 	speedUsed: boolean,
+	-- Times this run went back to the start deck (cloud floor or lava).
+	falls: number,
+	-- Course.progress of the runner's last trusted position, in hundredths.
+	progress: number,
 }
 
 type Worn = { gear: string, humanoid: any, root: any, base: any }
@@ -257,7 +275,9 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		return session.profile.parkour
 	end
 
-	local function rewardFor(session: any, level: number): Economy.ModeReward
+	-- What finishing `level` pays now. Inside the cooldown only a `clean` run (no gear worn)
+	-- earns the repeat share of the map's pack.
+	local function rewardFor(session: any, level: number, clean: boolean): Economy.ModeReward
 		local p = session.profile
 		local pack = theme.Modes.Reward
 		local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
@@ -266,7 +286,8 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, first, shared(session).lastRewardAt, os.time())
 		local bonus = Economy.parkourLevelBonus(level)
 		r.packCash = math.floor(r.packCash * bonus + 0.5)
-		r.cash = if r.full then r.packCash else 0
+		r.repeatCash = math.floor(r.packCash * Economy.MODE_REPEAT_SHARE)
+		r.cash = if r.full then r.packCash elseif clean then r.repeatCash else 0
 		return r
 	end
 
@@ -462,8 +483,11 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			graceUntil = t + TELEPORT_GRACE,
 			assisted = false,
 			speedUsed = false,
+			falls = 0,
+			progress = 0,
 		}
 		runs[player] = state
+		setAttribute(player, "ParkourProgress", 0)
 		if teleport or level.remote then
 			teleportTo(player, level)
 		end
@@ -496,6 +520,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		removeGear(player)
 		if reason ~= "leave" then
 			setAttribute(player, "ParkourStage", 0)
+			setAttribute(player, "ParkourProgress", 0)
 			settleUntil[player] = now() + TELEPORT_GRACE
 		end
 		if reason ~= "leave" then
@@ -508,6 +533,7 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		runs[player] = nil
 		removeGear(player)
 		setAttribute(player, "ParkourStage", 0)
+		setAttribute(player, "ParkourProgress", 0)
 		local session = GameModes.session(player)
 		if not session then
 			return
@@ -529,12 +555,12 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		local cooldown = shared(session)
 		local first = rec.clears[index] == 0
 		local unlockedBefore = unlockedOf(rec)
-		local reward = GameModes.hooks.reward(session, ID, rewardFor(session, index))
+		local assisted = state.assisted
+		local reward = GameModes.hooks.reward(session, ID, rewardFor(session, index, not assisted))
 		rec.clears[index] += 1
 		if reward.full then
 			cooldown.lastRewardAt = os.time()
 		end
-		local assisted = state.assisted
 		local newBest = not assisted and (rec.best[index] <= 0 or time < rec.best[index])
 		if newBest then
 			rec.best[index] = time
@@ -577,6 +603,12 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			stage = stage,
 			stageCount = stageCount(),
 			assisted = assisted,
+			falls = state.falls,
+			-- For the finish card: why `cash` is what it is, and both of this map's prices.
+			pay = if first then "first" elseif reward.full then "full" elseif assisted then "assisted" else "repeat",
+			packCash = reward.packCash,
+			repeatCash = reward.repeatCash,
+			repeatShare = Economy.MODE_REPEAT_SHARE,
 		})
 		GameModes.hooks.rewarded(session, ID, reward)
 		Tycoon.markDirty(session)
@@ -612,12 +644,16 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		local function backToStart(reason: string?)
 			state.graceUntil = t + TELEPORT_GRACE
 			state.outsideSince = nil
+			state.falls += 1
+			state.progress = 0
+			setAttribute(player, "ParkourProgress", 0)
 			teleportTo(player, level)
 			GameModes.notify(player, "respawn", ID, {
 				index = 0,
 				stage = level.STAGE_FIRST,
 				stageCount = stageCount(),
 				reason = reason,
+				falls = state.falls,
 			})
 		end
 		if Course.inWater(x, y, z) then
@@ -644,17 +680,36 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		end
 		if Course.inFinish(level, x, y, z) then
 			finish(player, state, root, t)
+			return
+		end
+		-- Where the runner is along the map, for the HUD bar (hundredths: a handful of
+		-- attribute changes per second at most).
+		local progress = math.floor(Course.progress(level, x, z) * 100 + 0.5) / 100
+		if progress ~= state.progress then
+			state.progress = progress
+			setAttribute(player, "ParkourProgress", progress)
 		end
 	end
 
-	-- Reward preview for `level` (default: the player's default level).
+	-- Reward preview for `level` (default: the player's default level). `cash` is what a
+	-- finish would pay now: inside the cooldown that is the repeat share (`repeatCash`,
+	-- `repeatShare` of `packCash`) unless gear is worn (this run's, or the chosen coil).
 	function def.rewardPreview(player: Player, level: number?): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, full = false, packCash = 0 }
+			return { cash = 0, full = false, packCash = 0, repeatCash = 0, repeatShare = Economy.MODE_REPEAT_SHARE }
 		end
-		local r = rewardFor(session, level or defaultOf(levels(session)))
-		return { cash = r.cash, full = r.full, packCash = r.packCash }
+		local rec = levels(session)
+		local state = runs[player]
+		local clean = if state then not state.assisted else rec.gear == "none"
+		local r = rewardFor(session, level or defaultOf(rec), clean)
+		return {
+			cash = r.cash,
+			full = r.full,
+			packCash = r.packCash,
+			repeatCash = r.repeatCash,
+			repeatShare = Economy.MODE_REPEAT_SHARE,
+		}
 	end
 
 	function def.snapshot(player: Player): { [string]: any }
@@ -705,6 +760,9 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 			bestStage = if rec then rec.stage else 0,
 			stageCount = stageCount(),
 			assisted = if state then state.assisted else false,
+			-- This run so far (the live position is the "ParkourProgress" attribute).
+			progress = if state then state.progress else 0,
+			falls = if state then state.falls else 0,
 			skipCost = if session then Economy.parkourSkipCost(Tycoon.income(session)) else Economy.PARKOUR_SKIP_MIN,
 		}
 	end

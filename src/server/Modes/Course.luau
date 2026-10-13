@@ -75,7 +75,8 @@
 	  spinner     obstacle (not a path element): a bar `length` long turning about the
 	              vertical axis at `speed` rad/s (angle = speed * t + phase) above deck top `y`
 	  wall        obstacle: a low wall `h` tall standing on `y` to hop over (sx along X, sz
-	              along Z)
+	              along Z); named "Rail" it runs along a deck's side instead (map 1's
+	              sweeper and bounce decks)
 	  bounce      bounce pad of radius `r` on a deck top `y`: launches the player up at `power`
 	              studs/s (the next path element may be higher than a normal jump)
 	  kill        lava box (not a path element) standing on a path deck's top `y`: sx by sz,
@@ -344,6 +345,8 @@ end
 -- Level 1, drawn with its start deck at x = -197, z = 0 (where it once began on the beach):
 -- its local frame. The chain (FRAMES[1]: oy = SKY_Y - 0.6) lifts it so the start deck stands
 -- at SKY_Y and recolours its path tops rainbow (movers stay Orange).
+-- Height of the side rails on map 1's sweeper and bounce decks (drawn as low hop walls).
+local LEVEL1_RAIL_H = 1.5
 local LEVEL1_ELEMENTS = {
 	-- Start deck and two wide steps up.
 	box(-197, 0.6, 0, 14, 14, "Sunny", "StartDeck"),
@@ -377,14 +380,27 @@ local LEVEL1_ELEMENTS = {
 		phase = 0,
 	},
 	restPad(-356, 8, 0, 6),
-	-- Turn south: a deck with two slow sweeper bars to jump over.
+	-- Turn south: a deck with two slow sweeper bars to jump over (the first one 30% slower:
+	-- it is the first hazard a new player meets). Low rails along both sides (LEVEL1_RAIL_H)
+	-- keep a bumped runner on the deck; the bars are shorter than the deck is wide so their
+	-- end caps pass inside the rails.
 	box(-356, 8, -21, 14, 24, "Sunny", "SweeperDeck"),
-	{ kind = "spinner", x = -356, y = 8, z = -15, length = 12, speed = 1.2, phase = 0 },
-	{ kind = "spinner", x = -356, y = 8, z = -27, length = 12, speed = -1, phase = math.pi / 2 },
-	-- Bounce pad up to the high return lane.
+	{ kind = "spinner", x = -356, y = 8, z = -15, length = 10.6, speed = 0.84, phase = 0 },
+	{ kind = "spinner", x = -356, y = 8, z = -27, length = 10.6, speed = -1, phase = math.pi / 2 },
+	{ kind = "wall", x = -362.6, y = 8, z = -21, sx = 0.8, sz = 24, h = LEVEL1_RAIL_H, color = "Teal", name = "Rail" },
+	{ kind = "wall", x = -349.4, y = 8, z = -21, sx = 0.8, sz = 24, h = LEVEL1_RAIL_H, color = "Teal", name = "Rail" },
+	-- Bounce pad up to the high return lane: 9 studs wide on the 12-stud deck and centred on
+	-- the path line, so a runner bumped sideways by the second sweeper still walks onto it,
+	-- with the same low rails beside it. A pad this long is touched up to 5 studs before the
+	-- deck's middle: at power 94 (0.86 s in the air before coming down to the lane, 13.7
+	-- studs forward at walking speed) a runner launched from its near edge still lands on
+	-- the landing deck, and one launched from its far edge is above the lane before reaching
+	-- that deck's edge.
 	box(-356, 8, -39, 12, 10, "Butter", "BounceDeck"),
-	{ kind = "bounce", x = -356, y = 8, z = -39.5, r = 2.5, power = 78 },
-	restPad(-356, 17, -53, 6),
+	{ kind = "bounce", x = -356, y = 8, z = -39, r = 4.5, power = 94 },
+	{ kind = "wall", x = -361.6, y = 8, z = -39, sx = 0.8, sz = 10, h = LEVEL1_RAIL_H, color = "Teal", name = "Rail" },
+	{ kind = "wall", x = -350.4, y = 8, z = -39, sx = 0.8, sz = 10, h = LEVEL1_RAIL_H, color = "Teal", name = "Rail" },
+	box(-356, 17, -53, 12, 13, "Sunny", "RestDeck"),
 	-- Back east: a bobbing platform, then the wall-hop deck.
 	{
 		kind = "mover",
@@ -1583,6 +1599,32 @@ function Course.pathLength(level: Level): number
 		total += math.sqrt((a.x - b.x) ^ 2 + (a.z - b.z) ^ 2)
 	end
 	return total
+end
+
+-- How far along `level`'s path the point (x, z) is, 0 (the start deck's centre) to 1 (the
+-- finish deck's): the nearest point on the line through the centres of consecutive path
+-- elements, the line PATH_LENGTH measures. The HUD's progress bar reads it.
+function Course.progress(level: Level, x: number, z: number): number
+	local path = level.PATH
+	local total = level.PATH_LENGTH
+	if #path < 2 or total <= 0 then
+		return 0
+	end
+	local nearest, at, walked = math.huge, 0, 0
+	for i = 1, #path - 1 do
+		local a, b = path[i], path[i + 1]
+		local dx, dz = b.x - a.x, b.z - a.z
+		local squared = dx * dx + dz * dz
+		local t = if squared > 0 then math.clamp(((x - a.x) * dx + (z - a.z) * dz) / squared, 0, 1) else 0
+		local px, pz = a.x + dx * t, a.z + dz * t
+		local distance = (x - px) ^ 2 + (z - pz) ^ 2
+		local length = math.sqrt(squared)
+		if distance < nearest - 1e-9 then
+			nearest, at = distance, walked + length * t
+		end
+		walked += length
+	end
+	return math.clamp(at / total, 0, 1)
 end
 
 local function copyElement(e: Element): Element

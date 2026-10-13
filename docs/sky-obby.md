@@ -177,3 +177,40 @@ picker picks where to start; falling sends the player back to the **start of the
   `Checkpoints` attribute (`StageFirst` / `StageLast` stay).
 - **Client**: ObbyHud shows "MAP n / 10" and a "SKIP MAP $X" button; Fx.Modes drops the
   next-flag pulse and the checkpoint pop, and the idle hint points toward the finish deck.
+
+## Pay per run, a clearer HUD, a safer map 1 (round 5, playtest fixes)
+
+There are still no checkpoints.
+
+- **Pay per run.** Inside the 30 minute reward cooldown a clean finish (no gear worn) pays
+  `Economy.MODE_REPEAT_SHARE` (20%) of that map's pack on every run; an assisted finish inside the
+  cooldown pays nothing. A map's first clear and the full reward once per cooldown are unchanged,
+  and only a full reward restarts the cooldown. The finish payload adds `pay` (`"first"`, `"full"`,
+  `"repeat"` or `"assisted"`), `packCash`, `repeatCash`, `repeatShare` and `falls`; the snapshot's
+  `rewardPreview` adds `repeatCash` and `repeatShare`, and its `cash` is what a finish would pay
+  now (0 inside the cooldown with a coil chosen).
+- **Progress.** `Course.progress(level, x, z)` is how far along the map's path a point is (0 on
+  the start deck, 1 on the finish deck: the nearest point on the line through the path elements'
+  centres). The server publishes it for every runner as the player attribute `ParkourProgress`
+  (hundredths, 0 when not running) and in the snapshot (`progress`).
+- **Falls.** A run counts its trips back to the start deck (cloud floor or lava): `falls` in the
+  `respawn` notify, the snapshot and the finish payload.
+- **ObbyHud.** The bar is now the map being run: the local head rides it at `ParkourProgress`,
+  with the heads of other players on the same map. Under it: "MAP 3 / 10 · Sweeper Bay", and
+  "Best 0:34.4 · Falls 2" under the run pill. "ASSISTED: no best time" shows from the moment a
+  coil is worn; "Oops! Back to the start" shows for 1.5 s after a fall. SKIP MAP is a small grey
+  button that opens a question ("Skip Sweeper Bay for $250? You get no reward for a skipped map.",
+  YES, SKIP / NO, KEEP GOING); only YES fires `ParkourSkip`.
+- **One word: MAP.** The HUD and the picker say "MAP n" (the picker said "Level n").
+- **Picker.** The side panel labels its pips "Difficulty n/10". A locked card shows "Clear
+  <previous map> first" where its pips were and what its first clear pays beside the lock, and
+  still shakes with the bubble when tapped. Inside the cooldown the reward line of a cleared map
+  reads "Run again: +$X · full in m:ss" ("Gear on: no reward · full in m:ss" with a coil chosen).
+- **Map 1 "Sunny Steps"** (hand-made, `LEVEL1_ELEMENTS`; maps 2 to 10 are untouched and the chain
+  has not moved): the bounce pad is 9 studs wide (was 5) and centred on its 12-stud deck; the
+  sweeper deck and the bounce deck have low side rails (1.5 studs, `wall` elements named "Rail");
+  the first sweeper turns 30% slower (0.84 rad/s) and both bars are 10.6 long (were 12) so their
+  end caps pass inside the rails. A pad that long is touched up to 5 studs earlier, so its power
+  went from 78 to 94 and the landing deck above grew half a stud toward it (12 x 13): a runner
+  launched at walking speed from either edge of the pad lands on that deck
+  (tests/parkour_bugs.luau pins this).

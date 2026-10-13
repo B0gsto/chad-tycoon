@@ -2,14 +2,18 @@
 	MapPicker: the "Maps" window (docs/parkour-maps.md, "Picker + server").
 
 	Header "PICK A MAP". Left: a 2-column grid of the ten Parkour map cards, stretched so all
-	ten fit without scrolling (accent band with the map's icon, "Level n", the best time and a
+	ten fit without scrolling (accent band with the map's icon, "MAP n", the best time and a
 	check when cleared or a lock badge when locked; the name and difficulty pips below). The
 	selected card carries a thick gold rim, a lighter body and a gold chevron; a locked one has
-	a grey band (text kept bright) and wobbles with "Clear <previous map> first!" when tapped.
+	a grey band (text kept bright) with what its first clear pays ("+$1.2K") beside the lock,
+	"Clear <previous map> first" in place of its pips, and shakes with a "Clear <previous map>
+	first!" bubble when tapped.
 	Right, top to bottom: the selected map in a slowly orbiting ViewportFrame preview (panel
-	width, about 45% of its height) with a "Level n" chip, name, pips, best/clears, blurb, the
-	reward line and a gold PLAY (RESTART while that map is running) that fires ModeStart and
-	closes every window. When the screen or window is narrow (viewport < 700 or window < 750
+	width, about 45% of its height) with a "MAP n" chip, name, pips labelled "Difficulty
+	n/10", best/clears, blurb, the reward line (inside the reward cooldown: "Run again: +$X
+	· full in m:ss", what a clean run pays on every finish, from rewardPreview's
+	repeatShare; "Gear on: no reward" with a coil chosen) and a gold PLAY (RESTART while that map is running) that fires ModeStart and
+	closes every window. One word for a map everywhere: MAP. When the screen or window is narrow (viewport < 700 or window < 750
 	wide) the side panel stacks under the grid in one scrolling column.
 
 	The preview is a lazy clone of workspace.Map.GameModes.Parkour.Level<n> without its
@@ -22,12 +26,13 @@
 	helpers and the shared reward/pip helpers, and exposes Windows.open("Maps") and
 	Windows.openMaps(level?). Reads State.data.modes.parkour (levels[i] = { name,
 	difficulty, best, clears, bonus, theme?, blurb?, icon?, accent? }, unlocked, level,
-	running).
+	running, gear, cooldownEnds, rewardPreview = { packCash, repeatShare? }).
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
 local Kit = require(script.Parent.Kit)
@@ -134,7 +139,22 @@ local function iconOf(lv: any, i: number): string
 end
 
 local function nameOf(lv: any, i: number): string
-	return if type(lv) == "table" and type(lv.name) == "string" then lv.name else "Level " .. i
+	return if type(lv) == "table" and type(lv.name) == "string" then lv.name else "Map " .. i
+end
+
+-- The full reward of map `level` (its first clear, or a finish after the cooldown): the
+-- snapshot's rewardPreview is priced for info.level, so it is rescaled to `level`'s bonus
+-- (like Windows' parkourReward). nil without a snapshot.
+local function packCash(info: { [string]: any }?, level: number): number?
+	local list = levelList(info)
+	local lv = list[level]
+	local preview = if info then info.rewardPreview else nil
+	if not info or type(preview) ~= "table" or type(lv) ~= "table" then
+		return nil
+	end
+	local current = list[tonumber(info.level) or 1]
+	local currentBonus = if type(current) == "table" then tonumber(current.bonus) or 1 else 1
+	return math.floor((tonumber(preview.packCash) or 0) / math.max(currentBonus, 0.01) * (tonumber(lv.bonus) or 1) + 0.5)
 end
 
 -- Preview -------------------------------------------------------------------------------
@@ -244,6 +264,9 @@ type Card = {
 	chevron: TextLabel,
 	stroke: UIStroke?,
 	setPips: (number) -> (),
+	pipRow: GuiObject?,
+	-- "Clear <previous map> first" on a locked card (where the pips are).
+	lockedLine: TextLabel,
 }
 
 -- Grey version of an accent for locked bands: its luminance, pulled toward a cool slate.
@@ -371,11 +394,23 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.Text,
 	})
-	local setSidePips = deps.pips(side, {
+	local setSidePipRow = deps.pips(side, {
 		Name = "Difficulty",
 		Size = UDim2.new(1, -24, 0, 16),
 		Position = UDim2.new(0, 12, 1, -(PIPS_BOTTOM + 16)),
 	})
+	-- The row's "n/10" says what it counts here: "Difficulty n/10" (the cards are too narrow).
+	local sidePipRow = side:FindFirstChild("Difficulty")
+	local sideOf = sidePipRow and sidePipRow:FindFirstChild("Of10")
+	if sideOf and sideOf:IsA("TextLabel") then
+		sideOf.Size = UDim2.fromOffset(112, sideOf.Size.Y.Offset)
+	end
+	local function setSidePips(value: number)
+		setSidePipRow(value)
+		if sideOf and sideOf:IsA("TextLabel") then
+			sideOf.Text = "Difficulty " .. sideOf.Text
+		end
+	end
 	local sideStats = Kit.text(side, {
 		Name = "Stats",
 		Text = "",
@@ -578,7 +613,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		})
 		local levelLabel = Kit.title(band, {
 			Name = "Level",
-			Text = "Level " .. i,
+			Text = "MAP " .. i,
 			TextSize = T.Small,
 			TextWrapped = false,
 			TextXAlignment = Enum.TextXAlignment.Left,
@@ -664,6 +699,21 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		if pipRow and pipRow:IsA("GuiObject") then
 			pipRow.LayoutOrder = 2
 		end
+		local lockedLine = Kit.text(body, {
+			Name = "Locked",
+			Text = "",
+			Font = F.UI,
+			TextSize = T.Small,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Size = UDim2.new(1, 0, 0, 14),
+			LayoutOrder = 2,
+			TextColor3 = C.TextDim,
+			StrokeThickness = 0,
+			Visible = false,
+			ZIndex = 2,
+		})
 		-- Small gold chevron on the right of the selected card's body.
 		local chevron = Kit.text(frame, {
 			Name = "Chevron",
@@ -700,6 +750,8 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			chevron = chevron,
 			stroke = frame:FindFirstChildOfClass("UIStroke"),
 			setPips = setPips,
+			pipRow = if pipRow and pipRow:IsA("GuiObject") then pipRow else nil,
+			lockedLine = lockedLine,
 		}
 		cards[i] = card
 		hit.Activated:Connect(function()
@@ -721,7 +773,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		end)
 	end
 
-	local function paintCard(card: Card, i: number, lv: any, unlocked: number)
+	local function paintCard(card: Card, i: number, lv: any, unlocked: number, info: { [string]: any }?, before: any)
 		local color = accentOf(lv, i)
 		local locked = i > unlocked
 		local clears = if type(lv) == "table" then tonumber(lv.clears) or 0 else 0
@@ -745,7 +797,17 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		card.check.Visible = clears > 0 and not locked
 		card.lock.Visible = locked
 		card.body.GroupTransparency = 0
-		if locked or clears <= 0 then
+		-- Locked: what to do ("Clear Sunny Steps first") where the pips are, and what the map's
+		-- first clear pays beside the lock.
+		if card.pipRow then
+			card.pipRow.Visible = not locked
+		end
+		card.lockedLine.Visible = locked
+		card.lockedLine.Text = if locked then string.format("Clear %s first", nameOf(before, i - 1)) else ""
+		local pays = if locked then packCash(info, i) else nil
+		if locked then
+			card.stats.Text = if pays and pays > 0 then "+" .. Format.money(pays) else ""
+		elseif clears <= 0 then
 			card.stats.Text = ""
 		else
 			card.stats.Text = if best > 0 then "Best " .. deps.runTime(best) else deps.plural(clears, "clear")
@@ -761,9 +823,33 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		card.chevron.Visible = isSelected
 	end
 
+	-- The reward line of the selected map. Inside the reward cooldown a cleared map still
+	-- pays on every clean run (the repeat share of its pack; nothing with gear on): say so
+	-- instead of only counting the cooldown down.
+	local function paintReward(info: { [string]: any }?, list: { any })
+		local lv = list[selected]
+		if not info or type(lv) ~= "table" then
+			reward.Text = ""
+			return
+		end
+		local preview = info.rewardPreview
+		local share = if type(preview) == "table" then tonumber(preview.repeatShare) or 0 else 0
+		local left = (tonumber(info.cooldownEnds) or 0) - os.time()
+		local pack = packCash(info, selected)
+		if share <= 0 or left <= 0 or (tonumber(lv.clears) or 0) == 0 or not pack then
+			deps.parkourReward(reward, info, selected)
+			return
+		end
+		local geared = info.gear ~= nil and info.gear ~= "none"
+		reward.TextColor3 = if geared then C.TextDim else C.MoneyText
+		reward.Text = if geared
+			then string.format("Gear on: no reward · full in %s", Format.time(left))
+			else string.format("Run again: +%s · full in %s", Format.money(math.floor(pack * share)), Format.time(left))
+	end
+
 	local function paintSide(info: { [string]: any }?, list: { any })
 		local lv = list[selected]
-		levelChip.Text = "Level " .. selected
+		levelChip.Text = "MAP " .. selected
 		levelChip.BackgroundColor3 = accentOf(lv, selected)
 		levelChip.TextColor3 = Kit.inkOn(levelChip.BackgroundColor3)
 		sideName.Text = nameOf(lv, selected)
@@ -772,11 +858,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		setSidePips(if type(lv) == "table" then tonumber(lv.difficulty) or selected else selected)
 		sideStats.Text = string.format("Best %s  ·  %s", if best > 0 then deps.runTime(best) else "--", deps.plural(clears, "clear"))
 		blurb.Text = if type(lv) == "table" and type(lv.blurb) == "string" then lv.blurb else "Jump, bounce and slide across the sky!"
-		if info and type(lv) == "table" then
-			deps.parkourReward(reward, info, selected)
-		else
-			reward.Text = ""
-		end
+		paintReward(info, list)
 		local runningHere = info ~= nil and info.running == true and tonumber(info.level) == selected
 		Kit.setButton(play, if runningHere then "RESTART" else "PLAY")
 		if window.isOpen() then
@@ -792,7 +874,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		selected = math.clamp(selected, 1, unlocked)
 		for i, card in cards do
 			card.frame.Visible = #list == 0 or list[i] ~= nil
-			paintCard(card, i, list[i], unlocked)
+			paintCard(card, i, list[i], unlocked, info, list[i - 1])
 		end
 		paintSide(info, list)
 	end
@@ -857,10 +939,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 				task.wait(1)
 				if window.isOpen() and tickId == myId then
 					local info = parkourInfo()
-					local list = levelList(info)
-					if info and type(list[selected]) == "table" then
-						deps.parkourReward(reward, info, selected)
-					end
+					paintReward(info, levelList(info))
 				end
 			end
 		end)
