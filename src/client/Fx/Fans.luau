@@ -10,9 +10,12 @@
 	behind the fan zone. The folder may be missing or arrive late: plots without
 	it simply have no fans.
 
-	- Count: clamp(Base + floor(bestTier * PerTier), 1, Max) fans on the local
-	  player's plot, at most MaxOther on other plots within ~150 studs of the
-	  camera; plots without units have none (Theme.Fans).
+	- Count: clamp(Base + floor(bestTier * PerTier), 1, Max) fans, at most MaxOther
+	  on other plots within ~150 studs of the camera; plots without units have
+	  none (Theme.Fans). The local player's own plot adds one fan per plot rank
+	  (Fx.PlotRank.ownFans) and goes up to PlotRank.CFG.OwnFansMax (20 at tier
+	  25; Max on a "low" device). The server builds 16 spots: the rest of the own
+	  crowd stands between them (PlotRank.extraSpots).
 	- Looks are picked per plot + spot, so a plot's crowd never reshuffles.
 	- New fans run in from the entrance, fade in, and settle with a little hop;
 	  when the count drops the extra fans wave and walk off.
@@ -45,6 +48,7 @@ local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 local State = require(script.Parent.Parent.State)
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
+local PlotRank = require(script.Parent.PlotRank)
 
 local Fans = {}
 
@@ -193,7 +197,8 @@ end
 -- Spots -------------------------------------------------------------------------------
 
 -- Reads the plot's FanSpots (sorted by Order) and derives the entrance and zone frame.
-local function readSpots(rec: PlotRec)
+-- `total` > the number of FanSpots adds standing spots between them (the own plot's crowd).
+local function readSpots(rec: PlotRec, total: number)
 	local spotsFolder = rec.folder:FindFirstChild("FanSpots")
 	local list: { BasePart } = {}
 	local entrancePart: BasePart? = nil
@@ -238,6 +243,15 @@ local function readSpots(rec: PlotRec)
 	rec.spots = spots
 	if #list == 0 then
 		return
+	end
+	if total > #list then
+		local known: { PlotRank.Spot } = {}
+		for i, spot in spots do
+			known[i] = { pos = spot.cf.Position, look = spot.cf.LookVector, entrance = spot.entrance, order = spot.order }
+		end
+		for _, extra in PlotRank.extraSpots(known, total - #list) do
+			table.insert(spots, { order = extra.order, cf = CFrame.lookAt(extra.pos, extra.pos + extra.look), entrance = extra.entrance })
+		end
 	end
 	rec.center = sum / #list
 	local forward = if look.Magnitude > 1e-3 then look.Unit else Vector3.new(0, 0, -1)
@@ -862,13 +876,17 @@ end
 
 local function syncPlot(rec: PlotRec, own: boolean, camPos: Vector3, now: number)
 	local oldSpots = rec.spots
-	readSpots(rec)
+	-- The own plot's crowd outgrows the server's spots; a "low" device keeps the old size.
+	local ownMax = if Budget.low() then CFG.Max else PlotRank.CFG.OwnFansMax
+	readSpots(rec, if own then ownMax else 0)
 	local spots = rec.spots
 	local want = 0
 	local best = if #spots > 0 then bestTier(rec) else 0
 	if best > 0 then
 		want = math.clamp(CFG.Base + math.floor(best * CFG.PerTier), 1, CFG.Max)
-		if not own then
+		if own then
+			want = PlotRank.ownFans(best, CFG.Base, CFG.PerTier, ownMax)
+		else
 			want = math.min(want, CFG.MaxOther)
 			local range = if rec.shown then HIDE_OTHER else SHOW_OTHER
 			rec.shown = (rec.center - camPos).Magnitude <= range

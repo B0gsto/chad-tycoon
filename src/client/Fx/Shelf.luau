@@ -33,10 +33,17 @@
 	  tiles, a faint colour haze, rising sparkles and a proud idle
 	  (Animator.setHero). The own plot is handed to Animator.setOwnPlot so its
 	  units get the bigger posing budget.
+	- Rarity and standing (rules and numbers in Fx.PlotRank): every disc sits in
+	  a ring of its rarity band's colour, fainter for Common and solid neon for
+	  Legendary and Mythic (the champion has its pedestal's glow instead), and
+	  front-shelf units from Epic up breathe a few sparkles. Units of the two
+	  best tiers are drawn up to 1.3x where the board above leaves room and
+	  never bigger than the champion; low tiers behind the front shelf shrink
+	  to 0.85x. A few units are resized per frame (Animator.hold / release).
 
 	Effects are painted, not glowing: SmoothPlastic parts in tier or palette
 	colours with eased fades, low particle light emission and no lights. Only
-	the soul orbs (aura) use Neon.
+	the soul orbs (aura) and the top bands' rarity rings use Neon.
 ]]
 
 local Players = game:GetService("Players")
@@ -54,8 +61,10 @@ local Client = script.Parent.Parent
 local Animator = require(Client.Animator)
 local Sounds = require(Client.Sounds)
 local State = require(Client.State)
+local Budget = require(script.Parent.Budget)
 local Camera = require(script.Parent.Camera)
 local Orbs = require(script.Parent.Orbs)
+local PlotRank = require(script.Parent.PlotRank)
 
 local Shelf = {}
 
@@ -1193,6 +1202,10 @@ local HIDDEN = CFrame.new(0, -10000, 0)
 
 type Deco = {
 	disc: Part,
+	ring: Part, -- rarity band ring round the disc
+	aura: ParticleEmitter?, -- sparkles of a front-shelf unit of a top band
+	slot: number,
+	scale: number, -- size the model is drawn at (1 = as the server built it)
 	tier: number,
 	color: Color3,
 	radius: number,
@@ -1221,6 +1234,9 @@ local heroEmitter: ParticleEmitter? = nil
 local heroColorSet: Color3? = nil -- colour last given to the hero's beam and sparkles
 local glowParts: { BasePart } = {}
 local glowCFrames: { CFrame } = {}
+-- The rack's two best tiers, the champion's drawn size and this frame's resize count.
+local standing = { best = 0, second = 0, champion = 1, resized = 0 }
+local RING = PlotRank.CFG.RingWidth
 
 local function modelTier(model: Model): number
 	local value = model:GetAttribute("Tier")
@@ -1243,6 +1259,7 @@ local function removeDeco(model: Model)
 	local deco = decos[model]
 	if deco then
 		deco.disc:Destroy()
+		deco.ring:Destroy()
 		decos[model] = nil
 		decoCount -= 1
 		local last = decoOrder[#decoOrder]
@@ -1263,9 +1280,17 @@ local function addDeco(model: Instance)
 	local color = tierColor(tier)
 	local disc = fxPart(Enum.PartType.Cylinder, Vector3.new(0.05, 0.1, 0.1), HIDDEN, color, DISC_ALPHA)
 	disc.Name = "TierDisc"
+	local ringAlpha, ringMaterial = PlotRank.ringLook(tier)
+	local ring = fxPart(Enum.PartType.Cylinder, Vector3.new(0.05, 0.1, 0.1), HIDDEN, PlotRank.bandColor(tier), ringAlpha, ringMaterial)
+	ring.Name = "RarityRing"
+	local okScale, scale = pcall(model.GetScale, model)
 	table.insert(decoOrder, model)
 	decos[model] = {
 		disc = disc,
+		ring = ring,
+		aura = nil,
+		slot = MAX_DISCS,
+		scale = if okScale and type(scale) == "number" then scale else 1,
 		tier = tier,
 		color = color,
 		radius = 2,
@@ -1284,6 +1309,11 @@ local function addDeco(model: Instance)
 			deco.tier = modelTier(model)
 			deco.color = tierColor(deco.tier)
 			deco.disc.Color = deco.color
+			deco.ring.Color = PlotRank.bandColor(deco.tier)
+			deco.ring.Transparency, deco.ring.Material = PlotRank.ringLook(deco.tier)
+			if deco.aura then
+				deco.aura.Color = ColorSequence.new(WHITE, PlotRank.bandColor(deco.tier))
+			end
 			deco.measured = false
 		end
 	end)
@@ -1359,11 +1389,14 @@ end
 local function pickHero()
 	local best: Model? = nil
 	local bestTier = -1
+	local tiers: { number } = {}
 	for model, deco in decos do
 		if model.Parent and (deco.tier > bestTier or (deco.tier == bestTier and model == hero)) then
 			best, bestTier = model, deco.tier
 		end
+		table.insert(tiers, deco.tier)
 	end
+	standing.best, standing.second = PlotRank.topTiers(tiers)
 	if best ~= hero then
 		local old = hero
 		if old then
@@ -1380,10 +1413,71 @@ local function pickHero()
 		if best then
 			Animator.setHero(best, true)
 			ensureHeroParts()
+			-- The champion's pedestal glows instead (Fx.PlotRank): no ring under it.
+			local bestDeco = decos[best]
+			if bestDeco then
+				bestDeco.ring.CFrame = HIDDEN
+			end
 		else
 			hideHero()
 		end
 	end
+end
+
+-- Draws a unit at the size its standing on the rack earns (PlotRank.wantScale), as far as the
+-- board above it leaves room, and switches its aura sparkles. A few units per frame.
+local function applyStanding(model: Model, deco: Deco)
+	local cfg = PlotRank.CFG
+	local slotValue = model:GetAttribute("Slot")
+	deco.slot = if type(slotValue) == "number" then slotValue else MAX_DISCS
+	local champion = deco.slot == 1
+	local glows = PlotRank.bandIndex(deco.tier) >= cfg.AuraBand and deco.slot <= cfg.FrontSlots and not champion and not Budget.low()
+	local aura = deco.aura
+	if glows and not aura then
+		local made = Instance.new("ParticleEmitter")
+		made.Name = "RarityAura"
+		made.Texture = SPARKLE
+		made.LightEmission = SPARKLE_EMISSION
+		made.Lifetime = NumberRange.new(1, 1.6)
+		made.Speed = NumberRange.new(1, 2.4)
+		-- The ring lies on its side: its +X face looks up.
+		made.EmissionDirection = Enum.NormalId.Right
+		made.SpreadAngle = Vector2.new(10, 10)
+		made.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0),
+			NumberSequenceKeypoint.new(0.2, 0.35),
+			NumberSequenceKeypoint.new(1, 0),
+		})
+		made.Transparency = NumberSequence.new(0, 1)
+		made.Color = ColorSequence.new(WHITE, PlotRank.bandColor(deco.tier))
+		made.Rate = Budget.count(cfg.AuraRate)
+		made.Parent = deco.ring
+		deco.aura = made
+		aura = made
+	end
+	if aura and aura.Enabled ~= glows then
+		aura.Enabled = glows
+		aura.Rate = Budget.count(cfg.AuraRate)
+	end
+
+	local feet = model:GetPivot().Position
+	local heightValue = model:GetAttribute("Height")
+	local height = if type(heightValue) == "number" then heightValue else 5
+	local ceiling = boardAbove(watched, feet)
+	local want = PlotRank.wantScale(deco.tier, deco.slot, standing.best, standing.second)
+	local target = PlotRank.fitScale(want, height, if ceiling then ceiling - feet.Y else nil, if champion then nil else standing.champion)
+	if champion then
+		standing.champion = target
+	end
+	if math.abs(target - deco.scale) < 0.005 or standing.resized >= cfg.RescalesPerFrame then
+		return
+	end
+	standing.resized += 1
+	deco.scale = target
+	Animator.hold(model)
+	safeScale(model, target)
+	Animator.release(model)
+	deco.measured = false
 end
 
 -- Re-reads where a unit stands; marks its disc dirty when it moved (or appeared).
@@ -1391,6 +1485,7 @@ local function refreshDeco(model: Model, deco: Deco, now: number)
 	if not model.Parent or Animator.isHeld(model) then
 		return
 	end
+	applyStanding(model, deco)
 	if not deco.measured then
 		measure(model, deco)
 	end
@@ -1415,6 +1510,7 @@ local function stepGlow()
 	local now = os.clock()
 	table.clear(glowParts)
 	table.clear(glowCFrames)
+	standing.resized = 0
 	local heroModel = hero
 	local count = #decoOrder
 	for _ = 1, math.min(DISC_REFRESH, count) do
@@ -1453,6 +1549,13 @@ local function stepGlow()
 		end
 		table.insert(glowParts, deco.disc)
 		table.insert(glowCFrames, CFrame.new(pos) * UPRIGHT)
+		if not isHero then
+			-- The rarity ring: a wider disc just under the tier disc, so only its edge shows.
+			local wide = d + RING * 2 * math.min(grow, 1)
+			deco.ring.Size = Vector3.new(0.05, wide, wide)
+			table.insert(glowParts, deco.ring)
+			table.insert(glowCFrames, CFrame.new(pos - Vector3.new(0, 0.03, 0)) * UPRIGHT)
+		end
 	end
 	local heroPos = heroDeco and heroDeco.pos
 	if heroDeco and heroPos and heroBeam and heroEmitPart then
