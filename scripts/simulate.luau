@@ -1,6 +1,7 @@
 --[[
 	Progression simulation of a greedy active player (no deposit bonus: every orb is worth
-	its base cash).
+	its base cash). The player uses Buy Max as soon as the Buy 100 pad offers it
+	(Economy.planBuyMax).
 	Prints when each tier is first reached, one line per tier.
 	Run with:  lune run scripts/simulate [flags]
 	  --aura        owns the 2x aura pass (double orbs and double converter speed)
@@ -109,15 +110,8 @@ function Simulate.run(options: Options): Result
 			end
 		end
 	end
-	local function addUnits(tier: number, amount: number, t: number): number
-		local result = Economy.addUnitsCapped(units, tier, amount)
-		units = result.units
-		-- The player merges every pair (by hand or with Auto Merge). A cascade can pass
-		-- straight through a tier, so record every tier a merge created.
-		local _, _, steps = Economy.mergeAll(units)
-		for _, step in result.steps do
-			table.insert(steps, step)
-		end
+	-- A cascade can pass straight through a tier, so record every tier a merge created.
+	local function merged(steps: { Economy.MergeStep }, t: number)
 		for _, step in steps do
 			if not reached[step.tier + 1] then
 				reached[step.tier + 1] = t
@@ -127,6 +121,16 @@ function Simulate.run(options: Options): Result
 		record(t)
 		-- A new tier lifts the converter to its free floor.
 		processLevel = math.max(processLevel, Economy.minProcessLevel(highest))
+	end
+	local function addUnits(tier: number, amount: number, t: number): number
+		local result = Economy.addUnitsCapped(units, tier, amount)
+		units = result.units
+		-- The player merges every pair (by hand or with Auto Merge).
+		local _, _, steps = Economy.mergeAll(units)
+		for _, step in result.steps do
+			table.insert(steps, step)
+		end
+		merged(steps, t)
 		return result.accepted
 	end
 
@@ -177,6 +181,15 @@ function Simulate.run(options: Options): Result
 					money -= Economy.processUpgradeCost(processLevel)
 					processLevel += 1
 				elseif not bottlenecked and money >= Economy.bulkPrice(boughtUnits, 1) then
+					-- The Buy 100 pad sells everything the cash allows once it is a Buy Max.
+					local plan = Economy.planBuyMax(units, boughtUnits, money)
+					if plan then
+						units = plan.units
+						money -= plan.cost
+						boughtUnits += plan.amount
+						merged(plan.steps, t)
+						continue
+					end
 					local amount = 1
 					for _, a in { 100, 25, 5 } do
 						if money >= Economy.bulkPrice(boughtUnits, a) then

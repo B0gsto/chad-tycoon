@@ -201,14 +201,19 @@ local function notify(session: Session, payload: { [string]: any })
 	NotifyRemote:FireClient(session.player, payload)
 end
 
-local function toast(session: Session, text: string, tone: string?)
+-- `extra`: more fields for the Toast payload (the client may show them its own way).
+local function toast(session: Session, text: string, tone: string?, extra: { [string]: any }?)
 	-- Pads fire repeatedly if a player hops on them; avoid spamming the same text.
 	local now = os.clock()
 	if session.lastToast[text] and now - session.lastToast[text] < 1 then
 		return
 	end
 	session.lastToast[text] = now
-	notify(session, { kind = "Toast", text = text, tone = tone or "info" })
+	local payload: { [string]: any } = { kind = "Toast", text = text, tone = tone or "info" }
+	for key, value in extra or ({} :: { [string]: any }) do
+		payload[key] = value
+	end
+	notify(session, payload)
 end
 Tycoon.toast = toast
 Tycoon.notify = notify
@@ -275,6 +280,13 @@ end
 -- Cash per second right now, surge included (the HUD's number).
 function Tycoon.incomeNow(session: Session): number
 	return Economy.incomePerSecond(Tycoon.production(session), processRate(session, true), Tycoon.moneyMultiplier(session))
+end
+
+-- Aura and cash per second without the Aura Surge, taken before an action so its Reward
+-- notify can say what the new units added.
+type Earning = { production: number, income: number }
+local function earning(session: Session): Earning
+	return { production = steadyProduction(session), income = Tycoon.income(session) }
 end
 
 local function highestTier(session: Session): number
@@ -556,8 +568,9 @@ end
 -- Discovery / rewards ------------------------------------------------------------
 
 -- Marks every owned tier (plus `extra` tiers, e.g. ones a merge passed through)
--- as discovered and announces the newest one.
-local function discoverAll(session: Session, extra: { number }?)
+-- as discovered and announces the newest one. `before` = earning() from before the action
+-- that made the units: the Reward notify then carries what it added per second.
+local function discoverAll(session: Session, extra: { number }?, before: Earning?)
 	local p = session.profile
 	local newest = 0
 	local found: { number } = {}
@@ -578,12 +591,34 @@ local function discoverAll(session: Session, extra: { number }?)
 	end
 	if newest > 0 then
 		table.sort(found)
-		notify(session, { kind = "Reward", tier = newest, tiers = found, new = true })
-		emit(session, "Discover", { tier = newest })
 		-- The free converter floor: a new best tier lifts the converter to cover one of its units.
 		local floor = Economy.minProcessLevel(newest)
-		if floor > p.processLevel then
+		local lifted = floor > p.processLevel
+		if lifted then
 			p.processLevel = floor
+		end
+		-- `rates[tier]` = aura per second of one unit of that tier (1..newest, Double Aura
+		-- counted); production is aura and income cash per second, both without the Aura Surge.
+		local rates = Economy.unitRates(newest)
+		if session.passes.DoubleAura then
+			for tier, rate in rates do
+				rates[tier] = rate * 2
+			end
+		end
+		local after = earning(session)
+		notify(session, {
+			kind = "Reward",
+			tier = newest,
+			tiers = found,
+			new = true,
+			rates = rates,
+			productionBefore = if before then before.production else nil,
+			productionAfter = after.production,
+			incomeBefore = if before then before.income else nil,
+			incomeAfter = after.income,
+		})
+		emit(session, "Discover", { tier = newest })
+		if lifted then
 			local pad = session.plot.padByName.ProcUp1
 			effect(session, "Upgrade", { pad = "ProcUp1", padPos = pad and pad.part.Position, level = floor, free = true })
 			toast(session, string.format("Blender upgraded for free: Lv %d", floor), "good")
@@ -619,6 +654,7 @@ local function awardUnit(session: Session, tier: number, source: string)
 		toast(session, string.format("Your rack is full! (%d %s max)", Economy.UNIT_CAP, theme.Words.Units), "bad")
 		return
 	end
+	local before = earning(session)
 	applyCapped(session, fit)
 	p.totalObtained += 1
 	local steps = autoMergeIfOn(session)
@@ -628,7 +664,7 @@ local function awardUnit(session: Session, tier: number, source: string)
 	if not isNew then
 		notify(session, { kind = "Reward", tier = tier, new = false, source = source })
 	end
-	discoverAll(session, stepTiers(steps, stepTiers(fit.steps, { tier })))
+	discoverAll(session, stepTiers(steps, stepTiers(fit.steps, { tier })), before)
 	markDirty(session)
 end
 
@@ -1295,6 +1331,7 @@ local function buy(session: Session, amount: number)
 	if not spend(session, cost, padName) then
 		return
 	end
+	local before = earning(session)
 	applyCapped(session, fit)
 	p.bought += bought
 	p.totalObtained += bought
@@ -1303,7 +1340,7 @@ local function buy(session: Session, amount: number)
 	effect(session, "Buy", { amount = bought, tier = tier, cost = cost, padPos = padPos(session, padName) })
 	sendOverflowEffect(session, fit.steps, diff)
 	sendMergeEffects(session, steps, true, diff)
-	discoverAll(session, stepTiers(steps, stepTiers(fit.steps, { tier })))
+	discoverAll(session, stepTiers(steps, stepTiers(fit.steps, { tier })), before)
 	if bought < amount then
 		toast(session, string.format("Rack full: bought %d of %d", bought, amount), "info")
 	end
@@ -1317,6 +1354,36 @@ for _, amount in Economy.BUY_AMOUNTS do
 	end
 end
 
+-- Buy Max (Economy.planBuyMax): everything the cash allows in one step, the whole rack
+-- merged. Returns false when this step is not a Buy Max (the pad then sells 100).
+local BUY_MAX_PAD = "Buy100"
+local function buyMax(session: Session): boolean
+	local p = session.profile
+	local plan = Economy.planBuyMax(p.units, p.bought, p.money)
+	if not plan or not spend(session, plan.cost, BUY_MAX_PAD) then
+		return false
+	end
+	local before = earning(session)
+	for tier = 1, Economy.MAX_TIER do
+		p.units[tier] = plan.units[tier]
+	end
+	p.bought += plan.amount
+	p.totalObtained += plan.amount
+	local diff = refreshDisplay(session)
+	effect(session, "Buy", { amount = plan.amount, tier = 1, cost = plan.cost, padPos = padPos(session, BUY_MAX_PAD), max = true })
+	sendMergeEffects(session, plan.steps, true, diff)
+	discoverAll(session, stepTiers(plan.steps, { 1 }), before)
+	emit(session, "Buy", { amount = plan.amount })
+	markDirty(session)
+	return true
+end
+
+padHandlers[BUY_MAX_PAD] = function(session)
+	if not buyMax(session) then
+		buy(session, 100)
+	end
+end
+
 -- A per-second amount for toasts and pad titles: "1.20K", "37", and one decimal under 10
 -- ("0.5") so a small gain never reads as zero.
 local function perSecond(amount: number): string
@@ -1326,13 +1393,14 @@ end
 local function doMerge(session: Session, verbose: boolean, auto: boolean)
 	local p = session.profile
 	local before = Economy.productionPerSecond(p.units)
+	local earningBefore = earning(session)
 	local bestBefore = highestTier(session)
 	local merges, top, steps = Economy.mergeAll(p.units)
 	if merges > 0 then
 		local after = Economy.productionPerSecond(p.units)
 		local diff = refreshDisplay(session)
 		sendMergeEffects(session, steps, auto, diff)
-		discoverAll(session, stepTiers(steps))
+		discoverAll(session, stepTiers(steps), earningBefore)
 		emit(session, "Merge", { merges = merges, top = top, before = before, after = after })
 		if verbose then
 			local times = if merges == 1 then "once" else Format.short(merges) .. " times"
@@ -1341,7 +1409,18 @@ local function doMerge(session: Session, verbose: boolean, auto: boolean)
 			if top > bestBefore then
 				text ..= string.format(" New best: %s!", tierName(top))
 			end
-			toast(session, text, "good")
+			-- `merge`: the same numbers for a client that shows them over the rack instead.
+			local earningAfter = earning(session)
+			toast(session, text, "good", {
+				merge = {
+					merges = merges,
+					productionBefore = earningBefore.production,
+					productionAfter = earningAfter.production,
+					incomeBefore = earningBefore.income,
+					incomeAfter = earningAfter.income,
+					newTier = top > bestBefore,
+				},
+			})
 		end
 		markDirty(session)
 	elseif verbose then
@@ -1495,6 +1574,8 @@ local function loadUnlocker(session: Session, slotIndex: number): number
 	if not p.firstCrateDone then
 		seconds = math.min(seconds, Economy.FIRST_CRATE_SECONDS)
 	end
+	-- Only that one: a second crate loaded before the first opens takes its full time.
+	p.firstCrateDone = true
 	slot.rarity = p.heldChest
 	slot.endsAt = os.time() + seconds
 	clearHeld(session)
@@ -1595,7 +1676,8 @@ padHandlers.Free = function(session)
 	local cash = math.max(Economy.FREE_REWARD_MIN, Tycoon.income(session) * Economy.FREE_REWARD_SECONDS)
 	addMoney(session, cash)
 	p.lastFreeReward = os.time()
-	toast(session, "Free reward: +" .. Format.money(cash), "good")
+	-- A reward card on the client; `nextIn` = seconds until the next gift.
+	notify(session, { kind = "Gift", cash = cash, nextIn = Economy.FREE_REWARD_COOLDOWN })
 	effect(session, "Cash", { amount = cash, source = "Free", padPos = padPos(session, "Free") })
 	markDirty(session)
 end
@@ -1624,6 +1706,12 @@ local function updateBoards(session: Session)
 	for _, amount in Economy.BUY_AMOUNTS do
 		local cost = Economy.bulkPrice(p.bought, amount)
 		setPad(session, "Buy" .. amount, "Buy " .. amount .. " " .. tierName(1), Format.money(cost), canAfford(session, cost))
+	end
+	-- The Buy 100 pad while its next step is a Buy Max: "BUY MAX x1,240 Normie".
+	local maxPlan = Economy.planBuyMax(p.units, p.bought, p.money)
+	if maxPlan then
+		local count = if maxPlan.amount < 1e6 then Format.commas(maxPlan.amount) else Format.short(maxPlan.amount)
+		setPad(session, BUY_MAX_PAD, string.format("BUY MAX x%s %s", count, tierName(1)), Format.money(maxPlan.cost), true)
 	end
 
 	if ownsAutoMerge(session) then
@@ -1713,6 +1801,8 @@ local function snapshot(session: Session): { [string]: any }
 		money = p.money,
 		carried = p.carried,
 		queue = p.queue,
+		-- Seconds until the converter has worked through the queue at its speed right now.
+		queueSeconds = if p.queue > 0 then p.queue / rate else 0,
 		pending = p.pending,
 		units = p.units,
 		discovered = p.discovered,
@@ -1721,7 +1811,11 @@ local function snapshot(session: Session): { [string]: any }
 		unitTotal = Economy.totalUnits(p.units),
 		unitCap = Economy.UNIT_CAP,
 		bought = p.bought,
+		-- First-tier units still to buy before a full merge makes the next new tier.
+		nextTierUnits = Economy.unitsToNextTier(p.units, highestTier(session)),
 		processLevel = p.processLevel,
+		-- Cash per second the next converter level adds (0 while the converter keeps up).
+		upgradeGain = upgradeGain(session, 1),
 		heldChest = p.heldChest,
 		crateRobux = Tycoon.hooks.crateRobuxAllowed(session.player),
 		highestTier = highestTier(session),
@@ -2469,10 +2563,22 @@ function Tycoon.init(builtWorld: WorldBuilder.World, themeModule: any)
 	end)
 
 	task.spawn(function()
+		-- Aura Surge announcements to everyone: 30 s before it starts, at its start and its end.
+		local surgePhase = Economy.surgePhase(serverNow())
 		while true do
 			task.wait(1)
 			if serverNow() >= (ReplicatedStorage:GetAttribute("DepositNextAt") or 0) then
 				rerollDeposit()
+			end
+			local phase, left = Economy.surgePhase(serverNow())
+			local notice = Economy.surgeNotice(surgePhase, phase)
+			surgePhase = phase
+			if notice then
+				-- `seconds`: until the surge starts ("soon") or ends ("start"); 0 at its end.
+				local seconds = if notice == "end" then 0 else math.max(1, math.floor(left + 0.5))
+				for _, session in sessions do
+					notify(session, { kind = "Surge", phase = notice, seconds = seconds, multiplier = Economy.SURGE_MULTIPLIER })
+				end
 			end
 			for _, session in sessions do
 				session.actionBudget = ACTIONS_PER_SECOND

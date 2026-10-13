@@ -221,6 +221,111 @@ function Economy.bulkPrice(bought: number, amount: number): number
 	return price(bought, amount)
 end
 
+-- Buy Max: once a profile has bought BUY_MAX_FROM units, the Buy 100 pad buys everything the
+-- cash allows (at least BUY_MAX_MIN units, else it stays a plain Buy 100) and merges the whole
+-- rack. Late tiers need millions of first-tier units, which no pad could sell 100 at a time.
+Economy.BUY_MAX_FROM = 500
+Economy.BUY_MAX_MIN = 200
+-- The most units one purchase can be: a full rack of the top tier.
+Economy.BUY_MAX_UNITS = Economy.UNIT_CAP * Economy.MERGE_RATIO ^ (Economy.MAX_TIER - 1)
+
+-- The largest amount with bulkPrice(bought, amount) <= money (0 when not even one unit).
+function Economy.maxAffordable(bought: number, money: number): number
+	if money ~= money or price(bought, 1) > money then
+		return 0
+	end
+	local low, high = 1, 2
+	while high < Economy.BUY_MAX_UNITS and price(bought, high) <= money do
+		low, high = high, high * 2
+	end
+	if high >= Economy.BUY_MAX_UNITS then
+		high = Economy.BUY_MAX_UNITS
+		if price(bought, high) <= money then
+			return high
+		end
+	end
+	-- price(low) <= money < price(high)
+	while high - low > 1 do
+		local mid = math.floor((low + high) / 2)
+		if price(bought, mid) <= money then
+			low = mid
+		else
+			high = mid
+		end
+	end
+	return low
+end
+
+export type MaxPlan = {
+	-- Units bought (all of the first tier) and their exact price.
+	amount: number,
+	cost: number,
+	-- The rack after the purchase with every pair merged (1..MAX_TIER); the input is untouched.
+	units: { number },
+	merges: number,
+	steps: { MergeStep },
+}
+
+-- What a Buy Max step does for a profile with `units`, `bought` units bought so far and
+-- `money` cash, or nil when it is not a Buy Max (the pad then sells 100 as before). The
+-- merge conserves unitValue exactly: the result is worth the old units plus `amount` of the
+-- first tier. The top tier cannot merge, so when the merged rack would pass the cap the
+-- purchase is cut down to whole top-tier units.
+function Economy.planBuyMax(units: { number }, bought: number, money: number, cap: number?): MaxPlan?
+	if bought < Economy.BUY_MAX_FROM then
+		return nil
+	end
+	local amount = Economy.maxAffordable(bought, money)
+	local limit = cap or Economy.UNIT_CAP
+	for _ = 1, 2 do
+		if amount < Economy.BUY_MAX_MIN then
+			return nil
+		end
+		local out: { number } = table.create(Economy.MAX_TIER, 0)
+		for tier = 1, Economy.MAX_TIER do
+			out[tier] = units[tier] or 0
+		end
+		out[1] += amount
+		local merges, _, steps = Economy.mergeAll(out)
+		if Economy.totalUnits(out) <= limit then
+			return { amount = amount, cost = price(bought, amount), units = out, merges = merges, steps = steps }
+		end
+		-- Over the cap: buy just enough to turn everything below the top tier into whole
+		-- top-tier units, as many as the rack still has room for.
+		local top = Economy.MERGE_RATIO ^ (Economy.MAX_TIER - 1)
+		local below = 0
+		for tier = 1, Economy.MAX_TIER - 1 do
+			below += (units[tier] or 0) * Economy.MERGE_RATIO ^ (tier - 1)
+		end
+		local room = limit - (units[Economy.MAX_TIER] or 0)
+		local made = math.min(math.floor((below + amount) / top), room)
+		amount = made * top - below
+	end
+	return nil
+end
+
+-- First-tier units still missing before the rack, with every pair merged, holds a unit of
+-- the tier after `highestTier` (0 at the top tier, or when the rack already holds enough).
+function Economy.unitsToNextTier(units: { number }, highestTier: number): number
+	if highestTier >= Economy.MAX_TIER then
+		return 0
+	end
+	local owned = 0
+	for tier = 1, Economy.MAX_TIER do
+		owned += (units[tier] or 0) * Economy.MERGE_RATIO ^ (tier - 1)
+	end
+	return math.max(0, Economy.MERGE_RATIO ^ math.max(highestTier, 1) - owned)
+end
+
+-- Aura per second of one unit of each tier, 1..`upTo` (a dense list: it crosses a remote as is).
+function Economy.unitRates(upTo: number): { number }
+	local rates: { number } = {}
+	for tier = 1, math.clamp(math.floor(upTo), 1, Economy.MAX_TIER) do
+		rates[tier] = Economy.unitRate(tier)
+	end
+	return rates
+end
+
 -- Processing (the converter that turns deposited orbs into cash) ---------------
 
 -- Each level is 25% faster and costs 25% more than the one before, so a level always costs
@@ -321,6 +426,34 @@ function Economy.surgeState(now: number): (boolean, number)
 		return true, Economy.SURGE_CYCLE - t
 	end
 	return false, start - t
+end
+
+-- Players are told this many seconds before a surge starts.
+Economy.SURGE_WARN_SECONDS = 30
+
+-- The surge cycle as the server announces it: "idle", "soon" (the last SURGE_WARN_SECONDS
+-- before a surge) or "active", and the seconds until that phase ends.
+function Economy.surgePhase(now: number): (string, number)
+	local active, left = Economy.surgeState(now)
+	if active then
+		return "active", left
+	elseif left <= Economy.SURGE_WARN_SECONDS then
+		return "soon", left
+	end
+	return "idle", left - Economy.SURGE_WARN_SECONDS
+end
+
+-- What to announce when the phase goes from `previous` to `phase`: "soon", "start", "end" or
+-- nil (no change, or a surge that was never running ends).
+function Economy.surgeNotice(previous: string, phase: string): string?
+	if phase == previous then
+		return nil
+	elseif phase == "soon" then
+		return "soon"
+	elseif phase == "active" then
+		return "start"
+	end
+	return if previous == "active" then "end" else nil
 end
 
 -- Chests ----------------------------------------------------------------------
