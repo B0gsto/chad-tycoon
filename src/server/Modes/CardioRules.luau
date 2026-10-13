@@ -78,6 +78,10 @@ CardioRules.STEP_LEVEL_BONUS = 0.1
 CardioRules.COST_SECONDS = 120
 CardioRules.COST_SECONDS_PER_LEVEL = 24
 CardioRules.COST_MINIMUM = 150
+-- The run again bonus (a WIN plate inside the reward cooldown pays Economy.MODE_REPEAT_SHARE
+-- of its pack) is paid no sooner than this many seconds after the last plate that paid, so
+-- a short stage cannot be looped for it however fast the runner is.
+CardioRules.REPEAT_GAP = 30
 
 export type Movers = { travel: number, period: number }
 
@@ -313,6 +317,30 @@ function CardioRules.treadmillCost(level: number, income: number): number
 	end
 	local seconds = CardioRules.COST_SECONDS + CardioRules.COST_SECONDS_PER_LEVEL * l
 	return math.floor(math.max(CardioRules.COST_MINIMUM * (l + 1) ^ 2, math.max(0, income) * seconds))
+end
+
+-- The first plate that can pay the run again bonus: the deepest one claimed so far (the
+-- personal best), so a repeat is a run at least as long as the player's best one.
+function CardioRules.repeatFrom(bestStage: number): number
+	return math.clamp(math.floor(bestStage), 1, CardioRules.STAGE_COUNT)
+end
+
+-- Does claiming plate `stage` inside the reward cooldown earn the run again bonus? Only on
+-- the best plate (`bestStage`, before this claim) or a deeper one, and only `sincePaid` >=
+-- REPEAT_GAP seconds after the last plate that paid anything.
+function CardioRules.repeatEarned(stage: number, bestStage: number, sincePaid: number): boolean
+	return stage >= CardioRules.repeatFrom(bestStage) and sincePaid >= CardioRules.REPEAT_GAP
+end
+
+-- What a WIN plate pays: "first" (its first clear) and "full" (the cooldown is over) the
+-- whole pack, "repeat" (inside the cooldown, `earned`) the run again bonus, "none" nothing.
+function CardioRules.payKind(first: boolean, full: boolean, earned: boolean): string
+	if first then
+		return "first"
+	elseif full then
+		return "full"
+	end
+	return if earned then "repeat" else "none"
 end
 
 -- Cash multiplier on stage n's reward (+25% per stage: stage 10 pays 3.25x the pack).

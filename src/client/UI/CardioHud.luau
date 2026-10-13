@@ -9,7 +9,9 @@
 	                "12.85K Speed" that counts up smoothly, a chunky bar under it toward the
 	                next stage's need ("Stage 3 · 968 / 1.1K", gold until the need is met,
 	                then mint), and small lines beside it ("Multiplier x1.25 (Stages)",
-	                "Treadmill Lv 3"); on narrow screens those lines sit above the number.
+	                "Treadmill Lv 3", "Best plate 5": the deepest WIN plate claimed, the
+	                personal best, "No best plate yet" before the first); on narrow screens
+	                those lines sit above the number.
 	                The bar runs on past the need to the recommended Speed (snapshot
 	                `recommended`, 15% above the need): a dark tick marks the need, and from
 	                there the text reads "Stage 3 · 1.12K · recommended 1.27K", then
@@ -20,15 +22,20 @@
 	                stays for later": true in Modes.Cardio, first clears are kept per plate),
 	                or white "NO REWARD on this WIN plate right now" with when it pays again
 	                and the same warning; while Speed < need, a pulsing coral "Need more
-	                speed!" hint.
+	                speed!" hint. Inside the reward cooldown the best plate and deeper ones
+	                pay the run again bonus (snapshot `repeats`, `repeatFrom`,
+	                `repeatReadyAt`): "WIN plate: run again bonus +$2.4K", and where it is
+	                not paid the line says from which plate or in how many seconds it is.
 	  Title         a big bubbly "STAGE n" (plus the stage's name) under it whenever you
 	                enter a stage; also "STAGE 3 CLEAR!" (reaching a safe zone: nothing is
-	                paid until you step on its WIN plate), "YOU WIN!" (cashed out; "RUN
-	                OVER" when the plate paid nothing), and for a fall "TOO SLOW!" / "OOPS!"
+	                paid until you step on its WIN plate), "YOU WIN!" (cashed out; "NEW
+	                BEST!" with "Plate n" when the claim is deeper than the best plate,
+	                with more confetti; "RUN OVER" when the plate paid nothing), and for a fall "TOO SLOW!" / "OOPS!"
 	                / "CAUGHT!" with what happened (Speed below the stage's need, the custom
 	                speed cap, a plain fall, the chaser), "TREADMILL LV 4!" banners.
 	  WIN plates    the floating "Amount" line over every WIN pad (tag "CardioWinPad",
-	                World.CardioTrack) is written here: "+$12.4K" or "NO REWARD".
+	                World.CardioTrack) is written here: "+$12.4K", "NO REWARD", or
+	                "+$2.4K in 0:12" while the run again bonus waits for its gap.
 	  Right column  centre right: Custom Speed (title, "Your Max Speed: N", a number box
 	                + green OK that fires CardioSpeedCap { cap } with 0 / empty = no cap,
 	                "Current speed: N"; a small "Custom Speed" chip by default on every
@@ -40,8 +47,8 @@
 	                HOME, confetti.
 
 	Snapshot fields read (modes.cardio): running, speed, walkSpeed, maxWalkSpeed?,
-	speedCap?, multiplier, treadmill, treadmillRate, nextCost, stage, wins?, firsts?,
-	cooldownEnds, onTreadmill, stageCount, needs, recommended?, names. Main routes Notify (kind "Mode", mode "cardio")
+	speedCap?, multiplier, bestStage, treadmill, treadmillRate, nextCost, stage, wins?, firsts?,
+	repeats?, repeatFrom?, repeatReadyAt?, cooldownEnds, onTreadmill, stageCount, needs, recommended?, names. Main routes Notify (kind "Mode", mode "cardio")
 	to CardioHud.onNotify, every State snapshot to CardioHud.onState and the "CardioSteps"
 	effect to CardioHud.onSteps.
 ]]
@@ -110,6 +117,7 @@ local barText: TextLabel
 local side: Frame
 local sideLayout: UIListLayout
 local multLine: TextLabel
+local bestLine: TextLabel
 local treadLine: TextLabel
 -- Custom speed
 local customCard: Frame
@@ -160,6 +168,8 @@ local walkSpeed = 16
 local maxSeen = 16
 local stage = 0
 local stageCount = 10
+-- The deepest WIN plate claimed so far (the personal best; 0 = none yet).
+local bestStage = 0
 local nearPad = false
 local nearTreadmill = false
 -- Safe zone the player stands in (0 = none), and what each zone's WIN pad paid when its
@@ -261,9 +271,17 @@ local function stageTitle(delay: number?)
 	showBanner("STAGE " .. n, if name then string.upper(name) else nil, WHITE, 1.8, delay)
 end
 
--- "No reward this time: plates pay again in 12:30" for a WIN plate that paid nothing.
+-- Why a WIN plate paid nothing: the run again bonus starts at a deeper plate (the best one),
+-- or it was paid a moment ago, or "plates pay again in 12:30".
 local function noRewardText(p: any): string
 	local left = math.max(0, math.ceil(num(p.cooldownEnds, 0) - os.time()))
+	local from = math.floor(num(p.repeatFrom, 0))
+	local wait = math.max(0, math.ceil(num(p.repeatReadyAt, 0) - os.time()))
+	if left > 0 and num(p.stage, from) < from then
+		return "No reward: the run again bonus starts at plate " .. from
+	elseif left > 0 and wait > 0 then
+		return "No reward this time: run again bonus in " .. Format.time(wait)
+	end
 	return if left > 0 then "No reward this time: plates pay again in " .. Format.time(left) else "No reward this time"
 end
 
@@ -272,20 +290,43 @@ local function rewardText(p: any): string?
 	if cash <= 0 then
 		return if p.full == false then noRewardText(p) else nil
 	end
-	local text = "+" .. Format.money(cash)
-	if p.full == false then
-		text ..= "  (cooling down)"
+	-- Inside the reward cooldown a real run still pays its share (`pay` = "repeat").
+	return if p.pay == "repeat" or p.full == false then "Run again bonus +" .. Format.money(cash) else "+" .. Format.money(cash)
+end
+
+-- "Best plate 5" beside the Speed: the personal best. `pop` marks a new one.
+local function setBest(best: number, pop: boolean?)
+	bestStage = math.clamp(math.floor(best), 0, 10)
+	local text = if bestStage > 0 then "Best plate " .. bestStage else "No best plate yet"
+	if bestLine.Text ~= text then
+		bestLine.Text = text
+		if pop then
+			Kit.pop(bestLine, 1.5)
+		end
 	end
-	return text
 end
 
 -- WIN plates ----------------------------------------------------------------------------------
 
--- What safe zone n's WIN pad pays right now (0 inside the reward cooldown), if known.
+-- Seconds until the run again bonus is paid again (0 = it is now): it has a short gap after
+-- every plate that paid.
+local function repeatLeft(): number
+	return math.max(0, math.ceil(num(snap.repeatReadyAt, 0) - os.time()))
+end
+
+-- The run again bonus safe zone n's WIN pad pays inside the reward cooldown (0 = none: the
+-- pad pays in full, or it is before the best plate).
+local function repeatCash(n: number): number
+	local repeats = snap.repeats
+	return if type(repeats) == "table" and type(repeats[n]) == "number" then repeats[n] else 0
+end
+
+-- What safe zone n's WIN pad pays right now (0 = nothing), if known.
 local function winCash(n: number): number?
 	local wins = snap.wins
 	if type(wins) == "table" and type(wins[n]) == "number" then
-		return wins[n]
+		-- The snapshot can be older than the bonus' gap: once that is over the bonus counts.
+		return if wins[n] <= 0 and repeatLeft() <= 0 then repeatCash(n) else wins[n]
 	end
 	return zoneCash[n]
 end
@@ -324,16 +365,22 @@ local function paintWin()
 	if show then
 		local left = cooldownLeft()
 		local pays = (cash :: number) > 0
+		local bonus = repeatCash(zoneIn) > 0
 		if pays then
-			winLabel.Text = "WIN plate: +" .. Format.money(cash) .. "  ·  it ends this run"
+			winLabel.Text = (if bonus then "WIN plate: run again bonus +" else "WIN plate: +")
+				.. Format.money(cash)
+				.. "  ·  it ends this run"
 			-- True in Modes.Cardio: first clears are kept per plate (profile.cardio.firsts).
 			if winFirst(zoneIn) and zoneIn < stageCount then
 				note = "Skip it and this first win stays for later"
 			end
 		else
 			winLabel.Text = "NO REWARD on this WIN plate right now"
-			note = if left > 0
-				then "Pays again in " .. Format.time(left) .. ". Stepping on it ends this run!"
+			local from = math.floor(num(snap.repeatFrom, 0))
+			note = if bonus
+				then "Run again bonus in " .. Format.time(repeatLeft()) .. ". Stepping on it ends this run!"
+				elseif left > 0 and zoneIn < from then "Run again bonus from plate " .. from .. ". Stepping here ends this run!"
+				elseif left > 0 then "Pays again in " .. Format.time(left) .. ". Stepping on it ends this run!"
 				else "Stepping on it ends this run!"
 		end
 		winLabel.TextColor3 = if pays then GOLD else WHITE
@@ -356,11 +403,18 @@ local function paintPads()
 		local gui = pad:FindFirstChild("WinLabel")
 		local amount = gui and gui:FindFirstChild("Amount")
 		if amount and amount:IsA("TextLabel") then
-			local cash = winCash(math.floor(num(pad:GetAttribute("Stage"), 0)))
+			local n = math.floor(num(pad:GetAttribute("Stage"), 0))
+			local cash = winCash(n)
 			local text = "CASH OUT"
 			if active and cash then
-				-- A pad that pays nothing right now says so (stepping on it still ends the run).
-				text = if cash > 0 then "+" .. Format.money(cash) elseif cooldownLeft() > 0 then "NO REWARD" else "CASH OUT"
+				-- A pad that pays nothing right now says so (stepping on it still ends the run);
+				-- one whose run again bonus waits for its gap counts down to it.
+				local bonus = repeatCash(n)
+				text = if cash > 0
+					then "+" .. Format.money(cash)
+					elseif bonus > 0 then "+" .. Format.money(bonus) .. " in " .. Format.time(repeatLeft())
+					elseif cooldownLeft() > 0 then "NO REWARD"
+					else "CASH OUT"
 			end
 			if amount.Text ~= text then
 				amount.Text = text
@@ -480,6 +534,7 @@ local function setMultiplier(mult: number)
 		end
 	end
 	treadLine.Text = "Treadmill Lv " .. math.clamp(math.floor(num(snap.treadmill, 0)), 0, MAX_LEVEL)
+	setBest(num(snap.bestStage, bestStage))
 end
 
 -- Custom Speed is a small chip until tapped; OK and the run's end fold it again.
@@ -635,10 +690,13 @@ local function render(dt: number)
 		proximityAt = now
 		checkProximity()
 	end
-	-- The pads' cooldown countdowns tick on their own.
+	-- The pads' cooldown countdowns tick on their own (and the stage line's, in a safe zone).
 	if now - padsAt >= PADS_EVERY then
 		padsAt = now
 		paintPads()
+		if zoneIn > 0 then
+			paintWin()
+		end
 	end
 end
 
@@ -782,9 +840,15 @@ function CardioHud.onNotify(p: any)
 		setTarget(num(p.speed, targetSpeed), true)
 		setWalk(num(p.walkSpeed, walkSpeed))
 		setMultiplier(num(p.multiplier, 1))
+		setBest(num(p.bestStage, bestStage))
 		show()
 		Sounds.play("Ready")
-		showBanner("CARDIO!", "Every key you step on = +Speed!", MINT, 2)
+		-- The personal best to chase, once there is one.
+		local chase = if bestStage <= 0
+			then "Every key you step on = +Speed!"
+			elseif bestStage >= stageCount then "Best plate " .. bestStage .. ": all the way!"
+			else "Best plate " .. bestStage .. ". Can you go deeper?"
+		showBanner("CARDIO!", chase, MINT, 2)
 		stageTitle(2.4)
 	elseif event == "zone" then
 		-- Reached a safe zone: nothing is paid yet, its WIN plate shows what it would pay.
@@ -795,13 +859,15 @@ function CardioHud.onNotify(p: any)
 		zoneFirst[n] = p.first == true
 		-- What this zone's WIN plate does right now; never a promise the plates can't keep.
 		local sub
-		if cash > 0 then
+		if cash > 0 and p.pay == "repeat" then
+			sub = "WIN plate: run again bonus +" .. Format.money(cash) .. " (ends this run)"
+		elseif cash > 0 then
 			sub = "WIN plate: +" .. Format.money(cash) .. " (it ends this run)"
 		elseif deeperPays(n) then
 			sub = "No reward on this plate now. A deeper one pays!"
 		else
 			local left = math.max(0, math.ceil(num(p.cooldownEnds, 0) - os.time()))
-			sub = if left > 0 then "No reward right now: plates pay again in " .. Format.time(left) else "No reward on this plate right now"
+			sub = if left > 0 then noRewardText(p) else "No reward on this plate right now"
 		end
 		showBanner("STAGE " .. n .. " CLEAR!", sub, MINT, 2.4)
 		stageTitle(2.8)
@@ -815,8 +881,20 @@ function CardioHud.onNotify(p: any)
 		table.clear(zoneCash)
 		table.clear(zoneFirst)
 		paintWin()
+		-- A claim deeper than the best plate is a new personal best.
+		local newBest = p.newBest == true
+		setBest(num(p.bestStage, bestStage), newBest)
 		if p.final == true then
 			showFinish(p)
+		elseif newBest then
+			local reward = rewardText(p)
+			local plate = "Plate " .. math.floor(num(p.stage, bestStage))
+			showBanner("NEW BEST!", if reward then plate .. "  ·  " .. reward else plate, GOLD, 2.6)
+			stageTitle(3)
+			Sounds.play("Celebrate")
+			if screen then
+				Kit.confetti(screen, { Count = 26, Origin = UDim2.fromScale(0.5, 0.3), Power = 1.2 })
+			end
 		elseif num(p.cash, 0) <= 0 then
 			-- The plate paid nothing (the cooldown) and still ended the run: say so, no party.
 			showBanner("RUN OVER", noRewardText(p), WHITE, 2.4)
@@ -1058,6 +1136,17 @@ local function buildBox()
 		AutomaticSize = Enum.AutomaticSize.X,
 		Size = UDim2.fromOffset(0, 22),
 		LayoutOrder = 2,
+		ZIndex = 22,
+	})
+	-- The personal best: the deepest WIN plate claimed.
+	bestLine = Kit.hudText(side, {
+		Name = "Best",
+		Text = "No best plate yet",
+		TextSize = 17,
+		TextColor3 = Kit.lighten(GOLD, 0.2),
+		AutomaticSize = Enum.AutomaticSize.X,
+		Size = UDim2.fromOffset(0, 22),
+		LayoutOrder = 3,
 		ZIndex = 22,
 	})
 end
@@ -1588,7 +1677,7 @@ function CardioHud.build(screenGui: ScreenGui)
 		box.Position = UDim2.new(0.5, 0, 1, if Kit.touch then -10 else -16)
 		local wide = not Kit.touch and view.X / 2 >= (BOX_W / 2 + 12 + SIDE_W) * scale + 12
 		if wide then
-			side.Size = UDim2.fromOffset(SIDE_W, 50)
+			side.Size = UDim2.fromOffset(SIDE_W, 74)
 			side.Position = UDim2.new(1, 12, 0, 8)
 			side.AnchorPoint = Vector2.zero
 			sideLayout.FillDirection = Enum.FillDirection.Vertical

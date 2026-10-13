@@ -22,6 +22,14 @@
 	min(330 - zoneSize, max(the floor above, REVEAL_TIME * speed)).
 	All randomness comes from the `rand()` function passed in (values in [0, 1)).
 
+	Pay (Modes.Mog): a PvE pass and a PvP win share one reward cooldown. Inside it they pay
+	the repeat share (Economy.MODE_REPEAT_SHARE of the pack), but only for a real run:
+	  - a pass: PASS_RIVALS rivals mogged in this run, paid once per run (claimPass). No pass
+	    takes less than minPassSeconds() of checks (about 15 s; a kid needs about 35 s).
+	  - a PvP win: a duel fought to the end (a KO or the round cap, never a forfeit of any
+	    kind) in which the loser pressed on PVP_REPEAT_PRESSES checks or more (duelFought).
+	payKind names what a pass or win pays: "first" | "full" | "repeat" | "none".
+
 	Pass rate of the first PASS_RIVALS rivals for a player whose presses miss the zone centre by
 	a Gaussian timing error (4,000 runs each): 50 ms 100%, 70 ms 94%, 100 ms 57%, 140 ms 17%
 	(before this curve: 94%, 62%, 18%, 3%).
@@ -72,6 +80,9 @@ MogRules.PVP_MAX_ROUNDS = 40
 -- PvP: a decided duel was close when the winner ended at most this many HP ahead (or it went
 -- to sudden death); only then does the loser's card say "So close!".
 MogRules.PVP_CLOSE_MARGIN = 2
+-- PvP: a win inside the reward cooldown pays the repeat share only when the loser really
+-- pressed (a timeout is not a press) on this many checks. A KO takes 3 rounds at the least.
+MogRules.PVP_REPEAT_PRESSES = 3
 
 export type Check = {
 	n: number,
@@ -100,12 +111,14 @@ export type Run = {
 	passed: boolean,
 	finished: boolean,
 	names: { string }?,
+	-- The pass of this run was paid (claimPass): one pay per run.
+	claimed: boolean?,
 }
 
 export type Outcome = { moggedRival: Rival?, rival: Rival?, passed: boolean?, finished: boolean? }
 
 -- One side of a PvP duel; `result` is this round's answer (nil = not answered yet), `idle`
--- the checks in a row this side let time out.
+-- the checks in a row this side let time out, `presses` the checks it really answered.
 export type Duelist = {
 	hp: number,
 	maxHp: number,
@@ -114,10 +127,12 @@ export type Duelist = {
 	bestCombo: number,
 	result: string?,
 	idle: number,
+	presses: number,
 }
 
 -- A PvP duel: sides[1] and sides[2]; `rounds` played; once finished, winner = 1 | 2, or nil
--- for a draw (both sides idle, or level on HP and score at the round cap).
+-- for a draw (both sides idle, or level on HP and score at the round cap) and `reason` is
+-- the Round's ("ko" | "afk" | "rounds").
 export type Duel = {
 	n: number,
 	rounds: number,
@@ -125,6 +140,7 @@ export type Duel = {
 	finished: boolean,
 	winner: number?,
 	suddenDeath: boolean,
+	reason: string?,
 }
 
 -- What a round did: each side's result (a missing answer counts as "miss"), suddenDeath when
@@ -322,16 +338,79 @@ function MogRules.countClear(rec: Record, vs: string)
 	end
 end
 
+-- Takes this run's pass pay: true once, for a run that really mogged PASS_RIVALS rivals.
+function MogRules.claimPass(run: Run): boolean
+	if run.claimed or not run.passed or run.rivals < MogRules.PASS_RIVALS then
+		return false
+	end
+	run.claimed = true
+	return true
+end
+
+-- The fewest checks a pass takes: every hit a perfect.
+function MogRules.minPassChecks(): number
+	local checks = 0
+	for i = 1, MogRules.PASS_RIVALS do
+		checks += math.ceil(MogRules.rival(i).hp / MogRules.PERFECT_DAMAGE)
+	end
+	return checks
+end
+
+-- The shortest a pass can take, seconds from the first check's announcement: each check's
+-- lead, the needle's travel to the earliest zone and the shortest delay to the next one.
+function MogRules.minPassSeconds(): number
+	local checks = MogRules.minPassChecks()
+	local seconds = 0
+	for n = 1, checks do
+		local from = if n <= MogRules.EASY_ZONE_CHECKS then MogRules.ZONE_FROM_EASY else MogRules.ZONE_FROM_HARD
+		seconds += MogRules.lead(n) + from / MogRules.speed(n)
+		if n < checks then
+			seconds += MogRules.DELAY_MIN
+		end
+	end
+	return seconds
+end
+
+-- What a pass or a PvP win pays: "first" (the first pass ever) and "full" (the cooldown is
+-- over) pay the whole pack, "repeat" (inside the cooldown, `earned` by a real run) the repeat
+-- share, "none" nothing.
+function MogRules.payKind(first: boolean, full: boolean, earned: boolean): string
+	if first then
+		return "first"
+	elseif full then
+		return "full"
+	end
+	return if earned then "repeat" else "none"
+end
+
 local function duelist(): Duelist
-	return { hp = MogRules.PVP_HP, maxHp = MogRules.PVP_HP, score = 0, combo = 0, bestCombo = 0, result = nil, idle = 0 }
+	return {
+		hp = MogRules.PVP_HP,
+		maxHp = MogRules.PVP_HP,
+		score = 0,
+		combo = 0,
+		bestCombo = 0,
+		result = nil,
+		idle = 0,
+		presses = 0,
+	}
 end
 
 function MogRules.newDuel(): Duel
-	return { n = 0, rounds = 0, sides = { duelist(), duelist() }, finished = false, winner = nil, suddenDeath = false }
+	return {
+		n = 0,
+		rounds = 0,
+		sides = { duelist(), duelist() },
+		finished = false,
+		winner = nil,
+		suddenDeath = false,
+		reason = nil,
+	}
 end
 
 -- Records side `side`'s answer ("perfect" | "hit" | "miss") to this round's check and
--- updates its score and combo; a press of any kind ends that side's idle streak. Returns
+-- updates its score and combo; a press of any kind ends that side's idle streak and counts
+-- as one of its `presses`. Returns
 -- false (and changes nothing) when that side already answered or the duel is over. HP only
 -- changes in duelRound.
 function MogRules.duelPress(duel: Duel, side: number, result: string): boolean
@@ -341,6 +420,7 @@ function MogRules.duelPress(duel: Duel, side: number, result: string): boolean
 	end
 	d.result = result
 	d.idle = 0
+	d.presses += 1
 	if result == "perfect" or result == "hit" then
 		d.score += if result == "perfect" then MogRules.PERFECT_SCORE else MogRules.HIT_SCORE
 		d.combo += 1
@@ -360,6 +440,7 @@ end
 local function decide(duel: Duel, round: Round, winner: number?, reason: string)
 	duel.winner = winner
 	duel.finished = true
+	duel.reason = reason
 	round.finished = true
 	round.winner = winner
 	round.reason = reason
@@ -380,9 +461,9 @@ function MogRules.duelRound(duel: Duel): Round
 	for side = 1, 2 do
 		local d = duel.sides[side]
 		if d.result == nil then
-			local idle = d.idle + 1
+			local idle, presses = d.idle + 1, d.presses
 			MogRules.duelPress(duel, side, "miss")
-			d.idle = idle
+			d.idle, d.presses = idle, presses
 		end
 	end
 	local damage = { 0, 0 }
@@ -438,6 +519,17 @@ function MogRules.duelClose(duel: Duel): boolean
 		return false
 	end
 	return duel.suddenDeath or duel.sides[winner].hp - duel.sides[3 - winner].hp <= MogRules.PVP_CLOSE_MARGIN
+end
+
+-- Was the duel really fought? It ended by a KO or at the round cap (an idle forfeit and a
+-- draw are not; the caller leaves out a side that left) and the loser pressed on
+-- PVP_REPEAT_PRESSES checks or more. Only such a win earns the repeat share.
+function MogRules.duelFought(duel: Duel): boolean
+	local winner = duel.winner
+	if not duel.finished or winner == nil or (duel.reason ~= "ko" and duel.reason ~= "rounds") then
+		return false
+	end
+	return duel.sides[3 - winner].presses >= MogRules.PVP_REPEAT_PRESSES
 end
 
 return MogRules

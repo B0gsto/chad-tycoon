@@ -26,15 +26,18 @@
 	               wobble. The needle freezes where it was pressed until the result.
 	  Status       score (bouncy count) and the combo chip above the ring and a quiet "X"
 	               that asks "QUIT?" before firing ModeQuit. Vs rivals: beside the score the
-	               target "BEAT n" (the saved best from "start"; "NEW BEST!" in gold once the
-	               run's score passes it; hidden without a best), hearts (maxLives)
+	               target "BEAT n" (the saved best from "start"; hidden without a best).
+	               The moment the run's score passes it: the chip reads "NEW BEST!" in
+	               gold, the score turns gold for the rest of the run and a short
+	               "NEW BEST!" banner pops. Hearts (maxLives)
 	               under them and the rival's name and HP bar under the ring. In a duel the
 	               hearts become your own HP bar ("YOU", green, gold flash on perfect) and
 	               the bottom panel is the opponent's name and red HP bar, both moved by
 	               "round" only ("result" is just your own press); the opponent's result
 	               shows small under it ("Opponent: PERFECT").
 	  Banners      "MOG TEST!" / "1v1 DUEL!" (vs <name>) at the start, "MOGGED!" per rival,
-	               "MOG TEST PASSED!" with the cash the first time the run passes,
+	               "MOG TEST PASSED!" with the cash the first time the run passes ("Run
+	               again bonus +$" when `pay` is "repeat": a pass inside the cooldown),
 	               "SUDDEN DEATH!" in a duel.
 
 	MogHud.onNotify(payload) takes every Notify with kind "Mode" and mode "mog" (Main
@@ -92,6 +95,8 @@ local ring: any -- MogRing
 local tapHint: TextLabel
 local resultLabel: TextLabel
 local scoreLabel: TextLabel
+-- The score's resting colour (gold once the run beats the saved best).
+local scoreColor: Color3 = C.Text
 local beatLabel: TextLabel
 local comboChip: TextLabel
 local heartsRow: Frame
@@ -352,14 +357,16 @@ local function onZone(p: any)
 	ring:setZone({ zoneStart = c.zoneStart, zoneSize = c.zoneSize, perfectSize = c.perfectSize, dir = c.dir, n = c.n })
 end
 
--- "BEAT n" beside the score: the saved best this run is after, "NEW BEST!" once it is beaten.
+-- "BEAT n" beside the score: the saved best this run is after, "NEW BEST!" once it is beaten
+-- (the score goes gold and a short banner marks the moment).
 local function paintBeat(score: number)
+	local beaten = not pvp and bestToBeat > 0 and score > bestToBeat
+	scoreLabel.TextColor3 = if beaten then C.Gold else scoreColor
 	local show = not pvp and bestToBeat > 0 and not quitArmed
 	beatLabel.Visible = show
 	if not show then
 		return
 	end
-	local beaten = score > bestToBeat
 	local text = if beaten then "NEW BEST!" else "BEAT " .. Format.short(bestToBeat)
 	if beatLabel.Text ~= text then
 		beatLabel.Text = text
@@ -367,6 +374,7 @@ local function paintBeat(score: number)
 		if beaten then
 			Kit.pop(beatLabel, 1.4)
 			Sounds.play("Coin", 0.05, 1.3)
+			showBanner("NEW BEST!", "You beat " .. Format.short(bestToBeat) .. "!", C.Gold, 1.4)
 		end
 	end
 end
@@ -666,7 +674,12 @@ function MogHud.onNotify(p: any)
 		if passedNow then
 			passedShown = true
 			local cash = num(p.cash, 0)
-			showBanner("MOG TEST PASSED!", if cash > 0 then "+" .. Format.money(cash) else "Keep mogging!", C.Gold, 2.4)
+			-- A pass inside the reward cooldown pays the run again bonus (`pay` = "repeat").
+			local sub = if cash <= 0
+				then "Keep mogging!"
+				elseif p.pay == "repeat" then "Run again bonus +" .. Format.money(cash)
+				else "+" .. Format.money(cash)
+			showBanner("MOG TEST PASSED!", sub, C.Gold, 2.4)
 		else
 			local mogged = type(p.mogged) == "table" and p.mogged.name
 			showBanner("MOGGED!", if mogged then tostring(mogged) .. " is out!" else nil, W.Cream, 1.5)
@@ -734,6 +747,7 @@ function MogHud.build(screenGui: ScreenGui)
 		Position = UDim2.fromOffset(42, 0),
 		ZIndex = 3,
 	})
+	scoreColor = scoreLabel.TextColor3
 	-- The target: between the score and the quit button (hidden while "QUIT?" is up).
 	beatLabel = Kit.hudText(scorePanel, {
 		Name = "Beat",
