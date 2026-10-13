@@ -3,7 +3,8 @@
 
 	Header "PICK A MAP". Left: a 2-column grid of the ten Parkour map cards, stretched so all
 	ten fit without scrolling (accent band with the map's icon, "MAP n", the best time and a
-	check when cleared or a lock badge when locked; the name and difficulty pips below). The
+	check when cleared or a lock badge when locked; the name and "Difficulty n/10" with its
+	pips below). The
 	selected card carries a thick gold rim, a lighter body and a gold chevron; a locked one has
 	a grey band (text kept bright) with what its first clear pays ("+$1.2K") beside the lock,
 	"Clear <previous map> first" in place of its pips, and shakes with a "Clear <previous map>
@@ -12,7 +13,8 @@
 	width, about 45% of its height) with a "MAP n" chip, name, pips labelled "Difficulty
 	n/10", best/clears, blurb, the reward line (inside the reward cooldown: "Run again: +$X
 	· full in m:ss", what a clean run pays on every finish, from rewardPreview's
-	repeatShare; "Gear on: no reward" with a coil chosen) and a gold PLAY (RESTART while that map is running) that fires ModeStart and
+	repeatShare; "Bonus is resting, back in m:ss" while that map's bonus rests, from
+	levels[i].repeatRest, like the finish card; "Gear on: no reward" with a coil chosen) and a gold PLAY (RESTART while that map is running) that fires ModeStart and
 	closes every window. One word for a map everywhere: MAP. When the screen or window is narrow (viewport < 700 or window < 750
 	wide) the side panel stacks under the grid in one scrolling column.
 
@@ -25,7 +27,7 @@
 	Windows.luau owns the window list: it calls MapPicker.build with its register/closeAll
 	helpers and the shared reward/pip helpers, and exposes Windows.open("Maps") and
 	Windows.openMaps(level?). Reads State.data.modes.parkour (levels[i] = { name,
-	difficulty, best, clears, bonus, theme?, blurb?, icon?, accent? }, unlocked, level,
+	difficulty, best, clears, bonus, repeatRest?, theme?, blurb?, icon?, accent? }, unlocked, level,
 	running, gear, cooldownEnds, rewardPreview = { packCash, repeatShare? }).
 ]]
 
@@ -79,7 +81,8 @@ local CARD_GAP = 8
 local BAND_H = 28
 local GRID_PAD = 6
 local STACK_W = 700
--- Below this window width the cards get too narrow for their pip row: stack instead.
+-- Below this window width the cards get too narrow for their pip row: stack instead. (A row
+-- that is still too narrow keeps its "Difficulty n/10" and hides the pips: deps.pips.)
 local SIDE_BY_SIDE_MIN_W = 750
 local SIDE_STACK_H = 440
 -- Side panel: fixed rows measured up from the bottom (offsets of each row's bottom edge).
@@ -330,7 +333,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Radius = Kit.RADIUS.M + 2,
 	})
 
-	-- Preview well with the viewport, a fallback icon and a "Level n" chip.
+	-- Preview well with the viewport, a fallback icon and a "MAP n" chip.
 	local previewWell = Kit.well(side, {
 		Name = "Preview",
 		Color = SEA,
@@ -403,23 +406,11 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.Text,
 	})
-	local setSidePipRow = deps.pips(side, {
+	local setSidePips = deps.pips(side, {
 		Name = "Difficulty",
 		Size = UDim2.new(1, -24, 0, 16),
 		Position = UDim2.new(0, 12, 1, -(PIPS_BOTTOM + 16)),
 	})
-	-- The row's "n/10" says what it counts here: "Difficulty n/10" (the cards are too narrow).
-	local sidePipRow = side:FindFirstChild("Difficulty")
-	local sideOf = sidePipRow and sidePipRow:FindFirstChild("Of10")
-	if sideOf and sideOf:IsA("TextLabel") then
-		sideOf.Size = UDim2.fromOffset(112, sideOf.Size.Y.Offset)
-	end
-	local function setSidePips(value: number)
-		setSidePipRow(value)
-		if sideOf and sideOf:IsA("TextLabel") then
-			sideOf.Text = "Difficulty " .. sideOf.Text
-		end
-	end
 	local sideStats = readable(Kit.text(side, {
 		Name = "Stats",
 		Text = "",
@@ -855,9 +846,13 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			return
 		end
 		local geared = info.gear ~= nil and info.gear ~= "none"
-		-- The run again bonus rests after it was paid (the server prices one map: info.level).
+		-- The run again bonus rests after it was paid: this map for two minutes, every map
+		-- for one. The server says how long for each map (levels[i].repeatRest, counted down
+		-- by the snapshot's age); an older server priced only info.level.
 		local rest = 0
-		if type(preview) == "table" and preview.full == false and selected == (tonumber(info.level) or 1) then
+		if type(lv.repeatRest) == "number" then
+			rest = math.max(0, math.ceil(lv.repeatRest - State.age()))
+		elseif type(preview) == "table" and preview.full == false and selected == (tonumber(info.level) or 1) then
 			rest = math.max(0, math.ceil((tonumber(preview.repeatRest) or 0) - State.age()))
 		end
 		reward.TextColor3 = if geared or rest > 0 then C.TextDim else C.MoneyText

@@ -23,10 +23,11 @@
 	  REPEAT_REST_SECONDS and every map's for REPEAT_GAP_SECONDS (in memory, per player: a
 	  run inside the rest finishes as usual and pays nothing); an assisted one pays nothing.
 	  After a remote
-	  finish the player is brought back to the gates (GameModes.returnLater) wherever they
-	  stand on the sky course by then (the finish deck, a bridge, the next map's start deck);
-	  while the finish card is up (action "ModeCard" { mode, open }) the return waits, for
-	  CARD_HOLD_SECONDS at the most.
+	  finish the player is brought back to the gates (GameModes.returnLater) if they still
+	  stand where the finish left them (the finish deck, or anywhere else off the way on);
+	  a player who walked on, onto a bridge or a map's start deck, is not pulled off it (the
+	  stranded rule below still times a wait on a bridge). While the finish card is up (action
+	  "ModeCard" { mode, open }) the return waits, for CARD_HOLD_SECONDS at the most.
 	- Leaving the level's bounds for Course.LEAVE_SECONDS ends the run ("left"); on a remote
 	  level the player goes back to the gates.
 	- Nobody stays on the sky course without a run: a player with no run who is below the
@@ -252,14 +253,30 @@ for _, level in Course.LEVELS do
 	table.insert(DECKS, level.PATH[#level.PATH])
 end
 
--- Are feet at (x, y, z) on one of the DECKS (or hopping over it)?
-local function onDeck(x: number, y: number, z: number): boolean
-	for _, deck in DECKS do
+-- The way on from a finish: every map's start deck and every bridge step. A player who
+-- walked there after a finish did it on purpose (the timed return leaves them).
+local WAY_ON: { Course.Element } = {}
+for _, level in Course.LEVELS do
+	table.insert(WAY_ON, level.PATH[1])
+end
+for _, bridge in Course.BRIDGES do
+	for _, step in bridge do
+		table.insert(WAY_ON, step)
+	end
+end
+
+-- Are feet at (x, y, z) on one of `decks` (or hopping over it)?
+local function standsOn(decks: { Course.Element }, x: number, y: number, z: number): boolean
+	for _, deck in decks do
 		if y >= deck.y - DECK_UNDER and y <= deck.y + DECK_OVER and Course.footDistance(deck, x, z) <= DECK_EDGE then
 			return true
 		end
 	end
 	return false
+end
+
+local function onDeck(x: number, y: number, z: number): boolean
+	return standsOn(DECKS, x, y, z)
 end
 
 -- The sky course volume: over any map's rectangle (SKY_MARGIN around it), from RESCUE_DEPTH
@@ -321,6 +338,16 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		local any = repeatPaidAny[userId]
 		local left = math.max(if at then at + REPEAT_REST_SECONDS - now() else 0, if any then any + REPEAT_GAP_SECONDS - now() else 0)
 		return math.max(0, math.ceil(left))
+	end
+
+	-- Seconds `level`'s run again bonus still rests for the picker and the Modes row: 0 when
+	-- it is awake, and when the map pays in full anyway (its first clear, the cooldown over).
+	local function levelRest(session: any, level: number): number
+		local first = (levels(session).clears[level] or 0) == 0
+		if first or os.time() >= shared(session).lastRewardAt + Economy.MODE_REWARD_COOLDOWN then
+			return 0
+		end
+		return repeatRest(session, level)
 	end
 
 	-- What finishing `level` pays now. Inside the cooldown only a `clean` run (no gear worn)
@@ -410,9 +437,10 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		end
 	end
 
-	-- Back to the gates after `seconds`, wherever the player then stands on the sky course
-	-- (not if they went home, started a run, or a later return took over). While the finish
-	-- card is up the return waits, CARD_HOLD_SECONDS at the most.
+	-- Back to the gates after `seconds` if the player is then still on the sky course and
+	-- has not walked on (a start deck, a bridge): not if they went home, started a run, or a
+	-- later return took over. While the finish card is up the return waits,
+	-- CARD_HOLD_SECONDS at the most.
 	local function returnFromSky(player: Player, seconds: number)
 		local ticket = (returnTicket[player] or 0) + 1
 		returnTicket[player] = ticket
@@ -420,7 +448,8 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 		local function later(wait: number)
 			GameModes.returnLater(player, wait, function(r: BasePart): boolean
 				local at = r.Position
-				if returnTicket[player] ~= ticket or not inSky(at.X, at.Y - FEET_BELOW_ROOT, at.Z) then
+				local x, y, z = at.X, at.Y - FEET_BELOW_ROOT, at.Z
+				if returnTicket[player] ~= ticket or not inSky(x, y, z) or standsOn(WAY_ON, x, y, z) then
 					return false
 				end
 				if cardOpen[player] and now() < holdUntil then
@@ -811,6 +840,8 @@ function Parkour.create(GameModes: any, context: { built: any, theme: any, Tycoo
 				clears = if rec then rec.clears[i] else 0,
 				checkpoints = 0,
 				bonus = Economy.parkourLevelBonus(i),
+				-- Seconds this map's run again bonus still rests (both rests; 0 = awake).
+				repeatRest = if session then levelRest(session, i) else 0,
 				-- Map look (Course.MAPS); read defensively so older Course data still works.
 				theme = (level :: any).theme,
 				blurb = (level :: any).blurb,

@@ -18,10 +18,12 @@
 	    spin:      CFrame = CFrame.new(rest.Position) * CFrame.Angles(0, MoveSpeed*t + MovePhase, 0) * rest.Rotation
 	  Every BasePart descendant of the root moves rigidly with it. Spinner bars are
 	  "SpinnerBar" roots with CanCollide = false and attribute Hazard = "bump": touching one
-	  should give the local player a gentle push away and a small hop. The bar is hazard tape
+	  gives the local player a push away and a hop; with attribute BumpShove (studs; map 1's
+	  sweepers) it only slides them that far along the deck, never past ShoveMin / ShoveMax
+	  (Vector3 corners of Course.shoveKeep) and never into the air. The bar is hazard tape
 	  (sunny with dark "SpinnerBand" children, red ends and hub) over a "SpinnerRing" on the deck.
 	  Bounce pads: parts named "BouncePad" (tag "BouncePad"), attribute Bounce = upward launch
-	  speed in studs/s for the local player.
+	  speed in studs/s for the local player, on the first touch of every contact.
 
 	  Blink pads: "BlinkPad" slabs (tag "BlinkPad"; the only part that fades, with four Neon
 	  "BlinkGlow" bars round it as descendants), attributes BlinkOn, BlinkPeriod, BlinkPhase
@@ -608,7 +610,7 @@ local SPINNER_BAND_SHARE = 0.1 -- each band's share of the bar's length
 local SPINNER_RING_R = 2.6
 local SPINNER_RING_W = 0.7
 local SPINNER_DARK = W.Ink:Lerp(Color3.new(0, 0, 0), 0.6)
-local function spinner(e: Course.Element, parent: Instance)
+local function spinner(e: Course.Element, parent: Instance, keep: { x0: number, x1: number, z0: number, z1: number }?)
 	local length = e.length :: number
 	decor(make("Part", {
 		Name = "SpinnerRing",
@@ -652,6 +654,13 @@ local function spinner(e: Course.Element, parent: Instance)
 	bar:SetAttribute("MoveSpeed", e.speed)
 	bar:SetAttribute("MovePhase", e.phase or 0)
 	bar:SetAttribute("Hazard", "bump")
+	-- A shoving sweeper (map 1): a hit slides the runner BumpShove studs along the deck, never
+	-- past ShoveMin / ShoveMax (Course.shoveKeep) and never into the air.
+	if keep and e.shove then
+		bar:SetAttribute("BumpShove", e.shove)
+		bar:SetAttribute("ShoveMin", Vector3.new(keep.x0, e.y, keep.z0))
+		bar:SetAttribute("ShoveMax", Vector3.new(keep.x1, e.y, keep.z1))
+	end
 	bar:AddTag("ModeMover")
 	decor(make("Part", {
 		Name = "SpinnerHub",
@@ -1587,7 +1596,7 @@ local function buildCourse(level: Course.Level, parent: Instance)
 		elseif e.kind == "blink" then
 			tops[e] = blink(e, parent)
 		elseif e.kind == "spinner" then
-			spinner(e, parent)
+			spinner(e, parent, Course.shoveKeep(level.ELEMENTS, e))
 		elseif e.kind == "bounce" then
 			bounce(e, parent)
 		elseif e.kind == "wall" then

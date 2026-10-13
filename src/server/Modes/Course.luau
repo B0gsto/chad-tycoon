@@ -73,12 +73,18 @@
 	  slide       straight ramp from `from` {x,y,z} to `to` {x,y,z} (top surface), `width`
 	              wide; x, y, z is its midpoint
 	  spinner     obstacle (not a path element): a bar `length` long turning about the
-	              vertical axis at `speed` rad/s (angle = speed * t + phase) above deck top `y`
+	              vertical axis at `speed` rad/s (angle = speed * t + phase) above deck top `y`.
+	              A hit bumps the runner away and up (a full jump high); with `shove` (map
+	              1's two) it only slides them that many studs along the deck, never into the
+	              air and never past Course.shoveKeep (the deck less SHOVE_INSET)
 	  wall        obstacle: a low wall `h` tall standing on `y` to hop over (sx along X, sz
 	              along Z); named "Rail" it runs along a deck's side instead (map 1's
-	              sweeper and bounce decks)
-	  bounce      bounce pad of radius `r` on a deck top `y`: launches the player up at `power`
-	              studs/s (the next path element may be higher than a normal jump)
+	              sweeper and bounce decks: taller than a character's hips, so nobody steps
+	              up onto it)
+	  bounce      bounce pad of radius `r` on a deck top `y`: launches whoever touches it up at
+	              `power` studs/s (the next path element may be higher than a normal jump).
+	              The element after it is placed for a runner who just walks on and keeps
+	              walking (Course.bounceFair)
 	  kill        lava box (not a path element) standing on a path deck's top `y`: sx by sz,
 	              `h` tall, colour "Lava"; a sliding bar also has motion "slide", axis,
 	              distance, period and phase (same formula as movers). Maps 2..10 carry
@@ -237,6 +243,7 @@ export type Element = {
 	speed: number?,
 	h: number?,
 	power: number?,
+	shove: number?,
 	from: { number }?,
 	to: { number }?,
 	width: number?,
@@ -347,8 +354,12 @@ end
 -- Level 1, drawn with its start deck at x = -197, z = 0 (where it once began on the beach):
 -- its local frame. The chain (FRAMES[1]: oy = SKY_Y - 0.6) lifts it so the start deck stands
 -- at SKY_Y and recolours its path tops rainbow (movers stay Orange).
--- Height of the side rails on map 1's sweeper and bounce decks (drawn as low hop walls).
-local LEVEL1_RAIL_H = 1.5
+-- Height of the side rails on map 1's sweeper and bounce decks (drawn as hop walls). Taller
+-- than a character's hips (about 2 studs): a Humanoid steps up onto anything lower, and
+-- walked along the old 1.5-stud rails and off the deck's end.
+local LEVEL1_RAIL_H = 3
+-- Studs a hit by one of map 1's sweepers slides the runner along the deck (no bump).
+local LEVEL1_SHOVE = 3
 local LEVEL1_ELEMENTS = {
 	-- Start deck and two wide steps up.
 	box(-197, 0.6, 0, 14, 14, "Sunny", "StartDeck"),
@@ -383,21 +394,25 @@ local LEVEL1_ELEMENTS = {
 	},
 	restPad(-356, 8, 0, 6),
 	-- Turn south: a deck with two slow sweeper bars to jump over (the first one 30% slower:
-	-- it is the first hazard a new player meets). Low rails along both sides (LEVEL1_RAIL_H)
-	-- keep a bumped runner on the deck; the bars are shorter than the deck is wide so their
+	-- it is the first hazard a new player meets). This is the teaching map: a hit here costs
+	-- position, not the run. The bars only shove (LEVEL1_SHOVE studs along the deck, no
+	-- bump into the air, stopping SHOVE_INSET inside the deck's edges: 4 studs either side
+	-- of the path line, in line with the bounce pad and clear of the next deck's rail ends)
+	-- and rails too tall to step onto (LEVEL1_RAIL_H) run along both sides, outside the
+	-- width of the rest deck before it; the bars are shorter than the deck is wide so their
 	-- end caps pass inside the rails.
 	box(-356, 8, -21, 14, 24, "Sunny", "SweeperDeck"),
-	{ kind = "spinner", x = -356, y = 8, z = -15, length = 10.6, speed = 0.84, phase = 0 },
-	{ kind = "spinner", x = -356, y = 8, z = -27, length = 10.6, speed = -1, phase = math.pi / 2 },
+	{ kind = "spinner", x = -356, y = 8, z = -15, length = 10.6, speed = 0.84, phase = 0, shove = LEVEL1_SHOVE },
+	{ kind = "spinner", x = -356, y = 8, z = -27, length = 10.6, speed = -1, phase = math.pi / 2, shove = LEVEL1_SHOVE },
 	{ kind = "wall", x = -362.6, y = 8, z = -21, sx = 0.8, sz = 24, h = LEVEL1_RAIL_H, color = "Teal", name = "Rail" },
 	{ kind = "wall", x = -349.4, y = 8, z = -21, sx = 0.8, sz = 24, h = LEVEL1_RAIL_H, color = "Teal", name = "Rail" },
 	-- Bounce pad up to the high return lane: 9 studs wide on the 12-stud deck and centred on
-	-- the path line, so a runner bumped sideways by the second sweeper still walks onto it,
-	-- with the same low rails beside it. A pad this long is touched up to 5 studs before the
-	-- deck's middle: at power 94 (0.86 s in the air before coming down to the lane, 13.7
-	-- studs forward at walking speed) a runner launched from its near edge still lands on
-	-- the landing deck, and one launched from its far edge is above the lane before reaching
-	-- that deck's edge.
+	-- the path line, with the same rails beside it, so nobody between the rails walks past
+	-- it. It launches on the first touch, 0.4 studs before its rim (Course.PAD_REACH), which
+	-- is the deck's near edge: at power 94 a runner who just keeps walking is 0.85 s in the
+	-- air before coming down to the lane, 13.6 studs on, 1.2 studs onto the landing deck;
+	-- one launched from the pad's far rim comes down 1.8 studs before that deck's far edge
+	-- and is above the lane before reaching its near edge (Course.bounceFair).
 	box(-356, 8, -39, 12, 10, "Butter", "BounceDeck"),
 	{ kind = "bounce", x = -356, y = 8, z = -39, r = 4.5, power = 94 },
 	{ kind = "wall", x = -361.6, y = 8, z = -39, sx = 0.8, sz = 10, h = LEVEL1_RAIL_H, color = "Teal", name = "Rail" },
@@ -683,6 +698,107 @@ function Course.edgeGap(a: Element, ax: number, az: number, b: Element, bx: numb
 	local dx = math.max(0, math.abs(ax - bx) - ahx - bhx)
 	local dz = math.max(0, math.abs(az - bz) - ahz - bhz)
 	return math.sqrt(dx * dx + dz * dz) - ar - br
+end
+
+-- Bounce pads. A pad launches whoever touches it, PAD_REACH past its rim and from the deck
+-- up (Shared.ParkourMoves.onPad; its top stands PAD_LIP over the deck, World.Modes). So the
+-- shortest walked-on launch starts at the rim's side away from the next element with the
+-- feet on the deck, and the longest at the rim's near side with the feet on the pad's top.
+Course.PAD_REACH = 0.4
+Course.PAD_LIP = 0.7
+-- A runner rising beside the next element's edge keeps this far off it (half a body).
+Course.BOUNCE_SNAG = 0.5
+
+-- A launch at `power` studs/s by a runner walking on at WALK_SPEED, toward a top `rise` studs
+-- above their feet: the studs walked when the feet pass that height going up, and when they
+-- come back down to it. nil when the launch does not get that high.
+function Course.bounceArc(power: number, rise: number): (number?, number?)
+	local g = Course.GRAVITY
+	local d = power * power - 2 * g * rise
+	if d <= 0 then
+		return nil, nil
+	end
+	local root = math.sqrt(d)
+	return Course.WALK_SPEED * (power - root) / g, Course.WALK_SPEED * (power + root) / g
+end
+
+-- Studs the point (x, z) lies inside a still pad element's footprint (negative: outside).
+local function insideBy(e: Element, x: number, z: number): number
+	if boxy(e) then
+		return math.min((e.sx :: number) / 2 - math.abs(x - e.x), (e.sz :: number) / 2 - math.abs(z - e.z))
+	end
+	local r = (e.r or 0) * (if e.shape == "hex" then HEX_APOTHEM else 1)
+	return r - math.sqrt((x - e.x) ^ 2 + (z - e.z) ^ 2)
+end
+
+-- Is the bounce from `pad` onto the next path element `b` fair for a runner who only WALKS:
+-- launched on the first touch, anywhere on the pad, and holding forward at walking speed
+-- along the lane (the axis from the pad to b)? From the rim's far side they come down at
+-- least SAFETY inside b; from its near side they are above b's top BOUNCE_SNAG before its
+-- edge and come down at least a stud before its far edge. b must be a still, whole pad (no
+-- mover, no blink pad, no ring with its hole). Returns false and why when it is not.
+function Course.bounceFair(pad: Element, b: Element): (boolean, string?)
+	if b.kind ~= "pad" or b.shape == "ring" then
+		return false, "the landing is not a still, whole pad"
+	end
+	local dx, dz = b.x - pad.x, b.z - pad.z
+	local ux, uz = 0, 0
+	if math.abs(dx) >= math.abs(dz) then
+		ux = if dx >= 0 then 1 else -1
+	else
+		uz = if dz >= 0 then 1 else -1
+	end
+	local touch = (pad.r :: number) + Course.PAD_REACH
+	local power = pad.power :: number
+	local _, short = Course.bounceArc(power, b.y - pad.y)
+	local climb, long = Course.bounceArc(power, b.y - pad.y - Course.PAD_LIP)
+	if not short or not climb or not long then
+		return false, "the launch does not reach the landing's height"
+	end
+	local function inside(along: number): number
+		return insideBy(b, pad.x + ux * along, pad.z + uz * along)
+	end
+	if inside(short - touch) < Course.SAFETY then
+		return false, string.format("a walked-on launch comes down %.2f inside the landing", inside(short - touch))
+	elseif inside(touch + long) < 1 then
+		return false, string.format("a launch from the far rim comes down %.2f inside the landing", inside(touch + long))
+	elseif inside(touch + climb) > -Course.BOUNCE_SNAG then
+		return false, "a launch from the far rim meets the landing's edge before it is above it"
+	end
+	return true, nil
+end
+
+-- Sweepers with a `shove` slide a hit runner along their deck instead of bumping them into
+-- the air (Shared.ParkourMoves.shoveTo); the slide stops SHOVE_INSET studs inside the deck's
+-- edges: the runner's body stays clear of the side rails and of the gaps at the deck's ends.
+Course.SHOVE_INSET = 3
+
+-- The box path element `e` (a sweeper, a wall, a bounce pad) stands on, or nil.
+function Course.deckUnder(elements: { Element }, e: Element): Element?
+	for _, p in elements do
+		if
+			p.path
+			and p.kind == "pad"
+			and p.shape == "box"
+			and math.abs(p.y - e.y) < 0.01
+			and math.abs(e.x - p.x) <= (p.sx :: number) / 2
+			and math.abs(e.z - p.z) <= (p.sz :: number) / 2
+		then
+			return p
+		end
+	end
+	return nil
+end
+
+-- Where a shove by `spinner` stops: its deck less SHOVE_INSET on every side (nil for a
+-- sweeper that bumps, or one on no deck).
+function Course.shoveKeep(elements: { Element }, spinner: Element): { x0: number, x1: number, z0: number, z1: number }?
+	local deck = if (spinner.shove or 0) > 0 then Course.deckUnder(elements, spinner) else nil
+	if not deck then
+		return nil
+	end
+	local hx, hz = (deck.sx :: number) / 2 - Course.SHOVE_INSET, (deck.sz :: number) / 2 - Course.SHOVE_INSET
+	return { x0 = deck.x - hx, x1 = deck.x + hx, z0 = deck.z - hz, z1 = deck.z + hz }
 end
 
 -- Can a player jump from a to b at EVERY phase of their motion (no touching either)?
@@ -1382,6 +1498,8 @@ local function generateLocal(n: number): Local
 		return left
 	end
 	local sinceCp, bounced, afterBounce = 0, 0, false
+	-- The pad on the bounce deck just placed (afterBounce).
+	local lastPad: Element? = nil
 	local plainPads = 0
 	while count < T.pathLength do
 		if turnLeft == 0 and room() <= 0 then
@@ -1508,9 +1626,12 @@ local function generateLocal(n: number): Local
 			end
 		elseif kind == "bounce" then
 			bounced += 1
-			e = box(0, 0, 0, 10, size + 2, colour, "BounceDeck")
+			-- Square: the element after it may lie along the lane or, at a turn, beside it,
+			-- and a walked-on launch has to reach it either way (Course.bounceFair).
+			e = box(0, 0, 0, 10, 10, colour, "BounceDeck")
 			table.insert(extras, { kind = "bounce", x = 0, y = 0, z = 0, r = 2.5, power = BOUNCE_POWER, color = pal.accent })
-		elseif not turning and rand() < 0.35 then
+		elseif not turning and rand() < 0.35 and not afterBounce then
+			-- (never right after a bounce: a launch would come down in the ring's hole)
 			e = ring(0, 0, 0, round2(12 + 2 * rand()), colour)
 		else
 			e = box(0, 0, 0, size, size, colour)
@@ -1538,7 +1659,10 @@ local function generateLocal(n: number): Local
 				else
 					e.x, e.z = prev.x, round2(prev.z + centre)
 				end
-				if fits(prev, e, jumpHeight) and (kind ~= "finish" or deckClear(elements, prev, e)) then
+				-- After a bounce: also close enough for a runner who just walks onto the pad.
+				local pad = if afterBounce then lastPad else nil
+				local landable = pad == nil or (Course.bounceFair(pad, e))
+				if landable and fits(prev, e, jumpHeight) and (kind ~= "finish" or deckClear(elements, prev, e)) then
 					placed = true
 					break
 				end
@@ -1553,8 +1677,12 @@ local function generateLocal(n: number): Local
 			x.x, x.y, x.z = e.x + x.x, e.y, e.z
 		end
 		add(e)
+		lastPad = nil
 		for _, x in extras do
 			add(x)
+			if x.kind == "bounce" then
+				lastPad = x
+			end
 		end
 		afterBounce = kind == "bounce"
 		sinceCp = if kind == "rest" then 0 else sinceCp + 1

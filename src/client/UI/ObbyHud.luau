@@ -16,7 +16,8 @@
 	            left, "MAP n / N · <map name>" in the centre (a stage is a map: N =
 	            stageCount - 1, map 10's finish being the last stage), a small grey SKIP MAP
 	            (with the cash cost from State.data.modes.parkour.skipCost, refreshed on
-	            State.changed) on the right. Under the run pill: "Best 0:34.4 · Falls 2"
+	            State.changed) on the right; it is hidden where a skip has nothing to unlock
+	            (the last map, or the next map already open: the server refuses those). Under the run pill: "Best 0:34.4 · Falls 2"
 	            (the map's best time from the start Notify, this run's falls from the respawn
 	            Notify). There are no checkpoints.
 	  Skip      SKIP MAP only opens a small card under the row: "Skip <map> for $250? You
@@ -568,7 +569,10 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		return if info then tonumber(info.best) or 0 else 0
 	end
 
+	-- Shows SKIP MAP only where a skip unlocks something (set once the button exists).
+	local showSkip: () -> () = function() end
 	local function renderCounter()
+		showSkip()
 		-- One stage per map; the last stage is map 10's finish deck, so maps = stageCount - 1.
 		local maps = math.max(stageCount - 1, 0)
 		local total = if maps > 0 then string.format(' <font size="16" transparency="0.2">/ %d</font>', maps) else ""
@@ -849,7 +853,26 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		renderCounter()
 	end)
 
+	-- A skip only unlocks the next map: none to offer on the last map, nor when the next map
+	-- is open already (the server refuses both and charges nothing).
+	showSkip = function()
+		local data = State.data
+		local info = data and data.modes and data.modes.parkour
+		local known = type(info) == "table"
+		local maps = math.max(stageCount - 1, if known then tonumber(info.levelCount) or 0 else 0)
+		local map = math.max(myStage, 1)
+		local unlocked = if known then tonumber(info.unlocked) or 1 else 1
+		local useful = not (maps > 0 and map >= maps) and unlocked <= map
+		if skip.Visible ~= useful then
+			skip.Visible = useful
+			if not useful then
+				closeConfirm()
+			end
+		end
+	end
+	showSkip()
 	local function syncSkip()
+		showSkip()
 		local next = skipCost()
 		if next ~= cost then
 			cost = next

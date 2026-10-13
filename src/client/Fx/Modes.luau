@@ -9,13 +9,19 @@
 	  Carry        while the character stands on a moving part (short downward raycast
 	               against mover parts), the part's frame-to-frame motion (delta CFrame,
 	               rotation included) is applied to the character's root before physics.
-	  Spinners     "SpinnerBar" (Hazard = "bump"): a gentle push away plus a small hop.
+	  Spinners     "SpinnerBar" (Hazard = "bump"): a push away plus a hop (a full jump high).
+	               A bar with a BumpShove attribute (map 1's sweepers) only slides the runner
+	               that many studs along the deck, never past ShoveMin / ShoveMax and never
+	               into the air (Shared.ParkourMoves).
 	  Blink pads   tag "BlinkPad": solid when ((t + BlinkPhase) % BlinkPeriod) < BlinkOn
 	               (server clock). Near the player, CanCollide and the look are set locally
 	               (character physics is client-owned): faded when off, with a few quick
 	               flashes in the last BLINK_WARN seconds before switching off.
-	  Bounce pads  tag "BouncePad": once per contact, launch upward at the pad's Bounce
-	               speed (double jump still works in the air), squash the pad, Puff sprite.
+	  Bounce pads  tag "BouncePad": on the first frame of every contact (walking on, landing
+	               on it, at its centre or its rim: Shared.ParkourMoves.onPad), launch upward
+	               at the pad's Bounce speed and hold that arc for a moment, so the Humanoid's
+	               own jump cannot replace it (double jump still works in the air); squash
+	               the pad, Puff sprite.
 	  Effects      ModeSplash (fell through
 	               the cloud floor: a white cloud poof and a short camera dip), ModeFinish
 	               (stars and confetti), ModeKill (touched a kill brick: a red/black
@@ -47,6 +53,7 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local Net = require(ReplicatedStorage.Shared.Net)
+local Moves = require(ReplicatedStorage.Shared.ParkourMoves)
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
 local State = require(script.Parent.Parent.State) :: any
@@ -90,6 +97,8 @@ type Mover = {
 	hazard: boolean,
 	length: number,
 	spinZ: boolean, -- SpinAxis = "Z": spins about the root's look vector, not world up
+	shove: number, -- BumpShove: studs a hit slides the runner along the deck (0: a bump)
+	keep: Moves.Keep?, -- ShoveMin / ShoveMax: where a shove stops
 }
 
 local movers: { Mover } = {}
@@ -98,6 +107,9 @@ local floorParts: { Instance } = {}
 local pads: { BasePart } = {}
 local padRest: { [BasePart]: CFrame } = {}
 local padContact: { [BasePart]: boolean } = {}
+-- The launch being held on its arc (Moves.heldSpeed) and the shove being slid out.
+local held: { power: number, at: number }? = nil
+local shoving: { dir: Vector3, studs: number, at: number, done: number, keep: Moves.Keep? }? = nil
 local bounds: { min: Vector3, max: Vector3 }? = nil
 
 type Blink = {
@@ -159,6 +171,7 @@ local function addMover(root: Instance)
 		return
 	end
 	local axis = root:GetAttribute("MoveAxis")
+	local keepMin, keepMax = root:GetAttribute("ShoveMin"), root:GetAttribute("ShoveMax")
 	local m: Mover = {
 		root = root,
 		rest = root.CFrame,
@@ -175,6 +188,10 @@ local function addMover(root: Instance)
 		hazard = root:GetAttribute("Hazard") == "bump",
 		length = root.Size.X,
 		spinZ = root:GetAttribute("SpinAxis") == "Z",
+		shove = math.max(num(root:GetAttribute("BumpShove"), 0), 0),
+		keep = if typeof(keepMin) == "Vector3" and typeof(keepMax) == "Vector3"
+			then { x0 = keepMin.X, x1 = keepMax.X, z0 = keepMin.Z, z1 = keepMax.Z }
+			else nil,
 	}
 	for _, d in root:GetDescendants() do
 		if d:IsA("BasePart") then
@@ -325,7 +342,9 @@ local function feetY(humanoid: Humanoid, root: BasePart): number
 	return root.Position.Y - root.Size.Y / 2 - humanoid.HipHeight
 end
 
--- Spinner bump: away from the bar, along its sweep, and a small hop. Never a fling.
+-- Spinner bump: away from the bar, along its sweep, and a hop (the Jumping state makes it a
+-- full jump). A bar with a shove (map 1) slides the runner along the deck instead: no jump,
+-- no upward speed, and stepShove never takes them past the bar's keep box.
 local lastBump = 0
 local function bump(m: Mover, humanoid: Humanoid, root: BasePart, closest: Vector3)
 	local now = os.clock()
@@ -339,22 +358,69 @@ local function bump(m: Mover, humanoid: Humanoid, root: BasePart, closest: Vecto
 	local sweep = if radial.Magnitude > 0.01 then Vector3.yAxis:Cross(radial).Unit * math.sign(m.speed) else Vector3.zero
 	local push = (if away.Magnitude > 0.01 then away.Unit else sweep) + sweep * 0.6
 	push = if push.Magnitude > 0.01 then push.Unit else Vector3.xAxis
-	humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-	root.AssemblyLinearVelocity = push * 26 + Vector3.new(0, 24, 0)
+	if m.shove > 0 then
+		shoving = { dir = push, studs = m.shove, at = now, done = 0, keep = m.keep }
+	else
+		humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		root.AssemblyLinearVelocity = push * 26 + Vector3.new(0, 24, 0)
+	end
 	Sprites.billboard(anchorAt(closest, 2), "Puff", { position = closest, size = 2.2, life = 0.6, rise = Vector3.new(0, 1, 0) })
 end
 
+-- This frame's slice of the shove being slid out (bump), stopping at its keep box.
+local function stepShove(root: BasePart)
+	local s = shoving
+	if not s then
+		return
+	end
+	local elapsed = os.clock() - s.at
+	if elapsed > Moves.SHOVE_SECONDS * 2 then
+		-- Stale (the step did not run for a while): the rest of the slide is dropped.
+		shoving = nil
+		return
+	end
+	local target = s.studs * Moves.shoveShare(elapsed)
+	local slice = target - s.done
+	s.done = target
+	local pos = root.Position
+	local x, z = Moves.shoveTo(pos.X, pos.Z, s.dir.X * slice, s.dir.Z * slice, s.keep)
+	root.CFrame += Vector3.new(x - pos.X, 0, z - pos.Z)
+	if elapsed >= Moves.SHOVE_SECONDS then
+		shoving = nil
+	end
+end
+
+-- The launch is held on its arc (stepHold): a Humanoid launched from the ground answers with
+-- its own jump a frame later, which used to replace the pad's speed with the jump's 50.
 local function launch(pad: BasePart, humanoid: Humanoid, root: BasePart)
 	local speed = num(pad:GetAttribute("Bounce"), 78)
 	humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 	local v = root.AssemblyLinearVelocity
 	root.AssemblyLinearVelocity = Vector3.new(v.X, speed, v.Z)
+	held = { power = speed, at = os.clock() }
+	shoving = nil
 	local rest = padRest[pad]
 	pad.CFrame = rest - Vector3.new(0, 0.35, 0)
 	TweenService:Create(pad, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { CFrame = rest }):Play()
 	local top = rest.Position + Vector3.new(0, 0.6, 0)
 	Sprites.billboard(anchorAt(top, 2), "Puff", { position = top, size = 3.5, life = 0.7, rise = Vector3.new(0, 0.6, 0) })
 	Sprites.billboard(anchorAt(top, 2), "Ring", { position = top, size = 4, life = 0.5, rise = Vector3.zero, color = W.Sunny })
+end
+
+-- Keeps the last launch on its arc for Moves.HOLD_SECONDS.
+local function stepHold(root: BasePart)
+	local h = held
+	if not h then
+		return
+	end
+	local elapsed = os.clock() - h.at
+	local v = root.AssemblyLinearVelocity
+	local speed = Moves.heldSpeed(v.Y, h.power, elapsed, Workspace.Gravity)
+	if speed then
+		root.AssemblyLinearVelocity = Vector3.new(v.X, speed, v.Z)
+	elseif elapsed > Moves.HOLD_SECONDS then
+		held = nil
+	end
 end
 
 -- Run state (from the "Mode" notifies) for the still-player hint.
@@ -1358,13 +1424,17 @@ local function step(dt: number)
 			end
 		end
 	end
+	stepShove(root)
+	pos = root.Position
+	-- A pad launches on the first frame of every contact: no speed or state condition, so a
+	-- runner stepping up its lip (rising a little) is launched like one landing on it.
+	stepHold(root)
 	for _, pad in pads do
 		local center = padRest[pad].Position
-		local radius = pad.Size.Y / 2
 		local flat = Vector3.new(pos.X - center.X, 0, pos.Z - center.Z).Magnitude
 		local height = feet - (center.Y + pad.Size.X / 2)
-		local touching = flat < radius + 0.4 and height > -0.6 and height < 1.4
-		if touching and not padContact[pad] and root.AssemblyLinearVelocity.Y < 5 then
+		local fire, touching = Moves.padStep(padContact[pad] == true, Moves.onPad(flat, height, pad.Size.Y / 2, pad.Size.X))
+		if fire then
 			launch(pad, humanoid, root)
 		end
 		padContact[pad] = touching
