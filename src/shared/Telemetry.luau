@@ -8,8 +8,8 @@
 	    together. Telemetry.take gives each player their own minute of at most
 	    CAPS.Economy calls (under their 20), so the shared 120 stays spare. Cash moves are
 	    summed in a Ledger and sent at most once a minute per source or sink.
-	  - 100 custom event names, 3 custom fields per event, 8,000 custom field values in
-	    all: every label below comes from a short fixed list (tiers, bands, buckets).
+	  - 100 custom event names (22 are used), 3 custom fields per event, 8,000 custom field
+	    values in all: every label below comes from a short fixed list (tiers, bands, buckets).
 	  - 10 currencies (one is used: "Cash"), 20 transaction types (the six of
 	    Enum.AnalyticsEconomyTransactionType), 100 item SKUs (SOURCES + SINKS).
 	Nothing personal is ever a label: no names, ids or text typed by a player.
@@ -57,6 +57,33 @@ function Telemetry.weekBucket(streak: number): string
 	return bucket(streak, { 8, 15, 29 }, { "Week 1", "Week 2", "Week 3-4", "Week 5+" })
 end
 
+-- Which run of the tycoon a player is in, from the rebirths made: "Run 1" until the first.
+function Telemetry.runLabel(rebirths: any): string
+	local made = if type(rebirths) == "number" and rebirths == rebirths then math.max(0, math.floor(rebirths)) else 0
+	return if made >= 9 then "Run 10+" else "Run " .. (made + 1)
+end
+
+-- Hours since a run started at os.time() `startedAt`; nil when the save does not say (0).
+function Telemetry.runHours(startedAt: any, now: number): number?
+	if type(startedAt) ~= "number" or startedAt ~= startedAt or startedAt <= 0 then
+		return nil
+	end
+	return math.max(0, now - startedAt) / 3600
+end
+
+-- How long a run has lasted, on the clock (days away count: a run is days of short sessions).
+function Telemetry.runBucket(hours: number?): string
+	if not hours then
+		return "Unknown"
+	end
+	return bucket(hours, { 1, 6, 24, 72, 168, 336 }, { "0-1 h", "1-6 h", "6-24 h", "1-3 days", "3-7 days", "7-14 days", "14+ days" })
+end
+
+-- An Index milestone (tiers found: 5, 10, ...).
+function Telemetry.indexLabel(milestone: number): string
+	return "Index " .. math.clamp(math.floor(milestone), 0, 99)
+end
+
 -- A short server-side word (a mode id, a stop reason, a rarity) as a label; anything
 -- else (not a string, too long, not just letters) is "Other".
 function Telemetry.word(value: any): string
@@ -79,6 +106,51 @@ function Telemetry.modeDetail(data: { [string]: any }?): string
 		return Telemetry.word(data.vs)
 	end
 	return "None"
+end
+
+-- Why a mode's finish paid what it did, from its Notify payload's `pay`. "RunAgain" is the
+-- run again bonus (pay = "repeat"): a clean run inside the cooldown. A payload without `pay`
+-- says First / Repeat from `first` as every finish did before the pay kinds, where "Repeat"
+-- was any finish after the first; nil when it says neither.
+local PAY: { [string]: string } = {
+	first = "First",
+	full = "Full",
+	["repeat"] = "RunAgain",
+	assisted = "Assisted",
+	resting = "Resting",
+	none = "None",
+}
+
+function Telemetry.payLabel(data: { [string]: any }?): string?
+	if not data then
+		return nil
+	elseif data.pay ~= nil then
+		return PAY[data.pay] or "Other"
+	elseif data.first ~= nil then
+		return if data.first then "First" else "Repeat"
+	end
+	return nil
+end
+
+-- Whether a "while you were away" card had this line: true, a number above 0 or a word (a
+-- crate's rarity).
+local function listed(value: any): boolean
+	return value == true or (type(value) == "number" and value > 0) or (type(value) == "string" and value ~= "")
+end
+
+-- What a "while you were away" card listed, in a fixed order: "Cash+Crate+Daily", ..., "None".
+function Telemetry.awayLabel(cash: any, crate: any, daily: any): string
+	local parts = {}
+	if listed(cash) then
+		table.insert(parts, "Cash")
+	end
+	if listed(crate) then
+		table.insert(parts, "Crate")
+	end
+	if listed(daily) then
+		table.insert(parts, "Daily")
+	end
+	return if #parts > 0 then table.concat(parts, "+") else "None"
 end
 
 -- What became of a crate. `path` is Tycoon's: "unlocker" (opened in a Smasher slot),
@@ -105,6 +177,7 @@ Telemetry.SOURCES = {
 	Offline = "TimedReward",
 	Free = "TimedReward",
 	Daily = "TimedReward",
+	Index = "Gameplay",
 	ModeParkour = "Gameplay",
 	ModeMog = "Gameplay",
 	ModeCardio = "Gameplay",
@@ -125,7 +198,7 @@ local ALIASES: { [string]: string } = { Purchase = "Pack" }
 -- The order entries are sent in: sinks, then sources.
 local ORDER: { [string]: { string } } = {
 	Sink = { "Units", "Converter", "Treadmill", "Skip", "Other" },
-	Source = { "Collect", "Offline", "Free", "Daily", "ModeParkour", "ModeMog", "ModeCardio", "Mode", "Pack", "Tutorial", "Other" },
+	Source = { "Collect", "Offline", "Free", "Daily", "Index", "ModeParkour", "ModeMog", "ModeCardio", "Mode", "Pack", "Tutorial", "Other" },
 }
 
 export type Entry = {
@@ -221,8 +294,10 @@ export type Window = { start: number, used: number }
 Telemetry.WINDOW_SECONDS = 60
 -- Calls a player may have made this minute for one more of a kind to go out. "Event" =
 -- custom events and the shop funnel (a player can cause these at will), "Economy" = the
--- ledger, which so always has room left. Kinds without a cap (onboarding steps, the
--- session's end) always go out; they are rare.
+-- ledger, which so always has room left. Kinds without a cap always go out; they are rare:
+-- "Step" (onboarding steps, a purchase), "Rare" (what the server lets a player do a few
+-- times a day at most: a rebirth, an Index claim, the streak saver) and "Final" (the
+-- session's end).
 Telemetry.CAPS = { Event = 12, Economy = 18 } :: { [string]: number }
 
 function Telemetry.newWindow(now: number): Window
