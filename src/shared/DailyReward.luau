@@ -4,8 +4,11 @@
 	unit-tested with Lune; Server.Daily applies them, the Daily window shows them).
 
 	One claim per UTC day. Claiming on the day after the last claim continues the
-	streak; missing a day starts again at day 1; after day 7 the cards loop while
-	the streak keeps counting. Every day pays cash sized like a shop cash pack
+	streak. One missed day is forgiven: the streak goes on as if it had not been
+	missed, once per run of seven cards (the streak saver, free and automatic;
+	nothing repairs a streak for Robux). A second miss in the same run, or a
+	longer break, starts again at day 1. After day 7 the cards loop while the
+	streak keeps counting. Every day pays cash sized like a shop cash pack
 	(Economy.moneyPackAmount: seconds of the player's income, never below the
 	day's minimum), so a reward matters at every stage. Days 3 and 7 also open a
 	crate on the spot.
@@ -51,6 +54,32 @@ function DailyReward.card(streak: number): number
 	return (math.max(streak, 1) - 1) % DailyReward.DAYS + 1
 end
 
+-- The run of seven cards (0 = the first week) that claim number `streak` belongs to.
+local function run(streak: number): number
+	return (math.max(streak, 1) - 1) // DailyReward.DAYS
+end
+
+-- The streak saver: `saverUsedAt` is the streak value of the claim that last used it (0 =
+-- never in this streak). True when the claim after a streak of `streak` may use it: it was
+-- not used in that claim's run of seven. A value ahead of the streak (a broken save) reads
+-- as never used.
+function DailyReward.saverReady(streak: number, saverUsedAt: number?): boolean
+	local usedAt = saverUsedAt or 0
+	if usedAt < 1 or usedAt > streak then
+		return true
+	end
+	return run(usedAt) ~= run(streak + 1)
+end
+
+-- The card (1..DAYS) wearing the saver's shield in the run of seven that a streak of
+-- `streak` claims is on, 0 when the saver was not used in that run.
+local function savedCard(streak: number, usedAt: number): number
+	if usedAt < 1 or usedAt > streak or run(usedAt) ~= run(streak) then
+		return 0
+	end
+	return DailyReward.card(usedAt)
+end
+
 export type Status = {
 	-- A reward can be claimed today.
 	claimable: boolean,
@@ -58,33 +87,69 @@ export type Status = {
 	day: number,
 	-- Cards ticked in the current run of seven (0..DAYS).
 	claimed: number,
-	-- Days claimed in a row so far (0 after a missed day).
+	-- Days claimed in a row so far (0 after a streak was lost).
 	streak: number,
+	-- Today's claim uses the streak saver: one day was missed and the streak goes on.
+	saves: boolean,
+	-- The card of this run of seven that used the saver (today's when `saves`), 0 = none.
+	savedCard: number,
+	-- The saver is still there for the next missed day (once today's card is claimed).
+	saver: boolean,
 }
 
 -- `lastDay` = day number of the last claim (0 = never), `streak` = days in a row at that
--- claim, `today` = today's day number. A last claim "in the future" (a server clock ahead
--- of this one) counts as claimed today, so a reward is never paid twice for one day.
-function DailyReward.status(lastDay: number, streak: number, today: number): Status
+-- claim, `today` = today's day number, `saverUsedAt` = streak value of the claim that used
+-- the streak saver (0 or nil = not used). A last claim "in the future" (a server clock
+-- ahead of this one) counts as claimed today, so a reward is never paid twice for one day.
+function DailyReward.status(lastDay: number, streak: number, today: number, saverUsedAt: number?): Status
+	local usedAt = saverUsedAt or 0
 	if lastDay >= today and streak >= 1 then
 		local day = DailyReward.card(streak)
-		return { claimable = false, day = day, claimed = day, streak = streak }
+		return {
+			claimable = false,
+			day = day,
+			claimed = day,
+			streak = streak,
+			saves = false,
+			savedCard = savedCard(streak, usedAt),
+			saver = DailyReward.saverReady(streak, usedAt),
+		}
 	end
-	if lastDay == today - 1 and streak >= 1 then
+	-- The day after the last claim, or the day after that with the saver still unused.
+	local missed = lastDay == today - 2
+	if streak >= 1 and (lastDay == today - 1 or (missed and DailyReward.saverReady(streak, usedAt))) then
 		local day = DailyReward.card(streak + 1)
-		return { claimable = true, day = day, claimed = day - 1, streak = streak }
+		local after = if missed then streak + 1 else usedAt
+		return {
+			claimable = true,
+			day = day,
+			claimed = day - 1,
+			streak = streak,
+			saves = missed,
+			savedCard = savedCard(streak + 1, after),
+			saver = DailyReward.saverReady(streak + 1, after),
+		}
 	end
-	return { claimable = true, day = 1, claimed = 0, streak = 0 }
+	return { claimable = true, day = 1, claimed = 0, streak = 0, saves = false, savedCard = 0, saver = true }
 end
 
--- Claims today's reward: returns the new streak and the card it pays, or nil when today's
--- reward was already claimed.
-function DailyReward.claim(lastDay: number, streak: number, today: number): (number?, number?)
-	local status = DailyReward.status(lastDay, streak, today)
+-- Claims today's reward: returns the new streak, the card it pays, the `saverUsedAt` to
+-- save with it (the new streak when this claim used the saver, 0 when the streak started
+-- again) and whether the saver was used; nil when today's reward was already claimed.
+function DailyReward.claim(lastDay: number, streak: number, today: number, saverUsedAt: number?): (number?, number?, number?, boolean?)
+	local status = DailyReward.status(lastDay, streak, today, saverUsedAt)
 	if not status.claimable then
-		return nil, nil
+		return nil, nil, nil, nil
 	end
-	return status.streak + 1, status.day
+	local newStreak = status.streak + 1
+	local usedAt = saverUsedAt or 0
+	if status.saves then
+		usedAt = newStreak
+	elseif status.streak == 0 or usedAt > status.streak then
+		-- A new streak starts with its saver unused.
+		usedAt = 0
+	end
+	return newStreak, status.day, usedAt, status.saves
 end
 
 -- Units whose price is the most a player's first day pays.

@@ -11,12 +11,18 @@
 	row names what to do next on the left, with the countdown to the next UTC day, and
 	holds the one button on the right.
 
+	The streak saver (DailyReward.status) is free and automatic: the streak line says
+	"Miss a day? Your streak is saved once a week.", the card whose claim used it wears
+	a small blue shield, and once it is spent the line says so, so a second missed day
+	is never a surprise.
+
 	The window opens by itself once per session when a reward is waiting, after a
 	calm moment: never during the intro or the tutorial, a game-mode run, or
 	under another window or popup, and never within REWARD_QUIET seconds of a
 	reward card. A player who finished the tutorial this session first walks one
-	full lap (collects cash once). A held crate makes it wait too, but not for
-	ever (DailyReward.autoOpenTick): a crate can be carried for minutes.
+	full lap (collects cash once), or has had LAP_PATIENCE seconds since it ended
+	(a skipped tutorial, a player who never collects). A held crate makes it wait
+	too, but not for ever (DailyReward.autoOpenTick): a crate can be carried for minutes.
 	After a claim the window closes by itself, CLOSE_AFTER_CLAIM after the coins fly.
 ]]
 
@@ -93,6 +99,8 @@ local SIDE_TEXT = 112
 -- whose reward cards are still on their way).
 local CALM = 2
 local CALM_AFTER_TUTORIAL = 20
+-- A player who never collects cash after the tutorial is not waited for longer than this.
+local LAP_PATIENCE = 90
 -- The window never opens by itself this soon after a reward card (a unit or crate reveal).
 local REWARD_QUIET = 20
 -- A claimed window closes by itself this long after the coins fly.
@@ -100,6 +108,11 @@ local CLOSE_AFTER_CLAIM = 1.5
 -- ScreenGui attributes that mean "busy": a window, a popup or a mode run. The held-crate
 -- panel ("CratePanelOpen") only holds the window back for a while.
 local BUSY = { "WindowOpen", "ModalOpen", "RunActive", "ObbyMode", "CardioActive" }
+
+-- The streak line's right half: the saver's rule, and what it says once the saver is spent.
+local SAVER_RULE = "Miss a day? Your streak is saved once a week."
+local SAVER_SPENT = "Streak saver used. Come back tomorrow!"
+local SAVER_SAVES = "You missed a day: your streak is saved!"
 
 -- Art per card: the cash packs grow with the days; days 3 and 7 show their crate.
 local ART = { "CashPack1", "CashPack2", "CrateRare", "CashPack3", "CashPack4", "CashPack5", "CrateLegendary" }
@@ -114,6 +127,8 @@ type Card = {
 	chipFull: string,
 	chipShort: string,
 	tick: Frame,
+	-- The streak saver's shield, on the card whose claim used it.
+	shield: Frame,
 	state: string,
 }
 
@@ -173,9 +188,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Position = UDim2.fromOffset(48, 1),
 		ZIndex = 2,
 	})
-	Kit.text(hero, {
+	local rule = Kit.text(hero, {
 		Name = "Rule",
-		Text = "Come back tomorrow for the next card.",
+		Text = SAVER_RULE,
 		TextSize = T.Small,
 		MinPx = true,
 		TextColor3 = C.Text,
@@ -265,6 +280,41 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			ZIndex = 7,
 		})
+		-- Blue shield on the other corner of the card whose claim used the streak saver: a
+		-- flat top over a point, built from two frames (the atlas has no shield).
+		local shield = Kit.new("Frame", {
+			Name = "Shield",
+			BackgroundColor3 = C.Rizz,
+			Size = UDim2.fromOffset(26, 26),
+			Position = UDim2.fromOffset(4, 4),
+			Visible = false,
+			ZIndex = 6,
+			Parent = frame,
+		})
+		Kit.round(shield)
+		Kit.new("UIStroke", { Thickness = 2, Color = C.Text, Parent = shield })
+		local ink = Kit.inkOn(C.Rizz)
+		local top = Kit.new("Frame", {
+			Name = "Top",
+			BackgroundColor3 = ink,
+			BorderSizePixel = 0,
+			Size = UDim2.fromOffset(12, 7),
+			Position = UDim2.fromOffset(7, 6),
+			ZIndex = 7,
+			Parent = shield,
+		})
+		Kit.new("UICorner", { CornerRadius = UDim.new(0, 2), Parent = top })
+		Kit.new("Frame", {
+			Name = "Point",
+			BackgroundColor3 = ink,
+			BorderSizePixel = 0,
+			Size = UDim2.fromOffset(8, 8),
+			Position = UDim2.fromOffset(13, 13),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Rotation = 45,
+			ZIndex = 7,
+			Parent = shield,
+		})
 		local card: Card = {
 			frame = frame,
 			header = header,
@@ -274,6 +324,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			chipFull = chipFull,
 			chipShort = chipShort,
 			tick = tick,
+			shield = shield,
 			state = "",
 		}
 		-- Tapping today's card claims it (gamepads use the CLAIM button).
@@ -438,6 +489,11 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		canClaim = daily.claimable == true
 		todayClaimed = not canClaim
 		local tomorrowCard = if day < DailyReward.DAYS then day + 1 else 0
+		-- The streak saver: the card that used it, whether today's claim does, and whether
+		-- it is still there for the next missed day.
+		local savedCard = math.floor(tonumber(daily.savedCard) or 0)
+		local saves = canClaim and daily.saves == true
+		local saverSpent = daily.saver == false
 		local progression = Economy.progression(tonumber(data.highestTier) or 1, tonumber(data.processLevel) or 0)
 		-- The surge-free income Server.Daily pays with.
 		local income = tonumber(data.rewardIncome) or tonumber(data.income) or 0
@@ -453,7 +509,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			if state ~= card.state then
 				dress(card, i, state)
 			end
+			card.shield.Visible = i == savedCard
 		end
+		rule.Text = if saves then SAVER_SAVES elseif saverSpent then SAVER_SPENT else SAVER_RULE
 		streakTitle.Text = if streak >= 2
 			then string.format("%d DAY STREAK", streak)
 			elseif streak == 1 then "1 DAY STREAK"
@@ -462,7 +520,11 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		detail.AnchorPoint = Vector2.new(0, if canClaim then 0.5 else 0)
 		detail.Position = if canClaim then UDim2.fromScale(0, 0.5) else UDim2.fromOffset(0, 28)
 		if canClaim then
-			detail.Text = "Rewards grow every day, up to the big Day 7 gift"
+			-- A short window has no streak line: the saver's news goes here instead.
+			detail.Text = if saves
+				then SAVER_SAVES
+				elseif not hero.Visible then (if saverSpent then SAVER_SPENT else SAVER_RULE)
+				else "Rewards grow every day, up to the big Day 7 gift"
 			Kit.setButton(button, "CLAIM", C.Gold)
 		else
 			local nextDay = DailyReward.card(day + 1)
@@ -619,8 +681,10 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			local player = Players.LocalPlayer
 			local auto = DailyReward.autoOpen()
 			local needed = CALM
-			-- The tutorial was running this session: the window waits for the first lap.
+			-- The tutorial was running this session: the window waits for the first lap, but
+			-- no longer than LAP_PATIENCE after the tutorial ended.
 			local sawTutorial = false
+			local sinceTutorial = 0
 			while not opened do
 				local step = task.wait(0.5)
 				local data = State.data
@@ -628,6 +692,11 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				if data and data.tutorialDone ~= true then
 					sawTutorial = true
 					needed = CALM_AFTER_TUTORIAL
+				elseif data and sawTutorial and not lapped then
+					sinceTutorial += step
+					if sinceTutorial >= LAP_PATIENCE then
+						lapped = true
+					end
 				end
 				local ready = data ~= nil
 					and daily ~= nil

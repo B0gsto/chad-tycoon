@@ -49,7 +49,7 @@ return function(h: { [string]: any })
 		check(DailyReward.status(TODAY, 0, TODAY).claimable, "a save with no streak can always claim")
 	end)
 
-	test("Daily: streak advances, loops after day 7 and resets on a missed day", function()
+	test("Daily: streak advances, loops after day 7 and restarts after a long break", function()
 		local lastDay, streak = 0, 0
 		for n = 1, 16 do
 			local today = TODAY + n
@@ -66,16 +66,101 @@ return function(h: { [string]: any })
 			check(not after.claimable, "claimed on day " .. n)
 			eq(after.claimed, card, "ticks after the claim on day " .. n)
 		end
-		-- One day skipped: back to day 1.
-		local missed = DailyReward.status(TODAY, 5, TODAY + 2)
-		check(missed.claimable, "claimable after a missed day")
-		eq(missed.day, 1, "a missed day restarts at day 1")
-		eq(missed.claimed, 0, "ticks cleared after a missed day")
-		eq(missed.streak, 0, "streak cleared after a missed day")
-		local newStreak, paid = DailyReward.claim(TODAY, 5, TODAY + 2)
+		-- Two days skipped: back to day 1.
+		local missed = DailyReward.status(TODAY, 5, TODAY + 3)
+		check(missed.claimable, "claimable after a long break")
+		eq(missed.day, 1, "a long break restarts at day 1")
+		eq(missed.claimed, 0, "ticks cleared after a long break")
+		eq(missed.streak, 0, "streak cleared after a long break")
+		local newStreak, paid = DailyReward.claim(TODAY, 5, TODAY + 3)
 		eq(newStreak, 1, "streak restarts at 1")
 		eq(paid, 1, "restart pays card 1")
-		eq(select(2, DailyReward.claim(TODAY, 5, TODAY + 30)), 1, "a long break restarts too")
+		eq(select(2, DailyReward.claim(TODAY, 5, TODAY + 30)), 1, "a month away restarts too")
+	end)
+
+	test("Daily: the streak saver forgives one missed day per run of seven", function()
+		-- Gap 1 (the next day): the streak goes on and the saver is untouched.
+		local status = DailyReward.status(TODAY, 3, TODAY + 1, 0)
+		check(status.claimable and not status.saves, "gap 1 needs no saver")
+		eq(status.day, 4, "gap 1 continues on card 4")
+		eq(status.savedCard, 0, "no shield without a save")
+		check(status.saver, "the saver is still there")
+		local streak, card, usedAt, saved = DailyReward.claim(TODAY, 3, TODAY + 1, 0)
+		eq(streak, 4, "gap 1 streak")
+		eq(card, 4, "gap 1 card")
+		eq(usedAt, 0, "gap 1 leaves the saver unused")
+		eq(saved, false, "gap 1 is no save")
+
+		-- Gap 2 once (one missed day): the streak is kept and the saver is spent.
+		status = DailyReward.status(TODAY, 3, TODAY + 2, 0)
+		check(status.claimable and status.saves, "gap 2 uses the saver")
+		eq(status.day, 4, "gap 2 continues on card 4")
+		eq(status.claimed, 3, "the ticks stay")
+		eq(status.streak, 3, "the streak stays")
+		eq(status.savedCard, 4, "today's card wears the shield")
+		check(not status.saver, "the saver is spent for this run")
+		streak, card, usedAt, saved = DailyReward.claim(TODAY, 3, TODAY + 2, 0)
+		eq(streak, 4, "gap 2 streak")
+		eq(card, 4, "gap 2 card")
+		eq(usedAt, 4, "the save is stamped with the new streak")
+		eq(saved, true, "gap 2 is a save")
+		-- A field missing from an old save (nil) reads as an unused saver.
+		eq(DailyReward.claim(TODAY, 3, TODAY + 2), 4, "nil saver field")
+		local claimed = DailyReward.status(TODAY + 2, 4, TODAY + 2, 4)
+		check(not claimed.claimable and not claimed.saves, "claimed after the save")
+		eq(claimed.savedCard, 4, "the shield stays on the claimed card")
+		check(not claimed.saver, "still spent after the claim")
+		-- The shield stays for the rest of the run, then goes with the new one.
+		eq(DailyReward.status(TODAY + 5, 7, TODAY + 5, 4).savedCard, 4, "shield on card 4 at card 7")
+		eq(DailyReward.status(TODAY + 5, 7, TODAY + 6, 4).savedCard, 0, "no shield in the next run")
+		eq(DailyReward.status(TODAY + 6, 8, TODAY + 6, 4).savedCard, 0, "no shield on the next run's card 1")
+
+		-- Gap 2 twice in one run: the second miss restarts at day 1, with a fresh saver.
+		status = DailyReward.status(TODAY + 2, 4, TODAY + 4, 4)
+		check(status.claimable and not status.saves, "no second save in the same run")
+		eq(status.day, 1, "the second miss restarts at day 1")
+		eq(status.streak, 0, "the second miss clears the streak")
+		eq(status.savedCard, 0, "no shield after a restart")
+		check(status.saver, "the new streak has its saver")
+		streak, card, usedAt, saved = DailyReward.claim(TODAY + 2, 4, TODAY + 4, 4)
+		eq(streak, 1, "restart streak")
+		eq(card, 1, "restart card")
+		eq(usedAt, 0, "the restart clears the saver stamp")
+		eq(saved, false, "the restart is no save")
+		check(DailyReward.status(TODAY + 4, 1, TODAY + 6, 0).saves, "the new streak can be saved again")
+		-- Used on card 2, missed again before card 6: same run, no save.
+		eq(DailyReward.status(TODAY, 5, TODAY + 2, 2).day, 1, "one save per run, however far apart")
+
+		-- The next run of seven has its own saver.
+		status = DailyReward.status(TODAY, 7, TODAY + 2, 4)
+		check(status.saves, "a save in the second run")
+		eq(status.day, 1, "card 1 of the second run")
+		eq(status.streak, 7, "the streak goes on into the second run")
+		eq(status.savedCard, 1, "shield on the second run's card 1")
+		eq(select(3, DailyReward.claim(TODAY, 7, TODAY + 2, 4)), 8, "stamped at streak 8")
+		check(not DailyReward.status(TODAY + 2, 8, TODAY + 4, 8).saves, "spent for the second run")
+		check(DailyReward.status(TODAY, 14, TODAY + 2, 8).saves, "back for the third run")
+		-- A save on card 7 itself: the next run starts with its saver.
+		status = DailyReward.status(TODAY, 6, TODAY + 2, 0)
+		eq(status.savedCard, 7, "shield on card 7")
+		check(status.saver, "the next card is in a new run")
+
+		-- Gap 3 (two missed days): restart, saver or not.
+		for _, used in { 0, 2 } do
+			status = DailyReward.status(TODAY, 5, TODAY + 3, used)
+			check(status.claimable and not status.saves, "gap 3 is not saved")
+			eq(status.day, 1, "gap 3 restarts at day 1")
+			eq(status.streak, 0, "gap 3 clears the streak")
+			eq(select(3, DailyReward.claim(TODAY, 5, TODAY + 3, used)), 0, "gap 3 clears the saver stamp")
+		end
+
+		-- A stamp ahead of the streak (a broken save) reads as unused and is cleared.
+		check(DailyReward.status(TODAY, 2, TODAY + 2, 9).saves, "a stamp ahead of the streak does not block")
+		eq(DailyReward.status(TODAY, 2, TODAY, 9).savedCard, 0, "and shows no shield")
+		eq(select(3, DailyReward.claim(TODAY, 2, TODAY + 1, 9)), 0, "and is cleared by the next claim")
+		check(DailyReward.saverReady(0, 0), "a new player has the saver")
+		check(not DailyReward.saverReady(3, 2), "used on card 2: not on card 4")
+		check(DailyReward.saverReady(7, 2), "used on card 2: back on the next run's card 1")
 	end)
 
 	test("Daily: rewards grow each day and scale with income", function()
@@ -127,16 +212,29 @@ return function(h: { [string]: any })
 		eq(fresh.streak, 0, "new players have no streak")
 		eq(fresh.firstDay, 0, "new players' first day is stamped by the server")
 		eq(fresh.hinted, false, "new players have not seen the come-back toast")
+		eq(fresh.saverUsedAt, 0, "new players have not used the streak saver")
 		local legacy = DataService.reconcile({ money = 10, totalObtained = 3 }).daily
 		eq(legacy.day, 0, "old saves can claim day 1")
 		eq(legacy.streak, 0, "old saves have no streak")
 		eq(legacy.firstDay, 1, "old saves are not on their first day")
 		eq(legacy.hinted, true, "old saves never get the first-day toast")
+		eq(legacy.saverUsedAt, 0, "old saves have an unused streak saver")
 		local kept = DataService.reconcile({ money = 10, daily = { day = TODAY, streak = 4, firstDay = TODAY - 9, hinted = true } }).daily
 		eq(kept.day, TODAY, "claim day kept")
 		eq(kept.streak, 4, "streak kept")
 		eq(kept.firstDay, TODAY - 9, "first day kept")
 		eq(kept.hinted, true, "hint flag kept")
+		-- A save from before the streak saver: the field reads 0 and the streak goes on.
+		eq(kept.saverUsedAt, 0, "missing saver field reads 0")
+		local goesOn = DailyReward.status(kept.day, kept.streak, TODAY + 1, kept.saverUsedAt)
+		check(goesOn.claimable and goesOn.day == 5 and goesOn.streak == 4, "a current streak continues")
+		local used = DataService.reconcile({ money = 10, daily = { day = TODAY, streak = 4, saverUsedAt = 3.6 } }).daily
+		eq(used.saverUsedAt, 3, "saver stamp kept and floored")
+		eq(
+			DataService.reconcile({ money = 10, daily = { day = TODAY, streak = 4, saverUsedAt = -2 } }).daily.saverUsedAt,
+			0,
+			"negative saver stamp reset"
+		)
 		local broken = DataService.reconcile({ money = 10, daily = { day = -5, streak = 0 / 0, firstDay = "x", hinted = 1 } }).daily
 		eq(broken.day, 0, "negative day reset")
 		eq(broken.streak, 0, "NaN streak reset")
@@ -389,6 +487,53 @@ return function(h: { [string]: any })
 		eq(#log.toasts, 1, "the player is told")
 		check(string.find(log.toasts[1], "Rare Crate", 1, true) ~= nil, "the toast names the crate")
 		eq(full.profile.daily.streak, 3, "the claim counts")
+	end)
+
+	test("Daily server: a missed day is saved once, said out loud, then restarts", function()
+		local now = { time = TODAY * DAY + 60, clock = 0 }
+		local Daily, Tycoon, log = loadDaily(now)
+		local progression = Economy.progression(4, Economy.START_PROCESS_LEVEL)
+		-- Claimed card 3 two days ago: yesterday was missed.
+		local player = session(TODAY - 9, 3, TODAY - 2)
+		player.profile.daily.saverUsedAt = 0
+		local snap = Tycoon.hooks.daily(player)
+		check(snap.claimable and snap.saves, "the snapshot says the saver steps in")
+		eq(snap.day, 4, "the snapshot keeps the card")
+		eq(snap.streak, 3, "the snapshot keeps the streak")
+		eq(snap.savedCard, 4, "the snapshot puts the shield on today's card")
+		eq(snap.saver, false, "the snapshot says the saver is spent")
+		Daily.claim(player)
+		eq(player.profile.daily.streak, 4, "the streak goes on")
+		eq(player.profile.daily.saverUsedAt, 4, "the save is stamped")
+		eq(log.money, DailyReward.cash(4, 18, progression), "card 4 is paid in full")
+		eq(log.notifies[1].day, 4, "the notify names card 4")
+		eq(log.notifies[1].saved, true, "the notify says the streak was saved")
+		eq(#log.toasts, 1, "the player is told")
+		check(string.find(log.toasts[1], "4 day streak is safe", 1, true) ~= nil, "the toast names the streak")
+		check(string.find(log.toasts[1], "after Day 7", 1, true) ~= nil, "the toast says when the saver is back")
+		snap = Tycoon.hooks.daily(player)
+		eq(snap.savedCard, 4, "the shield stays after the claim")
+		eq(snap.saver, false, "still spent after the claim")
+		-- A second missed day in the same run: day 1 again, with a fresh saver.
+		now.time += 2 * DAY
+		snap = Tycoon.hooks.daily(player)
+		check(snap.claimable and not snap.saves, "no second save")
+		eq(snap.day, 1, "back to card 1")
+		log.money = 0
+		Daily.claim(player)
+		eq(player.profile.daily.streak, 1, "the streak starts again")
+		eq(player.profile.daily.saverUsedAt, 0, "the new streak's saver is unused")
+		eq(log.money, DailyReward.cash(1, 18, progression), "card 1 is paid")
+		eq(log.notifies[2].saved, nil, "no save in the notify")
+		eq(#log.toasts, 1, "no saver toast")
+		-- A plain next-day claim says nothing about the saver; a save from before the field
+		-- (nil) still claims.
+		now.time += DAY
+		player.profile.daily.saverUsedAt = nil
+		Daily.claim(player)
+		eq(player.profile.daily.streak, 2, "the next day continues")
+		eq(player.profile.daily.saverUsedAt, 0, "the missing field is written as 0")
+		eq(#log.toasts, 1, "still no saver toast")
 	end)
 
 	test("Daily server: one session's error does not stop the loop", function()
