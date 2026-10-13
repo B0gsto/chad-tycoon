@@ -2912,16 +2912,24 @@ end
 --[[
 	The Parkour finish card: "MAP n CLEAR!" (or "NEW BEST!") over the map's name and the
 	falls of the run, the run time, best and the rank on this server's board, the cash
-	reward rolling up, a line saying why it is what it is (payload `pay`: "repeat" = "Run
-	again bonus +$X (20%)" inside the cooldown, "assisted" = "Gear on: no bonus"; any other
-	mode's card keeps the calm "Reward again in m:ss" countdown),
-	and a popping "Map n+1 unlocked!" chip when this clear opened the next map.
+	reward rolling up and a line saying why it is what it is. Four states (payload `first`,
+	`pay`, `assisted`, `level` / `levels`):
+	  first clean clear  rays and sparkles round the medal, rows of confetti, and a wide
+	                     "MAP n+1 UNLOCKED!" banner popping in when the clear opened a map;
+	  all maps cleared   the last map's first clean clear: "SKY OBBY COMPLETE!", a star
+	                     medal, more confetti and an "ALL 10 MAPS CLEARED!" banner;
+	  repeat             a clean run inside the cooldown: "RUN AGAIN  +$X  +20%" in the
+	                     reward well and the cooldown as a clock bar under a padlock
+	                     ("Full reward in m:ss", filling until the full reward is back);
+	  assisted           gear on: grey medal, white title, an "ASSISTED RUN · NO BEST TIME"
+	                     ribbon instead of the best line, no confetti.
+	While the card is up the server holds the sky course's return to the gates: the card
+	fires the "ModeCard" action { mode, open } when it opens and when it closes.
 	Buttons: "Next level" (gold, when there is one) beside "Run again", with slim "Choose
 	map" (opens the Maps window) and "Back to my gym" under them; on the last level "Run
 	again" beside "Back to my gym" with a slim "Choose map" under them. `data` is the finish Notify payload (time, best, newBest, rank?, cash, full,
-	cooldownEnds, level, levelName, nextLevel?, unlockedNew, assisted?, falls?, pay?, repeatShare?).
-	An assisted run (gear or a
-	skipped stage) shows "Assisted run" instead of the best / rank line.
+	cooldownEnds, level, levelName, levels?, nextLevel?, unlockedNew, first?, assisted?, falls?,
+	pay?, repeatShare?, mode).
 ]]
 
 local function runTime(seconds: number): string
@@ -2962,33 +2970,107 @@ local function cashRow(well: Frame, total: number): TextLabel
 	})
 end
 
+-- Finish card tuning. Nothing here was judged on screen yet: adjust in Studio.
+local FINISH = {
+	Medal = 84,
+	Rays = 250, -- px across, behind the medal on a first clear
+	Sparkles = 7, -- twinkles round the medal on a first clear
+	Confetti = 28, -- pieces per burst (Kit.confetti caps at 28)
+	FirstBursts = 2, -- bursts on a map's first clean clear
+	CompleteBursts = 4, -- ... on the last map's (the whole sky obby)
+	BurstGap = 0.35, -- seconds between bursts
+	CashRoll = 0.9, -- seconds the "+$N" counts up
+	UnlockH = 40, -- the "MAP n UNLOCKED!" banner
+	UnlockAt = 0.7, -- seconds after the card opens
+	CoolH = 26, -- the cooldown clock bar
+	AssistedMedal = World.Steel, -- the grey medal of a run with gear on
+	CoolColor = C.Rizz,
+}
+
 function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> (), onNext: (() -> ())?, onPick: (() -> ())?)
 	Popups.enqueue("ModeFinish", Popups.PRIORITY.Normal, function(done)
 		local cashTotal = tonumber(data.cash) or 0
-		local cooling = data.full == false and (tonumber(data.cooldownEnds) or 0) > os.time()
+		local cooldownEnds = tonumber(data.cooldownEnds) or 0
+		local cooling = data.full == false and cooldownEnds > os.time()
 		local level = tonumber(data.level)
+		local levels = tonumber(data.levels)
 		local nextLevel = tonumber(data.nextLevel)
 		local hasNext = nextLevel ~= nil and onNext ~= nil
 		local unlockedNew = data.unlockedNew == true and nextLevel ~= nil
-		-- Height grows with the unlock chip and the third (slim) button.
-		local noteY = if unlockedNew then 284 else 254
+		-- An assisted run (worn gear) never sets a best or a board entry.
+		local assisted = data.assisted == true
+		-- The card's state: a map's first clean clear is the loud one, the last map's the
+		-- loudest ("SKY OBBY COMPLETE!"); a clean run inside the cooldown shows its share and
+		-- the clock; an assisted run is grey and calm.
+		local firstClear = data.first == true and not assisted
+		local complete = firstClear and data.mode == "parkour" and level ~= nil and levels ~= nil and level >= levels
+		local repeatRun = data.pay == "repeat" and not assisted
+		local calm = reducedMotion()
+		-- Rows under the best line, top to bottom: reward well, cooldown clock, banner, note.
+		local hasWell = cashTotal > 0
+		local banner: string? = if complete
+			then string.format("ALL %d MAPS CLEARED!", levels :: number)
+			elseif unlockedNew then "MAP " .. tostring(nextLevel) .. " UNLOCKED!"
+			else nil
+		local y = 184
+		local wellY = y
+		if hasWell then
+			y += 62 + 8
+		end
+		local coolY = y
+		if cooling then
+			y += FINISH.CoolH + 10
+		end
+		local bannerY = y
+		if banner then
+			y += FINISH.UnlockH + 8
+		end
+		local noteY = y
 		local hasPick = onPick ~= nil
 		local buttonsH = if hasNext or hasPick then 128 else 74
-		local box, close = modal("ModeFinish", Vector2.new(480, noteY + 22 + 14 + buttonsH), 45, nil, done)
-		local medal = medallion(box, "🏁", C.Gold, 84, UDim2.new(0.5, 0, 0, 0))
+		-- The sky course's return to the gates waits while this card is up: the server is told
+		-- when it opens and when it closes.
+		local action = Net.event("Action")
+		local box, close = modal("ModeFinish", Vector2.new(480, noteY + 22 + 14 + buttonsH), 45, nil, function()
+			action:FireServer({ action = "ModeCard", mode = data.mode, open = false })
+			done()
+		end)
+		action:FireServer({ action = "ModeCard", mode = data.mode, open = true })
+		local medalAt = UDim2.new(0.5, 0, 0, 0)
+		if firstClear then
+			-- Behind the medal and (made first) under the title: rays, and twinkles on a ring
+			-- lifted so its lower edge stays off the title.
+			if not calm then
+				Popups.rays(box, Kit.lighten(C.Gold, 0.3), FINISH.Rays, medalAt, 1, if complete then 9 else 6)
+			end
+			local twinkle = Kit.new("Frame", {
+				Name = "MedalSparkles",
+				BackgroundTransparency = 1,
+				Size = UDim2.fromOffset(FINISH.Medal, FINISH.Medal),
+				Position = UDim2.new(0.5, 0, 0, -math.floor(FINISH.Medal * 0.35)),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Parent = box,
+			})
+			sparkles(twinkle, Kit.lighten(C.Gold, 0.5), FINISH.Sparkles, FINISH.Medal * 0.85, calm)
+		end
+		local medal =
+			medallion(box, if complete then "⭐" else "🏁", if assisted then FINISH.AssistedMedal else C.Gold, FINISH.Medal, medalAt)
+		-- "NEW BEST!" only when an older best was beaten: a first clear names the map.
+		local namesMap = not complete and (firstClear or assisted or not data.newBest)
 		Kit.title(box, {
-			Text = if data.newBest and data.assisted ~= true
-				then "NEW BEST!"
+			Text = if complete
+				then "SKY OBBY COMPLETE!"
+				elseif not namesMap then "NEW BEST!"
 				elseif level then "MAP " .. tostring(level) .. " CLEAR!"
 				else "COURSE CLEAR!",
 			TextSize = T.H1,
 			TextWrapped = false,
 			Size = UDim2.new(1, -20, 0, 34),
 			Position = UDim2.fromOffset(10, 48),
-			TextColor3 = C.Gold,
+			TextColor3 = if assisted then C.Text else C.Gold,
 		})
 		local levelLine = if type(data.levelName) == "string" then data.levelName else ""
-		if level and data.newBest and data.assisted ~= true then
+		if level and not namesMap then
 			levelLine = "Map " .. tostring(level) .. (if levelLine ~= "" then "  ·  " .. levelLine else "")
 		end
 		-- The falls of the run (Parkour counts them; other modes send none).
@@ -3013,63 +3095,120 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			TextSize = 44,
 			Size = UDim2.new(1, -20, 0, 48),
 			Position = UDim2.fromOffset(10, 106),
-			TextColor3 = C.Text,
+			TextColor3 = if assisted then C.TextDim else C.Text,
 		})
-		-- An assisted run (worn gear) never sets a best or a board entry.
-		local assisted = data.assisted == true
-		local sub = "Best " .. runTime(tonumber(data.best) or tonumber(data.time) or 0)
-		if type(data.rank) == "number" then
-			sub ..= "  ·  #" .. tostring(data.rank) .. " on this server"
+		if assisted then
+			-- A grey ribbon instead of the best / rank line.
+			Kit.pill(box, {
+				Name = "Assisted",
+				Text = "ASSISTED RUN  ·  NO BEST TIME",
+				Font = Theme.Fonts.Display,
+				TextSize = T.Small,
+				Color = FINISH.AssistedMedal,
+				Solid = true,
+				Size = UDim2.fromOffset(290, 24),
+				Position = UDim2.new(0.5, 0, 0, 155),
+				AnchorPoint = Vector2.new(0.5, 0),
+				ZIndex = 3,
+			})
+		else
+			local sub = "Best " .. runTime(tonumber(data.best) or tonumber(data.time) or 0)
+			if type(data.rank) == "number" then
+				sub ..= "  ·  #" .. tostring(data.rank) .. " on this server"
+			end
+			Kit.text(box, {
+				Name = "Best",
+				Text = sub,
+				TextSize = T.Body,
+				Size = UDim2.new(1, -30, 0, 22),
+				Position = UDim2.fromOffset(15, 156),
+				TextColor3 = C.TextDim,
+				StrokeThickness = 0,
+			})
+		end
+		-- Runs that pay nothing (gear on inside the cooldown) get no empty "+$0" row.
+		local well = Kit.well(box, { Glass = true, Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, wellY) })
+		well.Visible = hasWell
+		local cashLabel = cashRow(well, cashTotal)
+		if repeatRun then
+			-- A clean run inside the cooldown pays a share of the map's reward: say which.
+			local share = math.floor((tonumber(data.repeatShare) or Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
+			Kit.text(well, {
+				Name = "RepeatCaption",
+				Text = "RUN AGAIN",
+				Font = Theme.Fonts.Display,
+				TextSize = T.Small,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Size = UDim2.new(0, 110, 1, 0),
+				Position = UDim2.fromOffset(14, 0),
+				TextColor3 = C.TextDim,
+				StrokeThickness = 0,
+			})
+			Kit.pill(well, {
+				Name = "RepeatShare",
+				Text = string.format("+%d%%", share),
+				Font = Theme.Fonts.Display,
+				TextSize = T.Body,
+				Color = FINISH.CoolColor,
+				Solid = true,
+				Size = UDim2.fromOffset(70, 28),
+				Position = UDim2.new(1, -12, 0.5, 0),
+				AnchorPoint = Vector2.new(1, 0.5),
+				ZIndex = 3,
+			})
+		end
+		-- The cooldown as a clock: a padlock and a bar that fills until the full reward is back.
+		if cooling then
+			local span = math.max(Economy.MODE_REWARD_COOLDOWN, 1)
+			Kit.icon(box, "Lock", FINISH.CoolH - 2, C.Gold, { Position = UDim2.fromOffset(22, coolY + 1) })
+			local track, setCool, coolLabel = Kit.progress(box, {
+				Name = "Cooldown",
+				Glass = true,
+				Color = FINISH.CoolColor,
+				TextSize = T.Small,
+				Size = UDim2.new(1, -76, 0, FINISH.CoolH),
+				Position = UDim2.fromOffset(56, coolY),
+			})
+			coolLabel.TextColor3 = C.Text
+			task.spawn(function()
+				local first = true
+				while track.Parent do
+					local left = cooldownEnds - os.time()
+					coolLabel.Text = if left > 0 then "Full reward in " .. Format.time(left) else "Full reward ready next run!"
+					setCool(1 - left / span, first)
+					first = false
+					task.wait(1)
+				end
+			end)
+		end
+		local unlockChip: TextLabel? = nil
+		if banner then
+			unlockChip = Kit.pill(box, {
+				Name = "Unlocked",
+				Text = banner,
+				Font = Theme.Fonts.Display,
+				TextSize = T.H2,
+				Color = if complete then C.Gold else C.Good,
+				Solid = true,
+				Size = UDim2.new(1, -40, 0, FINISH.UnlockH),
+				Position = UDim2.fromOffset(20, bannerY),
+				ZIndex = 3,
+			})
 		end
 		Kit.text(box, {
-			Name = if assisted then "Assisted" else "Best",
-			Text = if assisted then "Assisted run" else sub,
-			Font = if assisted then Kit.F.UI else nil,
-			TextSize = T.Body,
-			Size = UDim2.new(1, -30, 0, 22),
-			Position = UDim2.fromOffset(15, 156),
-			TextColor3 = if assisted then C.Rizz else C.TextDim,
-			StrokeThickness = 0,
-		})
-		local well = Kit.well(box, { Glass = true, Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, 184) })
-		-- Runs inside the reward cooldown pay nothing: no empty "+$0" row.
-		well.Visible = cashTotal > 0
-		local cashLabel = cashRow(well, cashTotal)
-		-- Parkour says why the cash is what it is (`pay`): a clean run inside the cooldown
-		-- pays a share of the map's reward, a run with gear on nothing.
-		local payNote: string? = nil
-		if data.pay == "repeat" then
-			local share = math.floor((tonumber(data.repeatShare) or Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
-			payNote = string.format("Run again bonus +%s (%d%%)", Format.money(cashTotal), share)
-		elseif data.pay == "assisted" then
-			payNote = "Gear on: no bonus"
-		end
-		local note = Kit.text(box, {
-			Text = if payNote
-				then payNote
-				elseif cooling then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
+			Name = "Note",
+			Text = if complete
+				then "Every map cleared. Now beat your best times!"
+				elseif data.pay == "assisted" then "Gear on: no bonus"
+				elseif repeatRun then "The full reward comes back when the bar fills."
+				elseif firstClear then "First clear reward!"
 				else "Nice run! Try to beat your best.",
 			TextSize = T.Small,
 			Size = UDim2.new(1, -40, 0, 22),
 			Position = UDim2.fromOffset(20, noteY),
-			TextColor3 = C.TextDim,
+			TextColor3 = C.Text,
 			StrokeThickness = 0,
 		})
-		local unlockChip: TextLabel? = nil
-		if unlockedNew then
-			unlockChip = Kit.pill(box, {
-				Name = "Unlocked",
-				Text = "Map " .. tostring(nextLevel) .. " unlocked!",
-				Font = Theme.Fonts.Display,
-				TextSize = T.Small,
-				Color = C.Good,
-				Solid = true,
-				Size = UDim2.fromOffset(200, 26),
-				Position = UDim2.new(0.5, 0, 0, 252),
-				AnchorPoint = Vector2.new(0.5, 0),
-				ZIndex = 3,
-			})
-		end
 		-- With a next level: [Next level] [Run again] and a slim "Back to my gym" below.
 		local rowY = if hasNext or hasPick then -128 else -74
 		local nextButton: TextButton? = nil
@@ -3149,31 +3288,50 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		if pick then
 			Kit.appear(pick, { from = 0.8, time = 0.26, delay = 0.2 })
 		end
+		-- Confetti: none for an assisted run, one burst for a clean one, a row of bursts from
+		-- across the card's top for a first clear.
+		local bursts = if assisted then 0 elseif complete then FINISH.CompleteBursts elseif firstClear then FINISH.FirstBursts else 1
+		if calm then
+			bursts = math.min(bursts, 1)
+		end
+		for i = 1, bursts do
+			local x = if i == 1 then 0.5 elseif i % 2 == 0 then 0.14 else 0.86
+			after((i - 1) * FINISH.BurstGap, function()
+				if box.Parent then
+					Kit.confetti(box, {
+						Origin = UDim2.fromScale(x, 0.1),
+						Count = if firstClear then FINISH.Confetti else 24,
+						ZIndex = 60,
+						Power = if firstClear then 1.15 else 1,
+					})
+				end
+			end)
+		end
 		if unlockChip then
 			local chip = unlockChip
 			chip.Visible = false
-			after(0.7, function()
+			after(FINISH.UnlockAt, function()
+				if not chip.Parent then
+					return
+				end
 				chip.Visible = true
 				Kit.pop(chip, 1.3)
 				sounds.play("BuyPop")
 			end)
 		end
-		Kit.confetti(box, { Origin = UDim2.fromScale(0.5, 0.1), Count = 24, ZIndex = 60 })
 		after(0.12, function()
 			Kit.pop(timeLabel, 1.2)
 		end)
 		after(0.25, function()
 			Kit.countTo(cashLabel, 0, cashTotal, function(n)
 				return "+" .. Format.money(n)
-			end, 0.8)
+			end, FINISH.CashRoll)
 		end)
-		if cooling and not payNote then
-			-- The countdown line ticks while the card is up.
-			task.spawn(function()
-				while note.Parent do
-					local left = (tonumber(data.cooldownEnds) or 0) - os.time()
-					note.Text = if left > 0 then "Reward again in " .. Format.time(left) else "Reward ready next run!"
-					task.wait(1)
+		if hasWell and not calm then
+			-- The amount lands with a pop once it has counted up.
+			after(0.25 + FINISH.CashRoll, function()
+				if cashLabel.Parent then
+					Kit.pop(cashLabel, 1.18)
 				end
 			end)
 		end

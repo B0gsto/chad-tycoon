@@ -21,6 +21,11 @@
 	               (stars and confetti), ModeKill (touched a kill brick: a red/black
 	               burst and a short red screen flash). Spin movers with SpinAxis = "Z" (windmill blades)
 	               turn about the root's look vector instead of world up.
+	  Oops         a run's "respawn" notify (fell, back on the start deck): a soft white
+	               blink of the screen (not after lava, which flashed red) and a puff with
+	               a ring at the runner's feet.
+	  Gantry       the marquee over a map's start arch (tag "StartGantry", attribute Level)
+	               fades out a moment into a run of that map and returns when it ends.
 	  Levels       a parkour run's start payload carries its level; hints and flags look in
 	               Map.GameModes.Parkour.Level<level>. Mode notifications of other modes
 	               (Mog Test) are ignored.
@@ -1438,8 +1443,9 @@ local FLASH_FROM = 0.35
 local FLASH_TIME = 0.35
 local flashFrame: Frame? = nil
 
--- The full-screen red flash frame, made lazily on its own ScreenGui.
-local function flash()
+-- The full-screen flash frame, made lazily on its own ScreenGui: red for lava, or `color`
+-- from transparency `from` over `time` seconds.
+local function flash(color: Color3?, from: number?, time: number?)
 	local frame = flashFrame
 	if not frame or not frame.Parent then
 		local gui = Instance.new("ScreenGui")
@@ -1460,8 +1466,9 @@ local function flash()
 		frame = f
 	end
 	local f = frame :: Frame
-	f.BackgroundTransparency = FLASH_FROM
-	TweenService:Create(f, TweenInfo.new(FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+	f.BackgroundColor3 = color or LAVA
+	f.BackgroundTransparency = from or FLASH_FROM
+	TweenService:Create(f, TweenInfo.new(time or FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 		BackgroundTransparency = 1,
 	}):Play()
 end
@@ -1517,6 +1524,102 @@ local function finish(position: Vector3)
 	end
 end
 
+-- Back on the start deck after a fall. The fall's own effect (ModeSplash / ModeKill) played
+-- where the runner fell, out of sight of the camera's new spot, so the landing gets its beat
+-- too: a soft white blink of the screen (lava already flashed red) and a puff with a ring
+-- at the feet.
+local OOPS_FLASH_FROM = 0.5
+local OOPS_FLASH_TIME = 0.45
+local OOPS_DELAY = 0.12 -- lets the teleport land before the puff is placed
+local OOPS_PUFF = 4.5
+local OOPS_RING = 8
+local function oops(reason: any)
+	local cloud = if typeof(W.Cloud) == "Color3" then W.Cloud else CLOUD_WHITE
+	if reason ~= "kill" then
+		flash(cloud, OOPS_FLASH_FROM, OOPS_FLASH_TIME)
+	end
+	task.delay(OOPS_DELAY, function()
+		local humanoid, root = character()
+		if not humanoid or not root or not running then
+			return
+		end
+		local feet = Vector3.new(root.Position.X, feetY(humanoid, root) + 0.4, root.Position.Z)
+		local anchor = anchorAt(feet, 2)
+		Sprites.billboard(anchor, "Puff", { position = feet, size = OOPS_PUFF, life = 0.7, rise = Vector3.new(0, 0.8, 0) })
+		Sprites.billboard(anchor, "Ring", { position = feet, size = OOPS_RING, life = 0.6, rise = Vector3.zero, color = cloud })
+	end)
+end
+
+-- Start gantry ---------------------------------------------------------------------------
+
+-- The marquee on a map's start arch (the "StartGantry" parts of that Level, contract in
+-- Server.World.Modes) fills the top of the screen from the spawn spot. GANTRY_HOLD seconds
+-- into a run of the map it fades over GANTRY_FADE to GANTRY_GHOST (1 = gone), sign faces
+-- included, and comes back over GANTRY_BACK when the run ends.
+local GANTRY_HOLD = 0.9
+local GANTRY_FADE = 0.5
+local GANTRY_BACK = 0.3
+local GANTRY_GHOST = 1
+
+type Faded = { inst: Instance, prop: string, rest: number }
+local gantry: { Faded } = {}
+local gantryRun = 0
+
+local function fadeGantry(hidden: boolean, time: number)
+	for _, item in gantry do
+		if item.inst.Parent then
+			local goal = if hidden then item.rest + (1 - item.rest) * GANTRY_GHOST else item.rest
+			if time > 0 then
+				TweenService:Create(item.inst, TweenInfo.new(time, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { [item.prop] = goal })
+					:Play()
+			else
+				(item.inst :: any)[item.prop] = goal
+			end
+		end
+	end
+end
+
+-- The run ended (or another starts): the marquee is back.
+local function showGantry(time: number)
+	gantryRun += 1
+	fadeGantry(false, time)
+end
+
+local function hideGantry(level: number)
+	-- Back to rest first, so the rest values below are never read mid-fade.
+	showGantry(0)
+	table.clear(gantry)
+	local function note(inst: Instance, prop: string)
+		local rest = (inst :: any)[prop]
+		if type(rest) == "number" and rest < 1 then
+			table.insert(gantry, { inst = inst, prop = prop, rest = rest })
+		end
+	end
+	local run = gantryRun
+	task.delay(GANTRY_HOLD, function()
+		if run ~= gantryRun or not running then
+			return
+		end
+		-- Collected only now: the far map's parts have arrived with the teleport.
+		for _, part in CollectionService:GetTagged("StartGantry") do
+			if part:IsA("BasePart") and part:GetAttribute("Level") == level then
+				note(part, "Transparency")
+				for _, d in part:GetDescendants() do
+					if d:IsA("GuiObject") then
+						note(d, "BackgroundTransparency")
+						if d:IsA("TextLabel") then
+							note(d, "TextTransparency")
+						end
+					elseif d:IsA("UIStroke") then
+						note(d, "Transparency")
+					end
+				end
+			end
+		end
+		fadeGantry(true, GANTRY_FADE)
+	end)
+end
+
 function ModesFx.init()
 	for _, root in CollectionService:GetTagged("ModeMover") do
 		addMover(root)
@@ -1568,9 +1671,13 @@ function ModesFx.init()
 			running = true
 			stillSince, lastHint = os.clock(), os.clock()
 			startAmbience(currentLevel)
+			hideGantry(currentLevel)
+		elseif event == "respawn" then
+			oops(payload.reason)
 		elseif event == "finish" or event == "invalid" or event == "stop" then
 			running = false
 			endAmbience()
+			showGantry(GANTRY_BACK)
 		end
 	end)
 
