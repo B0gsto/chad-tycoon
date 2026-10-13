@@ -30,6 +30,13 @@
 	a late tier a profile already had when its session started is marked without being
 	sent (Funnel.late), for the same reason. Everyone's tiers from 11 up are also custom
 	events (Server.Analytics, "TierReached"), so skippers need no extra event names.
+
+	Rebirth: `highestTier` below is always the best tier EVER found (profile.discovered, the
+	Index), never the current run's (profile.runDiscovered). A rebirth starts the run again
+	but lowers neither that nor profile.onboarding, and no rule here ever returns a lower
+	onboarding than it was given, so a tier found again in a later run is not a step (or a
+	Skipper event) a second time. A late tier first found in a later run is still a step:
+	it is the first time for that player.
 ]]
 
 local Funnel = {}
