@@ -439,11 +439,13 @@ Theme.World = {
 		Free = PURE_WHITE,
 	},
 	-- Plate behind a pad's floating price (white text): green when the player can afford it /
-	-- it is ready, soft red when not, dark for a plain status.
+	-- it is ready, soft red when not, dark for a plain status, gold (Ink text) on a pad that
+	-- needs a game pass.
 	PadPlate = {
 		Good = rgb(40, 158, 98),
 		Bad = rgb(216, 96, 92),
 		Plain = rgb(58, 48, 96),
+		Pass = rgb(255, 196, 40),
 	},
 }
 

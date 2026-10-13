@@ -132,12 +132,71 @@ local BOARD_BOTTOM = 7.2
 -- plinth and the gift box in front of them.
 local STATION_SIGN_BOTTOM = 4
 
+-- The crate crackers' cards: smaller than the other station cards, as they stand right behind
+-- their pad (2.4 studs from its base) and a full-size card fills the view from there.
+local CRACKER_SIGN = Vector2.new(4.4, 3.2)
+-- What Server.Tycoon writes into a cracker's timer once its crate can be opened.
+local READY_TEXT = "READY!"
+-- The upright "READY!" pill: its size in studs (plus a fixed pixel part, so it stays readable
+-- across the plot) and the gap between the card's top and its bottom edge.
+local READY_SIZE = Vector2.new(3, 1)
+local READY_PX = Vector2.new(24, 10)
+local READY_GAP = 0.3
+
 -- The owner card's text on a plot nobody owns.
 local FREE_PLOT = "FREE PLOT"
 
 -- A label Server.Tycoon still writes to that its card no longer shows.
 local function hiddenLabel(parent: Instance): TextLabel
 	return text(parent, { Text = "", Visible = false })
+end
+
+-- The "READY!" pill floating over a crate cracker's card (`body` is the card's body frame): a
+-- BillboardGui, so it stands upright and faces the camera from anywhere on the court, in the
+-- pads' green "ready" plate. It shows while `timer` says READY_TEXT; the card then drops its
+-- timer line and shows the crate's name (`status`) alone.
+local function buildReadyFlag(body: Frame, cardHeight: number, status: TextLabel, timer: TextLabel)
+	local card = body:FindFirstAncestorWhichIsA("BasePart") :: BasePart
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "ReadyFlag"
+	gui.Adornee = card
+	gui.Size = UDim2.new(READY_SIZE.X, READY_PX.X, READY_SIZE.Y, READY_PX.Y)
+	gui.StudsOffsetWorldSpace = Vector3.new(0, cardHeight / 2 + READY_GAP + READY_SIZE.Y / 2, 0)
+	gui.MaxDistance = Common.SIGN_FADE_CARD
+	gui.LightInfluence = 0
+	gui.Enabled = false
+	gui.Parent = card
+	local pill = Instance.new("Frame")
+	pill.Size = UDim2.fromScale(1, 1)
+	pill.BackgroundColor3 = (Paint.PadPlate and Paint.PadPlate.Good) or theme.Colors.Good
+	pill.BorderSizePixel = 0
+	pill.Parent = gui
+	local round = Instance.new("UICorner")
+	round.CornerRadius = UDim.new(0.5, 0)
+	round.Parent = pill
+	local rim = Instance.new("UIStroke")
+	rim.Color = Paint.Ink
+	rim.Thickness = 1.5
+	rim.Parent = pill
+	text(pill, {
+		Text = READY_TEXT,
+		Font = theme.Fonts.Display,
+		Size = UDim2.fromScale(0.86, 0.8),
+		Position = UDim2.fromScale(0.07, 0.1),
+		TextColor3 = Paint.White,
+		Outline = true,
+	})
+
+	local statusSize, statusPosition = status.Size, status.Position
+	local function show()
+		local ready = timer.Text == READY_TEXT
+		gui.Enabled = ready
+		timer.Visible = not ready
+		status.Size = if ready then UDim2.fromScale(statusSize.X.Scale, 0.8) else statusSize
+		status.Position = if ready then UDim2.fromScale(statusPosition.X.Scale, 0.1) else statusPosition
+	end
+	timer:GetPropertyChangedSignal("Text"):Connect(show)
+	show()
 end
 
 local function buildPlot(index: number): Plot
@@ -232,7 +291,8 @@ local function buildPlot(index: number): Plot
 	pad("Collect", padColors.Collect, w.Collect, "")
 	buildVault(B)
 
-	-- Crate unlockers (+X court), each with a sign card standing at the machine's front.
+	-- Crate unlockers (+X court), each with a small sign card standing at the machine's front,
+	-- square to its pad and the walkway beyond it (-X).
 	local unlockerScreens = {}
 	for i = 1, 2 do
 		local name = if i == 1 then w.Unlocker else w.PremiumUnlocker
@@ -240,16 +300,8 @@ local function buildPlot(index: number): Plot
 		pad("Unlock" .. i, color, name, "")
 		local rect = Layout.MACHINES["Unlocker" .. i]
 		buildUnlocker(B, rect, color)
-		local body, titleLabel = standingCard(
-			B,
-			rect.minX - 0.4,
-			(rect.minZ + rect.maxZ) / 2,
-			FACE_MINUS_X,
-			Vector2.new(6.2, 4.6),
-			STATION_SIGN_BOTTOM,
-			name,
-			false
-		)
+		local body, titleLabel =
+			standingCard(B, rect.minX - 0.4, (rect.minZ + rect.maxZ) / 2, FACE_MINUS_X, CRACKER_SIGN, STATION_SIGN_BOTTOM, name, false)
 		-- Tycoon tints the status in the crate's rarity colour, so it keeps an Ink outline.
 		local statusLabel = text(body, {
 			Text = "",
@@ -264,6 +316,7 @@ local function buildPlot(index: number): Plot
 			Size = UDim2.fromScale(0.9, 0.5),
 			Position = UDim2.fromScale(0.05, 0.46),
 		})
+		buildReadyFlag(body, CRACKER_SIGN.Y, statusLabel, timerLabel)
 		table.insert(unlockerScreens, { frame = body, title = titleLabel, status = statusLabel, timer = timerLabel })
 	end
 

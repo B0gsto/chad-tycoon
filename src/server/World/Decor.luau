@@ -1,6 +1,6 @@
 --[[
 	Decor: everything painted on a plot's floor (the courts under each group of pads, the cream
-	path from the entrance to the merge court and on to both side courts, its chevrons), the
+	path from the entrance to the merge court and on to both side courts), the
 	sunny gym dressing in the areas the courts leave free (a palm each side of the entrance, a
 	palm by each side fence), the interactive props along the front fence and the two fan
 	zones beside the display ledge. The plot is kept calm: few props, open floor.
@@ -520,8 +520,7 @@ end
 
 -- The cream path with a thin teal kerb: a wide stem from the entrance to the plaza along the
 -- pen's front (Layout.PLAZA), which joins both side courts with the merge court on the
--- junction. Chevrons show the way: up the stem to the merge pad, then out along the plaza to
--- the deposit pad (-X) and the crate stations (+X).
+-- junction. It carries no painted arrows: the guide's floor path (Client.Guide) shows the way.
 local function buildPath(B: Builder, parent: Instance)
 	-- Wider than the walkway PlotLayout keeps clear: the floor either side of it is open too.
 	local half = Layout.WALKWAY.maxX + 1.5
@@ -541,20 +540,6 @@ local function buildPath(B: Builder, parent: Instance)
 		edge
 	)
 	paintRect(B, parent, "PathStrip", Layout.rect(plaza.minX - tuck, plaza.maxX + tuck, plaza.minZ, plaza.maxZ), PATH_TOP, cream)
-
-	-- Three chevrons up the stem, evenly spaced from the entrance to the merge court.
-	local mark = color("TealLight")
-	local stemEnd = Layout.MERGE_COURT.z - Layout.MERGE_COURT.radius
-	local step = (stemEnd + Layout.INNER_HALF) / 4
-	for i = 1, 3 do
-		chevron(B, parent, 0, -Layout.INNER_HALF + i * step, 0, 1, mark)
-	end
-	local plazaZ = (plaza.minZ + plaza.maxZ) / 2
-	for _, side in { -1, 1 } do
-		for _, reach in { 2, 5.5 } do
-			chevron(B, parent, side * (plaza.maxX - reach), plazaZ, side, 0, mark)
-		end
-	end
 end
 
 -- Gym dressing ------------------------------------------------------------------------------
