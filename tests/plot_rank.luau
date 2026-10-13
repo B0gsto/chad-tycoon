@@ -150,10 +150,8 @@ local function suite(h: { [string]: any })
 		end
 	end)
 
-	test("PlotRank: a rebirth empties the rack, not the rank", function()
-		-- A plot folder: its "BestTier" attribute (the owner's all-time best, set by the
-		-- server) and the units standing on the rack.
-		local function plot(index: any, tiers: { number }?): any
+	test("PlotRank: the best tier standing on the rack", function()
+		local function plot(tiers: { number }?): any
 			local units = {}
 			for _, tier in tiers or {} do
 				table.insert(units, {
@@ -163,9 +161,6 @@ local function suite(h: { [string]: any })
 				})
 			end
 			return {
-				GetAttribute = function(_, name)
-					return if name == "BestTier" then index else nil
-				end,
 				FindFirstChild = function(_, name)
 					if name == "Units" and tiers then
 						return {
@@ -178,14 +173,10 @@ local function suite(h: { [string]: any })
 				end,
 			}
 		end
-		eq(PlotRank.rankTier(plot(nil, nil)), 0, "a free plot")
-		eq(PlotRank.rankTier(plot(20, { 1 })), 20, "after a rebirth the Index tier still counts")
-		eq(PlotRank.bestTier(plot(20, { 1 })), 1, "the pedestal shows the unit that stands on it")
-		eq(PlotRank.rank(PlotRank.rankTier(plot(20, { 1 }))), 4, "so the dressing stays")
-		eq(PlotRank.rankTier(plot(nil, { 3, 7 })), 7, "without the attribute: the rack")
-		eq(PlotRank.rankTier(plot(5, { 3, 9 })), 9, "never less than the rack")
-		eq(PlotRank.rankTier(plot("x", { 2 })), 2, "a junk attribute is ignored")
-		eq(PlotRank.rankTier(plot(12.9, {})), 12, "whole tiers")
+		eq(PlotRank.bestTier(plot(nil)), 0, "a free plot")
+		eq(PlotRank.bestTier(plot({})), 0, "an empty rack")
+		eq(PlotRank.bestTier(plot({ 3, 7, 5 })), 7, "the best unit")
+		eq(PlotRank.rank(PlotRank.bestTier(plot({ 20, 1 }))), 4, "which is what the dressing goes by")
 	end)
 
 	test("PlotRank: fans on the own plot", function()

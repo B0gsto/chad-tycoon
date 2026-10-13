@@ -432,7 +432,6 @@ return function(h: { [string]: any })
 			income = 18,
 			profile = {
 				discovered = discovered,
-				runDiscovered = table.clone(discovered),
 				processLevel = Economy.START_PROCESS_LEVEL,
 				bought = 8,
 				tutorialDone = true,
@@ -623,18 +622,22 @@ return function(h: { [string]: any })
 		near(goal.progress, 0, "no progress from bad counts")
 	end)
 
-	test("NextGoal: full rack fallback", function()
+	test("NextGoal: every tier found", function()
 		local all = Economy.MAX_TIER
 		local units = table.create(all, 0)
 		units[all] = 37
-		local goal = NextGoal.pick(profile(all, units))
-		eq(goal.kind, "rack", "every tier found: stack the top tier")
+		-- A saved profile that has claimed no Index milestone: that reward comes first.
+		eq(NextGoal.pick(profile(all, units)).kind, "index", "every tier found: the Index rewards")
+		local done = profile(all, units) :: any
+		done.indexClaimed = { 5, 10, 15, 20, 25 }
+		local goal = NextGoal.pick(done)
+		eq(goal.kind, "done", "and nothing left once they are claimed")
 		eq(goal.tier, all, "top tier")
 		eq(goal.have, 37, "top-tier units owned")
-		eq(goal.need, Economy.UNIT_CAP, "the rack's size")
-		near(goal.progress, 37 / Economy.UNIT_CAP, "rack bar")
+		eq(goal.need, 0, "no rack to fill")
+		near(goal.progress, 1, "no bar to fill")
 		local title, _, count = NextGoal.text(goal, nameOf)
-		eq(title, "T" .. all, "rack title")
-		eq(count, "37/" .. Economy.UNIT_CAP, "rack count")
+		eq(title, "All " .. all .. " units found!", "done title")
+		eq(count, "37", "done count")
 	end)
 end

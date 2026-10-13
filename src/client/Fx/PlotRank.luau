@@ -1,10 +1,8 @@
 --[[
 	Fx.PlotRank: a plot shows how far its owner has got (client-side only, built from parts).
 
-	Plot rank: one step for every entry of CFG.RankTiers the owner's best tier has reached
-	(PlotRank.rankTier: the best tier ever found, the plot folder's "BestTier" attribute, so a
-	rebirth never strips it; never less than the best "Tier" among Plot.Units. Fx.Fans counts
-	its crowd from the same value). Each step adds one
+	Plot rank: one step for every entry of CFG.RankTiers the owner's best tier has reached (the
+	best "Tier" among Plot.Units, the value Fx.Fans counts its crowd from). Each step adds one
 	piece of dressing to the display rack, kept for every later step:
 	  1 (tier 5)   Pennants   a sagging line of pennants between two masts on the rack's roof
 	  2 (tier 10)  GoldTrim   a gold fascia with studs round the roof, gold collars on the
@@ -26,7 +24,6 @@
 	  PlotRank.rank(bestTier)                          0 .. #CFG.RankTiers
 	  PlotRank.features(bestTier)                      names of the dressing shown
 	  PlotRank.ownFans(bestTier, base, perTier, cap)   fans on the owner's own plot (Fx.Fans)
-	  PlotRank.rankTier(plot)                          the tier the rank goes by (all-time best)
 	  PlotRank.extraSpots(spots, need)                 standing spots between the server's
 	  PlotRank.bandIndex(tier) / bandColor(tier)       rarity band 1 .. 6 and its colour
 	  PlotRank.ringLook(tier)                          transparency and material of a rarity ring
@@ -365,14 +362,6 @@ function PlotRank.bestTier(plot: Instance): number
 		end
 	end
 	return best
-end
-
--- The tier a plot's rank goes by: the best tier its owner ever found (the folder's "BestTier"
--- attribute, set by the server; a rebirth empties the rack but never lowers it), and never
--- less than what stands on the rack.
-function PlotRank.rankTier(plot: Instance): number
-	local index = plot:GetAttribute("BestTier")
-	return math.max(PlotRank.bestTier(plot), if type(index) == "number" then math.floor(index) else 0)
 end
 
 -- Parts -------------------------------------------------------------------------------
@@ -1030,9 +1019,9 @@ local function syncPlot(rec: Rec, own: boolean, camPos: Vector3)
 	else
 		rec.near = false
 	end
-	-- The dressing is earned for good (the Index); the pedestal glows for the unit on it.
-	syncDressing(rec, PlotRank.rankTier(rec.folder))
-	syncChampion(rec, PlotRank.bestTier(rec.folder))
+	local best = PlotRank.bestTier(rec.folder)
+	syncDressing(rec, best)
+	syncChampion(rec, best)
 	syncRings(rec, rec.near and not own)
 end
 

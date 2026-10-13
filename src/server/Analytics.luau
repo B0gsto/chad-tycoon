@@ -25,33 +25,16 @@
 	Shop funnel (recurring "Shop"): 1 Opened, 2 Prompted, 3 Purchased. One funnel session
 	per shop visit; a prompt from outside the shop (pads, crate panel) starts a new one.
 
-	Rebirth: a rebirth starts the run again, but the funnel and "TierReached" read the best
-	tier EVER found (profile.discovered, the Index), which a rebirth never lowers, and
-	profile.onboarding only goes up. So a tier found again in a later run is no funnel step
-	and no "TierReached" a second time: both stay "first time ever", once per player.
-	"TierReached" says in its third field which run the tier was first found in. What each
-	run does is told by "RebirthReady" (the run reached the tier a rebirth is offered from)
-	and "Rebirth" (it was taken), both with the hours the run has lasted on the clock:
-	compare them by "Run 1", "Run 2", ... to see whether runs get shorter. This module reads
-	the Index only, never the run's own tier list (tests/run.luau pins that), so a run's
-	start is: the Index stamp of tier 1 for the first run, the rebirth itself for a run that
-	started in this session, and otherwise the `startedAt` Tycoon sends with both events.
-	Without it such a run is "Unknown", with 0 hours.
-
 	Custom events (value; custom fields 1, 2, 3). Shared.Telemetry has the labels:
-	  TierReached   tier; "Tier 12", player age, "Run 2"   a tier from 11 up, found for the first
-	                                                   time ever
-	  RebirthReady  hours into the run; "Run 2", run length bucket, player age
-	  Rebirth       hours the run took; "Run 2" (the run that ended), its best tier, run length
-	                bucket                             stars paid = that tier - 14
-	  SessionEnd    seconds played; length bucket, best tier ever, player age
-	  ReturnGap     hours since the last session; gap bucket, tier band (best tier ever)
+	  TierReached   tier; "Tier 12", player age        a best tier from 11 up, when discovered
+	  SessionEnd    seconds played; length bucket, best tier, player age
+	  ReturnGap     hours since the last session; gap bucket, tier band
 	  AwayCard      hours since the last session; gap bucket, what the card listed
 	                ("Cash+Crate+Daily", ..., "None"), tier band      once a session
 	  DailyClaim    streak; "Day 3", streak week, Cash / Crate / CrateAsCash
 	  StreakSaved   streak; streak week, "Day 3"       that claim used the streak saver
 	  StreakLost    the streak that ended; its streak week      that claim started again at 1
-	  IndexClaim    milestone (tiers found); "Index 10", "Run 2", player age
+	  IndexClaim    milestone (tiers found); "Index 10", player age
 	  Crate         1; Smasher / Pass / PaidSmasher / PaidHeld / Discard, rarity
 	  ModeStart     1; mode, map / stage / duel kind
 	  ModeFinish    1; mode, map / stage, why it paid: First / Full / RunAgain (the run again
@@ -60,8 +43,7 @@
 	  ModeSkip      1; mode, map
 	  ModeStop      1; mode, reason                    every end of a run, finishes included
 
-	Economy events (currency "Cash"; custom field 1 = tier band of the best tier ever, so
-	after a rebirth a run's small sums are in its player's high band), summed per player in a
+	Economy events (currency "Cash"; custom field 1 = tier band), summed per player in a
 	Telemetry.Ledger and sent once a minute and when the session ends, one event per source
 	or sink that moved, with the wallet at that moment as the ending balance:
 	  sources  Collect, Offline, Free, Daily, Index, ModeParkour / ModeMog / ModeCardio, Pack,
@@ -70,12 +52,10 @@
 
 	Where they come from: Tycoon's listener events "Discover", "Cash", "Buy" { amount,
 	cost? }, "Earn" { source, amount }, "Spend" { sink, amount }, "Crate" { path, rarity },
-	"Rebirth" { tier, rebirths, startedAt? }, "IndexClaim" { milestone } and "Notify" (each
-	Notify payload: the daily claim, the offline return, "RebirthReady" { startedAt? } and
-	every mode event), plus
-	GameModes.hooks.rewarded and the client action "AwayShown" { cash, crate, daily }. Other
-	modules can call Analytics.earn / spend / daily / crate / mode / offline / rebirth /
-	index / away directly instead.
+	"IndexClaim" { milestone } and "Notify" (each Notify payload: the daily claim, the
+	offline return and every mode event), plus GameModes.hooks.rewarded and the client
+	action "AwayShown" { cash, crate, daily }. Other modules can call Analytics.earn / spend /
+	daily / crate / mode / offline / index / away directly instead.
 
 	Every call goes through `send`, which keeps each player inside Telemetry's per-minute
 	caps. With the Workspace attribute "AnalyticsDebug" = true every call is printed too
@@ -157,8 +137,6 @@ type State = {
 	-- whether "AwayCard" has been sent.
 	away: number?,
 	awayLogged: boolean,
-	-- os.time() the current run started (0 = not known: a later run from another session).
-	runStart: number,
 	-- The daily streak at the last claim.
 	streak: number,
 	ended: boolean,
@@ -185,8 +163,6 @@ local function stateOf(session: Tycoon.Session): State?
 			-- Read now: a save during the session moves lastOnline.
 			away = if p.lastOnline > 0 then math.max(0, os.time() - p.lastOnline) / 3600 else nil,
 			awayLogged = false,
-			-- The first run started when the Index got its first tier.
-			runStart = if p.rebirths == 0 then p.discovered[1] or 0 else 0,
 			streak = p.daily.streak or 0,
 			ended = false,
 		}
@@ -232,26 +208,12 @@ local function event(session: Tycoon.Session, name: string, value: number?, labe
 	end
 end
 
--- The best tier ever found (the Index): a rebirth never lowers it.
 local function bestTier(session: Tycoon.Session): number
 	return Economy.highestTier(session.profile.discovered)
 end
 
 local function tenths(value: number): number
 	return math.floor(value * 10 + 0.5) / 10
-end
-
--- The run the player is in ("Run 1" until the first rebirth).
-local function run(session: Tycoon.Session): string
-	return Telemetry.runLabel(session.profile.rebirths)
-end
-
--- How long the current run has lasted: hours for an event's value (0 when its start is not
--- known) and the bucket ("Unknown" then). `startedAt` = os.time() it started, when Tycoon
--- says; what this session knows otherwise.
-local function runTime(state: State, startedAt: number?): (number, string)
-	local hours = Telemetry.runHours(startedAt, os.time()) or Telemetry.runHours(state.runStart, os.time())
-	return tenths(hours or 0), Telemetry.runBucket(hours)
 end
 
 -- How long the player has had the game, in days, as a label.
@@ -306,9 +268,7 @@ function Analytics.tiers(session: Tycoon.Session, old: boolean?)
 	Tycoon.markDirty(session)
 end
 
--- "TierReached" for each tier from TIER_EVENTS_FROM up that became the best tier ever just
--- now, with the run it was found in. `state.bestTier` only goes up, so a tier found again
--- after a rebirth is never reached twice.
+-- "TierReached" for each tier from TIER_EVENTS_FROM up that became the best tier just now.
 local function reached(session: Tycoon.Session)
 	local state = stateOf(session)
 	if not state then
@@ -316,7 +276,7 @@ local function reached(session: Tycoon.Session)
 	end
 	local highest = bestTier(session)
 	for tier = math.max(state.bestTier + 1, TIER_EVENTS_FROM), highest do
-		event(session, "TierReached", tier, { Telemetry.tierLabel(tier), age(session), run(session) })
+		event(session, "TierReached", tier, { Telemetry.tierLabel(tier), age(session) })
 	end
 	state.bestTier = math.max(state.bestTier, highest)
 end
@@ -401,34 +361,11 @@ function Analytics.daily(session: Tycoon.Session, day: number, streak: number, r
 	state.streak = streak
 end
 
--- The run reached the tier a rebirth is offered from (Tycoon's "RebirthReady", once a run).
-function Analytics.rebirthReady(session: Tycoon.Session, startedAt: number?)
-	local state = stateOf(session)
-	if state then
-		local hours, length = runTime(state, startedAt)
-		event(session, "RebirthReady", hours, { run(session), length, age(session) }, "Rare")
-	end
-end
-
--- A rebirth started the run again. `tier` was the best tier of the run that ended,
--- `rebirths` counts it (the profile's count by now) and `startedAt` is when it started.
-function Analytics.rebirth(session: Tycoon.Session, tier: number, rebirths: number?, startedAt: number?)
-	local state = stateOf(session)
-	if not state then
-		return
-	end
-	local hours, length = runTime(state, startedAt)
-	local ended = Telemetry.runLabel((rebirths or session.profile.rebirths) - 1)
-	event(session, "Rebirth", hours, { ended, Telemetry.tierLabel(tier), length }, "Rare")
-	-- The next run starts now.
-	state.runStart = os.time()
-end
-
 -- An Index milestone (`milestone` tiers found: 5, 10, ...) was claimed. Its cash is the
 -- "Index" source (Tycoon.grantMoney(session, cash, "Index")).
 function Analytics.index(session: Tycoon.Session, milestone: number)
 	if type(milestone) == "number" and milestone == milestone then
-		event(session, "IndexClaim", milestone, { Telemetry.indexLabel(milestone), run(session), age(session) }, "Rare")
+		event(session, "IndexClaim", milestone, { Telemetry.indexLabel(milestone), age(session) }, "Rare")
 	end
 end
 
@@ -561,8 +498,6 @@ local function onNotify(session: Tycoon.Session, payload: { [string]: any })
 		Analytics.daily(session, payload.day, payload.streak, reward, payload.saved == true)
 	elseif kind == "Offline" then
 		Analytics.offline(session, payload.cash)
-	elseif kind == "RebirthReady" then
-		Analytics.rebirthReady(session, payload.startedAt)
 	end
 end
 
@@ -586,8 +521,6 @@ local function onEvent(session: Tycoon.Session, name: string, data: { [string]: 
 		Analytics.spend(session, data.sink, data.amount)
 	elseif name == "Crate" then
 		Analytics.crate(session, data.path, data.rarity)
-	elseif name == "Rebirth" then
-		Analytics.rebirth(session, data.tier, data.rebirths, data.startedAt)
 	elseif name == "IndexClaim" then
 		Analytics.index(session, data.milestone)
 	elseif name == "Notify" then
