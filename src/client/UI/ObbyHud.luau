@@ -27,10 +27,12 @@
 	            this run (the start Notify, the snapshot's `assisted`, or a coil picked here).
 	  Oops      "Oops! Back to the start" in the middle of the screen for 1.5 s on every
 	            respawn Notify (a fall or lava).
-	  Gear      a 3-slot hotbar 8 px above the dumbbell (deps.tank): Speed, Jump and Gravity
-	            coils with key badges 1 / 2 / 3. Keys or a tap toggle; the chosen slot is
-	            outlined gold; tapping it again picks "none". Fires ParkourGear { gear } and
-	            follows State.data.modes.parkour.gear.
+	  Gear      a 3-slot hotbar centred at the bottom of the screen (the HUD's dumbbell is
+	            hidden during a run): 16 px up on desktop, the title-safe margin on a
+	            gamepad / TV, and on touch just above the jump button's row, like the HUD's
+	            FREE gift. Speed, Jump and Gravity coils with key badges 1 / 2 / 3. Keys or
+	            a tap toggle; the chosen slot is outlined gold; tapping it again picks
+	            "none". Fires ParkourGear { gear } and follows State.data.modes.parkour.gear.
 
 	Phones (viewport under 700 px wide): the bar takes 70% of the width and the row wraps to
 	two lines (timer + "MAP n / N", then the map name with best / falls and skip). Every
@@ -44,6 +46,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
@@ -69,7 +72,8 @@ export type Deps = {
 	sounds: any?,
 	-- Hud.dockRun: moves the run pill into the row (nil puts it back).
 	dockRun: ((UDim2?, Vector2?) -> ())?,
-	-- Hud's dumbbell group: the hotbar rides 8 px above it.
+	-- Hud's dumbbell group. No longer used: the dumbbell is hidden during a run, so the
+	-- hotbar takes the bottom centre itself.
 	tank: GuiObject?,
 }
 
@@ -100,8 +104,11 @@ local CONFIRM_SECONDS = 8
 local OOPS_SECONDS = 1.5
 local SLOT = 66
 local SLOT_GAP = 10
-local HOTBAR_GAP = 8
-local HOTBAR_BOTTOM = 129 -- fallback: Hud's dumbbell (264 * 448 / 1024 + 6) + 8
+-- The hotbar's bottom margin (design px): desktop, and the gamepad / TV title-safe edge
+-- (Hud's SAFE_BOTTOM). On touch it clears Roblox's jump button instead (placeHotbar).
+local HOTBAR_BOTTOM = 16
+local HOTBAR_BOTTOM_PAD = 24
+local HOTBAR_JUMP_GAP = 8 -- screen px between the jump button's top and the hotbar
 
 local RAINBOW_KEYS =
 	{ "RainbowRed", "RainbowOrange", "RainbowYellow", "RainbowGreen", "RainbowCyan", "RainbowBlue", "RainbowPurple", "RainbowPink" }
@@ -256,7 +263,6 @@ end
 
 function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 	local dockRun = deps and deps.dockRun
-	local tank = deps and deps.tank
 	local action = Net.event("Action")
 	local me = Players.LocalPlayer
 	local shown = false
@@ -906,19 +912,24 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		-- away from the stage counter.
 		return runPos, Vector2.new(1, 0)
 	end
+	-- Bottom centre. Touch: above the row of Roblox's jump button (70 px at 20 px from the
+	-- corner on small screens, 120 px 90 px up otherwise: the same rule as Hud's FREE gift),
+	-- so a thumb on the button never lands on a coil; the centre is clear of the thumbstick's
+	-- left third.
 	local function placeHotbar()
-		local y = -HOTBAR_BOTTOM
-		local x = 0
-		if tank then
-			local pos, size = tank.Position, tank.Size
-			-- The dumbbell is anchored bottom centre (Hud): its top is pos.Y - height.
-			y = pos.Y.Offset - size.Y.Offset * tank.AnchorPoint.Y - HOTBAR_GAP
-			x = pos.X.Offset
-			hotbar.Position = UDim2.new(pos.X.Scale, x, pos.Y.Scale, y)
-			return
+		local bottom = if Kit.gamepad or Kit.tenFoot then HOTBAR_BOTTOM_PAD else HOTBAR_BOTTOM
+		if Kit.touch then
+			local size = viewport()
+			pcall(function()
+				local camera = Workspace.CurrentCamera
+				if camera and camera.ViewportSize.X > 1 then
+					size = camera.ViewportSize
+				end
+			end)
+			local jumpTop = if math.min(size.X, size.Y) <= 500 then 90 else 210
+			bottom = math.ceil((jumpTop + HOTBAR_JUMP_GAP) / Kit.pixelScale(screen))
 		end
-		local compact = screen:GetAttribute("Compact") == true
-		hotbar.Position = UDim2.new(0.5, x, 1, if compact then -100 else y)
+		hotbar.Position = UDim2.new(0.5, 0, 1, -bottom)
 	end
 	local function relayout()
 		local runPos, runAnchor = rowLayout()
@@ -932,11 +943,8 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		screen:GetPropertyChangedSignal("AbsoluteSize"):Connect(relayout)
 	end)
 	screen:GetAttributeChangedSignal("Compact"):Connect(relayout)
-	if tank then
-		-- Follows the dumbbell as it resizes (compact) or slides away under a window.
-		tank:GetPropertyChangedSignal("Position"):Connect(placeHotbar)
-		tank:GetPropertyChangedSignal("Size"):Connect(placeHotbar)
-	end
+	-- Touch, keyboard or gamepad: the hotbar's margin follows the input in use.
+	Kit.onInput(placeHotbar)
 
 	-- API ----------------------------------------------------------------------------------
 	local function setCount(count: number?)

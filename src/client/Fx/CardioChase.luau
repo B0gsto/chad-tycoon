@@ -313,6 +313,18 @@ local function clear()
 	setDanger(0)
 end
 
+-- The run itself is over: the big words ("RUN!", "MOGGED!") go with the chase.
+local function stop()
+	clear()
+	if gui then
+		for _, child in gui:GetChildren() do
+			if child.Name == "Splash" then
+				child:Destroy()
+			end
+		end
+	end
+end
+
 local function warnMark(model: Model, height: number)
 	local head = model.PrimaryPart
 	if not head then
@@ -619,9 +631,13 @@ function ChaseFx.onNotify(p: any)
 	elseif event == "chaseEnd" then
 		onEnd(p)
 	elseif event == "stop" then
-		clear()
+		stop()
 	end
 end
+
+-- Fx.Cardio calls this on every way out of a run (its own "stop" and the snapshot's
+-- `running` going false), so the chaser, the meter and the red vignette never outlive it.
+ChaseFx.stop = stop
 
 function ChaseFx.init()
 	Net.event("Notify").OnClientEvent:Connect(function(payload)
@@ -629,7 +645,7 @@ function ChaseFx.init()
 			ChaseFx.onNotify(payload)
 		end
 	end)
-	player.CharacterRemoving:Connect(clear)
+	player.CharacterRemoving:Connect(stop)
 end
 
 return ChaseFx

@@ -59,6 +59,7 @@ local Kit = require(script.Parent.Kit) :: any
 local MogRing = require(script.Parent.MogRing) :: any
 local Popups = require(script.Parent.Popups) :: any
 local Sounds = require(Client.Sounds) :: any
+local State = require(Client.State) :: any
 
 local MogHud = {}
 
@@ -67,6 +68,21 @@ local F = Kit.F
 local W = Theme.World
 
 local RING = 180 -- ring diameter (px, design space)
+-- The run HUD's column (right edge, mid-height) and where the ring sits in it.
+local ROOT_W = 300
+local ROOT_H = 410
+local ROOT_RIGHT = 36
+local ROOT_DY = 6
+local RING_Y = 120
+local RING_TAP = 20 -- the tap target reaches this far past the ring
+-- The score pill: wide enough for a five-figure score beside "BEAT 12.5K" / "NEW BEST!".
+local SCORE_W = 268
+-- The banner (top centre) and the room it keeps to the ring where the two share a row.
+local BANNER_W = 560
+local BANNER_H = 90
+local BANNER_Y = 96
+local BANNER_GAP = 12
+local RESULT_RISE = 40 -- the result word rises this far above the ring
 local ACTION = "MogPress"
 local QUIT_ACTION = "MogQuit"
 local PRIORITY = 3000
@@ -117,6 +133,7 @@ local queueTime: TextLabel
 local queueSpinner: Frame
 
 local active = false
+local startedAt = 0
 local pvp = false -- this run is a 1v1 duel
 local check: Check? = nil
 local pressed = false -- this check's press is sent (input locked until the result)
@@ -589,10 +606,14 @@ local function unbind()
 	end
 end
 
+-- The one way out of a run: "finish" and "stop" (a quit, Home, a mode switch, a respawn)
+-- and the snapshot's modes.mog.running going false. Space / Enter go back to the game, the
+-- HUD gets its screen back (RunActive) and no ring, banner or queue panel stays up.
 local function hide()
 	active = false
 	unbind()
 	check = nil
+	quitArmed = false
 	hideQueue()
 	if screen then
 		screen:SetAttribute("RunActive", false)
@@ -600,12 +621,15 @@ local function hide()
 	if root.Visible then
 		Kit.disappear(root)
 	end
+	-- A banner on its way in or waiting to leave goes with the run.
+	bannerToken += 1
 	banner.Visible = false
 end
 
 local function onStart(p: any)
 	hideQueue()
 	active, passedShown, quitArmed = true, false, false
+	startedAt = os.clock()
 	pvp = p.vs == "pvp"
 	shownScore = num(p.score, 0)
 	scoreLabel.Text = Format.short(shownScore)
@@ -721,8 +745,8 @@ function MogHud.build(screenGui: ScreenGui)
 	root = Kit.new("Frame", {
 		Name = "MogHud",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(300, 410),
-		Position = UDim2.new(1, -36, 0.5, 6),
+		Size = UDim2.fromOffset(ROOT_W, ROOT_H),
+		Position = UDim2.new(1, -ROOT_RIGHT, 0.5, ROOT_DY),
 		AnchorPoint = Vector2.new(1, 0.5),
 		Visible = false,
 		ZIndex = 20,
@@ -732,7 +756,7 @@ function MogHud.build(screenGui: ScreenGui)
 	-- Score pill (glass, like the HUD's run pill) with the quiet quit button on its right end.
 	local scorePanel = Kit.hudGlass(root, {
 		Name = "Score",
-		Size = UDim2.fromOffset(240, 44),
+		Size = UDim2.fromOffset(SCORE_W, 44),
 		Position = UDim2.new(0.5, 0, 0, 0),
 		AnchorPoint = Vector2.new(0.5, 0),
 	})
@@ -903,7 +927,7 @@ function MogHud.build(screenGui: ScreenGui)
 		Name = "RingHolder",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(RING, RING),
-		Position = UDim2.new(0.5, 0, 0, 120),
+		Position = UDim2.new(0.5, 0, 0, RING_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = root,
 	})
@@ -916,7 +940,7 @@ function MogHud.build(screenGui: ScreenGui)
 		BackgroundTransparency = 1,
 		-- Gamepad presses with A (ContextActionService); the selection never lands here.
 		Selectable = false,
-		Size = UDim2.fromOffset(RING + 40, RING + 40),
+		Size = UDim2.fromOffset(RING + RING_TAP * 2, RING + RING_TAP * 2),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 12,
@@ -1099,8 +1123,8 @@ function MogHud.build(screenGui: ScreenGui)
 	banner = Kit.new("Frame", {
 		Name = "MogBanner",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(560, 90),
-		Position = UDim2.new(0.5, 0, 0, 96),
+		Size = UDim2.fromOffset(BANNER_W, BANNER_H),
+		Position = UDim2.new(0.5, 0, 0, BANNER_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Visible = false,
 		ZIndex = 30,
@@ -1122,6 +1146,41 @@ function MogHud.build(screenGui: ScreenGui)
 		Position = UDim2.fromOffset(0, 58),
 		ZIndex = 31,
 	})
+
+	-- Small screens: where the banner's row reaches down to the ring (its tap target and the
+	-- rising result word), the banner slides left just far enough to stay clear of it, so
+	-- "NEW BEST!" never lands on the ring. Roomy screens keep it centred.
+	local function placeBanner()
+		local shift = 0
+		local area = Kit.designArea(screenGui)
+		if area then
+			local ringLeft = area.X - ROOT_RIGHT - ROOT_W / 2 - RING / 2 - RING_TAP
+			local ringTop = area.Y / 2 + ROOT_DY - ROOT_H / 2 + RING_Y - RESULT_RISE
+			if BANNER_Y + BANNER_H > ringTop then
+				local room = ringLeft - BANNER_GAP - (area.X / 2 + BANNER_W / 2)
+				-- Never past the left edge: a screen too narrow for both keeps the banner whole.
+				shift = math.clamp(room, math.min(0, BANNER_W / 2 - area.X / 2), 0)
+			end
+		end
+		banner.Position = UDim2.new(0.5, shift, 0, BANNER_Y)
+	end
+	placeBanner()
+	pcall(function()
+		screenGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(placeBanner)
+		local uiScale = screenGui:FindFirstChildOfClass("UIScale")
+		if uiScale then
+			uiScale:GetPropertyChangedSignal("Scale"):Connect(placeBanner)
+		end
+	end)
+
+	-- The safety net: the server says no Mog run is on while the ring is still up here (a
+	-- lost "finish" / "stop"), so the keys and the HUD are never held by a run that is over.
+	State.changed.Event:Connect(function(data: any)
+		local info = type(data) == "table" and type(data.modes) == "table" and data.modes.mog
+		if active and type(info) == "table" and info.running == false and os.clock() - startedAt > 2 then
+			hide()
+		end
+	end)
 end
 
 return MogHud
