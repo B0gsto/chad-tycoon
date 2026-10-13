@@ -75,9 +75,10 @@ export type Profile = {
 	badges: { [string]: boolean },
 	-- Daily reward (Server.Daily, Shared.DailyReward): UTC day number of the last claim
 	-- (0 = never), days claimed in a row at that claim, UTC day number of the player's first
-	-- day (0 = not started yet, 1 = saves from before the daily reward) and whether the
-	-- first-day "come back tomorrow" toast was shown.
-	daily: { day: number, streak: number, firstDay: number, hinted: boolean },
+	-- day (0 = not started yet, 1 = saves from before the daily reward), whether the
+	-- first-day "come back tomorrow" toast was shown, and the streak value of the claim that
+	-- used the streak saver (0 = not used; saves from before it read 0).
+	daily: { day: number, streak: number, firstDay: number, hinted: boolean, saverUsedAt: number },
 	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
 	-- of the last full cash reward (Economy.modeReward cooldown).
 	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
@@ -164,7 +165,7 @@ function DataService.defaultProfile(): Profile
 		starterGranted = false,
 		onboarding = 0,
 		badges = {},
-		daily = { day = 0, streak = 0, firstDay = 0, hinted = false },
+		daily = { day = 0, streak = 0, firstDay = 0, hinted = false, saverUsedAt = 0 },
 		parkour = {
 			best = zeros(PARKOUR_LEVELS),
 			clears = zeros(PARKOUR_LEVELS),
@@ -238,7 +239,7 @@ local function reconcile(data: any): Profile
 	end
 	-- Saves from before the daily reward: day 1 is waiting, but today is not a "first day".
 	if data.daily == nil then
-		data.daily = { day = 0, streak = 0, firstDay = 1, hinted = true }
+		data.daily = { day = 0, streak = 0, firstDay = 1, hinted = true, saverUsedAt = 0 }
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
