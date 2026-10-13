@@ -160,7 +160,8 @@ sand island in the sea.
   cooldown (nothing with gear), after which that map's bonus rests for 2 minutes and every other map's
   for 1 minute (a run inside the rest finishes as usual and pays nothing; the card says "Bonus is
   resting, back in m:ss"). The run HUD shows your position in the map, best time and falls; Skip
-  Map asks first. Map 1 has a wider bounce pad and side rails. The finish card has four states: a first
+  Map asks first. Bounce pads launch every runner who touches them, walking or jumping. Map 1 has a wider bounce pad and
+  tall side rails, and its sweepers only shove. The picker shows when a run-again bonus is resting. The finish card has four states: a first
   clear (rays, confetti, "MAP n+1 UNLOCKED!"), all maps cleared ("SKY OBBY COMPLETE!", on the run that
   makes all ten maps cleared without gear), a repeat (the bonus and the cooldown as a clock bar) and an
   assisted run (grey, no best time). Signs and the best-times board say MAP n. The start arch's marquee
