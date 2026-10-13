@@ -19,8 +19,12 @@
 	workspace.Map.Plot<n>.Pad_<name>) or "Orbs" (the nearest orb in the pen,
 	else the middle of the field). Everything is client-only.
 
-	Two sources can ask for a target: the tutorial (persistent) and a short
-	"navigate" request (e.g. the Free reward button), which wins while active.
+	Three sources can ask for a target: the tutorial (persistent), a short
+	"navigate" request (e.g. the Free reward button), which wins while active, and a
+	standing "hint" (the HUD's goal strip: the upgrade pad while the blender is full,
+	MOG MERGE when the next tier is one step away). The hint comes last and is the
+	quietest: the chevron over the pad, a floor trail for its first HINT_TRAIL_SECONDS
+	(and whenever the player stands still), nothing at all from further than HINT_RANGE.
 ]]
 
 local Players = game:GetService("Players")
@@ -60,6 +64,10 @@ local CHEVRON_LIFT = 0.15
 -- A "navigate" trail shows only from this far, or after standing still this long.
 local TRAIL_DISTANCE = 12
 local IDLE_SECONDS = 4
+-- A standing hint: how long its trail shows after it is set, and the distance from which
+-- it shows nothing (the player is off the plot, in the plaza or on a course).
+local HINT_TRAIL_SECONDS = 20
+local HINT_RANGE = 110
 -- Route: how close a leg may pass the pen's footprint (a character's half width), and how
 -- far off its corners the route turns.
 local ROUTE_BODY = 1.2
@@ -104,6 +112,9 @@ local tutorialText = ""
 local navTarget: string? = nil
 local navText = ""
 local navUntil = 0
+local hintTarget: string? = nil
+local hintText = ""
+local hintSince = 0
 
 local currentPart: BasePart? = nil
 local currentName: string? = nil
@@ -383,13 +394,17 @@ local function resolve(name: string): BasePart?
 	return plot:FindFirstChild("Pad_" .. name, true) :: BasePart?
 end
 
--- The target, its tag text, and whether the tutorial (not a "navigate" request) asked for it.
-local function activeTarget(): (string?, string, boolean)
+-- The target, its tag text, and who asked for it: the tutorial (not a "navigate" request),
+-- or the standing hint.
+local function activeTarget(): (string?, string, boolean, boolean)
 	if navTarget and os.clock() < navUntil then
-		return navTarget, navText, false
+		return navTarget, navText, false, false
 	end
 	navTarget = nil
-	return tutorialTarget, tutorialText, true
+	if tutorialTarget then
+		return tutorialTarget, tutorialText, true, false
+	end
+	return hintTarget, hintText, false, hintTarget ~= nil
 end
 
 -- The palette colour that matches what the target does.
@@ -399,6 +414,12 @@ local function colorFor(name: string): Color3
 		return World.Pink
 	elseif string.sub(name, 1, 3) == "Buy" then
 		return pads.Buy
+	elseif string.sub(name, 1, 6) == "ProcUp" then
+		return pads.Process
+	elseif name == "Unlock1" then
+		return pads.Unlock
+	elseif name == "Unlock2" then
+		return pads.UnlockVip
 	end
 	return pads[name] or World.Sunny
 end
@@ -785,7 +806,7 @@ end
 ]]
 function Guide.update(clock: number, dt: number?)
 	local player = Players.LocalPlayer
-	local name, text, fromTutorial = activeTarget()
+	local name, text, fromTutorial, fromHint = activeTarget()
 	if not name or (player and player:GetAttribute("IntroPlaying") == true) then
 		hideAll(clock, dt)
 		return
@@ -803,6 +824,15 @@ function Guide.update(clock: number, dt: number?)
 	end
 	local color = colorFor(name)
 	local position = part.CFrame.Position
+	local root = rootPart()
+	-- A hint is for a player on the plot: from the plaza or a course it shows nothing.
+	if fromHint and root then
+		local rootPos = root.CFrame.Position
+		if Vector3.new(position.X - rootPos.X, 0, position.Z - rootPos.Z).Magnitude > HINT_RANGE then
+			hideAll(clock, dt)
+			return
+		end
+	end
 	local goal = position + Vector3.new(0, part.Size.Y * 0.5, 0)
 	local from = markerPos
 	if from and dt and markerAlpha > 0.05 then
@@ -822,7 +852,6 @@ function Guide.update(clock: number, dt: number?)
 	markerAlpha = approach(markerAlpha, 1, dt)
 	paintMarker()
 
-	local root = rootPart()
 	local wantTrail = false
 	local wantBeam = false
 	if root then
@@ -836,8 +865,10 @@ function Guide.update(clock: number, dt: number?)
 			idleFor = 0
 		end
 		local distance = Vector3.new(position.X - rootPos.X, 0, position.Z - rootPos.Z).Magnitude
-		-- The tutorial's path is always there; a "navigate" one only when it is needed.
-		wantTrail = fromTutorial or distance > TRAIL_DISTANCE or idleFor >= IDLE_SECONDS
+		-- The tutorial's path is always there; a "navigate" one only when it is needed; a
+		-- hint's only while it is new, or for a player who stands still.
+		local far = distance > TRAIL_DISTANCE and not (fromHint and os.clock() - hintSince > HINT_TRAIL_SECONDS)
+		wantTrail = fromTutorial or far or idleFor >= IDLE_SECONDS
 		wantBeam = fromTutorial and distance > BEAM_NEAR
 	end
 	trailAlpha = approach(trailAlpha, if wantTrail then 1 else 0, dt)
@@ -867,6 +898,18 @@ function Guide.clearNavigate(name: string)
 		navTarget = nil
 		currentPart = nil
 	end
+end
+
+-- The standing hint (nil clears it): shown while neither the tutorial nor a "navigate"
+-- request has a target. Setting the same target again changes nothing (its trail timer
+-- keeps running), so callers may repeat it on every refresh.
+function Guide.setHint(name: string?, text: string?)
+	if name ~= hintTarget then
+		hintTarget = name
+		hintSince = os.clock()
+		currentPart = nil
+	end
+	hintText = text or ""
 end
 
 return Guide
