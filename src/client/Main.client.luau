@@ -500,6 +500,7 @@ if fxFolder then
 			"Machines",
 			"Crates",
 			"Fans",
+			"PlotRank",
 			"Ambient",
 			"Plates",
 			"Cosmetics",
