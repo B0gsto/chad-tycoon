@@ -31,8 +31,9 @@
 -- Crates. They draw the Blender sprites (Fx.Sprites: Sparkle, Ring, Puff) when uploaded and
 -- fall back to the built-in sparkle texture and a flat neon disc otherwise. Orbs.coins can
 -- send its coins to the HUD's cash amount (bottom left), Orbs.coinArc flies coin sprites across
--- the screen to it, and Orbs.walletText pops a big outlined line just above it. Orbs.text never
--- gets smaller than FX.text.px pixels on screen; Orbs.shock and Orbs.sprite are the big pops.
+-- the screen to it, and Orbs.walletText pops a big outlined line beside it. Orbs.text never
+-- gets smaller than FX.text.px pixels on screen (with `hud` it stays under the top HUD, as
+-- Orbs.hudOffset keeps any pop); Orbs.shock and Orbs.sprite are the big pops.
 -- Every size, colour, duration and count of these helpers is in the FX table.
 
 local Players = game:GetService("Players")
@@ -100,15 +101,23 @@ local FX = {
 		flashes = 3, -- white blinks of a `flash` text
 		flashTime = 0.12, -- seconds per blink
 	},
+	-- Orbs.hudOffset / Orbs.text's `hud`: world pops stay under the top HUD's capsules.
+	hud = {
+		top = 130, -- design px from the top of the screen a pop's top edge stays under (the
+		-- capsules end at about 110 at 1280x720)
+	},
 	-- The HUD's cash amount and Orbs.walletText (what a pad just took).
 	wallet = {
 		fallback = Vector2.new(150, 110), -- px in from the left edge, up from the bottom
 		depth = 7, -- studs in front of the camera that homing coins fly to
 		textSize = 30, -- design px (the cash amount itself is 46)
-		textLift = 18, -- design px between the cash amount's top and the text's centre
-		textRise = 46, -- design px it climbs while it fades
+		-- The text starts beside the cash plate (right of the amount and its "+"), not over the
+		-- "CASH [x1.0]" line above the amount.
+		textGap = 14, -- design px between the cash plate's right edge and the text's left edge
+		textRise = 30, -- design px it climbs while it fades ...
+		textSlide = 22, -- ... and slides away to the right
 		textLife = 1.25, -- seconds
-		textDrift = 24, -- design px of random sideways start, so repeats do not stack
+		textDrift = 10, -- design px of random up / down start, so repeats do not stack
 		textStroke = 3, -- design px of dark outline
 		textPop = 1.4, -- overshoot of the pop-in
 		maxTexts = 3,
@@ -123,16 +132,16 @@ local FX = {
 	},
 	-- Orbs.coinArc (coin sprites on the screen, from a world point to the cash amount).
 	arc = {
-		count = 12,
+		count = 14,
 		max = 16, -- per call
 		live = 40, -- on screen at once
-		size = 36, -- design px across (28 to 40 reads as a coin at 1280x720)
-		endSize = 0.7, -- share of the size on arrival
-		time = 0.6, -- seconds of flight
-		stagger = 0.045, -- seconds between coins
-		lift = 150, -- design px the arc rises above the straight line
-		scatter = 46, -- design px of random start offset
-		burst = 0.16, -- seconds a coin takes to pop out before it flies
+		size = 34, -- design px across (28 to 40 reads as a coin at 1280x720)
+		endSize = 0.75, -- share of the size on arrival
+		time = 0.8, -- seconds of flight: an even pace, so most of it is in open screen space
+		stagger = 0.04, -- seconds between coins
+		lift = 230, -- design px the arc rises above the straight line (up into mid screen)
+		scatter = 56, -- design px of random start offset
+		burst = 0.12, -- seconds a coin takes to pop out before it flies
 		spin = 300, -- degrees turned on the way
 		pop = 64, -- design px across of the arrival ring at the cash amount
 		popTime = 0.28, -- seconds
@@ -449,7 +458,37 @@ export type TextOptions = {
 	clear: boolean?, -- step aside when it would sit on the local character on screen
 	plate: Color3?, -- a rounded badge of this colour behind the text
 	flash: boolean?, -- blink white a few times on the way in (with `plate`: the badge blinks)
+	hud: boolean?, -- moved down (along the camera's up) until it stays under the top HUD
 }
+
+-- The HUD's pixel scale (TycoonUI's UIScale; 1 at 1280x720).
+local function hudScale(): number
+	local playerGui = player:FindFirstChildOfClass("PlayerGui")
+	local screen = playerGui and playerGui:FindFirstChild("TycoonUI")
+	local uiScale = screen and screen:FindFirstChildOfClass("UIScale")
+	return if uiScale then uiScale.Scale else 1
+end
+
+-- The world offset (along the camera's down) that keeps a pop at `pos` under the top HUD: its
+-- top edge, `halfPx` pixels plus `halfStuds` studs over its centre, once it has risen `rise`
+-- studs, stays FX.hud.top design px or more from the top of the screen. Zero when it already
+-- does or is off screen.
+function Orbs.hudOffset(pos: Vector3, halfPx: number, halfStuds: number, rise: number?): Vector3
+	local camera = Workspace.CurrentCamera
+	if not camera then
+		return Vector3.zero
+	end
+	local at = camera:WorldToViewportPoint(pos + Vector3.new(0, rise or 0, 0))
+	if at.Z <= 0.5 then
+		return Vector3.zero
+	end
+	local pxPerStud = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+	local limit = FX.hud.top * hudScale() + halfPx + halfStuds * pxPerStud
+	if at.Y >= limit then
+		return Vector3.zero
+	end
+	return -camera.CFrame.UpVector * ((limit - at.Y) / pxPerStud)
+end
 
 -- `pos`, moved off the local character's box on screen: to the side it already leans to
 -- (the camera's right when dead centre) and a little toward the camera.
@@ -478,6 +517,16 @@ local function clearOfCharacter(pos: Vector3): Vector3
 	return pos + camera.CFrame.RightVector * (side * FX.text.clearSide) + nearer
 end
 
+-- Orbs.hudOffset for an Orbs.text line of `scale` at `pos` that rises `rise` studs: its
+-- popped-in height is the pixel floor plus the stud share, at the pop's overshoot. Add the same
+-- offset to the lines stacked under it so the stack keeps its order.
+function Orbs.textHudOffset(pos: Vector3, scale: number, rise: number): Vector3
+	local k = math.clamp(scale, 0.5, 3)
+	local pop = FX.text.popScale
+	local px = FX.text.px * math.min(k, FX.text.pxScaleMax)
+	return Orbs.hudOffset(pos, px * pop / 2, (1.4 * k + 0.4) * FX.text.studs * pop / 2, rise)
+end
+
 function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions?)
 	local o = opts or {}
 	local k = math.clamp(o.scale or 1, 0.5, 3)
@@ -485,6 +534,10 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	local rise = o.rise or (3 + k)
 	if o.clear then
 		pos = clearOfCharacter(pos)
+	end
+	local px = FX.text.px * math.min(k, FX.text.pxScaleMax)
+	if o.hud then
+		pos += Orbs.textHudOffset(pos, k, rise)
 	end
 	while #texts >= FX.text.max do
 		local old = table.remove(texts, 1)
@@ -504,7 +557,6 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 
 	-- Pixel floor plus a share of the old stud size: about the old size up close, never tiny
 	-- far away.
-	local px = FX.text.px * math.min(k, FX.text.pxScaleMax)
 	local pxWide = px * FX.text.letter * math.max(utf8.len(text) or #text, 4) + px
 	local gui = Instance.new("BillboardGui")
 	gui.AlwaysOnTop = true
@@ -670,13 +722,25 @@ function Orbs.walletText(text: string, color: Color3?)
 			old:Destroy()
 		end
 	end
-	local at, k = walletPixel(true)
-	local x = at.X + (math.random() * 2 - 1) * FX.wallet.textDrift * k
-	local y = at.Y - FX.wallet.textLift * k
+	local at, k = walletPixel()
+	local money = walletMoney()
+	local x = at.X
+	if money then
+		-- Right of the cash plate (it holds the amount and the "+"), at the amount's middle.
+		local right = money.AbsolutePosition.X + money.AbsoluteSize.X
+		local plate = money.Parent and money.Parent:FindFirstChild("CashPlate")
+		if plate and plate:IsA("GuiObject") then
+			right = math.max(right, plate.AbsolutePosition.X + plate.AbsoluteSize.X)
+		end
+		x = right - layer.AbsolutePosition.X
+	end
+	x += FX.wallet.textGap * k
+	local y = at.Y + (math.random() * 2 - 1) * FX.wallet.textDrift * k
 	local label = Instance.new("TextLabel")
 	label.Name = "WalletText"
 	label.BackgroundTransparency = 1
-	label.AnchorPoint = Vector2.new(0.5, 0.5)
+	label.AnchorPoint = Vector2.new(0, 0.5)
+	label.TextXAlignment = Enum.TextXAlignment.Left
 	label.Position = UDim2.fromOffset(x, y)
 	label.Size = UDim2.fromOffset(360 * k, FX.wallet.textSize * 1.4 * k)
 	label.Font = (Theme.Fonts :: any).Number or Theme.Fonts.Title
@@ -702,7 +766,7 @@ function Orbs.walletText(text: string, color: Color3?)
 	TweenService:Create(
 		label,
 		TweenInfo.new(life, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{ Position = UDim2.fromOffset(x, y - FX.wallet.textRise * k) }
+		{ Position = UDim2.fromOffset(x + FX.wallet.textSlide * k, y - FX.wallet.textRise * k) }
 	):Play()
 	local fadeAt = life * 0.55
 	task.delay(fadeAt, function()
@@ -989,10 +1053,10 @@ local function stepArc()
 			at = c.from:Lerp(c.burst, u)
 			size *= math.max(0.2, u)
 		else
-			-- Eased-in arc to the cash amount: slow off the mark, fast into the wallet.
+			-- Eased arc to the cash amount at an even pace: the coins spend their flight in open
+			-- screen space, not bunched at the source and then a blur into the wallet.
 			local t = (age - FX.arc.burst) / FX.arc.time
 			local e = t * t * (3 - 2 * t)
-			e = e * e
 			local mid = c.burst:Lerp(target, 0.5) - Vector2.new(0, FX.arc.lift * k)
 			local u = 1 - e
 			at = c.burst * (u * u) + mid * (2 * u * e) + target * (e * e)

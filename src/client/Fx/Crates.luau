@@ -35,6 +35,7 @@
 	  every rarity a glow disc on the plinth, a light and the floating rarity word.
 	- Opening ritual (SMASH.ritual): when a slot's crate opens, the crate shakes harder
 	  and harder for `shake` seconds under a rain of sparks while the camera leans in,
+	  (the booth's pastel wash lifts and the crate is drawn as a rarity silhouette over it),
 	  then bursts: a rarity-coloured flash, shock rings, a short light beam, the lid and
 	  shards flying off, a camera punch. A crate opened on the spot (no Smasher slot
 	  changed: a daily reward, a Crate Master's held crate) gets a stand-in crate on the
@@ -185,6 +186,17 @@ local SMASH = {
 		gemSpin = 1.6, -- radians per second
 		gemBob = 0.14, -- studs
 		beam = 0.75, -- beam height / the pen crate's (the booth's sign is overhead)
+		-- The Smasher's beam is brighter than the pen's: the transparency at the ground of its
+		-- wide layer and its core (the pen's are 0.7 and 0.35), full light emission, wider.
+		beamBase = { 0.35, 0.05 },
+		beamEmission = 1,
+		beamWide = 1.4, -- width / the pen crate's
+		-- Uncommon and Rare get a beam on the Smasher too (the pen's starts at Epic), so every
+		-- rarity above Common reads from the pad: height and width in studs, sparkles a second.
+		lowBeams = {
+			[1] = { beam = 16, beamWidth = 2.2, motes = 2 },
+			[2] = { beam = 22, beamWidth = 2.6, motes = 3 },
+		} :: { [number]: { beam: number, beamWidth: number, motes: number } },
 		foot = 0.95, -- studs from the plinth point down to the plinth's top
 		disc = 2.5, -- glow disc radius in studs (+ discPerRank per rank)
 		discPerRank = 0.3,
@@ -208,8 +220,17 @@ local SMASH = {
 		zoom = 5, -- degrees of FOV the camera leans in by (only near the crate)
 		near = 60, -- studs from the character within which the camera reacts
 		lightFrom = 0.6, -- the build-up light's brightness at the start ...
-		lightTo = 4, -- ... and at the burst
-		lightRange = 14,
+		lightTo = 1.8, -- ... and at the burst (brighter washes the booth out to a pale ghost)
+		lightRange = 10,
+		-- While it shakes, the booth's pastel wash (World.Props' "PastelOverlay" Highlight)
+		-- lifts so the machine shows its own solid colours, and the crate's wash turns into a
+		-- bright rarity-coloured silhouette drawn over the booth.
+		boothWash = 1, -- the booth's overlay fill transparency during the shake (1 = none)
+		boothFade = 0.15, -- seconds to lift it, and to put it back after the burst ...
+		boothBack = 0.6, -- ... that long after the burst
+		boothReach = 12, -- studs from the plinth to the booth mesh
+		crateFill = 0.25, -- the crate's own wash during the shake (drawn on top) ...
+		crateRim = 0, -- ... and its outline
 		-- Burst.
 		flash = 7, -- studs across at the end of the flash (+ flashPerRank per rank)
 		flashPerRank = 1.5,
@@ -233,7 +254,7 @@ local SMASH = {
 		beamHold = 0.3,
 		beamOut = 0.5,
 		beamCore = 0.35, -- the white core's width / the beam's
-		lid = Vector3.new(2.7, 0.42, 3.2),
+		lid = Vector3.new(3.05, 0.47, 3.6),
 		lidTime = 1.25, -- seconds in the air
 		lidSpeed = 25, -- studs per second up
 		lidGravity = 40, -- studs per second squared down
@@ -253,7 +274,7 @@ local SMASH = {
 		-- A crate opened on the spot.
 		reach = 45, -- studs from the character to an empty plinth that takes the stand-in crate
 		ahead = 6, -- else: studs in front of the character
-		crate = Vector3.new(2.04, 1.8, 2.52), -- the stand-in crate (Fx.Machines' crate size)
+		crate = Vector3.new(2.3, 2.03, 2.84), -- the stand-in crate (Fx.Machines' crate size)
 		crateColor = (WORLD.Sunny or GOLD) :: Color3, -- its body, and every other shard
 		strap = 0.34, -- studs across its two rarity straps
 	},
@@ -1098,10 +1119,31 @@ type Ritual = {
 	base: CFrame,
 	holder: Part?, -- carries the build-up light
 	light: PointLight?,
+	booth: Highlight?, -- the Smasher booth's pastel wash, lifted while it shakes ...
+	boothFill: number, -- ... and its fill transparency to put back
 }
 
 local smashers: { [number]: Smasher } = {}
 local smasherPlot: Instance? = nil
+
+-- The pastel wash ("PastelOverlay", World.Props.overlay) of the booth mesh nearest to `plinth`.
+local function boothWash(plinth: Vector3): Highlight?
+	local plot = smasherPlot
+	if not plot then
+		return nil
+	end
+	local best: Highlight?, bestDist = nil, SMASH.ritual.boothReach
+	for _, d in plot:GetDescendants() do
+		local mesh = d.Parent
+		if d:IsA("Highlight") and d.Name == "PastelOverlay" and mesh and mesh:IsA("BasePart") then
+			local flat = Vector3.new(mesh.Position.X - plinth.X, 0, mesh.Position.Z - plinth.Z).Magnitude
+			if flat < bestDist then
+				best, bestDist = d, flat
+			end
+		end
+	end
+	return best
+end
 local lids: { Lid } = {}
 local rituals: { Ritual } = {}
 -- The burst the cards wait for: its os.clock() time and rarity, when the "ChestOpen" effect
@@ -1448,7 +1490,41 @@ local function startRitual(s: Smasher?, rarity: string, color: Color3, pos: Vect
 		claimed = adopted,
 		near = playerNear(pos, R.near),
 		base = CFrame.new(pos) * CFrame.Angles(0, math.rad(20), 0),
+		boothFill = 1,
 	}
+	if s then
+		-- The machine keeps its solid colours while it shakes (no pale wash on a lit booth) ...
+		local wash = boothWash(s.plinth)
+		if wash then
+			-- Its own fill, kept on it: a second open before the first put it back reads 1.
+			local fill = wash:GetAttribute("RitualBaseFill")
+			if type(fill) ~= "number" then
+				fill = wash.FillTransparency
+				wash:SetAttribute("RitualBaseFill", fill)
+			end
+			ritual.booth, ritual.boothFill = wash, fill :: number
+			TweenService:Create(wash, TweenInfo.new(R.boothFade), { FillTransparency = math.max(wash.FillTransparency, R.boothWash) })
+				:Play()
+		end
+		-- ... and its crate is a bright rarity-coloured silhouette drawn over everything.
+		local model = s.body and s.body.Parent
+		if model then
+			local h: Highlight? = nil
+			for _, child in model:GetChildren() do
+				if child.Name == DECOR and child:IsA("Highlight") then
+					h = child
+				end
+			end
+			h = h or washOver(model, s.body :: BasePart, color, R.crateFill, R.crateRim)
+			if h then
+				h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+				h.FillColor = color
+				h.OutlineColor = color:Lerp(WHITE, RIM_WHITEN)
+				h.FillTransparency = R.crateFill
+				h.OutlineTransparency = R.crateRim
+			end
+		end
+	end
 	if standIn then
 		local size = R.crate
 		local sizes = {
@@ -1506,6 +1582,15 @@ local function stepRituals(now: number)
 			end
 			if s then
 				paintRing(s, -1)
+			end
+			local wash = r.booth
+			if wash then
+				local fill = r.boothFill
+				task.delay(R.boothBack, function()
+					if wash.Parent then
+						TweenService:Create(wash, TweenInfo.new(R.boothFade), { FillTransparency = fill }):Play()
+					end
+				end)
 			end
 			if r.near then
 				local held = false
@@ -1730,12 +1815,27 @@ local function dressSmasherCrate(s: Smasher): boolean
 				d.Scale = 1
 			end
 		end
-		if look.beam > 0 then
+		local low = L.lowBeams[rank]
+		if look.beam > 0 or low then
 			local shown = table.clone(look)
-			shown.beam = look.beam * L.beam
+			if look.beam <= 0 and low then
+				shown.beam, shown.beamWidth, shown.motes = low.beam, low.beamWidth, low.motes
+			end
+			shown.beam *= L.beam
+			shown.beamWidth *= L.beamWide
 			shown.light = 0
 			local aura = makeAura(shown, color)
 			if aura then
+				-- Brighter than the pen's beam: denser layers at full light emission.
+				for i, beam in aura.beams do
+					local base = L.beamBase[i] or BEAM_LAYERS[i].base
+					beam.LightEmission = L.beamEmission
+					beam.Transparency = NumberSequence.new({
+						NumberSequenceKeypoint.new(0, base),
+						NumberSequenceKeypoint.new(0.55, base + (1 - base) * 0.4),
+						NumberSequenceKeypoint.new(1, 1),
+					})
+				end
 				lightAura(aura, floor)
 				s.aura = aura
 			end
