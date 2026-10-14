@@ -879,6 +879,49 @@ local function portal(base: CFrame, centreY: number, colors: { Color3 }, parent:
 	end
 end
 
+-- Three chunky chevrons on the plaza floor in front of an open gate (frame: front -Z), in the
+-- gate's colour, pointing into its opening so a kid can follow them in.
+local function floorArrows(add: (props: { [string]: any }) -> BasePart, tint: Color3)
+	local arm = 2.4
+	for i, z in { -4.5, -8.5, -12.5 } do
+		for _, sx in { -1, 1 } do
+			-- One arm from the tip (0, z) back to (sx * arm, z - arm); yaw pi/4 lays a part's
+			-- +X along (1, -1), 3pi/4 along (-1, -1).
+			decor(add({
+				Name = "FloorArrow",
+				Size = Vector3.new(arm * math.sqrt(2) + 0.9, 0.1, 0.9),
+				CFrame = CFrame.new(sx * arm / 2, 0.07, z - arm / 2) * CFrame.Angles(0, if sx > 0 then math.pi / 4 else 3 * math.pi / 4, 0),
+				Color = tint:Lerp(W.White, 0.15 * (i - 1)),
+				CastShadow = false,
+			}))
+		end
+	end
+end
+
+-- A round wooden planter with a puffy green bush and a few bright flowers.
+local function planter(x: number, top: number, z: number, parent: Instance)
+	local add = adder(CFrame.new(x, top, z), parent)
+	add({ Name = "Planter", Shape = CYLINDER, Size = Vector3.new(2.2, 4.2, 4.2), CFrame = CFrame.new(0, 1.1, 0) * UPRIGHT, Color = W.Wood })
+	decor(add({
+		Name = "PlanterRim",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.5, 4.6, 4.6),
+		CFrame = CFrame.new(0, 2.2, 0) * UPRIGHT,
+		Color = W.White,
+	}))
+	decor(add({ Name = "PlanterBush", Shape = BALL, Size = cube(4), CFrame = CFrame.new(0, 3.4, 0), Color = W.Grass }))
+	for k, c in { W.Coral, W.Sunny, W.Pink } do
+		local a = k * 2 * math.pi / 3
+		decor(add({
+			Name = "PlanterFlower",
+			Shape = BALL,
+			Size = cube(1),
+			CFrame = CFrame.new(math.cos(a) * 1.5, 4.7, math.sin(a) * 1.5),
+			Color = c,
+		}))
+	end
+end
+
 -- One GAME MODES plaza: its deck, spur, gate row and big sign, and `mirror` (1: the plaza on
 -- the hub's -X side, fronts facing +X; -1: the mirrored plaza on +X, fronts facing -X).
 -- `portal` is the plaza's number (attribute Portal on its ParkourStart trigger).
@@ -917,10 +960,8 @@ local function gate(entry: Catalog.Entry, parent: Instance, spec: PlazaSpec)
 	local tint = color(entry.color)
 	local body = if not open then LOCKED elseif entry.id == "parkour" then W.Sunny else tint:Lerp(W.White, 0.2)
 	local trim = if open then W.White else W.Chrome
-	-- Gate 1 is the biggest; other open gates are a little smaller so the signs of
-	-- neighbouring open gates never touch.
-	local main = entry.slot == 1
-	local height = if not open then 13 elseif main then 16 else 15
+	-- Every open gate has the same size and style (Course.GATE_GAP keeps neighbours apart).
+	local height = if open then 16 else 13
 	local thick = if open then 3.6 else 3
 	local half = (if open then Course.GATE_HALF else LOCKED_HALF) + thick / 2
 	for _, sx in { -1, 1 } do
@@ -956,10 +997,13 @@ local function gate(entry: Catalog.Entry, parent: Instance, spec: PlazaSpec)
 		CFrame = CFrame.new(0, height - beamH / 2, 0),
 		Color = body,
 	})
-	-- The name card sits on the beam, framed by a trim-coloured backing.
-	local sw, sh = if not open then 12 elseif main then 20 else 15, if not open then 6.5 elseif main then 8.5 else 7.5
+	-- The name card sits on the beam, framed by a trim-coloured backing. The backing is
+	-- thinner than the card and centred on it, so the card's printed faces stand proud of it
+	-- on both sides (it used to sit behind the card and swallow the back face, so a gate seen
+	-- from behind showed a blank white board).
+	local sw, sh = if open then 18 else 12, if open then 8 else 6.5
 	local sy = height + 0.3 + sh / 2
-	decor(add({ Name = "GateSignBack", Size = Vector3.new(sw + 1.4, sh + 1.4, 0.8), CFrame = CFrame.new(0, sy, 0.5), Color = trim }))
+	decor(add({ Name = "GateSignBack", Size = Vector3.new(sw + 1.4, sh + 1.4, 0.5), CFrame = CFrame.new(0, sy, 0), Color = trim }))
 	local card = decor(add({
 		Name = "GateSign",
 		Size = Vector3.new(sw, sh, 0.8),
@@ -971,6 +1015,7 @@ local function gate(entry: Catalog.Entry, parent: Instance, spec: PlazaSpec)
 		cardFace(card, Enum.NormalId.Back, 30, W.Cream, tint, "GOOD LUCK!", entry.title)
 		add({ Name = "StartLine", Size = Vector3.new(Course.GATE_HALF * 2, 0.12, 1.6), CFrame = CFrame.new(0, 0.06, 0), Color = W.Sunny })
 		gateArrow(add, 8.6, tint)
+		floorArrows(add, tint)
 		portal(base, 6.2, PORTAL_COLORS[entry.id] or { tint, W.White }, folder)
 		local start = trigger(
 			entry.id == "parkour" and "ParkourStart" or "ModeStart",
@@ -1301,6 +1346,17 @@ local function buildPlaza(parent: Instance, spec: PlazaSpec)
 	-- Flag posts on the plaza corners.
 	for i, corner in { { p.x1 - 2, p.z0 + 2 }, { p.x1 - 2, p.z1 - 2 }, { p.x0 + 2, p.z0 + 2 }, { p.x0 + 2, p.z1 - 2 } } do
 		flagPole(corner[1], p.top, corner[2], 10, FLAG_COLORS[i], nil, if corner[2] < 0 then 0 else math.pi, parent)
+	end
+	-- Planters flanking the spur mouth, and between the side gates and the back row.
+	local mouthX = if spec.mirror > 0 then p.x1 - 3 else p.x0 + 3
+	local backX = spec.gateX + spec.mirror * 8
+	for _, side in { -1, 1 } do
+		planter(mouthX, p.top, side * (s.half + 6), parent)
+		planter(backX, p.top, side * (p.z1 - 3), parent)
+	end
+	-- The mirrored plaza has no best-times board: a planter stands in its spot.
+	if spec.portal ~= 1 then
+		planter(-Course.BOARD.x, p.top, Course.BOARD.z, parent)
 	end
 end
 

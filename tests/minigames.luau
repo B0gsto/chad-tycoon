@@ -66,8 +66,9 @@ return function(h: { [string]: any })
 	end)
 
 	test("Mini-games: gates stand apart, on the plaza, clear of the board", function()
-		-- Footprint of a gate: its opening plus pillars along the gate line, 4 deep.
-		local HALF_W, HALF_D = Course.GATE_HALF + 3.6, 2
+		-- Footprint of a gate: its opening plus pillars and feet along the gate line (the
+		-- 18-wide name card on top is narrower), 4.8 deep.
+		local HALF_W, HALF_D = Course.GATE_HALF + 4.2, 2.4
 		local boxes = {}
 		for slot = 1, 6 do
 			local x, z, fx, _fz = Course.gateSpot(slot, 1)
@@ -77,16 +78,18 @@ return function(h: { [string]: any })
 			check(x >= p.x0 and x <= p.x1 and z >= p.z0 and z <= p.z1, "gate " .. slot .. " on the plaza's edge")
 			check(not Course.isClear(x, z), "gate " .. slot .. " inside CLEAR")
 		end
-		-- (Gates 1-3 are the original row, 19 apart: their pillars just touch.)
+		-- Every pair of the six gates keeps at least 2 studs of air between footprints.
 		for a = 1, 6 do
-			for b = math.max(a + 1, 4), 6 do
+			for b = a + 1, 6 do
 				local A, B = boxes[a], boxes[b]
-				local apart = A.x1 <= B.x0 or B.x1 <= A.x0 or A.z1 <= B.z0 or B.z1 <= A.z0
+				local apart = A.x1 + 2 <= B.x0 or B.x1 + 2 <= A.x0 or A.z1 + 2 <= B.z0 or B.z1 + 2 <= A.z0
 				check(apart, string.format("gates %d and %d do not overlap", a, b))
 			end
 		end
+		-- The plaza stays clear of the plot rows (|z| >= PLOT_ROW_Z - PLOT_HALF = 54).
+		check(Course.PLAZA.z0 > -50 and Course.PLAZA.z1 < 50, "plaza clear of the plot rows")
 		local b = Course.BOARD
-		for slot = 4, 6 do
+		for slot = 1, 6 do
 			local B = boxes[slot]
 			check(not (b.x > B.x0 - 9 and b.x < B.x1 + 9 and b.z > B.z0 - 3 and b.z < B.z1 + 3), "board clear of gate " .. slot)
 		end
