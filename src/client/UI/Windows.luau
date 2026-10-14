@@ -3853,7 +3853,9 @@ local RANK = {
 	-- medal rows that are a spot to take, never a made-up player.
 	OpenTint = 0.82, -- transparency of the medal tint on the glass
 	OpenEdge = 0.35, -- transparency of the medal outline
-	OpenCoin = 0.55, -- transparency of the medal coin
+	-- Transparency of the medal coin. r5: at 0.55 the dark ink "2" and "3" stood on a coin
+	-- half see-through over the navy glass (ink on ink); near solid, they read like #1's.
+	OpenCoin = 0.12,
 	OpenBreathe = 1.4, -- seconds per half breath of the outline (0.35 <-> 0.75)
 	OpenName = "Your spot!", -- the player is not on the board yet
 	OpenOther = "Open spot: bring a friend!", -- the player already holds a higher step
@@ -3867,8 +3869,12 @@ local RANK = {
 	ValueText = 20,
 	ExtraText = 18, -- the clears column
 	RankText = 17,
-	HeadText = 16, -- the column heads (RANK, PLAYER, COLLECTED ...)
-	HeadPx = 15, -- ... held at this size on the glass
+	-- The column heads (RANK, PLAYER, COLLECTED ...), and the size they are held at on the
+	-- glass. r5, measured in Studio: TextSize 16 was honoured (no TextScaled, every UIScale
+	-- 1.00, TextBounds 15 px high), but the capitals of a TextSize are about 0.72 of it: 12 px.
+	-- 22 draws them about 16 px tall.
+	HeadText = 22,
+	HeadPx = 21,
 	YouPill = Vector2.new(56, 26),
 	MineEdge = 3, -- gold outline of the player's own row
 	PinAfter = 5, -- the own row is also pinned under the list once it sits below this place

@@ -455,7 +455,7 @@ end)
 
 -- Floating "+X" anchors: beside the HUD dumbbell (bottom centre) and above the
 -- cash amount (bottom left).
-local TANK = UDim2.new(0.5, 170, 1, -90)
+local TANK = UDim2.new(0.5, 170, 1, -100)
 local WALLET = UDim2.new(0, 150, 1, -110)
 
 -- Sounds for effects owned by the UI. Fx modules (Client.Fx.*) listen to the

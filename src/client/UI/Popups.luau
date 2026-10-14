@@ -991,9 +991,11 @@ Popups.FLOAT = {
 	-- line started 60 px above it while the aura float rose 80 px through it (the "ghost").
 	-- Now both pop from 0.85, rise straight up the same way, and the bonus line starts under
 	-- the aura float, so the one above always stays ahead.
-	aura = { size = 40, stroke = 3.5, width = 420, life = 1.4, pop = 0.85, drift = false }, -- TextSize design px
-	bonus = { size = 34, stroke = 3, width = 460, life = 1.5, pop = 0.85, drift = false }, -- the deposit's "+$X bonus" line
-	bonusRise = 56, -- design px: the bonus line starts this far under the aura float ...
+	-- r5: TextSize is the line's em box, not the glyphs: at 40 (UIScale 0.999, TextBounds 39 px
+	-- high at full size) the digits and capitals stood about 28 px tall. 56 puts them near 40.
+	aura = { size = 56, stroke = 4, width = 460, life = 1.4, pop = 0.85, drift = false }, -- TextSize design px
+	bonus = { size = 42, stroke = 3.5, width = 520, life = 1.5, pop = 0.85, drift = false }, -- the deposit's "+$X bonus" line
+	bonusRise = 62, -- design px: the bonus line starts this far under the aura float ...
 	bonusDelay = 0.18, -- ... and this many seconds after it
 }
 
@@ -2985,7 +2987,9 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		end
 		arrive(Kit.hudText(stage, {
 			Name = "Tier",
-			Text = string.format("TIER %d  •  %s", tier, string.upper(band)),
+			-- A crate rarer than the unit's band (crates never pay past best + 1, so a Legendary
+			-- crate can hold a Common unit): no band word under "LEGENDARY CRATE PRIZE!".
+			Text = if crated then string.format("TIER %d", tier) else string.format("TIER %d  •  %s", tier, string.upper(band)),
 			TextSize = tierSize,
 			TextColor3 = Kit.lighten(unitColor, 0.3),
 			StrokeColor = Theme.Glass.TextInk,

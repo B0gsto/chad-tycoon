@@ -429,7 +429,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	local detail = Kit.text(words, {
 		Name = "Detail",
 		Text = "",
-		TextSize = 15,
+		TextSize = 18, -- r5: 15 read small beside the cards
 		MinPx = true,
 		TextColor3 = C.Text,
 		TextWrapped = false,

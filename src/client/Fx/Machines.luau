@@ -154,6 +154,13 @@ local TUNE = {
 		sparks = 14,
 		sparkSize = 1.3, -- studs
 		stars = 3,
+		-- The orbs pour out of the HUD's Aura counter (TycoonUI.Dumbbell): they start on the
+		-- camera ray through its middle, this share of the way to the blender (at most
+		-- counterDepth studs from the eye), so the tank visibly empties into the blender (r4:
+		-- they left the player and curved up to the right, away from the counter).
+		counterShare = 0.35,
+		counterDepth = 12,
+		counterSize = 0.5,
 	},
 	collect = {
 		coins = 10, -- fountain coins (a few more for big amounts, at most 16)
@@ -1122,6 +1129,21 @@ local function upgradeJar(from: Vector3, level: number?, gained: number?)
 	end
 end
 
+-- A world point in front of the HUD's Aura counter on the way to `to` (nil while it is hidden).
+local function auraCounterPoint(to: Vector3): Vector3?
+	local camera = Workspace.CurrentCamera
+	local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	local screen = playerGui and playerGui:FindFirstChild("TycoonUI")
+	local counter = screen and screen:FindFirstChild("Dumbbell")
+	if not (camera and counter and counter:IsA("GuiObject") and counter.Visible and (screen :: ScreenGui).Enabled) then
+		return nil
+	end
+	local mid = counter.AbsolutePosition + counter.AbsoluteSize / 2
+	local ray = camera:ScreenPointToRay(mid.X, mid.Y)
+	local depth = math.min(TUNE.deposit.counterDepth, (to - ray.Origin).Magnitude * TUNE.deposit.counterShare)
+	return ray.Origin + ray.Direction * depth
+end
+
 local function onDeposit(data: any)
 	local to: Vector3? = if typeof(data.to) == "Vector3"
 		then data.to
@@ -1136,7 +1158,10 @@ local function onDeposit(data: any)
 		squashPad(pad, GRAPE)
 	end
 	jar.holdUntil = os.clock() + TUNE.jar.hold
-	local from: Vector3 = if typeof(data.from) == "Vector3" then data.from else to + Vector3.new(0, 6, 6)
+	local counter = auraCounterPoint(to)
+	local from: Vector3 = counter or (if typeof(data.from) == "Vector3" then data.from else to + Vector3.new(0, 6, 6))
+	-- Near the eye an orb looks bigger: from the counter they start at counterSize of the size.
+	local orbSize = if counter then TUNE.deposit.orb * TUNE.deposit.counterSize else TUNE.deposit.orb
 	local amount = tonumber(data.amount) or 0
 	local count = Budget.count(math.clamp(8 + math.floor(math.log10(math.max(1, amount)) * 2), 8, 16))
 	local first = true
@@ -1146,7 +1171,7 @@ local function onDeposit(data: any)
 			from = from + jitter,
 			to = to,
 			color = if i % 4 == 0 then C.OrbBig else C.Orb,
-			size = TUNE.deposit.orb,
+			size = orbSize,
 			endSize = TUNE.deposit.orb / 2,
 			duration = TUNE.deposit.flight,
 			delay = (i - 1) * (TUNE.deposit.stream / count),

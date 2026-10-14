@@ -158,6 +158,11 @@ local FX = {
 		pop = 64, -- design px across of the arrival ring at the cash amount
 		popTime = 0.28, -- seconds
 		popEvery = 3, -- an arrival ring for every Nth coin (and the last)
+		-- ... and the cash amount itself swells to this scale and back over pulseTime (r5:
+		-- measured in Studio the coins already ended on the label, 77-81 x 652-658 inside its
+		-- 13..105 x 633..682 box, but nothing on the label answered them).
+		pulse = 1.14,
+		pulseTime = 0.15,
 		gold = Color3.fromRGB(255, 205, 60), -- the shape coin without the sprite
 		goldRim = Color3.fromRGB(196, 132, 20),
 	},
@@ -1078,6 +1083,28 @@ local function walletPop(layer: Frame, at: Vector2, k: number)
 	end)
 end
 
+-- The cash amount swells and settles (a UIScale of its own, so the HUD's layout is untouched).
+local function pulseMoney()
+	local label = walletMoney()
+	if not label then
+		return
+	end
+	local scale = label:FindFirstChild("ArrivePulse") :: UIScale?
+	if not scale then
+		local made = Instance.new("UIScale")
+		made.Name = "ArrivePulse"
+		made.Parent = label
+		scale = made
+	end
+	local s = scale :: UIScale
+	local half = FX.arc.pulseTime / 2
+	s.Scale = 1
+	TweenService:Create(s, TweenInfo.new(half, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = FX.arc.pulse }):Play()
+	task.delay(half, function()
+		TweenService:Create(s, TweenInfo.new(half, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = 1 }):Play()
+	end)
+end
+
 local function stepArc()
 	local now = os.clock()
 	local layer = walletFrame()
@@ -1093,6 +1120,7 @@ local function stepArc()
 			table.remove(arcCoins, i)
 			if layer and (c.index % FX.arc.popEvery == 0 or c.index == c.total) then
 				walletPop(layer, target, k)
+				pulseMoney()
 			end
 			if c.onArrive then
 				task.spawn(c.onArrive, c.index, c.total)

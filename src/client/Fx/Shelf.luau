@@ -70,6 +70,7 @@ local Animator = require(Client.Animator)
 local Sounds = require(Client.Sounds)
 local State = require(Client.State)
 local Budget = require(script.Parent.Budget)
+local Sprites = require(script.Parent.Sprites)
 local Camera = require(script.Parent.Camera)
 local Orbs = require(script.Parent.Orbs)
 local PlotRank = require(script.Parent.PlotRank)
@@ -77,6 +78,8 @@ local PlotRank = require(script.Parent.PlotRank)
 local Shelf = {}
 
 local SPARKLE = "rbxasset://textures/particles/sparkles_main.dds"
+-- The merge's sparks: the Blender sparkle sprite, the built-in one without it.
+local SPARK_SPRITE = Sprites.image("Sparkle") or SPARKLE
 local SMOKE = "rbxasset://textures/particles/smoke_main.dds"
 local WHITE = Color3.new(1, 1, 1)
 
@@ -137,7 +140,7 @@ local MERGE = {
 			ringTime = 0.5,
 			rings = 1,
 			sparks = 12,
-			sparkSize = 1.2,
+			sparkSize = 3.6,
 			flash = 3.5,
 			pop = 0.22,
 			chip = Vector2.new(8, 2.3),
@@ -152,7 +155,7 @@ local MERGE = {
 			ringTime = 0.9,
 			rings = 2,
 			sparks = 40,
-			sparkSize = 3.2,
+			sparkSize = 9,
 			flash = 7,
 			pop = 0.42,
 			chip = Vector2.new(13, 3.6),
@@ -165,7 +168,7 @@ local MERGE = {
 			ringTime = 0.9,
 			rings = 3,
 			sparks = 60,
-			sparkSize = 3.2,
+			sparkSize = 10,
 			flash = 8,
 			pop = 0.6,
 			chip = Vector2.new(17, 6.2),
@@ -174,11 +177,21 @@ local MERGE = {
 			pulse = 0.88,
 		},
 	},
-	RingStroke = { 12, 3 }, -- the ring's line in pixels: at first, as it fades
+	-- The ring's line in pixels: at first, as it fades (r4: 12 -> 3 read as a thin outline),
+	-- and its soft gold fill's transparency as it starts (it fades out with the line).
+	RingStroke = { 20, 8 },
+	RingFill = 0.82,
+	-- The rings are drawn in the world (not on top), this many studs towards the camera from
+	-- the unit, so the "+TIER n" chip (always on top) is never under a ring: measured in Studio
+	-- (r5), both on top, the 22-stud ring crossed the chip although it stood 1 stud further.
+	RingForward = 3,
 	RingGap = 0.13,
 	RingGrow = 1.25,
 	SparkSpeed = NumberRange.new(12, 26),
 	SparkLife = NumberRange.new(0.6, 1.1),
+	-- Sparks: the Blender sparkle sprite (the built-in sparkles_main is a faint thin cross:
+	-- measured 53-62 px across at 3.2 studs and still unseen in r4), lit, 3x the r4 size.
+	SparkEmission = 0.7,
 	-- The neon ball and the white screen pulse are kept light: at 0.1 and 0.6 (a 40% white
 	-- sheet held 2 frames) they lifted the whole frame's mean by 10 levels and hid the sparks.
 	FlashTime = 0.3,
@@ -193,6 +206,8 @@ local MERGE = {
 	-- A chip that would cover one still on screen (a double merge: measured in Studio, the
 	-- "+TIER 2" and "+TIER 4" chips of a 3+3 / 1+1 merge overlapped by 175 x 31 px) stacks
 	-- above it with this gap, and pops this much later per chip under it.
+	-- Under the top HUD (no room above) it stacks below the other chip instead (r5: it stepped
+	-- 354 px aside, away from its own unit).
 	ChipStackPx = 10,
 	ChipStagger = 0.2,
 	AutoChipGap = 0.6, -- seconds between the chips of auto merges
@@ -271,6 +286,7 @@ local function burst(
 		spread: number?,
 		gravity: number?,
 		drag: number?,
+		emission: number?,
 	}?
 )
 	local o = opts or {}
@@ -278,7 +294,7 @@ local function burst(
 	local emitter = Instance.new("ParticleEmitter")
 	emitter.Texture = o.texture or SPARKLE
 	emitter.Color = ColorSequence.new(WHITE, color)
-	emitter.LightEmission = if o.texture == SMOKE then 0 else SPARKLE_EMISSION
+	emitter.LightEmission = o.emission or (if o.texture == SMOKE then 0 else SPARKLE_EMISSION)
 	local size = o.size or 0.8
 	emitter.Size = NumberSequence.new({
 		NumberSequenceKeypoint.new(0, size),
@@ -1015,17 +1031,31 @@ local liveChips: { { pos: Vector3, born: number, life: number, half: Vector2 } }
 
 -- A gold ring that always faces the camera, growing from `from` to `to` studs as it fades.
 local function goldRing(pos: Vector3, from: number, to: number, time: number, delay: number)
+	-- Pulled towards the camera (and shrunk to keep its screen size), drawn in the world.
+	local camera = Workspace.CurrentCamera
+	if camera then
+		local eye = camera.CFrame.Position
+		local away = (pos - eye).Magnitude
+		if away > MERGE.RingForward * 2 then
+			local k = (away - MERGE.RingForward) / away
+			pos = eye + (pos - eye) * k
+			from *= k
+			to *= k
+		end
+	end
 	local holder = fxPart(Enum.PartType.Block, Vector3.one * 0.2, CFrame.new(pos), WHITE, 1)
 	holder.Name = "MergeRing"
 	local gui = Instance.new("BillboardGui")
-	gui.AlwaysOnTop = true
+	gui.AlwaysOnTop = false
 	gui.LightInfluence = 0
 	gui.MaxDistance = 400
 	gui.Size = UDim2.fromScale(from, from)
 	gui.Enabled = delay <= 0
 	gui.Parent = holder
 	local circle = Instance.new("Frame")
-	circle.BackgroundTransparency = 1
+	circle.BackgroundColor3 = MERGE.Gold
+	circle.BackgroundTransparency = MERGE.RingFill
+	circle.BorderSizePixel = 0
 	circle.Size = UDim2.fromScale(1, 1)
 	circle.Parent = gui
 	local corner = Instance.new("UICorner")
@@ -1038,6 +1068,7 @@ local function goldRing(pos: Vector3, from: number, to: number, time: number, de
 	task.delay(delay, function()
 		gui.Enabled = true
 		tween(gui, time, { Size = UDim2.fromScale(to, to) })
+		tween(circle, time, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		tween(stroke, time, { Transparency = 1, Thickness = MERGE.RingStroke[2] }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	end)
 	cleanup(holder, delay + time + 0.05)
@@ -1247,7 +1278,7 @@ local function clearOfChips(pos: Vector3, half: Vector2): (Vector3, number)
 		if not mine then
 			break
 		end
-		local push, side = 0, 0
+		local push, below = 0, 0
 		for _, c in liveChips do
 			local rise = MERGE.ChipRise * math.clamp((now - c.born) / c.life, 0, 1)
 			local other, ko = chipBox(camera, c.pos + Vector3.new(0, rise, 0))
@@ -1256,9 +1287,9 @@ local function clearOfChips(pos: Vector3, half: Vector2): (Vector3, number)
 				local high = math.abs(mine.Y - other.Y) < half.Y * k + c.half.Y * ko
 				if wide and high then
 					-- Up until this chip's bottom edge clears the other's top edge (or, under the
-					-- top HUD, aside until its left edge clears the other's right edge).
+					-- top HUD, down until its top edge clears the other's bottom edge).
 					push = math.max(push, (mine.Y + half.Y * k) - (other.Y - c.half.Y * ko) + MERGE.ChipStackPx)
-					side = math.max(side, (other.X + c.half.X * ko) - (mine.X - half.X * k) + MERGE.ChipStackPx)
+					below = math.max(below, (other.Y + c.half.Y * ko) - (mine.Y - half.Y * k) + MERGE.ChipStackPx)
 				end
 			end
 		end
@@ -1267,7 +1298,7 @@ local function clearOfChips(pos: Vector3, half: Vector2): (Vector3, number)
 		end
 		local up = camera.CFrame.UpVector * (push / k)
 		if Orbs.hudOffset(pos + up, 0, half.Y, MERGE.ChipRise).Magnitude > 0.01 then
-			pos += camera.CFrame.RightVector * (side / k)
+			pos -= camera.CFrame.UpVector * (below / k)
 		else
 			pos += up
 		end
@@ -1293,10 +1324,12 @@ local function resultFx(feet: Vector3, tier: number, kind: string): Vector3
 	cleanup(flash, MERGE.FlashTime + 0.05)
 	burst(chest, MERGE.Gold, Budget.count(k.sparks), {
 		speed = MERGE.SparkSpeed,
+		texture = SPARK_SPRITE,
 		size = k.sparkSize,
 		life = MERGE.SparkLife,
 		gravity = 18,
 		drag = 2,
+		emission = MERGE.SparkEmission,
 	})
 	local unit = unitAt(feet)
 	if unit then
