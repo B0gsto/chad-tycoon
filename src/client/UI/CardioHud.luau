@@ -16,7 +16,10 @@
 	                `recommended`, 15% above the need): a dark tick marks the need, and from
 	                there the text reads "Stage 3 · 1.12K · recommended 1.27K", then
 	                "... · ready!".
-	  Stage line    top centre in the run-pill slot (y 92): a persistent "STAGE 4 · NAME";
+	  Stage line    bottom centre in the text lane right above the Speed box (the banners
+	                take the same lane while they show; the line also steps out while a world
+	                sign's text, a door board or a WIN pad amount, is projected into the
+	                lane): a persistent "STAGE 4 · NAME";
 	                in a safe zone what its WIN pad does right now: gold "WIN plate: +$12.4K
 	                · it ends this run" (and, for a first clear, "Skip it and this first win
 	                stays for later": true in Modes.Cardio, first clears are kept per plate),
@@ -26,7 +29,7 @@
 	                pay the run again bonus (snapshot `repeats`, `repeatFrom`,
 	                `repeatReadyAt`): "WIN plate: run again bonus +$2.4K", and where it is
 	                not paid the line says from which plate or in how many seconds it is.
-	  Title         a big bubbly "STAGE n" (plus the stage's name) under it whenever you
+	  Title         a big bubbly "STAGE n" (plus the stage's name) in the lane whenever you
 	                enter a stage; also "STAGE 3 CLEAR!" (reaching a safe zone: nothing is
 	                paid until you step on its WIN plate), "YOU WIN!" (cashed out; "NEW
 	                BEST!" with "Plate n" when the claim is deeper than the best plate,
@@ -36,7 +39,8 @@
 	  WIN plates    the floating "Amount" line over every WIN pad (tag "CardioWinPad",
 	                World.CardioTrack) is written here: "+$12.4K", "NO REWARD", or
 	                "+$2.4K in 0:12" while the run again bonus waits for its gap.
-	  Right column  centre right: Custom Speed (title, "Your Max Speed: N", a number box
+	  Right column  bottom right on the box's level (centre right on touch): Custom Speed
+	                (title, "Your Max Speed: N", a number box
 	                + green OK that fires CardioSpeedCap { cap } with 0 / empty = no cap,
 	                "Current speed: N"; a small "Custom Speed" chip by default on every
 	                screen: tapping it expands the box, OK and the run's end fold it),
@@ -57,6 +61,7 @@ local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
 local Theme = require(ReplicatedStorage:WaitForChild("Theme")) :: any
 local Economy = require(ReplicatedStorage.Shared.Economy)
@@ -83,15 +88,24 @@ local WHITE = Color3.new(1, 1, 1)
 local HINT_DIM = CORAL
 local HINT_BRIGHT = Color3.new(1, 0.86, 0.8)
 
-local STRIP_Y = 92 -- Hud's run-pill slot (Tutorial steps aside while "RunActive")
-local TITLE_Y = 128
--- Banner vs the stage sign: the big title stacks under the sign's "STAGE n" line, and the
--- sign's lower lines (WIN plate, note, need hint) step out while a banner shows, so the two
--- never print over each other. NoteText is the sign's smallest line.
+-- The text lane: the stage line and the big banners share one fixed lane just above the
+-- Speed box (bottom centre), below the runner's feet at the run camera, where the world's
+-- signs (the door's "NEED n SPEED", a WIN pad's floating "+$12.4K") never sit. A banner
+-- takes the lane while it shows (the stage line steps out, so the two never print over each
+-- other); the stage line also steps out while a world sign's text is projected into the lane.
+-- NoteText is the stage line's smallest line. Px in design space.
 local SIGN = {
-	BannerY = TITLE_Y + 22, -- banner top: under the 28 px stage label (STRIP_Y + 28)
+	Gap = 10, -- px between the lane's bottom and the top of the Speed box (or its lines above it)
+	LineW = 520, -- stage line width
+	LineH = 74, -- stage line height: win / note lines above the 28 px stage label
+	BannerW = 640,
+	BannerH = 110,
 	NoteText = 17,
 	BackFade = 0.5, -- seconds after a banner before the lines come back (a queued title replaces it first)
+	WorldEvery = 0.15, -- seconds between checks for world sign text over the lane
+	WorldRadius = 160, -- studs: signs and WIN pads farther than this are not checked
+	WorldPad = 12, -- px grown around the lane for the check
+	WorldHold = 0.6, -- seconds the stage line stays out after the last overlap
 }
 local BOX_W = 400
 local SPEED_TEXT = 78 -- the big bottom-centre number (1.4x the old 56)
@@ -277,6 +291,131 @@ local function iconName(): string
 	return Kit.pickIcon("Cardio", "Surge")
 end
 
+-- The text lane -------------------------------------------------------------------------------
+
+-- The stage line shows unless a banner holds the lane or a world sign's text is over it.
+local bannerUp = false
+local worldOver = false
+local worldAt = 0
+local worldSeenAt = -math.huge
+local worldSigns: { BasePart } = {}
+local worldSignsAt = -math.huge
+
+local function paintLane()
+	local on = not bannerUp and not worldOver
+	stageLabel.Visible = on
+	signBody.Visible = on
+end
+
+-- Top (px) of the stage line's row n counted up from the stage label (row 0, at the bottom).
+local function laneRow(n: number): number
+	return if n <= 0 then SIGN.LineH - 28 else SIGN.LineH - 28 - 2 - 22 * n
+end
+
+-- The lane's screen rect (px, GUI space), grown by SIGN.WorldPad; a showing banner adds its own.
+local function laneRect(): (Vector2, Vector2)
+	local lo, hi = stageLabel.AbsolutePosition, stageLabel.AbsolutePosition + stageLabel.AbsoluteSize
+	for _, line in { winLabel, winNote, hintLabel } do
+		if line.Visible then
+			lo = lo:Min(line.AbsolutePosition)
+			hi = hi:Max(line.AbsolutePosition + line.AbsoluteSize)
+		end
+	end
+	if banner.Visible then
+		local bAt = banner.AbsolutePosition
+		local bEnd = bAt + banner.AbsoluteSize
+		lo = lo:Min(bAt)
+		hi = hi:Max(bEnd)
+	end
+	return lo - Vector2.one * SIGN.WorldPad, hi + Vector2.one * SIGN.WorldPad
+end
+
+-- A world point in the same px space as the GUI's AbsolutePosition (and whether it is in
+-- front of the camera).
+local function toGui(camera: Camera, at: Vector3): (Vector2, boolean)
+	local p = if screen and screen.IgnoreGuiInset then camera:WorldToViewportPoint(at) else camera:WorldToScreenPoint(at)
+	return Vector2.new(p.X, p.Y), p.Z > 0
+end
+
+-- True when the projected box (centre, half size in px) meets the rect.
+local function meets(centre: Vector2, half: Vector2, lo: Vector2, hi: Vector2): boolean
+	return centre.X + half.X >= lo.X and centre.X - half.X <= hi.X and centre.Y + half.Y >= lo.Y and centre.Y - half.Y <= hi.Y
+end
+
+-- World sign text over the lane: the stage boards on the track (the door's "NEED n SPEED"
+-- and its countdown) and the floating amounts over the WIN pads.
+local function checkWorldSigns(now: number)
+	local camera = Workspace.CurrentCamera
+	if not camera or not stageLine.Visible or now - worldAt < SIGN.WorldEvery then
+		return
+	end
+	worldAt = now
+	if now - worldSignsAt > 5 then
+		worldSignsAt = now
+		table.clear(worldSigns)
+		local track = Workspace:FindFirstChild("CardioTrack")
+		if track then
+			for _, d in track:GetDescendants() do
+				if d:IsA("BasePart") and d.Name == "StageSign" then
+					table.insert(worldSigns, d)
+				end
+			end
+		end
+	end
+	local lo, hi = laneRect()
+	local eye = camera.CFrame.Position
+	local over = false
+	for _, board in worldSigns do
+		if board.Parent and (board.Position - eye).Magnitude < SIGN.WorldRadius then
+			-- The board's eight corners, projected.
+			local cf, h = board.CFrame, board.Size / 2
+			local minP, maxP = Vector2.new(math.huge, math.huge), Vector2.new(-math.huge, -math.huge)
+			local front = false
+			for i = 0, 7 do
+				local corner = Vector3.new(
+					if i % 2 == 0 then h.X else -h.X,
+					if (i // 2) % 2 == 0 then h.Y else -h.Y,
+					if i // 4 == 0 then h.Z else -h.Z
+				)
+				local p, ahead = toGui(camera, cf:PointToWorldSpace(corner))
+				if ahead then
+					front = true
+					minP = minP:Min(p)
+					maxP = maxP:Max(p)
+				end
+			end
+			if front and meets((minP + maxP) / 2, (maxP - minP) / 2, lo, hi) then
+				over = true
+				break
+			end
+		end
+	end
+	if not over then
+		for _, pad in CollectionService:GetTagged(WIN_TAG) do
+			local gui = pad:FindFirstChild("WinLabel")
+			if gui and gui:IsA("BillboardGui") and gui.Enabled and pad:IsA("BasePart") then
+				-- StudsOffset is in camera space, StudsOffsetWorldSpace in world space.
+				local at = pad.Position + gui.StudsOffsetWorldSpace + camera.CFrame:VectorToWorldSpace(gui.StudsOffset)
+				if (at - eye).Magnitude < SIGN.WorldRadius then
+					local p, ahead = toGui(camera, at)
+					if ahead and meets(p, gui.AbsoluteSize / 2, lo, hi) then
+						over = true
+						break
+					end
+				end
+			end
+		end
+	end
+	if over then
+		worldSeenAt = now
+	end
+	local want = now - worldSeenAt < SIGN.WorldHold
+	if want ~= worldOver then
+		worldOver = want
+		paintLane()
+	end
+end
+
 -- Banner / big stage title --------------------------------------------------------------------
 
 local function showBanner(title: string, sub: string?, color: Color3, hold: number, delay: number?)
@@ -290,14 +429,16 @@ local function showBanner(title: string, sub: string?, color: Color3, hold: numb
 		bannerTitle.TextColor3 = color
 		bannerSub.Text = sub or ""
 		bannerSub.Visible = sub ~= nil
-		signBody.Visible = false
+		bannerUp = true
+		paintLane()
 		Kit.appear(banner, { from = 0.35, time = 0.4 })
 		task.delay(hold, function()
 			if bannerToken == mine then
 				Kit.disappear(banner)
 				task.delay(SIGN.BackFade, function()
 					if bannerToken == mine then
-						signBody.Visible = true
+						bannerUp = false
+						paintLane()
 					end
 				end)
 			end
@@ -448,8 +589,12 @@ local function paintWin()
 			Kit.appear(winLabel, { from = 0.7 })
 		end
 	end
-	-- The need hint steps down while the win lines are up.
-	hintLabel.Position = UDim2.fromOffset(0, if not show then 30 elseif note then 72 else 52)
+	-- The lines stack up from the stage label (the lane's bottom): the note right above it,
+	-- the win line above the note, and the need hint steps up over both while they are up.
+	local hasNote = show and note ~= nil
+	winLabel.Position = UDim2.fromOffset(0, laneRow(if hasNote then 2 else 1))
+	winNote.Position = UDim2.fromOffset(0, laneRow(1))
+	hintLabel.Position = UDim2.fromOffset(0, laneRow(if not show then 1 elseif hasNote then 3 else 2))
 end
 
 -- The floating amount over every WIN pad: what it pays this player right now.
@@ -768,6 +913,7 @@ local function render(dt: number)
 		proximityAt = now
 		checkProximity()
 	end
+	checkWorldSigns(now)
 	-- The pads' cooldown countdowns tick on their own (and the stage line's, in a safe zone).
 	if now - padsAt >= PADS_EVERY then
 		padsAt = now
@@ -864,7 +1010,8 @@ end
 -- full-screen root goes once its blocks have eased out.
 local function hide()
 	bannerToken += 1
-	signBody.Visible = true
+	bannerUp, worldOver, worldSeenAt = false, false, -math.huge
+	paintLane()
 	if banner.Visible then
 		Kit.disappear(banner)
 	end
@@ -1652,9 +1799,9 @@ local function buildStageLine()
 	stageLine = Kit.new("Frame", {
 		Name = "CardioStage",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(460, 50),
-		Position = UDim2.new(0.5, 0, 0, STRIP_Y),
-		AnchorPoint = Vector2.new(0.5, 0),
+		Size = UDim2.fromOffset(SIGN.LineW, SIGN.LineH),
+		Position = UDim2.new(0.5, 0, 1, -200), -- in the text lane (relayout)
+		AnchorPoint = Vector2.new(0.5, 1),
 		Visible = false,
 		ZIndex = 20,
 		Parent = root,
@@ -1664,6 +1811,7 @@ local function buildStageLine()
 		Text = "",
 		TextSize = 24,
 		Size = UDim2.new(1, 0, 0, 28),
+		Position = UDim2.fromOffset(0, laneRow(0)),
 		ZIndex = 22,
 		StrokeThickness = 3,
 	})
@@ -1680,7 +1828,7 @@ local function buildStageLine()
 		TextSize = 18,
 		TextColor3 = GOLD,
 		Size = UDim2.new(1, 0, 0, 22),
-		Position = UDim2.fromOffset(0, 29),
+		Position = UDim2.fromOffset(0, laneRow(1)),
 		Visible = false,
 		ZIndex = 22,
 		StrokeThickness = 3,
@@ -1691,7 +1839,7 @@ local function buildStageLine()
 		Text = "",
 		TextSize = SIGN.NoteText,
 		Size = UDim2.new(1, 0, 0, 20),
-		Position = UDim2.fromOffset(0, 51),
+		Position = UDim2.fromOffset(0, laneRow(1)),
 		Visible = false,
 		ZIndex = 22,
 	})
@@ -1701,7 +1849,7 @@ local function buildStageLine()
 		TextSize = 16,
 		TextColor3 = Kit.lighten(CORAL, 0.15),
 		Size = UDim2.new(1, 0, 0, 20),
-		Position = UDim2.fromOffset(0, 30),
+		Position = UDim2.fromOffset(0, laneRow(1)),
 		Visible = false,
 		ZIndex = 22,
 	})
@@ -1711,9 +1859,9 @@ local function buildBanner(screenGui: ScreenGui)
 	banner = Kit.new("Frame", {
 		Name = "CardioBanner",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(640, 110),
-		Position = UDim2.new(0.5, 0, 0, SIGN.BannerY),
-		AnchorPoint = Vector2.new(0.5, 0),
+		Size = UDim2.fromOffset(SIGN.BannerW, SIGN.BannerH),
+		Position = UDim2.new(0.5, 0, 1, -200), -- in the text lane (relayout)
+		AnchorPoint = Vector2.new(0.5, 1),
 		Visible = false,
 		ZIndex = 30,
 		Parent = screenGui,
@@ -1837,7 +1985,7 @@ function CardioHud.build(screenGui: ScreenGui)
 		ZIndex = 20,
 		Parent = root,
 	})
-	Kit.list(column, 10, false, Enum.HorizontalAlignment.Right)
+	local columnList = Kit.list(column, 10, false, Enum.HorizontalAlignment.Right)
 	buildBox()
 	buildCustom()
 	buildTreadmillCard()
@@ -1862,9 +2010,14 @@ function CardioHud.build(screenGui: ScreenGui)
 			end
 		end
 		boxScale.Scale = scale
-		box.Position = UDim2.new(0.5, 0, 1, if Kit.touch then -10 else -16)
+		local boxBottom = if Kit.touch then 10 else 16
+		box.Position = UDim2.new(0.5, 0, 1, -boxBottom)
 		local wide = not Kit.touch and view.X / 2 >= (BOX_W / 2 + 12 + SIDE_W) * scale + 12
 		sideWide = wide
+		-- The text lane sits on the box (and on its lines, when they ride above the number).
+		local lane = boxBottom + (BOX_H + (if wide then 0 else PLATE.LineH + 4)) * scale + SIGN.Gap
+		stageLine.Position = UDim2.new(0.5, 0, 1, -lane)
+		banner.Position = UDim2.new(0.5, 0, 1, -lane)
 		side.Size = UDim2.fromOffset(0, 0)
 		if wide then
 			side.Position = UDim2.new(1, 12, 0, 2)
@@ -1880,7 +2033,18 @@ function CardioHud.build(screenGui: ScreenGui)
 		end
 		sideLayout.Padding = UDim.new(0, if wide then 2 else 14)
 		columnScale.Scale = if compact then 0.74 else 1
-		column.Position = if Kit.touch then UDim2.new(1, -16, 0.5, -40) else UDim2.new(1, -24, 0.5, 0)
+		-- Desktop: the column stands on the box's level at the right edge (Custom Speed and QUIT
+		-- at its foot), below the horizon where the track's goal star and door signs show.
+		-- Touch keeps it centre right, clear of the jump button.
+		if Kit.touch then
+			column.AnchorPoint = Vector2.new(1, 0.5)
+			column.Position = UDim2.new(1, -16, 0.5, -40)
+			columnList.VerticalAlignment = Enum.VerticalAlignment.Top
+		else
+			column.AnchorPoint = Vector2.new(1, 1)
+			column.Position = UDim2.new(1, -24, 1, -lane)
+			columnList.VerticalAlignment = Enum.VerticalAlignment.Bottom
+		end
 		if active then
 			paintTreadmill()
 		end
