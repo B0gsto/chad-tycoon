@@ -14,25 +14,34 @@
 	                       (the hitbox lets a body land partly over the edge)
 	Stage n's longest (flat) gap is <= maxGap(walkSpeed(need_n)) and > reach(walkSpeed(need_n-1)),
 	so the previous stage's Speed can never clear it, even with a perfect edge jump.
+	Stage 3 is the first with a chaser, so its gaps are shorter than the curve allows: at
+	exactly its need the longest jump keeps 2.4 studs of reach in reserve (3 x SAFETY), 3.4 at
+	the recommended Speed. Its need (830, was 1,100) is the lowest that keeps that reserve over
+	the shortest gap stage 2's need cannot clear (16), so a first session reaches the chaser
+	about 2-3.5 minutes of running after stage 2 (it was 4.5-5).
+	The HUD also shows recommended(n) = RECOMMEND x need (15% more Speed) as the Speed to run a
+	stage with comfortably.
 
 	Stage table (gaps in studs, walk at exactly `need` Speed, no Sneakers):
 	  stage  need     walk   maxGap  prev reach  longest gap
 	    1        0    16.0     7.9        -          7
 	    2      150    25.9    13.2      10.2        12
-	    3    1,100    35.8    18.6      15.5        17
-	    4    3,500    45.8    24.0      20.9        22.5
-	    5    8,000    55.7    29.4      26.3        28
-	    6   15,000    65.5    34.7      31.7        33
-	    7   27,000    76.8    40.8      37.0        39
-	    8   45,000    88.7    47.3      43.1        45
-	    9   77,000   103.8    55.4      49.6        52.5
-	   10  125,000   120.0    64.2      57.7        61
+	    3      830    34.0    17.6      15.5        16
+	    4    2,400    42.1    22.0      19.9        20.5
+	    5    5,800    51.5    27.1      24.3        25.5
+	    6   12,000    61.8    32.7      29.4        30.5
+	    7   23,000    73.5    39.0      35.0        36.5
+	    8   41,000    86.4    46.0      41.3        43.5
+	    9   72,000   101.7    54.3      48.3        51
+	   10  125,000   120.0    64.2      56.6        61
 
 	Progression check (a coarse 1 s simulation, also run in tests/cardio.luau): a player who
 	spends half the time running on keys (60% of the time actually stepping) and half on the
 	best treadmill they have reached, and buys one treadmill level every 4 minutes, reaches
-	  stage 2 ~1.5 min, 3 ~6 min, 4 ~12 min, 5 ~18 min, 6 ~23 min, 7 ~29 min, 8 ~34 min,
-	  9 ~41 min, 10 ~49 min (about 70% of the Speed from treadmills).
+	  stage 2 ~1.5 min, 3 ~5 min, 4 ~9.5 min, 5 ~15 min, 6 ~20 min, 7 ~26 min, 8 ~32 min,
+	  9 ~39 min, 10 ~48 min (about 70% of the Speed from treadmills).
+	From stage 2 (150 Speed, plate 2 claimed: x1.5 steps) to stage 3's 830 is about 3.3 minutes
+	of running on keys at 60% stepping, 2 minutes nonstop, 4.7 on the zone 2 treadmills.
 	Step multiplier: (1 + 0.25 * bestStage) * (1 + 0.1 * treadmillLevel)  (x1 .. x7)
 	Treadmill rate:  0.45 * (1 + zoneStage)^1.3 * (1 + 0.25 * level)
 	                 * max(1, (speed / 150)^0.25)                         Speed/s
@@ -53,6 +62,8 @@ CardioRules.GRAVITY = 196.2
 CardioRules.JUMP_HEIGHT = 7.2
 -- Studs of reach kept in reserve on every designed jump (phones, late jumps).
 CardioRules.SAFETY = 0.8
+-- Speed the HUD recommends for a stage, as a multiple of its need.
+CardioRules.RECOMMEND = 1.15
 -- Studs past the pure take-off-to-landing travel a body can still clear (half the hitbox at
 -- each end). Used only to prove a gap is NOT clearable.
 CardioRules.REACH_SLACK = 1.5
@@ -71,6 +82,10 @@ CardioRules.STEP_LEVEL_BONUS = 0.1
 CardioRules.COST_SECONDS = 120
 CardioRules.COST_SECONDS_PER_LEVEL = 24
 CardioRules.COST_MINIMUM = 150
+-- The run again bonus (a WIN plate inside the reward cooldown pays Economy.MODE_REPEAT_SHARE
+-- of its pack) is paid no sooner than this many seconds after the last plate that paid, so
+-- a short stage cannot be looped for it however fast the runner is.
+CardioRules.REPEAT_GAP = 30
 
 export type Movers = { travel: number, period: number }
 
@@ -140,13 +155,13 @@ CardioRules.STAGE_COUNT = 10
 CardioRules.STAGES = {
 	stage("Home Row",         "Mint",      0,      7,  25.2, 25.2, 4, 0,   nil,          nil),
 	stage("Shift Street",     "Sunny",     150,    12, 22.4, 25.2, 4, 1,   nil,          nil),
-	stage("Tab Tunnel",       "Teal",      1100,   17, 22.4, 22.4, 4, 2,   nil,          nil),
-	stage("Caps Lock Canyon", "Orange",    3500,   22.5, 16.8, 22.4, 3, 2.5, { 2.2, 3.2 }, nil),
-	stage("Enter Expressway", "Pink",      8000,   28, 16.8, 22.4, 3, 3,   { 2.0, 3.0 }, nil),
-	stage("Backspace Bridge", "Blue",      15000,  33, 14, 16.8, 3, 3.5, { 1.9, 2.9 }, { travel = 8, period = 5 }),
-	stage("Function Falls",   "Grape",     27000,  39, 14, 16.8, 3, 4,   { 1.8, 2.8 }, { travel = 8, period = 4.5 }),
-	stage("Arrow Key Alley",  "Coral",     45000,  45, 11.2, 16.8, 3, 4.5, { 1.7, 2.7 }, { travel = 10, period = 4.2 }),
-	stage("Escape Heights",   "RedOrange", 77000,  52.5, 11.2, 16.8, 3, 5,  { 1.6, 2.6 }, { travel = 10, period = 4 }),
+	stage("Tab Tunnel",       "Teal",      830,    16, 22.4, 22.4, 4, 2,   nil,          nil),
+	stage("Caps Lock Canyon", "Orange",    2400,   20.5, 16.8, 22.4, 3, 2.5, { 2.2, 3.2 }, nil),
+	stage("Enter Expressway", "Pink",      5800,   25.5, 16.8, 22.4, 3, 3,   { 2.0, 3.0 }, nil),
+	stage("Backspace Bridge", "Blue",      12000,  30.5, 14, 16.8, 3, 3.5, { 1.9, 2.9 }, { travel = 8, period = 5 }),
+	stage("Function Falls",   "Grape",     23000,  36.5, 14, 16.8, 3, 4,   { 1.8, 2.8 }, { travel = 8, period = 4.5 }),
+	stage("Arrow Key Alley",  "Coral",     41000,  43.5, 11.2, 16.8, 3, 4.5, { 1.7, 2.7 }, { travel = 10, period = 4.2 }),
+	stage("Escape Heights",   "RedOrange", 72000,  51, 11.2, 16.8, 3, 5,  { 1.6, 2.6 }, { travel = 10, period = 4 }),
 	stage("Spacebar Skyway",  "Butter",    125000, 61, 11.2, 16.8, 3, 5,   { 1.5, 2.5 }, { travel = 12, period = 3.8 }),
 } :: { Stage }
 
@@ -241,7 +256,46 @@ function CardioRules.stageFor(speed: number): number
 	return best
 end
 
--- Speed per counted step: grows with every first clear and every treadmill level.
+-- Speed the HUD recommends for stage n: RECOMMEND x its need, a whole number, and never past
+-- SPEED_AT_CAP (more Speed than that runs no faster, so the last stage recommends its need).
+function CardioRules.recommended(n: number): number
+	local s = CardioRules.STAGES[n]
+	if not s then
+		return 0
+	end
+	return math.max(s.need, math.min(math.ceil(s.need * CardioRules.RECOMMEND), CardioRules.SPEED_AT_CAP))
+end
+
+-- First clears are kept per WIN plate in a bit set (profile.cardio.firsts): bit n - 1 is set
+-- once plate n's first-clear pay was taken, so running past a plate never loses its first
+-- clear. Saves from before the set (nil) had one counter: every plate up to bestStage counts
+-- as taken, as it did then.
+local ALL_FIRSTS = 2 ^ CardioRules.STAGE_COUNT - 1
+
+function CardioRules.firstsOf(firsts: number?, bestStage: number): number
+	if type(firsts) == "number" and firsts == firsts and firsts >= 0 then
+		return bit32.band(math.floor(math.min(firsts, ALL_FIRSTS)), ALL_FIRSTS)
+	end
+	return 2 ^ math.clamp(math.floor(bestStage), 0, CardioRules.STAGE_COUNT) - 1
+end
+
+-- Is plate n's first-clear pay still there?
+function CardioRules.isFirst(firsts: number, n: number): boolean
+	if n < 1 or n > CardioRules.STAGE_COUNT then
+		return false
+	end
+	return not bit32.btest(firsts, bit32.lshift(1, n - 1))
+end
+
+-- The set after plate n's first-clear pay was taken.
+function CardioRules.claimFirst(firsts: number, n: number): number
+	if n < 1 or n > CardioRules.STAGE_COUNT then
+		return firsts
+	end
+	return bit32.bor(firsts, bit32.lshift(1, n - 1))
+end
+
+-- Speed per counted step: grows with the deepest plate claimed and every treadmill level.
 function CardioRules.stepMultiplier(bestStage: number, treadmillLevel: number): number
 	local b = math.clamp(math.floor(bestStage), 0, CardioRules.STAGE_COUNT)
 	local l = math.clamp(math.floor(treadmillLevel), 0, CardioRules.TREADMILL_MAX)
@@ -267,6 +321,33 @@ function CardioRules.treadmillCost(level: number, income: number): number
 	end
 	local seconds = CardioRules.COST_SECONDS + CardioRules.COST_SECONDS_PER_LEVEL * l
 	return math.floor(math.max(CardioRules.COST_MINIMUM * (l + 1) ^ 2, math.max(0, income) * seconds))
+end
+
+-- The first plate that can pay the run again bonus: the deepest one claimed so far (the
+-- personal best), so a repeat is a run at least as long as the player's best one.
+function CardioRules.repeatFrom(bestStage: number): number
+	return math.clamp(math.floor(bestStage), 1, CardioRules.STAGE_COUNT)
+end
+
+-- Does claiming plate `stage` inside the reward cooldown earn the run again bonus? Only on
+-- the best plate (`bestStage`, before this claim) or a deeper one, and only `sincePaid` >=
+-- REPEAT_GAP seconds after the last plate that paid anything.
+function CardioRules.repeatEarned(stage: number, bestStage: number, sincePaid: number): boolean
+	return stage >= CardioRules.repeatFrom(bestStage) and sincePaid >= CardioRules.REPEAT_GAP
+end
+
+-- What a WIN plate pays: "first" (its first clear) and "full" (the cooldown is over) the
+-- whole pack, "repeat" (inside the cooldown, `earned`) the run again bonus, "resting" (a
+-- plate that would earn it, but inside REPEAT_GAP: `resting`) and "none" nothing.
+function CardioRules.payKind(first: boolean, full: boolean, earned: boolean, resting: boolean?): string
+	if first then
+		return "first"
+	elseif full then
+		return "full"
+	elseif earned then
+		return "repeat"
+	end
+	return if resting then "resting" else "none"
 end
 
 -- Cash multiplier on stage n's reward (+25% per stage: stage 10 pays 3.25x the pack).

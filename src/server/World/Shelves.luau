@@ -9,7 +9,8 @@
 	the client's name plates hang from (Fx.Plates), so nothing else is built there. Slot 1, at
 	the front shelf's centre, is a raised champion pedestal with gold rims and a gold star
 	plaque whose ring and top disc follow the best unit's tier colour. A sunny roof board
-	carrying the "YOUR CHADS" sign (cream card, red-orange header) tops the highest shelf.
+	tops the highest shelf; it carries no caption (the HUD's unit counter names the rack), only
+	the gym emblem on its rear edge, which shows from behind the plot alone.
 	Two soft warm lights (one wash over the lower shelves, one spot on the champion) keep the
 	units the best-lit thing on the plot.
 
@@ -18,7 +19,7 @@
 	  * Shelves 2..10 are Models named "RackRow" with attribute Row = n. A shown shelf is
 	    parented to the plot folder; a hidden one is parented to nil (kept here), so clients
 	    see a revealed shelf arrive with ChildAdded and can animate it in.
-	  * The roof + sign is the Model "RackTopper"; the server pivots it onto the highest shown
+	  * The roof + emblem is the Model "RackTopper"; the server pivots it onto the highest shown
 	    shelf.
 	  * The plot folder's attribute "Rows" is the number of shelves shown (1 for an empty plot).
 	Part of the world generator; see Server.WorldBuilder for the overview and plot axes.
@@ -237,7 +238,7 @@ local function dumbbellIcon(parent: GuiObject)
 	end
 end
 
--- The gym emblem on the back of the rack sign, crowning the rack seen from behind the plot:
+-- The gym emblem on the back of the roof's board, crowning the rack seen from behind the plot:
 -- a cream card with a sunny border, a dumbbell between two coral stars and the gym's name.
 local function signBack(board: BasePart)
 	local gui = Instance.new("SurfaceGui")
@@ -289,81 +290,23 @@ local function signBack(board: BasePart)
 	})
 end
 
--- The rack sign in the shared sign style (Common.SIGN): a cream card with a teal border and a
--- red-orange header band, framed by a teal board on two teal posts, standing on the roof at
--- plot-local (0, base, z).
-local function buildSign(B: Builder, parent: Instance, z: number, base: number)
-	local L, P = B.L, B.P
-	local w, h = 20, 4.2
-	local cy = base + 3.4
-	for _, side in { -1, 1 } do
-		decorative(P({
-			Name = "SignPost",
-			Shape = Enum.PartType.Cylinder,
-			Size = Vector3.new(cy - base, 0.6, 0.6),
-			CFrame = L(side * (w / 2 - 1.5), (base + cy) / 2, z + 0.5) * UPRIGHT,
-			Color = SIGN.Border,
-			Parent = parent,
-		}))
-	end
-	-- Rounded teal frame: a slab with round ends.
-	local board = decorative(P({
+-- The gym emblem standing on the rear edge of the roof at plot-local (0, base, z), facing the
+-- back fence: an invisible board (so nothing of it shows from inside the plot) that carries
+-- signBack. The rack used to wear a "YOUR CHADS" marquee on two posts above the roof; from the
+-- spawn, walkway and pen cameras (Fx.Camera: 15 studs behind the head, 20 degrees down) it sat
+-- top-centre, 60 to 99 px down a 720 px screen with one shelf, right behind the HUD's unit
+-- counter, which already says what it counts. The roof now carries only Fx.PlotRank's dressing.
+local EMBLEM_W, EMBLEM_H = 12.6, 3.9
+local function buildEmblem(B: Builder, parent: Instance, z: number, base: number)
+	local board = decorative(B.P({
 		Name = "Board",
-		Size = Vector3.new(w - h, h + 0.5, 0.4),
-		CFrame = L(0, cy, z + 0.2),
-		Color = SIGN.Border,
+		Size = Vector3.new(EMBLEM_W, EMBLEM_H, 0.2),
+		CFrame = B.L(0, base + EMBLEM_H / 2, z),
+		Transparency = 1,
 		Parent = parent,
 	}))
+	board.CastShadow = false
 	signBack(board)
-	for _, side in { -1, 1 } do
-		decorative(P({
-			Name = "Board",
-			Shape = Enum.PartType.Cylinder,
-			Size = Vector3.new(0.4, h + 0.5, h + 0.5),
-			CFrame = L(side * (w - h) / 2, cy, z + 0.2) * CFrame.Angles(0, math.pi / 2, 0),
-			Color = SIGN.Border,
-			Parent = parent,
-		}))
-	end
-	local card = decorative(P({
-		Name = "Screen",
-		Size = Vector3.new(w - 0.6, h - 0.3, 0.2),
-		CFrame = L(0, cy, z),
-		Color = SIGN.Card,
-		Parent = parent,
-	}))
-	local gui = surface(card)
-	gui.MaxDistance = Common.SIGN_FADE_CARD
-	local frame = Instance.new("Frame")
-	frame.Size = UDim2.fromScale(1, 1)
-	frame.BackgroundColor3 = SIGN.Card
-	frame.BorderSizePixel = 0
-	frame.Parent = gui
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0.2, 0)
-	corner.Parent = frame
-	border(frame)
-	local band = Instance.new("Frame")
-	band.Size = UDim2.fromScale(1, 0.58)
-	band.BackgroundColor3 = SIGN.Header
-	band.BorderSizePixel = 0
-	band.Parent = frame
-	local bandCorner = Instance.new("UICorner")
-	bandCorner.CornerRadius = UDim.new(0.3, 0)
-	bandCorner.Parent = band
-	text(band, {
-		Text = "YOUR " .. string.upper(theme.Words.Units) .. "  ★",
-		Size = UDim2.fromScale(0.9, 0.78),
-		Position = UDim2.fromScale(0.05, 0.12),
-		TextColor3 = SIGN.Title,
-	})
-	text(frame, {
-		Text = "Every " .. theme.Words.Unit .. " drops " .. theme.Words.Orb .. " into the pen",
-		Font = theme.Fonts.UI or theme.Fonts.Bold or theme.Fonts.Body,
-		Size = UDim2.fromScale(0.86, 0.3),
-		Position = UDim2.fromScale(0.07, 0.64),
-		TextColor3 = SIGN.Text,
-	})
 end
 
 -- The shelf's number on a small round cream card with a teal border on the front of the +X
@@ -547,7 +490,7 @@ local function buildRow(B: Builder, parent: Instance, row: number)
 	rowTag(B, parent, row, (top + nextBottom) / 2, front)
 end
 
--- The sunny roof board over the top shelf with its sign, built over shelf 1 (setRows
+-- The sunny roof board over the top shelf with its rear emblem, built over shelf 1 (setRows
 -- moves it up). Returns the model; its PrimaryPart is the roof board.
 local function buildTopper(B: Builder): Model
 	local L, P = B.L, B.P
@@ -584,8 +527,7 @@ local function buildTopper(B: Builder): Model
 			Parent = model,
 		}))
 	end
-	local signZ = front + s.depth - 1
-	buildSign(B, model, signZ, roofTop)
+	buildEmblem(B, model, front - 0.3 + roofD - 0.3, roofTop)
 	model.PrimaryPart = roof
 	return model
 end

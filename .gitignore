@@ -22,5 +22,7 @@ art/out/**
 !art/out/**/
 !art/out/**/*.json
 !art/out/faces/**
+# Parkour picker thumbnails are Studio captures (no script makes them again): keep them.
+!art/out/maps/**
 # Marketing renders, thumbnails and trailers (made in a separate session) stay out of git.
 marketing/

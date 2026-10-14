@@ -36,8 +36,10 @@ checkpoint, per-checkpoint stage and Skip Stage rule in the earlier sections.
 - **Rainbow.** Every path element's `color` cycles the rainbow in path order:
   `Course.RAINBOW = { "RainbowRed", "RainbowOrange", "RainbowYellow", "RainbowGreen", "RainbowCyan", "RainbowBlue", "RainbowPurple", "RainbowPink" }`
   (Theme.World keys, World adds them). Checkpoints keep `color = "Checkpoint"` (a sky blue;
-  World adds the key) and movers/blinks keep their map's mover/blink colours. Map palettes stay
-  only as the `accent` for picker cards and landmark tints.
+  World adds the key) and movers/blinks keep their map's mover/blink colours. The rainbow is the
+  course DATA (tests check it); the built map tops and edges take each map's own palette from
+  `World/MapDress.luau` (scoring round 3: one rainbow look everywhere read as one map). Bridges
+  between maps stay rainbow.
 - **Sky scenery.** `level.PROPS` kinds become: `island` (floating green disc, `r`, grass top at
   `y`, rock cone below), `lighthouse`, `windmill` (spinning blades), `tree`, `balloon` (hot-air
   balloon, bobbing), `cloud` (white puffs), `star`, `rainbowarch`, `landmark` (the map's themed
@@ -104,9 +106,10 @@ checkpoint, per-checkpoint stage and Skip Stage rule in the earlier sections.
   outlined gold; "none" when the chosen one is tapped again) that fires `ParkourGear`.
   The existing run pill (timer) stays.
 - Ranking window: a third tab/board "STAGE" (People / Stage / Clears).
-- Fx.Modes: falling below the cloud floor shows a cloud poof instead of a water splash; the
-  per-map colour grades are toned down to a single sunny sky look (keep storm and volcano hints
-  very light); `SpinAxis` support for windmills.
+- Fx.Modes: falling below the cloud floor shows a cloud poof instead of a water splash; every
+  map grades the sunny sky its own clearly different way (`LOOK_TUNING`: sky / haze colour, sun
+  height, warmth; scoring round 3 brought this back after the single sunny look made all maps
+  read alike); `SpinAxis` support for windmills.
 - Finish card shows "Assisted run" instead of best/rank lines when `assisted`.
 - Map picker preview camera still frames the level's bounding box (now including islands).
 
@@ -163,11 +166,13 @@ picker picks where to start; falling sends the player back to the **start of the
 - **Anti-cheat**: `Rules.finish` checks one start-to-finish minimum, `MIN_SECONDS` (scaled by
   28/16 when the speed coil was worn); the only invalid reason is `"fast"`.
 - **Skip Map** (was Skip Stage): the same cash action `ParkourSkip` and cost
-  (`Economy.parkourSkipCost`). It finishes the current map as an assisted run (teleport under the
-  finish arch: it pays, counts the clear and unlocks the next map, no best time or board entry)
-  and then starts a run on the next map's start deck; on map 10 it just finishes. Notify
-  `{ event = "skip", level, stage = STAGE_LAST }`. It is a cash action, so no Robux receipts are
-  involved.
+  (`Economy.parkourSkipCost`). It only unlocks the next map (`profile.parkour.skipped[level] = 1`;
+  unlocks read "cleared or skipped"): no finish, so no reward, no clear, no best time, no stage and
+  no reward cooldown, and the map's real first clear still pays later. The run stops and the player
+  stands at the gates with the map picker on the next map (notifies `skip { level, paid = 0,
+  nextLevel, unlocked }`, `stop { reason = "skip" }`, `pick { level }`). With nothing to unlock
+  (map 10, or the next map is already open) it is refused and costs nothing. It is a cash action,
+  so no Robux receipts are involved.
 - **Saved data**: `profile.parkour.stage` is now in map units (0..11) and `stageMaps = true`
   marks it. Saves without the marker (checkpoint-era stages) are rebuilt on load from the maps
   cleared in a row from map 1 (cleared n: stage n + 1; none cleared but a stage: 1; never ran: 0).
@@ -175,3 +180,130 @@ picker picks where to start; falling sends the player back to the **start of the
   `Checkpoints` attribute (`StageFirst` / `StageLast` stay).
 - **Client**: ObbyHud shows "MAP n / 10" and a "SKIP MAP $X" button; Fx.Modes drops the
   next-flag pulse and the checkpoint pop, and the idle hint points toward the finish deck.
+
+## Pay per run, a clearer HUD, a safer map 1 (round 5, playtest fixes)
+
+There are still no checkpoints.
+
+- **Pay per run.** Inside the 30 minute reward cooldown a clean finish (no gear worn) pays
+  `Economy.MODE_REPEAT_SHARE` (20%) of that map's pack on every run; an assisted finish inside the
+  cooldown pays nothing. A map's first clear and the full reward once per cooldown are unchanged,
+  and only a full reward restarts the cooldown. The finish payload adds `pay` (`"first"`, `"full"`,
+  `"repeat"` or `"assisted"`), `packCash`, `repeatCash`, `repeatShare` and `falls`; the snapshot's
+  `rewardPreview` adds `repeatCash` and `repeatShare`, and its `cash` is what a finish would pay
+  now (0 inside the cooldown with a coil chosen).
+- **Progress.** `Course.progress(level, x, z)` is how far along the map's path a point is (0 on
+  the start deck, 1 on the finish deck: the nearest point on the line through the path elements'
+  centres). The server publishes it for every runner as the player attribute `ParkourProgress`
+  (hundredths, 0 when not running) and in the snapshot (`progress`).
+- **Falls.** A run counts its trips back to the start deck (cloud floor or lava): `falls` in the
+  `respawn` notify, the snapshot and the finish payload.
+- **ObbyHud.** The bar is now the map being run: the local head rides it at `ParkourProgress`,
+  with the heads of other players on the same map. Under it: "MAP 3 / 10 · Sweeper Bay", and
+  "Best 0:34.4 · Falls 2" under the run pill. "ASSISTED: no best time" shows from the moment a
+  coil is worn; "Oops! Back to the start" shows for 1.5 s after a fall. SKIP MAP is a small grey
+  button that opens a question ("Skip Sweeper Bay for $250? You get no reward for a skipped map.",
+  YES, SKIP / NO, KEEP GOING); only YES fires `ParkourSkip`.
+- **One word: MAP.** The HUD, the picker, the run pill's chip ("MAP 3") and the finish card
+  ("MAP 3 CLEAR!", "Map 4 unlocked!", "Next map") say "MAP n" (they said "Level n" / "L3").
+- **Finish card.** The map's name line adds the falls of the run ("No falls!", "2 falls"). Under
+  the cash, by `pay`: `"repeat"` reads "Run again bonus +$X (20%)", `"assisted"` reads "Gear on:
+  no bonus". The Modes window's Parkour row reads "Run again: +$X · full reward in m:ss" inside
+  the cooldown. A lava fall no longer adds a toast: the HUD's "Ouch! Back to the start" says it.
+- **Picker.** The side panel labels its pips "Difficulty n/10". A locked card shows "Clear
+  <previous map> first" where its pips were and what its first clear pays beside the lock, and
+  still shakes with the bubble when tapped. Inside the cooldown the reward line of a cleared map
+  reads "Run again: +$X · full in m:ss" ("Gear on: no reward · full in m:ss" with a coil chosen).
+- **Map 1 "Sunny Steps"** (hand-made, `LEVEL1_ELEMENTS`; maps 2 to 10 are untouched and the chain
+  has not moved): the bounce pad is 9 studs wide (was 5) and centred on its 12-stud deck; the
+  sweeper deck and the bounce deck have low side rails (1.5 studs, `wall` elements named "Rail");
+  the first sweeper turns 30% slower (0.84 rad/s) and both bars are 10.6 long (were 12) so their
+  end caps pass inside the rails. A pad that long is touched up to 5 studs earlier, so its power
+  went from 78 to 94 and the landing deck above grew half a stud toward it (12 x 13): a runner
+  launched at walking speed from either edge of the pad lands on that deck
+  (tests/parkour_bugs.luau pins this).
+
+## Finish card states, the resting bonus, MAP n everywhere (round 6, wave 3)
+
+There are still no checkpoints.
+
+- **Finish card, four states** (`Popups.modeFinish`): a first clean clear (rays and sparkles round
+  the medal, confetti, a wide "MAP n+1 UNLOCKED!" banner), all maps cleared ("SKY OBBY COMPLETE!",
+  a star medal, "ALL 10 MAPS CLEARED!"), a repeat ("RUN AGAIN +$X +20%" in the reward well and the
+  cooldown as a clock bar under a padlock, "Full reward in m:ss") and an assisted run (grey medal,
+  "ASSISTED RUN · NO BEST TIME", no confetti).
+- **`complete`.** The finish payload says when a run made it all ten maps cleared without gear
+  for the first time (every map has a best time, which only a clean finish sets). The card goes by
+  that flag, not by "map 10's first clear", so a player whose first map 10 clear wore a coil gets
+  "SKY OBBY COMPLETE!" on the clean clear that completes the set, whichever map it is.
+- **The return waits for the card.** The card fires the action `ModeCard { mode, open }` when it
+  opens and when it closes. The 15 s return to the gates looks again every second while the card
+  is up, for 20 s more at the most (`CARD_HOLD_SECONDS`), so a client can never hold a player in
+  the sky. A new finish starts with no card up.
+- **The run again bonus rests.** After a map's run again bonus (20%) was paid, that map's bonus
+  rests for 120 s (`REPEAT_REST_SECONDS`, in memory per player and map, kept for the server's
+  life). A clean run inside the rest finishes as usual, counts its clear and can set a best time,
+  and pays nothing: `pay = "resting"` with `repeatRest` (seconds left) in the finish payload, and
+  the card reads "Bonus is resting, back in m:ss". Every other map's bonus rests for 60 s after
+  any map's was paid (`REPEAT_GAP_SECONDS`, per player), so cycling the maps pays one bonus a
+  minute at the most. A first clear and the full reward never rest, and the snapshot's
+  `rewardPreview` adds `repeatRest` (its `cash` is 0 while the map rests; the Modes row and the map
+  picker then read "Bonus is resting, back in m:ss").
+- **Modes window row.** Inside the cooldown the Parkour row names the bonus only when the server
+  would pay it: nothing with a coil chosen or worn, and for the map the server priced its own
+  number.
+- **MAP n.** The world's signs and the best-times board by the gates say "MAP n" (the board said
+  "L1" .. "L10").
+- **Look.** The start arch's marquee (tag `StartGantry`, attribute `Level`) fades out 0.9 s into a
+  run of that map and returns when it ends; sweepers are hazard-striped; path platforms have a
+  bright edge; a fall blinks the screen white and puffs at the runner's feet on the start deck (a
+  lava fall keeps its red flash).
+
+## Bounce pads launch everyone, map 1's sweepers only shove (verification round 2)
+
+A tester played map 1 with real keys: walking onto its bounce pad never reached the upper lane
+(0 of 15), and the 1.5-stud rails did not hold a bumped runner. There are still no checkpoints.
+
+- **Bounce pads, every map** (`Shared.ParkourMoves`, applied by `Client.Fx.Modes`). A pad launches
+  on the first frame of every contact and nothing can refuse it: the old code refused a runner
+  who was rising faster than 5 studs/s (stepping up the pad's 0.7-stud lip gives 7 to 11) and
+  then held the contact, so a walk across the pad never launched. The touch zone is the pad's
+  top, 0.4 studs past its rim, from the deck up (`onPad`), so a runner beside the rim is launched
+  too. Contact ends when the feet leave the zone and the next contact launches again. The
+  launch is then held on its arc for 0.2 s (`heldSpeed`: upward speed at least power - gravity x
+  elapsed): a Humanoid launched from the ground answers with its own jump one frame later, which
+  replaced the pad's 94 with 50.
+- **Walked-on bounces are fair on every map** (`Course.bounceFair`, used by the generator and
+  pinned by the "every level's jumps are fair" test, which flies the launch out step by step). The
+  old rule measured the jump after a pad from the deck's edge with the launch's apex, as if the
+  runner had jumped; a pad launches where it is first touched, so a runner who walked on came
+  down short of the next element on maps 2 to 10 (gaps of 5 to 8 studs). Now the element after a
+  bounce deck stands 1.3 to 3.7 studs past it (2 studs for the usual 8-stud rise): launched at
+  the pad's near rim with the feet on the deck and holding forward, the runner comes down at
+  least 0.8 studs onto it; launched from the far rim they do not fly over it. Bounce decks are
+  10 x 10, and a ring (with its hole) never follows one. This moved the elements after each
+  bounce on maps 2 to 10 and with them the chain: every map's world position shifted (map 1 by
+  +24 studs in x and +1 in z). Nothing else about those maps' recipes changed.
+- **Map 1's sweepers shove** (`spinner.shove = 3`, attributes `BumpShove`, `ShoveMin`,
+  `ShoveMax` on the bar). A hit used to be a full jump (7.6 to 9.2 studs up, up to 3.1 sideways):
+  over any rail. On map 1 a hit now slides the runner 3 studs along the deck in 0.2 s with no
+  jump and no upward speed, and the slide stops at `Course.shoveKeep`: the deck less
+  `SHOVE_INSET = 3` studs on every side, which is 4 studs either side of the path line (the rails'
+  inner faces are 6.2 away) and 3 studs short of the deck's ends. Sweepers on maps 2 to 10 have
+  no `shove` and bump as before.
+- **Map 1's rails are 3 studs tall** (were 1.5). A Humanoid steps up onto anything lower than
+  its hips (about 2 studs), so the old rails were walked onto and along. The sweeper deck stays
+  14 wide and the bounce deck 12, pad 9, power 94.
+- **The timed return leaves a player who walked on.** 15 s after a finish the player goes back
+  to the gates only if they still stand where the finish left them (the finish deck, or off the
+  decks). On a bridge or on any map's start deck the return is dropped: they walked there on
+  purpose. The 2 s rule is unchanged (a wait on a bridge still ends at the gates).
+- **The picker and the Modes row show the rest.** The snapshot's `levels[i].repeatRest` is the
+  seconds map i's run again bonus still rests (its own 120 s or the 60 s after any map's bonus;
+  0 when awake or when the map pays in full). Both read "Bonus is resting, back in m:ss" for the
+  selected map, like the finish card, instead of promising "Run again: +$X".
+- **Naming.** The Modes row says "MAP n · name"; every difficulty row (Modes row, picker cards,
+  picker side panel) reads "Difficulty n/10" before its pips, and a row too narrow for both
+  hides the pips, never the words.
+- **SKIP MAP** is hidden where a skip has nothing to unlock: on the last map, and on a map whose
+  next map is already open (the server refused both already).

@@ -26,9 +26,12 @@
 	                local player scrolls at their WalkSpeed. While standing on a belt the
 	                character turns to the belt's LookVector and plays its own run
 	                animation in place (Animate.run.RunAnim) at WalkSpeed / 16 speed, with dust puffs and the odd sweat drop.
-	  Speed         radial speed lines (a pooled ScreenGui under the HUD) and a gentle FOV
-	                kick, both scaling with the horizontal speed above ~50 studs/s; reduced
-	                motion skips the FOV and halves the lines.
+	  Speed         radial speed lines (a pooled ScreenGui under the HUD, rainbow and white with
+	                rainbow tails, over soft glows), a gentle FOV kick, a glowing rainbow ribbon
+	                along the floor behind the runner and the run camera pulled in (the zoom
+	                cap, restored after the run), all scaling
+	                with the horizontal speed above LINES_FROM studs/s; reduced motion skips
+	                the FOV and halves the lines.
 	  Bursts        safe zone reached: stars and confetti; WIN pad claimed: a bigger ring of
 	                both (largest on the last pad); fall: a landing ring + puff,
 	                upgrade: sparkles over the upgrade pad (Fx.Sprites, budgeted).
@@ -56,8 +59,11 @@ local Client = script.Parent.Parent
 local State = require(Client.State) :: any
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
+local Camera = require(script.Parent.Camera) :: any
+local Chase = require(script.Parent.CardioChase) :: any
 local Sounds = require(Client.Sounds) :: any
 local Assets = require(ReplicatedStorage.Shared.Assets) :: any
+local Format = require(ReplicatedStorage.Shared.Format) :: any
 
 local CardioFx = {}
 
@@ -86,10 +92,103 @@ local PRESS_UP = 0.18 -- seconds to spring back (after the last foot leaves it)
 local BUCKET_DEFAULT = 2.8 -- studs per spatial-hash cell without the track's KeyPitch (one keycap)
 local OTHER_RADIUS = 90 -- other players' presses within this many studs
 local OTHER_MAX = 6 -- at most this many other players (scaled by Budget.count)
-local LINE_COUNT = 28
-local LINES_FROM = 50 -- studs/s: speed lines and FOV start above this
-local LINES_FULL = 110 -- studs/s: full effect
-local FOV_MAX = 12
+-- Speed effects: radial speed lines (every LINE_TINT_EVERY-th one rainbow, the rest white
+-- running into a rainbow tail, each over a soft wide glow), a FOV widen, a glowing rainbow
+-- ribbon trail along the floor behind the runner and the camera pulled in, all scaling with
+-- the horizontal speed from LINES_FROM to LINES_FULL studs/s. The lines fly out from an
+-- empty middle (LINE_CLEAR, share of the way to the screen edge, in every direction) to the
+-- edges, so the runner stays clear and the edges fill. Line length / thickness are px at rest
+-- + extra at full speed; opacity is the strongest line's at full speed. The range sits on
+-- real run speeds (WalkSpeed 16 at Speed 0, ~25 on stage 1, ~37 at stage 3's recommended
+-- Speed), so every run past the first steps shows them; the strength curve (speed share ^
+-- LINE_CURVE) makes even a slow run read in a still.
+-- r6: measured in Studio at a stage-1 run (23 studs/s) the lines and their glows covered 31% of
+-- a 64x36 grid at >= 25% opacity and washed the frame out in stills: fewer lines, lighter
+-- (the strongest about 45% opaque at that speed, 80% at full speed), much fainter glows, a
+-- wider clear middle and few lines along the horizontal band the runner runs in.
+local LINE_COUNT = 56
+local LINES_FROM = 17 -- studs/s: speed lines, trail and FOV start above this
+local LINES_FULL = 36 -- studs/s: full effect
+local LINE_CURVE = 0.5
+local LINE_LEN = 150
+local LINE_LEN_FULL = 420
+local LINE_THICK = 14
+local LINE_THICK_FULL = 28
+local LINE_OPACITY = 0.8
+local LINE_CLEAR = 0.5 -- lines start this far out (share of centre -> edge) ...
+local LINE_SOLID = 0.72 -- ... and are fully faded in from here
+local LINE_GLOW = 2.4 -- glow width, x the line's thickness
+local LINE_GLOW_OPACITY = 0.22 -- glow opacity at full strength
+local LINE_BAND = 0.3 -- |sin(angle)| under this is the centre band (left and right of the runner) ...
+local LINE_BAND_KEEP = 0.3 -- ... where only this share of the lines is drawn
+local LINE_TINT_EVERY = 2
+local LINE_TINT_WHITE = 0.08 -- how far a rainbow line is lifted toward white
+local FOV_MAX = 9
+local TRAIL = {
+	From = 0.02, -- speed share (0..1) where the trail starts showing
+	Lifetime = 0.6, -- seconds (short, so the ribbon never reaches the camera behind)
+	Width = 4.2, -- studs: the core ribbon, flat along the floor (left to right)
+	GlowWidth = 8, -- studs: the soft glow ribbon under it
+	-- Studs above the resting key tops. The feet stand on a pressed key, PressDepth below
+	-- them, and the keys behind spring back up within PRESS_UP: r5 laid the ribbon 0.35 over
+	-- the feet, inside the keycaps, so only a faint stripe of it showed between them.
+	Lift = 0.3,
+	Opacity = 1, -- core at full speed ...
+	Hold = 0.55, -- ... nearly that strong over this share of its length, then fading out
+	GlowOpacity = 0.7, -- glow at full speed
+	Floor = 0.85, -- core opacity the moment it shows
+	Light = 1, -- LightEmission (glows on the dark keys)
+}
+-- Cardio's own run camera: the follow camera's zoom is capped while a run is on, nearer the
+-- faster you go (studs from the head), and the player's own zoom limits come back after.
+local RUN_ZOOM = {
+	Walk = 12, -- at no speed
+	Full = 9, -- at full speed
+	Step = 0.25, -- studs: the cap is only rewritten when it moves this much
+	-- Fx.Camera pins both limits to one distance for two frames to set a zoom; limits still
+	-- pinned after this many seconds are stuck (measured in Studio: a home shot of 16.9 studs
+	-- left both at 16.9, so the cap never took and the run camera stayed at 17.6 studs) and
+	-- the run takes the cap anyway, from the place's own limits.
+	Stuck = 0.5,
+}
+-- The run glow (a bloom of its own and a little saturation, so the neon trusses glow). r5's
+-- threshold 0.9 also bloomed the sunlit pastel lobby: measured in Studio at the 'treadmill'
+-- camera 47% of the pixels clipped to white (9% without the run bloom). At 3 only the neon
+-- blooms: the lobby is back to 9% and the track keeps a glow (5% of its pixels brighter).
+local RUN_GLOW = {
+	BloomIntensity = 0.6,
+	BloomSize = 24,
+	BloomThreshold = 3,
+	Saturation = 0.1,
+}
+-- The goal star on the TRACK: beside the doorway of the stage you run next (on the right as
+-- you face it, under its StageSign<n>), a big gold star with that stage's recommended Speed
+-- and an arrow bobbing above it; mint "READY!" once your Speed reaches it. Size is studs
+-- (scale) + px (offset), so it stays readable far away and grows as you come close.
+local GOAL = {
+	StudsW = 5,
+	PxW = 130,
+	StudsH = 6,
+	PxH = 150,
+	Side = 21, -- studs to the right of the doorway's centre (+Z)
+	Front = 6, -- studs out from the wall toward the runner (-X)
+	Down = 13, -- studs below the sign's centre (about mid-doorway)
+	MaxDistance = 600,
+	KeepRight = 290, -- px at the screen's right edge kept clear (CardioHud's Custom Speed / QUIT column)
+	ArrowH = 0.26, -- share of the height
+	StarSize = 0.46,
+	TextH = 0.24,
+	BobShare = 0.07, -- arrow bob, share of the height
+	BobHz = 1.7,
+	SpinDeg = 9, -- star wobble
+	SpinHz = 0.8,
+	PulseHz = 2.2,
+	Pulse = 0.08, -- star scale swing
+	Plate = Color3.fromRGB(22, 20, 44),
+	PlateTransparency = 0.15,
+	Gold = Color3.fromRGB(255, 206, 64),
+	Ready = W.Mint or Color3.fromRGB(98, 224, 160),
+}
 local CLICK_RATE = 12 -- local key clicks per second at most
 local POP_POOL = 8
 local POP_LIFE = 0.9
@@ -123,7 +222,7 @@ export type Key = {
 }
 
 type Treadmill = { model: Instance, belt: BasePart, textures: { Texture }, dir: number, phase: number }
-type Line = { frame: Frame, angle: number, r: number, speed: number }
+type Line = { frame: Frame, glow: Frame, angle: number, r: number, speed: number }
 
 local keys: { [BasePart]: Key } = {}
 -- Grid cell size (studs): the track's KeyPitch, read when the keys are indexed.
@@ -145,12 +244,17 @@ local snap: { [string]: any } = {}
 local stepConn: RBXScriptConnection? = nil
 local folder: Folder? = nil
 local linesGui: ScreenGui? = nil
+local trail: Trail? = nil
+local trailGlow: Trail? = nil
+-- The player's own zoom cap before the run (restored after), and the cap set now.
+local zoomWas: number? = nil
+local zoomNow = 0
+local pinnedSince = 0 -- os.clock() since the zoom limits have been pinned to one distance
 local lastClick = 0
 local localKey: Key? = nil
 -- Keys under other players' feet this frame (kept pressed down).
 local heldOther: { Key } = {}
 local speedK = 0
-local fovBase: number? = nil
 local runTrack: AnimationTrack? = nil
 local runTrackOwner: Humanoid? = nil
 local puffAt = 0
@@ -610,10 +714,17 @@ end
 -- Speed lines and FOV -------------------------------------------------------------------------
 
 local function resetLine(line: Line, fresh: boolean)
-	line.angle = math.random() * TAU
-	line.r = if fresh then 0.3 + math.random() * 0.8 else 0.35 + math.random() * 0.25
+	local angle = math.random() * TAU
+	-- Few along the centre band: a line there is drawn somewhere else most of the time.
+	if math.abs(math.sin(angle)) < LINE_BAND and math.random() > LINE_BAND_KEEP then
+		local tilt = LINE_BAND + math.random() * (1 - LINE_BAND)
+		angle = math.asin(tilt) * (if math.random() < 0.5 then 1 else -1) + (if math.random() < 0.5 then 0 else math.pi)
+	end
+	line.angle = angle
+	line.r = if fresh then LINE_CLEAR + math.random() * (1.15 - LINE_CLEAR) else LINE_CLEAR + math.random() * 0.2
 	line.speed = 1.6 + math.random() * 1.4
 	line.frame.Rotation = math.deg(line.angle)
+	line.glow.Rotation = line.frame.Rotation
 end
 
 local function ensureLines()
@@ -629,44 +740,215 @@ local function ensureLines()
 	gui.Parent = player:WaitForChild("PlayerGui")
 	linesGui = gui
 	table.clear(lines)
-	for _ = 1, Budget.count(LINE_COUNT) do
+	for i = 1, Budget.count(LINE_COUNT) do
+		local tint = RAINBOW[(i // LINE_TINT_EVERY - 1) % #RAINBOW + 1]
+		local rainbow = i % LINE_TINT_EVERY == 0
+		-- The glow: a wide soft streak of the line's colour under it.
+		local glow = Instance.new("Frame")
+		glow.Name = "LineGlow"
+		glow.BorderSizePixel = 0
+		glow.BackgroundColor3 = if rainbow then tint else RAINBOW[(i - 1) % #RAINBOW + 1]
+		glow.AnchorPoint = Vector2.new(0.5, 0.5)
+		glow.BackgroundTransparency = 1
+		local glowFade = Instance.new("UIGradient")
+		glowFade.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1),
+			NumberSequenceKeypoint.new(0.45, 0.35),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		glowFade.Parent = glow
+		local glowCorner = Instance.new("UICorner")
+		glowCorner.CornerRadius = UDim.new(1, 0)
+		glowCorner.Parent = glow
+		glow.Parent = gui
+		-- The line: a rainbow one, or white at its head running into a rainbow tail.
 		local frame = Instance.new("Frame")
 		frame.Name = "Line"
 		frame.BorderSizePixel = 0
 		frame.BackgroundColor3 = WHITE
 		frame.AnchorPoint = Vector2.new(0.5, 0.5)
 		frame.BackgroundTransparency = 1
+		frame.ZIndex = 2
 		local gradient = Instance.new("UIGradient")
 		gradient.Transparency = NumberSequence.new({
 			NumberSequenceKeypoint.new(0, 1),
-			NumberSequenceKeypoint.new(0.4, 0.2),
-			NumberSequenceKeypoint.new(1, 0.9),
+			NumberSequenceKeypoint.new(0.35, 0.05),
+			NumberSequenceKeypoint.new(0.8, 0),
+			NumberSequenceKeypoint.new(1, 0.6),
+		})
+		-- The frame points outward (rotation = its angle), so offset 0 is the inner tail.
+		local head = if rainbow then tint:Lerp(WHITE, LINE_TINT_WHITE) else WHITE
+		local tail = if rainbow then tint else RAINBOW[(i - 1) % #RAINBOW + 1]
+		gradient.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, tail),
+			ColorSequenceKeypoint.new(0.55, tail:Lerp(head, 0.5)),
+			ColorSequenceKeypoint.new(1, head),
 		})
 		gradient.Parent = frame
 		local corner = Instance.new("UICorner")
 		corner.CornerRadius = UDim.new(1, 0)
 		corner.Parent = frame
 		frame.Parent = gui
-		local line: Line = { frame = frame, angle = 0, r = 0, speed = 1 }
+		local line: Line = { frame = frame, glow = glow, angle = 0, r = 0, speed = 1 }
 		resetLine(line, true)
 		table.insert(lines, line)
 	end
 end
 
+-- The widen is held by Fx.Camera, which owns the base FOV (its punch reads the same one), so
+-- nothing of it is left on the camera when the run ends.
 local function applyFov(delta: number)
-	local camera = Workspace.CurrentCamera
-	if not camera then
+	Camera.setFov("cardio", if delta > 0.01 then delta else 0)
+end
+
+-- One ribbon of the trail: a Trail between two attachments `width` studs apart left to right
+-- at the runner's feet, so it lies flat along the floor behind them (seen from the camera
+-- above and behind, a wide band on the keys rather than an edge-on strip).
+local function makeRibbon(part: BasePart, name: string, width: number, y: number, light: number): Trail
+	local a0 = Instance.new("Attachment")
+	a0.Name = name .. "Left"
+	a0.Position = Vector3.new(-width / 2, y, 0.6)
+	a0.Parent = part
+	local a1 = Instance.new("Attachment")
+	a1.Name = name .. "Right"
+	a1.Position = Vector3.new(width / 2, y, 0.6)
+	a1.Parent = part
+	local made = Instance.new("Trail")
+	made.Name = name
+	made.Attachment0 = a0
+	made.Attachment1 = a1
+	made.Lifetime = TRAIL.Lifetime
+	made.LightEmission = light
+	made.LightInfluence = 0
+	made.FaceCamera = false
+	made.MinLength = 0.05
+	local keys = {}
+	for i, colour in RAINBOW do
+		table.insert(keys, ColorSequenceKeypoint.new((i - 1) / (#RAINBOW - 1), colour))
+	end
+	made.Color = ColorSequence.new(keys)
+	made.Parent = part
+	-- The attachments go with the trail.
+	made.Destroying:Connect(function()
+		a0:Destroy()
+		a1:Destroy()
+	end)
+	return made
+end
+
+-- The rainbow trail behind the runner: a glowing core ribbon over a wider soft one, made on
+-- the root part once per character, shown from TRAIL.From of the speed share, brighter the
+-- faster.
+local function stepTrail(root: BasePart?)
+	local show = root ~= nil and speedK > TRAIL.From
+	if not show then
+		if trail then
+			trail.Enabled = false
+		end
+		if trailGlow then
+			trailGlow.Enabled = false
+		end
 		return
 	end
-	if delta > 0.01 then
-		if not fovBase then
-			fovBase = camera.FieldOfView
+	local part = root :: BasePart
+	local t = trail
+	if not t or t.Parent ~= part then
+		if t then
+			t:Destroy()
 		end
-		camera.FieldOfView = (fovBase :: number) + delta
-	elseif fovBase then
-		camera.FieldOfView = fovBase :: number
-		fovBase = nil
+		if trailGlow then
+			trailGlow:Destroy()
+		end
+		-- Feet height under the root (the trail lies just above the keys).
+		local humanoid = part.Parent and part.Parent:FindFirstChildOfClass("Humanoid")
+		local down = if humanoid then humanoid.HipHeight + part.Size.Y / 2 else 3
+		local y = -down + pressTravel() + TRAIL.Lift
+		trailGlow = makeRibbon(part, "CardioTrailGlow", TRAIL.GlowWidth, y - 0.05, 1)
+		t = makeRibbon(part, "CardioTrail", TRAIL.Width, y, TRAIL.Light)
+		trail = t
 	end
+	local k = math.clamp((speedK - TRAIL.From) / (1 - TRAIL.From), 0, 1) ^ LINE_CURVE
+	local head = 1 - (TRAIL.Floor + (TRAIL.Opacity - TRAIL.Floor) * k)
+	local trailNow = t :: Trail
+	trailNow.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, head),
+		NumberSequenceKeypoint.new(TRAIL.Hold, head + (1 - head) * 0.25),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	trailNow.Enabled = true
+	local glow = trailGlow
+	if glow then
+		glow.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1 - TRAIL.GlowOpacity * k),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		glow.WidthScale = NumberSequence.new(1, 0.4)
+		glow.Enabled = true
+	end
+end
+
+-- Fx.Camera's attributes on the LocalPlayer while it pins the zoom limits to one distance: the
+-- limits it puts back after (not required here: the Fx modules may be missing or fail).
+local PIN_MIN, PIN_MAX = "ZoomPinMin", "ZoomPinMax"
+
+-- Sets the follow camera's zoom cap; while Fx.Camera pins the limits, the cap it puts back.
+local function setCap(cap: number)
+	if type(player:GetAttribute(PIN_MAX)) == "number" then
+		player:SetAttribute(PIN_MAX, cap)
+	else
+		player.CameraMaxZoomDistance = cap
+	end
+end
+
+-- Cardio's own run camera: the follow camera's zoom cap moves in with the speed (Fx.Camera's
+-- spawn shot sets the zoom only inside the player's limits, so it never fights this cap).
+local function stepZoom()
+	local camera = Workspace.CurrentCamera
+	if not camera or camera.CameraType ~= Enum.CameraType.Custom then
+		return
+	end
+	local pinMin, pinMax = player:GetAttribute(PIN_MIN), player:GetAttribute(PIN_MAX)
+	if zoomWas == nil and type(pinMax) == "number" then
+		-- Fx.Camera is setting a zoom: the player's real cap is the one it will put back.
+		zoomWas = pinMax
+		pinnedSince = 0
+	elseif zoomWas == nil then
+		-- Both limits on one distance without Fx.Camera's pin: wait a moment so a pin of a
+		-- frame or two is not taken as the player's cap (stuck limits: see RUN_ZOOM.Stuck).
+		if player.CameraMaxZoomDistance <= player.CameraMinZoomDistance then
+			local now = os.clock()
+			if pinnedSince == 0 then
+				pinnedSince = now
+			end
+			if now - pinnedSince < RUN_ZOOM.Stuck then
+				return
+			end
+			local starter = game:GetService("StarterPlayer")
+			player.CameraMinZoomDistance = math.min(player.CameraMinZoomDistance, starter.CameraMinZoomDistance)
+			zoomWas = math.max(player.CameraMaxZoomDistance, starter.CameraMaxZoomDistance)
+		else
+			zoomWas = player.CameraMaxZoomDistance
+		end
+		pinnedSince = 0
+	end
+	local was = zoomWas :: number
+	local least = if type(pinMin) == "number" then pinMin else player.CameraMinZoomDistance
+	local want = RUN_ZOOM.Walk + (RUN_ZOOM.Full - RUN_ZOOM.Walk) * speedK
+	want = math.clamp(want, math.min(least, was), was)
+	if math.abs(want - zoomNow) >= RUN_ZOOM.Step then
+		zoomNow = want
+		setCap(want)
+	end
+end
+
+-- The player's own zoom cap back (the run is over).
+local function restoreZoom()
+	if zoomWas ~= nil then
+		setCap(zoomWas :: number)
+	end
+	zoomWas = nil
+	zoomNow = 0
+	pinnedSince = 0
 end
 
 local function stepSpeed(dt: number, root: BasePart?)
@@ -682,6 +964,8 @@ local function stepSpeed(dt: number, root: BasePart?)
 	end
 	local reduced = reducedMotion()
 	applyFov(if reduced then 0 else FOV_MAX * speedK)
+	stepTrail(root)
+	stepZoom()
 	if speedK <= 0 then
 		if linesGui then
 			linesGui.Enabled = false
@@ -694,21 +978,27 @@ local function stepSpeed(dt: number, root: BasePart?)
 	local camera = Workspace.CurrentCamera
 	local view = if camera then camera.ViewportSize else Vector2.new(1280, 720)
 	local centre = view / 2
-	local reach = centre.Magnitude
-	local strength = speedK * (if reduced then 0.5 else 1)
+	local strength = speedK ^ LINE_CURVE * (if reduced then 0.5 else 1)
+	local thick = LINE_THICK + (LINE_THICK_FULL - LINE_THICK) * strength
 	for _, line in lines do
 		line.r += dt * line.speed * (0.6 + strength)
 		if line.r > 1.15 then
 			resetLine(line, false)
 		end
+		-- r is the share of the way from the centre to the screen's edge along the line's
+		-- direction (an ellipse on the screen), so the lines fill every edge alike.
 		local dir = Vector2.new(math.cos(line.angle), math.sin(line.angle))
-		local pos = centre + dir * line.r * reach
-		local len = (40 + 140 * strength) * (0.5 + line.r)
-		line.frame.Position = UDim2.fromOffset(pos.X, pos.Y)
-		line.frame.Size = UDim2.fromOffset(len, 2 + 2 * strength)
-		-- Fade in from the centre, strongest near the edges.
-		local edge = math.clamp((line.r - 0.35) / 0.4, 0, 1)
-		line.frame.BackgroundTransparency = 1 - 0.55 * strength * edge
+		local pos = centre + Vector2.new(dir.X * centre.X, dir.Y * centre.Y) * line.r
+		local len = (LINE_LEN + (LINE_LEN_FULL - LINE_LEN) * strength) * (0.5 + line.r)
+		local at = UDim2.fromOffset(pos.X, pos.Y)
+		line.frame.Position = at
+		line.frame.Size = UDim2.fromOffset(len, thick)
+		line.glow.Position = at
+		line.glow.Size = UDim2.fromOffset(len * 1.1, thick * LINE_GLOW)
+		-- Fade in past the clear middle, solid out to the edges.
+		local edge = math.clamp((line.r - LINE_CLEAR) / (LINE_SOLID - LINE_CLEAR), 0, 1)
+		line.frame.BackgroundTransparency = 1 - LINE_OPACITY * strength * edge
+		line.glow.BackgroundTransparency = 1 - LINE_GLOW_OPACITY * strength * edge
 	end
 end
 
@@ -1136,6 +1426,182 @@ local function stepDoors(now: number)
 	end
 end
 
+-- Goal star on the track ------------------------------------------------------------------------
+
+type GoalMarker = {
+	gui: BillboardGui?,
+	arrow: TextLabel?,
+	star: GuiObject?,
+	scale: UIScale?,
+	text: TextLabel?,
+	plate: Frame?,
+	stage: number,
+	shown: string,
+}
+local goalMarker: GoalMarker = { stage = -1, shown = "" }
+
+local function signBoard(n: number): BasePart?
+	local track = Workspace:FindFirstChild("CardioTrack")
+	local model = track and track:FindFirstChild("StageSign" .. n, true)
+	local board = model and model:FindFirstChild("StageSign")
+	return if board and board:IsA("BasePart") then board else nil
+end
+
+local function goalGui(): BillboardGui
+	local made = goalMarker.gui
+	if made and made.Parent then
+		return made
+	end
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "CardioGoalStar"
+	gui.Size = UDim2.new(GOAL.StudsW, GOAL.PxW, GOAL.StudsH, GOAL.PxH)
+	gui.LightInfluence = 0
+	gui.MaxDistance = GOAL.MaxDistance
+	gui.ResetOnSpawn = false
+	gui.Enabled = false
+	local arrow = outlined(gui, 48, GOAL.Gold)
+	arrow.Name = "Arrow"
+	arrow.AutomaticSize = Enum.AutomaticSize.None
+	arrow.Text = utf8.char(0x25BC)
+	arrow.TextScaled = true
+	arrow.AnchorPoint = Vector2.new(0.5, 0)
+	arrow.Size = UDim2.fromScale(0.5, GOAL.ArrowH)
+	arrow.Position = UDim2.fromScale(0.5, 0)
+	local cell = Assets.icon and Assets.icon("Star")
+	local star: GuiObject
+	if type(cell) == "table" and type(cell.image) == "string" then
+		local image = Instance.new("ImageLabel")
+		image.BackgroundTransparency = 1
+		image.Image = cell.image
+		image.ImageRectOffset = Vector2.new(num(cell.x, 0), num(cell.y, 0))
+		image.ImageRectSize = Vector2.new(num(cell.w, 0), num(cell.h, 0))
+		image.ScaleType = Enum.ScaleType.Fit
+		star = image
+	else
+		local glyph = outlined(gui, 48, GOAL.Gold)
+		glyph.AutomaticSize = Enum.AutomaticSize.None
+		glyph.Text = utf8.char(0x2605)
+		glyph.TextScaled = true
+		star = glyph
+	end
+	star.Name = "Star"
+	star.AnchorPoint = Vector2.new(0.5, 0.5)
+	star.Size = UDim2.fromScale(GOAL.StarSize, GOAL.StarSize)
+	star.Position = UDim2.fromScale(0.5, GOAL.ArrowH + GOAL.StarSize / 2)
+	local aspect = Instance.new("UIAspectRatioConstraint")
+	aspect.Parent = star
+	local scale = Instance.new("UIScale")
+	scale.Parent = star
+	star.Parent = gui
+	local plate = Instance.new("Frame")
+	plate.Name = "Plate"
+	plate.BackgroundColor3 = GOAL.Plate
+	plate.BackgroundTransparency = GOAL.PlateTransparency
+	plate.AnchorPoint = Vector2.new(0.5, 1)
+	plate.Size = UDim2.fromScale(1, GOAL.TextH)
+	plate.Position = UDim2.fromScale(0.5, 1)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0.3, 0)
+	corner.Parent = plate
+	local rim = Instance.new("UIStroke")
+	rim.Color = GOAL.Gold
+	rim.Thickness = 3
+	rim.Parent = plate
+	plate.Parent = gui
+	local text = outlined(plate, 40, GOAL.Gold)
+	text.Name = "Goal"
+	text.AutomaticSize = Enum.AutomaticSize.None
+	text.TextScaled = true
+	text.Size = UDim2.fromScale(0.92, 0.84)
+	text.Position = UDim2.fromScale(0.04, 0.08)
+	gui.Parent = guiFolder()
+	goalMarker.gui = gui
+	goalMarker.arrow = arrow
+	goalMarker.star = star
+	goalMarker.scale = scale
+	goalMarker.text = text
+	goalMarker.plate = plate
+	goalMarker.stage = -1
+	goalMarker.shown = ""
+	return gui
+end
+
+local function hideGoal()
+	local gui = goalMarker.gui
+	if gui then
+		gui.Enabled = false
+	end
+end
+
+local function stepGoal(now: number)
+	local stageCount = math.floor(num(snap.stageCount, 10))
+	local n = math.floor(num(snap.stage, 0)) + 1
+	local needs = snap.needs
+	local need = if type(needs) == "table" then num(needs[n], 0) else 0
+	if n > stageCount or need <= 0 then
+		hideGoal()
+		return
+	end
+	local list = snap.recommended
+	local rec = math.max(need, if type(list) == "table" then num(list[n], 0) else 0)
+	local gui = goalGui()
+	if goalMarker.stage ~= n then
+		local board = signBoard(n)
+		if not board then
+			gui.Enabled = false
+			return
+		end
+		goalMarker.stage = n
+		gui.Adornee = board
+		gui.StudsOffsetWorldSpace = Vector3.new(-GOAL.Front, -GOAL.Down, GOAL.Side)
+	end
+	local ready = num(snap.speed, 0) >= rec
+	local colour = if ready then GOAL.Ready else GOAL.Gold
+	local label = (if ready then "READY! " else "GOAL ") .. Format.commas(math.ceil(rec)) .. " SPEED"
+	if goalMarker.shown ~= label then
+		goalMarker.shown = label
+		local text = goalMarker.text :: TextLabel
+		local arrow = goalMarker.arrow :: TextLabel
+		text.Text = label
+		text.TextColor3 = colour
+		arrow.TextColor3 = colour
+		-- The atlas star keeps its own colours; only the glyph fallback is tinted.
+		local star = goalMarker.star :: GuiObject
+		if star:IsA("TextLabel") then
+			star.TextColor3 = colour
+		end
+		local rim = (goalMarker.plate :: Frame):FindFirstChildOfClass("UIStroke")
+		if rim then
+			rim.Color = colour
+		end
+	end
+	gui.Enabled = true
+	-- Close to the door the star would reach the HUD column at the right edge: it slides left
+	-- in screen space (by at most its own width) so the column never covers it.
+	local camera = Workspace.CurrentCamera
+	local board = gui.Adornee
+	local shift = 0
+	if camera and board and board:IsA("BasePart") then
+		local p = camera:WorldToViewportPoint(board.Position + gui.StudsOffsetWorldSpace)
+		local width = gui.AbsoluteSize.X
+		if p.Z > 0 and width > 0 then
+			local over = p.X + width / 2 - (camera.ViewportSize.X - GOAL.KeepRight)
+			shift = math.clamp(over / width, 0, 1)
+		end
+	end
+	if math.abs(gui.SizeOffset.X + shift) > 0.01 then
+		gui.SizeOffset = Vector2.new(-shift, 0)
+	end
+	local still = reducedMotion()
+	local bob = if still then 0 else 0.5 + 0.5 * math.sin(now * GOAL.BobHz * TAU)
+	local arrow = goalMarker.arrow :: TextLabel
+	local star = goalMarker.star :: GuiObject
+	local scale = goalMarker.scale :: UIScale
+	arrow.Position = UDim2.fromScale(0.5, GOAL.BobShare * bob)
+	star.Rotation = if still then 0 else GOAL.SpinDeg * math.sin(now * GOAL.SpinHz * TAU)
+	scale.Scale = 1 + (if still then 0 else GOAL.Pulse * math.sin(now * GOAL.PulseHz * TAU))
+end
+
 local function step(dt: number)
 	local now = os.clock()
 	local humanoid, root = character()
@@ -1145,6 +1611,7 @@ local function step(dt: number)
 	stepSpeed(dt, root)
 	stepDoors(now)
 	stepBlinkKeys()
+	stepGoal(now)
 end
 
 -- Run glow: our own bloom + a touch more saturation so the neon trusses glow (Fx.Surge
@@ -1165,14 +1632,14 @@ local function setGlow(on: boolean)
 	end
 	local bloom = Instance.new("BloomEffect")
 	bloom.Name = "CardioBloom"
-	bloom.Intensity = 0.6
-	bloom.Size = 24
-	bloom.Threshold = 0.9
+	bloom.Intensity = RUN_GLOW.BloomIntensity
+	bloom.Size = RUN_GLOW.BloomSize
+	bloom.Threshold = RUN_GLOW.BloomThreshold
 	bloom.Parent = Lighting
 	runBloom = bloom
 	local grade = Instance.new("ColorCorrectionEffect")
 	grade.Name = "CardioGrade"
-	grade.Saturation = 0.1
+	grade.Saturation = RUN_GLOW.Saturation
 	grade.Parent = Lighting
 	runGrade = grade
 end
@@ -1190,7 +1657,11 @@ local function activate()
 	end
 end
 
+-- The one way out of a run (the "stop" Notify of a quit, Home, a mode switch, a respawn or
+-- leaving the track, and the snapshot's `running` going false): the glow, the widened FOV,
+-- the speed lines, the pops and pressed keys, and the chaser with its red vignette all go.
 local function deactivate()
+	Chase.stop()
 	if not active then
 		return
 	end
@@ -1207,6 +1678,16 @@ local function deactivate()
 	if linesGui then
 		linesGui.Enabled = false
 	end
+	if trail then
+		trail:Destroy()
+		trail = nil
+	end
+	if trailGlow then
+		trailGlow:Destroy()
+		trailGlow = nil
+	end
+	restoreZoom()
+	hideGoal()
 end
 
 function CardioFx.onNotify(p: any)

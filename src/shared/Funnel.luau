@@ -11,9 +11,10 @@
 	  2 Intro Done     the cutscene finished or was skipped
 	  3..7             each tutorial step finished (buy, orbs, deposit, collect, merge)
 	  8..11            highest tier discovered: Tier 3, Tier 5, Tier 7, Tier 10
+	  12..15           the late tiers: Tier 12, Tier 15, Tier 20, Tier 25
 
 	profile.onboarding says where a player is:
-	  0..11         the highest step logged
+	  0..15         the highest step logged
 	  SKIPPED + n   the tutorial was skipped. The funnel stops there: logging the rest
 	                of it would count tutorial steps the player never did. Their tier
 	                milestones are logged as one-time custom events instead
@@ -23,6 +24,12 @@
 	The tier milestones (steps 8..11 and the Skipper events) were added later. A save from
 	before them whose tutorial is over is a returning player: Funnel.returning marks every
 	milestone as logged without sending anything, so only new players' tiers are counted.
+
+	The late tiers (steps 12..15) came with economy 2.0, which brought them within a first
+	week. They are steps only for players who finished the tutorial and logged step LAST;
+	a late tier a profile already had when its session started is marked without being
+	sent (Funnel.late), for the same reason. Everyone's tiers from 11 up are also custom
+	events (Server.Analytics, "TierReached"), so skippers need no extra event names.
 ]]
 
 local Funnel = {}
@@ -34,6 +41,9 @@ Funnel.TUTORIAL_END = 7
 -- Tiers whose first discovery is a step, in order.
 Funnel.MILESTONES = { 3, 5, 7, 10 }
 Funnel.LAST = Funnel.TUTORIAL_END + #Funnel.MILESTONES
+-- Tiers whose first discovery is a late step (LAST + 1 and up), in order.
+Funnel.LATE = { 12, 15, 20, 25 }
+Funnel.LATE_LAST = Funnel.LAST + #Funnel.LATE
 
 export type Plan = {
 	-- The new profile.onboarding.
@@ -59,6 +69,10 @@ function Funnel.milestoneName(index: number): string
 	return "Tier " .. Funnel.MILESTONES[index]
 end
 
+function Funnel.lateName(index: number): string
+	return "Tier " .. Funnel.LATE[index]
+end
+
 -- profile.onboarding after the tutorial is skipped (unchanged when the tutorial was
 -- finished, already skipped, or the save is a legacy one).
 function Funnel.skip(onboarding: number): number
@@ -76,7 +90,7 @@ function Funnel.returning(onboarding: number, tutorialDone: boolean): number
 	elseif onboarding >= Funnel.SKIPPED or (tutorialDone and onboarding < Funnel.TUTORIAL_END) then
 		return Funnel.SKIPPED + #Funnel.MILESTONES
 	elseif onboarding >= Funnel.TUTORIAL_END then
-		return Funnel.LAST
+		return math.max(onboarding, Funnel.LAST)
 	end
 	return onboarding
 end
@@ -97,6 +111,27 @@ function Funnel.tiers(onboarding: number, highestTier: number): Plan
 	elseif onboarding >= Funnel.TUTORIAL_END then
 		for step = onboarding + 1, Funnel.TUTORIAL_END + reached do
 			table.insert(plan.steps, step)
+			plan.onboarding = step
+		end
+	end
+	return plan
+end
+
+-- The late steps of a profile at `onboarding` (after Funnel.tiers) whose best tier is
+-- `highestTier`. `news` = the tier was discovered just now: false when a session starts,
+-- where a late tier the profile already has (a save from before these steps) is marked as
+-- logged and not sent.
+function Funnel.late(onboarding: number, highestTier: number, news: boolean): Plan
+	local plan: Plan = { onboarding = onboarding, steps = {}, events = {} }
+	if onboarding < Funnel.LAST or onboarding >= Funnel.SKIPPED then
+		return plan
+	end
+	for index, tier in Funnel.LATE do
+		local step = Funnel.LAST + index
+		if highestTier >= tier and step > plan.onboarding then
+			if news then
+				table.insert(plan.steps, step)
+			end
 			plan.onboarding = step
 		end
 	end

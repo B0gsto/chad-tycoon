@@ -21,6 +21,7 @@ local Animator = require(Client.Animator)
 local Hud = require(Client.UI.Hud)
 local Windows = require(Client.UI.Windows)
 local Popups = require(Client.UI.Popups)
+local AwayWindow = require(Client.UI.AwayWindow)
 local Tutorial = require(Client.UI.Tutorial)
 local MogHud = require(Client.UI.MogHud)
 local CardioHud = require(Client.UI.CardioHud)
@@ -120,6 +121,15 @@ MogHud.build(screen)
 CardioHud.build(screen)
 -- The Modes window's MOG TEST PLAY opens the VS RIVALS / 1v1 DUEL picker.
 Windows.onMogPlay = MogHud.choose
+-- "While you were away" (built with the Daily window) opens like any window; a player still
+-- in the tutorial gets the plain "Welcome back" popup, one busy for minutes a toast.
+AwayWindow.connect({
+	open = function(name)
+		Windows.open(name)
+	end,
+	fallback = Popups.offline,
+	toast = Popups.toast,
+})
 Guide.build()
 Hud.build(screen, {
 	openWindow = Windows.open,
@@ -222,7 +232,10 @@ if RunService:IsStudio() and Cutscene then
 		end
 	end)
 end
--- Studio-only capture hook: "UiPreview" = "<WindowName>", "Shop,<focus>", "close", "starter" or "reward,<tier>".
+-- Studio-only capture hook: "UiPreview" = "<WindowName>", "Shop,<focus>", "close", "starter",
+-- "reward,<tier>", "rewards,<from>,<to>" (one reveal per tier), "crate,<Rarity>,<tier>" (the
+-- crate reveal with its rarity banner, then that unit), "gift", "surge", "tutorialdone"
+-- or "away" (the "While you were away" card, with made-up offline cash).
 if RunService:IsStudio() then
 	player:GetAttributeChangedSignal("UiPreview"):Connect(function()
 		local spec = player:GetAttribute("UiPreview")
@@ -230,8 +243,42 @@ if RunService:IsStudio() then
 			return
 		end
 		local tier = string.match(spec, "^reward,(%d+)$")
-		if tier then
-			Popups.reward({ kind = "Reward", tier = tonumber(tier), tiers = { tonumber(tier) }, new = true })
+		local from, to = string.match(spec, "^rewards,(%d+),(%d+)$")
+		local crateRarity, crateTier = string.match(spec, "^crate,(%a+),(%d+)$")
+		if crateRarity then
+			Popups.noteChestOpen(crateRarity)
+			Popups.reward({ kind = "Reward", tier = tonumber(crateTier), tiers = { tonumber(crateTier) }, new = false, source = "unlock" })
+		elseif tier then
+			-- The production pair is made up here: the "+X Aura/sec" line needs a gain to show.
+			Popups.reward({
+				kind = "Reward",
+				tier = tonumber(tier),
+				tiers = { tonumber(tier) },
+				new = true,
+				productionBefore = 0,
+				productionAfter = 12 * 2.4 ^ (tonumber(tier) :: number),
+			})
+		elseif from and to then
+			local tiers = {}
+			for t = tonumber(from) :: number, tonumber(to) :: number do
+				table.insert(tiers, t)
+			end
+			Popups.reward({
+				kind = "Reward",
+				tier = tonumber(to),
+				tiers = tiers,
+				new = true,
+				productionBefore = 0,
+				productionAfter = 12 * 2.4 ^ #tiers,
+			})
+		elseif spec == "gift" then
+			Popups.gift({ cash = 3290 })
+		elseif spec == "surge" then
+			Popups.surge({ phase = "start" })
+		elseif spec == "tutorialdone" then
+			Popups.tutorialDone(200, function() end)
+		elseif spec == "away" then
+			AwayWindow.show({ kind = "Offline", seconds = 3 * 3600 + 720, orbs = 5200, cash = 12400 }, true)
 		elseif spec == "close" then
 			Windows.closeAll()
 			Popups.closeModals()
@@ -245,9 +292,21 @@ if RunService:IsStudio() then
 	end)
 end
 
+-- Parkour's HUD normally leaves on the run's "finish" / "stop" / "invalid" Notify. Safety
+-- net: the snapshot says the run is over (a Notify that never arrived) and the HUD goes too.
+local parkourRunning = false
+
 Net.event("State").OnClientEvent:Connect(function(data)
 	State.set(data)
 	CardioHud.onState(data)
+	local parkour = type(data.modes) == "table" and data.modes.parkour
+	local running = type(parkour) == "table" and parkour.running == true
+	if parkourRunning and not running then
+		Hud.setObbyMode(false)
+		Hud.runStop()
+		ObbyHud.hide()
+	end
+	parkourRunning = running
 	maybePlayIntro()
 	Sounds.updateMusic()
 	if data.freeIn and data.freeIn > 0 then
@@ -259,22 +318,42 @@ Net.event("State").OnClientEvent:Connect(function(data)
 	end
 end)
 
+-- Mode events that end what a finish card was about: a run (or a duel queue, or the map and
+-- Mog pickers) began, or the mode stopped. The card of a finish that is still on its way in
+-- the same burst (a duel the player left) goes with it.
+local FINISH_OVER = { start = true, stop = true, choose = true, queue = true, pick = true }
+
 Net.event("Notify").OnClientEvent:Connect(function(payload)
 	if type(payload) ~= "table" then
 		return
+	end
+	if payload.kind == "Mode" and FINISH_OVER[payload.event] then
+		-- A finish card never stays up over another mode or after its own has ended (Popups
+		-- closes it too once the player is Home).
+		Popups.closeFinish()
+		-- CardioHud's own finish card too (its own "start" and "stop" hide it already).
+		CardioHud.closeFinish()
 	end
 	if payload.kind == "Toast" then
 		Popups.toast(payload.text, payload.tone)
 	elseif payload.kind == "Reward" then
 		Popups.reward(payload)
 	elseif payload.kind == "Offline" then
-		Popups.offline(payload)
+		-- Back after a while: the "While you were away" card, once the screen is calm.
+		AwayWindow.show(payload)
 	elseif payload.kind == "Confirm" then
 		Popups.confirm(payload.text, function()
 			action:FireServer(payload.action)
 		end)
 	elseif payload.kind == "Tutorial" then
 		Tutorial.onNotify(payload)
+	elseif payload.kind == "Gift" then
+		-- The free gift's card: { cash, nextIn } (the "Cash" effect of the same claim brings
+		-- the sound and the coins).
+		Popups.gift(payload)
+	elseif payload.kind == "Surge" then
+		-- Aura Surge: the countdown chip 30 s ahead and the banner at the start.
+		Popups.surge(payload)
 	elseif payload.kind == "Mode" and payload.mode == "mog" then
 		-- MOG TEST (vs rivals or a 1v1 duel): the picker, queue panel, ring, HP and finish card
 		-- (Fx.Mog does the 3D side).
@@ -318,13 +397,13 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 			end
 			Sounds.play("Step")
 		elseif event == "respawn" then
-			-- Fell through the clouds (or touched lava): back to the start of the map, the run goes on.
+			-- Fell through the clouds (or touched lava): back to the start of the map, the run
+			-- goes on. The obby HUD says it ("Oops! Back to the start"); lava adds the sound.
 			if payload.stage ~= nil then
 				ObbyHud.setStage(tonumber(payload.stage), tonumber(payload.stageCount))
 			end
 			if payload.reason == "kill" then
 				Sounds.play("Error")
-				Popups.toast("Ouch! Back to the start of the map", "bad")
 			end
 		elseif event == "skip" then
 			-- Paid a map skip: on to the next map (the run is now assisted).
@@ -376,7 +455,7 @@ end)
 
 -- Floating "+X" anchors: beside the HUD dumbbell (bottom centre) and above the
 -- cash amount (bottom left).
-local TANK = UDim2.new(0.5, 170, 1, -90)
+local TANK = UDim2.new(0.5, 170, 1, -100)
 local WALLET = UDim2.new(0, 150, 1, -110)
 
 -- Sounds for effects owned by the UI. Fx modules (Client.Fx.*) listen to the
@@ -387,7 +466,7 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 	if kind == "Collect" then
 		-- Silent: Fx.Orbs already popped for each pickup.
 		Hud.pulseTank()
-		Popups.float("+" .. I.Orb .. Format.short(data.amount or 0), C.Orb, TANK)
+		Popups.float("+" .. I.Orb .. Format.short(data.amount or 0), C.Orb, TANK, Popups.FLOAT.aura)
 	elseif kind == "Cash" then
 		-- Auto Cash pays out every few seconds: no sound, float or coin burst for it, the
 		-- wallet number simply rolls up.
@@ -410,9 +489,37 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 			return
 		end
 		Sounds.play("Cash")
-		Popups.float("+" .. Format.money(amount), C.Good, WALLET)
+		-- One cash number per collect: with a pad position Fx.Machines raises the big "+$X"
+		-- from there (and Orbs.coinArc flies the coins); the free gift's amount is on its card
+		-- (the Gift notify). The small float at the wallet is only for the rest.
+		if data.source ~= "Free" and typeof(data.padPos) ~= "Vector3" then
+			Popups.float("+" .. Format.money(amount), C.Good, WALLET)
+		end
 		-- Claimed from the Free menu button: coins fly from the button.
 		local fromMenu = data.source == "Free" and os.clock() - Hud.freeClaimedAt < 3
+		-- A pad's coins (Collect, the Free pad walked onto) are Fx.Machines' fountain, which
+		-- flies to the wallet: no second stream of flat coins from the same pad.
+		if data.source == "Collect" or (data.source == "Free" and not fromMenu) then
+			return
+		end
+		if data.source == "Mode" then
+			-- A mode's finish card (sent with this payout) counts the reward up with its own
+			-- coins: the HUD's stream would cross its text lines, so it waits for the card to
+			-- go and then flies from the middle of the screen (r5).
+			task.delay(0.3, function()
+				local card = screen:FindFirstChild("ModeFinish") or screen:FindFirstChild("MogFinish")
+				if not card then
+					Hud.coinBurst(amount, if typeof(data.padPos) == "Vector3" then data.padPos else nil, nil)
+					return
+				end
+				local waited = 0
+				while card.Parent and waited < 90 do
+					waited += task.wait(0.2)
+				end
+				Hud.coinBurst(amount, nil, nil)
+			end)
+			return
+		end
 		Hud.coinBurst(amount, if typeof(data.padPos) == "Vector3" then data.padPos else nil, if fromMenu then Hud.buttons.Free else nil)
 	elseif kind == "Pad" then
 		-- Fx.Machines plays the deny sound and pad wobble; the wallet shake
@@ -420,21 +527,35 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 		if data.ok == false and data.reason == "money" then
 			Hud.shakeWallet()
 		end
-	elseif kind == "AuraGrant" then
-		-- Aura pack: orbs fly into the tank (the server sends the "+X aura" toast).
-		Hud.orbBurst(if type(data.amount) == "number" then data.amount else 0)
 	elseif kind == "Deposit" then
 		Sounds.play("Deposit")
-		Popups.float(string.format("%s%s x%.1f", I.Orb, Format.short(data.amount or 0), data.mult or 1), C.Primary, TANK)
+		-- `amount` is the aura queued in the converter; the deposit multiplier's part is `bonus`,
+		-- cash paid at once (Economy.depositSplit), so the float names it as cash.
+		local text = I.Orb .. Format.short(if type(data.amount) == "number" then data.amount else 0)
+		Popups.float(text, C.Primary, TANK, Popups.FLOAT.aura)
+		if type(data.bonus) == "number" and data.bonus >= 1 then
+			local bonusText = "+" .. Format.money(data.bonus) .. " bonus"
+			task.delay(Popups.FLOAT.bonusDelay, function()
+				Popups.float(bonusText, C.Good, TANK + UDim2.fromOffset(0, Popups.FLOAT.bonusRise), Popups.FLOAT.bonus)
+			end)
+		end
 	elseif kind == "Buy" then
 		Sounds.play("Buy", 0.1)
 	elseif kind == "Merge" then
 		Popups.noteMerge()
+		-- The "+TIER n" chip (Fx.Shelf) holds the screen: toasts wait for it. (Not for the Auto
+		-- Merge pass's steady merges, or toasts would hardly ever get a turn.)
+		if data.auto ~= true then
+			Popups.holdToasts("Merge")
+		end
 	elseif kind == "Upgrade" then
 		Sounds.play("Upgrade")
+		-- So does the "+25% SPEED" pop (Fx.Machines); its "upgraded for free" toast follows it.
+		Popups.holdToasts("Upgrade")
 	elseif kind == "ChestOpen" then
 		-- The crate reveal (Popups) plays its own shake/burst sounds.
 		Popups.noteChestOpen(data.rarity)
+		Popups.holdToasts("Crate")
 	elseif kind == "ChestPickup" then
 		Sounds.play("Pickup")
 	elseif kind == "CardioSteps" then
@@ -453,6 +574,7 @@ if fxFolder then
 			"Machines",
 			"Crates",
 			"Fans",
+			"PlotRank",
 			"Ambient",
 			"Plates",
 			"Cosmetics",

@@ -47,6 +47,9 @@ local CROWN_WIDTH = 1.05
 local CROWN_SINK = 0.18
 -- Seconds before the join-time Starter popup is sent, so the client UI is listening.
 local STARTER_NOTIFY_DELAY = 4
+-- The Champion aura (the reward for the whole Index, profile.cosmetics.champion): a deeper
+-- gold than the Chad Aura's own colour, and a richer sparkle.
+local CHAMPION_AURA = { Color = Color3.fromRGB(255, 176, 24), Rich = true }
 
 local theme: any
 -- Per player: the cosmetic instances on the current character, and its connections.
@@ -112,6 +115,16 @@ function Cosmetics.toggleOn(profile: any, name: string): boolean
 	return profile.cosmetics.toggles[name] ~= false
 end
 
+-- May this player switch toggle item `name` on and off: its owner and, for the Chad Aura,
+-- a Champion too (the whole Index's aura needs no pass and hangs on the same switch).
+function Cosmetics.canSwitch(t: any, profile: any, passes: { [string]: boolean }, name: string): boolean
+	local c = config(t)
+	if not c or not isToggle(c.Items[name]) then
+		return false
+	end
+	return Cosmetics.owns(t, passes, name) or (name == "AuraGlow" and profile.cosmetics.champion == true)
+end
+
 -- Is cosmetic `name` owned and in use (equipped trail / toggle switched on)?
 function Cosmetics.active(t: any, profile: any, passes: { [string]: boolean }, name: string): boolean
 	local c = config(t)
@@ -154,15 +167,21 @@ end
 function Cosmetics.state(t: any, profile: any, passes: { [string]: boolean }): { [string]: any }
 	local c = config(t)
 	local toggles = {}
+	-- { [name] = true } for every switch the player may use (the shop shows those).
+	local canSwitch = {}
 	for name, item in c.Items do
 		if isToggle(item) then
 			toggles[name] = Cosmetics.toggleOn(profile, name)
+			if Cosmetics.canSwitch(t, profile, passes, name) then
+				canSwitch[name] = true
+			end
 		end
 	end
 	return {
 		owned = Cosmetics.ownedSet(t, passes),
 		trail = Cosmetics.trail(t, profile, passes),
 		toggles = toggles,
+		canSwitch = canSwitch,
 		bundleOwned = passes[c.Bundle] == true,
 		starterOwned = passes[c.Starter.Pass] == true,
 		starterGranted = profile.starterGranted == true,
@@ -304,7 +323,7 @@ local function addAura(player: Player, root: BasePart, item: any)
 	local color = item.Color
 	auraEmitter(player, root, "Sparkle", {
 		Color = ColorSequence.new(color, theme.World.Cream),
-		Rate = 6,
+		Rate = if item.Rich then 10 else 6,
 		Lifetime = NumberRange.new(0.9, 1.4),
 		Speed = NumberRange.new(1, 2),
 		Drag = 1,
@@ -468,7 +487,13 @@ local function apply(session: Session)
 	if trail ~= "" then
 		addTrail(player, root, items[trail])
 	end
-	if Cosmetics.active(theme, profile, passes, "AuraGlow") then
+	-- One aura: the Champion colour (the whole Index's reward, no pass needed) goes in front
+	-- of the Chad Aura's own. The Chad Aura switch turns it off, pass or no pass
+	-- (Cosmetics.canSwitch).
+	local champion = profile.cosmetics.champion == true
+	if champion and Cosmetics.toggleOn(profile, "AuraGlow") then
+		addAura(player, root, CHAMPION_AURA)
+	elseif Cosmetics.active(theme, profile, passes, "AuraGlow") then
 		addAura(player, root, items.AuraGlow)
 	end
 	local head = character:FindFirstChild("Head")
@@ -579,6 +604,12 @@ function Cosmetics.init(themeModule: any)
 	end
 
 	Tycoon.hooks.passGranted = onPassGranted
+	-- The whole Index was just claimed: the Champion aura colour goes on at once.
+	table.insert(Tycoon.listeners, function(session: Session, name: string, data: { [string]: any })
+		if name == "IndexClaim" and data.champion == true then
+			apply(session)
+		end
+	end)
 	Tycoon.hooks.cosmetics = function(session)
 		return Cosmetics.state(theme, session.profile, session.passes)
 	end
@@ -609,7 +640,7 @@ function Cosmetics.init(themeModule: any)
 		if not isToggle(item) then
 			return
 		end
-		if not Cosmetics.owns(theme, session.passes, name) then
+		if not Cosmetics.canSwitch(theme, session.profile, session.passes, name) then
 			Tycoon.toast(session, "Unlock " .. item.Title .. " in the shop first!", "info")
 			return
 		end

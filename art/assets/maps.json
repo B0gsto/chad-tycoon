@@ -1,0 +1,15 @@
+{
+  "domain": "maps",
+  "assets": [
+    {"name": "Map1", "file": "art/out/maps/Map1.png", "kind": "Image"},
+    {"name": "Map2", "file": "art/out/maps/Map2.png", "kind": "Image"},
+    {"name": "Map3", "file": "art/out/maps/Map3.png", "kind": "Image"},
+    {"name": "Map4", "file": "art/out/maps/Map4.png", "kind": "Image"},
+    {"name": "Map5", "file": "art/out/maps/Map5.png", "kind": "Image"},
+    {"name": "Map6", "file": "art/out/maps/Map6.png", "kind": "Image"},
+    {"name": "Map7", "file": "art/out/maps/Map7.png", "kind": "Image"},
+    {"name": "Map8", "file": "art/out/maps/Map8.png", "kind": "Image"},
+    {"name": "Map9", "file": "art/out/maps/Map9.png", "kind": "Image"},
+    {"name": "Map10", "file": "art/out/maps/Map10.png", "kind": "Image"}
+  ]
+}

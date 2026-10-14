@@ -9,7 +9,8 @@
 	World.Shell builds the ground, the low fences, the low stage wall behind the rack and the
 	entrance arch; the boards are freestanding cream sign cards (Shell.standingCard) with one
 	main line each. Labels Server.Tycoon still writes but the cards no longer show are kept
-	hidden (hiddenLabel).
+	hidden (hiddenLabel). The arch wears flags and pennants (ARCH_DRESS), and a plot nobody owns
+	a "FREE PLOT" pill, sign and balloons (FREE_DRESS).
 
 	Plot-local axes: Z = toward the back fence, Y = up, and +X is on the left of
 	a player walking in from the hub (Roblox is right-handed).
@@ -18,6 +19,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
+local Assets = require(ReplicatedStorage.Shared.Assets)
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Layout = require(script.Parent.PlotLayout)
 
@@ -95,6 +97,7 @@ local buildVault = Machines.buildVault
 local buildUnlocker = Machines.buildUnlocker
 local buildGymDecor = Decor.buildGymDecor
 local buildPad = Pads.buildPad
+local setPadClaimed = Pads.setClaimed
 
 local PLOT_COUNT = Common.PLOT_COUNT
 
@@ -131,9 +134,395 @@ local BOARD_BOTTOM = 7.2
 -- plinth and the gift box in front of them.
 local STATION_SIGN_BOTTOM = 4
 
+-- The crate crackers' cards: smaller than the other station cards, as they stand right behind
+-- their pad (2.4 studs from its base) and a full-size card fills the view from there.
+local CRACKER_SIGN = Vector2.new(4.4, 3.2)
+-- Studs from a cracker's middle to its card's middle along the machine's front, on its -Z
+-- side (left seen from the pad; the +Z side is in the north crate camera's line): in front
+-- of the plinth the card hid the crate in its window and the rarity word over it.
+local CRACKER_SIGN_SIDE = 8
+-- What Server.Tycoon writes into a cracker's timer once its crate can be opened.
+local READY_TEXT = "READY!"
+-- The upright "READY!" pill: its size in studs (plus a fixed pixel part, so it stays readable
+-- across the plot) and the gap between the card's top and its bottom edge.
+local READY_SIZE = Vector2.new(3, 1)
+local READY_PX = Vector2.new(24, 10)
+local READY_GAP = 0.3
+
+-- The owner card's text on a plot nobody owns.
+local FREE_PLOT = "FREE PLOT"
+
+-- Entrance dressing added to Shell's arch on every plot (studs, plot-local; the arch stands on
+-- the front fence line with its pillars at |x| = ArchX, as Shell.buildEntrance builds it): a
+-- flag on a pole over each pillar and a string of pennants from each pole top down to the fence.
+local ARCH_DRESS = {
+	ArchZ = -(Layout.PLOT_HALF - 0.8),
+	ArchX = 8.2,
+	-- Top of the pillars' sunny knobs: the poles stand on them.
+	PoleBase = 13.6,
+	PoleTop = 20,
+	PoleThick = 0.4,
+	KnobSize = 1,
+	-- Each pole's flag is a pennant: a square hoist by the pole carrying a star emblem (the HUD's
+	-- "Star" icon on a white roundel, both faces), then a triangle tapering outward to a point.
+	-- The tier-15 cups stand on these poles' knobs; plain rectangles read as sticky notes.
+	FlagSize = Vector2.new(5.4, 2.8), -- whole pennant: length out from the pole, height at the hoist
+	FlagHoist = 2.6, -- studs of the length that is the square hoist (the rest is the tail)
+	FlagThick = 0.15,
+	FlagColors = { "Coral", "Sunny" },
+	FlagEmblem = 0.8, -- roundel diameter / the hoist's height
+	FlagEmblemRing = { "Sunny", "Coral" }, -- the roundel's rim, per flag (the other flag's colour)
+	FlagEmblemPx = 40, -- SurfaceGui pixels per stud
+	-- Pennants: from each pole (PennantDrop under its flag) out to a short pole on the fence at
+	-- |x| = PennantEndX, PennantEndY up (so the last pennant hangs clear of the 3.6-stud fence),
+	-- sagging PennantSag in the middle.
+	PennantDrop = 0.6,
+	PennantEndX = 31,
+	PennantEndY = 8.6,
+	PennantSag = 2.2,
+	PennantCount = 11,
+	PennantSize = Vector2.new(1.9, 2.4),
+	PennantColors = { "Coral", "Sunny", "White", "Pink", "Mint" },
+}
+
+-- What a plot nobody owns wears so the street never shows an empty lot (FreePlotDressing, taken
+-- out of the world while the plot has an owner): a green pill floating over the arch, readable
+-- from the hub and from any side, balloons tied to the arch and to the pen's front posts, and a
+-- big sign card on the walkway facing the entrance. Plots are handed out as players join
+-- (Server.Tycoon), so the words promise nothing a visitor could do.
+local FREE_DRESS = {
+	Title = FREE_PLOT,
+	Line = "Waiting for a new " .. theme.Words.Unit .. "!",
+	-- The pill: centre height, size in studs plus fixed pixels, and how far it shows.
+	PillY = 23.5,
+	PillSize = Vector2.new(20, 6.4),
+	PillPx = Vector2.new(60, 20),
+	PillDistance = 170,
+	-- The walkway card: its z, size and bottom edge.
+	CardZ = -30,
+	CardSize = Vector2.new(15, 7),
+	CardBottom = 3.2,
+	-- Balloons: diameter, string thickness and the three balloons of a bunch as (away from the
+	-- centre line, up, along z) from where the bunch is tied.
+	Balloon = 2.6,
+	String = 0.1,
+	Bunch = { Vector3.new(1.8, 6.4, -0.8), Vector3.new(3.6, 7.4, 0.4), Vector3.new(2.4, 8.8, 0.9) },
+	BalloonColors = { "Coral", "Sunny", "Mint", "Pink", "Blue", "Grape" },
+	-- Where the arch bunches are tied: beside each pillar and ArchTieFront toward the hub, clear
+	-- of the awning (it reaches |x| = 9.9) and in front of the arch's pennants.
+	ArchTieOut = 1.8,
+	ArchTieFront = 2.6,
+	ArchTieY = 4.5,
+}
+
 -- A label Server.Tycoon still writes to that its card no longer shows.
 local function hiddenLabel(parent: Instance): TextLabel
 	return text(parent, { Text = "", Visible = false })
+end
+
+-- The "READY!" pill floating over a crate cracker's card (`body` is the card's body frame): a
+-- BillboardGui, so it stands upright and faces the camera from anywhere on the court, in the
+-- pads' green "ready" plate. It shows while `timer` says READY_TEXT; the card then drops its
+-- timer line and shows the crate's name (`status`) alone.
+local function buildReadyFlag(body: Frame, cardHeight: number, status: TextLabel, timer: TextLabel)
+	local card = body:FindFirstAncestorWhichIsA("BasePart") :: BasePart
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "ReadyFlag"
+	gui.Adornee = card
+	gui.Size = UDim2.new(READY_SIZE.X, READY_PX.X, READY_SIZE.Y, READY_PX.Y)
+	gui.StudsOffsetWorldSpace = Vector3.new(0, cardHeight / 2 + READY_GAP + READY_SIZE.Y / 2, 0)
+	gui.MaxDistance = Common.SIGN_FADE_CARD
+	gui.LightInfluence = 0
+	gui.Enabled = false
+	gui.Parent = card
+	local pill = Instance.new("Frame")
+	pill.Size = UDim2.fromScale(1, 1)
+	pill.BackgroundColor3 = (Paint.PadPlate and Paint.PadPlate.Good) or theme.Colors.Good
+	pill.BorderSizePixel = 0
+	pill.Parent = gui
+	local round = Instance.new("UICorner")
+	round.CornerRadius = UDim.new(0.5, 0)
+	round.Parent = pill
+	local rim = Instance.new("UIStroke")
+	rim.Color = Paint.Ink
+	rim.Thickness = 1.5
+	rim.Parent = pill
+	text(pill, {
+		Text = READY_TEXT,
+		Font = theme.Fonts.Display,
+		Size = UDim2.fromScale(0.86, 0.8),
+		Position = UDim2.fromScale(0.07, 0.1),
+		TextColor3 = Paint.White,
+		Outline = true,
+	})
+
+	local statusSize, statusPosition = status.Size, status.Position
+	local function show()
+		local ready = timer.Text == READY_TEXT
+		gui.Enabled = ready
+		timer.Visible = not ready
+		status.Size = if ready then UDim2.fromScale(statusSize.X.Scale, 0.8) else statusSize
+		status.Position = if ready then UDim2.fromScale(statusPosition.X.Scale, 0.1) else statusPosition
+	end
+	timer:GetPropertyChangedSignal("Text"):Connect(show)
+	show()
+end
+
+-- A thin round string from `from` to `to` (world space).
+local function stringRod(P: (props: { [string]: any }) -> BasePart, from: Vector3, to: Vector3, thick: number, color: Color3)
+	soft(P({
+		Name = "String",
+		Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new((to - from).Magnitude, thick, thick),
+		CFrame = CFrame.lookAt((from + to) / 2, to) * CFrame.Angles(0, math.rad(90), 0),
+		Color = color,
+	})).CastShadow =
+		false
+end
+
+-- One entrance pole's pennant flag (ARCH_DRESS.Flag*): the hoist with its star roundel on
+-- both faces and two wedges making the tail's point; `side` is -1 or 1, `i` the flag's index.
+local function dressArchFlag(B: Builder, x: number, z: number, side: number, i: number)
+	local d = ARCH_DRESS
+	local color = Paint[d.FlagColors[i]]
+	local h, hoist = d.FlagSize.Y, d.FlagHoist
+	local tail = d.FlagSize.X - hoist
+	local inner = x + side * d.PoleThick / 2
+	local midY = d.PoleTop - h / 2
+	local flag = soft(B.P({
+		Name = "ArchFlag",
+		Size = Vector3.new(hoist, h, d.FlagThick),
+		CFrame = B.L(inner + side * hoist / 2, midY, z),
+		Color = color,
+	}))
+	-- The tail: an upper and a lower right triangle meeting at the point, tall side at the hoist.
+	local back = Vector3.new(-side, 0, 0)
+	for _, up in { Vector3.yAxis, -Vector3.yAxis } do
+		soft(B.W({
+			Name = "ArchFlagTail",
+			Size = Vector3.new(d.FlagThick, h / 2, tail),
+			CFrame = B.cf
+				* CFrame.fromMatrix(Vector3.new(inner + side * (hoist + tail / 2), midY + up.Y * h / 4, z), up:Cross(back), up, back),
+			Color = color,
+		})).CastShadow =
+			false
+	end
+	local icon = Assets.icon("Star")
+	local ring = Paint[d.FlagEmblemRing[i]] or Paint.White
+	for _, face in { Enum.NormalId.Front, Enum.NormalId.Back } do
+		local gui = Instance.new("SurfaceGui")
+		gui.Name = "ArchFlagEmblem"
+		gui.Face = face
+		gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+		gui.PixelsPerStud = d.FlagEmblemPx
+		gui.LightInfluence = 0.3
+		gui.MaxDistance = Common.SIGN_FADE_CARD
+		gui.Parent = flag
+		local disc = Instance.new("Frame")
+		disc.AnchorPoint = Vector2.new(0.5, 0.5)
+		disc.Position = UDim2.fromScale(0.5, 0.5)
+		disc.Size = UDim2.fromScale(d.FlagEmblem * h / hoist, d.FlagEmblem)
+		disc.BackgroundColor3 = Paint.White
+		disc.Parent = gui
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(0.5, 0)
+		round.Parent = disc
+		local rim = Instance.new("UIStroke")
+		rim.Color = ring
+		rim.Thickness = 5
+		rim.Parent = disc
+		if icon then
+			local star = Instance.new("ImageLabel")
+			star.BackgroundTransparency = 1
+			star.AnchorPoint = Vector2.new(0.5, 0.5)
+			star.Position = UDim2.fromScale(0.5, 0.5)
+			star.Size = UDim2.fromScale(0.9, 0.9)
+			star.Image = icon.image
+			star.ImageRectOffset = Vector2.new(icon.x, icon.y)
+			star.ImageRectSize = Vector2.new(icon.w, icon.h)
+			star.ScaleType = Enum.ScaleType.Fit
+			star.Parent = disc
+		else
+			text(disc, {
+				Text = "★",
+				Font = theme.Fonts.Display,
+				TextColor3 = Paint.Sunny,
+				Size = UDim2.fromScale(0.86, 0.86),
+				Position = UDim2.fromScale(0.07, 0.07),
+				Outline = true,
+			})
+		end
+	end
+end
+
+-- Flags and pennants on the entrance arch (ARCH_DRESS).
+local function dressArch(B: Builder)
+	local d = ARCH_DRESS
+	local L, P = B.L, B.P
+	local z = d.ArchZ
+	for i, side in { -1, 1 } do
+		local x = side * d.ArchX
+		soft(P({
+			Name = "ArchFlagPole",
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(d.PoleTop - d.PoleBase, d.PoleThick, d.PoleThick),
+			CFrame = L(x, (d.PoleBase + d.PoleTop) / 2, z) * Common.UPRIGHT,
+			Color = Paint.White,
+		}))
+		soft(P({
+			Name = "ArchFlagKnob",
+			Shape = Enum.PartType.Ball,
+			Size = Vector3.new(d.KnobSize, d.KnobSize, d.KnobSize),
+			CFrame = L(x, d.PoleTop + d.KnobSize * 0.3, z),
+			Color = Paint.Sunny,
+		}))
+		-- The pennant flies outward from its pole, just under the knob.
+		dressArchFlag(B, x, z, side, i)
+		-- Pennants: right triangles hanging point down from the sagging line, flat to the hub,
+		-- out to a short pole standing on the fence.
+		local topY = d.PoleTop - d.FlagSize.Y - d.PennantDrop
+		local endX = side * (d.PennantEndX + d.PoleThick)
+		soft(P({
+			Name = "ArchPennantPole",
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(d.PennantEndY + 0.4, d.PoleThick, d.PoleThick),
+			CFrame = L(endX, (d.PennantEndY + 0.4) / 2, z) * Common.UPRIGHT,
+			Color = Paint.White,
+		}))
+		soft(P({
+			Name = "ArchFlagKnob",
+			Shape = Enum.PartType.Ball,
+			Size = Vector3.new(d.KnobSize, d.KnobSize, d.KnobSize),
+			CFrame = L(endX, d.PennantEndY + 0.4 + d.KnobSize * 0.3, z),
+			Color = Paint.Sunny,
+		}))
+		local w, h = d.PennantSize.X, d.PennantSize.Y
+		for n = 1, d.PennantCount do
+			local t = (n - 0.5) / d.PennantCount
+			local px = x + side * (d.PoleThick + (d.PennantEndX - d.ArchX) * t)
+			local py = topY + (d.PennantEndY - topY) * t - d.PennantSag * 4 * t * (1 - t)
+			local along = Vector3.new(side, 0, 0)
+			local down = Vector3.new(0, -1, 0)
+			soft(B.W({
+				Name = "ArchPennant",
+				Size = Vector3.new(0.12, h, w),
+				CFrame = B.cf * CFrame.fromMatrix(Vector3.new(px, py - h / 2, z), down:Cross(along), down, along),
+				Color = Paint[d.PennantColors[(n - 1) % #d.PennantColors + 1]],
+			})).CastShadow =
+				false
+		end
+	end
+end
+
+-- The dressing of a plot nobody owns (FREE_DRESS), in one model the caller shows or hides.
+local function buildFreeDressing(B: Builder, index: number): Model
+	local d = FREE_DRESS
+	local model = Instance.new("Model")
+	model.Name = "FreePlotDressing"
+	local function P(props: { [string]: any }): BasePart
+		props.Parent = props.Parent or model
+		return make("Part", props)
+	end
+	local FB: Builder = { cf = B.cf, folder = B.folder, c = B.c, L = B.L, P = P, W = B.W }
+	local L = B.L
+	local archZ = ARCH_DRESS.ArchZ
+
+	-- The pill over the arch.
+	local anchor = soft(P({
+		Name = "FreePlotSign",
+		Size = Vector3.new(1, 1, 1),
+		CFrame = L(0, d.PillY, archZ),
+		Transparency = 1,
+	}))
+	anchor.CastShadow = false
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "FreePlotPill"
+	gui.Adornee = anchor
+	gui.Size = UDim2.new(d.PillSize.X, d.PillPx.X, d.PillSize.Y, d.PillPx.Y)
+	gui.MaxDistance = d.PillDistance
+	gui.LightInfluence = 0
+	gui.Parent = anchor
+	local pill = Instance.new("Frame")
+	pill.Size = UDim2.fromScale(1, 1)
+	pill.BackgroundColor3 = (Paint.PadPlate and Paint.PadPlate.Good) or theme.Colors.Good
+	pill.BorderSizePixel = 0
+	pill.Parent = gui
+	local round = Instance.new("UICorner")
+	round.CornerRadius = UDim.new(0.3, 0)
+	round.Parent = pill
+	local rim = Instance.new("UIStroke")
+	rim.Color = Paint.White
+	rim.Thickness = 3
+	rim.Parent = pill
+	text(pill, {
+		Text = "★ " .. d.Title .. " ★",
+		Font = theme.Fonts.Display,
+		Size = UDim2.fromScale(0.9, 0.52),
+		Position = UDim2.fromScale(0.05, 0.07),
+		TextColor3 = Paint.Sunny,
+		Outline = true,
+	})
+	text(pill, {
+		Text = d.Line,
+		Font = theme.Fonts.Display,
+		Size = UDim2.fromScale(0.88, 0.3),
+		Position = UDim2.fromScale(0.06, 0.62),
+		TextColor3 = Paint.White,
+		Outline = true,
+	})
+
+	-- The walkway card, with the same words in white on its teal back.
+	local body = standingCard(FB, 0, d.CardZ, 0, d.CardSize, d.CardBottom, "★ " .. d.Title .. " ★")
+	text(body, {
+		Text = d.Line,
+		Font = theme.Fonts.Display,
+		Size = UDim2.fromScale(0.92, 0.8),
+		Position = UDim2.fromScale(0.04, 0.1),
+	})
+	local cardPart = body:FindFirstAncestorWhichIsA("BasePart") :: BasePart
+	local back = Instance.new("SurfaceGui")
+	back.Face = Enum.NormalId.Back
+	back.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	back.PixelsPerStud = 24
+	back.LightInfluence = 0.5
+	back.MaxDistance = Common.SIGN_FADE_CARD
+	back.Parent = cardPart
+	text(back, {
+		Text = d.Title,
+		Font = theme.Fonts.Display,
+		TextColor3 = Paint.White,
+		Size = UDim2.fromScale(0.8, 0.6),
+		Position = UDim2.fromScale(0.1, 0.2),
+	})
+
+	-- Balloon bunches: on the hub side of each arch pillar and on the pen's front posts, each
+	-- leaning away from the centre line.
+	local pen = Layout.POOL
+	local ties = {
+		{ x = ARCH_DRESS.ArchX + d.ArchTieOut, y = d.ArchTieY, z = archZ - d.ArchTieFront },
+		{ x = pen.maxX - Layout.PEN.wallThick / 2, y = Layout.PEN.postHeight + 1, z = pen.minZ + Layout.PEN.wallThick / 2 },
+	}
+	-- Start the colour cycle at the plot's number so neighbouring plots differ.
+	local colorIndex = index
+	for _, tie in ties do
+		for _, side in { -1, 1 } do
+			local from = L(side * tie.x, tie.y, tie.z).Position
+			for _, offset in d.Bunch do
+				colorIndex += 1
+				local at = L(side * (tie.x + offset.X), tie.y + offset.Y, tie.z + offset.Z).Position
+				stringRod(P, from, at, d.String, Paint.White)
+				soft(P({
+					Name = "Balloon",
+					Shape = Enum.PartType.Ball,
+					Size = Vector3.new(d.Balloon, d.Balloon, d.Balloon),
+					CFrame = CFrame.new(at + Vector3.new(0, d.Balloon * 0.45, 0)),
+					Color = Paint[d.BalloonColors[colorIndex % #d.BalloonColors + 1]],
+					Reflectance = 0.08,
+				}))
+			end
+		end
+	end
+	return model
 end
 
 local function buildPlot(index: number): Plot
@@ -163,6 +552,9 @@ local function buildPlot(index: number): Plot
 	Pen.build(B)
 	local slots, championParts = buildShelves(B)
 	local ownerLabel, ownerImage = buildEntrance(B, index)
+	ownerLabel.Text = FREE_PLOT
+	dressArch(B)
+	local freeDressing = buildFreeDressing(B, index)
 
 	local pads: { Pad } = {}
 	local padByName: { [string]: Pad } = {}
@@ -174,18 +566,23 @@ local function buildPlot(index: number): Plot
 		return record
 	end
 
-	-- Buy pads either side of the pen.
+	-- Until a player owns the plot (Server.Tycoon then writes every price and status), the pads
+	-- show their name only, with no price: a "$0" reads as a live offer.
+
+	-- Buy pads either side of the pen, named after the unit they sell like on an owned plot.
+	local firstTier = theme.Tiers[1]
+	local unitName = if firstTier then firstTier.Name else w.Unit
 	for _, amount in Economy.BUY_AMOUNTS do
-		pad("Buy" .. amount, padColors.Buy, "Buy " .. amount .. " " .. w.Unit, "$0")
+		pad("Buy" .. amount, padColors.Buy, "Buy " .. amount .. " " .. unitName, "")
 	end
-	pad("AutoMerge", padColors.AutoMerge, "Auto Merge", "$0")
+	pad("AutoMerge", padColors.AutoMerge, "Auto Merge", "Game pass")
 
 	-- Merge pad centred in front of the pen, at the end of the walkway.
 	pad("Merge", padColors.Merge, w.Merge, "Pairs merge into the next tier")
 
 	-- Deposit station (-X court, level with the plaza): pad + converter machine. The pad's floating label already shows the
 	-- multiplier, so the multiplier labels Tycoon writes stay hidden on the pad.
-	local depositPad = pad("Deposit", padColors.Deposit, "DEPOSIT", w.Orb .. " x1.0")
+	local depositPad = pad("Deposit", padColors.Deposit, "DEPOSIT", "")
 	do
 		local conv = Layout.MACHINES.Converter
 		buildConverter(B, (conv.minX + conv.maxX) / 2, (conv.minZ + conv.maxZ) / 2)
@@ -211,18 +608,19 @@ local function buildPlot(index: number): Plot
 		labels.ProcessTitle = title
 		-- Main line: the aura waiting to be converted.
 		labels.ProcessQueue =
-			text(body, { Text = "0", Font = theme.Fonts.Display, Size = UDim2.fromScale(0.9, 0.8), Position = UDim2.fromScale(0.05, 0.1) })
+			text(body, { Text = "", Font = theme.Fonts.Display, Size = UDim2.fromScale(0.9, 0.8), Position = UDim2.fromScale(0.05, 0.1) })
 		labels.ProcessRate = hiddenLabel(body)
 		labels.ProcessSpeed = hiddenLabel(body)
 	end
-	pad("ProcUp1", padColors.Process, "UPGRADE", "$0")
-	pad("ProcUp10", padColors.Process, "UPGRADE x" .. Economy.PROCESS_BULK, "$0")
+	pad("ProcUp1", padColors.Process, "UPGRADE", "")
+	pad("ProcUp10", padColors.Process, "UPGRADE x" .. Economy.PROCESS_BULK, "")
 
 	-- Collect cash pad + coin vault (-X court, front station).
-	pad("Collect", padColors.Collect, w.Collect, "$0")
+	pad("Collect", padColors.Collect, w.Collect, "")
 	buildVault(B)
 
-	-- Crate unlockers (+X court), each with a sign card standing at the machine's front.
+	-- Crate unlockers (+X court), each with a small sign card standing beside the machine's
+	-- front, square to its pad and the walkway beyond it (-X).
 	local unlockerScreens = {}
 	for i = 1, 2 do
 		local name = if i == 1 then w.Unlocker else w.PremiumUnlocker
@@ -233,27 +631,27 @@ local function buildPlot(index: number): Plot
 		local body, titleLabel = standingCard(
 			B,
 			rect.minX - 0.4,
-			(rect.minZ + rect.maxZ) / 2,
+			(rect.minZ + rect.maxZ) / 2 - CRACKER_SIGN_SIDE,
 			FACE_MINUS_X,
-			Vector2.new(6.2, 4.6),
+			CRACKER_SIGN,
 			STATION_SIGN_BOTTOM,
-			name,
-			false
+			name
 		)
 		-- Tycoon tints the status in the crate's rarity colour, so it keeps an Ink outline.
 		local statusLabel = text(body, {
-			Text = "EMPTY",
+			Text = "",
 			Size = UDim2.fromScale(0.96, 0.36),
 			Position = UDim2.fromScale(0.02, 0.02),
 			TextColor3 = Paint.White,
 			Outline = true,
 		})
 		local timerLabel = text(body, {
-			Text = "--:--:--",
+			Text = "",
 			Font = theme.Fonts.Number,
 			Size = UDim2.fromScale(0.9, 0.5),
 			Position = UDim2.fromScale(0.05, 0.46),
 		})
+		buildReadyFlag(body, CRACKER_SIGN.Y, statusLabel, timerLabel)
 		table.insert(unlockerScreens, { frame = body, title = titleLabel, status = statusLabel, timer = timerLabel })
 	end
 
@@ -294,6 +692,25 @@ local function buildPlot(index: number): Plot
 	end
 
 	labels.Owner = ownerLabel
+
+	-- Server.Tycoon puts the owner's avatar on the entrance card and clears it when they leave:
+	-- with no avatar the plot is free, so its pad names are dimmed and its card says so.
+	local function showClaimed()
+		local claimed = ownerImage.Image ~= ""
+		for _, record in pads do
+			setPadClaimed(record, claimed)
+		end
+		if not claimed then
+			ownerLabel.Text = FREE_PLOT
+		end
+		-- Parented to nil while the plot has an owner, like a folded rack shelf (World.Shelves).
+		local parent: Instance? = if claimed then nil else folder
+		if freeDressing.Parent ~= parent then
+			freeDressing.Parent = parent
+		end
+	end
+	ownerImage:GetPropertyChangedSignal("Image"):Connect(showClaimed)
+	showClaimed()
 
 	makeCameraSafe(folder)
 

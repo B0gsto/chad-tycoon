@@ -9,18 +9,30 @@
 	  Carry        while the character stands on a moving part (short downward raycast
 	               against mover parts), the part's frame-to-frame motion (delta CFrame,
 	               rotation included) is applied to the character's root before physics.
-	  Spinners     "SpinnerBar" (Hazard = "bump"): a gentle push away plus a small hop.
+	  Spinners     "SpinnerBar" (Hazard = "bump"): a push away plus a hop (a full jump high).
+	               A bar with a BumpShove attribute (map 1's sweepers) only slides the runner
+	               that many studs along the deck, never past ShoveMin / ShoveMax and never
+	               into the air (Shared.ParkourMoves).
 	  Blink pads   tag "BlinkPad": solid when ((t + BlinkPhase) % BlinkPeriod) < BlinkOn
 	               (server clock). Near the player, CanCollide and the look are set locally
 	               (character physics is client-owned): faded when off, with a few quick
 	               flashes in the last BLINK_WARN seconds before switching off.
-	  Bounce pads  tag "BouncePad": once per contact, launch upward at the pad's Bounce
-	               speed (double jump still works in the air), squash the pad, Puff sprite.
+	  Bounce pads  tag "BouncePad": on the first frame of every contact (walking on, landing
+	               on it, at its centre or its rim: Shared.ParkourMoves.onPad), launch upward
+	               at the pad's Bounce speed and hold that arc for a moment, so the Humanoid's
+	               own jump cannot replace it (double jump still works in the air); squash
+	               the pad, Puff sprite.
 	  Effects      ModeSplash (fell through
 	               the cloud floor: a white cloud poof and a short camera dip), ModeFinish
 	               (stars and confetti), ModeKill (touched a kill brick: a red/black
 	               burst and a short red screen flash). Spin movers with SpinAxis = "Z" (windmill blades)
 	               turn about the root's look vector instead of world up.
+	  Oops         a run's "respawn" notify (fell, back on the start deck): a strong
+	               cool-white blink of the screen held for a beat and eased out (not after
+	               lava, which flashed red), and a big cloud puff with a ring of smaller
+	               puffs and two expanding rings at the runner's feet (OOPS tunables).
+	  Gantry       the marquee over a map's start arch (tag "StartGantry", attribute Level)
+	               fades out a moment into a run of that map and returns when it ends.
 	  Levels       a parkour run's start payload carries its level; hints and flags look in
 	               Map.GameModes.Parkour.Level<level>. Mode notifications of other modes
 	               (Mog Test) are ignored.
@@ -42,8 +54,10 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local Net = require(ReplicatedStorage.Shared.Net)
+local Moves = require(ReplicatedStorage.Shared.ParkourMoves)
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
+local State = require(script.Parent.Parent.State) :: any
 
 local ModesFx = {}
 
@@ -67,6 +81,26 @@ local BLINK_WARN = 0.5
 local BLINK_FLASH_HZ = 6
 local BLINK_OFF_TOP = 0.75
 local BLINK_OFF_PART = 0.85
+-- Back on the start deck after a fall (tunables, see oops): a strong cool-white screen blink
+-- held for a beat and eased out, then a big cloud puff with a ring of smaller puffs and two
+-- expanding rings at the feet. Sizes in studs, times in seconds.
+local OOPS = {
+	FLASH_COLOR = Color3.fromRGB(214, 236, 255),
+	FLASH_FROM = 0.15, -- screen transparency at the start of the blink
+	FLASH_HOLD = 0.12, -- held that strong before easing out
+	FLASH_TIME = 0.75, -- the ease out
+	DELAY = 0.12, -- lets the teleport land before the puff is placed
+	PUFF = 9, -- the centre puff
+	PUFF_LIFE = 1.2,
+	PUFFS = 8, -- smaller puffs round it, drifting out
+	PUFF_SMALL = 4.5,
+	PUFF_REACH = 5, -- studs each small puff drifts out over its life
+	RING = 12,
+	RING_BIG = 20,
+	RING_LIFE = 0.9,
+	RING_DELAY = 0.12, -- the big ring follows the first
+	RING_COLOR = Color3.fromRGB(150, 205, 255),
+}
 
 type Mover = {
 	root: BasePart,
@@ -84,6 +118,8 @@ type Mover = {
 	hazard: boolean,
 	length: number,
 	spinZ: boolean, -- SpinAxis = "Z": spins about the root's look vector, not world up
+	shove: number, -- BumpShove: studs a hit slides the runner along the deck (0: a bump)
+	keep: Moves.Keep?, -- ShoveMin / ShoveMax: where a shove stops
 }
 
 local movers: { Mover } = {}
@@ -92,6 +128,9 @@ local floorParts: { Instance } = {}
 local pads: { BasePart } = {}
 local padRest: { [BasePart]: CFrame } = {}
 local padContact: { [BasePart]: boolean } = {}
+-- The launch being held on its arc (Moves.heldSpeed) and the shove being slid out.
+local held: { power: number, at: number }? = nil
+local shoving: { dir: Vector3, studs: number, at: number, done: number, keep: Moves.Keep? }? = nil
 local bounds: { min: Vector3, max: Vector3 }? = nil
 
 type Blink = {
@@ -153,6 +192,7 @@ local function addMover(root: Instance)
 		return
 	end
 	local axis = root:GetAttribute("MoveAxis")
+	local keepMin, keepMax = root:GetAttribute("ShoveMin"), root:GetAttribute("ShoveMax")
 	local m: Mover = {
 		root = root,
 		rest = root.CFrame,
@@ -169,6 +209,10 @@ local function addMover(root: Instance)
 		hazard = root:GetAttribute("Hazard") == "bump",
 		length = root.Size.X,
 		spinZ = root:GetAttribute("SpinAxis") == "Z",
+		shove = math.max(num(root:GetAttribute("BumpShove"), 0), 0),
+		keep = if typeof(keepMin) == "Vector3" and typeof(keepMax) == "Vector3"
+			then { x0 = keepMin.X, x1 = keepMax.X, z0 = keepMin.Z, z1 = keepMax.Z }
+			else nil,
 	}
 	for _, d in root:GetDescendants() do
 		if d:IsA("BasePart") then
@@ -319,7 +363,9 @@ local function feetY(humanoid: Humanoid, root: BasePart): number
 	return root.Position.Y - root.Size.Y / 2 - humanoid.HipHeight
 end
 
--- Spinner bump: away from the bar, along its sweep, and a small hop. Never a fling.
+-- Spinner bump: away from the bar, along its sweep, and a hop (the Jumping state makes it a
+-- full jump). A bar with a shove (map 1) slides the runner along the deck instead: no jump,
+-- no upward speed, and stepShove never takes them past the bar's keep box.
 local lastBump = 0
 local function bump(m: Mover, humanoid: Humanoid, root: BasePart, closest: Vector3)
 	local now = os.clock()
@@ -333,16 +379,47 @@ local function bump(m: Mover, humanoid: Humanoid, root: BasePart, closest: Vecto
 	local sweep = if radial.Magnitude > 0.01 then Vector3.yAxis:Cross(radial).Unit * math.sign(m.speed) else Vector3.zero
 	local push = (if away.Magnitude > 0.01 then away.Unit else sweep) + sweep * 0.6
 	push = if push.Magnitude > 0.01 then push.Unit else Vector3.xAxis
-	humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-	root.AssemblyLinearVelocity = push * 26 + Vector3.new(0, 24, 0)
+	if m.shove > 0 then
+		shoving = { dir = push, studs = m.shove, at = now, done = 0, keep = m.keep }
+	else
+		humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		root.AssemblyLinearVelocity = push * 26 + Vector3.new(0, 24, 0)
+	end
 	Sprites.billboard(anchorAt(closest, 2), "Puff", { position = closest, size = 2.2, life = 0.6, rise = Vector3.new(0, 1, 0) })
 end
 
+-- This frame's slice of the shove being slid out (bump), stopping at its keep box.
+local function stepShove(root: BasePart)
+	local s = shoving
+	if not s then
+		return
+	end
+	local elapsed = os.clock() - s.at
+	if elapsed > Moves.SHOVE_SECONDS * 2 then
+		-- Stale (the step did not run for a while): the rest of the slide is dropped.
+		shoving = nil
+		return
+	end
+	local target = s.studs * Moves.shoveShare(elapsed)
+	local slice = target - s.done
+	s.done = target
+	local pos = root.Position
+	local x, z = Moves.shoveTo(pos.X, pos.Z, s.dir.X * slice, s.dir.Z * slice, s.keep)
+	root.CFrame += Vector3.new(x - pos.X, 0, z - pos.Z)
+	if elapsed >= Moves.SHOVE_SECONDS then
+		shoving = nil
+	end
+end
+
+-- The launch is held on its arc (stepHold): a Humanoid launched from the ground answers with
+-- its own jump a frame later, which used to replace the pad's speed with the jump's 50.
 local function launch(pad: BasePart, humanoid: Humanoid, root: BasePart)
 	local speed = num(pad:GetAttribute("Bounce"), 78)
 	humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 	local v = root.AssemblyLinearVelocity
 	root.AssemblyLinearVelocity = Vector3.new(v.X, speed, v.Z)
+	held = { power = speed, at = os.clock() }
+	shoving = nil
 	local rest = padRest[pad]
 	pad.CFrame = rest - Vector3.new(0, 0.35, 0)
 	TweenService:Create(pad, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { CFrame = rest }):Play()
@@ -351,8 +428,25 @@ local function launch(pad: BasePart, humanoid: Humanoid, root: BasePart)
 	Sprites.billboard(anchorAt(top, 2), "Ring", { position = top, size = 4, life = 0.5, rise = Vector3.zero, color = W.Sunny })
 end
 
+-- Keeps the last launch on its arc for Moves.HOLD_SECONDS.
+local function stepHold(root: BasePart)
+	local h = held
+	if not h then
+		return
+	end
+	local elapsed = os.clock() - h.at
+	local v = root.AssemblyLinearVelocity
+	local speed = Moves.heldSpeed(v.Y, h.power, elapsed, Workspace.Gravity)
+	if speed then
+		root.AssemblyLinearVelocity = Vector3.new(v.X, speed, v.Z)
+	elseif elapsed > Moves.HOLD_SECONDS then
+		held = nil
+	end
+end
+
 -- Run state (from the "Mode" notifies) for the still-player hint.
 local running = false
+local runStartedAt = 0
 local stillSince = os.clock()
 local stillAt = Vector3.zero
 local lastHint = 0
@@ -454,15 +548,18 @@ end
 -- outside the level's bounds (the folder's extents padded LEVEL_PAD_SIDE sideways and
 -- LEVEL_PAD_BELOW below, so a fall to the cloud floor and the respawn keep the look).
 -- A start while a look is up cross-fades to the new one.
---   every theme  a bright sunny midday sky (sky obby): a saturated cool-blue ParkourGrade,
---            thin pale Atmosphere (low density, horizon haze, a little glare), brighter
---            Lighting and exposure, ClockTime 13 when the scene is outside 10-15, and a
---            light ParkourBloom (made lazily, enabled only during runs).
---   storm    the same but a little cooler and dimmer.
---   volcano  a touch warmer, plus ember emitters (ParkourEmbers, made lazily) on the
---            level's MapGlow parts, enabled only during the run.
---   giga     the sunny look plus soft gold sparkles around the player's root
---            (attachment ParkourSparkles).
+--   every theme  a bright sky-obby day built on SUNNY (ParkourGrade colour correction,
+--            Atmosphere colour / decay / density, Lighting brightness and exposure, a light
+--            ParkourBloom made lazily and enabled only during runs), graded per map by
+--            LOOK_TUNING so each map has its own sky: beach warm sunny noon, cove turquoise,
+--            bay deep blue, reef pink haze, bubble aqua under a deep-blue sky, coral peach sunset,
+--            shark deep teal, storm dim slate haze (no flashes), volcano smoky orange late
+--            afternoon, giga golden hour on a grape sky. ClockTime: the look's `clock`, else
+--            13 when the scene is outside 10-15.
+--   volcano  plus ember emitters (ParkourEmbers, made lazily) on the level's MapGlow parts
+--            (its landmark and World.MapDress lava rocks), enabled only during the run.
+--   AURAS    particles round the player's root (attachment ParkourSparkles): giga gold
+--            sparkles, bubble rising rings, reef and coral drifting motes.
 -- ParkourGrade / ParkourBloom are our own instances: Fx.Surge's SurgeGrade / SurgeBloom are
 -- separate and stack. Every Lighting / Atmosphere value is saved when a look starts and
 -- written back exactly.
@@ -754,11 +851,12 @@ type Look = {
 	light: number, -- added to Lighting.Brightness
 	exposure: number, -- added to Lighting.ExposureCompensation
 	bloom: number, -- ParkourBloom intensity
+	clock: number?, -- Lighting.ClockTime while the look is up (nil: SUNNY_CLOCK rule)
 }
 
--- The sky obby: one bright sunny midday look for every map (saturated cobalt sky, pale
--- haze at the horizon, light bloom); storm keeps a slight cool dim and volcano a slight
--- warm offset on top. Tints stay within ~0.9-1 per channel so the pastel art never muddies.
+-- The sky obby's base look: a bright sunny midday (saturated cobalt sky, pale haze at the
+-- horizon, light bloom). Every map grades it its own way (LOOK_TUNING below), clearly enough
+-- to tell the maps apart at a glance: sky / haze colour, sun height, warmth and density.
 local SUNNY: Look = {
 	tint = Color3.fromRGB(235, 245, 255),
 	brightness = 0.02,
@@ -778,56 +876,207 @@ local SUNNY: Look = {
 	light = 0.6,
 	exposure = 0.15,
 	bloom = BLOOM_INTENSITY,
-	flash = 0,
 }
-local LOOKS: { [string]: Look } = {
-	beach = SUNNY,
-	cove = SUNNY,
-	bay = SUNNY,
-	reef = SUNNY,
-	bubble = SUNNY,
-	coral = SUNNY,
-	shark = SUNNY,
-	giga = SUNNY,
-	storm = { -- the sunny sky, a little cooler and dimmer
-		tint = Color3.fromRGB(226, 238, 255),
-		brightness = -0.01,
-		contrast = 0.04,
-		saturation = 0.15,
-		ambient = Color3.fromRGB(190, 205, 235),
+
+-- Per-map grading (tunables): only what differs from SUNNY. atmosphereMix 0.9 so the sky and
+-- horizon really take the map's colour.
+local LOOK_TUNING: { [string]: { [string]: any } } = {
+	beach = { -- warm sunny noon over a clear sky-blue sea sky (no orange haze: it fought the cyan water)
+		tint = Color3.fromRGB(255, 249, 234),
+		contrast = 0.06,
+		saturation = 0.34,
+		atmosphere = Color3.fromRGB(205, 238, 250),
+		decay = Color3.fromRGB(90, 176, 250),
+		atmosphereMix = 0.9,
+		density = 0.24,
+		haze = 1,
+		glare = 0.6,
+		fog = Color3.fromRGB(200, 236, 250),
+		ambient = Color3.fromRGB(255, 240, 214),
 		ambientMix = 0.12,
-		fog = Color3.fromRGB(200, 215, 238),
-		fogMix = 0.25,
-		fogEnd = 100000,
-		atmosphere = Color3.fromRGB(210, 222, 242),
-		decay = Color3.fromRGB(185, 205, 240),
-		atmosphereMix = 0.75,
+		clock = 13,
+	},
+	cove = { -- tropical turquoise
+		tint = Color3.fromRGB(230, 255, 242),
+		saturation = 0.32,
+		atmosphere = Color3.fromRGB(196, 255, 234),
+		decay = Color3.fromRGB(90, 220, 200),
+		atmosphereMix = 0.9,
+		density = 0.32,
+		fog = Color3.fromRGB(190, 245, 230),
+		ambient = Color3.fromRGB(200, 255, 230),
+		ambientMix = 0.15,
+	},
+	bay = { -- crisp deep-blue sea air, a high sun
+		tint = Color3.fromRGB(226, 234, 255),
+		contrast = 0.08,
+		atmosphere = Color3.fromRGB(190, 208, 255),
+		decay = Color3.fromRGB(80, 120, 230),
+		atmosphereMix = 0.9,
+		density = 0.34,
+		clock = 14.5,
+	},
+	reef = { -- pink tropical haze
+		tint = Color3.fromRGB(255, 234, 246),
+		saturation = 0.32,
+		atmosphere = Color3.fromRGB(255, 214, 238),
+		decay = Color3.fromRGB(255, 140, 205),
+		atmosphereMix = 0.9,
+		density = 0.32,
+		ambient = Color3.fromRGB(255, 200, 230),
+		ambientMix = 0.15,
+	},
+	bubble = { -- saturated aqua under a deep-blue sky (was icy white: path and sky one pale value)
+		tint = Color3.fromRGB(222, 246, 255),
+		brightness = -0.01,
+		contrast = 0.12,
+		saturation = 0.42,
+		atmosphere = Color3.fromRGB(110, 204, 236),
+		decay = Color3.fromRGB(28, 96, 214),
+		atmosphereMix = 0.9,
 		density = 0.28,
-		haze = 1.8,
-		glare = 0.2,
+		haze = 0.8,
+		glare = 0.3,
+		fog = Color3.fromRGB(110, 196, 236),
+		fogMix = 0.25,
+		ambient = Color3.fromRGB(170, 236, 255),
+		ambientMix = 0.12,
+		exposure = 0,
+	},
+	coral = { -- warm peach sunset
+		tint = Color3.fromRGB(255, 230, 210),
+		saturation = 0.3,
+		atmosphere = Color3.fromRGB(255, 208, 170),
+		decay = Color3.fromRGB(255, 140, 90),
+		atmosphereMix = 0.9,
+		density = 0.34,
+		haze = 2,
+		glare = 0.5,
+		ambient = Color3.fromRGB(255, 196, 165),
+		ambientMix = 0.18,
 		light = 0.4,
-		exposure = 0.05,
+		clock = 16.6,
+	},
+	shark = { -- deep teal sea
+		tint = Color3.fromRGB(218, 246, 250),
+		contrast = 0.08,
+		atmosphere = Color3.fromRGB(176, 230, 236),
+		decay = Color3.fromRGB(30, 140, 165),
+		atmosphereMix = 0.9,
+		density = 0.36,
+		ambient = Color3.fromRGB(165, 230, 236),
+		ambientMix = 0.15,
+	},
+	storm = { -- cool, dim slate sky with thick grey haze (no lightning flashes)
+		tint = Color3.fromRGB(212, 220, 240),
+		brightness = -0.03,
+		contrast = 0.06,
+		saturation = -0.05,
+		atmosphere = Color3.fromRGB(172, 182, 204),
+		decay = Color3.fromRGB(100, 110, 145),
+		atmosphereMix = 0.9,
+		density = 0.46,
+		haze = 3,
+		glare = 0,
+		fog = Color3.fromRGB(180, 190, 210),
+		fogMix = 0.35,
+		ambient = Color3.fromRGB(165, 176, 210),
+		ambientMix = 0.2,
+		light = 0.1,
+		exposure = -0.1,
 		bloom = BLOOM_INTENSITY * 0.8,
 	},
-	volcano = { -- the sunny sky, a touch warmer
-		tint = Color3.fromRGB(250, 243, 236),
-		brightness = 0.02,
-		contrast = 0.04,
-		saturation = 0.25,
-		ambient = Color3.fromRGB(255, 220, 190),
-		ambientMix = 0.1,
-		fog = Color3.fromRGB(240, 232, 225),
-		fogMix = 0.2,
-		fogEnd = 100000,
-		atmosphere = Color3.fromRGB(240, 236, 235),
-		decay = Color3.fromRGB(235, 220, 215),
-		atmosphereMix = 0.75,
-		density = 0.25,
-		haze = 1.6,
-		glare = 0.3,
-		light = 0.6,
-		exposure = 0.15,
-		bloom = BLOOM_INTENSITY,
+	volcano = { -- smoky red-orange late afternoon
+		tint = Color3.fromRGB(255, 224, 204),
+		contrast = 0.08,
+		atmosphere = Color3.fromRGB(255, 186, 146),
+		decay = Color3.fromRGB(196, 72, 36),
+		atmosphereMix = 0.9,
+		density = 0.42,
+		haze = 2.6,
+		glare = 0.4,
+		fog = Color3.fromRGB(240, 190, 160),
+		fogMix = 0.3,
+		ambient = Color3.fromRGB(255, 168, 120),
+		ambientMix = 0.2,
+		clock = 17.2,
+	},
+	giga = { -- golden hour with a grape sky
+		tint = Color3.fromRGB(255, 240, 220),
+		saturation = 0.3,
+		atmosphere = Color3.fromRGB(255, 226, 178),
+		decay = Color3.fromRGB(180, 130, 255),
+		atmosphereMix = 0.9,
+		density = 0.32,
+		glare = 0.6,
+		ambient = Color3.fromRGB(255, 220, 196),
+		ambientMix = 0.15,
+		bloom = BLOOM_INTENSITY * 1.4,
+		clock = 17.4,
+	},
+}
+
+local LOOKS: { [string]: Look } = {}
+for theme, over in LOOK_TUNING do
+	local look = table.clone(SUNNY) :: any
+	for key, value in over do
+		look[key] = value
+	end
+	LOOKS[theme] = look :: Look
+end
+
+-- Particles round the runner on some maps (tunables): sprite, colours, rate per second,
+-- sizes (studs), lifetime, speed and drift.
+type Aura = {
+	sprite: string,
+	colors: { Color3 },
+	rate: number,
+	size: number,
+	life: { number },
+	speed: { number },
+	rise: number,
+	glow: number,
+}
+local AURAS: { [string]: Aura } = {
+	giga = {
+		sprite = "Sparkle",
+		colors = { Color3.fromRGB(255, 214, 120), Color3.fromRGB(255, 240, 205) },
+		rate = SPARKLE_RATE,
+		size = 0.55,
+		life = { 0.9, 1.5 },
+		speed = { 1.5, 3 },
+		rise = 1,
+		glow = 0.5,
+	},
+	bubble = {
+		sprite = "Ring",
+		colors = { Color3.fromRGB(170, 225, 255), Color3.fromRGB(240, 250, 255) },
+		rate = 5,
+		size = 0.9,
+		life = { 1.8, 2.8 },
+		speed = { 1, 2 },
+		rise = 3,
+		glow = 0.3,
+	},
+	reef = {
+		sprite = "SoftDot",
+		colors = { Color3.fromRGB(255, 150, 210), Color3.fromRGB(120, 255, 240) },
+		rate = 5,
+		size = 0.45,
+		life = { 1.6, 2.6 },
+		speed = { 0.8, 1.8 },
+		rise = 0.8,
+		glow = 0.6,
+	},
+	coral = {
+		sprite = "SoftDot",
+		colors = { Color3.fromRGB(255, 190, 140), Color3.fromRGB(255, 120, 110) },
+		rate = 4,
+		size = 0.45,
+		life = { 1.6, 2.6 },
+		speed = { 0.8, 1.8 },
+		rise = 0.8,
+		glow = 0.6,
 	},
 }
 
@@ -870,6 +1119,7 @@ local grade: ColorCorrectionEffect? = nil
 local bloom: BloomEffect? = nil
 local atmosphere: Atmosphere? = nil
 local sparkles: ParticleEmitter? = nil
+local sparkleRate = SPARKLE_RATE
 local embers: { [BasePart]: ParticleEmitter } = {}
 local liveEmbers: { ParticleEmitter } = {}
 local saved: Grade = {
@@ -973,22 +1223,22 @@ local function emberFor(part: BasePart): ParticleEmitter
 	return e
 end
 
-local function makeSparkles(root: BasePart): ParticleEmitter
+local function makeAura(root: BasePart, spec: Aura): ParticleEmitter
 	local attachment = Instance.new("Attachment")
 	attachment.Name = "ParkourSparkles"
 	attachment.Parent = root
-	return emitter(attachment, "Sparkle", {
+	return emitter(attachment, spec.sprite, {
 		Rate = 0,
-		Color = ColorSequence.new(Color3.fromRGB(255, 214, 120), Color3.fromRGB(255, 240, 205)),
-		LightEmission = 0.5,
-		Lifetime = NumberRange.new(0.9, 1.5),
-		Speed = NumberRange.new(1.5, 3),
+		Color = ColorSequence.new(spec.colors[1], spec.colors[2] or spec.colors[1]),
+		LightEmission = spec.glow,
+		Lifetime = NumberRange.new(spec.life[1], spec.life[2]),
+		Speed = NumberRange.new(spec.speed[1], spec.speed[2]),
 		Drag = 1.5,
-		Acceleration = Vector3.new(0, 1, 0),
+		Acceleration = Vector3.new(0, spec.rise, 0),
 		SpreadAngle = Vector2.new(180, 180),
 		Size = NumberSequence.new({
 			NumberSequenceKeypoint.new(0, 0),
-			NumberSequenceKeypoint.new(0.2, 0.55),
+			NumberSequenceKeypoint.new(0.2, spec.size),
 			NumberSequenceKeypoint.new(1, 0),
 		}),
 	})
@@ -1015,7 +1265,7 @@ local function gradeFor(theme: string): Grade
 		haze = look.haze,
 		glare = look.glare,
 		light = saved.light + look.light,
-		clock = if saved.clock < CLOCK_MIN or saved.clock > CLOCK_MAX then SUNNY_CLOCK else saved.clock,
+		clock = look.clock or (if saved.clock < CLOCK_MIN or saved.clock > CLOCK_MAX then SUNNY_CLOCK else saved.clock),
 		exposure = saved.exposure + look.exposure,
 		bloom = look.bloom,
 	}
@@ -1105,7 +1355,7 @@ local function applyLook()
 	end
 	local s = sparkles
 	if s then
-		s.Rate = SPARKLE_RATE * x
+		s.Rate = sparkleRate * x
 	end
 end
 
@@ -1139,10 +1389,13 @@ local function startExtras(theme: string, folder: Instance)
 				table.insert(liveEmbers, e)
 			end
 		end
-	elseif theme == "giga" then
+	end
+	local aura = AURAS[theme]
+	if aura then
 		local _, root = character()
 		if root then
-			sparkles = makeSparkles(root)
+			sparkles = makeAura(root, aura)
+			sparkleRate = aura.rate
 		end
 	end
 end
@@ -1351,13 +1604,17 @@ local function step(dt: number)
 			end
 		end
 	end
+	stepShove(root)
+	pos = root.Position
+	-- A pad launches on the first frame of every contact: no speed or state condition, so a
+	-- runner stepping up its lip (rising a little) is launched like one landing on it.
+	stepHold(root)
 	for _, pad in pads do
 		local center = padRest[pad].Position
-		local radius = pad.Size.Y / 2
 		local flat = Vector3.new(pos.X - center.X, 0, pos.Z - center.Z).Magnitude
 		local height = feet - (center.Y + pad.Size.X / 2)
-		local touching = flat < radius + 0.4 and height > -0.6 and height < 1.4
-		if touching and not padContact[pad] and root.AssemblyLinearVelocity.Y < 5 then
+		local fire, touching = Moves.padStep(padContact[pad] == true, Moves.onPad(flat, height, pad.Size.Y / 2, pad.Size.X))
+		if fire then
 			launch(pad, humanoid, root)
 		end
 		padContact[pad] = touching
@@ -1377,6 +1634,8 @@ local function step(dt: number)
 end
 
 -- Effects -------------------------------------------------------------------------------
+
+local dipTween: Tween? = nil -- the camera dip of the last splash
 
 -- Fell through the cloud floor: a white cloud poof (Puff particles plus a few soft white balls
 -- that swell and fade, so it reads even without the sprite art) and a short camera dip.
@@ -1428,8 +1687,13 @@ local function splash(position: Vector3)
 	local humanoid = character()
 	if humanoid then
 		humanoid.CameraOffset = Vector3.new(0, -1.2, 0)
-		TweenService:Create(humanoid, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { CameraOffset = Vector3.zero })
-			:Play()
+		local tween = TweenService:Create(
+			humanoid,
+			TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ CameraOffset = Vector3.zero }
+		)
+		dipTween = tween
+		tween:Play()
 	end
 end
 
@@ -1437,9 +1701,11 @@ local KILL_LIFE = 0.6
 local FLASH_FROM = 0.35
 local FLASH_TIME = 0.35
 local flashFrame: Frame? = nil
+local flashTween: Tween? = nil
 
--- The full-screen red flash frame, made lazily on its own ScreenGui.
-local function flash()
+-- The full-screen flash frame, made lazily on its own ScreenGui: red for lava, or `color`
+-- from transparency `from` over `time` seconds.
+local function flash(color: Color3?, from: number?, time: number?, hold: number?)
 	local frame = flashFrame
 	if not frame or not frame.Parent then
 		local gui = Instance.new("ScreenGui")
@@ -1460,10 +1726,15 @@ local function flash()
 		frame = f
 	end
 	local f = frame :: Frame
-	f.BackgroundTransparency = FLASH_FROM
-	TweenService:Create(f, TweenInfo.new(FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		BackgroundTransparency = 1,
-	}):Play()
+	f.BackgroundColor3 = color or LAVA
+	f.BackgroundTransparency = from or FLASH_FROM
+	local tween = TweenService:Create(
+		f,
+		TweenInfo.new(time or FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, false, hold or 0),
+		{ BackgroundTransparency = 1 }
+	)
+	flashTween = tween
+	tween:Play()
 end
 
 -- Touched a kill brick: red and black shards burst out and shrink away, plus the flash.
@@ -1517,6 +1788,146 @@ local function finish(position: Vector3)
 	end
 end
 
+-- Back on the start deck after a fall. The fall's own effect (ModeSplash / ModeKill) played
+-- where the runner fell, out of sight of the camera's new spot, so the landing gets its beat
+-- too (OOPS at the top): a strong cool-white blink of the screen (lava already flashed red)
+-- and a big puff with a ring of smaller puffs and two rings at the feet.
+local function oops(reason: any)
+	if reason ~= "kill" then
+		flash(OOPS.FLASH_COLOR, OOPS.FLASH_FROM, OOPS.FLASH_TIME, OOPS.FLASH_HOLD)
+	end
+	task.delay(OOPS.DELAY, function()
+		local humanoid, root = character()
+		if not humanoid or not root or not running then
+			return
+		end
+		local feet = Vector3.new(root.Position.X, feetY(humanoid, root) + 0.4, root.Position.Z)
+		local anchor = anchorAt(feet, 2.4)
+		Sprites.billboard(anchor, "Puff", { position = feet, size = OOPS.PUFF, life = OOPS.PUFF_LIFE, rise = Vector3.new(0, 1.5, 0) })
+		local puffs = Budget.count(OOPS.PUFFS)
+		for i = 1, puffs do
+			local a = i / puffs * TAU
+			local out = Vector3.new(math.cos(a), 0, math.sin(a))
+			Sprites.billboard(anchor, "Puff", {
+				position = feet + out * 1.5,
+				size = OOPS.PUFF_SMALL,
+				life = OOPS.PUFF_LIFE,
+				delay = 0.02 * i,
+				rise = out * OOPS.PUFF_REACH + Vector3.new(0, 1, 0),
+			})
+		end
+		Sprites.billboard(
+			anchor,
+			"Ring",
+			{ position = feet, size = OOPS.RING, life = OOPS.RING_LIFE, rise = Vector3.zero, color = OOPS.RING_COLOR }
+		)
+		Sprites.billboard(anchor, "Ring", {
+			position = feet,
+			size = OOPS.RING_BIG,
+			life = OOPS.RING_LIFE,
+			delay = OOPS.RING_DELAY,
+			rise = Vector3.zero,
+			color = CLOUD_WHITE,
+		})
+	end)
+end
+
+-- Start gantry ---------------------------------------------------------------------------
+
+-- The marquee on a map's start arch (the "StartGantry" parts of that Level, contract in
+-- Server.World.Modes) fills the top of the screen from the spawn spot. GANTRY_HOLD seconds
+-- into a run of the map it fades over GANTRY_FADE to GANTRY_GHOST (1 = gone), sign faces
+-- included, and comes back over GANTRY_BACK when the run ends.
+local GANTRY_HOLD = 0.9
+local GANTRY_FADE = 0.5
+local GANTRY_BACK = 0.3
+local GANTRY_GHOST = 1
+
+type Faded = { inst: Instance, prop: string, rest: number }
+local gantry: { Faded } = {}
+local gantryRun = 0
+
+local function fadeGantry(hidden: boolean, time: number)
+	for _, item in gantry do
+		if item.inst.Parent then
+			local goal = if hidden then item.rest + (1 - item.rest) * GANTRY_GHOST else item.rest
+			if time > 0 then
+				TweenService:Create(item.inst, TweenInfo.new(time, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { [item.prop] = goal })
+					:Play()
+			else
+				(item.inst :: any)[item.prop] = goal
+			end
+		end
+	end
+end
+
+-- The run ended (or another starts): the marquee is back.
+local function showGantry(time: number)
+	gantryRun += 1
+	fadeGantry(false, time)
+end
+
+local function hideGantry(level: number)
+	-- Back to rest first, so the rest values below are never read mid-fade.
+	showGantry(0)
+	table.clear(gantry)
+	local function note(inst: Instance, prop: string)
+		local rest = (inst :: any)[prop]
+		if type(rest) == "number" and rest < 1 then
+			table.insert(gantry, { inst = inst, prop = prop, rest = rest })
+		end
+	end
+	local run = gantryRun
+	task.delay(GANTRY_HOLD, function()
+		if run ~= gantryRun or not running then
+			return
+		end
+		-- Collected only now: the far map's parts have arrived with the teleport.
+		for _, part in CollectionService:GetTagged("StartGantry") do
+			if part:IsA("BasePart") and part:GetAttribute("Level") == level then
+				note(part, "Transparency")
+				for _, d in part:GetDescendants() do
+					if d:IsA("GuiObject") then
+						note(d, "BackgroundTransparency")
+						if d:IsA("TextLabel") then
+							note(d, "TextTransparency")
+						end
+					elseif d:IsA("UIStroke") then
+						note(d, "Transparency")
+					end
+				end
+			end
+		end
+		fadeGantry(true, GANTRY_FADE)
+	end)
+end
+
+-- The one way out of a Parkour run: "finish", "invalid" and "stop" (a quit, Home, a mode
+-- switch, a respawn, leaving the course) and the snapshot's modes.parkour.running going
+-- false. The themed look eases back to the scene's own Lighting (stepAmbience clears it at
+-- the end), the marquee returns, and what a fall left mid-tween (the full-screen flash, the
+-- camera dip) is put back at once.
+local function endRun()
+	running = false
+	endAmbience()
+	showGantry(GANTRY_BACK)
+	if flashTween then
+		flashTween:Cancel()
+		flashTween = nil
+	end
+	if flashFrame then
+		flashFrame.BackgroundTransparency = 1
+	end
+	if dipTween then
+		dipTween:Cancel()
+		dipTween = nil
+	end
+	local humanoid = character()
+	if humanoid then
+		humanoid.CameraOffset = Vector3.zero
+	end
+end
+
 function ModesFx.init()
 	for _, root in CollectionService:GetTagged("ModeMover") do
 		addMover(root)
@@ -1566,11 +1977,21 @@ function ModesFx.init()
 		if event == "start" then
 			currentLevel = math.floor(num(payload.level, 1))
 			running = true
+			runStartedAt = os.clock()
 			stillSince, lastHint = os.clock(), os.clock()
 			startAmbience(currentLevel)
+			hideGantry(currentLevel)
+		elseif event == "respawn" then
+			oops(payload.reason)
 		elseif event == "finish" or event == "invalid" or event == "stop" then
-			running = false
-			endAmbience()
+			endRun()
+		end
+	end)
+	-- The safety net: the server says no Parkour run is on while this one still counts here.
+	State.changed.Event:Connect(function(data: any)
+		local info = type(data) == "table" and type(data.modes) == "table" and data.modes.parkour
+		if running and type(info) == "table" and info.running == false and os.clock() - runStartedAt > 2 then
+			endRun()
 		end
 	end)
 

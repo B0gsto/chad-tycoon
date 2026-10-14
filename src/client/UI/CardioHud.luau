@@ -7,20 +7,40 @@
 	  Speed box     bottom centre, where the dumbbell sits (the Hud's "Dumbbell" group is
 	                hidden while a run is active and shown again after): a BIG outlined
 	                "12.85K Speed" that counts up smoothly, a chunky bar under it toward the
-	                next stage's need ("Stage 3 · 968 / 1.88K", gold until the need is met,
+	                next stage's need ("Stage 3 · 968 / 1.1K", gold until the need is met,
 	                then mint), and small lines beside it ("Multiplier x1.25 (Stages)",
-	                "Treadmill Lv 3"); on narrow screens those lines sit above the number.
-	  Stage line    top centre in the run-pill slot (y 92): a persistent "STAGE 4 · NAME";
-	                in a safe zone a gold "Step on the WIN plate: +$12.4K" (what that zone's
-	                WIN pad pays right now, or when it pays again); while Speed < need, a
-	                pulsing coral "Need more speed!" hint.
-	  Title         a big bubbly "STAGE n" (plus the stage's name) under it whenever you
+	                "Treadmill Lv 3", "Best plate 5": the deepest WIN plate claimed, the
+	                personal best, "No best plate yet" before the first); on narrow screens
+	                those lines sit above the number.
+	                The bar runs on past the need to the recommended Speed (snapshot
+	                `recommended`, 15% above the need): a dark tick marks the need, and from
+	                there the text reads "Stage 3 · 1.12K · recommended 1.27K", then
+	                "... · ready!".
+	  Stage line    bottom centre in the text lane right above the Speed box (the banners
+	                take the same lane while they show; the line also steps out while a world
+	                sign's text, a door board or a WIN pad amount, is projected into the
+	                lane): a persistent "STAGE 4 · NAME";
+	                in a safe zone what its WIN pad does right now: gold "WIN plate: +$12.4K
+	                · it ends this run" (and, for a first clear, "Skip it and this first win
+	                stays for later": true in Modes.Cardio, first clears are kept per plate),
+	                or white "NO REWARD on this WIN plate right now" with when it pays again
+	                and the same warning; while Speed < need, a pulsing coral "Need more
+	                speed!" hint. Inside the reward cooldown the best plate and deeper ones
+	                pay the run again bonus (snapshot `repeats`, `repeatFrom`,
+	                `repeatReadyAt`): "WIN plate: run again bonus +$2.4K", and where it is
+	                not paid the line says from which plate or in how many seconds it is.
+	  Title         a big bubbly "STAGE n" (plus the stage's name) in the lane whenever you
 	                enter a stage; also "STAGE 3 CLEAR!" (reaching a safe zone: nothing is
-	                paid until you step on its WIN plate), "YOU WIN!" (cashed out), "OOPS!" /
-	                "CAUGHT!" (back to stage 1), "TREADMILL LV 4!" banners.
+	                paid until you step on its WIN plate), "YOU WIN!" (cashed out; "NEW
+	                BEST!" with "Plate n" when the claim is deeper than the best plate,
+	                with more confetti; "RUN OVER" when the plate paid nothing), and for a fall "TOO SLOW!" / "OOPS!"
+	                / "CAUGHT!" with what happened (Speed below the stage's need, the custom
+	                speed cap, a plain fall, the chaser), "TREADMILL LV 4!" banners.
 	  WIN plates    the floating "Amount" line over every WIN pad (tag "CardioWinPad",
-	                World.CardioTrack) is written here: "+$12.4K" or "IN 12:30".
-	  Right column  centre right: Custom Speed (title, "Your Max Speed: N", a number box
+	                World.CardioTrack) is written here: "+$12.4K", "NO REWARD", or
+	                "+$2.4K in 0:12" while the run again bonus waits for its gap.
+	  Right column  bottom right on the box's level (centre right on touch): Custom Speed
+	                (title, "Your Max Speed: N", a number box
 	                + green OK that fires CardioSpeedCap { cap } with 0 / empty = no cap,
 	                "Current speed: N"; a small "Custom Speed" chip by default on every
 	                screen: tapping it expands the box, OK and the run's end fold it),
@@ -31,8 +51,8 @@
 	                HOME, confetti.
 
 	Snapshot fields read (modes.cardio): running, speed, walkSpeed, maxWalkSpeed?,
-	speedCap?, multiplier, treadmill, treadmillRate, nextCost, stage, wins?, cooldownEnds,
-	onTreadmill, stageCount, needs, names. Main routes Notify (kind "Mode", mode "cardio")
+	speedCap?, multiplier, bestStage, treadmill, treadmillRate, nextCost, stage, wins?, firsts?,
+	repeats?, repeatFrom?, repeatReadyAt?, cooldownEnds, onTreadmill, stageCount, needs, recommended?, names. Main routes Notify (kind "Mode", mode "cardio")
 	to CardioHud.onNotify, every State snapshot to CardioHud.onState and the "CardioSteps"
 	effect to CardioHud.onSteps.
 ]]
@@ -41,8 +61,10 @@ local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
 local Theme = require(ReplicatedStorage:WaitForChild("Theme")) :: any
+local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format) :: any
 local Net = require(ReplicatedStorage.Shared.Net)
 
@@ -66,14 +88,31 @@ local WHITE = Color3.new(1, 1, 1)
 local HINT_DIM = CORAL
 local HINT_BRIGHT = Color3.new(1, 0.86, 0.8)
 
-local STRIP_Y = 92 -- Hud's run-pill slot (Tutorial steps aside while "RunActive")
-local TITLE_Y = 128
+-- The text lane: the stage line and the big banners share one fixed lane just above the
+-- Speed box (bottom centre), below the runner's feet at the run camera, where the world's
+-- signs (the door's "NEED n SPEED", a WIN pad's floating "+$12.4K") never sit. A banner
+-- takes the lane while it shows (the stage line steps out, so the two never print over each
+-- other); the stage line also steps out while a world sign's text is projected into the lane.
+-- NoteText is the stage line's smallest line. Px in design space.
+local SIGN = {
+	Gap = 10, -- px between the lane's bottom and the top of the Speed box (or its lines above it)
+	LineW = 520, -- stage line width
+	LineH = 74, -- stage line height: win / note lines above the 28 px stage label
+	BannerW = 640,
+	BannerH = 110,
+	NoteText = 17,
+	BackFade = 0.5, -- seconds after a banner before the lines come back (a queued title replaces it first)
+	WorldEvery = 0.15, -- seconds between checks for world sign text over the lane
+	WorldRadius = 160, -- studs: signs and WIN pads farther than this are not checked
+	WorldPad = 12, -- px grown around the lane for the check
+	WorldHold = 0.6, -- seconds the stage line stays out after the last overlap
+}
 local BOX_W = 400
 local SPEED_TEXT = 78 -- the big bottom-centre number (1.4x the old 56)
 local SPEED_H = 84
 local BOX_H = SPEED_H + 4 + 30 + 10
 local BAR_H = 30
-local SIDE_W = 210
+local SIDE_W = 290
 local COLUMN_W = 250
 local WALLET_RIGHT = 340 -- px the desktop wallet (bottom left) reaches
 local NEAR_PAD = 16 -- studs (flat) from the upgrade pad that show the SPEED UP card
@@ -83,6 +122,35 @@ local PADS_EVERY = 1 -- seconds between repaints of the WIN pads' floating amoun
 local WIN_TAG = "CardioWinPad"
 local MAX_LEVEL = 10
 local MAX_CAP = 100000
+-- Readability tunables: the dark plates behind the big Speed number and behind the lines
+-- beside it (so the busy keycaps never show through the text), the lines' size, and the
+-- recommended-Speed marker on the bar (a pulsing gold star on the bar's end, which is the
+-- recommended Speed, and a tall white need tick). Sizes are px in design space; compact
+-- screens scale the box by 0.78 (21 px lines stay over 16 px).
+local PLATE = {
+	Color = Color3.fromRGB(22, 20, 44),
+	Transparency = 0.16,
+	Radius = 14,
+	PadX = 14,
+	PadY = 8,
+	Stroke = 2,
+	StrokeColor = Color3.fromRGB(255, 255, 255),
+	StrokeTransparency = 0.6,
+	LineText = 21,
+	LineH = 26,
+	LineGap = 2,
+	SpeedPadX = 24, -- px of plate either side of the Speed number's text
+	SpeedPadY = 0,
+	SpeedTransparency = 0.24,
+}
+local MARKER = {
+	Star = 38, -- the goal star on the bar's end
+	StarPulse = 0.16, -- scale swing of its pulse while the goal is not reached
+	PulseHz = 2.4,
+	TickW = 6, -- the need tick: white with an Ink outline...
+	TickOver = 7, -- ...reaching this far past the bar above and below
+	TickColor = Color3.fromRGB(255, 255, 255),
+}
 
 local player = Players.LocalPlayer
 local action = Net.event("Action")
@@ -96,11 +164,17 @@ local boxBody: Frame
 local boxScale: UIScale
 local speedLabel: TextLabel
 local barFill: Frame
+local barTick: Frame
 local barText: TextLabel
 local side: Frame
 local sideLayout: UIListLayout
 local multLine: TextLabel
+local bestLine: TextLabel
 local treadLine: TextLabel
+local goalLine: TextLabel
+local goalStar: Frame
+local goalScale: UIScale
+local sideWide = true
 -- Custom speed
 local customCard: Frame
 local customBody: Frame
@@ -130,7 +204,9 @@ local upButton: TextButton
 local stageLine: Frame
 local stageLabel: TextLabel
 local winLabel: TextLabel
+local winNote: TextLabel
 local hintLabel: TextLabel
+local signBody: Frame -- holds the win / note / hint lines; hidden while a banner shows
 -- Banner, finish
 local banner: Frame
 local bannerTitle: TextLabel
@@ -149,12 +225,17 @@ local walkSpeed = 16
 local maxSeen = 16
 local stage = 0
 local stageCount = 10
+-- The deepest WIN plate claimed so far (the personal best; 0 = none yet).
+local bestStage = 0
 local nearPad = false
 local nearTreadmill = false
 -- Safe zone the player stands in (0 = none), and what each zone's WIN pad paid when its
 -- "zone" Notify came (used until a snapshot brings `wins`).
 local zoneIn = 0
 local zoneCash: { [number]: number } = {}
+local zoneFirst: { [number]: boolean } = {}
+-- Speed recommended for a stage when the snapshot has none: this far above its need.
+local RECOMMEND = 1.15
 local padsAt = 0
 local quitArmed = false
 local bannerToken = 0
@@ -191,6 +272,13 @@ local function needOf(index: number): number?
 	return nil
 end
 
+-- The Speed to run stage `index` with comfortably (>= its need).
+local function recommendedOf(index: number, need: number): number
+	local list = snap.recommended
+	local v = if type(list) == "table" then list[index] else nil
+	return math.max(need, if type(v) == "number" then v else math.ceil(need * RECOMMEND))
+end
+
 local function nameOf(index: number): string?
 	local names = snap.names
 	if type(names) == "table" and type(names[index]) == "string" and names[index] ~= "" then
@@ -201,6 +289,131 @@ end
 
 local function iconName(): string
 	return Kit.pickIcon("Cardio", "Surge")
+end
+
+-- The text lane -------------------------------------------------------------------------------
+
+-- The stage line shows unless a banner holds the lane or a world sign's text is over it.
+local bannerUp = false
+local worldOver = false
+local worldAt = 0
+local worldSeenAt = -math.huge
+local worldSigns: { BasePart } = {}
+local worldSignsAt = -math.huge
+
+local function paintLane()
+	local on = not bannerUp and not worldOver
+	stageLabel.Visible = on
+	signBody.Visible = on
+end
+
+-- Top (px) of the stage line's row n counted up from the stage label (row 0, at the bottom).
+local function laneRow(n: number): number
+	return if n <= 0 then SIGN.LineH - 28 else SIGN.LineH - 28 - 2 - 22 * n
+end
+
+-- The lane's screen rect (px, GUI space), grown by SIGN.WorldPad; a showing banner adds its own.
+local function laneRect(): (Vector2, Vector2)
+	local lo, hi = stageLabel.AbsolutePosition, stageLabel.AbsolutePosition + stageLabel.AbsoluteSize
+	for _, line in { winLabel, winNote, hintLabel } do
+		if line.Visible then
+			lo = lo:Min(line.AbsolutePosition)
+			hi = hi:Max(line.AbsolutePosition + line.AbsoluteSize)
+		end
+	end
+	if banner.Visible then
+		local bAt = banner.AbsolutePosition
+		local bEnd = bAt + banner.AbsoluteSize
+		lo = lo:Min(bAt)
+		hi = hi:Max(bEnd)
+	end
+	return lo - Vector2.one * SIGN.WorldPad, hi + Vector2.one * SIGN.WorldPad
+end
+
+-- A world point in the same px space as the GUI's AbsolutePosition (and whether it is in
+-- front of the camera).
+local function toGui(camera: Camera, at: Vector3): (Vector2, boolean)
+	local p = if screen and screen.IgnoreGuiInset then camera:WorldToViewportPoint(at) else camera:WorldToScreenPoint(at)
+	return Vector2.new(p.X, p.Y), p.Z > 0
+end
+
+-- True when the projected box (centre, half size in px) meets the rect.
+local function meets(centre: Vector2, half: Vector2, lo: Vector2, hi: Vector2): boolean
+	return centre.X + half.X >= lo.X and centre.X - half.X <= hi.X and centre.Y + half.Y >= lo.Y and centre.Y - half.Y <= hi.Y
+end
+
+-- World sign text over the lane: the stage boards on the track (the door's "NEED n SPEED"
+-- and its countdown) and the floating amounts over the WIN pads.
+local function checkWorldSigns(now: number)
+	local camera = Workspace.CurrentCamera
+	if not camera or not stageLine.Visible or now - worldAt < SIGN.WorldEvery then
+		return
+	end
+	worldAt = now
+	if now - worldSignsAt > 5 then
+		worldSignsAt = now
+		table.clear(worldSigns)
+		local track = Workspace:FindFirstChild("CardioTrack")
+		if track then
+			for _, d in track:GetDescendants() do
+				if d:IsA("BasePart") and d.Name == "StageSign" then
+					table.insert(worldSigns, d)
+				end
+			end
+		end
+	end
+	local lo, hi = laneRect()
+	local eye = camera.CFrame.Position
+	local over = false
+	for _, board in worldSigns do
+		if board.Parent and (board.Position - eye).Magnitude < SIGN.WorldRadius then
+			-- The board's eight corners, projected.
+			local cf, h = board.CFrame, board.Size / 2
+			local minP, maxP = Vector2.new(math.huge, math.huge), Vector2.new(-math.huge, -math.huge)
+			local front = false
+			for i = 0, 7 do
+				local corner = Vector3.new(
+					if i % 2 == 0 then h.X else -h.X,
+					if (i // 2) % 2 == 0 then h.Y else -h.Y,
+					if i // 4 == 0 then h.Z else -h.Z
+				)
+				local p, ahead = toGui(camera, cf:PointToWorldSpace(corner))
+				if ahead then
+					front = true
+					minP = minP:Min(p)
+					maxP = maxP:Max(p)
+				end
+			end
+			if front and meets((minP + maxP) / 2, (maxP - minP) / 2, lo, hi) then
+				over = true
+				break
+			end
+		end
+	end
+	if not over then
+		for _, pad in CollectionService:GetTagged(WIN_TAG) do
+			local gui = pad:FindFirstChild("WinLabel")
+			if gui and gui:IsA("BillboardGui") and gui.Enabled and pad:IsA("BasePart") then
+				-- StudsOffset is in camera space, StudsOffsetWorldSpace in world space.
+				local at = pad.Position + gui.StudsOffsetWorldSpace + camera.CFrame:VectorToWorldSpace(gui.StudsOffset)
+				if (at - eye).Magnitude < SIGN.WorldRadius then
+					local p, ahead = toGui(camera, at)
+					if ahead and meets(p, gui.AbsoluteSize / 2, lo, hi) then
+						over = true
+						break
+					end
+				end
+			end
+		end
+	end
+	if over then
+		worldSeenAt = now
+	end
+	local want = now - worldSeenAt < SIGN.WorldHold
+	if want ~= worldOver then
+		worldOver = want
+		paintLane()
+	end
 end
 
 -- Banner / big stage title --------------------------------------------------------------------
@@ -216,10 +429,18 @@ local function showBanner(title: string, sub: string?, color: Color3, hold: numb
 		bannerTitle.TextColor3 = color
 		bannerSub.Text = sub or ""
 		bannerSub.Visible = sub ~= nil
+		bannerUp = true
+		paintLane()
 		Kit.appear(banner, { from = 0.35, time = 0.4 })
 		task.delay(hold, function()
 			if bannerToken == mine then
 				Kit.disappear(banner)
+				task.delay(SIGN.BackFade, function()
+					if bannerToken == mine then
+						bannerUp = false
+						paintLane()
+					end
+				end)
 			end
 		end)
 	end
@@ -240,25 +461,68 @@ local function stageTitle(delay: number?)
 	showBanner("STAGE " .. n, if name then string.upper(name) else nil, WHITE, 1.8, delay)
 end
 
+-- Why a WIN plate paid nothing: the run again bonus starts at a deeper plate (the best one),
+-- or it was paid a moment ago, or "plates pay again in 12:30".
+local function noRewardText(p: any): string
+	local left = math.max(0, math.ceil(num(p.cooldownEnds, 0) - os.time()))
+	local from = math.floor(num(p.repeatFrom, 0))
+	local wait = math.max(0, math.ceil(num(p.repeatReadyAt, 0) - os.time()))
+	if p.pay == "resting" then
+		return if wait > 0 then "Bonus is resting, back in " .. Format.time(wait) else "Bonus is resting"
+	elseif left > 0 and num(p.stage, from) < from then
+		return "No reward: the run again bonus starts at plate " .. from
+	elseif left > 0 and wait > 0 then
+		return "No reward this time: run again bonus in " .. Format.time(wait)
+	end
+	return if left > 0 then "No reward this time: plates pay again in " .. Format.time(left) else "No reward this time"
+end
+
 local function rewardText(p: any): string?
 	local cash = num(p.cash, 0)
 	if cash <= 0 then
-		return if p.full == false then "Reward is cooling down" else nil
+		return if p.full == false then noRewardText(p) else nil
 	end
-	local text = "+" .. Format.money(cash)
-	if p.full == false then
-		text ..= "  (cooling down)"
+	-- Inside the reward cooldown a real run still pays its share (`pay` = "repeat").
+	if p.pay == "repeat" or p.full == false then
+		local share = math.floor(num(p.repeatShare, Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
+		return string.format("Run again bonus +%s (%d%%)", Format.money(cash), share)
 	end
-	return text
+	return "+" .. Format.money(cash)
+end
+
+-- "Best plate 5" beside the Speed: the personal best. `pop` marks a new one.
+local function setBest(best: number, pop: boolean?)
+	bestStage = math.clamp(math.floor(best), 0, 10)
+	local text = if bestStage > 0 then "Best plate " .. bestStage else "No best plate yet"
+	if bestLine.Text ~= text then
+		bestLine.Text = text
+		if pop then
+			Kit.pop(bestLine, 1.5)
+		end
+	end
 end
 
 -- WIN plates ----------------------------------------------------------------------------------
 
--- What safe zone n's WIN pad pays right now (0 inside the reward cooldown), if known.
+-- Seconds until the run again bonus is paid again (0 = it is now): it has a short gap after
+-- every plate that paid.
+local function repeatLeft(): number
+	return math.max(0, math.ceil(num(snap.repeatReadyAt, 0) - os.time()))
+end
+
+-- The run again bonus safe zone n's WIN pad pays inside the reward cooldown (0 = none: the
+-- pad pays in full, or it is before the best plate).
+local function repeatCash(n: number): number
+	local repeats = snap.repeats
+	return if type(repeats) == "table" and type(repeats[n]) == "number" then repeats[n] else 0
+end
+
+-- What safe zone n's WIN pad pays right now (0 = nothing), if known.
 local function winCash(n: number): number?
 	local wins = snap.wins
 	if type(wins) == "table" and type(wins[n]) == "number" then
-		return wins[n]
+		-- The snapshot can be older than the bonus' gap: once that is over the bonus counts.
+		return if wins[n] <= 0 and repeatLeft() <= 0 then repeatCash(n) else wins[n]
 	end
 	return zoneCash[n]
 end
@@ -268,29 +532,69 @@ local function cooldownLeft(): number
 	return math.max(0, math.ceil(num(snap.cooldownEnds, 0) - os.time()))
 end
 
--- The stage line's "Step on the WIN plate: +$X" while standing in a safe zone.
+-- Is safe zone n's WIN pad still a first clear (always paid, and kept if you run past)?
+local function winFirst(n: number): boolean
+	local firsts = snap.firsts
+	if type(firsts) == "table" and type(firsts[n]) == "boolean" then
+		return firsts[n]
+	end
+	return zoneFirst[n] == true
+end
+
+-- Does a WIN pad deeper than zone n pay right now?
+local function deeperPays(n: number): boolean
+	for m = n + 1, stageCount do
+		local cash = winCash(m)
+		if cash and cash > 0 then
+			return true
+		end
+	end
+	return false
+end
+
+-- The stage line while standing in a safe zone: what its WIN plate pays right now, that
+-- stepping on it ends the run, and what happens to the reward if you run past.
 local function paintWin()
 	local cash = if zoneIn > 0 then winCash(zoneIn) else nil
 	local show = active and cash ~= nil
+	local note: string? = nil
 	if show then
 		local left = cooldownLeft()
-		if (cash :: number) > 0 then
-			winLabel.Text = "Step on the WIN plate: +" .. Format.money(cash)
-		elseif left > 0 then
-			winLabel.Text = "WIN plate pays again in " .. Format.time(left)
+		local pays = (cash :: number) > 0
+		local bonus = repeatCash(zoneIn) > 0
+		if pays then
+			winLabel.Text = (if bonus then "WIN plate: run again bonus +" else "WIN plate: +")
+				.. Format.money(cash)
+				.. "  ·  it ends this run"
+			-- True in Modes.Cardio: first clears are kept per plate (profile.cardio.firsts).
+			if winFirst(zoneIn) and zoneIn < stageCount then
+				note = "Skip it and this first win stays for later"
+			end
 		else
-			winLabel.Text = "Step on the WIN plate!"
+			winLabel.Text = "NO REWARD on this WIN plate right now"
+			local from = math.floor(num(snap.repeatFrom, 0))
+			note = if bonus
+				then "Run again bonus in " .. Format.time(repeatLeft()) .. ". Stepping on it ends this run!"
+				elseif left > 0 and zoneIn < from then "Run again bonus from plate " .. from .. ". Stepping here ends this run!"
+				elseif left > 0 then "Pays again in " .. Format.time(left) .. ". Stepping on it ends this run!"
+				else "Stepping on it ends this run!"
 		end
-		winLabel.TextColor3 = if (cash :: number) > 0 or left <= 0 then GOLD else WHITE
+		winLabel.TextColor3 = if pays then GOLD else WHITE
+		winNote.Text = note or ""
 	end
+	winNote.Visible = show and note ~= nil
 	if show ~= winLabel.Visible then
 		winLabel.Visible = show
 		if show then
 			Kit.appear(winLabel, { from = 0.7 })
 		end
-		-- The need hint steps down a line while the win line is up.
-		hintLabel.Position = UDim2.fromOffset(0, if show then 52 else 30)
 	end
+	-- The lines stack up from the stage label (the lane's bottom): the note right above it,
+	-- the win line above the note, and the need hint steps up over both while they are up.
+	local hasNote = show and note ~= nil
+	winLabel.Position = UDim2.fromOffset(0, laneRow(if hasNote then 2 else 1))
+	winNote.Position = UDim2.fromOffset(0, laneRow(1))
+	hintLabel.Position = UDim2.fromOffset(0, laneRow(if not show then 1 elseif hasNote then 3 else 2))
 end
 
 -- The floating amount over every WIN pad: what it pays this player right now.
@@ -299,11 +603,18 @@ local function paintPads()
 		local gui = pad:FindFirstChild("WinLabel")
 		local amount = gui and gui:FindFirstChild("Amount")
 		if amount and amount:IsA("TextLabel") then
-			local cash = winCash(math.floor(num(pad:GetAttribute("Stage"), 0)))
+			local n = math.floor(num(pad:GetAttribute("Stage"), 0))
+			local cash = winCash(n)
 			local text = "CASH OUT"
 			if active and cash then
-				local left = cooldownLeft()
-				text = if cash > 0 then "+" .. Format.money(cash) elseif left > 0 then "IN " .. Format.time(left) else "CASH OUT"
+				-- A pad that pays nothing right now says so (stepping on it still ends the run);
+				-- one whose run again bonus waits for its gap counts down to it.
+				local bonus = repeatCash(n)
+				text = if cash > 0
+					then "+" .. Format.money(cash)
+					elseif bonus > 0 then "+" .. Format.money(bonus) .. " in " .. Format.time(repeatLeft())
+					elseif cooldownLeft() > 0 then "NO REWARD"
+					else "CASH OUT"
 			end
 			if amount.Text ~= text then
 				amount.Text = text
@@ -338,6 +649,9 @@ local function paintNeed()
 		barText.Text = "MAX STAGE!"
 		barFill.Size = UDim2.fromScale(1, 1)
 		barFill.BackgroundColor3 = MINT
+		barTick.Visible = false
+		goalStar.Visible = false
+		goalLine.Visible = false
 		hintLabel.Visible = false
 		hintShown = false
 		return
@@ -348,15 +662,50 @@ local function paintNeed()
 	if not need then
 		barText.Text = "Stage " .. next
 		barFill.Size = UDim2.fromScale(0, 1)
+		barTick.Visible = false
+		goalStar.Visible = false
+		goalLine.Visible = false
 		hintLabel.Visible = false
 		hintShown = false
 		return
 	end
-	barText.Text = string.format("Stage %d  ·  %s / %s", next, speedText(shownSpeed), speedText(need))
-	local k = math.clamp(shownSpeed / math.max(need, 1), 0, 1)
-	barFill.Size = UDim2.fromScale(math.max(k, 0.04), 1)
+	-- The bar runs to the recommended Speed; a tick marks the need on the way.
+	local best = recommendedOf(next, need)
+	local full = math.max(best, 1)
 	local ready = targetSpeed >= need
+	barText.Text = if not ready
+		then string.format("Stage %d  ·  %s / %s", next, speedText(shownSpeed), speedText(need))
+		elseif targetSpeed < best then string.format(
+			"Stage %d  ·  %s  ·  recommended %s",
+			next,
+			speedText(shownSpeed),
+			speedText(best)
+		)
+		else string.format("Stage %d  ·  %s  ·  ready!", next, speedText(shownSpeed))
+	local k = math.clamp(shownSpeed / full, 0, 1)
+	barFill.Size = UDim2.fromScale(math.max(k, 0.04), 1)
 	barFill.BackgroundColor3 = if ready then MINT else GOLD
+	barTick.Visible = best > need
+	barTick.Position = UDim2.new(need / full, 0, 0, -MARKER.TickOver)
+	-- The recommended Speed: the gold star on the bar's end pulses until it is reached (then
+	-- it turns mint and rests), and the plate's "Goal" line names it.
+	local hasGoal = best > need
+	goalStar.Visible = hasGoal
+	if hasGoal then
+		local reached = targetSpeed >= best
+		goalScale.Scale = if reached then 1 else 1 + MARKER.StarPulse * math.sin(os.clock() * MARKER.PulseHz * math.pi * 2)
+		local image = goalStar:FindFirstChild("Image")
+		if image and image:IsA("ImageLabel") then
+			image.ImageColor3 = if reached then MINT else GOLD
+		end
+	end
+	goalLine.Visible = hasGoal and sideWide
+	if goalLine.Visible then
+		local text = if targetSpeed >= best then "Goal reached: " .. speedText(best) else "Goal: " .. speedText(best) .. " Speed"
+		if goalLine.Text ~= text then
+			goalLine.Text = text
+		end
+	end
 	if (not ready) ~= hintShown then
 		hintShown = not ready
 		hintLabel.Visible = hintShown
@@ -408,6 +757,7 @@ local function setMultiplier(mult: number)
 		end
 	end
 	treadLine.Text = "Treadmill Lv " .. math.clamp(math.floor(num(snap.treadmill, 0)), 0, MAX_LEVEL)
+	setBest(num(snap.bestStage, bestStage))
 end
 
 -- Custom Speed is a small chip until tapped; OK and the run's end fold it again.
@@ -563,10 +913,14 @@ local function render(dt: number)
 		proximityAt = now
 		checkProximity()
 	end
-	-- The pads' cooldown countdowns tick on their own.
+	checkWorldSigns(now)
+	-- The pads' cooldown countdowns tick on their own (and the stage line's, in a safe zone).
 	if now - padsAt >= PADS_EVERY then
 		padsAt = now
 		paintPads()
+		if zoneIn > 0 then
+			paintWin()
+		end
 	end
 end
 
@@ -582,6 +936,8 @@ local function setRunActive(on: boolean)
 	end
 	gui:SetAttribute("RunActive", on)
 	gui:SetAttribute("CardioActive", on)
+	-- The Roblox player list would cover Custom Speed and QUIT (centre right): hidden for the run.
+	Kit.hidePlayerList("cardio", on)
 	-- The Hud's other blocks (icon grid, cash, bonus strip, gift, chad counter, crate
 	-- panel) step aside too, so only the run, QUIT and the Settings gear stay. The Promo
 	-- hides itself on "CardioActive" (Hud). Each block gets back the Visible it had.
@@ -603,12 +959,16 @@ end
 
 -- Music level during a Cardio run (1 = normal).
 local MUSIC_DUCK = 0.25
+-- Seconds after a run ends before the root frame hides (past the blocks' Kit.disappear).
+local ROOT_HIDE = 0.3
+local hideToken = 0
 
 local function show()
 	if active then
 		return
 	end
 	active = true
+	hideToken += 1
 	-- Music a bit quieter during a run so the key clicks come through.
 	Sounds.setMusicDuck(MUSIC_DUCK)
 	quitArmed = false
@@ -618,6 +978,7 @@ local function show()
 	nearPad, nearTreadmill = false, false
 	zoneIn = 0
 	table.clear(zoneCash)
+	table.clear(zoneFirst)
 	paintWin()
 	paintPads()
 	treadCard.Visible = false
@@ -634,11 +995,38 @@ local function show()
 	end
 end
 
+-- Closes the finish card and drops a gamepad selection left on its buttons, so the stick
+-- goes back to running.
+local function hideFinish()
+	Kit.unfocus(finishCard)
+	if finishCard.Visible then
+		Kit.disappear(finishCard)
+	end
+end
+
+-- The one way out of a run: the "stop" Notify (a quit, Home, a mode switch, a respawn,
+-- leaving the track) and the snapshot's `running` going false. Nothing of the run stays on
+-- screen: no banner (a queued "STAGE n" title included), no finish card, and the
+-- full-screen root goes once its blocks have eased out.
 local function hide()
+	bannerToken += 1
+	bannerUp, worldOver, worldSeenAt = false, false, -math.huge
+	paintLane()
+	if banner.Visible then
+		Kit.disappear(banner)
+	end
+	hideFinish()
 	if not active then
 		return
 	end
 	active = false
+	hideToken += 1
+	local mine = hideToken
+	task.delay(ROOT_HIDE, function()
+		if hideToken == mine and not active then
+			root.Visible = false
+		end
+	end)
 	Sounds.setMusicDuck(1)
 	setRunActive(false)
 	if renderConn then
@@ -673,15 +1061,6 @@ local function applySnapshot(s: { [string]: any }, exact: boolean)
 	end
 end
 
--- Closes the finish card and drops a gamepad selection left on its buttons, so the stick
--- goes back to running.
-local function hideFinish()
-	Kit.unfocus(finishCard)
-	if finishCard.Visible then
-		Kit.disappear(finishCard)
-	end
-end
-
 local function showFinish(p: any)
 	finishSub.Text = string.format("You cleared all %d stages!", stageCount)
 	finishReward.Text = rewardText(p) or ""
@@ -709,9 +1088,15 @@ function CardioHud.onNotify(p: any)
 		setTarget(num(p.speed, targetSpeed), true)
 		setWalk(num(p.walkSpeed, walkSpeed))
 		setMultiplier(num(p.multiplier, 1))
+		setBest(num(p.bestStage, bestStage))
 		show()
 		Sounds.play("Ready")
-		showBanner("CARDIO!", "Every key you step on = +Speed!", MINT, 2)
+		-- The personal best to chase, once there is one.
+		local chase = if bestStage <= 0
+			then "Every key you step on = +Speed!"
+			elseif bestStage >= stageCount then "Best plate " .. bestStage .. ": all the way!"
+			else "Best plate " .. bestStage .. ". Can you go deeper?"
+		showBanner("CARDIO!", chase, MINT, 2)
 		stageTitle(2.4)
 	elseif event == "zone" then
 		-- Reached a safe zone: nothing is paid yet, its WIN plate shows what it would pay.
@@ -719,10 +1104,19 @@ function CardioHud.onNotify(p: any)
 		stage = n
 		local cash = num(p.cash, 0)
 		zoneCash[n] = cash
-		local sub = if cash > 0
-			then "Step on the WIN plate: +" .. Format.money(cash)
-			elseif n >= stageCount then "Step on the WIN plate!"
-			else "Keep running for a bigger win!"
+		zoneFirst[n] = p.first == true
+		-- What this zone's WIN plate does right now; never a promise the plates can't keep.
+		local sub
+		if cash > 0 and p.pay == "repeat" then
+			sub = "WIN plate: run again bonus +" .. Format.money(cash) .. " (ends this run)"
+		elseif cash > 0 then
+			sub = "WIN plate: +" .. Format.money(cash) .. " (it ends this run)"
+		elseif deeperPays(n) then
+			sub = "No reward on this plate now. A deeper one pays!"
+		else
+			local left = math.max(0, math.ceil(num(p.cooldownEnds, 0) - os.time()))
+			sub = if left > 0 then noRewardText(p) else "No reward on this plate right now"
+		end
 		showBanner("STAGE " .. n .. " CLEAR!", sub, MINT, 2.4)
 		stageTitle(2.8)
 		Sounds.play("Step")
@@ -733,9 +1127,27 @@ function CardioHud.onNotify(p: any)
 		stage = 0
 		zoneIn = 0
 		table.clear(zoneCash)
+		table.clear(zoneFirst)
 		paintWin()
+		-- A claim deeper than the best plate is a new personal best.
+		local newBest = p.newBest == true
+		setBest(num(p.bestStage, bestStage), newBest)
 		if p.final == true then
 			showFinish(p)
+		elseif newBest then
+			local reward = rewardText(p)
+			local plate = "Plate " .. math.floor(num(p.stage, bestStage))
+			showBanner("NEW BEST!", if reward then plate .. "  ·  " .. reward else plate, GOLD, 2.6)
+			stageTitle(3)
+			Sounds.play("Celebrate")
+			if screen then
+				Kit.confetti(screen, { Count = 26, Origin = UDim2.fromScale(0.5, 0.3), Power = 1.2 })
+			end
+		elseif num(p.cash, 0) <= 0 then
+			-- The plate paid nothing (the cooldown) and still ended the run: say so, no party.
+			showBanner("RUN OVER", noRewardText(p), WHITE, 2.4)
+			stageTitle(2.8)
+			Sounds.play("Step")
 		else
 			showBanner("YOU WIN!", rewardText(p), GOLD, 2.4)
 			stageTitle(2.8)
@@ -750,9 +1162,34 @@ function CardioHud.onNotify(p: any)
 		stage = 0
 		zoneIn = 0
 		table.clear(zoneCash)
+		table.clear(zoneFirst)
 		paintWin()
 		local caught = p.reason == "caught"
-		showBanner(if caught then "CAUGHT!" else "OOPS!", "Back to Stage 1. Build more Speed!", CORAL, 1.8, if caught then 1.2 else nil)
+		-- What happened, from the server: the run was slower than the stage's need gives (not
+		-- enough Speed, or the player's own speed cap), or it was fast enough and just fell /
+		-- got caught.
+		local from = math.floor(num(p.from, 1))
+		local need = num(p.need, needOf(from) or 0)
+		local title, sub
+		local zone = math.floor(num(p.zone, 0))
+		if zone > 0 and not caught then
+			-- Off the side of a safe zone's deck: not the next stage's need.
+			title = "OOPS!"
+			sub = "You fell off the edge after Stage " .. zone .. ". Back to Stage 1."
+		elseif p.capped == true then
+			title = if caught then "CAUGHT!" else "TOO SLOW!"
+			sub = "Your Custom Speed is too low for Stage " .. from .. ". Raise it!"
+		elseif p.slow == true then
+			title = if caught then "CAUGHT!" else "TOO SLOW!"
+			sub = "Stage " .. from .. " needs " .. speedText(need) .. " Speed. Back to Stage 1."
+		elseif caught then
+			title = "CAUGHT!"
+			sub = "Keep running, don't stop! Back to Stage 1."
+		else
+			title = "OOPS!"
+			sub = "You fell in Stage " .. from .. ". Back to Stage 1."
+		end
+		showBanner(title, sub, CORAL, 2.2, if caught then 1.2 else nil)
 		Sounds.play("Error")
 	elseif event == "refused" then
 		-- The server already toasted why; just shake the button.
@@ -783,6 +1220,13 @@ function CardioHud.onNotify(p: any)
 		elseif reason == "quit" then
 			Popups.toast("Cardio run ended", "info")
 		end
+	end
+end
+
+-- Another mode started or stopped (Main): the finish card never stays up over it.
+function CardioHud.closeFinish()
+	if screen then
+		hideFinish()
 	end
 end
 
@@ -856,6 +1300,25 @@ local function buildBox()
 		Parent = box,
 	})
 	boxBody = body
+	-- A dark plate behind the number (sized to its text) so keycap letters never show through.
+	local speedPlate = Kit.new("Frame", {
+		Name = "SpeedPlate",
+		BackgroundColor3 = PLATE.Color,
+		BackgroundTransparency = PLATE.SpeedTransparency,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(BOX_W - 40, SPEED_H - 10),
+		Position = UDim2.fromOffset(BOX_W / 2, SPEED_H / 2),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 20,
+		Parent = body,
+	})
+	Kit.new("UICorner", { CornerRadius = UDim.new(0, PLATE.Radius + 4), Parent = speedPlate })
+	Kit.new("UIStroke", {
+		Color = PLATE.StrokeColor,
+		Thickness = PLATE.Stroke,
+		Transparency = PLATE.StrokeTransparency,
+		Parent = speedPlate,
+	})
 	speedLabel = Kit.hudText(body, {
 		Name = "Speed",
 		Text = "0",
@@ -867,6 +1330,14 @@ local function buildBox()
 		StrokeThickness = 6,
 	})
 	Kit.gradient(speedLabel, WHITE, Color3.fromRGB(214, 226, 255), 90)
+	local function fitPlate()
+		local bounds = speedLabel.TextBounds
+		if bounds.X > 0 then
+			speedPlate.Size = UDim2.fromOffset(bounds.X + PLATE.SpeedPadX * 2, math.min(bounds.Y + PLATE.SpeedPadY * 2, SPEED_H))
+		end
+	end
+	speedLabel:GetPropertyChangedSignal("TextBounds"):Connect(fitPlate)
+	fitPlate()
 
 	-- Chunky bar toward the next stage's need.
 	local track = Kit.new("Frame", {
@@ -901,6 +1372,29 @@ local function buildBox()
 	})
 	Kit.round(barFill)
 	Kit.gradient(barFill, WHITE, Color3.new(0.78, 0.78, 0.84), 90)
+	-- The need: the bar itself runs on to the recommended Speed (paintNeed places the tick).
+	barTick = Kit.new("Frame", {
+		Name = "NeedTick",
+		BackgroundColor3 = MARKER.TickColor,
+		BorderSizePixel = 0,
+		Size = UDim2.new(0, MARKER.TickW, 1, MARKER.TickOver * 2),
+		Position = UDim2.new(1 / RECOMMEND, 0, 0, -MARKER.TickOver),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Visible = false,
+		ZIndex = 25,
+		Parent = inner,
+	})
+	Kit.new("UICorner", { CornerRadius = UDim.new(0, 3), Parent = barTick })
+	Kit.new("UIStroke", { Color = C.Ink, Thickness = 2, Parent = barTick })
+	-- The recommended Speed (the bar's end): a gold star that pulses until it is reached.
+	goalStar = Kit.hudIcon(track, "Star", MARKER.Star, GOLD, {
+		Name = "GoalStar",
+		Position = UDim2.new(1, 2, 0.5, 0),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 26,
+	})
+	goalStar.Visible = false
+	goalScale = Kit.new("UIScale", { Parent = goalStar })
 	barText = Kit.hudText(track, {
 		Name = "Need",
 		Text = "",
@@ -910,36 +1404,77 @@ local function buildBox()
 	})
 
 	-- Multiplier lines: beside the number on wide screens, above it on narrow ones.
+	-- One dark rounded plate behind all of them.
 	side = Kit.new("Frame", {
 		Name = "Lines",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(SIDE_W, 50),
+		BackgroundColor3 = PLATE.Color,
+		BackgroundTransparency = PLATE.Transparency,
+		BorderSizePixel = 0,
+		AutomaticSize = Enum.AutomaticSize.XY,
+		Size = UDim2.fromOffset(0, 0),
 		ZIndex = 21,
 		Parent = body,
 	})
+	Kit.new("UICorner", { CornerRadius = UDim.new(0, PLATE.Radius), Parent = side })
+	Kit.new("UIStroke", {
+		Color = PLATE.StrokeColor,
+		Thickness = PLATE.Stroke,
+		Transparency = PLATE.StrokeTransparency,
+		Parent = side,
+	})
+	Kit.new("UIPadding", {
+		PaddingLeft = UDim.new(0, PLATE.PadX),
+		PaddingRight = UDim.new(0, PLATE.PadX),
+		PaddingTop = UDim.new(0, PLATE.PadY),
+		PaddingBottom = UDim.new(0, PLATE.PadY),
+		Parent = side,
+	})
 	sideLayout = Kit.new("UIListLayout", {
-		Padding = UDim.new(0, 2),
+		Padding = UDim.new(0, PLATE.LineGap),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 		Parent = side,
 	})
 	multLine = Kit.hudText(side, {
 		Name = "Multiplier",
 		Text = "",
-		TextSize = 17,
-		TextColor3 = Kit.lighten(GRAPE, 0.3),
+		TextSize = PLATE.LineText,
+		TextColor3 = Kit.lighten(GRAPE, 0.45),
 		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 22),
+		Size = UDim2.fromOffset(0, PLATE.LineH),
 		LayoutOrder = 1,
 		ZIndex = 22,
 	})
 	treadLine = Kit.hudText(side, {
 		Name = "Treadmill",
 		Text = "Treadmill Lv 0",
-		TextSize = 17,
-		TextColor3 = Kit.lighten(MINT, 0.2),
+		TextSize = PLATE.LineText,
+		TextColor3 = Kit.lighten(MINT, 0.35),
 		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 22),
+		Size = UDim2.fromOffset(0, PLATE.LineH),
 		LayoutOrder = 2,
+		ZIndex = 22,
+	})
+	-- The personal best: the deepest WIN plate claimed.
+	bestLine = Kit.hudText(side, {
+		Name = "Best",
+		Text = "No best plate yet",
+		TextSize = PLATE.LineText,
+		TextColor3 = Kit.lighten(GOLD, 0.35),
+		AutomaticSize = Enum.AutomaticSize.X,
+		Size = UDim2.fromOffset(0, PLATE.LineH),
+		LayoutOrder = 3,
+		ZIndex = 22,
+	})
+	-- The recommended Speed for the next stage (wide screens; the bar's star marks it too).
+	goalLine = Kit.hudText(side, {
+		Name = "Goal",
+		Text = "",
+		TextSize = PLATE.LineText,
+		TextColor3 = WHITE,
+		AutomaticSize = Enum.AutomaticSize.X,
+		Size = UDim2.fromOffset(0, PLATE.LineH),
+		LayoutOrder = 4,
+		Visible = false,
 		ZIndex = 22,
 	})
 end
@@ -1264,9 +1799,9 @@ local function buildStageLine()
 	stageLine = Kit.new("Frame", {
 		Name = "CardioStage",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(460, 50),
-		Position = UDim2.new(0.5, 0, 0, STRIP_Y),
-		AnchorPoint = Vector2.new(0.5, 0),
+		Size = UDim2.fromOffset(SIGN.LineW, SIGN.LineH),
+		Position = UDim2.new(0.5, 0, 1, -200), -- in the text lane (relayout)
+		AnchorPoint = Vector2.new(0.5, 1),
 		Visible = false,
 		ZIndex = 20,
 		Parent = root,
@@ -1276,27 +1811,45 @@ local function buildStageLine()
 		Text = "",
 		TextSize = 24,
 		Size = UDim2.new(1, 0, 0, 28),
+		Position = UDim2.fromOffset(0, laneRow(0)),
 		ZIndex = 22,
 		StrokeThickness = 3,
 	})
-	winLabel = Kit.hudText(stageLine, {
+	signBody = Kit.new("Frame", {
+		Name = "SignLines",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 21,
+		Parent = stageLine,
+	})
+	winLabel = Kit.hudText(signBody, {
 		Name = "Win",
 		Text = "",
 		TextSize = 18,
 		TextColor3 = GOLD,
 		Size = UDim2.new(1, 0, 0, 22),
-		Position = UDim2.fromOffset(0, 29),
+		Position = UDim2.fromOffset(0, laneRow(1)),
 		Visible = false,
 		ZIndex = 22,
 		StrokeThickness = 3,
 	})
-	hintLabel = Kit.hudText(stageLine, {
+	-- Under the win line: what skipping the plate does, or when it pays again.
+	winNote = Kit.hudText(signBody, {
+		Name = "WinNote",
+		Text = "",
+		TextSize = SIGN.NoteText,
+		Size = UDim2.new(1, 0, 0, 20),
+		Position = UDim2.fromOffset(0, laneRow(1)),
+		Visible = false,
+		ZIndex = 22,
+	})
+	hintLabel = Kit.hudText(signBody, {
 		Name = "Hint",
 		Text = "Need more speed! Run on keys or hop on a treadmill",
 		TextSize = 16,
 		TextColor3 = Kit.lighten(CORAL, 0.15),
 		Size = UDim2.new(1, 0, 0, 20),
-		Position = UDim2.fromOffset(0, 30),
+		Position = UDim2.fromOffset(0, laneRow(1)),
 		Visible = false,
 		ZIndex = 22,
 	})
@@ -1306,9 +1859,9 @@ local function buildBanner(screenGui: ScreenGui)
 	banner = Kit.new("Frame", {
 		Name = "CardioBanner",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(640, 110),
-		Position = UDim2.new(0.5, 0, 0, TITLE_Y + 22),
-		AnchorPoint = Vector2.new(0.5, 0),
+		Size = UDim2.fromOffset(SIGN.BannerW, SIGN.BannerH),
+		Position = UDim2.new(0.5, 0, 1, -200), -- in the text lane (relayout)
+		AnchorPoint = Vector2.new(0.5, 1),
 		Visible = false,
 		ZIndex = 30,
 		Parent = screenGui,
@@ -1432,7 +1985,7 @@ function CardioHud.build(screenGui: ScreenGui)
 		ZIndex = 20,
 		Parent = root,
 	})
-	Kit.list(column, 10, false, Enum.HorizontalAlignment.Right)
+	local columnList = Kit.list(column, 10, false, Enum.HorizontalAlignment.Right)
 	buildBox()
 	buildCustom()
 	buildTreadmillCard()
@@ -1457,16 +2010,22 @@ function CardioHud.build(screenGui: ScreenGui)
 			end
 		end
 		boxScale.Scale = scale
-		box.Position = UDim2.new(0.5, 0, 1, if Kit.touch then -10 else -16)
+		local boxBottom = if Kit.touch then 10 else 16
+		box.Position = UDim2.new(0.5, 0, 1, -boxBottom)
 		local wide = not Kit.touch and view.X / 2 >= (BOX_W / 2 + 12 + SIDE_W) * scale + 12
+		sideWide = wide
+		-- The text lane sits on the box (and on its lines, when they ride above the number).
+		local lane = boxBottom + (BOX_H + (if wide then 0 else PLATE.LineH + 4)) * scale + SIGN.Gap
+		stageLine.Position = UDim2.new(0.5, 0, 1, -lane)
+		banner.Position = UDim2.new(0.5, 0, 1, -lane)
+		side.Size = UDim2.fromOffset(0, 0)
 		if wide then
-			side.Size = UDim2.fromOffset(SIDE_W, 50)
-			side.Position = UDim2.new(1, 12, 0, 8)
+			side.Position = UDim2.new(1, 12, 0, 2)
 			side.AnchorPoint = Vector2.zero
 			sideLayout.FillDirection = Enum.FillDirection.Vertical
 			sideLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
 		else
-			side.Size = UDim2.fromOffset(BOX_W + 80, 22)
+			goalLine.Visible = false
 			side.Position = UDim2.new(0.5, 0, 0, -4)
 			side.AnchorPoint = Vector2.new(0.5, 1)
 			sideLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -1474,7 +2033,18 @@ function CardioHud.build(screenGui: ScreenGui)
 		end
 		sideLayout.Padding = UDim.new(0, if wide then 2 else 14)
 		columnScale.Scale = if compact then 0.74 else 1
-		column.Position = if Kit.touch then UDim2.new(1, -16, 0.5, -40) else UDim2.new(1, -24, 0.5, 0)
+		-- Desktop: the column stands on the box's level at the right edge (Custom Speed and QUIT
+		-- at its foot), below the horizon where the track's goal star and door signs show.
+		-- Touch keeps it centre right, clear of the jump button.
+		if Kit.touch then
+			column.AnchorPoint = Vector2.new(1, 0.5)
+			column.Position = UDim2.new(1, -16, 0.5, -40)
+			columnList.VerticalAlignment = Enum.VerticalAlignment.Top
+		else
+			column.AnchorPoint = Vector2.new(1, 1)
+			column.Position = UDim2.new(1, -24, 1, -lane)
+			columnList.VerticalAlignment = Enum.VerticalAlignment.Bottom
+		end
 		if active then
 			paintTreadmill()
 		end

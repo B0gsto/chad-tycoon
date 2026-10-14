@@ -122,6 +122,11 @@ local KEY = Layout.KEY
 -- PRESS below the key tops, and Fx.Cardio sinks the keys under feet by exactly PRESS (the
 -- folder's PressDepth attribute), so feet rest on fully pressed keys and never bounce.
 local PRESS = Layout.PRESS
+-- Calmer keycaps: every key's palette tint is lerped this far toward KEY_CALM_TO (lighter, less
+-- saturated), so the floor reads as one soft pink-pastel keyboard and the baked dark letters
+-- stop fighting the run HUD's text; the stage palettes still tell the stages apart.
+local KEY_CALM = 0.2
+local KEY_CALM_TO = Color3.fromRGB(250, 244, 248)
 local DW = Layout.DOOR_WALL
 -- props/CardioTreadmill belt in mesh space (origin = base centre, runner faces -Z).
 local BELT = { top = 1.4, chevronTop = 1.435, x0 = -2.15, x1 = 2.15, z0 = -3.236, z1 = 5.364 }
@@ -307,7 +312,7 @@ local function buildKey(parent: Instance, key: Layout.Key, index: number): BaseP
 	local size = Vector3.new(key.sx - gap, KEY.height, key.sz - gap)
 	local cf = CFrame.new(key.x, key.y - KEY.height / 2, key.z)
 	local tint = Layout.tintOf(key)
-	local colour = Color3.fromRGB(tint.r, tint.g, tint.b)
+	local colour = Color3.fromRGB(tint.r, tint.g, tint.b):Lerp(KEY_CALM_TO, KEY_CALM)
 	local mesh = keyMesh(key.letter)
 	local root: BasePart
 	if mesh then

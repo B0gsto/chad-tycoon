@@ -26,10 +26,16 @@
 	  n - 1 reached, so a teleport deeper or a late position report reaches nothing). Cash is paid only on a WIN pad (CardioLayout zone.winPad, one per safe zone
 	  1..10; zone 10's is the finish): the server sees a living runner's feet on the pad of a
 	  zone reached this run (CardioLayout.onWinPad) and pays Economy.modeReward x
-	  stageBonus(n) for that zone: a first clear when n > bestStage (always paid; raises
-	  bestStage and with it the step multiplier), else only once per
-	  Economy.MODE_REWARD_COOLDOWN (modes.cardio.lastRewardAt, shared by all ten pads; a pad
-	  inside the cooldown pays $0). The claim ends the run: back to the lobby with nothing
+	  stageBonus(n) for that zone: a first clear the first time that pad is claimed (always
+	  paid; kept per pad in profile.cardio.firsts, CardioRules.firstsOf, so a pad that was run
+	  past keeps its first clear for later), else only once per
+	  Economy.MODE_REWARD_COOLDOWN (modes.cardio.lastRewardAt, shared by all ten pads). A pad
+	  inside the cooldown pays the run again bonus, Economy.MODE_REPEAT_SHARE of its pack,
+	  but only for a real run (CardioRules.repeatEarned): on the deepest pad claimed before
+	  (bestStage, the personal best) or a deeper one, and no sooner than
+	  CardioRules.REPEAT_GAP seconds after the last pad that paid; any other pad inside the
+	  cooldown pays $0. A claim deeper than bestStage raises it and with it the
+	  step multiplier. The claim ends the run: back to the lobby with nothing
 	  reached, so one run pays at most once and a pad cannot be stepped on again without
 	  running its stages again. Walking past a pad keeps the run going toward a bigger one.
 	- Leaving the runway any other way (Home, GoModes...) ends the run ("left").
@@ -38,21 +44,37 @@
 
 	Notify payloads (kind = "Mode", mode = "cardio"):
 	  { event = "start", speed, walkSpeed, bestStage, multiplier }      always in the lobby
-	  { event = "zone", stage, name, first, cash, full, cooldownEnds }
+	  { event = "zone", stage, name, first, cash, full, cooldownEnds, pay, packCash, repeatCash,
+	    repeatShare, repeatFrom, repeatReadyAt }
 	                                  reached safe zone `stage`; cash = what its WIN pad pays
 	                                  right now (nothing is paid yet)
-	  { event = "win", stage, name, final, first, cash, full, cooldownEnds, bestStage, multiplier }
+	  { event = "win", stage, name, final, first, cash, full, cooldownEnds, bestStage, multiplier,
+	    newBest, prevBest, pay, packCash, repeatCash, repeatShare, repeatFrom, repeatReadyAt }
 	                                  claimed `stage`'s WIN pad (final = stage 10): paid, back
-	                                  in the lobby
-	  { event = "fall", stage = 0, from, reason }  back in the lobby from stage `from`;
-	                                  reason "fall" | "caught"
+	                                  in the lobby; newBest = deeper than prevBest, the best
+	                                  plate before this claim
+	  Pay fields (as Parkour's finish): pay = "first" | "full" | "repeat" | "resting" | "none"
+	  says why `cash` is what it is ("repeat": the run again bonus, repeatShare of packCash =
+	  repeatCash; "resting": a plate that would pay it, inside CardioRules.REPEAT_GAP of the
+	  last one); repeatFrom = the first plate that can pay the bonus (the best plate);
+	  repeatReadyAt = os.time() from which the bonus is paid again (0 = now).
+	  { event = "fall", stage = 0, from, reason, speed, need, slow, capped, zone? }
+	                                  back in the lobby from stage `from`; reason "fall" |
+	                                  "caught"; speed = whole Speed, need = that stage's need,
+	                                  slow = the run's WalkSpeed was below what the need gives,
+	                                  capped = ...only because of the player's own speed cap;
+	                                  zone = n when the fall was off safe zone n's own deck
+	                                  (then slow and capped are false)
 	  { event = "upgrade", level, cost, rate, multiplier, nextCost? }
 	  { event = "refused", reason, cost? }        upgrade refused: "run" | "far" | "max" | "cash"
 	  { event = "stop", reason }
 	Snapshot: running, speed, walkSpeed (effective base, capped), maxWalkSpeed (uncapped),
 	speedCap (nil when none), multiplier, bestStage, treadmill, treadmillMax, treadmillRate,
 	nextCost, stage, reached (safe zones reached this run), wins (in a run: wins[n] = cash safe
-	zone n's WIN pad pays right now), onTreadmill, cooldownEnds, stageCount, needs, names.
+	zone n's WIN pad pays right now), firsts (in a run: firsts[n] = pad n's first clear is
+	still there), repeats (in a run: repeats[n] = the run again bonus pad n pays inside the
+	cooldown once repeatReadyAt has come, 0 = none), repeatFrom, repeatReadyAt, repeatShare, onTreadmill, cooldownEnds, stageCount, needs, recommended (Speed the HUD
+	recommends per stage, CardioRules.recommended), names.
 	Effects: "CardioSteps" { gained, speed, walkSpeed, treadmill, multiplier, rate } (at most ~4
 	per second while gaining; speed and gained are whole Speed, treadmill is true on a belt,
 	multiplier is the step multiplier, rate the current treadmillRate), "ModeSplash" { pos } on a fall, "ModeFinish" { pos, newBest } on a first clear,
@@ -97,9 +119,11 @@ local BOUNDS = LAYOUT.bounds
 local FORWARD = Vector3.new(1, 0, 0)
 
 local NEEDS = {}
+local RECOMMENDED = {}
 local NAMES = {}
 for n, s in CardioRules.STAGES do
 	NEEDS[n] = s.need
+	RECOMMENDED[n] = CardioRules.recommended(n)
 	NAMES[n] = s.name
 end
 
@@ -139,6 +163,8 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 	local theme = context.theme
 	local Tycoon = context.Tycoon
 	local runs: { [Player]: State } = {}
+	-- Server time of each player's last WIN pad that paid cash (the run again bonus' gap).
+	local lastPaidAt: { [Player]: number } = {}
 	-- CardioChase hook: chaser Chads on stages 3, 6 and 9 (Modes.CardioChase).
 	local chaser = CardioChase.serve(function(p: Player, event: string, data: { [string]: any })
 		GameModes.notify(p, event, ID, data)
@@ -148,8 +174,19 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		return workspace:GetServerTimeNow()
 	end
 
-	local function record(session: any): { speed: number, bestStage: number, treadmill: number, clears: number, speedCap: number }
+	local function record(
+		session: any
+	): { speed: number, bestStage: number, treadmill: number, clears: number, speedCap: number, firsts: number? }
 		return session.profile.cardio
+	end
+
+	-- The WIN pads whose first clear was taken (a bit set; DataService.reconcile fills it in on
+	-- saves without it, and this read repairs a record that still lacks it).
+	local function firstsOf(session: any): number
+		local rec = record(session)
+		local firsts = CardioRules.firstsOf(rec.firsts, rec.bestStage)
+		rec.firsts = firsts
+		return firsts
 	end
 
 	-- The player's own max WalkSpeed, or nil when none.
@@ -219,7 +256,21 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		humanoid.WalkSpeed = walk * (if type(mult) == "number" then mult else 1)
 	end
 
-	local function rewardFor(session: any, stage: number, first: boolean): Economy.ModeReward
+	-- Seconds until the run again bonus can be paid again (0 = now).
+	local function repeatLeft(session: any): number
+		local at = lastPaidAt[session.player]
+		return if at then math.max(0, at + CardioRules.REPEAT_GAP - now()) else 0
+	end
+
+	-- os.time() from which the run again bonus is paid again (0 = now), for the HUD.
+	local function repeatReadyAt(session: any): number
+		local left = repeatLeft(session)
+		return if left > 0 then os.time() + math.ceil(left) else 0
+	end
+
+	-- What safe zone `stage`'s WIN pad pays right now and why (CardioRules.payKind): inside
+	-- the cooldown only a claim that earned it gets the run again bonus (`repeatCash`).
+	local function rewardFor(session: any, stage: number, first: boolean): (Economy.ModeReward, string)
 		local p = session.profile
 		local pack = theme.Modes.Reward
 		local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
@@ -233,15 +284,37 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			os.time()
 		)
 		r.packCash = math.floor(r.packCash * CardioRules.stageBonus(stage) + 0.5)
-		r.cash = if r.full then r.packCash else 0
-		return r
+		r.repeatCash = math.floor(r.packCash * Economy.MODE_REPEAT_SHARE)
+		local sincePaid = CardioRules.REPEAT_GAP - repeatLeft(session)
+		local best = record(session).bestStage
+		local earned = CardioRules.repeatEarned(stage, best, sincePaid)
+		-- A plate deep enough for the bonus, only too soon after the last one: it rests.
+		local resting = not earned and CardioRules.repeatEarned(stage, best, CardioRules.REPEAT_GAP)
+		local kind = CardioRules.payKind(first, r.full, earned, resting)
+		r.cash = if r.full then r.packCash elseif kind == "repeat" then r.repeatCash else 0
+		return r, kind
 	end
 
-	-- What safe zone `stage`'s WIN pad pays right now, and whether it would be a first clear
-	-- (it beats bestStage: always paid; anything else pays once per cooldown).
-	local function winReward(session: any, stage: number): (Economy.ModeReward, boolean)
-		local first = stage > record(session).bestStage
-		return rewardFor(session, stage, first), first
+	-- What safe zone `stage`'s WIN pad pays right now, whether it would be a first clear
+	-- (this pad was never claimed: always paid; anything else pays once per cooldown, and the
+	-- run again bonus inside it) and why it pays that.
+	local function winReward(session: any, stage: number): (Economy.ModeReward, boolean, string)
+		local first = CardioRules.isFirst(firstsOf(session), stage)
+		local reward, kind = rewardFor(session, stage, first)
+		return reward, first, kind
+	end
+
+	-- The pay fields of a "zone" or "win" payload.
+	local function payFields(payload: { [string]: any }, session: any, reward: Economy.ModeReward, kind: string)
+		payload.cash = reward.cash
+		payload.full = reward.full
+		payload.pay = kind
+		payload.packCash = reward.packCash
+		payload.repeatCash = reward.repeatCash
+		payload.repeatShare = Economy.MODE_REPEAT_SHARE
+		payload.repeatFrom = CardioRules.repeatFrom(record(session).bestStage)
+		payload.repeatReadyAt = repeatReadyAt(session)
+		payload.cooldownEnds = cooldownEnds(session)
 	end
 
 	local function teleportTo(player: Player, state: State, c: CardioLayout.Point)
@@ -338,16 +411,11 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 	-- Reached safe zone `stage` (>= 1) this run. Nothing is paid here: the HUD learns what the
 	-- zone's WIN pad would pay.
 	local function reach(player: Player, session: any, stage: number)
-		local reward, first = winReward(session, stage)
+		local reward, first, kind = winReward(session, stage)
 		local s = CardioRules.STAGES[stage]
-		GameModes.notify(player, "zone", ID, {
-			stage = stage,
-			name = s and s.name,
-			first = first,
-			cash = reward.cash,
-			full = reward.full,
-			cooldownEnds = cooldownEnds(session),
-		})
+		local payload: { [string]: any } = { stage = stage, name = s and s.name, first = first }
+		payFields(payload, session, reward, kind)
+		GameModes.notify(player, "zone", ID, payload)
 		GameModes.refresh(player)
 	end
 
@@ -356,11 +424,16 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 	local function win(player: Player, session: any, state: State, root: BasePart, stage: number)
 		local rec = record(session)
 		local shared = cooldown(session)
-		local first = stage > rec.bestStage
-		local reward = GameModes.hooks.reward(session, ID, rewardFor(session, stage, first))
+		local firsts = firstsOf(session)
+		local first = CardioRules.isFirst(firsts, stage)
+		-- Priced against the best plate before this claim.
+		local prevBest = rec.bestStage
+		local priced, kind = rewardFor(session, stage, first)
+		local reward = GameModes.hooks.reward(session, ID, priced)
 		rec.clears += 1
 		shared.clears = rec.clears
-		if first then
+		rec.firsts = CardioRules.claimFirst(firsts, stage)
+		if stage > rec.bestStage then
 			rec.bestStage = stage
 			shared.best = stage
 		end
@@ -371,6 +444,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		if reward.cash > 0 then
 			p.money += reward.cash
 			p.totalEarned += reward.cash
+			lastPaidAt[player] = now()
 			GameModes.effect(player, "Cash", { amount = reward.cash, source = "Mode", padPos = root.Position })
 		end
 		if first then
@@ -378,17 +452,18 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		end
 		restart(player, state, "win")
 		local s = CardioRules.STAGES[stage]
-		GameModes.notify(player, "win", ID, {
+		local payload: { [string]: any } = {
 			stage = stage,
 			name = s and s.name,
 			final = stage >= CardioRules.STAGE_COUNT,
 			first = first,
-			cash = reward.cash,
-			full = reward.full,
-			cooldownEnds = cooldownEnds(session),
 			bestStage = rec.bestStage,
+			prevBest = prevBest,
+			newBest = stage > prevBest,
 			multiplier = multiplierOf(session),
-		})
+		}
+		payFields(payload, session, reward, kind)
+		GameModes.notify(player, "win", ID, payload)
 		GameModes.hooks.rewarded(session, ID, reward)
 		Tycoon.markDirty(session)
 		GameModes.refresh(player)
@@ -451,8 +526,25 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		end
 		if failed then
 			local from = state.stage + 1
+			-- Off the side of a safe zone's own deck (not a stage's jumps): the HUD says so instead
+			-- of the next stage's need.
+			local room = CardioLayout.roomAt(x)
+			local zone = if failed == "fall" and room and room.kind == "zone" then room.stage else nil
+			-- Why, for the HUD: was the run slower than the stage's need asks for?
+			local speed = record(session).speed
+			local need = NEEDS[from] or 0
+			local slow = zone == nil and state.walk < CardioRules.walkSpeed(need) - WALK_STEP
 			restart(player, state, failed)
-			GameModes.notify(player, "fall", ID, { stage = 0, from = from, reason = failed })
+			GameModes.notify(player, "fall", ID, {
+				stage = 0,
+				from = from,
+				reason = failed,
+				speed = math.floor(speed),
+				need = need,
+				slow = slow,
+				capped = slow and speed >= need,
+				zone = zone,
+			})
 			GameModes.refresh(player)
 			return
 		end
@@ -523,15 +615,22 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		end
 	end
 
-	-- What the WIN pad of the next new stage would pay right now.
+	-- What the WIN pad of the next new stage would pay right now (`repeatCash`: its run again
+	-- bonus inside the cooldown, `repeatShare` of `packCash`).
 	function def.rewardPreview(player: Player): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, full = false, packCash = 0 }
+			return { cash = 0, full = false, packCash = 0, repeatCash = 0, repeatShare = Economy.MODE_REPEAT_SHARE }
 		end
 		local rec = record(session)
 		local r = winReward(session, math.min(rec.bestStage + 1, CardioRules.STAGE_COUNT))
-		return { cash = r.cash, full = r.full, packCash = r.packCash }
+		return {
+			cash = r.cash,
+			full = r.full,
+			packCash = r.packCash,
+			repeatCash = r.repeatCash,
+			repeatShare = Economy.MODE_REPEAT_SHARE,
+		}
 	end
 
 	function def.snapshot(player: Player): { [string]: any }
@@ -540,14 +639,22 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		local rec = session and record(session)
 		local speed = if rec then rec.speed else 0
 		local level = if rec then rec.treadmill else 0
-		-- In a run: what each safe zone's WIN pad pays right now (the pads' floating labels).
+		-- In a run: what each safe zone's WIN pad pays right now (the pads' floating labels)
+		-- and whether its first clear is still there.
 		local wins: { number }? = nil
+		local firsts: { boolean }? = nil
+		-- ...and the run again bonus each pad pays inside the cooldown once its gap is over.
+		local repeats: { number }? = nil
 		if session and state then
-			local list = {}
+			local list, firstList, repeatList = {}, {}, {}
+			local from = CardioRules.repeatFrom(record(session).bestStage)
 			for n = 1, CardioRules.STAGE_COUNT do
-				list[n] = (winReward(session, n)).cash
+				local reward, first = winReward(session, n)
+				list[n] = reward.cash
+				firstList[n] = first
+				repeatList[n] = if not reward.full and n >= from then reward.repeatCash else 0
 			end
-			wins = list
+			wins, firsts, repeats = list, firstList, repeatList
 		end
 		return {
 			running = state ~= nil,
@@ -564,10 +671,16 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 			stage = if state then state.stage else 0,
 			reached = if state then state.reached else 0,
 			wins = wins,
+			firsts = firsts,
+			repeats = repeats,
+			repeatFrom = CardioRules.repeatFrom(if rec then rec.bestStage else 0),
+			repeatReadyAt = if session then repeatReadyAt(session) else 0,
+			repeatShare = Economy.MODE_REPEAT_SHARE,
 			onTreadmill = if state then state.onTreadmill else false,
 			cooldownEnds = if session then cooldownEnds(session) else 0,
 			stageCount = CardioRules.STAGE_COUNT,
 			needs = NEEDS,
+			recommended = RECOMMENDED,
 			names = NAMES,
 		}
 	end
@@ -645,6 +758,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 	game:GetService("Players").PlayerRemoving:Connect(function(player)
 		runs[player] = nil
 		lastX[player] = nil
+		lastPaidAt[player] = nil
 		chaser.forget(player) -- CardioChase hook
 	end)
 	return def

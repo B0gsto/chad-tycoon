@@ -18,9 +18,12 @@
 	    spin:      CFrame = CFrame.new(rest.Position) * CFrame.Angles(0, MoveSpeed*t + MovePhase, 0) * rest.Rotation
 	  Every BasePart descendant of the root moves rigidly with it. Spinner bars are
 	  "SpinnerBar" roots with CanCollide = false and attribute Hazard = "bump": touching one
-	  should give the local player a gentle push away and a small hop.
+	  gives the local player a push away and a hop; with attribute BumpShove (studs; map 1's
+	  sweepers) it only slides them that far along the deck, never past ShoveMin / ShoveMax
+	  (Vector3 corners of Course.shoveKeep) and never into the air. The bar is hazard tape
+	  (sunny with dark "SpinnerBand" children, red ends and hub) over a "SpinnerRing" on the deck.
 	  Bounce pads: parts named "BouncePad" (tag "BouncePad"), attribute Bounce = upward launch
-	  speed in studs/s for the local player.
+	  speed in studs/s for the local player, on the first touch of every contact.
 
 	  Blink pads: "BlinkPad" slabs (tag "BlinkPad"; the only part that fades, with four Neon
 	  "BlinkGlow" bars round it as descendants), attributes BlinkOn, BlinkPeriod, BlinkPhase
@@ -35,7 +38,10 @@
 	Every level of Server.Modes.Course is built into Parkour/Level<i> (attributes Mode,
 	Level, Title, LevelName, StageFirst, StageLast, and the map's Theme, Blurb,
 	Icon, Accent). Platforms are bright SmoothPlastic candy slabs in their element's colour
-	with a lighter lip and a thin white underside; Course.BRIDGES[i] (the rainbow stairs to the
+	with a lighter lip (a wider, bright Neon one on `path` elements, so the route stands out) and
+	a thin white underside; path pads and slides take their map's own top / edge colours from
+	World.MapDress (which also lines the path with the map's signature props in
+	Level<i>/MapDress); Course.BRIDGES[i] (the rainbow stairs to the
 	next map) go into Level<i>/Bridge, the cloud floor far below (Course.cloudLayer) into
 	Level<i>/CloudFloor and the scenery (level.PROPS) is drawn by World.MapDecor into
 	Level<i>/Scenery. Named parts the game looks up: "ParkourStart" (trigger in gate 1's
@@ -47,6 +53,8 @@
 	course stands next to the plaza.
 	Client hints (Client.Fx.Modes): each open gate's "GateArrow" root (tag "ModeHintArrow",
 	attribute HintBob = bob height in studs, children move with it).
+	Start gantry: each start arch's marquee ("StartSign" and "StartSignLedge", tag "StartGantry",
+	attribute Level) is faded out by Client.Fx.Modes while a run of that map is on.
 
 	Sign text is TextScaled; every sign face's PixelsPerStud is picked so its biggest label
 	lands near 100 px tall (TextScaled's ceiling), which keeps it crisp without wasting texture.
@@ -55,6 +63,7 @@
 
 local Common = require(script.Parent.Common)
 local MapDecor = require(script.Parent.MapDecor)
+local MapDress = require(script.Parent.MapDress)
 local Course = require(script.Parent.Parent.Modes.Course)
 local Catalog = require(script.Parent.Parent.Modes.Catalog)
 
@@ -290,17 +299,26 @@ end
 -- Platforms -----------------------------------------------------------------------------
 
 -- A bright candy slab: the SmoothPlastic top in the element's colour (or `fill`), a 0.3-stud
--- lighter lip just under it and a thin white underside. Returns the top part (named `name`);
+-- lighter lip just under it (the bright Neon edge on `path` elements; the frame-built ring
+-- and hex shapes have no lip) and a thin white underside. Returns the top part (named `name`);
 -- lip and underside are parented to it when `rimInTop` (movers carry them).
 local TOP_H = 1.2
 local LIP_H, LIP_OUT = 0.3, 0.3
 local UNDER_H, UNDER_IN = 0.5, 0.4
-local function platform(e: Course.Element, name: string, parent: Instance, rimInTop: boolean, fill: Color3?): BasePart
+-- A `path` element's lip is its bright edge: wider, near white and Neon, so the route stands
+-- out from the side platforms of the busy late maps (seen from above as an outline).
+local PATH_EDGE_OUT = 0.55
+local PATH_EDGE_TINT = 0.8
+local function platform(e: Course.Element, name: string, parent: Instance, rimInTop: boolean, fill: Color3?, edge: Color3?): BasePart
 	local col = fill or color(e.color)
 	local material = if e.color == "Wood" then Enum.Material.WoodPlanks else SMOOTH
 	local lipY = e.y - TOP_H - LIP_H / 2 + 0.05
 	local underY = e.y - TOP_H - LIP_H - UNDER_H / 2 + 0.1
 	local under = if rimInTop then nil else parent
+	local onPath = (e :: any).path == true
+	local lipOut = if onPath then PATH_EDGE_OUT else LIP_OUT
+	local lipColor = if onPath and edge then edge else col:Lerp(W.White, if onPath then PATH_EDGE_TINT else LIP_TINT)
+	local lipMaterial = if onPath then Enum.Material.Neon else SMOOTH
 	local top: BasePart = nil :: any
 	if e.shape == "disc" then
 		local r = e.r :: number
@@ -316,10 +334,10 @@ local function platform(e: Course.Element, name: string, parent: Instance, rimIn
 		decor(make("Part", {
 			Name = "PlatformRim",
 			Shape = CYLINDER,
-			Size = Vector3.new(LIP_H, r * 2 + LIP_OUT * 2, r * 2 + LIP_OUT * 2),
+			Size = Vector3.new(LIP_H, r * 2 + lipOut * 2, r * 2 + lipOut * 2),
 			CFrame = CFrame.new(e.x, lipY, e.z) * UPRIGHT,
-			Color = col:Lerp(W.White, LIP_TINT),
-			Material = SMOOTH,
+			Color = lipColor,
+			Material = lipMaterial,
 			Parent = under or top,
 		}))
 		decor(make("Part", {
@@ -385,10 +403,10 @@ local function platform(e: Course.Element, name: string, parent: Instance, rimIn
 		})
 		decor(make("Part", {
 			Name = "PlatformRim",
-			Size = Vector3.new(sx + LIP_OUT * 2, LIP_H, sz + LIP_OUT * 2),
+			Size = Vector3.new(sx + lipOut * 2, LIP_H, sz + lipOut * 2),
 			CFrame = CFrame.new(e.x, lipY, e.z),
-			Color = col:Lerp(W.White, LIP_TINT),
-			Material = SMOOTH,
+			Color = lipColor,
+			Material = lipMaterial,
 			Parent = under or top,
 		}))
 		decor(make("Part", {
@@ -587,8 +605,36 @@ local function killBrick(e: Course.Element, parent: Instance)
 	end
 end
 
-local function spinner(e: Course.Element, parent: Instance)
+-- A sweeper: a post with a spinning bar (Client.Fx.Modes turns it and bumps the runner). The
+-- bar is hazard tape, sunny with SPINNER_BANDS dark bands and red ends and hub, so it reads
+-- against the pale sky; a dark and sunny ring lies on the deck round the post.
+local SPINNER_BANDS = 4
+local SPINNER_BAND_SHARE = 0.1 -- each band's share of the bar's length
+local SPINNER_RING_R = 2.6
+local SPINNER_RING_W = 0.7
+local SPINNER_DARK = W.Ink:Lerp(Color3.new(0, 0, 0), 0.6)
+local function spinner(e: Course.Element, parent: Instance, keep: { x0: number, x1: number, z0: number, z1: number }?)
 	local length = e.length :: number
+	decor(make("Part", {
+		Name = "SpinnerRing",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.12, SPINNER_RING_R * 2, SPINNER_RING_R * 2),
+		CFrame = CFrame.new(e.x, e.y + 0.06, e.z) * UPRIGHT,
+		Color = SPINNER_DARK,
+		Material = SMOOTH,
+		CastShadow = false,
+		Parent = parent,
+	}))
+	decor(make("Part", {
+		Name = "SpinnerRingCore",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.16, (SPINNER_RING_R - SPINNER_RING_W) * 2, (SPINNER_RING_R - SPINNER_RING_W) * 2),
+		CFrame = CFrame.new(e.x, e.y + 0.08, e.z) * UPRIGHT,
+		Color = W.Sunny,
+		Material = SMOOTH,
+		CastShadow = false,
+		Parent = parent,
+	}))
 	make("Part", {
 		Name = "SpinnerPost",
 		Shape = CYLINDER,
@@ -602,7 +648,7 @@ local function spinner(e: Course.Element, parent: Instance)
 		Shape = CYLINDER,
 		Size = Vector3.new(length, 1.1, 1.1),
 		CFrame = CFrame.new(e.x, e.y + 1.75, e.z),
-		Color = W.Coral,
+		Color = W.Sunny,
 		CanCollide = false,
 		Parent = parent,
 	})
@@ -611,20 +657,45 @@ local function spinner(e: Course.Element, parent: Instance)
 	bar:SetAttribute("MoveSpeed", e.speed)
 	bar:SetAttribute("MovePhase", e.phase or 0)
 	bar:SetAttribute("Hazard", "bump")
+	-- A shoving sweeper (map 1): a hit slides the runner BumpShove studs along the deck, never
+	-- past ShoveMin / ShoveMax (Course.shoveKeep) and never into the air.
+	if keep and e.shove then
+		bar:SetAttribute("BumpShove", e.shove)
+		bar:SetAttribute("ShoveMin", Vector3.new(keep.x0, e.y, keep.z0))
+		bar:SetAttribute("ShoveMax", Vector3.new(keep.x1, e.y, keep.z1))
+	end
 	bar:AddTag("ModeMover")
-	decor(
-		make(
-			"Part",
-			{ Name = "SpinnerHub", Shape = BALL, Size = cube(2), CFrame = CFrame.new(e.x, e.y + 1.75, e.z), Color = W.Sunny, Parent = bar }
-		)
-	)
+	decor(make("Part", {
+		Name = "SpinnerHub",
+		Shape = BALL,
+		Size = cube(2),
+		CFrame = CFrame.new(e.x, e.y + 1.75, e.z),
+		Color = W.RainbowRed,
+		Parent = bar,
+	}))
 	for _, sx in { -1, 1 } do
 		decor(make("Part", {
 			Name = "SpinnerEnd",
 			Shape = BALL,
 			Size = cube(1.7),
 			CFrame = CFrame.new(e.x + sx * length / 2, e.y + 1.75, e.z),
-			Color = W.White,
+			Color = W.RainbowRed,
+			Parent = bar,
+		}))
+	end
+	-- The bands ride on the bar (children of the mover root), evenly spaced along it and
+	-- clear of the hub.
+	local bandW = length * SPINNER_BAND_SHARE
+	for k = 1, SPINNER_BANDS do
+		local at = ((k - 0.5) / SPINNER_BANDS - 0.5) * (length - bandW * 2)
+		decor(make("Part", {
+			Name = "SpinnerBand",
+			Shape = CYLINDER,
+			Size = Vector3.new(bandW, 1.18, 1.18),
+			CFrame = CFrame.new(e.x + at, e.y + 1.75, e.z),
+			Color = SPINNER_DARK,
+			Material = SMOOTH,
+			CastShadow = false,
 			Parent = bar,
 		}))
 	end
@@ -673,7 +744,7 @@ local function wall(e: Course.Element, parent: Instance)
 end
 
 -- The finish slide: a ramp between two top-surface points with low guard rails and legs.
-local function slide(e: Course.Element, parent: Instance)
+local function slide(e: Course.Element, parent: Instance, fill: Color3?)
 	local from, to = e.from :: { number }, e.to :: { number }
 	local a = Vector3.new(from[1], from[2], from[3])
 	local b = Vector3.new(to[1], to[2], to[3])
@@ -687,7 +758,7 @@ local function slide(e: Course.Element, parent: Instance)
 		Name = "Slide",
 		Size = Vector3.new(d.Magnitude, 1, width),
 		CFrame = frame * CFrame.new(0, -0.5, 0),
-		Color = color(e.color),
+		Color = fill or color(e.color),
 		Parent = parent,
 	})
 	ramp:SetAttribute("Slide", true)
@@ -1444,9 +1515,9 @@ local function checker(top: BasePart, sx: number, sz: number)
 end
 
 -- A map's entrance: an arch over the start deck's leading edge, ahead of the spawn spot,
--- with a marquee card standing on its crown: "STAGE <first stage>" / GO GO GO! toward the
--- runner on the deck, the map name over "STAGE <first stage>" toward the course (map 1:
--- CHAD OBBY / START), and five small rainbow flag poles along the deck's sides. The card
+-- with a marquee card standing on its crown: "MAP <n>" / GO GO GO! toward the
+-- runner on the deck, the map name over "MAP <n>" toward the course (map 1:
+-- CHAD OBBY / START; tagged "StartGantry" with its Level for the client's fade), and five small rainbow flag poles along the deck's sides. The card
 -- stays above the arch: across the opening the pillars cut through its text. Map 1's deck
 -- is the green checkered lobby with "CHAD OBBY" block letters floating high behind the
 -- arch.
@@ -1468,7 +1539,7 @@ local function startArch(level: Course.Level, deck: Course.Element, top: BasePar
 	local signScale = 1.4
 	local signW, signH = half * 2 + 4.6, 4.2 * signScale
 	local signY = ARCH_SPRING + half + signH / 2
-	decor(add({
+	local ledge = decor(add({
 		Name = "StartSignLedge",
 		Size = Vector3.new(signW + 1, 0.8, 2.2),
 		CFrame = CFrame.new(0, signY - signH / 2 + 0.4, 0),
@@ -1480,19 +1551,25 @@ local function startArch(level: Course.Level, deck: Course.Element, top: BasePar
 		CFrame = CFrame.new(0, signY, 0),
 		Color = W.Cream,
 	}))
+	-- Client.Fx.Modes fades the marquee out a moment into a run of this map (it filled the
+	-- top of the screen from the spawn spot) and brings it back when the run ends.
+	for _, part in { ledge, sign } do
+		part:SetAttribute("Level", level.index)
+		part:AddTag("StartGantry")
+	end
 	local pps = math.floor(44 / signScale + 0.5)
 	-- The card's Front face (-Z) looks along the course.
-	local first = (level :: any).STAGE_FIRST or 1
+	local map = "MAP " .. level.index
 	if lobby then
 		cardFace(sign, Enum.NormalId.Front, pps, W.Cream, W.RainbowGreen, "CHAD OBBY", "START")
-		cardFace(sign, Enum.NormalId.Back, pps, W.Cream, W.RainbowRed, "STAGE " .. first, "GO GO GO!")
+		cardFace(sign, Enum.NormalId.Back, pps, W.Cream, W.RainbowRed, map, "GO GO GO!")
 		if top then
 			checker(top, sx, sz)
 		end
 		blockLetters("CHAD OBBY", base * CFrame.new(0, signY + signH / 2 + 2.5, 4), parent)
 	else
-		cardFace(sign, Enum.NormalId.Front, pps, W.Cream, accent, string.upper(level.name), "STAGE " .. first)
-		cardFace(sign, Enum.NormalId.Back, pps, W.Cream, W.Coral, "STAGE " .. first, "GO GO GO!")
+		cardFace(sign, Enum.NormalId.Front, pps, W.Cream, accent, string.upper(level.name), map)
+		cardFace(sign, Enum.NormalId.Back, pps, W.Cream, W.Coral, map, "GO GO GO!")
 	end
 	local keys = { "RainbowRed", "RainbowYellow", "RainbowGreen", "RainbowBlue", "RainbowPurple" }
 	for i, key in keys do
@@ -1511,9 +1588,21 @@ local function buildCourse(level: Course.Level, parent: Instance)
 	local tops: { [Course.Element]: BasePart } = {}
 	local deck = level.PATH[1]
 	local lobby = level.index == 1
+	-- The map's own path colours (World.MapDress): tops cycle its palette in walking order,
+	-- edges glow in its edge colour. Movers and blink pads keep their palette colours.
+	local walk: { [Course.Element]: number } = {}
+	for i, e in level.PATH do
+		walk[e] = i
+	end
+	local edge = MapDress.edge(level.theme)
+	local function fillOf(e: Course.Element): Color3?
+		local i = walk[e]
+		return if i then MapDress.top(level.theme, i) else nil
+	end
 	for _, e in level.ELEMENTS do
 		if e.kind == "pad" then
-			local top = platform(e, e.name or "Platform", parent, false, if lobby and e == deck then LOBBY_GREEN else nil)
+			local fill = if lobby and e == deck then LOBBY_GREEN else fillOf(e)
+			local top = platform(e, e.name or "Platform", parent, false, fill, edge)
 			if e == deck then
 				tops[e] = top
 			end
@@ -1522,13 +1611,13 @@ local function buildCourse(level: Course.Level, parent: Instance)
 		elseif e.kind == "blink" then
 			tops[e] = blink(e, parent)
 		elseif e.kind == "spinner" then
-			spinner(e, parent)
+			spinner(e, parent, Course.shoveKeep(level.ELEMENTS, e))
 		elseif e.kind == "bounce" then
 			bounce(e, parent)
 		elseif e.kind == "wall" then
 			wall(e, parent)
 		elseif e.kind == "slide" then
-			slide(e, parent)
+			slide(e, parent, fillOf(e))
 		elseif e.kind == "kill" then
 			killBrick(e, parent)
 		end
@@ -1574,7 +1663,7 @@ local function buildCourse(level: Course.Level, parent: Instance)
 	}))
 	local bannerPps = math.floor(44 / bannerScale + 0.5)
 	cardFace(sign, Enum.NormalId.Front, bannerPps, W.Cream, W.Teal, "YOU DID IT!", "FINISH")
-	cardFace(sign, Enum.NormalId.Back, bannerPps, W.Cream, W.Coral, "WELL DONE!", "WORLD " .. level.index .. " CLEAR")
+	cardFace(sign, Enum.NormalId.Back, bannerPps, W.Cream, W.Coral, "WELL DONE!", "MAP " .. level.index .. " CLEAR")
 	-- Chequered finish line on the deck, its bottom 0.05 above the deck top.
 	local line = add({ Name = "FinishLine", Size = Vector3.new(half * 2 - 1, 0.12, 2.4), CFrame = CFrame.new(0, 0.11, 0), Color = W.White })
 	local cols = 12
@@ -1656,6 +1745,7 @@ local function buildCourse(level: Course.Level, parent: Instance)
 
 	cloudFloor(level, parent)
 	MapDecor.build(level, parent)
+	MapDress.build(level, parent)
 end
 
 -- The plaza specs: the GAME MODES plaza on -X and, when Course has it, the mirrored one on +X

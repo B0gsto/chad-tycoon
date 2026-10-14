@@ -20,7 +20,7 @@
 	  fusion and a short "FULL! AUTO-MERGED xN" float rises there (at most one
 	  float per second; merges in between add to the next one).
 	- Merge ("Merge" effect): aura soul orbs rise from every consumed unit
-	  and spiral into the target (~0.7 s, "MergeCharge"), then a soft
+	  and snap into the target (0.1 s, "MergeCharge"; auto merges 0.5 s), then a soft
 	  tier-tinted puff, an eased ring, a particle burst, "MergeBoom" and a
 	  gentle camera punch. Auto merges get a lighter, quieter version. A unit
 	  spawning at the merge target lands exactly on the impact.
@@ -33,10 +33,25 @@
 	  tiles, a faint colour haze, rising sparkles and a proud idle
 	  (Animator.setHero). The own plot is handed to Animator.setOwnPlot so its
 	  units get the bigger posing budget.
+	- Rarity and standing (rules and numbers in Fx.PlotRank): every disc sits in
+	  a ring of its rarity band's colour, fainter for Common and solid neon for
+	  Legendary and Mythic (the champion has its pedestal's glow instead), and
+	  front-shelf units from Epic up breathe a few sparkles. Units of the two
+	  best tiers are drawn up to 1.3x where the board above leaves room and
+	  never bigger than the champion; low tiers behind the front shelf shrink
+	  to 0.85x. A few units are resized per frame (Animator.hold / release).
+	- Champion: the unit in slot 1 is shown on Fx.PlotRank's stage in front of
+	  its shelf pedestal (PlotRank.championPivot), 1.4x big (1.55x at tier 25),
+	  where no board is above it; it lands there when it arrives.
+	- Merge impact (the MERGE table): at the result unit, gold rings that face
+	  the camera, a gold spark burst and flash, the unit pops in with an
+	  overshoot, a "+TIER n" chip floats over it and the camera punches (with a
+	  short white screen pulse). Lighter for auto merges; bigger, with "NEW
+	  BEST!", a gold column and confetti, when the merge makes a new best tier.
 
 	Effects are painted, not glowing: SmoothPlastic parts in tier or palette
 	colours with eased fades, low particle light emission and no lights. Only
-	the soul orbs (aura) use Neon.
+	the soul orbs (aura) and the top bands' rarity rings use Neon.
 ]]
 
 local Players = game:GetService("Players")
@@ -54,12 +69,17 @@ local Client = script.Parent.Parent
 local Animator = require(Client.Animator)
 local Sounds = require(Client.Sounds)
 local State = require(Client.State)
+local Budget = require(script.Parent.Budget)
+local Sprites = require(script.Parent.Sprites)
 local Camera = require(script.Parent.Camera)
 local Orbs = require(script.Parent.Orbs)
+local PlotRank = require(script.Parent.PlotRank)
 
 local Shelf = {}
 
 local SPARKLE = "rbxasset://textures/particles/sparkles_main.dds"
+-- The merge's sparks: the Blender sparkle sprite, the built-in one without it.
+local SPARK_SPRITE = Sprites.image("Sparkle") or SPARKLE
 local SMOKE = "rbxasset://textures/particles/smoke_main.dds"
 local WHITE = Color3.new(1, 1, 1)
 
@@ -92,12 +112,146 @@ local STAGGER = 0.04
 local START_SCALE = 0.05
 local POP_LIMIT = 4 -- BuyPop sounds per POP_WINDOW
 local POP_WINDOW = 0.4
-local CHARGE = 0.7 -- merge orb flight
+local CHARGE = 0.1 -- merge orb flight: a snap, so the impact is on screen 0.1 s after the merge
 local CHARGE_AUTO = 0.5
 local MERGE_STAGGER = 0.2 -- chained merge steps play one after another
 local CHEST_HEIGHT = 3 -- impact point above the target's feet
 local NEAR_PLOT = 120 -- camera punch only if the player is this close
 local PUNCH_SCALE = 0.6 -- keeps camera punches and shakes gentle
+
+-- Merge impact at the result unit: every size, colour, duration and count of it. Three kinds:
+-- "auto" (the Auto Merge pass and a full rack's forced merges), "manual" (the Merge pad) and
+-- "best" (the merge made a new best tier).
+--   ring      a gold ring that always faces the camera: from / to size in studs
+--   rings     how many, RingGap seconds apart, each RingGrow times wider than the last
+--   sparks    gold glitter burst: count (through Fx.Budget), particle size
+--   sprites   sparkle sprites flying out of the ring (MERGE.Sprite): how many, px across
+--   flash     diameter a neon gold ball swells to at the unit's chest
+--   pop       how far the result unit overshoots its size as it pops in (0.4 = 40 %)
+--   chip      the "+TIER n" chip over the unit: size in studs, seconds it stays
+--   punch     Camera.punch intensity (FOV kick of 5 degrees per 1.0, plus a small shake)
+--   pulse     transparency of the white screen pulse (1 = none)
+local MERGE = {
+	Gold = Color3.fromRGB(255, 200, 48),
+	GoldLight = Color3.fromRGB(255, 240, 170),
+	Ink = Color3.fromRGB(34, 22, 64),
+	Kinds = {
+		auto = {
+			ring = { 3, 10 },
+			ringTime = 0.5,
+			rings = 1,
+			sparks = 10,
+			sparkSize = 1.4,
+			sprites = 6,
+			spritePx = 44,
+			flash = 3.5,
+			pop = 0.22,
+			chip = Vector2.new(8, 2.3),
+			chipLife = 1.1,
+			punch = 0,
+			pulse = 1,
+		},
+		-- A plain merge: lands 0.1 s after the effect and stays big until about 0.9 s, so any
+		-- frame from 0.12 to 0.48 s catches the ring, the sparks and (first) the white pulse.
+		manual = {
+			ring = { 6, 22 },
+			ringTime = 0.9,
+			rings = 2,
+			sparks = 20,
+			sparkSize = 2.2,
+			sprites = 10,
+			spritePx = 64,
+			flash = 7,
+			pop = 0.42,
+			chip = Vector2.new(13, 3.6),
+			chipLife = 1.6,
+			punch = 0.8,
+			pulse = 0.86,
+		},
+		best = {
+			ring = { 5, 30 },
+			ringTime = 0.9,
+			rings = 3,
+			sparks = 28,
+			sparkSize = 2.6,
+			sprites = 12,
+			spritePx = 76,
+			flash = 8,
+			pop = 0.6,
+			chip = Vector2.new(17, 6.2),
+			chipLife = 2.2,
+			punch = 1.5,
+			pulse = 0.88,
+		},
+	},
+	-- The ring's line in pixels: at first, as it fades (r4: 12 -> 3 read as a thin outline),
+	-- and its soft gold fill's transparency as it starts (it fades out with the line).
+	RingStroke = { 20, 8 },
+	RingFill = 0.82,
+	-- The rings are drawn in the world (not on top; the "+TIER n" chip is, so it is never
+	-- under a ring), this many studs along the camera's ray BEHIND the unit's chest, at the
+	-- same size on screen: the unit and the name plates in front of the rack cover the ring.
+	-- r5 drew it 3 studs in front, over the plates' text (measured in Studio: the 22-stud ring
+	-- reached 227 px out from the unit and crossed its "Protein Bro / Tier 3" plate).
+	RingBack = 1.5,
+	RingGap = 0.13,
+	RingGrow = 1.25,
+	SparkSpeed = NumberRange.new(12, 26),
+	SparkLife = NumberRange.new(0.5, 0.9),
+	-- The glitter under the sprites. r5's 40 particles of 9 studs (measured in Studio: 149 px
+	-- each at the merge_f camera, inside a 300 px cloud by 0.3 s) piled into one white spiky
+	-- blob and no single spark could be told apart.
+	SparkEmission = 0.3,
+	-- The sparkle sprites: `sprites` Blender Sparkle sprites, `spritePx` across on screen
+	-- (fixed px), fly from From to To px out of the unit's chest on evenly spread headings,
+	-- in front of the unit (Forward studs toward the camera; the chip stays over them). They
+	-- pop in over Pop, keep their size until Hold of their life, then shrink out; so a frame
+	-- from 0.12 to 0.48 s after the Merge effect (the impact lands at +0.1) shows each one
+	-- whole and apart from the others. Every other one is light gold, each over a warm halo
+	-- (the SoftDot sprite, HaloScale x its size) so they read on the sunny pastel rack too.
+	Sprite = {
+		Life = 0.62,
+		Pop = 0.05,
+		Hold = 0.6,
+		From = 80,
+		To = 215,
+		Reach = 0.18, -- +- share of To per sprite
+		Jitter = 0.12, -- radians of heading jitter
+		Spin = 220, -- degrees turned over the life (alternating way)
+		Forward = 3.5,
+		Colors = { Color3.fromRGB(255, 200, 48), Color3.fromRGB(255, 244, 190) },
+		Halo = Color3.fromRGB(255, 150, 40),
+		HaloScale = 1.7,
+		HaloAlpha = 0.45,
+	},
+	-- The neon ball and the white screen pulse are kept light: at 0.1 and 0.6 (a 40% white
+	-- sheet held 2 frames) they lifted the whole frame's mean by 10 levels and hid the sparks.
+	FlashTime = 0.3,
+	FlashAlpha = 0.5, -- the neon ball's transparency as it starts
+	PopTime = 0.6, -- seconds of the result unit's overshoot
+	ChipAbove = 7.4, -- studs over the unit's feet the chip appears when the unit is not found ...
+	ChipRise = 2.2, -- ... and how far it floats up
+	ChipGap = 0.8, -- studs between the unit's top and the chip's bottom edge
+	ChipClearPx = 10, -- on screen too: the chip's bottom edge this many px over the unit's head
+	ChipSide = 1.5, -- studs aside (camera right) when the top HUD pushes the chip down
+	ChipFade = 0.35,
+	-- A chip that would cover one still on screen (a double merge: measured in Studio, the
+	-- "+TIER 2" and "+TIER 4" chips of a 3+3 / 1+1 merge overlapped by 175 x 31 px) takes its
+	-- own spot over its unit and the chips there glide up out of its way (ChipLiftTime), with
+	-- this gap, so the newest is at the bottom, straight under the one before; it pops this
+	-- much later per chip it stacks with. With no room above (the top HUD) it goes straight
+	-- under the lowest of them instead. r5 stepped it aside under the HUD: measured in Studio
+	-- the second chip of a 1+1 -> 2 -> 3 merge stood 167 px right and 75 px down.
+	ChipStackPx = 10,
+	ChipStagger = 0.2,
+	ChipLiftTime = 0.18,
+	AutoChipGap = 0.6, -- seconds between the chips of auto merges
+	PulseHold = 0, -- seconds the white pulse holds at full strength (0: one frame) ...
+	PulseTime = 0.08, -- ... and fades over
+	-- A new best tier: a gold column of light over the unit for a moment.
+	BestBeam = { Height = 70, Width = 8, Time = 1.4 },
+	BestDelay = 4, -- seconds a new best tier takes to stop being news
+}
 
 local fxFolder: Folder? = nil
 local started = false
@@ -167,6 +321,7 @@ local function burst(
 		spread: number?,
 		gravity: number?,
 		drag: number?,
+		emission: number?,
 	}?
 )
 	local o = opts or {}
@@ -174,7 +329,7 @@ local function burst(
 	local emitter = Instance.new("ParticleEmitter")
 	emitter.Texture = o.texture or SPARKLE
 	emitter.Color = ColorSequence.new(WHITE, color)
-	emitter.LightEmission = if o.texture == SMOKE then 0 else SPARKLE_EMISSION
+	emitter.LightEmission = o.emission or (if o.texture == SMOKE then 0 else SPARKLE_EMISSION)
 	local size = o.size or 0.8
 	emitter.Size = NumberSequence.new({
 		NumberSequenceKeypoint.new(0, size),
@@ -689,14 +844,39 @@ local function boardAbove(plot: Instance?, feet: Vector3): number?
 	return best
 end
 
+-- Champion stage ------------------------------------------------------------------------
+-- The best unit (slot 1) is shown on Fx.PlotRank's stage in front of its shelf pedestal, not
+-- where the server stands it.
+
+local function championRim(): BasePart?
+	local plot = watched
+	local rim = plot and plot:FindFirstChild("ChampionTop")
+	return if rim and rim:IsA("BasePart") then rim else nil
+end
+
+-- Where a unit the server stands at `pos` is drawn: the stage for the champion's pedestal.
+local function shownAt(pos: Vector3): Vector3
+	local rim = championRim()
+	if rim and (PlotRank.championHome(rim).Position - pos).Magnitude < 1 then
+		return PlotRank.championPivot(rim).Position
+	end
+	return pos
+end
+
 -- Arrival -----------------------------------------------------------------------------
 
 local popTimes: { number } = {}
 local lastDropStart = 0
 
--- Pending merge impacts: a unit spawning here lands on the impact.
-type Pending = { pos: Vector3, impact: number }
+-- Pending merge impacts: a unit spawning here lands on the impact (and pops in with `pop`
+-- overshoot). `pos` is where the server stands it.
+type Pending = { pos: Vector3, impact: number, pop: number }
 local pendingMerges: { Pending } = {}
+
+-- 1 at both ends, swelling by `amount` on the way: the result unit's pop.
+local function overshoot(q: number, amount: number): number
+	return 1 + amount * math.exp(-4 * q) * math.sin(q * 9)
+end
 
 local function pop(tier: number)
 	local now = os.clock()
@@ -737,11 +917,22 @@ end
 
 -- Moves a unit in: `peak` = nil falls from DROP_HEIGHT above (nothing overhead); otherwise
 -- it hops from HOP_FORWARD in front of its spot in an arc no higher than `peak`, so it never
--- passes through the board above. Then a squash, the landing puff and a power pose.
-local function arrive(model: Model, target: CFrame, baseScale: number, startAt: number, tier: number, quiet: boolean, peak: number?)
+-- passes through the board above. Then a squash (a merge's result pops with `popAmount`
+-- overshoot instead), the landing puff and a power pose.
+local function arrive(
+	model: Model,
+	target: CFrame,
+	baseScale: number,
+	startAt: number,
+	tier: number,
+	quiet: boolean,
+	peak: number?,
+	popAmount: number?
+)
 	local landed = false
 	local puffed = false
 	local flight = if peak then HOP else FALL
+	local settle = if popAmount then MERGE.PopTime else SETTLE
 	addJob(function(now: number): boolean
 		if not model.Parent then
 			Animator.release(model)
@@ -778,11 +969,15 @@ local function arrive(model: Model, target: CFrame, baseScale: number, startAt: 
 			landed = true
 			land(target, tier, quiet)
 		end
-		local q = (t - flight) / SETTLE
+		local q = (t - flight) / settle
 		if q < 1 then
-			-- Uniform squash: dip below full size, overshoot, settle.
-			local wobble = -0.16 * math.exp(-5 * q) * math.cos(q * 15)
-			safeScale(model, baseScale * (1 + math.min(wobble, 0.04)))
+			if popAmount then
+				safeScale(model, baseScale * overshoot(q, popAmount))
+			else
+				-- Uniform squash: dip below full size, overshoot, settle.
+				local wobble = -0.16 * math.exp(-5 * q) * math.cos(q * 15)
+				safeScale(model, baseScale * (1 + math.min(wobble, 0.04)))
+			end
 			model:PivotTo(target)
 			return false
 		end
@@ -808,9 +1003,17 @@ local function onUnitAdded(model: Instance)
 	local tierValue = model:GetAttribute("Tier")
 	local tier = if type(tierValue) == "number" then tierValue else 1
 	local target = model:GetPivot()
+	-- Where the server stands it: merge impacts are matched by this spot.
+	local home = target.Position
 	local okScale, baseScale = pcall(model.GetScale, model)
 	if not okScale or type(baseScale) ~= "number" then
 		baseScale = 1
+	end
+	-- The champion lands on its stage, at its full size.
+	local rim = championRim()
+	if rim and model:GetAttribute("Slot") == 1 then
+		target = PlotRank.championPivot(rim)
+		baseScale = PlotRank.championScale(tier)
 	end
 	-- Room under the shelf board (or roof) above decides between a hop in and a drop.
 	local plot = watched
@@ -830,16 +1033,18 @@ local function onUnitAdded(model: Instance)
 		local now = os.clock()
 		local startAt = math.max(now, lastDropStart + STAGGER, rowReadyAt(plot, target.Position))
 		local quiet = false
+		local popAmount: number? = nil
 		local flight = if peak then HOP else FALL
 		for _, pending in pendingMerges do
-			if (pending.pos - target.Position).Magnitude < 3 and pending.impact > now - 0.2 then
+			if (pending.pos - home).Magnitude < 3 and pending.impact > now - 0.2 then
 				startAt = math.max(now, pending.impact - flight)
 				quiet = true -- the merge boom covers it
+				popAmount = pending.pop
 				break
 			end
 		end
 		lastDropStart = math.max(lastDropStart, startAt)
-		arrive(model, target, baseScale, startAt, tier, quiet, peak)
+		arrive(model, target, baseScale, startAt, tier, quiet, peak, popAmount)
 	end)
 end
 
@@ -850,6 +1055,557 @@ local lastBoom = 0
 local lastImpact = 0
 local chainIndex = 0
 local chainTotal = 0
+-- The best tier the rack is known to hold (a merge past it is the "best" kind); a new best
+-- unit only counts MERGE.BestDelay later, so the merge that made it is still news.
+local knownBest = 0
+local pendingBest = 0
+local seenTop = 0 -- the highest tier any merge has made so far
+local lastAutoChip = 0
+-- The "+TIER n" chips on screen: where each started, when, for how long, half its size.
+-- The "+TIER n" chips on screen: where each stands (before its rise), when it popped (or
+-- will), its half size in studs and its holder part once it exists (to glide it up).
+type LiveChip = { pos: Vector3, born: number, life: number, half: Vector2, holder: BasePart? }
+type ChipBox = { c: LiveChip, at: Vector3, k: number } -- a live chip's screen point and px per stud
+local liveChips: { LiveChip } = {}
+
+-- A gold ring that always faces the camera, growing from `from` to `to` studs as it fades.
+local function goldRing(pos: Vector3, from: number, to: number, time: number, delay: number)
+	-- Pushed back along the camera's ray (and grown to keep its screen size), drawn in the
+	-- world, so what stands in front of the unit covers it.
+	local camera = Workspace.CurrentCamera
+	if camera then
+		local eye = camera.CFrame.Position
+		local away = (pos - eye).Magnitude
+		if away > 0.5 then
+			local k = (away + MERGE.RingBack) / away
+			pos = eye + (pos - eye) * k
+			from *= k
+			to *= k
+		end
+	end
+	local holder = fxPart(Enum.PartType.Block, Vector3.one * 0.2, CFrame.new(pos), WHITE, 1)
+	holder.Name = "MergeRing"
+	local gui = Instance.new("BillboardGui")
+	gui.AlwaysOnTop = false
+	gui.LightInfluence = 0
+	gui.MaxDistance = 400
+	gui.Size = UDim2.fromScale(from, from)
+	gui.Enabled = delay <= 0
+	gui.Parent = holder
+	local circle = Instance.new("Frame")
+	circle.BackgroundColor3 = MERGE.Gold
+	circle.BackgroundTransparency = MERGE.RingFill
+	circle.BorderSizePixel = 0
+	circle.Size = UDim2.fromScale(1, 1)
+	circle.Parent = gui
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0.5, 0)
+	corner.Parent = circle
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = MERGE.Gold
+	stroke.Thickness = MERGE.RingStroke[1]
+	stroke.Parent = circle
+	task.delay(delay, function()
+		gui.Enabled = true
+		tween(gui, time, { Size = UDim2.fromScale(to, to) })
+		tween(circle, time, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		tween(stroke, time, { Transparency = 1, Thickness = MERGE.RingStroke[2] }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	end)
+	cleanup(holder, delay + time + 0.05)
+end
+
+-- The "+TIER n" chip over the result unit: a dark pill in the tier's rarity outline that pops
+-- in, floats up and fades. The "best" kind adds a "NEW BEST!" line. `entry` (its liveChips
+-- entry) gets the holder, and its spot may have moved up while the chip waited to pop.
+local function tierChip(entry: LiveChip, tier: number, kind: string)
+	local pos = entry.pos
+	local k = MERGE.Kinds[kind]
+	local rarity = PlotRank.bandColor(tier)
+	local best = kind == "best"
+	local holder = fxPart(Enum.PartType.Block, Vector3.one * 0.2, CFrame.new(pos), WHITE, 1)
+	holder.Name = "TierChip"
+	local gui = Instance.new("BillboardGui")
+	gui.AlwaysOnTop = true
+	gui.LightInfluence = 0
+	gui.MaxDistance = 400
+	gui.Size = UDim2.fromScale(k.chip.X, k.chip.Y)
+	gui.Parent = holder
+	local scale = Instance.new("UIScale")
+	scale.Scale = 0.2
+	scale.Parent = gui
+	local pill = Instance.new("Frame")
+	pill.Size = UDim2.fromScale(1, 1)
+	pill.BackgroundColor3 = MERGE.Ink
+	pill.BackgroundTransparency = 0.08
+	pill.BorderSizePixel = 0
+	pill.Parent = gui
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(if best then 0.3 else 0.5, 0)
+	corner.Parent = pill
+	local outline = Instance.new("UIStroke")
+	outline.Color = rarity
+	outline.Thickness = if best then 6 else 4
+	outline.Parent = pill
+	local labels: { TextLabel } = {}
+	local function line(text: string, y: number, height: number, color: Color3)
+		local label = Instance.new("TextLabel")
+		label.BackgroundTransparency = 1
+		label.AnchorPoint = Vector2.new(0.5, 0)
+		label.Position = UDim2.fromScale(0.5, y)
+		label.Size = UDim2.fromScale(0.9, height)
+		label.Font = Theme.Fonts.Display
+		label.TextScaled = true
+		label.TextColor3 = color
+		label.TextStrokeColor3 = MERGE.Ink
+		label.TextStrokeTransparency = 0.2
+		label.Text = text
+		label.Parent = pill
+		table.insert(labels, label)
+	end
+	if best then
+		line("NEW BEST!", 0.07, 0.3, rarity:Lerp(WHITE, 0.35))
+		line("+TIER " .. tier, 0.36, 0.58, MERGE.GoldLight)
+	else
+		line("+TIER " .. tier, 0.1, 0.8, WHITE)
+	end
+	entry.holder = holder
+	tween(scale, 0.22, { Scale = 1 }, Enum.EasingStyle.Back)
+	tween(holder, k.chipLife, { CFrame = CFrame.new(pos + Vector3.new(0, MERGE.ChipRise, 0)) })
+	task.delay(k.chipLife - MERGE.ChipFade, function()
+		local style, dir = Enum.EasingStyle.Quad, Enum.EasingDirection.In
+		tween(pill, MERGE.ChipFade, { BackgroundTransparency = 1 }, style, dir)
+		tween(outline, MERGE.ChipFade, { Transparency = 1 }, style, dir)
+		for _, label in labels do
+			tween(label, MERGE.ChipFade, { TextTransparency = 1, TextStrokeTransparency = 1 }, style, dir)
+		end
+	end)
+	cleanup(holder, k.chipLife + 0.05)
+end
+
+-- A short white pulse over the whole screen (not with reduced motion).
+local function screenPulse(transparency: number)
+	local data = State.data
+	if transparency >= 1 or Camera.reducedMotion or (data and data.settings and data.settings.reducedMotion == true) then
+		return
+	end
+	pcall(function()
+		local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+		if not playerGui then
+			return
+		end
+		local gui = Instance.new("ScreenGui")
+		gui.Name = "MergePulse"
+		gui.IgnoreGuiInset = true
+		gui.ResetOnSpawn = false
+		gui.DisplayOrder = 40
+		local sheet = Instance.new("Frame")
+		sheet.Size = UDim2.fromScale(1, 1)
+		sheet.BackgroundColor3 = WHITE
+		sheet.BackgroundTransparency = transparency
+		sheet.BorderSizePixel = 0
+		sheet.Active = false
+		sheet.Parent = gui
+		gui.Parent = playerGui
+		task.delay(MERGE.PulseHold, function()
+			tween(sheet, MERGE.PulseTime, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		end)
+		cleanup(gui, MERGE.PulseHold + MERGE.PulseTime + 0.05)
+	end)
+end
+
+-- The own rack's unit drawn at `pos`, if any.
+local function unitAt(pos: Vector3): Model?
+	local units = watched and watched:FindFirstChild("Units")
+	if units then
+		for _, child in units:GetChildren() do
+			if child:IsA("Model") and (child:GetPivot().Position - pos).Magnitude < 1.2 then
+				return child
+			end
+		end
+	end
+	return nil
+end
+
+-- A unit that already stood there pops like a fresh result (one that is arriving pops in
+-- `arrive`).
+local function popUnit(model: Model, amount: number)
+	if Animator.isHeld(model) then
+		return
+	end
+	local okScale, base = pcall(model.GetScale, model)
+	if not okScale or type(base) ~= "number" then
+		return
+	end
+	local startAt = os.clock()
+	Animator.hold(model)
+	addJob(function(now: number): boolean
+		if not model.Parent then
+			Animator.release(model)
+			return true
+		end
+		local q = (now - startAt) / MERGE.PopTime
+		if q >= 1 then
+			safeScale(model, base)
+			Animator.release(model)
+			return true
+		end
+		safeScale(model, base * overshoot(q, amount))
+		return false
+	end)
+end
+
+-- Where the "+TIER n" chip of a `kind` merge at `feet` goes: over the unit's head, its bottom
+-- edge clear of the head on screen too (a camera looking down would put a chip just over the
+-- head on the unit's face), and under the top HUD (pushed down there, it steps aside so it
+-- does not land on the unit).
+local function chipSpot(feet: Vector3, kind: string, aside: boolean): Vector3
+	local chip = MERGE.Kinds[kind].chip
+	local halfY, halfX = chip.Y / 2, chip.X / 2
+	local top = feet.Y + MERGE.ChipAbove - halfY - MERGE.ChipGap
+	local unit = unitAt(feet)
+	if unit then
+		local ok, box, size = pcall(unit.GetBoundingBox, unit)
+		if ok then
+			top = box.Position.Y + size.Y / 2
+		end
+	end
+	local head = Vector3.new(feet.X, top, feet.Z)
+	local pos = head + Vector3.new(0, MERGE.ChipGap + halfY, 0)
+	local camera = Workspace.CurrentCamera
+	if not camera then
+		return pos
+	end
+	local headAt = camera:WorldToViewportPoint(head)
+	local at = camera:WorldToViewportPoint(pos)
+	if headAt.Z > 0.5 and at.Z > 0.5 then
+		local pxPerStud = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+		local bottom = at.Y + halfY * pxPerStud
+		local want = headAt.Y - MERGE.ChipClearPx
+		if bottom > want then
+			pos += camera.CFrame.UpVector * ((bottom - want) / pxPerStud)
+		end
+	end
+	local down = Orbs.hudOffset(pos, 0, halfY, MERGE.ChipRise)
+	if down.Magnitude > 0.01 then
+		pos += down
+		if aside then
+			pos += camera.CFrame.RightVector * (halfX + MERGE.ChipSide)
+		end
+	end
+	return pos
+end
+
+-- The screen point of a chip at `pos`, and the pixels per stud there.
+local function chipBox(camera: Camera, pos: Vector3): (Vector3?, number)
+	local at = camera:WorldToViewportPoint(pos)
+	if at.Z <= 0.5 then
+		return nil, 0
+	end
+	local k = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+	return Vector3.new(at.X, at.Y, 0), k
+end
+
+-- Where a live chip stands now (its rise so far included).
+local function chipNow(c: LiveChip, now: number): Vector3
+	return c.pos + Vector3.new(0, MERGE.ChipRise * math.clamp((now - c.born) / c.life, 0, 1), 0)
+end
+
+-- Glides a live chip `up` (a world offset) and on with its rise.
+local function liftChip(c: LiveChip, up: Vector3, now: number)
+	c.pos += up
+	local holder = c.holder
+	if holder and holder.Parent then
+		local left = c.born + c.life - now
+		if left > 0.05 then
+			local goal = c.pos + Vector3.new(0, MERGE.ChipRise, 0)
+			tween(holder, MERGE.ChipLiftTime, { CFrame = CFrame.new(chipNow(c, now + MERGE.ChipLiftTime)) })
+			task.delay(MERGE.ChipLiftTime, function()
+				if holder.Parent and left > MERGE.ChipLiftTime then
+					tween(holder, left - MERGE.ChipLiftTime, { CFrame = CFrame.new(goal) }, Enum.EasingStyle.Linear)
+				end
+			end)
+		end
+	end
+end
+
+-- A new chip at `pos` (half size `half` studs) among the chips on screen (see ChipStackPx):
+-- the chips in its column (side by side overlapping, from just under it upward) glide up
+-- until each clears the one under it, so the new chip keeps its spot at the bottom of the
+-- stack; with no room for them under the top HUD it goes straight under the lowest of them.
+-- Returns its spot and how many chips it stacked with (0: none in the way).
+local function clearOfChips(pos: Vector3, half: Vector2): (Vector3, number)
+	local camera = Workspace.CurrentCamera
+	local now = os.clock()
+	for i = #liveChips, 1, -1 do
+		if now - liveChips[i].born > liveChips[i].life then
+			table.remove(liveChips, i)
+		end
+	end
+	if not camera or #liveChips == 0 then
+		return pos, 0
+	end
+	local mine, k = chipBox(camera, pos)
+	if not mine then
+		return pos, 0
+	end
+	local column: { ChipBox } = {}
+	local touching = false
+	for _, c in liveChips do
+		local other, ko = chipBox(camera, chipNow(c, now))
+		if other then
+			local wide = math.abs(mine.X - other.X) < half.X * k + c.half.X * ko
+			local below = other.Y - c.half.Y * ko -- the other chip's top edge
+			if wide and below < mine.Y + half.Y * k + MERGE.ChipStackPx then
+				table.insert(column, { c = c, at = other, k = ko })
+				if math.abs(mine.Y - other.Y) < half.Y * k + c.half.Y * ko + MERGE.ChipStackPx then
+					touching = true
+				end
+			end
+		end
+	end
+	if not touching then
+		return pos, 0
+	end
+	-- Lowest first: each one clears the top edge of the one under it (screen px, y down).
+	table.sort(column, function(a, b)
+		return a.at.Y > b.at.Y
+	end)
+	local edge = mine.Y - half.Y * k - MERGE.ChipStackPx
+	local want: { number } = {}
+	for i, b in column do
+		want[i] = math.min(b.at.Y, edge - b.c.half.Y * b.k)
+		edge = want[i] - b.c.half.Y * b.k - MERGE.ChipStackPx
+	end
+	-- Then top down: none above the top HUD's line (the rise included), each clear under the
+	-- one over it, and the new chip clear under the lowest. With room that changes nothing.
+	local floor = -math.huge -- bottom edge of the chip above
+	local up = camera.CFrame.UpVector
+	for i = #column, 1, -1 do
+		local b = column[i]
+		local y = want[i]
+		local push = Orbs.hudOffset(b.c.pos + up * ((b.at.Y - y) / b.k), 0, b.c.half.Y, MERGE.ChipRise)
+		y = math.max(y + push.Magnitude * b.k, floor + MERGE.ChipStackPx + b.c.half.Y * b.k)
+		y = math.min(y, b.at.Y) -- a chip only ever moves up
+		floor = y + b.c.half.Y * b.k
+		if b.at.Y - y > 0.5 then
+			liftChip(b.c, up * ((b.at.Y - y) / b.k), now)
+		end
+	end
+	local drop = math.max(0, floor + MERGE.ChipStackPx + half.Y * k - mine.Y)
+	pos -= up * (drop / k)
+	-- Straight under: a chip of the same spot shares the X of the one over it.
+	local over = column[1]
+	local dx = over.at.X - mine.X
+	if math.abs(dx) < half.X * k * 0.5 or drop > 0.5 then
+		pos += camera.CFrame.RightVector * (dx / k)
+	end
+	return pos, 1
+end
+
+-- The world point just under the lowest "+TIER n" chip on screen (nil when none is up), for
+-- a line that should sit under the whole chip stack (UI.Popups' "+N merges" float).
+function Shelf.chipsBottom(): Vector3?
+	local camera = Workspace.CurrentCamera
+	local now = os.clock()
+	local best: Vector3? = nil
+	local bestY = -math.huge
+	if not camera then
+		return nil
+	end
+	for _, c in liveChips do
+		if now >= c.born and now - c.born <= c.life then
+			local at, k = chipBox(camera, chipNow(c, now))
+			if at and at.Y + c.half.Y * k > bestY then
+				bestY = at.Y + c.half.Y * k
+				best = chipNow(c, now) - camera.CFrame.UpVector * (c.half.Y + MERGE.ChipStackPx / k)
+			end
+		end
+	end
+	return best
+end
+
+-- The merge's sparkle sprites (MERGE.Sprite): flying out of the unit's chest on evenly spread
+-- headings, each a fixed size on screen.
+local function sparkleSprites(chest: Vector3, kind: string)
+	local k = MERGE.Kinds[kind]
+	local S = MERGE.Sprite
+	local image = Sprites.image("Sparkle")
+	local camera = Workspace.CurrentCamera
+	if not image or not camera or k.sprites <= 0 then
+		return
+	end
+	local eye = camera.CFrame.Position
+	local pos = chest
+	local away = (chest - eye).Magnitude
+	if away > S.Forward * 2 then
+		pos = eye + (chest - eye) * ((away - S.Forward) / away)
+	end
+	local px = k.spritePx
+	local span = math.ceil((S.To * (1 + S.Reach) + px * S.HaloScale) * 2)
+	local holder = fxPart(Enum.PartType.Block, Vector3.one * 0.2, CFrame.new(pos), WHITE, 1)
+	holder.Name = "MergeSparkles"
+	local gui = Instance.new("BillboardGui")
+	gui.AlwaysOnTop = false
+	gui.LightInfluence = 0
+	gui.MaxDistance = 400
+	gui.Size = UDim2.fromOffset(span, span)
+	gui.Parent = holder
+	local halo = Sprites.image("SoftDot")
+	local count = Budget.count(k.sprites)
+	local base = math.random() * math.pi * 2
+	local holdAt = S.Life * S.Hold
+	for i = 1, count do
+		local heading = base + (i - 1) / count * math.pi * 2 + (math.random() * 2 - 1) * S.Jitter
+		local dx, dy = math.cos(heading), math.sin(heading)
+		local reach = S.To * (1 + (math.random() * 2 - 1) * S.Reach)
+		local frame = Instance.new("Frame")
+		frame.BackgroundTransparency = 1
+		frame.AnchorPoint = Vector2.new(0.5, 0.5)
+		frame.Position = UDim2.new(0.5, dx * S.From, 0.5, dy * S.From)
+		frame.Size = UDim2.fromOffset(0, 0)
+		frame.Parent = gui
+		if halo then
+			local glow = Instance.new("ImageLabel")
+			glow.BackgroundTransparency = 1
+			glow.Image = halo
+			glow.ImageColor3 = S.Halo
+			glow.ImageTransparency = S.HaloAlpha
+			glow.AnchorPoint = Vector2.new(0.5, 0.5)
+			glow.Position = UDim2.fromScale(0.5, 0.5)
+			glow.Size = UDim2.fromScale(S.HaloScale, S.HaloScale)
+			glow.ZIndex = 1
+			glow.Parent = frame
+		end
+		local spark = Instance.new("ImageLabel")
+		spark.BackgroundTransparency = 1
+		spark.Image = image
+		spark.ImageColor3 = S.Colors[(i - 1) % #S.Colors + 1]
+		spark.AnchorPoint = Vector2.new(0.5, 0.5)
+		spark.Position = UDim2.fromScale(0.5, 0.5)
+		spark.Size = UDim2.fromScale(1, 1)
+		spark.Rotation = math.random() * 90
+		spark.ZIndex = 2
+		spark.Parent = frame
+		tween(frame, S.Pop, { Size = UDim2.fromOffset(px, px) }, Enum.EasingStyle.Back)
+		tween(frame, S.Life, { Position = UDim2.new(0.5, dx * reach, 0.5, dy * reach) })
+		tween(spark, S.Life, { Rotation = spark.Rotation + (if i % 2 == 0 then S.Spin else -S.Spin) }, Enum.EasingStyle.Linear)
+		task.delay(holdAt, function()
+			if frame.Parent then
+				tween(frame, S.Life - holdAt, { Size = UDim2.fromOffset(0, 0) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			end
+		end)
+	end
+	cleanup(holder, S.Life + 0.05)
+end
+
+-- The merge's impact on the rack, at the result unit drawn with its feet at `feet`: gold
+-- rings, a spark burst and a flash, the unit's pop, the "+TIER n" chip and a camera punch.
+-- `kind` is a key of MERGE.Kinds. Returns the point just over the chip (texts go above it).
+local function resultFx(feet: Vector3, tier: number, kind: string): Vector3
+	local k = MERGE.Kinds[kind]
+	-- Its own spot over the unit; stepped aside under the top HUD only with no chip to stack on.
+	local chipAt, stacked = clearOfChips(chipSpot(feet, kind, false), k.chip / 2)
+	if stacked == 0 then
+		chipAt = chipSpot(feet, kind, true)
+	end
+	local chest = feet + Vector3.new(0, CHEST_HEIGHT, 0)
+	local to = k.ring[2]
+	for i = 1, k.rings do
+		goldRing(chest, k.ring[1], to, k.ringTime, (i - 1) * MERGE.RingGap)
+		to *= MERGE.RingGrow
+	end
+	local flash = fxPart(Enum.PartType.Ball, Vector3.one, CFrame.new(chest), MERGE.GoldLight, MERGE.FlashAlpha, Enum.Material.Neon)
+	tween(flash, MERGE.FlashTime, { Size = Vector3.one * k.flash, Transparency = 1 })
+	cleanup(flash, MERGE.FlashTime + 0.05)
+	burst(chest, MERGE.Gold, Budget.count(k.sparks), {
+		speed = MERGE.SparkSpeed,
+		texture = SPARK_SPRITE,
+		size = k.sparkSize,
+		life = MERGE.SparkLife,
+		gravity = 18,
+		drag = 2,
+		emission = MERGE.SparkEmission,
+	})
+	sparkleSprites(chest, kind)
+	local unit = unitAt(feet)
+	if unit then
+		popUnit(unit, k.pop)
+	end
+	local now = os.clock()
+	if kind ~= "auto" or now - lastAutoChip >= MERGE.AutoChipGap then
+		if kind == "auto" then
+			lastAutoChip = now
+		end
+		local delay = stacked * MERGE.ChipStagger
+		local entry: LiveChip = { pos = chipAt, born = now + delay, life = k.chipLife, half = k.chip / 2, holder = nil }
+		table.insert(liveChips, entry)
+		if delay > 0 then
+			task.delay(delay, tierChip, entry, tier, kind)
+		else
+			tierChip(entry, tier, kind)
+		end
+	end
+	if kind == "best" then
+		-- A gold column of light over the new best unit.
+		local b = MERGE.BestBeam
+		local holder = fxPart(Enum.PartType.Block, Vector3.one * 0.2, CFrame.new(feet), WHITE, 1)
+		local a0 = Instance.new("Attachment")
+		a0.Parent = holder
+		local a1 = Instance.new("Attachment")
+		a1.Position = Vector3.new(0, b.Height, 0)
+		a1.Parent = holder
+		local beam = Instance.new("Beam")
+		beam.Attachment0 = a0
+		beam.Attachment1 = a1
+		beam.FaceCamera = true
+		beam.Segments = 4
+		beam.Width0 = b.Width
+		beam.Width1 = b.Width * 1.6
+		beam.LightEmission = 0.7
+		beam.LightInfluence = 0
+		beam.Color = ColorSequence.new(MERGE.GoldLight, WHITE)
+		beam.Transparency = NumberSequence.new(0.25, 1)
+		beam.Parent = holder
+		tween(beam, b.Time, { Width0 = 0, Width1 = 0 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		cleanup(holder, b.Time + 0.05)
+		for i, confetti in CONFETTI do
+			task.delay(0.04 * i, function()
+				burst(chest + Vector3.new(0, 1, 0), confetti, Budget.count(10), {
+					speed = NumberRange.new(12, 24),
+					size = 1.1,
+					life = NumberRange.new(0.9, 1.5),
+					spread = 60,
+					gravity = 18,
+					drag = 2,
+				})
+			end)
+		end
+	end
+	if playerNear(feet, NEAR_PLOT) then
+		if k.punch > 0 then
+			Camera.punch(k.punch)
+		end
+		screenPulse(k.pulse)
+	end
+	return chipAt + Vector3.new(0, k.chip.Y / 2 + MERGE.ChipRise, 0)
+end
+
+-- Which kind of impact a merge to `toTier` gets, asked at its impact (a new best tier then
+-- stops being news). Of a chain of step merges only the last, highest step is the "best".
+local function mergeKind(toTier: number, auto: boolean): string
+	if knownBest > 0 and toTier > knownBest and toTier >= seenTop then
+		knownBest = toTier
+		return "best"
+	end
+	return if auto then "auto" else "manual"
+end
+
+-- A merge to `toTier` was announced: how far its result unit will overshoot as it pops in.
+local function announce(toTier: number, auto: boolean): number
+	seenTop = math.max(seenTop, toTier)
+	local news = knownBest > 0 and toTier > knownBest
+	return MERGE.Kinds[if news then "best" elseif auto then "auto" else "manual"].pop
+end
 
 local function impactFx(pos: Vector3, tier: number, auto: boolean, boost: number?, pitch: number?)
 	local color = tierColor(tier)
@@ -874,9 +1630,7 @@ local function impactFx(pos: Vector3, tier: number, auto: boolean, boost: number
 			Sounds.play("MergeBoom", 0.05, (1.1 - math.min(tier, 25) * 0.012) * (pitch or 1))
 		end
 	end
-	if not auto and playerNear(pos, NEAR_PLOT) then
-		Camera.punch((0.35 + math.min(tier, 25) * 0.035) * math.min(boost or 1, 2) * PUNCH_SCALE)
-	end
+	-- The camera punch is resultFx's.
 end
 
 -- One quick fusion pop in a cascade: a soft bubble, ring, sparks, rising pitch.
@@ -897,10 +1651,21 @@ local function cascadePop(pos: Vector3, tier: number, index: number, total: numb
 	end
 end
 
+-- The "xN MERGES!" world text. Its part carries the text in the attribute
+-- Shelf.MERGES_ATTRIBUTE: UI.Popups hides the text while a discovery reveal is up and shows
+-- the same line on the reveal, and finds it by that attribute.
+local MERGES_ATTRIBUTE = "MergesText"
+Shelf.MERGES_ATTRIBUTE = MERGES_ATTRIBUTE
+
+local function mergesText(pos: Vector3, count: number, color: Color3, scale: number, life: number)
+	Orbs.text(pos, "x" .. count .. " MERGES!", color, { scale = scale, rise = 4, life = life, tag = MERGES_ATTRIBUTE })
+end
+
 -- Big finish for a batch: a wide soft ring, palette confetti, "xN MERGES!".
-local function cascadeFinale(chest: Vector3, tier: number, count: number, auto: boolean)
+local function cascadeFinale(chest: Vector3, tier: number, count: number, auto: boolean, kind: string)
 	local size = math.clamp(math.log(math.max(count, 2), 2) / 3, 0.6, 1.6)
 	impactFx(chest, tier, auto, 1 + size * 0.6, 0.9)
+	local overChip = resultFx(chest - Vector3.new(0, CHEST_HEIGHT, 0), tier, kind)
 	local color = tierColor(tier)
 	local feet = chest - Vector3.new(0, CHEST_HEIGHT - 0.25, 0)
 	task.delay(0.08, function()
@@ -919,15 +1684,8 @@ local function cascadeFinale(chest: Vector3, tier: number, count: number, auto: 
 			})
 		end)
 	end
-	Orbs.text(
-		chest + Vector3.new(0, 3.5, 0),
-		"x" .. count .. " MERGES!",
-		color:Lerp(WHITE, 0.25),
-		{ scale = 1.4 + size * 0.6, rise = 4, life = 1.6 }
-	)
-	if not auto and playerNear(chest, NEAR_PLOT) then
-		Camera.punch((0.9 + size * 0.4) * PUNCH_SCALE)
-	end
+	-- Over the "+TIER n" chip.
+	mergesText(overChip + Vector3.new(0, 1.2, 0), count, color:Lerp(WHITE, 0.25), 1.4 + size * 0.6, 1.6)
 end
 
 local function soulOrbs(from: Vector3, to: Vector3, color: Color3, startAt: number, duration: number, auto: boolean)
@@ -938,7 +1696,7 @@ local function soulOrbs(from: Vector3, to: Vector3, color: Color3, startAt: numb
 		burst(start, color, if auto then 5 else 10, { speed = NumberRange.new(2, 5), size = 0.7, gravity = -4 })
 	end)
 	for i = 1, count do
-		local delay = (i - 1) * 0.06
+		local delay = (i - 1) * math.min(0.06, duration * 0.3)
 		local radius = 1.2 + math.random() * 0.8
 		local angle0 = (i / count) * math.pi * 2 + math.random()
 		local rise = 3.5 + math.random() * 1.5
@@ -949,7 +1707,7 @@ local function soulOrbs(from: Vector3, to: Vector3, color: Color3, startAt: numb
 			if t < 0 then
 				return false
 			end
-			local length = duration - delay
+			local length = math.max(duration - delay, 0.05)
 			local p = math.clamp(t / length, 0, 1)
 			if not orb then
 				-- Soul orbs are aura, the one effect drawn in Neon.
@@ -1040,8 +1798,10 @@ local function onOverflow(data: { [string]: any }, target: Vector3, fromTier: nu
 	local flyAt = startAt + OVERFLOW_PULSE
 	local impact = flyAt + CHARGE_AUTO
 	lastMergeAt = flyAt
-	local pending = { pos = target, impact = impact }
+	local pending = { pos = target, impact = impact, pop = announce(toTier, true) }
 	table.insert(pendingMerges, pending)
+	-- Everything from here on is drawn where the units are shown.
+	target = shownAt(target)
 	task.delay(impact - now + 0.5, function()
 		local index = table.find(pendingMerges, pending)
 		if index then
@@ -1053,8 +1813,8 @@ local function onOverflow(data: { [string]: any }, target: Vector3, fromTier: nu
 	if type(data.from) == "table" then
 		for index, pos in data.from do
 			if typeof(pos) == "Vector3" and index <= 4 then
-				spotPulse(pos, color, startAt)
-				soulOrbs(pos, chest, color, flyAt, CHARGE_AUTO, true)
+				spotPulse(shownAt(pos), color, startAt)
+				soulOrbs(shownAt(pos), chest, color, flyAt, CHARGE_AUTO, true)
 			end
 		end
 	end
@@ -1063,8 +1823,10 @@ local function onOverflow(data: { [string]: any }, target: Vector3, fromTier: nu
 	end)
 	task.delay(impact - now, function()
 		impactFx(chest, toTier, true, 1.1, 1.1)
+		local overChip = resultFx(target, toTier, mergeKind(toTier, true))
 		ring(target + Vector3.new(0, 0.15, 0), worldColor("Sunny", WHITE), 1.5, 9, 0.45, 0.35)
-		fullFloat(chest + Vector3.new(0, 2.5, 0), count)
+		-- Over the "+TIER n" chip.
+		fullFloat(overChip + Vector3.new(0, 0.8, 0), count)
 	end)
 end
 
@@ -1115,22 +1877,25 @@ local function onMerge(data: { [string]: any })
 		chainTotal = count
 	end
 	local myChain = chainIndex
-	table.insert(pendingMerges, { pos = target, impact = impact })
+	local slotPos = target
+	table.insert(pendingMerges, { pos = slotPos, impact = impact, pop = announce(toTier, auto) })
 	task.delay(impact - now + 0.5, function()
 		for i, pending in pendingMerges do
-			if pending.impact == impact and pending.pos == target then
+			if pending.impact == impact and pending.pos == slotPos then
 				table.remove(pendingMerges, i)
 				break
 			end
 		end
 	end)
+	-- Everything from here on is drawn where the units are shown.
+	target = shownAt(target)
 
 	local chest = target + Vector3.new(0, CHEST_HEIGHT, 0)
 	local color = tierColor(fromTier)
 	if type(from) == "table" then
 		for index, pos in from do
 			if typeof(pos) == "Vector3" and index <= 4 then
-				soulOrbs(pos, chest, color, startAt, duration, auto)
+				soulOrbs(shownAt(pos), chest, color, startAt, duration, auto)
 			end
 		end
 	end
@@ -1151,28 +1916,27 @@ local function onMerge(data: { [string]: any })
 			at += math.max(0.06, 0.14 - i * 0.012)
 		end
 		task.delay(impact - now, function()
-			cascadeFinale(chest, toTier, count, auto)
+			cascadeFinale(chest, toTier, count, auto, mergeKind(toTier, auto))
 		end)
 		lastImpact = impact
 		chainTotal = 0
 		return
 	end
+	local chainAt = chest + Vector3.new(0, 9, 0) -- over the chip, once it is placed
 	task.delay(impact - now, function()
 		impactFx(chest, toTier, auto, nil, 1 + math.min(myChain, 6) * 0.06)
+		local overChip = resultFx(target, toTier, mergeKind(toTier, auto))
+		chainAt = overChip + Vector3.new(0, 1.2, 0)
 		if count >= 2 then
-			Orbs.text(chest + Vector3.new(0, 2.5, 0), "x" .. count, tierColor(toTier), { scale = 0.9, rise = 2.5 })
+			-- Over the "+TIER n" chip.
+			Orbs.text(overChip + Vector3.new(0, 0.8, 0), "x" .. count, tierColor(toTier), { scale = 0.9, rise = 2.5 })
 		end
 	end)
 	lastImpact = impact
 	-- When a chain of step merges ends, show its running total.
 	task.delay(impact - now + 0.25, function()
 		if lastImpact == impact and chainTotal >= 3 then
-			Orbs.text(
-				chest + Vector3.new(0, 4, 0),
-				"x" .. chainTotal .. " MERGES!",
-				tierColor(toTier):Lerp(WHITE, 0.25),
-				{ scale = 1.6, rise = 4, life = 1.5 }
-			)
+			mergesText(chainAt, chainTotal, tierColor(toTier):Lerp(WHITE, 0.25), 1.6, 1.5)
 			chainTotal = 0
 		end
 	end)
@@ -1193,6 +1957,10 @@ local HIDDEN = CFrame.new(0, -10000, 0)
 
 type Deco = {
 	disc: Part,
+	ring: Part, -- rarity band ring round the disc
+	aura: ParticleEmitter?, -- sparkles of a front-shelf unit of a top band
+	slot: number,
+	scale: number, -- size the model is drawn at (1 = as the server built it)
 	tier: number,
 	color: Color3,
 	radius: number,
@@ -1221,6 +1989,9 @@ local heroEmitter: ParticleEmitter? = nil
 local heroColorSet: Color3? = nil -- colour last given to the hero's beam and sparkles
 local glowParts: { BasePart } = {}
 local glowCFrames: { CFrame } = {}
+-- The rack's two best tiers, the champion's drawn size and this frame's resize count.
+local standing = { best = 0, second = 0, champion = 1, resized = 0 }
+local RING = PlotRank.CFG.RingWidth
 
 local function modelTier(model: Model): number
 	local value = model:GetAttribute("Tier")
@@ -1243,6 +2014,7 @@ local function removeDeco(model: Model)
 	local deco = decos[model]
 	if deco then
 		deco.disc:Destroy()
+		deco.ring:Destroy()
 		decos[model] = nil
 		decoCount -= 1
 		local last = decoOrder[#decoOrder]
@@ -1263,9 +2035,17 @@ local function addDeco(model: Instance)
 	local color = tierColor(tier)
 	local disc = fxPart(Enum.PartType.Cylinder, Vector3.new(0.05, 0.1, 0.1), HIDDEN, color, DISC_ALPHA)
 	disc.Name = "TierDisc"
+	local ringAlpha, ringMaterial = PlotRank.ringLook(tier)
+	local ring = fxPart(Enum.PartType.Cylinder, Vector3.new(0.05, 0.1, 0.1), HIDDEN, PlotRank.bandColor(tier), ringAlpha, ringMaterial)
+	ring.Name = "RarityRing"
+	local okScale, scale = pcall(model.GetScale, model)
 	table.insert(decoOrder, model)
 	decos[model] = {
 		disc = disc,
+		ring = ring,
+		aura = nil,
+		slot = MAX_DISCS,
+		scale = if okScale and type(scale) == "number" then scale else 1,
 		tier = tier,
 		color = color,
 		radius = 2,
@@ -1284,6 +2064,11 @@ local function addDeco(model: Instance)
 			deco.tier = modelTier(model)
 			deco.color = tierColor(deco.tier)
 			deco.disc.Color = deco.color
+			deco.ring.Color = PlotRank.bandColor(deco.tier)
+			deco.ring.Transparency, deco.ring.Material = PlotRank.ringLook(deco.tier)
+			if deco.aura then
+				deco.aura.Color = ColorSequence.new(WHITE, PlotRank.bandColor(deco.tier))
+			end
 			deco.measured = false
 		end
 	end)
@@ -1359,10 +2144,21 @@ end
 local function pickHero()
 	local best: Model? = nil
 	local bestTier = -1
+	local tiers: { number } = {}
 	for model, deco in decos do
 		if model.Parent and (deco.tier > bestTier or (deco.tier == bestTier and model == hero)) then
 			best, bestTier = model, deco.tier
 		end
+		table.insert(tiers, deco.tier)
+	end
+	standing.best, standing.second = PlotRank.topTiers(tiers)
+	-- A new best tier is known a moment later: the merge that made it gets the big impact.
+	local top = standing.best
+	if top > knownBest and top ~= pendingBest then
+		pendingBest = top
+		task.delay(MERGE.BestDelay, function()
+			knownBest = math.max(knownBest, top)
+		end)
 	end
 	if best ~= hero then
 		local old = hero
@@ -1380,10 +2176,85 @@ local function pickHero()
 		if best then
 			Animator.setHero(best, true)
 			ensureHeroParts()
+			-- The champion's pedestal glows instead (Fx.PlotRank): no ring under it.
+			local bestDeco = decos[best]
+			if bestDeco then
+				bestDeco.ring.CFrame = HIDDEN
+			end
 		else
 			hideHero()
 		end
 	end
+end
+
+-- Draws a unit at the size its standing on the rack earns (PlotRank.wantScale), as far as the
+-- board above it leaves room, and switches its aura sparkles. A few units per frame.
+local function applyStanding(model: Model, deco: Deco)
+	local cfg = PlotRank.CFG
+	local slotValue = model:GetAttribute("Slot")
+	deco.slot = if type(slotValue) == "number" then slotValue else MAX_DISCS
+	local champion = deco.slot == 1
+	local glows = PlotRank.bandIndex(deco.tier) >= cfg.AuraBand and deco.slot <= cfg.FrontSlots and not champion and not Budget.low()
+	local aura = deco.aura
+	if glows and not aura then
+		local made = Instance.new("ParticleEmitter")
+		made.Name = "RarityAura"
+		made.Texture = SPARKLE
+		made.LightEmission = SPARKLE_EMISSION
+		made.Lifetime = NumberRange.new(1, 1.6)
+		made.Speed = NumberRange.new(1, 2.4)
+		-- The ring lies on its side: its +X face looks up.
+		made.EmissionDirection = Enum.NormalId.Right
+		made.SpreadAngle = Vector2.new(10, 10)
+		made.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0),
+			NumberSequenceKeypoint.new(0.2, 0.35),
+			NumberSequenceKeypoint.new(1, 0),
+		})
+		made.Transparency = NumberSequence.new(0, 1)
+		made.Color = ColorSequence.new(WHITE, PlotRank.bandColor(deco.tier))
+		made.Rate = Budget.count(cfg.AuraRate)
+		made.Parent = deco.ring
+		deco.aura = made
+		aura = made
+	end
+	if aura and aura.Enabled ~= glows then
+		aura.Enabled = glows
+		aura.Rate = Budget.count(cfg.AuraRate)
+	end
+
+	-- The champion stands on its stage in front of the pedestal (the server stands it on the
+	-- pedestal, and puts it back there whenever it moves the unit).
+	local rim = if champion then championRim() else nil
+	if rim then
+		local stage = PlotRank.championPivot(rim)
+		if (model:GetPivot().Position - stage.Position).Magnitude > 0.05 then
+			model:PivotTo(stage)
+			deco.measured = false
+		end
+	end
+	local feet = model:GetPivot().Position
+	local heightValue = model:GetAttribute("Height")
+	local height = if type(heightValue) == "number" then heightValue else 5
+	local ceiling = boardAbove(watched, feet)
+	local want = PlotRank.wantScale(deco.tier, deco.slot, standing.best, standing.second)
+	local target = PlotRank.fitScale(want, height, if ceiling then ceiling - feet.Y else nil, if champion then nil else standing.champion)
+	if rim then
+		-- Nothing is above the stage: the champion gets its full size.
+		target = PlotRank.championScale(deco.tier)
+	end
+	if champion then
+		standing.champion = target
+	end
+	if math.abs(target - deco.scale) < 0.005 or standing.resized >= cfg.RescalesPerFrame then
+		return
+	end
+	standing.resized += 1
+	deco.scale = target
+	Animator.hold(model)
+	safeScale(model, target)
+	Animator.release(model)
+	deco.measured = false
 end
 
 -- Re-reads where a unit stands; marks its disc dirty when it moved (or appeared).
@@ -1391,6 +2262,7 @@ local function refreshDeco(model: Model, deco: Deco, now: number)
 	if not model.Parent or Animator.isHeld(model) then
 		return
 	end
+	applyStanding(model, deco)
 	if not deco.measured then
 		measure(model, deco)
 	end
@@ -1415,6 +2287,7 @@ local function stepGlow()
 	local now = os.clock()
 	table.clear(glowParts)
 	table.clear(glowCFrames)
+	standing.resized = 0
 	local heroModel = hero
 	local count = #decoOrder
 	for _ = 1, math.min(DISC_REFRESH, count) do
@@ -1453,6 +2326,13 @@ local function stepGlow()
 		end
 		table.insert(glowParts, deco.disc)
 		table.insert(glowCFrames, CFrame.new(pos) * UPRIGHT)
+		if not isHero then
+			-- The rarity ring: a wider disc just under the tier disc, so only its edge shows.
+			local wide = d + RING * 2 * math.min(grow, 1)
+			deco.ring.Size = Vector3.new(0.05, wide, wide)
+			table.insert(glowParts, deco.ring)
+			table.insert(glowCFrames, CFrame.new(pos - Vector3.new(0, 0.03, 0)) * UPRIGHT)
+		end
 	end
 	local heroPos = heroDeco and heroDeco.pos
 	if heroDeco and heroPos and heroBeam and heroEmitPart then
@@ -1521,6 +2401,9 @@ local function bindUnits(units: Instance)
 	end
 	hideHero()
 	unitsFolder = units
+	-- What already stands on the rack is not news.
+	knownBest = PlotRank.bestTier(units.Parent or units)
+	pendingBest = knownBest
 	for _, child in units:GetChildren() do
 		addDeco(child)
 	end

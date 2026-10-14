@@ -8,7 +8,17 @@
 	  stage * STAGE_PACK + min(clears, STAGE_PACK - 1).
 
 	Query "Ranking" returns { entries = { { rank, userId, name, value } }, updatedAt,
-	stage = { { rank, userId, name, stage, clears } } }.
+	stage = { { rank, userId, name, stage, clears } }, you = { units = Standing?, stage =
+	Standing? }, global }. Both lists are the stored board with this server's live scores
+	folded in (Ranking.merge), so a player's own row is never older than the HUD.
+
+	Standing (Ranking.standing) is the asking player's place on a board and the nearest
+	players to pass and to stay ahead of: { rank (nil under the listed top), cap, above,
+	below, aboveHere, serverRank, serverCount, unranked, count, edge }. `count` is how many
+	rows the board has (the window fills a young board with the player's own goal instead of
+	made-up names) and `edge` its last listed row once it is full: the score that gets a
+	player under it into the top `cap`. `global` is false while the
+	lists only hold this server's players (no DataStore, or before the first read).
 ]]
 
 local DataStoreService = game:GetService("DataStoreService")
@@ -30,12 +40,26 @@ local STAGE_PACK = 10000
 
 type Entry = { rank: number, userId: number, name: string, value: number }
 type StageEntry = { rank: number, userId: number, name: string, stage: number, clears: number }
+type Standing = {
+	rank: number?,
+	cap: number,
+	above: any?,
+	below: any?,
+	aboveHere: boolean,
+	serverRank: number,
+	serverCount: number,
+	unranked: boolean,
+	count: number,
+	edge: any?,
+}
 
 local ordered: OrderedDataStore? = nil
 local stageOrdered: OrderedDataStore? = nil
 local top: { Entry } = {}
 local stageTop: { StageEntry } = {}
 local updatedAt = 0
+-- Whether `top` was read from the store (else it is this server's players).
+local global = false
 local nameCache: { [number]: string } = {}
 
 local ok, err = pcall(function()
@@ -134,7 +158,8 @@ local function readTop(): { Entry }?
 	return list
 end
 
-local function localStageFallback(): { StageEntry }
+-- Every player in this server with a sky obby stage, best first.
+local function liveStages(): { StageEntry }
 	local list: { StageEntry } = {}
 	for player, session in Tycoon.allSessions() do
 		local stage, clears = stageOf(session.profile)
@@ -148,11 +173,16 @@ local function localStageFallback(): { StageEntry }
 		end
 		return a.clears > b.clears
 	end)
-	while #list > STAGE_TOP_COUNT do
-		table.remove(list)
-	end
 	for i, entry in list do
 		entry.rank = i
+	end
+	return list
+end
+
+local function localStageFallback(): { StageEntry }
+	local list = liveStages()
+	while #list > STAGE_TOP_COUNT do
+		table.remove(list)
 	end
 	return list
 end
@@ -200,24 +230,138 @@ local function updateBoards(labels: { TextLabel }, themeModule: any)
 	end
 end
 
+local function unitScore(entry: any): number
+	return tonumber(entry.value) or 0
+end
+
+local function stageScore(entry: any): number
+	return packStage(tonumber(entry.stage) or 0, tonumber(entry.clears) or 0)
+end
+
+-- The stored board with this server's live rows folded in: a player who is here moves to
+-- their current score (the store is up to REFRESH_SECONDS old) and joins the list when the
+-- store does not hold them yet. Best first, ranks renumbered; equal scores keep the lower
+-- user id first, so the order never flickers. Copies the rows: `stored` is left alone.
+local function merge(stored: { any }, live: { any }, scoreOf: (any) -> number): { any }
+	local list: { any } = {}
+	local here: { [number]: boolean } = {}
+	for _, entry in live do
+		if not here[entry.userId] then
+			here[entry.userId] = true
+			table.insert(list, table.clone(entry))
+		end
+	end
+	for _, entry in stored do
+		if not here[entry.userId] then
+			table.insert(list, table.clone(entry))
+		end
+	end
+	table.sort(list, function(a, b)
+		local scoreA, scoreB = scoreOf(a), scoreOf(b)
+		if scoreA ~= scoreB then
+			return scoreA > scoreB
+		end
+		return a.userId < b.userId
+	end)
+	for i, entry in list do
+		entry.rank = i
+	end
+	return list
+end
+
+--[[
+	A player's place on a merged board, with a target they can reach: `above` is the nearest
+	known player ahead (the row to pass) and `below` the nearest behind. `rank` is nil under
+	the `cap` rows the store keeps (the rest of the world is not listed there, so the place is
+	unknown) and `unranked` marks a player with no row at all (no stage yet): their target
+	is then the last row of the board. `here` holds the user ids in this server:
+	serverRank / serverCount place the player among them (count 0: not among them).
+	`count` is the number of rows on the board and `edge` row `cap` (nil while the board
+	has fewer): the one to beat to get into the listed top.
+]]
+local function standing(list: { any }, userId: number, cap: number, here: { [number]: boolean }): Standing
+	local index: number? = nil
+	local serverRank, serverCount = 0, 0
+	for i, entry in list do
+		if here[entry.userId] then
+			serverCount += 1
+			if not index then
+				serverRank += 1
+			end
+		end
+		if entry.userId == userId then
+			index = i
+		end
+	end
+	if not index then
+		local last = list[#list]
+		return {
+			rank = nil,
+			cap = cap,
+			above = last,
+			below = nil,
+			aboveHere = last ~= nil and here[last.userId] == true,
+			serverRank = 0,
+			serverCount = serverCount,
+			unranked = true,
+			count = #list,
+			edge = list[cap],
+		}
+	end
+	local above = list[index - 1]
+	return {
+		rank = if index <= cap then index else nil,
+		cap = cap,
+		above = above,
+		below = list[index + 1],
+		aboveHere = above ~= nil and here[above.userId] == true,
+		serverRank = serverRank,
+		serverCount = serverCount,
+		unranked = false,
+		count = #list,
+		edge = list[cap],
+	}
+end
+
+local function firstRows(list: { any }, count: number): { any }
+	return table.move(list, 1, math.min(count, #list), 1, {})
+end
+
+-- What Query "Ranking" answers `userId` with (see the header).
+local function answer(userId: number): { [string]: any }
+	local live = localFallback()
+	local here: { [number]: boolean } = {}
+	for _, entry in live do
+		here[entry.userId] = true
+	end
+	local units = merge(top, live, unitScore)
+	local stages = merge(stageTop, liveStages(), stageScore)
+	return {
+		entries = firstRows(units, TOP_COUNT),
+		updatedAt = updatedAt,
+		stage = firstRows(stages, STAGE_TOP_COUNT),
+		you = {
+			units = standing(units, userId, TOP_COUNT, here),
+			stage = standing(stages, userId, STAGE_TOP_COUNT, here),
+		},
+		global = global,
+	}
+end
+
 local function refresh(labels: { TextLabel }, themeModule: any)
 	writeScores()
-	top = readTop() or localFallback()
+	local stored = readTop()
+	global = stored ~= nil
+	top = stored or localFallback()
 	stageTop = readStageTop() or localStageFallback()
 	updatedAt = os.time()
 	updateBoards(labels, themeModule)
 end
 
 function Ranking.init(themeModule: any, labels: { TextLabel })
-	Net.func("Query").OnServerInvoke = function(_player, kind)
+	Net.func("Query").OnServerInvoke = function(player, kind)
 		if kind == "Ranking" then
-			if #top == 0 then
-				top = localFallback()
-			end
-			if #stageTop == 0 then
-				stageTop = localStageFallback()
-			end
-			return { entries = top, updatedAt = updatedAt, stage = stageTop }
+			return answer(player.UserId)
 		end
 		return nil
 	end
@@ -239,5 +383,10 @@ Ranking.writeScores = writeScores
 Ranking.packStage = packStage
 Ranking.unpackStage = unpackStage
 Ranking.stageOf = stageOf
+Ranking.merge = merge
+Ranking.standing = standing
+Ranking.unitScore = unitScore
+Ranking.stageScore = stageScore
+Ranking.answer = answer
 
 return Ranking

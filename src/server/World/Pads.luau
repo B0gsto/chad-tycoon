@@ -5,10 +5,16 @@
 	Every pad is a small flat button: a coloured top (one colour per job, Theme.World.Pads:
 	butter buys, sunny-orange merge, blue deposit, warm special pads) on a thin, low rounded base
 	in Theme.World.PadRim reaching Layout.PAD_RIM past it. The top carries a small printed icon
-	("+5", "$", a gift) in Theme.World.PadPrint. Above each pad floats plain text (a
-	BillboardGui, no card): the name (`title`) in white and the price or status Tycoon writes
-	into `sub` in green, both with an Ink outline. Merge shows only "MERGE" in sunny yellow and
-	Deposit a bigger label. A disabled pad turns soft grey (Theme.Colors.PadDisabled).
+	("+5", "$", a gift) in Theme.World.PadPrint. Above each pad floats its label (a
+	BillboardGui): the name (`title`) in white and, under it, the price or status Tycoon writes
+	into `sub`, in white on a small rounded plate (Theme.World.PadPlate: green when Tycoon
+	tints `sub` Good, soft red when Bad, dark otherwise; gold with dark print when it says the
+	pad needs a game pass), both with an Ink outline so they read on every pad colour. The
+	labels float above the head of a character standing on the pad; along the buy row they climb
+	outward (LABEL_LIFTS) so no tag covers its neighbour. Merge shows only its name in sunny
+	yellow, as a low tag standing at the pad's far left corner (LABEL_SHIFT), under the pen's crate
+	labels in the spawn view. On a plot nobody owns the names are dimmed (setClaimed). A disabled
+	pad turns soft grey (Theme.Colors.PadDisabled).
 ]]
 
 local Layout = require(script.Parent.Parent.PlotLayout)
@@ -34,18 +40,58 @@ local TOP_RISE = 0.15
 -- The trigger reaches this far past the coloured top (still on the base), so a character whose
 -- root is over the top's edge counts as standing on it.
 local TRIGGER_GROW = 0.4
--- Floating label: height of its bottom above the pad top, width in studs (wider for big pads),
--- and the camera distance it stops drawing at.
-local LABEL_LIFT = 2.6
+-- Floating label: height of its bottom above the pad top (over the head of a character standing
+-- on the pad: lower, the head hid the name), width in studs (wider for big pads), and the
+-- camera distance it stops drawing at.
+local LABEL_LIFT = 5.6
 local LABEL_W = 6
 local LABEL_W_MAX = 8
 local LABEL_MAX_DISTANCE = 90
--- Pads whose label sits at another height so it clears the labels of pads behind it in the
--- spawn view (the deposit label sits low on its big pad, the bulk speed upgrade's high).
-local LABEL_LIFTS: { [string]: number } = { Deposit = 0.9, ProcUp10 = 4.2 }
+-- Pads whose label sits at another height. The deposit label floats over the head of a player
+-- standing on its big pad (lower, the character and its dumbbell hid half of it); the bulk
+-- speed upgrade's clears the single upgrade's.
+-- The buy row's tags climb outward from the pen (Buy 5 / Buy 25 at LABEL_LIFT, Buy 1 / Buy 100
+-- two studs higher, Auto Merge two more): a label is 2 studs tall, and from a camera above the
+-- row the farther tag is drawn higher on screen, so neighbours that climb outward never meet
+-- (Auto Merge used to hang low, right behind the Buy 25 / Buy 100 tags seen from the pen's
+-- side). The outer tags also float clear of the fan zones' cards and crowd behind them.
+-- From the spawn camera (Fx.Camera: eye 15 studs behind the head and 20 degrees up, at
+-- plot-local (0, 9.6, -28.1), FOV 70; pixels of a 1280 x 720 screen):
+--   Buy 5 / Buy 25      y 189..213, x 388..459 / 821..892
+--   Buy 1 / Buy 100     y 168..192, x 285..357 / 923..995
+--   Auto Merge          y 146..171, x 1028..1101
+--   Deposit             y 181..215, x 1064..1167 (10 px under Auto Merge)
+-- The merge tag stands just above its pad: see LABEL_SHIFT.
+local LABEL_LIFTS: { [string]: number } = {
+	Deposit = 6.4,
+	Buy1 = 7.6,
+	Buy100 = 7.6,
+	AutoMerge = 9.6,
+	ProcUp10 = 7.2,
+	Merge = 0.4,
+}
+-- Pads whose label is wider or narrower than their size gives: the merge name a compact tag,
+-- the deposit label a shorter line that fits in front of the converter's jar.
+local LABEL_GROW: { [string]: number } = { Merge = 0.85, Deposit = 0.8 }
+-- Pads whose label stands off the pad's centre, as plot-local (x, z) studs. The merge tag
+-- stands at the pad's far left corner: floating over the far edge it covered the pen's crate
+-- labels ("Common", at y 229..256 in the spawn view above) and, hung lower there, the walking
+-- character's own head. At the corner it is drawn at x 511..613, y 280..314: over the pen's
+-- front wall (y 286..312), under every crate label and left of the character (x 570..710).
+local LABEL_SHIFT: { [string]: Vector2 } = { Merge = Vector2.new(5.2, 3.5) }
 -- Share of the stud width that scales with distance, and the fixed pixel part added to it.
 local LABEL_SCALE = 0.8
 local LABEL_PX = 24
+-- Price plate: its share of the label's height, and its width as a share of the label's: a
+-- fixed padding plus a part per character, so a short price gets a short plate.
+local PLATE_H = 0.52
+local PLATE_PAD = 0.14
+local PLATE_CHAR = 0.09
+local PLATE_MIN = 0.32
+-- What Server.Tycoon and Server.WorldBuilder write (in any case) on a pad that needs a game pass.
+local PASS_WORDS = "game pass"
+-- Transparency of the name (and its outline) on a plot nobody owns.
+local UNCLAIMED_DIM = 0.55
 
 -- Pads that show a fixed label (their action) instead of a name and a price.
 local STATIC: { [string]: boolean } = { Merge = true }
@@ -92,8 +138,9 @@ local function farDir(name: string): Vector2
 	return Vector2.new(0, 1)
 end
 
--- Each pad's job colour, print colour and top icon, so setEnabled can repaint them.
-type Painted = { color: Color3, print: Color3, icon: TextLabel }
+-- Each pad's job colour, print colour and top icon, so setEnabled can repaint them, and its
+-- shown name with its outline, so setClaimed can dim them.
+type Painted = { color: Color3, print: Color3, icon: TextLabel, title: TextLabel, titleStroke: UIStroke }
 local painted: { [BasePart]: Painted } = setmetatable({}, { __mode = "k" }) :: any
 
 local function corner(parent: Instance, scale: number)
@@ -102,13 +149,18 @@ local function corner(parent: Instance, scale: number)
 	c.Parent = parent
 end
 
-local function outline(parent: Instance, color: Color3, thickness: number, transparency: number?)
+local function outline(parent: Instance, color: Color3, thickness: number, transparency: number?): UIStroke
 	local s = Instance.new("UIStroke")
 	s.Color = color
 	s.Thickness = thickness
 	s.Transparency = transparency or 0
 	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
 	s.Parent = parent
+	return s
+end
+
+local function sameColor(a: Color3, b: Color3): boolean
+	return math.abs(a.R - b.R) + math.abs(a.G - b.G) + math.abs(a.B - b.B) < 0.01
 end
 
 local function text(parent: Instance, props: { [string]: any }): TextLabel
@@ -181,36 +233,83 @@ local function buildTopPrint(padPart: BasePart, face: Enum.NormalId, round: bool
 	return icon
 end
 
--- The floating label above a pad: a BillboardGui on the pad top with the name on top and the
--- big line (price / status) under it, both in the display font with an Ink outline. `width`
--- is in studs; part of the size is fixed pixels, so the label shrinks less than the world with
--- distance and does not fill the screen when the camera is beside the pad. Returns (name, big line).
-local function buildLabel(padPart: BasePart, lift: number, width: number): (TextLabel, TextLabel)
+-- The floating label above a pad: a BillboardGui `offset` (world space) from the pad top with
+-- the name on top and the price plate under it, the name and the price in white with an Ink
+-- outline. `width` is in studs; part of the size is fixed pixels, so the label shrinks less
+-- than the world with distance and does not fill the screen when the camera is beside the pad.
+-- Returns (name, its outline, plate, price).
+local function buildLabel(padPart: BasePart, offset: Vector3, width: number): (TextLabel, UIStroke, Frame, TextLabel)
 	local h = width * 0.34
+	local white = World.White or Color3.new(1, 1, 1)
 	local gui = Instance.new("BillboardGui")
 	gui.Name = "PadLabel"
 	gui.Adornee = padPart
 	gui.Size = UDim2.new(width * LABEL_SCALE, LABEL_PX, h * LABEL_SCALE, LABEL_PX * 0.34)
-	gui.StudsOffsetWorldSpace = Vector3.new(0, lift + h / 2, 0)
+	gui.StudsOffsetWorldSpace = offset + Vector3.new(0, h / 2, 0)
 	gui.MaxDistance = LABEL_MAX_DISTANCE
 	gui.LightInfluence = 0
 	gui.Parent = padPart
-	local function line(name: string, y: number, height: number, color: Color3): TextLabel
-		local l = text(gui, {
-			Name = name,
-			Text = "",
-			AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.fromScale(0.5, y),
-			Size = UDim2.fromScale(1, height),
-			TextColor3 = color,
-		})
-		outline(l, World.Ink, 2)
-		return l
+	local title = text(gui, {
+		Name = "Title",
+		Text = "",
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.fromScale(0.5, 0),
+		Size = UDim2.fromScale(1, 0.44),
+		TextColor3 = white,
+	})
+	local titleStroke = outline(title, World.Ink, 2)
+	local plate = Instance.new("Frame")
+	plate.Name = "Main"
+	plate.AnchorPoint = Vector2.new(0.5, 0)
+	plate.Position = UDim2.fromScale(0.5, 0.46)
+	plate.Size = UDim2.fromScale(1, PLATE_H)
+	plate.BorderSizePixel = 0
+	plate.Visible = false
+	plate.Parent = gui
+	corner(plate, 0.35)
+	outline(plate, World.Ink, 1.5)
+	local price = text(plate, {
+		Name = "Price",
+		Text = "",
+		Font = theme.Fonts.Number,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromScale(0.88, 0.84),
+		TextColor3 = white,
+	})
+	outline(price, World.Ink, 2)
+	return title, titleStroke, plate, price
+end
+
+-- Shows what Server.Tycoon writes into the hidden `sub` label: its text as the white price,
+-- its Good / Bad tint as the plate's colour. A pad that asks for a game pass (PASS_WORDS in
+-- the text) gets the gold plate with dark print whatever the tint: red reads as an error
+-- there. No text, no plate.
+local function bindPrice(sub: TextLabel, plate: Frame, price: TextLabel)
+	local plates = World.PadPlate or {}
+	local plain = plates.Plain or World.Ink
+	local white = price.TextColor3
+	local function show()
+		local shown = sub.Text
+		local tint = sub.TextColor3
+		local pass = plates.Pass ~= nil and string.find(string.lower(shown), PASS_WORDS, 1, true) ~= nil
+		price.Text = shown
+		price.TextColor3 = if pass then World.Ink else white
+		plate.Visible = shown ~= ""
+		plate.Size = UDim2.fromScale(math.clamp(PLATE_PAD + PLATE_CHAR * (utf8.len(shown) or #shown), PLATE_MIN, 1), PLATE_H)
+		if pass then
+			plate.BackgroundColor3 = plates.Pass
+		elseif sameColor(tint, theme.Colors.Good) then
+			plate.BackgroundColor3 = plates.Good or plain
+		elseif sameColor(tint, theme.Colors.Bad) then
+			plate.BackgroundColor3 = plates.Bad or plain
+		else
+			plate.BackgroundColor3 = plain
+		end
 	end
-	local title = line("Title", 0, 0.44, World.White or Color3.new(1, 1, 1))
-	local main = line("Main", 0.44, 0.56, theme.Colors.MoneyText)
-	main.Font = theme.Fonts.Number
-	return title, main
+	sub:GetPropertyChangedSignal("Text"):Connect(show)
+	sub:GetPropertyChangedSignal("TextColor3"):Connect(show)
+	show()
 end
 
 local function buildPad(B: Builder, name: string, color: Color3, title: string, sub: string): Pad
@@ -259,23 +358,28 @@ local function buildPad(B: Builder, name: string, color: Color3, title: string, 
 		icon = buildTopPrint(padPart, Enum.NormalId.Top, false, name, printColor)
 	end
 
-	local width = math.clamp(math.max(sx, sz) * 1.1, LABEL_W, LABEL_W_MAX)
-	local titleLine, mainLine = buildLabel(padPart, LABEL_LIFTS[name] or LABEL_LIFT, width)
-	painted[padPart] = { color = color, print = printColor, icon = icon }
+	local width = math.clamp(math.max(sx, sz) * 1.1, LABEL_W, LABEL_W_MAX) * (LABEL_GROW[name] or 1)
+	local offset = Vector3.new(0, LABEL_LIFTS[name] or LABEL_LIFT, 0)
+	local shift = LABEL_SHIFT[name]
+	if shift then
+		offset += B.cf:VectorToWorldSpace(Vector3.new(shift.X, 0, shift.Y))
+	end
+	local titleLine, titleStroke, plate, price = buildLabel(padPart, offset, width)
+	painted[padPart] = { color = color, print = printColor, icon = icon, title = titleLine, titleStroke = titleStroke }
 	-- Server.Tycoon writes the pad's name into `title` and the price / status into `sub` (and
-	-- recolours it). Pads it never prices (Merge) show their action as one big sunny line; the
-	-- labels it may clear stay hidden so the label keeps its fixed text.
-	local titleLabel, subLabel = titleLine, mainLine
+	-- tints it); `sub` stays hidden and the plate shows it (bindPrice). Pads it never prices
+	-- (Merge) show their action as one big sunny line; the labels it may clear stay hidden so
+	-- the label keeps its fixed text.
+	local titleLabel = titleLine
+	local subLabel = text(titleLine, { Name = "Sub", Text = sub, Visible = false })
 	if STATIC[name] then
-		mainLine.Visible = false
 		titleLine.Size = UDim2.fromScale(1, 1)
 		titleLine.Text = string.upper(title)
 		titleLine.TextColor3 = World.Sunny or color
 		titleLabel = text(titleLine, { Name = "Title", Text = title, Visible = false })
-		subLabel = text(titleLine, { Name = "Sub", Text = sub, Visible = false })
 	else
 		titleLabel.Text = title
-		subLabel.Text = sub
+		bindPrice(subLabel, plate, price)
 	end
 
 	return {
@@ -285,6 +389,9 @@ local function buildPad(B: Builder, name: string, color: Color3, title: string, 
 		part = padPart,
 		title = titleLabel,
 		sub = subLabel,
+		defaultTitle = titleLabel.Text,
+		defaultSub = sub,
+		defaultTint = subLabel.TextColor3,
 	}
 end
 
@@ -301,7 +408,19 @@ local function setEnabled(pad: Pad, enabled: boolean)
 	entry.icon.TextColor3 = print
 end
 
+-- Dims a pad's name on a plot nobody owns, or shows it in full once the plot has an owner.
+local function setClaimed(pad: Pad, claimed: boolean)
+	local entry = painted[pad.part]
+	if not entry then
+		return
+	end
+	local transparency = if claimed then 0 else UNCLAIMED_DIM
+	entry.title.TextTransparency = transparency
+	entry.titleStroke.Transparency = transparency
+end
+
 Pads.buildPad = buildPad
 Pads.setEnabled = setEnabled
+Pads.setClaimed = setClaimed
 
 return Pads

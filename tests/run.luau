@@ -13,6 +13,7 @@ local Format = require("../src/shared/Format")
 local SessionLock = require("../src/shared/SessionLock")
 local TutorialSteps = require("../src/shared/TutorialSteps")
 local CratePickup = require("../src/shared/CratePickup")
+local ParkourMoves = require("../src/shared/ParkourMoves")
 
 local passed, failed = 0, 0
 local currentTest = ""
@@ -326,22 +327,72 @@ test("processing", function()
 	near(Economy.processBulkCost(5, 10), sum, "bulk process cost")
 	eq(Economy.incomePerSecond(100, 40, 2), 80, "income bottlenecked by processing")
 	eq(Economy.incomePerSecond(30, 40, 1), 30, "income bottlenecked by production")
+	-- Every level is 25% faster and always costs 50 seconds of the converter's own output.
+	for _, level in { 0, 8, 39, 112, 150 } do
+		near(Economy.processRate(level + 1) / Economy.processRate(level), 1.25, "+25% speed at level " .. level)
+		near(Economy.processUpgradeCost(level) / Economy.processRate(level), 50, "50 s of output at level " .. level)
+	end
+	eq(Economy.CONVERTER_HEADROOM, 4, "upgrades stop at 4x the production")
+end)
+
+test("converter floor: a new tier never outruns the converter", function()
+	eq(Economy.minProcessLevel(1), 0, "no floor below the base rate")
+	eq(Economy.minProcessLevel(2), 0, "tier 2 is covered by the base rate")
+	eq(Economy.minProcessLevel(10), 39, "floor of tier 10")
+	eq(Economy.minProcessLevel(0), 0, "tiers are clamped (low)")
+	eq(Economy.minProcessLevel(99), Economy.minProcessLevel(Economy.MAX_TIER), "tiers are clamped (high)")
+	local rack = table.create(Economy.MAX_TIER, 0)
+	for tier = 1, Economy.MAX_TIER do
+		local floor = Economy.minProcessLevel(tier)
+		check(floor >= 0 and floor == math.floor(floor), "floor is a whole level at tier " .. tier)
+		check(Economy.processRate(floor) >= Economy.unitRate(tier), "floor covers one unit of tier " .. tier)
+		if floor > 0 then
+			check(Economy.processRate(floor - 1) < Economy.unitRate(tier), "floor is the lowest such level at tier " .. tier)
+		end
+		if tier > 3 then
+			local step = floor - Economy.minProcessLevel(tier - 1)
+			check(step == 4 or step == 5, "about 5 free levels per tier at " .. tier)
+		end
+		-- The most a merged rack makes (one unit of every tier up to the best) is under 2x
+		-- the floor's rate, so an un-upgraded converter passes at least half of it.
+		rack[tier] = 1
+		local production = Economy.productionPerSecond(rack)
+		check(production <= 2 * Economy.processRate(floor), "never short by more than 2x at tier " .. tier)
+		check(Economy.incomePerSecond(production, Economy.processRate(floor), 1) >= production / 2, "half the income at tier " .. tier)
+	end
+	-- A profile's level is lifted to the floor of its best tier and never lowered.
+	eq(math.max(16, Economy.minProcessLevel(10)), 39, "level lifted to the floor of the best tier")
+	eq(math.max(150, Economy.minProcessLevel(Economy.MAX_TIER)), 150, "a level above every floor is kept")
+	-- The start level covers the first three tiers; the floor takes over from tier 4.
+	check(Economy.START_PROCESS_LEVEL >= Economy.minProcessLevel(3), "start level covers tier 3")
+	check(Economy.START_PROCESS_LEVEL < Economy.minProcessLevel(4), "tier 4 brings the first free levels")
 end)
 
 test("deposit multiplier", function()
 	local rng = seeded(42)
 	local seen = {}
-	for _ = 1, 5000 do
+	local sum, rolls = 0, 10000
+	for _ = 1, rolls do
 		local m = Economy.rollDepositMultiplier(rng)
 		check(m >= Economy.DEPOSIT_MIN and m <= Economy.DEPOSIT_MAX, "multiplier in range " .. m)
+		check(m >= 1, "a deposit never loses aura " .. m)
 		seen[m] = true
+		sum += m
 	end
-	check(seen[1.0] == true and seen[0.5] == true, "covers low and neutral values")
+	eq(Economy.DEPOSIT_MIN, 1, "the lowest multiplier is x1")
+	check(seen[1.0] == true and seen[3.0] == true, "covers the neutral and the top value")
+	check(sum / rolls >= 1.10 and sum / rolls <= 1.20, "mean multiplier about 1.15 (" .. sum / rolls .. ")")
+	local lowest, highest = math.huge, 0
+	for _, entry in Economy.DEPOSIT_MULTIPLIERS do
+		lowest, highest = math.min(lowest, entry.value), math.max(highest, entry.value)
+	end
+	eq(lowest, Economy.DEPOSIT_MIN, "DEPOSIT_MIN matches the table")
+	eq(highest, Economy.DEPOSIT_MAX, "DEPOSIT_MAX matches the table")
 	eq(
 		Economy.rollDepositMultiplier(function()
 			return 0
 		end),
-		0.5,
+		1.0,
 		"roll 0 gives first entry"
 	)
 	eq(
@@ -351,6 +402,20 @@ test("deposit multiplier", function()
 		3.0,
 		"roll ~1 gives last entry"
 	)
+	-- The aura carried is queued whole; only the part above x1 is the bonus (paid as cash).
+	local queued, bonus = Economy.depositSplit(100, 1)
+	eq(queued, 100, "x1 queues everything")
+	eq(bonus, 0, "x1 has no bonus")
+	queued, bonus = Economy.depositSplit(100, 1.5)
+	eq(queued, 100, "x1.5 queues the aura carried")
+	near(bonus, 50, "x1.5 pays half as a bonus")
+	queued, bonus = Economy.depositSplit(100, 3)
+	near(queued + bonus, 300, "queue and bonus add up to the multiplied deposit")
+	queued, bonus = Economy.depositSplit(100, 0.5)
+	eq(queued, 100, "a multiplier below 1 takes nothing away")
+	eq(bonus, 0, "a multiplier below 1 pays no bonus")
+	queued, bonus = Economy.depositSplit(0, 3)
+	eq(queued + bonus, 0, "nothing carried, nothing paid")
 end)
 
 test("surge", function()
@@ -376,12 +441,18 @@ test("chests", function()
 		end
 		local rng = seeded(7)
 		for _ = 1, 500 do
-			-- Highest 10 anchors crates at tier 6.
+			-- Highest 10 anchors crates at tier 7.
 			local tier = Economy.rollChest(rarity, 10, rng)
-			check(tier >= 4 and tier <= 10, "roll near the crate anchor")
+			check(tier >= 5 and tier <= 10, "roll near the crate anchor")
 		end
 		check(Economy.unlockSeconds(rarity, true) < Economy.unlockSeconds(rarity, false), "premium is faster")
 	end
+	-- One to five minutes in the free Smasher; a profile's very first crate is faster still.
+	for index, seconds in { 60, 120, 180, 240, 300 } do
+		eq(Economy.unlockSeconds(Economy.CHEST_RARITIES[index], false), seconds, Economy.CHEST_RARITIES[index] .. " timer")
+	end
+	eq(Economy.FIRST_CRATE_SECONDS, 10, "first crate timer")
+	check(Economy.FIRST_CRATE_SECONDS < Economy.unlockSeconds("Common", true), "the first crate beats every timer")
 	check(not Economy.isRarity("Bogus"), "unknown rarity rejected")
 
 	eq(Economy.unitValue(1), Economy.BUY_BASE_PRICE, "tier 1 unit value")
@@ -393,55 +464,112 @@ test("chests", function()
 	end
 	-- Crates are anchored below the highest tier, further down the higher it is.
 	eq(Economy.chestAnchor(1), 1)
-	eq(Economy.chestAnchor(3), 2)
-	eq(Economy.chestAnchor(10), 6)
-	eq(Economy.chestAnchor(25), 13)
+	eq(Economy.chestAnchor(3), 3)
+	eq(Economy.chestAnchor(5), 4)
+	eq(Economy.chestAnchor(10), 7)
+	eq(Economy.chestAnchor(17), 12)
+	eq(Economy.chestAnchor(25), 17)
 	for highest = 2, 25 do
 		check(Economy.chestAnchor(highest) <= highest, "anchor at or below highest at " .. highest)
 		check(Economy.chestAnchor(highest) >= Economy.chestAnchor(highest - 1), "anchor never drops at " .. highest)
 	end
-	-- Higher rarities feel better: Rare rarely gives its lowest tier, Epic and
-	-- Legendary mostly give the anchor tier or above, at every stage.
-	for highest = 1, 25 do
-		local anchor = math.max(Economy.chestAnchor(highest), 2)
-		local rare = Economy.chestOdds("Rare", highest)
-		check(#rare >= 2, "rare offers a choice at " .. highest)
-		check(rare[1].chance <= 25, "rare lowest tier at most 25% at " .. highest)
-		check(rare[#rare].tier <= anchor + 1, "rare stays near the anchor at " .. highest)
-		for _, entry in Economy.chestOdds("Common", highest) do
-			check(entry.tier <= highest, "common never above highest at " .. highest)
-		end
-		for _, rarity in { "Epic", "Legendary" } do
-			local above = 0
-			for _, entry in Economy.chestOdds(rarity, highest) do
-				check(entry.tier >= anchor, rarity .. " never below the anchor at " .. highest)
-				check(entry.tier <= math.max(highest, 2) + 3, rarity .. " not absurdly high at " .. highest)
-				if entry.tier > anchor then
-					above += entry.chance
-				end
+	-- Rarer crates give visibly better units: Common and Uncommon stay anchored below the
+	-- highest tier, Rare one tier up, Epic and Legendary follow the highest tier itself.
+	-- No crate gives more than one tier past the highest (a merge of two of the best).
+	local function lowest(rarity: string, highest: number): number
+		return Economy.chestOdds(rarity, highest)[1].tier
+	end
+	local function top(rarity: string, highest: number): number
+		local odds = Economy.chestOdds(rarity, highest)
+		return odds[#odds].tier
+	end
+	local function main(rarity: string, highest: number): number
+		local best = Economy.chestOdds(rarity, highest)[1]
+		for _, entry in Economy.chestOdds(rarity, highest) do
+			if entry.chance > best.chance then
+				best = entry
 			end
-			check(above >= 70, rarity .. " mostly above the anchor at " .. highest)
 		end
-		local prevValue = 0
+		return best.tier
+	end
+	eq(Economy.chestCap(1), 2)
+	eq(Economy.chestCap(10), 11)
+	eq(Economy.chestCap(25), 25, "never past the last tier")
+	for highest = 1, 25 do
+		local cap = Economy.chestCap(highest)
+		for _, rarity in Economy.CHEST_RARITIES do
+			local total = 0
+			for _, entry in Economy.chestOdds(rarity, highest) do
+				total += entry.chance
+				check(entry.tier >= 1 and entry.tier <= cap, rarity .. " never skips past the next tier at " .. highest)
+			end
+			eq(total, 100, rarity .. " odds sum at highest " .. highest)
+		end
+		check(top("Common", highest) <= highest, "common never above highest at " .. highest)
+		local anchor = math.max(Economy.chestAnchor(highest), 2)
+		check(main("Rare", highest) == math.min(anchor + 1, cap), "rare is mostly the anchor's next tier at " .. highest)
+		check(top("Rare", highest) <= anchor + 2, "rare stays near the anchor at " .. highest)
+		-- Each rarity's window starts at or above the one below, and is worth at least as much.
+		local prevValue, prevLowest = 0, 0
 		for _, rarity in Economy.CHEST_RARITIES do
 			local value = Economy.chestExpectedValue(rarity, highest)
 			check(value >= prevValue, rarity .. " worth at least the rarity below at " .. highest)
-			prevValue = value
+			check(lowest(rarity, highest) >= prevLowest, rarity .. " starts no lower than the rarity below at " .. highest)
+			prevValue, prevLowest = value, lowest(rarity, highest)
+		end
+		-- A Legendary is a real payoff: at least 3 tiers above a Common crate's main tier
+		-- (as far as the cap allows) and close to the player's best at every stage.
+		local lead = math.min(main("Common", highest) + 3, cap)
+		check(lowest("Legendary", highest) >= lead, "legendary well above a common at " .. highest)
+		check(lowest("Legendary", highest) >= highest - 3, "legendary near the best tier at " .. highest)
+		check(lowest("Epic", highest) >= highest - 4, "epic near the best tier at " .. highest)
+		check(lowest("Legendary", highest) > top("Rare", highest) - 1, "legendary above the rare window at " .. highest)
+		if highest <= 10 then
+			check(top("Legendary", highest) >= highest, "early legendary reaches the best tier at " .. highest)
 		end
 	end
-	-- Early game stays fair: a common crate is a tier 1, a rare one at most tier 3.
+	-- The report's case: highest 4 used to open a Legendary on tier 3 or 4; now it is the next tier.
+	eq(#Economy.chestOdds("Legendary", 4), 1)
+	eq(lowest("Legendary", 4), 5, "highest 4: a Legendary brings tier 5")
+	eq(lowest("Legendary", 10), 9)
+	eq(top("Legendary", 10), 10, "highest 10: Legendary 9..10")
+	eq(lowest("Epic", 10), 8)
+	eq(top("Epic", 10), 9, "highest 10: Epic 8..9")
+	eq(lowest("Rare", 10), 7)
+	eq(top("Rare", 10), 9, "highest 10: Rare 7..9")
+	-- The last tiers are days apart at half an hour a day: there crates lag further behind.
+	eq(lowest("Legendary", 15), 13)
+	eq(top("Legendary", 15), 14, "highest 15: Legendary 13..14")
+	eq(lowest("Legendary", 25), 22)
+	eq(top("Legendary", 25), 23, "highest 25: Legendary 22..23")
+	eq(lowest("Epic", 25), 21)
+	eq(top("Epic", 25), 22, "highest 25: Epic 21..22")
+	-- Rarer is always better: the unit value a Smasher makes per second of its timer rises
+	-- with the rarity, so a rare crate is never a worse use of the slot than a common one
+	-- (from highest 4: below it the cap folds Epic and Legendary onto the next tier).
+	for highest = 4, 25 do
+		for _, premium in { false, true } do
+			local prevPerSecond = 0
+			for _, rarity in Economy.CHEST_RARITIES do
+				local perSecond = Economy.chestExpectedValue(rarity, highest) / Economy.unlockSeconds(rarity, premium)
+				check(perSecond > prevPerSecond, rarity .. " beats the rarity below per Smasher second at " .. highest)
+				prevPerSecond = perSecond
+			end
+		end
+	end
+	-- Early game stays fair: a common crate is a tier 1, a rare one at most tier 2.
 	local early = Economy.chestOdds("Common", 1)
 	eq(#early, 1)
 	eq(early[1].tier, 1)
 	eq(early[1].chance, 100)
 	local earlyRare = Economy.chestOdds("Rare", 1)
-	eq(earlyRare[1].tier, 1)
-	eq(earlyRare[#earlyRare].tier, 3)
+	eq(earlyRare[1].tier, 2)
+	eq(earlyRare[#earlyRare].tier, 2)
 
 	local common = Economy.chestOdds("Common", 6)
-	eq(common[1].tier, 2)
+	eq(common[1].tier, 3)
 	eq(common[1].chance, 75)
-	eq(common[3].tier, 4)
+	eq(common[3].tier, 5)
 	eq(common[3].chance, 5)
 
 	local rng = seeded(99)
@@ -2072,12 +2200,312 @@ test("new player start: cash, converter and tutorial reward", function()
 	check(Economy.START_CASH >= Economy.bulkPrice(0, 2) - Economy.unitPrice(1), "cash for the first unit")
 	check(Economy.START_CASH - Economy.unitPrice(0) > 0, "cash left after the first unit")
 	check(Economy.TUTORIAL_REWARD_CASH >= Economy.bulkPrice(1, 3), "the reward buys three more units")
-	-- The starting converter keeps up with one unit of tier 5 and no more than that.
-	check(Economy.processRate(Economy.START_PROCESS_LEVEL) >= Economy.unitRate(5), "converter covers tier 5")
-	check(Economy.processRate(Economy.START_PROCESS_LEVEL) < Economy.unitRate(6), "converter is upgraded for tier 6")
+	eq(Economy.START_PROCESS_LEVEL, 8, "start level")
+	-- The converter covers one unit of every tier at that tier's free floor.
+	for tier = 1, Economy.MAX_TIER do
+		check(Economy.processRate(Economy.minProcessLevel(tier)) >= Economy.unitRate(tier), "converter floor covers tier " .. tier)
+	end
 	-- Old saves are lifted to the starting level; higher levels are kept.
 	eq(DataService.reconcile({ money = 10, processLevel = 3 }).processLevel, Economy.START_PROCESS_LEVEL, "low level lifted")
 	eq(DataService.reconcile({ money = 10, processLevel = 40 }).processLevel, 40, "high level kept")
+end)
+
+test("Economy 2.0 migration: a save only gains", function()
+	local DataService = loadDataService()
+	eq(DataService.VERSION, 3, "profile version")
+	local function discoveredTo(best: number): { number }
+		local discovered = table.create(Economy.MAX_TIER, 0)
+		for tier = 1, best do
+			discovered[tier] = 1700000000 + tier
+		end
+		return discovered
+	end
+	-- The converter level is lifted to the free floor of the best discovered tier, never lowered.
+	local lifted = DataService.reconcile({ money = 10, bought = 5, processLevel = 16, discovered = discoveredTo(10) })
+	eq(lifted.processLevel, 39, "level 16 with best tier 10 becomes 39")
+	eq(lifted.processLevel, Economy.minProcessLevel(10), "which is the floor of tier 10")
+	local high = DataService.reconcile({ money = 10, bought = 5, processLevel = 150, discovered = discoveredTo(10) })
+	eq(high.processLevel, 150, "level 150 stays 150")
+	eq(DataService.reconcile({ money = 10, processLevel = 150, discovered = discoveredTo(25) }).processLevel, 150, "even at the last tier")
+	eq(
+		DataService.reconcile({ money = 10, processLevel = 16, discovered = discoveredTo(3) }).processLevel,
+		16,
+		"a level above the floor is kept"
+	)
+	eq(DataService.reconcile(lifted).processLevel, 39, "migrating twice changes nothing")
+
+	-- A version-2 save keeps everything it has.
+	local units = table.create(Economy.MAX_TIER, 0)
+	units[3] = 4
+	units[9] = 2
+	units[10] = 1
+	local saved = {
+		version = 2,
+		money = 123456,
+		carried = 77,
+		queue = 8900,
+		pending = 120,
+		units = table.clone(units),
+		discovered = discoveredTo(10),
+		totalObtained = 612,
+		bought = 550,
+		processLevel = 46,
+		heldChest = "Rare",
+		unlockers = { { rarity = "Epic", endsAt = 1900000000 }, { rarity = "Common", endsAt = 1900000500 } },
+		autoMergeOwned = true,
+		autoMerge = true,
+		totalEarned = 987654,
+		tutorialDone = true,
+		introSeen = true,
+		onboarding = 99,
+		parkour = { best = { 31.5, 40 }, clears = { 2, 1 }, stage = 3, stageMaps = true, gear = "jump" },
+		modes = { parkour = { best = 31.5, clears = 3, lastRewardAt = 1700000000 } },
+	}
+	local kept = DataService.reconcile(saved)
+	eq(kept.version, DataService.VERSION, "the save is now the current version")
+	for _, key in { "money", "carried", "queue", "pending", "totalObtained", "bought", "processLevel", "heldChest", "totalEarned" } do
+		eq(kept[key], saved[key], key .. " is kept")
+	end
+	eq(kept.autoMergeOwned, true, "the cash-bought Auto Merge is kept")
+	eq(kept.autoMerge, true, "and stays switched on")
+	for tier = 1, Economy.MAX_TIER do
+		eq(kept.units[tier], units[tier], "units of tier " .. tier)
+		eq(kept.discovered[tier], if tier <= 10 then 1700000000 + tier else 0, "discovery of tier " .. tier)
+	end
+	eq(kept.unlockers[1].rarity, "Epic", "Smasher slot 1 keeps its crate")
+	eq(kept.unlockers[1].endsAt, 1900000000, "and its end time")
+	eq(kept.unlockers[2].rarity, "Common", "Smasher slot 2 keeps its crate")
+	eq(kept.unlockers[2].endsAt, 1900000500, "and its end time")
+	eq(kept.parkour.best[1], 31.5, "parkour records are kept")
+	eq(kept.parkour.clears[2], 1, "parkour clears are kept")
+	eq(kept.parkour.stage, 3, "the sky obby stage is kept")
+	eq(kept.modes.parkour.lastRewardAt, 1700000000, "the reward cooldown is kept")
+	eq(kept.firstCrateDone, true, "an existing player waits the normal time for crates")
+	local production = Economy.productionPerSecond(kept.units)
+	check(Economy.processRate(kept.processLevel) >= Economy.unitRate(10), "the kept level covers the best unit")
+	check(production > 0, "the rack still produces")
+
+	-- The first-crate head start is for brand-new profiles only.
+	eq(DataService.defaultProfile().firstCrateDone, false, "a new profile has not opened a crate")
+	eq(DataService.reconcile(nil).firstCrateDone, false, "nor has a blank save")
+	eq(DataService.reconcile({ money = 10, bought = 3 }).firstCrateDone, true, "a save that bought units is not new")
+	eq(DataService.reconcile({ money = 10, totalObtained = 4 }).firstCrateDone, true, "nor is one that owned units")
+	eq(DataService.reconcile({ money = 10, bought = 3, firstCrateDone = false }).firstCrateDone, false, "a saved flag is kept")
+	eq(DataService.reconcile({ money = 10, firstCrateDone = "x" }).firstCrateDone, false, "a broken flag on an unplayed save resets")
+	-- The Smasher path shows by itself for a profile's first crates only.
+	eq(DataService.defaultProfile().cratesHeld, 0, "a new profile has held no crate")
+	eq(DataService.reconcile({ money = 10, bought = 3 }).cratesHeld, Economy.CRATE_GUIDE_HOLDS, "an existing player knows the way")
+	eq(DataService.reconcile({ money = 10, bought = 3, cratesHeld = 1 }).cratesHeld, 1, "a saved count is kept")
+
+	-- Parkour: a skipped map is saved next to best / clears (dense, 0 or 1).
+	local fresh = DataService.defaultProfile()
+	eq(#fresh.parkour.skipped, DataService.PARKOUR_LEVELS, "one skipped entry per map")
+	eq(#kept.parkour.skipped, DataService.PARKOUR_LEVELS, "old saves get the list")
+	for level = 1, DataService.PARKOUR_LEVELS do
+		eq(fresh.parkour.skipped[level], 0, "nothing skipped on a new profile")
+		eq(kept.parkour.skipped[level], 0, "nothing skipped on an old save")
+	end
+	local skips =
+		DataService.reconcile({ money = 1, parkour = { best = {}, clears = {}, skipped = { 1, 0, "x", 5, -1, 0 / 0 }, stageMaps = true } })
+	eq(skips.parkour.skipped[1], 1, "a skip is kept")
+	eq(skips.parkour.skipped[2], 0, "an unskipped map stays unskipped")
+	eq(skips.parkour.skipped[3], 0, "junk is dropped")
+	eq(skips.parkour.skipped[4], 1, "a skip is 0 or 1")
+	eq(skips.parkour.skipped[5], 0, "negative is dropped")
+	eq(skips.parkour.skipped[6], 0, "NaN is dropped")
+	eq(DataService.reconcile(skips).parkour.skipped[1], 1, "and survives another load")
+end)
+
+test("Tycoon pads: no Robux prompt from walking, upgrade pads need a stop", function()
+	local source = fs.readFile("src/server/Tycoon.luau")
+	local function has(text: string): boolean
+		return string.find(source, text, 1, true) ~= nil
+	end
+	-- Pass prompts come from the client's buttons (PromptPass, the Settings switch) only.
+	check(not has('promptPass(session.player, "PremiumUnlocker")'), "the VIP Smasher pad opens no pass prompt")
+	local _, autoMergePrompts = string.gsub(source, 'promptPass%(session%.player, "AutoMerge"%)', "")
+	eq(autoMergePrompts, 1, "Auto Merge is prompted from the Settings switch only")
+	check(has("PAD_DWELL = { ProcUp1 = 0.6, ProcUp10 = 0.6 }"), "the upgrade pads fire after a 0.6 s stop")
+	check(has("Economy.CONVERTER_HEADROOM * Economy.productionPerSecond(p.units)"), "upgrades are refused past the headroom")
+	check(has("Economy.depositSplit(p.carried, mult)"), "the deposit bonus is split off as cash")
+	check(has("Economy.minProcessLevel(newest)"), "a new tier lifts the converter for free")
+	check(has("return Economy.highestTier(session.profile.discovered)"), "crates and goals follow the best tier found")
+	check(has("return mult * (1 + bonus)"), "the cash multiplier is the passes, friends and Premium")
+end)
+
+-- One notion of "best tier": the highest one discovered. Every reward sized by progression
+-- reads it, like the amounts the client shows (the snapshot's highestTier).
+test("rewards and the goal strip read the best tier found", function()
+	local sized = {
+		"src/server/Monetization.luau",
+		"src/server/Cosmetics.luau",
+		"src/server/Daily.luau",
+		"src/server/Modes/Parkour.luau",
+		"src/server/Modes/Mog.luau",
+		"src/server/Modes/Cardio.luau",
+	}
+	for _, path in sized do
+		local src = fs.readFile(path)
+		check(string.find(src, "Economy.progression(Economy.highestTier(p", 1, true) ~= nil, path .. " sizes a reward by tier")
+		check(string.find(src, "discovered), p", 1, true) ~= nil, path .. " sizes it by the best tier found")
+	end
+	-- The plot's rank, its champion and its crowd go by the best unit on the rack.
+	local rank = fs.readFile("src/client/Fx/PlotRank.luau")
+	check(string.find(rank, "local best = PlotRank.bestTier(rec.folder)", 1, true) ~= nil, "PlotRank reads the rack")
+	check(string.find(rank, "syncDressing(rec, best)", 1, true) ~= nil, "the dressing goes by it")
+	check(string.find(rank, "syncChampion(rec, best)", 1, true) ~= nil, "and so does the pedestal")
+	check(string.find(fs.readFile("src/client/Fx/Fans.luau"), "PlotRank.bestTier(rec.folder)", 1, true) ~= nil, "fans go by the same tier")
+	-- The goal strip lets NextGoal do the sums.
+	local hud = fs.readFile("src/client/UI/Hud.luau")
+	check(string.find(hud, "indexClaimed = claimed", 1, true) ~= nil, "the goal strip sends the claimed Index milestones")
+	check(string.find(hud, 'picked.kind == "index"', 1, true) ~= nil, "the goal strip has a line for an Index reward")
+	check(string.find(hud, 'goalTrack.Visible = picked.kind ~= "done"', 1, true) ~= nil, "and no bar once nothing is left")
+	check(string.find(hud, "fill your rack", 1, true) == nil, "it never asks for a full rack")
+	check(
+		string.find(hud, "picked.mergeReady", 1, true) ~= nil and string.find(hud, "picked.percent", 1, true) ~= nil,
+		"it uses NextGoal's sums"
+	)
+end)
+
+test("Smasher slots: a saved crate gets its whole timer on load", function()
+	local DataService = loadDataService()
+	-- Smasher slots saved before the whole timer was kept get one on load, so the progress
+	-- ring fills steadily to the saved end time (which is never changed).
+	local now = os.time()
+	local slots = DataService.reconcile({
+		money = 1,
+		unlockers = { { rarity = "Legendary", endsAt = now + 4000 }, { rarity = "Common", endsAt = now + 5 } },
+	}).unlockers
+	eq(slots[1].endsAt, now + 4000, "the end time is kept")
+	check(slots[1].seconds >= 3999 and slots[1].seconds <= 4000, "a long old timer: the time left is the whole ring")
+	eq(slots[2].seconds, Economy.unlockSeconds("Common", true), "a short one: the rarity's timer")
+	eq(
+		DataService.reconcile({ money = 1, unlockers = { { rarity = "Rare", endsAt = now + 50, seconds = 60 } } }).unlockers[1].seconds,
+		60,
+		"a saved timer is kept"
+	)
+	eq(DataService.reconcile({ money = 1 }).unlockers[1].seconds, nil, "an empty slot has none")
+	local again = DataService.reconcile({ money = 1, unlockers = { { rarity = "Legendary", endsAt = now + 4000, seconds = 4000 } } })
+	eq(again.unlockers[1].seconds, 4000, "and it does not shrink on the next load")
+end)
+
+test("NextGoal: one merge step, the real percent and what is left at the top tier", function()
+	local NextGoal = loadShared("NextGoal")
+	local function input(best: number, units: { number }, claimed: { number }?): any
+		local discovered = table.create(Economy.MAX_TIER, 0)
+		for tier = 1, Economy.MAX_TIER do
+			discovered[tier] = if tier <= best then 1 else 0
+		end
+		local owned = table.create(Economy.MAX_TIER, 0)
+		for tier, n in units do
+			owned[tier] = n
+		end
+		return { discovered = discovered, units = owned, indexClaimed = claimed }
+	end
+	local function nameOf(tier: number): string
+		return "T" .. tier
+	end
+
+	-- mergeReady: one step on the merge pad reaches the tier, pair or no pair.
+	local goal = NextGoal.pick(input(3, { 2, 1, 1 }))
+	check(goal.mergeReady, "2 x T1 + T2 + T3 merge up to a T4")
+	check(not goal.ready, "though the T3 pair is not on the rack")
+	eq(goal.percent, 100, "100% when one step does it")
+	eq(goal.missing, 0, "nothing left to buy")
+	eq(goal.seconds, 0, "and no wait")
+	eq(select(4, NextGoal.text(goal, nameOf)), "100%", "the text carries the percent")
+	-- The server agrees: a full merge makes the tier.
+	local units = input(3, { 2, 1, 1 }).units
+	Economy.mergeAll(units)
+	eq(units[4], 1, "mergeAll makes the T4")
+	goal = NextGoal.pick(input(3, { 1, 1, 1 }))
+	check(not goal.mergeReady, "one T1 short")
+	eq(goal.missing, 1, "one more T1")
+	eq(goal.percent, 87, "7/8 of the way is 87%, not rounded up")
+	eq(select(4, NextGoal.text(goal, nameOf)), "87%", "percent text")
+	eq(NextGoal.pick(input(12, { [12] = 1, [11] = 1, [1] = 1023 })).percent, 99, "never 100% while a unit is missing")
+	check(NextGoal.pick(input(1, { 2 })).mergeReady, "a plain pair is ready too")
+	eq(NextGoal.pick(input(1, { 1 })).percent, 50, "half way")
+	-- Every rack agrees with the server's count and with a real merge.
+	local rng = seeded(7)
+	for _ = 1, 300 do
+		local best = 1 + math.floor(rng() * 12)
+		local rack: { number } = {}
+		for tier = 1, best do
+			rack[tier] = math.floor(rng() * 3)
+		end
+		local picked = NextGoal.pick(input(best, rack))
+		local owned = input(best, rack).units
+		eq(picked.missing, Economy.unitsToNextTier(owned, best), "missing matches the snapshot's nextTierUnits")
+		Economy.mergeAll(owned)
+		eq(picked.mergeReady, owned[best + 1] > 0, "mergeReady matches a real merge")
+		check(picked.percent < 100 or picked.mergeReady, "100% only when ready")
+	end
+
+	-- The time estimate (the snapshot's bought, money, pending, rewardIncome).
+	local timed = input(10, { [10] = 1 })
+	timed.bought, timed.money, timed.pending, timed.income = 600, 1000, 500, 250
+	goal = NextGoal.pick(timed)
+	eq(goal.missing, 512, "half a pair of T10 is 512 T1")
+	near(goal.seconds :: number, (Economy.bulkPrice(600, 512) - 1500) / 250, "cash still missing over the income")
+	timed.money = 1e12
+	eq(NextGoal.pick(timed).seconds, 0, "affordable now")
+	eq(NextGoal.pick(input(10, { [10] = 1 })).seconds, nil, "no income, no estimate")
+
+	-- Below the top tier the goal is always the next tier, whatever the Index has to claim.
+	goal = NextGoal.pick(input(24, { [24] = 1 }))
+	eq(goal.kind, "merge", "tier 24: the last tier")
+	eq(goal.tier, 25, "target")
+
+	-- Every tier found: the first Index milestone not claimed yet, lowest first.
+	goal = NextGoal.pick(input(25, { [25] = 3 }))
+	eq(goal.kind, "index", "the top tier with nothing claimed: an Index reward")
+	eq(goal.need, 5, "the first milestone")
+	eq(goal.have, 5, "counted up to the milestone")
+	check(goal.ready and goal.percent == 100 and goal.progress == 1, "it waits to be claimed")
+	check(not goal.mergeReady, "no merge makes it")
+	eq(goal.seconds, 0, "and no wait")
+	local title, hint, count, percent = NextGoal.text(goal, nameOf, "Chads")
+	eq(title, "Index reward", "index title")
+	eq(hint, "claim it in the Index", "index hint")
+	eq(count, "5/5", "index count")
+	eq(percent, "100%", "index percent")
+	goal = NextGoal.pick(input(25, { [25] = 3 }, { 5, 10, 15 }))
+	eq(goal.kind, "index", "milestones left")
+	eq(goal.need, 20, "the next one not claimed")
+	goal = NextGoal.pick(input(25, { [25] = 3 }, { 25, 5, 15, 10 }))
+	eq(goal.need, 20, "in any order of claims")
+	-- An Index with holes (tiers a crate skipped): the milestone is counted, not claimable.
+	local holes = input(25, { [25] = 1 }, { 5, 10, 15, 20 })
+	holes.discovered[7], holes.discovered[8] = 0, 0
+	goal = NextGoal.pick(holes)
+	eq(goal.kind, "index", "the whole Index is still the goal")
+	eq(goal.have, 23, "23 tiers found")
+	eq(goal.need, 25, "of 25")
+	check(not goal.ready and goal.percent == 92, "not ready, 92%")
+	eq(select(2, NextGoal.text(goal, nameOf, "Chads")), "find 25 Chads", "what it takes, in words")
+	eq(select(3, NextGoal.text(goal, nameOf, "Chads")), "23/25", "and the count")
+
+	-- Everything claimed: nothing is left to reach. No "fill your rack", no bar to fill:
+	-- only the units of the top tier as a count.
+	local all = { 5, 10, 15, 20, 25 }
+	goal = NextGoal.pick(input(25, { [25] = 3 }, all))
+	eq(goal.kind, "done", "every tier found and every milestone claimed")
+	eq(goal.tier, Economy.MAX_TIER, "it shows the top tier")
+	eq(goal.have, 3, "three units of it")
+	eq(goal.need, 0, "with no target")
+	check(goal.progress == 1 and goal.percent == 100, "nothing left to fill")
+	check(not goal.ready and not goal.mergeReady, "and nothing to step on")
+	title, hint, count, percent = NextGoal.text(goal, nameOf, "Chads")
+	eq(title, "All 25 Chads found!", "done title")
+	eq(hint, "3x T25", "the top tier's units")
+	eq(count, "3", "as a plain count")
+	eq(percent, "100%", "done percent")
+	eq(select(1, NextGoal.text(goal, nameOf)), "All 25 units found!", "a plain word without the theme's")
+	eq(NextGoal.pick(input(25, {}, all)).have, 0, "none on the rack: 0")
+	eq(NextGoal.pick(input(25, { [25] = 500 }, all)).have, Economy.UNIT_CAP, "never more than a rack holds")
+	-- Junk in the claimed list is not a claim.
+	eq(NextGoal.pick(input(25, { [25] = 1 }, { "x", 7, 5 } :: any)).need, 10, "only real milestones count as claimed")
 end)
 
 test("onboarding funnel and badges fields", function()
@@ -2374,6 +2802,32 @@ test("cosmetics profile and state", function()
 	eq(state.toggles.SpeedBoost, true, "state toggle default on")
 	eq(state.toggles.TrailStar, nil, "trails are not toggles")
 	eq(state.starterOwned, false, "state starter owned")
+
+	-- Who may use a switch: its owner and, for the Chad Aura, a Champion without the pass.
+	check(Cosmetics.canSwitch(theme, profile, passes, "Crown"), "an owner switches")
+	check(not Cosmetics.canSwitch(theme, profile, passes, "AuraGlow"), "no pass, no Champion: no aura switch")
+	check(not Cosmetics.canSwitch(theme, profile, passes, "TrailStar"), "a trail is not a switch")
+	check(not Cosmetics.canSwitch(theme, profile, passes, "Nope"), "nor is an unknown item")
+	check(state.canSwitch.Crown == true and state.canSwitch.AuraGlow == nil, "state: the switches the player may use")
+	profile.cosmetics.champion = true
+	check(Cosmetics.canSwitch(theme, profile, passes, "AuraGlow"), "a Champion switches the aura without the pass")
+	check(not Cosmetics.canSwitch(theme, profile, passes, "SpeedBoost"), "but nothing else it does not own")
+	check(not Cosmetics.owns(theme, passes, "AuraGlow"), "and still does not own the Chad Aura")
+	local champion = Cosmetics.state(theme, profile, passes)
+	eq(champion.canSwitch.AuraGlow, true, "state: the Champion's aura switch")
+	eq(champion.owned.AuraGlow, nil, "state: not owned")
+	eq(champion.toggles.AuraGlow, true, "state: the aura starts on")
+	profile.cosmetics.toggles.AuraGlow = false
+	eq(Cosmetics.state(theme, profile, passes).toggles.AuraGlow, false, "state: and can be off")
+	local source = fs.readFile("src/server/Cosmetics.luau")
+	check(
+		string.find(source, 'if champion and Cosmetics.toggleOn(profile, "AuraGlow") then', 1, true) ~= nil,
+		"the Champion aura follows the switch, pass or not"
+	)
+	check(
+		string.find(source, "if not Cosmetics.canSwitch(theme, session.profile, session.passes, name) then", 1, true) ~= nil,
+		"ToggleCosmetic lets a Champion through"
+	)
 end)
 
 test("starter pack grant", function()
@@ -3234,7 +3688,7 @@ test("Aura Surge mood: the grade follows the server clock, easing in and out", f
 		low, high = math.min(low, g.saturation), math.max(high, g.saturation)
 		eq(g.contrast, Surge.CONTRAST, "full contrast")
 	end
-	check(low > 0.15 and high < 0.35, "saturation pulses gently around +0.25")
+	check(low > 0.04 and high < 0.22, "saturation pulses gently around +0.12")
 	check(high - low > 0.05 and high - low <= 0.12, "the pulse is visible but small")
 	check(Surge.PULSE_PERIOD >= 1.5, "the pulse is slow (no strobing)")
 end)
@@ -3403,6 +3857,11 @@ test("Game modes: finish reward is sized like a cash pack, with a cooldown", fun
 	check(not early.full and early.cash == 0 and early.packCash > 0, "inside the cooldown a finish pays no cash")
 	local later = Economy.modeReward(0, progression, pack.Seconds, pack.Min, false, now - cooldown, now)
 	check(later.full and later.cash == later.packCash, "full pack again after the cooldown")
+	-- What a clean finish inside the cooldown is worth: a fifth of the pack, whole dollars.
+	eq(Economy.MODE_REPEAT_SHARE, 0.2, "repeat share")
+	eq(early.repeatCash, math.floor(early.packCash * 0.2), "repeat cash is 20% of the pack")
+	eq(later.repeatCash, early.repeatCash, "repeat cash does not depend on the cooldown")
+	check(early.repeatCash > 0 and early.repeatCash < early.packCash, "repeat cash is a part of the pack")
 end)
 
 test("Game modes: no checkpoints, one plausible start-to-finish time per level", function()
@@ -3471,6 +3930,20 @@ test("Game modes: profile defaults and per-level parkour records", function()
 	for n = 2, 10 do
 		check(Economy.parkourLevelBonus(n) > Economy.parkourLevelBonus(n - 1), "harder levels pay more")
 	end
+end)
+
+test("Game modes: cardio first clears have a default and old saves keep theirs", function()
+	local DataService = loadDataService()
+	eq(DataService.defaultProfile().cardio.firsts, 0, "a new profile has taken no first clear")
+	eq(DataService.reconcile({ money = 1 }).cardio.firsts, 0, "a save without cardio has taken none")
+	local old = DataService.reconcile({ money = 1, cardio = { speed = 50, bestStage = 3, treadmill = 1, clears = 4, speedCap = 0 } })
+	eq(old.cardio.firsts, 7, "a save from before the set took every plate up to bestStage")
+	local kept = DataService.reconcile({ money = 1, cardio = { speed = 50, bestStage = 9, firsts = 5 } })
+	eq(kept.cardio.firsts, 5, "a saved set wins over bestStage")
+	eq(DataService.reconcile({ money = 1, cardio = { bestStage = 2, firsts = 5.7 } }).cardio.firsts, 5, "whole numbers only")
+	eq(DataService.reconcile({ money = 1, cardio = { bestStage = 2, firsts = 1e9 } }).cardio.firsts, 1023, "never more than the ten plates")
+	eq(DataService.reconcile({ money = 1, cardio = { bestStage = 2, firsts = -4 } }).cardio.firsts, 3, "junk falls back to bestStage")
+	eq(DataService.reconcile({ money = 1, cardio = { bestStage = 99, firsts = "x" } }).cardio.firsts, 1023, "clamped to the ten plates")
 end)
 
 -- Sky obby server (docs/sky-obby.md): stages, gear, skip, stage board ------------------
@@ -3554,7 +4027,8 @@ local function loadParkour(): (any, any)
 	local player = fakeInstance("Player", { UserId = 7, DisplayName = "Tester", Character = character })
 	local session = { player = player, profile = DataService.defaultProfile() }
 	rig.player, rig.humanoid, rig.root, rig.session = player, humanoid, root, session
-	local GameModes = {
+	local GameModes
+	GameModes = {
 		hooks = {
 			reward = function(_, _, reward)
 				return reward
@@ -3621,6 +4095,7 @@ local function loadParkour(): (any, any)
 	}, { __index = _G })
 	local path = MODES_DIR .. "Parkour.luau"
 	local Parkour = luau.load(fs.readFile(path), { debugName = path, environment = env })()
+	rig.GameModes = GameModes
 	local def = Parkour.create(GameModes, { built = nil, theme = theme, Tycoon = Tycoon })
 	function rig.last(event: string): any
 		for i = #rig.notes, 1, -1 do
@@ -3633,7 +4108,7 @@ local function loadParkour(): (any, any)
 	return def, rig
 end
 
-test("Sky obby: Rules skip and speed-scaled anti-cheat", function()
+test("Sky obby: speed-scaled anti-cheat", function()
 	local level = ModesCourse.LEVELS[1]
 	-- A run exactly as quick as the speed coil allows: too fast unscaled, fine at 28/16.
 	local run = ModesRules.newRun(0, level)
@@ -3641,11 +4116,10 @@ test("Sky obby: Rules skip and speed-scaled anti-cheat", function()
 	local plain = ModesRules.finish(run, finishAt)
 	eq(plain, false, "coil-fast runs fail at walking speed")
 	eq((ModesRules.finish(run, finishAt, 28 / 16)), true, "the speed coil scales the minimum")
-	-- A skipped map has no minimum.
-	local skipped = ModesRules.newRun(0, level)
-	ModesRules.skip(skipped)
-	eq(skipped.skipped, true, "the skip is recorded")
-	eq((ModesRules.finish(skipped, 0.02)), true, "a skipped map is not 'fast'")
+	-- A paid Skip Map is no finish: runs carry no skip flag and nothing waives the minimum.
+	eq((ModesRules :: any).skip, nil, "no Rules.skip")
+	eq((ModesRules.newRun(0, level) :: any).skipped, nil, "runs carry no skip flag")
+	eq((ModesRules.finish(ModesRules.newRun(0, level), 0.02)), false, "an instant finish is always 'fast'")
 end)
 
 test("Sky obby: stages, gear and the assisted flag", function()
@@ -3758,14 +4232,19 @@ test("Sky obby: falls and kill bricks send the runner back to the map's start de
 	end
 end)
 
-test("Sky obby: Skip Map finishes the map and starts the next one", function()
+test("Sky obby: Skip Map only unlocks the next map", function()
 	local def, rig = loadParkour()
 	local player, profile = rig.player, rig.session.profile
+	local rec = profile.parkour
 	local cost = Economy.parkourSkipCost(0)
 	eq(cost, Economy.PARKOUR_SKIP_MIN, "with no income a skip costs the minimum")
 	eq(Economy.parkourSkipCost(1), 250, "two minutes of $1/s is under the minimum")
 	eq(Economy.parkourSkipCost(10), 1200, "two minutes of income")
 	eq(def.snapshot(player).skipCost, cost, "the snapshot carries the cash cost")
+	local gates = 0
+	rig.GameModes.toGates = function()
+		gates += 1
+	end
 	def.start(player, true, { level = 1 })
 	profile.money = cost - 1
 	rig.actions.ParkourSkip(rig.session, {})
@@ -3773,46 +4252,71 @@ test("Sky obby: Skip Map finishes the map and starts the next one", function()
 	check(string.find(rig.toasts[1], "Not enough cash", 1, true) ~= nil, "toast says Not enough cash")
 	eq(profile.money, cost - 1, "nothing taken")
 	eq(rig.last("skip"), nil, "no skip")
+	check(def.running(player), "the run goes on")
+
 	profile.money = cost + 5
+	local earned = profile.totalEarned
 	rig.actions.ParkourSkip(rig.session, {})
 	local skip = rig.last("skip")
-	check(skip ~= nil and skip.level == 1 and skip.stage == 2, "skip notify: map 1 skipped, on to stage 2")
-	local finish = rig.last("finish")
-	check(finish ~= nil, "skipping a map finishes it")
-	eq(finish.gems, nil, "no Rizz in the finish")
-	eq(profile.money, 5 + finish.cash, "one skip paid (plus the finish cash)")
-	eq(finish.assisted, true, "a skipped map is assisted")
-	eq(finish.newBest, false, "assisted runs set no best")
-	eq(finish.rank, nil, "and no board entry")
-	eq(finish.stage, 2, "the finish reaches the next map's stage")
-	eq(profile.parkour.clears[1], 1, "the clear still counts")
-	eq(profile.parkour.best[1], 0, "no best time recorded")
-	eq(finish.unlocked, 2, "and it unlocks the next map")
-	check(finish.cash > 0, "and it pays")
-	local start = rig.last("start")
-	check(start ~= nil and start.level == 2 and start.stage == 2, "the next map starts")
-	check(def.running(player), "running map 2")
-	local at = ModesCourse.respawn(ModesCourse.LEVELS[2])
-	check(
-		rig.teleportedTo ~= nil and (rig.teleportedTo - roblox.Vector3.new(at[1], at[2], at[3])).Magnitude < 0.01,
-		"on map 2's start deck"
-	)
-	eq(profile.parkour.stage, 2, "best stage saved")
-	eq(player:GetAttribute("ParkourBestStage"), 2, "best stage attribute")
-	eq(player:GetAttribute("ParkourStage"), 2, "running on stage 2")
-	-- The last map: a skip just finishes.
-	for i = 2, ModesCourse.LEVEL_COUNT - 1 do
-		profile.parkour.clears[i] = 1
-	end
-	def.start(player, true, { level = ModesCourse.LEVEL_COUNT })
+	check(skip ~= nil and skip.level == 1 and skip.nextLevel == 2 and skip.unlocked == 2, "skip notify: map 1 skipped, map 2 unlocked")
+	eq(skip and skip.paid, 0, "the skip pays nothing")
+	eq(rig.last("finish"), nil, "a skip is no finish: no finish card")
+	eq(profile.money, 5, "the skip costs its price and pays no cash")
+	eq(profile.totalEarned, earned, "nothing earned")
+	eq(rec.clears[1], 0, "no clear")
+	eq(rec.best[1], 0, "no best time")
+	eq(rec.skipped[1], 1, "the skip is saved")
+	eq(#rec.skipped, ModesCourse.LEVEL_COUNT, "one skipped slot per level")
+	eq(profile.modes.parkour.lastRewardAt, 0, "no reward cooldown started")
+	eq(rec.stage, 1, "the saved stage does not rise")
+	eq(player:GetAttribute("ParkourBestStage"), 1, "nor the best stage attribute")
+	-- The run stops and the player is back at the gates with the picker on the next map.
+	check(not def.running(player), "the run stops")
+	eq(player:GetAttribute("ParkourStage"), 0, "no stage on the HUD")
+	eq(gates, 1, "taken back to the gates")
+	local stop, pick, start = rig.last("stop"), rig.last("pick"), rig.last("start")
+	eq(stop and stop.reason, "skip", "the HUD run ends with reason skip")
+	eq(pick and pick.level, 2, "the picker opens on the next map")
+	eq(start and start.level, 1, "the next map does not start by itself")
+	eq(rig.notes[#rig.notes], pick, "the picker is the last notify")
+	local snap = def.snapshot(player)
+	check(snap.unlocked == 2 and snap.level == 2, "map 2 is unlocked and the default pick")
+	-- No skips outside a run.
 	profile.money = cost
 	rig.actions.ParkourSkip(rig.session, {})
-	eq(rig.last("finish").level, ModesCourse.LEVEL_COUNT, "map 10 skipped")
-	check(not def.running(player), "no map after the last")
-	eq(profile.parkour.stage, ModesCourse.STAGE_COUNT, "the last stage reached")
-	local money = profile.money
+	eq(profile.money, cost, "no skips outside a run")
+
+	-- A later real first clear of the skipped map still pays in full.
+	local level = ModesCourse.LEVELS[1]
+	local preview = def.rewardPreview(player, 1)
+	check(preview.full and preview.cash > 0, "map 1's first clear still pays")
+	check(def.start(player, true, { level = 1 }), "the skipped map can be run")
+	rig.clock.t += level.MIN_SECONDS + 30
+	local last = level.PATH[#level.PATH]
+	rig.root.Position = roblox.Vector3.new(last.x, last.y + 3, last.z)
+	def.tick(player, rig.root, rig.clock.t)
+	local finish = rig.last("finish")
+	check(finish ~= nil and finish.first == true, "a real finish, counted as the first clear")
+	check(finish ~= nil and finish.full and finish.cash == preview.cash, "paid in full")
+	eq(finish and finish.gems, nil, "no Rizz in the finish")
+	eq(profile.money, cost + (finish and finish.cash or 0), "the cash arrives")
+	eq(rec.clears[1], 1, "one clear")
+	check(rec.best[1] > 0, "and a best time")
+	eq(rec.stage, 2, "finishing map 1 reaches stage 2")
+
+	-- Nothing to unlock: refused and not charged (next map already open, or the last map).
+	for i = 2, ModesCourse.LEVEL_COUNT - 1 do
+		rec.clears[i] = 1
+	end
+	local toasts = #rig.toasts
+	def.start(player, true, { level = 1 })
 	rig.actions.ParkourSkip(rig.session, {})
-	eq(profile.money, money, "no skips outside a run")
+	def.start(player, true, { level = ModesCourse.LEVEL_COUNT })
+	rig.actions.ParkourSkip(rig.session, {})
+	eq(profile.money, cost + (finish and finish.cash or 0), "not charged with nothing to unlock")
+	eq(#rig.toasts, toasts + 2, "each refusal says why")
+	eq(rec.clears[ModesCourse.LEVEL_COUNT], 0, "the last map is not cleared by a skip")
+	check(def.running(player), "the run on the last map goes on")
 end)
 
 test("Sky obby: profile fields and the stage board", function()
@@ -3898,7 +4402,7 @@ test("Game modes: maxGap matches the default jump", function()
 	check(ModesCourse.maxGap(8) < 0, "8 studs up is out of reach")
 end)
 
-test("Game modes: every level's jumps are fair with the default jump", function()
+test("Game modes: every level's jumps are fair with the default jump, walked-on bounces too", function()
 	local gravity = 196.2
 	local function poses(e: any, steps: number): { { number } }
 		if e.kind ~= "mover" then
@@ -3914,6 +4418,7 @@ test("Game modes: every level's jumps are fair with the default jump", function(
 	for li, level in ModesCourse.LEVELS do
 		local path = level.PATH
 		local bounceOn, bounces = {}, 0
+		local pads = {}
 		for _, e in level.ELEMENTS do
 			if e.kind == "bounce" then
 				for i, p in path do
@@ -3924,6 +4429,7 @@ test("Game modes: every level's jumps are fair with the default jump", function(
 						and math.abs(p.y - e.y) < 0.01
 					then
 						bounceOn[i] = e.power * e.power / (2 * gravity) - 3
+						pads[i] = e
 						bounces += 1
 					end
 				end
@@ -3932,6 +4438,62 @@ test("Game modes: every level's jumps are fair with the default jump", function(
 			end
 		end
 		check(bounces >= 1, "level " .. li .. ": the bounce pad sits on a path deck")
+		-- A WALKED-ON bounce is fair too. The pad launches on the first touch, PAD_REACH past
+		-- its rim, so a runner who walks onto it and just keeps walking is launched at the
+		-- rim's side away from the landing, feet on the deck: flown out step by step (no
+		-- formula of Course's), they come down on the landing. One launched from the rim's
+		-- near side, feet on the pad's top, does not fly over it.
+		for i, deck in path do
+			local pad = pads[i]
+			if pad then
+				local landing = path[i + 1]
+				local label = string.format("level %d bounce %d -> %d", li, i, i + 1)
+				check(landing.kind == "pad" and landing.shape ~= "ring", label .. ": the landing is a still, whole pad")
+				check(math.abs(pad.x - deck.x) < 0.01 and math.abs(pad.z - deck.z) < 0.01, label .. ": the pad is centred on its deck")
+				local dx, dz = landing.x - pad.x, landing.z - pad.z
+				local ux, uz = 0, 0
+				if math.abs(dx) >= math.abs(dz) then
+					ux = if dx >= 0 then 1 else -1
+				else
+					uz = if dz >= 0 then 1 else -1
+				end
+				-- Studs inside the landing's footprint where a launch from `along` (studs from
+				-- the pad's centre toward the landing) at feet height `y` comes back down to
+				-- its top, holding forward at walking speed; nil when it never gets that high.
+				local function comesDown(along: number, y: number): number?
+					local dt = 1 / 240
+					local vy, reached = pad.power, false
+					for _ = 1, 240 * 4 do
+						y += vy * dt
+						vy -= gravity * dt
+						along += ModesCourse.WALK_SPEED * dt
+						reached = reached or y >= landing.y
+						if reached and vy < 0 and y <= landing.y then
+							local x, z = pad.x + ux * along, pad.z + uz * along
+							if landing.sx then
+								return math.min(landing.sx / 2 - math.abs(x - landing.x), landing.sz / 2 - math.abs(z - landing.z))
+							end
+							local r = landing.r * (if landing.shape == "hex" then math.sqrt(3) / 2 else 1)
+							return r - math.sqrt((x - landing.x) ^ 2 + (z - landing.z) ^ 2)
+						end
+					end
+					return nil
+				end
+				local touch = pad.r + ParkourMoves.PAD_REACH
+				local walked = comesDown(-touch, deck.y)
+				check(
+					walked ~= nil and walked >= ModesCourse.SAFETY - 0.1,
+					string.format("%s: walked on, the runner lands on the next element (%s inside)", label, tostring(walked))
+				)
+				local long = comesDown(touch, deck.y + ModesCourse.PAD_LIP)
+				check(
+					long ~= nil and long >= 0.9,
+					string.format("%s: from the far rim they do not fly over it (%s inside)", label, tostring(long))
+				)
+				local okFair, why = ModesCourse.bounceFair(pad, landing)
+				check(okFair, label .. ": Course.bounceFair agrees (" .. tostring(why) .. ")")
+			end
+		end
 		for i = 1, #path - 1 do
 			local a, b = path[i], path[i + 1]
 			local label = string.format("level %d path %d -> %d", li, i, i + 1)
@@ -4551,6 +5113,24 @@ require("./cardio_chase")({ test = test, check = check, eq = eq, near = near, se
 require("./daily")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared, loadDataService = loadDataService })
 -- Interactive gym props: bounce, combo, swing and rep rules, and the gym poses (tests/interactive.luau).
 require("./interactive")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared })
+-- Parkour server: Skip Map, stranded rescue and the timed return (tests/parkour_bugs.luau).
+require("./parkour_bugs")({ test = test, check = check, eq = eq })
+-- Buy Max, the Aura Surge announcements and the events Tycoon sends (tests/buymax.luau).
+require("./buymax")({ test = test, check = check, eq = eq })
+-- Aura packs paid as cash, and the shop's free gift (tests/shop.luau).
+require("./shop")({ test = test, check = check, eq = eq })
+-- Analytics: funnel steps, the economy ledger and custom events (tests/analytics.luau).
+require("./analytics")({ test = test, check = check, eq = eq })
+-- The Ranking window's own row: place, and the nearest player to pass (tests/ranking.luau).
+require("./ranking")({ test = test, check = check, eq = eq })
+-- Plot rank: dressing per five best tiers, rarity bands, champion sizes, fans (tests/plot_rank.luau).
+require("./plot_rank")({ test = test, check = check, eq = eq })
+-- Index milestones: rules, claims and the saved field (tests/index_rewards.luau).
+require("./index_rewards")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared, loadDataService = loadDataService })
+-- Comeback hooks: the "While you were away" rows and the "Before you go" line (tests/comeback.luau).
+require("./comeback")({ test = test, check = check, eq = eq, loadShared = loadShared })
+-- Every script compiles the way Studio compiles it: 200 locals per chunk (tests/fx_juice.luau).
+require("./fx_juice")({ test = test, check = check })
 
 test("Sky obby: lava kill strips and sliding bars on wide decks", function()
 	for li, level in ModesCourse.LEVELS do
@@ -4736,6 +5316,8 @@ test("Game modes: a second plaza mirrored on the hub's +X side", function()
 	end
 	check(C.ARRIVAL2.x == -C.ARRIVAL.x and C.QUIT2.x == -C.QUIT.x, "arrival/quit mirrored")
 	check(C.QUIT.faceX == 1 and C.QUIT2.faceX == -1, "quit spots face the hub")
+	check(C.QUIT.x - C.GATE_X >= 18, "quit spot stands clear of the gates (the camera is behind the player)")
+	check(C.QUIT.x < C.ARRIVAL.x and C.QUIT.x > C.PLAZA.x0 and C.QUIT.x < C.PLAZA.x1, "and on the plaza")
 	check(C.ARRIVAL.faceX == -1 and C.ARRIVAL2.faceX == 1, "arrival spots face the gates")
 	-- Portals: west through gate 1 at -X, east through the mirrored gate 1 at +X.
 	local L1, L2 = C.START_LINE_X, C.START_LINE2_X
@@ -4794,13 +5376,55 @@ test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", 
 	eq(Simulate.SMALL_PACK_MIN, pack.Min, "simulated parkour reward uses the mode reward's minimum")
 
 	-- The first tiers come fast (see the first-minutes test); after them each tier takes
-	-- close to twice as long as the one before, since every unit is bought at the first tier.
-	local reached = Simulate.run({ hours = 5, step = 5 }).reached
-	check(reached[2] ~= nil and reached[2] <= 60, "tier 2 within the first minute")
-	check(reached[6] ~= nil and reached[6] <= 20 * 60, "tier 6 within 20 minutes")
-	check(reached[8] ~= nil and reached[8] >= 60 * 60 and reached[8] <= 100 * 60, "tier 8 after 60 to 100 minutes")
-	check(reached[9] ~= nil and reached[9] >= 2 * 3600, "tier 9 not before 2 hours")
-	check(reached[10] == nil, "tier 10 not before 5 hours")
+	-- about 1.4 times as long as the one before (every unit is bought at the first tier, and
+	-- a tier makes three times the aura of the one below).
+	local stock = Simulate.run({ hours = 5, step = 5 })
+	local reached = stock.reached
+	local function by(tier: number, seconds: number): boolean
+		return reached[tier] ~= nil and reached[tier] <= seconds
+	end
+	check(by(2, 60), "tier 2 within the first minute")
+	check(by(6, 10 * 60), "tier 6 by 10 minutes")
+	check(by(7, 15 * 60), "tier 7 by 15 minutes")
+	check(by(8, 25 * 60), "tier 8 by 25 minutes")
+	check(by(10, 60 * 60) and reached[10] >= 25 * 60, "tier 10 between 25 and 60 minutes")
+	check(by(12, 2 * 3600), "tier 12 by 2 hours")
+	check(by(15, 5 * 3600), "tier 15 by 5 hours")
+	check(stock.converterShare >= 0.5, "the converter passes at least half the production (" .. stock.converterShare .. ")")
+
+	-- With the periodic extras (free gift, mode reward, surge, crates).
+	local extras = Simulate.run({ hours = 2, step = 5, extras = true })
+	reached = extras.reached
+	check(by(10, 30 * 60), "extras: tier 10 by 30 minutes")
+	check(by(15, 2 * 3600), "extras: tier 15 by 2 hours")
+	check(extras.converterShare >= 0.5, "extras: the converter passes at least half the production")
+	near(Simulate.depositBonus(), 0.154, "average deposit bonus")
+end)
+
+test("daily sessions (scripts/simulate): offline cash and the longest wait", function()
+	(_G :: any).SIMULATE_AS_LIBRARY = true
+	local Simulate = require("../scripts/simulate")
+	-- One long session and half an hour a day, the same hours of play: the cash made while
+	-- away brings every late tier sooner in play time.
+	local session = Simulate.run({ hours = 20, step = 30, extras = true })
+	local daily = Simulate.run({ hours = 20, step = 30, extras = true, minutesPerDay = 30 })
+	local top = Economy.MAX_TIER
+	check(session.reached[top] ~= nil and daily.reached[top] ~= nil, "both find every tier")
+	check(daily.reached[15] < session.reached[15], "offline cash: tier 15 in less play time")
+	check(daily.reached[top] < session.reached[top], "and the top tier too")
+	local days = daily.reached[top] / 1800
+	check(days >= 12 and days <= 22, string.format("half an hour a day finds every tier in two to three weeks (%.0f days)", days))
+	-- The longest wait is counted on the calendar, and nothing is waited for after the top tier.
+	check(
+		daily.longestWait >= 86400 and daily.longestWait <= 7 * 86400,
+		string.format("the longest wait for a tier is days, under a week (%.1f)", daily.longestWait / 86400)
+	)
+	eq(daily.waitAt, top - 1, "and it is the wait for the last tier")
+	check(session.longestWait <= 6 * 3600, "one session: the wait is play time")
+	-- A run that ends short of the top tier counts the wait still running.
+	local short = Simulate.run({ hours = 2, step = 30 })
+	check(short.reached[top] == nil, "two hours do not reach the top")
+	check(short.longestWait > 0 and short.waitAt >= 10, "the wait at the end is counted (tier " .. short.waitAt .. ")")
 end)
 
 test("first minutes: a new player merges early and always has something to buy", function()
@@ -4813,10 +5437,17 @@ test("first minutes: a new player merges early and always has something to buy",
 	check(reached[3] ~= nil and reached[3] <= 90, "tier 3 by 90 s")
 	check(reached[4] ~= nil and reached[4] <= 150, "tier 4 by 2.5 min")
 	check(reached[5] ~= nil and reached[5] <= 200, "tier 5 soon after 3 min")
-	check(reached[6] ~= nil and reached[6] <= 360, "tier 6 by 6 min")
-	check(reached[7] ~= nil and reached[7] >= 360, "tier 7 is past the first minutes")
-	check(reached[8] == nil, "tier 8 is not an early tier")
+	check(reached[6] ~= nil and reached[6] <= 300, "tier 6 by 5 min")
+	check(reached[7] ~= nil and reached[7] < 480, "tier 7 before minute 8")
+	check(reached[8] ~= nil and reached[8] >= 300 and reached[8] <= 600, "tier 8 between minute 5 and 10")
 	check(result.longestGap <= 25, "never over 25 s without a purchase in the first 6 minutes (" .. result.longestGap .. ")")
+	check(result.converterShare >= 0.5, "the converter passes at least half the production (" .. result.converterShare .. ")")
+
+	-- A player who never steps on an upgrade pad is carried by the free converter floor.
+	local idle = Simulate.firstMinutes({ minutes = 12, noUpgrades = true })
+	check(idle.reached[8] ~= nil and idle.reached[8] <= 600, "no converter upgrades: still tier 8 by minute 10")
+	check(idle.converterShare >= 0.5, "no converter upgrades: still at least half the production")
+	eq(idle.processLevel, Economy.minProcessLevel(Economy.highestTier(idle.reached)), "the floor of the best tier")
 
 	-- A slower player (longer paths, more reading) still gets there.
 	local speed, read = Simulate.PATH_SLACK, Simulate.STEP_READ

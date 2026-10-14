@@ -5,6 +5,8 @@
 	  local ring = MogRing.new(parent, 180)   -- diameter in px
 	  ring.frame / ring.scale                  -- root Frame (centred in parent) and its UIScale
 	  ring:setCheck(c)    c = { zoneStart, zoneSize, perfectSize, dir, n }: draws the zone, swells in, hides the needle
+	  ring:cue(dir)       a hidden check (PvP): the same swell-in on an empty track
+	  ring:setZone(c)     ...and its zone, popped in when the needle starts (the needle keeps running)
 	  ring:warn(now)      every frame before the needle starts: soft breathing gold halo
 	  ring:setNeedle(travel?, dir)   every frame while running (nil hides the needle)
 	  ring:setCentre(text, color)
@@ -342,7 +344,8 @@ local function clearZone(self: MogRing)
 	table.clear(self.perfect)
 end
 
-function MogRing.setCheck(self: MogRing, c: Check)
+-- Draws the zone band and its perfect slice (replacing the last one).
+local function drawZone(self: MogRing, c: Check)
 	clearZone(self)
 	local dir = if c.dir == -1 then -1 else 1
 	local zoneStart = math.clamp(c.zoneStart, 0, 360)
@@ -368,12 +371,33 @@ function MogRing.setCheck(self: MogRing, c: Check)
 			segment(self.zone, k, dir * t - 0.6, dir * t + 0.6, C.GoldLight, 6)
 		end
 	end
+end
+
+-- The swell-in cue of a new check: needle hidden, the ring pops up to full size.
+local function swell(self: MogRing, dir: number)
 	self:setNeedle(nil, dir)
 	haloTo(self, nil, nil, 1, 0)
-	-- The swell-in cue.
 	self.scale.Scale = 0.7
 	Kit.tween(self.scale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
 	self:_burst(W.Cream)
+end
+
+function MogRing.setCheck(self: MogRing, c: Check)
+	drawZone(self, c)
+	swell(self, if c.dir == -1 then -1 else 1)
+end
+
+function MogRing.cue(self: MogRing, dir: number)
+	clearZone(self)
+	if self.images then
+		Kit.tween(self.base, 0.2, { ImageColor3 = WHITE })
+	end
+	swell(self, if dir == -1 then -1 else 1)
+end
+
+function MogRing.setZone(self: MogRing, c: Check)
+	drawZone(self, c)
+	self:_burst(ZONE)
 end
 
 function MogRing.warn(self: MogRing, now: number)

@@ -9,23 +9,42 @@
 	the crate's rarity colour. Claimed cards are dimmed and ticked; today's says TODAY
 	in gold and glows (tap it or the CLAIM button); tomorrow's says TOMORROW. The footer
 	row names what to do next on the left, with the countdown to the next UTC day, and
-	holds the one button on the right.
+	holds the one button on the right. Its last line is "Before you go"
+	(Shared.Comeback.leaveLine): the crate in the Smasher and how long away cash keeps
+	filling, as plain facts rounded to the minute (no countdown, nothing flashes). A low
+	window (a phone) has room for two lines: there it stands in for the "Tomorrow" line,
+	which the TOMORROW card says anyway.
+
+	The streak saver (DailyReward.status) is free and automatic: the streak line says
+	"Miss a day? Your streak is saved once a week.", the card whose claim used it wears
+	a small blue shield, and once it is spent the line says so, so a second missed day
+	is never a surprise.
 
 	The window opens by itself once per session when a reward is waiting, after a
-	calm moment: never during the intro or the tutorial, a game-mode run, or
-	under another window or popup. A held crate makes it wait too, but not for
-	ever (DailyReward.autoOpenTick): a crate can be carried for minutes.
+	calm moment: never during the intro or the tutorial, a game mode (picker, queue,
+	run or finish card, and MODE_QUIET after it), or under another window or popup, and never within REWARD_QUIET seconds of a
+	reward card. A player who finished the tutorial this session first walks one
+	full lap (collects cash once), or has had LAP_PATIENCE seconds since it ended
+	(a skipped tutorial, a player who never collects). A held crate makes it wait
+	too, but not for ever (DailyReward.autoOpenTick): a crate can be carried for minutes.
+	After a claim the window closes by itself, CLOSE_AFTER_CLAIM after the coins fly.
+
+	The "While you were away" card (AwayWindow) is built from here, because it shares
+	this gate: it goes first, and the window never opens by itself while that card is
+	waiting or up.
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local Comeback = require(ReplicatedStorage.Shared.Comeback)
 local DailyReward = require(ReplicatedStorage.Shared.DailyReward)
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
+local AwayWindow = require(script.Parent.AwayWindow)
 local Kit = require(script.Parent.Kit)
 local State = require(script.Parent.Parent.State)
 
@@ -60,8 +79,13 @@ local GAP = 8
 -- Space between the streak line, the cards and the footer row (one row of cards).
 local SECTION = 16
 local HERO_H = 40
-local FOOTER_H = 72
+-- The footer's lines (headline, detail, "Before you go") stack LINE_GAP apart, centred in
+-- its words box: three lines in one row of cards, two in the low window.
+local LINE_GAP = 2
+local LEAVE_H = 18
+local FOOTER_H = 72 + LINE_GAP + LEAVE_H
 local FOOTER_COMPACT = 60
+local WORDS_H = 48
 -- One row of tall cards: the day (HEAD_H) under CARD_TOP, then the art, the amount and the
 -- crate chip stacked HEAD_GAP / STACK_GAP apart, CARD_BOTTOM above the card's edge.
 local CARD_TOP = 10
@@ -74,7 +98,11 @@ local ART_MAX = 96
 local AMOUNT_H = 28
 local AMOUNT_MAX = 24
 local AMOUNT_MIN_PX = 18 -- the amount is the card's key number: never under this on the glass
-local CHIP_H = 22
+local CHIP_H = 24
+local CHIP_TEXT = math.max(T.Small, Kit.WINDOW.TextPx) -- the crate chip's text (a window caption)
+-- The streak line's saver rule ("Miss a day? ..."): a body line on the glass, not a caption
+-- (the header has room for two lines of it).
+local RULE_TEXT = 16
 -- The design window holds exactly that: chrome (104) + streak + cards + footer.
 local CARD_H = CARD_TOP + HEAD_H + HEAD_GAP + ART_MAX + STACK_GAP + AMOUNT_H + STACK_GAP + CHIP_H + CARD_BOTTOM
 local DESIGN = Vector2.new(880, 104 + HERO_H + SECTION + CARD_H + SECTION + FOOTER_H)
@@ -89,10 +117,32 @@ local SIDE_TEXT = 112
 -- Seconds of calm before the window opens by itself (longer right after the tutorial,
 -- whose reward cards are still on their way).
 local CALM = 2
-local CALM_AFTER_TUTORIAL = 8
--- ScreenGui attributes that mean "busy": a window, a popup or a mode run. The held-crate
--- panel ("CratePanelOpen") only holds the window back for a while.
-local BUSY = { "WindowOpen", "ModalOpen", "RunActive", "ObbyMode", "CardioActive" }
+local CALM_AFTER_TUTORIAL = 20
+-- A player who never collects cash after the tutorial is not waited for longer than this.
+local LAP_PATIENCE = 90
+-- The window never opens by itself this soon after a reward card (a unit or crate reveal).
+local REWARD_QUIET = 20
+-- A claimed window closes by itself this long after the coins fly.
+local CLOSE_AFTER_CLAIM = 1.5
+-- ScreenGui attributes that mean "busy": a window, a popup or a mode run. "PopupBusy"
+-- (Popups) is a card that is still waiting in the popup queue, or up: a reveal is held back
+-- for as long as the merges go on, which can outlast REWARD_QUIET, and the window used to
+-- open by itself in that gap, right under the reveal. It covers the free gift's card too.
+-- The held-crate panel ("CratePanelOpen") only holds the window back for a while.
+local BUSY = { "WindowOpen", "ModalOpen", "PopupBusy", "RunActive", "ObbyMode", "CardioActive" }
+-- Game modes own the screen from their picker or queue to their finish card: the window
+-- never opens by itself while one is up (a snapshot run, or a begin with no end since),
+-- nor within MODE_QUIET seconds of any mode event, and a mode that begins closes it. A
+-- begin that never got its end (a picker closed by hand) stops counting after MODE_HOLD.
+local MODE_QUIET = 20
+local MODE_HOLD = 90
+local MODE_BEGINS = { start = true, choose = true, queue = true, pick = true }
+local MODE_ENDS = { stop = true, finish = true, invalid = true, refused = true }
+
+-- The streak line's right half: the saver's rule, and what it says once the saver is spent.
+local SAVER_RULE = "Miss a day? Your streak is saved once a week."
+local SAVER_SPENT = "Streak saver used. Come back tomorrow!"
+local SAVER_SAVES = "You missed a day: your streak is saved!"
 
 -- Art per card: the cash packs grow with the days; days 3 and 7 show their crate.
 local ART = { "CashPack1", "CashPack2", "CrateRare", "CashPack3", "CashPack4", "CashPack5", "CrateLegendary" }
@@ -107,7 +157,25 @@ type Card = {
 	chipFull: string,
 	chipShort: string,
 	tick: Frame,
+	-- The streak saver's shield, on the card whose claim used it.
+	shield: Frame,
 	state: string,
+}
+
+--[[
+	Idle motion, only while the window is open: today's card floats up and down and stars
+	twinkle over its art, the Day 7 chest sparkles until it is claimed, and the streak icon
+	breathes. Sizes in design px, times in seconds.
+]]
+local MOTION = {
+	TodayBob = 12, -- px today's card rises
+	TodayBeat = 0.7, -- seconds per half bob
+	TodayStar = 24, -- stars over today's art...
+	TodayEvery = 0.45, -- ...one every this many seconds
+	ChestStar = 22, -- stars over the Day 7 chest
+	ChestEvery = 0.28,
+	StarLife = 0.8,
+	StreakBreathe = 0.12, -- how far the streak icon swells
 }
 
 -- Width of a chip that says `text` (TextService when available, else an estimate).
@@ -115,10 +183,10 @@ local function chipWidth(text: string): number
 	local width = 0
 	pcall(function()
 		local TextService = game:GetService("TextService")
-		width = TextService:GetTextSize(text, T.Small, F.UI, Vector2.new(1000, 40)).X
+		width = TextService:GetTextSize(text, CHIP_TEXT, F.UI, Vector2.new(1000, 40)).X
 	end)
 	if width <= 0 then
-		width = (utf8.len(text) or #text) * T.Small * 0.62
+		width = (utf8.len(text) or #text) * CHIP_TEXT * 0.62
 	end
 	return math.ceil(width) + 20
 end
@@ -166,11 +234,11 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Position = UDim2.fromOffset(48, 1),
 		ZIndex = 2,
 	})
-	Kit.text(hero, {
+	local rule = Kit.text(hero, {
 		Name = "Rule",
-		Text = "Come back every day. Miss one and it starts again at Day 1!",
-		TextSize = T.Small,
-		MinPx = true,
+		Text = SAVER_RULE,
+		TextSize = RULE_TEXT,
+		MinPx = RULE_TEXT,
 		TextColor3 = C.Text,
 		TextXAlignment = Enum.TextXAlignment.Right,
 		Size = UDim2.new(0.5, -2, 1, 0),
@@ -233,7 +301,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				Text = chipFull,
 				Color = C.Rarity[reward.crate] or C.Gold,
 				Solid = true,
-				TextSize = T.Small,
+				TextSize = CHIP_TEXT,
 				MinPx = true,
 				Size = UDim2.fromOffset(chipWidth(chipFull), CHIP_H),
 				AnchorPoint = Vector2.new(0.5, 0),
@@ -258,6 +326,41 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			ZIndex = 7,
 		})
+		-- Blue shield on the other corner of the card whose claim used the streak saver: a
+		-- flat top over a point, built from two frames (the atlas has no shield).
+		local shield = Kit.new("Frame", {
+			Name = "Shield",
+			BackgroundColor3 = C.Rizz,
+			Size = UDim2.fromOffset(26, 26),
+			Position = UDim2.fromOffset(4, 4),
+			Visible = false,
+			ZIndex = 6,
+			Parent = frame,
+		})
+		Kit.round(shield)
+		Kit.new("UIStroke", { Thickness = 2, Color = C.Text, Parent = shield })
+		local ink = Kit.inkOn(C.Rizz)
+		local top = Kit.new("Frame", {
+			Name = "Top",
+			BackgroundColor3 = ink,
+			BorderSizePixel = 0,
+			Size = UDim2.fromOffset(12, 7),
+			Position = UDim2.fromOffset(7, 6),
+			ZIndex = 7,
+			Parent = shield,
+		})
+		Kit.new("UICorner", { CornerRadius = UDim.new(0, 2), Parent = top })
+		Kit.new("Frame", {
+			Name = "Point",
+			BackgroundColor3 = ink,
+			BorderSizePixel = 0,
+			Size = UDim2.fromOffset(8, 8),
+			Position = UDim2.fromOffset(13, 13),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Rotation = 45,
+			ZIndex = 7,
+			Parent = shield,
+		})
 		local card: Card = {
 			frame = frame,
 			header = header,
@@ -267,6 +370,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 			chipFull = chipFull,
 			chipShort = chipShort,
 			tick = tick,
+			shield = shield,
 			state = "",
 		}
 		-- Tapping today's card claims it (gamepads use the CLAIM button).
@@ -301,11 +405,12 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	local BUTTON_W = 200
 	-- Headline over detail, centred as a pair on the row's middle line. While today's reward
 	-- waits, the card (TODAY) and the CLAIM button already say so: the row keeps only the
-	-- detail line. Once claimed, the headline is the countdown to the next one.
+	-- detail line. Once claimed, the headline is the countdown to the next one. The lines that
+	-- show are stacked by render().
 	local words = Kit.new("Frame", {
 		Name = "Words",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -(16 + 16 + BUTTON_W + 12), 0, 48),
+		Size = UDim2.new(1, -(16 + 16 + BUTTON_W + 12), 0, WORDS_H),
 		Position = UDim2.new(0, 16, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
 		ZIndex = 2,
@@ -324,7 +429,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	local detail = Kit.text(words, {
 		Name = "Detail",
 		Text = "",
-		TextSize = 15,
+		TextSize = 18, -- r5: 15 read small beside the cards
 		MinPx = true,
 		TextColor3 = C.Text,
 		TextWrapped = false,
@@ -334,6 +439,22 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Position = UDim2.fromOffset(0, 28),
 		ZIndex = 2,
 	})
+	-- "Before you go": quieter than the lines above it.
+	local leave = Kit.text(words, {
+		Name = "Leave",
+		Text = "",
+		TextSize = T.Small,
+		MinPx = true,
+		TextColor3 = C.TextMute,
+		TextWrapped = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, 0, 0, LEAVE_H),
+		Visible = false,
+		ZIndex = 2,
+	})
+	-- A caption like the other windows' captions: never under 13 px on screen.
+	Kit.holdText(leave, math.max(Kit.captionPx(), 13), nil, true)
 	local button = Kit.button(footer, {
 		Name = "Claim",
 		Text = "CLAIM",
@@ -404,6 +525,9 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		Kit.setGlow(card.frame, state == "today", C.Gold)
 	end
 
+	-- Restarts the idle motion (set under the layout, which it depends on).
+	local restartMotion: () -> () = function() end
+
 	-- The footer's countdown to the next reward, once a second while open.
 	local clockText = ""
 	local function updateClock()
@@ -431,10 +555,17 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		canClaim = daily.claimable == true
 		todayClaimed = not canClaim
 		local tomorrowCard = if day < DailyReward.DAYS then day + 1 else 0
+		-- The streak saver: the card that used it, whether today's claim does, and whether
+		-- it is still there for the next missed day.
+		local savedCard = math.floor(tonumber(daily.savedCard) or 0)
+		local saves = canClaim and daily.saves == true
+		local saverSpent = daily.saver == false
 		local progression = Economy.progression(tonumber(data.highestTier) or 1, tonumber(data.processLevel) or 0)
-		local income = tonumber(data.income) or 0
+		-- The surge-free income Server.Daily pays with.
+		local income = tonumber(data.rewardIncome) or tonumber(data.income) or 0
 		-- A player's first day pays today's card up to a cap (Server.Daily does the same).
 		local cap = if daily.firstDay == true then DailyReward.firstDayCap(day, tonumber(data.bought) or 0) else nil
+		local restyled = false
 		for i, card in cards do
 			card.amount.Text = State.money(DailyReward.cash(i, income, progression, if i == day then cap else nil))
 			local state = if i <= claimed
@@ -444,17 +575,42 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				else "later"
 			if state ~= card.state then
 				dress(card, i, state)
+				restyled = true
 			end
+			card.shield.Visible = i == savedCard
 		end
+		-- A card changed state with the window open (the claim landed): the motion follows it.
+		if restyled and window.isOpen() then
+			task.defer(restartMotion)
+		end
+		rule.Text = if saves then SAVER_SAVES elseif saverSpent then SAVER_SPENT else SAVER_RULE
 		streakTitle.Text = if streak >= 2
 			then string.format("%d DAY STREAK", streak)
 			elseif streak == 1 then "1 DAY STREAK"
 			else "START YOUR STREAK"
+		-- "Before you go" without the daily card: the headline and the cards say that part.
+		leave.Text = Comeback.leaveLine(data, { money = State.money, words = W, age = State.age() }, false)
 		headline.Visible = not canClaim
-		detail.AnchorPoint = Vector2.new(0, if canClaim then 0.5 else 0)
-		detail.Position = if canClaim then UDim2.fromScale(0, 0.5) else UDim2.fromOffset(0, 28)
+		leave.Visible = leave.Text ~= ""
+		-- The low window's second line is "Before you go" once today's card is claimed.
+		detail.Visible = canClaim or hero.Visible or not leave.Visible
+		local y = -LINE_GAP
+		for _, line in { headline, detail, leave } do
+			y += if line.Visible then line.Size.Y.Offset + LINE_GAP else 0
+		end
+		y = (words.Size.Y.Offset - y) // 2
+		for _, line in { headline, detail, leave } do
+			if line.Visible then
+				line.Position = UDim2.fromOffset(0, y)
+				y += line.Size.Y.Offset + LINE_GAP
+			end
+		end
 		if canClaim then
-			detail.Text = "Rewards grow every day, up to the big Day 7 gift"
+			-- A short window has no streak line: the saver's news goes here instead.
+			detail.Text = if saves
+				then SAVER_SAVES
+				elseif not hero.Visible then (if saverSpent then SAVER_SPENT else SAVER_RULE)
+				else "Rewards grow every day, up to the big Day 7 gift"
 			Kit.setButton(button, "CLAIM", C.Gold)
 		else
 			local nextDay = DailyReward.card(day + 1)
@@ -466,9 +622,53 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		updateClock()
 	end
 
+	-- Idle motion (MOTION): started when the window opens, a card changes state or the
+	-- cards are laid out again (a bob holds its card's place), stopped when it closes.
+	local motionStops: { () -> () } = {}
+	local function stopMotion()
+		for _, stop in motionStops do
+			stop()
+		end
+		table.clear(motionStops)
+	end
+	local function startMotion()
+		stopMotion()
+		if PREVIEW or not window.isOpen() then
+			return
+		end
+		for day, card in cards do
+			if card.state == "today" then
+				table.insert(motionStops, Kit.bob(card.frame, MOTION.TodayBob, MOTION.TodayBeat))
+				table.insert(
+					motionStops,
+					Kit.twinkle(
+						card.art,
+						{ Size = MOTION.TodayStar, Every = MOTION.TodayEvery, Life = MOTION.StarLife, Inset = 0, ZIndex = 5 }
+					)
+				)
+			elseif day == DailyReward.DAYS and card.state ~= "claimed" then
+				table.insert(
+					motionStops,
+					Kit.twinkle(
+						card.art,
+						{ Size = MOTION.ChestStar, Every = MOTION.ChestEvery, Life = MOTION.StarLife, Inset = 0, ZIndex = 5 }
+					)
+				)
+			end
+		end
+		local streakIcon = hero:FindFirstChild("Icon")
+		if streakIcon and streakIcon:IsA("GuiObject") and hero.Visible then
+			table.insert(motionStops, Kit.breathe(streakIcon, MOTION.StreakBreathe))
+		end
+	end
+	restartMotion = startMotion
+	window.onOpen.Event:Connect(startMotion)
+	window.onClose.Event:Connect(stopMotion)
+
 	-- Layout: one row of seven, or 4 + 3 with Day 7 double width (a narrow window, and
 	-- always a phone: touch on a Compact screen, whose window is short and scaled up) -------
 	local function layout()
+		stopMotion()
 		local size = window.size()
 		-- Window chrome (24 wide, 84 tall) and the content well's padding (10 a side).
 		local width, height = size.X - 44, size.Y - 104
@@ -479,6 +679,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		local top = if big then HERO_H + between else 0
 		local footerH = if big then FOOTER_H else FOOTER_COMPACT
 		footer.Size = UDim2.new(1, 0, 0, footerH)
+		words.Size = UDim2.new(words.Size.X.Scale, words.Size.X.Offset, 0, if big then WORDS_H + LINE_GAP + LEAVE_H else WORDS_H)
 		local gridH = height - top - footerH - between
 		grid.Position = UDim2.fromOffset(0, top)
 		grid.Size = UDim2.new(1, 0, 0, gridH)
@@ -541,6 +742,7 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		end
 		clockText = ""
 		render()
+		startMotion()
 	end
 	layout()
 	window.onResize.Event:Connect(layout)
@@ -569,6 +771,12 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				Kit.pop(card.frame, 1)
 				Kit.confetti(window.frame, { Origin = UDim2.fromScale(0.5, 0.45), Count = 24, ZIndex = 12 })
 			end
+			-- Claimed: nothing is left to do here, so the window steps out by itself.
+			task.delay(CLOSE_AFTER_CLAIM, function()
+				if window.isOpen() then
+					deps.close()
+				end
+			end)
 		end)
 
 		-- Opens by itself once per session when a reward is waiting and the screen is calm
@@ -577,33 +785,131 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		window.onOpen.Event:Connect(function()
 			opened = true
 		end)
+		-- Reward cards: the Reward notify (its card may still be queued) and the reveal
+		-- itself, from start to end (ScreenGui attribute "RevealOpen", Popups).
+		local rewardAt = -math.huge
+		local function noteReward()
+			rewardAt = os.clock()
+		end
+		Net.event("Notify").OnClientEvent:Connect(function(payload)
+			if type(payload) == "table" and payload.kind == "Reward" then
+				noteReward()
+			end
+		end)
+		screen:GetAttributeChangedSignal("RevealOpen"):Connect(noteReward)
+		-- First full lap: cash collected (by hand or by Auto Cash) after the tutorial ended.
+		-- The collect that ends the tutorial arrives before its state does, so it never counts.
+		local lapped = false
+		Net.event("Effect").OnClientEvent:Connect(function(kind, effect)
+			if kind ~= "Cash" or type(effect) ~= "table" then
+				return
+			end
+			local data = State.data
+			if (effect.source == "Collect" or effect.source == "Auto") and data and data.tutorialDone == true then
+				lapped = true
+			end
+		end)
+		-- A game mode is up (picker, queue, run, finish) or ended under MODE_QUIET ago.
+		local modeUp = false
+		local modeAt = -math.huge
+		Net.event("Notify").OnClientEvent:Connect(function(payload)
+			if type(payload) ~= "table" or payload.kind ~= "Mode" then
+				return
+			end
+			modeAt = os.clock()
+			if MODE_BEGINS[payload.event] then
+				modeUp = true
+			elseif MODE_ENDS[payload.event] then
+				modeUp = false
+			end
+			-- Only this window: the mode's own picker may be opening in the same event.
+			if MODE_BEGINS[payload.event] and window.isOpen() then
+				window.setOpen(false)
+			end
+		end)
+		local function inMode(): boolean
+			local since = os.clock() - modeAt
+			if since < MODE_QUIET or (modeUp and since < MODE_HOLD) then
+				return true
+			end
+			local data = State.data
+			local modes = data and data.modes
+			if type(modes) == "table" then
+				for _, info in modes do
+					if type(info) == "table" and info.running == true then
+						return true
+					end
+				end
+			end
+			return false
+		end
+		-- Nothing a card may cover is on screen: the loading screen and the intro are gone, and
+		-- no window, popup or game mode is up.
+		local player = Players.LocalPlayer
+		local function screenFree(): boolean
+			if player:GetAttribute("IntroPlaying") == true or player:GetAttribute("GameReady") ~= true then
+				return false
+			end
+			if inMode() then
+				return false
+			end
+			local playerGui = player:FindFirstChildOfClass("PlayerGui")
+			if playerGui and playerGui:FindFirstChild("LoadingScreen") then
+				return false
+			end
+			for _, name in BUSY do
+				if screen:GetAttribute(name) == true then
+					return false
+				end
+			end
+			return true
+		end
+		-- "While you were away" opens under the same gate, and keeps clear of a reward card
+		-- for as long as this window does.
+		AwayWindow.build(screen, {
+			register = deps.register,
+			openDaily = deps.open,
+			close = deps.close,
+			free = function(): boolean
+				-- The held-crate panel too (it is not in BUSY): the card would sit on it on a
+				-- phone. AwayWindow's own patience ends the wait with a toast.
+				return screenFree() and screen:GetAttribute("CratePanelOpen") ~= true and os.clock() - rewardAt >= REWARD_QUIET
+			end,
+		})
 		task.spawn(function()
-			local player = Players.LocalPlayer
 			local auto = DailyReward.autoOpen()
 			local needed = CALM
+			-- The tutorial was running this session: the window waits for the first lap, but
+			-- no longer than LAP_PATIENCE after the tutorial ended.
+			local sawTutorial = false
+			local sinceTutorial = 0
 			while not opened do
 				local step = task.wait(0.5)
 				local data = State.data
 				local daily = dailyOf(data)
 				if data and data.tutorialDone ~= true then
+					sawTutorial = true
 					needed = CALM_AFTER_TUTORIAL
+				elseif data and sawTutorial and not lapped then
+					sinceTutorial += step
+					if sinceTutorial >= LAP_PATIENCE then
+						lapped = true
+					end
 				end
 				local ready = data ~= nil
 					and daily ~= nil
 					and daily.claimable == true
 					and data.tutorialDone == true
-					and player:GetAttribute("IntroPlaying") ~= true
-					and player:GetAttribute("GameReady") == true
-				if ready then
-					local playerGui = player:FindFirstChildOfClass("PlayerGui")
-					ready = not (playerGui and playerGui:FindFirstChild("LoadingScreen"))
-				end
-				for _, name in BUSY do
-					ready = ready and screen:GetAttribute(name) ~= true
-				end
+					and (lapped or not sawTutorial)
+					-- "While you were away" goes first.
+					and not AwayWindow.holding()
+					and screenFree()
 				-- A held crate is waited for, then the window stops waiting for it.
 				local crate = screen:GetAttribute("CratePanelOpen") == true
-				if DailyReward.autoOpenTick(auto, step, not ready, crate, needed) and not opened then
+				-- A reward card does not restart the calm (the reveal itself does, as a popup):
+				-- the window only waits out the rest of REWARD_QUIET.
+				local quiet = os.clock() - rewardAt >= REWARD_QUIET
+				if DailyReward.autoOpenTick(auto, step, not ready, crate, needed) and quiet and not opened then
 					deps.open()
 					return
 				end

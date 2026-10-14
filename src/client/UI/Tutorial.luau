@@ -4,22 +4,27 @@
 	ServerScriptService.Server.Tutorial); this only reads the State snapshot
 	(tutorialStep, tutorialDone) and the "Tutorial" Notify payloads.
 
-	The quest pill is one slim glass line (Kit.hudGlass: step chip "2/5", the
-	short instruction as outlined HUD text, a quiet "x" to skip) docked
-	top-centre under the multiplier gauge, or
+	The quest pill is one slim dark plate (Kit.hudGlass, all but opaque: step chip
+	"2/5", the short instruction as outlined HUD text, a small grey "Skip" word at the
+	right) docked top-centre under the multiplier gauge, or
 	bottom-centre above the dumbbell meter on compact screens, so it never covers the
 	play area. Theme.Tutorial.Steps[i].ShortHint, when present, shows as a
-	small second line for the first few seconds of a step. Docked at the top
-	it sets the ScreenGui attribute "TopCardHeight" so toasts sit below it.
+	small second line for the first few seconds of a step. Docked at the top it takes
+	the HUD goal plate's slot (hidden during the tutorial) and sets the ScreenGui
+	attribute "TopCardHeight" to how far it reaches below that slot, so toasts sit below it.
 
 	The pill drops in 12 px with a fade and one soft pulse. A finished step
 	ticks a check mark on the chip, then the next step's text cross-fades in
 	place with another soft pulse (the pill is not rebuilt); only the last step
 	slides it out. The pill (and the 3D guide, see Guide) stays hidden while the
-	intro cutscene plays (Players.LocalPlayer attribute "IntroPlaying").
+	intro cutscene plays (Players.LocalPlayer attribute "IntroPlaying"). The pill also
+	steps out while anything else owns the screen: a window or a modal (the map picker,
+	a finish card, a confirm: ScreenGui attributes "WindowOpen" / "ModalOpen") and a
+	game-mode run ("RunActive", "ObbyMode", "CardioActive", the ones the HUD hides its
+	goal strip on); during a run the 3D guide is cleared too.
 
-	The completion reward is a toast-sized banner shown through the popup
-	queue once the wallet has finished counting up the first collect.
+	The completion reward is the "YOU DID IT!" banner (Popups.tutorialDone), shown through
+	the popup queue once the wallet has finished counting up the first collect.
 ]]
 
 local Players = game:GetService("Players")
@@ -30,11 +35,7 @@ local Net = require(ReplicatedStorage.Shared.Net)
 local TutorialSteps = require(ReplicatedStorage.Shared.TutorialSteps)
 
 local Kit = require(script.Parent.Kit)
-local Sprites = require(script.Parent.Parent.Fx.Sprites)
 local State = require(script.Parent.Parent.State)
-
-local PREVIEW = typeof(TweenInfo.new(0)) ~= "TweenInfo"
-local SPARKLE = Sprites.image("Sparkle")
 
 local Theme = Kit.Theme
 local G = Theme.Glass
@@ -55,14 +56,20 @@ export type Deps = {
 	walletIdle: (() -> boolean)?,
 }
 
--- Pill geometry (design pixels). The HUD's deposit strip spans y 54..84 at the top
--- centre; the compact dumbbell's top edge sits about 94 px above the bottom.
+-- Pill geometry (design pixels). The HUD's top stack (Hud.luau TUNE) is row 1 at y 2..38
+-- and the goal plate's slot under it (y 42..88 at 720p), and the goal plate is hidden all
+-- through the tutorial: the pill takes that slot (on touch row 1 is a column of two plates,
+-- so the slot is one row lower). The world's labels at the spawn camera start below it.
+-- The compact dumbbell's top edge sits about 94 px above the bottom.
 -- The text sizes are held on the glass (Tutorial.build: a phone's UI scale would shrink
--- 18 / 14 design px to 12 / 9), and the pill's height and widest width follow them.
+-- 22 / 14 design px to 13 / 9), and the pill's height and widths follow them.
 local PILL_HEIGHT = 44
 local PILL_MIN_WIDTH = 220
 local PILL_MAX_WIDTH = 440
-local TOP_Y = 92
+local HUD_ROW_END = 38 -- Hud TUNE.TopY + TUNE.RowH
+local HUD_ROW_H = 36 -- Hud TUNE.RowH (the second plate of the touch column)
+local HUD_GAP = 4 -- Hud TUNE.StackGap (held on the glass, Kit.pxUp, as the HUD does)
+local GOAL_H = 49 -- Hud TUNE.GoalH and its 20 px second line: the pill reaches no lower than the goal plate would
 local BOTTOM_GAP = 102
 -- The pill lives in a CanvasGroup (for the fade) padded so its shadow is not clipped.
 local PAD_X = 6
@@ -72,13 +79,22 @@ local SLIDE = 12
 local CHIP_WIDTH = 38
 local TEXT_X = 64
 local CHIP_X = 18 -- past the gold accent bar
--- While a window is open the pill docks on the screen edge above it (and above its dim).
-local EDGE_GAP = 4
 local Z_REST = 6
-local Z_OVER_WINDOWS = 12
-local CLOSE_WIDTH = 38
-local TEXT_SIZE = 18
-local HINT_SIZE = 14
+-- The plate: the glass tint, dark enough for the text to read over any floor or sky.
+local PLATE = 0.1
+-- The "Skip" word's slot at the right end (Tutorial.build: its measured width and a margin),
+-- on a small outlined pill. BuilderSans draws about 0.77 of its size: 18 reads as 14 px.
+local SKIP_WIDTH = 52
+local SKIP_DESIGN = 18
+local SKIP_SIZE = 18
+local SKIP_REST = 0.15
+local SKIP_PILL_H = 28
+local SKIP_PILL_PAD = 10 -- the word to the pill's sides
+local SKIP_EDGE = 1.5
+local SKIP_EDGE_REST = 0.35
+local TEXT_SIZE = 22
+local HINT_DESIGN = 18 -- reads as 14 px
+local HINT_SIZE = 18
 local HINT_FADED = 0.1
 local HINT_SECONDS = 4
 local IN_TIME = 0.18
@@ -105,8 +121,6 @@ local leaving = false
 local token = 0
 local hintSerial = 0
 local lastData: { [string]: any }? = nil
--- A window or modal is open (Kit.onWindowOpen): the HUD is hidden, the pill stays.
-local windowUp = false
 
 local function compact(): boolean
 	return screen:GetAttribute("Compact") == true
@@ -117,21 +131,31 @@ local function introPlaying(): boolean
 	return player ~= nil and player:GetAttribute("IntroPlaying") == true
 end
 
--- A game-mode run timer (Hud, ScreenGui attribute "RunActive") takes the pill's slot.
+-- A game-mode run: its timer takes the pill's slot ("RunActive", set by Hud, MogHud and
+-- CardioHud) and its own HUD owns the screen ("ObbyMode", "CardioActive").
+local RUN_FLAGS = { "RunActive", "ObbyMode", "CardioActive" }
+local function runUp(): boolean
+	for _, name in RUN_FLAGS do
+		if screen:GetAttribute(name) == true then
+			return true
+		end
+	end
+	return false
+end
+
+-- Something else owns the screen: the intro, a run, or a window or modal (the map picker,
+-- a mode's finish card, a confirm). A tutorial line over those is noise.
 local function slotTaken(): boolean
-	return introPlaying() or screen:GetAttribute("RunActive") == true
+	return introPlaying() or runUp() or screen:GetAttribute("WindowOpen") == true or screen:GetAttribute("ModalOpen") == true
 end
 
 local function restPosition(): UDim2
-	if windowUp then
-		-- Clear of the window: the very top (the hidden unit counter's row), or the very
-		-- bottom on compact screens.
-		return if compact() then UDim2.new(0.5, 0, 1, PAD_BOTTOM - EDGE_GAP) else UDim2.new(0.5, 0, 0, EDGE_GAP - PAD_TOP)
-	end
 	if compact() then
 		return UDim2.new(0.5, 0, 1, -BOTTOM_GAP + PAD_BOTTOM)
 	end
-	return UDim2.new(0.5, 0, 0, TOP_Y - PAD_TOP)
+	local gap = Kit.pxUp(HUD_GAP, HUD_GAP, screen)
+	local top = HUD_ROW_END + gap + (if Kit.touch then HUD_ROW_H + gap else 0)
+	return UDim2.new(0.5, 0, 0, top - PAD_TOP)
 end
 
 -- Where the pill slides from/to: above its spot at the top, below it at the bottom.
@@ -140,7 +164,9 @@ local function awayPosition(): UDim2
 end
 
 local function publishHeight()
-	local height = if onScreen and not compact() then PILL_HEIGHT + 8 else 0
+	-- How far the pill reaches below the goal plate's slot it holds (the toasts already sit
+	-- under that slot): nothing while it is no taller than the plate.
+	local height = if onScreen and not compact() then math.max(0, PILL_HEIGHT - GOAL_H) else 0
 	screen:SetAttribute("TopCardHeight", height)
 end
 
@@ -218,7 +244,7 @@ local function setContent(step: number, data: { [string]: any }, live: boolean?)
 	ease(checkScale, time * 0.6, { Scale = 0 })
 	mainLabel.Text = text
 	local width = math.max(textWidth(text, TEXT_SIZE, F.Display), if hint then textWidth(hint, HINT_SIZE, F.UI) else 0)
-	local pillWidth = math.clamp(math.ceil(width) + TEXT_X + CLOSE_WIDTH + 12, PILL_MIN_WIDTH, PILL_MAX_WIDTH)
+	local pillWidth = math.clamp(math.ceil(width) + TEXT_X + SKIP_WIDTH + 12, PILL_MIN_WIDTH, PILL_MAX_WIDTH)
 	ease(group, time, { Size = UDim2.fromOffset(pillWidth + PAD_X * 2, PILL_HEIGHT + PAD_TOP + PAD_BOTTOM) })
 	fadeText(hintLabel, 0, 1)
 	mainLabel.Position = UDim2.new(0, TEXT_X, 0.5, 0)
@@ -347,14 +373,15 @@ local function render(data: { [string]: any })
 	end
 
 	if deps.guide then
-		deps.guide.setTutorialTarget(TutorialSteps.target(step, data.units))
+		-- A run is somewhere else entirely: no path home across the course.
+		deps.guide.setTutorialTarget(if runUp() then nil else TutorialSteps.target(step, data.units))
 	end
 
 	if slotTaken() then
 		if onScreen then
 			slideOut()
 		end
-		-- Re-shown fresh (with its hint) when the intro or the run ends.
+		-- Re-shown fresh (with its hint) when the intro, the run or the window is over.
 		shownStep = 0
 		return
 	end
@@ -379,222 +406,9 @@ local function render(data: { [string]: any })
 	end
 end
 
--- A burst of sparkles from the middle of `holder`, flung out along a wide ellipse (the
--- Sparkle sprite; one tween each, nothing per frame). They clean themselves up.
-local function sparkleBurst(holder: Frame, count: number, zindex: number)
-	if not SPARKLE then
-		return
-	end
-	for i = 1, count do
-		local angle = (i + math.random() * 0.5) / count * math.pi * 2
-		local size = math.random(20, 34)
-		local star = Kit.new("ImageLabel", {
-			Name = "Sparkle",
-			BackgroundTransparency = 1,
-			Image = SPARKLE,
-			ImageColor3 = if i % 2 == 0 then C.GoldLight else Color3.new(1, 1, 1),
-			ImageTransparency = 0.05,
-			Size = UDim2.fromOffset(size * 0.4, size * 0.4),
-			Position = UDim2.fromScale(0.5, 0.45),
-			AnchorPoint = Vector2.new(0.5, 0.5),
-			Rotation = math.random(-25, 25),
-			ZIndex = zindex,
-			Parent = holder,
-		})
-		local reach = 0.86 + math.random() * 0.3
-		Kit.tween(star, 0.5, {
-			Size = UDim2.fromOffset(size, size),
-			Position = UDim2.new(0.5, math.cos(angle) * 250 * reach, 0.45, math.sin(angle) * 62 * reach),
-			Rotation = star.Rotation + 60,
-		}, Enum.EasingStyle.Quart)
-		if not PREVIEW then
-			task.delay(0.4, function()
-				Kit.tween(star, 0.35, { ImageTransparency = 1, Size = UDim2.fromOffset(size * 0.5, size * 0.5) })
-			end)
-			task.delay(0.8, function()
-				star:Destroy()
-			end)
-		end
-	end
-end
-
--- "Training complete": the top notification tier. A gold banner (bigger than a toast)
--- that bounces into the pill's slot with a sparkle burst, queued with the other popups.
--- Not modal: tap or wait to dismiss.
-local BANNER_W, BANNER_H = 468, 96
-local function showCelebrate(cash: number, done: () -> ())
-	local existing = screen:FindFirstChild("TutorialDone")
-	if existing then
-		existing:Destroy()
-	end
-	local atBottom = compact()
-	local rest = if atBottom then UDim2.new(0.5, 0, 1, -BOTTOM_GAP + PAD_BOTTOM) else UDim2.new(0.5, 0, 0, TOP_Y - PAD_TOP)
-	local away = rest + UDim2.fromOffset(0, if atBottom then SLIDE else -SLIDE)
-	local holder = Kit.new("Frame", {
-		Name = "TutorialDone",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(BANNER_W, BANNER_H + PAD_TOP + PAD_BOTTOM),
-		Position = away,
-		AnchorPoint = Vector2.new(0.5, if atBottom then 1 else 0),
-		ZIndex = 20,
-		Parent = screen,
-	})
-	-- A plain frame, faded by its elements' own transparency (Kit.fade): the banner is
-	-- painted straight to the screen, the same gold at the top of a desktop and in the
-	-- bottom slot of a phone, with no off-screen group texture between its fill and the world.
-	local fade = Kit.new("Frame", {
-		Name = "Fade",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 21,
-		Parent = holder,
-	})
-	-- Toasts queue under the banner while it holds the top slot.
-	if not atBottom then
-		screen:SetAttribute("TopCardHeight", BANNER_H + 8)
-	end
-	local bounce = Kit.new("UIScale", { Name = "Bounce", Scale = 0.6, Parent = holder })
-	-- The one solid banner: the bright gold of a primary button (sunny yellow down to
-	-- orange, G.Celebrate: all but opaque) on an orange lip, with a white highlight along
-	-- the top inner edge.
-	local card = Kit.new("Frame", {
-		Name = "Card",
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		BackgroundTransparency = G.Celebrate,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, -PAD_X * 2, 0, BANNER_H),
-		Position = UDim2.fromOffset(PAD_X, PAD_TOP),
-		ZIndex = 21,
-		Parent = fade,
-	})
-	Kit.corner(card, Kit.RADIUS.L)
-	Kit.new("UIGradient", {
-		Rotation = 90,
-		Color = ColorSequence.new({
-			ColorSequenceKeypoint.new(0, C.GoldLight),
-			ColorSequenceKeypoint.new(0.45, C.Gold),
-			ColorSequenceKeypoint.new(1, C.GoldDeep),
-		}),
-		Parent = card,
-	})
-	Kit.stroke(card, 2.5, Kit.lip(C.GoldDeep))
-	Kit.shadow(card, Kit.RADIUS.L, 1, 0)
-	local shine = Kit.new("Frame", {
-		Name = "Highlight",
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		BackgroundTransparency = 0.25,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, -28, 0, 3),
-		Position = UDim2.fromOffset(14, 4),
-		ZIndex = 22,
-		Parent = card,
-	})
-	Kit.round(shine)
-	local medal = Kit.new("Frame", {
-		Name = "Medal",
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		Size = UDim2.fromOffset(64, 64),
-		Position = UDim2.new(0, 16, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ZIndex = 22,
-		Parent = card,
-	})
-	Kit.round(medal)
-	Kit.gradient(medal, Color3.new(1, 1, 1), C.GoldLight)
-	Kit.stroke(medal, 2.5, Kit.lip(C.GoldDeep))
-	Kit.icon(medal, "Ranking", 38, C.GoldInk, { Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 23 })
-	local medalScale = Kit.new("UIScale", { Scale = 0.4, Parent = medal })
-
-	-- White title with the dark outline, the size of a window title.
-	Kit.hudText(card, {
-		Name = "Title",
-		Text = Words.DoneTitle,
-		TextSize = 28,
-		MinPx = 18,
-		Size = UDim2.new(1, -106, 0, 36),
-		Position = UDim2.fromOffset(94, 10),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = C.Text,
-		StrokeColor = G.TextInk,
-		StrokeThickness = 3,
-		ZIndex = 22,
-	})
-	-- The reward: a coin and the amount, large, on a dark chip so the green holds on gold.
-	local reward = Kit.new("Frame", {
-		Name = "Reward",
-		BackgroundColor3 = C.Ink,
-		BackgroundTransparency = 0.12,
-		Size = UDim2.fromOffset(0, 36),
-		AutomaticSize = Enum.AutomaticSize.X,
-		Position = UDim2.fromOffset(94, 50),
-		ZIndex = 22,
-		Parent = card,
-	})
-	Kit.round(reward)
-	Kit.padding(reward, 0, 12)
-	Kit.list(reward, 8, true)
-	Kit.icon(reward, "Coin", 26, C.Gold, { Name = "Coin", LayoutOrder = 1, ZIndex = 23 })
-	Kit.number(reward, {
-		Name = "Amount",
-		Text = "+" .. State.money(cash),
-		TextSize = 26,
-		MinPx = 18,
-		TextColor3 = C.MoneyText,
-		Size = UDim2.fromOffset(0, 36),
-		AutomaticSize = Enum.AutomaticSize.X,
-		LayoutOrder = 2,
-		ZIndex = 23,
-	})
-	task.delay(0.39, function()
-		deps.sounds.play("Tick", 0.03, 1.12)
-	end)
-
-	Kit.fade(fade, true, IN_TIME)
-	-- Bounce in: the banner drops into the slot and overshoots its size.
-	Kit.tween(holder, 0.34, { Position = rest }, Enum.EasingStyle.Back)
-	Kit.tween(bounce, 0.42, { Scale = 1 }, Enum.EasingStyle.Back)
-	Kit.tween(medalScale, 0.5, { Scale = 1 }, Enum.EasingStyle.Back)
-	sparkleBurst(holder, 12, 24)
-	Kit.confetti(holder, {
-		Origin = UDim2.new(0, PAD_X + 48, 0, PAD_TOP + BANNER_H // 2),
-		Count = 12,
-		Power = 0.45,
-		ZIndex = 24,
-	})
-	deps.sounds.play("Celebrate")
-
-	local closed = false
-	local function close()
-		if closed then
-			return
-		end
-		closed = true
-		publishHeight()
-		-- Hidden once faded: Kit.fade restores the resting look just before the holder goes.
-		Kit.fade(fade, false, 0.2, function()
-			fade.Visible = false
-		end)
-		Kit.tween(holder, 0.22, { Position = away }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		task.delay(0.25, function()
-			holder:Destroy()
-			done()
-		end)
-	end
-	local catcher = Kit.new("TextButton", {
-		Name = "Dismiss",
-		BackgroundTransparency = 1,
-		Selectable = false,
-		Text = "",
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 25,
-		Parent = holder,
-	})
-	catcher.Activated:Connect(close)
-	task.delay(4.5, close)
-end
-
 -- Waits for the first-collect cash to finish rolling into the wallet (the
--- "done" notify can arrive before or after the Cash effect), then queues the banner.
+-- "done" notify can arrive before or after the Cash effect), then queues the "YOU DID IT!"
+-- banner (Popups.tutorialDone) with the other popups.
 function Tutorial.celebrate(cash: number)
 	task.spawn(function()
 		task.wait(0.5)
@@ -605,7 +419,7 @@ function Tutorial.celebrate(cash: number)
 			waited += 0.1
 		end
 		deps.popups.enqueue("Tutorial", deps.popups.PRIORITY.Tutorial, function(done)
-			showCelebrate(cash, done)
+			deps.popups.tutorialDone(cash, done)
 		end)
 	end)
 end
@@ -635,10 +449,14 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 	screen = screenGui
 	deps = dependencies
 	local action = Net.event("Action")
-	-- The step (at least 16 px on the glass, 14 on a phone) and its hint (a caption).
-	TEXT_SIZE = Kit.px(if Kit.touch then 14 else 16, 18, screen)
-	HINT_SIZE = Kit.px(Kit.captionPx(), 14, screen)
+	-- The step (22 px at 720p; at least 18 px on the glass, 16 on a phone), its hint and the
+	-- "Skip" word (captions).
+	TEXT_SIZE = Kit.px(if Kit.touch then 16 else 18, 22, screen)
+	HINT_SIZE = Kit.px(Kit.captionPx(), HINT_DESIGN, screen)
+	SKIP_SIZE = Kit.px(Kit.captionPx(), SKIP_DESIGN, screen)
+	SKIP_WIDTH = math.ceil(textWidth(Words.Skip, SKIP_SIZE, F.UI)) + SKIP_PILL_PAD * 2 + 12
 	PILL_HEIGHT = math.max(44, TEXT_SIZE + HINT_SIZE + 12)
+	PILL_MIN_WIDTH = math.ceil(220 * TEXT_SIZE / 18)
 	PILL_MAX_WIDTH = math.ceil(440 * TEXT_SIZE / 18)
 
 	group = Kit.new("CanvasGroup", {
@@ -653,13 +471,15 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		Parent = screen,
 	})
 	pulseScale = Kit.new("UIScale", { Parent = group })
-	-- Glass over the unblurred world, a notification tier above the HUD strips: a gold
-	-- accent bar, the step chip carries the colour and the text is outlined.
+	-- A dark plate over the unblurred world, a notification tier above the HUD strips: a
+	-- gold accent bar, the step chip carries the colour and the text is outlined.
 	local pill = Kit.hudGlass(group, {
 		Name = "Pill",
 		Size = UDim2.new(1, -PAD_X * 2, 0, PILL_HEIGHT),
 		Position = UDim2.fromOffset(PAD_X, PAD_TOP),
 		Radius = Kit.RADIUS.M,
+		Color = G.Tint,
+		Transparency = PLATE,
 		Accent = C.Gold,
 		ZIndex = 6,
 	})
@@ -697,7 +517,7 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		Text = "",
 		TextSize = TEXT_SIZE,
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		Size = UDim2.new(1, -(TEXT_X + CLOSE_WIDTH), 0, TEXT_SIZE + 4),
+		Size = UDim2.new(1, -(TEXT_X + SKIP_WIDTH), 0, TEXT_SIZE + 4),
 		Position = UDim2.new(0, TEXT_X, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
 		TextXAlignment = Enum.TextXAlignment.Left,
@@ -710,7 +530,7 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		Font = F.UI,
 		TextSize = HINT_SIZE,
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		Size = UDim2.new(1, -(TEXT_X + CLOSE_WIDTH), 0, HINT_SIZE + 3),
+		Size = UDim2.new(1, -(TEXT_X + SKIP_WIDTH), 0, HINT_SIZE + 3),
 		Position = UDim2.new(0, TEXT_X, 0.5, TEXT_SIZE // 2 + 2),
 		AnchorPoint = Vector2.new(0, 0.5),
 		TextXAlignment = Enum.TextXAlignment.Left,
@@ -720,33 +540,55 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 	})
 	fadeText(hintLabel, 0, 1)
 
-	-- Quiet skip: a small "x" (44 px hit area, centred where the 36 px one was) that asks
-	-- before skipping.
+	-- Quiet skip: a small grey word at the right end (a 44 px tall hit area) that asks
+	-- before skipping. It turns white under the pointer or the gamepad selection.
 	local skip = Kit.new("TextButton", {
 		Name = "Skip",
 		BackgroundTransparency = 1,
 		Text = "",
 		AutoButtonColor = false,
-		Size = UDim2.fromOffset(44, 44),
-		Position = UDim2.new(1, 2, 0.5, 0),
+		Size = UDim2.fromOffset(SKIP_WIDTH, math.max(44, PILL_HEIGHT)),
+		Position = UDim2.new(1, 0, 0.5, 0),
 		AnchorPoint = Vector2.new(1, 0.5),
 		ZIndex = 8,
 		Parent = pill,
 	})
-	local cross = Kit.icon(skip, "Close", 12, C.TextDim, {
-		Name = "Cross",
-		Position = UDim2.fromScale(0.5, 0.5),
+	local border = Kit.new("Frame", {
+		Name = "Border",
+		BackgroundColor3 = G.TextInk,
+		BackgroundTransparency = 0.55,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(SKIP_WIDTH - 12, SKIP_PILL_H),
+		Position = UDim2.new(0.5, -2, 0.5, 0),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 8,
+		Parent = skip,
+	})
+	Kit.round(border)
+	local edge = Kit.new("UIStroke", {
+		Thickness = SKIP_EDGE,
+		Color = C.TextMute,
+		Transparency = SKIP_EDGE_REST,
+		Parent = border,
+	})
+	local word = Kit.text(skip, {
+		Name = "Word",
+		Text = Words.Skip,
+		Font = F.UI,
+		TextSize = SKIP_SIZE,
+		TextColor3 = C.TextMute,
+		TextTransparency = SKIP_REST,
+		StrokeThickness = 0,
+		Size = UDim2.fromOffset(SKIP_WIDTH - 12, SKIP_PILL_H),
+		Position = UDim2.new(0.5, -2, 0.5, 0),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 9,
 	})
-	Kit.bouncy(skip, 1.12)
+	Kit.bouncy(skip, 1.08)
 	Kit.selectable(skip)
 	local function lit(on: boolean)
-		for _, part in cross:GetChildren() do
-			if part:IsA("Frame") then
-				Kit.tween(part, 0.12, { BackgroundColor3 = if on then C.Text else C.TextDim })
-			end
-		end
+		Kit.tween(word, 0.12, { TextTransparency = if on then 0 else SKIP_REST, TextColor3 = if on then C.Text else C.TextMute })
+		Kit.tween(edge, 0.12, { Transparency = if on then 0 else SKIP_EDGE_REST, Color = if on then C.Text else C.TextMute })
 	end
 	skip.MouseEnter:Connect(function()
 		lit(true)
@@ -775,16 +617,6 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 	screen:GetAttributeChangedSignal("RevealOpen"):Connect(hideForReveal)
 	hideForReveal()
 
-	-- The tutorial may be telling the player to use the window that just opened: the pill
-	-- stays, lifted over the window's dim and docked clear of the window.
-	Kit.onWindowOpen(function(open: boolean)
-		windowUp = open
-		group.ZIndex = if open then Z_OVER_WINDOWS else Z_REST
-		if onScreen then
-			Kit.tween(group, 0.2, { Position = restPosition() }, Enum.EasingStyle.Quad)
-		end
-	end)
-
 	screen:GetAttributeChangedSignal("Compact"):Connect(function()
 		group.AnchorPoint = Vector2.new(0.5, if compact() then 1 else 0)
 		if onScreen then
@@ -804,11 +636,14 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		end)
 	end
 
-	screen:GetAttributeChangedSignal("RunActive"):Connect(function()
-		if State.data then
-			render(State.data)
-		end
-	end)
+	-- Windows, modals and runs take the screen: the pill steps out, and comes back after.
+	for _, name in { "WindowOpen", "ModalOpen", table.unpack(RUN_FLAGS) } do
+		screen:GetAttributeChangedSignal(name):Connect(function()
+			if State.data then
+				render(State.data)
+			end
+		end)
+	end
 
 	State.changed.Event:Connect(render)
 	if State.data then

@@ -4,8 +4,10 @@
 	in a 1v1 duel (start / round / finish carry vs = "pvp").
 
 	  Rival        built locally with CharacterFactory from the rival's tier look (so only
-	               this client sees its own rival), standing at rivalPos facing the player.
-	               Hit: a shocked flinch back; perfect adds a star pop. Miss: an angry
+	               this client sees its own rival), standing at rivalPos facing the player,
+	               in its own outfit (RIVAL_OUTFITS by rival index) with a name tag pill.
+	               Hit: a shocked flinch back and a burst of sparks off its chest (bigger
+	               on a perfect, which also adds a star pop and punches the camera in). Miss: an angry
 	               flex pose with a hop and a red ring at the player's feet. Mogged:
 	               sad face, it shrinks and pops with stars, confetti and a puff, and the
 	               next rival walks in after a beat with its own puff.
@@ -28,7 +30,9 @@
 	  Sounds       Celebrate when a rival is mogged; the UI sounds belong to MogHud.
 
 	Listens to Notify (kind "Mode", mode "mog") on its own; everything it makes is
-	removed on finish and stop.
+	removed by clear(), the one way out: "finish" and "stop" (a quit, Home, a mode switch,
+	a respawn), the character leaving, and the snapshot's modes.mog.running going false
+	while the stage is still up (a lost Notify never leaves the camera scripted).
 ]]
 
 local Players = game:GetService("Players")
@@ -45,7 +49,9 @@ local Sounds = require(Client.Sounds) :: any
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
 local Animator = require(Client.Animator) :: any
+local State = require(Client.State) :: any
 local PlayerPose = require(script.Parent.PlayerPose)
+local Camera = require(script.Parent.Camera) :: any
 
 local MogFx = {}
 
@@ -58,6 +64,107 @@ local AURA_BASE = 4.5 -- aura disc diameter at combo 0 (studs)
 local AURA_PER_COMBO = 0.55
 local AURA_MAX_COMBO = 10
 
+-- Rival juice tunables. Each rival (by its index in the run) wears its own outfit over its tier
+-- look and carries a name tag in the outfit's colour; every hit bursts on the rival, and a
+-- perfect also punches the duel camera in.
+local RIVAL_OUTFITS: { { [string]: any } } = {
+	{
+		shirt = Color3.fromRGB(232, 64, 58),
+		pants = Color3.fromRGB(38, 36, 62),
+		top = "Jacket",
+		trim = Color3.fromRGB(255, 214, 64),
+		emblem = "Star",
+		shoes = Color3.fromRGB(255, 255, 255),
+	},
+	{
+		shirt = Color3.fromRGB(150, 96, 255),
+		pants = Color3.fromRGB(56, 44, 110),
+		top = "Hoodie",
+		trim = Color3.fromRGB(98, 236, 170),
+		emblem = "Heart",
+		shoes = Color3.fromRGB(98, 236, 170),
+	},
+	{
+		shirt = Color3.fromRGB(28, 190, 196),
+		pants = Color3.fromRGB(30, 48, 80),
+		top = "Tee",
+		trim = Color3.fromRGB(255, 226, 80),
+		emblem = "Star",
+		shoes = Color3.fromRGB(255, 120, 60),
+	},
+	{
+		shirt = Color3.fromRGB(255, 196, 40),
+		pants = Color3.fromRGB(34, 30, 40),
+		top = "Jacket",
+		trim = Color3.fromRGB(240, 70, 90),
+		emblem = "Disc",
+		shoes = Color3.fromRGB(34, 30, 40),
+	},
+	{
+		shirt = Color3.fromRGB(255, 110, 178),
+		pants = Color3.fromRGB(44, 54, 120),
+		top = "Tee",
+		trim = Color3.fromRGB(255, 255, 255),
+		emblem = "Heart",
+		shoes = Color3.fromRGB(255, 255, 255),
+	},
+	{
+		shirt = Color3.fromRGB(70, 200, 90),
+		pants = Color3.fromRGB(26, 70, 40),
+		top = "Hoodie",
+		trim = Color3.fromRGB(255, 255, 255),
+		emblem = "Star",
+		shoes = Color3.fromRGB(255, 214, 64),
+	},
+}
+local NAME_TAG = {
+	Width = 8, -- studs
+	Height = 1.9,
+	Lift = 2.2, -- studs above the head's top
+	-- Drawn over the hit bursts (AlwaysOnTop puts it above every other billboard), so a burst
+	-- never hides the rival's name.
+	OnTop = true,
+	TextColor = Color3.fromRGB(255, 255, 255),
+	Stroke = 3, -- px, dark pill outline
+	MaxDistance = 140,
+}
+local HIT_BURST = {
+	Sparks = 10, -- pieces on a hit ("NICE!")
+	PerfectSparks = 18, -- ...and on a perfect
+	SparkSize = 2.2, -- studs
+	Spread = 6, -- studs the pieces fly out
+	Life = 0.8,
+	Ring = 8, -- ring sprite size on the rival's chest (perfect: x1.4)
+	Color = Color3.fromRGB(255, 226, 80),
+	-- The pieces fan out sideways and down, never into the cone above the chest that holds the
+	-- head and the name tag (degrees either side of straight up), and the ring sits low.
+	TopGap = 50,
+	RingDrop = 0.15, -- share of the rival's height the ring sits under the chest
+}
+-- The rival stands this much larger than its tier look, so it fills more of the duel frame.
+local RIVAL = {
+	Scale = 1.3,
+}
+-- The crowd jumps on every hit: the fan rows of the stands near you (World.MogStage moves
+-- one anchored "FanRow" root per row in a slow wave) get an extra local jump on top of the
+-- server's wave, bigger on a perfect, and the rows go off in a quick ripple.
+local CHEER = {
+	Height = 4.6, -- studs at the top of a hit's jump
+	PerfectBoost = 1.6, -- x Height on a perfect
+	Time = 0.55, -- seconds of one jump
+	Bounces = 2, -- jumps per cheer (each Rebound x the one before)
+	Rebound = 0.55,
+	Ripple = 0.06, -- seconds between neighbouring rows taking off
+	Range = 160, -- studs from the player: rows of these stands jump
+	Resync = 0.05, -- studs: a root this far from what we wrote was moved by the server
+}
+local PUNCH = {
+	Dist = 3.4, -- studs the camera dollies toward the rival on a perfect
+	Fov = 9, -- degrees narrower at the peak
+	In = 0.08, -- seconds to the peak
+	Out = 0.55, -- seconds back
+}
+
 local folder: Folder? = nil
 local rival: Model? = nil
 local rivalHeight = 6
@@ -67,6 +174,8 @@ local auraLight: PointLight? = nil
 local playerPos = Vector3.zero
 local rivalPos = Vector3.new(0, 0, -12)
 local running = false
+local startedAt = 0
+local runId = 0 -- bumps on every start and clear, so a finished run's timers stop
 local duel = false -- a 1v1 duel: the opponent is a real player's character
 local opponentId = 0
 local cameraOn = false
@@ -74,6 +183,15 @@ local token = 0 -- bumps on every rival change so stale tweens stop
 local selfPoser: PlayerPose.Poser? = nil
 local foePoser: PlayerPose.Poser? = nil
 local poseTokens: { [PlayerPose.Poser]: number } = {}
+local punchAt = -math.huge
+local outfitColor = HIT_BURST.Color
+
+local INK: Color3 = C.Ink or Color3.fromRGB(30, 34, 60)
+
+local function reducedMotion(): boolean
+	local data = State.data
+	return type(data) == "table" and type(data.settings) == "table" and data.settings.reducedMotion == true
+end
 
 local function num(value: any, default: number): number
 	return if type(value) == "number" and value == value then value else default
@@ -203,6 +321,83 @@ local function removeRival()
 	end
 end
 
+-- A pill over the rival's head with its name, in its outfit's colour.
+local function nameTag(m: Model, name: string, color: Color3)
+	local head = m:FindFirstChild("Head", true)
+	local adornee = if head and head:IsA("BasePart") then head else m.PrimaryPart
+	if not adornee then
+		return
+	end
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "RivalTag"
+	gui.Size = UDim2.fromScale(NAME_TAG.Width, NAME_TAG.Height)
+	gui.StudsOffsetWorldSpace = Vector3.new(0, adornee.Size.Y / 2 + NAME_TAG.Lift, 0)
+	gui.LightInfluence = 0
+	gui.MaxDistance = NAME_TAG.MaxDistance
+	gui.AlwaysOnTop = NAME_TAG.OnTop
+	gui.Adornee = adornee
+	local pill = Instance.new("Frame")
+	pill.Size = UDim2.fromScale(1, 1)
+	pill.BackgroundColor3 = color
+	pill.BorderSizePixel = 0
+	pill.Parent = gui
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0.5, 0)
+	corner.Parent = pill
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = INK
+	stroke.Thickness = NAME_TAG.Stroke
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Parent = pill
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.fromScale(0.88, 0.78)
+	label.Position = UDim2.fromScale(0.06, 0.11)
+	label.TextScaled = true
+	label.Font = Theme.Fonts.Title or Enum.Font.FredokaOne
+	label.Text = string.upper(name)
+	label.TextColor3 = NAME_TAG.TextColor
+	label.TextStrokeColor3 = INK
+	label.TextStrokeTransparency = 0
+	label.Parent = pill
+	gui.Parent = m
+end
+
+-- Sparks, stars and a ring bursting off the rival's chest on every hit (bigger on a perfect).
+local function rivalBurst(perfect: boolean)
+	local chest = rivalPos + Vector3.new(0, rivalHeight * 0.6, 0)
+	local ringAt = chest - Vector3.new(0, rivalHeight * HIT_BURST.RingDrop, 0)
+	local toward = Vector3.new(playerPos.X - rivalPos.X, 0, playerPos.Z - rivalPos.Z)
+	local front = if toward.Magnitude > 0.1 then toward.Unit else Vector3.new(0, 0, 1)
+	local side = front:Cross(Vector3.yAxis)
+	sprite("Ring", ringAt + front * 1.2, {
+		size = HIT_BURST.Ring * (if perfect then 1.4 else 1),
+		life = 0.5,
+		rise = Vector3.zero,
+		color = if perfect then W.Sunny else outfitColor,
+	})
+	local n = Budget.count(if perfect then HIT_BURST.PerfectSparks else HIT_BURST.Sparks)
+	for i = 1, n do
+		if not Sprites.room() then
+			break -- decorative: the device's sprite budget is full
+		end
+		-- Round the circle from just past the top cone on one side to just before it on the
+		-- other (angle 90 degrees is straight up).
+		local gap = math.rad(HIT_BURST.TopGap)
+		local angle = math.pi / 2 + gap + (i - 0.5 + math.random() * 0.4) / n * (math.pi * 2 - gap * 2)
+		local out = side * math.cos(angle) + Vector3.yAxis * math.sin(angle)
+		local kind = if i % 3 == 0 then "StarPop" elseif i % 3 == 1 then "Sparkle" else "Confetti"
+		sprite(kind, chest + front * 1.5 + out * 0.6, {
+			size = HIT_BURST.SparkSize * (0.8 + math.random() * 0.4),
+			life = HIT_BURST.Life,
+			delay = i * 0.012,
+			rise = out * HIT_BURST.Spread + front * 1.5,
+			spin = 120,
+			color = if kind == "Confetti" then nil else (if i % 2 == 0 then HIT_BURST.Color else outfitColor),
+		})
+	end
+end
+
 local function spawnRival(info: any)
 	removeRival()
 	if type(info) ~= "table" then
@@ -213,6 +408,11 @@ local function spawnRival(info: any)
 		return
 	end
 	local look = table.clone(base)
+	local outfit = RIVAL_OUTFITS[(math.max(1, math.floor(num(info.index, 1))) - 1) % #RIVAL_OUTFITS + 1]
+	for key, value in outfit do
+		look[key] = value
+	end
+	outfitColor = outfit.shirt
 	look.exprs = { "Smug", "Shock", "Angry", "Sad", "Determined" }
 	look.expr = "Smug"
 	local ok, model = pcall(CharacterFactory.build, look, "MogRival")
@@ -221,14 +421,16 @@ local function spawnRival(info: any)
 		return
 	end
 	local m = model :: Model
+	m:ScaleTo(m:GetScale() * RIVAL.Scale)
 	local height = m:GetAttribute("Height")
-	rivalHeight = if type(height) == "number" then height else 6
+	rivalHeight = (if type(height) == "number" then height else 6) * RIVAL.Scale
 	local face = Vector3.new(playerPos.X, rivalPos.Y, playerPos.Z)
 	rivalPivot = if (face - rivalPos).Magnitude > 0.1 then CFrame.lookAt(rivalPos, face) else CFrame.new(rivalPos)
 	m:PivotTo(rivalPivot)
 	m.Parent = folder
 	rival = m
 	CharacterFactory.setExpression(m, "Smug")
+	nameTag(m, if type(info.name) == "string" then info.name else "RIVAL", outfit.shirt)
 	-- Walk-in pop: grows from small with a puff (the Animator holds it while it scales,
 	-- then re-captures its rest pose).
 	Animator.hold(m)
@@ -390,6 +592,8 @@ local function releaseCamera()
 	end
 	cameraOn = false
 	RunService:UnbindFromRenderStep(CAMERA_BIND)
+	punchAt = -math.huge
+	Camera.setFov("mogPunch", 0)
 	local camera = Workspace.CurrentCamera
 	if camera then
 		local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
@@ -430,7 +634,105 @@ local function takeCamera()
 		local focus = rivalPos + Vector3.new(0, rivalHeight * 0.55, 0) - forward * 2
 		local goal = CFrame.lookAt(eye, focus)
 		current = if current then current:Lerp(goal, 1 - math.exp(-dt * 4)) else goal
-		cam.CFrame = current :: CFrame
+		-- A perfect hit punches in: a quick dolly toward the rival and a narrower FOV, eased back.
+		local since = os.clock() - punchAt
+		local punch = 0
+		if since < PUNCH.In then
+			punch = since / PUNCH.In
+		elseif since < PUNCH.In + PUNCH.Out then
+			punch = (1 - (since - PUNCH.In) / PUNCH.Out) ^ 2
+		end
+		cam.CFrame = (current :: CFrame) * CFrame.new(0, 0, -PUNCH.Dist * punch)
+		Camera.setFov("mogPunch", if punch > 0.01 then -PUNCH.Fov * punch else 0)
+	end)
+end
+
+-- Crowd jump -----------------------------------------------------------------------------------
+
+type CheerRow = { root: BasePart, server: CFrame, wrote: CFrame?, delay: number }
+local cheerRows: { CheerRow } = {}
+local cheerAt = -math.huge
+local cheerHeight = 0
+local cheerConn: RBXScriptConnection? = nil
+
+local function stopCheer()
+	if cheerConn then
+		cheerConn:Disconnect()
+		cheerConn = nil
+	end
+	for _, row in cheerRows do
+		if row.wrote and row.root.Parent then
+			row.root.CFrame = row.server
+		end
+		row.wrote = nil
+	end
+	table.clear(cheerRows)
+end
+
+local function findCheerRows()
+	table.clear(cheerRows)
+	local map = Workspace:FindFirstChild("Map")
+	local stage = map and map:FindFirstChild("MogStage")
+	if not stage then
+		return
+	end
+	for _, part in stage:GetChildren() do
+		if part.Name == "FanRow" and part:IsA("BasePart") and (part.Position - playerPos).Magnitude <= CHEER.Range then
+			table.insert(cheerRows, { root = part, server = part.CFrame, delay = 0 })
+		end
+	end
+	-- The ripple runs round the stand from the row nearest the rival.
+	table.sort(cheerRows, function(a, b)
+		return (a.root.Position - rivalPos).Magnitude < (b.root.Position - rivalPos).Magnitude
+	end)
+	for i, row in cheerRows do
+		row.delay = (i - 1) * CHEER.Ripple
+	end
+end
+
+local function cheer(perfect: boolean)
+	if reducedMotion() then
+		return
+	end
+	if #cheerRows == 0 then
+		findCheerRows()
+	end
+	cheerAt = os.clock()
+	cheerHeight = CHEER.Height * (if perfect then CHEER.PerfectBoost else 1)
+	if cheerConn then
+		return
+	end
+	cheerConn = RunService.RenderStepped:Connect(function()
+		local t = os.clock() - cheerAt
+		local busy = false
+		for _, row in cheerRows do
+			local root = row.root
+			if root.Parent then
+				local now = root.CFrame
+				local wrote = row.wrote
+				if not wrote or (now.Position - wrote.Position).Magnitude > CHEER.Resync then
+					row.server = now -- the server's wave moved it since our last write
+				end
+				local k = (t - row.delay) / CHEER.Time
+				if k > 0 and k < CHEER.Bounces then
+					busy = true
+					local n = math.floor(k)
+					local lift = cheerHeight * CHEER.Rebound ^ n * math.sin(math.pi * (k - n))
+					local cf = row.server * CFrame.new(0, lift, 0)
+					row.wrote = cf
+					root.CFrame = cf
+				elseif k <= 0 then
+					busy = true
+				elseif wrote then
+					root.CFrame = row.server
+					row.wrote = nil
+				end
+			end
+		end
+		if not busy and cheerConn then
+			cheerConn:Disconnect()
+			cheerConn = nil
+		end
 	end)
 end
 
@@ -438,9 +740,12 @@ end
 
 local function clear()
 	running, duel, opponentId = false, false, 0
-	stopPosers()
+	runId += 1
+	-- The camera first: whatever else fails, the player gets the follow camera back.
 	releaseCamera()
+	stopPosers()
 	removeRival()
+	stopCheer()
 	if folder then
 		folder:Destroy()
 		folder = nil
@@ -451,6 +756,7 @@ end
 local function onStart(p: any)
 	clear()
 	running = true
+	startedAt = os.clock()
 	if typeof(p.playerPos) == "Vector3" then
 		playerPos = p.playerPos
 	else
@@ -483,6 +789,11 @@ local function onResult(p: any)
 	if p.result == "perfect" then
 		setExpr("Shock", 0.8)
 		flinch(1.4)
+		rivalBurst(true)
+		cheer(true)
+		if not reducedMotion() then
+			punchAt = os.clock()
+		end
 		pulseAura(combo, W.Sunny)
 		sprite("StarPop", head, { size = 3, life = 0.8, rise = Vector3.new(0, 2, 0), spin = 60 })
 		sprite(
@@ -493,6 +804,8 @@ local function onResult(p: any)
 	elseif p.result == "hit" then
 		setExpr("Shock", 0.6)
 		flinch(0.8)
+		rivalBurst(false)
+		cheer(false)
 		pulseAura(combo, W.Cream)
 	else
 		setExpr("Angry", 1)
@@ -589,8 +902,9 @@ function MogFx.onNotify(p: any)
 		strike(selfPoser, "Victory", 0.8, 1.6)
 		moggedPop()
 		local nextRival = p.rival
+		local run = runId
 		task.delay(1.1, function()
-			if running and type(nextRival) == "table" then
+			if running and run == runId and type(nextRival) == "table" then
 				spawnRival(nextRival)
 			end
 		end)
@@ -611,6 +925,13 @@ function MogFx.init()
 	end)
 	player.CharacterRemoving:Connect(function()
 		if running then
+			clear()
+		end
+	end)
+	-- The safety net: the server says no Mog run is on while the stage is still up here.
+	State.changed.Event:Connect(function(data: any)
+		local info = type(data) == "table" and type(data.modes) == "table" and data.modes.mog
+		if running and type(info) == "table" and info.running == false and os.clock() - startedAt > 2 then
 			clear()
 		end
 	end)

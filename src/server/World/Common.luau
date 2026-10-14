@@ -49,6 +49,11 @@ export type Pad = {
 	part: BasePart,
 	title: TextLabel,
 	sub: TextLabel,
+	-- What `title` and `sub` say (and sub's tint) on a plot nobody owns: Server.Tycoon puts
+	-- them back when the owner leaves.
+	defaultTitle: string,
+	defaultSub: string,
+	defaultTint: Color3,
 }
 -- Primitives ------------------------------------------------------------------------
 

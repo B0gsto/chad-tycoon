@@ -14,23 +14,35 @@
 	               its swell-in cue, warn() runs every frame until the needle starts, then
 	               setNeedle(travel, dir) poses the needle from the server clock (travel =
 	               speed * (now - appearAt)), flash() on each result, idle() between checks.
-	               The result word ("PERFECT!", "HIT", "MISS" / "TOO EARLY" / "TOO SLOW"
-	               in red) pops in on the ring's top edge and rises as it fades.
+	               A duel's checks are hidden: "check" (hidden = true) only cues the empty
+	               ring, and the zone pops in with "zone" when the needle starts.
+	               The result word ("PERFECT!", "NICE!", "MISS" / "TOO EARLY" / "TOO SLOW"),
+	               big white with a dark outline (tinted gold / mint / red at the bottom),
+	               pops in on the ring's top edge and rises as it fades.
 	  Input        Space, Enter and gamepad A (ContextActionService, high priority, sunk
 	               so Space does not jump) and a big invisible button over the ring for
 	               mouse / touch. One MogPress per check, sent with the server time of the
-	               press; presses before the needle starts only give a small "wait..."
+	               press; presses before the needle starts (in a duel: before the zone
+	               shows and for a blink after, `pressFrom`) only give a small "wait..."
 	               wobble. The needle freezes where it was pressed until the result.
 	  Status       score (bouncy count) and the combo chip above the ring and a quiet "X"
-	               that asks "QUIT?" before firing ModeQuit. Vs rivals: hearts (maxLives)
+	               that asks "QUIT?" before firing ModeQuit. Vs rivals: beside the score a
+	               gold chip with the target "BEAT n" (the saved best from "start"; "SET A
+	               BEST!" without one). The player list and the gift corner are hidden
+	               for the run.
+	               The moment the run's score passes it: the chip reads "NEW BEST!" in
+	               gold, the score turns gold for the rest of the run and a short
+	               "NEW BEST!" banner pops. Hearts (maxLives)
 	               under them and the rival's name and HP bar under the ring. In a duel the
 	               hearts become your own HP bar ("YOU", green, gold flash on perfect) and
 	               the bottom panel is the opponent's name and red HP bar, both moved by
 	               "round" only ("result" is just your own press); the opponent's result
 	               shows small under it ("Opponent: PERFECT").
 	  Banners      "MOG TEST!" / "1v1 DUEL!" (vs <name>) at the start, "MOGGED!" per rival,
-	               "MOG TEST PASSED!" with the cash the first time the run passes,
-	               "SUDDEN DEATH!" in a duel.
+	               "MOG TEST PASSED!" with the cash the first time the run passes ("Run
+	               again bonus +$" when `pay` is "repeat": a pass inside the cooldown),
+	               "SUDDEN DEATH!" in a duel. Each drops in from above and settles under
+	               the HUD's unit-count capsule (never over it); the pass adds confetti.
 
 	MogHud.onNotify(payload) takes every Notify with kind "Mode" and mode "mog" (Main
 	routes them); Fx.Mog does the 3D side from the same payloads. MogHud.choose() opens
@@ -51,6 +63,7 @@ local Kit = require(script.Parent.Kit) :: any
 local MogRing = require(script.Parent.MogRing) :: any
 local Popups = require(script.Parent.Popups) :: any
 local Sounds = require(Client.Sounds) :: any
+local State = require(Client.State) :: any
 
 local MogHud = {}
 
@@ -59,10 +72,66 @@ local F = Kit.F
 local W = Theme.World
 
 local RING = 180 -- ring diameter (px, design space)
+-- The run HUD's column (right edge, mid-height) and where the ring sits in it.
+local ROOT_W = 300
+local ROOT_H = 410
+local ROOT_RIGHT = 36
+-- Pushed down from mid-height so the score pill clears the stand's wall words (the stand to
+-- the right of the duel frame puts its word band at about y 230-265 on a 720 px screen) and
+-- the top-right chrome (the player list is hidden during a run as well).
+local ROOT_DY = 110
+local RING_Y = 120
+local RING_TAP = 20 -- the tap target reaches this far past the ring
+-- The score pill: wide enough for a five-figure score beside "BEAT 12.5K" / "NEW BEST!".
+local SCORE_W = 268
+-- The banner (top centre) and the room it keeps to the ring where the two share a row.
+local BANNER_W = 560
+local BANNER_H = 90
+local BANNER_GAP = 12
+-- Tunables of the banner's place and motion. It sits under the HUD's unit-count capsule
+-- ("Units", measured when it shows): at least MinY from the top and Clear px below the
+-- capsule. It drops in from DropFrom px above its place and settles past it (Back, DropTime
+-- seconds); "MOG TEST PASSED!" also bursts PassConfetti pieces and pops by PassPop.
+local BANNER = {
+	MinY = 132,
+	Clear = 16,
+	DropFrom = 150,
+	DropTime = 0.45,
+	PassConfetti = 28,
+	PassPop = 1.6,
+	PassPopAt = 0.5,
+}
+local RESULT_RISE = 52 -- the result word rises this far above the ring
+-- The result word ("PERFECT!" / "NICE!" / "TOO SLOW"): big white with a thick dark outline so it
+-- reads over the crowd, tinted toward its colour at the bottom only (Tint). It sits LEFT of the
+-- ring, its right end Gap px clear of the ring's edge (so it never touches the dial or the combo
+-- chip above it). It pops from PopFrom scale (Back, PopTime), rises from FromY to ToY (px from
+-- the ring's top to the word's centre) over RiseTime, holds Hold seconds and fades over Fade.
+local RESULT = {
+	TextSize = 52,
+	Width = 380,
+	Height = 62,
+	Stroke = 5,
+	StrokeColor = Color3.fromRGB(18, 16, 40),
+	Tint = 0.45,
+	PopFrom = 0.3,
+	PopTime = 0.35,
+	Gap = 18,
+	FromY = 104,
+	ToY = 60,
+	RiseTime = 0.9,
+	Hold = 0.75,
+	Fade = 0.3,
+}
+-- The "BEAT n" target chip in the score pill: a gold chip (it reads "SET A BEST!" before the
+-- first saved best), "NEW BEST!" once beaten.
+local BEAT = { Width = 104, Height = 26, TextSize = 16 }
+-- HUD chrome that steps aside during a run (the gift corner and the crate panel).
+local MOG_CLUTTER = { "FreeCorner", "ChestPanel" }
 local ACTION = "MogPress"
 local QUIT_ACTION = "MogQuit"
 local PRIORITY = 3000
-local RESULT_WORDS = { perfect = "PERFECT", hit = "HIT", miss = "MISS" }
+local RESULT_WORDS = { perfect = "PERFECT", hit = "NICE", miss = "MISS" }
 
 local action = Net.event("Action")
 
@@ -75,6 +144,10 @@ type Check = {
 	zoneStart: number,
 	zoneSize: number,
 	perfectSize: number,
+	-- The zone is on the ring (a duel's comes later, with "zone"); no press counts before
+	-- `pressFrom` (server time).
+	known: boolean,
+	pressFrom: number,
 }
 
 local screen: ScreenGui? = nil
@@ -83,6 +156,9 @@ local ring: any -- MogRing
 local tapHint: TextLabel
 local resultLabel: TextLabel
 local scoreLabel: TextLabel
+-- The score's resting colour (gold once the run beats the saved best).
+local scoreColor: Color3 = C.Text
+local beatLabel: TextLabel
 local comboChip: TextLabel
 local heartsRow: Frame
 local youPanel: Frame
@@ -102,11 +178,14 @@ local queueTime: TextLabel
 local queueSpinner: Frame
 
 local active = false
+local startedAt = 0
 local pvp = false -- this run is a 1v1 duel
 local check: Check? = nil
 local pressed = false -- this check's press is sent (input locked until the result)
 local frozenTravel: number? = nil
 local shownScore = 0
+-- The saved best score this PvE run tries to beat (0 = none: no target shown).
+local bestToBeat = 0
 local lives, maxLives = 3, 3
 local passedShown = false
 local quitArmed = false
@@ -122,6 +201,10 @@ end
 local quitPress: () -> () = function() end
 local warned = false
 local bannerToken = 0
+-- Where the banner rests (design px from the top), and what puts it there (and clear of the
+-- ring sideways); set in build.
+local bannerY = BANNER.MinY
+local placeBanner: () -> () = function() end
 local stepConn: RBXScriptConnection? = nil
 local queueToken = 0
 local choosing = false -- the picker is open (or queued)
@@ -209,25 +292,36 @@ local function travelNow(c: Check): number
 	return math.clamp(c.speed * (Workspace:GetServerTimeNow() - c.appearAt), 0, 360)
 end
 
-local showBanner: (title: string, sub: string?, color: Color3, hold: number) -> ()
+local showBanner: (title: string, sub: string?, color: Color3, hold: number, celebrate: boolean?) -> ()
 
--- The result word pops in on the ring's top edge (clear of the "#n" centre label) and
--- rises toward the hearts / HP row while it fades.
-local RESULT_FROM = UDim2.new(0.5, 0, 0, 6)
-local RESULT_TO = UDim2.new(0.5, 0, 0, -16)
+-- The result word pops in beside the ring's left edge (clear of the dial and its "#n" centre
+-- label) and rises while it fades.
+local RESULT_FROM = UDim2.new(0, -RESULT.Gap, 0, RESULT.FromY)
+local RESULT_TO = UDim2.new(0, -RESULT.Gap, 0, RESULT.ToY)
+local resultTint: UIGradient? = nil
 
 local function popResult(text: string, color: Color3)
 	resultLabel.Text = text
-	resultLabel.TextColor3 = color
+	resultLabel.TextColor3 = Color3.new(1, 1, 1)
+	if resultTint then
+		resultTint.Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.new(1, 1, 1):Lerp(color, RESULT.Tint))
+	end
 	resultLabel.TextTransparency = 0
+	local outline = resultLabel:FindFirstChild("Outline")
+	if outline and outline:IsA("UIStroke") then
+		outline.Transparency = 0
+	end
 	resultLabel.Position = RESULT_FROM
 	local scale = resultLabel:FindFirstChildOfClass("UIScale") :: UIScale
-	scale.Scale = 0.3
-	Kit.tween(scale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
-	Kit.tween(resultLabel, 0.9, { Position = RESULT_TO }, Enum.EasingStyle.Quad)
-	task.delay(0.65, function()
+	scale.Scale = RESULT.PopFrom
+	Kit.tween(scale, RESULT.PopTime, { Scale = 1 }, Enum.EasingStyle.Back)
+	Kit.tween(resultLabel, RESULT.RiseTime, { Position = RESULT_TO }, Enum.EasingStyle.Quad)
+	task.delay(RESULT.Hold, function()
 		if resultLabel.Text == text then
-			Kit.tween(resultLabel, 0.3, { TextTransparency = 1 })
+			Kit.tween(resultLabel, RESULT.Fade, { TextTransparency = 1 })
+			if outline and outline:IsA("UIStroke") then
+				Kit.tween(outline, RESULT.Fade, { Transparency = 1 })
+			end
 		end
 	end)
 end
@@ -262,7 +356,8 @@ local function press()
 		return
 	end
 	local now = Workspace:GetServerTimeNow()
-	if now < c.appearAt then
+	if now < c.appearAt or now < c.pressFrom or not c.known then
+		-- Too soon to count (the server ignores it too): no life lost.
 		wobble()
 		return
 	end
@@ -299,23 +394,68 @@ local function step()
 end
 
 local function onCheck(p: any)
+	local appearAt = num(p.appearAt, Workspace:GetServerTimeNow() + 1)
 	local c: Check = {
 		id = p.id,
 		n = num(p.n, 1),
-		appearAt = num(p.appearAt, Workspace:GetServerTimeNow() + 1),
+		appearAt = appearAt,
 		speed = math.max(num(p.speed, 180), 1),
 		dir = if p.dir == -1 then -1 else 1,
 		zoneStart = num(p.zoneStart, 180),
 		zoneSize = num(p.zoneSize, 40),
 		perfectSize = num(p.perfectSize, 10),
+		known = p.hidden ~= true,
+		pressFrom = num(p.pressFrom, appearAt),
 	}
 	check, pressed, frozenTravel, warned = c, false, nil, false
-	-- The DBD-style warning: tick, and MogRing swells the ring in with the new zone.
-	ring:setCheck({ zoneStart = c.zoneStart, zoneSize = c.zoneSize, perfectSize = c.perfectSize, dir = c.dir, n = c.n })
+	-- The DBD-style warning: tick, and MogRing swells the ring in, with the new zone unless
+	-- the check is hidden (a duel: the zone comes with "zone" when the needle starts).
+	if c.known then
+		ring:setCheck({ zoneStart = c.zoneStart, zoneSize = c.zoneSize, perfectSize = c.perfectSize, dir = c.dir, n = c.n })
+	else
+		ring:cue(c.dir)
+	end
 	ring:setNeedle(nil, c.dir)
 	centreHint = "check"
 	ring:setCentre(Kit.keyHint("confirm") .. (if Kit.touch then "!" else ""), C.Gold)
 	Sounds.play("Tick")
+end
+
+-- A hidden check's zone: sent when the needle starts.
+local function onZone(p: any)
+	local c = check
+	if not c or c.known or p.id ~= c.id then
+		return
+	end
+	c.zoneStart = num(p.zoneStart, c.zoneStart)
+	c.zoneSize = num(p.zoneSize, c.zoneSize)
+	c.perfectSize = num(p.perfectSize, c.perfectSize)
+	c.known = true
+	ring:setZone({ zoneStart = c.zoneStart, zoneSize = c.zoneSize, perfectSize = c.perfectSize, dir = c.dir, n = c.n })
+end
+
+-- "BEAT n" beside the score: the saved best this run is after, "NEW BEST!" once it is beaten
+-- (the score goes gold and a short banner marks the moment).
+local function paintBeat(score: number)
+	local beaten = not pvp and bestToBeat > 0 and score > bestToBeat
+	scoreLabel.TextColor3 = if beaten then C.Gold else scoreColor
+	local show = not pvp and not quitArmed
+	beatLabel.Visible = show
+	if not show then
+		return
+	end
+	local text = if beaten then "NEW BEST!" elseif bestToBeat > 0 then "BEAT " .. Format.short(bestToBeat) else "SET A BEST!"
+	if beatLabel.Text ~= text then
+		beatLabel.Text = text
+		-- Gold chip with dark text; a beaten best flips to a bright white chip.
+		beatLabel.BackgroundColor3 = if beaten then Color3.new(1, 1, 1) else C.Gold
+		beatLabel.TextColor3 = C.GoldInk
+		if beaten then
+			Kit.pop(beatLabel, 1.4)
+			Sounds.play("Coin", 0.05, 1.3)
+			showBanner("NEW BEST!", "You beat " .. Format.short(bestToBeat) .. "!", C.Gold, 1.4)
+		end
+	end
 end
 
 -- An HP bar fill and its "hp/max" label; `flash` briefly tints the fill (a hit taken).
@@ -337,6 +477,7 @@ local function setScore(score: number, combo: number)
 		Kit.countTo(scoreLabel, shownScore, score, Format.short, 0.4)
 		Kit.pop(scoreLabel, 1.25)
 		shownScore = score
+		paintBeat(score)
 	end
 	if combo >= 2 then
 		comboChip.Text = "x" .. tostring(combo) .. " COMBO"
@@ -368,7 +509,7 @@ local function onResult(p: any)
 		Sounds.play("Coin", 0.05, 1.15)
 	elseif result == "hit" then
 		ring:flash("hit")
-		popResult("HIT", W.Cream)
+		popResult("NICE!", W.Mint or W.Cream)
 		Sounds.play("Pickup", 0.08)
 	else
 		ring:flash("miss")
@@ -421,7 +562,24 @@ local function setRival(info: any)
 	rivalHpText.Text = string.format("%d/%d", hp, hpMax)
 end
 
-function showBanner(title: string, sub: string?, color: Color3, hold: number)
+-- The lowest edge of the HUD's unit-count capsule in design px (0 when it is not on screen):
+-- the banner keeps below it, wherever the HUD has put it.
+local function capsuleBottom(): number
+	local gui = screen
+	local units = gui and gui:FindFirstChild("Units")
+	if not gui or not units or not units:IsA("GuiObject") or not units.Visible then
+		return 0
+	end
+	local bottom = units.AbsolutePosition.Y + units.AbsoluteSize.Y
+	for _, part in units:GetDescendants() do
+		if part:IsA("GuiObject") and part.Visible and part.AbsoluteSize.Y < 200 then
+			bottom = math.max(bottom, part.AbsolutePosition.Y + part.AbsoluteSize.Y)
+		end
+	end
+	return (bottom - gui.AbsolutePosition.Y) / Kit.pixelScale(gui)
+end
+
+function showBanner(title: string, sub: string?, color: Color3, hold: number, celebrate: boolean?)
 	bannerToken += 1
 	local mine = bannerToken
 	bannerTitle.Text = title
@@ -429,7 +587,29 @@ function showBanner(title: string, sub: string?, color: Color3, hold: number)
 	bannerSub.Text = sub or ""
 	bannerSub.Visible = sub ~= nil
 	banner.Visible = true
-	Kit.appear(banner, { from = 0.4, time = 0.3 })
+	-- Under the unit-count capsule, never over it.
+	bannerY = math.max(BANNER.MinY, capsuleBottom() + BANNER.Clear)
+	placeBanner()
+	local rest = banner.Position
+	local data = State.data
+	local calm = data ~= nil and type(data.settings) == "table" and data.settings.reducedMotion == true
+	if calm then
+		banner.Position = rest
+		Kit.appear(banner, { from = 0.9, time = 0.25 })
+	else
+		-- Drops in from above, runs past its place and settles.
+		Kit.appear(banner, { from = 0.7, time = 0.25 })
+		banner.Position = rest - UDim2.fromOffset(0, BANNER.DropFrom)
+		Kit.tween(banner, BANNER.DropTime, { Position = rest }, Enum.EasingStyle.Back)
+		if celebrate then
+			Kit.confetti(banner, { Origin = UDim2.fromScale(0.5, 0.4), Count = BANNER.PassConfetti, ZIndex = 31, Power = 1.2 })
+			task.delay(BANNER.PassPopAt, function()
+				if bannerToken == mine then
+					Kit.pop(banner, BANNER.PassPop)
+				end
+			end)
+		end
+	end
 	task.delay(hold, function()
 		if bannerToken == mine then
 			Kit.disappear(banner)
@@ -527,26 +707,62 @@ local function unbind()
 	end
 end
 
+-- During a run the Roblox player list (it covered the stand's wall words and the score pill)
+-- and the unrelated tycoon chrome step aside; each block gets back the Visible it had.
+local stashed: { [GuiObject]: boolean } = {}
+local function setChrome(on: boolean)
+	Kit.hidePlayerList("mog", on)
+	local gui = screen
+	if not gui then
+		return
+	end
+	if on then
+		for _, name in MOG_CLUTTER do
+			local block = gui:FindFirstChild(name)
+			if block and block:IsA("GuiObject") and stashed[block] == nil then
+				stashed[block] = block.Visible
+				block.Visible = false
+			end
+		end
+	else
+		for block, was in stashed do
+			block.Visible = was
+		end
+		table.clear(stashed)
+	end
+end
+
+-- The one way out of a run: "finish" and "stop" (a quit, Home, a mode switch, a respawn)
+-- and the snapshot's modes.mog.running going false. Space / Enter go back to the game, the
+-- HUD gets its screen back (RunActive) and no ring, banner or queue panel stays up.
 local function hide()
 	active = false
 	unbind()
 	check = nil
+	quitArmed = false
 	hideQueue()
 	if screen then
 		screen:SetAttribute("RunActive", false)
 	end
+	setChrome(false)
 	if root.Visible then
 		Kit.disappear(root)
 	end
+	-- A banner on its way in or waiting to leave goes with the run.
+	bannerToken += 1
 	banner.Visible = false
 end
 
 local function onStart(p: any)
 	hideQueue()
 	active, passedShown, quitArmed = true, false, false
+	startedAt = os.clock()
 	pvp = p.vs == "pvp"
 	shownScore = num(p.score, 0)
 	scoreLabel.Text = Format.short(shownScore)
+	bestToBeat = if pvp then 0 else math.max(0, math.floor(num(p.best, 0)))
+	beatLabel.Text = ""
+	paintBeat(shownScore)
 	comboChip.Visible = false
 	Kit.setButton(quitButton, quitLabel(), C.SurfaceHi)
 	quitButton.Size = UDim2.fromOffset(30, 28)
@@ -569,6 +785,7 @@ local function onStart(p: any)
 		-- Tells Tutorial to step aside, like a Parkour run.
 		screen:SetAttribute("RunActive", true)
 	end
+	setChrome(true)
 	bind()
 	Sounds.play("Ready")
 	if pvp then
@@ -598,6 +815,8 @@ function MogHud.onNotify(p: any)
 		return
 	elseif event == "check" then
 		onCheck(p)
+	elseif event == "zone" then
+		onZone(p)
 	elseif event == "result" then
 		onResult(p)
 	elseif event == "round" then
@@ -607,7 +826,13 @@ function MogHud.onNotify(p: any)
 		if passedNow then
 			passedShown = true
 			local cash = num(p.cash, 0)
-			showBanner("MOG TEST PASSED!", if cash > 0 then "+" .. Format.money(cash) else "Keep mogging!", C.Gold, 2.4)
+			-- A pass inside the reward cooldown pays the run again bonus (`pay` = "repeat").
+			local sub = if p.pay == "resting"
+				then "Bonus is resting. Keep mogging!"
+				elseif cash <= 0 then "Keep mogging!"
+				elseif p.pay == "repeat" then "Run again bonus +" .. Format.money(cash)
+				else "+" .. Format.money(cash)
+			showBanner("MOG TEST PASSED!", sub, C.Gold, 2.4, true)
 		else
 			local mogged = type(p.mogged) == "table" and p.mogged.name
 			showBanner("MOGGED!", if mogged then tostring(mogged) .. " is out!" else nil, W.Cream, 1.5)
@@ -648,8 +873,8 @@ function MogHud.build(screenGui: ScreenGui)
 	root = Kit.new("Frame", {
 		Name = "MogHud",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(300, 410),
-		Position = UDim2.new(1, -36, 0.5, 6),
+		Size = UDim2.fromOffset(ROOT_W, ROOT_H),
+		Position = UDim2.new(1, -ROOT_RIGHT, 0.5, ROOT_DY),
 		AnchorPoint = Vector2.new(1, 0.5),
 		Visible = false,
 		ZIndex = 20,
@@ -659,7 +884,7 @@ function MogHud.build(screenGui: ScreenGui)
 	-- Score pill (glass, like the HUD's run pill) with the quiet quit button on its right end.
 	local scorePanel = Kit.hudGlass(root, {
 		Name = "Score",
-		Size = UDim2.fromOffset(200, 44),
+		Size = UDim2.fromOffset(SCORE_W, 44),
 		Position = UDim2.new(0.5, 0, 0, 0),
 		AnchorPoint = Vector2.new(0.5, 0),
 	})
@@ -674,6 +899,32 @@ function MogHud.build(screenGui: ScreenGui)
 		Size = UDim2.new(1, -84, 1, 0),
 		Position = UDim2.fromOffset(42, 0),
 		ZIndex = 3,
+	})
+	scoreColor = scoreLabel.TextColor3
+	-- The target: between the score and the quit button (hidden while "QUIT?" is up).
+	beatLabel = Kit.text(scorePanel, {
+		Name = "Beat",
+		Text = "",
+		Font = F.Display,
+		TextSize = BEAT.TextSize,
+		TextWrapped = false,
+		TextColor3 = C.GoldInk,
+		BackgroundColor3 = C.Gold,
+		BackgroundTransparency = 0,
+		Size = UDim2.fromOffset(BEAT.Width, BEAT.Height),
+		Position = UDim2.new(1, -44, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		StrokeThickness = 0,
+		Visible = false,
+		ZIndex = 3,
+	})
+	Kit.round(beatLabel)
+	Kit.new("UIStroke", {
+		Color = C.GoldInk,
+		Thickness = 2,
+		Transparency = 0.3,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		Parent = beatLabel,
 	})
 	quitButton = Kit.button(scorePanel, {
 		Name = "Quit",
@@ -715,6 +966,7 @@ function MogHud.build(screenGui: ScreenGui)
 		end
 		-- First tap arms it: "QUIT?" for a few seconds.
 		quitArmed = true
+		paintBeat(shownScore)
 		Kit.setButton(quitButton, "QUIT?", C.Bad)
 		Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(64, 28) }, Enum.EasingStyle.Back)
 		task.delay(3, function()
@@ -722,6 +974,9 @@ function MogHud.build(screenGui: ScreenGui)
 				quitArmed = false
 				Kit.setButton(quitButton, quitLabel(), C.SurfaceHi)
 				Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(30, 28) })
+				if active then
+					paintBeat(shownScore)
+				end
 			end
 		end)
 	end
@@ -810,7 +1065,7 @@ function MogHud.build(screenGui: ScreenGui)
 		Name = "RingHolder",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(RING, RING),
-		Position = UDim2.new(0.5, 0, 0, 120),
+		Position = UDim2.new(0.5, 0, 0, RING_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = root,
 	})
@@ -823,7 +1078,7 @@ function MogHud.build(screenGui: ScreenGui)
 		BackgroundTransparency = 1,
 		-- Gamepad presses with A (ContextActionService); the selection never lands here.
 		Selectable = false,
-		Size = UDim2.fromOffset(RING + 40, RING + 40),
+		Size = UDim2.fromOffset(RING + RING_TAP * 2, RING + RING_TAP * 2),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 12,
@@ -843,17 +1098,22 @@ function MogHud.build(screenGui: ScreenGui)
 		Visible = false,
 		ZIndex = 11,
 	})
-	resultLabel = Kit.number(ringHolder, {
+	resultLabel = Kit.hudText(ringHolder, {
 		Name = "Result",
 		Text = "",
-		TextSize = 34,
+		Font = F.Display,
+		TextSize = RESULT.TextSize,
 		TextWrapped = false,
-		Size = UDim2.fromOffset(260, 40),
+		Size = UDim2.fromOffset(RESULT.Width, RESULT.Height),
 		Position = RESULT_FROM,
-		AnchorPoint = Vector2.new(0.5, 0.5),
+		AnchorPoint = Vector2.new(1, 0.5),
+		TextXAlignment = Enum.TextXAlignment.Right,
 		TextTransparency = 1,
+		StrokeThickness = RESULT.Stroke,
+		StrokeColor = RESULT.StrokeColor,
 		ZIndex = 14,
 	})
+	resultTint = Kit.gradient(resultLabel, Color3.new(1, 1, 1), Color3.new(1, 1, 1), 90)
 	Kit.new("UIScale", { Parent = resultLabel })
 
 	-- The rival: name and HP bar under the ring.
@@ -1006,8 +1266,8 @@ function MogHud.build(screenGui: ScreenGui)
 	banner = Kit.new("Frame", {
 		Name = "MogBanner",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(560, 90),
-		Position = UDim2.new(0.5, 0, 0, 96),
+		Size = UDim2.fromOffset(BANNER_W, BANNER_H),
+		Position = UDim2.new(0.5, 0, 0, bannerY),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Visible = false,
 		ZIndex = 30,
@@ -1029,6 +1289,41 @@ function MogHud.build(screenGui: ScreenGui)
 		Position = UDim2.fromOffset(0, 58),
 		ZIndex = 31,
 	})
+
+	-- Small screens: where the banner's row reaches down to the ring (its tap target and the
+	-- rising result word), the banner slides left just far enough to stay clear of it, so
+	-- "NEW BEST!" never lands on the ring. Roomy screens keep it centred.
+	placeBanner = function()
+		local shift = 0
+		local area = Kit.designArea(screenGui)
+		if area then
+			local ringLeft = area.X - ROOT_RIGHT - ROOT_W / 2 - RING / 2 - RING_TAP
+			local ringTop = area.Y / 2 + ROOT_DY - ROOT_H / 2 + RING_Y - RESULT_RISE
+			if bannerY + BANNER_H > ringTop then
+				local room = ringLeft - BANNER_GAP - (area.X / 2 + BANNER_W / 2)
+				-- Never past the left edge: a screen too narrow for both keeps the banner whole.
+				shift = math.clamp(room, math.min(0, BANNER_W / 2 - area.X / 2), 0)
+			end
+		end
+		banner.Position = UDim2.new(0.5, shift, 0, bannerY)
+	end
+	placeBanner()
+	pcall(function()
+		screenGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(placeBanner)
+		local uiScale = screenGui:FindFirstChildOfClass("UIScale")
+		if uiScale then
+			uiScale:GetPropertyChangedSignal("Scale"):Connect(placeBanner)
+		end
+	end)
+
+	-- The safety net: the server says no Mog run is on while the ring is still up here (a
+	-- lost "finish" / "stop"), so the keys and the HUD are never held by a run that is over.
+	State.changed.Event:Connect(function(data: any)
+		local info = type(data) == "table" and type(data.modes) == "table" and data.modes.mog
+		if active and type(info) == "table" and info.running == false and os.clock() - startedAt > 2 then
+			hide()
+		end
+	end)
 end
 
 return MogHud

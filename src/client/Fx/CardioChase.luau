@@ -37,6 +37,7 @@ local Theme = require(ReplicatedStorage:WaitForChild("Theme")) :: any
 local Client = script.Parent.Parent
 local Sounds = require(Client.Sounds) :: any
 local Sprites = require(script.Parent.Sprites)
+local Highlights = require(script.Parent.Highlights)
 
 local ChaseFx = {}
 
@@ -297,7 +298,7 @@ local function removeChad()
 	end
 	chad, rig = nil, nil
 	if outline then
-		outline.Enabled = false
+		Highlights.want(outline, false)
 		outline.Adornee = nil
 	end
 end
@@ -311,6 +312,18 @@ local function clear()
 		meter.Visible = false
 	end
 	setDanger(0)
+end
+
+-- The run itself is over: the big words ("RUN!", "MOGGED!") go with the chase.
+local function stop()
+	clear()
+	if gui then
+		for _, child in gui:GetChildren() do
+			if child.Name == "Splash" then
+				child:Destroy()
+			end
+		end
+	end
 end
 
 local function warnMark(model: Model, height: number)
@@ -362,6 +375,7 @@ local function outlineOf(): Highlight
 	made.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	made.Enabled = false
 	made.Parent = Workspace
+	Highlights.claim(made, Highlights.PRIORITY.Chase, false)
 	outline = made
 	return made
 end
@@ -401,7 +415,7 @@ local function buildChad(p: any, scale: number): Model?
 	m.Parent = folder
 	local h = outlineOf()
 	h.Adornee = m
-	h.Enabled = true
+	Highlights.want(h, true)
 	return m
 end
 
@@ -619,9 +633,13 @@ function ChaseFx.onNotify(p: any)
 	elseif event == "chaseEnd" then
 		onEnd(p)
 	elseif event == "stop" then
-		clear()
+		stop()
 	end
 end
+
+-- Fx.Cardio calls this on every way out of a run (its own "stop" and the snapshot's
+-- `running` going false), so the chaser, the meter and the red vignette never outlive it.
+ChaseFx.stop = stop
 
 function ChaseFx.init()
 	Net.event("Notify").OnClientEvent:Connect(function(payload)
@@ -629,7 +647,7 @@ function ChaseFx.init()
 			ChaseFx.onNotify(payload)
 		end
 	end)
-	player.CharacterRemoving:Connect(clear)
+	player.CharacterRemoving:Connect(stop)
 end
 
 return ChaseFx

@@ -2,14 +2,21 @@
 	MapPicker: the "Maps" window (docs/parkour-maps.md, "Picker + server").
 
 	Header "PICK A MAP". Left: a 2-column grid of the ten Parkour map cards, stretched so all
-	ten fit without scrolling (accent band with the map's icon, "Level n", the best time and a
-	check when cleared or a lock badge when locked; the name and difficulty pips below). The
-	selected card carries a thick gold rim, a lighter body and a gold chevron; a locked one has
-	a grey band (text kept bright) and wobbles with "Clear <previous map> first!" when tapped.
+	ten fit without scrolling (accent band with the map's icon, "MAP n", the best time and a
+	check when cleared or a lock badge when locked; the name and "Difficulty n/10" with its
+	pips below). The
+	selected card carries a thick gold rim, a lighter body and a gold chevron; every card's band
+	is its map's theme colour (HEADERS) with a faint wash of it over the body; a locked one has
+	a darker, greyer band of that colour (text kept bright) with what its first clear pays ("+$1.2K") beside the lock,
+	"Clear <previous map> first" in place of its pips, and shakes with a "Clear <previous map>
+	first!" bubble when tapped.
 	Right, top to bottom: the selected map in a slowly orbiting ViewportFrame preview (panel
-	width, about 45% of its height) with a "Level n" chip, name, pips, best/clears, blurb, the
-	reward line and a gold PLAY (RESTART while that map is running) that fires ModeStart and
-	closes every window. When the screen or window is narrow (viewport < 700 or window < 750
+	width, about 45% of its height) with a "MAP n" chip, name, pips labelled "Difficulty
+	n/10", best/clears, blurb, the reward line (inside the reward cooldown: "Run again: +$X
+	· full in m:ss", what a clean run pays on every finish, from rewardPreview's
+	repeatShare; "Bonus is resting, back in m:ss" while that map's bonus rests, from
+	levels[i].repeatRest, like the finish card; "Gear on: no reward" with a coil chosen) and a gold PLAY (RESTART while that map is running) that fires ModeStart and
+	closes every window. One word for a map everywhere: MAP. When the screen or window is narrow (viewport < 700 or window < 750
 	wide) the side panel stacks under the grid in one scrolling column.
 
 	The preview is a lazy clone of workspace.Map.GameModes.Parkour.Level<n> without its
@@ -18,16 +25,25 @@
 	bounding box (path, cloud floor and floating islands with their props) fits the viewport
 	from a high 3/4 angle. It orbits on RenderStepped only while the window is open.
 
+	Thumbnails: each map has a Studio capture (Assets "maps/Map<n>", art/assets/maps.json: its
+	start deck looking along the path under the map's own sky). Once Roblox has loaded it, it
+	fills the card body under a dark shade (dimmed on a locked card) and replaces the orbiting
+	preview with a slow zoom-and-pan drift. Until then (no pin, still in moderation, a slow
+	load) the code-drawn look stays: the card's colour wash and the ViewportFrame.
+
 	Windows.luau owns the window list: it calls MapPicker.build with its register/closeAll
 	helpers and the shared reward/pip helpers, and exposes Windows.open("Maps") and
 	Windows.openMaps(level?). Reads State.data.modes.parkour (levels[i] = { name,
-	difficulty, best, clears, bonus, theme?, blurb?, icon?, accent? }, unlocked, level,
-	running).
+	difficulty, best, clears, bonus, repeatRest?, theme?, blurb?, icon?, accent? }, unlocked, level,
+	running, gear, cooldownEnds, rewardPreview = { packCash, repeatShare? }).
 ]]
 
+local ContentProvider = game:GetService("ContentProvider")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local Assets = require(ReplicatedStorage.Shared.Assets)
+local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
 local Kit = require(script.Parent.Kit)
@@ -68,22 +84,23 @@ local SIDE_W = 300
 -- Card height: fills the grid column so all ten cards show without scrolling, within these
 -- bounds (CARD_MIN is also the height in the stacked layout and on a phone's short window,
 -- where the grid scrolls: the band plus a body that holds the name and pip rows unclipped).
-local CARD_MIN = 64
+local CARD_MIN = 72
 local CARD_MAX = 84
 local CARD_GAP = 8
 local BAND_H = 28
 local GRID_PAD = 6
 local STACK_W = 700
--- Below this window width the cards get too narrow for their pip row: stack instead.
+-- Below this window width the cards get too narrow for their pip row: stack instead. (A row
+-- that is still too narrow keeps its "Difficulty n/10" and hides the pips: deps.pips.)
 local SIDE_BY_SIDE_MIN_W = 750
 local SIDE_STACK_H = 440
 -- Side panel: fixed rows measured up from the bottom (offsets of each row's bottom edge).
 local PLAY_H = 50
 local PLAY_BOTTOM = 12
 local REWARD_BOTTOM = PLAY_BOTTOM + PLAY_H + 8
-local BLURB_H = 40
+local BLURB_H = 44
 local BLURB_BOTTOM = REWARD_BOTTOM + 18 + 4
-local STATS_H = 20
+local STATS_H = 22
 local STATS_BOTTOM = BLURB_BOTTOM + BLURB_H + 4
 local PIPS_BOTTOM = STATS_BOTTOM + STATS_H + 4
 local NAME_H = 24
@@ -100,6 +117,47 @@ local LOCKED_SLATE = Color3.fromRGB(104, 112, 138)
 -- Accent fallbacks (Theme.World keys) for maps whose data has no accent yet.
 local ACCENTS = { "Sunny", "Teal", "Blue", "Coral", "Mint", "Pink", "Grape", "Blue", "Orange", "Sunny" }
 local ICONS = { "🏖️", "🌴", "⚓", "🐠", "🫧", "🪸", "🦈", "⛈️", "🌋", "👑" }
+-- Card look per map theme (tunables): the band colour, matching the map's own path colours
+-- (World.MapDress), and the faint wash of it over the card body. Locked cards keep the hue,
+-- darker and a little greyer, so every map shows its colour before it is unlocked.
+local HEADERS: { [string]: Color3 } = {
+	beach = Color3.fromRGB(255, 214, 72),
+	cove = Color3.fromRGB(90, 214, 150),
+	bay = Color3.fromRGB(96, 136, 245),
+	reef = Color3.fromRGB(255, 96, 176),
+	bubble = Color3.fromRGB(120, 196, 255),
+	coral = Color3.fromRGB(255, 140, 80),
+	shark = Color3.fromRGB(40, 176, 186),
+	storm = Color3.fromRGB(132, 144, 182),
+	volcano = Color3.fromRGB(255, 104, 18),
+	giga = Color3.fromRGB(255, 196, 40),
+}
+local THEMES = { "beach", "cove", "bay", "reef", "bubble", "coral", "shark", "storm", "volcano", "giga" }
+local BODY_WASH = 0.8 -- body background transparency over the card (1 = no wash)
+local LOCKED_DARK = 0.38 -- locked band: share pulled toward LOCKED_SLATE
+local LOCKED_GREY = 0.3 -- ... and toward its own grey
+local ICON_PX = 24
+-- Emoji the Roblox font cannot draw (Emoji 14 bubbles and coral print the placeholder logo):
+-- big text (the preview fallback) swaps them for these, and the card band draws the map's
+-- code-built emblem (EMBLEMS) instead. EMBLEM tunables: box px, colours, stroke px.
+local GLYPH_SWAP: { [string]: string } = { ["🫧"] = "🔵", ["🪸"] = "🐚" }
+local EMBLEM = {
+	BOX = 26,
+	STROKE = 1.5,
+	BUBBLE_FILL = Color3.fromRGB(206, 246, 255),
+	BUBBLE_EDGE = Color3.fromRGB(28, 86, 170),
+	BUBBLE_ALPHA = 0.1,
+	-- Bubbles: { centre x, centre y (box scale), diameter px }.
+	BUBBLES = { { 0.4, 0.6, 16 }, { 0.76, 0.3, 10 }, { 0.2, 0.2, 7 } },
+	SHINE = Color3.new(1, 1, 1),
+	CORAL = Color3.fromRGB(240, 56, 96),
+	CORAL_EDGE = Color3.new(1, 1, 1),
+	CORAL_TIP = Color3.fromRGB(255, 232, 214),
+	-- Coral branches: { foot x, foot y (box scale), length px, width px, tilt degrees }.
+	BRANCHES = { { 0.5, 0.95, 20, 5, 0 }, { 0.42, 0.62, 11, 4, -38 }, { 0.58, 0.55, 11, 4, 40 } },
+}
+-- Every caption on the cards and side panel is held at least this many px on the glass.
+local MIN_TEXT_PX = 15
 local STRIP = { ParkourFinish = true, ParkourWater = true, Trigger = true }
 -- The sky under the cloud floor (preview plane and well).
 local SEA = Color3.fromRGB(120, 190, 245)
@@ -109,6 +167,31 @@ local PREVIEW_FOV = 40
 local PREVIEW_PITCH = 40
 local PREVIEW_MARGIN = 1.12
 local ORBIT_SPEED = 0.12
+-- Map thumbnails (tunables): the card shade behind the name and pips, the locked dimming and
+-- the side preview's drift.
+local THUMB = {
+	KEY = "maps/Map%d",
+	SHADE = Color3.fromRGB(8, 12, 36),
+	SHADE_LEFT = 0.3, -- shade transparency on the text side (left) ...
+	SHADE_RIGHT = 0.9, -- ... and on the right
+	LOCKED_TINT = Color3.fromRGB(120, 124, 142), -- ImageColor3 on a locked card
+	LOCKED_SHADE_LEFT = 0.15,
+	DRIFT_ZOOM = 1.1, -- side preview: base zoom of the drift
+	DRIFT_BREATH = 0.04, -- zoom swing
+	DRIFT_PAN = 0.03, -- sideways pan, share of the well
+	DRIFT_SPEED = 0.3, -- radians per second
+}
+
+-- Captions and map names stay readable: held on the glass at the caption size plus `extra`,
+-- rounded up and never under 13 px (a phone's 12 px captions included), whatever the screen
+-- and the window's own scale (the same floor as Windows.luau's captions).
+local function readable(label: TextLabel, extra: number?): TextLabel
+	-- Kit.WINDOW's caption size on the glass (Kit.text holds every label in a window at it
+	-- anyway): `extra` px over it for the labels that lead their card.
+	local floor = if Kit.touch then Kit.WINDOW.TextPxTouch else Kit.WINDOW.TextPx
+	Kit.holdText(label, math.max(Kit.captionPx(), floor, MIN_TEXT_PX) + (extra or 0), nil, true)
+	return label
+end
 
 local function parkourInfo(): { [string]: any }?
 	local data = State.data
@@ -120,7 +203,16 @@ local function levelList(info: { [string]: any }?): { any }
 	return if info and type(info.levels) == "table" then info.levels else {}
 end
 
+local function themeOf(lv: any, i: number): string?
+	return if type(lv) == "table" and type(lv.theme) == "string" then lv.theme else THEMES[i]
+end
+
 local function accentOf(lv: any, i: number): Color3
+	local theme = themeOf(lv, i)
+	local header = theme and HEADERS[theme]
+	if header then
+		return header
+	end
 	local key = if type(lv) == "table" and type(lv.accent) == "string" then lv.accent else ACCENTS[i] or "Sunny"
 	local color = (Theme.World :: any)[key]
 	if typeof(color) ~= "Color3" then
@@ -130,11 +222,131 @@ local function accentOf(lv: any, i: number): Color3
 end
 
 local function iconOf(lv: any, i: number): string
-	return if type(lv) == "table" and type(lv.icon) == "string" and lv.icon ~= "" then lv.icon else ICONS[i] or "🏁"
+	local icon = if type(lv) == "table" and type(lv.icon) == "string" and lv.icon ~= "" then lv.icon else ICONS[i] or "🏁"
+	return GLYPH_SWAP[icon] or icon
+end
+
+-- Code-built band emblems for the maps whose emoji does not render (EMBLEM above).
+local function emblemDisc(parent: Instance, name: string, x: number, y: number, d: number, color: Color3, alpha: number, z: number): Frame
+	local disc = Kit.new("Frame", {
+		Name = name,
+		BackgroundColor3 = color,
+		BackgroundTransparency = alpha,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(x, y),
+		Size = UDim2.fromOffset(d, d),
+		ZIndex = z,
+		Parent = parent,
+	})
+	Kit.round(disc)
+	return disc
+end
+
+local EMBLEMS: { [string]: (Frame) -> () } = {}
+
+EMBLEMS.bubble = function(box)
+	for n, b in EMBLEM.BUBBLES do
+		local disc = emblemDisc(box, "Bubble" .. n, b[1], b[2], b[3], EMBLEM.BUBBLE_FILL, EMBLEM.BUBBLE_ALPHA, 4)
+		Kit.new("UIStroke", { Thickness = EMBLEM.STROKE, Color = EMBLEM.BUBBLE_EDGE, Parent = disc })
+		emblemDisc(disc, "Shine", 0.32, 0.3, math.max(2, math.floor(b[3] * 0.28)), EMBLEM.SHINE, 0, 5)
+	end
+end
+
+EMBLEMS.coral = function(box)
+	for n, b in EMBLEM.BRANCHES do
+		local rad = math.rad(b[5])
+		-- A rounded bar standing on its foot, tilted about it: the centre moves half a length
+		-- along the tilt.
+		local cx = b[1] + math.sin(rad) * b[3] / 2 / EMBLEM.BOX
+		local cy = b[2] - math.cos(rad) * b[3] / 2 / EMBLEM.BOX
+		local bar = Kit.new("Frame", {
+			Name = "Branch" .. n,
+			BackgroundColor3 = EMBLEM.CORAL,
+			BorderSizePixel = 0,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(cx, cy),
+			Size = UDim2.fromOffset(b[4], b[3]),
+			Rotation = b[5],
+			ZIndex = 4,
+			Parent = box,
+		})
+		Kit.round(bar)
+		Kit.new("UIStroke", { Thickness = EMBLEM.STROKE, Color = EMBLEM.CORAL_EDGE, Parent = bar })
+		local tx = b[1] + math.sin(rad) * b[3] / EMBLEM.BOX
+		local ty = b[2] - math.cos(rad) * b[3] / EMBLEM.BOX
+		emblemDisc(box, "Tip" .. n, tx, ty, b[4] + 2, EMBLEM.CORAL_TIP, 0, 5)
+	end
+end
+
+-- Shows the map's emblem on its band icon label (built once per label), or the emoji.
+local function paintIcon(label: TextLabel, lv: any, i: number)
+	local theme = themeOf(lv, i)
+	local draw = theme and EMBLEMS[theme]
+	local box = label:FindFirstChild("Emblem")
+	if draw and not box then
+		local made = Kit.new("Frame", {
+			Name = "Emblem",
+			BackgroundTransparency = 1,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(EMBLEM.BOX, EMBLEM.BOX),
+			ZIndex = 4,
+			Parent = label,
+		})
+		draw(made)
+		box = made
+	end
+	if box and box:IsA("GuiObject") then
+		box.Visible = draw ~= nil
+	end
+	label.Text = if draw then "" else iconOf(lv, i)
 end
 
 local function nameOf(lv: any, i: number): string
-	return if type(lv) == "table" and type(lv.name) == "string" then lv.name else "Level " .. i
+	return if type(lv) == "table" and type(lv.name) == "string" then lv.name else "Map " .. i
+end
+
+-- The full reward of map `level` (its first clear, or a finish after the cooldown): the
+-- snapshot's rewardPreview is priced for info.level, so it is rescaled to `level`'s bonus
+-- (like Windows' parkourReward). nil without a snapshot.
+local function packCash(info: { [string]: any }?, level: number): number?
+	local list = levelList(info)
+	local lv = list[level]
+	local preview = if info then info.rewardPreview else nil
+	if not info or type(preview) ~= "table" or type(lv) ~= "table" then
+		return nil
+	end
+	local current = list[tonumber(info.level) or 1]
+	local currentBonus = if type(current) == "table" then tonumber(current.bonus) or 1 else 1
+	return math.floor((tonumber(preview.packCash) or 0) / math.max(currentBonus, 0.01) * (tonumber(lv.bonus) or 1) + 0.5)
+end
+
+-- The thumbnail id of map `n`, or nil when it was never pinned.
+local function thumbOf(n: number): string?
+	return Assets.image(string.format(THUMB.KEY, n))
+end
+
+-- True once Roblox has fetched the thumbnail (false while it loads, sits in moderation or
+-- failed). The fetch status, not ImageLabel.IsLoaded: that one stays false in Studio.
+local function thumbReady(url: string?): boolean
+	if not url or url == "" then
+		return false
+	end
+	local ok, status = pcall(function()
+		return ContentProvider:GetAssetFetchStatus(url)
+	end)
+	return ok and status == Enum.AssetFetchStatus.Success
+end
+
+-- Calls `fn` whenever the fetch status of `url` changes (nothing where the API is missing).
+local function onThumbFetch(url: string?, fn: () -> ())
+	if not url then
+		return
+	end
+	pcall(function()
+		ContentProvider:GetAssetFetchStatusChangedSignal(url):Connect(fn)
+	end)
 end
 
 -- Preview -------------------------------------------------------------------------------
@@ -243,13 +455,19 @@ type Card = {
 	body: CanvasGroup,
 	chevron: TextLabel,
 	stroke: UIStroke?,
+	-- Map thumbnail under the body (transparent until loaded) and its text shade.
+	thumb: ImageLabel,
+	thumbShade: UIGradient,
 	setPips: (number) -> (),
+	pipRow: GuiObject?,
+	-- "Clear <previous map> first" on a locked card (where the pips are).
+	lockedLine: TextLabel,
 }
 
--- Grey version of an accent for locked bands: its luminance, pulled toward a cool slate.
+-- A locked band: the accent kept recognisable, a little greyer and pulled toward a cool slate.
 local function desaturate(color: Color3): Color3
 	local y = color.R * 0.3 + color.G * 0.59 + color.B * 0.11
-	return Color3.new(y, y, y):Lerp(LOCKED_SLATE, 0.6)
+	return color:Lerp(Color3.new(y, y, y), LOCKED_GREY):Lerp(LOCKED_SLATE, LOCKED_DARK)
 end
 
 function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
@@ -272,6 +490,8 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 	scroll.ScrollBarImageColor3 = C.Text
 	scroll.ScrollBarImageTransparency = 0.35
 	Kit.list(scroll, 10)
+	-- Stacked, the map's details are under the fold: a shade and a bouncing arrow say so.
+	Kit.scrollCue(scroll)
 	local grid = Kit.new("Frame", {
 		Name = "Grid",
 		BackgroundTransparency = 1,
@@ -299,7 +519,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Radius = Kit.RADIUS.M + 2,
 	})
 
-	-- Preview well with the viewport, a fallback icon and a "Level n" chip.
+	-- Preview well with the viewport, a fallback icon and a "MAP n" chip.
 	local previewWell = Kit.well(side, {
 		Name = "Preview",
 		Color = SEA,
@@ -323,13 +543,26 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 	camera.FieldOfView = PREVIEW_FOV
 	camera.Parent = viewport
 	viewport.CurrentCamera = camera
+	-- The map's thumbnail over the viewport, transparent until it is fetched (showPreview).
+	local shot = Kit.new("ImageLabel", {
+		Name = "Shot",
+		BackgroundTransparency = 1,
+		Image = "",
+		ImageTransparency = 1,
+		ScaleType = Enum.ScaleType.Crop,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromScale(THUMB.DRIFT_ZOOM, THUMB.DRIFT_ZOOM),
+		ZIndex = 3,
+		Parent = previewWell,
+	}) :: ImageLabel
 	local fallback = Kit.text(previewWell, {
 		Name = "Fallback",
 		Text = "",
 		TextSize = 72,
 		Size = UDim2.fromScale(1, 1),
 		StrokeThickness = 0,
-		ZIndex = 3,
+		ZIndex = 4,
 	})
 	local levelChip = Kit.pill(side, {
 		Name = "LevelChip",
@@ -342,6 +575,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Position = UDim2.fromOffset(PREVIEW_INSET + 8, PREVIEW_INSET + 8),
 		ZIndex = 4,
 	})
+	readable(levelChip)
 
 	-- About 45% of the side panel's height, capped so the rows below always fit.
 	local function sizePreview()
@@ -376,7 +610,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Size = UDim2.new(1, -24, 0, 16),
 		Position = UDim2.new(0, 12, 1, -(PIPS_BOTTOM + 16)),
 	})
-	local sideStats = Kit.text(side, {
+	local sideStats = readable(Kit.text(side, {
 		Name = "Stats",
 		Text = "",
 		Font = F.UI,
@@ -388,8 +622,8 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Position = UDim2.new(0, 12, 1, -STATS_BOTTOM),
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.Text,
-	})
-	local blurb = Kit.text(side, {
+	}))
+	local blurb = readable(Kit.text(side, {
 		Name = "Blurb",
 		Text = "",
 		TextSize = T.Body,
@@ -402,8 +636,8 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.TextDim,
 		StrokeThickness = 0,
-	})
-	local reward = Kit.text(side, {
+	}))
+	local reward = readable(Kit.text(side, {
 		Name = "Reward",
 		Text = "",
 		Font = F.UI,
@@ -415,7 +649,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Position = UDim2.new(0, 12, 1, -REWARD_BOTTOM),
 		AnchorPoint = Vector2.new(0, 1),
 		TextColor3 = C.MoneyText,
-	})
+	}))
 	local play = Kit.button(side, {
 		Name = "Play",
 		Text = "PLAY",
@@ -447,6 +681,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		Visible = false,
 		ZIndex = 20,
 	})
+	readable(hint)
 	local hintToken = 0
 	local function showHint(text: string)
 		hintToken += 1
@@ -479,7 +714,24 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		local offset = Vector3.new(math.cos(angle) * flat, d * math.sin(pitch), math.sin(angle) * flat)
 		camera.CFrame = CFrame.lookAt(p.center + offset, p.center)
 	end
+	local drift = 0
+	local shotOn = false
 	local function showPreview(n: number)
+		local url = thumbOf(n)
+		if shot.Image ~= (url or "") then
+			shot.Image = url or ""
+		end
+		shotOn = thumbReady(url)
+		shot.ImageTransparency = if shotOn then 0 else 1
+		if shotOn then
+			-- The capture replaces the orbit (and its fallback icon).
+			if shown then
+				shown.model.Parent = nil
+				shown = nil
+			end
+			fallback.Visible = false
+			return
+		end
 		local p = previews[n]
 		if not p then
 			local ok, built = pcall(buildPreview, n)
@@ -513,6 +765,13 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 					angle += dt * ORBIT_SPEED
 					placeCamera()
 				end
+				if shotOn then
+					-- Slow zoom-and-pan drift over the still.
+					drift += dt * THUMB.DRIFT_SPEED
+					local zoom = THUMB.DRIFT_ZOOM + THUMB.DRIFT_BREATH * math.sin(drift * 0.7)
+					shot.Size = UDim2.fromScale(zoom, zoom)
+					shot.Position = UDim2.fromScale(0.5 + THUMB.DRIFT_PAN * math.sin(drift), 0.5)
+				end
 			end)
 		end)
 	end)
@@ -545,12 +804,39 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			LayoutOrder = i,
 			Radius = Kit.RADIUS.M,
 		})
+		-- The map's thumbnail fills the body (its rounded top tucked under the band), with a
+		-- left-to-right shade so the name and pips read on it. Transparent until loaded.
+		local thumb = Kit.new("ImageLabel", {
+			Name = "Thumb",
+			BackgroundTransparency = 1,
+			Image = thumbOf(i) or "",
+			ImageTransparency = 1,
+			ScaleType = Enum.ScaleType.Crop,
+			Size = UDim2.new(1, 0, 1, -(BAND_H - Kit.RADIUS.M)),
+			Position = UDim2.fromOffset(0, BAND_H - Kit.RADIUS.M),
+			ZIndex = 2,
+			Parent = frame,
+		}) :: ImageLabel
+		Kit.corner(thumb, Kit.RADIUS.M)
+		local shade = Kit.new("Frame", {
+			Name = "Shade",
+			BackgroundColor3 = THUMB.SHADE,
+			BorderSizePixel = 0,
+			Size = UDim2.fromScale(1, 1),
+			Visible = false,
+			Parent = thumb,
+		})
+		Kit.corner(shade, Kit.RADIUS.M)
+		local thumbShade = Kit.new("UIGradient", {
+			Transparency = NumberSequence.new(THUMB.SHADE_LEFT, THUMB.SHADE_RIGHT),
+			Parent = shade,
+		}) :: UIGradient
 		local band = Kit.new("Frame", {
 			Name = "Band",
 			BackgroundColor3 = C.Gold,
 			BorderSizePixel = 0,
 			Size = UDim2.new(1, 0, 0, BAND_H),
-			ZIndex = 2,
+			ZIndex = 3,
 			Parent = frame,
 		})
 		Kit.corner(band, Kit.RADIUS.M)
@@ -570,15 +856,15 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		local icon = Kit.text(band, {
 			Name = "Icon",
 			Text = "",
-			TextSize = 18,
+			TextSize = ICON_PX,
 			Size = UDim2.fromOffset(26, BAND_H),
 			Position = UDim2.fromOffset(6, 0),
 			StrokeThickness = 0,
 			ZIndex = 3,
 		})
-		local levelLabel = Kit.title(band, {
+		local levelLabel = readable(Kit.title(band, {
 			Name = "Level",
-			Text = "Level " .. i,
+			Text = "MAP " .. i,
 			TextSize = T.Small,
 			TextWrapped = false,
 			TextXAlignment = Enum.TextXAlignment.Left,
@@ -586,14 +872,14 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			Position = UDim2.fromOffset(34, 0),
 			StrokeThickness = 0,
 			ZIndex = 3,
-		})
+		}))
 		-- White on a locked (grey) band wears the dark outline of text on glass; ink text on
 		-- an accent band has none.
 		local levelInk = Kit.textStroke(levelLabel, Theme.Glass.TextStroke, Theme.Glass.TextStrokeFade)
 		levelInk.Color = Theme.Glass.TextInk
 		levelInk.Enabled = false
 		-- Best time on the right of the band, then the cleared check or the lock.
-		local stats = Kit.text(band, {
+		local stats = readable(Kit.text(band, {
 			Name = "Stats",
 			Text = "",
 			Font = F.UI,
@@ -606,7 +892,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			AnchorPoint = Vector2.new(1, 0),
 			StrokeThickness = 0,
 			ZIndex = 3,
-		})
+		}))
 		local check = Kit.icon(band, "Check", 16, C.Good, {
 			Position = UDim2.new(1, -8, 0.5, 0),
 			AnchorPoint = Vector2.new(1, 0.5),
@@ -637,24 +923,29 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			BorderSizePixel = 0,
 			Size = UDim2.new(1, 0, 1, -BAND_H),
 			Position = UDim2.fromOffset(0, BAND_H),
-			ZIndex = 2,
+			ZIndex = 3,
 			Parent = frame,
 		}) :: CanvasGroup
+		Kit.corner(body, Kit.RADIUS.M)
 		Kit.list(body, 2).VerticalAlignment = Enum.VerticalAlignment.Center
 		Kit.padding(body, 0, 10)
-		local name = Kit.title(body, {
-			Name = "MapName",
-			Text = "",
-			TextSize = T.Body,
-			TextWrapped = false,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			-- Leaves room on the right for the selected card's chevron.
-			Size = UDim2.new(1, -14, 0, 18),
-			LayoutOrder = 1,
-			TextColor3 = C.Text,
-			ZIndex = 2,
-		})
+		-- Map names are the biggest text on a card: two px over the captions.
+		local name = readable(
+			Kit.title(body, {
+				Name = "MapName",
+				Text = "",
+				TextSize = T.Body,
+				TextWrapped = false,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				-- Leaves room on the right for the selected card's chevron.
+				Size = UDim2.new(1, -14, 0, 22),
+				LayoutOrder = 1,
+				TextColor3 = C.Text,
+				ZIndex = 2,
+			}),
+			2
+		)
 		local setPips = deps.pips(body, {
 			Name = "Difficulty",
 			Pip = 8,
@@ -664,6 +955,21 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		if pipRow and pipRow:IsA("GuiObject") then
 			pipRow.LayoutOrder = 2
 		end
+		local lockedLine = readable(Kit.text(body, {
+			Name = "Locked",
+			Text = "",
+			Font = F.UI,
+			TextSize = T.Small,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Size = UDim2.new(1, 0, 0, 20),
+			LayoutOrder = 2,
+			TextColor3 = C.TextDim,
+			StrokeThickness = 0,
+			Visible = false,
+			ZIndex = 2,
+		}))
 		-- Small gold chevron on the right of the selected card's body.
 		local chevron = Kit.text(frame, {
 			Name = "Chevron",
@@ -675,7 +981,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			AnchorPoint = Vector2.new(1, 0.5),
 			StrokeThickness = 0,
 			Visible = false,
-			ZIndex = 3,
+			ZIndex = 4,
 		})
 		local hit = Kit.new("TextButton", {
 			Name = "Hit",
@@ -699,9 +1005,19 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			body = body,
 			chevron = chevron,
 			stroke = frame:FindFirstChildOfClass("UIStroke"),
+			thumb = thumb,
+			thumbShade = thumbShade,
 			setPips = setPips,
+			pipRow = if pipRow and pipRow:IsA("GuiObject") then pipRow else nil,
+			lockedLine = lockedLine,
 		}
 		cards[i] = card
+		-- Repaint when the thumbnail arrives (the side preview swaps to it too).
+		onThumbFetch(thumbOf(i), function()
+			if window.isOpen() then
+				refresh()
+			end
+		end)
 		hit.Activated:Connect(function()
 			local info = parkourInfo()
 			local unlocked = if info then tonumber(info.unlocked) or 1 else 1
@@ -721,13 +1037,26 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		end)
 	end
 
-	local function paintCard(card: Card, i: number, lv: any, unlocked: number)
+	local function paintCard(card: Card, i: number, lv: any, unlocked: number, info: { [string]: any }?, before: any)
 		local color = accentOf(lv, i)
 		local locked = i > unlocked
 		local clears = if type(lv) == "table" then tonumber(lv.clears) or 0 else 0
 		local best = if type(lv) == "table" then tonumber(lv.best) or 0 else 0
-		-- Locked: a grey (desaturated) band with a lock badge; text stays at full brightness.
+		-- Locked: a darker, greyer band of the map's colour with a lock badge; text stays at
+		-- full brightness. The body wears a faint wash of the band colour.
 		local bandColor = if locked then desaturate(color) else color
+		-- With its thumbnail loaded the body shows the map itself (dimmed when locked) under a
+		-- shade instead of the colour wash.
+		local pictured = thumbReady(card.thumb.Image)
+		card.thumb.ImageTransparency = if pictured then 0 else 1
+		card.thumb.ImageColor3 = if locked then THUMB.LOCKED_TINT else Color3.new(1, 1, 1)
+		local shade = card.thumbShade.Parent
+		if shade and shade:IsA("GuiObject") then
+			shade.Visible = pictured
+		end
+		card.thumbShade.Transparency = NumberSequence.new(if locked then THUMB.LOCKED_SHADE_LEFT else THUMB.SHADE_LEFT, THUMB.SHADE_RIGHT)
+		card.body.BackgroundColor3 = bandColor
+		card.body.BackgroundTransparency = if pictured then 1 else BODY_WASH
 		card.band.BackgroundColor3 = bandColor
 		local cover = card.band:FindFirstChild("Cover")
 		if cover and cover:IsA("Frame") then
@@ -738,14 +1067,24 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		card.levelLabel.TextTransparency = 0
 		card.levelInk.Enabled = locked
 		card.stats.TextColor3 = ink
-		card.icon.Text = iconOf(lv, i)
+		paintIcon(card.icon, lv, i)
 		card.icon.TextTransparency = 0
 		card.name.Text = nameOf(lv, i)
 		card.setPips(if type(lv) == "table" then tonumber(lv.difficulty) or i else i)
 		card.check.Visible = clears > 0 and not locked
 		card.lock.Visible = locked
 		card.body.GroupTransparency = 0
-		if locked or clears <= 0 then
+		-- Locked: what to do ("Clear Sunny Steps first") where the pips are, and what the map's
+		-- first clear pays beside the lock.
+		if card.pipRow then
+			card.pipRow.Visible = not locked
+		end
+		card.lockedLine.Visible = locked
+		card.lockedLine.Text = if locked then string.format("Clear %s first", nameOf(before, i - 1)) else ""
+		local pays = if locked then packCash(info, i) else nil
+		if locked then
+			card.stats.Text = if pays and pays > 0 then "+" .. Format.money(pays) else ""
+		elseif clears <= 0 then
 			card.stats.Text = ""
 		else
 			card.stats.Text = if best > 0 then "Best " .. deps.runTime(best) else deps.plural(clears, "clear")
@@ -761,9 +1100,50 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		card.chevron.Visible = isSelected
 	end
 
+	-- The reward line of the selected map. Inside the reward cooldown a cleared map still
+	-- pays on every clean run (the repeat share of its pack; nothing with gear on): say so
+	-- instead of only counting the cooldown down.
+	local function paintReward(info: { [string]: any }?, list: { any })
+		local lv = list[selected]
+		if not info or type(lv) ~= "table" then
+			reward.Text = ""
+			return
+		end
+		local preview = info.rewardPreview
+		local share = if type(preview) == "table" then tonumber(preview.repeatShare) or 0 else 0
+		local left = (tonumber(info.cooldownEnds) or 0) - os.time()
+		local pack = packCash(info, selected)
+		if share <= 0 or left <= 0 or (tonumber(lv.clears) or 0) == 0 or not pack then
+			deps.parkourReward(reward, info, selected)
+			return
+		end
+		local geared = info.gear ~= nil and info.gear ~= "none"
+		-- The run again bonus rests after it was paid: this map for two minutes, every map
+		-- for one. The server says how long for each map (levels[i].repeatRest, counted down
+		-- by the snapshot's age); an older server priced only info.level.
+		local rest = 0
+		if type(lv.repeatRest) == "number" then
+			rest = math.max(0, math.ceil(lv.repeatRest - State.age()))
+		elseif type(preview) == "table" and preview.full == false and selected == (tonumber(info.level) or 1) then
+			rest = math.max(0, math.ceil((tonumber(preview.repeatRest) or 0) - State.age()))
+		end
+		-- On the green reward bar the money colour washes out: take the ink that reads on the bar.
+		local bar = reward.Parent
+		local ink = if bar
+				and bar:IsA("GuiObject")
+				and bar.BackgroundTransparency < 0.5
+			then Kit.inkOn(bar.BackgroundColor3)
+			else C.MoneyText
+		reward.TextColor3 = if geared or rest > 0 then C.TextDim else ink
+		reward.Text = if geared
+			then string.format("Gear on: no reward · full in %s", Format.time(left))
+			elseif rest > 0 then "Bonus is resting, back in " .. Format.time(rest)
+			else string.format("Run again: +%s · full in %s", Format.money(math.floor(pack * share)), Format.time(left))
+	end
+
 	local function paintSide(info: { [string]: any }?, list: { any })
 		local lv = list[selected]
-		levelChip.Text = "Level " .. selected
+		levelChip.Text = "MAP " .. selected
 		levelChip.BackgroundColor3 = accentOf(lv, selected)
 		levelChip.TextColor3 = Kit.inkOn(levelChip.BackgroundColor3)
 		sideName.Text = nameOf(lv, selected)
@@ -772,11 +1152,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		setSidePips(if type(lv) == "table" then tonumber(lv.difficulty) or selected else selected)
 		sideStats.Text = string.format("Best %s  ·  %s", if best > 0 then deps.runTime(best) else "--", deps.plural(clears, "clear"))
 		blurb.Text = if type(lv) == "table" and type(lv.blurb) == "string" then lv.blurb else "Jump, bounce and slide across the sky!"
-		if info and type(lv) == "table" then
-			deps.parkourReward(reward, info, selected)
-		else
-			reward.Text = ""
-		end
+		paintReward(info, list)
 		local runningHere = info ~= nil and info.running == true and tonumber(info.level) == selected
 		Kit.setButton(play, if runningHere then "RESTART" else "PLAY")
 		if window.isOpen() then
@@ -792,7 +1168,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		selected = math.clamp(selected, 1, unlocked)
 		for i, card in cards do
 			card.frame.Visible = #list == 0 or list[i] ~= nil
-			paintCard(card, i, list[i], unlocked)
+			paintCard(card, i, list[i], unlocked, info, list[i - 1])
 		end
 		paintSide(info, list)
 	end
@@ -846,7 +1222,26 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		end
 	end)
 	local tickId = 0
+	local preloaded = false
 	window.onOpen.Event:Connect(function()
+		if not preloaded then
+			-- Ask for every thumbnail at once; each card repaints when its own arrives.
+			preloaded = true
+			local thumbs: { Instance } = {}
+			for _, card in cards do
+				if card.thumb.Image ~= "" then
+					table.insert(thumbs, card.thumb)
+				end
+			end
+			task.spawn(function()
+				pcall(function()
+					ContentProvider:PreloadAsync(thumbs)
+				end)
+				if window.isOpen() then
+					refresh()
+				end
+			end)
+		end
 		showPreview(selected)
 		-- The cooldown line counts down while the window is open (one loop per open: a
 		-- reopen within the second retires the previous loop).
@@ -857,10 +1252,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 				task.wait(1)
 				if window.isOpen() and tickId == myId then
 					local info = parkourInfo()
-					local list = levelList(info)
-					if info and type(list[selected]) == "table" then
-						deps.parkourReward(reward, info, selected)
-					end
+					paintReward(info, levelList(info))
 				end
 			end
 		end)

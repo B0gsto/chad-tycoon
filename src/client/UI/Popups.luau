@@ -5,15 +5,26 @@
 	Everything eases: popups come in with Kit.appear and leave with
 	Kit.disappear, toasts slide into a stack, floats rise on an arc, numbers
 	count up. Celebrations use the candy colours of Theme.World (confetti,
-	soft rays, a white ring on bursts); nothing flashes the whole screen.
+	soft rays, a white ring on bursts). The one whole-screen flash is a short white
+	one under an Epic or rarer discovery (never with reduced motion).
 
 	A unit reveal is not a dialog: the unit floats over the dimmed world with
 	its text straight on the scene, and a new discovery flies off into the
-	HUD's Index button (see showReveal).
+	HUD's Index button (see showReveal). An action that discovers several tiers
+	plays one reveal per tier, lowest first (revealChain).
+
+	Not modal, straight over the game: the free gift card (Popups.gift), the centre
+	banner (Popups.banner: surge start, tutorial done; it waits for an open window to
+	close) and the surge countdown chip.
+
+	Every size, colour, duration and count of the reward moments (the reveal's escalation
+	per rarity band, the crate's rarity banner, the banners' entrance, the surge's gold
+	edge and coin rain) is in Popups.JUICE below.
 
 	Z order (ScreenGui uses Sibling ZIndex):
-	  floats 20, toasts 25, reward 30, offline 44-45, starter 46-47, confirm 49-50,
-	  cash rain 50
+	  floats 20, toasts and the surge chip 25, gift card and the surge's gold edge 27,
+	  banner 28, reward 30,
+	  offline 44-45, starter 46-47, confirm 49-50, cash rain 50
 ]]
 
 local Players = game:GetService("Players")
@@ -21,12 +32,14 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local GuiService = game:GetService("GuiService")
+local Workspace = game:GetService("Workspace")
 local ContextActionService = game:GetService("ContextActionService")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
+local Guide = require(script.Parent.Parent.Guide)
 local Hud = require(script.Parent.Hud)
 local Kit = require(script.Parent.Kit)
 local State = require(script.Parent.Parent.State)
@@ -50,11 +63,255 @@ local PREVIEW = typeof(TweenInfo.new(0)) ~= "TweenInfo"
 
 local Popups = {}
 
+--[[
+	Tunables of the reward moments: every size, colour, duration and count of the
+	escalating unit reveal, the crate's rarity banner, the centre banners and the surge's
+	gold edge and coin rain. A list of six is per rarity band, in RARITY_RANK order:
+	Common, Uncommon, Rare, Epic, Legendary, Mythic. (A field of Popups and not a set of
+	locals: this chunk sits at Luau's 200-locals limit.)
+]]
+Popups.JUICE = {
+	Reveal = {
+		-- The unit, drawn this much larger than its box (the box and the text keep their
+		-- places): it grows a little more upward than downward (HeroLift of the growth
+		-- moves its centre up), the "NEW CHAD!" line moves up out of its way by at most
+		-- LabelLift px, and the whole stage sits up to StageDrop px lower to make that room.
+		HeroScale = { 0.92, 0.96, 1.08, 1.2, 1.28, 1.36 },
+		HeroLift = 0.08,
+		LabelLift = 58,
+		StageDrop = 24,
+		-- Rays behind the unit: diameter (px), bars, seconds per turn; the lighter
+		-- counter-layer's diameter.
+		RaySize = { 560, 600, 700, 860, 1000, 1140 },
+		RayCount = { 6, 7, 9, 11, 13, 15 },
+		RaySpin = { 22, 22, 18, 13, 10, 8 },
+		InnerRaySize = { 420, 440, 500, 580, 660, 740 },
+		-- From Epic a third layer of wide white beams turns the other way.
+		OuterFrom = 4,
+		OuterSize = { 0, 0, 0, 1200, 1450, 1700 },
+		OuterCount = { 0, 0, 0, 5, 6, 8 },
+		OuterWidth = { 0, 0, 0, 80, 100, 120 },
+		OuterAlpha = { 0, 0, 0, 0.22, 0.28, 0.34 },
+		OuterSpin = { 0, 0, 0, 16, 12, 9 },
+		-- Opacity of the rarity colour washed over the whole screen, the glow's size
+		-- (x the unit) and the twinkling sparkles round the unit.
+		Wash = { 0.1, 0.12, 0.15, 0.2, 0.26, 0.32 },
+		Glow = 1.45,
+		Sparkles = { 7, 9, 11, 14, 18, 22 },
+		-- The white flash as the unit lands (from Epic): opacity, how long it stays at
+		-- full strength, its fade, and its share for a unit that is not new.
+		FlashFrom = 4,
+		FlashAlpha = { 0, 0, 0, 0.8, 0.9, 1 },
+		FlashHold = 0.12,
+		FlashFade = 0.28,
+		FlashOld = 0.6,
+		-- The pool of light on the ground under the unit (from Rare): opacity, width (x the
+		-- unit), height (x its width), where it sits (x the unit, below its centre), and its
+		-- breathing (size factor, seconds).
+		GroundAlpha = { 0, 0, 0.5, 0.65, 0.8, 0.92 },
+		GroundWidth = 1.25,
+		GroundFlat = 0.2,
+		GroundAt = 0.47,
+		GroundPulse = 1.16,
+		GroundPulseTime = 0.7,
+		-- Rings that spread over the ground from the landing (from Epic).
+		ShockRings = { 0, 0, 0, 1, 2, 3 },
+		ShockReach = 2.5,
+		ShockTime = 0.65,
+		ShockGap = 0.16,
+		-- Confetti of a new discovery: bursts (each up to Kit.confetti's 28 pieces), pieces
+		-- per burst, their power, seconds between bursts and how far to the sides they
+		-- start (px); then later showers while the card holds (count, seconds apart).
+		ConfettiBursts = { 1, 1, 1, 2, 4, 6 },
+		ConfettiCount = { 17, 22, 27, 28, 28, 28 },
+		ConfettiPower = { 1.03, 1.11, 1.19, 1.3, 1.42, 1.55 },
+		ConfettiGap = 0.14,
+		ConfettiSpread = 240,
+		Showers = { 0, 0, 0, 0, 3, 6 },
+		ShowerEvery = 0.55,
+		-- Seconds a rarer card holds longer (a chain's card, a unit that is not new, a card
+		-- with another one waiting), and how much later the first tap may dismiss it.
+		HoldExtra = { 0, 0, 0, 0, 0.4, 0.8 },
+		MinExtra = { 0, 0, 0, 0.1, 0.4, 0.8 },
+		-- The bar of light that sweeps the name (from Legendary).
+		SweepFrom = 5,
+		SweepColor = C.GoldLight,
+		SweepWidth = 120,
+		SweepAlpha = 0.6,
+		SweepTime = 0.7,
+		SweepEvery = 1.7,
+	},
+	-- The top tier only: crowns bursting out from behind the unit in waves, a gold ray
+	-- layer, and the name stamped in letter by letter in gold between two crowns.
+	Top = {
+		Color = C.Gold,
+		Crowns = 12,
+		CrownSize = 52,
+		CrownReach = 1.05,
+		CrownTime = 0.55,
+		CrownHold = 0.45,
+		CrownWaves = 3,
+		CrownWaveGap = 0.5,
+		RaySize = 900,
+		RayCount = 10,
+		RayWidth = 56,
+		RayAlpha = 0.4,
+		RaySpin = 14,
+		LetterFrom = 2.8,
+		LetterTime = 0.24,
+		LetterGap = 0.055,
+		LetterWave = 5,
+		LetterWaveTime = 0.55,
+		LetterTop = Color3.fromRGB(255, 250, 205),
+		LetterBottom = Color3.fromRGB(255, 176, 30),
+		-- Crowns fly out over the upper arc only (radians either side of straight up) and
+		-- never land lower than CrownFloor x the unit's box below its centre: the name, the
+		-- stats and the unit's feet stay clear.
+		CrownArc = 1.9,
+		CrownFloor = 0.12,
+		-- The unit itself: a little less oversized than the band's HeroScale and grown mostly
+		-- upward, so its feet stop above the name.
+		HeroScale = 1.3,
+		HeroLift = 0.4,
+		-- Its look in the reveal: CharacterFactory already builds it as a gold statue (GILD:
+		-- metal, darker limbs and face) and Kit.unitViewport draws that metal as plastic under
+		-- GILD.Viewport's light; here the same ambient and key light, the key from the side so
+		-- one flank shines (about 255, 205, 50) and the face-on chest stays gold (230, 150, 40),
+		-- not brown. Any part still Neon is drawn as shaded gold (colours x Shade) unless
+		-- named in Keep.
+		Shade = 0.88,
+		Ambient = Color3.fromRGB(170, 150, 125),
+		Light = Color3.fromRGB(200, 186, 160),
+		LightDir = Vector3.new(-0.95, -0.7, 0.45),
+		Keep = { Eye = true, Mouth = true, Glint = true, Visor = true, Halo = true },
+		-- A rim of light: the same unit drawn flat in RimColor, RimScale x larger, behind it.
+		RimColor = Color3.fromRGB(255, 244, 196),
+		RimScale = 1.045,
+		RimAlpha = 0.1,
+		-- Behind it a dark disc (x the glow's size) inside a fainter rarity glow, and a much
+		-- softer white bloom as it lands (start transparency; the other bands start at 0.05).
+		Backdrop = Color3.fromRGB(26, 18, 44),
+		BackdropScale = 0.62,
+		BackdropAlpha = 0.12,
+		GlowAlpha = 0.62,
+		BloomAlpha = 0.65,
+	},
+	-- The crate's own moment before its unit: "LEGENDARY CRATE!" in the rarity colour.
+	Crate = {
+		-- Fx.Crates' 3D burst: how long the 2D reveal waits for it at most, how long before
+		-- the reward a burst still counts, and how many of the 2D shakes play after a 3D one
+		-- was seen (none: the banner and the unit follow the 3D burst at once, and its
+		-- CrateShake / MergeBoom stand in for the 2D shake and burst sounds).
+		BurstWait = 1.2,
+		BurstLead = 1.5,
+		ShakesAfterBurst = 0,
+		-- The banner: design px per band, the px it keeps on a phone's glass, how far above
+		-- the crate (px from the 420 px stage's top), the slam (start scale, seconds), the
+		-- shake (degrees, seconds), its confetti and the ring behind it (px).
+		TextSize = { 42, 46, 50, 56, 62, 66 },
+		TextPx = 30,
+		Y = -34,
+		Width = 900,
+		SlamFrom = 2.6,
+		SlamTime = 0.28,
+		Shake = { 3, 4, 6, 8, 10, 12 },
+		ShakeTime = 0.45,
+		Confetti = { 0, 10, 14, 20, 26, 28 },
+		Ring = { 260, 300, 360, 440, 520, 600 },
+		PlateAlpha = 0.8,
+	},
+	-- Popups.banner: the line slides in from the left past the middle and settles, the
+	-- band opens, a bar of light crosses it once; coins burst from the reward chip.
+	Banner = {
+		SlideFrom = -0.4,
+		SlideTime = 0.5,
+		BandTime = 0.3,
+		ShineAt = 0.4,
+		ShineTime = 0.55,
+		ShineWidth = 190,
+		ShineAlpha = 0.65,
+		-- The band is opaque (r5: at 0.06 the plot's signs ghosted through "YOU DID IT!").
+		BandAlpha = 0,
+		BurstCoins = 16,
+		BurstReach = 260,
+		-- The band starts ClearGap px right of the HUD's left column (Menu, Promo) where the
+		-- column stands at its height, so the menu buttons stay in view (r5: the surge plank
+		-- covered them), unless that leaves the band under ClearMinShare of the screen. Its
+		-- left end is round.
+		ClearLeft = { "Menu", "Promo" },
+		ClearGap = 16,
+		ClearMinShare = 0.6,
+		-- A banner never opens over a window, a modal or a reveal: it waits for them to
+		-- close, at most HoldMax seconds (then it is dropped), looking every Poll.
+		HoldMax = 15,
+		Poll = 0.2,
+	},
+	-- The surge banner's extras: a gold edge round the whole screen and a rain of coins.
+	Surge = {
+		Color = C.Gold,
+		-- Edge-only (r5: 26% deep bands top and bottom tinted half the frame gold): bands
+		-- EdgeDepth of the height top and bottom, EdgeSide of the width at the sides.
+		EdgeAlpha = 0.62,
+		EdgeDepth = 0.12,
+		EdgeSide = 0.08,
+		EdgeIn = 0.3,
+		EdgeHold = 2.3,
+		EdgeOut = 0.6,
+		EdgePulse = 0.4,
+		Coins = 30,
+		CoinSize = 46,
+		RainFor = 1.1,
+		FallMin = 0.9,
+		FallMax = 1.5,
+		-- A banner held back by an open window still shows with this much surge left (s).
+		MinLeft = 5,
+	},
+	-- The held-crate panel's Crate Master button (a quiet secondary under the free route).
+	Pass = { Height = 48, TextSize = 14 },
+	-- The unit card after a crate rarer than its unit (Popups.crateFrame): a frame in the
+	-- crate's colour round the whole card (px: padding round it, corner, stroke and its
+	-- pulse, fill opacity), a bright inner line, and the crate itself tilted on its corner.
+	CrateCard = {
+		Pad = 16,
+		Radius = 30,
+		Stroke = 7,
+		StrokePulse = 12,
+		PulseTime = 0.55,
+		Fill = 0.84,
+		InnerAlpha = 0.35,
+		Icon = 92,
+		IconTilt = -14,
+		IconWobble = 8,
+		IconWobbleTime = 0.9,
+	},
+	-- Toasts wait (hidden, then drop in) while a reward pop holds the screen: the "+TIER n"
+	-- chip of a merge, the "+25% SPEED" of an upgrade, a crate's burst on the Smasher and the
+	-- gift card (seconds each), never longer than MaxHold in a row. Errors still show.
+	Toast = { Merge = 1.8, Upgrade = 1.8, Crate = 2.4, Gift = 3.4, MaxHold = 5 },
+	-- The free gift card: a dark pool round it (covers the avatar standing behind it: x the
+	-- card's size, lowered by Drop x its height, transparency) and gold rays behind it.
+	Gift = { ShadeW = 1.9, ShadeH = 2.7, ShadeDrop = 0.42, ShadeAlpha = 0.04, Rays = 560, RayCount = 10, RaySpin = 12 },
+}
+
 local screen: ScreenGui
 local toastHolder: Frame
 local sounds: any
 
-local TOAST_Y = 146
+-- Toasts start just under the HUD's top stack (Hud.luau TUNE: row 1 at y 2..38, the goal
+-- plate 42..90 at 720p), clear of the screen's centre; on touch row 1 is a column of two
+-- plates, so the stack ends one row lower.
+-- During a game-mode run the run pill (Hud RUN_Y 92..128) and the mode HUDs hold the top:
+-- the toasts keep their old place under them.
+-- (Fields, not locals: this chunk is at its 200 locals.)
+local TOAST_Y = 96
+Popups.TOAST_Y = { Touch = 136, Run = 146 }
+-- A touch phone (attribute "Compact") has the HUD's menu as one row along the top left
+-- (Hud's measure(): from y 88, a tap target tall), and that row reaches under the stack:
+-- there the toasts start below it.
+local PHONE_MENU_Y = 88
+local PHONE_MENU_H = 76
+local PHONE_TAP_PX = 44
+local PHONE_MENU_GAP = 8
 
 -- Defined with the held-crate art below; toasts that name a crate draw it too.
 local crateIcon: (parent: Instance, color: Color3, size: number, props: { [string]: any }?) -> Frame
@@ -188,15 +445,50 @@ end
 local revealCount = 0
 local heldToasts: { HeldToast } = {}
 
+-- Height the surge countdown chip takes at the head of the stack (0 while it is away).
+local chipRoom = 0
+-- Glides the stack to its place (set in Popups.build).
+local placeToastHolder: (() -> ())? = nil
+
+-- Top of the stack with nothing above it (design px): under the HUD's top strips, and on a
+-- touch phone under its menu row too.
+local function toastBase(): number
+	local run = screen:GetAttribute("RunActive") == true
+		or screen:GetAttribute("ObbyMode") == true
+		or screen:GetAttribute("CardioActive") == true
+	if run and not (Kit.touch and screen:GetAttribute("Compact") == true) then
+		return Popups.TOAST_Y.Run
+	end
+	if not Kit.touch then
+		return TOAST_Y
+	end
+	if screen:GetAttribute("Compact") ~= true then
+		return Popups.TOAST_Y.Touch
+	end
+	local uiScale = screen:FindFirstChildOfClass("UIScale")
+	local scale = if uiScale and uiScale.Scale > 0 then uiScale.Scale else 1
+	local bottom = PHONE_MENU_Y + math.max(PHONE_MENU_H, math.ceil(PHONE_TAP_PX / scale))
+	-- The row itself once it is laid out (its y holds while the HUD parks it off the left
+	-- edge); the estimate above until then, or if the plate is somewhere unexpected.
+	local plate = Hud.buttons.Home
+	if plate and plate.AbsoluteSize.Y > 0 then
+		local measured = (plate.AbsolutePosition.Y + plate.AbsoluteSize.Y - screen.AbsolutePosition.Y) / scale
+		if measured > TOAST_Y - TOAST_H and measured < TOAST_Y + 120 then
+			bottom = measured
+		end
+	end
+	return math.max(TOAST_Y, math.ceil(bottom) + PHONE_MENU_GAP)
+end
+
 -- Where the stack sits (y, design px) and how many toasts it may show there. Under the
--- HUD's top strips (and the tutorial card) normally; while a window or modal is open, at
--- the very top, as many as fit above it: none when the window reaches the top of the
--- screen or the tutorial pill holds that slot.
+-- HUD's top strips (and the tutorial card and the surge chip) normally; while a window or
+-- modal is open, at the very top, as many as fit above it: none when the window reaches the
+-- top of the screen or the tutorial pill holds that slot.
 local function toastRoom(): (number, number)
 	local card = screen:GetAttribute("TopCardHeight")
 	local cardH: number = if type(card) == "number" then card else 0
 	if screen:GetAttribute("WindowOpen") ~= true then
-		return TOAST_Y + cardH, MAX_TOASTS
+		return toastBase() + cardH + chipRoom, MAX_TOASTS
 	end
 	local top = Kit.openTop(screen)
 	if not top or cardH > 0 then
@@ -215,7 +507,7 @@ end
 
 -- Drops in the toasts that waited, as far as there is room for them now.
 local function flushToasts()
-	if revealCount > 0 then
+	if revealCount > 0 or os.clock() < Popups.toastHold.until_ then
 		return
 	end
 	local _, room = toastRoom()
@@ -331,11 +623,18 @@ local function clearForWindow(room: number)
 end
 
 function Popups.toast(text: string, tone: string?)
+	-- The stack's place may have moved since it was last set (a phone's menu row is only
+	-- measured once the HUD is laid out).
+	if placeToastHolder then
+		placeToastHolder()
+	end
 	local _, room = toastRoom()
 	local windowUp = screen:GetAttribute("WindowOpen") == true
 	local urgent = isUrgent(tone)
 	-- A reveal holds every toast for its few seconds; a window only the ones that can wait.
-	if revealCount > 0 or (windowUp and not urgent and #toasts >= room) then
+	-- So does a reward pop (Popups.holdToasts) for the ones that can wait.
+	local popping = not urgent and os.clock() < Popups.toastHold.until_
+	if revealCount > 0 or popping or (windowUp and not urgent and #toasts >= room) then
 		holdToast({ text = text, tone = tone })
 		return
 	end
@@ -427,27 +726,321 @@ function Popups.toast(text: string, tone: string?)
 	end)
 end
 
+--[[
+	Merge count on the reveal. Fx.Shelf floats "xN MERGES!" over the rack as world text
+	(Fx.Orbs.text: a part with a BillboardGui, in Workspace.ClientFx) and marks that part
+	with the attribute MERGES_ATTRIBUTE, which holds the text. A discovery's reveal comes up
+	a moment later and its "NEW CHAD!" banner landed on that text. So while a reveal is up
+	the world text is hidden, and the reveal shows the same line under its name plate
+	instead (showReveal).
+]]
+-- Fx.Shelf.MERGES_ATTRIBUTE (not required here: the Fx modules may be missing or fail).
+local MERGES_ATTRIBUTE = "MergesText"
+local MERGES_FRESH = 4 -- seconds a merge count still belongs to the next reveal
+local MERGES_MIN = 3 -- Fx.Shelf floats no count under three merges
+local mergeTexts: { Instance } = {} -- the world texts still alive
+local mergesText, mergesAt = "", 0 -- the last one seen
+local mergeTally, mergeTallyAt = 0, 0 -- merges of the last batch ("Merge" effects)
+local mergesOnReveal: ((text: string) -> ())? = nil -- the reveal on screen takes the line
+
+--[[
+	What a merge gained. The units' aura per second is worked out from every snapshot (from
+	the units, so a surge does not count) and kept for a few seconds; the gain of an action
+	is the newest value minus the one from just before it. That is only the fallback: the
+	server sends the real numbers (`productionBefore` / `productionAfter`, aura per second
+	without the surge, on the Reward notify and on every "Merge" effect), which win.
+
+	A merge batch that discovers nothing gets no card: a float over the rack, "+24 merges ·
+	Aura +1.2K/sec", MERGE_SETTLE after its last "Merge" effect (by then its Reward notify
+	would have arrived, and its snapshot has). It stands in for the world's "xN MERGES!"
+	text, which is hidden like under a reveal. Auto merges (on a buy) only float from
+	MERGES_MIN up, manual ones always.
+]]
+local PROD_KEEP = 8 -- seconds of history
+local PROD_LEAD = 0.25 -- a snapshot this close before an action is taken as the action's own
+local MERGE_SETTLE = 0.7
+local MERGE_FLOAT_LIFE = 2
+local RACK_FALLBACK = UDim2.fromScale(0.5, 0.36)
+local RACK_LIFT = 6 -- studs above the merged unit's spot
+
+type MergeBatch = { count: number, startedAt: number, to: Vector3?, manual: boolean, token: number, gain: number? }
+local prodHistory: { { at: number, value: number } } = {}
+local mergeBatch: MergeBatch? = nil
+local mergeFloatAt = 0
+local lastDiscoveryAt = 0 -- os.clock() of the last Reward notify with a new tier
+
+local function noteProduction(data: any)
+	if type(data) ~= "table" or type(data.units) ~= "table" then
+		return
+	end
+	local ok, value = pcall(Economy.productionPerSecond, data.units)
+	if not ok or type(value) ~= "number" then
+		return
+	end
+	local last = prodHistory[#prodHistory]
+	if last and last.value == value then
+		return
+	end
+	local now = os.clock()
+	table.insert(prodHistory, { at = now, value = value })
+	-- Always keeps the newest sample older than the window: the value "before".
+	while #prodHistory > 2 and now - prodHistory[2].at > PROD_KEEP do
+		table.remove(prodHistory, 1)
+	end
+end
+
+-- Aura per second gained since `since` (os.clock()); nil when unknown or nothing gained.
+local function productionGain(since: number): number?
+	local base: number? = nil
+	for _, sample in prodHistory do
+		if sample.at > since then
+			break
+		end
+		base = sample.value
+	end
+	local newest = prodHistory[#prodHistory]
+	if not base or not newest or newest.value <= base then
+		return nil
+	end
+	return newest.value - base
+end
+
+-- "+1.20K Aura/sec": one decimal under 10 so a small gain never reads as zero.
+local function gainText(amount: number): string
+	local number = if amount < 10 then string.format("%.1f", amount) else Format.short(amount)
+	return string.format("%s +%s/sec", W.Orb, number)
+end
+
+-- A world point as a spot on the ScreenGui (design px), kept inside the screen; `fallback`
+-- when it is off screen or behind the camera.
+local function worldAnchor(pos: Vector3?, fallback: UDim2): UDim2
+	local camera = Workspace.CurrentCamera
+	if not pos or not camera then
+		return fallback
+	end
+	local point, visible = camera:WorldToScreenPoint(pos)
+	if not visible then
+		return fallback
+	end
+	local uiScale = screen:FindFirstChildOfClass("UIScale")
+	local scale = if uiScale and uiScale.Scale > 0 then uiScale.Scale else 1
+	local size = screen.AbsoluteSize / scale
+	local x = (point.X - screen.AbsolutePosition.X) / scale
+	local y = (point.Y - screen.AbsolutePosition.Y) / scale
+	if x < 0 or x > size.X or y < 0 or y > size.Y or size.X < 600 or size.Y < 340 then
+		return fallback
+	end
+	return UDim2.fromOffset(math.clamp(x, 280, size.X - 280), math.clamp(y, 150, size.Y - 170))
+end
+
+-- Hides the live world texts (they fade and go by themselves) and forgets the dead ones.
+local function hideMergeTexts(hide: boolean)
+	for i = #mergeTexts, 1, -1 do
+		local part = mergeTexts[i]
+		local gui = if part.Parent then part:FindFirstChildWhichIsA("BillboardGui") else nil
+		if not gui then
+			table.remove(mergeTexts, i)
+		elseif hide then
+			gui.Enabled = false
+		end
+	end
+end
+
+local function mergeFloat(batch: MergeBatch)
+	-- A discovery's reveal carries the count and the gain itself; a window covers the rack.
+	if revealCount > 0 or lastDiscoveryAt >= batch.startedAt - 0.5 or screen:GetAttribute("WindowOpen") == true then
+		return
+	end
+	if not batch.manual and batch.count < MERGES_MIN then
+		return
+	end
+	local text = string.format("+%s %s", Format.short(batch.count), if batch.count == 1 then "merge" else "merges")
+	local gain = batch.gain or productionGain(batch.startedAt - PROD_LEAD)
+	if gain and gain > 0 then
+		text ..= " · " .. gainText(gain)
+	end
+	mergeFloatAt = os.clock()
+	mergesAt, mergeTally = 0, 0
+	hideMergeTexts(true)
+	local spot = if batch.to then batch.to + Vector3.new(0, RACK_LIFT, 0) else nil
+	-- Under the "+TIER n" chips while they are up (Fx.Shelf.chipsBottom: the point just under
+	-- the lowest one), its top edge there, rising less so it stays clear of them.
+	local under: Vector3? = nil
+	pcall(function()
+		local folder = script.Parent.Parent:FindFirstChild("Fx")
+		local module = folder and folder:FindFirstChild("Shelf")
+		local shelf: any = if module and module:IsA("ModuleScript") then require(module) else nil
+		if type(shelf) == "table" and type(shelf.chipsBottom) == "function" then
+			under = shelf.chipsBottom()
+		end
+	end)
+	local opts: { [string]: any } = { life = MERGE_FLOAT_LIFE, size = 28, width = 560, drift = false }
+	local anchor = worldAnchor(spot, RACK_FALLBACK)
+	if typeof(under) == "Vector3" then
+		local below = worldAnchor(under, RACK_FALLBACK)
+		if below ~= RACK_FALLBACK then
+			anchor, opts.rise = below + UDim2.fromOffset(0, 22), -24
+		end
+	end
+	Popups.float(text, C.GoldLight, anchor, opts)
+	sounds.play("Tick", 0.02, 1.3)
+end
+
 -- A reveal starts or ends. While one is up the ScreenGui attribute "RevealOpen" is true
--- (the tutorial pill steps out on it) and the toast stack is hidden.
+-- (the tutorial pill steps out on it), the toast stack is hidden and so is the world's
+-- "xN MERGES!" text.
 local function setReveal(on: boolean)
 	revealCount = math.max(0, revealCount + (if on then 1 else -1))
 	local up = revealCount > 0
 	screen:SetAttribute("RevealOpen", up)
-	toastHolder.Visible = not up
-	if not up then
+	toastHolder.Visible = not up and os.clock() >= Popups.toastHold.until_
+	if up then
+		hideMergeTexts(true)
+	else
 		flushToasts()
 	end
 end
 
+--[[
+	A reward pop is on screen for `kind`'s seconds (JUICE.Toast: "Merge", "Upgrade", "Crate",
+	"Gift"): the toast stack hides and new toasts that can wait are held, then they drop in
+	once the pop has gone. Holds in a row never keep the stack away longer than MaxHold.
+]]
+Popups.toastHold = { until_ = 0, since = 0 }
+function Popups.holdToasts(kind: string)
+	local J = Popups.JUICE.Toast
+	local seconds = J[kind]
+	if type(seconds) ~= "number" or not toastHolder then
+		return
+	end
+	local hold = Popups.toastHold
+	local now = os.clock()
+	if now >= hold.until_ then
+		hold.since = now
+	end
+	local goal = math.min(math.max(hold.until_, now + seconds), hold.since + J.MaxHold)
+	if goal <= now then
+		return
+	end
+	hold.until_ = goal
+	toastHolder.Visible = false
+	task.delay(goal - now + 0.02, function()
+		if os.clock() < hold.until_ then
+			return -- a later hold took over
+		end
+		if revealCount == 0 then
+			toastHolder.Visible = true
+		end
+		flushToasts()
+	end)
+end
+
+-- Watches Fx.Orbs' folder for the "xN MERGES!" texts, and the "Merge" effects for the size
+-- of the batch (the text can land after the reveal has started).
+local function watchMerges()
+	local function onText(part: Instance)
+		-- Set by Fx.Shelf before the part is parented.
+		local text = part:GetAttribute(MERGES_ATTRIBUTE)
+		if type(text) ~= "string" or text == "" then
+			return
+		end
+		-- Orbs.text parents the part first and builds its BillboardGui in the same step.
+		task.defer(function()
+			hideMergeTexts(false)
+			table.insert(mergeTexts, part)
+			mergesText, mergesAt = text, os.clock()
+			if revealCount > 0 then
+				hideMergeTexts(true)
+				if mergesOnReveal then
+					mergesOnReveal(text)
+				end
+			elseif mergeBatch or os.clock() - mergeFloatAt < MERGES_FRESH then
+				-- The float over the rack says it (mergeFloat).
+				hideMergeTexts(true)
+			end
+		end)
+	end
+	local function bind(child: Instance)
+		if child.Name == "ClientFx" and child:IsA("Folder") then
+			child.ChildAdded:Connect(onText)
+		end
+	end
+	for _, child in Workspace:GetChildren() do
+		bind(child)
+	end
+	Workspace.ChildAdded:Connect(bind)
+	Net.event("Effect").OnClientEvent:Connect(function(kind, data)
+		if kind ~= "Merge" or type(data) ~= "table" or data.overflow == true then
+			return
+		end
+		local now = os.clock()
+		if now - mergeTallyAt > MERGES_FRESH then
+			mergeTally = 0
+		end
+		local count = math.max(1, math.floor(tonumber(data.count) or 1))
+		mergeTally += count
+		mergeTallyAt = now
+		-- The batch for the float: every step of one action arrives in the same moment.
+		local batch = mergeBatch
+		if not batch then
+			batch = { count = 0, startedAt = now, to = nil, manual = false, token = 0, gain = nil }
+			mergeBatch = batch
+		end
+		batch.count += count
+		batch.token += 1
+		if typeof(data.to) == "Vector3" then
+			batch.to = data.to
+		end
+		if data.auto ~= true then
+			batch.manual = true
+		end
+		-- Every step of one action carries the same pair: what the whole action added.
+		local before, after = tonumber(data.productionBefore), tonumber(data.productionAfter)
+		if before and after then
+			batch.gain = after - before
+		end
+		local token = batch.token
+		task.delay(MERGE_SETTLE, function()
+			if mergeBatch == batch and batch.token == token then
+				mergeBatch = nil
+				mergeFloat(batch)
+			end
+		end)
+	end)
+	State.changed.Event:Connect(noteProduction)
+	noteProduction(State.data)
+end
+
 -- Floating text -------------------------------------------------------------------
 
+-- The aura floats over the Aura bar (Collect, Deposit and the deposit's cash bonus): big
+-- lettering with a thick dark outline, as Fx.Orbs' "+$X" cash floats are.
+Popups.FLOAT = {
+	-- Measured in Studio: the aura float's glyphs are 38 px tall at full size, but its pop
+	-- starts at 0.55 and takes 0.28 s, so a frame 0.12 s in read about 22 px; and the bonus
+	-- line started 60 px above it while the aura float rose 80 px through it (the "ghost").
+	-- Now both pop from 0.85, rise straight up the same way, and the bonus line starts under
+	-- the aura float, so the one above always stays ahead.
+	-- r5: TextSize is the line's em box, not the glyphs: at 40 (UIScale 0.999, TextBounds 39 px
+	-- high at full size) the digits and capitals stood about 28 px tall. 56 puts them near 40.
+	aura = { size = 56, stroke = 4, width = 460, life = 1.4, pop = 0.85, drift = false }, -- TextSize design px
+	bonus = { size = 42, stroke = 3.5, width = 520, life = 1.5, pop = 0.85, drift = false }, -- the deposit's "+$X bonus" line
+	bonusRise = 62, -- design px: the bonus line starts this far under the aura float ...
+	bonusDelay = 0.18, -- ... and this many seconds after it
+}
+
 -- "+$120" over the world: pops in, rises on a soft arc (steady sideways drift,
--- easing-out climb) and fades near the top.
-function Popups.float(text: string, color: Color3, anchor: UDim2)
+-- easing-out climb) and fades near the top. opts: life (seconds, 1.1), size (text, 30),
+-- width (300), drift (false = straight up), stroke (outline px, 2.5), pop (the scale it pops in
+-- from, 0.55), rise (px it climbs, -80).
+function Popups.float(text: string, color: Color3, anchor: UDim2, opts: { [string]: any }?)
+	local o = opts or {}
+	local life: number = o.life or 1.1
+	local fadeAt = life - 0.4
 	local mover = Kit.new("Frame", {
 		Name = "Float",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(300, 44),
+		Size = UDim2.fromOffset(o.width or 300, math.max(44, (o.size or 30) + 14)),
 		Position = anchor,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 20,
@@ -456,23 +1049,24 @@ function Popups.float(text: string, color: Color3, anchor: UDim2)
 	local label = Kit.title(mover, {
 		Name = "Text",
 		Text = text,
-		TextSize = 30,
+		TextSize = o.size or 30,
 		TextWrapped = false,
 		Size = UDim2.fromScale(1, 1),
 		TextColor3 = color,
 		StrokeThickness = 0,
 	})
 	-- Over the 3D world: a solid navy outline.
-	local outline = Kit.textStroke(label, 2.5, 0)
-	local pop = Kit.new("UIScale", { Scale = 0.55, Parent = label })
-	Kit.tween(pop, 0.28, { Scale = 1 }, Enum.EasingStyle.Back)
-	local drift = math.random(-36, 36)
-	Kit.tween(mover, 1.1, { Position = anchor + UDim2.fromOffset(drift, 0) }, Enum.EasingStyle.Linear)
-	Kit.tween(label, 1.1, { Position = UDim2.fromOffset(0, -80) }, Enum.EasingStyle.Quad)
-	tweenAfter(label, 0.4, 0.7, { TextTransparency = 1 })
-	tweenAfter(outline, 0.4, 0.7, { Transparency = 1 })
-	tweenAfter(pop, 0.4, 0.7, { Scale = 0.85 })
-	task.delay(1.15, function()
+	local outline = Kit.textStroke(label, o.stroke or 2.5, 0)
+	local from: number = o.pop or 0.55
+	local pop = Kit.new("UIScale", { Scale = from, Parent = label })
+	Kit.tween(pop, if from > 0.7 then 0.18 else 0.28, { Scale = 1 }, Enum.EasingStyle.Back)
+	local drift = if o.drift == false then 0 else math.random(-36, 36)
+	Kit.tween(mover, life, { Position = anchor + UDim2.fromOffset(drift, 0) }, Enum.EasingStyle.Linear)
+	Kit.tween(label, life, { Position = UDim2.fromOffset(0, o.rise or -80) }, Enum.EasingStyle.Quad)
+	tweenAfter(label, 0.4, fadeAt, { TextTransparency = 1 })
+	tweenAfter(outline, 0.4, fadeAt, { Transparency = 1 })
+	tweenAfter(pop, 0.4, fadeAt, { Scale = 0.85 })
+	task.delay(life + 0.05, function()
 		mover:Destroy()
 	end)
 end
@@ -487,6 +1081,15 @@ end
 ]]
 
 Popups.PRIORITY = { NewTier = 3, Tutorial = 2, Normal = 1 }
+-- Per kind of card: what its caller takes back when `show` threw (its own "a card is open"
+-- state). The queue runs it after closing what the card had built.
+Popups.FAILED = {} :: { [string]: () -> () }
+-- The modals open right now, and closing the ones opened since (set under `modal`, which
+-- keeps the list): the queue takes down what a card that threw half-way left on screen.
+Popups.modalsNow = function(): { [() -> ()]: boolean }
+	return {}
+end
+Popups.closeModalsSince = function(_before: { [() -> ()]: boolean }) end
 
 type Entry = {
 	kind: string,
@@ -513,6 +1116,17 @@ local pump: () -> ()
 
 local function schedule(delay: number)
 	task.delay(math.max(delay, 0), pump)
+end
+
+-- ScreenGui attribute "PopupBusy": a queued card is waiting or up, or the free gift's card
+-- is on screen. The Daily window and the "While you were away" card never open by
+-- themselves meanwhile (a reveal can wait in the queue for as long as the merges go on,
+-- much longer than the Daily window's own quiet time after a Reward notify).
+Popups.giftUntil = 0
+function Popups.syncBusy()
+	if screen then
+		screen:SetAttribute("PopupBusy", busy or #queue > 0 or os.clock() < Popups.giftUntil)
+	end
 end
 
 pump = function()
@@ -550,22 +1164,36 @@ pump = function()
 		finished = true
 		busy = false
 		lastModalAt = os.clock()
+		Popups.syncBusy()
 		schedule(0.05)
 	end
+	-- A card that throws half-way must not stay up: its modal, its dim and its Back entry
+	-- (ModalOpen) go, the caller resets its own state (Popups.FAILED) and the queue moves on.
+	local before = Popups.modalsNow()
 	local ok, err = pcall(entry.show, done)
 	if not ok then
 		warn("[Popups] " .. entry.kind .. " failed: " .. tostring(err))
+		Popups.closeModalsSince(before)
+		local failed = Popups.FAILED[entry.kind]
+		if failed then
+			pcall(failed)
+		end
 		done()
 	end
 end
 
--- Queue a modal. `show(done)` builds it and must call `done()` once it closes.
+-- Queue a modal. `show(done)` builds it and must call `done()` once it closes. If it throws,
+-- the queue closes what it built and runs Popups.FAILED[kind].
 function Popups.enqueue(kind: string, priority: number, show: (done: () -> ()) -> (), data: { [string]: any }?)
 	if PREVIEW then
 		-- The preview captures right after the call: show it at once.
 		local ok, err = pcall(show, function() end)
 		if not ok then
 			warn("[Popups] " .. kind .. " failed: " .. tostring(err))
+			local failed = Popups.FAILED[kind]
+			if failed then
+				pcall(failed)
+			end
 		end
 		return
 	end
@@ -578,7 +1206,65 @@ function Popups.enqueue(kind: string, priority: number, show: (done: () -> ()) -
 		show = show,
 		data = data,
 	})
+	Popups.syncBusy()
 	schedule(GATHER + 0.01)
+end
+
+--[[
+	Finish cards (Popups.modeFinish, Popups.mogFinish). A card that is up is in
+	Popups.finishCards under its own token, as its close function. Popups.closeFinish
+	closes them all and drops the ones still waiting in the queue: Main calls it when a
+	mode starts or stops (the card's mode is over, or another one has begun), and
+	Popups.watchFinish when the player is back on their own plot (the Home button, or a
+	walk home), so a card never stays up, with its dim and its blur, over another mode or
+	the gym.
+]]
+Popups.finishCards = {} :: { [any]: () -> () }
+function Popups.closeFinish()
+	for i = #queue, 1, -1 do
+		local kind = queue[i].kind
+		if kind == "ModeFinish" or kind == "MogFinish" then
+			table.remove(queue, i)
+		end
+	end
+	for token, close in table.clone(Popups.finishCards) do
+		Popups.finishCards[token] = nil
+		close()
+	end
+	Popups.syncBusy()
+end
+
+-- The player's character stands on their own plot (its "Floor" slab, World.Shell).
+function Popups.atHome(): boolean
+	local data = State.data
+	local map = Workspace:FindFirstChild("Map")
+	local plot = if data and map and data.plotIndex then map:FindFirstChild("Plot" .. tostring(data.plotIndex)) else nil
+	local floor = plot and plot:FindFirstChild("Floor", true)
+	local character = Players.LocalPlayer.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not floor or not floor:IsA("BasePart") or not root or not root:IsA("BasePart") then
+		return false
+	end
+	local at = floor.CFrame:PointToObjectSpace(root.Position)
+	return math.abs(at.X) <= floor.Size.X / 2 and math.abs(at.Z) <= floor.Size.Z / 2 and at.Y > -8 and at.Y < 60
+end
+
+-- The finish card `token` just opened as `close`: it is closed with the others, and by
+-- itself once the player is Home.
+function Popups.watchFinish(token: any, close: () -> ())
+	Popups.finishCards[token] = close
+	if PREVIEW then
+		return
+	end
+	task.spawn(function()
+		while Popups.finishCards[token] do
+			task.wait(0.25)
+			if Popups.finishCards[token] and Popups.atHome() then
+				Popups.closeFinish()
+				return
+			end
+		end
+	end)
 end
 
 -- Main calls this on every "Merge" effect.
@@ -810,6 +1496,18 @@ end
 function Popups.closeModals()
 	for close in openModals do
 		close()
+	end
+end
+
+-- For the queue (`pump`, declared above with the queue's own state).
+Popups.modalsNow = function(): { [() -> ()]: boolean }
+	return table.clone(openModals)
+end
+Popups.closeModalsSince = function(before: { [() -> ()]: boolean })
+	for close in table.clone(openModals) do
+		if not before[close] then
+			close()
+		end
 	end
 end
 
@@ -1049,10 +1747,6 @@ end
 
 local RARITY_RANK = { Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5, Mythic = 6 }
 
-local function isBigBand(band: string): boolean
-	return band == "Legendary" or band == "Mythic"
-end
-
 -- Other tiers discovered by the same action (payload.tiers minus the headline
 -- tier), highest first.
 local function extraTiers(reward: { [string]: any }): { number }
@@ -1076,15 +1770,24 @@ local RING = Sprites.image("Ring")
 
 -- Stage layout (design px; Kit.fit shrinks the whole stage on small screens).
 local STAGE_W = 620
-local HERO = 320
+local HERO = 350
+-- The unit's viewport is drawn this much larger than its box (Kit.unitViewport leaves a
+-- margin round the unit), so the unit itself fills the box: about half the screen's height.
+local HERO_ZOOM = 1.22
+local HERO_PUSH = 0.3 -- the viewport's camera starts this much further back and pushes in
 local EXTRAS_H = 66
 local EXTRA_SLOTS = 5
 local VEIL = Kit.darken(C.Ink, 0.4)
 
--- Timing (seconds). Left alone, a discovery takes REVEAL_HOLD + ORB_MORPH +
--- ORB_FLIGHT = 2.5 s, and input is free again from the moment the hold ends.
+-- Timing (seconds). A discovery stays until it is dismissed (REVEAL_IDLE is only there so
+-- a player who is away is not left behind the veil); the ones before it in a chain, and a
+-- unit that is not new, leave by themselves.
 local REVEAL_MIN = 0.35 -- an earlier tap waits until the unit has popped in
-local REVEAL_HOLD = 1.9 -- entrance (0.3) + hold (1.6) before it leaves by itself
+local REVEAL_HOLD = 1.9 -- entrance (0.3) + hold (1.6) before a unit that is not new leaves
+local REVEAL_CHAIN = 1.6 -- each discovery of a chain but the last
+local REVEAL_IDLE = 10 -- the last (or only) discovery, if nobody taps
+local REVEAL_QUEUED = 3 -- the same discovery once another card waits behind it ("YOU DID IT!")
+local CHAIN_MAX = 6 -- reveals in a row; older tiers of a bigger jump ride on the last one
 local REVEAL_HOLD_TUTORIAL = 1.3 -- shorter while the tutorial is pointing somewhere
 local REVEAL_HINT = 1.0 -- "tap to continue" only shows this late
 local ORB_MORPH = 0.14 -- the unit shrinks into an orb
@@ -1336,6 +2039,485 @@ local function flyOrb(layer: Frame, from: Vector2, goal: Vector2, color: Color3,
 	end)
 end
 
+-- Reveal extras (Popups.JUICE.Reveal and .Top) ---------------------------------------------
+-- Fields of Popups, not locals: the chunk has no local registers to spare.
+
+-- Sets how fast a Popups.rays layer turns (seconds per turn).
+function Popups.spinRays(holder: Frame, period: number, reverse: boolean?)
+	if not PREVIEW then
+		local info = TweenInfo.new(period, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1)
+		TweenService:Create(holder, info, { Rotation = if reverse then -360 else 360 }):Play()
+	end
+end
+
+-- A layer of wide beams: Popups.rays with its bars widened to `width` px at opacity
+-- `alpha`, one turn every `period` seconds.
+function Popups.beams(
+	parent: Instance,
+	color: Color3,
+	size: number,
+	position: UDim2,
+	count: number,
+	width: number,
+	alpha: number,
+	period: number,
+	reverse: boolean?
+): Frame
+	local holder = Popups.rays(parent, color, size, position, 1, count, reverse)
+	for _, ray in holder:GetChildren() do
+		if ray:IsA("Frame") then
+			ray.Size = UDim2.new(0, width, 1, 0)
+			ray.BackgroundTransparency = 1 - alpha
+		end
+	end
+	Popups.spinRays(holder, period, reverse)
+	return holder
+end
+
+-- The top tier's crowns: waves of them fly out from behind the unit, spin and shrink away.
+function Popups.crownBurst(o: { [string]: any })
+	local top = Popups.JUICE.Top
+	local stage: Frame, heroAt: UDim2 = o.stage, o.heroAt
+	local icon = if Kit.iconName("Crown") then "Crown" else "Star"
+	local reach = o.heroSize * o.scale * top.CrownReach
+	for wave = 1, top.CrownWaves do
+		task.delay(0.1 + (wave - 1) * top.CrownWaveGap, function()
+			if not stage.Parent then
+				return
+			end
+			for i = 1, top.Crowns do
+				-- Spread over the upper arc (straight up is -pi/2 on the screen).
+				local angle = -math.pi / 2 + ((i - 0.5 + (wave % 2) * 0.5) / top.Crowns * 2 - 1) * top.CrownArc
+				local size = math.floor(top.CrownSize * (0.8 + math.random() * 0.5))
+				local crown = Kit.icon(stage, icon, size, if icon == "Crown" then nil else top.Color, {
+					Name = "CrownPop",
+					Position = heroAt,
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					ZIndex = 2,
+				})
+				crown.Rotation = math.random(-40, 40)
+				local grow = Kit.new("UIScale", { Name = "Pop", Scale = 0.2, Parent = crown })
+				local goal = heroAt
+					+ UDim2.fromOffset(math.cos(angle) * reach, math.min(math.sin(angle) * reach * 0.62, o.heroSize * top.CrownFloor))
+				Kit.tween(
+					crown,
+					top.CrownTime,
+					{ Position = goal, Rotation = crown.Rotation + math.random(-60, 60) },
+					Enum.EasingStyle.Quart
+				)
+				Kit.tween(grow, top.CrownTime * 0.5, { Scale = 1 }, Enum.EasingStyle.Back)
+				task.delay(top.CrownTime + top.CrownHold, function()
+					Kit.tween(grow, 0.25, { Scale = 0 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+					task.delay(0.27, function()
+						crown:Destroy()
+					end)
+				end)
+			end
+		end)
+	end
+end
+
+--[[
+	The top tier's unit in the reveal: CharacterFactory's gold statue (GILD), lit by a warm
+	key light from the side over a mid ambient (JUICE.Top Ambient, Light, LightDir; any part
+	still Neon is shaded gold), and a flat light copy of it slightly larger sits behind it as
+	a rim. Returns the rim's
+	viewport (its model turns with the unit's).
+]]
+function Popups.gradeHero(hero: Frame, viewport: ViewportFrame, tier: number): ViewportFrame
+	local top = Popups.JUICE.Top
+	viewport.Ambient = top.Ambient
+	viewport.LightColor = top.Light
+	viewport.LightDirection = top.LightDir
+	for _, part in viewport:GetDescendants() do
+		if part:IsA("BasePart") and part.Material == Enum.Material.Neon and not top.Keep[part.Name] then
+			part.Material = Enum.Material.SmoothPlastic
+			local h, sat, v = part.Color:ToHSV()
+			part.Color = Color3.fromHSV(h, math.min(1, sat * 1.15), v * top.Shade)
+		end
+	end
+	local rim = Kit.unitViewport(hero, tier, {
+		Size = UDim2.fromScale(HERO_ZOOM * top.RimScale, HERO_ZOOM * top.RimScale),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		-- The same model as the hero's (the top tier's statue).
+		Statue = viewport:GetAttribute("Statue") == true,
+	})
+	rim.Name = "Rim"
+	rim.ZIndex = viewport.ZIndex - 1
+	rim.Ambient = WHITE
+	rim.LightColor = Color3.new(0, 0, 0)
+	rim.ImageTransparency = top.RimAlpha
+	for _, d in rim:GetDescendants() do
+		if d:IsA("BasePart") then
+			-- See-through shells (the aura) would turn the outline into a blob: left out.
+			if d.Transparency > 0.3 then
+				d.Transparency = 1
+			else
+				d.Color = top.RimColor
+				d.Material = Enum.Material.SmoothPlastic
+			end
+		elseif
+			d:IsA("ParticleEmitter")
+			or d:IsA("Sparkles")
+			or d:IsA("Fire")
+			or d:IsA("Light")
+			or d:IsA("SurfaceGui")
+			or d:IsA("Decal")
+		then
+			d:Destroy()
+		end
+	end
+	return rim
+end
+
+--[[
+	The frame of a unit card out of a crate rarer than its unit: a rounded plate in the
+	crate's colour with a pulsing outline from `top` to `bottom` (stage px), and the crate,
+	tilted, on its top-left corner. Added to `lights` (fades with the stage).
+]]
+function Popups.crateFrame(stage: Frame, color: Color3, rarity: string, top: number, bottom: number, calm: boolean, lights: { GuiObject })
+	local J = Popups.JUICE.CrateCard
+	local frame = Kit.new("Frame", {
+		Name = "CrateFrame",
+		BackgroundColor3 = color,
+		BackgroundTransparency = J.Fill,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, J.Pad * 2, 0, bottom - top + J.Pad * 2),
+		Position = UDim2.new(0.5, 0, 0, top - J.Pad),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 1,
+		Parent = stage,
+	})
+	Kit.corner(frame, J.Radius)
+	local stroke = Kit.new("UIStroke", { Thickness = J.Stroke, Color = color, Parent = frame })
+	local inner = Kit.new("Frame", {
+		Name = "Inner",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -J.Stroke * 2 - 4, 1, -J.Stroke * 2 - 4),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 1,
+		Parent = frame,
+	})
+	Kit.corner(inner, J.Radius - J.Stroke)
+	Kit.new("UIStroke", { Thickness = 2, Color = Kit.lighten(color, 0.7), Transparency = J.InnerAlpha, Parent = inner })
+	local crate = crateIcon(frame, color, J.Icon, {
+		Rarity = rarity,
+		Position = UDim2.fromOffset(J.Icon * 0.3, J.Icon * 0.2),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 6,
+	})
+	crate.Rotation = J.IconTilt
+	Kit.appear(frame, { from = 0.85, time = 0.35, style = Enum.EasingStyle.Back })
+	if not calm and not PREVIEW then
+		local loop = TweenInfo.new(J.PulseTime, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+		TweenService:Create(stroke, loop, { Thickness = J.StrokePulse, Color = Kit.lighten(color, 0.35) }):Play()
+		local wobble = TweenInfo.new(J.IconWobbleTime, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+		TweenService:Create(crate, wobble, { Rotation = J.IconTilt + J.IconWobble }):Play()
+	end
+	table.insert(lights, frame)
+end
+
+--[[
+	What a rarer band adds to the reveal's stage, built before the unit so it all sits
+	behind it: the pool of light on the ground (from Rare), the wide counter-turning beams,
+	the white flash and the ground rings (from Epic), the confetti of a discovery (more
+	bursts per band, then showers while a Legendary or Mythic card holds), and for the top
+	tier a gold beam layer and the crowns. `o`: root, stage, heroAt, heroY, heroSize, scale,
+	color, rank, tier, isNew, calm, lights (what fades out with the stage).
+]]
+function Popups.revealExtras(o: { [string]: any })
+	local J = Popups.JUICE.Reveal
+	local rank: number, color: Color3, stage: Frame = o.rank, o.color, o.stage
+	local heroSize: number, heroAt: UDim2 = o.heroSize, o.heroAt
+	local lights: { GuiObject } = o.lights
+	local moving = not o.calm and not PREVIEW
+	local top = o.tier == Economy.MAX_TIER
+	local wide = heroSize * o.scale * J.GroundWidth
+	-- Under the feet of the unit as drawn (larger than its box, its centre moved up).
+	local feet = UDim2.new(0.5, 0, 0, o.heroY + heroSize * (o.scale * J.GroundAt - (o.scale - 1) * (o.lift or J.HeroLift)))
+	local function flat(width: number): UDim2
+		return UDim2.fromOffset(width, width * J.GroundFlat)
+	end
+
+	local groundAlpha: number = J.GroundAlpha[rank] or 0
+	if groundAlpha > 0 then
+		local pool = softDot(stage, "Ground", Kit.lighten(color, 0.2), flat(wide), 1 - groundAlpha, 3)
+		local core = softDot(stage, "GroundCore", Kit.lighten(color, 0.75), flat(wide * 0.55), 1 - groundAlpha * 0.85, 3)
+		for _, light in { pool, core } do
+			light.Position = feet
+			Kit.appear(light, { from = 0.3, time = 0.4 })
+			table.insert(lights, light)
+		end
+		if moving then
+			local info = TweenInfo.new(J.GroundPulseTime, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+			TweenService:Create(pool, info, { Size = flat(wide * J.GroundPulse) }):Play()
+		end
+	end
+	if rank >= J.OuterFrom then
+		local outer = Popups.beams(
+			stage,
+			WHITE:Lerp(color, 0.3),
+			J.OuterSize[rank],
+			heroAt,
+			J.OuterCount[rank],
+			J.OuterWidth[rank],
+			J.OuterAlpha[rank],
+			J.OuterSpin[rank],
+			true
+		)
+		Kit.appear(outer, { from = 0.3, time = 0.6, style = Enum.EasingStyle.Quart })
+		table.insert(lights, outer)
+	end
+	if top then
+		local gold = Popups.JUICE.Top
+		local beams =
+			Popups.beams(stage, gold.Color, gold.RaySize, heroAt, gold.RayCount, gold.RayWidth, gold.RayAlpha, gold.RaySpin, false)
+		Kit.appear(beams, { from = 0.3, time = 0.6, style = Enum.EasingStyle.Quart })
+		table.insert(lights, beams)
+		if moving then
+			Popups.crownBurst(o)
+		end
+	end
+
+	if moving and rank >= J.FlashFrom then
+		-- The one whole-screen flash: white as the unit lands, held for a blink, then gone.
+		local flash = Kit.new("Frame", {
+			Name = "Flash",
+			BackgroundColor3 = WHITE,
+			BackgroundTransparency = 1 - J.FlashAlpha[rank] * (if o.isNew then 1 else J.FlashOld),
+			BorderSizePixel = 0,
+			Size = UDim2.new(3, 0, 1, 400),
+			Position = UDim2.fromScale(0.5, 0.5),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 9,
+			Parent = o.root,
+		})
+		task.delay(J.FlashHold, function()
+			Kit.tween(flash, J.FlashFade, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad)
+			task.delay(J.FlashFade + 0.05, function()
+				flash:Destroy()
+			end)
+		end)
+	end
+	if moving and RING then
+		for i = 1, J.ShockRings[rank] or 0 do
+			local ring = Kit.new("ImageLabel", {
+				Name = "Shock",
+				BackgroundTransparency = 1,
+				Image = RING,
+				ImageColor3 = if i % 2 == 1 then WHITE else Kit.lighten(color, 0.4),
+				ImageTransparency = 0.05,
+				Size = flat(wide * 0.3),
+				Position = feet,
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = 3,
+				Visible = false,
+				Parent = stage,
+			})
+			task.delay(0.12 + (i - 1) * J.ShockGap, function()
+				ring.Visible = true
+				Kit.tween(ring, J.ShockTime, { Size = flat(wide * J.ShockReach), ImageTransparency = 1 }, Enum.EasingStyle.Quart)
+				task.delay(J.ShockTime + 0.05, function()
+					ring:Destroy()
+				end)
+			end)
+		end
+	end
+
+	if o.isNew and not o.calm then
+		-- Confetti in the band's colour (its shades and white; gold too at the top tier).
+		local colors = { color, Kit.lighten(color, 0.35), WHITE, color, Kit.darken(color, 0.18), Kit.lighten(color, 0.6) }
+		if top then
+			colors[4], colors[5] = Popups.JUICE.Top.Color, Kit.lighten(Popups.JUICE.Top.Color, 0.4)
+		end
+		local function burst(dx: number, dy: number)
+			if stage.Parent then
+				Kit.confetti(stage, {
+					Origin = UDim2.new(0.5, dx, 0, o.heroY + dy),
+					Count = J.ConfettiCount[rank],
+					ZIndex = 4,
+					Colors = colors,
+					Power = J.ConfettiPower[rank],
+				})
+			end
+		end
+		burst(0, 0)
+		if not PREVIEW then
+			-- More bursts for rarer bands: left and right of the unit, then above it.
+			for i = 2, J.ConfettiBursts[rank] do
+				local side = if i % 2 == 0 then -1 else 1
+				local near = i > 3
+				task.delay((i - 1) * J.ConfettiGap, function()
+					burst(side * J.ConfettiSpread * (if near then 0.5 else 1), if near then -heroSize * 0.3 else heroSize * 0.1)
+				end)
+			end
+			for i = 1, J.Showers[rank] do
+				task.delay(0.9 + i * J.ShowerEvery, function()
+					burst(math.random(-J.ConfettiSpread, J.ConfettiSpread), -heroSize * 0.45)
+				end)
+			end
+		end
+	end
+end
+
+--[[
+	The top tier's name: gold letters stamped in one at a time between two crowns (each
+	lands from LetterFrom times its size and settles), then the line ripples. Returns the
+	row; it takes the plain name's place and name ("UnitName").
+]]
+function Popups.stampName(stage: Frame, text: string, size: number, y: number): Frame
+	local top = Popups.JUICE.Top
+	local row = Kit.new("Frame", {
+		Name = "UnitName",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -40, 0, size + 6),
+		Position = UDim2.fromOffset(20, y),
+		ZIndex = 5,
+		Parent = stage,
+	})
+	Kit.list(row, 0, true, Enum.HorizontalAlignment.Center)
+	local icon = if Kit.iconName("Crown") then "Crown" else "Star"
+	local letters: { string } = {}
+	for _, code in utf8.codes(text) do
+		table.insert(letters, utf8.char(code))
+	end
+	local function widthOf(ch: string, px: number): number
+		return if ch == " " then math.ceil(px * 0.32) else displayWidth(ch, px) + 1
+	end
+	-- One line: the letters shrink together when the name is wider than the stage.
+	local px = size
+	local total = 2 * (px + 12)
+	for _, ch in letters do
+		total += widthOf(ch, px)
+	end
+	if total > STAGE_W - 40 then
+		px = math.floor(px * (STAGE_W - 40) / total)
+	end
+	local stamps: { GuiObject } = {}
+	local function cell(order: number, width: number): Frame
+		return Kit.new("Frame", {
+			Name = "Cell",
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(width, size + 6),
+			LayoutOrder = order,
+			ZIndex = 5,
+			Parent = row,
+		})
+	end
+	local function crown(order: number)
+		table.insert(
+			stamps,
+			Kit.icon(cell(order, px + 12), icon, px, if icon == "Crown" then nil else top.Color, {
+				Name = "Crown",
+				Position = UDim2.fromScale(0.5, 0.5),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = 5,
+			})
+		)
+	end
+	crown(0)
+	for i, ch in letters do
+		local holder = cell(i, widthOf(ch, px))
+		if ch ~= " " then
+			local label = Kit.hudText(holder, {
+				Name = "Letter",
+				Text = ch,
+				TextSize = px,
+				StrokeColor = Theme.Glass.TextInk,
+				StrokeThickness = 4,
+				Size = UDim2.new(1, 40, 1, 0),
+				Position = UDim2.fromScale(0.5, 0.5),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = 5,
+			})
+			Kit.gradient(label, top.LetterTop, top.LetterBottom)
+			table.insert(stamps, label)
+		end
+	end
+	crown(#letters + 1)
+	for i, gui in stamps do
+		-- Scale 0 until its turn: the row's own fade-in (Kit.appear) runs meanwhile.
+		local stamp = Kit.new("UIScale", { Name = "Stamp", Scale = 0, Parent = gui })
+		task.delay(0.08 + (i - 1) * top.LetterGap, function()
+			if not gui.Parent then
+				return
+			end
+			stamp.Scale = top.LetterFrom
+			Kit.tween(stamp, top.LetterTime, { Scale = 1 }, Enum.EasingStyle.Back)
+			if i % 3 == 1 then
+				sounds.play("Tick", 0.02, 1 + i * 0.03)
+			end
+		end)
+		task.delay(0.08 + #stamps * top.LetterGap + top.LetterTime + i * 0.07, function()
+			if gui.Parent then
+				local info = TweenInfo.new(top.LetterWaveTime, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+				TweenService:Create(gui, info, { Position = UDim2.new(0.5, 0, 0.5, -top.LetterWave) }):Play()
+			end
+		end)
+	end
+	return row
+end
+
+-- A slanted bar of light that crosses the name again and again (Legendary and Mythic).
+-- Returns its clip frame, which leaves with the reveal's text. `name` (the name's label or
+-- stamped row): the clip is cut to the name's own width before every pass, so the bar never
+-- shows on the bare stage beside a short name (measured in Studio: the tier-25 row ends at
+-- 880 px, the old full-width clip at 929, so a cream block crossed the gap on its own).
+function Popups.nameSweep(stage: Frame, y: number, size: number, name: GuiObject?): Frame
+	local J = Popups.JUICE.Reveal
+	local clip = Kit.new("Frame", {
+		Name = "Sweep",
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+		Size = UDim2.new(1, -40, 0, size + 10),
+		Position = UDim2.fromOffset(20, y - 2),
+		ZIndex = 6,
+		Parent = stage,
+	})
+	local bar = Kit.new("Frame", {
+		Name = "Bar",
+		BackgroundColor3 = J.SweepColor,
+		BorderSizePixel = 0,
+		Size = UDim2.new(0, J.SweepWidth, 1, 0),
+		Position = UDim2.fromOffset(-J.SweepWidth, 0),
+		ZIndex = 6,
+		Parent = clip,
+	})
+	Kit.new("UIGradient", {
+		Rotation = 20,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1),
+			NumberSequenceKeypoint.new(0.5, 1 - J.SweepAlpha),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+		Parent = bar,
+	})
+	local function fit()
+		if not name then
+			return
+		end
+		local layout = name:FindFirstChildWhichIsA("UIListLayout")
+		local width = if layout then layout.AbsoluteContentSize.X elseif name:IsA("TextLabel") then name.TextBounds.X else 0
+		if width > 0 then
+			clip.AnchorPoint = Vector2.new(0.5, 0)
+			clip.Size = UDim2.fromOffset(width + 6, size + 10)
+			clip.Position = UDim2.new(0.5, 0, 0, y - 2)
+		end
+	end
+	task.spawn(function()
+		task.wait(0.5)
+		while clip.Parent do
+			fit()
+			bar.Position = UDim2.fromOffset(-J.SweepWidth, 0)
+			Kit.tween(bar, J.SweepTime, { Position = UDim2.fromScale(1, 0) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+			task.wait(J.SweepEvery)
+		end
+	end)
+	return clip
+end
+
 --[[
 	The reveal has no card and no button. The world stays in view under a soft
 	navy veil and a short blur, the HUD steps aside, and the unit floats in the
@@ -1345,50 +2527,93 @@ end
 	outlined style and arrives a line at a time: label, name, tier, stats, then
 	any other units the same action discovered.
 
-	A new discovery then leaves for the Index. After REVEAL_HOLD, or on any tap,
-	click, A, B or Escape, input is free again, the HUD slides back and the unit
+	The rarity band (Economy.tierBand) colours it all: rays, glow, the plate behind
+	the name, the confetti and a thin wash over the whole screen; rarer bands turn
+	it up (Popups.JUICE.Reveal, built by Popups.revealExtras): a bigger unit, bigger and
+	faster rays, a pool of light on the ground from Rare; from Epic a white flash as it
+	lands, wide counter-turning beams, ground rings, more confetti and the longer fanfare;
+	Legendary and Mythic hold longer, shower confetti and sweep the name with light; the
+	top tier bursts crowns and stamps its name in gold letters. The unit fills about half
+	the screen's height (more for a rarer band) and its camera pushes in.
+	Under the name, "+X Aura/sec" counts up: what the action added (reward.gain).
+
+	A new discovery then leaves for the Index. On any tap, click, A, B or Escape
+	(or after REVEAL_IDLE), input is free again, the HUD slides back and the unit
 	shrinks into an orb that flies into the Index button (Hud.indexPoint), which
 	bounces and counts it (Hud.punchIndex); the other units follow one by one.
 	With no button to land on (a window is open, the menu is hidden) the orbs
 	leave by the top-left corner. A unit that is not new, and any unit under the
 	reduced-motion setting, just fades where it stands.
+
+	In a chain (revealChain) every reveal but the last has reward._next: it holds
+	REVEAL_CHAIN, starts the next one as it leaves (so the veil, the blur and the
+	"RevealOpen" attribute never drop in between) and fades quickly without an orb.
 ]]
 local function showReveal(reward: { [string]: any }, done: () -> ())
 	local tier = reward.tier
 	local band = Economy.tierBand(tier)
-	local color = C.Rarity[band] or C.Gold
-	local rank = RARITY_RANK[band] or 1
+	local unitColor = C.Rarity[band] or C.Gold
+	local unitRank = RARITY_RANK[band] or 1
+	-- Out of a crate rarer than its unit, the stage (rays, wash, glow, flash, confetti, the
+	-- frame) takes the crate's rarity and colour: a Legendary crate pays off like one. The
+	-- unit's own name, tier line and size keep its band.
+	local crateRank = RARITY_RANK[reward.crateRarity or ""] or 0
+	local crated = crateRank > unitRank
+	local color = if crated then C.Rarity[reward.crateRarity] or unitColor else unitColor
+	local rank = math.max(unitRank, crateRank)
 	local isNew = reward.new == true
 	local extras = if isNew then extraTiers(reward) else {}
 	local calm = reducedMotion()
+	local J = Popups.JUICE.Reveal
+	-- The top tier keeps its own size and lift (JUICE.Top): grown mostly upward.
+	local topTier = tier == Economy.MAX_TIER
+	local heroScale: number = if topTier then Popups.JUICE.Top.HeroScale else J.HeroScale[unitRank] or 1
+	local heroLift: number = if topTier then Popups.JUICE.Top.HeroLift else J.HeroLift
 	local data = State.data
+	local nextReveal: (() -> ())? = if type(reward._next) == "function" then reward._next else nil
+	local chained = nextReveal ~= nil
+	local gain: number? = if type(reward.gain) == "number" and reward.gain > 0 then reward.gain else nil
+	-- A merge batch brought this discovery: its "xN MERGES!" line gets a row under the
+	-- stats (the text itself may still be on its way: Fx.Shelf floats it at the last pop).
+	-- In a chain it waits for the last reveal, judged from when the chain started.
+	local now = if type(reward._startedAt) == "number" then reward._startedAt else os.clock()
+	local mergesSeen: string? = if isNew and not chained and now - mergesAt < MERGES_FRESH then mergesText else nil
+	local mergesRow = isNew and not chained and (mergesSeen ~= nil or (now - mergeTallyAt < MERGES_FRESH and mergeTally >= MERGES_MIN))
+	if not chained then
+		mergesAt, mergeTally = 0, 0
+	end
 	-- Text sizes held on the glass: a phone's UI scale would take the 30 px label to 19 and
 	-- the 22 px tier line to 14. What the text gains the unit gives up, so the stage keeps
 	-- its height (and Kit.fit does not shrink it all again).
 	-- Kit.fit may still scale the stage a little (a short screen): the sizes count that in.
 	local area = Kit.designArea(screen)
 	local share = if Kit.touch then Theme.Glass.FitTouch else Theme.Glass.Fit
-	local stageBase = 196 + HERO + (if #extras > 0 then EXTRAS_H else 0)
+	local stageBase = 204 + HERO + (if #extras > 0 then EXTRAS_H else 0) + (if mergesRow then 32 else 0) + (if gain then 38 else 0)
 	local fit = if area then math.min(1, area.X * share / STAGE_W, area.Y * share / stageBase) else 1
-	local bannerSize = Kit.px(28 / fit, 30, screen)
+	local bannerSize = Kit.px(28 / fit, 38, screen)
 	local nameSize = Kit.px(30 / fit, 48, screen)
+	local gainSize = Kit.px(20 / fit, 30, screen)
 	local tierSize = Kit.px(18 / fit, 22, screen)
 	local statSize = Kit.px(18 / fit, 26, screen)
-	local heroSize = math.max(HERO - (bannerSize - 30) - (nameSize - 48) - (tierSize - 22) - (statSize - 26), 200)
+	local heroSize =
+		math.max(HERO - (bannerSize - 38) - (nameSize - 48) - (tierSize - 22) - (statSize - 26) - (if gain then gainSize - 30 else 0), 200)
 	local heroY = bannerSize + 6 + heroSize / 2
 	local nameY = heroY + heroSize / 2
-	local tierY = nameY + nameSize + 8
+	local gainY = nameY + nameSize + 6
+	local tierY = (if gain then gainY + gainSize + 2 else nameY + nameSize) + 8
 	local statsY = tierY + tierSize + 12
-	local stageH = statsY + statSize + 8 + 36
+	local mergesY = statsY + statSize + 10
+	local stageH = statsY + statSize + 8 + (if mergesRow then tierSize + 10 else 0) + 36
 	local height = stageH + (if #extras > 0 then EXTRAS_H else 0)
+	-- A rarer band's unit is drawn larger than its box (J.HeroScale): how much it gains,
+	-- and how far that reaches above the box.
+	local heroGrow = heroSize * (heroScale - 1)
+	local heroUp = math.max(heroGrow * (0.5 + heroLift), 0)
 
-	-- A window underneath (the shop, the Index) is busy: the veil goes deep and even over it,
-	-- the window dims to about Theme.Glass.RevealDim behind the name and comes back when the
-	-- veil lifts. Toasts and the tutorial pill step out (setReveal).
-	local overWindow = screen:GetAttribute("WindowOpen") == true
+	-- Toasts and the tutorial pill step out (setReveal); the veil below hides an open window.
 	local openKey = "Reward:" .. tostring(os.clock())
 	setReveal(true)
-	-- The lighter frost: the Chad's plot stays readable behind the reveal.
+	-- The lighter frost, under a dark veil.
 	Kit.setBlur(true, true)
 
 	local root = Kit.new("Frame", {
@@ -1398,7 +2623,8 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 30,
 		Parent = screen,
 	})
-	-- Veil: navy across the middle band (about 40 %), thinning out toward the edges.
+	-- Veil: navy, about 80 % across the middle band and a little thinner toward the edges, so
+	-- the unit and its name stand on a dark stage whatever the plot shows behind them.
 	local veil = Kit.new("Frame", {
 		Name = "Dim",
 		BackgroundColor3 = VEIL,
@@ -1410,31 +2636,56 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 0,
 		Parent = root,
 	})
-	local window = 1 - Theme.Glass.RevealDim
-	Kit.new("UIGradient", {
-		Rotation = 90,
-		Transparency = if overWindow
-			then NumberSequence.new({
-				NumberSequenceKeypoint.new(0, window),
-				NumberSequenceKeypoint.new(0.3, window * 0.5),
-				NumberSequenceKeypoint.new(0.8, window * 0.4),
-				NumberSequenceKeypoint.new(1, window),
-			})
-			else NumberSequence.new({
-				NumberSequenceKeypoint.new(0, 0.92),
-				NumberSequenceKeypoint.new(0.36, 0.62),
-				NumberSequenceKeypoint.new(0.74, 0.6),
-				NumberSequenceKeypoint.new(1, 0.78),
-			}),
-		Parent = veil,
-	})
+	do
+		-- An open window (the Shop, the Daily window, the Index) is hidden for as long as the
+		-- reveal or its chain plays: over one the veil is solid, also when the window opens
+		-- half-way through, and the window is back as the veil lifts. Nothing of it reads
+		-- through behind the unit.
+		local gradient = Kit.new("UIGradient", { Rotation = 90, Parent = veil })
+		local function paint()
+			gradient.Transparency = if Windows.isAnyOpen()
+				then NumberSequence.new(0)
+				else NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 0.3),
+					NumberSequenceKeypoint.new(0.3, 0.2),
+					NumberSequenceKeypoint.new(0.8, 0.18),
+					NumberSequenceKeypoint.new(1, 0.26),
+				})
+		end
+		paint()
+		if not PREVIEW then
+			local watch: RBXScriptConnection
+			watch = Windows.changed.Event:Connect(function()
+				if root:IsDescendantOf(game) then
+					paint()
+				else
+					watch:Disconnect()
+				end
+			end)
+		end
+	end
 	-- The count behind WindowOpen is given back if the reveal's gui is destroyed.
 	Kit.markOpen(screen, openKey, true, root)
 	Kit.tween(veil, 0.25, { BackgroundTransparency = 0 })
+	-- A thin wash of the rarity colour over the whole screen, stronger for rarer bands.
+	local wash = Kit.new("Frame", {
+		Name = "Wash",
+		BackgroundColor3 = color,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Size = UDim2.new(3, 0, 1, 400),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 0,
+		Parent = root,
+	})
+	Kit.tween(wash, 0.3, { BackgroundTransparency = 1 - J.Wash[rank] })
 
 	-- The stage sits a little lower while the tutorial card holds the top centre.
 	local topCard = screen:GetAttribute("TopCardHeight")
 	local shift = if type(topCard) == "number" and screen:GetAttribute("Compact") ~= true then math.min(topCard / 2, 40) else 0
+	-- ...and a little lower under a larger unit, so the label above it has somewhere to go.
+	shift = math.max(shift, math.min(heroUp * 0.4, J.StageDrop))
 	local stage = Kit.new("Frame", {
 		Name = "Stage",
 		BackgroundTransparency = 1,
@@ -1454,32 +2705,85 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		pool.Position = UDim2.new(0.5, 0, 0, heroY + 70)
 		table.insert(lights, pool)
 	end
-	local rays = Popups.rays(stage, Kit.lighten(color, 0.55), 600 + rank * 24, heroAt, 1, 6 + rank)
+	if crated then
+		Popups.crateFrame(stage, color, reward.crateRarity, -math.min(heroUp, J.LabelLift), statsY + statSize, calm, lights)
+	end
+	local rays = Popups.rays(stage, Kit.lighten(color, 0.12), J.RaySize[rank], heroAt, 1, J.RayCount[rank])
+	Popups.spinRays(rays, J.RaySpin[rank])
 	Kit.appear(rays, { from = 0.3, time = 0.5, style = Enum.EasingStyle.Quart })
 	table.insert(lights, rays)
 	if isNew then
-		-- A white counter-layer turning the other way for a fresh discovery.
-		local inner = Popups.rays(stage, WHITE, 440, heroAt, 1, 9, true)
+		-- A lighter counter-layer turning the other way for a fresh discovery (white from Epic).
+		local inner = Popups.rays(stage, if rank >= 4 then WHITE else Kit.lighten(color, 0.6), J.InnerRaySize[rank], heroAt, 1, 9, true)
 		Kit.appear(inner, { from = 0.3, time = 0.55, style = Enum.EasingStyle.Quart })
 		table.insert(lights, inner)
 	end
-	local glow = softDot(stage, "Glow", Kit.lighten(color, 0.2), UDim2.fromOffset(heroSize * 1.45, heroSize * 1.45), 0.3, 2)
+	local glowSize = heroSize * heroScale * J.Glow
+	local glow = softDot(
+		stage,
+		"Glow",
+		Kit.lighten(color, 0.2),
+		UDim2.fromOffset(glowSize, glowSize),
+		if topTier then Popups.JUICE.Top.GlowAlpha else 0.3,
+		2
+	)
 	glow.Position = heroAt
+	if topTier then
+		-- The gold unit stands on a dark disc inside a fainter glow, not on a sheet of light.
+		local backdrop = softDot(glow, "Backdrop", Popups.JUICE.Top.Backdrop, UDim2.fromScale(1, 1), Popups.JUICE.Top.BackdropAlpha, 2)
+		backdrop.Size = UDim2.fromScale(Popups.JUICE.Top.BackdropScale, Popups.JUICE.Top.BackdropScale)
+	end
 	Kit.appear(glow, { from = 0.4, time = 0.4 })
 	table.insert(lights, glow)
+	-- What the band adds behind the unit: ground light, beams, the flash, confetti, crowns.
+	Popups.revealExtras({
+		root = root,
+		stage = stage,
+		heroAt = heroAt,
+		heroY = heroY,
+		heroSize = heroSize,
+		scale = heroScale,
+		lift = heroLift,
+		color = color,
+		rank = rank,
+		tier = tier,
+		isNew = isNew,
+		calm = calm,
+		lights = lights,
+	})
 
-	-- The unit: frameless, popping in with an overshoot.
+	-- The unit: frameless, popping in with an overshoot; larger than its box for a rarer
+	-- band, and the text under it keeps its place.
 	local hero = Kit.new("Frame", {
 		Name = "Hero",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(heroSize, heroSize),
-		Position = heroAt,
+		Size = UDim2.fromOffset(heroSize * heroScale, heroSize * heroScale),
+		Position = heroAt - UDim2.fromOffset(0, heroGrow * heroLift),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 3,
 		Parent = stage,
 	})
-	local viewport = Kit.unitViewport(hero, tier, { Size = UDim2.fromScale(1, 1) })
+	local viewport = Kit.unitViewport(hero, tier, {
+		Size = UDim2.fromScale(HERO_ZOOM, HERO_ZOOM),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		-- A showcase: the top tier is revealed as the Absolute Chad statue.
+		Statue = true,
+	})
 	Kit.appear(hero, { from = 0.15, time = 0.4 + 0.02 * rank })
+	local rim: ViewportFrame? = if topTier then Popups.gradeHero(hero, viewport, tier) else nil
+	local lens = viewport.CurrentCamera
+	if lens and not calm and not PREVIEW then
+		-- Camera push: from a little further back, in onto the unit.
+		local rest = lens.CFrame
+		lens.CFrame = rest * CFrame.new(0, 0, rest.Position.Magnitude * HERO_PUSH)
+		Kit.tween(lens, 0.6, { CFrame = rest }, Enum.EasingStyle.Quart)
+		local rimLens = if rim then rim.CurrentCamera else nil
+		if rimLens then
+			rimLens.CFrame = lens.CFrame
+			Kit.tween(rimLens, 0.6, { CFrame = rest }, Enum.EasingStyle.Quart)
+		end
+	end
 	local twinkle = Kit.new("Frame", {
 		Name = "Sparkles",
 		BackgroundTransparency = 1,
@@ -1489,13 +2793,20 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 4,
 		Parent = stage,
 	})
-	sparkles(twinkle, Kit.lighten(color, 0.4), 5 + rank * 2, heroSize * 0.5, calm)
+	sparkles(twinkle, Kit.lighten(color, 0.4), J.Sparkles[rank], heroSize * heroScale * 0.5, calm)
 	Kit.appear(twinkle, { from = 0.5, time = 0.4, delay = 0.1 })
 	table.insert(lights, twinkle)
 
 	if not calm and not PREVIEW then
 		-- A soft white bloom behind the pop (no full-screen flash), bigger for rarer units.
-		local bloom, fade = softDot(stage, "Bloom", WHITE, UDim2.fromOffset(heroSize * 0.7, heroSize * 0.7), 0.05, 4)
+		local bloom, fade = softDot(
+			stage,
+			"Bloom",
+			WHITE,
+			UDim2.fromOffset(heroSize * 0.7, heroSize * 0.7),
+			if topTier then Popups.JUICE.Top.BloomAlpha else 0.05,
+			4
+		)
 		bloom.Position = heroAt
 		local reach = heroSize * (1.5 + 0.2 * rank)
 		Kit.tween(bloom, 0.34, { Size = UDim2.fromOffset(reach, reach), [fade] = 1 }, Enum.EasingStyle.Quart)
@@ -1527,7 +2838,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 				end)
 			end)
 		end
-		-- Epic and up land with a second bump.
+		-- Epic and up land with a second bump (the white flash is Popups.revealExtras').
 		if rank >= 4 then
 			task.delay(0.5 + 0.02 * rank, function()
 				if hero.Parent then
@@ -1536,18 +2847,15 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 			end)
 		end
 	end
-	if isNew and not calm then
-		Kit.confetti(stage, {
-			Origin = heroAt,
-			Count = 12 + rank * 4,
-			ZIndex = 4,
-			Colors = { color, CANDY[1], CANDY[2], CANDY[3], CANDY[4], CANDY[5], CANDY[7] },
-			Power = 0.95 + 0.08 * rank,
-		})
-	end
 
 	if isNew then
-		sounds.play(if isBigBand(band) then "CelebrateLegendary" else "Celebrate")
+		-- The same fanfares, pitched by band: brighter for the common ones; from Epic the
+		-- longer one, deeper (and so longer still) toward Mythic.
+		if rank >= 4 then
+			sounds.play("CelebrateLegendary", 0, if rank == 4 then 1.08 elseif rank >= 6 then 0.92 else 1)
+		else
+			sounds.play("Celebrate", 0, 1.1 - 0.05 * (rank - 1))
+		end
 	elseif not reward._sounded then
 		-- The crate reveal already played "Reward" when it landed.
 		sounds.play("Reward")
@@ -1565,6 +2873,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	-- Idle: the unit turns in from a little past its rest pose (never side-on or
 	-- from behind), settles with a small overshoot, then sways and bobs gently.
 	local model = viewport:FindFirstChildOfClass("Model")
+	local rimModel = if rim then rim:FindFirstChildOfClass("Model") else nil
 	if model and not calm and not PREVIEW then
 		local rest = model:GetPivot()
 		local TURN, FROM, SWAY, BOB = 0.9, -0.8, 0.22, 7
@@ -1588,7 +2897,12 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 				yaw = SWAY * math.sin(idle * 0.9) * math.min(1, idle / 1.5)
 			end
 			model:PivotTo(rest * CFrame.Angles(0, yaw, 0))
-			viewport.Position = UDim2.fromOffset(0, math.sin(t * 2.4) * BOB * math.min(1, t / 0.6))
+			viewport.Position = UDim2.new(0.5, 0, 0.5, math.sin(t * 2.4) * BOB * math.min(1, t / 0.6))
+			if rim and rimModel then
+				-- The rim turns and bobs with the unit it outlines.
+				rimModel:PivotTo(rest * CFrame.Angles(0, yaw, 0))
+				rim.Position = viewport.Position
+			end
 		end)
 	end
 
@@ -1609,12 +2923,25 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		end
 		arrive(Kit.hudText(stage, {
 			Name = "Banner",
-			Text = if isNew then "NEW " .. string.upper(W.Unit) .. "!" else "YOU GOT",
+			Text = if crated
+				then (if isNew then "NEW! " else "") .. string.upper(reward.crateRarity .. " " .. W.Chest) .. " PRIZE!"
+				elseif not isNew then "YOU GOT"
+				elseif type(reward._count) == "number" and reward._count > 1 then string.format(
+					"NEW %s!  %d/%d",
+					string.upper(W.Unit),
+					reward._index or 1,
+					reward._count
+				)
+				else "NEW " .. string.upper(W.Unit) .. "!",
 			TextSize = bannerSize,
-			TextColor3 = if isNew then C.Gold else C.Text,
+			TextScaled = true,
+			MaxTextSize = bannerSize,
+			TextColor3 = if crated then Kit.lighten(color, 0.15) elseif isNew then C.Gold else C.Text,
 			StrokeColor = Theme.Glass.TextInk,
 			StrokeThickness = 3,
 			Size = UDim2.new(1, 0, 0, bannerSize + 6),
+			-- A larger unit reaches up here: the label makes room as far as the screen has it.
+			Position = UDim2.fromOffset(0, -math.min(heroUp, J.LabelLift)),
 			ZIndex = 5,
 		}))
 	end)
@@ -1622,37 +2949,79 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		if not alive() then
 			return
 		end
-		-- A soft dark plate behind the name and the stats (no box, no border: a tinted
-		-- soft dot stretched wide) so they hold over a busy plot.
-		local plate = softDot(stage, "Plate", Theme.Glass.Tint, UDim2.fromOffset(STAGE_W, 250), 0.22, 2)
+		-- A soft dark plate behind the name and the stats (no box, no border: a soft dot
+		-- stretched wide, the glass tint with the rarity colour in it) so they hold over a
+		-- busy plot.
+		local plateH = statsY + statSize - nameY + 110
+		local plate = softDot(stage, "Plate", VEIL:Lerp(color, 0.12), UDim2.fromOffset(STAGE_W, plateH), 0.1, 2)
 		plate.Position = UDim2.new(0.5, 0, 0, (nameY + statsY + statSize + 8) / 2)
 		table.insert(lines, plate)
 		Kit.appear(plate, { from = 0.9, time = 0.3 })
-		-- Big name in the rarity colour, scaled down to fit on one line.
-		arrive(Kit.hudText(stage, {
-			Name = "UnitName",
-			Text = string.upper(Theme.Tiers[tier].Name),
-			TextSize = nameSize,
-			TextScaled = true,
-			MaxTextSize = nameSize,
-			TextColor3 = Kit.lighten(color, 0.15),
-			StrokeColor = Theme.Glass.TextInk,
-			Size = UDim2.new(1, -40, 0, nameSize + 6),
-			Position = UDim2.fromOffset(20, nameY),
-			StrokeThickness = 3,
-			ZIndex = 5,
-		}))
-		sounds.play("Tick", 0.02, 1.2)
+		-- Big name in the rarity colour, scaled down to fit on one line. It reads on every
+		-- rarity: a pale colour with little hue of its own (Common's grey) goes most of the
+		-- way to white, and every name wears a thick ink outline over the dark plate.
+		local _, saturation = unitColor:ToHSV()
+		local unitName = string.upper(Theme.Tiers[tier].Name)
+		local nameGui: GuiObject
+		if tier == Economy.MAX_TIER and not calm and not PREVIEW then
+			-- The top tier's name is stamped in, a gold letter at a time (with its own ticks).
+			nameGui = Popups.stampName(stage, unitName, nameSize, nameY)
+			arrive(nameGui)
+		else
+			nameGui = Kit.hudText(stage, {
+				Name = "UnitName",
+				Text = unitName,
+				TextSize = nameSize,
+				TextScaled = true,
+				MaxTextSize = nameSize,
+				TextColor3 = Kit.lighten(unitColor, if saturation < 0.25 then 0.7 else 0.2),
+				StrokeColor = Theme.Glass.TextInk,
+				Size = UDim2.new(1, -40, 0, nameSize + 6),
+				Position = UDim2.fromOffset(20, nameY),
+				StrokeThickness = 4,
+				ZIndex = 5,
+			})
+			arrive(nameGui)
+			sounds.play("Tick", 0.02, 1.2)
+		end
+		if rank >= J.SweepFrom and not calm and not PREVIEW then
+			table.insert(lines, Popups.nameSweep(stage, nameY, nameSize, nameGui))
+		end
 	end)
+	if gain then
+		-- What the action added to the aura made per second, counting up.
+		after(0.34, function()
+			if not alive() then
+				return
+			end
+			local row = Kit.new("Frame", {
+				Name = "Gain",
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, 0, 0, gainSize + 8),
+				Position = UDim2.fromOffset(0, gainY),
+				ZIndex = 5,
+				Parent = stage,
+			})
+			Kit.list(row, 0, true, Enum.HorizontalAlignment.Center)
+			local function gained(n: number): string
+				return "+" .. (if n < 10 then string.format("%.1f", n) else Format.short(n)) .. " " .. W.Orb .. "/sec"
+			end
+			local label = statPair(row, "Orb", C.Orb, gained(gain), Kit.lighten(C.Cash, 0.25), 1, gainSize)
+			arrive(row)
+			Kit.countTo(label, 0, gain, gained, 0.7)
+		end)
+	end
 	after(0.38, function()
 		if not alive() then
 			return
 		end
 		arrive(Kit.hudText(stage, {
 			Name = "Tier",
-			Text = string.format("TIER %d  •  %s", tier, string.upper(band)),
+			-- A crate rarer than the unit's band (crates never pay past best + 1, so a Legendary
+			-- crate can hold a Common unit): no band word under "LEGENDARY CRATE PRIZE!".
+			Text = if crated then string.format("TIER %d", tier) else string.format("TIER %d  •  %s", tier, string.upper(band)),
 			TextSize = tierSize,
-			TextColor3 = Kit.lighten(color, 0.55),
+			TextColor3 = Kit.lighten(unitColor, 0.3),
 			StrokeColor = Theme.Glass.TextInk,
 			Size = UDim2.new(1, 0, 0, tierSize + 4),
 			Position = UDim2.fromOffset(0, tierY),
@@ -1678,7 +3047,9 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		local function perSecond(n: number): string
 			return Format.short(n) .. "/s"
 		end
-		local rate = statPair(stats, "Orb", C.Orb, perSecond(Economy.unitRate(tier)), Kit.lighten(C.Orb, 0.4), 1, statSize)
+		-- The server may send the unit's rate (reward.rate, see revealChain).
+		local unitRate: number = if type(reward.rate) == "number" then reward.rate else Economy.unitRate(tier)
+		local rate = statPair(stats, "Orb", C.Orb, perSecond(unitRate), Kit.lighten(C.Orb, 0.4), 1, statSize)
 		if isNew and data and type(data.discovered) == "table" then
 			local found = 0
 			for t = 1, Economy.MAX_TIER do
@@ -1689,8 +3060,37 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 			statPair(stats, "Index", C.Gold, string.format("%d/%d", found, Economy.MAX_TIER), C.GoldLight, 2, statSize)
 		end
 		arrive(stats)
-		Kit.countTo(rate, 0, Economy.unitRate(tier), perSecond, 0.45)
+		Kit.countTo(rate, 0, unitRate, perSecond, 0.45)
 	end)
+	-- "xN MERGES!" under the name plate, never behind the banner: the world text of the
+	-- same batch (hidden while the reveal is up), once the stats are in and it is known.
+	local mergesReady = false
+	local function showMerges(text: string)
+		mergesSeen = text
+		if not mergesRow or not mergesReady or not alive() or stage:FindFirstChild("Merges") then
+			return
+		end
+		arrive(Kit.hudText(stage, {
+			Name = "Merges",
+			Text = text,
+			TextSize = tierSize,
+			TextColor3 = C.GoldLight,
+			StrokeColor = Theme.Glass.TextInk,
+			Size = UDim2.new(1, 0, 0, tierSize + 4),
+			Position = UDim2.fromOffset(0, mergesY),
+			StrokeThickness = 2.5,
+			ZIndex = 5,
+		}))
+	end
+	if mergesRow then
+		mergesOnReveal = showMerges
+		after(0.58, function()
+			mergesReady = true
+			if mergesSeen then
+				showMerges(mergesSeen)
+			end
+		end)
+	end
 	local portraits: { Portrait } = {}
 	if #extras > 0 then
 		portraits = extrasRow(stage, extras, stageH - 28, 0.6, alive)
@@ -1702,6 +3102,9 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	local function endReveal()
 		if revealed then
 			revealed = false
+			if mergesOnReveal == showMerges then
+				mergesOnReveal = nil
+			end
 			setReveal(false)
 		end
 	end
@@ -1718,12 +3121,23 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		end
 		done()
 	end
-	local function leave()
+	local leave: () -> ()
+	local function abort()
+		-- The rest of the chain is dropped: the queue moves on once this one has gone.
+		if nextReveal then
+			nextReveal = nil
+			if type(reward._chainDone) == "function" then
+				task.delay(0.4, reward._chainDone)
+			end
+		end
+		leave()
+	end
+	leave = function()
 		if closed then
 			return
 		end
 		closed = true
-		openModals[leave] = nil
+		openModals[abort] = nil
 		if spin then
 			spin:Disconnect()
 		end
@@ -1732,10 +3146,18 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		end
 		release(root, previous)
 		skip:Destroy()
+		-- The next reveal of the chain comes up first: the blur, the open count and the
+		-- "RevealOpen" attribute never drop in between.
+		local follow = nextReveal
+		nextReveal = nil
+		if follow then
+			follow()
+		end
 		Kit.setBlur(false, true)
 		Kit.markOpen(screen, openKey, false)
 		endReveal()
 		Kit.tween(veil, 0.35, { BackgroundTransparency = 1 })
+		Kit.tween(wash, 0.3, { BackgroundTransparency = 1 })
 		for _, gui in lines do
 			Kit.disappear(gui, { time = 0.16, to = 0.96 })
 		end
@@ -1749,15 +3171,15 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		-- The queue must never stall (finish and done are idempotent).
 		task.delay(1.6, finish)
 
-		if not isNew or calm then
+		if not isNew or calm or chained then
 			-- Nothing flies: the units fade where they stand (a calm discovery still
-			-- counts on the Index).
+			-- counts on the Index; in a chain the last reveal's orb does).
 			Kit.disappear(hero, { time = 0.2, to = 0.85 })
 			for _, portrait in portraits do
 				Kit.disappear(portrait.gui, { time = 0.2, to = 0.85 })
 			end
 			task.delay(0.3, function()
-				if isNew and Hud.indexPoint() then
+				if isNew and not chained and Hud.indexPoint() then
 					Hud.punchIndex()
 				end
 				finish()
@@ -1803,7 +3225,7 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 	end
 	-- Any tap, click, B or Escape continues, but never before the unit has popped in.
 	local function dismiss()
-		local wait = REVEAL_MIN - (os.clock() - startedAt)
+		local wait = REVEAL_MIN + J.MinExtra[rank] - (os.clock() - startedAt)
 		if wait > 0 then
 			task.delay(wait, leave)
 		else
@@ -1811,8 +3233,9 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		end
 	end
 	skip.Activated:Connect(dismiss)
-	-- Popups.closeModals (the capture hook, the preview) ends a reveal too.
-	openModals[leave] = true
+	-- Popups.closeModals (the capture hook, the preview) ends a reveal too, and with it
+	-- the rest of its chain.
+	openModals[abort] = true
 	back = pushBack(30, dismiss)
 	if not PREVIEW and (Kit.gamepad or Kit.tenFoot) then
 		-- Gamepad: the catcher holds the selection (with no ring), so A continues too.
@@ -1821,9 +3244,10 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		Kit.focus(skip, skip)
 	end
 
-	-- A small faded hint, only for a player who has not continued after a second.
+	-- A small faded hint, only for a player who has not continued after a second (a
+	-- reveal with more behind it moves on by itself).
 	after(REVEAL_HINT, function()
-		if not alive() then
+		if not alive() or chained then
 			return
 		end
 		local hint = Kit.hudText(stage, {
@@ -1847,18 +3271,261 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 
 	if not PREVIEW then
 		local tutorial = data ~= nil and data.tutorialDone ~= true
-		local hold = if tutorial then REVEAL_HOLD_TUTORIAL else REVEAL_HOLD
-		task.delay(hold + (if #portraits > 0 then 0.25 else 0), leave)
+		-- Legendary and Mythic cards hold a little longer (J.HoldExtra), also with a card waiting.
+		local holdExtra: number = J.HoldExtra[rank]
+		local hold = (
+			if chained then REVEAL_CHAIN elseif isNew then REVEAL_IDLE else (if tutorial then REVEAL_HOLD_TUTORIAL else REVEAL_HOLD)
+		) + holdExtra
+		task.delay(hold, leave)
+		-- The long hold is for the last card only: once something waits in the queue (the
+		-- tutorial's "YOU DID IT!", a finish card, the next reveal) this one makes room.
+		if hold > REVEAL_QUEUED then
+			task.spawn(function()
+				while not closed and root.Parent do
+					if #queue > 0 and os.clock() - startedAt >= REVEAL_QUEUED + holdExtra then
+						leave()
+						return
+					end
+					task.wait(0.25)
+				end
+			end)
+		end
 	end
 end
 
--- Crate reveal: rising shakes (more for rarer crates, with a halo and a soft
--- tint building up), a burst (white ring, rays, confetti; a held breath before
--- Legendary+), a quick roll through the possible units, then the unit reveal.
--- 1.5-3 s; tap to skip.
+--[[
+	One reveal per newly discovered tier, lowest first: every one but the last holds
+	REVEAL_CHAIN and hands over (reward._next), the last stays until it is dismissed. At most
+	CHAIN_MAX in a row: a bigger jump keeps its newest tiers and the older ones ride on the
+	last reveal as small portraits.
+
+	Payload fields the server adds (Tycoon.discoverAll); without them the client works them out:
+	  productionBefore, productionAfter  aura per second before and after the action, without
+	                 the surge (else from the snapshots; "before" is absent on a join or debug grant)
+	  rates          { [tier] = aura per second of one unit }, 1..newest (else Economy.unitRate)
+]]
+local function revealChain(reward: { [string]: any }, done: () -> ())
+	local startedAt = os.clock()
+	local before, after = tonumber(reward.productionBefore), tonumber(reward.productionAfter)
+	local gain: number? = if before and after
+		then after - before
+		else productionGain((if type(reward._at) == "number" then reward._at else startedAt) - PROD_LEAD)
+	local rates: { [any]: any } = if type(reward.rates) == "table" then reward.rates else {}
+	local function rateOf(t: number): number?
+		-- A sparse table crosses the remote with string keys.
+		return tonumber(rates[t]) or tonumber(rates[tostring(t)])
+	end
+	local tiers: { number } = {}
+	if reward.new == true and type(reward.tiers) == "table" then
+		for _, t in reward.tiers do
+			if type(t) == "number" and Theme.Tiers[t] and not table.find(tiers, t) then
+				table.insert(tiers, t)
+			end
+		end
+	end
+	if not table.find(tiers, reward.tier) then
+		table.insert(tiers, reward.tier)
+	end
+	table.sort(tiers)
+	if #tiers <= 1 or PREVIEW then
+		reward._startedAt = startedAt
+		reward.gain = gain
+		reward.rate = rateOf(reward.tier)
+		showReveal(reward, done)
+		return
+	end
+	local first = math.max(1, #tiers - CHAIN_MAX + 1)
+	local count = #tiers - first + 1
+	local function show(index: number)
+		local t = tiers[first + index - 1]
+		local last = index == count
+		local shown = { t }
+		if last then
+			for i = 1, first - 1 do
+				table.insert(shown, tiers[i])
+			end
+		end
+		local entry: { [string]: any } = {
+			kind = "Reward",
+			tier = t,
+			tiers = shown,
+			new = true,
+			rate = rateOf(t),
+			gain = if last then gain else nil,
+			_at = reward._at,
+			_startedAt = startedAt,
+			_index = index,
+			_count = count,
+			_chainDone = done,
+			crateRarity = reward.crateRarity,
+		}
+		if not last then
+			entry._next = function()
+				show(index + 1)
+			end
+		end
+		local ok, err = pcall(showReveal, entry, if last then done else function() end)
+		if not ok then
+			warn("[Popups] reveal " .. tostring(t) .. " failed: " .. tostring(err))
+			done()
+		end
+	end
+	show(1)
+end
+
+--[[
+	Waits for Fx.Crates' 3D burst of the crate that just opened (it yields), so the 2D
+	reveal's veil does not cover it; true when a burst was seen. The one API used:
+	  Crates.awaitBurst(maxWait)  yields until the burst of the open in progress has passed
+	  Crates.burstAt()            os.clock() of that burst (one from just before counts)
+	The wait is at most JUICE.Crate.BurstWait, and never shorter than the ritual's build-up
+	(Crates.SMASH.ritual.shake) so the card cannot open before the burst. Not waited for
+	behind an open window: the Smasher is out of sight there.
+]]
+function Popups.awaitCrateBurst(reward: { [string]: any }): boolean
+	local J = Popups.JUICE.Crate
+	if screen:GetAttribute("WindowOpen") == true then
+		return false
+	end
+	local fx: any = nil
+	pcall(function()
+		local folder = script.Parent.Parent:FindFirstChild("Fx")
+		local module = folder and folder:FindFirstChild("Crates")
+		if module and module:IsA("ModuleScript") then
+			fx = require(module) :: any
+		end
+	end)
+	if type(fx) ~= "table" or type(fx.awaitBurst) ~= "function" or type(fx.burstAt) ~= "function" then
+		return false
+	end
+	local limit = J.BurstWait
+	pcall(function()
+		limit = math.max(limit, fx.SMASH.ritual.shake + 0.15)
+	end)
+	local ok = pcall(fx.awaitBurst, limit)
+	local okAt, at = pcall(fx.burstAt)
+	local from = (if type(reward._at) == "number" then reward._at else os.clock()) - J.BurstLead
+	return ok and okAt and type(at) == "number" and at >= from and at <= os.clock() + 0.05
+end
+
+--[[
+	The crate's own moment: "LEGENDARY CRATE!" in the rarity's colour over the crate reveal.
+	It slams in from JUICE.Crate.SlamFrom times its size, shakes (harder for a rarer
+	crate), and a ring and confetti in its colour burst from behind it. Returns the banner
+	(a child of the reveal's holder: it leaves with it).
+]]
+function Popups.crateBanner(holder: Frame, rarity: string, color: Color3, rank: number): Frame
+	local J = Popups.JUICE.Crate
+	local calm = reducedMotion()
+	local text = string.upper(rarity .. " " .. W.Chest) .. "!"
+	local size = Kit.px(J.TextPx, J.TextSize[rank] or J.TextSize[1], screen)
+	local at = UDim2.new(0.5, 0, 0, J.Y)
+	local banner = Kit.new("Frame", {
+		Name = "CrateBanner",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(J.Width, size + 16),
+		Position = at,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 5,
+		Parent = holder,
+	})
+	-- A soft dark plate so the colour holds over the plot, and the ring that bursts from it.
+	softDot(banner, "Plate", VEIL, UDim2.fromOffset(displayWidth(text, size) + 280, (size + 16) * 2.3), 1 - J.PlateAlpha, 5)
+	local _, saturation = color:ToHSV()
+	Kit.hudText(banner, {
+		Name = "Text",
+		Text = text,
+		TextSize = size,
+		TextScaled = true,
+		MaxTextSize = size,
+		TextColor3 = Kit.lighten(color, if saturation < 0.25 then 0.7 else 0.2),
+		StrokeColor = Theme.Glass.TextInk,
+		StrokeThickness = 5,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 6,
+	})
+	if calm then
+		Kit.appear(banner, { from = 0.9, time = 0.25 })
+		return banner
+	end
+	Kit.appear(banner, { from = J.SlamFrom, time = J.SlamTime })
+	task.delay(J.SlamTime * 0.6, function()
+		if not banner.Parent then
+			return
+		end
+		-- Landed: the burst behind it, then the shake dying away.
+		local reach: number = J.Ring[rank] or J.Ring[1]
+		if RING then
+			local ring = Kit.new("ImageLabel", {
+				Name = "Burst",
+				BackgroundTransparency = 1,
+				Image = RING,
+				ImageColor3 = Kit.lighten(color, 0.45),
+				ImageTransparency = 0.05,
+				Size = UDim2.fromOffset(reach * 0.5, reach * 0.2),
+				Position = at,
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = 4,
+				Parent = holder,
+			})
+			Kit.tween(ring, 0.5, { Size = UDim2.fromOffset(reach * 2.4, reach), ImageTransparency = 1 }, Enum.EasingStyle.Quart)
+			task.delay(0.55, function()
+				ring:Destroy()
+			end)
+		end
+		local pieces: number = J.Confetti[rank] or 0
+		if pieces > 0 then
+			Kit.confetti(holder, {
+				Origin = at,
+				Count = pieces,
+				ZIndex = 4,
+				Colors = { color, Kit.lighten(color, 0.4), WHITE, Kit.darken(color, 0.15) },
+				Power = 0.9 + rank * 0.08,
+			})
+		end
+		local amp: number = J.Shake[rank] or J.Shake[1]
+		local shaken = 0
+		while banner.Parent and shaken < J.ShakeTime do
+			local k = 1 - shaken / J.ShakeTime
+			banner.Rotation = (math.random() - 0.5) * 2 * amp * k
+			banner.Position = at + UDim2.fromOffset((math.random() - 0.5) * 2 * amp * k, (math.random() - 0.5) * amp * k)
+			shaken += task.wait(0.03)
+		end
+		if banner.Parent then
+			banner.Rotation = 0
+			banner.Position = at
+		end
+	end)
+	return banner
+end
+
+-- Crate reveal: the crate's rarity banner (Popups.crateBanner), rising shakes (more for
+-- rarer crates, with a halo and a soft tint building up), a burst (white ring, rays,
+-- confetti; a held breath before Legendary+), a quick roll through the possible units,
+-- then the unit reveal. 1.5-3 s; tap to skip. It starts after Fx.Crates' 3D burst when
+-- that module tells of one (Popups.awaitCrateBurst, at most 0.8 s), and then plays fewer
+-- of its own shakes.
 local function crateReveal(reward: { [string]: any }, done: () -> ())
 	if PREVIEW then
-		showReveal(reward, done)
+		revealChain(reward, done)
+		return
+	end
+	if reward._burst == nil then
+		-- First the 3D burst on the Smasher, uncovered (no wait when Fx.Crates tells of none).
+		reward._burst = false
+		task.spawn(function()
+			local seen, burst = pcall(Popups.awaitCrateBurst, reward)
+			reward._burst = seen and burst == true
+			local ok, err = pcall(crateReveal, reward, done)
+			if not ok then
+				warn("[Popups] crate reveal failed: " .. tostring(err))
+				local stale = screen:FindFirstChild("CrateReveal")
+				if stale then
+					stale:Destroy()
+				end
+				done()
+			end
+		end)
 		return
 	end
 	local rarity = reward.crateRarity or Economy.tierBand(reward.tier)
@@ -1874,7 +3541,9 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 		ZIndex = 30,
 		Parent = screen,
 	})
-	local dim = cover(holder, "Dim", C.Ink, 0.66)
+	-- As dark as the unit reveal's veil that follows, and solid over an open window (the
+	-- window is hidden for the whole reveal).
+	local dim = cover(holder, "Dim", VEIL, if Windows.isAnyOpen() then 0 else 0.2)
 	Kit.appear(dim, { from = 1, time = 0.25 })
 	local tint: Frame? = if rank >= 3 then cover(holder, "Tint", color, 1) else nil
 
@@ -1910,6 +3579,7 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 	})
 	local crateScale = Kit.new("UIScale", { Parent = crate })
 	Kit.appear(crate, { from = 0.4, time = 0.3 })
+	local crateBanner = Popups.crateBanner(holder, rarity, color, rank)
 	local rarityPill = Kit.pill(holder, {
 		Name = "Rarity",
 		Text = string.upper(rarity .. " " .. W.Chest),
@@ -1951,7 +3621,7 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 		end
 		Kit.disappear(holder, { to = 1.08, time = 0.2, destroy = true })
 		task.delay(0.1, function()
-			showReveal(reward, done)
+			revealChain(reward, done)
 		end)
 	end
 	catcher(holder, 6).Activated:Connect(function()
@@ -1969,7 +3639,11 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 
 	task.spawn(function()
 		-- Rising shakes: 2 for Common up to 6 for Legendary/Mythic.
+		-- (Fewer after the crate was seen shaking and bursting on the Smasher.)
 		local shakes = math.min(rank + 1, 6)
+		if reward._burst == true then
+			shakes = math.min(shakes, Popups.JUICE.Crate.ShakesAfterBurst)
+		end
 		for i = 1, shakes do
 			local k = i / shakes
 			if pause(math.max(0.24 - i * 0.02, 0.13)) then
@@ -1993,8 +3667,10 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 			end
 		end
 
-		-- Legendary+: a held breath (trembling, swelling, halo growing) before the pop.
-		if rank >= 5 then
+		-- Legendary+: a held breath (trembling, swelling, halo growing) before the pop,
+		-- unless the 3D crate has just held its own breath and burst.
+		local seen3d = reward._burst == true
+		if rank >= 5 and not seen3d then
 			sounds.play("Ready", 0, 0.8)
 			Kit.tween(crateScale, 0.7, { Scale = 1.25 }, Enum.EasingStyle.Sine)
 			Kit.tween(halo, 0.7, { BackgroundTransparency = 0.3, Size = UDim2.fromOffset(320, 320) }, Enum.EasingStyle.Sine)
@@ -2009,12 +3685,15 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 			end
 			crate.Rotation = 0
 			crate.Position = UDim2.fromScale(0.5, 0.5)
-		elseif pause(0.14) then
+		elseif pause(if seen3d then 0.05 else 0.14) then
 			return
 		end
 
-		-- Burst: the crate puffs away, a white ring spreads, rays and confetti.
-		sounds.play("CrateBurst", 0, if rank >= 5 then 0.85 else 1)
+		-- Burst: the crate puffs away, a white ring spreads, rays and confetti. (Silent
+		-- right after the 3D burst: its MergeBoom was this beat's sound.)
+		if not seen3d then
+			sounds.play("CrateBurst", 0, if rank >= 5 then 0.85 else 1)
+		end
 		Kit.disappear(crate, { to = 1.6, time = 0.2, destroy = true })
 		local ring = circle(holder, "Ring", WHITE, 1, 4)
 		ring.Size = UDim2.fromOffset(90, 90)
@@ -2036,6 +3715,7 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 			Kit.appear(inner, { from = 0.2, time = 0.45, style = Enum.EasingStyle.Quart })
 		end
 		Kit.pop(holder, 0.15 + 0.05 * rank)
+		Kit.pop(crateBanner, 1 + 0.25 * rank)
 		Kit.confetti(holder, {
 			Origin = UDim2.fromScale(0.5, 0.5),
 			Count = 12 + rank * 8,
@@ -2104,6 +3784,9 @@ end
 
 function Popups.reward(data: { [string]: any })
 	data._at = os.clock()
+	if data.new then
+		lastDiscoveryAt = data._at
+	end
 	if data.source == "unlock" or data.source == "unlocker" then
 		data.crate = true
 	end
@@ -2129,7 +3812,7 @@ function Popups.reward(data: { [string]: any })
 		if data.crate then
 			crateReveal(data, done)
 		else
-			showReveal(data, done)
+			revealChain(data, done)
 		end
 	end, data)
 end
@@ -2393,15 +4076,29 @@ end
 
 -- Game mode finish ----------------------------------------------------------------------------
 --[[
-	The Parkour finish card: "LEVEL n CLEAR!" (or "NEW BEST!") over the level's name,
-	the run time, best and today's rank, the cash reward rolling up or a
-	calm "Reward again in m:ss" line while the full reward is cooling down,
-	and a popping "Level n+1 unlocked!" chip when this clear opened the next level.
+	The Parkour finish card: "MAP n CLEAR!" (or "NEW BEST!") over the map's name and the
+	falls of the run, the run time, best and the rank on this server's board, the cash
+	reward rolling up and a line saying why it is what it is. Four states (payload `first`,
+	`pay`, `assisted`, `level` / `levels`):
+	  first clean clear  rays and sparkles round the medal, rows of confetti, and a wide
+	                     "MAP n+1 UNLOCKED!" banner popping in when the clear opened a map;
+	  all maps cleared   the run that makes every map cleared without gear (payload
+	                     `complete`): "SKY OBBY COMPLETE!", a star medal, more confetti and
+	                     an "ALL 10 MAPS CLEARED!" banner;
+	  repeat             a clean run inside the cooldown: "RUN AGAIN  +$X  +20%" in the
+	                     reward well and the cooldown as a clock bar under a padlock
+	                     ("Full reward in m:ss", filling until the full reward is back);
+	                     while the map's bonus rests (pay "resting") no well, and a note
+	                     saying when it is back;
+	  assisted           gear on: grey medal, white title, an "ASSISTED RUN · NO BEST TIME"
+	                     ribbon instead of the best line, no confetti.
+	While the card is up the server holds the sky course's return to the gates: the card
+	fires the "ModeCard" action { mode, open } when it opens and when it closes.
 	Buttons: "Next level" (gold, when there is one) beside "Run again", with slim "Choose
 	map" (opens the Maps window) and "Back to my gym" under them; on the last level "Run
 	again" beside "Back to my gym" with a slim "Choose map" under them. `data` is the finish Notify payload (time, best, newBest, rank?, cash, full,
-	cooldownEnds, level, levelName, nextLevel?, unlockedNew, assisted?). An assisted run (gear or a
-	skipped stage) shows "Assisted run" instead of the best / rank line.
+	cooldownEnds, level, levelName, levels?, nextLevel?, unlockedNew, first?, assisted?, falls?,
+	pay?, repeatShare?, mode).
 ]]
 
 local function runTime(seconds: number): string
@@ -2412,15 +4109,16 @@ Popups.runTime = runTime
 
 -- A finish card's reward well: the coin and a rolling "+$N", centred as one group sized
 -- for the final amount so it holds still while it counts.
-local function cashRow(well: Frame, total: number): TextLabel
+local function cashRow(well: Frame, total: number, textSize: number?): TextLabel
 	local final = "+" .. Format.money(total)
+	local size = textSize or 26
 	local width = 0
 	pcall(function()
 		local TextService = game:GetService("TextService")
-		width = TextService:GetTextSize(final, 26, Kit.F.Number, Vector2.new(1000, 40)).X
+		width = TextService:GetTextSize(final, size, Kit.F.Number, Vector2.new(1000, 60)).X
 	end)
 	if width <= 0 then
-		width = (utf8.len(final) or #final) * 16
+		width = (utf8.len(final) or #final) * size * 0.62
 	end
 	local cell = Kit.new("Frame", {
 		Name = "Cash",
@@ -2433,7 +4131,7 @@ local function cashRow(well: Frame, total: number): TextLabel
 	Kit.icon(cell, "Coin", 30, C.Gold, { Position = UDim2.new(0, 0, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5) })
 	return Kit.number(cell, {
 		Text = "+0",
-		TextSize = 26,
+		TextSize = size,
 		Size = UDim2.new(1, -38, 1, 0),
 		Position = UDim2.fromOffset(38, 0),
 		TextXAlignment = Enum.TextXAlignment.Left,
@@ -2442,40 +4140,171 @@ local function cashRow(well: Frame, total: number): TextLabel
 	})
 end
 
+-- Finish card tuning. Nothing here was judged on screen yet: adjust in Studio.
+local FINISH = {
+	Medal = 84,
+	Rays = 250, -- px across, behind the medal on a first clear
+	Sparkles = 7, -- twinkles round the medal on a first clear
+	Confetti = 28, -- pieces per burst (Kit.confetti caps at 28)
+	FirstBursts = 2, -- bursts on a map's first clean clear
+	CompleteBursts = 4, -- ... on the last map's (the whole sky obby)
+	BurstGap = 0.35, -- seconds between bursts
+	CashRoll = 0.9, -- seconds the "+$N" counts up
+	UnlockH = 40, -- the "MAP n UNLOCKED!" banner
+	UnlockAt = 0.7, -- seconds after the card opens
+	CoolH = 26, -- the cooldown clock bar
+	AssistedMedal = World.Steel, -- the grey medal of a run with gear on
+	CoolColor = C.Rizz,
+	TextPx = 14, -- the card's smallest text, in screen px (the card may be fitted smaller)
+	-- A first clear is a whole-screen event: big gold rays turning behind the card (px, bars,
+	-- seconds per turn; larger for the whole sky obby), confetti from the screen's bottom
+	-- edge (bursts, power), a fountain of coins from the reward as it lands, and a larger
+	-- "+$N" (px) that counts up for longer (s) with coin ticks.
+	FirstRays = 980,
+	CompleteRays = 1200,
+	FirstRayCount = 12,
+	FirstRaySpin = 16,
+	ScreenBursts = 3,
+	ScreenPower = 1.8,
+	FirstCash = 36,
+	FirstCashRoll = 1.5,
+	-- r5: the card's width (it was 480; the first clear wants a screen event), the confetti's
+	-- ZIndex inside the card (under its text lines and buttons, over the glass) and behind the
+	-- card for the bursts from the screen's bottom edge; the coin fountain leaves the reward
+	-- well sideways from both ends (CoinArcs, degrees, 270 = up), CoinsPerSide each, so it
+	-- never crosses the "Best" line or the amount.
+	Width = 640,
+	-- r6: px the medal (and its rays and twinkles) sits above the card's top edge's middle,
+	-- so its shadow clears the title (r5: the flag badge touched "MAP 1 CLEAR!").
+	MedalLift = 10,
+	ConfettiZ = 0,
+	BackConfettiZ = 44,
+	CoinArcs = { { 165, 215 }, { -35, 15 } },
+	CoinsPerSide = 10,
+}
+
 function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> (), onNext: (() -> ())?, onPick: (() -> ())?)
 	Popups.enqueue("ModeFinish", Popups.PRIORITY.Normal, function(done)
 		local cashTotal = tonumber(data.cash) or 0
-		local cooling = data.full == false and (tonumber(data.cooldownEnds) or 0) > os.time()
+		local cooldownEnds = tonumber(data.cooldownEnds) or 0
+		-- An assisted run pays nothing: no "Full reward in ..." clock on its card.
+		local cooling = data.full == false and cooldownEnds > os.time() and data.assisted ~= true
 		local level = tonumber(data.level)
+		local levels = tonumber(data.levels)
 		local nextLevel = tonumber(data.nextLevel)
 		local hasNext = nextLevel ~= nil and onNext ~= nil
 		local unlockedNew = data.unlockedNew == true and nextLevel ~= nil
-		-- Height grows with the unlock chip and the third (slim) button.
-		local noteY = if unlockedNew then 284 else 254
+		-- An assisted run (worn gear) never sets a best or a board entry.
+		local assisted = data.assisted == true
+		-- The card's state: a map's first clean clear is the loud one, the last map's the
+		-- loudest ("SKY OBBY COMPLETE!"); a clean run inside the cooldown shows its share and
+		-- the clock; an assisted run is grey and calm.
+		-- `complete` is the server's word: this run made it every map cleared without gear,
+		-- for the first time (so a map 10 first cleared with gear still gets its card later).
+		local complete = data.complete == true and not assisted
+		local firstClear = (data.first == true and not assisted) or complete
+		local repeatRun = data.pay == "repeat" and not assisted
+		-- A clean run while this map's run again bonus rests (it was paid a moment ago).
+		local resting = data.pay == "resting"
+		local restLeft = math.max(0, math.floor(tonumber(data.repeatRest) or 0))
+		local calm = reducedMotion()
+		-- Rows under the best line, top to bottom: reward well, cooldown clock, banner, note.
+		local hasWell = cashTotal > 0
+		local banner: string? = if complete
+			then string.format("ALL %d MAPS CLEARED!", levels or level or 10)
+			elseif unlockedNew then "MAP " .. tostring(nextLevel) .. " UNLOCKED!"
+			else nil
+		local y = 184
+		local wellY = y
+		if hasWell then
+			y += 62 + 8
+		end
+		local coolY = y
+		if cooling then
+			y += FINISH.CoolH + 10
+		end
+		local bannerY = y
+		if banner then
+			y += FINISH.UnlockH + 8
+		end
+		local noteY = y
 		local hasPick = onPick ~= nil
 		local buttonsH = if hasNext or hasPick then 128 else 74
-		local box, close = modal("ModeFinish", Vector2.new(480, noteY + 22 + 14 + buttonsH), 45, nil, done)
-		local medal = medallion(box, "🏁", C.Gold, 84, UDim2.new(0.5, 0, 0, 0))
+		-- The sky course's return to the gates waits while this card is up: the server is told
+		-- when it opens and when it closes.
+		local action = Net.event("Action")
+		local box, close = modal("ModeFinish", Vector2.new(FINISH.Width, noteY + 22 + 14 + buttonsH), 45, nil, function()
+			Popups.finishCards[done] = nil
+			action:FireServer({ action = "ModeCard", mode = data.mode, open = false })
+			done()
+		end)
+		-- Closed with the mode's next start or stop, and once the player is Home.
+		Popups.watchFinish(done, close)
+		action:FireServer({ action = "ModeCard", mode = data.mode, open = true })
+		-- Text held at FINISH.TextPx on the glass however far the card is fitted down.
+		local small = Kit.px(FINISH.TextPx, T.Small, box)
+		local body = math.max(T.Body, small)
+		if firstClear and not calm then
+			-- Behind the whole card: big gold rays, turning.
+			local big = Popups.rays(
+				box.Parent :: Frame,
+				Kit.lighten(C.Gold, 0.2),
+				if complete then FINISH.CompleteRays else FINISH.FirstRays,
+				UDim2.fromScale(0.5, 0.5),
+				1,
+				FINISH.FirstRayCount
+			)
+			Popups.spinRays(big, FINISH.FirstRaySpin)
+			Kit.appear(big, { from = 0.3, time = 0.5, style = Enum.EasingStyle.Quart })
+		end
+		local medalAt = UDim2.new(0.5, 0, 0, -FINISH.MedalLift)
+		if firstClear then
+			-- Behind the medal and (made first) under the title: rays, and twinkles on a ring
+			-- lifted so its lower edge stays off the title.
+			if not calm then
+				Popups.rays(box, Kit.lighten(C.Gold, 0.3), FINISH.Rays, medalAt, 1, if complete then 9 else 6)
+			end
+			local twinkle = Kit.new("Frame", {
+				Name = "MedalSparkles",
+				BackgroundTransparency = 1,
+				Size = UDim2.fromOffset(FINISH.Medal, FINISH.Medal),
+				Position = UDim2.new(0.5, 0, 0, -math.floor(FINISH.Medal * 0.35) - FINISH.MedalLift),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Parent = box,
+			})
+			sparkles(twinkle, Kit.lighten(C.Gold, 0.5), FINISH.Sparkles, FINISH.Medal * 0.85, calm)
+		end
+		local medal =
+			medallion(box, if complete then "⭐" else "🏁", if assisted then FINISH.AssistedMedal else C.Gold, FINISH.Medal, medalAt)
+		-- "NEW BEST!" only when an older best was beaten: a first clear names the map.
+		local namesMap = not complete and (firstClear or assisted or not data.newBest)
 		Kit.title(box, {
-			Text = if data.newBest and data.assisted ~= true
-				then "NEW BEST!"
-				elseif level then "LEVEL " .. tostring(level) .. " CLEAR!"
+			Text = if complete
+				then "SKY OBBY COMPLETE!"
+				elseif not namesMap then "NEW BEST!"
+				elseif level then "MAP " .. tostring(level) .. " CLEAR!"
 				else "COURSE CLEAR!",
 			TextSize = T.H1,
 			TextWrapped = false,
 			Size = UDim2.new(1, -20, 0, 34),
 			Position = UDim2.fromOffset(10, 48),
-			TextColor3 = C.Gold,
+			TextColor3 = if assisted then C.Text else C.Gold,
 		})
 		local levelLine = if type(data.levelName) == "string" then data.levelName else ""
-		if level and data.newBest and data.assisted ~= true then
-			levelLine = "Level " .. tostring(level) .. (if levelLine ~= "" then "  ·  " .. levelLine else "")
+		if level and not namesMap then
+			levelLine = "Map " .. tostring(level) .. (if levelLine ~= "" then "  ·  " .. levelLine else "")
+		end
+		-- The falls of the run (Parkour counts them; other modes send none).
+		local falls = tonumber(data.falls)
+		if falls then
+			local fallsText = if falls <= 0 then "No falls!" elseif falls == 1 then "1 fall" else string.format("%d falls", falls)
+			levelLine = if levelLine ~= "" then levelLine .. "  ·  " .. fallsText else fallsText
 		end
 		Kit.text(box, {
 			Name = "LevelName",
 			Text = levelLine,
 			Font = Kit.F.UI,
-			TextSize = T.Body,
+			TextSize = body,
 			TextWrapped = false,
 			Size = UDim2.new(1, -30, 0, 22),
 			Position = UDim2.fromOffset(15, 82),
@@ -2487,60 +4316,134 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			TextSize = 44,
 			Size = UDim2.new(1, -20, 0, 48),
 			Position = UDim2.fromOffset(10, 106),
-			TextColor3 = C.Text,
+			TextColor3 = if assisted then C.TextDim else C.Text,
 		})
-		-- An assisted run (gear or a skipped stage) never sets a best or a board entry.
-		local assisted = data.assisted == true
-		local sub = "Best " .. runTime(tonumber(data.best) or tonumber(data.time) or 0)
-		if type(data.rank) == "number" then
-			sub ..= "  ·  #" .. tostring(data.rank) .. " today"
-		end
-		Kit.text(box, {
-			Name = if assisted then "Assisted" else "Best",
-			Text = if assisted then "Assisted run" else sub,
-			Font = if assisted then Kit.F.UI else nil,
-			TextSize = T.Body,
-			Size = UDim2.new(1, -30, 0, 22),
-			Position = UDim2.fromOffset(15, 156),
-			TextColor3 = if assisted then C.Rizz else C.TextDim,
-			StrokeThickness = 0,
-		})
-		local well = Kit.well(box, { Glass = true, Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, 184) })
-		-- Runs inside the reward cooldown pay nothing: no empty "+$0" row.
-		well.Visible = cashTotal > 0
-		local cashLabel = cashRow(well, cashTotal)
-		local note = Kit.text(box, {
-			Text = if cooling
-				then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
-				else "Nice run! Try to beat your best.",
-			TextSize = T.Small,
-			Size = UDim2.new(1, -40, 0, 22),
-			Position = UDim2.fromOffset(20, noteY),
-			TextColor3 = C.TextDim,
-			StrokeThickness = 0,
-		})
-		local unlockChip: TextLabel? = nil
-		if unlockedNew then
-			unlockChip = Kit.pill(box, {
-				Name = "Unlocked",
-				Text = "Level " .. tostring(nextLevel) .. " unlocked!",
+		if assisted then
+			-- A grey ribbon instead of the best / rank line.
+			Kit.pill(box, {
+				Name = "Assisted",
+				Text = "ASSISTED RUN  ·  NO BEST TIME",
 				Font = Theme.Fonts.Display,
-				TextSize = T.Small,
-				Color = C.Good,
+				TextSize = small,
+				Color = FINISH.AssistedMedal,
 				Solid = true,
-				Size = UDim2.fromOffset(200, 26),
-				Position = UDim2.new(0.5, 0, 0, 252),
+				Size = UDim2.fromOffset(math.max(290, small * 21), 24 + small - T.Small),
+				Position = UDim2.new(0.5, 0, 0, 155),
 				AnchorPoint = Vector2.new(0.5, 0),
 				ZIndex = 3,
 			})
+		else
+			local sub = "Best " .. runTime(tonumber(data.best) or tonumber(data.time) or 0)
+			if type(data.rank) == "number" then
+				sub ..= "  ·  #" .. tostring(data.rank) .. " on this server"
+			end
+			Kit.text(box, {
+				Name = "Best",
+				Text = sub,
+				TextSize = body,
+				Size = UDim2.new(1, -30, 0, 22),
+				Position = UDim2.fromOffset(15, 156),
+				TextColor3 = C.TextDim,
+				StrokeThickness = 0,
+			})
 		end
+		-- Runs that pay nothing (gear on inside the cooldown) get no empty "+$0" row.
+		local well = Kit.well(box, { Glass = true, Size = UDim2.new(1, -40, 0, 62), Position = UDim2.fromOffset(20, wellY) })
+		well.Visible = hasWell
+		local cashLabel = cashRow(well, cashTotal, if firstClear then FINISH.FirstCash else nil)
+		if repeatRun then
+			-- A clean run inside the cooldown pays a share of the map's reward: say which.
+			local share = math.floor((tonumber(data.repeatShare) or Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
+			-- Two lines, "RUN AGAIN / BONUS", so the "+20%" pill on the right reads as its size.
+			Kit.text(well, {
+				Name = "RepeatCaption",
+				Text = "RUN AGAIN\nBONUS",
+				Font = Theme.Fonts.Display,
+				TextSize = small,
+				TextWrapped = true,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Size = UDim2.new(0, 110, 1, 0),
+				Position = UDim2.fromOffset(14, 0),
+				TextColor3 = C.TextDim,
+				StrokeThickness = 0,
+			})
+			Kit.pill(well, {
+				Name = "RepeatShare",
+				Text = string.format("+%d%%", share),
+				Font = Theme.Fonts.Display,
+				TextSize = T.Body,
+				Color = FINISH.CoolColor,
+				Solid = true,
+				Size = UDim2.fromOffset(70, 28),
+				Position = UDim2.new(1, -12, 0.5, 0),
+				AnchorPoint = Vector2.new(1, 0.5),
+				ZIndex = 3,
+			})
+		end
+		-- The cooldown as a clock: a padlock and a bar that fills until the full reward is back.
+		if cooling then
+			local span = math.max(Economy.MODE_REWARD_COOLDOWN, 1)
+			Kit.icon(box, "Lock", FINISH.CoolH - 2, C.Gold, { Position = UDim2.fromOffset(22, coolY + 1) })
+			local track, setCool, coolLabel = Kit.progress(box, {
+				Name = "Cooldown",
+				Glass = true,
+				Color = FINISH.CoolColor,
+				TextSize = small,
+				Size = UDim2.new(1, -76, 0, FINISH.CoolH),
+				Position = UDim2.fromOffset(56, coolY),
+			})
+			coolLabel.TextColor3 = C.Text
+			task.spawn(function()
+				local first = true
+				while track.Parent do
+					local left = cooldownEnds - os.time()
+					coolLabel.Text = if left > 0 then "Full reward in " .. Format.time(left) else "Full reward ready next run!"
+					setCool(1 - left / span, first)
+					first = false
+					task.wait(1)
+				end
+			end)
+		end
+		local unlockChip: TextLabel? = nil
+		if banner then
+			unlockChip = Kit.pill(box, {
+				Name = "Unlocked",
+				Text = banner,
+				Font = Theme.Fonts.Display,
+				TextSize = T.H2,
+				Color = if complete then C.Gold else C.Good,
+				Solid = true,
+				Size = UDim2.new(1, -40, 0, FINISH.UnlockH),
+				Position = UDim2.fromOffset(20, bannerY),
+				ZIndex = 3,
+			})
+		end
+		Kit.text(box, {
+			Name = "Note",
+			Text = if complete
+				then "Every map cleared. Now beat your best times!"
+				elseif data.pay == "assisted" then "Gear on: no bonus"
+				elseif resting and restLeft > 0 then "Bonus is resting, back in " .. Format.time(restLeft)
+				elseif resting then "Run again bonus is back next run!"
+				elseif repeatRun then string.format(
+					"Run again bonus: %d%% of the full reward",
+					math.floor((tonumber(data.repeatShare) or Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
+				)
+				elseif firstClear then "First clear reward!"
+				else "Nice run! Try to beat your best.",
+			TextSize = small,
+			Size = UDim2.new(1, -40, 0, 22),
+			Position = UDim2.fromOffset(20, noteY),
+			TextColor3 = C.Text,
+			StrokeThickness = 0,
+		})
 		-- With a next level: [Next level] [Run again] and a slim "Back to my gym" below.
 		local rowY = if hasNext or hasPick then -128 else -74
 		local nextButton: TextButton? = nil
 		if hasNext then
 			nextButton = Kit.button(box, {
 				Name = "Next",
-				Text = "Next level ▶",
+				Text = "Next map ▶",
 				Font = Theme.Fonts.Display,
 				Color = C.Gold,
 				Breathe = true,
@@ -2613,33 +4516,93 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		if pick then
 			Kit.appear(pick, { from = 0.8, time = 0.26, delay = 0.2 })
 		end
+		-- Confetti: none for an assisted run, one burst for a clean one, a row of bursts from
+		-- across the card's top for a first clear.
+		local bursts = if assisted then 0 elseif complete then FINISH.CompleteBursts elseif firstClear then FINISH.FirstBursts else 1
+		if calm then
+			bursts = math.min(bursts, 1)
+		end
+		for i = 1, bursts do
+			local x = if i == 1 then 0.5 elseif i % 2 == 0 then 0.14 else 0.86
+			after((i - 1) * FINISH.BurstGap, function()
+				if box.Parent then
+					Kit.confetti(box, {
+						Origin = UDim2.fromScale(x, 0.1),
+						Count = if firstClear then FINISH.Confetti else 24,
+						ZIndex = FINISH.ConfettiZ,
+						Power = if firstClear then 1.15 else 1,
+					})
+				end
+			end)
+		end
 		if unlockChip then
 			local chip = unlockChip
 			chip.Visible = false
-			after(0.7, function()
+			after(FINISH.UnlockAt, function()
+				if not chip.Parent then
+					return
+				end
 				chip.Visible = true
 				Kit.pop(chip, 1.3)
 				sounds.play("BuyPop")
 			end)
 		end
-		Kit.confetti(box, { Origin = UDim2.fromScale(0.5, 0.1), Count = 24, ZIndex = 60 })
 		after(0.12, function()
 			Kit.pop(timeLabel, 1.2)
 		end)
+		local roll = if firstClear then FINISH.FirstCashRoll else FINISH.CashRoll
 		after(0.25, function()
 			Kit.countTo(cashLabel, 0, cashTotal, function(n)
 				return "+" .. Format.money(n)
-			end, 0.8)
+			end, roll)
 		end)
-		if cooling then
-			-- The countdown line ticks while the card is up.
-			task.spawn(function()
-				while note.Parent do
-					local left = (tonumber(data.cooldownEnds) or 0) - os.time()
-					note.Text = if left > 0 then "Reward again in " .. Format.time(left) else "Reward ready next run!"
-					task.wait(1)
+		if hasWell and not calm then
+			-- The amount lands with a pop once it has counted up.
+			after(0.25 + roll, function()
+				if cashLabel.Parent then
+					Kit.pop(cashLabel, if firstClear then 1.35 else 1.18)
 				end
 			end)
+		end
+		if firstClear and hasWell and not calm and not PREVIEW then
+			-- Coin ticks rising with the count, then a fountain of coins out of the reward.
+			task.spawn(function()
+				task.wait(0.25)
+				local t = 0
+				while t < roll and box.Parent do
+					sounds.play("Coin", 0.03, 0.9 + (t / roll) * 0.6)
+					task.wait(0.1)
+					t += 0.1
+				end
+				if box.Parent and box.Parent.Parent then
+					-- From the well's two ends, outward (the holder is the card's width).
+					for i, arc in FINISH.CoinArcs do
+						local at = UDim2.new(i - 1, if i == 1 then 24 else -24, 0, 48 + wellY + 31)
+						Popups.coinBurst(box.Parent :: Frame, at, 60, arc, FINISH.CoinsPerSide)
+					end
+				end
+			end)
+		end
+		if firstClear and not calm then
+			-- Confetti up from the screen's bottom edge, left, middle and right: behind the card
+			-- (in its holder, under the glass), so no piece lands on a text line.
+			for i = 1, FINISH.ScreenBursts do
+				after(0.15 + (i - 1) * FINISH.BurstGap, function()
+					local holder = box.Parent :: Frame?
+					if box.Parent and holder and holder.AbsoluteSize.X > 0 then
+						local k = FINISH.Width / holder.AbsoluteSize.X
+						local spot = Vector2.new(screen.AbsoluteSize.X * i / (FINISH.ScreenBursts + 1), screen.AbsoluteSize.Y * 1.02)
+							+ screen.AbsolutePosition
+							- holder.AbsolutePosition
+						Kit.confetti(holder, {
+							Origin = UDim2.fromOffset(spot.X * k, spot.Y * k),
+							Count = FINISH.Confetti,
+							ZIndex = FINISH.BackConfettiZ,
+							Power = FINISH.ScreenPower,
+						})
+					end
+				end)
+			end
 		end
 		sounds.play("Reward")
 	end)
@@ -2647,35 +4610,79 @@ end
 
 --[[
 	The MOG TEST finish card, in the same language as the Parkour one: the score,
-	"NEW BEST!", rivals mogged, best and today's rank, the reward rolling up or the
-	"Reward again in m:ss" line while the full reward cools down. "Mog again" and
-	"Back to my gym". `data` is the mog finish Notify payload (score, rivals, best,
-	newBest, passed, cash, full, cooldownEnds, rank?).
+	"NEW BEST!", rivals mogged, best and the rank ("#N all-time" from `globalRank`, the saved
+	best's place on the all-time TOP MOGGERS list, else "#N on this server" from `rank`), the
+	reward rolling up, and under it "Run again bonus +$X (20%)" for a pass inside the cooldown
+	(`pay` = "repeat"), "Bonus is resting, back in m:ss" for one inside the repeat gap (`pay` =
+	"resting", `repeatRest` seconds) or the "Reward again in m:ss" line while the full reward
+	cools down.
+	"Mog again" and "Back to my gym". `data` is the mog finish Notify payload (score, rivals,
+	best, newBest, passed, cash, full, cooldownEnds, rank?, globalRank?, pay?, repeatShare?).
 
 	A 1v1 duel (data.vs == "pvp": won, reason "ko" | "forfeit", opponent { userId, name },
-	score, wins, played, cash, full, cooldownEnds) uses the same card: "YOU MOGGED
-	<name>!" in gold or "<name> MOGGED YOU" in red, duels won / played, the reward (the
-	winner's) and "Duel again" instead of "Mog again".
+	score, wins, played, cash, full, cooldownEnds, afk?, rounds?, draw?, close?) uses the
+	same card: "YOU MOGGED <name>!" in gold, "<name> MOGGED YOU" in red or a plain "DRAW!",
+	duels won / played, the reward (the winner's) and "Duel again" instead of "Mog again".
+	The line under the reward says how it ended: an idle forfeit (afk), a player who left
+	(forfeit), a draw, and "So close!" only for a loss the server calls close (data.close: a
+	small HP margin or sudden death).
 ]]
 function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> ())
+	-- Nothing to show: the player left the duel themselves, or the test ended with no score,
+	-- no pass and no cash. A line says so; no card stands in the way out.
+	if not PREVIEW then
+		if data.vs == "pvp" then
+			if data.won ~= true and data.draw ~= true and data.reason == "forfeit" and data.afk ~= true then
+				Popups.toast("You left the duel", "info")
+				return
+			end
+		elseif (tonumber(data.score) or 0) <= 0 and data.passed ~= true and (tonumber(data.cash) or 0) <= 0 then
+			Popups.toast("Mog test over. Try again at the gate!", "info")
+			return
+		end
+	end
 	Popups.enqueue("MogFinish", Popups.PRIORITY.Normal, function(done)
 		local score = tonumber(data.score) or 0
 		local cashTotal = tonumber(data.cash) or 0
-		local cooling = data.full == false and (tonumber(data.cooldownEnds) or 0) > os.time()
+		local cooldownLeft = math.max(0, (tonumber(data.cooldownEnds) or 0) - os.time())
+		local cooling = data.full == false and cooldownLeft > 0
+		-- Inside the cooldown a pass (or a duel really fought and won) pays the run again bonus.
+		local repeatLine: string? = nil
+		if data.pay == "repeat" and cashTotal > 0 then
+			local share = math.floor((tonumber(data.repeatShare) or Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
+			repeatLine = string.format("Run again bonus +%s (%d%%)", Format.money(cashTotal), share)
+		end
+		-- Earned, but the last bonus was paid a moment ago (the server's repeat gap).
+		local restEnds = os.clock() + math.max(0, tonumber(data.repeatRest) or 0)
+		local function restLine(): string
+			local left = math.ceil(restEnds - os.clock())
+			-- The rest can end before the run does (repeatRest = 0): the bonus is back, say so.
+			return if left > 0 then "Bonus is resting, back in " .. Format.time(left) else "Run again bonus is back next run!"
+		end
+		if data.pay == "resting" then
+			repeatLine = restLine()
+		end
 		local duel = data.vs == "pvp"
 		local won = duel and data.won == true
+		local draw = duel and data.draw == true
+		local lost = duel and not won and not draw
 		local foe = if duel and type(data.opponent) == "table" then tostring(data.opponent.name or "Opponent") else "Opponent"
-		local box, close = modal("MogFinish", Vector2.new(480, 380), 45, nil, done)
+		local box, close = modal("MogFinish", Vector2.new(480, 380), 45, nil, function()
+			Popups.finishCards[done] = nil
+			done()
+		end)
+		Popups.watchFinish(done, close)
 		local medal = medallion(
 			box,
-			if duel and not won then "😤" else "💪",
-			if duel and not won then C.Bad else C.Gold,
+			if lost then "😤" elseif draw then "🤝" else "💪",
+			if lost then C.Bad elseif draw then C.SurfaceHi else C.Gold,
 			84,
 			UDim2.new(0.5, 0, 0, 0)
 		)
 		Kit.title(box, {
-			Text = if duel
-				then (if won then "YOU MOGGED " .. string.upper(foe) .. "!" else string.upper(foe) .. " MOGGED YOU")
+			Text = if draw
+				then "DRAW!"
+				elseif duel then (if won then "YOU MOGGED " .. string.upper(foe) .. "!" else string.upper(foe) .. " MOGGED YOU")
 				elseif data.newBest then "NEW BEST!"
 				else "MOG TEST OVER",
 			TextScaled = duel,
@@ -2683,7 +4690,7 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			TextWrapped = false,
 			Size = UDim2.new(1, -20, 0, 34),
 			Position = UDim2.fromOffset(10, 48),
-			TextColor3 = if duel and not won then C.Bad else C.Gold,
+			TextColor3 = if lost then C.Bad elseif draw then C.Text else C.Gold,
 		})
 		local scoreLabel = Kit.number(box, {
 			Text = "0",
@@ -2696,8 +4703,11 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		sub ..= "  ·  Best " .. Format.short(math.max(tonumber(data.best) or 0, score))
 		if duel then
 			sub = "Duels won " .. tostring(tonumber(data.wins) or 0) .. "  ·  Played " .. tostring(tonumber(data.played) or 0)
+		elseif type(data.globalRank) == "number" then
+			-- The saved best's place on the all-time TOP MOGGERS list.
+			sub ..= "  ·  #" .. tostring(data.globalRank) .. " all-time"
 		elseif type(data.rank) == "number" then
-			sub ..= "  ·  #" .. tostring(data.rank) .. " today"
+			sub ..= "  ·  #" .. tostring(data.rank) .. " on this server"
 		end
 		Kit.text(box, {
 			Text = sub,
@@ -2711,10 +4721,19 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		well.Visible = cashTotal > 0
 		local cashLabel = cashRow(well, cashTotal)
 		local note = Kit.text(box, {
-			Text = if duel and data.reason == "forfeit"
-				then (if won then foe .. " left the duel. The win is yours!" else "You left the duel.")
-				elseif duel and not won then "So close! Hit PERFECT to deal double damage."
-				elseif cooling then "Reward again in " .. Format.time(math.max(0, data.cooldownEnds - os.time()))
+			Text = if draw
+				then "Draw! Nobody won."
+				elseif duel and data.afk == true then (if won
+					then foe .. " stopped pressing. The win is yours!"
+					else "You stopped pressing, so the duel ended.")
+				elseif duel and data.reason == "forfeit" then (if won
+					then foe .. " left the duel. The win is yours!"
+					else "You left the duel.")
+				elseif lost and data.close == true then "So close! Hit PERFECT to deal double damage."
+				elseif lost then "Good duel! Hit PERFECT to deal double damage."
+				elseif repeatLine and cooling then repeatLine .. "  ·  full reward in " .. Format.time(cooldownLeft)
+				elseif repeatLine then repeatLine
+				elseif cooling then "Reward again in " .. Format.time(cooldownLeft)
 				elseif duel then "Total mog! Can you win another?"
 				elseif data.passed then "MOG TEST PASSED! Can you mog even more?"
 				else "Nice try! Mog more rivals to pass.",
@@ -2771,7 +4790,12 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 			task.spawn(function()
 				while note.Parent do
 					local left = (tonumber(data.cooldownEnds) or 0) - os.time()
-					note.Text = if left > 0 then "Reward again in " .. Format.time(left) else "Reward ready next run!"
+					-- The bonus line stays in front of the clock (a resting one counts down too).
+					local lead = if data.pay == "resting" then restLine() else repeatLine
+					note.Text = if lead and left > 0
+						then lead .. "  ·  full reward in " .. Format.time(left)
+						elseif left > 0 then "Reward again in " .. Format.time(left)
+						else "Reward ready next run!"
 					task.wait(1)
 				end
 			end)
@@ -3185,60 +5209,73 @@ end
 
 -- Held crate panel -----------------------------------------------------------------------------
 
+-- The Crate Smasher's first pad (a Guide target) and how long the panel's arrow points at it.
+local SMASHER_PAD = "Unlock1"
+local SMASHER_ARROW = 30
+
 --[[
-	Side panel while the player carries a crate: rarity header, the crate, the
-	odds (a scrolling list of rarity-dot rows; bars fill), then one primary
-	"Open now" button, the free route as a plain line, a quiet text link to the
-	Crate Master pass, and at the bottom (well apart from "Open now") a red
-	Discard button (discards at once, any rarity). The "ChestPanel" holder carries the compact-mode
-	UIScale; the "Card" inside eases in and out with Kit.appear / Kit.disappear.
+	Side panel while the player carries a crate: the crate and its rarity in the
+	header, the odds (rarity-dot rows; bars fill), then the ways to open it, the free
+	one first. A gold "Carry it to the Crate Smasher / FREE" button with the Smasher's
+	timer for this rarity leads (tapping it points the guide arrow at the Smasher); the
+	paid "Open now" is a small neutral button under it, the Crate Master pass a second
+	neutral button ("Open every crate free", 14 px or more), and at the bottom, well apart, sits a red Discard button (Rare and better
+	ask first, with Popups.confirm). A Crate Master owner opens free, so for them "Open
+	now" is the gold button and comes first. The card is solid (the world never shows
+	through it), PANEL_W wide and as tall as its rows. It never shows while the tutorial
+	is running. The "ChestPanel" holder carries the compact-mode UIScale; the "Card"
+	inside eases in and out with Kit.appear / Kit.disappear.
 	While it is up the ScreenGui attribute "CratePanelOpen" is true (the held
 	crate's world chip hides then, so the two labels never show together).
 ]]
 local function buildChestPanel()
 	local action = Net.event("Action")
-	-- Card geometry: header band, crate, odds well, then the button rows from BUTTON_Y.
-	-- A phone (touch on a Compact screen) gets a compact card sized to what the player acts
-	-- on: the rarity header and the buttons, narrower, with no crate art and no odds list,
-	-- so it sits between the gear and the jump button instead of down the right of the screen.
-	local PANEL_W = 320
-	local ODDS_Y = 172
-	local ODDS_H = 128
-	local BUTTON_Y = ODDS_Y + ODDS_H + 12
+	-- Card geometry: header (crate + rarity), the odds well, then the rows under it.
+	-- A phone (touch on a Compact screen) gets the header and the rows only, no odds
+	-- list, so the card sits between the gear and the jump button.
+	local PANEL_W = 240
+	local EDGE = 8
+	local HEAD_H = 44
+	local ODDS_Y = EDGE + HEAD_H + 24
+	local ODDS_ROW, ODDS_GAP = 26, 3
+	local FREE_H, OPEN_H, ROW_GAP = 60, 44, 8
+	local oddsRows = 1
 	local phone = false
 	local function measure()
 		phone = Kit.touch and screen:GetAttribute("Compact") == true
-		PANEL_W = if phone then 280 else 320
-		BUTTON_Y = if phone then 62 else ODDS_Y + ODDS_H + 12
 	end
 	measure()
+	-- The odds well is as tall as its rows (one row for a first crate, never a list of air).
+	local function oddsHeight(): number
+		local rows = math.clamp(oddsRows, 1, 4)
+		return rows * ODDS_ROW + (rows - 1) * ODDS_GAP + 12
+	end
 	local holder = Kit.new("Frame", {
 		Name = "ChestPanel",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(PANEL_W, 440),
+		Size = UDim2.fromOffset(PANEL_W, 300),
 		Position = UDim2.new(1, -12, 0.5, 30),
 		AnchorPoint = Vector2.new(1, 0.5),
 		Parent = screen,
 	})
 	local compactScale = Kit.new("UIScale", { Name = "Compact", Parent = holder })
-	-- The same glass pane as every window and modal (one body token), over the unblurred
-	-- world; only the buttons are solid.
+	-- A solid card, not the windows' glass: it stands over the plot's signs and price
+	-- pads all the time, and their text read through a glass pane.
 	local panel = Kit.panel(holder, {
 		Name = "Card",
-		Glass = "body",
+		Color = C.Surface,
 		Size = UDim2.fromScale(1, 1),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Visible = false,
 	})
-	-- Header: no slab of its own, just the pane's glass over a 1 px divider. The crate's
-	-- rarity is carried by the name (its colour, in the ink outline), the divider under it
-	-- and the crate itself (all painted per crate below).
+	-- Header: the crate on the left, its rarity beside it (the name's colour, the divider
+	-- under it and the crate itself are painted per crate below).
 	local band = Kit.new("Frame", {
 		Name = "Band",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -16, 0, 46),
-		Position = UDim2.fromOffset(8, 8),
+		Size = UDim2.new(1, -EDGE * 2, 0, HEAD_H),
+		Position = UDim2.fromOffset(EDGE, EDGE),
 		Parent = panel,
 	})
 	local divider = Kit.new("Frame", {
@@ -3246,27 +5283,29 @@ local function buildChestPanel()
 		BackgroundColor3 = C.Gold,
 		BackgroundTransparency = Theme.Glass.Divider,
 		BorderSizePixel = 0,
-		Size = UDim2.new(1, -12, 0, 1),
+		Size = UDim2.new(1, -4, 0, 1),
 		Position = UDim2.new(0.5, 0, 1, 0),
 		AnchorPoint = Vector2.new(0.5, 1),
 		Parent = band,
 	})
 	local title = Kit.title(band, {
 		Text = "",
-		TextSize = T.H2,
+		TextSize = T.H3,
 		MinPx = 16,
 		TextWrapped = false,
-		Size = UDim2.fromScale(1, 1),
-		Position = UDim2.fromOffset(0, 1),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -52, 1, -4),
+		Position = UDim2.fromOffset(50, 0),
 	})
 
+	local CRATE_AT = UDim2.fromOffset(EDGE + 24, EDGE + HEAD_H / 2 - 2)
 	local halo = Kit.new("Frame", {
 		Name = "IconGlow",
 		BackgroundColor3 = WHITE,
 		BackgroundTransparency = 0.6,
 		BorderSizePixel = 0,
-		Size = UDim2.fromOffset(88, 88),
-		Position = UDim2.new(0.5, 0, 0, 102),
+		Size = UDim2.fromOffset(42, 42),
+		Position = CRATE_AT,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Parent = panel,
 	})
@@ -3276,45 +5315,82 @@ local function buildChestPanel()
 		Name = "OddsTitle",
 		Text = "POSSIBLE " .. string.upper(W.Units),
 		Font = Theme.Fonts.UI,
-		TextSize = 15,
+		TextSize = 14,
 		MinPx = true,
 		TextWrapped = false,
-		Size = UDim2.new(1, -28, 0, 20),
-		Position = UDim2.fromOffset(14, ODDS_Y - 24),
+		Size = UDim2.new(1, -EDGE * 2 - 8, 0, 18),
+		Position = UDim2.fromOffset(EDGE + 4, ODDS_Y - 21),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = C.Text,
 		StrokeThickness = 0,
 	})
-	-- The odds sit on a faint inset (InsetSoft), not a dark slab: the rows carry their own bars.
 	local oddsWell = Kit.well(panel, {
 		Name = "Odds",
-		Glass = true,
-		Transparency = Theme.Glass.InsetSoft,
-		Size = UDim2.new(1, -24, 0, ODDS_H),
-		Position = UDim2.fromOffset(12, ODDS_Y),
+		Size = UDim2.new(1, -EDGE * 2, 0, oddsHeight()),
+		Position = UDim2.fromOffset(EDGE, ODDS_Y),
 	})
 	local odds = Kit.scrolling(oddsWell, { Name = "List", Size = UDim2.new(1, -8, 1, -8), Position = UDim2.fromOffset(4, 4) })
 	Kit.padding(odds, 2, 4)
-	Kit.list(odds, 3)
+	Kit.list(odds, ODDS_GAP)
+
+	-- The free route leads: one gold button, two lines ("Carry it to the Crate Smasher",
+	-- then FREE and the Smasher's timer for this rarity). Tapping it points the guide
+	-- arrow at the Smasher's pad for a while.
+	local crackerName = string.gsub(string.lower(W.Unlocker), "%f[%a]%a", string.upper)
+	local freeButton = Kit.button(panel, {
+		Name = "FreeRoute",
+		Text = "",
+		Color = C.Gold,
+		Size = UDim2.new(1, -EDGE * 2, 0, FREE_H),
+		Position = UDim2.fromOffset(EDGE, ODDS_Y),
+	}, function()
+		Guide.navigate(SMASHER_PAD, string.upper(W.Unlocker), SMASHER_ARROW)
+	end)
+	freeButton:SetAttribute("FocusFirst", true)
+	local freeFace: Instance = Kit.buttonFace(freeButton) or freeButton
+	local freeRoute = Kit.text(freeFace, {
+		Name = "Route",
+		Text = "Carry it to the " .. crackerName,
+		Font = Theme.Fonts.UI,
+		TextScaled = true,
+		MaxTextSize = 15,
+		TextWrapped = false,
+		TextColor3 = Kit.inkOn(C.Gold),
+		Size = UDim2.new(1, -16, 0.38, 0),
+		Position = UDim2.new(0, 8, 0.1, 0),
+		StrokeThickness = 0,
+		ZIndex = 2,
+	})
+	local freePrice = Kit.title(freeFace, {
+		Name = "Free",
+		Text = "FREE",
+		TextScaled = true,
+		MaxTextSize = 22,
+		TextWrapped = false,
+		TextColor3 = Kit.inkOn(C.Gold),
+		Size = UDim2.new(1, -16, 0.44, 0),
+		Position = UDim2.new(0, 8, 0.48, 0),
+		StrokeThickness = 0,
+		ZIndex = 2,
+	})
 
 	-- Instant open: free for Crate Master owners ("owner"); otherwise one developer
-	-- product (same price for every rarity) with the Crate Master pass as a quiet text
-	-- link under it ("buy"). Both purchases are hidden where paid random items are not
-	-- allowed ("none"). The free route is always a plain readable line.
+	-- product (same price for every rarity) with the Crate Master pass as a second button
+	-- under it ("buy"). Both purchases are hidden where paid random items are not
+	-- allowed ("none"). For a buyer it is the small neutral button under the free route.
 	local crateOpen = Theme.Monetization.CrateOpen
 	local crateKey = Theme.Monetization.Passes.CrateKey
 	local mode = "none"
 	local openButton = Kit.button(panel, {
 		Name = "OpenNow",
 		Text = "Open now",
-		Color = C.Gold,
-		Size = UDim2.new(1, -24, 0, 56),
-		Position = UDim2.fromOffset(12, BUTTON_Y),
-		TextSize = 24,
+		Color = C.SurfaceHi,
+		Size = UDim2.new(1, -EDGE * 2, 0, OPEN_H),
+		Position = UDim2.fromOffset(EDGE, ODDS_Y),
+		TextSize = T.Body,
 	}, function()
 		action:FireServer({ action = "OpenCrateNow" })
 	end)
-	openButton:SetAttribute("FocusFirst", true)
 	local masterTag = Kit.pill(panel, {
 		Name = "MasterTag",
 		Text = string.upper(crateKey.Title),
@@ -3323,94 +5399,48 @@ local function buildChestPanel()
 		TextSize = T.Small,
 		Size = UDim2.fromOffset(0, 22),
 		AutomaticSize = Enum.AutomaticSize.X,
-		Position = UDim2.fromOffset(PANEL_W - 8, BUTTON_Y - 10),
+		Position = UDim2.fromOffset(PANEL_W - 4, ODDS_Y - 10),
 		AnchorPoint = Vector2.new(1, 0),
 		ZIndex = 6,
 		Visible = false,
 	})
-	local crackerName = string.gsub(string.lower(W.Unlocker), "%f[%a]%a", string.upper)
-	local freeLine = Kit.text(panel, {
-		Name = "FreeRoute",
-		Text = "Carry it to a " .. crackerName .. ": free",
-		TextSize = T.Small,
-		Size = UDim2.new(1, -32, 0, 22),
-		Position = UDim2.fromOffset(16, BUTTON_Y + 64),
-		TextColor3 = C.Text,
-		StrokeThickness = 0,
-	})
-	-- Quiet text link: the pass that opens every crate free.
-	local function textLink(
-		name: string,
-		text: string,
-		color: Color3,
-		hover: Color3,
-		y: number,
-		width: number,
-		onClick: () -> ()
-	): TextButton
-		local link = Kit.new("TextButton", {
-			Name = name,
-			BackgroundTransparency = 1,
-			AutoButtonColor = false,
-			RichText = true,
-			Text = "<u>" .. text .. "</u>",
+	-- The pass that opens every crate free: a real button (it was an 11 px text link), two
+	-- lines at JUICE.Pass.TextSize or more on the neutral face of "Open now", so the gold
+	-- free route above still leads.
+	local PASS_H: number = Popups.JUICE.Pass.Height
+	local passLink = Kit.button(panel, {
+		Name = "BuyCrateMaster",
+		Text = "",
+		Color = C.SurfaceHi,
+		Size = UDim2.new(1, -EDGE * 2, 0, PASS_H),
+		Position = UDim2.fromOffset(EDGE, ODDS_Y),
+	}, function()
+		action:FireServer({ action = "PromptPass", name = "CrateKey" })
+	end)
+	local passFace: Instance = Kit.buttonFace(passLink) or passLink
+	local passLines: { TextLabel } = {}
+	for i, line in { "Open every crate free", crateKey.Title .. "  " .. Kit.ROBUX .. " " .. crateKey.Price } do
+		passLines[i] = Kit.text(passFace, {
+			Name = if i == 1 then "Route" else "Price",
+			Text = line,
 			Font = Theme.Fonts.UI,
-			TextSize = T.Small,
-			TextWrapped = true,
-			TextColor3 = color,
-			Size = UDim2.fromOffset(width, 30),
-			Position = UDim2.new(0.5, 0, 0, y),
-			AnchorPoint = Vector2.new(0.5, 0),
-			Parent = panel,
+			TextSize = Popups.JUICE.Pass.TextSize,
+			TextWrapped = false,
+			TextColor3 = Kit.inkOn(C.SurfaceHi),
+			Size = UDim2.new(1, -12, 0.5, -3),
+			Position = UDim2.new(0, 6, (i - 1) * 0.5, if i == 1 then 3 else 0),
+			StrokeThickness = 0,
+			ZIndex = 2,
 		})
-		Kit.bouncy(link, 1.04)
-		local function lit(on: boolean)
-			Kit.tween(link, 0.12, { TextColor3 = if on then hover else color })
-		end
-		link.MouseEnter:Connect(function()
-			lit(true)
-		end)
-		link.MouseLeave:Connect(function()
-			lit(false)
-		end)
-		link.SelectionGained:Connect(function()
-			lit(true)
-		end)
-		link.SelectionLost:Connect(function()
-			lit(false)
-		end)
-		link.Activated:Connect(onClick)
-		-- The link reads 30 px tall; its tap area is 44 (an invisible strip over it).
-		local hit = Kit.new("TextButton", {
-			Name = "Hit",
-			BackgroundTransparency = 1,
-			AutoButtonColor = false,
-			Selectable = false,
-			Text = "",
-			Size = UDim2.new(1, 0, 0, 44),
-			Position = UDim2.fromScale(0.5, 0.5),
-			AnchorPoint = Vector2.new(0.5, 0.5),
-			ZIndex = link.ZIndex + 1,
-			Parent = link,
-		})
-		hit.Activated:Connect(onClick)
-		return link
 	end
-	local passLink = textLink(
-		"BuyCrateMaster",
-		"Open every crate free  " .. Kit.ROBUX .. " " .. crateKey.Price,
-		C.TextDim,
-		C.GoldLight,
-		BUTTON_Y + 88,
-		PANEL_W - 40,
-		function()
-			Kit.sound("Click")
-			action:FireServer({ action = "PromptPass", name = "CrateKey" })
-		end
-	)
 	-- Discard: a red button at the bottom of the card, DISCARD_GAP below the rows above it.
-	-- It discards the held crate at once, whatever its rarity.
-	local DISCARD_H, DISCARD_GAP = 44, 14
+	-- A Common or Uncommon crate goes at once; Rare and better ask first (the same confirm
+	-- card as the Smasher's "Smash it now"), so one stray tap never throws away a good crate.
+	local DISCARD_H, DISCARD_GAP = 40, 12
+	local heldRarity = ""
+	local function discardNow()
+		action:FireServer({ action = "DiscardChest" })
+	end
 	local discard = Kit.button(panel, {
 		Name = "Discard",
 		Text = "Discard",
@@ -3418,54 +5448,68 @@ local function buildChestPanel()
 		IconColor = WHITE,
 		TextColor = WHITE,
 		Color = C.Danger,
-		Size = UDim2.fromOffset(150, DISCARD_H),
+		Size = UDim2.fromOffset(140, DISCARD_H),
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, BUTTON_Y + 48 + DISCARD_GAP),
+		Position = UDim2.new(0.5, 0, 0, ODDS_Y),
 		TextSize = T.Body,
 		Sound = "Close",
 	}, function()
-		action:FireServer({ action = "DiscardChest" })
+		local rarity = heldRarity
+		if (RARITY_RANK[rarity] or 0) < RARITY_RANK.Rare then
+			discardNow()
+			return
+		end
+		Popups.confirm(string.format("Discard this %s %s?", rarity, string.lower(W.Chest)), function()
+			-- Only the crate that was asked about: it may have been opened meanwhile.
+			if heldRarity == rarity then
+				discardNow()
+			end
+		end, { title = "DISCARD?", yes = "Discard", no = "Keep it" })
 	end)
 
-	-- Lays the rows out from BUTTON_Y down for the current mode: the open button, the
-	-- free-route line, the pass link (buy only), Discard. Without an open button the free
-	-- route takes the button's place at body size. Small text holds its size on the glass.
+	-- Lays the rows out under the odds for the current mode: the free route, the open
+	-- button (the other way round for a Crate Master owner), the pass button (buy only),
+	-- Discard; the card ends under Discard. Small text holds its size on the glass.
 	local function arrange(animate: boolean)
 		local hasButton = mode ~= "none"
-		local buying = mode == "buy"
+		local owner = mode == "owner"
 		local small = Kit.px(Kit.captionPx(), T.Small, holder)
 		local body = Kit.px(Kit.captionPx(), T.Body, holder)
-		local y = BUTTON_Y
-		openButton.Position = UDim2.fromOffset(12, y)
-		masterTag.Position = UDim2.fromOffset(PANEL_W - 8, y - 10)
-		if hasButton then
-			y += 56 + 8
+		local wellH = oddsHeight()
+		oddsWell.Size = UDim2.new(1, -EDGE * 2, 0, wellH)
+		local y = if phone then EDGE + HEAD_H + ROW_GAP else ODDS_Y + wellH + 10
+		local freeY, openY = y, y
+		if owner then
+			freeY = openY + OPEN_H + ROW_GAP
+			y = freeY + FREE_H
+		else
+			openY = freeY + FREE_H + ROW_GAP
+			y = if hasButton then openY + OPEN_H else freeY + FREE_H
 		end
-		-- One line beside a button, two when it stands alone or the card is narrow.
-		local freeSize = if hasButton then small else body
-		local freeHeight = if hasButton and not phone then freeSize + 8 else freeSize * 2 + 12
-		local freeGoal = { Position = UDim2.fromOffset(16, y), Size = UDim2.new(1, -32, 0, freeHeight), TextSize = freeSize }
-		y += freeHeight + 4
-		local linkH = if phone then small * 2 + 8 else 30
-		passLink.TextSize = small
-		passLink.Size = UDim2.fromOffset(PANEL_W - 40, linkH)
-		if buying then
-			passLink.Position = UDim2.new(0.5, 0, 0, y)
-			y += linkH + 2
+		openButton.Position = UDim2.fromOffset(EDGE, openY)
+		masterTag.Position = UDim2.fromOffset(PANEL_W - 4, openY - 10)
+		y += 4
+		for _, line in passLines do
+			line.TextSize = math.max(small, Popups.JUICE.Pass.TextSize)
+		end
+		if mode == "buy" then
+			passLink.Position = UDim2.fromOffset(EDGE, y + ROW_GAP - 4)
+			y += ROW_GAP - 4 + PASS_H
 		end
 		y += DISCARD_GAP
 		local discardLabel = Kit.buttonLabel(discard)
 		if discardLabel then
 			discardLabel.TextSize = body
 		end
+		local freeGoal = { Position = UDim2.fromOffset(EDGE, freeY) }
 		local discardGoal = { Position = UDim2.new(0.5, 0, 0, y) }
-		local holderGoal = { Size = UDim2.fromOffset(PANEL_W, y + DISCARD_H + 12) }
+		local holderGoal = { Size = UDim2.fromOffset(PANEL_W, y + DISCARD_H + 10) }
 		if animate then
-			Kit.tween(freeLine, 0.25, freeGoal)
+			Kit.tween(freeButton, 0.25, freeGoal)
 			Kit.tween(discard, 0.25, discardGoal)
 			Kit.tween(holder, 0.25, holderGoal)
 		else
-			freeLine.Position, freeLine.Size, freeLine.TextSize = freeGoal.Position, freeGoal.Size, freeGoal.TextSize
+			freeButton.Position = freeGoal.Position
 			discard.Position = discardGoal.Position
 			holder.Size = holderGoal.Size
 		end
@@ -3477,16 +5521,25 @@ local function buildChestPanel()
 		local wasButton = mode ~= "none"
 		mode = newMode
 		local hasButton = newMode ~= "none"
+		local owner = newMode == "owner"
 		if hasButton and not wasButton then
 			Kit.appear(openButton, { from = 0.9, time = 0.2 })
 		elseif not hasButton and wasButton then
 			Kit.disappear(openButton)
 		end
-		if newMode == "owner" then
-			Kit.setButton(openButton, "Open now")
+		-- One gold button per card: the instant open for a Crate Master owner (it is free
+		-- for them), the walk to the Smasher for everyone else.
+		local freeColor = if owner then C.SurfaceHi else C.Gold
+		Kit.setButton(freeButton, nil, freeColor)
+		freeRoute.TextColor3 = Kit.inkOn(freeColor)
+		freePrice.TextColor3 = Kit.inkOn(freeColor)
+		freeButton:SetAttribute("FocusFirst", not owner)
+		openButton:SetAttribute("FocusFirst", owner)
+		if owner then
+			Kit.setButton(openButton, "Open now", C.Gold)
 			Kit.appear(masterTag, { from = 0.6, time = 0.25 })
 		else
-			Kit.setButton(openButton, "Open now   " .. Kit.ROBUX .. " " .. crateOpen.Price)
+			Kit.setButton(openButton, "Open now   " .. Kit.ROBUX .. " " .. crateOpen.Price, C.SurfaceHi)
 			if masterTag.Visible then
 				Kit.disappear(masterTag)
 			end
@@ -3507,7 +5560,7 @@ local function buildChestPanel()
 	local away = rest
 	local parked = false
 	-- Places everything that depends on the card's shape (desktop / phone); the Compact
-	-- scale shrinks the tall desktop card on a short window, the phone card is already small.
+	-- scale shrinks the desktop card on a short window, the phone card is already small.
 	local crate: Frame? = nil
 	local function place()
 		measure()
@@ -3515,12 +5568,8 @@ local function buildChestPanel()
 		rest = if phone then UDim2.new(1, -12, 0.5, -14) else UDim2.new(1, -12, 0.5, 30)
 		away = UDim2.new(1, PANEL_W + 40, rest.Y.Scale, rest.Y.Offset)
 		holder.Position = if parked then away else rest
-		halo.Visible = not phone
 		oddsTitle.Visible = not phone
 		oddsWell.Visible = not phone
-		if crate then
-			crate.Visible = not phone
-		end
 		arrange(false)
 	end
 	place()
@@ -3544,7 +5593,7 @@ local function buildChestPanel()
 			local row = Kit.new("Frame", {
 				Name = "Odds" .. order,
 				BackgroundTransparency = 1,
-				Size = UDim2.new(1, 0, 0, 26),
+				Size = UDim2.new(1, 0, 0, ODDS_ROW),
 				LayoutOrder = order,
 				Parent = odds,
 			})
@@ -3576,7 +5625,7 @@ local function buildChestPanel()
 				Text = "#" .. entry.tier,
 				TextSize = T.Small,
 				MinPx = true,
-				Size = UDim2.new(0, 36, 1, 0),
+				Size = UDim2.new(0, 28, 1, 0),
 				Position = UDim2.fromOffset(24, 0),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				TextColor3 = C.TextDim,
@@ -3585,12 +5634,12 @@ local function buildChestPanel()
 			Kit.text(row, {
 				Text = Theme.Tiers[entry.tier].Name,
 				Font = Theme.Fonts.UI,
-				TextSize = 15,
+				TextSize = 14,
 				MinPx = true,
 				TextWrapped = false,
 				TextTruncate = Enum.TextTruncate.AtEnd,
-				Size = UDim2.new(1, -126, 1, 0),
-				Position = UDim2.fromOffset(60, 0),
+				Size = UDim2.new(1, -100, 1, 0),
+				Position = UDim2.fromOffset(52, 0),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				TextColor3 = Kit.lighten(tierColor, 0.35),
 				StrokeThickness = 0,
@@ -3599,7 +5648,7 @@ local function buildChestPanel()
 				Text = entry.chance .. "%",
 				TextSize = T.Body,
 				MinPx = true,
-				Size = UDim2.new(0, 60, 1, 0),
+				Size = UDim2.new(0, 46, 1, 0),
 				Position = UDim2.new(1, -4, 0, 0),
 				AnchorPoint = Vector2.new(1, 0),
 				TextXAlignment = Enum.TextXAlignment.Right,
@@ -3608,16 +5657,23 @@ local function buildChestPanel()
 			table.insert(rows, row)
 		end
 		Kit.stagger(rows)
+		-- The well, and the rows under it, follow the number of odds rows.
+		oddsRows = #rows
+		arrange(false)
 	end
 
 	local shownFor = ""
 	local open = false
 	State.changed.Event:Connect(function(data)
-		local rarity = data.heldChest
+		-- No panel (and no Robux button) over the tutorial: a crate held then is still
+		-- carried to the Smasher by hand.
+		local rarity = if data.tutorialDone == true then data.heldChest else nil
 		if rarity == nil or rarity == "" then
 			shownFor = ""
+			heldRarity = ""
 			if open then
 				open = false
+				Guide.clearNavigate(SMASHER_PAD)
 				Kit.unfocus(panel)
 				Kit.disappear(panel)
 				Kit.hidePlayerList("crate", false)
@@ -3625,6 +5681,7 @@ local function buildChestPanel()
 			end
 			return
 		end
+		heldRarity = rarity
 		if not open then
 			open = true
 			-- Fx/Crates hides the held crate's own world chip while this is true.
@@ -3632,30 +5689,35 @@ local function buildChestPanel()
 			Kit.appear(panel, { from = 0.85, time = 0.26 })
 			-- The default player list sits over the panel's header on short screens.
 			Kit.hidePlayerList("crate", true)
+			-- The first few crates a player ever holds: the path to the Smasher shows by
+			-- itself (later ones on a tap of the gold button).
+			if data.crateGuide == true then
+				Guide.navigate(SMASHER_PAD, string.upper(W.Unlocker), SMASHER_ARROW * 2)
+			end
 		end
 		local color = C.Rarity[rarity] or C.Gold
-		local key = rarity .. ":" .. data.highestTier
+		-- The Smasher's time for this very crate, from the server (a profile's first crate
+		-- opens in Economy.FIRST_CRATE_SECONDS, not in its rarity's time).
+		local freeSeconds = tonumber(data.heldSeconds)
+		local key = rarity .. ":" .. data.highestTier .. ":" .. (freeSeconds or -1)
 		if key ~= shownFor then
 			shownFor = key
 			title.Text = string.upper(rarity .. " " .. W.Chest)
 			title.TextColor3 = Kit.lighten(color, 0.3)
 			divider.BackgroundColor3 = Kit.lighten(color, 0.2)
 			halo.BackgroundColor3 = Kit.lighten(color, 0.45)
+			freePrice.Text = if freeSeconds then "FREE  •  " .. Format.time(freeSeconds) else "FREE"
 			if crate then
 				crate:Destroy()
 			end
-			local icon = crateIcon(panel, color, 80, {
+			local icon = crateIcon(panel, color, 40, {
 				Rarity = rarity,
-				Position = UDim2.new(0.5, 0, 0, 102),
+				Position = CRATE_AT,
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				ZIndex = 2,
 			})
 			crate = icon
-			if phone then
-				icon.Visible = false
-			else
-				Kit.appear(icon, { from = 0.6, time = 0.3 })
-			end
+			Kit.appear(icon, { from = 0.6, time = 0.3 })
 			fillOdds(rarity, data.highestTier)
 		end
 		-- Pass owners open free; everyone else only where paid random items are allowed.
@@ -3830,6 +5892,776 @@ function Popups.purchase(amount: number)
 	end)
 end
 
+-- Centre banner, gift card, surge chip (not modal) ------------------------------------------
+
+-- A run on a course owns the screen: no surge notice over it.
+local function inRun(): boolean
+	for _, name in { "RunActive", "ObbyMode", "CardioActive" } do
+		if screen:GetAttribute(name) == true then
+			return true
+		end
+	end
+	return false
+end
+
+-- Banner extras (Popups.JUICE.Banner and .Surge) ---------------------------------------------
+
+--[[
+	A banner asked for while a window, a modal or a reveal is up (attribute "WindowOpen")
+	waits for it to close, so it never sits over one. A newer banner takes its place; after
+	JUICE.Banner.HoldMax seconds, or when opts.Still() says its moment has passed, it is
+	dropped: opts.OnDropped runs, then opts.OnClosed.
+]]
+function Popups.holdBanner(opts: { [string]: any })
+	local J = Popups.JUICE.Banner
+	local function drop()
+		if opts.OnDropped then
+			opts.OnDropped()
+		end
+		if opts.OnClosed then
+			opts.OnClosed()
+		end
+	end
+	Popups.heldBanner = opts
+	task.spawn(function()
+		local waited = 0
+		while Popups.heldBanner == opts and screen:GetAttribute("WindowOpen") == true and waited < J.HoldMax do
+			waited += task.wait(J.Poll)
+		end
+		if Popups.heldBanner ~= opts then
+			drop()
+			return
+		end
+		Popups.heldBanner = nil
+		if screen:GetAttribute("WindowOpen") == true or (opts.Still and not opts.Still()) then
+			drop()
+			return
+		end
+		opts._held = true
+		Popups.banner(opts)
+	end)
+end
+
+-- The banner's entrance: the line slides in from the left, runs past the middle and
+-- settles (Back), the band opens from a line, and a slanted bar of light crosses it once.
+function Popups.bannerEntrance(holder: Frame, band: Frame)
+	local J = Popups.JUICE.Banner
+	if PREVIEW or reducedMotion() then
+		Kit.appear(holder, { from = 0.6, time = 0.32 })
+		return
+	end
+	Kit.appear(holder, { from = 1, time = 0.2 })
+	local rest = holder.Position
+	holder.Position = UDim2.new(J.SlideFrom, rest.X.Offset, rest.Y.Scale, rest.Y.Offset)
+	Kit.tween(holder, J.SlideTime, { Position = rest }, Enum.EasingStyle.Back)
+	local open = band.Size
+	band.Size = UDim2.new(open.X.Scale, open.X.Offset, 0, 0)
+	Kit.tween(band, J.BandTime, { Size = open }, Enum.EasingStyle.Back)
+	-- The shine: clipped to the band (three screens wide, the screen is its middle third).
+	-- A band that starts at the holder's left edge (inset past the HUD) shows the holder's
+	-- width: the shine crosses just that.
+	local leftBand = band.AnchorPoint.X == 0
+	local clip = Kit.new("Frame", {
+		Name = "Shine",
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+		Size = if leftBand then UDim2.fromScale(1, 1) else open,
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 29,
+		Parent = holder,
+	})
+	local bar = Kit.new("Frame", {
+		Name = "Bar",
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+		Size = UDim2.new(0, J.ShineWidth, 1, 0),
+		Position = UDim2.fromScale(0.3, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 29,
+		Parent = clip,
+	})
+	Kit.new("UIGradient", {
+		Rotation = 20,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1),
+			NumberSequenceKeypoint.new(0.5, 1 - J.ShineAlpha),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+		Parent = bar,
+	})
+	if leftBand then
+		bar.Position = UDim2.fromScale(0.05, 0)
+	end
+	tweenAfter(
+		bar,
+		J.ShineTime,
+		J.ShineAt,
+		{ Position = UDim2.fromScale(if leftBand then 1 else 0.7, 0) },
+		Enum.EasingStyle.Sine,
+		Enum.EasingDirection.InOut
+	)
+	task.delay(J.ShineAt + J.ShineTime + 0.05, function()
+		clip:Destroy()
+	end)
+end
+
+-- Coins bursting up and out of `at` (the banner's reward chip), then falling away. `arc`
+-- (degrees, screen y down: 270 is straight up) and `count` change the spread and number.
+function Popups.coinBurst(holder: Frame, at: UDim2, zindex: number, arc: { number }?, count: number?)
+	local J = Popups.JUICE.Banner
+	local spread = arc or { 200, 340 }
+	for _ = 1, count or J.BurstCoins do
+		local coin = moneyPiece(holder, false, zindex)
+		coin.Position = at
+		local angle = math.rad(math.random(spread[1], spread[2]))
+		local reach = J.BurstReach * (0.5 + math.random() * 0.6)
+		local peak = at + UDim2.fromOffset(math.cos(angle) * reach, math.sin(angle) * reach)
+		Kit.tween(coin, 0.3, { Position = peak, Rotation = math.random(-90, 90) }, Enum.EasingStyle.Quad)
+		task.delay(0.3, function()
+			if not coin.Parent then
+				return
+			end
+			Kit.tween(
+				coin,
+				0.55,
+				{ Position = peak + UDim2.fromOffset(math.cos(angle) * reach * 0.4, 420) },
+				Enum.EasingStyle.Quad,
+				Enum.EasingDirection.In
+			)
+			if coin:IsA("ImageLabel") then
+				tweenAfter(coin, 0.2, 0.35, { ImageTransparency = 1 })
+			end
+			task.delay(0.57, function()
+				coin:Destroy()
+			end)
+		end)
+	end
+end
+
+--[[
+	The surge's gold look for a moment: a gold glow in from all four edges of the screen
+	(it pulses, then fades) and coins raining down the whole width. Under the banner, over
+	the HUD; takes no input. Reduced motion keeps the edge, still, and has no rain.
+]]
+function Popups.goldEdge()
+	local J = Popups.JUICE.Surge
+	local old = screen:FindFirstChild("SurgeEdge")
+	if old then
+		old:Destroy()
+	end
+	-- The whole glass, the top bar's strip too when the ScreenGui starts under it.
+	local inset = 0
+	pcall(function()
+		if not screen.IgnoreGuiInset then
+			inset = GuiService:GetGuiInset().Y / Kit.pixelScale(screen)
+		end
+	end)
+	local layer = Kit.new("Frame", {
+		Name = "SurgeEdge",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 1, inset),
+		Position = UDim2.fromOffset(0, -inset),
+		ZIndex = 27,
+		Parent = screen,
+	})
+	local calm = reducedMotion()
+	local glow = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1 - J.EdgeAlpha),
+		NumberSequenceKeypoint.new(0.45, 1 - J.EdgeAlpha * 0.35),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	-- Top, bottom, left, right: each fades from the screen's edge inward.
+	for i, turn in { 90, 270, 0, 180 } do
+		local across = i <= 2
+		local far = i == 2 or i == 4
+		local edge = Kit.new("Frame", {
+			Name = "Edge",
+			BackgroundColor3 = J.Color,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Size = if across then UDim2.fromScale(1, J.EdgeDepth) else UDim2.fromScale(J.EdgeSide, 1),
+			Position = if not far then UDim2.fromScale(0, 0) elseif across then UDim2.fromScale(0, 1) else UDim2.fromScale(1, 0),
+			AnchorPoint = if not far then Vector2.zero elseif across then Vector2.new(0, 1) else Vector2.new(1, 0),
+			ZIndex = 27,
+			Parent = layer,
+		})
+		Kit.new("UIGradient", { Rotation = turn, Transparency = glow, Parent = edge })
+		Kit.tween(edge, J.EdgeIn, { BackgroundTransparency = 0 })
+		if not calm then
+			task.delay(J.EdgeIn, function()
+				if edge.Parent then
+					local info = TweenInfo.new(J.EdgePulse, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+					TweenService:Create(edge, info, { BackgroundTransparency = 0.45 }):Play()
+				end
+			end)
+		end
+		task.delay(J.EdgeIn + J.EdgeHold, function()
+			if edge.Parent then
+				Kit.tween(edge, J.EdgeOut, { BackgroundTransparency = 1 })
+			end
+		end)
+	end
+	task.delay(J.EdgeIn + J.EdgeHold + J.EdgeOut + 0.1, function()
+		layer:Destroy()
+	end)
+	if calm then
+		return
+	end
+	for _ = 1, J.Coins do
+		task.delay(math.random() * J.RainFor, function()
+			if not layer.Parent then
+				return
+			end
+			local coin = moneyPiece(layer, false, 27)
+			local size = math.floor(J.CoinSize * (0.7 + math.random() * 0.6))
+			local x = math.random()
+			local fall = J.FallMin + math.random() * (J.FallMax - J.FallMin)
+			coin.Size = UDim2.fromOffset(size, size)
+			coin.Position = UDim2.new(x, 0, 0, -size)
+			coin.Rotation = math.random(-40, 40)
+			Kit.tween(coin, fall, {
+				Position = UDim2.new(x + (math.random() - 0.5) * 0.08, 0, 1, size),
+				Rotation = coin.Rotation + math.random(-260, 260),
+			}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			task.delay(fall + 0.05, function()
+				coin:Destroy()
+			end)
+		end)
+	end
+end
+
+--[[
+	Popups.banner(opts): a band of colour right across the screen with one big line on it,
+	for a moment that outranks a toast (the surge starting, the tutorial done). Its line
+	slides in past the middle and settles, the band opens and shines once
+	(Popups.bannerEntrance); it holds and fades by itself, nothing waits for it and it takes
+	no input. It never opens over a window, a modal or a reveal: it waits for them to close
+	(Popups.holdBanner). opts:
+	  Text      the line                    Color     the band (gold)
+	  Amount    cash counted up on a dark chip under the line
+	  Life      seconds on screen (2)       Confetti  pieces (0), none with reduced motion
+	  Sound     name, Pitch                 OnClosed  runs when it has gone (or was dropped)
+	  CoinBurst coins burst from the Amount chip
+	  Edge      the surge's gold screen edge and coin rain (Popups.goldEdge)
+	  Still     () -> boolean: a held banner is dropped when this says false
+	  OnDropped runs when a held banner is dropped
+]]
+local BANNER_Y = 0.34
+-- Px the banner starts right of the screen's left edge: clear of the HUD's left column where
+-- it stands at the band's height (Popups.JUICE.Banner.ClearLeft), else 0.
+function Popups.bannerInset(height: number): number
+	local J = Popups.JUICE.Banner
+	if PREVIEW then
+		return 0
+	end
+	local top = screen.AbsoluteSize.Y * BANNER_Y - height / 2
+	local right = 0
+	for _, name in J.ClearLeft do
+		local g = screen:FindFirstChild(name)
+		if g and g:IsA("GuiObject") and g.Visible then
+			local y, h = g.AbsolutePosition.Y - screen.AbsolutePosition.Y, g.AbsoluteSize.Y
+			if y < top + height and y + h > top then
+				right = math.max(right, g.AbsolutePosition.X - screen.AbsolutePosition.X + g.AbsoluteSize.X)
+			end
+		end
+	end
+	if right <= 0 or screen.AbsoluteSize.X - right - J.ClearGap < screen.AbsoluteSize.X * J.ClearMinShare then
+		return 0
+	end
+	return math.ceil(right + J.ClearGap)
+end
+function Popups.banner(opts: { [string]: any })
+	if not PREVIEW and not opts._held and screen:GetAttribute("WindowOpen") == true then
+		Popups.holdBanner(opts)
+		return
+	end
+	local color: Color3 = opts.Color or C.Gold
+	local life: number = opts.Life or 2
+	local amount: number? = if type(opts.Amount) == "number" then opts.Amount else nil
+	local titleSize = Kit.px(26, 46, screen)
+	local chipH = Kit.px(24, 40, screen) + 8
+	local height = 28 + titleSize + (if amount then chipH + 10 else 0) + 24
+	local old = screen:FindFirstChild("Banner")
+	if old then
+		old:Destroy()
+	end
+	local inset = Popups.bannerInset(height)
+	local round = if inset > 0 then math.floor(height / 2) else 0
+	local holder = Kit.new("Frame", {
+		Name = "Banner",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -inset, 0, height),
+		Position = UDim2.new(0.5, inset / 2, BANNER_Y, 0),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 28,
+		Parent = screen,
+	})
+	-- Wider than any screen, so its far end is never seen (also past the safe area); with
+	-- an inset it starts at the holder's left edge, round.
+	local band = Kit.new("Frame", {
+		Name = "Band",
+		BackgroundColor3 = WHITE,
+		BackgroundTransparency = Popups.JUICE.Banner.BandAlpha,
+		BorderSizePixel = 0,
+		Size = UDim2.new(3, 0, 1, 0),
+		Position = if inset > 0 then UDim2.fromScale(0, 0.5) else UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = if inset > 0 then Vector2.new(0, 0.5) else Vector2.new(0.5, 0.5),
+		ZIndex = 28,
+		Parent = holder,
+	})
+	if round > 0 then
+		Kit.corner(band, round)
+	end
+	Kit.gradient(band, Kit.lighten(color, 0.32), Kit.darken(color, 0.1))
+	for _, y in { 0, 1 } do
+		Kit.new("Frame", {
+			Name = "Edge",
+			BackgroundColor3 = if y == 0 then WHITE else Kit.lip(color),
+			BackgroundTransparency = if y == 0 then 0.3 else 0,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, -round, 0, 4),
+			Position = UDim2.new(0, round, y, 0),
+			AnchorPoint = Vector2.new(0, y),
+			ZIndex = 29,
+			Parent = band,
+		})
+	end
+	Kit.hudText(holder, {
+		Name = "Title",
+		Text = opts.Text or "",
+		TextSize = titleSize,
+		TextScaled = true,
+		MaxTextSize = titleSize,
+		Size = UDim2.new(1, -48, 0, titleSize + 8),
+		Position = UDim2.fromOffset(24, 22),
+		StrokeColor = Theme.Glass.TextInk,
+		StrokeThickness = 3.5,
+		ZIndex = 29,
+	})
+	if amount then
+		-- The reward: a coin and the amount, on a dark chip so the green holds on the band.
+		local chip = Kit.new("Frame", {
+			Name = "Reward",
+			BackgroundColor3 = C.Ink,
+			BackgroundTransparency = 0.12,
+			Size = UDim2.fromOffset(0, chipH),
+			AutomaticSize = Enum.AutomaticSize.X,
+			Position = UDim2.new(0.5, 0, 0, 22 + titleSize + 14),
+			AnchorPoint = Vector2.new(0.5, 0),
+			ZIndex = 29,
+			Parent = holder,
+		})
+		Kit.round(chip)
+		Kit.padding(chip, 0, 16)
+		Kit.list(chip, 8, true)
+		Kit.icon(chip, "Coin", chipH - 12, C.Gold, { Name = "Coin", LayoutOrder = 1, ZIndex = 30 })
+		local label = Kit.number(chip, {
+			Name = "Amount",
+			Text = "+" .. State.money(amount),
+			TextSize = chipH - 10,
+			TextColor3 = C.MoneyText,
+			Size = UDim2.fromOffset(0, chipH),
+			AutomaticSize = Enum.AutomaticSize.X,
+			LayoutOrder = 2,
+			ZIndex = 30,
+		})
+		after(0.2, function()
+			if holder.Parent then
+				Kit.countTo(label, 0, amount, function(n)
+					return "+" .. State.money(n)
+				end, 0.8)
+			end
+		end)
+		if opts.CoinBurst and not PREVIEW and not reducedMotion() then
+			-- As the line settles: coins out of the chip, in front of the band.
+			task.delay(Popups.JUICE.Banner.SlideTime, function()
+				if holder.Parent then
+					Popups.coinBurst(holder, UDim2.new(0.5, 0, 0, 22 + titleSize + 14 + chipH / 2), 30)
+				end
+			end)
+		end
+	end
+	Popups.bannerEntrance(holder, band)
+	if opts.Edge and not PREVIEW then
+		Popups.goldEdge()
+	end
+	local confetti: number = if reducedMotion() then 0 else (opts.Confetti or 0)
+	if confetti > 0 then
+		-- From both ends of the band and its middle.
+		for i, x in { 0.5, 0.2, 0.8 } do
+			after((i - 1) * 0.12, function()
+				if holder.Parent then
+					Kit.confetti(holder, { Origin = UDim2.fromScale(x, 0.5), Count = math.ceil(confetti / 3), ZIndex = 30, Power = 1.15 })
+				end
+			end)
+		end
+	end
+	if opts.Sound then
+		sounds.play(opts.Sound, 0, opts.Pitch)
+	end
+	local closed = false
+	local function close()
+		if closed then
+			return
+		end
+		closed = true
+		if holder.Parent then
+			Kit.disappear(holder, { time = 0.25, to = 1.04, destroy = true })
+		end
+		if opts.OnClosed then
+			task.delay(0.25, opts.OnClosed)
+		end
+	end
+	if not PREVIEW then
+		task.delay(life, close)
+		-- Replaced by a newer banner: its OnClosed still runs.
+		holder.AncestryChanged:Connect(function()
+			if not holder:IsDescendantOf(game) then
+				close()
+			end
+		end)
+	end
+end
+
+-- The tutorial's last step is done: "YOU DID IT!" and the cash, with confetti. Goes
+-- through the modal queue (`done`), so it never lands on a reveal.
+function Popups.tutorialDone(cash: number, done: () -> ())
+	Popups.banner({
+		Text = "YOU DID IT!",
+		Amount = math.max(tonumber(cash) or 0, 0),
+		Color = C.Gold,
+		Life = 2.5,
+		Confetti = 42,
+		CoinBurst = true,
+		Sound = "Celebrate",
+		-- The HUD's MODES UNLOCKED burst waits for this banner to have gone (Hud).
+		OnClosed = function()
+			screen:SetAttribute("TutorialCheered", true)
+			done()
+		end,
+	})
+	if PREVIEW then
+		done()
+	end
+end
+
+--[[
+	The free gift: a small solid card in the middle of the screen (the crate panel's solid
+	style: it stands over the plot's signs, and their text read through glass) with the gift
+	badge, the cash counting up over a toss of coins, and when the next one is due. Not modal
+	and it takes no input: it goes by itself after GIFT_LIFE. data: cash, nextIn (seconds; the
+	cooldown when absent): the server's Gift notify. The "Cash" effect of the same claim
+	brings the sound and the coins (Main), not a second card.
+]]
+local GIFT_LIFE = 3.2
+local GIFT_W, GIFT_H = 360, 168
+function Popups.gift(data: { [string]: any })
+	local now = os.clock()
+	local cash = math.max(tonumber(data.cash) or 0, 0)
+	local nextIn = tonumber(data.nextIn) or Economy.FREE_REWARD_COOLDOWN
+	local old = screen:FindFirstChild("GiftCard")
+	if old then
+		old:Destroy()
+	end
+	local holder = Kit.new("Frame", {
+		Name = "GiftCard",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(GIFT_W, GIFT_H),
+		-- Centred, a little low: the badge on its top edge stays clear of the HUD's top strips.
+		Position = UDim2.fromScale(0.5, 0.44),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 27,
+		Parent = screen,
+	})
+	if not PREVIEW then
+		-- Set before the card is filled, so one that fails half-way still goes by itself.
+		task.delay(GIFT_LIFE, function()
+			if holder.Parent then
+				Kit.disappear(holder, { time = 0.22, to = 0.9, destroy = true })
+			end
+		end)
+		-- A reward card is on screen: nothing opens by itself over it ("PopupBusy"), and the
+		-- toasts wait.
+		Popups.holdToasts("Gift")
+		Popups.giftUntil = os.clock() + GIFT_LIFE + 0.25
+		Popups.syncBusy()
+		task.delay(GIFT_LIFE + 0.3, Popups.syncBusy)
+	end
+	local card = Kit.panel(holder, {
+		Name = "Card",
+		Color = C.Surface,
+		StrokeColor = C.Cash,
+		StrokeThickness = 2,
+		Size = UDim2.fromOffset(GIFT_W, GIFT_H),
+		Radius = Kit.RADIUS.L,
+		ZIndex = 2,
+	})
+	do
+		-- Behind the card: a dark pool that hides the avatar standing behind it (its legs
+		-- showed under the card), and slow gold rays.
+		local G = Popups.JUICE.Gift
+		local shade = softDot(holder, "Shade", VEIL, UDim2.fromOffset(GIFT_W * G.ShadeW, GIFT_H * G.ShadeH), G.ShadeAlpha, 0)
+		shade.Position = UDim2.new(0.5, 0, 0.5, GIFT_H * G.ShadeDrop)
+		local rays = Popups.rays(holder, Kit.lighten(C.Gold, 0.25), G.Rays, UDim2.fromScale(0.5, 0.5), 1, G.RayCount)
+		if not PREVIEW and not reducedMotion() then
+			Popups.spinRays(rays, G.RaySpin)
+		end
+	end
+	medallion(card, Theme.Icons.Free, C.Cash, 68, UDim2.new(0.5, 0, 0, 0))
+	Kit.hudText(card, {
+		Name = "Title",
+		Text = W.Free .. "!",
+		TextSize = Kit.px(18, 24, screen),
+		TextColor3 = C.GoldLight,
+		Size = UDim2.new(1, -24, 0, 30),
+		Position = UDim2.fromOffset(12, 40),
+		ZIndex = 3,
+	})
+	local amountSize = Kit.px(28, 46, screen)
+	local amount = Kit.hudText(card, {
+		Name = "Amount",
+		Text = "+" .. State.money(cash),
+		Font = Theme.Fonts.Number,
+		TextSize = amountSize,
+		TextScaled = true,
+		MaxTextSize = amountSize,
+		TextColor3 = C.MoneyText,
+		Size = UDim2.new(1, -32, 0, amountSize + 6),
+		Position = UDim2.fromOffset(16, 70),
+		StrokeThickness = 3,
+		ZIndex = 3,
+	})
+	local nextLine = Kit.hudText(card, {
+		Name = "Next",
+		Text = "Next gift in " .. Format.time(nextIn),
+		Font = Theme.Fonts.UI,
+		TextSize = Kit.px(Kit.captionPx(), 16, screen),
+		TextTransparency = 0.1,
+		Size = UDim2.new(1, -24, 0, 22),
+		Position = UDim2.new(0, 12, 1, -32),
+		StrokeThickness = 2,
+		ZIndex = 3,
+	})
+	Kit.appear(holder, { from = 0.6, time = 0.3 })
+
+	local COUNT_TIME = 0.9
+	after(0.15, function()
+		if holder.Parent then
+			Kit.countTo(amount, 0, cash, function(n)
+				return "+" .. State.money(n)
+			end, COUNT_TIME)
+		end
+	end)
+	if not PREVIEW then
+		task.spawn(function()
+			-- Coin ticks rising with the count, and the countdown under it.
+			task.wait(0.15)
+			local t = 0
+			while t < COUNT_TIME and holder.Parent do
+				sounds.play("Coin", 0.03, 0.9 + (t / COUNT_TIME) * 0.6)
+				task.wait(0.1)
+				t += 0.1
+			end
+			while holder.Parent do
+				nextLine.Text = "Next gift in " .. Format.time(nextIn - (os.clock() - now))
+				task.wait(0.5)
+			end
+		end)
+		if not reducedMotion() then
+			-- A toss of coins from behind the card, falling past it.
+			for i = 1, 12 do
+				local coin = moneyPiece(holder, false, 1)
+				local x = 0.5 + (math.random() - 0.5) * 0.5
+				coin.Position = UDim2.fromScale(x, 0.3)
+				coin.Rotation = math.random(-30, 30)
+				local out = x + (x - 0.5) * 1.8 + (math.random() - 0.5) * 0.3
+				local up = 0.14 + i * 0.012
+				Kit.tween(
+					coin,
+					up + 0.16,
+					{ Position = UDim2.fromScale((x + out) / 2, -0.55 - math.random() * 0.35) },
+					Enum.EasingStyle.Quad
+				)
+				task.delay(up + 0.16, function()
+					if not coin.Parent then
+						return
+					end
+					Kit.tween(
+						coin,
+						0.55,
+						{ Position = UDim2.fromScale(out, 1.7), Rotation = coin.Rotation + math.random(-200, 200) },
+						Enum.EasingStyle.Quad,
+						Enum.EasingDirection.In
+					)
+					if coin:IsA("ImageLabel") then
+						tweenAfter(coin, 0.2, 0.35, { ImageTransparency = 1 })
+					end
+					task.delay(0.56, function()
+						coin:Destroy()
+					end)
+				end)
+			end
+		end
+	end
+end
+
+--[[
+	Aura Surge notices. SURGE_WARN seconds before a surge a chip "AURA SURGE in 0:30"
+	counts down at the head of the toast stack (the toasts move down for it), and when the
+	surge starts a banner crosses the screen for 2 s. The surge is a slice of the server
+	clock (Economy.surgeState), so both run off that clock here; the server's Surge notify
+	(Popups.surge) only lands them at once. Not shown before the tutorial is done, during
+	the intro or on a course.
+]]
+local SURGE_WARN = 30
+local SURGE_CHIP_W, SURGE_CHIP_H = 260, 36
+local SURGE_CHIP_STEP = 44
+local surgeChip: GuiObject? = nil
+local surgeChipText: TextLabel? = nil
+local surgeChipSecond = -1
+local surgeBannerAt = -math.huge
+
+local function surgeQuiet(): boolean
+	local data = State.data
+	return data == nil or data.tutorialDone ~= true or inRun() or Players.LocalPlayer:GetAttribute("IntroPlaying") == true
+end
+
+-- Shows the chip at `seconds` to go; nil takes it away.
+local function setSurgeChip(seconds: number?)
+	if not seconds then
+		local chip = surgeChip
+		if chip then
+			surgeChip, surgeChipText, surgeChipSecond = nil, nil, -1
+			chipRoom = 0
+			Kit.disappear(chip, { time = 0.2, to = 0.94, destroy = true })
+			if placeToastHolder then
+				placeToastHolder()
+			end
+		end
+		return
+	end
+	local whole = math.max(0, math.ceil(seconds))
+	if not surgeChip then
+		local chip = Kit.hudGlass(toastHolder, {
+			Name = "SurgeChip",
+			Size = UDim2.fromOffset(SURGE_CHIP_W, SURGE_CHIP_H),
+			Position = UDim2.new(0.5, 0, 0, -SURGE_CHIP_STEP),
+			AnchorPoint = Vector2.new(0.5, 0),
+			Accent = C.Amber,
+			ZIndex = 2,
+		})
+		Kit.hudIcon(chip, "Surge", 22, C.Amber, {
+			Position = UDim2.new(0, 22, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ZIndex = 2,
+		})
+		surgeChipText = Kit.hudText(chip, {
+			Name = "Text",
+			Text = "",
+			MaxTextSize = 17,
+			Size = UDim2.new(1, -66, 0, 23),
+			Position = UDim2.new(0, 52, 0.5, 1),
+			AnchorPoint = Vector2.new(0, 0.5),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = Kit.lighten(C.Amber, 0.35),
+			StrokeThickness = 2,
+			ZIndex = 2,
+		})
+		surgeChip = chip
+		chipRoom = SURGE_CHIP_STEP
+		chip.Visible = screen:GetAttribute("WindowOpen") ~= true
+		if placeToastHolder then
+			placeToastHolder()
+		end
+		Kit.appear(chip, { from = 0.9, time = TOAST_IN, style = Enum.EasingStyle.Quad })
+		sounds.play("Toast", 0, 1.2)
+	end
+	if whole ~= surgeChipSecond and surgeChipText then
+		surgeChipSecond = whole
+		surgeChipText.Text = string.format("%s in %s", W.Surge, Format.time(whole))
+		-- The last five seconds tick.
+		if whole <= 5 and whole > 0 and surgeChip and surgeChip.Visible and revealCount == 0 then
+			Kit.pop(surgeChip, 0.5)
+			sounds.play("Tick", 0, 1 + (5 - whole) * 0.06)
+		end
+	end
+end
+
+-- A surge is told once: `surgeToldUntil` is the os.clock() its telling covers.
+local surgeToldUntil = -math.huge
+
+local function surgeBanner()
+	local now = os.clock()
+	if now - surgeBannerAt < 10 or surgeQuiet() then
+		return
+	end
+	surgeBannerAt = now
+	surgeToldUntil = now + Economy.SURGE_DURATION
+	Popups.banner({
+		Text = string.format("%s x%d: double cash!", W.Surge, Economy.SURGE_MULTIPLIER),
+		Color = C.Amber,
+		Life = 2,
+		Confetti = 18,
+		Edge = true,
+		-- Held back by an open window (Popups.holdBanner): it still shows once the window
+		-- closes while enough of the surge is left; else the "is on: 0:40 left" toast of
+		-- surgeTick tells it instead (toasts keep clear of windows by themselves).
+		Still = function(): boolean
+			local active, left = Economy.surgeState(Workspace:GetServerTimeNow())
+			return active and left > Popups.JUICE.Surge.MinLeft and not surgeQuiet()
+		end,
+		OnDropped = function()
+			surgeToldUntil = -math.huge
+		end,
+	})
+end
+
+-- One look at the server clock: the chip while a surge is SURGE_WARN or less away, the
+-- banner on the step into a surge. A surge found already running (on join, when the
+-- tutorial ends, back from a course) gets a toast with the time left instead, as soon as
+-- the screen is free; the server sends nothing for it.
+local function surgeTick(wasActive: boolean?): boolean
+	local active, left = Economy.surgeState(Workspace:GetServerTimeNow())
+	if active and wasActive == false then
+		surgeBanner()
+	end
+	if active and left > 5 and os.clock() >= surgeToldUntil and not surgeQuiet() then
+		surgeToldUntil = os.clock() + left + 5
+		Popups.toast(string.format("%s x%d is on: %s left", W.Surge, Economy.SURGE_MULTIPLIER, Format.time(left)), "good")
+	end
+	if not active and left <= SURGE_WARN and not surgeQuiet() then
+		setSurgeChip(left)
+	else
+		setSurgeChip(nil)
+	end
+	return active
+end
+
+-- The server's Surge notify: { phase = "soon", seconds = 30 } | "start" | "end". It is not
+-- sent during the tutorial.
+function Popups.surge(payload: { [string]: any })
+	if payload.phase == "start" then
+		setSurgeChip(nil)
+		surgeBanner()
+	elseif payload.phase == "soon" and not surgeQuiet() then
+		local _, left = Economy.surgeState(Workspace:GetServerTimeNow())
+		setSurgeChip(math.min(left, tonumber(payload.seconds) or SURGE_WARN))
+	elseif payload.phase == "end" then
+		setSurgeChip(nil)
+	end
+end
+
+local function watchSurge()
+	task.spawn(function()
+		local active: boolean? = nil
+		while true do
+			active = surgeTick(active)
+			task.wait(0.25)
+		end
+	end)
+end
+
 function Popups.build(screenGui: ScreenGui, soundModule: any)
 	screen = screenGui
 	sounds = soundModule
@@ -3869,11 +6701,23 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 		for _, holder in { toastHolder, frontHolder } do
 			Kit.tween(holder, 0.3, { Position = UDim2.new(0.5, 0, 0, y) }, Enum.EasingStyle.Quad)
 		end
+		-- The surge chip rides at the head of the stack; over a window that is off screen.
+		if surgeChip then
+			surgeChip.Visible = screen:GetAttribute("WindowOpen") ~= true
+		end
 	end
+	placeToastHolder = placeHolder
 	screen:GetAttributeChangedSignal("TopCardHeight"):Connect(function()
 		placeHolder()
 		flushToasts()
 	end)
+	-- A phone's menu row and a game-mode run push the stack down (toastBase): follow the
+	-- layout, the input and the run.
+	for _, name in { "Compact", "Input", "RunActive", "ObbyMode", "CardioActive" } do
+		screen:GetAttributeChangedSignal(name):Connect(function()
+			task.defer(placeHolder)
+		end)
+	end
 	Kit.onWindowOpen(function(up: boolean)
 		placeHolder()
 		if not up then
@@ -3899,6 +6743,8 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 				game:GetService("ContentProvider"):PreloadAsync(sprites)
 			end)
 		end)
+		watchMerges()
+		watchSurge()
 		-- The server's one-time Starter grant (other Notify kinds are routed by Main).
 		Net.event("Notify").OnClientEvent:Connect(function(payload)
 			if type(payload) == "table" and payload.kind == "Starter" then

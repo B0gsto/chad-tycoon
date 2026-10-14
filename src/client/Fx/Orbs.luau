@@ -29,13 +29,19 @@
 --
 -- Also exports small shared VFX helpers (fly / ring / sparkle / puff) used by Machines and
 -- Crates. They draw the Blender sprites (Fx.Sprites: Sparkle, Ring, Puff) when uploaded and
--- fall back to the built-in sparkle texture and a flat neon disc otherwise.
+-- fall back to the built-in sparkle texture and a flat neon disc otherwise. Orbs.coins can
+-- send its coins to the HUD's cash amount (bottom left), Orbs.coinArc flies coin sprites across
+-- the screen to it, and Orbs.walletText pops a big outlined line beside it. Orbs.text never
+-- gets smaller than FX.text.px pixels on screen (with `hud` it stays under the top HUD, as
+-- Orbs.hudOffset keeps any pop); Orbs.shock and Orbs.sprite are the big pops.
+-- Every size, colour, duration and count of these helpers is in the FX table.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
+local GuiService = game:GetService("GuiService")
 
 local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 local Net = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Net"))
@@ -57,8 +63,114 @@ local FAR = CFrame.new(0, -10000, 0)
 local ROLL_WINDOW = 1.5 -- seconds after Spawned during which an orb still rolls in
 local SOUND_GAP = 1 / 12
 local LABEL_MAX_DISTANCE = 70 -- camera distance cap of the "xN" tags (BillboardGui.MaxDistance)
-local LABEL_HEIGHT = 1.15 -- studs
+local LABEL_HEIGHT = 0.8 -- studs
+local LABEL_MIN_COUNT = 10 -- a merged ball wears its "xN" tag from this count (fewer: the pool stays clean)
 local WHITE = Color3.new(1, 1, 1)
+
+-- Tunables of the shared helpers below (sparkles, rings, float text, wallet text, coins): their
+-- sizes, colours, durations and counts. One table, not a local each: a chunk holds 200 locals at
+-- most. Sized for a 1280x720 screen with the camera 25 to 50 studs from the pads.
+local FX = {
+	sparkle = {
+		size = 0.8, -- studs across at a sparkle's peak (Orbs.sparkle's `size` overrides it)
+		life = { 0.45, 0.85 }, -- seconds
+		window = 0.3, -- seconds: sparkle bursts inside one window share ...
+		budget = 44, -- ... at most this many particles (a big pickup stays calm)
+	},
+	-- Orbs.shock: ground rings one inside the other plus a ring that faces the camera.
+	shock = {
+		rings = { { radius = 1, delay = 0 }, { radius = 0.72, delay = 0.07 } }, -- shares of the radius
+		time = 0.55, -- seconds
+		start = 0, -- starting transparency
+		face = 1.5, -- camera-facing ring: diameter / the radius
+		faceLife = 0.5, -- seconds
+	},
+	-- Orbs.text: world float text never smaller than `px` on screen.
+	text = {
+		max = 12, -- texts alive at once
+		px = 30, -- pixel floor of the line's height at scale 1 (about 24 px of glyph)
+		pxScaleMax = 1.6, -- the floor follows the scale up to this
+		letter = 0.62, -- a letter's width / the line's height
+		studs = 0.6, -- share of the stud size (4k + 2 by 1.4k + 0.4) kept on top of the floor
+		stroke = 2.5, -- outline pixels at scale 1 (+1 per unit of scale)
+		popScale = 1.35, -- overshoot of the pop-in
+		-- `clear`: a text that would sit on the local character on screen steps aside.
+		clearPx = Vector2.new(90, 130), -- half size of the character's box on screen
+		clearSide = 3.5, -- studs along the camera's right
+		clearNear = 2, -- studs toward the camera
+		plate = 0.08, -- a plate's background transparency
+		flashes = 3, -- white blinks of a `flash` text
+		flashTime = 0.12, -- seconds per blink
+	},
+	-- Orbs.hudOffset / Orbs.text's `hud`: world pops stay under the top HUD's capsules.
+	hud = {
+		top = 130, -- design px from the top of the screen a pop's top edge stays under (the
+		-- capsules end at about 110 at 1280x720)
+		-- The HUD's left column (TycoonUI children): every world pop steps right until it
+		-- clears them by `sideGap` design px. Measured in Studio: the collect's "+$34.06T" sat
+		-- at x 35..452 over the menu grid (x 13..302).
+		column = { "Menu", "Wallet" },
+		sideGap = 16,
+	},
+	-- The HUD's cash amount and Orbs.walletText (what a pad just took).
+	wallet = {
+		fallback = Vector2.new(150, 110), -- px in from the left edge, up from the bottom
+		depth = 7, -- studs in front of the camera that homing coins fly to
+		textSize = 30, -- design px (the cash amount itself is 46)
+		-- The text starts beside the cash plate (right of the amount and its "+"), not over the
+		-- "CASH [x1.0]" line above the amount.
+		textGap = 14, -- design px between the cash plate's right edge and the text's left edge
+		textRise = 30, -- design px it climbs while it fades ...
+		textSlide = 22, -- ... and slides away to the right
+		textLife = 1.25, -- seconds
+		textDrift = 10, -- design px of random up / down start, so repeats do not stack
+		textStroke = 3, -- design px of dark outline
+		textPop = 1.4, -- overshoot of the pop-in
+		maxTexts = 3,
+	},
+	-- Orbs.coins (3D coins).
+	coin = {
+		max = 70,
+		gold = Color3.fromRGB(255, 205, 60),
+		gravity = Vector3.new(0, -70, 0),
+		homeTime = 0.45, -- seconds a homing coin takes to the wallet
+		homeShrink = 0.45, -- share of its size it loses on the way
+	},
+	-- Orbs.coinArc (coin sprites on the screen, from a world point to the cash amount).
+	arc = {
+		count = 14,
+		max = 16, -- per call
+		live = 40, -- on screen at once
+		size = 34, -- design px across (28 to 40 reads as a coin at 1280x720)
+		endSize = 0.75, -- share of the size on arrival
+		-- Seconds of flight (eased out: half the way in the first 30%). r6: measured in Studio
+		-- at 0.8 the first coin of a collect landed 0.93 s after the Cash effect and the label
+		-- swelled from 1.00 s; at 0.4 the coins land from about 0.5 s on, so the label is
+		-- swelling from +0.5 to +1.1 s.
+		time = 0.4,
+		stagger = 0.04, -- seconds between coins
+		lift = 230, -- design px the arc rises above the straight line (up into mid screen)
+		-- The arc's middle is pulled this share of the way to the screen centre, so coins from
+		-- a source on the left still cross mid-screen; and they leave fast (ease-out), so a
+		-- frame 0.3 s after a collect already catches the stream half way. Measured in Studio:
+		-- with a 0.12 s pop and a smoothstep flight the first coin left the piggy 0.13 s after
+		-- the event and was still beside it at +0.36 s.
+		centre = 0.5,
+		scatter = 56, -- design px of random start offset
+		burst = 0.05, -- seconds a coin takes to pop out before it flies
+		spin = 300, -- degrees turned on the way
+		pop = 64, -- design px across of the arrival ring at the cash amount
+		popTime = 0.28, -- seconds
+		popEvery = 3, -- an arrival ring for every Nth coin (and the first and the last)
+		-- ... and the cash amount itself swells to this scale and back over pulseTime (r5:
+		-- measured in Studio the coins already ended on the label, 77-81 x 652-658 inside its
+		-- 13..105 x 633..682 box, but nothing on the label answered them).
+		pulse = 1.16,
+		pulseTime = 0.24, -- longer than the gap between two pulsing coins: one held swell
+		gold = Color3.fromRGB(255, 205, 60), -- the shape coin without the sprite
+		goldRim = Color3.fromRGB(196, 132, 20),
+	},
+}
 
 local folder: Folder = nil :: any
 local fxFolder: () -> Instance
@@ -102,14 +214,13 @@ end
 -- Sparkle emitters (one per colour, moved to the burst point then Emit()) ----------------
 
 local SPARKLE_SPRITE = Sprites.image("Sparkle")
-local SPARKLE_WINDOW = 0.3 -- seconds: sparkle bursts inside one window share ...
-local SPARKLE_BUDGET = 28 -- ... at most this many particles (a big pickup stays calm)
 local sparkleWindow, sparkleSpent = 0, 0
 
 local emitters: { [string]: { part: BasePart, emitter: ParticleEmitter } } = {}
 
-local function emitterFor(color: Color3)
-	local key = color:ToHex()
+-- One emitter per colour and size (`size`: studs across at the peak).
+local function emitterFor(color: Color3, size: number)
+	local key = color:ToHex() .. string.format(":%.1f", size)
 	local entry = emitters[key]
 	if entry then
 		return entry
@@ -124,17 +235,17 @@ local function emitterFor(color: Color3)
 	emitter.LightEmission = if SPARKLE_SPRITE then 0 else 1
 	emitter.LightInfluence = 0
 	emitter.Rate = 0
-	emitter.Lifetime = NumberRange.new(0.35, 0.7)
+	emitter.Lifetime = NumberRange.new(FX.sparkle.life[1], FX.sparkle.life[2])
 	emitter.Speed = NumberRange.new(6, 14)
 	emitter.SpreadAngle = Vector2.new(180, 180)
 	emitter.Drag = 4
 	emitter.Acceleration = Vector3.new(0, -8, 0)
 	emitter.RotSpeed = NumberRange.new(-180, 180)
 	if SPARKLE_SPRITE then
-		-- The 4-point sprite fills its frame: smaller, pops up then shrinks away.
+		-- The 4-point sprite fills its frame: pops up then shrinks away.
 		emitter.Size = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.15),
-			NumberSequenceKeypoint.new(0.2, 0.42),
+			NumberSequenceKeypoint.new(0, size * 0.35),
+			NumberSequenceKeypoint.new(0.2, size),
 			NumberSequenceKeypoint.new(1, 0),
 		})
 		emitter.Transparency = NumberSequence.new({
@@ -145,7 +256,7 @@ local function emitterFor(color: Color3)
 		emitter.RotSpeed = NumberRange.new(-90, 90)
 	else
 		emitter.Size = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.5),
+			NumberSequenceKeypoint.new(0, size * 1.2),
 			NumberSequenceKeypoint.new(1, 0),
 		})
 		emitter.Transparency = NumberSequence.new(0, 0.6)
@@ -156,17 +267,18 @@ local function emitterFor(color: Color3)
 	return entry
 end
 
-function Orbs.sparkle(pos: Vector3, color: Color3?, count: number?, speed: number?)
+-- `size`: studs across at the peak (default FX.sparkle.size), rounded to 0.1.
+function Orbs.sparkle(pos: Vector3, color: Color3?, count: number?, speed: number?, size: number?)
 	local now = os.clock()
-	if now - sparkleWindow > SPARKLE_WINDOW then
+	if now - sparkleWindow > FX.sparkle.window then
 		sparkleWindow, sparkleSpent = now, 0
 	end
-	local n = math.min(Budget.count(count or 8), Budget.count(SPARKLE_BUDGET) - sparkleSpent)
+	local n = math.min(Budget.count(count or 8), Budget.count(FX.sparkle.budget) - sparkleSpent)
 	if n <= 0 then
 		return
 	end
 	sparkleSpent += n
-	local entry = emitterFor(color or C.Orb)
+	local entry = emitterFor(color or C.Orb, math.clamp(math.floor((size or FX.sparkle.size) * 10 + 0.5) / 10, 0.2, 4))
 	entry.part.CFrame = CFrame.new(pos)
 	local s = speed or 1
 	entry.emitter.Speed = NumberRange.new(6 * s, 14 * s)
@@ -286,6 +398,47 @@ function Orbs.ring(pos: Vector3, color: Color3?, radius: number?, duration: numb
 	tween:Play()
 end
 
+-- One-off sprite pops and shock rings ------------------------------------------------------
+
+local popAnchor: Part? = nil
+
+-- A Fx.Sprites billboard at world point `opts.position` (StarPop, Ring, Heart ...): it scales
+-- in, drifts by `rise`, fades and cleans itself up. nil when the sprite is missing.
+function Orbs.sprite(name: string, opts: Sprites.BillboardOptions): BillboardGui?
+	local anchor = popAnchor
+	if not anchor or not anchor.Parent then
+		anchor = basePart(Enum.PartType.Block, "SpriteAnchor")
+		anchor.Size = Vector3.new(0.2, 0.2, 0.2)
+		anchor.Transparency = 1
+		anchor.CFrame = CFrame.new(opts.position)
+		anchor.Parent = fxFolder()
+		popAnchor = anchor
+	end
+	return Sprites.billboard(anchor :: Part, name, opts)
+end
+
+-- A shock wave that reads from any camera angle: ground rings one inside the other (FX.shock)
+-- and a ring that faces the camera, all in `color`, `radius` studs out.
+function Orbs.shock(pos: Vector3, color: Color3?, radius: number?, duration: number?)
+	local r = radius or 5
+	local dur = duration or FX.shock.time
+	for _, ring in FX.shock.rings do
+		if ring.delay <= 0 then
+			Orbs.ring(pos, color, r * ring.radius, dur, FX.shock.start)
+		else
+			task.delay(ring.delay, Orbs.ring, pos, color, r * ring.radius, dur, FX.shock.start)
+		end
+	end
+	Orbs.sprite("Ring", {
+		position = pos + Vector3.new(0, 0.6, 0),
+		size = r * FX.shock.face,
+		rise = Vector3.zero,
+		life = FX.shock.faceLife,
+		color = (color or C.Orb):Lerp(WHITE, 0.25),
+		maxDistance = 220,
+	})
+end
+
 -- Shared FX folder (created on demand so helpers work before init) ------------------------
 
 fxFolder = function(): Instance
@@ -310,8 +463,9 @@ function Orbs.getFolder(): Instance
 end
 
 -- World float text (pop in with overshoot, rise, fade). Capped. -------------------------------
+-- Its height on screen never drops under FX.text.px pixels (times the scale): the BillboardGui
+-- is part studs, part pixels, so a "+$1.2K" 50 studs away still reads.
 
-local MAX_TEXTS = 10
 local texts: { Part } = {}
 
 export type TextOptions = {
@@ -319,23 +473,153 @@ export type TextOptions = {
 	rise: number?, -- studs
 	life: number?, -- seconds
 	stroke: Color3?,
+	-- An attribute set to the text on the "FloatText" part before it is parented, so other
+	-- code can tell this text from the rest without reading its label.
+	tag: string?,
+	clear: boolean?, -- step aside when it would sit on the local character on screen
+	plate: Color3?, -- a rounded badge of this colour behind the text
+	flash: boolean?, -- blink white a few times on the way in (with `plate`: the badge blinks)
+	hud: boolean?, -- moved down (along the camera's up) until it stays under the top HUD
 }
+
+-- The HUD's pixel scale (TycoonUI's UIScale; 1 at 1280x720).
+local function hudScale(): number
+	local playerGui = player:FindFirstChildOfClass("PlayerGui")
+	local screen = playerGui and playerGui:FindFirstChild("TycoonUI")
+	local uiScale = screen and screen:FindFirstChildOfClass("UIScale")
+	return if uiScale then uiScale.Scale else 1
+end
+
+-- The world offset (along the camera's down) that keeps a pop at `pos` under the top HUD: its
+-- top edge, `halfPx` pixels plus `halfStuds` studs over its centre, once it has risen `rise`
+-- studs, stays FX.hud.top design px or more from the top of the screen. Zero when it already
+-- does or is off screen.
+function Orbs.hudOffset(pos: Vector3, halfPx: number, halfStuds: number, rise: number?): Vector3
+	local camera = Workspace.CurrentCamera
+	if not camera then
+		return Vector3.zero
+	end
+	local at = camera:WorldToViewportPoint(pos + Vector3.new(0, rise or 0, 0))
+	if at.Z <= 0.5 then
+		return Vector3.zero
+	end
+	local pxPerStud = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+	local limit = FX.hud.top * hudScale() + halfPx + halfStuds * pxPerStud
+	if at.Y >= limit then
+		return Vector3.zero
+	end
+	return -camera.CFrame.UpVector * ((limit - at.Y) / pxPerStud)
+end
+
+-- `pos`, moved off the local character's box on screen: to the side it already leans to
+-- (the camera's right when dead centre) and a little toward the camera.
+local function clearOfCharacter(pos: Vector3): Vector3
+	local camera = Workspace.CurrentCamera
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not camera or not root or not root:IsA("BasePart") then
+		return pos
+	end
+	local at, atOn = camera:WorldToViewportPoint(pos)
+	local body, bodyOn = camera:WorldToViewportPoint(root.Position)
+	if not atOn or not bodyOn or body.Z <= 0 or at.Z <= 0 then
+		return pos
+	end
+	-- The box follows the character's size on screen (it is FX.text.clearPx at 25 studs).
+	local near = math.clamp(25 / body.Z, 0.4, 2.5)
+	local dx, dy = at.X - body.X, at.Y - body.Y
+	if math.abs(dx) > FX.text.clearPx.X * near or math.abs(dy) > FX.text.clearPx.Y * near then
+		return pos
+	end
+	local side = if dx < 0 then -1 else 1
+	local toCamera = camera.CFrame.Position - pos
+	local flat = Vector3.new(toCamera.X, 0, toCamera.Z)
+	local nearer = if flat.Magnitude > 0.1 then flat.Unit * FX.text.clearNear else Vector3.zero
+	return pos + camera.CFrame.RightVector * (side * FX.text.clearSide) + nearer
+end
+
+-- Orbs.hudOffset for an Orbs.text line of `scale` at `pos` that rises `rise` studs: its
+-- popped-in height is the pixel floor plus the stud share, at the pop's overshoot. Add the same
+-- offset to the lines stacked under it so the stack keeps its order.
+function Orbs.textHudOffset(pos: Vector3, scale: number, rise: number): Vector3
+	local k = math.clamp(scale, 0.5, 3)
+	local pop = FX.text.popScale
+	local px = FX.text.px * math.min(k, FX.text.pxScaleMax)
+	return Orbs.hudOffset(pos, px * pop / 2, (1.4 * k + 0.4) * FX.text.studs * pop / 2, rise)
+end
+
+-- The world offset (along the camera's right) that keeps a box `halfW` px wide either side of
+-- `pos` (and `halfH` px tall, rising `risePx` px on screen) clear of the HUD's left column.
+local function columnOffset(pos: Vector3, halfW: number, halfH: number, risePx: number): Vector3
+	local camera = Workspace.CurrentCamera
+	local playerGui = player:FindFirstChildOfClass("PlayerGui")
+	local screen = playerGui and playerGui:FindFirstChild("TycoonUI")
+	if not camera or not screen or not (screen :: ScreenGui).Enabled then
+		return Vector3.zero
+	end
+	local at = camera:WorldToViewportPoint(pos)
+	if at.Z <= 0.5 then
+		return Vector3.zero
+	end
+	local inset = if (screen :: ScreenGui).IgnoreGuiInset then Vector2.zero else GuiService:GetGuiInset()
+	local push = 0
+	for _, name in FX.hud.column do
+		local gui = screen:FindFirstChild(name)
+		if gui and gui:IsA("GuiObject") and gui.Visible then
+			local top = gui.AbsolutePosition.Y + inset.Y
+			local bottom = top + gui.AbsoluteSize.Y
+			local right = gui.AbsolutePosition.X + inset.X + gui.AbsoluteSize.X + FX.hud.sideGap * hudScale()
+			local overlapsY = at.Y + halfH > top and at.Y - halfH - risePx < bottom
+			if overlapsY and at.X - halfW < right then
+				push = math.max(push, right - (at.X - halfW))
+			end
+		end
+	end
+	if push <= 0 then
+		return Vector3.zero
+	end
+	local pxPerStud = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+	return camera.CFrame.RightVector * (push / pxPerStud)
+end
 
 function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions?)
 	local o = opts or {}
 	local k = math.clamp(o.scale or 1, 0.5, 3)
 	local life = o.life or (0.9 + 0.25 * k)
 	local rise = o.rise or (3 + k)
-	while #texts >= MAX_TEXTS do
+	if o.clear then
+		pos = clearOfCharacter(pos)
+	end
+	local px = FX.text.px * math.min(k, FX.text.pxScaleMax)
+	if o.hud then
+		pos += Orbs.textHudOffset(pos, k, rise)
+	end
+	while #texts >= FX.text.max do
 		local old = table.remove(texts, 1)
 		if old then
 			old:Destroy()
+		end
+	end
+	-- Pixel floor plus a share of the old stud size: about the old size up close, never tiny
+	-- far away.
+	local pxWide = px * FX.text.letter * math.max(utf8.len(text) or #text, 4) + px
+	local studsWide, studsHigh = (4 * k + 2) * FX.text.studs, (1.4 * k + 0.4) * FX.text.studs
+	do
+		local camera = Workspace.CurrentCamera
+		local at = camera and camera:WorldToViewportPoint(pos)
+		if camera and at and at.Z > 0.5 then
+			local pxPerStud = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+			local pop = FX.text.popScale
+			pos += columnOffset(pos, (pxWide + studsWide * pxPerStud) * pop / 2, (px + studsHigh * pxPerStud) * pop / 2, rise * pxPerStud)
 		end
 	end
 	local holder = basePart(Enum.PartType.Block, "FloatText")
 	holder.Size = Vector3.new(0.2, 0.2, 0.2)
 	holder.Transparency = 1
 	holder.CFrame = CFrame.new(pos)
+	if o.tag then
+		holder:SetAttribute(o.tag, text)
+	end
 	holder.Parent = fxFolder()
 	table.insert(texts, holder)
 
@@ -343,7 +627,7 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	gui.AlwaysOnTop = true
 	gui.LightInfluence = 0
 	gui.MaxDistance = 220
-	gui.Size = UDim2.new(4 * k + 2, 0, 1.4 * k + 0.4, 0)
+	gui.Size = UDim2.new(studsWide, pxWide, studsHigh, px)
 	gui.Parent = holder
 	local label = Instance.new("TextLabel")
 	label.BackgroundTransparency = 1
@@ -357,15 +641,40 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	label.Rotation = (math.random() - 0.5) * 10
 	label.Parent = gui
 	local stroke = Instance.new("UIStroke")
-	stroke.Thickness = 2 + k
+	stroke.Thickness = FX.text.stroke + k
 	stroke.Color = o.stroke or C.Stroke or Color3.new(0, 0, 0)
 	stroke.Parent = label
 	local scale = Instance.new("UIScale")
 	scale.Scale = 0.2
 	scale.Parent = label
+	local plate = o.plate
+	if plate then
+		-- A badge: the label's own box, rounded, with the text inset.
+		label.BackgroundColor3 = plate
+		label.BackgroundTransparency = FX.text.plate
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0.5, 0)
+		corner.Parent = label
+		local pad = Instance.new("UIPadding")
+		pad.PaddingLeft, pad.PaddingRight = UDim.new(0.1, 0), UDim.new(0.1, 0)
+		pad.PaddingTop, pad.PaddingBottom = UDim.new(0.12, 0), UDim.new(0.12, 0)
+		pad.Parent = label
+	end
+	if o.flash then
+		local blink = TweenInfo.new(FX.text.flashTime, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, FX.text.flashes - 1, true)
+		local base = if plate then plate else label.TextColor3
+		local prop = if plate then "BackgroundColor3" else "TextColor3"
+		(label :: any)[prop] = WHITE
+		TweenService:Create(label, blink, { [prop] = base }):Play()
+		task.delay(FX.text.flashTime * FX.text.flashes * 2 + 0.02, function()
+			if label.Parent then
+				(label :: any)[prop] = base
+			end
+		end)
+	end
 
 	-- Anticipation-free snap: overshoot pop, settle, rise and fade.
-	TweenService:Create(scale, TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1.3 }):Play()
+	TweenService:Create(scale, TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = FX.text.popScale }):Play()
 	task.delay(0.16, function()
 		TweenService:Create(scale, TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 1 }):Play()
 		TweenService:Create(label, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Rotation = 0 }):Play()
@@ -378,7 +687,7 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	local fadeAt = life * 0.6
 	task.delay(fadeAt, function()
 		local info = TweenInfo.new(life - fadeAt, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		TweenService:Create(label, info, { TextTransparency = 1 }):Play()
+		TweenService:Create(label, info, { TextTransparency = 1, BackgroundTransparency = 1 }):Play()
 		TweenService:Create(stroke, info, { Transparency = 1 }):Play()
 		TweenService:Create(scale, info, { Scale = 0.7 }):Play()
 	end)
@@ -391,14 +700,159 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	end)
 end
 
--- 3D coins: ballistic spin, bounce, then fade or home to the wallet. Capped. ----------------
+-- Wallet anchor: the HUD's cash amount (TycoonUI > Wallet > Money, bottom left) -------------
+-- Found by name, so this module needs nothing from the UI. Until the HUD exists (or while it
+-- hides the wallet) the anchor is a fixed point near the bottom-left corner.
 
-local MAX_COINS = 70
-local COIN_GOLD = Color3.fromRGB(255, 205, 60)
-local GRAVITY = Vector3.new(0, -70, 0)
+local walletLabel: GuiObject? = nil
+local walletLayer: Frame? = nil
+local walletTexts: { TextLabel } = {}
+
+-- A full-viewport layer with no insets or scale, so its pixels are viewport pixels.
+local function walletFrame(): Frame?
+	local layer = walletLayer
+	if layer and layer.Parent then
+		return layer
+	end
+	local playerGui = player:FindFirstChildOfClass("PlayerGui")
+	if not playerGui then
+		return nil
+	end
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "FxWallet"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 5
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	pcall(function()
+		gui.ScreenInsets = Enum.ScreenInsets.None
+	end)
+	local frame = Instance.new("Frame")
+	frame.Name = "Layer"
+	frame.BackgroundTransparency = 1
+	frame.Size = UDim2.fromScale(1, 1)
+	frame.Parent = gui
+	gui.Parent = playerGui
+	walletLayer = frame
+	return frame
+end
+
+-- The cash amount label and the HUD's pixel scale; nil while the HUD hides its wallet.
+local function walletMoney(): (GuiObject?, number)
+	local playerGui = player:FindFirstChildOfClass("PlayerGui")
+	local screen = playerGui and playerGui:FindFirstChild("TycoonUI")
+	if not screen then
+		return nil, 1
+	end
+	local uiScale = screen:FindFirstChildOfClass("UIScale")
+	local scale = if uiScale then uiScale.Scale else 1
+	local label = walletLabel
+	if not label or not label:IsDescendantOf(screen) then
+		local wallet = screen:FindFirstChild("Wallet")
+		local money = wallet and wallet:FindFirstChild("Money")
+		label = if money and money:IsA("GuiObject") then money else nil
+		walletLabel = label
+	end
+	local wallet = label and label.Parent
+	if not label or not (wallet and wallet:IsA("GuiObject") and wallet.Visible) then
+		return nil, scale
+	end
+	return label, scale
+end
+
+-- Viewport pixel at the middle of the cash amount (its top edge with `top`).
+local function walletPixel(top: boolean?): (Vector2, number)
+	local layer = walletFrame()
+	local label, scale = walletMoney()
+	if layer and label then
+		local at = label.AbsolutePosition - layer.AbsolutePosition
+		local size = label.AbsoluteSize
+		return at + Vector2.new(size.X / 2, if top then 0 else size.Y / 2), scale
+	end
+	local camera = Workspace.CurrentCamera
+	local height = if camera then camera.ViewportSize.Y else 720
+	return Vector2.new(FX.wallet.fallback.X, height - FX.wallet.fallback.Y), scale
+end
+
+-- Big outlined text over the wallet (what a pad just took): pops in with an overshoot, climbs
+-- and fades.
+function Orbs.walletText(text: string, color: Color3?)
+	local layer = walletFrame()
+	if not layer then
+		return
+	end
+	while #walletTexts >= FX.wallet.maxTexts do
+		local old = table.remove(walletTexts, 1)
+		if old then
+			old:Destroy()
+		end
+	end
+	local at, k = walletPixel()
+	local money = walletMoney()
+	local x = at.X
+	if money then
+		-- Right of the cash plate (it holds the amount and the "+"), at the amount's middle.
+		local right = money.AbsolutePosition.X + money.AbsoluteSize.X
+		local plate = money.Parent and money.Parent:FindFirstChild("CashPlate")
+		if plate and plate:IsA("GuiObject") then
+			right = math.max(right, plate.AbsolutePosition.X + plate.AbsoluteSize.X)
+		end
+		x = right - layer.AbsolutePosition.X
+	end
+	x += FX.wallet.textGap * k
+	local y = at.Y + (math.random() * 2 - 1) * FX.wallet.textDrift * k
+	local label = Instance.new("TextLabel")
+	label.Name = "WalletText"
+	label.BackgroundTransparency = 1
+	label.AnchorPoint = Vector2.new(0, 0.5)
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Position = UDim2.fromOffset(x, y)
+	label.Size = UDim2.fromOffset(360 * k, FX.wallet.textSize * 1.4 * k)
+	label.Font = (Theme.Fonts :: any).Number or Theme.Fonts.Title
+	label.TextSize = math.max(10, math.floor(FX.wallet.textSize * k + 0.5))
+	label.Text = text
+	label.TextColor3 = color or C.Bad
+	label.ZIndex = 20
+	label.Parent = layer
+	table.insert(walletTexts, label)
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = math.max(2, FX.wallet.textStroke * k)
+	stroke.Color = C.Stroke or Color3.new(0, 0, 0)
+	stroke.Parent = label
+	local scale = Instance.new("UIScale")
+	scale.Scale = 0.4
+	scale.Parent = label
+
+	local life = FX.wallet.textLife
+	TweenService:Create(scale, TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = FX.wallet.textPop }):Play()
+	task.delay(0.16, function()
+		TweenService:Create(scale, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+	end)
+	TweenService:Create(
+		label,
+		TweenInfo.new(life, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Position = UDim2.fromOffset(x + FX.wallet.textSlide * k, y - FX.wallet.textRise * k) }
+	):Play()
+	local fadeAt = life * 0.55
+	task.delay(fadeAt, function()
+		local info = TweenInfo.new(life - fadeAt, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		TweenService:Create(label, info, { TextTransparency = 1 }):Play()
+		TweenService:Create(stroke, info, { Transparency = 1 }):Play()
+	end)
+	task.delay(life + 0.05, function()
+		local i = table.find(walletTexts, label)
+		if i then
+			table.remove(walletTexts, i)
+		end
+		label:Destroy()
+	end)
+end
+
+-- 3D coins: ballistic spin, bounce, then fade or home to the wallet. Capped. ----------------
 
 type Coin = {
 	part: Part,
+	size: number,
 	pos: Vector3,
 	vel: Vector3,
 	axis: Vector3,
@@ -417,14 +871,15 @@ local coinConn: RBXScriptConnection? = nil
 local coinParts: { BasePart } = {}
 local coinCFrames: { CFrame } = {}
 
--- World point just in front of the camera, under the top-left wallet.
+-- World point just in front of the camera, over the HUD's cash amount.
 local function walletPoint(): Vector3?
 	local camera = Workspace.CurrentCamera
 	if not camera then
 		return nil
 	end
-	local ray = camera:ViewportPointToRay(170, 70)
-	return ray.Origin + ray.Direction * 7
+	local at = walletPixel()
+	local ray = camera:ViewportPointToRay(at.X, at.Y)
+	return ray.Origin + ray.Direction * FX.wallet.depth
 end
 
 local function stepCoins(dt: number)
@@ -441,15 +896,15 @@ local function stepCoins(dt: number)
 			if not c.homeFrom then
 				c.homeFrom = c.pos
 			end
-			c.homeT += dt / 0.45
+			c.homeT += dt / FX.coin.homeTime
 			local t = math.min(c.homeT, 1)
 			local e = t * t * t -- ease-in: whoosh into the wallet
 			local from = c.homeFrom :: Vector3
 			c.pos = from:Lerp(wallet, e) + Vector3.new(0, math.sin(t * math.pi) * 2, 0)
-			c.part.Size = Vector3.new(0.16, 1, 1) * (1 - 0.6 * e)
+			c.part.Size = Vector3.new(0.16, 1, 1) * (c.size * (1 - FX.coin.homeShrink * e))
 			done = t >= 1
 		else
-			c.vel += GRAVITY * dt
+			c.vel += FX.coin.gravity * dt
 			c.pos += c.vel * dt
 			if c.pos.Y < c.floor and c.vel.Y < 0 then
 				c.pos = Vector3.new(c.pos.X, c.floor, c.pos.Z)
@@ -492,6 +947,7 @@ export type CoinOptions = {
 	life: number?,
 	toWallet: boolean?, -- fly to the wallet after bouncing
 	stagger: number?, -- seconds between coins
+	size: number?, -- coin diameter in studs (default 1)
 }
 
 -- Spawns gold coins at `pos` (a puff when speed is high, a shower when height is high).
@@ -503,9 +959,10 @@ function Orbs.coins(pos: Vector3, opts: CoinOptions?)
 	local height = o.height or 0
 	local life = o.life or 1.1
 	local stagger = o.stagger or 0
+	local size = math.clamp(o.size or 1, 0.5, 2)
 	for i = 1, count do
 		local function spawnCoin()
-			if #coinList >= Budget.count(MAX_COINS) then
+			if #coinList >= Budget.count(FX.coin.max) then
 				local old = table.remove(coinList, 1)
 				if old then
 					old.part:Destroy()
@@ -514,8 +971,8 @@ function Orbs.coins(pos: Vector3, opts: CoinOptions?)
 			local part = basePart(Enum.PartType.Cylinder, "Coin")
 			part.Material = Enum.Material.Metal
 			part.Reflectance = 0.25
-			part.Color = COIN_GOLD
-			part.Size = Vector3.new(0.16, 1, 1)
+			part.Color = FX.coin.gold
+			part.Size = Vector3.new(0.16, 1, 1) * size
 			part.Parent = fxFolder()
 			local angle = math.random() * math.pi * 2
 			local r = math.sqrt(math.random()) * spread
@@ -526,6 +983,7 @@ function Orbs.coins(pos: Vector3, opts: CoinOptions?)
 			local coinLife = life * (0.85 + math.random() * 0.3)
 			table.insert(coinList, {
 				part = part,
+				size = size,
 				pos = start,
 				vel = vel,
 				axis = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5).Unit,
@@ -547,6 +1005,226 @@ function Orbs.coins(pos: Vector3, opts: CoinOptions?)
 			spawnCoin()
 		end
 	end
+end
+
+-- Screen coins: coin sprites that pop out at a world point and arc to the cash amount --------
+-- Drawn in the wallet's own layer (viewport pixels), so they are the same size wherever the
+-- camera is. The CoinSpin sprite, or a shape coin without it.
+
+type ArcCoin = {
+	gui: GuiObject,
+	from: Vector2,
+	burst: Vector2, -- where it pops out to before it flies
+	t0: number,
+	size: number,
+	turn: number,
+	index: number,
+	total: number,
+	onArrive: ((index: number, total: number) -> ())?,
+}
+
+local arcCoins: { ArcCoin } = {}
+local arcConn: RBXScriptConnection? = nil
+local COIN_SPRITE = Sprites.image("CoinSpin")
+
+local function arcCoinGui(layer: Frame): GuiObject
+	if COIN_SPRITE then
+		local image = Instance.new("ImageLabel")
+		image.Name = "ArcCoin"
+		image.BackgroundTransparency = 1
+		image.Image = COIN_SPRITE
+		image.ScaleType = Enum.ScaleType.Fit
+		image.AnchorPoint = Vector2.new(0.5, 0.5)
+		image.ZIndex = 18
+		image.Parent = layer
+		return image
+	end
+	local disc = Instance.new("Frame")
+	disc.Name = "ArcCoin"
+	disc.BackgroundColor3 = FX.arc.gold
+	disc.BorderSizePixel = 0
+	disc.AnchorPoint = Vector2.new(0.5, 0.5)
+	disc.ZIndex = 18
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0.5, 0)
+	corner.Parent = disc
+	local rim = Instance.new("UIStroke")
+	rim.Thickness = 3
+	rim.Color = FX.arc.goldRim
+	rim.Parent = disc
+	disc.Parent = layer
+	return disc
+end
+
+-- A ring that pops open at the cash amount as coins land.
+local function walletPop(layer: Frame, at: Vector2, k: number)
+	local ring = Instance.new(if RING_SPRITE then "ImageLabel" else "Frame") :: GuiObject
+	ring.Name = "WalletPop"
+	ring.BackgroundTransparency = 1
+	ring.AnchorPoint = Vector2.new(0.5, 0.5)
+	ring.Position = UDim2.fromOffset(at.X, at.Y)
+	ring.Size = UDim2.fromOffset(FX.arc.pop * 0.3 * k, FX.arc.pop * 0.3 * k)
+	ring.ZIndex = 17
+	local info = TweenInfo.new(FX.arc.popTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	if ring:IsA("ImageLabel") then
+		ring.Image = RING_SPRITE :: string
+		ring.ImageColor3 = FX.arc.gold:Lerp(WHITE, 0.3)
+		TweenService:Create(ring, info, { ImageTransparency = 1 }):Play()
+	else
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0.5, 0)
+		corner.Parent = ring
+		local line = Instance.new("UIStroke")
+		line.Thickness = 3
+		line.Color = FX.arc.gold:Lerp(WHITE, 0.3)
+		line.Parent = ring
+		TweenService:Create(line, info, { Transparency = 1 }):Play()
+	end
+	ring.Parent = layer
+	TweenService:Create(ring, info, { Size = UDim2.fromOffset(FX.arc.pop * k, FX.arc.pop * k) }):Play()
+	task.delay(FX.arc.popTime + 0.05, function()
+		ring:Destroy()
+	end)
+end
+
+-- The cash amount swells and settles (a UIScale of its own, so the HUD's layout is untouched).
+local pulseToken = 0
+local function pulseMoney()
+	local label = walletMoney()
+	if not label then
+		return
+	end
+	local scale = label:FindFirstChild("ArrivePulse") :: UIScale?
+	if not scale then
+		local made = Instance.new("UIScale")
+		made.Name = "ArrivePulse"
+		made.Parent = label
+		scale = made
+	end
+	local s = scale :: UIScale
+	local half = FX.arc.pulseTime / 2
+	-- Grows from where it is (a pulse that lands mid-swell holds it up, no snap back to 1),
+	-- and only the newest pulse brings it back down.
+	pulseToken += 1
+	local mine = pulseToken
+	TweenService:Create(s, TweenInfo.new(half, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = FX.arc.pulse }):Play()
+	task.delay(half, function()
+		if pulseToken == mine then
+			TweenService:Create(s, TweenInfo.new(half, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = 1 }):Play()
+		end
+	end)
+end
+
+local function stepArc()
+	local now = os.clock()
+	local layer = walletFrame()
+	local target, k = walletPixel()
+	for i = #arcCoins, 1, -1 do
+		local c = arcCoins[i]
+		local age = now - c.t0
+		if age < 0 then
+			continue
+		end
+		if age >= FX.arc.burst + FX.arc.time or not layer or not c.gui.Parent then
+			c.gui:Destroy()
+			table.remove(arcCoins, i)
+			if layer and (c.index % FX.arc.popEvery == 0 or c.index == 1 or c.index == c.total) then
+				walletPop(layer, target, k)
+				pulseMoney()
+			end
+			if c.onArrive then
+				task.spawn(c.onArrive, c.index, c.total)
+			end
+			continue
+		end
+		c.gui.Visible = true
+		local at: Vector2
+		local size = c.size
+		if age < FX.arc.burst then
+			-- Pops out of the source with an overshoot.
+			local v = age / FX.arc.burst - 1
+			local u = 1 + 2.70158 * v * v * v + 1.70158 * v * v -- Back out
+			at = c.from:Lerp(c.burst, u)
+			size *= math.max(0.2, u)
+		else
+			-- Eased-out arc to the cash amount through mid-screen: the coins leave the source at
+			-- once and spend their flight in open screen space, not bunched at the source.
+			local t = (age - FX.arc.burst) / FX.arc.time
+			local e = 1 - (1 - t) * (1 - t)
+			local camera = Workspace.CurrentCamera
+			local centre = if camera then camera.ViewportSize / 2 else c.burst:Lerp(target, 0.5)
+			local mid = c.burst:Lerp(target, 0.5):Lerp(centre, FX.arc.centre) - Vector2.new(0, FX.arc.lift * k)
+			local u = 1 - e
+			at = c.burst * (u * u) + mid * (2 * u * e) + target * (e * e)
+			size *= 1 - (1 - FX.arc.endSize) * e
+			c.gui.Rotation = c.turn * e
+		end
+		c.gui.Position = UDim2.fromOffset(at.X, at.Y)
+		c.gui.Size = UDim2.fromOffset(size, size)
+	end
+	if #arcCoins == 0 and arcConn then
+		arcConn:Disconnect()
+		arcConn = nil
+	end
+end
+
+export type ArcOptions = {
+	count: number?, -- coins (default FX.arc.count, at most FX.arc.max; scaled by Fx.Budget)
+	size: number?, -- design px across (default FX.arc.size)
+	delay: number?, -- seconds before the first coin
+	onArrive: ((index: number, total: number) -> ())?, -- as each coin lands on the cash amount
+}
+
+-- Coin sprites pop out of world point `from` and arc across the screen to the HUD's cash
+-- amount, with a ring there as they land. A point behind the camera or off the screen starts
+-- them at the nearest screen edge. Returns the seconds until the last coin lands.
+function Orbs.coinArc(from: Vector3, opts: ArcOptions?): number
+	local o = opts or {}
+	local layer = walletFrame()
+	local camera = Workspace.CurrentCamera
+	if not layer or not camera then
+		return 0
+	end
+	local view = camera.ViewportSize
+	local point = camera:WorldToViewportPoint(from)
+	local x, y = point.X, point.Y
+	if point.Z <= 0 then
+		-- Behind the camera: mirrored through the screen centre, then held to the edge.
+		x, y = view.X - x, view.Y * 0.5
+	end
+	local _, k = walletPixel()
+	local margin = 30 * k
+	local origin =
+		Vector2.new(math.clamp(x, margin, math.max(margin, view.X - margin)), math.clamp(y, margin, math.max(margin, view.Y - margin)))
+	local count = Budget.count(math.clamp(o.count or FX.arc.count, 1, FX.arc.max))
+	local size = (o.size or FX.arc.size) * k
+	local now = os.clock() + (o.delay or 0)
+	for i = 1, count do
+		if #arcCoins >= FX.arc.live then
+			break
+		end
+		local gui = arcCoinGui(layer)
+		gui.Visible = false
+		gui.Size = UDim2.fromOffset(size, size)
+		gui.Position = UDim2.fromOffset(origin.X, origin.Y)
+		local a = math.random() * math.pi * 2
+		local r = (0.4 + math.random() * 0.6) * FX.arc.scatter * k
+		table.insert(arcCoins, {
+			gui = gui,
+			from = origin,
+			burst = origin + Vector2.new(math.cos(a) * r, math.sin(a) * r * 0.7 - FX.arc.scatter * 0.5 * k),
+			t0 = now + (i - 1) * FX.arc.stagger,
+			size = size,
+			turn = (math.random() * 2 - 1) * FX.arc.spin,
+			index = i,
+			total = count,
+			onArrive = o.onArrive,
+		})
+	end
+	if not arcConn and #arcCoins > 0 then
+		arcConn = RunService.RenderStepped:Connect(stepArc)
+	end
+	return (o.delay or 0) + (count - 1) * FX.arc.stagger + FX.arc.burst + FX.arc.time
 end
 
 -- Orb balls ---------------------------------------------------------------------------------
@@ -1241,7 +1919,7 @@ end
 
 -- New count on a ball: show / retext its tag (with a tiny pop when it was already showing).
 local function updateLabel(fx: OrbFx, punch: boolean)
-	if fx.count < 2 or fx.waiting then
+	if fx.count < LABEL_MIN_COUNT or fx.waiting then
 		fadeLabel(fx, false)
 		return
 	end
@@ -1683,10 +2361,15 @@ end
 
 -- Extra celebration when the piece picked up at `pos` was a dumbbell.
 local function dumbbellPicked(pos: Vector3, color: Color3)
-	Orbs.sparkle(pos, color, 14, 1.1)
-	Orbs.sparkle(pos, WHITE, 6, 0.9)
-	Orbs.ring(pos - Vector3.new(0, 0.8, 0), color, 3.4, 0.5, 0.25)
-	Orbs.text(pos + Vector3.new(0, 1.5, 0), "x" .. tostring(OrbLook.DUMBBELL_VALUE) .. "!", color:Lerp(WHITE, 0.3), { scale = 1.6 })
+	Orbs.sparkle(pos, color, 14, 1.1, 1.2)
+	Orbs.sparkle(pos, WHITE, 6, 0.9, 1.2)
+	Orbs.shock(pos - Vector3.new(0, 0.8, 0), color, 4.2)
+	Orbs.text(
+		pos + Vector3.new(0, 1.5, 0),
+		"x" .. tostring(OrbLook.DUMBBELL_VALUE) .. "!",
+		color:Lerp(WHITE, 0.3),
+		{ scale = 1.6, clear = true }
+	)
 end
 
 local function onPicked(data: any)
@@ -1738,10 +2421,9 @@ local function onPicked(data: any)
 			accel = true,
 			trail = true,
 			onDone = function()
-				Orbs.sparkle(root.Position, color, if count >= 2 then 3 + math.min(count, 8) else 3, 0.5 + (grow - 1))
-				if count >= 2 then
-					Orbs.ring(root.Position - Vector3.new(0, 2.5, 0), color, 1.6 + grow, 0.35, 0.35)
-				end
+				Orbs.sparkle(root.Position, color, if count >= 2 then 5 + math.min(count, 8) else 5, 0.6 + (grow - 1))
+				-- A ring at the feet for every pickup, wider for a merged ball.
+				Orbs.ring(root.Position - Vector3.new(0, 2.5, 0), color, (if count >= 2 then 2.6 else 2) + grow, 0.4, 0.2)
 				pickupBlip(count)
 			end,
 		})

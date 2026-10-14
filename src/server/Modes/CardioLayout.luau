@@ -110,6 +110,10 @@ CardioLayout.ZONE_WALL_HEIGHT = 30
 CardioLayout.KILL_ABOVE = 1.5
 -- Feet below this (anywhere in the mode) count as a fall; every room's killY equals it.
 CardioLayout.KILL_Y = CardioLayout.ORIGIN.y - CardioLayout.ROOM.floorDrop + CardioLayout.KILL_ABOVE
+-- Run-ups whose sideways leg is pinned to this many keys (else 2-6 at random). Stage 3 is the
+-- first chase: its Chad's catch is measured along X, so a wide leg right after the trigger
+-- would let it catch a runner who is still well ahead on the path.
+CardioLayout.SHORT_LEG = { [3] = 2 } :: { [number]: number }
 -- Shortest run-up a stage may get (studs, incl. the jog leg); generate() errors below it.
 CardioLayout.RUNUP_MIN = 48
 -- Side / cap walls: thickness and bottom Y (below the hazard floor).
@@ -902,6 +906,10 @@ function CardioLayout.generate(): Layout
 		local sillIn = doors[#doors]
 		cur += DW
 		local shift = (2 + math.floor(rand() * 5)) * K
+		if CardioLayout.SHORT_LEG[n] then
+			-- After the draw, so every later random number stays the same.
+			shift = CardioLayout.SHORT_LEG[n] * K
+		end
 		local latC = if latA + shift <= reach and (latA - shift < -reach or rand() < 0.5) then latA + shift else latA - shift
 		latC = math.clamp(latC, -reach, reach)
 		local legCols = wCols

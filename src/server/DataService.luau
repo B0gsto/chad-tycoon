@@ -24,10 +24,15 @@ local STORE_NAME = "TycoonProfiles_v1"
 local MAX_RETRIES = 4
 -- Profile.version of a save written by this code. reconcile migrates older saves once:
 --   2  the onboarding funnel counts tier milestones (Shared.Funnel)
-local VERSION = 2
+--   3  Economy 2.0: the converter level is lifted to the free floor of the best tier
+--      (Economy.minProcessLevel), firstCrateDone and the parkour `skipped` record exist.
+--      Nothing saved is lowered or removed.
+local VERSION = 3
 DataService.VERSION = VERSION
 
-export type Unlocker = { rarity: string, endsAt: number }
+-- `seconds`: the crate's whole timer (the Smasher's progress ring). A slot saved before it
+-- was kept gets one when the save is loaded (reconcile).
+export type Unlocker = { rarity: string, endsAt: number, seconds: number? }
 
 export type Profile = {
 	version: number,
@@ -36,12 +41,23 @@ export type Profile = {
 	queue: number,
 	pending: number,
 	units: { number },
+	-- The Index: os.time() each tier was first found (0 = never).
 	discovered: { number },
+	-- Index milestones claimed (Shared.IndexRewards): the `found` of each one. A save from
+	-- before them has claimed none, so every milestone it has already passed is waiting in
+	-- the Index window.
+	indexClaimed: { number },
 	totalObtained: number,
 	-- Units bought on the buy pads so far (Economy.unitPrice grows with it).
 	bought: number,
 	processLevel: number,
 	heldChest: string,
+	-- The profile's first crate has been opened (until then a Smasher slot takes
+	-- Economy.FIRST_CRATE_SECONDS).
+	firstCrateDone: boolean,
+	-- Crates picked up so far, counted to Economy.CRATE_GUIDE_HOLDS only: the first ones get
+	-- the guide's path to the Crate Smasher by themselves.
+	cratesHeld: number,
 	-- Rarity of the crate the player was last prompted to open with Robux ("" = none);
 	-- the receipt opens this one if the crate is no longer held.
 	pendingCrate: string,
@@ -59,8 +75,9 @@ export type Profile = {
 	tutorialStep: number,
 	tutorialDone: boolean,
 	introSeen: boolean,
-	-- Equipped trail ("" = none) and on/off switches of the toggle cosmetics (missing = on).
-	cosmetics: { trail: string, toggles: { [string]: boolean } },
+	-- Equipped trail ("" = none), on/off switches of the toggle cosmetics (missing = on) and
+	-- `champion`: the Champion aura colour is owned (the whole Index's milestone, claimed).
+	cosmetics: { trail: string, toggles: { [string]: boolean }, champion: boolean },
 	-- The Starter pack's one-time cash and trail have been given.
 	starterGranted: boolean,
 	-- Highest onboarding funnel step logged (Analytics; ONBOARDING_LEGACY = saves from before it).
@@ -69,24 +86,28 @@ export type Profile = {
 	badges: { [string]: boolean },
 	-- Daily reward (Server.Daily, Shared.DailyReward): UTC day number of the last claim
 	-- (0 = never), days claimed in a row at that claim, UTC day number of the player's first
-	-- day (0 = not started yet, 1 = saves from before the daily reward) and whether the
-	-- first-day "come back tomorrow" toast was shown.
-	daily: { day: number, streak: number, firstDay: number, hinted: boolean },
+	-- day (0 = not started yet, 1 = saves from before the daily reward), whether the
+	-- first-day "come back tomorrow" toast was shown, and the streak value of the claim that
+	-- used the streak saver (0 = not used; saves from before it read 0).
+	daily: { day: number, streak: number, firstDay: number, hinted: boolean, saverUsedAt: number },
 	-- Game mode records: personal best seconds (0 = never finished), finishes, and os.time()
 	-- of the last full cash reward (Economy.modeReward cooldown).
 	-- Mog Test: best = highest score, rivals = most rivals mogged in one run, clears = tests
 	-- passed (and PvP wins paid), pvpWins / pvpPlayed = PvP duels won / fought.
-	-- Parkour per level (dense, PARKOUR_LEVELS long, 0 = never): best seconds and finishes.
+	-- Parkour per level (dense, PARKOUR_LEVELS long, 0 = never): best seconds, finishes and
+	-- skipped (1 = the map was skipped for cash, which unlocks the next one).
 	-- modes.parkour keeps the shared reward cooldown and mirrors level 1 for the old UI.
 	-- stage = highest sky-obby stage reached (0 = never ran; one stage per map since the
 	-- checkpoints went: map n is stage n, finishing map 10 is 11); stageMaps = the stage is
 	-- in those units (older saves counted checkpoints and are rebuilt on load); gear = the
 	-- chosen coil ("none" | "speed" | "jump" | "gravity", worn only during runs).
-	parkour: { best: { number }, clears: { number }, stage: number, stageMaps: boolean, gear: string },
-	-- Cardio (keyboard runner): Speed earned (permanent, never goes down), highest safe zone
-	-- reached (0..CARDIO_STAGES), treadmill level (0..CARDIO_TREADMILL_MAX), safe-zone arrivals
-	-- and the player's own max WalkSpeed (0 = none, else 16..CARDIO_WALK_CAP).
-	cardio: { speed: number, bestStage: number, treadmill: number, clears: number, speedCap: number },
+	parkour: { best: { number }, clears: { number }, skipped: { number }, stage: number, stageMaps: boolean, gear: string },
+	-- Cardio (keyboard runner): Speed earned (permanent, never goes down), deepest WIN plate
+	-- claimed (0..CARDIO_STAGES), treadmill level (0..CARDIO_TREADMILL_MAX), WIN plates claimed
+	-- in total (clears), the player's own max WalkSpeed (0 = none, else 16..CARDIO_WALK_CAP)
+	-- and the plates whose first-clear pay was taken (firsts: a bit set, bit n - 1 = plate n;
+	-- Modes.CardioRules.firstsOf).
+	cardio: { speed: number, bestStage: number, treadmill: number, clears: number, speedCap: number, firsts: number },
 	modes: {
 		parkour: { best: number, clears: number, lastRewardAt: number },
 		mog: {
@@ -130,10 +151,13 @@ function DataService.defaultProfile(): Profile
 		pending = 0,
 		units = units,
 		discovered = discovered,
+		indexClaimed = {},
 		totalObtained = 1,
 		bought = 0,
 		processLevel = Economy.START_PROCESS_LEVEL,
 		heldChest = "",
+		firstCrateDone = false,
+		cratesHeld = 0,
 		pendingCrate = "",
 		pendingUnlocker = 0,
 		unlockers = {
@@ -150,13 +174,20 @@ function DataService.defaultProfile(): Profile
 		tutorialStep = 1,
 		tutorialDone = false,
 		introSeen = false,
-		cosmetics = { trail = "", toggles = {} },
+		cosmetics = { trail = "", toggles = {}, champion = false },
 		starterGranted = false,
 		onboarding = 0,
 		badges = {},
-		daily = { day = 0, streak = 0, firstDay = 0, hinted = false },
-		parkour = { best = zeros(PARKOUR_LEVELS), clears = zeros(PARKOUR_LEVELS), stage = 0, stageMaps = true, gear = "none" },
-		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0 },
+		daily = { day = 0, streak = 0, firstDay = 0, hinted = false, saverUsedAt = 0 },
+		parkour = {
+			best = zeros(PARKOUR_LEVELS),
+			clears = zeros(PARKOUR_LEVELS),
+			skipped = zeros(PARKOUR_LEVELS),
+			stage = 0,
+			stageMaps = true,
+			gear = "none",
+		},
+		cardio = { speed = 0, bestStage = 0, treadmill = 0, clears = 0, speedCap = 0, firsts = 0 },
 		modes = {
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
 			mog = { best = 0, rivals = 0, clears = 0, lastRewardAt = 0, pvpWins = 0, pvpPlayed = 0 },
@@ -211,9 +242,21 @@ local function reconcile(data: any): Profile
 	if data.onboarding == nil then
 		data.onboarding = 99
 	end
+	-- Saves from before the first-crate head start: anyone who has played already had their
+	-- first crate (or waits the normal time for it); only a brand-new profile gets the short one.
+	if type(data.firstCrateDone) ~= "boolean" then
+		local played = (type(data.bought) == "number" and data.bought > 0)
+			or (type(data.totalObtained) == "number" and data.totalObtained > 1)
+			or data.tutorialDone == true
+		data.firstCrateDone = played
+	end
+	-- Saves from before the Smasher path: a profile that has had a crate knows the way.
+	if type(data.cratesHeld) ~= "number" then
+		data.cratesHeld = if data.firstCrateDone then Economy.CRATE_GUIDE_HOLDS else 0
+	end
 	-- Saves from before the daily reward: day 1 is waiting, but today is not a "first day".
 	if data.daily == nil then
-		data.daily = { day = 0, streak = 0, firstDay = 1, hinted = true }
+		data.daily = { day = 0, streak = 0, firstDay = 1, hinted = true, saverUsedAt = 0 }
 	end
 	for key, value in default :: any do
 		if data[key] == nil or type(data[key]) ~= type(value) then
@@ -228,10 +271,30 @@ local function reconcile(data: any): Profile
 			end
 		end
 	end
+	-- Claimed Index milestones: whole tier counts, each once, in the order they were claimed.
+	-- Junk is dropped; a claim is never taken back.
+	local claimed: { number } = {}
+	for _, found in data.indexClaimed do
+		if type(found) == "number" and found == math.floor(found) and found >= 1 and found <= Economy.MAX_TIER then
+			if not table.find(claimed, found) then
+				table.insert(claimed, found)
+			end
+		end
+	end
+	data.indexClaimed = claimed
 	for i = 1, 2 do
 		local slot = data.unlockers[i]
 		if type(slot) ~= "table" or type(slot.rarity) ~= "string" or type(slot.endsAt) ~= "number" then
 			data.unlockers[i] = { rarity = "", endsAt = 0 }
+		elseif slot.seconds ~= nil and (type(slot.seconds) ~= "number" or slot.seconds ~= slot.seconds or slot.seconds <= 0) then
+			slot.seconds = nil
+		end
+		slot = data.unlockers[i]
+		-- A crate loaded before the slot kept its whole timer: the time still left now (or the
+		-- rarity's timer, when that is longer) stands in for it from here on, so the Smasher's
+		-- progress ring fills steadily to the saved end time. `endsAt` is not touched.
+		if slot.seconds == nil and Economy.isRarity(slot.rarity) then
+			slot.seconds = math.max(slot.endsAt - os.time(), Economy.unlockSeconds(slot.rarity, i == 2))
 		end
 	end
 	for key, value in default.settings :: any do
@@ -245,6 +308,12 @@ local function reconcile(data: any): Profile
 	if type(data.cosmetics.toggles) ~= "table" then
 		data.cosmetics.toggles = {}
 	end
+	-- The Champion aura colour comes with the whole Index's milestone: a save that claimed
+	-- it owns it, whatever the flag says.
+	local champion = table.find(data.indexClaimed, Economy.MAX_TIER) ~= nil
+	if champion or type(data.cosmetics.champion) ~= "boolean" then
+		data.cosmetics.champion = champion
+	end
 	for key, value in data.cosmetics.toggles do
 		if type(key) ~= "string" or type(value) ~= "boolean" then
 			data.cosmetics.toggles[key] = nil
@@ -253,6 +322,8 @@ local function reconcile(data: any): Profile
 	data.bought = if data.bought ~= data.bought or data.bought == math.huge then 0 else math.max(0, math.floor(data.bought))
 	-- The converter starts at START_PROCESS_LEVEL; saves from before that are lifted to it.
 	data.processLevel = math.max(math.floor(data.processLevel), Economy.START_PROCESS_LEVEL)
+	-- ...and it is never below the free floor of the best tier the player has discovered.
+	data.processLevel = math.max(data.processLevel, Economy.minProcessLevel(Economy.highestTier(data.discovered)))
 	data.tutorialStep = TutorialSteps.clamp(data.tutorialStep)
 	if data.heldChest ~= "" and not Economy.isRarity(data.heldChest) then
 		data.heldChest = ""
@@ -270,14 +341,14 @@ local function reconcile(data: any): Profile
 			end
 		end
 	end
-	for _, key in { "best", "clears" } do
+	for _, key in { "best", "clears", "skipped" } do
 		local list = data.parkour[key]
 		local fixed = zeros(PARKOUR_LEVELS)
 		if type(list) == "table" then
 			for i = 1, PARKOUR_LEVELS do
 				local v = list[i]
 				if type(v) == "number" and v == v and v >= 0 and v ~= math.huge then
-					fixed[i] = if key == "clears" then math.floor(v) else v
+					fixed[i] = if key == "best" then v elseif key == "skipped" then math.min(math.floor(v), 1) else math.floor(v)
 				end
 			end
 		end
@@ -300,6 +371,8 @@ local function reconcile(data: any): Profile
 	if not PARKOUR_GEARS[data.parkour.gear] then
 		data.parkour.gear = "none"
 	end
+	-- (Read before the defaults go in: a save without `firsts` is not a save that took none.)
+	local firsts = data.cardio.firsts
 	for key, value in default.cardio :: any do
 		local v = data.cardio[key]
 		if type(v) ~= "number" or v ~= v or v < 0 or v == math.huge then
@@ -311,6 +384,13 @@ local function reconcile(data: any): Profile
 	data.cardio.clears = math.floor(data.cardio.clears)
 	local cap = math.floor(data.cardio.speedCap + 0.5)
 	data.cardio.speedCap = if cap < CARDIO_WALK_MIN then 0 else math.min(cap, CARDIO_WALK_CAP)
+	-- Saves from before the per-plate set had one counter: every plate up to bestStage is taken
+	-- (the same rule as Modes.CardioRules.firstsOf).
+	data.cardio.firsts = if type(firsts) == "number"
+			and firsts == firsts
+			and firsts >= 0
+		then math.min(math.floor(firsts), 2 ^ CARDIO_STAGES - 1)
+		else 2 ^ data.cardio.bestStage - 1
 	for key, value in data.badges do
 		if type(key) ~= "string" or type(value) ~= "boolean" then
 			data.badges[key] = nil

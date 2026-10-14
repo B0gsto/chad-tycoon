@@ -33,7 +33,7 @@ Theme.Words = {
 	Merge = "MOG MERGE",
 	Unlocker = "CRATE SMASHER",
 	PremiumUnlocker = "VIP CRATE SMASHER",
-	Free = "DAILY GAINS",
+	Free = "FREE GIFT",
 	Surge = "AURA SURGE",
 	Multiplier = "Aura Multiplier",
 }
@@ -91,6 +91,8 @@ Theme.Loading = {
 		"Tip: deposit when the Aura Multiplier is high for more cash.",
 		"Tip: during an Aura Surge every Chad drops double aura.",
 		"Tip: walk into a crate to pick it up, then carry it to the Crate Smasher to open it free.",
+		"Tip: rarer crates open better Chads.",
+		"Tip: a deposit bonus is extra cash, paid at once.",
 	},
 }
 
@@ -435,6 +437,15 @@ Theme.World = {
 		Unlock = PURE_WHITE,
 		UnlockVip = TEAL_INK,
 		Free = PURE_WHITE,
+	},
+	-- Plate behind a pad's floating price (white text): green when the player can afford it /
+	-- it is ready, soft red when not, dark for a plain status, gold (Ink text) on a pad that
+	-- needs a game pass.
+	PadPlate = {
+		Good = rgb(40, 158, 98),
+		Bad = rgb(216, 96, 92),
+		Plain = rgb(58, 48, 96),
+		Pass = rgb(255, 196, 40),
 	},
 }
 
@@ -1398,9 +1409,9 @@ Theme.Monetization = {
 		{ Id = 3716878844, Price = 499, Seconds = 18000, Min = 50000 },
 		{ Id = 3716954002, Price = 1000, Seconds = 86400, Min = 250000 },
 	},
-	-- Aura packs put aura straight into the buyer's tank (profile.carried, ready for the
-	-- converter): `Seconds` of the buyer's aura production, never below the progression floor
-	-- (Economy.auraPackAmount); `Min` is the floor for brand-new players. Roblox names:
+	-- Aura packs are paid as cash at once (Shared.ShopMath.auraPackCash): `Seconds` of the
+	-- buyer's aura production, never below the progression floor (Economy.auraPackAmount),
+	-- blended on the spot; `Min` is the aura floor for brand-new players. Roblox names:
 	-- "Aura Pack: 15 Minutes / 1 Hour / 5 Hours / 24 Hours".
 	AuraPacks = {
 		{ Id = 3716954009, Price = 49, Seconds = 900, Min = 2500 },

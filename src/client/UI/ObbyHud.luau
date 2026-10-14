@@ -5,30 +5,52 @@
 	run's start Notify) and hidden on finish / stop / invalid (Main calls hide).
 
 	  Bar       top centre (y 14, 46% of the width): a chunky rainbow bar (UIGradient) with
-	            a trophy at its end; the stretch past the local player is dimmed. Every
-	            player with a ParkourStage attribute above 0 rides its top edge as a round
-	            avatar head (Players:GetUserThumbnailAsync HeadShot 48 px, cached per user)
-	            at ParkourStage / stageCount; the local head sits on top with a white caret
-	            under the bar. Attributes are followed live (PlayerAdded / Removing too).
+	            a trophy at its end. It is THIS MAP, start deck to finish deck: the local
+	            player's round avatar head (Players:GetUserThumbnailAsync HeadShot 48 px,
+	            cached per user) rides its top edge at the player attribute "ParkourProgress"
+	            (0..1 along the map's path, set by the server), with a white caret under the
+	            bar, and the stretch still ahead is dimmed. Other players running the same
+	            map (their "ParkourStage" attribute equals ours) ride it too. Attributes are
+	            followed live (PlayerAdded / Removing too). Forward moves glide; a drop back
+	            to the start after a fall slides back eased (RESET_TIME) instead of jumping.
+	  List      Roblox's player list is hidden from show to hide (Kit.hidePlayerList
+	            "parkour"): it covered the trophy end of the bar and SKIP MAP.
 	  Row       one line under the bar: Hud's run pill (docked through deps.dockRun) on the
-	            left, "MAP n / N" in the centre (a stage is a map: N = stageCount - 1, map 10's
-	            finish being the last stage), SKIP MAP (pink, with a coin and the cash cost
-	            from State.data.modes.parkour.skipCost, refreshed on State.changed; fires
-	            ParkourSkip: the server finishes this map as assisted and starts the next one
-	            from its start deck) on the right. There are no checkpoints.
-	  Gear      a 3-slot hotbar 8 px above the dumbbell (deps.tank): Speed, Jump and Gravity
-	            coils with key badges 1 / 2 / 3. Keys or a tap toggle; the chosen slot is
-	            outlined gold; tapping it again picks "none". Fires ParkourGear { gear } and
-	            follows State.data.modes.parkour.gear.
+	            left, "MAP n / N · <map name>" in the centre (a stage is a map: N =
+	            stageCount - 1, map 10's finish being the last stage), a small grey SKIP MAP
+	            (with the cash cost from State.data.modes.parkour.skipCost, refreshed on
+	            State.changed) on the right; it is hidden where a skip has nothing to unlock
+	            (the last map, or the next map already open: the server refuses those). Under the run pill: "Best 0:34.4 · Falls 2"
+	            (the map's best time from the start Notify, this run's falls from the respawn
+	            Notify). There are no checkpoints.
+	  Skip      SKIP MAP only opens a small card under the row: "Skip <map> for $250? You
+	            get no reward for a skipped map." with YES, SKIP / NO. YES fires ParkourSkip
+	            (the server only unlocks the next map, ends the run and opens the picker at
+	            the gates); NO, eight seconds or the end of the run close it.
+	  Chip      "ASSISTED: no best time" under the counter from the moment gear is worn in
+	            this run (the start Notify, the snapshot's `assisted`, or a coil picked here).
+	  Oops      "Oops! Back to the start" in the middle of the screen for 1.5 s on every
+	            respawn Notify (a fall or lava).
+	  Gear      a 3-slot hotbar centred at the bottom of the screen (the HUD's dumbbell is
+	            hidden during a run): 16 px up on desktop, the title-safe margin on a
+	            gamepad / TV, and on touch just above the jump button's row, like the HUD's
+	            FREE gift. Speed, Jump and Gravity coils with key badges 1 / 2 / 3. Keys or
+	            a tap toggle; the chosen slot is outlined gold; tapping it again picks
+	            "none". Fires ParkourGear { gear } and follows State.data.modes.parkour.gear.
 
 	Phones (viewport under 700 px wide): the bar takes 70% of the width and the row wraps to
-	two lines (timer + stage, then skip). Every engine call that the Lune preview cannot run
-	(thumbnails, AbsoluteSize) is wrapped in pcall.
+	two lines (timer + "MAP n / N", then the map name with best / falls and skip). Every
+	engine call that the Lune preview cannot run (thumbnails, AbsoluteSize) is wrapped in
+	pcall.
+
+	ObbyHud listens to the Notify remote itself for what Main does not pass on (the start
+	payload's best / levelName / assisted and the respawn payload's falls).
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
@@ -54,7 +76,8 @@ export type Deps = {
 	sounds: any?,
 	-- Hud.dockRun: moves the run pill into the row (nil puts it back).
 	dockRun: ((UDim2?, Vector2?) -> ())?,
-	-- Hud's dumbbell group: the hotbar rides 8 px above it.
+	-- Hud's dumbbell group. No longer used: the dumbbell is hidden during a run, so the
+	-- hotbar takes the bottom centre itself.
 	tank: GuiObject?,
 }
 
@@ -70,12 +93,31 @@ local ROW_Y = BAR_Y + BAR_H + CARET_H + 8 -- the row clears the heads and the ca
 local ROW_H = 46
 local ROW_GAP = 12
 local RUN_W = 236 -- Hud's run pill
-local STAGE_W = 190
-local SKIP_W = 186
+local RUN_H = 36
+local STAGE_W = 350 -- "MAP n / N · <map name>"
+local STAGE_W_PHONE = 190 -- "MAP n / N"
+local STATS_W_PHONE = 250 -- "<map name> · Best · Falls" on a phone's second line
+local STATS_H = 20
+local SKIP_W = 150
+local SKIP_H = 34
+local CHIP_H = 26
+local CONFIRM_W = 400
+local CONFIRM_H = 136
+-- Seconds the skip question stays up unanswered, and the "Oops!" line after a fall.
+local CONFIRM_SECONDS = 8
+local OOPS_SECONDS = 1.5
+-- Heads and the dimmed stretch glide GLIDE_TIME s forward; a drop (back to the start after a
+-- fall) slides back over RESET_TIME s with an ease in and out instead of jumping.
+local GLIDE_TIME = 0.3
+local RESET_TIME = 0.8
+local RESET_STYLE = Enum.EasingStyle.Quint
 local SLOT = 66
 local SLOT_GAP = 10
-local HOTBAR_GAP = 8
-local HOTBAR_BOTTOM = 129 -- fallback: Hud's dumbbell (264 * 448 / 1024 + 6) + 8
+-- The hotbar's bottom margin (design px): desktop, and the gamepad / TV title-safe edge
+-- (Hud's SAFE_BOTTOM). On touch it clears Roblox's jump button instead (placeHotbar).
+local HOTBAR_BOTTOM = 16
+local HOTBAR_BOTTOM_PAD = 24
+local HOTBAR_JUMP_GAP = 8 -- screen px between the jump button's top and the hotbar
 
 local RAINBOW_KEYS =
 	{ "RainbowRed", "RainbowOrange", "RainbowYellow", "RainbowGreen", "RainbowCyan", "RainbowBlue", "RainbowPurple", "RainbowPink" }
@@ -113,6 +155,21 @@ end
 
 local function skipText(cost: number?): string
 	return if cost then "SKIP MAP  " .. Format.money(cost) else "SKIP MAP"
+end
+
+-- The snapshot's entry for map `level` (name, best, ...), nil before the first snapshot.
+local function levelInfo(level: number): { [string]: any }?
+	local data = State.data
+	local info = data and data.modes and data.modes.parkour
+	local list = if type(info) == "table" then info.levels else nil
+	local entry = if type(list) == "table" then list[level] else nil
+	return if type(entry) == "table" then entry else nil
+end
+
+-- "0:34.4", like Hud's run clock.
+local function clockText(seconds: number): string
+	local tenths = math.floor(math.max(seconds, 0) * 10)
+	return string.format("%d:%02d.%d", tenths // 600, (tenths // 10) % 60, tenths % 10)
 end
 
 -- The course's last stage from the world: Parkour folder's Levels and the last level
@@ -215,13 +272,17 @@ end
 
 function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 	local dockRun = deps and deps.dockRun
-	local tank = deps and deps.tank
 	local action = Net.event("Action")
 	local me = Players.LocalPlayer
 	local shown = false
 	local myStage = 0
 	local stageCount = 0
 	local cost = skipCost()
+	-- This run, from the Notify remote: the start payload (its map, name and best time),
+	-- the falls so far and whether gear was worn.
+	local started: { level: number, name: string?, best: number? }? = nil
+	local falls = 0
+	local assisted = false
 
 	local root = Kit.new("Frame", {
 		Name = "ObbyHud",
@@ -309,11 +370,15 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 	})
 
 	-- Heads.
-	type Head = { frame: Frame, image: ImageLabel, conn: RBXScriptConnection?, stage: number }
+	type Head = { frame: Frame, image: ImageLabel, placed: boolean, progress: number }
 	local heads: { [Player]: Head } = {}
-	local function headX(stage: number): number
-		local total = if stageCount > 0 then stageCount else math.max(stage, 1)
-		return math.clamp(stage / total, 0, 1)
+	local function stageOf(p: Player): number
+		return tonumber(p:GetAttribute("ParkourStage")) or 0
+	end
+	-- How far along its map's path a player is (0..1).
+	local function progressOf(p: Player): number
+		local progress = tonumber(p:GetAttribute("ParkourProgress")) or 0
+		return if progress == progress then math.clamp(progress, 0, 1) else 0
 	end
 	local function makeHead(p: Player): Head
 		local mine = p == me
@@ -368,15 +433,17 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 				initial.Visible = false
 			end
 		end)
-		return { frame = frame, image = image, conn = nil, stage = 0 }
+		return { frame = frame, image = image, placed = false, progress = 0 }
 	end
 
-	local function placeHead(p: Player, stage: number, animate: boolean)
+	-- Puts a player's head where they are along the map. Only the local player and players
+	-- on the same map are on the bar.
+	local function placeHead(p: Player, animate: boolean)
 		local head = heads[p]
-		if stage <= 0 and p ~= me then
+		if p ~= me and (myStage <= 0 or stageOf(p) ~= myStage) then
 			if head then
 				head.frame.Visible = false
-				head.stage = 0
+				head.placed = false
 			end
 			return
 		end
@@ -387,49 +454,63 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		local h = head :: Head
 		h.frame.Visible = true
 		-- Bottoms just under the bar's bottom edge: the heads ride on top of it.
-		local target = UDim2.new(headX(stage), 0, 1, 2)
-		if animate and h.stage > 0 and shown then
-			Kit.tween(h.frame, 0.45, { Position = target }, Enum.EasingStyle.Back)
+		local progress = progressOf(p)
+		local target = UDim2.new(progress, 0, 1, 2)
+		local glide = animate and h.placed and shown
+		local back = progress < h.progress - 0.001
+		h.progress = progress
+		local time = if back then RESET_TIME else GLIDE_TIME
+		local style = if back then RESET_STYLE else Enum.EasingStyle.Quad
+		local dir = if back then Enum.EasingDirection.InOut else Enum.EasingDirection.Out
+		if glide then
+			Kit.tween(h.frame, time, { Position = target }, style, dir)
 		else
 			h.frame.Position = target
 		end
-		h.stage = stage
-	end
-
-	local function stageOf(p: Player): number
-		return tonumber(p:GetAttribute("ParkourStage")) or 0
-	end
-
-	-- Re-places every head (the stage count changed).
-	local function placeAll()
-		for _, p in Players:GetPlayers() do
-			if p == me then
-				placeHead(p, myStage, false)
+		h.placed = true
+		if p == me then
+			local left = UDim2.fromScale(1 - progress, 1)
+			if glide then
+				Kit.tween(ahead, time, { Size = left }, style, dir)
 			else
-				placeHead(p, stageOf(p), false)
+				ahead.Size = left
 			end
 		end
-		ahead.Size = UDim2.fromScale(1 - headX(myStage), 1)
 	end
 
-	local watched: { [Player]: RBXScriptConnection } = {}
+	-- Re-places every head (the local player's map changed).
+	local function placeAll()
+		for _, p in Players:GetPlayers() do
+			placeHead(p, false)
+		end
+	end
+
+	local watched: { [Player]: { RBXScriptConnection } } = {}
 	local function watch(p: Player)
-		if watched[p] or p == me then
+		if watched[p] then
 			return
 		end
-		watched[p] = p:GetAttributeChangedSignal("ParkourStage"):Connect(function()
-			placeHead(p, stageOf(p), true)
-		end)
-		placeHead(p, stageOf(p), false)
+		local function moved()
+			placeHead(p, true)
+		end
+		local conns = { p:GetAttributeChangedSignal("ParkourProgress"):Connect(moved) }
+		if p ~= me then
+			-- (The local player's map comes from Main through setStage.)
+			table.insert(conns, p:GetAttributeChangedSignal("ParkourStage"):Connect(moved))
+		end
+		watched[p] = conns
+		placeHead(p, false)
 	end
 	for _, p in Players:GetPlayers() do
 		watch(p)
 	end
 	Players.PlayerAdded:Connect(watch)
 	Players.PlayerRemoving:Connect(function(p)
-		local conn = watched[p]
-		if conn then
-			conn:Disconnect()
+		local conns = watched[p]
+		if conns then
+			for _, conn in conns do
+				conn:Disconnect()
+			end
 			watched[p] = nil
 		end
 		local head = heads[p]
@@ -440,41 +521,221 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 	end)
 
 	-- Counter and skip -----------------------------------------------------------------
+	local phone = false
 	local counter = Kit.hudText(root, {
 		Name = "Stage",
 		Text = "MAP 1",
 		RichText = true,
 		Font = F.Display,
-		TextSize = 30,
+		TextSize = 26,
 		StrokeThickness = 3,
-		Size = UDim2.fromOffset(STAGE_W, ROW_H),
+		TextWrapped = false,
+		Size = UDim2.fromOffset(STAGE_W, RUN_H),
 		Position = UDim2.new(0.5, 0, 0, ROW_Y),
 		AnchorPoint = Vector2.new(0.5, 0),
 	})
 	local counterScale = Kit.new("UIScale", { Parent = counter })
+	-- "Best 0:34.4 · Falls 2" under the run pill (on phones: the second line, with the map
+	-- name in front).
+	local stats = Kit.hudText(root, {
+		Name = "Stats",
+		Text = "",
+		RichText = true,
+		Font = F.UI,
+		TextSize = 15,
+		StrokeThickness = 2,
+		TextWrapped = false,
+		Size = UDim2.fromOffset(RUN_W, STATS_H),
+		Position = UDim2.new(0.5, -STAGE_W / 2 - ROW_GAP, 0, ROW_Y + RUN_H + 2),
+		AnchorPoint = Vector2.new(1, 0),
+	})
+	local statsScale = Kit.new("UIScale", { Parent = stats })
+	-- "ASSISTED: no best time" from the moment gear is worn in this run.
+	local chip = Kit.pill(root, {
+		Name = "Assisted",
+		Text = "ASSISTED: no best time",
+		Font = F.Display,
+		TextSize = 14,
+		Color = C.Rizz,
+		Solid = true,
+		Size = UDim2.fromOffset(210, CHIP_H),
+		Position = UDim2.new(0.5, 0, 0, ROW_Y + RUN_H + 2),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Visible = false,
+		ZIndex = 3,
+	})
+
+	-- The map's name and best time: the start Notify's when it is about this map, else the
+	-- snapshot's.
+	local function mapName(): string?
+		if started and started.level == myStage and started.name then
+			return started.name
+		end
+		local info = levelInfo(myStage)
+		return if info and type(info.name) == "string" then info.name else nil
+	end
+	local function mapBest(): number
+		if started and started.level == myStage then
+			return started.best or 0
+		end
+		local info = levelInfo(myStage)
+		return if info then tonumber(info.best) or 0 else 0
+	end
+
+	-- Shows SKIP MAP only where a skip unlocks something (set once the button exists).
+	local showSkip: () -> () = function() end
+	local function renderCounter()
+		showSkip()
+		-- One stage per map; the last stage is map 10's finish deck, so maps = stageCount - 1.
+		local maps = math.max(stageCount - 1, 0)
+		local total = if maps > 0 then string.format(' <font size="16" transparency="0.2">/ %d</font>', maps) else ""
+		local map = if maps > 0 then math.clamp(myStage, 1, maps) else math.max(myStage, 1)
+		local name = mapName()
+		local tail = if name and not phone then string.format(' <font size="16">  ·  %s</font>', name) else ""
+		counter.Text = string.format("MAP %d%s%s", map, total, tail)
+		local parts = {}
+		if name and phone then
+			table.insert(parts, name)
+		end
+		local best = mapBest()
+		if best > 0 then
+			table.insert(parts, "Best " .. clockText(best))
+		end
+		table.insert(parts, string.format("Falls %d", falls))
+		stats.Text = table.concat(parts, "  ·  ")
+	end
+
+	local function setAssisted(on: boolean)
+		if on ~= assisted then
+			assisted = on
+			chip.Visible = on
+			if on and shown then
+				Kit.pop(chip, 1.5)
+			end
+		end
+	end
+
+	-- Skip Map: a small grey button that only asks; the card's YES pays.
+	local closeConfirm: () -> ()
+	local openConfirm: () -> ()
 	local skip = Kit.button(root, {
 		Name = "Skip",
 		Text = skipText(cost),
-		Icon = "Coin",
-		IconColor = C.MoneyText,
-		Font = F.Display,
-		Color = Color3.fromRGB(255, 95, 150),
-		TextSize = 17,
-		Size = UDim2.fromOffset(SKIP_W, ROW_H),
-		Position = UDim2.new(0.5, STAGE_W / 2 + ROW_GAP, 0, ROW_Y),
+		Font = F.UI,
+		Color = C.SurfaceHi,
+		TextSize = 13,
+		Depth = 2,
+		Size = UDim2.fromOffset(SKIP_W, SKIP_H),
+		Position = UDim2.new(0.5, STAGE_W / 2 + ROW_GAP, 0, ROW_Y + 1),
 	}, function()
-		if not shown then
+		if shown then
+			openConfirm()
+		end
+	end)
+	local confirm = Kit.hudGlass(root, {
+		Name = "SkipConfirm",
+		Size = UDim2.fromOffset(CONFIRM_W, CONFIRM_H),
+		Position = UDim2.new(0.5, 0, 0, ROW_Y + ROW_H + CHIP_H + 8),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Radius = 18,
+		Visible = false,
+		ZIndex = 20,
+	})
+	local question = Kit.hudText(confirm, {
+		Name = "Question",
+		Text = "",
+		Font = F.UI,
+		TextSize = 16,
+		StrokeThickness = 2,
+		TextWrapped = true,
+		Size = UDim2.new(1, -28, 0, 62),
+		Position = UDim2.new(0.5, 0, 0, 12),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 21,
+	})
+	local confirmToken = 0
+	closeConfirm = function()
+		confirmToken += 1
+		confirm.Visible = false
+	end
+	openConfirm = function()
+		if confirm.Visible then
+			closeConfirm()
 			return
 		end
-		action:FireServer({ action = "ParkourSkip" })
+		confirmToken += 1
+		local mine = confirmToken
+		local name = mapName() or "this map"
+		question.Text = if cost
+			then string.format("Skip %s for %s?\nYou get no reward for a skipped map.", name, Format.money(cost))
+			else string.format("Skip %s?\nYou get no reward for a skipped map.", name)
+		confirm.Visible = true
+		Kit.appear(confirm, { from = 0.85, time = 0.2 })
+		task.delay(CONFIRM_SECONDS, function()
+			if confirmToken == mine then
+				closeConfirm()
+			end
+		end)
+	end
+	local half = (CONFIRM_W - 28 - 12) / 2
+	Kit.button(confirm, {
+		Name = "Yes",
+		Text = "YES, SKIP",
+		Font = F.Display,
+		Color = C.SurfaceHi,
+		TextSize = 15,
+		Size = UDim2.fromOffset(half, 40),
+		Position = UDim2.new(0, 14, 1, -12),
+		AnchorPoint = Vector2.new(0, 1),
+		ZIndex = 21,
+	}, function()
+		if shown and confirm.Visible then
+			closeConfirm()
+			action:FireServer({ action = "ParkourSkip" })
+		end
+	end)
+	Kit.button(confirm, {
+		Name = "No",
+		Text = "NO, KEEP GOING",
+		Font = F.Display,
+		Color = C.Good,
+		TextSize = 15,
+		Size = UDim2.fromOffset(half, 40),
+		Position = UDim2.new(1, -14, 1, -12),
+		AnchorPoint = Vector2.new(1, 1),
+		ZIndex = 21,
+	}, function()
+		closeConfirm()
 	end)
 
-	local function renderCounter()
-		-- One stage per map; the last stage is map 10's finish deck, so maps = stageCount - 1.
-		local maps = math.max(stageCount - 1, 0)
-		local total = if maps > 0 then string.format(' <font size="18" transparency="0.25">/ %d</font>', maps) else ""
-		local map = if maps > 0 then math.clamp(myStage, 1, maps) else math.max(myStage, 1)
-		counter.Text = string.format("MAP %d%s", map, total)
+	-- "Oops! Back to the start": the beat after a fall (the run goes on).
+	local oops = Kit.hudText(root, {
+		Name = "Oops",
+		Text = "",
+		Font = F.Display,
+		TextSize = 34,
+		StrokeThickness = 3.5,
+		TextWrapped = false,
+		Size = UDim2.fromOffset(520, 44),
+		Position = UDim2.fromScale(0.5, 0.3),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Visible = false,
+		ZIndex = 15,
+	})
+	local oopsScale = Kit.new("UIScale", { Parent = oops })
+	local oopsToken = 0
+	local function showOops(text: string)
+		oopsToken += 1
+		local mine = oopsToken
+		oops.Text = text
+		oops.Visible = true
+		oopsScale.Scale = 0.6
+		Kit.tween(oopsScale, 0.25, { Scale = 1 }, Enum.EasingStyle.Back)
+		task.delay(OOPS_SECONDS, function()
+			if oopsToken == mine then
+				oops.Visible = false
+			end
+		end)
 	end
 
 	-- Gear hotbar --------------------------------------------------------------------------
@@ -506,6 +767,10 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		renderGear()
 		Kit.sound("Click")
 		action:FireServer({ action = "ParkourGear", gear = chosen })
+		if chosen ~= "none" then
+			-- Worn at once on the server: the run is assisted from here on.
+			setAssisted(true)
+		end
 	end
 	for i, def in GEARS do
 		local button = Kit.new("TextButton", {
@@ -586,8 +851,41 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		end
 	end
 	State.changed.Event:Connect(syncGear)
+	-- A new snapshot may bring the map's name and best time after the HUD is up, and says
+	-- when the run became assisted (it only ever turns the chip on: a run never stops being
+	-- assisted, and the start Notify resets it).
+	State.changed.Event:Connect(function()
+		if not shown then
+			return
+		end
+		local data = State.data
+		local info = data and data.modes and data.modes.parkour
+		if type(info) == "table" and info.running == true and info.assisted == true then
+			setAssisted(true)
+		end
+		renderCounter()
+	end)
 
+	-- A skip only unlocks the next map: none to offer on the last map, nor when the next map
+	-- is open already (the server refuses both and charges nothing).
+	showSkip = function()
+		local data = State.data
+		local info = data and data.modes and data.modes.parkour
+		local known = type(info) == "table"
+		local maps = math.max(stageCount - 1, if known then tonumber(info.levelCount) or 0 else 0)
+		local map = math.max(myStage, 1)
+		local unlocked = if known then tonumber(info.unlocked) or 1 else 1
+		local useful = not (maps > 0 and map >= maps) and unlocked <= map
+		if skip.Visible ~= useful then
+			skip.Visible = useful
+			if not useful then
+				closeConfirm()
+			end
+		end
+	end
+	showSkip()
 	local function syncSkip()
+		showSkip()
 		local next = skipCost()
 		if next ~= cost then
 			cost = next
@@ -607,9 +905,10 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		return if ok and typeof(size) == "Vector2" and size.X > 0 then size else Vector2.new(1280, 720)
 	end
 	-- Row positions, as offsets from the screen centre (design px). Desktop:
-	-- [run pill][STAGE n / N][SKIP] on one line, the stage centred. Phones: the run pill
-	-- and the stage share line 1, the skip button is centred on line 2.
-	local phone = false
+	-- [run pill][MAP n / N · name][SKIP] on one line, the counter centred, best / falls
+	-- under the run pill. Phones: the run pill and "MAP n / N" share line 1; the name with
+	-- best / falls and the skip button share line 2. The assisted chip and the skip card
+	-- sit under the last line.
 	local function rowLayout(): (UDim2, Vector2)
 		phone = viewport().X < PHONE_PX
 		barHolder.Size = UDim2.new(if phone then BAR_FRACTION_PHONE else BAR_FRACTION, 0, 0, BAR_H)
@@ -617,34 +916,56 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		counter.TextXAlignment = Enum.TextXAlignment.Center
 		skip.AnchorPoint = Vector2.new(0.5, 0)
 		local runPos: UDim2
+		local below: number -- where the assisted chip and the skip card start
 		if phone then
-			-- Line 1: [run pill][stage] centred as a pair; line 2: skip.
-			local left = -(RUN_W + ROW_GAP + STAGE_W) / 2
+			-- Line 1: [run pill][MAP n / N] centred as a pair; line 2: [name · best · falls]
+			-- [skip] centred as a pair.
+			local left = -(RUN_W + ROW_GAP + STAGE_W_PHONE) / 2
+			local line2 = ROW_Y + ROW_H + 8
 			runPos = UDim2.new(0.5, left + RUN_W, 0, ROW_Y)
-			counter.Position = UDim2.new(0.5, left + RUN_W + ROW_GAP + STAGE_W / 2, 0, ROW_Y)
-			skip.Position = UDim2.new(0.5, 0, 0, ROW_Y + ROW_H + 8)
+			counter.Size = UDim2.fromOffset(STAGE_W_PHONE, RUN_H)
+			counter.Position = UDim2.new(0.5, left + RUN_W + ROW_GAP + STAGE_W_PHONE / 2, 0, ROW_Y)
+			local left2 = -(STATS_W_PHONE + ROW_GAP + SKIP_W) / 2
+			stats.Size = UDim2.fromOffset(STATS_W_PHONE, SKIP_H)
+			stats.AnchorPoint = Vector2.new(0, 0)
+			stats.Position = UDim2.new(0.5, left2, 0, line2)
+			skip.Position = UDim2.new(0.5, left2 + STATS_W_PHONE + ROW_GAP + SKIP_W / 2, 0, line2)
+			below = line2 + SKIP_H + 6
 		else
 			runPos = UDim2.new(0.5, -STAGE_W / 2 - ROW_GAP, 0, ROW_Y)
+			counter.Size = UDim2.fromOffset(STAGE_W, RUN_H)
 			counter.Position = UDim2.new(0.5, 0, 0, ROW_Y)
-			skip.Position = UDim2.new(0.5, STAGE_W / 2 + ROW_GAP + SKIP_W / 2, 0, ROW_Y)
+			stats.Size = UDim2.fromOffset(RUN_W, STATS_H)
+			stats.AnchorPoint = Vector2.new(1, 0)
+			stats.Position = UDim2.new(0.5, -STAGE_W / 2 - ROW_GAP, 0, ROW_Y + RUN_H + 2)
+			skip.Position = UDim2.new(0.5, STAGE_W / 2 + ROW_GAP + SKIP_W / 2, 0, ROW_Y + 1)
+			below = ROW_Y + RUN_H + 4
 		end
+		chip.Position = UDim2.new(0.5, 0, 0, below)
+		confirm.Position = UDim2.new(0.5, 0, 0, below + CHIP_H + 8)
+		renderCounter()
 		-- The run pill is anchored by its right edge so "QUIT?" widens it to the left,
 		-- away from the stage counter.
 		return runPos, Vector2.new(1, 0)
 	end
+	-- Bottom centre. Touch: above the row of Roblox's jump button (70 px at 20 px from the
+	-- corner on small screens, 120 px 90 px up otherwise: the same rule as Hud's FREE gift),
+	-- so a thumb on the button never lands on a coil; the centre is clear of the thumbstick's
+	-- left third.
 	local function placeHotbar()
-		local y = -HOTBAR_BOTTOM
-		local x = 0
-		if tank then
-			local pos, size = tank.Position, tank.Size
-			-- The dumbbell is anchored bottom centre (Hud): its top is pos.Y - height.
-			y = pos.Y.Offset - size.Y.Offset * tank.AnchorPoint.Y - HOTBAR_GAP
-			x = pos.X.Offset
-			hotbar.Position = UDim2.new(pos.X.Scale, x, pos.Y.Scale, y)
-			return
+		local bottom = if Kit.gamepad or Kit.tenFoot then HOTBAR_BOTTOM_PAD else HOTBAR_BOTTOM
+		if Kit.touch then
+			local size = viewport()
+			pcall(function()
+				local camera = Workspace.CurrentCamera
+				if camera and camera.ViewportSize.X > 1 then
+					size = camera.ViewportSize
+				end
+			end)
+			local jumpTop = if math.min(size.X, size.Y) <= 500 then 90 else 210
+			bottom = math.ceil((jumpTop + HOTBAR_JUMP_GAP) / Kit.pixelScale(screen))
 		end
-		local compact = screen:GetAttribute("Compact") == true
-		hotbar.Position = UDim2.new(0.5, x, 1, if compact then -100 else y)
+		hotbar.Position = UDim2.new(0.5, 0, 1, -bottom)
 	end
 	local function relayout()
 		local runPos, runAnchor = rowLayout()
@@ -658,11 +979,8 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		screen:GetPropertyChangedSignal("AbsoluteSize"):Connect(relayout)
 	end)
 	screen:GetAttributeChangedSignal("Compact"):Connect(relayout)
-	if tank then
-		-- Follows the dumbbell as it resizes (compact) or slides away under a window.
-		tank:GetPropertyChangedSignal("Position"):Connect(placeHotbar)
-		tank:GetPropertyChangedSignal("Size"):Connect(placeHotbar)
-	end
+	-- Touch, keyboard or gamepad: the hotbar's margin follows the input in use.
+	Kit.onInput(placeHotbar)
 
 	-- API ----------------------------------------------------------------------------------
 	local function setCount(count: number?)
@@ -672,7 +990,6 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		end
 		if n > 0 and n ~= stageCount then
 			stageCount = n
-			placeAll()
 		end
 	end
 
@@ -681,8 +998,12 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		local n = tonumber(stage) or myStage
 		local changed = n ~= myStage
 		myStage = n
-		placeHead(me, myStage, true)
-		Kit.tween(ahead, 0.45, { Size = UDim2.fromScale(1 - headX(myStage), 1) }, Enum.EasingStyle.Quad)
+		if changed then
+			-- Another map: other runners' heads belong to it or not.
+			placeAll()
+		else
+			placeHead(me, true)
+		end
 		renderCounter()
 		if changed and shown then
 			counterScale.Scale = 1.3
@@ -697,6 +1018,9 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		syncGear()
 		renderGear()
 		relayout() -- docks Hud's run pill into the row
+		-- Roblox's player list sits over the trophy end of the bar and SKIP MAP: hidden for
+		-- the run (hide puts it back; Main hides on finish / stop / invalid / not running).
+		Kit.hidePlayerList("parkour", true)
 		ObbyHud.setStage(stage, count)
 		if not was then
 			-- The bar drops in from above the screen.
@@ -712,10 +1036,41 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		end
 		shown = false
 		root.Visible = false
+		Kit.hidePlayerList("parkour", false)
+		closeConfirm()
+		oopsToken += 1
+		oops.Visible = false
 		if dockRun then
 			dockRun(nil, nil)
 		end
 	end
+
+	-- What Main does not pass on: the start payload (map name, best time, assisted) and
+	-- the falls counted by the respawn payload.
+	Net.event("Notify").OnClientEvent:Connect(function(payload: any)
+		if type(payload) ~= "table" or payload.kind ~= "Mode" or payload.mode ~= "parkour" then
+			return
+		end
+		if payload.event == "start" then
+			started = {
+				level = tonumber(payload.level) or 0,
+				name = if type(payload.levelName) == "string" then payload.levelName else nil,
+				best = tonumber(payload.best),
+			}
+			falls = 0
+			assisted = payload.assisted == true
+			chip.Visible = assisted
+			closeConfirm()
+			renderCounter()
+		elseif payload.event == "respawn" then
+			falls = tonumber(payload.falls) or falls + 1
+			renderCounter()
+			statsScale.Scale = 1.25
+			Kit.tween(statsScale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+			closeConfirm()
+			showOops(if payload.reason == "kill" then "Ouch! Back to the start" else "Oops! Back to the start")
+		end
+	end)
 
 	ObbyHud.isShown = function(): boolean
 		return shown

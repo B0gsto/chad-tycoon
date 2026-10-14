@@ -2,18 +2,24 @@
 	Daily: server side of the daily reward (rules: Shared.DailyReward; client:
 	Client.UI.DailyWindow and the HUD's Daily button).
 
-	The saved profile field `daily` holds the UTC day of the last claim and the
-	streak at that claim. The State snapshot's `daily` field tells the client
-	what today looks like: { claimable, day (today's card 1..7), claimed (cards
-	ticked), streak, nextIn (seconds to the next UTC day), firstDay (today is the
-	player's first day: today's card is capped, DailyReward.firstDayCap) }. The
+	The saved profile field `daily` holds the UTC day of the last claim, the
+	streak at that claim and the streak value of the claim that used the streak
+	saver (one missed day forgiven per run of seven, DailyReward.status). The
+	State snapshot's `daily` field tells the client what today looks like:
+	{ claimable, day (today's card 1..7), claimed (cards ticked), streak, nextIn
+	(seconds to the next UTC day), firstDay (today is the player's first day:
+	today's card is capped, DailyReward.firstDayCap), saves (today's claim uses
+	the saver), savedCard (the card wearing the saver's shield, 0 = none), saver
+	(the saver is still there for the next missed day), lapsed (the streak that ended
+	with the missed days, 0 = none: the "While you were away" card says so once) }. The
 	"ClaimDaily" action pays today's card: cash sized by the player's income right
 	now (the amounts the window shows) and, on days 3 and 7, a crate opened on the
 	spot. With no room on the rack for the crate's unit, the crate is paid as cash.
 
 	Notify payloads (client shows them):
 	  { kind = "Daily", event = "claimed", day = n, cash = c, crate = rarity?, streak = s,
-	    crateCash = part of `cash` paid instead of the crate (rack full)? }
+	    crateCash = part of `cash` paid instead of the crate (rack full)?,
+	    saved = true when the streak saver kept the streak? }
 
 	First day: once a player has finished the tutorial, has claimed and has been
 	playing for a few minutes, one toast names tomorrow's reward.
@@ -56,7 +62,7 @@ end
 local function snapshot(session: Tycoon.Session): { [string]: any }
 	local d = session.profile.daily
 	local now = os.time()
-	local status = DailyReward.status(d.day, d.streak, DailyReward.dayNumber(now))
+	local status = DailyReward.status(d.day, d.streak, DailyReward.dayNumber(now), d.saverUsedAt)
 	return {
 		claimable = status.claimable,
 		day = status.day,
@@ -64,6 +70,11 @@ local function snapshot(session: Tycoon.Session): { [string]: any }
 		streak = status.streak,
 		nextIn = DailyReward.secondsLeft(now),
 		firstDay = d.firstDay == DailyReward.dayNumber(now),
+		saves = status.saves,
+		savedCard = status.savedCard,
+		saver = status.saver,
+		-- A saved streak the rules no longer count: it ended with the days missed.
+		lapsed = if status.claimable and status.streak == 0 then d.streak else 0,
 	}
 end
 
@@ -72,7 +83,7 @@ function Daily.claim(session: Tycoon.Session)
 		return
 	end
 	local d = session.profile.daily
-	local streak, day = DailyReward.claim(d.day, d.streak, today())
+	local streak, day, saverUsedAt, saved = DailyReward.claim(d.day, d.streak, today(), d.saverUsedAt)
 	if not streak or not day then
 		Tycoon.toast(session, "Next daily reward in " .. Format.time(DailyReward.secondsLeft(os.time())), "info")
 		return
@@ -90,6 +101,7 @@ function Daily.claim(session: Tycoon.Session)
 	end
 	d.day = today()
 	d.streak = streak
+	d.saverUsedAt = saverUsedAt or 0
 	claimedAt[session] = os.clock()
 	Tycoon.notify(session, {
 		kind = "Daily",
@@ -99,8 +111,17 @@ function Daily.claim(session: Tycoon.Session)
 		crate = if tier then crate else nil,
 		streak = streak,
 		crateCash = crateCash,
+		saved = if saved then true else nil,
 	})
 	Tycoon.grantMoney(session, cash, "Daily")
+	if saved then
+		-- Said out loud, so the next missed day in this run of seven is no surprise.
+		local text = string.format("You missed a day, but your %d day streak is safe!", streak)
+		if not DailyReward.saverReady(streak, d.saverUsedAt) then
+			text ..= string.format(" Your streak saver comes back after Day %d.", DailyReward.DAYS)
+		end
+		Tycoon.toast(session, text, "good")
+	end
 	if crate and tier then
 		Tycoon.grantCrate(session, crate, tier)
 	elseif crate and crateCash then

@@ -36,6 +36,16 @@ local Images: { [string]: string } = {
 	["hud/MogRingNeedle"] = "rbxassetid://89825850684715",
 	["hud/MogRingTrailL"] = "rbxassetid://140703410837019",
 	["hud/MogRingTrailR"] = "rbxassetid://111013692402636",
+	["maps/Map1"] = "rbxassetid://86643257307571",
+	["maps/Map10"] = "rbxassetid://130252297514317",
+	["maps/Map2"] = "rbxassetid://83863682063099",
+	["maps/Map3"] = "rbxassetid://127544529120912",
+	["maps/Map4"] = "rbxassetid://79313220084452",
+	["maps/Map5"] = "rbxassetid://81985510734093",
+	["maps/Map6"] = "rbxassetid://137698608920039",
+	["maps/Map7"] = "rbxassetid://71597452231199",
+	["maps/Map8"] = "rbxassetid://108087647924264",
+	["maps/Map9"] = "rbxassetid://100143199180544",
 	["proof/sphere"] = "rbxassetid://136882863283158",
 	["ui/atlas_1"] = "rbxassetid://124009831336881",
 	["ui/atlas_2"] = "rbxassetid://110910493203649",
@@ -54,6 +64,11 @@ local Images: { [string]: string } = {
 
 local Meshes: { [string]: Mesh } = {
 	["proof/cube"] = { id = "rbxassetid://80374365012668", model = "rbxassetid://89753695118063", size = Vector3.new(4, 4, 4) },
+	["props/AbsoluteChad"] = {
+		id = "rbxassetid://102523814325935",
+		model = "rbxassetid://106029410731455",
+		size = Vector3.new(4.658, 6.625, 2.686),
+	},
 	["props/Barbell"] = { id = "rbxassetid://87394703936998", model = "rbxassetid://104146566714540", size = Vector3.new(4.82, 2.9, 2.9) },
 	["props/BeachBall"] = {
 		id = "rbxassetid://134231720312186",
