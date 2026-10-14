@@ -32,7 +32,8 @@
 	its +X side, right of the boards as seen from the spawn and turned toward it, a Hollywood
 	dressing mirror ("RehearsalMirror" glass: a glossy gradient, sparkles and a pose
 	silhouette under a "REHEARSE" header, ringed with bulbs) with the "RehearsalSpot" pad on a
-	pink-and-white checker dance mat in front. A pink path of glowing chevrons leads from the
+	pink-and-white checker dance mat in front (mint trim, a sparkle halo of bulbs over the spot
+	and a "PRACTICE YOUR FLEXES" A-frame board beside it). A pink path of glowing chevrons leads from the
 	spawn star to the big "StartPad" in front of the lit STAGE door at the lobby's inner edge
 	(a glowing star disc in pink and navy rings, with a "StartGlow" column and a PointLight;
 	Fx may hide them in play), a START sign standing just behind it; past the door a pink path
@@ -102,8 +103,10 @@ local MIRROR_TURN = 30
 -- The STAGE door's turn from facing +X toward the spawn, so its sign reads from there.
 local DOOR_TURN = 35
 -- The EXIT (World.Arena's pad and arch) in the green room's +X/+Z corner behind the spawn,
--- turned to face into the room: outside the spawn camera's view, so nothing blocks it.
-local EXIT_AT = Vector2.new(48.7, 20.7)
+-- its arch along the +X railing facing into the room (-X): narrow enough (EXIT_HALF, the
+-- posts' offset) to stay just outside the spawn camera's right edge.
+local EXIT_AT = Vector2.new(49, 21.3)
+local EXIT_HALF = 2.4
 
 -- The arena's own sea (as World.Hub's): ocean tiles to the fog, a lagoon under the deck.
 local OCEAN_TOP = -1.2
@@ -1137,7 +1140,9 @@ function PoseStage.build(): Built
 			sign(back, AUDIENCE, backSign, W.White, 30, W.Navy)
 		end
 	end
-	bleacher(cx + 19, cz + 6.4, {
+	-- The +X bleacher mirrors the -X one at the back of the fan zone, out of the lobby
+	-- view's bottom-left corner (from the spawn it only showed as a cut-off stack of risers).
+	bleacher(cx + 15, cz + 12.8, {
 		{ 1, 1, W.HotPink, W.Sunny },
 		{ 1, 3, W.Blue },
 		{ 2, 2, W.Grape, W.HotPink },
@@ -1370,12 +1375,13 @@ function PoseStage.build(): Built
 	star("MirrorStar", 2.2, m(0, 14.9, 0) * Common.ALONG_Z, W.Sunny)
 
 	-- The dance mat in front, square to the mirror: a bold 4 x 4 hot-pink and white checker
-	-- in a navy border on a sunny rim, the RehearsalSpot in the middle (a white disc in a
-	-- sunny ring) with two hot-pink footprints pointing at the glass.
+	-- in a navy border on a mint rim, the RehearsalSpot in the middle (a white disc in a mint
+	-- neon ring) with two hot-pink footprints pointing at the glass. Mint is the rehearsal
+	-- corner's colour (the START pad is sunny), so the two pads never read as one thing.
 	local mat = CFrame.new(spotPos) * mirrorTurn
-	box("DanceMatRim", Vector3.new(8, 0.04, 8), mat * CFrame.new(0, 0.03, 0), W.Sunny).CanCollide = false
-	box("DanceMatBorder", Vector3.new(7.4, 0.05, 7.4), mat * CFrame.new(0, 0.05, 0), W.Navy).CanCollide = false
-	local TILE = 1.65
+	box("DanceMatRim", Vector3.new(7.2, 0.04, 7.2), mat * CFrame.new(0, 0.03, 0), W.Mint, Enum.Material.Neon).CanCollide = false
+	box("DanceMatBorder", Vector3.new(6.6, 0.05, 6.6), mat * CFrame.new(0, 0.05, 0), W.Navy).CanCollide = false
+	local TILE = 1.5
 	for i = 0, 3 do
 		for j = 0, 3 do
 			box(
@@ -1387,7 +1393,7 @@ function PoseStage.build(): Built
 				false
 		end
 	end
-	disc("RehearsalRim", 3.7, 0.1, spotPos + Vector3.new(0, 0.14, 0), W.Sunny).CanCollide = false
+	disc("RehearsalRim", 3.8, 0.1, spotPos + Vector3.new(0, 0.14, 0), W.Mint, Enum.Material.Neon).CanCollide = false
 	local rehearsal = disc("RehearsalSpot", 3.1, 0.12, spotPos + Vector3.new(0, 0.17, 0), W.White)
 	rehearsal.CanCollide = false
 	-- A Top-face gui's top edge is the part's -Z side: look at the mirror, toes point at it.
@@ -1408,6 +1414,51 @@ function PoseStage.build(): Built
 			shape(feetGui, "Toe", W.HotPink, { tx, 0.15 - size + t * 0.012, size, size }, 0.5)
 		end
 	end
+
+	-- The sparkle halo over the RehearsalSpot, above head height: a white hoop studded with
+	-- warm and mint bulbs, three neon sparkles over it turned to the spawn camera.
+	local eye = Vector3.new(LX, top + 11.5, cz + LOBBY.SpawnZ + 12) -- the spawn camera
+	local HALO_Y, HALO_R, HALO_N = 7.6, 2.3, 12
+	for k = 0, HALO_N - 1 do
+		local a0, a1 = k / HALO_N * 2 * math.pi, (k + 1) / HALO_N * 2 * math.pi
+		local p0 = spotPos + Vector3.new(math.cos(a0) * HALO_R, HALO_Y, math.sin(a0) * HALO_R)
+		local p1 = spotPos + Vector3.new(math.cos(a1) * HALO_R, HALO_Y, math.sin(a1) * HALO_R)
+		local hoop = box("HaloHoop", Vector3.new(0.24, 0.24, (p1 - p0).Magnitude + 0.1), CFrame.lookAt((p0 + p1) / 2, p1), W.White)
+		hoop.CanCollide = false
+		hoop.CastShadow = false
+		ball("HaloBulb", 0.6, p0, if k % 2 == 0 then BULB else W.Mint, Enum.Material.Neon).CastShadow = false
+	end
+	local sparks: { { at: Vector3, size: number, color: Color3 } } = {
+		{ at = Vector3.new(-1.5, 1.2, 0), size = 1.3, color = W.HotPink },
+		{ at = Vector3.new(1.4, 1.5, 0), size = 1.1, color = W.Sunny },
+		{ at = Vector3.new(0, 2.4, 0), size = 0.9, color = W.Mint },
+	}
+	for _, spark in sparks do
+		local at = spotPos + Vector3.new(0, HALO_Y, 0) + spark.at
+		star("HaloSparkle", spark.size, CFrame.lookAt(at, Vector3.new(eye.X, at.Y, eye.Z)), spark.color)
+	end
+
+	-- A "PRACTICE YOUR FLEXES" A-frame board on the mat's spawn side, flat-on to the spawn
+	-- camera: two mint panels in white frames leaning together under a hot-pink hinge cap,
+	-- navy letters and a gold star on top, so the rehearsal corner says what it is for.
+	local tagAt = Vector3.new(cx + 50.2, top, cz + 9.6)
+	local tagBase = CFrame.lookAt(tagAt, tagAt - (Vector3.new(eye.X, top, eye.Z) - tagAt)) -- Back (+Z) to the camera
+	local TAG_W, TAG_H, TAG_LEAN = 3.8, 3.2, 14
+	for _, side in { -1, 1 } do
+		local panel = tagBase
+			* CFrame.new(0, TAG_H / 2 * math.cos(math.rad(TAG_LEAN)), side * TAG_H / 2 * math.sin(math.rad(TAG_LEAN)))
+			* CFrame.Angles(math.rad(-side * TAG_LEAN), 0, 0)
+		box("TagFrame", Vector3.new(TAG_W, TAG_H, 0.2), panel, W.White)
+		local tagFace = box("TagFace", Vector3.new(TAG_W - 0.4, TAG_H - 0.4, 0.2), panel * CFrame.new(0, 0, side * 0.06), W.Mint)
+		if side == 1 then
+			local gui = surface(tagFace, AUDIENCE, 70, "PracticeTag")
+			caption(gui, "Practice", "PRACTICE", W.Navy, { 0.05, 0.05, 0.9, 0.4 }, W.White, 6)
+			caption(gui, "Flexes", "YOUR FLEXES", W.Navy, { 0.05, 0.5, 0.9, 0.4 }, W.White, 6)
+		end
+	end
+	local capY = TAG_H * math.cos(math.rad(TAG_LEAN))
+	box("TagCap", Vector3.new(TAG_W + 0.3, 0.35, 0.6), tagBase * CFrame.new(0, capY, 0), W.HotPink)
+	star("TagStar", 1.5, tagBase * CFrame.new(0, capY + 0.95, 0), W.Sunny)
 
 	-- The lobby spawn: a sunny star mark facing the HOW TO PLAY board.
 	local lobbyPos = Vector3.new(LX, top, cz + LOBBY.SpawnZ)
@@ -1455,13 +1506,13 @@ function PoseStage.build(): Built
 	local startPos = Vector3.new(cx + LOBBY.X0 + LOBBY.StartIn, top, cz + LOBBY.StartZ)
 	-- From the spawn star's pink ring to the START pad's outline ring.
 	local toStart = (startPos - lobbyPos).Unit
-	local pathLength = (startPos - lobbyPos).Magnitude - 4.4 - 5.6
-	pinkPath("LobbyPath", lobbyPos + toStart * 4.4, startPos - toStart * 5.6, 3.6, { pathLength / 2 + 0.3 })
-	local startOutline = disc("StartOutline", 11.4, 0.08, startPos + Vector3.new(0, 0.05, 0), W.Navy)
+	local pathLength = (startPos - lobbyPos).Magnitude - 4.4 - 5.3
+	pinkPath("LobbyPath", lobbyPos + toStart * 4.4, startPos - toStart * 5.3, 3.6, { pathLength / 2 + 0.3 })
+	local startOutline = disc("StartOutline", 10.6, 0.08, startPos + Vector3.new(0, 0.05, 0), W.Navy)
 	startOutline.CanCollide = false
-	local startRing = disc("StartRing", 10.4, 0.1, startPos + Vector3.new(0, 0.08, 0), W.HotPink, Enum.Material.Neon)
+	local startRing = disc("StartRing", 9.8, 0.1, startPos + Vector3.new(0, 0.08, 0), W.HotPink, Enum.Material.Neon)
 	startRing.CanCollide = false
-	local startRim = disc("StartPadRim", 9.2, 0.16, startPos + Vector3.new(0, 0.14, 0), W.White)
+	local startRim = disc("StartPadRim", 8.8, 0.16, startPos + Vector3.new(0, 0.14, 0), W.White)
 	startRim.CanCollide = false
 	local startPad = disc("StartPad", 8, 0.2, startPos + Vector3.new(0, 0.2, 0), W.Sunny, Enum.Material.Neon)
 	startPad.CanCollide = false
@@ -1543,20 +1594,25 @@ function PoseStage.build(): Built
 	end
 
 	-- The EXIT: World.Arena's pad, posts and sign move to EXIT_AT, the arch facing into the
-	-- room, dressed up: candy-striped posts, mint neon knobs, the sign in a white frame with a
-	-- gold star on top and a "TO PLAZA" plate under it, and the pad in white and pink rings.
+	-- room, dressed in the lobby's candy colours: a hot-pink EXIT sign in a white frame with a
+	-- gold star on top and a sunny "TO PLAZA" plate under it, pink-and-white striped posts
+	-- with mint neon knobs, and the pad in white and pink rings.
 	local exitAt = Vector3.new(cx + EXIT_AT.X, top, cz + EXIT_AT.Y)
-	local exitLook = CFrame.lookAt(exitAt, exitAt + Vector3.new(-1, 0, -1))
+	local exitLook = CFrame.lookAt(exitAt, exitAt + Vector3.new(-1, 0, 0))
 	local postSide = -1
 	for _, child in folder:GetChildren() do
 		if child:IsA("BasePart") then
 			if child.Name == "ArenaExit" then
+				child.Size = Vector3.new(0.3, 5.4, 5.4)
 				child.CFrame = exitLook * CFrame.new(0, 0.15, 0) * UPRIGHT
 			elseif child.Name == "ArenaExitPost" then
-				child.CFrame = exitLook * CFrame.new(postSide * 3.5, 4, 0) * UPRIGHT
+				child.CFrame = exitLook * CFrame.new(postSide * EXIT_HALF, 4, 0) * UPRIGHT
+				child.Color = W.White
 				postSide = 1
 			elseif child.Name == "ArenaExitSign" then
+				child.Size = Vector3.new(2 * EXIT_HALF + 0.4, 1.6, 0.6)
 				child.CFrame = exitLook * CFrame.new(0, 8.6, 0)
+				child.Color = W.HotPink
 				local word = child:FindFirstChildWhichIsA("SurfaceGui")
 				local label = word and word:FindFirstChildWhichIsA("TextLabel")
 				if label then
@@ -1568,27 +1624,27 @@ function PoseStage.build(): Built
 			end
 		end
 	end
-	disc("ExitPadRing", 8, 0.08, exitAt + Vector3.new(0, 0.05, 0), W.HotPink).CanCollide = false
-	disc("ExitPadRim", 7, 0.1, exitAt + Vector3.new(0, 0.08, 0), W.White).CanCollide = false
+	disc("ExitPadRing", 6, 0.08, exitAt + Vector3.new(0, 0.05, 0), W.HotPink).CanCollide = false
+	disc("ExitPadRim", 5.6, 0.1, exitAt + Vector3.new(0, 0.08, 0), W.White).CanCollide = false
 	for _, side in { -1, 1 } do
 		for k = 0, 3 do
 			local stripe = make("Part", {
 				Name = "ExitPostStripe",
 				Shape = CYLINDER,
 				Size = Vector3.new(0.45, 1.25, 1.25),
-				CFrame = exitLook * CFrame.new(side * 3.5, 1 + k * 1.9, 0) * UPRIGHT,
+				CFrame = exitLook * CFrame.new(side * EXIT_HALF, 1 + k * 1.9, 0) * UPRIGHT,
 				Color = if k % 2 == 0 then W.HotPink else W.White,
 				CanCollide = false,
 				Parent = folder,
 			})
 			stripe.CastShadow = false
 		end
-		ball("ExitKnob", 1.4, (exitLook * CFrame.new(side * 4.5, 10.2, 0)).Position, W.Mint, Enum.Material.Neon)
+		ball("ExitKnob", 1.2, (exitLook * CFrame.new(side * EXIT_HALF, 10.4, 0)).Position, W.Mint, Enum.Material.Neon)
 	end
-	box("ExitSignFrame", Vector3.new(9.2, 2.6, 0.4), exitLook * CFrame.new(0, 8.6, 0.45), W.White)
-	star("ExitStar", 2, exitLook * CFrame.new(0, 10.8, 0.3), W.Sunny)
-	local hint = box("ExitHint", Vector3.new(5.6, 1.1, 0.3), exitLook * CFrame.new(0, 7, 0), W.Mint)
-	caption(surface(hint, Enum.NormalId.Front, 40, "Hint"), "Text", "TO PLAZA", W.White, { 0.04, 0.06, 0.92, 0.88 }, W.Navy, 4)
+	box("ExitSignFrame", Vector3.new(2 * EXIT_HALF + 1, 2.4, 0.4), exitLook * CFrame.new(0, 8.6, 0.45), W.White)
+	star("ExitStar", 1.8, exitLook * CFrame.new(0, 10.6, 0.3), W.Sunny)
+	local hint = box("ExitHint", Vector3.new(2 * EXIT_HALF - 0.6, 1.1, 0.3), exitLook * CFrame.new(0, 7, 0), W.Sunny)
+	caption(surface(hint, Enum.NormalId.Front, 40, "Hint"), "Text", "TO PLAZA", W.Navy, { 0.04, 0.06, 0.92, 0.88 }, W.White, 4)
 
 	-- The TV-crew corner on the -X wing ----------------------------------------------------
 	-- A plank deck with a camera crane aimed at the podiums, an "ON AIR" light, two loungers
