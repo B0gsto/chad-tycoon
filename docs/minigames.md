@@ -8,7 +8,7 @@ files only.
 | --- | --- | --- | --- | --- | --- |
 | SHAKE CATCH | `shake` | 4 (south edge, west) | Pink | `World/ShakeArena.luau` | (380, 6, -380), 64 x 64 |
 | POSE COPY | `pose` | 5 (north edge) | Blue | `World/PoseStage.luau` | (560, 6, -380), 56 x 48 |
-| DUMBBELL BOWL | `bowling` | 6 (south edge, east) | RedOrange | `World/BowlingLane.luau` | (740, 6, -380), 30 x 110 |
+| DUMBBELL BOWL | `bowling` | 6 (south edge, east) | RedOrange | `World/BowlingLane.luau` | (740, 6, -380), 54 x 110 |
 
 The arenas float over the sea on the hub's -Z/+X side, away from the Parkour sky maps, the
 Mog stage (0, 6, 400) and the Cardio track (-1296, 20, 1150). `tests/minigames.luau` keeps
