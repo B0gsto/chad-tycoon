@@ -2930,6 +2930,15 @@ local INDEX = {
 	-- Text on the glass (screen px): a card's rarity chip and the legend's band bars.
 	ChipText = 16,
 	LegendText = 15,
+	-- Each band bar's "COMMON 3/5" sits on a dark plate hugging the text, so the white words
+	-- read over the pale fill as well as over the empty glass.
+	LegendPlate = 0.12, -- the plate's transparency (Ink)
+	LegendPlatePad = 8, -- px either side of the text
+	LegendPlateInset = 5, -- px of the bar's height the plate leaves free (top + bottom)
+	-- The milestone track's captions and reward pills ("$6.60K"): at least this many screen
+	-- px, a still-locked one in this light text (opaque) on its dim plate.
+	RewardPx = 14,
+	RewardLocked = C.Text:Lerp(C.TextDim, 0.15),
 	-- A card's name (two lines at most) and the pale rarity line of a card still to find.
 	NameText = 16,
 	NamePx = 15, -- held at this size on the glass
@@ -3095,7 +3104,7 @@ local function buildIndex(screen: ScreenGui)
 			Parent = track,
 		})
 		-- Bottom-aligned: a one-line caption sits on its button, a second line goes above it.
-		local caption = readable(Kit.text(cell, {
+		local caption = Kit.text(cell, {
 			Name = "Caption",
 			Text = "",
 			Font = F.UI,
@@ -3106,7 +3115,8 @@ local function buildIndex(screen: ScreenGui)
 			TextColor3 = SMALL_TEXT,
 			Size = UDim2.new(1, 0, 0, 18),
 			StrokeThickness = 0,
-		}))
+		})
+		Kit.holdText(caption, math.max(Kit.captionPx(), INDEX.RewardPx), nil, true)
 		local button = Kit.button(cell, {
 			Name = "Claim",
 			Text = "",
@@ -3129,7 +3139,7 @@ local function buildIndex(screen: ScreenGui)
 			Position = UDim2.fromOffset(0, 24),
 			Visible = false,
 		})
-		readable(done)
+		Kit.holdText(done, math.max(Kit.captionPx(), INDEX.RewardPx), nil, true)
 		local buttonLabel = Kit.buttonLabel(button)
 		if buttonLabel then
 			readable(buttonLabel)
@@ -3291,6 +3301,19 @@ local function buildIndex(screen: ScreenGui)
 		})
 		label.TextWrapped = false
 		Kit.holdText(label, math.max(Kit.captionPx(), INDEX.LegendText))
+		-- The dark plate behind the words: the label itself, shrunk to its text.
+		label.AutomaticSize = Enum.AutomaticSize.X
+		label.AnchorPoint = Vector2.new(0.5, 0.5)
+		label.Position = UDim2.fromScale(0.5, 0.5)
+		label.Size = UDim2.new(0, 0, 1, -INDEX.LegendPlateInset)
+		label.BackgroundColor3 = C.Ink
+		label.BackgroundTransparency = INDEX.LegendPlate
+		Kit.round(label)
+		Kit.new("UIPadding", {
+			PaddingLeft = UDim.new(0, INDEX.LegendPlatePad),
+			PaddingRight = UDim.new(0, INDEX.LegendPlatePad),
+			Parent = label,
+		})
 		bands[order] =
 			{ name = band.name, from = if previous then previous.upTo + 1 else 1, upTo = band.upTo, set = set, label = label, found = -1 }
 	end
@@ -3385,7 +3408,7 @@ local function buildIndex(screen: ScreenGui)
 				cell.shown = key
 				cell.state = state
 				cell.caption.Text = captionText
-				cell.caption.TextColor3 = if state == "locked" then SMALL_TEXT else C.GoldLight
+				cell.caption.TextColor3 = if state == "locked" then INDEX.RewardLocked else C.GoldLight
 				-- Only a milestone that can be claimed shows a button, and that one breathes.
 				cell.button.Visible = state == "ready"
 				cell.done.Visible = state ~= "ready"
@@ -3394,8 +3417,8 @@ local function buildIndex(screen: ScreenGui)
 					local locked = state == "locked"
 					cell.done.BackgroundColor3 = if locked then C.Ink else C.Gold
 					cell.done.BackgroundTransparency = if locked then 0.6 else 0
-					cell.done.TextColor3 = if locked then SMALL_TEXT else C.GoldInk
-					cell.done.TextTransparency = if locked then 0.25 else 0
+					cell.done.TextColor3 = if locked then INDEX.RewardLocked else C.GoldInk
+					cell.done.TextTransparency = 0
 					local edge = cell.done:FindFirstChild("Edge")
 					if edge and edge:IsA("UIStroke") then
 						edge.Transparency = if locked then 0.8 else 0

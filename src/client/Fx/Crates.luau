@@ -229,6 +229,10 @@ local SMASH = {
 			-- word lost its first letters.
 			lean = 0.38,
 		},
+		-- The pad's "CRATE SMASHER" name goes away while a crate is on the plinth (the rarity
+		-- word over the crate fell on its letters at Common, Epic and Legendary) and comes
+		-- back when the crate is gone.
+		hideSign = true,
 	},
 	ritual = {
 		shake = 0.85, -- seconds from the open to the burst
@@ -1158,6 +1162,10 @@ type Smasher = {
 	aura: Aura?,
 	glow: Part?, -- the disc on the plinth; carries the light and the rarity word
 	dressedAt: number,
+	-- The pad's floating "CRATE SMASHER" name (World.Pads' "PadLabel"): hidden while a crate
+	-- is dressed, as the rarity word over the crate lands on it (SMASH.look.hideSign).
+	sign: BillboardGui?,
+	pad: BasePart,
 }
 
 -- Something a burst throws (the lid, crate shards): ballistic, spinning, fading at the end.
@@ -1249,6 +1257,9 @@ local function clearSmasherDress(s: Smasher)
 	table.clear(s.decor)
 	table.clear(s.decorOffsets)
 	s.body, s.gem = nil, nil
+	if s.sign then
+		s.sign.Enabled = true
+	end
 end
 
 -- Builds the ring of every Smasher pad of `plot` that has replicated (called again until
@@ -1321,6 +1332,7 @@ local function bindSmashers(plot: Instance)
 			decorOffsets = {},
 			gemRest = CFrame.identity,
 			dressedAt = 0,
+			pad = pad,
 		}
 	end
 end
@@ -1882,6 +1894,11 @@ local function dressSmasherCrate(s: Smasher): boolean
 		chip.AlwaysOnTop = true
 		chip.MaxDistance = W.range
 		chip.Enabled = true
+		local sign = s.pad:FindFirstChild("PadLabel")
+		if L.hideSign and sign and sign:IsA("BillboardGui") then
+			s.sign = sign
+			sign.Enabled = false
+		end
 		for _, d in chip:GetDescendants() do
 			if d:IsA("TextLabel") then
 				d.TextTransparency = 0
