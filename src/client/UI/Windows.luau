@@ -206,8 +206,8 @@ local function tag(parent: Instance, props: { [string]: any }): TextLabel
 		Name = props.Name or "Tag",
 		Text = props.Text,
 		Font = F.UI,
-		TextSize = 15,
-		MinPx = true,
+		TextSize = props.TextSize or 15,
+		MinPx = props.TextSize or true,
 		TextColor3 = Kit.lighten(color, 0.65),
 		TextWrapped = false,
 		BackgroundColor3 = color,
@@ -429,8 +429,17 @@ local PACK_STAGE = 125 -- pack card stage (square) on a PACK_H card; it grows an
 local PACK_MAX_H = 260 -- tallest a pack card grows to fill a page its row fits in
 local PACK_FILL = 0.9 -- share of the free page height such a card takes
 local PACK_ICON = 26 -- currency icon left of a pack's amount
-local STARTER_H = 120 -- Starter pack card, under the free card
-local FREE_H = 120 -- free gift card heading the Passes page: never smaller than the paid card under it
+-- The free and Starter cards are kept low so the first pass banner fits the default page
+-- whole under them and the GAME PASSES header (12 + 98 + 16 + 98 + 12 + 54 + 10 + 130 = 430
+-- of the 444 px page at 860x600).
+local STARTER_H = 98 -- Starter pack card, under the free card
+local FREE_H = 98 -- free gift card heading the Passes page: never smaller than the paid card under it
+local WIDE_ART = 86 -- the art on the left of the free and Starter cards
+local WIDE_TITLE_Y = 8 -- a wide card's title row (32 px tall)...
+local WIDE_CHIPS_Y = 44 -- ...and its row of contents chips under it
+local WIDE_CHIP_H = 46
+local STARTER_GAP = 12 -- under the Starter card, over the GAME PASSES header
+local PASSES_HEAD_GAP = 10 -- under that header, over the first banner
 local BUNDLE_H = 120 -- All Cosmetics card heading the cosmetics section
 local GAP = 16
 local HEAD_H = 54 -- section header height (icon row + glowing underline)
@@ -442,8 +451,12 @@ local FADE_H = 56 -- shade along the bottom edge of the page: the hint that it s
 -- The slow sheen across each grid's BEST VALUE card: seconds between two, band width (px),
 -- the band's transparency at its brightest and seconds to cross the card.
 local BEST_SHINE = { Every = 3.4, Width = 90, Fade = 0.45, Time = 1.8 }
+-- Every banner and card: its own sheen, ENTRY_SHINE.Every seconds apart plus up to
+-- ENTRY_SHINE.Spread (staggered by card), bright and wide enough to catch in a still.
+local ENTRY_SHINE = { Every = 3.2, Spread = 1.2, Width = 64, Fade = 0.4, Time = 1.4 }
 local PACK_SUB = 16 -- a pack card's caption ("1 h of income"), design px...
-local PACK_SUB_PX = 12 -- ...and its floor on the glass, whatever the screen and window scale
+local PACK_SUB_PX = 14 -- ...and its floor on the glass, whatever the screen and window scale
+local CHIP_CAPTION = 16 -- a contents chip's caption ("every 10 min", "cash"), px on the glass
 local PAGE_BOTTOM = 14 -- room under the last row of a section, clear of that shade
 local PAGE_PAD = 12 -- UIPadding over the first row: a ribbon overlaps its card's top edge by 8 px
 local PAGE_FIT_BOTTOM = 4 -- room under a row of cards that fills the page
@@ -1280,7 +1293,7 @@ local function buildShop(screen: ScreenGui)
 			TextScaled = true,
 			TextWrapped = false,
 			Size = UDim2.new(1, WIDE_TEXT_W, 0, 32),
-			Position = UDim2.fromOffset(WIDE_LEFT, 10),
+			Position = UDim2.fromOffset(WIDE_LEFT, WIDE_TITLE_Y),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextColor3 = Color3.new(1, 1, 1),
 			StrokeThickness = 0,
@@ -1325,8 +1338,8 @@ local function buildShop(screen: ScreenGui)
 		local chips = Kit.new("Frame", {
 			Name = "Contents",
 			BackgroundTransparency = 1,
-			Size = UDim2.new(1, WIDE_TEXT_W, 0, 56),
-			Position = UDim2.fromOffset(WIDE_LEFT, 50),
+			Size = UDim2.new(1, WIDE_TEXT_W, 0, WIDE_CHIP_H),
+			Position = UDim2.fromOffset(WIDE_LEFT, WIDE_CHIPS_Y),
 			ZIndex = 4,
 			Parent = body,
 		})
@@ -1355,7 +1368,7 @@ local function buildShop(screen: ScreenGui)
 				MaxTextSize = 20,
 				TextScaled = true,
 				Size = UDim2.new(1, -50, 0, 24),
-				Position = UDim2.fromOffset(44, 6),
+				Position = UDim2.fromOffset(44, 3),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				TextColor3 = Color3.new(1, 1, 1),
 				ZIndex = 4,
@@ -1364,11 +1377,12 @@ local function buildShop(screen: ScreenGui)
 				Name = "Caption",
 				Text = caption,
 				Font = F.Bold,
-				TextSize = 14,
+				TextSize = CHIP_CAPTION,
+				MinPx = CHIP_CAPTION,
 				TextWrapped = false,
 				TextTruncate = Enum.TextTruncate.AtEnd,
 				Size = UDim2.new(1, -50, 0, 18),
-				Position = UDim2.fromOffset(44, 31),
+				Position = UDim2.fromOffset(44, 26),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				TextColor3 = C.Text,
 				ZIndex = 4,
@@ -1386,7 +1400,8 @@ local function buildShop(screen: ScreenGui)
 		ready.
 	]]
 	local freeTint = Theme.World.Sunny
-	local freeCell, freeBody, freeArtHolder, freeArt = makeEntry(scroll, "Free", 0, freeTint, "Free", "Star", 104, UDim2.new(0, 68, 0.5, 0))
+	local freeCell, freeBody, freeArtHolder, freeArt =
+		makeEntry(scroll, "Free", 0, freeTint, "Free", "Star", WIDE_ART, UDim2.new(0, 68, 0.5, 0))
 	local freeEntry: Entry
 	local freeShownCash: number? = nil
 	-- The gift's amount, its button (CLAIM or the time left) and the Daily chip; runs with
@@ -1475,7 +1490,7 @@ local function buildShop(screen: ScreenGui)
 	local starterPass = Theme.Monetization.Passes[COS.Starter.Pass]
 	local starterTint = Theme.World.Mint
 	local starterCell, starterBody, starterArtHolder, starterArt =
-		makeEntry(scroll, "Starter", 0, starterTint, COS.Starter.Icon, "Star", 104, UDim2.new(0, 68, 0.5, 0))
+		makeEntry(scroll, "Starter", 0, starterTint, COS.Starter.Icon, "Star", WIDE_ART, UDim2.new(0, 68, 0.5, 0))
 	local starterClip = bannerPaint(starterBody, starterTint, WIDE_R, nil, true)
 	wideText(starterBody, starterTint, "STARTER PACK")
 	-- What is inside: two chips, this player's own cash amount and the exclusive trail.
@@ -2220,8 +2235,8 @@ local function buildShop(screen: ScreenGui)
 			{
 				-- Free first, then the Starter card; without the header they lead the one list.
 				{ gui = freeCell, h = FREE_H, gapAfter = GAP },
-				{ gui = starterCell, h = STARTER_H, gapAfter = if short then GAP else 18, shown = starterShown },
-				{ gui = heads[1], h = HEAD_H, gapAfter = 14, head = true, shown = not short },
+				{ gui = starterCell, h = STARTER_H, gapAfter = if short then GAP else STARTER_GAP, shown = starterShown },
+				{ gui = heads[1], h = HEAD_H, gapAfter = PASSES_HEAD_GAP, head = true, shown = not short },
 				{ gui = passList, h = gridH(#bannerList, 1, BANNER_H), gapAfter = 26 },
 			},
 			{
@@ -2661,7 +2676,7 @@ local function buildShop(screen: ScreenGui)
 				end)
 			end
 			if entry.clip and entry.cell.Visible then
-				table.insert(idleStops, Kit.shimmer(entry.clip, 5 + (i % 4) * 0.8, 3))
+				table.insert(idleStops, Kit.shimmer(entry.clip, ENTRY_SHINE.Every + (i % 4) / 3 * ENTRY_SHINE.Spread, 3, ENTRY_SHINE))
 			end
 		end
 		-- The BEST VALUE card of each pack grid: a wide, slow sheen on top of its own.
@@ -2909,6 +2924,12 @@ local INDEX = {
 	NewStep = 0.07,
 	NewPill = Vector2.new(58, 26),
 	NewText = 17,
+	-- At most this many cards wear NEW at once: the most recent finds since the Index was
+	-- last opened (a burst of finds marks only the newest, not the whole page).
+	NewMax = 2,
+	-- Text on the glass (screen px): a card's rarity chip and the legend's band bars.
+	ChipText = 16,
+	LegendText = 15,
 	-- Track heights: one-line captions (a narrow window, a phone) and two-line ones.
 	TrackLow = 66,
 	TrackTall = 90,
@@ -3259,11 +3280,11 @@ local function buildIndex(screen: ScreenGui)
 			Color = C.Rarity[band.name],
 			Size = UDim2.new(1 / bandCount, -6, 1, 0),
 			Position = UDim2.fromScale((order - 1) / bandCount, 0),
-			TextSize = T.Small,
+			TextSize = INDEX.LegendText,
 			MinFill = 0.12,
 		})
 		label.TextWrapped = false
-		Kit.holdText(label, Kit.captionPx())
+		Kit.holdText(label, math.max(Kit.captionPx(), INDEX.LegendText))
 		bands[order] =
 			{ name = band.name, from = if previous then previous.upTo + 1 else 1, upTo = band.upTo, set = set, label = label, found = -1 }
 	end
@@ -3466,6 +3487,33 @@ local function buildIndex(screen: ScreenGui)
 	local sparkled: { [number]: boolean } = {}
 	local sessionStart: number? = nil
 
+	-- The tiers that wear NEW: found this session and not looked at yet, newest first, at
+	-- most INDEX.NewMax of them (ties on the time go to the higher tier).
+	local function newTiers(data): { [number]: boolean }
+		local fresh = {}
+		if not sessionStart then
+			return fresh
+		end
+		local order = {}
+		for tier = 1, Economy.MAX_TIER do
+			local at = data.discovered[tier] or 0
+			if at > 0 and at >= (sessionStart :: number) and not seen[tier] then
+				table.insert(order, tier)
+			end
+		end
+		table.sort(order, function(a, b)
+			local atA, atB = data.discovered[a], data.discovered[b]
+			if atA ~= atB then
+				return atA > atB
+			end
+			return a > b
+		end)
+		for i = 1, math.min(#order, INDEX.NewMax) do
+			fresh[order[i]] = true
+		end
+		return fresh
+	end
+
 	local function fillCard(tier: number, discoveredAt: number, isNew: boolean)
 		local entry = cards[tier]
 		local key = (if discoveredAt > 0 then "known" else "unknown") .. (if isNew then "+new" else "")
@@ -3544,6 +3592,7 @@ local function buildIndex(screen: ScreenGui)
 				Name = "Footer",
 				Text = string.upper(band),
 				Color = rarity,
+				TextSize = INDEX.ChipText,
 				Position = UDim2.new(0.5, 0, 1, -8),
 				AnchorPoint = Vector2.new(0.5, 1),
 				ZIndex = 3,
@@ -3613,13 +3662,13 @@ local function buildIndex(screen: ScreenGui)
 			sessionStart = State.now() - 2
 		end
 		local count = 0
+		local fresh = newTiers(data)
 		for tier = 1, Economy.MAX_TIER do
 			local at = data.discovered[tier] or 0
 			if at > 0 then
 				count += 1
 			end
-			local isNew = at > 0 and at >= (sessionStart :: number) and not seen[tier]
-			fillCard(tier, at, isNew)
+			fillCard(tier, at, fresh[tier] == true)
 		end
 		-- Per rarity: the bar of each band fills with the tiers found in it.
 		for _, band in bands do
@@ -3675,9 +3724,14 @@ local function buildIndex(screen: ScreenGui)
 		if not data or not sessionStart then
 			return
 		end
+		local fresh = newTiers(data)
 		for tier = 1, Economy.MAX_TIER do
-			local at = data.discovered[tier] or 0
-			if at > 0 and at >= (sessionStart :: number) and not seen[tier] and not sparkled[tier] then
+			-- The older finds of a burst count as looked at, so clearing the newest NEW
+			-- markers never hands theirs to the next ones in line.
+			if not fresh[tier] and (data.discovered[tier] or 0) > 0 then
+				seen[tier] = true
+			end
+			if fresh[tier] and not sparkled[tier] then
 				sparkled[tier] = true
 				local frame = cards[tier].frame
 				if not PREVIEW then
@@ -3758,8 +3812,7 @@ local function buildIndex(screen: ScreenGui)
 				local data = State.data
 				for tier = 1, Economy.MAX_TIER do
 					if data then
-						local at = data.discovered[tier] or 0
-						fillCard(tier, at, at > 0 and at >= (sessionStart :: number) and not seen[tier])
+						fillCard(tier, data.discovered[tier] or 0, newTiers(data)[tier] == true)
 					end
 					if tier % 2 == 0 then
 						task.wait()
@@ -3788,6 +3841,17 @@ local RANK = {
 	PodiumValue = { 28, 24, 24 },
 	PodiumEdge = 2.5, -- outline of a podium row in its medal colour
 	GoldShine = 3.2, -- seconds between the sheens across the gold row
+	-- A young board (one or two players): the podium's empty steps still show, as faint
+	-- medal rows that are a spot to take, never a made-up player.
+	OpenTint = 0.82, -- transparency of the medal tint on the glass
+	OpenEdge = 0.35, -- transparency of the medal outline
+	OpenCoin = 0.55, -- transparency of the medal coin
+	OpenBreathe = 1.4, -- seconds per half breath of the outline (0.35 <-> 0.75)
+	OpenName = "Your spot!", -- the player is not on the board yet
+	OpenOther = "Open spot: bring a friend!", -- the player already holds a higher step
+	-- The card under the list pops when the player takes #1: from its centre, and gently,
+	-- so the pop never reaches past the window's right edge.
+	LeadPop = 0.35,
 	-- A plain row.
 	RowH = 50,
 	RowGap = 8,
@@ -3901,6 +3965,7 @@ local function rankingInfo(parent: Instance): RankInfo
 	local frame = Kit.glass(parent, {
 		Name = "Info",
 		Size = UDim2.new(1, -14, 0, RANK.InfoMin),
+		AnchorPoint = Vector2.new(0.5, 0),
 		Radius = Kit.RADIUS.L,
 		StrokeThickness = 2,
 		Visible = false,
@@ -4125,7 +4190,7 @@ local function rankingInfo(parent: Instance): RankInfo
 			layout(height)
 			motion()
 			if lead and playing and not PREVIEW then
-				Kit.pop(frame, 0.6)
+				Kit.pop(frame, RANK.LeadPop)
 			end
 		end,
 		stat = function(i: number, value: string, caption: string)
@@ -4319,7 +4384,7 @@ local function buildRanking(screen: ScreenGui)
 		y += pinH
 		local left = inner - y
 		info.frame.Visible = left >= RANK.InfoMin
-		info.frame.Position = UDim2.fromOffset(0, y)
+		info.frame.Position = UDim2.new(0.5, -7, 0, y)
 		info.frame.Size = UDim2.new(1, -14, 0, math.max(left, RANK.InfoMin))
 		info.layout(math.max(left, RANK.InfoMin))
 	end
@@ -4441,6 +4506,40 @@ local function buildRanking(screen: ScreenGui)
 		return entry.name == me.Name or entry.name == me.DisplayName
 	end
 
+	-- An empty podium step: the medal row at `rank`, faint, its coin numbered, the name
+	-- `text` and no score. Its outline breathes while the window is open.
+	local function openSpot(rank: number, text: string): Frame
+		local medal = MEDAL_COLORS[rank]
+		local frame = Kit.glass(list, {
+			Name = "Open" .. rank,
+			Size = UDim2.new(1, 0, 0, RANK.PodiumH[rank]),
+			LayoutOrder = rank,
+			Radius = Kit.RADIUS.M + 2,
+			StrokeThickness = RANK.PodiumEdge,
+		})
+		Kit.paintGlass(frame, medal, RANK.OpenTint, medal)
+		local edge = frame:FindFirstChildOfClass("UIStroke")
+		if edge then
+			edge.Transparency = RANK.OpenEdge
+			if not PREVIEW then
+				TweenService:Create(
+					edge,
+					TweenInfo.new(RANK.OpenBreathe, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+					{ Transparency = 0.75 }
+				):Play()
+			end
+		end
+		local labels = row(frame, rank, "#" .. rank, text, "", false)
+		labels.chip.BackgroundTransparency = RANK.OpenCoin
+		labels.rank.TextTransparency = 0.25
+		local name = frame:FindFirstChild("Name")
+		if name and name:IsA("TextLabel") then
+			name.TextColor3 = Kit.lighten(medal, 0.55)
+			name.Size = UDim2.new(0.8, 0, 1, 0)
+		end
+		return frame
+	end
+
 	-- Rebuilds the leaderboard rows; `animate` ripples them in. The top three are the podium:
 	-- taller rows of glass in their medal's colour with a big medal coin, the gold one under a
 	-- passing sheen. The player's own row wears a thick gold outline wherever it is.
@@ -4495,6 +4594,14 @@ local function buildRanking(screen: ScreenGui)
 				row(frame, rank, "#" .. rank, name, fmt(tonumber(entry.value) or 0), isMe)
 			end
 			table.insert(rows, frame)
+		end
+		-- One or two players: the empty podium steps under them, faint and waiting.
+		if #rows > 0 and #rows < #MEDAL_COLORS then
+			for rank = #rows + 1, #MEDAL_COLORS do
+				local frame = openSpot(rank, if mineAt > 0 then RANK.OpenOther else RANK.OpenName)
+				rowsTall += RANK.PodiumH[rank] + ROW_GAP
+				table.insert(rows, frame)
+			end
 		end
 		rowCount = #rows
 		listed = mineAt > 0
