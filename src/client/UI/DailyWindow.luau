@@ -100,6 +100,9 @@ local AMOUNT_MAX = 24
 local AMOUNT_MIN_PX = 18 -- the amount is the card's key number: never under this on the glass
 local CHIP_H = 24
 local CHIP_TEXT = math.max(T.Small, Kit.WINDOW.TextPx) -- the crate chip's text (a window caption)
+-- The streak line's saver rule ("Miss a day? ..."): a body line on the glass, not a caption
+-- (the header has room for two lines of it).
+local RULE_TEXT = 16
 -- The design window holds exactly that: chrome (104) + streak + cards + footer.
 local CARD_H = CARD_TOP + HEAD_H + HEAD_GAP + ART_MAX + STACK_GAP + AMOUNT_H + STACK_GAP + CHIP_H + CARD_BOTTOM
 local DESIGN = Vector2.new(880, 104 + HERO_H + SECTION + CARD_H + SECTION + FOOTER_H)
@@ -157,9 +160,9 @@ type Card = {
 	breathes. Sizes in design px, times in seconds.
 ]]
 local MOTION = {
-	TodayBob = 8, -- px today's card rises
+	TodayBob = 12, -- px today's card rises
 	TodayBeat = 0.7, -- seconds per half bob
-	TodayStar = 20, -- stars over today's art...
+	TodayStar = 24, -- stars over today's art...
 	TodayEvery = 0.45, -- ...one every this many seconds
 	ChestStar = 22, -- stars over the Day 7 chest
 	ChestEvery = 0.28,
@@ -226,8 +229,8 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 	local rule = Kit.text(hero, {
 		Name = "Rule",
 		Text = SAVER_RULE,
-		TextSize = T.Small,
-		MinPx = true,
+		TextSize = RULE_TEXT,
+		MinPx = RULE_TEXT,
 		TextColor3 = C.Text,
 		TextXAlignment = Enum.TextXAlignment.Right,
 		Size = UDim2.new(0.5, -2, 1, 0),
