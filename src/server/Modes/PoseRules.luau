@@ -18,6 +18,7 @@
 	  showLength(round)           seconds from "round" to the player's turn
 	  repeatReady(lastAt, now)    the repeat share may pay again (REPEAT_GAP since the last)
 	  newBest(best, cleared)      the saved best after a run that cleared `cleared` rounds
+	  outsideArena(dx, dz, m)     a point (offsets from ARENA's centre) more than m off the deck
 
 	ARENA is where World.PoseStage builds the arena (floor top centre and size in studs,
 	out over the sea away from the Parkour maps, the Mog stage and the Cardio track; tests/
@@ -31,6 +32,15 @@ local PoseRules = {}
 PoseRules.ARENA = { x = 0, y = 6, z = -10000, sizeX = 104, sizeZ = 48 }
 -- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
 PoseRules.FALL_BELOW = 20
+-- The green-room lobby on the deck's +X wing, in studs from ARENA's centre (World.PoseStage
+-- builds it from these): its inner edge (the show takes the middle 56 studs), the spawn mark,
+-- the rehearsal mirror's row and the RehearsalSpot in front of the mirror. All of it is on
+-- the deck, inside ARENA.
+PoseRules.LOBBY = { x0 = 28.6, spawnX = 40, spawnZ = 12, mirrorZ = -7, spotX = 45.5 }
+-- A player walking free (lobby or results) whose feet are this far outside the deck was moved
+-- off it by something else and leaves the mode. A jump off the edge falls past FALL_BELOW
+-- long before it carries this far, and the lobby itself is on the deck.
+PoseRules.LEAVE_MARGIN = 24
 
 export type Flex = { pose: string, label: string, dir: string, rgb: { number } }
 
@@ -185,6 +195,12 @@ function PoseRules.pickLane(used: { [number]: string }, count: number, prefer: n
 		end
 	end
 	return nil, false
+end
+
+-- A point `dx`, `dz` studs from ARENA's centre lies more than `margin` outside the deck.
+function PoseRules.outsideArena(dx: number, dz: number, margin: number): boolean
+	local a = PoseRules.ARENA
+	return math.abs(dx) > a.sizeX / 2 + margin or math.abs(dz) > a.sizeZ / 2 + margin
 end
 
 function PoseRules.newBest(best: number, cleared: number): number

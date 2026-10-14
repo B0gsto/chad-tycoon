@@ -160,4 +160,16 @@ return function(h: { [string]: any })
 		check(PoseRules.MAX_ROUND >= 50, "after the pass the chase for a best is endless")
 		check(#PoseRules.sequence(7, PoseRules.MAX_ROUND) == PoseRules.MAX_ROUND, "the sequence covers every round")
 	end)
+	test("Pose: the lobby is on the deck and the leave margin sits outside it", function()
+		local a, l = PoseRules.ARENA, PoseRules.LOBBY
+		check(l.x0 >= 28, "the green room starts past the 56-stud show")
+		for _, p in { { l.spawnX, l.spawnZ }, { l.spotX, l.mirrorZ }, { l.x0, 0 } } do
+			check(not PoseRules.outsideArena(p[1], p[2], 0), "lobby point on the deck")
+		end
+		check(l.spotX + 4 <= a.sizeX / 2, "room for the mirror past the RehearsalSpot")
+		check(PoseRules.LEAVE_MARGIN > 0, "a margin past the deck")
+		check(not PoseRules.outsideArena(a.sizeX / 2 + PoseRules.LEAVE_MARGIN - 1, 0, PoseRules.LEAVE_MARGIN), "inside the margin")
+		check(PoseRules.outsideArena(a.sizeX / 2 + PoseRules.LEAVE_MARGIN + 1, 0, PoseRules.LEAVE_MARGIN), "past the margin")
+		check(PoseRules.outsideArena(0, -(a.sizeZ / 2 + PoseRules.LEAVE_MARGIN + 1), PoseRules.LEAVE_MARGIN), "past the margin in z")
+	end)
 end

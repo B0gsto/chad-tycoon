@@ -67,9 +67,8 @@ local TURN_EARLY = 0.8
 -- notify arrives (after its trip), the server's clock when it was sent.
 local TURN_GRACE = 0.75
 -- A held player whose feet end up this far from their podium (moved away by something
--- else) has the mode ended as "invalid"; in the lobby, this far outside the arena's deck.
+-- else) has the mode ended as "invalid" (walking free: PoseRules.LEAVE_MARGIN off the deck).
 local LEAVE_SPOT = 30
-local LEAVE_ARENA = 60
 -- A player not in the mode stands "in the arena" within this margin of its deck.
 local ARENA_MARGIN = 4
 -- Begin requests closer together than this are dropped (spam from a held button).
@@ -472,7 +471,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 
 	local function outsideArena(pos: Vector3, margin: number): boolean
 		local a = PoseRules.ARENA
-		return math.abs(pos.X - a.x) > a.sizeX / 2 + margin or math.abs(pos.Z - a.z) > a.sizeZ / 2 + margin
+		return PoseRules.outsideArena(pos.X - a.x, pos.Z - a.z, margin)
 	end
 
 	-- Anyone on the deck without the mode (it ended some other way): exit pad and falls.
@@ -540,7 +539,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			return
 		end
 		-- Lobby and results: walking free on the deck.
-		if not fell and outsideArena(pos, LEAVE_ARENA) then
+		if not fell and outsideArena(pos, PoseRules.LEAVE_MARGIN) then
 			def.stop(player, "invalid")
 			return
 		end
