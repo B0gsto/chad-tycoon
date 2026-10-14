@@ -27,9 +27,10 @@
 	               (stars and confetti), ModeKill (touched a kill brick: a red/black
 	               burst and a short red screen flash). Spin movers with SpinAxis = "Z" (windmill blades)
 	               turn about the root's look vector instead of world up.
-	  Oops         a run's "respawn" notify (fell, back on the start deck): a soft white
-	               blink of the screen (not after lava, which flashed red) and a puff with
-	               a ring at the runner's feet.
+	  Oops         a run's "respawn" notify (fell, back on the start deck): a strong
+	               cool-white blink of the screen held for a beat and eased out (not after
+	               lava, which flashed red), and a big cloud puff with a ring of smaller
+	               puffs and two expanding rings at the runner's feet (OOPS tunables).
 	  Gantry       the marquee over a map's start arch (tag "StartGantry", attribute Level)
 	               fades out a moment into a run of that map and returns when it ends.
 	  Levels       a parkour run's start payload carries its level; hints and flags look in
@@ -80,6 +81,26 @@ local BLINK_WARN = 0.5
 local BLINK_FLASH_HZ = 6
 local BLINK_OFF_TOP = 0.75
 local BLINK_OFF_PART = 0.85
+-- Back on the start deck after a fall (tunables, see oops): a strong cool-white screen blink
+-- held for a beat and eased out, then a big cloud puff with a ring of smaller puffs and two
+-- expanding rings at the feet. Sizes in studs, times in seconds.
+local OOPS = {
+	FLASH_COLOR = Color3.fromRGB(214, 236, 255),
+	FLASH_FROM = 0.15, -- screen transparency at the start of the blink
+	FLASH_HOLD = 0.12, -- held that strong before easing out
+	FLASH_TIME = 0.75, -- the ease out
+	DELAY = 0.12, -- lets the teleport land before the puff is placed
+	PUFF = 9, -- the centre puff
+	PUFF_LIFE = 1.2,
+	PUFFS = 8, -- smaller puffs round it, drifting out
+	PUFF_SMALL = 4.5,
+	PUFF_REACH = 5, -- studs each small puff drifts out over its life
+	RING = 12,
+	RING_BIG = 20,
+	RING_LIFE = 0.9,
+	RING_DELAY = 0.12, -- the big ring follows the first
+	RING_COLOR = Color3.fromRGB(150, 205, 255),
+}
 
 type Mover = {
 	root: BasePart,
@@ -527,15 +548,18 @@ end
 -- outside the level's bounds (the folder's extents padded LEVEL_PAD_SIDE sideways and
 -- LEVEL_PAD_BELOW below, so a fall to the cloud floor and the respawn keep the look).
 -- A start while a look is up cross-fades to the new one.
---   every theme  a bright sunny midday sky (sky obby): a saturated cool-blue ParkourGrade,
---            thin pale Atmosphere (low density, horizon haze, a little glare), brighter
---            Lighting and exposure, ClockTime 13 when the scene is outside 10-15, and a
---            light ParkourBloom (made lazily, enabled only during runs).
---   storm    the same but a little cooler and dimmer.
---   volcano  a touch warmer, plus ember emitters (ParkourEmbers, made lazily) on the
---            level's MapGlow parts, enabled only during the run.
---   giga     the sunny look plus soft gold sparkles around the player's root
---            (attachment ParkourSparkles).
+--   every theme  a bright sky-obby day built on SUNNY (ParkourGrade colour correction,
+--            Atmosphere colour / decay / density, Lighting brightness and exposure, a light
+--            ParkourBloom made lazily and enabled only during runs), graded per map by
+--            LOOK_TUNING so each map has its own sky: beach golden noon, cove turquoise,
+--            bay deep blue, reef pink haze, bubble icy and bright, coral peach sunset,
+--            shark deep teal, storm dim slate haze (no flashes), volcano smoky orange late
+--            afternoon, giga golden hour on a grape sky. ClockTime: the look's `clock`, else
+--            13 when the scene is outside 10-15.
+--   volcano  plus ember emitters (ParkourEmbers, made lazily) on the level's MapGlow parts
+--            (its landmark and World.MapDress lava rocks), enabled only during the run.
+--   AURAS    particles round the player's root (attachment ParkourSparkles): giga gold
+--            sparkles, bubble rising rings, reef and coral drifting motes.
 -- ParkourGrade / ParkourBloom are our own instances: Fx.Surge's SurgeGrade / SurgeBloom are
 -- separate and stack. Every Lighting / Atmosphere value is saved when a look starts and
 -- written back exactly.
@@ -827,11 +851,12 @@ type Look = {
 	light: number, -- added to Lighting.Brightness
 	exposure: number, -- added to Lighting.ExposureCompensation
 	bloom: number, -- ParkourBloom intensity
+	clock: number?, -- Lighting.ClockTime while the look is up (nil: SUNNY_CLOCK rule)
 }
 
--- The sky obby: one bright sunny midday look for every map (saturated cobalt sky, pale
--- haze at the horizon, light bloom); storm keeps a slight cool dim and volcano a slight
--- warm offset on top. Tints stay within ~0.9-1 per channel so the pastel art never muddies.
+-- The sky obby's base look: a bright sunny midday (saturated cobalt sky, pale haze at the
+-- horizon, light bloom). Every map grades it its own way (LOOK_TUNING below), clearly enough
+-- to tell the maps apart at a glance: sky / haze colour, sun height, warmth and density.
 local SUNNY: Look = {
 	tint = Color3.fromRGB(235, 245, 255),
 	brightness = 0.02,
@@ -851,56 +876,195 @@ local SUNNY: Look = {
 	light = 0.6,
 	exposure = 0.15,
 	bloom = BLOOM_INTENSITY,
-	flash = 0,
 }
-local LOOKS: { [string]: Look } = {
-	beach = SUNNY,
-	cove = SUNNY,
-	bay = SUNNY,
-	reef = SUNNY,
-	bubble = SUNNY,
-	coral = SUNNY,
-	shark = SUNNY,
-	giga = SUNNY,
-	storm = { -- the sunny sky, a little cooler and dimmer
-		tint = Color3.fromRGB(226, 238, 255),
-		brightness = -0.01,
-		contrast = 0.04,
-		saturation = 0.15,
-		ambient = Color3.fromRGB(190, 205, 235),
+
+-- Per-map grading (tunables): only what differs from SUNNY. atmosphereMix 0.9 so the sky and
+-- horizon really take the map's colour.
+local LOOK_TUNING: { [string]: { [string]: any } } = {
+	beach = { -- golden sunny noon
+		tint = Color3.fromRGB(255, 246, 226),
+		saturation = 0.3,
+		atmosphere = Color3.fromRGB(255, 240, 212),
+		decay = Color3.fromRGB(255, 206, 150),
+		atmosphereMix = 0.9,
+		density = 0.3,
+		ambient = Color3.fromRGB(255, 236, 205),
 		ambientMix = 0.12,
-		fog = Color3.fromRGB(200, 215, 238),
-		fogMix = 0.25,
-		fogEnd = 100000,
-		atmosphere = Color3.fromRGB(210, 222, 242),
-		decay = Color3.fromRGB(185, 205, 240),
-		atmosphereMix = 0.75,
-		density = 0.28,
-		haze = 1.8,
-		glare = 0.2,
+	},
+	cove = { -- tropical turquoise
+		tint = Color3.fromRGB(230, 255, 242),
+		saturation = 0.32,
+		atmosphere = Color3.fromRGB(196, 255, 234),
+		decay = Color3.fromRGB(90, 220, 200),
+		atmosphereMix = 0.9,
+		density = 0.32,
+		fog = Color3.fromRGB(190, 245, 230),
+		ambient = Color3.fromRGB(200, 255, 230),
+		ambientMix = 0.15,
+	},
+	bay = { -- crisp deep-blue sea air, a high sun
+		tint = Color3.fromRGB(226, 234, 255),
+		contrast = 0.08,
+		atmosphere = Color3.fromRGB(190, 208, 255),
+		decay = Color3.fromRGB(80, 120, 230),
+		atmosphereMix = 0.9,
+		density = 0.34,
+		clock = 14.5,
+	},
+	reef = { -- pink tropical haze
+		tint = Color3.fromRGB(255, 234, 246),
+		saturation = 0.32,
+		atmosphere = Color3.fromRGB(255, 214, 238),
+		decay = Color3.fromRGB(255, 140, 205),
+		atmosphereMix = 0.9,
+		density = 0.32,
+		ambient = Color3.fromRGB(255, 200, 230),
+		ambientMix = 0.15,
+	},
+	bubble = { -- airy, icy and bright
+		tint = Color3.fromRGB(234, 248, 255),
+		brightness = 0.05,
+		atmosphere = Color3.fromRGB(226, 246, 255),
+		decay = Color3.fromRGB(150, 215, 255),
+		atmosphereMix = 0.9,
+		density = 0.36,
+		haze = 2.4,
+		exposure = 0.25,
+	},
+	coral = { -- warm peach sunset
+		tint = Color3.fromRGB(255, 230, 210),
+		saturation = 0.3,
+		atmosphere = Color3.fromRGB(255, 208, 170),
+		decay = Color3.fromRGB(255, 140, 90),
+		atmosphereMix = 0.9,
+		density = 0.34,
+		haze = 2,
+		glare = 0.5,
+		ambient = Color3.fromRGB(255, 196, 165),
+		ambientMix = 0.18,
 		light = 0.4,
-		exposure = 0.05,
+		clock = 16.6,
+	},
+	shark = { -- deep teal sea
+		tint = Color3.fromRGB(218, 246, 250),
+		contrast = 0.08,
+		atmosphere = Color3.fromRGB(176, 230, 236),
+		decay = Color3.fromRGB(30, 140, 165),
+		atmosphereMix = 0.9,
+		density = 0.36,
+		ambient = Color3.fromRGB(165, 230, 236),
+		ambientMix = 0.15,
+	},
+	storm = { -- cool, dim slate sky with thick grey haze (no lightning flashes)
+		tint = Color3.fromRGB(212, 220, 240),
+		brightness = -0.03,
+		contrast = 0.06,
+		saturation = -0.05,
+		atmosphere = Color3.fromRGB(172, 182, 204),
+		decay = Color3.fromRGB(100, 110, 145),
+		atmosphereMix = 0.9,
+		density = 0.46,
+		haze = 3,
+		glare = 0,
+		fog = Color3.fromRGB(180, 190, 210),
+		fogMix = 0.35,
+		ambient = Color3.fromRGB(165, 176, 210),
+		ambientMix = 0.2,
+		light = 0.1,
+		exposure = -0.1,
 		bloom = BLOOM_INTENSITY * 0.8,
 	},
-	volcano = { -- the sunny sky, a touch warmer
-		tint = Color3.fromRGB(250, 243, 236),
-		brightness = 0.02,
-		contrast = 0.04,
-		saturation = 0.25,
-		ambient = Color3.fromRGB(255, 220, 190),
-		ambientMix = 0.1,
-		fog = Color3.fromRGB(240, 232, 225),
-		fogMix = 0.2,
-		fogEnd = 100000,
-		atmosphere = Color3.fromRGB(240, 236, 235),
-		decay = Color3.fromRGB(235, 220, 215),
-		atmosphereMix = 0.75,
-		density = 0.25,
-		haze = 1.6,
-		glare = 0.3,
-		light = 0.6,
-		exposure = 0.15,
-		bloom = BLOOM_INTENSITY,
+	volcano = { -- smoky red-orange late afternoon
+		tint = Color3.fromRGB(255, 224, 204),
+		contrast = 0.08,
+		atmosphere = Color3.fromRGB(255, 186, 146),
+		decay = Color3.fromRGB(196, 72, 36),
+		atmosphereMix = 0.9,
+		density = 0.42,
+		haze = 2.6,
+		glare = 0.4,
+		fog = Color3.fromRGB(240, 190, 160),
+		fogMix = 0.3,
+		ambient = Color3.fromRGB(255, 168, 120),
+		ambientMix = 0.2,
+		clock = 17.2,
+	},
+	giga = { -- golden hour with a grape sky
+		tint = Color3.fromRGB(255, 240, 220),
+		saturation = 0.3,
+		atmosphere = Color3.fromRGB(255, 226, 178),
+		decay = Color3.fromRGB(180, 130, 255),
+		atmosphereMix = 0.9,
+		density = 0.32,
+		glare = 0.6,
+		ambient = Color3.fromRGB(255, 220, 196),
+		ambientMix = 0.15,
+		bloom = BLOOM_INTENSITY * 1.4,
+		clock = 17.4,
+	},
+}
+
+local LOOKS: { [string]: Look } = {}
+for theme, over in LOOK_TUNING do
+	local look = table.clone(SUNNY) :: any
+	for key, value in over do
+		look[key] = value
+	end
+	LOOKS[theme] = look :: Look
+end
+
+-- Particles round the runner on some maps (tunables): sprite, colours, rate per second,
+-- sizes (studs), lifetime, speed and drift.
+type Aura = {
+	sprite: string,
+	colors: { Color3 },
+	rate: number,
+	size: number,
+	life: { number },
+	speed: { number },
+	rise: number,
+	glow: number,
+}
+local AURAS: { [string]: Aura } = {
+	giga = {
+		sprite = "Sparkle",
+		colors = { Color3.fromRGB(255, 214, 120), Color3.fromRGB(255, 240, 205) },
+		rate = SPARKLE_RATE,
+		size = 0.55,
+		life = { 0.9, 1.5 },
+		speed = { 1.5, 3 },
+		rise = 1,
+		glow = 0.5,
+	},
+	bubble = {
+		sprite = "Ring",
+		colors = { Color3.fromRGB(170, 225, 255), Color3.fromRGB(240, 250, 255) },
+		rate = 5,
+		size = 0.9,
+		life = { 1.8, 2.8 },
+		speed = { 1, 2 },
+		rise = 3,
+		glow = 0.3,
+	},
+	reef = {
+		sprite = "SoftDot",
+		colors = { Color3.fromRGB(255, 150, 210), Color3.fromRGB(120, 255, 240) },
+		rate = 5,
+		size = 0.45,
+		life = { 1.6, 2.6 },
+		speed = { 0.8, 1.8 },
+		rise = 0.8,
+		glow = 0.6,
+	},
+	coral = {
+		sprite = "SoftDot",
+		colors = { Color3.fromRGB(255, 190, 140), Color3.fromRGB(255, 120, 110) },
+		rate = 4,
+		size = 0.45,
+		life = { 1.6, 2.6 },
+		speed = { 0.8, 1.8 },
+		rise = 0.8,
+		glow = 0.6,
 	},
 }
 
@@ -943,6 +1107,7 @@ local grade: ColorCorrectionEffect? = nil
 local bloom: BloomEffect? = nil
 local atmosphere: Atmosphere? = nil
 local sparkles: ParticleEmitter? = nil
+local sparkleRate = SPARKLE_RATE
 local embers: { [BasePart]: ParticleEmitter } = {}
 local liveEmbers: { ParticleEmitter } = {}
 local saved: Grade = {
@@ -1046,22 +1211,22 @@ local function emberFor(part: BasePart): ParticleEmitter
 	return e
 end
 
-local function makeSparkles(root: BasePart): ParticleEmitter
+local function makeAura(root: BasePart, spec: Aura): ParticleEmitter
 	local attachment = Instance.new("Attachment")
 	attachment.Name = "ParkourSparkles"
 	attachment.Parent = root
-	return emitter(attachment, "Sparkle", {
+	return emitter(attachment, spec.sprite, {
 		Rate = 0,
-		Color = ColorSequence.new(Color3.fromRGB(255, 214, 120), Color3.fromRGB(255, 240, 205)),
-		LightEmission = 0.5,
-		Lifetime = NumberRange.new(0.9, 1.5),
-		Speed = NumberRange.new(1.5, 3),
+		Color = ColorSequence.new(spec.colors[1], spec.colors[2] or spec.colors[1]),
+		LightEmission = spec.glow,
+		Lifetime = NumberRange.new(spec.life[1], spec.life[2]),
+		Speed = NumberRange.new(spec.speed[1], spec.speed[2]),
 		Drag = 1.5,
-		Acceleration = Vector3.new(0, 1, 0),
+		Acceleration = Vector3.new(0, spec.rise, 0),
 		SpreadAngle = Vector2.new(180, 180),
 		Size = NumberSequence.new({
 			NumberSequenceKeypoint.new(0, 0),
-			NumberSequenceKeypoint.new(0.2, 0.55),
+			NumberSequenceKeypoint.new(0.2, spec.size),
 			NumberSequenceKeypoint.new(1, 0),
 		}),
 	})
@@ -1088,7 +1253,7 @@ local function gradeFor(theme: string): Grade
 		haze = look.haze,
 		glare = look.glare,
 		light = saved.light + look.light,
-		clock = if saved.clock < CLOCK_MIN or saved.clock > CLOCK_MAX then SUNNY_CLOCK else saved.clock,
+		clock = look.clock or (if saved.clock < CLOCK_MIN or saved.clock > CLOCK_MAX then SUNNY_CLOCK else saved.clock),
 		exposure = saved.exposure + look.exposure,
 		bloom = look.bloom,
 	}
@@ -1178,7 +1343,7 @@ local function applyLook()
 	end
 	local s = sparkles
 	if s then
-		s.Rate = SPARKLE_RATE * x
+		s.Rate = sparkleRate * x
 	end
 end
 
@@ -1212,10 +1377,13 @@ local function startExtras(theme: string, folder: Instance)
 				table.insert(liveEmbers, e)
 			end
 		end
-	elseif theme == "giga" then
+	end
+	local aura = AURAS[theme]
+	if aura then
 		local _, root = character()
 		if root then
-			sparkles = makeSparkles(root)
+			sparkles = makeAura(root, aura)
+			sparkleRate = aura.rate
 		end
 	end
 end
@@ -1525,7 +1693,7 @@ local flashTween: Tween? = nil
 
 -- The full-screen flash frame, made lazily on its own ScreenGui: red for lava, or `color`
 -- from transparency `from` over `time` seconds.
-local function flash(color: Color3?, from: number?, time: number?)
+local function flash(color: Color3?, from: number?, time: number?, hold: number?)
 	local frame = flashFrame
 	if not frame or not frame.Parent then
 		local gui = Instance.new("ScreenGui")
@@ -1548,9 +1716,11 @@ local function flash(color: Color3?, from: number?, time: number?)
 	local f = frame :: Frame
 	f.BackgroundColor3 = color or LAVA
 	f.BackgroundTransparency = from or FLASH_FROM
-	local tween = TweenService:Create(f, TweenInfo.new(time or FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		BackgroundTransparency = 1,
-	})
+	local tween = TweenService:Create(
+		f,
+		TweenInfo.new(time or FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, false, hold or 0),
+		{ BackgroundTransparency = 1 }
+	)
 	flashTween = tween
 	tween:Play()
 end
@@ -1608,27 +1778,45 @@ end
 
 -- Back on the start deck after a fall. The fall's own effect (ModeSplash / ModeKill) played
 -- where the runner fell, out of sight of the camera's new spot, so the landing gets its beat
--- too: a soft white blink of the screen (lava already flashed red) and a puff with a ring
--- at the feet.
-local OOPS_FLASH_FROM = 0.5
-local OOPS_FLASH_TIME = 0.45
-local OOPS_DELAY = 0.12 -- lets the teleport land before the puff is placed
-local OOPS_PUFF = 4.5
-local OOPS_RING = 8
+-- too (OOPS at the top): a strong cool-white blink of the screen (lava already flashed red)
+-- and a big puff with a ring of smaller puffs and two rings at the feet.
 local function oops(reason: any)
-	local cloud = if typeof(W.Cloud) == "Color3" then W.Cloud else CLOUD_WHITE
 	if reason ~= "kill" then
-		flash(cloud, OOPS_FLASH_FROM, OOPS_FLASH_TIME)
+		flash(OOPS.FLASH_COLOR, OOPS.FLASH_FROM, OOPS.FLASH_TIME, OOPS.FLASH_HOLD)
 	end
-	task.delay(OOPS_DELAY, function()
+	task.delay(OOPS.DELAY, function()
 		local humanoid, root = character()
 		if not humanoid or not root or not running then
 			return
 		end
 		local feet = Vector3.new(root.Position.X, feetY(humanoid, root) + 0.4, root.Position.Z)
-		local anchor = anchorAt(feet, 2)
-		Sprites.billboard(anchor, "Puff", { position = feet, size = OOPS_PUFF, life = 0.7, rise = Vector3.new(0, 0.8, 0) })
-		Sprites.billboard(anchor, "Ring", { position = feet, size = OOPS_RING, life = 0.6, rise = Vector3.zero, color = cloud })
+		local anchor = anchorAt(feet, 2.4)
+		Sprites.billboard(anchor, "Puff", { position = feet, size = OOPS.PUFF, life = OOPS.PUFF_LIFE, rise = Vector3.new(0, 1.5, 0) })
+		local puffs = Budget.count(OOPS.PUFFS)
+		for i = 1, puffs do
+			local a = i / puffs * TAU
+			local out = Vector3.new(math.cos(a), 0, math.sin(a))
+			Sprites.billboard(anchor, "Puff", {
+				position = feet + out * 1.5,
+				size = OOPS.PUFF_SMALL,
+				life = OOPS.PUFF_LIFE,
+				delay = 0.02 * i,
+				rise = out * OOPS.PUFF_REACH + Vector3.new(0, 1, 0),
+			})
+		end
+		Sprites.billboard(
+			anchor,
+			"Ring",
+			{ position = feet, size = OOPS.RING, life = OOPS.RING_LIFE, rise = Vector3.zero, color = OOPS.RING_COLOR }
+		)
+		Sprites.billboard(anchor, "Ring", {
+			position = feet,
+			size = OOPS.RING_BIG,
+			life = OOPS.RING_LIFE,
+			delay = OOPS.RING_DELAY,
+			rise = Vector3.zero,
+			color = CLOUD_WHITE,
+		})
 	end)
 end
 
