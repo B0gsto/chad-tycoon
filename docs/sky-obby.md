@@ -36,8 +36,10 @@ checkpoint, per-checkpoint stage and Skip Stage rule in the earlier sections.
 - **Rainbow.** Every path element's `color` cycles the rainbow in path order:
   `Course.RAINBOW = { "RainbowRed", "RainbowOrange", "RainbowYellow", "RainbowGreen", "RainbowCyan", "RainbowBlue", "RainbowPurple", "RainbowPink" }`
   (Theme.World keys, World adds them). Checkpoints keep `color = "Checkpoint"` (a sky blue;
-  World adds the key) and movers/blinks keep their map's mover/blink colours. Map palettes stay
-  only as the `accent` for picker cards and landmark tints.
+  World adds the key) and movers/blinks keep their map's mover/blink colours. The rainbow is the
+  course DATA (tests check it); the built map tops and edges take each map's own palette from
+  `World/MapDress.luau` (scoring round 3: one rainbow look everywhere read as one map). Bridges
+  between maps stay rainbow.
 - **Sky scenery.** `level.PROPS` kinds become: `island` (floating green disc, `r`, grass top at
   `y`, rock cone below), `lighthouse`, `windmill` (spinning blades), `tree`, `balloon` (hot-air
   balloon, bobbing), `cloud` (white puffs), `star`, `rainbowarch`, `landmark` (the map's themed
@@ -104,9 +106,10 @@ checkpoint, per-checkpoint stage and Skip Stage rule in the earlier sections.
   outlined gold; "none" when the chosen one is tapped again) that fires `ParkourGear`.
   The existing run pill (timer) stays.
 - Ranking window: a third tab/board "STAGE" (People / Stage / Clears).
-- Fx.Modes: falling below the cloud floor shows a cloud poof instead of a water splash; the
-  per-map colour grades are toned down to a single sunny sky look (keep storm and volcano hints
-  very light); `SpinAxis` support for windmills.
+- Fx.Modes: falling below the cloud floor shows a cloud poof instead of a water splash; every
+  map grades the sunny sky its own clearly different way (`LOOK_TUNING`: sky / haze colour, sun
+  height, warmth; scoring round 3 brought this back after the single sunny look made all maps
+  read alike); `SpinAxis` support for windmills.
 - Finish card shows "Assisted run" instead of best/rank lines when `assisted`.
 - Map picker preview camera still frames the level's bounding box (now including islands).
 

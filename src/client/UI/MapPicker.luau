@@ -5,8 +5,9 @@
 	ten fit without scrolling (accent band with the map's icon, "MAP n", the best time and a
 	check when cleared or a lock badge when locked; the name and "Difficulty n/10" with its
 	pips below). The
-	selected card carries a thick gold rim, a lighter body and a gold chevron; a locked one has
-	a grey band (text kept bright) with what its first clear pays ("+$1.2K") beside the lock,
+	selected card carries a thick gold rim, a lighter body and a gold chevron; every card's band
+	is its map's theme colour (HEADERS) with a faint wash of it over the body; a locked one has
+	a darker, greyer band of that colour (text kept bright) with what its first clear pays ("+$1.2K") beside the lock,
 	"Clear <previous map> first" in place of its pips, and shakes with a "Clear <previous map>
 	first!" bubble when tapped.
 	Right, top to bottom: the selected map in a slowly orbiting ViewportFrame preview (panel
@@ -108,6 +109,28 @@ local LOCKED_SLATE = Color3.fromRGB(104, 112, 138)
 -- Accent fallbacks (Theme.World keys) for maps whose data has no accent yet.
 local ACCENTS = { "Sunny", "Teal", "Blue", "Coral", "Mint", "Pink", "Grape", "Blue", "Orange", "Sunny" }
 local ICONS = { "🏖️", "🌴", "⚓", "🐠", "🫧", "🪸", "🦈", "⛈️", "🌋", "👑" }
+-- Card look per map theme (tunables): the band colour, matching the map's own path colours
+-- (World.MapDress), and the faint wash of it over the card body. Locked cards keep the hue,
+-- darker and a little greyer, so every map shows its colour before it is unlocked.
+local HEADERS: { [string]: Color3 } = {
+	beach = Color3.fromRGB(255, 214, 72),
+	cove = Color3.fromRGB(90, 214, 150),
+	bay = Color3.fromRGB(96, 136, 245),
+	reef = Color3.fromRGB(255, 96, 176),
+	bubble = Color3.fromRGB(120, 196, 255),
+	coral = Color3.fromRGB(255, 140, 80),
+	shark = Color3.fromRGB(40, 176, 186),
+	storm = Color3.fromRGB(132, 144, 182),
+	volcano = Color3.fromRGB(255, 104, 18),
+	giga = Color3.fromRGB(255, 196, 40),
+}
+local THEMES = { "beach", "cove", "bay", "reef", "bubble", "coral", "shark", "storm", "volcano", "giga" }
+local BODY_WASH = 0.8 -- body background transparency over the card (1 = no wash)
+local LOCKED_DARK = 0.38 -- locked band: share pulled toward LOCKED_SLATE
+local LOCKED_GREY = 0.3 -- ... and toward its own grey
+local ICON_PX = 22
+-- Every caption on the cards and side panel is held at least this many px on the glass.
+local MIN_TEXT_PX = 15
 local STRIP = { ParkourFinish = true, ParkourWater = true, Trigger = true }
 -- The sky under the cloud floor (preview plane and well).
 local SEA = Color3.fromRGB(120, 190, 245)
@@ -125,7 +148,7 @@ local function readable(label: TextLabel, extra: number?): TextLabel
 	-- Kit.WINDOW's caption size on the glass (Kit.text holds every label in a window at it
 	-- anyway): `extra` px over it for the labels that lead their card.
 	local floor = if Kit.touch then Kit.WINDOW.TextPxTouch else Kit.WINDOW.TextPx
-	Kit.holdText(label, math.max(Kit.captionPx(), floor) + (extra or 0), nil, true)
+	Kit.holdText(label, math.max(Kit.captionPx(), floor, MIN_TEXT_PX) + (extra or 0), nil, true)
 	return label
 end
 
@@ -140,6 +163,11 @@ local function levelList(info: { [string]: any }?): { any }
 end
 
 local function accentOf(lv: any, i: number): Color3
+	local theme = if type(lv) == "table" and type(lv.theme) == "string" then lv.theme else THEMES[i]
+	local header = theme and HEADERS[theme]
+	if header then
+		return header
+	end
 	local key = if type(lv) == "table" and type(lv.accent) == "string" then lv.accent else ACCENTS[i] or "Sunny"
 	local color = (Theme.World :: any)[key]
 	if typeof(color) ~= "Color3" then
@@ -283,10 +311,10 @@ type Card = {
 	lockedLine: TextLabel,
 }
 
--- Grey version of an accent for locked bands: its luminance, pulled toward a cool slate.
+-- A locked band: the accent kept recognisable, a little greyer and pulled toward a cool slate.
 local function desaturate(color: Color3): Color3
 	local y = color.R * 0.3 + color.G * 0.59 + color.B * 0.11
-	return Color3.new(y, y, y):Lerp(LOCKED_SLATE, 0.6)
+	return color:Lerp(Color3.new(y, y, y), LOCKED_GREY):Lerp(LOCKED_SLATE, LOCKED_DARK)
 end
 
 function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
@@ -611,7 +639,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		local icon = Kit.text(band, {
 			Name = "Icon",
 			Text = "",
-			TextSize = 18,
+			TextSize = ICON_PX,
 			Size = UDim2.fromOffset(26, BAND_H),
 			Position = UDim2.fromOffset(6, 0),
 			StrokeThickness = 0,
@@ -681,6 +709,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			ZIndex = 2,
 			Parent = frame,
 		}) :: CanvasGroup
+		Kit.corner(body, Kit.RADIUS.M)
 		Kit.list(body, 2).VerticalAlignment = Enum.VerticalAlignment.Center
 		Kit.padding(body, 0, 10)
 		-- Map names are the biggest text on a card: two px over the captions.
@@ -788,8 +817,11 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		local locked = i > unlocked
 		local clears = if type(lv) == "table" then tonumber(lv.clears) or 0 else 0
 		local best = if type(lv) == "table" then tonumber(lv.best) or 0 else 0
-		-- Locked: a grey (desaturated) band with a lock badge; text stays at full brightness.
+		-- Locked: a darker, greyer band of the map's colour with a lock badge; text stays at
+		-- full brightness. The body wears a faint wash of the band colour.
 		local bandColor = if locked then desaturate(color) else color
+		card.body.BackgroundColor3 = bandColor
+		card.body.BackgroundTransparency = BODY_WASH
 		card.band.BackgroundColor3 = bandColor
 		local cover = card.band:FindFirstChild("Cover")
 		if cover and cover:IsA("Frame") then

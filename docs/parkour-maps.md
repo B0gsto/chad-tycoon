@@ -68,6 +68,14 @@ Prop kinds (the world builder draws each with parts; unknown kinds are skipped w
   volcano = dark slate rims with orange trim, storm = steel with cyan trim, reef = sand with coral
   trim, giga = gold rims.
 - Scenery: `MapDecor.build(level, folder)` draws every `level.PROPS` entry.
+- Map identity (`World/MapDress.luau`, all tunables in its `DRESS` table): path pads and slides
+  take the map's own top colours (`DRESS.TOPS[theme]`, cycled in walking order) and Neon edge
+  colour (`DRESS.EDGE`); Course data keeps its rainbow `color`. `MapDress.build` lines the path
+  with up to 16 signature props on small floating islets (`Level<i>/MapDress`): beach umbrellas,
+  cove palms, bay buoys, reef clownfish, bubble rising bubbles, coral staghorn, shark fins,
+  storm clouds with still volt bolts, volcano lava rocks, giga crown pillars. A spot is used only
+  when the prop keeps `Course.PROP_CLEARANCE + 2` studs from every element at every phase, the
+  bridges in and out, `level.PROPS` and the other dress props; every part is decor.
 - Tags/attributes the client animates:
   - `MapBubble` (BasePart): attribute `Rise` studs/s, `Top` world y where it pops and restarts at
     its rest y. Client bobs/raises them.
@@ -84,7 +92,8 @@ Prop kinds (the world builder draws each with parts; unknown kinds are skipped w
   client opens the Maps window with that map selected. (`ModeStart { mode = "parkour", level = n }`
   still starts and teleports; the player stands on the plaza while picking.)
 - New window `"Maps"` (`Windows.open("Maps")`): a header "PICK A MAP", a scrolling grid of 10
-  map cards (2 columns): accent band with icon and `MAP n`, name, "Difficulty n/10" with its pips, best time
+  map cards (2 columns): theme-coloured band (MapPicker `HEADERS`, locked cards keep the hue,
+  darker) with icon and `MAP n`, name, "Difficulty n/10" with its pips, best time
   and clears, lock state (locked cards dim with a lock; tapping says "Clear <previous name> first!").
   Selecting a card shows it in a side panel: a `ViewportFrame` preview of that map (lazy clone of
   `Map/GameModes/Parkour/Level<n>` without triggers, cached per map, camera framed on the whole
@@ -98,9 +107,12 @@ Prop kinds (the world builder draws each with parts; unknown kinds are skipped w
 ## Client fx (`Fx/Modes.luau`)
 
 - When a run starts on a level (start notify, `payload.level`), read the level folder's `Theme`
-  and apply an ambience until the run ends or the player leaves the level bounds: storm = darker
-  sky tint + fog (no lightning: the flashes annoyed players); volcano = warm tint
-  + ember particles from `MapGlow` parts; reef/bubble = none beyond bubbles; giga = gold sparkles.
+  and apply an ambience until the run ends or the player leaves the level bounds (`LOOK_TUNING`):
+  beach golden noon, cove turquoise, bay deep blue, reef pink haze, bubble icy bright, coral peach
+  sunset, shark deep teal, storm dim slate haze (no lightning: the flashes annoyed players),
+  volcano smoky orange late afternoon + ember particles from `MapGlow` parts, giga golden hour on a
+  grape sky. `AURAS`: giga gold sparkles, bubble rising rings, reef and coral drifting motes round
+  the runner.
   Restore defaults on finish/stop/invalid and on leaving the bounds.
 - Animate `MapBubble`, `MapBob`, `MapGlow` only when within ~250 studs of the
   player (like movers).

@@ -39,7 +39,9 @@
 	Level, Title, LevelName, StageFirst, StageLast, and the map's Theme, Blurb,
 	Icon, Accent). Platforms are bright SmoothPlastic candy slabs in their element's colour
 	with a lighter lip (a wider, bright Neon one on `path` elements, so the route stands out) and
-	a thin white underside; Course.BRIDGES[i] (the rainbow stairs to the
+	a thin white underside; path pads and slides take their map's own top / edge colours from
+	World.MapDress (which also lines the path with the map's signature props in
+	Level<i>/MapDress); Course.BRIDGES[i] (the rainbow stairs to the
 	next map) go into Level<i>/Bridge, the cloud floor far below (Course.cloudLayer) into
 	Level<i>/CloudFloor and the scenery (level.PROPS) is drawn by World.MapDecor into
 	Level<i>/Scenery. Named parts the game looks up: "ParkourStart" (trigger in gate 1's
@@ -61,6 +63,7 @@
 
 local Common = require(script.Parent.Common)
 local MapDecor = require(script.Parent.MapDecor)
+local MapDress = require(script.Parent.MapDress)
 local Course = require(script.Parent.Parent.Modes.Course)
 local Catalog = require(script.Parent.Parent.Modes.Catalog)
 
@@ -306,7 +309,7 @@ local UNDER_H, UNDER_IN = 0.5, 0.4
 -- out from the side platforms of the busy late maps (seen from above as an outline).
 local PATH_EDGE_OUT = 0.55
 local PATH_EDGE_TINT = 0.8
-local function platform(e: Course.Element, name: string, parent: Instance, rimInTop: boolean, fill: Color3?): BasePart
+local function platform(e: Course.Element, name: string, parent: Instance, rimInTop: boolean, fill: Color3?, edge: Color3?): BasePart
 	local col = fill or color(e.color)
 	local material = if e.color == "Wood" then Enum.Material.WoodPlanks else SMOOTH
 	local lipY = e.y - TOP_H - LIP_H / 2 + 0.05
@@ -314,7 +317,7 @@ local function platform(e: Course.Element, name: string, parent: Instance, rimIn
 	local under = if rimInTop then nil else parent
 	local onPath = (e :: any).path == true
 	local lipOut = if onPath then PATH_EDGE_OUT else LIP_OUT
-	local lipColor = col:Lerp(W.White, if onPath then PATH_EDGE_TINT else LIP_TINT)
+	local lipColor = if onPath and edge then edge else col:Lerp(W.White, if onPath then PATH_EDGE_TINT else LIP_TINT)
 	local lipMaterial = if onPath then Enum.Material.Neon else SMOOTH
 	local top: BasePart = nil :: any
 	if e.shape == "disc" then
@@ -741,7 +744,7 @@ local function wall(e: Course.Element, parent: Instance)
 end
 
 -- The finish slide: a ramp between two top-surface points with low guard rails and legs.
-local function slide(e: Course.Element, parent: Instance)
+local function slide(e: Course.Element, parent: Instance, fill: Color3?)
 	local from, to = e.from :: { number }, e.to :: { number }
 	local a = Vector3.new(from[1], from[2], from[3])
 	local b = Vector3.new(to[1], to[2], to[3])
@@ -755,7 +758,7 @@ local function slide(e: Course.Element, parent: Instance)
 		Name = "Slide",
 		Size = Vector3.new(d.Magnitude, 1, width),
 		CFrame = frame * CFrame.new(0, -0.5, 0),
-		Color = color(e.color),
+		Color = fill or color(e.color),
 		Parent = parent,
 	})
 	ramp:SetAttribute("Slide", true)
@@ -1585,9 +1588,21 @@ local function buildCourse(level: Course.Level, parent: Instance)
 	local tops: { [Course.Element]: BasePart } = {}
 	local deck = level.PATH[1]
 	local lobby = level.index == 1
+	-- The map's own path colours (World.MapDress): tops cycle its palette in walking order,
+	-- edges glow in its edge colour. Movers and blink pads keep their palette colours.
+	local walk: { [Course.Element]: number } = {}
+	for i, e in level.PATH do
+		walk[e] = i
+	end
+	local edge = MapDress.edge(level.theme)
+	local function fillOf(e: Course.Element): Color3?
+		local i = walk[e]
+		return if i then MapDress.top(level.theme, i) else nil
+	end
 	for _, e in level.ELEMENTS do
 		if e.kind == "pad" then
-			local top = platform(e, e.name or "Platform", parent, false, if lobby and e == deck then LOBBY_GREEN else nil)
+			local fill = if lobby and e == deck then LOBBY_GREEN else fillOf(e)
+			local top = platform(e, e.name or "Platform", parent, false, fill, edge)
 			if e == deck then
 				tops[e] = top
 			end
@@ -1602,7 +1617,7 @@ local function buildCourse(level: Course.Level, parent: Instance)
 		elseif e.kind == "wall" then
 			wall(e, parent)
 		elseif e.kind == "slide" then
-			slide(e, parent)
+			slide(e, parent, fillOf(e))
 		elseif e.kind == "kill" then
 			killBrick(e, parent)
 		end
@@ -1730,6 +1745,7 @@ local function buildCourse(level: Course.Level, parent: Instance)
 
 	cloudFloor(level, parent)
 	MapDecor.build(level, parent)
+	MapDress.build(level, parent)
 end
 
 -- The plaza specs: the GAME MODES plaza on -X and, when Course has it, the mirrored one on +X

@@ -11,7 +11,10 @@
 	            (0..1 along the map's path, set by the server), with a white caret under the
 	            bar, and the stretch still ahead is dimmed. Other players running the same
 	            map (their "ParkourStage" attribute equals ours) ride it too. Attributes are
-	            followed live (PlayerAdded / Removing too).
+	            followed live (PlayerAdded / Removing too). Forward moves glide; a drop back
+	            to the start after a fall slides back eased (RESET_TIME) instead of jumping.
+	  List      Roblox's player list is hidden from show to hide (Kit.hidePlayerList
+	            "parkour"): it covered the trophy end of the bar and SKIP MAP.
 	  Row       one line under the bar: Hud's run pill (docked through deps.dockRun) on the
 	            left, "MAP n / N · <map name>" in the centre (a stage is a map: N =
 	            stageCount - 1, map 10's finish being the last stage), a small grey SKIP MAP
@@ -103,6 +106,11 @@ local CONFIRM_H = 136
 -- Seconds the skip question stays up unanswered, and the "Oops!" line after a fall.
 local CONFIRM_SECONDS = 8
 local OOPS_SECONDS = 1.5
+-- Heads and the dimmed stretch glide GLIDE_TIME s forward; a drop (back to the start after a
+-- fall) slides back over RESET_TIME s with an ease in and out instead of jumping.
+local GLIDE_TIME = 0.3
+local RESET_TIME = 0.8
+local RESET_STYLE = Enum.EasingStyle.Quint
 local SLOT = 66
 local SLOT_GAP = 10
 -- The hotbar's bottom margin (design px): desktop, and the gamepad / TV title-safe edge
@@ -362,7 +370,7 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 	})
 
 	-- Heads.
-	type Head = { frame: Frame, image: ImageLabel, placed: boolean }
+	type Head = { frame: Frame, image: ImageLabel, placed: boolean, progress: number }
 	local heads: { [Player]: Head } = {}
 	local function stageOf(p: Player): number
 		return tonumber(p:GetAttribute("ParkourStage")) or 0
@@ -425,7 +433,7 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 				initial.Visible = false
 			end
 		end)
-		return { frame = frame, image = image, placed = false }
+		return { frame = frame, image = image, placed = false, progress = 0 }
 	end
 
 	-- Puts a player's head where they are along the map. Only the local player and players
@@ -449,8 +457,13 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		local progress = progressOf(p)
 		local target = UDim2.new(progress, 0, 1, 2)
 		local glide = animate and h.placed and shown
+		local back = progress < h.progress - 0.001
+		h.progress = progress
+		local time = if back then RESET_TIME else GLIDE_TIME
+		local style = if back then RESET_STYLE else Enum.EasingStyle.Quad
+		local dir = if back then Enum.EasingDirection.InOut else Enum.EasingDirection.Out
 		if glide then
-			Kit.tween(h.frame, 0.3, { Position = target }, Enum.EasingStyle.Quad)
+			Kit.tween(h.frame, time, { Position = target }, style, dir)
 		else
 			h.frame.Position = target
 		end
@@ -458,7 +471,7 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		if p == me then
 			local left = UDim2.fromScale(1 - progress, 1)
 			if glide then
-				Kit.tween(ahead, 0.3, { Size = left }, Enum.EasingStyle.Quad)
+				Kit.tween(ahead, time, { Size = left }, style, dir)
 			else
 				ahead.Size = left
 			end
@@ -1005,6 +1018,9 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		syncGear()
 		renderGear()
 		relayout() -- docks Hud's run pill into the row
+		-- Roblox's player list sits over the trophy end of the bar and SKIP MAP: hidden for
+		-- the run (hide puts it back; Main hides on finish / stop / invalid / not running).
+		Kit.hidePlayerList("parkour", true)
 		ObbyHud.setStage(stage, count)
 		if not was then
 			-- The bar drops in from above the screen.
@@ -1020,6 +1036,7 @@ function ObbyHud.build(screen: ScreenGui, deps: Deps?)
 		end
 		shown = false
 		root.Visible = false
+		Kit.hidePlayerList("parkour", false)
 		closeConfirm()
 		oopsToken += 1
 		oops.Visible = false
