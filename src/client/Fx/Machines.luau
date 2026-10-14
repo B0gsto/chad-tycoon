@@ -211,6 +211,7 @@ local TUNE = {
 		burstStars = 6,
 		burstPuff = 4, -- dust ring radius, studs
 		hold = 0.3, -- seconds an opened crate waits for Fx.Crates' ritual before it just bursts
+		smashBelow = 1.15, -- studs from the crate's bottom down to the middle of its "Smash now" button
 	},
 }
 
@@ -2049,7 +2050,9 @@ local function buildCrate(cr: Cracker, rarity: string, slotIndex: number)
 		smash.LightInfluence = 0
 		smash.MaxDistance = 28
 		smash.Size = UDim2.fromOffset(156, 38)
-		smash.StudsOffsetWorldSpace = Vector3.new(0, 0.2, 0)
+		-- Under the crate, not on it: measured in Studio, a button on the crate's middle
+		-- (offset 0.2) covered 38 of its 50 px and its whole width from 22 studs.
+		smash.StudsOffsetWorldSpace = Vector3.new(0, -(body.Size.Y / 2 + K.smashBelow), 0)
 		smash.Enabled = false
 		local button = Instance.new("TextButton")
 		button.Name = "Button"

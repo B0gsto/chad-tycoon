@@ -151,27 +151,27 @@ local MERGE = {
 			ring = { 6, 22 },
 			ringTime = 0.9,
 			rings = 2,
-			sparks = 32,
-			sparkSize = 2.4,
-			flash = 9,
+			sparks = 40,
+			sparkSize = 3.2,
+			flash = 7,
 			pop = 0.42,
 			chip = Vector2.new(13, 3.6),
 			chipLife = 1.6,
 			punch = 0.8,
-			pulse = 0.6,
+			pulse = 0.86,
 		},
 		best = {
 			ring = { 5, 30 },
 			ringTime = 0.9,
 			rings = 3,
-			sparks = 52,
-			sparkSize = 2.4,
-			flash = 11,
+			sparks = 60,
+			sparkSize = 3.2,
+			flash = 8,
 			pop = 0.6,
 			chip = Vector2.new(17, 6.2),
 			chipLife = 2.2,
 			punch = 1.5,
-			pulse = 0.78,
+			pulse = 0.88,
 		},
 	},
 	RingStroke = { 12, 3 }, -- the ring's line in pixels: at first, as it fades
@@ -179,7 +179,10 @@ local MERGE = {
 	RingGrow = 1.25,
 	SparkSpeed = NumberRange.new(12, 26),
 	SparkLife = NumberRange.new(0.6, 1.1),
-	FlashTime = 0.4,
+	-- The neon ball and the white screen pulse are kept light: at 0.1 and 0.6 (a 40% white
+	-- sheet held 2 frames) they lifted the whole frame's mean by 10 levels and hid the sparks.
+	FlashTime = 0.3,
+	FlashAlpha = 0.5, -- the neon ball's transparency as it starts
 	PopTime = 0.6, -- seconds of the result unit's overshoot
 	ChipAbove = 7.4, -- studs over the unit's feet the chip appears when the unit is not found ...
 	ChipRise = 2.2, -- ... and how far it floats up
@@ -187,9 +190,14 @@ local MERGE = {
 	ChipClearPx = 10, -- on screen too: the chip's bottom edge this many px over the unit's head
 	ChipSide = 1.5, -- studs aside (camera right) when the top HUD pushes the chip down
 	ChipFade = 0.35,
+	-- A chip that would cover one still on screen (a double merge: measured in Studio, the
+	-- "+TIER 2" and "+TIER 4" chips of a 3+3 / 1+1 merge overlapped by 175 x 31 px) stacks
+	-- above it with this gap, and pops this much later per chip under it.
+	ChipStackPx = 10,
+	ChipStagger = 0.2,
 	AutoChipGap = 0.6, -- seconds between the chips of auto merges
-	PulseHold = 0.035, -- seconds the white pulse holds at full strength (2 frames) ...
-	PulseTime = 0.16, -- ... and fades over
+	PulseHold = 0, -- seconds the white pulse holds at full strength (0: one frame) ...
+	PulseTime = 0.08, -- ... and fades over
 	-- A new best tier: a gold column of light over the unit for a moment.
 	BestBeam = { Height = 70, Width = 8, Time = 1.4 },
 	BestDelay = 4, -- seconds a new best tier takes to stop being news
@@ -1002,6 +1010,8 @@ local knownBest = 0
 local pendingBest = 0
 local seenTop = 0 -- the highest tier any merge has made so far
 local lastAutoChip = 0
+-- The "+TIER n" chips on screen: where each started, when, for how long, half its size.
+local liveChips: { { pos: Vector3, born: number, life: number, half: Vector2 } } = {}
 
 -- A gold ring that always faces the camera, growing from `from` to `to` studs as it fades.
 local function goldRing(pos: Vector3, from: number, to: number, time: number, delay: number)
@@ -1208,19 +1218,77 @@ local function chipSpot(feet: Vector3, kind: string): Vector3
 	return pos
 end
 
+-- The screen point of a chip at `pos`, and the pixels per stud there.
+local function chipBox(camera: Camera, pos: Vector3): (Vector3?, number)
+	local at = camera:WorldToViewportPoint(pos)
+	if at.Z <= 0.5 then
+		return nil, 0
+	end
+	local k = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+	return Vector3.new(at.X, at.Y, 0), k
+end
+
+-- `pos` moved up (camera up) until a chip there covers none of the chips on screen; how many
+-- it stacked over.
+local function clearOfChips(pos: Vector3, half: Vector2): (Vector3, number)
+	local camera = Workspace.CurrentCamera
+	local now = os.clock()
+	for i = #liveChips, 1, -1 do
+		if now - liveChips[i].born > liveChips[i].life then
+			table.remove(liveChips, i)
+		end
+	end
+	if not camera or #liveChips == 0 then
+		return pos, 0
+	end
+	local stacked = 0
+	for _ = 1, #liveChips do
+		local mine, k = chipBox(camera, pos)
+		if not mine then
+			break
+		end
+		local push, side = 0, 0
+		for _, c in liveChips do
+			local rise = MERGE.ChipRise * math.clamp((now - c.born) / c.life, 0, 1)
+			local other, ko = chipBox(camera, c.pos + Vector3.new(0, rise, 0))
+			if other then
+				local wide = math.abs(mine.X - other.X) < half.X * k + c.half.X * ko
+				local high = math.abs(mine.Y - other.Y) < half.Y * k + c.half.Y * ko
+				if wide and high then
+					-- Up until this chip's bottom edge clears the other's top edge (or, under the
+					-- top HUD, aside until its left edge clears the other's right edge).
+					push = math.max(push, (mine.Y + half.Y * k) - (other.Y - c.half.Y * ko) + MERGE.ChipStackPx)
+					side = math.max(side, (other.X + c.half.X * ko) - (mine.X - half.X * k) + MERGE.ChipStackPx)
+				end
+			end
+		end
+		if push <= 0 then
+			break
+		end
+		local up = camera.CFrame.UpVector * (push / k)
+		if Orbs.hudOffset(pos + up, 0, half.Y, MERGE.ChipRise).Magnitude > 0.01 then
+			pos += camera.CFrame.RightVector * (side / k)
+		else
+			pos += up
+		end
+		stacked += 1
+	end
+	return pos, stacked
+end
+
 -- The merge's impact on the rack, at the result unit drawn with its feet at `feet`: gold
 -- rings, a spark burst and a flash, the unit's pop, the "+TIER n" chip and a camera punch.
 -- `kind` is a key of MERGE.Kinds. Returns the point just over the chip (texts go above it).
 local function resultFx(feet: Vector3, tier: number, kind: string): Vector3
 	local k = MERGE.Kinds[kind]
-	local chipAt = chipSpot(feet, kind)
+	local chipAt, stacked = clearOfChips(chipSpot(feet, kind), k.chip / 2)
 	local chest = feet + Vector3.new(0, CHEST_HEIGHT, 0)
 	local to = k.ring[2]
 	for i = 1, k.rings do
 		goldRing(chest, k.ring[1], to, k.ringTime, (i - 1) * MERGE.RingGap)
 		to *= MERGE.RingGrow
 	end
-	local flash = fxPart(Enum.PartType.Ball, Vector3.one, CFrame.new(chest), MERGE.GoldLight, 0.1, Enum.Material.Neon)
+	local flash = fxPart(Enum.PartType.Ball, Vector3.one, CFrame.new(chest), MERGE.GoldLight, MERGE.FlashAlpha, Enum.Material.Neon)
 	tween(flash, MERGE.FlashTime, { Size = Vector3.one * k.flash, Transparency = 1 })
 	cleanup(flash, MERGE.FlashTime + 0.05)
 	burst(chest, MERGE.Gold, Budget.count(k.sparks), {
@@ -1239,7 +1307,13 @@ local function resultFx(feet: Vector3, tier: number, kind: string): Vector3
 		if kind == "auto" then
 			lastAutoChip = now
 		end
-		tierChip(chipAt, tier, kind)
+		local delay = stacked * MERGE.ChipStagger
+		table.insert(liveChips, { pos = chipAt, born = now + delay, life = k.chipLife, half = k.chip / 2 })
+		if delay > 0 then
+			task.delay(delay, tierChip, chipAt, tier, kind)
+		else
+			tierChip(chipAt, tier, kind)
+		end
 	end
 	if kind == "best" then
 		-- A gold column of light over the new best unit.

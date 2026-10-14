@@ -3227,6 +3227,31 @@ end
 -- figure, framed plinth to crown under GILD.Viewport's warm light; every other use keeps the
 -- figure.
 local SILHOUETTE = Color3.fromRGB(122, 146, 220)
+-- The statue's mesh is fetched as soon as Kit loads. A viewport built before it has arrived
+-- draws a dark blob for the whole card (a fresh profile's first tier-25 reveal, measured in
+-- Studio): until the fetch has succeeded a showcase keeps the gold code figure instead.
+local ContentProvider = game:GetService("ContentProvider")
+local function statueSource(): Instance?
+	local folder = ReplicatedStorage:FindFirstChild("AssetModels")
+	return folder and folder:FindFirstChild(AssetModels.name(AssetModels.ABSOLUTE_CHAD))
+end
+local function statueReady(): boolean
+	local source = statueSource()
+	local mesh = if source == nil then nil elseif source:IsA("MeshPart") then source else source:FindFirstChildWhichIsA("MeshPart", true)
+	if mesh == nil or (mesh :: MeshPart).MeshId == "" then
+		return true -- no mesh in the place: AssetModels builds its blocks, nothing to wait for
+	end
+	return ContentProvider:GetAssetFetchStatus((mesh :: MeshPart).MeshId) == Enum.AssetFetchStatus.Success
+end
+task.spawn(function()
+	local folder = ReplicatedStorage:WaitForChild("AssetModels", 30)
+	local source = folder and statueSource()
+	if source then
+		pcall(function()
+			ContentProvider:PreloadAsync({ source })
+		end)
+	end
+end)
 local function statueViewport(viewport: ViewportFrame): ViewportFrame
 	viewport:SetAttribute("Statue", true)
 	local V = CharacterFactory.GILD.Viewport
@@ -3259,7 +3284,7 @@ function Kit.unitViewport(parent: Instance, tier: number, props: { [string]: any
 	-- Tagged so tooling (preview renderer) can identify what the viewport shows.
 	viewport:SetAttribute("Tier", tier)
 	viewport:SetAttribute("Silhouette", silhouette == true)
-	if props.Statue == true and not silhouette and tier == Economy.MAX_TIER then
+	if props.Statue == true and not silhouette and tier == Economy.MAX_TIER and statueReady() then
 		return statueViewport(viewport)
 	end
 	local model = CharacterFactory.build(look, Theme.Tiers[tier].Name)

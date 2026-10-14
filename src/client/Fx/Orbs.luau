@@ -41,6 +41,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
+local GuiService = game:GetService("GuiService")
 
 local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 local Net = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Net"))
@@ -105,6 +106,11 @@ local FX = {
 	hud = {
 		top = 130, -- design px from the top of the screen a pop's top edge stays under (the
 		-- capsules end at about 110 at 1280x720)
+		-- The HUD's left column (TycoonUI children): every world pop steps right until it
+		-- clears them by `sideGap` design px. Measured in Studio: the collect's "+$34.06T" sat
+		-- at x 35..452 over the menu grid (x 13..302).
+		column = { "Menu", "Wallet" },
+		sideGap = 16,
 	},
 	-- The HUD's cash amount and Orbs.walletText (what a pad just took).
 	wallet = {
@@ -137,11 +143,17 @@ local FX = {
 		live = 40, -- on screen at once
 		size = 34, -- design px across (28 to 40 reads as a coin at 1280x720)
 		endSize = 0.75, -- share of the size on arrival
-		time = 0.8, -- seconds of flight: an even pace, so most of it is in open screen space
+		time = 0.8, -- seconds of flight (eased out: half the way in the first 30%)
 		stagger = 0.04, -- seconds between coins
 		lift = 230, -- design px the arc rises above the straight line (up into mid screen)
+		-- The arc's middle is pulled this share of the way to the screen centre, so coins from
+		-- a source on the left still cross mid-screen; and they leave fast (ease-out), so a
+		-- frame 0.3 s after a collect already catches the stream half way. Measured in Studio:
+		-- with a 0.12 s pop and a smoothstep flight the first coin left the piggy 0.13 s after
+		-- the event and was still beside it at +0.36 s.
+		centre = 0.5,
 		scatter = 56, -- design px of random start offset
-		burst = 0.12, -- seconds a coin takes to pop out before it flies
+		burst = 0.06, -- seconds a coin takes to pop out before it flies
 		spin = 300, -- degrees turned on the way
 		pop = 64, -- design px across of the arrival ring at the cash amount
 		popTime = 0.28, -- seconds
@@ -527,6 +539,40 @@ function Orbs.textHudOffset(pos: Vector3, scale: number, rise: number): Vector3
 	return Orbs.hudOffset(pos, px * pop / 2, (1.4 * k + 0.4) * FX.text.studs * pop / 2, rise)
 end
 
+-- The world offset (along the camera's right) that keeps a box `halfW` px wide either side of
+-- `pos` (and `halfH` px tall, rising `risePx` px on screen) clear of the HUD's left column.
+local function columnOffset(pos: Vector3, halfW: number, halfH: number, risePx: number): Vector3
+	local camera = Workspace.CurrentCamera
+	local playerGui = player:FindFirstChildOfClass("PlayerGui")
+	local screen = playerGui and playerGui:FindFirstChild("TycoonUI")
+	if not camera or not screen or not (screen :: ScreenGui).Enabled then
+		return Vector3.zero
+	end
+	local at = camera:WorldToViewportPoint(pos)
+	if at.Z <= 0.5 then
+		return Vector3.zero
+	end
+	local inset = if (screen :: ScreenGui).IgnoreGuiInset then Vector2.zero else GuiService:GetGuiInset()
+	local push = 0
+	for _, name in FX.hud.column do
+		local gui = screen:FindFirstChild(name)
+		if gui and gui:IsA("GuiObject") and gui.Visible then
+			local top = gui.AbsolutePosition.Y + inset.Y
+			local bottom = top + gui.AbsoluteSize.Y
+			local right = gui.AbsolutePosition.X + inset.X + gui.AbsoluteSize.X + FX.hud.sideGap * hudScale()
+			local overlapsY = at.Y + halfH > top and at.Y - halfH - risePx < bottom
+			if overlapsY and at.X - halfW < right then
+				push = math.max(push, right - (at.X - halfW))
+			end
+		end
+	end
+	if push <= 0 then
+		return Vector3.zero
+	end
+	local pxPerStud = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+	return camera.CFrame.RightVector * (push / pxPerStud)
+end
+
 function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions?)
 	local o = opts or {}
 	local k = math.clamp(o.scale or 1, 0.5, 3)
@@ -545,6 +591,19 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 			old:Destroy()
 		end
 	end
+	-- Pixel floor plus a share of the old stud size: about the old size up close, never tiny
+	-- far away.
+	local pxWide = px * FX.text.letter * math.max(utf8.len(text) or #text, 4) + px
+	local studsWide, studsHigh = (4 * k + 2) * FX.text.studs, (1.4 * k + 0.4) * FX.text.studs
+	do
+		local camera = Workspace.CurrentCamera
+		local at = camera and camera:WorldToViewportPoint(pos)
+		if camera and at and at.Z > 0.5 then
+			local pxPerStud = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+			local pop = FX.text.popScale
+			pos += columnOffset(pos, (pxWide + studsWide * pxPerStud) * pop / 2, (px + studsHigh * pxPerStud) * pop / 2, rise * pxPerStud)
+		end
+	end
 	local holder = basePart(Enum.PartType.Block, "FloatText")
 	holder.Size = Vector3.new(0.2, 0.2, 0.2)
 	holder.Transparency = 1
@@ -555,14 +614,11 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	holder.Parent = fxFolder()
 	table.insert(texts, holder)
 
-	-- Pixel floor plus a share of the old stud size: about the old size up close, never tiny
-	-- far away.
-	local pxWide = px * FX.text.letter * math.max(utf8.len(text) or #text, 4) + px
 	local gui = Instance.new("BillboardGui")
 	gui.AlwaysOnTop = true
 	gui.LightInfluence = 0
 	gui.MaxDistance = 220
-	gui.Size = UDim2.new((4 * k + 2) * FX.text.studs, pxWide, (1.4 * k + 0.4) * FX.text.studs, px)
+	gui.Size = UDim2.new(studsWide, pxWide, studsHigh, px)
 	gui.Parent = holder
 	local label = Instance.new("TextLabel")
 	label.BackgroundTransparency = 1
@@ -1053,11 +1109,13 @@ local function stepArc()
 			at = c.from:Lerp(c.burst, u)
 			size *= math.max(0.2, u)
 		else
-			-- Eased arc to the cash amount at an even pace: the coins spend their flight in open
-			-- screen space, not bunched at the source and then a blur into the wallet.
+			-- Eased-out arc to the cash amount through mid-screen: the coins leave the source at
+			-- once and spend their flight in open screen space, not bunched at the source.
 			local t = (age - FX.arc.burst) / FX.arc.time
-			local e = t * t * (3 - 2 * t)
-			local mid = c.burst:Lerp(target, 0.5) - Vector2.new(0, FX.arc.lift * k)
+			local e = 1 - (1 - t) * (1 - t)
+			local camera = Workspace.CurrentCamera
+			local centre = if camera then camera.ViewportSize / 2 else c.burst:Lerp(target, 0.5)
+			local mid = c.burst:Lerp(target, 0.5):Lerp(centre, FX.arc.centre) - Vector2.new(0, FX.arc.lift * k)
 			local u = 1 - e
 			at = c.burst * (u * u) + mid * (2 * u * e) + target * (e * e)
 			size *= 1 - (1 - FX.arc.endSize) * e
