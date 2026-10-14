@@ -232,6 +232,13 @@ Popups.JUICE = {
 		ShineAlpha = 0.65,
 		BurstCoins = 16,
 		BurstReach = 260,
+		-- The band starts ClearGap px right of the HUD's left column (Menu, Promo) where the
+		-- column stands at its height, so the menu buttons stay in view (r5: the surge plank
+		-- covered them), unless that leaves the band under ClearMinShare of the screen. Its
+		-- left end is round.
+		ClearLeft = { "Menu", "Promo" },
+		ClearGap = 16,
+		ClearMinShare = 0.6,
 		-- A banner never opens over a window, a modal or a reveal: it waits for them to
 		-- close, at most HoldMax seconds (then it is dropped), looking every Poll.
 		HoldMax = 15,
@@ -4138,6 +4145,16 @@ local FINISH = {
 	ScreenPower = 1.8,
 	FirstCash = 36,
 	FirstCashRoll = 1.5,
+	-- r5: the card's width (it was 480; the first clear wants a screen event), the confetti's
+	-- ZIndex inside the card (under its text lines and buttons, over the glass) and behind the
+	-- card for the bursts from the screen's bottom edge; the coin fountain leaves the reward
+	-- well sideways from both ends (CoinArcs, degrees, 270 = up), CoinsPerSide each, so it
+	-- never crosses the "Best" line or the amount.
+	Width = 640,
+	ConfettiZ = 0,
+	BackConfettiZ = 44,
+	CoinArcs = { { 165, 215 }, { -35, 15 } },
+	CoinsPerSide = 10,
 }
 
 function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: () -> (), onNext: (() -> ())?, onPick: (() -> ())?)
@@ -4190,7 +4207,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 		-- The sky course's return to the gates waits while this card is up: the server is told
 		-- when it opens and when it closes.
 		local action = Net.event("Action")
-		local box, close = modal("ModeFinish", Vector2.new(480, noteY + 22 + 14 + buttonsH), 45, nil, function()
+		local box, close = modal("ModeFinish", Vector2.new(FINISH.Width, noteY + 22 + 14 + buttonsH), 45, nil, function()
 			Popups.finishCards[done] = nil
 			action:FireServer({ action = "ModeCard", mode = data.mode, open = false })
 			done()
@@ -4486,7 +4503,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 					Kit.confetti(box, {
 						Origin = UDim2.fromScale(x, 0.1),
 						Count = if firstClear then FINISH.Confetti else 24,
-						ZIndex = 60,
+						ZIndex = FINISH.ConfettiZ,
 						Power = if firstClear then 1.15 else 1,
 					})
 				end
@@ -4532,19 +4549,29 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 					t += 0.1
 				end
 				if box.Parent and box.Parent.Parent then
-					Popups.coinBurst(box.Parent :: Frame, UDim2.new(0.5, 0, 0, 48 + wellY + 31), 60)
+					-- From the well's two ends, outward (the holder is the card's width).
+					for i, arc in FINISH.CoinArcs do
+						local at = UDim2.new(i - 1, if i == 1 then 24 else -24, 0, 48 + wellY + 31)
+						Popups.coinBurst(box.Parent :: Frame, at, 60, arc, FINISH.CoinsPerSide)
+					end
 				end
 			end)
 		end
 		if firstClear and not calm then
-			-- Confetti up from the screen's bottom edge, left, middle and right.
+			-- Confetti up from the screen's bottom edge, left, middle and right: behind the card
+			-- (in its holder, under the glass), so no piece lands on a text line.
 			for i = 1, FINISH.ScreenBursts do
 				after(0.15 + (i - 1) * FINISH.BurstGap, function()
-					if box.Parent then
-						Kit.confetti(screen, {
-							Origin = UDim2.fromScale(i / (FINISH.ScreenBursts + 1), 1.02),
+					local holder = box.Parent :: Frame?
+					if box.Parent and holder and holder.AbsoluteSize.X > 0 then
+						local k = FINISH.Width / holder.AbsoluteSize.X
+						local spot = Vector2.new(screen.AbsoluteSize.X * i / (FINISH.ScreenBursts + 1), screen.AbsoluteSize.Y * 1.02)
+							+ screen.AbsolutePosition
+							- holder.AbsolutePosition
+						Kit.confetti(holder, {
+							Origin = UDim2.fromOffset(spot.X * k, spot.Y * k),
 							Count = FINISH.Confetti,
-							ZIndex = 60,
+							ZIndex = FINISH.BackConfettiZ,
 							Power = FINISH.ScreenPower,
 						})
 					end
@@ -5905,11 +5932,14 @@ function Popups.bannerEntrance(holder: Frame, band: Frame)
 	band.Size = UDim2.new(open.X.Scale, open.X.Offset, 0, 0)
 	Kit.tween(band, J.BandTime, { Size = open }, Enum.EasingStyle.Back)
 	-- The shine: clipped to the band (three screens wide, the screen is its middle third).
+	-- A band that starts at the holder's left edge (inset past the HUD) shows the holder's
+	-- width: the shine crosses just that.
+	local leftBand = band.AnchorPoint.X == 0
 	local clip = Kit.new("Frame", {
 		Name = "Shine",
 		BackgroundTransparency = 1,
 		ClipsDescendants = true,
-		Size = open,
+		Size = if leftBand then UDim2.fromScale(1, 1) else open,
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 29,
@@ -5934,19 +5964,31 @@ function Popups.bannerEntrance(holder: Frame, band: Frame)
 		}),
 		Parent = bar,
 	})
-	tweenAfter(bar, J.ShineTime, J.ShineAt, { Position = UDim2.fromScale(0.7, 0) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+	if leftBand then
+		bar.Position = UDim2.fromScale(0.05, 0)
+	end
+	tweenAfter(
+		bar,
+		J.ShineTime,
+		J.ShineAt,
+		{ Position = UDim2.fromScale(if leftBand then 1 else 0.7, 0) },
+		Enum.EasingStyle.Sine,
+		Enum.EasingDirection.InOut
+	)
 	task.delay(J.ShineAt + J.ShineTime + 0.05, function()
 		clip:Destroy()
 	end)
 end
 
--- Coins bursting up and out of `at` (the banner's reward chip), then falling away.
-function Popups.coinBurst(holder: Frame, at: UDim2, zindex: number)
+-- Coins bursting up and out of `at` (the banner's reward chip), then falling away. `arc`
+-- (degrees, screen y down: 270 is straight up) and `count` change the spread and number.
+function Popups.coinBurst(holder: Frame, at: UDim2, zindex: number, arc: { number }?, count: number?)
 	local J = Popups.JUICE.Banner
-	for _ = 1, J.BurstCoins do
+	local spread = arc or { 200, 340 }
+	for _ = 1, count or J.BurstCoins do
 		local coin = moneyPiece(holder, false, zindex)
 		coin.Position = at
-		local angle = math.rad(math.random(200, 340))
+		local angle = math.rad(math.random(spread[1], spread[2]))
 		local reach = J.BurstReach * (0.5 + math.random() * 0.6)
 		local peak = at + UDim2.fromOffset(math.cos(angle) * reach, math.sin(angle) * reach)
 		Kit.tween(coin, 0.3, { Position = peak, Rotation = math.random(-90, 90) }, Enum.EasingStyle.Quad)
@@ -6080,6 +6122,29 @@ end
 	  OnDropped runs when a held banner is dropped
 ]]
 local BANNER_Y = 0.34
+-- Px the banner starts right of the screen's left edge: clear of the HUD's left column where
+-- it stands at the band's height (Popups.JUICE.Banner.ClearLeft), else 0.
+function Popups.bannerInset(height: number): number
+	local J = Popups.JUICE.Banner
+	if PREVIEW then
+		return 0
+	end
+	local top = screen.AbsoluteSize.Y * BANNER_Y - height / 2
+	local right = 0
+	for _, name in J.ClearLeft do
+		local g = screen:FindFirstChild(name)
+		if g and g:IsA("GuiObject") and g.Visible then
+			local y, h = g.AbsolutePosition.Y - screen.AbsolutePosition.Y, g.AbsoluteSize.Y
+			if y < top + height and y + h > top then
+				right = math.max(right, g.AbsolutePosition.X - screen.AbsolutePosition.X + g.AbsoluteSize.X)
+			end
+		end
+	end
+	if right <= 0 or screen.AbsoluteSize.X - right - J.ClearGap < screen.AbsoluteSize.X * J.ClearMinShare then
+		return 0
+	end
+	return math.ceil(right + J.ClearGap)
+end
 function Popups.banner(opts: { [string]: any })
 	if not PREVIEW and not opts._held and screen:GetAttribute("WindowOpen") == true then
 		Popups.holdBanner(opts)
@@ -6095,27 +6160,33 @@ function Popups.banner(opts: { [string]: any })
 	if old then
 		old:Destroy()
 	end
+	local inset = Popups.bannerInset(height)
+	local round = if inset > 0 then math.floor(height / 2) else 0
 	local holder = Kit.new("Frame", {
 		Name = "Banner",
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, height),
-		Position = UDim2.fromScale(0.5, BANNER_Y),
+		Size = UDim2.new(1, -inset, 0, height),
+		Position = UDim2.new(0.5, inset / 2, BANNER_Y, 0),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 28,
 		Parent = screen,
 	})
-	-- Wider than any screen, so its ends are never seen (also past the safe area).
+	-- Wider than any screen, so its far end is never seen (also past the safe area); with
+	-- an inset it starts at the holder's left edge, round.
 	local band = Kit.new("Frame", {
 		Name = "Band",
 		BackgroundColor3 = WHITE,
 		BackgroundTransparency = 0.06,
 		BorderSizePixel = 0,
 		Size = UDim2.new(3, 0, 1, 0),
-		Position = UDim2.fromScale(0.5, 0.5),
-		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = if inset > 0 then UDim2.fromScale(0, 0.5) else UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = if inset > 0 then Vector2.new(0, 0.5) else Vector2.new(0.5, 0.5),
 		ZIndex = 28,
 		Parent = holder,
 	})
+	if round > 0 then
+		Kit.corner(band, round)
+	end
 	Kit.gradient(band, Kit.lighten(color, 0.32), Kit.darken(color, 0.1))
 	for _, y in { 0, 1 } do
 		Kit.new("Frame", {
@@ -6123,8 +6194,8 @@ function Popups.banner(opts: { [string]: any })
 			BackgroundColor3 = if y == 0 then WHITE else Kit.lip(color),
 			BackgroundTransparency = if y == 0 then 0.3 else 0,
 			BorderSizePixel = 0,
-			Size = UDim2.new(1, 0, 0, 4),
-			Position = UDim2.fromScale(0, y),
+			Size = UDim2.new(1, -round, 0, 4),
+			Position = UDim2.new(0, round, y, 0),
 			AnchorPoint = Vector2.new(0, y),
 			ZIndex = 29,
 			Parent = band,
@@ -6238,7 +6309,11 @@ function Popups.tutorialDone(cash: number, done: () -> ())
 		Confetti = 42,
 		CoinBurst = true,
 		Sound = "Celebrate",
-		OnClosed = done,
+		-- The HUD's MODES UNLOCKED burst waits for this banner to have gone (Hud).
+		OnClosed = function()
+			screen:SetAttribute("TutorialCheered", true)
+			done()
+		end,
 	})
 	if PREVIEW then
 		done()

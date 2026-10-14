@@ -502,6 +502,24 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 		if data.source == "Collect" or (data.source == "Free" and not fromMenu) then
 			return
 		end
+		if data.source == "Mode" then
+			-- A mode's finish card (sent with this payout) counts the reward up with its own
+			-- coins: the HUD's stream would cross its text lines, so it waits for the card to
+			-- go and then flies from the middle of the screen (r5).
+			task.delay(0.3, function()
+				local card = screen:FindFirstChild("ModeFinish") or screen:FindFirstChild("MogFinish")
+				if not card then
+					Hud.coinBurst(amount, if typeof(data.padPos) == "Vector3" then data.padPos else nil, nil)
+					return
+				end
+				local waited = 0
+				while card.Parent and waited < 90 do
+					waited += task.wait(0.2)
+				end
+				Hud.coinBurst(amount, nil, nil)
+			end)
+			return
+		end
 		Hud.coinBurst(amount, if typeof(data.padPos) == "Vector3" then data.padPos else nil, if fromMenu then Hud.buttons.Free else nil)
 	elseif kind == "Pad" then
 		-- Fx.Machines plays the deny sound and pad wobble; the wallet shake

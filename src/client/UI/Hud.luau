@@ -360,6 +360,8 @@ local TUNE = {
 	ModesUnlockPillH = 44,
 	ModesUnlockGap = 22, -- the menu's right edge to the pill's pointer
 	ModesUnlockHold = 4.5,
+	ModesUnlockAfter = 0.4, -- s after the YOU DID IT banner has gone
+	ModesUnlockWaitMax = 20, -- s it waits for that banner at most
 	ModesUnlockBeat = 0.45,
 	-- The dumbbell's charge ring: TankRing segments on an ellipse (radii in design px, centred
 	-- at TankRingCentreY of its height: round the plaque), lit as the carried aura grows toward
@@ -926,6 +928,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		ring = {} :: { [string]: boolean },
 		focus = nil :: string?,
 		modesNewUntil = 0,
+		-- The goal plate says READY: one cue at a time, so the Modes ring and arrow rest.
+		goalReady = false,
 		stopBreath = nil :: (() -> ())?,
 		refocus = function() end,
 		modesSeen = function() end,
@@ -944,11 +948,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		for name, wanted in menu.ring do
 			local button = Hud.buttons[name]
 			if button then
-				Kit.setGlow(button, wanted and name == focus)
+				Kit.setGlow(button, wanted and name == focus and not (name == "Modes" and menu.goalReady))
 			end
 		end
 		if menu.arrow then
-			menu.arrow.Visible = menu.wants.ModesNew == true and focus == "Modes"
+			menu.arrow.Visible = menu.wants.ModesNew == true and focus == "Modes" and not menu.goalReady
 		end
 		if focus == "Daily" and Hud.buttons.Daily then
 			menu.stopBreath = menu.stopBreath or Kit.breathe(Hud.buttons.Daily, 0.06)
@@ -1227,15 +1231,29 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				menu.wants.ModesNew = true
 				menu.ring.Modes = true
 				menu.refocus()
-				-- The burst waits for a window in the way to close (a few seconds at most).
+				-- The burst waits for the tutorial's "YOU DID IT!" banner to have come and gone
+				-- (Popups sets "TutorialCheered" as it closes) and for nothing to stand in its way
+				-- (a window, a modal card, a reveal, another banner), at most ModesUnlockWaitMax s.
 				task.spawn(function()
-					for _ = 1, 20 do
-						if screen:GetAttribute("WindowOpen") ~= true then
-							break
-						end
-						task.wait(0.5)
+					local function busy(): boolean
+						return screen:GetAttribute("WindowOpen") == true
+							or screen:GetAttribute("ModalOpen") == true
+							or screen:GetAttribute("RevealOpen") == true
+							or screen:FindFirstChild("Banner") ~= nil
 					end
-					if screen:GetAttribute("WindowOpen") ~= true and screen:GetAttribute("RunActive") ~= true then
+					local waited = 0
+					while waited < TUNE.ModesUnlockWaitMax do
+						if screen:GetAttribute("TutorialCheered") == true and not busy() then
+							-- A clear moment that lasts ModesUnlockAfter (a surge banner may follow).
+							waited += task.wait(TUNE.ModesUnlockAfter)
+							if not busy() then
+								break
+							end
+						else
+							waited += task.wait(0.1)
+						end
+					end
+					if not busy() and screen:GetAttribute("RunActive") ~= true then
 						menu.unlockBurst()
 					end
 				end)
@@ -1429,17 +1447,25 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		ZIndex = 3,
 	})
 	-- The ready gift's "CLAIM!" sits on a gold tab (it breathes with the word, its edge beats).
+	-- A sibling under the word, not its child: with Sibling ZIndex a child draws over its
+	-- parent's text, and the tab hid the word (r5: a blank gold pill in every capture).
 	local claimTab = Kit.new("Frame", {
 		Name = "ClaimTab",
 		BackgroundColor3 = TUNE.ClaimTab,
 		BorderSizePixel = 0,
 		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.new(0, TUNE.ClaimTabW, 1, TUNE.ClaimTabPad),
 		Visible = false,
-		ZIndex = 2,
-		Parent = freeTimer,
+		ZIndex = freeTimer.ZIndex - 1,
+		Parent = corner,
 	})
+	local function placeClaimTab()
+		local at, size = freeTimer.Position, freeTimer.Size
+		claimTab.Position = UDim2.new(at.X.Scale, at.X.Offset, at.Y.Scale, at.Y.Offset + size.Y.Offset / 2)
+		claimTab.Size = UDim2.new(0, TUNE.ClaimTabW, 0, size.Y.Offset + TUNE.ClaimTabPad)
+	end
+	placeClaimTab()
+	freeTimer:GetPropertyChangedSignal("Position"):Connect(placeClaimTab)
+	freeTimer:GetPropertyChangedSignal("Size"):Connect(placeClaimTab)
 	Kit.round(claimTab)
 	do
 		local edge = Kit.new("UIStroke", { Thickness = TUNE.ClaimTabEdgeWidth[1], Color = TUNE.ClaimTabEdge, Parent = claimTab })
@@ -2208,6 +2234,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				return
 			end
 			goalReady, champNow, legendNow = ready, champ, legend
+			if menu.goalReady ~= ready then
+				menu.goalReady = ready
+				menu.refocus()
+			end
 			-- LEGEND (every tier found, every milestone claimed): crown-lit royal violet with a
 			-- thick gold edge and gold title, a slower sheen; CHAMPION before that is gold.
 			local fill = if ready then C.Good elseif legend then TUNE.LegendPlate elseif champ then TUNE.ChampPlate else nil
@@ -3865,9 +3895,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 					Kit.pop(freeButton, 0.8)
 					local stopGift = hop(freeButton, UDim2.fromScale(0.5, 0))
 					local stopWord = Kit.breathe(freeTimer, TUNE.GiftWordBreathe)
+					local stopTab = Kit.breathe(claimTab, TUNE.GiftWordBreathe)
 					stopFreeBounce = function()
 						stopGift()
 						stopWord()
+						stopTab()
 					end
 				elseif stopFreeBounce then
 					stopFreeBounce()
