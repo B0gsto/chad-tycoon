@@ -8,12 +8,13 @@
 	  Lobby card   right side (top right on touch): POSE COPY, the goal ("Copy 8 flexes to
 	               pass"), BEST and CLEARS, the reward status (full pack ready, or the time
 	               to the next one and what a pass pays now), a big PLAY button (tap, Enter,
-	               gamepad A; sends "PoseBegin") and LEAVE ("ModeQuit"; B arms it on a
-	               controller, a second B confirms).
+	               gamepad X: A stays jump; sends "PoseBegin") and LEAVE ("ModeQuit"; B arms
+	               it on a controller, a second B confirms).
 	  Rehearsal    standing at the arena's "RehearsalSpot" in the lobby shows the flex pad
-	               with a floating "Practise your flexes" hint; the pad and the keys strike
-	               the flex on the avatar (Fx.Pose.rehearse). Nothing is sent and the keys
-	               still walk (they pass through), so stepping off ends it.
+	               with a floating "Practise your flexes" hint and the mirror's reflection
+	               (Fx.Pose.mirror); the pad, the arrow keys and the D-pad strike the flex on
+	               the avatar (Fx.Pose.rehearse). Nothing is sent; WASD still walk (and do
+	               not flex there), so stepping off ends it.
 	  Countdown    a big 3, 2, 1, GO! before the first show; the game HUD comes up.
 	  Play         Top pill: "ROUND n" with the goal ("PASS AT 8", then "BEST n"), the
 	               hearts and the quiet quit button (X; first tap arms "QUIT?", the second
@@ -29,11 +30,14 @@
 	               WASD and the D-pad press them. Shaded while the rival shows, each lights
 	               up as its flex is shown; a wrong press flashes red and lights the right one.
 	  Results      after "win" / "lose": flexes copied, the best (NEW BEST! pulses), the pay,
-	               PLAY AGAIN (Enter / A; "PoseBegin") and LOBBY (B). It goes when the
-	               snapshot's phase is back to "lobby".
+	               PLAY AGAIN (Enter / X; "PoseBegin") and LOBBY (B; "PoseLobby"). It goes on
+	               the server's "lobby" (or the snapshot's phase back to "lobby").
+	  Lobby again  "lobby" { reason } puts the lobby card back; "bumped" (another player
+	               needed the podium) and "full" (every podium busy) say so in a toast.
 	The arena's "BestBoard" SurfaceGui gets its "Best", "Clears" and "Reward" TextLabels
-	filled from the snapshot (values only; any missing piece is skipped). The player list is
-	hidden for the whole stay, the touch thumbstick during countdown and play.
+	filled from the snapshot, each with its caption ("BEST: 5 FLEXES"; a missing piece is
+	skipped). The player list is hidden for the whole stay, the touch thumbstick during
+	countdown and play.
 
 	Wired from Main.client.luau (nothing else needs editing):
 	  init(screen)        once, builds the HUD (hidden)
@@ -76,7 +80,7 @@ local REHEARSE_RADIUS = 9
 local RESULTS_FALLBACK = 9
 local RESULTS_LOBBY = 6 -- the server's own return to the lobby (docs/minigames.md)
 
--- Which flex each key strikes (arrows, WASD, D-pad).
+-- Which flex each key strikes (arrows, WASD, D-pad). At the mirror WASD only walk.
 local KEYS: { [Enum.KeyCode]: number } = {
 	[Enum.KeyCode.Up] = 1,
 	[Enum.KeyCode.W] = 1,
@@ -91,6 +95,7 @@ local KEYS: { [Enum.KeyCode]: number } = {
 	[Enum.KeyCode.S] = 4,
 	[Enum.KeyCode.DPadDown] = 4,
 }
+local WALK_KEYS = { [Enum.KeyCode.W] = true, [Enum.KeyCode.A] = true, [Enum.KeyCode.S] = true, [Enum.KeyCode.D] = true }
 -- The key chip on each button: keyboard letter, controller direction.
 local CHIPS = { { "W", "UP" }, { "A", "LEFT" }, { "D", "RIGHT" }, { "S", "DOWN" } }
 -- Where each button sits in the D-pad (column, row from the centre).
@@ -402,6 +407,11 @@ end
 
 local hintToken = 0
 
+-- The mirror's floating hint (keyboard: only the arrows flex there, WASD walk).
+local function practiseText(): string
+	return Kit.hint("Practise your flexes", "Practise: arrow keys", "Practise: D-pad")
+end
+
 local function rehearse(i: number)
 	PoseFx.rehearse(i)
 	lightButton(i, 0.35)
@@ -413,7 +423,7 @@ local function rehearse(i: number)
 	Kit.pop(rehearseHint, 1.2)
 	task.delay(1.2, function()
 		if hintToken == mine then
-			rehearseHint.Text = "Practise your flexes"
+			rehearseHint.Text = practiseText()
 			rehearseHint.TextColor3 = C.Text
 		end
 	end)
@@ -475,17 +485,22 @@ end
 
 local begin: () -> () = function() end
 local toLobby: () -> () = function() end
+local leaveResults: () -> () = function() end
 
 local function onAction(_name: string, state: Enum.UserInputState, input: InputObject): Enum.ContextActionResult
+	-- In a game the player is held on the podium and every key only flexes. At the mirror
+	-- WASD keep walking (and do not flex: the avatar would turn and step), so stepping off
+	-- is always possible; the arrows and the D-pad flex there.
+	if not running and WALK_KEYS[input.KeyCode] then
+		return Enum.ContextActionResult.Pass
+	end
 	if state == Enum.UserInputState.Begin then
 		local i = KEYS[input.KeyCode]
 		if i then
 			press(i)
 		end
 	end
-	-- In a game the player is held on the podium and the keys only flex; at the mirror the
-	-- same keys still walk, so stepping off is always possible.
-	return if running then Enum.ContextActionResult.Sink else Enum.ContextActionResult.Pass
+	return Enum.ContextActionResult.Sink
 end
 
 local function onBack(_name: string, state: Enum.UserInputState): Enum.ContextActionResult
@@ -495,7 +510,7 @@ local function onBack(_name: string, state: Enum.UserInputState): Enum.ContextAc
 		elseif stage == "lobby" then
 			leavePress()
 		elseif stage == "results" then
-			toLobby()
+			leaveResults()
 		end
 	end
 	return Enum.ContextActionResult.Sink
@@ -508,8 +523,8 @@ local function onConfirm(_name: string, state: Enum.UserInputState): Enum.Contex
 	return Enum.ContextActionResult.Sink
 end
 
--- Binds what the current stage needs: the flex keys in a game and at the mirror, Enter / A
--- for PLAY in the lobby and results, B / Y for quit, leave or lobby.
+-- Binds what the current stage needs: the flex keys in a game and at the mirror, Enter / X
+-- for PLAY in the lobby and results (gamepad A stays jump), B / Y for quit, leave or lobby.
 local function rebind()
 	ContextActionService:UnbindAction(ACTION)
 	ContextActionService:UnbindAction(BACK_ACTION)
@@ -533,7 +548,7 @@ local function rebind()
 			PRIORITY,
 			Enum.KeyCode.Return,
 			Enum.KeyCode.KeypadEnter,
-			Enum.KeyCode.ButtonA
+			Enum.KeyCode.ButtonX
 		)
 	end
 end
@@ -670,13 +685,13 @@ local function rewardStatus(): (string, Color3)
 	return line .. "\n" .. now, C.TextDim
 end
 
--- The board's one-liner.
+-- The board's reward line (captioned: the board's label is the whole line).
 local function boardReward(): string
 	if reward.full == true then
-		return "READY! +" .. Format.money(math.max(num(reward.packCash, 0), num(reward.cash, 0)))
+		return "REWARD READY: +" .. Format.money(math.max(num(reward.packCash, 0), num(reward.cash, 0)))
 	end
 	local left = cooldownLeft()
-	return if left > 0 then "NEXT PACK IN " .. Format.time(left) else "READY SOON"
+	return if left > 0 then "NEXT REWARD IN " .. Format.time(left) else "REWARD READY SOON"
 end
 
 local function refreshLobby()
@@ -717,8 +732,9 @@ end
 local function fillBoard()
 	local b = board()
 	if b then
-		setBoardLabel(b, "Best", tostring(best))
-		setBoardLabel(b, "Clears", tostring(clears))
+		setBoardLabel(b, "Title", "YOUR BEST")
+		setBoardLabel(b, "Best", "BEST: " .. best .. (if best == 1 then " FLEX" else " FLEXES"))
+		setBoardLabel(b, "Clears", "CLEARS: " .. clears)
 		setBoardLabel(b, "Reward", boardReward())
 	end
 end
@@ -765,9 +781,10 @@ local function setRehearse(on: boolean)
 		bobStop()
 		bobStop = nil
 	end
+	PoseFx.mirror(on)
 	if on then
 		shadePad(false)
-		rehearseHint.Text = "Practise your flexes"
+		rehearseHint.Text = practiseText()
 		rehearseHint.TextColor3 = C.Text
 		rehearseHint.Visible = true
 		bobStop = Kit.bob(rehearseHint, 6, 1.3)
@@ -935,11 +952,11 @@ local function readRun(p: any)
 	end
 end
 
--- A game starts on screen: the countdown (seconds) or, from an older server, the show.
-local function beginGame(p: any, countdown: number?)
+-- A game starts on screen: the "countdown" (seconds until the first show).
+local function beginGame(p: any, countdown: number)
 	readRun(p)
 	running = true
-	setStage(if countdown then "countdown" else "play")
+	setStage("countdown")
 	restorePlay()
 	phase = "intro"
 	beat += 1
@@ -956,19 +973,23 @@ local function beginGame(p: any, countdown: number?)
 	Kit.hideTouchControls("pose", true)
 	top.Visible = true
 	layoutPad()
-	if countdown then
-		showBanner("GET READY!", "Watch the Chad, then copy his flexes", C.Gold)
-		showCountdown(countdown)
-	else
-		showBanner("POSE COPY!", "Watch the Chad, then copy his flexes", C.Gold)
-		Sounds.play("Ready")
-	end
+	showBanner("GET READY!", "Watch the Chad, then copy his flexes", C.Gold)
+	showCountdown(countdown)
 	rebind()
 end
 
 toLobby = function()
 	stopShow()
 	setStage("lobby")
+end
+
+-- LOBBY on the results card: the server moves the player back now ("PoseLobby"); its
+-- "lobby" notify follows, the card goes at once.
+leaveResults = function()
+	if stage == "results" then
+		action:FireServer({ action = "PoseLobby" })
+	end
+	toLobby()
 end
 
 begin = function()
@@ -992,13 +1013,9 @@ local function hideAll()
 	setStage("off")
 end
 
+-- "start" (entered the mode) and "lobby" (back from a game): the lobby card.
 function PoseHud.start(payload: { [string]: any }?)
 	local p: any = payload or {}
-	if p.phase == nil then
-		-- An older server: "start" is the game itself.
-		beginGame(p, nil)
-		return
-	end
 	readRun(p)
 	stopShow()
 	setStage("lobby")
@@ -1015,6 +1032,11 @@ function PoseHud.onNotify(payload: { [string]: any })
 		PoseHud.start(p)
 	elseif event == "stop" then
 		PoseHud.stop(p)
+	elseif event == "lobby" then
+		PoseHud.start(p)
+		if p.reason == "bumped" then
+			Popups.toast("Another chad needed your podium. Back to the lobby!", "info")
+		end
 	elseif event == "full" then
 		Popups.toast(if type(p.text) == "string" then p.text else "The posing stage is full, wait a moment!", "info")
 		if stage == "lobby" then
@@ -1340,7 +1362,7 @@ local function buildCard(screenGui: ScreenGui)
 	}, function()
 		begin()
 	end)
-	keyChip(again, "ENTER", "A")
+	keyChip(again, "ENTER", "X")
 	local back = Kit.button(card, {
 		Name = "Lobby",
 		Text = "LOBBY",
@@ -1350,7 +1372,7 @@ local function buildCard(screenGui: ScreenGui)
 		AnchorPoint = Vector2.new(0, 1),
 		ZIndex = 42,
 	}, function()
-		toLobby()
+		leaveResults()
 	end)
 	keyChip(back, "", "B")
 end
@@ -1435,7 +1457,7 @@ local function buildLobby(screenGui: ScreenGui)
 	}, function()
 		begin()
 	end)
-	keyChip(playButton, "ENTER", "A")
+	keyChip(playButton, "ENTER", "X")
 	Kit.text(lobby, {
 		Text = "or step on the glowing START pad",
 		TextSize = 13,

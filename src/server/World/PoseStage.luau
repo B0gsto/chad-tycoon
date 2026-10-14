@@ -69,13 +69,14 @@ local STAGE = {
 -- either side are the green room (+X) and the TV-crew corner (-X).
 local SHOW_W = 56
 
--- Green room layout (x / z offsets from the arena centre).
+-- Green room layout (x / z offsets from the arena centre; the spawn, mirror and inner edge
+-- come from PoseRules.LOBBY, which Modes.Pose and the tests read too).
 local LOBBY = {
-	X0 = 28.6, -- inner edge (the velvet rope runs just inside it, at X0 - 0.3)
-	X = 40, -- centre line
-	SpawnZ = 12,
-	MirrorZ = -7,
-	SpotX = 45.5, -- the RehearsalSpot, in front of the mirror at the +X edge
+	X0 = PoseRules.LOBBY.x0, -- inner edge (the velvet rope runs just inside it, at X0 - 0.3)
+	X = PoseRules.LOBBY.spawnX, -- centre line
+	SpawnZ = PoseRules.LOBBY.spawnZ,
+	MirrorZ = PoseRules.LOBBY.mirrorZ,
+	SpotX = PoseRules.LOBBY.spotX, -- the RehearsalSpot, in front of the mirror at the +X edge
 	BestZ = 7,
 	BoardZ = -20.5, -- front face of the HOW TO PLAY board
 	PathZ = -1.2, -- centre of the path to the START pad (between the barrier and the stage)
