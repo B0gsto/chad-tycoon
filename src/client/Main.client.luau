@@ -522,11 +522,19 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 		Sounds.play("Buy", 0.1)
 	elseif kind == "Merge" then
 		Popups.noteMerge()
+		-- The "+TIER n" chip (Fx.Shelf) holds the screen: toasts wait for it. (Not for the Auto
+		-- Merge pass's steady merges, or toasts would hardly ever get a turn.)
+		if data.auto ~= true then
+			Popups.holdToasts("Merge")
+		end
 	elseif kind == "Upgrade" then
 		Sounds.play("Upgrade")
+		-- So does the "+25% SPEED" pop (Fx.Machines); its "upgraded for free" toast follows it.
+		Popups.holdToasts("Upgrade")
 	elseif kind == "ChestOpen" then
 		-- The crate reveal (Popups) plays its own shake/burst sounds.
 		Popups.noteChestOpen(data.rarity)
+		Popups.holdToasts("Crate")
 	elseif kind == "ChestPickup" then
 		Sounds.play("Pickup")
 	elseif kind == "CardioSteps" then
