@@ -253,6 +253,9 @@ local TUNE = {
 	ChipIcon = 22,
 	ChipText = 17,
 	ChipGap = 8,
+	-- px from the chips' bottom up from the "Cash" line: clear of the SURGE chip's 3 px gold
+	-- edge and its breathing (r5: at 4 it sat tight on CASH), about 6 px of air left.
+	ChipLift = 11,
 	ChipPad = 10,
 	ChipRadius = 10,
 	-- The beat: every badge dot on a HUD button pops ("!" harder than a count), one button
@@ -2911,7 +2914,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	})
 	local chips = group("Status", {
 		Size = UDim2.fromOffset(400, TUNE.ChipH),
-		Position = UDim2.fromOffset(0, 62 - TUNE.ChipH - 4),
+		Position = UDim2.fromOffset(0, 62 - TUNE.ChipH - TUNE.ChipLift),
 		Parent = wallet,
 	})
 	Kit.new("UIListLayout", {
@@ -3114,7 +3117,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		cashPlate.Size = UDim2.fromOffset(8 + x + (if addButton.Visible then 10 + 44 + 10 else 10), TUNE.CashPlateH)
 		chips.Position = if Kit.touch
 			then UDim2.fromOffset(drawnWidth(multLine.Text, multLine.TextSize, multLine.Font) + 14, 73 - TUNE.ChipH // 2)
-			else UDim2.fromOffset(0, 62 - TUNE.ChipH - 4)
+			else UDim2.fromOffset(0, 62 - TUNE.ChipH - TUNE.ChipLift)
 	end
 	moneyLabel:GetPropertyChangedSignal("Text"):Connect(layoutWallet)
 	-- Income (`cashGain`, from refresh): the cash plate flashes green and a "+$X" floats up

@@ -230,6 +230,8 @@ Popups.JUICE = {
 		ShineTime = 0.55,
 		ShineWidth = 190,
 		ShineAlpha = 0.65,
+		-- The band is opaque (r5: at 0.06 the plot's signs ghosted through "YOU DID IT!").
+		BandAlpha = 0,
 		BurstCoins = 16,
 		BurstReach = 260,
 		-- The band starts ClearGap px right of the HUD's left column (Menu, Promo) where the
@@ -247,9 +249,11 @@ Popups.JUICE = {
 	-- The surge banner's extras: a gold edge round the whole screen and a rain of coins.
 	Surge = {
 		Color = C.Gold,
+		-- Edge-only (r5: 26% deep bands top and bottom tinted half the frame gold): bands
+		-- EdgeDepth of the height top and bottom, EdgeSide of the width at the sides.
 		EdgeAlpha = 0.62,
-		EdgeDepth = 0.26,
-		EdgeSide = 0.17,
+		EdgeDepth = 0.12,
+		EdgeSide = 0.08,
 		EdgeIn = 0.3,
 		EdgeHold = 2.3,
 		EdgeOut = 0.6,
@@ -4151,6 +4155,9 @@ local FINISH = {
 	-- well sideways from both ends (CoinArcs, degrees, 270 = up), CoinsPerSide each, so it
 	-- never crosses the "Best" line or the amount.
 	Width = 640,
+	-- r6: px the medal (and its rays and twinkles) sits above the card's top edge's middle,
+	-- so its shadow clears the title (r5: the flag badge touched "MAP 1 CLEAR!").
+	MedalLift = 10,
 	ConfettiZ = 0,
 	BackConfettiZ = 44,
 	CoinArcs = { { 165, 215 }, { -35, 15 } },
@@ -4231,7 +4238,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			Popups.spinRays(big, FINISH.FirstRaySpin)
 			Kit.appear(big, { from = 0.3, time = 0.5, style = Enum.EasingStyle.Quart })
 		end
-		local medalAt = UDim2.new(0.5, 0, 0, 0)
+		local medalAt = UDim2.new(0.5, 0, 0, -FINISH.MedalLift)
 		if firstClear then
 			-- Behind the medal and (made first) under the title: rays, and twinkles on a ring
 			-- lifted so its lower edge stays off the title.
@@ -4242,7 +4249,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 				Name = "MedalSparkles",
 				BackgroundTransparency = 1,
 				Size = UDim2.fromOffset(FINISH.Medal, FINISH.Medal),
-				Position = UDim2.new(0.5, 0, 0, -math.floor(FINISH.Medal * 0.35)),
+				Position = UDim2.new(0.5, 0, 0, -math.floor(FINISH.Medal * 0.35) - FINISH.MedalLift),
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Parent = box,
 			})
@@ -6176,7 +6183,7 @@ function Popups.banner(opts: { [string]: any })
 	local band = Kit.new("Frame", {
 		Name = "Band",
 		BackgroundColor3 = WHITE,
-		BackgroundTransparency = 0.06,
+		BackgroundTransparency = Popups.JUICE.Banner.BandAlpha,
 		BorderSizePixel = 0,
 		Size = UDim2.new(3, 0, 1, 0),
 		Position = if inset > 0 then UDim2.fromScale(0, 0.5) else UDim2.fromScale(0.5, 0.5),

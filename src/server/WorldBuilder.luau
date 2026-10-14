@@ -19,6 +19,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
+local Assets = require(ReplicatedStorage.Shared.Assets)
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Layout = require(script.Parent.PlotLayout)
 
@@ -162,8 +163,16 @@ local ARCH_DRESS = {
 	PoleTop = 20,
 	PoleThick = 0.4,
 	KnobSize = 1,
-	FlagSize = Vector2.new(4.2, 2.8),
+	-- Each pole's flag is a pennant: a square hoist by the pole carrying a star emblem (the HUD's
+	-- "Star" icon on a white roundel, both faces), then a triangle tapering outward to a point.
+	-- The tier-15 cups stand on these poles' knobs; plain rectangles read as sticky notes.
+	FlagSize = Vector2.new(5.4, 2.8), -- whole pennant: length out from the pole, height at the hoist
+	FlagHoist = 2.6, -- studs of the length that is the square hoist (the rest is the tail)
+	FlagThick = 0.15,
 	FlagColors = { "Coral", "Sunny" },
+	FlagEmblem = 0.8, -- roundel diameter / the hoist's height
+	FlagEmblemRing = { "Sunny", "Coral" }, -- the roundel's rim, per flag (the other flag's colour)
+	FlagEmblemPx = 40, -- SurfaceGui pixels per stud
 	-- Pennants: from each pole (PennantDrop under its flag) out to a short pole on the fence at
 	-- |x| = PennantEndX, PennantEndY up (so the last pennant hangs clear of the 3.6-stud fence),
 	-- sagging PennantSag in the middle.
@@ -271,6 +280,81 @@ local function stringRod(P: (props: { [string]: any }) -> BasePart, from: Vector
 		false
 end
 
+-- One entrance pole's pennant flag (ARCH_DRESS.Flag*): the hoist with its star roundel on
+-- both faces and two wedges making the tail's point; `side` is -1 or 1, `i` the flag's index.
+local function dressArchFlag(B: Builder, x: number, z: number, side: number, i: number)
+	local d = ARCH_DRESS
+	local color = Paint[d.FlagColors[i]]
+	local h, hoist = d.FlagSize.Y, d.FlagHoist
+	local tail = d.FlagSize.X - hoist
+	local inner = x + side * d.PoleThick / 2
+	local midY = d.PoleTop - h / 2
+	local flag = soft(B.P({
+		Name = "ArchFlag",
+		Size = Vector3.new(hoist, h, d.FlagThick),
+		CFrame = B.L(inner + side * hoist / 2, midY, z),
+		Color = color,
+	}))
+	-- The tail: an upper and a lower right triangle meeting at the point, tall side at the hoist.
+	local back = Vector3.new(-side, 0, 0)
+	for _, up in { Vector3.yAxis, -Vector3.yAxis } do
+		soft(B.W({
+			Name = "ArchFlagTail",
+			Size = Vector3.new(d.FlagThick, h / 2, tail),
+			CFrame = B.cf
+				* CFrame.fromMatrix(Vector3.new(inner + side * (hoist + tail / 2), midY + up.Y * h / 4, z), up:Cross(back), up, back),
+			Color = color,
+		})).CastShadow =
+			false
+	end
+	local icon = Assets.icon("Star")
+	local ring = Paint[d.FlagEmblemRing[i]] or Paint.White
+	for _, face in { Enum.NormalId.Front, Enum.NormalId.Back } do
+		local gui = Instance.new("SurfaceGui")
+		gui.Name = "ArchFlagEmblem"
+		gui.Face = face
+		gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+		gui.PixelsPerStud = d.FlagEmblemPx
+		gui.LightInfluence = 0.3
+		gui.MaxDistance = Common.SIGN_FADE_CARD
+		gui.Parent = flag
+		local disc = Instance.new("Frame")
+		disc.AnchorPoint = Vector2.new(0.5, 0.5)
+		disc.Position = UDim2.fromScale(0.5, 0.5)
+		disc.Size = UDim2.fromScale(d.FlagEmblem * h / hoist, d.FlagEmblem)
+		disc.BackgroundColor3 = Paint.White
+		disc.Parent = gui
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(0.5, 0)
+		round.Parent = disc
+		local rim = Instance.new("UIStroke")
+		rim.Color = ring
+		rim.Thickness = 5
+		rim.Parent = disc
+		if icon then
+			local star = Instance.new("ImageLabel")
+			star.BackgroundTransparency = 1
+			star.AnchorPoint = Vector2.new(0.5, 0.5)
+			star.Position = UDim2.fromScale(0.5, 0.5)
+			star.Size = UDim2.fromScale(0.9, 0.9)
+			star.Image = icon.image
+			star.ImageRectOffset = Vector2.new(icon.x, icon.y)
+			star.ImageRectSize = Vector2.new(icon.w, icon.h)
+			star.ScaleType = Enum.ScaleType.Fit
+			star.Parent = disc
+		else
+			text(disc, {
+				Text = "★",
+				Font = theme.Fonts.Display,
+				TextColor3 = Paint.Sunny,
+				Size = UDim2.fromScale(0.86, 0.86),
+				Position = UDim2.fromScale(0.07, 0.07),
+				Outline = true,
+			})
+		end
+	end
+end
+
 -- Flags and pennants on the entrance arch (ARCH_DRESS).
 local function dressArch(B: Builder)
 	local d = ARCH_DRESS
@@ -292,13 +376,8 @@ local function dressArch(B: Builder)
 			CFrame = L(x, d.PoleTop + d.KnobSize * 0.3, z),
 			Color = Paint.Sunny,
 		}))
-		-- The flag flies outward from its pole, just under the knob.
-		soft(P({
-			Name = "ArchFlag",
-			Size = Vector3.new(d.FlagSize.X, d.FlagSize.Y, 0.15),
-			CFrame = L(x + side * (d.PoleThick / 2 + d.FlagSize.X / 2), d.PoleTop - d.FlagSize.Y / 2, z),
-			Color = Paint[d.FlagColors[i]],
-		}))
+		-- The pennant flies outward from its pole, just under the knob.
+		dressArchFlag(B, x, z, side, i)
 		-- Pennants: right triangles hanging point down from the sagging line, flat to the hub,
 		-- out to a short pole standing on the fence.
 		local topY = d.PoleTop - d.FlagSize.Y - d.PennantDrop
