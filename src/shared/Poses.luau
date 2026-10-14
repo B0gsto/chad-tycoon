@@ -929,6 +929,110 @@ STORY.BenchDown = {
 	}),
 }
 
+-- MOG TEST moves for a player's own avatar (Client.Fx.Mog plays them through Fx.PlayerPose,
+-- some only for their legs under a Chad flex). Knees bend over planted feet: the shin's lean
+-- is the thigh's plus the knee's, the foot takes it back out, and the root drops to match.
+
+-- Anticipation: coiled down, arms gathered low in front, eyes still on the rival.
+STORY.MogWindup = {
+	base = P({
+		UpperTorso = { -8, 0, 0 },
+		Head = { 8, 0, 0 },
+		RightUpperArm = { 22, 0, -12 },
+		RightLowerArm = { 70, 0, 0 },
+		RightUpperLeg = { 28, 0, 8 },
+		RightLowerLeg = { -50, 0, 0 },
+		RightFoot = { 22, 0, -8 },
+	}, -0.2),
+}
+
+-- A step in: right foot forward with the knee over it, left leg trailing.
+STORY.MogLunge = {
+	base = P({
+		UpperTorso = { -8, 0, 0 },
+		Head = { 6, 0, 0 },
+		RightUpperArm = { 0, 0, 9 },
+		RightLowerArm = { 10, 0, 0 },
+		RightUpperLeg = { 34, 0, 6 },
+		RightLowerLeg = { -38, 0, 0 },
+		RightFoot = { 4, 0, -6 },
+		LeftUpperLeg = { -18, 0, -6 },
+		LeftLowerLeg = { -10, 0, 0 },
+		LeftFoot = { 28, 0, 6 },
+	}, -0.16),
+}
+
+-- Airborne before a stomp: right knee driven up high, arms in a double biceps.
+STORY.MogKneeUp = {
+	base = P({
+		UpperTorso = { 2, 0, 0 },
+		Head = { 6, 0, 0 },
+		RightUpperArm = { 0, 14, 94 },
+		RightLowerArm = { 0, 0, 104 },
+		RightHand = { 0, 0, 18 },
+		RightUpperLeg = { 75, 0, 6 },
+		RightLowerLeg = { -85, 0, 0 },
+		RightFoot = { 10, 0, 0 },
+		LeftUpperLeg = { 0, 0, -6 },
+		LeftFoot = { 0, 0, 6 },
+	}),
+}
+
+-- The stomp landed: a wide, low sumo stance, arms still flexed.
+STORY.MogStomp = {
+	base = P({
+		UpperTorso = { -4, 0, 0 },
+		Head = { 4, 0, 0 },
+		RightUpperArm = { 0, 14, 94 },
+		RightLowerArm = { 0, 0, 104 },
+		RightHand = { 0, 0, 18 },
+		RightUpperLeg = { 30, 0, 22 },
+		RightLowerLeg = { -52, 0, 0 },
+		RightFoot = { 22, 0, -22 },
+	}, -0.3),
+}
+
+-- Knocked off balance: leaning back and twisted, arms flung out wheeling, right foot
+-- stepping back to catch the fall.
+STORY.MogStagger = {
+	base = P({
+		UpperTorso = { 16, 10, 6 },
+		Head = { -6, -12, 4 },
+		RightUpperArm = { 40, 0, 80 },
+		RightLowerArm = { 0, 0, 40 },
+		LeftUpperArm = { -20, 0, -50 },
+		LeftLowerArm = { 30, 0, 0 },
+		RightUpperLeg = { -22, 0, 6 },
+		RightLowerLeg = { -14, 0, 0 },
+		RightFoot = { 30, 0, -6 },
+		LeftUpperLeg = { 16, 0, -4 },
+		LeftLowerLeg = { -10, 0, 0 },
+		LeftFoot = { -6, 0, 4 },
+	}, -0.08),
+	anim = function(v, t)
+		local s = math.sin(t * 9)
+		add(v, "RightUpperArm", 14 * s, 0, 6 * s)
+		add(v, "LeftUpperArm", -14 * s, 0, 6 * s)
+	end,
+}
+
+-- Shaking it off: hunched a little, head shaking fast.
+STORY.MogShakeOff = {
+	base = P({
+		UpperTorso = { -6, 0, 0 },
+		Head = { -8, 0, 0 },
+		RightUpperArm = { 6, 0, 6 },
+		RightLowerArm = { 14, 0, 0 },
+		RightUpperLeg = { 0, 0, 5 },
+		RightFoot = { 0, 0, -5 },
+	}, -0.02),
+	anim = function(v, t)
+		local s = math.sin(t * 16)
+		add(v, "Head", 0, 18 * s, 0)
+		add(v, "UpperTorso", 0, 4 * s, 0)
+	end,
+}
+
 -- Animation sets -----------------------------------------------------------------
 
 type Set = {
