@@ -215,8 +215,8 @@ sand island in the sea.
   (`docs/cardio.md`):
   build Speed, run ten stages, and cash out only by stepping on a safe zone's WIN plate (deeper plates pay
   more; every plate keeps its own first clear, so a plate you ran past still pays it later); a fall or a
-  chaser's catch sends you back to stage 1. Stage 3, the first with a chaser, needs 1,100 Speed: its
-  longest gap is 16.5 studs and its Chad runs at 0.85 of the stage's walk speed after a 2 s head start.
+  chaser's catch sends you back to stage 1. Stage 3, the first with a chaser, needs 830 Speed: its
+  longest gap is 16 studs and its Chad runs at 0.85 of the stage's walk speed after a 2 s head start.
   Its HUD shows Speed and the Multiplier / Treadmill / Best / Goal lines on dark plates, with a pulsing
   gold star on the bar at the recommended Speed; speed lines and a rainbow trail come in at high speed.
 - **Shop packs scale with progression.** Cash packs pay 15 min / 1 h / 5 h / 24 h of your income, and aura

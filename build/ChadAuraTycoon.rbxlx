@@ -26468,11 +26468,13 @@ end)
 	  repeatCash; "resting": a plate that would pay it, inside CardioRules.REPEAT_GAP of the
 	  last one); repeatFrom = the first plate that can pay the bonus (the best plate);
 	  repeatReadyAt = os.time() from which the bonus is paid again (0 = now).
-	  { event = "fall", stage = 0, from, reason, speed, need, slow, capped }
+	  { event = "fall", stage = 0, from, reason, speed, need, slow, capped, zone? }
 	                                  back in the lobby from stage `from`; reason "fall" |
 	                                  "caught"; speed = whole Speed, need = that stage's need,
 	                                  slow = the run's WalkSpeed was below what the need gives,
-	                                  capped = ...only because of the player's own speed cap
+	                                  capped = ...only because of the player's own speed cap;
+	                                  zone = n when the fall was off safe zone n's own deck
+	                                  (then slow and capped are false)
 	  { event = "upgrade", level, cost, rate, multiplier, nextCost? }
 	  { event = "refused", reason, cost? }        upgrade refused: "run" | "far" | "max" | "cash"
 	  { event = "stop", reason }
@@ -26934,10 +26936,14 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		end
 		if failed then
 			local from = state.stage + 1
+			-- Off the side of a safe zone's own deck (not a stage's jumps): the HUD says so instead
+			-- of the next stage's need.
+			local room = CardioLayout.roomAt(x)
+			local zone = if failed == "fall" and room and room.kind == "zone" then room.stage else nil
 			-- Why, for the HUD: was the run slower than the stage's need asks for?
 			local speed = record(session).speed
 			local need = NEEDS[from] or 0
-			local slow = state.walk < CardioRules.walkSpeed(need) - WALK_STEP
+			local slow = zone == nil and state.walk < CardioRules.walkSpeed(need) - WALK_STEP
 			restart(player, state, failed)
 			GameModes.notify(player, "fall", ID, {
 				stage = 0,
@@ -26947,6 +26953,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 				need = need,
 				slow = slow,
 				capped = slow and speed >= need,
+				zone = zone,
 			})
 			GameModes.refresh(player)
 			return
@@ -27688,6 +27695,10 @@ CardioLayout.ZONE_WALL_HEIGHT = 30
 CardioLayout.KILL_ABOVE = 1.5
 -- Feet below this (anywhere in the mode) count as a fall; every room's killY equals it.
 CardioLayout.KILL_Y = CardioLayout.ORIGIN.y - CardioLayout.ROOM.floorDrop + CardioLayout.KILL_ABOVE
+-- Run-ups whose sideways leg is pinned to this many keys (else 2-6 at random). Stage 3 is the
+-- first chase: its Chad's catch is measured along X, so a wide leg right after the trigger
+-- would let it catch a runner who is still well ahead on the path.
+CardioLayout.SHORT_LEG = { [3] = 2 } :: { [number]: number }
 -- Shortest run-up a stage may get (studs, incl. the jog leg); generate() errors below it.
 CardioLayout.RUNUP_MIN = 48
 -- Side / cap walls: thickness and bottom Y (below the hazard floor).
@@ -28480,6 +28491,10 @@ function CardioLayout.generate(): Layout
 		local sillIn = doors[#doors]
 		cur += DW
 		local shift = (2 + math.floor(rand() * 5)) * K
+		if CardioLayout.SHORT_LEG[n] then
+			-- After the draw, so every later random number stays the same.
+			shift = CardioLayout.SHORT_LEG[n] * K
+		end
 		local latC = if latA + shift <= reach and (latA - shift < -reach or rand() < 0.5) then latA + shift else latA - shift
 		latC = math.clamp(latC, -reach, reach)
 		local legCols = wCols
@@ -29058,8 +29073,10 @@ return CardioLayout
 	Stage n's longest (flat) gap is <= maxGap(walkSpeed(need_n)) and > reach(walkSpeed(need_n-1)),
 	so the previous stage's Speed can never clear it, even with a perfect edge jump.
 	Stage 3 is the first with a chaser, so its gaps are shorter than the curve allows: at
-	exactly its need the longest jump keeps 2.9 studs of reach in reserve (2.4 with a 17), 3.5
-	at the recommended Speed.
+	exactly its need the longest jump keeps 2.4 studs of reach in reserve (3 x SAFETY), 3.4 at
+	the recommended Speed. Its need (830, was 1,100) is the lowest that keeps that reserve over
+	the shortest gap stage 2's need cannot clear (16), so a first session reaches the chaser
+	about 2-3.5 minutes of running after stage 2 (it was 4.5-5).
 	The HUD also shows recommended(n) = RECOMMEND x need (15% more Speed) as the Speed to run a
 	stage with comfortably.
 
@@ -29067,20 +29084,22 @@ return CardioLayout
 	  stage  need     walk   maxGap  prev reach  longest gap
 	    1        0    16.0     7.9        -          7
 	    2      150    25.9    13.2      10.2        12
-	    3    1,100    35.8    18.6      15.5        16.5
-	    4    3,500    45.8    24.0      20.9        22.5
-	    5    8,000    55.7    29.4      26.3        28
-	    6   15,000    65.5    34.7      31.7        33
-	    7   27,000    76.8    40.8      37.0        39
-	    8   45,000    88.7    47.3      43.1        45
-	    9   77,000   103.8    55.4      49.6        52.5
-	   10  125,000   120.0    64.2      57.7        61
+	    3      830    34.0    17.6      15.5        16
+	    4    2,400    42.1    22.0      19.9        20.5
+	    5    5,800    51.5    27.1      24.3        25.5
+	    6   12,000    61.8    32.7      29.4        30.5
+	    7   23,000    73.5    39.0      35.0        36.5
+	    8   41,000    86.4    46.0      41.3        43.5
+	    9   72,000   101.7    54.3      48.3        51
+	   10  125,000   120.0    64.2      56.6        61
 
 	Progression check (a coarse 1 s simulation, also run in tests/cardio.luau): a player who
 	spends half the time running on keys (60% of the time actually stepping) and half on the
 	best treadmill they have reached, and buys one treadmill level every 4 minutes, reaches
-	  stage 2 ~1.5 min, 3 ~6 min, 4 ~12 min, 5 ~18 min, 6 ~23 min, 7 ~29 min, 8 ~34 min,
-	  9 ~41 min, 10 ~49 min (about 70% of the Speed from treadmills).
+	  stage 2 ~1.5 min, 3 ~5 min, 4 ~9.5 min, 5 ~15 min, 6 ~20 min, 7 ~26 min, 8 ~32 min,
+	  9 ~39 min, 10 ~48 min (about 70% of the Speed from treadmills).
+	From stage 2 (150 Speed, plate 2 claimed: x1.5 steps) to stage 3's 830 is about 3.3 minutes
+	of running on keys at 60% stepping, 2 minutes nonstop, 4.7 on the zone 2 treadmills.
 	Step multiplier: (1 + 0.25 * bestStage) * (1 + 0.1 * treadmillLevel)  (x1 .. x7)
 	Treadmill rate:  0.45 * (1 + zoneStage)^1.3 * (1 + 0.25 * level)
 	                 * max(1, (speed / 150)^0.25)                         Speed/s
@@ -29194,13 +29213,13 @@ CardioRules.STAGE_COUNT = 10
 CardioRules.STAGES = {
 	stage("Home Row",         "Mint",      0,      7,  25.2, 25.2, 4, 0,   nil,          nil),
 	stage("Shift Street",     "Sunny",     150,    12, 22.4, 25.2, 4, 1,   nil,          nil),
-	stage("Tab Tunnel",       "Teal",      1100,   16.5, 22.4, 22.4, 4, 2,   nil,          nil),
-	stage("Caps Lock Canyon", "Orange",    3500,   22.5, 16.8, 22.4, 3, 2.5, { 2.2, 3.2 }, nil),
-	stage("Enter Expressway", "Pink",      8000,   28, 16.8, 22.4, 3, 3,   { 2.0, 3.0 }, nil),
-	stage("Backspace Bridge", "Blue",      15000,  33, 14, 16.8, 3, 3.5, { 1.9, 2.9 }, { travel = 8, period = 5 }),
-	stage("Function Falls",   "Grape",     27000,  39, 14, 16.8, 3, 4,   { 1.8, 2.8 }, { travel = 8, period = 4.5 }),
-	stage("Arrow Key Alley",  "Coral",     45000,  45, 11.2, 16.8, 3, 4.5, { 1.7, 2.7 }, { travel = 10, period = 4.2 }),
-	stage("Escape Heights",   "RedOrange", 77000,  52.5, 11.2, 16.8, 3, 5,  { 1.6, 2.6 }, { travel = 10, period = 4 }),
+	stage("Tab Tunnel",       "Teal",      830,    16, 22.4, 22.4, 4, 2,   nil,          nil),
+	stage("Caps Lock Canyon", "Orange",    2400,   20.5, 16.8, 22.4, 3, 2.5, { 2.2, 3.2 }, nil),
+	stage("Enter Expressway", "Pink",      5800,   25.5, 16.8, 22.4, 3, 3,   { 2.0, 3.0 }, nil),
+	stage("Backspace Bridge", "Blue",      12000,  30.5, 14, 16.8, 3, 3.5, { 1.9, 2.9 }, { travel = 8, period = 5 }),
+	stage("Function Falls",   "Grape",     23000,  36.5, 14, 16.8, 3, 4,   { 1.8, 2.8 }, { travel = 8, period = 4.5 }),
+	stage("Arrow Key Alley",  "Coral",     41000,  43.5, 11.2, 16.8, 3, 4.5, { 1.7, 2.7 }, { travel = 10, period = 4.2 }),
+	stage("Escape Heights",   "RedOrange", 72000,  51, 11.2, 16.8, 3, 5,  { 1.6, 2.6 }, { travel = 10, period = 4 }),
 	stage("Spacebar Skyway",  "Butter",    125000, 61, 11.2, 16.8, 3, 5,   { 1.5, 2.5 }, { travel = 12, period = 3.8 }),
 } :: { Stage }
 
@@ -44394,9 +44413,11 @@ local DRESS = {
 		cove = { rgb(104, 226, 160), rgb(244, 220, 168), rgb(56, 186, 126) },
 		bay = { rgb(248, 250, 255), rgb(150, 168, 255), rgb(255, 112, 112) },
 		reef = { rgb(255, 96, 176), rgb(80, 220, 210), rgb(255, 178, 214) },
-		bubble = { rgb(176, 224, 255), rgb(244, 250, 255), rgb(150, 200, 255) },
-		coral = { rgb(255, 146, 80), rgb(255, 200, 152), rgb(222, 104, 70) },
-		shark = { rgb(255, 128, 112), rgb(244, 250, 255), rgb(46, 150, 160) },
+		-- Saturated aqua and teal (not pale ice): the path stands well clear of the deep-blue sky.
+		bubble = { rgb(0, 206, 196), rgb(40, 232, 222), rgb(0, 166, 190) },
+		-- Coral and shark: no pale tops (they matched their pale sunset / sea skies).
+		coral = { rgb(255, 146, 80), rgb(255, 92, 120), rgb(222, 104, 70) },
+		shark = { rgb(255, 128, 112), rgb(32, 74, 128), rgb(46, 150, 160) },
 		storm = { rgb(118, 130, 160), rgb(166, 178, 206), rgb(92, 104, 132) },
 		volcano = { rgb(78, 66, 78), rgb(104, 86, 90), rgb(255, 120, 40) },
 		giga = { rgb(255, 246, 228), rgb(255, 204, 64), rgb(176, 136, 255) },
@@ -44406,16 +44427,16 @@ local DRESS = {
 		cove = rgb(196, 255, 222),
 		bay = rgb(255, 92, 92),
 		reef = rgb(120, 255, 240),
-		bubble = rgb(110, 196, 255),
+		bubble = rgb(246, 255, 255),
 		coral = rgb(255, 226, 186),
 		shark = rgb(84, 236, 236),
 		storm = rgb(240, 255, 56),
 		volcano = rgb(255, 98, 16),
 		giga = rgb(255, 212, 72),
 	} :: { [string]: Color3 },
-	-- Which prop each theme lines its path with.
+	-- Which prop each theme lines its path with (a list: cycled along the path).
 	PROP = {
-		beach = "umbrella",
+		beach = { "palm", "umbrella", "buoy" },
 		cove = "palm",
 		bay = "buoy",
 		reef = "fish",
@@ -44425,7 +44446,7 @@ local DRESS = {
 		storm = "stormcloud",
 		volcano = "lavarock",
 		giga = "crownpillar",
-	} :: { [string]: string },
+	} :: { [string]: string | { string } },
 	EVERY = 2, -- one prop by every 2nd path element
 	FIRST = 2, -- path index of the first one (not by the start deck)
 	MAX = 16, -- props per map at most
@@ -44442,7 +44463,7 @@ local DRESS = {
 		cove = { rgb(244, 220, 164), rgb(92, 176, 96) },
 		bay = { rgb(84, 170, 230), rgb(248, 250, 255) },
 		reef = { rgb(244, 220, 164), rgb(80, 220, 210) },
-		bubble = { rgb(176, 224, 255), rgb(248, 250, 255) },
+		bubble = { rgb(0, 190, 200), rgb(248, 250, 255) },
 		coral = { rgb(244, 214, 170), rgb(222, 104, 70) },
 		shark = { rgb(46, 150, 180), rgb(248, 250, 255) },
 		storm = { rgb(110, 120, 146), rgb(70, 78, 100) },
@@ -44465,8 +44486,13 @@ local DRESS = {
 	FISH_BAND = rgb(255, 255, 255),
 	FISH_EYE = rgb(30, 30, 40),
 	WEED = rgb(70, 200, 110),
-	BUBBLE = { rgb(170, 220, 255), rgb(240, 250, 255), rgb(120, 190, 255) },
-	BUBBLE_ALPHA = 0.45,
+	-- Soap-bubble tints (aqua, pink, lilac) that show against the blue sky, big and fairly solid.
+	BUBBLE = { rgb(120, 236, 255), rgb(255, 150, 226), rgb(186, 160, 255) },
+	BUBBLE_ALPHA = 0.25,
+	BUBBLE_REFLECT = 0.3,
+	BUBBLE_COUNT = 6, -- per prop
+	BUBBLE_D = { 3, 5.4 }, -- diameter range (prop units)
+	BUBBLE_STEP = 2.4, -- height between the bubbles of one prop
 	BUBBLE_RISE = { 3, 5 }, -- studs/s
 	BUBBLE_TOP = 18, -- studs above the islet the bubbles climb (prop units)
 	CORAL = { rgb(255, 120, 110), rgb(255, 96, 176), rgb(255, 160, 70) },
@@ -44670,15 +44696,16 @@ PROPS.fish = function(k, rand)
 end
 
 PROPS.bubbles = function(k, rand)
-	for i = 1, 5 do
-		local a = i * 2 * math.pi / 5
-		local d = rand:NextNumber(1.6, 3.4)
+	local n = DRESS.BUBBLE_COUNT
+	for i = 1, n do
+		local a = i * 2 * math.pi / n
+		local d = rand:NextNumber(DRESS.BUBBLE_D[1], DRESS.BUBBLE_D[2])
 		local bubble = k.ball(
 			"Bubble",
 			d,
-			at(math.cos(a) * 2.2, 1 + i * 2.6, math.sin(a) * 2.2),
+			at(math.cos(a) * 2.2, 1 + i * DRESS.BUBBLE_STEP, math.sin(a) * 2.2),
 			DRESS.BUBBLE[i % #DRESS.BUBBLE + 1],
-			{ Transparency = DRESS.BUBBLE_ALPHA, Reflectance = 0.2, CastShadow = false }
+			{ Transparency = DRESS.BUBBLE_ALPHA, Reflectance = DRESS.BUBBLE_REFLECT, CastShadow = false }
 		)
 		bubble:SetAttribute("Rise", rand:NextNumber(DRESS.BUBBLE_RISE[1], DRESS.BUBBLE_RISE[2]))
 		bubble:SetAttribute("Top", k.base.Y + DRESS.BUBBLE_TOP * k.s)
@@ -44804,9 +44831,10 @@ end
 
 function MapDress.build(level: Course.Level, parent: Instance)
 	local theme = level.theme
-	local builder = PROPS[DRESS.PROP[theme] or ""]
+	local kinds = DRESS.PROP[theme] or {}
+	local list: { string } = if type(kinds) == "table" then kinds else { kinds }
 	local path = level.PATH
-	if not builder or not path or #path < 3 then
+	if not PROPS[list[1] or ""] or not path or #path < 3 then
 		return
 	end
 	local folder = Instance.new("Folder")
@@ -44851,7 +44879,7 @@ function MapDress.build(level: Course.Level, parent: Instance)
 						local base = CFrame.lookAt(Vector3.new(x, ey - DRESS.DROP, z), Vector3.new(ex, ey - DRESS.DROP, ez))
 						local k = kit(base, DRESS.SCALE, folder)
 						islet(k, theme)
-						builder(k, rand)
+						PROPS[list[count % #list + 1]](k, rand)
 						table.insert(taken, { x = x, z = z, r = foot })
 						count += 1
 						side = -s
@@ -52206,6 +52234,7 @@ local Camera = require(script.Parent.Camera) :: any
 local Chase = require(script.Parent.CardioChase) :: any
 local Sounds = require(Client.Sounds) :: any
 local Assets = require(ReplicatedStorage.Shared.Assets) :: any
+local Format = require(ReplicatedStorage.Shared.Format) :: any
 
 local CardioFx = {}
 
@@ -52237,22 +52266,56 @@ local OTHER_MAX = 6 -- at most this many other players (scaled by Budget.count)
 -- Speed effects: radial speed lines (every LINE_TINT_EVERY-th one rainbow-tinted, the rest
 -- white), a FOV widen and a rainbow trail off the runner's back, all scaling with the
 -- horizontal speed from LINES_FROM to LINES_FULL studs/s. Line length / thickness are px at
--- rest + extra at full speed; opacity is the strongest line's at full speed.
-local LINE_COUNT = 40
-local LINES_FROM = 30 -- studs/s: speed lines, trail and FOV start above this
-local LINES_FULL = 80 -- studs/s: full effect
-local LINE_LEN = 60
-local LINE_LEN_FULL = 240
-local LINE_THICK = 3
-local LINE_THICK_FULL = 6
-local LINE_OPACITY = 0.8
-local LINE_TINT_EVERY = 3
-local FOV_MAX = 12
+-- rest + extra at full speed; opacity is the strongest line's at full speed. The range sits
+-- on real run speeds (WalkSpeed 16 at Speed 0, ~25 on stage 1, ~37 at stage 3's recommended
+-- Speed), so every run past the first steps shows them; the strength curve (speed share ^
+-- LINE_CURVE) makes even a slow run read in a still.
+local LINE_COUNT = 56
+local LINES_FROM = 17 -- studs/s: speed lines, trail and FOV start above this
+local LINES_FULL = 36 -- studs/s: full effect
+local LINE_CURVE = 0.5
+local LINE_LEN = 110
+local LINE_LEN_FULL = 320
+local LINE_THICK = 5
+local LINE_THICK_FULL = 10
+local LINE_OPACITY = 0.95
+local LINE_TINT_EVERY = 2
+local LINE_TINT_WHITE = 0.08 -- how far a rainbow line is lifted toward white
+local FOV_MAX = 9
 local TRAIL = {
-	From = 0.2, -- speed share (0..1) where the trail starts showing
-	Lifetime = 0.45, -- seconds
-	Width = 2.2, -- studs between its two attachments (centred on the torso)
-	Opacity = 0.75, -- at full speed (the tail fades to nothing)
+	From = 0.02, -- speed share (0..1) where the trail starts showing
+	Lifetime = 0.8, -- seconds
+	Width = 3.6, -- studs between its two attachments (centred on the torso)
+	Opacity = 0.95, -- at full speed (the tail fades to nothing)
+	Floor = 0.45, -- opacity the moment it shows
+	Light = 0.85, -- LightEmission
+}
+-- The goal star on the TRACK: beside the doorway of the stage you run next (on the right as
+-- you face it, under its StageSign<n>), a big gold star with that stage's recommended Speed
+-- and an arrow bobbing above it; mint "READY!" once your Speed reaches it. Size is studs
+-- (scale) + px (offset), so it stays readable far away and grows as you come close.
+local GOAL = {
+	StudsW = 5,
+	PxW = 130,
+	StudsH = 6,
+	PxH = 150,
+	Side = 21, -- studs to the right of the doorway's centre (+Z)
+	Front = 6, -- studs out from the wall toward the runner (-X)
+	Down = 13, -- studs below the sign's centre (about mid-doorway)
+	MaxDistance = 600,
+	ArrowH = 0.26, -- share of the height
+	StarSize = 0.46,
+	TextH = 0.24,
+	BobShare = 0.07, -- arrow bob, share of the height
+	BobHz = 1.7,
+	SpinDeg = 9, -- star wobble
+	SpinHz = 0.8,
+	PulseHz = 2.2,
+	Pulse = 0.08, -- star scale swing
+	Plate = Color3.fromRGB(22, 20, 44),
+	PlateTransparency = 0.15,
+	Gold = Color3.fromRGB(255, 206, 64),
+	Ready = W.Mint or Color3.fromRGB(98, 224, 160),
 }
 local CLICK_RATE = 12 -- local key clicks per second at most
 local POP_POOL = 8
@@ -52798,7 +52861,7 @@ local function ensureLines()
 		frame.Name = "Line"
 		frame.BorderSizePixel = 0
 		frame.BackgroundColor3 = if i % LINE_TINT_EVERY == 0
-			then RAINBOW[(i // LINE_TINT_EVERY - 1) % #RAINBOW + 1]:Lerp(WHITE, 0.25)
+			then RAINBOW[(i // LINE_TINT_EVERY - 1) % #RAINBOW + 1]:Lerp(WHITE, LINE_TINT_WHITE)
 			else WHITE
 		frame.AnchorPoint = Vector2.new(0.5, 0.5)
 		frame.BackgroundTransparency = 1
@@ -52854,7 +52917,7 @@ local function stepTrail(root: BasePart?)
 		made.Attachment0 = a0
 		made.Attachment1 = a1
 		made.Lifetime = TRAIL.Lifetime
-		made.LightEmission = 0.6
+		made.LightEmission = TRAIL.Light
 		made.FaceCamera = true
 		local keys = {}
 		for i, colour in RAINBOW do
@@ -52870,8 +52933,8 @@ local function stepTrail(root: BasePart?)
 		trail = made
 		t = made
 	end
-	local k = math.clamp((speedK - TRAIL.From) / (1 - TRAIL.From), 0, 1)
-	local head = 1 - TRAIL.Opacity * k
+	local k = math.clamp((speedK - TRAIL.From) / (1 - TRAIL.From), 0, 1) ^ LINE_CURVE
+	local head = 1 - (TRAIL.Floor + (TRAIL.Opacity - TRAIL.Floor) * k)
 	local trailNow = t :: Trail
 	trailNow.Transparency = NumberSequence.new(head, 1)
 	trailNow.Enabled = true
@@ -52904,7 +52967,7 @@ local function stepSpeed(dt: number, root: BasePart?)
 	local view = if camera then camera.ViewportSize else Vector2.new(1280, 720)
 	local centre = view / 2
 	local reach = centre.Magnitude
-	local strength = speedK * (if reduced then 0.5 else 1)
+	local strength = speedK ^ LINE_CURVE * (if reduced then 0.5 else 1)
 	for _, line in lines do
 		line.r += dt * line.speed * (0.6 + strength)
 		if line.r > 1.15 then
@@ -53345,6 +53408,166 @@ local function stepDoors(now: number)
 	end
 end
 
+-- Goal star on the track ------------------------------------------------------------------------
+
+type GoalMarker = {
+	gui: BillboardGui?,
+	arrow: TextLabel?,
+	star: GuiObject?,
+	scale: UIScale?,
+	text: TextLabel?,
+	plate: Frame?,
+	stage: number,
+	shown: string,
+}
+local goalMarker: GoalMarker = { stage = -1, shown = "" }
+
+local function signBoard(n: number): BasePart?
+	local track = Workspace:FindFirstChild("CardioTrack")
+	local model = track and track:FindFirstChild("StageSign" .. n, true)
+	local board = model and model:FindFirstChild("StageSign")
+	return if board and board:IsA("BasePart") then board else nil
+end
+
+local function goalGui(): BillboardGui
+	local made = goalMarker.gui
+	if made and made.Parent then
+		return made
+	end
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "CardioGoalStar"
+	gui.Size = UDim2.new(GOAL.StudsW, GOAL.PxW, GOAL.StudsH, GOAL.PxH)
+	gui.LightInfluence = 0
+	gui.MaxDistance = GOAL.MaxDistance
+	gui.ResetOnSpawn = false
+	gui.Enabled = false
+	local arrow = outlined(gui, 48, GOAL.Gold)
+	arrow.Name = "Arrow"
+	arrow.AutomaticSize = Enum.AutomaticSize.None
+	arrow.Text = utf8.char(0x25BC)
+	arrow.TextScaled = true
+	arrow.AnchorPoint = Vector2.new(0.5, 0)
+	arrow.Size = UDim2.fromScale(0.5, GOAL.ArrowH)
+	arrow.Position = UDim2.fromScale(0.5, 0)
+	local cell = Assets.icon and Assets.icon("Star")
+	local star: GuiObject
+	if type(cell) == "table" and type(cell.image) == "string" then
+		local image = Instance.new("ImageLabel")
+		image.BackgroundTransparency = 1
+		image.Image = cell.image
+		image.ImageRectOffset = Vector2.new(num(cell.x, 0), num(cell.y, 0))
+		image.ImageRectSize = Vector2.new(num(cell.w, 0), num(cell.h, 0))
+		image.ScaleType = Enum.ScaleType.Fit
+		star = image
+	else
+		local glyph = outlined(gui, 48, GOAL.Gold)
+		glyph.AutomaticSize = Enum.AutomaticSize.None
+		glyph.Text = utf8.char(0x2605)
+		glyph.TextScaled = true
+		star = glyph
+	end
+	star.Name = "Star"
+	star.AnchorPoint = Vector2.new(0.5, 0.5)
+	star.Size = UDim2.fromScale(GOAL.StarSize, GOAL.StarSize)
+	star.Position = UDim2.fromScale(0.5, GOAL.ArrowH + GOAL.StarSize / 2)
+	local aspect = Instance.new("UIAspectRatioConstraint")
+	aspect.Parent = star
+	local scale = Instance.new("UIScale")
+	scale.Parent = star
+	star.Parent = gui
+	local plate = Instance.new("Frame")
+	plate.Name = "Plate"
+	plate.BackgroundColor3 = GOAL.Plate
+	plate.BackgroundTransparency = GOAL.PlateTransparency
+	plate.AnchorPoint = Vector2.new(0.5, 1)
+	plate.Size = UDim2.fromScale(1, GOAL.TextH)
+	plate.Position = UDim2.fromScale(0.5, 1)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0.3, 0)
+	corner.Parent = plate
+	local rim = Instance.new("UIStroke")
+	rim.Color = GOAL.Gold
+	rim.Thickness = 3
+	rim.Parent = plate
+	plate.Parent = gui
+	local text = outlined(plate, 40, GOAL.Gold)
+	text.Name = "Goal"
+	text.AutomaticSize = Enum.AutomaticSize.None
+	text.TextScaled = true
+	text.Size = UDim2.fromScale(0.92, 0.84)
+	text.Position = UDim2.fromScale(0.04, 0.08)
+	gui.Parent = guiFolder()
+	goalMarker.gui = gui
+	goalMarker.arrow = arrow
+	goalMarker.star = star
+	goalMarker.scale = scale
+	goalMarker.text = text
+	goalMarker.plate = plate
+	goalMarker.stage = -1
+	goalMarker.shown = ""
+	return gui
+end
+
+local function hideGoal()
+	local gui = goalMarker.gui
+	if gui then
+		gui.Enabled = false
+	end
+end
+
+local function stepGoal(now: number)
+	local stageCount = math.floor(num(snap.stageCount, 10))
+	local n = math.floor(num(snap.stage, 0)) + 1
+	local needs = snap.needs
+	local need = if type(needs) == "table" then num(needs[n], 0) else 0
+	if n > stageCount or need <= 0 then
+		hideGoal()
+		return
+	end
+	local list = snap.recommended
+	local rec = math.max(need, if type(list) == "table" then num(list[n], 0) else 0)
+	local gui = goalGui()
+	if goalMarker.stage ~= n then
+		local board = signBoard(n)
+		if not board then
+			gui.Enabled = false
+			return
+		end
+		goalMarker.stage = n
+		gui.Adornee = board
+		gui.StudsOffsetWorldSpace = Vector3.new(-GOAL.Front, -GOAL.Down, GOAL.Side)
+	end
+	local ready = num(snap.speed, 0) >= rec
+	local colour = if ready then GOAL.Ready else GOAL.Gold
+	local label = (if ready then "READY! " else "GOAL ") .. Format.commas(math.ceil(rec)) .. " SPEED"
+	if goalMarker.shown ~= label then
+		goalMarker.shown = label
+		local text = goalMarker.text :: TextLabel
+		local arrow = goalMarker.arrow :: TextLabel
+		text.Text = label
+		text.TextColor3 = colour
+		arrow.TextColor3 = colour
+		-- The atlas star keeps its own colours; only the glyph fallback is tinted.
+		local star = goalMarker.star :: GuiObject
+		if star:IsA("TextLabel") then
+			star.TextColor3 = colour
+		end
+		local rim = (goalMarker.plate :: Frame):FindFirstChildOfClass("UIStroke")
+		if rim then
+			rim.Color = colour
+		end
+	end
+	gui.Enabled = true
+	local still = reducedMotion()
+	local bob = if still then 0 else 0.5 + 0.5 * math.sin(now * GOAL.BobHz * TAU)
+	local arrow = goalMarker.arrow :: TextLabel
+	local star = goalMarker.star :: GuiObject
+	local scale = goalMarker.scale :: UIScale
+	arrow.Position = UDim2.fromScale(0.5, GOAL.BobShare * bob)
+	star.Rotation = if still then 0 else GOAL.SpinDeg * math.sin(now * GOAL.SpinHz * TAU)
+	scale.Scale = 1 + (if still then 0 else GOAL.Pulse * math.sin(now * GOAL.PulseHz * TAU))
+end
+
 local function step(dt: number)
 	local now = os.clock()
 	local humanoid, root = character()
@@ -53354,6 +53577,7 @@ local function step(dt: number)
 	stepSpeed(dt, root)
 	stepDoors(now)
 	stepBlinkKeys()
+	stepGoal(now)
 end
 
 -- Run glow: our own bloom + a touch more saturation so the neon trusses glow (Fx.Surge
@@ -53424,6 +53648,7 @@ local function deactivate()
 		trail:Destroy()
 		trail = nil
 	end
+	hideGoal()
 end
 
 function CardioFx.onNotify(p: any)
@@ -54703,6 +54928,7 @@ local SMASH = {
 	-- What Fx.Machines' crate on the plinth wears on top of its rarity's row of LOOKS.
 	look = {
 		wash = 0.42, -- the sunny crate needs at least this strong a wash
+		rim = 0, -- and a rarity outline at every rarity (the pen's starts at Epic)
 		gem = 1.4, -- gem size / the pen crate's
 		gemSpin = 1.6, -- radians per second
 		gemBob = 0.14, -- studs
@@ -56288,7 +56514,7 @@ local function dressSmasherCrate(s: Smasher): boolean
 		local rank = rankOf(s.rarity)
 		local look = lookOf(rank)
 		local color = s.color
-		washOver(child, body, color, math.min(look.wash, L.wash), look.rim, Highlights.PRIORITY.SmasherCrate)
+		washOver(child, body, color, math.min(look.wash, L.wash), math.min(look.rim, L.rim), Highlights.PRIORITY.SmasherCrate)
 		-- Piping round the middle of each strap: the strap's thinnest side is its width.
 		local piping = look.piping
 		if piping then
@@ -59565,6 +59791,7 @@ local TUNE = {
 		burstStars = 6,
 		burstPuff = 4, -- dust ring radius, studs
 		hold = 0.3, -- seconds an opened crate waits for Fx.Crates' ritual before it just bursts
+		smashBelow = 1.15, -- studs from the crate's bottom down to the middle of its "Smash now" button
 	},
 }
 
@@ -61403,7 +61630,9 @@ local function buildCrate(cr: Cracker, rarity: string, slotIndex: number)
 		smash.LightInfluence = 0
 		smash.MaxDistance = 28
 		smash.Size = UDim2.fromOffset(156, 38)
-		smash.StudsOffsetWorldSpace = Vector3.new(0, 0.2, 0)
+		-- Under the crate, not on it: measured in Studio, a button on the crate's middle
+		-- (offset 0.2) covered 38 of its 50 px and its whole width from 22 studs.
+		smash.StudsOffsetWorldSpace = Vector3.new(0, -(body.Size.Y / 2 + K.smashBelow), 0)
 		smash.Enabled = false
 		local button = Instance.new("TextButton")
 		button.Name = "Button"
@@ -62262,8 +62491,8 @@ end
 --   every theme  a bright sky-obby day built on SUNNY (ParkourGrade colour correction,
 --            Atmosphere colour / decay / density, Lighting brightness and exposure, a light
 --            ParkourBloom made lazily and enabled only during runs), graded per map by
---            LOOK_TUNING so each map has its own sky: beach golden noon, cove turquoise,
---            bay deep blue, reef pink haze, bubble icy and bright, coral peach sunset,
+--            LOOK_TUNING so each map has its own sky: beach warm sunny noon, cove turquoise,
+--            bay deep blue, reef pink haze, bubble aqua under a deep-blue sky, coral peach sunset,
 --            shark deep teal, storm dim slate haze (no flashes), volcano smoky orange late
 --            afternoon, giga golden hour on a grape sky. ClockTime: the look's `clock`, else
 --            13 when the scene is outside 10-15.
@@ -62592,15 +62821,20 @@ local SUNNY: Look = {
 -- Per-map grading (tunables): only what differs from SUNNY. atmosphereMix 0.9 so the sky and
 -- horizon really take the map's colour.
 local LOOK_TUNING: { [string]: { [string]: any } } = {
-	beach = { -- golden sunny noon
-		tint = Color3.fromRGB(255, 246, 226),
-		saturation = 0.3,
-		atmosphere = Color3.fromRGB(255, 240, 212),
-		decay = Color3.fromRGB(255, 206, 150),
+	beach = { -- warm sunny noon over a clear sky-blue sea sky (no orange haze: it fought the cyan water)
+		tint = Color3.fromRGB(255, 249, 234),
+		contrast = 0.06,
+		saturation = 0.34,
+		atmosphere = Color3.fromRGB(205, 238, 250),
+		decay = Color3.fromRGB(90, 176, 250),
 		atmosphereMix = 0.9,
-		density = 0.3,
-		ambient = Color3.fromRGB(255, 236, 205),
+		density = 0.24,
+		haze = 1,
+		glare = 0.6,
+		fog = Color3.fromRGB(200, 236, 250),
+		ambient = Color3.fromRGB(255, 240, 214),
 		ambientMix = 0.12,
+		clock = 13,
 	},
 	cove = { -- tropical turquoise
 		tint = Color3.fromRGB(230, 255, 242),
@@ -62632,15 +62866,22 @@ local LOOK_TUNING: { [string]: { [string]: any } } = {
 		ambient = Color3.fromRGB(255, 200, 230),
 		ambientMix = 0.15,
 	},
-	bubble = { -- airy, icy and bright
-		tint = Color3.fromRGB(234, 248, 255),
-		brightness = 0.05,
-		atmosphere = Color3.fromRGB(226, 246, 255),
-		decay = Color3.fromRGB(150, 215, 255),
+	bubble = { -- saturated aqua under a deep-blue sky (was icy white: path and sky one pale value)
+		tint = Color3.fromRGB(222, 246, 255),
+		brightness = -0.01,
+		contrast = 0.12,
+		saturation = 0.42,
+		atmosphere = Color3.fromRGB(110, 204, 236),
+		decay = Color3.fromRGB(28, 96, 214),
 		atmosphereMix = 0.9,
-		density = 0.36,
-		haze = 2.4,
-		exposure = 0.25,
+		density = 0.28,
+		haze = 0.8,
+		glare = 0.3,
+		fog = Color3.fromRGB(110, 196, 236),
+		fogMix = 0.25,
+		ambient = Color3.fromRGB(170, 236, 255),
+		ambientMix = 0.12,
+		exposure = 0,
 	},
 	coral = { -- warm peach sunset
 		tint = Color3.fromRGB(255, 230, 210),
@@ -63851,6 +64092,21 @@ local HIT_BURST = {
 	Ring = 8, -- ring sprite size on the rival's chest (perfect: x1.4)
 	Color = Color3.fromRGB(255, 226, 80),
 }
+-- The rival stands this much larger than its tier look, so it fills more of the duel frame.
+local RIVAL = {
+	Scale = 1.3,
+}
+-- The crowd jumps on every hit: the fan rows of the stands near you (World.MogStage moves
+-- one anchored "FanRow" root per row in a slow wave) get an extra local jump on top of the
+-- server's wave, bigger on a perfect, and the rows go off in a quick ripple.
+local CHEER = {
+	Height = 2.8, -- studs at the top of a hit's jump
+	PerfectBoost = 1.6, -- x Height on a perfect
+	Time = 0.5, -- seconds of one jump
+	Ripple = 0.06, -- seconds between neighbouring rows taking off
+	Range = 160, -- studs from the player: rows of these stands jump
+	Resync = 0.05, -- studs: a root this far from what we wrote was moved by the server
+}
 local PUNCH = {
 	Dist = 3.4, -- studs the camera dollies toward the rival on a perfect
 	Fov = 9, -- degrees narrower at the peak
@@ -64109,8 +64365,9 @@ local function spawnRival(info: any)
 		return
 	end
 	local m = model :: Model
+	m:ScaleTo(m:GetScale() * RIVAL.Scale)
 	local height = m:GetAttribute("Height")
-	rivalHeight = if type(height) == "number" then height else 6
+	rivalHeight = (if type(height) == "number" then height else 6) * RIVAL.Scale
 	local face = Vector3.new(playerPos.X, rivalPos.Y, playerPos.Z)
 	rivalPivot = if (face - rivalPos).Magnitude > 0.1 then CFrame.lookAt(rivalPos, face) else CFrame.new(rivalPos)
 	m:PivotTo(rivalPivot)
@@ -64334,6 +64591,93 @@ local function takeCamera()
 	end)
 end
 
+-- Crowd jump -----------------------------------------------------------------------------------
+
+type CheerRow = { root: BasePart, server: CFrame, wrote: CFrame?, delay: number }
+local cheerRows: { CheerRow } = {}
+local cheerAt = -math.huge
+local cheerHeight = 0
+local cheerConn: RBXScriptConnection? = nil
+
+local function stopCheer()
+	if cheerConn then
+		cheerConn:Disconnect()
+		cheerConn = nil
+	end
+	for _, row in cheerRows do
+		if row.wrote and row.root.Parent then
+			row.root.CFrame = row.server
+		end
+		row.wrote = nil
+	end
+	table.clear(cheerRows)
+end
+
+local function findCheerRows()
+	table.clear(cheerRows)
+	local map = Workspace:FindFirstChild("Map")
+	local stage = map and map:FindFirstChild("MogStage")
+	if not stage then
+		return
+	end
+	for _, part in stage:GetChildren() do
+		if part.Name == "FanRow" and part:IsA("BasePart") and (part.Position - playerPos).Magnitude <= CHEER.Range then
+			table.insert(cheerRows, { root = part, server = part.CFrame, delay = 0 })
+		end
+	end
+	-- The ripple runs round the stand from the row nearest the rival.
+	table.sort(cheerRows, function(a, b)
+		return (a.root.Position - rivalPos).Magnitude < (b.root.Position - rivalPos).Magnitude
+	end)
+	for i, row in cheerRows do
+		row.delay = (i - 1) * CHEER.Ripple
+	end
+end
+
+local function cheer(perfect: boolean)
+	if reducedMotion() then
+		return
+	end
+	if #cheerRows == 0 then
+		findCheerRows()
+	end
+	cheerAt = os.clock()
+	cheerHeight = CHEER.Height * (if perfect then CHEER.PerfectBoost else 1)
+	if cheerConn then
+		return
+	end
+	cheerConn = RunService.RenderStepped:Connect(function()
+		local t = os.clock() - cheerAt
+		local busy = false
+		for _, row in cheerRows do
+			local root = row.root
+			if root.Parent then
+				local now = root.CFrame
+				local wrote = row.wrote
+				if not wrote or (now.Position - wrote.Position).Magnitude > CHEER.Resync then
+					row.server = now -- the server's wave moved it since our last write
+				end
+				local k = (t - row.delay) / CHEER.Time
+				if k > 0 and k < 1 then
+					busy = true
+					local cf = row.server * CFrame.new(0, cheerHeight * math.sin(math.pi * k), 0)
+					row.wrote = cf
+					root.CFrame = cf
+				elseif k <= 0 then
+					busy = true
+				elseif wrote then
+					root.CFrame = row.server
+					row.wrote = nil
+				end
+			end
+		end
+		if not busy and cheerConn then
+			cheerConn:Disconnect()
+			cheerConn = nil
+		end
+	end)
+end
+
 -- Run ---------------------------------------------------------------------------------------
 
 local function clear()
@@ -64343,6 +64687,7 @@ local function clear()
 	releaseCamera()
 	stopPosers()
 	removeRival()
+	stopCheer()
 	if folder then
 		folder:Destroy()
 		folder = nil
@@ -64387,6 +64732,7 @@ local function onResult(p: any)
 		setExpr("Shock", 0.8)
 		flinch(1.4)
 		rivalBurst(true)
+		cheer(true)
 		if not reducedMotion() then
 			punchAt = os.clock()
 		end
@@ -64401,6 +64747,7 @@ local function onResult(p: any)
 		setExpr("Shock", 0.6)
 		flinch(0.8)
 		rivalBurst(false)
+		cheer(false)
 		pulseAura(combo, W.Cream)
 	else
 		setExpr("Angry", 1)
@@ -64582,6 +64929,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
+local GuiService = game:GetService("GuiService")
 
 local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 local Net = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Net"))
@@ -64646,6 +64994,11 @@ local FX = {
 	hud = {
 		top = 130, -- design px from the top of the screen a pop's top edge stays under (the
 		-- capsules end at about 110 at 1280x720)
+		-- The HUD's left column (TycoonUI children): every world pop steps right until it
+		-- clears them by `sideGap` design px. Measured in Studio: the collect's "+$34.06T" sat
+		-- at x 35..452 over the menu grid (x 13..302).
+		column = { "Menu", "Wallet" },
+		sideGap = 16,
 	},
 	-- The HUD's cash amount and Orbs.walletText (what a pad just took).
 	wallet = {
@@ -64678,11 +65031,17 @@ local FX = {
 		live = 40, -- on screen at once
 		size = 34, -- design px across (28 to 40 reads as a coin at 1280x720)
 		endSize = 0.75, -- share of the size on arrival
-		time = 0.8, -- seconds of flight: an even pace, so most of it is in open screen space
+		time = 0.8, -- seconds of flight (eased out: half the way in the first 30%)
 		stagger = 0.04, -- seconds between coins
 		lift = 230, -- design px the arc rises above the straight line (up into mid screen)
+		-- The arc's middle is pulled this share of the way to the screen centre, so coins from
+		-- a source on the left still cross mid-screen; and they leave fast (ease-out), so a
+		-- frame 0.3 s after a collect already catches the stream half way. Measured in Studio:
+		-- with a 0.12 s pop and a smoothstep flight the first coin left the piggy 0.13 s after
+		-- the event and was still beside it at +0.36 s.
+		centre = 0.5,
 		scatter = 56, -- design px of random start offset
-		burst = 0.12, -- seconds a coin takes to pop out before it flies
+		burst = 0.06, -- seconds a coin takes to pop out before it flies
 		spin = 300, -- degrees turned on the way
 		pop = 64, -- design px across of the arrival ring at the cash amount
 		popTime = 0.28, -- seconds
@@ -65068,6 +65427,40 @@ function Orbs.textHudOffset(pos: Vector3, scale: number, rise: number): Vector3
 	return Orbs.hudOffset(pos, px * pop / 2, (1.4 * k + 0.4) * FX.text.studs * pop / 2, rise)
 end
 
+-- The world offset (along the camera's right) that keeps a box `halfW` px wide either side of
+-- `pos` (and `halfH` px tall, rising `risePx` px on screen) clear of the HUD's left column.
+local function columnOffset(pos: Vector3, halfW: number, halfH: number, risePx: number): Vector3
+	local camera = Workspace.CurrentCamera
+	local playerGui = player:FindFirstChildOfClass("PlayerGui")
+	local screen = playerGui and playerGui:FindFirstChild("TycoonUI")
+	if not camera or not screen or not (screen :: ScreenGui).Enabled then
+		return Vector3.zero
+	end
+	local at = camera:WorldToViewportPoint(pos)
+	if at.Z <= 0.5 then
+		return Vector3.zero
+	end
+	local inset = if (screen :: ScreenGui).IgnoreGuiInset then Vector2.zero else GuiService:GetGuiInset()
+	local push = 0
+	for _, name in FX.hud.column do
+		local gui = screen:FindFirstChild(name)
+		if gui and gui:IsA("GuiObject") and gui.Visible then
+			local top = gui.AbsolutePosition.Y + inset.Y
+			local bottom = top + gui.AbsoluteSize.Y
+			local right = gui.AbsolutePosition.X + inset.X + gui.AbsoluteSize.X + FX.hud.sideGap * hudScale()
+			local overlapsY = at.Y + halfH > top and at.Y - halfH - risePx < bottom
+			if overlapsY and at.X - halfW < right then
+				push = math.max(push, right - (at.X - halfW))
+			end
+		end
+	end
+	if push <= 0 then
+		return Vector3.zero
+	end
+	local pxPerStud = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+	return camera.CFrame.RightVector * (push / pxPerStud)
+end
+
 function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions?)
 	local o = opts or {}
 	local k = math.clamp(o.scale or 1, 0.5, 3)
@@ -65086,6 +65479,19 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 			old:Destroy()
 		end
 	end
+	-- Pixel floor plus a share of the old stud size: about the old size up close, never tiny
+	-- far away.
+	local pxWide = px * FX.text.letter * math.max(utf8.len(text) or #text, 4) + px
+	local studsWide, studsHigh = (4 * k + 2) * FX.text.studs, (1.4 * k + 0.4) * FX.text.studs
+	do
+		local camera = Workspace.CurrentCamera
+		local at = camera and camera:WorldToViewportPoint(pos)
+		if camera and at and at.Z > 0.5 then
+			local pxPerStud = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+			local pop = FX.text.popScale
+			pos += columnOffset(pos, (pxWide + studsWide * pxPerStud) * pop / 2, (px + studsHigh * pxPerStud) * pop / 2, rise * pxPerStud)
+		end
+	end
 	local holder = basePart(Enum.PartType.Block, "FloatText")
 	holder.Size = Vector3.new(0.2, 0.2, 0.2)
 	holder.Transparency = 1
@@ -65096,14 +65502,11 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	holder.Parent = fxFolder()
 	table.insert(texts, holder)
 
-	-- Pixel floor plus a share of the old stud size: about the old size up close, never tiny
-	-- far away.
-	local pxWide = px * FX.text.letter * math.max(utf8.len(text) or #text, 4) + px
 	local gui = Instance.new("BillboardGui")
 	gui.AlwaysOnTop = true
 	gui.LightInfluence = 0
 	gui.MaxDistance = 220
-	gui.Size = UDim2.new((4 * k + 2) * FX.text.studs, pxWide, (1.4 * k + 0.4) * FX.text.studs, px)
+	gui.Size = UDim2.new(studsWide, pxWide, studsHigh, px)
 	gui.Parent = holder
 	local label = Instance.new("TextLabel")
 	label.BackgroundTransparency = 1
@@ -65594,11 +65997,13 @@ local function stepArc()
 			at = c.from:Lerp(c.burst, u)
 			size *= math.max(0.2, u)
 		else
-			-- Eased arc to the cash amount at an even pace: the coins spend their flight in open
-			-- screen space, not bunched at the source and then a blur into the wallet.
+			-- Eased-out arc to the cash amount through mid-screen: the coins leave the source at
+			-- once and spend their flight in open screen space, not bunched at the source.
 			local t = (age - FX.arc.burst) / FX.arc.time
-			local e = t * t * (3 - 2 * t)
-			local mid = c.burst:Lerp(target, 0.5) - Vector2.new(0, FX.arc.lift * k)
+			local e = 1 - (1 - t) * (1 - t)
+			local camera = Workspace.CurrentCamera
+			local centre = if camera then camera.ViewportSize / 2 else c.burst:Lerp(target, 0.5)
+			local mid = c.burst:Lerp(target, 0.5):Lerp(centre, FX.arc.centre) - Vector2.new(0, FX.arc.lift * k)
 			local u = 1 - e
 			at = c.burst * (u * u) + mid * (2 * u * e) + target * (e * e)
 			size *= 1 - (1 - FX.arc.endSize) * e
@@ -68690,15 +69095,19 @@ local CFG = {
 		Collar = 0.45,
 		CollarInset = 1.6, -- from a front post's ends: under the white knob of the shelf above
 		Glints = 4,
-		-- A neon gold strip along the top of every fence cap (the plot's outline from the hub),
-		-- in a deeper gold than the sunny caps it lies on, and a bead with a light on every post.
-		Rail = 0.62, -- strip thickness
-		RailWide = 1.1, -- strip width (the cap is 1.3 across)
-		RailColor = Color3.fromRGB(255, 170, 20),
+		-- A neon gold bar clads the top of every fence cap (the plot's outline from the hub),
+		-- in a deep orange gold that reads apart from the sunny yellow caps, and a big bead with
+		-- a light on every post. Neon brightens far past its colour: measured on screen in
+		-- Studio, the old strip (255, 170, 20) breathing to (255, 232, 130) drew (255, 255, 84),
+		-- neon (225, 135, 5) draws (251, 230, 77), the caps' own yellow (248, 212, 73), while
+		-- (215, 120, 0) draws (243, 174, 61) and (200, 90, 0) draws (236, 90, 41).
+		Rail = 0.95, -- bar thickness: taller than the cap's top half, so the fence line thickens
+		RailWide = 1.6, -- bar width (the cap is 1.3 across: the bar hides it from above)
+		RailColor = Color3.fromRGB(200, 92, 0),
 		RailPulse = 1.3, -- seconds of one half of its breath ...
-		RailBright = Color3.fromRGB(255, 232, 130), -- ... to this colour (it never fades out)
-		Bead = 1.2, -- neon gold ball on every fence post's knob
-		PostLight = { Range = 10, Brightness = 1.6 },
+		RailBright = Color3.fromRGB(214, 116, 0), -- ... to this colour (still orange gold, never the caps' yellow)
+		Bead = 2.1, -- neon gold ball on every fence post's knob
+		PostLight = { Range = 12, Brightness = 2.2 },
 		PostLights = 24, -- most post lights on one plot (spread evenly over the posts)
 	},
 	Trophies = {
@@ -68768,12 +69177,18 @@ local CFG = {
 			Spread = 10, -- studs off the shaft's axis
 			Climb = 0.55, -- seconds the rocket climbs
 			Rocket = 1.1, -- the rocket's ball
-			Sparks = 48,
-			SparkSize = 2.6,
-			Speed = { 20, 30 },
-			Drag = 2.4,
+			-- Measured in Studio from the crown camera (burst 60 studs away): 48 additive
+			-- (LightEmission 1) white-to-colour sparks of 2.6 studs changed only 6% of the
+			-- pixels round the burst: light added to a pale sky stays pale. The sparks are now
+			-- drawn in their own colour (little added light), bigger and more of them.
+			Sparks = 110,
+			SparkSize = 5.5,
+			SparkGlow = 0.15, -- the sparks' LightEmission (1 = added light: lost on the sky)
+			Speed = { 24, 36 },
+			Drag = 2.2,
 			Fall = 9, -- studs/s^2 the sparks sink
-			Life = { 1.3, 1.9 },
+			Life = { 1.6, 2.2 },
+			Boom = { Size = 9, Time = 0.3 }, -- the rocket's ball swells to this and fades: the bang
 			Flash = { Range = 40, Brightness = 4, Time = 0.6 },
 			Colors = {
 				Color3.fromRGB(255, 200, 40),
@@ -69532,7 +69947,8 @@ function BUILDERS.CrownBeam(k: Kit): Feature
 		burst.Name = "FireworkBurst"
 		burst.Texture = SPARKLE
 		burst.Rate = 0
-		burst.LightEmission = 1
+		burst.LightEmission = f.SparkGlow
+		burst.LightInfluence = 0
 		burst.Speed = NumberRange.new(f.Speed[1], f.Speed[2])
 		burst.Drag = f.Drag
 		burst.Acceleration = Vector3.new(0, -f.Fall, 0)
@@ -69567,6 +69983,7 @@ function BUILDERS.CrownBeam(k: Kit): Feature
 			local high = f.Height[1] + math.random() * (f.Height[2] - f.Height[1])
 			rocket.CFrame = base * CFrame.new(0, tipTop, 0)
 			rocket.Color = color
+			rocket.Size = Vector3.one * f.Rocket
 			rocket.Transparency = 0
 			local goal = base * CFrame.new(math.cos(angle) * off, high, math.sin(angle) * off)
 			local climb =
@@ -69575,8 +69992,13 @@ function BUILDERS.CrownBeam(k: Kit): Feature
 				if not rocket.Parent then
 					return
 				end
-				rocket.Transparency = 1
-				burst.Color = ColorSequence.new(WHITE, color)
+				-- The bang: the ball swells and fades while the sparks fly.
+				TweenService:Create(
+					rocket,
+					TweenInfo.new(f.Boom.Time, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+					{ Size = Vector3.one * f.Boom.Size, Transparency = 1 }
+				):Play()
+				burst.Color = ColorSequence.new(color, color:Lerp(WHITE, 0.35))
 				burst:Emit(Budget.count(f.Sparks))
 				flash.Color = color
 				flash.Brightness = f.Flash.Brightness
@@ -70558,27 +70980,27 @@ local MERGE = {
 			ring = { 6, 22 },
 			ringTime = 0.9,
 			rings = 2,
-			sparks = 32,
-			sparkSize = 2.4,
-			flash = 9,
+			sparks = 40,
+			sparkSize = 3.2,
+			flash = 7,
 			pop = 0.42,
 			chip = Vector2.new(13, 3.6),
 			chipLife = 1.6,
 			punch = 0.8,
-			pulse = 0.6,
+			pulse = 0.86,
 		},
 		best = {
 			ring = { 5, 30 },
 			ringTime = 0.9,
 			rings = 3,
-			sparks = 52,
-			sparkSize = 2.4,
-			flash = 11,
+			sparks = 60,
+			sparkSize = 3.2,
+			flash = 8,
 			pop = 0.6,
 			chip = Vector2.new(17, 6.2),
 			chipLife = 2.2,
 			punch = 1.5,
-			pulse = 0.78,
+			pulse = 0.88,
 		},
 	},
 	RingStroke = { 12, 3 }, -- the ring's line in pixels: at first, as it fades
@@ -70586,7 +71008,10 @@ local MERGE = {
 	RingGrow = 1.25,
 	SparkSpeed = NumberRange.new(12, 26),
 	SparkLife = NumberRange.new(0.6, 1.1),
-	FlashTime = 0.4,
+	-- The neon ball and the white screen pulse are kept light: at 0.1 and 0.6 (a 40% white
+	-- sheet held 2 frames) they lifted the whole frame's mean by 10 levels and hid the sparks.
+	FlashTime = 0.3,
+	FlashAlpha = 0.5, -- the neon ball's transparency as it starts
 	PopTime = 0.6, -- seconds of the result unit's overshoot
 	ChipAbove = 7.4, -- studs over the unit's feet the chip appears when the unit is not found ...
 	ChipRise = 2.2, -- ... and how far it floats up
@@ -70594,9 +71019,14 @@ local MERGE = {
 	ChipClearPx = 10, -- on screen too: the chip's bottom edge this many px over the unit's head
 	ChipSide = 1.5, -- studs aside (camera right) when the top HUD pushes the chip down
 	ChipFade = 0.35,
+	-- A chip that would cover one still on screen (a double merge: measured in Studio, the
+	-- "+TIER 2" and "+TIER 4" chips of a 3+3 / 1+1 merge overlapped by 175 x 31 px) stacks
+	-- above it with this gap, and pops this much later per chip under it.
+	ChipStackPx = 10,
+	ChipStagger = 0.2,
 	AutoChipGap = 0.6, -- seconds between the chips of auto merges
-	PulseHold = 0.035, -- seconds the white pulse holds at full strength (2 frames) ...
-	PulseTime = 0.16, -- ... and fades over
+	PulseHold = 0, -- seconds the white pulse holds at full strength (0: one frame) ...
+	PulseTime = 0.08, -- ... and fades over
 	-- A new best tier: a gold column of light over the unit for a moment.
 	BestBeam = { Height = 70, Width = 8, Time = 1.4 },
 	BestDelay = 4, -- seconds a new best tier takes to stop being news
@@ -71409,6 +71839,8 @@ local knownBest = 0
 local pendingBest = 0
 local seenTop = 0 -- the highest tier any merge has made so far
 local lastAutoChip = 0
+-- The "+TIER n" chips on screen: where each started, when, for how long, half its size.
+local liveChips: { { pos: Vector3, born: number, life: number, half: Vector2 } } = {}
 
 -- A gold ring that always faces the camera, growing from `from` to `to` studs as it fades.
 local function goldRing(pos: Vector3, from: number, to: number, time: number, delay: number)
@@ -71615,19 +72047,77 @@ local function chipSpot(feet: Vector3, kind: string): Vector3
 	return pos
 end
 
+-- The screen point of a chip at `pos`, and the pixels per stud there.
+local function chipBox(camera: Camera, pos: Vector3): (Vector3?, number)
+	local at = camera:WorldToViewportPoint(pos)
+	if at.Z <= 0.5 then
+		return nil, 0
+	end
+	local k = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+	return Vector3.new(at.X, at.Y, 0), k
+end
+
+-- `pos` moved up (camera up) until a chip there covers none of the chips on screen; how many
+-- it stacked over.
+local function clearOfChips(pos: Vector3, half: Vector2): (Vector3, number)
+	local camera = Workspace.CurrentCamera
+	local now = os.clock()
+	for i = #liveChips, 1, -1 do
+		if now - liveChips[i].born > liveChips[i].life then
+			table.remove(liveChips, i)
+		end
+	end
+	if not camera or #liveChips == 0 then
+		return pos, 0
+	end
+	local stacked = 0
+	for _ = 1, #liveChips do
+		local mine, k = chipBox(camera, pos)
+		if not mine then
+			break
+		end
+		local push, side = 0, 0
+		for _, c in liveChips do
+			local rise = MERGE.ChipRise * math.clamp((now - c.born) / c.life, 0, 1)
+			local other, ko = chipBox(camera, c.pos + Vector3.new(0, rise, 0))
+			if other then
+				local wide = math.abs(mine.X - other.X) < half.X * k + c.half.X * ko
+				local high = math.abs(mine.Y - other.Y) < half.Y * k + c.half.Y * ko
+				if wide and high then
+					-- Up until this chip's bottom edge clears the other's top edge (or, under the
+					-- top HUD, aside until its left edge clears the other's right edge).
+					push = math.max(push, (mine.Y + half.Y * k) - (other.Y - c.half.Y * ko) + MERGE.ChipStackPx)
+					side = math.max(side, (other.X + c.half.X * ko) - (mine.X - half.X * k) + MERGE.ChipStackPx)
+				end
+			end
+		end
+		if push <= 0 then
+			break
+		end
+		local up = camera.CFrame.UpVector * (push / k)
+		if Orbs.hudOffset(pos + up, 0, half.Y, MERGE.ChipRise).Magnitude > 0.01 then
+			pos += camera.CFrame.RightVector * (side / k)
+		else
+			pos += up
+		end
+		stacked += 1
+	end
+	return pos, stacked
+end
+
 -- The merge's impact on the rack, at the result unit drawn with its feet at `feet`: gold
 -- rings, a spark burst and a flash, the unit's pop, the "+TIER n" chip and a camera punch.
 -- `kind` is a key of MERGE.Kinds. Returns the point just over the chip (texts go above it).
 local function resultFx(feet: Vector3, tier: number, kind: string): Vector3
 	local k = MERGE.Kinds[kind]
-	local chipAt = chipSpot(feet, kind)
+	local chipAt, stacked = clearOfChips(chipSpot(feet, kind), k.chip / 2)
 	local chest = feet + Vector3.new(0, CHEST_HEIGHT, 0)
 	local to = k.ring[2]
 	for i = 1, k.rings do
 		goldRing(chest, k.ring[1], to, k.ringTime, (i - 1) * MERGE.RingGap)
 		to *= MERGE.RingGrow
 	end
-	local flash = fxPart(Enum.PartType.Ball, Vector3.one, CFrame.new(chest), MERGE.GoldLight, 0.1, Enum.Material.Neon)
+	local flash = fxPart(Enum.PartType.Ball, Vector3.one, CFrame.new(chest), MERGE.GoldLight, MERGE.FlashAlpha, Enum.Material.Neon)
 	tween(flash, MERGE.FlashTime, { Size = Vector3.one * k.flash, Transparency = 1 })
 	cleanup(flash, MERGE.FlashTime + 0.05)
 	burst(chest, MERGE.Gold, Budget.count(k.sparks), {
@@ -71646,7 +72136,13 @@ local function resultFx(feet: Vector3, tier: number, kind: string): Vector3
 		if kind == "auto" then
 			lastAutoChip = now
 		end
-		tierChip(chipAt, tier, kind)
+		local delay = stacked * MERGE.ChipStagger
+		table.insert(liveChips, { pos = chipAt, born = now + delay, life = k.chipLife, half = k.chip / 2 })
+		if delay > 0 then
+			task.delay(delay, tierChip, chipAt, tier, kind)
+		else
+			tierChip(chipAt, tier, kind)
+		end
 	end
 	if kind == "best" then
 		-- A gold column of light over the new best unit.
@@ -80712,6 +81208,14 @@ local HINT_BRIGHT = Color3.new(1, 0.86, 0.8)
 
 local STRIP_Y = 92 -- Hud's run-pill slot (Tutorial steps aside while "RunActive")
 local TITLE_Y = 128
+-- Banner vs the stage sign: the big title stacks under the sign's "STAGE n" line, and the
+-- sign's lower lines (WIN plate, note, need hint) step out while a banner shows, so the two
+-- never print over each other. NoteText is the sign's smallest line.
+local SIGN = {
+	BannerY = TITLE_Y + 22, -- banner top: under the 28 px stage label (STRIP_Y + 28)
+	NoteText = 17,
+	BackFade = 0.5, -- seconds after a banner before the lines come back (a queued title replaces it first)
+}
 local BOX_W = 400
 local SPEED_TEXT = 78 -- the big bottom-centre number (1.4x the old 56)
 local SPEED_H = 84
@@ -80811,6 +81315,7 @@ local stageLabel: TextLabel
 local winLabel: TextLabel
 local winNote: TextLabel
 local hintLabel: TextLabel
+local signBody: Frame -- holds the win / note / hint lines; hidden while a banner shows
 -- Banner, finish
 local banner: Frame
 local bannerTitle: TextLabel
@@ -80908,10 +81413,16 @@ local function showBanner(title: string, sub: string?, color: Color3, hold: numb
 		bannerTitle.TextColor3 = color
 		bannerSub.Text = sub or ""
 		bannerSub.Visible = sub ~= nil
+		signBody.Visible = false
 		Kit.appear(banner, { from = 0.35, time = 0.4 })
 		task.delay(hold, function()
 			if bannerToken == mine then
 				Kit.disappear(banner)
+				task.delay(SIGN.BackFade, function()
+					if bannerToken == mine then
+						signBody.Visible = true
+					end
+				end)
 			end
 		end)
 	end
@@ -81476,6 +81987,7 @@ end
 -- full-screen root goes once its blocks have eased out.
 local function hide()
 	bannerToken += 1
+	signBody.Visible = true
 	if banner.Visible then
 		Kit.disappear(banner)
 	end
@@ -81635,7 +82147,12 @@ function CardioHud.onNotify(p: any)
 		local from = math.floor(num(p.from, 1))
 		local need = num(p.need, needOf(from) or 0)
 		local title, sub
-		if p.capped == true then
+		local zone = math.floor(num(p.zone, 0))
+		if zone > 0 and not caught then
+			-- Off the side of a safe zone's deck: not the next stage's need.
+			title = "OOPS!"
+			sub = "You fell off the edge after Stage " .. zone .. ". Back to Stage 1."
+		elseif p.capped == true then
 			title = if caught then "CAUGHT!" else "TOO SLOW!"
 			sub = "Your Custom Speed is too low for Stage " .. from .. ". Raise it!"
 		elseif p.slow == true then
@@ -82273,7 +82790,14 @@ local function buildStageLine()
 		ZIndex = 22,
 		StrokeThickness = 3,
 	})
-	winLabel = Kit.hudText(stageLine, {
+	signBody = Kit.new("Frame", {
+		Name = "SignLines",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 21,
+		Parent = stageLine,
+	})
+	winLabel = Kit.hudText(signBody, {
 		Name = "Win",
 		Text = "",
 		TextSize = 18,
@@ -82285,16 +82809,16 @@ local function buildStageLine()
 		StrokeThickness = 3,
 	})
 	-- Under the win line: what skipping the plate does, or when it pays again.
-	winNote = Kit.hudText(stageLine, {
+	winNote = Kit.hudText(signBody, {
 		Name = "WinNote",
 		Text = "",
-		TextSize = 15,
+		TextSize = SIGN.NoteText,
 		Size = UDim2.new(1, 0, 0, 20),
 		Position = UDim2.fromOffset(0, 51),
 		Visible = false,
 		ZIndex = 22,
 	})
-	hintLabel = Kit.hudText(stageLine, {
+	hintLabel = Kit.hudText(signBody, {
 		Name = "Hint",
 		Text = "Need more speed! Run on keys or hop on a treadmill",
 		TextSize = 16,
@@ -82311,7 +82835,7 @@ local function buildBanner(screenGui: ScreenGui)
 		Name = "CardioBanner",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(640, 110),
-		Position = UDim2.new(0.5, 0, 0, TITLE_Y + 22),
+		Position = UDim2.new(0.5, 0, 0, SIGN.BannerY),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Visible = false,
 		ZIndex = 30,
@@ -82520,8 +83044,8 @@ return CardioHud
 	is never a surprise.
 
 	The window opens by itself once per session when a reward is waiting, after a
-	calm moment: never during the intro or the tutorial, a game-mode run, or
-	under another window or popup, and never within REWARD_QUIET seconds of a
+	calm moment: never during the intro or the tutorial, a game mode (picker, queue,
+	run or finish card, and MODE_QUIET after it), or under another window or popup, and never within REWARD_QUIET seconds of a
 	reward card. A player who finished the tutorial this session first walks one
 	full lap (collects cash once), or has had LAP_PATIENCE seconds since it ended
 	(a skipped tutorial, a player who never collects). A held crate makes it wait
@@ -82629,6 +83153,14 @@ local CLOSE_AFTER_CLAIM = 1.5
 -- open by itself in that gap, right under the reveal. It covers the free gift's card too.
 -- The held-crate panel ("CratePanelOpen") only holds the window back for a while.
 local BUSY = { "WindowOpen", "ModalOpen", "PopupBusy", "RunActive", "ObbyMode", "CardioActive" }
+-- Game modes own the screen from their picker or queue to their finish card: the window
+-- never opens by itself while one is up (a snapshot run, or a begin with no end since),
+-- nor within MODE_QUIET seconds of any mode event, and a mode that begins closes it. A
+-- begin that never got its end (a picker closed by hand) stops counting after MODE_HOLD.
+local MODE_QUIET = 20
+local MODE_HOLD = 90
+local MODE_BEGINS = { start = true, choose = true, queue = true, pick = true }
+local MODE_ENDS = { stop = true, finish = true, invalid = true, refused = true }
 
 -- The streak line's right half: the saver's rule, and what it says once the saver is spent.
 local SAVER_RULE = "Miss a day? Your streak is saved once a week."
@@ -83300,11 +83832,48 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				lapped = true
 			end
 		end)
+		-- A game mode is up (picker, queue, run, finish) or ended under MODE_QUIET ago.
+		local modeUp = false
+		local modeAt = -math.huge
+		Net.event("Notify").OnClientEvent:Connect(function(payload)
+			if type(payload) ~= "table" or payload.kind ~= "Mode" then
+				return
+			end
+			modeAt = os.clock()
+			if MODE_BEGINS[payload.event] then
+				modeUp = true
+			elseif MODE_ENDS[payload.event] then
+				modeUp = false
+			end
+			-- Only this window: the mode's own picker may be opening in the same event.
+			if MODE_BEGINS[payload.event] and window.isOpen() then
+				window.setOpen(false)
+			end
+		end)
+		local function inMode(): boolean
+			local since = os.clock() - modeAt
+			if since < MODE_QUIET or (modeUp and since < MODE_HOLD) then
+				return true
+			end
+			local data = State.data
+			local modes = data and data.modes
+			if type(modes) == "table" then
+				for _, info in modes do
+					if type(info) == "table" and info.running == true then
+						return true
+					end
+				end
+			end
+			return false
+		end
 		-- Nothing a card may cover is on screen: the loading screen and the intro are gone, and
-		-- no window, popup or mode run is up.
+		-- no window, popup or game mode is up.
 		local player = Players.LocalPlayer
 		local function screenFree(): boolean
 			if player:GetAttribute("IntroPlaying") == true or player:GetAttribute("GameReady") ~= true then
+				return false
+			end
+			if inMode() then
 				return false
 			end
 			local playerGui = player:FindFirstChildOfClass("PlayerGui")
@@ -83408,10 +83977,11 @@ return DailyWindow
 	                 Protein Bro 63%" over "1,240 more Normies · about 2 h" and a
 	                 progress bar, Shared.NextGoal; it turns green, breathes and says
 	                 "READY: step on MOG MERGE" when one merge finds the tier, sparkles
-	                 sweeping across it). With every tier found it is the gold CHAMPION
+	                 sweeping across it, inside a steady green glow). With every tier found it is the gold CHAMPION
 	                 plate: a big bobbing crown, "CHAMPION" and the count of top-tier
 	                 Chads, a slow sheen and sparkles, over "Index reward: tap to claim it" behind
 	                 the Index icon and its red dot while a milestone is unclaimed, then
+	                 the violet LEGEND plate (gold edge, gold title, a haloed crown) over
 	                 "All 25 Chads found!" (above the dumbbell on compact screens). A
 	                 "nearer goal" takes the plate's second line, one at a time, behind its
 	                 icon ("Blender is full: upgrade its speed", "Crate ready at the
@@ -83599,9 +84169,22 @@ local TUNE = {
 	SurgeBarInset = 10,
 	SurgeBarColor = Color3.fromRGB(255, 218, 72),
 	SurgeVignette = Color3.fromRGB(255, 196, 40),
-	SurgeVignetteDepth = { 0.2, 0.14 }, -- of the screen's height (top, bottom bands) and width (sides)
-	SurgeVignetteAlpha = { 0.45, 0.72 }, -- the edge's transparency, at its swell and at rest
+	-- The vignette is a band along the edges only (the middle of the screen keeps its colours):
+	-- its depth is a share of the screen's height (top, bottom bands) and width (sides), solid
+	-- for the first SurgeVignetteCore of it, then fading out inward.
+	SurgeVignetteDepth = { 0.075, 0.05 },
+	SurgeVignetteCore = 0.25,
+	SurgeVignetteAlpha = { 0.2, 0.5 }, -- the edge's transparency, at its swell and at rest
 	SurgeVignetteBeat = 1.1,
+	-- ...and gold motes rise along the side edges while it runs: one every SurgeMoteEvery
+	-- seconds, SurgeMoteSize screen px, from the lower half up SurgeMoteRise of the height
+	-- within SurgeMoteBand of the width from an edge, over SurgeMoteLife seconds.
+	SurgeMoteEvery = 0.09,
+	SurgeMoteSize = { 12, 22 },
+	SurgeMoteRise = { 0.22, 0.4 },
+	SurgeMoteBand = 0.045,
+	SurgeMoteLife = { 1.6, 2.4 },
+	SurgeMoteColors = { Color3.fromRGB(255, 214, 72), Color3.fromRGB(255, 244, 180), Color3.fromRGB(255, 176, 40) },
 	SurgeIcon = 28, -- the bolt's dark medallion (the bolt itself is 6 smaller)
 	SurgeValue = 26,
 	SurgeSheenEvery = 0.9, -- pause between two sheens
@@ -83666,9 +84249,28 @@ local TUNE = {
 	ChampCrownBobBeat = 1.1,
 	ChampSheenEvery = 1.8,
 	ChampSparkColor = Color3.fromRGB(255, 255, 230),
+	-- LEGEND (every tier found and every Index milestone claimed): the plate's last state,
+	-- crown-lit royal violet with a thick gold edge, a gold title, a gold halo beating round
+	-- the crown's medallion and a slower sheen.
+	LegendWords = "LEGEND",
+	LegendPlate = Color3.fromRGB(112, 38, 196),
+	LegendEdge = Color3.fromRGB(255, 214, 72),
+	LegendEdgeWidth = 4,
+	LegendTitle = Color3.fromRGB(255, 222, 80),
+	LegendSheenEvery = 2.6,
+	LegendHalo = 4, -- px outside the medallion
+	LegendHaloWidth = { 3, 6 },
 	-- READY (one merge finds the tier): the green goal plate breathes under a quick sheen and a
 	-- sweep of sparkles that crosses it with the sheen.
 	ReadyBreathe = 0.05,
+	-- ...inside a steady glow (on for as long as it is ready): rings round the plate, `out` px
+	-- outside it, their stroke from width[1] (beating to width[2]) at `alpha`.
+	ReadyGlow = {
+		{ out = 3, width = { 4, 7 }, alpha = 0, color = Color3.fromRGB(236, 255, 120) },
+		{ out = 9, width = { 8, 8 }, alpha = 0.55, color = Color3.fromRGB(120, 255, 110) },
+		{ out = 13, width = { 6, 6 }, alpha = 0.78, color = Color3.fromRGB(120, 255, 110) },
+	},
+	ReadyGlowBeat = 0.5,
 	ReadySheenEvery = 1.4,
 	ReadySparkColor = Color3.fromRGB(255, 255, 210),
 	-- A sparkle sweep: Sparks stars ride across the plate with the sheen's band, each SparkSize
@@ -83698,10 +84300,58 @@ local TUNE = {
 	ModesArrowBeat = 0.42,
 	ModesArrowColor = C.Gold,
 	ModesNewPop = 0.7, -- the Modes plate's beat (Kit.pop strength)
-	-- The wallet: "+$X/s" under the cash plate (the snapshot's income without a surge).
-	IncomeText = 20,
+	-- ...and the moment it first lights: a gold burst on the plate (a ring blowing out to
+	-- ModesUnlockRing px, ModesUnlockRays rays flying ModesUnlockRayReach px, gold confetti)
+	-- and a gold "MODES UNLOCKED!" pill to the right of the menu for ModesUnlockHold seconds.
+	ModesUnlockColor = C.Gold,
+	ModesUnlockTime = 0.8,
+	ModesUnlockRing = 190,
+	ModesUnlockRingWidth = 9,
+	ModesUnlockRays = 12,
+	ModesUnlockRayLength = { 14, 40 },
+	ModesUnlockRayWidth = 7,
+	ModesUnlockRayReach = 96,
+	ModesUnlockConfetti = 26,
+	ModesUnlockPop = 2.2,
+	ModesUnlockWords = "MODES UNLOCKED!",
+	ModesUnlockText = 26,
+	ModesUnlockPillH = 44,
+	ModesUnlockGap = 22, -- the menu's right edge to the pill's pointer
+	ModesUnlockHold = 4.5,
+	ModesUnlockBeat = 0.45,
+	-- The dumbbell's charge ring: TankRing segments on an ellipse (radii in design px, centred
+	-- at TankRingCentreY of its height: round the plaque), lit as the carried aura grows toward
+	-- TankChargeSeconds of production; all white-gold, swollen and beating when full.
+	TankRing = 18,
+	TankRingRadius = { 76, 47 },
+	TankRingCentreY = 0.43,
+	TankRingSeg = { 9, 6 }, -- unlit
+	TankRingSegOn = { 12, 7 },
+	TankRingSegFull = { 14, 8 },
+	TankRingOff = Color3.fromRGB(52, 46, 96),
+	TankRingOn = Color3.fromRGB(255, 200, 48),
+	TankRingFull = Color3.fromRGB(255, 248, 196),
+	TankRingBeat = 0.4,
+	TankChargeSeconds = 30,
+	-- The FREE gift's "CLAIM!" when ready: a gold tab (ink edge that beats wider) behind the word.
+	ClaimTab = C.Gold,
+	ClaimTabEdge = G.TextInk,
+	ClaimTabEdgeWidth = { 2, 4 },
+	ClaimTabW = 80,
+	ClaimTabPad = 6, -- px taller than the word's line
+	ClaimTabBeat = 0.35,
+	-- The wallet: "+$X/s" on its own navy chip under the cash plate (the snapshot's income
+	-- without a surge), behind a green up-arrow; it pops and flashes green on each payout.
+	-- F.Number draws about 0.7 of its size: 23 reads as 16 px.
+	IncomeText = 23,
 	IncomeColor = C.MoneyText,
 	IncomeGap = 2, -- under the cash plate
+	IncomeChipH = 26, -- its bottom overhangs the wallet's 168 by 2, into the 6 px margin
+	IncomeArrow = 16,
+	IncomeArrowColor = C.Cash,
+	IncomePop = 1.3,
+	IncomeFlash = C.CashDeep,
+	IncomeFlashEdge = 4,
 }
 
 -- Layout (design px). The top centre stack sits just under the top bar (TUNE).
@@ -84237,6 +84887,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		stopBreath = nil :: (() -> ())?,
 		refocus = function() end,
 		modesSeen = function() end,
+		unlockBurst = function() end,
 		arrow = nil :: Frame?,
 	}
 	menu.refocus = function()
@@ -84294,6 +84945,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		-- A milestone reward waiting in the Index window (the snapshot's `indexClaimable`)
 		-- goes in front of the count of new finds, and the button glows until the Index is opened.
 		local claimable = math.max(0, math.floor(tonumber(data.indexClaimable) or 0))
+		-- Every tier found and every milestone claimed: the Index has nothing left to give, so a
+		-- count of finds would only read as rewards waiting. No badge from then on.
+		if claimable == 0 and discoveredCount(data) >= Economy.MAX_TIER then
+			fresh = 0
+		end
 		Kit.setBadge(Hud.buttons.Index, if claimable > 0 then "!" elseif fresh > 0 then tostring(fresh) else nil)
 		if claimable ~= indexClaimable then
 			indexClaimable = claimable
@@ -84358,6 +85014,141 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		pulse(arrow, TUNE.ModesArrowBeat, { Position = rest - UDim2.fromOffset(0, TUNE.ModesArrowBob) })
 		menu.arrow = arrow
 	end
+	-- Modes lights up for the first time: a gold burst on its plate (a ring that blows out,
+	-- rays, gold confetti) and a gold "MODES UNLOCKED!" pop to the right of the menu, clear of
+	-- it, that holds for a few seconds. In design px on the screen, from the plate's place.
+	menu.unlockBurst = function()
+		local modes = Hud.buttons.Modes
+		local right = Hud.buttons.Index or modes
+		if not modes or PREVIEW then
+			return
+		end
+		local scale = if screenScale then screenScale.Scale else 1
+		local origin = screen.AbsolutePosition
+		local centre = (modes.AbsolutePosition + modes.AbsoluteSize / 2 - origin) / scale
+		Kit.pop(modes, TUNE.ModesUnlockPop)
+		Kit.confetti(modes, {
+			Origin = UDim2.fromScale(0.5, 0.45),
+			Count = TUNE.ModesUnlockConfetti,
+			ZIndex = 20,
+			Colors = { C.Gold, C.GoldLight, Color3.new(1, 1, 1) },
+			Power = 0.7,
+		})
+		local burst = Kit.new("Frame", {
+			Name = "UnlockBurst",
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(0, 0),
+			Position = UDim2.fromOffset(centre.X, centre.Y),
+			ZIndex = 20,
+			Parent = screen,
+		})
+		local ring = Kit.new("Frame", {
+			Name = "Ring",
+			BackgroundTransparency = 1,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Size = UDim2.fromOffset(40, 40),
+			ZIndex = 20,
+			Parent = burst,
+		})
+		Kit.round(ring)
+		local stroke = Kit.new("UIStroke", { Color = TUNE.ModesUnlockColor, Thickness = TUNE.ModesUnlockRingWidth, Parent = ring })
+		local grow = TUNE.ModesUnlockRing
+		Kit.tween(ring, TUNE.ModesUnlockTime, { Size = UDim2.fromOffset(grow, grow) }, Enum.EasingStyle.Quad)
+		Kit.tween(stroke, TUNE.ModesUnlockTime, { Thickness = 1, Transparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		for i = 1, TUNE.ModesUnlockRays do
+			local turn = (i - 1) / TUNE.ModesUnlockRays * 360 + math.random(-8, 8)
+			local ray = Kit.new("Frame", {
+				Name = "Ray",
+				BackgroundColor3 = if i % 2 == 0 then C.GoldLight else TUNE.ModesUnlockColor,
+				BorderSizePixel = 0,
+				AnchorPoint = Vector2.new(0, 0.5),
+				Size = UDim2.fromOffset(TUNE.ModesUnlockRayLength[1], TUNE.ModesUnlockRayWidth),
+				Rotation = turn,
+				ZIndex = 21,
+				Parent = burst,
+			})
+			Kit.round(ray)
+			-- Each ray shoots out along its angle, stretching, then thins away.
+			local a = math.rad(turn)
+			local reach = TUNE.ModesUnlockRayReach
+			Kit.tween(ray, TUNE.ModesUnlockTime, {
+				Position = UDim2.fromOffset(math.cos(a) * reach, math.sin(a) * reach),
+				Size = UDim2.fromOffset(TUNE.ModesUnlockRayLength[2], TUNE.ModesUnlockRayWidth),
+			}, Enum.EasingStyle.Quad)
+			task.delay(TUNE.ModesUnlockTime * 0.55, function()
+				Kit.tween(
+					ray,
+					TUNE.ModesUnlockTime * 0.45,
+					{ BackgroundTransparency = 1, Size = UDim2.fromOffset(TUNE.ModesUnlockRayLength[2], 0) }
+				)
+			end)
+		end
+		task.delay(TUNE.ModesUnlockTime + 0.1, function()
+			burst:Destroy()
+		end)
+		-- The pop: a gold pill with dark words, to the right of the menu's first row.
+		local x = (right.AbsolutePosition.X + right.AbsoluteSize.X - origin.X) / scale + TUNE.ModesUnlockGap
+		local pill = Kit.new("Frame", {
+			Name = "ModesUnlocked",
+			BackgroundColor3 = TUNE.ModesUnlockColor,
+			BorderSizePixel = 0,
+			AutomaticSize = Enum.AutomaticSize.X,
+			AnchorPoint = Vector2.new(0, 0.5),
+			Size = UDim2.fromOffset(0, TUNE.ModesUnlockPillH),
+			Position = UDim2.fromOffset(x, centre.Y),
+			ZIndex = 22,
+			Parent = screen,
+		})
+		Kit.round(pill)
+		Kit.padding(pill, 0, 16)
+		local edge = Kit.new("UIStroke", { Color = G.TextInk, Thickness = 3, Parent = pill })
+		local words = Kit.text(pill, {
+			Name = "Words",
+			Text = TUNE.ModesUnlockWords,
+			Font = F.Display,
+			TextSize = TUNE.ModesUnlockText,
+			TextWrapped = false,
+			TextColor3 = C.GoldInk,
+			StrokeThickness = 0,
+			AutomaticSize = Enum.AutomaticSize.X,
+			Size = UDim2.fromOffset(0, TUNE.ModesUnlockPillH),
+			ZIndex = 23,
+		})
+		-- A gold pointer on its left, at the menu.
+		local tip = Kit.new("Frame", {
+			Name = "Tip",
+			BackgroundColor3 = TUNE.ModesUnlockColor,
+			BorderSizePixel = 0,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Size = UDim2.fromOffset(14, 14),
+			Position = UDim2.new(0, -16, 0.5, 0),
+			Rotation = 45,
+			ZIndex = 21,
+			Parent = pill,
+		})
+		Kit.new("UIStroke", { Color = G.TextInk, Thickness = 3, Parent = tip })
+		local pillScale = Kit.new("UIScale", { Scale = 0.2, Parent = pill })
+		Kit.tween(pillScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
+		task.delay(0.4, function()
+			if pill.Parent then
+				pulse(pillScale, TUNE.ModesUnlockBeat, { Scale = 1.08 })
+			end
+		end)
+		task.delay(TUNE.ModesUnlockHold, function()
+			Kit.tween(pill, 0.3, { BackgroundTransparency = 1 })
+			Kit.tween(tip, 0.3, { BackgroundTransparency = 1 })
+			Kit.tween(words, 0.3, { TextTransparency = 1 })
+			Kit.tween(edge, 0.3, { Transparency = 1 })
+			for _, child in tip:GetChildren() do
+				if child:IsA("UIStroke") then
+					Kit.tween(child, 0.3, { Transparency = 1 })
+				end
+			end
+			task.delay(0.35, function()
+				pill:Destroy()
+			end)
+		end)
+	end
 	local function openIndex()
 		menu.ring.Index = false
 		local data = State.data
@@ -84394,6 +85185,18 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				menu.wants.ModesNew = true
 				menu.ring.Modes = true
 				menu.refocus()
+				-- The burst waits for a window in the way to close (a few seconds at most).
+				task.spawn(function()
+					for _ = 1, 20 do
+						if screen:GetAttribute("WindowOpen") ~= true then
+							break
+						end
+						task.wait(0.5)
+					end
+					if screen:GetAttribute("WindowOpen") ~= true and screen:GetAttribute("RunActive") ~= true then
+						menu.unlockBurst()
+					end
+				end)
 				task.delay(TUNE.ModesNewSeconds, function()
 					if os.clock() >= menu.modesNewUntil then
 						menu.modesSeen()
@@ -84583,6 +85386,23 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 3,
 	})
+	-- The ready gift's "CLAIM!" sits on a gold tab (it breathes with the word, its edge beats).
+	local claimTab = Kit.new("Frame", {
+		Name = "ClaimTab",
+		BackgroundColor3 = TUNE.ClaimTab,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(0, TUNE.ClaimTabW, 1, TUNE.ClaimTabPad),
+		Visible = false,
+		ZIndex = 2,
+		Parent = freeTimer,
+	})
+	Kit.round(claimTab)
+	do
+		local edge = Kit.new("UIStroke", { Thickness = TUNE.ClaimTabEdgeWidth[1], Color = TUNE.ClaimTabEdge, Parent = claimTab })
+		pulse(edge, TUNE.ClaimTabBeat, { Thickness = TUNE.ClaimTabEdgeWidth[2] })
+	end
 	local version = Kit.hudText(screen, {
 		Name = "Version",
 		Text = "v" .. Economy.VERSION,
@@ -85068,10 +85888,62 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			})
 			Kit.new("UIGradient", {
 				Rotation = spec[3],
-				Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }),
+				Transparency = NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 0),
+					NumberSequenceKeypoint.new(TUNE.SurgeVignetteCore, 0.15),
+					NumberSequenceKeypoint.new(1, 1),
+				}),
 				Parent = band,
 			})
 			pulse(band, TUNE.SurgeVignetteBeat, { BackgroundTransparency = TUNE.SurgeVignetteAlpha[1] })
+		end
+		-- The motes: while the vignette shows, gold sparks rise up both side edges, swaying a
+		-- little, popping in and shrinking away.
+		if not PREVIEW then
+			task.spawn(function()
+				local side = 1
+				while vignette.Parent do
+					if vignette.Enabled then
+						side = -side
+						local id = sparkId()
+						local size = math.random(TUNE.SurgeMoteSize[1], TUNE.SurgeMoteSize[2])
+						local color = TUNE.SurgeMoteColors[math.random(1, #TUNE.SurgeMoteColors)]
+						local mote: GuiObject
+						if id then
+							mote = Kit.new("ImageLabel", { Image = id, ImageColor3 = color, BackgroundTransparency = 1 })
+						else
+							mote = Kit.new("Frame", { BackgroundColor3 = color, BorderSizePixel = 0, Rotation = 45 })
+							Kit.corner(mote, 3)
+						end
+						local inset = math.random() * TUNE.SurgeMoteBand
+						local x = if side > 0 then inset else 1 - inset
+						local y = 0.55 + math.random() * 0.45
+						local rise = TUNE.SurgeMoteRise[1] + math.random() * (TUNE.SurgeMoteRise[2] - TUNE.SurgeMoteRise[1])
+						local life = TUNE.SurgeMoteLife[1] + math.random() * (TUNE.SurgeMoteLife[2] - TUNE.SurgeMoteLife[1])
+						mote.Name = "Mote"
+						mote.AnchorPoint = Vector2.new(0.5, 0.5)
+						mote.Size = UDim2.fromOffset(0, 0)
+						mote.Position = UDim2.fromScale(x, y)
+						mote.ZIndex = 2
+						mote.Parent = vignette
+						local sway = (math.random() - 0.5) * TUNE.SurgeMoteBand
+						Kit.tween(
+							mote,
+							life,
+							{ Position = UDim2.fromScale(math.clamp(x + sway, 0.005, 0.995), y - rise), Rotation = mote.Rotation + 120 },
+							Enum.EasingStyle.Linear
+						)
+						Kit.tween(mote, life * 0.2, { Size = UDim2.fromOffset(size, size) }, Enum.EasingStyle.Back)
+						task.delay(life * 0.6, function()
+							Kit.tween(mote, life * 0.4, { Size = UDim2.fromOffset(0, 0) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+						end)
+						task.delay(life + 0.05, function()
+							mote:Destroy()
+						end)
+					end
+					task.wait(TUNE.SurgeMoteEvery)
+				end
+			end)
 		end
 		local function showVignette()
 			local busy = screen:GetAttribute("WindowOpen") == true
@@ -85121,7 +85993,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- CHAMPION's: gold, a crown on a dark medallion, "CHAMPION" and the top tier's units on the
 	-- rack, with no bar (there is nothing left to fill); its second line names an Index
 	-- milestone that is not claimed yet (the Index icon with a red dot; a tap opens the
-	-- Index), then "All 25 Chads found!".
+	-- Index), then, with every milestone claimed, it is the LEGEND's (crown-lit violet) over
+	-- "All 25 Chads found!".
 	-- The slot is L.goalY: StackGap under row 1, and never under that many pixels on the glass
 	-- (a small window's scale would close the gap).
 	local goal = plate(screen, {
@@ -85251,7 +86124,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	end
 	-- Ready: the plate turns green, breathes and wears a sheen until the merge is made.
 	-- Champion (every tier found): it is gold for good, with a slower sheen.
-	local setGoalLook: (boolean, boolean) -> ()
+	local setGoalLook: (boolean, boolean, boolean) -> ()
 	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
 	do
 		local champNow = false
@@ -85259,16 +86132,55 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local shine = sheen(goal, TUNE.PlateRadius)
 		local readySparks = sparkles(goal, TUNE.ReadySparkColor)
 		local champSparks = sparkles(goal, TUNE.ChampSparkColor)
-		setGoalLook = function(ready: boolean, champ: boolean)
-			if ready == goalReady and champ == champNow then
+		-- READY's glow is a steady state a still always catches: a bright inner ring hugging
+		-- the plate (its width beats) inside a wide soft halo, both on for as long as it is ready.
+		local readyGlow = Kit.new("Frame", {
+			Name = "ReadyGlow",
+			BackgroundTransparency = 1,
+			Size = UDim2.fromScale(1, 1),
+			Visible = false,
+			ZIndex = 0,
+			Parent = goal,
+		})
+		readyGlow:SetAttribute("KitChrome", true)
+		for i, spec in TUNE.ReadyGlow do
+			local ring = Kit.new("Frame", {
+				Name = "Ring" .. i,
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, spec.out * 2, 1, spec.out * 2),
+				Position = UDim2.fromScale(0.5, 0.5),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = 0,
+				Parent = readyGlow,
+			})
+			ring:SetAttribute("KitChrome", true)
+			Kit.corner(ring, TUNE.PlateRadius + spec.out)
+			local stroke = Kit.new("UIStroke", { Color = spec.color, Thickness = spec.width[1], Transparency = spec.alpha, Parent = ring })
+			if spec.width[2] ~= spec.width[1] then
+				pulse(stroke, TUNE.ReadyGlowBeat, { Thickness = spec.width[2] })
+			end
+		end
+		local legendNow = false
+		setGoalLook = function(ready: boolean, champ: boolean, legend: boolean)
+			if ready == goalReady and champ == champNow and legend == legendNow then
 				return
 			end
-			goalReady, champNow = ready, champ
-			tint(goal, if ready then C.Good elseif champ then TUNE.ChampPlate else nil, if champ then TUNE.ChampEdge else nil)
+			goalReady, champNow, legendNow = ready, champ, legend
+			-- LEGEND (every tier found, every milestone claimed): crown-lit royal violet with a
+			-- thick gold edge and gold title, a slower sheen; CHAMPION before that is gold.
+			local fill = if ready then C.Good elseif legend then TUNE.LegendPlate elseif champ then TUNE.ChampPlate else nil
+			tint(goal, fill, if legend then TUNE.LegendEdge elseif champ then TUNE.ChampEdge else nil)
+			local edge = edgeOf(goal)
+			if edge then
+				edge.Thickness = if legend then TUNE.LegendEdgeWidth else TUNE.PlateEdgeWidth
+			end
+			goalTitle.TextColor3 = if legend then TUNE.LegendTitle else C.Text
 			goalBar.BackgroundColor3 = if ready then Color3.new(1, 1, 1) else C.Gold
-			shine(ready or champ, if champ then TUNE.ChampSheenEvery else TUNE.ReadySheenEvery)
+			readyGlow.Visible = ready
+			local every = if legend then TUNE.LegendSheenEvery elseif champ then TUNE.ChampSheenEvery else TUNE.ReadySheenEvery
+			shine(ready or champ, every)
 			readySparks(ready and not champ, TUNE.ReadySheenEvery)
-			champSparks(champ, TUNE.ChampSheenEvery)
+			champSparks(champ, every)
 			-- "CHAMPION" is a title: a size up (the plate lays itself out again).
 			GOAL_TEXT[goalTitle] = if champ then TUNE.ChampTitle else TUNE.GoalTitle
 			Kit.holdText(goalTitle, Kit.captionPx(), GOAL_TEXT[goalTitle], true)
@@ -85326,7 +86238,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local champ = picked.kind ~= "merge"
 		local top = if picked.kind == "done" then picked.have else math.max(0, math.floor(tonumber(data.units[Economy.MAX_TIER]) or 0))
 		local topCount = if top > 0 then string.format("%dx %s", top, tierName(Economy.MAX_TIER)) else ""
-		setGoalLook(ready, champ)
+		setGoalLook(ready, champ, picked.kind == "done")
 		-- Line 1: the lead, the target and how far along it is; line 2: what it still takes,
 		-- in fewer words when the strip is short of room (`hints`, longest first).
 		local lead, title, count = "Next:", tierName(picked.tier), ""
@@ -85353,8 +86265,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				hints = { string.format("Index reward: %s %s found", found, W.Units), "Index reward: " .. found }
 			end
 		else
-			-- Nothing is left to reach: the champion's plate and how complete the Index is.
-			lead, title, count = "", "CHAMPION", topCount
+			-- Nothing is left to reach: the LEGEND plate and how complete the Index is.
+			lead, title, count = "", TUNE.LegendWords, topCount
 			local all = string.format("All %d %s found!", Economy.MAX_TIER, W.Units)
 			hints = { all .. " The gym is yours", all, "" }
 		end
@@ -85476,7 +86388,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		goalWidth = math.max(x, GOAL_TEXT_X + hintW) + 12
 		goal.Size = UDim2.fromOffset(goalWidth, TUNE.GoalH + (lineH - 20) + (hintH - 16) + (if tall then lineH else 0))
 		-- A new target (not just a new count) gets a fresh thumbnail and a pop.
-		local thumbKey = if champ then "champ" else picked.kind .. picked.tier
+		local legend = picked.kind == "done"
+		local thumbKey = if legend then "legend" elseif champ then "champ" else picked.kind .. picked.tier
 		if thumbKey ~= goalThumbKey then
 			goalThumbKey = thumbKey
 			for _, child in goalThumb:GetChildren() do
@@ -85493,6 +86406,21 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				})
 				Kit.round(medal)
 				Kit.new("UIStroke", { Thickness = 2, Color = TUNE.ChampEdge, Parent = medal })
+				if legend then
+					-- Crown-lit: a gold halo round the medallion, beating.
+					local halo = Kit.new("Frame", {
+						Name = "Halo",
+						BackgroundTransparency = 1,
+						Size = UDim2.new(1, TUNE.LegendHalo * 2, 1, TUNE.LegendHalo * 2),
+						Position = UDim2.fromScale(0.5, 0.5),
+						AnchorPoint = Vector2.new(0.5, 0.5),
+						ZIndex = 1,
+						Parent = medal,
+					})
+					Kit.round(halo)
+					local ring = Kit.new("UIStroke", { Thickness = TUNE.LegendHaloWidth[1], Color = C.GoldLight, Parent = halo })
+					pulse(ring, TUNE.ChampCrownBeat, { Thickness = TUNE.LegendHaloWidth[2] })
+				end
 				-- The crown is bigger than its medallion and stands out of it: it rocks, and bobs
 				-- on a holder of its own (two tweens, two objects).
 				local bob = group("Bob", {
@@ -85822,6 +86750,65 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	})
 	tankCaption.TextSize = 20
 	carriedLabel.TextSize = 36
+	-- The charge ring: TUNE.TankRing segments on an ellipse round the plaque light up gold, one
+	-- after another from the top, as the carried aura grows toward TankChargeSeconds of
+	-- production; full, they all turn white-gold, swell and beat. Colours and sizes only (the
+	-- HUD's fade owns transparencies).
+	local tankCharge: (number) -> ()
+	-- In a block: its locals stay out of build's 200.
+	do
+		local segments: { Frame } = {}
+		local tw, th = DUMBBELL_W, DUMBBELL_W * DUMBBELL_ASPECT
+		local rx, ry = TUNE.TankRingRadius[1], TUNE.TankRingRadius[2]
+		for i = 1, TUNE.TankRing do
+			local a = -math.pi / 2 + (i - 1) / TUNE.TankRing * math.pi * 2
+			local turn = math.deg(math.atan2(ry * math.cos(a), -rx * math.sin(a)))
+			local seg = Kit.new("Frame", {
+				Name = "Charge" .. i,
+				BackgroundColor3 = TUNE.TankRingOff,
+				BorderSizePixel = 0,
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Size = UDim2.fromOffset(TUNE.TankRingSeg[1], TUNE.TankRingSeg[2]),
+				Position = UDim2.fromScale(0.5 + rx * math.cos(a) / tw, TUNE.TankRingCentreY + ry * math.sin(a) / th),
+				Rotation = turn,
+				ZIndex = 3,
+				Parent = tank,
+			})
+			Kit.round(seg)
+			Kit.new("UIStroke", { Name = "Edge", Thickness = 1.5, Color = G.TextInk, Parent = seg })
+			segments[i] = seg
+		end
+		local lit = -1
+		local beat: Tween? = nil
+		tankCharge = function(fraction: number)
+			local n = math.clamp(math.floor(fraction * TUNE.TankRing + 0.5), 0, TUNE.TankRing)
+			if n == lit then
+				return
+			end
+			local full = n >= TUNE.TankRing
+			local wasFull = lit >= TUNE.TankRing
+			lit = n
+			for i, seg in segments do
+				local on = i <= n
+				local color = if full then TUNE.TankRingFull elseif on then TUNE.TankRingOn else TUNE.TankRingOff
+				Kit.tween(seg, 0.15, { BackgroundColor3 = color })
+				local size = if full then TUNE.TankRingSegFull elseif on then TUNE.TankRingSegOn else TUNE.TankRingSeg
+				Kit.tween(seg, 0.2, { Size = UDim2.fromOffset(size[1], size[2]) }, Enum.EasingStyle.Back)
+			end
+			if full ~= wasFull then
+				if beat then
+					beat:Cancel()
+					beat = nil
+				end
+				if full then
+					Hud.pulseTank(true)
+					beat = pulse(tankCaption, TUNE.TankRingBeat, { TextColor3 = Color3.new(1, 1, 1) })
+				else
+					tankCaption.TextColor3 = C.GoldLight
+				end
+			end
+		end
+	end
 	-- A bounce and a short cross-fade to the glow art; deposits bounce a little more.
 	local glowToken = 0
 	Hud.pulseTank = function(big: boolean?)
@@ -85959,9 +86946,66 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		ZIndex = 3,
 	})
 	local coin = moneyLabel -- coin bursts fly into the cash amount
-	-- Income at a glance: "+$1.2K/s" under the cash plate (steady income, no surge in it). Not
-	-- on touch, where the menu grid sits right under the top-left wallet.
-	local incomeLine = Kit.hudText(wallet, {
+	-- Income at a glance: "+$1.2K/s" under the cash plate (steady income, no surge in it), on
+	-- its own navy chip behind a green up-arrow, so it never sits bare on the floor. The chip
+	-- pops and its edge flashes green on each payout (cashGain). Not on touch, where the menu
+	-- grid sits right under the top-left wallet.
+	local incomeChip = plate(wallet, {
+		Name = "IncomeChip",
+		Radius = TUNE.ChipRadius,
+		Size = UDim2.fromOffset(0, TUNE.IncomeChipH),
+		Position = UDim2.fromOffset(-8, 84 + TUNE.CashPlateH + TUNE.IncomeGap),
+		Visible = false,
+	})
+	incomeChip.AutomaticSize = Enum.AutomaticSize.X
+	Kit.padding(incomeChip, 0, TUNE.ChipPad)
+	Kit.new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		Padding = UDim.new(0, 6),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = incomeChip,
+	})
+	-- In a block: its locals stay out of build's 200.
+	do
+		-- The green up-arrow: a stem under a turned square's upper point, ink-edged.
+		local arrowW = TUNE.IncomeArrow
+		local arrow = Kit.new("Frame", {
+			Name = "Up",
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(arrowW, arrowW + 2),
+			LayoutOrder = 1,
+			ZIndex = 3,
+			Parent = incomeChip,
+		})
+		local side = math.floor(arrowW / math.sqrt(2) + 0.5)
+		local head = Kit.new("Frame", {
+			Name = "Head",
+			BackgroundColor3 = TUNE.IncomeArrowColor,
+			BorderSizePixel = 0,
+			Size = UDim2.fromOffset(side, side),
+			Position = UDim2.new(0.5, 0, 0, arrowW / 2),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Rotation = 45,
+			ZIndex = 4,
+			Parent = arrow,
+		})
+		Kit.corner(head, 2)
+		Kit.new("UIStroke", { Thickness = 2, Color = G.TextInk, Parent = head })
+		local stem = Kit.new("Frame", {
+			Name = "Stem",
+			BackgroundColor3 = TUNE.IncomeArrowColor,
+			BorderSizePixel = 0,
+			Size = UDim2.fromOffset(math.max(4, arrowW // 3), arrowW // 2 + 2),
+			Position = UDim2.new(0.5, 0, 1, 0),
+			AnchorPoint = Vector2.new(0.5, 1),
+			ZIndex = 5,
+			Parent = arrow,
+		})
+		Kit.corner(stem, 2)
+		Kit.new("UIStroke", { Thickness = 2, Color = G.TextInk, Parent = stem })
+	end
+	local incomeLine = Kit.hudText(incomeChip, {
 		Name = "Income",
 		Text = "",
 		Font = F.Number,
@@ -85969,11 +87013,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		StrokeThickness = 2.5,
 		TextColor3 = TUNE.IncomeColor,
 		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, TUNE.IncomeText + 4),
-		Position = UDim2.fromOffset(0, 84 + TUNE.CashPlateH + TUNE.IncomeGap),
+		Size = UDim2.fromOffset(0, TUNE.IncomeChipH),
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Visible = false,
-		ZIndex = 3,
+		LayoutOrder = 2,
+		ZIndex = 4,
 	})
 	local addButton = Kit.button(wallet, {
 		Name = "Add",
@@ -86025,6 +87068,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			lastAt = now
 			-- (The edge is the surge's while one runs: its pulse is not to be cut short.)
 			flash(cashPlate, TUNE.CashFlash, TUNE.PlateColor, TUNE.CashFlashTime, if surgeActiveNow then nil else C.Cash, nil, 4)
+			-- The income chip beats with the payout: a pop and a green flash of its plate and edge.
+			if incomeChip.Visible then
+				Kit.pop(incomeChip, TUNE.IncomePop)
+				flash(incomeChip, TUNE.IncomeFlash, TUNE.PlateColor, TUNE.CashFlashTime, C.Cash, nil, TUNE.IncomeFlashEdge)
+			end
 			local float = Kit.hudText(wallet, {
 				Name = "Gain",
 				Text = "+" .. State.money(owed),
@@ -86461,7 +87509,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		lastMult = data.moneyMult
 		multLine.Text = string.format('Cash <font color="#%s">[ x%.1f ]</font>', C.Gold:ToHex(), data.moneyMult)
 		local income = tonumber(data.rewardIncome) or tonumber(data.income) or 0
-		incomeLine.Visible = income > 0 and not Kit.touch
+		incomeChip.Visible = income > 0 and not Kit.touch
 		incomeLine.Text = "+" .. State.money(income) .. "/s"
 		local owned = 0
 		if type(data.unitTotal) == "number" then
@@ -86487,6 +87535,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		lastBought = bought
 		roll(carriedLabel, data.carried, State.num, 0.3)
+		do
+			local production = tonumber(data.production) or 0
+			tankCharge(if production > 0 then (tonumber(data.carried) or 0) / (production * TUNE.TankChargeSeconds) else 0)
+		end
 		-- Carried aura dropping to nothing is a deposit: the bigger bounce.
 		if lastCarried ~= nil and lastCarried > 0 and data.carried <= 0 then
 			Hud.pulseTank(true)
@@ -86764,7 +87816,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			if ready ~= freeReady then
 				freeReady = ready
 				Kit.setBadge(freeButton, if ready then "!" else nil)
-				freeTimer.TextColor3 = if ready then C.Gold else Color3.new(1, 1, 1)
+				-- White on the gold tab when ready (gold words would vanish on it).
+				freeTimer.TextColor3 = Color3.new(1, 1, 1)
+				claimTab.Visible = ready
 				if ready then
 					Kit.pop(freeButton, 0.8)
 					local stopGift = hop(freeButton, UDim2.fromScale(0.5, 0))
@@ -90196,6 +91250,31 @@ end
 -- figure, framed plinth to crown under GILD.Viewport's warm light; every other use keeps the
 -- figure.
 local SILHOUETTE = Color3.fromRGB(122, 146, 220)
+-- The statue's mesh is fetched as soon as Kit loads. A viewport built before it has arrived
+-- draws a dark blob for the whole card (a fresh profile's first tier-25 reveal, measured in
+-- Studio): until the fetch has succeeded a showcase keeps the gold code figure instead.
+local ContentProvider = game:GetService("ContentProvider")
+local function statueSource(): Instance?
+	local folder = ReplicatedStorage:FindFirstChild("AssetModels")
+	return folder and folder:FindFirstChild(AssetModels.name(AssetModels.ABSOLUTE_CHAD))
+end
+local function statueReady(): boolean
+	local source = statueSource()
+	local mesh = if source == nil then nil elseif source:IsA("MeshPart") then source else source:FindFirstChildWhichIsA("MeshPart", true)
+	if mesh == nil or (mesh :: MeshPart).MeshId == "" then
+		return true -- no mesh in the place: AssetModels builds its blocks, nothing to wait for
+	end
+	return ContentProvider:GetAssetFetchStatus((mesh :: MeshPart).MeshId) == Enum.AssetFetchStatus.Success
+end
+task.spawn(function()
+	local folder = ReplicatedStorage:WaitForChild("AssetModels", 30)
+	local source = folder and statueSource()
+	if source then
+		pcall(function()
+			ContentProvider:PreloadAsync({ source })
+		end)
+	end
+end)
 local function statueViewport(viewport: ViewportFrame): ViewportFrame
 	viewport:SetAttribute("Statue", true)
 	local V = CharacterFactory.GILD.Viewport
@@ -90228,7 +91307,7 @@ function Kit.unitViewport(parent: Instance, tier: number, props: { [string]: any
 	-- Tagged so tooling (preview renderer) can identify what the viewport shows.
 	viewport:SetAttribute("Tier", tier)
 	viewport:SetAttribute("Silhouette", silhouette == true)
-	if props.Statue == true and not silhouette and tier == Economy.MAX_TIER then
+	if props.Statue == true and not silhouette and tier == Economy.MAX_TIER and statueReady() then
 		return statueViewport(viewport)
 	end
 	local model = CharacterFactory.build(look, Theme.Tiers[tier].Name)
@@ -91375,7 +92454,26 @@ local THEMES = { "beach", "cove", "bay", "reef", "bubble", "coral", "shark", "st
 local BODY_WASH = 0.8 -- body background transparency over the card (1 = no wash)
 local LOCKED_DARK = 0.38 -- locked band: share pulled toward LOCKED_SLATE
 local LOCKED_GREY = 0.3 -- ... and toward its own grey
-local ICON_PX = 22
+local ICON_PX = 24
+-- Emoji the Roblox font cannot draw (Emoji 14 bubbles and coral print the placeholder logo):
+-- big text (the preview fallback) swaps them for these, and the card band draws the map's
+-- code-built emblem (EMBLEMS) instead. EMBLEM tunables: box px, colours, stroke px.
+local GLYPH_SWAP: { [string]: string } = { ["🫧"] = "🔵", ["🪸"] = "🐚" }
+local EMBLEM = {
+	BOX = 26,
+	STROKE = 1.5,
+	BUBBLE_FILL = Color3.fromRGB(206, 246, 255),
+	BUBBLE_EDGE = Color3.fromRGB(28, 86, 170),
+	BUBBLE_ALPHA = 0.1,
+	-- Bubbles: { centre x, centre y (box scale), diameter px }.
+	BUBBLES = { { 0.4, 0.6, 16 }, { 0.76, 0.3, 10 }, { 0.2, 0.2, 7 } },
+	SHINE = Color3.new(1, 1, 1),
+	CORAL = Color3.fromRGB(240, 56, 96),
+	CORAL_EDGE = Color3.new(1, 1, 1),
+	CORAL_TIP = Color3.fromRGB(255, 232, 214),
+	-- Coral branches: { foot x, foot y (box scale), length px, width px, tilt degrees }.
+	BRANCHES = { { 0.5, 0.95, 20, 5, 0 }, { 0.42, 0.62, 11, 4, -38 }, { 0.58, 0.55, 11, 4, 40 } },
+}
 -- Every caption on the cards and side panel is held at least this many px on the glass.
 local MIN_TEXT_PX = 15
 local STRIP = { ParkourFinish = true, ParkourWater = true, Trigger = true }
@@ -91409,8 +92507,12 @@ local function levelList(info: { [string]: any }?): { any }
 	return if info and type(info.levels) == "table" then info.levels else {}
 end
 
+local function themeOf(lv: any, i: number): string?
+	return if type(lv) == "table" and type(lv.theme) == "string" then lv.theme else THEMES[i]
+end
+
 local function accentOf(lv: any, i: number): Color3
-	local theme = if type(lv) == "table" and type(lv.theme) == "string" then lv.theme else THEMES[i]
+	local theme = themeOf(lv, i)
 	local header = theme and HEADERS[theme]
 	if header then
 		return header
@@ -91424,7 +92526,85 @@ local function accentOf(lv: any, i: number): Color3
 end
 
 local function iconOf(lv: any, i: number): string
-	return if type(lv) == "table" and type(lv.icon) == "string" and lv.icon ~= "" then lv.icon else ICONS[i] or "🏁"
+	local icon = if type(lv) == "table" and type(lv.icon) == "string" and lv.icon ~= "" then lv.icon else ICONS[i] or "🏁"
+	return GLYPH_SWAP[icon] or icon
+end
+
+-- Code-built band emblems for the maps whose emoji does not render (EMBLEM above).
+local function emblemDisc(parent: Instance, name: string, x: number, y: number, d: number, color: Color3, alpha: number, z: number): Frame
+	local disc = Kit.new("Frame", {
+		Name = name,
+		BackgroundColor3 = color,
+		BackgroundTransparency = alpha,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(x, y),
+		Size = UDim2.fromOffset(d, d),
+		ZIndex = z,
+		Parent = parent,
+	})
+	Kit.round(disc)
+	return disc
+end
+
+local EMBLEMS: { [string]: (Frame) -> () } = {}
+
+EMBLEMS.bubble = function(box)
+	for n, b in EMBLEM.BUBBLES do
+		local disc = emblemDisc(box, "Bubble" .. n, b[1], b[2], b[3], EMBLEM.BUBBLE_FILL, EMBLEM.BUBBLE_ALPHA, 4)
+		Kit.new("UIStroke", { Thickness = EMBLEM.STROKE, Color = EMBLEM.BUBBLE_EDGE, Parent = disc })
+		emblemDisc(disc, "Shine", 0.32, 0.3, math.max(2, math.floor(b[3] * 0.28)), EMBLEM.SHINE, 0, 5)
+	end
+end
+
+EMBLEMS.coral = function(box)
+	for n, b in EMBLEM.BRANCHES do
+		local rad = math.rad(b[5])
+		-- A rounded bar standing on its foot, tilted about it: the centre moves half a length
+		-- along the tilt.
+		local cx = b[1] + math.sin(rad) * b[3] / 2 / EMBLEM.BOX
+		local cy = b[2] - math.cos(rad) * b[3] / 2 / EMBLEM.BOX
+		local bar = Kit.new("Frame", {
+			Name = "Branch" .. n,
+			BackgroundColor3 = EMBLEM.CORAL,
+			BorderSizePixel = 0,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(cx, cy),
+			Size = UDim2.fromOffset(b[4], b[3]),
+			Rotation = b[5],
+			ZIndex = 4,
+			Parent = box,
+		})
+		Kit.round(bar)
+		Kit.new("UIStroke", { Thickness = EMBLEM.STROKE, Color = EMBLEM.CORAL_EDGE, Parent = bar })
+		local tx = b[1] + math.sin(rad) * b[3] / EMBLEM.BOX
+		local ty = b[2] - math.cos(rad) * b[3] / EMBLEM.BOX
+		emblemDisc(box, "Tip" .. n, tx, ty, b[4] + 2, EMBLEM.CORAL_TIP, 0, 5)
+	end
+end
+
+-- Shows the map's emblem on its band icon label (built once per label), or the emoji.
+local function paintIcon(label: TextLabel, lv: any, i: number)
+	local theme = themeOf(lv, i)
+	local draw = theme and EMBLEMS[theme]
+	local box = label:FindFirstChild("Emblem")
+	if draw and not box then
+		local made = Kit.new("Frame", {
+			Name = "Emblem",
+			BackgroundTransparency = 1,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(EMBLEM.BOX, EMBLEM.BOX),
+			ZIndex = 4,
+			Parent = label,
+		})
+		draw(made)
+		box = made
+	end
+	if box and box:IsA("GuiObject") then
+		box.Visible = draw ~= nil
+	end
+	label.Text = if draw then "" else iconOf(lv, i)
 end
 
 local function nameOf(lv: any, i: number): string
@@ -92079,7 +93259,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		card.levelLabel.TextTransparency = 0
 		card.levelInk.Enabled = locked
 		card.stats.TextColor3 = ink
-		card.icon.Text = iconOf(lv, i)
+		paintIcon(card.icon, lv, i)
 		card.icon.TextTransparency = 0
 		card.name.Text = nameOf(lv, i)
 		card.setPips(if type(lv) == "table" then tonumber(lv.difficulty) or i else i)
@@ -92360,9 +93540,10 @@ local RING = 180 -- ring diameter (px, design space)
 local ROOT_W = 300
 local ROOT_H = 410
 local ROOT_RIGHT = 36
--- Pushed down from mid-height so the score pill clears the stand's wall words and the
--- top-right chrome (the player list is hidden during a run as well).
-local ROOT_DY = 44
+-- Pushed down from mid-height so the score pill clears the stand's wall words (the stand to
+-- the right of the duel frame puts its word band at about y 230-265 on a 720 px screen) and
+-- the top-right chrome (the player list is hidden during a run as well).
+local ROOT_DY = 110
 local RING_Y = 120
 local RING_TAP = 20 -- the tap target reaches this far past the ring
 -- The score pill: wide enough for a five-figure score beside "BEAT 12.5K" / "NEW BEST!".
@@ -92386,9 +93567,10 @@ local BANNER = {
 }
 local RESULT_RISE = 52 -- the result word rises this far above the ring
 -- The result word ("PERFECT!" / "NICE!" / "TOO SLOW"): big white with a thick dark outline so it
--- reads over the crowd, tinted toward its colour at the bottom only (Tint). It pops from PopFrom
--- scale (Back, PopTime), rises from FromY to ToY (px from the ring's top) over RiseTime, holds
--- Hold seconds and fades over Fade.
+-- reads over the crowd, tinted toward its colour at the bottom only (Tint). It sits LEFT of the
+-- ring, its right end Gap px clear of the ring's edge (so it never touches the dial or the combo
+-- chip above it). It pops from PopFrom scale (Back, PopTime), rises from FromY to ToY (px from
+-- the ring's top to the word's centre) over RiseTime, holds Hold seconds and fades over Fade.
 local RESULT = {
 	TextSize = 52,
 	Width = 380,
@@ -92398,8 +93580,9 @@ local RESULT = {
 	Tint = 0.45,
 	PopFrom = 0.3,
 	PopTime = 0.35,
-	FromY = 2,
-	ToY = -24,
+	Gap = 18,
+	FromY = 104,
+	ToY = 60,
 	RiseTime = 0.9,
 	Hold = 0.75,
 	Fade = 0.3,
@@ -92575,10 +93758,10 @@ end
 
 local showBanner: (title: string, sub: string?, color: Color3, hold: number, celebrate: boolean?) -> ()
 
--- The result word pops in on the ring's top edge (clear of the "#n" centre label) and
--- rises toward the hearts / HP row while it fades.
-local RESULT_FROM = UDim2.new(0.5, 0, 0, RESULT.FromY)
-local RESULT_TO = UDim2.new(0.5, 0, 0, RESULT.ToY)
+-- The result word pops in beside the ring's left edge (clear of the dial and its "#n" centre
+-- label) and rises while it fades.
+local RESULT_FROM = UDim2.new(0, -RESULT.Gap, 0, RESULT.FromY)
+local RESULT_TO = UDim2.new(0, -RESULT.Gap, 0, RESULT.ToY)
 local resultTint: UIGradient? = nil
 
 local function popResult(text: string, color: Color3)
@@ -93387,7 +94570,8 @@ function MogHud.build(screenGui: ScreenGui)
 		TextWrapped = false,
 		Size = UDim2.fromOffset(RESULT.Width, RESULT.Height),
 		Position = RESULT_FROM,
-		AnchorPoint = Vector2.new(0.5, 0.5),
+		AnchorPoint = Vector2.new(1, 0.5),
+		TextXAlignment = Enum.TextXAlignment.Right,
 		TextTransparency = 1,
 		StrokeThickness = RESULT.Stroke,
 		StrokeColor = RESULT.StrokeColor,
@@ -96221,15 +97405,21 @@ end
 -- The aura floats over the Aura bar (Collect, Deposit and the deposit's cash bonus): big
 -- lettering with a thick dark outline, as Fx.Orbs' "+$X" cash floats are.
 Popups.FLOAT = {
-	aura = { size = 40, stroke = 3.5, width = 420, life = 1.4 }, -- TextSize design px (about 24-28 px of glyph at 1280x720)
-	bonus = { size = 34, stroke = 3, width = 460, life = 1.5 }, -- the deposit's "+$X bonus" line
-	bonusRise = -60, -- design px: the bonus line starts this far above the aura float ...
+	-- Measured in Studio: the aura float's glyphs are 38 px tall at full size, but its pop
+	-- starts at 0.55 and takes 0.28 s, so a frame 0.12 s in read about 22 px; and the bonus
+	-- line started 60 px above it while the aura float rose 80 px through it (the "ghost").
+	-- Now both pop from 0.85, rise straight up the same way, and the bonus line starts under
+	-- the aura float, so the one above always stays ahead.
+	aura = { size = 40, stroke = 3.5, width = 420, life = 1.4, pop = 0.85, drift = false }, -- TextSize design px
+	bonus = { size = 34, stroke = 3, width = 460, life = 1.5, pop = 0.85, drift = false }, -- the deposit's "+$X bonus" line
+	bonusRise = 56, -- design px: the bonus line starts this far under the aura float ...
 	bonusDelay = 0.18, -- ... and this many seconds after it
 }
 
 -- "+$120" over the world: pops in, rises on a soft arc (steady sideways drift,
 -- easing-out climb) and fades near the top. opts: life (seconds, 1.1), size (text, 30),
--- width (300), drift (false = straight up), stroke (outline px, 2.5).
+-- width (300), drift (false = straight up), stroke (outline px, 2.5), pop (the scale it pops in
+-- from, 0.55).
 function Popups.float(text: string, color: Color3, anchor: UDim2, opts: { [string]: any }?)
 	local o = opts or {}
 	local life: number = o.life or 1.1
@@ -96254,8 +97444,9 @@ function Popups.float(text: string, color: Color3, anchor: UDim2, opts: { [strin
 	})
 	-- Over the 3D world: a solid navy outline.
 	local outline = Kit.textStroke(label, o.stroke or 2.5, 0)
-	local pop = Kit.new("UIScale", { Scale = 0.55, Parent = label })
-	Kit.tween(pop, 0.28, { Scale = 1 }, Enum.EasingStyle.Back)
+	local from: number = o.pop or 0.55
+	local pop = Kit.new("UIScale", { Scale = from, Parent = label })
+	Kit.tween(pop, if from > 0.7 then 0.18 else 0.28, { Scale = 1 }, Enum.EasingStyle.Back)
 	local drift = if o.drift == false then 0 else math.random(-36, 36)
 	Kit.tween(mover, life, { Position = anchor + UDim2.fromOffset(drift, 0) }, Enum.EasingStyle.Linear)
 	Kit.tween(label, life, { Position = UDim2.fromOffset(0, -80) }, Enum.EasingStyle.Quad)
@@ -97657,8 +98848,11 @@ function Popups.stampName(stage: Frame, text: string, size: number, y: number): 
 end
 
 -- A slanted bar of light that crosses the name again and again (Legendary and Mythic).
--- Returns its clip frame, which leaves with the reveal's text.
-function Popups.nameSweep(stage: Frame, y: number, size: number): Frame
+-- Returns its clip frame, which leaves with the reveal's text. `name` (the name's label or
+-- stamped row): the clip is cut to the name's own width before every pass, so the bar never
+-- shows on the bare stage beside a short name (measured in Studio: the tier-25 row ends at
+-- 880 px, the old full-width clip at 929, so a cream block crossed the gap on its own).
+function Popups.nameSweep(stage: Frame, y: number, size: number, name: GuiObject?): Frame
 	local J = Popups.JUICE.Reveal
 	local clip = Kit.new("Frame", {
 		Name = "Sweep",
@@ -97687,9 +98881,22 @@ function Popups.nameSweep(stage: Frame, y: number, size: number): Frame
 		}),
 		Parent = bar,
 	})
+	local function fit()
+		if not name then
+			return
+		end
+		local layout = name:FindFirstChildWhichIsA("UIListLayout")
+		local width = if layout then layout.AbsoluteContentSize.X elseif name:IsA("TextLabel") then name.TextBounds.X else 0
+		if width > 0 then
+			clip.AnchorPoint = Vector2.new(0.5, 0)
+			clip.Size = UDim2.fromOffset(width + 6, size + 10)
+			clip.Position = UDim2.new(0.5, 0, 0, y - 2)
+		end
+	end
 	task.spawn(function()
 		task.wait(0.5)
 		while clip.Parent do
+			fit()
 			bar.Position = UDim2.fromOffset(-J.SweepWidth, 0)
 			Kit.tween(bar, J.SweepTime, { Position = UDim2.fromScale(1, 0) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
 			task.wait(J.SweepEvery)
@@ -98142,11 +99349,13 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		-- way to white, and every name wears a thick ink outline over the dark plate.
 		local _, saturation = unitColor:ToHSV()
 		local unitName = string.upper(Theme.Tiers[tier].Name)
+		local nameGui: GuiObject
 		if tier == Economy.MAX_TIER and not calm and not PREVIEW then
 			-- The top tier's name is stamped in, a gold letter at a time (with its own ticks).
-			arrive(Popups.stampName(stage, unitName, nameSize, nameY))
+			nameGui = Popups.stampName(stage, unitName, nameSize, nameY)
+			arrive(nameGui)
 		else
-			arrive(Kit.hudText(stage, {
+			nameGui = Kit.hudText(stage, {
 				Name = "UnitName",
 				Text = unitName,
 				TextSize = nameSize,
@@ -98158,11 +99367,12 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 				Position = UDim2.fromOffset(20, nameY),
 				StrokeThickness = 4,
 				ZIndex = 5,
-			}))
+			})
+			arrive(nameGui)
 			sounds.play("Tick", 0.02, 1.2)
 		end
 		if rank >= J.SweepFrom and not calm and not PREVIEW then
-			table.insert(lines, Popups.nameSweep(stage, nameY, nameSize))
+			table.insert(lines, Popups.nameSweep(stage, nameY, nameSize, nameGui))
 		end
 	end)
 	if gain then
@@ -99586,7 +100796,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 				then "Every map cleared. Now beat your best times!"
 				elseif data.pay == "assisted" then "Gear on: no bonus"
 				elseif resting and restLeft > 0 then "Bonus is resting, back in " .. Format.time(restLeft)
-				elseif resting then "Bonus is resting"
+				elseif resting then "Run again bonus is back next run!"
 				elseif repeatRun then string.format(
 					"Run again bonus: %d%% of the full reward",
 					math.floor((tonumber(data.repeatShare) or Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
@@ -99808,7 +101018,8 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		local restEnds = os.clock() + math.max(0, tonumber(data.repeatRest) or 0)
 		local function restLine(): string
 			local left = math.ceil(restEnds - os.clock())
-			return if left > 0 then "Bonus is resting, back in " .. Format.time(left) else "Bonus is resting"
+			-- The rest can end before the run does (repeatRest = 0): the bonus is back, say so.
+			return if left > 0 then "Bonus is resting, back in " .. Format.time(left) else "Run again bonus is back next run!"
 		end
 		if data.pay == "resting" then
 			repeatLine = restLine()
@@ -107385,6 +108596,12 @@ local INDEX = {
 	-- Text on the glass (screen px): a card's rarity chip and the legend's band bars.
 	ChipText = 16,
 	LegendText = 15,
+	-- A card's name (two lines at most) and the pale rarity line of a card still to find.
+	NameText = 16,
+	NamePx = 15, -- held at this size on the glass
+	NameBox = 44, -- two lines of NameText
+	GridGap = 8, -- between the legend and the first row of cards (the track's labels crowded it)
+
 	-- Track heights: one-line captions (a narrow window, a phone) and two-line ones.
 	TrackLow = 66,
 	TrackTall = 90,
@@ -107916,7 +109133,7 @@ local function buildIndex(screen: ScreenGui)
 		local ribbon = isComplete and not showTrack
 		local strip = if showTrack then trackH elseif ribbon then COMPLETE_H else 0
 		local folded = strip > 0 and window.size().Y < 440
-		local top = strip + (if folded then 0 else LEGEND_H)
+		local top = strip + (if folded then 0 else LEGEND_H + INDEX.GridGap)
 		complete.Visible = ribbon
 		track.Visible = showTrack
 		legend.Visible = not folded
@@ -108004,16 +109221,16 @@ local function buildIndex(screen: ScreenGui)
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextColor3 = if known then C.Text else C.TextMute,
 		})
-		-- Name under the character: 14 px, up to two lines (never scaled down).
+		-- Name under the character: INDEX.NameText, up to two lines (never scaled down).
 		Kit.text(frame, {
 			Name = "Name",
 			Text = if known then string.upper(Theme.Tiers[tier].Name) else "???",
 			Font = F.UI,
-			TextSize = T.Small,
-			MinPx = true,
+			TextSize = INDEX.NameText,
+			MinPx = INDEX.NamePx,
 			TextWrapped = true,
-			Size = UDim2.new(1, -16, 0, 42),
-			Position = UDim2.new(0, 8, 1, -78),
+			Size = UDim2.new(1, -16, 0, INDEX.NameBox),
+			Position = UDim2.new(0, 8, 1, -(36 + INDEX.NameBox)),
 			TextColor3 = if known then C.Text else C.TextMute,
 			ZIndex = 3,
 		})
@@ -108058,8 +109275,8 @@ local function buildIndex(screen: ScreenGui)
 				Name = "Footer",
 				Text = string.upper(band),
 				Font = F.UI,
-				TextSize = T.Small,
-				MinPx = true,
+				TextSize = INDEX.NameText,
+				MinPx = INDEX.NamePx,
 				TextWrapped = false,
 				Size = UDim2.new(1, -16, 0, 24),
 				Position = UDim2.new(0, 8, 1, -32),
@@ -108289,7 +109506,9 @@ end
 local RANK = {
 	-- The podium: gold, silver and bronze rows, each taller and bolder than a plain row.
 	Medals = { C.Gold, C.Chrome, C.Amber },
-	PodiumH = { 68, 58, 58 },
+	-- The three steps (taken or open) always show in full at 1280x720, also while the
+	-- leader's trophy card wants its room (LeadKeep only takes rows past the podium).
+	PodiumH = { 60, 52, 52 },
 	MedalSize = { 50, 42, 42 }, -- the medal coin
 	MedalText = { 28, 22, 22 }, -- the place on it
 	PodiumName = { 22, 20, 20 },
@@ -108314,6 +109533,8 @@ local RANK = {
 	ValueText = 20,
 	ExtraText = 18, -- the clears column
 	RankText = 17,
+	HeadText = 16, -- the column heads (RANK, PLAYER, COLLECTED ...)
+	HeadPx = 15, -- ... held at this size on the glass
 	YouPill = Vector2.new(56, 26),
 	MineEdge = 3, -- gold outline of the player's own row
 	PinAfter = 5, -- the own row is also pinned under the list once it sits below this place
@@ -108712,8 +109933,8 @@ local function buildRanking(screen: ScreenGui)
 		local label = Kit.text(header, {
 			Text = text,
 			Font = F.UI,
-			TextSize = T.Small,
-			MinPx = true,
+			TextSize = RANK.HeadText,
+			MinPx = RANK.HeadPx,
 			TextWrapped = false,
 			Size = UDim2.new(w, 0, 1, 0),
 			Position = UDim2.fromScale(x, 0),
@@ -108811,6 +110032,7 @@ local function buildRanking(screen: ScreenGui)
 	local ROW_GAP = RANK.RowGap
 	local rowCount = 0
 	local rowsTall = 0 -- the rows' heights and the gaps between them
+	local podiumTall = 0 -- ... of the first three (the podium, taken or open)
 	local pinned = true
 	-- The player's own row is on the board / is its first row.
 	local listed = false
@@ -108829,7 +110051,10 @@ local function buildRanking(screen: ScreenGui)
 		local rowsH = if rowCount > 0 then rowsTall + 14 else 0
 		-- The leader's trophy card keeps its room: a long list gives way to it.
 		local keep = if leading and not short then RANK.LeadKeep else 0
-		local listH = math.max(0, math.min(inner - y - pinH - keep, rowsH))
+		-- ... but never the podium: its three steps show in full while there is room at all.
+		local podiumH = if rowCount > 0 then podiumTall + 14 else 0
+		local room = inner - y - pinH
+		local listH = math.max(0, math.min(room, rowsH, math.max(podiumH, room - keep)))
 		list.Position = UDim2.fromOffset(0, y)
 		list.Size = UDim2.new(1, 0, 0, listH)
 		list.Visible = listH > 0
@@ -109005,6 +110230,7 @@ local function buildRanking(screen: ScreenGui)
 		local shown = if board == "stage" then stageEntries else entries
 		local mineAt = 0
 		rowsTall = 0
+		podiumTall = 0
 		for i, entry in shown do
 			if type(entry) ~= "table" then
 				continue
@@ -109041,6 +110267,9 @@ local function buildRanking(screen: ScreenGui)
 				mineAt = #rows + 1
 			end
 			rowsTall += (if medal then RANK.PodiumH[rank] else RANK.RowH) + (if #rows > 0 then ROW_GAP else 0)
+			if #rows < #MEDAL_COLORS then
+				podiumTall = rowsTall
+			end
 			local name = tostring(entry.name or "?")
 			if board == "stage" then
 				local stage = tonumber(entry.stage) or tonumber(entry.value) or 0
@@ -109055,6 +110284,7 @@ local function buildRanking(screen: ScreenGui)
 			for rank = #rows + 1, #MEDAL_COLORS do
 				local frame = openSpot(rank, if mineAt > 0 then RANK.OpenOther else RANK.OpenName)
 				rowsTall += RANK.PodiumH[rank] + ROW_GAP
+				podiumTall = rowsTall
 				table.insert(rows, frame)
 			end
 		end
