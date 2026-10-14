@@ -15,14 +15,21 @@
 	comes when that animation is over. After the last ball: "win" (score >= PASS_SCORE: best,
 	clears and the pay) or "lose", phase "results"; PLAY AGAIN is "BowlingBegin", LOBBY is
 	"BowlingLobby", and with no input the player is back in the lobby after
-	BowlingRules.RESULTS_SECONDS. The EXIT arch (lobby or results only) or "ModeQuit" ends the
+	BowlingRules.RESULTS_SECONDS. A game earns stars at BowlingRules.STAR_TIERS (50 / 90 / 130);
+	each star pays a small bonus, capped per BowlingRules.REPEAT_GAP window (BowlingRules
+	"STARS"). Once a ball's pins are down "BowlingSkip" ends the reaction early. A turn left
+	BowlingRules.AFK_SECONDS bowls a weak centre ball for the player (the friendlier choice:
+	the game waits for them instead of ending). Other players see the bowler through the
+	character attribute "BowlFlex" = "<move>#<n>" (move: stance, bowl, strike, spare, miss,
+	point; nil when not bowling); their clients pose that avatar and put a dumbbell in its hand. The EXIT arch (lobby or results only) or "ModeQuit" ends the
 	run (stop "quit", back to the gates). A fall goes back to the lobby spawn in the lobby,
 	else to the foul line.
 
 	PROTOCOL (for the client). Notify: kind = "Mode", mode = "bowling", event =
 	  "start"     { phase = "lobby", best, clears, rewardPreview, target, maxScore, frames,
 	              choice, balls, lane, pins, ball, pin, aimSpread, power, windup, countdown,
-	              resultsSeconds }
+	              resultsSeconds, tiers }
+	              tiers = BowlingRules.STAR_TIERS (the star scores)
 	              lane = { x, z (foul line), top, width, length, gutter }, pins = { { x, d } }
 	              (lane space: BowlingRules header); ball / pin = their sizes ({ radius,
 	              halfLength } / { radius, height }); choice = the picked dumbbell (1..balls);
@@ -32,28 +39,40 @@
 	              results card; also sent after "BowlingLobby" and the auto-return)
 	  "ball"      { choice } (a "BowlingBall" pick was taken)
 	  "countdown" { seconds } (3, 2, 1; the first "ready" follows when it ends)
-	  "ready"     { frame, shot, ball, standing, card, total, rack } (your turn; shot = ball
-	              number in the frame 1..3, ball = the picked dumbbell, rack = a full set)
+	  "ready"     { frame, shot, ball, standing, card, total, rack, seq } (your turn; shot =
+	              ball number in the frame 1..3, ball = the picked dumbbell, rack = a full
+	              set, seq = the turn's number in the run: a resend keeps it)
 	  "roll"      { aim, power, zone, hook, windup, path, falls, knocked, gutter, mark, reset,
-	              frame, shot, ball, card, total, over, wait } (path / falls: BowlingRules.Roll,
+	              frame, shot, ball, card, total, over, wait, react, skipAt, auto } (path /
+	              falls: BowlingRules.Roll,
 	              their times count from the release, `windup` seconds after this event while
 	              the player's avatar runs up and swings; zone = "soft" | "sweet" | "wild";
 	              ball = the picked dumbbell 1..4 for its colour; mark = "strike" | "spare" |
-	              "gutter" | nil; wait = seconds until the next event)
+	              "gutter" | nil; wait = seconds until the next event; react = seconds from the
+	              release to the bowler's reaction; skipAt = seconds from this event after
+	              which "BowlingSkip" is taken; auto = the server bowled it (AFK))
 	  "win"       { score, target, best, newBest, first, cash, full, pay, packCash,
-	              repeatCash, cooldownEnds, repeatEnds, lobbyIn } (pay = "full" | "repeat" |
+	              repeatCash, cooldownEnds, repeatEnds, lobbyIn, stars, bonus } (stars = 0..3,
+	              bonus = the stars' cash this game (0: the window's bonuses are spent);
+	              pay = "full" | "repeat" |
 	              "none": the repeat share pays once per BowlingRules.REPEAT_GAP; repeatEnds =
 	              when the next is due, 0 = now; lobbyIn = seconds until the auto-return)
-	  "lose"      { score, target, best, newBest, lobbyIn }
+	  "lose"      { score, target, best, newBest, lobbyIn, stars }
 	  "stop"      { reason }
 	Actions (Tycoon "Action" remote, fields on the action table):
 	  "BowlingBegin" {}          lobby or results only: a new game (countdown, then play).
 	                             "BowlingAgain" is an alias (older clients).
 	  "BowlingBall" { choice }   lobby or results only; integer 1..BowlingRules.BALL_CHOICES.
-	  "BowlingRoll" { aim, power } play, on the player's turn only; aim -1..1, power 0..1.
+	  "BowlingRoll" { aim, power } play, on the player's turn only, at least
+	                             BowlingRules.READY_GAP after its "ready"; aim -1..1, power
+	                             0..1 (clamped; a non-number is no roll: "ready" again).
+	  "BowlingSkip" {}           play, while a ball settles, once its pins are down (the
+	                             roll's skipAt): the next "ready" (or the results) now.
 	  "BowlingLobby" {}          results only: back to the lobby now.
-	Snapshot modes.bowling: { running, phase, choice, best, clears, cooldownEnds,
-	  rewardPreview, repeatEnds, target } (phase = "lobby" | "countdown" | "play" | "results").
+	Snapshot modes.bowling: { running, phase, turn, ready, choice, best, clears, cooldownEnds,
+	  rewardPreview, repeatEnds, target, tiers } (phase = "lobby" | "countdown" | "play" |
+	  "results"; turn = "none" | "aim" | "rolling"; ready = the open turn's "ready" payload
+	  while turn is "aim", so a HUD that lost the event can show its controls).
 ]]
 
 local Players = game:GetService("Players")
@@ -73,6 +92,8 @@ local RESET = 1.0
 -- A roll sooner than this after the last one is ignored (the turn gate already blocks
 -- rolls mid-animation; this stops a flood of remote calls).
 local MIN_ROLL_GAP = 0.5
+-- The character attribute other clients pose this bowler from ("<move>#<n>").
+local FLEX_ATTR = "BowlFlex"
 
 local Bowling = {}
 
@@ -90,6 +111,11 @@ type Run = {
 	choice: number,
 	-- os.clock() from which the START pad works (BowlingRules.REARM after landing in the lobby).
 	armAt: number,
+	-- The open turn: when its "ready" went out (os.clock) and its number in the run.
+	readyAt: number,
+	readySeq: number,
+	-- While a ball settles: os.clock() from which "BowlingSkip" is taken.
+	skipFrom: number,
 }
 
 function Bowling.create(GameModes: any, context: { [string]: any }): any
@@ -102,6 +128,26 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 
 	local function record(session: any): { best: number, clears: number, lastRewardAt: number }
 		return session.profile.modes[ID]
+	end
+
+	-- A saved extra field (os.time stamps, shares) that may be missing or broken: 0 then.
+	local function stamp(value: any): number
+		return if type(value) == "number" and value == value and value >= 0 and value < math.huge then value else 0
+	end
+
+	-- Tells every other client which move this bowler's avatar makes (FLEX_ATTR); nil clears.
+	local cueCount = 0
+	local function cue(player: Player, move: string?)
+		local character = player.Character
+		if not character then
+			return
+		end
+		if move then
+			cueCount += 1
+			character:SetAttribute(FLEX_ATTR, move .. "#" .. cueCount)
+		elseif character:GetAttribute(FLEX_ATTR) ~= nil then
+			character:SetAttribute(FLEX_ATTR, nil)
+		end
 	end
 
 	-- When the next repeat share is due (os.time); 0 when it already is.
@@ -164,16 +210,15 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		return BowlingRules.card(run.game.frames)
 	end
 
-	-- The player's turn: the next ball of the current frame.
-	local function sendReady(player: Player, run: Run)
-		run.turn = "aim"
+	-- The open turn's "ready" payload (also the snapshot's `ready`).
+	local function readyInfo(run: Run): { [string]: any }
 		local game = run.game
 		local card, total = cardOf(run)
 		local rack = true
 		for _, up in game.standing do
 			rack = rack and up
 		end
-		GameModes.notify(player, "ready", ID, {
+		return {
 			frame = game.frame,
 			shot = #game.frames[game.frame] + 1,
 			ball = run.choice,
@@ -181,7 +226,34 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 			card = card,
 			total = total,
 			rack = rack,
-		})
+			seq = run.readySeq,
+		}
+	end
+
+	-- Defined below (the AFK timer bowls through it).
+	local bowl: (player: Player, run: Run, aim: number, power: number, auto: boolean) -> ()
+
+	-- The player's turn: the next ball of the current frame. `again` re-sends the open turn
+	-- (a refused roll) without restarting its clocks.
+	local function sendReady(player: Player, run: Run, again: boolean?)
+		run.turn = "aim"
+		if not again then
+			run.readyAt = os.clock()
+			run.readySeq += 1
+			cue(player, "stance")
+			-- AFK: a turn left too long bowls a weak centre ball for the player.
+			local seq = run.readySeq
+			task.delay(BowlingRules.AFK_SECONDS, function()
+				if runs[player] == run and run.phase == "play" and run.turn == "aim" and run.readySeq == seq then
+					bowl(player, run, BowlingRules.AFK_AIM, BowlingRules.AFK_POWER, true)
+				end
+			end)
+		end
+		GameModes.notify(player, "ready", ID, readyInfo(run))
+		if not again then
+			-- The snapshot's turn too (a HUD that lost the event shows its controls from it).
+			GameModes.refresh(player)
+		end
 	end
 
 	-- Back in the lobby (entry, the results card's LOBBY, or its auto-return).
@@ -189,6 +261,7 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		run.phase = "lobby"
 		run.turn = "none"
 		run.token += 1
+		cue(player, nil)
 		run.armAt = os.clock() + BowlingRules.REARM
 		if teleport then
 			toLobby(player)
@@ -227,12 +300,20 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		run.phase = "results"
 		run.turn = "none"
 		run.token += 1
+		-- Other players' view lets the bowler go a beat later, like this client's (Fx.Bowling).
+		local mine = run.token
+		task.delay(0.5, function()
+			if runs[player] == run and run.token == mine then
+				cue(player, nil)
+			end
+		end)
 		local session = GameModes.session(player)
 		if not session then
 			return
 		end
 		local rec = record(session)
 		local score = BowlingRules.score(run.game.frames)
+		local stars = BowlingRules.stars(score)
 		local newBest = score > rec.best
 		if newBest then
 			rec.best = score
@@ -246,6 +327,7 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 				best = rec.best,
 				newBest = newBest,
 				lobbyIn = BowlingRules.RESULTS_SECONDS,
+				stars = stars,
 			})
 			GameModes.refresh(player)
 			return
@@ -269,6 +351,25 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		end
 		rec.clears += 1
 		local paid = GameModes.payReward(player, ID, reward)
+		-- The stars' bonus (BowlingRules "STARS"): repeat shares, capped per REPEAT_GAP
+		-- window; never a full pay, so the pack's cooldown is untouched.
+		local bonus = 0
+		local wanted = BowlingRules.starShare(stars)
+		if wanted > 0 then
+			local share, windowAt, used = BowlingRules.bonusTake(stamp(stamps.bonusAt), stamp(stamps.bonusUsed), now, wanted)
+			stamps.bonusAt, stamps.bonusUsed = windowAt, used
+			local priced = GameModes.modeReward(session, ID, false)
+			local cash = BowlingRules.bonusCash(priced.repeatCash, share)
+			if cash > 0 then
+				local extra = GameModes.payReward(
+					player,
+					ID,
+					{ cash = cash, full = false, packCash = priced.packCash, repeatCash = priced.repeatCash }
+				)
+				bonus = extra.cash
+			end
+			Tycoon.markDirty(session)
+		end
 		GameModes.notify(player, "win", ID, {
 			score = score,
 			target = BowlingRules.PASS_SCORE,
@@ -283,6 +384,8 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 			repeatEnds = repeatEnds(rec),
 			lobbyIn = BowlingRules.RESULTS_SECONDS,
+			stars = stars,
+			bonus = bonus,
 		})
 		GameModes.refresh(player)
 	end
@@ -297,8 +400,10 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		run.game = BowlingRules.newGame()
 		run.token += 1
 		run.startedAt = os.clock()
+		run.readySeq = 0
 		local mine = run.token
 		toPlay(player)
+		cue(player, "stance")
 		GameModes.notify(player, "countdown", ID, { seconds = BowlingRules.COUNTDOWN })
 		GameModes.refresh(player)
 		task.delay(BowlingRules.COUNTDOWN, function()
@@ -309,7 +414,6 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 			-- The first ball can go straight away.
 			run.lastRollAt = 0
 			sendReady(player, run)
-			GameModes.refresh(player)
 		end)
 	end
 
@@ -336,6 +440,9 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 			lastRollAt = 0,
 			choice = if old then old.choice else 1,
 			armAt = 0,
+			readyAt = 0,
+			readySeq = 0,
+			skipFrom = math.huge,
 		}
 		runs[player] = run
 		enterLobby(player, run, teleport)
@@ -350,6 +457,7 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		payload.balls = BowlingRules.BALL_CHOICES
 		payload.countdown = BowlingRules.COUNTDOWN
 		payload.resultsSeconds = BowlingRules.RESULTS_SECONDS
+		payload.tiers = table.clone(BowlingRules.STAR_TIERS)
 		GameModes.notify(player, "start", ID, payload)
 		GameModes.refresh(player)
 		return true
@@ -362,6 +470,7 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		end
 		run.token += 1
 		runs[player] = nil
+		cue(player, nil)
 		if reason ~= "leave" then
 			GameModes.notify(player, "stop", ID, { reason = reason })
 			GameModes.refresh(player)
@@ -424,6 +533,8 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		return {
 			running = run ~= nil,
 			phase = if run then run.phase else nil,
+			turn = if run then run.turn else nil,
+			ready = if run and run.phase == "play" and run.turn == "aim" then readyInfo(run) else nil,
 			choice = if run then run.choice else nil,
 			best = rec.best,
 			clears = rec.clears,
@@ -431,32 +542,29 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 			rewardPreview = def.rewardPreview(player),
 			repeatEnds = repeatEnds(rec),
 			target = BowlingRules.PASS_SCORE,
+			tiers = table.clone(BowlingRules.STAR_TIERS),
 		}
 	end
 
-	-- One ball: only in play, on the player's turn, at most every MIN_ROLL_GAP; aim and
-	-- power clamped.
-	Tycoon.addAction("BowlingRoll", function(session: any, data: { [string]: any })
-		local player = session.player
-		local run = runs[player]
+	-- After a ball: the next turn, or the results once the game is over.
+	local function afterBall(player: Player, run: Run)
+		run.skipFrom = math.huge
+		if run.game.over then
+			finish(player, run)
+		else
+			sendReady(player, run)
+		end
+	end
+
+	-- One ball at (aim, power), already checked and clamped: played in pure code, sent to the
+	-- client to animate, then the next turn once it has settled.
+	bowl = function(player: Player, run: Run, aim: number, power: number, auto: boolean)
 		local clock = os.clock()
-		if not run or not BowlingRules.canRoll(run.phase) then
-			return
-		end
-		if run.turn ~= "aim" or clock - run.lastRollAt < MIN_ROLL_GAP then
-			-- A rejected roll on the player's turn: say "ready" again so the HUD shows its
-			-- aim controls instead of waiting for a "roll" that never comes. (Mid-ball the
-			-- delayed "ready" is on its way.)
-			if run.turn == "aim" then
-				sendReady(player, run)
-			end
-			return
-		end
 		run.lastRollAt = clock
 		local game = run.game
 		local frame = game.frame
 		local shot = #game.frames[frame] + 1
-		local result = BowlingRules.roll(game.standing, data.aim, data.power, seeds:NextInteger(1, 2147483646))
+		local result = BowlingRules.roll(game.standing, aim, power, seeds:NextInteger(1, 2147483646))
 		local fallen = {}
 		for _, fall in result.falls do
 			table.insert(fallen, fall.pin)
@@ -464,7 +572,10 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		local mark, reset = BowlingRules.applyRoll(game, fallen)
 		local card, total = cardOf(run)
 		local wait = BowlingRules.WINDUP + result.duration + BowlingRules.settle(mark) + (if reset and not game.over then RESET else 0)
+		local skipAt = BowlingRules.WINDUP + result.duration + BowlingRules.SKIP_AFTER
+		local react = BowlingRules.reactAt(result, mark)
 		run.turn = "rolling"
+		run.skipFrom = clock + skipAt
 		run.token += 1
 		local mine = run.token
 		GameModes.notify(player, "roll", ID, {
@@ -486,17 +597,67 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 			total = total,
 			over = game.over,
 			wait = wait,
+			react = react,
+			skipAt = skipAt,
+			auto = auto,
 		})
+		-- Other players' view: the run-up now, the reaction once the pins have settled.
+		cue(player, "bowl")
+		local reaction = if mark == "strike"
+			then "strike"
+			elseif mark == "spare" then "spare"
+			elseif result.knocked <= 0 then "miss"
+			else "point"
+		task.delay(BowlingRules.WINDUP + react, function()
+			if runs[player] == run and run.token == mine then
+				cue(player, reaction)
+			end
+		end)
 		task.delay(wait, function()
 			if runs[player] ~= run or run.token ~= mine then
 				return
 			end
-			if game.over then
-				finish(player, run)
-			else
-				sendReady(player, run)
-			end
+			afterBall(player, run)
 		end)
+	end
+
+	-- One ball: only in play, on the player's turn, READY_GAP after its "ready", at most
+	-- every MIN_ROLL_GAP; aim and power must be numbers (then clamped).
+	Tycoon.addAction("BowlingRoll", function(session: any, data: { [string]: any })
+		local player = session.player
+		local run = runs[player]
+		local clock = os.clock()
+		if not run or not BowlingRules.canRoll(run.phase) then
+			return
+		end
+		local aim, power = BowlingRules.rollInput(data.aim, data.power)
+		if
+			run.turn ~= "aim"
+			or clock - run.lastRollAt < MIN_ROLL_GAP
+			or BowlingRules.tooEarly(clock, run.readyAt)
+			or aim == nil
+			or power == nil
+		then
+			-- A refused roll on the player's turn: say "ready" again so the HUD shows its
+			-- aim controls instead of waiting for a "roll" that never comes. (Mid-ball the
+			-- delayed "ready" is on its way.)
+			if run.turn == "aim" then
+				sendReady(player, run, true)
+			end
+			return
+		end
+		bowl(player, run, aim :: number, power :: number, false)
+	end)
+
+	-- A tap during the reaction: once the ball's pins are down, the next turn now.
+	Tycoon.addAction("BowlingSkip", function(session: any, _data: { [string]: any })
+		local player = session.player
+		local run = runs[player]
+		if not run or run.phase ~= "play" or run.turn ~= "rolling" or not BowlingRules.canSkip(os.clock(), run.skipFrom) then
+			return
+		end
+		run.token += 1
+		afterBall(player, run)
 	end)
 
 	-- A new game: from the lobby (the HUD's PLAY) or the results card (PLAY AGAIN).

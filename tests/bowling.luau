@@ -144,6 +144,83 @@ return function(h: { [string]: any })
 		check(R.WINDUP > 0.5 and R.WINDUP < 1.5, "a short run-up")
 		check(R.settle("strike") >= R.settle("spare") and R.settle("spare") >= R.settle(nil), "a strike celebrates longest")
 		check(R.settle("gutter") > 0 and R.settle(nil) > 0, "every ball settles")
+		check(R.settle(nil) <= 1.7 and R.settle("strike") <= 2.5, "settles kept short for pacing")
+		check(R.SKIP_AFTER >= 0 and R.SKIP_AFTER < R.settle(nil), "a skip comes inside the settle")
+		-- The reaction lands after the last pin and before the next turn.
+		for seed = 1, 60 do
+			local roll = R.roll(R.allStanding(), (seed % 7 - 3) / 3, (seed % 10) / 10, seed)
+			local fallen = {}
+			for _, f in roll.falls do
+				table.insert(fallen, f.pin)
+			end
+			local mark = R.applyRoll(R.newGame(), fallen)
+			local react = R.reactAt(roll, mark)
+			for _, f in roll.falls do
+				check(react >= f.t, "reaction after every pin falls")
+			end
+			check(react <= roll.duration + 1, "reaction soon after the ball")
+			check(react < roll.duration + R.settle(mark), "reaction before the next turn")
+		end
+	end)
+
+	test("Bowling: star tiers and their capped bonus", function()
+		local R = BowlingRules
+		eq(#R.STAR_TIERS, 3, "three stars")
+		eq(R.STAR_TIERS[1], R.PASS_SCORE, "the first star is the pass")
+		eq(R.stars(0), 0, "no stars")
+		eq(R.stars(49), 0, "under the pass")
+		eq(R.stars(50), 1, "one star at 50")
+		eq(R.stars(89), 1, "still one")
+		eq(R.stars(90), 2, "two at 90")
+		eq(R.stars(130), 3, "three at 130")
+		eq(R.stars(R.MAX_SCORE), 3, "a perfect game")
+		eq(R.stars(0 / 0), 0, "NaN: none")
+		check(R.STAR_TIERS[3] <= R.MAX_SCORE, "every star is reachable")
+		near(R.starShare(0), 0, "no share")
+		check(R.starShare(1) > 0 and R.starShare(1) < R.starShare(2) and R.starShare(2) < R.starShare(3), "more stars pay more")
+		check(R.starShare(3) <= R.BONUS_CAP + 1e-9, "three stars fit one window")
+		eq(R.bonusCash(1000, 0.25), 250, "a share of the repeat cash")
+		eq(R.bonusCash(1000, 0), 0, "nothing")
+		-- However many three-star games in five minutes: at most BONUS_CAP repeat shares.
+		local at, used, total = 0, 0, 0
+		for i = 0, 40 do
+			local paid
+			paid, at, used = R.bonusTake(at, used, 1000 + i * 7, R.starShare(3))
+			check(paid >= 0, "never negative")
+			total += paid
+		end
+		check(total <= R.BONUS_CAP * 2 + 1e-9, "two windows at most in 280 s (" .. total .. ")")
+		local paid1, at1, used1 = R.bonusTake(0, 0, 5000, R.starShare(3))
+		near(paid1, R.starShare(3), "a fresh window pays it all")
+		local paid2 = R.bonusTake(at1, used1, 5000 + R.REPEAT_GAP - 1, R.starShare(3))
+		near(paid2, math.max(0, R.BONUS_CAP - used1), "the window's rest only")
+		local paid3 = R.bonusTake(at1, used1, 5000 + R.REPEAT_GAP, R.starShare(3))
+		near(paid3, R.starShare(3), "a new window")
+		local paid4 = R.bonusTake(at1 + 999, 1, 5000, 0.5)
+		near(paid4, 0.5, "a window from the future starts afresh")
+	end)
+
+	test("Bowling: roll input, the ready gap, skips and AFK", function()
+		local R = BowlingRules
+		local a, p = R.rollInput(0.3, 0.8)
+		eq(a, 0.3, "aim kept")
+		eq(p, 0.8, "power kept")
+		a, p = R.rollInput(5, -2)
+		eq(a, 1, "aim clamped")
+		eq(p, 0, "power clamped")
+		for _, bad in { { nil, 0.5 }, { 0, nil }, { "0", 0.5 }, { 0, {} }, { 0 / 0, 0.5 }, { 0, 0 / 0 }, { true, 1 } } do
+			local x, y = R.rollInput(bad[1], bad[2])
+			check(x == nil and y == nil, "invalid input is no roll")
+		end
+		check(R.tooEarly(10.5, 10), "half a second after ready: refused")
+		check(not R.tooEarly(10 + R.READY_GAP, 10), "after the gap: fine")
+		check(R.READY_GAP >= 0.6 and R.READY_GAP <= 1, "a short gap")
+		check(not R.canSkip(4.9, 5), "before the pins are down")
+		check(R.canSkip(5, 5), "once they are")
+		check(not R.canSkip(1e9, math.huge), "no ball settling: nothing to skip")
+		check(R.AFK_SECONDS >= 30 and R.AFK_SECONDS <= 90, "AFK after a while")
+		check(R.AFK_POWER < R.POWER.sweetLo, "the AFK ball is weak")
+		eq(R.AFK_AIM, 0, "down the middle")
 	end)
 
 	test("Bowling: frames, strikes, spares and the last frame's bonus balls", function()

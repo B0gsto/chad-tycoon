@@ -28,15 +28,24 @@
 	              press locks the aim; then the power bar fills and empties: SOFT (mint), the
 	              gold SWEET spot (the start payload's power.sweetLo..sweetHi; the best ball)
 	              and the red TOO HARD top (the dumbbell goes wild and hooks): the second press
-	              sends "BowlingRoll" { aim, power }. The panel fades while the avatar bowls
-	              and the ball rolls (the roll's path times start `windup` seconds in).
+	              sends "BowlingRoll" { aim, power } (never sooner than MIN_TURN after "ready").
+	              The first power turn of a visit coaches "STOP IN THE GOLD!" with an arrow
+	              over the sweet spot. The panel fades while the avatar bowls and the ball
+	              rolls (the roll's path times start `windup` seconds in); once the pins are
+	              down (the roll's skipAt) a tap, click or the bowl key sends "BowlingSkip"
+	              to cut the reaction short. A snapshot that says it is the player's turn
+	              (turn "aim", its `ready` seq not seen) while the HUD still waits opens the
+	              turn from it, so a lost "ready" never stalls the game.
 	  Callouts    centre: "STRIKE!" / "SPARE!" (gold / mint, confetti), "GUTTER!" or the pin
 	              count pop in when the last pin falls; the card updates at the same moment.
 	  Results     a centre card: "YOU PASSED!" with the pay or "SO CLOSE!" with the points
-	              still missing, the score (counting up), the best ("NEW BEST!" flashes),
-	              PLAY AGAIN ("BowlingBegin"; Enter, gamepad X) and LOBBY ("BowlingLobby";
-	              gamepad B; it leaves for the lobby at once). It hides itself when the phase
-	              is back to "lobby" (the server does that after about 6 s).
+	              still missing, the score (counting up), three stars (50 / 90 / 130: the
+	              earned ones pop in gold; the lobby's best pill and the BestBoard's Clears
+	              caption show the best game's stars), the stars' bonus cash, the best
+	              ("NEW BEST!" flashes), PLAY AGAIN ("BowlingBegin"; Enter, gamepad X) and
+	              LOBBY ("BowlingLobby"; gamepad B; it dims until the server's "lobby"
+	              arrives). It hides itself when the phase is back to "lobby" (the server
+	              does that after about 6 s).
 
 	Wired from Main.client.luau (nothing else needs editing):
 	  init(screen)        once, builds the HUD (hidden)
@@ -49,6 +58,7 @@
 local ContextActionService = game:GetService("ContextActionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local Format = require(ReplicatedStorage.Shared.Format) :: any
@@ -73,9 +83,20 @@ local CARD = { BoxW = 56, BoxH = 58, TotalW = 74, Pad = 8, MinY = 120, Clear = 1
 local SENT_TIMEOUT = 4
 local CONTROLS = { W = 440, H = 168, Bottom = 28, StripW = 384, AimH = 34, PowerH = 26 }
 -- Seconds for the aim arrow to cross the lane one way, and the power bar to fill once.
-local SWEEP = { Aim = 1.25, Power = 1.0 }
+-- The power sweep is slow enough that a kid can stop it in the gold.
+local SWEEP = { Aim = 1.25, Power = 1.3 }
 -- A press this soon after the turn opens or the aim locks is ignored (a double tap, a held key).
 local PRESS_GUARD = 0.18
+-- The roll is never sent sooner than this after "ready" (the server refuses rolls inside
+-- BowlingRules.READY_GAP = 0.8 s).
+local MIN_TURN = 0.85
+-- The star scores (the start payload's `tiers`; BowlingRules.STAR_TIERS).
+local tiers = { 50, 90, 130 }
+-- LOBBY on the results card waits this long for the server's "lobby" before it re-arms.
+local LOBBY_WAIT = 3
+-- A snapshot that says it is the player's turn while the HUD still waits brings the controls
+-- up after this long (the "ready" event went missing).
+local RECOVER_AFTER = 0.6
 -- |aim| under POCKET hits the head pin square ("PERFECT AIM!"). Power is a choice
 -- (BowlingRules.POWER, sent as the start payload's `power`): under sweetLo the dumbbell is
 -- soft, sweetLo..sweetHi is the SWEET spot, over sweetHi it goes wild.
@@ -128,6 +149,9 @@ local powerFill: Frame
 local sweetBand: Frame
 local wildBand: Frame
 local againKey: TextLabel
+local coachArrow: TextLabel
+local skipLabel: TextLabel
+local finishStars: { TextLabel } = {}
 local callout: TextLabel
 local countLabel: TextLabel
 local countSub: TextLabel
@@ -180,9 +204,37 @@ local countToken = 0
 local flashToken = 0
 local textsAt = 0
 local board: Instance? = nil
+-- The open turn: when its "ready" came (os.clock) and its number (the payload's `seq`).
+local readyAt = -math.huge
+local readySeq = -1
+-- While a ball settles: when a tap may skip the reaction ("BowlingSkip"), and if one was sent.
+local skipFrom = math.huge
+local skipSent = false
+-- The power meter's "STOP IN THE GOLD!" coaching: once per visit.
+local coached = false
+-- LOBBY was pressed on the results card; waiting for the server's "lobby".
+local lobbyPending = false
+local lobbyToken = 0
+-- The latest snapshot's open turn (the "ready" recovery checks it).
+local snapReady: any = nil
 
 local function num(value: any, default: number): number
 	return if type(value) == "number" and value == value then value else default
+end
+
+-- Stars for a score (as BowlingRules.stars) and the stars as text ("★★☆").
+local function starsOf(score: number): number
+	local n = 0
+	for i, tier in tiers do
+		if score >= tier then
+			n = i
+		end
+	end
+	return n
+end
+
+local function starText(n: number): string
+	return string.rep("★", n) .. string.rep("☆", math.max(0, #tiers - n))
 end
 
 local function reducedMotion(): boolean
@@ -277,7 +329,8 @@ end
 local function paintLobby()
 	goalLabel.Text = "Score " .. target .. " of " .. maxScore .. " in " .. frames .. " frames"
 	local best = num(stats.best, 0)
-	bestPill.Text = if best > 0 then "BEST " .. best else "NO BEST YET"
+	local stars = starsOf(best)
+	bestPill.Text = if best > 0 then "BEST " .. best .. "  " .. starText(stars) else "NO BEST YET"
 	local text, color = rewardText()
 	rewardLabel.Text = text
 	rewardLabel.TextColor3 = color
@@ -285,7 +338,7 @@ local function paintLobby()
 	if gui then
 		-- The board's own captions: "CLEARS: n" and an upper-case reward line.
 		setBoardText(gui, "Best", tostring(best))
-		setBoardText(gui, "Clears", "CLEARS: " .. num(stats.clears, 0))
+		setBoardText(gui, "Clears", starText(stars) .. "  CLEARS: " .. num(stats.clears, 0))
 		setBoardText(gui, "Reward", string.upper(text))
 	end
 end
@@ -395,14 +448,21 @@ local function showFinish(p: any, won: boolean)
 	Kit.countTo(finishScore, 0, score, nil, 0.6)
 	finishBestLine.Text = "BEST " .. best
 	finishBestLine.TextColor3 = if p.newBest == true then C.Gold else C.TextDim
+	local stars = math.clamp(math.floor(num(p.stars, starsOf(score))), 0, #tiers)
 	if won then
-		finishSub.Text = "Target " .. num(p.target, target) .. " smashed!"
+		local nextTier = tiers[stars + 1]
+		finishSub.Text = if nextTier then "Next star at " .. nextTier .. " points!" else "All three stars! Legend!"
 		local cash = num(p.cash, 0)
+		local bonus = num(p.bonus, 0)
 		finishCash.Visible = true
-		if cash > 0 then
-			finishCash.Text = (if p.pay == "repeat" then "Run again bonus +" else "+") .. Format.money(cash)
+		if cash > 0 or bonus > 0 then
+			local text = if cash > 0 then (if p.pay == "repeat" then "Run again +" else "+") .. Format.money(cash) else ""
+			if bonus > 0 then
+				text ..= (if text ~= "" then "   " else "") .. "★ +" .. Format.money(bonus)
+			end
+			finishCash.Text = text
 			finishCash.TextColor3 = C.MoneyText
-			finishCash.TextSize = 30
+			finishCash.TextSize = if bonus > 0 and cash > 0 then 26 else 30
 		else
 			-- Inside the cooldown with the run-again share used: say when pay comes back.
 			local now = State.now()
@@ -418,6 +478,24 @@ local function showFinish(p: any, won: boolean)
 	else
 		finishSub.Text = (num(p.target, target) - score) .. " more points to pass. Try again!"
 		finishCash.Visible = false
+	end
+	-- The stars: earned ones pop in one by one once the score has counted up.
+	for i, star in finishStars do
+		star.TextColor3 = C.Well
+		star.Text = "★"
+		local tier = star:FindFirstChild("Tier")
+		if tier and tier:IsA("TextLabel") and tiers[i] then
+			tier.Text = tostring(tiers[i])
+		end
+		if i <= stars then
+			task.delay(0.45 + i * 0.28, function()
+				if mode == "results" and finishCard.Visible then
+					star.TextColor3 = C.Gold
+					Kit.pop(star, if reducedMotion() then 1.15 else 1.8)
+					Sounds.play("Coin", 0, 1 + i * 0.12)
+				end
+			end)
+		end
 	end
 	finishBest.Visible = false
 	finishBack.Text = ""
@@ -471,10 +549,41 @@ local function setPhase(next: string)
 		aimFrom = (if math.random() < 0.5 then u else 1 + u) * SWEEP.Aim
 	end
 	paintPrompt()
+	-- The first power turn of a visit: point at the gold.
+	local coach = next == "power" and not coached
+	if coach then
+		promptLabel.Text = "STOP IN THE GOLD!"
+		promptLabel.TextColor3 = C.Gold
+		Kit.pop(promptLabel, 1.25)
+	end
+	if coach then
+		coachArrow.Position = UDim2.new(0.5, ((SWEET.Lo + SWEET.Hi) / 2 - 0.5) * CONTROLS.StripW, 0, 96)
+	end
+	coachArrow.Visible = coach
+	if next ~= "sent" then
+		skipLabel.Visible = false
+	end
+end
+
+-- A tap while a ball settles: once its pins are down, skip the rest of the reaction.
+local function trySkip()
+	if not running or mode ~= "play" or phase ~= "sent" or skipSent or os.clock() < skipFrom then
+		return
+	end
+	skipSent = true
+	skipLabel.Visible = false
+	action:FireServer({ action = "BowlingSkip" })
 end
 
 local function press()
-	if not running or mode ~= "play" or os.clock() - phaseAt < PRESS_GUARD then
+	if not running or mode ~= "play" then
+		return
+	end
+	if phase == "sent" then
+		trySkip()
+		return
+	end
+	if os.clock() - phaseAt < PRESS_GUARD then
 		return
 	end
 	if phase == "aim" then
@@ -489,6 +598,12 @@ local function press()
 		end
 		setPhase("power")
 	elseif phase == "power" then
+		if os.clock() - readyAt < MIN_TURN then
+			return
+		end
+		coached = true
+		skipFrom = math.huge
+		skipSent = false
 		setPhase("sent")
 		if power >= SWEET.Lo and power <= SWEET.Hi then
 			Kit.pop(powerStrip, 1.5)
@@ -536,6 +651,10 @@ local function step()
 			-- Mint while soft, gold in the sweet spot, red once it is too hard.
 			powerFill.BackgroundColor3 = if power > SWEET.Hi then C.Bad elseif power >= SWEET.Lo then C.Gold else C.Good
 			BowlingFx.setAim(aim, power, "power")
+			if coachArrow.Visible then
+				local bob = if reducedMotion() then 0 else math.abs(math.sin(t * 6)) * 5
+				coachArrow.Position = UDim2.new(0.5, ((SWEET.Lo + SWEET.Hi) / 2 - 0.5) * CONTROLS.StripW, 0, 96 - bob)
+			end
 		end
 	end
 	-- The texts that tick (reward waits, the results card's lobby countdown), twice a second.
@@ -606,13 +725,30 @@ end
 local applyMode: (next: string) -> ()
 local placeZones: () -> ()
 
+-- LOBBY's pressed state: dimmed while the server's "lobby" is on its way.
+local function setLobbyPending(on: boolean)
+	lobbyPending = on
+	lobbyToken += 1
+	Kit.setEnabled(lobbyButton, not on)
+	Kit.setButton(lobbyButton, if on then "LOBBY..." else "LOBBY")
+end
+
 local function toLobby()
-	if mode ~= "results" then
+	if mode ~= "results" or lobbyPending then
 		return
 	end
 	-- The server brings the player over by itself after RESULTS_BACK; this asks for it now.
+	-- The card stays until its "lobby" arrives (so the view never runs ahead of the server).
 	action:FireServer({ action = "BowlingLobby" })
-	applyMode("lobby")
+	Kit.pop(lobbyButton, 1.15)
+	Kit.sound("Click")
+	setLobbyPending(true)
+	local mine = lobbyToken
+	task.delay(LOBBY_WAIT, function()
+		if lobbyToken == mine and lobbyPending and mode == "results" then
+			setLobbyPending(false)
+		end
+	end)
 end
 
 local function bindAt(name: string, fn: (string, Enum.UserInputState, InputObject) -> Enum.ContextActionResult?, ...: Enum.KeyCode)
@@ -726,6 +862,9 @@ applyMode = function(next: string)
 	resetQuit()
 	leaveArmed = false
 	Kit.setButton(leaveButton, "LEAVE", C.SurfaceHi)
+	if lobbyPending then
+		setLobbyPending(false)
+	end
 	if next == "lobby" then
 		paintLobby()
 		paintSwatches()
@@ -801,6 +940,9 @@ end
 local function onReady(p: any)
 	applyMode("play")
 	rollToken += 1
+	readyAt = os.clock()
+	readySeq = num(p.seq, readySeq)
+	skipFrom = math.huge
 	paintCard(p.card, p.total)
 	local frame = num(p.frame, 1)
 	highlightFrame(frame)
@@ -815,6 +957,12 @@ local function onRoll(p: any)
 	rollToken += 1
 	local mine = rollToken
 	setPhase("sent")
+	-- A tap skips the reaction once the pins are down (the server's own clock starts first).
+	skipSent = false
+	skipFrom = os.clock() + num(p.skipAt, math.huge)
+	if p.auto == true then
+		flash("AUTO ROLL", C.TextDim)
+	end
 	-- A late "roll" after the timeout brought the controls back: hide them again.
 	if controls.Visible then
 		Kit.disappear(controls)
@@ -847,6 +995,15 @@ local function onRoll(p: any)
 			showCallout(num(p.knocked, 0) .. (if p.knocked == 1 then " PIN!" else " PINS!"), C.Text, false)
 		end
 	end)
+	-- The skip hint once a skip is taken (and not after the last ball: the results come).
+	if p.over ~= true and num(p.skipAt, math.huge) < math.huge then
+		task.delay(math.max(0, skipFrom - os.clock()), function()
+			if rollToken == mine and running and mode == "play" and phase == "sent" and not skipSent then
+				skipLabel.Text = if Kit.touch then "TAP TO SKIP" elseif Kit.gamepad then "X  SKIP" else "CLICK OR SPACE TO SKIP"
+				Kit.appear(skipLabel, { from = 0.8, time = 0.2 })
+			end
+		end)
+	end
 end
 
 local function onFinish(p: any, won: boolean)
@@ -874,6 +1031,11 @@ function BowlingHud.start(payload: { [string]: any }?)
 		placeZones()
 	end
 	windup = math.max(num(p.windup, windup), 0)
+	if type(p.tiers) == "table" and #p.tiers > 0 then
+		tiers = table.clone(p.tiers)
+	end
+	readySeq = -1
+	snapReady = nil
 	if type(p.choice) == "number" then
 		pick(p.choice, true)
 	end
@@ -886,6 +1048,8 @@ function BowlingHud.start(payload: { [string]: any }?)
 	countLabel.Visible = false
 	countSub.Visible = false
 	flashLabel.Visible = false
+	skipLabel.Visible = false
+	coachArrow.Visible = false
 	lobbyCard.Visible = false
 	cardPanel.Visible = false
 	setChrome(true)
@@ -953,6 +1117,10 @@ function BowlingHud.onNotify(payload: { [string]: any })
 	elseif event == "countdown" then
 		onCountdown(payload)
 	elseif event == "ready" then
+		-- Already opened from the snapshot (the event came late): leave the turn running.
+		if payload.seq ~= nil and payload.seq == readySeq and mode == "play" and (phase == "aim" or phase == "power") then
+			return
+		end
 		onReady(payload)
 	elseif event == "roll" then
 		onRoll(payload)
@@ -993,6 +1161,26 @@ function BowlingHud.onState(data: any)
 	-- Back to the lobby (the results card times out, or the game was called off).
 	if info.phase == "lobby" and mode ~= "lobby" and os.clock() - modeAt > PHASE_TRUST then
 		applyMode("lobby")
+	end
+	if type(info.tiers) == "table" and #info.tiers > 0 then
+		tiers = table.clone(info.tiers)
+	end
+	-- The player's turn while the HUD still waits (its "ready" went missing): open it from
+	-- the snapshot, after a moment in case the event is only late.
+	local ready = info.ready
+	snapReady = if info.phase == "play" and info.turn == "aim" and type(ready) == "table" then ready else nil
+	if snapReady and snapReady.seq ~= readySeq then
+		local seq = snapReady.seq
+		task.delay(RECOVER_AFTER, function()
+			local now = snapReady
+			if not running or not now or now.seq ~= seq or seq == readySeq then
+				return
+			end
+			if mode == "countdown" or (mode == "play" and (phase == "wait" or phase == "sent")) then
+				onReady(now)
+				BowlingFx.ready(now)
+			end
+		end)
 	end
 	paintLobby()
 end
@@ -1326,6 +1514,18 @@ local function buildControls()
 		Size = UDim2.new(SWEET.Lo, 0, 1, 0),
 		ZIndex = 6,
 	})
+	-- First power turn of a visit: a bobbing arrow over the gold and a caption.
+	coachArrow = Kit.hudText(controls, {
+		Name = "CoachArrow",
+		Text = "▼",
+		TextSize = 22,
+		TextColor3 = C.Gold,
+		Size = UDim2.fromOffset(30, 22),
+		Position = UDim2.new(0.5, ((SWEET.Lo + SWEET.Hi) / 2 - 0.5) * CONTROLS.StripW, 0, 96),
+		AnchorPoint = Vector2.new(0.5, 1),
+		Visible = false,
+		ZIndex = 8,
+	})
 	promptLabel = Kit.hudText(controls, {
 		Name = "Prompt",
 		Text = "",
@@ -1550,7 +1750,7 @@ end
 local function buildFinish()
 	finishCard = Kit.panel(root, {
 		Name = "Finish",
-		Size = UDim2.fromOffset(400, 340),
+		Size = UDim2.fromOffset(400, 380),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Visible = false,
@@ -1598,16 +1798,42 @@ local function buildFinish()
 		TextSize = 17,
 		TextColor3 = C.TextDim,
 		Size = UDim2.new(1, -24, 0, 22),
-		Position = UDim2.fromOffset(12, 128),
+		Position = UDim2.fromOffset(12, 168),
 		ZIndex = 41,
 	})
+	-- The three stars (BowlingRules.STAR_TIERS), each with its score under it.
+	for i = 1, 3 do
+		local x = (i - 2) * 64
+		finishStars[i] = Kit.hudText(finishCard, {
+			Name = "Star" .. i,
+			Text = "★",
+			TextSize = 40,
+			TextColor3 = C.Well,
+			StrokeThickness = 3,
+			Size = UDim2.fromOffset(52, 40),
+			Position = UDim2.new(0.5, x, 0, 128),
+			AnchorPoint = Vector2.new(0.5, 0),
+			ZIndex = 41,
+		})
+		Kit.hudText(finishStars[i], {
+			Name = "Tier",
+			Text = tostring(tiers[i]),
+			TextSize = 11,
+			TextColor3 = C.TextDim,
+			StrokeThickness = 1.5,
+			Size = UDim2.new(1, 0, 0, 12),
+			Position = UDim2.new(0.5, 0, 1, -2),
+			AnchorPoint = Vector2.new(0.5, 0),
+			ZIndex = 41,
+		})
+	end
 	finishSub = Kit.hudText(finishCard, {
 		Name = "Sub",
 		Text = "",
 		TextSize = 17,
 		TextColor3 = C.TextDim,
 		Size = UDim2.new(1, -24, 0, 22),
-		Position = UDim2.fromOffset(12, 152),
+		Position = UDim2.fromOffset(12, 192),
 		ZIndex = 41,
 	})
 	finishCash = Kit.hudText(finishCard, {
@@ -1617,7 +1843,7 @@ local function buildFinish()
 		TextSize = 30,
 		TextColor3 = C.MoneyText,
 		Size = UDim2.new(1, 0, 0, 36),
-		Position = UDim2.fromOffset(0, 178),
+		Position = UDim2.fromOffset(0, 218),
 		Visible = false,
 		ZIndex = 41,
 	})
@@ -1697,9 +1923,29 @@ function BowlingHud.init(screenGui: ScreenGui)
 		Visible = false,
 		ZIndex = 30,
 	})
+	skipLabel = Kit.hudText(root, {
+		Name = "Skip",
+		Text = "",
+		TextSize = 18,
+		TextColor3 = C.Text,
+		Size = UDim2.fromOffset(360, 26),
+		Position = UDim2.new(0.5, 0, 1, -40),
+		AnchorPoint = Vector2.new(0.5, 1),
+		Visible = false,
+		ZIndex = 25,
+	})
 	buildCountdown()
 	buildFinish()
 	layoutAll()
+	-- A click or tap anywhere skips a settling ball's reaction (keys go through ACTION).
+	UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
+		if processed or not running or mode ~= "play" or phase ~= "sent" then
+			return
+		end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			trySkip()
+		end
+	end)
 	screenGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(layoutAll)
 	Kit.onInput(layoutAll)
 end

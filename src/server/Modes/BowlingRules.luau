@@ -356,8 +356,12 @@ end
 
 BowlingRules.WINDUP = 0.9
 -- Seconds after the last pin falls (or the dumbbell reaches the pit) for the pins to settle
--- and the bowler's reaction: a strike's celebration is the longest.
-BowlingRules.SETTLE = { strike = 3.0, spare = 2.6, gutter = 2.4, open = 2.0 }
+-- and the bowler's reaction: a strike's celebration is the longest. Kept short so a game
+-- moves; a tap skips the rest of it anyway (SKIP_AFTER).
+BowlingRules.SETTLE = { strike = 2.2, spare = 1.9, gutter = 1.7, open = 1.6 }
+-- "BowlingSkip" ends the settle early, but only once the pins are down: this many seconds
+-- after the release's last event (the roll's duration), so the result has been seen.
+BowlingRules.SKIP_AFTER = 0.3
 
 function BowlingRules.settle(mark: string?): number
 	local s = BowlingRules.SETTLE
@@ -523,6 +527,106 @@ end
 
 function BowlingRules.passed(score: number): boolean
 	return score >= BowlingRules.PASS_SCORE
+end
+
+--[[
+	STARS. A finished game earns a star at each of STAR_TIERS points (the first is the pass).
+	Every star a game reaches pays a bonus of TIER_SHARE[i] repeat shares (Economy repeatCash:
+	MODE_REPEAT_SHARE of the cash pack), on top of the pass pay. All the bonuses together pay
+	at most BONUS_CAP repeat shares per REPEAT_GAP window (its start and what it paid are saved
+	with the record: bonusAt, bonusUsed), so with the pass's own repeat share (at most one per
+	REPEAT_GAP) a player earns at most (1 + BONUS_CAP) = 2 repeat shares per 5 minutes outside
+	the full pack, however many games they play. Bonuses never restart the full pack's
+	cooldown.
+]]
+BowlingRules.STAR_TIERS = { 50, 90, 130 }
+BowlingRules.TIER_SHARE = { 0.2, 0.3, 0.5 }
+BowlingRules.BONUS_CAP = 1
+
+-- Stars for a score (0..#STAR_TIERS).
+function BowlingRules.stars(score: number): number
+	local n = 0
+	if type(score) ~= "number" or score ~= score then
+		return 0
+	end
+	for i, tier in BowlingRules.STAR_TIERS do
+		if score >= tier then
+			n = i
+		end
+	end
+	return n
+end
+
+-- The repeat shares the stars of a game with `stars` stars are worth (before the cap).
+function BowlingRules.starShare(stars: number): number
+	local share = 0
+	for i = 1, math.clamp(math.floor(stars), 0, #BowlingRules.TIER_SHARE) do
+		share += BowlingRules.TIER_SHARE[i]
+	end
+	return share
+end
+
+-- A bonus of `share` repeat shares against the window that started at `windowAt` (os.time,
+-- 0 = none) and has paid `used` shares: returns the share paid now (0..share) and the
+-- window's new start and used shares. A window older than REPEAT_GAP (or from the future)
+-- starts afresh.
+function BowlingRules.bonusTake(windowAt: number, used: number, now: number, share: number): (number, number, number)
+	if windowAt <= 0 or now - windowAt >= BowlingRules.REPEAT_GAP or now < windowAt then
+		windowAt, used = now, 0
+	end
+	local paid = math.clamp(BowlingRules.BONUS_CAP - math.max(0, used), 0, math.max(0, share))
+	return paid, windowAt, used + paid
+end
+
+function BowlingRules.bonusCash(repeatCash: number, share: number): number
+	return math.max(0, math.floor(repeatCash * share))
+end
+
+-- Turn guards ---------------------------------------------------------------------------------
+
+-- A roll this soon after its "ready" is refused (a scripted or mashed roll).
+BowlingRules.READY_GAP = 0.8
+-- A turn left this long: the server bowls a weak centre ball for the player (AFK_AIM,
+-- AFK_POWER) so a kid who wandered off comes back to the same game, not a lost one.
+BowlingRules.AFK_SECONDS = 45
+BowlingRules.AFK_AIM = 0
+BowlingRules.AFK_POWER = 0.45
+
+-- A "BowlingRoll"'s aim and power: both must be real numbers (anything else is no roll at
+-- all: nil, nil); then clamped to -1..1 and 0..1.
+function BowlingRules.rollInput(aim: any, power: any): (number?, number?)
+	if type(aim) ~= "number" or aim ~= aim or type(power) ~= "number" or power ~= power then
+		return nil, nil
+	end
+	return math.clamp(aim, -1, 1), math.clamp(power, 0, 1)
+end
+
+-- A roll at `now` for a turn that opened at `readyAt` is early (refused).
+function BowlingRules.tooEarly(now: number, readyAt: number): boolean
+	return now - readyAt < BowlingRules.READY_GAP
+end
+
+-- Seconds from the release to the bowler's reaction (Fx.Bowling and other players' views
+-- play it then; sent as the roll's `react`): after the pins settle (a strike's burst
+-- first), as a gutter ball drops off the lane, or as the dumbbell reaches the pit.
+function BowlingRules.reactAt(roll: Roll, mark: string?): number
+	local path = roll.path
+	local endT = path[#path].t
+	if roll.knocked > 0 then
+		local lastT = 0
+		for _, fall in roll.falls do
+			lastT = math.max(lastT, fall.t)
+		end
+		return lastT + (if mark == "strike" then 0.7 elseif mark == "spare" then 0.6 else 0.4)
+	elseif roll.gutter and #path >= 4 then
+		return path[#path - 2].t + 0.35
+	end
+	return endT
+end
+
+-- "BowlingSkip": the settle may end early once `now` is past `skipFrom` (the pins are down).
+function BowlingRules.canSkip(now: number, skipFrom: number): boolean
+	return now >= skipFrom
 end
 
 -- Lobby and phases ---------------------------------------------------------------------------
