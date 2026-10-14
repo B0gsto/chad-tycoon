@@ -313,6 +313,36 @@ return function(h: { [string]: any })
 		check(ShakeRules.REANCHOR == nil, "no blind re-anchoring")
 		local nan = ShakeRules.trust(anchor, 0 / 0, 0, 10)
 		check(not nan, "nan positions are never trusted")
+		-- A 30 stud/s speed hack never passes once the anchor is half a second old.
+		check(not ShakeRules.plausible(30 * 0.5, 0.5), "30 stud/s over 0.5 s")
+		check(not ShakeRules.plausible(30 * 1, 1), "30 stud/s over 1 s")
+		-- The walk Modes.Shake holds a visitor at always passes.
+		eq(ShakeRules.legitWalk(nil), walk, "no Sneakers: the base walk")
+		eq(ShakeRules.legitWalk(0.5), walk, "a slow multiplier counts as 1")
+		check(math.abs(ShakeRules.legitWalk(1.3) - walk * 1.3) < 1e-9, "Speedy Sneakers")
+		eq(ShakeRules.legitWalk(10), ShakeRules.MAX_WALK, "never above MAX_WALK")
+		eq(ShakeRules.legitWalk(0 / 0), walk, "nan counts as 1")
+		for _, dt in { 0.1, 0.25, 0.5, 0.6, 1 } do
+			check(ShakeRules.plausible(ShakeRules.MAX_WALK * dt, dt), "a legit top-speed walk over " .. dt .. " s")
+		end
+	end)
+
+	test("Shake: the rng is the exact 31-bit LCG", function()
+		-- Reference values from exact integer maths (state * 1103515245 + 12345 mod 2^31).
+		local state = 1
+		for _, want in { 1103527590, 377401575, 662824084, 1147902781, 2035015474 } do
+			state = ShakeRules.lcgNext(state)
+			eq(state, want, "seed 1 step")
+		end
+		state = 2147483647
+		for _, want in { 1043980748, 288979989, 646343466 } do
+			state = ShakeRules.lcgNext(state)
+			eq(state, want, "the largest state")
+		end
+		local r = ShakeRules.rng(1)
+		eq(r(), 1103527590 / 2147483648, "rng(1) starts on the first step")
+		local z = ShakeRules.rng(0 / 0)
+		check(z() >= 0, "a nan seed still runs")
 	end)
 
 	test("Shake: catches are judged at the tray", function()

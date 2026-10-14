@@ -28,9 +28,13 @@
 	    (the tray, ShakeRules.TRAY_AHEAD in front of the root, inside the kind's catch radius
 	    within its window): the catch pops at once (sparkles, "+1" / "+3", the sound, the
 	    tray dip; junk: the splat, "OUCH!", the flinch). The server's "catch" / "splat" only
-	    confirms it (the HUD's score and hearts follow the server); a prediction the server
+	    confirms it (the HUD's hearts follow the server; its score shows predicted catches at
+	    once, through onPredict, and settles on the server's); a prediction the server
 	    never confirms gets a gentle correction ("MISSED" / "PHEW!") after holdWait(), and a
-	    server catch the client did not predict pops when it comes. Anything not caught
+	    server catch the client did not predict pops when it comes. Junk is predicted with a
+	    smaller radius than the server's (PREDICT_JUNK_RADIUS): the client checks the tray
+	    every frame, the server only on its ticks, so a graze here must not cry "OUCH!" for a
+	    hit the server never sees. Anything not caught
 	    hits the sand and fades (junk squashes flat).
 	Parts live in the arena's "Items" folder (World.ShakeArena), never collide or query.
 
@@ -38,6 +42,9 @@
 	  init()            connects the Notify and State listeners
 	  start(payload)    "start": the lobby (phase "lobby"), or a run on an older server
 	  stop(payload)     the player left the mode ("stop")
+	  onPredict(fn)     UI.ShakeHud listens: fn("catch", id, points) when a good item is
+	                    predicted caught here, fn("missed", id, points) when the server never
+	                    confirmed it
 	Phases follow docs/minigames.md: "start" { phase = "lobby" } and a snapshot phase of
 	"lobby" start the practice; "countdown" (or the first "wave") starts the run; "win" /
 	"lose" clear its drops while the avatar reacts with the tray; "lobby" takes the tray.
@@ -63,6 +70,10 @@ local Shake = {}
 -- above the floor and (roughly) the tray's height above the root.
 local CATCH_RADIUS = 4.5
 local JUNK_RADIUS = 3
+-- Junk is only predicted a hit inside this (smaller) radius: the server judges root samples
+-- from its ~10 Hz ticks inside a 0.2 s window (Modes.Shake, ShakeRules.JUNK), this module the
+-- tray every frame, so a near-graze must err toward "no hit".
+local PREDICT_JUNK_RADIUS = JUNK_RADIUS * 0.7
 local DROP_HEIGHT = 40
 local TRAY_ABOVE_ROOT = 0.8
 -- Items reach the tray's height (above the floor) at their land time.
@@ -126,6 +137,19 @@ type Item = {
 	heldAt: number,
 	spin: number,
 }
+
+-- UI.ShakeHud's provisional score (Shake.onPredict).
+local predictListeners: { (string, number, number) -> () } = {}
+local function tellPredict(event: string, d: Drop)
+	local points = if d.kind == "gold" then 3 else 1
+	for _, fn in predictListeners do
+		task.spawn(fn, event, d.id, points)
+	end
+end
+
+function Shake.onPredict(fn: (event: string, id: number, points: number) -> ())
+	table.insert(predictListeners, fn)
+end
 
 -- "" (not in the mode), "lobby" (practice), "run" (countdown and play), "results".
 local mode = ""
@@ -444,9 +468,10 @@ local function judgePoint(root: BasePart): Vector3
 	return root.Position + flat.Unit * TRAY_AHEAD
 end
 
--- True when the judge point (x, z) is inside the drop's catch radius.
+-- True when the judge point (x, z) is inside the drop's predicted catch radius (junk:
+-- PREDICT_JUNK_RADIUS, a little inside the server's).
 local function reaches(x: number, z: number, d: Drop): boolean
-	local r = if isJunk(d.kind) then JUNK_RADIUS else CATCH_RADIUS
+	local r = if isJunk(d.kind) then PREDICT_JUNK_RADIUS else CATCH_RADIUS
 	local dx, dz = x - d.x, z - d.z
 	return dx * dx + dz * dz <= r * r
 end
@@ -621,6 +646,7 @@ local function predict(item: Item)
 		splatPop(at, true)
 	else
 		catchPop(at, d.kind, if d.kind == "gold" then "+3" else "+1")
+		tellPredict("catch", d)
 	end
 	dropParts(item)
 	item.state = "predicted"
@@ -634,6 +660,7 @@ local function correct(item: Item)
 		floatText(at, "PHEW!", W.Mint, 24)
 	else
 		floatText(at, "MISSED", MISS_COLOR, 24)
+		tellPredict("missed", d)
 	end
 end
 
