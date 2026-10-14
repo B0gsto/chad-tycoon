@@ -3580,7 +3580,7 @@ local function buildIndex(screen: ScreenGui)
 		end
 		-- Unknown tiers: a smaller soft-blue silhouette (Kit.unitViewport tints it).
 		local viewport = if known
-			then Kit.unitViewport(frame, tier, { Size = UDim2.new(1, -16, 1, -118), Position = UDim2.fromOffset(8, 32) })
+			then Kit.unitViewport(frame, tier, { Size = UDim2.new(1, -16, 1, -118), Position = UDim2.fromOffset(8, 32), Statue = true })
 			else Kit.unitViewport(frame, tier, {
 				Size = UDim2.new(1, -60, 1, -136),
 				Position = UDim2.new(0.5, 0, 0, 40),

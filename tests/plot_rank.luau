@@ -51,11 +51,28 @@ local function loadTheme(): any
 end
 
 -- PlotRank with the real Economy and Theme, a "high" (or "low") effects budget and no engine.
+-- Shared.AssetModels with no AssetModels folder in ReplicatedStorage: its statue is the block fallback.
+local function loadAssetModels(): any
+	local path = "src/shared/AssetModels.luau"
+	local env = robloxEnv()
+	env.game = {
+		GetService = function()
+			return {
+				FindFirstChild = function()
+					return nil
+				end,
+			}
+		end,
+	}
+	return luau.load(fs.readFile(path), { debugName = path, environment = env })()
+end
+
 local function loadPlotRank(theme: any, low: boolean): any
 	local path = "src/client/Fx/PlotRank.luau"
+	local modules = { Economy = Economy, AssetModels = loadAssetModels() }
 	local shared = {
 		WaitForChild = function(_, name: string)
-			return ({ Economy = Economy })[name]
+			return modules[name]
 		end,
 	}
 	local services = {
@@ -584,8 +601,42 @@ local function suite(h: { [string]: any })
 		-- Tier 25 is clearly grander than tier 23.
 		local top, _, topSpins = PlotRank.showcase(parent, drum, rim, foot, Economy.MAX_TIER)
 		eq(#named(top, "CrownPoint"), CFG.CrownPoints, "a crown round the stage")
-		eq(#named(top, "CapeStrip"), CFG.Cape.Strips, "the cape's strips")
-		for _, strip in named(top, "CapeStrip") do
+		-- A tier 25 champion is the Absolute Chad statue (one, on the stage, facing the walkway).
+		check(PlotRank.statueFor(Economy.MAX_TIER), "the top tier's stage shows the statue")
+		check(not PlotRank.statueFor(Economy.MAX_TIER - 1), "a lower tier keeps its figure")
+		eq(#named(top, "ChampionStatue"), 1, "one statue on a tier 25 stage")
+		eq(#named(legend, "ChampionStatue") + #named(model, "ChampionStatue"), 0, "no statue below tier 25")
+		eq(top:GetAttribute("Statue"), true, "the stage says it shows the statue")
+		local figure = named(top, "ChampionStatue")[1]
+		check(sameFrame(figure.WorldPivot, stage), "the statue stands on the stage, facing the entrance")
+		local low, high = math.huge, -math.huge
+		for _, part in baseParts(figure) do
+			if part.Name ~= "AuraRing" then
+				local y = stage:PointToObjectSpace(part.CFrame.Position).Y
+				local cf, size = part.CFrame, part.Size
+				local reach = (math.abs(cf.RightVector.Y) * size.X + math.abs(cf.UpVector.Y) * size.Y + math.abs(cf.LookVector.Y) * size.Z)
+					/ 2
+				low, high = math.min(low, y - reach), math.max(high, y + reach)
+			end
+		end
+		check(math.abs(low) < 0.1, "its plinth stands on the stage (" .. low .. ")")
+		-- (The block fallback stops a little short of the mesh's crown tip.)
+		check(high > c.StatueHeight * 0.9 and high < c.StatueHeight + 0.1, "the statue is about StatueHeight tall (" .. high .. ")")
+		check(
+			c.StatueHeight > 6.625 * 1.1 and c.StatueHeight <= c.UnitHeight * c.MythicScale,
+			"15% over its own size, in the figure's room"
+		)
+		eq(#named(top, "CapeStrip"), 0, "the statue wears its own cape")
+		eq(#named(top, "BodySparkles"), 1, "gold sparkles still rise round the statue")
+		local haloAt = stage:PointToObjectSpace(named(top, "HaloTile")[1].CFrame.Position)
+		check(haloAt.Y > c.StatueHeight, "the ring turns over the statue's crown")
+		-- With the statue switched off the figure wears the cape.
+		c.Statue = false
+		local caped = PlotRank.showcase(parent, drum, rim, foot, Economy.MAX_TIER)
+		c.Statue = true
+		eq(#named(caped, "ChampionStatue"), 0, "no statue when switched off")
+		eq(#named(caped, "CapeStrip"), CFG.Cape.Strips, "the cape's strips")
+		for _, strip in named(caped, "CapeStrip") do
 			check(strip.Color.R > strip.Color.G * 3 and strip.Color.R < 0.6, "a solid dark-red cloth")
 			check(strip.Transparency == 0, "not see-through")
 		end
@@ -619,7 +670,7 @@ local function suite(h: { [string]: any })
 				check(math.abs(at.X) <= s.spacing, part.Name .. " keeps off the neighbours' spots")
 			end
 		end
-		for _, strip in named(top, "CapeStrip") do
+		for _, strip in named(caped, "CapeStrip") do
 			local at = stage:PointToObjectSpace(strip.CFrame.Position)
 			check(at.Z > 0.3 and at.Z < c.Panel.Back, "the cape hangs behind the champion, in front of the panel")
 			check(at.Y > 0 and at.Y < CFG.Cape.Top * c.MythicScale, "the cape hangs between the shoulders and the stage")
@@ -635,6 +686,49 @@ local function suite(h: { [string]: any })
 		for _, d in parent:GetDescendants() do
 			check(d.ClassName ~= "Highlight", "no Highlight instances")
 		end
+	end)
+
+	test("The Absolute Chad statue is only used where tier 25 is showcased", function()
+		-- Every Luau file under src, with its text.
+		local files: { [string]: string } = {}
+		local function scan(dir: string)
+			for _, name in fs.readDir(dir) do
+				local path = dir .. "/" .. name
+				if fs.isDir(path) then
+					scan(path)
+				elseif string.sub(name, -5) == ".luau" then
+					files[path] = fs.readFile(path)
+				end
+			end
+		end
+		scan("src")
+		local function count(text: string, needle: string): number
+			local n, at = 0, 1
+			while true do
+				local found = string.find(text, needle, at, true)
+				if not found then
+					return n
+				end
+				n += 1
+				at = found + #needle
+			end
+		end
+		-- Built only by the champion stage and the showcase viewport ...
+		local builders = { ["src/client/Fx/PlotRank.luau"] = 1, ["src/client/UI/Kit.luau"] = 1 }
+		-- ... which the reveal card and the Index card ask for (Kit draws it for tier 25 only).
+		-- (PlotRank's is its CFG.Champion switch.)
+		local askers = { ["src/client/UI/Popups.luau"] = 1, ["src/client/UI/Windows.luau"] = 1, ["src/client/Fx/PlotRank.luau"] = 1 }
+		for path, text in files do
+			if path ~= "src/shared/AssetModels.luau" then
+				eq(count(text, "AssetModels.absoluteChad("), builders[path] or 0, path .. " builds the statue")
+			end
+			eq(count(text, "Statue = true"), askers[path] or 0, path .. " asks for the statue")
+		end
+		local kit = files["src/client/UI/Kit.luau"]
+		check(
+			string.find(kit, "props.Statue == true and not silhouette and tier == Economy.MAX_TIER", 1, true) ~= nil,
+			"Kit shows it for tier 25 only"
+		)
 	end)
 
 	test("PlotRank: the home shot frames the rack and its roof dressing", function()

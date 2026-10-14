@@ -45,6 +45,8 @@ local UserInputService = game:GetService("UserInputService")
 
 local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 local CharacterFactory = require(ReplicatedStorage.Shared.CharacterFactory)
+local AssetModels = require(ReplicatedStorage.Shared.AssetModels)
+local Economy = require(ReplicatedStorage.Shared.Economy)
 local Animator = require(script.Parent.Parent.Animator)
 local Sprites = require(script.Parent.Parent.Fx.Sprites)
 
@@ -3220,8 +3222,28 @@ function Kit.tabs(parent: Instance, props: { [string]: any }, onSelect: (string)
 end
 
 -- Builds a ViewportFrame showing a unit tier (`silhouette`: an undiscovered tier,
--- drawn as one soft mid-blue shape).
+-- drawn as one soft mid-blue shape). `props.Statue`: a showcase (the reveal, the Index card)
+-- shows the top tier as the Absolute Chad statue (AssetModels.absoluteChad), not its code
+-- figure, framed plinth to crown under GILD.Viewport's warm light; every other use keeps the
+-- figure.
 local SILHOUETTE = Color3.fromRGB(122, 146, 220)
+local function statueViewport(viewport: ViewportFrame): ViewportFrame
+	viewport:SetAttribute("Statue", true)
+	local V = CharacterFactory.GILD.Viewport
+	viewport.Ambient = V.Ambient
+	viewport.LightColor = V.Light
+	local model = AssetModels.absoluteChad()
+	model.Parent = viewport
+	-- Plinth bottom (the pivot) to crown tip, plus a little room: both stay in view.
+	local height = model:GetExtentsSize().Y * 1.06
+	local camera = Instance.new("Camera")
+	camera.FieldOfView = 40
+	local focus = Vector3.new(0, height * 0.48, 0)
+	camera.CFrame = CFrame.lookAt(Vector3.new(height * 0.35, height * 0.6, -height * 1.75), focus)
+	camera.Parent = viewport
+	viewport.CurrentCamera = camera
+	return viewport
+end
 function Kit.unitViewport(parent: Instance, tier: number, props: { [string]: any }, silhouette: boolean?): ViewportFrame
 	local look = Theme.Tiers[tier].Look
 	local viewport = Kit.new("ViewportFrame", {
@@ -3237,6 +3259,9 @@ function Kit.unitViewport(parent: Instance, tier: number, props: { [string]: any
 	-- Tagged so tooling (preview renderer) can identify what the viewport shows.
 	viewport:SetAttribute("Tier", tier)
 	viewport:SetAttribute("Silhouette", silhouette == true)
+	if props.Statue == true and not silhouette and tier == Economy.MAX_TIER then
+		return statueViewport(viewport)
+	end
 	local model = CharacterFactory.build(look, Theme.Tiers[tier].Name)
 	if silhouette then
 		-- A soft mid-blue shape (lighter than the tile's ink, never black), lit flat.

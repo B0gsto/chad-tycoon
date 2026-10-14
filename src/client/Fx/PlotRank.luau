@@ -32,8 +32,11 @@
 	turns over its head and a plaque over the ring names it. From Epic the stage
 	sparkles, from Legendary a beam rises to the sky; a tier 25 champion is bigger still, on
 	a wider crowned stage, in a dark-red cape, in front of a turning sunburst and under a wider
-	beam with turning sheets of light, with gold sparkles rising round it (its figure is
-	CharacterFactory's gilded look: gold metal, so its glow is kept low). The pedestal keeps its glow in the rarity colour. Other
+	beam with turning sheets of light, with gold sparkles rising round it. A tier 25 champion
+	is not its code figure but the Absolute Chad statue (AssetModels.absoluteChad, Blender-made,
+	CFG.Champion.StatueHeight tall, with its own cape): one per plot, built with the stage and
+	gone with it, while the slot 1 unit itself is hidden on this client (PlotRank.statueFor).
+	The pedestal keeps its glow in the rarity colour. Other
 	players' front-row units get a rarity ring under their feet; the own rack's rings, sizes
 	and aura are Fx.Shelf's.
 
@@ -51,6 +54,7 @@
 	  PlotRank.homeShot(rise, run, fov)                the spawn camera's pitch and distance
 	  PlotRank.homeTilt(pitch, distance, bestTier)     ... looking further up from tier 20
 	  PlotRank.championScale(tier) / championPivot(rim) / championHome(rim)
+	  PlotRank.statueFor(tier)                         the stage shows the statue, not the unit
 	PlotRank.dress(rank, roofTop, roofSize, parent) builds the dressing without starting it
 	(the tests count its parts with it).
 
@@ -67,6 +71,8 @@ local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Economy = require(Shared:WaitForChild("Economy"))
+-- The Absolute Chad statue on a tier 25 stage (absent in some unit tests: the figure stays).
+local AssetModels = require(Shared:WaitForChild("AssetModels")) :: any
 local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 
 local State = require(script.Parent.Parent.State)
@@ -149,6 +155,10 @@ local CFG = {
 	Champion = {
 		Scale = 1.4, -- the champion's drawn size ...
 		MythicScale = 1.55, -- ... and a tier 25 champion's
+		-- A tier 25 champion is the Absolute Chad statue instead: 15% over its authored 6.625
+		-- studs, about the 7.75 studs the 1.55x figure took (plinth bottom to crown tip).
+		Statue = true,
+		StatueHeight = 6.625 * 1.15,
 		UnitHeight = 5, -- a rack unit's height at scale 1 (PlotLayout.SHELF.unitMaxHeight)
 		Out = 4.3, -- studs in front of the shelf pedestal: over the gutter, clear of the roof's front edge
 		Rise = 1.2, -- studs above the pedestal's top
@@ -581,6 +591,11 @@ end
 -- The size the champion (slot 1) is drawn at.
 function PlotRank.championScale(tier: number): number
 	return if tier >= Economy.MAX_TIER then CFG.Champion.MythicScale else CFG.Champion.Scale
+end
+
+-- Whether a `tier` champion's stage shows the Absolute Chad statue instead of the unit.
+function PlotRank.statueFor(tier: number): boolean
+	return CFG.Champion.Statue and tier >= Economy.MAX_TIER and AssetModels ~= nil
 end
 
 -- Where the server stands the champion: the middle of the pedestal rim's top (`rim` is the
@@ -1214,7 +1229,8 @@ function PlotRank.showcase(parent: Instance, drum: BasePart, rim: BasePart, foot
 	local mythic = tier >= Economy.MAX_TIER
 	local low = Budget.low()
 	local scale = PlotRank.championScale(tier)
-	local tall = c.UnitHeight * scale
+	local statue = PlotRank.statueFor(tier)
+	local tall = if statue then c.StatueHeight else c.UnitHeight * scale
 	-- `stand`: where the server stands the champion; `stage`: where it is shown. Both have Y
 	-- up and -Z toward the plot's entrance.
 	local stand = PlotRank.championHome(rim)
@@ -1254,6 +1270,21 @@ function PlotRank.showcase(parent: Instance, drum: BasePart, rim: BasePart, foot
 	metal(piece(model, "StageDisc", disc, stage * CFrame.new(0, -c.StageThick / 2, 0) * UPRIGHT, CFG.Gold, Enum.PartType.Cylinder))
 	local rimGlow = Vector3.new(0.16, diameter + 0.6, diameter + 0.6)
 	neon(piece(model, "StageGlow", rimGlow, stage * CFrame.new(0, -c.StageThick - 0.04, 0) * UPRIGHT, color, Enum.PartType.Cylinder), 0.1)
+	-- A tier 25 champion: the statue on the stage, facing the walkway (its pivot is the bottom
+	-- centre of its plinth, front -Z, like a unit's).
+	if statue then
+		local figure = AssetModels.absoluteChad(c.StatueHeight) :: Model
+		figure.Name = "ChampionStatue"
+		-- PivotTo by hand (its pivot is the origin): the same in the unit tests' Lune.
+		for _, part in figure:GetDescendants() do
+			if part:IsA("BasePart") then
+				part.CFrame = stage * part.CFrame
+			end
+		end
+		figure.WorldPivot = stage
+		figure.Parent = model
+		model:SetAttribute("Statue", true)
+	end
 
 	-- The dark panel behind the champion, in a gold frame, with a gold disc of back light.
 	local p = c.Panel
@@ -1405,24 +1436,27 @@ function PlotRank.showcase(parent: Instance, drum: BasePart, rim: BasePart, foot
 			metal(piece(model, "CrownPoint", point, spoke * CFrame.Angles(0, 0, math.pi / 4), CFG.Gold))
 			neon(piece(model, "CrownJewel", Vector3.one * 0.3, spoke * CFrame.new(0, tipY, 0), color, Enum.PartType.Ball))
 		end
-		-- The cape: strips fanning out from the shoulders to the stage, behind the unit.
-		local cape = CFG.Cape
-		local half = (cape.Strips - 1) / 2
-		local cloth = cape.Color
-		local footZ = math.min(cape.BottomZ * scale, p.Back - p.Thick / 2 - 0.15)
-		for i = 0, cape.Strips - 1 do
-			local n = i - half
-			local upper = Vector3.new(n * cape.TopStep * scale, cape.Top * scale, cape.TopZ * scale)
-			local lower = Vector3.new(n * cape.BottomStep * scale, cape.Bottom, footZ)
-			local up = (upper - lower).Unit
-			local across = up:Cross(Vector3.zAxis).Unit
-			local cf = stage * CFrame.fromMatrix((upper + lower) / 2, across, up)
-			local edge = i == 0 or i == cape.Strips - 1
-			local strip = Vector3.new(cape.Width * scale, (upper - lower).Magnitude, 0.08)
-			piece(model, "CapeStrip", strip, cf, if edge then cape.Edge else cloth).Material = Enum.Material.Fabric
+		-- The cape: strips fanning out from the shoulders to the stage, behind the unit (the
+		-- statue wears its own).
+		if not statue then
+			local cape = CFG.Cape
+			local half = (cape.Strips - 1) / 2
+			local cloth = cape.Color
+			local footZ = math.min(cape.BottomZ * scale, p.Back - p.Thick / 2 - 0.15)
+			for i = 0, cape.Strips - 1 do
+				local n = i - half
+				local upper = Vector3.new(n * cape.TopStep * scale, cape.Top * scale, cape.TopZ * scale)
+				local lower = Vector3.new(n * cape.BottomStep * scale, cape.Bottom, footZ)
+				local up = (upper - lower).Unit
+				local across = up:Cross(Vector3.zAxis).Unit
+				local cf = stage * CFrame.fromMatrix((upper + lower) / 2, across, up)
+				local edge = i == 0 or i == cape.Strips - 1
+				local strip = Vector3.new(cape.Width * scale, (upper - lower).Magnitude, 0.08)
+				piece(model, "CapeStrip", strip, cf, if edge then cape.Edge else cloth).Material = Enum.Material.Fabric
+			end
+			local collar = Vector3.new((cape.TopStep * (cape.Strips - 1) + cape.Width) * scale, 0.3, 0.3)
+			metal(piece(model, "CapeCollar", collar, stage * CFrame.new(0, cape.Top * scale, cape.TopZ * scale), CFG.Gold))
 		end
-		local collar = Vector3.new((cape.TopStep * (cape.Strips - 1) + cape.Width) * scale, 0.3, 0.3)
-		metal(piece(model, "CapeCollar", collar, stage * CFrame.new(0, cape.Top * scale, cape.TopZ * scale), CFG.Gold))
 	end
 	return model,
 		function()
@@ -1446,6 +1480,9 @@ type Rec = {
 	championKey: string,
 	spins: { Spin }, -- the champion stage's turning models
 	staged: Model?, -- another player's champion this module moved onto its stage
+	hidden: Model?, -- the slot 1 unit hidden behind a tier 25 stage's statue ...
+	hiddenBits: { Instance }, -- ... the parts, lights, particles and guis it hid
+	watch: RBXScriptConnection?, -- the plot's Units, while a statue stands: a new champion hides at once
 	rings: { Part },
 	near: boolean,
 	rank: number?, -- the rank last dressed while in range (nil = not dressed): a higher one is news
@@ -1672,6 +1709,77 @@ local function stageChampion(rec: Rec, own: boolean)
 	end
 end
 
+-- The unit in slot 1 of a plot (the champion), if it is there.
+local function slotOne(plot: Instance): Model?
+	local units = plot:FindFirstChild("Units")
+	if units then
+		for _, child in units:GetChildren() do
+			if child:IsA("Model") and child:GetAttribute("Slot") == 1 then
+				return child
+			end
+		end
+	end
+	return nil
+end
+
+-- Hides a unit on this client (its parts see-through, its lights, particles and guis off) and
+-- returns what it changed, for showUnit.
+local function hideUnit(unit: Model): { Instance }
+	local bits: { Instance } = {}
+	for _, d in unit:GetDescendants() do
+		if d:IsA("BasePart") or d:IsA("Decal") then
+			(d :: any).LocalTransparencyModifier = 1
+			table.insert(bits, d)
+		elseif
+			(d:IsA("ParticleEmitter") or d:IsA("Light") or d:IsA("LayerCollector") or d:IsA("Fire") or d:IsA("Sparkles"))
+			and (d :: any).Enabled
+		then
+			(d :: any).Enabled = false
+			table.insert(bits, d)
+		end
+	end
+	return bits
+end
+
+local function showUnit(bits: { Instance })
+	for _, d in bits do
+		if d:IsA("BasePart") or d:IsA("Decal") then
+			(d :: any).LocalTransparencyModifier = 0
+		else
+			(d :: any).Enabled = true
+		end
+	end
+end
+
+-- A stage with the statue (PlotRank.statueFor) hides the champion's own unit, own plot or not;
+-- it shows again when the champion changes, the stage goes or the plot is released.
+local function hideChampion(rec: Rec)
+	local statue = rec.champion ~= nil and rec.champion:GetAttribute("Statue") == true
+	local unit = if statue then slotOne(rec.folder) else nil
+	local tier = if unit then unit:GetAttribute("Tier") else nil
+	if type(tier) ~= "number" or not PlotRank.statueFor(tier) then
+		unit = nil
+	end
+	if rec.hidden ~= unit then
+		showUnit(rec.hiddenBits)
+		rec.hidden = unit
+		rec.hiddenBits = if unit then hideUnit(unit) else {}
+	end
+	local units = if statue then rec.folder:FindFirstChild("Units") else nil
+	if units and not rec.watch then
+		rec.watch = units.ChildAdded:Connect(function()
+			task.defer(function()
+				if rec.watch then
+					pcall(hideChampion, rec)
+				end
+			end)
+		end)
+	elseif not units and rec.watch then
+		rec.watch:Disconnect()
+		rec.watch = nil
+	end
+end
+
 -- Rarity rings under the front-row units of another player's plot (the own rack's are
 -- Fx.Shelf's): a small pool of discs, placed again on every scan.
 local function syncRings(rec: Rec, show: boolean)
@@ -1729,10 +1837,18 @@ local function syncPlot(rec: Rec, own: boolean, camPos: Vector3)
 	syncDressing(rec, best)
 	syncChampion(rec, best)
 	stageChampion(rec, own)
+	hideChampion(rec)
 	syncRings(rec, rec.near and not own)
 end
 
 local function dropPlot(rec: Rec)
+	if rec.watch then
+		rec.watch:Disconnect()
+		rec.watch = nil
+	end
+	showUnit(rec.hiddenBits)
+	rec.hidden = nil
+	rec.hiddenBits = {}
 	rec.group:Destroy()
 end
 
@@ -1766,6 +1882,9 @@ local function poll()
 						championKey = "",
 						spins = {},
 						staged = nil,
+						hidden = nil,
+						hiddenBits = {},
+						watch = nil,
 						rings = {},
 						near = false,
 						rank = nil,

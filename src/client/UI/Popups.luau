@@ -2101,6 +2101,8 @@ function Popups.gradeHero(hero: Frame, viewport: ViewportFrame, tier: number): V
 		Size = UDim2.fromScale(HERO_ZOOM * top.RimScale, HERO_ZOOM * top.RimScale),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
+		-- The same model as the hero's (the top tier's statue).
+		Statue = viewport:GetAttribute("Statue") == true,
 	})
 	rim.Name = "Rim"
 	rim.ZIndex = viewport.ZIndex - 1
@@ -2710,6 +2712,8 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		Size = UDim2.fromScale(HERO_ZOOM, HERO_ZOOM),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
+		-- A showcase: the top tier is revealed as the Absolute Chad statue.
+		Statue = true,
 	})
 	Kit.appear(hero, { from = 0.15, time = 0.4 + 0.02 * rank })
 	local rim: ViewportFrame? = if topTier then Popups.gradeHero(hero, viewport, tier) else nil
