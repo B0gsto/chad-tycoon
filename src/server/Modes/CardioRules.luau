@@ -15,8 +15,10 @@
 	Stage n's longest (flat) gap is <= maxGap(walkSpeed(need_n)) and > reach(walkSpeed(need_n-1)),
 	so the previous stage's Speed can never clear it, even with a perfect edge jump.
 	Stage 3 is the first with a chaser, so its gaps are shorter than the curve allows: at
-	exactly its need the longest jump keeps 2.9 studs of reach in reserve (2.4 with a 17), 3.5
-	at the recommended Speed.
+	exactly its need the longest jump keeps 2.4 studs of reach in reserve (3 x SAFETY), 3.4 at
+	the recommended Speed. Its need (830, was 1,100) is the lowest that keeps that reserve over
+	the shortest gap stage 2's need cannot clear (16), so a first session reaches the chaser
+	about 2-3.5 minutes of running after stage 2 (it was 4.5-5).
 	The HUD also shows recommended(n) = RECOMMEND x need (15% more Speed) as the Speed to run a
 	stage with comfortably.
 
@@ -24,20 +26,22 @@
 	  stage  need     walk   maxGap  prev reach  longest gap
 	    1        0    16.0     7.9        -          7
 	    2      150    25.9    13.2      10.2        12
-	    3    1,100    35.8    18.6      15.5        16.5
-	    4    3,500    45.8    24.0      20.9        22.5
-	    5    8,000    55.7    29.4      26.3        28
-	    6   15,000    65.5    34.7      31.7        33
-	    7   27,000    76.8    40.8      37.0        39
-	    8   45,000    88.7    47.3      43.1        45
-	    9   77,000   103.8    55.4      49.6        52.5
-	   10  125,000   120.0    64.2      57.7        61
+	    3      830    34.0    17.6      15.5        16
+	    4    2,400    42.1    22.0      19.9        20.5
+	    5    5,800    51.5    27.1      24.3        25.5
+	    6   12,000    61.8    32.7      29.4        30.5
+	    7   23,000    73.5    39.0      35.0        36.5
+	    8   41,000    86.4    46.0      41.3        43.5
+	    9   72,000   101.7    54.3      48.3        51
+	   10  125,000   120.0    64.2      56.6        61
 
 	Progression check (a coarse 1 s simulation, also run in tests/cardio.luau): a player who
 	spends half the time running on keys (60% of the time actually stepping) and half on the
 	best treadmill they have reached, and buys one treadmill level every 4 minutes, reaches
-	  stage 2 ~1.5 min, 3 ~6 min, 4 ~12 min, 5 ~18 min, 6 ~23 min, 7 ~29 min, 8 ~34 min,
-	  9 ~41 min, 10 ~49 min (about 70% of the Speed from treadmills).
+	  stage 2 ~1.5 min, 3 ~5 min, 4 ~9.5 min, 5 ~15 min, 6 ~20 min, 7 ~26 min, 8 ~32 min,
+	  9 ~39 min, 10 ~48 min (about 70% of the Speed from treadmills).
+	From stage 2 (150 Speed, plate 2 claimed: x1.5 steps) to stage 3's 830 is about 3.3 minutes
+	of running on keys at 60% stepping, 2 minutes nonstop, 4.7 on the zone 2 treadmills.
 	Step multiplier: (1 + 0.25 * bestStage) * (1 + 0.1 * treadmillLevel)  (x1 .. x7)
 	Treadmill rate:  0.45 * (1 + zoneStage)^1.3 * (1 + 0.25 * level)
 	                 * max(1, (speed / 150)^0.25)                         Speed/s
@@ -151,13 +155,13 @@ CardioRules.STAGE_COUNT = 10
 CardioRules.STAGES = {
 	stage("Home Row",         "Mint",      0,      7,  25.2, 25.2, 4, 0,   nil,          nil),
 	stage("Shift Street",     "Sunny",     150,    12, 22.4, 25.2, 4, 1,   nil,          nil),
-	stage("Tab Tunnel",       "Teal",      1100,   16.5, 22.4, 22.4, 4, 2,   nil,          nil),
-	stage("Caps Lock Canyon", "Orange",    3500,   22.5, 16.8, 22.4, 3, 2.5, { 2.2, 3.2 }, nil),
-	stage("Enter Expressway", "Pink",      8000,   28, 16.8, 22.4, 3, 3,   { 2.0, 3.0 }, nil),
-	stage("Backspace Bridge", "Blue",      15000,  33, 14, 16.8, 3, 3.5, { 1.9, 2.9 }, { travel = 8, period = 5 }),
-	stage("Function Falls",   "Grape",     27000,  39, 14, 16.8, 3, 4,   { 1.8, 2.8 }, { travel = 8, period = 4.5 }),
-	stage("Arrow Key Alley",  "Coral",     45000,  45, 11.2, 16.8, 3, 4.5, { 1.7, 2.7 }, { travel = 10, period = 4.2 }),
-	stage("Escape Heights",   "RedOrange", 77000,  52.5, 11.2, 16.8, 3, 5,  { 1.6, 2.6 }, { travel = 10, period = 4 }),
+	stage("Tab Tunnel",       "Teal",      830,    16, 22.4, 22.4, 4, 2,   nil,          nil),
+	stage("Caps Lock Canyon", "Orange",    2400,   20.5, 16.8, 22.4, 3, 2.5, { 2.2, 3.2 }, nil),
+	stage("Enter Expressway", "Pink",      5800,   25.5, 16.8, 22.4, 3, 3,   { 2.0, 3.0 }, nil),
+	stage("Backspace Bridge", "Blue",      12000,  30.5, 14, 16.8, 3, 3.5, { 1.9, 2.9 }, { travel = 8, period = 5 }),
+	stage("Function Falls",   "Grape",     23000,  36.5, 14, 16.8, 3, 4,   { 1.8, 2.8 }, { travel = 8, period = 4.5 }),
+	stage("Arrow Key Alley",  "Coral",     41000,  43.5, 11.2, 16.8, 3, 4.5, { 1.7, 2.7 }, { travel = 10, period = 4.2 }),
+	stage("Escape Heights",   "RedOrange", 72000,  51, 11.2, 16.8, 3, 5,  { 1.6, 2.6 }, { travel = 10, period = 4 }),
 	stage("Spacebar Skyway",  "Butter",    125000, 61, 11.2, 16.8, 3, 5,   { 1.5, 2.5 }, { travel = 12, period = 3.8 }),
 } :: { Stage }
 

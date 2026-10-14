@@ -61,6 +61,7 @@ local Camera = require(script.Parent.Camera) :: any
 local Chase = require(script.Parent.CardioChase) :: any
 local Sounds = require(Client.Sounds) :: any
 local Assets = require(ReplicatedStorage.Shared.Assets) :: any
+local Format = require(ReplicatedStorage.Shared.Format) :: any
 
 local CardioFx = {}
 
@@ -92,22 +93,56 @@ local OTHER_MAX = 6 -- at most this many other players (scaled by Budget.count)
 -- Speed effects: radial speed lines (every LINE_TINT_EVERY-th one rainbow-tinted, the rest
 -- white), a FOV widen and a rainbow trail off the runner's back, all scaling with the
 -- horizontal speed from LINES_FROM to LINES_FULL studs/s. Line length / thickness are px at
--- rest + extra at full speed; opacity is the strongest line's at full speed.
-local LINE_COUNT = 40
-local LINES_FROM = 30 -- studs/s: speed lines, trail and FOV start above this
-local LINES_FULL = 80 -- studs/s: full effect
-local LINE_LEN = 60
-local LINE_LEN_FULL = 240
-local LINE_THICK = 3
-local LINE_THICK_FULL = 6
-local LINE_OPACITY = 0.8
-local LINE_TINT_EVERY = 3
-local FOV_MAX = 12
+-- rest + extra at full speed; opacity is the strongest line's at full speed. The range sits
+-- on real run speeds (WalkSpeed 16 at Speed 0, ~25 on stage 1, ~37 at stage 3's recommended
+-- Speed), so every run past the first steps shows them; the strength curve (speed share ^
+-- LINE_CURVE) makes even a slow run read in a still.
+local LINE_COUNT = 56
+local LINES_FROM = 17 -- studs/s: speed lines, trail and FOV start above this
+local LINES_FULL = 36 -- studs/s: full effect
+local LINE_CURVE = 0.5
+local LINE_LEN = 110
+local LINE_LEN_FULL = 320
+local LINE_THICK = 5
+local LINE_THICK_FULL = 10
+local LINE_OPACITY = 0.95
+local LINE_TINT_EVERY = 2
+local LINE_TINT_WHITE = 0.08 -- how far a rainbow line is lifted toward white
+local FOV_MAX = 9
 local TRAIL = {
-	From = 0.2, -- speed share (0..1) where the trail starts showing
-	Lifetime = 0.45, -- seconds
-	Width = 2.2, -- studs between its two attachments (centred on the torso)
-	Opacity = 0.75, -- at full speed (the tail fades to nothing)
+	From = 0.02, -- speed share (0..1) where the trail starts showing
+	Lifetime = 0.8, -- seconds
+	Width = 3.6, -- studs between its two attachments (centred on the torso)
+	Opacity = 0.95, -- at full speed (the tail fades to nothing)
+	Floor = 0.45, -- opacity the moment it shows
+	Light = 0.85, -- LightEmission
+}
+-- The goal star on the TRACK: beside the doorway of the stage you run next (on the right as
+-- you face it, under its StageSign<n>), a big gold star with that stage's recommended Speed
+-- and an arrow bobbing above it; mint "READY!" once your Speed reaches it. Size is studs
+-- (scale) + px (offset), so it stays readable far away and grows as you come close.
+local GOAL = {
+	StudsW = 5,
+	PxW = 130,
+	StudsH = 6,
+	PxH = 150,
+	Side = 21, -- studs to the right of the doorway's centre (+Z)
+	Front = 6, -- studs out from the wall toward the runner (-X)
+	Down = 13, -- studs below the sign's centre (about mid-doorway)
+	MaxDistance = 600,
+	ArrowH = 0.26, -- share of the height
+	StarSize = 0.46,
+	TextH = 0.24,
+	BobShare = 0.07, -- arrow bob, share of the height
+	BobHz = 1.7,
+	SpinDeg = 9, -- star wobble
+	SpinHz = 0.8,
+	PulseHz = 2.2,
+	Pulse = 0.08, -- star scale swing
+	Plate = Color3.fromRGB(22, 20, 44),
+	PlateTransparency = 0.15,
+	Gold = Color3.fromRGB(255, 206, 64),
+	Ready = W.Mint or Color3.fromRGB(98, 224, 160),
 }
 local CLICK_RATE = 12 -- local key clicks per second at most
 local POP_POOL = 8
@@ -653,7 +688,7 @@ local function ensureLines()
 		frame.Name = "Line"
 		frame.BorderSizePixel = 0
 		frame.BackgroundColor3 = if i % LINE_TINT_EVERY == 0
-			then RAINBOW[(i // LINE_TINT_EVERY - 1) % #RAINBOW + 1]:Lerp(WHITE, 0.25)
+			then RAINBOW[(i // LINE_TINT_EVERY - 1) % #RAINBOW + 1]:Lerp(WHITE, LINE_TINT_WHITE)
 			else WHITE
 		frame.AnchorPoint = Vector2.new(0.5, 0.5)
 		frame.BackgroundTransparency = 1
@@ -709,7 +744,7 @@ local function stepTrail(root: BasePart?)
 		made.Attachment0 = a0
 		made.Attachment1 = a1
 		made.Lifetime = TRAIL.Lifetime
-		made.LightEmission = 0.6
+		made.LightEmission = TRAIL.Light
 		made.FaceCamera = true
 		local keys = {}
 		for i, colour in RAINBOW do
@@ -725,8 +760,8 @@ local function stepTrail(root: BasePart?)
 		trail = made
 		t = made
 	end
-	local k = math.clamp((speedK - TRAIL.From) / (1 - TRAIL.From), 0, 1)
-	local head = 1 - TRAIL.Opacity * k
+	local k = math.clamp((speedK - TRAIL.From) / (1 - TRAIL.From), 0, 1) ^ LINE_CURVE
+	local head = 1 - (TRAIL.Floor + (TRAIL.Opacity - TRAIL.Floor) * k)
 	local trailNow = t :: Trail
 	trailNow.Transparency = NumberSequence.new(head, 1)
 	trailNow.Enabled = true
@@ -759,7 +794,7 @@ local function stepSpeed(dt: number, root: BasePart?)
 	local view = if camera then camera.ViewportSize else Vector2.new(1280, 720)
 	local centre = view / 2
 	local reach = centre.Magnitude
-	local strength = speedK * (if reduced then 0.5 else 1)
+	local strength = speedK ^ LINE_CURVE * (if reduced then 0.5 else 1)
 	for _, line in lines do
 		line.r += dt * line.speed * (0.6 + strength)
 		if line.r > 1.15 then
@@ -1200,6 +1235,166 @@ local function stepDoors(now: number)
 	end
 end
 
+-- Goal star on the track ------------------------------------------------------------------------
+
+type GoalMarker = {
+	gui: BillboardGui?,
+	arrow: TextLabel?,
+	star: GuiObject?,
+	scale: UIScale?,
+	text: TextLabel?,
+	plate: Frame?,
+	stage: number,
+	shown: string,
+}
+local goalMarker: GoalMarker = { stage = -1, shown = "" }
+
+local function signBoard(n: number): BasePart?
+	local track = Workspace:FindFirstChild("CardioTrack")
+	local model = track and track:FindFirstChild("StageSign" .. n, true)
+	local board = model and model:FindFirstChild("StageSign")
+	return if board and board:IsA("BasePart") then board else nil
+end
+
+local function goalGui(): BillboardGui
+	local made = goalMarker.gui
+	if made and made.Parent then
+		return made
+	end
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "CardioGoalStar"
+	gui.Size = UDim2.new(GOAL.StudsW, GOAL.PxW, GOAL.StudsH, GOAL.PxH)
+	gui.LightInfluence = 0
+	gui.MaxDistance = GOAL.MaxDistance
+	gui.ResetOnSpawn = false
+	gui.Enabled = false
+	local arrow = outlined(gui, 48, GOAL.Gold)
+	arrow.Name = "Arrow"
+	arrow.AutomaticSize = Enum.AutomaticSize.None
+	arrow.Text = utf8.char(0x25BC)
+	arrow.TextScaled = true
+	arrow.AnchorPoint = Vector2.new(0.5, 0)
+	arrow.Size = UDim2.fromScale(0.5, GOAL.ArrowH)
+	arrow.Position = UDim2.fromScale(0.5, 0)
+	local cell = Assets.icon and Assets.icon("Star")
+	local star: GuiObject
+	if type(cell) == "table" and type(cell.image) == "string" then
+		local image = Instance.new("ImageLabel")
+		image.BackgroundTransparency = 1
+		image.Image = cell.image
+		image.ImageRectOffset = Vector2.new(num(cell.x, 0), num(cell.y, 0))
+		image.ImageRectSize = Vector2.new(num(cell.w, 0), num(cell.h, 0))
+		image.ScaleType = Enum.ScaleType.Fit
+		star = image
+	else
+		local glyph = outlined(gui, 48, GOAL.Gold)
+		glyph.AutomaticSize = Enum.AutomaticSize.None
+		glyph.Text = utf8.char(0x2605)
+		glyph.TextScaled = true
+		star = glyph
+	end
+	star.Name = "Star"
+	star.AnchorPoint = Vector2.new(0.5, 0.5)
+	star.Size = UDim2.fromScale(GOAL.StarSize, GOAL.StarSize)
+	star.Position = UDim2.fromScale(0.5, GOAL.ArrowH + GOAL.StarSize / 2)
+	local aspect = Instance.new("UIAspectRatioConstraint")
+	aspect.Parent = star
+	local scale = Instance.new("UIScale")
+	scale.Parent = star
+	star.Parent = gui
+	local plate = Instance.new("Frame")
+	plate.Name = "Plate"
+	plate.BackgroundColor3 = GOAL.Plate
+	plate.BackgroundTransparency = GOAL.PlateTransparency
+	plate.AnchorPoint = Vector2.new(0.5, 1)
+	plate.Size = UDim2.fromScale(1, GOAL.TextH)
+	plate.Position = UDim2.fromScale(0.5, 1)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0.3, 0)
+	corner.Parent = plate
+	local rim = Instance.new("UIStroke")
+	rim.Color = GOAL.Gold
+	rim.Thickness = 3
+	rim.Parent = plate
+	plate.Parent = gui
+	local text = outlined(plate, 40, GOAL.Gold)
+	text.Name = "Goal"
+	text.AutomaticSize = Enum.AutomaticSize.None
+	text.TextScaled = true
+	text.Size = UDim2.fromScale(0.92, 0.84)
+	text.Position = UDim2.fromScale(0.04, 0.08)
+	gui.Parent = guiFolder()
+	goalMarker.gui = gui
+	goalMarker.arrow = arrow
+	goalMarker.star = star
+	goalMarker.scale = scale
+	goalMarker.text = text
+	goalMarker.plate = plate
+	goalMarker.stage = -1
+	goalMarker.shown = ""
+	return gui
+end
+
+local function hideGoal()
+	local gui = goalMarker.gui
+	if gui then
+		gui.Enabled = false
+	end
+end
+
+local function stepGoal(now: number)
+	local stageCount = math.floor(num(snap.stageCount, 10))
+	local n = math.floor(num(snap.stage, 0)) + 1
+	local needs = snap.needs
+	local need = if type(needs) == "table" then num(needs[n], 0) else 0
+	if n > stageCount or need <= 0 then
+		hideGoal()
+		return
+	end
+	local list = snap.recommended
+	local rec = math.max(need, if type(list) == "table" then num(list[n], 0) else 0)
+	local gui = goalGui()
+	if goalMarker.stage ~= n then
+		local board = signBoard(n)
+		if not board then
+			gui.Enabled = false
+			return
+		end
+		goalMarker.stage = n
+		gui.Adornee = board
+		gui.StudsOffsetWorldSpace = Vector3.new(-GOAL.Front, -GOAL.Down, GOAL.Side)
+	end
+	local ready = num(snap.speed, 0) >= rec
+	local colour = if ready then GOAL.Ready else GOAL.Gold
+	local label = (if ready then "READY! " else "GOAL ") .. Format.commas(math.ceil(rec)) .. " SPEED"
+	if goalMarker.shown ~= label then
+		goalMarker.shown = label
+		local text = goalMarker.text :: TextLabel
+		local arrow = goalMarker.arrow :: TextLabel
+		text.Text = label
+		text.TextColor3 = colour
+		arrow.TextColor3 = colour
+		-- The atlas star keeps its own colours; only the glyph fallback is tinted.
+		local star = goalMarker.star :: GuiObject
+		if star:IsA("TextLabel") then
+			star.TextColor3 = colour
+		end
+		local rim = (goalMarker.plate :: Frame):FindFirstChildOfClass("UIStroke")
+		if rim then
+			rim.Color = colour
+		end
+	end
+	gui.Enabled = true
+	local still = reducedMotion()
+	local bob = if still then 0 else 0.5 + 0.5 * math.sin(now * GOAL.BobHz * TAU)
+	local arrow = goalMarker.arrow :: TextLabel
+	local star = goalMarker.star :: GuiObject
+	local scale = goalMarker.scale :: UIScale
+	arrow.Position = UDim2.fromScale(0.5, GOAL.BobShare * bob)
+	star.Rotation = if still then 0 else GOAL.SpinDeg * math.sin(now * GOAL.SpinHz * TAU)
+	scale.Scale = 1 + (if still then 0 else GOAL.Pulse * math.sin(now * GOAL.PulseHz * TAU))
+end
+
 local function step(dt: number)
 	local now = os.clock()
 	local humanoid, root = character()
@@ -1209,6 +1404,7 @@ local function step(dt: number)
 	stepSpeed(dt, root)
 	stepDoors(now)
 	stepBlinkKeys()
+	stepGoal(now)
 end
 
 -- Run glow: our own bloom + a touch more saturation so the neon trusses glow (Fx.Surge
@@ -1279,6 +1475,7 @@ local function deactivate()
 		trail:Destroy()
 		trail = nil
 	end
+	hideGoal()
 end
 
 function CardioFx.onNotify(p: any)

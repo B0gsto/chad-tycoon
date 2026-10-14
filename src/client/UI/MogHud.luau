@@ -76,9 +76,10 @@ local RING = 180 -- ring diameter (px, design space)
 local ROOT_W = 300
 local ROOT_H = 410
 local ROOT_RIGHT = 36
--- Pushed down from mid-height so the score pill clears the stand's wall words and the
--- top-right chrome (the player list is hidden during a run as well).
-local ROOT_DY = 44
+-- Pushed down from mid-height so the score pill clears the stand's wall words (the stand to
+-- the right of the duel frame puts its word band at about y 230-265 on a 720 px screen) and
+-- the top-right chrome (the player list is hidden during a run as well).
+local ROOT_DY = 110
 local RING_Y = 120
 local RING_TAP = 20 -- the tap target reaches this far past the ring
 -- The score pill: wide enough for a five-figure score beside "BEAT 12.5K" / "NEW BEST!".
@@ -102,9 +103,10 @@ local BANNER = {
 }
 local RESULT_RISE = 52 -- the result word rises this far above the ring
 -- The result word ("PERFECT!" / "NICE!" / "TOO SLOW"): big white with a thick dark outline so it
--- reads over the crowd, tinted toward its colour at the bottom only (Tint). It pops from PopFrom
--- scale (Back, PopTime), rises from FromY to ToY (px from the ring's top) over RiseTime, holds
--- Hold seconds and fades over Fade.
+-- reads over the crowd, tinted toward its colour at the bottom only (Tint). It sits LEFT of the
+-- ring, its right end Gap px clear of the ring's edge (so it never touches the dial or the combo
+-- chip above it). It pops from PopFrom scale (Back, PopTime), rises from FromY to ToY (px from
+-- the ring's top to the word's centre) over RiseTime, holds Hold seconds and fades over Fade.
 local RESULT = {
 	TextSize = 52,
 	Width = 380,
@@ -114,8 +116,9 @@ local RESULT = {
 	Tint = 0.45,
 	PopFrom = 0.3,
 	PopTime = 0.35,
-	FromY = 2,
-	ToY = -24,
+	Gap = 18,
+	FromY = 104,
+	ToY = 60,
 	RiseTime = 0.9,
 	Hold = 0.75,
 	Fade = 0.3,
@@ -291,10 +294,10 @@ end
 
 local showBanner: (title: string, sub: string?, color: Color3, hold: number, celebrate: boolean?) -> ()
 
--- The result word pops in on the ring's top edge (clear of the "#n" centre label) and
--- rises toward the hearts / HP row while it fades.
-local RESULT_FROM = UDim2.new(0.5, 0, 0, RESULT.FromY)
-local RESULT_TO = UDim2.new(0.5, 0, 0, RESULT.ToY)
+-- The result word pops in beside the ring's left edge (clear of the dial and its "#n" centre
+-- label) and rises while it fades.
+local RESULT_FROM = UDim2.new(0, -RESULT.Gap, 0, RESULT.FromY)
+local RESULT_TO = UDim2.new(0, -RESULT.Gap, 0, RESULT.ToY)
 local resultTint: UIGradient? = nil
 
 local function popResult(text: string, color: Color3)
@@ -1103,7 +1106,8 @@ function MogHud.build(screenGui: ScreenGui)
 		TextWrapped = false,
 		Size = UDim2.fromOffset(RESULT.Width, RESULT.Height),
 		Position = RESULT_FROM,
-		AnchorPoint = Vector2.new(0.5, 0.5),
+		AnchorPoint = Vector2.new(1, 0.5),
+		TextXAlignment = Enum.TextXAlignment.Right,
 		TextTransparency = 1,
 		StrokeThickness = RESULT.Stroke,
 		StrokeColor = RESULT.StrokeColor,

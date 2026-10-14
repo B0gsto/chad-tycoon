@@ -58,11 +58,13 @@
 	  repeatCash; "resting": a plate that would pay it, inside CardioRules.REPEAT_GAP of the
 	  last one); repeatFrom = the first plate that can pay the bonus (the best plate);
 	  repeatReadyAt = os.time() from which the bonus is paid again (0 = now).
-	  { event = "fall", stage = 0, from, reason, speed, need, slow, capped }
+	  { event = "fall", stage = 0, from, reason, speed, need, slow, capped, zone? }
 	                                  back in the lobby from stage `from`; reason "fall" |
 	                                  "caught"; speed = whole Speed, need = that stage's need,
 	                                  slow = the run's WalkSpeed was below what the need gives,
-	                                  capped = ...only because of the player's own speed cap
+	                                  capped = ...only because of the player's own speed cap;
+	                                  zone = n when the fall was off safe zone n's own deck
+	                                  (then slow and capped are false)
 	  { event = "upgrade", level, cost, rate, multiplier, nextCost? }
 	  { event = "refused", reason, cost? }        upgrade refused: "run" | "far" | "max" | "cash"
 	  { event = "stop", reason }
@@ -524,10 +526,14 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 		end
 		if failed then
 			local from = state.stage + 1
+			-- Off the side of a safe zone's own deck (not a stage's jumps): the HUD says so instead
+			-- of the next stage's need.
+			local room = CardioLayout.roomAt(x)
+			local zone = if failed == "fall" and room and room.kind == "zone" then room.stage else nil
 			-- Why, for the HUD: was the run slower than the stage's need asks for?
 			local speed = record(session).speed
 			local need = NEEDS[from] or 0
-			local slow = state.walk < CardioRules.walkSpeed(need) - WALK_STEP
+			local slow = zone == nil and state.walk < CardioRules.walkSpeed(need) - WALK_STEP
 			restart(player, state, failed)
 			GameModes.notify(player, "fall", ID, {
 				stage = 0,
@@ -537,6 +543,7 @@ function Cardio.create(GameModes: any, context: { built: any, theme: any, Tycoon
 				need = need,
 				slow = slow,
 				capped = slow and speed >= need,
+				zone = zone,
 			})
 			GameModes.refresh(player)
 			return
