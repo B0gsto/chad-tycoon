@@ -6,16 +6,17 @@
 	play spot pad, exit arch) comes from World.Arena, built for the 64 x 64 COURT.
 	Players land in the lobby (docs/minigames.md "Lobby first, then the game"), a plank deck past
 	the court's +Z edge:
-	  * the START gate at the court entrance: a big glowing "StartPad" with a START plate on
-	    the floor in front of it, candy-striped posts and rope fences either side;
-	  * the HOW TO PLAY board (three illustrated steps, hearts and the pass mark) and the
-	    YOUR BEST board (SurfaceGui "BestBoard": labels Best, Clears and Reward the client
-	    fills), both angled at the lobby spawn;
-	  * the practice mat under a low flat cloud (Fx drops slow demo items on it), a small Tiki
-	    Shakes hut in the near right corner, palms, and the EXIT arch (moved here from the
-	    court's corner).
-	Round it all: a sand island under the decks (a sand lip banked against the lobby deck,
-	wet-sand rim, foam ring, umbrellas, a jetty
+	  * the START gate at the court entrance: a big glowing pad (the invisible "StartPad"
+	    trigger plate on it) with a big START plate on the floor in front of it, candy-striped
+	    posts and rope fences either side;
+	  * on the front-left deck, turned to the player's view from the spawn, the HOW TO PLAY
+	    board (three illustrated steps, hearts and the pass mark) with the YOUR BEST board
+	    (SurfaceGui "BestBoard": labels Best, Clears and Reward the client fills) on top;
+	  * the practice mat on the front-right deck under a puffy cloud (Fx drops slow demo items
+	    on it) with a PRACTICE floor plate, a small Tiki Shakes hut in the near right corner,
+	    palms, giant shakes, and the EXIT arch (moved here from the court's corner).
+	Round it all: a sand island under the decks (a sand lip banked against the lobby deck, a
+	pastel pink edge band, pastel shells, wet-sand rim, foam ring, umbrellas, a jetty
 	with a ladder, a giant shake, a beach ball and a flamingo float on the back beach), its own
 	sea (World.Hub's sea line), a light lagoon, sandbars, a candy-striped lighthouse, a palm
 	cluster islet with a giant rubber duck and buoys, a hot-air balloon, palm islands on the horizon and clouds. The court itself is dressed as a sunny beach court:
@@ -66,20 +67,23 @@ local COURT = 64
 -- The lobby deck past the court's +Z edge: its depth, and in lobby-local studs (z from the
 -- court's edge) the spawn, the START pad and the practice mat.
 local LOBBY_DEPTH = 50
-local LOBBY_SPAWN_Z = 40
+local LOBBY_SPAWN_Z = 42
 local START_Z = 11
-local START_RADIUS = 9
-local PRACTICE = { x = -17, z = 37, half = 5.5 }
+-- START_RADIUS is the trigger (the bullseye's outer hot-pink ring); START_PAD the radius of
+-- the glowing pad drawn round it (bigger, so it reads from the spawn).
+local START_RADIUS = 10
+local START_PAD = 13
+local PRACTICE = { x = 22, z = 13, half = 5 }
 -- The practice mat's diameter.
-local PRACTICE_MAT = 17
--- Demo items spawn this high over the practice mat (just under its flat cloud).
+local PRACTICE_MAT = 13
+-- Demo items spawn this high over the practice mat (just under its puffy cloud).
 local PRACTICE_DROP = 12
 -- World.Hub's sea line and ocean tile size.
 local OCEAN_TOP = -1.2
 local OCEAN_TILE = 2048
 -- The sand island under the decks (studs from ARENA's centre): half its width, its -Z and +Z
 -- edges and its corner radius.
-local ISLAND = { halfX = 56, z0 = -62, z1 = 86, r = 14 }
+local ISLAND = { halfX = 49, z0 = -62, z1 = 90, r = 14 }
 
 -- Studs between the deck's edge and the catch area (the awnings stand in it, clear of every
 -- drop column; the palms stand on the Smoothie Bar's deck past the far edge).
@@ -384,18 +388,18 @@ local function chute(parent: Instance, a: Arena.Spec, top: number)
 	end
 	-- The beam is the title board: a white frame, a hot-pink face with the words facing the
 	-- spawn and a neon trim under it.
-	piece(parent, "ChuteBeam", Vector3.new(62, 8, 2), CFrame.new(a.x, beamY, gz - 0.4), W.White)
-	local title = piece(parent, "TitleBoard", Vector3.new(58, 6.6, 0.6), CFrame.new(a.x, beamY, gz + 0.8), W.HotPink)
+	piece(parent, "ChuteBeam", Vector3.new(62, 10, 2), CFrame.new(a.x, beamY, gz - 0.4), W.White)
+	local title = piece(parent, "TitleBoard", Vector3.new(58.6, 8.6, 0.6), CFrame.new(a.x, beamY, gz + 0.8), W.HotPink)
 	word(title, "SHAKE CATCH!", W.Sunny)
 	piece(
 		parent,
 		"TitleTrim",
 		Vector3.new(62, 0.6, 2.4),
-		CFrame.new(a.x, beamY - 4.2, gz - 0.4),
+		CFrame.new(a.x, beamY - 5.2, gz - 0.4),
 		W.Sunny,
 		{ Material = Enum.Material.Neon }
 	)
-	local deckY = beamY + 4
+	local deckY = beamY + 5
 	piece(parent, "ChuteShelf", Vector3.new(62, 0.6, 3.6), CFrame.new(a.x, deckY - 0.3, gz - 1), W.Teal)
 	-- A cloud bank along the beam (kept behind its front face).
 	local puffs = { { -27, 4.6 }, { -21, 6 }, { -8, 5 }, { 8, 5.4 }, { 21, 6.2 }, { 27, 4.4 } }
@@ -837,15 +841,16 @@ local function signBoard(
 end
 
 -- The YOUR BEST board (15 x 10 studs at 30 px/stud: 450 x 300 px), styled like the bleachers'
--- score board. Fx / the HUD fill the labels Best, Clears and Reward by name.
-local function bestBoard(parent: Instance, cf: CFrame): SurfaceGui
-	local panel = signBoard(parent, "BestPanel", cf, 15, 10, 4, W.Sunny, W.Navy)
+-- score board, its bottom `bottom` studs up. Fx / the HUD fill the labels Best, Clears and
+-- Reward by name.
+local function bestBoard(parent: Instance, cf: CFrame, bottom: number): SurfaceGui
+	local panel = signBoard(parent, "BestPanel", cf, 15, 10, bottom, W.Sunny, W.Navy)
 	for i = -1, 1 do
 		piece(
 			parent,
 			"BestLight",
 			Vector3.new(1.2, 1.2, 1.2),
-			cf * CFrame.new(i * 5, 14.9, 0.1),
+			cf * CFrame.new(i * 5, bottom + 10.9, 0.1),
 			W.Sunny,
 			{ Shape = BALL, Material = Enum.Material.Neon }
 		)
@@ -953,29 +958,24 @@ local function cloud(parent: Instance, at: Vector3, size: number, shadow: boolea
 	end
 end
 
--- A low, wide cartoon cloud with its underside at `at`: a flat white disc `d` across, a
--- second tier of three smaller discs and a little top disc (all cylinders: flat, not blobby),
--- a pale sky-blue underside. Only the underside casts a shadow.
-local function flatCloud(parent: Instance, at: Vector3, d: number)
-	local still = { Shape = CYLINDER, CanCollide = false, CanQuery = false, CanTouch = false, CastShadow = false }
-	local tiers: { { x: number, z: number, y: number, d: number, h: number, color: Color3 } } = {
-		{ x = 0, z = 0, y = 0, d = d * 0.94, h = 0.6, color = W.SkyBlue },
-		{ x = 0, z = 0, y = 0.5, d = d, h = 1.5, color = W.White },
-		{ x = -0.2, z = 0.12, y = 1.9, d = d * 0.55, h = 1.4, color = W.White },
-		{ x = 0.22, z = -0.1, y = 1.9, d = d * 0.5, h = 1.3, color = W.White },
-		{ x = 0.05, z = -0.18, y = 1.9, d = d * 0.42, h = 1.2, color = W.White },
-		{ x = -0.02, z = 0, y = 3.2, d = d * 0.3, h = 1.1, color = W.White },
+-- The practice mat's little cloud, its underside at `at`: four overlapping puffy white balls
+-- of different sizes spread wider than tall (a big middle one, two lower side ones and a small
+-- one on top at the back). No collisions or shadows (the mat carries a painted soft shadow).
+local function puffyCloud(parent: Instance, at: Vector3)
+	local puffs: { { x: number, y: number, z: number, d: number } } = {
+		{ x = 0, y = 4.2, z = 0, d = 8.6 },
+		{ x = -4.6, y = 3.2, z = 0.5, d = 6.4 },
+		{ x = 4.7, y = 3.3, z = -0.3, d = 6.8 },
+		{ x = 1.3, y = 7.1, z = -1, d = 5.4 },
 	}
-	for i, t in tiers do
-		local props = table.clone(still)
-		props.CastShadow = i == 1
+	for _, p in puffs do
 		piece(
 			parent,
 			"PracticeCloud",
-			Vector3.new(t.h, t.d, t.d),
-			CFrame.new(at + Vector3.new(t.x * d, t.y + t.h / 2, t.z * d)) * UPRIGHT,
-			t.color,
-			props
+			Vector3.new(p.d, p.d, p.d),
+			CFrame.new(at + Vector3.new(p.x, p.y, p.z)),
+			W.White,
+			{ Shape = BALL, CanQuery = false, CanTouch = false, CastShadow = false }
 		)
 	end
 end
@@ -990,10 +990,6 @@ local function lobby(parent: Instance, c: Arena.Spec, top: number): Lobby
 		return Vector3.new(c.x + x, top + y, z0 + z)
 	end
 	local spawnAt = L(0, 0, LOBBY_SPAWN_Z)
-	local function facingSpawn(x: number, z: number): CFrame
-		local at = L(x, 0, z)
-		return CFrame.lookAt(at, Vector3.new(spawnAt.X, at.Y, spawnAt.Z))
-	end
 
 	-- Deck: a warm apricot boardwalk, planks running across (a lighter / darker stripe drawn
 	-- on its top) inside a pastel trim border (pink, white, mint), a pink rim and two more
@@ -1065,7 +1061,7 @@ local function lobby(parent: Instance, c: Arena.Spec, top: number): Lobby
 		)
 	end
 
-	-- The spawn mat and a teal path with sunny stepping dots up to the START pad.
+	-- The spawn mat and a teal path up to the START pad (under the START plate).
 	piece(
 		parent,
 		"LobbySpawnRim",
@@ -1082,29 +1078,17 @@ local function lobby(parent: Instance, c: Arena.Spec, top: number): Lobby
 		W.Sunny,
 		{ Shape = CYLINDER }
 	)
-	local pathFrom, pathTo = START_Z + START_RADIUS + 1.8, LOBBY_SPAWN_Z - 4.4
+	local pathFrom, pathTo = START_Z + START_PAD + 1.2, LOBBY_SPAWN_Z - 4.4
 	local pathLen = pathTo - pathFrom
 	piece(parent, "LobbyPath", Vector3.new(8, 0.05, pathLen), CFrame.new(L(0, 0.03, pathFrom + pathLen / 2)), W.Teal)
 	for _, sx in { -1, 1 } do
 		piece(parent, "LobbyPathEdge", Vector3.new(0.6, 0.06, pathLen), CFrame.new(L(sx * 4.3, 0.03, pathFrom + pathLen / 2)), W.White)
 	end
-	-- Two dots between the START plate (START_RADIUS + 4.4 past the pad) and the spawn mat.
-	local dotsFrom = START_Z + START_RADIUS + 7.3
-	for k = 0, 1 do
-		local z = dotsFrom + (pathTo - dotsFrom) * (k + 0.5) / 2
-		piece(
-			parent,
-			"LobbyPathDot",
-			Vector3.new(0.06, 3.6, 3.6),
-			CFrame.new(L(0, 0.07, z)) * UPRIGHT,
-			if k % 2 == 0 then W.Sunny else W.White,
-			{ Shape = CYLINDER }
-		)
-	end
 
-	-- Rope fences along the court's edge, open at the gate; tall flag poles at the ends.
+	-- Rope fences along the court's edge, open at the gate (clear of the START pad's halo);
+	-- tall flag poles at the ends.
 	for _, sx in { -1, 1 } do
-		local xs = { 7, 15, 23, 31 }
+		local xs = { 16, 21, 26, 31 }
 		for i, x in xs do
 			local tall = i == #xs
 			local h = if tall then 10 else 3
@@ -1128,8 +1112,8 @@ local function lobby(parent: Instance, c: Arena.Spec, top: number): Lobby
 				piece(
 					parent,
 					"FenceRope",
-					Vector3.new(8, 0.3, 0.3),
-					CFrame.new(L(sx * (x - 4), 2.5, 1.2)),
+					Vector3.new(5, 0.3, 0.3),
+					CFrame.new(L(sx * (x - 2.5), 2.5, 1.2)),
 					W.HotPink,
 					{ CanCollide = true }
 				)
@@ -1137,127 +1121,90 @@ local function lobby(parent: Instance, c: Arena.Spec, top: number): Lobby
 		end
 	end
 
-	-- The START gate at the court entrance: a big glowing sunny bullseye pad in a hot-pink
-	-- neon ring and a soft halo, a light column, a "START" plate on the floor in front of it
-	-- (toward the spawn) and candy-striped posts flanking the gate with bunting out to the
-	-- flag poles. The Shake Chute's "SHAKE CATCH!" title over the court is the only header.
+	-- The START gate at the court entrance: a big glowing sunny pad (START_PAD across, in a
+	-- white rim, a hot-pink neon ring and a soft halo) with a bullseye whose outer hot-pink
+	-- ring is the trigger (START_RADIUS), a light column, a big "START" plate on the floor in
+	-- front of it (toward the spawn) and candy-striped posts flanking the gate with bunting
+	-- out to the flag poles. The Shake Chute's "SHAKE CATCH!" title over the court is the
+	-- only header.
 	local sp = L(0, 0, START_Z)
-	piece(
-		parent,
-		"StartHalo",
-		Vector3.new(0.06, START_RADIUS * 2 + 5, START_RADIUS * 2 + 5),
-		CFrame.new(sp + Vector3.new(0, 0.04, 0)) * UPRIGHT,
-		W.Sunny,
-		{ Shape = CYLINDER, Material = Enum.Material.Neon, Transparency = 0.55, CastShadow = false }
-	)
-	piece(
-		parent,
-		"StartGlowRing",
-		Vector3.new(0.12, START_RADIUS * 2 + 3.4, START_RADIUS * 2 + 3.4),
-		CFrame.new(sp + Vector3.new(0, 0.07, 0)) * UPRIGHT,
-		W.HotPink,
-		{ Shape = CYLINDER, Material = Enum.Material.Neon, CastShadow = false }
-	)
-	piece(
-		parent,
-		"StartPadRim",
-		Vector3.new(0.2, START_RADIUS * 2 + 1.6, START_RADIUS * 2 + 1.6),
-		CFrame.new(sp + Vector3.new(0, 0.1, 0)) * UPRIGHT,
-		W.White,
-		{ Shape = CYLINDER }
-	)
+	local padD = START_PAD * 2
+	local flat: { [string]: any } = { Shape = CYLINDER, CastShadow = false, CanQuery = false, CanTouch = false }
+	local function padDisc(name: string, d: number, h: number, y: number, color: Color3, extra: { [string]: any }?)
+		local props = table.clone(flat)
+		for key, value in (extra or {}) :: { [string]: any } do
+			props[key] = value
+		end
+		return piece(parent, name, Vector3.new(h, d, d), CFrame.new(sp + Vector3.new(0, y, 0)) * UPRIGHT, color, props)
+	end
+	padDisc("StartHalo", padD + 3, 0.06, 0.04, W.Sunny, { Material = Enum.Material.Neon, Transparency = 0.55 })
+	padDisc("StartGlowRing", padD + 2, 0.12, 0.07, W.HotPink, { Material = Enum.Material.Neon })
+	padDisc("StartPadRim", padD + 1, 0.2, 0.1, W.White)
+	local disc = padDisc("StartPadDisc", padD, 0.3, 0.15, W.Sunny, { Material = Enum.Material.Neon })
+	local light = Instance.new("PointLight")
+	light.Color = W.Sunny
+	light.Range = 28
+	light.Brightness = 2
+	light.Parent = disc
+	-- The bullseye: the hot-pink trigger ring, a white ring and a hot-pink centre.
+	local eyes: { { d: number, color: Color3 } } = {
+		{ d = START_RADIUS * 2, color = W.HotPink },
+		{ d = START_RADIUS * 1.36, color = W.White },
+		{ d = START_RADIUS * 0.74, color = W.HotPink },
+	}
+	for i, eye in eyes do
+		padDisc("StartPadRing", eye.d, 0.05, 0.29 + i * 0.03, eye.color)
+	end
+	padDisc("StartGlow", padD - 0.8, 6, 3.2, W.Sunny, { Material = Enum.Material.Neon, Transparency = 0.9 })
+	-- The trigger Modes.Shake reads: an invisible flat plate on the pad (its Size.Y is its
+	-- thickness, so Position + Size.Y / 2 is the pad's top).
 	local pad = piece(
 		parent,
 		"StartPad",
-		Vector3.new(0.3, START_RADIUS * 2, START_RADIUS * 2),
-		CFrame.new(sp + Vector3.new(0, 0.15, 0)) * UPRIGHT,
+		Vector3.new(START_RADIUS * 2, 0.3, START_RADIUS * 2),
+		CFrame.new(sp + Vector3.new(0, 0.15, 0)),
 		W.Sunny,
-		{ Shape = CYLINDER, Material = Enum.Material.Neon }
-	)
-	local light = Instance.new("PointLight")
-	light.Color = W.Sunny
-	light.Range = 24
-	light.Brightness = 2
-	light.Parent = pad
-	-- A bullseye on the pad: a hot-pink ring, a white ring and a hot-pink centre.
-	local eyes: { { d: number, color: Color3 } } = {
-		{ d = START_RADIUS * 1.3, color = W.HotPink },
-		{ d = START_RADIUS * 0.95, color = W.White },
-		{ d = START_RADIUS * 0.55, color = W.HotPink },
-	}
-	for i, eye in eyes do
-		piece(
-			parent,
-			"StartPadRing",
-			Vector3.new(0.05, eye.d, eye.d),
-			CFrame.new(sp + Vector3.new(0, 0.29 + i * 0.03, 0)) * UPRIGHT,
-			eye.color,
-			{ Shape = CYLINDER, CanQuery = false, CanTouch = false }
-		)
-	end
-	piece(
-		parent,
-		"StartGlow",
-		Vector3.new(5, START_RADIUS * 2 - 0.8, START_RADIUS * 2 - 0.8),
-		CFrame.new(sp + Vector3.new(0, 2.65, 0)) * UPRIGHT,
-		W.Sunny,
-		{ Shape = CYLINDER, Material = Enum.Material.Neon, Transparency = 0.9, CastShadow = false, CanQuery = false, CanTouch = false }
+		{ Transparency = 1, CanQuery = false, CanTouch = false, CastShadow = false }
 	)
 	-- The "START" plate on the floor in front of the pad: a white frame, a hot-pink plate and
 	-- the word printed on its top (a Top-face gui reads upright from the spawn: its top edge is
 	-- the part's -Z side).
-	local labelAt = sp + Vector3.new(0, 0, START_RADIUS + 4.4)
-	piece(parent, "StartLabelFrame", Vector3.new(17.2, 0.16, 5.8), CFrame.new(labelAt + Vector3.new(0, 0.08, 0)), W.White)
-	local label = piece(parent, "StartLabel", Vector3.new(16, 0.2, 4.6), CFrame.new(labelAt + Vector3.new(0, 0.12, 0)), W.HotPink)
+	local labelAt = sp + Vector3.new(0, 0, START_PAD + 6.2)
+	piece(parent, "StartLabelFrame", Vector3.new(25.8, 0.16, 8.7), CFrame.new(labelAt + Vector3.new(0, 0.08, 0)), W.White)
+	local label = piece(parent, "StartLabel", Vector3.new(24, 0.2, 6.9), CFrame.new(labelAt + Vector3.new(0, 0.12, 0)), W.HotPink)
 	word(label, "START", W.Sunny, Enum.NormalId.Top)
 	for _, sx in { -1, 1 } do
-		local postAt = L(sx * 10.5, 0, 2.6)
+		local postAt = L(sx * 13, 0, 2.6)
 		candyPost(parent, postAt, 3, 3.6, true)
 		bunting(parent, postAt + Vector3.new(0, 11.4, 0), L(sx * 31, 9.8, 1.2), 7)
 	end
 
-	-- The boards, angled at the spawn: HOW TO PLAY on the left, YOUR BEST on the right.
-	-- (Clear of the big START pad's halo and the EXIT arch.)
-	local howTo = signBoard(parent, "HowToBoard", facingSpawn(-21, 18), 22, 12, 2.5, W.Teal, W.Cream)
+	-- The boards on the front-left deck, one above the other and turned to face the player's
+	-- view from the spawn: HOW TO PLAY below, YOUR BEST on top (clear of the START halo).
+	local boardAt = L(-21.5, 0, 27)
+	local boardLook = CFrame.lookAt(boardAt, L(0, 0, LOBBY_SPAWN_Z + 14))
+	local howTo = signBoard(parent, "HowToBoard", boardLook, 22, 12, 2.5, W.Teal, W.Cream)
 	howToFace(surface(howTo, Enum.NormalId.Front, 25, "HowToPlay"))
-	local board = bestBoard(parent, facingSpawn(18, 16))
+	local board = bestBoard(parent, boardLook, 16.4)
 
-	-- The practice mat (Fx drops slow demo items on it from under its little cloud) and its
-	-- big sign on the deck's left edge, turned between the spawn and the aisle behind it.
+	-- The practice mat on the front-right deck (Fx drops slow demo items on it from under its
+	-- puffy cloud): a grape mat in a white rim with a teal centre, a soft painted shadow under
+	-- the cloud, and a bold "PRACTICE" plate on the floor at its edge facing the spawn (a shake
+	-- falling down an arrow, then the word).
 	local pc = L(PRACTICE.x, 0, PRACTICE.z)
-	piece(
-		parent,
-		"PracticeRim",
-		Vector3.new(0.2, PRACTICE_MAT + 1.6, PRACTICE_MAT + 1.6),
-		CFrame.new(pc + Vector3.new(0, 0.1, 0)) * UPRIGHT,
-		W.White,
-		{ Shape = CYLINDER }
-	)
-	piece(
-		parent,
-		"PracticeMat",
-		Vector3.new(0.3, PRACTICE_MAT, PRACTICE_MAT),
-		CFrame.new(pc + Vector3.new(0, 0.15, 0)) * UPRIGHT,
-		W.Grape,
-		{ Shape = CYLINDER }
-	)
-	local rings: { { d: number, color: Color3 } } = {
-		{ d = 13, color = W.White },
-		{ d = 11.2, color = W.Teal },
-		{ d = 6.4, color = W.White },
-		{ d = 4.6, color = W.Mint },
-		{ d = 1.8, color = W.White },
-	}
-	for i, ring in rings do
-		piece(
-			parent,
-			"PracticeRing",
-			Vector3.new(0.05, ring.d, ring.d),
-			CFrame.new(pc + Vector3.new(0, 0.3 + i * 0.03, 0)) * UPRIGHT,
-			ring.color,
-			{ Shape = CYLINDER }
-		)
+	local function matDisc(name: string, d: number, h: number, y: number, color: Color3, extra: { [string]: any }?)
+		local props = table.clone(flat)
+		for key, value in (extra or {}) :: { [string]: any } do
+			props[key] = value
+		end
+		piece(parent, name, Vector3.new(h, d, d), CFrame.new(pc + Vector3.new(0, y, 0)) * UPRIGHT, color, props)
 	end
+	matDisc("PracticeRim", PRACTICE_MAT + 1.6, 0.2, 0.1, W.White)
+	matDisc("PracticeMat", PRACTICE_MAT, 0.3, 0.15, W.Grape)
+	matDisc("PracticeRing", PRACTICE_MAT - 2.4, 0.05, 0.33, W.White)
+	matDisc("PracticeRing", PRACTICE_MAT - 3.6, 0.05, 0.36, W.Teal)
+	matDisc("PracticeShadow", 8, 0.05, 0.39, W.Navy, { Transparency = 0.72 })
+	matDisc("PracticeShadow", 5.4, 0.05, 0.42, W.Navy, { Transparency = 0.6 })
 	-- The invisible "PracticeArea" Fx.Shake looks up by name: a thin plate the size of the
 	-- demo drop square, its top on the mat; DropY is where the demo items start.
 	local practiceArea = piece(
@@ -1269,11 +1216,20 @@ local function lobby(parent: Instance, c: Arena.Spec, top: number): Lobby
 		{ Transparency = 1, CanQuery = false, CanTouch = false, CastShadow = false }
 	)
 	practiceArea:SetAttribute("DropY", top + PRACTICE_DROP)
-	flatCloud(parent, pc + Vector3.new(0, PRACTICE_DROP + 0.8, 0), PRACTICE_MAT)
-	local signAt = L(-29, 0, PRACTICE.z)
-	local signLook = CFrame.lookAt(signAt, L(2, 0, 56))
-	local practiceSign = signBoard(parent, "PracticeSign", signLook, 13, 3.6, 4.6, W.Sunny, W.Grape)
-	word(practiceSign, "PRACTICE", W.White, Enum.NormalId.Front)
+	puffyCloud(parent, pc + Vector3.new(0, PRACTICE_DROP + 0.3, 0))
+	-- The plate lies in front of the mat, shifted toward the gate (clear of the EXIT arch);
+	-- like START, its Top gui reads upright from the spawn (upper edge on the -Z side).
+	local plateLook = CFrame.new(pc + Vector3.new(-3, 0, PRACTICE_MAT / 2 + 0.8 + 0.6 + 2.2))
+	piece(parent, "PracticeLabelFrame", Vector3.new(12, 0.16, 4.4), plateLook * CFrame.new(0, 0.08, 0), W.White)
+	local plate = piece(parent, "PracticeLabel", Vector3.new(11, 0.2, 3.4), plateLook * CFrame.new(0, 0.12, 0), W.Grape)
+	local plateGui = surface(plate, Enum.NormalId.Top, 30, "PracticeLabel")
+	drawShake(plateGui, 36, 58, 38)
+	local arrow = layer(plateGui, 6)
+	box(arrow, W.Sunny, 80, 40, 10, 36, { round = 0.5, stroke = W.Ink, thick = 2, z = 1 })
+	for _, side in { -1, 1 } do
+		box(arrow, W.Sunny, 80 + side * 7, 59, 10, 24, { round = 0.5, rot = side * 40, stroke = W.Ink, thick = 2, z = 1 })
+	end
+	text(plateGui, "PRACTICE", W.White, 214, 52, 220, 84, { stroke = 3 })
 
 	-- The Tiki Shakes hut, a small one tucked into the deck's near right corner (its back wall
 	-- on the deck's edge): a counter facing the aisle, a thatched roof sloping toward it with
@@ -1330,10 +1286,12 @@ local function lobby(parent: Instance, c: Arena.Spec, top: number): Lobby
 		)
 	end
 
-	-- Palms framing the gate and the practice corner.
+	-- A palm by the gate's left post and one in the back-left corner, with two giant shakes
+	-- standing on the deck between it and the spawn.
 	palm(parent, L(-27, 0, 5), math.rad(-40))
-	palm(parent, L(27, 0, 5), math.rad(220))
 	palm(parent, L(-30, 0, 48.5), math.rad(130))
+	shakeProp(parent, L(-20, 0, 41), 4.2, W.Pink)
+	shakeProp(parent, L(-25.5, 0, 44.5), 3, W.Mint)
 
 	return {
 		lobbySpawn = CFrame.lookAt(spawnAt, L(0, 0, 0)),
@@ -1412,8 +1370,9 @@ local function surroundings(parent: Instance, cx: number, cz: number, top: numbe
 		return piece(parent, name, size, cf, color, props)
 	end
 
-	-- The island under the decks: a rounded sand beach (round corners, ISLAND.r) with a wet-sand
-	-- rim and a white foam ring at the water line, so the shore reads against the lagoon.
+	-- The island under the decks: a rounded sand beach (round corners, ISLAND.r) edged with a
+	-- pastel pink band, then a wet-sand rim and a white foam ring at the water line, so the
+	-- shore reads against the lagoon.
 	local function roundRect(name: string, grow: number, topY: number, height: number, color: Color3)
 		local x0, x1 = cx - ISLAND.halfX - grow, cx + ISLAND.halfX + grow
 		local z0, z1 = cz + ISLAND.z0 - grow, cz + ISLAND.z1 + grow
@@ -1428,8 +1387,30 @@ local function surroundings(parent: Instance, cx: number, cz: number, top: numbe
 	end
 	roundRect("ShoreFoam", 5.5, OCEAN_TOP + 0.4, 0.3, W.White)
 	roundRect("WetSand", 1.6, 0.2, 1.6, W.SandDark)
-	roundRect("Beach", 0, 0.7, 2, W.Sand)
-	local beachY = 0.7
+	roundRect("BeachRim", 0, 0.7, 2, W.Pink)
+	roundRect("Beach", -2.6, 0.78, 2, W.Sand)
+	local beachY = 0.78
+	-- Pastel shells dotted over the sand either side of the lobby deck.
+	local shells: { { number } } = {
+		{ -40, 30, 1 },
+		{ -37, 58, 2 },
+		{ -43, 70, 3 },
+		{ 37, 26, 4 },
+		{ 44, 62, 1 },
+		{ 39, 74, 3 },
+	}
+	local shellColors = { W.Coral, W.Sunny, W.Mint, W.SkyBlue }
+	for _, sh in shells do
+		local at = Vector3.new(cx + sh[1], beachY, cz + sh[2])
+		deco(
+			"Shell",
+			Vector3.new(0.5, 2.4, 2.4),
+			CFrame.new(at + Vector3.new(0, 0.25, 0)) * UPRIGHT,
+			shellColors[sh[3]],
+			{ Shape = CYLINDER }
+		)
+		deco("ShellDome", Vector3.new(1.5, 1.5, 1.5), CFrame.new(at + Vector3.new(0, 0.5, 0)), W.White, { Shape = BALL })
+	end
 
 	-- A sand lip banked up against the lobby deck's front and sides (a wedge's high end is its
 	-- +Z face: each one looks outward with its high end on the deck), up to just under the
@@ -1450,9 +1431,9 @@ local function surroundings(parent: Instance, cx: number, cz: number, top: numbe
 
 	-- Beach umbrellas and towels on the sand beside the decks.
 	local umbrellas: { { x: number, z: number, color: Color3, towel: Color3 } } = {
-		{ x = -45, z = -8, color = W.Coral, towel = W.SkyBlue },
-		{ x = -45, z = 44, color = W.Mint, towel = W.Pink },
-		{ x = 52, z = 40, color = W.Grape, towel = W.Sunny },
+		{ x = -41, z = -8, color = W.Coral, towel = W.SkyBlue },
+		{ x = -42, z = 46, color = W.Mint, towel = W.Pink },
+		{ x = 40, z = 46, color = W.Grape, towel = W.Sunny },
 	}
 	for _, u in umbrellas do
 		local at = Vector3.new(cx + u.x, beachY, cz + u.z)
