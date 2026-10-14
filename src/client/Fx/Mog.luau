@@ -120,7 +120,10 @@ local RIVAL_OUTFITS: { { [string]: any } } = {
 local NAME_TAG = {
 	Width = 8, -- studs
 	Height = 1.9,
-	Lift = 1.6, -- studs above the head's top
+	Lift = 2.2, -- studs above the head's top
+	-- Drawn over the hit bursts (AlwaysOnTop puts it above every other billboard), so a burst
+	-- never hides the rival's name.
+	OnTop = true,
 	TextColor = Color3.fromRGB(255, 255, 255),
 	Stroke = 3, -- px, dark pill outline
 	MaxDistance = 140,
@@ -133,6 +136,10 @@ local HIT_BURST = {
 	Life = 0.8,
 	Ring = 8, -- ring sprite size on the rival's chest (perfect: x1.4)
 	Color = Color3.fromRGB(255, 226, 80),
+	-- The pieces fan out sideways and down, never into the cone above the chest that holds the
+	-- head and the name tag (degrees either side of straight up), and the ring sits low.
+	TopGap = 50,
+	RingDrop = 0.15, -- share of the rival's height the ring sits under the chest
 }
 -- The rival stands this much larger than its tier look, so it fills more of the duel frame.
 local RIVAL = {
@@ -142,9 +149,11 @@ local RIVAL = {
 -- one anchored "FanRow" root per row in a slow wave) get an extra local jump on top of the
 -- server's wave, bigger on a perfect, and the rows go off in a quick ripple.
 local CHEER = {
-	Height = 2.8, -- studs at the top of a hit's jump
+	Height = 4.6, -- studs at the top of a hit's jump
 	PerfectBoost = 1.6, -- x Height on a perfect
-	Time = 0.5, -- seconds of one jump
+	Time = 0.55, -- seconds of one jump
+	Bounces = 2, -- jumps per cheer (each Rebound x the one before)
+	Rebound = 0.55,
 	Ripple = 0.06, -- seconds between neighbouring rows taking off
 	Range = 160, -- studs from the player: rows of these stands jump
 	Resync = 0.05, -- studs: a root this far from what we wrote was moved by the server
@@ -325,6 +334,7 @@ local function nameTag(m: Model, name: string, color: Color3)
 	gui.StudsOffsetWorldSpace = Vector3.new(0, adornee.Size.Y / 2 + NAME_TAG.Lift, 0)
 	gui.LightInfluence = 0
 	gui.MaxDistance = NAME_TAG.MaxDistance
+	gui.AlwaysOnTop = NAME_TAG.OnTop
 	gui.Adornee = adornee
 	local pill = Instance.new("Frame")
 	pill.Size = UDim2.fromScale(1, 1)
@@ -356,10 +366,11 @@ end
 -- Sparks, stars and a ring bursting off the rival's chest on every hit (bigger on a perfect).
 local function rivalBurst(perfect: boolean)
 	local chest = rivalPos + Vector3.new(0, rivalHeight * 0.6, 0)
+	local ringAt = chest - Vector3.new(0, rivalHeight * HIT_BURST.RingDrop, 0)
 	local toward = Vector3.new(playerPos.X - rivalPos.X, 0, playerPos.Z - rivalPos.Z)
 	local front = if toward.Magnitude > 0.1 then toward.Unit else Vector3.new(0, 0, 1)
 	local side = front:Cross(Vector3.yAxis)
-	sprite("Ring", chest + front * 1.2, {
+	sprite("Ring", ringAt + front * 1.2, {
 		size = HIT_BURST.Ring * (if perfect then 1.4 else 1),
 		life = 0.5,
 		rise = Vector3.zero,
@@ -370,7 +381,10 @@ local function rivalBurst(perfect: boolean)
 		if not Sprites.room() then
 			break -- decorative: the device's sprite budget is full
 		end
-		local angle = i / n * math.pi * 2 + math.random() * 0.4
+		-- Round the circle from just past the top cone on one side to just before it on the
+		-- other (angle 90 degrees is straight up).
+		local gap = math.rad(HIT_BURST.TopGap)
+		local angle = math.pi / 2 + gap + (i - 0.5 + math.random() * 0.4) / n * (math.pi * 2 - gap * 2)
 		local out = side * math.cos(angle) + Vector3.yAxis * math.sin(angle)
 		local kind = if i % 3 == 0 then "StarPop" elseif i % 3 == 1 then "Sparkle" else "Confetti"
 		sprite(kind, chest + front * 1.5 + out * 0.6, {
@@ -700,9 +714,11 @@ local function cheer(perfect: boolean)
 					row.server = now -- the server's wave moved it since our last write
 				end
 				local k = (t - row.delay) / CHEER.Time
-				if k > 0 and k < 1 then
+				if k > 0 and k < CHEER.Bounces then
 					busy = true
-					local cf = row.server * CFrame.new(0, cheerHeight * math.sin(math.pi * k), 0)
+					local n = math.floor(k)
+					local lift = cheerHeight * CHEER.Rebound ^ n * math.sin(math.pi * (k - n))
+					local cf = row.server * CFrame.new(0, lift, 0)
 					row.wrote = cf
 					root.CFrame = cf
 				elseif k <= 0 then

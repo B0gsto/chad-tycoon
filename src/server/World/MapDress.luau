@@ -10,7 +10,8 @@
 	  MapDress.build(level, parent)
 	                          a row of signature props beside the path (palms for Coconut Cove,
 	                          shark fins, lava rocks, rising bubbles, storm clouds, coral ...):
-	                          one by every EVERY-th path element, alternating sides, each on a
+	                          one by every EVERY-th path element (DRESS.PLACE per theme: the
+	                          bubble map packs its clusters closer), alternating sides, each on a
 	                          small floating islet a little below the path top. A spot is used
 	                          only when its footprint keeps Course.PROP_CLEARANCE + CLEAR_EXTRA
 	                          studs (horizontally) from every element at every phase, from the
@@ -87,6 +88,12 @@ local DRESS = {
 	FIRST = 2, -- path index of the first one (not by the start deck)
 	MAX = 16, -- props per map at most
 	OFFSETS = { 13, 17, 22, 28 }, -- studs out from the element's centre line, tried in order
+	-- Per-theme overrides of EVERY / MAX / OFFSETS / FOOT: the bubble map packs its clusters by
+	-- every element, as near the path as the clearance allows, with the wider footprint of a
+	-- bubble cluster (BUBBLE_RING + the largest bubble's radius).
+	PLACE = {
+		bubble = { EVERY = 1, MAX = 24, OFFSETS = { 11, 13, 16, 20, 25 }, FOOT = 6.8 },
+	} :: { [string]: { [string]: any } },
 	CLEAR_EXTRA = 2, -- studs on top of Course.PROP_CLEARANCE
 	FOOT = 4.5, -- footprint radius of a prop and its islet (at SCALE)
 	SCALE = 1.25, -- every prop's uniform scale
@@ -122,15 +129,20 @@ local DRESS = {
 	FISH_BAND = rgb(255, 255, 255),
 	FISH_EYE = rgb(30, 30, 40),
 	WEED = rgb(70, 200, 110),
-	-- Soap-bubble tints (aqua, pink, lilac) that show against the blue sky, big and fairly solid.
+	-- Soap-bubble tints (aqua, pink, lilac) that show against the blue sky, big and fairly
+	-- solid. Each prop is a cluster: BUBBLE_COUNT bubbles round the islet within BUBBLE_RING
+	-- (prop units, golden-angle spiral), stacked BUBBLE_STEP apart from BUBBLE_LOW up, rising
+	-- slowly to BUBBLE_TOP so the clump stays at path height beside the path.
 	BUBBLE = { rgb(120, 236, 255), rgb(255, 150, 226), rgb(186, 160, 255) },
-	BUBBLE_ALPHA = 0.25,
+	BUBBLE_ALPHA = 0.15,
 	BUBBLE_REFLECT = 0.3,
-	BUBBLE_COUNT = 6, -- per prop
-	BUBBLE_D = { 3, 5.4 }, -- diameter range (prop units)
-	BUBBLE_STEP = 2.4, -- height between the bubbles of one prop
-	BUBBLE_RISE = { 3, 5 }, -- studs/s
-	BUBBLE_TOP = 18, -- studs above the islet the bubbles climb (prop units)
+	BUBBLE_COUNT = 9, -- per prop
+	BUBBLE_D = { 4.6, 8 }, -- diameter range (prop units)
+	BUBBLE_RING = 2.8, -- cluster radius (prop units)
+	BUBBLE_LOW = 2, -- the lowest bubble's centre above the islet (prop units)
+	BUBBLE_STEP = 0.9, -- height between the bubbles of one prop
+	BUBBLE_RISE = { 1.6, 3 }, -- studs/s
+	BUBBLE_TOP = 11, -- studs above the islet the bubbles climb (prop units)
 	CORAL = { rgb(255, 120, 110), rgb(255, 96, 176), rgb(255, 160, 70) },
 	CORAL_TIP = rgb(255, 236, 200),
 	FIN = rgb(64, 84, 104),
@@ -333,13 +345,15 @@ end
 
 PROPS.bubbles = function(k, rand)
 	local n = DRESS.BUBBLE_COUNT
+	local golden = math.pi * (3 - math.sqrt(5))
 	for i = 1, n do
-		local a = i * 2 * math.pi / n
+		local a = i * golden
+		local r = DRESS.BUBBLE_RING * math.sqrt(i / n)
 		local d = rand:NextNumber(DRESS.BUBBLE_D[1], DRESS.BUBBLE_D[2])
 		local bubble = k.ball(
 			"Bubble",
 			d,
-			at(math.cos(a) * 2.2, 1 + i * DRESS.BUBBLE_STEP, math.sin(a) * 2.2),
+			at(math.cos(a) * r, DRESS.BUBBLE_LOW + (i - 1) * DRESS.BUBBLE_STEP, math.sin(a) * r),
 			DRESS.BUBBLE[i % #DRESS.BUBBLE + 1],
 			{ Transparency = DRESS.BUBBLE_ALPHA, Reflectance = DRESS.BUBBLE_REFLECT, CastShadow = false }
 		)
@@ -483,13 +497,17 @@ function MapDress.build(level: Course.Level, parent: Instance)
 		end
 	end
 	local taken = takenByProps(level)
-	local foot = DRESS.FOOT * DRESS.SCALE
+	local place = DRESS.PLACE[theme or ""] or {}
+	local every: number = place.EVERY or DRESS.EVERY
+	local maxProps: number = place.MAX or DRESS.MAX
+	local offsets: { number } = place.OFFSETS or DRESS.OFFSETS
+	local foot = (place.FOOT or DRESS.FOOT) * DRESS.SCALE
 	local need = foot + Course.PROP_CLEARANCE + DRESS.CLEAR_EXTRA
 	local rand = Random.new(level.index * 4241 + 7)
 	local side = 1
 	local count = 0
-	for i = DRESS.FIRST, #path - 1, DRESS.EVERY do
-		if count >= DRESS.MAX then
+	for i = DRESS.FIRST, #path - 1, every do
+		if count >= maxProps then
 			break
 		end
 		local e = path[i]
@@ -501,7 +519,7 @@ function MapDress.build(level: Course.Level, parent: Instance)
 			dx, dz = dx / len, dz / len
 			local px, pz = -dz, dx
 			local done = false
-			for _, d in DRESS.OFFSETS do
+			for _, d in offsets do
 				for _, s in { side, -side } do
 					local x, z = ex + px * s * d, ez + pz * s * d
 					local free = clearOf(near, x, z) >= need

@@ -12,10 +12,12 @@
 	- Arena dressing (DRESS, all of it decoration without collision, outside the rope ring so it
 	  never stands between a camera and the players): a floating grandstand behind every duel
 	  spot with three rows of cheering fans (each row hops in a wave while somebody is on the
-	  stage), a light tower between every two stands with one beam on the MOG TEST sign and one
+	  stage) and a word band sized to its text, a light tower between every two stands with one beam on the MOG TEST sign and one
 	  sweeping the sky, a garland of pennants from tower to tower, and a painted duel lane with a
 	  ring round both pads of every spot, its capsule filled with a Grape-to-Sunny glow.
 ]]
+
+local TextService = game:GetService("TextService")
 
 local Common = require(script.Parent.Common)
 local MogLayout = require(script.Parent.Parent.Modes.MogLayout)
@@ -53,6 +55,14 @@ local DRESS = {
 	-- with one of WallWords.
 	WallHeight = 16,
 	WallBand = 4.4,
+	-- The word band is sized to its measured text (TextService, WordText px at WordPixels per
+	-- stud, WordPad studs either side) and sits WordInset studs in from the wall's end on the
+	-- stage's left as you face the stand: the end that faces the middle of a duel shot, so a
+	-- stand at the frame's right edge still shows its whole word.
+	WordPixels = 20,
+	WordText = 64,
+	WordPad = 1.4,
+	WordInset = 1.2,
 	WallWords = { "MOG OR GET MOGGED!", "W AURA ONLY", "TEAM CHAD", "GO GO GO!", "AURA +1000!", "MOG! MOG! MOG!" },
 	RowColors = { "Coral", "Sunny", "Grape" },
 	FlagHeight = 6,
@@ -68,7 +78,7 @@ local DRESS = {
 	ArmSpread = 18,
 	-- The wave: every row hops HopHeight, one hop per HopPeriod seconds, each row HopStagger of
 	-- a hop behind the row in front and each stand StandStagger behind its neighbour.
-	HopHeight = 1.5,
+	HopHeight = 2.4,
 	HopPeriod = 0.9,
 	HopStagger = 0.3,
 	StandStagger = 0.17,
@@ -525,12 +535,27 @@ local function buildStand(parent: Instance, index: number, rows: { Mover })
 	-- Back wall with the word band across its top, facing the stage.
 	local wallTop = deckTop + d.WallHeight
 	block("StandWall", Vector3.new(width + 2, wallTop - hullTop, 1), CFrame.new(0, (wallTop + hullTop) / 2, depth + 0.5), W.Grape)
-	local band =
-		block("StandBand", Vector3.new(width, d.WallBand, 0.3), CFrame.new(0, wallTop - d.WallBand / 2 - 0.5, depth - 0.1), W.Cream)
-	text(surface(band, Enum.NormalId.Front, 20), {
-		Text = d.WallWords[(index - 1) % #d.WallWords + 1],
-		Size = UDim2.fromScale(0.92, 0.8),
-		Position = UDim2.fromScale(0.04, 0.1),
+	local word = d.WallWords[(index - 1) % #d.WallWords + 1]
+	local font = theme.Fonts.Display
+	local bounds = TextService:GetTextSize(word, d.WordText, font, Vector2.new(4000, 400))
+	local bandW = math.min(width, bounds.X / d.WordPixels + d.WordPad * 2)
+	-- +X is the stage's left as you face the stand (its front faces the centre, -Z).
+	local bandX = width / 2 - d.WordInset - bandW / 2
+	local band = block(
+		"StandBand",
+		Vector3.new(bandW, d.WallBand, 0.3),
+		CFrame.new(math.max(bandX, 0), wallTop - d.WallBand / 2 - 0.5, depth - 0.1),
+		W.Cream
+	)
+	text(surface(band, Enum.NormalId.Front, d.WordPixels), {
+		Text = word,
+		-- A word too long for the wall shrinks to fit instead of running off the band.
+		TextScaled = bounds.X / d.WordPixels > width - d.WordPad * 2,
+		TextSize = d.WordText,
+		TextWrapped = false,
+		Font = font,
+		Size = UDim2.new(1, -d.WordPad * d.WordPixels * 2, 1, 0),
+		Position = UDim2.fromOffset(d.WordPad * d.WordPixels, 0),
 	})
 	block("StandCap", Vector3.new(width + 2.6, 0.8, 1.6), CFrame.new(0, wallTop + 0.4, depth + 0.5), W.Sunny)
 	for i, side in { -1, 1 } do
