@@ -13,8 +13,8 @@
 	    board (three illustrated steps, hearts and the pass mark) with the YOUR BEST board
 	    (SurfaceGui "BestBoard": labels Best, Clears and Reward the client fills) on top;
 	  * the practice mat on the front-right deck under a puffy cloud (Fx drops slow demo items
-	    on it) with a PRACTICE floor plate, a small Tiki Shakes hut in the near right corner,
-	    palms, giant shakes, and the EXIT arch (moved here from the court's corner).
+	    on it) with a PRACTICE sign standing behind it, a small Tiki Shakes hut in the near
+	    right corner, a palm by the gate and the EXIT arch (moved here from the court's corner).
 	Round it all: a sand island under the decks (a sand lip banked against the lobby deck, a
 	pastel pink edge band, pastel shells, wet-sand rim, foam ring, umbrellas, a jetty
 	with a ladder, a giant shake, a beach ball and a flamingo float on the back beach), its own
@@ -62,6 +62,14 @@ local BALL = Enum.PartType.Ball
 
 local ShakeArena = {}
 
+-- `at` turned about Y so its LookVector (and a part's Front face) points at `toward` across
+-- the floor. Same as a level CFrame.lookAt, but built from a yaw so every CFrame
+-- implementation (the preview's Lune included) agrees on which way the face points.
+local function facing(at: Vector3, toward: Vector3): CFrame
+	local d = toward - at
+	return CFrame.new(at) * CFrame.Angles(0, math.atan2(-d.X, -d.Z), 0)
+end
+
 -- The catch court's deck (studs, square, centred on ShakeRules.ARENA's x / z).
 local COURT = 64
 -- The lobby deck past the court's +Z edge: its depth, and in lobby-local studs (z from the
@@ -73,7 +81,7 @@ local START_Z = 11
 -- the glowing pad drawn round it (bigger, so it reads from the spawn).
 local START_RADIUS = 10
 local START_PAD = 13
-local PRACTICE = { x = 22, z = 13, half = 5 }
+local PRACTICE = { x = 21, z = 17, half = 5 }
 -- The practice mat's diameter.
 local PRACTICE_MAT = 13
 -- Demo items spawn this high over the practice mat (just under its puffy cloud).
@@ -1182,15 +1190,14 @@ local function lobby(parent: Instance, c: Arena.Spec, top: number): Lobby
 	-- The boards on the front-left deck, one above the other and turned to face the player's
 	-- view from the spawn: HOW TO PLAY below, YOUR BEST on top (clear of the START halo).
 	local boardAt = L(-21.5, 0, 27)
-	local boardLook = CFrame.lookAt(boardAt, L(0, 0, LOBBY_SPAWN_Z + 14))
+	local boardLook = facing(boardAt, L(0, 0, LOBBY_SPAWN_Z + 14))
 	local howTo = signBoard(parent, "HowToBoard", boardLook, 22, 12, 2.5, W.Teal, W.Cream)
 	howToFace(surface(howTo, Enum.NormalId.Front, 25, "HowToPlay"))
 	local board = bestBoard(parent, boardLook, 16.4)
 
 	-- The practice mat on the front-right deck (Fx drops slow demo items on it from under its
 	-- puffy cloud): a grape mat in a white rim with a teal centre, a soft painted shadow under
-	-- the cloud, and a bold "PRACTICE" plate on the floor at its edge facing the spawn (a shake
-	-- falling down an arrow, then the word).
+	-- the cloud, and a bold "PRACTICE" sign behind it facing the spawn.
 	local pc = L(PRACTICE.x, 0, PRACTICE.z)
 	local function matDisc(name: string, d: number, h: number, y: number, color: Color3, extra: { [string]: any }?)
 		local props = table.clone(flat)
@@ -1217,19 +1224,19 @@ local function lobby(parent: Instance, c: Arena.Spec, top: number): Lobby
 	)
 	practiceArea:SetAttribute("DropY", top + PRACTICE_DROP)
 	puffyCloud(parent, pc + Vector3.new(0, PRACTICE_DROP + 0.3, 0))
-	-- The plate lies in front of the mat, shifted toward the gate (clear of the EXIT arch);
-	-- like START, its Top gui reads upright from the spawn (upper edge on the -Z side).
-	local plateLook = CFrame.new(pc + Vector3.new(-3, 0, PRACTICE_MAT / 2 + 0.8 + 0.6 + 2.2))
-	piece(parent, "PracticeLabelFrame", Vector3.new(12, 0.16, 4.4), plateLook * CFrame.new(0, 0.08, 0), W.White)
-	local plate = piece(parent, "PracticeLabel", Vector3.new(11, 0.2, 3.4), plateLook * CFrame.new(0, 0.12, 0), W.Grape)
-	local plateGui = surface(plate, Enum.NormalId.Top, 30, "PracticeLabel")
-	drawShake(plateGui, 36, 58, 38)
+	-- The PRACTICE sign stands on posts behind the mat (past the drop square, so the demo
+	-- items fall in front of it) and faces the spawn's view: a white-framed grape board with a
+	-- shake falling down an arrow, then the word.
+	local signLook = facing(pc + Vector3.new(0, 0, -(PRACTICE_MAT / 2 + 1.6)), L(0, 0, LOBBY_SPAWN_Z + 14))
+	local plate = signBoard(parent, "PracticeLabel", signLook, 15, 4.6, 1.6, W.White, W.Grape)
+	local plateGui = surface(plate, Enum.NormalId.Front, 30, "PracticeLabel")
+	drawShake(plateGui, 52, 82, 56)
 	local arrow = layer(plateGui, 6)
-	box(arrow, W.Sunny, 80, 40, 10, 36, { round = 0.5, stroke = W.Ink, thick = 2, z = 1 })
+	box(arrow, W.Sunny, 112, 52, 14, 50, { round = 0.5, stroke = W.Ink, thick = 3, z = 1 })
 	for _, side in { -1, 1 } do
-		box(arrow, W.Sunny, 80 + side * 7, 59, 10, 24, { round = 0.5, rot = side * 40, stroke = W.Ink, thick = 2, z = 1 })
+		box(arrow, W.Sunny, 112 + side * 10, 79, 14, 34, { round = 0.5, rot = side * 40, stroke = W.Ink, thick = 3, z = 1 })
 	end
-	text(plateGui, "PRACTICE", W.White, 214, 52, 220, 84, { stroke = 3 })
+	text(plateGui, "PRACTICE", W.White, 290, 69, 310, 112, { stroke = 4 })
 
 	-- The Tiki Shakes hut, a small one tucked into the deck's near right corner (its back wall
 	-- on the deck's edge): a counter facing the aisle, a thatched roof sloping toward it with
@@ -1286,12 +1293,8 @@ local function lobby(parent: Instance, c: Arena.Spec, top: number): Lobby
 		)
 	end
 
-	-- A palm by the gate's left post and one in the back-left corner, with two giant shakes
-	-- standing on the deck between it and the spawn.
+	-- A palm by the gate's left post (the near-left corner stays clear of the spawn's view).
 	palm(parent, L(-27, 0, 5), math.rad(-40))
-	palm(parent, L(-30, 0, 48.5), math.rad(130))
-	shakeProp(parent, L(-20, 0, 41), 4.2, W.Pink)
-	shakeProp(parent, L(-25.5, 0, 44.5), 3, W.Mint)
 
 	return {
 		lobbySpawn = CFrame.lookAt(spawnAt, L(0, 0, 0)),
@@ -1305,7 +1308,7 @@ end
 -- Moves World.Arena's EXIT pad and arch (built in the court's +X / +Z corner) onto the lobby
 -- deck at `at`, the arch facing `toward`, and dresses its sign with a frame and a hint plate.
 local function moveExit(folder: Model, parent: Instance, at: Vector3, toward: Vector3)
-	local look = CFrame.lookAt(at, Vector3.new(toward.X, at.Y, toward.Z))
+	local look = facing(at, toward)
 	local side = -1
 	for _, child in folder:GetChildren() do
 		if child:IsA("BasePart") then
