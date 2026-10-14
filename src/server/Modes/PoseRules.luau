@@ -26,7 +26,9 @@
 
 local PoseRules = {}
 
-PoseRules.ARENA = { x = 0, y = 6, z = -10000, sizeX = 56, sizeZ = 48 }
+-- 104 wide: the 56-stud show (stage and fan zone) in the middle, the green-room lobby on the
+-- +X wing and a TV-crew corner on the -X wing (World.PoseStage).
+PoseRules.ARENA = { x = 0, y = 6, z = -10000, sizeX = 104, sizeZ = 48 }
 -- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
 PoseRules.FALL_BELOW = 20
 
