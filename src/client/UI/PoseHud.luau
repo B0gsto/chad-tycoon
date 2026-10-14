@@ -39,6 +39,7 @@ local Client = script.Parent.Parent
 local Kit = require(script.Parent.Kit) :: any
 local Sounds = require(Client.Sounds) :: any
 local PoseFx = require(Client.Fx.Pose)
+local Popups = require(script.Parent.Popups) :: any
 
 local PoseHud = {}
 
@@ -89,6 +90,9 @@ local quitButton: TextButton = nil :: any
 local banner: TextLabel = nil :: any
 local subBanner: TextLabel = nil :: any
 local dotsRow: Frame = nil :: any
+local dotsList: UIListLayout = nil :: any
+-- The dots row's usable width (the top pill is 420 wide): dots shrink to fit it.
+local DOTS_WIDTH = 396
 local timerBack: Frame = nil :: any
 local timerFill: Frame = nil :: any
 local pad: Frame = nil :: any
@@ -213,7 +217,11 @@ local function buildDots(count: number)
 			child:Destroy()
 		end
 	end
-	local size = if count > 14 then 14 else 20
+	-- Up to 14 dots at full size; past that the gap and the dots shrink so even MAX_ROUND
+	-- (30) fits inside the pill.
+	local gap = if count > 14 then 3 else 6
+	local size = math.clamp(math.floor((DOTS_WIDTH - (count - 1) * gap) / math.max(count, 1)), 8, 20)
+	dotsList.Padding = UDim.new(0, gap)
 	for i = 1, count do
 		local dot = Kit.new("Frame", {
 			Name = "Dot" .. i,
@@ -491,6 +499,8 @@ function PoseHud.onNotify(payload: { [string]: any })
 		PoseHud.start(p)
 	elseif event == "stop" then
 		PoseHud.stop(p)
+	elseif event == "full" then
+		Popups.toast(if type(p.text) == "string" then p.text else "The posing stage is full!", "info")
 	elseif not running then
 		return
 	elseif event == "round" then
@@ -861,7 +871,7 @@ function PoseHud.init(screenGui: ScreenGui)
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = top,
 	})
-	Kit.list(dotsRow, 6, true, Enum.HorizontalAlignment.Center)
+	dotsList = Kit.list(dotsRow, 6, true, Enum.HorizontalAlignment.Center)
 	timerBack = Kit.new("Frame", {
 		Name = "Timer",
 		BackgroundColor3 = C.Well,

@@ -103,6 +103,8 @@ local selfToken = 0
 
 local lamps: { [number]: BasePart } = {}
 local glows: { [string]: BasePart } = {}
+-- Every player podium's glow (one per lane); start() keeps the one under this player.
+local playerGlows: { BasePart } = {}
 
 local function flexOf(index: any): Flex?
 	return if type(index) == "number" then Pose.FLEXES[index] else nil
@@ -170,6 +172,7 @@ end
 local function findStage()
 	table.clear(lamps)
 	table.clear(glows)
+	table.clear(playerGlows)
 	local map = Workspace:FindFirstChild("Map")
 	local stage = map and map:FindFirstChild("PoseStage")
 	if not stage then
@@ -184,7 +187,9 @@ local function findStage()
 			lamps[flex] = part
 		elseif part.Name == "PodiumGlow" then
 			local side = part:GetAttribute("Side")
-			if type(side) == "string" then
+			if side == "player" then
+				table.insert(playerGlows, part)
+			elseif type(side) == "string" then
 				glows[side] = part
 			end
 		end
@@ -418,6 +423,15 @@ function Pose.start(payload: { [string]: any })
 	f.Parent = Workspace
 	folder = f
 	findStage()
+	-- This player's podium (lanes: several players can pose at once).
+	local nearest = math.huge
+	for _, glow in playerGlows do
+		local d = (Vector3.new(glow.Position.X, playerPos.Y, glow.Position.Z) - playerPos).Magnitude
+		if d < nearest then
+			nearest = d
+			glows.player = glow
+		end
+	end
 	spawnRival()
 	setExpr("Smug")
 	-- The avatar may land a frame after the teleport: attach once it is there.
