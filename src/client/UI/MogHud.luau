@@ -38,7 +38,8 @@
 	  Banners      "MOG TEST!" / "1v1 DUEL!" (vs <name>) at the start, "MOGGED!" per rival,
 	               "MOG TEST PASSED!" with the cash the first time the run passes ("Run
 	               again bonus +$" when `pay` is "repeat": a pass inside the cooldown),
-	               "SUDDEN DEATH!" in a duel.
+	               "SUDDEN DEATH!" in a duel. Each drops in from above and settles under
+	               the HUD's unit-count capsule (never over it); the pass adds confetti.
 
 	MogHud.onNotify(payload) takes every Notify with kind "Mode" and mode "mog" (Main
 	routes them); Fx.Mog does the 3D side from the same payloads. MogHud.choose() opens
@@ -80,8 +81,20 @@ local SCORE_W = 268
 -- The banner (top centre) and the room it keeps to the ring where the two share a row.
 local BANNER_W = 560
 local BANNER_H = 90
-local BANNER_Y = 96
 local BANNER_GAP = 12
+-- Tunables of the banner's place and motion. It sits under the HUD's unit-count capsule
+-- ("Units", measured when it shows): at least MinY from the top and Clear px below the
+-- capsule. It drops in from DropFrom px above its place and settles past it (Back, DropTime
+-- seconds); "MOG TEST PASSED!" also bursts PassConfetti pieces and pops by PassPop.
+local BANNER = {
+	MinY = 132,
+	Clear = 16,
+	DropFrom = 150,
+	DropTime = 0.45,
+	PassConfetti = 28,
+	PassPop = 1.6,
+	PassPopAt = 0.5,
+}
 local RESULT_RISE = 40 -- the result word rises this far above the ring
 local ACTION = "MogPress"
 local QUIT_ACTION = "MogQuit"
@@ -156,6 +169,10 @@ end
 local quitPress: () -> () = function() end
 local warned = false
 local bannerToken = 0
+-- Where the banner rests (design px from the top), and what puts it there (and clear of the
+-- ring sideways); set in build.
+local bannerY = BANNER.MinY
+local placeBanner: () -> () = function() end
 local stepConn: RBXScriptConnection? = nil
 local queueToken = 0
 local choosing = false -- the picker is open (or queued)
@@ -243,7 +260,7 @@ local function travelNow(c: Check): number
 	return math.clamp(c.speed * (Workspace:GetServerTimeNow() - c.appearAt), 0, 360)
 end
 
-local showBanner: (title: string, sub: string?, color: Color3, hold: number) -> ()
+local showBanner: (title: string, sub: string?, color: Color3, hold: number, celebrate: boolean?) -> ()
 
 -- The result word pops in on the ring's top edge (clear of the "#n" centre label) and
 -- rises toward the hearts / HP row while it fades.
@@ -500,7 +517,24 @@ local function setRival(info: any)
 	rivalHpText.Text = string.format("%d/%d", hp, hpMax)
 end
 
-function showBanner(title: string, sub: string?, color: Color3, hold: number)
+-- The lowest edge of the HUD's unit-count capsule in design px (0 when it is not on screen):
+-- the banner keeps below it, wherever the HUD has put it.
+local function capsuleBottom(): number
+	local gui = screen
+	local units = gui and gui:FindFirstChild("Units")
+	if not gui or not units or not units:IsA("GuiObject") or not units.Visible then
+		return 0
+	end
+	local bottom = units.AbsolutePosition.Y + units.AbsoluteSize.Y
+	for _, part in units:GetDescendants() do
+		if part:IsA("GuiObject") and part.Visible and part.AbsoluteSize.Y < 200 then
+			bottom = math.max(bottom, part.AbsolutePosition.Y + part.AbsoluteSize.Y)
+		end
+	end
+	return (bottom - gui.AbsolutePosition.Y) / Kit.pixelScale(gui)
+end
+
+function showBanner(title: string, sub: string?, color: Color3, hold: number, celebrate: boolean?)
 	bannerToken += 1
 	local mine = bannerToken
 	bannerTitle.Text = title
@@ -508,7 +542,29 @@ function showBanner(title: string, sub: string?, color: Color3, hold: number)
 	bannerSub.Text = sub or ""
 	bannerSub.Visible = sub ~= nil
 	banner.Visible = true
-	Kit.appear(banner, { from = 0.4, time = 0.3 })
+	-- Under the unit-count capsule, never over it.
+	bannerY = math.max(BANNER.MinY, capsuleBottom() + BANNER.Clear)
+	placeBanner()
+	local rest = banner.Position
+	local data = State.data
+	local calm = data ~= nil and type(data.settings) == "table" and data.settings.reducedMotion == true
+	if calm then
+		banner.Position = rest
+		Kit.appear(banner, { from = 0.9, time = 0.25 })
+	else
+		-- Drops in from above, runs past its place and settles.
+		Kit.appear(banner, { from = 0.7, time = 0.25 })
+		banner.Position = rest - UDim2.fromOffset(0, BANNER.DropFrom)
+		Kit.tween(banner, BANNER.DropTime, { Position = rest }, Enum.EasingStyle.Back)
+		if celebrate then
+			Kit.confetti(banner, { Origin = UDim2.fromScale(0.5, 0.4), Count = BANNER.PassConfetti, ZIndex = 31, Power = 1.2 })
+			task.delay(BANNER.PassPopAt, function()
+				if bannerToken == mine then
+					Kit.pop(banner, BANNER.PassPop)
+				end
+			end)
+		end
+	end
 	task.delay(hold, function()
 		if bannerToken == mine then
 			Kit.disappear(banner)
@@ -704,7 +760,7 @@ function MogHud.onNotify(p: any)
 				elseif cash <= 0 then "Keep mogging!"
 				elseif p.pay == "repeat" then "Run again bonus +" .. Format.money(cash)
 				else "+" .. Format.money(cash)
-			showBanner("MOG TEST PASSED!", sub, C.Gold, 2.4)
+			showBanner("MOG TEST PASSED!", sub, C.Gold, 2.4, true)
 		else
 			local mogged = type(p.mogged) == "table" and p.mogged.name
 			showBanner("MOGGED!", if mogged then tostring(mogged) .. " is out!" else nil, W.Cream, 1.5)
@@ -1124,7 +1180,7 @@ function MogHud.build(screenGui: ScreenGui)
 		Name = "MogBanner",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(BANNER_W, BANNER_H),
-		Position = UDim2.new(0.5, 0, 0, BANNER_Y),
+		Position = UDim2.new(0.5, 0, 0, bannerY),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Visible = false,
 		ZIndex = 30,
@@ -1150,19 +1206,19 @@ function MogHud.build(screenGui: ScreenGui)
 	-- Small screens: where the banner's row reaches down to the ring (its tap target and the
 	-- rising result word), the banner slides left just far enough to stay clear of it, so
 	-- "NEW BEST!" never lands on the ring. Roomy screens keep it centred.
-	local function placeBanner()
+	placeBanner = function()
 		local shift = 0
 		local area = Kit.designArea(screenGui)
 		if area then
 			local ringLeft = area.X - ROOT_RIGHT - ROOT_W / 2 - RING / 2 - RING_TAP
 			local ringTop = area.Y / 2 + ROOT_DY - ROOT_H / 2 + RING_Y - RESULT_RISE
-			if BANNER_Y + BANNER_H > ringTop then
+			if bannerY + BANNER_H > ringTop then
 				local room = ringLeft - BANNER_GAP - (area.X / 2 + BANNER_W / 2)
 				-- Never past the left edge: a screen too narrow for both keeps the banner whole.
 				shift = math.clamp(room, math.min(0, BANNER_W / 2 - area.X / 2), 0)
 			end
 		end
-		banner.Position = UDim2.new(0.5, shift, 0, BANNER_Y)
+		banner.Position = UDim2.new(0.5, shift, 0, bannerY)
 	end
 	placeBanner()
 	pcall(function()
