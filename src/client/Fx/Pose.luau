@@ -3,26 +3,36 @@
 	Fx.Pose: the 3D side of POSE COPY (Modes.Pose; docs/minigames.md). UI.PoseHud draws
 	the screen and drives the show's beats through Pose.rivalFlex / Pose.playerFlex.
 
-	  Rival     a chad built locally with CharacterFactory (manual rig, posed here with
-	            RigPose) on the rival's podium, facing the audience; every flex snaps in
-	            with a hop, a ring on the podium and its lamp on the stage's D-pad.
-	  Player    the local avatar strikes each flex it presses (Fx.PlayerPose): a correct
-	            one bursts a sparkle aura in the flex's colour; a wrong one reels in Shock.
-	  Stage     World.PoseStage's "FlexLamp<i>" tiles light up with the flex shown or
-	            struck; the "PodiumGlow" rings take the flex colour and fade back.
+	A stay goes lobby -> countdown -> play -> results -> lobby (docs/minigames.md):
+	  Lobby     the rival chad stands on his podium warming up (a random flex now and then);
+	            the follow camera is the player's. Standing at the arena's "RehearsalSpot"
+	            the HUD's flex pad calls Pose.rehearse(i): the avatar strikes the flex with
+	            the same aura as a game (nothing is sent; walking off lets the pose go).
+	  Countdown the pose camera takes over and the avatar is posed on its podium.
+	  Play      Rival: a chad built locally with CharacterFactory (manual rig, posed here
+	            with RigPose) on the rival's podium, facing the audience; every flex snaps
+	            in with a hop, a ring on the podium and its lamp on the stage's D-pad.
+	            Player: the local avatar strikes each flex it presses (Fx.PlayerPose): a
+	            right one bursts a sparkle aura in the flex's colour; a wrong one reels.
+	            Stage: "FlexLamp<i>" tiles light up with the flex shown or struck; the
+	            "PodiumGlow" rings take the flex colour and fade back.
 	  Camera    Scriptable, from the audience: both chads side by side, a slow drift, a
-	            short push-in on every cleared round. Back to Custom when the run ends.
+	            short push-in on every cleared round. Short (phone) screens frame the chads
+	            lower and clear of the flex pad (Pose.compact()). Back to the follow
+	            camera a moment after "win" / "lose", in the lobby and on leave.
 	  Moments   "clear": both chads hop into a flex; "pass": confetti, stars and Victory;
 	            "miss": the player's Shock and the rival's Smug; "win" / "lose": a last
-	            pose each, then everything is put away.
+	            pose each, then back to the lobby look.
 
 	Main.client.luau calls init() once (it is in the Fx list); nothing else needs editing:
-	  init()            connects the Notify listener
-	  start(payload)    a run began ("start")
-	  stop(payload)     the run ended ("stop", and shortly after "win" / "lose")
-	  FLEXES            the client's copy of Modes.PoseRules.FLEXES (same order, colours)
-	  rivalFlex(i, hold)        the rival shows flex i (hold: seconds it stays lit)
-	  playerFlex(i, ok)         the player struck flex i; ok = it was the right one
+	  init()                connects the Notify listener
+	  FLEXES                the client's copy of Modes.PoseRules.FLEXES (same order, colours)
+	  rivalFlex(i, hold)    the rival shows flex i (hold: seconds it stays lit)
+	  playerFlex(i, ok)     the player struck flex i; ok = it was the right one
+	  rehearse(i)           lobby warm-up: the avatar strikes flex i (no game running)
+	  compact()             true on short (phone) screens: the HUD puts its pad aside
+	  arena() / find(name)  the arena Model (attribute Mode = "pose") and a named part in it
+	  sync(inMode, phase)   the State snapshot's view (a safety net for a lost Notify)
 ]]
 
 local Players = game:GetService("Players")
@@ -57,7 +67,7 @@ local BLEND = 0.16 -- seconds for the rival to snap into a flex
 local HOP = { Time = 0.3, Height = 0.7 }
 local SETTLE = 0.85 -- seconds a flex holds before easing back to REST
 -- Camera framing: distance in front of the chads, height over their feet, look height.
-local CAM = { Back = 17, Up = 5.2, Look = 2.3, Drift = 1.2, Push = 2.4 }
+local CAM = { Back = 17, Up = 5.2, Look = 2.3, Drift = 1.2, Push = 2.4, CompactLift = 2.2 }
 local END_HOLD = 2.6 -- seconds the last poses stay after "win" / "lose"
 
 -- The rival's look (CharacterFactory fields): a tanned beach chad in a grape tank.
@@ -81,8 +91,14 @@ local RIVAL_LOOK = {
 	manual = true,
 }
 
+-- inMode: in the arena (lobby included); running: a game is on (countdown, play, results
+-- hold). The rival stays up for the whole stay; the camera and the avatar's poser only
+-- while running.
+local inMode = false
 local running = false
 local runId = 0
+local idleConn: RBXScriptConnection? = nil
+local idleAt = 0
 local folder: Folder? = nil
 local playerPos = Vector3.zero
 local rivalPos = Vector3.new(0, 0, -14)
@@ -169,21 +185,72 @@ end
 
 -- Stage ------------------------------------------------------------------------------------
 
+-- The arena Model: World.PoseStage's (attribute Mode = "pose"), cached while it lives.
+local arenaModel: Instance? = nil
+local arenaLookedAt = -math.huge
+function Pose.arena(): Instance?
+	if arenaModel and arenaModel.Parent then
+		return arenaModel
+	end
+	arenaModel = nil
+	-- A missing arena (still streaming in) is looked for again at most once a second.
+	if os.clock() - arenaLookedAt < 1 then
+		return nil
+	end
+	arenaLookedAt = os.clock()
+	local map = Workspace:FindFirstChild("Map")
+	if map then
+		local named = map:FindFirstChild("PoseStage")
+		if named and named:GetAttribute("Mode") ~= nil and named:GetAttribute("Mode") ~= "pose" then
+			named = nil
+		end
+		arenaModel = named
+		if not arenaModel then
+			for _, child in map:GetChildren() do
+				if child:GetAttribute("Mode") == "pose" then
+					arenaModel = child
+					break
+				end
+			end
+		end
+	end
+	return arenaModel
+end
+
+-- A named descendant of the arena (nil when the arena or the part is not there).
+function Pose.find(name: string): Instance?
+	local stage = Pose.arena()
+	return if stage then stage:FindFirstChild(name, true) else nil
+end
+
+-- Short screens (phones in landscape): the HUD moves the flex pad to the right and the
+-- camera frames the chads lower, so the pad never covers them.
+function Pose.compact(): boolean
+	local camera = Workspace.CurrentCamera
+	return camera ~= nil and camera.ViewportSize.Y < 560
+end
+
+-- The top of a part along world Y (podium discs are rotated cylinders).
+local function topOf(part: BasePart): number
+	local cf, size = part.CFrame, part.Size
+	local half = (math.abs(cf.RightVector.Y) * size.X + math.abs(cf.UpVector.Y) * size.Y + math.abs(cf.LookVector.Y) * size.Z) / 2
+	return part.Position.Y + half
+end
+
 local function findStage()
 	table.clear(lamps)
 	table.clear(glows)
 	table.clear(playerGlows)
-	local map = Workspace:FindFirstChild("Map")
-	local stage = map and map:FindFirstChild("PoseStage")
+	local stage = Pose.arena()
 	if not stage then
 		return
 	end
-	for _, part in stage:GetChildren() do
+	for _, part in stage:GetDescendants() do
 		if not part:IsA("BasePart") then
 			continue
 		end
 		local flex = part:GetAttribute("Flex")
-		if type(flex) == "number" then
+		if type(flex) == "number" and string.sub(part.Name, 1, 8) == "FlexLamp" then
 			lamps[flex] = part
 		elseif part.Name == "PodiumGlow" then
 			local side = part:GetAttribute("Side")
@@ -194,6 +261,16 @@ local function findStage()
 			end
 		end
 	end
+end
+
+-- The rival's feet on his podium, read from the stage ("RivalPad"), else nil.
+local function stageRivalPos(): Vector3?
+	local pad = Pose.find("RivalPad")
+	if pad and pad:IsA("BasePart") then
+		return Vector3.new(pad.Position.X, topOf(pad), pad.Position.Z)
+	end
+	local glow = glows.rival
+	return if glow then Vector3.new(glow.Position.X, topOf(glow), glow.Position.Z) else nil
 end
 
 -- Lights flex `index`'s lamp for `hold` seconds (Neon, a pop of size), then dims it back.
@@ -334,6 +411,37 @@ local function selfStrike(pose: string, hop: number?, settle: number?)
 	end
 end
 
+-- Feet position of a character (HumanoidRootPart centre minus hip height and half the root).
+local function feetOf(character: Model?): Vector3?
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root or not root:IsA("BasePart") then
+		return nil
+	end
+	local humanoid = (character :: Model):FindFirstChildOfClass("Humanoid")
+	local hip = if humanoid then humanoid.HipHeight else 2
+	return root.Position - Vector3.new(0, hip + root.Size.Y / 2, 0)
+end
+
+-- Where the local avatar poses: the player podium nearest `at` (default: its feet; the
+-- server put it on one), else that point itself. Also picks that podium's glow ring.
+local function locatePlayer(at: Vector3?)
+	local feet = at or feetOf(player.Character)
+	if not feet then
+		return
+	end
+	local best, nearest = nil :: BasePart?, 8
+	for _, glow in playerGlows do
+		local d = (Vector3.new(glow.Position.X, feet.Y, glow.Position.Z) - feet).Magnitude
+		if d < nearest then
+			nearest, best = d, glow
+		end
+	end
+	if best then
+		glows.player = best
+	end
+	playerPos = if best and not at then Vector3.new(best.Position.X, feet.Y, best.Position.Z) else feet
+end
+
 -- Camera ------------------------------------------------------------------------------------
 
 local function releaseCamera()
@@ -354,7 +462,7 @@ end
 
 local function takeCamera()
 	local camera = Workspace.CurrentCamera
-	if not camera then
+	if not camera or cameraOn then
 		return
 	end
 	cameraOn = true
@@ -372,22 +480,138 @@ local function takeCamera()
 		local t = os.clock() - started
 		local mid = (playerPos + rivalPos) / 2
 		local right = facing:Cross(Vector3.yAxis)
+		local look = CAM.Look
+		local shift = Vector3.zero
+		if Pose.compact() then
+			-- Phones: the chads sit lower (clear of the round pill and banner) and, on a
+			-- narrow-ish screen, left of centre (clear of the flex pad at the bottom right).
+			look += CAM.CompactLift
+			local view = cam.ViewportSize
+			local halfW = CAM.Back * math.tan(math.rad(cam.FieldOfView) / 2) * view.X / math.max(view.Y, 1)
+			shift = -right * math.max(0, 9.5 - 0.42 * halfW)
+		end
 		-- From the audience, both chads in frame, drifting slowly side to side.
 		local since = os.clock() - pushAt
 		local push = if since < 0.9 then math.sin(math.clamp(since / 0.9, 0, 1) * math.pi) * CAM.Push else 0
 		local eye = mid
+			+ shift
 			+ facing * (CAM.Back - push)
 			+ right * math.sin(t * 0.3) * CAM.Drift
 			+ Vector3.new(0, CAM.Up + math.sin(t * 0.23) * 0.25, 0)
-		local goal = CFrame.lookAt(eye, mid + Vector3.new(0, CAM.Look, 0))
+		local goal = CFrame.lookAt(eye, mid + shift + Vector3.new(0, look, 0))
 		current = if current then current:Lerp(goal, 1 - math.exp(-dt * 5)) else goal
 		cam.CFrame = current :: CFrame
 	end)
 end
 
--- Run -------------------------------------------------------------------------------------
+-- Rehearsal mirror (lobby) -------------------------------------------------------------------
 
-local function clear()
+local rehearsePoser: PlayerPose.Poser? = nil
+local rehearseChar: Model? = nil
+local rehearseToken = 0
+local rehearseConn: RBXScriptConnection? = nil
+
+local function endRehearse()
+	rehearseToken += 1
+	if rehearseConn then
+		rehearseConn:Disconnect()
+		rehearseConn = nil
+	end
+	if rehearsePoser then
+		rehearsePoser:stop()
+	end
+	rehearsePoser, rehearseChar = nil, nil
+end
+
+-- Lobby warm-up: the avatar strikes flex `index` with a game's aura. Nothing is sent; the
+-- pose lets go after a beat, or at once when the player walks off.
+function Pose.rehearse(index: number)
+	local flex = flexOf(index)
+	local character = player.Character
+	local feet = feetOf(character)
+	if not flex or not inMode or running or not character or not feet then
+		return
+	end
+	if rehearseChar ~= character or not rehearsePoser then
+		endRehearse()
+		rehearsePoser = PlayerPose.attach(character)
+		rehearseChar = character
+	end
+	local poser = rehearsePoser
+	if not poser then
+		return
+	end
+	rehearseToken += 1
+	local mine = rehearseToken
+	poser:strike(flex.pose, 0.5)
+	burst(feet + Vector3.new(0, 3.2, 0), flex.color, 14)
+	sprite("Ring", feet + Vector3.new(0, 0.3, 0), { size = 6, life = 0.5, rise = Vector3.zero, color = flex.color })
+	if not rehearseConn then
+		local moving = 0
+		rehearseConn = RunService.Heartbeat:Connect(function(dt: number)
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.MoveDirection.Magnitude > 0.1 then
+				moving += dt
+				if moving > 0.25 then
+					endRehearse()
+				end
+			else
+				moving = 0
+			end
+		end)
+	end
+	task.delay(SETTLE + 0.4, function()
+		if rehearseToken == mine then
+			endRehearse()
+		end
+	end)
+end
+
+-- Lobby, game, leave ------------------------------------------------------------------------
+
+-- The lobby's rival: on his podium, a random warm-up flex every few seconds.
+local function idleStep()
+	if running or not rig or os.clock() < idleAt then
+		return
+	end
+	idleAt = os.clock() + 4 + math.random() * 3
+	local flex = Pose.FLEXES[math.random(#Pose.FLEXES)]
+	rivalStrike(flex.pose, true, 1.1)
+end
+
+local function enterLobby(p: { [string]: any })
+	if not inMode or not folder or not folder.Parent then
+		inMode = true
+		local f = Instance.new("Folder")
+		f.Name = "PoseFx"
+		f.Parent = Workspace
+		folder = f
+	end
+	findStage()
+	if typeof(p.facing) == "Vector3" then
+		facing = p.facing
+	end
+	local spot = if typeof(p.rivalPos) == "Vector3" then p.rivalPos else stageRivalPos()
+	if spot and (spot - rivalPos).Magnitude > 0.05 then
+		rivalPos = spot
+		removeRival()
+	end
+	if not rig and spot then
+		spawnRival()
+	end
+	setExpr("Smug")
+	idleAt = os.clock() + 2
+	if not idleConn then
+		idleConn = RunService.Heartbeat:Connect(idleStep)
+	end
+end
+
+-- The game is over (or never started): the follow camera, the avatar's own animations and
+-- the rival at rest. The rival stays for the lobby.
+local function endGame()
+	if not running then
+		return
+	end
 	running = false
 	runId += 1
 	-- The camera first: whatever else fails, the player gets the follow camera back.
@@ -396,11 +620,81 @@ local function clear()
 		selfPoser:stop()
 		selfPoser = nil
 	end
-	removeRival()
 	lampsOff()
 	for _, glow in glows do
 		glow.Color = Color3.new(1, 1, 1)
 	end
+	rivalStrike(REST, false)
+	setExpr("Smug")
+	idleAt = os.clock() + 3
+end
+
+local playedAt = -math.huge
+local givenPos = false
+
+-- Countdown: the pose camera and the avatar's poser for a game on the player's podium.
+local function beginPlay(p: { [string]: any })
+	if not inMode then
+		enterLobby(p)
+	elseif next(lamps) == nil then
+		findStage()
+	end
+	endRehearse()
+	running = true
+	runId += 1
+	playedAt = os.clock()
+	lampsOff()
+	if typeof(p.facing) == "Vector3" then
+		facing = p.facing
+	end
+	givenPos = typeof(p.playerPos) == "Vector3"
+	locatePlayer(if givenPos then p.playerPos else nil)
+	local spot = if typeof(p.rivalPos) == "Vector3" then p.rivalPos else stageRivalPos()
+	if spot and (spot - rivalPos).Magnitude > 0.05 then
+		rivalPos = spot
+		removeRival()
+	end
+	if not rig then
+		-- No stage to read (still streaming in): the rival two podiums to the player's left.
+		if not spot then
+			rivalPos = playerPos + facing:Cross(Vector3.yAxis) * 14
+		end
+		spawnRival()
+	end
+	rivalStrike(REST, false)
+	setExpr("Smug")
+	-- The avatar lands on the podium a moment after the teleport: attach (and look again)
+	-- once it is there.
+	local mine = runId
+	for _, wait in { 0.15, 0.4, 1 } do
+		task.delay(wait, function()
+			if not running or runId ~= mine then
+				return
+			end
+			if not givenPos then
+				locatePlayer()
+			end
+			if not selfPoser then
+				selfPoser = PlayerPose.attach(player.Character)
+			end
+		end)
+	end
+	takeCamera()
+end
+
+local function stopAll()
+	endGame()
+	endRehearse()
+	inMode = false
+	running = false
+	runId += 1
+	releaseCamera()
+	if idleConn then
+		idleConn:Disconnect()
+		idleConn = nil
+	end
+	removeRival()
+	lampsOff()
 	if folder then
 		folder:Destroy()
 		folder = nil
@@ -408,47 +702,30 @@ local function clear()
 end
 
 function Pose.start(payload: { [string]: any })
-	clear()
-	running = true
-	if typeof(payload.playerPos) == "Vector3" then
-		playerPos = payload.playerPos
+	if payload.phase == nil then
+		-- An older server: "start" is the game itself.
+		enterLobby(payload)
+		beginPlay(payload)
 	else
-		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-		playerPos = if root and root:IsA("BasePart") then root.Position - Vector3.new(0, 3, 0) else Vector3.zero
+		endGame()
+		enterLobby(payload)
 	end
-	facing = if typeof(payload.facing) == "Vector3" then payload.facing else Vector3.new(0, 0, 1)
-	rivalPos = if typeof(payload.rivalPos) == "Vector3" then payload.rivalPos else playerPos - facing:Cross(Vector3.yAxis) * 14
-	local f = Instance.new("Folder")
-	f.Name = "PoseFx"
-	f.Parent = Workspace
-	folder = f
-	findStage()
-	-- This player's podium (lanes: several players can pose at once).
-	local nearest = math.huge
-	for _, glow in playerGlows do
-		local d = (Vector3.new(glow.Position.X, playerPos.Y, glow.Position.Z) - playerPos).Magnitude
-		if d < nearest then
-			nearest = d
-			glows.player = glow
-		end
-	end
-	spawnRival()
-	setExpr("Smug")
-	-- The avatar may land a frame after the teleport: attach once it is there.
-	local mine = runId
-	task.delay(0.15, function()
-		if running and runId == mine and not selfPoser then
-			selfPoser = PlayerPose.attach(player.Character)
-		end
-	end)
-	takeCamera()
 end
 
 function Pose.stop(_payload: { [string]: any }?)
-	if not running then
-		return
+	stopAll()
+end
+
+-- The State snapshot's view: hands the camera back if a "win" / "lose" got lost, puts the
+-- arena away if a "stop" did.
+function Pose.sync(inArena: boolean, phase: string?)
+	if not inArena then
+		if inMode then
+			stopAll()
+		end
+	elseif phase == "lobby" and running and os.clock() - playedAt > 2 then
+		endGame()
 	end
-	clear()
 end
 
 -- The rival shows flex `index` (one beat of the "round" show); its lamp stays lit `hold` s.
@@ -479,12 +756,20 @@ function Pose.playerFlex(index: number, ok: boolean)
 	else
 		selfStrike("Shock", nil, 1.1)
 		flashGlow("player", Color3.fromRGB(255, 70, 70))
+		sprite(
+			"Ring",
+			playerPos + Vector3.new(0, 0.4, 0),
+			{ size = 6, life = 0.4, rise = Vector3.zero, color = Color3.fromRGB(255, 70, 70) }
+		)
 	end
 end
 
 -- Notify -----------------------------------------------------------------------------------
 
 local function onRound(p: any)
+	if not givenPos then
+		locatePlayer()
+	end
 	lampsOff()
 	rivalStrike(REST, false)
 	setExpr(if p.replay then "Determined" else "Smug")
@@ -521,10 +806,13 @@ local function onPass(_p: any)
 end
 
 local function onMiss(_p: any)
+	local mine = runId
 	setExpr("Cheer")
 	rivalStrike("Shrug", false, 1.2)
 	task.delay(1.2, function()
-		setExpr("Smug")
+		if runId == mine and running then
+			setExpr("Smug")
+		end
 	end)
 end
 
@@ -542,10 +830,11 @@ local function onFinish(p: any, won: boolean)
 	if p.newBest then
 		sprite("StarPop", playerPos + Vector3.new(0, 7.5, 0), { size = 3.5, life = 1.2, rise = Vector3.new(0, 3, 0), spin = 60 })
 	end
-	-- The run is over on the server already: hold the last poses a moment, then put away.
+	-- Hold the last poses a moment, then the follow camera (PLAY AGAIN meanwhile starts a
+	-- new countdown, which keeps the pose camera).
 	task.delay(END_HOLD, function()
 		if runId == mine then
-			Pose.stop(nil)
+			endGame()
 		end
 	end)
 end
@@ -560,6 +849,8 @@ function Pose.init()
 			Pose.start(payload)
 		elseif event == "stop" then
 			Pose.stop(payload)
+		elseif event == "countdown" then
+			beginPlay(payload)
 		elseif not running then
 			return
 		elseif event == "round" then
@@ -573,6 +864,10 @@ function Pose.init()
 		elseif event == "win" or event == "lose" then
 			onFinish(payload, event == "win")
 		end
+	end)
+	-- A respawn in the lobby drops the warm-up poser (it held the old body's joints).
+	player.CharacterAdded:Connect(function()
+		endRehearse()
 	end)
 end
 
