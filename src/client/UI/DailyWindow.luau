@@ -21,8 +21,8 @@
 	is never a surprise.
 
 	The window opens by itself once per session when a reward is waiting, after a
-	calm moment: never during the intro or the tutorial, a game-mode run, or
-	under another window or popup, and never within REWARD_QUIET seconds of a
+	calm moment: never during the intro or the tutorial, a game mode (picker, queue,
+	run or finish card, and MODE_QUIET after it), or under another window or popup, and never within REWARD_QUIET seconds of a
 	reward card. A player who finished the tutorial this session first walks one
 	full lap (collects cash once), or has had LAP_PATIENCE seconds since it ended
 	(a skipped tutorial, a player who never collects). A held crate makes it wait
@@ -130,6 +130,14 @@ local CLOSE_AFTER_CLAIM = 1.5
 -- open by itself in that gap, right under the reveal. It covers the free gift's card too.
 -- The held-crate panel ("CratePanelOpen") only holds the window back for a while.
 local BUSY = { "WindowOpen", "ModalOpen", "PopupBusy", "RunActive", "ObbyMode", "CardioActive" }
+-- Game modes own the screen from their picker or queue to their finish card: the window
+-- never opens by itself while one is up (a snapshot run, or a begin with no end since),
+-- nor within MODE_QUIET seconds of any mode event, and a mode that begins closes it. A
+-- begin that never got its end (a picker closed by hand) stops counting after MODE_HOLD.
+local MODE_QUIET = 20
+local MODE_HOLD = 90
+local MODE_BEGINS = { start = true, choose = true, queue = true, pick = true }
+local MODE_ENDS = { stop = true, finish = true, invalid = true, refused = true }
 
 -- The streak line's right half: the saver's rule, and what it says once the saver is spent.
 local SAVER_RULE = "Miss a day? Your streak is saved once a week."
@@ -801,11 +809,48 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 				lapped = true
 			end
 		end)
+		-- A game mode is up (picker, queue, run, finish) or ended under MODE_QUIET ago.
+		local modeUp = false
+		local modeAt = -math.huge
+		Net.event("Notify").OnClientEvent:Connect(function(payload)
+			if type(payload) ~= "table" or payload.kind ~= "Mode" then
+				return
+			end
+			modeAt = os.clock()
+			if MODE_BEGINS[payload.event] then
+				modeUp = true
+			elseif MODE_ENDS[payload.event] then
+				modeUp = false
+			end
+			-- Only this window: the mode's own picker may be opening in the same event.
+			if MODE_BEGINS[payload.event] and window.isOpen() then
+				window.setOpen(false)
+			end
+		end)
+		local function inMode(): boolean
+			local since = os.clock() - modeAt
+			if since < MODE_QUIET or (modeUp and since < MODE_HOLD) then
+				return true
+			end
+			local data = State.data
+			local modes = data and data.modes
+			if type(modes) == "table" then
+				for _, info in modes do
+					if type(info) == "table" and info.running == true then
+						return true
+					end
+				end
+			end
+			return false
+		end
 		-- Nothing a card may cover is on screen: the loading screen and the intro are gone, and
-		-- no window, popup or mode run is up.
+		-- no window, popup or game mode is up.
 		local player = Players.LocalPlayer
 		local function screenFree(): boolean
 			if player:GetAttribute("IntroPlaying") == true or player:GetAttribute("GameReady") ~= true then
+				return false
+			end
+			if inMode() then
 				return false
 			end
 			local playerGui = player:FindFirstChildOfClass("PlayerGui")

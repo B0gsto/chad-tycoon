@@ -2930,6 +2930,12 @@ local INDEX = {
 	-- Text on the glass (screen px): a card's rarity chip and the legend's band bars.
 	ChipText = 16,
 	LegendText = 15,
+	-- A card's name (two lines at most) and the pale rarity line of a card still to find.
+	NameText = 16,
+	NamePx = 15, -- held at this size on the glass
+	NameBox = 44, -- two lines of NameText
+	GridGap = 8, -- between the legend and the first row of cards (the track's labels crowded it)
+
 	-- Track heights: one-line captions (a narrow window, a phone) and two-line ones.
 	TrackLow = 66,
 	TrackTall = 90,
@@ -3461,7 +3467,7 @@ local function buildIndex(screen: ScreenGui)
 		local ribbon = isComplete and not showTrack
 		local strip = if showTrack then trackH elseif ribbon then COMPLETE_H else 0
 		local folded = strip > 0 and window.size().Y < 440
-		local top = strip + (if folded then 0 else LEGEND_H)
+		local top = strip + (if folded then 0 else LEGEND_H + INDEX.GridGap)
 		complete.Visible = ribbon
 		track.Visible = showTrack
 		legend.Visible = not folded
@@ -3549,16 +3555,16 @@ local function buildIndex(screen: ScreenGui)
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextColor3 = if known then C.Text else C.TextMute,
 		})
-		-- Name under the character: 14 px, up to two lines (never scaled down).
+		-- Name under the character: INDEX.NameText, up to two lines (never scaled down).
 		Kit.text(frame, {
 			Name = "Name",
 			Text = if known then string.upper(Theme.Tiers[tier].Name) else "???",
 			Font = F.UI,
-			TextSize = T.Small,
-			MinPx = true,
+			TextSize = INDEX.NameText,
+			MinPx = INDEX.NamePx,
 			TextWrapped = true,
-			Size = UDim2.new(1, -16, 0, 42),
-			Position = UDim2.new(0, 8, 1, -78),
+			Size = UDim2.new(1, -16, 0, INDEX.NameBox),
+			Position = UDim2.new(0, 8, 1, -(36 + INDEX.NameBox)),
 			TextColor3 = if known then C.Text else C.TextMute,
 			ZIndex = 3,
 		})
@@ -3603,8 +3609,8 @@ local function buildIndex(screen: ScreenGui)
 				Name = "Footer",
 				Text = string.upper(band),
 				Font = F.UI,
-				TextSize = T.Small,
-				MinPx = true,
+				TextSize = INDEX.NameText,
+				MinPx = INDEX.NamePx,
 				TextWrapped = false,
 				Size = UDim2.new(1, -16, 0, 24),
 				Position = UDim2.new(0, 8, 1, -32),
@@ -3834,7 +3840,9 @@ end
 local RANK = {
 	-- The podium: gold, silver and bronze rows, each taller and bolder than a plain row.
 	Medals = { C.Gold, C.Chrome, C.Amber },
-	PodiumH = { 68, 58, 58 },
+	-- The three steps (taken or open) always show in full at 1280x720, also while the
+	-- leader's trophy card wants its room (LeadKeep only takes rows past the podium).
+	PodiumH = { 60, 52, 52 },
 	MedalSize = { 50, 42, 42 }, -- the medal coin
 	MedalText = { 28, 22, 22 }, -- the place on it
 	PodiumName = { 22, 20, 20 },
@@ -3859,6 +3867,8 @@ local RANK = {
 	ValueText = 20,
 	ExtraText = 18, -- the clears column
 	RankText = 17,
+	HeadText = 16, -- the column heads (RANK, PLAYER, COLLECTED ...)
+	HeadPx = 15, -- ... held at this size on the glass
 	YouPill = Vector2.new(56, 26),
 	MineEdge = 3, -- gold outline of the player's own row
 	PinAfter = 5, -- the own row is also pinned under the list once it sits below this place
@@ -4257,8 +4267,8 @@ local function buildRanking(screen: ScreenGui)
 		local label = Kit.text(header, {
 			Text = text,
 			Font = F.UI,
-			TextSize = T.Small,
-			MinPx = true,
+			TextSize = RANK.HeadText,
+			MinPx = RANK.HeadPx,
 			TextWrapped = false,
 			Size = UDim2.new(w, 0, 1, 0),
 			Position = UDim2.fromScale(x, 0),
@@ -4356,6 +4366,7 @@ local function buildRanking(screen: ScreenGui)
 	local ROW_GAP = RANK.RowGap
 	local rowCount = 0
 	local rowsTall = 0 -- the rows' heights and the gaps between them
+	local podiumTall = 0 -- ... of the first three (the podium, taken or open)
 	local pinned = true
 	-- The player's own row is on the board / is its first row.
 	local listed = false
@@ -4374,7 +4385,10 @@ local function buildRanking(screen: ScreenGui)
 		local rowsH = if rowCount > 0 then rowsTall + 14 else 0
 		-- The leader's trophy card keeps its room: a long list gives way to it.
 		local keep = if leading and not short then RANK.LeadKeep else 0
-		local listH = math.max(0, math.min(inner - y - pinH - keep, rowsH))
+		-- ... but never the podium: its three steps show in full while there is room at all.
+		local podiumH = if rowCount > 0 then podiumTall + 14 else 0
+		local room = inner - y - pinH
+		local listH = math.max(0, math.min(room, rowsH, math.max(podiumH, room - keep)))
 		list.Position = UDim2.fromOffset(0, y)
 		list.Size = UDim2.new(1, 0, 0, listH)
 		list.Visible = listH > 0
@@ -4550,6 +4564,7 @@ local function buildRanking(screen: ScreenGui)
 		local shown = if board == "stage" then stageEntries else entries
 		local mineAt = 0
 		rowsTall = 0
+		podiumTall = 0
 		for i, entry in shown do
 			if type(entry) ~= "table" then
 				continue
@@ -4586,6 +4601,9 @@ local function buildRanking(screen: ScreenGui)
 				mineAt = #rows + 1
 			end
 			rowsTall += (if medal then RANK.PodiumH[rank] else RANK.RowH) + (if #rows > 0 then ROW_GAP else 0)
+			if #rows < #MEDAL_COLORS then
+				podiumTall = rowsTall
+			end
 			local name = tostring(entry.name or "?")
 			if board == "stage" then
 				local stage = tonumber(entry.stage) or tonumber(entry.value) or 0
@@ -4600,6 +4618,7 @@ local function buildRanking(screen: ScreenGui)
 			for rank = #rows + 1, #MEDAL_COLORS do
 				local frame = openSpot(rank, if mineAt > 0 then RANK.OpenOther else RANK.OpenName)
 				rowsTall += RANK.PodiumH[rank] + ROW_GAP
+				podiumTall = rowsTall
 				table.insert(rows, frame)
 			end
 		end
