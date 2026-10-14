@@ -85,6 +85,14 @@ local HINT_BRIGHT = Color3.new(1, 0.86, 0.8)
 
 local STRIP_Y = 92 -- Hud's run-pill slot (Tutorial steps aside while "RunActive")
 local TITLE_Y = 128
+-- Banner vs the stage sign: the big title stacks under the sign's "STAGE n" line, and the
+-- sign's lower lines (WIN plate, note, need hint) step out while a banner shows, so the two
+-- never print over each other. NoteText is the sign's smallest line.
+local SIGN = {
+	BannerY = TITLE_Y + 22, -- banner top: under the 28 px stage label (STRIP_Y + 28)
+	NoteText = 17,
+	BackFade = 0.5, -- seconds after a banner before the lines come back (a queued title replaces it first)
+}
 local BOX_W = 400
 local SPEED_TEXT = 78 -- the big bottom-centre number (1.4x the old 56)
 local SPEED_H = 84
@@ -184,6 +192,7 @@ local stageLabel: TextLabel
 local winLabel: TextLabel
 local winNote: TextLabel
 local hintLabel: TextLabel
+local signBody: Frame -- holds the win / note / hint lines; hidden while a banner shows
 -- Banner, finish
 local banner: Frame
 local bannerTitle: TextLabel
@@ -281,10 +290,16 @@ local function showBanner(title: string, sub: string?, color: Color3, hold: numb
 		bannerTitle.TextColor3 = color
 		bannerSub.Text = sub or ""
 		bannerSub.Visible = sub ~= nil
+		signBody.Visible = false
 		Kit.appear(banner, { from = 0.35, time = 0.4 })
 		task.delay(hold, function()
 			if bannerToken == mine then
 				Kit.disappear(banner)
+				task.delay(SIGN.BackFade, function()
+					if bannerToken == mine then
+						signBody.Visible = true
+					end
+				end)
 			end
 		end)
 	end
@@ -849,6 +864,7 @@ end
 -- full-screen root goes once its blocks have eased out.
 local function hide()
 	bannerToken += 1
+	signBody.Visible = true
 	if banner.Visible then
 		Kit.disappear(banner)
 	end
@@ -1008,7 +1024,12 @@ function CardioHud.onNotify(p: any)
 		local from = math.floor(num(p.from, 1))
 		local need = num(p.need, needOf(from) or 0)
 		local title, sub
-		if p.capped == true then
+		local zone = math.floor(num(p.zone, 0))
+		if zone > 0 and not caught then
+			-- Off the side of a safe zone's deck: not the next stage's need.
+			title = "OOPS!"
+			sub = "You fell off the edge after Stage " .. zone .. ". Back to Stage 1."
+		elseif p.capped == true then
 			title = if caught then "CAUGHT!" else "TOO SLOW!"
 			sub = "Your Custom Speed is too low for Stage " .. from .. ". Raise it!"
 		elseif p.slow == true then
@@ -1646,7 +1667,14 @@ local function buildStageLine()
 		ZIndex = 22,
 		StrokeThickness = 3,
 	})
-	winLabel = Kit.hudText(stageLine, {
+	signBody = Kit.new("Frame", {
+		Name = "SignLines",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 21,
+		Parent = stageLine,
+	})
+	winLabel = Kit.hudText(signBody, {
 		Name = "Win",
 		Text = "",
 		TextSize = 18,
@@ -1658,16 +1686,16 @@ local function buildStageLine()
 		StrokeThickness = 3,
 	})
 	-- Under the win line: what skipping the plate does, or when it pays again.
-	winNote = Kit.hudText(stageLine, {
+	winNote = Kit.hudText(signBody, {
 		Name = "WinNote",
 		Text = "",
-		TextSize = 15,
+		TextSize = SIGN.NoteText,
 		Size = UDim2.new(1, 0, 0, 20),
 		Position = UDim2.fromOffset(0, 51),
 		Visible = false,
 		ZIndex = 22,
 	})
-	hintLabel = Kit.hudText(stageLine, {
+	hintLabel = Kit.hudText(signBody, {
 		Name = "Hint",
 		Text = "Need more speed! Run on keys or hop on a treadmill",
 		TextSize = 16,
@@ -1684,7 +1712,7 @@ local function buildBanner(screenGui: ScreenGui)
 		Name = "CardioBanner",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(640, 110),
-		Position = UDim2.new(0.5, 0, 0, TITLE_Y + 22),
+		Position = UDim2.new(0.5, 0, 0, SIGN.BannerY),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Visible = false,
 		ZIndex = 30,

@@ -144,7 +144,7 @@ return function(h: { [string]: any })
 			end
 		end
 		check(at[2] <= 3, "stage 2 in the first few minutes (" .. at[2] .. ")")
-		check(at[3] <= 8, "stage 3 soon after (" .. at[3] .. ")")
+		check(at[3] <= 6, "stage 3 soon after (" .. at[3] .. ")")
 		check(at[10] >= 40 and at[10] <= 65, "stage 10 after ~45-60 min (" .. tostring(at[10]) .. ")")
 	end)
 
@@ -1340,14 +1340,14 @@ return function(h: { [string]: any })
 		local s3 = Rules.STAGES[3]
 		-- Reach left over on the longest jump at exactly the need: well above SAFETY.
 		local reserve = s3.walk * Rules.airtime(0) - s3.gap
-		check(reserve >= 2.9, "stage 3 keeps 2.9 studs in reserve at its need (" .. reserve .. ")")
+		check(reserve >= 2.4, "stage 3 keeps 2.4 studs in reserve at its need (" .. reserve .. ")")
 		check(reserve >= 3 * Rules.SAFETY, "three times the safety margin")
 		for _, j in Rules.jumps(3) do
 			check(s3.walk * Rules.airtime(j.rise) - j.gap >= reserve - 1e-9, "no stage 3 jump is tighter than its longest")
 		end
 		eq(Rules.RECOMMEND, 1.15, "recommended = 15% above the need")
 		eq(Rules.recommended(1), 0, "stage 1 needs nothing")
-		eq(Rules.recommended(3), 1265, "stage 3: 1,100 x 1.15")
+		eq(Rules.recommended(3), 955, "stage 3: 830 x 1.15")
 		eq(Rules.recommended(99), 0, "no such stage")
 		for n = 2, Rules.STAGE_COUNT - 1 do
 			local s = Rules.STAGES[n]
@@ -1627,5 +1627,13 @@ return function(h: { [string]: any })
 		rig.feet(x1, Layout.killYAt(x1) - 10, O.z)
 		fall = rig.last("fall")
 		check(fall.from == 1 and fall.need == 0 and fall.slow == false, "a stage 1 fall is never about Speed")
+		-- Off the side of safe zone 3's own deck: a plain fall, not stage 4's need.
+		check(def.start(player, true), "restart for a zone fall")
+		local z3 = Layout.zone(3)
+		local zx = (z3.x0 + z3.x1) / 2
+		rig.feet(zx, Layout.killYAt(zx) - 10, O.z)
+		fall = rig.last("fall")
+		check(fall.zone == 3 and fall.slow == false and fall.capped == false, "a fall off zone 3 says so")
+		check(rig.last("fall").from == 4, "still counted from stage 4")
 	end)
 end

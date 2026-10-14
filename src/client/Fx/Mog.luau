@@ -134,6 +134,21 @@ local HIT_BURST = {
 	Ring = 8, -- ring sprite size on the rival's chest (perfect: x1.4)
 	Color = Color3.fromRGB(255, 226, 80),
 }
+-- The rival stands this much larger than its tier look, so it fills more of the duel frame.
+local RIVAL = {
+	Scale = 1.3,
+}
+-- The crowd jumps on every hit: the fan rows of the stands near you (World.MogStage moves
+-- one anchored "FanRow" root per row in a slow wave) get an extra local jump on top of the
+-- server's wave, bigger on a perfect, and the rows go off in a quick ripple.
+local CHEER = {
+	Height = 2.8, -- studs at the top of a hit's jump
+	PerfectBoost = 1.6, -- x Height on a perfect
+	Time = 0.5, -- seconds of one jump
+	Ripple = 0.06, -- seconds between neighbouring rows taking off
+	Range = 160, -- studs from the player: rows of these stands jump
+	Resync = 0.05, -- studs: a root this far from what we wrote was moved by the server
+}
 local PUNCH = {
 	Dist = 3.4, -- studs the camera dollies toward the rival on a perfect
 	Fov = 9, -- degrees narrower at the peak
@@ -392,8 +407,9 @@ local function spawnRival(info: any)
 		return
 	end
 	local m = model :: Model
+	m:ScaleTo(m:GetScale() * RIVAL.Scale)
 	local height = m:GetAttribute("Height")
-	rivalHeight = if type(height) == "number" then height else 6
+	rivalHeight = (if type(height) == "number" then height else 6) * RIVAL.Scale
 	local face = Vector3.new(playerPos.X, rivalPos.Y, playerPos.Z)
 	rivalPivot = if (face - rivalPos).Magnitude > 0.1 then CFrame.lookAt(rivalPos, face) else CFrame.new(rivalPos)
 	m:PivotTo(rivalPivot)
@@ -617,6 +633,93 @@ local function takeCamera()
 	end)
 end
 
+-- Crowd jump -----------------------------------------------------------------------------------
+
+type CheerRow = { root: BasePart, server: CFrame, wrote: CFrame?, delay: number }
+local cheerRows: { CheerRow } = {}
+local cheerAt = -math.huge
+local cheerHeight = 0
+local cheerConn: RBXScriptConnection? = nil
+
+local function stopCheer()
+	if cheerConn then
+		cheerConn:Disconnect()
+		cheerConn = nil
+	end
+	for _, row in cheerRows do
+		if row.wrote and row.root.Parent then
+			row.root.CFrame = row.server
+		end
+		row.wrote = nil
+	end
+	table.clear(cheerRows)
+end
+
+local function findCheerRows()
+	table.clear(cheerRows)
+	local map = Workspace:FindFirstChild("Map")
+	local stage = map and map:FindFirstChild("MogStage")
+	if not stage then
+		return
+	end
+	for _, part in stage:GetChildren() do
+		if part.Name == "FanRow" and part:IsA("BasePart") and (part.Position - playerPos).Magnitude <= CHEER.Range then
+			table.insert(cheerRows, { root = part, server = part.CFrame, delay = 0 })
+		end
+	end
+	-- The ripple runs round the stand from the row nearest the rival.
+	table.sort(cheerRows, function(a, b)
+		return (a.root.Position - rivalPos).Magnitude < (b.root.Position - rivalPos).Magnitude
+	end)
+	for i, row in cheerRows do
+		row.delay = (i - 1) * CHEER.Ripple
+	end
+end
+
+local function cheer(perfect: boolean)
+	if reducedMotion() then
+		return
+	end
+	if #cheerRows == 0 then
+		findCheerRows()
+	end
+	cheerAt = os.clock()
+	cheerHeight = CHEER.Height * (if perfect then CHEER.PerfectBoost else 1)
+	if cheerConn then
+		return
+	end
+	cheerConn = RunService.RenderStepped:Connect(function()
+		local t = os.clock() - cheerAt
+		local busy = false
+		for _, row in cheerRows do
+			local root = row.root
+			if root.Parent then
+				local now = root.CFrame
+				local wrote = row.wrote
+				if not wrote or (now.Position - wrote.Position).Magnitude > CHEER.Resync then
+					row.server = now -- the server's wave moved it since our last write
+				end
+				local k = (t - row.delay) / CHEER.Time
+				if k > 0 and k < 1 then
+					busy = true
+					local cf = row.server * CFrame.new(0, cheerHeight * math.sin(math.pi * k), 0)
+					row.wrote = cf
+					root.CFrame = cf
+				elseif k <= 0 then
+					busy = true
+				elseif wrote then
+					root.CFrame = row.server
+					row.wrote = nil
+				end
+			end
+		end
+		if not busy and cheerConn then
+			cheerConn:Disconnect()
+			cheerConn = nil
+		end
+	end)
+end
+
 -- Run ---------------------------------------------------------------------------------------
 
 local function clear()
@@ -626,6 +729,7 @@ local function clear()
 	releaseCamera()
 	stopPosers()
 	removeRival()
+	stopCheer()
 	if folder then
 		folder:Destroy()
 		folder = nil
@@ -670,6 +774,7 @@ local function onResult(p: any)
 		setExpr("Shock", 0.8)
 		flinch(1.4)
 		rivalBurst(true)
+		cheer(true)
 		if not reducedMotion() then
 			punchAt = os.clock()
 		end
@@ -684,6 +789,7 @@ local function onResult(p: any)
 		setExpr("Shock", 0.6)
 		flinch(0.8)
 		rivalBurst(false)
+		cheer(false)
 		pulseAura(combo, W.Cream)
 	else
 		setExpr("Angry", 1)

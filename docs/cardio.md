@@ -30,9 +30,17 @@ you stand still. Stages need more and more Speed. In Chad Aura Tycoon it is the 
    Each stage has `need` Speed, shown on a big sign at its entrance ("NEED 1,200 SPEED"). Its
    longest gap is clearable at walkSpeed(need) with the default jump, and NOT clearable at
    walkSpeed(previous stage's need). Physics decides; there are no walls. Every designed jump keeps
-   some reach in reserve for phones and late jumps: stage 3 (need 1,100) asks for 16.5 studs at
-   most, which leaves 2.9 studs at exactly the need (it was 17 studs and 2.4). The HUD's bar
-   recommends 15% more Speed than the need (`CardioRules.RECOMMEND`).
+   some reach in reserve for phones and late jumps: stage 3 (need 830, recommended 955) asks for
+   16 studs at most, which leaves 2.4 studs (3 x SAFETY) at exactly the need. 16 is the shortest
+   gap that stage 2's need (150) cannot clear, and 830 the lowest need that keeps 2.4 over it, so
+   a first session reaches the chaser about 3 minutes of running after stage 2 (2 minutes
+   nonstop, 4.7 on the zone 2 treadmills; it was 1,100 and about 5 minutes). Stages 4-9 follow
+   on a smooth curve: 2,400 / 5,800 / 12,000 / 23,000 / 41,000 / 72,000, stage 10 stays 125,000
+   (the Speed cap); stage 10 comes after about 48 minutes in the coarse progression model.
+   Saved Speed is never lowered: a save above a stage's new need simply has that stage open.
+   The HUD's bar recommends 15% more Speed than the need (`CardioRules.RECOMMEND`); on the
+   track a gold goal star with that number and a bobbing arrow stands beside the doorway of the
+   stage you run next (Fx.Cardio).
    Later stages also add: narrower key bridges, step-ups (≤ 5 studs), blinking keys (on/off by
    server time from stage 4), sliding keys (moving platforms from stage 6). There are
    no checkpoints anywhere. Stage 10's zone holds the last WIN plate, in front of the FINISH podium.
@@ -110,7 +118,8 @@ x ≈ -1300 to +1300 at most, deck tops around y = 20 above the sea. It is reach
   `"resting"` = a plate that would pay it, inside the 30 s gap, or `"none"`), `packCash`, `repeatCash`, `repeatShare`, `repeatFrom` (the first plate that can pay
   the bonus) and `repeatReadyAt` (os.time() from which it is paid again, 0 = now); the win banner
   reads "Run again bonus +$X (20%)" for `"repeat"`, `fall { stage = 0, from, reason }` (back in the lobby
-  from stage `from`; reason "fall" or "caught"), `upgrade { level, cost }`, `stop { reason }`.
+  from stage `from`; reason "fall" or "caught"; `zone = n` when the fall was off safe zone n's own deck, which
+  the HUD shows as a plain fall instead of the next stage's need), `upgrade { level, cost }`, `stop { reason }`.
 - Speed changes travel in the State snapshot (`modes.cardio`: speed, walkSpeed, multiplier,
   maxWalkSpeed (uncapped), speedCap (nil when none), bestStage, treadmill, treadmillRate,
   nextCost, stage, reached, wins and firsts (per plate, in a run: what the plate pays now and
