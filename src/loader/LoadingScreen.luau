@@ -1,18 +1,18 @@
 --[[
-	LoadingScreen: full-screen splash shown from ReplicatedFirst until the
-	player is in the game. Standalone (the client Kit isn't replicated yet
-	when this runs): it takes the theme later, once ReplicatedStorage has
-	arrived, for the game name, tagline, tips and colours, and the Blender art
-	(brand/KeyArt background, brand/Logo wordmark) once Shared.Assets is there.
+	LoadingScreen: what is drawn over the join, from ReplicatedFirst until the
+	player is in the game. There is no splash picture: the loading screen is
+	the camera circling high over the map (Flyover) and this is only what sits
+	on top of it. Standalone (the client Kit isn't replicated yet when this
+	runs): it takes the theme later, once ReplicatedStorage has arrived, for
+	the game name, tagline, tips and colours.
 
-	Look: the key art covers the screen with its hero (Chad on the stage) kept
-	clear in the middle; the logo sits at the top centre over the sky, bobbing,
-	with twinkles and a shine sweep; one band along the bottom holds the
-	tagline, a chunky sunny progress bar (an aura orb riding its leading edge),
-	the status under it and the tip card. Aura orbs drift up round the
-	hero. Only the bottom of the art is shaded, so the beach keeps its colour.
-	Without art ids it keeps the code-drawn sky gradient, bands and title text.
-	Art fades in only once its image has loaded; the whole screen fades out.
+	Look: until the world has arrived a sky gradient covers the screen; open()
+	fades it off the flight. The logo sits at the top centre, bobbing, with
+	twinkles and a shine sweep; one band along the bottom holds the tagline, a
+	chunky sunny progress bar (an aura orb riding its leading edge), the status
+	under it and the tip card, over a soft navy shade. Without a logo id it
+	shows the title text. finish() lifts the logo off the top and drops the
+	band off the bottom while the camera comes down to the player.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -27,7 +27,6 @@ local LoadingScreen = {}
 export type Cell = { image: string, x: number, y: number, w: number, h: number }
 
 export type Art = {
-	keyArt: string?,
 	logo: string?,
 	logoShine: string?,
 	softDot: string?,
@@ -41,7 +40,12 @@ export type Handle = {
 	applyArt: (Art?) -> (),
 	setStatus: (string) -> (),
 	setProgress: (number) -> (),
-	finish: () -> (),
+	-- The world is there: fades the sky cover off the camera's flight. `speed`
+	-- scales time from here on (1 = real time).
+	open: (number?) -> (),
+	-- Takes the logo and the band off the screen at `speed` (1 = real time)
+	-- and returns the seconds until they are gone.
+	finish: (number?) -> number,
 }
 
 local DEFAULT = {
@@ -69,27 +73,10 @@ local BAR = Vector2.new(640, 36)
 local BAR_Y = 36
 local STATUS_Y = 82
 
--- The key art: its aspect, and where the hero group (Chad's hair down to the
--- stage) sits as fractions of its height. art/blender/brand/brand.py prints
--- these as KEYART_LAYOUT; the art is slid so that span shows between the logo
--- and the bottom band on every screen shape.
-local ART_ASPECT = 16 / 9
-local HERO_TOP = 0.375
-local HERO_BOTTOM = 0.754
-
--- Aura orbs drifting up round the hero: x offset from the art's centre (in art
--- widths; clear of the three faces at 0 and +-0.165), size (design px), seconds
--- per rise, phase, colour.
-local ORBS = {
-	{ dx = -0.260, size = 30, period = 6.5, phase = 0.05, color = Color3.fromRGB(176, 128, 255) },
-	{ dx = 0.240, size = 26, period = 5.6, phase = 0.40, color = Color3.fromRGB(255, 112, 184) },
-	{ dx = -0.090, size = 20, period = 4.8, phase = 0.72, color = Color3.fromRGB(255, 216, 72) },
-	{ dx = 0.300, size = 22, period = 7.2, phase = 0.18, color = Color3.fromRGB(104, 232, 192) },
-	{ dx = -0.330, size = 18, period = 5.2, phase = 0.58, color = Color3.fromRGB(104, 232, 192) },
-	{ dx = 0.085, size = 18, period = 6.0, phase = 0.86, color = Color3.fromRGB(176, 128, 255) },
-	{ dx = -0.225, size = 24, period = 7.6, phase = 0.33, color = Color3.fromRGB(255, 112, 184) },
-	{ dx = 0.215, size = 16, period = 4.4, phase = 0.64, color = Color3.fromRGB(255, 216, 72) },
-}
+-- Seconds: the sky cover's fade once the world is there, and the logo and
+-- band leaving the screen.
+local OPEN = 0.9
+local LEAVE = 0.55
 
 -- Twinkles round the logo: position in the logo box, size (of its height),
 -- speed, phase.
@@ -143,27 +130,21 @@ local function tween(obj: Instance, time: number, props: { [string]: any }, styl
 	TweenService:Create(obj, TweenInfo.new(time, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
 end
 
--- Fades a whole tree out (what GroupTransparency did on a CanvasGroup).
-local function fadeOut(root: Instance, time: number)
-	for _, obj in { root, table.unpack(root:GetDescendants()) } do
-		if obj:IsA("GuiObject") then
-			tween(obj, time, { BackgroundTransparency = 1 })
-		end
-		if obj:IsA("TextLabel") then
-			tween(obj, time, { TextTransparency = 1 })
-		elseif obj:IsA("ImageLabel") then
-			tween(obj, time, { ImageTransparency = 1 })
-		elseif obj:IsA("UIStroke") then
-			tween(obj, time, { Transparency = 1 })
-		end
-	end
-end
-
 -- Overshooting ease for the logo's pop-in.
 local function backOut(t: number): number
 	local c = 1.70158
 	local u = t - 1
 	return 1 + (c + 1) * u * u * u + c * u * u
+end
+
+-- Winds up the other way first: the logo and band dip before they leave.
+local function backIn(t: number): number
+	local c = 1.70158
+	return (c + 1) * t * t * t - c * t * t
+end
+
+local function smooth(t: number): number
+	return t * t * (3 - 2 * t)
 end
 
 --[[
@@ -194,14 +175,13 @@ function LoadingScreen.findArt(timeout: number?): Art?
 	local icons = (assets :: any).Icons
 	local orb = if type(icons) == "table" and type(icons.Orb) == "table" then icons.Orb else nil
 	local art: Art = {
-		keyArt = id("brand/KeyArt"),
 		logo = id("brand/Logo"),
 		logoShine = id("brand/LogoShine"),
 		softDot = id("vfx/SoftDot"),
 		sparkle = id("vfx/Sparkle"),
 		orb = orb,
 	}
-	if not art.keyArt and not art.logo then
+	if not art.logo then
 		return nil
 	end
 	return art
@@ -213,49 +193,20 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	-- high-DPI window drew only its own gradient and none of its children.
 	local root = new("Frame", {
 		Name = "Loading",
-		BackgroundColor3 = WHITE,
-		BorderSizePixel = 0,
+		BackgroundTransparency = 1,
 		ClipsDescendants = true,
 		Size = UDim2.fromScale(1, 1),
 		Parent = parent,
 	})
-	local background = new("UIGradient", { Rotation = 90, Parent = root })
-
-	-- Code-drawn backdrop: big soft diagonal bands over the sky gradient.
-	local bands = {}
-	for i = 1, 4 do
-		local band = new("Frame", {
-			Name = "Band",
-			BackgroundColor3 = WHITE,
-			BackgroundTransparency = 0.92,
-			BorderSizePixel = 0,
-			Size = UDim2.new(0.16, 0, 2.5, 0),
-			Position = UDim2.fromScale(-0.2 + i * 0.3, -0.7),
-			Rotation = 28,
-			Parent = root,
-		})
-		table.insert(bands, band)
-	end
-
-	-- Key art, faded in once loaded. Sized and slid every frame (see layout)
-	-- instead of ScaleType.Crop, which would centre it and hide the hero.
-	local keyArt = image("KeyArt", root, {
-		AnchorPoint = Vector2.zero,
-		ImageTransparency = UNLOADED,
+	-- The sky cover: all there is to see until the world has arrived.
+	local cover = new("Frame", {
+		Name = "Cover",
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
 		Size = UDim2.fromScale(1, 1),
-		Visible = false,
+		Parent = root,
 	})
-
-	local orbs = {}
-	for i, spec in ORBS do
-		local glow = image("Orb" .. i, root, { ImageColor3 = spec.color, ImageTransparency = 1 })
-		local core = image("Core", glow, {
-			ImageTransparency = 1,
-			Size = UDim2.fromScale(0.42, 0.42),
-			Position = UDim2.fromScale(0.5, 0.5),
-		})
-		table.insert(orbs, { spec = spec, glow = glow, core = core })
-	end
+	local background = new("UIGradient", { Rotation = 90, Parent = cover })
 
 	-- Readability shade under the bottom band only: clear at its top edge.
 	local shade = new("Frame", {
@@ -531,28 +482,19 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	local clock = 0
 	local logoShownAt: number? = nil
 	local alive = true
-	local fading = false
+	-- The sky cover fades once the world may be seen (open); leaving takes the
+	-- logo and the band off the screen (finish).
+	local opened = false
+	local coverK = 0
+	local leaving = false
+	local leaveT = 0
+	local rate = 1
+	local connection: RBXScriptConnection? = nil
 
 	local function applyArt(art: Art?)
 		-- Art arriving during the fade-out would fight its tweens.
 		if not art or not alive then
 			return
-		end
-		if art.keyArt and keyArt.Image ~= art.keyArt then
-			keyArt.Image = art.keyArt
-			keyArt.Visible = true
-			whenLoaded(keyArt, function()
-				if PREVIEW then
-					keyArt.ImageTransparency = 0
-					shade.BackgroundTransparency = 0
-				else
-					tween(keyArt, 0.5, { ImageTransparency = 0 })
-					tween(shade, 0.5, { BackgroundTransparency = 0 })
-				end
-				for _, band in bands do
-					band.Visible = false
-				end
-			end)
 		end
 		if art.logo and logo.Image ~= art.logo then
 			logo.Image = art.logo
@@ -579,10 +521,6 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 			shine.Image = art.logoShine
 		end
 		if art.softDot then
-			for _, orb in orbs do
-				orb.glow.Image = art.softDot
-				orb.core.Image = art.softDot
-			end
 			riderGlow.Image = art.softDot
 		end
 		if art.sparkle then
@@ -621,35 +559,14 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		local bandS = math.max(scale, math.min(1, w / 800, h / 480))
 		bandScale.Scale = bandS
 
-		-- Logo at the top, band at the bottom, the hero between them.
-		local logoS = scale
+		-- Leaving: the band dips and drops off the bottom, the logo lifts off the top.
+		local away = if leaving then backIn(math.clamp(leaveT / LEAVE, 0, 1)) else 0
 		local logoH = LOGO.Y * scale
 		local top = math.max(10 * scale, 6)
 		local margin = 16 * bandS
-		local bandTop = h - margin - BAND.Y * bandS
-		local artW = math.max(w, h * ART_ASPECT)
-		local artH = artW / ART_ASPECT
-		local artX = (w - artW) / 2
-		-- Short screens (phones) can't fit all three: shrink the logo by up to a
-		-- quarter, then drop the tagline, so the hero stays clear.
-		local short = (HERO_BOTTOM - HERO_TOP) * artH + 18 * bandS - (bandTop - top - logoH)
-		if short > 0 then
-			local cut = math.min(short, logoH * 0.25)
-			logoS *= 1 - cut / logoH
-			logoH -= cut
-			short -= cut
-		end
-		tagline.Visible = short <= 0
-		if short > 0 then
-			bandTop += BAR_Y * bandS
-		end
-		bottom.Position = UDim2.new(0.5, 0, 1, -margin)
-		shade.Size = UDim2.new(1, 0, 0, h - bandTop + 90 * bandS)
-
-		local between = (top + logoH + bandTop) / 2
-		local artY = math.clamp(between - (HERO_TOP + HERO_BOTTOM) / 2 * artH, h - artH, 0)
-		keyArt.Size = UDim2.fromOffset(artW, artH)
-		keyArt.Position = UDim2.fromOffset(artX, artY)
+		bottom.Position = UDim2.new(0.5, 0, 1, -margin + away * (BAND.Y * bandS + margin + 40))
+		shade.Size = UDim2.new(1, 0, 0, BAND.Y * bandS + margin + 90 * bandS)
+		shade.BackgroundTransparency = math.clamp(away, 0, 1)
 
 		-- Gentle bob for the logo and title; the logo pops in when it arrives.
 		local bob = math.sin(clock * 1.8) * 5 * scale
@@ -657,11 +574,12 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		if logoShownAt then
 			pop = 0.75 + 0.25 * backOut(math.clamp((clock - logoShownAt) / 0.45, 0, 1))
 		end
-		logo.Size = UDim2.fromOffset(LOGO.X * logoS * pop, logoH * pop)
-		logo.Position = UDim2.new(0.5, 0, 0, top + logoH / 2 + bob)
+		local logoY = top + logoH / 2 + bob - away * (top + logoH * 1.2 + 40)
+		logo.Size = UDim2.fromOffset(LOGO.X * scale * pop, logoH * pop)
+		logo.Position = UDim2.new(0.5, 0, 0, logoY)
 		logo.Rotation = math.sin(clock * 0.9) * 1.2
 		title.Size = UDim2.fromOffset(math.min(w * 0.92, 760 * scale), 84 * scale)
-		title.Position = UDim2.new(0.5, 0, 0, top + logoH / 2 + bob)
+		title.Position = UDim2.new(0.5, 0, 0, logoY)
 
 		-- The rider sits on the fill's leading edge.
 		local edge = (BAND.X - BAR.X) / 2 + 3 + progress * (BAR.X - 6)
@@ -669,24 +587,7 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 		rider.Position = UDim2.fromOffset(edge, riderY)
 		rider.Rotation = math.sin(clock * 2.6) * 10
 		riderGlow.Position = UDim2.fromOffset(edge, riderY)
-
-		if fading then
-			-- The fade-out tweens own every transparency from here on.
-			return
-		end
-
-		for _, orb in orbs do
-			local spec = orb.spec
-			local t = (clock / spec.period + spec.phase) % 1
-			local seen = math.sin(math.pi * t)
-			local d = spec.size * scale * (0.7 + 0.3 * seen)
-			local x = w / 2 + artW * (spec.dx + 0.012 * math.sin(clock * 1.3 + spec.phase * 6.28))
-			local y = artY + artH * (HERO_BOTTOM - 0.04 + (HERO_TOP - 0.1 - HERO_BOTTOM + 0.04) * t)
-			orb.glow.Size = UDim2.fromOffset(d * 2.2, d * 2.2)
-			orb.glow.Position = UDim2.fromOffset(x, y)
-			orb.glow.ImageTransparency = 1 - 0.62 * seen
-			orb.core.ImageTransparency = 1 - 0.9 * seen
-		end
+		riderGlow.ImageTransparency = if rider.Image ~= "" then 0.35 + 0.2 * math.sin(clock * 3) else 1
 
 		for _, twinkle in twinkles do
 			local spec = twinkle.spec
@@ -702,7 +603,6 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 			local t = ((clock - logoShownAt) % SHINE_EVERY) / SHINE_TIME
 			shineGradient.Offset = Vector2.new(if t < 1 then -0.8 + 1.6 * t else -1.5, 0)
 		end
-		riderGlow.ImageTransparency = if rider.Image ~= "" then 0.35 + 0.2 * math.sin(clock * 3) else 1
 	end
 
 	local function showProgress()
@@ -711,8 +611,24 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	end
 	showProgress()
 
-	local connection = RunService.RenderStepped:Connect(function(dt)
+	connection = RunService.RenderStepped:Connect(function(dt)
+		dt *= rate
 		clock += dt
+		if opened and coverK < 1 then
+			coverK = math.min(1, coverK + dt / OPEN)
+			cover.BackgroundTransparency = smooth(coverK)
+			cover.Visible = coverK < 1
+		end
+		if leaving then
+			leaveT += dt
+			if leaveT >= LEAVE then
+				if connection then
+					connection:Disconnect()
+				end
+				root:Destroy()
+				return
+			end
+		end
 		-- The bar eases toward the stage the loader has reached and fills on finish.
 		progress += (target - progress) * math.min(1, dt * (if alive then 1.6 else 8))
 		showProgress()
@@ -742,21 +658,17 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 	end)
 	layout()
 
-	local function finish()
+	local function finish(speed: number?): number
 		if not alive then
-			return
+			return 0
 		end
 		alive = false
 		target = 1
 		table.clear(pending)
-		task.delay(0.3, function()
-			fading = true
-			fadeOut(root, 0.6)
-		end)
-		task.delay(0.95, function()
-			connection:Disconnect()
-			root:Destroy()
-		end)
+		opened = true
+		leaving = true
+		rate = speed or 1
+		return LEAVE / rate
 	end
 
 	return {
@@ -771,6 +683,10 @@ function LoadingScreen.build(parent: Instance, theme: any?): Handle
 			if alive then
 				target = math.max(target, math.clamp(p, 0, 0.97))
 			end
+		end,
+		open = function(speed: number?)
+			opened = true
+			rate = speed or 1
 		end,
 		finish = finish,
 	}
