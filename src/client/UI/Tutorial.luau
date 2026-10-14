@@ -69,7 +69,7 @@ local PILL_MAX_WIDTH = 440
 local HUD_ROW_END = 38 -- Hud TUNE.TopY + TUNE.RowH
 local HUD_ROW_H = 36 -- Hud TUNE.RowH (the second plate of the touch column)
 local HUD_GAP = 4 -- Hud TUNE.StackGap (held on the glass, Kit.pxUp, as the HUD does)
-local GOAL_H = 44 -- Hud TUNE.GoalH: the pill reaches no lower than the goal plate would
+local GOAL_H = 49 -- Hud TUNE.GoalH and its 20 px second line: the pill reaches no lower than the goal plate would
 local BOTTOM_GAP = 102
 -- The pill lives in a CanvasGroup (for the fade) padded so its shadow is not clipped.
 local PAD_X = 6
@@ -82,12 +82,19 @@ local CHIP_X = 18 -- past the gold accent bar
 local Z_REST = 6
 -- The plate: the glass tint, dark enough for the text to read over any floor or sky.
 local PLATE = 0.1
--- The "Skip" word's slot at the right end (Tutorial.build: its measured width and a margin).
+-- The "Skip" word's slot at the right end (Tutorial.build: its measured width and a margin),
+-- on a small outlined pill. BuilderSans draws about 0.77 of its size: 18 reads as 14 px.
 local SKIP_WIDTH = 52
-local SKIP_SIZE = 14
-local SKIP_REST = 0.35
+local SKIP_DESIGN = 18
+local SKIP_SIZE = 18
+local SKIP_REST = 0.15
+local SKIP_PILL_H = 28
+local SKIP_PILL_PAD = 10 -- the word to the pill's sides
+local SKIP_EDGE = 1.5
+local SKIP_EDGE_REST = 0.35
 local TEXT_SIZE = 22
-local HINT_SIZE = 14
+local HINT_DESIGN = 18 -- reads as 14 px
+local HINT_SIZE = 18
 local HINT_FADED = 0.1
 local HINT_SECONDS = 4
 local IN_TIME = 0.18
@@ -445,9 +452,9 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 	-- The step (22 px at 720p; at least 18 px on the glass, 16 on a phone), its hint and the
 	-- "Skip" word (captions).
 	TEXT_SIZE = Kit.px(if Kit.touch then 16 else 18, 22, screen)
-	HINT_SIZE = Kit.px(Kit.captionPx(), 14, screen)
-	SKIP_SIZE = HINT_SIZE
-	SKIP_WIDTH = math.ceil(textWidth(Words.Skip, SKIP_SIZE, F.UI)) + 24
+	HINT_SIZE = Kit.px(Kit.captionPx(), HINT_DESIGN, screen)
+	SKIP_SIZE = Kit.px(Kit.captionPx(), SKIP_DESIGN, screen)
+	SKIP_WIDTH = math.ceil(textWidth(Words.Skip, SKIP_SIZE, F.UI)) + SKIP_PILL_PAD * 2 + 12
 	PILL_HEIGHT = math.max(44, TEXT_SIZE + HINT_SIZE + 12)
 	PILL_MIN_WIDTH = math.ceil(220 * TEXT_SIZE / 18)
 	PILL_MAX_WIDTH = math.ceil(440 * TEXT_SIZE / 18)
@@ -546,6 +553,24 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		ZIndex = 8,
 		Parent = pill,
 	})
+	local border = Kit.new("Frame", {
+		Name = "Border",
+		BackgroundColor3 = G.TextInk,
+		BackgroundTransparency = 0.55,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(SKIP_WIDTH - 12, SKIP_PILL_H),
+		Position = UDim2.new(0.5, -2, 0.5, 0),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 8,
+		Parent = skip,
+	})
+	Kit.round(border)
+	local edge = Kit.new("UIStroke", {
+		Thickness = SKIP_EDGE,
+		Color = C.TextMute,
+		Transparency = SKIP_EDGE_REST,
+		Parent = border,
+	})
 	local word = Kit.text(skip, {
 		Name = "Word",
 		Text = Words.Skip,
@@ -554,12 +579,16 @@ function Tutorial.build(screenGui: ScreenGui, dependencies: Deps)
 		TextColor3 = C.TextMute,
 		TextTransparency = SKIP_REST,
 		StrokeThickness = 0,
+		Size = UDim2.fromOffset(SKIP_WIDTH - 12, SKIP_PILL_H),
+		Position = UDim2.new(0.5, -2, 0.5, 0),
+		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 9,
 	})
 	Kit.bouncy(skip, 1.08)
 	Kit.selectable(skip)
 	local function lit(on: boolean)
 		Kit.tween(word, 0.12, { TextTransparency = if on then 0 else SKIP_REST, TextColor3 = if on then C.Text else C.TextMute })
+		Kit.tween(edge, 0.12, { Transparency = if on then 0 else SKIP_EDGE_REST, Color = if on then C.Text else C.TextMute })
 	end
 	skip.MouseEnter:Connect(function()
 		lit(true)

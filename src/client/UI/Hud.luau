@@ -10,28 +10,34 @@
 	                 so it reads over a crowded rack.
 	                 Row 1, side by side: the count plate (Chad icon + "37/100"; the number
 	                 ticks, the plate pops and the icon wiggles on every change; at
-	                 100/100 the plate turns orange-red with an "AUTO-MERGING" pill and
-	                 shakes on each buy that auto-merges) and the status plate ("Deposit
-	                 bonus: x1.3 · 12s", never red; during a surge a gold plate with the
-	                 bolt, "AURA SURGE x2 · 1:23", a pulsing edge and a sheen).
+	                 100/100 the plate turns orange-red with an "AUTO-MERGING" pill and a
+	                 pulsing ring, and shakes on each buy that auto-merges) and the status
+	                 plate ("Deposit bonus: x1.3 · 12s"; during a surge a crimson plate with
+	                 the gold bolt, "AURA SURGE x2 · 1:23", a draining gold bar, a pulsing
+	                 edge, a sheen and a gold vignette round the screen).
 	                 Row 2, once the tutorial is done: the "Next:" goal plate ("Next:
 	                 Protein Bro 63%" over "1,240 more Normies · about 2 h" and a
 	                 progress bar, Shared.NextGoal; it turns green, breathes and says
-	                 "READY: step on MOG MERGE" when one merge finds the tier). With every
-	                 tier found it is the gold CHAMPION plate: a crown, "CHAMPION" and the
-	                 count of top-tier Chads, over "Index reward: tap to claim it" behind
+	                 "READY: step on MOG MERGE" when one merge finds the tier, sparkles
+	                 sweeping across it). With every tier found it is the gold CHAMPION
+	                 plate: a big bobbing crown, "CHAMPION" and the count of top-tier
+	                 Chads, a slow sheen and sparkles, over "Index reward: tap to claim it" behind
 	                 the Index icon and its red dot while a milestone is unclaimed, then
 	                 "All 25 Chads found!" (above the dumbbell on compact screens). A
 	                 "nearer goal" takes the plate's second line, one at a time, behind its
 	                 icon ("Blender is full: upgrade its speed", "Crate ready at the
-	                 Smasher", "Try a Game Mode: +$X"): a tap on the plate then does it, and
+	                 Smasher", "Try a Game Mode: +$X", "New! Open MODES" right after the
+	                 tutorial): a tap on the plate then does it, and
 	                 Client.Guide points at its pad on the plot. No row is ever added
 	                 under the plate. The tutorial quest pill and the parkour run pill
 	                 have their own slot under the stack. On touch the wallet shares the
 	                 top left, so the three plates stack in one column instead.
-	  left edge      menu grid: Home Ranking Modes / Index Shop Invite Daily, each an
+	  left edge      menu grid: Home Ranking Modes Index / Shop Invite Daily, each an
 	                 icon and its caption on its own dark glass plate, all the same
-	                 size (Daily: a dot while a reward waits, else its countdown)
+	                 size, on one dark backing plate (Daily: a dot while a reward waits,
+	                 else its countdown). Only one button calls at a time (MENU_RANK): its
+	                 badge beats and it glows or breathes; Modes, new after the tutorial,
+	                 wears a gold ring and a bobbing arrow
 	                 promo under it, only after the tutorial, below tier 15 and until it
 	                 is opened once: a small green-tinted glass card three buttons wide,
 	                 STARTER PACK (then 2X CASH under a tilted "PERMANENT" tag) with a
@@ -40,6 +46,7 @@
 	                 ("Premium +10%", "Friends +20%", a gold "SURGE x2"), "Cash [ x1.0 ]",
 	                 the big cash amount + square "+" on the cash plate (it flashes green
 	                 and floats "+$X" on income, wears a pulsing gold edge during a surge)
+	                 and under it the income, "+$X/s" (not on touch)
 	  bottom centre  the dumbbell: "AURA" + the carried amount on its plaque
 	  bottom right   FREE gift with its countdown (ready: a "!" dot, the gift hopping and
 	                 a sunny "CLAIM!": the gift is announced here and nowhere else),
@@ -166,7 +173,9 @@ local TUNE = {
 	GoalLead = 18,
 	GoalTitle = 18,
 	GoalCount = 17,
-	GoalHint = 17,
+	-- The goal plate's second line is BuilderSans, which draws about 0.77 of its size (17
+	-- read as 13 px): 20 reads as 15 px. Its line and the plate grow with it.
+	GoalHint = 20,
 	-- The count changes: the plate pops, the number flashes and the Chad icon wiggles.
 	CountPop = 1.6, -- Kit.pop strength (1 = +12 %)
 	CountFlash = 0.55,
@@ -179,15 +188,31 @@ local TUNE = {
 	FullPlate = Color3.fromRGB(236, 84, 38),
 	FullEdge = Color3.fromRGB(255, 214, 160),
 	FullFlash = Color3.fromRGB(255, 176, 64),
-	FullText = 15,
-	FullPillH = 24,
+	FullText = 19, -- LuckiestGuy draws about 0.8 of its size: 19 reads as 15 px
+	FullPillH = 28,
+	-- ...and the plate pulses: a glowing ring just outside it swells and fades, for good.
+	FullRingColor = Color3.fromRGB(255, 196, 92),
+	FullRingOut = 4, -- px outside the plate
+	FullRingWidth = { 2, 6 }, -- the ring's stroke, at rest and at its swell
+	FullRingAlpha = { 0.75, 0 }, -- its transparency, at rest and at its swell
+	FullRingBeat = 0.55,
 	FullShake = { 8, -7, 6, -4, 2, 0 }, -- px, one per step
 	FullShakeStep = 0.04,
 	FullBeatPop = 0.9, -- the pill's idle beat
-	-- Aura Surge: the status plate in gold with the bolt and a big "x2"; the cash plate's edge
-	-- pulses gold; the SURGE chip is gold too.
-	SurgePlate = Color3.fromRGB(255, 186, 36),
-	SurgeEdge = Color3.fromRGB(255, 246, 204),
+	-- Aura Surge: the status plate turns hot crimson (not gold: the CHAMPION plate under it is
+	-- gold, and not the full rack's orange beside it) with the gold bolt, a big gold "x2" and a
+	-- gold bar along its bottom that drains with the time left; the cash plate's edge pulses
+	-- gold; the SURGE chip is gold; a gold vignette glows round the screen's edge.
+	SurgePlate = Color3.fromRGB(214, 32, 92),
+	SurgeEdge = Color3.fromRGB(255, 214, 96),
+	SurgeText = Color3.fromRGB(255, 224, 90), -- "x2"
+	SurgeBarH = 5,
+	SurgeBarInset = 10,
+	SurgeBarColor = Color3.fromRGB(255, 218, 72),
+	SurgeVignette = Color3.fromRGB(255, 196, 40),
+	SurgeVignetteDepth = { 0.2, 0.14 }, -- of the screen's height (top, bottom bands) and width (sides)
+	SurgeVignetteAlpha = { 0.45, 0.72 }, -- the edge's transparency, at its swell and at rest
+	SurgeVignetteBeat = 1.1,
 	SurgeIcon = 28, -- the bolt's dark medallion (the bolt itself is 6 smaller)
 	SurgeValue = 26,
 	SurgeSheenEvery = 0.9, -- pause between two sheens
@@ -240,18 +265,54 @@ local TUNE = {
 	PromoText = 18,
 	PromoPrice = 15,
 	PromoSheenEvery = 2.8,
-	-- CHAMPION (every tier found): the goal plate in gold with a rocking crown and a sheen.
+	-- CHAMPION (every tier found): the goal plate in gold with a big crown that bobs and rocks
+	-- over its medallion (it overhangs it), a slow sheen and sparkles that follow the sheen.
 	ChampPlate = Color3.fromRGB(244, 170, 28),
 	ChampEdge = C.GoldLight,
 	ChampTitle = 20,
-	ChampCrown = 28, -- on the thumbnail's 36 px medallion
+	ChampCrown = 44, -- over the thumbnail's 36 px medallion
 	ChampCrownTilt = 9,
 	ChampCrownBeat = 0.8,
-	ChampSheenEvery = 2.2,
-	-- READY (one merge finds the tier): the green goal plate breathes under a quick sheen.
+	ChampCrownBob = 5, -- px up and down
+	ChampCrownBobBeat = 1.1,
+	ChampSheenEvery = 1.8,
+	ChampSparkColor = Color3.fromRGB(255, 255, 230),
+	-- READY (one merge finds the tier): the green goal plate breathes under a quick sheen and a
+	-- sweep of sparkles that crosses it with the sheen.
 	ReadyBreathe = 0.05,
 	ReadySheenEvery = 1.4,
+	ReadySparkColor = Color3.fromRGB(255, 255, 210),
+	-- A sparkle sweep: Sparks stars ride across the plate with the sheen's band, each SparkSize
+	-- px (from SparkSize[1] to [2]), popping up and fading as they go.
+	Sparks = 9,
+	SparkSize = { 14, 24 },
+	SparkSpin = 140, -- degrees over the sweep
+	SparkJitter = 0.18, -- of the sweep's time: each star starts up to this much late
 	IndexDot = 9, -- the red dot on the Index icon of an unclaimed milestone
+	-- The left menu: 4 + 3 plates on one dark backing plate, so a world label never shows
+	-- between two rows.
+	MenuBackColor = G.TintTop,
+	MenuBackAlpha = 0.28,
+	MenuBackPad = 6,
+	MenuBackRadius = 14,
+	-- Only one menu button calls at a time (MENU_RANK): its badge beats and it wears its ring
+	-- (Index, Modes) or breathes (Daily); the others keep a still badge.
+	-- Modes is new (the tutorial was finished this session): after ModesNewDelay its gold ring
+	-- pulses, a gold arrow bobs over it and the goal plate's second line says so, until Modes
+	-- is opened or for ModesNewSeconds.
+	ModesNewDelay = 3,
+	ModesNewSeconds = 240,
+	ModesArrow = 26, -- the arrow's head, px
+	ModesArrowStem = { 10, 12 }, -- its stem, w x h
+	ModesArrowGap = 4, -- its tip over the plate
+	ModesArrowBob = 9, -- px
+	ModesArrowBeat = 0.42,
+	ModesArrowColor = C.Gold,
+	ModesNewPop = 0.7, -- the Modes plate's beat (Kit.pop strength)
+	-- The wallet: "+$X/s" under the cash plate (the snapshot's income without a surge).
+	IncomeText = 20,
+	IncomeColor = C.MoneyText,
+	IncomeGap = 2, -- under the cash plate
 }
 
 -- Layout (design px). The top centre stack sits just under the top bar (TUNE).
@@ -289,7 +350,12 @@ local PREMIUM_BONUS = 10
 -- The menu grid's rows and captions; the promo's two offers (a tag only says what is true: the
 -- Starter Pack has no deadline, so it wears none); the run pill's sizes (the "MAP 3" chip of a
 -- run with levels, and where the clock starts beside the star otherwise).
-local GRID_ROWS = { { "Home", "Ranking", "Modes" }, { "Index", "Shop", "Invite", "Daily" } }
+local GRID_ROWS = { { "Home", "Ranking", "Modes", "Index" }, { "Shop", "Invite", "Daily" } }
+-- Which menu button calls when several want to (the first one that does): Modes while it is
+-- new (a few minutes right after the tutorial, the one moment it is pointed at), then a reward
+-- to claim, then news, then a count.
+local MENU_RANK = { "ModesNew", "Daily!", "Index!", "Index" }
+local MENU_BUTTON: { [string]: string } = { ["Daily!"] = "Daily", ["Index!"] = "Index", ModesNew = "Modes", Index = "Index" }
 local CAPTIONS: { [string]: string } = {
 	Home = "Home",
 	Ranking = "Ranking",
@@ -415,6 +481,86 @@ local function sheen(face: GuiObject, radius: number, color: Color3?): (boolean,
 			while turn == mine and overlay.Parent do
 				band.Offset = Vector2.new(-1, 0)
 				Kit.tween(band, TUNE.SheenTime, { Offset = Vector2.new(1, 0) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+				task.wait(TUNE.SheenTime + (pause or 2))
+			end
+		end)
+	end
+end
+
+-- The Blender-rendered sparkle (Assets.Images "vfx/Sparkle"), looked up once; nil without it.
+local sparkImage: string | boolean | nil = nil
+local function sparkId(): string?
+	if sparkImage == nil then
+		sparkImage = false
+		pcall(function()
+			local module = ReplicatedStorage:FindFirstChild("Shared")
+			module = module and module:FindFirstChild("Assets")
+			if module and module:IsA("ModuleScript") then
+				sparkImage = (require(module) :: any).image("vfx/Sparkle") or false
+			end
+		end)
+	end
+	return if type(sparkImage) == "string" then sparkImage else nil
+end
+
+-- A sparkle sweep to go with a sheen: TUNE.Sparks stars cross `face` left to right in the
+-- sheen's time and at its pace, each popping up, spinning and fading on the way (a turned
+-- square stands in for the sparkle image). The same switch as sheen's.
+local function sparkles(face: GuiObject, color: Color3): (boolean, number?) -> ()
+	local turn = 0
+	local function star(): GuiObject
+		local id = sparkId()
+		local spark: GuiObject
+		if id then
+			spark = Kit.new("ImageLabel", {
+				Image = id,
+				ImageColor3 = color,
+				BackgroundTransparency = 1,
+			})
+		else
+			spark = Kit.new("Frame", { BackgroundColor3 = color, BorderSizePixel = 0, Rotation = 45 })
+			Kit.corner(spark, 2)
+		end
+		spark.Name = "Spark"
+		spark.AnchorPoint = Vector2.new(0.5, 0.5)
+		spark.Size = UDim2.fromOffset(0, 0)
+		spark.ZIndex = 4
+		spark:SetAttribute("KitChrome", true)
+		return spark
+	end
+	return function(on: boolean, pause: number?)
+		turn += 1
+		local mine = turn
+		if not on or PREVIEW then
+			return
+		end
+		task.spawn(function()
+			while turn == mine and face.Parent do
+				local gui = face:FindFirstAncestorOfClass("ScreenGui")
+				if face.Visible and not (gui and gui:GetAttribute("WindowOpen") == true) then
+					for _ = 1, TUNE.Sparks do
+						local size = math.random(TUNE.SparkSize[1], TUNE.SparkSize[2])
+						local spark = star()
+						local late = math.random() * TUNE.SparkJitter * TUNE.SheenTime
+						local time = TUNE.SheenTime - late
+						local y = 0.15 + math.random() * 0.7
+						spark.Position = UDim2.fromScale(late / TUNE.SheenTime, y)
+						spark.Parent = face
+						Kit.tween(
+							spark,
+							time,
+							{ Position = UDim2.fromScale(1.02, y), Rotation = spark.Rotation + TUNE.SparkSpin },
+							Enum.EasingStyle.Linear
+						)
+						Kit.tween(spark, time * 0.3, { Size = UDim2.fromOffset(size, size) }, Enum.EasingStyle.Back)
+						task.delay(time * 0.55, function()
+							Kit.tween(spark, time * 0.45, { Size = UDim2.fromOffset(0, 0) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+						end)
+						task.delay(time + 0.05, function()
+							spark:Destroy()
+						end)
+					end
+				end
 				task.wait(TUNE.SheenTime + (pause or 2))
 			end
 		end)
@@ -641,6 +787,21 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- is the second gift of the atlas (the FREE gift keeps the first).
 	local ICON_FOR: { [string]: string } = { Modes = Kit.pickIcon("Modes", "Star"), Daily = Kit.pickIcon("Gift2", "Free") }
 	local grid = group("Menu", { Position = UDim2.fromOffset(EDGE_X, GRID_Y) })
+	-- One dark backing plate under all of them (a world label never shows between two rows),
+	-- as big as the grid and MenuBackPad more on every side.
+	do
+		local back = Kit.hudGlass(grid, {
+			Name = "Backing",
+			Shadow = false,
+			Color = TUNE.MenuBackColor,
+			Transparency = TUNE.MenuBackAlpha,
+			Radius = TUNE.MenuBackRadius,
+			Size = UDim2.new(1, TUNE.MenuBackPad * 2, 1, TUNE.MenuBackPad * 2),
+			Position = UDim2.fromOffset(-TUNE.MenuBackPad, -TUNE.MenuBackPad),
+			ZIndex = 0,
+		})
+		back.Selectable = false
+	end
 	local captions: { TextLabel } = {}
 	local gridIcons: { [string]: Frame } = {}
 	local function gridButton(name: string, onClick: () -> ()): TextButton
@@ -675,6 +836,53 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		return button
 	end
 
+	-- One menu button calls at a time: the first of MENU_RANK that wants to (`wants`) is the
+	-- focus. Its badge beats (the beat, below), it wears its ring if one is wanted (`ring`:
+	-- Index with a reward waiting until it is opened, Modes while new) and Daily breathes.
+	-- `modesNewUntil`: os.clock() until which Modes is new (0: it is not).
+	local menu = {
+		wants = {} :: { [string]: boolean },
+		ring = {} :: { [string]: boolean },
+		focus = nil :: string?,
+		modesNewUntil = 0,
+		stopBreath = nil :: (() -> ())?,
+		refocus = function() end,
+		modesSeen = function() end,
+		arrow = nil :: Frame?,
+	}
+	menu.refocus = function()
+		local focus: string? = nil
+		for _, want in MENU_RANK do
+			if menu.wants[want] then
+				focus = MENU_BUTTON[want]
+				break
+			end
+		end
+		menu.focus = focus
+		for name, wanted in menu.ring do
+			local button = Hud.buttons[name]
+			if button then
+				Kit.setGlow(button, wanted and name == focus)
+			end
+		end
+		if menu.arrow then
+			menu.arrow.Visible = menu.wants.ModesNew == true and focus == "Modes"
+		end
+		if focus == "Daily" and Hud.buttons.Daily then
+			menu.stopBreath = menu.stopBreath or Kit.breathe(Hud.buttons.Daily, 0.06)
+		elseif menu.stopBreath then
+			menu.stopBreath()
+			menu.stopBreath = nil
+		end
+	end
+	-- Modes was opened (or has been new long enough): it is not new any more.
+	menu.modesSeen = function()
+		menu.modesNewUntil = 0
+		menu.wants.ModesNew = false
+		menu.ring.Modes = false
+		menu.refocus()
+	end
+
 	-- New discoveries since the Index was last opened (badge).
 	local seenDiscoveries: number? = nil
 	-- Index milestone rewards waiting, as last painted (the glow follows its changes only).
@@ -700,8 +908,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Kit.setBadge(Hud.buttons.Index, if claimable > 0 then "!" elseif fresh > 0 then tostring(fresh) else nil)
 		if claimable ~= indexClaimable then
 			indexClaimable = claimable
-			Kit.setGlow(Hud.buttons.Index, claimable > 0)
+			menu.ring.Index = claimable > 0
 		end
+		menu.wants["Index!"] = claimable > 0
+		menu.wants.Index = fresh > 0
+		menu.refocus()
 	end
 	gridButton("Home", function()
 		action:FireServer({ action = "Home" })
@@ -710,11 +921,56 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		handlers.openWindow("Ranking", { origin = Hud.buttons.Ranking })
 	end)
 	gridButton("Modes", function()
-		Kit.setGlow(Hud.buttons.Modes, false)
+		menu.modesSeen()
 		handlers.openWindow("Modes", { origin = Hud.buttons.Modes })
 	end)
+	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
+	do
+		-- New Modes: a gold arrow (a stem over a diamond's lower point) bobbing over the plate.
+		local arrow = Kit.new("Frame", {
+			Name = "NewArrow",
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(TUNE.ModesArrow, TUNE.ModesArrow + TUNE.ModesArrowStem[2]),
+			Position = UDim2.new(0.5, 0, 0, -TUNE.ModesArrowGap),
+			AnchorPoint = Vector2.new(0.5, 1),
+			Visible = false,
+			ZIndex = 8,
+			Parent = Hud.buttons.Modes,
+		})
+		local ink = G.TextInk
+		local stem = Kit.new("Frame", {
+			Name = "Stem",
+			BackgroundColor3 = TUNE.ModesArrowColor,
+			BorderSizePixel = 0,
+			Size = UDim2.fromOffset(TUNE.ModesArrowStem[1], TUNE.ModesArrowStem[2] + 6),
+			Position = UDim2.new(0.5, 0, 0, 0),
+			AnchorPoint = Vector2.new(0.5, 0),
+			ZIndex = 9,
+			Parent = arrow,
+		})
+		Kit.corner(stem, 3)
+		Kit.new("UIStroke", { Thickness = 2, Color = ink, Parent = stem })
+		-- The head: a square turned 45 degrees, its upper half under the stem's foot.
+		local side = math.floor(TUNE.ModesArrow / math.sqrt(2) + 0.5)
+		local head = Kit.new("Frame", {
+			Name = "Head",
+			BackgroundColor3 = TUNE.ModesArrowColor,
+			BorderSizePixel = 0,
+			Size = UDim2.fromOffset(side, side),
+			Position = UDim2.new(0.5, 0, 1, -TUNE.ModesArrow / 2),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Rotation = 45,
+			ZIndex = 8,
+			Parent = arrow,
+		})
+		Kit.corner(head, 3)
+		Kit.new("UIStroke", { Thickness = 2, Color = ink, Parent = head })
+		local rest = arrow.Position
+		pulse(arrow, TUNE.ModesArrowBeat, { Position = rest - UDim2.fromOffset(0, TUNE.ModesArrowBob) })
+		menu.arrow = arrow
+	end
 	local function openIndex()
-		Kit.setGlow(Hud.buttons.Index, false)
+		menu.ring.Index = false
 		local data = State.data
 		if data then
 			seenDiscoveries = discoveredCount(data)
@@ -735,17 +991,25 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		handlers.openWindow("Daily", { origin = Hud.buttons.Daily })
 	end)
 	local dailyCaption = dailyButton:FindFirstChild("Caption") :: TextLabel
-	-- Right after the tutorial finishes (watched live this session), one toast and a
-	-- soft glow point at the Modes button.
+	-- Right after the tutorial finishes (watched live this session) Modes is new: its gold ring
+	-- and arrow, and the goal plate's second line says so (pickNear). No toast: a third row
+	-- under the top stack would sit on the plot's signs.
 	local tutorialWasOpen = false
 	State.changed.Event:Connect(function(data)
 		if data.tutorialDone ~= true then
 			tutorialWasOpen = true
 		elseif tutorialWasOpen then
 			tutorialWasOpen = false
-			task.delay(9, function()
-				Kit.setGlow(Hud.buttons.Modes, true)
-				toast("New! " .. (if Kit.touch then "Tap" else "Open") .. " MODES to try Parkour and the Mog Test", "info")
+			task.delay(TUNE.ModesNewDelay, function()
+				menu.modesNewUntil = os.clock() + TUNE.ModesNewSeconds
+				menu.wants.ModesNew = true
+				menu.ring.Modes = true
+				menu.refocus()
+				task.delay(TUNE.ModesNewSeconds, function()
+					if os.clock() >= menu.modesNewUntil then
+						menu.modesSeen()
+					end
+				end)
 			end)
 		end
 	end)
@@ -1194,7 +1458,29 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		L.layoutTop(true)
 	end
 	counterCaption:GetPropertyChangedSignal("TextSize"):Connect(fitCount)
-	-- 100/100 is a moment: the plate turns orange-red and the pill joins the count.
+	-- 100/100 is a moment: the plate turns orange-red, the pill joins the count and a glowing
+	-- ring round the plate swells and fades for as long as the rack is full.
+	local fullRing = Kit.new("Frame", {
+		Name = "FullRing",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, TUNE.FullRingOut * 2, 1, TUNE.FullRingOut * 2),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Visible = false,
+		ZIndex = 0,
+		Parent = units,
+	})
+	fullRing:SetAttribute("KitChrome", true)
+	Kit.corner(fullRing, TUNE.PlateRadius + TUNE.FullRingOut)
+	do
+		local stroke = Kit.new("UIStroke", {
+			Color = TUNE.FullRingColor,
+			Thickness = TUNE.FullRingWidth[1],
+			Transparency = TUNE.FullRingAlpha[1],
+			Parent = fullRing,
+		})
+		pulse(stroke, TUNE.FullRingBeat, { Thickness = TUNE.FullRingWidth[2], Transparency = TUNE.FullRingAlpha[2] })
+	end
 	local function setRackFull(full: boolean)
 		if full == rackFull then
 			return
@@ -1202,6 +1488,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local first = rackFull == nil
 		rackFull = full
 		counterCaption.Visible = full
+		fullRing.Visible = full
 		fitCount()
 		tint(countPlate, if full then TUNE.FullPlate else nil, if full then TUNE.FullEdge else nil)
 		if full and not first then
@@ -1313,6 +1600,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		ZIndex = 5,
 	})
 	local paintSurge: (boolean) -> ()
+	-- The surge's time left (seconds), every frame while one runs: its bar drains.
+	local surgeLeft: (number) -> ()
 	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
 	do
 		-- The bolt on a dark medallion, so it reads on the gold.
@@ -1335,8 +1624,80 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		})
 		local shine = sheen(strip, TUNE.PlateRadius)
 		local beat: Tween? = nil
+		-- The countdown bar: a dark track along the plate's bottom with the gold fill in it.
+		local track = Kit.new("Frame", {
+			Name = "SurgeBar",
+			BackgroundColor3 = G.TextInk,
+			BackgroundTransparency = 0.35,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, -TUNE.SurgeBarInset * 2, 0, TUNE.SurgeBarH),
+			Position = UDim2.new(0, TUNE.SurgeBarInset, 1, -TUNE.SurgeBarH - 2),
+			Visible = false,
+			ZIndex = 1, -- under the words
+			Parent = strip,
+		})
+		Kit.round(track)
+		local fill = Kit.new("Frame", {
+			Name = "Fill",
+			BackgroundColor3 = TUNE.SurgeBarColor,
+			BorderSizePixel = 0,
+			Size = UDim2.fromScale(1, 1),
+			ZIndex = 2,
+			Parent = track,
+		})
+		Kit.round(fill)
+		surgeLeft = function(left: number)
+			fill.Size = UDim2.fromScale(math.clamp(left / Economy.SURGE_DURATION, 0, 1), 1)
+		end
+		-- The gold vignette: four bands round the screen's edge, fading inward, in a screen of
+		-- their own under the HUD's; it breathes while the surge runs and steps away for a
+		-- window or a game-mode run.
+		local vignette = Instance.new("ScreenGui")
+		vignette.Name = "SurgeVignette"
+		vignette.ResetOnSpawn = false
+		vignette.IgnoreGuiInset = true
+		vignette.DisplayOrder = screen.DisplayOrder - 1
+		vignette.Enabled = false
+		vignette.Parent = screen.Parent
+		local depth = TUNE.SurgeVignetteDepth
+		for _, spec in
+			{
+				{ UDim2.new(1, 0, depth[1], 0), UDim2.fromScale(0, 0), 90 },
+				{ UDim2.new(1, 0, depth[1], 0), UDim2.fromScale(0, 1 - depth[1]), -90 },
+				{ UDim2.new(depth[2], 0, 1, 0), UDim2.fromScale(0, 0), 0 },
+				{ UDim2.new(depth[2], 0, 1, 0), UDim2.fromScale(1 - depth[2], 0), 180 },
+			}
+		do
+			local band = Kit.new("Frame", {
+				Name = "Band",
+				BackgroundColor3 = TUNE.SurgeVignette,
+				BackgroundTransparency = TUNE.SurgeVignetteAlpha[2],
+				BorderSizePixel = 0,
+				Size = spec[1],
+				Position = spec[2],
+				Parent = vignette,
+			})
+			Kit.new("UIGradient", {
+				Rotation = spec[3],
+				Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }),
+				Parent = band,
+			})
+			pulse(band, TUNE.SurgeVignetteBeat, { BackgroundTransparency = TUNE.SurgeVignetteAlpha[1] })
+		end
+		local function showVignette()
+			local busy = screen:GetAttribute("WindowOpen") == true
+			for _, name in { "RunActive", "ObbyMode", "CardioActive" } do
+				busy = busy or screen:GetAttribute(name) == true
+			end
+			vignette.Enabled = surgeActiveNow and not busy
+		end
+		for _, name in { "WindowOpen", "RunActive", "ObbyMode", "CardioActive" } do
+			screen:GetAttributeChangedSignal(name):Connect(showVignette)
+		end
 		paintSurge = function(active: boolean)
 			surgeActiveNow = active
+			track.Visible = active
+			showVignette()
 			stripLead.Text = if active then "AURA SURGE" else "Deposit bonus:"
 			bolt.Visible = active
 			gaugeNext.TextColor3 = if active then Color3.new(1, 1, 1) else C.TextDim
@@ -1507,6 +1868,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local champNow = false
 		local stopBreath: (() -> ())? = nil
 		local shine = sheen(goal, TUNE.PlateRadius)
+		local readySparks = sparkles(goal, TUNE.ReadySparkColor)
+		local champSparks = sparkles(goal, TUNE.ChampSparkColor)
 		setGoalLook = function(ready: boolean, champ: boolean)
 			if ready == goalReady and champ == champNow then
 				return
@@ -1515,6 +1878,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			tint(goal, if ready then C.Good elseif champ then TUNE.ChampPlate else nil, if champ then TUNE.ChampEdge else nil)
 			goalBar.BackgroundColor3 = if ready then Color3.new(1, 1, 1) else C.Gold
 			shine(ready or champ, if champ then TUNE.ChampSheenEvery else TUNE.ReadySheenEvery)
+			readySparks(ready and not champ, TUNE.ReadySheenEvery)
+			champSparks(champ, TUNE.ChampSheenEvery)
 			-- "CHAMPION" is a title: a size up (the plate lays itself out again).
 			GOAL_TEXT[goalTitle] = if champ then TUNE.ChampTitle else TUNE.GoalTitle
 			Kit.holdText(goalTitle, Kit.captionPx(), GOAL_TEXT[goalTitle], true)
@@ -1739,14 +2104,24 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				})
 				Kit.round(medal)
 				Kit.new("UIStroke", { Thickness = 2, Color = TUNE.ChampEdge, Parent = medal })
-				local crown = Kit.icon(medal, Kit.pickIcon("Crown", "Star"), TUNE.ChampCrown, C.Gold, {
-					Name = "Crown",
-					Position = UDim2.fromScale(0.5, 0.46),
+				-- The crown is bigger than its medallion and stands out of it: it rocks, and bobs
+				-- on a holder of its own (two tweens, two objects).
+				local bob = group("Bob", {
+					Size = UDim2.fromOffset(TUNE.ChampCrown, TUNE.ChampCrown),
+					Position = UDim2.fromScale(0.5, 0.45),
 					AnchorPoint = Vector2.new(0.5, 0.5),
-					ZIndex = 2,
+					ZIndex = 3,
+					Parent = medal,
+				})
+				local crown = Kit.hudIcon(bob, Kit.pickIcon("Crown", "Star"), TUNE.ChampCrown, C.Gold, {
+					Name = "Crown",
+					Position = UDim2.fromScale(0.5, 0.5),
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					ZIndex = 3,
 				})
 				crown.Rotation = -TUNE.ChampCrownTilt
 				pulse(crown, TUNE.ChampCrownBeat, { Rotation = TUNE.ChampCrownTilt })
+				pulse(bob, TUNE.ChampCrownBobBeat, { Position = bob.Position - UDim2.fromOffset(0, TUNE.ChampCrownBob) })
 			else
 				-- A silhouette until the tier is discovered.
 				pcall(Kit.unitViewport, goalThumb, picked.tier, { Size = UDim2.fromScale(1, 1) }, true)
@@ -1795,6 +2170,18 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			brokeSince = nil
 		else
 			brokeSince = brokeSince or now
+		end
+		-- Modes are new (the tutorial was just finished): said here, behind the Modes icon, while
+		-- the Modes button wears its ring and arrow (menu.wants.ModesNew).
+		if menu.wants.ModesNew and now < menu.modesNewUntil then
+			local verb = if Kit.touch then "Tap" else "Open"
+			return {
+				kind = "modesNew",
+				text = "New! " .. verb .. " MODES: Parkour + Mog Test",
+				short = "New! " .. verb .. " MODES",
+				icon = Kit.pickIcon("Modes", "Star"),
+				color = C.Gold,
+			}
 		end
 		if full and money >= upgradeCost and awake("blender") then
 			return {
@@ -1883,7 +2270,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			elseif near then
 				if near.kind == "index" then
 					openIndex()
-				elseif near.kind == "mode" then
+				elseif near.kind == "mode" or near.kind == "modesNew" then
+					if near.kind == "modesNew" then
+						menu.modesSeen()
+					end
 					handlers.openWindow("Modes", { origin = goal })
 				else
 					Guide.navigate(near.pad or "ProcUp1", near.tag or "UPGRADE", 30)
@@ -2180,6 +2570,22 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		ZIndex = 3,
 	})
 	local coin = moneyLabel -- coin bursts fly into the cash amount
+	-- Income at a glance: "+$1.2K/s" under the cash plate (steady income, no surge in it). Not
+	-- on touch, where the menu grid sits right under the top-left wallet.
+	local incomeLine = Kit.hudText(wallet, {
+		Name = "Income",
+		Text = "",
+		Font = F.Number,
+		TextSize = TUNE.IncomeText,
+		StrokeThickness = 2.5,
+		TextColor3 = TUNE.IncomeColor,
+		AutomaticSize = Enum.AutomaticSize.X,
+		Size = UDim2.fromOffset(0, TUNE.IncomeText + 4),
+		Position = UDim2.fromOffset(0, 84 + TUNE.CashPlateH + TUNE.IncomeGap),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Visible = false,
+		ZIndex = 3,
+	})
 	local addButton = Kit.button(wallet, {
 		Name = "Add",
 		Icon = "Plus",
@@ -2665,6 +3071,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		lastMult = data.moneyMult
 		multLine.Text = string.format('Cash <font color="#%s">[ x%.1f ]</font>', C.Gold:ToHex(), data.moneyMult)
+		local income = tonumber(data.rewardIncome) or tonumber(data.income) or 0
+		incomeLine.Visible = income > 0 and not Kit.touch
+		incomeLine.Text = "+" .. State.money(income) .. "/s"
 		local owned = 0
 		if type(data.unitTotal) == "number" then
 			owned = data.unitTotal
@@ -2902,7 +3311,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		local function showMult(mult: number)
 			if surgeActiveNow then
 				gaugeValue.Text = "x" .. Economy.SURGE_MULTIPLIER
-				gaugeValue.TextColor3 = Color3.new(1, 1, 1)
+				gaugeValue.TextColor3 = TUNE.SurgeText
 			else
 				gaugeValue.Text = string.format("x%.1f", mult)
 				gaugeValue.TextColor3 = multColor(mult)
@@ -2982,11 +3391,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end
 			freeTimer.Text = text
 		end
-		-- Daily reward: a dot, a sunny caption and a gentle bounce while a reward waits; the
-		-- countdown to the next one as the caption otherwise.
+		-- Daily reward: a dot, a sunny caption and a gentle bounce while a reward waits (the
+		-- bounce while it is the menu's focus: menu.refocus); the countdown to the next one as
+		-- the caption otherwise.
 		local dailyText = ""
 		local dailyReady: boolean? = nil
-		local stopDailyBounce: (() -> ())? = nil
 		local function paintDaily(text: string, ready: boolean)
 			if ready ~= dailyReady then
 				dailyReady = ready
@@ -2994,16 +3403,15 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				dailyCaption.TextColor3 = if ready then C.Gold else Color3.new(1, 1, 1)
 				if ready then
 					Kit.pop(dailyButton, 0.8)
-					stopDailyBounce = Kit.breathe(dailyButton, 0.06)
-				elseif stopDailyBounce then
-					stopDailyBounce()
-					stopDailyBounce = nil
 				end
+				menu.wants["Daily!"] = ready
+				menu.refocus()
 			end
 			dailyCaption.Text = text
 		end
 		-- The beat: every BeatEvery seconds each badge dot on a HUD button pops, one button
-		-- after another ("!" harder than a count: a reward to claim outranks news), the "+"
+		-- after another ("!" harder than a count: a reward to claim outranks news; of the menu
+		-- only the button in focus), the "+"
 		-- pops on every PlusEvery-th beat and the "AUTO-MERGING" pill on every other. Not
 		-- while a window covers the HUD.
 		if not PREVIEW then
@@ -3014,8 +3422,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 					beat += 1
 					if screen:GetAttribute("WindowOpen") ~= true then
 						local nth = 0
-						for _, button in Hud.buttons do
-							local badge = button:FindFirstChild("Badge")
+						for name, button in Hud.buttons do
+							-- On the menu only its focus beats (menu.refocus).
+							local badge = if CAPTIONS[name] and name ~= menu.focus then nil else button:FindFirstChild("Badge")
 							if badge and badge:IsA("TextLabel") and badge.Visible then
 								task.delay(
 									nth * TUNE.BeatStagger,
@@ -3025,6 +3434,10 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 								)
 								nth += 1
 							end
+						end
+						-- New Modes (no badge of its own): the plate itself beats under its ring.
+						if menu.focus == "Modes" and menu.wants.ModesNew then
+							Kit.pop(Hud.buttons.Modes, TUNE.ModesNewPop)
 						end
 						if beat % TUNE.PlusEvery == 0 and addButton.Visible then
 							Kit.pop(addButton, TUNE.PlusPop)
@@ -3064,6 +3477,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 					Kit.pop(gaugeNext, 0.8)
 				end
 				text = "· " .. Format.time(left)
+				surgeLeft(left)
 			else
 				local nextAt = ReplicatedStorage:GetAttribute("DepositNextAt") or now
 				text = string.format("· %ds", math.max(0, math.ceil(nextAt - now)))
