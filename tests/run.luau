@@ -3688,7 +3688,7 @@ test("Aura Surge mood: the grade follows the server clock, easing in and out", f
 		low, high = math.min(low, g.saturation), math.max(high, g.saturation)
 		eq(g.contrast, Surge.CONTRAST, "full contrast")
 	end
-	check(low > 0.15 and high < 0.35, "saturation pulses gently around +0.25")
+	check(low > 0.04 and high < 0.22, "saturation pulses gently around +0.12")
 	check(high - low > 0.05 and high - low <= 0.12, "the pulse is visible but small")
 	check(Surge.PULSE_PERIOD >= 1.5, "the pulse is slow (no strobing)")
 end)

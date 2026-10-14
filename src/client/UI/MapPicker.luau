@@ -1127,7 +1127,14 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		elseif type(preview) == "table" and preview.full == false and selected == (tonumber(info.level) or 1) then
 			rest = math.max(0, math.ceil((tonumber(preview.repeatRest) or 0) - State.age()))
 		end
-		reward.TextColor3 = if geared or rest > 0 then C.TextDim else C.MoneyText
+		-- On the green reward bar the money colour washes out: take the ink that reads on the bar.
+		local bar = reward.Parent
+		local ink = if bar
+				and bar:IsA("GuiObject")
+				and bar.BackgroundTransparency < 0.5
+			then Kit.inkOn(bar.BackgroundColor3)
+			else C.MoneyText
+		reward.TextColor3 = if geared or rest > 0 then C.TextDim else ink
 		reward.Text = if geared
 			then string.format("Gear on: no reward · full in %s", Format.time(left))
 			elseif rest > 0 then "Bonus is resting, back in " .. Format.time(rest)
