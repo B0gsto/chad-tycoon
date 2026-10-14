@@ -23,7 +23,7 @@
 
 local ShakeRules = {}
 
-ShakeRules.ARENA = { x = 380, y = 6, z = -380, sizeX = 64, sizeZ = 64 }
+ShakeRules.ARENA = { x = 7000, y = 6, z = -7000, sizeX = 64, sizeZ = 64 }
 -- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
 ShakeRules.FALL_BELOW = 20
 

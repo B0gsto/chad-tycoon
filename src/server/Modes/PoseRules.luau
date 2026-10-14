@@ -26,7 +26,7 @@
 
 local PoseRules = {}
 
-PoseRules.ARENA = { x = 560, y = 6, z = -380, sizeX = 56, sizeZ = 48 }
+PoseRules.ARENA = { x = 0, y = 6, z = -10000, sizeX = 56, sizeZ = 48 }
 -- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
 PoseRules.FALL_BELOW = 20
 

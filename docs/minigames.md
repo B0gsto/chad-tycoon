@@ -6,13 +6,56 @@ files only.
 
 | Mode | id | Gate slot | Gate colour | Arena (world module) | Arena centre (floor top) |
 | --- | --- | --- | --- | --- | --- |
-| SHAKE CATCH | `shake` | 4 (south edge, west) | Pink | `World/ShakeArena.luau` | (380, 6, -380), 64 x 64 |
-| POSE COPY | `pose` | 5 (north edge) | Blue | `World/PoseStage.luau` | (560, 6, -380), 56 x 48 |
-| DUMBBELL BOWL | `bowling` | 6 (south edge, east) | RedOrange | `World/BowlingLane.luau` | (740, 6, -380), 54 x 110 |
+| SHAKE CATCH | `shake` | 4 (south edge, west) | Pink | `World/ShakeArena.luau` | (7000, 6, -7000) |
+| POSE COPY | `pose` | 5 (north edge) | Blue | `World/PoseStage.luau` | (0, 6, -10000) |
+| DUMBBELL BOWL | `bowling` | 6 (south edge, east) | RedOrange | `World/BowlingLane.luau` | (-7000, 6, -7000) |
 
-The arenas float over the sea on the hub's -Z/+X side, away from the Parkour sky maps, the
-Mog stage (0, 6, 400) and the Cardio track (-1296, 20, 1150). `tests/minigames.luau` keeps
-them apart.
+Each arena is its own space: far out at sea, past the fog (Lighting FogEnd 4000) as seen from
+the hub, the Mog stage (0, 6, 400), the Cardio track (-1296, 20, 1150) and the other arenas,
+so none of them clutters the map. The hub's ocean only reaches about 3000 studs, so every
+arena builds its own sea tile and horizon scenery around itself. `tests/minigames.luau`
+keeps them out of sight of each other. The size in `XRules.ARENA` covers the lobby and the
+play area together.
+
+## Lobby first, then the game
+
+A gate never drops the player straight into a game. Every run goes:
+
+`lobby` -> `countdown` (3, 2, 1) -> `play` -> `results` -> back to `lobby`
+
+- **Entry** (gate walk-in or "ModeStart"): teleport to `lobbySpawn`; phase `lobby`. Nothing
+  is timed, scored or paid in the lobby; the player can walk around, read the boards and
+  warm up. The "start" Notify carries `phase = "lobby"` plus best, clears and rewardPreview.
+- **Lobby area** (part of the arena build, next to the play area): the mode's title sign, a
+  HOW TO PLAY board (three big illustrated steps, readable from the spawn), a YOUR BEST /
+  reward status board, a glowing START pad and the EXIT arch (back to the plaza). Each mode
+  adds its own warm-up: Bowling has a ball rack to pick a dumbbell colour and a view down
+  the lane, Shake Catch a practice tray with slow demo drops, Pose Copy a rehearsal mirror
+  where the four flex buttons work without scoring.
+- **Start**: stepping on the START pad or pressing the HUD's PLAY button (tap, Enter,
+  gamepad A) sends the mode's own action `"<Mode>Begin" {}` ("ShakeBegin", "PoseBegin",
+  "BowlingBegin"). The server accepts it only in phase `lobby`, moves the player to the
+  play spot, sends `"countdown" { seconds = 3 }` and starts play when it ends.
+- **End**: win/lose events and pay as before. The HUD shows a results card (score, best,
+  pay) with PLAY AGAIN (sends Begin from `results`) and LOBBY; with no input the player is
+  back in the lobby after about 6 s. A finished game never sends the player to the plaza.
+- **Leave**: the EXIT arch in the lobby, or the HUD's LEAVE button ("ModeQuit"): stop
+  "quit" plus `GameModes.toGates`.
+- **Snapshot**: `modes.x.phase` = "lobby" | "countdown" | "play" | "results".
+- **Several players**: the lobby is shared; each player's game runs on its own (as before).
+
+Arena anchors added for the lobby (every arena's `build()`):
+
+```
+lobbySpawn: CFrame,   -- feet position + facing where a player lands from the gate
+startPad: BasePart,   -- "StartPad": feet within startRadius of it in phase lobby = Begin
+startRadius: number,
+board: SurfaceGui,    -- the YOUR BEST board's face; the client fills it (it is under the
+                      -- arena Model, named "BestBoard", so clients find it by name)
+```
+
+`spawn` stays the play spot where a game starts; `exit` and `exitRadius` now sit in the
+lobby.
 
 ## Files each builder owns (and may edit)
 
