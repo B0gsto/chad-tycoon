@@ -102,8 +102,9 @@ local Course = {}
 
 -- The plaza deck (x0..x1, z0..z1) and the spur that joins it to the hub ring, whose outer edge
 -- is at x = -(2 * PlotLayout.PLOT_HALF + 34) = -138 (World.Hub RING_OUT; tests/run.luau checks it).
--- (z +-32: the side edges hold gates 4-6, clear of the back row's outer pillars.)
-Course.PLAZA = { x0 = -210, x1 = -160, z0 = -32, z1 = 32, top = 0.5 }
+-- (z +-40: the side edges hold gates 4-6, well clear of the back row's outer pillars; the plot
+-- rows start at |z| = 54.)
+Course.PLAZA = { x0 = -222, x1 = -160, z0 = -40, z1 = 40, top = 0.5 }
 Course.SPUR = { x0 = -160, x1 = -138, half = 6, top = 0.3 }
 -- Where GoModes / ModeQuit put the player (feet): the spur end facing the gates (-X), and
 -- in front of the gates facing back toward the hub (+X). faceX: the direction faced.
@@ -112,27 +113,33 @@ Course.ARRIVAL = { x = -166, y = 0.5, z = 0, faceX = -1 }
 -- the player, and from closer it looked out through a portal's swirl.
 Course.QUIT = { x = -188, y = 0.5, z = 0, faceX = 1 }
 
--- Mode gates: one per catalog slot, a U round the plaza. Slots 1-3 stand in a row on the
--- plaza's west edge at x = GATE_X, fronts facing the hub (+X). Slots 4-6 stand on the side
--- edges (their own `x`, z = the edge) with fronts facing into the plaza (`faceZ`: +1 on the
--- south edge, -1 on the north one): 4 and 6 on the south edge, 5 on the north edge, where
--- the best-times BOARD balances 6. GATE_HALF is half the opening width of an open gate;
--- locked gates are narrower (World.Modes). Course.gateSpot / crossedGate read every slot.
+-- Mode gates: one per catalog slot, a U of six same-sized gates round the plaza, GATE_GAP
+-- studs between neighbouring centres (an open gate is about 20.4 wide over its feet, so
+-- every pair keeps a few studs of air and every sign reads whole). Slots 1-3 stand in the
+-- back row on the plaza's west edge at x = GATE_X, fronts facing the hub (+X); Mog and
+-- Cardio check that line themselves. Slots 4-6 stand on the side edges (their own `x`,
+-- z = the edge) with fronts facing into the plaza (`faceZ`: +1 on the south edge, -1 on
+-- the north one): 4 and 6 on the south edge, 5 on the north edge facing 4, and the
+-- best-times BOARD facing 6. GATE_HALF is half the opening width of an open gate; locked
+-- gates are narrower (World.Modes). Course.gateSpot / crossedGate read every slot.
 export type GateSpot = { z: number, x: number?, faceZ: number? }
-Course.GATE_X = -208
+Course.GATE_X = -220
+Course.GATE_GAP = 24
+Course.SIDE_X = { -198, -198 + Course.GATE_GAP }
 Course.GATES = {
 	[1] = { z = 0 },
-	[2] = { z = -19 },
-	[3] = { z = 19 },
-	[4] = { z = Course.PLAZA.z0, x = -195, faceZ = 1 },
-	[5] = { z = Course.PLAZA.z1, x = -195, faceZ = -1 },
-	[6] = { z = Course.PLAZA.z0, x = -175.5, faceZ = 1 },
+	[2] = { z = -Course.GATE_GAP },
+	[3] = { z = Course.GATE_GAP },
+	[4] = { z = Course.PLAZA.z0, x = Course.SIDE_X[1], faceZ = 1 },
+	[5] = { z = Course.PLAZA.z1, x = Course.SIDE_X[1], faceZ = -1 },
+	[6] = { z = Course.PLAZA.z0, x = Course.SIDE_X[2], faceZ = 1 },
 } :: { [number]: GateSpot }
 Course.GATE_HALF = 6
 -- The big GAME MODES sign high above and behind the gates (front faces +X).
-Course.BIG_SIGN = { x = -217, z = 0, width = 56, height = 15, bottom = 28 }
--- Best-times board on the plaza, facing the spur mouth.
-Course.BOARD = { x = -172, z = 20, faceX = -160, faceZ = 4 }
+Course.BIG_SIGN = { x = Course.GATE_X - 9, z = 0, width = 56, height = 15, bottom = 28 }
+-- Best-times board on the north edge across from gate 6, facing into the plaza (faceX/faceZ:
+-- the point it looks at).
+Course.BOARD = { x = Course.SIDE_X[2], z = Course.PLAZA.z1 - 2, faceX = Course.SIDE_X[2], faceZ = 0 }
 
 -- Walking west across this line inside gate 1's opening starts a Parkour run (the player
 -- is teleported onto the level's start deck).
@@ -2231,8 +2238,8 @@ end
 -- Beach props the hub must not place here (palms, beach balls): both plazas, their spurs
 -- and the big signs behind the gates (the second mirrors the first).
 Course.CLEAR = {
-	{ x0 = -230, x1 = -138, z0 = -36, z1 = 36 },
-	{ x0 = 138, x1 = 230, z0 = -36, z1 = 36 },
+	{ x0 = -238, x1 = -138, z0 = -46, z1 = 46 },
+	{ x0 = 138, x1 = 238, z0 = -46, z1 = 46 },
 }
 
 return Course
