@@ -16,6 +16,7 @@
 	  passed(cleared)             cleared rounds reach PASS_ROUND
 	  showStep(round)             seconds per flex while the rival shows, faster each round
 	  showLength(round)           seconds from "round" to the player's turn
+	  repeatReady(lastAt, now)    the repeat share may pay again (REPEAT_GAP since the last)
 	  newBest(best, cleared)      the saved best after a run that cleared `cleared` rounds
 
 	ARENA is where World.PoseStage builds the arena (floor top centre and size in studs,
@@ -61,6 +62,8 @@ PoseRules.ROUND_GAP = 1.6
 PoseRules.MISS_GAP = 2.2
 -- Seconds from "start" to the first show.
 PoseRules.INTRO = 2.6
+-- Inside the full reward's cooldown a pass pays the repeat share at most this often (s).
+PoseRules.REPEAT_GAP = 300
 
 local function lcg(seed: number): () -> number
 	local state = math.floor(math.abs(seed)) % 2147483648
@@ -94,6 +97,11 @@ function PoseRules.press(seq: { number }, round: number, done: number, flex: num
 		return "wrong"
 	end
 	return if done + 1 >= round then "clear" else "good"
+end
+
+-- Whether the repeat share may pay again (`lastAt`: os.time of its last pay, 0 = never).
+function PoseRules.repeatReady(lastAt: number, now: number): boolean
+	return lastAt <= 0 or now - lastAt >= PoseRules.REPEAT_GAP
 end
 
 function PoseRules.passed(cleared: number): boolean

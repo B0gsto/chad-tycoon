@@ -28,10 +28,13 @@
 	  "clear" { round, next, passed }             the round was copied (`next` comes up)
 	  "miss"  { hearts, reason, step, expected }  reason: "wrong" | "slow"
 	  "pass"  { round, cash, full, packCash, repeatCash, pay }
-	                                               pay: "first" | "full" | "repeat"
+	                                               pay: "first" | "full" | "repeat" | "none" (the
+	                                               repeat share rests PoseRules.REPEAT_GAP)
 	  "win" / "lose" { cleared, best, prevBest, newBest, passed, cash, full, packCash,
 	            repeatCash, pay }                  win = passed this run (cash: what the pass paid)
-	  "stop"  { reason }                          the stub's: quit, left, switch, ...
+	  "stop"  { reason }                          the stub's: quit, left, switch, ...; "invalid"
+	                                               when the player is moved off their podium
+	  "full"  { text }                            every podium lane is taken (start refused)
 	Snapshot modes.pose: { running, best, clears, cooldownEnds, rewardPreview, round, hearts }.
 ]]
 
@@ -48,8 +51,12 @@ local ID = "pose"
 local FEET_BELOW_ROOT = 3
 -- The turn opens this much before the client's show ends (the "round" notify's trip).
 local TURN_EARLY = 0.35
--- Presses closer together than this are a double tap and ignored.
-local PRESS_GAP = 0.06
+-- The first flex's deadline gets this much extra: the client's bar starts when the "round"
+-- notify arrives (after its trip), the server's clock when it was sent.
+local TURN_GRACE = 0.75
+-- A running player whose feet end up this far from their podium (moved away by something
+-- else) has the run ended as "invalid".
+local LEAVE_SPOT = 30
 -- A player not running stands "in the arena" within this margin of its deck.
 local ARENA_MARGIN = 4
 
@@ -68,7 +75,8 @@ type Run = {
 	nextAt: number,
 	turnAt: number,
 	deadline: number,
-	lastPress: number,
+	lane: number,
+	spot: CFrame,
 	replay: boolean,
 	cleared: number,
 	prevBest: number,
@@ -84,8 +92,30 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 	local runs: { [Player]: Run } = {}
 	local lastPos: { [Player]: Vector3 } = {}
 
-	local function record(session: any): { best: number, clears: number, lastRewardAt: number }
+	local function record(session: any): { best: number, clears: number, lastRewardAt: number, lastRepeatAt: number? }
 		return session.profile.modes[ID]
+	end
+
+	-- When the repeat share last paid (os.time; an extra field on the saved record).
+	local function repeatAt(rec: { [string]: any }): number
+		local at = rec.lastRepeatAt
+		return if type(at) == "number" and at == at and at >= 0 and at < math.huge then at else 0
+	end
+
+	-- The first podium lane no other run is using (nil: all taken).
+	local function freeLane(player: Player): number?
+		local used: { [number]: boolean } = {}
+		for other, run in runs do
+			if other ~= player then
+				used[run.lane] = true
+			end
+		end
+		for lane = 1, #built.playerSpots do
+			if not used[lane] then
+				return lane
+			end
+		end
+		return nil
 	end
 
 	local function toSpawn(player: Player)
@@ -142,7 +172,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		run.phase = "show"
 		run.done = 0
 		run.turnAt = now + length - TURN_EARLY
-		run.deadline = now + length + PoseRules.INPUT_TIMEOUT
+		run.deadline = now + length + PoseRules.INPUT_TIMEOUT + TURN_GRACE
 		GameModes.notify(player, "round", ID, {
 			round = run.round,
 			seq = table.move(run.seq, 1, run.round, 1, {}),
@@ -192,7 +222,16 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		local priced = GameModes.modeReward(session, ID, first)
 		local kind = if first then "first" elseif priced.full then "full" else "repeat"
 		if not priced.full then
-			priced.cash = priced.repeatCash
+			-- The repeat share pays at most once per PoseRules.REPEAT_GAP (saved with the
+			-- record, so a rejoin does not reset it); between those a pass pays nothing.
+			local now = os.time()
+			if PoseRules.repeatReady(repeatAt(rec), now) then
+				priced.cash = priced.repeatCash
+				rec.lastRepeatAt = now
+			else
+				priced.cash = 0
+				kind = "none"
+			end
 		end
 		rec.clears += 1
 		rec.best = PoseRules.newBest(rec.best, run.cleared)
@@ -252,12 +291,19 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			return false
 		end
 		local old = runs[player]
+		local lane = if old then old.lane else freeLane(player)
+		if not lane then
+			-- Every podium is busy: tell the player and leave them where they are.
+			GameModes.notify(player, "full", ID, { text = "The posing stage is full. Try again in a moment!" })
+			return false
+		end
 		if old then
 			-- Again from the finish card or the gate while a run is on: a fresh run.
 			unhold(old.held)
 			runs[player] = nil
 		end
 		local rec = record(session)
+		local spot: CFrame = built.playerSpots[lane]
 		local seed = (player.UserId % 100000) * 7919 + math.floor(os.clock() * 1000) % 1000003
 		local run: Run = {
 			startedAt = os.clock(),
@@ -269,7 +315,8 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			nextAt = os.clock() + PoseRules.INTRO,
 			turnAt = math.huge,
 			deadline = math.huge,
-			lastPress = 0,
+			lane = lane,
+			spot = spot,
 			replay = false,
 			cleared = 0,
 			prevBest = rec.best,
@@ -278,7 +325,6 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			held = nil,
 		}
 		runs[player] = run
-		local spot: CFrame = built.playerSpot
 		if teleport or old then
 			GameModes.teleport(player, spot.Position, spot.LookVector)
 		end
@@ -346,9 +392,12 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		end
 		-- A respawned character is a new root: hold that one (and put it back on the podium).
 		if not run.held or run.held.root ~= root then
-			local spot: CFrame = built.playerSpot
-			GameModes.teleport(player, spot.Position, spot.LookVector)
+			GameModes.teleport(player, run.spot.Position, run.spot.LookVector)
 			run.held = hold(player)
+		elseif (Vector3.new(pos.X, feetY, pos.Z) - run.spot.Position).Magnitude > LEAVE_SPOT then
+			-- Moved off the stage by something else (an admin, a teleport pad): the run is off.
+			def.stop(player, "invalid")
+			return
 		end
 		local clock = os.clock()
 		if (run.phase == "intro" or run.phase == "gap") and clock >= run.nextAt then
@@ -373,7 +422,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		if run.phase == "show" and clock >= run.turnAt then
 			run.phase = "input"
 		end
-		if run.phase ~= "input" or clock - run.lastPress < PRESS_GAP then
+		if run.phase ~= "input" then
 			return
 		end
 		local flex, step = data.flex, data.step
@@ -383,7 +432,6 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		if flex ~= math.floor(flex) or flex < 1 or flex > #PoseRules.FLEXES then
 			return
 		end
-		run.lastPress = clock
 		local result = PoseRules.press(run.seq, run.round, run.done, flex)
 		if result == "wrong" then
 			miss(player, run, "wrong")
@@ -401,8 +449,11 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		if not session then
 			return { cash = 0, full = false, packCash = 0, repeatCash = 0 }
 		end
-		local r = GameModes.modeReward(session, ID, record(session).clears == 0)
-		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = r.repeatCash }
+		local rec = record(session)
+		local r = GameModes.modeReward(session, ID, rec.clears == 0)
+		-- The repeat share is resting until PoseRules.REPEAT_GAP has passed since it last paid.
+		local repeatCash = if PoseRules.repeatReady(repeatAt(rec), os.time()) then r.repeatCash else 0
+		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = repeatCash }
 	end
 
 	function def.snapshot(player: Player): { [string]: any }

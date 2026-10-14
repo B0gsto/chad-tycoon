@@ -81,4 +81,12 @@ return function(h: { [string]: any })
 		eq(PoseRules.showStep(PoseRules.MAX_ROUND), PoseRules.STEP_MIN, "the fastest step is reached")
 		check(PoseRules.INPUT_TIMEOUT >= 4, "the turn is generous")
 	end)
+
+	test("Pose: the repeat share rests between pays", function()
+		local gap = PoseRules.REPEAT_GAP
+		check(gap >= 60, "the repeat gap is minutes, not seconds")
+		check(PoseRules.repeatReady(0, 1000), "never paid: ready")
+		check(not PoseRules.repeatReady(1000, 1000 + gap - 1), "inside the gap: resting")
+		check(PoseRules.repeatReady(1000, 1000 + gap), "after the gap: ready")
+	end)
 end
