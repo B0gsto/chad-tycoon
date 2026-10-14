@@ -183,6 +183,7 @@ local SMASH = {
 	-- What Fx.Machines' crate on the plinth wears on top of its rarity's row of LOOKS.
 	look = {
 		wash = 0.42, -- the sunny crate needs at least this strong a wash
+		rim = 0, -- and a rarity outline at every rarity (the pen's starts at Epic)
 		gem = 1.4, -- gem size / the pen crate's
 		gemSpin = 1.6, -- radians per second
 		gemBob = 0.14, -- studs
@@ -1768,7 +1769,7 @@ local function dressSmasherCrate(s: Smasher): boolean
 		local rank = rankOf(s.rarity)
 		local look = lookOf(rank)
 		local color = s.color
-		washOver(child, body, color, math.min(look.wash, L.wash), look.rim, Highlights.PRIORITY.SmasherCrate)
+		washOver(child, body, color, math.min(look.wash, L.wash), math.min(look.rim, L.rim), Highlights.PRIORITY.SmasherCrate)
 		-- Piping round the middle of each strap: the strap's thinnest side is its width.
 		local piping = look.piping
 		if piping then

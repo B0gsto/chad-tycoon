@@ -263,15 +263,19 @@ local CFG = {
 		Collar = 0.45,
 		CollarInset = 1.6, -- from a front post's ends: under the white knob of the shelf above
 		Glints = 4,
-		-- A neon gold strip along the top of every fence cap (the plot's outline from the hub),
-		-- in a deeper gold than the sunny caps it lies on, and a bead with a light on every post.
-		Rail = 0.62, -- strip thickness
-		RailWide = 1.1, -- strip width (the cap is 1.3 across)
-		RailColor = Color3.fromRGB(255, 170, 20),
+		-- A neon gold bar clads the top of every fence cap (the plot's outline from the hub),
+		-- in a deep orange gold that reads apart from the sunny yellow caps, and a big bead with
+		-- a light on every post. Neon brightens far past its colour: measured on screen in
+		-- Studio, the old strip (255, 170, 20) breathing to (255, 232, 130) drew (255, 255, 84),
+		-- neon (225, 135, 5) draws (251, 230, 77), the caps' own yellow (248, 212, 73), while
+		-- (215, 120, 0) draws (243, 174, 61) and (200, 90, 0) draws (236, 90, 41).
+		Rail = 0.95, -- bar thickness: taller than the cap's top half, so the fence line thickens
+		RailWide = 1.6, -- bar width (the cap is 1.3 across: the bar hides it from above)
+		RailColor = Color3.fromRGB(200, 92, 0),
 		RailPulse = 1.3, -- seconds of one half of its breath ...
-		RailBright = Color3.fromRGB(255, 232, 130), -- ... to this colour (it never fades out)
-		Bead = 1.2, -- neon gold ball on every fence post's knob
-		PostLight = { Range = 10, Brightness = 1.6 },
+		RailBright = Color3.fromRGB(214, 116, 0), -- ... to this colour (still orange gold, never the caps' yellow)
+		Bead = 2.1, -- neon gold ball on every fence post's knob
+		PostLight = { Range = 12, Brightness = 2.2 },
 		PostLights = 24, -- most post lights on one plot (spread evenly over the posts)
 	},
 	Trophies = {
@@ -341,12 +345,18 @@ local CFG = {
 			Spread = 10, -- studs off the shaft's axis
 			Climb = 0.55, -- seconds the rocket climbs
 			Rocket = 1.1, -- the rocket's ball
-			Sparks = 48,
-			SparkSize = 2.6,
-			Speed = { 20, 30 },
-			Drag = 2.4,
+			-- Measured in Studio from the crown camera (burst 60 studs away): 48 additive
+			-- (LightEmission 1) white-to-colour sparks of 2.6 studs changed only 6% of the
+			-- pixels round the burst: light added to a pale sky stays pale. The sparks are now
+			-- drawn in their own colour (little added light), bigger and more of them.
+			Sparks = 110,
+			SparkSize = 5.5,
+			SparkGlow = 0.15, -- the sparks' LightEmission (1 = added light: lost on the sky)
+			Speed = { 24, 36 },
+			Drag = 2.2,
 			Fall = 9, -- studs/s^2 the sparks sink
-			Life = { 1.3, 1.9 },
+			Life = { 1.6, 2.2 },
+			Boom = { Size = 9, Time = 0.3 }, -- the rocket's ball swells to this and fades: the bang
 			Flash = { Range = 40, Brightness = 4, Time = 0.6 },
 			Colors = {
 				Color3.fromRGB(255, 200, 40),
@@ -1105,7 +1115,8 @@ function BUILDERS.CrownBeam(k: Kit): Feature
 		burst.Name = "FireworkBurst"
 		burst.Texture = SPARKLE
 		burst.Rate = 0
-		burst.LightEmission = 1
+		burst.LightEmission = f.SparkGlow
+		burst.LightInfluence = 0
 		burst.Speed = NumberRange.new(f.Speed[1], f.Speed[2])
 		burst.Drag = f.Drag
 		burst.Acceleration = Vector3.new(0, -f.Fall, 0)
@@ -1140,6 +1151,7 @@ function BUILDERS.CrownBeam(k: Kit): Feature
 			local high = f.Height[1] + math.random() * (f.Height[2] - f.Height[1])
 			rocket.CFrame = base * CFrame.new(0, tipTop, 0)
 			rocket.Color = color
+			rocket.Size = Vector3.one * f.Rocket
 			rocket.Transparency = 0
 			local goal = base * CFrame.new(math.cos(angle) * off, high, math.sin(angle) * off)
 			local climb =
@@ -1148,8 +1160,13 @@ function BUILDERS.CrownBeam(k: Kit): Feature
 				if not rocket.Parent then
 					return
 				end
-				rocket.Transparency = 1
-				burst.Color = ColorSequence.new(WHITE, color)
+				-- The bang: the ball swells and fades while the sparks fly.
+				TweenService:Create(
+					rocket,
+					TweenInfo.new(f.Boom.Time, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+					{ Size = Vector3.one * f.Boom.Size, Transparency = 1 }
+				):Play()
+				burst.Color = ColorSequence.new(color, color:Lerp(WHITE, 0.35))
 				burst:Emit(Budget.count(f.Sparks))
 				flash.Color = color
 				flash.Brightness = f.Flash.Brightness

@@ -986,15 +986,21 @@ end
 -- The aura floats over the Aura bar (Collect, Deposit and the deposit's cash bonus): big
 -- lettering with a thick dark outline, as Fx.Orbs' "+$X" cash floats are.
 Popups.FLOAT = {
-	aura = { size = 40, stroke = 3.5, width = 420, life = 1.4 }, -- TextSize design px (about 24-28 px of glyph at 1280x720)
-	bonus = { size = 34, stroke = 3, width = 460, life = 1.5 }, -- the deposit's "+$X bonus" line
-	bonusRise = -60, -- design px: the bonus line starts this far above the aura float ...
+	-- Measured in Studio: the aura float's glyphs are 38 px tall at full size, but its pop
+	-- starts at 0.55 and takes 0.28 s, so a frame 0.12 s in read about 22 px; and the bonus
+	-- line started 60 px above it while the aura float rose 80 px through it (the "ghost").
+	-- Now both pop from 0.85, rise straight up the same way, and the bonus line starts under
+	-- the aura float, so the one above always stays ahead.
+	aura = { size = 40, stroke = 3.5, width = 420, life = 1.4, pop = 0.85, drift = false }, -- TextSize design px
+	bonus = { size = 34, stroke = 3, width = 460, life = 1.5, pop = 0.85, drift = false }, -- the deposit's "+$X bonus" line
+	bonusRise = 56, -- design px: the bonus line starts this far under the aura float ...
 	bonusDelay = 0.18, -- ... and this many seconds after it
 }
 
 -- "+$120" over the world: pops in, rises on a soft arc (steady sideways drift,
 -- easing-out climb) and fades near the top. opts: life (seconds, 1.1), size (text, 30),
--- width (300), drift (false = straight up), stroke (outline px, 2.5).
+-- width (300), drift (false = straight up), stroke (outline px, 2.5), pop (the scale it pops in
+-- from, 0.55).
 function Popups.float(text: string, color: Color3, anchor: UDim2, opts: { [string]: any }?)
 	local o = opts or {}
 	local life: number = o.life or 1.1
@@ -1019,8 +1025,9 @@ function Popups.float(text: string, color: Color3, anchor: UDim2, opts: { [strin
 	})
 	-- Over the 3D world: a solid navy outline.
 	local outline = Kit.textStroke(label, o.stroke or 2.5, 0)
-	local pop = Kit.new("UIScale", { Scale = 0.55, Parent = label })
-	Kit.tween(pop, 0.28, { Scale = 1 }, Enum.EasingStyle.Back)
+	local from: number = o.pop or 0.55
+	local pop = Kit.new("UIScale", { Scale = from, Parent = label })
+	Kit.tween(pop, if from > 0.7 then 0.18 else 0.28, { Scale = 1 }, Enum.EasingStyle.Back)
 	local drift = if o.drift == false then 0 else math.random(-36, 36)
 	Kit.tween(mover, life, { Position = anchor + UDim2.fromOffset(drift, 0) }, Enum.EasingStyle.Linear)
 	Kit.tween(label, life, { Position = UDim2.fromOffset(0, -80) }, Enum.EasingStyle.Quad)
@@ -2422,8 +2429,11 @@ function Popups.stampName(stage: Frame, text: string, size: number, y: number): 
 end
 
 -- A slanted bar of light that crosses the name again and again (Legendary and Mythic).
--- Returns its clip frame, which leaves with the reveal's text.
-function Popups.nameSweep(stage: Frame, y: number, size: number): Frame
+-- Returns its clip frame, which leaves with the reveal's text. `name` (the name's label or
+-- stamped row): the clip is cut to the name's own width before every pass, so the bar never
+-- shows on the bare stage beside a short name (measured in Studio: the tier-25 row ends at
+-- 880 px, the old full-width clip at 929, so a cream block crossed the gap on its own).
+function Popups.nameSweep(stage: Frame, y: number, size: number, name: GuiObject?): Frame
 	local J = Popups.JUICE.Reveal
 	local clip = Kit.new("Frame", {
 		Name = "Sweep",
@@ -2452,9 +2462,22 @@ function Popups.nameSweep(stage: Frame, y: number, size: number): Frame
 		}),
 		Parent = bar,
 	})
+	local function fit()
+		if not name then
+			return
+		end
+		local layout = name:FindFirstChildWhichIsA("UIListLayout")
+		local width = if layout then layout.AbsoluteContentSize.X elseif name:IsA("TextLabel") then name.TextBounds.X else 0
+		if width > 0 then
+			clip.AnchorPoint = Vector2.new(0.5, 0)
+			clip.Size = UDim2.fromOffset(width + 6, size + 10)
+			clip.Position = UDim2.new(0.5, 0, 0, y - 2)
+		end
+	end
 	task.spawn(function()
 		task.wait(0.5)
 		while clip.Parent do
+			fit()
 			bar.Position = UDim2.fromOffset(-J.SweepWidth, 0)
 			Kit.tween(bar, J.SweepTime, { Position = UDim2.fromScale(1, 0) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
 			task.wait(J.SweepEvery)
@@ -2907,11 +2930,13 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 		-- way to white, and every name wears a thick ink outline over the dark plate.
 		local _, saturation = unitColor:ToHSV()
 		local unitName = string.upper(Theme.Tiers[tier].Name)
+		local nameGui: GuiObject
 		if tier == Economy.MAX_TIER and not calm and not PREVIEW then
 			-- The top tier's name is stamped in, a gold letter at a time (with its own ticks).
-			arrive(Popups.stampName(stage, unitName, nameSize, nameY))
+			nameGui = Popups.stampName(stage, unitName, nameSize, nameY)
+			arrive(nameGui)
 		else
-			arrive(Kit.hudText(stage, {
+			nameGui = Kit.hudText(stage, {
 				Name = "UnitName",
 				Text = unitName,
 				TextSize = nameSize,
@@ -2923,11 +2948,12 @@ local function showReveal(reward: { [string]: any }, done: () -> ())
 				Position = UDim2.fromOffset(20, nameY),
 				StrokeThickness = 4,
 				ZIndex = 5,
-			}))
+			})
+			arrive(nameGui)
 			sounds.play("Tick", 0.02, 1.2)
 		end
 		if rank >= J.SweepFrom and not calm and not PREVIEW then
-			table.insert(lines, Popups.nameSweep(stage, nameY, nameSize))
+			table.insert(lines, Popups.nameSweep(stage, nameY, nameSize, nameGui))
 		end
 	end)
 	if gain then
@@ -4351,7 +4377,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 				then "Every map cleared. Now beat your best times!"
 				elseif data.pay == "assisted" then "Gear on: no bonus"
 				elseif resting and restLeft > 0 then "Bonus is resting, back in " .. Format.time(restLeft)
-				elseif resting then "Bonus is resting"
+				elseif resting then "Run again bonus is back next run!"
 				elseif repeatRun then string.format(
 					"Run again bonus: %d%% of the full reward",
 					math.floor((tonumber(data.repeatShare) or Economy.MODE_REPEAT_SHARE) * 100 + 0.5)
@@ -4573,7 +4599,8 @@ function Popups.mogFinish(data: { [string]: any }, onAgain: () -> (), onHome: ()
 		local restEnds = os.clock() + math.max(0, tonumber(data.repeatRest) or 0)
 		local function restLine(): string
 			local left = math.ceil(restEnds - os.clock())
-			return if left > 0 then "Bonus is resting, back in " .. Format.time(left) else "Bonus is resting"
+			-- The rest can end before the run does (repeatRest = 0): the bonus is back, say so.
+			return if left > 0 then "Bonus is resting, back in " .. Format.time(left) else "Run again bonus is back next run!"
 		end
 		if data.pay == "resting" then
 			repeatLine = restLine()
