@@ -99,13 +99,19 @@ test("tiers and merging", function()
 	eq(Economy.MAX_TIER, 25, "max tier")
 	check(Economy.TIER_RATE_GROWTH > Economy.MERGE_RATIO, "merging must increase production")
 	eq(Economy.unitRate(1), 1, "tier 1 rate")
-	check(Economy.LATE_TIER_RATE_GROWTH > Economy.MERGE_RATIO, "merging late tiers must increase production too")
+	check(Economy.MID_TIER_RATE_GROWTH > Economy.MERGE_RATIO, "merging mid tiers must increase production too")
+	check(Economy.LATE_TIER_RATE_GROWTH > Economy.MERGE_RATIO, "and late tiers")
 	near(Economy.unitRate(3), Economy.TIER_RATE_GROWTH ^ 2, "tier 3 rate")
 	near(Economy.unitRate(Economy.FAST_TIERS), Economy.TIER_RATE_GROWTH ^ (Economy.FAST_TIERS - 1), "the fast tiers grow 3x")
 	near(
-		Economy.unitRate(Economy.FAST_TIERS + 2),
-		Economy.unitRate(Economy.FAST_TIERS) * Economy.LATE_TIER_RATE_GROWTH ^ 2,
-		"the late tiers grow slower"
+		Economy.unitRate(Economy.MID_TIERS),
+		Economy.unitRate(Economy.FAST_TIERS) * Economy.MID_TIER_RATE_GROWTH ^ (Economy.MID_TIERS - Economy.FAST_TIERS),
+		"the mid tiers grow 2.7x"
+	)
+	near(
+		Economy.unitRate(Economy.MID_TIERS + 2),
+		Economy.unitRate(Economy.MID_TIERS) * Economy.LATE_TIER_RATE_GROWTH ^ 2,
+		"the late tiers grow 2.4x"
 	)
 
 	local units = table.create(25, 0)
@@ -5392,7 +5398,7 @@ test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", 
 
 	-- The first tiers come fast (see the first-minutes test); after them each tier takes
 	-- longer than the one before (every unit is bought at the first tier, and a tier makes
-	-- three times the aura of the one below, 2.7 times past Economy.FAST_TIERS).
+	-- three times the aura of the one below, less past Economy.FAST_TIERS).
 	local stock = Simulate.run({ hours = 5, step = 5 })
 	local reached = stock.reached
 	local function by(tier: number, seconds: number): boolean
@@ -5421,21 +5427,21 @@ test("daily sessions (scripts/simulate): offline cash and the longest wait", fun
 	local Simulate = require("../scripts/simulate")
 	-- One long session and half an hour a day, the same hours of play: the cash made while
 	-- away brings every late tier sooner in play time.
-	local session = Simulate.run({ hours = 24, step = 30, extras = true })
-	local daily = Simulate.run({ hours = 24, step = 30, extras = true, minutesPerDay = 30 })
+	local session = Simulate.run({ hours = 30, step = 30, extras = true })
+	local daily = Simulate.run({ hours = 30, step = 30, extras = true, minutesPerDay = 30 })
 	local top = Economy.MAX_TIER
 	check(session.reached[top] ~= nil and daily.reached[top] ~= nil, "both find every tier")
 	check(daily.reached[15] < session.reached[15], "offline cash: tier 15 in less play time")
 	check(daily.reached[top] < session.reached[top], "and the top tier too")
 	local days = daily.reached[top] / 1800
-	check(days >= 25 and days <= 35, string.format("half an hour a day finds every tier in about a month (%.0f days)", days))
+	check(days >= 25 and days <= 40, string.format("half an hour a day finds every tier in about a month (%.0f days)", days))
 	-- The longest wait is counted on the calendar, and nothing is waited for after the top tier.
 	check(
 		daily.longestWait >= 3 * 86400 and daily.longestWait <= 10 * 86400,
 		string.format("the longest wait for a tier is days, under ten (%.1f)", daily.longestWait / 86400)
 	)
 	eq(daily.waitAt, top - 1, "and it is the wait for the last tier")
-	check(session.longestWait <= 6 * 3600, "one session: the wait is play time")
+	check(session.longestWait <= 8 * 3600, "one session: the wait is play time")
 	-- A run that ends short of the top tier counts the wait still running.
 	local short = Simulate.run({ hours = 2, step = 30 })
 	check(short.reached[top] == nil, "two hours do not reach the top")
