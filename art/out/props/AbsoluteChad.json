@@ -1,14 +1,14 @@
 {
  "kind": "AbsoluteChad",
- "tris": 10162,
+ "tris": 12824,
  "size": [
-  4.71,
-  6.01,
-  2.43
+  4.46,
+  6.31,
+  2.54
  ],
  "axes": "roblox x, y (height), z (depth)",
  "plinth_offset": [
-  0.184,
-  -0.026
+  0.162,
+  -0.121
  ]
 }
