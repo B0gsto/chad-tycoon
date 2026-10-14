@@ -128,7 +128,26 @@ local THEMES = { "beach", "cove", "bay", "reef", "bubble", "coral", "shark", "st
 local BODY_WASH = 0.8 -- body background transparency over the card (1 = no wash)
 local LOCKED_DARK = 0.38 -- locked band: share pulled toward LOCKED_SLATE
 local LOCKED_GREY = 0.3 -- ... and toward its own grey
-local ICON_PX = 22
+local ICON_PX = 24
+-- Emoji the Roblox font cannot draw (Emoji 14 bubbles and coral print the placeholder logo):
+-- big text (the preview fallback) swaps them for these, and the card band draws the map's
+-- code-built emblem (EMBLEMS) instead. EMBLEM tunables: box px, colours, stroke px.
+local GLYPH_SWAP: { [string]: string } = { ["🫧"] = "🔵", ["🪸"] = "🐚" }
+local EMBLEM = {
+	BOX = 26,
+	STROKE = 1.5,
+	BUBBLE_FILL = Color3.fromRGB(206, 246, 255),
+	BUBBLE_EDGE = Color3.fromRGB(28, 86, 170),
+	BUBBLE_ALPHA = 0.1,
+	-- Bubbles: { centre x, centre y (box scale), diameter px }.
+	BUBBLES = { { 0.4, 0.6, 16 }, { 0.76, 0.3, 10 }, { 0.2, 0.2, 7 } },
+	SHINE = Color3.new(1, 1, 1),
+	CORAL = Color3.fromRGB(240, 56, 96),
+	CORAL_EDGE = Color3.new(1, 1, 1),
+	CORAL_TIP = Color3.fromRGB(255, 232, 214),
+	-- Coral branches: { foot x, foot y (box scale), length px, width px, tilt degrees }.
+	BRANCHES = { { 0.5, 0.95, 20, 5, 0 }, { 0.42, 0.62, 11, 4, -38 }, { 0.58, 0.55, 11, 4, 40 } },
+}
 -- Every caption on the cards and side panel is held at least this many px on the glass.
 local MIN_TEXT_PX = 15
 local STRIP = { ParkourFinish = true, ParkourWater = true, Trigger = true }
@@ -162,8 +181,12 @@ local function levelList(info: { [string]: any }?): { any }
 	return if info and type(info.levels) == "table" then info.levels else {}
 end
 
+local function themeOf(lv: any, i: number): string?
+	return if type(lv) == "table" and type(lv.theme) == "string" then lv.theme else THEMES[i]
+end
+
 local function accentOf(lv: any, i: number): Color3
-	local theme = if type(lv) == "table" and type(lv.theme) == "string" then lv.theme else THEMES[i]
+	local theme = themeOf(lv, i)
 	local header = theme and HEADERS[theme]
 	if header then
 		return header
@@ -177,7 +200,85 @@ local function accentOf(lv: any, i: number): Color3
 end
 
 local function iconOf(lv: any, i: number): string
-	return if type(lv) == "table" and type(lv.icon) == "string" and lv.icon ~= "" then lv.icon else ICONS[i] or "🏁"
+	local icon = if type(lv) == "table" and type(lv.icon) == "string" and lv.icon ~= "" then lv.icon else ICONS[i] or "🏁"
+	return GLYPH_SWAP[icon] or icon
+end
+
+-- Code-built band emblems for the maps whose emoji does not render (EMBLEM above).
+local function emblemDisc(parent: Instance, name: string, x: number, y: number, d: number, color: Color3, alpha: number, z: number): Frame
+	local disc = Kit.new("Frame", {
+		Name = name,
+		BackgroundColor3 = color,
+		BackgroundTransparency = alpha,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(x, y),
+		Size = UDim2.fromOffset(d, d),
+		ZIndex = z,
+		Parent = parent,
+	})
+	Kit.round(disc)
+	return disc
+end
+
+local EMBLEMS: { [string]: (Frame) -> () } = {}
+
+EMBLEMS.bubble = function(box)
+	for n, b in EMBLEM.BUBBLES do
+		local disc = emblemDisc(box, "Bubble" .. n, b[1], b[2], b[3], EMBLEM.BUBBLE_FILL, EMBLEM.BUBBLE_ALPHA, 4)
+		Kit.new("UIStroke", { Thickness = EMBLEM.STROKE, Color = EMBLEM.BUBBLE_EDGE, Parent = disc })
+		emblemDisc(disc, "Shine", 0.32, 0.3, math.max(2, math.floor(b[3] * 0.28)), EMBLEM.SHINE, 0, 5)
+	end
+end
+
+EMBLEMS.coral = function(box)
+	for n, b in EMBLEM.BRANCHES do
+		local rad = math.rad(b[5])
+		-- A rounded bar standing on its foot, tilted about it: the centre moves half a length
+		-- along the tilt.
+		local cx = b[1] + math.sin(rad) * b[3] / 2 / EMBLEM.BOX
+		local cy = b[2] - math.cos(rad) * b[3] / 2 / EMBLEM.BOX
+		local bar = Kit.new("Frame", {
+			Name = "Branch" .. n,
+			BackgroundColor3 = EMBLEM.CORAL,
+			BorderSizePixel = 0,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(cx, cy),
+			Size = UDim2.fromOffset(b[4], b[3]),
+			Rotation = b[5],
+			ZIndex = 4,
+			Parent = box,
+		})
+		Kit.round(bar)
+		Kit.new("UIStroke", { Thickness = EMBLEM.STROKE, Color = EMBLEM.CORAL_EDGE, Parent = bar })
+		local tx = b[1] + math.sin(rad) * b[3] / EMBLEM.BOX
+		local ty = b[2] - math.cos(rad) * b[3] / EMBLEM.BOX
+		emblemDisc(box, "Tip" .. n, tx, ty, b[4] + 2, EMBLEM.CORAL_TIP, 0, 5)
+	end
+end
+
+-- Shows the map's emblem on its band icon label (built once per label), or the emoji.
+local function paintIcon(label: TextLabel, lv: any, i: number)
+	local theme = themeOf(lv, i)
+	local draw = theme and EMBLEMS[theme]
+	local box = label:FindFirstChild("Emblem")
+	if draw and not box then
+		local made = Kit.new("Frame", {
+			Name = "Emblem",
+			BackgroundTransparency = 1,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(EMBLEM.BOX, EMBLEM.BOX),
+			ZIndex = 4,
+			Parent = label,
+		})
+		draw(made)
+		box = made
+	end
+	if box and box:IsA("GuiObject") then
+		box.Visible = draw ~= nil
+	end
+	label.Text = if draw then "" else iconOf(lv, i)
 end
 
 local function nameOf(lv: any, i: number): string
@@ -832,7 +933,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		card.levelLabel.TextTransparency = 0
 		card.levelInk.Enabled = locked
 		card.stats.TextColor3 = ink
-		card.icon.Text = iconOf(lv, i)
+		paintIcon(card.icon, lv, i)
 		card.icon.TextTransparency = 0
 		card.name.Text = nameOf(lv, i)
 		card.setPips(if type(lv) == "table" then tonumber(lv.difficulty) or i else i)
