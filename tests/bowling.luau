@@ -145,7 +145,10 @@ return function(h: { [string]: any })
 		check(R.settle("strike") >= R.settle("spare") and R.settle("spare") >= R.settle(nil), "a strike celebrates longest")
 		check(R.settle("gutter") > 0 and R.settle(nil) > 0, "every ball settles")
 		check(R.settle(nil) <= 1.7 and R.settle("strike") <= 2.5, "settles kept short for pacing")
-		check(R.SKIP_AFTER >= 0.8 and R.SKIP_AFTER <= 1.5, "a skip opens about a second into the reaction")
+		check(R.skipAfter(nil) >= 0.8 and R.skipAfter(nil) <= 1.5, "a skip opens about a second into the reaction")
+		eq(R.skipAfter("spare"), R.skipAfter(nil), "a spare's skip like an open frame's")
+		-- A strike's reaction (Fx.Bowling: leap, roar, flex) runs ~1.6 s: the skip waits it out.
+		check(R.skipAfter("strike") >= 1.6, "a strike's whole celebration plays before a skip")
 		-- The reaction lands after the last pin and before the next turn.
 		for seed = 1, 60 do
 			local roll = R.roll(R.allStanding(), (seed % 7 - 3) / 3, (seed % 10) / 10, seed)
@@ -162,7 +165,7 @@ return function(h: { [string]: any })
 			check(react < roll.duration + R.settle(mark), "reaction before the next turn")
 			-- A skip never cuts the reaction's start, and still comes before the next turn.
 			local skipAt = R.skipAt(roll, mark)
-			near(skipAt, R.WINDUP + react + R.SKIP_AFTER, "skip opens SKIP_AFTER into the reaction")
+			near(skipAt, R.WINDUP + react + R.skipAfter(mark), "skip opens skipAfter(mark) into the reaction")
 			check(skipAt <= R.WINDUP + roll.duration + R.settle(mark) + 1e-9, "skip opens before the turn ends")
 		end
 	end)
@@ -176,32 +179,56 @@ return function(h: { [string]: any })
 		eq(R.stars(50), 1, "one star at 50")
 		eq(R.stars(79), 1, "still one")
 		eq(R.stars(80), 2, "two at 80")
-		eq(R.stars(114), 2, "still two")
-		eq(R.stars(115), 3, "three at 115")
+		eq(R.stars(104), 2, "still two")
+		eq(R.stars(105), 3, "three at 105")
 		eq(R.stars(R.MAX_SCORE), 3, "a perfect game")
 		eq(R.stars(0 / 0), 0, "NaN: none")
 		check(R.STAR_TIERS[3] <= R.MAX_SCORE, "every star is reachable")
 		near(R.starShare(0), 0, "no share")
 		check(R.starShare(1) > 0 and R.starShare(1) < R.starShare(2) and R.starShare(2) < R.starShare(3), "more stars pay more")
-		check(R.starShare(3) <= R.BONUS_CAP + 1e-9, "three stars fit one window")
+		eq(#R.BONUS_CAPS, #R.STAR_TIERS, "a window cap for every star count")
+		eq(R.bonusCap(0), 0, "no stars: no cap")
+		eq(R.bonusCap(0 / 0), 0, "NaN: no cap")
+		check(R.bonusCap(1) < R.bonusCap(2) and R.bonusCap(2) < R.bonusCap(3), "more stars, a higher window cap")
+		check(R.bonusCap(3) <= 1.5, "a sane cap (" .. R.bonusCap(3) .. " repeat shares per window)")
+		eq(R.bonusCap(9), R.bonusCap(3), "clamped")
+		for n = 1, 3 do
+			check(R.starShare(n) <= R.bonusCap(n) + 1e-9, n .. " stars fit a fresh window")
+		end
 		eq(R.bonusCash(1000, 0.25), 250, "a share of the repeat cash")
 		eq(R.bonusCash(1000, 0), 0, "nothing")
-		-- However many three-star games in five minutes: at most BONUS_CAP repeat shares.
-		local at, used, total = 0, 0, 0
-		for i = 0, 40 do
-			local paid
-			paid, at, used = R.bonusTake(at, used, 1000 + i * 7, R.starShare(3))
-			check(paid >= 0, "never negative")
-			total += paid
+		-- Back-to-back games of one star count for a whole window (every 7 s for 5 minutes):
+		-- each tier's games pay up to its cap, so higher tiers stay worth more after the first.
+		local function windowTotal(stars: number): number
+			local at, used, total = 0, 0, 0
+			for i = 0, 42 do
+				local paid
+				paid, at, used = R.bonusTake(at, used, 1000 + i * 7, R.starShare(stars), stars)
+				check(paid >= 0, "never negative")
+				total += paid
+			end
+			return total
 		end
-		check(total <= R.BONUS_CAP * 2 + 1e-9, "two windows at most in 280 s (" .. total .. ")")
-		local paid1, at1, used1 = R.bonusTake(0, 0, 5000, R.starShare(3))
+		local w1, w2, w3 = windowTotal(1), windowTotal(2), windowTotal(3)
+		near(w1, R.bonusCap(1), "1-star games fill the 1-star cap")
+		near(w2, R.bonusCap(2), "2-star games fill the 2-star cap")
+		near(w3, R.bonusCap(3), "3-star games fill the 3-star cap")
+		check(w1 < w2 and w2 < w3, "a window of higher-tier games pays more (" .. w1 .. ", " .. w2 .. ", " .. w3 .. ")")
+		-- A second game in the same window still pays more for more stars.
+		local _, atA, usedA = R.bonusTake(0, 0, 5000, R.starShare(1), 1)
+		local second1 = R.bonusTake(atA, usedA, 5060, R.starShare(1), 1)
+		local second2 = R.bonusTake(atA, usedA, 5060, R.starShare(2), 2)
+		local second3 = R.bonusTake(atA, usedA, 5060, R.starShare(3), 3)
+		check(second1 < second2 and second2 < second3, "after a 1-star game, more stars still pay more")
+		-- A 3-star game spends the window: a later 1-star game in it pays nothing.
+		local paid1, at1, used1 = R.bonusTake(0, 0, 5000, R.starShare(3), 3)
 		near(paid1, R.starShare(3), "a fresh window pays it all")
-		local paid2 = R.bonusTake(at1, used1, 5000 + R.REPEAT_GAP - 1, R.starShare(3))
-		near(paid2, math.max(0, R.BONUS_CAP - used1), "the window's rest only")
-		local paid3 = R.bonusTake(at1, used1, 5000 + R.REPEAT_GAP, R.starShare(3))
+		eq(R.bonusTake(at1, used1, 5100, R.starShare(1), 1), 0, "a lower tier can't top up past its own cap")
+		local paid2 = R.bonusTake(at1, used1, 5000 + R.REPEAT_GAP - 1, R.starShare(3), 3)
+		near(paid2, math.max(0, R.bonusCap(3) - used1), "the window's rest only")
+		local paid3 = R.bonusTake(at1, used1, 5000 + R.REPEAT_GAP, R.starShare(3), 3)
 		near(paid3, R.starShare(3), "a new window")
-		local paid4 = R.bonusTake(at1 + 999, 1, 5000, 0.5)
+		local paid4 = R.bonusTake(at1 + 999, 1, 5000, 0.5, 2)
 		near(paid4, 0.5, "a window from the future starts afresh")
 	end)
 
@@ -341,24 +368,23 @@ return function(h: { [string]: any })
 		check(BowlingRules.PASS_SCORE < BowlingRules.MAX_SCORE, "pass mark under the max")
 	end)
 
-	test("Bowling: a skilled bowler earns 2 stars often and 3 sometimes", function()
+	test("Bowling: three stars take skill (perfect play often, decent play now and then)", function()
 		local rand = h.seeded(7)
 		local function gauss(): number
 			return math.sqrt(-2 * math.log(1 - rand() * 0.999)) * math.cos(2 * math.pi * rand())
 		end
 		local P = BowlingRules.POWER
 		local mid = (P.sweetLo + P.sweetHi) / 2
-		-- Stars for `games` games: aim spread around the centre, power spread around the sweet
-		-- spot's middle. Returns the share of games with 2+ and with 3 stars.
-		local function starRates(aimSpread: number, powerSpread: number, games: number): (number, number)
+		-- Stars for `games` games, each ball at aim() and power(). Returns the share of games
+		-- with 2+ and with 3 stars.
+		local function starRates(aim: () -> number, power: () -> number, games: number): (number, number)
 			local two, three = 0, 0
 			for g = 1, games do
 				local game = BowlingRules.newGame()
 				local ball = 0
 				while not game.over do
 					ball += 1
-					local power = math.clamp(mid + gauss() * powerSpread, 0, 1)
-					local r = BowlingRules.roll(game.standing, gauss() * aimSpread, power, g * 1000 + ball)
+					local r = BowlingRules.roll(game.standing, aim(), math.clamp(power(), 0, 1), g * 1000 + ball)
 					local fallen = {}
 					for _, f in r.falls do
 						table.insert(fallen, f.pin)
@@ -375,14 +401,31 @@ return function(h: { [string]: any })
 			end
 			return two / games, three / games
 		end
-		-- Skilled: the aim mostly in the gold pocket, the power mostly in the sweet spot.
-		local two, three = starRates(0.08, 0.05, 400)
-		check(two >= 0.4 and two <= 0.8, "skilled: 2+ stars often (" .. two .. ")")
-		check(three >= 0.08 and three <= 0.3, "skilled: 3 stars sometimes (" .. three .. ")")
-		-- Decent (the pass-rate test's bowler): 2 stars sometimes, 3 rarely.
-		local dTwo, dThree = starRates(0.15, 0.08, 300)
-		check(dTwo < two and dThree < three, "skill pays (" .. dTwo .. ", " .. dThree .. ")")
-		check(dThree < 0.12, "decent: 3 stars rare (" .. dThree .. ")")
+		local function spread(aimSpread: number, powerSpread: number): (() -> number, () -> number)
+			return function()
+				return gauss() * aimSpread
+			end, function()
+				return mid + gauss() * powerSpread
+			end
+		end
+		-- Perfect: every ball's aim inside the gold pocket and its power inside the sweet spot.
+		local pTwo, pThree = starRates(function()
+			return (rand() * 2 - 1) * BowlingRules.POCKET
+		end, function()
+			return P.sweetLo + rand() * (P.sweetHi - P.sweetLo)
+		end, 400)
+		check(pThree >= 0.25 and pThree <= 0.45, "perfect play: 3 stars about a third of the time (" .. pThree .. ")")
+		check(pTwo >= 0.55, "perfect play: 2+ stars most games (" .. pTwo .. ")")
+		-- Skilled: the aim mostly in the pocket, the power mostly sweet.
+		local sAim, sPower = spread(0.08, 0.05)
+		local sTwo, sThree = starRates(sAim, sPower, 400)
+		-- Decent (the pass-rate test's bowler): 2 stars sometimes, 3 now and then.
+		local dAim, dPower = spread(0.15, 0.08)
+		local dTwo, dThree = starRates(dAim, dPower, 400)
+		check(dThree >= 0.06 and dThree <= 0.18, "decent: 3 stars now and then (" .. dThree .. ")")
+		check(dTwo < sTwo and sTwo <= pTwo + 0.05, "2 stars follow skill (" .. dTwo .. ", " .. sTwo .. ", " .. pTwo .. ")")
+		check(dThree < sThree and sThree < pThree, "3 stars follow skill (" .. dThree .. ", " .. sThree .. ", " .. pThree .. ")")
+		check(pThree > dThree * 2, "perfect play earns 3 stars far more often than decent play")
 	end)
 
 	test("Bowling: what each phase allows (lobby -> countdown -> play -> results)", function()
@@ -410,8 +453,7 @@ return function(h: { [string]: any })
 
 	test("Bowling: ball picks are whole numbers 1..BALL_CHOICES", function()
 		local R = BowlingRules
-		eq(R.RACK_BALLS, 4, "four dumbbells on the rack")
-		eq(R.BALL_CHOICES, R.RACK_BALLS + 1, "plus the PRO one")
+		eq(R.RACK_BALLS, R.BALL_CHOICES, "every pick is on the rack, the PRO one too")
 		eq(R.PRO_BALL, R.BALL_CHOICES, "the PRO dumbbell is the last pick")
 		for i = 1, R.BALL_CHOICES do
 			eq(R.ballChoice(i), i, "choice " .. i)
