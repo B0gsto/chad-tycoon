@@ -258,7 +258,7 @@ function shotList(world) {
 		{ name: "25-mode-gates", scene: "world", gui: "none", camera: { pos: [-185, 40, -75], look: [-185, 2, 0], fov: 62 }, extra: { shadowSpan: 140 } },
 		{ name: "26-shake-arena", scene: "world", gui: "none", camera: { pos: [380, 40, -432], look: [380, 6, -380], fov: 60 }, extra: { shadowSpan: 120 } },
 		{ name: "27-pose-stage", scene: "world", gui: "none", camera: { pos: [560, 26, -420], look: [560, 10, -380], fov: 60 }, extra: { shadowSpan: 110 } },
-		{ name: "28-bowling-lane", scene: "world", gui: "none", camera: { pos: [740, 22, -450], look: [740, 6, -360], fov: 55 }, extra: { shadowSpan: 160 } },
+		{ name: "28-bowling-lane", scene: "world", gui: "none", camera: { pos: [740, 25, -315], look: [740, 3, -374], fov: 44 }, extra: { shadowSpan: 160 } },
 	];
 }
 

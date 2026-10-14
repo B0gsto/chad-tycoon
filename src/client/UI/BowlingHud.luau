@@ -48,6 +48,7 @@ local FRAMES = 5
 -- Scorecard: frame box size, the TOTAL box, the gap to the unit-count capsule.
 local CARD = { BoxW = 56, BoxH = 58, TotalW = 74, Pad = 8, MinY = 120, Clear = 12 }
 -- The controls panel (bottom centre) and its two strips.
+local SENT_TIMEOUT = 4
 local CONTROLS = { W = 440, H = 168, Bottom = 28, StripW = 384, AimH = 34, PowerH = 26 }
 -- Seconds for the aim arrow to cross the lane one way, and the power bar to fill once.
 local SWEEP = { Aim = 1.25, Power = 0.85 }
@@ -227,6 +228,17 @@ local function press()
 		BowlingFx.setAim(aim, power, "off")
 		action:FireServer({ action = "BowlingRoll", aim = aim, power = power })
 		Kit.disappear(controls)
+		-- The server may drop the roll (action budget); with no "roll" or "ready" back in
+		-- SENT_TIMEOUT seconds the aim controls come back so the turn never stalls.
+		rollToken += 1
+		local mine = rollToken
+		task.delay(SENT_TIMEOUT, function()
+			if running and rollToken == mine and (phase :: string) == "sent" then
+				controls.Visible = true
+				Kit.appear(controls, { from = 0.85, time = 0.2 })
+				setPhase("aim")
+			end
+		end)
 	end
 end
 
@@ -343,6 +355,10 @@ local function onRoll(p: any)
 	rollToken += 1
 	local mine = rollToken
 	setPhase("sent")
+	-- A late "roll" after the timeout brought the controls back: hide them again.
+	if controls.Visible then
+		Kit.disappear(controls)
+	end
 	local lastT = 0
 	local paths = type(p.path) == "table" and p.path or {}
 	local endT = num(paths[#paths] and paths[#paths].t, 1.5)
@@ -401,6 +417,8 @@ function BowlingHud.stop(_payload: { [string]: any }?)
 	unbind()
 	setChrome(false)
 	BowlingFx.setAim(0, 0, "off")
+	-- Safety net (onState, or a missed "stop" notify): Fx puts the pins and camera back.
+	BowlingFx.stop(nil)
 	root.Visible = false
 	finishCard.Visible = false
 end
@@ -551,6 +569,33 @@ local function buildCard()
 	end)
 end
 
+-- On touch screens the panel keeps clear of the thumbstick (bottom left) and the jump button
+-- (bottom right): it sits between them, shrunk to fit on narrow phones.
+local TOUCH_CLEAR = { Left = 210, Right = 170, MinScale = 0.68 }
+local controlsScale: UIScale
+
+local function layoutControls()
+	if not controls or not screen then
+		return
+	end
+	local width = (screen :: ScreenGui).AbsoluteSize.X / Kit.pixelScale(root)
+	if Kit.touch and width > 0 then
+		local room = width - TOUCH_CLEAR.Left - TOUCH_CLEAR.Right
+		local scale = math.clamp(room / CONTROLS.W, TOUCH_CLEAR.MinScale, 1)
+		controlsScale.Scale = scale
+		local centre = TOUCH_CLEAR.Left + room / 2
+		-- Still too narrow: centre it and lift it over the thumbstick ring instead.
+		local lift = if room < CONTROLS.W * TOUCH_CLEAR.MinScale then 70 else 0
+		if lift > 0 then
+			centre = width / 2
+		end
+		controls.Position = UDim2.new(0, centre, 1, -CONTROLS.Bottom - lift)
+	else
+		controlsScale.Scale = 1
+		controls.Position = UDim2.new(0.5, 0, 1, -CONTROLS.Bottom)
+	end
+end
+
 local function buildControls()
 	controls = Kit.hudGlass(root, {
 		Name = "Controls",
@@ -669,9 +714,17 @@ local function buildControls()
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 10,
+		-- Gamepad A is bound through ContextActionService; a selectable button would fire twice.
+		Selectable = false,
 		Parent = controls,
 	})
 	tap.Activated:Connect(press)
+	controlsScale = Instance.new("UIScale")
+	controlsScale.Parent = controls
+	layoutControls()
+	local gui = screen :: ScreenGui
+	gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(layoutControls)
+	Kit.onInput(layoutControls)
 end
 
 local function buildFinish()

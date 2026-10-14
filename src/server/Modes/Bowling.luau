@@ -24,7 +24,8 @@
 	  "roll"   { aim, power, path, falls, knocked, mark, reset, frame, ball, card, total,
 	           over, wait } (path / falls: BowlingRules.Roll; wait = seconds until "ready")
 	  "win"    { score, target, best, newBest, first, cash, full, pay, packCash, repeatCash,
-	           cooldownEnds } (pay = "full" | "repeat")
+	           cooldownEnds, repeatEnds } (pay = "full" | "repeat" | "none": the repeat share
+	           pays once per BowlingRules.REPEAT_GAP; repeatEnds = when the next is due, 0 = now)
 	  "lose"   { score, target, best, newBest }
 	  "again"  {} (a new game in the same run; a "ready" follows)
 	  "stop"   { reason }
@@ -73,6 +74,15 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 
 	local function record(session: any): { best: number, clears: number, lastRewardAt: number }
 		return session.profile.modes[ID]
+	end
+
+	-- When the next repeat share is due (os.time); 0 when it already is.
+	local function repeatEnds(rec: any): number
+		local last = rec.lastRepeatAt
+		if BowlingRules.repeatDue(os.time(), last) then
+			return 0
+		end
+		return last + BowlingRules.REPEAT_GAP
 	end
 
 	local function toSpawn(player: Player)
@@ -153,11 +163,20 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		end
 		local first = rec.clears == 0
 		local reward = GameModes.modeReward(session, ID, first)
-		-- Inside the cooldown a pass still pays the smaller "run again" share.
+		-- Inside the cooldown a pass still pays the smaller "run again" share, but only once
+		-- per BowlingRules.REPEAT_GAP (stamped on the save, so a rejoin doesn't reset it).
 		local pay = "full"
+		local now = os.time()
+		local stamps = rec :: any
 		if not reward.full then
-			reward.cash = reward.repeatCash
-			pay = "repeat"
+			if BowlingRules.repeatDue(now, stamps.lastRepeatAt) then
+				reward.cash = reward.repeatCash
+				pay = "repeat"
+				stamps.lastRepeatAt = now
+			else
+				reward.cash = 0
+				pay = "none"
+			end
 		end
 		rec.clears += 1
 		local paid = GameModes.payReward(player, ID, reward)
@@ -173,6 +192,7 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 			packCash = paid.packCash,
 			repeatCash = paid.repeatCash,
 			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
+			repeatEnds = repeatEnds(rec),
 		})
 		GameModes.refresh(player)
 	end
@@ -254,8 +274,11 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		if not session then
 			return { cash = 0, full = false, packCash = 0, repeatCash = 0 }
 		end
-		local r = GameModes.modeReward(session, ID, record(session).clears == 0)
-		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = r.repeatCash }
+		local rec = record(session)
+		local r = GameModes.modeReward(session, ID, rec.clears == 0)
+		-- The repeat share reads 0 until its gap is over.
+		local repeatCash = if repeatEnds(rec) == 0 then r.repeatCash else 0
+		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = repeatCash }
 	end
 
 	function def.snapshot(player: Player): { [string]: any }
@@ -270,6 +293,7 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 			clears = rec.clears,
 			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 			rewardPreview = def.rewardPreview(player),
+			repeatEnds = repeatEnds(rec),
 			target = BowlingRules.PASS_SCORE,
 		}
 	end
@@ -279,7 +303,16 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		local player = session.player
 		local run = runs[player]
 		local clock = os.clock()
-		if not run or run.phase ~= "aim" or clock - run.lastRollAt < MIN_ROLL_GAP then
+		if not run then
+			return
+		end
+		if run.phase ~= "aim" or clock - run.lastRollAt < MIN_ROLL_GAP then
+			-- A rejected roll on the player's turn: say "ready" again so the HUD shows its
+			-- aim controls instead of waiting for a "roll" that never comes. (Mid-ball the
+			-- delayed "ready" is on its way; after the game the result screen is up.)
+			if run.phase == "aim" then
+				sendReady(player, run)
+			end
 			return
 		end
 		run.lastRollAt = clock

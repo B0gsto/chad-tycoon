@@ -319,6 +319,8 @@ local function showGuide(on: boolean)
 end
 
 local lastPhase = "off"
+-- While returnBall drops the dumbbell in, setAim leaves its pivot alone (one writer a frame).
+local returningUntil = 0
 function Bowling.setAim(aim: number, power: number?, phase: string)
 	if not running or not info then
 		return
@@ -343,7 +345,7 @@ function Bowling.setAim(aim: number, power: number?, phase: string)
 		dot.CFrame = CFrame.new(at(x, d, LANE_TOP + 0.03)) * CFrame.Angles(0, 0, math.pi / 2)
 	end
 	local ball = dumbbell
-	if ball then
+	if ball and os.clock() >= returningUntil then
 		local wobble = if phase == "power" and not reducedMotion() then math.sin(os.clock() * 30) * 0.04 * p else 0
 		ball:PivotTo(restCFrame(aim, p * 0.8) * CFrame.new(wobble, 0, 0))
 	end
@@ -357,9 +359,11 @@ local function returnBall()
 	end
 	ball.Parent = folder
 	local startAt = os.clock()
+	returningUntil = startAt + 0.5
 	local mine = token
 	addJob(function(now: number): boolean
 		if token ~= mine then
+			returningUntil = 0
 			return true
 		end
 		local a = math.clamp((now - startAt) / 0.5, 0, 1)

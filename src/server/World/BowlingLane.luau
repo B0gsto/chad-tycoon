@@ -48,6 +48,8 @@ local PIN_RED = Color3.fromRGB(226, 46, 58)
 local PLATE_COLORS = { W.RedOrange, W.Blue, W.Grape }
 -- The back wall's neon strips, bottom to top.
 local NEON_STRIPS = { W.HotPink, W.Sunny, W.Mint }
+-- The pins stand this much bigger than BowlingRules.PIN (chunkier, cartoony, easy to read).
+local PIN_SCALE = 1.25
 
 local function ellipsoid(props: { [string]: any }): BasePart
 	local p = make("Part", props)
@@ -158,6 +160,190 @@ local function makeDumbbell(parent: Instance, centre: Vector3, plate: Color3, ro
 	return model
 end
 
+-- The dressing beside the lane: a neighbouring lane on the left (pins standing, nobody bowls
+-- there), bleachers and a scoreboard on the right and lamp posts down both edges.
+type At = (x: number, d: number, y: number) -> Vector3
+local function dress(folder: Instance, at: At, a: { [string]: number }, outer: number)
+	local L = BowlingRules.LANE
+	local laneL = L.length
+	local half = a.sizeX / 2
+	local quiet: { [string]: any } = { CanCollide = false, CanQuery = false, CanTouch = false }
+	local function part(props: { [string]: any }): BasePart
+		props.Parent = props.Parent or folder
+		return make("Part", props)
+	end
+	local function deco(props: { [string]: any }): BasePart
+		for k, v in quiet do
+			props[k] = v
+		end
+		return part(props)
+	end
+
+	-- Neighbouring lane (left): narrower, its own gutters, arrows, deck and a full rack.
+	local nW, nG = 10, 1.5
+	local nx = -(outer + 1 + nG + nW / 2)
+	local nOuter = nx - nW / 2 - nG
+	part({
+		Name = "SideLane",
+		Size = Vector3.new(nW, 0.2, laneL),
+		CFrame = CFrame.new(at(nx, laneL / 2, 0.1)),
+		Color = W.Honey,
+		Material = Enum.Material.Wood,
+		Reflectance = 0.28,
+	})
+	deco({
+		Name = "SideDeck",
+		Size = Vector3.new(nW, 0.03, laneL - 68),
+		CFrame = CFrame.new(at(nx, (68 + laneL) / 2, 0.205)),
+		Color = W.Wood,
+		Material = Enum.Material.Wood,
+	})
+	for _, side in { -1, 1 } do
+		part({
+			Name = "SideGutter",
+			Size = Vector3.new(nG, 0.1, laneL),
+			CFrame = CFrame.new(at(nx + side * (nW / 2 + nG / 2), laneL / 2, -0.05)),
+			Color = W.Steel,
+			Material = Enum.Material.Metal,
+			Reflectance = 0.2,
+		})
+	end
+	part({ Name = "SideDivider", Size = Vector3.new(1, 0.7, laneL), CFrame = CFrame.new(at(nOuter - 0.5, laneL / 2, 0.35)), Color = W.Teal })
+	part({ Name = "SideKickback", Size = Vector3.new(1, 6, 22), CFrame = CFrame.new(at(nOuter - 0.5, laneL - 7, 3.7)), Color = W.Coral })
+	deco({
+		Name = "SideKickbackGlow",
+		Size = Vector3.new(1.1, 0.35, 22),
+		CFrame = CFrame.new(at(nOuter - 0.5, laneL - 7, 6.6)),
+		Color = W.Sunny,
+		Material = Enum.Material.Neon,
+	})
+	part({
+		Name = "SidePit",
+		Size = Vector3.new(nW + nG * 2, 0.1, BowlingRules.PIT + 1),
+		CFrame = CFrame.new(at(nx, laneL + BowlingRules.PIT / 2 + 0.5, -0.3)),
+		Color = W.Basalt,
+	})
+	for i = -2, 2 do
+		local tipD = 14 + (2 - math.abs(i)) * 1.6
+		for _, side in { -1, 1 } do
+			deco({
+				Name = "SideArrow",
+				Size = Vector3.new(0.4, 0.03, 1.8),
+				CFrame = CFrame.new(at(nx + i * 1.6 + side * 0.42, tipD - 0.8, 0.215)) * CFrame.Angles(0, side * math.rad(28), 0),
+				Color = W.Blue,
+			})
+		end
+	end
+	local decoPins = Instance.new("Folder")
+	decoPins.Name = "SidePins"
+	decoPins.Parent = folder
+	local k = 0.75
+	for i, spot in BowlingRules.PIN_SPOTS do
+		local d = 70 + (spot.d - BowlingRules.PIN_SPOTS[1].d) * k
+		makePin(decoPins, "SidePin" .. i, CFrame.new(at(nx + spot.x * k, d, 0.2)), PIN_SCALE * 0.85)
+	end
+
+	-- Bleachers (right): four stepped tiers with coloured bench fronts, facing the lane.
+	local BENCH = { W.Sunny, W.HotPink, W.Teal, W.Blue }
+	local bx0, tierW = outer + 7, (half - outer - 7) / 4
+	local bFrom, bTo = 16, 66
+	for t = 1, 4 do
+		local h = 1.3 * t
+		local x = bx0 + (t - 0.5) * tierW
+		part({
+			Name = "Bleacher",
+			Size = Vector3.new(tierW, h, bTo - bFrom),
+			CFrame = CFrame.new(at(x, (bFrom + bTo) / 2, h / 2)),
+			Color = W.White,
+		})
+		deco({
+			Name = "BleacherBench",
+			Size = Vector3.new(tierW * 0.55, 0.45, bTo - bFrom),
+			CFrame = CFrame.new(at(x + tierW * 0.1, (bFrom + bTo) / 2, h + 0.22)),
+			Color = BENCH[t],
+		})
+	end
+	part({
+		Name = "BleacherEnd",
+		Size = Vector3.new(half - bx0, 6, 0.8),
+		CFrame = CFrame.new(at((bx0 + half) / 2, bFrom - 0.4, 3)),
+		Color = W.RedOrange,
+	})
+	part({
+		Name = "BleacherEnd",
+		Size = Vector3.new(half - bx0, 6, 0.8),
+		CFrame = CFrame.new(at((bx0 + half) / 2, bTo + 0.4, 3)),
+		Color = W.RedOrange,
+	})
+
+	-- Scoreboard (right, past the bleachers): a big screen on two posts facing the bowler.
+	local sx, sd, sy = (bx0 + half) / 2 - 1, 76, 12
+	local screen = part({ Name = "Scoreboard", Size = Vector3.new(13, 7, 0.8), CFrame = CFrame.new(at(sx, sd, sy)), Color = W.Ink })
+	for _, side in { -1, 1 } do
+		part({
+			Name = "ScoreboardPost",
+			Size = Vector3.new(0.8, sy, 0.8),
+			CFrame = CFrame.new(at(sx + side * 5, sd + 0.2, sy / 2 - 3.5)),
+			Color = W.Teal,
+		})
+		deco({
+			Name = "ScoreboardNeon",
+			Size = Vector3.new(13.6, 0.4, 0.3),
+			CFrame = CFrame.new(at(sx, sd - 0.45, sy + side * 3.7)),
+			Color = W.Mint,
+			Material = Enum.Material.Neon,
+		})
+	end
+	local board = Instance.new("SurfaceGui")
+	board.Face = Enum.NormalId.Back
+	board.PixelsPerStud = 24
+	board.LightInfluence = 0
+	board.Brightness = 1.6
+	board.Parent = screen
+	Common.label(board, {
+		Text = "STRIKE!",
+		Font = Common.theme.Fonts.Display,
+		TextColor3 = W.Sunny,
+		Size = UDim2.fromScale(0.9, 0.5),
+		Position = UDim2.fromScale(0.05, 0.06),
+	})
+	Common.label(board, {
+		Text = "SCORE " .. BowlingRules.PASS_SCORE .. " TO WIN",
+		Font = Common.theme.Fonts.Display,
+		TextColor3 = W.Mint,
+		Size = UDim2.fromScale(0.86, 0.3),
+		Position = UDim2.fromScale(0.07, 0.62),
+	})
+
+	-- Lamp posts down both edges: a teal pole with a glowing sunny globe.
+	local lamps = { { -1, 8 }, { -1, 40 }, { -1, 72 }, { 1, 8 }, { 1, 84 } }
+	for _, lamp in lamps do
+		local x = lamp[1] * (half - 1.2)
+		part({
+			Name = "LampPost",
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(14, 0.7, 0.7),
+			CFrame = CFrame.new(at(x, lamp[2], 7)) * UPRIGHT,
+			Color = W.Teal,
+		})
+		local globe = ellipsoid({
+			Name = "LampGlobe",
+			Size = Vector3.new(2, 2, 2),
+			CFrame = CFrame.new(at(x, lamp[2], 14.6)),
+			Color = W.Sunny,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+		local glowLight = Instance.new("PointLight")
+		glowLight.Range = 16
+		glowLight.Brightness = 1.2
+		glowLight.Color = Color3.fromRGB(255, 236, 190)
+		glowLight.Parent = globe
+	end
+end
+
 function BowlingLane.build(): Built
 	local a = BowlingRules.ARENA
 	local L = BowlingRules.LANE
@@ -180,7 +366,7 @@ function BowlingLane.build(): Built
 		CFrame = CFrame.new(at(0, laneL / 2, 0.1)),
 		Color = W.Honey,
 		Material = Enum.Material.Wood,
-		Reflectance = 0.12,
+		Reflectance = 0.28,
 		Parent = folder,
 	})
 	for _, x in { -5.25, -3.5, -1.75, 1.75, 3.5, 5.25 } do
@@ -224,15 +410,15 @@ function BowlingLane.build(): Built
 			Parent = folder,
 		})
 	end
-	local ARM, TILT = 1.4, math.rad(28)
+	local ARM, TILT = 2.2, math.rad(28)
 	for i = -3, 3 do
-		local x = i * 1.5
-		local tipD = 14 + (3 - math.abs(i)) * 1.3
+		local x = i * 1.75
+		local tipD = 14 + (3 - math.abs(i)) * 1.8
 		for _, side in { -1, 1 } do
 			local mid = at(x + side * math.sin(TILT) * ARM / 2, tipD - math.cos(TILT) * ARM / 2, laneTop + 0.015)
 			make("Part", {
 				Name = "LaneArrow",
-				Size = Vector3.new(0.32, 0.03, ARM),
+				Size = Vector3.new(0.45, 0.03, ARM),
 				CFrame = CFrame.new(mid) * CFrame.Angles(0, side * TILT, 0),
 				Color = W.RedOrange,
 				CanCollide = false,
@@ -296,7 +482,7 @@ function BowlingLane.build(): Built
 		})
 	end
 
-	-- Pit behind the lane and the back wall with its neon strips.
+	-- Pit behind the lane and the back wall (the whole arena's width) with its neon strips.
 	local pitD = laneL + BowlingRules.PIT / 2 + 0.5
 	make("Part", {
 		Name = "Pit",
@@ -306,18 +492,19 @@ function BowlingLane.build(): Built
 		Parent = folder,
 	})
 	local wallD = laneL + BowlingRules.PIT + 1.5
+	local wallW = a.sizeX
 	make("Part", {
 		Name = "BackWall",
-		Size = Vector3.new(outer * 2 + 2, 10, 1),
-		CFrame = CFrame.new(at(0, wallD, 5)),
+		Size = Vector3.new(wallW, 12, 1),
+		CFrame = CFrame.new(at(0, wallD, 6)),
 		Color = W.Navy,
 		Parent = folder,
 	})
 	for i, color in NEON_STRIPS do
 		make("Part", {
 			Name = "BackNeon",
-			Size = Vector3.new(outer * 2 + 2, 0.4, 0.2),
-			CFrame = CFrame.new(at(0, wallD - 0.55, 1.2 + i * 1.1)),
+			Size = Vector3.new(wallW, 0.4, 0.2),
+			CFrame = CFrame.new(at(0, wallD - 0.55, 6.2 + i * 1.3)),
 			Color = color,
 			Material = Enum.Material.Neon,
 			CanCollide = false,
@@ -325,39 +512,99 @@ function BowlingLane.build(): Built
 			Parent = folder,
 		})
 	end
-
-	-- The header over the pins: a sign facing the bowler with a light on the pin deck.
-	local header = make("Part", {
-		Name = "BowlingHeader",
-		Size = Vector3.new(outer * 2 + 2, 3.4, 1),
-		CFrame = CFrame.new(at(0, deckFrom - 1, 10)),
-		Color = W.RedOrange,
+	-- The big glowing sign over the pin deck: a navy board on the back wall's top with a
+	-- neon frame, "DUMBBELL BOWL" in white with a hot-pink glow and a sunny tagline.
+	local SIGN_W, SIGN_H, SIGN_Y = 34, 7, 16.5
+	local sign = make("Part", {
+		Name = "BowlingSign",
+		Size = Vector3.new(SIGN_W, SIGN_H, 0.8),
+		CFrame = CFrame.new(at(0, wallD - 0.2, SIGN_Y)),
+		Color = W.Navy,
 		Parent = folder,
 	})
 	local gui = Instance.new("SurfaceGui")
 	gui.Face = Enum.NormalId.Back
-	gui.PixelsPerStud = 30
+	gui.PixelsPerStud = 24
 	gui.LightInfluence = 0
-	gui.Parent = header
-	Common.label(gui, {
+	gui.Brightness = 2
+	gui.Parent = sign
+	local title = Common.label(gui, {
 		Text = "DUMBBELL BOWL",
 		Font = Common.theme.Fonts.Display,
 		TextColor3 = W.White,
-		Size = UDim2.fromScale(0.94, 0.62),
-		Position = UDim2.fromScale(0.03, 0.06),
+		Size = UDim2.fromScale(0.94, 0.64),
+		Position = UDim2.fromScale(0.03, 0.04),
 	})
+	local glow = title:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
+	glow.Color = W.HotPink
+	glow.Thickness = 6
+	glow.Parent = title
 	Common.label(gui, {
 		Text = "KNOCK 'EM ALL DOWN!",
 		Font = Common.theme.Fonts.Display,
 		TextColor3 = W.Sunny,
-		Size = UDim2.fromScale(0.7, 0.26),
-		Position = UDim2.fromScale(0.15, 0.68),
+		Size = UDim2.fromScale(0.64, 0.26),
+		Position = UDim2.fromScale(0.18, 0.68),
+	})
+	local signFront = wallD - 0.75
+	for _, edge in { { 0, SIGN_H / 2 + 0.3, SIGN_W + 1, 0.5 }, { 0, -SIGN_H / 2 - 0.3, SIGN_W + 1, 0.5 } } do
+		make("Part", {
+			Name = "SignNeon",
+			Size = Vector3.new(edge[3], edge[4], 0.4),
+			CFrame = CFrame.new(at(edge[1], signFront, SIGN_Y + edge[2])),
+			Color = W.HotPink,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+	end
+	for _, side in { -1, 1 } do
+		make("Part", {
+			Name = "SignNeon",
+			Size = Vector3.new(0.5, SIGN_H + 1.1, 0.4),
+			CFrame = CFrame.new(at(side * (SIGN_W / 2 + 0.25), signFront, SIGN_Y)),
+			Color = W.HotPink,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+		-- Starburst bulbs at the sign's ends.
+		ellipsoid({
+			Name = "SignBulb",
+			Size = Vector3.new(2.2, 2.2, 2.2),
+			CFrame = CFrame.new(at(side * (SIGN_W / 2 + 2), signFront, SIGN_Y)),
+			Color = W.Sunny,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+	end
+	-- A light truss over the pin deck (sunny beam on teal posts) lighting the pins.
+	local header = make("Part", {
+		Name = "BowlingHeader",
+		Size = Vector3.new(outer * 2 + 2, 1, 1),
+		CFrame = CFrame.new(at(0, deckFrom - 1, 10)),
+		Color = W.Sunny,
+		Parent = folder,
+	})
+	make("Part", {
+		Name = "HeaderNeon",
+		Size = Vector3.new(outer * 2 + 2, 0.3, 0.3),
+		CFrame = CFrame.new(at(0, deckFrom - 1.6, 9.6)),
+		Color = W.Mint,
+		Material = Enum.Material.Neon,
+		CanCollide = false,
+		CanQuery = false,
+		Parent = folder,
 	})
 	local light = Instance.new("SpotLight")
 	light.Face = Enum.NormalId.Bottom
-	light.Angle = 70
-	light.Range = 18
-	light.Brightness = 1.6
+	light.Angle = 80
+	light.Range = 20
+	light.Brightness = 2.2
 	light.Color = Color3.fromRGB(255, 244, 224)
 	light.Parent = header
 	for _, side in { -1, 1 } do
@@ -369,7 +616,6 @@ function BowlingLane.build(): Built
 			Parent = folder,
 		})
 	end
-
 	-- Pins: the classic triangle (head pin first).
 	local pins = Instance.new("Folder")
 	pins.Name = "Pins"
@@ -378,11 +624,11 @@ function BowlingLane.build(): Built
 	for i, spot in BowlingRules.PIN_SPOTS do
 		local cf = CFrame.new(at(spot.x, spot.d, laneTop))
 		pinSpots[i] = cf
-		local pin = makePin(pins, "Pin" .. i, cf, 1)
+		local pin = makePin(pins, "Pin" .. i, cf, PIN_SCALE)
 		pin:SetAttribute("Index", i)
 	end
-	-- A giant pin statue on the approach's left, on a sunny plinth.
-	local statueAt = at(-(outer + 3.5), 3, 0)
+	-- A giant pin statue on the approach's back-left corner, on a sunny plinth.
+	local statueAt = at(-(a.sizeX / 2 - 3.5), -8, 0)
 	make("Part", {
 		Name = "StatuePlinth",
 		Shape = Enum.PartType.Cylinder,
@@ -422,6 +668,7 @@ function BowlingLane.build(): Built
 		makeDumbbell(folder, at(rackX, d, 2.2 + b.radius), color, i == 1)
 	end
 
+	dress(folder, at, a, outer)
 	local built: any = base
 	built.lane = lane
 	built.rollStart = CFrame.lookAt(at(0, -3, 0), at(0, laneL, 0))

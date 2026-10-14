@@ -25,7 +25,9 @@
 
 local BowlingRules = {}
 
-BowlingRules.ARENA = { x = 740, y = 6, z = -380, sizeX = 30, sizeZ = 110 }
+-- 54 wide: the lane in the middle, a decorative neighbouring lane on the left, bleachers
+-- and a scoreboard on the right (World.BowlingLane).
+BowlingRules.ARENA = { x = 740, y = 6, z = -380, sizeX = 54, sizeZ = 110 }
 -- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
 BowlingRules.FALL_BELOW = 20
 
@@ -332,10 +334,13 @@ function BowlingRules.card(frames: { { number } }): ({ CardFrame }, number)
 		local marks: { string } = {}
 		local lastFrame = i == #frames
 		local standing = BowlingRules.PINS
-		for b, n in f do
-			if n == standing and (lastFrame or b == 1) and standing == BowlingRules.PINS then
+		-- A fresh rack: the frame's first ball, or (last frame only) a ball after a clear.
+		-- All ten off a fresh rack is a strike; clearing what was left is a spare.
+		local fresh = true
+		for _, n in f do
+			if fresh and n == BowlingRules.PINS then
 				table.insert(marks, "X")
-			elseif n == standing and b > 1 then
+			elseif not fresh and n == standing then
 				table.insert(marks, "/")
 			elseif n == 0 then
 				table.insert(marks, "-")
@@ -343,6 +348,7 @@ function BowlingRules.card(frames: { { number } }): ({ CardFrame }, number)
 				table.insert(marks, tostring(n))
 			end
 			standing -= n
+			fresh = standing <= 0 and lastFrame
 			if standing <= 0 then
 				standing = BowlingRules.PINS
 			end
@@ -387,6 +393,16 @@ end
 function BowlingRules.score(frames: { { number } }): number
 	local _, total = BowlingRules.card(frames)
 	return total
+end
+
+-- Inside the full-pay cooldown a pass pays the smaller repeat share at most once per
+-- REPEAT_GAP seconds (os.time; the stamp lives in profile.modes.bowling.lastRepeatAt).
+BowlingRules.REPEAT_GAP = 300
+
+function BowlingRules.repeatDue(now: number, lastRepeatAt: any): boolean
+	local last = if type(lastRepeatAt) == "number" and lastRepeatAt == lastRepeatAt then lastRepeatAt else 0
+	-- A stamp from the future (clock skew, a bad save) counts as long ago.
+	return last > now or now >= last + BowlingRules.REPEAT_GAP
 end
 
 function BowlingRules.passed(score: number): boolean
