@@ -11,7 +11,8 @@
 	  On the own plot, facing the rack, the shot is the home shot instead: it tilts up and
 	  pulls back (Fx.PlotRank.homeShot, numbers in PlotRank.CFG.Shot) until the whole rack and
 	  its roof dressing (sign, pennants, crown) are in frame, as far as the rack's height
-	  allows. A spawn that comes before the plot is known is framed again once it is (if the
+	  allows; from tier 20 it looks a few degrees further up (PlotRank.homeTilt). A spawn
+	  that comes before the plot is known is framed again once it is (if the
 	  player has not moved).
 	  In front of a mode gate (where ModeQuit puts the player, back to the gate) the shot is
 	  shortened so the eye never sits behind the gate's see-through portal; the zoom goes
@@ -108,11 +109,13 @@ local function shotFor(root: BasePart, flat: Vector3): (number, number)
 	if run < HOME_NEAR or run > HOME_FAR or to.Unit:Dot(flat) < HOME_FACING then
 		return FRAME_PITCH, FRAME_DISTANCE
 	end
-	local rise = top.Y + PlotRank.dressTop(PlotRank.bestTier(plot)) - focus.Y
+	local best = PlotRank.bestTier(plot)
+	local rise = top.Y + PlotRank.dressTop(best) - focus.Y
 	local camera = Workspace.CurrentCamera
 	local fov = baseFov or (if camera then camera.FieldOfView else nil)
 	local pitch, distance = PlotRank.homeShot(rise, run, fov)
-	return pitch, distance
+	-- From tier 20 it looks a little further up, so the neon sign and the crown are in frame.
+	return PlotRank.homeTilt(pitch, distance, best)
 end
 
 -- The spawn shot for `root`: the camera's eye, the focus it looks at (the character's head)
