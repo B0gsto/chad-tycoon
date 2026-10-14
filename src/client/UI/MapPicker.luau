@@ -25,6 +25,12 @@
 	bounding box (path, cloud floor and floating islands with their props) fits the viewport
 	from a high 3/4 angle. It orbits on RenderStepped only while the window is open.
 
+	Thumbnails: each map has a Studio capture (Assets "maps/Map<n>", art/assets/maps.json: its
+	start deck looking along the path under the map's own sky). Once Roblox has loaded it, it
+	fills the card body under a dark shade (dimmed on a locked card) and replaces the orbiting
+	preview with a slow zoom-and-pan drift. Until then (no pin, still in moderation, a slow
+	load) the code-drawn look stays: the card's colour wash and the ViewportFrame.
+
 	Windows.luau owns the window list: it calls MapPicker.build with its register/closeAll
 	helpers and the shared reward/pip helpers, and exposes Windows.open("Maps") and
 	Windows.openMaps(level?). Reads State.data.modes.parkour (levels[i] = { name,
@@ -32,9 +38,11 @@
 	running, gear, cooldownEnds, rewardPreview = { packCash, repeatShare? }).
 ]]
 
+local ContentProvider = game:GetService("ContentProvider")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local Assets = require(ReplicatedStorage.Shared.Assets)
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
 
@@ -159,6 +167,20 @@ local PREVIEW_FOV = 40
 local PREVIEW_PITCH = 40
 local PREVIEW_MARGIN = 1.12
 local ORBIT_SPEED = 0.12
+-- Map thumbnails (tunables): the card shade behind the name and pips, the locked dimming and
+-- the side preview's drift.
+local THUMB = {
+	KEY = "maps/Map%d",
+	SHADE = Color3.fromRGB(8, 12, 36),
+	SHADE_LEFT = 0.3, -- shade transparency on the text side (left) ...
+	SHADE_RIGHT = 0.9, -- ... and on the right
+	LOCKED_TINT = Color3.fromRGB(120, 124, 142), -- ImageColor3 on a locked card
+	LOCKED_SHADE_LEFT = 0.15,
+	DRIFT_ZOOM = 1.1, -- side preview: base zoom of the drift
+	DRIFT_BREATH = 0.04, -- zoom swing
+	DRIFT_PAN = 0.03, -- sideways pan, share of the well
+	DRIFT_SPEED = 0.3, -- radians per second
+}
 
 -- Captions and map names stay readable: held on the glass at the caption size plus `extra`,
 -- rounded up and never under 13 px (a phone's 12 px captions included), whatever the screen
@@ -300,6 +322,33 @@ local function packCash(info: { [string]: any }?, level: number): number?
 	return math.floor((tonumber(preview.packCash) or 0) / math.max(currentBonus, 0.01) * (tonumber(lv.bonus) or 1) + 0.5)
 end
 
+-- The thumbnail id of map `n`, or nil when it was never pinned.
+local function thumbOf(n: number): string?
+	return Assets.image(string.format(THUMB.KEY, n))
+end
+
+-- True once Roblox has fetched the thumbnail (false while it loads, sits in moderation or
+-- failed). The fetch status, not ImageLabel.IsLoaded: that one stays false in Studio.
+local function thumbReady(url: string?): boolean
+	if not url or url == "" then
+		return false
+	end
+	local ok, status = pcall(function()
+		return ContentProvider:GetAssetFetchStatus(url)
+	end)
+	return ok and status == Enum.AssetFetchStatus.Success
+end
+
+-- Calls `fn` whenever the fetch status of `url` changes (nothing where the API is missing).
+local function onThumbFetch(url: string?, fn: () -> ())
+	if not url then
+		return
+	end
+	pcall(function()
+		ContentProvider:GetAssetFetchStatusChangedSignal(url):Connect(fn)
+	end)
+end
+
 -- Preview -------------------------------------------------------------------------------
 
 type Preview = { model: Model, center: Vector3, span: Vector3 }
@@ -406,6 +455,9 @@ type Card = {
 	body: CanvasGroup,
 	chevron: TextLabel,
 	stroke: UIStroke?,
+	-- Map thumbnail under the body (transparent until loaded) and its text shade.
+	thumb: ImageLabel,
+	thumbShade: UIGradient,
 	setPips: (number) -> (),
 	pipRow: GuiObject?,
 	-- "Clear <previous map> first" on a locked card (where the pips are).
@@ -491,13 +543,26 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 	camera.FieldOfView = PREVIEW_FOV
 	camera.Parent = viewport
 	viewport.CurrentCamera = camera
+	-- The map's thumbnail over the viewport, transparent until it is fetched (showPreview).
+	local shot = Kit.new("ImageLabel", {
+		Name = "Shot",
+		BackgroundTransparency = 1,
+		Image = "",
+		ImageTransparency = 1,
+		ScaleType = Enum.ScaleType.Crop,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromScale(THUMB.DRIFT_ZOOM, THUMB.DRIFT_ZOOM),
+		ZIndex = 3,
+		Parent = previewWell,
+	}) :: ImageLabel
 	local fallback = Kit.text(previewWell, {
 		Name = "Fallback",
 		Text = "",
 		TextSize = 72,
 		Size = UDim2.fromScale(1, 1),
 		StrokeThickness = 0,
-		ZIndex = 3,
+		ZIndex = 4,
 	})
 	local levelChip = Kit.pill(side, {
 		Name = "LevelChip",
@@ -649,7 +714,24 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		local offset = Vector3.new(math.cos(angle) * flat, d * math.sin(pitch), math.sin(angle) * flat)
 		camera.CFrame = CFrame.lookAt(p.center + offset, p.center)
 	end
+	local drift = 0
+	local shotOn = false
 	local function showPreview(n: number)
+		local url = thumbOf(n)
+		if shot.Image ~= (url or "") then
+			shot.Image = url or ""
+		end
+		shotOn = thumbReady(url)
+		shot.ImageTransparency = if shotOn then 0 else 1
+		if shotOn then
+			-- The capture replaces the orbit (and its fallback icon).
+			if shown then
+				shown.model.Parent = nil
+				shown = nil
+			end
+			fallback.Visible = false
+			return
+		end
 		local p = previews[n]
 		if not p then
 			local ok, built = pcall(buildPreview, n)
@@ -683,6 +765,13 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 					angle += dt * ORBIT_SPEED
 					placeCamera()
 				end
+				if shotOn then
+					-- Slow zoom-and-pan drift over the still.
+					drift += dt * THUMB.DRIFT_SPEED
+					local zoom = THUMB.DRIFT_ZOOM + THUMB.DRIFT_BREATH * math.sin(drift * 0.7)
+					shot.Size = UDim2.fromScale(zoom, zoom)
+					shot.Position = UDim2.fromScale(0.5 + THUMB.DRIFT_PAN * math.sin(drift), 0.5)
+				end
 			end)
 		end)
 	end)
@@ -715,12 +804,39 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			LayoutOrder = i,
 			Radius = Kit.RADIUS.M,
 		})
+		-- The map's thumbnail fills the body (its rounded top tucked under the band), with a
+		-- left-to-right shade so the name and pips read on it. Transparent until loaded.
+		local thumb = Kit.new("ImageLabel", {
+			Name = "Thumb",
+			BackgroundTransparency = 1,
+			Image = thumbOf(i) or "",
+			ImageTransparency = 1,
+			ScaleType = Enum.ScaleType.Crop,
+			Size = UDim2.new(1, 0, 1, -(BAND_H - Kit.RADIUS.M)),
+			Position = UDim2.fromOffset(0, BAND_H - Kit.RADIUS.M),
+			ZIndex = 2,
+			Parent = frame,
+		}) :: ImageLabel
+		Kit.corner(thumb, Kit.RADIUS.M)
+		local shade = Kit.new("Frame", {
+			Name = "Shade",
+			BackgroundColor3 = THUMB.SHADE,
+			BorderSizePixel = 0,
+			Size = UDim2.fromScale(1, 1),
+			Visible = false,
+			Parent = thumb,
+		})
+		Kit.corner(shade, Kit.RADIUS.M)
+		local thumbShade = Kit.new("UIGradient", {
+			Transparency = NumberSequence.new(THUMB.SHADE_LEFT, THUMB.SHADE_RIGHT),
+			Parent = shade,
+		}) :: UIGradient
 		local band = Kit.new("Frame", {
 			Name = "Band",
 			BackgroundColor3 = C.Gold,
 			BorderSizePixel = 0,
 			Size = UDim2.new(1, 0, 0, BAND_H),
-			ZIndex = 2,
+			ZIndex = 3,
 			Parent = frame,
 		})
 		Kit.corner(band, Kit.RADIUS.M)
@@ -807,7 +923,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			BorderSizePixel = 0,
 			Size = UDim2.new(1, 0, 1, -BAND_H),
 			Position = UDim2.fromOffset(0, BAND_H),
-			ZIndex = 2,
+			ZIndex = 3,
 			Parent = frame,
 		}) :: CanvasGroup
 		Kit.corner(body, Kit.RADIUS.M)
@@ -865,7 +981,7 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			AnchorPoint = Vector2.new(1, 0.5),
 			StrokeThickness = 0,
 			Visible = false,
-			ZIndex = 3,
+			ZIndex = 4,
 		})
 		local hit = Kit.new("TextButton", {
 			Name = "Hit",
@@ -889,11 +1005,19 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 			body = body,
 			chevron = chevron,
 			stroke = frame:FindFirstChildOfClass("UIStroke"),
+			thumb = thumb,
+			thumbShade = thumbShade,
 			setPips = setPips,
 			pipRow = if pipRow and pipRow:IsA("GuiObject") then pipRow else nil,
 			lockedLine = lockedLine,
 		}
 		cards[i] = card
+		-- Repaint when the thumbnail arrives (the side preview swaps to it too).
+		onThumbFetch(thumbOf(i), function()
+			if window.isOpen() then
+				refresh()
+			end
+		end)
 		hit.Activated:Connect(function()
 			local info = parkourInfo()
 			local unlocked = if info then tonumber(info.unlocked) or 1 else 1
@@ -921,8 +1045,18 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		-- Locked: a darker, greyer band of the map's colour with a lock badge; text stays at
 		-- full brightness. The body wears a faint wash of the band colour.
 		local bandColor = if locked then desaturate(color) else color
+		-- With its thumbnail loaded the body shows the map itself (dimmed when locked) under a
+		-- shade instead of the colour wash.
+		local pictured = thumbReady(card.thumb.Image)
+		card.thumb.ImageTransparency = if pictured then 0 else 1
+		card.thumb.ImageColor3 = if locked then THUMB.LOCKED_TINT else Color3.new(1, 1, 1)
+		local shade = card.thumbShade.Parent
+		if shade and shade:IsA("GuiObject") then
+			shade.Visible = pictured
+		end
+		card.thumbShade.Transparency = NumberSequence.new(if locked then THUMB.LOCKED_SHADE_LEFT else THUMB.SHADE_LEFT, THUMB.SHADE_RIGHT)
 		card.body.BackgroundColor3 = bandColor
-		card.body.BackgroundTransparency = BODY_WASH
+		card.body.BackgroundTransparency = if pictured then 1 else BODY_WASH
 		card.band.BackgroundColor3 = bandColor
 		local cover = card.band:FindFirstChild("Cover")
 		if cover and cover:IsA("Frame") then
@@ -1081,7 +1215,26 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		end
 	end)
 	local tickId = 0
+	local preloaded = false
 	window.onOpen.Event:Connect(function()
+		if not preloaded then
+			-- Ask for every thumbnail at once; each card repaints when its own arrives.
+			preloaded = true
+			local thumbs: { Instance } = {}
+			for _, card in cards do
+				if card.thumb.Image ~= "" then
+					table.insert(thumbs, card.thumb)
+				end
+			end
+			task.spawn(function()
+				pcall(function()
+					ContentProvider:PreloadAsync(thumbs)
+				end)
+				if window.isOpen() then
+					refresh()
+				end
+			end)
+		end
 		showPreview(selected)
 		-- The cooldown line counts down while the window is open (one loop per open: a
 		-- reopen within the second retires the previous loop).

@@ -39,6 +39,15 @@
   "source": "art/out/audio/key_click_2.flac",
   "type": "Audio"
  },
+ "Image:00aed99e02d23ed3a6e62099a30e81e44edf757354ebbab2f1a0173e685095bf": {
+  "assetId": "127544529120912",
+  "imageId": "127544529120912",
+  "moderation": "Reviewing",
+  "name": "maps__Map3",
+  "sha": "00aed99e02d23ed3a6e62099a30e81e44edf757354ebbab2f1a0173e685095bf",
+  "source": "art/out/maps/Map3.png",
+  "type": "Image"
+ },
  "Image:062bde10636113c7aa51534476934d4f4bef876541c43d0725b4bf9e05996607": {
   "assetId": "110910493203649",
   "imageId": "110910493203649",
@@ -156,6 +165,15 @@
   "source": "art/out/ui/MogRingArcGlow.png",
   "type": "Image"
  },
+ "Image:1c9d755cd6f1ecea6a8d7243033a455d1ca47b60c19fec6fa6af065f57001dec": {
+  "assetId": "137698608920039",
+  "imageId": "137698608920039",
+  "moderation": "Reviewing",
+  "name": "maps__Map6",
+  "sha": "1c9d755cd6f1ecea6a8d7243033a455d1ca47b60c19fec6fa6af065f57001dec",
+  "source": "art/out/maps/Map6.png",
+  "type": "Image"
+ },
  "Image:1e84acbc90864b1ceaa201be5625cf210ab7223d50e6588eb1b4cfeb625166a5": {
   "assetId": "72501502325053",
   "imageId": "72501502325053",
@@ -190,6 +208,15 @@
   "name": "ui__atlas_1",
   "sha": "20ebf72396ffb65e11ca0b28179900f062b11e104ee396cc2d2f16c47ca47b3a",
   "source": "art/out/atlas/ui_1.png",
+  "type": "Image"
+ },
+ "Image:240db3f39825f056e57dd23969315f87eb6d6d437f7a138933aac49412d2ee90": {
+  "assetId": "130252297514317",
+  "imageId": "130252297514317",
+  "moderation": "Reviewing",
+  "name": "maps__Map10",
+  "sha": "240db3f39825f056e57dd23969315f87eb6d6d437f7a138933aac49412d2ee90",
+  "source": "art/out/maps/Map10.png",
   "type": "Image"
  },
  "Image:251e32cf218f0afdc9ecaca5873a3ed386c1f031069649eb5ead9ae6ebc36de4": {
@@ -325,6 +352,15 @@
   "name": "faces__Awe",
   "sha": "48503f47bdea8331f0484ca431d8a1ba1495a8d91c76e57c3c6fcc8c9247cd34",
   "source": "art/out/faces/Awe.png",
+  "type": "Image"
+ },
+ "Image:48ebec349baf56fea65f69b4f1fb66b0103f2b65208eb9fd86c30995fb5e176a": {
+  "assetId": "83863682063099",
+  "imageId": "83863682063099",
+  "moderation": "Reviewing",
+  "name": "maps__Map2",
+  "sha": "48ebec349baf56fea65f69b4f1fb66b0103f2b65208eb9fd86c30995fb5e176a",
+  "source": "art/out/maps/Map2.png",
   "type": "Image"
  },
  "Image:4ab8abc96560d67f7e3c02d6d1886da2e0657191a948ceebcb0881b893a4eb38": {
@@ -534,6 +570,15 @@
   "source": "art/out/faces/Shock.png",
   "type": "Image"
  },
+ "Image:96671f79da4e96dd04b5049bc6f5a8bd230770a350eb4ffe605b3a5841151f24": {
+  "assetId": "100143199180544",
+  "imageId": "100143199180544",
+  "moderation": "Reviewing",
+  "name": "maps__Map9",
+  "sha": "96671f79da4e96dd04b5049bc6f5a8bd230770a350eb4ffe605b3a5841151f24",
+  "source": "art/out/maps/Map9.png",
+  "type": "Image"
+ },
  "Image:9c570423cc49d2f9d8235a87df66a2a81c0798ed3d01f91bb5f6a772b64cc089": {
   "assetId": "123195389221355",
   "imageId": "123195389221355",
@@ -570,6 +615,15 @@
   "source": "art/out/ui/HudDumbbellGlow.png",
   "type": "Image"
  },
+ "Image:a7503349c00e0c2c523bcbf2e346d84ac830c51e169fb7755cf5a089a5fa936d": {
+  "assetId": "81985510734093",
+  "imageId": "81985510734093",
+  "moderation": "Reviewing",
+  "name": "maps__Map5",
+  "sha": "a7503349c00e0c2c523bcbf2e346d84ac830c51e169fb7755cf5a089a5fa936d",
+  "source": "art/out/maps/Map5.png",
+  "type": "Image"
+ },
  "Image:a8cb243ded3ccc760e3e2e68440771d20356863dcccabd9479d4a367980f8331": {
   "assetId": "105508241468834",
   "imageId": "105508241468834",
@@ -577,6 +631,15 @@
   "name": "hud__MogRingTrailL",
   "sha": "a8cb243ded3ccc760e3e2e68440771d20356863dcccabd9479d4a367980f8331",
   "source": "art/out/ui/MogRingTrailL.png",
+  "type": "Image"
+ },
+ "Image:aa68d0eabe72bbab20324097de4db282ae592a8ad8fd267c959285c8f35c1c3a": {
+  "assetId": "79313220084452",
+  "imageId": "79313220084452",
+  "moderation": "Reviewing",
+  "name": "maps__Map4",
+  "sha": "aa68d0eabe72bbab20324097de4db282ae592a8ad8fd267c959285c8f35c1c3a",
+  "source": "art/out/maps/Map4.png",
   "type": "Image"
  },
  "Image:ac9a5cde08dc52984665df6b0337bd9a1b5a5df0d3ca2b13ee0705ba47492be3": {
@@ -595,6 +658,15 @@
   "name": "ui__atlas_1",
   "sha": "ad0bc3ff6928705c34a14d1e5f37b37d0a6362699f77e9aad889bd961e10bd8d",
   "source": "art/out/atlas/ui_1.png",
+  "type": "Image"
+ },
+ "Image:ae94edf67a3307f3ce7a325c041730362a54bb756f8b83077d3dc3fb7ea723ef": {
+  "assetId": "71597452231199",
+  "imageId": "71597452231199",
+  "moderation": "Reviewing",
+  "name": "maps__Map7",
+  "sha": "ae94edf67a3307f3ce7a325c041730362a54bb756f8b83077d3dc3fb7ea723ef",
+  "source": "art/out/maps/Map7.png",
   "type": "Image"
  },
  "Image:afd8092f807961ef2270c3b2a54c53a31fa1d47d39820a84a8c97f89c1986685": {
@@ -669,6 +741,15 @@
   "source": "art/out/atlas/ui_3.png",
   "type": "Image"
  },
+ "Image:bd8ac47ca83e022d19deae58cecc2393351cf2b950b5ae5261b4c2800beac632": {
+  "assetId": "86643257307571",
+  "imageId": "86643257307571",
+  "moderation": "Reviewing",
+  "name": "maps__Map1",
+  "sha": "bd8ac47ca83e022d19deae58cecc2393351cf2b950b5ae5261b4c2800beac632",
+  "source": "art/out/maps/Map1.png",
+  "type": "Image"
+ },
  "Image:c43ee2f23dfa708b909237875349808c7c15dfab04419fea11fa1938ce499390": {
   "assetId": "81600921432516",
   "imageId": "81600921432516",
@@ -712,6 +793,15 @@
   "name": "brand__KeyArt",
   "sha": "e6f318bf49fa30b834e126db573e35c6e3df1c2aa01cb0ebfc1484a1719961fa",
   "source": "art/out/brand/KeyArt.png",
+  "type": "Image"
+ },
+ "Image:e94bca94517c424feae71d153221d819443451cb297e5e77dd884e939a3bacec": {
+  "assetId": "108087647924264",
+  "imageId": "108087647924264",
+  "moderation": "Reviewing",
+  "name": "maps__Map8",
+  "sha": "e94bca94517c424feae71d153221d819443451cb297e5e77dd884e939a3bacec",
+  "source": "art/out/maps/Map8.png",
   "type": "Image"
  },
  "Image:eb4123c7615b4fd04fcee4dea12bdd2f749fcf8732f26a0eebdf4c055f518911": {

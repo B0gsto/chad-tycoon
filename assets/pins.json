@@ -216,6 +216,86 @@
       "source": "art/out/ui/MogRingTrailR.png",
       "updatedAt": "2026-10-07T08:54:30Z"
     },
+    "maps/Map1": {
+      "assetId": "86643257307571",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "bd8ac47ca83e022d19deae58cecc2393351cf2b950b5ae5261b4c2800beac632",
+      "source": "art/out/maps/Map1.png",
+      "updatedAt": "2026-10-14T13:24:37Z"
+    },
+    "maps/Map10": {
+      "assetId": "130252297514317",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "240db3f39825f056e57dd23969315f87eb6d6d437f7a138933aac49412d2ee90",
+      "source": "art/out/maps/Map10.png",
+      "updatedAt": "2026-10-14T13:24:37Z"
+    },
+    "maps/Map2": {
+      "assetId": "83863682063099",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "48ebec349baf56fea65f69b4f1fb66b0103f2b65208eb9fd86c30995fb5e176a",
+      "source": "art/out/maps/Map2.png",
+      "updatedAt": "2026-10-14T13:24:37Z"
+    },
+    "maps/Map3": {
+      "assetId": "127544529120912",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "00aed99e02d23ed3a6e62099a30e81e44edf757354ebbab2f1a0173e685095bf",
+      "source": "art/out/maps/Map3.png",
+      "updatedAt": "2026-10-14T13:24:37Z"
+    },
+    "maps/Map4": {
+      "assetId": "79313220084452",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "aa68d0eabe72bbab20324097de4db282ae592a8ad8fd267c959285c8f35c1c3a",
+      "source": "art/out/maps/Map4.png",
+      "updatedAt": "2026-10-14T13:24:37Z"
+    },
+    "maps/Map5": {
+      "assetId": "81985510734093",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "a7503349c00e0c2c523bcbf2e346d84ac830c51e169fb7755cf5a089a5fa936d",
+      "source": "art/out/maps/Map5.png",
+      "updatedAt": "2026-10-14T13:24:37Z"
+    },
+    "maps/Map6": {
+      "assetId": "137698608920039",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "1c9d755cd6f1ecea6a8d7243033a455d1ca47b60c19fec6fa6af065f57001dec",
+      "source": "art/out/maps/Map6.png",
+      "updatedAt": "2026-10-14T13:24:37Z"
+    },
+    "maps/Map7": {
+      "assetId": "71597452231199",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "ae94edf67a3307f3ce7a325c041730362a54bb756f8b83077d3dc3fb7ea723ef",
+      "source": "art/out/maps/Map7.png",
+      "updatedAt": "2026-10-14T13:24:37Z"
+    },
+    "maps/Map8": {
+      "assetId": "108087647924264",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "e94bca94517c424feae71d153221d819443451cb297e5e77dd884e939a3bacec",
+      "source": "art/out/maps/Map8.png",
+      "updatedAt": "2026-10-14T13:24:37Z"
+    },
+    "maps/Map9": {
+      "assetId": "100143199180544",
+      "kind": "Image",
+      "moderation": "Approved",
+      "sha256": "96671f79da4e96dd04b5049bc6f5a8bd230770a350eb4ffe605b3a5841151f24",
+      "source": "art/out/maps/Map9.png",
+      "updatedAt": "2026-10-14T13:24:37Z"
+    },
     "proof/cube": {
       "assetId": "89753695118063",
       "kind": "Model",
