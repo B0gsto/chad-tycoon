@@ -16,6 +16,14 @@
 	  (Fx.PlotRank.ownFans) and goes up to PlotRank.CFG.OwnFansMax (20 at tier
 	  25; Max on a "low" device). The server builds 16 spots: the rest of the own
 	  crowd stands between them (PlotRank.extraSpots).
+	  Other plots near the camera show more fans the higher their plot rank (CROWD.Other*),
+	  so a strong plot's crowd is seen from the hub.
+	- An audience (the CROWD table): every fan faces the champion's stage at the front of
+	  the rack, stands on a grandstand that rises toward the back of its zone (two client-
+	  built ramps, so the rows behind are seen over the rows in front), is drawn bigger
+	  than its look, and most hold a sign up. Standing fans cheer, jump and lift their
+	  signs far more than they idle, and every few seconds a few of the own plot's fans
+	  cheer by themselves with hearts and stars.
 	- Looks are picked per plot + spot, so a plot's crowd never reshuffles.
 	- New fans run in from the entrance, fade in, and settle with a little hop;
 	  when the count drops the extra fans wave and walk off.
@@ -55,7 +63,7 @@ local Fans = {}
 local W = Theme.World
 local CFG = Theme.Fans
 
-local MAX_ANIMATED = 16 -- fans posed per frame (the nearest to the camera)
+local MAX_ANIMATED = 24 -- fans posed per frame (the nearest to the camera)
 local ANIM_RANGE = 160 -- studs: beyond this fans hold still
 local NEAR = 60 -- studs: closer than this fans update every frame (else every 2nd)
 local SHOW_OTHER = 150 -- studs: other plots' fans appear inside this range ...
@@ -78,7 +86,24 @@ local BUBBLE_GAP = 6
 local BUBBLE_LIFE = 2.2
 local MAX_PARTICLES = 24
 
-local IDLE_POSES = { "Idle", "Idle", "Clap", "Wave", "SignUp" }
+-- The crowd as an audience: every size, count and timing of it.
+local CROWD = {
+	Scale = 1.22, -- fans are drawn this much bigger than their look, to read from the hub
+	-- The grandstand: a ramp per fan zone, rising toward the back fence.
+	Slope = 0.32, -- studs up per stud of depth (4.3 studs at the back of a 13.5-deep zone)
+	Pad = 1.7, -- studs the ramp reaches past the outermost spots on every side
+	Stripes = 4, -- sunny lines across each ramp, like bleacher rows
+	SignEvery = 3, -- of every SignEvery fans all but one hold a sign
+	-- Standing poses, the first one held by fans too far away to be animated.
+	SignPoses = { "SignUp", "SignUp", "Cheer", "SignUp", "Jump" },
+	HandPoses = { "Cheer", "Clap", "Jump", "Cheer", "Wave" },
+	PoseHold = NumberRange.new(1.6, 3.2), -- seconds a standing pose is held
+	-- Fans on other players' plots, by plot rank and device ("low" keeps Theme.Fans.MaxOther).
+	OtherBase = 4,
+	OtherPerRank = { mid = 1, high = 2 },
+	SelfCheer = NumberRange.new(4, 8), -- seconds between the own crowd's cheers of its own
+	SelfCheerFans = 5,
+}
 local CHEER_POSES = { "Cheer", "Jump", "Cheer" }
 -- Text glyph, its colour, and the sprite drawn instead when uploaded.
 local GLYPHS = {
@@ -91,6 +116,9 @@ local RUN_SPEED = Poses.GAIT.Run.speed
 local WALK_SPEED = Poses.GAIT.Walk.speed
 
 type Spot = { order: number, cf: CFrame, entrance: Vector3? }
+-- One side's grandstand: `frame` has Y up and +Z toward the back fence, at floor level on the
+-- ramp's front edge; the ramp is `width` wide (X, centred) and `depth` deep.
+type Stand = { frame: CFrame, width: number, depth: number }
 
 type PlotRec = {
 	index: number,
@@ -105,6 +133,9 @@ type PlotRec = {
 	want: number,
 	shown: boolean,
 	lastBubble: number,
+	stands: { Stand },
+	standParts: { BasePart },
+	standKey: string,
 }
 
 -- state: "enter" (running to the spot) | "settle" (hop) | "idle" | "leave"
@@ -118,6 +149,7 @@ type Fan = {
 	scale: number,
 	height: number,
 	random: Random,
+	poses: { string }, -- its standing poses (CROWD.SignPoses or HandPoses)
 	state: string,
 	stateStart: number,
 	from: Vector3,
@@ -196,6 +228,85 @@ end
 
 -- Spots -------------------------------------------------------------------------------
 
+-- Grandstands ---------------------------------------------------------------------------
+
+-- How high the grandstand lifts a fan standing over `pos` (0 off the ramps).
+local function groundAt(rec: PlotRec, pos: Vector3): number
+	for _, stand in rec.stands do
+		local at = stand.frame:PointToObjectSpace(pos)
+		if math.abs(at.X) <= stand.width / 2 and at.Z >= 0 then
+			return math.min(at.Z, stand.depth) * CROWD.Slope
+		end
+	end
+	return 0
+end
+
+local function standPart(part: BasePart, name: string, cf: CFrame, color: Color3, rec: PlotRec)
+	part.Name = name
+	part.CFrame = cf
+	part.Color = color
+	part.Material = Enum.Material.SmoothPlastic
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.CastShadow = false
+	part.Parent = rec.group
+	table.insert(rec.standParts, part)
+end
+
+-- Works out the plot's grandstands from its first `count` (server) spots, one per side of
+-- the rack, and builds their ramps: a teal wedge rising toward the back with sunny lines.
+local function buildStands(rec: PlotRec, count: number)
+	local rim = rec.folder:FindFirstChild("ChampionTop")
+	if not rim or not rim:IsA("BasePart") or count == 0 then
+		return
+	end
+	-- The plot's own frame at floor level: Y up, -Z toward the entrance.
+	local home = PlotRank.championHome(rim)
+	local floorY = rec.spots[1].cf.Position.Y
+	local plot = home.Rotation + Vector3.new(home.Position.X, floorY, home.Position.Z)
+	local key = tostring(plot.Position) .. count
+	if key == rec.standKey then
+		return
+	end
+	rec.standKey = key
+	for _, part in rec.standParts do
+		part:Destroy()
+	end
+	table.clear(rec.standParts)
+	table.clear(rec.stands)
+	for _, side in { -1, 1 } do
+		local minX, maxX, minZ, maxZ = math.huge, -math.huge, math.huge, -math.huge
+		for i = 1, count do
+			local at = plot:PointToObjectSpace(rec.spots[i].cf.Position)
+			if at.X * side > 0 then
+				minX, maxX = math.min(minX, at.X), math.max(maxX, at.X)
+				minZ, maxZ = math.min(minZ, at.Z), math.max(maxZ, at.Z)
+			end
+		end
+		if minX <= maxX then
+			local width = maxX - minX + CROWD.Pad * 2
+			local depth = maxZ - minZ + CROWD.Pad * 2
+			local frame = plot * CFrame.new((minX + maxX) / 2, 0, minZ - CROWD.Pad)
+			table.insert(rec.stands, { frame = frame, width = width, depth = depth })
+			local height = depth * CROWD.Slope
+			-- A wedge's slope falls toward its -Z: here the entrance side.
+			local ramp = Instance.new("WedgePart")
+			ramp.Size = Vector3.new(width, height, depth)
+			standPart(ramp, "Grandstand", frame * CFrame.new(0, height / 2, depth / 2), W.Teal, rec)
+			-- Lying on the slope, which rises toward +Z.
+			local tilt = CFrame.Angles(-math.atan(CROWD.Slope), 0, 0)
+			for i = 1, CROWD.Stripes do
+				local z = depth * (i - 0.5) / CROWD.Stripes
+				local line = Instance.new("Part")
+				line.Size = Vector3.new(width, 0.12, 0.5)
+				standPart(line, "GrandstandLine", frame * CFrame.new(0, z * CROWD.Slope + 0.04, z) * tilt, W.Sunny, rec)
+			end
+		end
+	end
+end
+
 -- Reads the plot's FanSpots (sorted by Order) and derives the entrance and zone frame.
 -- `total` > the number of FanSpots adds standing spots between them (the own plot's crowd).
 local function readSpots(rec: PlotRec, total: number)
@@ -253,6 +364,17 @@ local function readSpots(rec: PlotRec, total: number)
 			table.insert(spots, { order = extra.order, cf = CFrame.lookAt(extra.pos, extra.pos + extra.look), entrance = extra.entrance })
 		end
 	end
+	-- An audience: every spot is lifted onto its zone's grandstand and turned to the champion's
+	-- stage at the front of the rack.
+	buildStands(rec, #list)
+	local rim = rec.folder:FindFirstChild("ChampionTop")
+	local focus: Vector3? = if rim and rim:IsA("BasePart") then PlotRank.championPivot(rim).Position else nil
+	for _, spot in spots do
+		local pos = spot.cf.Position
+		pos = Vector3.new(pos.X, pos.Y + groundAt(rec, pos), pos.Z)
+		local toward = if focus then Vector3.new(focus.X - pos.X, 0, focus.Z - pos.Z) else spot.cf.LookVector * Vector3.new(1, 0, 1)
+		spot.cf = if toward.Magnitude > 1e-3 then CFrame.lookAt(pos, pos + toward) else spot.cf.Rotation + pos
+	end
 	rec.center = sum / #list
 	local forward = if look.Magnitude > 1e-3 then look.Unit else Vector3.new(0, 0, -1)
 	rec.right = forward:Cross(Vector3.yAxis)
@@ -309,7 +431,7 @@ local function nextIdlePose(fan: Fan, now: number)
 	local previous = fan.pose
 	local name = previous
 	for _ = 1, 4 do
-		name = IDLE_POSES[fan.random:NextInteger(1, #IDLE_POSES)]
+		name = fan.poses[fan.random:NextInteger(1, #fan.poses)]
 		if name ~= previous then
 			break
 		end
@@ -317,8 +439,7 @@ local function nextIdlePose(fan: Fan, now: number)
 	fan.prevPose = previous
 	fan.pose = name
 	fan.poseStart = now
-	local hold = if name == "Idle" then fan.random:NextNumber(2.4, 4.5) else fan.random:NextNumber(1.8, 3.2)
-	fan.poseEnd = now + hold
+	fan.poseEnd = now + fan.random:NextNumber(CROWD.PoseHold.Min, CROWD.PoseHold.Max)
 end
 
 local function spawnFan(rec: PlotRec, index: number, now: number)
@@ -329,6 +450,11 @@ local function spawnFan(rec: PlotRec, index: number, now: number)
 	local looks = CFG.Looks
 	local look = table.clone(looks[(rec.index * 3 + spot.order * 5) % #looks + 1])
 	look.manual = true
+	look.scale = (look.scale or 1) * CROWD.Scale
+	-- Most of the crowd holds a sign up.
+	if spot.order % CROWD.SignEvery ~= 0 then
+		look.prop = "FanSign"
+	end
 	local signs = CFG.Signs
 	if look.prop == "FanSign" and signs and #signs > 0 then
 		look.signText = signs[(rec.index + spot.order * 3) % #signs + 1]
@@ -367,6 +493,7 @@ local function spawnFan(rec: PlotRec, index: number, now: number)
 		scale = rig.scale,
 		height = if type(height) == "number" then height else 5,
 		random = Random.new(seed + slotCounter),
+		poses = if look.prop == "FanSign" then CROWD.SignPoses else CROWD.HandPoses,
 		state = "enter",
 		stateStart = now,
 		from = start,
@@ -416,6 +543,18 @@ local function spawnFan(rec: PlotRec, index: number, now: number)
 	table.insert(allFans, fan)
 end
 
+-- `pos` on the floor or the grandstand under it (a running fan climbs its zone's ramp).
+local function onGround(fan: Fan, pos: Vector3): Vector3
+	local rec = fan.plot
+	local floorY = if rec.spots[1] then rec.spots[1].cf.Position.Y else pos.Y
+	if #rec.stands == 0 then
+		return pos
+	end
+	-- Every spot's CFrame is at the floor plus its ramp height; the first stand's frame is the floor.
+	floorY = rec.stands[1].frame.Position.Y
+	return Vector3.new(pos.X, floorY + groundAt(rec, Vector3.new(pos.X, floorY, pos.Z)), pos.Z)
+end
+
 -- Works out where the fan is and which pose it shows this frame (cheap; runs for every fan).
 -- Returns false once the fan has finished leaving.
 local function advance(fan: Fan, now: number): boolean
@@ -426,7 +565,7 @@ local function advance(fan: Fan, now: number): boolean
 	if state == "enter" then
 		local speed = RUN_SPEED * fan.scale
 		local d = math.min(t * speed, fan.length)
-		fan.pos = if fan.length > 0 then fan.from:Lerp(fan.to, d / fan.length) else fan.to
+		fan.pos = onGround(fan, if fan.length > 0 then fan.from:Lerp(fan.to, d / fan.length) else fan.to)
 		fan.yaw = fan.moveYaw
 		fan.pose = "Run"
 		fan.gaitEnd = Poses.gaitTime("Run", d, fan.scale)
@@ -441,9 +580,11 @@ local function advance(fan: Fan, now: number): boolean
 			fan.fade = 1 - math.clamp(t / FADE, 0, 1)
 		end
 		if d >= fan.length then
+			-- It settles straight into its first standing pose (sign up, or cheering): the pose a
+			-- far, unanimated fan then keeps.
 			fan.clockBase = now - fan.gaitEnd
 			fan.prevPose = "Run"
-			fan.pose = "Idle"
+			fan.pose = fan.poses[1]
 			setState(fan, "settle", now)
 		end
 	elseif state == "settle" then
@@ -456,7 +597,7 @@ local function advance(fan: Fan, now: number): boolean
 		fan.fade = 0
 		if u >= 1 then
 			fan.prevPose = nil
-			fan.pose = "Idle"
+			fan.pose = fan.poses[1]
 			fan.poseStart = now
 			fan.poseEnd = now + fan.random:NextNumber(0.5, 3.5)
 			setState(fan, "idle", now)
@@ -485,7 +626,7 @@ local function advance(fan: Fan, now: number): boolean
 		local speed = WALK_SPEED * fan.scale
 		local duration = fan.length / speed
 		local d = math.min(t * speed, fan.length)
-		fan.pos = if fan.length > 0 then fan.from:Lerp(fan.to, d / fan.length) else fan.to
+		fan.pos = onGround(fan, if fan.length > 0 then fan.from:Lerp(fan.to, d / fan.length) else fan.to)
 		local turn = smooth(t / TURN)
 		fan.yaw = lerpAngle(fan.spotYaw, fan.moveYaw, turn)
 		fan.pose = "Walk"
@@ -857,6 +998,9 @@ local function newPlot(index: number, plotFolder: Instance): PlotRec
 		want = 0,
 		shown = false,
 		lastBubble = 0,
+		stands = {},
+		standParts = {},
+		standKey = "",
 	}
 end
 
@@ -873,7 +1017,10 @@ local function syncPlot(rec: PlotRec, own: boolean, camPos: Vector3, now: number
 		if own then
 			want = PlotRank.ownFans(best, CFG.Base, CFG.PerTier, ownMax)
 		else
-			want = math.min(want, CFG.MaxOther)
+			-- A strong plot's crowd is seen from the hub: more fans the higher its rank.
+			local perRank = (CROWD.OtherPerRank :: { [string]: number })[Budget.tier()]
+			local most = if perRank then CROWD.OtherBase + PlotRank.rank(best) * perRank else CFG.MaxOther
+			want = math.min(want, math.max(most, CFG.MaxOther))
 			local range = if rec.shown then HIDE_OTHER else SHOW_OTHER
 			rec.shown = (rec.center - camPos).Magnitude <= range
 			if not rec.shown then
@@ -962,6 +1109,16 @@ function Fans.init()
 		end
 	end)
 	RunService.RenderStepped:Connect(step)
+	-- The own crowd cheers by itself now and then, so it reads as an audience between buys.
+	task.spawn(function()
+		local random = Random.new()
+		while true do
+			task.wait(random:NextNumber(CROWD.SelfCheer.Min, CROWD.SelfCheer.Max))
+			if os.clock() - lastCheer >= CHEER_GAP then
+				pcall(cheer, CROWD.SelfCheerFans, CHEER_LENGTH, nil)
+			end
+		end
+	end)
 
 	Net.event("Effect").OnClientEvent:Connect(function(kind: string, data: any)
 		if kind ~= "Buy" and kind ~= "Merge" then

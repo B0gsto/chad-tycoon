@@ -1501,9 +1501,10 @@ end
 ACCESSORIES.FanSign = function(c)
 	local x = c.armX + c.A / 2 + 0.08
 	local bottom = c.wristY - 0.48
-	local stick = 2.1
-	local cardW, cardH = 1.6, 1.05
-	local cx = x + 0.35
+	-- Big enough to read as a sign from the plot's entrance.
+	local stick = 2.2
+	local cardW, cardH = 2.5, 1.55
+	local cx = x + 0.5
 	local cy = bottom + stick + cardH / 2 - 0.12
 	local plain = Enum.Material.SmoothPlastic
 	add(c, "RightHand", "SignStick", Vector3.new(0.1, stick, 0.1), at(x, bottom + stick / 2, 0), WOOD, plain)
@@ -1556,29 +1557,60 @@ CharacterFactory.ACCESSORIES = ACCESSORIES
 
 -- Effects -------------------------------------------------------------------------
 
+-- Every size, rate and place of a unit's particles. They are kept small and start behind
+-- the shoulders (a unit faces -Z), rising, so the body's silhouette reads from the front:
+-- on the rack a tier is told by its aura's colour and rate and by its flame, not by a cloud.
+-- Sizes and offsets are per unit of the look's scale.
+local FX = {
+	AuraSize = 0.32, -- particle size at birth (it shrinks to nothing)
+	AuraRate = 5, -- particles per second when the look gives no auraRate ...
+	AuraRateMax = 6, -- ... and the most any look gets
+	AuraEmission = 0.6,
+	AuraAlpha = 0.4, -- transparency at birth
+	AuraLife = NumberRange.new(0.7, 1.1),
+	AuraSpeed = { 0.8, 1.7 },
+	AuraSpread = 70, -- degrees round straight up
+	AuraLift = 4, -- upward acceleration
+	AuraBack = 0.6, -- behind the chest's centre ...
+	AuraUp = 0.3, -- ... and above it
+	FireSize = 1.6, -- Fire.Size (it was 4: a blob over the whole torso)
+	FireHeat = 9,
+	FireBack = 0.75,
+	FireUp = 0.7,
+}
+
 local function addEffects(c: Ctx)
 	local look = c.look
 	local chest = c.parts.UpperTorso
 	local s = c.scale
+	-- A point behind the shoulders for the aura and the flame.
+	local function behind(name: string, back: number, up: number): Attachment
+		local attachment = Instance.new("Attachment")
+		attachment.Name = name
+		attachment.Position = Vector3.new(0, up * s, back * s)
+		attachment.Parent = chest
+		return attachment
+	end
 	if look.aura then
 		local emitter = Instance.new("ParticleEmitter")
 		emitter.Name = "Aura"
 		emitter.Color = ColorSequence.new(look.aura)
-		emitter.LightEmission = 1
+		emitter.LightEmission = FX.AuraEmission
 		emitter.Size = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.6 * s),
+			NumberSequenceKeypoint.new(0, FX.AuraSize * s),
 			NumberSequenceKeypoint.new(1, 0),
 		})
 		emitter.Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.2),
+			NumberSequenceKeypoint.new(0, FX.AuraAlpha),
 			NumberSequenceKeypoint.new(1, 1),
 		})
-		emitter.Lifetime = NumberRange.new(0.8, 1.4)
-		emitter.Rate = look.auraRate or 10
-		emitter.Speed = NumberRange.new(1.5 * s, 3 * s)
-		emitter.SpreadAngle = Vector2.new(180, 180)
-		emitter.Acceleration = Vector3.new(0, 3, 0)
-		emitter.Parent = chest
+		emitter.Lifetime = FX.AuraLife
+		emitter.Rate = math.min(look.auraRate or FX.AuraRate, FX.AuraRateMax)
+		emitter.Speed = NumberRange.new(FX.AuraSpeed[1] * s, FX.AuraSpeed[2] * s)
+		emitter.EmissionDirection = Enum.NormalId.Top
+		emitter.SpreadAngle = Vector2.new(FX.AuraSpread, FX.AuraSpread)
+		emitter.Acceleration = Vector3.new(0, FX.AuraLift, 0)
+		emitter.Parent = behind("AuraAt", FX.AuraBack, FX.AuraUp)
 	end
 	if look.sparkles then
 		local sparkles = Instance.new("Sparkles")
@@ -1589,9 +1621,9 @@ local function addEffects(c: Ctx)
 		local fire = Instance.new("Fire")
 		fire.Color = look.fire
 		fire.SecondaryColor = Color3.new(1, 1, 1)
-		fire.Size = 4 * s
-		fire.Heat = 6
-		fire.Parent = chest
+		fire.Size = FX.FireSize * s
+		fire.Heat = FX.FireHeat
+		fire.Parent = behind("FireAt", FX.FireBack, FX.FireUp)
 	end
 	if look.glow or look.aura then
 		local light = Instance.new("PointLight")
