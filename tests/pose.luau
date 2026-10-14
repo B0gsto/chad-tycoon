@@ -90,6 +90,60 @@ return function(h: { [string]: any })
 		check(PoseRules.repeatReady(1000, 1000 + gap), "after the gap: ready")
 	end)
 
+	test("Pose: replay milestones pay a capped bonus (REPLAY rule)", function()
+		check(not PoseRules.milestone(PoseRules.PASS_ROUND), "the pass itself is no milestone")
+		check(PoseRules.MILESTONE_FIRST > PoseRules.PASS_ROUND, "milestones come after the pass")
+		local hits = {}
+		for cleared = 1, 30 do
+			if PoseRules.milestone(cleared) then
+				table.insert(hits, cleared)
+			end
+		end
+		eq(hits[1], 12, "first milestone at 12")
+		eq(hits[2], 16, "then 16")
+		eq(hits[3], 20, "then every 4")
+		check(not PoseRules.milestone(13.5), "whole flexes only")
+		eq(PoseRules.bonusCash(1000, 0.5), 500, "half a repeat share")
+		eq(PoseRules.bonusCash(999, 0.5), 499, "rounded down")
+		eq(PoseRules.bonusCash(1000, 0), 0, "nothing for nothing")
+		-- One window: 12 and 16 pay half each, then the window is spent.
+		local share = PoseRules.MILESTONE_SHARE
+		local paid, at, used = PoseRules.bonusTake(0, 0, 1000, share)
+		eq(paid, share, "first bonus pays")
+		eq(at, 1000, "the window starts")
+		paid, at, used = PoseRules.bonusTake(at, used, 1010, share)
+		eq(paid, share, "second bonus pays")
+		paid, at, used = PoseRules.bonusTake(at, used, 1020, share)
+		eq(paid, 0, "the window's cap is spent")
+		eq(used, PoseRules.BONUS_CAP, "used stays at the cap")
+		paid, at = PoseRules.bonusTake(at, used, 1000 + PoseRules.REPEAT_GAP, share)
+		eq(paid, share, "a new window pays again")
+		eq(at, 1000 + PoseRules.REPEAT_GAP, "and starts now")
+		paid = PoseRules.bonusTake(5000, 0.75, 4000, share)
+		eq(paid, share, "a clock that went back opens a fresh window")
+		-- The rule: a bot or a grinder running back to back for an hour earns at most two
+		-- repeat shares per REPEAT_GAP outside the full pack (one pass share, BONUS_CAP bonus).
+		local repeatCash = 1000
+		local windowAt, windowUsed, repeatLast = 0, 0, 0
+		local total = 0
+		for t = 1000, 1000 + 3600 - 1, 20 do -- a run reaching 20 flexes every 20 s (os.time 0 is "never")
+			if PoseRules.repeatReady(repeatLast, t) then
+				total += repeatCash
+				repeatLast = t
+			end
+			for _, m in { 12, 16, 20 } do
+				if PoseRules.milestone(m) then
+					local s
+					s, windowAt, windowUsed = PoseRules.bonusTake(windowAt, windowUsed, t, share)
+					total += PoseRules.bonusCash(repeatCash, s)
+				end
+			end
+		end
+		local windows = 3600 / PoseRules.REPEAT_GAP
+		check(total <= windows * (1 + PoseRules.BONUS_CAP) * repeatCash, "at most 2 repeat shares per window")
+		check(total > windows * repeatCash, "replays pay more than the pass share alone")
+	end)
+
 	test("Pose: lobby phases gate Begin, input and falls", function()
 		check(PoseRules.canBegin("lobby"), "Begin from the lobby")
 		check(PoseRules.canBegin("results"), "Begin from the results card (PLAY AGAIN)")

@@ -24,7 +24,13 @@
 	  Camera    Scriptable, from the audience: both chads side by side, a slow drift, a
 	            short push-in on every cleared round. Short (phone) screens frame the chads
 	            lower and clear of the flex pad (Pose.compact()). Back to the follow
-	            camera a moment after "win" / "lose", in the lobby and on leave.
+	            camera a moment after "win" / "lose" (at once if the player walks off
+	            during the finale), in the lobby and on leave.
+	  Others    every other player's avatar plays the same moves from its "PoseFlex"
+	            character attribute (Modes.Pose sets "<move>#<n>": a flex name, "ready",
+	            "stumble", "slow", "clear", "pass", "win" or "lose"; nil lets it go), so a
+	            game on the next podium is seen too. Watched whether or not this player is
+	            in the mode; the finale lets the body go when it ends or the player walks.
 	  Moments   "clear": a quick hop into Victory and finger guns; "pass": a big jump and a
 	            stomp into a crab most muscular (the camera punches in), every lamp lit;
 	            "miss": the stumble (or shrug) and the rival's Shrug; "win": shake it off,
@@ -75,6 +81,8 @@ local HOP = { Time = 0.3, Height = 0.7 }
 -- Camera framing: distance in front of the chads, height over their feet, look height.
 local CAM = { Back = 17, Up = 5.2, Look = 2.3, Drift = 1.2, Push = 2.4, CompactLift = 2.2 }
 local END_HOLD = 3.4 -- seconds the finale moves play after "win" / "lose" (pose camera on)
+local WALK_OFF = 0.1 -- MoveDirection magnitude that hands the camera back during the finale
+local FLEX_ATTR = "PoseFlex" -- the character attribute other players' moves come in (Modes.Pose)
 
 -- The rival's look (CharacterFactory fields): a tanned beach chad in a grape tank.
 local RIVAL_LOOK = {
@@ -1079,12 +1087,144 @@ local function onFinish(_p: any, won: boolean)
 	-- results phase lets them walk).
 	selfPlay(if won then winMove() else loseMove(), true)
 	-- Then the follow camera (PLAY AGAIN meanwhile starts a new countdown, which keeps the
-	-- pose camera).
+	-- pose camera); walking off hands it back at once.
 	task.delay(END_HOLD, function()
 		if runId == mine then
 			endGame()
 		end
 	end)
+	local walkConn: RBXScriptConnection? = nil
+	walkConn = RunService.Heartbeat:Connect(function()
+		if runId ~= mine then
+			(walkConn :: RBXScriptConnection):Disconnect()
+			return
+		end
+		local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if humanoid and humanoid.MoveDirection.Magnitude > WALK_OFF then
+			(walkConn :: RBXScriptConnection):Disconnect()
+			endGame()
+		end
+	end)
+end
+
+-- Other players ----------------------------------------------------------------------------
+
+-- A watched player: their character's attribute connection and the poser on it (`final`:
+-- it plays a finale, which lets itself go).
+type Watched = {
+	charConn: RBXScriptConnection?,
+	attrConn: RBXScriptConnection?,
+	poser: PlayerPose.Poser?,
+	final: boolean,
+}
+local watched: { [Player]: Watched } = {}
+
+-- A move without its cues (the camera punch is for this player's own game).
+local function quiet(keys: Keys): Keys
+	local out: Keys = {}
+	for i, key in keys do
+		local copy = table.clone(key)
+		copy.cue = nil
+		out[i] = copy
+	end
+	return out
+end
+
+-- The keys for a "PoseFlex" move and whether it is a finale (nil: no such move).
+local function otherMove(move: string): (Keys?, boolean)
+	if move == "ready" then
+		return readyMove(), false
+	elseif move == "stumble" then
+		return stumbleMove(), false
+	elseif move == "slow" then
+		return slowMove(), false
+	elseif move == "clear" then
+		return clearMove(), false
+	elseif move == "pass" then
+		return quiet(passMove()), false
+	elseif move == "win" then
+		return quiet(winMove()), true
+	elseif move == "lose" then
+		return loseMove(), true
+	elseif FLAVOUR[move] then
+		return flexMove(move), false
+	end
+	return nil, false
+end
+
+local function dropOther(w: Watched)
+	if w.poser then
+		w.poser:stop()
+		w.poser = nil
+	end
+	w.final = false
+end
+
+-- The character's attribute changed (or was found set): play its move, or let the body go.
+local function poseOther(w: Watched, character: Model)
+	local value = character:GetAttribute(FLEX_ATTR)
+	local move = if type(value) == "string" then string.match(value, "^(%w+)#%d+$") else nil
+	local keys, final = nil, false
+	if move then
+		keys, final = otherMove(move)
+	end
+	if not keys then
+		dropOther(w)
+		return
+	end
+	if w.final then
+		-- A finale's poser may have let go already: a fresh one.
+		dropOther(w)
+	end
+	if not w.poser then
+		w.poser = PlayerPose.attach(character)
+	end
+	if w.poser then
+		w.poser:play(keys, final)
+		w.final = final
+	end
+end
+
+local function watchCharacter(w: Watched, character: Model?)
+	if w.attrConn then
+		w.attrConn:Disconnect()
+		w.attrConn = nil
+	end
+	dropOther(w)
+	if not character then
+		return
+	end
+	local model = character :: Model
+	w.attrConn = model:GetAttributeChangedSignal(FLEX_ATTR):Connect(function()
+		poseOther(w, model)
+	end)
+	if model:GetAttribute(FLEX_ATTR) ~= nil then
+		poseOther(w, model)
+	end
+end
+
+local function watchPlayer(other: Player)
+	if other == player or watched[other] then
+		return
+	end
+	local w: Watched = { charConn = nil, attrConn = nil, poser = nil, final = false }
+	watched[other] = w
+	w.charConn = other.CharacterAdded:Connect(function(character)
+		watchCharacter(w, character)
+	end)
+	watchCharacter(w, other.Character)
+end
+
+local function unwatchPlayer(other: Player)
+	local w = watched[other]
+	if not w then
+		return
+	end
+	watched[other] = nil
+	if w.charConn then
+		w.charConn:Disconnect()
+	end
+	watchCharacter(w, nil)
 end
 
 function Pose.init()
@@ -1122,6 +1262,12 @@ function Pose.init()
 		removeReflection()
 		dropSelfPoser()
 	end)
+	-- Every other player's avatar plays its game's moves (FLEX_ATTR).
+	Players.PlayerAdded:Connect(watchPlayer)
+	Players.PlayerRemoving:Connect(unwatchPlayer)
+	for _, other in Players:GetPlayers() do
+		watchPlayer(other)
+	end
 end
 
 return Pose
