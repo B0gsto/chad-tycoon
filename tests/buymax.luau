@@ -257,8 +257,8 @@ local function suite(h: { [string]: any })
 		local Simulate = require("../scripts/simulate")
 		local source = fs.readFile("scripts/simulate.luau")
 		check(string.find(source, "Economy.planBuyMax(units, boughtUnits, money)", 1, true) ~= nil, "Simulate.run plans a Buy Max")
-		local result = Simulate.run({ hours = 100, step = 10 })
-		check(result.reached[Economy.MAX_TIER] ~= nil, "tier 25 within 100 hours")
+		local result = Simulate.run({ hours = 500, step = 10 })
+		check(result.reached[Economy.MAX_TIER] ~= nil, "tier 25 within 500 hours")
 		for tier = 2, Economy.MAX_TIER do
 			check(result.reached[tier] ~= nil and result.reached[tier] >= result.reached[tier - 1], "tiers in order: " .. tier)
 		end

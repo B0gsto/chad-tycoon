@@ -390,13 +390,14 @@ end
 
 -- Toasts ------------------------------------------------------------------------
 --[[
-	A short stack under the HUD's top strips, newest on top. Each toast is a glass
+	A short stack at the right edge under the HUD's top strips, newest on top: small, so
+	it reports without covering the play area in the middle. Each toast is a glass
 	card (Kit.hudGlass: the world shows through, no blur) a tier above those quiet
 	strips: denser, with an accent bar down its left edge and an icon chip in the
 	notification's colour (green success, gold info, orange warning, coral error,
-	a crate's rarity) and outlined HUD text a size up from the strips'. It drops in 12 px with a fade
-	and a slight scale, the others glide down to make room, and it fades up and
-	away after 3 s. A toast that names a crate ("A Rare Crate is on its way!")
+	a crate's rarity) and outlined HUD text. It slides in from the edge with a fade
+	and a slight scale, the others glide down to make room, and it slides back out
+	after 3 s. A toast that names a crate ("A Rare Crate is on its way!")
 	carries that rarity's colour and a little crate instead of the tone's chip.
 ]]
 
@@ -407,13 +408,16 @@ local TONES = {
 	warn = { color = C.Amber, icon = "!" },
 }
 
-local TOAST_H = 44
-local TOAST_STEP = 52 -- toast + shadow + gap
-local TOAST_SLIDE = 12
-local TOAST_IN = 0.18
-local TOAST_TEXT = 18
-local TOAST_TEXT_X = 60
-local TOAST_ICON_X = 19 -- past the accent bar
+local TOAST_H = 32
+local TOAST_STEP = 38 -- toast + shadow + gap
+local TOAST_SLIDE = 28 -- in from the right edge (the bottom stack: up from the bottom)
+local TOAST_IN = 0.2
+local TOAST_TEXT = 14
+local TOAST_TEXT_X = 42
+local TOAST_ICON_X = 12 -- past the accent bar
+-- The icon chip's size, the stack's right edge from the screen's and its width (the widest
+-- toast). (Fields, not locals: this chunk is at its 200 locals.)
+Popups.TOAST_SIDE = { Icon = 22, Margin = 10, MaxW = 360 }
 local MAX_TOASTS = 4
 -- While a window or modal is open the stack sits at the very top of the safe area, over
 -- the margin above the window: TOAST_TOP from the edge. A toast may reach HEADER_CLEAR into
@@ -531,7 +535,7 @@ local function toastWidth(text: string): number
 	if width <= 0 then
 		width = (utf8.len(text) or #text) * 9.2
 	end
-	return math.clamp(math.ceil(width) + TOAST_TEXT_X + 28, 220, 540)
+	return math.clamp(math.ceil(width) + TOAST_TEXT_X + 18, 150, Popups.TOAST_SIDE.MaxW)
 end
 
 -- The rarity a toast's text names next to the crate word, if any.
@@ -566,11 +570,11 @@ local function placeToasts(fresh: Frame?)
 		end
 	end
 	for index, toast in toasts do
-		glide(toast, { Position = UDim2.new(0.5, 0, 0, (index - 1) * TOAST_STEP) })
+		glide(toast, { Position = UDim2.new(1, 0, 0, (index - 1) * TOAST_STEP) })
 	end
 	-- The bottom stack grows upward from the edge.
 	for index, toast in lowToasts do
-		glide(toast, { Position = UDim2.new(0.5, 0, 1, -(index - 1) * TOAST_STEP) })
+		glide(toast, { Position = UDim2.new(1, 0, 1, -(index - 1) * TOAST_STEP) })
 	end
 end
 
@@ -586,9 +590,9 @@ local function dismissToast(toast: Frame)
 	end
 	table.remove(if low then lowToasts else toasts, index)
 	toastInfo[toast] = nil
-	-- Out the way it came: up from the top stack, down from the bottom one.
-	local slide = if low then TOAST_SLIDE else -TOAST_SLIDE
-	Kit.tween(toast, 0.2, { Position = toast.Position + UDim2.fromOffset(0, slide) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	-- Out the way it came: off the right edge, down from the bottom stack.
+	local slide = if low then UDim2.fromOffset(0, TOAST_SLIDE) else UDim2.fromOffset(TOAST_SLIDE, 0)
+	Kit.tween(toast, 0.2, { Position = toast.Position + slide }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	Kit.disappear(toast, { time = 0.2, to = 0.97, destroy = true })
 	placeToasts()
 	-- Its slot is free once it has faded: the next waiting toast takes it.
@@ -649,17 +653,17 @@ function Popups.toast(text: string, tone: string?)
 		Name = "Toast",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(toastWidth(text), TOAST_H),
-		Position = if low then UDim2.new(0.5, 0, 1, TOAST_SLIDE) else UDim2.new(0.5, 0, 0, -TOAST_SLIDE),
-		AnchorPoint = Vector2.new(0.5, if low then 1 else 0),
+		Position = if low then UDim2.new(1, 0, 1, TOAST_SLIDE) else UDim2.new(1, TOAST_SLIDE, 0, 0),
+		AnchorPoint = Vector2.new(1, if low then 1 else 0),
 		Parent = if low then lowHolder elseif front then frontHolder else toastHolder,
 	})
 	local card = Kit.hudGlass(toast, { Name = "Card", Size = UDim2.new(1, 0, 0, TOAST_H), Radius = Kit.RADIUS.M, Accent = color })
 	if rarity then
 		-- The crate itself, in its rarity's colour.
-		crateIcon(card, color, 32, {
+		crateIcon(card, color, Popups.TOAST_SIDE.Icon + 2, {
 			Name = "Icon",
 			Rarity = rarity,
-			Position = UDim2.new(0, TOAST_ICON_X + 15, 0.5, 0),
+			Position = UDim2.new(0, TOAST_ICON_X + Popups.TOAST_SIDE.Icon / 2, 0.5, 0),
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			ZIndex = 2,
 		})
@@ -667,7 +671,7 @@ function Popups.toast(text: string, tone: string?)
 		local chip = Kit.new("Frame", {
 			Name = "Icon",
 			BackgroundColor3 = WHITE,
-			Size = UDim2.fromOffset(30, 30),
+			Size = UDim2.fromOffset(Popups.TOAST_SIDE.Icon, Popups.TOAST_SIDE.Icon),
 			Position = UDim2.new(0, TOAST_ICON_X, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
 			ZIndex = 2,
@@ -675,15 +679,15 @@ function Popups.toast(text: string, tone: string?)
 		})
 		Kit.round(chip)
 		Kit.gradient(chip, Kit.lighten(color, 0.25), color)
-		Kit.stroke(chip, 2, Kit.lip(color))
+		Kit.stroke(chip, 1.5, Kit.lip(color))
 		local ink = Kit.inkOn(color)
 		if Kit.ICONS[style.icon] then
-			Kit.icon(chip, style.icon, 16, ink, { Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 3 })
+			Kit.icon(chip, style.icon, 12, ink, { Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 3 })
 		else
 			Kit.text(chip, {
 				Text = style.icon,
 				Font = Theme.Fonts.Display,
-				TextSize = 18,
+				TextSize = 14,
 				TextColor3 = ink,
 				Size = UDim2.fromScale(1, 1),
 				Position = UDim2.fromOffset(0, 1),
@@ -696,11 +700,11 @@ function Popups.toast(text: string, tone: string?)
 		Name = "Text",
 		Text = text,
 		MaxTextSize = TOAST_TEXT,
-		Size = UDim2.new(1, -(TOAST_TEXT_X + 14), 0, TOAST_TEXT + 6),
+		Size = UDim2.new(1, -(TOAST_TEXT_X + 10), 0, TOAST_TEXT + 4),
 		Position = UDim2.new(0, TOAST_TEXT_X, 0.5, 1),
 		AnchorPoint = Vector2.new(0, 0.5),
 		TextXAlignment = Enum.TextXAlignment.Left,
-		StrokeThickness = 2,
+		StrokeThickness = 1.5,
 		ZIndex = 2,
 	})
 
@@ -6521,8 +6525,8 @@ end
 	the intro or on a course.
 ]]
 local SURGE_WARN = 30
-local SURGE_CHIP_W, SURGE_CHIP_H = 260, 36
-local SURGE_CHIP_STEP = 44
+local SURGE_CHIP_W, SURGE_CHIP_H = 200, 30
+local SURGE_CHIP_STEP = 38
 local surgeChip: GuiObject? = nil
 local surgeChipText: TextLabel? = nil
 local surgeChipSecond = -1
@@ -6552,22 +6556,22 @@ local function setSurgeChip(seconds: number?)
 		local chip = Kit.hudGlass(toastHolder, {
 			Name = "SurgeChip",
 			Size = UDim2.fromOffset(SURGE_CHIP_W, SURGE_CHIP_H),
-			Position = UDim2.new(0.5, 0, 0, -SURGE_CHIP_STEP),
-			AnchorPoint = Vector2.new(0.5, 0),
+			Position = UDim2.new(1, 0, 0, -SURGE_CHIP_STEP),
+			AnchorPoint = Vector2.new(1, 0),
 			Accent = C.Amber,
 			ZIndex = 2,
 		})
-		Kit.hudIcon(chip, "Surge", 22, C.Amber, {
-			Position = UDim2.new(0, 22, 0.5, 0),
+		Kit.hudIcon(chip, "Surge", 18, C.Amber, {
+			Position = UDim2.new(0, 14, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
 			ZIndex = 2,
 		})
 		surgeChipText = Kit.hudText(chip, {
 			Name = "Text",
 			Text = "",
-			MaxTextSize = 17,
-			Size = UDim2.new(1, -66, 0, 23),
-			Position = UDim2.new(0, 52, 0.5, 1),
+			MaxTextSize = 14,
+			Size = UDim2.new(1, -50, 0, 18),
+			Position = UDim2.new(0, 40, 0.5, 1),
 			AnchorPoint = Vector2.new(0, 0.5),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextColor3 = Kit.lighten(C.Amber, 0.35),
@@ -6661,9 +6665,9 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 	toastHolder = Kit.new("Frame", {
 		Name = "Toasts",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(560, 230),
-		Position = UDim2.new(0.5, 0, 0, TOAST_Y),
-		AnchorPoint = Vector2.new(0.5, 0),
+		Size = UDim2.fromOffset(Popups.TOAST_SIDE.MaxW, 230),
+		Position = UDim2.new(1, -Popups.TOAST_SIDE.Margin, 0, TOAST_Y),
+		AnchorPoint = Vector2.new(1, 0),
 		ZIndex = 25,
 		Parent = screen,
 	})
@@ -6682,8 +6686,8 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 		Name = "ToastsBottom",
 		BackgroundTransparency = 1,
 		Size = toastHolder.Size,
-		Position = UDim2.new(0.5, 0, 1, -TOAST_TOP),
-		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(1, -Popups.TOAST_SIDE.Margin, 1, -TOAST_TOP),
+		AnchorPoint = Vector2.new(1, 1),
 		ZIndex = TOAST_FRONT,
 		Parent = screen,
 	})
@@ -6692,7 +6696,7 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 	local function placeHolder()
 		local y = toastRoom()
 		for _, holder in { toastHolder, frontHolder } do
-			Kit.tween(holder, 0.3, { Position = UDim2.new(0.5, 0, 0, y) }, Enum.EasingStyle.Quad)
+			Kit.tween(holder, 0.3, { Position = UDim2.new(1, -Popups.TOAST_SIDE.Margin, 0, y) }, Enum.EasingStyle.Quad)
 		end
 		-- The surge chip rides at the head of the stack; over a window that is off screen.
 		if surgeChip then

@@ -31,12 +31,21 @@ Economy.DISPLAY_SLOTS = Economy.DISPLAY_ROWS * Economy.DISPLAY_COLS
 
 -- Production ------------------------------------------------------------------
 
--- Each tier produces this many times more than the previous one. Must be greater
--- than MERGE_RATIO so merging is always an upgrade.
+-- Each tier up to FAST_TIERS produces TIER_RATE_GROWTH times more than the previous one,
+-- each tier up to MID_TIERS MID_TIER_RATE_GROWTH times more and every tier after that
+-- LATE_TIER_RATE_GROWTH times more: the first minutes stay quick and the late tiers take
+-- days. All must be greater than MERGE_RATIO so merging is always an upgrade.
 Economy.TIER_RATE_GROWTH = 3.0
+Economy.MID_TIER_RATE_GROWTH = 2.7
+Economy.LATE_TIER_RATE_GROWTH = 2.4
+Economy.FAST_TIERS = 8
+Economy.MID_TIERS = 16
 
 function Economy.unitRate(tier: number): number
-	return Economy.TIER_RATE_GROWTH ^ (tier - 1)
+	local fast = math.min(tier, Economy.FAST_TIERS) - 1
+	local mid = math.clamp(tier, Economy.FAST_TIERS, Economy.MID_TIERS) - Economy.FAST_TIERS
+	local late = math.max(tier - Economy.MID_TIERS, 0)
+	return Economy.TIER_RATE_GROWTH ^ fast * Economy.MID_TIER_RATE_GROWTH ^ mid * Economy.LATE_TIER_RATE_GROWTH ^ late
 end
 
 function Economy.productionPerSecond(units: { number }): number
