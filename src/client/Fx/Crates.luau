@@ -110,6 +110,11 @@ local CHIP_SCALE = 0.55
 local CHIP_PX_PER_LETTER = 6
 local CHIP_PX_HEIGHT = 8
 local CHIP_SCAN = 0.15 -- seconds between chip range checks
+-- Labels that would overlap on screen: only the one nearest the camera shows (measured in
+-- Studio at the tier 25 spawn view: three pen crates' labels drew on top of each other over
+-- the pool). Two labels overlap when their centres are closer than this share of their
+-- sizes (1 = the boxes just touch).
+local CHIP_OVERLAP = 1.05
 local WIGGLE = 0.45 -- seconds of one "can't" wiggle
 local WORLD = (Theme :: any).World or {}
 local INK: Color3 = WORLD.Ink or Color3.fromRGB(58, 48, 96)
@@ -208,6 +213,22 @@ local SMASH = {
 		light = 9, -- PointLight range in studs (+ 1.5 per rank); none on "low" devices
 		lightBrightness = 1.1,
 		chip = 2.1, -- studs from the crate's centre up to the rarity word (clear of the gem)
+		-- The rarity word over the Smasher's crate: drawn on top (the awning and a player on the
+		-- pad stand in front of it), mostly a fixed pixel size so it reads from the pad and from
+		-- the spawn view (54 studs) at 1280x720. Height = px + studs (scaled by distance), width
+		-- per letter likewise.
+		word = {
+			px = 26, -- pixels of height at any distance ...
+			studs = 0.9, -- ... plus this many studs
+			letterPx = 17, -- width per letter: pixels ...
+			letterStuds = 0.55, -- ... plus studs
+			gap = 0.7, -- studs from the crate's top (or its gem) up to the word's middle
+			range = 120, -- camera distance cap (the spawn view is 54 studs away)
+			-- Share of its width it sits right of the crate on screen: the spawn view has the
+			-- Smasher at the screen's left edge (crate centre at x 43 of 1280), where a centred
+			-- word lost its first letters.
+			lean = 0.38,
+		},
 	},
 	ritual = {
 		shake = 0.85, -- seconds from the open to the burst
@@ -276,7 +297,7 @@ local SMASH = {
 		-- A crate opened on the spot.
 		reach = 45, -- studs from the character to an empty plinth that takes the stand-in crate
 		ahead = 6, -- else: studs in front of the character
-		crate = Vector3.new(2.3, 2.03, 2.84), -- the stand-in crate (Fx.Machines' crate size)
+		crate = Vector3.new(3.57, 3.15, 4.41), -- the stand-in crate (Fx.Machines' crate size)
 		crateColor = (WORLD.Sunny or GOLD) :: Color3, -- its body, and every other shard
 		strap = 0.34, -- studs across its two rarity straps
 	},
@@ -735,9 +756,47 @@ local function scanChips(now: number)
 	end
 	lastChipScan = now
 	local hidden = cratePanelOpen()
+	local camera = Workspace.CurrentCamera
+	-- Candidates nearest first; each one shows unless a nearer shown label covers its spot.
+	local wanted: { { crate: Crate, dist: number, at: Vector2, size: Vector2 } } = {}
 	for model, crate in crates do
 		local want = crate.landed and model.Parent ~= nil and not hidden
+		if want and camera then
+			local gui = crate.chip
+			local adornee = gui.Adornee :: BasePart?
+			local world = if adornee then adornee.Position + gui.StudsOffset else nil
+			local dist = if world then (world - camera.CFrame.Position).Magnitude else math.huge
+			if world and dist <= gui.MaxDistance then
+				local v, onScreen = camera:WorldToViewportPoint(world)
+				if onScreen then
+					-- The chip's size at this distance: its stud part shrinks, its pixel part stays.
+					local perStud = camera.ViewportSize.Y / (2 * dist * math.tan(math.rad(camera.FieldOfView / 2)))
+					local size = Vector2.new(gui.Size.X.Scale * perStud + gui.Size.X.Offset, gui.Size.Y.Scale * perStud + gui.Size.Y.Offset)
+					table.insert(wanted, { crate = crate, dist = dist, at = Vector2.new(v.X, v.Y), size = size })
+					continue
+				end
+			end
+		end
 		fadeChip(crate, want)
+	end
+	table.sort(wanted, function(a, b)
+		return a.dist < b.dist
+	end)
+	local shown = {}
+	for _, w in wanted do
+		local free = true
+		for _, o in shown do
+			local reach = (w.size + o.size) / 2 * CHIP_OVERLAP
+			local gap = w.at - o.at
+			if math.abs(gap.X) < reach.X and math.abs(gap.Y) < reach.Y then
+				free = false
+				break
+			end
+		end
+		if free then
+			table.insert(shown, w)
+		end
+		fadeChip(w.crate, free)
 	end
 end
 
@@ -1815,6 +1874,13 @@ local function dressSmasherCrate(s: Smasher): boolean
 		end
 		-- The rarity word, lit at once (the pen's chips fade in by camera distance).
 		local chip = makeChip(s.rarity, color, body, math.max(top, L.chip), glow)
+		local W = L.word
+		local letters = utf8.len(s.rarity) or #s.rarity
+		chip.Size = UDim2.new(W.letterStuds * (letters + 1), W.letterPx * (letters + 1), W.studs, W.px)
+		chip.StudsOffset = Vector3.new(0, top + W.gap, 0)
+		chip.SizeOffset = Vector2.new(W.lean, 0)
+		chip.AlwaysOnTop = true
+		chip.MaxDistance = W.range
 		chip.Enabled = true
 		for _, d in chip:GetDescendants() do
 			if d:IsA("TextLabel") then

@@ -182,18 +182,26 @@ local CFG = {
 		RimPulse = 1.1,
 		RimLight = { Range = 14, Brightness = 2.2 },
 		MythicRimLight = 1.1,
-		-- Ring of gold tiles turning over the champion's head: deep gold, thick and nearly
-		-- closed, so it reads as a ring and not as a white glow.
+		-- The statue's own warm light (AssetModels' "AuraRing" PointLight, 1.6) and the back
+		-- light behind it: measured in Studio on the statue camera, the two together drew the
+		-- gold chest at (255, 255, 103), clipped pale; at 0.35 / 0.25 it draws (245, 189, 85).
+		StatueLight = 0.35,
+		StatueRimLight = 0.25,
+		-- Ring of gold tiles turning over the champion's head: thin, bright and closed, so it
+		-- reads as a ring (wide flat tiles read as a band), tilted toward the walkway.
 		Halo = {
-			Tiles = 16,
+			Tiles = 36,
 			Radius = 1.5,
 			Above = 0.9,
-			Tilt = 18,
-			Thick = 0.42,
-			Wide = 0.62,
-			Fill = 0.88, -- share of the circle the tiles cover
+			Tilt = 24,
+			Thick = 0.2,
+			Wide = 0.22,
+			Fill = 0.97, -- share of the circle the tiles cover
 			Spin = 1.2,
-			Color = Color3.fromRGB(255, 184, 28),
+			Color = Color3.fromRGB(255, 208, 60),
+			-- Studs kept between the ring's back edge and the panel (and the name plaque in its
+			-- plane): measured, the 2.3-stud ring of a tier 25 champion ran behind the plaque.
+			PanelGap = 0.12,
 		},
 		-- Name plaque: a board over the champion's head, above its ring, on two gold rods from
 		-- the panel's top (under the stage the pen's crate labels covered it from the spawn).
@@ -290,9 +298,14 @@ local CFG = {
 		Big = 3, -- size of the gold cup on each end of the roof (a cup is 2.1 studs tall at size 1)
 		BigInset = 1.6, -- from the roof's ends
 		BigZ = 0.8, -- behind the roof's white corner knobs
-		Pillar = 2.9, -- size of the gold cup on each entrance pillar (about 6 studs tall)
-		PillarRing = 4.4, -- neon gold ring under each of those cups ...
-		PillarLight = { Range = 18, Brightness = 2 }, -- ... a light ...
+		-- The gold cup over each entrance pillar stands on top of the pillar's flag pole (its
+		-- knob), above the PLOT sign and the flag: measured from the hub side, on the pillar's
+		-- knob it covered 1225 and 1791 px of the sign and the flag pole ran through it.
+		Pillar = 2.9, -- its size (about 6 studs tall)
+		PillarRing = 3.6, -- neon gold ring under each of those cups ...
+		-- ... a light (measured: Range 18 / Brightness 2 under the cups drew the arch's awning
+		-- at a flat (255, 255, 84), (223..244, 163..183, 56..65) without it) ...
+		PillarLight = { Range = 9, Brightness = 0.8 },
 		PillarGlints = 6, -- ... and glints round it, so they read from the hub
 		PillarGold = Color3.fromRGB(255, 176, 30), -- deeper than the sunny knobs they stand on
 	},
@@ -356,8 +369,27 @@ local CFG = {
 			Drag = 2.2,
 			Fall = 9, -- studs/s^2 the sparks sink
 			Life = { 1.6, 2.2 },
-			Boom = { Size = 9, Time = 0.3 }, -- the rocket's ball swells to this and fades: the bang
-			Flash = { Range = 40, Brightness = 4, Time = 0.6 },
+			Boom = { Size = 9, Time = 0.3 }, -- the bang's coloured ball swells to this and fades
+			Flash = { Range = 40, Brightness = 4, Time = 0.6 }, -- its PointLight
+			-- A white flash ball over each bang: starts this transparent, grows by Grow, gone
+			-- after Time seconds.
+			FlashBall = { Size = 7, From = 0, Grow = 1.8, Time = 0.12 },
+			Bangs = { 2, 3 }, -- bangs per launch (least, most), in sequence ...
+			BangGap = 0.32, -- ... this many seconds apart ...
+			BangSpread = 8, -- ... each a little off the first (studs sideways ...
+			BangRise = 2.5, -- ... and up)
+			-- Comets thrown out of every bang, falling away on a Trail of sparks.
+			Comets = {
+				Count = 9,
+				Size = 0.8, -- studs
+				Width = 1.1, -- trail width at its head, studs
+				TrailLife = 0.55, -- seconds a trail lingers
+				Glow = 0.35, -- the trail's LightEmission
+				Speed = { 16, 26 }, -- studs per second out of the bang
+				Drag = 1.1,
+				Gravity = 22, -- studs/s^2 they fall
+				Life = 1.7, -- seconds until they burn out (fading over the last 40%)
+			},
 			Colors = {
 				Color3.fromRGB(255, 200, 40),
 				Color3.fromRGB(255, 110, 170),
@@ -955,7 +987,17 @@ function BUILDERS.Trophies(k: Kit): Feature
 	-- sunny knob it stands on, on a neon ring, lit and glinting.
 	local ground = group("PillarTrophies", k.top, k.parent)
 	for _, knob in k.pillars do
-		local base = knob.CFrame * CFrame.new(0, knob.Size.Y / 2 - 0.25, 0)
+		-- On the flag pole's knob right above this pillar when there is one.
+		local top: BasePart = knob
+		for _, d in if knob.Parent then knob.Parent:GetChildren() else {} do
+			if d.Name == "ArchFlagKnob" and d:IsA("BasePart") and d.CFrame.Position.Y > top.CFrame.Position.Y then
+				local flat = d.CFrame.Position - knob.CFrame.Position
+				if math.abs(flat.X) < 0.5 and math.abs(flat.Z) < 0.5 then
+					top = d
+				end
+			end
+		end
+		local base = CFrame.new(top.CFrame.Position) * knob.CFrame.Rotation * CFrame.new(0, top.Size.Y / 2 - 0.1, 0)
 		trophy(ground, base, c.Pillar, c.PillarGold)
 		local ring = Vector3.new(0.3, c.PillarRing, c.PillarRing)
 		local glow = neon(piece(ground, "PillarRing", ring, base * CFrame.new(0, 0.05, 0) * UPRIGHT, CFG.GoldLight, Enum.PartType.Cylinder))
@@ -1105,52 +1147,151 @@ function BUILDERS.CrownBeam(k: Kit): Feature
 			lightBeam(anchor, "CrownRay", CFrame.new(0, c.Band, 0) * turn, top, c.RayWidth, gold, c.RayAlpha, false)
 		end
 	end
-	-- Fireworks over the crown: a rocket climbs from the crown's top and bursts.
+	-- Fireworks over the crown: a rocket climbs from the crown's top and bursts two or three
+	-- times in a row, each bang a white flash ball, a coloured spark ball and comets that fall
+	-- away trailing sparks.
 	local f = c.Firework
 	local launch: (() -> ())? = nil
 	if not k.low then
 		local rocket = piece(model, "FireworkRocket", Vector3.one * f.Rocket, k.top * at, WHITE, Enum.PartType.Ball)
 		neon(rocket, 1)
-		local burst = Instance.new("ParticleEmitter")
-		burst.Name = "FireworkBurst"
-		burst.Texture = SPARKLE
-		burst.Rate = 0
-		burst.LightEmission = f.SparkGlow
-		burst.LightInfluence = 0
-		burst.Speed = NumberRange.new(f.Speed[1], f.Speed[2])
-		burst.Drag = f.Drag
-		burst.Acceleration = Vector3.new(0, -f.Fall, 0)
-		burst.Lifetime = NumberRange.new(f.Life[1], f.Life[2])
-		burst.SpreadAngle = Vector2.new(180, 180)
-		burst.RotSpeed = NumberRange.new(-120, 120)
-		burst.Size = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, f.SparkSize),
-			NumberSequenceKeypoint.new(0.6, f.SparkSize * 0.7),
-			NumberSequenceKeypoint.new(1, 0),
-		})
-		burst.Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0),
-			NumberSequenceKeypoint.new(0.7, 0.2),
-			NumberSequenceKeypoint.new(1, 1),
-		})
-		burst.Parent = rocket
-		local flash = Instance.new("PointLight")
-		flash.Range = f.Flash.Range
-		flash.Brightness = 0
-		flash.Shadows = false
-		flash.Parent = rocket
+		-- One rig per bang of a launch: boom ball, flash ball, spark emitter, light, comets.
+		local rigs = {}
+		for b = 1, f.Bangs[2] do
+			local boom = piece(model, "FireworkBoom", Vector3.one * f.Rocket, k.top * at, WHITE, Enum.PartType.Ball)
+			neon(boom, 1)
+			local flashBall = piece(model, "FireworkFlash", Vector3.one * f.Rocket, k.top * at, WHITE, Enum.PartType.Ball)
+			neon(flashBall, 1)
+			local burst = Instance.new("ParticleEmitter")
+			burst.Name = "FireworkBurst"
+			burst.Texture = SPARKLE
+			burst.Rate = 0
+			burst.LightEmission = f.SparkGlow
+			burst.LightInfluence = 0
+			burst.Speed = NumberRange.new(f.Speed[1], f.Speed[2])
+			burst.Drag = f.Drag
+			burst.Acceleration = Vector3.new(0, -f.Fall, 0)
+			burst.Lifetime = NumberRange.new(f.Life[1], f.Life[2])
+			burst.SpreadAngle = Vector2.new(180, 180)
+			burst.RotSpeed = NumberRange.new(-120, 120)
+			burst.Size = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, f.SparkSize),
+				NumberSequenceKeypoint.new(0.6, f.SparkSize * 0.7),
+				NumberSequenceKeypoint.new(1, 0),
+			})
+			burst.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0),
+				NumberSequenceKeypoint.new(0.7, 0.2),
+				NumberSequenceKeypoint.new(1, 1),
+			})
+			burst.Parent = boom
+			local light = Instance.new("PointLight")
+			light.Range = f.Flash.Range
+			light.Brightness = 0
+			light.Shadows = false
+			light.Parent = boom
+			-- Comets: small balls thrown out of the bang that arc down, each drawing a Trail.
+			local comets = {}
+			for i = 1, f.Comets.Count do
+				local comet = piece(model, "FireworkComet", Vector3.one * f.Comets.Size, k.top * at, WHITE, Enum.PartType.Ball)
+				neon(comet, 1)
+				local a0 = Instance.new("Attachment")
+				a0.Position = Vector3.new(0, f.Comets.Width / 2, 0)
+				a0.Parent = comet
+				local a1 = Instance.new("Attachment")
+				a1.Position = Vector3.new(0, -f.Comets.Width / 2, 0)
+				a1.Parent = comet
+				local trail = Instance.new("Trail")
+				trail.Attachment0 = a0
+				trail.Attachment1 = a1
+				trail.FaceCamera = true
+				trail.Lifetime = f.Comets.TrailLife
+				trail.LightEmission = f.Comets.Glow
+				trail.LightInfluence = 0
+				trail.WidthScale = NumberSequence.new(1, 0)
+				trail.Transparency = NumberSequence.new(0, 1)
+				trail.Enabled = false
+				trail.Parent = comet
+				comets[i] = { part = comet, trail = trail, vel = Vector3.zero }
+			end
+			rigs[b] = { boom = boom, flash = flashBall, burst = burst, light = light, comets = comets }
+		end
 		local tipTop = c.Band / 2 + c.PointHeight
 		local shot = 0
+		-- Moves one bang's comets along falling arcs until they burn out.
+		local function fly(rig, color: Color3)
+			local K = f.Comets
+			for i, cm in rig.comets do
+				local dir = Vector3.new(math.random() * 2 - 1, math.random() * 1.4 - 0.4, math.random() * 2 - 1)
+				dir = if dir.Magnitude > 0.01 then dir.Unit else Vector3.yAxis
+				cm.vel = dir * (K.Speed[1] + math.random() * (K.Speed[2] - K.Speed[1]))
+				cm.part.CFrame = rig.boom.CFrame
+				cm.part.Color = if i % 3 == 0 then WHITE else color:Lerp(WHITE, 0.25)
+				cm.part.Transparency = 0
+				cm.trail.Color = ColorSequence.new(color:Lerp(WHITE, 0.5), color)
+				cm.trail:Clear()
+				cm.trail.Enabled = true
+			end
+			local t0 = os.clock()
+			local conn: RBXScriptConnection? = nil
+			conn = RunService.Heartbeat:Connect(function(dt)
+				local age = os.clock() - t0
+				if age > K.Life or not model.Parent then
+					for _, cm in rig.comets do
+						cm.trail.Enabled = false
+						cm.part.Transparency = 1
+					end
+					if conn then
+						conn:Disconnect()
+					end
+					return
+				end
+				local fade = math.clamp((age - K.Life * 0.6) / (K.Life * 0.4), 0, 1)
+				for _, cm in rig.comets do
+					cm.vel = cm.vel * math.exp(-K.Drag * dt) - Vector3.yAxis * K.Gravity * dt
+					cm.part.CFrame += cm.vel * dt
+					cm.part.Transparency = fade
+				end
+			end)
+		end
+		local function bang(rig, pos: CFrame, color: Color3)
+			rig.boom.CFrame = pos
+			rig.boom.Color = color
+			rig.boom.Size = Vector3.one * f.Rocket
+			rig.boom.Transparency = 0
+			-- The bang: the ball swells and fades while the sparks fly ...
+			TweenService:Create(
+				rig.boom,
+				TweenInfo.new(f.Boom.Time, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+				{ Size = Vector3.one * f.Boom.Size, Transparency = 1 }
+			):Play()
+			-- ... over a short white flash.
+			rig.flash.CFrame = pos
+			rig.flash.Size = Vector3.one * f.FlashBall.Size
+			rig.flash.Transparency = f.FlashBall.From
+			TweenService:Create(
+				rig.flash,
+				TweenInfo.new(f.FlashBall.Time, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+				{ Size = Vector3.one * f.FlashBall.Size * f.FlashBall.Grow, Transparency = 1 }
+			):Play()
+			rig.burst.Color = ColorSequence.new(color, color:Lerp(WHITE, 0.35))
+			rig.burst:Emit(Budget.count(f.Sparks))
+			rig.light.Color = color
+			rig.light.Brightness = f.Flash.Brightness
+			TweenService:Create(rig.light, TweenInfo.new(f.Flash.Time), { Brightness = 0 }):Play()
+			fly(rig, color)
+			model:SetAttribute("FireworkBang", os.clock())
+		end
 		launch = function()
 			shot += 1
-			local color = f.Colors[(shot - 1) % #f.Colors + 1]
 			-- The crown's top, wherever the roof stands now (the rocket is part of its model).
 			local base = (model.PrimaryPart :: BasePart).CFrame * at
 			local angle = math.random() * 2 * math.pi
 			local off = math.random() * f.Spread
 			local high = f.Height[1] + math.random() * (f.Height[2] - f.Height[1])
+			local first = f.Colors[(shot - 1) % #f.Colors + 1]
 			rocket.CFrame = base * CFrame.new(0, tipTop, 0)
-			rocket.Color = color
+			rocket.Color = first
 			rocket.Size = Vector3.one * f.Rocket
 			rocket.Transparency = 0
 			local goal = base * CFrame.new(math.cos(angle) * off, high, math.sin(angle) * off)
@@ -1160,17 +1301,25 @@ function BUILDERS.CrownBeam(k: Kit): Feature
 				if not rocket.Parent then
 					return
 				end
-				-- The bang: the ball swells and fades while the sparks fly.
-				TweenService:Create(
-					rocket,
-					TweenInfo.new(f.Boom.Time, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-					{ Size = Vector3.one * f.Boom.Size, Transparency = 1 }
-				):Play()
-				burst.Color = ColorSequence.new(color, color:Lerp(WHITE, 0.35))
-				burst:Emit(Budget.count(f.Sparks))
-				flash.Color = color
-				flash.Brightness = f.Flash.Brightness
-				TweenService:Create(flash, TweenInfo.new(f.Flash.Time), { Brightness = 0 }):Play()
+				rocket.Transparency = 1
+				local bangs = math.random(f.Bangs[1], f.Bangs[2])
+				model:SetAttribute("FireworkBangs", bangs)
+				for b = 1, bangs do
+					local color = f.Colors[(shot + b - 2) % #f.Colors + 1]
+					local turn = angle + b * 2.1
+					local pos = if b == 1
+						then goal
+						else goal * CFrame.new(math.cos(turn) * f.BangSpread, (b - 1) * f.BangRise, math.sin(turn) * f.BangSpread)
+					if b == 1 then
+						bang(rigs[b], pos, color)
+					else
+						task.delay((b - 1) * f.BangGap, function()
+							if model.Parent then
+								bang(rigs[b], pos, color)
+							end
+						end)
+					end
+				end
 			end)
 			climb:Play()
 		end
@@ -1299,6 +1448,11 @@ function PlotRank.showcase(parent: Instance, drum: BasePart, rim: BasePart, foot
 			end
 		end
 		figure.WorldPivot = stage
+		local aura = figure:FindFirstChild("AuraRing", true)
+		local glow = aura and aura:FindFirstChildOfClass("PointLight")
+		if glow then
+			glow.Brightness = c.StatueLight
+		end
 		figure.Parent = model
 		model:SetAttribute("Statue", true)
 	end
@@ -1333,7 +1487,7 @@ function PlotRank.showcase(parent: Instance, drum: BasePart, rim: BasePart, foot
 	rimLight.Name = "RimLight"
 	rimLight.Color = CFG.GoldLight
 	rimLight.Range = c.RimLight.Range
-	rimLight.Brightness = if mythic then c.MythicRimLight else c.RimLight.Brightness
+	rimLight.Brightness = if statue then c.StatueRimLight elseif mythic then c.MythicRimLight else c.RimLight.Brightness
 	rimLight.Shadows = false
 	rimLight.Parent = rimDisc
 
@@ -1341,7 +1495,7 @@ function PlotRank.showcase(parent: Instance, drum: BasePart, rim: BasePart, foot
 	local h = c.Halo
 	local haloAt = stage * CFrame.new(0, tall + h.Above, 0) * CFrame.Angles(math.rad(h.Tilt), 0, 0)
 	local halo = group("HaloRing", haloAt, model)
-	local haloRadius = h.Radius * scale
+	local haloRadius = math.min(h.Radius * scale, (p.Back - p.Thick / 2 - h.Wide / 2 - h.PanelGap) / math.cos(math.rad(h.Tilt)))
 	local tiles = if low then h.Tiles / 2 else h.Tiles
 	local arc = 2 * math.pi * haloRadius / tiles * h.Fill
 	for i = 1, tiles do

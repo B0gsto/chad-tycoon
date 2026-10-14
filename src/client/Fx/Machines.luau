@@ -199,7 +199,13 @@ local TUNE = {
 	},
 	-- The Smasher's crate.
 	crate = {
-		scale = 1.35, -- against the 1.7 x 1.5 x 2.1 crate (Fx.Crates' SMASH.ritual.crate matches it)
+		scale = 2.1, -- against the 1.7 x 1.5 x 2.1 crate (Fx.Crates' SMASH.ritual.crate matches it)
+		-- Studs it floats over its plinth: up in the booth's window under the awning (top 5.2
+		-- studs up, the awning's scallops start at 5.4), so its top and sides clear the head of a
+		-- player on the pad in the follow camera (measured in Studio: 1.35 on the plinth showed
+		-- 0 of 81 sample points past the character, 2.1 lifted 0.8 shows 23).
+		lift = 0.8,
+		readyHop = 0.15, -- studs of its happy hop once ready (clear of the awning)
 		-- Its rarity reads from the pad without Fx.Crates' wash: the body is the sunny crate
 		-- mixed this far toward the rarity colour (by rank, Common first), and from `neonFrom`
 		-- up the straps glow (Neon).
@@ -2167,9 +2173,10 @@ local function stepBells(dt: number, now: number)
 end
 
 -- Where the crate rests on its plinth: turned like the ghost crate, standing on the same spot
--- whatever TUNE.crate.scale makes of its height.
+-- whatever TUNE.crate.scale makes of its height, TUNE.crate.lift over it.
 local function crateBase(holo: BasePart): CFrame
-	return CFrame.new(holo.Position + Vector3.new(0, -0.95 + 0.75 * TUNE.crate.scale, 0)) * CFrame.Angles(0, math.rad(20), 0)
+	local K = TUNE.crate
+	return CFrame.new(holo.Position + Vector3.new(0, -0.95 + K.lift + 0.75 * K.scale, 0)) * CFrame.Angles(0, math.rad(20), 0)
 end
 
 local function stepCrackers(now: number)
@@ -2237,7 +2244,7 @@ local function stepCrackers(now: number)
 		local shake = CFrame.identity
 		if ready then
 			-- Calm happy hop and a slow turn.
-			local hopY = math.abs(math.sin(now * 3)) * 0.3
+			local hopY = math.abs(math.sin(now * 3)) * TUNE.crate.readyHop
 			shake = CFrame.new(0, hopY, 0) * CFrame.Angles(0, now * 0.8, math.sin(now * 6) * 0.05)
 		else
 			if now >= cr.nextShake then

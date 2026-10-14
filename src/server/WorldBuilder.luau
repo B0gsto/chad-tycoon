@@ -136,6 +136,10 @@ local STATION_SIGN_BOTTOM = 4
 -- The crate crackers' cards: smaller than the other station cards, as they stand right behind
 -- their pad (2.4 studs from its base) and a full-size card fills the view from there.
 local CRACKER_SIGN = Vector2.new(4.4, 3.2)
+-- Studs from a cracker's middle to its card's middle along the machine's front, on its -Z
+-- side (left seen from the pad; the +Z side is in the north crate camera's line): in front
+-- of the plinth the card hid the crate in its window and the rarity word over it.
+local CRACKER_SIGN_SIDE = 8
 -- What Server.Tycoon writes into a cracker's timer once its crate can be opened.
 local READY_TEXT = "READY!"
 -- The upright "READY!" pill: its size in studs (plus a fixed pixel part, so it stays readable
@@ -536,8 +540,8 @@ local function buildPlot(index: number): Plot
 	pad("Collect", padColors.Collect, w.Collect, "")
 	buildVault(B)
 
-	-- Crate unlockers (+X court), each with a small sign card standing at the machine's front,
-	-- square to its pad and the walkway beyond it (-X).
+	-- Crate unlockers (+X court), each with a small sign card standing beside the machine's
+	-- front, square to its pad and the walkway beyond it (-X).
 	local unlockerScreens = {}
 	for i = 1, 2 do
 		local name = if i == 1 then w.Unlocker else w.PremiumUnlocker
@@ -545,8 +549,15 @@ local function buildPlot(index: number): Plot
 		pad("Unlock" .. i, color, name, "")
 		local rect = Layout.MACHINES["Unlocker" .. i]
 		buildUnlocker(B, rect, color)
-		local body, titleLabel =
-			standingCard(B, rect.minX - 0.4, (rect.minZ + rect.maxZ) / 2, FACE_MINUS_X, CRACKER_SIGN, STATION_SIGN_BOTTOM, name, false)
+		local body, titleLabel = standingCard(
+			B,
+			rect.minX - 0.4,
+			(rect.minZ + rect.maxZ) / 2 - CRACKER_SIGN_SIDE,
+			FACE_MINUS_X,
+			CRACKER_SIGN,
+			STATION_SIGN_BOTTOM,
+			name
+		)
 		-- Tycoon tints the status in the crate's rarity colour, so it keeps an Ink outline.
 		local statusLabel = text(body, {
 			Text = "",

@@ -483,7 +483,10 @@ local function suite(h: { [string]: any })
 		eq(#named(crowned, "CrownLight"), 1, "a shaft of light that faces the camera")
 		check(named(crowned, "CrownLight")[1].Width0 >= 12, "which is wide enough to read from the hub")
 		eq(#named(crowned, "ShaftSparkles"), 1, "sparkles drift up the shaft")
-		eq(#named(crowned, "FireworkBurst"), 1, "and fireworks burst over the crown")
+		local fw = CFG.CrownBeam.Firework
+		eq(#named(crowned, "FireworkBurst"), fw.Bangs[2], "and fireworks burst over the crown, a rig per bang of a launch")
+		eq(#named(crowned, "FireworkFlash"), fw.Bangs[2], "each bang with a white flash")
+		eq(#named(crowned, "FireworkComet"), fw.Bangs[2] * fw.Comets.Count, "and comets that trail sparks")
 		check(type(crown.start) == "function", "which its start sets going")
 		eq(#named(crown.spin, "CrownRay"), CFG.CrownBeam.Rays, "sheets of light that turn with the crown")
 		for _, ray in named(crown.spin, "CrownRay") do
