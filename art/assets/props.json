@@ -14,6 +14,7 @@
     {"name": "Dumbbell", "file": "art/out/props/Dumbbell.fbx", "kind": "Model"},
     {"name": "DumbbellRack", "file": "art/out/props/DumbbellRack.fbx", "kind": "Model"},
     {"name": "GigaStatue", "file": "art/out/props/GigaStatue.fbx", "kind": "Model"},
+    {"name": "AbsoluteChad", "file": "art/out/props/AbsoluteChad.fbx", "kind": "Model"},
     {"name": "HubBench", "file": "art/out/props/HubBench.fbx", "kind": "Model"},
     {"name": "JuiceBar", "file": "art/out/props/JuiceBar.fbx", "kind": "Model"},
     {"name": "Kettlebell", "file": "art/out/props/Kettlebell.fbx", "kind": "Model"},

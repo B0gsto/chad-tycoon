@@ -240,6 +240,22 @@
       "source": "art/proof/out/proof_sphere.png",
       "updatedAt": "2026-10-06T10:13:00Z"
     },
+    "props/AbsoluteChad": {
+      "assetId": "106029410731455",
+      "kind": "Model",
+      "meshId": "rbxassetid://102523814325935",
+      "meshParts": 1,
+      "moderation": "Approved",
+      "rbxm": "assets/models/props__AbsoluteChad.rbxm",
+      "sha256": "577e50e5a594015b0c80ad18a37c6ac8ff637843debd09d5cd366c4349cf844b",
+      "size": [
+        4.658,
+        6.625,
+        2.686
+      ],
+      "source": "art/out/props/AbsoluteChad.fbx",
+      "updatedAt": "2026-10-14T07:45:31Z"
+    },
     "props/Barbell": {
       "assetId": "104146566714540",
       "kind": "Model",
