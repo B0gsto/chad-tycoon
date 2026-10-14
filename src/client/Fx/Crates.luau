@@ -76,6 +76,7 @@ local Camera = require(script.Parent.Camera)
 local Orbs = require(script.Parent.Orbs)
 local Sprites = require(script.Parent.Sprites)
 local Budget = require(script.Parent.Budget)
+local Highlights = require(script.Parent.Highlights)
 
 local Crates = {}
 
@@ -428,7 +429,7 @@ local function setShown(crate: Crate, body: boolean, extras: boolean)
 		end
 	end
 	if crate.wash then
-		crate.wash.Enabled = body
+		Highlights.want(crate.wash, body)
 	end
 	if crate.gem then
 		crate.gem.LocalTransparencyModifier = if extras then 0 else 1
@@ -446,8 +447,9 @@ local function lookOf(rank: number): Look
 end
 
 -- Washes `adornee` toward `color` (a part Color would only darken the mesh's baked vertex
--- colours): an occluded Highlight fill, with an outline when `rim` is under 1.
-local function washOver(parent: Instance, adornee: Instance, color: Color3, fill: number, rim: number): Highlight?
+-- colours): an occluded Highlight fill, with an outline when `rim` is under 1. `priority` is its
+-- class in Fx.Highlights' shared budget (Roblox draws at most 31 Highlights).
+local function washOver(parent: Instance, adornee: Instance, color: Color3, fill: number, rim: number, priority: number): Highlight?
 	if fill >= 1 and rim >= 1 then
 		return nil
 	end
@@ -460,7 +462,7 @@ local function washOver(parent: Instance, adornee: Instance, color: Color3, fill
 	h.OutlineTransparency = rim
 	h.Adornee = adornee
 	h.Parent = parent
-	return h
+	return Highlights.claim(h, priority)
 end
 
 local function clearDecor(model: Instance)
@@ -1201,6 +1203,12 @@ local function bindSmashers(plot: Instance)
 			clearSmasherDress(s)
 		end
 		table.clear(smashers)
+		-- This plot's booth washes outrank the other plots' in the Highlight budget.
+		for _, d in plot:GetDescendants() do
+			if d:IsA("Highlight") and d.Name == "PastelOverlay" then
+				Highlights.claim(d, Highlights.PRIORITY.Booth)
+			end
+		end
 	end
 	for i = 1, 2 do
 		local pad = if smashers[i] then nil else plot:FindFirstChild("Pad_Unlock" .. i, true)
@@ -1515,8 +1523,9 @@ local function startRitual(s: Smasher?, rarity: string, color: Color3, pos: Vect
 					h = child
 				end
 			end
-			h = h or washOver(model, s.body :: BasePart, color, R.crateFill, R.crateRim)
+			h = h or washOver(model, s.body :: BasePart, color, R.crateFill, R.crateRim, Highlights.PRIORITY.Ritual)
 			if h then
+				Highlights.claim(h, Highlights.PRIORITY.Ritual, true)
 				h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 				h.FillColor = color
 				h.OutlineColor = color:Lerp(WHITE, RIM_WHITEN)
@@ -1759,7 +1768,7 @@ local function dressSmasherCrate(s: Smasher): boolean
 		local rank = rankOf(s.rarity)
 		local look = lookOf(rank)
 		local color = s.color
-		washOver(child, body, color, math.min(look.wash, L.wash), look.rim)
+		washOver(child, body, color, math.min(look.wash, L.wash), look.rim, Highlights.PRIORITY.SmasherCrate)
 		-- Piping round the middle of each strap: the strap's thinnest side is its width.
 		local piping = look.piping
 		if piping then
@@ -2028,7 +2037,14 @@ local function track(model: Instance, intro: boolean)
 	end
 	-- The label clears the gem (a cube on its corner: 1.74 of its side tall).
 	local chipTop = if gem then top + GEM_GAP + look.gem * 1.74 else top
-	local wash = washOver(model, model:FindFirstChildWhichIsA("MeshPart") or model, color, look.wash, look.rim)
+	local wash = washOver(
+		model,
+		model:FindFirstChildWhichIsA("MeshPart") or model,
+		color,
+		look.wash,
+		look.rim,
+		Highlights.PRIORITY.PenCrate + rank / 10
+	)
 	local aura = makeAura(look, color)
 	local disc = fxPart(Enum.PartType.Cylinder, "CrateGlow", color)
 	disc.Transparency = 1
@@ -2155,7 +2171,14 @@ local function washHeld(child: Instance)
 	for _, rarity in Economy.CHEST_RARITIES do
 		if child.Name == rarity .. "Crate" then
 			local look = lookOf(rankOf(rarity))
-			washOver(child, child:FindFirstChildWhichIsA("MeshPart") or child, rarityColor(rarity), look.wash, look.rim)
+			washOver(
+				child,
+				child:FindFirstChildWhichIsA("MeshPart") or child,
+				rarityColor(rarity),
+				look.wash,
+				look.rim,
+				Highlights.PRIORITY.Held
+			)
 			return
 		end
 	end

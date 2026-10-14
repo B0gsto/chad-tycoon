@@ -85,14 +85,16 @@ sand island in the sea.
 - **Deposit bonus.** Depositing sends all your aura to the blender, which turns it into cash at your
   processing speed. The global deposit multiplier (x1 to x3) re-rolls every 20 s and shows under the
   unit count as "Deposit bonus: x1.3 · 12s". Its bonus part (aura x (multiplier - 1)) is paid as cash into
-  the vault at once (`Economy.depositSplit`); the float over the dumbbell names it ("+$120 bonus").
+  the vault at once (`Economy.depositSplit`); over the dumbbell the aura floats at 40 design px with a
+  thick dark outline and the bonus rises in green just above it ("+$120 bonus", `Popups.FLOAT`).
   Collect the cash on the Collect pad.
 - **Converter.** Each level is +25% speed for +25% cost. Every new best tier lifts the converter for free
   to that tier's floor (`Economy.minProcessLevel`, with a toast), so it never falls far behind the rack.
 - **Aura Surge.** The last 2 minutes of every 10 double all orbs and the converter's speed, so the cash
   really doubles (the Double Aura pass doubles both too, all the time). Rewards and packs are sized with
-  the income without the surge. The strip turns orange ("AURA SURGE
-  x2"), the client adds a warm golden-hour grade, soft bloom, sun rays and drifting gold sparkles, and the
+  the income without the surge. The surge plate is crimson with a gold bolt and "x2", a gold
+  countdown bar drains under it and a gold vignette breathes at the screen's edges (so it never reads as
+  the gold CHAMPION plate); the client adds a warm golden-hour grade, soft bloom, sun rays and drifting gold sparkles, and the
   music cross-fades to the surge playlist (`src/client/Fx/Surge.luau`, `Theme.SurgeMusicId`). The surge
   is announced 30 seconds ahead with a countdown chip at the head of the toasts, and a banner crosses
   the screen when it starts; a surge found already running (on join, back from a course) gets a toast
@@ -102,9 +104,10 @@ sand island in the sea.
 - **Crates** (Common to Legendary) slide down the same chute into the pen (none during the tutorial).
   Every arrival is told with a toast: "An Epic Crate is on its way!" for Uncommon and better, "A crate
   rolled into your pen!" for a Common one (that one at most every 30 s). Walk
-  into one to pick it up (within 4.5 studs, one at a time; `src/shared/CratePickup.luau`). Crates hold
-  units a few tiers under your best tier (`Economy.chestAnchor`: best 10 gives tier 7, best 25
-  gives 17), so they help without skipping the curve. The crate panel shows the odds for that tier and leads
+  into one to pick it up (within 4.5 studs, one at a time; `src/shared/CratePickup.luau`). Common and
+  Uncommon crates sit a few tiers under your best, Rare one tier higher, and Epic and Legendary near your
+  best (Legendary 9..10 at best 10, 22..23 at best 25), never more than one tier past it
+  (`Economy.chestAnchor`, `Economy.chestCap`). The crate panel shows the odds for that tier and leads
   with the free route:
   - The gold button, **Carry it to the Crate Smasher / FREE**, shows the Smasher's real time for this
     crate (the snapshot's `heldSeconds`: 1 minute for a Common up to 5 for a Legendary,
@@ -127,10 +130,17 @@ sand island in the sea.
   flags and pennants. Buy-row tags climb outward, the MOG MERGE tag stands at the pad's corner, and the
   rack's YOUR CHADS marquee is gone.
 - **Plot rank** (`src/client/Fx/PlotRank.luau`, tunables in `PlotRank.CFG`): progress you can see from
-  the hub. Every five best tiers add dressing to the rack's roof (pennants at 5, gold trim at 10,
-  trophies at 15, a neon sign at 20, a crown beam at 25). The spawn camera frames the whole rack and its
-  roof dressing. The best Chad stands 1.4x on a gold stage with a name plaque; tier 25 gets a crown, cape
-  and sky beam. Rack units stand on rarity rings. Merges land with gold rings, a +TIER chip and a camera
+  the hub. Every five best tiers add dressing to the rack's roof (pennants at 5; at 10 a neon gold rail
+  along the fence with a lit bead on every post; at 15 two big gold cups on the entrance arch, on lit
+  rings; a neon sign at 20; at 25 a crown beam with gold sparkles up its shaft and a firework over the
+  crown every 3 to 6 s). From tier 20 the spawn shot looks 5 degrees further up so the sign and crown are
+  in frame. The spawn camera frames the whole rack and its
+  roof dressing. The best Chad stands 1.4x on a gold stage with a name plaque; tier 25 is a gold champion statue
+  (CharacterFactory's `GILD`: gold metal, darker limbs and face, a grin under shades, gold shoulder plates
+  and belt, a solid dark-red cape) under a turning gold ring with rising sparkles and a sky beam; the name
+  plaque hangs over the ring. In the Index and the tier-25 reveal the same statue is lit by
+  `GILD.Viewport` (no blown-out yellow). Roblox draws at most 31 Highlights, so every crate wash and
+  outline shares one budget of 24 (`src/client/Fx/Highlights.luau`; other plots' booth washes go first). Rack units stand on rarity rings. Merges land with gold rings, a +TIER chip and a camera
   punch.
 - **Cosmetics** (`src/server/Cosmetics.luau`): Speedy Sneakers, Double Jump, Rainbow / Star / Rookie
   trails, Chad Aura and Golden Crown. Each has its own pass (the Rookie Trail comes only with the Starter
@@ -141,13 +151,18 @@ sand island in the sea.
   themed maps (Sunny Steps, Coconut Cove, Sweeper Bay, Blink Reef, Bubble Bounce, Coral Climb, Shark Fin
   Sprint, Thunder Tide, Volcano Vault, Giga Gauntlet; `Course.MAPS`, see
   [docs/sky-obby.md](docs/sky-obby.md) and [docs/parkour-maps.md](docs/parkour-maps.md)) are chained
-  end to end high above the clouds: rainbow tiles (square, ring, hex, discs, beams, stairs), floating
+  end to end high above the clouds. Each map has its own look: its own palette on the path's tops and
+  neon edges and up to 16 signature props on islets clear of the path (palms, buoys, clownfish, bubbles,
+  coral, shark fins, still storm clouds, lava rocks, crown pillars; `src/server/World/MapDress.luau`),
+  and the client grades the sky per map while you run it (`Fx.Modes` LOOK_TUNING). The picker's cards
+  wear their map's colour. All maps share the tile kinds (square, ring, hex, discs, beams, stairs), floating
   islands with landmarks, windmills, balloons and a cloud floor. There are no checkpoints: a map is one
   leg from its start deck to its finish deck, and a fall or a kill brick puts you back on that start deck
   with the clock still running. Walking through gate 1's
   portal, CHOOSE MAP in the Modes window or "Choose map" on the finish card opens the **map picker**
   (`src/client/UI/MapPicker.luau`, a live 3D preview per map). During a run the HUD
-  (`src/client/UI/ObbyHud.luau`) shows a rainbow progress bar with every runner's avatar head,
+  (`src/client/UI/ObbyHud.luau`; Roblox's player list is hidden for the run, as in Mog and Cardio, through
+  the reference-counted `Kit.hidePlayerList`) shows a rainbow progress bar with every runner's avatar head,
   "MAP n / 10", **SKIP MAP** (cash: two minutes of income, at least $250, `ParkourSkip`) and a 3-slot
   **gear hotbar** (Speed, Jump and Gravity coils, keys 1-3, `ParkourGear`); the gear hotbar sits bottom
   centre (above the jump button's row on touch). SKIP MAP only unlocks the next
@@ -169,16 +184,20 @@ sand island in the sea.
   resting, back in m:ss"). The run HUD shows your position in the map, best time and falls; Skip
   Map asks first. Bounce pads launch every runner who touches them, walking or jumping. Map 1 has a wider bounce pad and
   tall side rails, and its sweepers only shove. The picker shows when a run-again bonus is resting. The finish card has four states: a first
-  clear (rays, confetti, "MAP n+1 UNLOCKED!"), all maps cleared ("SKY OBBY COMPLETE!", on the run that
-  makes all ten maps cleared without gear), a repeat (the bonus and the cooldown as a clock bar) and an
-  assisted run (grey, no best time). Signs and the best-times board say MAP n. The start arch's marquee
+  clear (big turning rays, confetti from the bottom edge, a "+$" count-up with a coin fountain, "MAP n+1
+  UNLOCKED!"), all maps cleared ("SKY OBBY COMPLETE!", on the run that
+  makes all ten maps cleared without gear), a repeat (the "RUN AGAIN BONUS" share and the cooldown as a
+  clock bar) and an assisted run (grey, no best time, no cooldown bar: it pays nothing). Signs and the best-times board say MAP n. The start arch's marquee
   fades during a run, sweepers are hazard-striped, path platforms have a bright edge, and a fall blinks
   the screen. **Mog Test** is a skill-check duel on a floating stage
   (`Modes/MogRules.luau`, `Mog.luau`, `World/MogStage.luau`, `UI/MogHud.luau`, `Fx/Mog.luau`): press
   Space / click / tap / A when the needle is in the zone; the zone shrinks and the needle speeds up every
   check, but the zone is never under 40 degrees and the PERFECT slice never under 40 ms of needle travel
-  (`MogRules.ZONE_MIN`, `PERFECT_MIN_TIME`); mogging 3 rivals passes the test and pays the mode reward,
-  then the run goes on for a high score
+  (`MogRules.ZONE_MIN`, `PERFECT_MIN_TIME`); mogging 3 rivals passes the test and pays the mode reward. Rivals wear their own outfits and
+  name tags, every hit bursts on the rival, a perfect punches the camera in, and each check ends in a
+  big white "PERFECT!" / "NICE!" / "TOO SLOW" with a dark outline over a blue ring-canvas floor with
+  glowing lanes; a gold "BEAT n" chip names the score to beat. After the pass
+  the run goes on for a high score
   with 3 lives. Entering asks **vs rivals** (that run) or **PvP**: a 1v1 against a real player from a
   45 s queue, both answering the same checks with 8 HP each (hit 1 damage, perfect 2, a miss hurts yourself;
   a KO tie goes to sudden death). In PvP the zone stays hidden until the needle starts, so nobody can aim
@@ -198,6 +217,8 @@ sand island in the sea.
   more; every plate keeps its own first clear, so a plate you ran past still pays it later); a fall or a
   chaser's catch sends you back to stage 1. Stage 3, the first with a chaser, needs 1,100 Speed: its
   longest gap is 16.5 studs and its Chad runs at 0.85 of the stage's walk speed after a 2 s head start.
+  Its HUD shows Speed and the Multiplier / Treadmill / Best / Goal lines on dark plates, with a pulsing
+  gold star on the bar at the recommended Speed; speed lines and a rainbow trail come in at high speed.
 - **Shop packs scale with progression.** Cash packs pay 15 min / 1 h / 5 h / 24 h of your income, and aura
   packs turn 15 min / 1 h / 5 h / 24 h of your aura production into cash at once (x your cash multiplier,
   `src/shared/ShopMath.luau`), each with a minimum per pack (`Economy.progression`: your best tier
@@ -208,9 +229,9 @@ sand island in the sea.
 - **HUD** (`src/client/UI/Hud.luau`), laid out like the owner's reference game: chunky icons and outlined
   text straight over the world. Settings gear top right; top centre: the count and status plates share
   row 1 and the goal plate sits under them (a CHAMPION plate at tier 25); icon grid
-  (Home, Ranking, Modes, Index, Shop, Invite, Daily), every button on its own dark glass plate with its
-  caption, and a 2X CASH / Starter Pack promo on the left (only below best tier 15 and until it was opened
-  once in a visit; the Shop keeps the offers); cash bottom left with chips that show only while their
+  of 4 over 3 (Home, Ranking, Modes, Index / Shop, Invite, Daily) on one dark backing plate, every button
+  with its caption and only one badge pulsing at a time, and a 2X CASH / Starter Pack promo on the left (only below best tier 15 and until it was opened
+  once in a visit; the Shop keeps the offers); cash bottom left with the steady income ("+$X/s", not on touch) under it and chips that show only while their
   bonus is on ("Premium +10%", "Friends +20%", "SURGE x2"), on a cash plate that flashes with income; the
   Blender dumbbell with the carried aura bottom centre; the free gift bottom right. Toasts drop in just
   under the top stack. Tunables are in `TUNE` in `Hud.luau`.
@@ -229,14 +250,18 @@ sand island in the sea.
   during the intro, and during a game-mode run only the cash stays on screen.
 - **Windows.** Windows open with a spring; text inside a window is at least 14 px on screen (13 on
   touch, `Kit.WINDOW`). Ranking shows a podium top three, your own row and a goal card with a #1 trophy
-  state. A complete Index wears a crown, offers CLAIM ALL and clears NEW once seen. Scrolling lists show
+  state. A complete Index wears a crown and offers CLAIM ALL; NEW marks at most the two newest finds
+  since the Index was last opened. With one or two players the empty podium steps are open spots ("Your
+  spot!" / "Open spot: bring a friend!"), never made-up players. Scrolling lists show
   a shade and a bouncing arrow. The Ranking goal is a dark pill over
   a slim bar. The Index's locked milestones are dim chips and only a claimable one is a button. The
   Shop's FREE GIFT card shows the gift and the Daily Reward as two chips. A Champion without the Chad
   Aura pass sees the aura switch beside the price.
 - **Cards.** Reveals escalate by rarity (size, flash, beams, ground glow, confetti; crowns and gold
   lettering at tier 25). A crate shows its rarity banner before its unit, right after the crate's 3D
-  burst (`Fx.Crates.awaitBurst`). Banners slide in and never open over a window; the surge start adds a
+  burst (`Fx.Crates.awaitBurst`); a unit out of a crate rarer than itself gets the crate's prize
+  card: stage effects and a pulsing frame in the crate's colour with the crate on its corner and a
+  "LEGENDARY CRATE PRIZE!" banner. Toasts that can wait hold while a reward pop is on screen. Banners slide in and never open over a window; the surge start adds a
   gold edge and coin rain. Finish cards close when a mode starts or stops and when the player is home. The free gift
   card is solid. A reveal hides any open window behind a dark veil. Nothing opens by itself while a card
   is queued or showing (PopupBusy). A NEW CHAD reveal stays 10 s if nobody taps, but only 3 s once

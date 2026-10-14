@@ -3249,6 +3249,17 @@ function Kit.unitViewport(parent: Instance, tier: number, props: { [string]: any
 		viewport.Ambient = Color3.new(1, 1, 1)
 		viewport.LightColor = Color3.fromRGB(70, 70, 80)
 		viewport.ImageTransparency = 0.15
+	elseif model:GetAttribute("Gilded") == true then
+		-- The top tier's gold statue (CharacterFactory.GILD): its metal under the viewport's
+		-- own light, which neither blows it out nor leaves it brown.
+		local V = CharacterFactory.GILD.Viewport
+		for _, part in model:GetDescendants() do
+			if part:IsA("BasePart") and part.Material == CharacterFactory.GILD.Material then
+				part.Material = V.Material
+			end
+		end
+		viewport.Ambient = V.Ambient
+		viewport.LightColor = V.Light
 	end
 	model.Parent = viewport
 	Animator.attach(model)

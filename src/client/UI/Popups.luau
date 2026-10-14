@@ -173,12 +173,15 @@ Popups.JUICE = {
 		-- upward, so its feet stop above the name.
 		HeroScale = 1.3,
 		HeroLift = 0.4,
-		-- Its look in the reveal: the glowing (Neon) body is drawn as shaded gold instead
-		-- (colours x Shade, under a warm key light from the side and a low ambient); parts
-		-- named in Keep still glow.
+		-- Its look in the reveal: CharacterFactory already builds it as a gold statue (GILD:
+		-- metal, darker limbs and face) and Kit.unitViewport draws that metal as plastic under
+		-- GILD.Viewport's light; here the same ambient and key light, the key from the side so
+		-- one flank shines (about 255, 205, 50) and the face-on chest stays gold (230, 150, 40),
+		-- not brown. Any part still Neon is drawn as shaded gold (colours x Shade) unless
+		-- named in Keep.
 		Shade = 0.88,
-		Ambient = Color3.fromRGB(105, 88, 70),
-		Light = Color3.fromRGB(255, 238, 200),
+		Ambient = Color3.fromRGB(170, 150, 125),
+		Light = Color3.fromRGB(200, 186, 160),
 		LightDir = Vector3.new(-0.95, -0.7, 0.45),
 		Keep = { Eye = true, Mouth = true, Glint = true, Visor = true, Halo = true },
 		-- A rim of light: the same unit drawn flat in RimColor, RimScale x larger, behind it.
@@ -980,9 +983,18 @@ end
 
 -- Floating text -------------------------------------------------------------------
 
+-- The aura floats over the Aura bar (Collect, Deposit and the deposit's cash bonus): big
+-- lettering with a thick dark outline, as Fx.Orbs' "+$X" cash floats are.
+Popups.FLOAT = {
+	aura = { size = 40, stroke = 3.5, width = 420, life = 1.4 }, -- TextSize design px (about 24-28 px of glyph at 1280x720)
+	bonus = { size = 34, stroke = 3, width = 460, life = 1.5 }, -- the deposit's "+$X bonus" line
+	bonusRise = -60, -- design px: the bonus line starts this far above the aura float ...
+	bonusDelay = 0.18, -- ... and this many seconds after it
+}
+
 -- "+$120" over the world: pops in, rises on a soft arc (steady sideways drift,
 -- easing-out climb) and fades near the top. opts: life (seconds, 1.1), size (text, 30),
--- width (300), drift (false = straight up).
+-- width (300), drift (false = straight up), stroke (outline px, 2.5).
 function Popups.float(text: string, color: Color3, anchor: UDim2, opts: { [string]: any }?)
 	local o = opts or {}
 	local life: number = o.life or 1.1
@@ -990,7 +1002,7 @@ function Popups.float(text: string, color: Color3, anchor: UDim2, opts: { [strin
 	local mover = Kit.new("Frame", {
 		Name = "Float",
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(o.width or 300, 44),
+		Size = UDim2.fromOffset(o.width or 300, math.max(44, (o.size or 30) + 14)),
 		Position = anchor,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 20,
@@ -1006,7 +1018,7 @@ function Popups.float(text: string, color: Color3, anchor: UDim2, opts: { [strin
 		StrokeThickness = 0,
 	})
 	-- Over the 3D world: a solid navy outline.
-	local outline = Kit.textStroke(label, 2.5, 0)
+	local outline = Kit.textStroke(label, o.stroke or 2.5, 0)
 	local pop = Kit.new("UIScale", { Scale = 0.55, Parent = label })
 	Kit.tween(pop, 0.28, { Scale = 1 }, Enum.EasingStyle.Back)
 	local drift = if o.drift == false then 0 else math.random(-36, 36)
@@ -2067,9 +2079,10 @@ function Popups.crownBurst(o: { [string]: any })
 end
 
 --[[
-	The top tier's unit in the reveal: its Neon body would read as one flat blown-out
-	yellow, so it is drawn as shaded gold (JUICE.Top Shade, Ambient, Light, LightDir), and
-	a flat light copy of it slightly larger sits behind it as a rim. Returns the rim's
+	The top tier's unit in the reveal: CharacterFactory's gold statue (GILD), lit by a warm
+	key light from the side over a mid ambient (JUICE.Top Ambient, Light, LightDir; any part
+	still Neon is shaded gold), and a flat light copy of it slightly larger sits behind it as
+	a rim. Returns the rim's
 	viewport (its model turns with the unit's).
 ]]
 function Popups.gradeHero(hero: Frame, viewport: ViewportFrame, tier: number): ViewportFrame

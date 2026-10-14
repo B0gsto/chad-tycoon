@@ -466,7 +466,7 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 	if kind == "Collect" then
 		-- Silent: Fx.Orbs already popped for each pickup.
 		Hud.pulseTank()
-		Popups.float("+" .. I.Orb .. Format.short(data.amount or 0), C.Orb, TANK)
+		Popups.float("+" .. I.Orb .. Format.short(data.amount or 0), C.Orb, TANK, Popups.FLOAT.aura)
 	elseif kind == "Cash" then
 		-- Auto Cash pays out every few seconds: no sound, float or coin burst for it, the
 		-- wallet number simply rolls up.
@@ -514,10 +514,13 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 		-- `amount` is the aura queued in the converter; the deposit multiplier's part is `bonus`,
 		-- cash paid at once (Economy.depositSplit), so the float names it as cash.
 		local text = I.Orb .. Format.short(if type(data.amount) == "number" then data.amount else 0)
+		Popups.float(text, C.Primary, TANK, Popups.FLOAT.aura)
 		if type(data.bonus) == "number" and data.bonus >= 1 then
-			text ..= "  +" .. Format.money(data.bonus) .. " bonus"
+			local bonusText = "+" .. Format.money(data.bonus) .. " bonus"
+			task.delay(Popups.FLOAT.bonusDelay, function()
+				Popups.float(bonusText, C.Good, TANK + UDim2.fromOffset(0, Popups.FLOAT.bonusRise), Popups.FLOAT.bonus)
+			end)
 		end
-		Popups.float(text, C.Primary, TANK)
 	elseif kind == "Buy" then
 		Sounds.play("Buy", 0.1)
 	elseif kind == "Merge" then

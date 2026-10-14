@@ -142,6 +142,15 @@ local GILD = {
 	AccColor = { Cape = "Cape" }, -- accessories drawn in another GILD colour than Accent
 	Light = 0.5, -- its point light's brightness, as a share of a normal one
 	Fire = 0.6, -- its flame's size, as a share
+	-- In a ViewportFrame (Index card, tier-25 reveal: Kit.unitViewport) there is no sky to
+	-- reflect, so the metal is drawn as plastic under this light: the face-on chest about
+	-- (230, 160, 40), the lit side (255, 205, 50), the shadow side (160, 115, 35). Neither the
+	-- default viewport light (blown out to pale yellow) nor a dark one (brown).
+	Viewport = {
+		Material = Enum.Material.SmoothPlastic,
+		Ambient = Color3.fromRGB(170, 150, 125),
+		Light = Color3.fromRGB(200, 186, 160),
+	},
 }
 CharacterFactory.GILD = GILD
 
@@ -1807,6 +1816,9 @@ function CharacterFactory.build(look: Look, name: string?): Model
 
 	model:SetAttribute("RigScale", scale)
 	model:SetAttribute("AnimSet", anim)
+	if gilded then
+		model:SetAttribute("Gilded", true)
+	end
 	model:SetAttribute("Height", c.top * scale)
 	if not look.manual then
 		model:AddTag(TAG)

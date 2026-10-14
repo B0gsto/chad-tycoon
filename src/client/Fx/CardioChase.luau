@@ -37,6 +37,7 @@ local Theme = require(ReplicatedStorage:WaitForChild("Theme")) :: any
 local Client = script.Parent.Parent
 local Sounds = require(Client.Sounds) :: any
 local Sprites = require(script.Parent.Sprites)
+local Highlights = require(script.Parent.Highlights)
 
 local ChaseFx = {}
 
@@ -297,7 +298,7 @@ local function removeChad()
 	end
 	chad, rig = nil, nil
 	if outline then
-		outline.Enabled = false
+		Highlights.want(outline, false)
 		outline.Adornee = nil
 	end
 end
@@ -374,6 +375,7 @@ local function outlineOf(): Highlight
 	made.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	made.Enabled = false
 	made.Parent = Workspace
+	Highlights.claim(made, Highlights.PRIORITY.Chase, false)
 	outline = made
 	return made
 end
@@ -413,7 +415,7 @@ local function buildChad(p: any, scale: number): Model?
 	m.Parent = folder
 	local h = outlineOf()
 	h.Adornee = m
-	h.Enabled = true
+	Highlights.want(h, true)
 	return m
 end
 
