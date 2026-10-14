@@ -3,13 +3,15 @@
 	ShakeArena: the SHAKE CATCH arena out at sea (teleport-only; Modes.Shake brings players here).
 	Numbers live in Modes.ShakeRules.ARENA; the shell (deck, spawn pad, exit arch) comes from
 	World.Arena. Dressed as a sunny beach court:
-	  * a sand deck with white court lines round the catch area (where items land);
+	  * a sand deck with a coloured court over the catch area (where items land): a sunny
+	    checker, a coral border, white court lines, a target in the middle and a catch ring
+	    in each quadrant;
 	  * the Smoothie Bar on its own deck past the far (-Z) edge, facing the spawn: a pink
-	    counter with blenders, a striped awning, a "SMOOTHIE BAR" sign and a giant shake
-	    cup on the roof, surfboards leaning on its sides;
-	  * striped sun awnings on posts along both side edges (outside the catch area), with
-	    bunting between them; palms in the four corners (the PalmTree mesh, or a part-built
-	    one when the mesh is missing).
+	    counter with blenders, a striped awning and a "SMOOTHIE BAR" sign, a giant shake cup
+	    and surfboards at its ends, palms framing it (the PalmTree mesh, or a part-built one)
+	    and the big "SHAKE CATCH!" title banner on striped pillars above it;
+	  * striped sun awnings on four posts along both side edges (outside the catch area),
+	    with bunting between them.
 	Nothing solid stands inside the catch area; the falling items are client-side (Fx.Shake).
 
 	build() -> Built: everything World.Arena.Base has ({ folder, floor, spawn, exit,
@@ -32,8 +34,11 @@ local BALL = Enum.PartType.Ball
 
 local ShakeArena = {}
 
--- Studs between the deck's edge and the catch area (the awnings and palms stand in it).
-local INSET = 6
+-- Studs between the deck's edge and the catch area (the awnings stand in it, clear of every
+-- drop column; the palms stand on the Smoothie Bar's deck past the far edge).
+local INSET = 9
+-- The side awnings' centre line (studs from the arena's centre along X).
+local AWNING_X = 28.5
 local PALM_HEIGHT = 15
 
 export type Built = Arena.Base & {
@@ -56,11 +61,13 @@ local function piece(parent: Instance, name: string, size: Vector3, cf: CFrame, 
 	return make(className, p)
 end
 
--- A big SurfaceGui word on `part`'s front face.
-local function word(part: BasePart, text: string, color: Color3)
+-- A big SurfaceGui word on `part`'s `face` (default Back: +Z, toward the spawn).
+local function word(part: BasePart, text: string, color: Color3, face: Enum.NormalId?)
 	local gui = Instance.new("SurfaceGui")
-	gui.Face = Enum.NormalId.Front
+	gui.Face = face or Enum.NormalId.Back
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
 	gui.PixelsPerStud = 30
+	gui.LightInfluence = 0
 	gui.Parent = part
 	local label = Instance.new("TextLabel")
 	label.BackgroundTransparency = 1
@@ -116,15 +123,29 @@ end
 -- A sun awning on two posts along an edge: red-and-white style stripes, sloping outward.
 local function awning(parent: Instance, center: Vector3, length: number, outward: number)
 	local postH = 9
+	-- Four posts (the canopy slopes down outward: the inner pair stands taller), each on a
+	-- little pink foot.
 	for _, s in { -1, 1 } do
-		piece(
-			parent,
-			"AwningPost",
-			Vector3.new(postH, 0.6, 0.6),
-			CFrame.new(center + Vector3.new(outward * 2.2, postH / 2, s * (length / 2 - 0.5))) * UPRIGHT,
-			W.White,
-			{ Shape = CYLINDER, CanCollide = true }
-		)
+		for _, side in { -1, 1 } do
+			local h = postH + 0.4 - side * 2.1 * math.tan(math.rad(14))
+			local foot = center + Vector3.new(outward * side * 2.1, 0, s * (length / 2 - 0.6))
+			piece(
+				parent,
+				"AwningPost",
+				Vector3.new(h, 0.5, 0.5),
+				CFrame.new(foot + Vector3.new(0, h / 2, 0)) * UPRIGHT,
+				W.White,
+				{ Shape = CYLINDER, CanCollide = true }
+			)
+			piece(
+				parent,
+				"AwningFoot",
+				Vector3.new(0.5, 1.3, 1.3),
+				CFrame.new(foot + Vector3.new(0, 0.25, 0)) * UPRIGHT,
+				W.Pink,
+				{ Shape = CYLINDER }
+			)
+		end
 	end
 	local stripes = 8
 	local w = length / stripes
@@ -152,8 +173,8 @@ end
 local function smoothieBar(parent: Instance, a: Arena.Spec, top: number)
 	local bz = a.z - a.sizeZ / 2 - 6
 	local deck = Vector3.new(a.x, top, bz)
-	piece(parent, "BarDeck", Vector3.new(44, 2, 12), CFrame.new(deck - Vector3.new(0, 1, 0)), W.Wood, { CanCollide = true })
-	piece(parent, "BarDeckRim", Vector3.new(46, 1.2, 13), CFrame.new(deck - Vector3.new(0, 1.5, 0)), W.White)
+	piece(parent, "BarDeck", Vector3.new(64, 2, 12), CFrame.new(deck - Vector3.new(0, 1, 0)), W.Wood, { CanCollide = true })
+	piece(parent, "BarDeckRim", Vector3.new(66, 1.2, 13), CFrame.new(deck - Vector3.new(0, 1.5, 0)), W.White)
 	-- Back wall and side pillars.
 	piece(parent, "BarWall", Vector3.new(30, 14, 1), CFrame.new(deck + Vector3.new(0, 7, -4)), W.Butter, { CanCollide = true })
 	for _, s in { -1, 1 } do
@@ -215,8 +236,8 @@ local function smoothieBar(parent: Instance, a: Arena.Spec, top: number)
 	local sign = piece(parent, "BarSign", Vector3.new(22, 4, 0.6), CFrame.new(deck + Vector3.new(0, 16, -3.6)), W.Pink)
 	piece(parent, "BarSignBack", Vector3.new(23, 5, 0.4), CFrame.new(deck + Vector3.new(0, 16, -4)), W.White)
 	word(sign, "SMOOTHIE BAR", W.White)
-	-- A giant protein shake on the roof: cup, lid, straw and a cherry.
-	local cup = deck + Vector3.new(14, 14, -3)
+	-- A giant protein shake standing on the deck's left end: cup, lid, straw and a cherry.
+	local cup = deck + Vector3.new(-22, 0, -1)
 	piece(parent, "GiantCup", Vector3.new(7, 5, 5), CFrame.new(cup + Vector3.new(0, 3.5, 0)) * UPRIGHT, W.Pink, { Shape = CYLINDER })
 	piece(
 		parent,
@@ -238,9 +259,9 @@ local function smoothieBar(parent: Instance, a: Arena.Spec, top: number)
 	piece(parent, "GiantCherry", Vector3.new(1.4, 1.4, 1.4), CFrame.new(cup + Vector3.new(-1, 9.3, 0.6)), W.Coral, { Shape = BALL })
 	-- Surfboards leaning on the deck's ends.
 	local boards: { { x: number, color: Color3, tilt: number } } = {
-		{ x = -19, color = W.Mint, tilt = 1 },
-		{ x = 19, color = W.Sunny, tilt = -1 },
-		{ x = -21, color = W.Blue, tilt = 1 },
+		{ x = 18, color = W.Mint, tilt = -1 },
+		{ x = 20.5, color = W.Sunny, tilt = -1 },
+		{ x = 23, color = W.Blue, tilt = -1 },
 	}
 	for _, b in boards do
 		local x, color, tilt = b.x, b.color, b.tilt
@@ -248,6 +269,38 @@ local function smoothieBar(parent: Instance, a: Arena.Spec, top: number)
 		piece(parent, "Surfboard", Vector3.new(2.6, 9, 0.4), board, color)
 		piece(parent, "SurfboardStripe", Vector3.new(0.5, 9.05, 0.45), board, W.White)
 	end
+	-- Palms framing both ends of the bar (outside the court: no fronds over a drop column).
+	for _, sx in { -1, 1 } do
+		palm(parent, deck + Vector3.new(sx * 29.5, 0, -1.5), math.rad(if sx < 0 then 30 else 210))
+	end
+	-- The title: a big "SHAKE CATCH" banner on striped pillars over the bar, facing the spawn.
+	local stripes = { W.Pink, W.White }
+	for _, sx in { -1, 1 } do
+		local base = deck + Vector3.new(sx * 26.5, 0, 1.5)
+		for i = 0, 5 do
+			piece(
+				parent,
+				"TitlePillar",
+				Vector3.new(4.5, 1.6, 1.6),
+				CFrame.new(base + Vector3.new(0, 2.25 + i * 4.5, 0)) * UPRIGHT,
+				stripes[i % 2 + 1],
+				{ Shape = CYLINDER, CanCollide = i == 0 }
+			)
+		end
+		piece(parent, "TitlePillarTop", Vector3.new(2.6, 2.6, 2.6), CFrame.new(base + Vector3.new(0, 28, 0)), W.Sunny, { Shape = BALL })
+	end
+	local titleAt = deck + Vector3.new(0, 24.5, 1.5)
+	piece(parent, "TitleBack", Vector3.new(52, 8.6, 0.5), CFrame.new(titleAt - Vector3.new(0, 0, 0.3)), W.White)
+	local title = piece(parent, "TitleBoard", Vector3.new(50, 7.4, 0.6), CFrame.new(titleAt), W.HotPink)
+	word(title, "SHAKE CATCH!", W.Sunny)
+	piece(
+		parent,
+		"TitleTrim",
+		Vector3.new(50, 0.5, 0.7),
+		CFrame.new(titleAt - Vector3.new(0, 4.1, -0.1)),
+		W.Sunny,
+		{ Material = Enum.Material.Neon }
+	)
 end
 
 -- Bunting: little upside-down wedge flags sagging on a line along Z between two points.
@@ -288,27 +341,66 @@ function ShakeArena.build(): Built
 
 	-- Court lines round the catch area and a centre circle.
 	local w, d = area.x1 - area.x0, area.z1 - area.z0
-	local lineY = top + 0.03
+	local lineY = top + 0.08
 	for _, s in { -1, 1 } do
 		piece(decor, "CourtLine", Vector3.new(w + 0.6, 0.06, 0.6), CFrame.new(a.x, lineY, a.z + s * d / 2), W.White)
 		piece(decor, "CourtLine", Vector3.new(0.6, 0.06, d + 0.6), CFrame.new(a.x + s * w / 2, lineY, a.z), W.White)
 	end
-	piece(decor, "CourtCircle", Vector3.new(0.06, 12, 12), CFrame.new(a.x, lineY, a.z) * UPRIGHT, W.SandDark, { Shape = CYLINDER })
+	-- The coloured court: one plate with a sunny checker drawn on its top (a SurfaceGui, no
+	-- extra parts), a coral border band, then the drop-zone target in the middle and a catch
+	-- ring in each quadrant.
+	piece(decor, "CourtBorder", Vector3.new(w + 3, 0.04, d + 3), CFrame.new(a.x, top + 0.01, a.z), W.Coral)
+	local court = piece(decor, "CourtFloor", Vector3.new(w, 0.05, d), CFrame.new(a.x, top + 0.02, a.z), W.Apricot)
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Top
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 4
+	gui.Parent = court
+	local cells = 6
+	for i = 0, cells - 1 do
+		for j = 0, cells - 1 do
+			if (i + j) % 2 == 0 then
+				local cell = Instance.new("Frame")
+				cell.BackgroundColor3 = W.Sunny
+				cell.BorderSizePixel = 0
+				cell.Position = UDim2.fromScale(i / cells, j / cells)
+				cell.Size = UDim2.fromScale(1 / cells, 1 / cells)
+				cell.Parent = gui
+			end
+		end
+	end
+	local function disc(at: Vector3, diameter: number, color: Color3, lift: number)
+		piece(
+			decor,
+			"CourtDisc",
+			Vector3.new(0.05, diameter, diameter),
+			CFrame.new(at + Vector3.new(0, lift, 0)) * UPRIGHT,
+			color,
+			{ Shape = CYLINDER }
+		)
+	end
+	local mid = Vector3.new(a.x, top, a.z)
+	disc(mid, 15, W.White, 0.06)
+	disc(mid, 13, W.Pink, 0.09)
+	disc(mid, 8, W.White, 0.12)
+	disc(mid, 6, W.Mint, 0.15)
+	for _, q in { { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 } } do
+		local at = mid + Vector3.new(q[1] * w / 4, 0, q[2] * d / 4)
+		disc(at, 7, W.White, 0.06)
+		disc(at, 5.6, if q[2] < 0 then W.Grape else W.Blue, 0.09)
+	end
 
 	smoothieBar(decor, a, top)
 
-	-- Side awnings with bunting and the corner palms.
+	-- Side awnings with bunting (their inner valance stays outside every drop column).
 	local length = 18
 	for _, sx in { -1, 1 } do
-		local x = a.x + sx * (a.sizeX / 2 - INSET / 2)
+		local x = a.x + sx * AWNING_X
 		for _, sz in { -1, 1 } do
 			awning(decor, Vector3.new(x, top, a.z + sz * 12), length, sx)
 		end
 		bunting(decor, Vector3.new(x - sx * 0.5, top + 9.6, a.z - 3), Vector3.new(x - sx * 0.5, top + 9.6, a.z + 3), 4)
-		palm(decor, Vector3.new(a.x + sx * (a.sizeX / 2 - 2.5), top, a.z - a.sizeZ / 2 + 2.5), math.rad(45 * sx))
 	end
-	-- Only the far corners get palms on the deck: the near +X corner holds the exit arch.
-	palm(decor, Vector3.new(a.x - a.sizeX / 2 + 2.5, top, a.z + a.sizeZ / 2 - 2.5), math.rad(200))
 
 	local built: any = base
 	built.catchArea = area

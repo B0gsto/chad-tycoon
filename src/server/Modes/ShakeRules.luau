@@ -39,6 +39,16 @@ ShakeRules.REPEAT_GAP = 120
 ShakeRules.CATCH = { radius = 4.5, early = 0.3, late = 0.3 }
 -- Junk is judged a touch late (the server sees a dodging player where they were a moment ago).
 ShakeRules.JUNK = { radius = 3, early = 0, late = 0.2 }
+-- The exit pad (World.Arena: +X / +Z corner, 5 studs in from both edges) and how far from it
+-- no drop may land, so chasing a corner drop never walks the player out of a run (the exit
+-- arch's posts stand inside this circle too).
+ShakeRules.EXIT = { x = ShakeRules.ARENA.x + ShakeRules.ARENA.sizeX / 2 - 5, z = ShakeRules.ARENA.z + ShakeRules.ARENA.sizeZ / 2 - 5 }
+ShakeRules.EXIT_CLEAR = 10
+-- The server sees a player's position this late: about half the round trip plus a frame of
+-- replication (lagOf). Samples are stamped back by it so dodges count when they happened.
+ShakeRules.LAG_MAX = 0.4
+-- A sample further than this (studs) from the last tick's position is a teleport: dropped.
+ShakeRules.MAX_STEP = 40
 -- A drop is judged this long after it lands (the longest `late`), once every sample is in.
 ShakeRules.SETTLE = 0.3
 
@@ -124,10 +134,45 @@ function ShakeRules.points(kind: string): number
 	return ShakeRules.POINTS[kind] or 0
 end
 
--- Every drop of a run, in land order, from its seed. Landing spots stay inside `area`; the
--- last items land by RUN_SECONDS.
-function ShakeRules.schedule(seed: number, area: Area): { Drop }
+-- The lag (seconds) to take off a sample's time for a player whose network ping (round trip,
+-- Player:GetNetworkPing seconds) is `ping`.
+function ShakeRules.lagOf(ping: number): number
+	if ping ~= ping then
+		return 0
+	end
+	return math.clamp(ping / 2 + 1 / 30, 0, ShakeRules.LAG_MAX)
+end
+
+-- (x, z) moved out of the `clear`-stud circle round `avoid`: straight away from it, or (when
+-- that runs off the area, as past a corner exit) toward the area's centre; clamped to `area`.
+function ShakeRules.keepClear(x: number, z: number, area: Area, avoid: { x: number, z: number }, clear: number): (number, number)
+	local function inside(px: number, pz: number): boolean
+		local dx, dz = px - avoid.x, pz - avoid.z
+		return dx * dx + dz * dz < clear * clear
+	end
+	if not inside(x, z) then
+		return x, z
+	end
+	local dx, dz = x - avoid.x, z - avoid.z
+	local dist = math.sqrt(dx * dx + dz * dz)
+	if dist >= 0.5 then
+		local nx = math.clamp(avoid.x + dx / dist * (clear + 0.5), area.x0, area.x1)
+		local nz = math.clamp(avoid.z + dz / dist * (clear + 0.5), area.z0, area.z1)
+		if not inside(nx, nz) then
+			return nx, nz
+		end
+	end
+	local cx, cz = (area.x0 + area.x1) / 2 - avoid.x, (area.z0 + area.z1) / 2 - avoid.z
+	local len = math.max(math.sqrt(cx * cx + cz * cz), 1e-6)
+	return math.clamp(avoid.x + cx / len * (clear + 0.5), area.x0, area.x1),
+		math.clamp(avoid.z + cz / len * (clear + 0.5), area.z0, area.z1)
+end
+
+-- Every drop of a run, in land order, from its seed. Landing spots stay inside `area` and
+-- at least EXIT_CLEAR studs from `avoid` (default EXIT); the last items land by RUN_SECONDS.
+function ShakeRules.schedule(seed: number, area: Area, avoid: { x: number, z: number }?): { Drop }
 	local rand = ShakeRules.rng(seed)
+	local exit = avoid or ShakeRules.EXIT
 	local drops: { Drop } = {}
 	local cx, cz = (area.x0 + area.x1) / 2, (area.z0 + area.z1) / 2
 	local function place(reach: number): (number, number)
@@ -135,7 +180,7 @@ function ShakeRules.schedule(seed: number, area: Area): { Drop }
 		local dist = reach * (0.35 + 0.65 * rand())
 		local x = math.clamp(cx + math.cos(angle) * dist, area.x0, area.x1)
 		local z = math.clamp(cz + math.sin(angle) * dist, area.z0, area.z1)
-		return x, z
+		return ShakeRules.keepClear(x, z, area, exit, ShakeRules.EXIT_CLEAR)
 	end
 	for index, wave in ShakeRules.WAVES do
 		local nextWave = ShakeRules.WAVES[index + 1]

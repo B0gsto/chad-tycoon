@@ -382,6 +382,8 @@ local function step()
 			local parent = folder or Workspace
 			item.ring, item.shadow = buildMark(parent, d)
 			local model = buildItem(d.kind)
+			-- Start on the landing column (a drop first seen late would otherwise sit at the origin).
+			model:PivotTo(CFrame.new(d.x, top + CATCH_HEIGHT + DROP_HEIGHT * (1 - math.clamp(alpha, 0, 1) ^ 2), d.z))
 			model.Parent = parent
 			item.model = model
 			item.state = "fall"
