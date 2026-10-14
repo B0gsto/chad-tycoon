@@ -6,20 +6,22 @@
 	Phases (modes.shake.phase in the snapshot, mirrored by the Notify events):
 	  lobby      the lobby card (right edge, mid-height): SHAKE CATCH, the goal, best and
 	             clears, the reward status (full pack ready, or the wait and the repeat
-	             share), a big PLAY (tap, Enter, gamepad A: "ShakeBegin") and LEAVE
-	             ("ModeQuit"). The run HUD is hidden.
-	  countdown  a big "3, 2, 1, GO!" in the centre; the run column comes up.
+	             share), a big PLAY (tap, Enter, gamepad X: "ShakeBegin"; gamepad A stays
+	             jump) and LEAVE ("ModeQuit"). The run HUD is hidden.
+	  countdown  a big "3, 2, 1, GO!" in the centre ("go" ends it); the run column comes up.
 	  play       the run column (right edge, mid-height, like the Mog test): a glass score pill
 	             ("12 / 25" with a star, the quiet X that asks "QUIT?" before ModeQuit), a
 	             chunky bar toward the target, three hearts and the clock with the wave
 	             ("0:42 · WAVE 2/4"). Wave banners and "TARGET HIT!" in the centre; a red
 	             edge flash when a heart goes.
 	  results    the results card on "win" / "lose": title, catches and score, best (a
-	             flashing NEW BEST!), the pay (or why none), PLAY AGAIN ("ShakeBegin") and
-	             LOBBY. It goes as soon as the snapshot says the phase is back to lobby.
+	             flashing NEW BEST!), the pay (or why none), PLAY AGAIN ("ShakeBegin"; Enter,
+	             gamepad X) and LOBBY ("ShakeLobby", counting down to the server's returnAt).
+	             It goes on the "lobby" event (or the snapshot's phase back to lobby).
 
 	The arena's "BestBoard" SurfaceGui (under the arena Model, attribute Mode = "shake") gets
-	its TextLabels "Best", "Clears" and "Reward" (each optional) filled from the snapshot.
+	its TextLabels "Best", "Clears" and "Reward" (each optional) filled from the snapshot, and
+	"RewardCaption" says what the reward value is (the pack ready, or the wait for it).
 
 	Wired from Main.client.luau (nothing else needs editing):
 	  init(screen)        once, builds the HUD (hidden)
@@ -61,13 +63,17 @@ local LOBBY_W = 300
 local LOBBY_H = 250
 -- HUD chrome that steps aside while the player is in the mode (the gift corner, the crates).
 local CLUTTER = { "FreeCorner", "ChestPanel" }
--- Enter / gamepad A: PLAY in the lobby, PLAY AGAIN on the results card.
+-- Enter / gamepad X: PLAY in the lobby, PLAY AGAIN on the results card (gamepad A is jump).
 local PLAY_ACTION = "ShakeHudPlay"
 local PRIORITY = Enum.ContextActionPriority.High.Value + 40
 -- A second PLAY press within this many seconds is ignored (the server answers with "countdown").
 local BEGIN_GAP = 1.5
--- The results card closes itself after this many seconds if the server never says "lobby".
+-- The results card closes itself this many seconds after the server's returnAt (or after
+-- FINISH_HOLD with no returnAt) if the server never says "lobby".
+local FINISH_GRACE = 3
 local FINISH_HOLD = 20
+-- The gamepad X button's colour (its glyph on PLAY and PLAY AGAIN).
+local PAD_X_COLOR = Color3.fromRGB(40, 122, 232)
 
 local screen: ScreenGui? = nil
 local root: Frame
@@ -94,7 +100,12 @@ local finishSub: TextLabel
 local finishReward: TextLabel
 local finishBest: TextLabel
 local finishNew: TextLabel
-
+local lobbyButton: TextButton
+-- The gamepad X glyphs (shown while a gamepad is in use).
+local padGlyphs: { GuiObject } = {}
+-- Server time the server brings the player back to the lobby (the results card's countdown).
+local returnAt = 0
+local lobbyLeft = -1
 -- "" (not in the mode), "lobby", "countdown", "play", "results".
 local phase = ""
 -- The run column is up (countdown and play).
@@ -202,10 +213,16 @@ local function paintBoard()
 	if not findBoard() then
 		return
 	end
-	setBoardLabel("Best", tostring(best))
+	setBoardLabel("Best", if best > 0 then tostring(best) else "--")
 	setBoardLabel("Clears", tostring(clears))
 	local _, _, ready, wait = rewardStatus()
-	setBoardLabel("Reward", if ready then "READY!" else Format.clock(wait))
+	if ready then
+		setBoardLabel("RewardCaption", if clears == 0 then "FIRST CLEAR" else "FULL PACK")
+		setBoardLabel("Reward", "+" .. Format.money(num(reward.packCash, num(reward.cash, 0))))
+	else
+		setBoardLabel("RewardCaption", "NEXT PACK IN")
+		setBoardLabel("Reward", Format.clock(wait))
+	end
 end
 
 -- Stats from a start payload or the snapshot.
@@ -377,6 +394,13 @@ local function render()
 		clockLabel.Text = string.format("%s · WAVE %d/%d", Format.clock(left), wave, waves)
 		clockLabel.TextColor3 = if left <= 10 and toGo <= 0 then C.Bad else Color3.new(1, 1, 1)
 	end
+	if finishCard.Visible and returnAt > 0 then
+		local left = math.max(0, math.ceil(returnAt - now))
+		if left ~= lobbyLeft then
+			lobbyLeft = left
+			Kit.setButton(lobbyButton, if left > 0 then string.format("LOBBY %d", left) else "LOBBY")
+		end
+	end
 	if lobbyCard.Visible or board then
 		-- The cooldown counts down: repaint when the text changes (about once a second).
 		local line, sub = rewardStatus()
@@ -432,12 +456,12 @@ local function sendBegin()
 	end
 end
 
-local function onPlayKey(_: string, state: Enum.UserInputState, _input: InputObject): Enum.ContextActionResult
+local function onPlayKey(_: string, state: Enum.UserInputState, input: InputObject): Enum.ContextActionResult
 	if state ~= Enum.UserInputState.Begin then
 		return Enum.ContextActionResult.Pass
 	end
-	-- A gamepad selection on one of the cards presses that button instead.
-	if Kit.selectedIn(lobbyCard) or Kit.selectedIn(finishCard) then
+	-- Enter with a button selected on one of the cards presses that button instead.
+	if input.KeyCode ~= Enum.KeyCode.ButtonX and (Kit.selectedIn(lobbyCard) or Kit.selectedIn(finishCard)) then
 		return Enum.ContextActionResult.Pass
 	end
 	if (phase == "lobby" and lobbyCard.Visible) or (phase == "results" and finishCard.Visible) then
@@ -458,7 +482,15 @@ local function bind(on: boolean)
 	end
 	bound = on
 	if on then
-		ContextActionService:BindActionAtPriority(PLAY_ACTION, onPlayKey, false, PRIORITY, Enum.KeyCode.Return, Enum.KeyCode.ButtonA)
+		ContextActionService:BindActionAtPriority(
+			PLAY_ACTION,
+			onPlayKey,
+			false,
+			PRIORITY,
+			Enum.KeyCode.Return,
+			Enum.KeyCode.KeypadEnter,
+			Enum.KeyCode.ButtonX
+		)
 	else
 		ContextActionService:UnbindAction(PLAY_ACTION)
 	end
@@ -490,7 +522,7 @@ local function paintLobby()
 	lobbyReward.TextColor3 = if ready then C.MoneyText else C.Text
 	lobbyRewardSub.Text = sub
 	lobbyHint.Text =
-		Kit.hint("Tap PLAY or step on the START pad", "ENTER to play · or step on the START pad", "A to play · or step on the START pad")
+		Kit.hint("Tap PLAY or step on the START pad", "ENTER to play · or step on the START pad", "X to play · or step on the START pad")
 end
 
 local function hideLobby()
@@ -552,11 +584,15 @@ local function showFinish(p: { [string]: any }, won: boolean)
 	if type(p.cooldownEnds) == "number" then
 		cooldownEnds = p.cooldownEnds
 	end
+	returnAt = num(p.returnAt, 0)
+	lobbyLeft = -1
+	Kit.setButton(lobbyButton, "LOBBY")
 	finishCard.Visible = true
 	Kit.appear(finishCard, { from = 0.5, time = 0.35 })
 	finishToken += 1
 	local token = finishToken
-	task.delay(FINISH_HOLD, function()
+	local hold = if returnAt > 0 then math.max(1, returnAt - Workspace:GetServerTimeNow()) + FINISH_GRACE else FINISH_HOLD
+	task.delay(hold, function()
 		if token == finishToken and finishCard.Visible then
 			hideFinish()
 			if phase == "results" then
@@ -579,10 +615,7 @@ local function showFinish(p: { [string]: any }, won: boolean)
 			end
 		end)
 	end
-	Kit.focus(finishCard)
-	task.defer(function()
-		Kit.select(Kit.firstSelectable(finishCard))
-	end)
+	-- No gamepad focus on the card: A stays jump and the stick keeps walking (X plays again).
 	if won then
 		Kit.confetti(finishCard, { Count = if cash > 0 then 36 else 20, Origin = UDim2.fromScale(0.5, 0.2), ZIndex = 55 })
 		Sounds.play(if p.first == true then "CelebrateLegendary" else "Celebrate")
@@ -712,6 +745,15 @@ function ShakeHud.onNotify(payload: { [string]: any })
 	local event = payload.event
 	if event == "start" then
 		ShakeHud.start(payload)
+	elseif event == "go" then
+		-- The countdown is over (render shows GO! from the clock; this pins the times).
+		if running then
+			phase = "play"
+			goAt = num(payload.goAt, goAt)
+			endAt = num(payload.endAt, endAt)
+		elseif phase == "lobby" or phase == "" then
+			beginRun(payload)
+		end
 	elseif event == "stop" then
 		ShakeHud.stop(payload)
 	elseif event == "lobby" then
@@ -835,6 +877,27 @@ end
 
 -- Build --------------------------------------------------------------------------------------
 
+-- The gamepad X glyph on a button's face (left end), shown while a gamepad is in use.
+local function padGlyph(button: TextButton)
+	local glyph = Kit.new("TextLabel", {
+		Name = "PadX",
+		Text = "X",
+		Font = F.Display,
+		TextSize = 18,
+		TextColor3 = Color3.new(1, 1, 1),
+		BackgroundColor3 = PAD_X_COLOR,
+		Size = UDim2.fromOffset(28, 28),
+		Position = UDim2.new(0, 10, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = (button.ZIndex or 1) + 4,
+		Visible = Kit.gamepad == true,
+		Parent = Kit.buttonFace(button) or button,
+	})
+	Kit.round(glyph)
+	Kit.stroke(glyph, 2, W.Ink)
+	table.insert(padGlyphs, glyph)
+end
+
 local function buildLobby(screenGui: ScreenGui)
 	lobbyCard = Kit.panel(screenGui, {
 		Name = "ShakeLobby",
@@ -920,6 +983,7 @@ local function buildLobby(screenGui: ScreenGui)
 		Breathe = true,
 	}, sendBegin)
 	playButton:SetAttribute("FocusFirst", true)
+	padGlyph(playButton)
 	local leave = Kit.button(lobbyCard, {
 		Name = "Leave",
 		Text = "LEAVE",
@@ -946,6 +1010,9 @@ local function buildLobby(screenGui: ScreenGui)
 		ZIndex = 21,
 	})
 	Kit.onInput(function()
+		for _, glyph in padGlyphs do
+			glyph.Visible = Kit.gamepad == true
+		end
 		if lobbyCard.Visible then
 			paintLobby()
 		end
@@ -1026,7 +1093,7 @@ local function buildFinish(screenGui: ScreenGui)
 		Color = C.Good,
 		Font = F.Display,
 		TextSize = 20,
-		Size = UDim2.fromOffset(180, 54),
+		Size = UDim2.fromOffset(200, 54),
 		Position = UDim2.new(0.5, -8, 1, -20),
 		AnchorPoint = Vector2.new(1, 1),
 		ZIndex = 52,
@@ -1036,7 +1103,8 @@ local function buildFinish(screenGui: ScreenGui)
 		sendBegin()
 	end)
 	again:SetAttribute("FocusFirst", true)
-	local lobby = Kit.button(finishCard, {
+	padGlyph(again)
+	lobbyButton = Kit.button(finishCard, {
 		Name = "Lobby",
 		Text = "LOBBY",
 		Color = C.SurfaceHi,
@@ -1048,15 +1116,16 @@ local function buildFinish(screenGui: ScreenGui)
 		ZIndex = 52,
 	}, function()
 		hideFinish()
-		-- The server brings the player back to the lobby a few seconds after a finish;
-		-- the lobby card (PLAY works from results too) is up straight away.
+		-- Back to the lobby now (the server would do it at returnAt anyway); the lobby card
+		-- (PLAY works from results too) is up straight away, the "lobby" event confirms it.
+		action:FireServer({ action = "ShakeLobby" })
 		if phase == "results" then
 			phase = "lobby"
 			showLobby()
 		end
 	end)
 	Kit.selectable(again)
-	Kit.selectable(lobby)
+	Kit.selectable(lobbyButton)
 end
 
 function ShakeHud.init(screenGui: ScreenGui)

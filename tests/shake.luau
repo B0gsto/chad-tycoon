@@ -240,6 +240,47 @@ return function(h: { [string]: any })
 		check(go and off == nil, "after the re-arm it starts and disarms")
 	end)
 
+	test("Shake: the court spawn and START pad stay clear of the exit", function()
+		-- World.Arena puts the court spawn 6 studs in from the court's +Z edge (a 64 stud court).
+		local spawnX, spawnZ = a.x, a.z + 32 - 6
+		local exit = ShakeRules.EXIT
+		local dist = math.sqrt((spawnX - exit.x) ^ 2 + (spawnZ - exit.z) ^ 2)
+		check(dist > ShakeRules.EXIT_CLEAR + 4, "the court spawn is " .. dist .. " from the exit")
+	end)
+
+	test("Shake: the avatar's tray moves are finite poses", function()
+		local roblox = require("@lune/roblox")
+		local Poses = luau.load(fs.readFile("src/shared/Poses.luau"), {
+			debugName = "Poses",
+			environment = { CFrame = roblox.CFrame, Vector3 = roblox.Vector3 },
+		})()
+		local names =
+			{ "ShakeCarry", "ShakeDip", "ShakeLift", "ShakeGoldCrouch", "ShakeGoldPop", "ShakeFlinch", "ShakeCheer", "ShakeSlump" }
+		local bad = 0
+		for _, name in names do
+			for i = 0, 20 do
+				local pose = Poses.samplePose("Chad", name, i * 0.21, 0)
+				for _, limb in Poses.LIMBS do
+					local cf = pose[limb]
+					local ok = cf ~= nil
+					if ok then
+						for _, v in { cf:GetComponents() } do
+							ok = ok and v == v and math.abs(v) < 1e6
+						end
+					end
+					if not ok then
+						bad += 1
+					end
+				end
+			end
+			check(table.find(Poses.poseNames("Story"), name) == nil, name .. " stays out of the cutscene rotation")
+		end
+		eq(bad, 0, "every Shake pose samples finite on every limb")
+		-- The carry holds the hands out in front (upper arms raised forward, elbows bent).
+		local carry = Poses.samplePose("Chad", "ShakeCarry", 0, 0)
+		check(carry.RightUpperArm.LookVector.Y > 0.3 and carry.LeftUpperArm.LookVector.Y > 0.3, "the carry raises both arms forward")
+	end)
+
 	test("Shake: the speed check", function()
 		local walk = ShakeRules.BASE_WALK
 		check(ShakeRules.plausible(walk * 0.5, 0.5, walk), "walking")

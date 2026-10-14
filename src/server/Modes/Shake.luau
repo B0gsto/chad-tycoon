@@ -20,10 +20,12 @@
 	  "lose"      { phase = "results", returnAt, score, target, best, prevBest, newBest, caught,
 	              hearts, why = "hearts" | "time" }
 	  "lobby"     { phase = "lobby", best, clears, rewardPreview }
-	              back in the lobby (RESULTS_SECONDS after a finish, or a fall on the results card)
+	              back in the lobby (RESULTS_SECONDS after a finish, "ShakeLobby", or a fall on
+	              the results card)
 	  "stop"      { reason }   the visit is over ("quit" | "left" | "respawn" | "switch" | ...)
 	Actions (Tycoon.addAction):
 	  "ShakeBegin" {}   start a run; accepted in phase "lobby" and "results" only
+	  "ShakeLobby" {}   the results card's LOBBY button: back to the lobby now ("results" only)
 	  ("ModeStart" { mode = "shake" } and "ModeQuit" are GameModes' own)
 	Snapshot modes.shake: { running, phase, best, clears, cooldownEnds, rewardPreview, target,
 	score, hearts, goAt, endAt } (score / hearts / goAt / endAt only with a run, kept on the
@@ -41,7 +43,7 @@
 	(ShakeRules.outcome); a pass pays through GameModes.modeReward + GameModes.payReward (in
 	full on the first clear and once per cooldown, else the repeat share at most once per
 	ShakeRules.REPEAT_GAP). The results card stays RESULTS_SECONDS, then the player is back in
-	the lobby. The EXIT arch (lobby only) or "ModeQuit" ends the visit and brings the player
+	the lobby. The EXIT arch (lobby and results card) or "ModeQuit" ends the visit and brings the player
 	back to the gates; a fall puts them on the lobby spawn (lobby, results) or the court spawn
 	(countdown, play).
 ]]
@@ -460,12 +462,12 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 			return
 		end
 
+		if onExit and (phase == "lobby" or phase == "results") then
+			def.stop(player, "quit")
+			GameModes.toGates(player)
+			return
+		end
 		if phase == "lobby" then
-			if onExit then
-				def.stop(player, "quit")
-				GameModes.toGates(player)
-				return
-			end
 			local pad, radius = startPad()
 			if pad then
 				local top = pad.Position + Vector3.new(0, pad.Size.Y / 2, 0)
@@ -531,6 +533,13 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 	if Tycoon then
 		Tycoon.addAction("ShakeBegin", function(session: any)
 			begin(session.player)
+		end)
+		Tycoon.addAction("ShakeLobby", function(session: any)
+			local player = session.player
+			local visit = visits[player]
+			if visit and visit.phase == "results" then
+				enterLobby(player, visit, "lobby")
+			end
 		end)
 	end
 

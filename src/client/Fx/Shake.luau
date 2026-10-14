@@ -11,8 +11,14 @@
 	    They fall with a gravity ease and a slow spin, tumbling junk wobbles;
 	  * a landing mark under each: a dark shadow that grows as the item nears and a ring the
 	    size of the catch radius (mint for good items, coral for junk);
-	  * the player's tray: a big striped tray over their head and a faint ring at their feet
-	    showing how far they reach (both local only);
+	  * the player's own avatar does the catching (Fx.PlayerPose, layered so the legs keep
+	    walking): it carries a striped tray in both hands (the tray rides on the hands every
+	    frame, the arms hold a carry pose). A catch is a quick knee dip and a lift of the
+	    tray, a golden one a deep coil and a hop with the tray pressed overhead; junk food
+	    makes it flinch back, head turned away; a win hoists the tray like a trophy with two
+	    hops, a loss slumps. The joints go back to the avatar's own animations when the tray
+	    goes (lobby, practice area left, the visit over). A faint ring at the feet shows how
+	    far the tray reaches. Nothing on the player glows;
 	  * in the lobby (phase "lobby") a practice warm-up: slow demo drops (a good item, now and
 	    then a junk one) into the arena's "PracticeArea" part, judged here only (nothing is
 	    sent or scored), with "NICE!" / "OUCH!" / "DODGED!" feedback and the tray shown while
@@ -29,7 +35,7 @@
 	  stop(payload)     the player left the mode ("stop")
 	Phases follow docs/minigames.md: "start" { phase = "lobby" } and a snapshot phase of
 	"lobby" start the practice; "countdown" (or the first "wave") starts the run; "win" /
-	"lose" clear it.
+	"lose" clear its drops while the avatar reacts with the tray; "lobby" takes the tray.
 ]]
 
 local Players = game:GetService("Players")
@@ -41,6 +47,7 @@ local Workspace = game:GetService("Workspace")
 local Net = require(ReplicatedStorage.Shared.Net)
 local Theme = require(ReplicatedStorage:WaitForChild("Theme")) :: any
 
+local PlayerPose = require(script.Parent.PlayerPose)
 local Sounds = require(script.Parent.Parent.Sounds) :: any
 
 local W = Theme.World
@@ -48,13 +55,18 @@ local W = Theme.World
 local Shake = {}
 
 -- Mirrors of ShakeRules (server-only): catch radius of good items and junk, the drop height
--- above the floor and the tray's height above the root.
+-- above the floor and (roughly) the tray's height above the root.
 local CATCH_RADIUS = 4.5
 local JUNK_RADIUS = 3
 local DROP_HEIGHT = 40
-local TRAY_ABOVE_ROOT = 3.4
+local TRAY_ABOVE_ROOT = 0.8
 -- Items reach the tray's height (above the floor) at their land time.
-local CATCH_HEIGHT = 6.4
+local CATCH_HEIGHT = 4.2
+-- The tray: its diameter, how far its centre sits past the hands (they hold its back half
+-- from under it) and how high its centre sits over the hands' centres.
+local TRAY_SIZE = 5.4
+local TRAY_REACH = 1.3
+local TRAY_ON_HANDS = 0.38
 -- Seconds an item rests on the tray waiting for the server's word before it slips off.
 local HOLD_WAIT = 0.7
 -- Seconds a missed item lies on the sand before it is gone.
@@ -109,8 +121,11 @@ local practiceLookAt = -math.huge
 local nextPracticeAt = 0
 local practiceCount = 0
 local practiceId = 0
--- Tray dip after a catch (1 = full dip, decays with time).
+-- Tray wobble after a catch (1 = full, decays with time).
 local trayKick = 0
+-- The local avatar holding the tray (Fx.PlayerPose, layered) and the character it holds.
+local poser: PlayerPose.Poser? = nil
+local posedFor: Model? = nil
 -- Camera kick (heart lost).
 local kickEnd = 0
 local kickTime = 0.3
@@ -356,7 +371,6 @@ local function burst(at: Vector3, colors: { Color3 }, count: number, speed: numb
 		local bit =
 			part(folder or Workspace, Vector3.new(s, if flat then s * 0.4 else s, s), CFrame.new(at), colors[(i - 1) % #colors + 1], {
 				Shape = if flat then CYL else BALL,
-				Material = if flat then Enum.Material.SmoothPlastic else Enum.Material.Neon,
 			})
 		if flat then
 			bit.CFrame = CFrame.new(at) * UP
@@ -391,9 +405,97 @@ local function rootPart(): BasePart?
 	return if root and root:IsA("BasePart") then root else nil
 end
 
+-- The tray's top centre (where caught items rest), or over the root while there is no tray.
 local function trayPoint(): Vector3?
+	local t = tray
+	if t then
+		return (t:GetPivot() * CFrame.new(0, 0.3, 0)).Position
+	end
 	local root = rootPart()
 	return root and root.Position + Vector3.new(0, TRAY_ABOVE_ROOT + 0.6, 0)
+end
+
+-- The avatar ---------------------------------------------------------------------------------
+
+local SINE, QUAD, BACK = Enum.EasingStyle.Sine, Enum.EasingStyle.Quad, Enum.EasingStyle.Back
+local IN, IN_OUT = Enum.EasingDirection.In, Enum.EasingDirection.InOut
+
+-- A root offset: `back` studs backward, leaning back `lean` degrees, turned `turn` degrees to
+-- the avatar's left, rolled `roll`.
+local function at(back: number, lean: number?, turn: number?, roll: number?): CFrame
+	return CFrame.new(0, 0, back) * CFrame.Angles(math.rad(lean or 0), math.rad(turn or 0), math.rad(roll or 0))
+end
+
+local CARRY: PlayerPose.Key = { pose = "ShakeCarry", blend = 0.3, ease = BACK }
+
+local MOVES: { [string]: { PlayerPose.Key } } = {
+	-- Picking the tray up.
+	carry = { CARRY },
+	-- A catch: knee dip, then the tray lifted with a little bounce, back to the carry.
+	catch = {
+		{ pose = "ShakeDip", blend = 0.08, ease = QUAD, hold = 0.03 },
+		{ pose = "ShakeLift", blend = 0.13, ease = BACK, hop = 0.14, hopTime = 0.22, hold = 0.06 },
+		{ pose = "ShakeCarry", blend = 0.26, ease = SINE, dir = IN_OUT },
+	},
+	-- A golden catch: a deep coil, a hop with the tray pressed overhead, a soft landing.
+	gold = {
+		{ pose = "ShakeGoldCrouch", blend = 0.1, ease = QUAD, hold = 0.04 },
+		{ pose = "ShakeGoldPop", blend = 0.16, ease = BACK, hop = 1.1, hopTime = 0.42, hold = 0.3 },
+		{ pose = "ShakeDip", blend = 0.1, ease = QUAD, dir = IN, hold = 0.05 },
+		{ pose = "ShakeCarry", blend = 0.3, ease = BACK },
+	},
+	-- Junk food hit: a recoil back and away, a sway, then the tray back up.
+	flinch = {
+		{ pose = "ShakeFlinch", blend = 0.07, ease = QUAD, root = at(0.55, 12, -10, 4), hop = 0.18, hopTime = 0.2, hold = 0.14 },
+		{ pose = "ShakeFlinch", blend = 0.2, ease = SINE, dir = IN_OUT, root = at(0.25, 5, 6, -3), hold = 0.14 },
+		{ pose = "ShakeCarry", blend = 0.34, ease = BACK },
+	},
+	-- A win: coil, a trophy hop with the tray overhead, again, then back to the carry.
+	win = {
+		{ pose = "ShakeGoldCrouch", blend = 0.12, ease = QUAD, hold = 0.05 },
+		{ pose = "ShakeCheer", blend = 0.18, ease = BACK, hop = 1.3, hopTime = 0.46, hold = 0.32 },
+		{ pose = "ShakeGoldCrouch", blend = 0.1, ease = QUAD, dir = IN, hold = 0.05 },
+		{ pose = "ShakeCheer", blend = 0.16, ease = BACK, hop = 0.9, hopTime = 0.4, hold = 1.1 },
+		{ pose = "ShakeCarry", blend = 0.45, ease = SINE, dir = IN_OUT },
+	},
+	-- A loss: a jolt back, then a long slump, then the tray picked back up.
+	lose = {
+		{ pose = "ShakeFlinch", blend = 0.12, ease = QUAD, root = at(0.3, 8), hold = 0.12 },
+		{ pose = "ShakeSlump", blend = 0.5, ease = SINE, dir = IN_OUT, root = at(0.1, -4), hold = 1.8 },
+		{ pose = "ShakeCarry", blend = 0.6, ease = SINE, dir = IN_OUT },
+	},
+}
+
+-- Lets the local avatar go: its joints go back to its own animations.
+local function releaseAvatar()
+	if poser then
+		poser:stop()
+	end
+	poser = nil
+	posedFor = nil
+end
+
+-- The poser holding the local avatar (attached again after a respawn), nil for an R6 avatar.
+local function holdAvatar(): PlayerPose.Poser?
+	local character = Players.LocalPlayer.Character
+	if posedFor == character and (poser == nil or (character and character.Parent)) then
+		return poser
+	end
+	releaseAvatar()
+	posedFor = character
+	poser = PlayerPose.attach(character, true)
+	if poser then
+		poser:play(MOVES.carry)
+	end
+	return poser
+end
+
+-- Plays one of MOVES on the avatar while it holds the tray.
+local function move(name: string)
+	local p = if tray then holdAvatar() else nil
+	if p then
+		p:play(MOVES[name])
+	end
 end
 
 -- A short camera kick (a heart lost): applied after the camera scripts, fading out.
@@ -420,30 +522,34 @@ local function cameraKick(strength: number, time: number)
 	end)
 end
 
--- The catch pop on the tray: sparkles, the floating word, the sound and the tray dip.
+-- A catch: the avatar dips and lifts the tray (a golden one: the hop with the tray overhead),
+-- a few crumbs of the item off the tray, the floating word and the sound.
 local function catchPop(at: Vector3, kind: string, text: string)
 	local gold = kind == "gold"
+	move(if gold then "gold" else "catch")
 	burst(
 		at,
 		if gold
 			then { W.Gold, W.Sunny, W.White }
 			elseif kind == "orb" then { W.Grape, W.SkyBlue, W.White }
 			else { W.Mint, W.Sunny, W.Pink, W.White },
-		if gold then 14 else 10,
-		if gold then 6 else 4.5,
+		8,
+		3.5,
 		false
 	)
 	floatText(at + Vector3.new(0, 1.5, 0), text, if gold then W.Gold else W.Mint, if gold then 46 else 36)
 	Sounds.play(if gold then "Cash" else "Collect", 0.08, if kind == "orb" then 1.2 else 1)
-	trayKick = 1
+	trayKick = if gold then 0.4 else 0.6
 end
 
--- The splat on the player: goo, "OUCH!", the sound and (in a run) the camera kick.
+-- Junk food on the tray: the avatar flinches back, goo off the tray, "OUCH!", the sound and
+-- (in a run) the camera kick.
 local function splatPop(at: Vector3, kick: boolean)
-	burst(at - Vector3.new(0, 0.5, 0), { W.WoodDark, W.Coral, W.Honey }, 12, 5.5, true)
+	move("flinch")
+	burst(at - Vector3.new(0, 0.3, 0), { W.WoodDark, W.Coral, W.Honey }, 10, 4.5, true)
 	floatText(at + Vector3.new(0, 1.5, 0), "OUCH!", W.Coral, 42)
 	Sounds.play("Error")
-	trayKick = 1.4
+	trayKick = 1
 	if kick then
 		cameraKick(0.9, 0.3)
 	end
@@ -462,24 +568,38 @@ end
 
 -- The tray ------------------------------------------------------------------------------------
 
+-- The tray the avatar carries: a white rim, a pink face with a sunny centre and a raised lip.
+-- Its pivot is the middle of the plate (the step loop seats it on the hands every frame).
 local function buildTray(parent: Instance)
 	local m = Instance.new("Model")
 	m.Name = "ShakeTray"
-	part(m, Vector3.new(0.3, 7, 7), UP, W.White, { Shape = CYL })
-	part(m, Vector3.new(0.32, 6.2, 6.2), CFrame.new(0, 0.02, 0) * UP, W.Pink, { Shape = CYL })
-	part(m, Vector3.new(0.34, 3.4, 3.4), CFrame.new(0, 0.04, 0) * UP, W.Sunny, { Shape = CYL })
-	part(m, Vector3.new(0.9, 0.5, 0.5), CFrame.new(0, -0.55, 0) * UP, W.Steel, { Shape = CYL })
+	part(m, Vector3.new(0.24, TRAY_SIZE, TRAY_SIZE), UP, W.White, { Shape = CYL })
+	part(m, Vector3.new(0.26, TRAY_SIZE - 0.7, TRAY_SIZE - 0.7), CFrame.new(0, 0.02, 0) * UP, W.Pink, { Shape = CYL })
+	part(m, Vector3.new(0.28, TRAY_SIZE * 0.45, TRAY_SIZE * 0.45), CFrame.new(0, 0.04, 0) * UP, W.Sunny, { Shape = CYL })
+	-- The lip: short white blocks round the rim.
+	local segments = 16
+	for i = 1, segments do
+		local a = (i / segments) * math.pi * 2
+		local r = TRAY_SIZE / 2 - 0.12
+		part(
+			m,
+			Vector3.new(0.24, 0.3, TRAY_SIZE * math.pi / segments + 0.05),
+			CFrame.new(math.cos(a) * r, 0.2, math.sin(a) * r) * CFrame.Angles(0, -a, 0),
+			W.White
+		)
+	end
+	m.WorldPivot = CFrame.identity
 	m.Parent = parent
 	tray = m
 	footRing = part(parent, Vector3.new(0.05, CATCH_RADIUS * 2, CATCH_RADIUS * 2), UP, W.Mint, {
 		Shape = CYL,
-		Material = Enum.Material.Neon,
-		Transparency = 0.85,
+		Transparency = 0.72,
 		Name = "ShakeReach",
 	})
 end
 
 local function clearTray()
+	releaseAvatar()
 	if tray then
 		tray:Destroy()
 		tray = nil
@@ -584,6 +704,23 @@ end
 
 -- The frame loop ------------------------------------------------------------------------------
 
+-- Where the tray sits: on the avatar's hands (its back half over them, level across them, so
+-- it tilts and rises with every arm move), or just over the head of an avatar without hands.
+local function trayFrame(root: BasePart): CFrame
+	local character = root.Parent
+	local left = character and character:FindFirstChild("LeftHand")
+	local right = character and character:FindFirstChild("RightHand")
+	if left and right and left:IsA("BasePart") and right:IsA("BasePart") then
+		local across = right.Position - left.Position
+		local side = if across.Magnitude > 0.2 then across.Unit else root.CFrame.RightVector
+		local up = Vector3.yAxis - side * side.Y
+		up = if up.Magnitude > 1e-3 then up.Unit else Vector3.yAxis
+		local hands = CFrame.fromMatrix((left.Position + right.Position) / 2, side, up)
+		return hands * CFrame.new(0, TRAY_ON_HANDS, -TRAY_REACH)
+	end
+	return CFrame.new(root.Position + Vector3.new(0, 3.4, 0))
+end
+
 local function step(dt: number)
 	local now = Workspace:GetServerTimeNow()
 	local root = rootPart()
@@ -601,9 +738,9 @@ local function step(dt: number)
 	end
 	trayKick = math.max(0, trayKick - dt * 5)
 	if tray and root then
-		local dip = 0.45 * math.min(trayKick, 1)
-		local tilt = math.sin(trayKick * 8) * 0.06 * trayKick
-		tray:PivotTo(CFrame.new(root.Position + Vector3.new(0, TRAY_ABOVE_ROOT - dip, 0)) * CFrame.Angles(tilt, clock * 0.6, tilt * 0.5))
+		holdAvatar()
+		local tilt = math.sin(trayKick * 8) * 0.07 * trayKick
+		tray:PivotTo(trayFrame(root) * CFrame.Angles(tilt, 0, tilt * 0.6))
 		if footRing then
 			local ground = if mode == "lobby" and practice then practice.floor else top
 			footRing.CFrame = CFrame.new(root.Position.X, ground + 0.05, root.Position.Z) * UP
@@ -669,6 +806,16 @@ local function step(dt: number)
 					local near = root and Vector2.new(root.Position.X - d.x, root.Position.Z - d.z).Magnitude <= reach + 0.75
 					item.state = if near then "held" else "floor"
 					item.heldAt = clock
+					if near then
+						-- On the tray: the item's own glow goes (nothing on the player glows).
+						for _, child in model:GetDescendants() do
+							if child:IsA("Light") then
+								child:Destroy()
+							elseif child:IsA("BasePart") and child.Material == Enum.Material.Neon then
+								child.Material = Enum.Material.SmoothPlastic
+							end
+						end
+					end
 				end
 				if item.ring then
 					item.ring:Destroy()
@@ -707,7 +854,7 @@ local function step(dt: number)
 			end
 		end
 	end
-	if (mode == "" or mode == "results") and not alive and stepConn then
+	if (mode == "" or mode == "results") and not alive and not tray and stepConn then
 		stepConn:Disconnect()
 		stepConn = nil
 	end
@@ -719,12 +866,17 @@ local function ensureStep()
 	end
 end
 
-local function clearAll()
+-- The drops in the air go (the tray stays).
+local function clearDrops()
 	for _, item in items do
 		clearItem(item)
 	end
-	table.clear(items)
 	table.clear(verdicts)
+end
+
+local function clearAll()
+	clearDrops()
+	table.clear(items)
 	clearTray()
 end
 
@@ -831,10 +983,19 @@ function Shake.init()
 			enterLobby()
 		elseif event == "countdown" then
 			enterRun()
+		elseif event == "go" then
+			-- The countdown is over (the run's drops already ride on "wave"); a lost
+			-- "countdown" still brings the tray up here.
+			if mode == "" or mode == "lobby" then
+				enterRun()
+			end
 		elseif event == "win" or event == "lose" then
 			if mode ~= "" then
-				clearAll()
+				-- The run's drops go; the avatar keeps the tray for its win or loss reaction
+				-- until the lobby.
+				clearDrops()
 				mode = "results"
+				move(event)
 			end
 		elseif event == "wave" then
 			-- The first wave can beat a lost "countdown".
@@ -856,7 +1017,7 @@ function Shake.init()
 			return
 		end
 		if info.running ~= true then
-			if mode == "lobby" or mode == "run" then
+			if mode ~= "" then
 				Shake.stop({})
 			end
 			return
@@ -868,7 +1029,7 @@ function Shake.init()
 			enterRun()
 		elseif phase == "results" and mode == "run" then
 			-- The finish Notify is late or lost: the run's drops go.
-			clearAll()
+			clearDrops()
 			mode = "results"
 		end
 	end)
