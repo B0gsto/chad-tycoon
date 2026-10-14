@@ -9,16 +9,17 @@
 	(docs/minigames.md, "Lobby first, then the game").
 
 	The dressing, parts only: a glossy honey-wood lane with board lines, aiming dots and red
-	chevron arrows, a pale pin deck, steel gutters and capped dividers, a dark pit behind the
-	pins with a glowing blue backstop and a bright pin deck, a navy back wall with three neon
-	strips, side kickbacks, a lit "DUMBBELL BOWL" header over the pins, a giant pin statue by
-	the approach and a raised ball-return track ending in a rack of three giant dumbbells.
-	Around it (dress): a confetti carpet, a lounge with benches and a shoe rack, a roped-off
+	chevron arrows, a pastel-pink pin deck with a neon edge, steel gutters and teal dividers
+	topped with candy bumper rails, a dark pit behind the pins with a glowing blue backstop, a
+	royal-blue back wall with three neon strips, side kickbacks, a hot-pink "DUMBBELL BOWL"
+	sign over the pins, a giant pin statue by the approach and a raised ball-return track
+	ending in a rack of three giant dumbbells.
+	Around it (dress): a pastel confetti carpet, a lounge with benches and a shoe rack, a roped-off
 	"PRO LANE" with a giant decor dumbbell on its foul line, a scoreboard and lamp posts.
 
 	The lobby (lobby): a coral knee wall between it and the alley with a gap under a lit
-	"DUMBBELL BOWL" arch, the glowing START pad ("StartPad") in that gap at the head of the
-	approach, a red runner from the spawn pad (World.Arena's "ArenaSpawn", now the lobby
+	"DUMBBELL BOWL" arch, the big glowing START pad ("StartPad", with a floating START pill)
+	just in front of that gap, a red runner from the spawn pad (World.Arena's "ArenaSpawn", now the lobby
 	spawn) to it, a HOW TO PLAY board (press to lock the aim arrow, press again in the power
 	meter's gold sweet spot, knock pins) on the left, the YOUR BEST board (SurfaceGui
 	"BestBoard" with TextLabels Best, Clears ("CLEARS: n") and Reward the client fills) on the
@@ -27,8 +28,9 @@
 	the client can light), sofas round a table, a bench, plants, lamps, a railing and the
 	EXIT arch in the back right corner.
 
-	Around the deck (sea): its own ocean (the hub's ends ~3000 studs out), shallows and foam
-	under the deck, buoys, two sandbars and palm islands on the horizon.
+	Around the deck (sea): its own ocean (the hub's ends ~3000 studs out), shallows and a foam
+	shoreline hugging the deck, buoys, two sandbars, a candy-striped lighthouse on its islet
+	and palm islands on the horizon.
 
 	The ten pins (white with two red neck stripes; Models "Pin1".."Pin10" with attribute
 	Index, pivot at the base centre) stand in `pins` for everyone to see. During a run
@@ -75,7 +77,7 @@ export type Built = Arena.Base & {
 -- line sits LANE.foulFromEdge in front of it.
 local LOBBY_D = 40
 -- The START pad's radius (feet within it begin a game).
-local START_RADIUS = 3.5
+local START_RADIUS = 5
 -- The dumbbells on the lobby rack: plate colour and the name the HUD can show.
 local CHOICES: { { color: Color3, label: string } } = {
 	{ color = W.RedOrange, label = "RED" },
@@ -83,9 +85,12 @@ local CHOICES: { { color: Color3, label: string } } = {
 	{ color = W.Mint, label = "MINT" },
 	{ color = W.HotPink, label = "PINK" },
 }
--- The navy confetti carpet (alley and lobby).
-local CARPET = Color3.fromRGB(34, 40, 92)
-local CONFETTI = { W.Sunny, W.HotPink, W.Mint, W.SkyBlue, W.Orange, W.White }
+-- The pastel periwinkle confetti carpet (the alley's a shade deeper than the lobby's).
+local CARPET = Color3.fromRGB(150, 164, 236)
+local LOBBY_CARPET = Color3.fromRGB(184, 196, 252)
+local CONFETTI = { W.Sunny, W.HotPink, W.Mint, W.Blue, W.Orange, W.RedOrange }
+-- The candy bumper rails along the dividers and the lighthouse's stripes.
+local CANDY = { W.HotPink, W.Sunny, W.SkyBlue, W.Mint }
 local OCEAN_TOP = -1.2
 local OCEAN_TILE = 2048
 local CYLINDER = Enum.PartType.Cylinder
@@ -336,7 +341,7 @@ local function dress(folder: Instance, at: At, a: { [string]: number }, outer: n
 		Position = UDim2.fromScale(0.05, 0.47),
 	})
 
-	-- Confetti carpet (navy with bright scraps) over every bit of floor beside the lanes.
+	-- Confetti carpet (pastel periwinkle with bright scraps) over every bit of floor beside the lanes.
 	local backD = laneL + BowlingRules.PIT + 1
 	local frontD = -(L.foulFromEdge - 0.5)
 	local carpets = {
@@ -456,7 +461,28 @@ local function dress(folder: Instance, at: At, a: { [string]: number }, outer: n
 
 	-- Scoreboard (right, past the bleachers): a big screen on two posts facing the bowler.
 	local sx, sd, sy = (bx0 + half) / 2 - 1, 76, 12
-	local screen = part({ Name = "Scoreboard", Size = Vector3.new(13, 7, 0.8), CFrame = CFrame.new(at(sx, sd, sy)), Color = W.Ink })
+	local screen = part({ Name = "Scoreboard", Size = Vector3.new(13, 7, 0.8), CFrame = CFrame.new(at(sx, sd, sy)), Color = W.Board })
+	-- A chunky hot-pink frame with sunny marquee bulbs along the top.
+	for _, e in { { 0, 3.75, 14.2, 0.7 }, { 0, -3.75, 14.2, 0.7 }, { -6.75, 0, 0.7, 7 }, { 6.75, 0, 0.7, 7 } } do
+		deco({
+			Name = "ScoreboardFrame",
+			Size = Vector3.new(e[3], e[4], 1.1),
+			CFrame = CFrame.new(at(sx + e[1], sd, sy + e[2])),
+			Color = W.HotPink,
+		})
+	end
+	for j = -3, 3 do
+		ellipsoid({
+			Name = "ScoreboardBulb",
+			Size = Vector3.new(0.8, 0.8, 0.8),
+			CFrame = CFrame.new(at(sx + j * 2, sd - 0.4, sy + 4.4)),
+			Color = if j % 2 == 0 then W.Sunny else W.Mint,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+	end
 	for _, side in { -1, 1 } do
 		part({
 			Name = "ScoreboardPost",
@@ -467,7 +493,7 @@ local function dress(folder: Instance, at: At, a: { [string]: number }, outer: n
 		deco({
 			Name = "ScoreboardNeon",
 			Size = Vector3.new(13.6, 0.4, 0.3),
-			CFrame = CFrame.new(at(sx, sd - 0.45, sy + side * 3.7)),
+			CFrame = CFrame.new(at(sx, sd - 0.62, sy + side * 3.5)),
 			Color = W.Mint,
 			Material = Enum.Material.Neon,
 		})
@@ -701,8 +727,17 @@ local function quietPart(parent: Instance, props: { [string]: any }): BasePart
 	return make("Part", props)
 end
 
-local function disc(parent: Instance, name: string, radius: number, topY: number, thick: number, color: Color3, x: number, z: number)
-	quietPart(parent, {
+local function disc(
+	parent: Instance,
+	name: string,
+	radius: number,
+	topY: number,
+	thick: number,
+	color: Color3,
+	x: number,
+	z: number
+): BasePart
+	return quietPart(parent, {
 		Name = name,
 		Shape = CYLINDER,
 		Size = Vector3.new(thick, radius * 2, radius * 2),
@@ -766,6 +801,73 @@ local function palm(parent: Instance, base: CFrame, height: number, lean: number
 	end
 end
 
+-- The horizon landmark: a chunky candy-striped lighthouse (red and white bands tapering up to
+-- a teal gallery, a glowing sunny lantern and a red dome) on a grassy islet with rocks and a
+-- foam ring, its door turned to face `toward` (the deck).
+local function lighthouse(parent: Instance, x: number, z: number, toward: Vector3)
+	disc(parent, "LighthouseShallows", 46, OCEAN_TOP + 0.15, 0.2, W.Shallows, x, z)
+	disc(parent, "LighthouseFoam", 30, OCEAN_TOP + 0.22, 0.2, W.White, x, z)
+	disc(parent, "LighthouseIsle", 27, 1.2, 4, W.Sand, x, z)
+	disc(parent, "LighthouseGrass", 19, 2.6, 2, W.Grass, x, z)
+	for i = 1, 5 do
+		local ang = i * 1.37
+		quietPart(parent, {
+			Name = "LighthouseRock",
+			Shape = BALL_SHAPE,
+			Size = Vector3.one * (4 + (i % 3) * 1.6),
+			CFrame = CFrame.new(x + math.cos(ang) * 24, 0.8, z + math.sin(ang) * 24),
+			Color = if i % 2 == 0 then W.Steel else W.StormCloud,
+		})
+	end
+	local baseY, h, bands = 2.6, 48, 6
+	local bandH = h / bands
+	for i = 1, bands do
+		local dia = 15 - 5 * (i - 0.5) / bands
+		quietPart(parent, {
+			Name = "LighthouseTower",
+			Shape = CYLINDER,
+			Size = Vector3.new(bandH + 0.05, dia, dia),
+			CFrame = CFrame.new(x, baseY + (i - 0.5) * bandH, z) * UPRIGHT,
+			Color = if i % 2 == 1 then W.RedOrange else W.White,
+		})
+	end
+	local face = CFrame.lookAt(Vector3.new(x, 0, z), Vector3.new(toward.X, 0, toward.Z))
+	quietPart(parent, {
+		Name = "LighthouseDoor",
+		Size = Vector3.new(3.6, 6, 1),
+		CFrame = face * CFrame.new(0, baseY + 3, -7.1),
+		Color = W.Navy,
+	})
+	for _, y in { 20, 36 } do
+		quietPart(parent, {
+			Name = "LighthouseWindow",
+			Size = Vector3.new(2.4, 3.2, 1),
+			CFrame = face * CFrame.new(0, baseY + y, -(7.5 - 2.5 * y / h) + 0.3),
+			Color = W.Navy,
+		})
+	end
+	local topY = baseY + h
+	disc(parent, "LighthouseGallery", 8.4, topY + 1.2, 1.2, W.Teal, x, z)
+	disc(parent, "LighthouseGalleryRim", 8.6, topY + 1.5, 0.4, W.Sunny, x, z)
+	disc(parent, "LighthouseLantern", 4.2, topY + 6.8, 5.6, W.Sunny, x, z).Material = Enum.Material.Neon
+	disc(parent, "LighthouseRoof", 5.4, topY + 7.8, 1, W.RedOrange, x, z)
+	quietPart(parent, {
+		Name = "LighthouseDome",
+		Shape = BALL_SHAPE,
+		Size = Vector3.one * 8,
+		CFrame = CFrame.new(x, topY + 7.8, z),
+		Color = W.RedOrange,
+	})
+	quietPart(parent, {
+		Name = "LighthouseFinial",
+		Shape = BALL_SHAPE,
+		Size = Vector3.one * 2.2,
+		CFrame = CFrame.new(x, topY + 12.6, z),
+		Color = W.Sunny,
+		Material = Enum.Material.Neon,
+	})
+end
+
 -- The arena's own sea: ocean tiles to the fog, shallows and foam under the deck (its pontoons
 -- stand in them), three buoys, two sandbars and palm islands on the horizon.
 local function sea(folder: Instance, a: { [string]: number })
@@ -787,6 +889,31 @@ local function sea(folder: Instance, a: { [string]: number })
 	local width = a.sizeX + 44
 	stadium(root, "Foam", a.x, a.z, width + 5, a.sizeZ, OCEAN_TOP + 0.08, W.White)
 	stadium(root, "Shallows", a.x, a.z, width, a.sizeZ, OCEAN_TOP + 0.15, W.Shallows)
+
+	-- The foam shoreline hugging the deck: a white skirt a little wider than the deck with
+	-- puffy scallops all round its edge.
+	local foamY = OCEAN_TOP + 0.24
+	local fx, fz = a.sizeX / 2 + 2.5, a.sizeZ / 2 + 2.5
+	quietPart(root, {
+		Name = "DeckFoam",
+		Size = Vector3.new(fx * 2, 0.2, fz * 2),
+		CFrame = CFrame.new(a.x, foamY - 0.1, a.z),
+		Color = W.White,
+		CastShadow = false,
+	})
+	local corners = { { -fx, -fz }, { fx, -fz }, { fx, fz }, { -fx, fz } }
+	local puff = 0
+	for c = 1, 4 do
+		local p0, p1 = corners[c], corners[c % 4 + 1]
+		local len = math.abs(p1[1] - p0[1]) + math.abs(p1[2] - p0[2])
+		local count = math.max(2, math.floor(len / 7 + 0.5))
+		for i = 0, count - 1 do
+			puff += 1
+			local t = i / count
+			local r = 2.2 + (puff * 7 % 3) * 0.7
+			disc(root, "DeckFoam", r, foamY, 0.2, W.White, a.x + p0[1] + (p1[1] - p0[1]) * t, a.z + p0[2] + (p1[2] - p0[2]) * t)
+		end
+	end
 
 	for i, b in { { -46, -40 }, { 44, 30 }, { -40, 72 } } do
 		local x, z = a.x + b[1], a.z + b[2]
@@ -823,6 +950,8 @@ local function sea(folder: Instance, a: { [string]: number })
 		palm(root, CFrame.new(x + 2, 0.3, z - 1) * CFrame.Angles(0, ang + i, 0), 13 + i * 2, 0.45)
 	end
 
+	lighthouse(root, a.x - 95, a.z - 230, Vector3.new(a.x, 0, a.z))
+
 	-- Palm islands on the horizon (Hub's farIsland look, fewer parts).
 	local islands = { { 250, 520, 48 }, { 292, 780, 60 }, { 205, 690, 40 }, { 338, 610, 36 }, { 110, 650, 52 }, { 32, 840, 44 } }
 	for n, isle in islands do
@@ -858,7 +987,9 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 	local railD = -L.foulFromEdge -- the knee wall between the lobby and the alley
 	local edgeD = railD - LOBBY_D -- the deck's +Z edge
 	local spawnD = edgeD + 6 -- World.Arena's spawn pad (6 in from the +Z edge)
-	local padD = railD - 4
+	local padD = railD - 7
+	-- The START pad's rings: a white rim round a sunny neon ring round the mint pad.
+	local ringR = START_RADIUS + 1.6
 	local font = Common.theme.Fonts.Display
 	local function part(props: { [string]: any }): BasePart
 		props.Parent = props.Parent or folder
@@ -890,16 +1021,16 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 		})
 	end
 
-	-- Floor: the navy confetti carpet and a red runner from the spawn pad to the START pad,
+	-- Floor: the pastel confetti carpet and a red runner from the spawn pad to the START pad,
 	-- with sunny chevrons pointing the way.
 	deco({
 		Name = "LobbyCarpet",
 		Size = Vector3.new(a.sizeX - 1, 0.04, LOBBY_D),
 		CFrame = CFrame.new(at(0, (edgeD + 0.5 + railD + 0.5) / 2, 0.02)),
-		Color = CARPET,
+		Color = LOBBY_CARPET,
 		Material = Enum.Material.Fabric,
 	})
-	local runFrom, runTo = spawnD + 3.5, padD - 4.5
+	local runFrom, runTo = spawnD + 3.5, padD - ringR - 0.3
 	deco({
 		Name = "Runner",
 		Size = Vector3.new(6, 0.03, runTo - runFrom),
@@ -1021,13 +1152,22 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 		globe(at(side * (SIGN_W / 2 + 2), signFront, SIGN_Y), 2.2, W.Sunny, "SignBulb", true)
 	end
 
-	-- The START pad: a mint glow disc on a sunny ring, lighting the gap.
+	-- The START pad, at the end of the runner in front of the gap: a big mint glow disc in a
+	-- sunny neon ring and a white rim, a soft light column and a floating START pill.
+	deco({
+		Name = "StartPadRim",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.16, ringR * 2, ringR * 2),
+		CFrame = CFrame.new(at(0, padD, 0.08)) * UPRIGHT,
+		Color = W.White,
+	})
 	deco({
 		Name = "StartPadRing",
 		Shape = CYLINDER,
-		Size = Vector3.new(0.2, START_RADIUS * 2 + 2, START_RADIUS * 2 + 2),
-		CFrame = CFrame.new(at(0, padD, 0.1)) * UPRIGHT,
+		Size = Vector3.new(0.22, START_RADIUS * 2 + 1.6, START_RADIUS * 2 + 1.6),
+		CFrame = CFrame.new(at(0, padD, 0.11)) * UPRIGHT,
 		Color = W.Sunny,
+		Material = Enum.Material.Neon,
 	})
 	local startPad = make("Part", {
 		Name = "StartPad",
@@ -1040,11 +1180,52 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 		CanTouch = false,
 		Parent = folder,
 	})
+	-- A white bullseye dot in the middle.
+	deco({
+		Name = "StartPadDot",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.34, 2.4, 2.4),
+		CFrame = CFrame.new(at(0, padD, 0.17)) * UPRIGHT,
+		Color = W.White,
+		Material = Enum.Material.Neon,
+	})
+	deco({
+		Name = "StartGlow",
+		Shape = CYLINDER,
+		Size = Vector3.new(6, START_RADIUS * 2 - 0.6, START_RADIUS * 2 - 0.6),
+		CFrame = CFrame.new(at(0, padD, 3.2)) * UPRIGHT,
+		Color = W.Mint,
+		Material = Enum.Material.Neon,
+		Transparency = 0.86,
+		CastShadow = false,
+	})
 	local padLight = Instance.new("PointLight")
 	padLight.Color = W.Mint
-	padLight.Range = 14
-	padLight.Brightness = 1.6
+	padLight.Range = 18
+	padLight.Brightness = 2.4
 	padLight.Parent = startPad
+	local startLabel = Instance.new("BillboardGui")
+	startLabel.Name = "StartLabel"
+	startLabel.Size = UDim2.fromScale(8, 2.6)
+	startLabel.StudsOffsetWorldSpace = Vector3.new(0, 5.4, 0)
+	startLabel.LightInfluence = 0
+	startLabel.MaxDistance = 140
+	startLabel.Adornee = startPad
+	startLabel.Parent = startPad
+	local startPill = Instance.new("Frame")
+	startPill.BorderSizePixel = 0
+	startPill.BackgroundColor3 = W.HotPink
+	startPill.Size = UDim2.fromScale(1, 1)
+	rounded(startPill, 0.5)
+	outline(startPill, W.White, 4)
+	startPill.Parent = startLabel
+	Common.label(startPill, {
+		Text = "START",
+		Font = font,
+		TextColor3 = W.Sunny,
+		Size = UDim2.fromScale(0.8, 0.78),
+		Position = UDim2.fromScale(0.1, 0.11),
+	})
 
 	-- A board on two teal posts at lane spot (x, d), turned to face a point behind the spawn
 	-- (its Back face is the front): navy, `accent` trim and three bulbs on top.
@@ -1137,7 +1318,7 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 
 	-- The ball rack (right, by the gap): a two-tier gym rack (teal shelves, coral sides,
 	-- chrome lips) with the four dumbbells to choose from and a sign on chrome posts.
-	local RX, RD = 14, -22
+	local RX, RD = 19, -24
 	local tiers = { { d = RD + 1.5, top = 4.4 }, { d = RD - 1.5, top = 1.4 } } -- back high, front low
 	for _, t in tiers do
 		part({
@@ -1259,7 +1440,7 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 		Color = W.Chrome,
 		Material = Enum.Material.Metal,
 	})
-	for _, lamp in { { -1, edgeD + 6 }, { 1, railD - 13 } } do
+	for _, lamp in { { -1, edgeD + 6 }, { 1, railD - 19 } } do
 		local x = lamp[1] * (half - 1.4)
 		upright(x, lamp[2], 0, 14, 0.7, W.Teal, "LampPost")
 		local lampGlobe = globe(at(x, lamp[2], 14.6), 2, W.Sunny, "LampGlobe", true)
@@ -1356,27 +1537,38 @@ function BowlingLane.build(): Built
 			})
 		end
 	end
-	-- Pin deck: paler wood under the triangle.
+	-- Pin deck: a pastel-pink stage under the triangle, edged at the front with a hot-pink
+	-- neon strip, so the white pins pop.
 	local deckFrom = L.headD - 3
+	make("Part", {
+		Name = "PinDeckEdge",
+		Size = Vector3.new(laneW, 0.06, 0.5),
+		CFrame = CFrame.new(at(0, deckFrom + 0.25, laneTop + 0.02)),
+		Color = W.HotPink,
+		Material = Enum.Material.Neon,
+		CanCollide = false,
+		CanQuery = false,
+		Parent = folder,
+	})
 	make("Part", {
 		Name = "PinDeck",
 		Size = Vector3.new(laneW, 0.03, laneL - deckFrom),
 		CFrame = CFrame.new(at(0, (deckFrom + laneL) / 2, laneTop + 0.005)),
-		Color = W.Butter,
+		Color = Color3.fromRGB(255, 196, 222),
 		Material = Enum.Material.SmoothPlastic,
 		Reflectance = 0.15,
 		CanCollide = false,
 		CanQuery = false,
 		Parent = folder,
 	})
-	-- Coral pin spots under the triangle (the pins stand on them).
+	-- Sunny pin spots under the triangle (the pins stand on them).
 	for _, spot in BowlingRules.PIN_SPOTS do
 		make("Part", {
 			Name = "PinSpot",
 			Shape = Enum.PartType.Cylinder,
-			Size = Vector3.new(0.02, 2.1, 2.1),
+			Size = Vector3.new(0.02, 2.3, 2.3),
 			CFrame = CFrame.new(at(spot.x, spot.d, laneTop + 0.03)) * UPRIGHT,
-			Color = W.Coral,
+			Color = W.Sunny,
 			CanCollide = false,
 			CanQuery = false,
 			Parent = folder,
@@ -1405,6 +1597,21 @@ function BowlingLane.build(): Built
 		-- Kickbacks: tall side walls by the pins, coral with a neon edge.
 		local kickL = laneL + 4 - deckFrom + 3
 		local kickD = deckFrom - 3 + kickL / 2
+		-- Chunky candy bumper rails on the dividers, from the foul line to the kickbacks.
+		local segs = 11
+		local segL = (kickD - kickL / 2) / segs
+		for k = 1, segs do
+			make("Part", {
+				Name = "BumperRail",
+				Shape = Enum.PartType.Cylinder,
+				Size = Vector3.new(segL - 0.12, 1.1, 1.1),
+				CFrame = CFrame.new(at(side * (outer + 0.6), (k - 0.5) * segL, 1.2)) * CFrame.Angles(0, math.pi / 2, 0),
+				Color = CANDY[(k + (if side > 0 then 2 else 0)) % #CANDY + 1],
+				CanCollide = false,
+				CanQuery = false,
+				Parent = folder,
+			})
+		end
 		make("Part", {
 			Name = "Kickback",
 			Size = Vector3.new(1, 6, kickL),
@@ -1439,7 +1646,7 @@ function BowlingLane.build(): Built
 		Name = "BackWall",
 		Size = Vector3.new(wallW, 12, 1),
 		CFrame = CFrame.new(at(0, wallD, 6)),
-		Color = W.Navy,
+		Color = Color3.fromRGB(72, 100, 200),
 		Parent = folder,
 	})
 	-- The glowing backstop behind the pins: a blue light panel edged in sunny neon (the white
@@ -1483,22 +1690,31 @@ function BowlingLane.build(): Built
 			Parent = folder,
 		})
 	end
-	-- The big glowing sign over the pin deck: a navy board on the back wall's top with a
-	-- neon frame, "DUMBBELL BOWL" in white with a hot-pink glow and a sunny tagline.
+	-- The big glowing sign over the pin deck: a hot-pink-to-orange board on the back wall's
+	-- top with a sunny neon frame and mint bulbs, "DUMBBELL BOWL" in white and a sunny tagline.
 	local SIGN_W, SIGN_H, SIGN_Y = 34, 7, 16.5
 	local sign = make("Part", {
 		Name = "BowlingSign",
 		Size = Vector3.new(SIGN_W, SIGN_H, 0.8),
 		CFrame = CFrame.new(at(0, wallD - 0.2, SIGN_Y)),
-		Color = W.Navy,
+		Color = W.HotPink,
 		Parent = folder,
 	})
 	local gui = Instance.new("SurfaceGui")
 	gui.Face = Enum.NormalId.Back
 	gui.PixelsPerStud = 24
 	gui.LightInfluence = 0
-	gui.Brightness = 2
+	gui.Brightness = 1.6
 	gui.Parent = sign
+	local face = Instance.new("Frame")
+	face.BorderSizePixel = 0
+	face.BackgroundColor3 = W.White
+	face.Size = UDim2.fromScale(1, 1)
+	face.ZIndex = 0
+	face.Parent = gui
+	local faceTint = Instance.new("UIGradient")
+	faceTint.Color = ColorSequence.new(W.HotPink, W.Orange)
+	faceTint.Parent = face
 	local title = Common.label(gui, {
 		Text = "DUMBBELL BOWL",
 		Font = Common.theme.Fonts.Display,
@@ -1507,23 +1723,27 @@ function BowlingLane.build(): Built
 		Position = UDim2.fromScale(0.03, 0.04),
 	})
 	local glow = title:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
-	glow.Color = W.HotPink
+	glow.Color = W.Ink
 	glow.Thickness = 6
 	glow.Parent = title
-	Common.label(gui, {
+	local tagline = Common.label(gui, {
 		Text = "KNOCK 'EM ALL DOWN!",
 		Font = Common.theme.Fonts.Display,
 		TextColor3 = W.Sunny,
 		Size = UDim2.fromScale(0.64, 0.26),
 		Position = UDim2.fromScale(0.18, 0.68),
 	})
+	local tagStroke = tagline:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
+	tagStroke.Color = W.Ink
+	tagStroke.Thickness = 3
+	tagStroke.Parent = tagline
 	local signFront = wallD - 0.75
 	for _, edge in { { 0, SIGN_H / 2 + 0.3, SIGN_W + 1, 0.5 }, { 0, -SIGN_H / 2 - 0.3, SIGN_W + 1, 0.5 } } do
 		make("Part", {
 			Name = "SignNeon",
 			Size = Vector3.new(edge[3], edge[4], 0.4),
 			CFrame = CFrame.new(at(edge[1], signFront, SIGN_Y + edge[2])),
-			Color = W.HotPink,
+			Color = W.Mint,
 			Material = Enum.Material.Neon,
 			CanCollide = false,
 			CanQuery = false,
@@ -1535,7 +1755,7 @@ function BowlingLane.build(): Built
 			Name = "SignNeon",
 			Size = Vector3.new(0.5, SIGN_H + 1.1, 0.4),
 			CFrame = CFrame.new(at(side * (SIGN_W / 2 + 0.25), signFront, SIGN_Y)),
-			Color = W.HotPink,
+			Color = W.Sunny,
 			Material = Enum.Material.Neon,
 			CanCollide = false,
 			CanQuery = false,
@@ -1546,7 +1766,7 @@ function BowlingLane.build(): Built
 			Name = "SignBulb",
 			Size = Vector3.new(2.2, 2.2, 2.2),
 			CFrame = CFrame.new(at(side * (SIGN_W / 2 + 2), signFront, SIGN_Y)),
-			Color = W.Sunny,
+			Color = W.Mint,
 			Material = Enum.Material.Neon,
 			CanCollide = false,
 			CanQuery = false,
