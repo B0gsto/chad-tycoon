@@ -7,21 +7,29 @@
 	  lobby      the lobby card (right edge, mid-height): SHAKE CATCH, the goal, best and
 	             clears, the reward status (full pack ready, or the wait and the repeat
 	             share), a big PLAY (tap, Enter, gamepad X: "ShakeBegin"; gamepad A stays
-	             jump) and LEAVE ("ModeQuit"). The run HUD is hidden.
+	             jump; Enter is left alone while a window is open or a TextBox has focus) and
+	             LEAVE ("ModeQuit"). The run HUD is hidden.
 	  countdown  a big "3, 2, 1, GO!" in the centre ("go" ends it); the run column comes up.
 	  play       the run column (right edge, mid-height, like the Mog test): a glass score pill
-	             ("12 / 25" with a star, the quiet X that asks "QUIT?" before ModeQuit), a
+	             ("12 / 25" with a star, the quiet X that asks "QUIT?" before ModeQuit; gamepad
+	             Y presses it, a Y badge shows while a gamepad is in use), a
 	             chunky bar toward the target, three hearts and the clock with the wave
 	             ("0:42 · WAVE 2/4"). Wave banners and "TARGET HIT!" in the centre; a red
 	             edge flash when a heart goes.
 	  results    the results card on "win" / "lose": title, catches and score, best (a
-	             flashing NEW BEST!), the pay (or why none), PLAY AGAIN ("ShakeBegin"; Enter,
+	             flashing NEW BEST!), the pay (or why none), the three stars (ShakeRules.STARS:
+	             lit for each tier reached, with the star bonus or the next star's points),
+	             PLAY AGAIN ("ShakeBegin"; Enter,
 	             gamepad X) and LOBBY ("ShakeLobby", counting down to the server's returnAt).
 	             It goes on the "lobby" event (or the snapshot's phase back to lobby).
 
 	The arena's "BestBoard" SurfaceGui (under the arena Model, attribute Mode = "shake") gets
 	its TextLabels "Best", "Clears" and "Reward" (each optional) filled from the snapshot, and
-	"RewardCaption" says what the reward value is (the pack ready, or the wait for it).
+	"RewardCaption" says what the reward value is (the pack ready, a star bonus ready, or the
+	wait for the pack).
+
+	Touch: the lobby card and the run column sit higher on the right edge, clear of the jump
+	button (and the thumbstick on the left).
 
 	Wired from Main.client.luau (nothing else needs editing):
 	  init(screen)        once, builds the HUD (hidden)
@@ -31,6 +39,7 @@
 ]]
 
 local ContextActionService = game:GetService("ContextActionService")
+local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -56,6 +65,9 @@ local ROOT_W = 280
 local ROOT_H = 160
 local ROOT_RIGHT = 36
 local ROOT_DY = 60
+-- On touch the column and the lobby card ride higher (the jump button owns the bottom right).
+local TOUCH_RIGHT = 16
+local TOUCH_DY = -40
 local PILL_W = 250
 local BAR_W = 230
 -- The lobby card (same spot as the run column).
@@ -66,6 +78,14 @@ local CLUTTER = { "FreeCorner", "ChestPanel" }
 -- Enter / gamepad X: PLAY in the lobby, PLAY AGAIN on the results card (gamepad A is jump).
 local PLAY_ACTION = "ShakeHudPlay"
 local PRIORITY = Enum.ContextActionPriority.High.Value + 40
+-- Gamepad Y during a run: the quit button (first press arms "QUIT?", the second quits).
+local QUIT_ACTION = "ShakeHudQuit"
+local PAD_Y_COLOR = Color3.fromRGB(232, 178, 30)
+-- Screen attributes that mean another window owns the keys (Enter is left alone).
+local BUSY = { "WindowOpen", "ModalOpen", "PopupBusy" }
+-- The results card's stars (ShakeRules.STARS).
+local STAR_COUNT = 3
+local STAR_DIM = Color3.fromRGB(70, 74, 96)
 -- A second PLAY press within this many seconds is ignored (the server answers with "countdown").
 local BEGIN_GAP = 1.5
 -- The results card closes itself this many seconds after the server's returnAt (or after
@@ -101,6 +121,9 @@ local finishReward: TextLabel
 local finishBest: TextLabel
 local finishNew: TextLabel
 local lobbyButton: TextButton
+local finishStars: { GuiObject } = {}
+local finishStarNote: TextLabel
+local quitBadge: TextLabel
 -- The gamepad X glyphs (shown while a gamepad is in use).
 local padGlyphs: { GuiObject } = {}
 -- Server time the server brings the player back to the lobby (the results card's countdown).
@@ -116,6 +139,8 @@ local target = 25
 local runSeconds = 60
 local hearts = 3
 local maxHearts = 3
+-- Hearts a run starts with (the lobby's goal line).
+local startHearts = 3
 local goAt = 0
 local endAt = 0
 local wave = 1
@@ -140,6 +165,7 @@ local finishToken = 0
 local stopNewBest: (() -> ())? = nil
 local stepConn: RBXScriptConnection? = nil
 local bound = false
+local quitBound = false
 -- The arena's best board.
 local arena: Instance? = nil
 local board: Instance? = nil
@@ -201,6 +227,20 @@ local function rewardStatus(): (string, string, boolean, number)
 		wait
 end
 
+-- The lowest star tier whose bonus is ready (rewardPreview.stars): its points and cash.
+local function readyStar(): (number?, number)
+	local list = reward.stars
+	if type(list) ~= "table" then
+		return nil, 0
+	end
+	for _, star in list do
+		if type(star) == "table" and star.ready == true and num(star.cash, 0) > 0 then
+			return num(star.at, 0), num(star.cash, 0)
+		end
+	end
+	return nil, 0
+end
+
 local function setBoardLabel(name: string, text: string)
 	local b = board
 	local label = b and b:FindFirstChild(name, true)
@@ -220,8 +260,14 @@ local function paintBoard()
 		setBoardLabel("RewardCaption", if clears == 0 then "FIRST CLEAR" else "FULL PACK")
 		setBoardLabel("Reward", "+" .. Format.money(num(reward.packCash, num(reward.cash, 0))))
 	else
-		setBoardLabel("RewardCaption", "NEXT PACK IN")
-		setBoardLabel("Reward", Format.clock(wait))
+		local at, cash = readyStar()
+		if at then
+			setBoardLabel("RewardCaption", string.format("STAR BONUS AT %d", at))
+			setBoardLabel("Reward", "+" .. Format.money(cash))
+		else
+			setBoardLabel("RewardCaption", "NEXT PACK IN")
+			setBoardLabel("Reward", Format.clock(wait))
+		end
 	end
 end
 
@@ -230,7 +276,6 @@ local function absorb(p: { [string]: any })
 	best = num(p.best, best)
 	clears = num(p.clears, clears)
 	target = num(p.target, target)
-	runSeconds = num(p.runSeconds, runSeconds)
 	cooldownEnds = num(p.cooldownEnds, cooldownEnds)
 	if type(p.rewardPreview) == "table" then
 		reward = p.rewardPreview
@@ -460,6 +505,18 @@ local function onPlayKey(_: string, state: Enum.UserInputState, input: InputObje
 	if state ~= Enum.UserInputState.Begin then
 		return Enum.ContextActionResult.Pass
 	end
+	-- Another window (the shop, a popup) or a TextBox owns the keys: leave them alone.
+	if UserInputService:GetFocusedTextBox() ~= nil then
+		return Enum.ContextActionResult.Pass
+	end
+	local gui = screen
+	if gui then
+		for _, name in BUSY do
+			if gui:GetAttribute(name) == true then
+				return Enum.ContextActionResult.Pass
+			end
+		end
+	end
 	-- Enter with a button selected on one of the cards presses that button instead.
 	if input.KeyCode ~= Enum.KeyCode.ButtonX and (Kit.selectedIn(lobbyCard) or Kit.selectedIn(finishCard)) then
 		return Enum.ContextActionResult.Pass
@@ -496,6 +553,58 @@ local function bind(on: boolean)
 	end
 end
 
+local function resetQuit()
+	quitArmed = false
+	Kit.setButton(quitButton, "X", C.SurfaceHi)
+	quitButton.Size = UDim2.fromOffset(44, 44)
+end
+
+local function pressQuit()
+	if quitArmed then
+		resetQuit()
+		action:FireServer({ action = "ModeQuit" })
+		return
+	end
+	-- First press arms it: "QUIT?" for a few seconds.
+	quitArmed = true
+	Kit.setButton(quitButton, "QUIT?", C.Bad)
+	Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(96, 44) }, Enum.EasingStyle.Back)
+	task.delay(3, function()
+		if quitArmed then
+			resetQuit()
+		end
+	end)
+end
+
+local function onQuitKey(_: string, state: Enum.UserInputState, _input: InputObject): Enum.ContextActionResult
+	if state ~= Enum.UserInputState.Begin or not running then
+		return Enum.ContextActionResult.Pass
+	end
+	local gui = screen
+	if gui then
+		for _, name in BUSY do
+			if gui:GetAttribute(name) == true then
+				return Enum.ContextActionResult.Pass
+			end
+		end
+	end
+	pressQuit()
+	return Enum.ContextActionResult.Sink
+end
+
+-- Gamepad Y reaches the quit button during the countdown and play.
+local function bindQuit(on: boolean)
+	if on == quitBound then
+		return
+	end
+	quitBound = on
+	if on then
+		ContextActionService:BindActionAtPriority(QUIT_ACTION, onQuitKey, false, PRIORITY, Enum.KeyCode.ButtonY)
+	else
+		ContextActionService:UnbindAction(QUIT_ACTION)
+	end
+end
+
 local function ensureStep(on: boolean)
 	if on and not stepConn then
 		stepConn = RunService.RenderStepped:Connect(render)
@@ -505,16 +614,10 @@ local function ensureStep(on: boolean)
 	end
 end
 
-local function resetQuit()
-	quitArmed = false
-	Kit.setButton(quitButton, "X", C.SurfaceHi)
-	quitButton.Size = UDim2.fromOffset(44, 44)
-end
-
 -- Lobby card ---------------------------------------------------------------------------------
 
 local function paintLobby()
-	lobbyGoal.Text = string.format("Catch %d in %d s — dodge junk food", target, runSeconds)
+	lobbyGoal.Text = string.format("Score %d points — gold = 3! %d hearts", target, startHearts)
 	lobbyStats.Text = string.format("BEST %d   ·   CLEARS %d", best, clears)
 	local line, sub, ready = rewardStatus()
 	lastRewardText = line
@@ -584,6 +687,31 @@ local function showFinish(p: { [string]: any }, won: boolean)
 	if type(p.cooldownEnds) == "number" then
 		cooldownEnds = p.cooldownEnds
 	end
+	-- The stars: one per tier reached (a pass is one), popping in one by one.
+	local stars = math.clamp(math.floor(num(p.stars, if won then 1 else 0)), 0, STAR_COUNT)
+	local starCash = num(p.starCash, 0)
+	local nextStar = p.starNext
+	for i, star in finishStars do
+		star.Visible = false
+		if i <= stars then
+			task.delay(0.25 + i * 0.18, function()
+				if finishCard.Visible and finishStars[i] == star then
+					Kit.appear(star, { from = 2.2, time = 0.3 })
+					Sounds.play("Collect", 0.05, 1 + i * 0.12)
+				end
+			end)
+		end
+	end
+	if starCash > 0 then
+		finishStarNote.Text = string.format("%d STARS! Star bonus +%s", stars, Format.money(starCash))
+		finishStarNote.TextColor3 = C.Gold
+	elseif won and type(nextStar) == "number" then
+		finishStarNote.Text = string.format("Next star at %d points", nextStar)
+		finishStarNote.TextColor3 = C.TextDim
+	else
+		finishStarNote.Text = if stars >= STAR_COUNT then "All 3 stars!" else ""
+		finishStarNote.TextColor3 = C.Gold
+	end
 	returnAt = num(p.returnAt, 0)
 	lobbyLeft = -1
 	Kit.setButton(lobbyButton, "LOBBY")
@@ -634,6 +762,7 @@ end
 -- Takes the run column down (banners, count, flash).
 local function endRun()
 	running = false
+	bindQuit(false)
 	bannerEpoch += 1
 	bannerShown = 0
 	banner.Visible = false
@@ -682,6 +811,7 @@ local function beginRun(p: { [string]: any })
 	-- A snapshot in play has no count to show.
 	lastCount = if goAt > now then -1 else 0
 	resetQuit()
+	bindQuit(true)
 	for _, child in heartsRow:GetChildren() do
 		if child:IsA("Frame") then
 			child:Destroy()
@@ -706,6 +836,7 @@ local function leaveMode()
 	end
 	hideLobby()
 	bind(false)
+	bindQuit(false)
 	ensureStep(false)
 	setChrome(false)
 end
@@ -717,6 +848,9 @@ function ShakeHud.start(payload: { [string]: any }?)
 	local p: { [string]: any } = payload or {}
 	if type(p.seconds) == "number" then
 		runSeconds = p.seconds
+	end
+	if type(p.hearts) == "number" and p.hearts > 0 then
+		startHearts = p.hearts
 	end
 	if p.phase == "lobby" or type(p.goAt) ~= "number" then
 		enterLobby(p)
@@ -928,7 +1062,7 @@ local function buildLobby(screenGui: ScreenGui)
 		Name = "Goal",
 		Text = "",
 		Font = F.UI,
-		TextSize = 16,
+		MaxTextSize = 16,
 		TextColor3 = C.Text,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.new(1, -28, 0, 20),
@@ -1013,6 +1147,13 @@ local function buildLobby(screenGui: ScreenGui)
 		for _, glyph in padGlyphs do
 			glyph.Visible = Kit.gamepad == true
 		end
+		if quitBadge then
+			quitBadge.Visible = Kit.gamepad == true
+		end
+		-- Touch: the column and the card ride higher, clear of the jump button.
+		local right = if Kit.touch then TOUCH_RIGHT else ROOT_RIGHT
+		root.Position = UDim2.new(1, -right, 0.5, if Kit.touch then TOUCH_DY else ROOT_DY)
+		lobbyCard.Position = UDim2.new(1, -right + (if Kit.touch then 0 else 12), 0.5, if Kit.touch then TOUCH_DY + 10 else 20)
 		if lobbyCard.Visible then
 			paintLobby()
 		end
@@ -1022,7 +1163,7 @@ end
 local function buildFinish(screenGui: ScreenGui)
 	finishCard = Kit.panel(screenGui, {
 		Name = "ShakeFinish",
-		Size = UDim2.fromOffset(420, 290),
+		Size = UDim2.fromOffset(420, 330),
 		Position = UDim2.fromScale(0.5, 0.48),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Visible = false,
@@ -1085,6 +1226,40 @@ local function buildFinish(screenGui: ScreenGui)
 		TextColor3 = C.MoneyText,
 		Size = UDim2.new(1, -20, 0, 32),
 		Position = UDim2.fromOffset(10, 144),
+		ZIndex = 51,
+	})
+	-- The stars: a dim star per tier, a lit one over it that pops in when reached.
+	local starSize, starGap = 34, 10
+	local rowW = STAR_COUNT * starSize + (STAR_COUNT - 1) * starGap
+	for i = 1, STAR_COUNT do
+		local x = (i - 1) * (starSize + starGap) - rowW / 2
+		local dim = Kit.icon(finishCard, "Star", starSize, STAR_DIM, {
+			Name = "StarSlot" .. i,
+			Position = UDim2.new(0.5, x, 0, 180),
+			ZIndex = 51,
+		})
+		for _, inst in dim:GetDescendants() do
+			if inst:IsA("ImageLabel") then
+				inst.ImageColor3 = STAR_DIM
+				inst.ImageTransparency = 0.3
+			end
+		end
+		local lit = Kit.icon(finishCard, "Star", starSize, C.Gold, {
+			Name = "Star" .. i,
+			Position = UDim2.new(0.5, x, 0, 180),
+			ZIndex = 52,
+		})
+		lit.Visible = false
+		finishStars[i] = lit
+	end
+	finishStarNote = Kit.text(finishCard, {
+		Name = "StarNote",
+		Text = "",
+		Font = F.UI,
+		MaxTextSize = 16,
+		TextColor3 = C.TextDim,
+		Size = UDim2.new(1, -20, 0, 20),
+		Position = UDim2.fromOffset(10, 220),
 		ZIndex = 51,
 	})
 	local again = Kit.button(finishCard, {
@@ -1171,23 +1346,24 @@ function ShakeHud.init(screenGui: ScreenGui)
 		Radius = 22,
 		Depth = 2,
 		ZIndex = 4,
-	}, function()
-		if quitArmed then
-			resetQuit()
-			action:FireServer({ action = "ModeQuit" })
-			return
-		end
-		-- First tap arms it: "QUIT?" for a few seconds.
-		quitArmed = true
-		Kit.setButton(quitButton, "QUIT?", C.Bad)
-		Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(96, 44) }, Enum.EasingStyle.Back)
-		task.delay(3, function()
-			if quitArmed then
-				resetQuit()
-			end
-		end)
-	end)
+	}, pressQuit)
 	Kit.selectable(quitButton)
+	-- The gamepad Y badge on the quit button's corner.
+	quitBadge = Kit.new("TextLabel", {
+		Name = "PadY",
+		Text = "Y",
+		Font = F.Display,
+		TextSize = 14,
+		TextColor3 = W.Ink,
+		BackgroundColor3 = PAD_Y_COLOR,
+		Size = UDim2.fromOffset(20, 20),
+		Position = UDim2.fromOffset(-6, -6),
+		ZIndex = 8,
+		Visible = Kit.gamepad == true,
+		Parent = quitButton,
+	})
+	Kit.round(quitBadge)
+	Kit.stroke(quitBadge, 2, W.Ink)
 
 	-- The bar toward the target.
 	local bar = Kit.new("Frame", {

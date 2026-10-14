@@ -17,15 +17,20 @@
 	    tray, a golden one a deep coil and a hop with the tray pressed overhead; junk food
 	    makes it flinch back, head turned away; a win hoists the tray like a trophy with two
 	    hops, a loss slumps. The joints go back to the avatar's own animations when the tray
-	    goes (lobby, practice area left, the visit over). A faint ring at the feet shows how
-	    far the tray reaches. Nothing on the player glows;
+	    goes (lobby, practice area left, the visit over). A faint ring on the ground under the
+	    tray shows how far it reaches. Nothing on the player glows;
 	  * in the lobby (phase "lobby") a practice warm-up: slow demo drops (a good item, now and
 	    then a junk one) into the arena's "PracticeArea" part, judged here only (nothing is
 	    sent or scored), with "NICE!" / "OUCH!" / "DODGED!" feedback and the tray shown while
 	    the player stands in the practice area;
 	  * a short camera kick when junk food costs a heart;
-	  * at the land time an item over the tray waits there for the server's word ("catch":
-	    sparkles and a floating "+1" / "+3"; "splat": a junk splat and "OUCH!"); anything else
+	  * catches are predicted here at the land time, from the same point the server judges
+	    (the tray, ShakeRules.TRAY_AHEAD in front of the root, inside the kind's catch radius
+	    within its window): the catch pops at once (sparkles, "+1" / "+3", the sound, the
+	    tray dip; junk: the splat, "OUCH!", the flinch). The server's "catch" / "splat" only
+	    confirms it (the HUD's score and hearts follow the server); a prediction the server
+	    never confirms gets a gentle correction ("MISSED" / "PHEW!") after holdWait(), and a
+	    server catch the client did not predict pops when it comes. Anything not caught
 	    hits the sand and fades (junk squashes flat).
 	Parts live in the arena's "Items" folder (World.ShakeArena), never collide or query.
 
@@ -67,8 +72,26 @@ local CATCH_HEIGHT = 4.2
 local TRAY_SIZE = 5.4
 local TRAY_REACH = 1.3
 local TRAY_ON_HANDS = 0.38
--- Seconds an item rests on the tray waiting for the server's word before it slips off.
-local HOLD_WAIT = 0.7
+-- Catch windows (seconds before / after the land time) and the tray's judge point in front
+-- of the root: mirrors of ShakeRules.CATCH, ShakeRules.JUNK and ShakeRules.TRAY_AHEAD.
+local CATCH_EARLY = 0.3
+local CATCH_LATE = 0.3
+local JUNK_LATE = 0.2
+local TRAY_AHEAD = 2
+-- A predicted catch waits at least HOLD_WAIT seconds after the land time for the server's
+-- word before it is corrected; more on a slow connection (holdWait: the server judges
+-- SETTLE plus its lag, at most LAG_MAX, after the land, then the word takes half a round
+-- trip back).
+local HOLD_WAIT = 1.0
+local SETTLE = 0.3
+local LAG_MAX = 0.4
+-- Seconds of the tray's judge points kept for the early part of the catch window.
+local TRAIL_KEEP = 0.5
+-- How long the flinch plays: a loss right after junk food waits for it.
+local FLINCH_TIME = 0.5
+-- Speed (studs/s) an uncaught item drops past the tray in the late part of its window.
+local LATE_DROP = 14
+local MISS_COLOR = Color3.fromRGB(205, 210, 222)
 -- Seconds a missed item lies on the sand before it is gone.
 local FLOOR_FADE = 0.7
 -- Practice drops (lobby): one every PRACTICE_GAP seconds, PRACTICE_FALL seconds in the air,
@@ -97,7 +120,8 @@ type Item = {
 	model: Model?,
 	shadow: BasePart?,
 	ring: BasePart?,
-	-- "wait" (not shown yet), "fall", "held", "floor", "done"
+	-- "wait" (not shown yet), "fall", "landing" (the late window), "predicted" (popped here,
+	-- waiting for the server's word), "floor", "done"
 	state: string,
 	heldAt: number,
 	spin: number,
@@ -123,6 +147,10 @@ local practiceCount = 0
 local practiceId = 0
 -- Tray wobble after a catch (1 = full, decays with time).
 local trayKick = 0
+-- The tray's judge points (server time, x, z) of the last TRAIL_KEEP seconds of a run.
+local trail: { { t: number, x: number, z: number } } = {}
+-- os.clock() the last flinch started (a loss waits for it).
+local flinchAt = -math.huge
 -- The local avatar holding the tray (Fx.PlayerPose, layered) and the character it holds.
 local poser: PlayerPose.Poser? = nil
 local posedFor: Model? = nil
@@ -405,6 +433,24 @@ local function rootPart(): BasePart?
 	return if root and root:IsA("BasePart") then root else nil
 end
 
+-- Where catches are judged: TRAY_AHEAD studs in front of the root along its flat look
+-- (ShakeRules.judgePoint), at the root's height.
+local function judgePoint(root: BasePart): Vector3
+	local look = root.CFrame.LookVector
+	local flat = Vector3.new(look.X, 0, look.Z)
+	if flat.Magnitude < 1e-3 then
+		return root.Position
+	end
+	return root.Position + flat.Unit * TRAY_AHEAD
+end
+
+-- True when the judge point (x, z) is inside the drop's catch radius.
+local function reaches(x: number, z: number, d: Drop): boolean
+	local r = if isJunk(d.kind) then JUNK_RADIUS else CATCH_RADIUS
+	local dx, dz = x - d.x, z - d.z
+	return dx * dx + dz * dz <= r * r
+end
+
 -- The tray's top centre (where caught items rest), or over the root while there is no tray.
 local function trayPoint(): Vector3?
 	local t = tray
@@ -546,6 +592,7 @@ end
 -- (in a run) the camera kick.
 local function splatPop(at: Vector3, kick: boolean)
 	move("flinch")
+	flinchAt = os.clock()
 	burst(at - Vector3.new(0, 0.3, 0), { W.WoodDark, W.Coral, W.Honey }, 10, 4.5, true)
 	floatText(at + Vector3.new(0, 1.5, 0), "OUCH!", W.Coral, 42)
 	Sounds.play("Error")
@@ -553,6 +600,61 @@ local function splatPop(at: Vector3, kick: boolean)
 	if kick then
 		cameraKick(0.9, 0.3)
 	end
+end
+
+-- The item's parts go (its record stays: a predicted catch still waits for the word).
+local function dropParts(item: Item)
+	for _, key in { "model", "ring", "shadow" } do
+		local inst = (item :: any)[key]
+		if inst then
+			inst:Destroy();
+			(item :: any)[key] = nil
+		end
+	end
+end
+
+-- A catch predicted at the land time: the pop plays now; the server's word only confirms it.
+local function predict(item: Item)
+	local d = item.drop
+	local at = trayPoint() or Vector3.new(d.x, item.catchY, d.z)
+	if isJunk(d.kind) then
+		splatPop(at, true)
+	else
+		catchPop(at, d.kind, if d.kind == "gold" then "+3" else "+1")
+	end
+	dropParts(item)
+	item.state = "predicted"
+end
+
+-- The server never confirmed a predicted catch: a gentle word instead of a second pop.
+local function correct(item: Item)
+	local d = item.drop
+	local at = (trayPoint() or Vector3.new(d.x, item.catchY, d.z)) + Vector3.new(0, 2.2, 0)
+	if isJunk(d.kind) then
+		floatText(at, "PHEW!", W.Mint, 24)
+	else
+		floatText(at, "MISSED", MISS_COLOR, 24)
+	end
+end
+
+-- Seconds after the land time a predicted catch waits for the server's word.
+local function holdWait(): number
+	local ok, ping = pcall(function()
+		return Players.LocalPlayer:GetNetworkPing()
+	end)
+	local rtt = if ok and type(ping) == "number" and ping == ping then math.clamp(ping, 0, 2) else 0.2
+	return math.max(HOLD_WAIT, SETTLE + math.min(rtt / 2 + 1 / 30, LAG_MAX) + 0.1 + rtt / 2 + 0.25)
+end
+
+-- True when the tray was over the drop in the early part of its window (the trail).
+local function trailHit(d: Drop): boolean
+	local from = d.landAt - (if isJunk(d.kind) then 0 else CATCH_EARLY)
+	for _, s in trail do
+		if s.t >= from and reaches(s.x, s.z, d) then
+			return true
+		end
+	end
+	return false
 end
 
 -- The server's word on an item: a catch pops it on the tray, a splat squashes it on the player.
@@ -684,7 +786,8 @@ local function judgePractice(item: Item, root: BasePart?): boolean
 	if not root then
 		return false
 	end
-	local flat = Vector2.new(root.Position.X - d.x, root.Position.Z - d.z).Magnitude
+	local point = judgePoint(root)
+	local flat = Vector2.new(point.X - d.x, point.Z - d.z).Magnitude
 	local level = math.abs(root.Position.Y - TRAY_ABOVE_ROOT - item.floorY) < 6
 	local at = trayPoint() or Vector3.new(d.x, item.catchY, d.z)
 	if level and flat <= (if junk then JUNK_RADIUS else CATCH_RADIUS) + 0.5 then
@@ -742,10 +845,20 @@ local function step(dt: number)
 		local tilt = math.sin(trayKick * 8) * 0.07 * trayKick
 		tray:PivotTo(trayFrame(root) * CFrame.Angles(tilt, 0, tilt * 0.6))
 		if footRing then
+			-- Under the tray: the ring is the reach the server judges.
 			local ground = if mode == "lobby" and practice then practice.floor else top
-			footRing.CFrame = CFrame.new(root.Position.X, ground + 0.05, root.Position.Z) * UP
+			local point = judgePoint(root)
+			footRing.CFrame = CFrame.new(point.X, ground + 0.05, point.Z) * UP
 		end
 	end
+	if mode == "run" and root then
+		local point = judgePoint(root)
+		table.insert(trail, { t = now, x = point.X, z = point.Z })
+		while trail[1] and trail[1].t < now - TRAIL_KEEP do
+			table.remove(trail, 1)
+		end
+	end
+	local holdFor: number? = nil
 	local alive = false
 	for id, item in items do
 		local d = item.drop
@@ -789,6 +902,14 @@ local function step(dt: number)
 				local pulse = if alpha > 1 - 0.5 / fall then 18 else 8
 				ring.Transparency = 0.72 - 0.32 * alpha + math.sin(clock * pulse) * 0.08 * alpha
 			else
+				if item.ring then
+					item.ring:Destroy()
+					item.ring = nil
+				end
+				if item.shadow then
+					item.shadow:Destroy()
+					item.shadow = nil
+				end
 				if item.practice then
 					if judgePractice(item, root) then
 						continue
@@ -802,39 +923,36 @@ local function step(dt: number)
 						resolve(item, verdict)
 						continue
 					end
-					local reach = if junk then JUNK_RADIUS else CATCH_RADIUS
-					local near = root and Vector2.new(root.Position.X - d.x, root.Position.Z - d.z).Magnitude <= reach + 0.75
-					item.state = if near then "held" else "floor"
-					item.heldAt = clock
-					if near then
-						-- On the tray: the item's own glow goes (nothing on the player glows).
-						for _, child in model:GetDescendants() do
-							if child:IsA("Light") then
-								child:Destroy()
-							elseif child:IsA("BasePart") and child.Material == Enum.Material.Neon then
-								child.Material = Enum.Material.SmoothPlastic
-							end
-						end
+					if trailHit(d) then
+						predict(item)
+						continue
 					end
-				end
-				if item.ring then
-					item.ring:Destroy()
-					item.ring = nil
-				end
-				if item.shadow then
-					item.shadow:Destroy()
-					item.shadow = nil
+					item.state = "landing"
 				end
 			end
-		elseif item.state == "held" then
-			local at = trayPoint()
-			if at then
-				model:PivotTo(CFrame.new(at + Vector3.new(0, 0.6, 0)) * CFrame.Angles(0, item.spin * clock, 0))
+		elseif item.state == "landing" then
+			-- The late part of the window: the item drops on past the tray height, and a tray
+			-- arriving now still catches it.
+			if root then
+				local point = judgePoint(root)
+				if reaches(point.X, point.Z, d) then
+					predict(item)
+					continue
+				end
 			end
-			if clock - item.heldAt > HOLD_WAIT then
-				-- No word from the server: it slipped off the tray.
+			local since = now - d.landAt
+			local y = math.max(item.floorY + 0.8, item.catchY - since * LATE_DROP)
+			model:PivotTo(CFrame.new(d.x, y, d.z) * CFrame.Angles(0, item.spin * clock, 0))
+			if since > (if junk then JUNK_LATE else CATCH_LATE) then
 				item.state = "floor"
 				item.heldAt = clock
+			end
+		elseif item.state == "predicted" then
+			holdFor = holdFor or holdWait()
+			if now > d.landAt + (holdFor :: number) then
+				-- No word from the server: it did not count.
+				correct(item)
+				item.state = "done"
 			end
 		elseif item.state == "floor" then
 			local t = clock - item.heldAt
@@ -906,7 +1024,11 @@ local function onVerdict(payload: { [string]: any })
 		return
 	end
 	local item = items[id]
-	if item and (item.state == "held" or item.state == "floor") then
+	if item and item.state == "predicted" then
+		-- The server agrees: the pop already played.
+		item.state = "done"
+	elseif item and (item.state == "landing" or item.state == "floor") then
+		-- Caught after all (the server saw the tray there): the pop plays now.
 		resolve(item, payload)
 	elseif item and item.state ~= "done" then
 		verdicts[id] = payload
@@ -945,6 +1067,7 @@ local function enterRun()
 		return
 	end
 	clearAll()
+	table.clear(trail)
 	mode = "run"
 	findArena()
 	buildTray(folder or Workspace)
@@ -995,7 +1118,17 @@ function Shake.init()
 				-- until the lobby.
 				clearDrops()
 				mode = "results"
-				move(event)
+				-- Junk food that cost the last heart flinches first, then the loss plays.
+				local left = flinchAt + FLINCH_TIME - os.clock()
+				if left > 0 then
+					task.delay(left, function()
+						if mode == "results" then
+							move(event)
+						end
+					end)
+				else
+					move(event)
+				end
 			end
 		elseif event == "wave" then
 			-- The first wave can beat a lost "countdown".
