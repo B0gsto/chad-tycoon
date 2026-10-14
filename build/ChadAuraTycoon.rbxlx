@@ -26497,7 +26497,8 @@ end)
 	  "roll"   { aim, power, path, falls, knocked, mark, reset, frame, ball, card, total,
 	           over, wait } (path / falls: BowlingRules.Roll; wait = seconds until "ready")
 	  "win"    { score, target, best, newBest, first, cash, full, pay, packCash, repeatCash,
-	           cooldownEnds } (pay = "full" | "repeat")
+	           cooldownEnds, repeatEnds } (pay = "full" | "repeat" | "none": the repeat share
+	           pays once per BowlingRules.REPEAT_GAP; repeatEnds = when the next is due, 0 = now)
 	  "lose"   { score, target, best, newBest }
 	  "again"  {} (a new game in the same run; a "ready" follows)
 	  "stop"   { reason }
@@ -26546,6 +26547,15 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 
 	local function record(session: any): { best: number, clears: number, lastRewardAt: number }
 		return session.profile.modes[ID]
+	end
+
+	-- When the next repeat share is due (os.time); 0 when it already is.
+	local function repeatEnds(rec: any): number
+		local last = rec.lastRepeatAt
+		if BowlingRules.repeatDue(os.time(), last) then
+			return 0
+		end
+		return last + BowlingRules.REPEAT_GAP
 	end
 
 	local function toSpawn(player: Player)
@@ -26626,11 +26636,20 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		end
 		local first = rec.clears == 0
 		local reward = GameModes.modeReward(session, ID, first)
-		-- Inside the cooldown a pass still pays the smaller "run again" share.
+		-- Inside the cooldown a pass still pays the smaller "run again" share, but only once
+		-- per BowlingRules.REPEAT_GAP (stamped on the save, so a rejoin doesn't reset it).
 		local pay = "full"
+		local now = os.time()
+		local stamps = rec :: any
 		if not reward.full then
-			reward.cash = reward.repeatCash
-			pay = "repeat"
+			if BowlingRules.repeatDue(now, stamps.lastRepeatAt) then
+				reward.cash = reward.repeatCash
+				pay = "repeat"
+				stamps.lastRepeatAt = now
+			else
+				reward.cash = 0
+				pay = "none"
+			end
 		end
 		rec.clears += 1
 		local paid = GameModes.payReward(player, ID, reward)
@@ -26646,6 +26665,7 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 			packCash = paid.packCash,
 			repeatCash = paid.repeatCash,
 			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
+			repeatEnds = repeatEnds(rec),
 		})
 		GameModes.refresh(player)
 	end
@@ -26727,8 +26747,11 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		if not session then
 			return { cash = 0, full = false, packCash = 0, repeatCash = 0 }
 		end
-		local r = GameModes.modeReward(session, ID, record(session).clears == 0)
-		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = r.repeatCash }
+		local rec = record(session)
+		local r = GameModes.modeReward(session, ID, rec.clears == 0)
+		-- The repeat share reads 0 until its gap is over.
+		local repeatCash = if repeatEnds(rec) == 0 then r.repeatCash else 0
+		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = repeatCash }
 	end
 
 	function def.snapshot(player: Player): { [string]: any }
@@ -26743,6 +26766,7 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 			clears = rec.clears,
 			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 			rewardPreview = def.rewardPreview(player),
+			repeatEnds = repeatEnds(rec),
 			target = BowlingRules.PASS_SCORE,
 		}
 	end
@@ -26752,7 +26776,16 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		local player = session.player
 		local run = runs[player]
 		local clock = os.clock()
-		if not run or run.phase ~= "aim" or clock - run.lastRollAt < MIN_ROLL_GAP then
+		if not run then
+			return
+		end
+		if run.phase ~= "aim" or clock - run.lastRollAt < MIN_ROLL_GAP then
+			-- A rejected roll on the player's turn: say "ready" again so the HUD shows its
+			-- aim controls instead of waiting for a "roll" that never comes. (Mid-ball the
+			-- delayed "ready" is on its way; after the game the result screen is up.)
+			if run.phase == "aim" then
+				sendReady(player, run)
+			end
 			return
 		end
 		run.lastRollAt = clock
@@ -26851,7 +26884,9 @@ return Bowling
 
 local BowlingRules = {}
 
-BowlingRules.ARENA = { x = 740, y = 6, z = -380, sizeX = 30, sizeZ = 110 }
+-- 54 wide: the lane in the middle, a decorative neighbouring lane on the left, bleachers
+-- and a scoreboard on the right (World.BowlingLane).
+BowlingRules.ARENA = { x = 740, y = 6, z = -380, sizeX = 54, sizeZ = 110 }
 -- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
 BowlingRules.FALL_BELOW = 20
 
@@ -27158,10 +27193,13 @@ function BowlingRules.card(frames: { { number } }): ({ CardFrame }, number)
 		local marks: { string } = {}
 		local lastFrame = i == #frames
 		local standing = BowlingRules.PINS
-		for b, n in f do
-			if n == standing and (lastFrame or b == 1) and standing == BowlingRules.PINS then
+		-- A fresh rack: the frame's first ball, or (last frame only) a ball after a clear.
+		-- All ten off a fresh rack is a strike; clearing what was left is a spare.
+		local fresh = true
+		for _, n in f do
+			if fresh and n == BowlingRules.PINS then
 				table.insert(marks, "X")
-			elseif n == standing and b > 1 then
+			elseif not fresh and n == standing then
 				table.insert(marks, "/")
 			elseif n == 0 then
 				table.insert(marks, "-")
@@ -27169,6 +27207,7 @@ function BowlingRules.card(frames: { { number } }): ({ CardFrame }, number)
 				table.insert(marks, tostring(n))
 			end
 			standing -= n
+			fresh = standing <= 0 and lastFrame
 			if standing <= 0 then
 				standing = BowlingRules.PINS
 			end
@@ -27213,6 +27252,16 @@ end
 function BowlingRules.score(frames: { { number } }): number
 	local _, total = BowlingRules.card(frames)
 	return total
+end
+
+-- Inside the full-pay cooldown a pass pays the smaller repeat share at most once per
+-- REPEAT_GAP seconds (os.time; the stamp lives in profile.modes.bowling.lastRepeatAt).
+BowlingRules.REPEAT_GAP = 300
+
+function BowlingRules.repeatDue(now: number, lastRepeatAt: any): boolean
+	local last = if type(lastRepeatAt) == "number" and lastRepeatAt == lastRepeatAt then lastRepeatAt else 0
+	-- A stamp from the future (clock skew, a bad save) counts as long ago.
+	return last > now or now >= last + BowlingRules.REPEAT_GAP
 end
 
 function BowlingRules.passed(score: number): boolean
@@ -30407,8 +30456,9 @@ local Course = {}
 
 -- The plaza deck (x0..x1, z0..z1) and the spur that joins it to the hub ring, whose outer edge
 -- is at x = -(2 * PlotLayout.PLOT_HALF + 34) = -138 (World.Hub RING_OUT; tests/run.luau checks it).
--- (z +-32: the side edges hold gates 4-6, clear of the back row's outer pillars.)
-Course.PLAZA = { x0 = -210, x1 = -160, z0 = -32, z1 = 32, top = 0.5 }
+-- (z +-40: the side edges hold gates 4-6, well clear of the back row's outer pillars; the plot
+-- rows start at |z| = 54.)
+Course.PLAZA = { x0 = -222, x1 = -160, z0 = -40, z1 = 40, top = 0.5 }
 Course.SPUR = { x0 = -160, x1 = -138, half = 6, top = 0.3 }
 -- Where GoModes / ModeQuit put the player (feet): the spur end facing the gates (-X), and
 -- in front of the gates facing back toward the hub (+X). faceX: the direction faced.
@@ -30417,27 +30467,33 @@ Course.ARRIVAL = { x = -166, y = 0.5, z = 0, faceX = -1 }
 -- the player, and from closer it looked out through a portal's swirl.
 Course.QUIT = { x = -188, y = 0.5, z = 0, faceX = 1 }
 
--- Mode gates: one per catalog slot, a U round the plaza. Slots 1-3 stand in a row on the
--- plaza's west edge at x = GATE_X, fronts facing the hub (+X). Slots 4-6 stand on the side
--- edges (their own `x`, z = the edge) with fronts facing into the plaza (`faceZ`: +1 on the
--- south edge, -1 on the north one): 4 and 6 on the south edge, 5 on the north edge, where
--- the best-times BOARD balances 6. GATE_HALF is half the opening width of an open gate;
--- locked gates are narrower (World.Modes). Course.gateSpot / crossedGate read every slot.
+-- Mode gates: one per catalog slot, a U of six same-sized gates round the plaza, GATE_GAP
+-- studs between neighbouring centres (an open gate is about 20.4 wide over its feet, so
+-- every pair keeps a few studs of air and every sign reads whole). Slots 1-3 stand in the
+-- back row on the plaza's west edge at x = GATE_X, fronts facing the hub (+X); Mog and
+-- Cardio check that line themselves. Slots 4-6 stand on the side edges (their own `x`,
+-- z = the edge) with fronts facing into the plaza (`faceZ`: +1 on the south edge, -1 on
+-- the north one): 4 and 6 on the south edge, 5 on the north edge facing 4, and the
+-- best-times BOARD facing 6. GATE_HALF is half the opening width of an open gate; locked
+-- gates are narrower (World.Modes). Course.gateSpot / crossedGate read every slot.
 export type GateSpot = { z: number, x: number?, faceZ: number? }
-Course.GATE_X = -208
+Course.GATE_X = -220
+Course.GATE_GAP = 24
+Course.SIDE_X = { -198, -198 + Course.GATE_GAP }
 Course.GATES = {
 	[1] = { z = 0 },
-	[2] = { z = -19 },
-	[3] = { z = 19 },
-	[4] = { z = Course.PLAZA.z0, x = -195, faceZ = 1 },
-	[5] = { z = Course.PLAZA.z1, x = -195, faceZ = -1 },
-	[6] = { z = Course.PLAZA.z0, x = -175.5, faceZ = 1 },
+	[2] = { z = -Course.GATE_GAP },
+	[3] = { z = Course.GATE_GAP },
+	[4] = { z = Course.PLAZA.z0, x = Course.SIDE_X[1], faceZ = 1 },
+	[5] = { z = Course.PLAZA.z1, x = Course.SIDE_X[1], faceZ = -1 },
+	[6] = { z = Course.PLAZA.z0, x = Course.SIDE_X[2], faceZ = 1 },
 } :: { [number]: GateSpot }
 Course.GATE_HALF = 6
 -- The big GAME MODES sign high above and behind the gates (front faces +X).
-Course.BIG_SIGN = { x = -217, z = 0, width = 56, height = 15, bottom = 28 }
--- Best-times board on the plaza, facing the spur mouth.
-Course.BOARD = { x = -172, z = 20, faceX = -160, faceZ = 4 }
+Course.BIG_SIGN = { x = Course.GATE_X - 9, z = 0, width = 56, height = 15, bottom = 28 }
+-- Best-times board on the north edge across from gate 6, facing into the plaza (faceX/faceZ:
+-- the point it looks at).
+Course.BOARD = { x = Course.SIDE_X[2], z = Course.PLAZA.z1 - 2, faceX = Course.SIDE_X[2], faceZ = 0 }
 
 -- Walking west across this line inside gate 1's opening starts a Parkour run (the player
 -- is teleported onto the level's start deck).
@@ -32536,8 +32592,8 @@ end
 -- Beach props the hub must not place here (palms, beach balls): both plazas, their spurs
 -- and the big signs behind the gates (the second mirrors the first).
 Course.CLEAR = {
-	{ x0 = -230, x1 = -138, z0 = -36, z1 = 36 },
-	{ x0 = 138, x1 = 230, z0 = -36, z1 = 36 },
+	{ x0 = -238, x1 = -138, z0 = -46, z1 = 46 },
+	{ x0 = 138, x1 = 238, z0 = -46, z1 = 46 },
 }
 
 return Course
@@ -35481,10 +35537,13 @@ return Parkour
 	  "clear" { round, next, passed }             the round was copied (`next` comes up)
 	  "miss"  { hearts, reason, step, expected }  reason: "wrong" | "slow"
 	  "pass"  { round, cash, full, packCash, repeatCash, pay }
-	                                               pay: "first" | "full" | "repeat"
+	                                               pay: "first" | "full" | "repeat" | "none" (the
+	                                               repeat share rests PoseRules.REPEAT_GAP)
 	  "win" / "lose" { cleared, best, prevBest, newBest, passed, cash, full, packCash,
 	            repeatCash, pay }                  win = passed this run (cash: what the pass paid)
-	  "stop"  { reason }                          the stub's: quit, left, switch, ...
+	  "stop"  { reason }                          the stub's: quit, left, switch, ...; "invalid"
+	                                               when the player is moved off their podium
+	  "full"  { text }                            every podium lane is taken (start refused)
 	Snapshot modes.pose: { running, best, clears, cooldownEnds, rewardPreview, round, hearts }.
 ]]
 
@@ -35501,8 +35560,12 @@ local ID = "pose"
 local FEET_BELOW_ROOT = 3
 -- The turn opens this much before the client's show ends (the "round" notify's trip).
 local TURN_EARLY = 0.35
--- Presses closer together than this are a double tap and ignored.
-local PRESS_GAP = 0.06
+-- The first flex's deadline gets this much extra: the client's bar starts when the "round"
+-- notify arrives (after its trip), the server's clock when it was sent.
+local TURN_GRACE = 0.75
+-- A running player whose feet end up this far from their podium (moved away by something
+-- else) has the run ended as "invalid".
+local LEAVE_SPOT = 30
 -- A player not running stands "in the arena" within this margin of its deck.
 local ARENA_MARGIN = 4
 
@@ -35521,7 +35584,8 @@ type Run = {
 	nextAt: number,
 	turnAt: number,
 	deadline: number,
-	lastPress: number,
+	lane: number,
+	spot: CFrame,
 	replay: boolean,
 	cleared: number,
 	prevBest: number,
@@ -35537,8 +35601,30 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 	local runs: { [Player]: Run } = {}
 	local lastPos: { [Player]: Vector3 } = {}
 
-	local function record(session: any): { best: number, clears: number, lastRewardAt: number }
+	local function record(session: any): { best: number, clears: number, lastRewardAt: number, lastRepeatAt: number? }
 		return session.profile.modes[ID]
+	end
+
+	-- When the repeat share last paid (os.time; an extra field on the saved record).
+	local function repeatAt(rec: { [string]: any }): number
+		local at = rec.lastRepeatAt
+		return if type(at) == "number" and at == at and at >= 0 and at < math.huge then at else 0
+	end
+
+	-- The first podium lane no other run is using (nil: all taken).
+	local function freeLane(player: Player): number?
+		local used: { [number]: boolean } = {}
+		for other, run in runs do
+			if other ~= player then
+				used[run.lane] = true
+			end
+		end
+		for lane = 1, #built.playerSpots do
+			if not used[lane] then
+				return lane
+			end
+		end
+		return nil
 	end
 
 	local function toSpawn(player: Player)
@@ -35595,7 +35681,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		run.phase = "show"
 		run.done = 0
 		run.turnAt = now + length - TURN_EARLY
-		run.deadline = now + length + PoseRules.INPUT_TIMEOUT
+		run.deadline = now + length + PoseRules.INPUT_TIMEOUT + TURN_GRACE
 		GameModes.notify(player, "round", ID, {
 			round = run.round,
 			seq = table.move(run.seq, 1, run.round, 1, {}),
@@ -35645,7 +35731,16 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		local priced = GameModes.modeReward(session, ID, first)
 		local kind = if first then "first" elseif priced.full then "full" else "repeat"
 		if not priced.full then
-			priced.cash = priced.repeatCash
+			-- The repeat share pays at most once per PoseRules.REPEAT_GAP (saved with the
+			-- record, so a rejoin does not reset it); between those a pass pays nothing.
+			local now = os.time()
+			if PoseRules.repeatReady(repeatAt(rec), now) then
+				priced.cash = priced.repeatCash
+				rec.lastRepeatAt = now
+			else
+				priced.cash = 0
+				kind = "none"
+			end
 		end
 		rec.clears += 1
 		rec.best = PoseRules.newBest(rec.best, run.cleared)
@@ -35705,12 +35800,19 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			return false
 		end
 		local old = runs[player]
+		local lane = if old then old.lane else freeLane(player)
+		if not lane then
+			-- Every podium is busy: tell the player and leave them where they are.
+			GameModes.notify(player, "full", ID, { text = "The posing stage is full. Try again in a moment!" })
+			return false
+		end
 		if old then
 			-- Again from the finish card or the gate while a run is on: a fresh run.
 			unhold(old.held)
 			runs[player] = nil
 		end
 		local rec = record(session)
+		local spot: CFrame = built.playerSpots[lane]
 		local seed = (player.UserId % 100000) * 7919 + math.floor(os.clock() * 1000) % 1000003
 		local run: Run = {
 			startedAt = os.clock(),
@@ -35722,7 +35824,8 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			nextAt = os.clock() + PoseRules.INTRO,
 			turnAt = math.huge,
 			deadline = math.huge,
-			lastPress = 0,
+			lane = lane,
+			spot = spot,
 			replay = false,
 			cleared = 0,
 			prevBest = rec.best,
@@ -35731,7 +35834,6 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			held = nil,
 		}
 		runs[player] = run
-		local spot: CFrame = built.playerSpot
 		if teleport or old then
 			GameModes.teleport(player, spot.Position, spot.LookVector)
 		end
@@ -35799,9 +35901,12 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		end
 		-- A respawned character is a new root: hold that one (and put it back on the podium).
 		if not run.held or run.held.root ~= root then
-			local spot: CFrame = built.playerSpot
-			GameModes.teleport(player, spot.Position, spot.LookVector)
+			GameModes.teleport(player, run.spot.Position, run.spot.LookVector)
 			run.held = hold(player)
+		elseif (Vector3.new(pos.X, feetY, pos.Z) - run.spot.Position).Magnitude > LEAVE_SPOT then
+			-- Moved off the stage by something else (an admin, a teleport pad): the run is off.
+			def.stop(player, "invalid")
+			return
 		end
 		local clock = os.clock()
 		if (run.phase == "intro" or run.phase == "gap") and clock >= run.nextAt then
@@ -35826,7 +35931,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		if run.phase == "show" and clock >= run.turnAt then
 			run.phase = "input"
 		end
-		if run.phase ~= "input" or clock - run.lastPress < PRESS_GAP then
+		if run.phase ~= "input" then
 			return
 		end
 		local flex, step = data.flex, data.step
@@ -35836,7 +35941,6 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		if flex ~= math.floor(flex) or flex < 1 or flex > #PoseRules.FLEXES then
 			return
 		end
-		run.lastPress = clock
 		local result = PoseRules.press(run.seq, run.round, run.done, flex)
 		if result == "wrong" then
 			miss(player, run, "wrong")
@@ -35854,8 +35958,11 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		if not session then
 			return { cash = 0, full = false, packCash = 0, repeatCash = 0 }
 		end
-		local r = GameModes.modeReward(session, ID, record(session).clears == 0)
-		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = r.repeatCash }
+		local rec = record(session)
+		local r = GameModes.modeReward(session, ID, rec.clears == 0)
+		-- The repeat share is resting until PoseRules.REPEAT_GAP has passed since it last paid.
+		local repeatCash = if PoseRules.repeatReady(repeatAt(rec), os.time()) then r.repeatCash else 0
+		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = repeatCash }
 	end
 
 	function def.snapshot(player: Player): { [string]: any }
@@ -35909,6 +36016,7 @@ return Pose
 	  passed(cleared)             cleared rounds reach PASS_ROUND
 	  showStep(round)             seconds per flex while the rival shows, faster each round
 	  showLength(round)           seconds from "round" to the player's turn
+	  repeatReady(lastAt, now)    the repeat share may pay again (REPEAT_GAP since the last)
 	  newBest(best, cleared)      the saved best after a run that cleared `cleared` rounds
 
 	ARENA is where World.PoseStage builds the arena (floor top centre and size in studs,
@@ -35954,6 +36062,8 @@ PoseRules.ROUND_GAP = 1.6
 PoseRules.MISS_GAP = 2.2
 -- Seconds from "start" to the first show.
 PoseRules.INTRO = 2.6
+-- Inside the full reward's cooldown a pass pays the repeat share at most this often (s).
+PoseRules.REPEAT_GAP = 300
 
 local function lcg(seed: number): () -> number
 	local state = math.floor(math.abs(seed)) % 2147483648
@@ -35987,6 +36097,11 @@ function PoseRules.press(seq: { number }, round: number, done: number, flex: num
 		return "wrong"
 	end
 	return if done + 1 >= round then "clear" else "good"
+end
+
+-- Whether the repeat share may pay again (`lastAt`: os.time of its last pay, 0 = never).
+function PoseRules.repeatReady(lastAt: number, now: number): boolean
+	return lastAt <= 0 or now - lastAt >= PoseRules.REPEAT_GAP
 end
 
 function PoseRules.passed(cleared: number): boolean
@@ -36148,6 +36263,9 @@ local WAVE_LEAD = 1.5
 local SAMPLE_KEEP = 1.5
 -- After a finish the player is brought back to the gates this long later (unless they left).
 local RETURN_AFTER = 25
+-- During a run the feet must be this close to the exit pad's centre to quit (drops land at
+-- least ShakeRules.EXIT_CLEAR away, so a chase never brushes it).
+local EXIT_RUN_RADIUS = 2.5
 
 local Shake = {}
 
@@ -36163,6 +36281,8 @@ type Run = {
 	hearts: number,
 	caught: number,
 	samples: { ShakeRules.Sample },
+	-- Seconds the server sees this player late (ShakeRules.lagOf, refreshed every tick).
+	lag: number,
 }
 
 function Shake.create(GameModes: any, context: { [string]: any }): any
@@ -36171,10 +36291,12 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 	local def: any = { id = ID }
 	local runs: { [Player]: Run } = {}
 	local lastPos: { [Player]: Vector3 } = {}
-	-- When each player was last paid the repeat share (os.time()).
-	local lastRepeat: { [Player]: number } = {}
+	-- Bumped on every finish; a finish's return-to-gates timer only fires if still current.
+	local finishes: { [Player]: number } = {}
 
-	local function record(session: any): { best: number, clears: number, lastRewardAt: number }
+	-- lastRepeatAt (os.time() of the last repeat-share pay) rides on the save record too:
+	-- DataService keeps a mode record's extra keys, so the REPEAT_GAP survives rejoins.
+	local function record(session: any): { best: number, clears: number, lastRewardAt: number, lastRepeatAt: number? }
 		return session.profile.modes[ID]
 	end
 
@@ -36229,13 +36351,18 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		local run: Run = {
 			startedAt = os.clock(),
 			goAt = now + ShakeRules.READY_SECONDS,
-			drops = ShakeRules.schedule(Random.new():NextInteger(1, 2 ^ 30), built.catchArea),
+			drops = ShakeRules.schedule(
+				Random.new():NextInteger(1, 2 ^ 30),
+				built.catchArea,
+				{ x = built.exit.Position.X, z = built.exit.Position.Z }
+			),
 			nextDrop = 1,
 			sentWave = 0,
 			score = 0,
 			hearts = ShakeRules.HEARTS,
 			caught = 0,
 			samples = {},
+			lag = 0,
 		}
 		runs[player] = run
 		if teleport then
@@ -36296,11 +36423,12 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 			local r = GameModes.modeReward(session, ID, first)
 			local pay = "full"
 			if not r.full then
-				local last = lastRepeat[player]
-				pay = if last and os.time() - last < ShakeRules.REPEAT_GAP then "resting" else "repeat"
+				local last = rec.lastRepeatAt
+				local now = os.time()
+				pay = if type(last) == "number" and last <= now and now - last < ShakeRules.REPEAT_GAP then "resting" else "repeat"
 				r.cash = if pay == "repeat" then r.repeatCash else 0
 				if r.cash > 0 then
-					lastRepeat[player] = os.time()
+					rec.lastRepeatAt = now
 				end
 			end
 			local paid = GameModes.payReward(player, ID, r, root.Position)
@@ -36321,16 +36449,28 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		end
 		GameModes.notify(player, result, ID, payload)
 		GameModes.refresh(player)
+		local token = (finishes[player] or 0) + 1
+		finishes[player] = token
 		GameModes.returnLater(player, RETURN_AFTER, function(r: BasePart)
-			return inArena(r.Position)
+			-- A newer run (and its own finish) supersedes this timer.
+			return finishes[player] == token and inArena(r.Position)
 		end)
 	end
 
 	-- Judges every drop whose window has closed and ends the run when it is over.
-	local function play(player: Player, run: Run, root: BasePart, now: number)
-		local t = now - run.goAt
+	-- `prev`: the root's position last tick (a jump past MAX_STEP is a teleport, not a run).
+	local function play(player: Player, run: Run, root: BasePart, now: number, prev: Vector3?)
+		local ok, ping = pcall(function()
+			return player:GetNetworkPing()
+		end)
+		run.lag = ShakeRules.lagOf(if ok and type(ping) == "number" then ping else 0)
+		-- Samples are stamped with when the player stood there (the server sees it `lag` late).
+		local t = now - run.goAt - run.lag
 		local pos = root.Position
-		table.insert(run.samples, { t = t, x = pos.X, z = pos.Z })
+		local step = if prev then Vector3.new(pos.X - prev.X, 0, pos.Z - prev.Z).Magnitude else 0
+		if inArena(pos) and step <= ShakeRules.MAX_STEP then
+			table.insert(run.samples, { t = t, x = pos.X, z = pos.Z })
+		end
 		while run.samples[1] and run.samples[1].t < t - SAMPLE_KEEP do
 			table.remove(run.samples, 1)
 		end
@@ -36381,7 +36521,8 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		end
 		local exit = built.exit.Position
 		local flat = Vector3.new(pos.X - exit.X, 0, pos.Z - exit.Z)
-		local onExit = flat.Magnitude <= built.exitRadius and math.abs(feetY - built.top) < 4
+		local radius = if run then math.min(EXIT_RUN_RADIUS, built.exitRadius) else built.exitRadius
+		local onExit = flat.Magnitude <= radius and math.abs(feetY - built.top) < 4
 		if not run then
 			if prev and feetY < Course.PLAZA.top + 8 and Course.crossedGate(def.slot, prev.X, prev.Z, pos.X, pos.Z) then
 				GameModes.start(player, ID, true)
@@ -36399,7 +36540,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		if feetY < built.top - ShakeRules.FALL_BELOW then
 			toSpawn(player)
 		end
-		play(player, run, root, now)
+		play(player, run, root, now, prev)
 	end
 
 	function def.rewardPreview(player: Player): { [string]: any }
@@ -36433,7 +36574,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 
 	Players.PlayerRemoving:Connect(function(player)
 		lastPos[player] = nil
-		lastRepeat[player] = nil
+		finishes[player] = nil
 	end)
 
 	return def
@@ -36487,6 +36628,16 @@ ShakeRules.REPEAT_GAP = 120
 ShakeRules.CATCH = { radius = 4.5, early = 0.3, late = 0.3 }
 -- Junk is judged a touch late (the server sees a dodging player where they were a moment ago).
 ShakeRules.JUNK = { radius = 3, early = 0, late = 0.2 }
+-- The exit pad (World.Arena: +X / +Z corner, 5 studs in from both edges) and how far from it
+-- no drop may land, so chasing a corner drop never walks the player out of a run (the exit
+-- arch's posts stand inside this circle too).
+ShakeRules.EXIT = { x = ShakeRules.ARENA.x + ShakeRules.ARENA.sizeX / 2 - 5, z = ShakeRules.ARENA.z + ShakeRules.ARENA.sizeZ / 2 - 5 }
+ShakeRules.EXIT_CLEAR = 10
+-- The server sees a player's position this late: about half the round trip plus a frame of
+-- replication (lagOf). Samples are stamped back by it so dodges count when they happened.
+ShakeRules.LAG_MAX = 0.4
+-- A sample further than this (studs) from the last tick's position is a teleport: dropped.
+ShakeRules.MAX_STEP = 40
 -- A drop is judged this long after it lands (the longest `late`), once every sample is in.
 ShakeRules.SETTLE = 0.3
 
@@ -36572,10 +36723,45 @@ function ShakeRules.points(kind: string): number
 	return ShakeRules.POINTS[kind] or 0
 end
 
--- Every drop of a run, in land order, from its seed. Landing spots stay inside `area`; the
--- last items land by RUN_SECONDS.
-function ShakeRules.schedule(seed: number, area: Area): { Drop }
+-- The lag (seconds) to take off a sample's time for a player whose network ping (round trip,
+-- Player:GetNetworkPing seconds) is `ping`.
+function ShakeRules.lagOf(ping: number): number
+	if ping ~= ping then
+		return 0
+	end
+	return math.clamp(ping / 2 + 1 / 30, 0, ShakeRules.LAG_MAX)
+end
+
+-- (x, z) moved out of the `clear`-stud circle round `avoid`: straight away from it, or (when
+-- that runs off the area, as past a corner exit) toward the area's centre; clamped to `area`.
+function ShakeRules.keepClear(x: number, z: number, area: Area, avoid: { x: number, z: number }, clear: number): (number, number)
+	local function inside(px: number, pz: number): boolean
+		local dx, dz = px - avoid.x, pz - avoid.z
+		return dx * dx + dz * dz < clear * clear
+	end
+	if not inside(x, z) then
+		return x, z
+	end
+	local dx, dz = x - avoid.x, z - avoid.z
+	local dist = math.sqrt(dx * dx + dz * dz)
+	if dist >= 0.5 then
+		local nx = math.clamp(avoid.x + dx / dist * (clear + 0.5), area.x0, area.x1)
+		local nz = math.clamp(avoid.z + dz / dist * (clear + 0.5), area.z0, area.z1)
+		if not inside(nx, nz) then
+			return nx, nz
+		end
+	end
+	local cx, cz = (area.x0 + area.x1) / 2 - avoid.x, (area.z0 + area.z1) / 2 - avoid.z
+	local len = math.max(math.sqrt(cx * cx + cz * cz), 1e-6)
+	return math.clamp(avoid.x + cx / len * (clear + 0.5), area.x0, area.x1),
+		math.clamp(avoid.z + cz / len * (clear + 0.5), area.z0, area.z1)
+end
+
+-- Every drop of a run, in land order, from its seed. Landing spots stay inside `area` and
+-- at least EXIT_CLEAR studs from `avoid` (default EXIT); the last items land by RUN_SECONDS.
+function ShakeRules.schedule(seed: number, area: Area, avoid: { x: number, z: number }?): { Drop }
 	local rand = ShakeRules.rng(seed)
+	local exit = avoid or ShakeRules.EXIT
 	local drops: { Drop } = {}
 	local cx, cz = (area.x0 + area.x1) / 2, (area.z0 + area.z1) / 2
 	local function place(reach: number): (number, number)
@@ -36583,7 +36769,7 @@ function ShakeRules.schedule(seed: number, area: Area): { Drop }
 		local dist = reach * (0.35 + 0.65 * rand())
 		local x = math.clamp(cx + math.cos(angle) * dist, area.x0, area.x1)
 		local z = math.clamp(cz + math.sin(angle) * dist, area.z0, area.z1)
-		return x, z
+		return ShakeRules.keepClear(x, z, area, exit, ShakeRules.EXIT_CLEAR)
 	end
 	for index, wave in ShakeRules.WAVES do
 		local nextWave = ShakeRules.WAVES[index + 1]
@@ -40369,7 +40555,9 @@ actionHandlers.BenchStop = function(session)
 	Decor.releaseLifter(session.player)
 end
 
-local COSMETIC_ACTIONS = { BenchRep = true, BenchStop = true }
+-- Mini-game inputs are cosmetic here too: the modes refresh the State and pay (which marks the
+-- save dirty) themselves, so a press does not flush a full snapshot.
+local COSMETIC_ACTIONS = { BenchRep = true, BenchStop = true, PoseInput = true, BowlingRoll = true }
 
 -- Sent by the client once its UI is ready; the caller flushes fresh state.
 actionHandlers.Sync = function(_session) end
@@ -40728,7 +40916,7 @@ function Tycoon.init(builtWorld: WorldBuilder.World, themeModule: any)
 		local handler = actionHandlers[data.action]
 		if handler then
 			handler(session, data)
-			-- A rep changes no tycoon state: no snapshot for it.
+			-- A rep or a mini-game press changes no tycoon state: no snapshot for it.
 			if not COSMETIC_ACTIONS[data.action] then
 				markDirty(session)
 				flush(session)
@@ -40947,9 +41135,11 @@ return Arena
 
 	The dressing, parts only: a glossy honey-wood lane with board lines, aiming dots and red
 	chevron arrows, a pale pin deck, steel gutters and capped dividers, a dark pit behind the
-	pins, a navy back wall with three neon strips, side kickbacks, a lit "DUMBBELL BOWL"
-	header over the pins, a giant pin statue by the approach and a ball-return rack holding
-	three giant dumbbells.
+	pins with a glowing blue backstop and a bright pin deck, a navy back wall with three neon
+	strips, side kickbacks, a lit "DUMBBELL BOWL" header over the pins, a giant pin statue by
+	the approach and a raised ball-return track ending in a rack of three giant dumbbells.
+	Around it (dress): a confetti carpet, a lounge with benches and a shoe rack, a roped-off
+	"PRO LANE" with a giant decor dumbbell on its foul line, a scoreboard and lamp posts.
 
 	The ten pins (white with two red neck stripes; Models "Pin1".."Pin10" with attribute
 	Index, pivot at the base centre) stand in `pins` for everyone to see. During a run
@@ -40989,6 +41179,8 @@ local PIN_RED = Color3.fromRGB(226, 46, 58)
 local PLATE_COLORS = { W.RedOrange, W.Blue, W.Grape }
 -- The back wall's neon strips, bottom to top.
 local NEON_STRIPS = { W.HotPink, W.Sunny, W.Mint }
+-- The pins stand this much bigger than BowlingRules.PIN (chunkier, cartoony, easy to read).
+local PIN_SCALE = 1.45
 
 local function ellipsoid(props: { [string]: any }): BasePart
 	local p = make("Part", props)
@@ -41043,11 +41235,14 @@ local function makePin(parent: Instance, name: string, base: CFrame, scale: numb
 	return model
 end
 
--- A giant dumbbell lying across X with its centre at `centre` (plates `radius` studs).
-local function makeDumbbell(parent: Instance, centre: Vector3, plate: Color3, roller: boolean): Model
+-- A dumbbell lying across X with its centre at `centre` (plates `radius` studs), `scale`
+-- times the rules' size (bigger ones are decor: "GiantDumbbell").
+local function makeDumbbell(parent: Instance, centre: Vector3, plate: Color3, roller: boolean, scale: number?): Model
 	local model = Instance.new("Model")
-	model.Name = if roller then "BowlDumbbell" else "RackDumbbell"
-	local b = BowlingRules.BALL
+	local k = scale or 1
+	model.Name = if roller then "BowlDumbbell" elseif k > 1 then "GiantDumbbell" else "RackDumbbell"
+	local r = BowlingRules.BALL
+	local b = { radius = r.radius * k, halfLength = r.halfLength * k }
 	local quiet = { CanQuery = false, CanTouch = false, Parent = model }
 	local function props(extra: { [string]: any }): { [string]: any }
 		local t = table.clone(quiet)
@@ -41062,20 +41257,20 @@ local function makeDumbbell(parent: Instance, centre: Vector3, plate: Color3, ro
 		props({
 			Name = "Bar",
 			Shape = Enum.PartType.Cylinder,
-			Size = Vector3.new(b.halfLength * 2 + 0.3, 0.55, 0.55),
+			Size = Vector3.new(b.halfLength * 2 + 0.3 * k, 0.55 * k, 0.55 * k),
 			CFrame = cf,
 			Color = W.Chrome,
 			Reflectance = 0.25,
 		})
 	)
 	for _, side in { -1, 1 } do
-		local x = side * (b.halfLength - 0.35)
+		local x = side * (b.halfLength - 0.35 * k)
 		make(
 			"Part",
 			props({
 				Name = "Plate",
 				Shape = Enum.PartType.Cylinder,
-				Size = Vector3.new(0.7, b.radius * 2, b.radius * 2),
+				Size = Vector3.new(0.7 * k, b.radius * 2, b.radius * 2),
 				CFrame = cf * CFrame.new(x, 0, 0),
 				Color = plate,
 			})
@@ -41085,7 +41280,7 @@ local function makeDumbbell(parent: Instance, centre: Vector3, plate: Color3, ro
 			props({
 				Name = "Hub",
 				Shape = Enum.PartType.Cylinder,
-				Size = Vector3.new(0.8, b.radius * 1.1, b.radius * 1.1),
+				Size = Vector3.new(0.8 * k, b.radius * 1.1, b.radius * 1.1),
 				CFrame = cf * CFrame.new(x, 0, 0),
 				Color = W.Sunny,
 			})
@@ -41097,6 +41292,317 @@ local function makeDumbbell(parent: Instance, centre: Vector3, plate: Color3, ro
 	end
 	model.Parent = parent
 	return model
+end
+
+-- The dressing beside the lane: a closed "PRO LANE" on the left (dim, roped off, a giant
+-- dumbbell on its foul line), a confetti carpet, a lounge (benches, shoe rack) and a
+-- scoreboard on the right and lamp posts down both edges.
+type At = (x: number, d: number, y: number) -> Vector3
+local function dress(folder: Instance, at: At, a: { [string]: number }, outer: number)
+	local L = BowlingRules.LANE
+	local laneL = L.length
+	local half = a.sizeX / 2
+	local quiet: { [string]: any } = { CanCollide = false, CanQuery = false, CanTouch = false }
+	local function part(props: { [string]: any }): BasePart
+		props.Parent = props.Parent or folder
+		return make("Part", props)
+	end
+	local function deco(props: { [string]: any }): BasePart
+		for k, v in quiet do
+			props[k] = v
+		end
+		return part(props)
+	end
+
+	-- Neighbouring "PRO LANE" (left): narrower and dimmer (dark wood, no glow), its pins
+	-- standing behind a velvet rope with a CLOSED sign, a giant dumbbell resting on its foul line.
+	local nW, nG = 10, 1.5
+	local nx = -(outer + 1 + nG + nW / 2)
+	local nOuter = nx - nW / 2 - nG
+	part({
+		Name = "SideLane",
+		Size = Vector3.new(nW, 0.2, laneL),
+		CFrame = CFrame.new(at(nx, laneL / 2, 0.1)),
+		Color = W.WoodDark,
+		Material = Enum.Material.Wood,
+		Reflectance = 0.06,
+	})
+	deco({
+		Name = "SideDeck",
+		Size = Vector3.new(nW, 0.03, laneL - 68),
+		CFrame = CFrame.new(at(nx, (68 + laneL) / 2, 0.205)),
+		Color = W.Wood,
+		Material = Enum.Material.Wood,
+	})
+	for _, side in { -1, 1 } do
+		part({
+			Name = "SideGutter",
+			Size = Vector3.new(nG, 0.1, laneL),
+			CFrame = CFrame.new(at(nx + side * (nW / 2 + nG / 2), laneL / 2, -0.05)),
+			Color = W.Slate,
+			Material = Enum.Material.Metal,
+		})
+	end
+	part({ Name = "SideDivider", Size = Vector3.new(1, 0.7, laneL), CFrame = CFrame.new(at(nOuter - 0.5, laneL / 2, 0.35)), Color = W.Teal })
+	part({ Name = "SideKickback", Size = Vector3.new(1, 6, 22), CFrame = CFrame.new(at(nOuter - 0.5, laneL - 7, 3.7)), Color = W.Slate })
+	part({
+		Name = "SidePit",
+		Size = Vector3.new(nW + nG * 2, 0.1, BowlingRules.PIT + 1),
+		CFrame = CFrame.new(at(nx, laneL + BowlingRules.PIT / 2 + 0.5, -0.3)),
+		Color = W.Basalt,
+	})
+	local decoPins = Instance.new("Folder")
+	decoPins.Name = "SidePins"
+	decoPins.Parent = folder
+	local k = 0.75
+	for i, spot in BowlingRules.PIN_SPOTS do
+		local d = 70 + (spot.d - BowlingRules.PIN_SPOTS[1].d) * k
+		makePin(decoPins, "SidePin" .. i, CFrame.new(at(nx + spot.x * k, d, 0.2)), PIN_SCALE * 0.7)
+	end
+	-- The giant dumbbell resting just past the pro lane's foul line (decor; the client rolls
+	-- its own on the main lane).
+	makeDumbbell(folder, at(nx, 3.2, 0.2 + BowlingRules.BALL.radius * 1.8), W.HotPink, false, 1.8)
+	-- Velvet rope across the pro lane's approach: chrome stanchions, a red rope, a CLOSED sign.
+	local ropeD, postX = -1.2, nW / 2 + 0.8
+	for _, side in { -1, 1 } do
+		part({
+			Name = "RopePost",
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(3.2, 0.45, 0.45),
+			CFrame = CFrame.new(at(nx + side * postX, ropeD, 1.6)) * UPRIGHT,
+			Color = W.Gold,
+			Reflectance = 0.3,
+		})
+		ellipsoid({
+			Name = "RopeKnob",
+			Size = Vector3.new(0.75, 0.75, 0.75),
+			CFrame = CFrame.new(at(nx + side * postX, ropeD, 3.3)),
+			Color = W.Gold,
+			Reflectance = 0.3,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+	end
+	deco({
+		Name = "Rope",
+		Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(postX * 2, 0.3, 0.3),
+		CFrame = CFrame.new(at(nx, ropeD, 2.8)),
+		Color = PIN_RED,
+	})
+	local closed = deco({
+		Name = "ClosedSign",
+		Size = Vector3.new(6.4, 2.2, 0.2),
+		CFrame = CFrame.new(at(nx, ropeD - 0.15, 1.75)),
+		Color = W.HotPink,
+	})
+	local closedGui = Instance.new("SurfaceGui")
+	closedGui.Face = Enum.NormalId.Back
+	closedGui.PixelsPerStud = 32
+	closedGui.LightInfluence = 0
+	closedGui.Parent = closed
+	Common.label(closedGui, {
+		Text = "PRO LANE",
+		Font = Common.theme.Fonts.Display,
+		TextColor3 = W.Sunny,
+		Size = UDim2.fromScale(0.9, 0.4),
+		Position = UDim2.fromScale(0.05, 0.06),
+	})
+	Common.label(closedGui, {
+		Text = "CLOSED",
+		Font = Common.theme.Fonts.Display,
+		TextColor3 = W.White,
+		Size = UDim2.fromScale(0.9, 0.48),
+		Position = UDim2.fromScale(0.05, 0.47),
+	})
+
+	-- Confetti carpet (navy with bright scraps) over every bit of floor beside the lanes.
+	local CARPET = Color3.fromRGB(34, 40, 92)
+	local backD = laneL + BowlingRules.PIT + 1
+	local frontD = -(L.foulFromEdge - 0.5)
+	local carpets = {
+		{ -half + 0.5, half - 0.5, frontD, 0 }, -- across the front, under the approaches
+		{ outer + 1, half - 0.5, 0, backD }, -- right of the lane (lounge, ball return)
+		{ -half + 0.5, nOuter - 1, 0, backD }, -- the left strip
+	}
+	for _, c in carpets do
+		deco({
+			Name = "Carpet",
+			Size = Vector3.new(c[2] - c[1], 0.04, c[4] - c[3]),
+			CFrame = CFrame.new(at((c[1] + c[2]) / 2, (c[3] + c[4]) / 2, 0.02)),
+			Color = CARPET,
+			Material = Enum.Material.Fabric,
+		})
+	end
+	-- Scraps where nothing covers them: right lounge, the front corners, behind the approach.
+	local zones = {
+		{ outer + 5, half - 0.8, -12.5, 70, 46 },
+		{ -half + 0.8, -outer - 1.2, frontD + 0.5, -0.6, 18 },
+		{ -outer, outer, frontD + 0.5, -10.4, 8 },
+		{ outer + 1.2, outer + 5, -12.5, -0.6, 4 },
+		{ -half + 0.8, nOuter - 1.2, 1, 80, 8 },
+	}
+	local CONFETTI = { W.Sunny, W.HotPink, W.Mint, W.SkyBlue, W.Orange, W.White }
+	local seed = 20261014
+	local function rand(): number
+		seed = (seed * 1103515245 + 12345) % 2147483648
+		return seed / 2147483648
+	end
+	local n = 0
+	for _, z in zones do
+		for _ = 1, z[5] do
+			n += 1
+			local x = z[1] + rand() * (z[2] - z[1])
+			local d = z[3] + rand() * (z[4] - z[3])
+			local color = CONFETTI[n % #CONFETTI + 1]
+			local cf = CFrame.new(at(x, d, 0.05)) * CFrame.Angles(0, rand() * math.pi, 0)
+			if n % 3 == 0 then
+				deco({
+					Name = "Confetti",
+					Shape = Enum.PartType.Cylinder,
+					Size = Vector3.new(0.02, 0.8, 0.8),
+					CFrame = cf * UPRIGHT,
+					Color = color,
+				})
+			elseif n % 3 == 1 then
+				deco({ Name = "Confetti", Size = Vector3.new(0.3, 0.02, 1.3), CFrame = cf, Color = color })
+			else
+				deco({ Name = "Confetti", Size = Vector3.new(0.65, 0.02, 0.65), CFrame = cf, Color = color })
+			end
+		end
+	end
+
+	-- Lounge (right): three bright benches facing the lane, a shoe rack with a marquee sign.
+	local BENCH = { W.HotPink, W.Sunny, W.SkyBlue }
+	local benchX, benchL = outer + 9, 8
+	for i, color in BENCH do
+		local d = 16 + (i - 1) * 12
+		part({ Name = "BenchSeat", Size = Vector3.new(2.4, 0.5, benchL), CFrame = CFrame.new(at(benchX, d, 1.35)), Color = color })
+		part({ Name = "BenchBack", Size = Vector3.new(0.5, 2.2, benchL), CFrame = CFrame.new(at(benchX + 1.2, d, 2.5)), Color = color })
+		for _, e in { -1, 1 } do
+			part({
+				Name = "BenchLeg",
+				Size = Vector3.new(2, 1.1, 0.4),
+				CFrame = CFrame.new(at(benchX + 0.1, d + e * (benchL / 2 - 0.6), 0.55)),
+				Color = W.Chrome,
+				Material = Enum.Material.Metal,
+			})
+		end
+	end
+	local shoeX, shoeD = half - 1.6, 4
+	part({ Name = "ShoeRack", Size = Vector3.new(0.5, 5, 7), CFrame = CFrame.new(at(shoeX + 0.9, shoeD, 2.5)), Color = W.Coral })
+	local SHOES = { W.RedOrange, W.Blue, W.Mint }
+	for s = 1, 3 do
+		local y = 0.6 + (s - 1) * 1.6
+		part({ Name = "ShoeShelf", Size = Vector3.new(2, 0.25, 7), CFrame = CFrame.new(at(shoeX, shoeD, y)), Color = W.Wood })
+		for j = -1, 1 do
+			deco({
+				Name = "ShoePair",
+				Size = Vector3.new(1.2, 0.55, 1.1),
+				CFrame = CFrame.new(at(shoeX - 0.1, shoeD + j * 2.1, y + 0.4)),
+				Color = SHOES[(s + j + 1) % #SHOES + 1],
+			})
+		end
+	end
+	local shoeSign = part({
+		Name = "ShoeSign",
+		Size = Vector3.new(0.4, 1.6, 6),
+		CFrame = CFrame.new(at(shoeX + 0.7, shoeD, 5.9)),
+		Color = W.Navy,
+	})
+	local shoeGui = Instance.new("SurfaceGui")
+	shoeGui.Face = Enum.NormalId.Left
+	shoeGui.PixelsPerStud = 32
+	shoeGui.LightInfluence = 0
+	shoeGui.Parent = shoeSign
+	Common.label(shoeGui, {
+		Text = "SHOES",
+		Font = Common.theme.Fonts.Display,
+		TextColor3 = W.Sunny,
+		Size = UDim2.fromScale(0.9, 0.8),
+		Position = UDim2.fromScale(0.05, 0.1),
+	})
+	for j = -2, 2 do
+		ellipsoid({
+			Name = "MarqueeBulb",
+			Size = Vector3.new(0.5, 0.5, 0.5),
+			CFrame = CFrame.new(at(shoeX + 0.4, shoeD + j * 1.4, 6.95)),
+			Color = W.Sunny,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+	end
+	local bx0 = outer + 7
+
+	-- Scoreboard (right, past the bleachers): a big screen on two posts facing the bowler.
+	local sx, sd, sy = (bx0 + half) / 2 - 1, 76, 12
+	local screen = part({ Name = "Scoreboard", Size = Vector3.new(13, 7, 0.8), CFrame = CFrame.new(at(sx, sd, sy)), Color = W.Ink })
+	for _, side in { -1, 1 } do
+		part({
+			Name = "ScoreboardPost",
+			Size = Vector3.new(0.8, sy, 0.8),
+			CFrame = CFrame.new(at(sx + side * 5, sd + 0.2, sy / 2 - 3.5)),
+			Color = W.Teal,
+		})
+		deco({
+			Name = "ScoreboardNeon",
+			Size = Vector3.new(13.6, 0.4, 0.3),
+			CFrame = CFrame.new(at(sx, sd - 0.45, sy + side * 3.7)),
+			Color = W.Mint,
+			Material = Enum.Material.Neon,
+		})
+	end
+	local board = Instance.new("SurfaceGui")
+	board.Face = Enum.NormalId.Back
+	board.PixelsPerStud = 24
+	board.LightInfluence = 0
+	board.Brightness = 1.6
+	board.Parent = screen
+	Common.label(board, {
+		Text = "STRIKE!",
+		Font = Common.theme.Fonts.Display,
+		TextColor3 = W.Sunny,
+		Size = UDim2.fromScale(0.9, 0.5),
+		Position = UDim2.fromScale(0.05, 0.06),
+	})
+	Common.label(board, {
+		Text = "SCORE " .. BowlingRules.PASS_SCORE .. " TO WIN",
+		Font = Common.theme.Fonts.Display,
+		TextColor3 = W.Mint,
+		Size = UDim2.fromScale(0.86, 0.3),
+		Position = UDim2.fromScale(0.07, 0.62),
+	})
+
+	-- Lamp posts down both edges: a teal pole with a glowing sunny globe.
+	local lamps = { { -1, 8 }, { -1, 40 }, { -1, 72 }, { 1, 10 }, { 1, 84 } }
+	for _, lamp in lamps do
+		local x = lamp[1] * (half - 1.2)
+		part({
+			Name = "LampPost",
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(14, 0.7, 0.7),
+			CFrame = CFrame.new(at(x, lamp[2], 7)) * UPRIGHT,
+			Color = W.Teal,
+		})
+		local globe = ellipsoid({
+			Name = "LampGlobe",
+			Size = Vector3.new(2, 2, 2),
+			CFrame = CFrame.new(at(x, lamp[2], 14.6)),
+			Color = W.Sunny,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+		local glowLight = Instance.new("PointLight")
+		glowLight.Range = 16
+		glowLight.Brightness = 1.2
+		glowLight.Color = Color3.fromRGB(255, 236, 190)
+		glowLight.Parent = globe
+	end
 end
 
 function BowlingLane.build(): Built
@@ -41121,7 +41627,7 @@ function BowlingLane.build(): Built
 		CFrame = CFrame.new(at(0, laneL / 2, 0.1)),
 		Color = W.Honey,
 		Material = Enum.Material.Wood,
-		Reflectance = 0.12,
+		Reflectance = 0.28,
 		Parent = folder,
 	})
 	for _, x in { -5.25, -3.5, -1.75, 1.75, 3.5, 5.25 } do
@@ -41165,15 +41671,15 @@ function BowlingLane.build(): Built
 			Parent = folder,
 		})
 	end
-	local ARM, TILT = 1.4, math.rad(28)
+	local ARM, TILT = 2.2, math.rad(28)
 	for i = -3, 3 do
-		local x = i * 1.5
-		local tipD = 14 + (3 - math.abs(i)) * 1.3
+		local x = i * 1.75
+		local tipD = 14 + (3 - math.abs(i)) * 1.8
 		for _, side in { -1, 1 } do
 			local mid = at(x + side * math.sin(TILT) * ARM / 2, tipD - math.cos(TILT) * ARM / 2, laneTop + 0.015)
 			make("Part", {
 				Name = "LaneArrow",
-				Size = Vector3.new(0.32, 0.03, ARM),
+				Size = Vector3.new(0.45, 0.03, ARM),
 				CFrame = CFrame.new(mid) * CFrame.Angles(0, side * TILT, 0),
 				Color = W.RedOrange,
 				CanCollide = false,
@@ -41188,13 +41694,26 @@ function BowlingLane.build(): Built
 		Name = "PinDeck",
 		Size = Vector3.new(laneW, 0.03, laneL - deckFrom),
 		CFrame = CFrame.new(at(0, (deckFrom + laneL) / 2, laneTop + 0.005)),
-		Color = W.Wood,
-		Material = Enum.Material.Wood,
-		Reflectance = 0.1,
+		Color = W.Butter,
+		Material = Enum.Material.SmoothPlastic,
+		Reflectance = 0.15,
 		CanCollide = false,
 		CanQuery = false,
 		Parent = folder,
 	})
+	-- Coral pin spots under the triangle (the pins stand on them).
+	for _, spot in BowlingRules.PIN_SPOTS do
+		make("Part", {
+			Name = "PinSpot",
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(0.02, 2.1, 2.1),
+			CFrame = CFrame.new(at(spot.x, spot.d, laneTop + 0.03)) * UPRIGHT,
+			Color = W.Coral,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+	end
 
 	-- Gutters (steel channels a little under the lane) and capped dividers outside them.
 	local outer = laneW / 2 + L.gutter
@@ -41237,7 +41756,7 @@ function BowlingLane.build(): Built
 		})
 	end
 
-	-- Pit behind the lane and the back wall with its neon strips.
+	-- Pit behind the lane and the back wall (the whole arena's width) with its neon strips.
 	local pitD = laneL + BowlingRules.PIT / 2 + 0.5
 	make("Part", {
 		Name = "Pit",
@@ -41247,18 +41766,48 @@ function BowlingLane.build(): Built
 		Parent = folder,
 	})
 	local wallD = laneL + BowlingRules.PIT + 1.5
+	local wallW = a.sizeX
 	make("Part", {
 		Name = "BackWall",
-		Size = Vector3.new(outer * 2 + 2, 10, 1),
-		CFrame = CFrame.new(at(0, wallD, 5)),
+		Size = Vector3.new(wallW, 12, 1),
+		CFrame = CFrame.new(at(0, wallD, 6)),
 		Color = W.Navy,
+		Parent = folder,
+	})
+	-- The glowing backstop behind the pins: a blue light panel edged in sunny neon (the white
+	-- pins pop against it), lighting the pin deck.
+	local backstop = make("Part", {
+		Name = "PinBackstop",
+		Size = Vector3.new(outer * 2, 3.4, 0.3),
+		CFrame = CFrame.new(at(0, wallD - 0.65, 1.7)),
+		Color = W.SkyBlue,
+		Material = Enum.Material.Neon,
+		CanCollide = false,
+		CanQuery = false,
+		Parent = folder,
+	})
+	local deckLight = Instance.new("SurfaceLight")
+	deckLight.Face = Enum.NormalId.Back
+	deckLight.Range = 18
+	deckLight.Angle = 70
+	deckLight.Brightness = 2
+	deckLight.Color = Color3.fromRGB(220, 240, 255)
+	deckLight.Parent = backstop
+	make("Part", {
+		Name = "BackstopNeon",
+		Size = Vector3.new(outer * 2 + 2, 0.45, 0.4),
+		CFrame = CFrame.new(at(0, wallD - 0.75, 3.6)),
+		Color = W.Sunny,
+		Material = Enum.Material.Neon,
+		CanCollide = false,
+		CanQuery = false,
 		Parent = folder,
 	})
 	for i, color in NEON_STRIPS do
 		make("Part", {
 			Name = "BackNeon",
-			Size = Vector3.new(outer * 2 + 2, 0.4, 0.2),
-			CFrame = CFrame.new(at(0, wallD - 0.55, 1.2 + i * 1.1)),
+			Size = Vector3.new(wallW, 0.4, 0.2),
+			CFrame = CFrame.new(at(0, wallD - 0.55, 6.2 + i * 1.3)),
 			Color = color,
 			Material = Enum.Material.Neon,
 			CanCollide = false,
@@ -41266,39 +41815,99 @@ function BowlingLane.build(): Built
 			Parent = folder,
 		})
 	end
-
-	-- The header over the pins: a sign facing the bowler with a light on the pin deck.
-	local header = make("Part", {
-		Name = "BowlingHeader",
-		Size = Vector3.new(outer * 2 + 2, 3.4, 1),
-		CFrame = CFrame.new(at(0, deckFrom - 1, 10)),
-		Color = W.RedOrange,
+	-- The big glowing sign over the pin deck: a navy board on the back wall's top with a
+	-- neon frame, "DUMBBELL BOWL" in white with a hot-pink glow and a sunny tagline.
+	local SIGN_W, SIGN_H, SIGN_Y = 34, 7, 16.5
+	local sign = make("Part", {
+		Name = "BowlingSign",
+		Size = Vector3.new(SIGN_W, SIGN_H, 0.8),
+		CFrame = CFrame.new(at(0, wallD - 0.2, SIGN_Y)),
+		Color = W.Navy,
 		Parent = folder,
 	})
 	local gui = Instance.new("SurfaceGui")
 	gui.Face = Enum.NormalId.Back
-	gui.PixelsPerStud = 30
+	gui.PixelsPerStud = 24
 	gui.LightInfluence = 0
-	gui.Parent = header
-	Common.label(gui, {
+	gui.Brightness = 2
+	gui.Parent = sign
+	local title = Common.label(gui, {
 		Text = "DUMBBELL BOWL",
 		Font = Common.theme.Fonts.Display,
 		TextColor3 = W.White,
-		Size = UDim2.fromScale(0.94, 0.62),
-		Position = UDim2.fromScale(0.03, 0.06),
+		Size = UDim2.fromScale(0.94, 0.64),
+		Position = UDim2.fromScale(0.03, 0.04),
 	})
+	local glow = title:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
+	glow.Color = W.HotPink
+	glow.Thickness = 6
+	glow.Parent = title
 	Common.label(gui, {
 		Text = "KNOCK 'EM ALL DOWN!",
 		Font = Common.theme.Fonts.Display,
 		TextColor3 = W.Sunny,
-		Size = UDim2.fromScale(0.7, 0.26),
-		Position = UDim2.fromScale(0.15, 0.68),
+		Size = UDim2.fromScale(0.64, 0.26),
+		Position = UDim2.fromScale(0.18, 0.68),
+	})
+	local signFront = wallD - 0.75
+	for _, edge in { { 0, SIGN_H / 2 + 0.3, SIGN_W + 1, 0.5 }, { 0, -SIGN_H / 2 - 0.3, SIGN_W + 1, 0.5 } } do
+		make("Part", {
+			Name = "SignNeon",
+			Size = Vector3.new(edge[3], edge[4], 0.4),
+			CFrame = CFrame.new(at(edge[1], signFront, SIGN_Y + edge[2])),
+			Color = W.HotPink,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+	end
+	for _, side in { -1, 1 } do
+		make("Part", {
+			Name = "SignNeon",
+			Size = Vector3.new(0.5, SIGN_H + 1.1, 0.4),
+			CFrame = CFrame.new(at(side * (SIGN_W / 2 + 0.25), signFront, SIGN_Y)),
+			Color = W.HotPink,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+		-- Starburst bulbs at the sign's ends.
+		ellipsoid({
+			Name = "SignBulb",
+			Size = Vector3.new(2.2, 2.2, 2.2),
+			CFrame = CFrame.new(at(side * (SIGN_W / 2 + 2), signFront, SIGN_Y)),
+			Color = W.Sunny,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+	end
+	-- A light truss over the pin deck (sunny beam on teal posts) lighting the pins.
+	local header = make("Part", {
+		Name = "BowlingHeader",
+		Size = Vector3.new(outer * 2 + 2, 1, 1),
+		CFrame = CFrame.new(at(0, deckFrom - 1, 10)),
+		Color = W.Sunny,
+		Parent = folder,
+	})
+	make("Part", {
+		Name = "HeaderNeon",
+		Size = Vector3.new(outer * 2 + 2, 0.3, 0.3),
+		CFrame = CFrame.new(at(0, deckFrom - 1.6, 9.6)),
+		Color = W.Mint,
+		Material = Enum.Material.Neon,
+		CanCollide = false,
+		CanQuery = false,
+		Parent = folder,
 	})
 	local light = Instance.new("SpotLight")
 	light.Face = Enum.NormalId.Bottom
-	light.Angle = 70
-	light.Range = 18
-	light.Brightness = 1.6
+	light.Angle = 80
+	light.Range = 26
+	light.Brightness = 3.5
 	light.Color = Color3.fromRGB(255, 244, 224)
 	light.Parent = header
 	for _, side in { -1, 1 } do
@@ -41310,7 +41919,6 @@ function BowlingLane.build(): Built
 			Parent = folder,
 		})
 	end
-
 	-- Pins: the classic triangle (head pin first).
 	local pins = Instance.new("Folder")
 	pins.Name = "Pins"
@@ -41319,11 +41927,11 @@ function BowlingLane.build(): Built
 	for i, spot in BowlingRules.PIN_SPOTS do
 		local cf = CFrame.new(at(spot.x, spot.d, laneTop))
 		pinSpots[i] = cf
-		local pin = makePin(pins, "Pin" .. i, cf, 1)
+		local pin = makePin(pins, "Pin" .. i, cf, PIN_SCALE)
 		pin:SetAttribute("Index", i)
 	end
-	-- A giant pin statue on the approach's left, on a sunny plinth.
-	local statueAt = at(-(outer + 3.5), 3, 0)
+	-- A giant pin statue on the approach's back-left corner, on a sunny plinth.
+	local statueAt = at(-(a.sizeX / 2 - 3.5), -8, 0)
 	make("Part", {
 		Name = "StatuePlinth",
 		Shape = Enum.PartType.Cylinder,
@@ -41334,8 +41942,9 @@ function BowlingLane.build(): Built
 	})
 	makePin(folder, "PinStatue", CFrame.new(statueAt + Vector3.new(0, 0.8, 0)) * CFrame.Angles(0, math.rad(20), 0), 2.2)
 
-	-- Ball return: a coral rack with two steel rails and three giant dumbbells on the right
-	-- (just down the lane, clear of the exit pad in the +X, +Z corner).
+	-- Ball return: a teal rack with two chrome rails and three giant dumbbells on the right
+	-- (just down the lane, clear of the exit pad in the +X, +Z corner), fed by a raised
+	-- track that runs back from a coral hood by the pit.
 	local rackX = outer + 3.5
 	local rackD = 6
 	local RACK_LEN = 10.5
@@ -41343,7 +41952,7 @@ function BowlingLane.build(): Built
 		Name = "BallRack",
 		Size = Vector3.new(3.6, 1.8, RACK_LEN),
 		CFrame = CFrame.new(at(rackX, rackD, 0.9)),
-		Color = W.Coral,
+		Color = W.Teal,
 		Parent = folder,
 	})
 	local b = BowlingRules.BALL
@@ -41358,11 +41967,67 @@ function BowlingLane.build(): Built
 			Parent = folder,
 		})
 	end
+	local trackFrom, hoodD = rackD + RACK_LEN / 2, laneL - 5
+	local trackL = hoodD - trackFrom
+	make("Part", {
+		Name = "ReturnTrack",
+		Size = Vector3.new(3.2, 1.6, trackL),
+		CFrame = CFrame.new(at(rackX, trackFrom + trackL / 2, 0.8)),
+		Color = W.Teal,
+		Parent = folder,
+	})
+	for _, side in { -1, 1 } do
+		make("Part", {
+			Name = "ReturnRail",
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(trackL, 0.4, 0.4),
+			CFrame = CFrame.new(at(rackX + side * railX, trackFrom + trackL / 2, 2)) * CFrame.Angles(0, math.pi / 2, 0),
+			Color = W.Chrome,
+			Material = Enum.Material.Metal,
+			Reflectance = 0.3,
+			Parent = folder,
+		})
+		make("Part", {
+			Name = "ReturnNeon",
+			Size = Vector3.new(0.15, 0.3, trackL),
+			CFrame = CFrame.new(at(rackX + side * 1.65, trackFrom + trackL / 2, 1.1)),
+			Color = W.Mint,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CanQuery = false,
+			Parent = folder,
+		})
+	end
+	make("Part", {
+		Name = "ReturnHood",
+		Size = Vector3.new(4.4, 3.2, 6),
+		CFrame = CFrame.new(at(rackX, hoodD + 2, 1.6)),
+		Color = W.Coral,
+		Parent = folder,
+	})
+	make("Part", {
+		Name = "ReturnHoodTop",
+		Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(6, 4.4, 4.4),
+		CFrame = CFrame.new(at(rackX, hoodD + 2, 3.2)) * CFrame.Angles(0, math.pi / 2, 0),
+		Color = W.Coral,
+		Parent = folder,
+	})
+	make("Part", {
+		Name = "ReturnHoodMouth",
+		Size = Vector3.new(3, 2.4, 0.1),
+		CFrame = CFrame.new(at(rackX, hoodD - 1.02, 1.6)),
+		Color = W.Ink,
+		CanCollide = false,
+		CanQuery = false,
+		Parent = folder,
+	})
 	for i, color in PLATE_COLORS do
 		local d = rackD + (i - 2) * (b.radius * 2 + 0.3)
 		makeDumbbell(folder, at(rackX, d, 2.2 + b.radius), color, i == 1)
 	end
 
+	dress(folder, at, a, outer)
 	local built: any = base
 	built.lane = lane
 	built.rollStart = CFrame.lookAt(at(0, -3, 0), at(0, laneL, 0))
@@ -47735,11 +48400,6 @@ local function lockedFace(p: BasePart, face: Enum.NormalId, pps: number, title: 
 	outline.Parent = label
 end
 
--- An invisible flat carrier part for a crisp text layer laid over a sign card.
-local function carrier(add: (props: { [string]: any }) -> BasePart, name: string, cframe: CFrame, size: Vector3): BasePart
-	return decor(add({ Name = name, Size = size, CFrame = cframe, Transparency = 1, CastShadow = false }))
-end
-
 -- Builder for parts in a local frame: props.CFrame is relative to `base`.
 local function adder(base: CFrame, parent: Instance): (props: { [string]: any }, className: string?) -> BasePart
 	return function(props: { [string]: any }, className: string?): BasePart
@@ -48398,6 +49058,49 @@ local function portal(base: CFrame, centreY: number, colors: { Color3 }, parent:
 	end
 end
 
+-- Three chunky chevrons on the plaza floor in front of an open gate (frame: front -Z), in the
+-- gate's colour, pointing into its opening so a kid can follow them in.
+local function floorArrows(add: (props: { [string]: any }) -> BasePart, tint: Color3)
+	local arm = 2.4
+	for i, z in { -4.5, -8.5, -12.5 } do
+		for _, sx in { -1, 1 } do
+			-- One arm from the tip (0, z) back to (sx * arm, z - arm); yaw pi/4 lays a part's
+			-- +X along (1, -1), 3pi/4 along (-1, -1).
+			decor(add({
+				Name = "FloorArrow",
+				Size = Vector3.new(arm * math.sqrt(2) + 0.9, 0.1, 0.9),
+				CFrame = CFrame.new(sx * arm / 2, 0.07, z - arm / 2) * CFrame.Angles(0, if sx > 0 then math.pi / 4 else 3 * math.pi / 4, 0),
+				Color = tint:Lerp(W.White, 0.15 * (i - 1)),
+				CastShadow = false,
+			}))
+		end
+	end
+end
+
+-- A round wooden planter with a puffy green bush and a few bright flowers.
+local function planter(x: number, top: number, z: number, parent: Instance)
+	local add = adder(CFrame.new(x, top, z), parent)
+	add({ Name = "Planter", Shape = CYLINDER, Size = Vector3.new(2.2, 4.2, 4.2), CFrame = CFrame.new(0, 1.1, 0) * UPRIGHT, Color = W.Wood })
+	decor(add({
+		Name = "PlanterRim",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.5, 4.6, 4.6),
+		CFrame = CFrame.new(0, 2.2, 0) * UPRIGHT,
+		Color = W.White,
+	}))
+	decor(add({ Name = "PlanterBush", Shape = BALL, Size = cube(4), CFrame = CFrame.new(0, 3.4, 0), Color = W.Grass }))
+	for k, c in { W.Coral, W.Sunny, W.Pink } do
+		local a = k * 2 * math.pi / 3
+		decor(add({
+			Name = "PlanterFlower",
+			Shape = BALL,
+			Size = cube(1),
+			CFrame = CFrame.new(math.cos(a) * 1.5, 4.7, math.sin(a) * 1.5),
+			Color = c,
+		}))
+	end
+end
+
 -- One GAME MODES plaza: its deck, spur, gate row and big sign, and `mirror` (1: the plaza on
 -- the hub's -X side, fronts facing +X; -1: the mirrored plaza on +X, fronts facing -X).
 -- `portal` is the plaza's number (attribute Portal on its ParkourStart trigger).
@@ -48436,10 +49139,8 @@ local function gate(entry: Catalog.Entry, parent: Instance, spec: PlazaSpec)
 	local tint = color(entry.color)
 	local body = if not open then LOCKED elseif entry.id == "parkour" then W.Sunny else tint:Lerp(W.White, 0.2)
 	local trim = if open then W.White else W.Chrome
-	-- Gate 1 is the biggest; other open gates are a little smaller so the signs of
-	-- neighbouring open gates never touch.
-	local main = entry.slot == 1
-	local height = if not open then 13 elseif main then 16 else 15
+	-- Every open gate has the same size and style (Course.GATE_GAP keeps neighbours apart).
+	local height = if open then 16 else 13
 	local thick = if open then 3.6 else 3
 	local half = (if open then Course.GATE_HALF else LOCKED_HALF) + thick / 2
 	for _, sx in { -1, 1 } do
@@ -48475,10 +49176,13 @@ local function gate(entry: Catalog.Entry, parent: Instance, spec: PlazaSpec)
 		CFrame = CFrame.new(0, height - beamH / 2, 0),
 		Color = body,
 	})
-	-- The name card sits on the beam, framed by a trim-coloured backing.
-	local sw, sh = if not open then 12 elseif main then 20 else 15, if not open then 6.5 elseif main then 8.5 else 7.5
+	-- The name card sits on the beam, framed by a trim-coloured backing. The backing is
+	-- thinner than the card and centred on it, so the card's printed faces stand proud of it
+	-- on both sides (it used to sit behind the card and swallow the back face, so a gate seen
+	-- from behind showed a blank white board).
+	local sw, sh = if open then 18 else 12, if open then 8 else 6.5
 	local sy = height + 0.3 + sh / 2
-	decor(add({ Name = "GateSignBack", Size = Vector3.new(sw + 1.4, sh + 1.4, 0.8), CFrame = CFrame.new(0, sy, 0.5), Color = trim }))
+	decor(add({ Name = "GateSignBack", Size = Vector3.new(sw + 1.4, sh + 1.4, 0.5), CFrame = CFrame.new(0, sy, 0), Color = trim }))
 	local card = decor(add({
 		Name = "GateSign",
 		Size = Vector3.new(sw, sh, 0.8),
@@ -48490,6 +49194,7 @@ local function gate(entry: Catalog.Entry, parent: Instance, spec: PlazaSpec)
 		cardFace(card, Enum.NormalId.Back, 30, W.Cream, tint, "GOOD LUCK!", entry.title)
 		add({ Name = "StartLine", Size = Vector3.new(Course.GATE_HALF * 2, 0.12, 1.6), CFrame = CFrame.new(0, 0.06, 0), Color = W.Sunny })
 		gateArrow(add, 8.6, tint)
+		floorArrows(add, tint)
 		portal(base, 6.2, PORTAL_COLORS[entry.id] or { tint, W.White }, folder)
 		local start = trigger(
 			entry.id == "parkour" and "ParkourStart" or "ModeStart",
@@ -48560,9 +49265,11 @@ local function gate(entry: Catalog.Entry, parent: Instance, spec: PlazaSpec)
 	decor(add({ Name = "PadlockHole", Size = Vector3.new(0.4, 0.9, 0.2), CFrame = CFrame.new(0, 4.35, -1.75), Color = W.Ink }))
 end
 
--- The big GAME MODES landmark high behind the gates: a cream card in a chunky sunny frame of
--- rounded rails, on two teal posts. The coral header and the Ink title are separate text
--- layers, each with its own resolution, so both stay crisp from the hub centre.
+-- The big GAME MODES landmark high behind the gates: a navy card in a chunky sunny frame of
+-- rounded rails, on two teal posts. Its face is built from opaque plates (a coral title
+-- strip, a row of gate-colour chips and the navy title plate), so it reads as a finished
+-- board even where SurfaceGui text has not drawn yet; the title strip and the sunny title
+-- are separate text layers, each with its own resolution, so both stay crisp from the hub.
 local function bigSign(parent: Instance, spec: PlazaSpec)
 	local s = spec.sign
 	local base = CFrame.new(s.x, 0, s.z) * CFrame.Angles(0, FACE_HUB * spec.mirror, 0)
@@ -48640,22 +49347,52 @@ local function bigSign(parent: Instance, spec: PlazaSpec)
 		CFrame = CFrame.new(0, cy, 0.7),
 		Color = W.Sunny,
 	}))
-	decor(add({ Name = "BigSign", Size = Vector3.new(w, h, 0.8), CFrame = CFrame.new(0, cy, 0), Color = W.Cream }))
+	decor(add({ Name = "BigSign", Size = Vector3.new(w, h, 0.8), CFrame = CFrame.new(0, cy, 0), Color = W.Navy }))
 	cardFace(frame, Enum.NormalId.Back, 12, W.Cream, W.Coral, "PARKOUR", "GAME MODES")
-	-- Coral header pill (white text ~95 px) and the Ink title (~95 px, width-limited).
+	-- Opaque face plates 0.1 proud of the card (front at z -0.5): coral title strip with
+	-- white text (~95 px), a row of six chips in the gate colours, and the navy title plate
+	-- with sunny text (~100 px, width-limited).
+	local faceTop = cy + h / 2
+	local function plate(name: string, y: number, width: number, height: number, fill: Color3): BasePart
+		return decor(add({
+			Name = name,
+			Size = Vector3.new(width, height, 0.1),
+			CFrame = CFrame.new(0, y, -0.45),
+			Color = fill,
+			CastShadow = false,
+		}))
+	end
 	local headH = 3.8
-	local head = carrier(add, "BigSignHeader", CFrame.new(0, cy + h / 2 - 0.5 - headH / 2, -0.45), Vector3.new(w - 3, headH, 0.05))
-	local pill = panel(surface(head, Enum.NormalId.Front, 34), W.Coral, UDim2.fromScale(0, 0), UDim2.fromScale(1, 1), 0.5)
+	local head = plate("BigSignHeader", faceTop - 0.5 - headH / 2, w - 3, headH, W.Coral)
 	text(
-		pill,
+		surface(head, Enum.NormalId.Front, 34),
 		{ Text = "PARKOUR OPEN NOW!", TextColor3 = W.White, Size = UDim2.fromScale(0.9, 0.74), Position = UDim2.fromScale(0.05, 0.14) }
 	)
-	local titleH = h - headH - 1.4
-	local title = carrier(add, "BigSignTitle", CFrame.new(0, s.bottom + 0.5 + titleH / 2, -0.45), Vector3.new(w - 2, titleH, 0.05))
-	text(
+	local chipY = faceTop - 0.5 - headH - 0.5 - 0.5
+	local tints: { Color3 } = {}
+	for _, entry in Catalog do
+		tints[entry.slot] = color(entry.color)
+	end
+	for i = 1, 6 do
+		decor(add({
+			Name = "BigSignChip",
+			Size = Vector3.new(7, 1, 0.14),
+			CFrame = CFrame.new((i - 3.5) * 8.4, chipY, -0.45),
+			Color = tints[i] or FLAG_COLORS[i],
+			CastShadow = false,
+		}))
+	end
+	local titleTop = chipY - 0.9
+	local titleH = titleTop - (s.bottom + 0.5)
+	local title = plate("BigSignTitle", s.bottom + 0.5 + titleH / 2, w - 2, titleH, W.Navy:Lerp(W.Ink, 0.35))
+	local label = text(
 		surface(title, Enum.NormalId.Front, 14),
-		{ Text = "GAME MODES", Size = UDim2.fromScale(0.98, 0.96), Position = UDim2.fromScale(0.01, 0.02) }
+		{ Text = "GAME MODES", TextColor3 = W.Sunny, Size = UDim2.fromScale(0.96, 0.9), Position = UDim2.fromScale(0.02, 0.05) }
 	)
+	local outline = Instance.new("UIStroke")
+	outline.Color = W.Ink
+	outline.Thickness = 3
+	outline.Parent = label
 end
 
 -- Freestanding best-times card; returns the list label.
@@ -48684,32 +49421,34 @@ local function bestBoard(parent: Instance, spec: PlazaSpec): TextLabel
 		})
 		decor(add({ Name = "BoardCap", Shape = BALL, Size = cube(2), CFrame = CFrame.new(x, bottom + h + 0.8, 0), Color = W.Sunny }))
 	end
+	-- Navy slab, saturated sunny card and Ink text, with a coral title pill at the gate
+	-- signs' scale (~2.3 studs tall, like a gate card's header band).
 	local slab =
-		decor(add({ Name = "BestBoard", Size = Vector3.new(w, h, 0.8), CFrame = CFrame.new(0, bottom + h / 2, 0), Color = W.White }))
+		decor(add({ Name = "BestBoard", Size = Vector3.new(w, h, 0.8), CFrame = CFrame.new(0, bottom + h / 2, 0), Color = W.Navy }))
 	local root = surface(slab, Enum.NormalId.Front, 30)
-	local card = panel(root, W.Cream, UDim2.fromScale(0.03, 0.025), UDim2.fromScale(0.94, 0.95), 0.06)
-	local pill = panel(card, W.Coral, UDim2.fromScale(0.1, 0.025), UDim2.fromScale(0.8, 0.1), 0.5)
-	text(pill, { Text = "PARKOUR BEST", TextColor3 = W.White, Size = UDim2.fromScale(0.9, 0.74), Position = UDim2.fromScale(0.05, 0.13) })
+	local card = panel(root, W.Sunny, UDim2.fromScale(0.03, 0.025), UDim2.fromScale(0.94, 0.95), 0.06)
+	local pill = panel(card, W.Coral, UDim2.fromScale(0.05, 0.025), UDim2.fromScale(0.9, 0.15), 0.5)
+	text(pill, { Text = "PARKOUR BEST", TextColor3 = W.White, Size = UDim2.fromScale(0.9, 0.76), Position = UDim2.fromScale(0.05, 0.12) })
 	text(card, {
 		Text = "SERVER TOP TIMES",
 		Font = theme.Fonts.Bold,
-		Size = UDim2.fromScale(0.8, 0.05),
-		Position = UDim2.fromScale(0.1, 0.135),
+		Size = UDim2.fromScale(0.84, 0.065),
+		Position = UDim2.fromScale(0.08, 0.185),
 	})
 	local list = text(card, {
 		Text = "Be the first to finish!",
 		Font = theme.Fonts.Bold,
 		TextScaled = false,
-		TextSize = 25,
+		TextSize = 28,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextYAlignment = Enum.TextYAlignment.Top,
 		TextWrapped = true,
 		RichText = true,
-		Size = UDim2.fromScale(0.9, 0.78),
-		Position = UDim2.fromScale(0.05, 0.2),
+		Size = UDim2.fromScale(0.9, 0.71),
+		Position = UDim2.fromScale(0.05, 0.27),
 	})
 	local back = surface(slab, Enum.NormalId.Back, 30)
-	local backCard = panel(back, W.Cream, UDim2.fromScale(0.03, 0.025), UDim2.fromScale(0.94, 0.95), 0.06)
+	local backCard = panel(back, W.Sunny, UDim2.fromScale(0.03, 0.025), UDim2.fromScale(0.94, 0.95), 0.06)
 	text(backCard, { Text = "GAME MODES", Size = UDim2.fromScale(0.86, 0.3), Position = UDim2.fromScale(0.07, 0.35) })
 	return list
 end
@@ -48743,6 +49482,132 @@ local function spurArch(parent: Instance, spec: PlazaSpec)
 		decor(add({ Name = "ArchSign", Size = Vector3.new(half * 2 - 1.5, 3.8, 0.9), CFrame = CFrame.new(0, 9.6, 0), Color = W.White }))
 	cardFace(sign, Enum.NormalId.Front, 30, W.Cream, W.Grape, "THIS WAY!", "GAME MODES")
 	cardFace(sign, Enum.NormalId.Back, 30, W.Cream, W.Grape, "BACK TO", "THE GYMS")
+end
+
+-- A bench on the plaza edge (local frame: front -Z faces into the plaza).
+local function bench(base: CFrame, back: Color3, parent: Instance)
+	local add = adder(base, parent)
+	for _, sx in { -1, 1 } do
+		add({ Name = "BenchLeg", Size = Vector3.new(0.6, 1.3, 1.9), CFrame = CFrame.new(sx * 2.4, 0.65, 0), Color = W.White })
+	end
+	add({ Name = "BenchSeat", Size = Vector3.new(6.4, 0.45, 2.2), CFrame = CFrame.new(0, 1.5, 0), Color = W.Honey })
+	decor(add({
+		Name = "BenchBack",
+		Size = Vector3.new(6.4, 1.5, 0.4),
+		CFrame = CFrame.new(0, 2.6, 0.95) * CFrame.Angles(-0.15, 0, 0),
+		Color = back,
+	}))
+end
+
+-- A potted palm: terracotta pot, a gently leaning ringed trunk and six drooping fronds.
+local function pottedPalm(x: number, top: number, z: number, lean: number, parent: Instance)
+	local add = adder(CFrame.new(x, top, z), parent)
+	add({
+		Name = "PalmPot",
+		Shape = CYLINDER,
+		Size = Vector3.new(2.2, 3.4, 3.4),
+		CFrame = CFrame.new(0, 1.1, 0) * UPRIGHT,
+		Color = W.Terracotta,
+	})
+	decor(add({
+		Name = "PalmPotRim",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.45, 3.8, 3.8),
+		CFrame = CFrame.new(0, 2.15, 0) * UPRIGHT,
+		Color = W.Cream,
+	}))
+	local y, off = 2.2, 0
+	for i = 1, 3 do
+		add({
+			Name = "PalmTrunk",
+			Shape = CYLINDER,
+			Size = Vector3.new(2.6, 1 - i * 0.08, 1 - i * 0.08),
+			CFrame = CFrame.new(off + lean * 0.2, y + 1.2, 0) * CFrame.Angles(0, 0, math.pi / 2 - lean * 0.12 * i),
+			Color = if i % 2 == 1 then W.Honey else W.SandDark,
+		})
+		y += 2.3
+		off += lean * 0.45
+	end
+	local crown = CFrame.new(off, y + 0.4, 0)
+	decor(add({ Name = "PalmCrown", Shape = BALL, Size = cube(1.3), CFrame = crown, Color = W.GrassDark }))
+	for k = 1, 6 do
+		decor(add({
+			Name = "PalmFrond",
+			Size = Vector3.new(1.5, 0.25, 4.6),
+			CFrame = crown * CFrame.Angles(0, k * math.pi / 3 + 0.3, 0) * CFrame.Angles(-0.42, 0, 0) * CFrame.new(0, 0, -2.2),
+			Color = if k % 2 == 0 then W.Grass else W.GrassDark,
+		}))
+	end
+	for _, dz in { -0.45, 0.45 } do
+		decor(add({
+			Name = "Coconut",
+			Shape = BALL,
+			Size = cube(0.75),
+			CFrame = crown * CFrame.new(0.3, -0.7, dz),
+			Color = W.Terracotta:Lerp(W.Ink, 0.45),
+		}))
+	end
+end
+
+-- A small cluster of gym balls (the biggest one is solid; the others are decor).
+local function ballCluster(x: number, top: number, z: number, parent: Instance)
+	local add = adder(CFrame.new(x, top, z), parent)
+	for i, b in
+		{
+			{ 3, 0, 0, W.Coral },
+			{ 2.3, 2.3, 0.9, W.Blue },
+			{ 1.9, -0.6, 2.2, W.Sunny },
+			{ 1.3, 1.6, -1.8, W.Mint },
+		}
+	do
+		local part = add({ Name = "GymBall", Shape = BALL, Size = cube(b[1]), CFrame = CFrame.new(b[2], b[1] / 2, b[3]), Color = b[4] })
+		if i > 1 then
+			decor(part)
+		end
+	end
+end
+
+-- Colour rugs from every gate to the centre medallion (a full-colour border with a pastel
+-- middle, so the gate's floor arrows still read on top), plus benches and potted palms on
+-- the spur edge and gym-ball clusters between the back-row gates. Everything stays clear of
+-- the gate openings, the spur mouth and the straight lines between them.
+local function plazaDressing(parent: Instance, spec: PlazaSpec)
+	local p = spec.plaza
+	local cx, cz = (p.x0 + p.x1) / 2, (p.z0 + p.z1) / 2
+	for _, entry in Catalog do
+		local spot: any = spec.gates[entry.slot]
+		if spot then
+			local gx = spot.x or spec.gateX
+			local front = if spot.faceZ then Vector3.new(0, 0, spot.faceZ) else Vector3.new(spec.mirror, 0, 0)
+			local from = Vector3.new(gx, 0, spot.z) + front * 1.4
+			local toCentre = Vector3.new(cx - from.X, 0, cz - from.Z)
+			local to = Vector3.new(cx, 0, cz) - toCentre.Unit * 12.2
+			local length = (to - from).Magnitude
+			local mid = (from + to) / 2
+			local tint = color(entry.color)
+			for k, layer in { { 5.6, -0.03, tint }, { 4.2, -0.01, tint:Lerp(W.White, 0.55) } } do
+				local y = p.top + layer[2]
+				decor(make("Part", {
+					Name = if k == 1 then "PlazaRugEdge" else "PlazaRug",
+					Size = Vector3.new(layer[1], 0.1, length),
+					CFrame = CFrame.lookAt(Vector3.new(mid.X, y, mid.Z), Vector3.new(to.X, y, to.Z)),
+					Color = layer[3],
+					CastShadow = false,
+					Parent = parent,
+				}))
+			end
+		end
+	end
+	local edgeX = if spec.mirror > 0 then p.x1 else p.x0
+	for i, side in { -1, 1 } do
+		bench(
+			CFrame.new(edgeX - spec.mirror * 2.6, p.top, side * 22) * CFrame.Angles(0, -FACE_HUB * spec.mirror, 0),
+			if i == 1 then W.Coral else W.Blue,
+			parent
+		)
+		pottedPalm(edgeX - spec.mirror * 3, p.top, side * 31, -spec.mirror, parent)
+		ballCluster(spec.gateX + spec.mirror * 7, p.top, side * 12, parent)
+	end
 end
 
 -- Plaza ---------------------------------------------------------------------------------
@@ -48820,6 +49685,18 @@ local function buildPlaza(parent: Instance, spec: PlazaSpec)
 	-- Flag posts on the plaza corners.
 	for i, corner in { { p.x1 - 2, p.z0 + 2 }, { p.x1 - 2, p.z1 - 2 }, { p.x0 + 2, p.z0 + 2 }, { p.x0 + 2, p.z1 - 2 } } do
 		flagPole(corner[1], p.top, corner[2], 10, FLAG_COLORS[i], nil, if corner[2] < 0 then 0 else math.pi, parent)
+	end
+	-- Planters flanking the spur mouth, and between the side gates and the back row.
+	local mouthX = if spec.mirror > 0 then p.x1 - 3 else p.x0 + 3
+	local backX = spec.gateX + spec.mirror * 8
+	for _, side in { -1, 1 } do
+		planter(mouthX, p.top, side * (s.half + 6), parent)
+		planter(backX, p.top, side * (p.z1 - 3), parent)
+	end
+	plazaDressing(parent, spec)
+	-- The mirrored plaza has no best-times board: a planter stands in its spot.
+	if spec.portal ~= 1 then
+		planter(-Course.BOARD.x, p.top, Course.BOARD.z, parent)
 	end
 end
 
@@ -50992,11 +51869,17 @@ return Pen
 	(+Z, toward the spawn). Over them a D-pad of four "FlexLamp<i>" tiles in the flexes'
 	colours (PoseRules.FLEXES; Fx.Pose lights the one being shown), "PodiumGlow" rings that
 	Fx.Pose tints, two spotlight towers, a pink runway from the spawn to the stage steps and
-	a judges' table on the left with three "10" cards.
+	a judges' table on the left (three seated judges holding "10" paddles). The backdrop is an
+	opaque LED wall (sunset gradient bands, neon stars, a light bar of coloured cans) framed by
+	red curtains; confetti cannons sit in drums on the deck's front corners. The audience area
+	is a blue checker carpet behind a "FAN ZONE" barrier, with a start mark round the spawn pad
+	and two cushioned bleachers of blocky fans waving foam fingers. Every sign faces the audience (+Z: SurfaceGui Face Back).
 
 	build() -> Built: everything World.Arena.Base has ({ folder, floor, spawn, exit,
 	exitRadius, center, top }) plus
-	playerSpot feet CFrame on the player's podium, facing the audience
+	playerSpot feet CFrame on the player's podium, facing the audience (lane 1)
+	playerSpots every player podium's feet CFrame (lane 1 first): runs at the same time each
+	           take their own lane; the rival is local to each client, so all share rivalSpot
 	rivalSpot  feet CFrame on the rival's podium, facing the audience
 	rival      empty Model "Rival" (the rival rig is built on each client by Fx.Pose, so
 	           every player sees their own rival's show)
@@ -51022,17 +51905,23 @@ local STAGE = {
 	PodiumD = 7,
 	PodiumH = 1.4,
 	WallH = 19,
+	LaneX = 16, -- the extra player podiums (lanes 2 and 3) at -LaneX and +LaneX
 }
+
+-- SurfaceGui faces: Back is the part's +Z face, toward the audience and the spawn.
+local AUDIENCE = Enum.NormalId.Back
 
 local PoseStage = {}
 
 export type Built = Arena.Base & {
 	playerSpot: CFrame,
 	rivalSpot: CFrame,
+	playerSpots: { CFrame },
 	rival: Model,
 }
 
-local function sign(part: BasePart, face: Enum.NormalId, text: string, color: Color3, ppu: number?)
+-- `outline` swaps the soft ink stroke for a bold opaque one in that colour.
+local function sign(part: BasePart, face: Enum.NormalId, text: string, color: Color3, ppu: number?, outline: Color3?)
 	local gui = Instance.new("SurfaceGui")
 	gui.Face = face
 	gui.PixelsPerStud = ppu or 40
@@ -51047,10 +51936,14 @@ local function sign(part: BasePart, face: Enum.NormalId, text: string, color: Co
 	label.TextColor3 = color
 	label.Parent = gui
 	local stroke = Instance.new("UIStroke")
-	stroke.Thickness = 3
-	stroke.Color = W.Ink
-	stroke.Transparency = 0.35
+	stroke.Thickness = if outline then 4 else 3
+	stroke.Color = outline or W.Ink
+	stroke.Transparency = if outline then 0 else 0.35
 	stroke.Parent = label
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0.06, 0)
+	pad.PaddingBottom = UDim.new(0.06, 0)
+	pad.Parent = label
 end
 
 function PoseStage.build(): Built
@@ -51108,7 +52001,7 @@ function PoseStage.build(): Built
 
 	-- Back wall with a framed banner on top.
 	local wallZ = cz + STAGE.Back + 0.6
-	box("StageWall", Vector3.new(STAGE.HalfW * 2, STAGE.WallH, 1), CFrame.new(cx, deckTop + STAGE.WallH / 2, wallZ), W.SkyBlue)
+	box("StageWall", Vector3.new(STAGE.HalfW * 2, STAGE.WallH, 1), CFrame.new(cx, deckTop + STAGE.WallH / 2, wallZ), W.Navy)
 	box("StageWallFrame", Vector3.new(STAGE.HalfW * 2 + 1.2, 1.2, 1.4), CFrame.new(cx, deckTop + STAGE.WallH, wallZ), W.Blue)
 	for _, side in { -1, 1 } do
 		box(
@@ -51118,20 +52011,135 @@ function PoseStage.build(): Built
 			W.Blue
 		)
 	end
-	local banner = box("PoseBanner", Vector3.new(26, 4.6, 0.6), CFrame.new(cx, deckTop + STAGE.WallH - 3.2, wallZ + 0.8), W.HotPink)
-	sign(banner, Enum.NormalId.Front, "POSE COPY", W.White)
-	box("PoseBannerTrim", Vector3.new(27, 0.4, 0.7), CFrame.new(cx, deckTop + STAGE.WallH - 5.6, wallZ + 0.8), W.Sunny, Enum.Material.Neon)
+	-- Dark letters on a sunny board with a white border: reads from the back of the crowd.
+	local bannerY = deckTop + STAGE.WallH - 2.9
+	box("PoseBannerBorder", Vector3.new(28.8, 5.8, 0.4), CFrame.new(cx, bannerY, wallZ + 0.7), W.White)
+	local banner = box("PoseBanner", Vector3.new(28, 5, 0.6), CFrame.new(cx, bannerY, wallZ + 0.8), W.Sunny)
+	sign(banner, AUDIENCE, "POSE COPY", W.Navy, 40, W.White)
+	box("PoseBannerTrim", Vector3.new(28.8, 0.4, 0.7), CFrame.new(cx, bannerY - 2.9, wallZ + 0.85), W.HotPink, Enum.Material.Neon)
+
+	-- The LED backdrop: sunset bands from sky blue (behind the chads) to deep navy under the
+	-- banner, thin panel seams, neon stars, red curtains at the sides, a valance and a light
+	-- bar of coloured cans on top. All opaque: the wall reads as a screen, not glass.
+	local face = wallZ + 0.55
+	local bands = { W.SkyBlue, W.RainbowBlue, W.Blue, W.Grape, W.Navy }
+	local bandH = STAGE.WallH / #bands
+	for i, color in bands do
+		box("BackdropBand", Vector3.new(STAGE.HalfW * 2 - 2, bandH, 0.1), CFrame.new(cx, deckTop + bandH * (i - 0.5), face), color)
+	end
+	for i = -4, 4 do
+		local seam = box(
+			"BackdropSeam",
+			Vector3.new(0.15, STAGE.WallH, 0.12),
+			CFrame.new(cx + i * 4.4, deckTop + STAGE.WallH / 2, face + 0.02),
+			W.Ink
+		)
+		seam.Transparency = 0.6
+		seam.CanCollide = false
+	end
+	local stars = {
+		{ x = -14, y = 13.5, color = W.Sunny, size = 1.6 },
+		{ x = -9.5, y = 11, color = W.White, size = 1.0 },
+		{ x = -15.5, y = 7.5, color = W.White, size = 0.9 },
+		{ x = 10, y = 12.5, color = W.Sunny, size = 1.4 },
+		{ x = 15, y = 9.5, color = W.White, size = 1.0 },
+		{ x = 13.5, y = 15, color = W.Pink, size = 1.1 },
+		{ x = -11, y = 16, color = W.Pink, size = 1.0 },
+		{ x = 8, y = 16.2, color = W.White, size = 0.8 },
+	}
+	for _, star in stars do
+		local pos = CFrame.new(cx + star.x, deckTop + star.y, face + 0.13)
+		for _, turn in { 0, 45 } do
+			local ray = box(
+				"BackdropStar",
+				Vector3.new(star.size, star.size, 0.12),
+				pos * CFrame.Angles(0, 0, math.rad(turn)),
+				star.color,
+				Enum.Material.Neon
+			)
+			ray.CanCollide = false
+		end
+	end
+	for _, side in { -1, 1 } do
+		for f = 0, 4 do
+			disc(
+				"Curtain",
+				1.5,
+				STAGE.WallH + 1,
+				Vector3.new(cx + side * (STAGE.HalfW - 0.6 - f * 1.15), deckTop + (STAGE.WallH + 1) / 2, wallZ + 1.3 + (f % 2) * 0.35),
+				if f % 2 == 0 then W.RainbowRed else W.Coral,
+				Enum.Material.Fabric
+			)
+		end
+	end
+	box(
+		"Valance",
+		Vector3.new(STAGE.HalfW * 2 + 1.6, 2, 1.2),
+		CFrame.new(cx, deckTop + STAGE.WallH + 1.2, wallZ + 1.4),
+		W.RainbowRed,
+		Enum.Material.Fabric
+	)
+	box(
+		"ValanceTrim",
+		Vector3.new(STAGE.HalfW * 2 + 1.6, 0.35, 1.3),
+		CFrame.new(cx, deckTop + STAGE.WallH + 0.2, wallZ + 1.45),
+		W.Sunny,
+		Enum.Material.Neon
+	)
+	box("LightBar", Vector3.new(STAGE.HalfW * 2 - 4, 0.5, 0.5), CFrame.new(cx, deckTop + STAGE.WallH + 2.6, wallZ + 2), W.Steel)
+	local canColors = { W.Sunny, W.HotPink, W.RainbowBlue, W.White, W.Mint, W.HotPink, W.Sunny }
+	for i, color in canColors do
+		local x = cx + (i - 4) * 6
+		local canPos = Vector3.new(x, deckTop + STAGE.WallH + 3.4, wallZ + 2)
+		local aim = Vector3.new(x * 0.4 + cx * 0.6, deckTop + 2, cz + STAGE.PodiumZ + 2)
+		make("Part", {
+			Name = "StageCan",
+			Shape = CYLINDER,
+			Size = Vector3.new(1.6, 1.3, 1.3),
+			CFrame = CFrame.lookAt(canPos, aim) * CFrame.Angles(0, math.rad(90), 0),
+			Color = W.Navy,
+			CanCollide = false,
+			Parent = folder,
+		})
+		local lens = make("Part", {
+			Name = "StageCanLens",
+			Shape = CYLINDER,
+			Size = Vector3.new(0.15, 1.1, 1.1),
+			CFrame = CFrame.lookAt(canPos + (aim - canPos).Unit * 0.82, aim) * CFrame.Angles(0, math.rad(90), 0),
+			Color = color,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			Parent = folder,
+		})
+		if i % 2 == 0 then
+			local light = Instance.new("SpotLight")
+			light.Face = Enum.NormalId.Right
+			light.Angle = 50
+			light.Range = 34
+			light.Brightness = 2
+			light.Color = color
+			light.Parent = lens
+		end
+	end
+	-- Gold side stars flanking the title.
+	for _, side in { -1, 1 } do
+		local pos = CFrame.new(cx + side * 15.6, deckTop + STAGE.WallH - 2.9, wallZ + 0.9)
+		for _, turn in { 0, 45 } do
+			box("TitleStar", Vector3.new(1.8, 1.8, 0.3), pos * CFrame.Angles(0, 0, math.rad(turn)), W.Sunny, Enum.Material.Neon)
+		end
+	end
 
 	-- The flex lamps: a D-pad of four tiles between the chads (up, left, right, down).
 	local padY = deckTop + 9.4
-	local padZ = wallZ + 0.7
+	local padZ = wallZ + 1.2
 	local offsets: { [string]: Vector2 } = {
 		Up = Vector2.new(0, 1),
 		Left = Vector2.new(-1, 0),
 		Right = Vector2.new(1, 0),
 		Down = Vector2.new(0, -1),
 	}
-	box("FlexPadBack", Vector3.new(9.6, 9.6, 0.4), CFrame.new(cx, padY, padZ - 0.3) * CFrame.Angles(0, 0, math.rad(45)), W.Navy)
+	box("FlexPadRim", Vector3.new(11, 11, 0.2), CFrame.new(cx, padY, padZ - 0.5) * CFrame.Angles(0, 0, math.rad(45)), W.White)
+	box("FlexPadBack", Vector3.new(9.6, 9.6, 0.3), CFrame.new(cx, padY, padZ - 0.35) * CFrame.Angles(0, 0, math.rad(45)), W.Navy)
 	for i, flex in PoseRules.FLEXES do
 		local o = offsets[flex.dir] or Vector2.zero
 		local lamp = box(
@@ -51150,9 +52158,16 @@ function PoseStage.build(): Built
 	local feetY = deckTop + STAGE.PodiumH
 	local rivalPos = Vector3.new(cx - STAGE.PodiumX, feetY, podiumZ)
 	local playerPos = Vector3.new(cx + STAGE.PodiumX, feetY, podiumZ)
+	local lanePos = {
+		playerPos,
+		Vector3.new(cx - STAGE.LaneX, feetY, podiumZ),
+		Vector3.new(cx + STAGE.LaneX, feetY, podiumZ),
+	}
 	local podiums = {
 		{ pos = rivalPos, color = W.Grape, name = "RivalPad", text = "CHAD" },
-		{ pos = playerPos, color = W.Sunny, name = "PlayerPad", text = "YOU" },
+		{ pos = lanePos[1], color = W.Sunny, name = "PlayerPad", text = "YOU" },
+		{ pos = lanePos[2], color = W.Sunny, name = "PlayerPad", text = "YOU" },
+		{ pos = lanePos[3], color = W.Sunny, name = "PlayerPad", text = "YOU" },
 	}
 	for _, pod in podiums do
 		local p = pod.pos
@@ -51162,7 +52177,7 @@ function PoseStage.build(): Built
 		glow:SetAttribute("Side", if pod.name == "RivalPad" then "rival" else "player")
 		local plate = box("PodiumPlate", Vector3.new(4, 1, 0.2), CFrame.new(p.X, deckTop + 0.7, p.Z + STAGE.PodiumD / 2 + 0.05), W.White)
 		plate.CanCollide = false
-		sign(plate, Enum.NormalId.Front, pod.text, pod.color)
+		sign(plate, AUDIENCE, pod.text, pod.color)
 	end
 
 	-- Spotlight towers at the stage's front corners, aimed at the podiums.
@@ -51174,7 +52189,7 @@ function PoseStage.build(): Built
 		box("SpotTower", Vector3.new(0.8, h, 0.8), CFrame.new(x, top + h / 2, z), W.Steel)
 		local target = (if side < 0 then rivalPos else playerPos) + Vector3.new(0, 3, 0)
 		local headPos = Vector3.new(x, top + h + 0.6, z)
-		local head = make("Part", {
+		make("Part", {
 			Name = "SpotHead",
 			Shape = CYLINDER,
 			Size = Vector3.new(2.2, 2, 2),
@@ -51200,32 +52215,209 @@ function PoseStage.build(): Built
 		light.Brightness = 2.5
 		light.Color = Color3.fromRGB(255, 240, 210)
 		light.Parent = lens
-		head.CanCollide = false
 	end
 
-	-- Judges' table on the audience's left, angled at the stage, with three "10" cards.
-	local judge = CFrame.new(cx - 16, top, cz + 10) * CFrame.Angles(0, math.rad(-25), 0)
-	box("JudgeTable", Vector3.new(11, 0.4, 3), judge * CFrame.new(0, 2.8, 0), W.White)
-	box("JudgeSkirt", Vector3.new(11, 2.6, 0.3), judge * CFrame.new(0, 1.3, -1.35), W.Blue)
-	for _, dx in { -5.2, 5.2 } do
-		box("JudgeLeg", Vector3.new(0.4, 2.6, 2.6), judge * CFrame.new(dx, 1.3, 0), W.Blue)
+	-- Blocky Roblox-style figures (fans and judges): torso and yellow head on a seat, facing
+	-- the stage. `cf` is the seat top, looking at the stage.
+	local SKIN = W.Sunny
+	local function figure(cf: CFrame, shirt: Color3)
+		local torso = box("FanBody", Vector3.new(1.4, 1.6, 0.8), cf * CFrame.new(0, 0.8, 0), shirt)
+		torso.CanCollide = false
+		make("Part", {
+			Name = "FanHead",
+			Shape = Enum.PartType.Ball,
+			Size = Vector3.one * 1.1,
+			CFrame = cf * CFrame.new(0, 2.15, 0),
+			Color = SKIN,
+			Material = Enum.Material.SmoothPlastic,
+			CanCollide = false,
+			Parent = folder,
+		})
 	end
-	local judgeSign = box("JudgeSign", Vector3.new(6, 1.2, 0.2), judge * CFrame.new(0, 1.6, -1.55), W.Sunny)
-	sign(judgeSign, Enum.NormalId.Front, "JUDGES", W.White)
+	-- A raised arm at the figure's right holding `color` up (a foam finger or a score paddle).
+	local function raisedArm(cf: CFrame): CFrame
+		local arm = box("FanArm", Vector3.new(0.4, 1.5, 0.4), cf * CFrame.new(0.95, 2.05, 0), SKIN)
+		arm.CanCollide = false
+		return cf * CFrame.new(0.95, 2.8, 0)
+	end
+	local function foamFinger(cf: CFrame, color: Color3)
+		local hand = raisedArm(cf)
+		local palm = box("FoamFinger", Vector3.new(1.1, 1.1, 0.45), hand * CFrame.new(0, 0.5, 0), color)
+		local finger = box("FoamFinger", Vector3.new(0.4, 1.2, 0.4), hand * CFrame.new(0.25, 1.6, 0), color)
+		palm.CanCollide = false
+		finger.CanCollide = false
+	end
+
+	-- Judges' table on the audience's left, angled at the stage: three judges in navy seated on
+	-- coral chairs facing the stage, each holding up a "10" paddle.
+	local judge = CFrame.new(cx - 14, top, cz + 6.4) * CFrame.Angles(0, math.rad(-12), 0)
+	box("JudgeTable", Vector3.new(14, 0.5, 3.4), judge * CFrame.new(0, 3.25, 0), W.White)
+	box("JudgeTableTrim", Vector3.new(14.2, 0.25, 3.6), judge * CFrame.new(0, 2.9, 0), W.HotPink)
+	box("JudgeSkirt", Vector3.new(14, 2.8, 0.3), judge * CFrame.new(0, 1.4, -1.55), W.Blue)
+	for _, dx in { -6.6, 6.6 } do
+		box("JudgeLeg", Vector3.new(0.4, 2.8, 3), judge * CFrame.new(dx, 1.4, 0), W.Blue)
+	end
+	local judgeSign = box("JudgeSign", Vector3.new(8, 1.8, 0.2), judge * CFrame.new(0, 1.6, -1.75), W.Sunny)
+	sign(judgeSign, Enum.NormalId.Front, "JUDGES", W.Navy, 40, W.White)
 	for i = -1, 1 do
-		local seat = judge * CFrame.new(i * 3.4, 0, 2.6)
-		box("JudgeChair", Vector3.new(2.2, 0.4, 2.2), seat * CFrame.new(0, 1.9, 0), W.Coral)
-		box("JudgeChairBack", Vector3.new(2.2, 2.6, 0.3), seat * CFrame.new(0, 3.2, 1.0), W.Coral)
-		box("JudgeChairLeg", Vector3.new(0.4, 1.7, 0.4), seat * CFrame.new(0, 0.85, 0), W.Steel)
-		local card =
-			box("ScoreCard", Vector3.new(1.6, 1.4, 0.15), seat * CFrame.new(0, 3.85, -2.4) * CFrame.Angles(math.rad(-12), 0, 0), W.White)
-		card.CanCollide = false
-		sign(card, Enum.NormalId.Front, "10", W.HotPink)
+		local seat = judge * CFrame.new(i * 4.4, 0, 3.1)
+		box("JudgeChair", Vector3.new(2.6, 0.4, 2.4), seat * CFrame.new(0, 2, 0), W.Coral)
+		box("JudgeChairBack", Vector3.new(2.6, 2.6, 0.3), seat * CFrame.new(0, 3.3, 1.1), W.Coral)
+		box("JudgeChairLeg", Vector3.new(0.5, 1.8, 0.5), seat * CFrame.new(0, 0.9, 0), W.Steel)
+		box("JudgeChairFoot", Vector3.new(1.8, 0.2, 1.8), seat * CFrame.new(0, 0.1, 0), W.Steel)
+		local sit = seat * CFrame.new(0, 2.2, -0.1)
+		figure(sit, W.Navy)
+		local hand = raisedArm(sit)
+		local handle = box("PaddleHandle", Vector3.new(0.22, 0.9, 0.22), hand * CFrame.new(0, 0.45, 0), W.Steel)
+		handle.CanCollide = false
+		local paddle = box("ScorePaddle", Vector3.new(2, 1.7, 0.15), hand * CFrame.new(0, 1.75, 0), W.White)
+		paddle.CanCollide = false
+		sign(paddle, Enum.NormalId.Front, "10", W.HotPink, 40, W.Navy)
+		sign(paddle, Enum.NormalId.Back, "10", W.HotPink, 40, W.Navy)
 	end
 
-	-- A few beach balls and pom-pom flowers around the deck for colour.
+	-- Confetti cannons on the deck's front corners: a navy drum with a pink collar holding a
+	-- gold barrel tilted in over the podiums, and confetti already scattered on the deck and
+	-- the audience floor.
+	for _, side in { -1, 1 } do
+		local basePos = Vector3.new(cx + side * 20, deckTop, cz + STAGE.Front - 2)
+		disc("CannonBase", 2.8, 1.2, basePos + Vector3.new(0, 0.6, 0), W.Navy)
+		disc("CannonCollar", 3.1, 0.3, basePos + Vector3.new(0, 1.25, 0), W.HotPink)
+		local from = basePos + Vector3.new(0, 0.5, 0)
+		local mouth = basePos + Vector3.new(-side * 1.1, 4.2, -0.7)
+		local len = (mouth - from).Magnitude
+		local barrel = CFrame.lookAt((from + mouth) / 2, mouth) * CFrame.Angles(0, math.rad(90), 0)
+		make("Part", {
+			Name = "ConfettiCannon",
+			Shape = CYLINDER,
+			Size = Vector3.new(len, 1.4, 1.4),
+			CFrame = barrel,
+			Color = W.Gold,
+			Material = Enum.Material.SmoothPlastic,
+			Parent = folder,
+		})
+		for _, along in { 0.2, len / 2 - 0.2 } do
+			make("Part", {
+				Name = "CannonRing",
+				Shape = CYLINDER,
+				Size = Vector3.new(0.35, 1.65, 1.65),
+				CFrame = barrel * CFrame.new(along, 0, 0),
+				Color = W.HotPink,
+				CanCollide = false,
+				Parent = folder,
+			})
+		end
+	end
+	local confettiColors = { W.HotPink, W.Sunny, W.RainbowBlue, W.Mint, W.Grape, W.Orange }
+	local seed = 7
+	local function rand(): number
+		seed = (seed * 1103515245 + 12345) % 2147483648
+		return seed / 2147483648
+	end
+	for i = 1, 30 do
+		local onDeck = i <= 18
+		local x = cx + (rand() * 2 - 1) * (if onDeck then STAGE.HalfW - 2 else 18)
+		local z = if onDeck then cz + STAGE.Front - 1 - rand() * 6 else cz + STAGE.Front + 3 + rand() * 6
+		local y = if onDeck then deckTop + 0.13 else top + 0.1
+		local bit = box(
+			"Confetti",
+			Vector3.new(0.6, 0.05, 0.35),
+			CFrame.new(x, y, z) * CFrame.Angles(0, rand() * math.pi, 0),
+			confettiColors[(i - 1) % #confettiColors + 1]
+		)
+		bit.CanCollide = false
+	end
+
+	-- The fan zone: a blue checker carpet from the barrier to the deck's +Z edge, a dressed
+	-- start mark round the spawn pad at the runway's end, a barrier in front of the stage (a
+	-- gap for the runway) and two bleachers of cushioned seats with cheering fans.
+	local carpetZ0, carpetZ1 = cz + 2.3, cz + a.sizeZ / 2 - 0.2
+	local carpetW, carpetD = a.sizeX - 0.4, carpetZ1 - carpetZ0
+	box("AudienceCarpet", Vector3.new(carpetW, 0.04, carpetD), CFrame.new(cx, top + 0.02, (carpetZ0 + carpetZ1) / 2), W.RainbowBlue)
+	local cols, rows = 8, 3
+	local tileW, tileD = carpetW / cols, carpetD / rows
+	for r = 0, rows - 1 do
+		for c = 0, cols - 1 do
+			if (r + c) % 2 == 0 then
+				box(
+					"CarpetTile",
+					Vector3.new(tileW, 0.03, tileD),
+					CFrame.new(cx - carpetW / 2 + tileW * (c + 0.5), top + 0.055, carpetZ0 + tileD * (r + 0.5)),
+					W.SkyBlue
+				)
+			end
+		end
+	end
+	local spawnPos = base.spawn.Position
+	disc("StartMarkRim", 9.6, 0.1, Vector3.new(spawnPos.X, top + 0.06, spawnPos.Z), W.HotPink)
+	disc("StartMark", 8.4, 0.12, Vector3.new(spawnPos.X, top + 0.08, spawnPos.Z), W.White)
+
+	local barrierZ = cz + 2
+	for _, side in { -1, 1 } do
+		local x0, x1 = cx + side * 4.5, cx + side * 21
+		local midX, len = (x0 + x1) / 2, math.abs(x1 - x0)
+		local panel = box("FanBarrier", Vector3.new(len, 3, 0.3), CFrame.new(midX, top + 1.8, barrierZ), W.White)
+		sign(panel, AUDIENCE, "FAN ZONE", W.Navy, 30, W.Sunny)
+		sign(panel, Enum.NormalId.Front, "GO CHAD GO!", W.Blue, 30)
+		box("FanBarrierRail", Vector3.new(len + 0.4, 0.4, 0.5), CFrame.new(midX, top + 3.5, barrierZ), W.HotPink)
+		for k = 0, 3 do
+			local x = x0 + (x1 - x0) * k / 3
+			box("FanBarrierPost", Vector3.new(0.4, 3.6, 0.4), CFrame.new(x, top + 1.8, barrierZ), W.Steel)
+			box("FanBarrierFoot", Vector3.new(0.5, 0.2, 2), CFrame.new(x, top + 0.1, barrierZ), W.Steel)
+		end
+	end
+
+	-- Bleachers: three navy risers stepping up away from the stage, a white stripe on each
+	-- step's face and four coloured seat cushions per row. `fans` = { row, seat, shirt, finger? }.
+	local ROW_D, ROW_H, SEAT_W = 2.2, 0.9, 2.75
+	local cushions = { W.HotPink, W.Sunny, W.Mint }
+	local function bleacher(x: number, z0: number, fans: { { any } }, backSign: string?)
+		for i = 1, 3 do
+			local h = ROW_H * i
+			local zc = z0 + ROW_D * (i - 0.5)
+			box("Bleacher", Vector3.new(11.6, h, ROW_D), CFrame.new(x, top + h / 2, zc), W.Navy)
+			box("BleacherStripe", Vector3.new(11.6, 0.25, 0.1), CFrame.new(x, top + h - 0.2, z0 + ROW_D * (i - 1) - 0.04), W.White)
+			for s = 1, 4 do
+				box(
+					"BleacherSeat",
+					Vector3.new(SEAT_W - 0.35, 0.3, 1.3),
+					CFrame.new(x + (s - 2.5) * SEAT_W, top + h + 0.15, zc - 0.3),
+					cushions[i]
+				)
+			end
+		end
+		for _, fan in fans do
+			local row, seat = fan[1] :: number, fan[2] :: number
+			local cf = CFrame.lookAt(
+				Vector3.new(x + (seat - 2.5) * SEAT_W, top + ROW_H * row + 0.3, z0 + ROW_D * (row - 0.5) - 0.2),
+				Vector3.new(cx, top + ROW_H * row + 0.3, cz + STAGE.PodiumZ)
+			)
+			figure(cf, fan[3] :: Color3)
+			if fan[4] then
+				foamFinger(cf, fan[4] :: Color3)
+			end
+		end
+		if backSign then
+			local back = box("BleacherBack", Vector3.new(11.6, 2.2, 0.2), CFrame.new(x, top + 1.3, z0 + ROW_D * 3 + 0.1), W.HotPink)
+			sign(back, AUDIENCE, backSign, W.White, 30, W.Navy)
+		end
+	end
+	bleacher(cx + 15, cz + 6.4, {
+		{ 1, 1, W.HotPink, W.Sunny },
+		{ 1, 3, W.Blue },
+		{ 2, 2, W.Grape, W.HotPink },
+		{ 3, 4, W.Coral, W.Mint },
+		{ 3, 1, W.RainbowBlue },
+	}, "GO CHAD GO!")
+	bleacher(cx - 15, cz + 12.8, {
+		{ 1, 4, W.Mint, W.HotPink },
+		{ 2, 1, W.HotPink },
+		{ 3, 3, W.Blue, W.Sunny },
+	}, "FAN CLUB")
+
+	-- A few beach balls around the deck for colour.
 	local props = {
-		{ Vector3.new(cx + 20, top, cz + 12), W.Pink },
+		{ Vector3.new(cx - 24.5, top, cz + 21.5), W.Pink },
 		{ Vector3.new(cx + 22, top, cz - 1), W.Mint },
 		{ Vector3.new(cx - 22, top, cz - 1), W.Sunny },
 	}
@@ -51247,6 +52439,10 @@ function PoseStage.build(): Built
 	local built: any = base
 	built.playerSpot = CFrame.lookAt(playerPos, playerPos + facing)
 	built.rivalSpot = CFrame.lookAt(rivalPos, rivalPos + facing)
+	built.playerSpots = {}
+	for _, pos in lanePos do
+		table.insert(built.playerSpots, CFrame.lookAt(pos, pos + facing))
+	end
 	built.rival = rival
 	return built :: Built
 end
@@ -51534,13 +52730,19 @@ return Props
 	ShakeArena: the SHAKE CATCH arena out at sea (teleport-only; Modes.Shake brings players here).
 	Numbers live in Modes.ShakeRules.ARENA; the shell (deck, spawn pad, exit arch) comes from
 	World.Arena. Dressed as a sunny beach court:
-	  * a sand deck with white court lines round the catch area (where items land);
+	  * a sand deck with a coloured court over the catch area (where items land): a bold
+	    teal-and-sunny checker, a wide hot-pink border, white court lines, a big target in
+	    the middle and a catch ring in each quadrant;
+	  * the Shake Chute over the far margin (outside every drop column): a candy-striped
+	    gantry carrying the "SHAKE CATCH!" title, a cloud bank, three giant blenders tipped
+	    at the court and sample shakes and fruit;
+	  * bleachers on their own deck past the +X edge: three tiers of cheering fan cut-outs
+	    and a score / timer board;
 	  * the Smoothie Bar on its own deck past the far (-Z) edge, facing the spawn: a pink
-	    counter with blenders, a striped awning, a "SMOOTHIE BAR" sign and a giant shake
-	    cup on the roof, surfboards leaning on its sides;
-	  * striped sun awnings on posts along both side edges (outside the catch area), with
-	    bunting between them; palms in the four corners (the PalmTree mesh, or a part-built
-	    one when the mesh is missing).
+	    counter with blenders, a striped awning and a "SMOOTHIE BAR" sign, a giant shake cup
+	    and surfboards at its ends, palms framing it (the PalmTree mesh, or a part-built one);
+	  * striped sun awnings on four posts along both side edges (outside the catch area),
+	    with bunting between them.
 	Nothing solid stands inside the catch area; the falling items are client-side (Fx.Shake).
 
 	build() -> Built: everything World.Arena.Base has ({ folder, floor, spawn, exit,
@@ -51563,9 +52765,16 @@ local BALL = Enum.PartType.Ball
 
 local ShakeArena = {}
 
--- Studs between the deck's edge and the catch area (the awnings and palms stand in it).
-local INSET = 6
+-- Studs between the deck's edge and the catch area (the awnings stand in it, clear of every
+-- drop column; the palms stand on the Smoothie Bar's deck past the far edge).
+local INSET = 9
+-- The side awnings' centre line (studs from the arena's centre along X).
+local AWNING_X = 28.5
 local PALM_HEIGHT = 15
+-- The Shake Chute gantry's centre line (studs in from the deck's -Z edge: between the catch
+-- area and the edge) and its beam's height above the floor.
+local CHUTE_INSET = 4.5
+local CHUTE_HEIGHT = 30
 
 export type Built = Arena.Base & {
 	catchArea: { x0: number, x1: number, z0: number, z1: number },
@@ -51587,11 +52796,13 @@ local function piece(parent: Instance, name: string, size: Vector3, cf: CFrame, 
 	return make(className, p)
 end
 
--- A big SurfaceGui word on `part`'s front face.
-local function word(part: BasePart, text: string, color: Color3)
+-- A big SurfaceGui word on `part`'s `face` (default Back: +Z, toward the spawn).
+local function word(part: BasePart, text: string, color: Color3, face: Enum.NormalId?)
 	local gui = Instance.new("SurfaceGui")
-	gui.Face = Enum.NormalId.Front
+	gui.Face = face or Enum.NormalId.Back
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
 	gui.PixelsPerStud = 30
+	gui.LightInfluence = 0
 	gui.Parent = part
 	local label = Instance.new("TextLabel")
 	label.BackgroundTransparency = 1
@@ -51647,15 +52858,29 @@ end
 -- A sun awning on two posts along an edge: red-and-white style stripes, sloping outward.
 local function awning(parent: Instance, center: Vector3, length: number, outward: number)
 	local postH = 9
+	-- Four posts (the canopy slopes down outward: the inner pair stands taller), each on a
+	-- little pink foot.
 	for _, s in { -1, 1 } do
-		piece(
-			parent,
-			"AwningPost",
-			Vector3.new(postH, 0.6, 0.6),
-			CFrame.new(center + Vector3.new(outward * 2.2, postH / 2, s * (length / 2 - 0.5))) * UPRIGHT,
-			W.White,
-			{ Shape = CYLINDER, CanCollide = true }
-		)
+		for _, side in { -1, 1 } do
+			local h = postH + 0.4 - side * 2.1 * math.tan(math.rad(14))
+			local foot = center + Vector3.new(outward * side * 2.1, 0, s * (length / 2 - 0.6))
+			piece(
+				parent,
+				"AwningPost",
+				Vector3.new(h, 0.5, 0.5),
+				CFrame.new(foot + Vector3.new(0, h / 2, 0)) * UPRIGHT,
+				W.White,
+				{ Shape = CYLINDER, CanCollide = true }
+			)
+			piece(
+				parent,
+				"AwningFoot",
+				Vector3.new(0.5, 1.3, 1.3),
+				CFrame.new(foot + Vector3.new(0, 0.25, 0)) * UPRIGHT,
+				W.Pink,
+				{ Shape = CYLINDER }
+			)
+		end
 	end
 	local stripes = 8
 	local w = length / stripes
@@ -51683,8 +52908,8 @@ end
 local function smoothieBar(parent: Instance, a: Arena.Spec, top: number)
 	local bz = a.z - a.sizeZ / 2 - 6
 	local deck = Vector3.new(a.x, top, bz)
-	piece(parent, "BarDeck", Vector3.new(44, 2, 12), CFrame.new(deck - Vector3.new(0, 1, 0)), W.Wood, { CanCollide = true })
-	piece(parent, "BarDeckRim", Vector3.new(46, 1.2, 13), CFrame.new(deck - Vector3.new(0, 1.5, 0)), W.White)
+	piece(parent, "BarDeck", Vector3.new(64, 2, 12), CFrame.new(deck - Vector3.new(0, 1, 0)), W.Wood, { CanCollide = true })
+	piece(parent, "BarDeckRim", Vector3.new(66, 1.2, 13), CFrame.new(deck - Vector3.new(0, 1.5, 0)), W.White)
 	-- Back wall and side pillars.
 	piece(parent, "BarWall", Vector3.new(30, 14, 1), CFrame.new(deck + Vector3.new(0, 7, -4)), W.Butter, { CanCollide = true })
 	for _, s in { -1, 1 } do
@@ -51743,11 +52968,11 @@ local function smoothieBar(parent: Instance, a: Arena.Spec, top: number)
 		)
 	end
 	-- The sign on the roof line.
-	local sign = piece(parent, "BarSign", Vector3.new(22, 4, 0.6), CFrame.new(deck + Vector3.new(0, 16, -3.6)), W.Pink)
-	piece(parent, "BarSignBack", Vector3.new(23, 5, 0.4), CFrame.new(deck + Vector3.new(0, 16, -4)), W.White)
+	local sign = piece(parent, "BarSign", Vector3.new(30, 6, 0.6), CFrame.new(deck + Vector3.new(0, 17, -3.6)), W.HotPink)
+	piece(parent, "BarSignBack", Vector3.new(31.5, 7.4, 0.4), CFrame.new(deck + Vector3.new(0, 17, -4)), W.White)
 	word(sign, "SMOOTHIE BAR", W.White)
-	-- A giant protein shake on the roof: cup, lid, straw and a cherry.
-	local cup = deck + Vector3.new(14, 14, -3)
+	-- A giant protein shake standing on the deck's left end: cup, lid, straw and a cherry.
+	local cup = deck + Vector3.new(-22, 0, -1)
 	piece(parent, "GiantCup", Vector3.new(7, 5, 5), CFrame.new(cup + Vector3.new(0, 3.5, 0)) * UPRIGHT, W.Pink, { Shape = CYLINDER })
 	piece(
 		parent,
@@ -51769,15 +52994,19 @@ local function smoothieBar(parent: Instance, a: Arena.Spec, top: number)
 	piece(parent, "GiantCherry", Vector3.new(1.4, 1.4, 1.4), CFrame.new(cup + Vector3.new(-1, 9.3, 0.6)), W.Coral, { Shape = BALL })
 	-- Surfboards leaning on the deck's ends.
 	local boards: { { x: number, color: Color3, tilt: number } } = {
-		{ x = -19, color = W.Mint, tilt = 1 },
-		{ x = 19, color = W.Sunny, tilt = -1 },
-		{ x = -21, color = W.Blue, tilt = 1 },
+		{ x = 18, color = W.Mint, tilt = -1 },
+		{ x = 20.5, color = W.Sunny, tilt = -1 },
+		{ x = 23, color = W.Blue, tilt = -1 },
 	}
 	for _, b in boards do
 		local x, color, tilt = b.x, b.color, b.tilt
 		local board = CFrame.new(deck + Vector3.new(x, 4.3, -1)) * CFrame.Angles(math.rad(-12), 0, math.rad(tilt * 8))
 		piece(parent, "Surfboard", Vector3.new(2.6, 9, 0.4), board, color)
 		piece(parent, "SurfboardStripe", Vector3.new(0.5, 9.05, 0.45), board, W.White)
+	end
+	-- Palms framing both ends of the bar (outside the court: no fronds over a drop column).
+	for _, sx in { -1, 1 } do
+		palm(parent, deck + Vector3.new(sx * 29.5, 0, -1.5), math.rad(if sx < 0 then 30 else 210))
 	end
 end
 
@@ -51796,6 +53025,211 @@ local function bunting(parent: Instance, from: Vector3, to: Vector3, count: numb
 			colors[(i - 1) % #colors + 1],
 			{ ClassName = "WedgePart" }
 		)
+	end
+end
+
+-- The Shake Chute: a candy-striped gantry over the far margin (between the catch area's -Z
+-- edge and the deck's, so it stands outside every drop column) whose beam is the "SHAKE
+-- CATCH!" title, with a cloud bank and three giant blenders that "fire" the shakes onto the court.
+local function chute(parent: Instance, a: Arena.Spec, top: number)
+	local gz = a.z - a.sizeZ / 2 + CHUTE_INSET
+	local beamY = top + CHUTE_HEIGHT
+	local stripes = { W.HotPink, W.White }
+	for _, sx in { -1, 1 } do
+		local base = Vector3.new(a.x + sx * 29, top, gz)
+		piece(parent, "ChuteFoot", Vector3.new(4, 1, 4), CFrame.new(base + Vector3.new(0, 0.5, 0)), W.Teal, { CanCollide = true })
+		for i = 0, 7 do
+			piece(
+				parent,
+				"ChutePillar",
+				Vector3.new(4.4, 2.4, 2.4),
+				CFrame.new(base + Vector3.new(0, 1 + 2.2 + i * 4.4, 0)) * UPRIGHT,
+				stripes[i % 2 + 1],
+				{ Shape = CYLINDER, CanCollide = i == 0 }
+			)
+		end
+		piece(parent, "ChutePillarTop", Vector3.new(3, 3, 3), CFrame.new(base + Vector3.new(0, 37.5, 0)), W.Sunny, { Shape = BALL })
+	end
+	-- The beam is the title board: a white frame, a hot-pink face with the words facing the
+	-- spawn and a neon trim under it.
+	piece(parent, "ChuteBeam", Vector3.new(62, 8, 2), CFrame.new(a.x, beamY, gz - 0.4), W.White)
+	local title = piece(parent, "TitleBoard", Vector3.new(58, 6.6, 0.6), CFrame.new(a.x, beamY, gz + 0.8), W.HotPink)
+	word(title, "SHAKE CATCH!", W.Sunny)
+	piece(
+		parent,
+		"TitleTrim",
+		Vector3.new(62, 0.6, 2.4),
+		CFrame.new(a.x, beamY - 4.2, gz - 0.4),
+		W.Sunny,
+		{ Material = Enum.Material.Neon }
+	)
+	local deckY = beamY + 4
+	piece(parent, "ChuteShelf", Vector3.new(62, 0.6, 3.6), CFrame.new(a.x, deckY - 0.3, gz - 1), W.Teal)
+	-- A cloud bank along the beam (kept behind its front face).
+	local puffs = { { -27, 4.6 }, { -21, 6 }, { -8, 5 }, { 8, 5.4 }, { 21, 6.2 }, { 27, 4.4 } }
+	for _, puff in puffs do
+		piece(
+			parent,
+			"ChuteCloud",
+			Vector3.new(puff[2], puff[2] * 0.8, puff[2] * 0.75),
+			CFrame.new(a.x + puff[1], deckY + 1.2, gz - 1),
+			W.White,
+			{ Shape = BALL }
+		)
+	end
+	-- Three giant blenders tipped toward the court, a smoothie inside each.
+	local fills = { W.Grape, W.HotPink, W.Orange }
+	for i, fill in fills do
+		local at = CFrame.new(a.x + (i - 2) * 14.5, deckY, gz - 1) * CFrame.Angles(math.rad(10), 0, 0)
+		piece(parent, "CannonBase", Vector3.new(4, 2, 4), at * CFrame.new(0, 1, 0), W.Steel)
+		piece(
+			parent,
+			"CannonJug",
+			Vector3.new(5, 4.2, 4.2),
+			at * CFrame.new(0, 4.5, 0) * UPRIGHT,
+			W.White,
+			{ Shape = CYLINDER, Transparency = 0.4, Material = Enum.Material.Glass }
+		)
+		piece(parent, "CannonFill", Vector3.new(3.8, 3.7, 3.7), at * CFrame.new(0, 4, 0) * UPRIGHT, fill, { Shape = CYLINDER })
+		piece(parent, "CannonLid", Vector3.new(0.8, 4.6, 4.6), at * CFrame.new(0, 7.3, 0) * UPRIGHT, W.Teal, { Shape = CYLINDER })
+		piece(parent, "CannonKnob", Vector3.new(1.4, 1.4, 1.4), at * CFrame.new(0, 8, 0), W.Sunny, { Shape = BALL })
+	end
+	-- Sample shakes and fruit between the blenders.
+	for _, sx in { -1, 1 } do
+		local cup = Vector3.new(a.x + sx * 7.2, deckY, gz - 1)
+		piece(
+			parent,
+			"SampleCup",
+			Vector3.new(3.2, 2.4, 2.4),
+			CFrame.new(cup + Vector3.new(0, 1.6, 0)) * UPRIGHT,
+			if sx < 0 then W.Mint else W.Pink,
+			{ Shape = CYLINDER }
+		)
+		piece(parent, "SampleCream", Vector3.new(2.4, 1.6, 2.4), CFrame.new(cup + Vector3.new(0, 3.3, 0)), W.Cream, { Shape = BALL })
+		piece(
+			parent,
+			"SampleStraw",
+			Vector3.new(0.4, 3, 0.4),
+			CFrame.new(cup + Vector3.new(0.4, 4.2, 0)) * CFrame.Angles(0, 0, math.rad(-15)),
+			W.HotPink
+		)
+		piece(parent, "SampleCherry", Vector3.new(0.9, 0.9, 0.9), CFrame.new(cup + Vector3.new(-0.3, 4.2, 0)), W.Coral, { Shape = BALL })
+		local fruit = Vector3.new(a.x + sx * 23.5, deckY + 1.2, gz - 1.2)
+		piece(parent, "SampleOrange", Vector3.new(2.4, 2.4, 2.4), CFrame.new(fruit), W.Orange, { Shape = BALL })
+		piece(
+			parent,
+			"SampleStrawberry",
+			Vector3.new(1.8, 2.2, 1.8),
+			CFrame.new(fruit + Vector3.new(sx * 2.2, -0.2, 0)),
+			W.Coral,
+			{ Shape = BALL }
+		)
+		piece(parent, "SampleLeaf", Vector3.new(1.4, 0.4, 1.4), CFrame.new(fruit + Vector3.new(sx * 2.2, 1, 0)), W.Grass)
+	end
+end
+
+-- A cheering fan cut-out on the bleachers, facing -X (the court): a blocky body, a yellow
+-- head with a painted smile and both arms up.
+local function fan(parent: Instance, feet: Vector3, shirt: Color3)
+	local face = CFrame.new(feet) * CFrame.Angles(0, math.rad(90), 0)
+	piece(parent, "FanLegs", Vector3.new(1.6, 1.4, 0.3), face * CFrame.new(0, 0.7, 0), W.Navy)
+	piece(parent, "FanBody", Vector3.new(1.9, 1.8, 0.3), face * CFrame.new(0, 2.3, 0), shirt)
+	local head = piece(parent, "FanHead", Vector3.new(1.2, 1.2, 0.3), face * CFrame.new(0, 3.85, 0), W.Sunny)
+	for _, s in { -1, 1 } do
+		piece(
+			parent,
+			"FanArm",
+			Vector3.new(0.5, 1.7, 0.3),
+			face * CFrame.new(s * 1.2, 3.6, 0) * CFrame.Angles(0, 0, math.rad(-s * 25)),
+			W.Sunny
+		)
+	end
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Front
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 40
+	gui.LightInfluence = 0
+	gui.Parent = head
+	local function blob(x: number, y: number, sw: number, sh: number)
+		local f = Instance.new("Frame")
+		f.BackgroundColor3 = W.Ink
+		f.BorderSizePixel = 0
+		f.AnchorPoint = Vector2.new(0.5, 0.5)
+		f.Position = UDim2.fromScale(x, y)
+		f.Size = UDim2.fromScale(sw, sh)
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0.5, 0)
+		corner.Parent = f
+		f.Parent = gui
+	end
+	blob(0.32, 0.38, 0.14, 0.2)
+	blob(0.68, 0.38, 0.14, 0.2)
+	blob(0.5, 0.7, 0.46, 0.14)
+end
+
+-- Bleachers on their own deck past the +X edge: three stepped tiers of cheering fans and a
+-- score / timer board at the far end, angled toward the court.
+local function bleachers(parent: Instance, a: Arena.Spec, top: number)
+	local x0 = a.x + a.sizeX / 2 + 1
+	local zc, len = a.z + 1, 28
+	piece(parent, "StandDeck", Vector3.new(14, 2, 40), CFrame.new(x0 + 7, top - 1, a.z - 4), W.Wood, { CanCollide = true })
+	piece(parent, "StandDeckRim", Vector3.new(15, 1.2, 41), CFrame.new(x0 + 7, top - 1.5, a.z - 4), W.White)
+	local fronts = { W.Teal, W.Sunny, W.HotPink }
+	local shirts = { W.Coral, W.Blue, W.Mint, W.Grape, W.Orange, W.HotPink, W.Teal }
+	for k = 0, 2 do
+		local h = 1.4 * (k + 1)
+		local x = x0 + 3 + k * 3.4
+		piece(parent, "StandTier", Vector3.new(3.4, h, len), CFrame.new(x, top + h / 2, zc), fronts[k + 1], { CanCollide = true })
+		piece(parent, "StandSeat", Vector3.new(3.6, 0.3, len + 0.2), CFrame.new(x, top + h + 0.15, zc), W.White)
+		for n = 0, 4 do
+			local z = zc - len / 2 + 3 + n * 5.5 + (k % 2) * 2.2
+			fan(parent, Vector3.new(x + 0.4, top + h + 0.3, z), shirts[(n + k * 2) % #shirts + 1])
+		end
+	end
+	-- Pennants on a line over the top tier.
+	bunting(parent, Vector3.new(x0 + 11, top + 11.5, zc - len / 2), Vector3.new(x0 + 11, top + 11.5, zc + len / 2), 8)
+	for _, sz in { -1, 1 } do
+		piece(parent, "StandPole", Vector3.new(0.4, 11.5, 0.4), CFrame.new(x0 + 11, top + 5.75, zc + sz * len / 2), W.White)
+	end
+	-- The score board: two posts and a navy panel facing the court's centre.
+	local at = Vector3.new(x0 + 7, top, a.z - 17.5)
+	local look = CFrame.lookAt(at, Vector3.new(a.x, top, a.z + 6))
+	for _, s in { -1, 1 } do
+		piece(parent, "BoardPost", Vector3.new(0.9, 9, 0.9), look * CFrame.new(s * 6, 4.5, 0), W.White, { CanCollide = true })
+	end
+	piece(parent, "ScoreFrame", Vector3.new(16, 9.6, 0.6), look * CFrame.new(0, 13, 0.2), W.Sunny)
+	local panel = piece(parent, "ScoreBoard", Vector3.new(15, 8.6, 0.6), look * CFrame.new(0, 13, -0.1), W.Navy)
+	for i = -1, 1 do
+		piece(
+			parent,
+			"ScoreLight",
+			Vector3.new(1.2, 1.2, 1.2),
+			look * CFrame.new(i * 5, 18.4, 0),
+			W.Sunny,
+			{ Shape = BALL, Material = Enum.Material.Neon }
+		)
+	end
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Front
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 30
+	gui.LightInfluence = 0
+	gui.Parent = panel
+	local rows: { { text: string, color: Color3, y: number, h: number } } = {
+		{ text = "SHAKES", color = W.White, y = 0.03, h = 0.22 },
+		{ text = "128", color = W.Sunny, y = 0.25, h = 0.42 },
+		{ text = "TIME 0:45", color = W.Mint, y = 0.7, h = 0.26 },
+	}
+	for _, row in rows do
+		local label = Instance.new("TextLabel")
+		label.BackgroundTransparency = 1
+		label.Position = UDim2.fromScale(0.05, row.y)
+		label.Size = UDim2.fromScale(0.9, row.h)
+		label.Text = row.text
+		label.TextScaled = true
+		label.Font = Common.theme.Fonts.Display
+		label.TextColor3 = row.color
+		label.Parent = gui
 	end
 end
 
@@ -51819,27 +53253,71 @@ function ShakeArena.build(): Built
 
 	-- Court lines round the catch area and a centre circle.
 	local w, d = area.x1 - area.x0, area.z1 - area.z0
-	local lineY = top + 0.03
+	local lineY = top + 0.08
 	for _, s in { -1, 1 } do
 		piece(decor, "CourtLine", Vector3.new(w + 0.6, 0.06, 0.6), CFrame.new(a.x, lineY, a.z + s * d / 2), W.White)
 		piece(decor, "CourtLine", Vector3.new(0.6, 0.06, d + 0.6), CFrame.new(a.x + s * w / 2, lineY, a.z), W.White)
 	end
-	piece(decor, "CourtCircle", Vector3.new(0.06, 12, 12), CFrame.new(a.x, lineY, a.z) * UPRIGHT, W.SandDark, { Shape = CYLINDER })
+	-- The coloured court: one teal plate with a sunny checker drawn on its top (a SurfaceGui,
+	-- no extra parts), a wide hot-pink border band edged in white, then the drop-zone target in
+	-- the middle and a catch ring in each quadrant.
+	piece(decor, "CourtEdge", Vector3.new(w + 7, 0.02, d + 7), CFrame.new(a.x, top + 0.01, a.z), W.White)
+	piece(decor, "CourtBorder", Vector3.new(w + 6, 0.02, d + 6), CFrame.new(a.x, top + 0.025, a.z), W.HotPink)
+	local court = piece(decor, "CourtFloor", Vector3.new(w, 0.05, d), CFrame.new(a.x, top + 0.04, a.z), W.Teal)
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Top
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 4
+	gui.Parent = court
+	local cells = 8
+	for i = 0, cells - 1 do
+		for j = 0, cells - 1 do
+			if (i + j) % 2 == 0 then
+				local cell = Instance.new("Frame")
+				cell.BackgroundColor3 = W.Sunny
+				cell.BorderSizePixel = 0
+				cell.Position = UDim2.fromScale(i / cells, j / cells)
+				cell.Size = UDim2.fromScale(1 / cells, 1 / cells)
+				cell.Parent = gui
+			end
+		end
+	end
+	local function disc(at: Vector3, diameter: number, color: Color3, lift: number)
+		piece(
+			decor,
+			"CourtDisc",
+			Vector3.new(0.05, diameter, diameter),
+			CFrame.new(at + Vector3.new(0, lift, 0)) * UPRIGHT,
+			color,
+			{ Shape = CYLINDER }
+		)
+	end
+	local mid = Vector3.new(a.x, top, a.z)
+	disc(mid, 20, W.White, 0.08)
+	disc(mid, 17.6, W.HotPink, 0.11)
+	disc(mid, 11, W.White, 0.14)
+	disc(mid, 8.6, W.Orange, 0.17)
+	disc(mid, 3.4, W.White, 0.20)
+	for _, q in { { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 } } do
+		local at = mid + Vector3.new(q[1] * w / 4, 0, q[2] * d / 4)
+		disc(at, 10, W.White, 0.08)
+		disc(at, 8.2, if q[2] < 0 then W.Grape else W.Blue, 0.11)
+		disc(at, 3, W.White, 0.14)
+	end
 
 	smoothieBar(decor, a, top)
+	chute(decor, a, top)
+	bleachers(decor, a, top)
 
-	-- Side awnings with bunting and the corner palms.
+	-- Side awnings with bunting (their inner valance stays outside every drop column).
 	local length = 18
 	for _, sx in { -1, 1 } do
-		local x = a.x + sx * (a.sizeX / 2 - INSET / 2)
+		local x = a.x + sx * AWNING_X
 		for _, sz in { -1, 1 } do
 			awning(decor, Vector3.new(x, top, a.z + sz * 12), length, sx)
 		end
 		bunting(decor, Vector3.new(x - sx * 0.5, top + 9.6, a.z - 3), Vector3.new(x - sx * 0.5, top + 9.6, a.z + 3), 4)
-		palm(decor, Vector3.new(a.x + sx * (a.sizeX / 2 - 2.5), top, a.z - a.sizeZ / 2 + 2.5), math.rad(45 * sx))
 	end
-	-- Only the far corners get palms on the deck: the near +X corner holds the exit arch.
-	palm(decor, Vector3.new(a.x - a.sizeX / 2 + 2.5, top, a.z + a.sizeZ / 2 - 2.5), math.rad(200))
 
 	local built: any = base
 	built.catchArea = area
@@ -55162,6 +56640,8 @@ local function showGuide(on: boolean)
 end
 
 local lastPhase = "off"
+-- While returnBall drops the dumbbell in, setAim leaves its pivot alone (one writer a frame).
+local returningUntil = 0
 function Bowling.setAim(aim: number, power: number?, phase: string)
 	if not running or not info then
 		return
@@ -55186,7 +56666,7 @@ function Bowling.setAim(aim: number, power: number?, phase: string)
 		dot.CFrame = CFrame.new(at(x, d, LANE_TOP + 0.03)) * CFrame.Angles(0, 0, math.pi / 2)
 	end
 	local ball = dumbbell
-	if ball then
+	if ball and os.clock() >= returningUntil then
 		local wobble = if phase == "power" and not reducedMotion() then math.sin(os.clock() * 30) * 0.04 * p else 0
 		ball:PivotTo(restCFrame(aim, p * 0.8) * CFrame.new(wobble, 0, 0))
 	end
@@ -55200,9 +56680,11 @@ local function returnBall()
 	end
 	ball.Parent = folder
 	local startAt = os.clock()
+	returningUntil = startAt + 0.5
 	local mine = token
 	addJob(function(now: number): boolean
 		if token ~= mine then
+			returningUntil = 0
 			return true
 		end
 		local a = math.clamp((now - startAt) / 0.5, 0, 1)
@@ -75504,6 +76986,8 @@ local selfToken = 0
 
 local lamps: { [number]: BasePart } = {}
 local glows: { [string]: BasePart } = {}
+-- Every player podium's glow (one per lane); start() keeps the one under this player.
+local playerGlows: { BasePart } = {}
 
 local function flexOf(index: any): Flex?
 	return if type(index) == "number" then Pose.FLEXES[index] else nil
@@ -75571,6 +77055,7 @@ end
 local function findStage()
 	table.clear(lamps)
 	table.clear(glows)
+	table.clear(playerGlows)
 	local map = Workspace:FindFirstChild("Map")
 	local stage = map and map:FindFirstChild("PoseStage")
 	if not stage then
@@ -75585,7 +77070,9 @@ local function findStage()
 			lamps[flex] = part
 		elseif part.Name == "PodiumGlow" then
 			local side = part:GetAttribute("Side")
-			if type(side) == "string" then
+			if side == "player" then
+				table.insert(playerGlows, part)
+			elseif type(side) == "string" then
 				glows[side] = part
 			end
 		end
@@ -75819,6 +77306,15 @@ function Pose.start(payload: { [string]: any })
 	f.Parent = Workspace
 	folder = f
 	findStage()
+	-- This player's podium (lanes: several players can pose at once).
+	local nearest = math.huge
+	for _, glow in playerGlows do
+		local d = (Vector3.new(glow.Position.X, playerPos.Y, glow.Position.Z) - playerPos).Magnitude
+		if d < nearest then
+			nearest = d
+			glows.player = glow
+		end
+	end
 	spawnRival()
 	setExpr("Smug")
 	-- The avatar may land a frame after the teleport: attach once it is there.
@@ -76354,6 +77850,8 @@ local function step()
 			local parent = folder or Workspace
 			item.ring, item.shadow = buildMark(parent, d)
 			local model = buildItem(d.kind)
+			-- Start on the landing column (a drop first seen late would otherwise sit at the origin).
+			model:PivotTo(CFrame.new(d.x, top + CATCH_HEIGHT + DROP_HEIGHT * (1 - math.clamp(alpha, 0, 1) ^ 2), d.z))
 			model.Parent = parent
 			item.model = model
 			item.state = "fall"
@@ -87144,6 +88642,7 @@ local FRAMES = 5
 -- Scorecard: frame box size, the TOTAL box, the gap to the unit-count capsule.
 local CARD = { BoxW = 56, BoxH = 58, TotalW = 74, Pad = 8, MinY = 120, Clear = 12 }
 -- The controls panel (bottom centre) and its two strips.
+local SENT_TIMEOUT = 4
 local CONTROLS = { W = 440, H = 168, Bottom = 28, StripW = 384, AimH = 34, PowerH = 26 }
 -- Seconds for the aim arrow to cross the lane one way, and the power bar to fill once.
 local SWEEP = { Aim = 1.25, Power = 0.85 }
@@ -87323,6 +88822,17 @@ local function press()
 		BowlingFx.setAim(aim, power, "off")
 		action:FireServer({ action = "BowlingRoll", aim = aim, power = power })
 		Kit.disappear(controls)
+		-- The server may drop the roll (action budget); with no "roll" or "ready" back in
+		-- SENT_TIMEOUT seconds the aim controls come back so the turn never stalls.
+		rollToken += 1
+		local mine = rollToken
+		task.delay(SENT_TIMEOUT, function()
+			if running and rollToken == mine and (phase :: string) == "sent" then
+				controls.Visible = true
+				Kit.appear(controls, { from = 0.85, time = 0.2 })
+				setPhase("aim")
+			end
+		end)
 	end
 end
 
@@ -87439,6 +88949,10 @@ local function onRoll(p: any)
 	rollToken += 1
 	local mine = rollToken
 	setPhase("sent")
+	-- A late "roll" after the timeout brought the controls back: hide them again.
+	if controls.Visible then
+		Kit.disappear(controls)
+	end
 	local lastT = 0
 	local paths = type(p.path) == "table" and p.path or {}
 	local endT = num(paths[#paths] and paths[#paths].t, 1.5)
@@ -87497,6 +89011,8 @@ function BowlingHud.stop(_payload: { [string]: any }?)
 	unbind()
 	setChrome(false)
 	BowlingFx.setAim(0, 0, "off")
+	-- Safety net (onState, or a missed "stop" notify): Fx puts the pins and camera back.
+	BowlingFx.stop(nil)
 	root.Visible = false
 	finishCard.Visible = false
 end
@@ -87647,6 +89163,33 @@ local function buildCard()
 	end)
 end
 
+-- On touch screens the panel keeps clear of the thumbstick (bottom left) and the jump button
+-- (bottom right): it sits between them, shrunk to fit on narrow phones.
+local TOUCH_CLEAR = { Left = 210, Right = 170, MinScale = 0.68 }
+local controlsScale: UIScale
+
+local function layoutControls()
+	if not controls or not screen then
+		return
+	end
+	local width = (screen :: ScreenGui).AbsoluteSize.X / Kit.pixelScale(root)
+	if Kit.touch and width > 0 then
+		local room = width - TOUCH_CLEAR.Left - TOUCH_CLEAR.Right
+		local scale = math.clamp(room / CONTROLS.W, TOUCH_CLEAR.MinScale, 1)
+		controlsScale.Scale = scale
+		local centre = TOUCH_CLEAR.Left + room / 2
+		-- Still too narrow: centre it and lift it over the thumbstick ring instead.
+		local lift = if room < CONTROLS.W * TOUCH_CLEAR.MinScale then 70 else 0
+		if lift > 0 then
+			centre = width / 2
+		end
+		controls.Position = UDim2.new(0, centre, 1, -CONTROLS.Bottom - lift)
+	else
+		controlsScale.Scale = 1
+		controls.Position = UDim2.new(0.5, 0, 1, -CONTROLS.Bottom)
+	end
+end
+
 local function buildControls()
 	controls = Kit.hudGlass(root, {
 		Name = "Controls",
@@ -87765,9 +89308,17 @@ local function buildControls()
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 10,
+		-- Gamepad A is bound through ContextActionService; a selectable button would fire twice.
+		Selectable = false,
 		Parent = controls,
 	})
 	tap.Activated:Connect(press)
+	controlsScale = Instance.new("UIScale")
+	controlsScale.Parent = controls
+	layoutControls()
+	local gui = screen :: ScreenGui
+	gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(layoutControls)
+	Kit.onInput(layoutControls)
 end
 
 local function buildFinish()
@@ -110282,6 +111833,7 @@ local Client = script.Parent.Parent
 local Kit = require(script.Parent.Kit) :: any
 local Sounds = require(Client.Sounds) :: any
 local PoseFx = require(Client.Fx.Pose)
+local Popups = require(script.Parent.Popups) :: any
 
 local PoseHud = {}
 
@@ -110332,6 +111884,9 @@ local quitButton: TextButton = nil :: any
 local banner: TextLabel = nil :: any
 local subBanner: TextLabel = nil :: any
 local dotsRow: Frame = nil :: any
+local dotsList: UIListLayout = nil :: any
+-- The dots row's usable width (the top pill is 420 wide): dots shrink to fit it.
+local DOTS_WIDTH = 396
 local timerBack: Frame = nil :: any
 local timerFill: Frame = nil :: any
 local pad: Frame = nil :: any
@@ -110456,7 +112011,11 @@ local function buildDots(count: number)
 			child:Destroy()
 		end
 	end
-	local size = if count > 14 then 14 else 20
+	-- Up to 14 dots at full size; past that the gap and the dots shrink so even MAX_ROUND
+	-- (30) fits inside the pill.
+	local gap = if count > 14 then 3 else 6
+	local size = math.clamp(math.floor((DOTS_WIDTH - (count - 1) * gap) / math.max(count, 1)), 8, 20)
+	dotsList.Padding = UDim.new(0, gap)
 	for i = 1, count do
 		local dot = Kit.new("Frame", {
 			Name = "Dot" .. i,
@@ -110734,6 +112293,8 @@ function PoseHud.onNotify(payload: { [string]: any })
 		PoseHud.start(p)
 	elseif event == "stop" then
 		PoseHud.stop(p)
+	elseif event == "full" then
+		Popups.toast(if type(p.text) == "string" then p.text else "The posing stage is full!", "info")
 	elseif not running then
 		return
 	elseif event == "round" then
@@ -111104,7 +112665,7 @@ function PoseHud.init(screenGui: ScreenGui)
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = top,
 	})
-	Kit.list(dotsRow, 6, true, Enum.HorizontalAlignment.Center)
+	dotsList = Kit.list(dotsRow, 6, true, Enum.HorizontalAlignment.Center)
 	timerBack = Kit.new("Frame", {
 		Name = "Timer",
 		BackgroundColor3 = C.Well,
@@ -111217,7 +112778,15 @@ local wave = 1
 local waves = 4
 local targetShown = false
 local lastCount = -1
-local bannerToken = 0
+-- Banners: hide() bumps bannerEpoch to cancel every pending one; each banner has its own id
+-- and only hides itself if it is still the one on screen (so they never cancel each other).
+local bannerEpoch = 0
+local bannerSeq = 0
+local bannerShown = 0
+-- Bumped on every finish card show / hide; the card's auto-dismiss checks it.
+local finishToken = 0
+-- The finish card closes itself after this many seconds.
+local FINISH_HOLD = 20
 local stepConn: RBXScriptConnection? = nil
 
 local function num(value: any, default: number): number
@@ -111298,19 +112867,20 @@ local function paintScore(pop: boolean)
 end
 
 local function showBanner(title: string, sub: string?, color: Color3, hold: number, delay: number?)
-	bannerToken += 1
-	local token = bannerToken
+	bannerSeq += 1
+	local id, epoch = bannerSeq, bannerEpoch
 	task.delay(delay or 0, function()
-		if token ~= bannerToken or not running then
+		if epoch ~= bannerEpoch or not running then
 			return
 		end
+		bannerShown = id
 		banner.Text = title
 		banner.TextColor3 = color
 		bannerSub.Text = sub or ""
 		banner.Visible = true
 		Kit.appear(banner, { from = 0.35, time = 0.35 })
 		task.delay(hold, function()
-			if token == bannerToken then
+			if epoch == bannerEpoch and bannerShown == id then
 				Kit.disappear(banner)
 			end
 		end)
@@ -111370,10 +112940,11 @@ end
 local function resetQuit()
 	quitArmed = false
 	Kit.setButton(quitButton, "X", C.SurfaceHi)
-	quitButton.Size = UDim2.fromOffset(30, 28)
+	quitButton.Size = UDim2.fromOffset(44, 44)
 end
 
 local function hideFinish()
+	finishToken += 1
 	Kit.unfocus(finishCard)
 	if finishCard.Visible then
 		Kit.disappear(finishCard)
@@ -111411,6 +112982,13 @@ local function showFinish(p: { [string]: any }, won: boolean)
 	end
 	finishCard.Visible = true
 	Kit.appear(finishCard, { from = 0.5, time = 0.35 })
+	finishToken += 1
+	local token = finishToken
+	task.delay(FINISH_HOLD, function()
+		if token == finishToken and finishCard.Visible then
+			hideFinish()
+		end
+	end)
 	Kit.focus(finishCard)
 	task.defer(function()
 		Kit.select(Kit.firstSelectable(finishCard))
@@ -111432,7 +113010,8 @@ end
 
 local function hide()
 	running = false
-	bannerToken += 1
+	bannerEpoch += 1
+	bannerShown = 0
 	banner.Visible = false
 	if stepConn then
 		stepConn:Disconnect()
@@ -111483,6 +113062,7 @@ function ShakeHud.stop(payload: { [string]: any }?)
 		return
 	end
 	hide()
+	hideFinish()
 	if was and payload and payload.reason == "quit" then
 		Popups.toast("Shake Catch ended", "info")
 	end
@@ -111543,6 +113123,15 @@ function ShakeHud.onState(data: any)
 	local info = type(data) == "table" and type(data.modes) == "table" and data.modes.shake
 	if running and not (type(info) == "table" and info.running == true) then
 		ShakeHud.stop(nil)
+	elseif not running and finishCard and finishCard.Visible and type(data) == "table" and type(data.modes) == "table" then
+		-- Not running any more and another mode has started: the finish card is stale.
+		-- (Right after a finish nothing runs, so the card stays until dismissed or timed out.)
+		for _, other in data.modes do
+			if type(other) == "table" and other.running == true then
+				hideFinish()
+				break
+			end
+		end
 	end
 end
 
@@ -111652,7 +113241,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 	-- Score pill with the quiet quit button on its right end.
 	local pill = Kit.hudGlass(root, {
 		Name = "Score",
-		Size = UDim2.fromOffset(PILL_W, 46),
+		Size = UDim2.fromOffset(PILL_W, 54),
 		Position = UDim2.new(0.5, 0, 0, 0),
 		AnchorPoint = Vector2.new(0.5, 0),
 	})
@@ -111664,7 +113253,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 		TextSize = 26,
 		StrokeThickness = 2,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -90, 1, 0),
+		Size = UDim2.new(1, -100, 1, 0),
 		Position = UDim2.fromOffset(44, 0),
 		ZIndex = 3,
 	})
@@ -111672,11 +113261,11 @@ function ShakeHud.init(screenGui: ScreenGui)
 		Name = "Quit",
 		Text = "X",
 		Color = C.SurfaceHi,
-		TextSize = 14,
-		Size = UDim2.fromOffset(30, 28),
-		Position = UDim2.new(1, -8, 0.5, 0),
+		TextSize = 18,
+		Size = UDim2.fromOffset(44, 44),
+		Position = UDim2.new(1, -5, 0.5, 0),
 		AnchorPoint = Vector2.new(1, 0.5),
-		Radius = 14,
+		Radius = 22,
 		Depth = 2,
 		ZIndex = 4,
 	}, function()
@@ -111688,7 +113277,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 		-- First tap arms it: "QUIT?" for a few seconds.
 		quitArmed = true
 		Kit.setButton(quitButton, "QUIT?", C.Bad)
-		Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(64, 28) }, Enum.EasingStyle.Back)
+		Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(96, 44) }, Enum.EasingStyle.Back)
 		task.delay(3, function()
 			if quitArmed then
 				resetQuit()
@@ -111703,7 +113292,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 		BackgroundColor3 = C.Well,
 		BorderSizePixel = 0,
 		Size = UDim2.fromOffset(BAR_W, 14),
-		Position = UDim2.new(0.5, 0, 0, 54),
+		Position = UDim2.new(0.5, 0, 0, 62),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = root,
 	})
@@ -111722,7 +113311,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 		Name = "Hearts",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(200, 28),
-		Position = UDim2.new(0.5, 0, 0, 78),
+		Position = UDim2.new(0.5, 0, 0, 86),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = root,
 	})
@@ -111734,7 +113323,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 		Font = F.Display,
 		TextSize = 22,
 		Size = UDim2.new(1, 0, 0, 28),
-		Position = UDim2.fromOffset(0, 114),
+		Position = UDim2.fromOffset(0, 122),
 	})
 
 	-- The centre banner (count-in, waves, target).
