@@ -75,13 +75,42 @@ BowlingRules.HIT = BowlingRules.BALL.halfLength + BowlingRules.PIN.radius
 -- it was hit (0 dead on, 1 at the edge), JITTER is the random wobble on its direction.
 BowlingRules.SIDE = 1.6
 BowlingRules.JITTER = 0.35
+-- However far off centre a pin is struck, it flies at most SPLAY studs sideways per stud
+-- forward (about 39 degrees): an edge hit sends it into its neighbour, not across the rack
+-- past it (an uncapped splay left the 7 and 10 pins up just right of centre: a dead zone
+-- inside the praised aim).
+BowlingRules.SPLAY = 0.8
 -- A falling pin sweeps REACH studs along its direction; a standing pin within KNOCK_R of
--- that sweep goes over with chance KNOCK_BASE + KNOCK_POWER * drive(power) (less off its
--- edge).
+-- that sweep goes over with chance (KNOCK_BASE + KNOCK_POWER * drive(power)) * carry(entry)
+-- (less off its edge).
 BowlingRules.REACH = 3.4
 BowlingRules.KNOCK_R = 1.4
 BowlingRules.KNOCK_BASE = 0.42
 BowlingRules.KNOCK_POWER = 0.53
+-- THE POCKET. |aim| <= POCKET is the praised aim (the HUD's gold band and "PERFECT AIM!"
+-- come from this number, sent in "start"): the dumbbell meets the head pin within
+-- POCKET * AIM_SPREAD studs of square and drives through the rack. Past that a thinner hit
+-- deflects the dumbbell and the rack carries less: carry(entry) falls by CARRY_FALL per stud
+-- of `entry` (the line's x at the head pin) beyond the pocket, down to CARRY_MIN.
+-- tests/bowling.luau plays fixed aims to check the pocket really is the best region.
+BowlingRules.POCKET = 0.12
+BowlingRules.CARRY_FALL = 0.35
+BowlingRules.CARRY_MIN = 0.3
+
+-- How well the rack carries (0..1) for a line `entry` studs across at the head pin.
+function BowlingRules.carry(entry: number): number
+	local off = math.abs(entry) - BowlingRules.POCKET * BowlingRules.AIM_SPREAD
+	if off <= 0 then
+		return 1
+	end
+	return math.max(BowlingRules.CARRY_MIN, 1 - off * BowlingRules.CARRY_FALL)
+end
+
+-- Whether an aim is in the pocket (the HUD's "PERFECT AIM!").
+function BowlingRules.inPocket(aim: number): boolean
+	return math.abs(aim) <= BowlingRules.POCKET
+end
+
 -- The power meter's zones: under sweetLo the dumbbell is soft, sweetLo..sweetHi is the sweet
 -- spot, over sweetHi it goes wild (hooks off its line: HOOK studs at the head pin at power 1).
 BowlingRules.POWER = { sweetLo = 0.72, sweetHi = 0.9 }
@@ -280,7 +309,8 @@ function BowlingRules.roll(standing: { boolean }, aim: number, power: number, se
 			local off = spot.x - xAt(spot.d)
 			if math.abs(off) < BowlingRules.HIT then
 				local side = off / BowlingRules.HIT
-				local dx, dd = unit(slopeAt(spot.d) + side * BowlingRules.SIDE + (rand() - 0.5) * BowlingRules.JITTER, 1)
+				local splay = math.clamp(side * BowlingRules.SIDE, -BowlingRules.SPLAY, BowlingRules.SPLAY)
+				local dx, dd = unit(slopeAt(spot.d) + splay + (rand() - 0.5) * BowlingRules.JITTER, 1)
 				local t = timeAt(math.max(spot.d - BowlingRules.BALL.radius, 0))
 				down[i] = true
 				table.insert(falls, { pin = i, t = t, dx = dx, dd = dd, struck = true })
@@ -289,7 +319,7 @@ function BowlingRules.roll(standing: { boolean }, aim: number, power: number, se
 	end
 
 	-- Chain: the earliest falling pin not yet spread topples the standing pins in its sweep.
-	local chance = BowlingRules.KNOCK_BASE + BowlingRules.KNOCK_POWER * BowlingRules.drive(power)
+	local chance = (BowlingRules.KNOCK_BASE + BowlingRules.KNOCK_POWER * BowlingRules.drive(power)) * BowlingRules.carry(xAt(lane.headD))
 	local spread: { [number]: boolean } = {}
 	while true do
 		local nextFall: Fall? = nil
@@ -357,11 +387,11 @@ end
 BowlingRules.WINDUP = 0.9
 -- Seconds after the last pin falls (or the dumbbell reaches the pit) for the pins to settle
 -- and the bowler's reaction: a strike's celebration is the longest. Kept short so a game
--- moves; a tap skips the rest of it anyway (SKIP_AFTER).
+-- moves; a tap skips the rest of it anyway (skipAt).
 BowlingRules.SETTLE = { strike = 2.2, spare = 1.9, gutter = 1.7, open = 1.6 }
--- "BowlingSkip" ends the settle early, but only once the pins are down: this many seconds
--- after the release's last event (the roll's duration), so the result has been seen.
-BowlingRules.SKIP_AFTER = 0.3
+-- "BowlingSkip" ends the settle early, but only this many seconds after the bowler's
+-- reaction starts (reactAt), so the pins and the reaction have been seen (skipAt).
+BowlingRules.SKIP_AFTER = 1.0
 
 function BowlingRules.settle(mark: string?): number
 	local s = BowlingRules.SETTLE
@@ -539,7 +569,9 @@ end
 	the full pack, however many games they play. Bonuses never restart the full pack's
 	cooldown.
 ]]
-BowlingRules.STAR_TIERS = { 50, 90, 130 }
+-- Tuned with tests/bowling.luau's bowlers: a skilled one (aim mostly in the pocket, power
+-- mostly sweet) earns 2+ stars in about half its games and 3 in about one in seven.
+BowlingRules.STAR_TIERS = { 50, 80, 115 }
 BowlingRules.TIER_SHARE = { 0.2, 0.3, 0.5 }
 BowlingRules.BONUS_CAP = 1
 
@@ -587,10 +619,17 @@ end
 -- A roll this soon after its "ready" is refused (a scripted or mashed roll).
 BowlingRules.READY_GAP = 0.8
 -- A turn left this long: the server bowls a weak centre ball for the player (AFK_AIM,
--- AFK_POWER) so a kid who wandered off comes back to the same game, not a lost one.
+-- AFK_POWER) so a kid who wandered off comes back to the same game, not a lost one. A game
+-- with AUTO_LIMIT or more such balls is "auto-bowled": it pays nothing and counts for no
+-- best, clears or stars (autoGame).
 BowlingRules.AFK_SECONDS = 45
 BowlingRules.AFK_AIM = 0
 BowlingRules.AFK_POWER = 0.45
+BowlingRules.AUTO_LIMIT = 2
+
+function BowlingRules.autoGame(autoBalls: number): boolean
+	return autoBalls >= BowlingRules.AUTO_LIMIT
+end
 
 -- A "BowlingRoll"'s aim and power: both must be real numbers (anything else is no roll at
 -- all: nil, nil); then clamped to -1..1 and 0..1.
@@ -624,7 +663,14 @@ function BowlingRules.reactAt(roll: Roll, mark: string?): number
 	return endT
 end
 
--- "BowlingSkip": the settle may end early once `now` is past `skipFrom` (the pins are down).
+-- Seconds from the "roll" event after which "BowlingSkip" is taken: the run-up, the reaction's
+-- start and SKIP_AFTER of it.
+function BowlingRules.skipAt(roll: Roll, mark: string?): number
+	return BowlingRules.WINDUP + BowlingRules.reactAt(roll, mark) + BowlingRules.SKIP_AFTER
+end
+
+-- "BowlingSkip": the settle may end early once `now` is past `skipFrom` (the reaction has
+-- played a while).
 function BowlingRules.canSkip(now: number, skipFrom: number): boolean
 	return now >= skipFrom
 end
@@ -644,8 +690,14 @@ BowlingRules.RESULTS_SECONDS = 6
 BowlingRules.REARM = 1.5
 -- Feet within this many studs above or below a pad's top count as standing on it.
 BowlingRules.PAD_HEIGHT = 4
--- Dumbbell colours on the lobby's ball rack (the client owns the colours, 1..BALL_CHOICES).
-BowlingRules.BALL_CHOICES = 4
+-- Dumbbells to pick: the lobby rack's four colours (1..RACK_BALLS; the client owns the
+-- colours) and the gold-striped PRO dumbbell (PRO_BALL, HUD picker only).
+BowlingRules.RACK_BALLS = 4
+BowlingRules.PRO_BALL = 5
+BowlingRules.BALL_CHOICES = 5
+-- The stars a player must have reached in some game (starsEver) to pick each dumbbell: two
+-- free, then one more for each star tier.
+BowlingRules.BALL_STARS = { 0, 0, 1, 2, 3 }
 
 function BowlingRules.isPhase(phase: any): boolean
 	return table.find(BowlingRules.PHASES, phase) ~= nil
@@ -686,6 +738,21 @@ function BowlingRules.ballChoice(value: any): number?
 		return nil
 	end
 	return value
+end
+
+-- The most stars ever: the best score's stars and the saved topStars (profile.modes.bowling;
+-- kept even if the tiers move later). Broken values count as 0.
+function BowlingRules.starsEver(best: any, topStars: any): number
+	local saved = if type(topStars) == "number" and topStars == topStars
+		then math.clamp(math.floor(topStars), 0, #BowlingRules.STAR_TIERS)
+		else 0
+	return math.max(BowlingRules.stars(if type(best) == "number" then best else 0), saved)
+end
+
+-- Dumbbell `choice` (a valid ballChoice) is unlocked for a player with `stars` stars ever.
+function BowlingRules.ballUnlocked(choice: number, stars: number): boolean
+	local need = BowlingRules.BALL_STARS[choice]
+	return need ~= nil and stars >= need
 end
 
 -- Feet at (dx, dy, dz) from a pad's top centre: on the pad when within `radius` across
