@@ -121,9 +121,19 @@ local function clamp(value: any, low: number, high: number, default: number): nu
 end
 BowlingRules.clamp = clamp
 
--- A seeded random source in [0, 1) (Park-Miller; products stay exact in doubles).
+-- A seeded random source in [0, 1) (Park-Miller; products stay exact in doubles). The seed
+-- is scrambled first (xorshift rounds): straight Park-Miller from a small seed starts right
+-- next to 0 and neighbouring seeds start almost alike, which tilted the first pin's wobble
+-- and made the first chain check a sure thing.
 function BowlingRules.rng(seed: number): () -> number
-	local state = math.floor(math.abs(seed)) % 2147483646 + 1
+	local x = bit32.band(math.floor(math.abs(seed)) % 4294967296, 0xFFFFFFFF)
+	for _ = 1, 3 do
+		x = bit32.bxor(x, bit32.lshift(x, 13))
+		x = bit32.bxor(x, bit32.rshift(x, 17))
+		x = bit32.bxor(x, bit32.lshift(x, 5))
+		x = bit32.bxor(x, 0x9E3779B9)
+	end
+	local state = x % 2147483646 + 1
 	return function()
 		state = (state * 48271) % 2147483647
 		return (state - 1) / 2147483646
@@ -407,6 +417,76 @@ end
 
 function BowlingRules.passed(score: number): boolean
 	return score >= BowlingRules.PASS_SCORE
+end
+
+-- Lobby and phases ---------------------------------------------------------------------------
+--
+-- A run goes lobby -> countdown -> play -> results -> lobby (docs/minigames.md, "Lobby first,
+-- then the game"). Modes.Bowling keeps the phase; these say what each phase allows.
+
+BowlingRules.PHASES = { "lobby", "countdown", "play", "results" }
+-- Seconds of "3, 2, 1" before the first ball.
+BowlingRules.COUNTDOWN = 3
+-- Seconds the results card stays up before the player is back in the lobby.
+BowlingRules.RESULTS_SECONDS = 6
+-- Seconds after landing in the lobby before the START pad works (a player who lands on it,
+-- or stands on it as they come back, is not thrown straight into another game).
+BowlingRules.REARM = 1.5
+-- Feet within this many studs above or below a pad's top count as standing on it.
+BowlingRules.PAD_HEIGHT = 4
+-- Dumbbell colours on the lobby's ball rack (the client owns the colours, 1..BALL_CHOICES).
+BowlingRules.BALL_CHOICES = 4
+
+function BowlingRules.isPhase(phase: any): boolean
+	return table.find(BowlingRules.PHASES, phase) ~= nil
+end
+
+-- "BowlingBegin": from the lobby, or PLAY AGAIN on the results card.
+function BowlingRules.canBegin(phase: string): boolean
+	return phase == "lobby" or phase == "results"
+end
+
+-- "BowlingBall": the rack is in the lobby; the results card may change it too.
+function BowlingRules.canPickBall(phase: string): boolean
+	return phase == "lobby" or phase == "results"
+end
+
+-- "BowlingRoll": only while a game is on.
+function BowlingRules.canRoll(phase: string): boolean
+	return phase == "play"
+end
+
+-- The EXIT arch ends the run in the lobby, or once the game is over (results); never
+-- mid-game or mid-countdown.
+function BowlingRules.canExit(phase: string): boolean
+	return phase == "lobby" or phase == "results"
+end
+
+-- Where a fallen player goes back to: the lobby spawn in the lobby, else the play spot.
+function BowlingRules.fallTo(phase: string): string
+	return if phase == "lobby" then "lobby" else "play"
+end
+
+-- A valid ball pick (an integer 1..BALL_CHOICES), or nil.
+function BowlingRules.ballChoice(value: any): number?
+	if type(value) ~= "number" or value ~= value or value % 1 ~= 0 then
+		return nil
+	end
+	if value < 1 or value > BowlingRules.BALL_CHOICES then
+		return nil
+	end
+	return value
+end
+
+-- Feet at (dx, dy, dz) from a pad's top centre: on the pad when within `radius` across
+-- and PAD_HEIGHT up or down.
+function BowlingRules.onPad(dx: number, dy: number, dz: number, radius: number): boolean
+	return dx * dx + dz * dz <= radius * radius and math.abs(dy) < BowlingRules.PAD_HEIGHT
+end
+
+-- The START pad begins a game: phase lobby, feet on it, and the re-arm time (armAt) over.
+function BowlingRules.padStarts(phase: string, onPad: boolean, now: number, armAt: number): boolean
+	return phase == "lobby" and onPad and now >= armAt
 end
 
 return BowlingRules
