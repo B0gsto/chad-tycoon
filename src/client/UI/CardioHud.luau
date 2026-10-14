@@ -90,7 +90,7 @@ local SPEED_TEXT = 78 -- the big bottom-centre number (1.4x the old 56)
 local SPEED_H = 84
 local BOX_H = SPEED_H + 4 + 30 + 10
 local BAR_H = 30
-local SIDE_W = 210
+local SIDE_W = 290
 local COLUMN_W = 250
 local WALLET_RIGHT = 340 -- px the desktop wallet (bottom left) reaches
 local NEAR_PAD = 16 -- studs (flat) from the upgrade pad that show the SPEED UP card
@@ -100,6 +100,35 @@ local PADS_EVERY = 1 -- seconds between repaints of the WIN pads' floating amoun
 local WIN_TAG = "CardioWinPad"
 local MAX_LEVEL = 10
 local MAX_CAP = 100000
+-- Readability tunables: the dark plates behind the big Speed number and behind the lines
+-- beside it (so the busy keycaps never show through the text), the lines' size, and the
+-- recommended-Speed marker on the bar (a pulsing gold star on the bar's end, which is the
+-- recommended Speed, and a tall white need tick). Sizes are px in design space; compact
+-- screens scale the box by 0.78 (21 px lines stay over 16 px).
+local PLATE = {
+	Color = Color3.fromRGB(22, 20, 44),
+	Transparency = 0.16,
+	Radius = 14,
+	PadX = 14,
+	PadY = 8,
+	Stroke = 2,
+	StrokeColor = Color3.fromRGB(255, 255, 255),
+	StrokeTransparency = 0.6,
+	LineText = 21,
+	LineH = 26,
+	LineGap = 2,
+	SpeedPadX = 24, -- px of plate either side of the Speed number's text
+	SpeedPadY = 0,
+	SpeedTransparency = 0.24,
+}
+local MARKER = {
+	Star = 38, -- the goal star on the bar's end
+	StarPulse = 0.16, -- scale swing of its pulse while the goal is not reached
+	PulseHz = 2.4,
+	TickW = 6, -- the need tick: white with an Ink outline...
+	TickOver = 7, -- ...reaching this far past the bar above and below
+	TickColor = Color3.fromRGB(255, 255, 255),
+}
 
 local player = Players.LocalPlayer
 local action = Net.event("Action")
@@ -120,6 +149,10 @@ local sideLayout: UIListLayout
 local multLine: TextLabel
 local bestLine: TextLabel
 local treadLine: TextLabel
+local goalLine: TextLabel
+local goalStar: Frame
+local goalScale: UIScale
+local sideWide = true
 -- Custom speed
 local customCard: Frame
 local customBody: Frame
@@ -457,6 +490,8 @@ local function paintNeed()
 		barFill.Size = UDim2.fromScale(1, 1)
 		barFill.BackgroundColor3 = MINT
 		barTick.Visible = false
+		goalStar.Visible = false
+		goalLine.Visible = false
 		hintLabel.Visible = false
 		hintShown = false
 		return
@@ -468,6 +503,8 @@ local function paintNeed()
 		barText.Text = "Stage " .. next
 		barFill.Size = UDim2.fromScale(0, 1)
 		barTick.Visible = false
+		goalStar.Visible = false
+		goalLine.Visible = false
 		hintLabel.Visible = false
 		hintShown = false
 		return
@@ -489,7 +526,26 @@ local function paintNeed()
 	barFill.Size = UDim2.fromScale(math.max(k, 0.04), 1)
 	barFill.BackgroundColor3 = if ready then MINT else GOLD
 	barTick.Visible = best > need
-	barTick.Position = UDim2.fromScale(need / full, 0)
+	barTick.Position = UDim2.new(need / full, 0, 0, -MARKER.TickOver)
+	-- The recommended Speed: the gold star on the bar's end pulses until it is reached (then
+	-- it turns mint and rests), and the plate's "Goal" line names it.
+	local hasGoal = best > need
+	goalStar.Visible = hasGoal
+	if hasGoal then
+		local reached = targetSpeed >= best
+		goalScale.Scale = if reached then 1 else 1 + MARKER.StarPulse * math.sin(os.clock() * MARKER.PulseHz * math.pi * 2)
+		local image = goalStar:FindFirstChild("Image")
+		if image and image:IsA("ImageLabel") then
+			image.ImageColor3 = if reached then MINT else GOLD
+		end
+	end
+	goalLine.Visible = hasGoal and sideWide
+	if goalLine.Visible then
+		local text = if targetSpeed >= best then "Goal reached: " .. speedText(best) else "Goal: " .. speedText(best) .. " Speed"
+		if goalLine.Text ~= text then
+			goalLine.Text = text
+		end
+	end
 	if (not ready) ~= hintShown then
 		hintShown = not ready
 		hintLabel.Visible = hintShown
@@ -719,6 +775,8 @@ local function setRunActive(on: boolean)
 	end
 	gui:SetAttribute("RunActive", on)
 	gui:SetAttribute("CardioActive", on)
+	-- The Roblox player list would cover Custom Speed and QUIT (centre right): hidden for the run.
+	Kit.hidePlayerList("cardio", on)
 	-- The Hud's other blocks (icon grid, cash, bonus strip, gift, chad counter, crate
 	-- panel) step aside too, so only the run, QUIT and the Settings gear stay. The Promo
 	-- hides itself on "CardioActive" (Hud). Each block gets back the Visible it had.
@@ -1074,6 +1132,25 @@ local function buildBox()
 		Parent = box,
 	})
 	boxBody = body
+	-- A dark plate behind the number (sized to its text) so keycap letters never show through.
+	local speedPlate = Kit.new("Frame", {
+		Name = "SpeedPlate",
+		BackgroundColor3 = PLATE.Color,
+		BackgroundTransparency = PLATE.SpeedTransparency,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(BOX_W - 40, SPEED_H - 10),
+		Position = UDim2.fromOffset(BOX_W / 2, SPEED_H / 2),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 20,
+		Parent = body,
+	})
+	Kit.new("UICorner", { CornerRadius = UDim.new(0, PLATE.Radius + 4), Parent = speedPlate })
+	Kit.new("UIStroke", {
+		Color = PLATE.StrokeColor,
+		Thickness = PLATE.Stroke,
+		Transparency = PLATE.StrokeTransparency,
+		Parent = speedPlate,
+	})
 	speedLabel = Kit.hudText(body, {
 		Name = "Speed",
 		Text = "0",
@@ -1085,6 +1162,14 @@ local function buildBox()
 		StrokeThickness = 6,
 	})
 	Kit.gradient(speedLabel, WHITE, Color3.fromRGB(214, 226, 255), 90)
+	local function fitPlate()
+		local bounds = speedLabel.TextBounds
+		if bounds.X > 0 then
+			speedPlate.Size = UDim2.fromOffset(bounds.X + PLATE.SpeedPadX * 2, math.min(bounds.Y + PLATE.SpeedPadY * 2, SPEED_H))
+		end
+	end
+	speedLabel:GetPropertyChangedSignal("TextBounds"):Connect(fitPlate)
+	fitPlate()
 
 	-- Chunky bar toward the next stage's need.
 	local track = Kit.new("Frame", {
@@ -1122,15 +1207,26 @@ local function buildBox()
 	-- The need: the bar itself runs on to the recommended Speed (paintNeed places the tick).
 	barTick = Kit.new("Frame", {
 		Name = "NeedTick",
-		BackgroundColor3 = C.Ink,
+		BackgroundColor3 = MARKER.TickColor,
 		BorderSizePixel = 0,
-		Size = UDim2.new(0, 3, 1, 0),
-		Position = UDim2.fromScale(1 / RECOMMEND, 0),
+		Size = UDim2.new(0, MARKER.TickW, 1, MARKER.TickOver * 2),
+		Position = UDim2.new(1 / RECOMMEND, 0, 0, -MARKER.TickOver),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Visible = false,
-		ZIndex = 23,
+		ZIndex = 25,
 		Parent = inner,
 	})
+	Kit.new("UICorner", { CornerRadius = UDim.new(0, 3), Parent = barTick })
+	Kit.new("UIStroke", { Color = C.Ink, Thickness = 2, Parent = barTick })
+	-- The recommended Speed (the bar's end): a gold star that pulses until it is reached.
+	goalStar = Kit.hudIcon(track, "Star", MARKER.Star, GOLD, {
+		Name = "GoalStar",
+		Position = UDim2.new(1, 2, 0.5, 0),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		ZIndex = 26,
+	})
+	goalStar.Visible = false
+	goalScale = Kit.new("UIScale", { Parent = goalStar })
 	barText = Kit.hudText(track, {
 		Name = "Need",
 		Text = "",
@@ -1140,35 +1236,53 @@ local function buildBox()
 	})
 
 	-- Multiplier lines: beside the number on wide screens, above it on narrow ones.
+	-- One dark rounded plate behind all of them.
 	side = Kit.new("Frame", {
 		Name = "Lines",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(SIDE_W, 50),
+		BackgroundColor3 = PLATE.Color,
+		BackgroundTransparency = PLATE.Transparency,
+		BorderSizePixel = 0,
+		AutomaticSize = Enum.AutomaticSize.XY,
+		Size = UDim2.fromOffset(0, 0),
 		ZIndex = 21,
 		Parent = body,
 	})
+	Kit.new("UICorner", { CornerRadius = UDim.new(0, PLATE.Radius), Parent = side })
+	Kit.new("UIStroke", {
+		Color = PLATE.StrokeColor,
+		Thickness = PLATE.Stroke,
+		Transparency = PLATE.StrokeTransparency,
+		Parent = side,
+	})
+	Kit.new("UIPadding", {
+		PaddingLeft = UDim.new(0, PLATE.PadX),
+		PaddingRight = UDim.new(0, PLATE.PadX),
+		PaddingTop = UDim.new(0, PLATE.PadY),
+		PaddingBottom = UDim.new(0, PLATE.PadY),
+		Parent = side,
+	})
 	sideLayout = Kit.new("UIListLayout", {
-		Padding = UDim.new(0, 2),
+		Padding = UDim.new(0, PLATE.LineGap),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 		Parent = side,
 	})
 	multLine = Kit.hudText(side, {
 		Name = "Multiplier",
 		Text = "",
-		TextSize = 17,
-		TextColor3 = Kit.lighten(GRAPE, 0.3),
+		TextSize = PLATE.LineText,
+		TextColor3 = Kit.lighten(GRAPE, 0.45),
 		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 22),
+		Size = UDim2.fromOffset(0, PLATE.LineH),
 		LayoutOrder = 1,
 		ZIndex = 22,
 	})
 	treadLine = Kit.hudText(side, {
 		Name = "Treadmill",
 		Text = "Treadmill Lv 0",
-		TextSize = 17,
-		TextColor3 = Kit.lighten(MINT, 0.2),
+		TextSize = PLATE.LineText,
+		TextColor3 = Kit.lighten(MINT, 0.35),
 		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 22),
+		Size = UDim2.fromOffset(0, PLATE.LineH),
 		LayoutOrder = 2,
 		ZIndex = 22,
 	})
@@ -1176,11 +1290,23 @@ local function buildBox()
 	bestLine = Kit.hudText(side, {
 		Name = "Best",
 		Text = "No best plate yet",
-		TextSize = 17,
-		TextColor3 = Kit.lighten(GOLD, 0.2),
+		TextSize = PLATE.LineText,
+		TextColor3 = Kit.lighten(GOLD, 0.35),
 		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 22),
+		Size = UDim2.fromOffset(0, PLATE.LineH),
 		LayoutOrder = 3,
+		ZIndex = 22,
+	})
+	-- The recommended Speed for the next stage (wide screens; the bar's star marks it too).
+	goalLine = Kit.hudText(side, {
+		Name = "Goal",
+		Text = "",
+		TextSize = PLATE.LineText,
+		TextColor3 = WHITE,
+		AutomaticSize = Enum.AutomaticSize.X,
+		Size = UDim2.fromOffset(0, PLATE.LineH),
+		LayoutOrder = 4,
+		Visible = false,
 		ZIndex = 22,
 	})
 end
@@ -1710,14 +1836,15 @@ function CardioHud.build(screenGui: ScreenGui)
 		boxScale.Scale = scale
 		box.Position = UDim2.new(0.5, 0, 1, if Kit.touch then -10 else -16)
 		local wide = not Kit.touch and view.X / 2 >= (BOX_W / 2 + 12 + SIDE_W) * scale + 12
+		sideWide = wide
+		side.Size = UDim2.fromOffset(0, 0)
 		if wide then
-			side.Size = UDim2.fromOffset(SIDE_W, 74)
-			side.Position = UDim2.new(1, 12, 0, 8)
+			side.Position = UDim2.new(1, 12, 0, 2)
 			side.AnchorPoint = Vector2.zero
 			sideLayout.FillDirection = Enum.FillDirection.Vertical
 			sideLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
 		else
-			side.Size = UDim2.fromOffset(BOX_W + 80, 22)
+			goalLine.Visible = false
 			side.Position = UDim2.new(0.5, 0, 0, -4)
 			side.AnchorPoint = Vector2.new(0.5, 1)
 			sideLayout.FillDirection = Enum.FillDirection.Horizontal

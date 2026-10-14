@@ -2,7 +2,7 @@
 	MogStage: the MOG TEST stage, a round "toy" boxing ring floating out at sea on pontoons
 	(teleport-only; Modes.Mog brings players here). Numbers live in Modes.MogLayout.
 
-	- A thick Teal disc with a Cream top, a ring of Sunny/Coral bumpers on the rim and a Grape
+	- A thick Teal disc with a ring-canvas blue top (DRESS.FloorColor), a ring of Sunny/Coral bumpers on the rim and a Grape
 	  skirt underneath, on six pontoon floats with foam at sea level.
 	- Posts with glowing caps (dim PointLights) and two rows of ropes, like a boxing ring.
 	- SPOT_COUNT duel spots: a Sunny pad for the player and a Grape pad for the rival, each on
@@ -14,7 +14,7 @@
 	  spot with three rows of cheering fans (each row hops in a wave while somebody is on the
 	  stage), a light tower between every two stands with one beam on the MOG TEST sign and one
 	  sweeping the sky, a garland of pennants from tower to tower, and a painted duel lane with a
-	  ring round both pads of every spot.
+	  ring round both pads of every spot, its capsule filled with a Grape-to-Sunny glow.
 ]]
 
 local Common = require(script.Parent.Common)
@@ -104,6 +104,11 @@ local DRESS = {
 	LaneLine = 0.3,
 	LaneMargin = 0.6,
 	LanePixels = 20,
+	-- Colour on the floor: the stage top is a ring-canvas blue (FloorColor; the Sunny inlay
+	-- and the Cream core stay), and every lane's capsule is filled with a glow from the
+	-- rival's Grape end to the player's Sunny end at LaneFill transparency.
+	FloorColor = Color3.fromRGB(96, 156, 255),
+	LaneFill = 0.45,
 	-- The crowd and the lamps move TickRate times a second, and only while a player is within
 	-- ActiveRange of the centre (checked every ScanEvery seconds).
 	TickRate = 20,
@@ -207,7 +212,7 @@ end
 local function buildDisc(parent: Instance)
 	local r, t = MogLayout.RADIUS, MogLayout.THICKNESS
 	disc(parent, "StageBody", Vector3.new(C.x, TOP - 0.2 - t / 2, C.z), r * 2, t, W.Teal)
-	disc(parent, "StageTop", Vector3.new(C.x, TOP - 0.5, C.z), r * 2 - 4, 1, W.Cream)
+	disc(parent, "StageTop", Vector3.new(C.x, TOP - 0.5, C.z), r * 2 - 4, 1, DRESS.FloorColor)
 	disc(parent, "StageInlay", Vector3.new(C.x, TOP - 0.45, C.z), 30, 1, W.Sunny)
 	disc(parent, "StageCore", Vector3.new(C.x, TOP - 0.4, C.z), 24, 1, W.Cream)
 	disc(parent, "StageSkirt", Vector3.new(C.x, TOP - t - 1.2, C.z), r * 2 - 6, 2, W.Grape)
@@ -704,6 +709,22 @@ local function buildLanes(parent: Instance)
 			stroke.Parent = f
 		end
 		local inset = d.LaneLine * pps
+		-- The lane's glow: a capsule fill, Grape at the rival's end (the face's top) to Sunny.
+		local fill = Instance.new("Frame")
+		fill.AnchorPoint = Vector2.new(0.5, 0.5)
+		fill.Position = UDim2.fromScale(0.5, 0.5)
+		fill.Size = UDim2.new(1, -inset * 2, 1, -inset * 2)
+		fill.BackgroundColor3 = W.White
+		fill.BackgroundTransparency = d.LaneFill
+		fill.BorderSizePixel = 0
+		fill.Parent = root
+		local fillRound = Instance.new("UICorner")
+		fillRound.CornerRadius = UDim.new(0.5, 0)
+		fillRound.Parent = fill
+		local glow = Instance.new("UIGradient")
+		glow.Color = ColorSequence.new(W.Grape, W.Sunny)
+		glow.Rotation = 90
+		glow.Parent = fill
 		outlined(UDim2.fromScale(0.5, 0.5), UDim2.new(1, -inset * 2, 1, -inset * 2), W.White, d.LaneLine, 0.15)
 		-- The plate's -Z edge (the face's top) is the rival's end, toward the centre.
 		local ring = d.RingRadius * 2 * pps

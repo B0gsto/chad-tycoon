@@ -26,9 +26,10 @@
 	                local player scrolls at their WalkSpeed. While standing on a belt the
 	                character turns to the belt's LookVector and plays its own run
 	                animation in place (Animate.run.RunAnim) at WalkSpeed / 16 speed, with dust puffs and the odd sweat drop.
-	  Speed         radial speed lines (a pooled ScreenGui under the HUD) and a gentle FOV
-	                kick, both scaling with the horizontal speed above ~50 studs/s; reduced
-	                motion skips the FOV and halves the lines.
+	  Speed         radial speed lines (a pooled ScreenGui under the HUD, some rainbow-tinted),
+	                a gentle FOV kick and a rainbow Trail off the runner's back, all scaling
+	                with the horizontal speed above LINES_FROM studs/s; reduced motion skips
+	                the FOV and halves the lines.
 	  Bursts        safe zone reached: stars and confetti; WIN pad claimed: a bigger ring of
 	                both (largest on the last pad); fall: a landing ring + puff,
 	                upgrade: sparkles over the upgrade pad (Fx.Sprites, budgeted).
@@ -88,10 +89,26 @@ local PRESS_UP = 0.18 -- seconds to spring back (after the last foot leaves it)
 local BUCKET_DEFAULT = 2.8 -- studs per spatial-hash cell without the track's KeyPitch (one keycap)
 local OTHER_RADIUS = 90 -- other players' presses within this many studs
 local OTHER_MAX = 6 -- at most this many other players (scaled by Budget.count)
-local LINE_COUNT = 28
-local LINES_FROM = 50 -- studs/s: speed lines and FOV start above this
-local LINES_FULL = 110 -- studs/s: full effect
+-- Speed effects: radial speed lines (every LINE_TINT_EVERY-th one rainbow-tinted, the rest
+-- white), a FOV widen and a rainbow trail off the runner's back, all scaling with the
+-- horizontal speed from LINES_FROM to LINES_FULL studs/s. Line length / thickness are px at
+-- rest + extra at full speed; opacity is the strongest line's at full speed.
+local LINE_COUNT = 40
+local LINES_FROM = 30 -- studs/s: speed lines, trail and FOV start above this
+local LINES_FULL = 80 -- studs/s: full effect
+local LINE_LEN = 60
+local LINE_LEN_FULL = 240
+local LINE_THICK = 3
+local LINE_THICK_FULL = 6
+local LINE_OPACITY = 0.8
+local LINE_TINT_EVERY = 3
 local FOV_MAX = 12
+local TRAIL = {
+	From = 0.2, -- speed share (0..1) where the trail starts showing
+	Lifetime = 0.45, -- seconds
+	Width = 2.2, -- studs between its two attachments (centred on the torso)
+	Opacity = 0.75, -- at full speed (the tail fades to nothing)
+}
 local CLICK_RATE = 12 -- local key clicks per second at most
 local POP_POOL = 8
 local POP_LIFE = 0.9
@@ -147,6 +164,7 @@ local snap: { [string]: any } = {}
 local stepConn: RBXScriptConnection? = nil
 local folder: Folder? = nil
 local linesGui: ScreenGui? = nil
+local trail: Trail? = nil
 local lastClick = 0
 local localKey: Key? = nil
 -- Keys under other players' feet this frame (kept pressed down).
@@ -630,11 +648,13 @@ local function ensureLines()
 	gui.Parent = player:WaitForChild("PlayerGui")
 	linesGui = gui
 	table.clear(lines)
-	for _ = 1, Budget.count(LINE_COUNT) do
+	for i = 1, Budget.count(LINE_COUNT) do
 		local frame = Instance.new("Frame")
 		frame.Name = "Line"
 		frame.BorderSizePixel = 0
-		frame.BackgroundColor3 = WHITE
+		frame.BackgroundColor3 = if i % LINE_TINT_EVERY == 0
+			then RAINBOW[(i // LINE_TINT_EVERY - 1) % #RAINBOW + 1]:Lerp(WHITE, 0.25)
+			else WHITE
 		frame.AnchorPoint = Vector2.new(0.5, 0.5)
 		frame.BackgroundTransparency = 1
 		local gradient = Instance.new("UIGradient")
@@ -660,6 +680,58 @@ local function applyFov(delta: number)
 	Camera.setFov("cardio", if delta > 0.01 then delta else 0)
 end
 
+-- The rainbow trail off the runner's back: made on the root part once per character, shown
+-- from TRAIL.From of the speed share, brighter the faster.
+local function stepTrail(root: BasePart?)
+	local show = root ~= nil and speedK > TRAIL.From
+	if not show then
+		if trail then
+			trail.Enabled = false
+		end
+		return
+	end
+	local part = root :: BasePart
+	local t = trail
+	if not t or t.Parent ~= part then
+		if t then
+			t:Destroy()
+		end
+		local a0 = Instance.new("Attachment")
+		a0.Name = "CardioTrailTop"
+		a0.Position = Vector3.new(0, TRAIL.Width / 2, 0.4)
+		a0.Parent = part
+		local a1 = Instance.new("Attachment")
+		a1.Name = "CardioTrailBottom"
+		a1.Position = Vector3.new(0, -TRAIL.Width / 2, 0.4)
+		a1.Parent = part
+		local made = Instance.new("Trail")
+		made.Name = "CardioTrail"
+		made.Attachment0 = a0
+		made.Attachment1 = a1
+		made.Lifetime = TRAIL.Lifetime
+		made.LightEmission = 0.6
+		made.FaceCamera = true
+		local keys = {}
+		for i, colour in RAINBOW do
+			table.insert(keys, ColorSequenceKeypoint.new((i - 1) / (#RAINBOW - 1), colour))
+		end
+		made.Color = ColorSequence.new(keys)
+		made.Parent = part
+		-- The attachments go with the trail.
+		made.Destroying:Connect(function()
+			a0:Destroy()
+			a1:Destroy()
+		end)
+		trail = made
+		t = made
+	end
+	local k = math.clamp((speedK - TRAIL.From) / (1 - TRAIL.From), 0, 1)
+	local head = 1 - TRAIL.Opacity * k
+	local trailNow = t :: Trail
+	trailNow.Transparency = NumberSequence.new(head, 1)
+	trailNow.Enabled = true
+end
+
 local function stepSpeed(dt: number, root: BasePart?)
 	local hv = 0
 	if root then
@@ -673,6 +745,7 @@ local function stepSpeed(dt: number, root: BasePart?)
 	end
 	local reduced = reducedMotion()
 	applyFov(if reduced then 0 else FOV_MAX * speedK)
+	stepTrail(root)
 	if speedK <= 0 then
 		if linesGui then
 			linesGui.Enabled = false
@@ -694,12 +767,12 @@ local function stepSpeed(dt: number, root: BasePart?)
 		end
 		local dir = Vector2.new(math.cos(line.angle), math.sin(line.angle))
 		local pos = centre + dir * line.r * reach
-		local len = (40 + 140 * strength) * (0.5 + line.r)
+		local len = (LINE_LEN + (LINE_LEN_FULL - LINE_LEN) * strength) * (0.5 + line.r)
 		line.frame.Position = UDim2.fromOffset(pos.X, pos.Y)
-		line.frame.Size = UDim2.fromOffset(len, 2 + 2 * strength)
+		line.frame.Size = UDim2.fromOffset(len, LINE_THICK + (LINE_THICK_FULL - LINE_THICK) * strength)
 		-- Fade in from the centre, strongest near the edges.
 		local edge = math.clamp((line.r - 0.35) / 0.4, 0, 1)
-		line.frame.BackgroundTransparency = 1 - 0.55 * strength * edge
+		line.frame.BackgroundTransparency = 1 - LINE_OPACITY * strength * edge
 	end
 end
 
@@ -1201,6 +1274,10 @@ local function deactivate()
 	applyFov(0)
 	if linesGui then
 		linesGui.Enabled = false
+	end
+	if trail then
+		trail:Destroy()
+		trail = nil
 	end
 end
 
