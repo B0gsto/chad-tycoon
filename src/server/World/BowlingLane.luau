@@ -1706,7 +1706,7 @@ function BowlingLane.build(): Built
 	end
 	for _, child in folder:GetChildren() do
 		if child:IsA("BasePart") and child.Name == "ArenaPontoon" then
-			local pos = child.Position
+			local pos = child.CFrame.Position
 			child.Size = Vector3.new(floatTop - floatBottom, child.Size.Y, child.Size.Z)
 			child.CFrame = CFrame.new(pos.X, (floatTop + floatBottom) / 2, pos.Z) * UPRIGHT
 		end
