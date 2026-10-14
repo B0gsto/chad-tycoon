@@ -479,27 +479,52 @@ end
 
 Economy.CHEST_RARITIES = { "Common", "Uncommon", "Rare", "Epic", "Legendary" }
 
--- `offsets` = { tier offset from the crate anchor (see chestAnchor), % chance }.
--- `minAnchor` = the lowest tier the offsets are applied to: at very low highest
--- tiers Rare+ crates shift their window up instead of piling the clamped
--- chances onto tier 1, so they still feel better than a Common crate.
+-- Each rarity rolls `offsets` = { tier offset, % chance } around a base tier:
+--   base = max(crate anchor (see chestAnchor, at least `minAnchor`) + `lift`,
+--              highest tier - `belowBest`)
+-- so Common and Uncommon stay anchored below the highest tier, Rare sits one tier above
+-- the anchor, and Epic and Legendary follow the highest tier itself (Epic highest-2 ..
+-- highest-1, Legendary highest-1 .. highest). The `lift` keeps every rarity clear of the
+-- one below while the anchor is still close to the highest tier: a Legendary's lowest tier
+-- is at least 3 above a Common crate's main tier (4 once the cap no longer binds). No crate gives more
+-- than one tier past the highest one (chestCap): that tier is a merge of two of the
+-- player's best, so a crate can bring the next tier but never skip past it.
+-- `minAnchor` = the lowest anchor Rare+ crates use: at very low highest tiers their window
+-- shifts up instead of piling the clamped chances onto tier 1.
 export type ChestInfo = {
 	weight: number,
 	unlockSeconds: number,
 	minAnchor: number?,
+	lift: number?,
+	belowBest: number?,
 	offsets: { { number } },
 }
 
 Economy.CHEST_INFO = {
 	Common = { weight = 82, unlockSeconds = 60, offsets = { { -2, 75 }, { -1, 20 }, { 0, 5 } } },
 	Uncommon = { weight = 12, unlockSeconds = 120, offsets = { { -1, 60 }, { 0, 32 }, { 1, 8 } } },
-	Rare = { weight = 4.5, unlockSeconds = 180, minAnchor = 2, offsets = { { -1, 20 }, { 0, 50 }, { 1, 30 } } },
-	Epic = { weight = 1.2, unlockSeconds = 240, minAnchor = 2, offsets = { { 0, 30 }, { 1, 50 }, { 2, 20 } } },
+	Rare = {
+		weight = 4.5,
+		unlockSeconds = 180,
+		minAnchor = 2,
+		lift = 1,
+		offsets = { { -1, 30 }, { 0, 50 }, { 1, 20 } },
+	},
+	Epic = {
+		weight = 1.2,
+		unlockSeconds = 240,
+		minAnchor = 2,
+		lift = 2,
+		belowBest = 1,
+		offsets = { { -1, 50 }, { 0, 50 } },
+	},
 	Legendary = {
 		weight = 0.3,
 		unlockSeconds = 300,
 		minAnchor = 2,
-		offsets = { { 0, 15 }, { 1, 45 }, { 2, 30 }, { 3, 10 } },
+		lift = 3,
+		belowBest = 0,
+		offsets = { { -1, 40 }, { 0, 60 } },
 	},
 } :: { [string]: ChestInfo }
 
@@ -512,11 +537,17 @@ Economy.FIRST_CRATE_SECONDS = 10
 -- The guide shows the path to the Crate Smasher by itself for a profile's first crates.
 Economy.CRATE_GUIDE_HOLDS = 3
 
--- Crates are anchored this share of the way from the player's highest tier down to tier 1
+-- Common and Uncommon crates (and the Rare window, one tier up) are anchored this share
+-- of the way from the player's highest tier down to tier 1
 -- (rounded towards the highest tier). Late tiers take hours to reach while crates keep
 -- arriving every few minutes, so the gap grows with the tier to keep crates a bonus
 -- rather than a shortcut: highest 3 -> anchor 3, 5 -> 4, 10 -> 7, 17 -> 12, 25 -> 17.
 Economy.CHEST_TIER_LAG = 0.35
+
+-- Epic and Legendary crates drop this share of a tier further below the highest tier for
+-- every tier climbed, so the last tiers (days apart at half an hour a day) are still
+-- earned by merging: highest 10 -> Legendary 9..10, 15 -> 13..14, 25 -> 22..23.
+Economy.CHEST_BEST_LAG = 0.1
 
 function Economy.chestAnchor(highestTier: number): number
 	return highestTier - math.floor((highestTier - 1) * Economy.CHEST_TIER_LAG)
@@ -534,14 +565,32 @@ end
 
 export type Odds = { tier: number, chance: number }
 
--- Possible tiers and their % chance, relative to the crate anchor of the player's highest tier.
--- Offsets that clamp onto the same tier are combined (see `minAnchor`).
+-- The highest tier a crate can give: one past the player's highest (two of their best
+-- merged), never past MAX_TIER.
+function Economy.chestCap(highestTier: number): number
+	return math.min(math.max(highestTier, 1) + 1, Economy.MAX_TIER)
+end
+
+-- The tier a rarity's offsets are applied to (see CHEST_INFO).
+function Economy.chestBase(rarity: string, highestTier: number): number
+	local info = Economy.CHEST_INFO[rarity]
+	local base = math.max(Economy.chestAnchor(highestTier), info.minAnchor or 1) + (info.lift or 0)
+	if info.belowBest then
+		local gap = info.belowBest + math.floor((highestTier - 1) * Economy.CHEST_BEST_LAG)
+		base = math.max(base, highestTier - gap)
+	end
+	return base
+end
+
+-- Possible tiers and their % chance for the player's highest tier, lowest tier first.
+-- Offsets that clamp onto the same tier (at tier 1 or chestCap) are combined.
 function Economy.chestOdds(rarity: string, highestTier: number): { Odds }
 	local info = Economy.CHEST_INFO[rarity]
-	local anchor = math.max(Economy.chestAnchor(highestTier), info.minAnchor or 1)
+	local base = Economy.chestBase(rarity, highestTier)
+	local cap = Economy.chestCap(highestTier)
 	local byTier: { [number]: number } = {}
 	for _, pair in info.offsets do
-		local tier = math.clamp(anchor + pair[1], 1, Economy.MAX_TIER)
+		local tier = math.clamp(base + pair[1], 1, cap)
 		byTier[tier] = (byTier[tier] or 0) + pair[2]
 	end
 	local list: { Odds } = {}

@@ -453,18 +453,6 @@ test("chests", function()
 	end
 	eq(Economy.FIRST_CRATE_SECONDS, 10, "first crate timer")
 	check(Economy.FIRST_CRATE_SECONDS < Economy.unlockSeconds("Common", true), "the first crate beats every timer")
-	-- Rarer is always better: the unit value a Smasher makes per second of its timer rises
-	-- with the rarity, so a rare crate is never a worse use of the slot than a common one.
-	for _, highest in { 5, 10, 17, 25 } do
-		for _, premium in { false, true } do
-			local prevPerSecond = 0
-			for _, rarity in Economy.CHEST_RARITIES do
-				local perSecond = Economy.chestExpectedValue(rarity, highest) / Economy.unlockSeconds(rarity, premium)
-				check(perSecond > prevPerSecond, rarity .. " beats the rarity below per Smasher second at " .. highest)
-				prevPerSecond = perSecond
-			end
-		end
-	end
 	check(not Economy.isRarity("Bogus"), "unknown rarity rejected")
 
 	eq(Economy.unitValue(1), Economy.BUY_BASE_PRICE, "tier 1 unit value")
@@ -485,43 +473,98 @@ test("chests", function()
 		check(Economy.chestAnchor(highest) <= highest, "anchor at or below highest at " .. highest)
 		check(Economy.chestAnchor(highest) >= Economy.chestAnchor(highest - 1), "anchor never drops at " .. highest)
 	end
-	-- Higher rarities feel better: Rare rarely gives its lowest tier, Epic and
-	-- Legendary mostly give the anchor tier or above, at every stage.
-	for highest = 1, 25 do
-		local anchor = math.max(Economy.chestAnchor(highest), 2)
-		local rare = Economy.chestOdds("Rare", highest)
-		check(#rare >= 2, "rare offers a choice at " .. highest)
-		check(rare[1].chance <= 25, "rare lowest tier at most 25% at " .. highest)
-		check(rare[#rare].tier <= anchor + 1, "rare stays near the anchor at " .. highest)
-		for _, entry in Economy.chestOdds("Common", highest) do
-			check(entry.tier <= highest, "common never above highest at " .. highest)
-		end
-		for _, rarity in { "Epic", "Legendary" } do
-			local above = 0
-			for _, entry in Economy.chestOdds(rarity, highest) do
-				check(entry.tier >= anchor, rarity .. " never below the anchor at " .. highest)
-				check(entry.tier <= math.max(highest, 2) + 3, rarity .. " not absurdly high at " .. highest)
-				if entry.tier > anchor then
-					above += entry.chance
-				end
+	-- Rarer crates give visibly better units: Common and Uncommon stay anchored below the
+	-- highest tier, Rare one tier up, Epic and Legendary follow the highest tier itself.
+	-- No crate gives more than one tier past the highest (a merge of two of the best).
+	local function lowest(rarity: string, highest: number): number
+		return Economy.chestOdds(rarity, highest)[1].tier
+	end
+	local function top(rarity: string, highest: number): number
+		local odds = Economy.chestOdds(rarity, highest)
+		return odds[#odds].tier
+	end
+	local function main(rarity: string, highest: number): number
+		local best = Economy.chestOdds(rarity, highest)[1]
+		for _, entry in Economy.chestOdds(rarity, highest) do
+			if entry.chance > best.chance then
+				best = entry
 			end
-			check(above >= 70, rarity .. " mostly above the anchor at " .. highest)
 		end
-		local prevValue = 0
+		return best.tier
+	end
+	eq(Economy.chestCap(1), 2)
+	eq(Economy.chestCap(10), 11)
+	eq(Economy.chestCap(25), 25, "never past the last tier")
+	for highest = 1, 25 do
+		local cap = Economy.chestCap(highest)
+		for _, rarity in Economy.CHEST_RARITIES do
+			local total = 0
+			for _, entry in Economy.chestOdds(rarity, highest) do
+				total += entry.chance
+				check(entry.tier >= 1 and entry.tier <= cap, rarity .. " never skips past the next tier at " .. highest)
+			end
+			eq(total, 100, rarity .. " odds sum at highest " .. highest)
+		end
+		check(top("Common", highest) <= highest, "common never above highest at " .. highest)
+		local anchor = math.max(Economy.chestAnchor(highest), 2)
+		check(main("Rare", highest) == math.min(anchor + 1, cap), "rare is mostly the anchor's next tier at " .. highest)
+		check(top("Rare", highest) <= anchor + 2, "rare stays near the anchor at " .. highest)
+		-- Each rarity's window starts at or above the one below, and is worth at least as much.
+		local prevValue, prevLowest = 0, 0
 		for _, rarity in Economy.CHEST_RARITIES do
 			local value = Economy.chestExpectedValue(rarity, highest)
 			check(value >= prevValue, rarity .. " worth at least the rarity below at " .. highest)
-			prevValue = value
+			check(lowest(rarity, highest) >= prevLowest, rarity .. " starts no lower than the rarity below at " .. highest)
+			prevValue, prevLowest = value, lowest(rarity, highest)
+		end
+		-- A Legendary is a real payoff: at least 3 tiers above a Common crate's main tier
+		-- (as far as the cap allows) and close to the player's best at every stage.
+		local lead = math.min(main("Common", highest) + 3, cap)
+		check(lowest("Legendary", highest) >= lead, "legendary well above a common at " .. highest)
+		check(lowest("Legendary", highest) >= highest - 3, "legendary near the best tier at " .. highest)
+		check(lowest("Epic", highest) >= highest - 4, "epic near the best tier at " .. highest)
+		check(lowest("Legendary", highest) > top("Rare", highest) - 1, "legendary above the rare window at " .. highest)
+		if highest <= 10 then
+			check(top("Legendary", highest) >= highest, "early legendary reaches the best tier at " .. highest)
 		end
 	end
-	-- Early game stays fair: a common crate is a tier 1, a rare one at most tier 3.
+	-- The report's case: highest 4 used to open a Legendary on tier 3 or 4; now it is the next tier.
+	eq(#Economy.chestOdds("Legendary", 4), 1)
+	eq(lowest("Legendary", 4), 5, "highest 4: a Legendary brings tier 5")
+	eq(lowest("Legendary", 10), 9)
+	eq(top("Legendary", 10), 10, "highest 10: Legendary 9..10")
+	eq(lowest("Epic", 10), 8)
+	eq(top("Epic", 10), 9, "highest 10: Epic 8..9")
+	eq(lowest("Rare", 10), 7)
+	eq(top("Rare", 10), 9, "highest 10: Rare 7..9")
+	-- The last tiers are days apart at half an hour a day: there crates lag further behind.
+	eq(lowest("Legendary", 15), 13)
+	eq(top("Legendary", 15), 14, "highest 15: Legendary 13..14")
+	eq(lowest("Legendary", 25), 22)
+	eq(top("Legendary", 25), 23, "highest 25: Legendary 22..23")
+	eq(lowest("Epic", 25), 21)
+	eq(top("Epic", 25), 22, "highest 25: Epic 21..22")
+	-- Rarer is always better: the unit value a Smasher makes per second of its timer rises
+	-- with the rarity, so a rare crate is never a worse use of the slot than a common one
+	-- (from highest 4: below it the cap folds Epic and Legendary onto the next tier).
+	for highest = 4, 25 do
+		for _, premium in { false, true } do
+			local prevPerSecond = 0
+			for _, rarity in Economy.CHEST_RARITIES do
+				local perSecond = Economy.chestExpectedValue(rarity, highest) / Economy.unlockSeconds(rarity, premium)
+				check(perSecond > prevPerSecond, rarity .. " beats the rarity below per Smasher second at " .. highest)
+				prevPerSecond = perSecond
+			end
+		end
+	end
+	-- Early game stays fair: a common crate is a tier 1, a rare one at most tier 2.
 	local early = Economy.chestOdds("Common", 1)
 	eq(#early, 1)
 	eq(early[1].tier, 1)
 	eq(early[1].chance, 100)
 	local earlyRare = Economy.chestOdds("Rare", 1)
-	eq(earlyRare[1].tier, 1)
-	eq(earlyRare[#earlyRare].tier, 3)
+	eq(earlyRare[1].tier, 2)
+	eq(earlyRare[#earlyRare].tier, 2)
 
 	local common = Economy.chestOdds("Common", 6)
 	eq(common[1].tier, 3)
