@@ -168,6 +168,10 @@ end
 
 -- Methods / properties Lune lacks ----------------------------------------------------
 
+-- Rough text metrics (about 0.55 em per character) for builders that size labels from text.
+roblox.implementMethod("TextService", "GetTextSize", function(_self, text, size, _font, _frame)
+	return roblox.Vector2.new(#text * size * 0.55, size)
+end)
 roblox.implementMethod("Instance", "WaitForChild", function(self, name)
 	local child = self:FindFirstChild(name)
 	assert(child, "WaitForChild: missing " .. tostring(name) .. " under " .. self:GetFullName())
