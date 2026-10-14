@@ -29,6 +29,31 @@ local Catalog: { Entry } = {
 		enabled = true,
 		color = "Mint",
 	},
+	-- The solo mini-games (docs/minigames.md): gates 4-6 on the plaza's side edges.
+	{
+		id = "shake",
+		title = "SHAKE CATCH",
+		blurb = "Catch the falling shakes, dodge the junk food!",
+		slot = 4,
+		enabled = true,
+		color = "Pink",
+	},
+	{
+		id = "pose",
+		title = "POSE COPY",
+		blurb = "Copy the rival's flexes — one more every round!",
+		slot = 5,
+		enabled = true,
+		color = "Blue",
+	},
+	{
+		id = "bowling",
+		title = "DUMBBELL BOWL",
+		blurb = "Roll a giant dumbbell and knock down every pin!",
+		slot = 6,
+		enabled = true,
+		color = "RedOrange",
+	},
 }
 
 return Catalog

@@ -102,7 +102,8 @@ local Course = {}
 
 -- The plaza deck (x0..x1, z0..z1) and the spur that joins it to the hub ring, whose outer edge
 -- is at x = -(2 * PlotLayout.PLOT_HALF + 34) = -138 (World.Hub RING_OUT; tests/run.luau checks it).
-Course.PLAZA = { x0 = -210, x1 = -160, z0 = -28, z1 = 28, top = 0.5 }
+-- (z +-32: the side edges hold gates 4-6, clear of the back row's outer pillars.)
+Course.PLAZA = { x0 = -210, x1 = -160, z0 = -32, z1 = 32, top = 0.5 }
 Course.SPUR = { x0 = -160, x1 = -138, half = 6, top = 0.3 }
 -- Where GoModes / ModeQuit put the player (feet): the spur end facing the gates (-X), and
 -- in front of the gates facing back toward the hub (+X). faceX: the direction faced.
@@ -111,15 +112,22 @@ Course.ARRIVAL = { x = -166, y = 0.5, z = 0, faceX = -1 }
 -- the player, and from closer it looked out through a portal's swirl.
 Course.QUIT = { x = -188, y = 0.5, z = 0, faceX = 1 }
 
--- Mode gates: one per catalog slot, in a row on the plaza's west edge, fronts facing the
--- hub (+X). GATE_HALF is half the opening width of the open (slot 1) gate; locked gates are
--- narrower (World.Modes).
+-- Mode gates: one per catalog slot, a U round the plaza. Slots 1-3 stand in a row on the
+-- plaza's west edge at x = GATE_X, fronts facing the hub (+X). Slots 4-6 stand on the side
+-- edges (their own `x`, z = the edge) with fronts facing into the plaza (`faceZ`: +1 on the
+-- south edge, -1 on the north one): 4 and 6 on the south edge, 5 on the north edge, where
+-- the best-times BOARD balances 6. GATE_HALF is half the opening width of an open gate;
+-- locked gates are narrower (World.Modes). Course.gateSpot / crossedGate read every slot.
+export type GateSpot = { z: number, x: number?, faceZ: number? }
 Course.GATE_X = -208
 Course.GATES = {
 	[1] = { z = 0 },
 	[2] = { z = -19 },
 	[3] = { z = 19 },
-}
+	[4] = { z = Course.PLAZA.z0, x = -195, faceZ = 1 },
+	[5] = { z = Course.PLAZA.z1, x = -195, faceZ = -1 },
+	[6] = { z = Course.PLAZA.z0, x = -175.5, faceZ = 1 },
+} :: { [number]: GateSpot }
 Course.GATE_HALF = 6
 -- The big GAME MODES sign high above and behind the gates (front faces +X).
 Course.BIG_SIGN = { x = -217, z = 0, width = 56, height = 15, bottom = 28 }
@@ -138,11 +146,10 @@ Course.SPUR2 = { x0 = -Course.SPUR.x1, x1 = -Course.SPUR.x0, half = Course.SPUR.
 Course.ARRIVAL2 = { x = -Course.ARRIVAL.x, y = Course.ARRIVAL.y, z = Course.ARRIVAL.z, faceX = -Course.ARRIVAL.faceX }
 Course.QUIT2 = { x = -Course.QUIT.x, y = Course.QUIT.y, z = Course.QUIT.z, faceX = -Course.QUIT.faceX }
 Course.GATE2_X = -Course.GATE_X
-Course.GATES2 = {
-	[1] = { z = Course.GATES[1].z },
-	[2] = { z = Course.GATES[2].z },
-	[3] = { z = Course.GATES[3].z },
-}
+Course.GATES2 = {} :: { [number]: GateSpot }
+for slot, g in Course.GATES do
+	Course.GATES2[slot] = { z = g.z, x = if g.x then -g.x else nil, faceZ = g.faceZ }
+end
 Course.BIG_SIGN2 = {
 	x = -Course.BIG_SIGN.x,
 	z = Course.BIG_SIGN.z,
@@ -2134,6 +2141,40 @@ function Course.crossedStart(prevX: number, x: number, z: number): boolean
 		return math.abs(z - Course.GATES2[1].z) <= Course.GATE_HALF + 1
 	end
 	return false
+end
+
+-- Where gate `slot` stands on plaza `plaza` (1: -X, 2: the mirror at +X) and which way its
+-- front (the side players walk in from) faces: (x, z, frontX, frontZ), or nil.
+function Course.gateSpot(slot: number, plaza: number): (number?, number?, number, number)
+	local g = (if plaza == 2 then Course.GATES2 else Course.GATES)[slot]
+	if g == nil then
+		return nil, nil, 0, 0
+	end
+	local side = if plaza == 2 then -1 else 1
+	local x = g.x or (if plaza == 2 then Course.GATE2_X else Course.GATE_X)
+	if g.faceZ then
+		return x, g.z, 0, g.faceZ
+	end
+	return x, g.z, side, 0
+end
+
+-- Did a player's feet (prevX, prevZ) -> (x, z) walk in through gate `slot`'s opening (from
+-- its front, across its line, within GATE_HALF + 1 of its middle)? Returns the plaza (1 or 2)
+-- or nil. Any slot; slots 1-3 match Parkour's / Mog's / Cardio's own checks.
+function Course.crossedGate(slot: number, prevX: number, prevZ: number, x: number, z: number): number?
+	for plaza = 1, 2 do
+		local gx, gz, fx, fz = Course.gateSpot(slot, plaza)
+		if gx and gz then
+			-- Signed distance in front of the gate line, before and after.
+			local before = (prevX - gx) * fx + (prevZ - gz) * fz
+			local after = (x - gx) * fx + (z - gz) * fz
+			local across = math.abs((x - gx) * fz - (z - gz) * fx)
+			if before > 0 and after <= 0 and across <= Course.GATE_HALF + 1 then
+				return plaza
+			end
+		end
+	end
+	return nil
 end
 
 export type Spot = { x: number, y: number, z: number, faceX: number }

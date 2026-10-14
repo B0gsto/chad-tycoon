@@ -36,6 +36,9 @@ local Props = require(World.Props)
 local Modes = require(World.Modes)
 local MogStage = require(World.MogStage)
 local CardioTrack = require(World.CardioTrack)
+local ShakeArena = require(World.ShakeArena)
+local PoseStage = require(World.PoseStage)
+local BowlingLane = require(World.BowlingLane)
 
 local WorldBuilder = {}
 
@@ -76,6 +79,10 @@ export type World = {
 	mog: MogStage.Built,
 	-- The CARDIO keyboard runway out at sea (World.CardioTrack).
 	cardio: CardioTrack.Built,
+	-- The solo mini-game arenas out at sea (docs/minigames.md).
+	shake: ShakeArena.Built,
+	pose: PoseStage.Built,
+	bowling: BowlingLane.Built,
 }
 
 local theme = Common.theme
@@ -760,13 +767,25 @@ function WorldBuilder.build(_themeModule: any): World
 	local modes = Modes.build()
 	local mog = MogStage.build()
 	local cardio = CardioTrack.build()
+	local shake = ShakeArena.build()
+	local pose = PoseStage.build()
+	local bowling = BowlingLane.build()
 	local plots = {}
 	for i = 1, PLOT_COUNT do
 		table.insert(plots, buildPlot(i))
 	end
 	-- Blender meshes replace the part-built props that have one (World.Props).
 	Props.apply(mapFolder)
-	return { plots = plots, ranking = ranking, modes = modes, mog = mog, cardio = cardio }
+	return {
+		plots = plots,
+		ranking = ranking,
+		modes = modes,
+		mog = mog,
+		cardio = cardio,
+		shake = shake,
+		pose = pose,
+		bowling = bowling,
+	}
 end
 
 WorldBuilder.label = Common.label

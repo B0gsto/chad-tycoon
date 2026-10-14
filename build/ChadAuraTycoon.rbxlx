@@ -25461,6 +25461,10 @@ export type Profile = {
 		},
 		-- best mirrors cardio.bestStage, clears cardio.clears; lastRewardAt is the cooldown.
 		cardio: { best: number, clears: number, lastRewardAt: number },
+		-- The solo mini-games (docs/minigames.md): best score, passes, the reward cooldown.
+		shake: { best: number, clears: number, lastRewardAt: number },
+		pose: { best: number, clears: number, lastRewardAt: number },
+		bowling: { best: number, clears: number, lastRewardAt: number },
 	},
 }
 
@@ -25533,6 +25537,9 @@ function DataService.defaultProfile(): Profile
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
 			mog = { best = 0, rivals = 0, clears = 0, lastRewardAt = 0, pvpWins = 0, pvpPlayed = 0 },
 			cardio = { best = 0, clears = 0, lastRewardAt = 0 },
+			shake = { best = 0, clears = 0, lastRewardAt = 0 },
+			pose = { best = 0, clears = 0, lastRewardAt = 0 },
+			bowling = { best = 0, clears = 0, lastRewardAt = 0 },
 		},
 	}
 end
@@ -25921,6 +25928,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
+local Economy = require(ReplicatedStorage.Shared.Economy)
 local Net = require(ReplicatedStorage.Shared.Net)
 
 local Catalog = require(script.Parent.Modes.Catalog)
@@ -25948,6 +25956,9 @@ local BUILTIN = {
 	parkour = script.Parent.Modes.Parkour,
 	mog = script.Parent.Modes.Mog,
 	cardio = script.Parent.Modes.Cardio,
+	shake = script.Parent.Modes.Shake,
+	pose = script.Parent.Modes.Pose,
+	bowling = script.Parent.Modes.Bowling,
 }
 
 local TICK = 0.1
@@ -25955,6 +25966,7 @@ local TICK = 0.1
 local modes: { [string]: ModeDef } = {}
 local order: { string } = {}
 local Tycoon: any
+local Theme: any
 
 -- Reward hooks: `reward` may change a reward before it is paid (events, boosts);
 -- `rewarded` is told after it was paid. reward = { cash, full, packCash }.
@@ -26062,6 +26074,46 @@ function GameModes.effect(player: Player, kind: string, data: { [string]: any })
 	Net.event("Effect"):FireClient(player, kind, data)
 end
 
+-- Rewards (the solo mini-games use these; Parkour, Mog and Cardio price their own) ---------
+
+-- What a pass of `modeId` pays right now (Economy.modeReward: a Theme.Modes.Reward cash pack
+-- sized by income and the best tier found; in full on the first clear (`first`) and then at
+-- most once per Economy.MODE_REWARD_COOLDOWN, read from profile.modes[modeId].lastRewardAt).
+function GameModes.modeReward(session: any, modeId: string, first: boolean): Economy.ModeReward
+	local p = session.profile
+	local pack = Theme.Modes.Reward
+	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
+	local rec = p.modes[modeId]
+	local lastRewardAt = if type(rec) == "table" then tonumber(rec.lastRewardAt) or 0 else 0
+	return Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, first, lastRewardAt, os.time())
+end
+
+-- Pays a priced reward (GameModes.modeReward, the mode may zero `cash` first): runs it
+-- through hooks.reward (events, boosts), adds the cash, restarts the cooldown on a full pay,
+-- fires the "Cash" effect at `pos`, tells hooks.rewarded and saves. Returns what was paid.
+function GameModes.payReward(player: Player, modeId: string, priced: Economy.ModeReward, pos: Vector3?): { [string]: any }
+	local session = GameModes.session(player)
+	if not session then
+		return priced
+	end
+	local reward = GameModes.hooks.reward(session, modeId, priced)
+	local p = session.profile
+	local rec = p.modes[modeId]
+	if reward.full and type(rec) == "table" then
+		rec.lastRewardAt = os.time()
+	end
+	if reward.cash > 0 then
+		p.money += reward.cash
+		p.totalEarned += reward.cash
+		local root = GameModes.root(player)
+		local at = pos or (root and root.Position) or Vector3.zero
+		GameModes.effect(player, "Cash", { amount = reward.cash, source = "Mode", padPos = at })
+	end
+	GameModes.hooks.rewarded(session, modeId, reward)
+	Tycoon.markDirty(session)
+	return reward
+end
+
 -- Pushes a fresh State snapshot to the player.
 function GameModes.refresh(player: Player)
 	if Tycoon then
@@ -26167,6 +26219,7 @@ end
 
 function GameModes.init(built: any, theme: any, tycoon: any, world: any)
 	Tycoon = tycoon
+	Theme = theme
 	GameModes.hooks.teleporting = (require :: any)(script.Parent.World.Decor).releaseLifter
 	for id, module in BUILTIN do
 		local impl = (require :: any)(module)
@@ -26416,6 +26469,173 @@ end)
           <string name="Name">Modes</string>
         </Properties>
         <Item class="ModuleScript" referent="189">
+          <Properties>
+            <string name="Name">Bowling</string>
+            <string name="Source"><![CDATA[--!strict
+--[[
+	Modes.Bowling: DUMBBELL BOWL, a solo mini-game (docs/minigames.md). Arena: World.BowlingLane
+	(context.world.bowling); rules: Modes.BowlingRules (pure).
+
+	STUB (foundation): walking in through the mode's plaza gate (Course.crossedGate) or the
+	"ModeStart" { mode = "bowling" } action starts a run on the arena's spawn; the arena's
+	exit pad (or the HUD's quit, "ModeQuit") ends it and brings the player back to the
+	gates; a fall puts them back on the spawn. Nothing is played or paid yet.
+	TODO(bowling builder): roll the dumbbell down the lane at the pins; a pass pays through GameModes.modeReward + GameModes.payReward
+	(first clear: record(session).clears == 0).
+
+	Notify (kind = "Mode", mode = "bowling"): "start" { best, clears }, "stop" { reason }.
+	Builders add their own events (docs/minigames.md lists the convention).
+	Snapshot modes.bowling: { running, best, clears, cooldownEnds, rewardPreview } (the Game
+	Modes window reads exactly these).
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Economy = require(ReplicatedStorage.Shared.Economy)
+
+local Course = require(script.Parent.Course)
+local BowlingRules = require(script.Parent.BowlingRules)
+
+local ID = "bowling"
+-- Feet are about this far under the HumanoidRootPart's centre (R15 default rig).
+local FEET_BELOW_ROOT = 3
+
+local Bowling = {}
+
+type Run = { startedAt: number }
+
+function Bowling.create(GameModes: any, context: { [string]: any }): any
+	local built = context.world and context.world.bowling
+	local def: any = { id = ID }
+	local runs: { [Player]: Run } = {}
+	local lastPos: { [Player]: Vector3 } = {}
+
+	local function record(session: any): { best: number, clears: number, lastRewardAt: number }
+		return session.profile.modes[ID]
+	end
+
+	local function toSpawn(player: Player)
+		GameModes.teleport(player, built.spawn.Position, built.spawn.LookVector)
+	end
+
+	function def.running(player: Player): boolean
+		return runs[player] ~= nil
+	end
+
+	function def.start(player: Player, teleport: boolean, _options: { [string]: any }?): boolean
+		local session = GameModes.session(player)
+		if not session or not built then
+			return false
+		end
+		runs[player] = { startedAt = os.clock() }
+		if teleport then
+			toSpawn(player)
+		end
+		local rec = record(session)
+		GameModes.notify(player, "start", ID, { best = rec.best, clears = rec.clears })
+		GameModes.refresh(player)
+		return true
+	end
+
+	function def.stop(player: Player, reason: string)
+		if not runs[player] then
+			return
+		end
+		runs[player] = nil
+		if reason ~= "leave" then
+			GameModes.notify(player, "stop", ID, { reason = reason })
+			GameModes.refresh(player)
+		end
+	end
+
+	function def.tick(player: Player, root: BasePart, _now: number)
+		local pos = root.Position
+		local prev = lastPos[player]
+		lastPos[player] = pos
+		local feetY = pos.Y - FEET_BELOW_ROOT
+		if not runs[player] then
+			if prev and feetY < Course.PLAZA.top + 8 and Course.crossedGate(def.slot, prev.X, prev.Z, pos.X, pos.Z) then
+				GameModes.start(player, ID, true)
+			end
+			return
+		end
+		if not built then
+			return
+		end
+		local exit = built.exit.Position
+		local flat = Vector3.new(pos.X - exit.X, 0, pos.Z - exit.Z)
+		if flat.Magnitude <= built.exitRadius and math.abs(feetY - built.top) < 4 then
+			def.stop(player, "quit")
+			GameModes.toGates(player)
+			return
+		end
+		if feetY < built.top - BowlingRules.FALL_BELOW then
+			toSpawn(player)
+		end
+	end
+
+	function def.rewardPreview(player: Player): { [string]: any }
+		local session = GameModes.session(player)
+		if not session then
+			return { cash = 0, full = false, packCash = 0, repeatCash = 0 }
+		end
+		local r = GameModes.modeReward(session, ID, record(session).clears == 0)
+		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = r.repeatCash }
+	end
+
+	function def.snapshot(player: Player): { [string]: any }
+		local session = GameModes.session(player)
+		if not session then
+			return { running = false }
+		end
+		local rec = record(session)
+		return {
+			running = runs[player] ~= nil,
+			best = rec.best,
+			clears = rec.clears,
+			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
+			rewardPreview = def.rewardPreview(player),
+		}
+	end
+
+	Players.PlayerRemoving:Connect(function(player)
+		lastPos[player] = nil
+	end)
+
+	return def
+end
+
+return Bowling
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="190">
+          <Properties>
+            <string name="Name">BowlingRules</string>
+            <string name="Source"><![CDATA[--!strict
+--[[
+	BowlingRules: the pure rules of DUMBBELL BOWL (Modes.Bowling; docs/minigames.md). No Roblox
+	services: tests/bowling.luau loads it with Lune.
+
+	TODO(bowling builder): the roll (aim and power), pin physics or pin-fall rules, frames and score, the pass mark.
+
+	ARENA is where World.BowlingLane builds the arena (floor top centre and size in studs,
+	out over the sea away from the Parkour maps, the Mog stage and the Cardio track; tests/
+	minigames.luau keeps every arena clear of the others).
+]]
+
+local BowlingRules = {}
+
+BowlingRules.ARENA = { x = 740, y = 6, z = -380, sizeX = 30, sizeZ = 110 }
+-- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
+BowlingRules.FALL_BELOW = 20
+
+return BowlingRules
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="191">
           <Properties>
             <string name="Name">Cardio</string>
             <string name="Source"><![CDATA[--[[
@@ -27188,7 +27408,7 @@ return Cardio
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="190">
+        <Item class="ModuleScript" referent="192">
           <Properties>
             <string name="Name">CardioChase</string>
             <string name="Source"><![CDATA[--!strict
@@ -27590,7 +27810,7 @@ return CardioChase
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="191">
+        <Item class="ModuleScript" referent="193">
           <Properties>
             <string name="Name">CardioLayout</string>
             <string name="Source"><![CDATA[--!strict
@@ -29063,7 +29283,7 @@ return CardioLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="192">
+        <Item class="ModuleScript" referent="194">
           <Properties>
             <string name="Name">CardioRules</string>
             <string name="Source"><![CDATA[--!strict
@@ -29427,7 +29647,7 @@ return CardioRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="193">
+        <Item class="ModuleScript" referent="195">
           <Properties>
             <string name="Name">Catalog</string>
             <string name="Source"><![CDATA[--!strict
@@ -29461,13 +29681,38 @@ local Catalog: { Entry } = {
 		enabled = true,
 		color = "Mint",
 	},
+	-- The solo mini-games (docs/minigames.md): gates 4-6 on the plaza's side edges.
+	{
+		id = "shake",
+		title = "SHAKE CATCH",
+		blurb = "Catch the falling shakes, dodge the junk food!",
+		slot = 4,
+		enabled = true,
+		color = "Pink",
+	},
+	{
+		id = "pose",
+		title = "POSE COPY",
+		blurb = "Copy the rival's flexes — one more every round!",
+		slot = 5,
+		enabled = true,
+		color = "Blue",
+	},
+	{
+		id = "bowling",
+		title = "DUMBBELL BOWL",
+		blurb = "Roll a giant dumbbell and knock down every pin!",
+		slot = 6,
+		enabled = true,
+		color = "RedOrange",
+	},
 }
 
 return Catalog
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="194">
+        <Item class="ModuleScript" referent="196">
           <Properties>
             <string name="Name">Course</string>
             <string name="Source"><![CDATA[--!strict
@@ -29574,7 +29819,8 @@ local Course = {}
 
 -- The plaza deck (x0..x1, z0..z1) and the spur that joins it to the hub ring, whose outer edge
 -- is at x = -(2 * PlotLayout.PLOT_HALF + 34) = -138 (World.Hub RING_OUT; tests/run.luau checks it).
-Course.PLAZA = { x0 = -210, x1 = -160, z0 = -28, z1 = 28, top = 0.5 }
+-- (z +-32: the side edges hold gates 4-6, clear of the back row's outer pillars.)
+Course.PLAZA = { x0 = -210, x1 = -160, z0 = -32, z1 = 32, top = 0.5 }
 Course.SPUR = { x0 = -160, x1 = -138, half = 6, top = 0.3 }
 -- Where GoModes / ModeQuit put the player (feet): the spur end facing the gates (-X), and
 -- in front of the gates facing back toward the hub (+X). faceX: the direction faced.
@@ -29583,15 +29829,22 @@ Course.ARRIVAL = { x = -166, y = 0.5, z = 0, faceX = -1 }
 -- the player, and from closer it looked out through a portal's swirl.
 Course.QUIT = { x = -188, y = 0.5, z = 0, faceX = 1 }
 
--- Mode gates: one per catalog slot, in a row on the plaza's west edge, fronts facing the
--- hub (+X). GATE_HALF is half the opening width of the open (slot 1) gate; locked gates are
--- narrower (World.Modes).
+-- Mode gates: one per catalog slot, a U round the plaza. Slots 1-3 stand in a row on the
+-- plaza's west edge at x = GATE_X, fronts facing the hub (+X). Slots 4-6 stand on the side
+-- edges (their own `x`, z = the edge) with fronts facing into the plaza (`faceZ`: +1 on the
+-- south edge, -1 on the north one): 4 and 6 on the south edge, 5 on the north edge, where
+-- the best-times BOARD balances 6. GATE_HALF is half the opening width of an open gate;
+-- locked gates are narrower (World.Modes). Course.gateSpot / crossedGate read every slot.
+export type GateSpot = { z: number, x: number?, faceZ: number? }
 Course.GATE_X = -208
 Course.GATES = {
 	[1] = { z = 0 },
 	[2] = { z = -19 },
 	[3] = { z = 19 },
-}
+	[4] = { z = Course.PLAZA.z0, x = -195, faceZ = 1 },
+	[5] = { z = Course.PLAZA.z1, x = -195, faceZ = -1 },
+	[6] = { z = Course.PLAZA.z0, x = -175.5, faceZ = 1 },
+} :: { [number]: GateSpot }
 Course.GATE_HALF = 6
 -- The big GAME MODES sign high above and behind the gates (front faces +X).
 Course.BIG_SIGN = { x = -217, z = 0, width = 56, height = 15, bottom = 28 }
@@ -29610,11 +29863,10 @@ Course.SPUR2 = { x0 = -Course.SPUR.x1, x1 = -Course.SPUR.x0, half = Course.SPUR.
 Course.ARRIVAL2 = { x = -Course.ARRIVAL.x, y = Course.ARRIVAL.y, z = Course.ARRIVAL.z, faceX = -Course.ARRIVAL.faceX }
 Course.QUIT2 = { x = -Course.QUIT.x, y = Course.QUIT.y, z = Course.QUIT.z, faceX = -Course.QUIT.faceX }
 Course.GATE2_X = -Course.GATE_X
-Course.GATES2 = {
-	[1] = { z = Course.GATES[1].z },
-	[2] = { z = Course.GATES[2].z },
-	[3] = { z = Course.GATES[3].z },
-}
+Course.GATES2 = {} :: { [number]: GateSpot }
+for slot, g in Course.GATES do
+	Course.GATES2[slot] = { z = g.z, x = if g.x then -g.x else nil, faceZ = g.faceZ }
+end
 Course.BIG_SIGN2 = {
 	x = -Course.BIG_SIGN.x,
 	z = Course.BIG_SIGN.z,
@@ -31608,6 +31860,40 @@ function Course.crossedStart(prevX: number, x: number, z: number): boolean
 	return false
 end
 
+-- Where gate `slot` stands on plaza `plaza` (1: -X, 2: the mirror at +X) and which way its
+-- front (the side players walk in from) faces: (x, z, frontX, frontZ), or nil.
+function Course.gateSpot(slot: number, plaza: number): (number?, number?, number, number)
+	local g = (if plaza == 2 then Course.GATES2 else Course.GATES)[slot]
+	if g == nil then
+		return nil, nil, 0, 0
+	end
+	local side = if plaza == 2 then -1 else 1
+	local x = g.x or (if plaza == 2 then Course.GATE2_X else Course.GATE_X)
+	if g.faceZ then
+		return x, g.z, 0, g.faceZ
+	end
+	return x, g.z, side, 0
+end
+
+-- Did a player's feet (prevX, prevZ) -> (x, z) walk in through gate `slot`'s opening (from
+-- its front, across its line, within GATE_HALF + 1 of its middle)? Returns the plaza (1 or 2)
+-- or nil. Any slot; slots 1-3 match Parkour's / Mog's / Cardio's own checks.
+function Course.crossedGate(slot: number, prevX: number, prevZ: number, x: number, z: number): number?
+	for plaza = 1, 2 do
+		local gx, gz, fx, fz = Course.gateSpot(slot, plaza)
+		if gx and gz then
+			-- Signed distance in front of the gate line, before and after.
+			local before = (prevX - gx) * fx + (prevZ - gz) * fz
+			local after = (x - gx) * fx + (z - gz) * fz
+			local across = math.abs((x - gx) * fz - (z - gz) * fx)
+			if before > 0 and after <= 0 and across <= Course.GATE_HALF + 1 then
+				return plaza
+			end
+		end
+	end
+	return nil
+end
+
 export type Spot = { x: number, y: number, z: number, faceX: number }
 
 local function closer(a: Spot, b: Spot, x: number, z: number): Spot
@@ -31670,7 +31956,7 @@ return Course
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="195">
+        <Item class="ModuleScript" referent="197">
           <Properties>
             <string name="Name">Mog</string>
             <string name="Source"><![CDATA[--[[
@@ -32752,7 +33038,7 @@ return { create = create }
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="196">
+        <Item class="ModuleScript" referent="198">
           <Properties>
             <string name="Name">MogBoard</string>
             <string name="Source"><![CDATA[--[[
@@ -32967,7 +33253,7 @@ return MogBoard
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="197">
+        <Item class="ModuleScript" referent="199">
           <Properties>
             <string name="Name">MogLayout</string>
             <string name="Source"><![CDATA[--[[
@@ -33044,7 +33330,7 @@ return MogLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="198">
+        <Item class="ModuleScript" referent="200">
           <Properties>
             <string name="Name">MogRules</string>
             <string name="Source"><![CDATA[--[[
@@ -33594,7 +33880,7 @@ return MogRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="199">
+        <Item class="ModuleScript" referent="201">
           <Properties>
             <string name="Name">Parkour</string>
             <string name="Source"><![CDATA[--[[
@@ -34574,7 +34860,174 @@ return Parkour
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="200">
+        <Item class="ModuleScript" referent="202">
+          <Properties>
+            <string name="Name">Pose</string>
+            <string name="Source"><![CDATA[--!strict
+--[[
+	Modes.Pose: POSE COPY, a solo mini-game (docs/minigames.md). Arena: World.PoseStage
+	(context.world.pose); rules: Modes.PoseRules (pure).
+
+	STUB (foundation): walking in through the mode's plaza gate (Course.crossedGate) or the
+	"ModeStart" { mode = "pose" } action starts a run on the arena's spawn; the arena's
+	exit pad (or the HUD's quit, "ModeQuit") ends it and brings the player back to the
+	gates; a fall puts them back on the spawn. Nothing is played or paid yet.
+	TODO(pose builder): copy the rival's growing flex sequence; a pass pays through GameModes.modeReward + GameModes.payReward
+	(first clear: record(session).clears == 0).
+
+	Notify (kind = "Mode", mode = "pose"): "start" { best, clears }, "stop" { reason }.
+	Builders add their own events (docs/minigames.md lists the convention).
+	Snapshot modes.pose: { running, best, clears, cooldownEnds, rewardPreview } (the Game
+	Modes window reads exactly these).
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Economy = require(ReplicatedStorage.Shared.Economy)
+
+local Course = require(script.Parent.Course)
+local PoseRules = require(script.Parent.PoseRules)
+
+local ID = "pose"
+-- Feet are about this far under the HumanoidRootPart's centre (R15 default rig).
+local FEET_BELOW_ROOT = 3
+
+local Pose = {}
+
+type Run = { startedAt: number }
+
+function Pose.create(GameModes: any, context: { [string]: any }): any
+	local built = context.world and context.world.pose
+	local def: any = { id = ID }
+	local runs: { [Player]: Run } = {}
+	local lastPos: { [Player]: Vector3 } = {}
+
+	local function record(session: any): { best: number, clears: number, lastRewardAt: number }
+		return session.profile.modes[ID]
+	end
+
+	local function toSpawn(player: Player)
+		GameModes.teleport(player, built.spawn.Position, built.spawn.LookVector)
+	end
+
+	function def.running(player: Player): boolean
+		return runs[player] ~= nil
+	end
+
+	function def.start(player: Player, teleport: boolean, _options: { [string]: any }?): boolean
+		local session = GameModes.session(player)
+		if not session or not built then
+			return false
+		end
+		runs[player] = { startedAt = os.clock() }
+		if teleport then
+			toSpawn(player)
+		end
+		local rec = record(session)
+		GameModes.notify(player, "start", ID, { best = rec.best, clears = rec.clears })
+		GameModes.refresh(player)
+		return true
+	end
+
+	function def.stop(player: Player, reason: string)
+		if not runs[player] then
+			return
+		end
+		runs[player] = nil
+		if reason ~= "leave" then
+			GameModes.notify(player, "stop", ID, { reason = reason })
+			GameModes.refresh(player)
+		end
+	end
+
+	function def.tick(player: Player, root: BasePart, _now: number)
+		local pos = root.Position
+		local prev = lastPos[player]
+		lastPos[player] = pos
+		local feetY = pos.Y - FEET_BELOW_ROOT
+		if not runs[player] then
+			if prev and feetY < Course.PLAZA.top + 8 and Course.crossedGate(def.slot, prev.X, prev.Z, pos.X, pos.Z) then
+				GameModes.start(player, ID, true)
+			end
+			return
+		end
+		if not built then
+			return
+		end
+		local exit = built.exit.Position
+		local flat = Vector3.new(pos.X - exit.X, 0, pos.Z - exit.Z)
+		if flat.Magnitude <= built.exitRadius and math.abs(feetY - built.top) < 4 then
+			def.stop(player, "quit")
+			GameModes.toGates(player)
+			return
+		end
+		if feetY < built.top - PoseRules.FALL_BELOW then
+			toSpawn(player)
+		end
+	end
+
+	function def.rewardPreview(player: Player): { [string]: any }
+		local session = GameModes.session(player)
+		if not session then
+			return { cash = 0, full = false, packCash = 0, repeatCash = 0 }
+		end
+		local r = GameModes.modeReward(session, ID, record(session).clears == 0)
+		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = r.repeatCash }
+	end
+
+	function def.snapshot(player: Player): { [string]: any }
+		local session = GameModes.session(player)
+		if not session then
+			return { running = false }
+		end
+		local rec = record(session)
+		return {
+			running = runs[player] ~= nil,
+			best = rec.best,
+			clears = rec.clears,
+			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
+			rewardPreview = def.rewardPreview(player),
+		}
+	end
+
+	Players.PlayerRemoving:Connect(function(player)
+		lastPos[player] = nil
+	end)
+
+	return def
+end
+
+return Pose
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="203">
+          <Properties>
+            <string name="Name">PoseRules</string>
+            <string name="Source"><![CDATA[--!strict
+--[[
+	PoseRules: the pure rules of POSE COPY (Modes.Pose; docs/minigames.md). No Roblox
+	services: tests/pose.luau loads it with Lune.
+
+	TODO(pose builder): the flex list, the sequence that grows one flex every round, input timing and the pass mark.
+
+	ARENA is where World.PoseStage builds the arena (floor top centre and size in studs,
+	out over the sea away from the Parkour maps, the Mog stage and the Cardio track; tests/
+	minigames.luau keeps every arena clear of the others).
+]]
+
+local PoseRules = {}
+
+PoseRules.ARENA = { x = 560, y = 6, z = -380, sizeX = 56, sizeZ = 48 }
+-- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
+PoseRules.FALL_BELOW = 20
+
+return PoseRules
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="204">
           <Properties>
             <string name="Name">Rules</string>
             <string name="Source"><![CDATA[--!strict
@@ -34659,8 +35112,175 @@ return Rules
 ]]></string>
           </Properties>
         </Item>
+        <Item class="ModuleScript" referent="205">
+          <Properties>
+            <string name="Name">Shake</string>
+            <string name="Source"><![CDATA[--!strict
+--[[
+	Modes.Shake: SHAKE CATCH, a solo mini-game (docs/minigames.md). Arena: World.ShakeArena
+	(context.world.shake); rules: Modes.ShakeRules (pure).
+
+	STUB (foundation): walking in through the mode's plaza gate (Course.crossedGate) or the
+	"ModeStart" { mode = "shake" } action starts a run on the arena's spawn; the arena's
+	exit pad (or the HUD's quit, "ModeQuit") ends it and brings the player back to the
+	gates; a fall puts them back on the spawn. Nothing is played or paid yet.
+	TODO(shake builder): catch the falling shakes, dodge the junk food; a pass pays through GameModes.modeReward + GameModes.payReward
+	(first clear: record(session).clears == 0).
+
+	Notify (kind = "Mode", mode = "shake"): "start" { best, clears }, "stop" { reason }.
+	Builders add their own events (docs/minigames.md lists the convention).
+	Snapshot modes.shake: { running, best, clears, cooldownEnds, rewardPreview } (the Game
+	Modes window reads exactly these).
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Economy = require(ReplicatedStorage.Shared.Economy)
+
+local Course = require(script.Parent.Course)
+local ShakeRules = require(script.Parent.ShakeRules)
+
+local ID = "shake"
+-- Feet are about this far under the HumanoidRootPart's centre (R15 default rig).
+local FEET_BELOW_ROOT = 3
+
+local Shake = {}
+
+type Run = { startedAt: number }
+
+function Shake.create(GameModes: any, context: { [string]: any }): any
+	local built = context.world and context.world.shake
+	local def: any = { id = ID }
+	local runs: { [Player]: Run } = {}
+	local lastPos: { [Player]: Vector3 } = {}
+
+	local function record(session: any): { best: number, clears: number, lastRewardAt: number }
+		return session.profile.modes[ID]
+	end
+
+	local function toSpawn(player: Player)
+		GameModes.teleport(player, built.spawn.Position, built.spawn.LookVector)
+	end
+
+	function def.running(player: Player): boolean
+		return runs[player] ~= nil
+	end
+
+	function def.start(player: Player, teleport: boolean, _options: { [string]: any }?): boolean
+		local session = GameModes.session(player)
+		if not session or not built then
+			return false
+		end
+		runs[player] = { startedAt = os.clock() }
+		if teleport then
+			toSpawn(player)
+		end
+		local rec = record(session)
+		GameModes.notify(player, "start", ID, { best = rec.best, clears = rec.clears })
+		GameModes.refresh(player)
+		return true
+	end
+
+	function def.stop(player: Player, reason: string)
+		if not runs[player] then
+			return
+		end
+		runs[player] = nil
+		if reason ~= "leave" then
+			GameModes.notify(player, "stop", ID, { reason = reason })
+			GameModes.refresh(player)
+		end
+	end
+
+	function def.tick(player: Player, root: BasePart, _now: number)
+		local pos = root.Position
+		local prev = lastPos[player]
+		lastPos[player] = pos
+		local feetY = pos.Y - FEET_BELOW_ROOT
+		if not runs[player] then
+			if prev and feetY < Course.PLAZA.top + 8 and Course.crossedGate(def.slot, prev.X, prev.Z, pos.X, pos.Z) then
+				GameModes.start(player, ID, true)
+			end
+			return
+		end
+		if not built then
+			return
+		end
+		local exit = built.exit.Position
+		local flat = Vector3.new(pos.X - exit.X, 0, pos.Z - exit.Z)
+		if flat.Magnitude <= built.exitRadius and math.abs(feetY - built.top) < 4 then
+			def.stop(player, "quit")
+			GameModes.toGates(player)
+			return
+		end
+		if feetY < built.top - ShakeRules.FALL_BELOW then
+			toSpawn(player)
+		end
+	end
+
+	function def.rewardPreview(player: Player): { [string]: any }
+		local session = GameModes.session(player)
+		if not session then
+			return { cash = 0, full = false, packCash = 0, repeatCash = 0 }
+		end
+		local r = GameModes.modeReward(session, ID, record(session).clears == 0)
+		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = r.repeatCash }
+	end
+
+	function def.snapshot(player: Player): { [string]: any }
+		local session = GameModes.session(player)
+		if not session then
+			return { running = false }
+		end
+		local rec = record(session)
+		return {
+			running = runs[player] ~= nil,
+			best = rec.best,
+			clears = rec.clears,
+			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
+			rewardPreview = def.rewardPreview(player),
+		}
+	end
+
+	Players.PlayerRemoving:Connect(function(player)
+		lastPos[player] = nil
+	end)
+
+	return def
+end
+
+return Shake
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="206">
+          <Properties>
+            <string name="Name">ShakeRules</string>
+            <string name="Source"><![CDATA[--!strict
+--[[
+	ShakeRules: the pure rules of SHAKE CATCH (Modes.Shake; docs/minigames.md). No Roblox
+	services: tests/shake.luau loads it with Lune.
+
+	TODO(shake builder): spawn waves (shakes vs junk food), catching and dodging, score and the pass mark, the difficulty curve.
+
+	ARENA is where World.ShakeArena builds the arena (floor top centre and size in studs,
+	out over the sea away from the Parkour maps, the Mog stage and the Cardio track; tests/
+	minigames.luau keeps every arena clear of the others).
+]]
+
+local ShakeRules = {}
+
+ShakeRules.ARENA = { x = 380, y = 6, z = -380, sizeX = 64, sizeZ = 64 }
+-- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
+ShakeRules.FALL_BELOW = 20
+
+return ShakeRules
+]]></string>
+          </Properties>
+        </Item>
       </Item>
-      <Item class="ModuleScript" referent="201">
+      <Item class="ModuleScript" referent="207">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -34965,7 +35585,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="202">
+      <Item class="ModuleScript" referent="208">
         <Properties>
           <string name="Name">PlotLayout</string>
           <string name="Source"><![CDATA[--!strict
@@ -35556,7 +36176,7 @@ return Layout
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="203">
+      <Item class="ModuleScript" referent="209">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -35954,7 +36574,7 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="204">
+      <Item class="ModuleScript" referent="210">
         <Properties>
           <string name="Name">Tutorial</string>
           <string name="Source"><![CDATA[--[[
@@ -36071,7 +36691,7 @@ return Tutorial
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="205">
+      <Item class="ModuleScript" referent="211">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -38785,11 +39405,245 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="206">
+      <Item class="Folder" referent="212">
         <Properties>
           <string name="Name">World</string>
         </Properties>
-        <Item class="ModuleScript" referent="207">
+        <Item class="ModuleScript" referent="213">
+          <Properties>
+            <string name="Name">Arena</string>
+            <string name="Source"><![CDATA[--!strict
+--[[
+	Arena: the shared shell of a solo mini-game arena (World.ShakeArena, World.PoseStage,
+	World.BowlingLane; docs/minigames.md). Shared plumbing: mode builders do not edit it.
+
+	base(id, name, arena, style) builds, in a Model `name` (attribute Mode = id) under the map
+	folder, a floating deck out at sea:
+	  "ArenaFloor"   the walkable slab, top at arena.y, arena.sizeX x arena.sizeZ, centred on
+	                 (arena.x, arena.z); a white "ArenaRim" lip under it and four
+	                 "ArenaPontoon" floats down to the sea.
+	  "ArenaSpawn"   a sunny pad near the +Z edge where runs start (`spawn`: feet position,
+	                 looking -Z across the arena).
+	  "ArenaExit"    a glowing pad under an arch at the +Z edge's right corner; Modes.<Mode>
+	                 ends the run when the player's feet come within `exitRadius` of it.
+	Returns Base = { folder, floor, spawn, exit, exitRadius, center, top }.
+]]
+
+local Common = require(script.Parent.Common)
+
+local W = Common.theme.World
+local make = Common.make
+local UPRIGHT = Common.UPRIGHT
+local CYLINDER = Enum.PartType.Cylinder
+
+local Arena = {}
+
+export type Spec = { x: number, y: number, z: number, sizeX: number, sizeZ: number }
+
+export type Base = {
+	folder: Model,
+	floor: BasePart,
+	-- Feet position and facing of a run's start (GameModes.teleport(player, spawn.Position, spawn.LookVector)).
+	spawn: CFrame,
+	exit: BasePart,
+	exitRadius: number,
+	-- Floor top centre.
+	center: Vector3,
+	top: number,
+}
+
+-- style: { floor = Theme.World key of the deck, trim = key of the rim and arch }.
+function Arena.base(id: string, name: string, arena: Spec, style: { floor: string, trim: string }): Base
+	local folder = Instance.new("Model")
+	folder.Name = name
+	folder:SetAttribute("Mode", id)
+	folder.Parent = Common.mapFolder
+	local top = arena.y
+	local floorColor: Color3 = (W :: any)[style.floor] or W.Cream
+	local trim: Color3 = (W :: any)[style.trim] or W.White
+	local floor = make("Part", {
+		Name = "ArenaFloor",
+		Size = Vector3.new(arena.sizeX, 2, arena.sizeZ),
+		CFrame = CFrame.new(arena.x, top - 1, arena.z),
+		Color = floorColor,
+		Parent = folder,
+	})
+	make("Part", {
+		Name = "ArenaRim",
+		Size = Vector3.new(arena.sizeX + 2, 1.2, arena.sizeZ + 2),
+		CFrame = CFrame.new(arena.x, top - 1.5, arena.z),
+		Color = W.White,
+		Parent = folder,
+	})
+	local floatH = math.max(top - 2, 1)
+	for _, sx in { -1, 1 } do
+		for _, sz in { -1, 1 } do
+			make("Part", {
+				Name = "ArenaPontoon",
+				Shape = CYLINDER,
+				Size = Vector3.new(floatH, 6, 6),
+				CFrame = CFrame.new(arena.x + sx * (arena.sizeX / 2 - 4), floatH / 2, arena.z + sz * (arena.sizeZ / 2 - 4)) * UPRIGHT,
+				Color = trim,
+				Parent = folder,
+			})
+		end
+	end
+	local spawnZ = arena.z + arena.sizeZ / 2 - 6
+	make("Part", {
+		Name = "ArenaSpawn",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.2, 7, 7),
+		CFrame = CFrame.new(arena.x, top + 0.1, spawnZ) * UPRIGHT,
+		Color = W.Sunny,
+		CanCollide = false,
+		Parent = folder,
+	})
+	local spawn = CFrame.lookAt(Vector3.new(arena.x, top, spawnZ), Vector3.new(arena.x, top, arena.z - arena.sizeZ))
+	-- The exit: a mint pad under a small arch in the +X, +Z corner.
+	local ex, ez = arena.x + arena.sizeX / 2 - 5, arena.z + arena.sizeZ / 2 - 5
+	local exit = make("Part", {
+		Name = "ArenaExit",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.3, 6, 6),
+		CFrame = CFrame.new(ex, top + 0.15, ez) * UPRIGHT,
+		Color = W.Mint,
+		Material = Enum.Material.Neon,
+		CanCollide = false,
+		Parent = folder,
+	})
+	for _, side in { -1, 1 } do
+		make("Part", {
+			Name = "ArenaExitPost",
+			Shape = CYLINDER,
+			Size = Vector3.new(8, 1, 1),
+			CFrame = CFrame.new(ex + side * 3.5, top + 4, ez) * UPRIGHT,
+			Color = trim,
+			Parent = folder,
+		})
+	end
+	local beam = make("Part", {
+		Name = "ArenaExitSign",
+		Size = Vector3.new(8, 1.8, 0.6),
+		CFrame = CFrame.new(ex, top + 8.6, ez),
+		Color = trim,
+		Parent = folder,
+	})
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Front
+	gui.PixelsPerStud = 40
+	gui.Parent = beam
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.fromScale(1, 1)
+	label.Text = "EXIT"
+	label.TextScaled = true
+	label.Font = Common.theme.Fonts.Display
+	label.TextColor3 = W.White
+	label.Parent = gui
+	return {
+		folder = folder,
+		floor = floor,
+		spawn = spawn,
+		exit = exit,
+		exitRadius = 4,
+		center = Vector3.new(arena.x, top, arena.z),
+		top = top,
+	}
+end
+
+return Arena
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="214">
+          <Properties>
+            <string name="Name">BowlingLane</string>
+            <string name="Source"><![CDATA[--!strict
+--[[
+	BowlingLane: the DUMBBELL BOWL arena out at sea (teleport-only; Modes.Bowling brings players here).
+	Numbers live in Modes.BowlingRules.ARENA; the shell (floor, spawn pad, exit arch) comes from
+	World.Arena. TODO(bowling builder): dress it (props, signs, fans) and add the game's parts.
+
+	build() -> Built: everything World.Arena.Base has ({ folder, floor, spawn, exit,
+	exitRadius, center, top }) plus
+	lane       the lane slab ("BowlingLane", runs -Z from the foul line)
+	rollStart  feet CFrame at the foul line, looking down the lane (-Z)
+	pinSpots   10 CFrames (pin base centres) in the classic triangle at the far end, head pin first
+	pins       empty Folder "Pins" for the pin parts (Modes.Bowling fills it)
+]]
+
+local Common = require(script.Parent.Common)
+local Arena = require(script.Parent.Arena)
+local BowlingRules = require(script.Parent.Parent.Modes.BowlingRules)
+
+local W = Common.theme.World
+local make = Common.make
+
+local BowlingLane = {}
+
+export type Built = Arena.Base & {
+	lane: BasePart,
+	rollStart: CFrame,
+	pinSpots: { CFrame },
+	pins: Folder,
+}
+
+function BowlingLane.build(): Built
+	local a = BowlingRules.ARENA
+	local base = Arena.base("bowling", "BowlingLane", a, { floor = "Cream", trim = "RedOrange" })
+	local top = base.top
+	local laneW, laneL = 14, a.sizeZ - 24
+	local foulZ = a.z + a.sizeZ / 2 - 14
+	local lane = make("Part", {
+		Name = "BowlingLane",
+		Size = Vector3.new(laneW, 0.2, laneL),
+		CFrame = CFrame.new(a.x, top + 0.1, foulZ - laneL / 2),
+		Color = W.Wood,
+		Material = Enum.Material.WoodPlanks,
+		Parent = base.folder,
+	})
+	for _, side in { -1, 1 } do
+		make("Part", {
+			Name = "BowlingGutter",
+			Size = Vector3.new(2, 0.3, laneL),
+			CFrame = CFrame.new(a.x + side * (laneW / 2 + 1), top + 0.15, foulZ - laneL / 2),
+			Color = W.Steel,
+			Parent = base.folder,
+		})
+	end
+	make("Part", {
+		Name = "FoulLine",
+		Size = Vector3.new(laneW, 0.25, 0.6),
+		CFrame = CFrame.new(a.x, top + 0.13, foulZ),
+		Color = W.Coral,
+		Parent = base.folder,
+	})
+	-- Pins: rows of 1-4 from the head pin, PIN_GAP studs apart.
+	local PIN_GAP = 3
+	local headZ = foulZ - laneL + 14
+	local pinSpots = {}
+	for row = 0, 3 do
+		for i = 0, row do
+			local x = a.x + (i - row / 2) * PIN_GAP
+			table.insert(pinSpots, CFrame.new(x, top + 0.2, headZ - row * PIN_GAP * 0.87))
+		end
+	end
+	local pins = Instance.new("Folder")
+	pins.Name = "Pins"
+	pins.Parent = base.folder
+	local built: any = base
+	built.lane = lane
+	built.rollStart = CFrame.lookAt(Vector3.new(a.x, top, foulZ + 3), Vector3.new(a.x, top, foulZ - laneL))
+	built.pinSpots = pinSpots
+	built.pins = pins
+	return built :: Built
+end
+
+return BowlingLane
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="215">
           <Properties>
             <string name="Name">CardioTrack</string>
             <string name="Source"><![CDATA[--[[
@@ -40257,7 +41111,7 @@ return CardioTrack
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="208">
+        <Item class="ModuleScript" referent="216">
           <Properties>
             <string name="Name">Common</string>
             <string name="Source"><![CDATA[--[[
@@ -40437,7 +41291,7 @@ return Common
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="209">
+        <Item class="ModuleScript" referent="217">
           <Properties>
             <string name="Name">Decor</string>
             <string name="Source"><![CDATA[--[[
@@ -41489,7 +42343,7 @@ return Decor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="210">
+        <Item class="ModuleScript" referent="218">
           <Properties>
             <string name="Name">Hub</string>
             <string name="Source"><![CDATA[--[[
@@ -42606,7 +43460,7 @@ return Hub
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="211">
+        <Item class="ModuleScript" referent="219">
           <Properties>
             <string name="Name">Machines</string>
             <string name="Source"><![CDATA[--[[
@@ -43424,7 +44278,7 @@ return Machines
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="212">
+        <Item class="ModuleScript" referent="220">
           <Properties>
             <string name="Name">MapDecor</string>
             <string name="Source"><![CDATA[--[[
@@ -44369,7 +45223,7 @@ return MapDecor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="213">
+        <Item class="ModuleScript" referent="221">
           <Properties>
             <string name="Name">MapDress</string>
             <string name="Source"><![CDATA[--[[
@@ -44928,7 +45782,7 @@ return MapDress
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="214">
+        <Item class="ModuleScript" referent="222">
           <Properties>
             <string name="Name">Modes</string>
             <string name="Source"><![CDATA[--[[
@@ -45818,7 +46672,7 @@ end
 type PlazaSpec = {
 	plaza: { x0: number, x1: number, z0: number, z1: number, top: number },
 	spur: { x0: number, x1: number, half: number, top: number },
-	gates: { [number]: { z: number } },
+	gates: { [number]: { z: number, x: number?, faceZ: number? } },
 	gateX: number,
 	sign: { x: number, z: number, width: number, height: number, bottom: number },
 	mirror: number,
@@ -45839,7 +46693,12 @@ local function gate(entry: Catalog.Entry, parent: Instance, spec: PlazaSpec)
 	folder:SetAttribute("Mode", entry.id)
 	folder:SetAttribute("Enabled", entry.enabled)
 	folder.Parent = parent
-	local base = CFrame.new(spec.gateX, spec.plaza.top, spot.z) * CFrame.Angles(0, FACE_HUB * spec.mirror, 0)
+	-- Slots 1-3: the back row at gateX facing the hub; slots 4-6: their own x on a side
+	-- edge, facing into the plaza (Course.GATES faceZ; a part's front is its -Z, so yaw pi
+	-- faces +Z and 0 faces -Z).
+	local s: any = spot
+	local yaw = if s.faceZ then (if s.faceZ > 0 then math.pi else 0) else FACE_HUB * spec.mirror
+	local base = CFrame.new(s.x or spec.gateX, spec.plaza.top, spot.z) * CFrame.Angles(0, yaw, 0)
 	local add = adder(base, folder)
 	local open = entry.enabled
 	local tint = color(entry.color)
@@ -46774,7 +47633,7 @@ return Modes
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="215">
+        <Item class="ModuleScript" referent="223">
           <Properties>
             <string name="Name">MogStage</string>
             <string name="Source"><![CDATA[--[[
@@ -47632,7 +48491,7 @@ return MogStage
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="216">
+        <Item class="ModuleScript" referent="224">
           <Properties>
             <string name="Name">Pads</string>
             <string name="Source"><![CDATA[--[[
@@ -48064,7 +48923,7 @@ return Pads
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="217">
+        <Item class="ModuleScript" referent="225">
           <Properties>
             <string name="Name">Pen</string>
             <string name="Source"><![CDATA[--[[
@@ -48386,7 +49245,72 @@ return Pen
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="218">
+        <Item class="ModuleScript" referent="226">
+          <Properties>
+            <string name="Name">PoseStage</string>
+            <string name="Source"><![CDATA[--!strict
+--[[
+	PoseStage: the POSE COPY arena out at sea (teleport-only; Modes.Pose brings players here).
+	Numbers live in Modes.PoseRules.ARENA; the shell (floor, spawn pad, exit arch) comes from
+	World.Arena. TODO(pose builder): dress it (props, signs, fans) and add the game's parts.
+
+	build() -> Built: everything World.Arena.Base has ({ folder, floor, spawn, exit,
+	exitRadius, center, top }) plus
+	playerSpot feet CFrame where the player stands, facing the rival
+	rivalSpot  feet CFrame where the rival poser stands, facing the player
+	rival      empty Model "Rival" for the rival rig (Modes.Pose fills it)
+]]
+
+local Common = require(script.Parent.Common)
+local Arena = require(script.Parent.Arena)
+local PoseRules = require(script.Parent.Parent.Modes.PoseRules)
+
+local W = Common.theme.World
+local make = Common.make
+
+local PoseStage = {}
+
+export type Built = Arena.Base & {
+	playerSpot: CFrame,
+	rivalSpot: CFrame,
+	rival: Model,
+}
+
+function PoseStage.build(): Built
+	local a = PoseRules.ARENA
+	local base = Arena.base("pose", "PoseStage", a, { floor = "Cream", trim = "Blue" })
+	local top = base.top
+	local playerPos = Vector3.new(a.x, top, a.z + 6)
+	local rivalPos = Vector3.new(a.x, top, a.z - 10)
+	local pads: { { pos: Vector3, color: Color3, name: string } } = {
+		{ pos = playerPos, color = W.Sunny, name = "PlayerPad" },
+		{ pos = rivalPos, color = W.Grape, name = "RivalPad" },
+	}
+	for _, pad in pads do
+		make("Part", {
+			Name = pad.name,
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(0.4, 8, 8),
+			CFrame = CFrame.new(pad.pos + Vector3.new(0, 0.2, 0)) * Common.UPRIGHT,
+			Color = pad.color,
+			Parent = base.folder,
+		})
+	end
+	local rival = Instance.new("Model")
+	rival.Name = "Rival"
+	rival.Parent = base.folder
+	local built: any = base
+	built.playerSpot = CFrame.lookAt(playerPos, rivalPos)
+	built.rivalSpot = CFrame.lookAt(rivalPos, playerPos)
+	built.rival = rival
+	return built :: Built
+end
+
+return PoseStage
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="227">
           <Properties>
             <string name="Name">Props</string>
             <string name="Source"><![CDATA[--!strict
@@ -48657,7 +49581,57 @@ return Props
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="219">
+        <Item class="ModuleScript" referent="228">
+          <Properties>
+            <string name="Name">ShakeArena</string>
+            <string name="Source"><![CDATA[--!strict
+--[[
+	ShakeArena: the SHAKE CATCH arena out at sea (teleport-only; Modes.Shake brings players here).
+	Numbers live in Modes.ShakeRules.ARENA; the shell (floor, spawn pad, exit arch) comes from
+	World.Arena. TODO(shake builder): dress it (props, signs, fans) and add the game's parts.
+
+	build() -> Built: everything World.Arena.Base has ({ folder, floor, spawn, exit,
+	exitRadius, center, top }) plus
+	catchArea  floor rectangle (world x0, x1, z0, z1) where shakes and junk food may land
+	dropY      height falling items spawn at
+	items      empty Folder "Items" for the falling props (Modes.Shake / Fx.Shake fill it)
+]]
+
+local Arena = require(script.Parent.Arena)
+local ShakeRules = require(script.Parent.Parent.Modes.ShakeRules)
+
+local ShakeArena = {}
+
+export type Built = Arena.Base & {
+	catchArea: { x0: number, x1: number, z0: number, z1: number },
+	dropY: number,
+	items: Folder,
+}
+
+function ShakeArena.build(): Built
+	local a = ShakeRules.ARENA
+	local base = Arena.base("shake", "ShakeArena", a, { floor = "Cream", trim = "Pink" })
+	local inset = 4
+	local items = Instance.new("Folder")
+	items.Name = "Items"
+	items.Parent = base.folder
+	local built: any = base
+	built.catchArea = {
+		x0 = a.x - a.sizeX / 2 + inset,
+		x1 = a.x + a.sizeX / 2 - inset,
+		z0 = a.z - a.sizeZ / 2 + inset,
+		z1 = a.z + a.sizeZ / 2 - inset,
+	}
+	built.dropY = base.top + 40
+	built.items = items
+	return built :: Built
+end
+
+return ShakeArena
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="229">
           <Properties>
             <string name="Name">Shell</string>
             <string name="Source"><![CDATA[--[[
@@ -49106,7 +50080,7 @@ return Shell
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="220">
+        <Item class="ModuleScript" referent="230">
           <Properties>
             <string name="Name">Shelves</string>
             <string name="Source"><![CDATA[--[[
@@ -49758,7 +50732,7 @@ return Shelves
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="221">
+      <Item class="ModuleScript" referent="231">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -49799,6 +50773,9 @@ local Props = require(World.Props)
 local Modes = require(World.Modes)
 local MogStage = require(World.MogStage)
 local CardioTrack = require(World.CardioTrack)
+local ShakeArena = require(World.ShakeArena)
+local PoseStage = require(World.PoseStage)
+local BowlingLane = require(World.BowlingLane)
 
 local WorldBuilder = {}
 
@@ -49839,6 +50816,10 @@ export type World = {
 	mog: MogStage.Built,
 	-- The CARDIO keyboard runway out at sea (World.CardioTrack).
 	cardio: CardioTrack.Built,
+	-- The solo mini-game arenas out at sea (docs/minigames.md).
+	shake: ShakeArena.Built,
+	pose: PoseStage.Built,
+	bowling: BowlingLane.Built,
 }
 
 local theme = Common.theme
@@ -50523,13 +51504,25 @@ function WorldBuilder.build(_themeModule: any): World
 	local modes = Modes.build()
 	local mog = MogStage.build()
 	local cardio = CardioTrack.build()
+	local shake = ShakeArena.build()
+	local pose = PoseStage.build()
+	local bowling = BowlingLane.build()
 	local plots = {}
 	for i = 1, PLOT_COUNT do
 		table.insert(plots, buildPlot(i))
 	end
 	-- Blender meshes replace the part-built props that have one (World.Props).
 	Props.apply(mapFolder)
-	return { plots = plots, ranking = ranking, modes = modes, mog = mog, cardio = cardio }
+	return {
+		plots = plots,
+		ranking = ranking,
+		modes = modes,
+		mog = mog,
+		cardio = cardio,
+		shake = shake,
+		pose = pose,
+		bowling = bowling,
+	}
 end
 
 WorldBuilder.label = Common.label
@@ -50541,26 +51534,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="222">
+  <Item class="SoundService" referent="232">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="223">
+  <Item class="StarterPlayer" referent="233">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="224">
+    <Item class="StarterPlayerScripts" referent="234">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="225">
+      <Item class="Folder" referent="235">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="ModuleScript" referent="226">
+        <Item class="ModuleScript" referent="236">
           <Properties>
             <string name="Name">Animator</string>
             <string name="Source"><![CDATA[--[[
@@ -51240,11 +52233,11 @@ return Animator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="227">
+        <Item class="Folder" referent="237">
           <Properties>
             <string name="Name">Fx</string>
           </Properties>
-          <Item class="ModuleScript" referent="228">
+          <Item class="ModuleScript" referent="238">
             <Properties>
               <string name="Name">Ambient</string>
               <string name="Source"><![CDATA[--[[
@@ -51624,7 +52617,61 @@ return Ambient
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="229">
+          <Item class="ModuleScript" referent="239">
+            <Properties>
+              <string name="Name">Bowling</string>
+              <string name="Source"><![CDATA[--!strict
+--[[
+	Fx.Bowling: the 3D side of DUMBBELL BOWL (Modes.Bowling; docs/minigames.md). UI.BowlingHud draws
+	the screen.
+
+	STUB (foundation): listens for this mode's Notify and calls start / stop.
+	TODO(bowling builder): the arena's client effects (World.Bowling arena parts under
+	workspace's map folder, Model with attribute Mode = "bowling").
+
+	Main.client.luau calls init() once (it is in the Fx list); nothing else needs editing:
+	  init()            connects the Notify listener
+	  start(payload)    a run began ("start")
+	  stop(payload)     the run ended ("stop")
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Bowling = {}
+
+local running = false
+
+function Bowling.start(_payload: { [string]: any })
+	running = true
+end
+
+function Bowling.stop(_payload: { [string]: any })
+	if not running then
+		return
+	end
+	running = false
+end
+
+function Bowling.init()
+	Net.event("Notify").OnClientEvent:Connect(function(payload)
+		if type(payload) ~= "table" or payload.kind ~= "Mode" or payload.mode ~= "bowling" then
+			return
+		end
+		if payload.event == "start" then
+			Bowling.start(payload)
+		elseif payload.event == "stop" then
+			Bowling.stop(payload)
+		end
+	end)
+end
+
+return Bowling
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="240">
             <Properties>
               <string name="Name">Budget</string>
               <string name="Source"><![CDATA[--[[
@@ -51801,7 +52848,7 @@ return Budget
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="230">
+          <Item class="ModuleScript" referent="241">
             <Properties>
               <string name="Name">Camera</string>
               <string name="Source"><![CDATA[--[[
@@ -52325,7 +53372,7 @@ return Camera
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="231">
+          <Item class="ModuleScript" referent="242">
             <Properties>
               <string name="Name">Cardio</string>
               <string name="Source"><![CDATA[--!strict
@@ -54132,7 +55179,7 @@ return CardioFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="232">
+          <Item class="ModuleScript" referent="243">
             <Properties>
               <string name="Name">CardioChase</string>
               <string name="Source"><![CDATA[--!strict
@@ -54791,7 +55838,7 @@ return ChaseFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="233">
+          <Item class="ModuleScript" referent="244">
             <Properties>
               <string name="Name">Cosmetics</string>
               <string name="Source"><![CDATA[--[[
@@ -55109,7 +56156,7 @@ return CosmeticsFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="234">
+          <Item class="ModuleScript" referent="245">
             <Properties>
               <string name="Name">Crates</string>
               <string name="Source"><![CDATA[--[[
@@ -57421,7 +58468,7 @@ return Crates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="235">
+          <Item class="ModuleScript" referent="246">
             <Properties>
               <string name="Name">Fans</string>
               <string name="Source"><![CDATA[--[[
@@ -58577,7 +59624,7 @@ return Fans
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="236">
+          <Item class="ModuleScript" referent="247">
             <Properties>
               <string name="Name">Highlights</string>
               <string name="Source"><![CDATA[--[[
@@ -58701,7 +59748,7 @@ return Highlights
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="237">
+          <Item class="ModuleScript" referent="248">
             <Properties>
               <string name="Name">Interactive</string>
               <string name="Source"><![CDATA[--!strict
@@ -60027,7 +61074,7 @@ return Interactive
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="238">
+          <Item class="ModuleScript" referent="249">
             <Properties>
               <string name="Name">Machines</string>
               <string name="Source"><![CDATA[-- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow
@@ -62419,7 +63466,7 @@ return Machines
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="239">
+          <Item class="ModuleScript" referent="250">
             <Properties>
               <string name="Name">Modes</string>
               <string name="Source"><![CDATA[--!strict
@@ -64437,7 +65484,7 @@ return ModesFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="240">
+          <Item class="ModuleScript" referent="251">
             <Properties>
               <string name="Name">Mog</string>
               <string name="Source"><![CDATA[--!strict
@@ -65383,7 +66430,7 @@ return MogFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="241">
+          <Item class="ModuleScript" referent="252">
             <Properties>
               <string name="Name">Orbs</string>
               <string name="Source"><![CDATA[-- Client-side aura orb visuals for the local player's own plot.
@@ -68131,7 +69178,7 @@ return Orbs
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="242">
+          <Item class="ModuleScript" referent="253">
             <Properties>
               <string name="Name">PlateStyle</string>
               <string name="Source"><![CDATA[--!strict
@@ -68380,7 +69427,7 @@ return PlateStyle
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="243">
+          <Item class="ModuleScript" referent="254">
             <Properties>
               <string name="Name">Plates</string>
               <string name="Source"><![CDATA[--!strict
@@ -69211,7 +70258,7 @@ return Plates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="244">
+          <Item class="ModuleScript" referent="255">
             <Properties>
               <string name="Name">PlayerPose</string>
               <string name="Source"><![CDATA[--!strict
@@ -69365,7 +70412,7 @@ return PlayerPose
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="245">
+          <Item class="ModuleScript" referent="256">
             <Properties>
               <string name="Name">PlotRank</string>
               <string name="Source"><![CDATA[--[[
@@ -71516,7 +72563,115 @@ return PlotRank
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="246">
+          <Item class="ModuleScript" referent="257">
+            <Properties>
+              <string name="Name">Pose</string>
+              <string name="Source"><![CDATA[--!strict
+--[[
+	Fx.Pose: the 3D side of POSE COPY (Modes.Pose; docs/minigames.md). UI.PoseHud draws
+	the screen.
+
+	STUB (foundation): listens for this mode's Notify and calls start / stop.
+	TODO(pose builder): the arena's client effects (World.Pose arena parts under
+	workspace's map folder, Model with attribute Mode = "pose").
+
+	Main.client.luau calls init() once (it is in the Fx list); nothing else needs editing:
+	  init()            connects the Notify listener
+	  start(payload)    a run began ("start")
+	  stop(payload)     the run ended ("stop")
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Pose = {}
+
+local running = false
+
+function Pose.start(_payload: { [string]: any })
+	running = true
+end
+
+function Pose.stop(_payload: { [string]: any })
+	if not running then
+		return
+	end
+	running = false
+end
+
+function Pose.init()
+	Net.event("Notify").OnClientEvent:Connect(function(payload)
+		if type(payload) ~= "table" or payload.kind ~= "Mode" or payload.mode ~= "pose" then
+			return
+		end
+		if payload.event == "start" then
+			Pose.start(payload)
+		elseif payload.event == "stop" then
+			Pose.stop(payload)
+		end
+	end)
+end
+
+return Pose
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="258">
+            <Properties>
+              <string name="Name">Shake</string>
+              <string name="Source"><![CDATA[--!strict
+--[[
+	Fx.Shake: the 3D side of SHAKE CATCH (Modes.Shake; docs/minigames.md). UI.ShakeHud draws
+	the screen.
+
+	STUB (foundation): listens for this mode's Notify and calls start / stop.
+	TODO(shake builder): the arena's client effects (World.Shake arena parts under
+	workspace's map folder, Model with attribute Mode = "shake").
+
+	Main.client.luau calls init() once (it is in the Fx list); nothing else needs editing:
+	  init()            connects the Notify listener
+	  start(payload)    a run began ("start")
+	  stop(payload)     the run ended ("stop")
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Shake = {}
+
+local running = false
+
+function Shake.start(_payload: { [string]: any })
+	running = true
+end
+
+function Shake.stop(_payload: { [string]: any })
+	if not running then
+		return
+	end
+	running = false
+end
+
+function Shake.init()
+	Net.event("Notify").OnClientEvent:Connect(function(payload)
+		if type(payload) ~= "table" or payload.kind ~= "Mode" or payload.mode ~= "shake" then
+			return
+		end
+		if payload.event == "start" then
+			Shake.start(payload)
+		elseif payload.event == "stop" then
+			Shake.stop(payload)
+		end
+	end)
+end
+
+return Shake
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="259">
             <Properties>
               <string name="Name">Shelf</string>
               <string name="Source"><![CDATA[--[[
@@ -74023,7 +75178,7 @@ return Shelf
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="247">
+          <Item class="ModuleScript" referent="260">
             <Properties>
               <string name="Name">Sprites</string>
               <string name="Source"><![CDATA[--[[
@@ -74228,7 +75383,7 @@ return Sprites
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="248">
+          <Item class="ModuleScript" referent="261">
             <Properties>
               <string name="Name">Surge</string>
               <string name="Source"><![CDATA[--[[
@@ -74517,7 +75672,7 @@ return Surge
             </Properties>
           </Item>
         </Item>
-        <Item class="ModuleScript" referent="249">
+        <Item class="ModuleScript" referent="262">
           <Properties>
             <string name="Name">Guide</string>
             <string name="Source"><![CDATA[--[[
@@ -75441,11 +76596,11 @@ return Guide
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="250">
+        <Item class="Folder" referent="263">
           <Properties>
             <string name="Name">Intro</string>
           </Properties>
-          <Item class="ModuleScript" referent="251">
+          <Item class="ModuleScript" referent="264">
             <Properties>
               <string name="Name">Actors</string>
               <string name="Source"><![CDATA[--!strict
@@ -76114,7 +77269,7 @@ return Actors
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="252">
+          <Item class="ModuleScript" referent="265">
             <Properties>
               <string name="Name">Avatar</string>
               <string name="Source"><![CDATA[--!strict
@@ -76757,7 +77912,7 @@ return Avatar
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="253">
+          <Item class="ModuleScript" referent="266">
             <Properties>
               <string name="Name">AvatarRig</string>
               <string name="Source"><![CDATA[--!strict
@@ -76988,7 +78143,7 @@ return AvatarRig
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="254">
+          <Item class="ModuleScript" referent="267">
             <Properties>
               <string name="Name">Cutscene</string>
               <string name="Source"><![CDATA[--[[
@@ -77831,7 +78986,7 @@ return Cutscene
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="255">
+          <Item class="ModuleScript" referent="268">
             <Properties>
               <string name="Name">Effects</string>
               <string name="Source"><![CDATA[--!strict
@@ -78756,7 +79911,7 @@ return Effects
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="256">
+          <Item class="ModuleScript" referent="269">
             <Properties>
               <string name="Name">Framing</string>
               <string name="Source"><![CDATA[--!strict
@@ -78963,7 +80118,7 @@ return Framing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="257">
+          <Item class="ModuleScript" referent="270">
             <Properties>
               <string name="Name">Stage</string>
               <string name="Source"><![CDATA[--!strict
@@ -79249,7 +80404,7 @@ return Stage
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="258">
+          <Item class="ModuleScript" referent="271">
             <Properties>
               <string name="Name">Timeline</string>
               <string name="Source"><![CDATA[--!strict
@@ -79597,7 +80752,7 @@ return Timeline
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="259">
+          <Item class="ModuleScript" referent="272">
             <Properties>
               <string name="Name">Ui</string>
               <string name="Source"><![CDATA[--!strict
@@ -80473,7 +81628,7 @@ return Ui
             </Properties>
           </Item>
         </Item>
-        <Item class="LocalScript" referent="260">
+        <Item class="LocalScript" referent="273">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -80503,6 +81658,9 @@ local AwayWindow = require(Client.UI.AwayWindow)
 local Tutorial = require(Client.UI.Tutorial)
 local MogHud = require(Client.UI.MogHud)
 local CardioHud = require(Client.UI.CardioHud)
+local ShakeHud = require(Client.UI.ShakeHud)
+local PoseHud = require(Client.UI.PoseHud)
+local BowlingHud = require(Client.UI.BowlingHud)
 local ObbyHud = require(Client.UI.ObbyHud)
 
 -- The opening cutscene (optional: the game runs without it if it fails to load).
@@ -80597,6 +81755,10 @@ Popups.build(screen, Sounds)
 Windows.build(screen)
 MogHud.build(screen)
 CardioHud.build(screen)
+-- The solo mini-games (docs/minigames.md): each HUD owns its own file.
+ShakeHud.init(screen)
+PoseHud.init(screen)
+BowlingHud.init(screen)
 -- The Modes window's MOG TEST PLAY opens the VS RIVALS / 1v1 DUEL picker.
 Windows.onMogPlay = MogHud.choose
 -- "While you were away" (built with the Daily window) opens like any window; a player still
@@ -80777,6 +81939,9 @@ local parkourRunning = false
 Net.event("State").OnClientEvent:Connect(function(data)
 	State.set(data)
 	CardioHud.onState(data)
+	ShakeHud.onState(data)
+	PoseHud.onState(data)
+	BowlingHud.onState(data)
 	local parkour = type(data.modes) == "table" and data.modes.parkour
 	local running = type(parkour) == "table" and parkour.running == true
 	if parkourRunning and not running then
@@ -80844,6 +82009,15 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 		-- CARDIO (keyboard runner): speed counter, stage strip, cards and banners
 		-- (Fx.Cardio does the 3D side).
 		CardioHud.onNotify(payload)
+	elseif payload.kind == "Mode" and payload.mode == "shake" then
+		-- SHAKE CATCH (Fx.Shake does the 3D side).
+		ShakeHud.onNotify(payload)
+	elseif payload.kind == "Mode" and payload.mode == "pose" then
+		-- POSE COPY (Fx.Pose does the 3D side).
+		PoseHud.onNotify(payload)
+	elseif payload.kind == "Mode" and payload.mode == "bowling" then
+		-- DUMBBELL BOWL (Fx.Bowling does the 3D side).
+		BowlingHud.onNotify(payload)
 	elseif payload.kind == "Mode" then
 		-- Game-mode runs: the HUD run pill and the finish card (Fx.Modes does the 3D side).
 		local event = payload.event
@@ -81062,6 +82236,9 @@ if fxFolder then
 			"Cardio",
 			"CardioChase",
 			"Interactive",
+			"Shake",
+			"Pose",
+			"Bowling",
 		}
 	do
 		local moduleScript = fxFolder:FindFirstChild(name)
@@ -81084,7 +82261,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="261">
+        <Item class="ModuleScript" referent="274">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects plus background music.
@@ -81652,7 +82829,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="262">
+        <Item class="ModuleScript" referent="275">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -81701,11 +82878,11 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="263">
+        <Item class="Folder" referent="276">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="264">
+          <Item class="ModuleScript" referent="277">
             <Properties>
               <string name="Name">AwayWindow</string>
               <string name="Source"><![CDATA[--[[
@@ -82058,7 +83235,74 @@ return AwayWindow
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="265">
+          <Item class="ModuleScript" referent="278">
+            <Properties>
+              <string name="Name">BowlingHud</string>
+              <string name="Source"><![CDATA[--!strict
+--[[
+	BowlingHud: the screen side of DUMBBELL BOWL (Modes.Bowling; docs/minigames.md). Fx.Bowling
+	does the 3D side.
+
+	STUB (foundation): a hidden root frame that shows while a run is on.
+	TODO(bowling builder): score, timer, round cards, the finish card.
+
+	Wired from Main.client.luau (nothing else needs editing):
+	  init(screen)        once, builds the HUD (hidden)
+	  onNotify(payload)   every Notify with kind = "Mode" and mode = "bowling"; routes
+	                      "start" -> start(payload) and "stop" -> stop(payload)
+	  onState(data)       every State snapshot (safety net: hides when modes.bowling is not running)
+	  start(payload) / stop(payload)
+]]
+
+local BowlingHud = {}
+
+local root: Frame? = nil
+local running = false
+
+function BowlingHud.init(screen: ScreenGui)
+	local frame = Instance.new("Frame")
+	frame.Name = "BowlingHud"
+	frame.BackgroundTransparency = 1
+	frame.Size = UDim2.fromScale(1, 1)
+	frame.Visible = false
+	frame.Parent = screen
+	root = frame
+end
+
+function BowlingHud.start(_payload: { [string]: any }?)
+	running = true
+	if root then
+		root.Visible = true
+	end
+end
+
+function BowlingHud.stop(_payload: { [string]: any }?)
+	running = false
+	if root then
+		root.Visible = false
+	end
+end
+
+function BowlingHud.onNotify(payload: { [string]: any })
+	if payload.event == "start" then
+		BowlingHud.start(payload)
+	elseif payload.event == "stop" then
+		BowlingHud.stop(payload)
+	end
+end
+
+function BowlingHud.onState(data: any)
+	local info = type(data) == "table" and type(data.modes) == "table" and data.modes.bowling
+	if running and not (type(info) == "table" and info.running == true) then
+		BowlingHud.stop(nil)
+	end
+end
+
+return BowlingHud
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="279">
             <Properties>
               <string name="Name">CardioHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -84122,7 +85366,7 @@ return CardioHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="266">
+          <Item class="ModuleScript" referent="280">
             <Properties>
               <string name="Name">DailyWindow</string>
               <string name="Source"><![CDATA[--[[
@@ -85057,7 +86301,7 @@ return DailyWindow
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="267">
+          <Item class="ModuleScript" referent="281">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -85428,20 +86672,6 @@ local TUNE = {
 	ModesUnlockAfter = 0.4, -- s after the YOU DID IT banner has gone
 	ModesUnlockWaitMax = 20, -- s it waits for that banner at most
 	ModesUnlockBeat = 0.45,
-	-- The dumbbell's charge ring: TankRing segments on an ellipse (radii in design px, centred
-	-- at TankRingCentreY of its height: round the plaque), lit as the carried aura grows toward
-	-- TankChargeSeconds of production; all white-gold, swollen and beating when full.
-	TankRing = 18,
-	TankRingRadius = { 76, 47 },
-	TankRingCentreY = 0.43,
-	TankRingSeg = { 9, 6 }, -- unlit
-	TankRingSegOn = { 12, 7 },
-	TankRingSegFull = { 14, 8 },
-	TankRingOff = Color3.fromRGB(52, 46, 96),
-	TankRingOn = Color3.fromRGB(255, 200, 48),
-	TankRingFull = Color3.fromRGB(255, 248, 196),
-	TankRingBeat = 0.4,
-	TankChargeSeconds = 30,
 	-- The FREE gift's "CLAIM!" when ready: a gold tab (ink edge that beats wider) behind the word.
 	ClaimTab = C.Gold,
 	ClaimTabEdge = G.TextInk,
@@ -87887,65 +89117,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	})
 	tankCaption.TextSize = 20
 	carriedLabel.TextSize = 36
-	-- The charge ring: TUNE.TankRing segments on an ellipse round the plaque light up gold, one
-	-- after another from the top, as the carried aura grows toward TankChargeSeconds of
-	-- production; full, they all turn white-gold, swell and beat. Colours and sizes only (the
-	-- HUD's fade owns transparencies).
-	local tankCharge: (number) -> ()
-	-- In a block: its locals stay out of build's 200.
-	do
-		local segments: { Frame } = {}
-		local tw, th = DUMBBELL_W, DUMBBELL_W * DUMBBELL_ASPECT
-		local rx, ry = TUNE.TankRingRadius[1], TUNE.TankRingRadius[2]
-		for i = 1, TUNE.TankRing do
-			local a = -math.pi / 2 + (i - 1) / TUNE.TankRing * math.pi * 2
-			local turn = math.deg(math.atan2(ry * math.cos(a), -rx * math.sin(a)))
-			local seg = Kit.new("Frame", {
-				Name = "Charge" .. i,
-				BackgroundColor3 = TUNE.TankRingOff,
-				BorderSizePixel = 0,
-				AnchorPoint = Vector2.new(0.5, 0.5),
-				Size = UDim2.fromOffset(TUNE.TankRingSeg[1], TUNE.TankRingSeg[2]),
-				Position = UDim2.fromScale(0.5 + rx * math.cos(a) / tw, TUNE.TankRingCentreY + ry * math.sin(a) / th),
-				Rotation = turn,
-				ZIndex = 3,
-				Parent = tank,
-			})
-			Kit.round(seg)
-			Kit.new("UIStroke", { Name = "Edge", Thickness = 1.5, Color = G.TextInk, Parent = seg })
-			segments[i] = seg
-		end
-		local lit = -1
-		local beat: Tween? = nil
-		tankCharge = function(fraction: number)
-			local n = math.clamp(math.floor(fraction * TUNE.TankRing + 0.5), 0, TUNE.TankRing)
-			if n == lit then
-				return
-			end
-			local full = n >= TUNE.TankRing
-			local wasFull = lit >= TUNE.TankRing
-			lit = n
-			for i, seg in segments do
-				local on = i <= n
-				local color = if full then TUNE.TankRingFull elseif on then TUNE.TankRingOn else TUNE.TankRingOff
-				Kit.tween(seg, 0.15, { BackgroundColor3 = color })
-				local size = if full then TUNE.TankRingSegFull elseif on then TUNE.TankRingSegOn else TUNE.TankRingSeg
-				Kit.tween(seg, 0.2, { Size = UDim2.fromOffset(size[1], size[2]) }, Enum.EasingStyle.Back)
-			end
-			if full ~= wasFull then
-				if beat then
-					beat:Cancel()
-					beat = nil
-				end
-				if full then
-					Hud.pulseTank(true)
-					beat = pulse(tankCaption, TUNE.TankRingBeat, { TextColor3 = Color3.new(1, 1, 1) })
-				else
-					tankCaption.TextColor3 = C.GoldLight
-				end
-			end
-		end
-	end
 	-- A bounce and a short cross-fade to the glow art; deposits bounce a little more.
 	local glowToken = 0
 	Hud.pulseTank = function(big: boolean?)
@@ -88672,10 +89843,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		lastBought = bought
 		roll(carriedLabel, data.carried, State.num, 0.3)
-		do
-			local production = tonumber(data.production) or 0
-			tankCharge(if production > 0 then (tonumber(data.carried) or 0) / (production * TUNE.TankChargeSeconds) else 0)
-		end
 		-- Carried aura dropping to nothing is a deposit: the bigger bounce.
 		if lastCarried ~= nil and lastCarried > 0 and data.carried <= 0 then
 			Hud.pulseTank(true)
@@ -89157,7 +90324,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="268">
+          <Item class="ModuleScript" referent="282">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -93460,7 +94627,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="269">
+          <Item class="ModuleScript" referent="283">
             <Properties>
               <string name="Name">MapPicker</string>
               <string name="Source"><![CDATA[--[[
@@ -94758,7 +95925,7 @@ return MapPicker
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="270">
+          <Item class="ModuleScript" referent="284">
             <Properties>
               <string name="Name">MogHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -96093,7 +97260,7 @@ return MogHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="271">
+          <Item class="ModuleScript" referent="285">
             <Properties>
               <string name="Name">MogRing</string>
               <string name="Source"><![CDATA[--!strict
@@ -96623,7 +97790,7 @@ return MogRing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="272">
+          <Item class="ModuleScript" referent="286">
             <Properties>
               <string name="Name">ObbyHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -97713,7 +98880,7 @@ return ObbyHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="273">
+          <Item class="ModuleScript" referent="287">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -103906,6 +105073,11 @@ function Popups.banner(opts: { [string]: any })
 	end
 	local inset = Popups.bannerInset(height)
 	local round = if inset > 0 then math.floor(height / 2) else 0
+	-- An inset moves the holder right of the screen's middle: the line and the chip shift
+	-- back left by up to half the inset, to the screen's centre, as far as the line still
+	-- sits on the band (24 px clear of its round end).
+	local slack = (screen.AbsoluteSize.X - inset - 48 - displayWidth(opts.Text or "", titleSize) - 8) / 2
+	local shift = math.max(0, math.min(inset / 2, slack))
 	local holder = Kit.new("Frame", {
 		Name = "Banner",
 		BackgroundTransparency = 1,
@@ -103952,7 +105124,8 @@ function Popups.banner(opts: { [string]: any })
 		TextScaled = true,
 		MaxTextSize = titleSize,
 		Size = UDim2.new(1, -48, 0, titleSize + 8),
-		Position = UDim2.fromOffset(24, 22),
+		Position = UDim2.new(0.5, -shift, 0, 22),
+		AnchorPoint = Vector2.new(0.5, 0),
 		StrokeColor = Theme.Glass.TextInk,
 		StrokeThickness = 3.5,
 		ZIndex = 29,
@@ -103965,7 +105138,7 @@ function Popups.banner(opts: { [string]: any })
 			BackgroundTransparency = 0.12,
 			Size = UDim2.fromOffset(0, chipH),
 			AutomaticSize = Enum.AutomaticSize.X,
-			Position = UDim2.new(0.5, 0, 0, 22 + titleSize + 14),
+			Position = UDim2.new(0.5, -shift, 0, 22 + titleSize + 14),
 			AnchorPoint = Vector2.new(0.5, 0),
 			ZIndex = 29,
 			Parent = holder,
@@ -103995,7 +105168,7 @@ function Popups.banner(opts: { [string]: any })
 			-- As the line settles: coins out of the chip, in front of the band.
 			task.delay(Popups.JUICE.Banner.SlideTime, function()
 				if holder.Parent then
-					Popups.coinBurst(holder, UDim2.new(0.5, 0, 0, 22 + titleSize + 14 + chipH / 2), 30)
+					Popups.coinBurst(holder, UDim2.new(0.5, -shift, 0, 22 + titleSize + 14 + chipH / 2), 30)
 				end
 			end)
 		end
@@ -104477,7 +105650,141 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="274">
+          <Item class="ModuleScript" referent="288">
+            <Properties>
+              <string name="Name">PoseHud</string>
+              <string name="Source"><![CDATA[--!strict
+--[[
+	PoseHud: the screen side of POSE COPY (Modes.Pose; docs/minigames.md). Fx.Pose
+	does the 3D side.
+
+	STUB (foundation): a hidden root frame that shows while a run is on.
+	TODO(pose builder): score, timer, round cards, the finish card.
+
+	Wired from Main.client.luau (nothing else needs editing):
+	  init(screen)        once, builds the HUD (hidden)
+	  onNotify(payload)   every Notify with kind = "Mode" and mode = "pose"; routes
+	                      "start" -> start(payload) and "stop" -> stop(payload)
+	  onState(data)       every State snapshot (safety net: hides when modes.pose is not running)
+	  start(payload) / stop(payload)
+]]
+
+local PoseHud = {}
+
+local root: Frame? = nil
+local running = false
+
+function PoseHud.init(screen: ScreenGui)
+	local frame = Instance.new("Frame")
+	frame.Name = "PoseHud"
+	frame.BackgroundTransparency = 1
+	frame.Size = UDim2.fromScale(1, 1)
+	frame.Visible = false
+	frame.Parent = screen
+	root = frame
+end
+
+function PoseHud.start(_payload: { [string]: any }?)
+	running = true
+	if root then
+		root.Visible = true
+	end
+end
+
+function PoseHud.stop(_payload: { [string]: any }?)
+	running = false
+	if root then
+		root.Visible = false
+	end
+end
+
+function PoseHud.onNotify(payload: { [string]: any })
+	if payload.event == "start" then
+		PoseHud.start(payload)
+	elseif payload.event == "stop" then
+		PoseHud.stop(payload)
+	end
+end
+
+function PoseHud.onState(data: any)
+	local info = type(data) == "table" and type(data.modes) == "table" and data.modes.pose
+	if running and not (type(info) == "table" and info.running == true) then
+		PoseHud.stop(nil)
+	end
+end
+
+return PoseHud
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="289">
+            <Properties>
+              <string name="Name">ShakeHud</string>
+              <string name="Source"><![CDATA[--!strict
+--[[
+	ShakeHud: the screen side of SHAKE CATCH (Modes.Shake; docs/minigames.md). Fx.Shake
+	does the 3D side.
+
+	STUB (foundation): a hidden root frame that shows while a run is on.
+	TODO(shake builder): score, timer, round cards, the finish card.
+
+	Wired from Main.client.luau (nothing else needs editing):
+	  init(screen)        once, builds the HUD (hidden)
+	  onNotify(payload)   every Notify with kind = "Mode" and mode = "shake"; routes
+	                      "start" -> start(payload) and "stop" -> stop(payload)
+	  onState(data)       every State snapshot (safety net: hides when modes.shake is not running)
+	  start(payload) / stop(payload)
+]]
+
+local ShakeHud = {}
+
+local root: Frame? = nil
+local running = false
+
+function ShakeHud.init(screen: ScreenGui)
+	local frame = Instance.new("Frame")
+	frame.Name = "ShakeHud"
+	frame.BackgroundTransparency = 1
+	frame.Size = UDim2.fromScale(1, 1)
+	frame.Visible = false
+	frame.Parent = screen
+	root = frame
+end
+
+function ShakeHud.start(_payload: { [string]: any }?)
+	running = true
+	if root then
+		root.Visible = true
+	end
+end
+
+function ShakeHud.stop(_payload: { [string]: any }?)
+	running = false
+	if root then
+		root.Visible = false
+	end
+end
+
+function ShakeHud.onNotify(payload: { [string]: any })
+	if payload.event == "start" then
+		ShakeHud.start(payload)
+	elseif payload.event == "stop" then
+		ShakeHud.stop(payload)
+	end
+end
+
+function ShakeHud.onState(data: any)
+	local info = type(data) == "table" and type(data.modes) == "table" and data.modes.shake
+	if running and not (type(info) == "table" and info.running == true) then
+		ShakeHud.stop(nil)
+	end
+end
+
+return ShakeHud
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="290">
             <Properties>
               <string name="Name">ShopScenes</string>
               <string name="Source"><![CDATA[--[[
@@ -106405,7 +107712,7 @@ return ShopScenes
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="275">
+          <Item class="ModuleScript" referent="291">
             <Properties>
               <string name="Name">Tutorial</string>
               <string name="Source"><![CDATA[--[[
@@ -107065,7 +108372,7 @@ return Tutorial
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="276">
+          <Item class="ModuleScript" referent="292">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
@@ -112189,7 +113496,8 @@ end
 	colour: a thumbnail (a sea scene for Parkour, the player's best unit for MOG TEST; a
 	narrow window shrinks it to a medal), title, blurb, stats, the reward chip (solid mint
 	while the full reward is up, dim through the cooldown) and a gold PLAY that fires
-	ModeStart and closes the window, then one slim "More modes coming soon" row.
+	ModeStart and closes the window. All six modes (Parkour, Mog, Cardio, Shake Catch, Pose
+	Copy, Dumbbell Bowl) sit in one scrolling list.
 
 	Parkour shows the preselected map (the player's unlocked level, re-synced whenever the
 	window opens): its name, difficulty (10 pips), best and clears and what finishing it
@@ -112543,19 +113851,22 @@ end
 
 local function buildModes(screen: ScreenGui)
 	local accent = Theme.World.Mint
-	-- 168 (Parkour) + 10 + 150 (Mog) + 10 + 44 (coming soon) + 20 padding + 84 of header and
-	-- margins. Short screens get a tighter stack (layoutRows) down to the 400 minimum, which
-	-- a phone shows scaled up x1.25.
+	-- 168 (Parkour) + 10 + 150 (Mog) + 10 + 118 per other mode, in a scrolling list (Parkour,
+	-- Mog and the top of the next card show without scrolling at 486). Short screens get a
+	-- tighter stack (layoutRows) down to the 400 minimum, which a phone shows scaled up x1.25.
 	local window = Kit.window(screen, "Modes", "Game Modes", "🏁", accent, Vector2.new(600, 486), Vector2.new(420, 400))
 	register("Modes", window)
 	local action = Net.event("Action")
-	Kit.list(window.content, 10)
+	local list = Kit.scrolling(window.content, { Name = "ModeList" })
+	Kit.padding(list, 2, 2)
+	Kit.list(list, 10)
+	Kit.scrollCue(list)
 
 	local rows: { GuiObject } = {}
 	local selected = 1
 
 	-- Parkour ---------------------------------------------------------------------------
-	local parkour = modeRow(window.content, {
+	local parkour = modeRow(list, {
 		Name = "PARKOUR",
 		Height = 168,
 		LayoutOrder = 1,
@@ -112629,7 +113940,7 @@ local function buildModes(screen: ScreenGui)
 	-- MOG TEST --------------------------------------------------------------------------
 	-- Gamepad starts on the loud PLAY of the first mode.
 	parkour.play:SetAttribute("FocusFirst", true)
-	local mog = modeRow(window.content, {
+	local mog = modeRow(list, {
 		Name = "MOGTEST",
 		Height = 150,
 		LayoutOrder = 2,
@@ -112677,37 +113988,67 @@ local function buildModes(screen: ScreenGui)
 		mogStar = viewport
 	end
 
-	-- Every other mode: one slim, quiet row.
-	local soon = Kit.panel(window.content, {
-		Name = "ComingSoon",
-		Glass = true,
-		Size = UDim2.new(1, 0, 0, 44),
-		LayoutOrder = 3,
-		Radius = Kit.RADIUS.M,
-		Transparency = Theme.Glass.Dimmed,
-	})
-	table.insert(rows, soon)
-	Kit.icon(soon, "Lock", 18, C.TextMute, {
-		Position = UDim2.new(0, 16, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ZIndex = 2,
-	})
-	Kit.text(soon, {
-		Text = "More modes coming soon",
-		Font = F.UI,
-		TextSize = T.Small,
-		TextWrapped = false,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -60, 1, 0),
-		Position = UDim2.fromOffset(44, 0),
-		TextColor3 = C.TextMute,
-		ZIndex = 2,
-	})
+	-- Every other mode: a card with its stats line, reward chip and PLAY (modes[id] in the
+	-- snapshot: running, best, clears, cooldownEnds, rewardPreview; Cardio: bestStage, speed).
+	-- Titles and blurbs match Server.Modes.Catalog.
+	local EXTRA_MODES = {
+		{
+			id = "cardio",
+			title = "CARDIO",
+			blurb = "Run the giant keyboard and get faster with every step!",
+			medal = "👟",
+			tint = Theme.World.Mint,
+			sky = Theme.World.Sky,
+		},
+		{
+			id = "shake",
+			title = "SHAKE CATCH",
+			blurb = "Catch the falling shakes, dodge the junk food!",
+			medal = "🥤",
+			tint = Theme.World.Pink,
+			sky = Theme.World.Sunny,
+		},
+		{
+			id = "pose",
+			title = "POSE COPY",
+			blurb = "Copy the rival's flexes — one more every round!",
+			medal = "🕺",
+			tint = Theme.World.Blue,
+			sky = Theme.World.Sky,
+		},
+		{
+			id = "bowling",
+			title = "DUMBBELL BOWL",
+			blurb = "Roll a giant dumbbell and knock down every pin!",
+			medal = "🎳",
+			tint = Theme.World.RedOrange,
+			sky = Theme.World.Sunny,
+		},
+	}
+	local EXTRA_H = 118
+	local extras: { { id: string, row: ModeRow } } = {}
+	for i, m in EXTRA_MODES do
+		local row = modeRow(list, {
+			Name = string.upper(m.id),
+			Height = EXTRA_H,
+			LayoutOrder = 2 + i,
+			Medal = m.medal,
+			Title = m.title,
+			Blurb = m.blurb,
+			Tint = m.tint,
+			Sky = m.sky,
+		}, function()
+			action:FireServer({ action = "ModeStart", mode = m.id })
+			Windows.closeAll()
+		end)
+		table.insert(rows, row.panel)
+		table.insert(extras, { id = m.id, row = row })
+	end
 
 	-- Wide windows: each card's thumbnail fills its left edge and the text sits beside it.
 	-- Narrow ones: the medal by the title, the map's details under it. Short windows: the
-	-- Mog card is 118 px (narrow too: its stats fold under the medal) and the "coming
-	-- soon" row goes while there is no room for it: 168 + 10 + 118 fills the 400 minimum.
+	-- Mog card is 118 px (narrow too: its stats fold under the medal); the list scrolls to
+	-- the other modes' 118 px cards.
 	local function layoutRows(size: Vector2)
 		local short = size.Y < 486
 		local wide = size.X >= MODES_WIDE
@@ -112734,7 +114075,12 @@ local function buildModes(screen: ScreenGui)
 			medal.Size = if badge then UDim2.fromScale(0.34, 0.26) else UDim2.fromScale(0.62, 0.5)
 			medal.Position = if badge then UDim2.fromScale(0.8, 0.84) else UDim2.fromScale(0.5, 0.42)
 		end
-		soon.Visible = not short or size.Y >= 454
+		for _, e in extras do
+			local _, ex = placeMode(e.row, wide, EXTRA_H)
+			e.row.stats.Position = UDim2.fromOffset(ex, if wide then 62 else 64)
+			e.row.stats.Size = UDim2.new(1, -(ex + 152), 0, 20)
+			e.row.reward.Position = UDim2.new(0, ex, 1, -10)
+		end
 	end
 	layoutRows(window.size())
 	window.onResize.Event:Connect(layoutRows)
@@ -112799,9 +114145,47 @@ local function buildModes(screen: ScreenGui)
 		Kit.setEnabled(mog.play, not info.running)
 	end
 
+	local function refreshExtra(id: string, row: ModeRow)
+		local data = State.data
+		local info = data and data.modes and data.modes[id]
+		if type(info) ~= "table" then
+			row.stats.Text = if id == "cardio" then "Best plate --" else "Best --  ·  0 passes"
+			paintReward(row.reward, "", false)
+			return
+		end
+		if id == "cardio" then
+			local plate = tonumber(info.bestStage) or 0
+			row.stats.Text =
+				string.format("Best plate %s  ·  Speed %d", if plate > 0 then tostring(plate) else "--", tonumber(info.speed) or 0)
+		else
+			local best = tonumber(info.best) or 0
+			row.stats.Text = string.format(
+				"Best %s  ·  %s",
+				if best > 0 then tostring(best) else "--",
+				plural(tonumber(info.clears) or 0, "pass", "passes")
+			)
+		end
+		local preview = info.rewardPreview
+		if type(preview) ~= "table" then
+			paintReward(row.reward, "", false)
+		else
+			setRewardLine(
+				row.reward,
+				tonumber(preview.packCash) or tonumber(preview.cash) or 0,
+				preview.full ~= false,
+				tonumber(info.cooldownEnds) or 0
+			)
+		end
+		Kit.setButton(row.play, if info.running then "PLAYING" else "PLAY")
+		Kit.setEnabled(row.play, not info.running)
+	end
+
 	local function refresh()
 		refreshParkour()
 		refreshMog()
+		for _, e in extras do
+			refreshExtra(e.id, e.row)
+		end
 		local had = mogStar
 		showMogStar()
 		if mogStar ~= had then
@@ -112888,7 +114272,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="277">
+  <Item class="Workspace" referent="293">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>

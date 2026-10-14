@@ -34,6 +34,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
+local Economy = require(ReplicatedStorage.Shared.Economy)
 local Net = require(ReplicatedStorage.Shared.Net)
 
 local Catalog = require(script.Parent.Modes.Catalog)
@@ -61,6 +62,9 @@ local BUILTIN = {
 	parkour = script.Parent.Modes.Parkour,
 	mog = script.Parent.Modes.Mog,
 	cardio = script.Parent.Modes.Cardio,
+	shake = script.Parent.Modes.Shake,
+	pose = script.Parent.Modes.Pose,
+	bowling = script.Parent.Modes.Bowling,
 }
 
 local TICK = 0.1
@@ -68,6 +72,7 @@ local TICK = 0.1
 local modes: { [string]: ModeDef } = {}
 local order: { string } = {}
 local Tycoon: any
+local Theme: any
 
 -- Reward hooks: `reward` may change a reward before it is paid (events, boosts);
 -- `rewarded` is told after it was paid. reward = { cash, full, packCash }.
@@ -175,6 +180,46 @@ function GameModes.effect(player: Player, kind: string, data: { [string]: any })
 	Net.event("Effect"):FireClient(player, kind, data)
 end
 
+-- Rewards (the solo mini-games use these; Parkour, Mog and Cardio price their own) ---------
+
+-- What a pass of `modeId` pays right now (Economy.modeReward: a Theme.Modes.Reward cash pack
+-- sized by income and the best tier found; in full on the first clear (`first`) and then at
+-- most once per Economy.MODE_REWARD_COOLDOWN, read from profile.modes[modeId].lastRewardAt).
+function GameModes.modeReward(session: any, modeId: string, first: boolean): Economy.ModeReward
+	local p = session.profile
+	local pack = Theme.Modes.Reward
+	local progression = Economy.progression(Economy.highestTier(p.discovered), p.processLevel)
+	local rec = p.modes[modeId]
+	local lastRewardAt = if type(rec) == "table" then tonumber(rec.lastRewardAt) or 0 else 0
+	return Economy.modeReward(Tycoon.income(session), progression, pack.Seconds, pack.Min, first, lastRewardAt, os.time())
+end
+
+-- Pays a priced reward (GameModes.modeReward, the mode may zero `cash` first): runs it
+-- through hooks.reward (events, boosts), adds the cash, restarts the cooldown on a full pay,
+-- fires the "Cash" effect at `pos`, tells hooks.rewarded and saves. Returns what was paid.
+function GameModes.payReward(player: Player, modeId: string, priced: Economy.ModeReward, pos: Vector3?): { [string]: any }
+	local session = GameModes.session(player)
+	if not session then
+		return priced
+	end
+	local reward = GameModes.hooks.reward(session, modeId, priced)
+	local p = session.profile
+	local rec = p.modes[modeId]
+	if reward.full and type(rec) == "table" then
+		rec.lastRewardAt = os.time()
+	end
+	if reward.cash > 0 then
+		p.money += reward.cash
+		p.totalEarned += reward.cash
+		local root = GameModes.root(player)
+		local at = pos or (root and root.Position) or Vector3.zero
+		GameModes.effect(player, "Cash", { amount = reward.cash, source = "Mode", padPos = at })
+	end
+	GameModes.hooks.rewarded(session, modeId, reward)
+	Tycoon.markDirty(session)
+	return reward
+end
+
 -- Pushes a fresh State snapshot to the player.
 function GameModes.refresh(player: Player)
 	if Tycoon then
@@ -280,6 +325,7 @@ end
 
 function GameModes.init(built: any, theme: any, tycoon: any, world: any)
 	Tycoon = tycoon
+	Theme = theme
 	GameModes.hooks.teleporting = (require :: any)(script.Parent.World.Decor).releaseLifter
 	for id, module in BUILTIN do
 		local impl = (require :: any)(module)

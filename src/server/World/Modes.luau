@@ -885,7 +885,7 @@ end
 type PlazaSpec = {
 	plaza: { x0: number, x1: number, z0: number, z1: number, top: number },
 	spur: { x0: number, x1: number, half: number, top: number },
-	gates: { [number]: { z: number } },
+	gates: { [number]: { z: number, x: number?, faceZ: number? } },
 	gateX: number,
 	sign: { x: number, z: number, width: number, height: number, bottom: number },
 	mirror: number,
@@ -906,7 +906,12 @@ local function gate(entry: Catalog.Entry, parent: Instance, spec: PlazaSpec)
 	folder:SetAttribute("Mode", entry.id)
 	folder:SetAttribute("Enabled", entry.enabled)
 	folder.Parent = parent
-	local base = CFrame.new(spec.gateX, spec.plaza.top, spot.z) * CFrame.Angles(0, FACE_HUB * spec.mirror, 0)
+	-- Slots 1-3: the back row at gateX facing the hub; slots 4-6: their own x on a side
+	-- edge, facing into the plaza (Course.GATES faceZ; a part's front is its -Z, so yaw pi
+	-- faces +Z and 0 faces -Z).
+	local s: any = spot
+	local yaw = if s.faceZ then (if s.faceZ > 0 then math.pi else 0) else FACE_HUB * spec.mirror
+	local base = CFrame.new(s.x or spec.gateX, spec.plaza.top, spot.z) * CFrame.Angles(0, yaw, 0)
 	local add = adder(base, folder)
 	local open = entry.enabled
 	local tint = color(entry.color)

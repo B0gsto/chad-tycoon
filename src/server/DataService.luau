@@ -120,6 +120,10 @@ export type Profile = {
 		},
 		-- best mirrors cardio.bestStage, clears cardio.clears; lastRewardAt is the cooldown.
 		cardio: { best: number, clears: number, lastRewardAt: number },
+		-- The solo mini-games (docs/minigames.md): best score, passes, the reward cooldown.
+		shake: { best: number, clears: number, lastRewardAt: number },
+		pose: { best: number, clears: number, lastRewardAt: number },
+		bowling: { best: number, clears: number, lastRewardAt: number },
 	},
 }
 
@@ -192,6 +196,9 @@ function DataService.defaultProfile(): Profile
 			parkour = { best = 0, clears = 0, lastRewardAt = 0 },
 			mog = { best = 0, rivals = 0, clears = 0, lastRewardAt = 0, pvpWins = 0, pvpPlayed = 0 },
 			cardio = { best = 0, clears = 0, lastRewardAt = 0 },
+			shake = { best = 0, clears = 0, lastRewardAt = 0 },
+			pose = { best = 0, clears = 0, lastRewardAt = 0 },
+			bowling = { best = 0, clears = 0, lastRewardAt = 0 },
 		},
 	}
 end
