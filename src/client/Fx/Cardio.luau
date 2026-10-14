@@ -102,7 +102,11 @@ local OTHER_MAX = 6 -- at most this many other players (scaled by Budget.count)
 -- real run speeds (WalkSpeed 16 at Speed 0, ~25 on stage 1, ~37 at stage 3's recommended
 -- Speed), so every run past the first steps shows them; the strength curve (speed share ^
 -- LINE_CURVE) makes even a slow run read in a still.
-local LINE_COUNT = 72
+-- r6: measured in Studio at a stage-1 run (23 studs/s) the lines and their glows covered 31% of
+-- a 64x36 grid at >= 25% opacity and washed the frame out in stills: fewer lines, lighter
+-- (the strongest about 45% opaque at that speed, 80% at full speed), much fainter glows, a
+-- wider clear middle and few lines along the horizontal band the runner runs in.
+local LINE_COUNT = 56
 local LINES_FROM = 17 -- studs/s: speed lines, trail and FOV start above this
 local LINES_FULL = 36 -- studs/s: full effect
 local LINE_CURVE = 0.5
@@ -110,31 +114,52 @@ local LINE_LEN = 150
 local LINE_LEN_FULL = 420
 local LINE_THICK = 14
 local LINE_THICK_FULL = 28
-local LINE_OPACITY = 1
-local LINE_CLEAR = 0.42 -- lines start this far out (share of centre -> edge) ...
-local LINE_SOLID = 0.62 -- ... and are fully faded in from here
+local LINE_OPACITY = 0.8
+local LINE_CLEAR = 0.5 -- lines start this far out (share of centre -> edge) ...
+local LINE_SOLID = 0.72 -- ... and are fully faded in from here
 local LINE_GLOW = 2.4 -- glow width, x the line's thickness
-local LINE_GLOW_OPACITY = 0.45 -- glow opacity at full strength
+local LINE_GLOW_OPACITY = 0.22 -- glow opacity at full strength
+local LINE_BAND = 0.3 -- |sin(angle)| under this is the centre band (left and right of the runner) ...
+local LINE_BAND_KEEP = 0.3 -- ... where only this share of the lines is drawn
 local LINE_TINT_EVERY = 2
 local LINE_TINT_WHITE = 0.08 -- how far a rainbow line is lifted toward white
 local FOV_MAX = 9
 local TRAIL = {
 	From = 0.02, -- speed share (0..1) where the trail starts showing
-	Lifetime = 0.55, -- seconds (short, so the ribbon never reaches the camera behind)
-	Width = 2.6, -- studs: the core ribbon, flat along the floor (left to right)
-	GlowWidth = 5.5, -- studs: the soft glow ribbon under it
-	Lift = 0.35, -- studs above the feet
-	Opacity = 1, -- core at full speed (the tail fades to nothing)
-	GlowOpacity = 0.6, -- glow at full speed
-	Floor = 0.55, -- core opacity the moment it shows
+	Lifetime = 0.6, -- seconds (short, so the ribbon never reaches the camera behind)
+	Width = 4.2, -- studs: the core ribbon, flat along the floor (left to right)
+	GlowWidth = 8, -- studs: the soft glow ribbon under it
+	-- Studs above the resting key tops. The feet stand on a pressed key, PressDepth below
+	-- them, and the keys behind spring back up within PRESS_UP: r5 laid the ribbon 0.35 over
+	-- the feet, inside the keycaps, so only a faint stripe of it showed between them.
+	Lift = 0.3,
+	Opacity = 1, -- core at full speed ...
+	Hold = 0.55, -- ... nearly that strong over this share of its length, then fading out
+	GlowOpacity = 0.7, -- glow at full speed
+	Floor = 0.85, -- core opacity the moment it shows
 	Light = 1, -- LightEmission (glows on the dark keys)
 }
 -- Cardio's own run camera: the follow camera's zoom is capped while a run is on, nearer the
 -- faster you go (studs from the head), and the player's own zoom limits come back after.
 local RUN_ZOOM = {
-	Walk = 14, -- at no speed
-	Full = 10, -- at full speed
+	Walk = 12, -- at no speed
+	Full = 9, -- at full speed
 	Step = 0.25, -- studs: the cap is only rewritten when it moves this much
+	-- Fx.Camera pins both limits to one distance for two frames to set a zoom; limits still
+	-- pinned after this many seconds are stuck (measured in Studio: a home shot of 16.9 studs
+	-- left both at 16.9, so the cap never took and the run camera stayed at 17.6 studs) and
+	-- the run takes the cap anyway, from the place's own limits.
+	Stuck = 0.5,
+}
+-- The run glow (a bloom of its own and a little saturation, so the neon trusses glow). r5's
+-- threshold 0.9 also bloomed the sunlit pastel lobby: measured in Studio at the 'treadmill'
+-- camera 47% of the pixels clipped to white (9% without the run bloom). At 3 only the neon
+-- blooms: the lobby is back to 9% and the track keeps a glow (5% of its pixels brighter).
+local RUN_GLOW = {
+	BloomIntensity = 0.6,
+	BloomSize = 24,
+	BloomThreshold = 3,
+	Saturation = 0.1,
 }
 -- The goal star on the TRACK: beside the doorway of the stage you run next (on the right as
 -- you face it, under its StageSign<n>), a big gold star with that stage's recommended Speed
@@ -224,6 +249,7 @@ local trailGlow: Trail? = nil
 -- The player's own zoom cap before the run (restored after), and the cap set now.
 local zoomWas: number? = nil
 local zoomNow = 0
+local pinnedSince = 0 -- os.clock() since the zoom limits have been pinned to one distance
 local lastClick = 0
 local localKey: Key? = nil
 -- Keys under other players' feet this frame (kept pressed down).
@@ -688,7 +714,13 @@ end
 -- Speed lines and FOV -------------------------------------------------------------------------
 
 local function resetLine(line: Line, fresh: boolean)
-	line.angle = math.random() * TAU
+	local angle = math.random() * TAU
+	-- Few along the centre band: a line there is drawn somewhere else most of the time.
+	if math.abs(math.sin(angle)) < LINE_BAND and math.random() > LINE_BAND_KEEP then
+		local tilt = LINE_BAND + math.random() * (1 - LINE_BAND)
+		angle = math.asin(tilt) * (if math.random() < 0.5 then 1 else -1) + (if math.random() < 0.5 then 0 else math.pi)
+	end
+	line.angle = angle
 	line.r = if fresh then LINE_CLEAR + math.random() * (1.15 - LINE_CLEAR) else LINE_CLEAR + math.random() * 0.2
 	line.speed = 1.6 + math.random() * 1.4
 	line.frame.Rotation = math.deg(line.angle)
@@ -830,7 +862,7 @@ local function stepTrail(root: BasePart?)
 		-- Feet height under the root (the trail lies just above the keys).
 		local humanoid = part.Parent and part.Parent:FindFirstChildOfClass("Humanoid")
 		local down = if humanoid then humanoid.HipHeight + part.Size.Y / 2 else 3
-		local y = -down + TRAIL.Lift
+		local y = -down + pressTravel() + TRAIL.Lift
 		trailGlow = makeRibbon(part, "CardioTrailGlow", TRAIL.GlowWidth, y - 0.05, 1)
 		t = makeRibbon(part, "CardioTrail", TRAIL.Width, y, TRAIL.Light)
 		trail = t
@@ -838,7 +870,11 @@ local function stepTrail(root: BasePart?)
 	local k = math.clamp((speedK - TRAIL.From) / (1 - TRAIL.From), 0, 1) ^ LINE_CURVE
 	local head = 1 - (TRAIL.Floor + (TRAIL.Opacity - TRAIL.Floor) * k)
 	local trailNow = t :: Trail
-	trailNow.Transparency = NumberSequence.new(head, 1)
+	trailNow.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, head),
+		NumberSequenceKeypoint.new(TRAIL.Hold, head + (1 - head) * 0.25),
+		NumberSequenceKeypoint.new(1, 1),
+	})
 	trailNow.Enabled = true
 	local glow = trailGlow
 	if glow then
@@ -860,11 +896,22 @@ local function stepZoom()
 	end
 	if zoomWas == nil then
 		-- Fx.Camera pins both limits to one distance for a frame or two to set a zoom: wait
-		-- that out so the player's real cap is the one kept.
+		-- that out so the player's real cap is the one kept (stuck limits: see RUN_ZOOM.Stuck).
 		if player.CameraMaxZoomDistance <= player.CameraMinZoomDistance then
-			return
+			local now = os.clock()
+			if pinnedSince == 0 then
+				pinnedSince = now
+			end
+			if now - pinnedSince < RUN_ZOOM.Stuck then
+				return
+			end
+			local starter = game:GetService("StarterPlayer")
+			player.CameraMinZoomDistance = math.min(player.CameraMinZoomDistance, starter.CameraMinZoomDistance)
+			zoomWas = math.max(player.CameraMaxZoomDistance, starter.CameraMaxZoomDistance)
+		else
+			zoomWas = player.CameraMaxZoomDistance
 		end
-		zoomWas = player.CameraMaxZoomDistance
+		pinnedSince = 0
 	end
 	local was = zoomWas :: number
 	local want = RUN_ZOOM.Walk + (RUN_ZOOM.Full - RUN_ZOOM.Walk) * speedK
@@ -882,6 +929,7 @@ local function restoreZoom()
 	end
 	zoomWas = nil
 	zoomNow = 0
+	pinnedSince = 0
 end
 
 local function stepSpeed(dt: number, root: BasePart?)
@@ -1565,14 +1613,14 @@ local function setGlow(on: boolean)
 	end
 	local bloom = Instance.new("BloomEffect")
 	bloom.Name = "CardioBloom"
-	bloom.Intensity = 0.6
-	bloom.Size = 24
-	bloom.Threshold = 0.9
+	bloom.Intensity = RUN_GLOW.BloomIntensity
+	bloom.Size = RUN_GLOW.BloomSize
+	bloom.Threshold = RUN_GLOW.BloomThreshold
 	bloom.Parent = Lighting
 	runBloom = bloom
 	local grade = Instance.new("ColorCorrectionEffect")
 	grade.Name = "CardioGrade"
-	grade.Saturation = 0.1
+	grade.Saturation = RUN_GLOW.Saturation
 	grade.Parent = Lighting
 	runGrade = grade
 end
