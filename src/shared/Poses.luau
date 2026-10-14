@@ -1375,6 +1375,7 @@ end
 
 Poses.hash = hash
 
+-- Shake poses
 -- SHAKE CATCH moves for a player's own avatar holding the catch tray in both hands
 -- (Client.Fx.Shake plays them through Fx.PlayerPose, layered: over walking legs only the arms
 -- and torso take them). The tray rests on the hands, so every arm here is a tray height.
