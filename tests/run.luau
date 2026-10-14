@@ -99,7 +99,14 @@ test("tiers and merging", function()
 	eq(Economy.MAX_TIER, 25, "max tier")
 	check(Economy.TIER_RATE_GROWTH > Economy.MERGE_RATIO, "merging must increase production")
 	eq(Economy.unitRate(1), 1, "tier 1 rate")
+	check(Economy.LATE_TIER_RATE_GROWTH > Economy.MERGE_RATIO, "merging late tiers must increase production too")
 	near(Economy.unitRate(3), Economy.TIER_RATE_GROWTH ^ 2, "tier 3 rate")
+	near(Economy.unitRate(Economy.FAST_TIERS), Economy.TIER_RATE_GROWTH ^ (Economy.FAST_TIERS - 1), "the fast tiers grow 3x")
+	near(
+		Economy.unitRate(Economy.FAST_TIERS + 2),
+		Economy.unitRate(Economy.FAST_TIERS) * Economy.LATE_TIER_RATE_GROWTH ^ 2,
+		"the late tiers grow slower"
+	)
 
 	local units = table.create(25, 0)
 	units[1] = 5
@@ -338,7 +345,7 @@ end)
 test("converter floor: a new tier never outruns the converter", function()
 	eq(Economy.minProcessLevel(1), 0, "no floor below the base rate")
 	eq(Economy.minProcessLevel(2), 0, "tier 2 is covered by the base rate")
-	eq(Economy.minProcessLevel(10), 39, "floor of tier 10")
+	eq(Economy.minProcessLevel(10), 38, "floor of tier 10")
 	eq(Economy.minProcessLevel(0), 0, "tiers are clamped (low)")
 	eq(Economy.minProcessLevel(99), Economy.minProcessLevel(Economy.MAX_TIER), "tiers are clamped (high)")
 	local rack = table.create(Economy.MAX_TIER, 0)
@@ -361,7 +368,7 @@ test("converter floor: a new tier never outruns the converter", function()
 		check(Economy.incomePerSecond(production, Economy.processRate(floor), 1) >= production / 2, "half the income at tier " .. tier)
 	end
 	-- A profile's level is lifted to the floor of its best tier and never lowered.
-	eq(math.max(16, Economy.minProcessLevel(10)), 39, "level lifted to the floor of the best tier")
+	eq(math.max(16, Economy.minProcessLevel(10)), 38, "level lifted to the floor of the best tier")
 	eq(math.max(150, Economy.minProcessLevel(Economy.MAX_TIER)), 150, "a level above every floor is kept")
 	-- The start level covers the first three tiers; the floor takes over from tier 4.
 	check(Economy.START_PROCESS_LEVEL >= Economy.minProcessLevel(3), "start level covers tier 3")
@@ -2222,7 +2229,7 @@ test("Economy 2.0 migration: a save only gains", function()
 	end
 	-- The converter level is lifted to the free floor of the best discovered tier, never lowered.
 	local lifted = DataService.reconcile({ money = 10, bought = 5, processLevel = 16, discovered = discoveredTo(10) })
-	eq(lifted.processLevel, 39, "level 16 with best tier 10 becomes 39")
+	eq(lifted.processLevel, 38, "level 16 with best tier 10 becomes 38")
 	eq(lifted.processLevel, Economy.minProcessLevel(10), "which is the floor of tier 10")
 	local high = DataService.reconcile({ money = 10, bought = 5, processLevel = 150, discovered = discoveredTo(10) })
 	eq(high.processLevel, 150, "level 150 stays 150")
@@ -2232,7 +2239,7 @@ test("Economy 2.0 migration: a save only gains", function()
 		16,
 		"a level above the floor is kept"
 	)
-	eq(DataService.reconcile(lifted).processLevel, 39, "migrating twice changes nothing")
+	eq(DataService.reconcile(lifted).processLevel, 38, "migrating twice changes nothing")
 
 	-- A version-2 save keeps everything it has.
 	local units = table.create(Economy.MAX_TIER, 0)
@@ -5384,8 +5391,8 @@ test("progression curve keeps its shape (scripts/simulate, no passes, coarse)", 
 	eq(Simulate.SMALL_PACK_MIN, pack.Min, "simulated parkour reward uses the mode reward's minimum")
 
 	-- The first tiers come fast (see the first-minutes test); after them each tier takes
-	-- about 1.4 times as long as the one before (every unit is bought at the first tier, and
-	-- a tier makes three times the aura of the one below).
+	-- longer than the one before (every unit is bought at the first tier, and a tier makes
+	-- three times the aura of the one below, 2.7 times past Economy.FAST_TIERS).
 	local stock = Simulate.run({ hours = 5, step = 5 })
 	local reached = stock.reached
 	local function by(tier: number, seconds: number): boolean
@@ -5414,18 +5421,18 @@ test("daily sessions (scripts/simulate): offline cash and the longest wait", fun
 	local Simulate = require("../scripts/simulate")
 	-- One long session and half an hour a day, the same hours of play: the cash made while
 	-- away brings every late tier sooner in play time.
-	local session = Simulate.run({ hours = 20, step = 30, extras = true })
-	local daily = Simulate.run({ hours = 20, step = 30, extras = true, minutesPerDay = 30 })
+	local session = Simulate.run({ hours = 24, step = 30, extras = true })
+	local daily = Simulate.run({ hours = 24, step = 30, extras = true, minutesPerDay = 30 })
 	local top = Economy.MAX_TIER
 	check(session.reached[top] ~= nil and daily.reached[top] ~= nil, "both find every tier")
 	check(daily.reached[15] < session.reached[15], "offline cash: tier 15 in less play time")
 	check(daily.reached[top] < session.reached[top], "and the top tier too")
 	local days = daily.reached[top] / 1800
-	check(days >= 12 and days <= 22, string.format("half an hour a day finds every tier in two to three weeks (%.0f days)", days))
+	check(days >= 25 and days <= 35, string.format("half an hour a day finds every tier in about a month (%.0f days)", days))
 	-- The longest wait is counted on the calendar, and nothing is waited for after the top tier.
 	check(
-		daily.longestWait >= 86400 and daily.longestWait <= 7 * 86400,
-		string.format("the longest wait for a tier is days, under a week (%.1f)", daily.longestWait / 86400)
+		daily.longestWait >= 3 * 86400 and daily.longestWait <= 10 * 86400,
+		string.format("the longest wait for a tier is days, under ten (%.1f)", daily.longestWait / 86400)
 	)
 	eq(daily.waitAt, top - 1, "and it is the wait for the last tier")
 	check(session.longestWait <= 6 * 3600, "one session: the wait is play time")
