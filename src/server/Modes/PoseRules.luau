@@ -47,13 +47,15 @@ PoseRules.FLEXES = {
 PoseRules.HEARTS = 3
 -- Cleared rounds that pass the test (a sequence this long copied).
 PoseRules.PASS_ROUND = 8
--- The longest sequence a run can reach (the run ends as a win there).
-PoseRules.MAX_ROUND = 30
+-- The longest sequence a run can reach (the run ends as a win there): out of human reach,
+-- so after the pass the run is an endless chase for a best.
+PoseRules.MAX_ROUND = 99
 
 -- Show timing: seconds per flex at round 1, the fastest it gets, and the speed-up per round.
+-- The floor stays readable: a flex shown twice in a row still needs a visible reset.
 PoseRules.STEP_START = 0.95
-PoseRules.STEP_MIN = 0.42
-PoseRules.STEP_DROP = 0.05
+PoseRules.STEP_MIN = 0.5
+PoseRules.STEP_DROP = 0.04
 -- Seconds before the first flex of a show (the "WATCH" banner) and after the last.
 PoseRules.SHOW_LEAD = 1.2
 PoseRules.SHOW_TAIL = 0.35
@@ -62,8 +64,13 @@ PoseRules.INPUT_TIMEOUT = 6
 -- Seconds between a cleared round (or a miss) and the next show.
 PoseRules.ROUND_GAP = 1.6
 PoseRules.MISS_GAP = 2.2
--- Seconds from "start" to the first show.
-PoseRules.INTRO = 2.6
+-- Lobby flow: the 3-2-1 before play, how long the results card holds the player before
+-- the lobby, the START pad's re-arm, its reach above/below the pad top and the podium cap.
+PoseRules.COUNTDOWN = 3
+PoseRules.RESULTS_TIME = 6
+PoseRules.PAD_REARM = 1.5
+PoseRules.PAD_HEIGHT = 4
+PoseRules.MAX_LANES = 3
 -- Inside the full reward's cooldown a pass pays the repeat share at most this often (s).
 PoseRules.REPEAT_GAP = 300
 
@@ -116,6 +123,68 @@ end
 
 function PoseRules.showLength(round: number): number
 	return PoseRules.SHOW_LEAD + math.max(1, round) * PoseRules.showStep(round) + PoseRules.SHOW_TAIL
+end
+
+function PoseRules.canBegin(phase: string?): boolean
+	return phase == "lobby" or phase == "results"
+end
+
+function PoseRules.acceptsInput(phase: string?): boolean
+	return phase == "play"
+end
+
+-- Where a fallen player goes back to: the podium while held there, else the lobby spawn.
+function PoseRules.fallBack(phase: string?): string
+	return if phase == "countdown" or phase == "play" then "podium" else "lobby"
+end
+
+-- The feet's offset from the START pad's top centre: inside `radius` on the flat and within
+-- PAD_HEIGHT up or down.
+function PoseRules.onPad(dx: number, dy: number, dz: number, radius: number): boolean
+	return dx * dx + dz * dz <= radius * radius and math.abs(dy) < PoseRules.PAD_HEIGHT
+end
+
+export type Pad = { off: boolean, armAt: number }
+
+-- A freshly armed pad: it fires only after the player was seen off it and PAD_REARM passed.
+function PoseRules.newPad(now: number): Pad
+	return { off = false, armAt = now + PoseRules.PAD_REARM }
+end
+
+-- One tick of the pad: true when this step on it starts a game (the pad then needs a step
+-- off before it fires again).
+function PoseRules.padStep(pad: Pad, on: boolean, now: number): boolean
+	if not on then
+		pad.off = true
+		return false
+	end
+	if pad.off and now >= pad.armAt then
+		pad.off = false
+		pad.armAt = now + PoseRules.PAD_REARM
+		return true
+	end
+	return false
+end
+
+-- A podium lane for a Begin. `used[lane]` is "busy" (a countdown or game holds it) or
+-- "results" (a results-card player still stands on it); nil is free. Returns the lane (nil:
+-- every podium is busy) and whether a results-card player must be moved off it first.
+function PoseRules.pickLane(used: { [number]: string }, count: number, prefer: number?): (number?, boolean)
+	local n = math.min(count, PoseRules.MAX_LANES)
+	if prefer and prefer >= 1 and prefer <= n and used[prefer] == nil then
+		return prefer, false
+	end
+	for lane = 1, n do
+		if used[lane] == nil then
+			return lane, false
+		end
+	end
+	for lane = 1, n do
+		if used[lane] == "results" then
+			return lane, true
+		end
+	end
+	return nil, false
 end
 
 function PoseRules.newBest(best: number, cleared: number): number
