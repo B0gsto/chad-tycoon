@@ -33,8 +33,15 @@
 	  Camera     Scriptable from the countdown to the results: behind the bowler while it aims
 	             and runs up, then chasing the dumbbell from behind and above, easing to a
 	             pin-deck view as it nears the pins (a small shake on the first hit, bigger on
-	             a strike), round in front of the bowler for its reaction, and behind it again
-	             on the next "ready". Back to Custom in the lobby, the results or a stop.
+	             a strike), round in front of the bowler for its reaction (at the roll's
+	             `react`), and behind it again on the next "ready". On the results it eases
+	             out behind the avatar (OUT_CAM) before Custom takes over, and the bowler is
+	             let go half a second later so its reaction finishes; the lobby or a stop
+	             hand both back at once.
+	  Others     every other player's avatar bowls from its "BowlFlex" character attribute
+	             (Modes.Bowling: stance, bowl, strike, spare, miss, point): the same PlayerPose
+	             moves, with a dumbbell in its right hand until the release; nil, a respawn or
+	             leaving lets the body go.
 	  Bursts     a strike or spare bursts stars, confetti and sparkles over the pin deck.
 	  Ball pick  the HUD's lobby picker (setBall) paints the dumbbells' plates in the chosen
 	             colour and marks the matching rack dumbbell (BallChoice1..4 under the arena
@@ -51,6 +58,7 @@
 	  setAim(aim, power?, phase)   from BowlingHud each frame of the player's turn
 	                               (phase "aim" | "power" | "off")
 	  setMode(mode)                from BowlingHud when the run's phase changes
+	  ready(payload)               from BowlingHud: a "ready" it recovered from the snapshot
 	  setBall(choice)              from BowlingHud's ball picker (1..4)
 	  ballColor(choice)            the colour of rack dumbbell `choice` (for the HUD swatches)
 	  arena()                      the arena Model (BowlingHud fills its BestBoard)
@@ -121,6 +129,10 @@ local BOWLER = { Back = 6, Side = 1.6, RunUp = 3.2, Carry = 0.5, Grip = 0.3, Joi
 -- The reaction camera: in front of the bowler (studs to its left, up and down the lane)
 -- looking at its chest (studs over the root).
 local REACT_CAM = { Side = -3, Up = 2.6, Ahead = 10, Look = 0.8, Rate = 3.5 }
+-- The results: the camera eases (Time seconds) to studs Back and Up of the head (Look over
+-- the root) before the player's own camera takes over; the bowler is let go Release seconds
+-- in, so its last reaction finishes.
+local OUT_CAM = { Back = 12, Up = 4, Look = 1.5, Rate = 6, Time = 0.65, Release = 0.5 }
 
 type Pin = { model: Model, base: CFrame, down: boolean, shown: boolean, anim: number }
 
@@ -660,23 +672,21 @@ local function dropHeld()
 	end
 end
 
--- A fresh dumbbell (the picked colour, BOWLER.Carry of the rolling one) in the right fist.
-local function gripHeld()
-	dropHeld()
-	local character = player.Character
+-- A dumbbell (BOWLER.Carry of the rolling one) welded in `character`'s right fist, or nil.
+local function holdIn(character: Model?, arenaModel: Model?): Model?
 	local hand = character and character:FindFirstChild("RightHand")
-	local source = arena and arena:FindFirstChild("BowlDumbbell", true)
-	if not hand or not hand:IsA("BasePart") or not source or not source:IsA("Model") or not folder then
-		return
+	local source = arenaModel and arenaModel:FindFirstChild("BowlDumbbell", true)
+	if not character or not hand or not hand:IsA("BasePart") or not source or not source:IsA("Model") then
+		return nil
 	end
 	local copy = source:Clone()
 	copy.Name = "HeldDumbbell"
 	local bar = copy:FindFirstChild("Bar")
 	if not bar or not bar:IsA("BasePart") then
 		copy:Destroy()
-		return
+		return nil
 	end
-	local scale = charScale()
+	local scale = character:GetScale()
 	copy:ScaleTo(BOWLER.Carry * scale)
 	-- The bar runs across the fist (palm forward), as it will roll across the lane.
 	local grip = CFrame.new(0, -BOWLER.Grip * scale, 0)
@@ -702,9 +712,21 @@ local function gripHeld()
 	weld.Part1 = bar
 	weld.C0 = grip
 	weld.Parent = bar
-	paintPlates(copy, Bowling.ballColor(ballChoice))
-	copy.Parent = folder
-	held = copy
+	return copy
+end
+
+-- A fresh dumbbell (the picked colour) in the local avatar's right fist.
+local function gripHeld()
+	dropHeld()
+	if not folder then
+		return
+	end
+	local copy = holdIn(player.Character, arena)
+	if copy then
+		paintPlates(copy, Bowling.ballColor(ballChoice))
+		copy.Parent = folder
+		held = copy
+	end
 end
 
 -- The avatar's poser (made once per character; nil for an R6 avatar).
@@ -793,7 +815,7 @@ local function reactMove(mark: string?, knocked: number): { PlayerPose.Key }
 		return {
 			{ pose = "BowlStance", blend = 0.14, ease = QUAD, root = stepAt(run, 4), hold = 0.04 },
 			{ pose = "Victory", blend = 0.18, ease = BACK, root = stepAt(run, 6), hop = 1.2, hopTime = 0.45, hold = 0.3 },
-			{ pose = "BowlRoar", blend = 0.12, ease = QUAD, dir = IN, root = stepAt(run, -2), hold = 0.9 },
+			{ pose = "BowlRoar", blend = 0.12, ease = QUAD, dir = IN, root = stepAt(run, -2), hold = 0.55 },
 			{ pose = "DoubleBiceps", blend = 0.3, ease = BACK, root = stepAt(run, 2) },
 		}
 	elseif mark == "spare" then
@@ -846,7 +868,18 @@ end
 -- Where the camera wants to be and look this frame, and how fast it gets there.
 local function cameraGoal(): (Vector3, Vector3, number)
 	local headD = num(info.pins and info.pins[1] and info.pins[1].d, 72)
-	if camMode == "react" then
+	if camMode == "out" then
+		-- Easing back to where the player's own camera will pick up: behind and above the
+		-- head, along the current view (OUT_CAM).
+		local root = rootPart()
+		local cam = Workspace.CurrentCamera
+		if root and cam then
+			local look = cam.CFrame.LookVector * Vector3.new(1, 0, 1)
+			look = if look.Magnitude > 1e-3 then look.Unit else Vector3.new(0, 0, -1)
+			local focus = root.Position + Vector3.new(0, OUT_CAM.Look * charScale(), 0)
+			return focus - look * OUT_CAM.Back + Vector3.new(0, OUT_CAM.Up, 0), focus, OUT_CAM.Rate
+		end
+	elseif camMode == "react" then
 		local root = rootPart()
 		if root then
 			local body = (root.CFrame * CFrame.new(0, 0, -BOWLER.RunUp * charScale())).Position
@@ -1065,7 +1098,9 @@ local function onRoll(p: any)
 	-- The reaction once the result reads: after the pins settle (a strike's burst first), or
 	-- as a gutter ball drops off the lane.
 	local reactT
-	if knocked > 0 then
+	if type(p.react) == "number" and p.react == p.react then
+		reactT = math.clamp(p.react, 0, 10)
+	elseif knocked > 0 then
 		reactT = lastT + (if mark == "strike" then 1.1 elseif mark == "spare" then 0.9 else 0.6)
 	elseif p.gutter == true and #path >= 4 then
 		reactT = num(path[#path - 2].t, endT) + 0.35
@@ -1209,11 +1244,36 @@ function Bowling.setMode(mode: string)
 		end
 		return
 	end
+	if mode == "results" then
+		-- No snap: the camera eases out and the bowler finishes its reaction first.
+		local mine = token
+		if cameraOn then
+			camMode = "out"
+			task.delay(OUT_CAM.Time, function()
+				if token == mine then
+					releaseCamera()
+				end
+			end)
+		end
+		task.delay(OUT_CAM.Release, function()
+			if token == mine then
+				releaseBowler()
+			end
+		end)
+		return
+	end
 	releaseCamera()
 	releaseBowler()
 	if info and mode == "lobby" then
 		resetPins({}, true)
 		returnBall()
+	end
+end
+
+-- A "ready" the HUD recovered from the snapshot (the event itself was lost).
+function Bowling.ready(p: { [string]: any })
+	if running and type(p) == "table" then
+		onReady(p)
 	end
 end
 
@@ -1239,7 +1299,152 @@ function Bowling.focus(): Vector3?
 	return camFocus
 end
 
+-- Other players ----------------------------------------------------------------------------
+
+-- A watched player: their character's attribute connection, the poser on it, the dumbbell in
+-- its hand and a token that ends a pending release.
+type Watched = {
+	charConn: RBXScriptConnection?,
+	attrConn: RBXScriptConnection?,
+	poser: PlayerPose.Poser?,
+	held: Model?,
+	token: number,
+}
+local watched: { [Player]: Watched } = {}
+local othersFolder: Folder? = nil
+
+local function dropOtherHeld(w: Watched)
+	if w.held then
+		w.held:Destroy()
+		w.held = nil
+	end
+end
+
+local function dropOther(w: Watched)
+	w.token += 1
+	if w.poser then
+		w.poser:stop()
+		w.poser = nil
+	end
+	dropOtherHeld(w)
+end
+
+-- The keys for a "BowlFlex" move and whether the avatar holds a dumbbell for it (nil: no
+-- such move).
+local function otherMove(move: string): ({ PlayerPose.Key }?, boolean)
+	if move == "stance" then
+		return { { pose = "BowlStance", blend = 0.32, ease = SINE, dir = IN_OUT, hop = 0.35, hopTime = 0.32 } }, true
+	elseif move == "bowl" then
+		return bowlMove(BOWLER.Windup), true
+	elseif move == "strike" then
+		return reactMove("strike", 10), false
+	elseif move == "spare" then
+		return reactMove("spare", 1), false
+	elseif move == "miss" then
+		return reactMove(nil, 0), false
+	elseif move == "point" then
+		return reactMove(nil, 1), false
+	end
+	return nil, false
+end
+
+-- The character's attribute changed (or was found set): play its move, or let the body go.
+local function poseOther(w: Watched, character: Model)
+	local value = character:GetAttribute("BowlFlex")
+	local move = if type(value) == "string" then string.match(value, "^(%a+)#%d+$") else nil
+	local keys, holds = nil, false
+	if move then
+		keys, holds = otherMove(move)
+	end
+	if not keys then
+		dropOther(w)
+		return
+	end
+	w.token += 1
+	local mine = w.token
+	if not w.poser then
+		w.poser = PlayerPose.attach(character)
+	end
+	if not w.poser then
+		return
+	end
+	if holds and not w.held then
+		local fx = othersFolder
+		if not fx or not fx.Parent then
+			local f = Instance.new("Folder")
+			f.Name = "BowlingOthersFx"
+			f.Parent = Workspace
+			othersFolder = f
+			fx = f
+		end
+		local copy = holdIn(character, findArena())
+		if copy then
+			copy.Parent = fx
+			w.held = copy
+		end
+	elseif not holds then
+		dropOtherHeld(w)
+	end
+	w.poser:play(keys)
+	if move == "bowl" then
+		-- The dumbbell leaves the hand at the release (this client doesn't see their lane).
+		task.delay(BOWLER.Windup, function()
+			if w.token == mine then
+				dropOtherHeld(w)
+			end
+		end)
+	end
+end
+
+local function watchCharacter(w: Watched, character: Model?)
+	if w.attrConn then
+		w.attrConn:Disconnect()
+		w.attrConn = nil
+	end
+	dropOther(w)
+	if not character then
+		return
+	end
+	local model = character :: Model
+	w.attrConn = model:GetAttributeChangedSignal("BowlFlex"):Connect(function()
+		poseOther(w, model)
+	end)
+	if model:GetAttribute("BowlFlex") ~= nil then
+		poseOther(w, model)
+	end
+end
+
+local function watchPlayer(other: Player)
+	if other == player or watched[other] then
+		return
+	end
+	local w: Watched = { charConn = nil, attrConn = nil, poser = nil, held = nil, token = 0 }
+	watched[other] = w
+	w.charConn = other.CharacterAdded:Connect(function(character)
+		watchCharacter(w, character)
+	end)
+	watchCharacter(w, other.Character)
+end
+
+local function unwatchPlayer(other: Player)
+	local w = watched[other]
+	if not w then
+		return
+	end
+	watched[other] = nil
+	if w.charConn then
+		w.charConn:Disconnect()
+	end
+	watchCharacter(w, nil)
+end
+
 function Bowling.init()
+	-- Every other player's avatar bowls from its "BowlFlex" attribute (Modes.Bowling).
+	Players.PlayerAdded:Connect(watchPlayer)
+	Players.PlayerRemoving:Connect(unwatchPlayer)
+	for _, other in Players:GetPlayers() do
+		watchPlayer(other)
+	end
 	Net.event("Notify").OnClientEvent:Connect(function(payload)
 		if type(payload) ~= "table" or payload.kind ~= "Mode" or payload.mode ~= "bowling" then
 			return
