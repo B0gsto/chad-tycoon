@@ -1,16 +1,17 @@
-"""Hero prop: AbsoluteChad, the tier 25 champion statue (about 4.6 studs wide, 6.2 tall, 2.4 deep).
+"""Hero prop: AbsoluteChad, the tier 25 champion statue (about 4.7 studs wide, 6.5 tall, 2.6 deep).
 
-A blocky Roblox-avatar champion on a tall plinth styled like the hub's GigaStatue plinth (cobalt trim,
-teal body) under a gold tier with a gold medallion and a big red star. Plain R6 / R15 blocks:
-- body (warm skin): leg blocks, a plain torso block, upper arm / forearm / fist blocks, a short neck and
-  the classic rounded-cylinder head;
-- gold armour layered on top: a cuirass with low pec plates, modest pauldrons, forearm bracers, a
-  champion belt with a red star, greaves; cobalt trunks, dark-red boots;
-- a dark-red cape curved round the back with deep pleats and a bright gold trim, a tall rolled collar
-  with a gold edge and two gold clasps;
+A blocky Roblox-avatar champion in gold and cobalt (the hub GigaStatue's pair) on a deep-navy plinth with a
+cobalt foot, a gold tier and a gold medallion with a big red star. Plain R6 / R15 blocks:
+- body (warm skin): leg blocks, a plain torso block, a blocky double-biceps flex (horizontal upper arm,
+  vertical forearm, plain hand block), a short neck and the classic rounded-cylinder head;
+- armour layered on top: a gold cuirass with cobalt hem and neckline, gold pauldrons on cobalt rims,
+  gold bracers with cobalt cuffs, a cobalt belt with a gold plate and a red star, gold greaves with cobalt
+  rims; cobalt trunks, dark-red boots;
+- a dark-red cape with a cobalt lining, curved round the back with deep pleats, a gold hem under a
+  cobalt band, gold edges, a tall rolled collar with a gold edge and two gold clasps;
 - a printed Roblox face (black shades with white glints, dark brows, a wide toothy grin), a brown swept
-  quiff and a bold four-point crown with a red gem.
-Pose: right fist flexed up beside the head, left fist on the hip. Front = -Y.
+  quiff and a chunky five-point gold crown between cobalt rings with a red gem and cobalt side gems.
+Front = -Y.
 
 Colour is painted per vertex after finish_for_game (which here only joins and centres) with the
 GigaStatue's palette and rule (light / deep pair per part, rim on upward curves, warm recesses); the gold
@@ -35,9 +36,9 @@ from mathutils.bvhtree import BVHTree  # noqa: E402
 KIND = "AbsoluteChad"
 TRI_BUDGET = 16000
 TRI_CAP = 20000
-SCALE = 0.85
+SCALE = 0.82
 # The Neon aura disc under the plinth (added in game by AssetModels.absoluteChad; drawn here for the renders).
-AURA_RADIUS, AURA_HEIGHT, AURA_RGB = 2.15, 0.08, (255, 222, 110)
+AURA_RADIUS, AURA_HEIGHT, AURA_RGB = 2.35, 0.08, (255, 222, 110)
 
 # Colour roles (sRGB 0..255): base (also the unique material colour that finds the role after the
 # join), light (top / rim-lit), deep (recesses and undersides). Gold, cobalt, plinth and glint match
@@ -56,6 +57,7 @@ ROLES = {
     "mouth": ((110, 30, 36), (140, 44, 48), (80, 20, 26)),
     "hair": ((112, 66, 36), (166, 108, 62), (70, 40, 22)),
     "teal": ((44, 170, 170), (104, 210, 202), (24, 118, 128)),
+    "navy": ((30, 44, 104), (66, 96, 176), (16, 22, 60)),
     "cream": ((255, 247, 232), (255, 255, 250), (228, 210, 180)),
     "coral": ((255, 112, 96), (255, 162, 142), (214, 74, 66)),
 }
@@ -113,7 +115,7 @@ def ball(r, loc, mat, name, scale=(1, 1, 1), seg=12, rings=7):
 # ---------------------------------------------------------------------------------------------
 # Proportions (Blender z up, studs). R6 / R15 blocks scaled up for a muscular champion.
 # ---------------------------------------------------------------------------------------------
-P = 1.06  # top of the plinth's cream lip, where the boots stand
+P = 1.2  # top of the plinth's cream lip, where the boots stand
 LEG_X = 0.56
 T0 = P + 2.0  # waist (top of the legs)
 T1 = T0 + 2.0  # shoulder line (top of the torso)
@@ -126,8 +128,8 @@ MZ = H0 + 0.36  # mouth line
 HAIR = H1 - 0.22  # hairline
 
 
-# ---- Plinth: the GigaStatue's stepped plinth (cobalt trim, teal body) under a tall gold tier with an
-# amber hem and a cream lip, and a gold medallion with a big red star on the front.
+# ---- Plinth: a deep-navy block on a cobalt foot (high contrast on sand) under a gold tier with a cobalt
+# hem and a cream lip, and a gold medallion with a cobalt rim and a big red star on the front.
 def open_bottom(ob, cut):
     bm = bmesh.new()
     bm.from_mesh(ob.data)
@@ -137,17 +139,18 @@ def open_bottom(ob, cut):
     return ob
 
 
-add(open_bottom(ck.rounded_box((3.9, 2.7, 0.22), 0.1, 2, M["cobalt"], "PlinthTrim"), 0.05))
-add(open_bottom(ck.rounded_box((3.66, 2.48, 0.52), 0.14, 2, M["teal"], "Plinth", (0, 0, 0.1)), 0.15))
-box((3.48, 2.36, 0.1), (0, 0, 0.58), "amber", r=0.04, name="TierHem")
-box((3.36, 2.26, 0.4), (0, 0, 0.6), "gold", r=0.14, seg=3, name="GoldTier")
-box((3.5, 2.4, 0.1), (0, 0, P - 0.1), "cream", r=0.05, name="PlinthLip")
+add(open_bottom(ck.rounded_box((4.5, 3.1, 0.24), 0.1, 2, M["cobalt"], "PlinthTrim"), 0.05))
+add(open_bottom(ck.rounded_box((4.26, 2.88, 0.62), 0.14, 2, M["navy"], "Plinth", (0, 0, 0.1)), 0.15))
+box((4.0, 2.7, 0.1), (0, 0, 0.7), "cobalt", r=0.04, name="TierHem")
+box((3.88, 2.6, 0.42), (0, 0, 0.72), "gold", r=0.14, seg=3, name="GoldTier")
+box((4.0, 2.72, 0.1), (0, 0, P - 0.1), "cream", r=0.05, name="PlinthLip")
+MED = (0, -1.43, 0.48)
 medal = ck.lathe(ck.round_profile(0, 0.5, 0, 0.14, 0.06, 2), 24, M["gold"], "Medallion", smooth_angle=50)
-add(place(medal, (0, -1.13, 0.56), (90, 0, 0)))
-ring = ck.lathe(ck.round_profile(0.42, 0.56, 0, 0.1, 0.04, 2), 24, M["amber"], "MedallionRim", smooth_angle=50)
-add(place(ring, (0, -1.2, 0.56), (90, 0, 0)))
+add(place(medal, MED, (90, 0, 0)))
+ring = ck.lathe(ck.round_profile(0.42, 0.58, 0, 0.1, 0.04, 2), 24, M["cobalt"], "MedallionRim", smooth_angle=50)
+add(place(ring, (0, MED[1] - 0.07, MED[2]), (90, 0, 0)))
 star = ck.extrude_shape(ck.star_points(5, 0.36, 0.16), depth=0.1, mat=M["gem"], name="PlinthStar", bevel=0.0)
-add(place(star, (0, -1.29, 0.56), (90, 0, 0)))
+add(place(star, (0, MED[1] - 0.16, MED[2]), (90, 0, 0)))
 
 # ---- Legs: plain R6 leg blocks under cobalt trunks, gold greaves, dark-red boots.
 for sx in (1, -1):
@@ -155,45 +158,39 @@ for sx in (1, -1):
     box((1.0, 1.0, 2.0), (x, 0, P), "skin", r=0.1, name="Leg")
     box((1.06, 1.06, 0.84), (x, 0, P + 1.2), "cobalt", r=0.1, name="TrunkLeg")
     box((1.1, 1.1, 0.62), (x, 0, P + 0.36), "gold", r=0.12, seg=3, name="Greave")
-    box((1.14, 1.14, 0.1), (x, 0, P + 0.92), "amber", r=0.04, name="GreaveRim")
+    box((1.14, 1.14, 0.1), (x, 0, P + 0.92), "cobalt", r=0.04, name="GreaveRim")
     box((1.12, 1.36, 0.4), (x, -0.14, P), "cape", r=0.12, name="Boot")
 box((2.24, 1.08, 0.5), (0, 0, T0 - 0.42), "cobalt", r=0.1, name="TrunkHips")
 
 # ---- Torso: a plain R6 block; gold armour layered on top (belt, cuirass with low pec plates).
 box((TORSO[0], TORSO[1], 2.0), (0, 0, T0), "skin", r=0.1, name="Torso")
-box((2.3, 1.14, 0.38), (0, 0, T0 - 0.08), "gold", r=0.1, seg=3, name="Belt")
-box((1.04, 0.14, 0.64), (0, -0.58, T0 - 0.21), "amber", r=0.06, name="BeltPlateRim")
+box((2.3, 1.14, 0.38), (0, 0, T0 - 0.08), "cobalt", r=0.1, seg=3, name="Belt")
+box((1.04, 0.14, 0.64), (0, -0.58, T0 - 0.21), "gold", r=0.06, name="BeltPlateRim")
 box((0.94, 0.16, 0.56), (0, -0.62, T0 - 0.17), "gold", r=0.1, seg=3, name="BeltPlate")
 star = ck.extrude_shape(ck.star_points(5, 0.22, 0.1), depth=0.08, mat=M["gem"], name="BeltStar", bevel=0.0)
 add(place(star, (0, -0.71, T0 + 0.11), (90, 0, 0)))
 CZ = T0 + 0.9
 box((2.4, 1.18, 1.16), (0, 0, CZ), "gold", r=0.14, seg=3, name="Cuirass")
-box((2.46, 1.24, 0.12), (0, 0, CZ - 0.04), "amber", r=0.05, name="CuirassHem")
-for sx in (1, -1):
-    box((0.94, 0.12, 0.5), (sx * 0.5, -0.6, CZ + 0.42), "gold", r=0.06, seg=3, name="Pec")
+box((2.46, 1.24, 0.12), (0, 0, CZ - 0.04), "cobalt", r=0.05, name="CuirassHem")
+box((1.2, 1.22, 0.1), (0, 0, CZ + 1.08), "cobalt", r=0.04, name="CuirassNeck")
 box((0.7, 0.6, 0.24), (0, 0, T1 - 0.1), "skin", r=0.08, name="Neck")
 
-# ---- Arms: plain R15 blocks. Right (statue's right = -X) flexed with the fist up beside the head; left
-# fist on the hip. Gold bracers.
-SR, SL = Vector((-1.36, 0, T1 - 0.5)), Vector((1.36, 0, T1 - 0.5))
-ER, WR = Vector((-2.32, -0.04, T1 - 0.42)), Vector((-2.34, -0.1, T1 + 0.46))
-EL, WL = Vector((1.94, 0.2, T0 + 0.98)), Vector((1.32, 0.04, T0 + 0.42))
-limb(SR, ER, 0.94, 0.94, "skin", "UpperArmR", r=0.1)
-box((0.94, 0.94, 0.94), (ER.x, ER.y, ER.z - 0.47), "skin", r=0.12, name="ElbowR")
-limb(ER, WR, 0.9, 0.9, "skin", "ForearmR", r=0.1)
-limb(ER.lerp(WR, 0.4), ER.lerp(WR, 0.92), 1.0, 1.0, "gold", "BracerR", r=0.1, over=0.0)
-box((0.84, 0.84, 0.66), (WR.x, WR.y, WR.z - 0.04), "skin", r=0.14, name="FistR")
-limb(SL, EL, 0.94, 0.94, "skin", "UpperArmL", r=0.1)
-box((0.94, 0.94, 0.94), (EL.x, EL.y, EL.z - 0.47), "skin", r=0.12, name="ElbowL")
-limb(EL, WL, 0.9, 0.9, "skin", "ForearmL", r=0.1)
-limb(EL.lerp(WL, 0.25), EL.lerp(WL, 0.75), 1.0, 1.0, "gold", "BracerL", r=0.1, over=0.0)
-add(place(ck.rounded_box((0.8, 0.8, 0.7), 0.14, 2, M["skin"], "FistL"), (WL.x + 0.06, WL.y, WL.z - 0.35),
-          (0, 30, 0)))
+# ---- Arms: a blocky double-biceps flex. Each arm is a horizontal upper-arm block out from the shoulder, a
+# vertical forearm block up from the elbow with a gold bracer and a cobalt cuff, and a plain hand block on top.
+ARM_Z = T1 - 0.46  # centre line of the upper arms
+ELBOW_X = 2.3  # centre of the forearm blocks
+for sx in (1, -1):
+    box((ELBOW_X - 0.9, 0.94, 0.94), (sx * (0.9 + (ELBOW_X - 0.9) / 2), 0, ARM_Z - 0.47), "skin", r=0.1,
+        name="UpperArm")
+    box((0.94, 0.94, 1.5), (sx * ELBOW_X, 0, ARM_Z - 0.47), "skin", r=0.1, name="Forearm")
+    box((1.04, 1.04, 0.6), (sx * ELBOW_X, 0, ARM_Z + 0.22), "gold", r=0.1, seg=3, name="Bracer")
+    box((1.08, 1.08, 0.1), (sx * ELBOW_X, 0, ARM_Z + 0.78), "cobalt", r=0.04, name="Cuff")
+    box((0.9, 0.9, 0.56), (sx * ELBOW_X, 0, ARM_Z + 1.02), "skin", r=0.12, name="Hand")
 
-# ---- Pauldrons: a modest gold dome over an amber rim plate on each shoulder.
+# ---- Pauldrons: a modest gold dome over a cobalt rim plate on each shoulder.
 for sx in (1, -1):
     tilt = (0, sx * 20, 0)
-    add(place(dome(0.66, 0.2, M["amber"], "PauldronRim", segments=18, steps=2), (sx * 1.3, 0, T1 - 0.34), tilt,
+    add(place(dome(0.66, 0.2, M["cobalt"], "PauldronRim", segments=18, steps=2), (sx * 1.3, 0, T1 - 0.34), tilt,
               (1, 0.86, 1)))
     add(place(dome(0.58, 0.42, M["gold"], "Pauldron", segments=18, steps=4), (sx * 1.28, 0, T1 - 0.26), tilt,
               (1, 0.86, 1)))
@@ -219,9 +216,23 @@ for i in range(NR):
         bm.faces.new((grid[i][j], grid[i][j + 1], grid[i + 1][j + 1], grid[i + 1][j]))
 cape = add(ck.mesh_object("Cape", bm, M["cape"]))
 sol = cape.modifiers.new("Thick", "SOLIDIFY")
-sol.thickness = 0.08
+sol.thickness = 0.05
 sol.offset = 0.0
 ck.shade_smooth(cape, 60)
+# Cobalt lining: the same sheet just inside the red one (toward the body).
+bm = bmesh.new()
+grid = [[bm.verts.new(cape_pt(i / NR, (j / NC * 2 - 1) * 0.985) - Vector((0, 0.06, 0))) for j in range(NC + 1)]
+        for i in range(NR + 1)]
+for i in range(NR):
+    for j in range(NC):
+        bm.faces.new((grid[i][j], grid[i][j + 1], grid[i + 1][j + 1], grid[i + 1][j]))
+lining = add(ck.mesh_object("CapeLining", bm, M["cobalt"]))
+sol = lining.modifiers.new("Thick", "SOLIDIFY")
+sol.thickness = 0.03
+sol.offset = 0.0
+ck.shade_smooth(lining, 60)
+band = [cape_pt(0.93, -1 + 2 * j / (NC * 2)) + Vector((0, 0.03, 0)) for j in range(NC * 2 + 1)]
+add(ck.sweep(band, [0.06] * len(band), 6, M["cobalt"], "CapeBand", flatten=0.6, smooth_angle=70))
 hem = [cape_pt(1.0, -1 + 2 * j / (NC * 2)) for j in range(NC * 2 + 1)]
 add(ck.sweep(hem, [0.075] * len(hem), 6, M["gold"], "CapeHem", smooth_angle=70))
 for sx in (1, -1):
@@ -245,18 +256,29 @@ hair += [(0.45 + (HEAD_R + 0.05 - 0.45) * math.cos(math.radians(a)), HAIR + 0.1 
 add(ck.lathe(hair + [(0.0, HAIR + 0.32)], 28, M["hair"], "Hair", smooth_angle=70))
 add(place(ck.rounded_box((1.0, 0.44, 0.3), 0.13, 2, M["hair"], "Quiff"), (0.04, -0.46, H1 - 0.16), (-24, 0, -4)))
 
-crown = [ck.lathe(ck.round_profile(0.5, 0.62, 0, 0.32, 0.06, 2), 24, M["gold"], "CrownBand", smooth_angle=50)]
-crown.append(ck.lathe(ck.round_profile(0.6, 0.66, 0.02, 0.1, 0.03, 1), 24, M["amber"], "CrownRim", smooth_angle=50))
-for k in range(4):
-    a = math.radians(90 * k)
-    p = (0.55 * math.sin(a), -0.55 * math.cos(a), 0.26)
-    crown.append(place(ck.lathe([(0.22, 0.0), (0.17, 0.2), (0.0, 0.54)], 10, M["gold"], "CrownPoint",
-                                smooth_angle=45), p))
-    crown.append(place(ck.sphere(0.1, 10, 6, M["gold"], "CrownTip"), (p[0], p[1], 0.82)))
-crown.append(place(ck.sphere(0.16, 12, 8, M["gem"], "CrownGem"), (0, -0.63, 0.17), (0, 0, 0), (1, 0.55, 1.1)))
+# A chunky five-point crown: a tall gold band between two cobalt rings, five fat points with round tips,
+# a big red gem at the front and cobalt gems on the sides.
+CROWN_R = 0.66
+crown = [ck.lathe(ck.round_profile(CROWN_R - 0.12, CROWN_R, 0, 0.46, 0.07, 2), 30, M["gold"], "CrownBand",
+                  smooth_angle=50)]
+for z0 in (0.0, 0.36):
+    crown.append(ck.lathe(ck.round_profile(CROWN_R - 0.04, CROWN_R + 0.05, z0, z0 + 0.1, 0.03, 1), 30, M["cobalt"],
+                          "CrownRing", smooth_angle=50))
+for k in range(5):
+    a = math.radians(72 * k)
+    p = ((CROWN_R - 0.2) * math.sin(a), -(CROWN_R - 0.2) * math.cos(a), 0.4)
+    crown.append(place(ck.lathe([(0.26, 0.0), (0.24, 0.22), (0.13, 0.56), (0.0, 0.8)], 12, M["gold"], "CrownPoint",
+                                smooth_angle=50), p))
+    crown.append(place(ck.sphere(0.13, 12, 7, M["gold"], "CrownTip"), (p[0], p[1], 1.2)))
+    if k:
+        g = place(ck.sphere(0.1, 10, 6, M["cobalt"], "CrownSideGem"), (0, 0, 0))
+        a2 = a + math.radians(36)
+        crown.append(place(g, ((CROWN_R + 0.03) * math.sin(a2), -(CROWN_R + 0.03) * math.cos(a2), 0.23)))
+crown.append(place(ck.sphere(0.2, 14, 8, M["gem"], "CrownGem"), (0, -CROWN_R - 0.04, 0.23), (0, 0, 0),
+                   (1, 0.55, 1.05)))
 for ob in crown:
     add(ob)
-ck.group(crown, "Crown", location=(0.05, 0.06, H1 - 0.04), rotation=(-4, 7, 0))
+ck.group(crown, "Crown", location=(0.0, 0.04, H1), rotation=(-4, 0, 0))
 
 
 # ---- Printed face: flat high-contrast shapes laid on the front of the head and bent round its cylinder.
@@ -468,7 +490,7 @@ def beauty_material():
     return mat
 
 
-# Built at R6-like proportions (7.3 studs), shipped scaled to SCALE (about 6 studs with the plinth).
+# Built at R6-like proportions (8 studs), shipped scaled to SCALE (about 6 studs with the plinth).
 root = ck._link(bpy.data.objects.new("Root", None))
 root.scale = (SCALE, SCALE, SCALE)
 for ob in list(bpy.data.objects):

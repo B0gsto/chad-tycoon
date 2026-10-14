@@ -241,20 +241,20 @@
       "updatedAt": "2026-10-06T10:13:00Z"
     },
     "props/AbsoluteChad": {
-      "assetId": "99343895761877",
+      "assetId": "106029410731455",
       "kind": "Model",
-      "meshId": "rbxassetid://128945576452125",
+      "meshId": "rbxassetid://102523814325935",
       "meshParts": 1,
       "moderation": "Approved",
       "rbxm": "assets/models/props__AbsoluteChad.rbxm",
-      "sha256": "794c164bdf1d473f2a6e153c86211ef10d524d5590a8723f73f5c76ad7f8840e",
+      "sha256": "577e50e5a594015b0c80ad18a37c6ac8ff637843debd09d5cd366c4349cf844b",
       "size": [
-        4.459,
-        6.305,
-        2.537
+        4.658,
+        6.625,
+        2.686
       ],
       "source": "art/out/props/AbsoluteChad.fbx",
-      "updatedAt": "2026-10-14T07:42:06Z"
+      "updatedAt": "2026-10-14T07:45:31Z"
     },
     "props/Barbell": {
       "assetId": "104146566714540",

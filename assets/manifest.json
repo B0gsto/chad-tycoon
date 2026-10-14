@@ -1260,6 +1260,16 @@
   "source": "art/out/props/Converter.fbx",
   "type": "Model"
  },
+ "Model:577e50e5a594015b0c80ad18a37c6ac8ff637843debd09d5cd366c4349cf844b": {
+  "assetId": "106029410731455",
+  "moderation": "Approved",
+  "name": "props__AbsoluteChad",
+  "rbxm": "assets/models/props__AbsoluteChad.rbxm",
+  "route": "delivery",
+  "sha": "577e50e5a594015b0c80ad18a37c6ac8ff637843debd09d5cd366c4349cf844b",
+  "source": "art/out/props/AbsoluteChad.fbx",
+  "type": "Model"
+ },
  "Model:59eac7912aedd8c8f5fcace255f25e3ab64a196ed370849b971eb82ed1a65825": {
   "assetId": "76492146637261",
   "moderation": "Approved",

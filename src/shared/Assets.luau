@@ -55,9 +55,9 @@ local Images: { [string]: string } = {
 local Meshes: { [string]: Mesh } = {
 	["proof/cube"] = { id = "rbxassetid://80374365012668", model = "rbxassetid://89753695118063", size = Vector3.new(4, 4, 4) },
 	["props/AbsoluteChad"] = {
-		id = "rbxassetid://128945576452125",
-		model = "rbxassetid://99343895761877",
-		size = Vector3.new(4.459, 6.305, 2.537),
+		id = "rbxassetid://102523814325935",
+		model = "rbxassetid://106029410731455",
+		size = Vector3.new(4.658, 6.625, 2.686),
 	},
 	["props/Barbell"] = { id = "rbxassetid://87394703936998", model = "rbxassetid://104146566714540", size = Vector3.new(4.82, 2.9, 2.9) },
 	["props/BeachBall"] = {
