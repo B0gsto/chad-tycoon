@@ -11,10 +11,10 @@
 	              frames"), the best score, the reward status (full pack ready, or the time to
 	              the next one and the run-again share), a four-swatch dumbbell picker
 	              ("BowlingBall" { choice }; Fx glows the matching BallChoiceN rack dumbbell),
-	              a big PLAY ("BowlingBegin": tap, Enter, gamepad A) and LEAVE ("ModeQuit";
-	              gamepad B twice). Space stays free so the player can jump around; LB / RB
-	              cycle the dumbbell. The arena's BestBoard (TextLabels Best, Clears, Reward)
-	              is filled from the snapshot.
+	              a big PLAY ("BowlingBegin": tap, Enter, gamepad X) and LEAVE ("ModeQuit";
+	              gamepad B twice). Space and gamepad A stay the jump so the player can hop
+	              around; LB / RB cycle the dumbbell. The arena's BestBoard (TextLabels Best,
+	              Clears "CLEARS: n", Reward) is filled from the snapshot.
 	  Countdown   a big 3, 2, 1, GO! in the middle; the scorecard comes up empty.
 	  Scorecard   top centre, under the HUD's unit-count capsule: five frame boxes (two mark
 	              cells, "X" / "/" / "-" / digits, and the running total once known), the
@@ -22,19 +22,21 @@
 	              and the quiet quit "X" (first tap arms "QUIT?", the second fires ModeQuit;
 	              gamepad Y / B press it).
 	  Controls    bottom centre, one big tap target (the whole panel; also Space, Enter and
-	              gamepad A, sunk so Space does not jump). On "ready" an arrow sweeps the lane
-	              strip (a constant-speed back-and-forth from a random side, gutters red at
-	              both ends, the pocket gold in the middle): the first press locks the aim;
-	              then the power bar fills and empties (full power is best: the MAX zone): the
-	              second press sends "BowlingRoll" { aim, power }. The panel fades while the
-	              ball rolls.
+	              gamepad X or A; the bowler stands still, so nothing jumps). On "ready" an
+	              arrow sweeps the lane strip (a constant-speed back-and-forth from a random
+	              side, gutters red at both ends, the pocket gold in the middle): the first
+	              press locks the aim; then the power bar fills and empties: SOFT (mint), the
+	              gold SWEET spot (the start payload's power.sweetLo..sweetHi; the best ball)
+	              and the red TOO HARD top (the dumbbell goes wild and hooks): the second press
+	              sends "BowlingRoll" { aim, power }. The panel fades while the avatar bowls
+	              and the ball rolls (the roll's path times start `windup` seconds in).
 	  Callouts    centre: "STRIKE!" / "SPARE!" (gold / mint, confetti), "GUTTER!" or the pin
 	              count pop in when the last pin falls; the card updates at the same moment.
 	  Results     a centre card: "YOU PASSED!" with the pay or "SO CLOSE!" with the points
 	              still missing, the score (counting up), the best ("NEW BEST!" flashes),
-	              PLAY AGAIN ("BowlingBegin"; Enter) and LOBBY ("BowlingLobby"; gamepad B). It
-	              hides itself when the phase is back to "lobby" (the server does that after
-	              about 6 s).
+	              PLAY AGAIN ("BowlingBegin"; Enter, gamepad X) and LOBBY ("BowlingLobby";
+	              gamepad B; it leaves for the lobby at once). It hides itself when the phase
+	              is back to "lobby" (the server does that after about 6 s).
 
 	Wired from Main.client.luau (nothing else needs editing):
 	  init(screen)        once, builds the HUD (hidden)
@@ -71,13 +73,16 @@ local CARD = { BoxW = 56, BoxH = 58, TotalW = 74, Pad = 8, MinY = 120, Clear = 1
 local SENT_TIMEOUT = 4
 local CONTROLS = { W = 440, H = 168, Bottom = 28, StripW = 384, AimH = 34, PowerH = 26 }
 -- Seconds for the aim arrow to cross the lane one way, and the power bar to fill once.
-local SWEEP = { Aim = 1.25, Power = 0.85 }
+local SWEEP = { Aim = 1.25, Power = 1.0 }
 -- A press this soon after the turn opens or the aim locks is ignored (a double tap, a held key).
 local PRESS_GUARD = 0.18
--- |aim| under POCKET hits the head pin square ("PERFECT AIM!"); power from MAX up is "MAX"
--- (the rules reward full power: a faster dumbbell and more chain falls).
+-- |aim| under POCKET hits the head pin square ("PERFECT AIM!"). Power is a choice
+-- (BowlingRules.POWER, sent as the start payload's `power`): under sweetLo the dumbbell is
+-- soft, sweetLo..sweetHi is the SWEET spot, over sweetHi it goes wild.
 local POCKET = 0.12
-local MAX_POWER = 0.88
+local SWEET = { Lo = 0.72, Hi = 0.9 }
+-- Seconds from a "roll" to the release (the avatar's run-up; the start payload's `windup`).
+local windup = 0.9
 -- Callout word: pop scale, hold and fade.
 local CALLOUT = { TextSize = 84, Hold = 1.1, Rise = 40 }
 -- The lobby card (bottom centre) and its parts.
@@ -120,6 +125,9 @@ local aimArrow: TextLabel
 local aimLock: Frame
 local powerStrip: Frame
 local powerFill: Frame
+local sweetBand: Frame
+local wildBand: Frame
+local againKey: TextLabel
 local callout: TextLabel
 local countLabel: TextLabel
 local countSub: TextLabel
@@ -275,9 +283,10 @@ local function paintLobby()
 	rewardLabel.TextColor3 = color
 	local gui = findBoard()
 	if gui then
-		setBoardText(gui, "Best", if best > 0 then tostring(best) else "--")
-		setBoardText(gui, "Clears", tostring(num(stats.clears, 0)))
-		setBoardText(gui, "Reward", text)
+		-- The board's own captions: "CLEARS: n" and an upper-case reward line.
+		setBoardText(gui, "Best", tostring(best))
+		setBoardText(gui, "Clears", "CLEARS: " .. num(stats.clears, 0))
+		setBoardText(gui, "Reward", string.upper(text))
 	end
 end
 
@@ -439,7 +448,8 @@ end
 -- Turn and input ----------------------------------------------------------------------------
 
 local function paintPrompt()
-	local hint = Kit.keyHint("confirm")
+	-- Gamepad X bowls (A stays the jump button everywhere else in the game).
+	local hint = if Kit.gamepad then "X" else Kit.keyHint("confirm")
 	if phase == "aim" then
 		promptLabel.Text = if Kit.touch then "TAP TO AIM" else hint .. "  TO AIM"
 		promptLabel.TextColor3 = C.Text
@@ -480,12 +490,18 @@ local function press()
 		setPhase("power")
 	elseif phase == "power" then
 		setPhase("sent")
-		if power >= MAX_POWER then
-			Kit.pop(powerStrip, 1.6)
+		if power >= SWEET.Lo and power <= SWEET.Hi then
+			Kit.pop(powerStrip, 1.5)
 			Sounds.play("Coin", 0, 1.25)
-			flash("MAX POWER!", C.GoldDeep)
+			flash("SWEET SPOT!", C.Gold)
+		elseif power > SWEET.Hi then
+			Kit.pop(powerStrip, 1.1)
+			Kit.sound("Click")
+			flash("TOO HARD!", C.Bad)
 		else
 			Kit.pop(powerStrip, 1.06)
+			Kit.sound("Click")
+			flash("A BIT SOFT", C.TextDim)
 		end
 		BowlingFx.setAim(aim, power, "off")
 		action:FireServer({ action = "BowlingRoll", aim = aim, power = power })
@@ -517,10 +533,8 @@ local function step()
 		elseif phase == "power" then
 			power = bounce(t, SWEEP.Power)
 			powerFill.Size = UDim2.fromScale(power, 1)
-			-- Mint to gold to deep orange: hotter is better (no red, nothing to fear at the top).
-			powerFill.BackgroundColor3 = if power >= MAX_POWER
-				then C.GoldDeep
-				else C.Good:Lerp(C.Gold, math.min(power / MAX_POWER * 1.4, 1))
+			-- Mint while soft, gold in the sweet spot, red once it is too hard.
+			powerFill.BackgroundColor3 = if power > SWEET.Hi then C.Bad elseif power >= SWEET.Lo then C.Gold else C.Good
 			BowlingFx.setAim(aim, power, "power")
 		end
 	end
@@ -590,6 +604,7 @@ local function begin()
 end
 
 local applyMode: (next: string) -> ()
+local placeZones: () -> ()
 
 local function toLobby()
 	if mode ~= "results" then
@@ -611,11 +626,7 @@ local function onPlayKey(_name: string, state: Enum.UserInputState, _input: Inpu
 	return Enum.ContextActionResult.Sink
 end
 
-local function onLobbyKey(_name: string, state: Enum.UserInputState, input: InputObject): Enum.ContextActionResult
-	-- A gamepad player who moved the selection onto a swatch or LEAVE presses that instead.
-	if input.KeyCode == Enum.KeyCode.ButtonA and Kit.selectedIn(lobbyCard) and not Kit.selectedIn(playButton) then
-		return Enum.ContextActionResult.Pass
-	end
+local function onLobbyKey(_name: string, state: Enum.UserInputState, _input: InputObject): Enum.ContextActionResult
 	if state == Enum.UserInputState.Begin then
 		begin()
 	end
@@ -635,7 +646,8 @@ local function bindKeys()
 		return
 	end
 	if mode == "lobby" then
-		bindAt(LOBBY_ACTION, onLobbyKey, Enum.KeyCode.Return, Enum.KeyCode.KeypadEnter, Enum.KeyCode.ButtonA)
+		-- Gamepad A stays the jump; X is PLAY.
+		bindAt(LOBBY_ACTION, onLobbyKey, Enum.KeyCode.Return, Enum.KeyCode.KeypadEnter, Enum.KeyCode.ButtonX)
 		bindAt(QUIT_ACTION, function(_, state)
 			if state == Enum.UserInputState.Begin then
 				leavePress(true)
@@ -649,7 +661,8 @@ local function bindKeys()
 			return Enum.ContextActionResult.Sink
 		end, Enum.KeyCode.ButtonL1, Enum.KeyCode.ButtonR1)
 	elseif mode == "countdown" or mode == "play" then
-		bindAt(ACTION, onPlayKey, Enum.KeyCode.Space, Enum.KeyCode.Return, Enum.KeyCode.ButtonA)
+		-- The bowler stands still on its spot (Fx.Bowling), so Space and A may bowl too.
+		bindAt(ACTION, onPlayKey, Enum.KeyCode.Space, Enum.KeyCode.Return, Enum.KeyCode.ButtonX, Enum.KeyCode.ButtonA)
 		bindAt(QUIT_ACTION, function(_, state)
 			if state == Enum.UserInputState.Begin then
 				quitPress()
@@ -657,7 +670,7 @@ local function bindKeys()
 			return Enum.ContextActionResult.Sink
 		end, Enum.KeyCode.ButtonY, Enum.KeyCode.ButtonB)
 	elseif mode == "results" then
-		-- Gamepad A presses the selected card button (PLAY AGAIN is selected first).
+		-- Gamepad X (or Enter) is PLAY AGAIN, B is LOBBY; A presses the selected card button.
 		bindAt(RESULT_ACTION, function(_, state, input)
 			if state == Enum.UserInputState.Begin then
 				if input.KeyCode == Enum.KeyCode.ButtonB then
@@ -667,7 +680,7 @@ local function bindKeys()
 				end
 			end
 			return Enum.ContextActionResult.Sink
-		end, Enum.KeyCode.Return, Enum.KeyCode.KeypadEnter, Enum.KeyCode.ButtonB)
+		end, Enum.KeyCode.Return, Enum.KeyCode.KeypadEnter, Enum.KeyCode.ButtonX, Enum.KeyCode.ButtonB)
 	end
 end
 
@@ -791,7 +804,8 @@ local function onReady(p: any)
 	paintCard(p.card, p.total)
 	local frame = num(p.frame, 1)
 	highlightFrame(frame)
-	frameLabel.Text = "FRAME " .. frame .. "/" .. frames .. "  •  BALL " .. num(p.ball, 1)
+	-- `shot` is the ball of the frame (`ball` is the picked dumbbell).
+	frameLabel.Text = "FRAME " .. frame .. "/" .. frames .. "  •  BALL " .. num(p.shot, 1)
 	Kit.appear(controls, { from = 0.85, time = 0.2 })
 	setPhase("aim")
 end
@@ -813,8 +827,9 @@ local function onRoll(p: any)
 			lastT = math.max(lastT, num(f.t, 0))
 		end
 	end
-	-- The callout lands as the last pin goes down (or as a gutter ball reaches the pit).
-	local at = if num(p.knocked, 0) > 0 then lastT + 0.3 else endT
+	-- The callout lands as the last pin goes down (or as a gutter ball reaches the pit); the
+	-- path's times start at the release, after the avatar's run-up.
+	local at = num(p.windup, windup) + (if num(p.knocked, 0) > 0 then lastT + 0.3 else endT)
 	task.delay(at, function()
 		if rollToken ~= mine or not running then
 			return
@@ -852,6 +867,15 @@ function BowlingHud.start(payload: { [string]: any }?)
 	stats.clears = num(p.clears, stats.clears)
 	if type(p.rewardPreview) == "table" then
 		stats.preview = p.rewardPreview
+	end
+	if type(p.power) == "table" then
+		SWEET.Lo = math.clamp(num(p.power.sweetLo, SWEET.Lo), 0.05, 0.95)
+		SWEET.Hi = math.clamp(num(p.power.sweetHi, SWEET.Hi), SWEET.Lo, 1)
+		placeZones()
+	end
+	windup = math.max(num(p.windup, windup), 0)
+	if type(p.choice) == "number" then
+		pick(p.choice, true)
 	end
 	board = nil
 	pendingPick = nil
@@ -911,7 +935,21 @@ function BowlingHud.onNotify(payload: { [string]: any })
 	elseif not running then
 		return
 	elseif event == "lobby" then
+		stats.best = num(payload.best, stats.best)
+		stats.clears = num(payload.clears, stats.clears)
+		if type(payload.rewardPreview) == "table" then
+			stats.preview = payload.rewardPreview
+		end
+		if type(payload.choice) == "number" and pendingPick == nil then
+			pick(payload.choice, true)
+		end
 		applyMode("lobby")
+		paintLobby()
+	elseif event == "ball" then
+		-- The server took a pick: keep it unless the player has already moved on.
+		if type(payload.choice) == "number" and pendingPick == nil and os.clock() - pickedAt > PICK_SEND + 0.5 then
+			pick(payload.choice, true)
+		end
 	elseif event == "countdown" then
 		onCountdown(payload)
 	elseif event == "ready" then
@@ -948,7 +986,7 @@ function BowlingHud.onState(data: any)
 	end
 	target = num(info.target, target)
 	-- The server's pick (a rejoin, or one it refused) wins unless the player just picked.
-	local theirs = info.ballChoice or info.ball
+	local theirs = info.choice
 	if type(theirs) == "number" and theirs >= 1 and theirs <= BALLS and pendingPick == nil and os.clock() - pickedAt > 2 then
 		pick(theirs, true)
 	end
@@ -960,6 +998,17 @@ function BowlingHud.onState(data: any)
 end
 
 -- Build -------------------------------------------------------------------------------------
+
+-- Lays the power meter's SWEET and TOO HARD zones out from SWEET.
+placeZones = function()
+	if sweetBand then
+		sweetBand.Position = UDim2.fromScale(SWEET.Lo, 0)
+		sweetBand.Size = UDim2.fromScale(SWEET.Hi - SWEET.Lo, 1)
+	end
+	if wildBand then
+		wildBand.Size = UDim2.fromScale(1 - SWEET.Hi, 1)
+	end
+end
 
 local function buildCard()
 	local boxesW = FRAMES * (CARD.BoxW + 4) + CARD.TotalW + CARD.Pad * 2 + 44
@@ -1234,31 +1283,47 @@ local function buildControls()
 		Parent = powerStrip,
 	})
 	Kit.round(powerFill)
-	-- The MAX zone at the top of the bar: stop the fill here for the best ball.
-	local zone = Kit.new("Frame", {
-		Name = "MaxZone",
+	-- The meter's zones (placed by placeZones): the gold SWEET spot to stop the fill in, and
+	-- the red TOO HARD top where the dumbbell goes wild.
+	sweetBand = Kit.new("Frame", {
+		Name = "SweetZone",
 		BackgroundColor3 = C.GoldLight,
-		BackgroundTransparency = 0.6,
-		Size = UDim2.fromScale(1 - MAX_POWER, 1),
-		Position = UDim2.fromScale(1, 0),
-		AnchorPoint = Vector2.new(1, 0),
+		BackgroundTransparency = 0.45,
 		ZIndex = 5,
 		Parent = powerStrip,
 	})
-	Kit.round(zone)
-	Kit.hudText(zone, {
+	Kit.stroke(sweetBand, 2, C.Gold)
+	Kit.hudText(sweetBand, {
 		Name = "Caption",
-		Text = "MAX",
+		Text = "SWEET",
 		TextSize = 13,
 		TextColor3 = C.Gold,
 		Size = UDim2.fromScale(1, 1),
 		ZIndex = 6,
 	})
+	wildBand = Kit.new("Frame", {
+		Name = "WildZone",
+		BackgroundColor3 = C.Bad,
+		BackgroundTransparency = 0.55,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.fromScale(1, 0),
+		ZIndex = 5,
+		Parent = powerStrip,
+	})
+	Kit.hudText(wildBand, {
+		Name = "Caption",
+		Text = "!",
+		TextSize = 14,
+		TextColor3 = C.Bad,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 6,
+	})
+	placeZones()
 	Kit.hudText(powerStrip, {
 		Name = "Caption",
 		Text = "POWER",
 		TextSize = 14,
-		Size = UDim2.fromScale(1, 1),
+		Size = UDim2.new(SWEET.Lo, 0, 1, 0),
 		ZIndex = 6,
 	})
 	promptLabel = Kit.hudText(controls, {
@@ -1443,8 +1508,15 @@ local function buildLobby()
 	Kit.breathe(playButton, 0.04)
 	Kit.onInput(function()
 		playKey.Visible = not Kit.touch
-		playKey.Text = if Kit.gamepad then "A" else "ENTER"
+		playKey.Text = if Kit.gamepad then "X" else "ENTER"
 		playKey.Size = UDim2.fromOffset(if Kit.gamepad then 26 else 52, 20)
+		-- The results card's PLAY AGAIN shows the same key (built after the lobby card).
+		local key = againKey :: TextLabel?
+		if key then
+			key.Visible = playKey.Visible
+			key.Text = playKey.Text
+			key.Size = playKey.Size
+		end
 		pickCaption.Text = if Kit.gamepad then "PICK YOUR DUMBBELL  (LB / RB)" else "PICK YOUR DUMBBELL"
 	end)
 end
@@ -1570,6 +1642,19 @@ local function buildFinish()
 		ZIndex = 42,
 	}, begin)
 	againButton:SetAttribute("FocusFirst", true)
+	againKey = Kit.pill(againButton, {
+		Name = "Key",
+		Text = if Kit.gamepad then "X" else "ENTER",
+		Color = C.Ink,
+		Solid = true,
+		Font = F.Display,
+		TextSize = 12,
+		Size = UDim2.fromOffset(if Kit.gamepad then 26 else 52, 20),
+		Position = UDim2.new(1, 6, 0, -8),
+		AnchorPoint = Vector2.new(1, 0),
+		ZIndex = 44,
+	})
+	againKey.Visible = not Kit.touch
 	lobbyButton = Kit.button(finishCard, {
 		Name = "Lobby",
 		Text = "LOBBY",

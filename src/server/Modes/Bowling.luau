@@ -21,19 +21,25 @@
 
 	PROTOCOL (for the client). Notify: kind = "Mode", mode = "bowling", event =
 	  "start"     { phase = "lobby", best, clears, rewardPreview, target, maxScore, frames,
-	              choice, balls, lane, pins, ball, pin, aimSpread, countdown, resultsSeconds }
+	              choice, balls, lane, pins, ball, pin, aimSpread, power, windup, countdown,
+	              resultsSeconds }
 	              lane = { x, z (foul line), top, width, length, gutter }, pins = { { x, d } }
 	              (lane space: BowlingRules header); ball / pin = their sizes ({ radius,
-	              halfLength } / { radius, height }); choice = the picked dumbbell (1..balls)
+	              halfLength } / { radius, height }); choice = the picked dumbbell (1..balls);
+	              power = { sweetLo, sweetHi } (the meter's sweet spot); windup = seconds
+	              from "roll" to the release
 	  "lobby"     { best, clears, rewardPreview, choice } (back in the lobby: hide the
 	              results card; also sent after "BowlingLobby" and the auto-return)
 	  "ball"      { choice } (a "BowlingBall" pick was taken)
 	  "countdown" { seconds } (3, 2, 1; the first "ready" follows when it ends)
 	  "ready"     { frame, shot, ball, standing, card, total, rack } (your turn; shot = ball
 	              number in the frame 1..3, ball = the picked dumbbell, rack = a full set)
-	  "roll"      { aim, power, path, falls, knocked, gutter, mark, reset, frame, shot, ball,
-	              card, total, over, wait } (path / falls: BowlingRules.Roll; ball = the
-	              picked dumbbell 1..4 for its colour; wait = seconds until the next event)
+	  "roll"      { aim, power, zone, hook, windup, path, falls, knocked, gutter, mark, reset,
+	              frame, shot, ball, card, total, over, wait } (path / falls: BowlingRules.Roll,
+	              their times count from the release, `windup` seconds after this event while
+	              the player's avatar runs up and swings; zone = "soft" | "sweet" | "wild";
+	              ball = the picked dumbbell 1..4 for its colour; mark = "strike" | "spare" |
+	              "gutter" | nil; wait = seconds until the next event)
 	  "win"       { score, target, best, newBest, first, cash, full, pay, packCash,
 	              repeatCash, cooldownEnds, repeatEnds, lobbyIn } (pay = "full" | "repeat" |
 	              "none": the repeat share pays once per BowlingRules.REPEAT_GAP; repeatEnds =
@@ -61,9 +67,8 @@ local BowlingRules = require(script.Parent.BowlingRules)
 local ID = "bowling"
 -- Feet are about this far under the HumanoidRootPart's centre (R15 default rig).
 local FEET_BELOW_ROOT = 3
--- After a ball's last pin falls: seconds for the pins to settle and the result to read,
--- plus the sweep when the rack is reset.
-local SETTLE = 1.6
+-- After a ball's last pin falls the pins settle and the bowler reacts
+-- (BowlingRules.settle(mark)); a reset rack adds the sweep.
 local RESET = 1.0
 -- A roll sooner than this after the last one is ignored (the turn gate already blocks
 -- rolls mid-animation; this stops a flood of remote calls).
@@ -150,6 +155,8 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 			ball = { radius = BowlingRules.BALL.radius, halfLength = BowlingRules.BALL.halfLength },
 			pin = { radius = BowlingRules.PIN.radius, height = BowlingRules.PIN.height },
 			aimSpread = BowlingRules.AIM_SPREAD,
+			power = { sweetLo = BowlingRules.POWER.sweetLo, sweetHi = BowlingRules.POWER.sweetHi },
+			windup = BowlingRules.WINDUP,
 		}
 	end
 
@@ -456,13 +463,16 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		end
 		local mark, reset = BowlingRules.applyRoll(game, fallen)
 		local card, total = cardOf(run)
-		local wait = result.duration + SETTLE + (if reset and not game.over then RESET else 0)
+		local wait = BowlingRules.WINDUP + result.duration + BowlingRules.settle(mark) + (if reset and not game.over then RESET else 0)
 		run.turn = "rolling"
 		run.token += 1
 		local mine = run.token
 		GameModes.notify(player, "roll", ID, {
 			aim = result.aim,
 			power = result.power,
+			zone = BowlingRules.powerZone(result.power),
+			hook = result.hook,
+			windup = BowlingRules.WINDUP,
 			path = result.path,
 			falls = result.falls,
 			knocked = result.knocked,
@@ -510,6 +520,7 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		end
 		run.choice = choice
 		GameModes.notify(player, "ball", ID, { choice = choice })
+		GameModes.refresh(player)
 	end)
 
 	-- The results card's LOBBY button.
@@ -521,6 +532,8 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		end
 		enterLobby(player, run, true)
 		GameModes.notify(player, "lobby", ID, lobbyInfo(session, run))
+		-- The snapshot's phase too, so every client view drops the results card now.
+		GameModes.refresh(player)
 	end)
 
 	Players.PlayerRemoving:Connect(function(player)

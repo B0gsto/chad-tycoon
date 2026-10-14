@@ -1,6 +1,7 @@
 --[[
 	Unit tests for the Bowling rules (src/server/Modes/BowlingRules.luau; docs/minigames.md):
-	the pin triangle, the seeded roll (path, gutter, knockdown, determinism), the frames
+	the pin triangle, the seeded roll (path, gutter, knockdown, determinism, the power sweet
+	spot and the over-powered hook), the bowler's timing, the frames
 	and bonus balls, the scorecard, the pass mark and the lobby phases (what each allows,
 	the START pad, ball picks).
 	Loaded by tests/run.luau with its harness: { test, check, eq, near, seeded }.
@@ -63,7 +64,7 @@ return function(h: { [string]: any })
 	end)
 
 	test("Bowling: a centre roll hits the head pin; a wide one is a gutter ball", function()
-		local centre = BowlingRules.roll(BowlingRules.allStanding(), 0, 1, 42)
+		local centre = BowlingRules.roll(BowlingRules.allStanding(), 0, 0.8, 42)
 		local headDown = false
 		for _, f in centre.falls do
 			if f.pin == 1 then
@@ -75,7 +76,7 @@ return function(h: { [string]: any })
 		check(headDown, "head pin struck")
 		check(centre.knocked >= 6, "centre roll knocks at least the pins on its line")
 		check(not centre.gutter, "no gutter")
-		local wide = BowlingRules.roll(BowlingRules.allStanding(), -1, 1, 42)
+		local wide = BowlingRules.roll(BowlingRules.allStanding(), -1, 0.8, 42)
 		check(wide.gutter, "full aim is a gutter ball")
 		eq(wide.knocked, 0, "gutter knocks nothing")
 		local path = wide.path
@@ -98,13 +99,51 @@ return function(h: { [string]: any })
 		end
 	end)
 
-	test("Bowling: more power topples more pins on average", function()
-		local soft, hard = 0, 0
-		for seed = 1, 400 do
-			soft += BowlingRules.roll(BowlingRules.allStanding(), 0.06, 0, seed).knocked
-			hard += BowlingRules.roll(BowlingRules.allStanding(), 0.06, 1, seed).knocked
+	test("Bowling: power is a choice: the sweet spot beats soft and wild", function()
+		local function mean(power: number): number
+			local sum = 0
+			for seed = 1, 400 do
+				sum += BowlingRules.roll(BowlingRules.allStanding(), 0.06, power, seed).knocked
+			end
+			return sum / 400
 		end
-		check(hard > soft, "power helps")
+		local P = BowlingRules.POWER
+		check(P.sweetLo >= 0.7 and P.sweetHi <= 0.92 and P.sweetLo < P.sweetHi, "sweet spot around 75-90 %")
+		local soft, sweet, wild = mean(0.3), mean((P.sweetLo + P.sweetHi) / 2), mean(1)
+		check(sweet > soft + 0.5, "sweet beats soft (" .. sweet .. " vs " .. soft .. ")")
+		check(sweet > wild + 1.5, "sweet beats full power (" .. sweet .. " vs " .. wild .. ")")
+		eq(BowlingRules.powerZone(0.3), "soft", "soft zone")
+		eq(BowlingRules.powerZone(P.sweetLo), "sweet", "sweet zone starts")
+		eq(BowlingRules.powerZone(P.sweetHi), "sweet", "sweet zone ends")
+		eq(BowlingRules.powerZone(1), "wild", "wild zone")
+		eq(BowlingRules.wildness(P.sweetHi), 0, "no wobble in the sweet spot")
+		eq(BowlingRules.wildness(1), 1, "full wobble at full power")
+	end)
+
+	test("Bowling: an over-powered ball hooks off its line; a sweet one runs true", function()
+		local hooked = 0
+		for seed = 1, 60 do
+			local calm = BowlingRules.roll(BowlingRules.allStanding(), 0.2, 0.8, seed)
+			eq(calm.hook, 0, "sweet power: no hook")
+			eq(#calm.path, 2, "sweet power: a straight line")
+			local wild = BowlingRules.roll(BowlingRules.allStanding(), 0, 1, seed)
+			check(wild.hook ~= 0, "full power hooks")
+			local path = wild.path
+			for i = 2, #path do
+				check(path[i].t > path[i - 1].t and path[i].d > path[i - 1].d, "hook path runs forward in time")
+			end
+			if math.abs(wild.hook) >= BowlingRules.HOOK * 0.6 - 1e-9 then
+				hooked += 1
+			end
+		end
+		eq(hooked, 60, "a full-power hook is at least 60 % of HOOK")
+	end)
+
+	test("Bowling: the bowler's wind-up and reaction times", function()
+		local R = BowlingRules
+		check(R.WINDUP > 0.5 and R.WINDUP < 1.5, "a short run-up")
+		check(R.settle("strike") >= R.settle("spare") and R.settle("spare") >= R.settle(nil), "a strike celebrates longest")
+		check(R.settle("gutter") > 0 and R.settle(nil) > 0, "every ball settles")
 	end)
 
 	test("Bowling: frames, strikes, spares and the last frame's bonus balls", function()
@@ -174,19 +213,21 @@ return function(h: { [string]: any })
 		check(BowlingRules.repeatDue(1000000, 2000000), "stamp from the future: due")
 	end)
 
-	test("Bowling: a sloppy bowler passes now and then, a careful one mostly", function()
+	test("Bowling: a decent bowler mostly passes; sloppy or full-power bowlers less", function()
 		local rand = h.seeded(99)
 		local function gauss(): number
 			return math.sqrt(-2 * math.log(1 - rand() * 0.999)) * math.cos(2 * math.pi * rand())
 		end
-		local function passRate(spread: number): number
+		local P = BowlingRules.POWER
+		local mid = (P.sweetLo + P.sweetHi) / 2
+		local function passRate(spread: number, power: () -> number): number
 			local passes = 0
 			for g = 1, 300 do
 				local game = BowlingRules.newGame()
 				local ball = 0
 				while not game.over do
 					ball += 1
-					local r = BowlingRules.roll(game.standing, gauss() * spread, 0.35 + rand() * 0.65, g * 100 + ball)
+					local r = BowlingRules.roll(game.standing, gauss() * spread, power(), g * 100 + ball)
 					local fallen = {}
 					for _, f in r.falls do
 						table.insert(fallen, f.pin)
@@ -199,9 +240,22 @@ return function(h: { [string]: any })
 			end
 			return passes / 300
 		end
-		local sloppy, careful = passRate(0.45), passRate(0.15)
+		-- A decent bowler stops the meter near the sweet spot; a sloppy one anywhere.
+		local function decent(): number
+			return math.clamp(mid + gauss() * 0.08, 0, 1)
+		end
+		local function anywhere(): number
+			return 0.35 + rand() * 0.65
+		end
+		local function full(): number
+			return 1
+		end
+		local good = passRate(0.15, decent)
+		local sloppy = passRate(0.45, anywhere)
+		local basher = passRate(0.15, full)
+		check(good > 0.75 and good < 0.99, "decent pass rate " .. good)
 		check(sloppy > 0.25 and sloppy < 0.75, "sloppy pass rate " .. sloppy)
-		check(careful > 0.5 and careful < 0.97, "careful pass rate " .. careful)
+		check(basher < good - 0.2, "full power every ball passes less (" .. basher .. ")")
 		check(BowlingRules.PASS_SCORE < BowlingRules.MAX_SCORE, "pass mark under the max")
 	end)
 

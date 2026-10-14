@@ -19,9 +19,10 @@
 	The lobby (lobby): a coral knee wall between it and the alley with a gap under a lit
 	"DUMBBELL BOWL" arch, the glowing START pad ("StartPad") in that gap at the head of the
 	approach, a red runner from the spawn pad (World.Arena's "ArenaSpawn", now the lobby
-	spawn) to it, a HOW TO PLAY board (aim, power, knock pins) on the left, the YOUR BEST
-	board (SurfaceGui "BestBoard" with TextLabels Best, Clears and Reward the client fills)
-	on the right, a two-tier gym rack of four dumbbells to choose from (Models "BallChoice1"
+	spawn) to it, a HOW TO PLAY board (press to lock the aim arrow, press again in the power
+	meter's gold sweet spot, knock pins) on the left, the YOUR BEST board (SurfaceGui
+	"BestBoard" with TextLabels Best, Clears ("CLEARS: n") and Reward the client fills) on the
+	right, a two-tier gym rack of four dumbbells to choose from (Models "BallChoice1"
 	.."BallChoice4", attributes Choice = 1..4, Color and Label, each with a neon "Glow" strip
 	the client can light), sofas round a table, a bench, plants, lamps, a railing and the
 	EXIT arch in the back right corner.
@@ -652,9 +653,16 @@ local function drawPower(p: Frame)
 	})
 	g.Rotation = -90
 	g.Parent = fill
-	local marker = rect(p, W.White, 14, 24, 52, 7, 0.5)
+	-- The sweet spot (BowlingRules.POWER) as a gold band across the meter: stop the marker
+	-- there; over it (the red top) the dumbbell goes wild.
+	local sweet = BowlingRules.POWER
+	local bandTop, bandBottom = 96 * (1 - sweet.sweetHi), 96 * (1 - sweet.sweetLo)
+	local band = rect(fill, W.Sunny, -4, bandTop, 32, bandBottom - bandTop, 0.2)
+	outline(band, W.Ink, 2)
+	local mid = 12 + (bandTop + bandBottom) / 2
+	local marker = rect(p, W.White, 14, mid - 3.5, 52, 7, 0.5)
 	outline(marker, W.Ink, 2)
-	arrow(p, 94, 28, 72, 28, 5, W.Ink, 10)
+	arrow(p, 94, mid, 72, mid, 5, W.Ink, 10)
 	-- A lightning bolt.
 	local bolt = { { 132, 8 }, { 106, 60 }, { 132, 58 }, { 108, 112 } }
 	for i = 1, #bolt - 1 do
@@ -1079,9 +1087,9 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 	howGui.Name = "HowToPlay"
 	words(howGui, "HOW TO PLAY", 0, 6, howW * PPS, 50, W.White, W.HotPink, 4)
 	local steps: { { n: string, title: string, hint: string, color: Color3, draw: (Frame) -> () } } = {
-		{ n = "1", title = "AIM", hint = "PICK YOUR LINE", color = W.Blue, draw = drawAim },
-		{ n = "2", title = "POWER", hint = "SET YOUR SPEED", color = W.Orange, draw = drawPower },
-		{ n = "3", title = "KNOCK PINS", hint = "STRIKE = BIG SCORE", color = W.HotPink, draw = drawKnock },
+		{ n = "1", title = "AIM", hint = "PRESS TO LOCK YOUR AIM", color = W.Blue, draw = drawAim },
+		{ n = "2", title = "POWER", hint = "PRESS IN THE GOLD ZONE", color = W.Orange, draw = drawPower },
+		{ n = "3", title = "KNOCK PINS", hint = "STRIKE = BIG SCORE!", color = W.HotPink, draw = drawKnock },
 	}
 	for i, step in steps do
 		local card = rect(howGui, step.color, 15 + (i - 1) * 187, 62, 172, 222, 0.08)
@@ -1092,7 +1100,8 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 		local pic = rect(card, W.Cream, 8, 46, 156, 120, 0.08)
 		pic.ClipsDescendants = true
 		step.draw(pic)
-		words(card, step.hint, 8, 172, 156, 40, W.White, W.Ink, 2)
+		-- Two short lines rather than one tiny one.
+		words(card, step.hint, 8, 170, 156, 46, W.White, W.Ink, 2).TextWrapped = true
 	end
 	words(
 		howGui,
