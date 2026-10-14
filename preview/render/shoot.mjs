@@ -261,7 +261,7 @@ function shotList(world) {
 		{ name: "27-pose-stage", scene: "world", gui: "none", camera: { pos: [3, 16, -9983], look: [0, 11.5, -10012], fov: 60 }, extra: { shadowSpan: 110 } },
 		{ name: "30-pose-lobby", scene: "world", gui: "none", camera: { pos: [40, 20, -9974], look: [38, 9, -10006], fov: 62 }, extra: { shadowSpan: 110 } },
 		{ name: "28-bowling-lane", scene: "world", gui: "none", camera: { pos: [-7000, 18, -6967], look: [-7000, 8, -7053], fov: 50 }, extra: { shadowSpan: 160 } },
-		{ name: "31-bowling-lobby", scene: "world", gui: "none", camera: { pos: [-6994, 22, -6917], look: [-7000, 9, -6957], fov: 60 }, extra: { shadowSpan: 120 } },
+		{ name: "31-bowling-lobby", scene: "world", gui: "none", camera: { pos: [-7001, 28, -6906], look: [-6999, 7, -6956], fov: 58 }, extra: { shadowSpan: 120 } },
 	];
 }
 
