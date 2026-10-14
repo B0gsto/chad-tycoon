@@ -2343,6 +2343,8 @@ test("rewards and the goal strip read the best tier found", function()
 		"src/server/Modes/Parkour.luau",
 		"src/server/Modes/Mog.luau",
 		"src/server/Modes/Cardio.luau",
+		-- GameModes.modeReward prices the solo mini-games.
+		"src/server/GameModes.luau",
 	}
 	for _, path in sized do
 		local src = fs.readFile(path)
@@ -5103,6 +5105,12 @@ test("Sky obby: one chain of maps with rainbow bridges and global stages", funct
 	)
 end)
 
+-- Solo mini-games: gates, arenas and catalog (tests/minigames.luau), then each mode's own
+-- rules (tests/shake.luau, tests/pose.luau, tests/bowling.luau; each builder owns its file).
+require("./minigames")({ test = test, check = check, eq = eq })
+require("./shake")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
+require("./pose")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
+require("./bowling")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
 -- Mog Test rules (tests/mog.luau).
 require("./mog")({ test = test, check = check, eq = eq, near = near, seeded = seeded })
 -- Cardio keyboard runner rules and layout (tests/cardio.luau).

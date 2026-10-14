@@ -102,7 +102,9 @@ local Course = {}
 
 -- The plaza deck (x0..x1, z0..z1) and the spur that joins it to the hub ring, whose outer edge
 -- is at x = -(2 * PlotLayout.PLOT_HALF + 34) = -138 (World.Hub RING_OUT; tests/run.luau checks it).
-Course.PLAZA = { x0 = -210, x1 = -160, z0 = -28, z1 = 28, top = 0.5 }
+-- (z +-40: the side edges hold gates 4-6, well clear of the back row's outer pillars; the plot
+-- rows start at |z| = 54.)
+Course.PLAZA = { x0 = -222, x1 = -160, z0 = -40, z1 = 40, top = 0.5 }
 Course.SPUR = { x0 = -160, x1 = -138, half = 6, top = 0.3 }
 -- Where GoModes / ModeQuit put the player (feet): the spur end facing the gates (-X), and
 -- in front of the gates facing back toward the hub (+X). faceX: the direction faced.
@@ -111,20 +113,33 @@ Course.ARRIVAL = { x = -166, y = 0.5, z = 0, faceX = -1 }
 -- the player, and from closer it looked out through a portal's swirl.
 Course.QUIT = { x = -188, y = 0.5, z = 0, faceX = 1 }
 
--- Mode gates: one per catalog slot, in a row on the plaza's west edge, fronts facing the
--- hub (+X). GATE_HALF is half the opening width of the open (slot 1) gate; locked gates are
--- narrower (World.Modes).
-Course.GATE_X = -208
+-- Mode gates: one per catalog slot, a U of six same-sized gates round the plaza, GATE_GAP
+-- studs between neighbouring centres (an open gate is about 20.4 wide over its feet, so
+-- every pair keeps a few studs of air and every sign reads whole). Slots 1-3 stand in the
+-- back row on the plaza's west edge at x = GATE_X, fronts facing the hub (+X); Mog and
+-- Cardio check that line themselves. Slots 4-6 stand on the side edges (their own `x`,
+-- z = the edge) with fronts facing into the plaza (`faceZ`: +1 on the south edge, -1 on
+-- the north one): 4 and 6 on the south edge, 5 on the north edge facing 4, and the
+-- best-times BOARD facing 6. GATE_HALF is half the opening width of an open gate; locked
+-- gates are narrower (World.Modes). Course.gateSpot / crossedGate read every slot.
+export type GateSpot = { z: number, x: number?, faceZ: number? }
+Course.GATE_X = -220
+Course.GATE_GAP = 24
+Course.SIDE_X = { -198, -198 + Course.GATE_GAP }
 Course.GATES = {
 	[1] = { z = 0 },
-	[2] = { z = -19 },
-	[3] = { z = 19 },
-}
+	[2] = { z = -Course.GATE_GAP },
+	[3] = { z = Course.GATE_GAP },
+	[4] = { z = Course.PLAZA.z0, x = Course.SIDE_X[1], faceZ = 1 },
+	[5] = { z = Course.PLAZA.z1, x = Course.SIDE_X[1], faceZ = -1 },
+	[6] = { z = Course.PLAZA.z0, x = Course.SIDE_X[2], faceZ = 1 },
+} :: { [number]: GateSpot }
 Course.GATE_HALF = 6
 -- The big GAME MODES sign high above and behind the gates (front faces +X).
-Course.BIG_SIGN = { x = -217, z = 0, width = 56, height = 15, bottom = 28 }
--- Best-times board on the plaza, facing the spur mouth.
-Course.BOARD = { x = -172, z = 20, faceX = -160, faceZ = 4 }
+Course.BIG_SIGN = { x = Course.GATE_X - 9, z = 0, width = 56, height = 15, bottom = 28 }
+-- Best-times board on the north edge across from gate 6, facing into the plaza (faceX/faceZ:
+-- the point it looks at).
+Course.BOARD = { x = Course.SIDE_X[2], z = Course.PLAZA.z1 - 2, faceX = Course.SIDE_X[2], faceZ = 0 }
 
 -- Walking west across this line inside gate 1's opening starts a Parkour run (the player
 -- is teleported onto the level's start deck).
@@ -138,11 +153,10 @@ Course.SPUR2 = { x0 = -Course.SPUR.x1, x1 = -Course.SPUR.x0, half = Course.SPUR.
 Course.ARRIVAL2 = { x = -Course.ARRIVAL.x, y = Course.ARRIVAL.y, z = Course.ARRIVAL.z, faceX = -Course.ARRIVAL.faceX }
 Course.QUIT2 = { x = -Course.QUIT.x, y = Course.QUIT.y, z = Course.QUIT.z, faceX = -Course.QUIT.faceX }
 Course.GATE2_X = -Course.GATE_X
-Course.GATES2 = {
-	[1] = { z = Course.GATES[1].z },
-	[2] = { z = Course.GATES[2].z },
-	[3] = { z = Course.GATES[3].z },
-}
+Course.GATES2 = {} :: { [number]: GateSpot }
+for slot, g in Course.GATES do
+	Course.GATES2[slot] = { z = g.z, x = if g.x then -g.x else nil, faceZ = g.faceZ }
+end
 Course.BIG_SIGN2 = {
 	x = -Course.BIG_SIGN.x,
 	z = Course.BIG_SIGN.z,
@@ -2136,6 +2150,40 @@ function Course.crossedStart(prevX: number, x: number, z: number): boolean
 	return false
 end
 
+-- Where gate `slot` stands on plaza `plaza` (1: -X, 2: the mirror at +X) and which way its
+-- front (the side players walk in from) faces: (x, z, frontX, frontZ), or nil.
+function Course.gateSpot(slot: number, plaza: number): (number?, number?, number, number)
+	local g = (if plaza == 2 then Course.GATES2 else Course.GATES)[slot]
+	if g == nil then
+		return nil, nil, 0, 0
+	end
+	local side = if plaza == 2 then -1 else 1
+	local x = g.x or (if plaza == 2 then Course.GATE2_X else Course.GATE_X)
+	if g.faceZ then
+		return x, g.z, 0, g.faceZ
+	end
+	return x, g.z, side, 0
+end
+
+-- Did a player's feet (prevX, prevZ) -> (x, z) walk in through gate `slot`'s opening (from
+-- its front, across its line, within GATE_HALF + 1 of its middle)? Returns the plaza (1 or 2)
+-- or nil. Any slot; slots 1-3 match Parkour's / Mog's / Cardio's own checks.
+function Course.crossedGate(slot: number, prevX: number, prevZ: number, x: number, z: number): number?
+	for plaza = 1, 2 do
+		local gx, gz, fx, fz = Course.gateSpot(slot, plaza)
+		if gx and gz then
+			-- Signed distance in front of the gate line, before and after.
+			local before = (prevX - gx) * fx + (prevZ - gz) * fz
+			local after = (x - gx) * fx + (z - gz) * fz
+			local across = math.abs((x - gx) * fz - (z - gz) * fx)
+			if before > 0 and after <= 0 and across <= Course.GATE_HALF + 1 then
+				return plaza
+			end
+		end
+	end
+	return nil
+end
+
 export type Spot = { x: number, y: number, z: number, faceX: number }
 
 local function closer(a: Spot, b: Spot, x: number, z: number): Spot
@@ -2190,8 +2238,8 @@ end
 -- Beach props the hub must not place here (palms, beach balls): both plazas, their spurs
 -- and the big signs behind the gates (the second mirrors the first).
 Course.CLEAR = {
-	{ x0 = -230, x1 = -138, z0 = -36, z1 = 36 },
-	{ x0 = 138, x1 = 230, z0 = -36, z1 = 36 },
+	{ x0 = -238, x1 = -138, z0 = -46, z1 = 46 },
+	{ x0 = 138, x1 = 238, z0 = -46, z1 = 46 },
 }
 
 return Course

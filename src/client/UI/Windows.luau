@@ -5119,7 +5119,8 @@ end
 	colour: a thumbnail (a sea scene for Parkour, the player's best unit for MOG TEST; a
 	narrow window shrinks it to a medal), title, blurb, stats, the reward chip (solid mint
 	while the full reward is up, dim through the cooldown) and a gold PLAY that fires
-	ModeStart and closes the window, then one slim "More modes coming soon" row.
+	ModeStart and closes the window. All six modes (Parkour, Mog, Cardio, Shake Catch, Pose
+	Copy, Dumbbell Bowl) sit in one scrolling list.
 
 	Parkour shows the preselected map (the player's unlocked level, re-synced whenever the
 	window opens): its name, difficulty (10 pips), best and clears and what finishing it
@@ -5473,19 +5474,22 @@ end
 
 local function buildModes(screen: ScreenGui)
 	local accent = Theme.World.Mint
-	-- 168 (Parkour) + 10 + 150 (Mog) + 10 + 44 (coming soon) + 20 padding + 84 of header and
-	-- margins. Short screens get a tighter stack (layoutRows) down to the 400 minimum, which
-	-- a phone shows scaled up x1.25.
+	-- 168 (Parkour) + 10 + 150 (Mog) + 10 + 118 per other mode, in a scrolling list (Parkour,
+	-- Mog and the top of the next card show without scrolling at 486). Short screens get a
+	-- tighter stack (layoutRows) down to the 400 minimum, which a phone shows scaled up x1.25.
 	local window = Kit.window(screen, "Modes", "Game Modes", "🏁", accent, Vector2.new(600, 486), Vector2.new(420, 400))
 	register("Modes", window)
 	local action = Net.event("Action")
-	Kit.list(window.content, 10)
+	local list = Kit.scrolling(window.content, { Name = "ModeList" })
+	Kit.padding(list, 2, 2)
+	Kit.list(list, 10)
+	Kit.scrollCue(list)
 
 	local rows: { GuiObject } = {}
 	local selected = 1
 
 	-- Parkour ---------------------------------------------------------------------------
-	local parkour = modeRow(window.content, {
+	local parkour = modeRow(list, {
 		Name = "PARKOUR",
 		Height = 168,
 		LayoutOrder = 1,
@@ -5559,7 +5563,7 @@ local function buildModes(screen: ScreenGui)
 	-- MOG TEST --------------------------------------------------------------------------
 	-- Gamepad starts on the loud PLAY of the first mode.
 	parkour.play:SetAttribute("FocusFirst", true)
-	local mog = modeRow(window.content, {
+	local mog = modeRow(list, {
 		Name = "MOGTEST",
 		Height = 150,
 		LayoutOrder = 2,
@@ -5607,37 +5611,67 @@ local function buildModes(screen: ScreenGui)
 		mogStar = viewport
 	end
 
-	-- Every other mode: one slim, quiet row.
-	local soon = Kit.panel(window.content, {
-		Name = "ComingSoon",
-		Glass = true,
-		Size = UDim2.new(1, 0, 0, 44),
-		LayoutOrder = 3,
-		Radius = Kit.RADIUS.M,
-		Transparency = Theme.Glass.Dimmed,
-	})
-	table.insert(rows, soon)
-	Kit.icon(soon, "Lock", 18, C.TextMute, {
-		Position = UDim2.new(0, 16, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ZIndex = 2,
-	})
-	Kit.text(soon, {
-		Text = "More modes coming soon",
-		Font = F.UI,
-		TextSize = T.Small,
-		TextWrapped = false,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -60, 1, 0),
-		Position = UDim2.fromOffset(44, 0),
-		TextColor3 = C.TextMute,
-		ZIndex = 2,
-	})
+	-- Every other mode: a card with its stats line, reward chip and PLAY (modes[id] in the
+	-- snapshot: running, best, clears, cooldownEnds, rewardPreview; Cardio: bestStage, speed).
+	-- Titles and blurbs match Server.Modes.Catalog.
+	local EXTRA_MODES = {
+		{
+			id = "cardio",
+			title = "CARDIO",
+			blurb = "Run the giant keyboard and get faster with every step!",
+			medal = "👟",
+			tint = Theme.World.Mint,
+			sky = Theme.World.Sky,
+		},
+		{
+			id = "shake",
+			title = "SHAKE CATCH",
+			blurb = "Catch the falling shakes, dodge the junk food!",
+			medal = "🥤",
+			tint = Theme.World.Pink,
+			sky = Theme.World.Sunny,
+		},
+		{
+			id = "pose",
+			title = "POSE COPY",
+			blurb = "Copy the rival's flexes — one more every round!",
+			medal = "🕺",
+			tint = Theme.World.Blue,
+			sky = Theme.World.Sky,
+		},
+		{
+			id = "bowling",
+			title = "DUMBBELL BOWL",
+			blurb = "Roll a giant dumbbell and knock down every pin!",
+			medal = "🎳",
+			tint = Theme.World.RedOrange,
+			sky = Theme.World.Sunny,
+		},
+	}
+	local EXTRA_H = 118
+	local extras: { { id: string, row: ModeRow } } = {}
+	for i, m in EXTRA_MODES do
+		local row = modeRow(list, {
+			Name = string.upper(m.id),
+			Height = EXTRA_H,
+			LayoutOrder = 2 + i,
+			Medal = m.medal,
+			Title = m.title,
+			Blurb = m.blurb,
+			Tint = m.tint,
+			Sky = m.sky,
+		}, function()
+			action:FireServer({ action = "ModeStart", mode = m.id })
+			Windows.closeAll()
+		end)
+		table.insert(rows, row.panel)
+		table.insert(extras, { id = m.id, row = row })
+	end
 
 	-- Wide windows: each card's thumbnail fills its left edge and the text sits beside it.
 	-- Narrow ones: the medal by the title, the map's details under it. Short windows: the
-	-- Mog card is 118 px (narrow too: its stats fold under the medal) and the "coming
-	-- soon" row goes while there is no room for it: 168 + 10 + 118 fills the 400 minimum.
+	-- Mog card is 118 px (narrow too: its stats fold under the medal); the list scrolls to
+	-- the other modes' 118 px cards.
 	local function layoutRows(size: Vector2)
 		local short = size.Y < 486
 		local wide = size.X >= MODES_WIDE
@@ -5664,7 +5698,12 @@ local function buildModes(screen: ScreenGui)
 			medal.Size = if badge then UDim2.fromScale(0.34, 0.26) else UDim2.fromScale(0.62, 0.5)
 			medal.Position = if badge then UDim2.fromScale(0.8, 0.84) else UDim2.fromScale(0.5, 0.42)
 		end
-		soon.Visible = not short or size.Y >= 454
+		for _, e in extras do
+			local _, ex = placeMode(e.row, wide, EXTRA_H)
+			e.row.stats.Position = UDim2.fromOffset(ex, if wide then 62 else 64)
+			e.row.stats.Size = UDim2.new(1, -(ex + 152), 0, 20)
+			e.row.reward.Position = UDim2.new(0, ex, 1, -10)
+		end
 	end
 	layoutRows(window.size())
 	window.onResize.Event:Connect(layoutRows)
@@ -5729,9 +5768,47 @@ local function buildModes(screen: ScreenGui)
 		Kit.setEnabled(mog.play, not info.running)
 	end
 
+	local function refreshExtra(id: string, row: ModeRow)
+		local data = State.data
+		local info = data and data.modes and data.modes[id]
+		if type(info) ~= "table" then
+			row.stats.Text = if id == "cardio" then "Best plate --" else "Best --  ·  0 passes"
+			paintReward(row.reward, "", false)
+			return
+		end
+		if id == "cardio" then
+			local plate = tonumber(info.bestStage) or 0
+			row.stats.Text =
+				string.format("Best plate %s  ·  Speed %d", if plate > 0 then tostring(plate) else "--", tonumber(info.speed) or 0)
+		else
+			local best = tonumber(info.best) or 0
+			row.stats.Text = string.format(
+				"Best %s  ·  %s",
+				if best > 0 then tostring(best) else "--",
+				plural(tonumber(info.clears) or 0, "pass", "passes")
+			)
+		end
+		local preview = info.rewardPreview
+		if type(preview) ~= "table" then
+			paintReward(row.reward, "", false)
+		else
+			setRewardLine(
+				row.reward,
+				tonumber(preview.packCash) or tonumber(preview.cash) or 0,
+				preview.full ~= false,
+				tonumber(info.cooldownEnds) or 0
+			)
+		end
+		Kit.setButton(row.play, if info.running then "PLAYING" else "PLAY")
+		Kit.setEnabled(row.play, not info.running)
+	end
+
 	local function refresh()
 		refreshParkour()
 		refreshMog()
+		for _, e in extras do
+			refreshExtra(e.id, e.row)
+		end
 		local had = mogStar
 		showMogStar()
 		if mogStar ~= had then

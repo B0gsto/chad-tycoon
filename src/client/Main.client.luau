@@ -25,6 +25,9 @@ local AwayWindow = require(Client.UI.AwayWindow)
 local Tutorial = require(Client.UI.Tutorial)
 local MogHud = require(Client.UI.MogHud)
 local CardioHud = require(Client.UI.CardioHud)
+local ShakeHud = require(Client.UI.ShakeHud)
+local PoseHud = require(Client.UI.PoseHud)
+local BowlingHud = require(Client.UI.BowlingHud)
 local ObbyHud = require(Client.UI.ObbyHud)
 
 -- The opening cutscene (optional: the game runs without it if it fails to load).
@@ -119,6 +122,10 @@ Popups.build(screen, Sounds)
 Windows.build(screen)
 MogHud.build(screen)
 CardioHud.build(screen)
+-- The solo mini-games (docs/minigames.md): each HUD owns its own file.
+ShakeHud.init(screen)
+PoseHud.init(screen)
+BowlingHud.init(screen)
 -- The Modes window's MOG TEST PLAY opens the VS RIVALS / 1v1 DUEL picker.
 Windows.onMogPlay = MogHud.choose
 -- "While you were away" (built with the Daily window) opens like any window; a player still
@@ -299,6 +306,9 @@ local parkourRunning = false
 Net.event("State").OnClientEvent:Connect(function(data)
 	State.set(data)
 	CardioHud.onState(data)
+	ShakeHud.onState(data)
+	PoseHud.onState(data)
+	BowlingHud.onState(data)
 	local parkour = type(data.modes) == "table" and data.modes.parkour
 	local running = type(parkour) == "table" and parkour.running == true
 	if parkourRunning and not running then
@@ -366,6 +376,15 @@ Net.event("Notify").OnClientEvent:Connect(function(payload)
 		-- CARDIO (keyboard runner): speed counter, stage strip, cards and banners
 		-- (Fx.Cardio does the 3D side).
 		CardioHud.onNotify(payload)
+	elseif payload.kind == "Mode" and payload.mode == "shake" then
+		-- SHAKE CATCH (Fx.Shake does the 3D side).
+		ShakeHud.onNotify(payload)
+	elseif payload.kind == "Mode" and payload.mode == "pose" then
+		-- POSE COPY (Fx.Pose does the 3D side).
+		PoseHud.onNotify(payload)
+	elseif payload.kind == "Mode" and payload.mode == "bowling" then
+		-- DUMBBELL BOWL (Fx.Bowling does the 3D side).
+		BowlingHud.onNotify(payload)
 	elseif payload.kind == "Mode" then
 		-- Game-mode runs: the HUD run pill and the finish card (Fx.Modes does the 3D side).
 		local event = payload.event
@@ -584,6 +603,9 @@ if fxFolder then
 			"Cardio",
 			"CardioChase",
 			"Interactive",
+			"Shake",
+			"Pose",
+			"Bowling",
 		}
 	do
 		local moduleScript = fxFolder:FindFirstChild(name)
