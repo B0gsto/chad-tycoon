@@ -22,12 +22,22 @@
 	             pin-deck view as it nears the pins (a small shake on the first hit, bigger on a
 	             strike) and goes back to Custom on the humanoid once the pins settle.
 	  Bursts     a strike or spare bursts stars, confetti and sparkles over the pin deck.
+	  Ball pick  the HUD's lobby picker (setBall) paints the rolling dumbbell's plates in the
+	             chosen colour and marks the matching rack dumbbell (BallChoice1..4 under the
+	             arena Model) with a glow and a bobbing arrow; a "roll" carries `ball` (1..4).
+	  Lobby      the run starts in the lobby: the lane info may come with "start" or with any
+	             later event that carries `lane`. setMode("lobby" | "countdown" | "results")
+	             from the HUD hands the camera back and racks a fresh set of pins.
 
 	Main.client.luau calls init() once (it is in the Fx list); nothing else needs editing:
 	  init()                       connects the Notify listener
 	  start(payload) / stop(payload)
 	  setAim(aim, power?, phase)   from BowlingHud each frame of the player's turn
 	                               (phase "aim" | "power" | "off")
+	  setMode(mode)                from BowlingHud when the run's phase changes
+	  setBall(choice)              from BowlingHud's ball picker (1..4)
+	  ballColor(choice)            the colour of rack dumbbell `choice` (for the HUD swatches)
+	  arena()                      the arena Model (BowlingHud fills its BestBoard)
 ]]
 
 local Players = game:GetService("Players")
@@ -63,6 +73,10 @@ local GUIDE = { Count = 7, From = 5, Gap = 4.4, Size = 0.55, PowerGrow = 0.5 }
 local CAMERA = { Back = 13, Up = 5.5, Ahead = 12, PinBack = 15, PinUp = 6.5, SwitchBefore = 18, Rate = 5, Hold = 1.2 }
 -- Burst sizes over the pin deck on a strike / spare.
 local BURST = { strike = 22, spare = 14, Size = 1.6, Spread = 7, Life = 1.4 }
+-- The ball picker: plate colours when the arena's BallChoiceN models can't be read, and the
+-- arrow over the chosen rack dumbbell (studs above it, bob height and speed).
+local BALL_COLORS = { W.Coral, W.Blue, W.Mint, W.Grape }
+local MARKER = { Up = 3.2, Bob = 0.35, Rate = 4 }
 
 type Pin = { model: Model, base: CFrame, down: boolean, shown: boolean, anim: number }
 
@@ -80,6 +94,10 @@ local token = 0 -- bumped by start / stop and each roll, so stale jobs end
 local cameraOn = false
 local shakeAt, shakeSize = -math.huge, 0
 local camFocus: Vector3? = nil
+local ballChoice = 1
+local marker: { glow: Highlight, arrow: BillboardGui }? = nil
+-- Defined under Lifecycle (onReady calls it first).
+local adopt: (p: any) -> ()
 
 local function num(value: any, default: number): number
 	return if type(value) == "number" and value == value then value else default
@@ -169,6 +187,8 @@ local function buildPins()
 	setLocalHidden(source, true)
 end
 
+local lastCrashAt = -math.huge
+
 -- Tips pin `i` over toward lane direction (dx, dd), starting `delay` seconds from now.
 local function fallPin(i: number, delay: number, dx: number, dd: number, struck: boolean)
 	local pin = pins[i]
@@ -199,8 +219,13 @@ local function fallPin(i: number, delay: number, dx: number, dd: number, struck:
 		end
 		if not sounded then
 			sounded = true
-			if struck then
-				Sounds.play("CrateBurst")
+			-- One crash for the dumbbell's hit, a light knock for each pin after it (a
+			-- stinger per pin drowned a strike in noise).
+			if struck and os.clock() - lastCrashAt > 0.25 then
+				lastCrashAt = os.clock()
+				Sounds.play("MergeBoom", 0.08)
+			else
+				Sounds.play("Tick", 0.15, 0.8)
 			end
 		end
 		local tip = ease(t / FALL.Time, Enum.EasingStyle.Bounce) * math.pi / 2
@@ -291,6 +316,104 @@ local function buildBall()
 	copy:PivotTo(restCFrame(0, 0))
 	copy.Parent = folder
 	dumbbell = copy
+end
+
+-- The rack dumbbell for pick `choice` (BallChoice1..4 under the arena Model), if built.
+local function choiceModel(choice: number): Instance?
+	local found = arena and arena:FindFirstChild("BallChoice" .. choice, true)
+	return if found and (found:IsA("Model") or found:IsA("BasePart")) then found else nil
+end
+
+function Bowling.ballColor(choice: number): Color3
+	local i = math.clamp(math.floor(num(choice, 1)), 1, #BALL_COLORS)
+	local model = choiceModel(i)
+	if model then
+		local color = model:GetAttribute("Color")
+		if typeof(color) == "Color3" then
+			return color
+		end
+		local plate = if model:IsA("BasePart") then model else model:FindFirstChild("Plate", true)
+		if plate and plate:IsA("BasePart") then
+			return plate.Color
+		end
+	end
+	return BALL_COLORS[i]
+end
+
+-- A part to hang the arrow on: the model's biggest part.
+local function anchorOf(model: Instance): BasePart?
+	if model:IsA("BasePart") then
+		return model
+	end
+	local best: BasePart? = nil
+	for _, part in model:GetDescendants() do
+		if part:IsA("BasePart") and (not best or part.Size.Magnitude > best.Size.Magnitude) then
+			best = part
+		end
+	end
+	return best
+end
+
+local function paintBall()
+	local color = Bowling.ballColor(ballChoice)
+	local ball = dumbbell
+	if ball then
+		for _, part in ball:GetDescendants() do
+			if part:IsA("BasePart") and part.Name == "Plate" then
+				part.Color = color
+			end
+		end
+	end
+	if marker then
+		marker.glow:Destroy()
+		marker.arrow:Destroy()
+		marker = nil
+	end
+	local model = choiceModel(ballChoice)
+	local anchor = model and anchorOf(model)
+	if not model or not anchor or not folder then
+		return
+	end
+	local glow = Instance.new("Highlight")
+	glow.Name = "BallPick"
+	glow.Adornee = model
+	glow.FillColor = W.Sunny
+	glow.FillTransparency = 0.7
+	glow.OutlineColor = W.Sunny
+	glow.OutlineTransparency = 0
+	glow.DepthMode = Enum.HighlightDepthMode.Occluded
+	glow.Parent = folder
+	local arrow = Instance.new("BillboardGui")
+	arrow.Name = "BallPickArrow"
+	arrow.Adornee = anchor
+	arrow.Size = UDim2.fromOffset(44, 44)
+	arrow.StudsOffsetWorldSpace = Vector3.new(0, MARKER.Up, 0)
+	arrow.LightInfluence = 0
+	arrow.MaxDistance = 120
+	arrow.Parent = folder
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.fromScale(1, 1)
+	label.Font = Enum.Font.FredokaOne
+	label.Text = "▼"
+	label.TextScaled = true
+	label.TextColor3 = W.Sunny
+	label.TextStrokeColor3 = W.Ink
+	label.TextStrokeTransparency = 0
+	label.Parent = arrow
+	marker = { glow = glow, arrow = arrow }
+end
+
+-- The lobby's ball picker (and each "roll"): paints the dumbbell and marks the rack one.
+function Bowling.setBall(choice: number)
+	local i = math.clamp(math.floor(num(choice, 1)), 1, #BALL_COLORS)
+	if i == ballChoice and (marker or not running) then
+		return
+	end
+	ballChoice = i
+	if running then
+		paintBall()
+	end
 end
 
 local function buildGuide()
@@ -482,6 +605,12 @@ local function onRoll(p: any)
 	local lastPos = ballNow
 	local ball = dumbbell
 	local slope = slopeOf(num(p.aim, 0))
+	-- `ball` is the picked colour (1..4); `ballChoice` is accepted too.
+	local pick = p.ballChoice or p.ball
+	if type(pick) == "number" and pick >= 1 and pick <= #BALL_COLORS and pick ~= ballChoice then
+		ballChoice = math.floor(pick)
+		paintBall()
+	end
 	Sounds.play("Step")
 	-- The dumbbell along the keypoints, spinning on its plates, then into the pit.
 	addJob(function(now: number): boolean
@@ -556,6 +685,7 @@ local function onRoll(p: any)
 end
 
 local function onReady(p: any)
+	adopt(p)
 	if not info then
 		return
 	end
@@ -570,6 +700,9 @@ end
 
 local function step()
 	local now = os.clock()
+	if marker and not reducedMotion() then
+		marker.arrow.StudsOffsetWorldSpace = Vector3.new(0, MARKER.Up + math.sin(now * MARKER.Rate) * MARKER.Bob, 0)
+	end
 	local i = 1
 	while i <= #jobs do
 		local ok, done = pcall(jobs[i], now)
@@ -603,26 +736,64 @@ local function clear()
 	table.clear(pins)
 	table.clear(guide)
 	dumbbell = nil
+	marker = nil
 	lastPhase = "off"
+end
+
+-- Builds the pins, the dumbbell and the guide from the first payload that carries the lane
+-- (the lobby's "start" may not; then "countdown" or "ready" does).
+adopt = function(p: any)
+	if info or not running or type(p) ~= "table" or type(p.lane) ~= "table" then
+		return
+	end
+	info = p
+	arena = arena or findArena()
+	buildPins()
+	buildBall()
+	buildGuide()
+	showGuide(false)
+	paintBall()
 end
 
 function Bowling.start(payload: { [string]: any })
 	clear()
-	if type(payload.lane) ~= "table" then
-		return
-	end
+	info = nil
 	running = true
-	info = payload
 	arena = findArena()
 	local f = Instance.new("Folder")
 	f.Name = "BowlingFx"
 	f.Parent = Workspace
 	folder = f
-	buildPins()
-	buildBall()
-	buildGuide()
-	showGuide(false)
 	stepConn = RunService.RenderStepped:Connect(step)
+	adopt(payload)
+	if not info then
+		-- No lane yet: still mark the picked rack dumbbell in the lobby.
+		paintBall()
+	end
+end
+
+-- The run's phase from BowlingHud: back in the lobby (or about to start) the camera is the
+-- player's again, the guide is off and a fresh rack stands with the dumbbell on the line.
+function Bowling.setMode(mode: string)
+	if not running or mode == "play" then
+		return
+	end
+	token += 1
+	releaseCamera()
+	showGuide(false)
+	lastPhase = "off"
+	if info and (mode == "lobby" or mode == "countdown") then
+		resetPins({}, true)
+		returnBall()
+	end
+end
+
+function Bowling.arena(): Model?
+	if arena and arena.Parent then
+		return arena
+	end
+	arena = findArena()
+	return arena
 end
 
 function Bowling.stop(_payload: { [string]: any })
@@ -651,7 +822,9 @@ function Bowling.init()
 			Bowling.stop(payload)
 		elseif not running then
 			return
-		elseif event == "roll" then
+		end
+		adopt(payload)
+		if event == "roll" then
 			onRoll(payload)
 		elseif event == "ready" then
 			onReady(payload)
