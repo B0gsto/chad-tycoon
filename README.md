@@ -35,7 +35,8 @@ sand island in the sea.
   player's real plot. The Skip button is on screen from the first frame (Esc and gamepad B or A skip
   too). Server: `src/server/Intro.luau`; client: `src/client/Intro/*`.
 - **Tutorial.** A slim, skippable checklist of 5 steps: buy a unit, pick up orbs, deposit, collect cash,
-  merge. A quest pill under the top HUD (a dark plate with a small "Skip" word) names the current step, a
+  merge. A quest pill in the top HUD's goal slot (the goal plate waits until the tutorial is done; a dark
+  plate with a small "Skip" word) names the current step, a
   path of chevrons flows along the floor from the player to the step's pad (round the pen's corner posts
   and over its stairs) and a tall soft beam stands over the pad so it is seen from the spawn
   (`src/client/Guide.luau`). Each step completes on the real server event. The tutorial's deposit turns
@@ -120,11 +121,17 @@ sand island in the sea.
   - **Discard** it. Rare and better ask first ("Discard this Rare crate?").
 - **Fans** are wholesome cheering fans around each plot: 3 + half your best tier, up to 20 on your
   own plot (one more per plot rank; 12 on a low-end device) and 4 on others. They run in, clap, wave
-  signs and cheer when you buy or merge.
+  signs and cheer when you buy or merge. Fans cheer from grandstands.
+- **Arena and plots.** The Mog stage is an arena: grandstands of hopping fans, light towers, a pennant
+  garland and painted duel lanes. Free plots wear a FREE PLOT pill, sign and balloons. Entrance arches fly
+  flags and pennants. Buy-row tags climb outward, the MOG MERGE tag stands at the pad's corner, and the
+  rack's YOUR CHADS marquee is gone.
 - **Plot rank** (`src/client/Fx/PlotRank.luau`, tunables in `PlotRank.CFG`): progress you can see from
   the hub. Every five best tiers add dressing to the rack's roof (pennants at 5, gold trim at 10,
-  trophies at 15, a neon sign at 20, a crown beam at 25). The champion pedestal glows in the rarity colour of the unit standing on it (tier
-  25 gets a crowned pedestal and a cape), and rack units stand on rarity rings.
+  trophies at 15, a neon sign at 20, a crown beam at 25). The spawn camera frames the whole rack and its
+  roof dressing. The best Chad stands 1.4x on a gold stage with a name plaque; tier 25 gets a crown, cape
+  and sky beam. Rack units stand on rarity rings. Merges land with gold rings, a +TIER chip and a camera
+  punch.
 - **Cosmetics** (`src/server/Cosmetics.luau`): Speedy Sneakers, Double Jump, Rainbow / Star / Rookie
   trails, Chad Aura and Golden Crown. Each has its own pass (the Rookie Trail comes only with the Starter
   Pack), and the All Cosmetics Pack unlocks every non-Starter item. The **Starter Pack** gives a one-time
@@ -199,13 +206,15 @@ sand island in the sea.
   out of a surge. The shop shows each player
   the same amounts the server grants.
 - **HUD** (`src/client/UI/Hud.luau`), laid out like the owner's reference game: chunky icons and outlined
-  text straight over the world. Settings gear top right; unit count and deposit strip top centre; icon grid
+  text straight over the world. Settings gear top right; top centre: the count and status plates share
+  row 1 and the goal plate sits under them (a CHAMPION plate at tier 25); icon grid
   (Home, Ranking, Modes, Index, Shop, Invite, Daily), every button on its own dark glass plate with its
   caption, and a 2X CASH / Starter Pack promo on the left (only below best tier 15 and until it was opened
   once in a visit; the Shop keeps the offers); cash bottom left with chips that show only while their
-  bonus is on ("Premium +10%", "Friends +20%", "SURGE x2"); the Blender dumbbell with the carried aura
-  bottom centre; the free gift bottom right.
-- **Next goal.** Once the tutorial is done, a small strip under the deposit strip (above the dumbbell on
+  bonus is on ("Premium +10%", "Friends +20%", "SURGE x2"), on a cash plate that flashes with income; the
+  Blender dumbbell with the carried aura bottom centre; the free gift bottom right. Toasts drop in just
+  under the top stack. Tunables are in `TUNE` in `Hud.luau`.
+- **Next goal.** Once the tutorial is done, the goal plate under row 1 (above the dumbbell on
   short screens) names the next target: "Next: Protein Bro" with the target's silhouette and a thin
   progress bar; tapping it opens the Index. The target is the next tier you have not found
   (`src/shared/NextGoal.luau`, which also works out the units still missing, the time estimate and the
@@ -213,16 +222,22 @@ sand island in the sea.
   missing and a time estimate, and pulses READY when one merge finds the tier. With all 25 tiers found
   it names the next Index reward you have not claimed ("Next: Index reward", a tap opens the Index),
   and once those are claimed it reads "All 25 Chads found!" over how many top-tier Chads stand on your
-  rack, with no progress bar: nothing is left to fill. The top centre is three
-  rows (count, status strip, goal strip). A nearer goal (blender upgrade, crate, Game Mode) takes the
+  rack, with no progress bar: nothing is left to fill. The top centre is two
+  rows (count and status plates, then the goal plate). A nearer goal (blender upgrade, crate, Game Mode) takes the
   goal strip's second line and a tap on the strip does it, with a chevron on the plot. The free gift is
   announced only by the pulsing CLAIM! gift in the bottom-right corner. It hides
   during the intro, and during a game-mode run only the cash stays on screen.
-- **Windows.** Window captions are held at 13 px or more on screen. The Ranking goal is a dark pill over
+- **Windows.** Windows open with a spring; text inside a window is at least 14 px on screen (13 on
+  touch, `Kit.WINDOW`). Ranking shows a podium top three, your own row and a goal card with a #1 trophy
+  state. A complete Index wears a crown, offers CLAIM ALL and clears NEW once seen. Scrolling lists show
+  a shade and a bouncing arrow. The Ranking goal is a dark pill over
   a slim bar. The Index's locked milestones are dim chips and only a claimable one is a button. The
   Shop's FREE GIFT card shows the gift and the Daily Reward as two chips. A Champion without the Chad
   Aura pass sees the aura switch beside the price.
-- **Cards.** Finish cards close when a mode starts or stops and when the player is home. The free gift
+- **Cards.** Reveals escalate by rarity (size, flash, beams, ground glow, confetti; crowns and gold
+  lettering at tier 25). A crate shows its rarity banner before its unit, right after the crate's 3D
+  burst (`Fx.Crates.awaitBurst`). Banners slide in and never open over a window; the surge start adds a
+  gold edge and coin rain. Finish cards close when a mode starts or stops and when the player is home. The free gift
   card is solid. A reveal hides any open window behind a dark veil. Nothing opens by itself while a card
   is queued or showing (PopupBusy). A NEW CHAD reveal stays 10 s if nobody taps, but only 3 s once
   another card waits behind it (the tutorial's "YOU DID IT!"). Quitting a mode puts the player 20 studs
@@ -253,7 +268,9 @@ sand island in the sea.
   HUD's Daily button shows a dot while a reward waits and the countdown otherwise. On a player's first day, a few minutes in, one toast says "Come back tomorrow for
   Day 2: ...".
 - **Juice.** Buy, deposit, collect and upgrade press their pad and throw coins or orbs; a buy's price
-  shows as small red text over the wallet. The converter cup fills with the queue (full at 2 minutes) and
+  shows as small red text over the wallet. Collect arcs coins to the wallet under one big "+$X", deposits
+  splash, upgrades squash the blender, and crates shake, spark and burst in their rarity colour before
+  the card. Pen balls wear an "xN" tag only from x10. The converter cup fills with the queue (full at 2 minutes) and
   wears a glowing band per 5 levels (`src/client/Fx/Machines.luau`).
 - **Windows** (`src/client/UI/Windows.luau`): the Ranking shows your own place and how many more Chads
   it takes to pass the next player. Game Modes are cards with a thumbnail and a reward chip (inside the

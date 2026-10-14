@@ -9,8 +9,9 @@
 	right) docked top-centre under the multiplier gauge, or
 	bottom-centre above the dumbbell meter on compact screens, so it never covers the
 	play area. Theme.Tutorial.Steps[i].ShortHint, when present, shows as a
-	small second line for the first few seconds of a step. Docked at the top
-	it sets the ScreenGui attribute "TopCardHeight" so toasts sit below it.
+	small second line for the first few seconds of a step. Docked at the top it takes
+	the HUD goal plate's slot (hidden during the tutorial) and sets the ScreenGui
+	attribute "TopCardHeight" to how far it reaches below that slot, so toasts sit below it.
 
 	The pill drops in 12 px with a fade and one soft pulse. A finished step
 	ticks a check mark on the chip, then the next step's text cross-fades in
@@ -55,14 +56,20 @@ export type Deps = {
 	walletIdle: (() -> boolean)?,
 }
 
--- Pill geometry (design pixels). The HUD's deposit strip spans y 54..84 at the top
--- centre; the compact dumbbell's top edge sits about 94 px above the bottom.
+-- Pill geometry (design pixels). The HUD's top stack (Hud.luau TUNE) is row 1 at y 2..38
+-- and the goal plate's slot under it (y 42..88 at 720p), and the goal plate is hidden all
+-- through the tutorial: the pill takes that slot (on touch row 1 is a column of two plates,
+-- so the slot is one row lower). The world's labels at the spawn camera start below it.
+-- The compact dumbbell's top edge sits about 94 px above the bottom.
 -- The text sizes are held on the glass (Tutorial.build: a phone's UI scale would shrink
 -- 22 / 14 design px to 13 / 9), and the pill's height and widths follow them.
 local PILL_HEIGHT = 44
 local PILL_MIN_WIDTH = 220
 local PILL_MAX_WIDTH = 440
-local TOP_Y = 92
+local HUD_ROW_END = 38 -- Hud TUNE.TopY + TUNE.RowH
+local HUD_ROW_H = 36 -- Hud TUNE.RowH (the second plate of the touch column)
+local HUD_GAP = 4 -- Hud TUNE.StackGap (held on the glass, Kit.pxUp, as the HUD does)
+local GOAL_H = 44 -- Hud TUNE.GoalH: the pill reaches no lower than the goal plate would
 local BOTTOM_GAP = 102
 -- The pill lives in a CanvasGroup (for the fade) padded so its shadow is not clipped.
 local PAD_X = 6
@@ -139,7 +146,9 @@ local function restPosition(): UDim2
 	if compact() then
 		return UDim2.new(0.5, 0, 1, -BOTTOM_GAP + PAD_BOTTOM)
 	end
-	return UDim2.new(0.5, 0, 0, TOP_Y - PAD_TOP)
+	local gap = Kit.pxUp(HUD_GAP, HUD_GAP, screen)
+	local top = HUD_ROW_END + gap + (if Kit.touch then HUD_ROW_H + gap else 0)
+	return UDim2.new(0.5, 0, 0, top - PAD_TOP)
 end
 
 -- Where the pill slides from/to: above its spot at the top, below it at the bottom.
@@ -148,7 +157,9 @@ local function awayPosition(): UDim2
 end
 
 local function publishHeight()
-	local height = if onScreen and not compact() then PILL_HEIGHT + 8 else 0
+	-- How far the pill reaches below the goal plate's slot it holds (the toasts already sit
+	-- under that slot): nothing while it is no taller than the plate.
+	local height = if onScreen and not compact() then math.max(0, PILL_HEIGHT - GOAL_H) else 0
 	screen:SetAttribute("TopCardHeight", height)
 end
 

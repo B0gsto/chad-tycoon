@@ -256,7 +256,7 @@ local TUNE = {
 
 -- Layout (design px). The top centre stack sits just under the top bar (TUNE).
 local EDGE_X = 14
-local RUN_Y = 92 -- tutorial / run pill slot (Tutorial.luau TOP_Y matches), under the stack
+local RUN_Y = 92 -- run pill slot, under the stack (the tutorial pill takes the goal slot instead)
 local HIDE_TIME = 0.15 -- the HUD's fade while a window is open
 local GOAL_TEXT_X = 50
 local GOAL_BAR_X = 12 -- the progress bar's inset, clear of the strip's round corners

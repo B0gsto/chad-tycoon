@@ -489,8 +489,10 @@ Net.event("Effect").OnClientEvent:Connect(function(kind, data)
 			return
 		end
 		Sounds.play("Cash")
-		-- The free gift's amount is on its card (the Gift notify), not in a small float.
-		if data.source ~= "Free" then
+		-- One cash number per collect: with a pad position Fx.Machines raises the big "+$X"
+		-- from there (and Orbs.coinArc flies the coins); the free gift's amount is on its card
+		-- (the Gift notify). The small float at the wallet is only for the rest.
+		if data.source ~= "Free" and typeof(data.padPos) ~= "Vector3" then
 			Popups.float("+" .. Format.money(amount), C.Good, WALLET)
 		end
 		-- Claimed from the Free menu button: coins fly from the button.

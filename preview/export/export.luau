@@ -322,6 +322,24 @@ local TweenInfo = {
 local moduleCache = {}
 local requireModule
 
+-- No layout runs here: a GuiObject's absolute size and position read as zero ("not laid out
+-- yet"), which the UI code already treats as such (e.g. the Modes window's difficulty pips).
+-- Lune has no default for them and implementProperty cannot override a known property, so
+-- the scripts' Instance.new sets them on every GuiObject it makes.
+local layoutInstance = setmetatable({
+	new = function(className, parent)
+		local made = Instance.new(className)
+		if made:IsA("GuiObject") then
+			made.AbsoluteSize = Vector2.zero
+			made.AbsolutePosition = Vector2.zero
+		end
+		if parent then
+			made.Parent = parent
+		end
+		return made
+	end,
+}, { __index = Instance })
+
 local function makeEnv(scriptInstance)
 	return setmetatable({
 		game = game,
@@ -330,7 +348,7 @@ local function makeEnv(scriptInstance)
 		require = function(target)
 			return requireModule(target)
 		end,
-		Instance = Instance,
+		Instance = layoutInstance,
 		Vector3 = Vector3,
 		Vector2 = Vector2,
 		CFrame = CFrame,
@@ -367,6 +385,9 @@ local SOURCE_PATCHES = {
 	{ ":Destroy()", ".Parent = nil" },
 	{ "camera.ViewportSize", string.format("Vector2.new(%d, %d)", VIEW_W, VIEW_H) },
 	{ "Workspace.CurrentCamera.ViewportSize", string.format("Vector2.new(%d, %d)", VIEW_W, VIEW_H) },
+	-- The unit reveal's camera push (skipped in the preview anyway): Lune fails reading a
+	-- ViewportFrame's CurrentCamera back.
+	{ "local lens = viewport.CurrentCamera", "local lens = nil" },
 	-- Lune can't override reflected properties, so the device flags are patched into the source.
 	{ "UserInputService.TouchEnabled", tostring(device == "touch") },
 	{ "UserInputService.GamepadEnabled", tostring(device == "gamepad") },
@@ -1192,6 +1213,7 @@ local function main()
 		owned = { TrailRainbow = true, SpeedBoost = true },
 		trail = "TrailRainbow",
 		toggles = { SpeedBoost = true, DoubleJump = true, AuraGlow = true, Crown = true },
+		canSwitch = { SpeedBoost = true },
 		bundleOwned = false,
 		starterOwned = false,
 		starterGranted = false,

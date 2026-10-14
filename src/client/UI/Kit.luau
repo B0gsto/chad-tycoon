@@ -68,10 +68,10 @@ Kit.TEXT = {
 	window text floor, motion and cues, in one place.
 ]]
 Kit.WINDOW = {
-	-- Smallest text in a window, in screen px (desktop / touch). Captures are judged scaled to
-	-- 1000 px wide, where 17 px reads as 13: Kit.text holds every fixed-size label in a
-	-- Kit.window at this size on the glass unless it passes MinPx = false.
-	TextPx = 17,
+	-- Smallest text in a window, in screen px (desktop / touch): Kit.text holds every
+	-- fixed-size label in a Kit.window at this size on the glass unless it passes
+	-- MinPx = false. (Measured on the real screen, not on a capture scaled down.)
+	TextPx = 14,
 	TextPxTouch = 13,
 	-- Open: a spring from OpenFrom scale and OpenRise px lower (Back overshoot) in OpenTime
 	-- seconds; close: CloseTime seconds down to CloseTo, CloseDrop px lower.

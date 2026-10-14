@@ -448,7 +448,7 @@ local PAGE_BOTTOM = 14 -- room under the last row of a section, clear of that sh
 local PAGE_PAD = 12 -- UIPadding over the first row: a ribbon overlaps its card's top edge by 8 px
 local PAGE_FIT_BOTTOM = 4 -- room under a row of cards that fills the page
 local PAGE_SHORT = 330 -- a page under this (a phone) drops the section header: the cards are the page
-local MIN_TEXT = 17 -- no fixed-size shop text is smaller (Kit.WINDOW.TextPx on a desktop screen)
+local MIN_TEXT = 14 -- no fixed-size shop text is smaller (Kit.WINDOW.TextPx on a desktop screen)
 local MIN_SCALED = 14 -- ...and a TextScaled label never shrinks under this to fit its box
 local CART = 52 -- header cart art (inside the pane)
 local WALLET_CASH = 140 -- header wallet pill: the cash half...
@@ -3798,7 +3798,7 @@ local RANK = {
 	YouPill = Vector2.new(56, 26),
 	MineEdge = 3, -- gold outline of the player's own row
 	PinAfter = 5, -- the own row is also pinned under the list once it sits below this place
-	ButtonText = 17, -- tabs, number format, refresh
+	ButtonText = 15, -- tabs, number format, refresh (held at Kit.WINDOW.TextPx on the glass)
 	-- The pinned card: the own row over the goal pill and its bar.
 	MineH = 56,
 	GoalH = 60,

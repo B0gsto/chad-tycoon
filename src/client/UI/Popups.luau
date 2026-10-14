@@ -167,13 +167,13 @@ Popups.JUICE = {
 	},
 	-- The crate's own moment before its unit: "LEGENDARY CRATE!" in the rarity colour.
 	Crate = {
-		-- Fx.Crates' 3D burst: how long the 2D reveal waits for it, how long before the
-		-- reward a burst still counts, the names it may be exposed under, and how many
-		-- of the 2D shakes play after a 3D one was seen.
-		BurstWait = 0.8,
+		-- Fx.Crates' 3D burst: how long the 2D reveal waits for it at most, how long before
+		-- the reward a burst still counts, and how many of the 2D shakes play after a 3D one
+		-- was seen (none: the banner and the unit follow the 3D burst at once, and its
+		-- CrateShake / MergeBoom stand in for the 2D shake and burst sounds).
+		BurstWait = 1.2,
 		BurstLead = 1.5,
-		BurstSignals = { "burst", "burstDone", "burstSignal", "opened", "onBurst" },
-		ShakesAfterBurst = 2,
+		ShakesAfterBurst = 0,
 		-- The banner: design px per band, the px it keeps on a phone's glass, how far above
 		-- the crate (px from the 420 px stage's top), the slam (start scale, seconds), the
 		-- shake (degrees, seconds), its confetti and the ring behind it (px).
@@ -232,7 +232,14 @@ local screen: ScreenGui
 local toastHolder: Frame
 local sounds: any
 
-local TOAST_Y = 146
+-- Toasts start just under the HUD's top stack (Hud.luau TUNE: row 1 at y 2..38, the goal
+-- plate 42..90 at 720p), clear of the screen's centre; on touch row 1 is a column of two
+-- plates, so the stack ends one row lower.
+-- During a game-mode run the run pill (Hud RUN_Y 92..128) and the mode HUDs hold the top:
+-- the toasts keep their old place under them.
+-- (Fields, not locals: this chunk is at its 200 locals.)
+local TOAST_Y = 96
+Popups.TOAST_Y = { Touch = 136, Run = 146 }
 -- A touch phone (attribute "Compact") has the HUD's menu as one row along the top left
 -- (Hud's measure(): from y 88, a tap target tall), and that row reaches under the stack:
 -- there the toasts start below it.
@@ -381,8 +388,17 @@ local placeToastHolder: (() -> ())? = nil
 -- Top of the stack with nothing above it (design px): under the HUD's top strips, and on a
 -- touch phone under its menu row too.
 local function toastBase(): number
-	if not Kit.touch or screen:GetAttribute("Compact") ~= true then
+	local run = screen:GetAttribute("RunActive") == true
+		or screen:GetAttribute("ObbyMode") == true
+		or screen:GetAttribute("CardioActive") == true
+	if run and not (Kit.touch and screen:GetAttribute("Compact") == true) then
+		return Popups.TOAST_Y.Run
+	end
+	if not Kit.touch then
 		return TOAST_Y
+	end
+	if screen:GetAttribute("Compact") ~= true then
+		return Popups.TOAST_Y.Touch
 	end
 	local uiScale = screen:FindFirstChildOfClass("UIScale")
 	local scale = if uiScale and uiScale.Scale > 0 then uiScale.Scale else 1
@@ -3044,14 +3060,13 @@ local function revealChain(reward: { [string]: any }, done: () -> ())
 end
 
 --[[
-	Waits for Fx.Crates' 3D burst of the crate that just opened, at most
-	JUICE.Crate.BurstWait seconds (it yields), so the 2D reveal's veil does not cover it;
-	true when a burst was seen. Fx.Crates is another stream's module, read defensively. Any
-	of these is understood, and with none of them there is no wait at all:
-	  Crates.burstAt             os.clock() of the last burst (one from just before counts)
-	  Crates.waitBurst(seconds)  yields until the burst or the timeout
-	  Crates.burst (or a name in JUICE.Crate.BurstSignals)   a BindableEvent or a signal
-	Not waited for behind an open window: the Smasher is out of sight there.
+	Waits for Fx.Crates' 3D burst of the crate that just opened (it yields), so the 2D
+	reveal's veil does not cover it; true when a burst was seen. The one API used:
+	  Crates.awaitBurst(maxWait)  yields until the burst of the open in progress has passed
+	  Crates.burstAt()            os.clock() of that burst (one from just before counts)
+	The wait is at most JUICE.Crate.BurstWait, and never shorter than the ritual's build-up
+	(Crates.SMASH.ritual.shake) so the card cannot open before the burst. Not waited for
+	behind an open window: the Smasher is out of sight there.
 ]]
 function Popups.awaitCrateBurst(reward: { [string]: any }): boolean
 	local J = Popups.JUICE.Crate
@@ -3066,49 +3081,17 @@ function Popups.awaitCrateBurst(reward: { [string]: any }): boolean
 			fx = require(module) :: any
 		end
 	end)
-	if type(fx) ~= "table" then
+	if type(fx) ~= "table" or type(fx.awaitBurst) ~= "function" or type(fx.burstAt) ~= "function" then
 		return false
 	end
+	local limit = J.BurstWait
+	pcall(function()
+		limit = math.max(limit, fx.SMASH.ritual.shake + 0.15)
+	end)
+	local ok = pcall(fx.awaitBurst, limit)
+	local okAt, at = pcall(fx.burstAt)
 	local from = (if type(reward._at) == "number" then reward._at else os.clock()) - J.BurstLead
-	local function burstSeen(): boolean
-		return type(fx.burstAt) == "number" and fx.burstAt >= from
-	end
-	if burstSeen() then
-		return true
-	end
-	if type(fx.waitBurst) == "function" then
-		local ok, seen = pcall(fx.waitBurst, J.BurstWait)
-		return burstSeen() or (ok and seen ~= false)
-	end
-	local signal: any = nil
-	for _, name in J.BurstSignals do
-		local exposed = fx[name]
-		if typeof(exposed) == "Instance" and exposed:IsA("BindableEvent") then
-			signal = exposed.Event
-		elseif typeof(exposed) == "RBXScriptSignal" then
-			signal = exposed
-		end
-		if signal then
-			break
-		end
-	end
-	if not signal and type(fx.burstAt) ~= "number" then
-		return false
-	end
-	local fired = false
-	local connection: RBXScriptConnection? = if signal
-		then signal:Connect(function()
-			fired = true
-		end)
-		else nil
-	local waited = 0
-	while not fired and not burstSeen() and waited < J.BurstWait do
-		waited += task.wait(0.03)
-	end
-	if connection then
-		connection:Disconnect()
-	end
-	return fired or burstSeen()
+	return ok and okAt and type(at) == "number" and at >= from and at <= os.clock() + 0.05
 end
 
 --[[
@@ -3370,8 +3353,10 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 			end
 		end
 
-		-- Legendary+: a held breath (trembling, swelling, halo growing) before the pop.
-		if rank >= 5 then
+		-- Legendary+: a held breath (trembling, swelling, halo growing) before the pop,
+		-- unless the 3D crate has just held its own breath and burst.
+		local seen3d = reward._burst == true
+		if rank >= 5 and not seen3d then
 			sounds.play("Ready", 0, 0.8)
 			Kit.tween(crateScale, 0.7, { Scale = 1.25 }, Enum.EasingStyle.Sine)
 			Kit.tween(halo, 0.7, { BackgroundTransparency = 0.3, Size = UDim2.fromOffset(320, 320) }, Enum.EasingStyle.Sine)
@@ -3386,12 +3371,15 @@ local function crateReveal(reward: { [string]: any }, done: () -> ())
 			end
 			crate.Rotation = 0
 			crate.Position = UDim2.fromScale(0.5, 0.5)
-		elseif pause(0.14) then
+		elseif pause(if seen3d then 0.05 else 0.14) then
 			return
 		end
 
-		-- Burst: the crate puffs away, a white ring spreads, rays and confetti.
-		sounds.play("CrateBurst", 0, if rank >= 5 then 0.85 else 1)
+		-- Burst: the crate puffs away, a white ring spreads, rays and confetti. (Silent
+		-- right after the 3D burst: its MergeBoom was this beat's sound.)
+		if not seen3d then
+			sounds.play("CrateBurst", 0, if rank >= 5 then 0.85 else 1)
+		end
 		Kit.disappear(crate, { to = 1.6, time = 0.2, destroy = true })
 		local ring = circle(holder, "Ring", WHITE, 1, 4)
 		ring.Size = UDim2.fromOffset(90, 90)
@@ -6257,8 +6245,9 @@ function Popups.build(screenGui: ScreenGui, soundModule: any)
 		placeHolder()
 		flushToasts()
 	end)
-	-- A phone's menu row pushes the stack down (toastBase): follow the layout and the input.
-	for _, name in { "Compact", "Input" } do
+	-- A phone's menu row and a game-mode run push the stack down (toastBase): follow the
+	-- layout, the input and the run.
+	for _, name in { "Compact", "Input", "RunActive", "ObbyMode", "CardioActive" } do
 		screen:GetAttributeChangedSignal(name):Connect(function()
 			task.defer(placeHolder)
 		end)

@@ -61,7 +61,8 @@ local FAR = CFrame.new(0, -10000, 0)
 local ROLL_WINDOW = 1.5 -- seconds after Spawned during which an orb still rolls in
 local SOUND_GAP = 1 / 12
 local LABEL_MAX_DISTANCE = 70 -- camera distance cap of the "xN" tags (BillboardGui.MaxDistance)
-local LABEL_HEIGHT = 1.15 -- studs
+local LABEL_HEIGHT = 0.8 -- studs
+local LABEL_MIN_COUNT = 10 -- a merged ball wears its "xN" tag from this count (fewer: the pool stays clean)
 local WHITE = Color3.new(1, 1, 1)
 
 -- Tunables of the shared helpers below (sparkles, rings, float text, wallet text, coins): their
@@ -1758,7 +1759,7 @@ end
 
 -- New count on a ball: show / retext its tag (with a tiny pop when it was already showing).
 local function updateLabel(fx: OrbFx, punch: boolean)
-	if fx.count < 2 or fx.waiting then
+	if fx.count < LABEL_MIN_COUNT or fx.waiting then
 		fadeLabel(fx, false)
 		return
 	end
