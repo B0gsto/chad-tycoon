@@ -7,32 +7,40 @@
 	               this client sees its own rival), standing at rivalPos facing the player,
 	               in its own outfit (RIVAL_OUTFITS by rival index) with a name tag pill.
 	               Hit: a shocked flinch back and a burst of sparks off its chest (bigger
-	               on a perfect, which also adds a star pop and punches the camera in). Miss: an angry
-	               flex pose with a hop and a red ring at the player's feet. Mogged:
-	               sad face, it shrinks and pops with stars, confetti and a puff, and the
-	               next rival walks in after a beat with its own puff.
-	  Aura         a glowing neon disc and light at the player's feet that grows with the
-	               combo and pulses on every hit (gold), flickers red on a miss.
+	               on a perfect, which also adds a star pop). Miss: an angry flex pose with
+	               a hop and a puff over its head. Mogged: sad face, it shrinks and pops
+	               with stars, confetti and a puff, and the next rival walks in after a beat
+	               with its own puff.
+	  Player       the player's own avatar does the mogging, nothing is drawn on or around
+	               it: every result plays a full-body move on the real R15 rig (Fx.PlayerPose
+	               keys, MOVES below). Hit: coil down, then step in hard into a flex from
+	               the bag (STRIKE_POSES) with a hop, and bounce back to the spot. Perfect:
+	               a deep coil, a knee-up leap into a double biceps and a stomp into a wide
+	               stance that punches the camera in, a Most Muscular squeeze, then back.
+	               Miss: knocked back off the spot in Shock, a wheeling stagger, a head shake
+	               and a walk back. Rival mogged: a leaping Victory, a stomped double biceps
+	               and a bicep kiss turned to the camera. The combo puts more spring in the
+	               step-ins and hops. Finish: a win jumps, stomps and holds a Most Muscular;
+	               a loss reels back and slumps Sad; then the avatar is handed back (at once
+	               if the player walks).
 	  Camera       Scriptable duel framing over the player's shoulder looking at the
 	               rival, with a slow sideways drift; on finish / stop the camera goes back
 	               to Custom on the humanoid (Fx.Camera then frames it behind the player).
-	  Poses        the player's own avatar strikes a new pose on every hit or perfect (a hop on
-	               a perfect; Fx.PlayerPose), reels in Shock on a miss and throws a Victory
-	               when a rival is mogged. In a duel the opponent's avatar is posed the same
-	               way from their result, so both players see the pose-off.
 	  Duel         no rival model: the opponent is the real character of
 	               Players:GetPlayerByUserId(opponent.userId), followed live (rivalPos is
-	               the fallback) and sized from its extents. On "round": a star pop (your
-	               perfect) or a cream ring (your hit) over their head, a red ring at your
-	               feet when you got hurt, the aura pulsing from your own result. On the
-	               finish: stars and confetti over the loser when you won, a red puff over
-	               you when you lost.
+	               the fallback) and sized from its extents, and its avatar plays the same
+	               moves from its own result, so both players see the mog-off. On "round":
+	               a star pop (your perfect) or a cream ring (your hit) over their head, a
+	               red puff when they missed. On the finish both avatars play their win /
+	               loss, with stars and confetti over the loser when you won.
 	  Sounds       Celebrate when a rival is mogged; the UI sounds belong to MogHud.
 
 	Listens to Notify (kind "Mode", mode "mog") on its own; everything it makes is
 	removed by clear(), the one way out: "finish" and "stop" (a quit, Home, a mode switch,
 	a respawn), the character leaving, and the snapshot's modes.mog.running going false
-	while the stage is still up (a lost Notify never leaves the camera scripted).
+	while the stage is still up (a lost Notify never leaves the camera scripted). On a finish
+	the avatars outlive it for their last move (finales) and hand themselves back; the next
+	start or the character leaving stops them sooner.
 ]]
 
 local Players = game:GetService("Players")
@@ -60,9 +68,33 @@ local W = Theme.World
 local C = Theme.Colors
 
 local CAMERA_BIND = "FxMogCamera"
-local AURA_BASE = 4.5 -- aura disc diameter at combo 0 (studs)
-local AURA_PER_COMBO = 0.55
-local AURA_MAX_COMBO = 10
+
+-- The avatars' moves (studs and degrees in the avatar's own frame; it faces its rival). Each
+-- combo step up to MaxCombo adds ComboSpring of extra step-in and hop.
+local MOVES = {
+	StepIn = 0.7, -- studs a hit's strike lunges toward the rival
+	PerfectStepIn = 1.1,
+	Lean = 5, -- degrees forward at the strike
+	Hop = 0.35, -- studs of a hit's hop
+	PerfectHop = 0.95, -- the perfect's knee-up leap
+	Recoil = 0.9, -- studs a miss knocks the avatar back...
+	Stagger = 1.35, -- ...and how far it stumbles on
+	ComboSpring = 0.04, -- x per combo step
+	MaxCombo = 10,
+}
+-- Flexes a hit strikes (from a shuffled bag): the Chad rotation's showy ones.
+local STRIKE_POSES = {
+	"DoubleBiceps",
+	"SideChest",
+	"LatSpread",
+	"MostMuscular",
+	"Point",
+	"FingerGuns",
+	"BicepKiss",
+	"AbsAndThigh",
+	"SmugTurn",
+	"Dab",
+}
 
 -- Rival juice tunables. Each rival (by its index in the run) wears its own outfit over its tier
 -- look and carries a name tag in the outfit's colour; every hit bursts on the rival, and a
@@ -169,8 +201,6 @@ local folder: Folder? = nil
 local rival: Model? = nil
 local rivalHeight = 6
 local rivalPivot = CFrame.identity
-local aura: Part? = nil
-local auraLight: PointLight? = nil
 local playerPos = Vector3.zero
 local rivalPos = Vector3.new(0, 0, -12)
 local running = false
@@ -182,7 +212,7 @@ local cameraOn = false
 local token = 0 -- bumps on every rival change so stale tweens stop
 local selfPoser: PlayerPose.Poser? = nil
 local foePoser: PlayerPose.Poser? = nil
-local poseTokens: { [PlayerPose.Poser]: number } = {}
+local finales: { PlayerPose.Poser } = {} -- avatars still playing a finish move
 local punchAt = -math.huge
 local outfitColor = HIT_BURST.Color
 
@@ -262,35 +292,129 @@ local function trackOpponent()
 	rivalHeight = math.clamp(model:GetExtentsSize().Y, 3, 14)
 end
 
--- Poses ------------------------------------------------------------------------------------
+-- Moves -------------------------------------------------------------------------------------
 
--- Strikes `pose` on an avatar; with `settle`, eases back to HandsOnHips after that many
--- seconds unless it struck another pose first.
-local function strike(poser: PlayerPose.Poser?, pose: string, hop: number?, settle: number?)
-	if not poser then
-		return
-	end
-	local mine = (poseTokens[poser] or 0) + 1
-	poseTokens[poser] = mine
-	poser:strike(pose, hop)
-	if settle then
-		task.delay(settle, function()
-			if poseTokens[poser] == mine then
-				poser:strike("HandsOnHips")
-			end
-		end)
+type Keys = { PlayerPose.Key }
+
+local QUAD, BACK, SINE = Enum.EasingStyle.Quad, Enum.EasingStyle.Back, Enum.EasingStyle.Sine
+local IN, IN_OUT = Enum.EasingDirection.In, Enum.EasingDirection.InOut
+
+-- A root offset: `back` studs away from the rival (negative: toward it), leaning back `lean`
+-- degrees (negative: forward), turned `turn` degrees to the avatar's left, rolled `roll`.
+local function at(back: number, lean: number?, turn: number?, roll: number?): CFrame
+	return CFrame.new(0, 0, back) * CFrame.Angles(math.rad(lean or 0), math.rad(turn or 0), math.rad(roll or 0))
+end
+
+local function spring(combo: number): number
+	return 1 + math.clamp(combo, 0, MOVES.MaxCombo) * MOVES.ComboSpring
+end
+
+-- Back onto the spot with a little bounce.
+local SETTLE: PlayerPose.Key = { pose = "HandsOnHips", blend = 0.34, ease = SINE, dir = IN_OUT, hop = 0.12, hopTime = 0.26 }
+
+-- Coil down and back, step in hard into a flex (overshooting), bounce back.
+local function hitMove(combo: number): Keys
+	local k = spring(combo)
+	return {
+		{ pose = "MogWindup", blend = 0.09, ease = QUAD, root = at(0.25), hold = 0.03 },
+		{
+			pose = PlayerPose.nextPose(STRIKE_POSES),
+			legs = "MogLunge",
+			blend = 0.16,
+			ease = BACK,
+			root = at(-MOVES.StepIn * k, -MOVES.Lean),
+			hop = MOVES.Hop * k,
+			hold = 0.42,
+		},
+		SETTLE,
+	}
+end
+
+-- The signature: a deep coil, a knee-up leap into a double biceps, a stomp into a wide stance
+-- as it lands (`impact`), a Most Muscular squeeze, back.
+local function perfectMove(combo: number, impact: (() -> ())?): Keys
+	local k = spring(combo)
+	local step = -MOVES.PerfectStepIn * k
+	return {
+		{ pose = "MogWindup", blend = 0.12, ease = QUAD, root = at(0.45, 6), hold = 0.05 },
+		{
+			pose = "DoubleBiceps",
+			legs = "MogKneeUp",
+			blend = 0.14,
+			ease = BACK,
+			root = at(step, -4),
+			hop = MOVES.PerfectHop * k,
+			hopTime = 0.36,
+			hold = 0.14,
+		},
+		{ pose = "DoubleBiceps", legs = "MogStomp", blend = 0.08, ease = QUAD, dir = IN, root = at(step, -7), cue = impact, hold = 0.22 },
+		{ pose = "MostMuscular", legs = "MogStomp", blend = 0.2, ease = BACK, root = at(step, -3), hold = 0.4 },
+		SETTLE,
+	}
+end
+
+-- Knocked back off the spot, a wheeling stagger, a head shake, back.
+local function missMove(): Keys
+	return {
+		{ pose = "Shock", blend = 0.1, ease = QUAD, root = at(MOVES.Recoil, 9, 0, -4), hop = 0.25, hopTime = 0.26, hold = 0.1 },
+		{ pose = "MogStagger", blend = 0.24, ease = SINE, dir = IN_OUT, root = at(MOVES.Stagger, 5, 8, 5), hold = 0.18 },
+		{ pose = "MogShakeOff", blend = 0.22, ease = QUAD, root = at(MOVES.Stagger * 0.8), hold = 0.36 },
+		{ pose = "HandsOnHips", blend = 0.5, ease = SINE, dir = IN_OUT, hop = 0.14, hopTime = 0.3 },
+	}
+end
+
+-- A rival mogged: a leaping Victory, a stomped double biceps (`impact`), a bicep kiss turned
+-- toward the camera, back.
+local function victoryMove(impact: (() -> ())?): Keys
+	return {
+		{ pose = "MogWindup", blend = 0.1, ease = QUAD, root = at(0.2), hold = 0.04 },
+		{ pose = "Victory", blend = 0.16, ease = BACK, root = at(-0.5, 4), hop = 1, hopTime = 0.42, hold = 0.26 },
+		{ pose = "DoubleBiceps", legs = "MogStomp", blend = 0.1, ease = QUAD, dir = IN, root = at(-0.6, -5), cue = impact, hold = 0.4 },
+		{ pose = "BicepKiss", blend = 0.26, ease = BACK, root = at(-0.4, 0, -22), hold = 0.5 },
+		SETTLE,
+	}
+end
+
+-- The finish, won: a leaping Victory, a stomp, a long Most Muscular, easing out to stand.
+local function winMove(): Keys
+	return {
+		{ pose = "MogWindup", blend = 0.12, ease = QUAD, root = at(0.2), hold = 0.05 },
+		{ pose = "Victory", blend = 0.18, ease = BACK, root = at(-0.4, 4), hop = 1.2, hopTime = 0.46, hold = 0.3 },
+		{ pose = "DoubleBiceps", legs = "MogStomp", blend = 0.1, ease = QUAD, dir = IN, root = at(-0.5, -5), hold = 0.5 },
+		{ pose = "MostMuscular", legs = "MogStomp", blend = 0.24, ease = BACK, root = at(-0.5, -3), hold = 0.9 },
+		{ pose = "HandsOnHips", blend = 0.4, ease = SINE, dir = IN_OUT, hold = 1 },
+		{ pose = "Relaxed", blend = 0.5, ease = SINE, dir = IN_OUT },
+	}
+end
+
+-- The finish, lost: reeling back, a stagger, a long sad slump, easing out to stand.
+local function loseMove(): Keys
+	return {
+		{ pose = "Shock", blend = 0.12, ease = QUAD, root = at(MOVES.Recoil, 9), hop = 0.25, hold = 0.2 },
+		{ pose = "MogStagger", blend = 0.26, ease = SINE, dir = IN_OUT, root = at(MOVES.Stagger, 5, 8, 5), hold = 0.15 },
+		{ pose = "Sad", blend = 0.45, ease = SINE, dir = IN_OUT, root = at(MOVES.Stagger * 0.75), hold = 1.6 },
+		{ pose = "Relaxed", blend = 0.6, ease = SINE, dir = IN_OUT },
+	}
+end
+
+-- A perfect's (or a mog's) stomp lands: the duel camera punches in.
+local function punchCamera()
+	if not reducedMotion() then
+		punchAt = os.clock()
 	end
 end
 
--- The pose for a skill-check result: a fresh flex on a hit, a hopping one on a perfect,
--- a shocked stagger on a miss.
-local function strikeResult(poser: PlayerPose.Poser?, result: any)
+-- The move for a skill-check result; `impact` goes off as a perfect's stomp lands.
+local function playResult(poser: PlayerPose.Poser?, result: any, combo: number, impact: (() -> ())?)
+	if not poser then
+		return
+	end
 	if result == "perfect" then
-		strike(poser, PlayerPose.nextPose(), 0.6)
+		poser:play(perfectMove(combo, impact))
 	elseif result == "hit" then
-		strike(poser, PlayerPose.nextPose(), 0.2)
+		poser:play(hitMove(combo))
 	elseif result == "miss" then
-		strike(poser, "Shock", nil, 1)
+		poser:play(missMove())
 	end
 end
 
@@ -302,7 +426,21 @@ local function stopPosers()
 		foePoser:stop()
 	end
 	selfPoser, foePoser = nil, nil
-	table.clear(poseTokens)
+end
+
+local function stopFinales()
+	for _, poser in finales do
+		poser:stop()
+	end
+	table.clear(finales)
+end
+
+-- Gives an avatar its finish move; it hands itself back when that is over.
+local function finale(poser: PlayerPose.Poser?, won: boolean)
+	if poser then
+		poser:play(if won then winMove() else loseMove(), true)
+		table.insert(finales, poser)
+	end
 end
 
 -- Rival -------------------------------------------------------------------------------------
@@ -536,54 +674,6 @@ local function moggedPop()
 	end)
 end
 
--- Aura --------------------------------------------------------------------------------------
-
-local function auraSize(combo: number): number
-	return AURA_BASE + math.min(combo, AURA_MAX_COMBO) * AURA_PER_COMBO
-end
-
-local function buildAura()
-	local part = Instance.new("Part")
-	part.Name = "MogAura"
-	part.Shape = Enum.PartType.Cylinder
-	part.Anchored = true
-	part.CanCollide = false
-	part.CanQuery = false
-	part.CanTouch = false
-	part.CastShadow = false
-	part.Material = Enum.Material.Neon
-	part.Color = C.Gold
-	part.Transparency = 0.6
-	part.Size = Vector3.new(0.12, AURA_BASE, AURA_BASE)
-	part.CFrame = CFrame.new(playerPos + Vector3.new(0, 0.08, 0)) * CFrame.Angles(0, 0, math.rad(90))
-	part.Parent = folder
-	local light = Instance.new("PointLight")
-	light.Color = C.Gold
-	light.Range = 10
-	light.Brightness = 1.2
-	light.Parent = part
-	aura, auraLight = part, light
-end
-
-local function pulseAura(combo: number, color: Color3)
-	local part, light = aura, auraLight
-	if not part or not light then
-		return
-	end
-	local d = auraSize(combo)
-	part.Color = color
-	part.Transparency = 0.25
-	part.Size = Vector3.new(0.12, d * 1.25, d * 1.25)
-	light.Color = color
-	light.Brightness = 3
-	TweenService:Create(part, TweenInfo.new(0.5, Enum.EasingStyle.Quad), {
-		Size = Vector3.new(0.12, d, d),
-		Transparency = 0.6 - math.min(combo, AURA_MAX_COMBO) * 0.025,
-		Color = C.Gold,
-	}):Play()
-	TweenService:Create(light, TweenInfo.new(0.5), { Brightness = 1.2 + math.min(combo, AURA_MAX_COMBO) * 0.15, Color = C.Gold }):Play()
-end
-
 -- Camera ------------------------------------------------------------------------------------
 
 local function releaseCamera()
@@ -750,11 +840,11 @@ local function clear()
 		folder:Destroy()
 		folder = nil
 	end
-	aura, auraLight = nil, nil
 end
 
 local function onStart(p: any)
 	clear()
+	stopFinales()
 	running = true
 	startedAt = os.clock()
 	if typeof(p.playerPos) == "Vector3" then
@@ -768,7 +858,6 @@ local function onStart(p: any)
 	f.Name = "MogFx"
 	f.Parent = Workspace
 	folder = f
-	buildAura()
 	if p.vs == "pvp" then
 		duel = true
 		local opponent = if type(p.opponent) == "table" then p.opponent else {}
@@ -785,72 +874,55 @@ end
 local function onResult(p: any)
 	local combo = num(p.combo, 0)
 	local head = rivalPos + Vector3.new(0, rivalHeight * 0.85, 0)
-	strikeResult(selfPoser, p.result)
+	playResult(selfPoser, p.result, combo, punchCamera)
 	if p.result == "perfect" then
 		setExpr("Shock", 0.8)
 		flinch(1.4)
 		rivalBurst(true)
 		cheer(true)
-		if not reducedMotion() then
-			punchAt = os.clock()
-		end
-		pulseAura(combo, W.Sunny)
 		sprite("StarPop", head, { size = 3, life = 0.8, rise = Vector3.new(0, 2, 0), spin = 60 })
-		sprite(
-			"Ring",
-			playerPos + Vector3.new(0, 0.3, 0),
-			{ size = auraSize(combo) * 1.4, life = 0.5, rise = Vector3.zero, color = W.Sunny }
-		)
 	elseif p.result == "hit" then
 		setExpr("Shock", 0.6)
 		flinch(0.8)
 		rivalBurst(false)
 		cheer(false)
-		pulseAura(combo, W.Cream)
 	else
 		setExpr("Angry", 1)
 		puffUp()
-		pulseAura(0, C.Bad)
-		sprite("Ring", playerPos + Vector3.new(0, 0.3, 0), { size = 6, life = 0.5, rise = Vector3.zero, color = C.Bad })
 		sprite("Puff", head, { size = 3, life = 0.6, rise = Vector3.new(0, 1.5, 0), color = C.Bad })
 	end
 end
 
--- A duel round: sprites on whoever took damage, the aura from your own result.
-local function onRound(p: any)
-	local you = if type(p.you) == "table" then p.you else {}
-	local opp = if type(p.opp) == "table" then p.opp else {}
-	local combo = num(you.combo, 0)
-	local head = rivalPos + Vector3.new(0, rivalHeight + 0.6, 0)
-	local feet = playerPos + Vector3.new(0, 0.3, 0)
+-- The opponent's avatar, posed once it has streamed in (it may come after the start).
+local function foe(): PlayerPose.Poser?
 	if not foePoser then
-		-- The opponent's avatar may stream in after the start.
 		local root = opponentRoot()
 		local model = root and root.Parent
 		foePoser = if model and model:IsA("Model") then PlayerPose.attach(model) else nil
 	end
-	strikeResult(selfPoser, you.result)
-	strikeResult(foePoser, opp.result)
+	return foePoser
+end
+
+-- A duel round: both avatars play their own result, sprites over the opponent.
+local function onRound(p: any)
+	local you = if type(p.you) == "table" then p.you else {}
+	local opp = if type(p.opp) == "table" then p.opp else {}
+	local head = rivalPos + Vector3.new(0, rivalHeight + 0.6, 0)
+	playResult(selfPoser, you.result, num(you.combo, 0), punchCamera)
+	playResult(foe(), opp.result, 0)
 	if you.result == "perfect" then
-		pulseAura(combo, W.Sunny)
 		sprite("StarPop", head, { size = 3, life = 0.8, rise = Vector3.new(0, 2, 0), spin = 60 })
-		sprite("Ring", feet, { size = auraSize(combo) * 1.4, life = 0.5, rise = Vector3.zero, color = W.Sunny })
 	elseif you.result == "hit" then
-		pulseAura(combo, W.Cream)
 		sprite("Ring", head, { size = 3.5, life = 0.5, rise = Vector3.new(0, 1, 0), color = W.Cream })
-	else
-		pulseAura(0, C.Bad)
 	end
 	if opp.result == "miss" then
 		-- Their own miss hurts them: a small red puff over their head.
 		sprite("Puff", head, { size = 3, life = 0.6, rise = Vector3.new(0, 1.5, 0), color = C.Bad })
 	end
-	if opp.result == "hit" or opp.result == "perfect" or you.result == "miss" then
-		sprite("Ring", feet, { size = 6, life = 0.5, rise = Vector3.zero, color = C.Bad })
-	end
 end
 
--- The duel's last word, made after clear() so the sprites outlive the folder.
+-- The duel's last word over the loser, made after clear() so the sprites outlive the folder
+-- (the avatars' own win / loss moves are their finales).
 local function duelFinish(won: boolean, foeHead: Vector3)
 	if won then
 		sprite("Ring", foeHead, { size = 7, life = 0.6, rise = Vector3.zero, color = W.Sunny })
@@ -870,11 +942,16 @@ local function duelFinish(won: boolean, foeHead: Vector3)
 			})
 		end
 		Sounds.play("Celebrate")
-	else
-		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-		local head = if root and root:IsA("BasePart") then root.Position + Vector3.new(0, 3, 0) else playerPos + Vector3.new(0, 6, 0)
-		sprite("Puff", head, { size = 5, life = 0.8, rise = Vector3.new(0, 2, 0), color = C.Bad })
 	end
+end
+
+-- Ends the run but lets the avatars play out their win / loss first (clear() would stop them).
+local function finish(won: boolean, foeWon: boolean)
+	local me, them = selfPoser, if duel then foe() else nil
+	selfPoser, foePoser = nil, nil
+	clear()
+	finale(me, won)
+	finale(them, foeWon)
 end
 
 function MogFx.onNotify(p: any)
@@ -899,7 +976,9 @@ function MogFx.onNotify(p: any)
 			onRound(p)
 		end
 	elseif event == "rival" then
-		strike(selfPoser, "Victory", 0.8, 1.6)
+		if selfPoser then
+			selfPoser:play(victoryMove(punchCamera))
+		end
 		moggedPop()
 		local nextRival = p.rival
 		local run = runId
@@ -910,9 +989,12 @@ function MogFx.onNotify(p: any)
 		end)
 	elseif event == "finish" and duel then
 		local foeHead = rivalPos + Vector3.new(0, rivalHeight * 0.85, 0)
-		clear()
-		duelFinish(p.won == true, foeHead)
-	elseif event == "finish" or event == "stop" then
+		local won = p.won == true
+		finish(won, not won and p.draw ~= true)
+		duelFinish(won, foeHead)
+	elseif event == "finish" then
+		finish(p.passed == true, false)
+	elseif event == "stop" then
 		clear()
 	end
 end
@@ -924,6 +1006,7 @@ function MogFx.init()
 		end
 	end)
 	player.CharacterRemoving:Connect(function()
+		stopFinales()
 		if running then
 			clear()
 		end

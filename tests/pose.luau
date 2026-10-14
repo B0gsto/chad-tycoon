@@ -89,4 +89,181 @@ return function(h: { [string]: any })
 		check(not PoseRules.repeatReady(1000, 1000 + gap - 1), "inside the gap: resting")
 		check(PoseRules.repeatReady(1000, 1000 + gap), "after the gap: ready")
 	end)
+
+	test("Pose: replay milestones pay a capped bonus (REPLAY rule)", function()
+		check(not PoseRules.milestone(PoseRules.PASS_ROUND), "the pass itself is no milestone")
+		check(PoseRules.MILESTONE_FIRST > PoseRules.PASS_ROUND, "milestones come after the pass")
+		local hits = {}
+		for cleared = 1, 30 do
+			if PoseRules.milestone(cleared) then
+				table.insert(hits, cleared)
+			end
+		end
+		eq(hits[1], 12, "first milestone at 12")
+		eq(hits[2], 16, "then 16")
+		eq(hits[3], 20, "then every 4")
+		check(not PoseRules.milestone(13.5), "whole flexes only")
+		eq(PoseRules.bonusCash(1000, 0.5), 500, "half a repeat share")
+		eq(PoseRules.bonusCash(999, 0.5), 499, "rounded down")
+		eq(PoseRules.bonusCash(1000, 0), 0, "nothing for nothing")
+		-- Growing shares: 12 half, 16 three quarters, 20 and on a whole repeat share.
+		eq(PoseRules.milestoneShare(11), 0, "no milestone, no share")
+		eq(PoseRules.milestoneShare(13), 0, "between milestones, no share")
+		eq(PoseRules.milestoneShare(12), 0.5, "12 pays half")
+		eq(PoseRules.milestoneShare(16), 0.75, "16 pays three quarters")
+		eq(PoseRules.milestoneShare(20), 1, "20 pays a whole share")
+		eq(PoseRules.milestoneShare(28), 1, "later ones too")
+		check(PoseRules.BONUS_CAP >= 2 and PoseRules.BONUS_CAP <= 2.5, "the cap is 2 to 2.5 repeat shares")
+		-- One window: a 12-16-20 run pays every bonus, then the window is spent.
+		local paid, at, used = PoseRules.bonusTake(0, 0, 1000, PoseRules.milestoneShare(12))
+		eq(paid, 0.5, "12 pays")
+		eq(at, 1000, "the window starts")
+		paid, at, used = PoseRules.bonusTake(at, used, 1010, PoseRules.milestoneShare(16))
+		eq(paid, 0.75, "16 pays")
+		paid, at, used = PoseRules.bonusTake(at, used, 1020, PoseRules.milestoneShare(20))
+		eq(paid, 1, "20 pays")
+		paid, at, used = PoseRules.bonusTake(at, used, 1030, PoseRules.milestoneShare(24))
+		eq(paid, PoseRules.BONUS_CAP - 2.25, "24 pays what the cap has left")
+		paid, at, used = PoseRules.bonusTake(at, used, 1040, PoseRules.milestoneShare(28))
+		eq(paid, 0, "the window's cap is spent")
+		eq(used, PoseRules.BONUS_CAP, "used stays at the cap")
+		paid, at = PoseRules.bonusTake(at, used, 1000 + PoseRules.REPEAT_GAP, 0.5)
+		eq(paid, 0.5, "a new window pays again")
+		eq(at, 1000 + PoseRules.REPEAT_GAP, "and starts now")
+		paid = PoseRules.bonusTake(5000, 0.75, 4000, 0.5)
+		eq(paid, 0.5, "a clock that went back opens a fresh window")
+		-- The rule: a bot or a grinder running back to back for an hour earns at most 2.5
+		-- repeat shares of bonuses per REPEAT_GAP (plus the pass's one share) outside the
+		-- full pack.
+		local repeatCash = 1000
+		local windowAt, windowUsed, repeatLast = 0, 0, 0
+		local total, bonusTotal = 0, 0
+		for t = 1000, 1000 + 3600 - 1, 20 do -- a run reaching 32 flexes every 20 s (os.time 0 is "never")
+			if PoseRules.repeatReady(repeatLast, t) then
+				total += repeatCash
+				repeatLast = t
+			end
+			for m = 1, 32 do
+				local share = PoseRules.milestoneShare(m)
+				if share > 0 then
+					local s
+					s, windowAt, windowUsed = PoseRules.bonusTake(windowAt, windowUsed, t, share)
+					bonusTotal += PoseRules.bonusCash(repeatCash, s)
+				end
+			end
+		end
+		total += bonusTotal
+		local windows = 3600 / PoseRules.REPEAT_GAP
+		check(bonusTotal <= windows * 2.5 * repeatCash, "bonuses: at most 2.5 repeat shares per window")
+		check(total <= windows * (1 + PoseRules.BONUS_CAP) * repeatCash, "everything: pass share plus the cap")
+		check(total > windows * repeatCash, "replays pay more than the pass share alone")
+	end)
+
+	test("Pose: titles for long runs (BRONZE / SILVER / GOLD POSER)", function()
+		local name, nextName, nextAt = PoseRules.trophy(0)
+		check(name == nil and nextName == "BRONZE POSER" and nextAt == 12, "none yet: bronze at 12")
+		name, nextName, nextAt = PoseRules.trophy(PoseRules.PASS_ROUND)
+		check(name == nil and nextAt == 12, "the pass alone earns no title")
+		name, nextName, nextAt = PoseRules.trophy(12)
+		check(name == "BRONZE POSER" and nextName == "SILVER POSER" and nextAt == 16, "12: bronze")
+		name, nextName = PoseRules.trophy(19)
+		check(name == "SILVER POSER" and nextName == "GOLD POSER", "16..19: silver")
+		name, nextName, nextAt = PoseRules.trophy(40)
+		check(name == "GOLD POSER" and nextName == nil and nextAt == nil, "20 and on: gold")
+		for _, t in PoseRules.TROPHIES do
+			check(PoseRules.milestone(t.at), "every title comes with a milestone banner")
+		end
+	end)
+
+	test("Pose: presses open once every flex is shown, on both sides", function()
+		for round = 1, PoseRules.MAX_ROUND do
+			local step = PoseRules.showStep(round)
+			local open = PoseRules.pressOpen(round)
+			check(open > PoseRules.SHOW_LEAD + (round - 1) * step, "after the last flex appears")
+			check(open < PoseRules.showLength(round), "before the show is over")
+		end
+	end)
+
+	test("Pose: lobby phases gate Begin, input and falls", function()
+		check(PoseRules.canBegin("lobby"), "Begin from the lobby")
+		check(PoseRules.canBegin("results"), "Begin from the results card (PLAY AGAIN)")
+		check(not PoseRules.canBegin("countdown"), "no Begin during the countdown")
+		check(not PoseRules.canBegin("play"), "no Begin during play")
+		check(not PoseRules.canBegin(nil), "no Begin outside the mode")
+		check(PoseRules.acceptsInput("play"), "input counts in play")
+		for _, phase in { "lobby", "countdown", "results" } do
+			check(not PoseRules.acceptsInput(phase), "no scored input in " .. phase)
+		end
+		eq(PoseRules.fallBack("lobby"), "lobby", "lobby fall: lobby spawn")
+		eq(PoseRules.fallBack("results"), "lobby", "results fall: lobby spawn")
+		eq(PoseRules.fallBack("countdown"), "podium", "countdown fall: podium")
+		eq(PoseRules.fallBack("play"), "podium", "play fall: podium")
+		eq(PoseRules.COUNTDOWN, 3, "3-2-1")
+		check(PoseRules.RESULTS_TIME >= 7 and PoseRules.RESULTS_TIME <= 10, "results card about 8 s")
+	end)
+
+	test("Pose: the START pad needs a step off and a re-arm", function()
+		check(PoseRules.onPad(0, 0, 0, 5), "centre")
+		check(PoseRules.onPad(3, 1, 4, 5), "on the rim")
+		check(not PoseRules.onPad(4, 0, 4, 5), "outside the radius")
+		check(not PoseRules.onPad(0, PoseRules.PAD_HEIGHT, 0, 5), "too far above")
+		check(not PoseRules.onPad(0, -PoseRules.PAD_HEIGHT - 1, 0, 5), "too far below")
+		local pad = PoseRules.newPad(100)
+		check(not PoseRules.padStep(pad, true, 100), "landing on it does not fire")
+		check(not PoseRules.padStep(pad, true, 200), "standing on it never fires without a step off")
+		check(not PoseRules.padStep(pad, false, 200), "stepped off")
+		check(PoseRules.padStep(pad, true, 200.1), "stepping back on fires")
+		check(not PoseRules.padStep(pad, true, 200.2), "fires once")
+		check(not PoseRules.padStep(pad, false, 200.3), "off again")
+		check(not PoseRules.padStep(pad, true, 200.4), "too soon after the last: re-arming")
+		check(PoseRules.padStep(pad, true, 200.1 + PoseRules.PAD_REARM), "re-armed")
+		local fresh = PoseRules.newPad(50)
+		PoseRules.padStep(fresh, false, 50)
+		check(not PoseRules.padStep(fresh, true, 50.5), "a fresh pad waits PAD_REARM")
+		check(PoseRules.padStep(fresh, true, 50 + PoseRules.PAD_REARM), "then fires")
+	end)
+
+	test("Pose: podium lanes for a Begin", function()
+		local lane, bump = PoseRules.pickLane({}, 3)
+		eq(lane, 1, "first free lane")
+		eq(bump, false, "nothing to bump")
+		lane = PoseRules.pickLane({ [1] = "busy" }, 3)
+		eq(lane, 2, "skips a busy lane")
+		lane = PoseRules.pickLane({}, 3, 3)
+		eq(lane, 3, "keeps the preferred lane (PLAY AGAIN on the same podium)")
+		lane = PoseRules.pickLane({ [3] = "busy" }, 3, 3)
+		eq(lane, 1, "preferred lane taken: another")
+		lane, bump = PoseRules.pickLane({ [1] = "busy", [2] = "results", [3] = "busy" }, 3)
+		eq(lane, 2, "a results card's podium is free")
+		eq(bump, true, "its player goes to the lobby")
+		lane, bump = PoseRules.pickLane({ [1] = "results", [2] = nil, [3] = "busy" }, 3)
+		eq(lane, 2, "an empty lane before a results one")
+		eq(bump, false, "no bump needed")
+		lane = PoseRules.pickLane({ [1] = "busy", [2] = "busy", [3] = "busy" }, 3)
+		eq(lane, nil, "all busy: full")
+		lane = PoseRules.pickLane({ [1] = "busy", [2] = "busy", [3] = "busy" }, 5)
+		eq(lane, nil, "at most MAX_LANES podiums")
+		lane = PoseRules.pickLane({}, 0)
+		eq(lane, nil, "no podiums")
+	end)
+
+	test("Pose: the show stays readable and the turn fair", function()
+		check(PoseRules.STEP_MIN >= 0.5, "the fastest flex is still readable")
+		local passShow = PoseRules.showLength(PoseRules.PASS_ROUND)
+		check(passShow <= 8, "the pass round's show is short enough to remember")
+		check(PoseRules.MAX_ROUND >= 50, "after the pass the chase for a best is endless")
+		check(#PoseRules.sequence(7, PoseRules.MAX_ROUND) == PoseRules.MAX_ROUND, "the sequence covers every round")
+	end)
+	test("Pose: the lobby is on the deck and the leave margin sits outside it", function()
+		local a, l = PoseRules.ARENA, PoseRules.LOBBY
+		check(l.x0 >= 28, "the green room starts past the 56-stud show")
+		for _, p in { { l.spawnX, l.spawnZ }, { l.spotX, l.mirrorZ }, { l.x0, 0 } } do
+			check(not PoseRules.outsideArena(p[1], p[2], 0), "lobby point on the deck")
+		end
+		check(l.spotX + 4 <= a.sizeX / 2, "room for the mirror past the RehearsalSpot")
+		check(PoseRules.LEAVE_MARGIN > 0, "a margin past the deck")
+		check(not PoseRules.outsideArena(a.sizeX / 2 + PoseRules.LEAVE_MARGIN - 1, 0, PoseRules.LEAVE_MARGIN), "inside the margin")
+		check(PoseRules.outsideArena(a.sizeX / 2 + PoseRules.LEAVE_MARGIN + 1, 0, PoseRules.LEAVE_MARGIN), "past the margin")
+		check(PoseRules.outsideArena(0, -(a.sizeZ / 2 + PoseRules.LEAVE_MARGIN + 1), PoseRules.LEAVE_MARGIN), "past the margin in z")
+	end)
 end

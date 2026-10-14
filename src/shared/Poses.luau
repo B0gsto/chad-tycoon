@@ -929,6 +929,314 @@ STORY.BenchDown = {
 	}),
 }
 
+-- MOG TEST moves for a player's own avatar (Client.Fx.Mog plays them through Fx.PlayerPose,
+-- some only for their legs under a Chad flex). Knees bend over planted feet: the shin's lean
+-- is the thigh's plus the knee's, the foot takes it back out, and the root drops to match.
+
+-- Anticipation: coiled down, arms gathered low in front, eyes still on the rival.
+STORY.MogWindup = {
+	base = P({
+		UpperTorso = { -8, 0, 0 },
+		Head = { 8, 0, 0 },
+		RightUpperArm = { 22, 0, -12 },
+		RightLowerArm = { 70, 0, 0 },
+		RightUpperLeg = { 28, 0, 8 },
+		RightLowerLeg = { -50, 0, 0 },
+		RightFoot = { 22, 0, -8 },
+	}, -0.2),
+}
+
+-- A step in: right foot forward with the knee over it, left leg trailing.
+STORY.MogLunge = {
+	base = P({
+		UpperTorso = { -8, 0, 0 },
+		Head = { 6, 0, 0 },
+		RightUpperArm = { 0, 0, 9 },
+		RightLowerArm = { 10, 0, 0 },
+		RightUpperLeg = { 34, 0, 6 },
+		RightLowerLeg = { -38, 0, 0 },
+		RightFoot = { 4, 0, -6 },
+		LeftUpperLeg = { -18, 0, -6 },
+		LeftLowerLeg = { -10, 0, 0 },
+		LeftFoot = { 28, 0, 6 },
+	}, -0.16),
+}
+
+-- Airborne before a stomp: right knee driven up high, arms in a double biceps.
+STORY.MogKneeUp = {
+	base = P({
+		UpperTorso = { 2, 0, 0 },
+		Head = { 6, 0, 0 },
+		RightUpperArm = { 0, 14, 94 },
+		RightLowerArm = { 0, 0, 104 },
+		RightHand = { 0, 0, 18 },
+		RightUpperLeg = { 75, 0, 6 },
+		RightLowerLeg = { -85, 0, 0 },
+		RightFoot = { 10, 0, 0 },
+		LeftUpperLeg = { 0, 0, -6 },
+		LeftFoot = { 0, 0, 6 },
+	}),
+}
+
+-- The stomp landed: a wide, low sumo stance, arms still flexed.
+STORY.MogStomp = {
+	base = P({
+		UpperTorso = { -4, 0, 0 },
+		Head = { 4, 0, 0 },
+		RightUpperArm = { 0, 14, 94 },
+		RightLowerArm = { 0, 0, 104 },
+		RightHand = { 0, 0, 18 },
+		RightUpperLeg = { 30, 0, 22 },
+		RightLowerLeg = { -52, 0, 0 },
+		RightFoot = { 22, 0, -22 },
+	}, -0.3),
+}
+
+-- Knocked off balance: leaning back and twisted, arms flung out wheeling, right foot
+-- stepping back to catch the fall.
+STORY.MogStagger = {
+	base = P({
+		UpperTorso = { 16, 10, 6 },
+		Head = { -6, -12, 4 },
+		RightUpperArm = { 40, 0, 80 },
+		RightLowerArm = { 0, 0, 40 },
+		LeftUpperArm = { -20, 0, -50 },
+		LeftLowerArm = { 30, 0, 0 },
+		RightUpperLeg = { -22, 0, 6 },
+		RightLowerLeg = { -14, 0, 0 },
+		RightFoot = { 30, 0, -6 },
+		LeftUpperLeg = { 16, 0, -4 },
+		LeftLowerLeg = { -10, 0, 0 },
+		LeftFoot = { -6, 0, 4 },
+	}, -0.08),
+	anim = function(v, t)
+		local s = math.sin(t * 9)
+		add(v, "RightUpperArm", 14 * s, 0, 6 * s)
+		add(v, "LeftUpperArm", -14 * s, 0, 6 * s)
+	end,
+}
+
+-- Shaking it off: hunched a little, head shaking fast.
+STORY.MogShakeOff = {
+	base = P({
+		UpperTorso = { -6, 0, 0 },
+		Head = { -8, 0, 0 },
+		RightUpperArm = { 6, 0, 6 },
+		RightLowerArm = { 14, 0, 0 },
+		RightUpperLeg = { 0, 0, 5 },
+		RightFoot = { 0, 0, -5 },
+	}, -0.02),
+	anim = function(v, t)
+		local s = math.sin(t * 16)
+		add(v, "Head", 0, 18 * s, 0)
+		add(v, "UpperTorso", 0, 4 * s, 0)
+	end,
+}
+
+-- Bowling poses
+
+-- DUMBBELL BOWL moves for a player's own avatar (Client.Fx.Bowling plays them through
+-- Fx.PlayerPose, the picked dumbbell in the right hand). The arm carrying it stays a little
+-- out from the hip so the plates swing clear of the leg. The approach runs Stance ->
+-- Pushaway (right foot) -> Backswing (left foot) -> Release (the slide) -> Follow.
+
+-- Ready on the approach: knees soft, leaning in, the dumbbell held at the hip, eyes on the pins.
+STORY.BowlStance = {
+	base = P({
+		UpperTorso = { -8, 0, 0 },
+		Head = { 8, 0, 0 },
+		RightUpperArm = { 14, 0, 18 },
+		RightLowerArm = { 34, 0, 0 },
+		LeftUpperArm = { 10, 0, -12 },
+		LeftLowerArm = { 24, 0, 0 },
+		RightUpperLeg = { 14, 0, 4 },
+		RightLowerLeg = { -24, 0, 0 },
+		RightFoot = { 10, 0, -4 },
+	}, -0.12),
+	anim = function(v, t)
+		-- A small bounce on the toes, the weight swaying.
+		local s = math.sin(t * 3.2)
+		add(v, "RightUpperArm", 3 * s, 0, 0)
+		add(v, "Head", -2 * s, 0, 0)
+	end,
+}
+
+-- First step (right foot): the dumbbell pushed out in front at the waist, left hand under it.
+STORY.BowlPushaway = {
+	base = P({
+		UpperTorso = { -10, 0, 0 },
+		Head = { 10, 0, 0 },
+		RightUpperArm = { 48, 0, 14 },
+		RightLowerArm = { 30, 0, 0 },
+		LeftUpperArm = { 40, 0, 16 },
+		LeftLowerArm = { 34, 0, 0 },
+		RightUpperLeg = { 32, 0, 4 },
+		RightLowerLeg = { -22, 0, 0 },
+		RightFoot = { -6, 0, -4 },
+		LeftUpperLeg = { -18, 0, -4 },
+		LeftLowerLeg = { -16, 0, 0 },
+		LeftFoot = { 24, 0, 4 },
+	}, -0.12),
+}
+
+-- Second step (left foot): the dumbbell swung up behind, the free arm out for balance, the
+-- shoulders turned toward the backswing and the eyes still on the pins.
+STORY.BowlBackswing = {
+	base = P({
+		UpperTorso = { -18, -10, 0 },
+		Head = { 16, 10, 0 },
+		RightUpperArm = { -72, 0, 18 },
+		RightLowerArm = { 6, 0, 0 },
+		LeftUpperArm = { 24, 0, -62 },
+		LeftLowerArm = { 16, 0, 0 },
+		LeftUpperLeg = { 34, 0, -4 },
+		LeftLowerLeg = { -28, 0, 0 },
+		LeftFoot = { -4, 0, 4 },
+		RightUpperLeg = { -20, 0, 4 },
+		RightLowerLeg = { -18, 0, 0 },
+		RightFoot = { 26, 0, -4 },
+	}, -0.22),
+}
+
+-- The slide and release: deep on the left knee, the right leg sweeping back behind it, the
+-- bowling arm swung through to point down the lane with the hand low by the left foot.
+STORY.BowlRelease = {
+	base = P({
+		UpperTorso = { -22, 0, 0 },
+		Head = { 24, 0, 0 },
+		RightUpperArm = { 52, 0, 14 },
+		RightLowerArm = { 8, 0, 0 },
+		LeftUpperArm = { 12, 0, -72 },
+		LeftLowerArm = { 12, 0, 0 },
+		LeftUpperLeg = { 56, 0, -6 },
+		LeftLowerLeg = { -64, 0, 0 },
+		LeftFoot = { 8, 0, 6 },
+		RightUpperLeg = { -30, 0, 14 },
+		RightLowerLeg = { -12, 0, 0 },
+		RightFoot = { 34, 0, -6 },
+	}, -0.7),
+}
+
+-- Follow-through: still down in the slide, the bowling arm carried on up toward the pins.
+STORY.BowlFollow = {
+	base = P({
+		UpperTorso = { -16, 0, 0 },
+		Head = { 26, 0, 0 },
+		RightUpperArm = { 128, 0, 8 },
+		RightLowerArm = { 22, 0, 0 },
+		LeftUpperArm = { 12, 0, -70 },
+		LeftLowerArm = { 12, 0, 0 },
+		LeftUpperLeg = { 54, 0, -6 },
+		LeftLowerLeg = { -62, 0, 0 },
+		LeftFoot = { 8, 0, 6 },
+		RightUpperLeg = { -30, 0, 14 },
+		RightLowerLeg = { -12, 0, 0 },
+		RightFoot = { 34, 0, -6 },
+	}, -0.66),
+}
+
+-- A strike: a wide, low stance, both arms in a double biceps, head thrown back in a roar.
+STORY.BowlRoar = {
+	base = P({
+		UpperTorso = { 10, 0, 0 },
+		Head = { 24, 0, 0 },
+		RightUpperArm = { 0, 14, 98 },
+		RightLowerArm = { 0, 0, 108 },
+		RightHand = { 0, 0, 18 },
+		RightUpperLeg = { 30, 0, 22 },
+		RightLowerLeg = { -52, 0, 0 },
+		RightFoot = { 22, 0, -22 },
+	}, -0.3),
+	anim = function(v, t)
+		-- Shaking with the effort.
+		local s = math.sin(t * 38)
+		add(v, "RightUpperArm", 0, 0, 2.5 * s)
+		add(v, "LeftUpperArm", 0, 0, -2.5 * s)
+		add(v, "Head", 1.5 * s, 0, 0)
+	end,
+}
+
+-- A spare's fist pump: the right fist raised up high ...
+STORY.BowlPumpUp = {
+	base = P({
+		UpperTorso = { 4, 0, 0 },
+		Head = { 12, 0, 0 },
+		RightUpperArm = { 150, 0, 12 },
+		RightLowerArm = { 34, 0, 0 },
+		LeftUpperArm = { 6, 0, -8 },
+		LeftLowerArm = { 20, 0, 0 },
+		RightUpperLeg = { 0, 0, 5 },
+		RightFoot = { 0, 0, -5 },
+	}),
+}
+
+-- ... and yanked down to the hip with the right knee up ("YES!").
+STORY.BowlPumpDown = {
+	base = P({
+		UpperTorso = { -12, 0, 0 },
+		Head = { -2, 0, 0 },
+		RightUpperArm = { 12, 0, 8 },
+		RightLowerArm = { 104, 0, 0 },
+		LeftUpperArm = { 6, 0, -10 },
+		LeftLowerArm = { 30, 0, 0 },
+		RightUpperLeg = { 52, 0, 4 },
+		RightLowerLeg = { -74, 0, 0 },
+		RightFoot = { 10, 0, -4 },
+		LeftUpperLeg = { 8, 0, -4 },
+		LeftLowerLeg = { -12, 0, 0 },
+		LeftFoot = { 4, 0, 4 },
+	}, -0.1),
+}
+
+-- A gutter ball: the right palm on the face, head dropped, the other hand on the hip.
+STORY.BowlFacepalm = {
+	base = P({
+		UpperTorso = { -10, 0, 0 },
+		Head = { -16, 0, 0 },
+		RightUpperArm = { 80, 40, -30 },
+		RightLowerArm = { 130, 0, 0 },
+		RightHand = { -20, 0, 0 },
+		LeftUpperArm = { 0, 14, -40 },
+		LeftLowerArm = { 14, 0, 102 },
+		LeftHand = { 0, 0, 18 },
+		RightUpperLeg = { 0, 0, 4 },
+		RightFoot = { 0, 0, -4 },
+	}),
+	anim = function(v, t)
+		-- Shaking the head in the hand.
+		local s = math.sin(t * 7)
+		add(v, "Head", 0, 10 * s, 0)
+	end,
+}
+
+-- ... then a slump: shoulders rolled forward, head hung, arms dangling, knees giving.
+STORY.BowlSlump = {
+	base = P({
+		UpperTorso = { -20, 0, 0 },
+		Head = { -24, 0, 0 },
+		RightUpperArm = { 8, 0, 4 },
+		RightLowerArm = { 6, 0, 0 },
+		RightUpperLeg = { 12, 0, 4 },
+		RightLowerLeg = { -20, 0, 0 },
+		RightFoot = { 8, 0, -4 },
+	}, -0.14),
+}
+
+-- Some pins down: a point at the deck and a nod.
+STORY.BowlPoint = {
+	base = P({
+		UpperTorso = { -4, 0, 0 },
+		Head = { 6, 0, 0 },
+		RightUpperArm = { 92, 0, 6 },
+		RightLowerArm = { 6, 0, 0 },
+		LeftUpperArm = { 0, 14, -40 },
+		LeftLowerArm = { 14, 0, 102 },
+		LeftHand = { 0, 0, 18 },
+		RightUpperLeg = { 0, 0, 5 },
+		RightFoot = { 0, 0, -5 },
+	}),
+}
+
 -- Animation sets -----------------------------------------------------------------
 
 type Set = {
@@ -1270,5 +1578,137 @@ function Poses.solve(
 end
 
 Poses.hash = hash
+
+-- Shake poses
+-- SHAKE CATCH moves for a player's own avatar holding the catch tray in both hands
+-- (Client.Fx.Shake plays them through Fx.PlayerPose, layered: over walking legs only the arms
+-- and torso take them). The tray rests on the hands, so every arm here is a tray height.
+
+-- The carry: forearms out level in front at belly height, elbows tucked, eyes up for drops;
+-- the tray sways a little side to side as if balanced.
+STORY.ShakeCarry = {
+	base = P({
+		UpperTorso = { 3, 0, 0 },
+		Head = { 12, 0, 0 },
+		RightUpperArm = { 34, 0, -4 },
+		RightLowerArm = { 58, 0, 0 },
+		RightUpperLeg = { 0, 0, 4 },
+		RightFoot = { 0, 0, -4 },
+	}),
+	anim = function(v, t)
+		local s = math.sin(t * 2.1)
+		add(v, "RightUpperArm", 2.5 * s, 0, 0)
+		add(v, "LeftUpperArm", -2.5 * s, 0, 0)
+		add(v, "UpperTorso", 0, 0, 1.2 * s)
+	end,
+}
+
+-- A catch landing: a quick knee dip, the tray giving a little under the weight.
+STORY.ShakeDip = {
+	base = P({
+		UpperTorso = { -6, 0, 0 },
+		Head = { 6, 0, 0 },
+		RightUpperArm = { 26, 0, -4 },
+		RightLowerArm = { 62, 0, 0 },
+		RightUpperLeg = { 24, 0, 5 },
+		RightLowerLeg = { -44, 0, 0 },
+		RightFoot = { 20, 0, -5 },
+	}, -0.18),
+}
+
+-- Out of the dip: the tray pushed up high in front, chest proud, up on the toes.
+STORY.ShakeLift = {
+	base = P({
+		UpperTorso = { 7, 0, 0 },
+		Head = { 14, 0, 0 },
+		RightUpperArm = { 64, 0, -4 },
+		RightLowerArm = { 40, 0, 0 },
+		RightUpperLeg = { 0, 0, 4 },
+		RightFoot = { -14, 0, -4 },
+	}, 0.06),
+}
+
+-- Coiling for a golden catch: a deep squat, tray low and close.
+STORY.ShakeGoldCrouch = {
+	base = P({
+		UpperTorso = { -12, 0, 0 },
+		Head = { 12, 0, 0 },
+		RightUpperArm = { 20, 0, -4 },
+		RightLowerArm = { 76, 0, 0 },
+		RightUpperLeg = { 40, 0, 9 },
+		RightLowerLeg = { -72, 0, 0 },
+		RightFoot = { 32, 0, -9 },
+	}, -0.44),
+}
+
+-- The golden pop: springing up, the tray pressed overhead, legs long and toes pointed.
+STORY.ShakeGoldPop = {
+	base = P({
+		UpperTorso = { 9, 0, 0 },
+		Head = { 22, 0, 0 },
+		RightUpperArm = { 152, 0, 6 },
+		RightLowerArm = { 18, 0, 0 },
+		RightUpperLeg = { -6, 0, 5 },
+		RightLowerLeg = { -10, 0, 0 },
+		RightFoot = { -24, 0, -5 },
+	}),
+}
+
+-- Junk food hit: recoiling back from the tray, head turned away, the tray pushed out and
+-- down at arm's length, a foot stepping back; the head shakes it off.
+STORY.ShakeFlinch = {
+	base = P({
+		UpperTorso = { 14, 10, 4 },
+		Head = { -10, -26, 6 },
+		RightUpperArm = { 22, 0, 2 },
+		RightLowerArm = { 26, 0, 0 },
+		RightUpperLeg = { -16, 0, 5 },
+		RightLowerLeg = { -14, 0, 0 },
+		RightFoot = { 30, 0, -5 },
+		LeftUpperLeg = { 12, 0, -4 },
+		LeftLowerLeg = { -20, 0, 0 },
+		LeftFoot = { 8, 0, 4 },
+	}, -0.06),
+	anim = function(v, t)
+		add(v, "Head", 0, 14 * math.sin(t * 17), 0)
+	end,
+}
+
+-- A win: the tray hoisted high overhead like a trophy, wide stance, pumping it.
+STORY.ShakeCheer = {
+	base = P({
+		UpperTorso = { 8, 0, 0 },
+		Head = { 18, 0, 0 },
+		RightUpperArm = { 166, 0, 10 },
+		RightLowerArm = { 8, 0, 0 },
+		RightUpperLeg = { 0, 0, 11 },
+		RightFoot = { 0, 0, -11 },
+	}),
+	anim = function(v, t)
+		local u = pulse(t, 0.5)
+		add(v, "RightUpperArm", -10 * u, 0, 0)
+		add(v, "LeftUpperArm", -10 * u, 0, 0)
+		add(v, "RightLowerArm", 14 * u, 0, 0)
+		add(v, "LeftLowerArm", 14 * u, 0, 0)
+	end,
+}
+
+-- A loss: shoulders slumped, head hanging, the tray dangling low, knees soft; a slow sigh.
+STORY.ShakeSlump = {
+	base = P({
+		UpperTorso = { -14, 0, 0 },
+		Head = { -26, 0, 0 },
+		RightUpperArm = { 8, 0, -2 },
+		RightLowerArm = { 30, 0, 0 },
+		RightUpperLeg = { 8, 0, 4 },
+		RightLowerLeg = { -14, 0, 0 },
+		RightFoot = { 6, 0, -4 },
+	}, -0.05),
+	anim = function(v, t)
+		local s = math.sin(t * 1.3)
+		add(v, "UpperTorso", 2.5 * s, 0, 0)
+		add(v, "Head", 2 * s, 0, 0)
+	end,
+}
 
 return Poses

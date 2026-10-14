@@ -256,9 +256,12 @@ function shotList(world) {
 		{ name: "23-shop-aura", scene: "world", gui: "shop_aura", camera: play },
 		{ name: "24-daily-reward", scene: "world", gui: "daily", camera: play },
 		{ name: "25-mode-gates", scene: "world", gui: "none", camera: { pos: [-134, 50, 0], look: [-198, 8, 0], fov: 64 }, extra: { shadowSpan: 140 } },
-		{ name: "26-shake-arena", scene: "world", gui: "none", camera: { pos: [376, 44, -318], look: [382, 8, -392], fov: 60 }, extra: { shadowSpan: 150 } },
-		{ name: "27-pose-stage", scene: "world", gui: "none", camera: { pos: [574, 19, -350], look: [556, 11, -392], fov: 60 }, extra: { shadowSpan: 110 } },
-		{ name: "28-bowling-lane", scene: "world", gui: "none", camera: { pos: [740, 25, -315], look: [740, 3, -374], fov: 44 }, extra: { shadowSpan: 160 } },
+		{ name: "26-shake-arena", scene: "world", gui: "none", camera: { pos: [6996, 44, -6950], look: [7002, 12, -7012], fov: 60 }, extra: { shadowSpan: 150 } },
+		{ name: "29-shake-lobby", scene: "world", gui: "none", camera: { pos: [7003, 28, -6896], look: [7000, 11, -6956], fov: 62 }, extra: { shadowSpan: 150 } },
+		{ name: "27-pose-stage", scene: "world", gui: "none", camera: { pos: [0, 17, -9982], look: [0, 12.5, -10012], fov: 54 }, extra: { shadowSpan: 110 } },
+		{ name: "30-pose-lobby", scene: "world", gui: "none", camera: { pos: [40, 17.5, -9976], look: [40, 10, -10014], fov: 70 }, extra: { shadowSpan: 110 } },
+		{ name: "28-bowling-lane", scene: "world", gui: "none", camera: { pos: [-7000, 18, -6967], look: [-7000, 8, -7053], fov: 50 }, extra: { shadowSpan: 160 } },
+		{ name: "31-bowling-lobby", scene: "world", gui: "none", camera: { pos: [-7001, 28, -6906], look: [-6999, 7, -6956], fov: 58 }, extra: { shadowSpan: 120 } },
 	];
 }
 

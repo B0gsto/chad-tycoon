@@ -95,22 +95,27 @@ return function(h: { [string]: any })
 		end
 	end)
 
-	test("Mini-games: arenas float at sea, clear of everything", function()
+	test("Mini-games: each arena is its own space, out of sight of the hub and the others", function()
 		local function gap(a: any, b: any): number
 			local dx = math.max(0, math.abs(a.x - b.x) - (a.sizeX + b.sizeX) / 2)
 			local dz = math.max(0, math.abs(a.z - b.z) - (a.sizeZ + b.sizeZ) / 2)
 			return math.max(dx, dz)
 		end
+		local SIGHT = 4000
+		local CARDIO = { x = -1296, z = 1150, sizeX = 1200, sizeZ = 1200 }
 		local ids = { "shake", "pose", "bowling" }
 		for i, id in ids do
 			local a = ARENAS[id]
 			check(a.y > Course.WATER_Y and a.y < 40, id .. " floats just over the sea")
+			-- Past the fog (Theme Lighting FogEnd 4000) seen from the hub, the other arenas,
+			-- the Mog stage and the Cardio track, so no mode clutters another's view.
 			local near = math.sqrt(a.x * a.x + a.z * a.z) - math.max(a.sizeX, a.sizeZ) / 2
-			check(near > Course.WATER_RADIUS + 40, id .. " is off the island")
+			check(near > SIGHT, id .. " is out of sight of the hub")
 			local mog = { x = MogLayout.CENTER.x, z = MogLayout.CENTER.z, sizeX = 160, sizeZ = 160 }
-			check(gap(a, mog) > 60, id .. " clear of the Mog stage")
+			check(gap(a, mog) > SIGHT, id .. " out of sight of the Mog stage")
+			check(gap(a, CARDIO) > SIGHT, id .. " out of sight of the Cardio track")
 			for j = i + 1, #ids do
-				check(gap(a, ARENAS[ids[j]]) >= 40, id .. " clear of " .. ids[j])
+				check(gap(a, ARENAS[ids[j]]) > SIGHT, id .. " out of sight of " .. ids[j])
 			end
 			for n, level in Course.LEVELS do
 				for _, e in level.ELEMENTS do

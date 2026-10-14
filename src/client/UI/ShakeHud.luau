@@ -1,27 +1,49 @@
 --!strict
 --[[
-	ShakeHud: the screen side of SHAKE CATCH (Modes.Shake; docs/minigames.md). Fx.Shake
-	does the 3D side (falling items, the tray, the "+1" pops).
+	ShakeHud: the screen side of SHAKE CATCH (Modes.Shake; docs/minigames.md, "Lobby first,
+	then the game"). Fx.Shake does the 3D side (falling items, the tray, the practice drops).
 
-	  Run column   right edge, mid-height (like the Mog test): a glass score pill ("12 / 25"
-	               with a star, the quiet X that asks "QUIT?" before ModeQuit), a chunky
-	               bar toward the target (gold, mint once it is reached), three hearts and
-	               the clock with the wave ("0:42 · WAVE 2/4").
-	  Centre       the "3, 2, 1, GO!" count-in, the wave banners ("WAVE 3!", "FINAL WAVE!"),
-	               "TARGET HIT!" when the score reaches the target.
-	  Finish card  centre, on "win" / "lose": the title (SHAKE CHAMP! / NEW BEST! / OUT OF
-	               HEARTS! / SO CLOSE!), score, target and best, the cash paid (or why none),
-	               PLAY AGAIN / HOME, confetti on a win. It stays up after the run ends.
+	Phases (modes.shake.phase in the snapshot, mirrored by the Notify events):
+	  lobby      the lobby card (right edge, mid-height): SHAKE CATCH, the goal, best and
+	             clears, the reward status (full pack ready, or the wait and the repeat
+	             share), a big PLAY (tap, Enter, gamepad X: "ShakeBegin"; gamepad A stays
+	             jump; Enter is left alone while a window is open or a TextBox has focus) and
+	             LEAVE ("ModeQuit"). The run HUD is hidden.
+	  countdown  a big "3, 2, 1, GO!" in the centre ("go" ends it); the run column comes up.
+	  play       the run column (right edge, mid-height, like the Mog test): a glass score pill
+	             ("12 / 25" with a star, the quiet X that asks "QUIT?" before ModeQuit; gamepad
+	             Y presses it, a Y badge shows while a gamepad is in use), a
+	             chunky bar toward the target, three hearts and the clock with the wave
+	             (the score counts a catch Fx.Shake predicts at once, through Fx.Shake.onPredict,
+	             and settles on the server's "catch" score; an unconfirmed one drops back out)
+	             ("0:42 · WAVE 2/4"). Wave banners and "TARGET HIT!" in the centre; a red
+	             edge flash when a heart goes.
+	  results    the results card on "win" / "lose": title, catches and score, best (a
+	             flashing NEW BEST!), the pay (or why none: a resting repeat bonus counts down
+	             to the server's repeatReadyAt), the three stars (ShakeRules.STARS:
+	             lit for each tier reached, with the star bonus or the next star's points),
+	             PLAY AGAIN ("ShakeBegin"; Enter,
+	             gamepad X) and LOBBY ("ShakeLobby", counting down to the server's returnAt).
+	             It goes on the "lobby" event (or the snapshot's phase back to lobby).
+
+	The arena's "BestBoard" SurfaceGui (under the arena Model, attribute Mode = "shake") gets
+	its TextLabels "Best" (with the best star count), "Clears" and "Reward" (each optional)
+	filled from the snapshot, and
+	"RewardCaption" says what the reward value is (the pack ready, a star bonus ready, or the
+	wait for the pack).
+
+	Touch: the lobby card and the run column sit higher on the right edge, clear of the jump
+	button (and the thumbstick on the left).
 
 	Wired from Main.client.luau (nothing else needs editing):
 	  init(screen)        once, builds the HUD (hidden)
-	  onNotify(payload)   every Notify with kind = "Mode" and mode = "shake"; routes
-	                      "start" -> start(payload) and "stop" -> stop(payload), plus this
-	                      mode's "wave", "catch", "splat", "win", "lose"
-	  onState(data)       every State snapshot (safety net: hides when modes.shake is not running)
+	  onNotify(payload)   every Notify with kind = "Mode" and mode = "shake"
+	  onState(data)       every State snapshot (phase changes, best board, safety net)
 	  start(payload) / stop(payload)
 ]]
 
+local ContextActionService = game:GetService("ContextActionService")
+local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -30,6 +52,7 @@ local Format = require(ReplicatedStorage.Shared.Format) :: any
 local Net = require(ReplicatedStorage.Shared.Net)
 
 local Client = script.Parent.Parent
+local FxShake = require(Client.Fx.Shake) :: any
 local Kit = require(script.Parent.Kit) :: any
 local Popups = require(script.Parent.Popups) :: any
 local Sounds = require(Client.Sounds) :: any
@@ -47,10 +70,40 @@ local ROOT_W = 280
 local ROOT_H = 160
 local ROOT_RIGHT = 36
 local ROOT_DY = 60
+-- On touch the column and the lobby card ride higher (the jump button owns the bottom right).
+local TOUCH_RIGHT = 16
+local TOUCH_DY = -40
 local PILL_W = 250
 local BAR_W = 230
--- HUD chrome that steps aside during a run (the gift corner and the crate panel).
+-- The lobby card (same spot as the run column).
+local LOBBY_W = 300
+local LOBBY_H = 268
+-- The lobby card's rows below the two-line goal.
+local LOBBY_GOAL_H = 38
+-- HUD chrome that steps aside while the player is in the mode (the gift corner, the crates).
 local CLUTTER = { "FreeCorner", "ChestPanel" }
+-- Enter / gamepad X: PLAY in the lobby, PLAY AGAIN on the results card (gamepad A is jump).
+local PLAY_ACTION = "ShakeHudPlay"
+local PRIORITY = Enum.ContextActionPriority.High.Value + 40
+-- Gamepad Y during a run: the quit button (first press arms "QUIT?", the second quits).
+local QUIT_ACTION = "ShakeHudQuit"
+local PAD_Y_COLOR = Color3.fromRGB(232, 178, 30)
+-- Screen attributes that mean another window owns the keys (Enter is left alone).
+local BUSY = { "WindowOpen", "ModalOpen", "PopupBusy" }
+-- The results card's stars (ShakeRules.STARS).
+local STAR_COUNT = 3
+local STAR_DIM = Color3.fromRGB(70, 74, 96)
+-- A second PLAY press within this many seconds is ignored (the server answers with "countdown").
+local BEGIN_GAP = 1.5
+-- The results card closes itself this many seconds after the server's returnAt (or after
+-- FINISH_HOLD with no returnAt) if the server never says "lobby".
+local FINISH_GRACE = 3
+local FINISH_HOLD = 20
+-- A predicted catch the server neither confirms nor Fx.Shake corrects within this many
+-- seconds drops out of the provisional score.
+local PENDING_KEEP = 4
+-- The gamepad X button's colour (its glyph on PLAY and PLAY AGAIN).
+local PAD_X_COLOR = Color3.fromRGB(40, 122, 232)
 
 local screen: ScreenGui? = nil
 local root: Frame
@@ -61,16 +114,48 @@ local clockLabel: TextLabel
 local quitButton: TextButton
 local banner: TextLabel
 local bannerSub: TextLabel
+local countLabel: TextLabel
+local countSub: TextLabel
+local hurtFlash: Frame
+local lobbyCard: Frame
+local lobbyGoal: TextLabel
+local lobbyStats: TextLabel
+local lobbyReward: TextLabel
+local lobbyRewardSub: TextLabel
+local lobbyHint: TextLabel
+local playButton: TextButton
 local finishCard: Frame
 local finishTitle: TextLabel
 local finishSub: TextLabel
 local finishReward: TextLabel
 local finishBest: TextLabel
-
+local finishNew: TextLabel
+local lobbyButton: TextButton
+local finishStars: { GuiObject } = {}
+local finishStarNote: TextLabel
+local quitBadge: TextLabel
+-- The gamepad X glyphs (shown while a gamepad is in use).
+local padGlyphs: { GuiObject } = {}
+-- Server time the server brings the player back to the lobby (the results card's countdown).
+local returnAt = 0
+local lobbyLeft = -1
+-- A resting repeat bonus on the results card: server time it pays again (0: none shown).
+local restingUntil = 0
+local restingLeft = -1
+-- "" (not in the mode), "lobby", "countdown", "play", "results".
+local phase = ""
+-- The run column is up (countdown and play).
 local running = false
 local quitArmed = false
+-- The score on the pill: the server's (serverScore) plus the catches Fx.Shake predicted that
+-- the server has not answered yet (pending: id -> { points, at = os.clock() }).
 local score = 0
+local serverScore = 0
+local pending: { [number]: { points: number, at: number } } = {}
+-- Drop ids the server already scored this run (a late prediction for one is not counted twice).
+local confirmed: { [number]: boolean } = {}
 local target = 25
+local runSeconds = 60
 local hearts = 3
 local maxHearts = 3
 local goAt = 0
@@ -79,19 +164,150 @@ local wave = 1
 local waves = 4
 local targetShown = false
 local lastCount = -1
+-- Last known stats (start payload and snapshot): best, clears, rewardPreview, cooldownEnds.
+local best = 0
+local bestStars = 0
+local clears = 0
+local reward: { [string]: any } = {}
+local cooldownEnds = 0
+local lastRewardText = ""
+local beganAt = -math.huge
 -- Banners: hide() bumps bannerEpoch to cancel every pending one; each banner has its own id
 -- and only hides itself if it is still the one on screen (so they never cancel each other).
 local bannerEpoch = 0
 local bannerSeq = 0
 local bannerShown = 0
--- Bumped on every finish card show / hide; the card's auto-dismiss checks it.
+local countToken = 0
+-- Bumped on every results card show / hide; the card's auto-dismiss checks it.
 local finishToken = 0
--- The finish card closes itself after this many seconds.
-local FINISH_HOLD = 20
+local stopNewBest: (() -> ())? = nil
 local stepConn: RBXScriptConnection? = nil
+local bound = false
+local quitBound = false
+-- The arena's best board.
+local arena: Instance? = nil
+local board: Instance? = nil
+local boardLookAt = -math.huge
 
 local function num(value: any, default: number): number
 	return if type(value) == "number" and value == value then value else default
+end
+
+-- "★★☆" for `n` of the STAR_COUNT stars ("" for none).
+local function starText(n: number): string
+	n = math.clamp(math.floor(n), 0, STAR_COUNT)
+	if n <= 0 then
+		return ""
+	end
+	return string.rep("★", n) .. string.rep("☆", STAR_COUNT - n)
+end
+
+-- Best board (the arena's "BestBoard" SurfaceGui) -------------------------------------------
+
+local function findArena(): Instance?
+	if arena and arena.Parent then
+		return arena
+	end
+	arena = nil
+	local map = Workspace:FindFirstChild("Map")
+	for _, holder in { map or Workspace, Workspace } do
+		for _, child in holder:GetChildren() do
+			if child:IsA("Model") and child:GetAttribute("Mode") == "shake" then
+				arena = child
+				return child
+			end
+		end
+	end
+	return nil
+end
+
+local function findBoard(): Instance?
+	if board and board.Parent then
+		return board
+	end
+	board = nil
+	-- The arena may stream in later: look again every few seconds, not every snapshot.
+	local now = os.clock()
+	if now - boardLookAt < 4 then
+		return nil
+	end
+	boardLookAt = now
+	local model = findArena()
+	board = model and model:FindFirstChild("BestBoard", true)
+	return board
+end
+
+-- The reward line, its sub line, whether the full pack is ready, and the wait in seconds.
+local function rewardStatus(): (string, string, boolean, number)
+	local cash = num(reward.packCash, num(reward.cash, 0))
+	if reward.full == true then
+		return if clears == 0 then "FIRST CLEAR: +" .. Format.money(cash) else "FULL PACK READY: +" .. Format.money(cash),
+			"Clear it to win the full cash pack!",
+			true,
+			0
+	end
+	local wait = math.max(0, math.ceil(cooldownEnds - os.time()))
+	local repeatCash = num(reward.repeatCash, 0)
+	return "Full pack in " .. Format.clock(wait),
+		if repeatCash > 0 then "Clear it now for +" .. Format.money(repeatCash) else "Play for a new best!",
+		false,
+		wait
+end
+
+-- The lowest star tier whose bonus is ready (rewardPreview.stars): its points and cash.
+local function readyStar(): (number?, number)
+	local list = reward.stars
+	if type(list) ~= "table" then
+		return nil, 0
+	end
+	for _, star in list do
+		if type(star) == "table" and star.ready == true and num(star.cash, 0) > 0 then
+			return num(star.at, 0), num(star.cash, 0)
+		end
+	end
+	return nil, 0
+end
+
+local function setBoardLabel(name: string, text: string)
+	local b = board
+	local label = b and b:FindFirstChild(name, true)
+	if label and label:IsA("TextLabel") and label.Text ~= text then
+		label.Text = text
+	end
+end
+
+local function paintBoard()
+	if not findBoard() then
+		return
+	end
+	setBoardLabel("Best", if best > 0 then (if bestStars > 0 then best .. " " .. starText(bestStars) else tostring(best)) else "--")
+	setBoardLabel("Clears", tostring(clears))
+	local _, _, ready, wait = rewardStatus()
+	if ready then
+		setBoardLabel("RewardCaption", if clears == 0 then "FIRST CLEAR" else "FULL PACK")
+		setBoardLabel("Reward", "+" .. Format.money(num(reward.packCash, num(reward.cash, 0))))
+	else
+		local at, cash = readyStar()
+		if at then
+			setBoardLabel("RewardCaption", string.format("STAR BONUS AT %d", at))
+			setBoardLabel("Reward", "+" .. Format.money(cash))
+		else
+			setBoardLabel("RewardCaption", "NEXT PACK IN")
+			setBoardLabel("Reward", Format.clock(wait))
+		end
+	end
+end
+
+-- Stats from a start payload or the snapshot.
+local function absorb(p: { [string]: any })
+	best = num(p.best, best)
+	bestStars = num(p.bestStars, bestStars)
+	clears = num(p.clears, clears)
+	target = num(p.target, target)
+	cooldownEnds = num(p.cooldownEnds, cooldownEnds)
+	if type(p.rewardPreview) == "table" then
+		reward = p.rewardPreview
+	end
 end
 
 -- Hearts (two discs and a 45-degree square, like the Mog test's) ---------------------------------
@@ -147,17 +363,54 @@ local function setHearts(newHearts: number, animate: boolean)
 			end
 			local pop = holder:FindFirstChild("Pop") :: UIScale?
 			if animate and pop and was ~= full then
-				pop.Scale = if full then 0.4 else 1.6
-				Kit.tween(pop, 0.45, { Scale = 1 }, Enum.EasingStyle.Back)
+				pop.Scale = if full then 0.4 else 1.8
+				Kit.tween(pop, 0.5, { Scale = 1 }, Enum.EasingStyle.Back)
 			end
 		end
 	end
 	hearts = newHearts
 end
 
--- Score, banner, clock ---------------------------------------------------------------------------
+-- A heart went: the red edge flash, the hearts shake and the warning when one is left.
+local function hurt(newHearts: number)
+	if newHearts >= hearts then
+		return
+	end
+	setHearts(newHearts, true)
+	Kit.pop(heartsRow, 1.3)
+	hurtFlash.Visible = true
+	hurtFlash.BackgroundTransparency = 0.55
+	Kit.tween(hurtFlash, 0.45, { BackgroundTransparency = 1 })
+	task.delay(0.5, function()
+		if hurtFlash.BackgroundTransparency >= 0.99 then
+			hurtFlash.Visible = false
+		end
+	end)
+end
+
+-- Score, banner, countdown, clock -------------------------------------------------------------
+
+-- The pill's score: the server's plus the predicted catches it has not answered yet.
+local function provisional(): number
+	local total = serverScore
+	local clock = os.clock()
+	for id, entry in pending do
+		if clock - entry.at > PENDING_KEEP then
+			pending[id] = nil
+		else
+			total += entry.points
+		end
+	end
+	return total
+end
+
+local function clearPending()
+	table.clear(pending)
+	table.clear(confirmed)
+end
 
 local function paintScore(pop: boolean)
+	score = provisional()
 	scoreLabel.Text = string.format("%d / %d", score, target)
 	local passed = score >= target
 	local fill = math.clamp(score / math.max(target, 1), 0, 1)
@@ -188,31 +441,84 @@ local function showBanner(title: string, sub: string?, color: Color3, hold: numb
 	end)
 end
 
-local function render()
-	if not running then
-		return
-	end
-	local now = Workspace:GetServerTimeNow()
-	local left = math.max(0, math.ceil(endAt - now))
-	local toGo = goAt - now
-	if toGo > 0 then
-		local n = math.ceil(toGo)
-		if n ~= lastCount then
-			lastCount = n
-			showBanner(tostring(n), "Get under the shakes!", W.Sunny, 0.8)
-			Sounds.play("Tick")
+-- One beat of the big centre count: punches in large, settles, fades.
+local function showCount(text: string, color: Color3, sub: string, hold: number)
+	countToken += 1
+	local token = countToken
+	countLabel.Text = text
+	countLabel.TextColor3 = color
+	countSub.Text = sub
+	-- Not "resuming" a fade-out: every beat punches in from big.
+	countLabel.Visible = false
+	Kit.appear(countLabel, { from = 2, time = 0.3 })
+	task.delay(hold, function()
+		if token == countToken then
+			Kit.disappear(countLabel)
 		end
-		left = math.ceil(endAt - goAt)
-	elseif lastCount > 0 then
-		lastCount = 0
-		showBanner("GO!", "Catch shakes, dodge junk food!", C.Good, 1.2)
-		Sounds.play("Ready")
-	end
-	clockLabel.Text = string.format("%s · WAVE %d/%d", Format.clock(left), wave, waves)
-	clockLabel.TextColor3 = if left <= 10 and toGo <= 0 then C.Bad else Color3.new(1, 1, 1)
+	end)
 end
 
--- Chrome -------------------------------------------------------------------------------------
+local function hideCount()
+	countToken += 1
+	countLabel.Visible = false
+end
+
+local function render()
+	local now = Workspace:GetServerTimeNow()
+	if running then
+		local left = math.max(0, math.ceil(endAt - now))
+		local toGo = goAt - now
+		if toGo > 0 then
+			local n = math.ceil(toGo)
+			if n ~= lastCount then
+				lastCount = n
+				showCount(tostring(n), if n == 1 then W.Coral elseif n == 2 then W.Sunny else C.Gold, "Get under the shakes!", 0.8)
+				Sounds.play("Tick")
+			end
+			left = math.ceil(endAt - goAt)
+		elseif lastCount > 0 then
+			lastCount = 0
+			if phase == "countdown" then
+				phase = "play"
+			end
+			showCount("GO!", C.Good, "Catch shakes, dodge junk food!", 1)
+			Sounds.play("Ready")
+		end
+		clockLabel.Text = string.format("%s · WAVE %d/%d", Format.clock(left), wave, waves)
+		clockLabel.TextColor3 = if left <= 10 and toGo <= 0 then C.Bad else Color3.new(1, 1, 1)
+	end
+	if running and next(pending) ~= nil and provisional() ~= score then
+		-- A predicted catch timed out: the pill settles back.
+		paintScore(false)
+	end
+	if finishCard.Visible and restingUntil > 0 then
+		local left = math.max(0, math.ceil(restingUntil - now))
+		if left ~= restingLeft then
+			restingLeft = left
+			finishReward.Text = if left > 0 then "Next bonus in " .. Format.clock(left) else "Bonus ready! Play again!"
+			finishReward.TextColor3 = if left > 0 then C.Text else C.MoneyText
+		end
+	end
+	if finishCard.Visible and returnAt > 0 then
+		local left = math.max(0, math.ceil(returnAt - now))
+		if left ~= lobbyLeft then
+			lobbyLeft = left
+			Kit.setButton(lobbyButton, if left > 0 then string.format("LOBBY %d", left) else "LOBBY")
+		end
+	end
+	if lobbyCard.Visible or board then
+		-- The cooldown counts down: repaint when the text changes (about once a second).
+		local line, sub = rewardStatus()
+		if line ~= lastRewardText then
+			lastRewardText = line
+			lobbyReward.Text = line
+			lobbyRewardSub.Text = sub
+			paintBoard()
+		end
+	end
+end
+
+-- Chrome, keys -------------------------------------------------------------------------------
 
 local stashed: { [GuiObject]: boolean } = {}
 local function setChrome(on: boolean)
@@ -238,32 +544,195 @@ local function setChrome(on: boolean)
 	end
 end
 
+local function sendBegin()
+	local now = os.clock()
+	if now - beganAt < BEGIN_GAP then
+		return
+	end
+	beganAt = now
+	action:FireServer({ action = "ShakeBegin" })
+	if lobbyCard.Visible then
+		Kit.setButton(playButton, "GET READY…")
+		task.delay(3, function()
+			if phase == "lobby" then
+				Kit.setButton(playButton, "PLAY")
+			end
+		end)
+	end
+end
+
+local function onPlayKey(_: string, state: Enum.UserInputState, input: InputObject): Enum.ContextActionResult
+	if state ~= Enum.UserInputState.Begin then
+		return Enum.ContextActionResult.Pass
+	end
+	-- Another window (the shop, a popup) or a TextBox owns the keys: leave them alone.
+	if UserInputService:GetFocusedTextBox() ~= nil then
+		return Enum.ContextActionResult.Pass
+	end
+	local gui = screen
+	if gui then
+		for _, name in BUSY do
+			if gui:GetAttribute(name) == true then
+				return Enum.ContextActionResult.Pass
+			end
+		end
+	end
+	-- Enter with a button selected on one of the cards presses that button instead.
+	if input.KeyCode ~= Enum.KeyCode.ButtonX and (Kit.selectedIn(lobbyCard) or Kit.selectedIn(finishCard)) then
+		return Enum.ContextActionResult.Pass
+	end
+	if (phase == "lobby" and lobbyCard.Visible) or (phase == "results" and finishCard.Visible) then
+		if finishCard.Visible then
+			finishToken += 1
+			Kit.unfocus(finishCard)
+			Kit.disappear(finishCard)
+		end
+		sendBegin()
+		return Enum.ContextActionResult.Sink
+	end
+	return Enum.ContextActionResult.Pass
+end
+
+local function bind(on: boolean)
+	if on == bound then
+		return
+	end
+	bound = on
+	if on then
+		ContextActionService:BindActionAtPriority(
+			PLAY_ACTION,
+			onPlayKey,
+			false,
+			PRIORITY,
+			Enum.KeyCode.Return,
+			Enum.KeyCode.KeypadEnter,
+			Enum.KeyCode.ButtonX
+		)
+	else
+		ContextActionService:UnbindAction(PLAY_ACTION)
+	end
+end
+
 local function resetQuit()
 	quitArmed = false
 	Kit.setButton(quitButton, "X", C.SurfaceHi)
 	quitButton.Size = UDim2.fromOffset(44, 44)
 end
 
+local function pressQuit()
+	if quitArmed then
+		resetQuit()
+		action:FireServer({ action = "ModeQuit" })
+		return
+	end
+	-- First press arms it: "QUIT?" for a few seconds.
+	quitArmed = true
+	Kit.setButton(quitButton, "QUIT?", C.Bad)
+	Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(96, 44) }, Enum.EasingStyle.Back)
+	task.delay(3, function()
+		if quitArmed then
+			resetQuit()
+		end
+	end)
+end
+
+local function onQuitKey(_: string, state: Enum.UserInputState, _input: InputObject): Enum.ContextActionResult
+	if state ~= Enum.UserInputState.Begin or not running then
+		return Enum.ContextActionResult.Pass
+	end
+	local gui = screen
+	if gui then
+		for _, name in BUSY do
+			if gui:GetAttribute(name) == true then
+				return Enum.ContextActionResult.Pass
+			end
+		end
+	end
+	pressQuit()
+	return Enum.ContextActionResult.Sink
+end
+
+-- Gamepad Y reaches the quit button during the countdown and play.
+local function bindQuit(on: boolean)
+	if on == quitBound then
+		return
+	end
+	quitBound = on
+	if on then
+		ContextActionService:BindActionAtPriority(QUIT_ACTION, onQuitKey, false, PRIORITY, Enum.KeyCode.ButtonY)
+	else
+		ContextActionService:UnbindAction(QUIT_ACTION)
+	end
+end
+
+local function ensureStep(on: boolean)
+	if on and not stepConn then
+		stepConn = RunService.RenderStepped:Connect(render)
+	elseif not on and stepConn then
+		stepConn:Disconnect()
+		stepConn = nil
+	end
+end
+
+-- Lobby card ---------------------------------------------------------------------------------
+
+local function paintLobby()
+	lobbyGoal.Text = string.format("Catch shakes, dodge junk (a heart each). Score %d — gold = 3!", target)
+	local stars = starText(bestStars)
+	lobbyStats.Text = if stars ~= ""
+		then string.format("BEST %d %s   ·   CLEARS %d", best, stars, clears)
+		else string.format("BEST %d   ·   CLEARS %d", best, clears)
+	local line, sub, ready = rewardStatus()
+	lastRewardText = line
+	lobbyReward.Text = line
+	lobbyReward.TextColor3 = if ready then C.MoneyText else C.Text
+	lobbyRewardSub.Text = sub
+	lobbyHint.Text =
+		Kit.hint("Tap PLAY or step on the START pad", "ENTER to play · or step on the START pad", "X to play · or step on the START pad")
+end
+
+local function hideLobby()
+	Kit.unfocus(lobbyCard)
+	if lobbyCard.Visible then
+		Kit.disappear(lobbyCard)
+	end
+end
+
+local function showLobby()
+	paintLobby()
+	Kit.setButton(playButton, "PLAY")
+	if not lobbyCard.Visible then
+		Kit.appear(lobbyCard, { from = 0.7, time = 0.3 })
+	end
+end
+
+-- Results card -------------------------------------------------------------------------------
+
 local function hideFinish()
 	finishToken += 1
+	if stopNewBest then
+		stopNewBest()
+		stopNewBest = nil
+	end
 	Kit.unfocus(finishCard)
 	if finishCard.Visible then
 		Kit.disappear(finishCard)
 	end
 end
 
--- Finish card --------------------------------------------------------------------------------
-
 local function showFinish(p: { [string]: any }, won: boolean)
-	local s, t, best = num(p.score, score), num(p.target, target), num(p.best, 0)
+	local s, t = num(p.score, score), num(p.target, target)
+	best = math.max(best, num(p.best, best))
+	bestStars = math.max(bestStars, num(p.bestStars, bestStars))
+	restingUntil = 0
+	restingLeft = -1
 	local newBest = p.newBest == true and s > 0
-	finishTitle.Text = if won
-		then (if newBest then "NEW BEST!" else "SHAKE CHAMP!")
-		elseif p.why == "hearts" then "OUT OF HEARTS!"
-		else "SO CLOSE!"
+	finishTitle.Text = if won then "SHAKE CHAMP!" elseif p.why == "hearts" then "OUT OF HEARTS!" else "SO CLOSE!"
 	finishTitle.TextColor3 = if won then C.Gold else W.Coral
-	finishSub.Text = string.format("Score %d  ·  Target %d", s, t)
-	finishBest.Text = if newBest then "Best: " .. s .. " (new!)" else "Best: " .. best
+	local caught = num(p.caught, s)
+	finishSub.Text = string.format("%d catches  ·  Score %d / %d", caught, s, t)
+	finishBest.Text = if newBest then string.format("Best %d  (was %d)", s, num(p.prevBest, 0)) else "Best " .. best
+	finishNew.Visible = false
 	local cash = num(p.cash, 0)
 	if not won then
 		finishReward.Text = if p.why == "hearts"
@@ -271,35 +740,89 @@ local function showFinish(p: { [string]: any }, won: boolean)
 			else "Catch " .. t .. " to win cash!"
 		finishReward.TextColor3 = C.Text
 	elseif cash > 0 then
-		finishReward.Text = (if p.pay == "repeat" then "Run again bonus +" else "+") .. Format.money(cash)
+		finishReward.Text = (if p.pay == "repeat" then "Repeat bonus +" else "+") .. Format.money(cash)
 		finishReward.TextColor3 = C.MoneyText
 	elseif p.pay == "resting" then
-		finishReward.Text = "Bonus is resting. Play again soon!"
+		-- The repeat bonus rests: render counts down to when it pays again.
+		local readyAt = num(p.repeatReadyAt, 0)
+		if readyAt > Workspace:GetServerTimeNow() then
+			restingUntil = readyAt
+			finishReward.Text = "Next bonus in " .. Format.clock(math.ceil(readyAt - Workspace:GetServerTimeNow()))
+		else
+			finishReward.Text = "Bonus ready! Play again!"
+		end
 		finishReward.TextColor3 = C.Text
 	else
-		local wait = math.max(0, num(p.cooldownEnds, 0) - os.time())
+		local wait = math.max(0, num(p.cooldownEnds, cooldownEnds) - os.time())
 		finishReward.Text = "Full reward in " .. Format.clock(wait)
 		finishReward.TextColor3 = C.Text
 	end
+	if type(p.cooldownEnds) == "number" then
+		cooldownEnds = p.cooldownEnds
+	end
+	-- The stars: one per tier reached (a pass is one), popping in one by one.
+	local stars = math.clamp(math.floor(num(p.stars, if won then 1 else 0)), 0, STAR_COUNT)
+	local starCash = num(p.starCash, 0)
+	local nextStar = p.starNext
+	for i, star in finishStars do
+		star.Visible = false
+		if i <= stars then
+			task.delay(0.25 + i * 0.18, function()
+				if finishCard.Visible and finishStars[i] == star then
+					Kit.appear(star, { from = 2.2, time = 0.3 })
+					Sounds.play("Collect", 0.05, 1 + i * 0.12)
+				end
+			end)
+		end
+	end
+	if starCash > 0 then
+		finishStarNote.Text = string.format("%d STARS! Star bonus +%s", stars, Format.money(starCash))
+		finishStarNote.TextColor3 = C.Gold
+	elseif won and type(nextStar) == "number" then
+		finishStarNote.Text = string.format("Next star at %d points", nextStar)
+		finishStarNote.TextColor3 = C.TextDim
+	else
+		finishStarNote.Text = if stars >= STAR_COUNT then "All 3 stars!" else ""
+		finishStarNote.TextColor3 = C.Gold
+	end
+	returnAt = num(p.returnAt, 0)
+	lobbyLeft = -1
+	Kit.setButton(lobbyButton, "LOBBY")
 	finishCard.Visible = true
 	Kit.appear(finishCard, { from = 0.5, time = 0.35 })
 	finishToken += 1
 	local token = finishToken
-	task.delay(FINISH_HOLD, function()
+	local hold = if returnAt > 0 then math.max(1, returnAt - Workspace:GetServerTimeNow()) + FINISH_GRACE else FINISH_HOLD
+	task.delay(hold, function()
 		if token == finishToken and finishCard.Visible then
 			hideFinish()
+			if phase == "results" then
+				phase = "lobby"
+				showLobby()
+			end
 		end
 	end)
-	Kit.focus(finishCard)
-	task.defer(function()
-		Kit.select(Kit.firstSelectable(finishCard))
-	end)
+	if newBest then
+		finishNew.Rotation = -6
+		Kit.appear(finishNew, { from = 2.2, time = 0.45, delay = 0.35 })
+		task.delay(0.4, function()
+			if token == finishToken then
+				Sounds.play("Upgrade")
+			end
+		end)
+		task.delay(0.9, function()
+			if token == finishToken and not stopNewBest then
+				stopNewBest = Kit.breathe(finishNew, 0.12)
+			end
+		end)
+	end
+	-- No gamepad focus on the card: A stays jump and the stick keeps walking (X plays again).
 	if won then
 		Kit.confetti(finishCard, { Count = if cash > 0 then 36 else 20, Origin = UDim2.fromScale(0.5, 0.2), ZIndex = 55 })
 		Sounds.play(if p.first == true then "CelebrateLegendary" else "Celebrate")
 		if cash > 0 then
 			Kit.countTo(finishReward, 0, cash, function(n: number)
-				return (if p.pay == "repeat" then "Run again bonus +" else "+") .. Format.money(n)
+				return (if p.pay == "repeat" then "Repeat bonus +" else "+") .. Format.money(n)
 			end, 0.9)
 		end
 	else
@@ -309,19 +832,89 @@ end
 
 -- Lifecycle ----------------------------------------------------------------------------------
 
-local function hide()
+-- Takes the run column down (banners, count, flash).
+local function endRun()
 	running = false
+	clearPending()
+	bindQuit(false)
 	bannerEpoch += 1
 	bannerShown = 0
 	banner.Visible = false
-	if stepConn then
-		stepConn:Disconnect()
-		stepConn = nil
-	end
-	setChrome(false)
+	hideCount()
+	hurtFlash.Visible = false
 	if root.Visible then
 		Kit.disappear(root)
 	end
+end
+
+local function enterLobby(p: { [string]: any }?)
+	if p then
+		absorb(p)
+	end
+	if running then
+		endRun()
+	end
+	hideFinish()
+	phase = "lobby"
+	setChrome(true)
+	ensureStep(true)
+	bind(true)
+	showLobby()
+	paintBoard()
+end
+
+-- Countdown (and play): the run column comes up. `p`: the "countdown" payload, a legacy
+-- "start" { goAt, endAt, ... } or a snapshot that skipped the Notify.
+local function beginRun(p: { [string]: any })
+	absorb(p)
+	hideLobby()
+	hideFinish()
+	bind(false)
+	phase = if p.phase == "play" then "play" else "countdown"
+	running = true
+	clearPending()
+	serverScore = num(p.score, 0)
+	score = serverScore
+	-- (A snapshot's hearts are the ones left, so they only ever raise the maximum.)
+	maxHearts = num(p.maxHearts, math.max(maxHearts, num(p.hearts, 0)))
+	hearts = maxHearts
+	local now = Workspace:GetServerTimeNow()
+	local fallback = if p.phase == "play" then now - 1 else now + num(p.seconds, 3)
+	goAt = num(p.goAt, fallback)
+	endAt = num(p.endAt, goAt + runSeconds)
+	wave, waves = 1, num(p.waves, waves)
+	targetShown = false
+	-- A snapshot in play has no count to show.
+	lastCount = if goAt > now then -1 else 0
+	resetQuit()
+	bindQuit(true)
+	for _, child in heartsRow:GetChildren() do
+		if child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+	setHearts(hearts, false)
+	if type(p.hearts) == "number" then
+		setHearts(p.hearts, false)
+	end
+	paintScore(false)
+	root.Visible = true
+	Kit.appear(root, { from = 0.6, time = 0.3 })
+	setChrome(true)
+	ensureStep(true)
+	render()
+end
+
+local function leaveMode()
+	phase = ""
+	if running then
+		endRun()
+	end
+	hideLobby()
+	bind(false)
+	bindQuit(false)
+	ensureStep(false)
+	setChrome(false)
 end
 
 function ShakeHud.start(payload: { [string]: any }?)
@@ -329,40 +922,23 @@ function ShakeHud.start(payload: { [string]: any }?)
 		return
 	end
 	local p: { [string]: any } = payload or {}
-	hideFinish()
-	running = true
-	score = 0
-	target = num(p.target, 25)
-	maxHearts = num(p.hearts, 3)
-	hearts = maxHearts
-	goAt = num(p.goAt, Workspace:GetServerTimeNow() + 3)
-	endAt = num(p.endAt, goAt + num(p.seconds, 60))
-	wave, waves = 1, num(p.waves, 4)
-	targetShown = false
-	lastCount = -1
-	resetQuit()
-	for _, child in heartsRow:GetChildren() do
-		if child:IsA("Frame") then
-			child:Destroy()
-		end
+	if type(p.seconds) == "number" then
+		runSeconds = p.seconds
 	end
-	setHearts(hearts, false)
-	paintScore(false)
-	root.Visible = true
-	Kit.appear(root, { from = 0.6, time = 0.3 })
-	setChrome(true)
-	if not stepConn then
-		stepConn = RunService.RenderStepped:Connect(render)
+	if p.phase == "lobby" or type(p.goAt) ~= "number" then
+		enterLobby(p)
+	else
+		-- An older server: "start" begins the run straight away.
+		beginRun(p)
 	end
-	render()
 end
 
 function ShakeHud.stop(payload: { [string]: any }?)
-	local was = running
 	if not root then
 		return
 	end
-	hide()
+	local was = running
+	leaveMode()
 	hideFinish()
 	if was and payload and payload.reason == "quit" then
 		Popups.toast("Shake Catch ended", "info")
@@ -376,15 +952,41 @@ function ShakeHud.onNotify(payload: { [string]: any })
 	local event = payload.event
 	if event == "start" then
 		ShakeHud.start(payload)
+	elseif event == "go" then
+		-- The countdown is over (render shows GO! from the clock; this pins the times).
+		if running then
+			phase = "play"
+			goAt = num(payload.goAt, goAt)
+			endAt = num(payload.endAt, endAt)
+		elseif phase == "lobby" or phase == "" then
+			beginRun(payload)
+		end
 	elseif event == "stop" then
 		ShakeHud.stop(payload)
+	elseif event == "lobby" then
+		enterLobby(payload)
+	elseif event == "countdown" then
+		beginRun(payload)
 	elseif event == "win" or event == "lose" then
-		hide()
+		if running then
+			endRun()
+		end
+		hideLobby()
+		phase = "results"
+		bind(true)
 		showFinish(payload, event == "win")
+		paintBoard()
+	elseif event == "wave" and not running then
+		-- The countdown Notify never came: the first wave says when play starts.
+		if phase == "lobby" then
+			local first = num(payload.wave, 1) == 1
+			beginRun({ goAt = if first then payload.at else nil, waves = payload.waves })
+		end
 	elseif not running then
 		return
 	elseif event == "wave" then
 		local n = num(payload.wave, 1)
+		waves = num(payload.waves, waves)
 		if n > 1 then
 			local delay = math.max(0, num(payload.at, 0) - Workspace:GetServerTimeNow())
 			task.delay(delay, function()
@@ -392,7 +994,7 @@ function ShakeHud.onNotify(payload: { [string]: any })
 					wave = n
 				end
 			end)
-			local last = n >= num(payload.waves, waves)
+			local last = n >= waves
 			showBanner(
 				if last then "FINAL WAVE!" else "WAVE " .. n .. "!",
 				if last then "Faster and faster!" else "Faster!",
@@ -407,41 +1009,243 @@ function ShakeHud.onNotify(payload: { [string]: any })
 			end)
 		end
 	elseif event == "catch" then
-		score = num(payload.score, score)
-		paintScore(true)
-		if score >= target and not targetShown then
+		local id = payload.id
+		local predicted = type(id) == "number" and pending[id] ~= nil
+		if type(id) == "number" then
+			pending[id] = nil
+			confirmed[id] = true
+		end
+		serverScore = num(payload.score, serverScore)
+		-- A predicted catch already popped the pill.
+		paintScore(not predicted)
+		if serverScore >= target and not targetShown then
 			targetShown = true
 			showBanner("TARGET HIT!", "Keep catching for a best!", C.Gold, 1.6)
 			Sounds.play("Upgrade")
 		end
-	elseif event == "splat" then
-		setHearts(num(payload.hearts, hearts - 1), true)
-		Kit.pop(heartsRow, 1.2)
+	elseif event == "splat" or event == "miss" then
+		-- "miss" only costs a heart if the server says so.
+		if type(payload.hearts) == "number" then
+			hurt(payload.hearts)
+		elseif event == "splat" then
+			hurt(hearts - 1)
+		end
 	end
 end
 
 function ShakeHud.onState(data: any)
-	local info = type(data) == "table" and type(data.modes) == "table" and data.modes.shake
-	if running and not (type(info) == "table" and info.running == true) then
-		ShakeHud.stop(nil)
-	elseif not running and finishCard and finishCard.Visible and type(data) == "table" and type(data.modes) == "table" then
-		-- Not running any more and another mode has started: the finish card is stale.
-		-- (Right after a finish nothing runs, so the card stays until dismissed or timed out.)
-		for _, other in data.modes do
-			if type(other) == "table" and other.running == true then
-				hideFinish()
-				break
+	if not screen or type(data) ~= "table" or type(data.modes) ~= "table" then
+		return
+	end
+	local info = data.modes.shake
+	if type(info) ~= "table" then
+		return
+	end
+	absorb(info)
+	paintBoard()
+	if info.running ~= true then
+		if phase == "results" then
+			-- An older server: nothing runs after a finish, the card stays until dismissed.
+			for _, other in data.modes do
+				if type(other) == "table" and other.running == true then
+					-- Another mode started: the card is stale.
+					ShakeHud.stop(nil)
+					break
+				end
+			end
+		elseif phase ~= "" then
+			ShakeHud.stop(nil)
+		end
+		return
+	end
+	local p = if type(info.phase) == "string" then info.phase else "play"
+	if p == "lobby" then
+		if phase ~= "lobby" then
+			enterLobby(nil)
+		elseif lobbyCard.Visible then
+			paintLobby()
+		end
+	elseif p == "countdown" or p == "play" then
+		if phase == "" or phase == "lobby" then
+			beginRun(info)
+		elseif running then
+			-- Safety net for a lost "catch" / "splat": the server's numbers win.
+			local s = num(info.score, serverScore)
+			if s > serverScore then
+				serverScore = s
+				paintScore(false)
+			end
+			local h = num(info.hearts, hearts)
+			if h < hearts then
+				hurt(h)
+			end
+			if p == "play" then
+				endAt = num(info.endAt, endAt)
 			end
 		end
+	elseif p == "results" and running then
+		-- The finish Notify is late (or lost): take the run column down and wait for it.
+		endRun()
 	end
 end
 
 -- Build --------------------------------------------------------------------------------------
 
+-- The gamepad X glyph on a button's face (left end), shown while a gamepad is in use.
+local function padGlyph(button: TextButton)
+	local glyph = Kit.new("TextLabel", {
+		Name = "PadX",
+		Text = "X",
+		Font = F.Display,
+		TextSize = 18,
+		TextColor3 = Color3.new(1, 1, 1),
+		BackgroundColor3 = PAD_X_COLOR,
+		Size = UDim2.fromOffset(28, 28),
+		Position = UDim2.new(0, 10, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		ZIndex = (button.ZIndex or 1) + 4,
+		Visible = Kit.gamepad == true,
+		Parent = Kit.buttonFace(button) or button,
+	})
+	Kit.round(glyph)
+	Kit.stroke(glyph, 2, W.Ink)
+	table.insert(padGlyphs, glyph)
+end
+
+local function buildLobby(screenGui: ScreenGui)
+	lobbyCard = Kit.panel(screenGui, {
+		Name = "ShakeLobby",
+		Size = UDim2.fromOffset(LOBBY_W, LOBBY_H),
+		Position = UDim2.new(1, -ROOT_RIGHT + 12, 0.5, 20),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Visible = false,
+		ZIndex = 20,
+		Elevated = true,
+		StrokeColor = W.Pink,
+		StrokeThickness = 3,
+	})
+	Kit.icon(lobbyCard, "Star", 30, C.Gold, {
+		Position = UDim2.fromOffset(14, 14),
+		ZIndex = 22,
+	})
+	Kit.title(lobbyCard, {
+		Name = "Title",
+		Text = "SHAKE CATCH",
+		TextSize = 30,
+		TextColor3 = W.Pink,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -66, 0, 34),
+		Position = UDim2.fromOffset(52, 12),
+		ZIndex = 21,
+	})
+	lobbyGoal = Kit.text(lobbyCard, {
+		Name = "Goal",
+		Text = "",
+		Font = F.UI,
+		MaxTextSize = 16,
+		TextColor3 = C.Text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		-- Two lines: the whole goal wraps at full size instead of shrinking to fit one.
+		Size = UDim2.new(1, -28, 0, LOBBY_GOAL_H),
+		Position = UDim2.fromOffset(14, 50),
+		ZIndex = 21,
+	})
+	lobbyStats = Kit.number(lobbyCard, {
+		Name = "Stats",
+		Text = "",
+		TextSize = 18,
+		TextColor3 = C.Gold,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -28, 0, 22),
+		Position = UDim2.fromOffset(14, 56 + LOBBY_GOAL_H),
+		ZIndex = 21,
+	})
+	local well = Kit.well(lobbyCard, {
+		Name = "RewardWell",
+		Size = UDim2.new(1, -24, 0, 50),
+		Position = UDim2.fromOffset(12, 84 + LOBBY_GOAL_H),
+		ZIndex = 21,
+	})
+	lobbyReward = Kit.text(well, {
+		Name = "Reward",
+		Text = "",
+		Font = F.Display,
+		TextSize = 17,
+		TextColor3 = C.MoneyText,
+		Size = UDim2.new(1, -16, 0, 22),
+		Position = UDim2.fromOffset(8, 4),
+		ZIndex = 22,
+	})
+	lobbyRewardSub = Kit.text(well, {
+		Name = "Sub",
+		Text = "",
+		Font = F.UI,
+		TextSize = 14,
+		TextColor3 = C.TextDim,
+		Size = UDim2.new(1, -16, 0, 18),
+		Position = UDim2.fromOffset(8, 27),
+		ZIndex = 22,
+	})
+	playButton = Kit.button(lobbyCard, {
+		Name = "Play",
+		Text = "PLAY",
+		Color = C.Good,
+		Font = F.Display,
+		TextSize = 28,
+		Size = UDim2.new(1, -136, 0, 58),
+		Position = UDim2.fromOffset(12, 144 + LOBBY_GOAL_H),
+		ZIndex = 22,
+		Breathe = true,
+	}, sendBegin)
+	playButton:SetAttribute("FocusFirst", true)
+	padGlyph(playButton)
+	local leave = Kit.button(lobbyCard, {
+		Name = "Leave",
+		Text = "LEAVE",
+		Color = C.SurfaceHi,
+		Font = F.Display,
+		TextSize = 18,
+		Size = UDim2.fromOffset(104, 58),
+		Position = UDim2.new(1, -12, 0, 144 + LOBBY_GOAL_H),
+		AnchorPoint = Vector2.new(1, 0),
+		ZIndex = 22,
+	}, function()
+		action:FireServer({ action = "ModeQuit" })
+	end)
+	Kit.selectable(playButton)
+	Kit.selectable(leave)
+	lobbyHint = Kit.text(lobbyCard, {
+		Name = "Hint",
+		Text = "",
+		Font = F.UI,
+		TextSize = 13,
+		TextColor3 = C.TextDim,
+		Size = UDim2.new(1, -24, 0, 18),
+		Position = UDim2.new(0, 12, 1, -24),
+		ZIndex = 21,
+	})
+	Kit.onInput(function()
+		for _, glyph in padGlyphs do
+			glyph.Visible = Kit.gamepad == true
+		end
+		if quitBadge then
+			quitBadge.Visible = Kit.gamepad == true
+		end
+		-- Touch: the column and the card ride higher, clear of the jump button.
+		local right = if Kit.touch then TOUCH_RIGHT else ROOT_RIGHT
+		root.Position = UDim2.new(1, -right, 0.5, if Kit.touch then TOUCH_DY else ROOT_DY)
+		lobbyCard.Position = UDim2.new(1, -right + (if Kit.touch then 0 else 12), 0.5, if Kit.touch then TOUCH_DY + 10 else 20)
+		if lobbyCard.Visible then
+			paintLobby()
+		end
+	end)
+end
+
 local function buildFinish(screenGui: ScreenGui)
 	finishCard = Kit.panel(screenGui, {
 		Name = "ShakeFinish",
-		Size = UDim2.fromOffset(420, 270),
+		Size = UDim2.fromOffset(420, 330),
 		Position = UDim2.fromScale(0.5, 0.48),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Visible = false,
@@ -478,11 +1282,24 @@ local function buildFinish(screenGui: ScreenGui)
 		Name = "Best",
 		Text = "",
 		Font = F.UI,
-		TextSize = 15,
+		TextSize = 16,
 		TextColor3 = C.TextDim,
 		Size = UDim2.new(1, -20, 0, 20),
-		Position = UDim2.fromOffset(10, 112),
+		Position = UDim2.fromOffset(10, 114),
 		ZIndex = 51,
+	})
+	finishNew = Kit.pill(finishCard, {
+		Name = "NewBest",
+		Text = "NEW BEST!",
+		Font = F.Display,
+		TextSize = 18,
+		Color = C.Gold,
+		Solid = true,
+		Size = UDim2.fromOffset(130, 30),
+		Position = UDim2.new(1, -16, 0, 14),
+		AnchorPoint = Vector2.new(1, 0),
+		ZIndex = 53,
+		Visible = false,
 	})
 	finishReward = Kit.number(finishCard, {
 		Name = "Reward",
@@ -490,7 +1307,41 @@ local function buildFinish(screenGui: ScreenGui)
 		TextSize = 24,
 		TextColor3 = C.MoneyText,
 		Size = UDim2.new(1, -20, 0, 32),
-		Position = UDim2.fromOffset(10, 140),
+		Position = UDim2.fromOffset(10, 144),
+		ZIndex = 51,
+	})
+	-- The stars: a dim star per tier, a lit one over it that pops in when reached.
+	local starSize, starGap = 34, 10
+	local rowW = STAR_COUNT * starSize + (STAR_COUNT - 1) * starGap
+	for i = 1, STAR_COUNT do
+		local x = (i - 1) * (starSize + starGap) - rowW / 2
+		local dim = Kit.icon(finishCard, "Star", starSize, STAR_DIM, {
+			Name = "StarSlot" .. i,
+			Position = UDim2.new(0.5, x, 0, 180),
+			ZIndex = 51,
+		})
+		for _, inst in dim:GetDescendants() do
+			if inst:IsA("ImageLabel") then
+				inst.ImageColor3 = STAR_DIM
+				inst.ImageTransparency = 0.3
+			end
+		end
+		local lit = Kit.icon(finishCard, "Star", starSize, C.Gold, {
+			Name = "Star" .. i,
+			Position = UDim2.new(0.5, x, 0, 180),
+			ZIndex = 52,
+		})
+		lit.Visible = false
+		finishStars[i] = lit
+	end
+	finishStarNote = Kit.text(finishCard, {
+		Name = "StarNote",
+		Text = "",
+		Font = F.UI,
+		MaxTextSize = 16,
+		TextColor3 = C.TextDim,
+		Size = UDim2.new(1, -20, 0, 20),
+		Position = UDim2.fromOffset(10, 220),
 		ZIndex = 51,
 	})
 	local again = Kit.button(finishCard, {
@@ -499,31 +1350,39 @@ local function buildFinish(screenGui: ScreenGui)
 		Color = C.Good,
 		Font = F.Display,
 		TextSize = 20,
-		Size = UDim2.fromOffset(170, 50),
-		Position = UDim2.new(0.5, -8, 1, -18),
+		Size = UDim2.fromOffset(200, 54),
+		Position = UDim2.new(0.5, -8, 1, -20),
 		AnchorPoint = Vector2.new(1, 1),
 		ZIndex = 52,
 		Breathe = true,
 	}, function()
 		hideFinish()
-		action:FireServer({ action = "ModeStart", mode = "shake" })
+		sendBegin()
 	end)
-	local home = Kit.button(finishCard, {
-		Name = "Home",
-		Text = "HOME",
+	again:SetAttribute("FocusFirst", true)
+	padGlyph(again)
+	lobbyButton = Kit.button(finishCard, {
+		Name = "Lobby",
+		Text = "LOBBY",
 		Color = C.SurfaceHi,
 		Font = F.Display,
 		TextSize = 20,
-		Size = UDim2.fromOffset(150, 50),
-		Position = UDim2.new(0.5, 8, 1, -18),
+		Size = UDim2.fromOffset(150, 54),
+		Position = UDim2.new(0.5, 8, 1, -20),
 		AnchorPoint = Vector2.new(0, 1),
 		ZIndex = 52,
 	}, function()
 		hideFinish()
-		action:FireServer({ action = "Home" })
+		-- Back to the lobby now (the server would do it at returnAt anyway); the lobby card
+		-- (PLAY works from results too) is up straight away, the "lobby" event confirms it.
+		action:FireServer({ action = "ShakeLobby" })
+		if phase == "results" then
+			phase = "lobby"
+			showLobby()
+		end
 	end)
 	Kit.selectable(again)
-	Kit.selectable(home)
+	Kit.selectable(lobbyButton)
 end
 
 function ShakeHud.init(screenGui: ScreenGui)
@@ -569,23 +1428,24 @@ function ShakeHud.init(screenGui: ScreenGui)
 		Radius = 22,
 		Depth = 2,
 		ZIndex = 4,
-	}, function()
-		if quitArmed then
-			resetQuit()
-			action:FireServer({ action = "ModeQuit" })
-			return
-		end
-		-- First tap arms it: "QUIT?" for a few seconds.
-		quitArmed = true
-		Kit.setButton(quitButton, "QUIT?", C.Bad)
-		Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(96, 44) }, Enum.EasingStyle.Back)
-		task.delay(3, function()
-			if quitArmed then
-				resetQuit()
-			end
-		end)
-	end)
+	}, pressQuit)
 	Kit.selectable(quitButton)
+	-- The gamepad Y badge on the quit button's corner.
+	quitBadge = Kit.new("TextLabel", {
+		Name = "PadY",
+		Text = "Y",
+		Font = F.Display,
+		TextSize = 14,
+		TextColor3 = W.Ink,
+		BackgroundColor3 = PAD_Y_COLOR,
+		Size = UDim2.fromOffset(20, 20),
+		Position = UDim2.fromOffset(-6, -6),
+		ZIndex = 8,
+		Visible = Kit.gamepad == true,
+		Parent = quitButton,
+	})
+	Kit.round(quitBadge)
+	Kit.stroke(quitBadge, 2, W.Ink)
 
 	-- The bar toward the target.
 	local bar = Kit.new("Frame", {
@@ -627,7 +1487,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 		Position = UDim2.fromOffset(0, 122),
 	})
 
-	-- The centre banner (count-in, waves, target).
+	-- The centre banner (waves, target).
 	banner = Kit.hudText(screenGui, {
 		Name = "ShakeBanner",
 		Text = "",
@@ -650,7 +1510,72 @@ function ShakeHud.init(screenGui: ScreenGui)
 		ZIndex = 30,
 	})
 
+	-- The big "3, 2, 1, GO!".
+	countLabel = Kit.hudText(screenGui, {
+		Name = "ShakeCount",
+		Text = "",
+		Font = F.Display,
+		TextSize = 150,
+		StrokeThickness = 7,
+		Size = UDim2.fromOffset(500, 160),
+		Position = UDim2.fromScale(0.5, 0.36),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Visible = false,
+		ZIndex = 32,
+	})
+	countSub = Kit.hudText(countLabel, {
+		Name = "Sub",
+		Text = "",
+		Font = F.Display,
+		TextSize = 26,
+		Size = UDim2.new(1, 200, 0, 32),
+		Position = UDim2.new(0.5, 0, 1, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 32,
+	})
+
+	-- Red edge flash when a heart goes (a soft vignette: transparent in the middle).
+	hurtFlash = Kit.new("Frame", {
+		Name = "ShakeHurt",
+		BackgroundColor3 = C.Bad,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(1, 1),
+		Visible = false,
+		ZIndex = 15,
+		Parent = screenGui,
+	})
+	Kit.new("UIGradient", {
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0),
+			NumberSequenceKeypoint.new(0.22, 0.85),
+			NumberSequenceKeypoint.new(0.5, 1),
+			NumberSequenceKeypoint.new(0.78, 0.85),
+			NumberSequenceKeypoint.new(1, 0),
+		}),
+		Parent = hurtFlash,
+	})
+
+	buildLobby(screenGui)
 	buildFinish(screenGui)
+
+	-- Fx.Shake's predicted catches count on the pill at once; the server's word settles them.
+	FxShake.onPredict(function(event: string, id: number, points: number)
+		if not running then
+			return
+		end
+		if event == "catch" then
+			if confirmed[id] or pending[id] then
+				return
+			end
+			pending[id] = { points = points, at = os.clock() }
+			-- (TARGET HIT! still waits for the server's score.)
+			paintScore(true)
+		elseif event == "missed" and pending[id] then
+			pending[id] = nil
+			paintScore(false)
+		end
+	end)
 end
 
 return ShakeHud

@@ -9,28 +9,37 @@
 	Fx.Shake animates them locally against the server clock.
 	  Good items: protein shake (+1), golden dumbbell (+3, rare), aura orb (+1).
 	  Junk food: burger, donut, soda. Catching one costs a heart (HEARTS per run).
-	A drop is caught when the player's root stood within the catch radius of its landing
-	spot at some moment of the window around the land time (caught; the window covers the
+	A drop is caught when the player's tray (judgePoint) stood within the catch radius of its
+	landing spot at some moment of the window around the land time (caught; the window covers the
 	server's view of a moving player arriving a little late). Junk uses a smaller radius and
 	a tighter window, so near misses never cost a heart.
 	The run is passed with TARGET points: when the clock runs out, or when the hearts run out
 	after the target was already reached (outcome). Out of hearts below the target: "lose".
 
-	ARENA is where World.ShakeArena builds the arena (floor top centre and size in studs,
-	out over the sea away from the Parkour maps, the Mog stage and the Cardio track; tests/
-	minigames.luau keeps every arena clear of the others).
+	A visit goes lobby -> countdown (READY_SECONDS) -> play -> results (RESULTS_SECONDS) ->
+	lobby (docs/minigames.md "Lobby first"): canBegin, onPad and padStep decide the START pad
+	and the "ShakeBegin" action. Root samples are only trusted at a walkable speed (plausible,
+	trust), so a teleporting or speed-hacked character cannot sweep the court; catches are
+	judged at the tray in front of the root (judgePoint). A pass earns 1 to 3 stars (STARS);
+	new star tiers pay a small bonus (starBonus).
+
+	ARENA is where World.ShakeArena builds the arena (floor top centre of the 64 x 64 catch
+	court and the size in studs of everything walkable round it: the court, the lobby deck past
+	its +Z edge, the bleachers past +X and the Smoothie Bar past -Z), out over the sea away
+	from the Parkour maps, the Mog stage and the Cardio track; tests/minigames.luau keeps every
+	arena clear of the others.
 ]]
 
 local ShakeRules = {}
 
-ShakeRules.ARENA = { x = 380, y = 6, z = -380, sizeX = 64, sizeZ = 64 }
+ShakeRules.ARENA = { x = 7000, y = 6, z = -7000, sizeX = 96, sizeZ = 164 }
 -- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
 ShakeRules.FALL_BELOW = 20
 
 ShakeRules.RUN_SECONDS = 60
 ShakeRules.HEARTS = 3
 ShakeRules.TARGET = 25
--- Seconds between "start" and the first wave (the HUD counts 3, 2, 1).
+-- The countdown: seconds between "ShakeBegin" and the first wave (the HUD counts 3, 2, 1).
 ShakeRules.READY_SECONDS = 3
 -- A pass inside the reward cooldown pays the repeat share at most this often (seconds).
 ShakeRules.REPEAT_GAP = 120
@@ -39,18 +48,58 @@ ShakeRules.REPEAT_GAP = 120
 ShakeRules.CATCH = { radius = 4.5, early = 0.3, late = 0.3 }
 -- Junk is judged a touch late (the server sees a dodging player where they were a moment ago).
 ShakeRules.JUNK = { radius = 3, early = 0, late = 0.2 }
--- The exit pad (World.Arena: +X / +Z corner, 5 studs in from both edges) and how far from it
--- no drop may land, so chasing a corner drop never walks the player out of a run (the exit
--- arch's posts stand inside this circle too).
-ShakeRules.EXIT = { x = ShakeRules.ARENA.x + ShakeRules.ARENA.sizeX / 2 - 5, z = ShakeRules.ARENA.z + ShakeRules.ARENA.sizeZ / 2 - 5 }
+-- The exit pad (World.ShakeArena: under the EXIT arch on the lobby deck's +X side, past the
+-- court's +Z edge) and how far from it no drop may land, so chasing a drop never walks the
+-- player out of a run.
+ShakeRules.EXIT = { x = ShakeRules.ARENA.x + 26, z = ShakeRules.ARENA.z + 61 }
 ShakeRules.EXIT_CLEAR = 10
 -- The server sees a player's position this late: about half the round trip plus a frame of
 -- replication (lagOf). Samples are stamped back by it so dodges count when they happened.
 ShakeRules.LAG_MAX = 0.4
--- A sample further than this (studs) from the last tick's position is a teleport: dropped.
-ShakeRules.MAX_STEP = 40
 -- A drop is judged this long after it lands (the longest `late`), once every sample is in.
 ShakeRules.SETTLE = 0.3
+
+-- Results card time before the player is put back in the lobby (seconds).
+ShakeRules.RESULTS_SECONDS = 6
+-- The START pad only fires after the feet were off it this long (seconds), so a player
+-- landing on or walking back onto it is never restarted at once.
+ShakeRules.PAD_REARM = 1
+-- Feet this far (studs, up or down) from the pad's top still count as standing on it.
+ShakeRules.PAD_HEIGHT = 4
+
+-- Speed check for root samples: a sample is trusted when it lies within
+-- MAX_WALK * SPEED_SLACK * dt + SPEED_PAD studs (flat) of the trust anchor, which moves to a
+-- trusted sample at most every ANCHOR_EVERY seconds (trust). MAX_WALK is a server constant (the
+-- base WalkSpeed with Speedy Sneakers), never the live Humanoid.WalkSpeed; Modes.Shake holds the
+-- character at legitWalk (BASE_WALK, x the Sneakers' multiplier, never above MAX_WALK) for the
+-- whole visit so honest play never outruns the check (a 30 stud/s hack does). An implausible
+-- sample is dropped (it catches nothing) and the anchor stays put: as `dt` grows the allowed
+-- circle grows with it, so a fling or a lag spike is trusted again once the new spot could
+-- have been walked to from the last trusted one, and a teleport never re-anchors at once.
+ShakeRules.BASE_WALK = 16
+ShakeRules.MAX_WALK = 21
+ShakeRules.SPEED_SLACK = 1.15
+ShakeRules.SPEED_PAD = 2
+ShakeRules.ANCHOR_EVERY = 0.5
+
+-- Catches are judged at the tray, not the root: TRAY_AHEAD studs in front of the root along
+-- its flat look direction (judgePoint). Fx.Shake draws the reach ring there and predicts
+-- catches from the same point.
+ShakeRules.TRAY_AHEAD = 2
+
+-- Star tiers: STARS[i] points earn star i (STARS[1] is the TARGET, the pass). Each tier past
+-- the first pays STAR_SHARE[i] of the repeat cash (Economy.MODE_REPEAT_SHARE of the pack) the
+-- first time it is reached in STAR_COOLDOWN seconds (starBonus), on top of the pass pay, so
+-- the star bonus adds at most sum(STAR_SHARE) x repeatCash per STAR_COOLDOWN (well within
+-- 2 x repeatCash in any 5 minutes).
+ShakeRules.STARS = { ShakeRules.TARGET, 40, 55 }
+ShakeRules.STAR_SHARE = { 0, 0.5, 1 }
+ShakeRules.STAR_COOLDOWN = 1800
+
+-- Fair drops: two items landing within FAIR.time seconds of each other, one good and one
+-- junk (or any two at the same moment), land at least FAIR.gap studs apart, so catching a
+-- good item never forces a heart and a double is a real choice.
+ShakeRules.FAIR = { time = 0.8, gap = ShakeRules.CATCH.radius + ShakeRules.JUNK.radius + 1.5 }
 
 -- "shake" | "gold" | "orb" (good) or "burger" | "donut" | "soda" (junk).
 export type Kind = string
@@ -93,12 +142,23 @@ export type Drop = {
 }
 export type Sample = { t: number, x: number, z: number }
 
--- A tiny deterministic generator (the same LCG as tests/run.luau's `seeded`): values in [0, 1).
+-- A tiny deterministic generator: the classic LCG state * 1103515245 + 12345 mod 2^31, values
+-- in [0, 1). The multiply is split in two (the multiplier's high and low 16 bits) so every
+-- product stays below 2^53 and no low bits are lost to float rounding: the result is exact,
+-- the same on the server and in Lune.
+local LCG_MUL_HI = 16838 -- math.floor(1103515245 / 65536)
+local LCG_MUL_LO = 20077 -- 1103515245 % 65536
+local LCG_MOD = 2147483648
+function ShakeRules.lcgNext(state: number): number
+	local hi = (state * LCG_MUL_HI) % LCG_MOD
+	return (hi * 65536 + state * LCG_MUL_LO + 12345) % LCG_MOD
+end
+
 function ShakeRules.rng(seed: number): () -> number
-	local state = math.floor(math.abs(seed)) % 2147483648
+	local state = if seed == seed and math.abs(seed) ~= math.huge then math.floor(math.abs(seed)) % LCG_MOD else 0
 	return function()
-		state = (state * 1103515245 + 12345) % 2147483648
-		return state / 2147483648
+		state = ShakeRules.lcgNext(state)
+		return state / LCG_MOD
 	end
 end
 
@@ -168,19 +228,63 @@ function ShakeRules.keepClear(x: number, z: number, area: Area, avoid: { x: numb
 		math.clamp(avoid.z + cz / len * (clear + 0.5), area.z0, area.z1)
 end
 
--- Every drop of a run, in land order, from its seed. Landing spots stay inside `area` and
--- at least EXIT_CLEAR studs from `avoid` (default EXIT); the last items land by RUN_SECONDS.
+-- `v` folded back inside [lo, hi] (a point past an edge bounces back in instead of piling
+-- up on the edge).
+function ShakeRules.reflect(v: number, lo: number, hi: number): number
+	if v < lo then
+		v = lo + (lo - v)
+	elseif v > hi then
+		v = hi - (v - hi)
+	end
+	return math.clamp(v, lo, hi)
+end
+
+-- True when a drop of `kind` landing at (x, z) at `landAt` keeps FAIR spacing from `drops`
+-- (in land order; only the last FAIR.time seconds are looked at).
+function ShakeRules.fair(drops: { Drop }, kind: Kind, x: number, z: number, landAt: number): boolean
+	local junk = ShakeRules.isJunk(kind)
+	local gap2 = ShakeRules.FAIR.gap * ShakeRules.FAIR.gap
+	for i = #drops, 1, -1 do
+		local o = drops[i]
+		local dt = math.abs(landAt - o.landAt)
+		if dt > ShakeRules.FAIR.time then
+			break
+		end
+		if dt < 1e-6 or ShakeRules.isJunk(o.kind) ~= junk then
+			local dx, dz = x - o.x, z - o.z
+			if dx * dx + dz * dz < gap2 then
+				return false
+			end
+		end
+	end
+	return true
+end
+
+-- Every drop of a run, in land order, from its seed. Landing spots stay inside `area`, at
+-- least EXIT_CLEAR studs from `avoid` (default EXIT) and FAIR from each other; the action
+-- wanders round the court (each drop within a wave's `reach` of the last, leaning back to
+-- the middle); the last items land by RUN_SECONDS.
 function ShakeRules.schedule(seed: number, area: Area, avoid: { x: number, z: number }?): { Drop }
 	local rand = ShakeRules.rng(seed)
 	local exit = avoid or ShakeRules.EXIT
 	local drops: { Drop } = {}
-	local cx, cz = (area.x0 + area.x1) / 2, (area.z0 + area.z1) / 2
-	local function place(reach: number): (number, number)
-		local angle = rand() * math.pi * 2
-		local dist = reach * (0.35 + 0.65 * rand())
-		local x = math.clamp(cx + math.cos(angle) * dist, area.x0, area.x1)
-		local z = math.clamp(cz + math.sin(angle) * dist, area.z0, area.z1)
-		return ShakeRules.keepClear(x, z, area, exit, ShakeRules.EXIT_CLEAR)
+	local mx, mz = (area.x0 + area.x1) / 2, (area.z0 + area.z1) / 2
+	local cx, cz = mx, mz
+	local function place(reach: number, kind: Kind, landAt: number): (number?, number?)
+		-- Lean a quarter of the way back to the middle so the action never hugs a wall.
+		local ox, oz = cx + (mx - cx) * 0.25, cz + (mz - cz) * 0.25
+		for _ = 1, 8 do
+			local angle = rand() * math.pi * 2
+			local dist = reach * (0.35 + 0.65 * rand())
+			local x = ShakeRules.reflect(ox + math.cos(angle) * dist, area.x0, area.x1)
+			local z = ShakeRules.reflect(oz + math.sin(angle) * dist, area.z0, area.z1)
+			x, z = ShakeRules.keepClear(x, z, area, exit, ShakeRules.EXIT_CLEAR)
+			if ShakeRules.fair(drops, kind, x, z, landAt) then
+				return x, z
+			end
+		end
+		-- No fair spot: this drop is skipped.
+		return nil, nil
 	end
 	for index, wave in ShakeRules.WAVES do
 		local nextWave = ShakeRules.WAVES[index + 1]
@@ -190,19 +294,22 @@ function ShakeRules.schedule(seed: number, area: Area, avoid: { x: number, z: nu
 			local count = if rand() < wave.double then 2 else 1
 			for n = 1, count do
 				local kind = ShakeRules.pick(wave, rand(), rand())
-				local x, z = place(wave.reach)
-				if n == 1 then
-					cx, cz = x, z
+				local landAt = t + wave.fall
+				local x, z = place(wave.reach, kind, landAt)
+				if x and z then
+					if n == 1 then
+						cx, cz = x, z
+					end
+					table.insert(drops, {
+						id = #drops + 1,
+						wave = index,
+						kind = kind,
+						x = x,
+						z = z,
+						spawnAt = t,
+						landAt = landAt,
+					})
 				end
-				table.insert(drops, {
-					id = #drops + 1,
-					wave = index,
-					kind = kind,
-					x = x,
-					z = z,
-					spawnAt = t,
-					landAt = t + wave.fall,
-				})
 			end
 			t += wave.gap
 		end
@@ -225,7 +332,7 @@ function ShakeRules.maxScore(drops: { Drop }): number
 	return total
 end
 
--- True when one of `samples` (run time `t`, root x / z) taken within [landAt - early,
+-- True when one of `samples` (run time `t`, judge point x / z) taken within [landAt - early,
 -- landAt + late] stood within the kind's catch radius of the drop's landing spot.
 function ShakeRules.caught(samples: { Sample }, drop: Drop): boolean
 	local rule = if ShakeRules.isJunk(drop.kind) then ShakeRules.JUNK else ShakeRules.CATCH
@@ -243,6 +350,121 @@ end
 
 function ShakeRules.passed(score: number): boolean
 	return score >= ShakeRules.TARGET
+end
+
+-- Lobby phases. "ShakeBegin" (or the START pad) starts a run from the lobby or the results.
+export type Phase = string -- "lobby" | "countdown" | "play" | "results"
+function ShakeRules.canBegin(phase: Phase?): boolean
+	return phase == "lobby" or phase == "results"
+end
+
+-- Where a fall puts the player back in `phase`: the lobby spawn in the lobby and on the
+-- results card (which then ends), the court spawn during the countdown and play.
+function ShakeRules.fallTo(phase: Phase?): string
+	return if phase == "countdown" or phase == "play" then "court" else "lobby"
+end
+
+-- True when feet at (x, y, z) stand on a pad whose top centre is `pad` (within `radius`
+-- studs flat and PAD_HEIGHT up or down).
+function ShakeRules.onPad(x: number, y: number, z: number, pad: { x: number, y: number, z: number }, radius: number): boolean
+	local dx, dz = x - pad.x, z - pad.z
+	return dx * dx + dz * dz <= radius * radius and math.abs(y - pad.y) <= ShakeRules.PAD_HEIGHT
+end
+
+-- One START-pad tick at time `now`: `offSince` is when the feet were last seen stepping off
+-- the pad (nil right after arriving in the lobby: they must step off first). Returns whether
+-- the run begins and the new offSince.
+function ShakeRules.padStep(onPad: boolean, offSince: number?, now: number): (boolean, number?)
+	if not onPad then
+		return false, offSince or now
+	end
+	if offSince and now - offSince >= ShakeRules.PAD_REARM then
+		return true, nil
+	end
+	-- On the pad too early: the re-arm starts over once they step off.
+	return false, nil
+end
+
+-- True when a root `dist` studs (flat) from the trust anchor `dt` seconds later could have
+-- walked there (at MAX_WALK, with SPEED_SLACK and SPEED_PAD).
+function ShakeRules.plausible(dist: number, dt: number): boolean
+	if dist ~= dist or dt ~= dt then
+		return false
+	end
+	return dist <= ShakeRules.MAX_WALK * ShakeRules.SPEED_SLACK * math.max(dt, 0) + ShakeRules.SPEED_PAD
+end
+
+-- The WalkSpeed Modes.Shake holds a visitor at: BASE_WALK times the Speedy Sneakers
+-- multiplier (Humanoid attribute "SpeedMultiplier"; anything else counts as 1), capped at MAX_WALK.
+function ShakeRules.legitWalk(multiplier: any): number
+	local mult = if type(multiplier) == "number" and multiplier == multiplier and multiplier >= 1 then multiplier else 1
+	return math.min(ShakeRules.BASE_WALK * mult, ShakeRules.MAX_WALK)
+end
+
+export type Anchor = { at: number, x: number, z: number }
+
+-- One root sample at (x, z), server time `now`, against the trust anchor (nil: none yet, the
+-- first sample anchors). Returns whether the sample is trusted and the anchor to keep.
+function ShakeRules.trust(anchor: Anchor?, x: number, z: number, now: number): (boolean, Anchor?)
+	if x ~= x or z ~= z then
+		return false, anchor
+	end
+	if not anchor then
+		return true, { at = now, x = x, z = z }
+	end
+	local dx, dz = x - anchor.x, z - anchor.z
+	local dt = now - anchor.at
+	if not ShakeRules.plausible(math.sqrt(dx * dx + dz * dz), dt) then
+		return false, anchor
+	end
+	if dt >= ShakeRules.ANCHOR_EVERY then
+		return true, { at = now, x = x, z = z }
+	end
+	return true, anchor
+end
+
+-- The point catches are judged at for a root at (x, z) looking along (lookX, lookZ) (any
+-- length; a vertical look judges at the root).
+function ShakeRules.judgePoint(x: number, z: number, lookX: number, lookZ: number): (number, number)
+	local len = math.sqrt(lookX * lookX + lookZ * lookZ)
+	if len < 1e-3 or len ~= len then
+		return x, z
+	end
+	return x + lookX / len * ShakeRules.TRAY_AHEAD, z + lookZ / len * ShakeRules.TRAY_AHEAD
+end
+
+-- Stars (0 to #STARS) a score earns.
+function ShakeRules.stars(score: number): number
+	local n = 0
+	for i, need in ShakeRules.STARS do
+		if score >= need then
+			n = i
+		end
+	end
+	return n
+end
+
+-- True when star tier `i` (last paid at os.time `paidAt`, nil: never) pays again at `now`.
+function ShakeRules.starReady(paidAt: number?, now: number): boolean
+	return type(paidAt) ~= "number" or paidAt > now or now - paidAt >= ShakeRules.STAR_COOLDOWN
+end
+
+-- The star bonus for a pass with `score`: the cash (each tier the score reached that pays and
+-- is ready, STAR_SHARE of `repeatCash`) and the tiers it pays (the caller stamps them `now`).
+-- `paidAt[i]`: when tier i last paid (os.time; nil: never).
+function ShakeRules.starBonus(score: number, repeatCash: number, paidAt: { [number]: number? }, now: number): (number, { number })
+	local cash, tiers = 0, {}
+	if not ShakeRules.passed(score) or repeatCash ~= repeatCash or repeatCash <= 0 then
+		return 0, tiers
+	end
+	for i = 1, ShakeRules.stars(score) do
+		local bonus = math.floor(repeatCash * ShakeRules.STAR_SHARE[i])
+		if bonus > 0 and ShakeRules.starReady(paidAt[i], now) then
+			cash += bonus
+			table.insert(tiers, i)
+		end
+	end
+	return cash, tiers
 end
 
 -- "win" / "lose" once the run is over at run time `t`, else nil.
