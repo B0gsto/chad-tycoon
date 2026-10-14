@@ -283,13 +283,99 @@ return function(h: { [string]: any })
 
 	test("Shake: the speed check", function()
 		local walk = ShakeRules.BASE_WALK
-		check(ShakeRules.plausible(walk * 0.5, 0.5, walk), "walking")
-		check(ShakeRules.plausible(walk * 1.3 * 0.5, 0.5, walk * 1.3), "Speedy Sneakers")
-		check(ShakeRules.plausible(1, 0, walk), "jitter in place")
-		check(not ShakeRules.plausible(30, 0.5, walk), "a teleport")
-		check(not ShakeRules.plausible(walk * 2.5, 1, walk), "a speed hack")
-		check(ShakeRules.plausible(walk * 0.5, 0.5, 4), "a slowed humanoid still gets the base allowance")
-		check(not ShakeRules.plausible(0 / 0, 0.5, walk), "nan")
-		check(ShakeRules.REANCHOR > ShakeRules.ANCHOR_EVERY, "re-anchoring is slower than anchoring")
+		check(ShakeRules.plausible(walk * 0.5, 0.5), "walking")
+		check(ShakeRules.plausible(walk * 1.3 * 0.5, 0.5), "Speedy Sneakers")
+		check(ShakeRules.MAX_WALK >= walk * 1.3, "MAX_WALK covers Speedy Sneakers")
+		check(ShakeRules.plausible(1, 0), "jitter in place")
+		check(not ShakeRules.plausible(30, 0.5), "a teleport")
+		check(not ShakeRules.plausible(walk * 2.5, 1), "a speed hack")
+		check(not ShakeRules.plausible(0 / 0, 0.5), "nan")
+		-- The anchor never jumps to an implausible spot: a teleport is dropped until the new
+		-- spot could have been walked to from the last trusted one.
+		local ok, anchor = ShakeRules.trust(nil, 0, 0, 0)
+		check(ok and anchor ~= nil and anchor.x == 0, "the first sample anchors")
+		ok, anchor = ShakeRules.trust(anchor, 5, 0, 0.5)
+		check(ok and anchor ~= nil and anchor.x == 5, "a walk moves the anchor")
+		local far = 60
+		local trusted = {}
+		for i = 1, 40 do
+			local now = 0.5 + i * 0.1
+			local fine
+			fine, anchor = ShakeRules.trust(anchor, far, 0, now)
+			if fine then
+				table.insert(trusted, now)
+			end
+		end
+		local first = trusted[1]
+		check(first ~= nil, "a fling is trusted again in the end")
+		local need = (far - 5 - ShakeRules.SPEED_PAD) / (ShakeRules.MAX_WALK * ShakeRules.SPEED_SLACK)
+		check(first ~= nil and first - 0.5 >= need - 1e-6, "but not before it could have been walked")
+		check(ShakeRules.REANCHOR == nil, "no blind re-anchoring")
+		local nan = ShakeRules.trust(anchor, 0 / 0, 0, 10)
+		check(not nan, "nan positions are never trusted")
+	end)
+
+	test("Shake: catches are judged at the tray", function()
+		local x, z = ShakeRules.judgePoint(10, 20, 0, -3)
+		eq(x, 10, "x along a -Z look")
+		eq(z, 20 - ShakeRules.TRAY_AHEAD, "the tray is ahead of the root")
+		x, z = ShakeRules.judgePoint(10, 20, 0, 0)
+		check(x == 10 and z == 20, "a vertical look judges at the root")
+		check(ShakeRules.TRAY_AHEAD > 0 and ShakeRules.TRAY_AHEAD < ShakeRules.CATCH.radius, "the tray stays near the root")
+	end)
+
+	test("Shake: star tiers", function()
+		local S = ShakeRules.STARS
+		eq(S[1], ShakeRules.TARGET, "the first star is the pass")
+		for i = 2, #S do
+			check(S[i] > S[i - 1], "tiers rise")
+		end
+		eq(ShakeRules.stars(S[1] - 1), 0, "no stars below the target")
+		eq(ShakeRules.stars(S[1]), 1, "one star at the target")
+		eq(ShakeRules.stars(S[2]), 2, "two")
+		eq(ShakeRules.stars(999), #S, "all of them")
+		-- The top tier stays reachable on every seed.
+		for seed = 1, 30 do
+			local max = ShakeRules.maxScore(ShakeRules.schedule(seed, area))
+			check(max >= S[#S], "seed " .. seed .. " can reach the top star (" .. max .. ")")
+		end
+		local rc = 1000
+		local cash, tiers = ShakeRules.starBonus(S[1], rc, {}, 0)
+		eq(cash, 0, "one star: just the pass pay")
+		eq(#tiers, 0, "no tier paid")
+		cash, tiers = ShakeRules.starBonus(S[3], rc, {}, 0)
+		eq(cash, math.floor(rc * ShakeRules.STAR_SHARE[2]) + math.floor(rc * ShakeRules.STAR_SHARE[3]), "three stars")
+		eq(#tiers, 2, "tiers 2 and 3")
+		cash = ShakeRules.starBonus(S[3] - 1, rc, {}, 0)
+		eq(cash, math.floor(rc * ShakeRules.STAR_SHARE[2]), "two stars")
+		cash = ShakeRules.starBonus(S[3], rc, { [2] = 100 }, 200)
+		eq(cash, math.floor(rc * ShakeRules.STAR_SHARE[3]), "a tier paid this cooldown pays nothing")
+		cash = ShakeRules.starBonus(S[3], rc, { [2] = 100, [3] = 100 }, 100 + ShakeRules.STAR_COOLDOWN)
+		check(cash > 0, "it pays again after the cooldown")
+		eq((ShakeRules.starBonus(S[1] - 1, rc, {}, 0)), 0, "a fail pays no stars")
+		eq((ShakeRules.starBonus(S[3], 0, {}, 0)), 0, "no repeat cash, no bonus")
+		-- Star pay in any 5 minutes stays within 2 x repeatCash, however often a top run is played.
+		local paidAt: { [number]: number? } = {}
+		local pays: { { at: number, cash: number } } = {}
+		for now = 0, 4 * 3600, 30 do
+			local c, t = ShakeRules.starBonus(S[3], rc, paidAt, now)
+			for _, i in t do
+				paidAt[i] = now
+			end
+			if c > 0 then
+				table.insert(pays, { at = now, cash = c })
+			end
+		end
+		local worst = 0
+		for _, a0 in pays do
+			local sum = 0
+			for _, b in pays do
+				if b.at >= a0.at and b.at < a0.at + 300 then
+					sum += b.cash
+				end
+			end
+			worst = math.max(worst, sum)
+		end
+		check(worst > 0 and worst <= 2 * rc, "star pay per 5 min is " .. worst .. " (repeat cash " .. rc .. ")")
 	end)
 end

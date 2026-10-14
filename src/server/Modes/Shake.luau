@@ -15,10 +15,13 @@
 	  "catch"     { id, kind, points, score, x, z }    a good item caught
 	  "splat"     { id, kind, hearts, x, z }           junk food caught: a heart lost
 	  "win"       { phase = "results", returnAt, score, target, best, prevBest, newBest, caught,
-	              hearts, first, cash, full, packCash, repeatCash, repeatShare, pay, cooldownEnds }
-	              (pay: "full" | "repeat" | "resting": the repeat share waits for REPEAT_GAP)
+	              hearts, first, cash, full, packCash, repeatCash, repeatShare, pay, cooldownEnds,
+	              stars, starCash, starTiers, starNext }
+	              (pay: "full" | "repeat" | "resting": the repeat share waits for REPEAT_GAP;
+	              stars: 1-3 (ShakeRules.STARS); starCash: the part of `cash` that is the star
+	              bonus for starTiers, the tiers newly paid; starNext: points for the next star)
 	  "lose"      { phase = "results", returnAt, score, target, best, prevBest, newBest, caught,
-	              hearts, why = "hearts" | "time" }
+	              hearts, why = "hearts" | "time", stars = 0 }
 	  "lobby"     { phase = "lobby", best, clears, rewardPreview }
 	              back in the lobby (RESULTS_SECONDS after a finish, "ShakeLobby", or a fall on
 	              the results card)
@@ -39,10 +42,13 @@
 	wave's drops go to the client before it starts (Fx.Shake animates them against the server
 	clock), and every drop is judged here from root positions sampled each tick, stamped back
 	by the player's ping (ShakeRules.lagOf) and kept only at a walkable speed
-	(ShakeRules.plausible). The run ends when the clock or the hearts run out
+	(ShakeRules.trust, against a server-side top speed); a catch is judged at the tray in front of
+	the root (ShakeRules.judgePoint), the point Fx.Shake predicts its catches from. The run ends when the clock or the hearts run out
 	(ShakeRules.outcome); a pass pays through GameModes.modeReward + GameModes.payReward (in
 	full on the first clear and once per cooldown, else the repeat share at most once per
-	ShakeRules.REPEAT_GAP). The results card stays RESULTS_SECONDS, then the player is back in
+	ShakeRules.REPEAT_GAP), plus the star bonus for each star tier reached that has not paid in
+	ShakeRules.STAR_COOLDOWN (ShakeRules.starBonus, a share of the repeat cash; rewardPreview
+	lists the tiers as stars = { { at, cash, ready } }). The results card stays RESULTS_SECONDS, then the player is back in
 	the lobby. The EXIT arch (lobby and results card) or "ModeQuit" ends the visit and brings the player
 	back to the gates; a fall puts them on the lobby spawn (lobby, results) or the court spawn
 	(countdown, play).
@@ -70,6 +76,8 @@ local DEFAULT_START_RADIUS = 4
 -- left some other way (a teleport home, a portal): the visit ends with "left".
 local AWAY_MARGIN = 80
 local AWAY_SECONDS = 2
+-- "ShakeBegin" / the START pad is ignored this soon (seconds) after the last accepted begin.
+local BEGIN_GAP = 1
 
 local Shake = {}
 
@@ -86,8 +94,8 @@ type Run = {
 	samples: { ShakeRules.Sample },
 	-- Seconds the server sees this player late (ShakeRules.lagOf, refreshed every tick).
 	lag: number,
-	-- The last trusted root position (server time, x, z); nil right after a teleport.
-	trusted: { at: number, x: number, z: number }?,
+	-- The speed check's trust anchor (ShakeRules.trust): the court spawn after a teleport.
+	trusted: ShakeRules.Anchor?,
 }
 
 type Visit = {
@@ -99,6 +107,8 @@ type Visit = {
 	padOff: number?,
 	-- Server time the root was first seen far outside the arena (nil while inside).
 	awaySince: number?,
+	-- Server time of the last accepted begin (BEGIN_GAP).
+	beganAt: number?,
 }
 
 function Shake.create(GameModes: any, context: { [string]: any }): any
@@ -110,8 +120,18 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 
 	-- lastRepeatAt (os.time() of the last repeat-share pay) rides on the save record too:
 	-- DataService keeps a mode record's extra keys, so the REPEAT_GAP survives rejoins.
-	local function record(session: any): { best: number, clears: number, lastRewardAt: number, lastRepeatAt: number? }
+	-- So do star<i>At (os.time() each star tier last paid its bonus, ShakeRules.starBonus).
+	local function record(session: any): { [string]: any }
 		return session.profile.modes[ID]
+	end
+
+	local function starPaidAt(rec: { [string]: any }): { [number]: number? }
+		local paidAt = {}
+		for i = 1, #ShakeRules.STARS do
+			local at = rec["star" .. i .. "At"]
+			paidAt[i] = if type(at) == "number" and at == at then at else nil
+		end
+		return paidAt
 	end
 
 	-- The lobby anchors, falling back to the play spawn / exit pad while the arena has none.
@@ -129,6 +149,12 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 
 	local function toCourt(player: Player)
 		GameModes.teleport(player, built.spawn.Position, built.spawn.LookVector)
+	end
+
+	-- The trust anchor right after a teleport to the court spawn.
+	local function spawnAnchor(now: number): ShakeRules.Anchor
+		local at = built.spawn.Position
+		return { at = now, x = at.X, z = at.Z }
 	end
 
 	local function toLobbySpawn(player: Player)
@@ -205,6 +231,10 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 			return false
 		end
 		local now = Workspace:GetServerTimeNow()
+		if visit.beganAt and now - visit.beganAt < BEGIN_GAP and now >= visit.beganAt then
+			return false
+		end
+		visit.beganAt = now
 		local run: Run = {
 			goAt = now + ShakeRules.READY_SECONDS,
 			drops = ShakeRules.schedule(
@@ -219,7 +249,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 			caught = 0,
 			samples = {},
 			lag = 0,
-			trusted = nil,
+			trusted = spawnAnchor(now),
 		}
 		visit.phase = "countdown"
 		visit.run = run
@@ -280,12 +310,32 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		end
 	end
 
-	-- The run is over: best and clears, the pay on a pass, the finish Notify, the results card.
+	-- The run is over: best and clears, the pay (and the star bonus) on a pass, the finish
+	-- Notify, the results card. Without a session (a save still loading or gone) the card still
+	-- comes up, with nothing recorded or paid.
 	local function finish(player: Player, visit: Visit, run: Run, result: string, root: BasePart, now: number)
 		visit.phase = "results"
 		visit.returnAt = now + ShakeRules.RESULTS_SECONDS
 		local session = GameModes.session(player)
+		local payload: { [string]: any } = {
+			phase = "results",
+			returnAt = visit.returnAt,
+			score = run.score,
+			target = ShakeRules.TARGET,
+			best = run.score,
+			prevBest = 0,
+			newBest = false,
+			caught = run.caught,
+			hearts = run.hearts,
+			stars = if result == "win" then ShakeRules.stars(run.score) else 0,
+			starNext = ShakeRules.STARS[ShakeRules.stars(run.score) + 1],
+		}
+		if result ~= "win" then
+			payload.why = if run.hearts <= 0 then "hearts" else "time"
+		end
 		if not session then
+			GameModes.notify(player, result, ID, payload)
+			GameModes.refresh(player)
 			return
 		end
 		local rec = record(session)
@@ -294,31 +344,30 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		if newBest then
 			rec.best = run.score
 		end
-		local payload: { [string]: any } = {
-			phase = "results",
-			returnAt = visit.returnAt,
-			score = run.score,
-			target = ShakeRules.TARGET,
-			best = rec.best,
-			prevBest = prevBest,
-			newBest = newBest,
-			caught = run.caught,
-			hearts = run.hearts,
-		}
+		payload.best = rec.best
+		payload.prevBest = prevBest
+		payload.newBest = newBest
 		if result == "win" then
 			local first = rec.clears == 0
 			rec.clears += 1
 			local r = GameModes.modeReward(session, ID, first)
 			local pay = "full"
+			local clock = os.time()
 			if not r.full then
 				local last = rec.lastRepeatAt
-				local clock = os.time()
 				pay = if type(last) == "number" and last <= clock and clock - last < ShakeRules.REPEAT_GAP then "resting" else "repeat"
 				r.cash = if pay == "repeat" then r.repeatCash else 0
 				if r.cash > 0 then
 					rec.lastRepeatAt = clock
 				end
 			end
+			-- New star tiers add their bonus to the same pay.
+			local starCash, tiers = ShakeRules.starBonus(run.score, r.repeatCash, starPaidAt(rec), clock)
+			for _, i in tiers do
+				rec["star" .. i .. "At"] = clock
+			end
+			local priced = r.cash + starCash
+			r.cash = priced
 			local paid = GameModes.payReward(player, ID, r, root.Position)
 			payload.first = first
 			payload.cash = paid.cash
@@ -328,42 +377,32 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 			payload.repeatShare = Economy.MODE_REPEAT_SHARE
 			payload.pay = pay
 			payload.cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN
-		else
-			payload.why = if run.hearts <= 0 then "hearts" else "time"
-			if newBest and Tycoon then
-				-- payReward saves a pass; a lost run's new best is saved here.
-				Tycoon.markDirty(session)
-			end
+			-- The star part of what was paid (hooks may have boosted the whole pay).
+			payload.starCash = if priced > 0 then math.floor(paid.cash * starCash / priced + 0.5) else 0
+			payload.starTiers = tiers
+		elseif newBest and Tycoon then
+			-- payReward saves a pass; a lost run's new best is saved here.
+			Tycoon.markDirty(session)
 		end
 		GameModes.notify(player, result, ID, payload)
 		GameModes.refresh(player)
 	end
 
-	-- Records the root sample if it is plausible (walkable from the last trusted one).
-	local function sample(player: Player, run: Run, root: BasePart, now: number, t: number)
+	-- Records the tray's judge point if the root is trusted (ShakeRules.trust: walkable from the
+	-- trust anchor at the server's top speed; an untrusted sample catches nothing).
+	local function sample(run: Run, root: BasePart, now: number, t: number)
 		local pos = root.Position
 		if not inArena(pos) then
 			return
 		end
-		local trusted = run.trusted
-		if trusted then
-			local dist = Vector3.new(pos.X - trusted.x, 0, pos.Z - trusted.z).Magnitude
-			local dt = now - trusted.at
-			local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-			local walk = if humanoid then humanoid.WalkSpeed else nil
-			if not ShakeRules.plausible(dist, dt, walk) then
-				if dt < ShakeRules.REANCHOR then
-					return
-				end
-				-- Long enough without a trusted sample (a fling, a lag spike): start over here.
-				run.trusted = { at = now, x = pos.X, z = pos.Z }
-			elseif dt >= ShakeRules.ANCHOR_EVERY then
-				run.trusted = { at = now, x = pos.X, z = pos.Z }
-			end
-		else
-			run.trusted = { at = now, x = pos.X, z = pos.Z }
+		local ok, anchor = ShakeRules.trust(run.trusted, pos.X, pos.Z, now)
+		run.trusted = anchor
+		if not ok then
+			return
 		end
-		table.insert(run.samples, { t = t, x = pos.X, z = pos.Z })
+		local look = root.CFrame.LookVector
+		local x, z = ShakeRules.judgePoint(pos.X, pos.Z, look.X, look.Z)
+		table.insert(run.samples, { t = t, x = x, z = z })
 	end
 
 	-- Judges every drop whose window has closed and ends the run when it is over.
@@ -374,7 +413,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		run.lag = ShakeRules.lagOf(if ok and type(ping) == "number" then ping else 0)
 		-- Samples are stamped with when the player stood there (the server sees it `lag` late).
 		local t = now - run.goAt - run.lag
-		sample(player, run, root, now, t)
+		sample(run, root, now, t)
 		while run.samples[1] and run.samples[1].t < t - SAMPLE_KEEP do
 			table.remove(run.samples, 1)
 		end
@@ -451,7 +490,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 			if ShakeRules.fallTo(phase) == "court" then
 				toCourt(player)
 				if visit.run then
-					visit.run.trusted = nil
+					visit.run.trusted = spawnAnchor(now)
 				end
 			elseif phase == "results" then
 				enterLobby(player, visit, "lobby")
@@ -501,10 +540,23 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 	function def.rewardPreview(player: Player): { [string]: any }
 		local session = GameModes.session(player)
 		if not session then
-			return { cash = 0, full = false, packCash = 0, repeatCash = 0 }
+			return { cash = 0, full = false, packCash = 0, repeatCash = 0, stars = {} }
 		end
-		local r = GameModes.modeReward(session, ID, record(session).clears == 0)
-		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = r.repeatCash }
+		local rec = record(session)
+		local r = GameModes.modeReward(session, ID, rec.clears == 0)
+		-- The star tiers: points needed, the bonus a pass reaching it pays, and whether that
+		-- bonus is ready (it pays once per ShakeRules.STAR_COOLDOWN).
+		local paidAt = starPaidAt(rec)
+		local clock = os.time()
+		local stars = {}
+		for i, need in ShakeRules.STARS do
+			table.insert(stars, {
+				at = need,
+				cash = math.floor(r.repeatCash * ShakeRules.STAR_SHARE[i]),
+				ready = ShakeRules.starReady(paidAt[i], clock),
+			})
+		end
+		return { cash = r.cash, full = r.full, packCash = r.packCash, repeatCash = r.repeatCash, stars = stars }
 	end
 
 	function def.snapshot(player: Player): { [string]: any }

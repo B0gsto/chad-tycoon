@@ -9,8 +9,8 @@
 	Fx.Shake animates them locally against the server clock.
 	  Good items: protein shake (+1), golden dumbbell (+3, rare), aura orb (+1).
 	  Junk food: burger, donut, soda. Catching one costs a heart (HEARTS per run).
-	A drop is caught when the player's root stood within the catch radius of its landing
-	spot at some moment of the window around the land time (caught; the window covers the
+	A drop is caught when the player's tray (judgePoint) stood within the catch radius of its
+	landing spot at some moment of the window around the land time (caught; the window covers the
 	server's view of a moving player arriving a little late). Junk uses a smaller radius and
 	a tighter window, so near misses never cost a heart.
 	The run is passed with TARGET points: when the clock runs out, or when the hearts run out
@@ -18,8 +18,10 @@
 
 	A visit goes lobby -> countdown (READY_SECONDS) -> play -> results (RESULTS_SECONDS) ->
 	lobby (docs/minigames.md "Lobby first"): canBegin, onPad and padStep decide the START pad
-	and the "ShakeBegin" action. Root samples are only trusted at a walkable speed (plausible),
-	so a teleporting or speed-hacked character cannot sweep the court.
+	and the "ShakeBegin" action. Root samples are only trusted at a walkable speed (plausible,
+	trust), so a teleporting or speed-hacked character cannot sweep the court; catches are
+	judged at the tray in front of the root (judgePoint). A pass earns 1 to 3 stars (STARS);
+	new star tiers pay a small bonus (starBonus).
 
 	ARENA is where World.ShakeArena builds the arena (floor top centre of the 64 x 64 catch
 	court and the size in studs of everything walkable round it: the court, the lobby deck past
@@ -66,14 +68,31 @@ ShakeRules.PAD_REARM = 1
 ShakeRules.PAD_HEIGHT = 4
 
 -- Speed check for root samples: a sample is trusted when it lies within
--- walkSpeed * SPEED_SLACK * dt + SPEED_PAD studs (flat) of the last trusted one, which moves
--- at most every ANCHOR_EVERY seconds; after REANCHOR seconds without a trusted sample the
--- next one is trusted anyway (a fling or a lag spike never locks a player out for long).
+-- MAX_WALK * SPEED_SLACK * dt + SPEED_PAD studs (flat) of the trust anchor, which moves to a
+-- trusted sample at most every ANCHOR_EVERY seconds (trust). MAX_WALK is a server constant (the
+-- base WalkSpeed with Speedy Sneakers), never the live Humanoid.WalkSpeed. An implausible
+-- sample is dropped (it catches nothing) and the anchor stays put: as `dt` grows the allowed
+-- circle grows with it, so a fling or a lag spike is trusted again once the new spot could
+-- have been walked to from the last trusted one, and a teleport never re-anchors at once.
 ShakeRules.BASE_WALK = 16
+ShakeRules.MAX_WALK = 21
 ShakeRules.SPEED_SLACK = 1.5
 ShakeRules.SPEED_PAD = 2
 ShakeRules.ANCHOR_EVERY = 0.5
-ShakeRules.REANCHOR = 2
+
+-- Catches are judged at the tray, not the root: TRAY_AHEAD studs in front of the root along
+-- its flat look direction (judgePoint). Fx.Shake draws the reach ring there and predicts
+-- catches from the same point.
+ShakeRules.TRAY_AHEAD = 2
+
+-- Star tiers: STARS[i] points earn star i (STARS[1] is the TARGET, the pass). Each tier past
+-- the first pays STAR_SHARE[i] of the repeat cash (Economy.MODE_REPEAT_SHARE of the pack) the
+-- first time it is reached in STAR_COOLDOWN seconds (starBonus), on top of the pass pay, so
+-- the star bonus adds at most sum(STAR_SHARE) x repeatCash per STAR_COOLDOWN (well within
+-- 2 x repeatCash in any 5 minutes).
+ShakeRules.STARS = { ShakeRules.TARGET, 40, 55 }
+ShakeRules.STAR_SHARE = { 0, 0.5, 1 }
+ShakeRules.STAR_COOLDOWN = 1800
 
 -- Fair drops: two items landing within FAIR.time seconds of each other, one good and one
 -- junk (or any two at the same moment), land at least FAIR.gap studs apart, so catching a
@@ -300,7 +319,7 @@ function ShakeRules.maxScore(drops: { Drop }): number
 	return total
 end
 
--- True when one of `samples` (run time `t`, root x / z) taken within [landAt - early,
+-- True when one of `samples` (run time `t`, judge point x / z) taken within [landAt - early,
 -- landAt + late] stood within the kind's catch radius of the drop's landing spot.
 function ShakeRules.caught(samples: { Sample }, drop: Drop): boolean
 	local rule = if ShakeRules.isJunk(drop.kind) then ShakeRules.JUNK else ShakeRules.CATCH
@@ -353,14 +372,79 @@ function ShakeRules.padStep(onPad: boolean, offSince: number?, now: number): (bo
 	return false, nil
 end
 
--- True when a root `dist` studs (flat) from the last trusted sample `dt` seconds later could
--- have walked there at `walkSpeed` (the server's Humanoid.WalkSpeed; at least BASE_WALK).
-function ShakeRules.plausible(dist: number, dt: number, walkSpeed: number?): boolean
+-- True when a root `dist` studs (flat) from the trust anchor `dt` seconds later could have
+-- walked there (at MAX_WALK, with SPEED_SLACK and SPEED_PAD).
+function ShakeRules.plausible(dist: number, dt: number): boolean
 	if dist ~= dist or dt ~= dt then
 		return false
 	end
-	local speed = math.clamp(if type(walkSpeed) == "number" and walkSpeed == walkSpeed then walkSpeed else 0, ShakeRules.BASE_WALK, 100)
-	return dist <= speed * ShakeRules.SPEED_SLACK * math.max(dt, 0) + ShakeRules.SPEED_PAD
+	return dist <= ShakeRules.MAX_WALK * ShakeRules.SPEED_SLACK * math.max(dt, 0) + ShakeRules.SPEED_PAD
+end
+
+export type Anchor = { at: number, x: number, z: number }
+
+-- One root sample at (x, z), server time `now`, against the trust anchor (nil: none yet, the
+-- first sample anchors). Returns whether the sample is trusted and the anchor to keep.
+function ShakeRules.trust(anchor: Anchor?, x: number, z: number, now: number): (boolean, Anchor?)
+	if x ~= x or z ~= z then
+		return false, anchor
+	end
+	if not anchor then
+		return true, { at = now, x = x, z = z }
+	end
+	local dx, dz = x - anchor.x, z - anchor.z
+	local dt = now - anchor.at
+	if not ShakeRules.plausible(math.sqrt(dx * dx + dz * dz), dt) then
+		return false, anchor
+	end
+	if dt >= ShakeRules.ANCHOR_EVERY then
+		return true, { at = now, x = x, z = z }
+	end
+	return true, anchor
+end
+
+-- The point catches are judged at for a root at (x, z) looking along (lookX, lookZ) (any
+-- length; a vertical look judges at the root).
+function ShakeRules.judgePoint(x: number, z: number, lookX: number, lookZ: number): (number, number)
+	local len = math.sqrt(lookX * lookX + lookZ * lookZ)
+	if len < 1e-3 or len ~= len then
+		return x, z
+	end
+	return x + lookX / len * ShakeRules.TRAY_AHEAD, z + lookZ / len * ShakeRules.TRAY_AHEAD
+end
+
+-- Stars (0 to #STARS) a score earns.
+function ShakeRules.stars(score: number): number
+	local n = 0
+	for i, need in ShakeRules.STARS do
+		if score >= need then
+			n = i
+		end
+	end
+	return n
+end
+
+-- True when star tier `i` (last paid at os.time `paidAt`, nil: never) pays again at `now`.
+function ShakeRules.starReady(paidAt: number?, now: number): boolean
+	return type(paidAt) ~= "number" or paidAt > now or now - paidAt >= ShakeRules.STAR_COOLDOWN
+end
+
+-- The star bonus for a pass with `score`: the cash (each tier the score reached that pays and
+-- is ready, STAR_SHARE of `repeatCash`) and the tiers it pays (the caller stamps them `now`).
+-- `paidAt[i]`: when tier i last paid (os.time; nil: never).
+function ShakeRules.starBonus(score: number, repeatCash: number, paidAt: { [number]: number? }, now: number): (number, { number })
+	local cash, tiers = 0, {}
+	if not ShakeRules.passed(score) or repeatCash ~= repeatCash or repeatCash <= 0 then
+		return 0, tiers
+	end
+	for i = 1, ShakeRules.stars(score) do
+		local bonus = math.floor(repeatCash * ShakeRules.STAR_SHARE[i])
+		if bonus > 0 and ShakeRules.starReady(paidAt[i], now) then
+			cash += bonus
+			table.insert(tiers, i)
+		end
+	end
+	return cash, tiers
 end
 
 -- "win" / "lose" once the run is over at run time `t`, else nil.
