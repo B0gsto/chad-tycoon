@@ -1395,13 +1395,13 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 
 	-- The ball rack (right, by the gap): a two-tier gym rack (teal shelves, coral sides,
 	-- chrome lips) with the four colour dumbbells in pairs either side, the gold-striped PRO
-	-- dumbbell as its showpiece in the middle of the front tier on a gold-ringed pedestal, and
-	-- a sign on chrome posts.
+	-- dumbbell as its showpiece out in front on a gold-ringed podium built into the front
+	-- tier (a PRO plaque, a gold star burst behind it), and a sign on chrome posts.
 	local RX, RD = 16.5, railD - 26 -- out in front of the YOUR BEST board, so neither hides the other
-	local PAIR = 4.6 -- each colour dumbbell this far either side of the rack's centre line
-	local RACK_W = 13.8
+	local PAIR = 5.6 -- each colour dumbbell this far either side of the rack's centre line
+	local RACK_W = 15.8 -- room for the PRO podium between the front pair
 	local tiers = { { d = RD + 1.5, top = 4.4 }, { d = RD - 1.5, top = 1.4 } } -- back high, front low
-	rug("RackRug", RX - 0.2, RD - 0.5, 7.6, W.Apricot, W.Coral, 0.05)
+	rug("RackRug", RX - 0.2, RD - 1, 8.4, W.Apricot, W.Coral, 0.05)
 	for _, t in tiers do
 		part({
 			Name = "RackRiser",
@@ -1427,7 +1427,7 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 		globe(at(RX + side * (sideX + 0.65), RD + 0.9, 10.6), 1, W.Sunny, "RackSignBulb", true)
 	end
 	-- The sign over the rack, in front of the back tier, big and tipped toward the player.
-	local SIGN_RW, SIGN_RH = 15, 3.6
+	local SIGN_RW, SIGN_RH = 16.6, 3.6
 	local signCf = CFrame.new(at(RX, RD, 8.2)) * CFrame.Angles(math.rad(-12), 0, 0)
 	local rackSign = part({ Name = "RackSign", Size = Vector3.new(SIGN_RW, SIGN_RH, 0.4), CFrame = signCf, Color = W.HotPink })
 	for _, s in { -1, 1 } do
@@ -1466,41 +1466,114 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 	for i, choice in CHOICES do
 		rackBall(i, choice.color, choice.label, tiers[if i <= 2 then 1 else 2], RX + (if i % 2 == 1 then -PAIR else PAIR), 0)
 	end
-	-- The PRO dumbbell (BowlingRules.PRO_BALL): ink plates with a gold neon stripe round each
-	-- rim and gold hubs (as Fx.Bowling paints a rolled one), up on a gold-ringed chrome
-	-- pedestal in the middle of the front tier, a gold PRO plaque on the riser under it.
-	local front = tiers[2]
-	local PED_H = 0.8
-	upright(RX, front.d, front.top, front.top + PED_H, 2.7, W.Chrome, "ProPedestal").Material = Enum.Material.Metal
+	-- The PRO dumbbell (BowlingRules.PRO_BALL), the rack's showpiece: ink plates with a wide
+	-- gold neon stripe round each rim, a gold ring on each face and gold hubs (as Fx.Bowling
+	-- paints a rolled one), raised on a chrome podium out in front of the front tier (its back
+	-- built into the tier) with gold rings, a "PRO ★★★" plaque on its front and a gold star
+	-- burst fanning out behind. The podium sits a little left of the rack's centre line so
+	-- that, seen from the spawn, the PRO stands in the gap between the front pair. Only the
+	-- dumbbell and its "Glow" (the podium's top ring) are in the BallChoice model, so a locked
+	-- PRO fades on its podium while the podium stays bright.
+	local PX, PD, PTOP = RX - 0.5, RD - 3.3, 2.4 -- podium centre and the top it holds the PRO at
+	local PED_R = 2
+	local gold = { Color = W.Gold, Material = Enum.Material.Metal, Reflectance = 0.2 }
+	local function disc(name: string, dia: number, y0: number, y1: number, props: { [string]: any }): BasePart
+		local spec = table.clone(props)
+		spec.Name = name
+		spec.Shape = CYLINDER
+		spec.Size = Vector3.new(y1 - y0, dia, dia)
+		spec.CFrame = CFrame.new(at(PX, PD, (y0 + y1) / 2)) * UPRIGHT
+		return if spec.Material == Enum.Material.Neon then deco(spec) else part(spec)
+	end
+	disc("ProPodiumBase", PED_R * 2 + 1.2, 0, 0.5, gold)
+	disc("ProPodiumBaseRing", PED_R * 2 + 1.4, 0.38, 0.5, { Color = W.Sunny, Material = Enum.Material.Neon })
+	disc("ProPedestal", PED_R * 2, 0.5, PTOP, { Color = W.Chrome, Material = Enum.Material.Metal, Reflectance = 0.3 })
+	disc("ProPedestalRing", PED_R * 2 + 0.3, 0.55, 0.8, { Color = W.Gold, Material = Enum.Material.Neon })
+	-- The plaque: a block set into the drum's front, framed in gold neon.
+	local plaqueD = PD - PED_R + 0.4
 	deco({
-		Name = "ProPedestalRing",
-		Shape = CYLINDER,
-		Size = Vector3.new(0.22, 2.95, 2.95),
-		CFrame = CFrame.new(at(RX, front.d, front.top + PED_H - 0.12)) * UPRIGHT,
+		Name = "ProPlaqueFrame",
+		Size = Vector3.new(3.5, 1.35, 0.8),
+		CFrame = CFrame.new(at(PX, plaqueD + 0.08, 1.5)),
 		Color = W.Gold,
 		Material = Enum.Material.Neon,
 	})
-	local pro = rackBall(BowlingRules.PRO_BALL, W.Gold, "PRO", front, RX, PED_H)
+	local plaque = part({
+		Name = "ProPlaque",
+		Size = Vector3.new(3.2, 1.05, 0.9),
+		CFrame = CFrame.new(at(PX, plaqueD, 1.5)),
+		Color = W.Ink,
+	})
+	words(surfaceGui(plaque, Enum.NormalId.Back, PPS), "PRO ★★★", 3, 2, 3.2 * PPS - 6, 1.05 * PPS - 4, W.Gold, W.Ink, 2)
+
+	local pro = rackBall(BowlingRules.PRO_BALL, W.Gold, "PRO", { d = PD, top = PTOP }, PX, 0)
+	-- Its Glow: the gold ring round the podium's top edge (the client lights and dims it).
+	local proGlow: Part = pro:FindFirstChild("Glow") :: any
+	proGlow.Shape = CYLINDER
+	proGlow.Size = Vector3.new(0.32, PED_R * 2 + 0.4, PED_R * 2 + 0.4)
+	proGlow.CFrame = CFrame.new(at(PX, PD, PTOP - 0.16)) * UPRIGHT
 	for _, plate in pro:GetChildren() do
 		if plate:IsA("BasePart") and plate.Name == "Plate" then
 			plate.Color = W.Ink
-			local stripe = plate:Clone()
-			stripe.Name = "ProStripe"
-			stripe.Size = Vector3.new(plate.Size.X * 0.4, plate.Size.Y * 1.06, plate.Size.Z * 1.06)
-			stripe.Color = W.Gold
-			stripe.Material = Enum.Material.Neon
-			stripe.Parent = pro
+			local function band(name: string, width: number, grow: number, color: Color3, neon: boolean)
+				local b = plate:Clone()
+				b.Name = name
+				b.Size = Vector3.new(plate.Size.X * width, plate.Size.Y * grow, plate.Size.Z * grow)
+				b.Color = color
+				b.Material = if neon then Enum.Material.Neon else Enum.Material.SmoothPlastic
+				b.Parent = pro
+			end
+			band("ProStripe", 0.5, 1.1, W.Gold, true) -- round the rim
+			band("ProFaceRing", 1.06, 0.87, W.Gold, true) -- a gold ring on each face...
+			band("ProFaceInk", 1.09, 0.67, W.Ink, false) -- ...inside it, ink out to the hub
 		elseif plate:IsA("BasePart") and plate.Name == "Hub" then
 			plate.Color = W.Gold
+			plate.Material = Enum.Material.Neon
+			plate.Size = Vector3.new(plate.Size.X * 1.4, plate.Size.Y, plate.Size.Z) -- proud of the face rings
 		end
 	end
-	local plaque = deco({
-		Name = "ProPlaque",
-		Size = Vector3.new(2.4, 0.7, 0.1),
-		CFrame = CFrame.new(at(RX, front.d - 1.55, (front.top - 0.5) / 2)),
-		Color = W.Ink,
+
+	-- The star burst: a soft gold halo and rays fanning up and out behind the PRO, kept clear
+	-- of the back pair, the front pair and the sign over the rack.
+	local BX, BD, BZ = RX, RD - 1.7, PTOP + r
+	local burstAt = CFrame.new(at(BX, BD, BZ))
+	deco({
+		Name = "ProHalo",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.08, 4, 4),
+		CFrame = burstAt * CFrame.new(0, 0, -0.1) * CFrame.Angles(0, math.pi / 2, 0),
+		Color = W.Sunny,
+		Material = Enum.Material.Neon,
+		Transparency = 0.35,
 	})
-	words(surfaceGui(plaque, Enum.NormalId.Back, PPS), "★ PRO ★", 2, 1, 2.4 * PPS - 4, 0.7 * PPS - 2, W.Gold, W.Ink, 2)
+	local REACH_X, REACH_UP, RAY_MAX = 3.1, 2.55, 3.4
+	for k = -6, 6 do
+		local theta = k * math.rad(17) -- from straight up
+		local long = k % 2 == 0
+		local len = RAY_MAX * (if long then 1 else 0.72)
+		local s, c = math.abs(math.sin(theta)), math.cos(theta)
+		if s > 0.01 then
+			len = math.min(len, REACH_X / s)
+		end
+		if c > 0.01 then
+			len = math.min(len, REACH_UP / c)
+		end
+		local from = 1.1
+		if len > from + 0.4 then
+			deco({
+				Name = "ProBurstRay",
+				Size = Vector3.new(if long then 0.5 else 0.34, len - from, 0.08),
+				CFrame = burstAt * CFrame.Angles(0, 0, -theta) * CFrame.new(0, (from + len) / 2, 0),
+				Color = if long then W.Gold else W.Sunny,
+				Material = Enum.Material.Neon,
+			})
+		end
+	end
+	local shine = Instance.new("PointLight")
+	shine.Color = W.Sunny
+	shine.Brightness = 1.5
+	shine.Range = 10
+	shine.Parent = plaque
 
 	-- Lounge seating (left, on its warm rug): chunky sofas round a big table, a long bench at
 	-- the back and potted bushes in the back corners.
@@ -1540,7 +1613,9 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 	makeDumbbell(folder, at(tableAt.X + 1.3, tableAt.Y + 0.6, 3.2 + 0.6), W.Mint, false, 0.4)
 
 	for _, side in { -1, 1 } do
-		local x, d = if side < 0 then -22.6 else 13.4, edgeD + 5.2 -- the right one clears the exit arch
+		-- The right one stands by the spawn pad, clear of the exit arch and of the view from the
+		-- spawn to the ball rack's PRO podium.
+		local x, d = if side < 0 then -22.6 else 5.2, edgeD + (if side < 0 then 5.2 else 2.4)
 		upright(x, d, 0, 3, 3.6, W.Terracotta, "PlantPot")
 		upright(x, d, 2.8, 3.3, 4.2, W.Coral, "PlantPotRim")
 		globe(at(x, d, 4.6), 4.8, W.GrassDark, "PlantBush")
