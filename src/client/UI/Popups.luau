@@ -14,7 +14,7 @@
 	plays one reveal per tier, lowest first (revealChain).
 
 	Not modal, straight over the game: the free gift card (Popups.gift), the centre
-	banner (Popups.banner: surge start, tutorial done; it waits for an open window to
+	banner (Popups.banner: tutorial done; it waits for an open window to
 	close) and the surge countdown chip.
 
 	Every size, colour, duration and count of the reward moments (the reveal's escalation
@@ -6133,7 +6133,7 @@ end
 
 --[[
 	Popups.banner(opts): a band of colour right across the screen with one big line on it,
-	for a moment that outranks a toast (the surge starting, the tutorial done). Its line
+	for a moment that outranks a toast (the tutorial done). Its line
 	slides in past the middle and settles, the band opens and shines once
 	(Popups.bannerEntrance); it holds and fades by itself, nothing waits for it and it takes
 	no input. It never opens over a window, a modal or a reveal: it waits for them to close
@@ -6515,7 +6515,7 @@ end
 --[[
 	Aura Surge notices. SURGE_WARN seconds before a surge a chip "AURA SURGE in 0:30"
 	counts down at the head of the toast stack (the toasts move down for it), and when the
-	surge starts a banner crosses the screen for 2 s. The surge is a slice of the server
+	surge starts the screen's edge glows gold for a moment. The surge is a slice of the server
 	clock (Economy.surgeState), so both run off that clock here; the server's Surge notify
 	(Popups.surge) only lands them at once. Not shown before the tutorial is done, during
 	the intro or on a course.
@@ -6597,6 +6597,9 @@ end
 -- A surge is told once: `surgeToldUntil` is the os.clock() its telling covers.
 local surgeToldUntil = -math.huge
 
+-- The step into a surge: the gold screen edge and coin rain only (no centre banner; the
+-- HUD's gold plate and SURGE chip say it). It counts as the surge's telling, so the
+-- "is on" toast stays for surges found already running.
 local function surgeBanner()
 	local now = os.clock()
 	if now - surgeBannerAt < 10 or surgeQuiet() then
@@ -6604,23 +6607,7 @@ local function surgeBanner()
 	end
 	surgeBannerAt = now
 	surgeToldUntil = now + Economy.SURGE_DURATION
-	Popups.banner({
-		Text = string.format("%s x%d: double cash!", W.Surge, Economy.SURGE_MULTIPLIER),
-		Color = C.Amber,
-		Life = 2,
-		Confetti = 18,
-		Edge = true,
-		-- Held back by an open window (Popups.holdBanner): it still shows once the window
-		-- closes while enough of the surge is left; else the "is on: 0:40 left" toast of
-		-- surgeTick tells it instead (toasts keep clear of windows by themselves).
-		Still = function(): boolean
-			local active, left = Economy.surgeState(Workspace:GetServerTimeNow())
-			return active and left > Popups.JUICE.Surge.MinLeft and not surgeQuiet()
-		end,
-		OnDropped = function()
-			surgeToldUntil = -math.huge
-		end,
-	})
+	Popups.goldEdge()
 end
 
 -- One look at the server clock: the chip while a surge is SURGE_WARN or less away, the
