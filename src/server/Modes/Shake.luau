@@ -49,6 +49,9 @@ local WAVE_LEAD = 1.5
 local SAMPLE_KEEP = 1.5
 -- After a finish the player is brought back to the gates this long later (unless they left).
 local RETURN_AFTER = 25
+-- During a run the feet must be this close to the exit pad's centre to quit (drops land at
+-- least ShakeRules.EXIT_CLEAR away, so a chase never brushes it).
+local EXIT_RUN_RADIUS = 2.5
 
 local Shake = {}
 
@@ -64,6 +67,8 @@ type Run = {
 	hearts: number,
 	caught: number,
 	samples: { ShakeRules.Sample },
+	-- Seconds the server sees this player late (ShakeRules.lagOf, refreshed every tick).
+	lag: number,
 }
 
 function Shake.create(GameModes: any, context: { [string]: any }): any
@@ -72,10 +77,12 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 	local def: any = { id = ID }
 	local runs: { [Player]: Run } = {}
 	local lastPos: { [Player]: Vector3 } = {}
-	-- When each player was last paid the repeat share (os.time()).
-	local lastRepeat: { [Player]: number } = {}
+	-- Bumped on every finish; a finish's return-to-gates timer only fires if still current.
+	local finishes: { [Player]: number } = {}
 
-	local function record(session: any): { best: number, clears: number, lastRewardAt: number }
+	-- lastRepeatAt (os.time() of the last repeat-share pay) rides on the save record too:
+	-- DataService keeps a mode record's extra keys, so the REPEAT_GAP survives rejoins.
+	local function record(session: any): { best: number, clears: number, lastRewardAt: number, lastRepeatAt: number? }
 		return session.profile.modes[ID]
 	end
 
@@ -130,13 +137,18 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		local run: Run = {
 			startedAt = os.clock(),
 			goAt = now + ShakeRules.READY_SECONDS,
-			drops = ShakeRules.schedule(Random.new():NextInteger(1, 2 ^ 30), built.catchArea),
+			drops = ShakeRules.schedule(
+				Random.new():NextInteger(1, 2 ^ 30),
+				built.catchArea,
+				{ x = built.exit.Position.X, z = built.exit.Position.Z }
+			),
 			nextDrop = 1,
 			sentWave = 0,
 			score = 0,
 			hearts = ShakeRules.HEARTS,
 			caught = 0,
 			samples = {},
+			lag = 0,
 		}
 		runs[player] = run
 		if teleport then
@@ -197,11 +209,12 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 			local r = GameModes.modeReward(session, ID, first)
 			local pay = "full"
 			if not r.full then
-				local last = lastRepeat[player]
-				pay = if last and os.time() - last < ShakeRules.REPEAT_GAP then "resting" else "repeat"
+				local last = rec.lastRepeatAt
+				local now = os.time()
+				pay = if type(last) == "number" and last <= now and now - last < ShakeRules.REPEAT_GAP then "resting" else "repeat"
 				r.cash = if pay == "repeat" then r.repeatCash else 0
 				if r.cash > 0 then
-					lastRepeat[player] = os.time()
+					rec.lastRepeatAt = now
 				end
 			end
 			local paid = GameModes.payReward(player, ID, r, root.Position)
@@ -222,16 +235,28 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		end
 		GameModes.notify(player, result, ID, payload)
 		GameModes.refresh(player)
+		local token = (finishes[player] or 0) + 1
+		finishes[player] = token
 		GameModes.returnLater(player, RETURN_AFTER, function(r: BasePart)
-			return inArena(r.Position)
+			-- A newer run (and its own finish) supersedes this timer.
+			return finishes[player] == token and inArena(r.Position)
 		end)
 	end
 
 	-- Judges every drop whose window has closed and ends the run when it is over.
-	local function play(player: Player, run: Run, root: BasePart, now: number)
-		local t = now - run.goAt
+	-- `prev`: the root's position last tick (a jump past MAX_STEP is a teleport, not a run).
+	local function play(player: Player, run: Run, root: BasePart, now: number, prev: Vector3?)
+		local ok, ping = pcall(function()
+			return player:GetNetworkPing()
+		end)
+		run.lag = ShakeRules.lagOf(if ok and type(ping) == "number" then ping else 0)
+		-- Samples are stamped with when the player stood there (the server sees it `lag` late).
+		local t = now - run.goAt - run.lag
 		local pos = root.Position
-		table.insert(run.samples, { t = t, x = pos.X, z = pos.Z })
+		local step = if prev then Vector3.new(pos.X - prev.X, 0, pos.Z - prev.Z).Magnitude else 0
+		if inArena(pos) and step <= ShakeRules.MAX_STEP then
+			table.insert(run.samples, { t = t, x = pos.X, z = pos.Z })
+		end
 		while run.samples[1] and run.samples[1].t < t - SAMPLE_KEEP do
 			table.remove(run.samples, 1)
 		end
@@ -282,7 +307,8 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		end
 		local exit = built.exit.Position
 		local flat = Vector3.new(pos.X - exit.X, 0, pos.Z - exit.Z)
-		local onExit = flat.Magnitude <= built.exitRadius and math.abs(feetY - built.top) < 4
+		local radius = if run then math.min(EXIT_RUN_RADIUS, built.exitRadius) else built.exitRadius
+		local onExit = flat.Magnitude <= radius and math.abs(feetY - built.top) < 4
 		if not run then
 			if prev and feetY < Course.PLAZA.top + 8 and Course.crossedGate(def.slot, prev.X, prev.Z, pos.X, pos.Z) then
 				GameModes.start(player, ID, true)
@@ -300,7 +326,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		if feetY < built.top - ShakeRules.FALL_BELOW then
 			toSpawn(player)
 		end
-		play(player, run, root, now)
+		play(player, run, root, now, prev)
 	end
 
 	function def.rewardPreview(player: Player): { [string]: any }
@@ -334,7 +360,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 
 	Players.PlayerRemoving:Connect(function(player)
 		lastPos[player] = nil
-		lastRepeat[player] = nil
+		finishes[player] = nil
 	end)
 
 	return def

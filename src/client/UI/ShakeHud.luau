@@ -79,7 +79,15 @@ local wave = 1
 local waves = 4
 local targetShown = false
 local lastCount = -1
-local bannerToken = 0
+-- Banners: hide() bumps bannerEpoch to cancel every pending one; each banner has its own id
+-- and only hides itself if it is still the one on screen (so they never cancel each other).
+local bannerEpoch = 0
+local bannerSeq = 0
+local bannerShown = 0
+-- Bumped on every finish card show / hide; the card's auto-dismiss checks it.
+local finishToken = 0
+-- The finish card closes itself after this many seconds.
+local FINISH_HOLD = 20
 local stepConn: RBXScriptConnection? = nil
 
 local function num(value: any, default: number): number
@@ -160,19 +168,20 @@ local function paintScore(pop: boolean)
 end
 
 local function showBanner(title: string, sub: string?, color: Color3, hold: number, delay: number?)
-	bannerToken += 1
-	local token = bannerToken
+	bannerSeq += 1
+	local id, epoch = bannerSeq, bannerEpoch
 	task.delay(delay or 0, function()
-		if token ~= bannerToken or not running then
+		if epoch ~= bannerEpoch or not running then
 			return
 		end
+		bannerShown = id
 		banner.Text = title
 		banner.TextColor3 = color
 		bannerSub.Text = sub or ""
 		banner.Visible = true
 		Kit.appear(banner, { from = 0.35, time = 0.35 })
 		task.delay(hold, function()
-			if token == bannerToken then
+			if epoch == bannerEpoch and bannerShown == id then
 				Kit.disappear(banner)
 			end
 		end)
@@ -232,10 +241,11 @@ end
 local function resetQuit()
 	quitArmed = false
 	Kit.setButton(quitButton, "X", C.SurfaceHi)
-	quitButton.Size = UDim2.fromOffset(30, 28)
+	quitButton.Size = UDim2.fromOffset(44, 44)
 end
 
 local function hideFinish()
+	finishToken += 1
 	Kit.unfocus(finishCard)
 	if finishCard.Visible then
 		Kit.disappear(finishCard)
@@ -273,6 +283,13 @@ local function showFinish(p: { [string]: any }, won: boolean)
 	end
 	finishCard.Visible = true
 	Kit.appear(finishCard, { from = 0.5, time = 0.35 })
+	finishToken += 1
+	local token = finishToken
+	task.delay(FINISH_HOLD, function()
+		if token == finishToken and finishCard.Visible then
+			hideFinish()
+		end
+	end)
 	Kit.focus(finishCard)
 	task.defer(function()
 		Kit.select(Kit.firstSelectable(finishCard))
@@ -294,7 +311,8 @@ end
 
 local function hide()
 	running = false
-	bannerToken += 1
+	bannerEpoch += 1
+	bannerShown = 0
 	banner.Visible = false
 	if stepConn then
 		stepConn:Disconnect()
@@ -345,6 +363,7 @@ function ShakeHud.stop(payload: { [string]: any }?)
 		return
 	end
 	hide()
+	hideFinish()
 	if was and payload and payload.reason == "quit" then
 		Popups.toast("Shake Catch ended", "info")
 	end
@@ -405,6 +424,15 @@ function ShakeHud.onState(data: any)
 	local info = type(data) == "table" and type(data.modes) == "table" and data.modes.shake
 	if running and not (type(info) == "table" and info.running == true) then
 		ShakeHud.stop(nil)
+	elseif not running and finishCard and finishCard.Visible and type(data) == "table" and type(data.modes) == "table" then
+		-- Not running any more and another mode has started: the finish card is stale.
+		-- (Right after a finish nothing runs, so the card stays until dismissed or timed out.)
+		for _, other in data.modes do
+			if type(other) == "table" and other.running == true then
+				hideFinish()
+				break
+			end
+		end
 	end
 end
 
@@ -514,7 +542,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 	-- Score pill with the quiet quit button on its right end.
 	local pill = Kit.hudGlass(root, {
 		Name = "Score",
-		Size = UDim2.fromOffset(PILL_W, 46),
+		Size = UDim2.fromOffset(PILL_W, 54),
 		Position = UDim2.new(0.5, 0, 0, 0),
 		AnchorPoint = Vector2.new(0.5, 0),
 	})
@@ -526,7 +554,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 		TextSize = 26,
 		StrokeThickness = 2,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -90, 1, 0),
+		Size = UDim2.new(1, -100, 1, 0),
 		Position = UDim2.fromOffset(44, 0),
 		ZIndex = 3,
 	})
@@ -534,11 +562,11 @@ function ShakeHud.init(screenGui: ScreenGui)
 		Name = "Quit",
 		Text = "X",
 		Color = C.SurfaceHi,
-		TextSize = 14,
-		Size = UDim2.fromOffset(30, 28),
-		Position = UDim2.new(1, -8, 0.5, 0),
+		TextSize = 18,
+		Size = UDim2.fromOffset(44, 44),
+		Position = UDim2.new(1, -5, 0.5, 0),
 		AnchorPoint = Vector2.new(1, 0.5),
-		Radius = 14,
+		Radius = 22,
 		Depth = 2,
 		ZIndex = 4,
 	}, function()
@@ -550,7 +578,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 		-- First tap arms it: "QUIT?" for a few seconds.
 		quitArmed = true
 		Kit.setButton(quitButton, "QUIT?", C.Bad)
-		Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(64, 28) }, Enum.EasingStyle.Back)
+		Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(96, 44) }, Enum.EasingStyle.Back)
 		task.delay(3, function()
 			if quitArmed then
 				resetQuit()
@@ -565,7 +593,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 		BackgroundColor3 = C.Well,
 		BorderSizePixel = 0,
 		Size = UDim2.fromOffset(BAR_W, 14),
-		Position = UDim2.new(0.5, 0, 0, 54),
+		Position = UDim2.new(0.5, 0, 0, 62),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = root,
 	})
@@ -584,7 +612,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 		Name = "Hearts",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(200, 28),
-		Position = UDim2.new(0.5, 0, 0, 78),
+		Position = UDim2.new(0.5, 0, 0, 86),
 		AnchorPoint = Vector2.new(0.5, 0),
 		Parent = root,
 	})
@@ -596,7 +624,7 @@ function ShakeHud.init(screenGui: ScreenGui)
 		Font = F.Display,
 		TextSize = 22,
 		Size = UDim2.new(1, 0, 0, 28),
-		Position = UDim2.fromOffset(0, 114),
+		Position = UDim2.fromOffset(0, 122),
 	})
 
 	-- The centre banner (count-in, waves, target).

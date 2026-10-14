@@ -40,6 +40,31 @@ return function(h: { [string]: any })
 		check(#one > 40, "a run drops plenty of items (" .. #one .. ")")
 	end)
 
+	test("Shake: no drop lands near the exit pad", function()
+		local court = { x0 = a.x - 23, x1 = a.x + 23, z0 = a.z - 23, z1 = a.z + 23 }
+		local exit = ShakeRules.EXIT
+		check(exit.x > a.x and exit.z > a.z, "the exit sits in the +X / +Z corner")
+		for seed = 1, 60 do
+			for _, box in { area, court } do
+				for _, d in ShakeRules.schedule(seed, box) do
+					local dist = math.sqrt((d.x - exit.x) ^ 2 + (d.z - exit.z) ^ 2)
+					check(dist >= ShakeRules.EXIT_CLEAR, "seed " .. seed .. " drop " .. d.id .. " is " .. dist .. " from the exit")
+					check(d.x >= box.x0 and d.x <= box.x1 and d.z >= box.z0 and d.z <= box.z1, "drop stays in the area")
+				end
+			end
+		end
+		check(ShakeRules.EXIT_CLEAR >= 9, "the exit keeps a wide clear circle")
+		local x, z = ShakeRules.keepClear(exit.x, exit.z, court, exit, ShakeRules.EXIT_CLEAR)
+		check(math.sqrt((x - exit.x) ^ 2 + (z - exit.z) ^ 2) >= ShakeRules.EXIT_CLEAR, "a drop right on the exit is moved out")
+	end)
+
+	test("Shake: lag compensation", function()
+		eq(ShakeRules.lagOf(0), 1 / 30, "no ping: one frame")
+		check(math.abs(ShakeRules.lagOf(0.2) - (0.1 + 1 / 30)) < 1e-9, "half the round trip")
+		eq(ShakeRules.lagOf(5), ShakeRules.LAG_MAX, "capped")
+		eq(ShakeRules.lagOf(0 / 0), 0, "nan ping: none")
+	end)
+
 	test("Shake: later waves drop faster and denser", function()
 		local waves = ShakeRules.WAVES
 		for i = 2, #waves do
