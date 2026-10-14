@@ -15,7 +15,10 @@
 	               fans: leggings / joggers)
 	  anim       : "Chad" | "Bot" | "Fan" — body style and animation set
 	               (defaults to the theme's Theme.AnimSet, else "Chad")
-	  material   : Enum.Material name for the body ("Metal", "Glass", ...)
+	  material   : Enum.Material name for the body ("Metal", "Glass", ...). A Chad
+	               with a "Neon" body (the top tier) is drawn gilded instead: a gold
+	               statue in CharacterFactory.GILD's colours (darker limbs and face,
+	               shades, gold armour, a dark-red cape instead of wings, half the light)
 	  buff       : 0..1 muscle / bulk (wider chest, thicker arms)
 	  scale      : overall size multiplier (1..2; fans 0.85..0.92)
 	  acc        : list of accessory names (see ACCESSORIES)
@@ -118,6 +121,30 @@ local INK = Color3.fromRGB(58, 48, 96) -- Theme.World.Ink
 local WOOD = Color3.fromRGB(222, 170, 112) -- Theme.World.Wood
 local SIGN_TEXT = "#1 FAN"
 
+-- The gilded look (a Chad whose look asks for a Neon body: the top tier). A glowing body read
+-- as one flat blown-out yellow; this one is gold metal with shading, a dark face and a cape.
+local GILD = {
+	Material = Enum.Material.Metal, -- the body's material instead of Neon
+	Reflectance = 0.08,
+	Skin = Color3.fromRGB(240, 178, 52), -- chest, belly and head
+	Shirt = Color3.fromRGB(226, 160, 40),
+	Pants = Color3.fromRGB(150, 84, 22), -- deep bronze shorts / trunks
+	Hair = Color3.fromRGB(122, 70, 18),
+	LimbShade = 0.2, -- arms and legs this much darker than the chest (orange-brown shading)
+	FaceShade = 0.12, -- the head this much darker, so the face features read
+	Expr = "Smug", -- a confident grin under the shades
+	Accent = Color3.fromRGB(255, 196, 44), -- crown, armour plates, belt plate
+	Cape = Color3.fromRGB(128, 18, 30), -- solid dark-red cloth
+	-- Accessories the gilded look leaves off (the wings' white shards; the halo: PlotRank turns a
+	-- gold ring over the champion, and the unit part budget is 60) ...
+	Drop = { Wings = true, Halo = true },
+	Add = { "Shades", "Shoulders", "ChampBelt", "Cape" }, -- ... and the ones it adds
+	AccColor = { Cape = "Cape" }, -- accessories drawn in another GILD colour than Accent
+	Light = 0.5, -- its point light's brightness, as a share of a normal one
+	Fire = 0.6, -- its flame's size, as a share
+}
+CharacterFactory.GILD = GILD
+
 local function shade(c: Color3, k: number): Color3
 	return c:Lerp(BLACK, k)
 end
@@ -175,6 +202,8 @@ type Ctx = {
 	isBot: boolean,
 	cute: boolean, -- fan build: big eyes, no nose / ears, rounder parts
 	exprTag: string?, -- expression the face parts being built belong to
+	gilded: boolean, -- the top tier's gold statue look (GILD)
+	body: { BasePart }, -- parts drawn in the body's material (a gilded look shades them)
 	exprHidden: boolean,
 	has: { [string]: boolean },
 	top: number,
@@ -240,6 +269,9 @@ local function add(
 		p.CastShadow = false
 	end
 	p:SetAttribute("Limb", limb)
+	if material == nil and c.gilded then
+		table.insert(c.body, p)
+	end
 	if c.exprTag then
 		p:SetAttribute("Expr", c.exprTag)
 		if c.exprHidden then
@@ -1621,7 +1653,7 @@ local function addEffects(c: Ctx)
 		local fire = Instance.new("Fire")
 		fire.Color = look.fire
 		fire.SecondaryColor = Color3.new(1, 1, 1)
-		fire.Size = FX.FireSize * s
+		fire.Size = FX.FireSize * s * (if c.gilded then GILD.Fire else 1)
 		fire.Heat = FX.FireHeat
 		fire.Parent = behind("FireAt", FX.FireBack, FX.FireUp)
 	end
@@ -1630,7 +1662,7 @@ local function addEffects(c: Ctx)
 		light.Color = look.glow or look.aura :: Color3
 		-- Faint auras (low tiers) get a dimmer, smaller light.
 		local strength = if look.glow then 1 else math.clamp((look.auraRate or 10) / 10, 0.35, 1)
-		light.Brightness = 1.5 * strength
+		light.Brightness = 1.5 * strength * (if c.gilded then GILD.Light else 1)
 		light.Range = (5 + 3 * strength) * s
 		light.Parent = chest
 	end
@@ -1638,12 +1670,57 @@ end
 
 -- Build ---------------------------------------------------------------------------
 
+-- The gilded look of a Chad whose look asks for a Neon body (GILD): gold colours, a grin,
+-- no wings, shades, armour, a belt and a cape.
+local function gildLook(look: Look): Look
+	local out = table.clone(look)
+	out.material = nil
+	out.skin = GILD.Skin
+	out.shirt = GILD.Shirt
+	out.pants = GILD.Pants
+	out.hair = GILD.Hair
+	out.expr = GILD.Expr
+	out.accColor = GILD.Accent
+	local acc: { string } = {}
+	local before: { string } = look.acc or {}
+	for _, accName in before do
+		if not GILD.Drop[accName] then
+			table.insert(acc, accName)
+		end
+	end
+	for _, accName in GILD.Add do
+		if not table.find(acc, accName) then
+			table.insert(acc, accName)
+		end
+	end
+	out.acc = acc
+	return out
+end
+
+-- A gilded body: arms and legs a shade darker than the chest, the head a little darker.
+local function shadeGilded(c: Ctx)
+	for _, part in c.body do
+		local limb = part:GetAttribute("Limb")
+		local name = if type(limb) == "string" then limb else ""
+		if string.find(name, "Arm") or string.find(name, "Hand") or string.find(name, "Leg") or string.find(name, "Foot") then
+			part.Color = shade(part.Color, GILD.LimbShade)
+		elseif name == "Head" then
+			part.Color = shade(part.Color, GILD.FaceShade)
+		end
+		part.Reflectance = GILD.Reflectance
+	end
+end
+
 -- Builds a model standing on y = 0 at the origin, facing -Z. Its PrimaryPart
 -- "Root" is at the feet, so model:PivotTo(CFrame) places the feet.
 function CharacterFactory.build(look: Look, name: string?): Model
 	local model = Instance.new("Model")
 	model.Name = name or "Unit"
 	local anim = animOf(look)
+	local gilded = anim == "Chad" and look.material == "Neon"
+	if gilded then
+		look = gildLook(look)
+	end
 	local scale = look.scale or 1
 
 	local accList: { string } = table.clone(look.acc or {})
@@ -1659,13 +1736,15 @@ function CharacterFactory.build(look: Look, name: string?): Model
 		model = model,
 		look = look,
 		scale = scale,
-		mat = materialFrom(look.material),
+		mat = if gilded then GILD.Material else materialFrom(look.material),
 		acc = look.accColor or Color3.fromRGB(255, 205, 60),
 		trim = look.trim or Color3.fromRGB(58, 62, 72),
 		isBot = anim == "Bot",
 		cute = anim == "Fan",
 		exprTag = nil,
 		exprHidden = false,
+		gilded = gilded,
+		body = {},
 		has = has,
 		top = 0,
 		parts = {},
@@ -1711,11 +1790,18 @@ function CharacterFactory.build(look: Look, name: string?): Model
 	else
 		buildChad(c)
 	end
+	local baseAcc = c.acc
 	for _, accName in accList do
 		local builder = ACCESSORIES[accName]
 		if builder then
+			local key = if gilded then GILD.AccColor[accName] else nil
+			c.acc = if key then (GILD :: any)[key] else baseAcc
 			builder(c)
 		end
+	end
+	c.acc = baseAcc
+	if gilded then
+		shadeGilded(c)
 	end
 	addEffects(c)
 

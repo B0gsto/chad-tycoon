@@ -403,8 +403,15 @@ local function suite(h: { [string]: any })
 			knob.CFrame = CFrame.new(x, 12, -51.2)
 			knobs[i] = knob
 		end
+		local postKnobs = {}
+		for i = 1, 30 do
+			local knob = Instance.new("Part")
+			knob.Size = Vector3.new(1.5, 1.5, 1.5)
+			knob.CFrame = CFrame.new(-51.2, 4.1, -40 + i * 2.5)
+			postKnobs[i] = knob
+		end
 		local outlined = Instance.new("Folder")
-		local dressed = PlotRank.dress(3, top, size, outlined, false, { post }, caps, knobs)
+		local dressed = PlotRank.dress(3, top, size, outlined, false, { post }, caps, knobs, postKnobs)
 		local rails = named(dressed.GoldTrim.ground, "GoldRail")
 		eq(#rails, #caps, "a gold tube on every fence cap")
 		for i, rail in rails do
@@ -414,7 +421,19 @@ local function suite(h: { [string]: any })
 			local at = caps[i].CFrame:PointToObjectSpace(rail.CFrame.Position)
 			check(math.abs(at.X) < 0.01 and math.abs(at.Z) < 0.01, "it lies along its cap")
 			check(at.Y >= caps[i].Size.Y / 2, "on top of it, seen from both sides of the fence")
+			check(rail.Color ~= theme.World.Sunny, "in a gold that stands out from the sunny cap")
 		end
+		local beads = named(dressed.GoldTrim.ground, "RailBead")
+		eq(#beads, #postKnobs, "a gold bead on every fence post")
+		local lit = 0
+		for i, bead in beads do
+			eq(bead.Material.Name, "Neon", "the bead glows")
+			check(bead.CFrame.Position.Y > postKnobs[i].CFrame.Position.Y, "on top of its knob")
+			if bead:FindFirstChildOfClass("PointLight") then
+				lit += 1
+			end
+		end
+		eq(lit, CFG.GoldTrim.PostLights, "lights in some of them, up to the cap")
 		local early = Instance.new("Folder")
 		PlotRank.dress(1, top, size, early, false, { post }, caps, knobs)
 		eq(#named(early, "GoldRail"), 0, "no outline before tier 10")
@@ -423,7 +442,10 @@ local function suite(h: { [string]: any })
 		for i, cup in pillarCups do
 			check(cup.CFrame.Position.Y > knobs[i].CFrame.Position.Y + knobs[i].Size.Y / 2, "it stands on top of the pillar's knob")
 			check(cup.Size.Y >= 2.5, "it is a big cup")
+			check(2.1 * CFG.Trophies.Pillar >= 6, "about 6 studs tall")
 		end
+		eq(#named(dressed.Trophies.ground, "PillarRing"), #knobs, "each on a glowing ring")
+		eq(#named(early, "PillarRing"), 0, "not before tier 15")
 		-- And a big gold cup on each end of the roof.
 		local big = 0
 		for _, cup in named(dressed.Trophies.roof, "TrophyCup") do
@@ -443,6 +465,9 @@ local function suite(h: { [string]: any })
 		check(CFG.CrownBeam.Diameter >= 18, "the crown is three times the old 6-stud one")
 		eq(#named(crowned, "CrownLight"), 1, "a shaft of light that faces the camera")
 		check(named(crowned, "CrownLight")[1].Width0 >= 12, "which is wide enough to read from the hub")
+		eq(#named(crowned, "ShaftSparkles"), 1, "sparkles drift up the shaft")
+		eq(#named(crowned, "FireworkBurst"), 1, "and fireworks burst over the crown")
+		check(type(crown.start) == "function", "which its start sets going")
 		eq(#named(crown.spin, "CrownRay"), CFG.CrownBeam.Rays, "sheets of light that turn with the crown")
 		for _, ray in named(crown.spin, "CrownRay") do
 			eq(ray.FaceCamera, false, "a sheet does not face the camera: its turning is seen")
@@ -537,7 +562,17 @@ local function suite(h: { [string]: any })
 		local along = math.clamp((chute.topZ - plaque.CFrame.Position.Z) / (chute.topZ - chute.bottomZ), 0, 1)
 		local chuteY = chute.topY + (chute.bottomY - chute.topY) * along
 		check(plaque.CFrame.Position.Y - plaque.Size.Y / 2 > chuteY + orb + 0.2, "orbs roll under the plaque")
-		check(stage:PointToObjectSpace(plaque.CFrame.Position).Z < 0, "it hangs on the stage's front")
+		-- It hangs over the champion's head, above its ring (the pen's crate labels covered it
+		-- under the stage), in the panel's plane, on two gold rods from the panel's top.
+		local plaqueAt = stage:PointToObjectSpace(plaque.CFrame.Position)
+		local ringTop = -math.huge
+		for _, tile in named(model, "HaloTile") do
+			ringTop = math.max(ringTop, stage:PointToObjectSpace(tile.CFrame.Position).Y + tile.Size.Y / 2)
+		end
+		check(plaqueAt.Y - plaque.Size.Y / 2 > ringTop, "it hangs above the ring over the champion's head")
+		check(plaqueAt.Y - plaque.Size.Y / 2 > c.UnitHeight * c.Scale, "above the champion")
+		check(math.abs(plaqueAt.Z - c.Panel.Back) < 0.01, "in the panel's plane")
+		eq(#named(model, "PlaqueRod"), 2, "on two rods")
 
 		-- Rarity: sparkles from Epic, a sky beam from Legendary.
 		local epic = PlotRank.showcase(parent, drum, rim, foot, 17)
@@ -550,6 +585,16 @@ local function suite(h: { [string]: any })
 		local top, _, topSpins = PlotRank.showcase(parent, drum, rim, foot, Economy.MAX_TIER)
 		eq(#named(top, "CrownPoint"), CFG.CrownPoints, "a crown round the stage")
 		eq(#named(top, "CapeStrip"), CFG.Cape.Strips, "the cape's strips")
+		for _, strip in named(top, "CapeStrip") do
+			check(strip.Color.R > strip.Color.G * 3 and strip.Color.R < 0.6, "a solid dark-red cloth")
+			check(strip.Transparency == 0, "not see-through")
+		end
+		check(CFG.Cape.Width >= CFG.Cape.BottomStep, "the strips overlap: no gaps")
+		for _, tile in named(top, "HaloTile") do
+			check(tile.Color.B < 0.3 and tile.Color.R > 0.9, "the ring is deep gold, not a white glow")
+		end
+		eq(#named(top, "BodySparkles"), 1, "gold sparkles rise round a tier 25 champion")
+		check(named(top, "RimGlow")[1]:FindFirstChildOfClass("PointLight").Brightness <= c.RimLight.Brightness / 2 + 0.01, "half the glare")
 		eq(#named(top, "SunRay"), c.SunRays, "a sunburst behind it")
 		eq(#named(top, "ChampionRay"), c.Rays, "sheets of light in its beam")
 		eq(#topSpins, 3, "the ring, the sunburst and the sheets of light turn")
@@ -632,6 +677,20 @@ local function suite(h: { [string]: any })
 			check(d <= shot.LevelDistance, label .. ": the eye stays inside the plot's entrance")
 			check(math.deg(p) >= 0, label .. ": the camera still looks down or level")
 			lastPitch, lastDistance = p, d
+		end
+		-- From tier 20 the shot looks further up, the eye staying above the floor.
+		for rows = 1, s.rows do
+			for _, tier in { 19, 20, 25 } do
+				local p, d = frame(rows, tier)
+				local tp, td = PlotRank.homeTilt(p, d, tier)
+				if tier < 20 then
+					check(tp == p and td == d, rows .. " shelves at tier " .. tier .. ": no extra tilt")
+				else
+					check(math.abs(math.deg(p - tp) - shot.HighTilt) < 1e-6, rows .. " shelves at tier " .. tier .. ": looks further up")
+					check(headY + td * math.sin(tp) > 1, rows .. " shelves at tier " .. tier .. ": the eye stays above the floor")
+					check(td >= shot.Distance and td <= d, rows .. " shelves at tier " .. tier .. ": never further, never too close")
+				end
+			end
 		end
 		-- The tier 25 view is not the tier 10 view (the complaint this shot answers).
 		local p10, d10 = frame(3, 10)
