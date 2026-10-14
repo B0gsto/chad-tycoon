@@ -35456,17 +35456,36 @@ return Parkour
 	Modes.Pose: POSE COPY, a solo mini-game (docs/minigames.md). Arena: World.PoseStage
 	(context.world.pose); rules: Modes.PoseRules (pure).
 
-	STUB (foundation): walking in through the mode's plaza gate (Course.crossedGate) or the
-	"ModeStart" { mode = "pose" } action starts a run on the arena's spawn; the arena's
-	exit pad (or the HUD's quit, "ModeQuit") ends it and brings the player back to the
-	gates; a fall puts them back on the spawn. Nothing is played or paid yet.
-	TODO(pose builder): copy the rival's growing flex sequence; a pass pays through GameModes.modeReward + GameModes.payReward
-	(first clear: record(session).clears == 0).
+	Walking in through the mode's plaza gate (Course.crossedGate) or the "ModeStart"
+	{ mode = "pose" } action starts a run: the player is put on their podium (playerSpot,
+	both chads facing the audience) and held still (HumanoidRootPart anchored, no jump).
+	The rival chad beside them (built locally by Fx.Pose on rivalSpot) shows a growing
+	sequence of flexes (PoseRules.sequence, seeded per run); the player copies it with the
+	"PoseInput" action { flex = 1..4, step = n } (n = 1 for the round's first flex). The
+	server validates every press in order (PoseRules.press) and times each one out after
+	PoseRules.INPUT_TIMEOUT. A wrong or slow flex costs a heart and the round replays; no
+	hearts left ends the run. Clearing PoseRules.PASS_ROUND rounds passes the test and pays
+	(once per run) through GameModes.modeReward + GameModes.payReward: the full pack on the
+	first clear or after the cooldown, else the repeat share. The run then goes on for a
+	best (the longest sequence copied) until the hearts run out or MAX_ROUND is cleared.
+	After the finish the player stands free on the stage (the exit pad or the finish card's
+	buttons take them away); the HUD's quit ("ModeQuit") ends a run early.
 
-	Notify (kind = "Mode", mode = "pose"): "start" { best, clears }, "stop" { reason }.
-	Builders add their own events (docs/minigames.md lists the convention).
-	Snapshot modes.pose: { running, best, clears, cooldownEnds, rewardPreview } (the Game
-	Modes window reads exactly these).
+	Notify (kind = "Mode", mode = "pose"):
+	  "start" { best, clears, hearts, maxHearts, passRound, maxRound, timeout, playerPos,
+	            rivalPos, facing }                 feet positions (Vector3), facing: both chads
+	  "round" { round, seq, step, lead, length, hearts, replay }
+	                                               seq: the round's flex indexes; the rival shows
+	                                               one every `step` s after `lead`; the player's
+	                                               turn starts `length` s after this arrives
+	  "clear" { round, next, passed }             the round was copied (`next` comes up)
+	  "miss"  { hearts, reason, step, expected }  reason: "wrong" | "slow"
+	  "pass"  { round, cash, full, packCash, repeatCash, pay }
+	                                               pay: "first" | "full" | "repeat"
+	  "win" / "lose" { cleared, best, prevBest, newBest, passed, cash, full, packCash,
+	            repeatCash, pay }                  win = passed this run (cash: what the pass paid)
+	  "stop"  { reason }                          the stub's: quit, left, switch, ...
+	Snapshot modes.pose: { running, best, clears, cooldownEnds, rewardPreview, round, hearts }.
 ]]
 
 local Players = game:GetService("Players")
@@ -35480,13 +35499,40 @@ local PoseRules = require(script.Parent.PoseRules)
 local ID = "pose"
 -- Feet are about this far under the HumanoidRootPart's centre (R15 default rig).
 local FEET_BELOW_ROOT = 3
+-- The turn opens this much before the client's show ends (the "round" notify's trip).
+local TURN_EARLY = 0.35
+-- Presses closer together than this are a double tap and ignored.
+local PRESS_GAP = 0.06
+-- A player not running stands "in the arena" within this margin of its deck.
+local ARENA_MARGIN = 4
 
 local Pose = {}
 
-type Run = { startedAt: number }
+type Held = { root: BasePart, humanoid: Humanoid?, jumpHeight: number, jumpPower: number }
+
+type Run = {
+	startedAt: number,
+	seq: { number },
+	round: number,
+	done: number,
+	hearts: number,
+	-- "intro" | "gap" (waiting for the next show) | "show" | "input"
+	phase: string,
+	nextAt: number,
+	turnAt: number,
+	deadline: number,
+	lastPress: number,
+	replay: boolean,
+	cleared: number,
+	prevBest: number,
+	passed: boolean,
+	pay: { [string]: any }?,
+	held: Held?,
+}
 
 function Pose.create(GameModes: any, context: { [string]: any }): any
 	local built = context.world and context.world.pose
+	local Tycoon = context.Tycoon
 	local def: any = { id = ID }
 	local runs: { [Player]: Run } = {}
 	local lastPos: { [Player]: Vector3 } = {}
@@ -35499,6 +35545,156 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		GameModes.teleport(player, built.spawn.Position, built.spawn.LookVector)
 	end
 
+	-- Holds the player still on their podium (the arrow keys flex, they must not walk).
+	local function hold(player: Player): Held?
+		local root = GameModes.root(player)
+		if not root then
+			return nil
+		end
+		local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		local held: Held = {
+			root = root,
+			humanoid = humanoid,
+			jumpHeight = if humanoid then humanoid.JumpHeight else 7.2,
+			jumpPower = if humanoid then humanoid.JumpPower else 50,
+		}
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.Anchored = true
+		if humanoid then
+			humanoid.JumpHeight = 0
+			humanoid.JumpPower = 0
+		end
+		return held
+	end
+
+	local function unhold(held: Held?)
+		if not held then
+			return
+		end
+		held.root.Anchored = false
+		if held.humanoid then
+			held.humanoid.JumpHeight = held.jumpHeight
+			held.humanoid.JumpPower = held.jumpPower
+		end
+	end
+
+	-- The pay fields of a "pass" / "win" / "lose" payload (zeros before a pass).
+	local function payFields(payload: { [string]: any }, run: Run)
+		local pay: any = run.pay or {}
+		payload.cash = pay.cash or 0
+		payload.full = pay.full == true
+		payload.packCash = pay.packCash or 0
+		payload.repeatCash = pay.repeatCash or 0
+		payload.pay = pay.pay or "none"
+	end
+
+	local function beginRound(player: Player, run: Run)
+		local now = os.clock()
+		local step = PoseRules.showStep(run.round)
+		local length = PoseRules.showLength(run.round)
+		run.phase = "show"
+		run.done = 0
+		run.turnAt = now + length - TURN_EARLY
+		run.deadline = now + length + PoseRules.INPUT_TIMEOUT
+		GameModes.notify(player, "round", ID, {
+			round = run.round,
+			seq = table.move(run.seq, 1, run.round, 1, {}),
+			step = step,
+			lead = PoseRules.SHOW_LEAD,
+			length = length,
+			hearts = run.hearts,
+			replay = run.replay,
+		})
+		run.replay = false
+	end
+
+	-- The end of a run (hearts out, or MAX_ROUND cleared): saves the best, sends "win" (the
+	-- test was passed this run) or "lose" and lets the player go (they stay on the stage).
+	local function finish(player: Player, run: Run)
+		local session = GameModes.session(player)
+		runs[player] = nil
+		unhold(run.held)
+		if not session then
+			return
+		end
+		local rec = record(session)
+		rec.best = PoseRules.newBest(rec.best, run.cleared)
+		local payload: { [string]: any } = {
+			cleared = run.cleared,
+			best = rec.best,
+			prevBest = run.prevBest,
+			newBest = run.cleared > run.prevBest,
+			passed = run.passed,
+		}
+		payFields(payload, run)
+		GameModes.notify(player, if run.passed then "win" else "lose", ID, payload)
+		Tycoon.markDirty(session)
+		GameModes.refresh(player)
+	end
+
+	-- The run just cleared PASS_ROUND: one pay per run. Full on the first clear ever or after
+	-- the cooldown; inside it the repeat share.
+	local function pass(player: Player, run: Run)
+		local session = GameModes.session(player)
+		if not session or run.passed then
+			return
+		end
+		run.passed = true
+		local rec = record(session)
+		local first = rec.clears == 0
+		local priced = GameModes.modeReward(session, ID, first)
+		local kind = if first then "first" elseif priced.full then "full" else "repeat"
+		if not priced.full then
+			priced.cash = priced.repeatCash
+		end
+		rec.clears += 1
+		rec.best = PoseRules.newBest(rec.best, run.cleared)
+		local root = GameModes.root(player)
+		local paid = GameModes.payReward(player, ID, priced, root and root.Position)
+		run.pay = { cash = paid.cash, full = paid.full, packCash = paid.packCash, repeatCash = paid.repeatCash, pay = kind }
+		local payload: { [string]: any } = { round = run.cleared }
+		payFields(payload, run)
+		GameModes.notify(player, "pass", ID, payload)
+		GameModes.refresh(player)
+	end
+
+	local function miss(player: Player, run: Run, reason: string)
+		run.hearts -= 1
+		GameModes.notify(player, "miss", ID, {
+			hearts = run.hearts,
+			reason = reason,
+			step = run.done + 1,
+			expected = run.seq[run.done + 1],
+		})
+		if run.hearts <= 0 then
+			finish(player, run)
+			return
+		end
+		run.phase = "gap"
+		run.replay = true
+		run.nextAt = os.clock() + PoseRules.MISS_GAP
+	end
+
+	local function clear(player: Player, run: Run)
+		run.cleared = math.max(run.cleared, run.round)
+		local passedNow = PoseRules.passed(run.cleared) and not run.passed
+		if run.round >= PoseRules.MAX_ROUND then
+			GameModes.notify(player, "clear", ID, { round = run.round, next = run.round, passed = true })
+			if passedNow then
+				pass(player, run)
+			end
+			finish(player, run)
+			return
+		end
+		run.round += 1
+		run.phase = "gap"
+		run.nextAt = os.clock() + PoseRules.ROUND_GAP
+		GameModes.notify(player, "clear", ID, { round = run.cleared, next = run.round, passed = run.passed or passedNow })
+		if passedNow then
+			pass(player, run)
+		end
+	end
+
 	function def.running(player: Player): boolean
 		return runs[player] ~= nil
 	end
@@ -35508,24 +35704,79 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		if not session or not built then
 			return false
 		end
-		runs[player] = { startedAt = os.clock() }
-		if teleport then
-			toSpawn(player)
+		local old = runs[player]
+		if old then
+			-- Again from the finish card or the gate while a run is on: a fresh run.
+			unhold(old.held)
+			runs[player] = nil
 		end
 		local rec = record(session)
-		GameModes.notify(player, "start", ID, { best = rec.best, clears = rec.clears })
+		local seed = (player.UserId % 100000) * 7919 + math.floor(os.clock() * 1000) % 1000003
+		local run: Run = {
+			startedAt = os.clock(),
+			seq = PoseRules.sequence(seed, PoseRules.MAX_ROUND),
+			round = 1,
+			done = 0,
+			hearts = PoseRules.HEARTS,
+			phase = "intro",
+			nextAt = os.clock() + PoseRules.INTRO,
+			turnAt = math.huge,
+			deadline = math.huge,
+			lastPress = 0,
+			replay = false,
+			cleared = 0,
+			prevBest = rec.best,
+			passed = false,
+			pay = nil,
+			held = nil,
+		}
+		runs[player] = run
+		local spot: CFrame = built.playerSpot
+		if teleport or old then
+			GameModes.teleport(player, spot.Position, spot.LookVector)
+		end
+		run.held = hold(player)
+		GameModes.notify(player, "start", ID, {
+			best = rec.best,
+			clears = rec.clears,
+			hearts = run.hearts,
+			maxHearts = PoseRules.HEARTS,
+			passRound = PoseRules.PASS_ROUND,
+			maxRound = PoseRules.MAX_ROUND,
+			timeout = PoseRules.INPUT_TIMEOUT,
+			playerPos = spot.Position,
+			rivalPos = built.rivalSpot.Position,
+			facing = spot.LookVector,
+		})
 		GameModes.refresh(player)
 		return true
 	end
 
 	function def.stop(player: Player, reason: string)
-		if not runs[player] then
+		local run = runs[player]
+		if not run then
 			return
 		end
 		runs[player] = nil
+		unhold(run.held)
 		if reason ~= "leave" then
 			GameModes.notify(player, "stop", ID, { reason = reason })
 			GameModes.refresh(player)
+		end
+	end
+
+	-- Exit pad and falls for anyone on the deck without a run (after a finish).
+	local function idleInArena(player: Player, pos: Vector3, feetY: number)
+		local a = PoseRules.ARENA
+		if math.abs(pos.X - a.x) > a.sizeX / 2 + ARENA_MARGIN or math.abs(pos.Z - a.z) > a.sizeZ / 2 + ARENA_MARGIN then
+			return
+		end
+		local exit = built.exit.Position
+		local flat = Vector3.new(pos.X - exit.X, 0, pos.Z - exit.Z)
+		if flat.Magnitude <= built.exitRadius and math.abs(feetY - built.top) < 4 then
+			GameModes.toGates(player)
+		elseif feetY < built.top - PoseRules.FALL_BELOW then
+			toSpawn(player)
 		end
 	end
 
@@ -35534,26 +35785,69 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		local prev = lastPos[player]
 		lastPos[player] = pos
 		local feetY = pos.Y - FEET_BELOW_ROOT
-		if not runs[player] then
+		local run = runs[player]
+		if not run then
 			if prev and feetY < Course.PLAZA.top + 8 and Course.crossedGate(def.slot, prev.X, prev.Z, pos.X, pos.Z) then
 				GameModes.start(player, ID, true)
+			elseif built then
+				idleInArena(player, pos, feetY)
 			end
 			return
 		end
 		if not built then
 			return
 		end
-		local exit = built.exit.Position
-		local flat = Vector3.new(pos.X - exit.X, 0, pos.Z - exit.Z)
-		if flat.Magnitude <= built.exitRadius and math.abs(feetY - built.top) < 4 then
-			def.stop(player, "quit")
-			GameModes.toGates(player)
-			return
+		-- A respawned character is a new root: hold that one (and put it back on the podium).
+		if not run.held or run.held.root ~= root then
+			local spot: CFrame = built.playerSpot
+			GameModes.teleport(player, spot.Position, spot.LookVector)
+			run.held = hold(player)
 		end
-		if feetY < built.top - PoseRules.FALL_BELOW then
-			toSpawn(player)
+		local clock = os.clock()
+		if (run.phase == "intro" or run.phase == "gap") and clock >= run.nextAt then
+			beginRound(player, run)
+		elseif run.phase == "show" and clock >= run.turnAt then
+			run.phase = "input"
+		elseif run.phase == "input" and clock > run.deadline then
+			miss(player, run, "slow")
 		end
 	end
+
+	-- One flex of the player's turn: { flex = 1..4, step = the press's place in the round }.
+	-- Out-of-turn, repeated or stale presses are ignored (never a miss: a lag spike must not
+	-- cost a heart).
+	Tycoon.addAction("PoseInput", function(session: any, data: { [string]: any })
+		local player = session.player
+		local run = runs[player]
+		if not run then
+			return
+		end
+		local clock = os.clock()
+		if run.phase == "show" and clock >= run.turnAt then
+			run.phase = "input"
+		end
+		if run.phase ~= "input" or clock - run.lastPress < PRESS_GAP then
+			return
+		end
+		local flex, step = data.flex, data.step
+		if type(flex) ~= "number" or type(step) ~= "number" or step ~= run.done + 1 then
+			return
+		end
+		if flex ~= math.floor(flex) or flex < 1 or flex > #PoseRules.FLEXES then
+			return
+		end
+		run.lastPress = clock
+		local result = PoseRules.press(run.seq, run.round, run.done, flex)
+		if result == "wrong" then
+			miss(player, run, "wrong")
+			return
+		end
+		run.done += 1
+		run.deadline = clock + PoseRules.INPUT_TIMEOUT
+		if result == "clear" then
+			clear(player, run)
+		end
+	end)
 
 	function def.rewardPreview(player: Player): { [string]: any }
 		local session = GameModes.session(player)
@@ -35570,17 +35864,21 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			return { running = false }
 		end
 		local rec = record(session)
+		local run = runs[player]
 		return {
-			running = runs[player] ~= nil,
+			running = run ~= nil,
 			best = rec.best,
 			clears = rec.clears,
 			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 			rewardPreview = def.rewardPreview(player),
+			round = if run then run.round else 0,
+			hearts = if run then run.hearts else 0,
 		}
 	end
 
 	Players.PlayerRemoving:Connect(function(player)
 		lastPos[player] = nil
+		runs[player] = nil
 	end)
 
 	return def
@@ -35598,7 +35896,20 @@ return Pose
 	PoseRules: the pure rules of POSE COPY (Modes.Pose; docs/minigames.md). No Roblox
 	services: tests/pose.luau loads it with Lune.
 
-	TODO(pose builder): the flex list, the sequence that grows one flex every round, input timing and the pass mark.
+	A Simon-says memory game. The rival chad on the stage shows a sequence of flexes (one of
+	the four FLEXES each beat), then the player copies it. Every cleared round adds one flex
+	to the same run-long sequence (round n plays the first n flexes). A wrong flex or a
+	too-slow one costs a heart and the round replays; no hearts left ends the run. Clearing
+	PASS_ROUND passes the test (paid once per run); the run then keeps going for a best
+	(the longest sequence copied).
+
+	  FLEXES                      the four flexes: Poses name, button label, key direction
+	  sequence(seed, length)      a run's flex indexes (1..4), seeded; never three in a row
+	  press(seq, round, done, f)  "good" | "clear" (the round's last flex) | "wrong"
+	  passed(cleared)             cleared rounds reach PASS_ROUND
+	  showStep(round)             seconds per flex while the rival shows, faster each round
+	  showLength(round)           seconds from "round" to the player's turn
+	  newBest(best, cleared)      the saved best after a run that cleared `cleared` rounds
 
 	ARENA is where World.PoseStage builds the arena (floor top centre and size in studs,
 	out over the sea away from the Parkour maps, the Mog stage and the Cardio track; tests/
@@ -35610,6 +35921,89 @@ local PoseRules = {}
 PoseRules.ARENA = { x = 560, y = 6, z = -380, sizeX = 56, sizeZ = 48 }
 -- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
 PoseRules.FALL_BELOW = 20
+
+export type Flex = { pose: string, label: string, dir: string, rgb: { number } }
+
+-- The four flexes, in button order (index = what the "PoseInput" action sends). `dir` is the
+-- arrow / WASD / D-pad direction that strikes it; `rgb` its colour (stage lamps, buttons).
+-- Fx.Pose.FLEXES is the client's copy: keep the two in the same order and colours.
+PoseRules.FLEXES = {
+	{ pose = "DoubleBiceps", label = "DOUBLE BICEPS", dir = "Up", rgb = { 255, 196, 40 } },
+	{ pose = "SideChest", label = "SIDE CHEST", dir = "Left", rgb = { 255, 64, 158 } },
+	{ pose = "LatSpread", label = "LAT SPREAD", dir = "Right", rgb = { 70, 140, 255 } },
+	{ pose = "MostMuscular", label = "MOST MUSCULAR", dir = "Down", rgb = { 60, 206, 120 } },
+} :: { Flex }
+
+PoseRules.HEARTS = 3
+-- Cleared rounds that pass the test (a sequence this long copied).
+PoseRules.PASS_ROUND = 8
+-- The longest sequence a run can reach (the run ends as a win there).
+PoseRules.MAX_ROUND = 30
+
+-- Show timing: seconds per flex at round 1, the fastest it gets, and the speed-up per round.
+PoseRules.STEP_START = 0.95
+PoseRules.STEP_MIN = 0.42
+PoseRules.STEP_DROP = 0.05
+-- Seconds before the first flex of a show (the "WATCH" banner) and after the last.
+PoseRules.SHOW_LEAD = 1.2
+PoseRules.SHOW_TAIL = 0.35
+-- Seconds the player gets for each flex of their turn (generous: kids think).
+PoseRules.INPUT_TIMEOUT = 6
+-- Seconds between a cleared round (or a miss) and the next show.
+PoseRules.ROUND_GAP = 1.6
+PoseRules.MISS_GAP = 2.2
+-- Seconds from "start" to the first show.
+PoseRules.INTRO = 2.6
+
+local function lcg(seed: number): () -> number
+	local state = math.floor(math.abs(seed)) % 2147483648
+	return function()
+		state = (state * 1103515245 + 12345) % 2147483648
+		return state / 2147483648
+	end
+end
+
+-- The run's sequence: `length` flex indexes (1..#FLEXES) from `seed`. The same seed gives the
+-- same sequence; no flex comes three times in a row (two is fine: kids see "again!").
+function PoseRules.sequence(seed: number, length: number): { number }
+	local rng = lcg(seed)
+	local n = #PoseRules.FLEXES
+	local seq: { number } = {}
+	for i = 1, math.max(0, math.floor(length)) do
+		local pick = math.floor(rng() * n) + 1
+		if i >= 3 and seq[i - 1] == pick and seq[i - 2] == pick then
+			pick = pick % n + 1
+		end
+		seq[i] = pick
+	end
+	return seq
+end
+
+-- One press of the player's turn: `done` flexes of round `round` are already copied and
+-- the player struck `flex`. "good" (go on), "clear" (that was the round's last) or "wrong".
+function PoseRules.press(seq: { number }, round: number, done: number, flex: number): string
+	local want = seq[done + 1]
+	if done >= round or want == nil or flex ~= want then
+		return "wrong"
+	end
+	return if done + 1 >= round then "clear" else "good"
+end
+
+function PoseRules.passed(cleared: number): boolean
+	return cleared >= PoseRules.PASS_ROUND
+end
+
+function PoseRules.showStep(round: number): number
+	return math.max(PoseRules.STEP_MIN, PoseRules.STEP_START - PoseRules.STEP_DROP * (math.max(1, round) - 1))
+end
+
+function PoseRules.showLength(round: number): number
+	return PoseRules.SHOW_LEAD + math.max(1, round) * PoseRules.showStep(round) + PoseRules.SHOW_TAIL
+end
+
+function PoseRules.newBest(best: number, cleared: number): number
+	return math.max(best, math.floor(cleared))
+end
 
 return PoseRules
 ]]></string>
@@ -35708,21 +36102,37 @@ return Rules
 	Modes.Shake: SHAKE CATCH, a solo mini-game (docs/minigames.md). Arena: World.ShakeArena
 	(context.world.shake); rules: Modes.ShakeRules (pure).
 
-	STUB (foundation): walking in through the mode's plaza gate (Course.crossedGate) or the
-	"ModeStart" { mode = "shake" } action starts a run on the arena's spawn; the arena's
-	exit pad (or the HUD's quit, "ModeQuit") ends it and brings the player back to the
-	gates; a fall puts them back on the spawn. Nothing is played or paid yet.
-	TODO(shake builder): catch the falling shakes, dodge the junk food; a pass pays through GameModes.modeReward + GameModes.payReward
-	(first clear: record(session).clears == 0).
+	Walking in through the mode's plaza gate (Course.crossedGate) or the "ModeStart"
+	{ mode = "shake" } action starts a run on the arena's spawn. After READY_SECONDS the first
+	wave drops: shakes, golden dumbbells and aura orbs to catch, junk food to dodge. The server
+	owns the run: the drops come from a seed (ShakeRules.schedule), each wave's drops go to the
+	client before it starts (Fx.Shake animates them against the server clock), and every drop
+	is judged here from the root positions sampled each tick (ShakeRules.caught). The run ends
+	when the clock runs out or the hearts do (ShakeRules.outcome); a pass pays through
+	GameModes.modeReward + GameModes.payReward (in full on the first clear and once per
+	cooldown, else the repeat share at most once per ShakeRules.REPEAT_GAP). The arena's exit
+	pad (or the HUD's quit, "ModeQuit") ends a run and brings the player back to the gates; a
+	fall puts them back on the spawn. After a finish the player may walk out through the exit
+	or is brought back to the gates a little later.
 
-	Notify (kind = "Mode", mode = "shake"): "start" { best, clears }, "stop" { reason }.
-	Builders add their own events (docs/minigames.md lists the convention).
-	Snapshot modes.shake: { running, best, clears, cooldownEnds, rewardPreview } (the Game
-	Modes window reads exactly these).
+	Notify (kind = "Mode", mode = "shake"); times are workspace:GetServerTimeNow() seconds:
+	  "start" { best, clears, target, hearts, seconds, goAt, endAt, waves }
+	  "wave"  { wave, waves, at, drops = { { id, kind, x, z, spawnAt, landAt } } } (sent
+	          WAVE_LEAD seconds before the wave starts; the first one with "start")
+	  "catch" { id, kind, points, score, x, z }   a good item caught
+	  "splat" { id, kind, hearts, x, z }           junk food caught: a heart lost
+	  "win"   { score, target, best, prevBest, newBest, caught, hearts, first, cash, full,
+	          packCash, repeatCash, repeatShare, pay, cooldownEnds }
+	          (pay: "full" | "repeat" | "resting": the repeat share waits for REPEAT_GAP)
+	  "lose"  { score, target, best, prevBest, newBest, caught, hearts, why = "hearts" | "time" }
+	  "stop"  { reason }
+	Snapshot modes.shake: { running, best, clears, cooldownEnds, rewardPreview, score, hearts,
+	target, endAt } (the Game Modes window reads the first five).
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
 
@@ -35732,16 +36142,37 @@ local ShakeRules = require(script.Parent.ShakeRules)
 local ID = "shake"
 -- Feet are about this far under the HumanoidRootPart's centre (R15 default rig).
 local FEET_BELOW_ROOT = 3
+-- A wave's drops go to the client this many seconds before the wave starts.
+local WAVE_LEAD = 1.5
+-- Root samples older than this (seconds) are dropped.
+local SAMPLE_KEEP = 1.5
+-- After a finish the player is brought back to the gates this long later (unless they left).
+local RETURN_AFTER = 25
 
 local Shake = {}
 
-type Run = { startedAt: number }
+type Run = {
+	startedAt: number,
+	-- Server time the first wave starts (run time 0).
+	goAt: number,
+	drops: { ShakeRules.Drop },
+	-- The next drop (land order) still to judge, and the last wave sent.
+	nextDrop: number,
+	sentWave: number,
+	score: number,
+	hearts: number,
+	caught: number,
+	samples: { ShakeRules.Sample },
+}
 
 function Shake.create(GameModes: any, context: { [string]: any }): any
 	local built = context.world and context.world.shake
+	local Tycoon = context.Tycoon
 	local def: any = { id = ID }
 	local runs: { [Player]: Run } = {}
 	local lastPos: { [Player]: Vector3 } = {}
+	-- When each player was last paid the repeat share (os.time()).
+	local lastRepeat: { [Player]: number } = {}
 
 	local function record(session: any): { best: number, clears: number, lastRewardAt: number }
 		return session.profile.modes[ID]
@@ -35749,6 +36180,40 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 
 	local function toSpawn(player: Player)
 		GameModes.teleport(player, built.spawn.Position, built.spawn.LookVector)
+	end
+
+	-- True when `pos` (a root) stands over the arena deck.
+	local function inArena(pos: Vector3): boolean
+		local a = ShakeRules.ARENA
+		return math.abs(pos.X - a.x) <= a.sizeX / 2 + 2
+			and math.abs(pos.Z - a.z) <= a.sizeZ / 2 + 2
+			and pos.Y > a.y - ShakeRules.FALL_BELOW
+			and pos.Y < a.y + 40
+	end
+
+	-- Sends wave `index`'s drops (absolute server times).
+	local function sendWave(player: Player, run: Run, index: number)
+		run.sentWave = index
+		local wave = ShakeRules.WAVES[index]
+		local list = {}
+		for _, d in run.drops do
+			if d.wave == index then
+				table.insert(list, {
+					id = d.id,
+					kind = d.kind,
+					x = d.x,
+					z = d.z,
+					spawnAt = run.goAt + d.spawnAt,
+					landAt = run.goAt + d.landAt,
+				})
+			end
+		end
+		GameModes.notify(player, "wave", ID, {
+			wave = index,
+			waves = #ShakeRules.WAVES,
+			at = run.goAt + wave.from,
+			drops = list,
+		})
 	end
 
 	function def.running(player: Player): boolean
@@ -35760,12 +36225,34 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		if not session or not built then
 			return false
 		end
-		runs[player] = { startedAt = os.clock() }
+		local now = Workspace:GetServerTimeNow()
+		local run: Run = {
+			startedAt = os.clock(),
+			goAt = now + ShakeRules.READY_SECONDS,
+			drops = ShakeRules.schedule(Random.new():NextInteger(1, 2 ^ 30), built.catchArea),
+			nextDrop = 1,
+			sentWave = 0,
+			score = 0,
+			hearts = ShakeRules.HEARTS,
+			caught = 0,
+			samples = {},
+		}
+		runs[player] = run
 		if teleport then
 			toSpawn(player)
 		end
 		local rec = record(session)
-		GameModes.notify(player, "start", ID, { best = rec.best, clears = rec.clears })
+		GameModes.notify(player, "start", ID, {
+			best = rec.best,
+			clears = rec.clears,
+			target = ShakeRules.TARGET,
+			hearts = run.hearts,
+			seconds = ShakeRules.RUN_SECONDS,
+			goAt = run.goAt,
+			endAt = run.goAt + ShakeRules.RUN_SECONDS,
+			waves = #ShakeRules.WAVES,
+		})
+		sendWave(player, run, 1)
 		GameModes.refresh(player)
 		return true
 	end
@@ -35781,23 +36268,130 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		end
 	end
 
-	function def.tick(player: Player, root: BasePart, _now: number)
+	-- The run is over: best and clears, the pay on a pass, the finish Notify.
+	local function finish(player: Player, run: Run, result: string, root: BasePart)
+		runs[player] = nil
+		local session = GameModes.session(player)
+		if not session then
+			return
+		end
+		local rec = record(session)
+		local prevBest = rec.best
+		local newBest = run.score > prevBest
+		if newBest then
+			rec.best = run.score
+		end
+		local payload: { [string]: any } = {
+			score = run.score,
+			target = ShakeRules.TARGET,
+			best = rec.best,
+			prevBest = prevBest,
+			newBest = newBest,
+			caught = run.caught,
+			hearts = run.hearts,
+		}
+		if result == "win" then
+			local first = rec.clears == 0
+			rec.clears += 1
+			local r = GameModes.modeReward(session, ID, first)
+			local pay = "full"
+			if not r.full then
+				local last = lastRepeat[player]
+				pay = if last and os.time() - last < ShakeRules.REPEAT_GAP then "resting" else "repeat"
+				r.cash = if pay == "repeat" then r.repeatCash else 0
+				if r.cash > 0 then
+					lastRepeat[player] = os.time()
+				end
+			end
+			local paid = GameModes.payReward(player, ID, r, root.Position)
+			payload.first = first
+			payload.cash = paid.cash
+			payload.full = paid.full
+			payload.packCash = paid.packCash
+			payload.repeatCash = paid.repeatCash
+			payload.repeatShare = Economy.MODE_REPEAT_SHARE
+			payload.pay = pay
+			payload.cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN
+		else
+			payload.why = if run.hearts <= 0 then "hearts" else "time"
+			if newBest and Tycoon then
+				-- payReward saves a pass; a lost run's new best is saved here.
+				Tycoon.markDirty(session)
+			end
+		end
+		GameModes.notify(player, result, ID, payload)
+		GameModes.refresh(player)
+		GameModes.returnLater(player, RETURN_AFTER, function(r: BasePart)
+			return inArena(r.Position)
+		end)
+	end
+
+	-- Judges every drop whose window has closed and ends the run when it is over.
+	local function play(player: Player, run: Run, root: BasePart, now: number)
+		local t = now - run.goAt
+		local pos = root.Position
+		table.insert(run.samples, { t = t, x = pos.X, z = pos.Z })
+		while run.samples[1] and run.samples[1].t < t - SAMPLE_KEEP do
+			table.remove(run.samples, 1)
+		end
+		local nextWave = ShakeRules.WAVES[run.sentWave + 1]
+		if nextWave and t >= nextWave.from - WAVE_LEAD then
+			sendWave(player, run, run.sentWave + 1)
+		end
+		local settled = t - ShakeRules.SETTLE
+		while run.hearts > 0 do
+			local drop = run.drops[run.nextDrop]
+			if not drop or drop.landAt > settled then
+				break
+			end
+			run.nextDrop += 1
+			if ShakeRules.caught(run.samples, drop) then
+				if ShakeRules.isJunk(drop.kind) then
+					run.hearts -= 1
+					GameModes.notify(player, "splat", ID, { id = drop.id, kind = drop.kind, hearts = run.hearts, x = drop.x, z = drop.z })
+				else
+					local points = ShakeRules.points(drop.kind)
+					run.score += points
+					run.caught += 1
+					GameModes.notify(player, "catch", ID, {
+						id = drop.id,
+						kind = drop.kind,
+						points = points,
+						score = run.score,
+						x = drop.x,
+						z = drop.z,
+					})
+				end
+			end
+		end
+		local result = ShakeRules.outcome(run.score, run.hearts, settled)
+		if result then
+			finish(player, run, result, root)
+		end
+	end
+
+	function def.tick(player: Player, root: BasePart, now: number)
 		local pos = root.Position
 		local prev = lastPos[player]
 		lastPos[player] = pos
 		local feetY = pos.Y - FEET_BELOW_ROOT
-		if not runs[player] then
-			if prev and feetY < Course.PLAZA.top + 8 and Course.crossedGate(def.slot, prev.X, prev.Z, pos.X, pos.Z) then
-				GameModes.start(player, ID, true)
-			end
-			return
-		end
+		local run = runs[player]
 		if not built then
 			return
 		end
 		local exit = built.exit.Position
 		local flat = Vector3.new(pos.X - exit.X, 0, pos.Z - exit.Z)
-		if flat.Magnitude <= built.exitRadius and math.abs(feetY - built.top) < 4 then
+		local onExit = flat.Magnitude <= built.exitRadius and math.abs(feetY - built.top) < 4
+		if not run then
+			if prev and feetY < Course.PLAZA.top + 8 and Course.crossedGate(def.slot, prev.X, prev.Z, pos.X, pos.Z) then
+				GameModes.start(player, ID, true)
+			elseif onExit and not GameModes.active(player) then
+				-- Walking out after a finish.
+				GameModes.toGates(player)
+			end
+			return
+		end
+		if onExit then
 			def.stop(player, "quit")
 			GameModes.toGates(player)
 			return
@@ -35805,6 +36399,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		if feetY < built.top - ShakeRules.FALL_BELOW then
 			toSpawn(player)
 		end
+		play(player, run, root, now)
 	end
 
 	function def.rewardPreview(player: Player): { [string]: any }
@@ -35822,17 +36417,23 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 			return { running = false }
 		end
 		local rec = record(session)
+		local run = runs[player]
 		return {
-			running = runs[player] ~= nil,
+			running = run ~= nil,
 			best = rec.best,
 			clears = rec.clears,
 			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 			rewardPreview = def.rewardPreview(player),
+			score = if run then run.score else nil,
+			hearts = if run then run.hearts else nil,
+			target = ShakeRules.TARGET,
+			endAt = if run then run.goAt + ShakeRules.RUN_SECONDS else nil,
 		}
 	end
 
 	Players.PlayerRemoving:Connect(function(player)
 		lastPos[player] = nil
+		lastRepeat[player] = nil
 	end)
 
 	return def
@@ -35850,7 +36451,18 @@ return Shake
 	ShakeRules: the pure rules of SHAKE CATCH (Modes.Shake; docs/minigames.md). No Roblox
 	services: tests/shake.luau loads it with Lune.
 
-	TODO(shake builder): spawn waves (shakes vs junk food), catching and dodging, score and the pass mark, the difficulty curve.
+	A run is RUN_SECONDS long, split into WAVES that drop faster and denser. Every drop is
+	worked out up front from the run's seed (schedule), so the server and the client agree on
+	where and when each item lands: the server sends a wave's drops before it starts and
+	Fx.Shake animates them locally against the server clock.
+	  Good items: protein shake (+1), golden dumbbell (+3, rare), aura orb (+1).
+	  Junk food: burger, donut, soda. Catching one costs a heart (HEARTS per run).
+	A drop is caught when the player's root stood within the catch radius of its landing
+	spot at some moment of the window around the land time (caught; the window covers the
+	server's view of a moving player arriving a little late). Junk uses a smaller radius and
+	a tighter window, so near misses never cost a heart.
+	The run is passed with TARGET points: when the clock runs out, or when the hearts run out
+	after the target was already reached (outcome). Out of hearts below the target: "lose".
 
 	ARENA is where World.ShakeArena builds the arena (floor top centre and size in studs,
 	out over the sea away from the Parkour maps, the Mog stage and the Cardio track; tests/
@@ -35862,6 +36474,187 @@ local ShakeRules = {}
 ShakeRules.ARENA = { x = 380, y = 6, z = -380, sizeX = 64, sizeZ = 64 }
 -- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
 ShakeRules.FALL_BELOW = 20
+
+ShakeRules.RUN_SECONDS = 60
+ShakeRules.HEARTS = 3
+ShakeRules.TARGET = 25
+-- Seconds between "start" and the first wave (the HUD counts 3, 2, 1).
+ShakeRules.READY_SECONDS = 3
+-- A pass inside the reward cooldown pays the repeat share at most this often (seconds).
+ShakeRules.REPEAT_GAP = 120
+
+-- Catch radius and window (seconds before / after the land time) for good items and junk.
+ShakeRules.CATCH = { radius = 4.5, early = 0.3, late = 0.3 }
+-- Junk is judged a touch late (the server sees a dodging player where they were a moment ago).
+ShakeRules.JUNK = { radius = 3, early = 0, late = 0.2 }
+-- A drop is judged this long after it lands (the longest `late`), once every sample is in.
+ShakeRules.SETTLE = 0.3
+
+-- "shake" | "gold" | "orb" (good) or "burger" | "donut" | "soda" (junk).
+export type Kind = string
+
+-- Points per kind (0: junk food, catching it costs a heart instead).
+ShakeRules.POINTS = { shake = 1, gold = 3, orb = 1, burger = 0, donut = 0, soda = 0 } :: { [string]: number }
+ShakeRules.JUNK_KINDS = { "burger", "donut", "soda" } :: { Kind }
+
+-- The waves: `from` seconds into the run, a drop every `gap` seconds (a `double` share of
+-- them drop a second item too), each falling for `fall` seconds; `junk`, `gold` and `orb`
+-- are the chances of each kind (the rest are shakes); `reach` is how far (studs) a drop may
+-- land from the one before, so the action wanders round the court instead of jumping across.
+export type Wave = {
+	from: number,
+	gap: number,
+	fall: number,
+	double: number,
+	junk: number,
+	gold: number,
+	orb: number,
+	reach: number,
+}
+ShakeRules.WAVES = {
+	{ from = 0, gap = 1.1, fall = 2.4, double = 0, junk = 0.15, gold = 0.08, orb = 0.15, reach = 14 },
+	{ from = 15, gap = 0.9, fall = 2.0, double = 0.1, junk = 0.22, gold = 0.08, orb = 0.15, reach = 16 },
+	{ from = 30, gap = 0.75, fall = 1.75, double = 0.2, junk = 0.28, gold = 0.09, orb = 0.15, reach = 18 },
+	{ from = 45, gap = 0.6, fall = 1.5, double = 0.3, junk = 0.32, gold = 0.1, orb = 0.15, reach = 20 },
+} :: { Wave }
+
+export type Area = { x0: number, x1: number, z0: number, z1: number }
+export type Drop = {
+	id: number,
+	wave: number,
+	kind: Kind,
+	x: number,
+	z: number,
+	-- Seconds after the first wave starts (run time) the item appears and lands.
+	spawnAt: number,
+	landAt: number,
+}
+export type Sample = { t: number, x: number, z: number }
+
+-- A tiny deterministic generator (the same LCG as tests/run.luau's `seeded`): values in [0, 1).
+function ShakeRules.rng(seed: number): () -> number
+	local state = math.floor(math.abs(seed)) % 2147483648
+	return function()
+		state = (state * 1103515245 + 12345) % 2147483648
+		return state / 2147483648
+	end
+end
+
+-- The wave running `t` seconds into the run (1 before the first starts, the last one past the end).
+function ShakeRules.waveAt(t: number): number
+	local index = 1
+	for i, wave in ShakeRules.WAVES do
+		if t >= wave.from then
+			index = i
+		end
+	end
+	return index
+end
+
+-- The kind of a drop for roll `r` in [0, 1) in `wave` (`r2` picks which junk food).
+function ShakeRules.pick(wave: Wave, r: number, r2: number): Kind
+	if r < wave.junk then
+		local list = ShakeRules.JUNK_KINDS
+		return list[math.clamp(math.floor(r2 * #list) + 1, 1, #list)]
+	elseif r < wave.junk + wave.gold then
+		return "gold"
+	elseif r < wave.junk + wave.gold + wave.orb then
+		return "orb"
+	end
+	return "shake"
+end
+
+function ShakeRules.isJunk(kind: string): boolean
+	return (ShakeRules.POINTS[kind] or 0) <= 0
+end
+
+function ShakeRules.points(kind: string): number
+	return ShakeRules.POINTS[kind] or 0
+end
+
+-- Every drop of a run, in land order, from its seed. Landing spots stay inside `area`; the
+-- last items land by RUN_SECONDS.
+function ShakeRules.schedule(seed: number, area: Area): { Drop }
+	local rand = ShakeRules.rng(seed)
+	local drops: { Drop } = {}
+	local cx, cz = (area.x0 + area.x1) / 2, (area.z0 + area.z1) / 2
+	local function place(reach: number): (number, number)
+		local angle = rand() * math.pi * 2
+		local dist = reach * (0.35 + 0.65 * rand())
+		local x = math.clamp(cx + math.cos(angle) * dist, area.x0, area.x1)
+		local z = math.clamp(cz + math.sin(angle) * dist, area.z0, area.z1)
+		return x, z
+	end
+	for index, wave in ShakeRules.WAVES do
+		local nextWave = ShakeRules.WAVES[index + 1]
+		local stop = if nextWave then nextWave.from else ShakeRules.RUN_SECONDS
+		local t = wave.from + (if index == 1 then 0.4 else 0)
+		while t + wave.fall <= stop do
+			local count = if rand() < wave.double then 2 else 1
+			for n = 1, count do
+				local kind = ShakeRules.pick(wave, rand(), rand())
+				local x, z = place(wave.reach)
+				if n == 1 then
+					cx, cz = x, z
+				end
+				table.insert(drops, {
+					id = #drops + 1,
+					wave = index,
+					kind = kind,
+					x = x,
+					z = z,
+					spawnAt = t,
+					landAt = t + wave.fall,
+				})
+			end
+			t += wave.gap
+		end
+	end
+	table.sort(drops, function(a, b)
+		if a.landAt == b.landAt then
+			return a.id < b.id
+		end
+		return a.landAt < b.landAt
+	end)
+	return drops
+end
+
+-- The most points a run's schedule holds (every good item caught).
+function ShakeRules.maxScore(drops: { Drop }): number
+	local total = 0
+	for _, drop in drops do
+		total += ShakeRules.points(drop.kind)
+	end
+	return total
+end
+
+-- True when one of `samples` (run time `t`, root x / z) taken within [landAt - early,
+-- landAt + late] stood within the kind's catch radius of the drop's landing spot.
+function ShakeRules.caught(samples: { Sample }, drop: Drop): boolean
+	local rule = if ShakeRules.isJunk(drop.kind) then ShakeRules.JUNK else ShakeRules.CATCH
+	local r2 = rule.radius * rule.radius
+	for _, s in samples do
+		if s.t >= drop.landAt - rule.early and s.t <= drop.landAt + rule.late then
+			local dx, dz = s.x - drop.x, s.z - drop.z
+			if dx * dx + dz * dz <= r2 then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+function ShakeRules.passed(score: number): boolean
+	return score >= ShakeRules.TARGET
+end
+
+-- "win" / "lose" once the run is over at run time `t`, else nil.
+function ShakeRules.outcome(score: number, hearts: number, t: number): string?
+	if hearts <= 0 or t >= ShakeRules.RUN_SECONDS then
+		return if ShakeRules.passed(score) then "win" else "lose"
+	end
+	return nil
+end
 
 return ShakeRules
 ]]></string>
@@ -50191,13 +50984,22 @@ return Pen
 --[[
 	PoseStage: the POSE COPY arena out at sea (teleport-only; Modes.Pose brings players here).
 	Numbers live in Modes.PoseRules.ARENA; the shell (floor, spawn pad, exit arch) comes from
-	World.Arena. TODO(pose builder): dress it (props, signs, fans) and add the game's parts.
+	World.Arena.
+
+	A sunny posing show at the deck's -Z end: a raised stage with a sky-blue back wall and a
+	"POSE COPY" banner, two podiums side by side (the rival's "CHAD" on the left, the
+	player's "YOU" on the right as the audience sees them), both chads facing the audience
+	(+Z, toward the spawn). Over them a D-pad of four "FlexLamp<i>" tiles in the flexes'
+	colours (PoseRules.FLEXES; Fx.Pose lights the one being shown), "PodiumGlow" rings that
+	Fx.Pose tints, two spotlight towers, a pink runway from the spawn to the stage steps and
+	a judges' table on the left with three "10" cards.
 
 	build() -> Built: everything World.Arena.Base has ({ folder, floor, spawn, exit,
 	exitRadius, center, top }) plus
-	playerSpot feet CFrame where the player stands, facing the rival
-	rivalSpot  feet CFrame where the rival poser stands, facing the player
-	rival      empty Model "Rival" for the rival rig (Modes.Pose fills it)
+	playerSpot feet CFrame on the player's podium, facing the audience
+	rivalSpot  feet CFrame on the rival's podium, facing the audience
+	rival      empty Model "Rival" (the rival rig is built on each client by Fx.Pose, so
+	           every player sees their own rival's show)
 ]]
 
 local Common = require(script.Parent.Common)
@@ -50206,6 +51008,21 @@ local PoseRules = require(script.Parent.Parent.Modes.PoseRules)
 
 local W = Common.theme.World
 local make = Common.make
+local UPRIGHT = Common.UPRIGHT
+local CYLINDER = Enum.PartType.Cylinder
+
+-- Stage layout (studs, from the arena centre): deck depth span and height, podium spread.
+local STAGE = {
+	Front = -4, -- deck front edge, z offset from the centre
+	Back = -22, -- deck back edge
+	HalfW = 22,
+	Height = 1.2,
+	PodiumX = 7, -- each podium's x offset
+	PodiumZ = -12,
+	PodiumD = 7,
+	PodiumH = 1.4,
+	WallH = 19,
+}
 
 local PoseStage = {}
 
@@ -50215,32 +51032,221 @@ export type Built = Arena.Base & {
 	rival: Model,
 }
 
+local function sign(part: BasePart, face: Enum.NormalId, text: string, color: Color3, ppu: number?)
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = face
+	gui.PixelsPerStud = ppu or 40
+	gui.LightInfluence = 0
+	gui.Parent = part
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.fromScale(1, 1)
+	label.Text = text
+	label.TextScaled = true
+	label.Font = Common.theme.Fonts.Display
+	label.TextColor3 = color
+	label.Parent = gui
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 3
+	stroke.Color = W.Ink
+	stroke.Transparency = 0.35
+	stroke.Parent = label
+end
+
 function PoseStage.build(): Built
 	local a = PoseRules.ARENA
 	local base = Arena.base("pose", "PoseStage", a, { floor = "Cream", trim = "Blue" })
+	local folder = base.folder
 	local top = base.top
-	local playerPos = Vector3.new(a.x, top, a.z + 6)
-	local rivalPos = Vector3.new(a.x, top, a.z - 10)
-	local pads: { { pos: Vector3, color: Color3, name: string } } = {
-		{ pos = playerPos, color = W.Sunny, name = "PlayerPad" },
-		{ pos = rivalPos, color = W.Grape, name = "RivalPad" },
-	}
-	for _, pad in pads do
-		make("Part", {
-			Name = pad.name,
-			Shape = Enum.PartType.Cylinder,
-			Size = Vector3.new(0.4, 8, 8),
-			CFrame = CFrame.new(pad.pos + Vector3.new(0, 0.2, 0)) * Common.UPRIGHT,
-			Color = pad.color,
-			Parent = base.folder,
+	local cx, cz = a.x, a.z
+	local deckTop = top + STAGE.Height
+	local depth = STAGE.Front - STAGE.Back
+	local midZ = cz + (STAGE.Front + STAGE.Back) / 2
+
+	local function box(name: string, size: Vector3, cf: CFrame, color: Color3, material: Enum.Material?): BasePart
+		return make("Part", {
+			Name = name,
+			Size = size,
+			CFrame = cf,
+			Color = color,
+			Material = material or Enum.Material.SmoothPlastic,
+			Parent = folder,
 		})
 	end
+	local function disc(name: string, diameter: number, height: number, pos: Vector3, color: Color3, material: Enum.Material?): BasePart
+		return make("Part", {
+			Name = name,
+			Shape = CYLINDER,
+			Size = Vector3.new(height, diameter, diameter),
+			CFrame = CFrame.new(pos) * UPRIGHT,
+			Color = color,
+			Material = material or Enum.Material.SmoothPlastic,
+			Parent = folder,
+		})
+	end
+
+	-- Stage deck: white body, a blue top, a glowing front strip and three steps to the runway.
+	box("StageDeck", Vector3.new(STAGE.HalfW * 2, STAGE.Height, depth), CFrame.new(cx, top + STAGE.Height / 2, midZ), W.White)
+	box("StageTop", Vector3.new(STAGE.HalfW * 2 - 1, 0.1, depth - 1), CFrame.new(cx, deckTop + 0.05, midZ - 0.5), W.SkyBlue)
+	box(
+		"StageEdge",
+		Vector3.new(STAGE.HalfW * 2, 0.3, 0.3),
+		CFrame.new(cx, deckTop - 0.25, cz + STAGE.Front + 0.05),
+		W.Sunny,
+		Enum.Material.Neon
+	)
+	for i = 1, 2 do
+		local h = STAGE.Height * i / 3
+		box("StageStep", Vector3.new(8, h, 1.4), CFrame.new(cx, top + h / 2, cz + STAGE.Front + 1.4 * (3 - i) - 0.7), W.Cream)
+	end
+	-- Runway from the spawn to the steps.
+	local runFrom, runTo = cz + STAGE.Front + 2.8, cz + a.sizeZ / 2 - 10
+	box("Runway", Vector3.new(6, 0.12, runTo - runFrom), CFrame.new(cx, top + 0.06, (runFrom + runTo) / 2), W.HotPink)
+	for _, side in { -1, 1 } do
+		box("RunwayEdge", Vector3.new(0.3, 0.16, runTo - runFrom), CFrame.new(cx + side * 3.15, top + 0.08, (runFrom + runTo) / 2), W.White)
+	end
+
+	-- Back wall with a framed banner on top.
+	local wallZ = cz + STAGE.Back + 0.6
+	box("StageWall", Vector3.new(STAGE.HalfW * 2, STAGE.WallH, 1), CFrame.new(cx, deckTop + STAGE.WallH / 2, wallZ), W.SkyBlue)
+	box("StageWallFrame", Vector3.new(STAGE.HalfW * 2 + 1.2, 1.2, 1.4), CFrame.new(cx, deckTop + STAGE.WallH, wallZ), W.Blue)
+	for _, side in { -1, 1 } do
+		box(
+			"StageWallFrame",
+			Vector3.new(1.2, STAGE.WallH, 1.4),
+			CFrame.new(cx + side * (STAGE.HalfW + 0.1), deckTop + STAGE.WallH / 2, wallZ),
+			W.Blue
+		)
+	end
+	local banner = box("PoseBanner", Vector3.new(26, 4.6, 0.6), CFrame.new(cx, deckTop + STAGE.WallH - 3.2, wallZ + 0.8), W.HotPink)
+	sign(banner, Enum.NormalId.Front, "POSE COPY", W.White)
+	box("PoseBannerTrim", Vector3.new(27, 0.4, 0.7), CFrame.new(cx, deckTop + STAGE.WallH - 5.6, wallZ + 0.8), W.Sunny, Enum.Material.Neon)
+
+	-- The flex lamps: a D-pad of four tiles between the chads (up, left, right, down).
+	local padY = deckTop + 9.4
+	local padZ = wallZ + 0.7
+	local offsets: { [string]: Vector2 } = {
+		Up = Vector2.new(0, 1),
+		Left = Vector2.new(-1, 0),
+		Right = Vector2.new(1, 0),
+		Down = Vector2.new(0, -1),
+	}
+	box("FlexPadBack", Vector3.new(9.6, 9.6, 0.4), CFrame.new(cx, padY, padZ - 0.3) * CFrame.Angles(0, 0, math.rad(45)), W.Navy)
+	for i, flex in PoseRules.FLEXES do
+		local o = offsets[flex.dir] or Vector2.zero
+		local lamp = box(
+			"FlexLamp" .. i,
+			Vector3.new(2.6, 2.6, 0.5),
+			CFrame.new(cx + o.X * 2.7, padY + o.Y * 2.7, padZ) * CFrame.Angles(0, 0, math.rad(45)),
+			Color3.fromRGB(flex.rgb[1], flex.rgb[2], flex.rgb[3])
+		)
+		lamp:SetAttribute("Flex", i)
+		lamp.Transparency = 0.15
+	end
+
+	-- Podiums: rival on the audience's left (-X), the player on the right (+X).
+	local facing = Vector3.new(0, 0, 1)
+	local podiumZ = cz + STAGE.PodiumZ
+	local feetY = deckTop + STAGE.PodiumH
+	local rivalPos = Vector3.new(cx - STAGE.PodiumX, feetY, podiumZ)
+	local playerPos = Vector3.new(cx + STAGE.PodiumX, feetY, podiumZ)
+	local podiums = {
+		{ pos = rivalPos, color = W.Grape, name = "RivalPad", text = "CHAD" },
+		{ pos = playerPos, color = W.Sunny, name = "PlayerPad", text = "YOU" },
+	}
+	for _, pod in podiums do
+		local p = pod.pos
+		disc(pod.name, STAGE.PodiumD, STAGE.PodiumH, Vector3.new(p.X, deckTop + STAGE.PodiumH / 2, p.Z), pod.color)
+		local glow =
+			disc("PodiumGlow", STAGE.PodiumD + 0.6, 0.25, Vector3.new(p.X, deckTop + STAGE.PodiumH - 0.3, p.Z), W.White, Enum.Material.Neon)
+		glow:SetAttribute("Side", if pod.name == "RivalPad" then "rival" else "player")
+		local plate = box("PodiumPlate", Vector3.new(4, 1, 0.2), CFrame.new(p.X, deckTop + 0.7, p.Z + STAGE.PodiumD / 2 + 0.05), W.White)
+		plate.CanCollide = false
+		sign(plate, Enum.NormalId.Front, pod.text, pod.color)
+	end
+
+	-- Spotlight towers at the stage's front corners, aimed at the podiums.
+	for _, side in { -1, 1 } do
+		local x = cx + side * (STAGE.HalfW + 2.5)
+		local z = cz + STAGE.Front - 1
+		local h = 15
+		disc("SpotBase", 3, 0.6, Vector3.new(x, top + 0.3, z), W.Navy)
+		box("SpotTower", Vector3.new(0.8, h, 0.8), CFrame.new(x, top + h / 2, z), W.Steel)
+		local target = (if side < 0 then rivalPos else playerPos) + Vector3.new(0, 3, 0)
+		local headPos = Vector3.new(x, top + h + 0.6, z)
+		local head = make("Part", {
+			Name = "SpotHead",
+			Shape = CYLINDER,
+			Size = Vector3.new(2.2, 2, 2),
+			-- A cylinder's axis is its X: point it from the head at the podium.
+			CFrame = CFrame.lookAt(headPos, target) * CFrame.Angles(0, math.rad(90), 0),
+			Color = W.Navy,
+			Parent = folder,
+		})
+		local lens = make("Part", {
+			Name = "SpotLens",
+			Shape = CYLINDER,
+			Size = Vector3.new(0.2, 1.7, 1.7),
+			CFrame = CFrame.lookAt(headPos + (target - headPos).Unit * 1.15, target) * CFrame.Angles(0, math.rad(90), 0),
+			Color = Color3.fromRGB(255, 244, 200),
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			Parent = folder,
+		})
+		local light = Instance.new("SpotLight")
+		light.Face = Enum.NormalId.Right
+		light.Angle = 40
+		light.Range = 30
+		light.Brightness = 2.5
+		light.Color = Color3.fromRGB(255, 240, 210)
+		light.Parent = lens
+		head.CanCollide = false
+	end
+
+	-- Judges' table on the audience's left, angled at the stage, with three "10" cards.
+	local judge = CFrame.new(cx - 16, top, cz + 10) * CFrame.Angles(0, math.rad(-25), 0)
+	box("JudgeTable", Vector3.new(11, 0.4, 3), judge * CFrame.new(0, 2.8, 0), W.White)
+	box("JudgeSkirt", Vector3.new(11, 2.6, 0.3), judge * CFrame.new(0, 1.3, -1.35), W.Blue)
+	for _, dx in { -5.2, 5.2 } do
+		box("JudgeLeg", Vector3.new(0.4, 2.6, 2.6), judge * CFrame.new(dx, 1.3, 0), W.Blue)
+	end
+	local judgeSign = box("JudgeSign", Vector3.new(6, 1.2, 0.2), judge * CFrame.new(0, 1.6, -1.55), W.Sunny)
+	sign(judgeSign, Enum.NormalId.Front, "JUDGES", W.White)
+	for i = -1, 1 do
+		local seat = judge * CFrame.new(i * 3.4, 0, 2.6)
+		box("JudgeChair", Vector3.new(2.2, 0.4, 2.2), seat * CFrame.new(0, 1.9, 0), W.Coral)
+		box("JudgeChairBack", Vector3.new(2.2, 2.6, 0.3), seat * CFrame.new(0, 3.2, 1.0), W.Coral)
+		box("JudgeChairLeg", Vector3.new(0.4, 1.7, 0.4), seat * CFrame.new(0, 0.85, 0), W.Steel)
+		local card =
+			box("ScoreCard", Vector3.new(1.6, 1.4, 0.15), seat * CFrame.new(0, 3.85, -2.4) * CFrame.Angles(math.rad(-12), 0, 0), W.White)
+		card.CanCollide = false
+		sign(card, Enum.NormalId.Front, "10", W.HotPink)
+	end
+
+	-- A few beach balls and pom-pom flowers around the deck for colour.
+	local props = {
+		{ Vector3.new(cx + 20, top, cz + 12), W.Pink },
+		{ Vector3.new(cx + 22, top, cz - 1), W.Mint },
+		{ Vector3.new(cx - 22, top, cz - 1), W.Sunny },
+	}
+	for _, prop in props do
+		local p, color = prop[1], prop[2]
+		make("Part", {
+			Name = "BeachBall",
+			Shape = Enum.PartType.Ball,
+			Size = Vector3.one * 2.4,
+			CFrame = CFrame.new(p + Vector3.new(0, 1.2, 0)),
+			Color = color,
+			Parent = folder,
+		})
+	end
+
 	local rival = Instance.new("Model")
 	rival.Name = "Rival"
-	rival.Parent = base.folder
+	rival.Parent = folder
 	local built: any = base
-	built.playerSpot = CFrame.lookAt(playerPos, rivalPos)
-	built.rivalSpot = CFrame.lookAt(rivalPos, playerPos)
+	built.playerSpot = CFrame.lookAt(playerPos, playerPos + facing)
+	built.rivalSpot = CFrame.lookAt(rivalPos, rivalPos + facing)
 	built.rival = rival
 	return built :: Built
 end
@@ -50526,8 +51532,16 @@ return Props
             <string name="Source"><![CDATA[--!strict
 --[[
 	ShakeArena: the SHAKE CATCH arena out at sea (teleport-only; Modes.Shake brings players here).
-	Numbers live in Modes.ShakeRules.ARENA; the shell (floor, spawn pad, exit arch) comes from
-	World.Arena. TODO(shake builder): dress it (props, signs, fans) and add the game's parts.
+	Numbers live in Modes.ShakeRules.ARENA; the shell (deck, spawn pad, exit arch) comes from
+	World.Arena. Dressed as a sunny beach court:
+	  * a sand deck with white court lines round the catch area (where items land);
+	  * the Smoothie Bar on its own deck past the far (-Z) edge, facing the spawn: a pink
+	    counter with blenders, a striped awning, a "SMOOTHIE BAR" sign and a giant shake
+	    cup on the roof, surfboards leaning on its sides;
+	  * striped sun awnings on posts along both side edges (outside the catch area), with
+	    bunting between them; palms in the four corners (the PalmTree mesh, or a part-built
+	    one when the mesh is missing).
+	Nothing solid stands inside the catch area; the falling items are client-side (Fx.Shake).
 
 	build() -> Built: everything World.Arena.Base has ({ folder, floor, spawn, exit,
 	exitRadius, center, top }) plus
@@ -50537,9 +51551,21 @@ return Props
 ]]
 
 local Arena = require(script.Parent.Arena)
+local Common = require(script.Parent.Common)
+local Props = require(script.Parent.Props)
 local ShakeRules = require(script.Parent.Parent.Modes.ShakeRules)
 
+local W = Common.theme.World
+local make = Common.make
+local UPRIGHT = Common.UPRIGHT
+local CYLINDER = Enum.PartType.Cylinder
+local BALL = Enum.PartType.Ball
+
 local ShakeArena = {}
+
+-- Studs between the deck's edge and the catch area (the awnings and palms stand in it).
+local INSET = 6
+local PALM_HEIGHT = 15
 
 export type Built = Arena.Base & {
 	catchArea: { x0: number, x1: number, z0: number, z1: number },
@@ -50547,21 +51573,277 @@ export type Built = Arena.Base & {
 	items: Folder,
 }
 
+-- A plain anchored part in `parent` (no collisions unless props say CanCollide = true).
+local function piece(parent: Instance, name: string, size: Vector3, cf: CFrame, color: Color3, props: { [string]: any }?): BasePart
+	local p: { [string]: any } = { Name = name, Size = size, CFrame = cf, Color = color, Parent = parent, CanCollide = false }
+	local className = "Part"
+	for key, value in (props or {}) :: { [string]: any } do
+		if key == "ClassName" then
+			className = value
+		else
+			p[key] = value
+		end
+	end
+	return make(className, p)
+end
+
+-- A big SurfaceGui word on `part`'s front face.
+local function word(part: BasePart, text: string, color: Color3)
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Front
+	gui.PixelsPerStud = 30
+	gui.Parent = part
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.fromScale(1, 1)
+	label.Text = text
+	label.TextScaled = true
+	label.Font = Common.theme.Fonts.Display
+	label.TextColor3 = color
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 4
+	stroke.Color = W.Ink
+	stroke.Parent = label
+	label.Parent = gui
+end
+
+-- A part-built palm (when the PalmTree mesh is missing): a leaning ringed trunk and fronds.
+local function partPalm(parent: Instance, base: Vector3)
+	local lean = CFrame.Angles(0, 0, math.rad(6))
+	for i = 0, 4 do
+		local y = 1.5 + i * 2.8
+		piece(
+			parent,
+			"PalmTrunk",
+			Vector3.new(3, 1.6 - i * 0.12, 1.6 - i * 0.12),
+			CFrame.new(base + Vector3.new(i * 0.3, y, 0)) * lean * UPRIGHT,
+			if i % 2 == 0 then W.Wood else W.WoodDark,
+			{ Shape = CYLINDER, CanCollide = i == 0 }
+		)
+	end
+	local crown = base + Vector3.new(1.5, PALM_HEIGHT - 1, 0)
+	for k = 0, 5 do
+		local yaw = math.rad(k * 60)
+		piece(
+			parent,
+			"PalmFrond",
+			Vector3.new(1.6, 0.4, 7),
+			CFrame.new(crown) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(math.rad(-22), 0, 0) * CFrame.new(0, 0, -3.2),
+			if k % 2 == 0 then W.Grass else W.GrassDark
+		)
+	end
+	piece(parent, "PalmCoconuts", Vector3.new(1.6, 1.6, 1.6), CFrame.new(crown - Vector3.new(0, 0.9, 0)), W.WoodDark, { Shape = BALL })
+end
+
+local function palm(parent: Instance, base: Vector3, facing: number)
+	local cf = CFrame.new(base) * CFrame.Angles(0, facing, 0)
+	local size = Props.size("PalmTree")
+	local mesh = size and Props.mesh("PalmTree", cf, PALM_HEIGHT / size.Y, parent)
+	if not mesh then
+		partPalm(parent, base)
+	end
+end
+
+-- A sun awning on two posts along an edge: red-and-white style stripes, sloping outward.
+local function awning(parent: Instance, center: Vector3, length: number, outward: number)
+	local postH = 9
+	for _, s in { -1, 1 } do
+		piece(
+			parent,
+			"AwningPost",
+			Vector3.new(postH, 0.6, 0.6),
+			CFrame.new(center + Vector3.new(outward * 2.2, postH / 2, s * (length / 2 - 0.5))) * UPRIGHT,
+			W.White,
+			{ Shape = CYLINDER, CanCollide = true }
+		)
+	end
+	local stripes = 8
+	local w = length / stripes
+	for i = 0, stripes - 1 do
+		local z = -length / 2 + w * (i + 0.5)
+		piece(
+			parent,
+			"AwningStripe",
+			Vector3.new(5, 0.3, w),
+			CFrame.new(center + Vector3.new(0, postH + 0.4, z)) * CFrame.Angles(0, 0, math.rad(-outward * 14)),
+			if i % 2 == 0 then W.Pink else W.White
+		)
+		-- The scalloped valance on the inner edge.
+		piece(
+			parent,
+			"AwningFlap",
+			Vector3.new(0.25, 0.9, w * 0.92),
+			CFrame.new(center + Vector3.new(-outward * 2.4, postH + 0.4, z)),
+			if i % 2 == 0 then W.Pink else W.White
+		)
+	end
+end
+
+-- The Smoothie Bar backdrop on its own deck past the -Z edge, facing +Z (the spawn).
+local function smoothieBar(parent: Instance, a: Arena.Spec, top: number)
+	local bz = a.z - a.sizeZ / 2 - 6
+	local deck = Vector3.new(a.x, top, bz)
+	piece(parent, "BarDeck", Vector3.new(44, 2, 12), CFrame.new(deck - Vector3.new(0, 1, 0)), W.Wood, { CanCollide = true })
+	piece(parent, "BarDeckRim", Vector3.new(46, 1.2, 13), CFrame.new(deck - Vector3.new(0, 1.5, 0)), W.White)
+	-- Back wall and side pillars.
+	piece(parent, "BarWall", Vector3.new(30, 14, 1), CFrame.new(deck + Vector3.new(0, 7, -4)), W.Butter, { CanCollide = true })
+	for _, s in { -1, 1 } do
+		piece(parent, "BarPillar", Vector3.new(1.4, 14, 1.4), CFrame.new(deck + Vector3.new(s * 15, 7, 3)), W.White, { CanCollide = true })
+	end
+	-- Counter: pink front, white top, mint kick strip.
+	piece(parent, "BarCounter", Vector3.new(28, 4, 2.4), CFrame.new(deck + Vector3.new(0, 2, 2.4)), W.Pink, { CanCollide = true })
+	piece(parent, "BarCounterTop", Vector3.new(29, 0.5, 3), CFrame.new(deck + Vector3.new(0, 4.25, 2.4)), W.White)
+	piece(
+		parent,
+		"BarKick",
+		Vector3.new(28, 0.6, 0.2),
+		CFrame.new(deck + Vector3.new(0, 0.5, 3.65)),
+		W.Mint,
+		{ Material = Enum.Material.Neon }
+	)
+	-- Blenders on the counter: a base, a glass jug and a coloured smoothie inside.
+	local fills = { W.Pink, W.Mint, W.Orange, W.Grape }
+	for i, fill in fills do
+		local x = -10.5 + (i - 1) * 7
+		local at = deck + Vector3.new(x, 4.5, 2.2)
+		piece(parent, "BlenderBase", Vector3.new(1.6, 0.9, 1.6), CFrame.new(at + Vector3.new(0, 0.45, 0)), W.Steel)
+		piece(
+			parent,
+			"BlenderJug",
+			Vector3.new(2.4, 1.4, 1.4),
+			CFrame.new(at + Vector3.new(0, 2.1, 0)) * UPRIGHT,
+			W.White,
+			{ Shape = CYLINDER, Transparency = 0.45, Material = Enum.Material.Glass }
+		)
+		piece(
+			parent,
+			"BlenderFill",
+			Vector3.new(1.5, 1.2, 1.2),
+			CFrame.new(at + Vector3.new(0, 1.7, 0)) * UPRIGHT,
+			fill,
+			{ Shape = CYLINDER }
+		)
+	end
+	-- Striped awning over the counter.
+	for i = 0, 9 do
+		local x = -14.4 + i * 3.2
+		piece(
+			parent,
+			"BarAwning",
+			Vector3.new(3.2, 0.3, 6),
+			CFrame.new(deck + Vector3.new(x, 11.6, 3.2)) * CFrame.Angles(math.rad(18), 0, 0),
+			if i % 2 == 0 then W.Coral else W.White
+		)
+		piece(
+			parent,
+			"BarAwningFlap",
+			Vector3.new(3.2, 1, 0.25),
+			CFrame.new(deck + Vector3.new(x, 10.2, 6.1)),
+			if i % 2 == 0 then W.Coral else W.White
+		)
+	end
+	-- The sign on the roof line.
+	local sign = piece(parent, "BarSign", Vector3.new(22, 4, 0.6), CFrame.new(deck + Vector3.new(0, 16, -3.6)), W.Pink)
+	piece(parent, "BarSignBack", Vector3.new(23, 5, 0.4), CFrame.new(deck + Vector3.new(0, 16, -4)), W.White)
+	word(sign, "SMOOTHIE BAR", W.White)
+	-- A giant protein shake on the roof: cup, lid, straw and a cherry.
+	local cup = deck + Vector3.new(14, 14, -3)
+	piece(parent, "GiantCup", Vector3.new(7, 5, 5), CFrame.new(cup + Vector3.new(0, 3.5, 0)) * UPRIGHT, W.Pink, { Shape = CYLINDER })
+	piece(
+		parent,
+		"GiantCupBand",
+		Vector3.new(1.4, 5.3, 5.3),
+		CFrame.new(cup + Vector3.new(0, 3.2, 0)) * UPRIGHT,
+		W.White,
+		{ Shape = CYLINDER }
+	)
+	piece(parent, "GiantLid", Vector3.new(1, 5.8, 5.8), CFrame.new(cup + Vector3.new(0, 7.3, 0)) * UPRIGHT, W.White, { Shape = CYLINDER })
+	piece(parent, "GiantDome", Vector3.new(4.6, 2.6, 4.6), CFrame.new(cup + Vector3.new(0, 7.9, 0)), W.Cream, { Shape = BALL })
+	piece(
+		parent,
+		"GiantStraw",
+		Vector3.new(0.8, 6, 0.8),
+		CFrame.new(cup + Vector3.new(0.6, 11, 0)) * CFrame.Angles(0, 0, math.rad(-12)),
+		W.Mint
+	)
+	piece(parent, "GiantCherry", Vector3.new(1.4, 1.4, 1.4), CFrame.new(cup + Vector3.new(-1, 9.3, 0.6)), W.Coral, { Shape = BALL })
+	-- Surfboards leaning on the deck's ends.
+	local boards: { { x: number, color: Color3, tilt: number } } = {
+		{ x = -19, color = W.Mint, tilt = 1 },
+		{ x = 19, color = W.Sunny, tilt = -1 },
+		{ x = -21, color = W.Blue, tilt = 1 },
+	}
+	for _, b in boards do
+		local x, color, tilt = b.x, b.color, b.tilt
+		local board = CFrame.new(deck + Vector3.new(x, 4.3, -1)) * CFrame.Angles(math.rad(-12), 0, math.rad(tilt * 8))
+		piece(parent, "Surfboard", Vector3.new(2.6, 9, 0.4), board, color)
+		piece(parent, "SurfboardStripe", Vector3.new(0.5, 9.05, 0.45), board, W.White)
+	end
+end
+
+-- Bunting: little upside-down wedge flags sagging on a line along Z between two points.
+local function bunting(parent: Instance, from: Vector3, to: Vector3, count: number)
+	local colors = { W.Pink, W.Sunny, W.Mint, W.Blue, W.Coral }
+	piece(parent, "BuntingLine", Vector3.new(0.08, 0.08, (to - from).Magnitude), CFrame.lookAt(from:Lerp(to, 0.5), to), W.White)
+	for i = 1, count do
+		local t = i / (count + 1)
+		local p = from:Lerp(to, t) - Vector3.new(0, 0.55 + math.sin(t * math.pi) * 0.4, 0)
+		piece(
+			parent,
+			"Bunting",
+			Vector3.new(0.1, 1.1, 1),
+			CFrame.new(p) * CFrame.Angles(0, 0, math.pi),
+			colors[(i - 1) % #colors + 1],
+			{ ClassName = "WedgePart" }
+		)
+	end
+end
+
 function ShakeArena.build(): Built
 	local a = ShakeRules.ARENA
-	local base = Arena.base("shake", "ShakeArena", a, { floor = "Cream", trim = "Pink" })
-	local inset = 4
+	local base = Arena.base("shake", "ShakeArena", a, { floor = "Sand", trim = "Pink" })
+	local folder = base.folder
+	local top = base.top
 	local items = Instance.new("Folder")
 	items.Name = "Items"
-	items.Parent = base.folder
-	local built: any = base
-	built.catchArea = {
-		x0 = a.x - a.sizeX / 2 + inset,
-		x1 = a.x + a.sizeX / 2 - inset,
-		z0 = a.z - a.sizeZ / 2 + inset,
-		z1 = a.z + a.sizeZ / 2 - inset,
+	items.Parent = folder
+	local area = {
+		x0 = a.x - a.sizeX / 2 + INSET,
+		x1 = a.x + a.sizeX / 2 - INSET,
+		z0 = a.z - a.sizeZ / 2 + INSET,
+		z1 = a.z + a.sizeZ / 2 - INSET,
 	}
-	built.dropY = base.top + 40
+	local decor = Instance.new("Model")
+	decor.Name = "Decor"
+	decor.Parent = folder
+
+	-- Court lines round the catch area and a centre circle.
+	local w, d = area.x1 - area.x0, area.z1 - area.z0
+	local lineY = top + 0.03
+	for _, s in { -1, 1 } do
+		piece(decor, "CourtLine", Vector3.new(w + 0.6, 0.06, 0.6), CFrame.new(a.x, lineY, a.z + s * d / 2), W.White)
+		piece(decor, "CourtLine", Vector3.new(0.6, 0.06, d + 0.6), CFrame.new(a.x + s * w / 2, lineY, a.z), W.White)
+	end
+	piece(decor, "CourtCircle", Vector3.new(0.06, 12, 12), CFrame.new(a.x, lineY, a.z) * UPRIGHT, W.SandDark, { Shape = CYLINDER })
+
+	smoothieBar(decor, a, top)
+
+	-- Side awnings with bunting and the corner palms.
+	local length = 18
+	for _, sx in { -1, 1 } do
+		local x = a.x + sx * (a.sizeX / 2 - INSET / 2)
+		for _, sz in { -1, 1 } do
+			awning(decor, Vector3.new(x, top, a.z + sz * 12), length, sx)
+		end
+		bunting(decor, Vector3.new(x - sx * 0.5, top + 9.6, a.z - 3), Vector3.new(x - sx * 0.5, top + 9.6, a.z + 3), 4)
+		palm(decor, Vector3.new(a.x + sx * (a.sizeX / 2 - 2.5), top, a.z - a.sizeZ / 2 + 2.5), math.rad(45 * sx))
+	end
+	-- Only the far corners get palms on the deck: the near +X corner holds the exit arch.
+	palm(decor, Vector3.new(a.x - a.sizeX / 2 + 2.5, top, a.z + a.sizeZ / 2 - 2.5), math.rad(200))
+
+	local built: any = base
+	built.catchArea = area
+	built.dropY = top + 40
 	built.items = items
 	return built :: Built
 end
@@ -74120,35 +75402,539 @@ return PlotRank
               <string name="Source"><![CDATA[--!strict
 --[[
 	Fx.Pose: the 3D side of POSE COPY (Modes.Pose; docs/minigames.md). UI.PoseHud draws
-	the screen.
+	the screen and drives the show's beats through Pose.rivalFlex / Pose.playerFlex.
 
-	STUB (foundation): listens for this mode's Notify and calls start / stop.
-	TODO(pose builder): the arena's client effects (World.Pose arena parts under
-	workspace's map folder, Model with attribute Mode = "pose").
+	  Rival     a chad built locally with CharacterFactory (manual rig, posed here with
+	            RigPose) on the rival's podium, facing the audience; every flex snaps in
+	            with a hop, a ring on the podium and its lamp on the stage's D-pad.
+	  Player    the local avatar strikes each flex it presses (Fx.PlayerPose): a correct
+	            one bursts a sparkle aura in the flex's colour; a wrong one reels in Shock.
+	  Stage     World.PoseStage's "FlexLamp<i>" tiles light up with the flex shown or
+	            struck; the "PodiumGlow" rings take the flex colour and fade back.
+	  Camera    Scriptable, from the audience: both chads side by side, a slow drift, a
+	            short push-in on every cleared round. Back to Custom when the run ends.
+	  Moments   "clear": both chads hop into a flex; "pass": confetti, stars and Victory;
+	            "miss": the player's Shock and the rival's Smug; "win" / "lose": a last
+	            pose each, then everything is put away.
 
 	Main.client.luau calls init() once (it is in the Fx list); nothing else needs editing:
 	  init()            connects the Notify listener
 	  start(payload)    a run began ("start")
-	  stop(payload)     the run ended ("stop")
+	  stop(payload)     the run ended ("stop", and shortly after "win" / "lose")
+	  FLEXES            the client's copy of Modes.PoseRules.FLEXES (same order, colours)
+	  rivalFlex(i, hold)        the rival shows flex i (hold: seconds it stays lit)
+	  playerFlex(i, ok)         the player struck flex i; ok = it was the right one
 ]]
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
 
 local Net = require(ReplicatedStorage.Shared.Net)
+local CharacterFactory = require(ReplicatedStorage.Shared:WaitForChild("CharacterFactory")) :: any
+local RigPose = require(ReplicatedStorage.Shared:WaitForChild("RigPose")) :: any
+local Sprites = require(script.Parent.Sprites)
+local PlayerPose = require(script.Parent.PlayerPose)
 
 local Pose = {}
 
-local running = false
+export type Flex = { pose: string, label: string, dir: string, color: Color3 }
 
-function Pose.start(_payload: { [string]: any })
-	running = true
+-- Same order and colours as Modes.PoseRules.FLEXES (the index is what "PoseInput" sends).
+Pose.FLEXES = {
+	{ pose = "DoubleBiceps", label = "DOUBLE BICEPS", dir = "Up", color = Color3.fromRGB(255, 196, 40) },
+	{ pose = "SideChest", label = "SIDE CHEST", dir = "Left", color = Color3.fromRGB(255, 64, 158) },
+	{ pose = "LatSpread", label = "LAT SPREAD", dir = "Right", color = Color3.fromRGB(70, 140, 255) },
+	{ pose = "MostMuscular", label = "MOST MUSCULAR", dir = "Down", color = Color3.fromRGB(60, 206, 120) },
+} :: { Flex }
+
+local player = Players.LocalPlayer
+
+local CAMERA_BIND = "FxPoseCamera"
+local REST = "HandsOnHips"
+local BLEND = 0.16 -- seconds for the rival to snap into a flex
+local HOP = { Time = 0.3, Height = 0.7 }
+local SETTLE = 0.85 -- seconds a flex holds before easing back to REST
+-- Camera framing: distance in front of the chads, height over their feet, look height.
+local CAM = { Back = 17, Up = 5.2, Look = 2.3, Drift = 1.2, Push = 2.4 }
+local END_HOLD = 2.6 -- seconds the last poses stay after "win" / "lose"
+
+-- The rival's look (CharacterFactory fields): a tanned beach chad in a grape tank.
+local RIVAL_LOOK = {
+	skin = Color3.fromRGB(214, 160, 116),
+	shirt = Color3.fromRGB(150, 96, 255),
+	pants = Color3.fromRGB(40, 44, 92),
+	anim = "Chad",
+	buff = 1,
+	scale = 1.15,
+	top = "Tank",
+	bottoms = "Shorts",
+	hair = Color3.fromRGB(70, 46, 30),
+	hairStyle = "Quiff",
+	jaw = true,
+	shoes = Color3.fromRGB(255, 255, 255),
+	sole = Color3.fromRGB(150, 96, 255),
+	trim = Color3.fromRGB(255, 214, 64),
+	expr = "Smug",
+	exprs = { "Smug", "Happy", "Shock", "Determined", "Cheer" },
+	manual = true,
+}
+
+local running = false
+local runId = 0
+local folder: Folder? = nil
+local playerPos = Vector3.zero
+local rivalPos = Vector3.new(0, 0, -14)
+local facing = Vector3.new(0, 0, 1)
+local cameraOn = false
+local pushAt = -math.huge
+
+local rival: Model? = nil
+local rig: any = nil
+local rivalBase = CFrame.identity
+local rivalPose, rivalFrom = REST, REST
+local rivalAt, rivalHopAt = -math.huge, -math.huge
+local rivalToken = 0
+local rivalConn: RBXScriptConnection? = nil
+
+local selfPoser: PlayerPose.Poser? = nil
+local selfToken = 0
+
+local lamps: { [number]: BasePart } = {}
+local glows: { [string]: BasePart } = {}
+
+local function flexOf(index: any): Flex?
+	return if type(index) == "number" then Pose.FLEXES[index] else nil
 end
 
-function Pose.stop(_payload: { [string]: any })
+-- Tweens -----------------------------------------------------------------------------------
+
+local function tween(obj: Instance, time: number, props: { [string]: any }, style: Enum.EasingStyle?)
+	TweenService:Create(obj, TweenInfo.new(time, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
+end
+
+-- A short-lived invisible anchor part for sprites and particles.
+local function anchorAt(position: Vector3, life: number): BasePart
+	local part = Instance.new("Part")
+	part.Name = "PoseFxAnchor"
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.Transparency = 1
+	part.Size = Vector3.one * 0.2
+	part.CFrame = CFrame.new(position)
+	part.Parent = folder or Workspace
+	task.delay(life, function()
+		part:Destroy()
+	end)
+	return part
+end
+
+local function sprite(name: string, position: Vector3, opts: { [string]: any })
+	local o = table.clone(opts) :: any
+	o.position = position
+	Sprites.billboard(anchorAt(position, 2.2), name, o)
+end
+
+-- A burst of `count` sparkles in `color` around `position` (the aura pop of a right flex).
+local function burst(position: Vector3, color: Color3, count: number)
+	local anchor = anchorAt(position, 2)
+	local emitter = Sprites.emitter(anchor, "Sparkle", {
+		Color = ColorSequence.new(color),
+		LightEmission = 0.8,
+		Speed = NumberRange.new(7, 13),
+		SpreadAngle = Vector2.new(180, 180),
+		Lifetime = NumberRange.new(0.45, 0.8),
+		Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.2),
+			NumberSequenceKeypoint.new(0.3, 0.9),
+			NumberSequenceKeypoint.new(1, 0),
+		}),
+		Drag = 6,
+	})
+	if emitter then
+		emitter:Emit(count)
+	end
+	local light = Instance.new("PointLight")
+	light.Color = color
+	light.Range = 14
+	light.Brightness = 4
+	light.Parent = anchor
+	tween(light, 0.6, { Brightness = 0 })
+end
+
+-- Stage ------------------------------------------------------------------------------------
+
+local function findStage()
+	table.clear(lamps)
+	table.clear(glows)
+	local map = Workspace:FindFirstChild("Map")
+	local stage = map and map:FindFirstChild("PoseStage")
+	if not stage then
+		return
+	end
+	for _, part in stage:GetChildren() do
+		if not part:IsA("BasePart") then
+			continue
+		end
+		local flex = part:GetAttribute("Flex")
+		if type(flex) == "number" then
+			lamps[flex] = part
+		elseif part.Name == "PodiumGlow" then
+			local side = part:GetAttribute("Side")
+			if type(side) == "string" then
+				glows[side] = part
+			end
+		end
+	end
+end
+
+-- Lights flex `index`'s lamp for `hold` seconds (Neon, a pop of size), then dims it back.
+local lampTokens: { [number]: number } = {}
+local function lightLamp(index: number, hold: number)
+	local lamp = lamps[index]
+	if not lamp then
+		return
+	end
+	local mine = (lampTokens[index] or 0) + 1
+	lampTokens[index] = mine
+	lamp.Material = Enum.Material.Neon
+	lamp.Transparency = 0
+	lamp.Size = Vector3.new(3.3, 3.3, 0.5)
+	tween(lamp, 0.2, { Size = Vector3.new(2.8, 2.8, 0.5) }, Enum.EasingStyle.Back)
+	task.delay(hold, function()
+		if lampTokens[index] == mine and lamp.Parent then
+			lamp.Material = Enum.Material.SmoothPlastic
+			lamp.Transparency = 0.15
+			tween(lamp, 0.2, { Size = Vector3.new(2.6, 2.6, 0.5) })
+		end
+	end)
+end
+
+local function lampsOff()
+	for index, lamp in lamps do
+		lampTokens[index] = (lampTokens[index] or 0) + 1
+		lamp.Material = Enum.Material.SmoothPlastic
+		lamp.Transparency = 0.15
+		lamp.Size = Vector3.new(2.6, 2.6, 0.5)
+	end
+end
+
+local function flashGlow(side: string, color: Color3)
+	local glow = glows[side]
+	if glow then
+		glow.Color = color
+		tween(glow, 0.7, { Color = Color3.new(1, 1, 1) })
+	end
+end
+
+-- Rival ------------------------------------------------------------------------------------
+
+local function rivalStrike(pose: string, hop: boolean, settle: number?)
+	if not rig then
+		return
+	end
+	rivalToken += 1
+	local mine = rivalToken
+	-- Blend from wherever the last flex had got to (a fresh one mid-blend snaps from it).
+	rivalFrom = if os.clock() - rivalAt >= BLEND then rivalPose else rivalFrom
+	rivalPose = pose
+	rivalAt = os.clock()
+	if hop then
+		rivalHopAt = rivalAt
+	end
+	if settle then
+		task.delay(settle, function()
+			if rivalToken == mine then
+				rivalStrike(REST, false)
+			end
+		end)
+	end
+end
+
+local function rivalStep()
+	if not rig or not rig.root.Parent then
+		return
+	end
+	local now = os.clock()
+	local alpha = math.clamp((now - rivalAt) / BLEND, 0, 1)
+	local eased = TweenService:GetValue(alpha, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+	local hopT = now - rivalHopAt
+	local lift = if hopT < HOP.Time then math.sin(hopT / HOP.Time * math.pi) * HOP.Height else 0
+	-- A squash-and-stretch read from the hop: tall at the top, a slight lean in on landing.
+	local lean = if hopT < HOP.Time then math.sin(hopT / HOP.Time * math.pi * 2) * math.rad(4) else 0
+	rig.root.CFrame = rivalBase * CFrame.new(0, lift, 0) * CFrame.Angles(lean, 0, 0)
+	RigPose.applyPose(rig, rivalPose, now, rivalFrom, eased)
+end
+
+local function setExpr(name: string)
+	if rival then
+		CharacterFactory.setExpression(rival, name)
+	end
+end
+
+local function removeRival()
+	if rivalConn then
+		rivalConn:Disconnect()
+		rivalConn = nil
+	end
+	rivalToken += 1
+	rig = nil
+	if rival then
+		rival:Destroy()
+		rival = nil
+	end
+end
+
+local function spawnRival()
+	removeRival()
+	local ok, model = pcall(CharacterFactory.build, RIVAL_LOOK, "PoseRival")
+	if not ok or not model then
+		warn("[Fx.Pose] rival build failed: " .. tostring(model))
+		return
+	end
+	local m = model :: Model
+	rivalBase = CFrame.lookAt(rivalPos, rivalPos + facing)
+	m:PivotTo(rivalBase)
+	m.Parent = folder
+	rival = m
+	rig = RigPose.capture(m)
+	if not rig then
+		return
+	end
+	rivalBase = rig.root.CFrame
+	rivalPose, rivalFrom, rivalAt = REST, REST, -math.huge
+	rivalConn = RunService.RenderStepped:Connect(rivalStep)
+	sprite("Puff", rivalPos + Vector3.new(0, 1, 0), { size = 6, life = 0.7, rise = Vector3.new(0, 2, 0) })
+end
+
+-- Player -----------------------------------------------------------------------------------
+
+local function selfStrike(pose: string, hop: number?, settle: number?)
+	local poser = selfPoser
+	if not poser then
+		return
+	end
+	selfToken += 1
+	local mine = selfToken
+	poser:strike(pose, hop)
+	if settle then
+		task.delay(settle, function()
+			if selfToken == mine and selfPoser == poser then
+				poser:strike(REST)
+			end
+		end)
+	end
+end
+
+-- Camera ------------------------------------------------------------------------------------
+
+local function releaseCamera()
+	if not cameraOn then
+		return
+	end
+	cameraOn = false
+	RunService:UnbindFromRenderStep(CAMERA_BIND)
+	local camera = Workspace.CurrentCamera
+	if camera then
+		local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			camera.CameraSubject = humanoid
+		end
+		camera.CameraType = Enum.CameraType.Custom
+	end
+end
+
+local function takeCamera()
+	local camera = Workspace.CurrentCamera
+	if not camera then
+		return
+	end
+	cameraOn = true
+	camera.CameraType = Enum.CameraType.Scriptable
+	local started = os.clock()
+	local current: CFrame? = nil
+	RunService:BindToRenderStep(CAMERA_BIND, Enum.RenderPriority.Camera.Value, function(dt: number)
+		local cam = Workspace.CurrentCamera
+		if not cam then
+			return
+		end
+		if cam.CameraType ~= Enum.CameraType.Scriptable then
+			cam.CameraType = Enum.CameraType.Scriptable
+		end
+		local t = os.clock() - started
+		local mid = (playerPos + rivalPos) / 2
+		local right = facing:Cross(Vector3.yAxis)
+		-- From the audience, both chads in frame, drifting slowly side to side.
+		local since = os.clock() - pushAt
+		local push = if since < 0.9 then math.sin(math.clamp(since / 0.9, 0, 1) * math.pi) * CAM.Push else 0
+		local eye = mid
+			+ facing * (CAM.Back - push)
+			+ right * math.sin(t * 0.3) * CAM.Drift
+			+ Vector3.new(0, CAM.Up + math.sin(t * 0.23) * 0.25, 0)
+		local goal = CFrame.lookAt(eye, mid + Vector3.new(0, CAM.Look, 0))
+		current = if current then current:Lerp(goal, 1 - math.exp(-dt * 5)) else goal
+		cam.CFrame = current :: CFrame
+	end)
+end
+
+-- Run -------------------------------------------------------------------------------------
+
+local function clear()
+	running = false
+	runId += 1
+	-- The camera first: whatever else fails, the player gets the follow camera back.
+	releaseCamera()
+	if selfPoser then
+		selfPoser:stop()
+		selfPoser = nil
+	end
+	removeRival()
+	lampsOff()
+	for _, glow in glows do
+		glow.Color = Color3.new(1, 1, 1)
+	end
+	if folder then
+		folder:Destroy()
+		folder = nil
+	end
+end
+
+function Pose.start(payload: { [string]: any })
+	clear()
+	running = true
+	if typeof(payload.playerPos) == "Vector3" then
+		playerPos = payload.playerPos
+	else
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		playerPos = if root and root:IsA("BasePart") then root.Position - Vector3.new(0, 3, 0) else Vector3.zero
+	end
+	facing = if typeof(payload.facing) == "Vector3" then payload.facing else Vector3.new(0, 0, 1)
+	rivalPos = if typeof(payload.rivalPos) == "Vector3" then payload.rivalPos else playerPos - facing:Cross(Vector3.yAxis) * 14
+	local f = Instance.new("Folder")
+	f.Name = "PoseFx"
+	f.Parent = Workspace
+	folder = f
+	findStage()
+	spawnRival()
+	setExpr("Smug")
+	-- The avatar may land a frame after the teleport: attach once it is there.
+	local mine = runId
+	task.delay(0.15, function()
+		if running and runId == mine and not selfPoser then
+			selfPoser = PlayerPose.attach(player.Character)
+		end
+	end)
+	takeCamera()
+end
+
+function Pose.stop(_payload: { [string]: any }?)
 	if not running then
 		return
 	end
-	running = false
+	clear()
+end
+
+-- The rival shows flex `index` (one beat of the "round" show); its lamp stays lit `hold` s.
+function Pose.rivalFlex(index: number, hold: number)
+	local flex = flexOf(index)
+	if not running or not flex then
+		return
+	end
+	rivalStrike(flex.pose, true, math.max(hold, 0.3))
+	lightLamp(index, hold)
+	flashGlow("rival", flex.color)
+	sprite("Ring", rivalPos + Vector3.new(0, 0.4, 0), { size = 7, life = 0.5, rise = Vector3.zero, color = flex.color })
+	sprite("Sparkle", rivalPos + Vector3.new(0, 7.5, 0), { size = 2.2, life = 0.6, color = flex.color })
+end
+
+-- The player struck flex `index`: right (`ok`) bursts an aura in its colour, wrong reels.
+function Pose.playerFlex(index: number, ok: boolean)
+	local flex = flexOf(index)
+	if not running or not flex then
+		return
+	end
+	lightLamp(index, 0.45)
+	if ok then
+		selfStrike(flex.pose, 0.5, SETTLE)
+		flashGlow("player", flex.color)
+		burst(playerPos + Vector3.new(0, 3.2, 0), flex.color, 18)
+		sprite("Ring", playerPos + Vector3.new(0, 0.4, 0), { size = 7, life = 0.5, rise = Vector3.zero, color = flex.color })
+	else
+		selfStrike("Shock", nil, 1.1)
+		flashGlow("player", Color3.fromRGB(255, 70, 70))
+	end
+end
+
+-- Notify -----------------------------------------------------------------------------------
+
+local function onRound(p: any)
+	lampsOff()
+	rivalStrike(REST, false)
+	setExpr(if p.replay then "Determined" else "Smug")
+end
+
+local function onClear(_p: any)
+	pushAt = os.clock()
+	setExpr("Happy")
+	rivalStrike("Point", true, 0.9)
+	selfStrike("Victory", 0.6, 0.9)
+	sprite("StarPop", playerPos + Vector3.new(0, 7, 0), { size = 3, life = 0.8, rise = Vector3.new(0, 2, 0), spin = 60 })
+end
+
+local function onPass(_p: any)
+	pushAt = os.clock()
+	setExpr("Shock")
+	rivalStrike("Shock", false, 1.6)
+	selfStrike("Victory", 1, 1.6)
+	local gold = Color3.fromRGB(255, 212, 64)
+	burst(playerPos + Vector3.new(0, 3.5, 0), gold, 40)
+	for i = 1, 6 do
+		local offset = Vector3.new((math.random() - 0.5) * 10, 6 + math.random() * 3, (math.random() - 0.5) * 3)
+		sprite(if i % 2 == 0 then "Confetti" else "StarPop", playerPos + offset, {
+			size = 2.4,
+			life = 1.2,
+			delay = i * 0.06,
+			rise = Vector3.new(0, -3, 0),
+			spin = 90,
+		})
+	end
+	for index in Pose.FLEXES do
+		lightLamp(index, 1.4)
+	end
+end
+
+local function onMiss(_p: any)
+	setExpr("Cheer")
+	rivalStrike("Shrug", false, 1.2)
+	task.delay(1.2, function()
+		setExpr("Smug")
+	end)
+end
+
+local function onFinish(p: any, won: boolean)
+	local mine = runId
+	if won then
+		setExpr("Shock")
+		rivalStrike("Shock", false)
+		selfStrike("Victory", 0.8)
+	else
+		setExpr("Happy")
+		rivalStrike("Victory", true)
+		selfStrike("Shrug")
+	end
+	if p.newBest then
+		sprite("StarPop", playerPos + Vector3.new(0, 7.5, 0), { size = 3.5, life = 1.2, rise = Vector3.new(0, 3, 0), spin = 60 })
+	end
+	-- The run is over on the server already: hold the last poses a moment, then put away.
+	task.delay(END_HOLD, function()
+		if runId == mine then
+			Pose.stop(nil)
+		end
+	end)
 end
 
 function Pose.init()
@@ -74156,10 +75942,23 @@ function Pose.init()
 		if type(payload) ~= "table" or payload.kind ~= "Mode" or payload.mode ~= "pose" then
 			return
 		end
-		if payload.event == "start" then
+		local event = payload.event
+		if event == "start" then
 			Pose.start(payload)
-		elseif payload.event == "stop" then
+		elseif event == "stop" then
 			Pose.stop(payload)
+		elseif not running then
+			return
+		elseif event == "round" then
+			onRound(payload)
+		elseif event == "clear" then
+			onClear(payload)
+		elseif event == "pass" then
+			onPass(payload)
+		elseif event == "miss" then
+			onMiss(payload)
+		elseif event == "win" or event == "lose" then
+			onFinish(payload, event == "win")
 		end
 	end)
 end
@@ -74176,26 +75975,523 @@ return Pose
 	Fx.Shake: the 3D side of SHAKE CATCH (Modes.Shake; docs/minigames.md). UI.ShakeHud draws
 	the screen.
 
-	STUB (foundation): listens for this mode's Notify and calls start / stop.
-	TODO(shake builder): the arena's client effects (World.Shake arena parts under
-	workspace's map folder, Model with attribute Mode = "shake").
+	The server sends each wave's drops ("wave" { drops = { id, kind, x, z, spawnAt, landAt } },
+	server-clock times) and judges every catch; this module animates them locally against
+	workspace:GetServerTimeNow():
+	  * items: part-built and bright: a pink protein shake (lid, dome, straw, cherry), a shiny
+	    golden dumbbell, a glowing aura orb; junk food: a burger, a pink donut, a soda can.
+	    They fall with a gravity ease and a slow spin, tumbling junk wobbles;
+	  * a landing mark under each: a dark shadow that grows as the item nears and a ring the
+	    size of the catch radius (mint for good items, coral for junk);
+	  * the player's tray: a big striped tray over their head and a faint ring at their feet
+	    showing how far they reach (both local only);
+	  * at the land time an item over the tray waits there for the server's word ("catch":
+	    sparkles and a floating "+1" / "+3"; "splat": a junk splat and "OUCH!"); anything else
+	    hits the sand and fades (junk squashes flat).
+	Parts live in the arena's "Items" folder (World.ShakeArena), never collide or query.
 
 	Main.client.luau calls init() once (it is in the Fx list); nothing else needs editing:
 	  init()            connects the Notify listener
 	  start(payload)    a run began ("start")
-	  stop(payload)     the run ended ("stop")
+	  stop(payload)     the run ended ("stop", "win", "lose")
 ]]
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
 
 local Net = require(ReplicatedStorage.Shared.Net)
+local Theme = require(ReplicatedStorage:WaitForChild("Theme")) :: any
+
+local Sounds = require(script.Parent.Parent.Sounds) :: any
+
+local W = Theme.World
 
 local Shake = {}
 
+-- Mirrors of ShakeRules (server-only): catch radius of good items and junk, the drop height
+-- above the floor and the tray's height above the root.
+local CATCH_RADIUS = 4.5
+local JUNK_RADIUS = 3
+local DROP_HEIGHT = 40
+local TRAY_ABOVE_ROOT = 3.4
+-- Items reach the tray's height (above the floor) at their land time.
+local CATCH_HEIGHT = 6.4
+-- Seconds an item rests on the tray waiting for the server's word before it slips off.
+local HOLD_WAIT = 0.7
+-- Seconds a missed item lies on the sand before it is gone.
+local FLOOR_FADE = 0.7
+
+type Drop = { id: number, kind: string, x: number, z: number, spawnAt: number, landAt: number }
+type Item = {
+	drop: Drop,
+	model: Model?,
+	shadow: BasePart?,
+	ring: BasePart?,
+	-- "wait" (not shown yet), "fall", "held", "floor", "done"
+	state: string,
+	heldAt: number,
+	spin: number,
+}
+
 local running = false
+local items: { [number]: Item } = {}
+-- Server verdicts that came in before the item landed (id -> "catch" / "splat" payload).
+local verdicts: { [number]: { [string]: any } } = {}
+local arena: Model? = nil
+local folder: Instance? = nil
+local top = 6
+local tray: Model? = nil
+local footRing: BasePart? = nil
+local stepConn: RBXScriptConnection? = nil
+
+local function isJunk(kind: string): boolean
+	return kind == "burger" or kind == "donut" or kind == "soda"
+end
+
+local function findArena(): Model?
+	if arena and arena.Parent then
+		return arena
+	end
+	for _, inst in Workspace:GetDescendants() do
+		if inst:IsA("Model") and inst:GetAttribute("Mode") == "shake" then
+			arena = inst
+			local floor = inst:FindFirstChild("ArenaFloor")
+			if floor and floor:IsA("BasePart") then
+				top = floor.Position.Y + floor.Size.Y / 2
+			end
+			folder = inst:FindFirstChild("Items") or inst
+			return inst
+		end
+	end
+	return nil
+end
+
+-- Parts --------------------------------------------------------------------------------------
+
+local function part(parent: Instance, size: Vector3, offset: CFrame, color: Color3, props: { [string]: any }?): BasePart
+	local p: BasePart = if props and props.Wedge then Instance.new("WedgePart") else Instance.new("Part")
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Material = Enum.Material.SmoothPlastic
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Size = size
+	p.Color = color
+	p.CFrame = offset
+	for key, value in (props or {}) :: { [string]: any } do
+		if key ~= "Wedge" then
+			(p :: any)[key] = value
+		end
+	end
+	p.Parent = parent
+	return p
+end
+
+local UP = CFrame.Angles(0, 0, math.rad(90)) -- a cylinder standing up
+local CYL = Enum.PartType.Cylinder
+local BALL = Enum.PartType.Ball
+
+-- Builds an item's model around the origin (the model is pivoted every frame).
+local function buildItem(kind: string): Model
+	local m = Instance.new("Model")
+	m.Name = "Shake_" .. kind
+	if kind == "shake" then
+		part(m, Vector3.new(2.4, 1.7, 1.7), UP, W.Pink, { Shape = CYL })
+		part(m, Vector3.new(0.6, 1.78, 1.78), CFrame.new(0, -0.1, 0) * UP, W.White, { Shape = CYL })
+		part(m, Vector3.new(0.3, 2, 2), CFrame.new(0, 1.3, 0) * UP, W.White, { Shape = CYL })
+		part(m, Vector3.new(1.7, 1.1, 1.7), CFrame.new(0, 1.45, 0), W.Cream, { Shape = BALL })
+		part(m, Vector3.new(0.3, 2.2, 0.3), CFrame.new(0.3, 2.4, 0) * CFrame.Angles(0, 0, math.rad(-15)), W.Mint)
+		part(m, Vector3.new(0.6, 0.6, 0.6), CFrame.new(-0.35, 2.05, 0.3), W.Coral, { Shape = BALL })
+	elseif kind == "gold" then
+		local gold = { Reflectance = 0.25, Material = Enum.Material.Metal }
+		part(m, Vector3.new(3.4, 0.45, 0.45), CFrame.new(), W.Gold, { Shape = CYL, Reflectance = 0.25, Material = Enum.Material.Metal })
+		for _, s in { -1, 1 } do
+			part(
+				m,
+				Vector3.new(0.5, 2.2, 2.2),
+				CFrame.new(s * 1.2, 0, 0),
+				W.Gold,
+				{ Shape = CYL, Reflectance = gold.Reflectance, Material = gold.Material }
+			)
+			part(m, Vector3.new(0.4, 1.6, 1.6), CFrame.new(s * 1.65, 0, 0), W.GoldDeep, { Shape = CYL })
+		end
+		local core = m:GetChildren()[1] :: BasePart
+		local light = Instance.new("PointLight")
+		light.Color = W.Gold
+		light.Range = 8
+		light.Brightness = 1.5
+		light.Parent = core
+	elseif kind == "orb" then
+		local core = part(m, Vector3.new(1.5, 1.5, 1.5), CFrame.new(), W.Grape, { Shape = BALL, Material = Enum.Material.Neon })
+		part(m, Vector3.new(2.4, 2.4, 2.4), CFrame.new(), W.SkyBlue, { Shape = BALL, Material = Enum.Material.ForceField })
+		local light = Instance.new("PointLight")
+		light.Color = W.Grape
+		light.Range = 10
+		light.Brightness = 2
+		light.Parent = core
+	elseif kind == "burger" then
+		part(m, Vector3.new(0.5, 2.2, 2.2), CFrame.new(0, -0.55, 0) * UP, W.Honey, { Shape = CYL })
+		part(m, Vector3.new(0.45, 2.3, 2.3), CFrame.new(0, -0.1, 0) * UP, W.WoodDark, { Shape = CYL })
+		part(m, Vector3.new(1.7, 0.12, 1.7), CFrame.new(0, 0.18, 0) * CFrame.Angles(0, math.rad(45), 0), W.Sunny)
+		part(m, Vector3.new(0.15, 2.45, 2.45), CFrame.new(0, 0.28, 0) * UP, W.Grass, { Shape = CYL })
+		part(m, Vector3.new(2.3, 1.3, 2.3), CFrame.new(0, 0.7, 0), W.Honey, { Shape = BALL })
+	elseif kind == "donut" then
+		part(m, Vector3.new(0.7, 2.5, 2.5), UP, W.Honey, { Shape = CYL })
+		part(m, Vector3.new(0.2, 2.3, 2.3), CFrame.new(0, 0.4, 0) * UP, W.HotPink, { Shape = CYL })
+		part(m, Vector3.new(0.92, 0.8, 0.8), UP, W.Ink, { Shape = CYL })
+		local sprinkles = { W.Sunny, W.Mint, W.White, W.Blue }
+		for i, c in sprinkles do
+			local a = math.rad(i * 90 + 20)
+			part(m, Vector3.new(0.4, 0.12, 0.12), CFrame.new(math.cos(a) * 0.8, 0.52, math.sin(a) * 0.8) * CFrame.Angles(0, a, 0), c)
+		end
+		m:PivotTo(CFrame.Angles(math.rad(35), 0, 0))
+	else -- soda
+		part(m, Vector3.new(2.2, 1.3, 1.3), UP, W.Coral, { Shape = CYL })
+		part(m, Vector3.new(0.6, 1.36, 1.36), CFrame.new(0, 0.1, 0) * UP, W.White, { Shape = CYL })
+		part(m, Vector3.new(0.12, 1.2, 1.2), CFrame.new(0, 1.12, 0) * UP, W.Steel, { Shape = CYL, Material = Enum.Material.Metal })
+		part(m, Vector3.new(0.3, 0.12, 0.5), CFrame.new(0, 1.22, 0.15), W.Steel)
+	end
+	return m
+end
+
+-- The landing mark: a dark shadow (grows) and the catch ring (good: mint, junk: coral).
+local function buildMark(parent: Instance, drop: Drop): (BasePart, BasePart)
+	local junk = isJunk(drop.kind)
+	local d = (if junk then JUNK_RADIUS else CATCH_RADIUS) * 2
+	local at = Vector3.new(drop.x, top + 0.06, drop.z)
+	local ring = part(parent, Vector3.new(0.05, d, d), CFrame.new(at) * UP, if junk then W.Coral else W.Mint, {
+		Shape = CYL,
+		Material = Enum.Material.Neon,
+		Transparency = 0.75,
+		Name = "ShakeRing",
+	})
+	local shadow = part(parent, Vector3.new(0.06, 1, 1), CFrame.new(at + Vector3.new(0, 0.02, 0)) * UP, W.Ink, {
+		Shape = CYL,
+		Transparency = 0.85,
+		Name = "ShakeShadow",
+	})
+	return ring, shadow
+end
+
+-- Effects -------------------------------------------------------------------------------------
+
+local function tween(inst: Instance, time: number, props: { [string]: any }, style: Enum.EasingStyle?)
+	local t = TweenService:Create(inst, TweenInfo.new(time, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props)
+	t:Play()
+end
+
+-- A floating word ("+3", "OUCH!") rising from `at`.
+local function floatText(at: Vector3, text: string, color: Color3, size: number)
+	local anchor = part(folder or Workspace, Vector3.new(0.2, 0.2, 0.2), CFrame.new(at), color, { Transparency = 1 })
+	local gui = Instance.new("BillboardGui")
+	gui.Size = UDim2.fromOffset(160, 70)
+	gui.AlwaysOnTop = true
+	gui.LightInfluence = 0
+	gui.Parent = anchor
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.fromScale(1, 1)
+	label.Text = text
+	label.TextSize = size
+	label.Font = Theme.Fonts.Display
+	label.TextColor3 = color
+	label.Parent = gui
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 3
+	stroke.Color = W.Ink
+	stroke.Parent = label
+	local scale = Instance.new("UIScale")
+	scale.Scale = 0.3
+	scale.Parent = label
+	tween(scale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+	tween(anchor, 1.1, { CFrame = CFrame.new(at + Vector3.new(0, 4, 0)) })
+	task.delay(0.7, function()
+		tween(label, 0.4, { TextTransparency = 1 })
+		tween(stroke, 0.4, { Transparency = 1 })
+	end)
+	task.delay(1.2, function()
+		anchor:Destroy()
+	end)
+end
+
+-- Little neon bits flying out of `at` and fading (sparkles for a catch, goo for a splat).
+local function burst(at: Vector3, colors: { Color3 }, count: number, speed: number, flat: boolean)
+	for i = 1, count do
+		local a = (i / count) * math.pi * 2 + math.random() * 0.5
+		local dir = Vector3.new(math.cos(a), if flat then 0.15 else 0.4 + math.random() * 0.8, math.sin(a))
+		local s = 0.35 + math.random() * 0.3
+		local bit =
+			part(folder or Workspace, Vector3.new(s, if flat then s * 0.4 else s, s), CFrame.new(at), colors[(i - 1) % #colors + 1], {
+				Shape = if flat then CYL else BALL,
+				Material = if flat then Enum.Material.SmoothPlastic else Enum.Material.Neon,
+			})
+		if flat then
+			bit.CFrame = CFrame.new(at) * UP
+		end
+		local to = at + dir * speed * (0.6 + math.random() * 0.4)
+		tween(bit, 0.5, { Position = to, Transparency = 1, Size = bit.Size * 0.4 })
+		task.delay(0.55, function()
+			bit:Destroy()
+		end)
+	end
+end
+
+local function clearItem(item: Item)
+	item.state = "done"
+	if item.model then
+		item.model:Destroy()
+		item.model = nil
+	end
+	if item.ring then
+		item.ring:Destroy()
+		item.ring = nil
+	end
+	if item.shadow then
+		item.shadow:Destroy()
+		item.shadow = nil
+	end
+end
+
+local function rootPart(): BasePart?
+	local character = Players.LocalPlayer.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	return if root and root:IsA("BasePart") then root else nil
+end
+
+local function trayPoint(): Vector3?
+	local root = rootPart()
+	return root and root.Position + Vector3.new(0, TRAY_ABOVE_ROOT + 0.6, 0)
+end
+
+-- The server's word on an item: a catch pops it on the tray, a splat squashes it on the player.
+local function resolve(item: Item, verdict: { [string]: any })
+	local at = trayPoint() or Vector3.new(item.drop.x, top + CATCH_HEIGHT, item.drop.z)
+	if verdict.event == "catch" then
+		local gold = item.drop.kind == "gold"
+		burst(
+			at,
+			if gold then { W.Gold, W.Sunny, W.White } else { W.Mint, W.Sunny, W.Pink, W.White },
+			if gold then 14 else 9,
+			if gold then 6 else 4,
+			false
+		)
+		floatText(
+			at + Vector3.new(0, 1.5, 0),
+			"+" .. tostring(verdict.points or 1),
+			if gold then W.Gold else W.Mint,
+			if gold then 46 else 36
+		)
+		Sounds.play(if gold then "Cash" else "Collect", 0.08, if item.drop.kind == "orb" then 1.2 else 1)
+		if tray then
+			local scale = tray:GetAttribute("Bounce")
+			tray:SetAttribute("Bounce", (if type(scale) == "number" then scale else 0) + 1)
+		end
+	else
+		burst(at - Vector3.new(0, 0.5, 0), { W.WoodDark, W.Coral, W.Honey }, 10, 5, true)
+		floatText(at + Vector3.new(0, 1.5, 0), "OUCH!", W.Coral, 40)
+		Sounds.play("Error")
+	end
+	clearItem(item)
+end
+
+-- The tray ------------------------------------------------------------------------------------
+
+local function buildTray(parent: Instance)
+	local m = Instance.new("Model")
+	m.Name = "ShakeTray"
+	part(m, Vector3.new(0.3, 7, 7), UP, W.White, { Shape = CYL })
+	part(m, Vector3.new(0.32, 6.2, 6.2), CFrame.new(0, 0.02, 0) * UP, W.Pink, { Shape = CYL })
+	part(m, Vector3.new(0.34, 3.4, 3.4), CFrame.new(0, 0.04, 0) * UP, W.Sunny, { Shape = CYL })
+	part(m, Vector3.new(0.9, 0.5, 0.5), CFrame.new(0, -0.55, 0) * UP, W.Steel, { Shape = CYL })
+	m.Parent = parent
+	tray = m
+	footRing = part(parent, Vector3.new(0.05, CATCH_RADIUS * 2, CATCH_RADIUS * 2), UP, W.Mint, {
+		Shape = CYL,
+		Material = Enum.Material.Neon,
+		Transparency = 0.85,
+		Name = "ShakeReach",
+	})
+end
+
+-- The frame loop ------------------------------------------------------------------------------
+
+local function step()
+	local now = Workspace:GetServerTimeNow()
+	local root = rootPart()
+	local clock = os.clock()
+	if tray and root then
+		local bounce = tray:GetAttribute("Bounce")
+		local dip = 0
+		if type(bounce) == "number" and bounce > 0 then
+			dip = 0.35
+			tray:SetAttribute("Bounce", math.max(0, bounce - 0.15))
+		end
+		tray:PivotTo(CFrame.new(root.Position + Vector3.new(0, TRAY_ABOVE_ROOT - dip, 0)) * CFrame.Angles(0, clock * 0.6, 0))
+		if footRing then
+			footRing.CFrame = CFrame.new(root.Position.X, top + 0.05, root.Position.Z) * UP
+		end
+	end
+	local alive = false
+	for id, item in items do
+		local d = item.drop
+		if item.state == "done" then
+			items[id] = nil
+			continue
+		end
+		alive = true
+		local fall = d.landAt - d.spawnAt
+		local alpha = (now - d.spawnAt) / fall
+		if item.state == "wait" then
+			if alpha < 0 then
+				continue
+			end
+			local parent = folder or Workspace
+			item.ring, item.shadow = buildMark(parent, d)
+			local model = buildItem(d.kind)
+			model.Parent = parent
+			item.model = model
+			item.state = "fall"
+		end
+		local model = item.model :: Model
+		if item.state == "fall" then
+			if alpha < 1 then
+				-- Gravity ease: slow at the top, fast near the tray.
+				local y = top + CATCH_HEIGHT + DROP_HEIGHT * (1 - alpha * alpha)
+				local wobble = if isJunk(d.kind)
+					then CFrame.Angles(math.sin(clock * 6 + id) * 0.4, 0, math.cos(clock * 5 + id) * 0.3)
+					else CFrame.new()
+				model:PivotTo(CFrame.new(d.x, y, d.z) * CFrame.Angles(0, item.spin * clock, 0) * wobble)
+				local shadow = item.shadow :: BasePart
+				local grow = 1 + alpha * (if isJunk(d.kind) then JUNK_RADIUS else CATCH_RADIUS) * 1.4
+				shadow.Size = Vector3.new(0.06, grow, grow)
+				shadow.Transparency = 0.85 - 0.4 * alpha
+				local ring = item.ring :: BasePart
+				ring.Transparency = 0.75 - 0.25 * alpha + math.sin(clock * 10) * 0.05 * alpha
+			else
+				local verdict = verdicts[id]
+				if verdict then
+					verdicts[id] = nil
+					resolve(item, verdict)
+					continue
+				end
+				local reach = if isJunk(d.kind) then JUNK_RADIUS else CATCH_RADIUS
+				local near = root and Vector2.new(root.Position.X - d.x, root.Position.Z - d.z).Magnitude <= reach + 0.75
+				if near then
+					item.state = "held"
+					item.heldAt = clock
+				else
+					item.state = "floor"
+					item.heldAt = clock
+				end
+				if item.ring then
+					item.ring:Destroy()
+					item.ring = nil
+				end
+				if item.shadow then
+					item.shadow:Destroy()
+					item.shadow = nil
+				end
+			end
+		elseif item.state == "held" then
+			local at = trayPoint()
+			if at then
+				model:PivotTo(CFrame.new(at + Vector3.new(0, 0.6, 0)) * CFrame.Angles(0, item.spin * clock, 0))
+			end
+			if clock - item.heldAt > HOLD_WAIT then
+				-- No word from the server: it slipped off the tray.
+				item.state = "floor"
+				item.heldAt = clock
+			end
+		elseif item.state == "floor" then
+			local t = clock - item.heldAt
+			if t > FLOOR_FADE then
+				clearItem(item)
+			else
+				local pos = model:GetPivot().Position
+				local y = math.max(top + 0.8, pos.Y - 60 * (1 / 60))
+				local squash = if isJunk(d.kind) and y <= top + 0.81 then 0.5 else 1
+				model:PivotTo(CFrame.new(pos.X, y, pos.Z) * CFrame.Angles(0, item.spin * clock, if squash < 1 then math.rad(80) else 0))
+				for _, p in model:GetDescendants() do
+					if p:IsA("BasePart") and p.Transparency < 1 then
+						p.Transparency = math.max(p.Transparency, t / FLOOR_FADE)
+					end
+				end
+			end
+		end
+	end
+	if not running and not alive and stepConn then
+		stepConn:Disconnect()
+		stepConn = nil
+	end
+end
+
+local function clearAll()
+	for _, item in items do
+		clearItem(item)
+	end
+	table.clear(items)
+	table.clear(verdicts)
+	if tray then
+		tray:Destroy()
+		tray = nil
+	end
+	if footRing then
+		footRing:Destroy()
+		footRing = nil
+	end
+end
+
+local function onWave(payload: { [string]: any })
+	if type(payload.drops) ~= "table" then
+		return
+	end
+	for _, d in payload.drops do
+		if type(d) == "table" and type(d.id) == "number" and type(d.landAt) == "number" and type(d.spawnAt) == "number" then
+			items[d.id] = {
+				drop = d :: any,
+				state = "wait",
+				heldAt = 0,
+				spin = (if d.id % 2 == 0 then 1 else -1) * (1 + (d.id % 3) * 0.4),
+			}
+		end
+	end
+end
+
+local function onVerdict(payload: { [string]: any })
+	local id = payload.id
+	if type(id) ~= "number" then
+		return
+	end
+	local item = items[id]
+	if item and (item.state == "held" or item.state == "floor") then
+		resolve(item, payload)
+	elseif item and item.state ~= "done" then
+		verdicts[id] = payload
+	else
+		-- Already gone (a slow word): still show the pop on the player.
+		resolve({
+			drop = { id = id, kind = tostring(payload.kind), x = 0, z = 0, spawnAt = 0, landAt = 0 },
+			state = "done",
+			heldAt = 0,
+			spin = 0,
+		}, payload)
+	end
+end
 
 function Shake.start(_payload: { [string]: any })
+	clearAll()
 	running = true
+	findArena()
+	buildTray(folder or Workspace)
+	if not stepConn then
+		stepConn = RunService.RenderStepped:Connect(step)
+	end
 end
 
 function Shake.stop(_payload: { [string]: any })
@@ -74203,6 +76499,8 @@ function Shake.stop(_payload: { [string]: any })
 		return
 	end
 	running = false
+	-- Items still in the air are cleared; the step loop ends once nothing is left.
+	clearAll()
 end
 
 function Shake.init()
@@ -74210,10 +76508,17 @@ function Shake.init()
 		if type(payload) ~= "table" or payload.kind ~= "Mode" or payload.mode ~= "shake" then
 			return
 		end
-		if payload.event == "start" then
+		local event = payload.event
+		if event == "start" then
 			Shake.start(payload)
-		elseif payload.event == "stop" then
+		elseif event == "stop" or event == "win" or event == "lose" then
 			Shake.stop(payload)
+		elseif not running then
+			return
+		elseif event == "wave" then
+			onWave(payload)
+		elseif event == "catch" or event == "splat" then
+			onVerdict(payload)
 		end
 	end)
 end
@@ -107938,62 +110243,890 @@ return Popups
               <string name="Name">PoseHud</string>
               <string name="Source"><![CDATA[--!strict
 --[[
-	PoseHud: the screen side of POSE COPY (Modes.Pose; docs/minigames.md). Fx.Pose
-	does the 3D side.
+	PoseHud: the screen side of POSE COPY (Modes.Pose; docs/minigames.md). Fx.Pose does
+	the 3D side; this HUD runs the show's beats (it calls Fx.Pose.rivalFlex on every flex
+	the rival shows and Fx.Pose.playerFlex on every press) so both stay on one clock.
 
-	STUB (foundation): a hidden root frame that shows while a run is on.
-	TODO(pose builder): score, timer, round cards, the finish card.
+	  Top pill     "ROUND n" with the goal ("PASS AT 8", then "BEST n"), the hearts and the
+	               quiet quit button (X; first tap arms "QUIT?", the second fires ModeQuit;
+	               Y / B on a controller).
+	  Banner       "WATCH!" while the rival shows the round, "YOUR TURN!" when the player
+	               copies it, "GREAT!" / "OOPS!" / "TOO SLOW!" / "TEST PASSED!" between.
+	  Dots         one per flex of the round: the shown flex flashes its colour, a copied
+	               one fills; a thin bar under them counts down the time left for the
+	               next flex (PoseRules.INPUT_TIMEOUT, from "start").
+	  Flex pad     four big buttons in a D-pad (up DOUBLE BICEPS, left SIDE CHEST, right LAT
+	               SPREAD, down MOST MUSCULAR) in the flexes' colours, sized for thumbs; the
+	               arrow keys, WASD and the D-pad press them. Shaded while the rival shows,
+	               each lights up as its flex is shown.
+	  Card         after "win" / "lose": the longest sequence, the best (NEW BEST!), the cash
+	               the pass paid, and AGAIN / LEAVE.
+	The player list and the touch thumbstick are hidden during a run.
 
 	Wired from Main.client.luau (nothing else needs editing):
 	  init(screen)        once, builds the HUD (hidden)
-	  onNotify(payload)   every Notify with kind = "Mode" and mode = "pose"; routes
-	                      "start" -> start(payload) and "stop" -> stop(payload)
+	  onNotify(payload)   every Notify with kind = "Mode" and mode = "pose"
 	  onState(data)       every State snapshot (safety net: hides when modes.pose is not running)
 	  start(payload) / stop(payload)
 ]]
 
+local ContextActionService = game:GetService("ContextActionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local Format = require(ReplicatedStorage.Shared.Format) :: any
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Client = script.Parent.Parent
+local Kit = require(script.Parent.Kit) :: any
+local Sounds = require(Client.Sounds) :: any
+local PoseFx = require(Client.Fx.Pose)
+
 local PoseHud = {}
 
-local root: Frame? = nil
-local running = false
+local C = Kit.C
+local F = Kit.F
+local FLEXES = PoseFx.FLEXES
 
-function PoseHud.init(screen: ScreenGui)
-	local frame = Instance.new("Frame")
-	frame.Name = "PoseHud"
-	frame.BackgroundTransparency = 1
-	frame.Size = UDim2.fromScale(1, 1)
-	frame.Visible = false
-	frame.Parent = screen
-	root = frame
+local ACTION = "PoseFlexPress"
+local QUIT_ACTION = "PoseQuit"
+local PRIORITY = 3000
+local BUTTON = 112 -- flex button size (design px)
+local GAP = 10
+local DESIGN_H = 760 -- screen height the HUD is laid out for (UIScale beyond it)
+
+-- Which flex each key strikes (arrows, WASD, D-pad).
+local KEYS: { [Enum.KeyCode]: number } = {
+	[Enum.KeyCode.Up] = 1,
+	[Enum.KeyCode.W] = 1,
+	[Enum.KeyCode.DPadUp] = 1,
+	[Enum.KeyCode.Left] = 2,
+	[Enum.KeyCode.A] = 2,
+	[Enum.KeyCode.DPadLeft] = 2,
+	[Enum.KeyCode.Right] = 3,
+	[Enum.KeyCode.D] = 3,
+	[Enum.KeyCode.DPadRight] = 3,
+	[Enum.KeyCode.Down] = 4,
+	[Enum.KeyCode.S] = 4,
+	[Enum.KeyCode.DPadDown] = 4,
+}
+-- The key chip on each button: keyboard letter, controller direction.
+local CHIPS = { { "W", "UP" }, { "A", "LEFT" }, { "D", "RIGHT" }, { "S", "DOWN" } }
+-- Where each button sits in the D-pad (column, row from the centre).
+local PLACE: { [string]: Vector2 } = {
+	Up = Vector2.new(0, -1),
+	Left = Vector2.new(-1, 0),
+	Right = Vector2.new(1, 0),
+	Down = Vector2.new(0, 1),
+}
+
+local action = Net.event("Action")
+
+local screen: ScreenGui? = nil
+local root: Frame = nil :: any
+local roundLabel: TextLabel = nil :: any
+local goalLabel: TextLabel = nil :: any
+local heartsRow: Frame = nil :: any
+local quitButton: TextButton = nil :: any
+local banner: TextLabel = nil :: any
+local subBanner: TextLabel = nil :: any
+local dotsRow: Frame = nil :: any
+local timerBack: Frame = nil :: any
+local timerFill: Frame = nil :: any
+local pad: Frame = nil :: any
+local card: Frame = nil :: any
+local cardTitle: TextLabel = nil :: any
+local cardLines: TextLabel = nil :: any
+local cardCash: TextLabel = nil :: any
+local cardBest: TextLabel = nil :: any
+local buttons: { TextButton } = {}
+local shades: { Frame } = {}
+local pops: { UIScale } = {}
+
+local running = false
+-- "intro" | "watch" | "turn" | "wait": only "turn" takes presses.
+local phase = "intro"
+local beat = 0 -- bumps on every round / stop, so stale show timers do nothing
+local seq: { number } = {}
+local done = 0
+local lives, maxLives = 3, 3
+local passRound = 8
+local best = 0
+local timeout = 6
+local turnAt = 0
+local quitArmed = false
+local quitPress: () -> () = function() end
+local timerConn: RBXScriptConnection? = nil
+
+local function num(value: any, default: number): number
+	return if type(value) == "number" and value == value then value else default
 end
 
-function PoseHud.start(_payload: { [string]: any }?)
-	running = true
-	if root then
-		root.Visible = true
+-- Hearts ----------------------------------------------------------------------------------
+
+-- A heart from two discs and a 45-degree square (as the Mog HUD's).
+local function heart(parent: Instance, index: number): Frame
+	local holder = Kit.new("Frame", {
+		Name = "Heart" .. index,
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(30, 28),
+		LayoutOrder = index,
+		Parent = parent,
+	})
+	local scale = Kit.new("UIScale", { Parent = holder })
+	scale.Name = "Pop"
+	local function piece(name: string, size: number, x: number, y: number, rotation: number, round: boolean)
+		local f = Kit.new("Frame", {
+			Name = name,
+			BackgroundColor3 = C.Bad,
+			BorderSizePixel = 0,
+			Size = UDim2.fromOffset(size, size),
+			Position = UDim2.fromOffset(x, y),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Rotation = rotation,
+			Parent = holder,
+		})
+		if round then
+			Kit.round(f)
+		else
+			Kit.corner(f, 3)
+		end
 	end
+	piece("Left", 15, 10, 10, 0, true)
+	piece("Right", 15, 20, 10, 0, true)
+	piece("Point", 15, 15, 15.5, 45, false)
+	return holder
+end
+
+local function setHearts(newLives: number, newMax: number, animate: boolean)
+	if newMax ~= maxLives or not heartsRow:FindFirstChild("Heart1") then
+		for _, child in heartsRow:GetChildren() do
+			if child:IsA("Frame") then
+				child:Destroy()
+			end
+		end
+		for i = 1, newMax do
+			heart(heartsRow, i)
+		end
+	end
+	for i = 1, newMax do
+		local holder = heartsRow:FindFirstChild("Heart" .. i)
+		if holder then
+			local full = i <= newLives
+			local was = i <= lives
+			for _, f in holder:GetChildren() do
+				if f:IsA("Frame") then
+					Kit.tween(f, 0.25, { BackgroundColor3 = if full then C.Bad else C.Well })
+				end
+			end
+			local pop = holder:FindFirstChild("Pop") :: UIScale?
+			if animate and pop and was ~= full then
+				pop.Scale = if full then 0.4 else 1.6
+				Kit.tween(pop, 0.45, { Scale = 1 }, Enum.EasingStyle.Back)
+			end
+		end
+	end
+	lives, maxLives = newLives, newMax
+end
+
+-- Banner, dots, timer -----------------------------------------------------------------------
+
+local function showBanner(text: string, sub: string?, color: Color3?)
+	banner.Text = text
+	banner.TextColor3 = color or C.Text
+	banner.Visible = true
+	subBanner.Text = sub or ""
+	subBanner.Visible = sub ~= nil
+	Kit.pop(banner, 1.25)
+end
+
+local function setGoal()
+	goalLabel.Text = if best >= passRound then "BEST " .. best else "PASS AT " .. passRound
+end
+
+local function setRound(round: number)
+	roundLabel.Text = "ROUND " .. round
+	Kit.pop(roundLabel, 1.1)
+end
+
+local function buildDots(count: number)
+	for _, child in dotsRow:GetChildren() do
+		if child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+	local size = if count > 14 then 14 else 20
+	for i = 1, count do
+		local dot = Kit.new("Frame", {
+			Name = "Dot" .. i,
+			BackgroundColor3 = C.Well,
+			BackgroundTransparency = 0.15,
+			Size = UDim2.fromOffset(size, size),
+			LayoutOrder = i,
+			Parent = dotsRow,
+		})
+		Kit.round(dot)
+		Kit.stroke(dot, 2, C.Ink)
+	end
+end
+
+local function paintDot(i: number, color: Color3?, flash: boolean?)
+	local dot = dotsRow:FindFirstChild("Dot" .. i) :: Frame?
+	if not dot then
+		return
+	end
+	dot.BackgroundColor3 = color or C.Well
+	if flash then
+		Kit.pop(dot, 1.5)
+	end
+end
+
+local function stopTimer()
+	if timerConn then
+		timerConn:Disconnect()
+		timerConn = nil
+	end
+	timerBack.Visible = false
+end
+
+-- The bar under the dots: time left for the next flex (resets on every right press).
+local function startTimer()
+	stopTimer()
+	turnAt = os.clock()
+	timerBack.Visible = true
+	timerConn = RunService.RenderStepped:Connect(function()
+		local left = math.clamp(1 - (os.clock() - turnAt) / timeout, 0, 1)
+		timerFill.Size = UDim2.fromScale(left, 1)
+		timerFill.BackgroundColor3 = if left < 0.3 then C.Bad else C.Good
+	end)
+end
+
+-- Flex pad ---------------------------------------------------------------------------------
+
+local function shadePad(on: boolean)
+	for _, shade in shades do
+		Kit.tween(shade, 0.18, { BackgroundTransparency = if on then 0.5 else 1 })
+	end
+end
+
+local lightTokens: { [number]: number } = {}
+local function lightButton(i: number, hold: number)
+	local button = buttons[i]
+	local scale = pops[i]
+	if not button or not scale then
+		return
+	end
+	Kit.setGlow(button, true, FLEXES[i].color)
+	scale.Scale = 1.14
+	Kit.tween(scale, 0.25, { Scale = 1 }, Enum.EasingStyle.Back)
+	local mine = (lightTokens[i] or 0) + 1
+	lightTokens[i] = mine
+	task.delay(hold, function()
+		if lightTokens[i] == mine then
+			Kit.setGlow(button, false)
+		end
+	end)
+end
+
+local function press(i: number)
+	if not running or phase ~= "turn" or not FLEXES[i] then
+		return
+	end
+	local step = done + 1
+	local ok = seq[step] == i
+	action:FireServer({ action = "PoseInput", flex = i, step = step })
+	PoseFx.playerFlex(i, ok)
+	lightButton(i, 0.3)
+	if ok then
+		done = step
+		paintDot(step, FLEXES[i].color, true)
+		Sounds.play("Pickup", 0.06, 1 + step * 0.04)
+		if done >= #seq then
+			-- The server's "clear" follows.
+			phase = "wait"
+			stopTimer()
+			shadePad(true)
+		else
+			turnAt = os.clock()
+		end
+	else
+		-- The server's "miss" follows (hearts there).
+		phase = "wait"
+		stopTimer()
+		shadePad(true)
+		Sounds.play("Error")
+		showBanner("OOPS!", "It was " .. FLEXES[seq[step]].label, C.Bad)
+	end
+end
+
+local function onAction(_name: string, state: Enum.UserInputState, input: InputObject): Enum.ContextActionResult
+	if state == Enum.UserInputState.Begin then
+		local i = KEYS[input.KeyCode]
+		if i then
+			press(i)
+		end
+	end
+	-- Sunk either way: the player is held on the podium and the keys only flex.
+	return Enum.ContextActionResult.Sink
+end
+
+local function bind()
+	local keys = {}
+	for key in KEYS do
+		table.insert(keys, key)
+	end
+	ContextActionService:BindActionAtPriority(ACTION, onAction, false, PRIORITY, table.unpack(keys))
+	ContextActionService:BindActionAtPriority(QUIT_ACTION, function(_, state)
+		if state == Enum.UserInputState.Begin then
+			quitPress()
+		end
+		return Enum.ContextActionResult.Sink
+	end, false, PRIORITY, Enum.KeyCode.ButtonY, Enum.KeyCode.ButtonB)
+end
+
+local function unbind()
+	ContextActionService:UnbindAction(ACTION)
+	ContextActionService:UnbindAction(QUIT_ACTION)
+end
+
+-- Show -------------------------------------------------------------------------------------
+
+local function onRound(p: any)
+	beat += 1
+	local mine = beat
+	seq = {}
+	if type(p.seq) == "table" then
+		for i, flex in p.seq do
+			seq[i] = math.clamp(math.floor(num(flex, 1)), 1, #FLEXES)
+		end
+	end
+	done = 0
+	phase = "watch"
+	stopTimer()
+	shadePad(true)
+	setRound(math.max(1, #seq))
+	setHearts(num(p.hearts, lives), maxLives, false)
+	buildDots(#seq)
+	showBanner("WATCH!", if p.replay then "Watch again..." else "Copy the Chad's flexes", C.Gold)
+	local step = num(p.step, 0.9)
+	local lead = num(p.lead, 1.2)
+	for i, flex in seq do
+		task.delay(lead + (i - 1) * step, function()
+			if beat ~= mine or not running then
+				return
+			end
+			PoseFx.rivalFlex(flex, step * 0.75)
+			lightButton(flex, step * 0.7)
+			paintDot(i, FLEXES[flex].color, true)
+			Sounds.play("Tick", 0.04, 0.9 + (flex - 1) * 0.12)
+			task.delay(step * 0.75, function()
+				if beat == mine and phase == "watch" then
+					paintDot(i, nil)
+				end
+			end)
+		end)
+	end
+	task.delay(num(p.length, lead + #seq * step + 0.35), function()
+		if beat ~= mine or not running then
+			return
+		end
+		phase = "turn"
+		for i = 1, #seq do
+			paintDot(i, nil)
+		end
+		shadePad(false)
+		showBanner("YOUR TURN!", if Kit.touch then "Tap the flexes" else Kit.hint("", "Arrow keys or WASD", "D-pad"), C.Good)
+		Sounds.play("Ready")
+		startTimer()
+	end)
+end
+
+-- Finish card ------------------------------------------------------------------------------
+
+local function hideCard()
+	if card.Visible then
+		Kit.disappear(card)
+	end
+end
+
+local function showCard(p: any, won: boolean)
+	local cleared = math.floor(num(p.cleared, 0))
+	best = math.floor(num(p.best, best))
+	cardTitle.Text = if won then "TEST PASSED!" else "NICE TRY!"
+	cardTitle.TextColor3 = if won then C.Gold else C.Text
+	cardLines.Text = "Longest copy: " .. cleared .. (if cleared == 1 then " flex" else " flexes")
+	cardBest.Text = if p.newBest then "NEW BEST!" else "Best " .. best
+	cardBest.TextColor3 = if p.newBest then C.Gold else C.TextDim
+	local cash = num(p.cash, 0)
+	cardCash.Text = if cash > 0 and p.pay == "first"
+		then "First clear! +" .. Format.money(cash)
+		elseif cash > 0 and p.pay == "repeat" then "Run again bonus +" .. Format.money(cash)
+		elseif cash > 0 then "+" .. Format.money(cash)
+		elseif won then "Pass bonus resting. Great posing!"
+		else "Copy " .. passRound .. " flexes to pass!"
+	cardCash.TextColor3 = if cash > 0 then C.Good else C.TextDim
+	card.Visible = true
+	Kit.appear(card)
+	if won then
+		Kit.confetti(card, { Origin = UDim2.fromScale(0.5, 0.2), Count = 40, ZIndex = 41, Power = 1.1 })
+	end
+end
+
+-- Run --------------------------------------------------------------------------------------
+
+local function hide()
+	running = false
+	phase = "intro"
+	beat += 1
+	quitArmed = false
+	unbind()
+	stopTimer()
+	Kit.hidePlayerList("pose", false)
+	Kit.hideTouchControls("pose", false)
+	if screen then
+		screen:SetAttribute("RunActive", false)
+	end
+	root.Visible = false
+	for i, button in buttons do
+		Kit.setGlow(button, false)
+		pops[i].Scale = 1
+	end
+end
+
+function PoseHud.start(payload: { [string]: any }?)
+	local p: any = payload or {}
+	hide()
+	hideCard()
+	running = true
+	phase = "intro"
+	passRound = math.floor(num(p.passRound, 8))
+	best = math.floor(num(p.best, 0))
+	timeout = num(p.timeout, 6)
+	setHearts(math.floor(num(p.hearts, 3)), math.floor(num(p.maxHearts, 3)), false)
+	setGoal()
+	roundLabel.Text = "ROUND 1"
+	buildDots(0)
+	shadePad(true)
+	Kit.setButton(quitButton, if Kit.gamepad then "Y" else "X", C.SurfaceHi)
+	quitButton.Size = UDim2.fromOffset(30, 28)
+	bind()
+	Kit.hidePlayerList("pose", true)
+	Kit.hideTouchControls("pose", true)
+	if screen then
+		screen:SetAttribute("RunActive", true)
+	end
+	root.Visible = true
+	Kit.appear(root)
+	showBanner("POSE COPY!", "Watch the Chad, then copy his flexes", C.Gold)
+	Sounds.play("Ready")
 end
 
 function PoseHud.stop(_payload: { [string]: any }?)
-	running = false
-	if root then
-		root.Visible = false
-	end
+	hide()
+	hideCard()
 end
 
 function PoseHud.onNotify(payload: { [string]: any })
-	if payload.event == "start" then
-		PoseHud.start(payload)
-	elseif payload.event == "stop" then
-		PoseHud.stop(payload)
+	local p: any = payload
+	local event = p.event
+	if event == "start" then
+		PoseHud.start(p)
+	elseif event == "stop" then
+		PoseHud.stop(p)
+	elseif not running then
+		return
+	elseif event == "round" then
+		onRound(p)
+	elseif event == "clear" then
+		phase = "wait"
+		beat += 1
+		stopTimer()
+		shadePad(true)
+		Sounds.play("Coin", 0.05, 1.2)
+		local nextRound = math.floor(num(p.next, 1))
+		showBanner("GREAT!", "Next: " .. nextRound .. " flexes", C.Good)
+	elseif event == "pass" then
+		best = math.max(best, math.floor(num(p.round, passRound)))
+		local cash = num(p.cash, 0)
+		local sub = if cash > 0 and p.pay == "repeat"
+			then "Run again bonus +" .. Format.money(cash)
+			elseif cash > 0 then "+" .. Format.money(cash) .. "  Keep going!"
+			else "Keep going for a best!"
+		showBanner("TEST PASSED!", sub, C.Gold)
+		Kit.confetti(banner, { Origin = UDim2.fromScale(0.5, 0.4), Count = 50, ZIndex = 31, Power = 1.2 })
+		goalLabel.Text = "BEST " .. best
+	elseif event == "miss" then
+		phase = "wait"
+		beat += 1
+		stopTimer()
+		shadePad(true)
+		setHearts(math.floor(num(p.hearts, lives - 1)), maxLives, true)
+		local expected = FLEXES[math.floor(num(p.expected, 0))]
+		local sub = if expected then "It was " .. expected.label else nil
+		if p.reason == "slow" then
+			Sounds.play("Error")
+			showBanner("TOO SLOW!", sub, C.Bad)
+		else
+			showBanner("OOPS!", sub, C.Bad)
+		end
+	elseif event == "win" or event == "lose" then
+		hide()
+		showCard(p, event == "win")
 	end
 end
 
 function PoseHud.onState(data: any)
 	local info = type(data) == "table" and type(data.modes) == "table" and data.modes.pose
 	if running and not (type(info) == "table" and info.running == true) then
-		PoseHud.stop(nil)
+		hide()
 	end
+end
+
+-- Build ------------------------------------------------------------------------------------
+
+local function fitScale(scale: UIScale)
+	local function fit()
+		local camera = Workspace.CurrentCamera
+		local view = if camera then camera.ViewportSize else Vector2.new(1280, DESIGN_H)
+		scale.Scale = math.clamp(math.min(view.Y / DESIGN_H, view.X / 900), 0.6, 1.25)
+	end
+	fit()
+	local camera = Workspace.CurrentCamera
+	if camera then
+		camera:GetPropertyChangedSignal("ViewportSize"):Connect(fit)
+	end
+end
+
+local function buildPad()
+	local span = BUTTON * 3 + GAP * 2
+	pad = Kit.new("Frame", {
+		Name = "FlexPad",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(span, span),
+		Position = UDim2.new(0.5, 0, 1, -16),
+		AnchorPoint = Vector2.new(0.5, 1),
+		ZIndex = 20,
+		Parent = root,
+	})
+	local scale = Kit.new("UIScale", { Parent = pad })
+	fitScale(scale)
+	for i, flex in FLEXES do
+		local at = PLACE[flex.dir] or Vector2.zero
+		local holder = Kit.new("Frame", {
+			Name = "Flex" .. i,
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(BUTTON, BUTTON),
+			Position = UDim2.new(0.5, at.X * (BUTTON + GAP), 0.5, at.Y * (BUTTON + GAP)),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Parent = pad,
+		})
+		pops[i] = Kit.new("UIScale", { Parent = holder })
+		local button = Kit.button(holder, {
+			Name = "Button",
+			Text = "",
+			Color = flex.color,
+			Size = UDim2.fromScale(1, 1),
+			Radius = 22,
+			Depth = 5,
+			ZIndex = 21,
+		}, function()
+			press(i)
+		end)
+		buttons[i] = button
+		-- The flex's name over the button's face, and the key chip at its top.
+		Kit.text(button, {
+			Name = "Flex",
+			Text = (flex.label:gsub(" ", "\n", 1)),
+			Font = F.Display,
+			TextSize = 19,
+			TextWrapped = true,
+			TextColor3 = C.Text,
+			StrokeThickness = 2,
+			Size = UDim2.new(1, -10, 0.6, 0),
+			Position = UDim2.new(0.5, 0, 0.62, 0),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			ZIndex = 24,
+		})
+		local chip = Kit.text(button, {
+			Name = "Key",
+			Text = CHIPS[i][1],
+			Font = F.Display,
+			TextSize = 15,
+			TextWrapped = false,
+			TextColor3 = C.Ink,
+			BackgroundColor3 = C.Text,
+			BackgroundTransparency = 0.05,
+			StrokeThickness = 0,
+			Size = UDim2.fromOffset(46, 22),
+			Position = UDim2.new(0.5, 0, 0, 10),
+			AnchorPoint = Vector2.new(0.5, 0),
+			ZIndex = 24,
+		})
+		Kit.round(chip)
+		local function paintChip()
+			chip.Visible = not Kit.touch
+			chip.Text = if Kit.gamepad then CHIPS[i][2] else CHIPS[i][1]
+			chip.Size = UDim2.fromOffset(if Kit.gamepad then 62 else 30, 22)
+		end
+		paintChip()
+		Kit.onInput(paintChip)
+		local shade = Kit.new("Frame", {
+			Name = "Shade",
+			BackgroundColor3 = Color3.new(0, 0, 0),
+			BackgroundTransparency = 0.5,
+			BorderSizePixel = 0,
+			Size = UDim2.fromScale(1, 1),
+			Active = false,
+			ZIndex = 26,
+			Parent = holder,
+		})
+		Kit.corner(shade, 22)
+		shades[i] = shade
+	end
+end
+
+local function buildCard(screenGui: ScreenGui)
+	card = Kit.panel(screenGui, {
+		Name = "PoseCard",
+		Size = UDim2.fromOffset(380, 300),
+		Position = UDim2.fromScale(0.5, 0.45),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Visible = false,
+		ZIndex = 40,
+	})
+	fitScale(Kit.new("UIScale", { Parent = card }))
+	cardTitle = Kit.title(card, {
+		Text = "TEST PASSED!",
+		TextSize = 34,
+		Size = UDim2.new(1, -40, 0, 44),
+		Position = UDim2.new(0.5, 0, 0, 22),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 42,
+	})
+	cardLines = Kit.text(card, {
+		Text = "",
+		TextSize = 20,
+		Size = UDim2.new(1, -40, 0, 26),
+		Position = UDim2.new(0.5, 0, 0, 78),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 42,
+	})
+	cardBest = Kit.text(card, {
+		Text = "",
+		Font = F.Display,
+		TextSize = 22,
+		Size = UDim2.new(1, -40, 0, 28),
+		Position = UDim2.new(0.5, 0, 0, 110),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 42,
+	})
+	cardCash = Kit.text(card, {
+		Text = "",
+		Font = F.Display,
+		TextSize = 22,
+		Size = UDim2.new(1, -40, 0, 30),
+		Position = UDim2.new(0.5, 0, 0, 148),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 42,
+	})
+	Kit.button(card, {
+		Name = "Again",
+		Text = "AGAIN",
+		Color = C.Good,
+		Size = UDim2.fromOffset(150, 52),
+		Position = UDim2.new(0.5, -8, 1, -24),
+		AnchorPoint = Vector2.new(1, 1),
+		ZIndex = 42,
+	}, function()
+		hideCard()
+		action:FireServer({ action = "ModeStart", mode = "pose" })
+	end)
+	Kit.button(card, {
+		Name = "Leave",
+		Text = "LEAVE",
+		Color = C.SurfaceHi,
+		Size = UDim2.fromOffset(150, 52),
+		Position = UDim2.new(0.5, 8, 1, -24),
+		AnchorPoint = Vector2.new(0, 1),
+		ZIndex = 42,
+	}, function()
+		hideCard()
+		action:FireServer({ action = "GoModes" })
+	end)
+	Kit.button(card, {
+		Name = "Close",
+		Text = "X",
+		Color = C.SurfaceHi,
+		TextSize = 14,
+		Size = UDim2.fromOffset(30, 28),
+		Position = UDim2.new(1, -10, 0, 10),
+		AnchorPoint = Vector2.new(1, 0),
+		Radius = 14,
+		Depth = 2,
+		ZIndex = 43,
+	}, hideCard)
+end
+
+function PoseHud.init(screenGui: ScreenGui)
+	screen = screenGui
+	root = Kit.new("Frame", {
+		Name = "PoseHud",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1),
+		Visible = false,
+		ZIndex = 20,
+		Parent = screenGui,
+	})
+
+	-- Top: a glass pill with the round, the goal, the hearts and the quit button.
+	local top = Kit.new("Frame", {
+		Name = "Top",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(420, 150),
+		Position = UDim2.new(0.5, 0, 0, 58),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Parent = root,
+	})
+	fitScale(Kit.new("UIScale", { Parent = top }))
+	local pill = Kit.hudGlass(top, {
+		Name = "Round",
+		Size = UDim2.fromOffset(380, 48),
+		Position = UDim2.new(0.5, 0, 0, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
+	})
+	roundLabel = Kit.hudText(pill, {
+		Name = "Round",
+		Text = "ROUND 1",
+		Font = F.Display,
+		TextSize = 24,
+		StrokeThickness = 2,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.fromOffset(130, 48),
+		Position = UDim2.fromOffset(16, 0),
+		ZIndex = 3,
+	})
+	goalLabel = Kit.text(pill, {
+		Name = "Goal",
+		Text = "PASS AT 8",
+		Font = F.Display,
+		TextSize = 14,
+		TextWrapped = false,
+		TextColor3 = C.GoldInk,
+		BackgroundColor3 = C.Gold,
+		BackgroundTransparency = 0,
+		StrokeThickness = 0,
+		Size = UDim2.fromOffset(92, 24),
+		Position = UDim2.fromOffset(146, 12),
+		ZIndex = 3,
+	})
+	Kit.round(goalLabel)
+	heartsRow = Kit.new("Frame", {
+		Name = "Hearts",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(100, 28),
+		Position = UDim2.new(1, -46, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		ZIndex = 3,
+		Parent = pill,
+	})
+	Kit.list(heartsRow, 2, true, Enum.HorizontalAlignment.Right)
+	quitButton = Kit.button(pill, {
+		Name = "Quit",
+		Text = "X",
+		Color = C.SurfaceHi,
+		TextSize = 14,
+		Size = UDim2.fromOffset(30, 28),
+		Position = UDim2.new(1, -8, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Radius = 14,
+		Depth = 2,
+		ZIndex = 4,
+	}, function()
+		quitPress()
+	end)
+	Kit.selectable(quitButton)
+	local quitHit = Kit.hitArea(quitButton, 48, function()
+		Kit.sound("Click")
+		quitPress()
+	end)
+	quitHit.Visible = Kit.touch
+	Kit.onInput(function()
+		quitHit.Visible = Kit.touch
+	end)
+	quitPress = function()
+		if quitArmed then
+			quitArmed = false
+			action:FireServer({ action = "ModeQuit" })
+			return
+		end
+		-- First tap arms it: "QUIT?" for a few seconds.
+		quitArmed = true
+		Kit.setButton(quitButton, "QUIT?", C.Bad)
+		Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(64, 28) }, Enum.EasingStyle.Back)
+		task.delay(3, function()
+			if quitArmed then
+				quitArmed = false
+				Kit.setButton(quitButton, if Kit.gamepad then "Y" else "X", C.SurfaceHi)
+				Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(30, 28) })
+			end
+		end)
+	end
+
+	-- Banner, its sub line, the dots and the turn timer under the pill.
+	banner = Kit.hudText(top, {
+		Name = "Banner",
+		Text = "",
+		Font = F.Display,
+		TextSize = 44,
+		StrokeThickness = 3,
+		Size = UDim2.new(1, 0, 0, 50),
+		Position = UDim2.new(0.5, 0, 0, 56),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 30,
+	})
+	subBanner = Kit.hudText(top, {
+		Name = "Sub",
+		Text = "",
+		Font = F.Display,
+		TextSize = 18,
+		StrokeThickness = 2,
+		Size = UDim2.new(1, 0, 0, 22),
+		Position = UDim2.new(0.5, 0, 0, 104),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 30,
+	})
+	dotsRow = Kit.new("Frame", {
+		Name = "Dots",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 22),
+		Position = UDim2.new(0.5, 0, 0, 132),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Parent = top,
+	})
+	Kit.list(dotsRow, 6, true, Enum.HorizontalAlignment.Center)
+	timerBack = Kit.new("Frame", {
+		Name = "Timer",
+		BackgroundColor3 = C.Well,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(200, 8),
+		Position = UDim2.new(0.5, 0, 0, 160),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Visible = false,
+		Parent = top,
+	})
+	Kit.round(timerBack)
+	timerFill = Kit.new("Frame", {
+		Name = "Fill",
+		BackgroundColor3 = C.Good,
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(1, 1),
+		Parent = timerBack,
+	})
+	Kit.round(timerFill)
+
+	buildPad()
+	buildCard(screenGui)
 end
 
 return PoseHud
@@ -108006,53 +111139,403 @@ return PoseHud
               <string name="Source"><![CDATA[--!strict
 --[[
 	ShakeHud: the screen side of SHAKE CATCH (Modes.Shake; docs/minigames.md). Fx.Shake
-	does the 3D side.
+	does the 3D side (falling items, the tray, the "+1" pops).
 
-	STUB (foundation): a hidden root frame that shows while a run is on.
-	TODO(shake builder): score, timer, round cards, the finish card.
+	  Run column   right edge, mid-height (like the Mog test): a glass score pill ("12 / 25"
+	               with a star, the quiet X that asks "QUIT?" before ModeQuit), a chunky
+	               bar toward the target (gold, mint once it is reached), three hearts and
+	               the clock with the wave ("0:42 · WAVE 2/4").
+	  Centre       the "3, 2, 1, GO!" count-in, the wave banners ("WAVE 3!", "FINAL WAVE!"),
+	               "TARGET HIT!" when the score reaches the target.
+	  Finish card  centre, on "win" / "lose": the title (SHAKE CHAMP! / NEW BEST! / OUT OF
+	               HEARTS! / SO CLOSE!), score, target and best, the cash paid (or why none),
+	               PLAY AGAIN / HOME, confetti on a win. It stays up after the run ends.
 
 	Wired from Main.client.luau (nothing else needs editing):
 	  init(screen)        once, builds the HUD (hidden)
 	  onNotify(payload)   every Notify with kind = "Mode" and mode = "shake"; routes
-	                      "start" -> start(payload) and "stop" -> stop(payload)
+	                      "start" -> start(payload) and "stop" -> stop(payload), plus this
+	                      mode's "wave", "catch", "splat", "win", "lose"
 	  onState(data)       every State snapshot (safety net: hides when modes.shake is not running)
 	  start(payload) / stop(payload)
 ]]
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local Format = require(ReplicatedStorage.Shared.Format) :: any
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Client = script.Parent.Parent
+local Kit = require(script.Parent.Kit) :: any
+local Popups = require(script.Parent.Popups) :: any
+local Sounds = require(Client.Sounds) :: any
+
 local ShakeHud = {}
 
-local root: Frame? = nil
-local running = false
+local C = Kit.C
+local F = Kit.F
+local W = Kit.Theme.World
 
-function ShakeHud.init(screen: ScreenGui)
-	local frame = Instance.new("Frame")
-	frame.Name = "ShakeHud"
-	frame.BackgroundTransparency = 1
-	frame.Size = UDim2.fromScale(1, 1)
-	frame.Visible = false
-	frame.Parent = screen
-	root = frame
+local action = Net.event("Action")
+
+-- The run column (right edge, mid-height, like the Mog test).
+local ROOT_W = 280
+local ROOT_H = 160
+local ROOT_RIGHT = 36
+local ROOT_DY = 60
+local PILL_W = 250
+local BAR_W = 230
+-- HUD chrome that steps aside during a run (the gift corner and the crate panel).
+local CLUTTER = { "FreeCorner", "ChestPanel" }
+
+local screen: ScreenGui? = nil
+local root: Frame
+local scoreLabel: TextLabel
+local barFill: Frame
+local heartsRow: Frame
+local clockLabel: TextLabel
+local quitButton: TextButton
+local banner: TextLabel
+local bannerSub: TextLabel
+local finishCard: Frame
+local finishTitle: TextLabel
+local finishSub: TextLabel
+local finishReward: TextLabel
+local finishBest: TextLabel
+
+local running = false
+local quitArmed = false
+local score = 0
+local target = 25
+local hearts = 3
+local maxHearts = 3
+local goAt = 0
+local endAt = 0
+local wave = 1
+local waves = 4
+local targetShown = false
+local lastCount = -1
+local bannerToken = 0
+local stepConn: RBXScriptConnection? = nil
+
+local function num(value: any, default: number): number
+	return if type(value) == "number" and value == value then value else default
 end
 
-function ShakeHud.start(_payload: { [string]: any }?)
-	running = true
-	if root then
-		root.Visible = true
+-- Hearts (two discs and a 45-degree square, like the Mog test's) ---------------------------------
+
+local function heart(parent: Instance, index: number): Frame
+	local holder = Kit.new("Frame", {
+		Name = "Heart" .. index,
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(30, 28),
+		LayoutOrder = index,
+		Parent = parent,
+	})
+	local scale = Kit.new("UIScale", { Parent = holder })
+	scale.Name = "Pop"
+	local function piece(name: string, x: number, y: number, rotation: number, round: boolean)
+		local f = Kit.new("Frame", {
+			Name = name,
+			BackgroundColor3 = C.Bad,
+			BorderSizePixel = 0,
+			Size = UDim2.fromOffset(15, 15),
+			Position = UDim2.fromOffset(x, y),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Rotation = rotation,
+			Parent = holder,
+		})
+		if round then
+			Kit.round(f)
+		else
+			Kit.corner(f, 3)
+		end
+	end
+	piece("Left", 10, 10, 0, true)
+	piece("Right", 20, 10, 0, true)
+	piece("Point", 15, 15.5, 45, false)
+	return holder
+end
+
+local function setHearts(newHearts: number, animate: boolean)
+	if #heartsRow:GetChildren() <= 1 then
+		for i = 1, maxHearts do
+			heart(heartsRow, i)
+		end
+	end
+	for i = 1, maxHearts do
+		local holder = heartsRow:FindFirstChild("Heart" .. i)
+		if holder then
+			local full = i <= newHearts
+			local was = i <= hearts
+			for _, f in holder:GetChildren() do
+				if f:IsA("Frame") then
+					Kit.tween(f, 0.25, { BackgroundColor3 = if full then C.Bad else C.Well })
+				end
+			end
+			local pop = holder:FindFirstChild("Pop") :: UIScale?
+			if animate and pop and was ~= full then
+				pop.Scale = if full then 0.4 else 1.6
+				Kit.tween(pop, 0.45, { Scale = 1 }, Enum.EasingStyle.Back)
+			end
+		end
+	end
+	hearts = newHearts
+end
+
+-- Score, banner, clock ---------------------------------------------------------------------------
+
+local function paintScore(pop: boolean)
+	scoreLabel.Text = string.format("%d / %d", score, target)
+	local passed = score >= target
+	local fill = math.clamp(score / math.max(target, 1), 0, 1)
+	Kit.tween(barFill, 0.25, { Size = UDim2.fromScale(fill, 1), BackgroundColor3 = if passed then C.Good else C.Gold })
+	if pop then
+		Kit.pop(scoreLabel, 1.25)
 	end
 end
 
-function ShakeHud.stop(_payload: { [string]: any }?)
+local function showBanner(title: string, sub: string?, color: Color3, hold: number, delay: number?)
+	bannerToken += 1
+	local token = bannerToken
+	task.delay(delay or 0, function()
+		if token ~= bannerToken or not running then
+			return
+		end
+		banner.Text = title
+		banner.TextColor3 = color
+		bannerSub.Text = sub or ""
+		banner.Visible = true
+		Kit.appear(banner, { from = 0.35, time = 0.35 })
+		task.delay(hold, function()
+			if token == bannerToken then
+				Kit.disappear(banner)
+			end
+		end)
+	end)
+end
+
+local function render()
+	if not running then
+		return
+	end
+	local now = Workspace:GetServerTimeNow()
+	local left = math.max(0, math.ceil(endAt - now))
+	local toGo = goAt - now
+	if toGo > 0 then
+		local n = math.ceil(toGo)
+		if n ~= lastCount then
+			lastCount = n
+			showBanner(tostring(n), "Get under the shakes!", W.Sunny, 0.8)
+			Sounds.play("Tick")
+		end
+		left = math.ceil(endAt - goAt)
+	elseif lastCount > 0 then
+		lastCount = 0
+		showBanner("GO!", "Catch shakes, dodge junk food!", C.Good, 1.2)
+		Sounds.play("Ready")
+	end
+	clockLabel.Text = string.format("%s · WAVE %d/%d", Format.clock(left), wave, waves)
+	clockLabel.TextColor3 = if left <= 10 and toGo <= 0 then C.Bad else Color3.new(1, 1, 1)
+end
+
+-- Chrome -------------------------------------------------------------------------------------
+
+local stashed: { [GuiObject]: boolean } = {}
+local function setChrome(on: boolean)
+	Kit.hidePlayerList("shake", on)
+	local gui = screen
+	if not gui then
+		return
+	end
+	gui:SetAttribute("RunActive", on)
+	if on then
+		for _, name in CLUTTER do
+			local block = gui:FindFirstChild(name)
+			if block and block:IsA("GuiObject") and stashed[block] == nil then
+				stashed[block] = block.Visible
+				block.Visible = false
+			end
+		end
+	else
+		for block, was in stashed do
+			block.Visible = was
+		end
+		table.clear(stashed)
+	end
+end
+
+local function resetQuit()
+	quitArmed = false
+	Kit.setButton(quitButton, "X", C.SurfaceHi)
+	quitButton.Size = UDim2.fromOffset(30, 28)
+end
+
+local function hideFinish()
+	Kit.unfocus(finishCard)
+	if finishCard.Visible then
+		Kit.disappear(finishCard)
+	end
+end
+
+-- Finish card --------------------------------------------------------------------------------
+
+local function showFinish(p: { [string]: any }, won: boolean)
+	local s, t, best = num(p.score, score), num(p.target, target), num(p.best, 0)
+	local newBest = p.newBest == true and s > 0
+	finishTitle.Text = if won
+		then (if newBest then "NEW BEST!" else "SHAKE CHAMP!")
+		elseif p.why == "hearts" then "OUT OF HEARTS!"
+		else "SO CLOSE!"
+	finishTitle.TextColor3 = if won then C.Gold else W.Coral
+	finishSub.Text = string.format("Score %d  ·  Target %d", s, t)
+	finishBest.Text = if newBest then "Best: " .. s .. " (new!)" else "Best: " .. best
+	local cash = num(p.cash, 0)
+	if not won then
+		finishReward.Text = if p.why == "hearts"
+			then "Dodge the junk food! Catch " .. t .. " to win cash."
+			else "Catch " .. t .. " to win cash!"
+		finishReward.TextColor3 = C.Text
+	elseif cash > 0 then
+		finishReward.Text = (if p.pay == "repeat" then "Run again bonus +" else "+") .. Format.money(cash)
+		finishReward.TextColor3 = C.MoneyText
+	elseif p.pay == "resting" then
+		finishReward.Text = "Bonus is resting. Play again soon!"
+		finishReward.TextColor3 = C.Text
+	else
+		local wait = math.max(0, num(p.cooldownEnds, 0) - os.time())
+		finishReward.Text = "Full reward in " .. Format.clock(wait)
+		finishReward.TextColor3 = C.Text
+	end
+	finishCard.Visible = true
+	Kit.appear(finishCard, { from = 0.5, time = 0.35 })
+	Kit.focus(finishCard)
+	task.defer(function()
+		Kit.select(Kit.firstSelectable(finishCard))
+	end)
+	if won then
+		Kit.confetti(finishCard, { Count = if cash > 0 then 36 else 20, Origin = UDim2.fromScale(0.5, 0.2), ZIndex = 55 })
+		Sounds.play(if p.first == true then "CelebrateLegendary" else "Celebrate")
+		if cash > 0 then
+			Kit.countTo(finishReward, 0, cash, function(n: number)
+				return (if p.pay == "repeat" then "Run again bonus +" else "+") .. Format.money(n)
+			end, 0.9)
+		end
+	else
+		Sounds.play("Close")
+	end
+end
+
+-- Lifecycle ----------------------------------------------------------------------------------
+
+local function hide()
 	running = false
-	if root then
-		root.Visible = false
+	bannerToken += 1
+	banner.Visible = false
+	if stepConn then
+		stepConn:Disconnect()
+		stepConn = nil
+	end
+	setChrome(false)
+	if root.Visible then
+		Kit.disappear(root)
+	end
+end
+
+function ShakeHud.start(payload: { [string]: any }?)
+	if not screen then
+		return
+	end
+	local p: { [string]: any } = payload or {}
+	hideFinish()
+	running = true
+	score = 0
+	target = num(p.target, 25)
+	maxHearts = num(p.hearts, 3)
+	hearts = maxHearts
+	goAt = num(p.goAt, Workspace:GetServerTimeNow() + 3)
+	endAt = num(p.endAt, goAt + num(p.seconds, 60))
+	wave, waves = 1, num(p.waves, 4)
+	targetShown = false
+	lastCount = -1
+	resetQuit()
+	for _, child in heartsRow:GetChildren() do
+		if child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+	setHearts(hearts, false)
+	paintScore(false)
+	root.Visible = true
+	Kit.appear(root, { from = 0.6, time = 0.3 })
+	setChrome(true)
+	if not stepConn then
+		stepConn = RunService.RenderStepped:Connect(render)
+	end
+	render()
+end
+
+function ShakeHud.stop(payload: { [string]: any }?)
+	local was = running
+	if not root then
+		return
+	end
+	hide()
+	if was and payload and payload.reason == "quit" then
+		Popups.toast("Shake Catch ended", "info")
 	end
 end
 
 function ShakeHud.onNotify(payload: { [string]: any })
-	if payload.event == "start" then
+	if not screen or type(payload) ~= "table" then
+		return
+	end
+	local event = payload.event
+	if event == "start" then
 		ShakeHud.start(payload)
-	elseif payload.event == "stop" then
+	elseif event == "stop" then
 		ShakeHud.stop(payload)
+	elseif event == "win" or event == "lose" then
+		hide()
+		showFinish(payload, event == "win")
+	elseif not running then
+		return
+	elseif event == "wave" then
+		local n = num(payload.wave, 1)
+		if n > 1 then
+			local delay = math.max(0, num(payload.at, 0) - Workspace:GetServerTimeNow())
+			task.delay(delay, function()
+				if running then
+					wave = n
+				end
+			end)
+			local last = n >= num(payload.waves, waves)
+			showBanner(
+				if last then "FINAL WAVE!" else "WAVE " .. n .. "!",
+				if last then "Faster and faster!" else "Faster!",
+				if last then W.Coral else W.Sunny,
+				1.6,
+				delay
+			)
+			task.delay(delay, function()
+				if running then
+					Sounds.play("Ready")
+				end
+			end)
+		end
+	elseif event == "catch" then
+		score = num(payload.score, score)
+		paintScore(true)
+		if score >= target and not targetShown then
+			targetShown = true
+			showBanner("TARGET HIT!", "Keep catching for a best!", C.Gold, 1.6)
+			Sounds.play("Upgrade")
+		end
+	elseif event == "splat" then
+		setHearts(num(payload.hearts, hearts - 1), true)
+		Kit.pop(heartsRow, 1.2)
 	end
 end
 
@@ -108061,6 +111544,223 @@ function ShakeHud.onState(data: any)
 	if running and not (type(info) == "table" and info.running == true) then
 		ShakeHud.stop(nil)
 	end
+end
+
+-- Build --------------------------------------------------------------------------------------
+
+local function buildFinish(screenGui: ScreenGui)
+	finishCard = Kit.panel(screenGui, {
+		Name = "ShakeFinish",
+		Size = UDim2.fromOffset(420, 270),
+		Position = UDim2.fromScale(0.5, 0.48),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Visible = false,
+		ZIndex = 50,
+		Elevated = true,
+		StrokeColor = C.Gold,
+		StrokeThickness = 3,
+	})
+	Kit.icon(finishCard, "Star", 64, C.Gold, {
+		Position = UDim2.new(0.5, 0, 0, -30),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 52,
+	})
+	finishTitle = Kit.title(finishCard, {
+		Name = "Title",
+		Text = "SHAKE CHAMP!",
+		TextSize = 38,
+		TextColor3 = C.Gold,
+		Size = UDim2.new(1, -20, 0, 44),
+		Position = UDim2.fromOffset(10, 40),
+		ZIndex = 51,
+	})
+	finishSub = Kit.text(finishCard, {
+		Name = "Sub",
+		Text = "",
+		Font = F.UI,
+		TextSize = 18,
+		TextColor3 = C.Text,
+		Size = UDim2.new(1, -20, 0, 22),
+		Position = UDim2.fromOffset(10, 88),
+		ZIndex = 51,
+	})
+	finishBest = Kit.text(finishCard, {
+		Name = "Best",
+		Text = "",
+		Font = F.UI,
+		TextSize = 15,
+		TextColor3 = C.TextDim,
+		Size = UDim2.new(1, -20, 0, 20),
+		Position = UDim2.fromOffset(10, 112),
+		ZIndex = 51,
+	})
+	finishReward = Kit.number(finishCard, {
+		Name = "Reward",
+		Text = "",
+		TextSize = 24,
+		TextColor3 = C.MoneyText,
+		Size = UDim2.new(1, -20, 0, 32),
+		Position = UDim2.fromOffset(10, 140),
+		ZIndex = 51,
+	})
+	local again = Kit.button(finishCard, {
+		Name = "Again",
+		Text = "PLAY AGAIN",
+		Color = C.Good,
+		Font = F.Display,
+		TextSize = 20,
+		Size = UDim2.fromOffset(170, 50),
+		Position = UDim2.new(0.5, -8, 1, -18),
+		AnchorPoint = Vector2.new(1, 1),
+		ZIndex = 52,
+		Breathe = true,
+	}, function()
+		hideFinish()
+		action:FireServer({ action = "ModeStart", mode = "shake" })
+	end)
+	local home = Kit.button(finishCard, {
+		Name = "Home",
+		Text = "HOME",
+		Color = C.SurfaceHi,
+		Font = F.Display,
+		TextSize = 20,
+		Size = UDim2.fromOffset(150, 50),
+		Position = UDim2.new(0.5, 8, 1, -18),
+		AnchorPoint = Vector2.new(0, 1),
+		ZIndex = 52,
+	}, function()
+		hideFinish()
+		action:FireServer({ action = "Home" })
+	end)
+	Kit.selectable(again)
+	Kit.selectable(home)
+end
+
+function ShakeHud.init(screenGui: ScreenGui)
+	screen = screenGui
+	root = Kit.new("Frame", {
+		Name = "ShakeHud",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(ROOT_W, ROOT_H),
+		Position = UDim2.new(1, -ROOT_RIGHT, 0.5, ROOT_DY),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Visible = false,
+		ZIndex = 20,
+		Parent = screenGui,
+	})
+
+	-- Score pill with the quiet quit button on its right end.
+	local pill = Kit.hudGlass(root, {
+		Name = "Score",
+		Size = UDim2.fromOffset(PILL_W, 46),
+		Position = UDim2.new(0.5, 0, 0, 0),
+		AnchorPoint = Vector2.new(0.5, 0),
+	})
+	Kit.icon(pill, "Star", 26, C.Gold, { Position = UDim2.new(0, 10, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), ZIndex = 3 })
+	scoreLabel = Kit.hudText(pill, {
+		Name = "Value",
+		Text = "0 / 25",
+		Font = F.Number,
+		TextSize = 26,
+		StrokeThickness = 2,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -90, 1, 0),
+		Position = UDim2.fromOffset(44, 0),
+		ZIndex = 3,
+	})
+	quitButton = Kit.button(pill, {
+		Name = "Quit",
+		Text = "X",
+		Color = C.SurfaceHi,
+		TextSize = 14,
+		Size = UDim2.fromOffset(30, 28),
+		Position = UDim2.new(1, -8, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Radius = 14,
+		Depth = 2,
+		ZIndex = 4,
+	}, function()
+		if quitArmed then
+			resetQuit()
+			action:FireServer({ action = "ModeQuit" })
+			return
+		end
+		-- First tap arms it: "QUIT?" for a few seconds.
+		quitArmed = true
+		Kit.setButton(quitButton, "QUIT?", C.Bad)
+		Kit.tween(quitButton, 0.2, { Size = UDim2.fromOffset(64, 28) }, Enum.EasingStyle.Back)
+		task.delay(3, function()
+			if quitArmed then
+				resetQuit()
+			end
+		end)
+	end)
+	Kit.selectable(quitButton)
+
+	-- The bar toward the target.
+	local bar = Kit.new("Frame", {
+		Name = "TargetBar",
+		BackgroundColor3 = C.Well,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(BAR_W, 14),
+		Position = UDim2.new(0.5, 0, 0, 54),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Parent = root,
+	})
+	Kit.round(bar)
+	Kit.stroke(bar, 2, W.Ink)
+	barFill = Kit.new("Frame", {
+		Name = "Fill",
+		BackgroundColor3 = C.Gold,
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(0, 1),
+		Parent = bar,
+	})
+	Kit.round(barFill)
+
+	heartsRow = Kit.new("Frame", {
+		Name = "Hearts",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(200, 28),
+		Position = UDim2.new(0.5, 0, 0, 78),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Parent = root,
+	})
+	Kit.list(heartsRow, 6, true, Enum.HorizontalAlignment.Center)
+
+	clockLabel = Kit.hudText(root, {
+		Name = "Clock",
+		Text = "1:00 · WAVE 1/4",
+		Font = F.Display,
+		TextSize = 22,
+		Size = UDim2.new(1, 0, 0, 28),
+		Position = UDim2.fromOffset(0, 114),
+	})
+
+	-- The centre banner (count-in, waves, target).
+	banner = Kit.hudText(screenGui, {
+		Name = "ShakeBanner",
+		Text = "",
+		Font = F.Display,
+		TextSize = 64,
+		StrokeThickness = 4,
+		Size = UDim2.fromOffset(600, 76),
+		Position = UDim2.fromScale(0.5, 0.26),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Visible = false,
+		ZIndex = 30,
+	})
+	bannerSub = Kit.hudText(banner, {
+		Name = "Sub",
+		Text = "",
+		Font = F.Display,
+		TextSize = 24,
+		Size = UDim2.new(1, 0, 0, 30),
+		Position = UDim2.new(0, 0, 1, 2),
+		ZIndex = 30,
+	})
+
+	buildFinish(screenGui)
 end
 
 return ShakeHud
