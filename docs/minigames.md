@@ -156,3 +156,28 @@ full pack.
   `GameModes.hooks.rewarded` and marks the save dirty. Returns what was paid.
 - Saves: `profile.modes.x = { best, clears, lastRewardAt }` (DataService). The mode updates
   `best` and `clears` itself before paying.
+
+## Replay rewards and stars
+
+On top of the pack rule above, each mode pays a small capped bonus for strong runs. Every
+bonus comes out of the mode's `repeatCash` share, never restarts the full-pack cooldown and is
+capped per window (saved in `profile.modes.x`):
+
+| Mode | Tiers | Bonus | Cap |
+| --- | --- | --- | --- |
+| SHAKE CATCH | stars at 25 / 40 / 55 points | 2nd star 0.5, 3rd star 1.0 repeatCash, once per 30 min each | best stars saved (`stars`) |
+| POSE COPY | 12 / 16 / 20+ flexes (BRONZE / SILVER / GOLD POSER) | 0.5 / 0.75 / 1.0 repeatCash | 2.25 repeatCash per 5 min |
+| DUMBBELL BOWL | stars at 50 / 80 / 105 points | 0.2 / 0.3 / 0.5 repeatCash | 0.4 / 0.7 / 1.2 repeatCash per 5 min by stars reached |
+
+DUMBBELL BOWL also unlocks rack dumbbells by stars ever reached (`topStars`): 1-2 free, 3 at
+1 star, 4 at 2 stars and the gold-striped PRO (`BallChoice5`) at 3 stars; the server refuses
+locked picks. Games with two or more AFK auto-rolls pay nothing and don't count.
+
+## The player's own avatar does the moves
+
+No mode tints, glows or hides the player: the real R15 avatar is posed through
+`Fx.PlayerPose` (Motor6D or AnimationConstraint joints; `attach(character, layered?)` keeps
+the legs on their own walk animation). Other players see the same moves from a character
+attribute the server sets: `PoseFlex` (Pose Copy), `BowlFlex` + `BowlBall` (Dumbbell Bowl),
+each `"<move>#<n>"`, cleared on lobby, stop, leave and respawn. Mog Test does the same with
+its own result payloads.
