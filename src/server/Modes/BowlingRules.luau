@@ -26,8 +26,9 @@
 local BowlingRules = {}
 
 -- 54 wide: the lane in the middle, a decorative neighbouring lane on the left, bleachers
--- and a scoreboard on the right (World.BowlingLane).
-BowlingRules.ARENA = { x = -7000, y = 6, z = -7000, sizeX = 54, sizeZ = 110 }
+-- and a scoreboard on the right (World.BowlingLane). 150 long: the lobby lounge takes the
+-- 40 studs at the +Z end, behind the lane's approach.
+BowlingRules.ARENA = { x = -7000, y = 6, z = -7000, sizeX = 54, sizeZ = 150 }
 -- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
 BowlingRules.FALL_BELOW = 20
 
