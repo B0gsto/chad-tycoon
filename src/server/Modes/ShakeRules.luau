@@ -16,14 +16,16 @@
 	The run is passed with TARGET points: when the clock runs out, or when the hearts run out
 	after the target was already reached (outcome). Out of hearts below the target: "lose".
 
-	ARENA is where World.ShakeArena builds the arena (floor top centre and size in studs,
-	out over the sea away from the Parkour maps, the Mog stage and the Cardio track; tests/
-	minigames.luau keeps every arena clear of the others).
+	ARENA is where World.ShakeArena builds the arena (floor top centre of the 64 x 64 catch
+	court and the size in studs of everything walkable round it: the court, the lobby deck past
+	its +Z edge, the bleachers past +X and the Smoothie Bar past -Z), out over the sea away
+	from the Parkour maps, the Mog stage and the Cardio track; tests/minigames.luau keeps every
+	arena clear of the others.
 ]]
 
 local ShakeRules = {}
 
-ShakeRules.ARENA = { x = 7000, y = 6, z = -7000, sizeX = 64, sizeZ = 64 }
+ShakeRules.ARENA = { x = 7000, y = 6, z = -7000, sizeX = 96, sizeZ = 164 }
 -- Feet more than this far under the floor top: the player fell off and goes back to the spawn.
 ShakeRules.FALL_BELOW = 20
 
@@ -39,10 +41,10 @@ ShakeRules.REPEAT_GAP = 120
 ShakeRules.CATCH = { radius = 4.5, early = 0.3, late = 0.3 }
 -- Junk is judged a touch late (the server sees a dodging player where they were a moment ago).
 ShakeRules.JUNK = { radius = 3, early = 0, late = 0.2 }
--- The exit pad (World.Arena: +X / +Z corner, 5 studs in from both edges) and how far from it
--- no drop may land, so chasing a corner drop never walks the player out of a run (the exit
--- arch's posts stand inside this circle too).
-ShakeRules.EXIT = { x = ShakeRules.ARENA.x + ShakeRules.ARENA.sizeX / 2 - 5, z = ShakeRules.ARENA.z + ShakeRules.ARENA.sizeZ / 2 - 5 }
+-- The exit pad (World.ShakeArena: under the EXIT arch on the lobby deck's +X side, past the
+-- court's +Z edge) and how far from it no drop may land, so chasing a drop never walks the
+-- player out of a run.
+ShakeRules.EXIT = { x = ShakeRules.ARENA.x + 26, z = ShakeRules.ARENA.z + 61 }
 ShakeRules.EXIT_CLEAR = 10
 -- The server sees a player's position this late: about half the round trip plus a frame of
 -- replication (lagOf). Samples are stamped back by it so dodges count when they happened.
