@@ -4,10 +4,10 @@
 	Numbers live in Modes.PoseRules.ARENA; the shell (floor, spawn pad, exit arch) comes from
 	World.Arena. The deck is 104 studs wide: the 56-stud show in the middle, the green-room
 	lobby on the +X wing (the shell's EXIT arch lands in its +Z corner) and a TV-crew corner on
-	the -X wing. A sunny edge band and a white-and-pink railing run round the deck. Its own sea
-	surrounds it (World.Hub's ocean ends ~3000 studs from the hub): ocean tiles, a lagoon with
-	bobbing buoys, a candy-striped lighthouse island and a big green twin-peak island placed
-	to read from the stage and lobby views, palm islets, sandbars and clouds on the horizon.
+	the -X wing. A sunny edge band and a chunky pink-and-white railing run round the deck, with
+	a foam ring on the water round it. Its own sea surrounds it (World.Hub's ocean ends ~3000
+	studs from the hub): ocean tiles, a lagoon with bobbing buoys, three big palm islets close
+	in (placed to read from the stage and lobby views), far islands, sandbars and clouds.
 
 	A sunny posing show at the deck's -Z end: a raised stage with a sky-blue back wall and a
 	"POSE COPY" banner, two podiums side by side (the rival's "CHAD" on the left, the
@@ -16,21 +16,23 @@
 	colours (PoseRules.FLEXES; Fx.Pose lights the one being shown), "PodiumGlow" rings that
 	Fx.Pose tints, two spotlight towers, a pink runway from the spawn to the stage steps and
 	a judges' table on the left (three seated judges holding "10" paddles). The backdrop is an
-	opaque LED wall (sunset gradient bands, neon stars, a light bar of coloured cans) framed by
-	red curtains; confetti cannons sit in drums on the deck's front corners. The audience area
-	is a blue checker carpet behind a low "FAN ZONE" barrier, with a start mark round the spawn
+	opaque LED wall (blue under a navy top band, a few neon stars, a light bar of coloured cans)
+	framed by red curtains; confetti cannons sit in drums on the deck's front corners. The
+	audience area is a blue checker carpet behind a low barrier with pink "FAN ZONE" plates, a
+	start mark round the spawn
 	pad and two cushioned bleachers of blocky fans waving foam fingers. Every sign faces the
 	audience (+Z: SurfaceGui Face Back).
 
-	The green room (lobby, mint carpet, a velvet rope along the fan zone): a "POSE COPY"
-	marquee over a HOW TO PLAY board (three illustrated steps) at its -Z end, facing the lobby
-	spawn; on its +X side a Hollywood dressing mirror ("RehearsalMirror" glass, "PRACTICE"
-	sign) with the "RehearsalSpot" pad on a checker dance floor in front, and the YOUR BEST
-	board (SurfaceGui "BestBoard" with TextLabels Title, Best, Clears, Reward for the client to
-	fill); a pink sofa. A pink path of glowing chevrons leads from the spawn star to the
-	"StartPad" in front of the lit STAGE door at the lobby's inner edge (a glowing star disc
-	in a pink glow ring, with a "StartGlow" column, a PointLight and a "StartLabel" billboard;
-	Fx may hide them in play); past the door a pink path runs on to the stage steps.
+	The green room (lobby, mint carpet in a hot-pink border, a low candy kerb along the fan
+	zone): at its -Z end, flat-on to the lobby spawn, the YOUR BEST board (SurfaceGui
+	"BestBoard" with TextLabels Title, Best, Clears, Reward for the client to fill) on top of a
+	HOW TO PLAY board (three illustrated steps), both kept right of the stage view's edge; on
+	its +X side a Hollywood dressing mirror ("RehearsalMirror" glass, "PRACTICE" sign) with the
+	"RehearsalSpot" pad on a checker dance floor in front. A pink path of glowing chevrons
+	leads from the spawn star to the big "StartPad" in front of the lit STAGE door at the
+	lobby's inner edge (a glowing star disc in pink and navy rings, with a "StartGlow" column,
+	a PointLight and a "StartLabel" billboard; Fx may hide them in play); past the door a pink
+	path runs on to the stage steps.
 
 	build() -> Built: everything World.Arena.Base has ({ folder, floor, spawn, exit,
 	exitRadius, center, top }; spawn is the audience start mark, the fall-back respawn) plus
@@ -81,10 +83,12 @@ local LOBBY = {
 	SpawnZ = PoseRules.LOBBY.spawnZ,
 	MirrorZ = PoseRules.LOBBY.mirrorZ,
 	SpotX = PoseRules.LOBBY.spotX, -- the RehearsalSpot, in front of the mirror at the +X edge
-	BestZ = 7,
-	BoardZ = -20.5, -- front face of the HOW TO PLAY board
+	BoardZ = -16, -- front face of the HOW TO PLAY board (YOUR BEST sits on top of it)
+	BoardX0 = 33.6, -- the boards' -X edge: clear of the stage view's right edge
+	BoardX1 = 51.2,
 	PathZ = -1.2, -- centre line of the STAGE door and the path on to the stage steps
-	StartIn = 5.2, -- the START pad's x past X0 (in front of the STAGE door)
+	StartIn = 5.9, -- the START pad's x past X0 (in front of the STAGE door)
+	StartZ = 1.5, -- the START pad's z: a step toward the spawn, clear of the boards in view
 }
 local START_RADIUS = 3.5
 
@@ -177,7 +181,15 @@ local function shape(parent: Instance, name: string, color: Color3, rect: { numb
 	return f
 end
 
-local function caption(parent: Instance, name: string, text: string, color: Color3, rect: { number }, outline: Color3?): TextLabel
+local function caption(
+	parent: Instance,
+	name: string,
+	text: string,
+	color: Color3,
+	rect: { number },
+	outline: Color3?,
+	thickness: number?
+): TextLabel
 	local l = Instance.new("TextLabel")
 	l.Name = name
 	l.BackgroundTransparency = 1
@@ -192,7 +204,7 @@ local function caption(parent: Instance, name: string, text: string, color: Colo
 	l.Parent = parent
 	if outline then
 		local st = Instance.new("UIStroke")
-		st.Thickness = 3
+		st.Thickness = thickness or 3
 		st.Color = outline
 		st.Parent = l
 	end
@@ -210,18 +222,18 @@ end
 -- up to a gold "8" (copy 8 to pass).
 local function howToPlay(gui: SurfaceGui)
 	local back = shape(gui, "Back", W.Navy, { 0, 0, 1, 1 })
-	caption(back, "Heading", "HOW TO PLAY", W.Sunny, { 0.06, 0.015, 0.88, 0.2 }, W.Ink)
-	-- Short captions so the words come out big: two lines each at most.
+	caption(back, "Heading", "HOW TO PLAY", W.Sunny, { 0.05, 0.01, 0.9, 0.21 }, W.Ink, 5)
+	-- One or two short words each, so the letters come out big from the spawn.
 	local steps = {
-		{ color = W.Grape, text = "WATCH THE RIVAL" },
-		{ color = W.HotPink, text = "COPY WITH 4 BUTTONS" },
-		{ color = W.Gold, text = "COPY 8 TO PASS!" },
+		{ color = W.Grape, text = "WATCH!" },
+		{ color = W.HotPink, text = "COPY!" },
+		{ color = W.Gold, text = "8 TO PASS!" },
 	}
 	local arts: { Frame } = {}
 	for i, step in steps do
 		local card = shape(back, "Step" .. i, W.White, { 0.035 + (i - 1) * 0.3225, 0.235, 0.3, 0.735 }, 0.08)
 		local edge = Instance.new("UIStroke")
-		edge.Thickness = 6
+		edge.Thickness = 8
 		edge.Color = step.color
 		edge.Parent = card
 		local badge = shape(card, "Badge", step.color, { -0.06, -0.06, 0.24, 0.24 }, 0.5, 3)
@@ -240,7 +252,7 @@ local function howToPlay(gui: SurfaceGui)
 		square.AspectRatio = 1
 		square.Parent = art
 		arts[i] = art
-		caption(card, "Caption", step.text, W.Navy, { 0.04, 0.56, 0.92, 0.42 })
+		caption(card, "Caption", step.text, step.color, { 0.05, 0.58, 0.9, 0.38 }, W.Navy, 4)
 	end
 
 	-- 1: the rival (purple vest, Roblox-yellow skin) hitting a double biceps.
@@ -291,15 +303,17 @@ local function howToPlay(gui: SurfaceGui)
 	caption(grow, "Pass", "PASS!", W.HotPink, { 0.6, 0.5, 0.4, 0.2 }, W.Navy)
 end
 
--- The YOUR BEST board's face: TextLabels Title, Best, Clears, Reward right under the
--- SurfaceGui (the client finds them by name and fills them).
+-- The YOUR BEST board's face, a wide strip: a sunny title block on the left and three
+-- big lines on the right. TextLabels Title, Best, Clears, Reward right under the SurfaceGui
+-- (the client finds them by name and fills them).
 local function bestBoard(gui: SurfaceGui)
 	shape(gui, "Back", W.Navy, { 0, 0, 1, 1 })
-	shape(gui, "TitleBar", W.Sunny, { 0, 0, 1, 0.27 })
-	caption(gui, "Title", "YOUR BEST", W.Navy, { 0.05, 0.03, 0.9, 0.21 })
-	caption(gui, "Best", "BEST: --", W.White, { 0.06, 0.32, 0.88, 0.19 }, W.Ink)
-	caption(gui, "Clears", "CLEARS: --", W.White, { 0.06, 0.53, 0.88, 0.19 }, W.Ink)
-	caption(gui, "Reward", "REWARD: --", W.Sunny, { 0.06, 0.75, 0.88, 0.19 }, W.Ink)
+	shape(gui, "TitleBlock", W.Sunny, { 0, 0, 0.34, 1 })
+	shape(gui, "TitleEdge", W.HotPink, { 0.34, 0, 0.012, 1 })
+	caption(gui, "Title", "YOUR BEST", W.Navy, { 0.02, 0.06, 0.3, 0.88 }, W.White, 4)
+	caption(gui, "Best", "BEST: --", W.White, { 0.38, 0.05, 0.59, 0.29 }, W.Ink, 4)
+	caption(gui, "Clears", "CLEARS: --", W.White, { 0.38, 0.355, 0.59, 0.29 }, W.Ink, 4)
+	caption(gui, "Reward", "REWARD: --", W.Sunny, { 0.38, 0.66, 0.59, 0.29 }, W.Ink, 4)
 end
 
 -- Props ------------------------------------------------------------------------------------
@@ -480,10 +494,40 @@ local function buildSea(parent: Instance, cx: number, cz: number)
 		end
 	end
 
-	-- Horizon landmarks, placed in the gaps the stage and lobby views see the sea through
-	-- (beside the LED wall's right edge, over the mirror and the YOUR BEST board, and left of
-	-- the wall). `dome` is a grass hill: a ball sunk in the sea, `top` studs above the water.
-	local function dome(name: string, diameter: number, top: number, x: number, z: number, color: Color3)
+	-- Foam round the deck at the waterline: a bright ring hugging the hull and a softer one
+	-- out past it (wide enough to show past the deck's lip from the lobby view).
+	local hx, hz = PoseRules.ARENA.sizeX / 2, PoseRules.ARENA.sizeZ / 2
+	local function foamRing(name: string, inner: number, outer: number, y: number, transparency: number)
+		local w = outer - inner
+		for _, side in { -1, 1 } do
+			for _, along in { "x", "z" } do
+				local size = if along == "x" then Vector3.new(2 * (hx + outer), 0.2, w) else Vector3.new(w, 0.2, 2 * (hz + inner))
+				local offset = if along == "x"
+					then Vector3.new(0, 0, side * (hz + inner + w / 2))
+					else Vector3.new(side * (hx + inner + w / 2), 0, 0)
+				make("Part", {
+					Name = name,
+					Size = size,
+					CFrame = CFrame.new(cx + offset.X, y, cz + offset.Z),
+					Color = W.White,
+					Transparency = transparency,
+					CanCollide = false,
+					CanQuery = false,
+					CanTouch = false,
+					CastShadow = false,
+					Parent = sea,
+				})
+			end
+		end
+	end
+	foamRing("DeckFoam", 0.5, 5, OCEAN_TOP + 0.35, 0.15)
+	foamRing("DeckFoamOuter", 5, 16, OCEAN_TOP + 0.3, 0.6)
+
+	-- Three big palm islets close in, each in a gap the views see the sea through: east of
+	-- the lobby (the lobby view, past the railing), and either side of the LED wall (the
+	-- stage view). Sand on a foam ring and shallows, a grass knoll, palms and a beach
+	-- umbrella. `turn` spins the layout so the three don't look stamped.
+	local function knoll(name: string, diameter: number, top: number, x: number, z: number, color: Color3)
 		make("Part", {
 			Name = name,
 			Shape = Enum.PartType.Ball,
@@ -496,68 +540,38 @@ local function buildSea(parent: Instance, cx: number, cz: number)
 			Parent = sea,
 		})
 	end
-	local function tower(
-		name: string,
-		diameter: number,
-		y0: number,
-		y1: number,
-		x: number,
-		z: number,
-		color: Color3,
-		material: Enum.Material?
-	)
-		local part = flat(name, diameter / 2, y1, y1 - y0, color, x, z)
-		part.CanCollide = false
-		part.Material = material or Enum.Material.SmoothPlastic
-		part.CastShadow = true
-	end
-	-- The lighthouse island: a sandy isle with a grass knoll and a rock, and a fat candy-striped
-	-- lighthouse with a navy gallery, a glowing lamp room and a red dome roof.
-	do
-		local x, z = cx + 158, cz - 240
-		flat("LighthouseShallows", 50, OCEAN_TOP + 0.15, 0.2, W.Shallows, x, z)
-		flat("LighthouseIsland", 34, 1.4, 5, W.Sand, x, z)
-		dome("LighthouseKnoll", 46, 9, x - 8, z + 6, W.Grass)
-		tower("LighthouseRock", 22, 0, 7, x + 4, z - 4, W.Steel)
-		local base = 7
-		for i = 1, 6 do
-			local d = 17 - i * 0.8
-			tower("LighthouseBand", d, base + (i - 1) * 8, base + i * 8, x + 4, z - 4, if i % 2 == 1 then W.RainbowRed else W.White)
+	local islets: { { dx: number, dz: number, r: number, color: Color3, turn: number } } = {
+		{ dx = 82, dz = -44, r = 17, color = W.HotPink, turn = 0.4 },
+		{ dx = -70, dz = -80, r = 18, color = W.Sunny, turn = 2.2 },
+		{ dx = 72, dz = -84, r = 15, color = W.RainbowBlue, turn = 4.1 },
+	}
+	for i, isle in islets do
+		local x, z, r, turn = cx + isle.dx, cz + isle.dz, isle.r, isle.turn
+		flat("IsletShallows", r + 12, OCEAN_TOP + 0.15, 0.2, W.Shallows, x, z)
+		local foam = flat("IsletFoam", r + 3, OCEAN_TOP + 0.3, 0.2, W.White, x, z)
+		foam.Transparency = 0.2
+		foam.CanCollide = false
+		flat("Islet", r, 1.2, 4, W.Sand, x, z)
+		knoll("IsletKnoll", r * 1.3, 9, x - math.cos(turn) * r * 0.25, z - math.sin(turn) * r * 0.25, W.Grass)
+		for k, spot in { { 0.55, 0.3, 26 }, { 0.6, 1.5, 21 } } do
+			local a = turn + spot[2]
+			palm(
+				sea,
+				CFrame.new(x + math.cos(a) * r * spot[1], 1.2, z + math.sin(a) * r * spot[1]) * CFrame.Angles(0, a + k, 0),
+				spot[3],
+				0.3 + 0.1 * k
+			)
 		end
-		local top = base + 48
-		tower("LighthouseGallery", 16, top, top + 1.2, x + 4, z - 4, W.Navy)
-		tower("LighthouseLamp", 9, top + 1.2, top + 7, x + 4, z - 4, W.Sunny, Enum.Material.Neon)
-		make("Part", {
-			Name = "LighthouseRoof",
-			Shape = Enum.PartType.Ball,
-			Size = Vector3.one * 12,
-			CFrame = CFrame.new(x + 4, top + 7, z - 4),
-			Color = W.RainbowRed,
-			CanCollide = false,
-			Parent = sea,
-		})
-		palm(sea, CFrame.new(x - 20, 1.4, z + 14) * CFrame.Angles(0, 2.2, 0), 22, 0.35)
-	end
-	-- The twin-peak island left of the stage: two grass domes on a wide sand ring with palms.
-	do
-		local x, z = cx - 304, cz - 312
-		flat("PeakShallows", 124, OCEAN_TOP + 0.15, 0.2, W.Shallows, x, z)
-		flat("PeakIsland", 100, 1.4, 5, W.Sand, x, z)
-		dome("PeakHill", 150, 62, x, z, W.Grass)
-		dome("PeakHill", 96, 38, x - 48, z - 20, W.GrassDark)
-		dome("PeakHill", 70, 26, x + 30, z - 50, W.GrassDark)
-		for i, spot in { { 58, 63 }, { 0, 88 }, { 82, 22 } } do
-			palm(sea, CFrame.new(x + spot[1], 1.4, z + spot[2]) * CFrame.Angles(0, i * 1.7, 0), 26 + i * 3, 0.3)
+		-- A beach umbrella on the sand toward the deck: a white pole and a two-tone canopy.
+		local ux, uz = x - math.sign(isle.dx) * r * 0.55, z + r * 0.35
+		local pole = flat("UmbrellaPole", 0.3, 9.6, 8.4, W.White, ux, uz)
+		pole.CanCollide = false
+		flat("UmbrellaCanopy", 5, 9.9, 0.8, isle.color, ux, uz).CanCollide = false
+		flat("UmbrellaTop", 2.2, 10.4, 0.6, W.White, ux, uz).CanCollide = false
+		if i == 1 then
+			-- A beach ball beside the umbrella on the lobby's islet.
+			knoll("IsletBall", 3, 4.4, ux + 3.5, uz - 1, W.Sunny)
 		end
-	end
-	-- A palm islet nearer in, over the lobby's YOUR BEST board.
-	do
-		local x, z = cx + 130, cz - 130
-		flat("IsletShallows", 26, OCEAN_TOP + 0.15, 0.2, W.Shallows, x, z)
-		flat("Islet", 16, 1.4, 4, W.Sand, x, z)
-		dome("IsletHill", 20, 7, x, z, W.Grass)
-		palm(sea, CFrame.new(x - 5, 3.8, z + 3) * CFrame.Angles(0, 0.8, 0), 20, 0.35)
-		palm(sea, CFrame.new(x + 6, 2.5, z - 4) * CFrame.Angles(0, 3.4, 0), 16, 0.45)
 	end
 
 	for _, c in
@@ -649,34 +663,30 @@ function PoseStage.build(): Built
 	sign(banner, AUDIENCE, "POSE COPY", W.Navy, 40, W.White)
 	box("PoseBannerTrim", Vector3.new(28.8, 0.4, 0.7), CFrame.new(cx, bannerY - 2.9, wallZ + 0.85), W.HotPink, Enum.Material.Neon)
 
-	-- The LED backdrop: sunset bands from sky blue (behind the chads) to deep navy under the
-	-- banner, thin panel seams, neon stars, red curtains at the sides, a valance and a light
-	-- bar of coloured cans on top. All opaque: the wall reads as a screen, not glass.
+	-- The LED backdrop: one calm blue screen (the chads and the podiums pop against it) under
+	-- a navy band behind the banner, a few neon stars, red curtains at the sides, a valance
+	-- and a light bar of coloured cans on top. All opaque: the wall reads as a screen.
 	local face = wallZ + 0.55
-	local bands = { W.SkyBlue, W.RainbowBlue, W.Blue, W.Grape, W.Navy }
-	local bandH = STAGE.WallH / #bands
-	for i, color in bands do
-		box("BackdropBand", Vector3.new(STAGE.HalfW * 2 - 2, bandH, 0.1), CFrame.new(cx, deckTop + bandH * (i - 0.5), face), color)
-	end
-	for i = -4, 4 do
-		local seam = box(
-			"BackdropSeam",
-			Vector3.new(0.15, STAGE.WallH, 0.12),
-			CFrame.new(cx + i * 4.4, deckTop + STAGE.WallH / 2, face + 0.02),
-			W.Ink
-		)
-		seam.Transparency = 0.6
-		seam.CanCollide = false
-	end
+	local lowH = STAGE.WallH * 0.66
+	box("BackdropBand", Vector3.new(STAGE.HalfW * 2 - 2, lowH, 0.1), CFrame.new(cx, deckTop + lowH / 2, face), W.Blue)
+	box(
+		"BackdropBand",
+		Vector3.new(STAGE.HalfW * 2 - 2, STAGE.WallH - lowH, 0.1),
+		CFrame.new(cx, deckTop + (STAGE.WallH + lowH) / 2, face),
+		W.Navy
+	)
+	box(
+		"BackdropStripe",
+		Vector3.new(STAGE.HalfW * 2 - 2, 0.35, 0.12),
+		CFrame.new(cx, deckTop + lowH, face + 0.02),
+		W.Sunny,
+		Enum.Material.Neon
+	)
 	local stars = {
-		{ x = -14, y = 13.5, color = W.Sunny, size = 1.6 },
-		{ x = -9.5, y = 11, color = W.White, size = 1.0 },
-		{ x = -15.5, y = 7.5, color = W.White, size = 0.9 },
-		{ x = 10, y = 12.5, color = W.Sunny, size = 1.4 },
-		{ x = 15, y = 9.5, color = W.White, size = 1.0 },
-		{ x = 13.5, y = 15, color = W.Pink, size = 1.1 },
-		{ x = -11, y = 16, color = W.Pink, size = 1.0 },
-		{ x = 8, y = 16.2, color = W.White, size = 0.8 },
+		{ x = -14, y = 9.5, color = W.Sunny, size = 1.6 },
+		{ x = 14, y = 9, color = W.Sunny, size = 1.6 },
+		{ x = -16, y = 4.5, color = W.White, size = 1.0 },
+		{ x = 16, y = 5, color = W.White, size = 1.0 },
 	}
 	for _, star in stars do
 		local pos = CFrame.new(cx + star.x, deckTop + star.y, face + 0.13)
@@ -692,13 +702,13 @@ function PoseStage.build(): Built
 		end
 	end
 	for _, side in { -1, 1 } do
-		for f = 0, 4 do
+		for f = 0, 2 do
 			disc(
 				"Curtain",
-				1.5,
+				1.7,
 				STAGE.WallH + 1,
-				Vector3.new(cx + side * (STAGE.HalfW - 0.6 - f * 1.15), deckTop + (STAGE.WallH + 1) / 2, wallZ + 1.3 + (f % 2) * 0.35),
-				if f % 2 == 0 then W.RainbowRed else W.Coral,
+				Vector3.new(cx + side * (STAGE.HalfW - 0.7 - f * 1.3), deckTop + (STAGE.WallH + 1) / 2, wallZ + 1.3 + (f % 2) * 0.35),
+				W.RainbowRed,
 				Enum.Material.Fabric
 			)
 		end
@@ -802,15 +812,20 @@ function PoseStage.build(): Built
 	}
 	for _, pod in podiums do
 		local p = pod.pos
+		-- A navy plinth under each podium and a navy band round its middle: dark outlines so
+		-- the sunny and purple discs stand off the sky-blue deck.
+		disc("PodiumPlinth", STAGE.PodiumD + 3, 0.3, Vector3.new(p.X, deckTop + 0.15, p.Z), W.Navy)
 		disc(pod.name, STAGE.PodiumD, STAGE.PodiumH, Vector3.new(p.X, deckTop + STAGE.PodiumH / 2, p.Z), pod.color)
+		local band = disc("PodiumBand", STAGE.PodiumD + 0.3, 0.35, Vector3.new(p.X, deckTop + 0.55, p.Z), W.Navy)
+		band.CanCollide = false
 		-- A bright outline: a fat white neon lip just under the podium's top edge (Fx.Pose
-		-- tints it) and a sunny neon ring on the deck round its foot.
+		-- tints it) and a sunny neon ring on the navy plinth round its foot.
 		local glow =
 			disc("PodiumGlow", STAGE.PodiumD + 1.2, 0.5, Vector3.new(p.X, deckTop + STAGE.PodiumH - 0.32, p.Z), W.White, Enum.Material.Neon)
 		glow:SetAttribute("Side", if pod.name == "RivalPad" then "rival" else "player")
-		local foot = disc("PodiumFootGlow", STAGE.PodiumD + 1.8, 0.12, Vector3.new(p.X, deckTop + 0.12, p.Z), W.Sunny, Enum.Material.Neon)
+		local foot = disc("PodiumFootGlow", STAGE.PodiumD + 1.8, 0.12, Vector3.new(p.X, deckTop + 0.33, p.Z), W.Sunny, Enum.Material.Neon)
 		foot.CanCollide = false
-		local plate = box("PodiumPlate", Vector3.new(4, 1, 0.2), CFrame.new(p.X, deckTop + 0.7, p.Z + STAGE.PodiumD / 2 + 0.05), W.White)
+		local plate = box("PodiumPlate", Vector3.new(4, 1, 0.2), CFrame.new(p.X, deckTop + 0.85, p.Z + STAGE.PodiumD / 2 + 0.2), W.White)
 		plate.CanCollide = false
 		sign(plate, AUDIENCE, pod.text, pod.color)
 	end
@@ -990,11 +1005,16 @@ function PoseStage.build(): Built
 	for _, side in { -1, 1 } do
 		local x0, x1 = cx + side * 4.5, cx + side * 21
 		local midX, len = (x0 + x1) / 2, math.abs(x1 - x0)
-		-- A solid panel on a navy plinth (no posts): one clean band of lettering.
+		-- A solid panel on a navy plinth (no posts), with a short hot-pink "FAN ZONE" plate on
+		-- its upper half near the runway, where the stage view keeps it whole.
 		box("FanBarrierBase", Vector3.new(len, 0.5, 1), CFrame.new(midX, top + 0.25, barrierZ), W.Navy)
 		local panel = box("FanBarrier", Vector3.new(len, 2.6, 0.4), CFrame.new(midX, top + 1.8, barrierZ), W.White)
-		sign(panel, AUDIENCE, "FAN ZONE", W.Navy, 30, W.White)
 		sign(panel, Enum.NormalId.Front, "GO CHAD GO!", W.Blue, 30)
+		local plateX = cx + side * 8.6
+		box("FanZoneEdge", Vector3.new(7.6, 2.2, 0.15), CFrame.new(plateX, top + 2.05, barrierZ + 0.27), W.Navy)
+		local plate = box("FanZonePlate", Vector3.new(7.2, 1.8, 0.15), CFrame.new(plateX, top + 2.05, barrierZ + 0.38), W.HotPink)
+		plate.CanCollide = false
+		sign(plate, AUDIENCE, "FAN ZONE", W.White, 40, W.Navy)
 		box("FanBarrierRail", Vector3.new(len + 0.4, 0.4, 0.6), CFrame.new(midX, top + 3.3, barrierZ), W.HotPink)
 	end
 
@@ -1091,61 +1111,50 @@ function PoseStage.build(): Built
 	local gw, gd = gx1 - gx0, a.sizeZ - 0.4
 	local gmx = (gx0 + gx1) / 2
 	box("GreenRoomCarpet", Vector3.new(gw, 0.04, gd), CFrame.new(gmx, top + 0.02, cz), W.Mint)
+	-- A bold hot-pink border with a white pinstripe inside it, so the mint reads as a rug.
+	local BORDER = 1.6
 	for _, side in { -1, 1 } do
-		box("GreenRoomStripe", Vector3.new(gw - 2, 0.03, 0.35), CFrame.new(gmx, top + 0.055, cz + side * (gd / 2 - 1)), W.White)
-		box("GreenRoomStripe", Vector3.new(0.35, 0.03, gd - 2), CFrame.new(gmx + side * (gw / 2 - 1), top + 0.055, cz), W.White)
+		box("GreenRoomBorder", Vector3.new(gw, 0.03, BORDER), CFrame.new(gmx, top + 0.055, cz + side * (gd - BORDER) / 2), W.HotPink)
+		box("GreenRoomBorder", Vector3.new(BORDER, 0.03, gd), CFrame.new(gmx + side * (gw - BORDER) / 2, top + 0.055, cz), W.HotPink)
+		local inset = BORDER + 0.5
+		box("GreenRoomStripe", Vector3.new(gw - 2 * inset, 0.03, 0.3), CFrame.new(gmx, top + 0.055, cz + side * (gd / 2 - inset)), W.White)
+		box("GreenRoomStripe", Vector3.new(0.3, 0.03, gd - 2 * inset), CFrame.new(gmx + side * (gw / 2 - inset), top + 0.055, cz), W.White)
 	end
 
-	-- Velvet rope between the fan zone and the green room (open at the path to the stage).
+	-- A low candy kerb between the fan zone and the green room (open at the STAGE door): a
+	-- hot-pink block with a white cap, knee high so it never blocks the view.
 	local ropeX = gx0 - 0.3
-	local ropeZs = { 4, 7.8, 11.6, 15.4, 19.2, 22.8 }
-	for i, dz in ropeZs do
-		local z = cz + dz
-		disc("RopeFoot", 1.4, 0.3, Vector3.new(ropeX, top + 0.15, z), W.Gold)
-		disc("RopePost", 0.4, 3.2, Vector3.new(ropeX, top + 1.6, z), W.Gold)
-		ball("RopeKnob", 0.7, Vector3.new(ropeX, top + 3.3, z), W.Gold)
-		local nextZ = ropeZs[i + 1]
-		if nextZ then
-			make("Part", {
-				Name = "VelvetRope",
-				Shape = CYLINDER,
-				Size = Vector3.new(nextZ - dz, 0.3, 0.3),
-				CFrame = CFrame.new(ropeX, top + 2.7, cz + (dz + nextZ) / 2) * Common.ALONG_Z,
-				Color = W.RainbowRed,
-				Material = Enum.Material.Fabric,
-				CanCollide = false,
-				Parent = folder,
-			})
-		end
+	for _, span in { { 3.4, a.sizeZ / 2 - 0.4 }, { -(a.sizeZ / 2 - 0.4), -5.8 } } do
+		local z0, z1 = cz + span[1], cz + span[2]
+		box("LobbyKerb", Vector3.new(0.8, 0.7, z1 - z0), CFrame.new(ropeX, top + 0.35, (z0 + z1) / 2), W.HotPink)
+		box("LobbyKerbCap", Vector3.new(1, 0.2, z1 - z0), CFrame.new(ropeX, top + 0.8, (z0 + z1) / 2), W.White)
 	end
 
-	-- The marquee and the HOW TO PLAY board at the -Z end, facing the lobby spawn. Two navy
-	-- posts crowned with gold stars carry both.
+	-- The boards at the -Z end, flat-on to the lobby spawn: the YOUR BEST strip on top of the
+	-- HOW TO PLAY board, both in white frames on two navy posts, with a gold star on top.
+	-- They start at BoardX0, so the stage view's right edge stays clear of them.
 	local boardZ = cz + LOBBY.BoardZ
+	local bx0, bx1 = cx + LOBBY.BoardX0, cx + LOBBY.BoardX1
+	local BX, BW = (bx0 + bx1) / 2, bx1 - bx0
+	local howY, howH = top + 7.2, 11.2
+	local bestY, bestH = top + 16.2, 5.4
 	for _, side in { -1, 1 } do
-		local x = LX + side * 11.2
-		box("HowToPost", Vector3.new(0.9, 20, 0.9), CFrame.new(x, top + 10, boardZ - 0.9), W.Navy)
-		star("PostStar", 2, CFrame.new(x, top + 20.9, boardZ - 0.9), W.Sunny)
+		box(
+			"HowToPost",
+			Vector3.new(0.9, bestY + bestH / 2 - top, 0.9),
+			CFrame.new(BX + side * (BW / 2 - 1.2), (top + bestY + bestH / 2) / 2, boardZ - 0.9),
+			W.Navy
+		)
 	end
-	box("HowToFrame", Vector3.new(21.8, 13.2, 0.5), CFrame.new(LX, top + 8, boardZ - 0.45), W.White)
-	local howTo = box("HowToBoard", Vector3.new(21, 12.4, 0.4), CFrame.new(LX, top + 8, boardZ - 0.2), W.Navy)
+	box("HowToFrame", Vector3.new(BW, howH, 0.5), CFrame.new(BX, howY, boardZ - 0.45), W.White)
+	local howTo = box("HowToBoard", Vector3.new(BW - 0.6, howH - 0.6, 0.4), CFrame.new(BX, howY, boardZ - 0.2), W.Navy)
 	howToPlay(surface(howTo, AUDIENCE, 32, "HowToPlay"))
-	box("HowToTrim", Vector3.new(21.8, 0.35, 0.6), CFrame.new(LX, top + 1.45, boardZ - 0.4), W.HotPink, Enum.Material.Neon)
-	local marqueeY = top + 17.4
-	box("MarqueeBorder", Vector3.new(18.4, 5.4, 0.5), CFrame.new(LX, marqueeY, boardZ - 0.5), W.HotPink)
-	local marquee = box("MarqueeSign", Vector3.new(17, 4.2, 0.6), CFrame.new(LX, marqueeY, boardZ - 0.35), W.Sunny)
-	sign(marquee, AUDIENCE, "POSE COPY", W.Navy, 40, W.White)
-	for k = 0, 8 do
-		local x = LX - 8.6 + k * 2.15
-		for _, dy in { -2.4, 2.4 } do
-			ball("MarqueeBulb", 0.55, Vector3.new(x, marqueeY + dy, boardZ - 0.15), BULB, Enum.Material.Neon)
-		end
-	end
-	for _, side in { -1, 1 } do
-		for _, dy in { -0.9, 0.9 } do
-			ball("MarqueeBulb", 0.55, Vector3.new(LX + side * 8.95, marqueeY + dy, boardZ - 0.15), BULB, Enum.Material.Neon)
-		end
-	end
+	box("HowToTrim", Vector3.new(BW, 0.35, 0.6), CFrame.new(BX, howY - howH / 2 - 0.1, boardZ - 0.4), W.HotPink, Enum.Material.Neon)
+	box("BestFrame", Vector3.new(BW, bestH, 0.5), CFrame.new(BX, bestY, boardZ - 0.45), W.HotPink)
+	local bestFace = box("BestBoardFace", Vector3.new(BW - 0.6, bestH - 0.6, 0.4), CFrame.new(BX, bestY, boardZ - 0.2), W.Navy)
+	local board = surface(bestFace, AUDIENCE, 30, "BestBoard")
+	bestBoard(board)
+	star("BestStar", 2.6, CFrame.new(BX, bestY + bestH / 2 + 1.1, boardZ - 0.45), W.Sunny)
 
 	-- The rehearsal mirror on the +X edge, facing into the lobby: a pink Hollywood frame with
 	-- warm bulbs on a navy plinth (four swatches in the flex colours: the buttons work here),
@@ -1192,64 +1201,19 @@ function PoseStage.build(): Built
 		foot.CanCollide = false
 	end
 
-	-- The YOUR BEST board on the +X edge, past the mirror.
-	local bz = cz + LOBBY.BestZ
-	box("BestFrame", Vector3.new(0.5, 8.2, 10.8), CFrame.new(mx + 0.2, top + 6.2, bz), W.HotPink)
-	local bestFace = box("BestBoardFace", Vector3.new(0.4, 7.4, 10), CFrame.new(mx, top + 6.2, bz), W.Navy)
-	local board = surface(bestFace, WEST, 30, "BestBoard")
-	bestBoard(board)
-	for _, side in { -1, 1 } do
-		box("BestLeg", Vector3.new(0.6, 2.2, 0.6), CFrame.new(mx + 0.2, top + 1.1, bz + side * 4.6), W.Navy)
-	end
-	-- A gold star on top, in the board's plane (a quarter turn about Y puts the star's XY
-	-- plane along Z).
-	star("BestStar", 2.2, CFrame.new(mx + 0.2, top + 11.1, bz) * Common.ALONG_Z, W.Sunny)
-
 	-- The rehearsal dance floor under the RehearsalSpot: a white square with pink checker
 	-- tiles (corners and centre).
 	local floorY = top + 0.05
+	box("DanceFloorBorder", Vector3.new(10.8, 0.05, 10.8), CFrame.new(spotPos.X, floorY - 0.005, mz), W.Blue)
 	box("DanceFloor", Vector3.new(9.4, 0.06, 9.4), CFrame.new(spotPos.X, floorY, mz), W.White)
 	for _, t in { { -1, -1 }, { 1, -1 }, { 0, 0 }, { -1, 1 }, { 1, 1 } } do
 		local tile = box("DanceTile", Vector3.new(3, 0.04, 3), CFrame.new(spotPos.X + t[1] * 3.1, floorY + 0.04, mz + t[2] * 3.1), W.Pink)
 		tile.CanCollide = false
 	end
 
-	-- Green-room comforts: a pink sofa facing the dance floor and a side table with a mini
-	-- dumbbell, back toward the HOW TO PLAY board.
-	local sofa = CFrame.new(gx0 + 2.8, top, mz - 5)
-	box("Sofa", Vector3.new(3.2, 1.2, 7.2), sofa * CFrame.new(0, 0.6, 0), W.HotPink, Enum.Material.Fabric)
-	box("SofaBack", Vector3.new(0.9, 3, 7.2), sofa * CFrame.new(-1.15, 1.5, 0), W.HotPink, Enum.Material.Fabric)
-	for _, side in { -1, 1 } do
-		box("SofaArm", Vector3.new(3.2, 2, 0.8), sofa * CFrame.new(0, 1, side * 3.2), W.HotPink, Enum.Material.Fabric)
-		box("SofaCushion", Vector3.new(2.3, 0.5, 2.7), sofa * CFrame.new(0.35, 1.45, side * 1.4), W.Pink, Enum.Material.Fabric)
-	end
-	local tablePos = Vector3.new(gx0 + 2.8, top, mz - 10.6)
-	disc("SideTableFoot", 1.6, 0.2, tablePos + Vector3.new(0, 0.1, 0), W.Steel)
-	disc("SideTableLeg", 0.4, 2, tablePos + Vector3.new(0, 1.1, 0), W.Steel)
-	disc("SideTable", 2.4, 0.2, tablePos + Vector3.new(0, 2.2, 0), W.White)
-	make("Part", {
-		Name = "MiniDumbbellBar",
-		Shape = CYLINDER,
-		Size = Vector3.new(1.5, 0.22, 0.22),
-		CFrame = CFrame.new(tablePos + Vector3.new(0, 2.6, 0)) * Common.ALONG_Z,
-		Color = W.Steel,
-		CanCollide = false,
-		Parent = folder,
-	})
-	for _, dz in { -0.6, 0.6 } do
-		make("Part", {
-			Name = "MiniDumbbell",
-			Shape = CYLINDER,
-			Size = Vector3.new(0.35, 0.75, 0.75),
-			CFrame = CFrame.new(tablePos + Vector3.new(0, 2.6, dz)) * Common.ALONG_Z,
-			Color = W.HotPink,
-			CanCollide = false,
-			Parent = folder,
-		})
-	end
-
 	-- The lobby spawn: a sunny star mark facing the HOW TO PLAY board.
 	local lobbyPos = Vector3.new(LX, top, cz + LOBBY.SpawnZ)
+	disc("LobbyMarkRing", 8.8, 0.08, lobbyPos + Vector3.new(0, 0.05, 0), W.HotPink)
 	disc("LobbyMarkRim", 7.4, 0.1, lobbyPos + Vector3.new(0, 0.06, 0), W.White)
 	disc("LobbyMark", 6.4, 0.12, lobbyPos + Vector3.new(0, 0.08, 0), W.Sunny)
 	for _, turn in { 0, 45 } do
@@ -1286,13 +1250,15 @@ function PoseStage.build(): Built
 		end
 	end
 
-	-- The START pad in front of the STAGE door: a glowing sunny disc with a white star, in a
-	-- white rim and a hot-pink glow ring. Fx.Pose hides its column, light and label in play.
+	-- The START pad in front of the STAGE door: a big glowing sunny disc with a white star, in
+	-- a white rim, a hot-pink glow ring and a navy outline ring that stands it off the mint.
+	-- Fx.Pose hides its column, light and label in play.
 	local pathZ = cz + LOBBY.PathZ
-	local startPos = Vector3.new(cx + LOBBY.X0 + LOBBY.StartIn, top, pathZ)
-	-- From the spawn star's rim to the START pad's glow ring.
+	local startPos = Vector3.new(cx + LOBBY.X0 + LOBBY.StartIn, top, cz + LOBBY.StartZ)
+	-- From the spawn star's pink ring to the START pad's outline ring.
 	local toStart = (startPos - lobbyPos).Unit
-	pinkPath("LobbyPath", lobbyPos + toStart * 3.6, startPos - toStart * 4.6, 3.6, { 1.9, 4.7 })
+	local pathLength = (startPos - lobbyPos).Magnitude - 4.4 - 5.6
+	pinkPath("LobbyPath", lobbyPos + toStart * 4.4, startPos - toStart * 5.6, 3.6, { pathLength / 2 + 0.3 })
 	-- White stepping stones from the spawn star to the dance floor.
 	local toSpot = Vector3.new(spotPos.X, top, mz) - lobbyPos
 	for _, at in { 6, 9, 12 } do
@@ -1304,41 +1270,43 @@ function PoseStage.build(): Built
 		)
 		stone.CanCollide = false
 	end
-	local startRing = disc("StartRing", 9.4, 0.1, startPos + Vector3.new(0, 0.08, 0), W.HotPink, Enum.Material.Neon)
+	local startOutline = disc("StartOutline", 11.4, 0.08, startPos + Vector3.new(0, 0.05, 0), W.Navy)
+	startOutline.CanCollide = false
+	local startRing = disc("StartRing", 10.4, 0.1, startPos + Vector3.new(0, 0.08, 0), W.HotPink, Enum.Material.Neon)
 	startRing.CanCollide = false
-	local startRim = disc("StartPadRim", 8.2, 0.16, startPos + Vector3.new(0, 0.14, 0), W.White)
+	local startRim = disc("StartPadRim", 9.2, 0.16, startPos + Vector3.new(0, 0.14, 0), W.White)
 	startRim.CanCollide = false
-	local startPad = disc("StartPad", 7, 0.2, startPos + Vector3.new(0, 0.2, 0), W.Sunny, Enum.Material.Neon)
+	local startPad = disc("StartPad", 8, 0.2, startPos + Vector3.new(0, 0.2, 0), W.Sunny, Enum.Material.Neon)
 	startPad.CanCollide = false
 	for _, turn in { 0, 45 } do
 		local ray = box(
 			"StartStar",
-			Vector3.new(3.6, 0.04, 3.6),
+			Vector3.new(4.2, 0.04, 4.2),
 			CFrame.new(startPos + Vector3.new(0, 0.32, 0)) * CFrame.Angles(0, math.rad(turn), 0),
 			W.White
 		)
 		ray.CanCollide = false
 	end
-	local column = disc("StartGlow", 6.6, 4, startPos + Vector3.new(0, 2.3, 0), W.Sunny, Enum.Material.Neon)
-	column.Transparency = 0.85
+	local column = disc("StartGlow", 7.6, 4.4, startPos + Vector3.new(0, 2.5, 0), W.Sunny, Enum.Material.Neon)
+	column.Transparency = 0.78
 	column.CanCollide = false
 	column.CanQuery = false
 	column.CanTouch = false
 	column.CastShadow = false
 	local startLight = Instance.new("PointLight")
 	startLight.Color = W.Sunny
-	startLight.Brightness = 1.5
-	startLight.Range = 14
+	startLight.Brightness = 2
+	startLight.Range = 16
 	startLight.Parent = startPad
 	local startLabel = Instance.new("BillboardGui")
 	startLabel.Name = "StartLabel"
-	startLabel.Size = UDim2.fromScale(8, 2.6)
-	startLabel.StudsOffset = Vector3.new(0, 6.2, 0)
+	startLabel.Size = UDim2.fromScale(8.5, 2.8)
+	startLabel.StudsOffset = Vector3.new(0, 5.6, 0)
 	startLabel.LightInfluence = 0
 	startLabel.MaxDistance = 140
 	startLabel.Adornee = startPad
 	startLabel.Parent = startPad
-	caption(startLabel, "Text", "START", W.Sunny, { 0, 0, 1, 1 }, W.Navy)
+	caption(startLabel, "Text", "START", W.Sunny, { 0, 0, 1, 1 }, W.Navy, 4)
 
 	-- The STAGE door at the lobby's inner edge, behind the START pad: navy posts lined with
 	-- warm bulbs, a sunny header ("STAGE" toward the lobby, "GREEN ROOM" toward the show) in
@@ -1446,12 +1414,15 @@ function PoseStage.build(): Built
 		palm(folder, CFrame.new(spot[1], top, spot[2]) * CFrame.Angles(0, spot[2] * 0.1, 0), 14, 0.3)
 	end
 
-	-- The deck's edge: a sunny band round the floor and a railing on the rim outside it (white
-	-- posts, a chunky pink top rail and a white mid rail), so the deck reads against the sea.
+	-- The deck's edge: a sunny band round the floor, a hot-pink fascia round the hull and a
+	-- chunky railing on the rim outside it (fat white posts, a hot-pink top rail and a sunny
+	-- mid rail), so the deck reads against the sea from inside and out.
 	local hx, hz = a.sizeX / 2, a.sizeZ / 2
 	for _, side in { -1, 1 } do
 		box("DeckEdge", Vector3.new(a.sizeX, 0.1, 1), CFrame.new(cx, top + 0.05, cz + side * (hz - 0.5)), W.Sunny)
 		box("DeckEdge", Vector3.new(1, 0.1, a.sizeZ - 2), CFrame.new(cx + side * (hx - 0.5), top + 0.05, cz), W.Sunny)
+		box("DeckFascia", Vector3.new(a.sizeX + 2.6, 1.6, 0.3), CFrame.new(cx, top - 1.5, cz + side * (hz + 1.15)), W.HotPink)
+		box("DeckFascia", Vector3.new(0.3, 1.6, a.sizeZ + 2), CFrame.new(cx + side * (hx + 1.15), top - 1.5, cz), W.HotPink)
 	end
 	local rx, rz = hx + 0.5, hz + 0.5
 	local function rail(name: string, length: number, diameter: number, y: number, cf: CFrame, color: Color3)
@@ -1466,17 +1437,17 @@ function PoseStage.build(): Built
 	end
 	for _, side in { -1, 1 } do
 		for k = 0, 16 do
-			disc("RailPost", 0.9, 3.9, Vector3.new(cx - rx + 2 * rx * k / 16, top + 1.05, cz + side * rz), W.White)
+			disc("RailPost", 1.2, 4.5, Vector3.new(cx - rx + 2 * rx * k / 16, top + 1.35, cz + side * rz), W.White)
 		end
 		for k = 1, 7 do
-			disc("RailPost", 0.9, 3.9, Vector3.new(cx + side * rx, top + 1.05, cz - rz + 2 * rz * k / 8), W.White)
+			disc("RailPost", 1.2, 4.5, Vector3.new(cx + side * rx, top + 1.35, cz - rz + 2 * rz * k / 8), W.White)
 		end
 		local alongX = CFrame.new(cx, 0, cz + side * rz)
 		local alongZ = CFrame.new(cx + side * rx, 0, cz) * Common.ALONG_Z
-		rail("RailTop", 2 * rx + 0.8, 0.8, top + 2.9, alongX, W.Pink)
-		rail("RailTop", 2 * rz + 0.8, 0.8, top + 2.9, alongZ, W.Pink)
-		rail("RailMid", 2 * rx, 0.45, top + 1.5, alongX, W.White)
-		rail("RailMid", 2 * rz, 0.45, top + 1.5, alongZ, W.White)
+		rail("RailTop", 2 * rx + 1.2, 1.2, top + 3.4, alongX, W.HotPink)
+		rail("RailTop", 2 * rz + 1.2, 1.2, top + 3.4, alongZ, W.HotPink)
+		rail("RailMid", 2 * rx, 0.6, top + 1.8, alongX, W.Sunny)
+		rail("RailMid", 2 * rz, 0.6, top + 1.8, alongZ, W.Sunny)
 	end
 
 	buildSea(folder, cx, cz)
