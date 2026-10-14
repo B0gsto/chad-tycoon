@@ -10,10 +10,11 @@
 	(+Z, toward the spawn). Over them a D-pad of four "FlexLamp<i>" tiles in the flexes'
 	colours (PoseRules.FLEXES; Fx.Pose lights the one being shown), "PodiumGlow" rings that
 	Fx.Pose tints, two spotlight towers, a pink runway from the spawn to the stage steps and
-	a judges' table on the left with three "10" cards. The backdrop is an opaque LED wall
-	(sunset gradient bands, neon stars, a light bar of coloured cans) framed by red curtains;
-	confetti cannons sit on the deck's front corners and a fan barrier with bleachers marks
-	the audience area. Every sign faces the audience (+Z: SurfaceGui Face Back).
+	a judges' table on the left (three seated judges holding "10" paddles). The backdrop is an
+	opaque LED wall (sunset gradient bands, neon stars, a light bar of coloured cans) framed by
+	red curtains; confetti cannons sit in drums on the deck's front corners. The audience area
+	is a blue checker carpet behind a "FAN ZONE" barrier, with a start mark round the spawn pad
+	and two cushioned bleachers of blocky fans waving foam fingers. Every sign faces the audience (+Z: SurfaceGui Face Back).
 
 	build() -> Built: everything World.Arena.Base has ({ folder, floor, spawn, exit,
 	exitRadius, center, top }) plus
@@ -60,7 +61,8 @@ export type Built = Arena.Base & {
 	rival: Model,
 }
 
-local function sign(part: BasePart, face: Enum.NormalId, text: string, color: Color3, ppu: number?)
+-- `outline` swaps the soft ink stroke for a bold opaque one in that colour.
+local function sign(part: BasePart, face: Enum.NormalId, text: string, color: Color3, ppu: number?, outline: Color3?)
 	local gui = Instance.new("SurfaceGui")
 	gui.Face = face
 	gui.PixelsPerStud = ppu or 40
@@ -75,10 +77,14 @@ local function sign(part: BasePart, face: Enum.NormalId, text: string, color: Co
 	label.TextColor3 = color
 	label.Parent = gui
 	local stroke = Instance.new("UIStroke")
-	stroke.Thickness = 3
-	stroke.Color = W.Ink
-	stroke.Transparency = 0.35
+	stroke.Thickness = if outline then 4 else 3
+	stroke.Color = outline or W.Ink
+	stroke.Transparency = if outline then 0 else 0.35
 	stroke.Parent = label
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0.06, 0)
+	pad.PaddingBottom = UDim.new(0.06, 0)
+	pad.Parent = label
 end
 
 function PoseStage.build(): Built
@@ -146,9 +152,12 @@ function PoseStage.build(): Built
 			W.Blue
 		)
 	end
-	local banner = box("PoseBanner", Vector3.new(26, 4.6, 0.6), CFrame.new(cx, deckTop + STAGE.WallH - 3.2, wallZ + 0.8), W.HotPink)
-	sign(banner, AUDIENCE, "POSE COPY", W.White)
-	box("PoseBannerTrim", Vector3.new(27, 0.4, 0.7), CFrame.new(cx, deckTop + STAGE.WallH - 5.6, wallZ + 0.8), W.Sunny, Enum.Material.Neon)
+	-- Dark letters on a sunny board with a white border: reads from the back of the crowd.
+	local bannerY = deckTop + STAGE.WallH - 2.9
+	box("PoseBannerBorder", Vector3.new(28.8, 5.8, 0.4), CFrame.new(cx, bannerY, wallZ + 0.7), W.White)
+	local banner = box("PoseBanner", Vector3.new(28, 5, 0.6), CFrame.new(cx, bannerY, wallZ + 0.8), W.Sunny)
+	sign(banner, AUDIENCE, "POSE COPY", W.Navy, 40, W.White)
+	box("PoseBannerTrim", Vector3.new(28.8, 0.4, 0.7), CFrame.new(cx, bannerY - 2.9, wallZ + 0.85), W.HotPink, Enum.Material.Neon)
 
 	-- The LED backdrop: sunset bands from sky blue (behind the chads) to deep navy under the
 	-- banner, thin panel seams, neon stars, red curtains at the sides, a valance and a light
@@ -255,9 +264,9 @@ function PoseStage.build(): Built
 	end
 	-- Gold side stars flanking the title.
 	for _, side in { -1, 1 } do
-		local pos = CFrame.new(cx + side * 15, deckTop + STAGE.WallH - 3.2, wallZ + 0.9)
+		local pos = CFrame.new(cx + side * 15.6, deckTop + STAGE.WallH - 2.9, wallZ + 0.9)
 		for _, turn in { 0, 45 } do
-			box("TitleStar", Vector3.new(2.4, 2.4, 0.3), pos * CFrame.Angles(0, 0, math.rad(turn)), W.Sunny, Enum.Material.Neon)
+			box("TitleStar", Vector3.new(1.8, 1.8, 0.3), pos * CFrame.Angles(0, 0, math.rad(turn)), W.Sunny, Enum.Material.Neon)
 		end
 	end
 
@@ -321,7 +330,7 @@ function PoseStage.build(): Built
 		box("SpotTower", Vector3.new(0.8, h, 0.8), CFrame.new(x, top + h / 2, z), W.Steel)
 		local target = (if side < 0 then rivalPos else playerPos) + Vector3.new(0, 3, 0)
 		local headPos = Vector3.new(x, top + h + 0.6, z)
-		local head = make("Part", {
+		make("Part", {
 			Name = "SpotHead",
 			Shape = CYLINDER,
 			Size = Vector3.new(2.2, 2, 2),
@@ -347,54 +356,92 @@ function PoseStage.build(): Built
 		light.Brightness = 2.5
 		light.Color = Color3.fromRGB(255, 240, 210)
 		light.Parent = lens
-		head.CanCollide = false
 	end
 
-	-- Judges' table on the audience's left, angled at the stage, with three "10" cards.
-	local judge = CFrame.new(cx - 16, top, cz + 10) * CFrame.Angles(0, math.rad(-25), 0)
-	box("JudgeTable", Vector3.new(11, 0.4, 3), judge * CFrame.new(0, 2.8, 0), W.White)
-	box("JudgeSkirt", Vector3.new(11, 2.6, 0.3), judge * CFrame.new(0, 1.3, -1.35), W.Blue)
-	for _, dx in { -5.2, 5.2 } do
-		box("JudgeLeg", Vector3.new(0.4, 2.6, 2.6), judge * CFrame.new(dx, 1.3, 0), W.Blue)
+	-- Blocky Roblox-style figures (fans and judges): torso and yellow head on a seat, facing
+	-- the stage. `cf` is the seat top, looking at the stage.
+	local SKIN = W.Sunny
+	local function figure(cf: CFrame, shirt: Color3)
+		local torso = box("FanBody", Vector3.new(1.4, 1.6, 0.8), cf * CFrame.new(0, 0.8, 0), shirt)
+		torso.CanCollide = false
+		make("Part", {
+			Name = "FanHead",
+			Shape = Enum.PartType.Ball,
+			Size = Vector3.one * 1.1,
+			CFrame = cf * CFrame.new(0, 2.15, 0),
+			Color = SKIN,
+			Material = Enum.Material.SmoothPlastic,
+			CanCollide = false,
+			Parent = folder,
+		})
 	end
-	local judgeSign = box("JudgeSign", Vector3.new(6, 1.2, 0.2), judge * CFrame.new(0, 1.6, -1.55), W.Sunny)
-	-- Readable from the stage and from the audience.
-	sign(judgeSign, Enum.NormalId.Front, "JUDGES", W.White)
-	sign(judgeSign, Enum.NormalId.Back, "JUDGES", W.White)
+	-- A raised arm at the figure's right holding `color` up (a foam finger or a score paddle).
+	local function raisedArm(cf: CFrame): CFrame
+		local arm = box("FanArm", Vector3.new(0.4, 1.5, 0.4), cf * CFrame.new(0.95, 2.05, 0), SKIN)
+		arm.CanCollide = false
+		return cf * CFrame.new(0.95, 2.8, 0)
+	end
+	local function foamFinger(cf: CFrame, color: Color3)
+		local hand = raisedArm(cf)
+		local palm = box("FoamFinger", Vector3.new(1.1, 1.1, 0.45), hand * CFrame.new(0, 0.5, 0), color)
+		local finger = box("FoamFinger", Vector3.new(0.4, 1.2, 0.4), hand * CFrame.new(0.25, 1.6, 0), color)
+		palm.CanCollide = false
+		finger.CanCollide = false
+	end
+
+	-- Judges' table on the audience's left, angled at the stage: three judges in navy seated on
+	-- coral chairs facing the stage, each holding up a "10" paddle.
+	local judge = CFrame.new(cx - 14, top, cz + 6.4) * CFrame.Angles(0, math.rad(-12), 0)
+	box("JudgeTable", Vector3.new(14, 0.5, 3.4), judge * CFrame.new(0, 3.25, 0), W.White)
+	box("JudgeTableTrim", Vector3.new(14.2, 0.25, 3.6), judge * CFrame.new(0, 2.9, 0), W.HotPink)
+	box("JudgeSkirt", Vector3.new(14, 2.8, 0.3), judge * CFrame.new(0, 1.4, -1.55), W.Blue)
+	for _, dx in { -6.6, 6.6 } do
+		box("JudgeLeg", Vector3.new(0.4, 2.8, 3), judge * CFrame.new(dx, 1.4, 0), W.Blue)
+	end
+	local judgeSign = box("JudgeSign", Vector3.new(8, 1.8, 0.2), judge * CFrame.new(0, 1.6, -1.75), W.Sunny)
+	sign(judgeSign, Enum.NormalId.Front, "JUDGES", W.Navy, 40, W.White)
 	for i = -1, 1 do
-		local seat = judge * CFrame.new(i * 3.4, 0, 2.6)
-		box("JudgeChair", Vector3.new(2.2, 0.4, 2.2), seat * CFrame.new(0, 1.9, 0), W.Coral)
-		box("JudgeChairBack", Vector3.new(2.2, 2.6, 0.3), seat * CFrame.new(0, 3.2, 1.0), W.Coral)
-		box("JudgeChairLeg", Vector3.new(0.4, 1.7, 0.4), seat * CFrame.new(0, 0.85, 0), W.Steel)
-		local card =
-			box("ScoreCard", Vector3.new(1.6, 1.4, 0.15), seat * CFrame.new(0, 3.85, -2.4) * CFrame.Angles(math.rad(-12), 0, 0), W.White)
-		card.CanCollide = false
-		sign(card, Enum.NormalId.Front, "10", W.HotPink)
-		sign(card, Enum.NormalId.Back, "10", W.HotPink)
+		local seat = judge * CFrame.new(i * 4.4, 0, 3.1)
+		box("JudgeChair", Vector3.new(2.6, 0.4, 2.4), seat * CFrame.new(0, 2, 0), W.Coral)
+		box("JudgeChairBack", Vector3.new(2.6, 2.6, 0.3), seat * CFrame.new(0, 3.3, 1.1), W.Coral)
+		box("JudgeChairLeg", Vector3.new(0.5, 1.8, 0.5), seat * CFrame.new(0, 0.9, 0), W.Steel)
+		box("JudgeChairFoot", Vector3.new(1.8, 0.2, 1.8), seat * CFrame.new(0, 0.1, 0), W.Steel)
+		local sit = seat * CFrame.new(0, 2.2, -0.1)
+		figure(sit, W.Navy)
+		local hand = raisedArm(sit)
+		local handle = box("PaddleHandle", Vector3.new(0.22, 0.9, 0.22), hand * CFrame.new(0, 0.45, 0), W.Steel)
+		handle.CanCollide = false
+		local paddle = box("ScorePaddle", Vector3.new(2, 1.7, 0.15), hand * CFrame.new(0, 1.75, 0), W.White)
+		paddle.CanCollide = false
+		sign(paddle, Enum.NormalId.Front, "10", W.HotPink, 40, W.Navy)
+		sign(paddle, Enum.NormalId.Back, "10", W.HotPink, 40, W.Navy)
 	end
 
-	-- Confetti cannons on the deck's front corners, aimed up over the podiums, and confetti
-	-- already scattered on the deck and the audience floor.
+	-- Confetti cannons on the deck's front corners: a navy drum with a pink collar holding a
+	-- gold barrel tilted in over the podiums, and confetti already scattered on the deck and
+	-- the audience floor.
 	for _, side in { -1, 1 } do
 		local basePos = Vector3.new(cx + side * 20, deckTop, cz + STAGE.Front - 2)
-		box("CannonBase", Vector3.new(2.2, 1, 2.2), CFrame.new(basePos + Vector3.new(0, 0.5, 0)), W.Navy)
-		local mouth = basePos + Vector3.new(-side * 1.4, 3.4, -1.2)
-		local from = basePos + Vector3.new(0, 1.2, 0)
+		disc("CannonBase", 2.8, 1.2, basePos + Vector3.new(0, 0.6, 0), W.Navy)
+		disc("CannonCollar", 3.1, 0.3, basePos + Vector3.new(0, 1.25, 0), W.HotPink)
+		local from = basePos + Vector3.new(0, 0.5, 0)
+		local mouth = basePos + Vector3.new(-side * 1.1, 4.2, -0.7)
+		local len = (mouth - from).Magnitude
 		local barrel = CFrame.lookAt((from + mouth) / 2, mouth) * CFrame.Angles(0, math.rad(90), 0)
 		make("Part", {
 			Name = "ConfettiCannon",
 			Shape = CYLINDER,
-			Size = Vector3.new((mouth - from).Magnitude + 0.6, 1.5, 1.5),
+			Size = Vector3.new(len, 1.4, 1.4),
 			CFrame = barrel,
 			Color = W.Gold,
 			Material = Enum.Material.SmoothPlastic,
 			Parent = folder,
 		})
-		for _, along in { -0.6, 0.6 } do
+		for _, along in { 0.2, len / 2 - 0.2 } do
 			make("Part", {
 				Name = "CannonRing",
 				Shape = CYLINDER,
-				Size = Vector3.new(0.3, 1.7, 1.7),
+				Size = Vector3.new(0.35, 1.65, 1.65),
 				CFrame = barrel * CFrame.new(along, 0, 0),
 				Color = W.HotPink,
 				CanCollide = false,
@@ -412,7 +459,7 @@ function PoseStage.build(): Built
 		local onDeck = i <= 18
 		local x = cx + (rand() * 2 - 1) * (if onDeck then STAGE.HalfW - 2 else 18)
 		local z = if onDeck then cz + STAGE.Front - 1 - rand() * 6 else cz + STAGE.Front + 3 + rand() * 6
-		local y = if onDeck then deckTop + 0.13 else top + 0.03
+		local y = if onDeck then deckTop + 0.13 else top + 0.1
 		local bit = box(
 			"Confetti",
 			Vector3.new(0.6, 0.05, 0.35),
@@ -422,31 +469,96 @@ function PoseStage.build(): Built
 		bit.CanCollide = false
 	end
 
-	-- The fan zone: a low barrier in front of the stage (a gap for the runway) and bleachers
-	-- on the audience's right.
+	-- The fan zone: a blue checker carpet from the barrier to the deck's +Z edge, a dressed
+	-- start mark round the spawn pad at the runway's end, a barrier in front of the stage (a
+	-- gap for the runway) and two bleachers of cushioned seats with cheering fans.
+	local carpetZ0, carpetZ1 = cz + 2.3, cz + a.sizeZ / 2 - 0.2
+	local carpetW, carpetD = a.sizeX - 0.4, carpetZ1 - carpetZ0
+	box("AudienceCarpet", Vector3.new(carpetW, 0.04, carpetD), CFrame.new(cx, top + 0.02, (carpetZ0 + carpetZ1) / 2), W.RainbowBlue)
+	local cols, rows = 8, 3
+	local tileW, tileD = carpetW / cols, carpetD / rows
+	for r = 0, rows - 1 do
+		for c = 0, cols - 1 do
+			if (r + c) % 2 == 0 then
+				box(
+					"CarpetTile",
+					Vector3.new(tileW, 0.03, tileD),
+					CFrame.new(cx - carpetW / 2 + tileW * (c + 0.5), top + 0.055, carpetZ0 + tileD * (r + 0.5)),
+					W.SkyBlue
+				)
+			end
+		end
+	end
+	local spawnPos = base.spawn.Position
+	disc("StartMarkRim", 9.6, 0.1, Vector3.new(spawnPos.X, top + 0.06, spawnPos.Z), W.HotPink)
+	disc("StartMark", 8.4, 0.12, Vector3.new(spawnPos.X, top + 0.08, spawnPos.Z), W.White)
+
 	local barrierZ = cz + 2
 	for _, side in { -1, 1 } do
 		local x0, x1 = cx + side * 4.5, cx + side * 21
 		local midX, len = (x0 + x1) / 2, math.abs(x1 - x0)
-		local panel = box("FanBarrier", Vector3.new(len, 2.2, 0.3), CFrame.new(midX, top + 1.5, barrierZ), W.White)
-		sign(panel, AUDIENCE, "FAN ZONE", W.HotPink, 30)
+		local panel = box("FanBarrier", Vector3.new(len, 3, 0.3), CFrame.new(midX, top + 1.8, barrierZ), W.White)
+		sign(panel, AUDIENCE, "FAN ZONE", W.Navy, 30, W.Sunny)
 		sign(panel, Enum.NormalId.Front, "GO CHAD GO!", W.Blue, 30)
-		box("FanBarrierRail", Vector3.new(len + 0.4, 0.35, 0.5), CFrame.new(midX, top + 2.75, barrierZ), W.HotPink)
+		box("FanBarrierRail", Vector3.new(len + 0.4, 0.4, 0.5), CFrame.new(midX, top + 3.5, barrierZ), W.HotPink)
 		for k = 0, 3 do
 			local x = x0 + (x1 - x0) * k / 3
-			box("FanBarrierPost", Vector3.new(0.4, 2.9, 0.4), CFrame.new(x, top + 1.45, barrierZ), W.Steel)
+			box("FanBarrierPost", Vector3.new(0.4, 3.6, 0.4), CFrame.new(x, top + 1.8, barrierZ), W.Steel)
 			box("FanBarrierFoot", Vector3.new(0.5, 0.2, 2), CFrame.new(x, top + 0.1, barrierZ), W.Steel)
 		end
 	end
-	local bleacherColors = { W.Sunny, W.White, W.Mint }
-	for i, color in bleacherColors do
-		local h = 0.8 * i
-		box("Bleacher", Vector3.new(11, h, 1.8), CFrame.new(cx + 14, top + h / 2, cz + 6 + i * 1.8), color)
-	end
 
-	-- A few beach balls and pom-pom flowers around the deck for colour.
+	-- Bleachers: three navy risers stepping up away from the stage, a white stripe on each
+	-- step's face and four coloured seat cushions per row. `fans` = { row, seat, shirt, finger? }.
+	local ROW_D, ROW_H, SEAT_W = 2.2, 0.9, 2.75
+	local cushions = { W.HotPink, W.Sunny, W.Mint }
+	local function bleacher(x: number, z0: number, fans: { { any } }, backSign: string?)
+		for i = 1, 3 do
+			local h = ROW_H * i
+			local zc = z0 + ROW_D * (i - 0.5)
+			box("Bleacher", Vector3.new(11.6, h, ROW_D), CFrame.new(x, top + h / 2, zc), W.Navy)
+			box("BleacherStripe", Vector3.new(11.6, 0.25, 0.1), CFrame.new(x, top + h - 0.2, z0 + ROW_D * (i - 1) - 0.04), W.White)
+			for s = 1, 4 do
+				box(
+					"BleacherSeat",
+					Vector3.new(SEAT_W - 0.35, 0.3, 1.3),
+					CFrame.new(x + (s - 2.5) * SEAT_W, top + h + 0.15, zc - 0.3),
+					cushions[i]
+				)
+			end
+		end
+		for _, fan in fans do
+			local row, seat = fan[1] :: number, fan[2] :: number
+			local cf = CFrame.lookAt(
+				Vector3.new(x + (seat - 2.5) * SEAT_W, top + ROW_H * row + 0.3, z0 + ROW_D * (row - 0.5) - 0.2),
+				Vector3.new(cx, top + ROW_H * row + 0.3, cz + STAGE.PodiumZ)
+			)
+			figure(cf, fan[3] :: Color3)
+			if fan[4] then
+				foamFinger(cf, fan[4] :: Color3)
+			end
+		end
+		if backSign then
+			local back = box("BleacherBack", Vector3.new(11.6, 2.2, 0.2), CFrame.new(x, top + 1.3, z0 + ROW_D * 3 + 0.1), W.HotPink)
+			sign(back, AUDIENCE, backSign, W.White, 30, W.Navy)
+		end
+	end
+	bleacher(cx + 15, cz + 6.4, {
+		{ 1, 1, W.HotPink, W.Sunny },
+		{ 1, 3, W.Blue },
+		{ 2, 2, W.Grape, W.HotPink },
+		{ 3, 4, W.Coral, W.Mint },
+		{ 3, 1, W.RainbowBlue },
+	}, "GO CHAD GO!")
+	bleacher(cx - 15, cz + 12.8, {
+		{ 1, 4, W.Mint, W.HotPink },
+		{ 2, 1, W.HotPink },
+		{ 3, 3, W.Blue, W.Sunny },
+	}, "FAN CLUB")
+
+	-- A few beach balls around the deck for colour.
 	local props = {
-		{ Vector3.new(cx - 21, top, cz + 17), W.Pink },
+		{ Vector3.new(cx - 24.5, top, cz + 21.5), W.Pink },
 		{ Vector3.new(cx + 22, top, cz - 1), W.Mint },
 		{ Vector3.new(cx - 22, top, cz - 1), W.Sunny },
 	}
