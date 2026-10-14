@@ -16,8 +16,9 @@
 	               speed * (now - appearAt)), flash() on each result, idle() between checks.
 	               A duel's checks are hidden: "check" (hidden = true) only cues the empty
 	               ring, and the zone pops in with "zone" when the needle starts.
-	               The result word ("PERFECT!", "HIT", "MISS" / "TOO EARLY" / "TOO SLOW"
-	               in red) pops in on the ring's top edge and rises as it fades.
+	               The result word ("PERFECT!", "NICE!", "MISS" / "TOO EARLY" / "TOO SLOW"),
+	               big white with a dark outline (tinted gold / mint / red at the bottom),
+	               pops in on the ring's top edge and rises as it fades.
 	  Input        Space, Enter and gamepad A (ContextActionService, high priority, sunk
 	               so Space does not jump) and a big invisible button over the ring for
 	               mouse / touch. One MogPress per check, sent with the server time of the
@@ -25,8 +26,10 @@
 	               shows and for a blink after, `pressFrom`) only give a small "wait..."
 	               wobble. The needle freezes where it was pressed until the result.
 	  Status       score (bouncy count) and the combo chip above the ring and a quiet "X"
-	               that asks "QUIT?" before firing ModeQuit. Vs rivals: beside the score the
-	               target "BEAT n" (the saved best from "start"; hidden without a best).
+	               that asks "QUIT?" before firing ModeQuit. Vs rivals: beside the score a
+	               gold chip with the target "BEAT n" (the saved best from "start"; "SET A
+	               BEST!" without one). The player list and the gift corner are hidden
+	               for the run.
 	               The moment the run's score passes it: the chip reads "NEW BEST!" in
 	               gold, the score turns gold for the rest of the run and a short
 	               "NEW BEST!" banner pops. Hearts (maxLives)
@@ -73,7 +76,9 @@ local RING = 180 -- ring diameter (px, design space)
 local ROOT_W = 300
 local ROOT_H = 410
 local ROOT_RIGHT = 36
-local ROOT_DY = 6
+-- Pushed down from mid-height so the score pill clears the stand's wall words and the
+-- top-right chrome (the player list is hidden during a run as well).
+local ROOT_DY = 44
 local RING_Y = 120
 local RING_TAP = 20 -- the tap target reaches this far past the ring
 -- The score pill: wide enough for a five-figure score beside "BEAT 12.5K" / "NEW BEST!".
@@ -95,11 +100,35 @@ local BANNER = {
 	PassPop = 1.6,
 	PassPopAt = 0.5,
 }
-local RESULT_RISE = 40 -- the result word rises this far above the ring
+local RESULT_RISE = 52 -- the result word rises this far above the ring
+-- The result word ("PERFECT!" / "NICE!" / "TOO SLOW"): big white with a thick dark outline so it
+-- reads over the crowd, tinted toward its colour at the bottom only (Tint). It pops from PopFrom
+-- scale (Back, PopTime), rises from FromY to ToY (px from the ring's top) over RiseTime, holds
+-- Hold seconds and fades over Fade.
+local RESULT = {
+	TextSize = 52,
+	Width = 380,
+	Height = 62,
+	Stroke = 5,
+	StrokeColor = Color3.fromRGB(18, 16, 40),
+	Tint = 0.45,
+	PopFrom = 0.3,
+	PopTime = 0.35,
+	FromY = 2,
+	ToY = -24,
+	RiseTime = 0.9,
+	Hold = 0.75,
+	Fade = 0.3,
+}
+-- The "BEAT n" target chip in the score pill: a gold chip (it reads "SET A BEST!" before the
+-- first saved best), "NEW BEST!" once beaten.
+local BEAT = { Width = 104, Height = 26, TextSize = 16 }
+-- HUD chrome that steps aside during a run (the gift corner and the crate panel).
+local MOG_CLUTTER = { "FreeCorner", "ChestPanel" }
 local ACTION = "MogPress"
 local QUIT_ACTION = "MogQuit"
 local PRIORITY = 3000
-local RESULT_WORDS = { perfect = "PERFECT", hit = "HIT", miss = "MISS" }
+local RESULT_WORDS = { perfect = "PERFECT", hit = "NICE", miss = "MISS" }
 
 local action = Net.event("Action")
 
@@ -264,21 +293,32 @@ local showBanner: (title: string, sub: string?, color: Color3, hold: number, cel
 
 -- The result word pops in on the ring's top edge (clear of the "#n" centre label) and
 -- rises toward the hearts / HP row while it fades.
-local RESULT_FROM = UDim2.new(0.5, 0, 0, 6)
-local RESULT_TO = UDim2.new(0.5, 0, 0, -16)
+local RESULT_FROM = UDim2.new(0.5, 0, 0, RESULT.FromY)
+local RESULT_TO = UDim2.new(0.5, 0, 0, RESULT.ToY)
+local resultTint: UIGradient? = nil
 
 local function popResult(text: string, color: Color3)
 	resultLabel.Text = text
-	resultLabel.TextColor3 = color
+	resultLabel.TextColor3 = Color3.new(1, 1, 1)
+	if resultTint then
+		resultTint.Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.new(1, 1, 1):Lerp(color, RESULT.Tint))
+	end
 	resultLabel.TextTransparency = 0
+	local outline = resultLabel:FindFirstChild("Outline")
+	if outline and outline:IsA("UIStroke") then
+		outline.Transparency = 0
+	end
 	resultLabel.Position = RESULT_FROM
 	local scale = resultLabel:FindFirstChildOfClass("UIScale") :: UIScale
-	scale.Scale = 0.3
-	Kit.tween(scale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
-	Kit.tween(resultLabel, 0.9, { Position = RESULT_TO }, Enum.EasingStyle.Quad)
-	task.delay(0.65, function()
+	scale.Scale = RESULT.PopFrom
+	Kit.tween(scale, RESULT.PopTime, { Scale = 1 }, Enum.EasingStyle.Back)
+	Kit.tween(resultLabel, RESULT.RiseTime, { Position = RESULT_TO }, Enum.EasingStyle.Quad)
+	task.delay(RESULT.Hold, function()
 		if resultLabel.Text == text then
-			Kit.tween(resultLabel, 0.3, { TextTransparency = 1 })
+			Kit.tween(resultLabel, RESULT.Fade, { TextTransparency = 1 })
+			if outline and outline:IsA("UIStroke") then
+				Kit.tween(outline, RESULT.Fade, { Transparency = 1 })
+			end
 		end
 	end)
 end
@@ -396,15 +436,17 @@ end
 local function paintBeat(score: number)
 	local beaten = not pvp and bestToBeat > 0 and score > bestToBeat
 	scoreLabel.TextColor3 = if beaten then C.Gold else scoreColor
-	local show = not pvp and bestToBeat > 0 and not quitArmed
+	local show = not pvp and not quitArmed
 	beatLabel.Visible = show
 	if not show then
 		return
 	end
-	local text = if beaten then "NEW BEST!" else "BEAT " .. Format.short(bestToBeat)
+	local text = if beaten then "NEW BEST!" elseif bestToBeat > 0 then "BEAT " .. Format.short(bestToBeat) else "SET A BEST!"
 	if beatLabel.Text ~= text then
 		beatLabel.Text = text
-		beatLabel.TextColor3 = if beaten then C.Gold else C.TextDim
+		-- Gold chip with dark text; a beaten best flips to a bright white chip.
+		beatLabel.BackgroundColor3 = if beaten then Color3.new(1, 1, 1) else C.Gold
+		beatLabel.TextColor3 = C.GoldInk
 		if beaten then
 			Kit.pop(beatLabel, 1.4)
 			Sounds.play("Coin", 0.05, 1.3)
@@ -464,7 +506,7 @@ local function onResult(p: any)
 		Sounds.play("Coin", 0.05, 1.15)
 	elseif result == "hit" then
 		ring:flash("hit")
-		popResult("HIT", W.Cream)
+		popResult("NICE!", W.Mint or W.Cream)
 		Sounds.play("Pickup", 0.08)
 	else
 		ring:flash("miss")
@@ -662,6 +704,31 @@ local function unbind()
 	end
 end
 
+-- During a run the Roblox player list (it covered the stand's wall words and the score pill)
+-- and the unrelated tycoon chrome step aside; each block gets back the Visible it had.
+local stashed: { [GuiObject]: boolean } = {}
+local function setChrome(on: boolean)
+	Kit.hidePlayerList("mog", on)
+	local gui = screen
+	if not gui then
+		return
+	end
+	if on then
+		for _, name in MOG_CLUTTER do
+			local block = gui:FindFirstChild(name)
+			if block and block:IsA("GuiObject") and stashed[block] == nil then
+				stashed[block] = block.Visible
+				block.Visible = false
+			end
+		end
+	else
+		for block, was in stashed do
+			block.Visible = was
+		end
+		table.clear(stashed)
+	end
+end
+
 -- The one way out of a run: "finish" and "stop" (a quit, Home, a mode switch, a respawn)
 -- and the snapshot's modes.mog.running going false. Space / Enter go back to the game, the
 -- HUD gets its screen back (RunActive) and no ring, banner or queue panel stays up.
@@ -674,6 +741,7 @@ local function hide()
 	if screen then
 		screen:SetAttribute("RunActive", false)
 	end
+	setChrome(false)
 	if root.Visible then
 		Kit.disappear(root)
 	end
@@ -714,6 +782,7 @@ local function onStart(p: any)
 		-- Tells Tutorial to step aside, like a Parkour run.
 		screen:SetAttribute("RunActive", true)
 	end
+	setChrome(true)
 	bind()
 	Sounds.play("Ready")
 	if pvp then
@@ -830,19 +899,29 @@ function MogHud.build(screenGui: ScreenGui)
 	})
 	scoreColor = scoreLabel.TextColor3
 	-- The target: between the score and the quit button (hidden while "QUIT?" is up).
-	beatLabel = Kit.hudText(scorePanel, {
+	beatLabel = Kit.text(scorePanel, {
 		Name = "Beat",
 		Text = "",
 		Font = F.Display,
-		TextSize = 14,
+		TextSize = BEAT.TextSize,
 		TextWrapped = false,
-		TextColor3 = C.TextDim,
-		TextXAlignment = Enum.TextXAlignment.Right,
-		Size = UDim2.fromOffset(86, 20),
-		Position = UDim2.new(1, -46, 0.5, 0),
+		TextColor3 = C.GoldInk,
+		BackgroundColor3 = C.Gold,
+		BackgroundTransparency = 0,
+		Size = UDim2.fromOffset(BEAT.Width, BEAT.Height),
+		Position = UDim2.new(1, -44, 0.5, 0),
 		AnchorPoint = Vector2.new(1, 0.5),
+		StrokeThickness = 0,
 		Visible = false,
 		ZIndex = 3,
+	})
+	Kit.round(beatLabel)
+	Kit.new("UIStroke", {
+		Color = C.GoldInk,
+		Thickness = 2,
+		Transparency = 0.3,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		Parent = beatLabel,
 	})
 	quitButton = Kit.button(scorePanel, {
 		Name = "Quit",
@@ -1016,17 +1095,21 @@ function MogHud.build(screenGui: ScreenGui)
 		Visible = false,
 		ZIndex = 11,
 	})
-	resultLabel = Kit.number(ringHolder, {
+	resultLabel = Kit.hudText(ringHolder, {
 		Name = "Result",
 		Text = "",
-		TextSize = 34,
+		Font = F.Display,
+		TextSize = RESULT.TextSize,
 		TextWrapped = false,
-		Size = UDim2.fromOffset(260, 40),
+		Size = UDim2.fromOffset(RESULT.Width, RESULT.Height),
 		Position = RESULT_FROM,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		TextTransparency = 1,
+		StrokeThickness = RESULT.Stroke,
+		StrokeColor = RESULT.StrokeColor,
 		ZIndex = 14,
 	})
+	resultTint = Kit.gradient(resultLabel, Color3.new(1, 1, 1), Color3.new(1, 1, 1), 90)
 	Kit.new("UIScale", { Parent = resultLabel })
 
 	-- The rival: name and HP bar under the ring.
