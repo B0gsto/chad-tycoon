@@ -6188,6 +6188,11 @@ function Popups.banner(opts: { [string]: any })
 	end
 	local inset = Popups.bannerInset(height)
 	local round = if inset > 0 then math.floor(height / 2) else 0
+	-- An inset moves the holder right of the screen's middle: the line and the chip shift
+	-- back left by up to half the inset, to the screen's centre, as far as the line still
+	-- sits on the band (24 px clear of its round end).
+	local slack = (screen.AbsoluteSize.X - inset - 48 - displayWidth(opts.Text or "", titleSize) - 8) / 2
+	local shift = math.max(0, math.min(inset / 2, slack))
 	local holder = Kit.new("Frame", {
 		Name = "Banner",
 		BackgroundTransparency = 1,
@@ -6234,7 +6239,8 @@ function Popups.banner(opts: { [string]: any })
 		TextScaled = true,
 		MaxTextSize = titleSize,
 		Size = UDim2.new(1, -48, 0, titleSize + 8),
-		Position = UDim2.fromOffset(24, 22),
+		Position = UDim2.new(0.5, -shift, 0, 22),
+		AnchorPoint = Vector2.new(0.5, 0),
 		StrokeColor = Theme.Glass.TextInk,
 		StrokeThickness = 3.5,
 		ZIndex = 29,
@@ -6247,7 +6253,7 @@ function Popups.banner(opts: { [string]: any })
 			BackgroundTransparency = 0.12,
 			Size = UDim2.fromOffset(0, chipH),
 			AutomaticSize = Enum.AutomaticSize.X,
-			Position = UDim2.new(0.5, 0, 0, 22 + titleSize + 14),
+			Position = UDim2.new(0.5, -shift, 0, 22 + titleSize + 14),
 			AnchorPoint = Vector2.new(0.5, 0),
 			ZIndex = 29,
 			Parent = holder,
@@ -6277,7 +6283,7 @@ function Popups.banner(opts: { [string]: any })
 			-- As the line settles: coins out of the chip, in front of the band.
 			task.delay(Popups.JUICE.Banner.SlideTime, function()
 				if holder.Parent then
-					Popups.coinBurst(holder, UDim2.new(0.5, 0, 0, 22 + titleSize + 14 + chipH / 2), 30)
+					Popups.coinBurst(holder, UDim2.new(0.5, -shift, 0, 22 + titleSize + 14 + chipH / 2), 30)
 				end
 			end)
 		end
