@@ -366,20 +366,6 @@ local TUNE = {
 	ModesUnlockAfter = 0.4, -- s after the YOU DID IT banner has gone
 	ModesUnlockWaitMax = 20, -- s it waits for that banner at most
 	ModesUnlockBeat = 0.45,
-	-- The dumbbell's charge ring: TankRing segments on an ellipse (radii in design px, centred
-	-- at TankRingCentreY of its height: round the plaque), lit as the carried aura grows toward
-	-- TankChargeSeconds of production; all white-gold, swollen and beating when full.
-	TankRing = 18,
-	TankRingRadius = { 76, 47 },
-	TankRingCentreY = 0.43,
-	TankRingSeg = { 9, 6 }, -- unlit
-	TankRingSegOn = { 12, 7 },
-	TankRingSegFull = { 14, 8 },
-	TankRingOff = Color3.fromRGB(52, 46, 96),
-	TankRingOn = Color3.fromRGB(255, 200, 48),
-	TankRingFull = Color3.fromRGB(255, 248, 196),
-	TankRingBeat = 0.4,
-	TankChargeSeconds = 30,
 	-- The FREE gift's "CLAIM!" when ready: a gold tab (ink edge that beats wider) behind the word.
 	ClaimTab = C.Gold,
 	ClaimTabEdge = G.TextInk,
@@ -2825,65 +2811,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	})
 	tankCaption.TextSize = 20
 	carriedLabel.TextSize = 36
-	-- The charge ring: TUNE.TankRing segments on an ellipse round the plaque light up gold, one
-	-- after another from the top, as the carried aura grows toward TankChargeSeconds of
-	-- production; full, they all turn white-gold, swell and beat. Colours and sizes only (the
-	-- HUD's fade owns transparencies).
-	local tankCharge: (number) -> ()
-	-- In a block: its locals stay out of build's 200.
-	do
-		local segments: { Frame } = {}
-		local tw, th = DUMBBELL_W, DUMBBELL_W * DUMBBELL_ASPECT
-		local rx, ry = TUNE.TankRingRadius[1], TUNE.TankRingRadius[2]
-		for i = 1, TUNE.TankRing do
-			local a = -math.pi / 2 + (i - 1) / TUNE.TankRing * math.pi * 2
-			local turn = math.deg(math.atan2(ry * math.cos(a), -rx * math.sin(a)))
-			local seg = Kit.new("Frame", {
-				Name = "Charge" .. i,
-				BackgroundColor3 = TUNE.TankRingOff,
-				BorderSizePixel = 0,
-				AnchorPoint = Vector2.new(0.5, 0.5),
-				Size = UDim2.fromOffset(TUNE.TankRingSeg[1], TUNE.TankRingSeg[2]),
-				Position = UDim2.fromScale(0.5 + rx * math.cos(a) / tw, TUNE.TankRingCentreY + ry * math.sin(a) / th),
-				Rotation = turn,
-				ZIndex = 3,
-				Parent = tank,
-			})
-			Kit.round(seg)
-			Kit.new("UIStroke", { Name = "Edge", Thickness = 1.5, Color = G.TextInk, Parent = seg })
-			segments[i] = seg
-		end
-		local lit = -1
-		local beat: Tween? = nil
-		tankCharge = function(fraction: number)
-			local n = math.clamp(math.floor(fraction * TUNE.TankRing + 0.5), 0, TUNE.TankRing)
-			if n == lit then
-				return
-			end
-			local full = n >= TUNE.TankRing
-			local wasFull = lit >= TUNE.TankRing
-			lit = n
-			for i, seg in segments do
-				local on = i <= n
-				local color = if full then TUNE.TankRingFull elseif on then TUNE.TankRingOn else TUNE.TankRingOff
-				Kit.tween(seg, 0.15, { BackgroundColor3 = color })
-				local size = if full then TUNE.TankRingSegFull elseif on then TUNE.TankRingSegOn else TUNE.TankRingSeg
-				Kit.tween(seg, 0.2, { Size = UDim2.fromOffset(size[1], size[2]) }, Enum.EasingStyle.Back)
-			end
-			if full ~= wasFull then
-				if beat then
-					beat:Cancel()
-					beat = nil
-				end
-				if full then
-					Hud.pulseTank(true)
-					beat = pulse(tankCaption, TUNE.TankRingBeat, { TextColor3 = Color3.new(1, 1, 1) })
-				else
-					tankCaption.TextColor3 = C.GoldLight
-				end
-			end
-		end
-	end
 	-- A bounce and a short cross-fade to the glow art; deposits bounce a little more.
 	local glowToken = 0
 	Hud.pulseTank = function(big: boolean?)
@@ -3610,10 +3537,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 		lastBought = bought
 		roll(carriedLabel, data.carried, State.num, 0.3)
-		do
-			local production = tonumber(data.production) or 0
-			tankCharge(if production > 0 then (tonumber(data.carried) or 0) / (production * TUNE.TankChargeSeconds) else 0)
-		end
 		-- Carried aura dropping to nothing is a deposit: the bigger bounce.
 		if lastCarried ~= nil and lastCarried > 0 and data.carried <= 0 then
 			Hud.pulseTank(true)
