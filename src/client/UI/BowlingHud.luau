@@ -9,8 +9,11 @@
 
 	  Lobby       bottom centre, a compact card: DUMBBELL BOWL, the goal ("Score 50 of 150 in 5
 	              frames"), the best score, the reward status (full pack ready, or the time to
-	              the next one and the run-again share), a four-swatch dumbbell picker
-	              ("BowlingBall" { choice }; Fx glows the matching BallChoiceN rack dumbbell),
+	              the next one and the run-again share), a five-swatch dumbbell picker
+	              ("BowlingBall" { choice }; Fx glows the matching BallChoiceN rack dumbbell;
+	              the fifth is the gold-striped PRO): a dumbbell needing more stars than the
+	              player has ever reached (the payloads' starsEver and ballStars) is dimmed
+	              with a "★n" lock, refuses the pick ("★n TO UNLOCK!") and LB / RB skip it;
 	              a big PLAY ("BowlingBegin": tap, Enter, gamepad X) and LEAVE ("ModeQuit";
 	              gamepad B twice). Space and gamepad A stay the jump so the player can hop
 	              around; LB / RB cycle the dumbbell. The arena's BestBoard (TextLabels Best,
@@ -24,28 +27,32 @@
 	  Controls    bottom centre, one big tap target (the whole panel; also Space, Enter and
 	              gamepad X or A; the bowler stands still, so nothing jumps). On "ready" an
 	              arrow sweeps the lane strip (a constant-speed back-and-forth from a random
-	              side, gutters red at both ends, the pocket gold in the middle): the first
-	              press locks the aim; then the power bar fills and empties: SOFT (mint), the
-	              gold SWEET spot (the start payload's power.sweetLo..sweetHi; the best ball)
-	              and the red TOO HARD top (the dumbbell goes wild and hooks): the second press
-	              sends "BowlingRoll" { aim, power } (never sooner than MIN_TURN after "ready").
-	              The first power turn of a visit coaches "STOP IN THE GOLD!" with an arrow
-	              over the sweet spot. The panel fades while the avatar bowls and the ball
-	              rolls (the roll's path times start `windup` seconds in); once the pins are
-	              down (the roll's skipAt) a tap, click or the bowl key sends "BowlingSkip"
-	              to cut the reaction short. A snapshot that says it is the player's turn
-	              (turn "aim", its `ready` seq not seen) while the HUD still waits opens the
-	              turn from it, so a lost "ready" never stalls the game.
+	              side, gutters red at both ends, the pocket gold in the middle: |aim| up to
+	              the start payload's `pocket`, BowlingRules.POCKET, the same window that
+	              flashes "PERFECT AIM!"): the first press locks the aim; then the power bar
+	              fills and empties: SOFT (mint), the gold SWEET spot (the start payload's
+	              power.sweetLo..sweetHi; the best ball) and the red TOO HARD top (the
+	              dumbbell goes wild and hooks): the second press sends "BowlingRoll" { aim,
+	              power } (never sooner than MIN_TURN after "ready"). The first power turn of
+	              a visit coaches "STOP IN THE GOLD!" with an arrow over the sweet spot. The
+	              panel fades while the avatar bowls and the ball rolls (the roll's path
+	              times start `windup` seconds in); a second into the bowler's reaction (the
+	              roll's skipAt; none after the last ball) a tap, click or the bowl key sends
+	              "BowlingSkip" to cut the rest short. A snapshot that says it is the
+	              player's turn (turn "aim", its `ready` seq not seen) while the HUD still
+	              waits opens the turn from it, so a lost "ready" never stalls the game.
 	  Callouts    centre: "STRIKE!" / "SPARE!" (gold / mint, confetti), "GUTTER!" or the pin
 	              count pop in when the last pin falls; the card updates at the same moment.
 	  Results     a centre card: "YOU PASSED!" with the pay or "SO CLOSE!" with the points
-	              still missing, the score (counting up), three stars (50 / 90 / 130: the
+	              still missing ("AUTO-BOWLED" when the server bowled 2+ balls: nothing
+	              counts), the score (counting up), three stars (50 / 80 / 115: the
 	              earned ones pop in gold; the lobby's best pill and the BestBoard's Clears
 	              caption show the best game's stars), the stars' bonus cash, the best
 	              ("NEW BEST!" flashes), PLAY AGAIN ("BowlingBegin"; Enter, gamepad X) and
 	              LOBBY ("BowlingLobby"; gamepad B; it dims until the server's "lobby"
-	              arrives). It hides itself when the phase is back to "lobby" (the server
-	              does that after about 6 s).
+	              arrives); a dumbbell the game's stars unlocked is announced. It hides
+	              itself when the phase is back to "lobby" (the server does that after the
+	              results' lobbyIn seconds).
 
 	Wired from Main.client.luau (nothing else needs editing):
 	  init(screen)        once, builds the HUD (hidden)
@@ -76,7 +83,9 @@ local C = Kit.C
 local F = Kit.F
 
 local FRAMES = 5
-local BALLS = 4
+-- The rack's four dumbbells and the PRO one (BowlingRules.BALL_CHOICES, PRO_BALL).
+local BALLS = 5
+local PRO_BALL = 5
 -- Scorecard: frame box size, the TOTAL box, the gap to the unit-count capsule.
 local CARD = { BoxW = 56, BoxH = 58, TotalW = 74, Pad = 8, MinY = 120, Clear = 12 }
 -- The controls panel (bottom centre) and its two strips.
@@ -91,25 +100,31 @@ local PRESS_GUARD = 0.18
 -- BowlingRules.READY_GAP = 0.8 s).
 local MIN_TURN = 0.85
 -- The star scores (the start payload's `tiers`; BowlingRules.STAR_TIERS).
-local tiers = { 50, 90, 130 }
+local tiers = { 50, 80, 115 }
+-- The dumbbell unlocks: the most stars of any game and the stars each pick needs (the
+-- payloads' starsEver and the start payload's ballStars; BowlingRules.BALL_STARS).
+local starsEver = 0
+local ballStars = { 0, 0, 1, 2, 3 }
 -- LOBBY on the results card waits this long for the server's "lobby" before it re-arms.
 local LOBBY_WAIT = 3
 -- A snapshot that says it is the player's turn while the HUD still waits brings the controls
 -- up after this long (the "ready" event went missing).
 local RECOVER_AFTER = 0.6
--- |aim| under POCKET hits the head pin square ("PERFECT AIM!"). Power is a choice
+-- |aim| up to POCKET is the pocket: the gold band and "PERFECT AIM!" (the start payload's
+-- `pocket`, BowlingRules.POCKET, where the simulated scores really are best). Power is a choice
 -- (BowlingRules.POWER, sent as the start payload's `power`): under sweetLo the dumbbell is
 -- soft, sweetLo..sweetHi is the SWEET spot, over sweetHi it goes wild.
-local POCKET = 0.12
+local pocket = 0.12
 local SWEET = { Lo = 0.72, Hi = 0.9 }
 -- Seconds from a "roll" to the release (the avatar's run-up; the start payload's `windup`).
 local windup = 0.9
 -- Callout word: pop scale, hold and fade.
 local CALLOUT = { TextSize = 84, Hold = 1.1, Rise = 40 }
 -- The lobby card (bottom centre) and its parts.
-local LOBBY = { W = 476, H = 206, Swatch = 48, SwatchGap = 8, PlayW = 172, PlayH = 74 }
--- Seconds the server keeps the results card up before the lobby (docs: about 6 s).
-local RESULTS_BACK = 6
+local LOBBY = { W = 476, H = 206, Swatch = 46, SwatchGap = 6, PlayW = 172, PlayH = 74 }
+-- Seconds the server keeps the results card up before the lobby (the results' lobbyIn; the
+-- start payload's resultsSeconds until one comes).
+local resultsBack = 6
 -- A snapshot's phase only overrides the HUD's once the HUD's own has stood this long (a
 -- snapshot sent just before a Notify must not undo it).
 local PHASE_TRUST = 1.5
@@ -147,6 +162,7 @@ local aimLock: Frame
 local powerStrip: Frame
 local powerFill: Frame
 local sweetBand: Frame
+local pocketBand: Frame
 local wildBand: Frame
 local againKey: TextLabel
 local coachArrow: TextLabel
@@ -175,7 +191,7 @@ local pickCaption: TextLabel
 local playButton: TextButton
 local playKey: TextLabel
 local leaveButton: TextButton
-local swatches: { { button: TextButton, ring: UIStroke, face: Frame } } = {}
+local swatches: { { button: TextButton, ring: UIStroke, face: Frame, lock: TextLabel } } = {}
 
 local running = false
 -- The run's phase: "off", "lobby", "countdown", "play" or "results".
@@ -192,6 +208,8 @@ local stats: { [string]: any } = { best = 0, clears = 0, preview = nil, cooldown
 local choice = 1
 local pendingPick: number? = nil
 local pickToken = 0
+-- Bumped by each "TO UNLOCK" note on the picker caption (the latest one restores it).
+local captionToken = 0
 local pickedAt = -math.huge
 local quitArmed = false
 local leaveArmed = false
@@ -210,6 +228,8 @@ local readySeq = -1
 -- While a ball settles: when a tap may skip the reaction ("BowlingSkip"), and if one was sent.
 local skipFrom = math.huge
 local skipSent = false
+-- The settling ball was the game's last: no skip (the results and the final reaction follow).
+local lastBall = false
 -- The power meter's "STOP IN THE GOLD!" coaching: once per visit.
 local coached = false
 -- LOBBY was pressed on the results card; waiting for the server's "lobby".
@@ -220,6 +240,12 @@ local snapReady: any = nil
 
 local function num(value: any, default: number): number
 	return if type(value) == "number" and value == value then value else default
+end
+
+-- Dumbbell `i` needs more stars than the player has reached (BowlingRules.ballUnlocked).
+local function locked(i: number): boolean
+	local need = ballStars[i]
+	return type(need) == "number" and starsEver < need
 end
 
 -- Stars for a score (as BowlingRules.stars) and the stars as text ("★★☆").
@@ -346,14 +372,37 @@ end
 local function paintSwatches()
 	for i, s in swatches do
 		local on = i == choice
-		s.ring.Color = if on then C.Gold else C.Edge
+		local shut = locked(i)
+		s.ring.Color = if on then C.Gold elseif i == PRO_BALL and not shut then C.Gold else C.Edge
 		s.ring.Thickness = if on then 4 else 2
 		s.face.BackgroundColor3 = if on then C.SurfaceHiTop else C.Well
-		for _, plate in s.face:GetChildren() do
-			if plate:IsA("Frame") and plate.Name == "Plate" then
-				plate.BackgroundColor3 = BowlingFx.ballColor(i)
+		for _, child in s.face:GetChildren() do
+			if child:IsA("Frame") and child.Name == "Plate" then
+				child.BackgroundColor3 = if i == PRO_BALL then C.Ink else BowlingFx.ballColor(i)
+				child.BackgroundTransparency = if shut then 0.65 else 0
+			elseif child:IsA("Frame") and child.Name == "Bar" then
+				child.BackgroundTransparency = if shut then 0.65 else 0
 			end
 		end
+		s.lock.Visible = shut
+		s.lock.Text = "★" .. tostring(ballStars[i] or 0)
+	end
+	BowlingFx.setLocks(starsEver, ballStars)
+end
+
+-- The unlocks from a payload (starsEver; ballStars on "start").
+local function takeLocks(p: any)
+	local changed = false
+	if type(p.starsEver) == "number" and p.starsEver == p.starsEver and p.starsEver ~= starsEver then
+		starsEver = p.starsEver
+		changed = true
+	end
+	if type(p.ballStars) == "table" and #p.ballStars > 0 then
+		ballStars = table.clone(p.ballStars)
+		changed = true
+	end
+	if changed and #swatches > 0 then
+		paintSwatches()
 	end
 end
 
@@ -366,9 +415,33 @@ local function sendPick()
 	end
 end
 
--- Picks dumbbell `i` (wraps 1..BALLS); `quiet` = from the server, nothing to send.
-local function pick(i: number, quiet: boolean?)
+-- Picks dumbbell `i` (wraps 1..BALLS); `quiet` = from the server, nothing to send. A locked
+-- one says how many stars it needs instead (`step`: LB / RB cycling skips locked ones).
+local function pick(i: number, quiet: boolean?, step: number?)
 	i = ((math.floor(i) - 1) % BALLS) + 1
+	if step and not quiet then
+		for _ = 1, BALLS do
+			if not locked(i) then
+				break
+			end
+			i = ((i + step - 1) % BALLS) + 1
+		end
+	end
+	if locked(i) and not quiet then
+		Kit.sound("Error")
+		Kit.pop(swatches[i].button, 1.15)
+		pickCaption.Text = "★" .. tostring(ballStars[i] or 0) .. " IN A GAME TO UNLOCK!"
+		pickCaption.TextColor3 = C.Gold
+		captionToken += 1
+		local mine = captionToken
+		task.delay(2.2, function()
+			if captionToken == mine then
+				pickCaption.Text = if Kit.gamepad then "PICK YOUR DUMBBELL  (LB / RB)" else "PICK YOUR DUMBBELL"
+				pickCaption.TextColor3 = C.TextDim
+			end
+		end)
+		return
+	end
 	local changed = i ~= choice
 	choice = i
 	paintSwatches()
@@ -449,7 +522,18 @@ local function showFinish(p: any, won: boolean)
 	finishBestLine.Text = "BEST " .. best
 	finishBestLine.TextColor3 = if p.newBest == true then C.Gold else C.TextDim
 	local stars = math.clamp(math.floor(num(p.stars, starsOf(score))), 0, #tiers)
-	if won then
+	resultsBack = math.max(0, num(p.lobbyIn, resultsBack))
+	takeLocks(p)
+	if p.auto == true then
+		-- The server bowled two or more balls (AFK): nothing counted.
+		finishTitle.Text = "AUTO-BOWLED"
+		finishTitle.TextColor3 = C.TextDim
+		stars = 0
+	end
+	if p.auto == true then
+		finishSub.Text = "Auto rolls don't count. Bowl it yourself!"
+		finishCash.Visible = false
+	elseif won then
 		local nextTier = tiers[stars + 1]
 		finishSub.Text = if nextTier then "Next star at " .. nextTier .. " points!" else "All three stars! Legend!"
 		local cash = num(p.cash, 0)
@@ -496,6 +580,21 @@ local function showFinish(p: any, won: boolean)
 				end
 			end)
 		end
+	end
+	-- A dumbbell this game's stars unlocked.
+	local fresh = if type(p.unlocked) == "table" then p.unlocked else {}
+	if #fresh > 0 then
+		local pro = table.find(fresh, PRO_BALL) ~= nil
+		finishSub.Text = if pro then "PRO DUMBBELL UNLOCKED!" else "NEW DUMBBELL UNLOCKED!"
+		finishSub.TextColor3 = C.Gold
+		task.delay(0.6 + stars * 0.28, function()
+			if mode == "results" and finishCard.Visible then
+				Kit.pop(finishSub, 1.3)
+				Sounds.play("Upgrade")
+			end
+		end)
+	else
+		finishSub.TextColor3 = C.TextDim
 	end
 	finishBest.Visible = false
 	finishBack.Text = ""
@@ -567,7 +666,7 @@ end
 
 -- A tap while a ball settles: once its pins are down, skip the rest of the reaction.
 local function trySkip()
-	if not running or mode ~= "play" or phase ~= "sent" or skipSent or os.clock() < skipFrom then
+	if not running or mode ~= "play" or phase ~= "sent" or skipSent or lastBall or os.clock() < skipFrom then
 		return
 	end
 	skipSent = true
@@ -590,7 +689,7 @@ local function press()
 		aimLock.Position = UDim2.fromScale((aim + 1) / 2, 0.5)
 		aimLock.Visible = true
 		Kit.pop(aimStrip, 1.04)
-		if math.abs(aim) <= POCKET then
+		if math.abs(aim) <= pocket then
 			Sounds.play("Coin")
 			flash("PERFECT AIM!", C.Gold)
 		else
@@ -663,7 +762,7 @@ local function step()
 		if mode == "lobby" then
 			paintLobby()
 		elseif mode == "results" then
-			local left = math.ceil(RESULTS_BACK - (now - resultsAt))
+			local left = math.ceil(resultsBack - (now - resultsAt))
 			finishBack.Text = if left > 0 then "Back to the lobby in " .. left else ""
 		end
 	end
@@ -737,7 +836,7 @@ local function toLobby()
 	if mode ~= "results" or lobbyPending then
 		return
 	end
-	-- The server brings the player over by itself after RESULTS_BACK; this asks for it now.
+	-- The server brings the player over by itself after resultsBack; this asks for it now.
 	-- The card stays until its "lobby" arrives (so the view never runs ahead of the server).
 	action:FireServer({ action = "BowlingLobby" })
 	Kit.pop(lobbyButton, 1.15)
@@ -792,7 +891,8 @@ local function bindKeys()
 		end, Enum.KeyCode.ButtonB)
 		bindAt(CYCLE_ACTION, function(_, state, input)
 			if state == Enum.UserInputState.Begin then
-				pick(choice + (if input.KeyCode == Enum.KeyCode.ButtonL1 then -1 else 1))
+				local step = if input.KeyCode == Enum.KeyCode.ButtonL1 then -1 else 1
+				pick(choice + step, false, step)
 			end
 			return Enum.ContextActionResult.Sink
 		end, Enum.KeyCode.ButtonL1, Enum.KeyCode.ButtonR1)
@@ -943,6 +1043,7 @@ local function onReady(p: any)
 	readyAt = os.clock()
 	readySeq = num(p.seq, readySeq)
 	skipFrom = math.huge
+	lastBall = false
 	paintCard(p.card, p.total)
 	local frame = num(p.frame, 1)
 	highlightFrame(frame)
@@ -959,9 +1060,10 @@ local function onRoll(p: any)
 	setPhase("sent")
 	-- A tap skips the reaction once the pins are down (the server's own clock starts first).
 	skipSent = false
-	skipFrom = os.clock() + num(p.skipAt, math.huge)
+	lastBall = p.over == true
+	skipFrom = if lastBall then math.huge else os.clock() + num(p.skipAt, math.huge)
 	if p.auto == true then
-		flash("AUTO ROLL", C.TextDim)
+		flash(if p.autoGame == true then "AUTO ROLL: THIS GAME WON'T COUNT" else "AUTO ROLL", C.TextDim)
 	end
 	-- A late "roll" after the timeout brought the controls back: hide them again.
 	if controls.Visible then
@@ -1034,6 +1136,12 @@ function BowlingHud.start(payload: { [string]: any }?)
 	if type(p.tiers) == "table" and #p.tiers > 0 then
 		tiers = table.clone(p.tiers)
 	end
+	resultsBack = math.max(0, num(p.resultsSeconds, resultsBack))
+	if type(p.pocket) == "number" and p.pocket == p.pocket then
+		pocket = math.clamp(p.pocket, 0, 1)
+		placeZones()
+	end
+	takeLocks(p)
 	readySeq = -1
 	snapReady = nil
 	if type(p.choice) == "number" then
@@ -1104,14 +1212,20 @@ function BowlingHud.onNotify(payload: { [string]: any })
 		if type(payload.rewardPreview) == "table" then
 			stats.preview = payload.rewardPreview
 		end
+		takeLocks(payload)
 		if type(payload.choice) == "number" and pendingPick == nil then
 			pick(payload.choice, true)
 		end
 		applyMode("lobby")
 		paintLobby()
 	elseif event == "ball" then
-		-- The server took a pick: keep it unless the player has already moved on.
-		if type(payload.choice) == "number" and pendingPick == nil and os.clock() - pickedAt > PICK_SEND + 0.5 then
+		-- The server took a pick: keep it unless the player has already moved on. A refused
+		-- (locked) pick snaps back to the server's at once.
+		if
+			type(payload.choice) == "number"
+			and pendingPick == nil
+			and (payload.locked ~= nil or os.clock() - pickedAt > PICK_SEND + 0.5)
+		then
 			pick(payload.choice, true)
 		end
 	elseif event == "countdown" then
@@ -1153,6 +1267,7 @@ function BowlingHud.onState(data: any)
 		stats.preview = info.rewardPreview
 	end
 	target = num(info.target, target)
+	takeLocks(info)
 	-- The server's pick (a rejoin, or one it refused) wins unless the player just picked.
 	local theirs = info.choice
 	if type(theirs) == "number" and theirs >= 1 and theirs <= BALLS and pendingPick == nil and os.clock() - pickedAt > 2 then
@@ -1195,6 +1310,10 @@ placeZones = function()
 	end
 	if wildBand then
 		wildBand.Size = UDim2.fromScale(1 - SWEET.Hi, 1)
+	end
+	-- The aim strip spans aim -1..1, so the pocket's +-pocket is `pocket` of its width.
+	if pocketBand then
+		pocketBand.Size = UDim2.new(pocket, 0, 1, -6)
 	end
 end
 
@@ -1409,17 +1528,17 @@ local function buildControls()
 		})
 		Kit.round(gutter)
 	end
-	local pocket = Kit.new("Frame", {
+	pocketBand = Kit.new("Frame", {
 		Name = "Pocket",
 		BackgroundColor3 = C.Gold,
 		BackgroundTransparency = 0.35,
-		Size = UDim2.new(POCKET, 0, 1, -6),
+		Size = UDim2.new(pocket, 0, 1, -6),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		ZIndex = 4,
 		Parent = aimStrip,
 	})
-	Kit.round(pocket)
+	Kit.round(pocketBand)
 	Kit.new("Frame", {
 		Name = "Centre",
 		BackgroundColor3 = C.Ink,
@@ -1585,7 +1704,7 @@ local function buildSwatch(parent: Instance, i: number, x: number, y: number)
 	for _, side in { -1, 1 } do
 		local plate = Kit.new("Frame", {
 			Name = "Plate",
-			BackgroundColor3 = BowlingFx.ballColor(i),
+			BackgroundColor3 = if i == PRO_BALL then C.Ink else BowlingFx.ballColor(i),
 			Size = UDim2.fromOffset(11, 28),
 			Position = UDim2.new(0.5, side * 10, 0.5, 0),
 			AnchorPoint = Vector2.new(0.5, 0.5),
@@ -1594,12 +1713,53 @@ local function buildSwatch(parent: Instance, i: number, x: number, y: number)
 		})
 		Kit.corner(plate, 4)
 		Kit.stroke(plate, 1.5, C.Ink)
+		if i == PRO_BALL then
+			-- The PRO dumbbell: dark plates, a gold stripe across each.
+			Kit.new("Frame", {
+				Name = "Stripe",
+				BackgroundColor3 = C.Gold,
+				BorderSizePixel = 0,
+				Size = UDim2.new(1, 0, 0, 5),
+				Position = UDim2.fromScale(0.5, 0.5),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = 7,
+				Parent = plate,
+			})
+		end
 	end
+	if i == PRO_BALL then
+		Kit.text(face, {
+			Name = "Pro",
+			Text = "PRO",
+			Font = F.Display,
+			TextSize = 11,
+			TextColor3 = C.Gold,
+			Size = UDim2.new(1, 0, 0, 12),
+			Position = UDim2.new(0, 0, 0, 1),
+			ZIndex = 8,
+		})
+	end
+	-- Locked: a gold "★n" chip (the stars it needs) over the dimmed dumbbell.
+	local lock = Kit.text(face, {
+		Name = "Lock",
+		Text = "★0",
+		Font = F.Display,
+		TextSize = 14,
+		TextColor3 = C.Gold,
+		BackgroundColor3 = C.Ink,
+		BackgroundTransparency = 0.15,
+		Size = UDim2.fromOffset(30, 18),
+		Position = UDim2.new(0.5, 0, 1, -2),
+		AnchorPoint = Vector2.new(0.5, 1),
+		ZIndex = 9,
+		Visible = false,
+	})
+	Kit.corner(lock, 9)
 	Kit.selectable(button)
 	button.Activated:Connect(function()
 		pick(i)
 	end)
-	swatches[i] = { button = button, ring = ring, face = face }
+	swatches[i] = { button = button, ring = ring, face = face, lock = lock }
 end
 
 local function buildLobby()

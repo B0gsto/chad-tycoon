@@ -46,7 +46,11 @@
 	  Ball pick  the HUD's lobby picker (setBall) paints the dumbbells' plates in the chosen
 	             colour and marks the matching rack dumbbell (BallChoice1..4 under the arena
 	             Model): its neon "Glow" strip lit (the others dimmed), a highlight and a
-	             bobbing arrow; a "roll" carries `ball` (1..4).
+	             bobbing arrow; a "roll" carries `ball` (1..5). Pick 5 is the PRO dumbbell
+	             (not on the rack): dark plates with a gold neon stripe round each rim.
+	             setLocks fades the rack dumbbells the player hasn't unlocked yet (local
+	             LocalTransparencyModifier, glow off) under a "LOCKED ★n" tag. Other
+	             bowlers' held dumbbells take their "BowlBall" pick's colour.
 	  Lobby      the run starts in the lobby: the lane info may come with "start" or with any
 	             later event that carries `lane`. setMode("countdown") from the HUD puts the
 	             bowler on its spot; setMode("lobby" | "results") hands the avatar and the
@@ -59,7 +63,8 @@
 	                               (phase "aim" | "power" | "off")
 	  setMode(mode)                from BowlingHud when the run's phase changes
 	  ready(payload)               from BowlingHud: a "ready" it recovered from the snapshot
-	  setBall(choice)              from BowlingHud's ball picker (1..4)
+	  setBall(choice)              from BowlingHud's ball picker (1..5)
+	  setLocks(starsEver, needs)   from BowlingHud: the unlocks (BowlingRules.BALL_STARS)
 	  ballColor(choice)            the colour of rack dumbbell `choice` (for the HUD swatches)
 	  arena()                      the arena Model (BowlingHud fills its BestBoard)
 ]]
@@ -116,7 +121,13 @@ local CAMERA = {
 local BURST = { strike = 22, spare = 14, Size = 1.6, Spread = 7, Life = 1.4 }
 -- The ball picker: plate colours when the arena's BallChoiceN models can't be read, and the
 -- arrow over the chosen rack dumbbell (studs above it, bob height and speed).
-local BALL_COLORS = { W.Coral, W.Blue, W.Mint, W.Grape }
+-- The fifth is the PRO dumbbell (BowlingRules.PRO_BALL, unlocked at three stars; not on the
+-- rack): dark plates with a gold neon stripe round each rim and gold hubs.
+local BALL_COLORS = { W.Coral, W.Blue, W.Mint, W.Grape, W.Gold }
+local PRO_BALL = 5
+local PRO = { Plate = W.Ink, Stripe = W.Gold, Width = 0.4, Grow = 1.06 }
+-- A locked rack dumbbell: how faded it is and its tag (pixels; studs above it).
+local LOCK = { Fade = 0.6, W = 120, H = 28, Up = 2.4 }
 local MARKER = { Up = 3.2, Bob = 0.35, Rate = 4 }
 
 -- The bowler (the player's avatar): its spot (studs behind the foul line, and left of the
@@ -165,6 +176,10 @@ local controlsOff = false
 local lastAim = 0
 local stepped = false
 local ballChoice = 1
+-- The dumbbell unlocks (setLocks): the most stars ever and the stars each pick needs.
+local starsEver = 0
+local ballStars: { number } = { 0, 0, 1, 2, 3 }
+local lockTags: { [number]: BillboardGui } = {}
 local marker: { glow: Highlight, arrow: BillboardGui }? = nil
 -- Defined under Lifecycle (onReady calls it first).
 local adopt: (p: any) -> ()
@@ -450,33 +465,124 @@ local function anchorOf(model: Instance): BasePart?
 	return best
 end
 
--- Lights the picked rack dumbbell's neon "Glow" strip and dims the others (`none`: all lit
--- again, as the arena builds them).
+-- Dumbbell `i` is locked: it needs more stars than the player has ever reached (setLocks).
+local function isLocked(i: number): boolean
+	local need = ballStars[i]
+	return type(need) == "number" and starsEver < need
+end
+
+-- Lights the picked rack dumbbell's neon "Glow" strip and dims the others; a locked one is
+-- faded on this client (LocalTransparencyModifier) with its glow off and a "★n TO UNLOCK"
+-- tag over it. `none`: all lit and solid again, as the arena builds them.
 local function lightGlows(none: boolean?)
 	for i = 1, #BALL_COLORS do
 		local model = choiceModel(i)
-		local glow = model and model:FindFirstChild("Glow")
-		if glow and glow:IsA("BasePart") then
-			glow.Transparency = if none or i == ballChoice then 0 else 0.75
+		if model then
+			local locked = not none and isLocked(i)
+			for _, part in model:GetDescendants() do
+				if part:IsA("BasePart") then
+					part.LocalTransparencyModifier = if locked then LOCK.Fade else 0
+				end
+			end
+			if model:IsA("BasePart") then
+				model.LocalTransparencyModifier = if locked then LOCK.Fade else 0
+			end
+			local glow = model:FindFirstChild("Glow")
+			if glow and glow:IsA("BasePart") then
+				glow.Transparency = if none or (i == ballChoice and not locked) then 0 elseif locked then 1 else 0.75
+			end
+			local tag = lockTags[i]
+			if locked and not tag and folder then
+				local anchor = anchorOf(model)
+				if anchor then
+					local gui = Instance.new("BillboardGui")
+					gui.Name = "BallLock"
+					gui.Adornee = anchor
+					gui.Size = UDim2.fromOffset(LOCK.W, LOCK.H)
+					gui.StudsOffsetWorldSpace = Vector3.new(0, LOCK.Up, 0)
+					gui.LightInfluence = 0
+					gui.MaxDistance = 90
+					gui.Parent = folder
+					local label = Instance.new("TextLabel")
+					label.BackgroundColor3 = W.Ink
+					label.BackgroundTransparency = 0.2
+					label.Size = UDim2.fromScale(1, 1)
+					label.Font = Enum.Font.FredokaOne
+					label.Text = "LOCKED  ★" .. tostring(ballStars[i])
+					label.TextScaled = true
+					label.TextColor3 = W.Sunny
+					label.TextStrokeColor3 = W.Ink
+					label.TextStrokeTransparency = 0
+					label.Parent = gui
+					local corner = Instance.new("UICorner")
+					corner.CornerRadius = UDim.new(0.5, 0)
+					corner.Parent = label
+					local padding = Instance.new("UIPadding")
+					padding.PaddingLeft = UDim.new(0, 8)
+					padding.PaddingRight = UDim.new(0, 8)
+					padding.PaddingTop = UDim.new(0, 3)
+					padding.PaddingBottom = UDim.new(0, 3)
+					padding.Parent = label
+					lockTags[i] = gui
+				end
+			elseif not locked and tag then
+				tag:Destroy()
+				lockTags[i] = nil
+			end
+		end
+	end
+	if none then
+		for i, tag in lockTags do
+			tag:Destroy()
+			lockTags[i] = nil
 		end
 	end
 end
 
-local function paintPlates(model: Model?, color: Color3)
+-- Paints a dumbbell model for pick `choice`: its plates in the pick's colour, or for the
+-- PRO dumbbell dark plates with a gold stripe round each rim (ProStripe parts, welded to a
+-- loose plate so a held one carries them) and gold hubs.
+local function paintPlates(model: Model?, choice: number)
 	if not model then
 		return
 	end
+	local pro = choice == PRO_BALL
+	local color = Bowling.ballColor(choice)
+	for _, part in model:GetDescendants() do
+		if part:IsA("BasePart") and part.Name == "ProStripe" and not pro then
+			part:Destroy()
+		end
+	end
 	for _, part in model:GetDescendants() do
 		if part:IsA("BasePart") and part.Name == "Plate" then
-			part.Color = color
+			part.Color = if pro then PRO.Plate else color
+			if pro and not part:FindFirstChild("ProStripe") then
+				local stripe = part:Clone()
+				stripe:ClearAllChildren()
+				stripe.Name = "ProStripe"
+				stripe.Size = Vector3.new(part.Size.X * PRO.Width, part.Size.Y * PRO.Grow, part.Size.Z * PRO.Grow)
+				stripe.CFrame = part.CFrame
+				stripe.Color = PRO.Stripe
+				stripe.Material = Enum.Material.Neon
+				stripe.Anchored = part.Anchored
+				stripe.Massless = true
+				stripe.Parent = part
+				if not part.Anchored then
+					local link = Instance.new("WeldConstraint")
+					link.Part0 = part
+					link.Part1 = stripe
+					link.Parent = stripe
+				end
+			end
+		elseif part:IsA("BasePart") and part.Name == "Hub" and pro then
+			part.Color = PRO.Stripe
 		end
 	end
 end
 
 local function paintBall()
-	local color = Bowling.ballColor(ballChoice)
-	paintPlates(dumbbell, color)
-	paintPlates(held, color)
+	paintPlates(dumbbell, ballChoice)
+	paintPlates(held, ballChoice)
 	lightGlows()
 	if marker then
 		marker.glow:Destroy()
@@ -527,6 +633,18 @@ function Bowling.setBall(choice: number)
 	ballChoice = i
 	if running then
 		paintBall()
+	end
+end
+
+-- The dumbbell unlocks from the HUD (the payloads' starsEver and ballStars): fades and tags
+-- the locked rack dumbbells.
+function Bowling.setLocks(stars: number, needs: { number }?)
+	starsEver = num(stars, 0)
+	if type(needs) == "table" then
+		ballStars = table.clone(needs)
+	end
+	if running then
+		lightGlows()
 	end
 end
 
@@ -723,7 +841,7 @@ local function gripHeld()
 	end
 	local copy = holdIn(player.Character, arena)
 	if copy then
-		paintPlates(copy, Bowling.ballColor(ballChoice))
+		paintPlates(copy, ballChoice)
 		copy.Parent = folder
 		held = copy
 	end
@@ -990,7 +1108,7 @@ local function onRoll(p: any)
 	local ball = dumbbell
 	local pose = poser
 	local bowler = pose ~= nil and held ~= nil and windup > 0
-	-- `ball` is the picked colour (1..4); `ballChoice` is accepted too.
+	-- `ball` is the picked dumbbell (1..5); `ballChoice` is accepted too.
 	local pick = p.ballChoice or p.ball
 	if type(pick) == "number" and pick >= 1 and pick <= #BALL_COLORS and pick ~= ballChoice then
 		ballChoice = math.floor(pick)
@@ -1379,6 +1497,10 @@ local function poseOther(w: Watched, character: Model)
 		end
 		local copy = holdIn(character, findArena())
 		if copy then
+			-- Their pick's colour ("BowlBall"; the rack's first colour when missing).
+			local pick = character:GetAttribute("BowlBall")
+			local i = if type(pick) == "number" and pick == pick then math.clamp(math.floor(pick), 1, #BALL_COLORS) else 1
+			paintPlates(copy, i)
 			copy.Parent = fx
 			w.held = copy
 		end
