@@ -1375,4 +1375,136 @@ end
 
 Poses.hash = hash
 
+-- Shake poses
+-- SHAKE CATCH moves for a player's own avatar holding the catch tray in both hands
+-- (Client.Fx.Shake plays them through Fx.PlayerPose, layered: over walking legs only the arms
+-- and torso take them). The tray rests on the hands, so every arm here is a tray height.
+
+-- The carry: forearms out level in front at belly height, elbows tucked, eyes up for drops;
+-- the tray sways a little side to side as if balanced.
+STORY.ShakeCarry = {
+	base = P({
+		UpperTorso = { 3, 0, 0 },
+		Head = { 12, 0, 0 },
+		RightUpperArm = { 34, 0, -4 },
+		RightLowerArm = { 58, 0, 0 },
+		RightUpperLeg = { 0, 0, 4 },
+		RightFoot = { 0, 0, -4 },
+	}),
+	anim = function(v, t)
+		local s = math.sin(t * 2.1)
+		add(v, "RightUpperArm", 2.5 * s, 0, 0)
+		add(v, "LeftUpperArm", -2.5 * s, 0, 0)
+		add(v, "UpperTorso", 0, 0, 1.2 * s)
+	end,
+}
+
+-- A catch landing: a quick knee dip, the tray giving a little under the weight.
+STORY.ShakeDip = {
+	base = P({
+		UpperTorso = { -6, 0, 0 },
+		Head = { 6, 0, 0 },
+		RightUpperArm = { 26, 0, -4 },
+		RightLowerArm = { 62, 0, 0 },
+		RightUpperLeg = { 24, 0, 5 },
+		RightLowerLeg = { -44, 0, 0 },
+		RightFoot = { 20, 0, -5 },
+	}, -0.18),
+}
+
+-- Out of the dip: the tray pushed up high in front, chest proud, up on the toes.
+STORY.ShakeLift = {
+	base = P({
+		UpperTorso = { 7, 0, 0 },
+		Head = { 14, 0, 0 },
+		RightUpperArm = { 64, 0, -4 },
+		RightLowerArm = { 40, 0, 0 },
+		RightUpperLeg = { 0, 0, 4 },
+		RightFoot = { -14, 0, -4 },
+	}, 0.06),
+}
+
+-- Coiling for a golden catch: a deep squat, tray low and close.
+STORY.ShakeGoldCrouch = {
+	base = P({
+		UpperTorso = { -12, 0, 0 },
+		Head = { 12, 0, 0 },
+		RightUpperArm = { 20, 0, -4 },
+		RightLowerArm = { 76, 0, 0 },
+		RightUpperLeg = { 40, 0, 9 },
+		RightLowerLeg = { -72, 0, 0 },
+		RightFoot = { 32, 0, -9 },
+	}, -0.44),
+}
+
+-- The golden pop: springing up, the tray pressed overhead, legs long and toes pointed.
+STORY.ShakeGoldPop = {
+	base = P({
+		UpperTorso = { 9, 0, 0 },
+		Head = { 22, 0, 0 },
+		RightUpperArm = { 152, 0, 6 },
+		RightLowerArm = { 18, 0, 0 },
+		RightUpperLeg = { -6, 0, 5 },
+		RightLowerLeg = { -10, 0, 0 },
+		RightFoot = { -24, 0, -5 },
+	}),
+}
+
+-- Junk food hit: recoiling back from the tray, head turned away, the tray pushed out and
+-- down at arm's length, a foot stepping back; the head shakes it off.
+STORY.ShakeFlinch = {
+	base = P({
+		UpperTorso = { 14, 10, 4 },
+		Head = { -10, -26, 6 },
+		RightUpperArm = { 22, 0, 2 },
+		RightLowerArm = { 26, 0, 0 },
+		RightUpperLeg = { -16, 0, 5 },
+		RightLowerLeg = { -14, 0, 0 },
+		RightFoot = { 30, 0, -5 },
+		LeftUpperLeg = { 12, 0, -4 },
+		LeftLowerLeg = { -20, 0, 0 },
+		LeftFoot = { 8, 0, 4 },
+	}, -0.06),
+	anim = function(v, t)
+		add(v, "Head", 0, 14 * math.sin(t * 17), 0)
+	end,
+}
+
+-- A win: the tray hoisted high overhead like a trophy, wide stance, pumping it.
+STORY.ShakeCheer = {
+	base = P({
+		UpperTorso = { 8, 0, 0 },
+		Head = { 18, 0, 0 },
+		RightUpperArm = { 166, 0, 10 },
+		RightLowerArm = { 8, 0, 0 },
+		RightUpperLeg = { 0, 0, 11 },
+		RightFoot = { 0, 0, -11 },
+	}),
+	anim = function(v, t)
+		local u = pulse(t, 0.5)
+		add(v, "RightUpperArm", -10 * u, 0, 0)
+		add(v, "LeftUpperArm", -10 * u, 0, 0)
+		add(v, "RightLowerArm", 14 * u, 0, 0)
+		add(v, "LeftLowerArm", 14 * u, 0, 0)
+	end,
+}
+
+-- A loss: shoulders slumped, head hanging, the tray dangling low, knees soft; a slow sigh.
+STORY.ShakeSlump = {
+	base = P({
+		UpperTorso = { -14, 0, 0 },
+		Head = { -26, 0, 0 },
+		RightUpperArm = { 8, 0, -2 },
+		RightLowerArm = { 30, 0, 0 },
+		RightUpperLeg = { 8, 0, 4 },
+		RightLowerLeg = { -14, 0, 0 },
+		RightFoot = { 6, 0, -4 },
+	}, -0.05),
+	anim = function(v, t)
+		local s = math.sin(t * 1.3)
+		add(v, "UpperTorso", 2.5 * s, 0, 0)
+		add(v, "Head", 2 * s, 0, 0)
+	end,
+}
+
 return Poses

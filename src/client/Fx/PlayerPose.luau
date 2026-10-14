@@ -6,9 +6,12 @@
 	AnimationConstraints an avatar with upgraded joints has instead) every frame after Roblox's
 	animations have run. Local only: each client poses the characters it sees itself.
 
-	  PlayerPose.attach(character)  a Poser holding the joints, standing HandsOnHips, or nil
+	  PlayerPose.attach(character, layered?)
+	                                a Poser holding the joints, standing HandsOnHips, or nil
 	                                for a missing or R6 avatar (an R15 one still loading is
-	                                held anyway and posed once its joints turn up)
+	                                held anyway and posed once its joints turn up); a layered
+	                                one only poses the upper body while its player walks or
+	                                is in the air (see Layered)
 	  poser:strike(pose, hop?)      snap into `pose` (any Poses name) with an eased blend,
 	                                plus an optional hop (studs)
 	  poser:play(keys, release?)    a move: the keys (see Key) one after another, then the
@@ -25,6 +28,11 @@
 	rotation back out, so a lean bends at the waist over feet that stay put. A key's `legs`
 	pose drives the legs and hips under the main pose's upper body (a flex on a lunge). Blends
 	may overshoot (Back easing goes past the key and settles), joints and root alike.
+
+	Layered: while the avatar walks or is in the air the hips and legs ease back (LAYER_BLEND)
+	to its own animations (walk, run, jump), so a carry or a catch moves the arms and torso
+	over walking legs; the root's turn then bends the waist instead, and a hop still lifts
+	the whole body. Standing still, the move gets the whole body again (knee dips, stances).
 
 	A pose transform is a rotation at the joint in the parent limb's frame; a joint Transform
 	is the same rotation turned into the joint's C0 frame.
@@ -43,6 +51,7 @@ local BLEND = 0.22 -- seconds to snap into a new pose
 local HOP_TIME = 0.32
 local RECOLLECT = 1 -- seconds between looks for the joints of an avatar still loading
 local WALK_OFF = 0.1 -- MoveDirection magnitude that ends a released move
+local LAYER_BLEND = 0.18 -- seconds a layered poser takes to hand the legs over (or back)
 
 -- The limbs a key's `legs` pose drives (the hips carry the crouch's root drop).
 local LEGS = {
@@ -121,7 +130,7 @@ local function isR6(character: Model): boolean
 	return humanoid ~= nil and humanoid.RigType == Enum.HumanoidRigType.R6
 end
 
-function PlayerPose.attach(character: Model?): Poser?
+function PlayerPose.attach(character: Model?, layered: boolean?): Poser?
 	if not character or not character.Parent or isR6(character) then
 		return nil
 	end
@@ -147,6 +156,8 @@ function PlayerPose.attach(character: Model?): Poser?
 	local target: { [string]: CFrame } = {}
 	local legTarget: { [string]: CFrame } = {}
 	local hopAt, hopHeight, hopTime = -math.huge, 0, HOP_TIME
+	-- How much of the move the hips and legs take (layered: 0 while walking or in the air).
+	local legWeight = if layered then 0 else 1
 
 	local poser = {} :: Poser
 	local stopped = false
@@ -166,7 +177,7 @@ function PlayerPose.attach(character: Model?): Poser?
 		end
 	end
 
-	conn = RunService.PreSimulation:Connect(function()
+	conn = RunService.PreSimulation:Connect(function(dt: number)
 		if not model.Parent then
 			poser:stop() -- respawned or left: nothing to hand back
 			return
@@ -195,6 +206,12 @@ function PlayerPose.attach(character: Model?): Poser?
 			end
 		end
 		local live = joints :: { [string]: Joint }
+		if layered then
+			local humanoid = model:FindFirstChildOfClass("Humanoid")
+			local busy = humanoid ~= nil and (humanoid.MoveDirection.Magnitude > WALK_OFF or humanoid.FloorMaterial == Enum.Material.Air)
+			local step = math.max(dt, 1 / 240) / LAYER_BLEND
+			legWeight = math.clamp(legWeight + (if busy then -step else step), 0, 1)
+		end
 
 		local blend = key.blend or BLEND
 		local alpha = if blend > 0 then math.clamp((now - keyAt) / blend, 0, 1) else 1
@@ -231,6 +248,10 @@ function PlayerPose.attach(character: Model?): Poser?
 				rotation = counter * rotation
 			elseif limb == "UpperTorso" then
 				rotation *= CFrame.Angles(breath, 0, 0)
+				if legWeight < 1 then
+					-- Walking hips: the root's lean and twist bend the waist instead.
+					rotation = mix(CFrame.identity, rootRot, 1 - legWeight) * rotation
+				end
 			end
 			local joint = live[limb]
 			if not joint or not joint.motor.Parent then
@@ -238,8 +259,16 @@ function PlayerPose.attach(character: Model?): Poser?
 			end
 			local transform = joint.rotInv * rotation * joint.rot
 			if limb == "LowerTorso" then
-				local offset = appliedRoot.Position + Vector3.new(0, cf.Y + lift, 0)
+				local offset = appliedRoot.Position + Vector3.new(0, cf.Y, 0)
 				transform = CFrame.new(joint.rotInv * offset * scale) * transform
+			end
+			if legWeight < 1 and LEGS[limb] then
+				-- Layered and walking: the avatar's own animation (written this frame) under it.
+				local own = (joint.motor :: any).Transform :: CFrame
+				transform = if legWeight <= 0 then own else own:Lerp(transform, legWeight)
+			end
+			if limb == "LowerTorso" and lift > 0 then
+				transform = CFrame.new(joint.rotInv * Vector3.new(0, lift, 0) * scale) * transform
 			end
 			-- Both joint classes have Transform; the union hides it from the type checker.
 			(joint.motor :: any).Transform = transform

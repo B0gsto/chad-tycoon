@@ -39,7 +39,8 @@
 	startPad       the "StartPad" part; feet within startRadius of it in phase lobby = Begin
 	startRadius    studs
 	board          the YOUR BEST SurfaceGui ("BestBoard"; TextLabels Best, Clears, Reward)
-	practiceArea   floor rectangle (world x0, x1, z0, z1) of the practice mat's demo drops
+	practiceArea   floor rectangle (world x0, x1, z0, z1) of the practice mat's demo drops (also
+	               an invisible "PracticeArea" part on the mat, attribute DropY, for Fx.Shake)
 	practiceDropY  height the demo items spawn at (just under the mat's cloud)
 ]]
 
@@ -1154,6 +1155,17 @@ local function lobby(parent: Instance, c: Arena.Spec, top: number): Lobby
 			{ Shape = CYLINDER }
 		)
 	end
+	-- The invisible "PracticeArea" Fx.Shake looks up by name: a thin plate the size of the
+	-- demo drop square, its top on the mat; DropY is where the demo items start.
+	local practiceArea = piece(
+		parent,
+		"PracticeArea",
+		Vector3.new(PRACTICE.half * 2, 0.2, PRACTICE.half * 2),
+		CFrame.new(pc + Vector3.new(0, 0.2, 0)),
+		W.Teal,
+		{ Transparency = 1, CanQuery = false, CanTouch = false, CastShadow = false }
+	)
+	practiceArea:SetAttribute("DropY", top + PRACTICE_DROP)
 	cloud(parent, pc + Vector3.new(0, PRACTICE_DROP + 3.4, 0), 7, true)
 	local practiceSign = signBoard(parent, "PracticeSign", facingSpawn(PRACTICE.x - 8.5, PRACTICE.z - 4), 8, 2.2, 5.4, W.White, W.Grape)
 	word(practiceSign, "PRACTICE", W.White, Enum.NormalId.Front)
