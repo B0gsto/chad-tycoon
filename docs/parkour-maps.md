@@ -71,7 +71,7 @@ Prop kinds (the world builder draws each with parts; unknown kinds are skipped w
 - Map identity (`World/MapDress.luau`, all tunables in its `DRESS` table): path pads and slides
   take the map's own top colours (`DRESS.TOPS[theme]`, cycled in walking order) and Neon edge
   colour (`DRESS.EDGE`); Course data keeps its rainbow `color`. `MapDress.build` lines the path
-  with up to 16 signature props on small floating islets (`Level<i>/MapDress`): beach umbrellas,
+  with up to 16 signature props on small floating islets (`Level<i>/MapDress`): beach palms, umbrellas and buoys in turn,
   cove palms, bay buoys, reef clownfish, bubble rising bubbles, coral staghorn, shark fins,
   storm clouds with still volt bolts, volcano lava rocks, giga crown pillars. A spot is used only
   when the prop keeps `Course.PROP_CLEARANCE + 2` studs from every element at every phase, the
@@ -108,7 +108,8 @@ Prop kinds (the world builder draws each with parts; unknown kinds are skipped w
 
 - When a run starts on a level (start notify, `payload.level`), read the level folder's `Theme`
   and apply an ambience until the run ends or the player leaves the level bounds (`LOOK_TUNING`):
-  beach golden noon, cove turquoise, bay deep blue, reef pink haze, bubble icy bright, coral peach
+  beach warm sunny noon (sky blue, no orange haze), cove turquoise, bay deep blue, reef pink haze,
+  bubble saturated aqua under a deep-blue sky, coral peach
   sunset, shark deep teal, storm dim slate haze (no lightning: the flashes annoyed players),
   volcano smoky orange late afternoon + ember particles from `MapGlow` parts, giga golden hour on a
   grape sky. `AURAS`: giga gold sparkles, bubble rising rings, reef and coral drifting motes round

@@ -551,8 +551,8 @@ end
 --   every theme  a bright sky-obby day built on SUNNY (ParkourGrade colour correction,
 --            Atmosphere colour / decay / density, Lighting brightness and exposure, a light
 --            ParkourBloom made lazily and enabled only during runs), graded per map by
---            LOOK_TUNING so each map has its own sky: beach golden noon, cove turquoise,
---            bay deep blue, reef pink haze, bubble icy and bright, coral peach sunset,
+--            LOOK_TUNING so each map has its own sky: beach warm sunny noon, cove turquoise,
+--            bay deep blue, reef pink haze, bubble aqua under a deep-blue sky, coral peach sunset,
 --            shark deep teal, storm dim slate haze (no flashes), volcano smoky orange late
 --            afternoon, giga golden hour on a grape sky. ClockTime: the look's `clock`, else
 --            13 when the scene is outside 10-15.
@@ -881,15 +881,20 @@ local SUNNY: Look = {
 -- Per-map grading (tunables): only what differs from SUNNY. atmosphereMix 0.9 so the sky and
 -- horizon really take the map's colour.
 local LOOK_TUNING: { [string]: { [string]: any } } = {
-	beach = { -- golden sunny noon
-		tint = Color3.fromRGB(255, 246, 226),
-		saturation = 0.3,
-		atmosphere = Color3.fromRGB(255, 240, 212),
-		decay = Color3.fromRGB(255, 206, 150),
+	beach = { -- warm sunny noon over a clear sky-blue sea sky (no orange haze: it fought the cyan water)
+		tint = Color3.fromRGB(255, 249, 234),
+		contrast = 0.06,
+		saturation = 0.34,
+		atmosphere = Color3.fromRGB(205, 238, 250),
+		decay = Color3.fromRGB(90, 176, 250),
 		atmosphereMix = 0.9,
-		density = 0.3,
-		ambient = Color3.fromRGB(255, 236, 205),
+		density = 0.24,
+		haze = 1,
+		glare = 0.6,
+		fog = Color3.fromRGB(200, 236, 250),
+		ambient = Color3.fromRGB(255, 240, 214),
 		ambientMix = 0.12,
+		clock = 13,
 	},
 	cove = { -- tropical turquoise
 		tint = Color3.fromRGB(230, 255, 242),
@@ -921,15 +926,22 @@ local LOOK_TUNING: { [string]: { [string]: any } } = {
 		ambient = Color3.fromRGB(255, 200, 230),
 		ambientMix = 0.15,
 	},
-	bubble = { -- airy, icy and bright
-		tint = Color3.fromRGB(234, 248, 255),
-		brightness = 0.05,
-		atmosphere = Color3.fromRGB(226, 246, 255),
-		decay = Color3.fromRGB(150, 215, 255),
+	bubble = { -- saturated aqua under a deep-blue sky (was icy white: path and sky one pale value)
+		tint = Color3.fromRGB(222, 246, 255),
+		brightness = -0.01,
+		contrast = 0.12,
+		saturation = 0.42,
+		atmosphere = Color3.fromRGB(110, 204, 236),
+		decay = Color3.fromRGB(28, 96, 214),
 		atmosphereMix = 0.9,
-		density = 0.36,
-		haze = 2.4,
-		exposure = 0.25,
+		density = 0.28,
+		haze = 0.8,
+		glare = 0.3,
+		fog = Color3.fromRGB(110, 196, 236),
+		fogMix = 0.25,
+		ambient = Color3.fromRGB(170, 236, 255),
+		ambientMix = 0.12,
+		exposure = 0,
 	},
 	coral = { -- warm peach sunset
 		tint = Color3.fromRGB(255, 230, 210),

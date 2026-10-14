@@ -49,9 +49,11 @@ local DRESS = {
 		cove = { rgb(104, 226, 160), rgb(244, 220, 168), rgb(56, 186, 126) },
 		bay = { rgb(248, 250, 255), rgb(150, 168, 255), rgb(255, 112, 112) },
 		reef = { rgb(255, 96, 176), rgb(80, 220, 210), rgb(255, 178, 214) },
-		bubble = { rgb(176, 224, 255), rgb(244, 250, 255), rgb(150, 200, 255) },
-		coral = { rgb(255, 146, 80), rgb(255, 200, 152), rgb(222, 104, 70) },
-		shark = { rgb(255, 128, 112), rgb(244, 250, 255), rgb(46, 150, 160) },
+		-- Saturated aqua and teal (not pale ice): the path stands well clear of the deep-blue sky.
+		bubble = { rgb(0, 206, 196), rgb(40, 232, 222), rgb(0, 166, 190) },
+		-- Coral and shark: no pale tops (they matched their pale sunset / sea skies).
+		coral = { rgb(255, 146, 80), rgb(255, 92, 120), rgb(222, 104, 70) },
+		shark = { rgb(255, 128, 112), rgb(32, 74, 128), rgb(46, 150, 160) },
 		storm = { rgb(118, 130, 160), rgb(166, 178, 206), rgb(92, 104, 132) },
 		volcano = { rgb(78, 66, 78), rgb(104, 86, 90), rgb(255, 120, 40) },
 		giga = { rgb(255, 246, 228), rgb(255, 204, 64), rgb(176, 136, 255) },
@@ -61,16 +63,16 @@ local DRESS = {
 		cove = rgb(196, 255, 222),
 		bay = rgb(255, 92, 92),
 		reef = rgb(120, 255, 240),
-		bubble = rgb(110, 196, 255),
+		bubble = rgb(246, 255, 255),
 		coral = rgb(255, 226, 186),
 		shark = rgb(84, 236, 236),
 		storm = rgb(240, 255, 56),
 		volcano = rgb(255, 98, 16),
 		giga = rgb(255, 212, 72),
 	} :: { [string]: Color3 },
-	-- Which prop each theme lines its path with.
+	-- Which prop each theme lines its path with (a list: cycled along the path).
 	PROP = {
-		beach = "umbrella",
+		beach = { "palm", "umbrella", "buoy" },
 		cove = "palm",
 		bay = "buoy",
 		reef = "fish",
@@ -80,7 +82,7 @@ local DRESS = {
 		storm = "stormcloud",
 		volcano = "lavarock",
 		giga = "crownpillar",
-	} :: { [string]: string },
+	} :: { [string]: string | { string } },
 	EVERY = 2, -- one prop by every 2nd path element
 	FIRST = 2, -- path index of the first one (not by the start deck)
 	MAX = 16, -- props per map at most
@@ -97,7 +99,7 @@ local DRESS = {
 		cove = { rgb(244, 220, 164), rgb(92, 176, 96) },
 		bay = { rgb(84, 170, 230), rgb(248, 250, 255) },
 		reef = { rgb(244, 220, 164), rgb(80, 220, 210) },
-		bubble = { rgb(176, 224, 255), rgb(248, 250, 255) },
+		bubble = { rgb(0, 190, 200), rgb(248, 250, 255) },
 		coral = { rgb(244, 214, 170), rgb(222, 104, 70) },
 		shark = { rgb(46, 150, 180), rgb(248, 250, 255) },
 		storm = { rgb(110, 120, 146), rgb(70, 78, 100) },
@@ -120,8 +122,13 @@ local DRESS = {
 	FISH_BAND = rgb(255, 255, 255),
 	FISH_EYE = rgb(30, 30, 40),
 	WEED = rgb(70, 200, 110),
-	BUBBLE = { rgb(170, 220, 255), rgb(240, 250, 255), rgb(120, 190, 255) },
-	BUBBLE_ALPHA = 0.45,
+	-- Soap-bubble tints (aqua, pink, lilac) that show against the blue sky, big and fairly solid.
+	BUBBLE = { rgb(120, 236, 255), rgb(255, 150, 226), rgb(186, 160, 255) },
+	BUBBLE_ALPHA = 0.25,
+	BUBBLE_REFLECT = 0.3,
+	BUBBLE_COUNT = 6, -- per prop
+	BUBBLE_D = { 3, 5.4 }, -- diameter range (prop units)
+	BUBBLE_STEP = 2.4, -- height between the bubbles of one prop
 	BUBBLE_RISE = { 3, 5 }, -- studs/s
 	BUBBLE_TOP = 18, -- studs above the islet the bubbles climb (prop units)
 	CORAL = { rgb(255, 120, 110), rgb(255, 96, 176), rgb(255, 160, 70) },
@@ -325,15 +332,16 @@ PROPS.fish = function(k, rand)
 end
 
 PROPS.bubbles = function(k, rand)
-	for i = 1, 5 do
-		local a = i * 2 * math.pi / 5
-		local d = rand:NextNumber(1.6, 3.4)
+	local n = DRESS.BUBBLE_COUNT
+	for i = 1, n do
+		local a = i * 2 * math.pi / n
+		local d = rand:NextNumber(DRESS.BUBBLE_D[1], DRESS.BUBBLE_D[2])
 		local bubble = k.ball(
 			"Bubble",
 			d,
-			at(math.cos(a) * 2.2, 1 + i * 2.6, math.sin(a) * 2.2),
+			at(math.cos(a) * 2.2, 1 + i * DRESS.BUBBLE_STEP, math.sin(a) * 2.2),
 			DRESS.BUBBLE[i % #DRESS.BUBBLE + 1],
-			{ Transparency = DRESS.BUBBLE_ALPHA, Reflectance = 0.2, CastShadow = false }
+			{ Transparency = DRESS.BUBBLE_ALPHA, Reflectance = DRESS.BUBBLE_REFLECT, CastShadow = false }
 		)
 		bubble:SetAttribute("Rise", rand:NextNumber(DRESS.BUBBLE_RISE[1], DRESS.BUBBLE_RISE[2]))
 		bubble:SetAttribute("Top", k.base.Y + DRESS.BUBBLE_TOP * k.s)
@@ -459,9 +467,10 @@ end
 
 function MapDress.build(level: Course.Level, parent: Instance)
 	local theme = level.theme
-	local builder = PROPS[DRESS.PROP[theme] or ""]
+	local kinds = DRESS.PROP[theme] or {}
+	local list: { string } = if type(kinds) == "table" then kinds else { kinds }
 	local path = level.PATH
-	if not builder or not path or #path < 3 then
+	if not PROPS[list[1] or ""] or not path or #path < 3 then
 		return
 	end
 	local folder = Instance.new("Folder")
@@ -506,7 +515,7 @@ function MapDress.build(level: Course.Level, parent: Instance)
 						local base = CFrame.lookAt(Vector3.new(x, ey - DRESS.DROP, z), Vector3.new(ex, ey - DRESS.DROP, ez))
 						local k = kit(base, DRESS.SCALE, folder)
 						islet(k, theme)
-						builder(k, rand)
+						PROPS[list[count % #list + 1]](k, rand)
 						table.insert(taken, { x = x, z = z, r = foot })
 						count += 1
 						side = -s
