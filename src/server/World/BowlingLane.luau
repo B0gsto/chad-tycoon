@@ -88,6 +88,8 @@ local CHOICES: { { color: Color3, label: string } } = {
 -- The pastel periwinkle confetti carpet (the alley's a shade deeper than the lobby's).
 local CARPET = Color3.fromRGB(150, 164, 236)
 local LOBBY_CARPET = Color3.fromRGB(184, 196, 252)
+-- The lobby boards' face: a bright grape-violet (lighter than navy, still dark enough for white text).
+local LOBBY_BOARD = Color3.fromRGB(108, 88, 218)
 local CONFETTI = { W.Sunny, W.HotPink, W.Mint, W.Blue, W.Orange, W.RedOrange }
 -- The candy bumper rails along the dividers and the lighthouse's stripes.
 local CANDY = { W.HotPink, W.Sunny, W.SkyBlue, W.Mint }
@@ -1030,7 +1032,7 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 		Color = LOBBY_CARPET,
 		Material = Enum.Material.Fabric,
 	})
-	local runFrom, runTo = spawnD + 3.5, padD - ringR - 0.3
+	local runFrom, runTo = spawnD + 3.5, padD - ringR - 2.1 -- stops at the pad's rug
 	deco({
 		Name = "Runner",
 		Size = Vector3.new(6, 0.03, runTo - runFrom),
@@ -1058,6 +1060,65 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 			})
 		end
 	end
+	-- A warm apricot border round the carpet (a sunny stripe on its inner edge) shapes the floor,
+	-- with warm rugs under the START pad, the lounge and the ball rack.
+	local BORDER = 2.4
+	local inner = half - 0.5 - BORDER
+	local frontEdge, backEdge = railD + 0.1, edgeD + 0.5
+	for _, side in { -1, 1 } do
+		deco({
+			Name = "LobbyBorder",
+			Size = Vector3.new(BORDER, 0.05, frontEdge - backEdge),
+			CFrame = CFrame.new(at(side * (inner + BORDER / 2), (frontEdge + backEdge) / 2, 0.045)),
+			Color = W.Apricot,
+			Material = Enum.Material.SmoothPlastic,
+		})
+		deco({
+			Name = "LobbyBorderLine",
+			Size = Vector3.new(0.4, 0.055, frontEdge - backEdge - BORDER),
+			CFrame = CFrame.new(at(side * (inner - 0.2), (frontEdge + backEdge - BORDER) / 2 + BORDER / 2, 0.05)),
+			Color = W.Sunny,
+		})
+	end
+	deco({
+		Name = "LobbyBorder",
+		Size = Vector3.new(inner * 2, 0.05, BORDER),
+		CFrame = CFrame.new(at(0, backEdge + BORDER / 2, 0.045)),
+		Color = W.Apricot,
+		Material = Enum.Material.SmoothPlastic,
+	})
+	deco({
+		Name = "LobbyBorderLine",
+		Size = Vector3.new(inner * 2 - 0.4, 0.055, 0.4),
+		CFrame = CFrame.new(at(0, backEdge + BORDER + 0.2, 0.05)),
+		Color = W.Sunny,
+	})
+	deco({
+		Name = "LobbyBorder",
+		Size = Vector3.new(inner * 2, 0.05, 1.6),
+		CFrame = CFrame.new(at(0, frontEdge - 0.8, 0.045)),
+		Color = W.Apricot,
+		Material = Enum.Material.SmoothPlastic,
+	})
+	local function rug(name: string, x: number, d: number, radius: number, color: Color3, rim: Color3, y: number)
+		deco({
+			Name = name .. "Rim",
+			Shape = CYLINDER,
+			Size = Vector3.new(0.05, radius * 2 + 1.2, radius * 2 + 1.2),
+			CFrame = CFrame.new(at(x, d, y)) * UPRIGHT,
+			Color = rim,
+		})
+		deco({
+			Name = name,
+			Shape = CYLINDER,
+			Size = Vector3.new(0.06, radius * 2, radius * 2),
+			CFrame = CFrame.new(at(x, d, y + 0.01)) * UPRIGHT,
+			Color = color,
+			Material = Enum.Material.Fabric,
+		})
+	end
+	rug("PadRug", 0, padD, ringR + 1.6, W.Apricot, W.Coral, 0.05)
+	rug("LoungeRug", -17.5, -32.5, 7.6, W.Apricot, W.Coral, 0.05)
 	-- Confetti scraps either side of the runner.
 	local seed = 20261015
 	local function rand(): number
@@ -1065,7 +1126,7 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 		return seed / 2147483648
 	end
 	local n = 0
-	for _, z in { { -half + 0.8, -4.2, edgeD + 1, railD - 1, 16 }, { 4.2, half - 0.8, edgeD + 1, railD - 1, 16 } } do
+	for _, z in { { -inner + 0.6, -4.2, edgeD + BORDER + 1.2, railD - 2, 16 }, { 4.2, inner - 0.6, edgeD + BORDER + 1.2, railD - 2, 16 } } do
 		for _ = 1, z[5] do
 			n += 1
 			local cf = CFrame.new(at(z[1] + rand() * (z[2] - z[1]), z[3] + rand() * (z[4] - z[3]), 0.05))
@@ -1096,7 +1157,7 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 	end
 
 	-- The title arch over the gap: teal pillars, a navy board with a hot-pink neon frame.
-	local SIGN_W, SIGN_H, SIGN_Y = 30, 7, 17.5
+	local SIGN_W, SIGN_H, SIGN_Y = 30, 7, 20.5 -- high enough to clear the boards' tops
 	for _, side in { -1, 1 } do
 		upright(side * 9, railD, 0, SIGN_Y - SIGN_H / 2, 1.8, W.Teal, "ArchPillar")
 		upright(side * 9, railD, 0, 0.8, 2.8, W.Sunny, "ArchFoot")
@@ -1227,43 +1288,58 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 		Position = UDim2.fromScale(0.1, 0.11),
 	})
 
-	-- A board on two teal posts at lane spot (x, d), turned to face a point behind the spawn
-	-- (its Back face is the front): navy, `accent` trim and three bulbs on top.
+	-- A billboard on two teal posts at lane spot (x, d), turned to face the player coming up
+	-- the runner from the spawn (its Back face is the front): a bright violet face in a white
+	-- frame and a chunky neon `accent` trim, a glow on its face and a row of bulbs on top.
 	local function standBoard(name: string, x: number, d: number, w: number, h: number, accent: Color3): BasePart
-		local cy = 2.6 + h / 2
+		local cy = 4.6 + h / 2
 		local p = at(x, d, cy)
-		local cf = CFrame.lookAt(p, p + (p - at(0, edgeD - 8, cy)))
-		local panel = part({ Name = name, Size = Vector3.new(w, h, 0.6), CFrame = cf, Color = W.Navy })
+		local cf = CFrame.lookAt(p, p + (p - at(0, spawnD - 6, cy)))
+		local panel = part({ Name = name, Size = Vector3.new(w, h, 0.6), CFrame = cf, Color = LOBBY_BOARD })
+		part({ Name = "BoardBack", Size = Vector3.new(w + 2.2, h + 2.2, 0.5), CFrame = cf * CFrame.new(0, 0, -0.5), Color = W.White })
 		for _, s in { -1, 1 } do
 			deco({
 				Name = "BoardTrim",
-				Size = Vector3.new(w + 0.9, 0.45, 0.8),
-				CFrame = cf * CFrame.new(0, s * (h / 2 + 0.22), 0),
+				Size = Vector3.new(w + 1.6, 0.7, 0.9),
+				CFrame = cf * CFrame.new(0, s * (h / 2 + 0.45), -0.1),
 				Color = accent,
+				Material = Enum.Material.Neon,
 			})
 			deco({
 				Name = "BoardTrim",
-				Size = Vector3.new(0.45, h, 0.8),
-				CFrame = cf * CFrame.new(s * (w / 2 + 0.22), 0, 0),
+				Size = Vector3.new(0.7, h, 0.9),
+				CFrame = cf * CFrame.new(s * (w / 2 + 0.45), 0, -0.1),
 				Color = accent,
+				Material = Enum.Material.Neon,
 			})
 			part({
 				Name = "BoardPost",
 				Shape = CYLINDER,
-				Size = Vector3.new(cy, 0.8, 0.8),
-				CFrame = cf * CFrame.new(s * (w / 2 - 2), -cy / 2, -0.7) * UPRIGHT,
+				Size = Vector3.new(cy, 1, 1),
+				CFrame = cf * CFrame.new(s * (w / 2 - 2), -cy / 2, -1.1) * UPRIGHT,
 				Color = W.Teal,
 			})
+			globe((cf * CFrame.new(s * (w / 2 - 2), -cy, -1.1)).Position, 1.8, W.Sunny, "BoardPostFoot")
 		end
-		for k = -1, 1 do
-			globe((cf * CFrame.new(k * w / 3, h / 2 + 0.95, 0)).Position, 1, W.Sunny, "BoardBulb", true)
+		local bulbs = math.floor(w / 3)
+		for k = 0, bulbs do
+			local bx = -w / 2 + w * k / bulbs
+			globe((cf * CFrame.new(bx, h / 2 + 1.35, -0.1)).Position, 0.9, if k % 2 == 0 then W.Sunny else W.HotPink, "BoardBulb", true)
 		end
+		local glowLight = Instance.new("SurfaceLight")
+		glowLight.Face = Enum.NormalId.Back
+		glowLight.Color = accent
+		glowLight.Range = 9
+		glowLight.Brightness = 1.6
+		glowLight.Angle = 120
+		glowLight.Parent = panel
 		return panel
 	end
 
 	-- HOW TO PLAY (left): three illustrated steps.
 	local howW, howH, PPS = 18, 10.5, 32
-	local how = standBoard("HowToPlayBoard", -18, -38, howW, howH, W.Sunny)
+	local BOARD_X, BOARD_D = 19.5, railD - 7 -- either side of the arch, behind the START pad
+	local how = standBoard("HowToPlayBoard", -BOARD_X, BOARD_D, howW, howH, W.Sunny)
 	local howGui = surfaceGui(how, Enum.NormalId.Back, PPS)
 	howGui.Name = "HowToPlay"
 	words(howGui, "HOW TO PLAY", 0, 6, howW * PPS, 50, W.White, W.HotPink, 4)
@@ -1298,7 +1374,7 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 
 	-- YOUR BEST (right): the client fills Best, Clears and Reward (and may recolour RewardPill).
 	local bestW, bestH = 14, 10
-	local bestPanel = standBoard("BestBoardPanel", 18, -38, bestW, bestH, W.Mint)
+	local bestPanel = standBoard("BestBoardPanel", BOARD_X, BOARD_D, bestW, bestH, W.Mint)
 	local board = surfaceGui(bestPanel, Enum.NormalId.Back, PPS)
 	board.Name = "BestBoard"
 	local bw = bestW * PPS
@@ -1318,8 +1394,9 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 
 	-- The ball rack (right, by the gap): a two-tier gym rack (teal shelves, coral sides,
 	-- chrome lips) with the four dumbbells to choose from and a sign on chrome posts.
-	local RX, RD = 19, -24
+	local RX, RD = 19, railD - 26 -- out in front of the YOUR BEST board, so neither hides the other
 	local tiers = { { d = RD + 1.5, top = 4.4 }, { d = RD - 1.5, top = 1.4 } } -- back high, front low
+	rug("RackRug", RX - 0.2, RD - 0.5, 6.6, W.Apricot, W.Coral, 0.05)
 	for _, t in tiers do
 		part({
 			Name = "RackRiser",
@@ -1340,19 +1417,24 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 	end
 	for _, side in { -1, 1 } do
 		part({ Name = "RackSide", Size = Vector3.new(0.7, 5.6, 6.4), CFrame = CFrame.new(at(RX + side * 5.95, RD, 2.8)), Color = W.Coral })
-		upright(RX + side * 5.95, RD + 1.6, 5.6, 9.4, 0.5, W.Chrome, "RackSignPost")
+		upright(RX + side * 6.6, RD + 0.9, 0, 10.4, 0.6, W.Chrome, "RackSignPost")
+		globe(at(RX + side * 6.6, RD + 0.9, 10.6), 1, W.Sunny, "RackSignBulb", true)
 	end
-	local rackSign =
-		part({ Name = "RackSign", Size = Vector3.new(12.6, 2.4, 0.4), CFrame = CFrame.new(at(RX, RD + 1.6, 9.5)), Color = W.Navy })
-	deco({
-		Name = "RackSignNeon",
-		Size = Vector3.new(12.6, 0.3, 0.3),
-		CFrame = CFrame.new(at(RX, RD + 1.4, 8.15)),
-		Color = W.Mint,
-		Material = Enum.Material.Neon,
-	})
+	-- The sign over the rack, in front of the back tier, big and tipped toward the player.
+	local SIGN_RW, SIGN_RH = 15, 3.6
+	local signCf = CFrame.new(at(RX, RD, 8.2)) * CFrame.Angles(math.rad(-12), 0, 0)
+	local rackSign = part({ Name = "RackSign", Size = Vector3.new(SIGN_RW, SIGN_RH, 0.4), CFrame = signCf, Color = W.HotPink })
+	for _, s in { -1, 1 } do
+		deco({
+			Name = "RackSignNeon",
+			Size = Vector3.new(SIGN_RW + 0.6, 0.4, 0.5),
+			CFrame = signCf * CFrame.new(0, s * (SIGN_RH / 2 + 0.2), 0),
+			Color = W.Sunny,
+			Material = Enum.Material.Neon,
+		})
+	end
 	local rackGui = surfaceGui(rackSign, Enum.NormalId.Back, PPS)
-	words(rackGui, "PICK YOUR DUMBBELL", 12, 6, 12.6 * PPS - 24, 2.4 * PPS - 12, W.Sunny, W.HotPink, 3)
+	words(rackGui, "PICK YOUR DUMBBELL!", 10, 8, SIGN_RW * PPS - 20, SIGN_RH * PPS - 16, W.White, W.Ink, 4)
 	local ballRack: { Model } = {}
 	local r = BowlingRules.BALL.radius
 	for i, choice in CHOICES do
@@ -1375,39 +1457,51 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 		ballRack[i] = model
 	end
 
-	-- Lounge seating: sofas round a table (left, by the wall) and a long bench at the back.
+	-- Lounge seating (left, on its warm rug): chunky sofas round a big table, a long bench at
+	-- the back and potted bushes in the back corners.
+	local S = 1.4 -- the lounge reads from across the lobby
 	local function sofa(cf: CFrame, len: number, color: Color3)
-		part({ Name = "SofaBase", Size = Vector3.new(len, 1.3, 2.8), CFrame = cf * CFrame.new(0, 0.65, 0), Color = color })
-		deco({ Name = "SofaCushion", Size = Vector3.new(len, 0.45, 2.1), CFrame = cf * CFrame.new(0, 1.5, -0.3), Color = W.Cream })
-		part({ Name = "SofaBack", Size = Vector3.new(len, 3.4, 0.8), CFrame = cf * CFrame.new(0, 1.7, 1), Color = color })
+		part({ Name = "SofaBase", Size = Vector3.new(len, 1.3 * S, 2.8 * S), CFrame = cf * CFrame.new(0, 0.65 * S, 0), Color = color })
+		deco({
+			Name = "SofaCushion",
+			Size = Vector3.new(len, 0.5 * S, 2.1 * S),
+			CFrame = cf * CFrame.new(0, 1.5 * S, -0.3 * S),
+			Color = W.Cream,
+		})
+		part({ Name = "SofaBack", Size = Vector3.new(len, 3.4 * S, 0.8 * S), CFrame = cf * CFrame.new(0, 1.7 * S, 1 * S), Color = color })
 		for _, side in { -1, 1 } do
 			part({
 				Name = "SofaArm",
-				Size = Vector3.new(0.8, 2.2, 2.8),
-				CFrame = cf * CFrame.new(side * (len / 2 + 0.4), 1.1, 0),
+				Size = Vector3.new(0.8 * S, 2.2 * S, 2.8 * S),
+				CFrame = cf * CFrame.new(side * (len / 2 + 0.4 * S), 1.1 * S, 0),
 				Color = color,
 			})
+			-- A round sunny cushion at each end.
+			globe((cf * CFrame.new(side * (len / 2 - 1.2), 2.6 * S, 0.3 * S)).Position, 1.5 * S, W.Sunny, "SofaPillow")
 		end
 	end
 	local function seat(x: number, d: number, facing: Vector3): CFrame
 		local p = at(x, d, 0)
 		return CFrame.lookAt(p, p + facing)
 	end
-	sofa(seat(-15.5, railD - 3.6, Vector3.zAxis), 9, W.HotPink)
-	sofa(seat(-23.4, railD - 10.5, Vector3.xAxis), 7, W.SkyBlue)
-	sofa(seat(-15, edgeD + 2.8, -Vector3.zAxis), 10, W.Grape)
-	local tableAt = Vector2.new(-16, railD - 10.5)
-	upright(tableAt.X, tableAt.Y, 0, 2.1, 0.6, W.Chrome, "TableStem")
-	upright(tableAt.X, tableAt.Y, 2, 2.3, 3.8, W.Sunny, "TableTop")
-	makePin(folder, "TablePin", CFrame.new(at(tableAt.X, tableAt.Y, 2.3)), 0.55)
+	local tableAt = Vector2.new(-17, -32.5)
+	sofa(seat(tableAt.X, tableAt.Y + 5.4, Vector3.zAxis), 10, W.HotPink)
+	sofa(seat(tableAt.X - 7, tableAt.Y - 1.5, Vector3.xAxis), 7.5, W.SkyBlue)
+	sofa(seat(-12, edgeD + 4.4, -Vector3.zAxis), 11, W.Grape)
+	upright(tableAt.X, tableAt.Y, 0, 2.9, 0.9, W.Chrome, "TableStem")
+	upright(tableAt.X, tableAt.Y, 0, 0.3, 3, W.Teal, "TableFoot")
+	upright(tableAt.X, tableAt.Y, 2.8, 3.2, 5.6, W.Sunny, "TableTop")
+	makePin(folder, "TablePin", CFrame.new(at(tableAt.X - 1, tableAt.Y, 3.2)), 0.85)
+	makeDumbbell(folder, at(tableAt.X + 1.3, tableAt.Y + 0.6, 3.2 + 0.6), W.Mint, false, 0.4)
 
-	-- Plants by the wall, a railing round the open edges and two lamp posts.
 	for _, side in { -1, 1 } do
-		local x, d = side * 24.3, railD - 3
-		upright(x, d, 0, 2.2, 2.6, W.Terracotta, "PlantPot")
-		globe(at(x, d, 3.2), 3.4, W.GrassDark, "PlantBush")
-		globe(at(x + 0.6, d - 0.4, 4.6), 2, W.Grass, "PlantBush")
+		local x, d = if side < 0 then -22.6 else 13.4, edgeD + 5.2 -- the right one clears the exit arch
+		upright(x, d, 0, 3, 3.6, W.Terracotta, "PlantPot")
+		upright(x, d, 2.8, 3.3, 4.2, W.Coral, "PlantPotRim")
+		globe(at(x, d, 4.6), 4.8, W.GrassDark, "PlantBush")
+		globe(at(x + 0.9 * side, d + 0.6, 6.4), 2.8, W.Grass, "PlantBush")
 	end
+	-- A railing round the open edges and two lamp posts.
 	local railX, backD, frontD = half - 0.4, edgeD + 0.4, railD - 0.5
 	local posts = {}
 	for k = 0, 4 do
@@ -1440,7 +1534,7 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 		Color = W.Chrome,
 		Material = Enum.Material.Metal,
 	})
-	for _, lamp in { { -1, edgeD + 6 }, { 1, railD - 19 } } do
+	for _, lamp in { { -1, railD - 26 }, { 1, railD - 31.5 } } do
 		local x = lamp[1] * (half - 1.4)
 		upright(x, lamp[2], 0, 14, 0.7, W.Teal, "LampPost")
 		local lampGlobe = globe(at(x, lamp[2], 14.6), 2, W.Sunny, "LampGlobe", true)
