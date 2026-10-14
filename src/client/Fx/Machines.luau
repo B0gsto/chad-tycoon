@@ -126,9 +126,13 @@ local TUNE = {
 		orbs = 8, -- orbs that fly from the pad into the cup
 		orbSize = 1.1, -- studs (half of it on arrival)
 		speedScale = 1.4, -- "+25% SPEED" over the blender
-		speedLift = 12.6, -- studs over the cup floor
+		speedLift = 12.6, -- studs over the cup floor (both lines move down together when the
+		-- top HUD would cover the first: Orbs.textHudOffset)
+		speedLife = 2.2, -- seconds on screen
+		speedRise = 2.4, -- studs it floats up
 		badgeScale = 1.1, -- the blinking "LEVEL N" badge under it
 		badgeLift = 9.6,
+		badgeLife = 2.2,
 		badge = TEAL,
 		ring = 8, -- shock ring radius round the blender's foot, studs
 		sparks = 16,
@@ -158,9 +162,10 @@ local TUNE = {
 		coinLife = 0.9, -- seconds
 		textScale = 1.3, -- "+$X" rising from the pad
 		textLift = 3.2, -- studs over the pad
-		arc = 12, -- coin sprites arcing across the screen to the cash amount (a few more for
+		arc = 13, -- coin sprites arcing across the screen to the cash amount (a few more for
 		arcMax = 16, -- big amounts, at most this)
-		arcSize = 36, -- design px across
+		arcSize = 34, -- design px across
+		arcDelay = 0.04, -- seconds from the collect to the first coin (at once, not after the hop)
 		hop = 0.4, -- seconds a coin of the stack takes into the piggy bank
 		hopSize = 1.3, -- studs
 		confetti = 20, -- over the piggy bank as the last coin goes in
@@ -194,7 +199,13 @@ local TUNE = {
 	},
 	-- The Smasher's crate.
 	crate = {
-		scale = 1.2, -- against the 1.7 x 1.5 x 2.1 crate
+		scale = 1.35, -- against the 1.7 x 1.5 x 2.1 crate (Fx.Crates' SMASH.ritual.crate matches it)
+		-- Its rarity reads from the pad without Fx.Crates' wash: the body is the sunny crate
+		-- mixed this far toward the rarity colour (by rank, Common first), and from `neonFrom`
+		-- up the straps glow (Neon).
+		bodyTint = { 0, 0.4, 0.6, 0.7, 0.75 },
+		neonFrom = 2,
+		ranks = { Common = 0, Uncommon = 1, Rare = 2, Epic = 3, Legendary = 4 } :: { [string]: number },
 		readyConfetti = 24,
 		burstConfetti = 30,
 		burstStars = 6,
@@ -1068,14 +1079,16 @@ local function upgradeJar(from: Vector3, level: number?, gained: number?)
 			then string.format("+%d%% SPEED", math.floor((factor - 1) * 100 + 0.5))
 			else string.format("x%.1f SPEED", factor)
 	end
-	Orbs.text(base + UP * U.speedLift, speed, SUNNY, { scale = U.speedScale, rise = 2.4, life = 1.5, clear = true })
+	-- Both lines move down together, so "+25% SPEED" stays clear of the top HUD's capsules.
+	local down = Orbs.textHudOffset(base + UP * U.speedLift, U.speedScale, U.speedRise)
+	Orbs.text(base + UP * U.speedLift + down, speed, SUNNY, { scale = U.speedScale, rise = U.speedRise, life = U.speedLife, clear = true })
 	if level then
 		local text = "LEVEL " .. math.floor(level)
 		Orbs.text(
-			base + UP * U.badgeLift,
+			base + UP * U.badgeLift + down,
 			text,
 			WHITE,
-			{ scale = U.badgeScale, rise = 1.2, life = 1.6, plate = U.badge, flash = true, clear = true }
+			{ scale = U.badgeScale, rise = 1.2, life = U.badgeLife, plate = U.badge, flash = true, clear = true }
 		)
 	end
 	local n = Budget.count(U.orbs)
@@ -1439,9 +1452,34 @@ local function cashShower(amount: number, big: boolean)
 	end
 end
 
--- Coins burst up out of `from` and bounce on `floorY`, while coin sprites arc across the screen
--- from it to the cash amount (each one landing ticks a little higher).
-local function cashFountain(from: Vector3, floorY: number, amount: number)
+-- Coin sprites arc across the screen from the first of `points` that is on screen (else the
+-- first) to the cash amount, each one landing ticking a little higher.
+local function cashArc(points: { Vector3 }, amount: number, delay: number?)
+	local K = TUNE.collect
+	local from = points[1]
+	local camera = Workspace.CurrentCamera
+	if camera then
+		for _, point in points do
+			local _, onScreen = camera:WorldToViewportPoint(point)
+			if onScreen then
+				from = point
+				break
+			end
+		end
+	end
+	Orbs.coinArc(from, {
+		count = math.clamp(K.arc + math.floor(math.log10(math.max(amount, 1))), K.arc, K.arcMax),
+		size = K.arcSize,
+		delay = delay,
+		onArrive = function(index: number)
+			play("Coin", 0.04, 1 + math.min(index, 14) * 0.035)
+		end,
+	})
+end
+
+-- Coins burst up out of `from` and bounce on `floorY`; with `arc`, coin sprites also arc
+-- across the screen from it to the cash amount.
+local function cashFountain(from: Vector3, floorY: number, amount: number, arc: boolean)
 	local K = TUNE.collect
 	local magnitude = math.log10(math.max(amount, 1))
 	Orbs.coins(from + UP * 0.6, {
@@ -1453,13 +1491,9 @@ local function cashFountain(from: Vector3, floorY: number, amount: number)
 		stagger = 0.03,
 		size = K.coinSize,
 	})
-	Orbs.coinArc(from + UP * 1.2, {
-		count = math.clamp(K.arc + math.floor(magnitude), K.arc, K.arcMax),
-		size = K.arcSize,
-		onArrive = function(index: number)
-			play("Coin", 0.04, 1 + math.min(index, 14) * 0.035)
-		end,
-	})
+	if arc then
+		cashArc({ from + UP * 1.2 }, amount)
+	end
 end
 
 local function onCash(data: any)
@@ -1486,7 +1520,11 @@ local function onCash(data: any)
 	local n = math.min(math.max(shownCoins, 6), 12)
 	local target = slotPos
 	if not target then
-		cashFountain(pos + UP * 0.5, pos.Y, amount)
+		cashFountain(pos + UP * 0.5, pos.Y, amount, true)
+	else
+		-- The coins to the wallet leave at once (from the piggy bank, or the pad when the bank
+		-- is off screen), so they are in the air while the stack hops into the bank.
+		cashArc({ target + UP * 1.5, pos + UP * 1.5 }, amount, K.arcDelay)
 	end
 	for i = 1, n do
 		local from = if i <= shownCoins then coinHomes[i].Position else pos + UP * 0.5
@@ -1504,9 +1542,8 @@ local function onCash(data: any)
 					pigHop.v = math.min(pigHop.v + (if i == 1 then 5 else 1.2), 9)
 					coinDip.v -= 1.5
 					if i == 1 then
-						-- The first coin in sets the piggy bank off: its fountain, and the coins
-						-- that fly to the wallet.
-						cashFountain(target, pos.Y, amount)
+						-- The first coin in sets the piggy bank off: its fountain.
+						cashFountain(target, pos.Y, amount, false)
 						Orbs.shock(target + UP * 0.3, SUNNY, 4)
 					end
 					if i == n then
@@ -1983,13 +2020,19 @@ local function buildCrate(cr: Cracker, rarity: string, slotIndex: number)
 	model.Name = "CrackerCrate"
 	-- Sunny crate (like the pen's chests) strapped in the rarity colour; Fx.Crates adds its
 	-- rarity's wash, piping, gem and beam.
-	local k = TUNE.crate.scale
-	local body = newPart(Enum.PartType.Block, "Body", SUNNY, Vector3.new(1.7, 1.5, 2.1) * k)
+	local K = TUNE.crate
+	local k = K.scale
+	local rank = math.clamp(K.ranks[rarity] or 0, 0, #K.bodyTint - 1)
+	local body = newPart(Enum.PartType.Block, "Body", SUNNY:Lerp(color, K.bodyTint[rank + 1]), Vector3.new(1.7, 1.5, 2.1) * k)
 	body.Parent = model
 	local bandA = newPart(Enum.PartType.Block, "Band", color, Vector3.new(1.76, 0.28, 2.16) * k)
 	bandA.Parent = model
 	local bandB = newPart(Enum.PartType.Block, "Band", color, Vector3.new(1.76, 1.56, 0.28) * k)
 	bandB.Parent = model
+	if rank >= K.neonFrom then
+		bandA.Material = Enum.Material.Neon
+		bandB.Material = Enum.Material.Neon
+	end
 
 	-- "Smash now" button over the crate while its timer runs (the station sign shows the
 	-- timer and READY!): the only place the Robux smash is offered, and only on a tap. In

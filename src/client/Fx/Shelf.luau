@@ -20,7 +20,7 @@
 	  fusion and a short "FULL! AUTO-MERGED xN" float rises there (at most one
 	  float per second; merges in between add to the next one).
 	- Merge ("Merge" effect): aura soul orbs rise from every consumed unit
-	  and spiral into the target (~0.7 s, "MergeCharge"), then a soft
+	  and snap into the target (0.1 s, "MergeCharge"; auto merges 0.5 s), then a soft
 	  tier-tinted puff, an eased ring, a particle burst, "MergeBoom" and a
 	  gentle camera punch. Auto merges get a lighter, quieter version. A unit
 	  spawning at the merge target lands exactly on the impact.
@@ -109,7 +109,7 @@ local STAGGER = 0.04
 local START_SCALE = 0.05
 local POP_LIMIT = 4 -- BuyPop sounds per POP_WINDOW
 local POP_WINDOW = 0.4
-local CHARGE = 0.7 -- merge orb flight
+local CHARGE = 0.1 -- merge orb flight: a snap, so the impact is on screen 0.1 s after the merge
 local CHARGE_AUTO = 0.5
 local MERGE_STAGGER = 0.2 -- chained merge steps play one after another
 local CHEST_HEIGHT = 3 -- impact point above the target's feet
@@ -145,18 +145,20 @@ local MERGE = {
 			punch = 0,
 			pulse = 1,
 		},
+		-- A plain merge: lands 0.1 s after the effect and stays big until about 0.9 s, so any
+		-- frame from 0.12 to 0.48 s catches the ring, the sparks and (first) the white pulse.
 		manual = {
-			ring = { 4, 18 },
-			ringTime = 0.65,
+			ring = { 6, 22 },
+			ringTime = 0.9,
 			rings = 2,
-			sparks = 28,
-			sparkSize = 1.8,
-			flash = 6.5,
+			sparks = 32,
+			sparkSize = 2.4,
+			flash = 9,
 			pop = 0.42,
 			chip = Vector2.new(13, 3.6),
-			chipLife = 1.5,
+			chipLife = 1.6,
 			punch = 0.8,
-			pulse = 0.9,
+			pulse = 0.6,
 		},
 		best = {
 			ring = { 5, 30 },
@@ -172,18 +174,22 @@ local MERGE = {
 			pulse = 0.78,
 		},
 	},
-	RingStroke = { 9, 2 }, -- the ring's line in pixels: at first, as it fades
+	RingStroke = { 12, 3 }, -- the ring's line in pixels: at first, as it fades
 	RingGap = 0.13,
 	RingGrow = 1.25,
 	SparkSpeed = NumberRange.new(12, 26),
-	SparkLife = NumberRange.new(0.5, 1),
-	FlashTime = 0.32,
+	SparkLife = NumberRange.new(0.6, 1.1),
+	FlashTime = 0.4,
 	PopTime = 0.6, -- seconds of the result unit's overshoot
-	ChipAbove = 7.4, -- studs over the unit's feet the chip appears ...
+	ChipAbove = 7.4, -- studs over the unit's feet the chip appears when the unit is not found ...
 	ChipRise = 2.2, -- ... and how far it floats up
+	ChipGap = 0.8, -- studs between the unit's top and the chip's bottom edge
+	ChipClearPx = 10, -- on screen too: the chip's bottom edge this many px over the unit's head
+	ChipSide = 1.5, -- studs aside (camera right) when the top HUD pushes the chip down
 	ChipFade = 0.35,
 	AutoChipGap = 0.6, -- seconds between the chips of auto merges
-	PulseTime = 0.16,
+	PulseHold = 0.035, -- seconds the white pulse holds at full strength (2 frames) ...
+	PulseTime = 0.16, -- ... and fades over
 	-- A new best tier: a gold column of light over the unit for a moment.
 	BestBeam = { Height = 70, Width = 8, Time = 1.4 },
 	BestDelay = 4, -- seconds a new best tier takes to stop being news
@@ -1116,8 +1122,10 @@ local function screenPulse(transparency: number)
 		sheet.Active = false
 		sheet.Parent = gui
 		gui.Parent = playerGui
-		tween(sheet, MERGE.PulseTime, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		cleanup(gui, MERGE.PulseTime + 0.05)
+		task.delay(MERGE.PulseHold, function()
+			tween(sheet, MERGE.PulseTime, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		end)
+		cleanup(gui, MERGE.PulseHold + MERGE.PulseTime + 0.05)
 	end)
 end
 
@@ -1162,11 +1170,50 @@ local function popUnit(model: Model, amount: number)
 	end)
 end
 
+-- Where the "+TIER n" chip of a `kind` merge at `feet` goes: over the unit's head, its bottom
+-- edge clear of the head on screen too (a camera looking down would put a chip just over the
+-- head on the unit's face), and under the top HUD (pushed down there, it steps aside so it
+-- does not land on the unit).
+local function chipSpot(feet: Vector3, kind: string): Vector3
+	local chip = MERGE.Kinds[kind].chip
+	local halfY, halfX = chip.Y / 2, chip.X / 2
+	local top = feet.Y + MERGE.ChipAbove - halfY - MERGE.ChipGap
+	local unit = unitAt(feet)
+	if unit then
+		local ok, box, size = pcall(unit.GetBoundingBox, unit)
+		if ok then
+			top = box.Position.Y + size.Y / 2
+		end
+	end
+	local head = Vector3.new(feet.X, top, feet.Z)
+	local pos = head + Vector3.new(0, MERGE.ChipGap + halfY, 0)
+	local camera = Workspace.CurrentCamera
+	if not camera then
+		return pos
+	end
+	local headAt = camera:WorldToViewportPoint(head)
+	local at = camera:WorldToViewportPoint(pos)
+	if headAt.Z > 0.5 and at.Z > 0.5 then
+		local pxPerStud = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView) / 2) * at.Z)
+		local bottom = at.Y + halfY * pxPerStud
+		local want = headAt.Y - MERGE.ChipClearPx
+		if bottom > want then
+			pos += camera.CFrame.UpVector * ((bottom - want) / pxPerStud)
+		end
+	end
+	local down = Orbs.hudOffset(pos, 0, halfY, MERGE.ChipRise)
+	if down.Magnitude > 0.01 then
+		pos += down + camera.CFrame.RightVector * (halfX + MERGE.ChipSide)
+	end
+	return pos
+end
+
 -- The merge's impact on the rack, at the result unit drawn with its feet at `feet`: gold
 -- rings, a spark burst and a flash, the unit's pop, the "+TIER n" chip and a camera punch.
--- `kind` is a key of MERGE.Kinds.
-local function resultFx(feet: Vector3, tier: number, kind: string)
+-- `kind` is a key of MERGE.Kinds. Returns the point just over the chip (texts go above it).
+local function resultFx(feet: Vector3, tier: number, kind: string): Vector3
 	local k = MERGE.Kinds[kind]
+	local chipAt = chipSpot(feet, kind)
 	local chest = feet + Vector3.new(0, CHEST_HEIGHT, 0)
 	local to = k.ring[2]
 	for i = 1, k.rings do
@@ -1192,7 +1239,7 @@ local function resultFx(feet: Vector3, tier: number, kind: string)
 		if kind == "auto" then
 			lastAutoChip = now
 		end
-		tierChip(feet + Vector3.new(0, MERGE.ChipAbove, 0), tier, kind)
+		tierChip(chipAt, tier, kind)
 	end
 	if kind == "best" then
 		-- A gold column of light over the new best unit.
@@ -1236,6 +1283,7 @@ local function resultFx(feet: Vector3, tier: number, kind: string)
 		end
 		screenPulse(k.pulse)
 	end
+	return chipAt + Vector3.new(0, k.chip.Y / 2 + MERGE.ChipRise, 0)
 end
 
 -- Which kind of impact a merge to `toTier` gets, asked at its impact (a new best tier then
@@ -1313,7 +1361,7 @@ end
 local function cascadeFinale(chest: Vector3, tier: number, count: number, auto: boolean, kind: string)
 	local size = math.clamp(math.log(math.max(count, 2), 2) / 3, 0.6, 1.6)
 	impactFx(chest, tier, auto, 1 + size * 0.6, 0.9)
-	resultFx(chest - Vector3.new(0, CHEST_HEIGHT, 0), tier, kind)
+	local overChip = resultFx(chest - Vector3.new(0, CHEST_HEIGHT, 0), tier, kind)
 	local color = tierColor(tier)
 	local feet = chest - Vector3.new(0, CHEST_HEIGHT - 0.25, 0)
 	task.delay(0.08, function()
@@ -1333,7 +1381,7 @@ local function cascadeFinale(chest: Vector3, tier: number, count: number, auto: 
 		end)
 	end
 	-- Over the "+TIER n" chip.
-	mergesText(chest + Vector3.new(0, 8.5, 0), count, color:Lerp(WHITE, 0.25), 1.4 + size * 0.6, 1.6)
+	mergesText(overChip + Vector3.new(0, 1.2, 0), count, color:Lerp(WHITE, 0.25), 1.4 + size * 0.6, 1.6)
 end
 
 local function soulOrbs(from: Vector3, to: Vector3, color: Color3, startAt: number, duration: number, auto: boolean)
@@ -1344,7 +1392,7 @@ local function soulOrbs(from: Vector3, to: Vector3, color: Color3, startAt: numb
 		burst(start, color, if auto then 5 else 10, { speed = NumberRange.new(2, 5), size = 0.7, gravity = -4 })
 	end)
 	for i = 1, count do
-		local delay = (i - 1) * 0.06
+		local delay = (i - 1) * math.min(0.06, duration * 0.3)
 		local radius = 1.2 + math.random() * 0.8
 		local angle0 = (i / count) * math.pi * 2 + math.random()
 		local rise = 3.5 + math.random() * 1.5
@@ -1355,7 +1403,7 @@ local function soulOrbs(from: Vector3, to: Vector3, color: Color3, startAt: numb
 			if t < 0 then
 				return false
 			end
-			local length = duration - delay
+			local length = math.max(duration - delay, 0.05)
 			local p = math.clamp(t / length, 0, 1)
 			if not orb then
 				-- Soul orbs are aura, the one effect drawn in Neon.
@@ -1471,10 +1519,10 @@ local function onOverflow(data: { [string]: any }, target: Vector3, fromTier: nu
 	end)
 	task.delay(impact - now, function()
 		impactFx(chest, toTier, true, 1.1, 1.1)
-		resultFx(target, toTier, mergeKind(toTier, true))
+		local overChip = resultFx(target, toTier, mergeKind(toTier, true))
 		ring(target + Vector3.new(0, 0.15, 0), worldColor("Sunny", WHITE), 1.5, 9, 0.45, 0.35)
 		-- Over the "+TIER n" chip.
-		fullFloat(chest + Vector3.new(0, 7.5, 0), count)
+		fullFloat(overChip + Vector3.new(0, 0.8, 0), count)
 	end)
 end
 
@@ -1570,19 +1618,21 @@ local function onMerge(data: { [string]: any })
 		chainTotal = 0
 		return
 	end
+	local chainAt = chest + Vector3.new(0, 9, 0) -- over the chip, once it is placed
 	task.delay(impact - now, function()
 		impactFx(chest, toTier, auto, nil, 1 + math.min(myChain, 6) * 0.06)
-		resultFx(target, toTier, mergeKind(toTier, auto))
+		local overChip = resultFx(target, toTier, mergeKind(toTier, auto))
+		chainAt = overChip + Vector3.new(0, 1.2, 0)
 		if count >= 2 then
-			-- Beside the "+TIER n" chip.
-			Orbs.text(chest + Vector3.new(0, 7.5, 0), "x" .. count, tierColor(toTier), { scale = 0.9, rise = 2.5 })
+			-- Over the "+TIER n" chip.
+			Orbs.text(overChip + Vector3.new(0, 0.8, 0), "x" .. count, tierColor(toTier), { scale = 0.9, rise = 2.5 })
 		end
 	end)
 	lastImpact = impact
 	-- When a chain of step merges ends, show its running total.
 	task.delay(impact - now + 0.25, function()
 		if lastImpact == impact and chainTotal >= 3 then
-			mergesText(chest + Vector3.new(0, 9, 0), chainTotal, tierColor(toTier):Lerp(WHITE, 0.25), 1.6, 1.5)
+			mergesText(chainAt, chainTotal, tierColor(toTier):Lerp(WHITE, 0.25), 1.6, 1.5)
 			chainTotal = 0
 		end
 	end)
