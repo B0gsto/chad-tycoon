@@ -1,7 +1,8 @@
 --[[
 	Unit tests for the Bowling rules (src/server/Modes/BowlingRules.luau; docs/minigames.md):
 	the pin triangle, the seeded roll (path, gutter, knockdown, determinism), the frames
-	and bonus balls, the scorecard and the pass mark.
+	and bonus balls, the scorecard, the pass mark and the lobby phases (what each allows,
+	the START pad, ball picks).
 	Loaded by tests/run.luau with its harness: { test, check, eq, near, seeded }.
 ]]
 
@@ -202,5 +203,77 @@ return function(h: { [string]: any })
 		check(sloppy > 0.25 and sloppy < 0.75, "sloppy pass rate " .. sloppy)
 		check(careful > 0.5 and careful < 0.97, "careful pass rate " .. careful)
 		check(BowlingRules.PASS_SCORE < BowlingRules.MAX_SCORE, "pass mark under the max")
+	end)
+
+	test("Bowling: what each phase allows (lobby -> countdown -> play -> results)", function()
+		local R = BowlingRules
+		eq(table.concat(R.PHASES, ","), "lobby,countdown,play,results", "phase order")
+		check(R.isPhase("lobby") and R.isPhase("results") and not R.isPhase("done"), "isPhase")
+		local allow = {
+			-- phase: begin, pick a ball, roll, exit, fall back to
+			lobby = { true, true, false, true, "lobby" },
+			countdown = { false, false, false, false, "play" },
+			play = { false, false, true, false, "play" },
+			results = { true, true, false, true, "play" },
+		}
+		for phase, a in allow do
+			eq(R.canBegin(phase), a[1], phase .. " begin")
+			eq(R.canPickBall(phase), a[2], phase .. " ball pick")
+			eq(R.canRoll(phase), a[3], phase .. " roll")
+			eq(R.canExit(phase), a[4], phase .. " exit")
+			eq(R.fallTo(phase), a[5], phase .. " fall")
+		end
+		check(R.COUNTDOWN == 3, "a 3, 2, 1 countdown")
+		check(R.RESULTS_SECONDS >= 4 and R.RESULTS_SECONDS <= 8, "results card for about 6 s")
+		check(R.REARM > 0 and R.REARM < R.RESULTS_SECONDS, "short START pad re-arm")
+	end)
+
+	test("Bowling: ball picks are whole numbers 1..BALL_CHOICES", function()
+		local R = BowlingRules
+		eq(R.BALL_CHOICES, 4, "four dumbbells on the rack")
+		for i = 1, R.BALL_CHOICES do
+			eq(R.ballChoice(i), i, "choice " .. i)
+		end
+		for _, bad in { 0, 5, -1, 1.5, 0 / 0, math.huge, "2", true, {} } :: { any } do
+			eq(R.ballChoice(bad), nil, "rejects " .. tostring(bad))
+		end
+	end)
+
+	test("Bowling: the START pad needs feet on it, the lobby and the re-arm over", function()
+		local R = BowlingRules
+		check(R.onPad(0, 0, 0, 4), "centre")
+		check(R.onPad(3, 1, 2, 4), "inside the radius")
+		check(not R.onPad(3, 0, 3, 4), "outside the radius")
+		check(not R.onPad(0, R.PAD_HEIGHT + 1, 0, 4), "jumping high over it")
+		check(not R.onPad(0, -R.PAD_HEIGHT - 1, 0, 4), "under it")
+		check(R.padStarts("lobby", true, 10, 10), "re-arm over: starts")
+		check(not R.padStarts("lobby", true, 9.9, 10), "just back in the lobby: waits")
+		check(not R.padStarts("lobby", false, 20, 10), "off the pad")
+		for _, phase in { "countdown", "play", "results" } do
+			check(not R.padStarts(phase, true, 20, 10), "pad does nothing in " .. phase)
+		end
+	end)
+
+	test("Bowling: neighbouring seeds give unrelated rolls", function()
+		local firsts = {}
+		local low = 0
+		for seed = 1, 200 do
+			local v = BowlingRules.rng(seed)()
+			check(v >= 0 and v < 1, "in [0, 1)")
+			firsts[seed] = v
+			if v < 0.1 then
+				low += 1
+			end
+		end
+		check(low > 5 and low < 40, "first draws spread out (" .. low .. " under 0.1)")
+		local close = 0
+		for seed = 2, 200 do
+			if math.abs(firsts[seed] - firsts[seed - 1]) < 0.05 then
+				close += 1
+			end
+		end
+		check(close < 30, "neighbouring seeds differ (" .. close .. " close pairs)")
+		local seq = BowlingRules.rng(0)
+		check(seq() ~= seq(), "seed 0 still runs")
 	end)
 end
