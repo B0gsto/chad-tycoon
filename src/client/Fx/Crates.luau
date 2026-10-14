@@ -30,7 +30,22 @@
 	  crate's rarity colour as its timer runs (snapshot `unlockers`), the next segment
 	  blinking faster toward the end; the whole ring breathes once the crate is ready.
 	  The Smasher's own crate (Fx.Machines' CrackerCrate, which does the rattling) gets
-	  the rarity wash. When a slot's crate opens, its lid pops off the plinth with a flash.
+	  the pen crate's whole rarity look (SMASH.look): the wash, from Rare up the piping
+	  and a turning gem, for Epic and Legendary the outline and the light beam, and for
+	  every rarity a glow disc on the plinth, a light and the floating rarity word.
+	- Opening ritual (SMASH.ritual): when a slot's crate opens, the crate shakes harder
+	  and harder for `shake` seconds under a rain of sparks while the camera leans in,
+	  then bursts: a rarity-coloured flash, shock rings, a short light beam, the lid and
+	  shards flying off, a camera punch. A crate opened on the spot (no Smasher slot
+	  changed: a daily reward, a Crate Master's held crate) gets a stand-in crate on the
+	  nearest empty plinth, else in front of the character, and the same ritual.
+	  For the cards (the unit card belongs after the burst):
+	    Players.LocalPlayer attributes "CrateBurstAt" (os.clock() of the burst of the
+	    open in progress; in the past or nil = nothing to wait for) and
+	    "CrateBurstRarity", both set on the "ChestOpen" effect, in the same frame;
+	    Crates.burstAt() returns the same time, and Crates.awaitBurst(maxWait) yields
+	    until it has passed (at most maxWait seconds, default 1.5) and returns the rarity.
+	  Nobody has to listen: without a listener the card just shows over the ritual.
 
 	Crates that already exist when the plot is bound just appear in place.
 	All movement is local (BulkMoveTo on the server's anchored parts) and a pure
@@ -49,6 +64,7 @@ local Workspace = game:GetService("Workspace")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Economy = require(Shared:WaitForChild("Economy"))
 local CratePickup = require(Shared:WaitForChild("CratePickup"))
+local Net = require(Shared:WaitForChild("Net"))
 local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 
 local Client = script.Parent.Parent
@@ -129,7 +145,7 @@ local GEM_WHITEN = 0.25
 local GEM_TILT = CFrame.Angles(-math.atan(1 / math.sqrt(2)), 0, math.pi / 4)
 -- Beam layers, widest first: `width` is a share of the look's beamWidth, `base` the
 -- transparency at the ground (each fades to nothing at the top).
-local BEAM_LAYERS = { { width = 1, base = 0.84 }, { width = 0.4, base = 0.55 } }
+local BEAM_LAYERS = { { width = 1, base = 0.7 }, { width = 0.4, base = 0.35 } }
 local BEAM_TAPER = 0.6 -- width at the top as a share of the width at the ground
 local BEAM_EMISSION = 0.6
 local BEAM_WHITEN = 0.25 -- the foot of the beam is the rarity colour mixed this far to white
@@ -155,18 +171,94 @@ local RING_BLINK_SLOW, RING_BLINK_FAST = 3, 14 -- radians per second at the star
 local RING_READY_DIP, RING_READY_RATE = 0.35, 4 -- ready: transparency swing, radians per second
 local RELOAD_JUMP = 5 -- seconds a slot's end must move back for it to count as a new crate
 local SMASHER_REACH = 14 -- studs from a pad to its plinth (the HoloCrate ghost)
-local SMASHER_WASH = 0.5 -- the Smasher's sunny crate needs at least this strong a wash
-local SMASHER_CRATE_REACH = 2 -- studs from the plinth within which Fx.Machines' crate stands
+local SMASHER_CRATE_REACH = 3 -- studs from the plinth within which Fx.Machines' crate stands
 local WASH_WINDOW, WASH_SCAN = 5, 0.1 -- seconds that crate is looked for, and between looks
-local FLASH_SIZE, FLASH_PER_RANK = 4, 0.8 -- studs across at the end of the flash
-local FLASH_TIME, FLASH_START = 0.3, 0.25 -- seconds, starting transparency
-local FLASH_WHITEN = 0.5
-local LID_SIZE = Vector3.new(1.9, 0.3, 2.3)
-local LID_TIME = 0.9 -- seconds in the air
-local LID_SPEED, LID_GRAVITY = 16, 38 -- studs per second up, studs per second squared down
-local LID_DRIFT = 3 -- studs per second away from the booth
-local LID_SPIN = 9 -- radians per second
-local LID_START = 0.9 -- studs above the plinth's crate centre
+
+-- The Smasher's crate and its opening ritual: every size, colour, duration and count. One
+-- table, not a local each: a chunk holds 200 locals at most. Written without a look at the
+-- game and sized to be seen from the pad at 1280x720 (the camera 25 to 50 studs away).
+local SMASH = {
+	-- What Fx.Machines' crate on the plinth wears on top of its rarity's row of LOOKS.
+	look = {
+		wash = 0.42, -- the sunny crate needs at least this strong a wash
+		gem = 1.4, -- gem size / the pen crate's
+		gemSpin = 1.6, -- radians per second
+		gemBob = 0.14, -- studs
+		beam = 0.75, -- beam height / the pen crate's (the booth's sign is overhead)
+		foot = 0.95, -- studs from the plinth point down to the plinth's top
+		disc = 2.5, -- glow disc radius in studs (+ discPerRank per rank)
+		discPerRank = 0.3,
+		discTransparency = 0.3, -- at its brightest (+ discPulse at its dimmest)
+		discPulse = 0.3,
+		discRate = 2.4, -- radians per second (+ 0.4 per rank)
+		light = 9, -- PointLight range in studs (+ 1.5 per rank); none on "low" devices
+		lightBrightness = 1.1,
+		chip = 2.1, -- studs from the crate's centre up to the rarity word (clear of the gem)
+	},
+	ritual = {
+		shake = 0.85, -- seconds from the open to the burst
+		link = 0.6, -- seconds within which a "ChestOpen" effect and a slot's change are one open
+		-- Build-up: Crates.ritualShake, sparks, the camera leaning in.
+		amp = { 0.05, 0.32 }, -- tilt in radians at the start and at the end
+		rate = { 22, 46 }, -- radians per second of the rattle
+		hop = 0.55, -- studs the crate has lifted off the plinth by the end
+		sparkEvery = { 0.2, 0.07 }, -- seconds between spark puffs
+		sparks = 3, -- sparkles per puff (+1 per rank)
+		sparkSize = 1.2, -- studs
+		zoom = 5, -- degrees of FOV the camera leans in by (only near the crate)
+		near = 60, -- studs from the character within which the camera reacts
+		lightFrom = 0.6, -- the build-up light's brightness at the start ...
+		lightTo = 4, -- ... and at the burst
+		lightRange = 14,
+		-- Burst.
+		flash = 7, -- studs across at the end of the flash (+ flashPerRank per rank)
+		flashPerRank = 1.5,
+		flashTime = 0.4,
+		flashStart = 0.1, -- starting transparency
+		flashWhiten = 0.55,
+		glint = 7, -- the big 4-point glint sprite: studs across (+ glintPerRank)
+		glintPerRank = 1.3,
+		glintLife = 0.7,
+		shock = 6, -- shock ring radius in studs (+ shockPerRank)
+		shockPerRank = 1,
+		burstSparks = 18, -- sparkles thrown (+ burstSparksPerRank)
+		burstSparksPerRank = 5,
+		burstSparkSize = 1.7, -- studs
+		burstSparkSpeed = { 14, 26 }, -- studs per second
+		beam = 26, -- height in studs of the short beam (+ beamPerRank)
+		beamPerRank = 7,
+		beamWidth = 2.6, -- studs (+ beamWidthPerRank)
+		beamWidthPerRank = 0.7,
+		beamIn = 0.12, -- seconds to open, to hold and to close
+		beamHold = 0.3,
+		beamOut = 0.5,
+		beamCore = 0.35, -- the white core's width / the beam's
+		lid = Vector3.new(2.7, 0.42, 3.2),
+		lidTime = 1.25, -- seconds in the air
+		lidSpeed = 25, -- studs per second up
+		lidGravity = 40, -- studs per second squared down
+		lidDrift = 4, -- studs per second away from the booth
+		lidSpin = 10, -- radians per second
+		lidStart = 0.9, -- studs above the crate's centre
+		shards = 8, -- crate chunks thrown around (none on "low" devices)
+		shardSize = 0.75, -- studs
+		shardSpeed = { 9, 17 }, -- studs per second outward
+		shardUp = { 12, 22 }, -- studs per second up
+		shardTime = 1,
+		punch = 0.35, -- Camera.punch intensity (+ punchPerRank)
+		punchPerRank = 0.12,
+		-- Existing sounds ("" = none).
+		shakeSound = "CrateShake",
+		burstSound = "MergeBoom",
+		-- A crate opened on the spot.
+		reach = 45, -- studs from the character to an empty plinth that takes the stand-in crate
+		ahead = 6, -- else: studs in front of the character
+		crate = Vector3.new(2.04, 1.8, 2.52), -- the stand-in crate (Fx.Machines' crate size)
+		crateColor = (WORLD.Sunny or GOLD) :: Color3, -- its body, and every other shard
+		strap = 0.34, -- studs across its two rarity straps
+	},
+}
+Crates.SMASH = SMASH
 
 -- One leg of the arrival. kind: "pop" | "hop" | "fall" | "slide" | "arc".
 type Leg = {
@@ -974,14 +1066,47 @@ type Smasher = {
 	blink: number, -- phase of the next segment's blink
 	washUntil: number, -- os.clock() until which Fx.Machines' crate is looked for
 	nextWash: number,
+	-- The rarity look on Fx.Machines' crate (dressSmasherCrate); nothing without one.
+	body: BasePart?, -- that crate's body: the added parts follow it
+	decor: { BasePart }, -- piping, inside the crate's model
+	decorOffsets: { CFrame }, -- relative to the body
+	gem: Part?,
+	gemRest: CFrame, -- the gem's spot over the lid, relative to the body
+	aura: Aura?,
+	glow: Part?, -- the disc on the plinth; carries the light and the rarity word
+	dressedAt: number,
 }
 
--- A lid in the air after a crate opened.
-type Lid = { part: Part, from: Vector3, out: Vector3, yaw: number, t0: number }
+-- Something a burst throws (the lid, crate shards): ballistic, spinning, fading at the end.
+type Lid = { part: Part, from: Vector3, vel: Vector3, yaw: number, spin: number, t0: number, life: number }
+
+-- One opening in progress: the build-up until `burstAt`.
+type Ritual = {
+	rarity: string,
+	color: Color3,
+	rank: number,
+	pos: Vector3, -- the crate's centre
+	out: Vector3, -- the lid drifts this way
+	t0: number,
+	burstAt: number,
+	nextSpark: number,
+	flip: boolean,
+	smasher: Smasher?, -- its court ring flickers
+	claimed: boolean, -- the "ChestOpen" effect of this open was seen
+	near: boolean, -- the character is close: the camera leans in and punches
+	parts: { BasePart }?, -- the stand-in crate of an open on the spot
+	base: CFrame,
+	holder: Part?, -- carries the build-up light
+	light: PointLight?,
+}
 
 local smashers: { [number]: Smasher } = {}
 local smasherPlot: Instance? = nil
 local lids: { Lid } = {}
+local rituals: { Ritual } = {}
+-- The burst the cards wait for: its os.clock() time and rarity, when the "ChestOpen" effect
+-- behind it came, and that effect's token while it still waits for its slot's change.
+local burst = { at = 0, rarity = "", effectAt = -math.huge, pending = 0, token = 0 }
 
 local function paintRing(s: Smasher, lit: number)
 	s.lit = lit
@@ -1000,6 +1125,28 @@ local function paintRing(s: Smasher, lit: number)
 	end
 end
 
+-- Takes the rarity look off a slot (its crate is gone, or another one is being dressed).
+local function clearSmasherDress(s: Smasher)
+	if s.aura then
+		s.aura.anchor:Destroy()
+		s.aura = nil
+	end
+	if s.glow then
+		s.glow:Destroy()
+		s.glow = nil
+	end
+	-- The piping and the gem live in the crate's model: gone with it, or taken off here.
+	for _, part in s.decor do
+		part:Destroy()
+	end
+	if s.gem then
+		s.gem:Destroy()
+	end
+	table.clear(s.decor)
+	table.clear(s.decorOffsets)
+	s.body, s.gem = nil, nil
+end
+
 -- Builds the ring of every Smasher pad of `plot` that has replicated (called again until
 -- both have); another plot drops the old rings first.
 local function bindSmashers(plot: Instance)
@@ -1009,6 +1156,7 @@ local function bindSmashers(plot: Instance)
 			for _, seg in s.segments do
 				seg:Destroy()
 			end
+			clearSmasherDress(s)
 		end
 		table.clear(smashers)
 	end
@@ -1059,41 +1207,409 @@ local function bindSmashers(plot: Instance)
 			blink = 0,
 			washUntil = 0,
 			nextWash = 0,
+			decor = {},
+			decorOffsets = {},
+			gemRest = CFrame.identity,
+			dressedAt = 0,
 		}
 	end
 end
 
--- A slot's crate opened: a flash on the plinth and the lid flying off toward the pad.
-local function popOpen(s: Smasher, rarity: string, color: Color3)
-	if not nearCamera(s.plinth, CULL) then
+-- Opening ritual ----------------------------------------------------------------------------
+
+-- Tells the cards when the burst of the open in progress happens (see the header).
+local function publish(at: number, rarity: string)
+	burst.at, burst.rarity = at, rarity
+	pcall(function()
+		local player = Players.LocalPlayer
+		player:SetAttribute("CrateBurstAt", at)
+		player:SetAttribute("CrateBurstRarity", rarity)
+	end)
+end
+
+-- How a crate `u` (0..1) of the way through its build-up shakes: a tilt and a rattle that
+-- grow, and a slow lift off the plinth. Fx.Machines plays it on its Smasher crate.
+function Crates.ritualShake(u: number, now: number): CFrame
+	local R = SMASH.ritual
+	local e = u * u
+	local amp = R.amp[1] + (R.amp[2] - R.amp[1]) * e
+	local rate = R.rate[1] + (R.rate[2] - R.rate[1]) * u
+	return CFrame.new(0, R.hop * e + math.abs(math.sin(now * rate)) * amp, 0)
+		* CFrame.Angles(math.sin(now * rate * 1.3) * amp, math.sin(now * rate * 0.7) * amp * 0.6, math.sin(now * rate) * amp)
+end
+
+-- 0..1 through the build-up of the ritual at `pos` (a Smasher plinth), nil when none runs.
+function Crates.ritualAt(pos: Vector3): number?
+	local now = os.clock()
+	for _, r in rituals do
+		if (r.pos - pos).Magnitude < SMASHER_CRATE_REACH then
+			return math.clamp((now - r.t0) / math.max(r.burstAt - r.t0, 0.05), 0, 1)
+		end
+	end
+	return nil
+end
+
+-- os.clock() of the burst of the open in progress (in the past: nothing to wait for).
+function Crates.burstAt(): number
+	return burst.at
+end
+
+-- Yields until the burst of the open in progress has happened, at most `maxWait` seconds
+-- (default 1.5), and returns its rarity. Call it on the "ChestOpen" effect; one frame of
+-- grace covers this module handling that effect after the caller.
+function Crates.awaitBurst(maxWait: number?): string?
+	local limit = os.clock() + (maxWait or 1.5)
+	task.wait()
+	while os.clock() < burst.at and os.clock() < limit do
+		task.wait()
+	end
+	return if burst.rarity ~= "" then burst.rarity else nil
+end
+
+-- A one-off throw of big sparkles from its own emitter (Orbs.sparkle's shared budget is
+-- spent by the build-up).
+local function sparkBurst(pos: Vector3, color: Color3, count: number, size: number, speed: { number })
+	local holder = fxPart(Enum.PartType.Block, "CrateSparks", color)
+	holder.Size = Vector3.one * 0.2
+	holder.Transparency = 1
+	holder.CFrame = CFrame.new(pos)
+	local emitter = Sprites.emitter(holder, "Sparkle", {
+		Color = ColorSequence.new(color:Lerp(WHITE, 0.6), color),
+		Lifetime = NumberRange.new(0.5, 0.95),
+		Speed = NumberRange.new(speed[1], speed[2]),
+		SpreadAngle = Vector2.new(180, 180),
+		Drag = 3,
+		Acceleration = Vector3.new(0, -14, 0),
+		Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, size * 0.4),
+			NumberSequenceKeypoint.new(0.2, size),
+			NumberSequenceKeypoint.new(1, 0),
+		}),
+	})
+	if not emitter then
+		holder:Destroy()
+		Orbs.sparkle(pos, color, count, 1.6, size)
 		return
 	end
-	local rank = rankOf(rarity)
-	local flash = fxPart(Enum.PartType.Ball, "CrateFlash", color:Lerp(WHITE, FLASH_WHITEN))
+	emitter:Emit(Budget.count(count))
+	task.delay(1.2, function()
+		holder:Destroy()
+	end)
+end
+
+-- The short beam of a burst: a rarity-coloured column with a white core that snaps open
+-- from `foot`, holds and closes.
+local function burstBeam(foot: Vector3, color: Color3, height: number, width: number)
+	local R = SMASH.ritual
+	local anchor = fxPart(Enum.PartType.Block, "CrateBurstBeam", color)
+	anchor.Size = Vector3.one * 0.2
+	anchor.Transparency = 1
+	anchor.CFrame = CFrame.new(foot)
+	local a0 = Instance.new("Attachment")
+	a0.Parent = anchor
+	local a1 = Instance.new("Attachment")
+	a1.Position = Vector3.new(0, height, 0)
+	a1.Parent = anchor
+	for i = 1, 2 do
+		local core = i == 2
+		local beam = Instance.new("Beam")
+		beam.Name = "BurstBeam" .. i
+		beam.Attachment0 = a0
+		beam.Attachment1 = a1
+		beam.FaceCamera = true
+		beam.Segments = 6
+		beam.LightEmission = if core then 1 else BEAM_EMISSION
+		beam.LightInfluence = 0
+		beam.Color = ColorSequence.new(if core then WHITE else color:Lerp(WHITE, BEAM_WHITEN), color)
+		beam.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, if core then 0.1 else 0.3),
+			NumberSequenceKeypoint.new(0.7, 0.6),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		beam.Width0 = 0
+		beam.Width1 = 0
+		beam.Parent = anchor
+		local wide = width * (if core then R.beamCore else 1)
+		TweenService:Create(
+			beam,
+			TweenInfo.new(R.beamIn, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+			{ Width0 = wide, Width1 = wide * BEAM_TAPER }
+		):Play()
+		task.delay(R.beamIn + R.beamHold, function()
+			TweenService:Create(beam, TweenInfo.new(R.beamOut, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Width0 = 0, Width1 = 0 })
+				:Play()
+		end)
+	end
+	task.delay(R.beamIn + R.beamHold + R.beamOut + 0.1, function()
+		anchor:Destroy()
+	end)
+end
+
+-- The burst that ends a ritual at `pos`: flash, glint, shock rings, sparkles and the short
+-- beam in the rarity colour, the lid flying off along `out` and shards all around.
+local function burstOpen(pos: Vector3, out: Vector3, rarity: string, color: Color3, near: boolean)
+	if not nearCamera(pos, CULL) then
+		return
+	end
+	local R = SMASH.ritual
+	local rank = math.clamp(rankOf(rarity), 0, TOP_RANK + 1)
+	local flash = fxPart(Enum.PartType.Ball, "CrateFlash", color:Lerp(WHITE, R.flashWhiten))
 	flash.Material = Enum.Material.Neon
-	flash.Transparency = FLASH_START
-	flash.CFrame = CFrame.new(s.plinth)
-	TweenService:Create(flash, TweenInfo.new(FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		Size = Vector3.one * (FLASH_SIZE + rank * FLASH_PER_RANK),
+	flash.Transparency = R.flashStart
+	flash.CFrame = CFrame.new(pos)
+	TweenService:Create(flash, TweenInfo.new(R.flashTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		Size = Vector3.one * (R.flash + rank * R.flashPerRank),
 		Transparency = 1,
 	}):Play()
-	task.delay(FLASH_TIME + 0.1, function()
+	task.delay(R.flashTime + 0.1, function()
 		flash:Destroy()
 	end)
-	Orbs.ring(s.plinth - UP * 0.8, color, 3 + rank * 0.5, 0.45, 0.15)
-	Orbs.sparkle(s.plinth + UP * 0.5, color, 8 + rank * 3, 1 + rank * 0.1)
+	Orbs.sprite("Sparkle", {
+		position = pos + UP * 0.6,
+		size = R.glint + rank * R.glintPerRank,
+		rise = UP * 1.2,
+		life = R.glintLife,
+		color = color:Lerp(WHITE, 0.45),
+		spin = 90,
+		maxDistance = 220,
+	})
+	Orbs.shock(pos - UP * 0.8, color, R.shock + rank * R.shockPerRank)
+	sparkBurst(pos + UP * 0.5, color, R.burstSparks + rank * R.burstSparksPerRank, R.burstSparkSize, R.burstSparkSpeed)
+	burstBeam(pos - UP * 0.8, color, R.beam + rank * R.beamPerRank, R.beamWidth + rank * R.beamWidthPerRank)
+	if near then
+		Camera.punch(R.punch + rank * R.punchPerRank)
+	end
+	if R.burstSound ~= "" then
+		(Sounds.play :: any)(R.burstSound, 0.05, 1)
+	end
 	if Budget.low() and #lids >= 1 then
 		return
 	end
+	local now = os.clock()
 	local lid = fxPart(Enum.PartType.Block, "CrateLid", color)
-	lid.Size = LID_SIZE
+	lid.Size = R.lid
 	table.insert(lids, {
 		part = lid,
-		from = s.plinth + UP * LID_START,
-		out = s.out,
-		yaw = math.atan2(-s.out.X, -s.out.Z),
-		t0 = os.clock(),
+		from = pos + UP * R.lidStart,
+		vel = UP * R.lidSpeed + out * R.lidDrift,
+		yaw = math.atan2(-out.X, -out.Z),
+		spin = R.lidSpin,
+		t0 = now,
+		life = R.lidTime,
 	})
+	if Budget.low() then
+		return
+	end
+	local n = Budget.count(R.shards)
+	for i = 1, n do
+		local a = (i / n) * math.pi * 2 + math.random() * 0.6
+		local dir = Vector3.new(math.cos(a), 0, math.sin(a))
+		local shard = fxPart(Enum.PartType.Block, "CrateShard", if i % 2 == 0 then color else R.crateColor)
+		shard.Size = Vector3.one * R.shardSize * (0.7 + math.random() * 0.6)
+		table.insert(lids, {
+			part = shard,
+			from = pos,
+			vel = dir * (R.shardSpeed[1] + math.random() * (R.shardSpeed[2] - R.shardSpeed[1]))
+				+ UP * (R.shardUp[1] + math.random() * (R.shardUp[2] - R.shardUp[1])),
+			yaw = a,
+			spin = R.lidSpin * 1.4,
+			t0 = now,
+			life = R.shardTime * (0.8 + math.random() * 0.4),
+		})
+	end
+end
+
+-- Starts the ritual of a `rarity` crate at `pos`: Smasher `s`'s own crate (Fx.Machines keeps
+-- it there and shakes it), or with `standIn` a crate built here for an open on the spot.
+local function startRitual(s: Smasher?, rarity: string, color: Color3, pos: Vector3, out: Vector3, standIn: boolean)
+	local R = SMASH.ritual
+	local now = os.clock()
+	-- The "ChestOpen" effect of this open may have named the burst time already.
+	local adopted = burst.at > now and now - burst.effectAt < R.link
+	burst.pending = 0
+	if not nearCamera(pos, CULL) then
+		-- Too far away to see: nothing for the cards to wait for.
+		publish(now, rarity)
+		return
+	end
+	local at = if adopted then burst.at else now + R.shake
+	publish(at, rarity)
+	local ritual: Ritual = {
+		rarity = rarity,
+		color = color,
+		rank = math.clamp(rankOf(rarity), 0, TOP_RANK + 1),
+		pos = pos,
+		out = out,
+		t0 = now,
+		burstAt = at,
+		nextSpark = now,
+		flip = false,
+		smasher = s,
+		claimed = adopted,
+		near = playerNear(pos, R.near),
+		base = CFrame.new(pos) * CFrame.Angles(0, math.rad(20), 0),
+	}
+	if standIn then
+		local size = R.crate
+		local sizes = {
+			size,
+			Vector3.new(size.X + 0.07, R.strap, size.Z + 0.07),
+			Vector3.new(size.X + 0.07, size.Y + 0.07, R.strap),
+		}
+		local parts: { BasePart } = {}
+		for i, partSize in sizes do
+			local part = fxPart(Enum.PartType.Block, "StandInCrate", if i == 1 then R.crateColor else color)
+			part.Size = partSize
+			part.CFrame = ritual.base
+			parts[i] = part
+		end
+		ritual.parts = parts
+		smokePuff(pos - UP * (size.Y / 2), 8, 6)
+	end
+	if not Budget.low() then
+		local holder = fxPart(Enum.PartType.Block, "RitualLight", color)
+		holder.Size = Vector3.one * 0.2
+		holder.Transparency = 1
+		holder.CFrame = CFrame.new(pos + UP * 1.2)
+		local light = Instance.new("PointLight")
+		light.Color = color
+		light.Range = R.lightRange
+		light.Brightness = R.lightFrom
+		light.Shadows = false
+		light.Parent = holder
+		ritual.holder, ritual.light = holder, light
+	end
+	if ritual.near then
+		Camera.setFov("CrateRitual", -R.zoom)
+	end
+	if R.shakeSound ~= "" then
+		(Sounds.play :: any)(R.shakeSound, 0.05, 1)
+	end
+	table.insert(rituals, ritual)
+end
+
+-- The build-up of every running ritual, and its burst when the time comes.
+local function stepRituals(now: number)
+	local R = SMASH.ritual
+	for i = #rituals, 1, -1 do
+		local r = rituals[i]
+		local s = r.smasher
+		if now >= r.burstAt then
+			table.remove(rituals, i)
+			if r.parts then
+				for _, part in r.parts do
+					part:Destroy()
+				end
+			end
+			if r.holder then
+				r.holder:Destroy()
+			end
+			if s then
+				paintRing(s, -1)
+			end
+			if r.near then
+				local held = false
+				for _, other in rituals do
+					held = held or other.near
+				end
+				if not held then
+					Camera.setFov("CrateRitual", 0)
+				end
+			end
+			burstOpen(r.pos, r.out, r.rarity, r.color, r.near)
+			continue
+		end
+		local u = math.clamp((now - r.t0) / math.max(r.burstAt - r.t0, 0.05), 0, 1)
+		if now >= r.nextSpark then
+			r.nextSpark = now + R.sparkEvery[1] + (R.sparkEvery[2] - R.sparkEvery[1]) * u
+			r.flip = not r.flip
+			local tint = if r.flip then r.color else r.color:Lerp(WHITE, 0.6)
+			Orbs.sparkle(r.pos + UP * 0.4, tint, R.sparks + r.rank, 0.8 + u, R.sparkSize)
+		end
+		if r.light then
+			r.light.Brightness = R.lightFrom + (R.lightTo - R.lightFrom) * u * u
+		end
+		if r.parts then
+			local cf = r.base * Crates.ritualShake(u, now)
+			for _, part in r.parts do
+				part.CFrame = cf
+			end
+		end
+		if s then
+			-- The court ring flickers between the rarity colour and white, faster and faster.
+			local k = 0.5 + 0.5 * math.sin(now * (R.rate[1] + (R.rate[2] - R.rate[1]) * u))
+			local tint = r.color:Lerp(WHITE, k * 0.7)
+			for _, seg in s.segments do
+				seg.Color = tint
+				seg.Material = Enum.Material.Neon
+				seg.Transparency = RING_LIT
+			end
+		end
+	end
+end
+
+-- The "ChestOpen" effect: names the burst time for the cards at once; the ritual itself
+-- starts with the slot's change in the snapshot, or here for a crate opened on the spot.
+local function onChestOpen(data: any)
+	local R = SMASH.ritual
+	local rarity = if type(data) == "table" and type(data.rarity) == "string" then data.rarity else "Common"
+	local now = os.clock()
+	-- The slot's change came first and started the ritual: its burst time stands.
+	for _, r in rituals do
+		if r.smasher and not r.claimed and now - r.t0 < R.link then
+			r.claimed = true
+			publish(r.burstAt, r.rarity)
+			return
+		end
+	end
+	burst.token += 1
+	local token = burst.token
+	burst.effectAt = now
+	burst.pending = token
+	publish(now + R.shake, rarity)
+	local function onTheSpot()
+		if burst.pending ~= token then
+			return
+		end
+		local root = localRoot()
+		if not root then
+			burst.pending = 0
+			publish(os.clock(), rarity)
+			return
+		end
+		-- The nearest empty plinth takes the stand-in crate, else the ground ahead.
+		local best: Smasher?, bestDist = nil, R.reach
+		for _, s in smashers do
+			local busy = s.rarity ~= "" or s.body ~= nil
+			for _, r in rituals do
+				busy = busy or r.smasher == s
+			end
+			local dist = (s.plinth - root.Position).Magnitude
+			if not busy and dist < bestDist then
+				best, bestDist = s, dist
+			end
+		end
+		local color = rarityColor(rarity)
+		if best then
+			startRitual(best, rarity, color, best.plinth, best.out, true)
+		else
+			local ahead = flatDir(root.CFrame.LookVector) or Vector3.zAxis
+			-- The root part is 3 studs over the ground.
+			local pos = root.Position + ahead * R.ahead + UP * (R.crate.Y / 2 - 2.9)
+			startRitual(nil, rarity, color, pos, root.CFrame.RightVector, true)
+		end
+	end
+	-- A slot that holds this rarity shows its change in the next snapshot; none does when
+	-- the crate was opened on the spot.
+	local slot = false
+	for _, s in smashers do
+		slot = slot or s.rarity == rarity
+	end
+	if slot then
+		task.delay(R.link * 0.4, onTheSpot)
+	else
+		onTheSpot()
+	end
 end
 
 -- Reads the slots from the snapshot: what each holds, when it ends and how long it takes.
@@ -1114,7 +1630,7 @@ local function syncSmashers()
 		local reloaded = not swapped and rarity ~= "" and endsAt > s.endsAt + RELOAD_JUMP
 		if swapped or reloaded then
 			if s.seen and s.rarity ~= "" then
-				popOpen(s, s.rarity, s.color)
+				startRitual(s, s.rarity, s.color, s.plinth, s.out, false)
 			end
 			-- The slot's whole timer comes with the snapshot (`totalSeconds`), so a crate
 			-- already ticking when the plot was bound shows its real share. Without it: a
@@ -1141,30 +1657,145 @@ local function syncSmashers()
 	end
 end
 
--- Gives Fx.Machines' crate on this slot's plinth the rarity wash; false until it stands there.
-local function washSmasherCrate(s: Smasher): boolean
+-- Gives Fx.Machines' crate on this slot's plinth its rarity's look: the wash and, as on the
+-- pen floor (LOOKS), piping, gem, outline and beam, plus what SMASH.look adds for every
+-- rarity (glow disc, light, the rarity word). False until that crate stands there.
+local function dressSmasherCrate(s: Smasher): boolean
+	local L = SMASH.look
 	for _, child in Orbs.getFolder():GetChildren() do
-		if child.Name ~= "CrackerCrate" or child:FindFirstChild(DECOR) then
+		if child.Name ~= "CrackerCrate" or not child:IsA("Model") or child:FindFirstChild(DECOR) then
 			continue
 		end
 		local body = child:FindFirstChild("Body")
-		if body and body:IsA("BasePart") and (body.Position - s.plinth).Magnitude < SMASHER_CRATE_REACH then
-			local look = lookOf(rankOf(s.rarity))
-			washOver(child, body, s.color, math.min(look.wash, SMASHER_WASH), look.rim)
-			return true
+		if not (body and body:IsA("BasePart")) or (body.Position - s.plinth).Magnitude > SMASHER_CRATE_REACH then
+			continue
 		end
+		clearSmasherDress(s)
+		local rank = rankOf(s.rarity)
+		local look = lookOf(rank)
+		local color = s.color
+		washOver(child, body, color, math.min(look.wash, L.wash), look.rim)
+		-- Piping round the middle of each strap: the strap's thinnest side is its width.
+		local piping = look.piping
+		if piping then
+			for _, band in child:GetChildren() do
+				if band:IsA("BasePart") and band.Name == "Band" then
+					local size = band.Size
+					local thin = math.min(size.X, size.Y, size.Z)
+					local function side(v: number): number
+						return if v == thin then PIPING_WIDTH else v + PIPING_PROUD * 2
+					end
+					local pipe = decorPart(
+						child,
+						piping,
+						Vector3.new(side(size.X), side(size.Y), side(size.Z)),
+						band.CFrame,
+						Enum.Material.SmoothPlastic
+					)
+					table.insert(s.decor, pipe)
+					table.insert(s.decorOffsets, body.CFrame:ToObjectSpace(band.CFrame))
+				end
+			end
+		end
+		local top = body.Size.Y / 2
+		if look.gem > 0 then
+			local side = look.gem * L.gem
+			s.gemRest = CFrame.new(0, top + GEM_GAP + side * 0.87, 0)
+			s.gem =
+				decorPart(child, color:Lerp(WHITE, GEM_WHITEN), Vector3.one * side, body.CFrame * s.gemRest * GEM_TILT, Enum.Material.Neon)
+			top += GEM_GAP + side * 1.74
+		end
+		local floor = s.plinth - UP * L.foot
+		local glow = fxPart(Enum.PartType.Cylinder, "SmasherGlow", color)
+		glow.Material = Enum.Material.Neon
+		glow.Transparency = 1
+		glow.CFrame = CFrame.new(floor + UP * 0.06) * UPRIGHT
+		if not Budget.low() then
+			local light = Instance.new("PointLight")
+			light.Color = color
+			light.Range = L.light + rank * 1.5
+			light.Brightness = L.lightBrightness
+			light.Shadows = false
+			light.Parent = glow
+		end
+		-- The rarity word, lit at once (the pen's chips fade in by camera distance).
+		local chip = makeChip(s.rarity, color, body, math.max(top, L.chip), glow)
+		chip.Enabled = true
+		for _, d in chip:GetDescendants() do
+			if d:IsA("TextLabel") then
+				d.TextTransparency = 0
+			elseif d:IsA("UIStroke") then
+				d.Transparency = 0
+			elseif d:IsA("UIScale") then
+				d.Scale = 1
+			end
+		end
+		if look.beam > 0 then
+			local shown = table.clone(look)
+			shown.beam = look.beam * L.beam
+			shown.light = 0
+			local aura = makeAura(shown, color)
+			if aura then
+				lightAura(aura, floor)
+				s.aura = aura
+			end
+		end
+		s.body = body
+		s.glow = glow
+		s.dressedAt = os.clock()
+		return true
 	end
 	return false
 end
 
+-- Keeps a dressed crate's piping and gem on the rattling body, turns the gem, pulses the
+-- glow disc and opens the beam; drops the look once the crate is gone.
+local function stepSmasherDress(s: Smasher, now: number)
+	local body = s.body
+	if not body then
+		return
+	end
+	if not body.Parent then
+		clearSmasherDress(s)
+		return
+	end
+	local L = SMASH.look
+	local cf = body.CFrame
+	for i, part in s.decor do
+		part.CFrame = cf * s.decorOffsets[i]
+	end
+	if s.gem then
+		s.gem.CFrame = cf * s.gemRest * CFrame.new(0, math.sin(now * 2.2) * L.gemBob, 0) * CFrame.Angles(0, now * L.gemSpin, 0) * GEM_TILT
+	end
+	local age = now - s.dressedAt
+	local rank = rankOf(s.rarity)
+	local glow = s.glow
+	if glow then
+		local pulse = 0.5 + 0.5 * math.sin(now * (L.discRate + rank * 0.4))
+		local d = math.max(0.05, (L.disc + rank * L.discPerRank) * 2 * backOut(math.clamp(age / 0.3, 0, 1)) * (1 + 0.06 * pulse))
+		glow.Size = Vector3.new(0.05, d, d)
+		glow.Transparency = L.discTransparency + L.discPulse * (1 - pulse)
+	end
+	local aura = s.aura
+	if aura then
+		local open = smooth(age / BEAM_OPEN) * (1 + BEAM_BREATH * math.sin(now * BEAM_BREATH_RATE))
+		for i, beam in aura.beams do
+			local width = aura.widths[i] * open
+			beam.Width0 = width
+			beam.Width1 = width * BEAM_TAPER
+		end
+	end
+end
+
 local function stepSmashers(now: number, dt: number)
 	for _, s in smashers do
+		stepSmasherDress(s, now)
 		if s.rarity == "" then
 			continue
 		end
 		if now < s.washUntil and now >= s.nextWash then
 			s.nextWash = now + WASH_SCAN
-			if washSmasherCrate(s) then
+			if dressSmasherCrate(s) then
 				s.washUntil = 0
 			end
 		end
@@ -1195,25 +1826,27 @@ local function stepSmashers(now: number, dt: number)
 	end
 end
 
--- Lids fly up and out on a ballistic arc, spinning, and fade over the last 40%.
+-- Lids and shards fly on a ballistic arc, spinning, and fade over the last 40%.
 local function stepLids(now: number)
+	local gravity = SMASH.ritual.lidGravity
 	for i = #lids, 1, -1 do
 		local lid = lids[i]
 		local t = now - lid.t0
-		if t >= LID_TIME then
+		if t >= lid.life then
 			lid.part:Destroy()
 			table.remove(lids, i)
 			continue
 		end
-		local pos = lid.from + UP * (LID_SPEED * t - 0.5 * LID_GRAVITY * t * t) + lid.out * (LID_DRIFT * t)
-		lid.part.CFrame = CFrame.new(pos) * CFrame.Angles(0, lid.yaw, 0) * CFrame.Angles(t * LID_SPIN, 0, t * LID_SPIN * 0.6)
-		lid.part.Transparency = smooth((t / LID_TIME - 0.6) / 0.4)
+		local pos = lid.from + lid.vel * t - UP * (0.5 * gravity * t * t)
+		lid.part.CFrame = CFrame.new(pos) * CFrame.Angles(0, lid.yaw, 0) * CFrame.Angles(t * lid.spin, 0, t * lid.spin * 0.6)
+		lid.part.Transparency = smooth((t / lid.life - 0.6) / 0.4)
 	end
 end
 
 local function step(dt: number)
 	local now = os.clock()
 	stepSmashers(now, dt)
+	stepRituals(now)
 	stepLids(now)
 	if crateCount == 0 then
 		return
@@ -1451,6 +2084,11 @@ function Crates.init()
 	RunService.Heartbeat:Connect(step)
 	State.changed.Event:Connect(refresh)
 	refresh()
+	Net.event("Effect").OnClientEvent:Connect(function(kind: string, data: any)
+		if kind == "ChestOpen" then
+			onChestOpen(data)
+		end
+	end)
 	local player = Players.LocalPlayer
 	player.CharacterAdded:Connect(bindCharacter)
 	if player.Character then
