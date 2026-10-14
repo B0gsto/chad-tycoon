@@ -15,15 +15,16 @@
 	comes when that animation is over. After the last ball: "win" (score >= PASS_SCORE: best,
 	clears and the pay) or "lose", phase "results"; PLAY AGAIN is "BowlingBegin", LOBBY is
 	"BowlingLobby", and with no input the player is back in the lobby after
-	BowlingRules.RESULTS_SECONDS. A game earns stars at BowlingRules.STAR_TIERS (50 / 80 / 115);
-	each star pays a small bonus, capped per BowlingRules.REPEAT_GAP window (BowlingRules
-	"STARS"), and the most stars ever (BowlingRules.starsEver: the best score's and the saved
-	profile.modes.bowling.topStars) unlock dumbbells (BowlingRules.BALL_STARS: rack 3 at 1
-	star, rack 4 at 2, the gold-striped PRO at 3). A second after the bowler's reaction starts
-	(BowlingRules.skipAt) "BowlingSkip" ends the rest of it, except after the last ball. A turn
-	left BowlingRules.AFK_SECONDS bowls a weak centre ball for the player (the friendlier
-	choice: the game waits for them instead of ending); a game with
-	BowlingRules.AUTO_LIMIT such balls pays nothing and counts for no best, clears or stars.
+	BowlingRules.RESULTS_SECONDS. A game earns stars at BowlingRules.STAR_TIERS (50 / 80 / 105);
+	each star pays a small bonus, capped per BowlingRules.REPEAT_GAP window by the game's
+	stars (BowlingRules "STARS": more stars, a higher cap), and the most stars ever
+	(BowlingRules.starsEver: the best score's and the saved profile.modes.bowling.topStars)
+	unlock dumbbells (BowlingRules.BALL_STARS: rack 3 at 1 star, rack 4 at 2, the
+	gold-striped PRO at 3). Once the bowler's reaction has played (BowlingRules.skipAt: a
+	strike's whole celebration, a second of the others) "BowlingSkip" ends the rest of the
+	settle, except after the last ball. A turn left BowlingRules.AFK_SECONDS bowls a weak
+	centre ball for the player (the friendlier choice: the game waits for them instead of
+	ending); a game with BowlingRules.AUTO_LIMIT such balls pays nothing and counts for no best, clears or stars.
 	Other players see the bowler through the character attributes "BowlFlex" = "<move>#<n>"
 	(move: stance, bowl, strike, spare, miss, point; nil when not bowling) and "BowlBall" (the
 	picked dumbbell 1..BALL_CHOICES); their clients pose that avatar and put a dumbbell of
@@ -415,11 +416,11 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 		rec.clears += 1
 		local paid = GameModes.payReward(player, ID, reward)
 		-- The stars' bonus (BowlingRules "STARS"): repeat shares, capped per REPEAT_GAP
-		-- window; never a full pay, so the pack's cooldown is untouched.
+		-- window by this game's stars; never a full pay, so the pack's cooldown is untouched.
 		local bonus = 0
 		local wanted = BowlingRules.starShare(stars)
 		if wanted > 0 then
-			local share, windowAt, used = BowlingRules.bonusTake(stamp(stamps.bonusAt), stamp(stamps.bonusUsed), now, wanted)
+			local share, windowAt, used = BowlingRules.bonusTake(stamp(stamps.bonusAt), stamp(stamps.bonusUsed), now, wanted, stars)
 			stamps.bonusAt, stamps.bonusUsed = windowAt, used
 			local priced = GameModes.modeReward(session, ID, false)
 			local cash = BowlingRules.bonusCash(priced.repeatCash, share)

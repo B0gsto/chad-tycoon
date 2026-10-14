@@ -388,10 +388,18 @@ BowlingRules.WINDUP = 0.9
 -- Seconds after the last pin falls (or the dumbbell reaches the pit) for the pins to settle
 -- and the bowler's reaction: a strike's celebration is the longest. Kept short so a game
 -- moves; a tap skips the rest of it anyway (skipAt).
-BowlingRules.SETTLE = { strike = 2.2, spare = 1.9, gutter = 1.7, open = 1.6 }
+BowlingRules.SETTLE = { strike = 2.4, spare = 1.9, gutter = 1.7, open = 1.6 }
 -- "BowlingSkip" ends the settle early, but only this many seconds after the bowler's
--- reaction starts (reactAt), so the pins and the reaction have been seen (skipAt).
-BowlingRules.SKIP_AFTER = 1.0
+-- reaction starts (reactAt), so the pins and the reaction have been seen (skipAt): the
+-- whole of a strike's leap, roar and flex (Fx.Bowling's reaction, ~1.6 s), about a second
+-- of the others.
+BowlingRules.SKIP_AFTER = { strike = 1.6, other = 1.0 }
+
+-- Seconds after the reaction starts before a skip is taken, for a ball marked `mark`.
+function BowlingRules.skipAfter(mark: string?): number
+	local s = BowlingRules.SKIP_AFTER
+	return if mark == "strike" then s.strike else s.other
+end
 
 function BowlingRules.settle(mark: string?): number
 	local s = BowlingRules.SETTLE
@@ -563,17 +571,20 @@ end
 	STARS. A finished game earns a star at each of STAR_TIERS points (the first is the pass).
 	Every star a game reaches pays a bonus of TIER_SHARE[i] repeat shares (Economy repeatCash:
 	MODE_REPEAT_SHARE of the cash pack), on top of the pass pay. All the bonuses together pay
-	at most BONUS_CAP repeat shares per REPEAT_GAP window (its start and what it paid are saved
-	with the record: bonusAt, bonusUsed), so with the pass's own repeat share (at most one per
-	REPEAT_GAP) a player earns at most (1 + BONUS_CAP) = 2 repeat shares per 5 minutes outside
-	the full pack, however many games they play. Bonuses never restart the full pack's
-	cooldown.
+	at most BONUS_CAPS[stars] repeat shares per REPEAT_GAP window (its start and what it paid
+	are saved with the record: bonusAt, bonusUsed), the cap set by the stars of the game being
+	paid: a 1-star game tops a window up to 0.4 repeat shares, a 2-star one to 0.7 and a
+	3-star one to 1.2, so the higher tiers stay worth chasing after the first game. With the
+	pass's own repeat share (at most one per REPEAT_GAP) a player earns at most
+	1 + BONUS_CAPS[3] = 2.2 repeat shares per 5 minutes outside the full pack, however many
+	games they play. Bonuses never restart the full pack's cooldown.
 ]]
--- Tuned with tests/bowling.luau's bowlers: a skilled one (aim mostly in the pocket, power
--- mostly sweet) earns 2+ stars in about half its games and 3 in about one in seven.
-BowlingRules.STAR_TIERS = { 50, 80, 115 }
+-- Tuned with tests/bowling.luau's bowlers: perfect play (aim always in the pocket, power
+-- always sweet) earns 3 stars in about a third of its games, a skilled one in about a
+-- quarter and a decent one in about one in nine.
+BowlingRules.STAR_TIERS = { 50, 80, 105 }
 BowlingRules.TIER_SHARE = { 0.2, 0.3, 0.5 }
-BowlingRules.BONUS_CAP = 1
+BowlingRules.BONUS_CAPS = { 0.4, 0.7, 1.2 }
 
 -- Stars for a score (0..#STAR_TIERS).
 function BowlingRules.stars(score: number): number
@@ -598,15 +609,22 @@ function BowlingRules.starShare(stars: number): number
 	return share
 end
 
--- A bonus of `share` repeat shares against the window that started at `windowAt` (os.time,
--- 0 = none) and has paid `used` shares: returns the share paid now (0..share) and the
--- window's new start and used shares. A window older than REPEAT_GAP (or from the future)
--- starts afresh.
-function BowlingRules.bonusTake(windowAt: number, used: number, now: number, share: number): (number, number, number)
+-- The most repeat shares a window's bonuses may reach once a game with `stars` stars is
+-- paid (0 for no stars).
+function BowlingRules.bonusCap(stars: number): number
+	local n = if type(stars) == "number" and stars == stars then math.floor(stars) else 0
+	return BowlingRules.BONUS_CAPS[math.clamp(n, 0, #BowlingRules.BONUS_CAPS)] or 0
+end
+
+-- A bonus of `share` repeat shares for a game with `stars` stars against the window that
+-- started at `windowAt` (os.time, 0 = none) and has paid `used` shares: returns the share
+-- paid now (0..share, topping the window up to bonusCap(stars) at most) and the window's new
+-- start and used shares. A window older than REPEAT_GAP (or from the future) starts afresh.
+function BowlingRules.bonusTake(windowAt: number, used: number, now: number, share: number, stars: number): (number, number, number)
 	if windowAt <= 0 or now - windowAt >= BowlingRules.REPEAT_GAP or now < windowAt then
 		windowAt, used = now, 0
 	end
-	local paid = math.clamp(BowlingRules.BONUS_CAP - math.max(0, used), 0, math.max(0, share))
+	local paid = math.clamp(BowlingRules.bonusCap(stars) - math.max(0, used), 0, math.max(0, share))
 	return paid, windowAt, used + paid
 end
 
@@ -664,9 +682,9 @@ function BowlingRules.reactAt(roll: Roll, mark: string?): number
 end
 
 -- Seconds from the "roll" event after which "BowlingSkip" is taken: the run-up, the reaction's
--- start and SKIP_AFTER of it.
+-- start and skipAfter(mark) of it (a strike's whole celebration).
 function BowlingRules.skipAt(roll: Roll, mark: string?): number
-	return BowlingRules.WINDUP + BowlingRules.reactAt(roll, mark) + BowlingRules.SKIP_AFTER
+	return BowlingRules.WINDUP + BowlingRules.reactAt(roll, mark) + BowlingRules.skipAfter(mark)
 end
 
 -- "BowlingSkip": the settle may end early once `now` is past `skipFrom` (the reaction has
@@ -690,9 +708,10 @@ BowlingRules.RESULTS_SECONDS = 6
 BowlingRules.REARM = 1.5
 -- Feet within this many studs above or below a pad's top count as standing on it.
 BowlingRules.PAD_HEIGHT = 4
--- Dumbbells to pick: the lobby rack's four colours (1..RACK_BALLS; the client owns the
--- colours) and the gold-striped PRO dumbbell (PRO_BALL, HUD picker only).
-BowlingRules.RACK_BALLS = 4
+-- Dumbbells to pick, all on the lobby rack (World.BowlingLane's BallChoice1..RACK_BALLS):
+-- four colours (the client reads them off the rack) and the gold-striped PRO dumbbell
+-- (PRO_BALL), the rack's showpiece.
+BowlingRules.RACK_BALLS = 5
 BowlingRules.PRO_BALL = 5
 BowlingRules.BALL_CHOICES = 5
 -- The stars a player must have reached in some game (starsEver) to pick each dumbbell: two

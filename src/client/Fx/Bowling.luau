@@ -44,10 +44,11 @@
 	             leaving lets the body go.
 	  Bursts     a strike or spare bursts stars, confetti and sparkles over the pin deck.
 	  Ball pick  the HUD's lobby picker (setBall) paints the dumbbells' plates in the chosen
-	             colour and marks the matching rack dumbbell (BallChoice1..4 under the arena
+	             colour and marks the matching rack dumbbell (BallChoice1..5 under the arena
 	             Model): its neon "Glow" strip lit (the others dimmed), a highlight and a
 	             bobbing arrow; a "roll" carries `ball` (1..5). Pick 5 is the PRO dumbbell
-	             (not on the rack): dark plates with a gold neon stripe round each rim.
+	             (the rack's showpiece on its pedestal): dark plates with a gold neon stripe
+	             round each rim.
 	             setLocks fades the rack dumbbells the player hasn't unlocked yet (local
 	             LocalTransparencyModifier, glow off) under a "LOCKED ★n" tag. Other
 	             bowlers' held dumbbells take their "BowlBall" pick's colour.
@@ -121,8 +122,8 @@ local CAMERA = {
 local BURST = { strike = 22, spare = 14, Size = 1.6, Spread = 7, Life = 1.4 }
 -- The ball picker: plate colours when the arena's BallChoiceN models can't be read, and the
 -- arrow over the chosen rack dumbbell (studs above it, bob height and speed).
--- The fifth is the PRO dumbbell (BowlingRules.PRO_BALL, unlocked at three stars; not on the
--- rack): dark plates with a gold neon stripe round each rim and gold hubs.
+-- The fifth is the PRO dumbbell (BowlingRules.PRO_BALL, unlocked at three stars; the rack's
+-- showpiece, BallChoice5): dark plates with a gold neon stripe round each rim and gold hubs.
 local BALL_COLORS = { W.Coral, W.Blue, W.Mint, W.Grape, W.Gold }
 local PRO_BALL = 5
 local PRO = { Plate = W.Ink, Stripe = W.Gold, Width = 0.4, Grow = 1.06 }
@@ -429,7 +430,7 @@ local function buildBall()
 	dumbbell = copy
 end
 
--- The rack dumbbell for pick `choice` (BallChoice1..4 under the arena Model), if built.
+-- The rack dumbbell for pick `choice` (BallChoice1..5 under the arena Model), if built.
 local function choiceModel(choice: number): Instance?
 	local found = arena and arena:FindFirstChild("BallChoice" .. choice, true)
 	return if found and (found:IsA("Model") or found:IsA("BasePart")) then found else nil
@@ -451,10 +452,14 @@ function Bowling.ballColor(choice: number): Color3
 	return BALL_COLORS[i]
 end
 
--- A part to hang the arrow on: the model's biggest part.
+-- A part to hang the arrow on: the model's PrimaryPart (the rack dumbbells' centre bar),
+-- else its biggest part.
 local function anchorOf(model: Instance): BasePart?
 	if model:IsA("BasePart") then
 		return model
+	end
+	if model:IsA("Model") and model.PrimaryPart then
+		return model.PrimaryPart
 	end
 	local best: BasePart? = nil
 	for _, part in model:GetDescendants() do

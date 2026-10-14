@@ -23,9 +23,10 @@
 	spawn) to it, a HOW TO PLAY board (press to lock the aim arrow, press again in the power
 	meter's gold sweet spot, knock pins) on the left, the YOUR BEST board (SurfaceGui
 	"BestBoard" with TextLabels Best, Clears ("CLEARS: n") and Reward the client fills) on the
-	right, a two-tier gym rack of four dumbbells to choose from (Models "BallChoice1"
-	.."BallChoice4", attributes Choice = 1..4, Color and Label, each with a neon "Glow" strip
-	the client can light), sofas round a table, a bench, plants, lamps, a railing and the
+	right, a two-tier gym rack of the five dumbbells to choose from (Models "BallChoice1"
+	.."BallChoice5", attributes Choice = 1..5, Color and Label, each with a neon "Glow" strip
+	the client can light: the four colours in pairs either side, the gold-striped PRO one,
+	BowlingRules.PRO_BALL, as the showpiece in the middle on a gold-ringed pedestal), sofas round a table, a bench, plants, lamps, a railing and the
 	EXIT arch in the back right corner.
 
 	Around the deck (sea): its own ocean (the hub's ends ~3000 studs out), shallows and a foam
@@ -48,7 +49,7 @@
 	startPad    the "StartPad" disc; feet within startRadius of it in phase lobby = Begin
 	startRadius the pad's radius
 	board       the "BestBoard" SurfaceGui (TextLabels Best, Clears, Reward; Frame RewardPill)
-	ballRack    the four "BallChoice" Models, in Choice order
+	ballRack    the five "BallChoice" Models, in Choice order
 ]]
 
 local Common = require(script.Parent.Common)
@@ -1393,32 +1394,37 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 	reward.Name = "Reward"
 
 	-- The ball rack (right, by the gap): a two-tier gym rack (teal shelves, coral sides,
-	-- chrome lips) with the four dumbbells to choose from and a sign on chrome posts.
-	local RX, RD = 19, railD - 26 -- out in front of the YOUR BEST board, so neither hides the other
+	-- chrome lips) with the four colour dumbbells in pairs either side, the gold-striped PRO
+	-- dumbbell as its showpiece in the middle of the front tier on a gold-ringed pedestal, and
+	-- a sign on chrome posts.
+	local RX, RD = 16.5, railD - 26 -- out in front of the YOUR BEST board, so neither hides the other
+	local PAIR = 4.6 -- each colour dumbbell this far either side of the rack's centre line
+	local RACK_W = 13.8
 	local tiers = { { d = RD + 1.5, top = 4.4 }, { d = RD - 1.5, top = 1.4 } } -- back high, front low
-	rug("RackRug", RX - 0.2, RD - 0.5, 6.6, W.Apricot, W.Coral, 0.05)
+	rug("RackRug", RX - 0.2, RD - 0.5, 7.6, W.Apricot, W.Coral, 0.05)
 	for _, t in tiers do
 		part({
 			Name = "RackRiser",
-			Size = Vector3.new(11.2, t.top - 0.5, 3),
+			Size = Vector3.new(RACK_W, t.top - 0.5, 3),
 			CFrame = CFrame.new(at(RX, t.d, (t.top - 0.5) / 2)),
 			Color = W.TealDeep,
 		})
-		part({ Name = "RackShelf", Size = Vector3.new(11.2, 0.5, 3), CFrame = CFrame.new(at(RX, t.d, t.top - 0.25)), Color = W.Teal })
+		part({ Name = "RackShelf", Size = Vector3.new(RACK_W, 0.5, 3), CFrame = CFrame.new(at(RX, t.d, t.top - 0.25)), Color = W.Teal })
 		part({
 			Name = "RackLip",
 			Shape = CYLINDER,
-			Size = Vector3.new(11.6, 0.4, 0.4),
+			Size = Vector3.new(RACK_W + 0.4, 0.4, 0.4),
 			CFrame = CFrame.new(at(RX, t.d - 1.4, t.top + 0.15)),
 			Color = W.Chrome,
 			Material = Enum.Material.Metal,
 			Reflectance = 0.3,
 		})
 	end
+	local sideX = RACK_W / 2 + 0.35
 	for _, side in { -1, 1 } do
-		part({ Name = "RackSide", Size = Vector3.new(0.7, 5.6, 6.4), CFrame = CFrame.new(at(RX + side * 5.95, RD, 2.8)), Color = W.Coral })
-		upright(RX + side * 6.6, RD + 0.9, 0, 10.4, 0.6, W.Chrome, "RackSignPost")
-		globe(at(RX + side * 6.6, RD + 0.9, 10.6), 1, W.Sunny, "RackSignBulb", true)
+		part({ Name = "RackSide", Size = Vector3.new(0.7, 5.6, 6.4), CFrame = CFrame.new(at(RX + side * sideX, RD, 2.8)), Color = W.Coral })
+		upright(RX + side * (sideX + 0.65), RD + 0.9, 0, 10.4, 0.6, W.Chrome, "RackSignPost")
+		globe(at(RX + side * (sideX + 0.65), RD + 0.9, 10.6), 1, W.Sunny, "RackSignBulb", true)
 	end
 	-- The sign over the rack, in front of the back tier, big and tipped toward the player.
 	local SIGN_RW, SIGN_RH = 15, 3.6
@@ -1437,25 +1443,64 @@ local function lobby(folder: Instance, at: At, a: { [string]: number }): Lobby
 	words(rackGui, "PICK YOUR DUMBBELL!", 10, 8, SIGN_RW * PPS - 20, SIGN_RH * PPS - 16, W.White, W.Ink, 4)
 	local ballRack: { Model } = {}
 	local r = BowlingRules.BALL.radius
-	for i, choice in CHOICES do
-		local t = tiers[if i <= 2 then 1 else 2]
-		local x = RX + (if i % 2 == 1 then -2.6 else 2.6)
-		local model = makeDumbbell(folder, at(x, t.d, t.top + r), choice.color, false)
+	-- A rack dumbbell (pick `i`) centred at (x, d) resting `lift` studs over tier `t`'s shelf,
+	-- with its neon "Glow" strip on the shelf's front under the lip.
+	local function rackBall(i: number, color: Color3, label: string, t: { d: number, top: number }, x: number, lift: number): Model
+		local model = makeDumbbell(folder, at(x, t.d, t.top + lift + r), color, false)
 		model.Name = "BallChoice" .. i
 		model.PrimaryPart = model:FindFirstChild("Bar") :: any
 		model:SetAttribute("Choice", i)
-		model:SetAttribute("Color", choice.color)
-		model:SetAttribute("Label", choice.label)
+		model:SetAttribute("Color", color)
+		model:SetAttribute("Label", label)
 		deco({
 			Name = "Glow",
 			Size = Vector3.new(3.4, 0.3, 0.12),
 			CFrame = CFrame.new(at(x, t.d - 1.56, t.top - 0.25)),
-			Color = choice.color,
+			Color = color,
 			Material = Enum.Material.Neon,
 			Parent = model,
 		})
 		ballRack[i] = model
+		return model
 	end
+	for i, choice in CHOICES do
+		rackBall(i, choice.color, choice.label, tiers[if i <= 2 then 1 else 2], RX + (if i % 2 == 1 then -PAIR else PAIR), 0)
+	end
+	-- The PRO dumbbell (BowlingRules.PRO_BALL): ink plates with a gold neon stripe round each
+	-- rim and gold hubs (as Fx.Bowling paints a rolled one), up on a gold-ringed chrome
+	-- pedestal in the middle of the front tier, a gold PRO plaque on the riser under it.
+	local front = tiers[2]
+	local PED_H = 0.8
+	upright(RX, front.d, front.top, front.top + PED_H, 2.7, W.Chrome, "ProPedestal").Material = Enum.Material.Metal
+	deco({
+		Name = "ProPedestalRing",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.22, 2.95, 2.95),
+		CFrame = CFrame.new(at(RX, front.d, front.top + PED_H - 0.12)) * UPRIGHT,
+		Color = W.Gold,
+		Material = Enum.Material.Neon,
+	})
+	local pro = rackBall(BowlingRules.PRO_BALL, W.Gold, "PRO", front, RX, PED_H)
+	for _, plate in pro:GetChildren() do
+		if plate:IsA("BasePart") and plate.Name == "Plate" then
+			plate.Color = W.Ink
+			local stripe = plate:Clone()
+			stripe.Name = "ProStripe"
+			stripe.Size = Vector3.new(plate.Size.X * 0.4, plate.Size.Y * 1.06, plate.Size.Z * 1.06)
+			stripe.Color = W.Gold
+			stripe.Material = Enum.Material.Neon
+			stripe.Parent = pro
+		elseif plate:IsA("BasePart") and plate.Name == "Hub" then
+			plate.Color = W.Gold
+		end
+	end
+	local plaque = deco({
+		Name = "ProPlaque",
+		Size = Vector3.new(2.4, 0.7, 0.1),
+		CFrame = CFrame.new(at(RX, front.d - 1.55, (front.top - 0.5) / 2)),
+		Color = W.Ink,
+	})
+	words(surfaceGui(plaque, Enum.NormalId.Back, PPS), "★ PRO ★", 2, 1, 2.4 * PPS - 4, 0.7 * PPS - 2, W.Gold, W.Ink, 2)
 
 	-- Lounge seating (left, on its warm rug): chunky sofas round a big table, a long bench at
 	-- the back and potted bushes in the back corners.

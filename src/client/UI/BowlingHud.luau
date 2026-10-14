@@ -43,9 +43,10 @@
 	              waits opens the turn from it, so a lost "ready" never stalls the game.
 	  Callouts    centre: "STRIKE!" / "SPARE!" (gold / mint, confetti), "GUTTER!" or the pin
 	              count pop in when the last pin falls; the card updates at the same moment.
-	  Results     a centre card: "YOU PASSED!" with the pay or "SO CLOSE!" with the points
-	              still missing ("AUTO-BOWLED" when the server bowled 2+ balls: nothing
-	              counts), the score (counting up), three stars (50 / 80 / 115: the
+	  Results     a centre card: "YOU PASSED!" with the pay, "SO CLOSE!" with the points
+	              still missing (within CLOSE_POINTS of the pass) or "NICE TRY!" with a tip
+	              further off ("AUTO-BOWLED" when the server bowled 2+ balls: nothing
+	              counts), the score (counting up), three stars (50 / 80 / 105: the
 	              earned ones pop in gold; the lobby's best pill and the BestBoard's Clears
 	              caption show the best game's stars), the stars' bonus cash, the best
 	              ("NEW BEST!" flashes), PLAY AGAIN ("BowlingBegin"; Enter, gamepad X) and
@@ -83,7 +84,7 @@ local C = Kit.C
 local F = Kit.F
 
 local FRAMES = 5
--- The rack's four dumbbells and the PRO one (BowlingRules.BALL_CHOICES, PRO_BALL).
+-- The rack's five dumbbells: four colours and the PRO showpiece (BowlingRules.BALL_CHOICES, PRO_BALL).
 local BALLS = 5
 local PRO_BALL = 5
 -- Scorecard: frame box size, the TOTAL box, the gap to the unit-count capsule.
@@ -100,7 +101,9 @@ local PRESS_GUARD = 0.18
 -- BowlingRules.READY_GAP = 0.8 s).
 local MIN_TURN = 0.85
 -- The star scores (the start payload's `tiers`; BowlingRules.STAR_TIERS).
-local tiers = { 50, 80, 115 }
+local tiers = { 50, 80, 105 }
+-- A failed game this close to the pass (points) reads "SO CLOSE!"; further off, "NICE TRY!".
+local CLOSE_POINTS = 10
 -- The dumbbell unlocks: the most stars of any game and the stars each pick needs (the
 -- payloads' starsEver and the start payload's ballStars; BowlingRules.BALL_STARS).
 local starsEver = 0
@@ -516,7 +519,9 @@ end
 local function showFinish(p: any, won: boolean)
 	local score = num(p.score, 0)
 	local best = num(p.best, score)
-	finishTitle.Text = if won then "YOU PASSED!" else "SO CLOSE!"
+	local missing = math.max(0, num(p.target, target) - score)
+	local close = missing <= CLOSE_POINTS
+	finishTitle.Text = if won then "YOU PASSED!" elseif close then "SO CLOSE!" else "NICE TRY!"
 	finishTitle.TextColor3 = if won then C.Gold else C.Text
 	Kit.countTo(finishScore, 0, score, nil, 0.6)
 	finishBestLine.Text = "BEST " .. best
@@ -560,7 +565,9 @@ local function showFinish(p: any, won: boolean)
 			finishCash.TextSize = 18
 		end
 	else
-		finishSub.Text = (num(p.target, target) - score) .. " more points to pass. Try again!"
+		finishSub.Text = if close
+			then "Just " .. missing .. (if missing == 1 then " more point!" else " more points!") .. " Try again!"
+			else "Nice try! Aim for the gold pocket!"
 		finishCash.Visible = false
 	end
 	-- The stars: earned ones pop in one by one once the score has counted up.
