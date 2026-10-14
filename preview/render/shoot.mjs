@@ -258,8 +258,8 @@ function shotList(world) {
 		{ name: "25-mode-gates", scene: "world", gui: "none", camera: { pos: [-134, 50, 0], look: [-198, 8, 0], fov: 64 }, extra: { shadowSpan: 140 } },
 		{ name: "26-shake-arena", scene: "world", gui: "none", camera: { pos: [6996, 44, -6950], look: [7002, 12, -7012], fov: 60 }, extra: { shadowSpan: 150 } },
 		{ name: "29-shake-lobby", scene: "world", gui: "none", camera: { pos: [7004, 30, -6896], look: [7000, 8, -6956], fov: 62 }, extra: { shadowSpan: 150 } },
-		{ name: "27-pose-stage", scene: "world", gui: "none", camera: { pos: [12, 17, -9980], look: [0, 10, -10012], fov: 60 }, extra: { shadowSpan: 110 } },
-		{ name: "30-pose-lobby", scene: "world", gui: "none", camera: { pos: [31, 17, -9977], look: [45, 8, -10006], fov: 62 }, extra: { shadowSpan: 110 } },
+		{ name: "27-pose-stage", scene: "world", gui: "none", camera: { pos: [3, 16, -9983], look: [0, 11.5, -10012], fov: 60 }, extra: { shadowSpan: 110 } },
+		{ name: "30-pose-lobby", scene: "world", gui: "none", camera: { pos: [40, 20, -9974], look: [38, 9, -10006], fov: 62 }, extra: { shadowSpan: 110 } },
 		{ name: "28-bowling-lane", scene: "world", gui: "none", camera: { pos: [-7000, 18, -6967], look: [-7000, 8, -7053], fov: 50 }, extra: { shadowSpan: 160 } },
 		{ name: "31-bowling-lobby", scene: "world", gui: "none", camera: { pos: [-6994, 22, -6917], look: [-7000, 9, -6957], fov: 60 }, extra: { shadowSpan: 120 } },
 	];
