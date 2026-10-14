@@ -63,6 +63,41 @@ Kit.TEXT = {
 	Tiny = 12,
 }
 
+--[[
+	Windows (Kit.window and what sits in one): every size, time and count of the shared
+	window text floor, motion and cues, in one place.
+]]
+Kit.WINDOW = {
+	-- Smallest text in a window, in screen px (desktop / touch). Captures are judged scaled to
+	-- 1000 px wide, where 17 px reads as 13: Kit.text holds every fixed-size label in a
+	-- Kit.window at this size on the glass unless it passes MinPx = false.
+	TextPx = 17,
+	TextPxTouch = 13,
+	-- Open: a spring from OpenFrom scale and OpenRise px lower (Back overshoot) in OpenTime
+	-- seconds; close: CloseTime seconds down to CloseTo, CloseDrop px lower.
+	OpenFrom = 0.72,
+	OpenRise = 40,
+	OpenTime = 0.24,
+	CloseTo = 0.88,
+	CloseDrop = 16,
+	CloseTime = 0.1,
+	CloseIcon = 20, -- the X in the close button
+	-- Kit.scrollCue: the shade under a list that runs on and its bouncing arrow chip.
+	CueFade = 64, -- shade height
+	CueSteps = 8, -- strips the shade is drawn with
+	CueDark = 0.92, -- how solid the shade is at the edge (0..1)
+	CueChip = 36, -- arrow chip diameter
+	CueBounce = 10, -- px the chip drops on each beat
+	CueBeat = 0.45, -- seconds per half bounce
+	-- Kit.bob: px up and seconds per half cycle.
+	BobPx = 7,
+	BobBeat = 0.8,
+	-- Kit.twinkle: star size (px, +-40%), seconds between stars, seconds a star lives.
+	TwinkleSize = 22,
+	TwinkleEvery = 0.3,
+	TwinkleLife = 0.75,
+}
+
 Kit.RADIUS = {
 	S = 10,
 	M = 14,
@@ -720,6 +755,12 @@ end
 	                            Kit.pxUp) and keeps it so when the screen is rescaled
 	                            (Kit.reflowText, called by Main and by Kit.fit)
 	Kit.text takes the same as the prop MinPx (a number, or true for a caption).
+
+	Inside a Kit.window none of that has to be asked for: every fixed-size Kit.text label
+	(captions, chips, pills, bar and tab labels) is held at Kit.WINDOW.TextPx on the glass
+	(TextPxTouch on touch), rounded up, and a MinPx under it is raised to it. MinPx = false
+	opts a label out for good, also from a later Kit.holdText's floor (button faces and
+	switch labels do: their box is their size).
 ]]
 local LAYOUT_SCALES = { "Fit", "Compact" }
 local screenScale: UIScale? = nil
@@ -762,13 +803,54 @@ end
 
 -- Held labels are kept by strong reference and dropped when they are destroyed: a weak
 -- table forgets an Instance as soon as no script holds it, though it is still on screen.
-type HeldText = { px: number, design: number, up: boolean? }
+-- `auto`: held only by the window floor (Kit.text's default in a Kit.window); a TextSize the
+-- owner set by hand since the last pass is then its new design size.
+type HeldText = { px: number, design: number, up: boolean?, auto: boolean?, last: number? }
 local heldText: { [TextLabel]: HeldText } = {}
-local function heldSize(label: TextLabel, held: HeldText): number
-	return if held.up then Kit.pxUp(held.px, held.design, label) else Kit.px(held.px, held.design, label)
+-- The holders of every Kit.window (they live as long as the game's ScreenGui).
+local windowHolders: { [Instance]: boolean } = {}
+-- Kit.WINDOW's text floor (screen px) for `from` inside a Kit.window; 0 anywhere else.
+local function windowFloor(from: Instance?): number
+	local current = from
+	while current do
+		if windowHolders[current] then
+			return if Kit.touch then Kit.WINDOW.TextPxTouch else Kit.WINDOW.TextPx
+		end
+		current = current.Parent
+	end
+	return 0
 end
-function Kit.holdText(label: TextLabel, screenPx: number, design: number?, up: boolean?)
-	local held: HeldText = { px = screenPx, design = design or label.TextSize, up = up }
+-- Whether a label built under `parent` is, or may later be, inside a Kit.window: false only
+-- for one that is already on screen outside every window (the HUD).
+local function mayBeInWindow(parent: Instance?): boolean
+	local current = parent
+	while current do
+		if windowHolders[current] then
+			return true
+		elseif current.ClassName == "ScreenGui" then
+			return false
+		end
+		current = current.Parent
+	end
+	return true
+end
+local function heldSize(label: TextLabel, held: HeldText): number
+	-- MinPx = false (button faces, ribbons): the label's size is its owner's, in any window.
+	local floor = if label:GetAttribute("OwnSize") == true then 0 else windowFloor(label)
+	if held.auto and held.last and label.TextSize ~= held.last then
+		held.design = label.TextSize
+	end
+	local px = math.max(held.px, floor)
+	-- The window floor is a hard one (rounded up); a caller's own size keeps its rounding.
+	local size = if px <= 0
+		then held.design
+		elseif held.up or floor > held.px then Kit.pxUp(px, held.design, label)
+		else Kit.px(px, held.design, label)
+	held.last = size
+	return size
+end
+function Kit.holdText(label: TextLabel, screenPx: number, design: number?, up: boolean?, auto: boolean?)
+	local held: HeldText = { px = screenPx, design = design or label.TextSize, up = up, auto = auto }
 	if heldText[label] == nil then
 		pcall(function()
 			(label :: any).Destroying:Once(function()
@@ -831,7 +913,7 @@ function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
 	local maxSize = props.MaxTextSize
 	local strokeThickness = props.StrokeThickness
 	local shadow = props.Shadow
-	local minPx: number? = if props.MinPx == true then Kit.captionPx() else props.MinPx
+	local minPx: number? = if props.MinPx == true then Kit.captionPx() elseif props.MinPx == false then nil else props.MinPx
 	for key, value in props do
 		if key ~= "MaxTextSize" and key ~= "StrokeThickness" and key ~= "Shadow" and key ~= "MinPx" then
 			(label :: any)[key] = value
@@ -844,6 +926,11 @@ function Kit.text(parent: Instance, props: { [string]: any }): TextLabel
 		label.TextSize = math.max(label.TextSize, floor)
 		if minPx then
 			Kit.holdText(label, minPx)
+		elseif props.MinPx == false then
+			label:SetAttribute("OwnSize", true)
+		elseif mayBeInWindow(parent) then
+			-- In a window every caption keeps Kit.WINDOW's size on the glass by default.
+			Kit.holdText(label, 0, nil, true, true)
 		end
 	end
 	if maxSize then
@@ -2071,15 +2158,17 @@ end
 --[[
 	Idle sheen: a soft light band that glides across `face` every `every`
 	seconds (for the one call to action on screen). `face` must clip.
-	Returns a stop function.
+	opts: Width (40 px), Fade (0.65: the band's transparency at its brightest),
+	Time (1.2 s to cross). Returns a stop function.
 ]]
-function Kit.shimmer(face: GuiObject, every: number?, zindex: number?): () -> ()
+function Kit.shimmer(face: GuiObject, every: number?, zindex: number?, opts: { [string]: any }?): () -> ()
+	local o = opts or {}
 	face.ClipsDescendants = true
 	local bar = Kit.new("Frame", {
 		Name = "Sheen",
 		BackgroundColor3 = WHITE,
 		BorderSizePixel = 0,
-		Size = UDim2.new(0, 40, 1.6, 0),
+		Size = UDim2.new(0, o.Width or 40, 1.6, 0),
 		Position = UDim2.fromScale(-0.4, -0.3),
 		Rotation = 18,
 		ZIndex = zindex or 3,
@@ -2089,18 +2178,19 @@ function Kit.shimmer(face: GuiObject, every: number?, zindex: number?): () -> ()
 	Kit.new("UIGradient", {
 		Transparency = NumberSequence.new({
 			NumberSequenceKeypoint.new(0, 1),
-			NumberSequenceKeypoint.new(0.5, 0.65),
+			NumberSequenceKeypoint.new(0.5, o.Fade or 0.65),
 			NumberSequenceKeypoint.new(1, 1),
 		}),
 		Parent = bar,
 	})
 	local alive = true
 	local period = every or 4.5
+	local cross: number = o.Time or 1.2
 	task.spawn(function()
 		task.wait(math.random() * period)
 		while alive and bar.Parent do
 			bar.Position = UDim2.fromScale(-0.4, -0.3)
-			Kit.tween(bar, 1.2, { Position = UDim2.fromScale(1.2, -0.3) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+			Kit.tween(bar, cross, { Position = UDim2.fromScale(1.2, -0.3) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
 			task.wait(period)
 		end
 	end)
@@ -2243,6 +2333,7 @@ function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> 
 			Text = string.upper(props.Text or ""),
 			Font = font,
 			TextSize = props.TextSize or (if faceHeight then math.clamp(math.floor(faceHeight * 0.2), 12, 18) else nil),
+			MinPx = props.MinPx or false,
 			TextColor3 = textColor,
 			TextWrapped = false,
 			Size = UDim2.new(1, -4, 0.28, 0),
@@ -2273,6 +2364,7 @@ function Kit.button(parent: Instance, props: { [string]: any }, onClick: (() -> 
 			Font = font,
 			RichText = props.RichText or false,
 			TextSize = textSize,
+			MinPx = props.MinPx or false,
 			MaxTextSize = if faceHeight or props.TextSize then nil else 28,
 			TextColor3 = textColor,
 			TextWrapped = false,
@@ -2975,6 +3067,7 @@ function Kit.switch(parent: Instance, props: { [string]: any }, onToggle: () -> 
 		Text = "",
 		Font = F.UI,
 		TextSize = if large then Kit.TEXT.Small else 10,
+		MinPx = false,
 		TextColor3 = C.Text,
 		Size = UDim2.new(1, -h, 1, 0),
 		Position = UDim2.fromOffset(0, 0),
@@ -3503,9 +3596,9 @@ export type Window = {
 	the icon and the chunky outlined title sit straight on the glass over a thin
 	divider line that starts in the window's accent `color`. Coral close button;
 	the content area is clear, so rows and cards (Kit.glass, Kit.panel Glass)
-	sit on the pane itself. Opens with a quick pop (Kit.appear: scale + fade,
-	0.2 s Back) and closes faster (Kit.disappear, 0.11 s); input is live from
-	the first frame. Blurs the scene while open and sets the WindowOpen
+	sit on the pane itself. Opens with a short spring (Kit.appear: scale + fade
+	while it rises into place, Back overshoot) and closes faster (Kit.disappear);
+	the sizes and times are Kit.WINDOW's. Input is live from the first frame. Blurs the scene while open and sets the WindowOpen
 	attribute; the caller owns the dimming backdrop (Kit.backdrop +
 	Kit.fadeBackdrop at Kit.GLASS_DIM).
 
@@ -3527,6 +3620,8 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 		ZIndex = 10,
 		Parent = screen,
 	})
+	-- Text built in this window keeps Kit.WINDOW's size on the glass (see Kit.text).
+	windowHolders[holder] = true
 	local frame = Kit.panel(holder, {
 		Name = "Panel",
 		Glass = "body",
@@ -3627,6 +3722,7 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 	-- Where the window grew from: the opening button's offset from the window centre, in
 	-- the pane's own design pixels.
 	local CENTRE = UDim2.fromScale(0.5, 0.5)
+	local M = Kit.WINDOW
 	local from: UDim2? = nil
 	local function originOf(point: Vector2?): UDim2?
 		if not point then
@@ -3655,11 +3751,17 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 			from = originOf(origin)
 			if from then
 				frame.Position = from
-				Kit.tween(frame, 0.24, { Position = CENTRE }, Enum.EasingStyle.Quint)
-				Kit.appear(frame, { from = G.OriginScale, time = 0.24 })
+				Kit.tween(frame, M.OpenTime, { Position = CENTRE }, Enum.EasingStyle.Back)
+				Kit.appear(frame, { from = G.OriginScale, time = M.OpenTime })
 			else
-				frame.Position = CENTRE
-				Kit.appear(frame, { from = 0.9, time = 0.2 })
+				-- The spring: up from a little lower and smaller, past its place and back.
+				if PREVIEW then
+					frame.Position = CENTRE
+				else
+					frame.Position = UDim2.new(0.5, 0, 0.5, M.OpenRise)
+					Kit.tween(frame, M.OpenTime, { Position = CENTRE }, Enum.EasingStyle.Back)
+				end
+				Kit.appear(frame, { from = M.OpenFrom, time = M.OpenTime })
 			end
 			Kit.setBlur(true)
 			Kit.sound("Open")
@@ -3674,10 +3776,18 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 			Kit.unfocus(holder)
 			if from then
 				Kit.tween(frame, 0.16, { Position = from }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			elseif not PREVIEW then
+				Kit.tween(
+					frame,
+					M.CloseTime,
+					{ Position = UDim2.new(0.5, 0, 0.5, M.CloseDrop) },
+					Enum.EasingStyle.Quad,
+					Enum.EasingDirection.In
+				)
 			end
 			Kit.disappear(frame, {
-				time = if from then 0.16 else 0.11,
-				to = if from then G.OriginScale else nil,
+				time = if from then 0.16 else M.CloseTime,
+				to = if from then G.OriginScale else M.CloseTo,
 				onDone = function()
 					holder.Visible = false
 					frame.Position = CENTRE
@@ -3707,7 +3817,7 @@ function Kit.window(screen: ScreenGui, name: string, title: string, icon: string
 	local closeIcon = (Kit.buttonFace(close) :: Frame):FindFirstChild("Icon") :: Frame
 	closeIcon.Position = UDim2.fromScale(0.5, 0.5)
 	closeIcon.AnchorPoint = Vector2.new(0.5, 0.5)
-	closeIcon.Size = UDim2.fromOffset(16, 16)
+	closeIcon.Size = UDim2.fromOffset(Kit.WINDOW.CloseIcon, Kit.WINDOW.CloseIcon)
 	Kit.hitArea(close, if Kit.touch then 72 else 52, function()
 		Kit.sound("Close")
 		setOpen(false)
@@ -3752,6 +3862,215 @@ function Kit.scrolling(parent: Instance, props: { [string]: any }?): ScrollingFr
 		ScrollingDirection = Enum.ScrollingDirection.Y,
 		Parent = parent,
 	})
+end
+
+--[[
+	Kit.scrollCue(scroll, opts?): shows that `scroll` runs on below its edge: a shade along
+	its bottom edge (stacked strips of the glass tint, clear at the top) and a round chip
+	with a bouncing arrow, both only while there is more content under the edge (they fade
+	out at the end of the list). Neither takes input: taps and drags go to the list. Built
+	as a sibling of `scroll` that follows its Position and Size (anchor 0,0). opts:
+	  Fade = false  no shade (the caller draws its own), only the arrow
+	  ZIndex        of the cue (scroll.ZIndex + 6)
+	Sizes and timing: Kit.WINDOW's Cue fields. Returns the cue frame.
+]]
+function Kit.scrollCue(scroll: ScrollingFrame, opts: { [string]: any }?): Frame
+	local o = opts or {}
+	local M = Kit.WINDOW
+	local z = o.ZIndex or (scroll.ZIndex + 6)
+	local cue = Kit.new("Frame", {
+		Name = scroll.Name .. "Cue",
+		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(0, 1),
+		ZIndex = z,
+		Parent = scroll.Parent,
+	})
+	local strips: { [Frame]: number } = {}
+	if o.Fade ~= false then
+		for i = 1, M.CueSteps do
+			local strip = Kit.new("Frame", {
+				Name = "Strip" .. i,
+				BackgroundColor3 = G.Tint,
+				BackgroundTransparency = 1 - (i / M.CueSteps) ^ 1.5 * M.CueDark,
+				BorderSizePixel = 0,
+				-- One pixel of overlap, so no seam shows between two strips at a fractional scale.
+				Size = UDim2.new(1, 0, 1 / M.CueSteps, 1),
+				Position = UDim2.fromScale(0, (i - 1) / M.CueSteps),
+				ZIndex = z,
+				Parent = cue,
+			})
+			strips[strip] = strip.BackgroundTransparency
+		end
+	end
+	-- The arrow: a sunny chip with a dark chevron (two bars), dropping and rising on a beat.
+	local chip = Kit.new("Frame", {
+		Name = "Arrow",
+		BackgroundColor3 = C.Gold,
+		Size = UDim2.fromOffset(M.CueChip, M.CueChip),
+		Position = UDim2.new(0.5, 0, 1, -8 - M.CueBounce),
+		AnchorPoint = Vector2.new(0.5, 1),
+		ZIndex = z + 1,
+		Parent = cue,
+	})
+	Kit.round(chip)
+	Kit.gradient(chip, Kit.lighten(C.Gold, 0.3), C.Gold)
+	local chipEdge = Kit.new("UIStroke", { Thickness = 2, Color = Kit.lip(C.Gold), Parent = chip })
+	local bars: { Frame } = {}
+	for side = -1, 1, 2 do
+		local bar = Kit.new("Frame", {
+			Name = "Bar",
+			BackgroundColor3 = C.GoldInk,
+			BorderSizePixel = 0,
+			Size = UDim2.new(0.42, 0, 0.14, 0),
+			Position = UDim2.new(0.5 + side * 0.13, 0, 0.54, 0),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Rotation = side * -42,
+			ZIndex = z + 2,
+			Parent = chip,
+		})
+		Kit.round(bar)
+		table.insert(bars, bar)
+	end
+	local shown = true
+	local bounce: Tween? = nil
+	local function show(on: boolean)
+		if on == shown then
+			return
+		end
+		shown = on
+		for strip, transparency in strips do
+			if PREVIEW then
+				strip.BackgroundTransparency = if on then transparency else 1
+			else
+				Kit.tween(strip, 0.2, { BackgroundTransparency = if on then transparency else 1 })
+			end
+		end
+		local t = if on then 0 else 1
+		if PREVIEW then
+			chip.BackgroundTransparency = t
+			chipEdge.Transparency = t
+			for _, bar in bars do
+				bar.BackgroundTransparency = t
+			end
+			return
+		end
+		Kit.tween(chip, 0.2, { BackgroundTransparency = t })
+		Kit.tween(chipEdge, 0.2, { Transparency = t })
+		for _, bar in bars do
+			Kit.tween(bar, 0.2, { BackgroundTransparency = t })
+		end
+		if bounce then
+			bounce:Cancel()
+			bounce = nil
+		end
+		if on then
+			chip.Position = UDim2.new(0.5, 0, 1, -8 - M.CueBounce)
+			local tween = TweenService:Create(
+				chip,
+				TweenInfo.new(M.CueBeat, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+				{ Position = UDim2.new(0.5, 0, 1, -8) }
+			)
+			tween:Play()
+			bounce = tween
+		end
+	end
+	local function place()
+		local pos, size = scroll.Position, scroll.Size
+		cue.Position = UDim2.new(pos.X.Scale, pos.X.Offset, pos.Y.Scale + size.Y.Scale, pos.Y.Offset + size.Y.Offset)
+		cue.Size = UDim2.new(size.X.Scale, size.X.Offset - scroll.ScrollBarThickness - 4, 0, M.CueFade)
+	end
+	local function update()
+		local more = false
+		pcall(function()
+			local window = scroll.AbsoluteWindowSize.Y
+			more = scroll.Visible and window > 0 and scroll.AbsoluteCanvasSize.Y - window - scroll.CanvasPosition.Y > 6
+		end)
+		cue.Visible = scroll.Visible
+		show(more)
+	end
+	place()
+	show(false)
+	pcall(function()
+		for _, property in { "Position", "Size" } do
+			scroll:GetPropertyChangedSignal(property):Connect(place)
+		end
+		for _, property in { "CanvasPosition", "AbsoluteCanvasSize", "AbsoluteWindowSize", "Visible" } do
+			scroll:GetPropertyChangedSignal(property):Connect(update)
+		end
+	end)
+	update()
+	return cue
+end
+
+--[[
+	Kit.bob(gui, px?, beat?): `gui` floats up `px` and back, for good (one repeating tween on
+	its Position, from where it is now). Returns a stop function that puts it back; call it
+	before moving `gui` by hand, then bob again.
+]]
+function Kit.bob(gui: GuiObject, px: number?, beat: number?): () -> ()
+	if PREVIEW then
+		return function() end
+	end
+	local rest = gui.Position
+	local tween = TweenService:Create(
+		gui,
+		TweenInfo.new(beat or Kit.WINDOW.BobBeat, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{ Position = UDim2.new(rest.X.Scale, rest.X.Offset, rest.Y.Scale, rest.Y.Offset - (px or Kit.WINDOW.BobPx)) }
+	)
+	tween:Play()
+	local stopped = false
+	return function()
+		if stopped then
+			return
+		end
+		stopped = true
+		tween:Cancel()
+		gui.Position = rest
+	end
+end
+
+--[[
+	Kit.twinkle(gui, opts?): sparkles over `gui` for as long as it runs: every `Every` seconds
+	a star pops in at a random spot, drifts up a little, turns and fades. opts: Color
+	(C.GoldLight), Size, Every, Life (Kit.WINDOW's Twinkle fields), ZIndex (gui.ZIndex + 4),
+	Inset (0.08: how far inside the edges, scale). Returns a stop function.
+]]
+function Kit.twinkle(gui: GuiObject, opts: { [string]: any }?): () -> ()
+	if PREVIEW then
+		return function() end
+	end
+	local o = opts or {}
+	local M = Kit.WINDOW
+	local size: number = o.Size or M.TwinkleSize
+	local every: number = o.Every or M.TwinkleEvery
+	local life: number = o.Life or M.TwinkleLife
+	local inset: number = o.Inset or 0.08
+	local alive = true
+	task.spawn(function()
+		while alive and gui.Parent do
+			local x = inset + math.random() * (1 - inset * 2)
+			local y = inset + math.random() * (1 - inset * 2)
+			local px = math.floor(size * (0.6 + math.random() * 0.8))
+			local star = Kit.icon(gui, "Star", px, o.Color or C.GoldLight, {
+				Name = "Twinkle",
+				Position = UDim2.fromScale(x, y),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				ZIndex = o.ZIndex or (gui.ZIndex + 4),
+			})
+			star.Rotation = math.random(-25, 25)
+			Kit.appear(star, { from = 0.1, time = life * 0.4 })
+			Kit.tween(star, life, { Position = UDim2.new(x, 0, y, -10), Rotation = star.Rotation + 50 }, Enum.EasingStyle.Sine)
+			task.delay(life * 0.55, function()
+				if star.Parent then
+					Kit.disappear(star, { to = 0.3, time = life * 0.45, destroy = true })
+				end
+			end)
+			task.wait(every)
+		end
+	end)
+	return function()
+		alive = false
+	end
 end
 
 -- Confetti burst from a point inside `parent` (scale position). Pieces shoot
