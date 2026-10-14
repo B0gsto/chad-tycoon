@@ -16,6 +16,11 @@
 	The run is passed with TARGET points: when the clock runs out, or when the hearts run out
 	after the target was already reached (outcome). Out of hearts below the target: "lose".
 
+	A visit goes lobby -> countdown (READY_SECONDS) -> play -> results (RESULTS_SECONDS) ->
+	lobby (docs/minigames.md "Lobby first"): canBegin, onPad and padStep decide the START pad
+	and the "ShakeBegin" action. Root samples are only trusted at a walkable speed (plausible),
+	so a teleporting or speed-hacked character cannot sweep the court.
+
 	ARENA is where World.ShakeArena builds the arena (floor top centre and size in studs,
 	out over the sea away from the Parkour maps, the Mog stage and the Cardio track; tests/
 	minigames.luau keeps every arena clear of the others).
@@ -30,7 +35,7 @@ ShakeRules.FALL_BELOW = 20
 ShakeRules.RUN_SECONDS = 60
 ShakeRules.HEARTS = 3
 ShakeRules.TARGET = 25
--- Seconds between "start" and the first wave (the HUD counts 3, 2, 1).
+-- The countdown: seconds between "ShakeBegin" and the first wave (the HUD counts 3, 2, 1).
 ShakeRules.READY_SECONDS = 3
 -- A pass inside the reward cooldown pays the repeat share at most this often (seconds).
 ShakeRules.REPEAT_GAP = 120
@@ -47,10 +52,31 @@ ShakeRules.EXIT_CLEAR = 10
 -- The server sees a player's position this late: about half the round trip plus a frame of
 -- replication (lagOf). Samples are stamped back by it so dodges count when they happened.
 ShakeRules.LAG_MAX = 0.4
--- A sample further than this (studs) from the last tick's position is a teleport: dropped.
-ShakeRules.MAX_STEP = 40
 -- A drop is judged this long after it lands (the longest `late`), once every sample is in.
 ShakeRules.SETTLE = 0.3
+
+-- Results card time before the player is put back in the lobby (seconds).
+ShakeRules.RESULTS_SECONDS = 6
+-- The START pad only fires after the feet were off it this long (seconds), so a player
+-- landing on or walking back onto it is never restarted at once.
+ShakeRules.PAD_REARM = 1
+-- Feet this far (studs, up or down) from the pad's top still count as standing on it.
+ShakeRules.PAD_HEIGHT = 4
+
+-- Speed check for root samples: a sample is trusted when it lies within
+-- walkSpeed * SPEED_SLACK * dt + SPEED_PAD studs (flat) of the last trusted one, which moves
+-- at most every ANCHOR_EVERY seconds; after REANCHOR seconds without a trusted sample the
+-- next one is trusted anyway (a fling or a lag spike never locks a player out for long).
+ShakeRules.BASE_WALK = 16
+ShakeRules.SPEED_SLACK = 1.5
+ShakeRules.SPEED_PAD = 2
+ShakeRules.ANCHOR_EVERY = 0.5
+ShakeRules.REANCHOR = 2
+
+-- Fair drops: two items landing within FAIR.time seconds of each other, one good and one
+-- junk (or any two at the same moment), land at least FAIR.gap studs apart, so catching a
+-- good item never forces a heart and a double is a real choice.
+ShakeRules.FAIR = { time = 0.8, gap = ShakeRules.CATCH.radius + ShakeRules.JUNK.radius + 1.5 }
 
 -- "shake" | "gold" | "orb" (good) or "burger" | "donut" | "soda" (junk).
 export type Kind = string
@@ -168,19 +194,63 @@ function ShakeRules.keepClear(x: number, z: number, area: Area, avoid: { x: numb
 		math.clamp(avoid.z + cz / len * (clear + 0.5), area.z0, area.z1)
 end
 
--- Every drop of a run, in land order, from its seed. Landing spots stay inside `area` and
--- at least EXIT_CLEAR studs from `avoid` (default EXIT); the last items land by RUN_SECONDS.
+-- `v` folded back inside [lo, hi] (a point past an edge bounces back in instead of piling
+-- up on the edge).
+function ShakeRules.reflect(v: number, lo: number, hi: number): number
+	if v < lo then
+		v = lo + (lo - v)
+	elseif v > hi then
+		v = hi - (v - hi)
+	end
+	return math.clamp(v, lo, hi)
+end
+
+-- True when a drop of `kind` landing at (x, z) at `landAt` keeps FAIR spacing from `drops`
+-- (in land order; only the last FAIR.time seconds are looked at).
+function ShakeRules.fair(drops: { Drop }, kind: Kind, x: number, z: number, landAt: number): boolean
+	local junk = ShakeRules.isJunk(kind)
+	local gap2 = ShakeRules.FAIR.gap * ShakeRules.FAIR.gap
+	for i = #drops, 1, -1 do
+		local o = drops[i]
+		local dt = math.abs(landAt - o.landAt)
+		if dt > ShakeRules.FAIR.time then
+			break
+		end
+		if dt < 1e-6 or ShakeRules.isJunk(o.kind) ~= junk then
+			local dx, dz = x - o.x, z - o.z
+			if dx * dx + dz * dz < gap2 then
+				return false
+			end
+		end
+	end
+	return true
+end
+
+-- Every drop of a run, in land order, from its seed. Landing spots stay inside `area`, at
+-- least EXIT_CLEAR studs from `avoid` (default EXIT) and FAIR from each other; the action
+-- wanders round the court (each drop within a wave's `reach` of the last, leaning back to
+-- the middle); the last items land by RUN_SECONDS.
 function ShakeRules.schedule(seed: number, area: Area, avoid: { x: number, z: number }?): { Drop }
 	local rand = ShakeRules.rng(seed)
 	local exit = avoid or ShakeRules.EXIT
 	local drops: { Drop } = {}
-	local cx, cz = (area.x0 + area.x1) / 2, (area.z0 + area.z1) / 2
-	local function place(reach: number): (number, number)
-		local angle = rand() * math.pi * 2
-		local dist = reach * (0.35 + 0.65 * rand())
-		local x = math.clamp(cx + math.cos(angle) * dist, area.x0, area.x1)
-		local z = math.clamp(cz + math.sin(angle) * dist, area.z0, area.z1)
-		return ShakeRules.keepClear(x, z, area, exit, ShakeRules.EXIT_CLEAR)
+	local mx, mz = (area.x0 + area.x1) / 2, (area.z0 + area.z1) / 2
+	local cx, cz = mx, mz
+	local function place(reach: number, kind: Kind, landAt: number): (number?, number?)
+		-- Lean a quarter of the way back to the middle so the action never hugs a wall.
+		local ox, oz = cx + (mx - cx) * 0.25, cz + (mz - cz) * 0.25
+		for _ = 1, 8 do
+			local angle = rand() * math.pi * 2
+			local dist = reach * (0.35 + 0.65 * rand())
+			local x = ShakeRules.reflect(ox + math.cos(angle) * dist, area.x0, area.x1)
+			local z = ShakeRules.reflect(oz + math.sin(angle) * dist, area.z0, area.z1)
+			x, z = ShakeRules.keepClear(x, z, area, exit, ShakeRules.EXIT_CLEAR)
+			if ShakeRules.fair(drops, kind, x, z, landAt) then
+				return x, z
+			end
+		end
+		-- No fair spot: this drop is skipped.
+		return nil, nil
 	end
 	for index, wave in ShakeRules.WAVES do
 		local nextWave = ShakeRules.WAVES[index + 1]
@@ -190,19 +260,22 @@ function ShakeRules.schedule(seed: number, area: Area, avoid: { x: number, z: nu
 			local count = if rand() < wave.double then 2 else 1
 			for n = 1, count do
 				local kind = ShakeRules.pick(wave, rand(), rand())
-				local x, z = place(wave.reach)
-				if n == 1 then
-					cx, cz = x, z
+				local landAt = t + wave.fall
+				local x, z = place(wave.reach, kind, landAt)
+				if x and z then
+					if n == 1 then
+						cx, cz = x, z
+					end
+					table.insert(drops, {
+						id = #drops + 1,
+						wave = index,
+						kind = kind,
+						x = x,
+						z = z,
+						spawnAt = t,
+						landAt = landAt,
+					})
 				end
-				table.insert(drops, {
-					id = #drops + 1,
-					wave = index,
-					kind = kind,
-					x = x,
-					z = z,
-					spawnAt = t,
-					landAt = t + wave.fall,
-				})
 			end
 			t += wave.gap
 		end
@@ -243,6 +316,49 @@ end
 
 function ShakeRules.passed(score: number): boolean
 	return score >= ShakeRules.TARGET
+end
+
+-- Lobby phases. "ShakeBegin" (or the START pad) starts a run from the lobby or the results.
+export type Phase = string -- "lobby" | "countdown" | "play" | "results"
+function ShakeRules.canBegin(phase: Phase?): boolean
+	return phase == "lobby" or phase == "results"
+end
+
+-- Where a fall puts the player back in `phase`: the lobby spawn in the lobby and on the
+-- results card (which then ends), the court spawn during the countdown and play.
+function ShakeRules.fallTo(phase: Phase?): string
+	return if phase == "countdown" or phase == "play" then "court" else "lobby"
+end
+
+-- True when feet at (x, y, z) stand on a pad whose top centre is `pad` (within `radius`
+-- studs flat and PAD_HEIGHT up or down).
+function ShakeRules.onPad(x: number, y: number, z: number, pad: { x: number, y: number, z: number }, radius: number): boolean
+	local dx, dz = x - pad.x, z - pad.z
+	return dx * dx + dz * dz <= radius * radius and math.abs(y - pad.y) <= ShakeRules.PAD_HEIGHT
+end
+
+-- One START-pad tick at time `now`: `offSince` is when the feet were last seen stepping off
+-- the pad (nil right after arriving in the lobby: they must step off first). Returns whether
+-- the run begins and the new offSince.
+function ShakeRules.padStep(onPad: boolean, offSince: number?, now: number): (boolean, number?)
+	if not onPad then
+		return false, offSince or now
+	end
+	if offSince and now - offSince >= ShakeRules.PAD_REARM then
+		return true, nil
+	end
+	-- On the pad too early: the re-arm starts over once they step off.
+	return false, nil
+end
+
+-- True when a root `dist` studs (flat) from the last trusted sample `dt` seconds later could
+-- have walked there at `walkSpeed` (the server's Humanoid.WalkSpeed; at least BASE_WALK).
+function ShakeRules.plausible(dist: number, dt: number, walkSpeed: number?): boolean
+	if dist ~= dist or dt ~= dt then
+		return false
+	end
+	local speed = math.clamp(if type(walkSpeed) == "number" and walkSpeed == walkSpeed then walkSpeed else 0, ShakeRules.BASE_WALK, 100)
+	return dist <= speed * ShakeRules.SPEED_SLACK * math.max(dt, 0) + ShakeRules.SPEED_PAD
 end
 
 -- "win" / "lose" once the run is over at run time `t`, else nil.
