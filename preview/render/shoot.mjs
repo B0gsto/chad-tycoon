@@ -256,7 +256,7 @@ function shotList(world) {
 		{ name: "23-shop-aura", scene: "world", gui: "shop_aura", camera: play },
 		{ name: "24-daily-reward", scene: "world", gui: "daily", camera: play },
 		{ name: "25-mode-gates", scene: "world", gui: "none", camera: { pos: [-134, 50, 0], look: [-198, 8, 0], fov: 64 }, extra: { shadowSpan: 140 } },
-		{ name: "26-shake-arena", scene: "world", gui: "none", camera: { pos: [6996, 44, -6950], look: [7002, 8, -7012], fov: 60 }, extra: { shadowSpan: 150 } },
+		{ name: "26-shake-arena", scene: "world", gui: "none", camera: { pos: [6996, 44, -6950], look: [7002, 12, -7012], fov: 60 }, extra: { shadowSpan: 150 } },
 		{ name: "29-shake-lobby", scene: "world", gui: "none", camera: { pos: [7004, 30, -6896], look: [7000, 8, -6956], fov: 62 }, extra: { shadowSpan: 150 } },
 		{ name: "27-pose-stage", scene: "world", gui: "none", camera: { pos: [12, 17, -9980], look: [0, 10, -10012], fov: 60 }, extra: { shadowSpan: 110 } },
 		{ name: "30-pose-lobby", scene: "world", gui: "none", camera: { pos: [31, 17, -9977], look: [45, 8, -10006], fov: 62 }, extra: { shadowSpan: 110 } },
