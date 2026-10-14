@@ -887,6 +887,19 @@ local function stepTrail(root: BasePart?)
 	end
 end
 
+-- Fx.Camera's attributes on the LocalPlayer while it pins the zoom limits to one distance: the
+-- limits it puts back after (not required here: the Fx modules may be missing or fail).
+local PIN_MIN, PIN_MAX = "ZoomPinMin", "ZoomPinMax"
+
+-- Sets the follow camera's zoom cap; while Fx.Camera pins the limits, the cap it puts back.
+local function setCap(cap: number)
+	if type(player:GetAttribute(PIN_MAX)) == "number" then
+		player:SetAttribute(PIN_MAX, cap)
+	else
+		player.CameraMaxZoomDistance = cap
+	end
+end
+
 -- Cardio's own run camera: the follow camera's zoom cap moves in with the speed (Fx.Camera's
 -- spawn shot sets the zoom only inside the player's limits, so it never fights this cap).
 local function stepZoom()
@@ -894,9 +907,14 @@ local function stepZoom()
 	if not camera or camera.CameraType ~= Enum.CameraType.Custom then
 		return
 	end
-	if zoomWas == nil then
-		-- Fx.Camera pins both limits to one distance for a frame or two to set a zoom: wait
-		-- that out so the player's real cap is the one kept (stuck limits: see RUN_ZOOM.Stuck).
+	local pinMin, pinMax = player:GetAttribute(PIN_MIN), player:GetAttribute(PIN_MAX)
+	if zoomWas == nil and type(pinMax) == "number" then
+		-- Fx.Camera is setting a zoom: the player's real cap is the one it will put back.
+		zoomWas = pinMax
+		pinnedSince = 0
+	elseif zoomWas == nil then
+		-- Both limits on one distance without Fx.Camera's pin: wait a moment so a pin of a
+		-- frame or two is not taken as the player's cap (stuck limits: see RUN_ZOOM.Stuck).
 		if player.CameraMaxZoomDistance <= player.CameraMinZoomDistance then
 			local now = os.clock()
 			if pinnedSince == 0 then
@@ -914,18 +932,19 @@ local function stepZoom()
 		pinnedSince = 0
 	end
 	local was = zoomWas :: number
+	local least = if type(pinMin) == "number" then pinMin else player.CameraMinZoomDistance
 	local want = RUN_ZOOM.Walk + (RUN_ZOOM.Full - RUN_ZOOM.Walk) * speedK
-	want = math.clamp(want, player.CameraMinZoomDistance, was)
+	want = math.clamp(want, math.min(least, was), was)
 	if math.abs(want - zoomNow) >= RUN_ZOOM.Step then
 		zoomNow = want
-		player.CameraMaxZoomDistance = want
+		setCap(want)
 	end
 end
 
 -- The player's own zoom cap back (the run is over).
 local function restoreZoom()
 	if zoomWas ~= nil then
-		player.CameraMaxZoomDistance = zoomWas :: number
+		setCap(zoomWas :: number)
 	end
 	zoomWas = nil
 	zoomNow = 0

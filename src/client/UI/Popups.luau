@@ -863,7 +863,26 @@ local function mergeFloat(batch: MergeBatch)
 	mergesAt, mergeTally = 0, 0
 	hideMergeTexts(true)
 	local spot = if batch.to then batch.to + Vector3.new(0, RACK_LIFT, 0) else nil
-	Popups.float(text, C.GoldLight, worldAnchor(spot, RACK_FALLBACK), { life = MERGE_FLOAT_LIFE, size = 28, width = 560, drift = false })
+	-- Under the "+TIER n" chips while they are up (Fx.Shelf.chipsBottom: the point just under
+	-- the lowest one), its top edge there, rising less so it stays clear of them.
+	local under: Vector3? = nil
+	pcall(function()
+		local folder = script.Parent.Parent:FindFirstChild("Fx")
+		local module = folder and folder:FindFirstChild("Shelf")
+		local shelf: any = if module and module:IsA("ModuleScript") then require(module) else nil
+		if type(shelf) == "table" and type(shelf.chipsBottom) == "function" then
+			under = shelf.chipsBottom()
+		end
+	end)
+	local opts: { [string]: any } = { life = MERGE_FLOAT_LIFE, size = 28, width = 560, drift = false }
+	local anchor = worldAnchor(spot, RACK_FALLBACK)
+	if typeof(under) == "Vector3" then
+		local below = worldAnchor(under, RACK_FALLBACK)
+		if below ~= RACK_FALLBACK then
+			anchor, opts.rise = below + UDim2.fromOffset(0, 22), -24
+		end
+	end
+	Popups.float(text, C.GoldLight, anchor, opts)
 	sounds.play("Tick", 0.02, 1.3)
 end
 
@@ -1013,7 +1032,7 @@ Popups.FLOAT = {
 -- "+$120" over the world: pops in, rises on a soft arc (steady sideways drift,
 -- easing-out climb) and fades near the top. opts: life (seconds, 1.1), size (text, 30),
 -- width (300), drift (false = straight up), stroke (outline px, 2.5), pop (the scale it pops in
--- from, 0.55).
+-- from, 0.55), rise (px it climbs, -80).
 function Popups.float(text: string, color: Color3, anchor: UDim2, opts: { [string]: any }?)
 	local o = opts or {}
 	local life: number = o.life or 1.1
@@ -1043,7 +1062,7 @@ function Popups.float(text: string, color: Color3, anchor: UDim2, opts: { [strin
 	Kit.tween(pop, if from > 0.7 then 0.18 else 0.28, { Scale = 1 }, Enum.EasingStyle.Back)
 	local drift = if o.drift == false then 0 else math.random(-36, 36)
 	Kit.tween(mover, life, { Position = anchor + UDim2.fromOffset(drift, 0) }, Enum.EasingStyle.Linear)
-	Kit.tween(label, life, { Position = UDim2.fromOffset(0, -80) }, Enum.EasingStyle.Quad)
+	Kit.tween(label, life, { Position = UDim2.fromOffset(0, o.rise or -80) }, Enum.EasingStyle.Quad)
 	tweenAfter(label, 0.4, fadeAt, { TextTransparency = 1 })
 	tweenAfter(outline, 0.4, fadeAt, { Transparency = 1 })
 	tweenAfter(pop, 0.4, fadeAt, { Scale = 0.85 })

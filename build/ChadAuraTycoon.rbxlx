@@ -49782,6 +49782,7 @@ return Shelves
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
+local Assets = require(ReplicatedStorage.Shared.Assets)
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Layout = require(script.Parent.PlotLayout)
 
@@ -49925,8 +49926,16 @@ local ARCH_DRESS = {
 	PoleTop = 20,
 	PoleThick = 0.4,
 	KnobSize = 1,
-	FlagSize = Vector2.new(4.2, 2.8),
+	-- Each pole's flag is a pennant: a square hoist by the pole carrying a star emblem (the HUD's
+	-- "Star" icon on a white roundel, both faces), then a triangle tapering outward to a point.
+	-- The tier-15 cups stand on these poles' knobs; plain rectangles read as sticky notes.
+	FlagSize = Vector2.new(5.4, 2.8), -- whole pennant: length out from the pole, height at the hoist
+	FlagHoist = 2.6, -- studs of the length that is the square hoist (the rest is the tail)
+	FlagThick = 0.15,
 	FlagColors = { "Coral", "Sunny" },
+	FlagEmblem = 0.8, -- roundel diameter / the hoist's height
+	FlagEmblemRing = { "Sunny", "Coral" }, -- the roundel's rim, per flag (the other flag's colour)
+	FlagEmblemPx = 40, -- SurfaceGui pixels per stud
 	-- Pennants: from each pole (PennantDrop under its flag) out to a short pole on the fence at
 	-- |x| = PennantEndX, PennantEndY up (so the last pennant hangs clear of the 3.6-stud fence),
 	-- sagging PennantSag in the middle.
@@ -50034,6 +50043,81 @@ local function stringRod(P: (props: { [string]: any }) -> BasePart, from: Vector
 		false
 end
 
+-- One entrance pole's pennant flag (ARCH_DRESS.Flag*): the hoist with its star roundel on
+-- both faces and two wedges making the tail's point; `side` is -1 or 1, `i` the flag's index.
+local function dressArchFlag(B: Builder, x: number, z: number, side: number, i: number)
+	local d = ARCH_DRESS
+	local color = Paint[d.FlagColors[i]]
+	local h, hoist = d.FlagSize.Y, d.FlagHoist
+	local tail = d.FlagSize.X - hoist
+	local inner = x + side * d.PoleThick / 2
+	local midY = d.PoleTop - h / 2
+	local flag = soft(B.P({
+		Name = "ArchFlag",
+		Size = Vector3.new(hoist, h, d.FlagThick),
+		CFrame = B.L(inner + side * hoist / 2, midY, z),
+		Color = color,
+	}))
+	-- The tail: an upper and a lower right triangle meeting at the point, tall side at the hoist.
+	local back = Vector3.new(-side, 0, 0)
+	for _, up in { Vector3.yAxis, -Vector3.yAxis } do
+		soft(B.W({
+			Name = "ArchFlagTail",
+			Size = Vector3.new(d.FlagThick, h / 2, tail),
+			CFrame = B.cf
+				* CFrame.fromMatrix(Vector3.new(inner + side * (hoist + tail / 2), midY + up.Y * h / 4, z), up:Cross(back), up, back),
+			Color = color,
+		})).CastShadow =
+			false
+	end
+	local icon = Assets.icon("Star")
+	local ring = Paint[d.FlagEmblemRing[i]] or Paint.White
+	for _, face in { Enum.NormalId.Front, Enum.NormalId.Back } do
+		local gui = Instance.new("SurfaceGui")
+		gui.Name = "ArchFlagEmblem"
+		gui.Face = face
+		gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+		gui.PixelsPerStud = d.FlagEmblemPx
+		gui.LightInfluence = 0.3
+		gui.MaxDistance = Common.SIGN_FADE_CARD
+		gui.Parent = flag
+		local disc = Instance.new("Frame")
+		disc.AnchorPoint = Vector2.new(0.5, 0.5)
+		disc.Position = UDim2.fromScale(0.5, 0.5)
+		disc.Size = UDim2.fromScale(d.FlagEmblem * h / hoist, d.FlagEmblem)
+		disc.BackgroundColor3 = Paint.White
+		disc.Parent = gui
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(0.5, 0)
+		round.Parent = disc
+		local rim = Instance.new("UIStroke")
+		rim.Color = ring
+		rim.Thickness = 5
+		rim.Parent = disc
+		if icon then
+			local star = Instance.new("ImageLabel")
+			star.BackgroundTransparency = 1
+			star.AnchorPoint = Vector2.new(0.5, 0.5)
+			star.Position = UDim2.fromScale(0.5, 0.5)
+			star.Size = UDim2.fromScale(0.9, 0.9)
+			star.Image = icon.image
+			star.ImageRectOffset = Vector2.new(icon.x, icon.y)
+			star.ImageRectSize = Vector2.new(icon.w, icon.h)
+			star.ScaleType = Enum.ScaleType.Fit
+			star.Parent = disc
+		else
+			text(disc, {
+				Text = "★",
+				Font = theme.Fonts.Display,
+				TextColor3 = Paint.Sunny,
+				Size = UDim2.fromScale(0.86, 0.86),
+				Position = UDim2.fromScale(0.07, 0.07),
+				Outline = true,
+			})
+		end
+	end
+end
+
 -- Flags and pennants on the entrance arch (ARCH_DRESS).
 local function dressArch(B: Builder)
 	local d = ARCH_DRESS
@@ -50055,13 +50139,8 @@ local function dressArch(B: Builder)
 			CFrame = L(x, d.PoleTop + d.KnobSize * 0.3, z),
 			Color = Paint.Sunny,
 		}))
-		-- The flag flies outward from its pole, just under the knob.
-		soft(P({
-			Name = "ArchFlag",
-			Size = Vector3.new(d.FlagSize.X, d.FlagSize.Y, 0.15),
-			CFrame = L(x + side * (d.PoleThick / 2 + d.FlagSize.X / 2), d.PoleTop - d.FlagSize.Y / 2, z),
-			Color = Paint[d.FlagColors[i]],
-		}))
+		-- The pennant flies outward from its pole, just under the knob.
+		dressArchFlag(B, x, z, side, i)
 		-- Pennants: right triangles hanging point down from the sagging line, flat to the hub,
 		-- out to a short pole standing on the fence.
 		local topY = d.PoleTop - d.FlagSize.Y - d.PennantDrop
@@ -51798,6 +51877,11 @@ local shakeUntil = 0
 local shakeLength = 0
 local started = false
 local zoomBusy = false
+-- While setZoom pins the limits, the player's own limits it puts back after, as LocalPlayer
+-- attributes: Fx.Cardio's run camera changes its cap through them during a pin (so neither
+-- puts back a cap the other has replaced). The limits are floats: compared within ZOOM_EPS.
+local PIN_MIN, PIN_MAX = "ZoomPinMin", "ZoomPinMax"
+local ZOOM_EPS = 0.01
 local frameToken = 0 -- bumps on every spawn shot (a pending widen belongs to one)
 
 local function reduced(): boolean
@@ -51914,8 +51998,10 @@ local function portalLimit(focus: Vector3, eye: Vector3): number
 end
 
 -- Sets the follow camera's zoom to `distance` by pinning the player's zoom limits to it for
--- a frame (the camera scripts clamp their zoom to the limits), then restoring them. Returns
--- false when it could not (another zoom is being set, or the distance is outside the limits).
+-- a frame (the camera scripts clamp their zoom to the limits), then restoring them (from the
+-- PIN_MIN / PIN_MAX attributes, which Fx.Cardio may have moved meanwhile). A limit something
+-- else rewrote during the pin is left as it is. Returns false when it could not (another
+-- zoom is being set, or the distance is outside the limits).
 local function setZoom(distance: number): boolean
 	local player = Players.LocalPlayer
 	local lo, hi = player.CameraMinZoomDistance, player.CameraMaxZoomDistance
@@ -51923,16 +52009,23 @@ local function setZoom(distance: number): boolean
 		return false
 	end
 	zoomBusy = true
+	player:SetAttribute(PIN_MIN, lo)
+	player:SetAttribute(PIN_MAX, hi)
 	task.spawn(function()
-		player.CameraMaxZoomDistance = distance
-		player.CameraMinZoomDistance = distance
-		RunService.RenderStepped:Wait()
-		RunService.RenderStepped:Wait()
-		if player.CameraMinZoomDistance == distance then
-			player.CameraMinZoomDistance = lo
+		pcall(function()
+			player.CameraMaxZoomDistance = distance
+			player.CameraMinZoomDistance = distance
+			RunService.RenderStepped:Wait()
+			RunService.RenderStepped:Wait()
+		end)
+		local backMin, backMax = player:GetAttribute(PIN_MIN), player:GetAttribute(PIN_MAX)
+		player:SetAttribute(PIN_MIN, nil)
+		player:SetAttribute(PIN_MAX, nil)
+		if math.abs(player.CameraMinZoomDistance - distance) < ZOOM_EPS then
+			player.CameraMinZoomDistance = if type(backMin) == "number" then backMin else lo
 		end
-		if player.CameraMaxZoomDistance == distance then
-			player.CameraMaxZoomDistance = hi
+		if math.abs(player.CameraMaxZoomDistance - distance) < ZOOM_EPS then
+			player.CameraMaxZoomDistance = if type(backMax) == "number" then backMax else hi
 		end
 		zoomBusy = false
 	end)
@@ -52339,7 +52432,11 @@ local OTHER_MAX = 6 -- at most this many other players (scaled by Budget.count)
 -- real run speeds (WalkSpeed 16 at Speed 0, ~25 on stage 1, ~37 at stage 3's recommended
 -- Speed), so every run past the first steps shows them; the strength curve (speed share ^
 -- LINE_CURVE) makes even a slow run read in a still.
-local LINE_COUNT = 72
+-- r6: measured in Studio at a stage-1 run (23 studs/s) the lines and their glows covered 31% of
+-- a 64x36 grid at >= 25% opacity and washed the frame out in stills: fewer lines, lighter
+-- (the strongest about 45% opaque at that speed, 80% at full speed), much fainter glows, a
+-- wider clear middle and few lines along the horizontal band the runner runs in.
+local LINE_COUNT = 56
 local LINES_FROM = 17 -- studs/s: speed lines, trail and FOV start above this
 local LINES_FULL = 36 -- studs/s: full effect
 local LINE_CURVE = 0.5
@@ -52347,31 +52444,52 @@ local LINE_LEN = 150
 local LINE_LEN_FULL = 420
 local LINE_THICK = 14
 local LINE_THICK_FULL = 28
-local LINE_OPACITY = 1
-local LINE_CLEAR = 0.42 -- lines start this far out (share of centre -> edge) ...
-local LINE_SOLID = 0.62 -- ... and are fully faded in from here
+local LINE_OPACITY = 0.8
+local LINE_CLEAR = 0.5 -- lines start this far out (share of centre -> edge) ...
+local LINE_SOLID = 0.72 -- ... and are fully faded in from here
 local LINE_GLOW = 2.4 -- glow width, x the line's thickness
-local LINE_GLOW_OPACITY = 0.45 -- glow opacity at full strength
+local LINE_GLOW_OPACITY = 0.22 -- glow opacity at full strength
+local LINE_BAND = 0.3 -- |sin(angle)| under this is the centre band (left and right of the runner) ...
+local LINE_BAND_KEEP = 0.3 -- ... where only this share of the lines is drawn
 local LINE_TINT_EVERY = 2
 local LINE_TINT_WHITE = 0.08 -- how far a rainbow line is lifted toward white
 local FOV_MAX = 9
 local TRAIL = {
 	From = 0.02, -- speed share (0..1) where the trail starts showing
-	Lifetime = 0.55, -- seconds (short, so the ribbon never reaches the camera behind)
-	Width = 2.6, -- studs: the core ribbon, flat along the floor (left to right)
-	GlowWidth = 5.5, -- studs: the soft glow ribbon under it
-	Lift = 0.35, -- studs above the feet
-	Opacity = 1, -- core at full speed (the tail fades to nothing)
-	GlowOpacity = 0.6, -- glow at full speed
-	Floor = 0.55, -- core opacity the moment it shows
+	Lifetime = 0.6, -- seconds (short, so the ribbon never reaches the camera behind)
+	Width = 4.2, -- studs: the core ribbon, flat along the floor (left to right)
+	GlowWidth = 8, -- studs: the soft glow ribbon under it
+	-- Studs above the resting key tops. The feet stand on a pressed key, PressDepth below
+	-- them, and the keys behind spring back up within PRESS_UP: r5 laid the ribbon 0.35 over
+	-- the feet, inside the keycaps, so only a faint stripe of it showed between them.
+	Lift = 0.3,
+	Opacity = 1, -- core at full speed ...
+	Hold = 0.55, -- ... nearly that strong over this share of its length, then fading out
+	GlowOpacity = 0.7, -- glow at full speed
+	Floor = 0.85, -- core opacity the moment it shows
 	Light = 1, -- LightEmission (glows on the dark keys)
 }
 -- Cardio's own run camera: the follow camera's zoom is capped while a run is on, nearer the
 -- faster you go (studs from the head), and the player's own zoom limits come back after.
 local RUN_ZOOM = {
-	Walk = 14, -- at no speed
-	Full = 10, -- at full speed
+	Walk = 12, -- at no speed
+	Full = 9, -- at full speed
 	Step = 0.25, -- studs: the cap is only rewritten when it moves this much
+	-- Fx.Camera pins both limits to one distance for two frames to set a zoom; limits still
+	-- pinned after this many seconds are stuck (measured in Studio: a home shot of 16.9 studs
+	-- left both at 16.9, so the cap never took and the run camera stayed at 17.6 studs) and
+	-- the run takes the cap anyway, from the place's own limits.
+	Stuck = 0.5,
+}
+-- The run glow (a bloom of its own and a little saturation, so the neon trusses glow). r5's
+-- threshold 0.9 also bloomed the sunlit pastel lobby: measured in Studio at the 'treadmill'
+-- camera 47% of the pixels clipped to white (9% without the run bloom). At 3 only the neon
+-- blooms: the lobby is back to 9% and the track keeps a glow (5% of its pixels brighter).
+local RUN_GLOW = {
+	BloomIntensity = 0.6,
+	BloomSize = 24,
+	BloomThreshold = 3,
+	Saturation = 0.1,
 }
 -- The goal star on the TRACK: beside the doorway of the stage you run next (on the right as
 -- you face it, under its StageSign<n>), a big gold star with that stage's recommended Speed
@@ -52461,6 +52579,7 @@ local trailGlow: Trail? = nil
 -- The player's own zoom cap before the run (restored after), and the cap set now.
 local zoomWas: number? = nil
 local zoomNow = 0
+local pinnedSince = 0 -- os.clock() since the zoom limits have been pinned to one distance
 local lastClick = 0
 local localKey: Key? = nil
 -- Keys under other players' feet this frame (kept pressed down).
@@ -52925,7 +53044,13 @@ end
 -- Speed lines and FOV -------------------------------------------------------------------------
 
 local function resetLine(line: Line, fresh: boolean)
-	line.angle = math.random() * TAU
+	local angle = math.random() * TAU
+	-- Few along the centre band: a line there is drawn somewhere else most of the time.
+	if math.abs(math.sin(angle)) < LINE_BAND and math.random() > LINE_BAND_KEEP then
+		local tilt = LINE_BAND + math.random() * (1 - LINE_BAND)
+		angle = math.asin(tilt) * (if math.random() < 0.5 then 1 else -1) + (if math.random() < 0.5 then 0 else math.pi)
+	end
+	line.angle = angle
 	line.r = if fresh then LINE_CLEAR + math.random() * (1.15 - LINE_CLEAR) else LINE_CLEAR + math.random() * 0.2
 	line.speed = 1.6 + math.random() * 1.4
 	line.frame.Rotation = math.deg(line.angle)
@@ -53067,7 +53192,7 @@ local function stepTrail(root: BasePart?)
 		-- Feet height under the root (the trail lies just above the keys).
 		local humanoid = part.Parent and part.Parent:FindFirstChildOfClass("Humanoid")
 		local down = if humanoid then humanoid.HipHeight + part.Size.Y / 2 else 3
-		local y = -down + TRAIL.Lift
+		local y = -down + pressTravel() + TRAIL.Lift
 		trailGlow = makeRibbon(part, "CardioTrailGlow", TRAIL.GlowWidth, y - 0.05, 1)
 		t = makeRibbon(part, "CardioTrail", TRAIL.Width, y, TRAIL.Light)
 		trail = t
@@ -53075,7 +53200,11 @@ local function stepTrail(root: BasePart?)
 	local k = math.clamp((speedK - TRAIL.From) / (1 - TRAIL.From), 0, 1) ^ LINE_CURVE
 	local head = 1 - (TRAIL.Floor + (TRAIL.Opacity - TRAIL.Floor) * k)
 	local trailNow = t :: Trail
-	trailNow.Transparency = NumberSequence.new(head, 1)
+	trailNow.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, head),
+		NumberSequenceKeypoint.new(TRAIL.Hold, head + (1 - head) * 0.25),
+		NumberSequenceKeypoint.new(1, 1),
+	})
 	trailNow.Enabled = true
 	local glow = trailGlow
 	if glow then
@@ -53088,6 +53217,19 @@ local function stepTrail(root: BasePart?)
 	end
 end
 
+-- Fx.Camera's attributes on the LocalPlayer while it pins the zoom limits to one distance: the
+-- limits it puts back after (not required here: the Fx modules may be missing or fail).
+local PIN_MIN, PIN_MAX = "ZoomPinMin", "ZoomPinMax"
+
+-- Sets the follow camera's zoom cap; while Fx.Camera pins the limits, the cap it puts back.
+local function setCap(cap: number)
+	if type(player:GetAttribute(PIN_MAX)) == "number" then
+		player:SetAttribute(PIN_MAX, cap)
+	else
+		player.CameraMaxZoomDistance = cap
+	end
+end
+
 -- Cardio's own run camera: the follow camera's zoom cap moves in with the speed (Fx.Camera's
 -- spawn shot sets the zoom only inside the player's limits, so it never fights this cap).
 local function stepZoom()
@@ -53095,30 +53237,48 @@ local function stepZoom()
 	if not camera or camera.CameraType ~= Enum.CameraType.Custom then
 		return
 	end
-	if zoomWas == nil then
-		-- Fx.Camera pins both limits to one distance for a frame or two to set a zoom: wait
-		-- that out so the player's real cap is the one kept.
+	local pinMin, pinMax = player:GetAttribute(PIN_MIN), player:GetAttribute(PIN_MAX)
+	if zoomWas == nil and type(pinMax) == "number" then
+		-- Fx.Camera is setting a zoom: the player's real cap is the one it will put back.
+		zoomWas = pinMax
+		pinnedSince = 0
+	elseif zoomWas == nil then
+		-- Both limits on one distance without Fx.Camera's pin: wait a moment so a pin of a
+		-- frame or two is not taken as the player's cap (stuck limits: see RUN_ZOOM.Stuck).
 		if player.CameraMaxZoomDistance <= player.CameraMinZoomDistance then
-			return
+			local now = os.clock()
+			if pinnedSince == 0 then
+				pinnedSince = now
+			end
+			if now - pinnedSince < RUN_ZOOM.Stuck then
+				return
+			end
+			local starter = game:GetService("StarterPlayer")
+			player.CameraMinZoomDistance = math.min(player.CameraMinZoomDistance, starter.CameraMinZoomDistance)
+			zoomWas = math.max(player.CameraMaxZoomDistance, starter.CameraMaxZoomDistance)
+		else
+			zoomWas = player.CameraMaxZoomDistance
 		end
-		zoomWas = player.CameraMaxZoomDistance
+		pinnedSince = 0
 	end
 	local was = zoomWas :: number
+	local least = if type(pinMin) == "number" then pinMin else player.CameraMinZoomDistance
 	local want = RUN_ZOOM.Walk + (RUN_ZOOM.Full - RUN_ZOOM.Walk) * speedK
-	want = math.clamp(want, player.CameraMinZoomDistance, was)
+	want = math.clamp(want, math.min(least, was), was)
 	if math.abs(want - zoomNow) >= RUN_ZOOM.Step then
 		zoomNow = want
-		player.CameraMaxZoomDistance = want
+		setCap(want)
 	end
 end
 
 -- The player's own zoom cap back (the run is over).
 local function restoreZoom()
 	if zoomWas ~= nil then
-		player.CameraMaxZoomDistance = zoomWas :: number
+		setCap(zoomWas :: number)
 	end
 	zoomWas = nil
 	zoomNow = 0
+	pinnedSince = 0
 end
 
 local function stepSpeed(dt: number, root: BasePart?)
@@ -53802,14 +53962,14 @@ local function setGlow(on: boolean)
 	end
 	local bloom = Instance.new("BloomEffect")
 	bloom.Name = "CardioBloom"
-	bloom.Intensity = 0.6
-	bloom.Size = 24
-	bloom.Threshold = 0.9
+	bloom.Intensity = RUN_GLOW.BloomIntensity
+	bloom.Size = RUN_GLOW.BloomSize
+	bloom.Threshold = RUN_GLOW.BloomThreshold
 	bloom.Parent = Lighting
 	runBloom = bloom
 	local grade = Instance.new("ColorCorrectionEffect")
 	grade.Name = "CardioGrade"
-	grade.Saturation = 0.1
+	grade.Saturation = RUN_GLOW.Saturation
 	grade.Parent = Lighting
 	runGrade = grade
 end
@@ -55183,6 +55343,10 @@ local SMASH = {
 			-- word lost its first letters.
 			lean = 0.38,
 		},
+		-- The pad's "CRATE SMASHER" name goes away while a crate is on the plinth (the rarity
+		-- word over the crate fell on its letters at Common, Epic and Legendary) and comes
+		-- back when the crate is gone.
+		hideSign = true,
 	},
 	ritual = {
 		shake = 0.85, -- seconds from the open to the burst
@@ -56112,6 +56276,10 @@ type Smasher = {
 	aura: Aura?,
 	glow: Part?, -- the disc on the plinth; carries the light and the rarity word
 	dressedAt: number,
+	-- The pad's floating "CRATE SMASHER" name (World.Pads' "PadLabel"): hidden while a crate
+	-- is dressed, as the rarity word over the crate lands on it (SMASH.look.hideSign).
+	sign: BillboardGui?,
+	pad: BasePart,
 }
 
 -- Something a burst throws (the lid, crate shards): ballistic, spinning, fading at the end.
@@ -56203,6 +56371,9 @@ local function clearSmasherDress(s: Smasher)
 	table.clear(s.decor)
 	table.clear(s.decorOffsets)
 	s.body, s.gem = nil, nil
+	if s.sign then
+		s.sign.Enabled = true
+	end
 end
 
 -- Builds the ring of every Smasher pad of `plot` that has replicated (called again until
@@ -56275,6 +56446,7 @@ local function bindSmashers(plot: Instance)
 			decorOffsets = {},
 			gemRest = CFrame.identity,
 			dressedAt = 0,
+			pad = pad,
 		}
 	end
 end
@@ -56836,6 +57008,11 @@ local function dressSmasherCrate(s: Smasher): boolean
 		chip.AlwaysOnTop = true
 		chip.MaxDistance = W.range
 		chip.Enabled = true
+		local sign = s.pad:FindFirstChild("PadLabel")
+		if L.hideSign and sign and sign:IsA("BillboardGui") then
+			s.sign = sign
+			sign.Enabled = false
+		end
 		for _, d in chip:GetDescendants() do
 			if d:IsA("TextLabel") then
 				d.TextTransparency = 0
@@ -65354,7 +65531,11 @@ local FX = {
 		live = 40, -- on screen at once
 		size = 34, -- design px across (28 to 40 reads as a coin at 1280x720)
 		endSize = 0.75, -- share of the size on arrival
-		time = 0.8, -- seconds of flight (eased out: half the way in the first 30%)
+		-- Seconds of flight (eased out: half the way in the first 30%). r6: measured in Studio
+		-- at 0.8 the first coin of a collect landed 0.93 s after the Cash effect and the label
+		-- swelled from 1.00 s; at 0.4 the coins land from about 0.5 s on, so the label is
+		-- swelling from +0.5 to +1.1 s.
+		time = 0.4,
 		stagger = 0.04, -- seconds between coins
 		lift = 230, -- design px the arc rises above the straight line (up into mid screen)
 		-- The arc's middle is pulled this share of the way to the screen centre, so coins from
@@ -65364,16 +65545,16 @@ local FX = {
 		-- the event and was still beside it at +0.36 s.
 		centre = 0.5,
 		scatter = 56, -- design px of random start offset
-		burst = 0.06, -- seconds a coin takes to pop out before it flies
+		burst = 0.05, -- seconds a coin takes to pop out before it flies
 		spin = 300, -- degrees turned on the way
 		pop = 64, -- design px across of the arrival ring at the cash amount
 		popTime = 0.28, -- seconds
-		popEvery = 3, -- an arrival ring for every Nth coin (and the last)
+		popEvery = 3, -- an arrival ring for every Nth coin (and the first and the last)
 		-- ... and the cash amount itself swells to this scale and back over pulseTime (r5:
 		-- measured in Studio the coins already ended on the label, 77-81 x 652-658 inside its
 		-- 13..105 x 633..682 box, but nothing on the label answered them).
-		pulse = 1.14,
-		pulseTime = 0.15,
+		pulse = 1.16,
+		pulseTime = 0.24, -- longer than the gap between two pulsing coins: one held swell
 		gold = Color3.fromRGB(255, 205, 60), -- the shape coin without the sprite
 		goldRim = Color3.fromRGB(196, 132, 20),
 	},
@@ -66295,6 +66476,7 @@ local function walletPop(layer: Frame, at: Vector2, k: number)
 end
 
 -- The cash amount swells and settles (a UIScale of its own, so the HUD's layout is untouched).
+local pulseToken = 0
 local function pulseMoney()
 	local label = walletMoney()
 	if not label then
@@ -66309,10 +66491,15 @@ local function pulseMoney()
 	end
 	local s = scale :: UIScale
 	local half = FX.arc.pulseTime / 2
-	s.Scale = 1
+	-- Grows from where it is (a pulse that lands mid-swell holds it up, no snap back to 1),
+	-- and only the newest pulse brings it back down.
+	pulseToken += 1
+	local mine = pulseToken
 	TweenService:Create(s, TweenInfo.new(half, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = FX.arc.pulse }):Play()
 	task.delay(half, function()
-		TweenService:Create(s, TweenInfo.new(half, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = 1 }):Play()
+		if pulseToken == mine then
+			TweenService:Create(s, TweenInfo.new(half, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = 1 }):Play()
+		end
 	end)
 end
 
@@ -66329,7 +66516,7 @@ local function stepArc()
 		if age >= FX.arc.burst + FX.arc.time or not layer or not c.gui.Parent then
 			c.gui:Destroy()
 			table.remove(arcCoins, i)
-			if layer and (c.index % FX.arc.popEvery == 0 or c.index == c.total) then
+			if layer and (c.index % FX.arc.popEvery == 0 or c.index == 1 or c.index == c.total) then
 				walletPop(layer, target, k)
 				pulseMoney()
 			end
@@ -71458,7 +71645,8 @@ local PUNCH_SCALE = 0.6 -- keeps camera punches and shakes gentle
 -- "best" (the merge made a new best tier).
 --   ring      a gold ring that always faces the camera: from / to size in studs
 --   rings     how many, RingGap seconds apart, each RingGrow times wider than the last
---   sparks    gold spark burst: count (through Fx.Budget), particle size
+--   sparks    gold glitter burst: count (through Fx.Budget), particle size
+--   sprites   sparkle sprites flying out of the ring (MERGE.Sprite): how many, px across
 --   flash     diameter a neon gold ball swells to at the unit's chest
 --   pop       how far the result unit overshoots its size as it pops in (0.4 = 40 %)
 --   chip      the "+TIER n" chip over the unit: size in studs, seconds it stays
@@ -71473,8 +71661,10 @@ local MERGE = {
 			ring = { 3, 10 },
 			ringTime = 0.5,
 			rings = 1,
-			sparks = 12,
-			sparkSize = 3.6,
+			sparks = 10,
+			sparkSize = 1.4,
+			sprites = 6,
+			spritePx = 44,
 			flash = 3.5,
 			pop = 0.22,
 			chip = Vector2.new(8, 2.3),
@@ -71488,8 +71678,10 @@ local MERGE = {
 			ring = { 6, 22 },
 			ringTime = 0.9,
 			rings = 2,
-			sparks = 40,
-			sparkSize = 9,
+			sparks = 20,
+			sparkSize = 2.2,
+			sprites = 10,
+			spritePx = 64,
 			flash = 7,
 			pop = 0.42,
 			chip = Vector2.new(13, 3.6),
@@ -71501,8 +71693,10 @@ local MERGE = {
 			ring = { 5, 30 },
 			ringTime = 0.9,
 			rings = 3,
-			sparks = 60,
-			sparkSize = 10,
+			sparks = 28,
+			sparkSize = 2.6,
+			sprites = 12,
+			spritePx = 76,
 			flash = 8,
 			pop = 0.6,
 			chip = Vector2.new(17, 6.2),
@@ -71515,17 +71709,42 @@ local MERGE = {
 	-- and its soft gold fill's transparency as it starts (it fades out with the line).
 	RingStroke = { 20, 8 },
 	RingFill = 0.82,
-	-- The rings are drawn in the world (not on top), this many studs towards the camera from
-	-- the unit, so the "+TIER n" chip (always on top) is never under a ring: measured in Studio
-	-- (r5), both on top, the 22-stud ring crossed the chip although it stood 1 stud further.
-	RingForward = 3,
+	-- The rings are drawn in the world (not on top; the "+TIER n" chip is, so it is never
+	-- under a ring), this many studs along the camera's ray BEHIND the unit's chest, at the
+	-- same size on screen: the unit and the name plates in front of the rack cover the ring.
+	-- r5 drew it 3 studs in front, over the plates' text (measured in Studio: the 22-stud ring
+	-- reached 227 px out from the unit and crossed its "Protein Bro / Tier 3" plate).
+	RingBack = 1.5,
 	RingGap = 0.13,
 	RingGrow = 1.25,
 	SparkSpeed = NumberRange.new(12, 26),
-	SparkLife = NumberRange.new(0.6, 1.1),
-	-- Sparks: the Blender sparkle sprite (the built-in sparkles_main is a faint thin cross:
-	-- measured 53-62 px across at 3.2 studs and still unseen in r4), lit, 3x the r4 size.
-	SparkEmission = 0.7,
+	SparkLife = NumberRange.new(0.5, 0.9),
+	-- The glitter under the sprites. r5's 40 particles of 9 studs (measured in Studio: 149 px
+	-- each at the merge_f camera, inside a 300 px cloud by 0.3 s) piled into one white spiky
+	-- blob and no single spark could be told apart.
+	SparkEmission = 0.3,
+	-- The sparkle sprites: `sprites` Blender Sparkle sprites, `spritePx` across on screen
+	-- (fixed px), fly from From to To px out of the unit's chest on evenly spread headings,
+	-- in front of the unit (Forward studs toward the camera; the chip stays over them). They
+	-- pop in over Pop, keep their size until Hold of their life, then shrink out; so a frame
+	-- from 0.12 to 0.48 s after the Merge effect (the impact lands at +0.1) shows each one
+	-- whole and apart from the others. Every other one is light gold, each over a warm halo
+	-- (the SoftDot sprite, HaloScale x its size) so they read on the sunny pastel rack too.
+	Sprite = {
+		Life = 0.62,
+		Pop = 0.05,
+		Hold = 0.6,
+		From = 80,
+		To = 215,
+		Reach = 0.18, -- +- share of To per sprite
+		Jitter = 0.12, -- radians of heading jitter
+		Spin = 220, -- degrees turned over the life (alternating way)
+		Forward = 3.5,
+		Colors = { Color3.fromRGB(255, 200, 48), Color3.fromRGB(255, 244, 190) },
+		Halo = Color3.fromRGB(255, 150, 40),
+		HaloScale = 1.7,
+		HaloAlpha = 0.45,
+	},
 	-- The neon ball and the white screen pulse are kept light: at 0.1 and 0.6 (a 40% white
 	-- sheet held 2 frames) they lifted the whole frame's mean by 10 levels and hid the sparks.
 	FlashTime = 0.3,
@@ -71538,12 +71757,15 @@ local MERGE = {
 	ChipSide = 1.5, -- studs aside (camera right) when the top HUD pushes the chip down
 	ChipFade = 0.35,
 	-- A chip that would cover one still on screen (a double merge: measured in Studio, the
-	-- "+TIER 2" and "+TIER 4" chips of a 3+3 / 1+1 merge overlapped by 175 x 31 px) stacks
-	-- above it with this gap, and pops this much later per chip under it.
-	-- Under the top HUD (no room above) it stacks below the other chip instead (r5: it stepped
-	-- 354 px aside, away from its own unit).
+	-- "+TIER 2" and "+TIER 4" chips of a 3+3 / 1+1 merge overlapped by 175 x 31 px) takes its
+	-- own spot over its unit and the chips there glide up out of its way (ChipLiftTime), with
+	-- this gap, so the newest is at the bottom, straight under the one before; it pops this
+	-- much later per chip it stacks with. With no room above (the top HUD) it goes straight
+	-- under the lowest of them instead. r5 stepped it aside under the HUD: measured in Studio
+	-- the second chip of a 1+1 -> 2 -> 3 merge stood 167 px right and 75 px down.
 	ChipStackPx = 10,
 	ChipStagger = 0.2,
+	ChipLiftTime = 0.18,
 	AutoChipGap = 0.6, -- seconds between the chips of auto merges
 	PulseHold = 0, -- seconds the white pulse holds at full strength (0: one frame) ...
 	PulseTime = 0.08, -- ... and fades over
@@ -72361,17 +72583,22 @@ local pendingBest = 0
 local seenTop = 0 -- the highest tier any merge has made so far
 local lastAutoChip = 0
 -- The "+TIER n" chips on screen: where each started, when, for how long, half its size.
-local liveChips: { { pos: Vector3, born: number, life: number, half: Vector2 } } = {}
+-- The "+TIER n" chips on screen: where each stands (before its rise), when it popped (or
+-- will), its half size in studs and its holder part once it exists (to glide it up).
+type LiveChip = { pos: Vector3, born: number, life: number, half: Vector2, holder: BasePart? }
+type ChipBox = { c: LiveChip, at: Vector3, k: number } -- a live chip's screen point and px per stud
+local liveChips: { LiveChip } = {}
 
 -- A gold ring that always faces the camera, growing from `from` to `to` studs as it fades.
 local function goldRing(pos: Vector3, from: number, to: number, time: number, delay: number)
-	-- Pulled towards the camera (and shrunk to keep its screen size), drawn in the world.
+	-- Pushed back along the camera's ray (and grown to keep its screen size), drawn in the
+	-- world, so what stands in front of the unit covers it.
 	local camera = Workspace.CurrentCamera
 	if camera then
 		local eye = camera.CFrame.Position
 		local away = (pos - eye).Magnitude
-		if away > MERGE.RingForward * 2 then
-			local k = (away - MERGE.RingForward) / away
+		if away > 0.5 then
+			local k = (away + MERGE.RingBack) / away
 			pos = eye + (pos - eye) * k
 			from *= k
 			to *= k
@@ -72409,8 +72636,10 @@ local function goldRing(pos: Vector3, from: number, to: number, time: number, de
 end
 
 -- The "+TIER n" chip over the result unit: a dark pill in the tier's rarity outline that pops
--- in, floats up and fades. The "best" kind adds a "NEW BEST!" line.
-local function tierChip(pos: Vector3, tier: number, kind: string)
+-- in, floats up and fades. The "best" kind adds a "NEW BEST!" line. `entry` (its liveChips
+-- entry) gets the holder, and its spot may have moved up while the chip waited to pop.
+local function tierChip(entry: LiveChip, tier: number, kind: string)
+	local pos = entry.pos
 	local k = MERGE.Kinds[kind]
 	local rarity = PlotRank.bandColor(tier)
 	local best = kind == "best"
@@ -72460,6 +72689,7 @@ local function tierChip(pos: Vector3, tier: number, kind: string)
 	else
 		line("+TIER " .. tier, 0.1, 0.8, WHITE)
 	end
+	entry.holder = holder
 	tween(scale, 0.22, { Scale = 1 }, Enum.EasingStyle.Back)
 	tween(holder, k.chipLife, { CFrame = CFrame.new(pos + Vector3.new(0, MERGE.ChipRise, 0)) })
 	task.delay(k.chipLife - MERGE.ChipFade, function()
@@ -72549,7 +72779,7 @@ end
 -- edge clear of the head on screen too (a camera looking down would put a chip just over the
 -- head on the unit's face), and under the top HUD (pushed down there, it steps aside so it
 -- does not land on the unit).
-local function chipSpot(feet: Vector3, kind: string): Vector3
+local function chipSpot(feet: Vector3, kind: string, aside: boolean): Vector3
 	local chip = MERGE.Kinds[kind].chip
 	local halfY, halfX = chip.Y / 2, chip.X / 2
 	local top = feet.Y + MERGE.ChipAbove - halfY - MERGE.ChipGap
@@ -72578,7 +72808,10 @@ local function chipSpot(feet: Vector3, kind: string): Vector3
 	end
 	local down = Orbs.hudOffset(pos, 0, halfY, MERGE.ChipRise)
 	if down.Magnitude > 0.01 then
-		pos += down + camera.CFrame.RightVector * (halfX + MERGE.ChipSide)
+		pos += down
+		if aside then
+			pos += camera.CFrame.RightVector * (halfX + MERGE.ChipSide)
+		end
 	end
 	return pos
 end
@@ -72593,8 +72826,34 @@ local function chipBox(camera: Camera, pos: Vector3): (Vector3?, number)
 	return Vector3.new(at.X, at.Y, 0), k
 end
 
--- `pos` moved up (camera up) until a chip there covers none of the chips on screen; how many
--- it stacked over.
+-- Where a live chip stands now (its rise so far included).
+local function chipNow(c: LiveChip, now: number): Vector3
+	return c.pos + Vector3.new(0, MERGE.ChipRise * math.clamp((now - c.born) / c.life, 0, 1), 0)
+end
+
+-- Glides a live chip `up` (a world offset) and on with its rise.
+local function liftChip(c: LiveChip, up: Vector3, now: number)
+	c.pos += up
+	local holder = c.holder
+	if holder and holder.Parent then
+		local left = c.born + c.life - now
+		if left > 0.05 then
+			local goal = c.pos + Vector3.new(0, MERGE.ChipRise, 0)
+			tween(holder, MERGE.ChipLiftTime, { CFrame = CFrame.new(chipNow(c, now + MERGE.ChipLiftTime)) })
+			task.delay(MERGE.ChipLiftTime, function()
+				if holder.Parent and left > MERGE.ChipLiftTime then
+					tween(holder, left - MERGE.ChipLiftTime, { CFrame = CFrame.new(goal) }, Enum.EasingStyle.Linear)
+				end
+			end)
+		end
+	end
+end
+
+-- A new chip at `pos` (half size `half` studs) among the chips on screen (see ChipStackPx):
+-- the chips in its column (side by side overlapping, from just under it upward) glide up
+-- until each clears the one under it, so the new chip keeps its spot at the bottom of the
+-- stack; with no room for them under the top HUD it goes straight under the lowest of them.
+-- Returns its spot and how many chips it stacked with (0: none in the way).
 local function clearOfChips(pos: Vector3, half: Vector2): (Vector3, number)
 	local camera = Workspace.CurrentCamera
 	local now = os.clock()
@@ -72606,39 +72865,158 @@ local function clearOfChips(pos: Vector3, half: Vector2): (Vector3, number)
 	if not camera or #liveChips == 0 then
 		return pos, 0
 	end
-	local stacked = 0
-	for _ = 1, #liveChips do
-		local mine, k = chipBox(camera, pos)
-		if not mine then
-			break
-		end
-		local push, below = 0, 0
-		for _, c in liveChips do
-			local rise = MERGE.ChipRise * math.clamp((now - c.born) / c.life, 0, 1)
-			local other, ko = chipBox(camera, c.pos + Vector3.new(0, rise, 0))
-			if other then
-				local wide = math.abs(mine.X - other.X) < half.X * k + c.half.X * ko
-				local high = math.abs(mine.Y - other.Y) < half.Y * k + c.half.Y * ko
-				if wide and high then
-					-- Up until this chip's bottom edge clears the other's top edge (or, under the
-					-- top HUD, down until its top edge clears the other's bottom edge).
-					push = math.max(push, (mine.Y + half.Y * k) - (other.Y - c.half.Y * ko) + MERGE.ChipStackPx)
-					below = math.max(below, (other.Y + c.half.Y * ko) - (mine.Y - half.Y * k) + MERGE.ChipStackPx)
+	local mine, k = chipBox(camera, pos)
+	if not mine then
+		return pos, 0
+	end
+	local column: { ChipBox } = {}
+	local touching = false
+	for _, c in liveChips do
+		local other, ko = chipBox(camera, chipNow(c, now))
+		if other then
+			local wide = math.abs(mine.X - other.X) < half.X * k + c.half.X * ko
+			local below = other.Y - c.half.Y * ko -- the other chip's top edge
+			if wide and below < mine.Y + half.Y * k + MERGE.ChipStackPx then
+				table.insert(column, { c = c, at = other, k = ko })
+				if math.abs(mine.Y - other.Y) < half.Y * k + c.half.Y * ko + MERGE.ChipStackPx then
+					touching = true
 				end
 			end
 		end
-		if push <= 0 then
-			break
-		end
-		local up = camera.CFrame.UpVector * (push / k)
-		if Orbs.hudOffset(pos + up, 0, half.Y, MERGE.ChipRise).Magnitude > 0.01 then
-			pos -= camera.CFrame.UpVector * (below / k)
-		else
-			pos += up
-		end
-		stacked += 1
 	end
-	return pos, stacked
+	if not touching then
+		return pos, 0
+	end
+	-- Lowest first: each one clears the top edge of the one under it (screen px, y down).
+	table.sort(column, function(a, b)
+		return a.at.Y > b.at.Y
+	end)
+	local edge = mine.Y - half.Y * k - MERGE.ChipStackPx
+	local want: { number } = {}
+	for i, b in column do
+		want[i] = math.min(b.at.Y, edge - b.c.half.Y * b.k)
+		edge = want[i] - b.c.half.Y * b.k - MERGE.ChipStackPx
+	end
+	-- Then top down: none above the top HUD's line (the rise included), each clear under the
+	-- one over it, and the new chip clear under the lowest. With room that changes nothing.
+	local floor = -math.huge -- bottom edge of the chip above
+	local up = camera.CFrame.UpVector
+	for i = #column, 1, -1 do
+		local b = column[i]
+		local y = want[i]
+		local push = Orbs.hudOffset(b.c.pos + up * ((b.at.Y - y) / b.k), 0, b.c.half.Y, MERGE.ChipRise)
+		y = math.max(y + push.Magnitude * b.k, floor + MERGE.ChipStackPx + b.c.half.Y * b.k)
+		y = math.min(y, b.at.Y) -- a chip only ever moves up
+		floor = y + b.c.half.Y * b.k
+		if b.at.Y - y > 0.5 then
+			liftChip(b.c, up * ((b.at.Y - y) / b.k), now)
+		end
+	end
+	local drop = math.max(0, floor + MERGE.ChipStackPx + half.Y * k - mine.Y)
+	pos -= up * (drop / k)
+	-- Straight under: a chip of the same spot shares the X of the one over it.
+	local over = column[1]
+	local dx = over.at.X - mine.X
+	if math.abs(dx) < half.X * k * 0.5 or drop > 0.5 then
+		pos += camera.CFrame.RightVector * (dx / k)
+	end
+	return pos, 1
+end
+
+-- The world point just under the lowest "+TIER n" chip on screen (nil when none is up), for
+-- a line that should sit under the whole chip stack (UI.Popups' "+N merges" float).
+function Shelf.chipsBottom(): Vector3?
+	local camera = Workspace.CurrentCamera
+	local now = os.clock()
+	local best: Vector3? = nil
+	local bestY = -math.huge
+	if not camera then
+		return nil
+	end
+	for _, c in liveChips do
+		if now >= c.born and now - c.born <= c.life then
+			local at, k = chipBox(camera, chipNow(c, now))
+			if at and at.Y + c.half.Y * k > bestY then
+				bestY = at.Y + c.half.Y * k
+				best = chipNow(c, now) - camera.CFrame.UpVector * (c.half.Y + MERGE.ChipStackPx / k)
+			end
+		end
+	end
+	return best
+end
+
+-- The merge's sparkle sprites (MERGE.Sprite): flying out of the unit's chest on evenly spread
+-- headings, each a fixed size on screen.
+local function sparkleSprites(chest: Vector3, kind: string)
+	local k = MERGE.Kinds[kind]
+	local S = MERGE.Sprite
+	local image = Sprites.image("Sparkle")
+	local camera = Workspace.CurrentCamera
+	if not image or not camera or k.sprites <= 0 then
+		return
+	end
+	local eye = camera.CFrame.Position
+	local pos = chest
+	local away = (chest - eye).Magnitude
+	if away > S.Forward * 2 then
+		pos = eye + (chest - eye) * ((away - S.Forward) / away)
+	end
+	local px = k.spritePx
+	local span = math.ceil((S.To * (1 + S.Reach) + px * S.HaloScale) * 2)
+	local holder = fxPart(Enum.PartType.Block, Vector3.one * 0.2, CFrame.new(pos), WHITE, 1)
+	holder.Name = "MergeSparkles"
+	local gui = Instance.new("BillboardGui")
+	gui.AlwaysOnTop = false
+	gui.LightInfluence = 0
+	gui.MaxDistance = 400
+	gui.Size = UDim2.fromOffset(span, span)
+	gui.Parent = holder
+	local halo = Sprites.image("SoftDot")
+	local count = Budget.count(k.sprites)
+	local base = math.random() * math.pi * 2
+	local holdAt = S.Life * S.Hold
+	for i = 1, count do
+		local heading = base + (i - 1) / count * math.pi * 2 + (math.random() * 2 - 1) * S.Jitter
+		local dx, dy = math.cos(heading), math.sin(heading)
+		local reach = S.To * (1 + (math.random() * 2 - 1) * S.Reach)
+		local frame = Instance.new("Frame")
+		frame.BackgroundTransparency = 1
+		frame.AnchorPoint = Vector2.new(0.5, 0.5)
+		frame.Position = UDim2.new(0.5, dx * S.From, 0.5, dy * S.From)
+		frame.Size = UDim2.fromOffset(0, 0)
+		frame.Parent = gui
+		if halo then
+			local glow = Instance.new("ImageLabel")
+			glow.BackgroundTransparency = 1
+			glow.Image = halo
+			glow.ImageColor3 = S.Halo
+			glow.ImageTransparency = S.HaloAlpha
+			glow.AnchorPoint = Vector2.new(0.5, 0.5)
+			glow.Position = UDim2.fromScale(0.5, 0.5)
+			glow.Size = UDim2.fromScale(S.HaloScale, S.HaloScale)
+			glow.ZIndex = 1
+			glow.Parent = frame
+		end
+		local spark = Instance.new("ImageLabel")
+		spark.BackgroundTransparency = 1
+		spark.Image = image
+		spark.ImageColor3 = S.Colors[(i - 1) % #S.Colors + 1]
+		spark.AnchorPoint = Vector2.new(0.5, 0.5)
+		spark.Position = UDim2.fromScale(0.5, 0.5)
+		spark.Size = UDim2.fromScale(1, 1)
+		spark.Rotation = math.random() * 90
+		spark.ZIndex = 2
+		spark.Parent = frame
+		tween(frame, S.Pop, { Size = UDim2.fromOffset(px, px) }, Enum.EasingStyle.Back)
+		tween(frame, S.Life, { Position = UDim2.new(0.5, dx * reach, 0.5, dy * reach) })
+		tween(spark, S.Life, { Rotation = spark.Rotation + (if i % 2 == 0 then S.Spin else -S.Spin) }, Enum.EasingStyle.Linear)
+		task.delay(holdAt, function()
+			if frame.Parent then
+				tween(frame, S.Life - holdAt, { Size = UDim2.fromOffset(0, 0) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			end
+		end)
+	end
+	cleanup(holder, S.Life + 0.05)
 end
 
 -- The merge's impact on the rack, at the result unit drawn with its feet at `feet`: gold
@@ -72646,7 +73024,11 @@ end
 -- `kind` is a key of MERGE.Kinds. Returns the point just over the chip (texts go above it).
 local function resultFx(feet: Vector3, tier: number, kind: string): Vector3
 	local k = MERGE.Kinds[kind]
-	local chipAt, stacked = clearOfChips(chipSpot(feet, kind), k.chip / 2)
+	-- Its own spot over the unit; stepped aside under the top HUD only with no chip to stack on.
+	local chipAt, stacked = clearOfChips(chipSpot(feet, kind, false), k.chip / 2)
+	if stacked == 0 then
+		chipAt = chipSpot(feet, kind, true)
+	end
 	local chest = feet + Vector3.new(0, CHEST_HEIGHT, 0)
 	local to = k.ring[2]
 	for i = 1, k.rings do
@@ -72665,6 +73047,7 @@ local function resultFx(feet: Vector3, tier: number, kind: string): Vector3
 		drag = 2,
 		emission = MERGE.SparkEmission,
 	})
+	sparkleSprites(chest, kind)
 	local unit = unitAt(feet)
 	if unit then
 		popUnit(unit, k.pop)
@@ -72675,11 +73058,12 @@ local function resultFx(feet: Vector3, tier: number, kind: string): Vector3
 			lastAutoChip = now
 		end
 		local delay = stacked * MERGE.ChipStagger
-		table.insert(liveChips, { pos = chipAt, born = now + delay, life = k.chipLife, half = k.chip / 2 })
+		local entry: LiveChip = { pos = chipAt, born = now + delay, life = k.chipLife, half = k.chip / 2, holder = nil }
+		table.insert(liveChips, entry)
 		if delay > 0 then
-			task.delay(delay, tierChip, chipAt, tier, kind)
+			task.delay(delay, tierChip, entry, tier, kind)
 		else
-			tierChip(chipAt, tier, kind)
+			tierChip(entry, tier, kind)
 		end
 	end
 	if kind == "best" then
@@ -73880,12 +74264,12 @@ Surge.FADE_OUT = 1.5
 Surge.PULSE_PERIOD = 2.2
 
 -- Full-strength grade values (scaled by the surge weight).
-Surge.TINT_RGB = { 255, 232, 196 }
-Surge.SATURATION = 0.25
+Surge.TINT_RGB = { 255, 244, 226 }
+Surge.SATURATION = 0.12
 Surge.SATURATION_PULSE = 0.05
 Surge.CONTRAST = 0.08
 Surge.BRIGHTNESS = 0.02
-Surge.BLOOM_INTENSITY = 0.3
+Surge.BLOOM_INTENSITY = 0.15
 Surge.RAYS_INTENSITY = 0.04
 
 local function smooth(x: number): number
@@ -84931,6 +85315,9 @@ local TUNE = {
 	ChipIcon = 22,
 	ChipText = 17,
 	ChipGap = 8,
+	-- px from the chips' bottom up from the "Cash" line: clear of the SURGE chip's 3 px gold
+	-- edge and its breathing (r5: at 4 it sat tight on CASH), about 6 px of air left.
+	ChipLift = 11,
 	ChipPad = 10,
 	ChipRadius = 10,
 	-- The beat: every badge dot on a HUD button pops ("!" harder than a count), one button
@@ -87589,7 +87976,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	})
 	local chips = group("Status", {
 		Size = UDim2.fromOffset(400, TUNE.ChipH),
-		Position = UDim2.fromOffset(0, 62 - TUNE.ChipH - 4),
+		Position = UDim2.fromOffset(0, 62 - TUNE.ChipH - TUNE.ChipLift),
 		Parent = wallet,
 	})
 	Kit.new("UIListLayout", {
@@ -87792,7 +88179,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		cashPlate.Size = UDim2.fromOffset(8 + x + (if addButton.Visible then 10 + 44 + 10 else 10), TUNE.CashPlateH)
 		chips.Position = if Kit.touch
 			then UDim2.fromOffset(drawnWidth(multLine.Text, multLine.TextSize, multLine.Font) + 14, 73 - TUNE.ChipH // 2)
-			else UDim2.fromOffset(0, 62 - TUNE.ChipH - 4)
+			else UDim2.fromOffset(0, 62 - TUNE.ChipH - TUNE.ChipLift)
 	end
 	moneyLabel:GetPropertyChangedSignal("Text"):Connect(layoutWallet)
 	-- Income (`cashGain`, from refresh): the cash plate flashes green and a "+$X" floats up
@@ -94205,7 +94592,14 @@ function MapPicker.build(screen: ScreenGui, deps: Deps): Picker
 		elseif type(preview) == "table" and preview.full == false and selected == (tonumber(info.level) or 1) then
 			rest = math.max(0, math.ceil((tonumber(preview.repeatRest) or 0) - State.age()))
 		end
-		reward.TextColor3 = if geared or rest > 0 then C.TextDim else C.MoneyText
+		-- On the green reward bar the money colour washes out: take the ink that reads on the bar.
+		local bar = reward.Parent
+		local ink = if bar
+				and bar:IsA("GuiObject")
+				and bar.BackgroundTransparency < 0.5
+			then Kit.inkOn(bar.BackgroundColor3)
+			else C.MoneyText
+		reward.TextColor3 = if geared or rest > 0 then C.TextDim else ink
 		reward.Text = if geared
 			then string.format("Gear on: no reward · full in %s", Format.time(left))
 			elseif rest > 0 then "Bonus is resting, back in " .. Format.time(rest)
@@ -97554,6 +97948,8 @@ Popups.JUICE = {
 		ShineTime = 0.55,
 		ShineWidth = 190,
 		ShineAlpha = 0.65,
+		-- The band is opaque (r5: at 0.06 the plot's signs ghosted through "YOU DID IT!").
+		BandAlpha = 0,
 		BurstCoins = 16,
 		BurstReach = 260,
 		-- The band starts ClearGap px right of the HUD's left column (Menu, Promo) where the
@@ -97571,9 +97967,11 @@ Popups.JUICE = {
 	-- The surge banner's extras: a gold edge round the whole screen and a rain of coins.
 	Surge = {
 		Color = C.Gold,
+		-- Edge-only (r5: 26% deep bands top and bottom tinted half the frame gold): bands
+		-- EdgeDepth of the height top and bottom, EdgeSide of the width at the sides.
 		EdgeAlpha = 0.62,
-		EdgeDepth = 0.26,
-		EdgeSide = 0.17,
+		EdgeDepth = 0.12,
+		EdgeSide = 0.08,
 		EdgeIn = 0.3,
 		EdgeHold = 2.3,
 		EdgeOut = 0.6,
@@ -98183,7 +98581,26 @@ local function mergeFloat(batch: MergeBatch)
 	mergesAt, mergeTally = 0, 0
 	hideMergeTexts(true)
 	local spot = if batch.to then batch.to + Vector3.new(0, RACK_LIFT, 0) else nil
-	Popups.float(text, C.GoldLight, worldAnchor(spot, RACK_FALLBACK), { life = MERGE_FLOAT_LIFE, size = 28, width = 560, drift = false })
+	-- Under the "+TIER n" chips while they are up (Fx.Shelf.chipsBottom: the point just under
+	-- the lowest one), its top edge there, rising less so it stays clear of them.
+	local under: Vector3? = nil
+	pcall(function()
+		local folder = script.Parent.Parent:FindFirstChild("Fx")
+		local module = folder and folder:FindFirstChild("Shelf")
+		local shelf: any = if module and module:IsA("ModuleScript") then require(module) else nil
+		if type(shelf) == "table" and type(shelf.chipsBottom) == "function" then
+			under = shelf.chipsBottom()
+		end
+	end)
+	local opts: { [string]: any } = { life = MERGE_FLOAT_LIFE, size = 28, width = 560, drift = false }
+	local anchor = worldAnchor(spot, RACK_FALLBACK)
+	if typeof(under) == "Vector3" then
+		local below = worldAnchor(under, RACK_FALLBACK)
+		if below ~= RACK_FALLBACK then
+			anchor, opts.rise = below + UDim2.fromOffset(0, 22), -24
+		end
+	end
+	Popups.float(text, C.GoldLight, anchor, opts)
 	sounds.play("Tick", 0.02, 1.3)
 end
 
@@ -98333,7 +98750,7 @@ Popups.FLOAT = {
 -- "+$120" over the world: pops in, rises on a soft arc (steady sideways drift,
 -- easing-out climb) and fades near the top. opts: life (seconds, 1.1), size (text, 30),
 -- width (300), drift (false = straight up), stroke (outline px, 2.5), pop (the scale it pops in
--- from, 0.55).
+-- from, 0.55), rise (px it climbs, -80).
 function Popups.float(text: string, color: Color3, anchor: UDim2, opts: { [string]: any }?)
 	local o = opts or {}
 	local life: number = o.life or 1.1
@@ -98363,7 +98780,7 @@ function Popups.float(text: string, color: Color3, anchor: UDim2, opts: { [strin
 	Kit.tween(pop, if from > 0.7 then 0.18 else 0.28, { Scale = 1 }, Enum.EasingStyle.Back)
 	local drift = if o.drift == false then 0 else math.random(-36, 36)
 	Kit.tween(mover, life, { Position = anchor + UDim2.fromOffset(drift, 0) }, Enum.EasingStyle.Linear)
-	Kit.tween(label, life, { Position = UDim2.fromOffset(0, -80) }, Enum.EasingStyle.Quad)
+	Kit.tween(label, life, { Position = UDim2.fromOffset(0, o.rise or -80) }, Enum.EasingStyle.Quad)
 	tweenAfter(label, 0.4, fadeAt, { TextTransparency = 1 })
 	tweenAfter(outline, 0.4, fadeAt, { Transparency = 1 })
 	tweenAfter(pop, 0.4, fadeAt, { Scale = 0.85 })
@@ -101475,6 +101892,9 @@ local FINISH = {
 	-- well sideways from both ends (CoinArcs, degrees, 270 = up), CoinsPerSide each, so it
 	-- never crosses the "Best" line or the amount.
 	Width = 640,
+	-- r6: px the medal (and its rays and twinkles) sits above the card's top edge's middle,
+	-- so its shadow clears the title (r5: the flag badge touched "MAP 1 CLEAR!").
+	MedalLift = 10,
 	ConfettiZ = 0,
 	BackConfettiZ = 44,
 	CoinArcs = { { 165, 215 }, { -35, 15 } },
@@ -101555,7 +101975,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 			Popups.spinRays(big, FINISH.FirstRaySpin)
 			Kit.appear(big, { from = 0.3, time = 0.5, style = Enum.EasingStyle.Quart })
 		end
-		local medalAt = UDim2.new(0.5, 0, 0, 0)
+		local medalAt = UDim2.new(0.5, 0, 0, -FINISH.MedalLift)
 		if firstClear then
 			-- Behind the medal and (made first) under the title: rays, and twinkles on a ring
 			-- lifted so its lower edge stays off the title.
@@ -101566,7 +101986,7 @@ function Popups.modeFinish(data: { [string]: any }, onAgain: () -> (), onHome: (
 				Name = "MedalSparkles",
 				BackgroundTransparency = 1,
 				Size = UDim2.fromOffset(FINISH.Medal, FINISH.Medal),
-				Position = UDim2.new(0.5, 0, 0, -math.floor(FINISH.Medal * 0.35)),
+				Position = UDim2.new(0.5, 0, 0, -math.floor(FINISH.Medal * 0.35) - FINISH.MedalLift),
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Parent = box,
 			})
@@ -103500,7 +103920,7 @@ function Popups.banner(opts: { [string]: any })
 	local band = Kit.new("Frame", {
 		Name = "Band",
 		BackgroundColor3 = WHITE,
-		BackgroundTransparency = 0.06,
+		BackgroundTransparency = Popups.JUICE.Banner.BandAlpha,
 		BorderSizePixel = 0,
 		Size = UDim2.new(3, 0, 1, 0),
 		Position = if inset > 0 then UDim2.fromScale(0, 0.5) else UDim2.fromScale(0.5, 0.5),
@@ -109580,6 +110000,15 @@ local INDEX = {
 	-- Text on the glass (screen px): a card's rarity chip and the legend's band bars.
 	ChipText = 16,
 	LegendText = 15,
+	-- Each band bar's "COMMON 3/5" sits on a dark plate hugging the text, so the white words
+	-- read over the pale fill as well as over the empty glass.
+	LegendPlate = 0.12, -- the plate's transparency (Ink)
+	LegendPlatePad = 8, -- px either side of the text
+	LegendPlateInset = 5, -- px of the bar's height the plate leaves free (top + bottom)
+	-- The milestone track's captions and reward pills ("$6.60K"): at least this many screen
+	-- px, a still-locked one in this light text (opaque) on its dim plate.
+	RewardPx = 14,
+	RewardLocked = C.Text:Lerp(C.TextDim, 0.15),
 	-- A card's name (two lines at most) and the pale rarity line of a card still to find.
 	NameText = 16,
 	NamePx = 15, -- held at this size on the glass
@@ -109745,7 +110174,7 @@ local function buildIndex(screen: ScreenGui)
 			Parent = track,
 		})
 		-- Bottom-aligned: a one-line caption sits on its button, a second line goes above it.
-		local caption = readable(Kit.text(cell, {
+		local caption = Kit.text(cell, {
 			Name = "Caption",
 			Text = "",
 			Font = F.UI,
@@ -109756,7 +110185,8 @@ local function buildIndex(screen: ScreenGui)
 			TextColor3 = SMALL_TEXT,
 			Size = UDim2.new(1, 0, 0, 18),
 			StrokeThickness = 0,
-		}))
+		})
+		Kit.holdText(caption, math.max(Kit.captionPx(), INDEX.RewardPx), nil, true)
 		local button = Kit.button(cell, {
 			Name = "Claim",
 			Text = "",
@@ -109779,7 +110209,7 @@ local function buildIndex(screen: ScreenGui)
 			Position = UDim2.fromOffset(0, 24),
 			Visible = false,
 		})
-		readable(done)
+		Kit.holdText(done, math.max(Kit.captionPx(), INDEX.RewardPx), nil, true)
 		local buttonLabel = Kit.buttonLabel(button)
 		if buttonLabel then
 			readable(buttonLabel)
@@ -109941,6 +110371,19 @@ local function buildIndex(screen: ScreenGui)
 		})
 		label.TextWrapped = false
 		Kit.holdText(label, math.max(Kit.captionPx(), INDEX.LegendText))
+		-- The dark plate behind the words: the label itself, shrunk to its text.
+		label.AutomaticSize = Enum.AutomaticSize.X
+		label.AnchorPoint = Vector2.new(0.5, 0.5)
+		label.Position = UDim2.fromScale(0.5, 0.5)
+		label.Size = UDim2.new(0, 0, 1, -INDEX.LegendPlateInset)
+		label.BackgroundColor3 = C.Ink
+		label.BackgroundTransparency = INDEX.LegendPlate
+		Kit.round(label)
+		Kit.new("UIPadding", {
+			PaddingLeft = UDim.new(0, INDEX.LegendPlatePad),
+			PaddingRight = UDim.new(0, INDEX.LegendPlatePad),
+			Parent = label,
+		})
 		bands[order] =
 			{ name = band.name, from = if previous then previous.upTo + 1 else 1, upTo = band.upTo, set = set, label = label, found = -1 }
 	end
@@ -110035,7 +110478,7 @@ local function buildIndex(screen: ScreenGui)
 				cell.shown = key
 				cell.state = state
 				cell.caption.Text = captionText
-				cell.caption.TextColor3 = if state == "locked" then SMALL_TEXT else C.GoldLight
+				cell.caption.TextColor3 = if state == "locked" then INDEX.RewardLocked else C.GoldLight
 				-- Only a milestone that can be claimed shows a button, and that one breathes.
 				cell.button.Visible = state == "ready"
 				cell.done.Visible = state ~= "ready"
@@ -110044,8 +110487,8 @@ local function buildIndex(screen: ScreenGui)
 					local locked = state == "locked"
 					cell.done.BackgroundColor3 = if locked then C.Ink else C.Gold
 					cell.done.BackgroundTransparency = if locked then 0.6 else 0
-					cell.done.TextColor3 = if locked then SMALL_TEXT else C.GoldInk
-					cell.done.TextTransparency = if locked then 0.25 else 0
+					cell.done.TextColor3 = if locked then INDEX.RewardLocked else C.GoldInk
+					cell.done.TextTransparency = 0
 					local edge = cell.done:FindFirstChild("Edge")
 					if edge and edge:IsA("UIStroke") then
 						edge.Transparency = if locked then 0.8 else 0

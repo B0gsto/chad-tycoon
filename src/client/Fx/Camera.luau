@@ -71,6 +71,11 @@ local shakeUntil = 0
 local shakeLength = 0
 local started = false
 local zoomBusy = false
+-- While setZoom pins the limits, the player's own limits it puts back after, as LocalPlayer
+-- attributes: Fx.Cardio's run camera changes its cap through them during a pin (so neither
+-- puts back a cap the other has replaced). The limits are floats: compared within ZOOM_EPS.
+local PIN_MIN, PIN_MAX = "ZoomPinMin", "ZoomPinMax"
+local ZOOM_EPS = 0.01
 local frameToken = 0 -- bumps on every spawn shot (a pending widen belongs to one)
 
 local function reduced(): boolean
@@ -187,8 +192,10 @@ local function portalLimit(focus: Vector3, eye: Vector3): number
 end
 
 -- Sets the follow camera's zoom to `distance` by pinning the player's zoom limits to it for
--- a frame (the camera scripts clamp their zoom to the limits), then restoring them. Returns
--- false when it could not (another zoom is being set, or the distance is outside the limits).
+-- a frame (the camera scripts clamp their zoom to the limits), then restoring them (from the
+-- PIN_MIN / PIN_MAX attributes, which Fx.Cardio may have moved meanwhile). A limit something
+-- else rewrote during the pin is left as it is. Returns false when it could not (another
+-- zoom is being set, or the distance is outside the limits).
 local function setZoom(distance: number): boolean
 	local player = Players.LocalPlayer
 	local lo, hi = player.CameraMinZoomDistance, player.CameraMaxZoomDistance
@@ -196,16 +203,23 @@ local function setZoom(distance: number): boolean
 		return false
 	end
 	zoomBusy = true
+	player:SetAttribute(PIN_MIN, lo)
+	player:SetAttribute(PIN_MAX, hi)
 	task.spawn(function()
-		player.CameraMaxZoomDistance = distance
-		player.CameraMinZoomDistance = distance
-		RunService.RenderStepped:Wait()
-		RunService.RenderStepped:Wait()
-		if player.CameraMinZoomDistance == distance then
-			player.CameraMinZoomDistance = lo
+		pcall(function()
+			player.CameraMaxZoomDistance = distance
+			player.CameraMinZoomDistance = distance
+			RunService.RenderStepped:Wait()
+			RunService.RenderStepped:Wait()
+		end)
+		local backMin, backMax = player:GetAttribute(PIN_MIN), player:GetAttribute(PIN_MAX)
+		player:SetAttribute(PIN_MIN, nil)
+		player:SetAttribute(PIN_MAX, nil)
+		if math.abs(player.CameraMinZoomDistance - distance) < ZOOM_EPS then
+			player.CameraMinZoomDistance = if type(backMin) == "number" then backMin else lo
 		end
-		if player.CameraMaxZoomDistance == distance then
-			player.CameraMaxZoomDistance = hi
+		if math.abs(player.CameraMaxZoomDistance - distance) < ZOOM_EPS then
+			player.CameraMaxZoomDistance = if type(backMax) == "number" then backMax else hi
 		end
 		zoomBusy = false
 	end)
