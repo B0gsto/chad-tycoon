@@ -33,7 +33,7 @@ A gate never drops the player straight into a game. Every run goes:
   the lane, Shake Catch a practice tray with slow demo drops, Pose Copy a rehearsal mirror
   where the four flex buttons work without scoring.
 - **Start**: stepping on the START pad or pressing the HUD's PLAY button (tap, Enter,
-  gamepad A) sends the mode's own action `"<Mode>Begin" {}` ("ShakeBegin", "PoseBegin",
+  gamepad X; A stays jump) sends the mode's own action `"<Mode>Begin" {}` ("ShakeBegin", "PoseBegin",
   "BowlingBegin"). The server accepts it only in phase `lobby`, moves the player to the
   play spot, sends `"countdown" { seconds = 3 }` and starts play when it ends.
 - **End**: win/lose events and pay as before. The HUD shows a results card (score, best,
