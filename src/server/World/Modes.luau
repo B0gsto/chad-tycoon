@@ -216,11 +216,6 @@ local function lockedFace(p: BasePart, face: Enum.NormalId, pps: number, title: 
 	outline.Parent = label
 end
 
--- An invisible flat carrier part for a crisp text layer laid over a sign card.
-local function carrier(add: (props: { [string]: any }) -> BasePart, name: string, cframe: CFrame, size: Vector3): BasePart
-	return decor(add({ Name = name, Size = size, CFrame = cframe, Transparency = 1, CastShadow = false }))
-end
-
 -- Builder for parts in a local frame: props.CFrame is relative to `base`.
 local function adder(base: CFrame, parent: Instance): (props: { [string]: any }, className: string?) -> BasePart
 	return function(props: { [string]: any }, className: string?): BasePart
@@ -1086,9 +1081,11 @@ local function gate(entry: Catalog.Entry, parent: Instance, spec: PlazaSpec)
 	decor(add({ Name = "PadlockHole", Size = Vector3.new(0.4, 0.9, 0.2), CFrame = CFrame.new(0, 4.35, -1.75), Color = W.Ink }))
 end
 
--- The big GAME MODES landmark high behind the gates: a cream card in a chunky sunny frame of
--- rounded rails, on two teal posts. The coral header and the Ink title are separate text
--- layers, each with its own resolution, so both stay crisp from the hub centre.
+-- The big GAME MODES landmark high behind the gates: a navy card in a chunky sunny frame of
+-- rounded rails, on two teal posts. Its face is built from opaque plates (a coral title
+-- strip, a row of gate-colour chips and the navy title plate), so it reads as a finished
+-- board even where SurfaceGui text has not drawn yet; the title strip and the sunny title
+-- are separate text layers, each with its own resolution, so both stay crisp from the hub.
 local function bigSign(parent: Instance, spec: PlazaSpec)
 	local s = spec.sign
 	local base = CFrame.new(s.x, 0, s.z) * CFrame.Angles(0, FACE_HUB * spec.mirror, 0)
@@ -1166,22 +1163,52 @@ local function bigSign(parent: Instance, spec: PlazaSpec)
 		CFrame = CFrame.new(0, cy, 0.7),
 		Color = W.Sunny,
 	}))
-	decor(add({ Name = "BigSign", Size = Vector3.new(w, h, 0.8), CFrame = CFrame.new(0, cy, 0), Color = W.Cream }))
+	decor(add({ Name = "BigSign", Size = Vector3.new(w, h, 0.8), CFrame = CFrame.new(0, cy, 0), Color = W.Navy }))
 	cardFace(frame, Enum.NormalId.Back, 12, W.Cream, W.Coral, "PARKOUR", "GAME MODES")
-	-- Coral header pill (white text ~95 px) and the Ink title (~95 px, width-limited).
+	-- Opaque face plates 0.1 proud of the card (front at z -0.5): coral title strip with
+	-- white text (~95 px), a row of six chips in the gate colours, and the navy title plate
+	-- with sunny text (~100 px, width-limited).
+	local faceTop = cy + h / 2
+	local function plate(name: string, y: number, width: number, height: number, fill: Color3): BasePart
+		return decor(add({
+			Name = name,
+			Size = Vector3.new(width, height, 0.1),
+			CFrame = CFrame.new(0, y, -0.45),
+			Color = fill,
+			CastShadow = false,
+		}))
+	end
 	local headH = 3.8
-	local head = carrier(add, "BigSignHeader", CFrame.new(0, cy + h / 2 - 0.5 - headH / 2, -0.45), Vector3.new(w - 3, headH, 0.05))
-	local pill = panel(surface(head, Enum.NormalId.Front, 34), W.Coral, UDim2.fromScale(0, 0), UDim2.fromScale(1, 1), 0.5)
+	local head = plate("BigSignHeader", faceTop - 0.5 - headH / 2, w - 3, headH, W.Coral)
 	text(
-		pill,
+		surface(head, Enum.NormalId.Front, 34),
 		{ Text = "PARKOUR OPEN NOW!", TextColor3 = W.White, Size = UDim2.fromScale(0.9, 0.74), Position = UDim2.fromScale(0.05, 0.14) }
 	)
-	local titleH = h - headH - 1.4
-	local title = carrier(add, "BigSignTitle", CFrame.new(0, s.bottom + 0.5 + titleH / 2, -0.45), Vector3.new(w - 2, titleH, 0.05))
-	text(
+	local chipY = faceTop - 0.5 - headH - 0.5 - 0.5
+	local tints: { Color3 } = {}
+	for _, entry in Catalog do
+		tints[entry.slot] = color(entry.color)
+	end
+	for i = 1, 6 do
+		decor(add({
+			Name = "BigSignChip",
+			Size = Vector3.new(7, 1, 0.14),
+			CFrame = CFrame.new((i - 3.5) * 8.4, chipY, -0.45),
+			Color = tints[i] or FLAG_COLORS[i],
+			CastShadow = false,
+		}))
+	end
+	local titleTop = chipY - 0.9
+	local titleH = titleTop - (s.bottom + 0.5)
+	local title = plate("BigSignTitle", s.bottom + 0.5 + titleH / 2, w - 2, titleH, W.Navy:Lerp(W.Ink, 0.35))
+	local label = text(
 		surface(title, Enum.NormalId.Front, 14),
-		{ Text = "GAME MODES", Size = UDim2.fromScale(0.98, 0.96), Position = UDim2.fromScale(0.01, 0.02) }
+		{ Text = "GAME MODES", TextColor3 = W.Sunny, Size = UDim2.fromScale(0.96, 0.9), Position = UDim2.fromScale(0.02, 0.05) }
 	)
+	local outline = Instance.new("UIStroke")
+	outline.Color = W.Ink
+	outline.Thickness = 3
+	outline.Parent = label
 end
 
 -- Freestanding best-times card; returns the list label.
@@ -1210,32 +1237,34 @@ local function bestBoard(parent: Instance, spec: PlazaSpec): TextLabel
 		})
 		decor(add({ Name = "BoardCap", Shape = BALL, Size = cube(2), CFrame = CFrame.new(x, bottom + h + 0.8, 0), Color = W.Sunny }))
 	end
+	-- Navy slab, saturated sunny card and Ink text, with a coral title pill at the gate
+	-- signs' scale (~2.3 studs tall, like a gate card's header band).
 	local slab =
-		decor(add({ Name = "BestBoard", Size = Vector3.new(w, h, 0.8), CFrame = CFrame.new(0, bottom + h / 2, 0), Color = W.White }))
+		decor(add({ Name = "BestBoard", Size = Vector3.new(w, h, 0.8), CFrame = CFrame.new(0, bottom + h / 2, 0), Color = W.Navy }))
 	local root = surface(slab, Enum.NormalId.Front, 30)
-	local card = panel(root, W.Cream, UDim2.fromScale(0.03, 0.025), UDim2.fromScale(0.94, 0.95), 0.06)
-	local pill = panel(card, W.Coral, UDim2.fromScale(0.1, 0.025), UDim2.fromScale(0.8, 0.1), 0.5)
-	text(pill, { Text = "PARKOUR BEST", TextColor3 = W.White, Size = UDim2.fromScale(0.9, 0.74), Position = UDim2.fromScale(0.05, 0.13) })
+	local card = panel(root, W.Sunny, UDim2.fromScale(0.03, 0.025), UDim2.fromScale(0.94, 0.95), 0.06)
+	local pill = panel(card, W.Coral, UDim2.fromScale(0.05, 0.025), UDim2.fromScale(0.9, 0.15), 0.5)
+	text(pill, { Text = "PARKOUR BEST", TextColor3 = W.White, Size = UDim2.fromScale(0.9, 0.76), Position = UDim2.fromScale(0.05, 0.12) })
 	text(card, {
 		Text = "SERVER TOP TIMES",
 		Font = theme.Fonts.Bold,
-		Size = UDim2.fromScale(0.8, 0.05),
-		Position = UDim2.fromScale(0.1, 0.135),
+		Size = UDim2.fromScale(0.84, 0.065),
+		Position = UDim2.fromScale(0.08, 0.185),
 	})
 	local list = text(card, {
 		Text = "Be the first to finish!",
 		Font = theme.Fonts.Bold,
 		TextScaled = false,
-		TextSize = 25,
+		TextSize = 28,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextYAlignment = Enum.TextYAlignment.Top,
 		TextWrapped = true,
 		RichText = true,
-		Size = UDim2.fromScale(0.9, 0.78),
-		Position = UDim2.fromScale(0.05, 0.2),
+		Size = UDim2.fromScale(0.9, 0.71),
+		Position = UDim2.fromScale(0.05, 0.27),
 	})
 	local back = surface(slab, Enum.NormalId.Back, 30)
-	local backCard = panel(back, W.Cream, UDim2.fromScale(0.03, 0.025), UDim2.fromScale(0.94, 0.95), 0.06)
+	local backCard = panel(back, W.Sunny, UDim2.fromScale(0.03, 0.025), UDim2.fromScale(0.94, 0.95), 0.06)
 	text(backCard, { Text = "GAME MODES", Size = UDim2.fromScale(0.86, 0.3), Position = UDim2.fromScale(0.07, 0.35) })
 	return list
 end
@@ -1269,6 +1298,132 @@ local function spurArch(parent: Instance, spec: PlazaSpec)
 		decor(add({ Name = "ArchSign", Size = Vector3.new(half * 2 - 1.5, 3.8, 0.9), CFrame = CFrame.new(0, 9.6, 0), Color = W.White }))
 	cardFace(sign, Enum.NormalId.Front, 30, W.Cream, W.Grape, "THIS WAY!", "GAME MODES")
 	cardFace(sign, Enum.NormalId.Back, 30, W.Cream, W.Grape, "BACK TO", "THE GYMS")
+end
+
+-- A bench on the plaza edge (local frame: front -Z faces into the plaza).
+local function bench(base: CFrame, back: Color3, parent: Instance)
+	local add = adder(base, parent)
+	for _, sx in { -1, 1 } do
+		add({ Name = "BenchLeg", Size = Vector3.new(0.6, 1.3, 1.9), CFrame = CFrame.new(sx * 2.4, 0.65, 0), Color = W.White })
+	end
+	add({ Name = "BenchSeat", Size = Vector3.new(6.4, 0.45, 2.2), CFrame = CFrame.new(0, 1.5, 0), Color = W.Honey })
+	decor(add({
+		Name = "BenchBack",
+		Size = Vector3.new(6.4, 1.5, 0.4),
+		CFrame = CFrame.new(0, 2.6, 0.95) * CFrame.Angles(-0.15, 0, 0),
+		Color = back,
+	}))
+end
+
+-- A potted palm: terracotta pot, a gently leaning ringed trunk and six drooping fronds.
+local function pottedPalm(x: number, top: number, z: number, lean: number, parent: Instance)
+	local add = adder(CFrame.new(x, top, z), parent)
+	add({
+		Name = "PalmPot",
+		Shape = CYLINDER,
+		Size = Vector3.new(2.2, 3.4, 3.4),
+		CFrame = CFrame.new(0, 1.1, 0) * UPRIGHT,
+		Color = W.Terracotta,
+	})
+	decor(add({
+		Name = "PalmPotRim",
+		Shape = CYLINDER,
+		Size = Vector3.new(0.45, 3.8, 3.8),
+		CFrame = CFrame.new(0, 2.15, 0) * UPRIGHT,
+		Color = W.Cream,
+	}))
+	local y, off = 2.2, 0
+	for i = 1, 3 do
+		add({
+			Name = "PalmTrunk",
+			Shape = CYLINDER,
+			Size = Vector3.new(2.6, 1 - i * 0.08, 1 - i * 0.08),
+			CFrame = CFrame.new(off + lean * 0.2, y + 1.2, 0) * CFrame.Angles(0, 0, math.pi / 2 - lean * 0.12 * i),
+			Color = if i % 2 == 1 then W.Honey else W.SandDark,
+		})
+		y += 2.3
+		off += lean * 0.45
+	end
+	local crown = CFrame.new(off, y + 0.4, 0)
+	decor(add({ Name = "PalmCrown", Shape = BALL, Size = cube(1.3), CFrame = crown, Color = W.GrassDark }))
+	for k = 1, 6 do
+		decor(add({
+			Name = "PalmFrond",
+			Size = Vector3.new(1.5, 0.25, 4.6),
+			CFrame = crown * CFrame.Angles(0, k * math.pi / 3 + 0.3, 0) * CFrame.Angles(-0.42, 0, 0) * CFrame.new(0, 0, -2.2),
+			Color = if k % 2 == 0 then W.Grass else W.GrassDark,
+		}))
+	end
+	for _, dz in { -0.45, 0.45 } do
+		decor(add({
+			Name = "Coconut",
+			Shape = BALL,
+			Size = cube(0.75),
+			CFrame = crown * CFrame.new(0.3, -0.7, dz),
+			Color = W.Terracotta:Lerp(W.Ink, 0.45),
+		}))
+	end
+end
+
+-- A small cluster of gym balls (the biggest one is solid; the others are decor).
+local function ballCluster(x: number, top: number, z: number, parent: Instance)
+	local add = adder(CFrame.new(x, top, z), parent)
+	for i, b in
+		{
+			{ 3, 0, 0, W.Coral },
+			{ 2.3, 2.3, 0.9, W.Blue },
+			{ 1.9, -0.6, 2.2, W.Sunny },
+			{ 1.3, 1.6, -1.8, W.Mint },
+		}
+	do
+		local part = add({ Name = "GymBall", Shape = BALL, Size = cube(b[1]), CFrame = CFrame.new(b[2], b[1] / 2, b[3]), Color = b[4] })
+		if i > 1 then
+			decor(part)
+		end
+	end
+end
+
+-- Colour rugs from every gate to the centre medallion (a full-colour border with a pastel
+-- middle, so the gate's floor arrows still read on top), plus benches and potted palms on
+-- the spur edge and gym-ball clusters between the back-row gates. Everything stays clear of
+-- the gate openings, the spur mouth and the straight lines between them.
+local function plazaDressing(parent: Instance, spec: PlazaSpec)
+	local p = spec.plaza
+	local cx, cz = (p.x0 + p.x1) / 2, (p.z0 + p.z1) / 2
+	for _, entry in Catalog do
+		local spot: any = spec.gates[entry.slot]
+		if spot then
+			local gx = spot.x or spec.gateX
+			local front = if spot.faceZ then Vector3.new(0, 0, spot.faceZ) else Vector3.new(spec.mirror, 0, 0)
+			local from = Vector3.new(gx, 0, spot.z) + front * 1.4
+			local toCentre = Vector3.new(cx - from.X, 0, cz - from.Z)
+			local to = Vector3.new(cx, 0, cz) - toCentre.Unit * 12.2
+			local length = (to - from).Magnitude
+			local mid = (from + to) / 2
+			local tint = color(entry.color)
+			for k, layer in { { 5.6, -0.03, tint }, { 4.2, -0.01, tint:Lerp(W.White, 0.55) } } do
+				local y = p.top + layer[2]
+				decor(make("Part", {
+					Name = if k == 1 then "PlazaRugEdge" else "PlazaRug",
+					Size = Vector3.new(layer[1], 0.1, length),
+					CFrame = CFrame.lookAt(Vector3.new(mid.X, y, mid.Z), Vector3.new(to.X, y, to.Z)),
+					Color = layer[3],
+					CastShadow = false,
+					Parent = parent,
+				}))
+			end
+		end
+	end
+	local edgeX = if spec.mirror > 0 then p.x1 else p.x0
+	for i, side in { -1, 1 } do
+		bench(
+			CFrame.new(edgeX - spec.mirror * 2.6, p.top, side * 22) * CFrame.Angles(0, -FACE_HUB * spec.mirror, 0),
+			if i == 1 then W.Coral else W.Blue,
+			parent
+		)
+		pottedPalm(edgeX - spec.mirror * 3, p.top, side * 31, -spec.mirror, parent)
+		ballCluster(spec.gateX + spec.mirror * 7, p.top, side * 12, parent)
+	end
 end
 
 -- Plaza ---------------------------------------------------------------------------------
@@ -1354,6 +1509,7 @@ local function buildPlaza(parent: Instance, spec: PlazaSpec)
 		planter(mouthX, p.top, side * (s.half + 6), parent)
 		planter(backX, p.top, side * (p.z1 - 3), parent)
 	end
+	plazaDressing(parent, spec)
 	-- The mirrored plaza has no best-times board: a planter stands in its spot.
 	if spec.portal ~= 1 then
 		planter(-Course.BOARD.x, p.top, Course.BOARD.z, parent)
