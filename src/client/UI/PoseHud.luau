@@ -6,7 +6,9 @@
 
 	A stay goes lobby -> countdown -> play -> results -> lobby (snapshot modes.pose.phase):
 	  Lobby card   right side (top right on touch): POSE COPY, the goal ("Copy 8 flexes to
-	               pass"), BEST and CLEARS, the reward status (full pack ready, or the time
+	               pass"), how to play ("Watch the Chad, then copy his flexes" over chips
+	               for the current input: ARROWS / WASD, D-PAD or TAP THE BUTTONS), BEST
+	               and CLEARS, the reward status (full pack ready, or the time
 	               to the next one and what a pass pays now), a big PLAY button (tap, Enter,
 	               gamepad X: A stays jump; sends "PoseBegin") and LEAVE ("ModeQuit"; B arms
 	               it on a controller, a second B confirms).
@@ -22,16 +24,20 @@
 	               Banner: "WATCH!" while the rival shows the round (each flex's name flashes
 	               under it in its colour), "YOUR TURN!" when the player copies it,
 	               "GREAT!" / "OOPS!" / "TOO SLOW!" / "TEST PASSED!" between.
-	               Dots: one per flex of the round; a thin bar under them counts down the
-	               time left for the next flex (ticks when it runs low).
+	               Dots: one per flex of the round (past DOT_PAGE flexes a page of them at
+	               a time, "25+" in front); a thin bar under them counts down the time left
+	               for the next flex (ticks when it runs low). "BONUS!" at every replay
+	               milestone (12, 16, 20... flexes) with its cash.
 	               Flex pad: four big buttons in a D-pad (up DOUBLE BICEPS, left SIDE CHEST,
 	               right LAT SPREAD, down MOST MUSCULAR) in the flexes' colours, sized for
 	               thumbs (bottom right on phones so the chads stay in view); the arrow keys,
 	               WASD and the D-pad press them. Shaded while the rival shows, each lights
 	               up as its flex is shown; a wrong press flashes red and lights the right one.
-	  Results      after "win" / "lose": flexes copied, the best (NEW BEST! pulses), the pay,
-	               PLAY AGAIN (Enter / X; "PoseBegin") and LOBBY (B; "PoseLobby"). It goes on
-	               the server's "lobby" (or the snapshot's phase back to "lobby").
+	  Results      after "win" / "lose" (CARD_DELAY s later, docked right like the lobby
+	               card so the avatar's finale in the middle stays in view): flexes copied,
+	               the best (NEW BEST! pulses), the pay and any milestone bonus, PLAY AGAIN
+	               (Enter / X; "PoseBegin") and LOBBY (B; "PoseLobby"). It goes on the
+	               server's "lobby" (or the snapshot's phase back to "lobby").
 	  Lobby again  "lobby" { reason } puts the lobby card back; "bumped" (another player
 	               needed the podium) and "full" (every podium busy) say so in a toast.
 	The arena's "BestBoard" SurfaceGui gets its "Best", "Clears" and "Reward" TextLabels
@@ -79,6 +85,10 @@ local REHEARSE_RADIUS = 9
 -- The results card's own way back if the snapshot's "lobby" never comes (s).
 local RESULTS_FALLBACK = 9
 local RESULTS_LOBBY = 6 -- the server's own return to the lobby (docs/minigames.md)
+-- The results card waits this long after "win" / "lose": the finale's first beat is seen whole.
+local CARD_DELAY = 1.2
+-- Past this many flexes in a round the dots row shows one page of them at a time.
+local DOT_PAGE = 24
 
 -- Which flex each key strikes (arrows, WASD, D-pad). At the mirror WASD only walk.
 local KEYS: { [Enum.KeyCode]: number } = {
@@ -172,6 +182,9 @@ local bestStop: (() -> ())? = nil
 local beginAt = -math.huge -- last "PoseBegin" sent (one per press burst)
 local playAt = -math.huge -- the countdown arrived (a stale "lobby" snapshot is ignored)
 local resultsAt = 0
+local cardToken = 0
+-- The round's dots: how many, and the page (0-based, DOT_PAGE dots each) on screen.
+local dotCount, dotPage = 0, -1
 local lobbyConn: RBXScriptConnection? = nil
 -- The snapshot's reward status (modes.pose): rewardPreview and cooldownEnds.
 local reward: { [string]: any } = {}
@@ -269,18 +282,36 @@ local function setRound(round: number)
 	Kit.pop(roundLabel, 1.1)
 end
 
-local function buildDots(count: number)
+-- The dots of page `page` (0-based): up to 14 at full size, past that the gap and the dots
+-- shrink; a round longer than DOT_PAGE shows one page at a time ("25+" in front), so even
+-- MAX_ROUND (99) fits inside the pill.
+local function showDotPage(page: number)
+	dotPage = page
 	for _, child in dotsRow:GetChildren() do
-		if child:IsA("Frame") then
+		if child:IsA("GuiObject") then
 			child:Destroy()
 		end
 	end
-	-- Up to 14 dots at full size; past that the gap and the dots shrink so even MAX_ROUND
-	-- (30) fits inside the pill.
-	local gap = if count > 14 then 3 else 6
-	local size = math.clamp(math.floor((DOTS_WIDTH - (count - 1) * gap) / math.max(count, 1)), 8, 20)
+	local first = page * DOT_PAGE + 1
+	local last = math.min(dotCount, first + DOT_PAGE - 1)
+	local shown = math.max(0, last - first + 1)
+	local width = DOTS_WIDTH
+	if page > 0 then
+		local tag = first .. "+"
+		Kit.text(dotsRow, {
+			Name = "Page",
+			Text = tag,
+			Font = F.Display,
+			TextSize = 16,
+			Size = UDim2.fromOffset(12 + #tag * 9, 20),
+			LayoutOrder = 0,
+		})
+		width -= 12 + #tag * 9 + 3
+	end
+	local gap = if dotCount > 14 then 3 else 6
+	local size = math.clamp(math.floor((width - (shown - 1) * gap) / math.max(shown, 1)), 8, 20)
 	dotsList.Padding = UDim.new(0, gap)
-	for i = 1, count do
+	for i = first, last do
 		local dot = Kit.new("Frame", {
 			Name = "Dot" .. i,
 			BackgroundColor3 = C.Well,
@@ -294,7 +325,18 @@ local function buildDots(count: number)
 	end
 end
 
+local function buildDots(count: number)
+	dotCount = count
+	showDotPage(0)
+end
+
 local function paintDot(i: number, color: Color3?, flash: boolean?)
+	local page = math.floor((i - 1) / DOT_PAGE)
+	if color and page ~= dotPage and i >= 1 and i <= dotCount then
+		-- The show or the turn moved on to another page's flexes (clearing a dot never
+		-- turns the page).
+		showDotPage(page)
+	end
 	local dot = dotsRow:FindFirstChild("Dot" .. i) :: Frame?
 	if not dot then
 		return
@@ -558,17 +600,23 @@ end
 local function onRound(p: any)
 	beat += 1
 	local mine = beat
-	seq = {}
-	if type(p.seq) == "table" then
-		for i, flex in p.seq do
-			seq[i] = math.clamp(math.floor(num(flex, 1)), 1, #FLEXES)
-		end
+	-- The server sends only the flex each round adds (round n plays the first n): the run's
+	-- sequence is kept here. Round 1 starts it; a replay keeps it.
+	local round = math.max(1, math.floor(num(p.round, #seq + 1)))
+	if round == 1 then
+		seq = {}
+	end
+	for i = #seq, round + 1, -1 do
+		seq[i] = nil
+	end
+	if #seq == round - 1 and type(p.add) == "number" then
+		seq[round] = math.clamp(math.floor(p.add), 1, #FLEXES)
 	end
 	done = 0
 	phase = "watch"
 	stopTimer()
 	shadePad(true)
-	setRound(math.max(1, #seq))
+	setRound(round)
 	setHearts(num(p.hearts, lives), maxLives, false)
 	buildDots(#seq)
 	showBanner("WATCH!", if p.replay then "Watch again..." else "Copy the Chad's flexes", C.Gold)
@@ -600,9 +648,8 @@ local function onRound(p: any)
 			return
 		end
 		phase = "turn"
-		for i = 1, #seq do
-			paintDot(i, nil)
-		end
+		-- Every dot blank again, from the first page.
+		showDotPage(0)
 		shadePad(false)
 		-- Every button bumps once: the pad is live.
 		for _, scale in pops do
@@ -803,6 +850,7 @@ end
 -- Results card -----------------------------------------------------------------------------
 
 local function hideCard()
+	cardToken += 1
 	if bestStop then
 		bestStop()
 		bestStop = nil
@@ -828,27 +876,40 @@ local function showCard(p: any, won: boolean)
 		elseif won then "Pass bonus resting. Great posing!"
 		else "Copy " .. passRound .. " flexes to pass!"
 	cardCash.TextColor3 = if cash > 0 then C.Good else C.TextDim
+	local bonus = num(p.bonus, 0)
+	if bonus > 0 then
+		cardCash.Text ..= "\nMilestone bonus +" .. Format.money(bonus)
+		cardCash.TextColor3 = C.Good
+	end
 	cardTimer.Text = ""
-	card.Visible = true
-	Kit.appear(card)
-	if won then
-		Kit.confetti(card, { Origin = UDim2.fromScale(0.5, 0.2), Count = 40, ZIndex = 41, Power = 1.1 })
-		Sounds.play("Celebrate")
-	end
-	if p.newBest then
-		-- NEW BEST flashes: three pops and a twinkle while the card is up.
-		bestStop = Kit.twinkle(cardBest, { ZIndex = 46 })
-		for k = 0, 2 do
-			task.delay(0.25 + k * 0.45, function()
-				if card.Visible then
-					Kit.pop(cardBest, 1.5)
-				end
-			end)
+	-- The finale plays first (the card is docked aside anyway).
+	cardToken += 1
+	local mine = cardToken
+	task.delay(CARD_DELAY, function()
+		if cardToken ~= mine or stage ~= "results" then
+			return
 		end
-		if not won then
-			Sounds.play("Step")
+		card.Visible = true
+		Kit.appear(card)
+		if won then
+			Kit.confetti(card, { Origin = UDim2.fromScale(0.5, 0.2), Count = 40, ZIndex = 41, Power = 1.1 })
+			Sounds.play("Celebrate")
 		end
-	end
+		if p.newBest then
+			-- NEW BEST flashes: three pops and a twinkle while the card is up.
+			bestStop = Kit.twinkle(cardBest, { ZIndex = 46 })
+			for k = 0, 2 do
+				task.delay(0.25 + k * 0.45, function()
+					if card.Visible then
+						Kit.pop(cardBest, 1.5)
+					end
+				end)
+			end
+			if not won then
+				Sounds.play("Step")
+			end
+		end
+	end)
 end
 
 -- Stages -----------------------------------------------------------------------------------
@@ -1070,6 +1131,17 @@ function PoseHud.onNotify(payload: { [string]: any })
 		showBanner("TEST PASSED!", sub, C.Gold)
 		Kit.confetti(banner, { Origin = UDim2.fromScale(0.5, 0.4), Count = 50, ZIndex = 31, Power = 1.2 })
 		goalLabel.Text = "BEST " .. best
+	elseif event == "bonus" then
+		local cash = num(p.cash, 0)
+		local round = math.floor(num(p.round, 0))
+		showBanner(
+			"BONUS!",
+			if cash > 0 then round .. " flexes: +" .. Format.money(cash) else round .. " flexes! Bonus resting, keep going!",
+			C.Gold
+		)
+		if cash > 0 then
+			Sounds.play("Coin", 0.05, 1.4)
+		end
 	elseif event == "miss" then
 		local wasTurn = phase == "turn"
 		phase = "wait"
@@ -1300,8 +1372,13 @@ end
 
 local function buildCard(screenGui: ScreenGui)
 	local holder = scaledHolder(screenGui, "PoseCardHolder", Vector2.new(380, 320), 0.75)
-	holder.Position = UDim2.fromScale(0.5, 0.45)
-	holder.AnchorPoint = Vector2.new(0.5, 0.5)
+	-- Docked where the lobby card sits (right; top right on touch, clear of the jump
+	-- button): the avatar's finale in the middle of the screen stays in view.
+	local function place()
+		holder.AnchorPoint = if Kit.touch then Vector2.new(1, 0) else Vector2.new(1, 0.5)
+		holder.Position = if Kit.touch then UDim2.new(1, -12, 0, 48) else UDim2.new(1, -24, 0.5, 0)
+	end
+	Kit.onInput(place)
 	card = Kit.panel(holder, {
 		Name = "PoseCard",
 		Size = UDim2.fromScale(1, 1),
@@ -1337,7 +1414,10 @@ local function buildCard(screenGui: ScreenGui)
 		Text = "",
 		Font = F.Display,
 		TextSize = 22,
-		Size = UDim2.new(1, -40, 0, 30),
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		-- Two lines: the pay and a milestone bonus.
+		Size = UDim2.new(1, -40, 0, 52),
 		Position = UDim2.new(0.5, 0, 0, 142),
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 42,
@@ -1347,7 +1427,7 @@ local function buildCard(screenGui: ScreenGui)
 		TextSize = 14,
 		TextColor3 = C.TextDim,
 		Size = UDim2.new(1, -40, 0, 18),
-		Position = UDim2.new(0.5, 0, 0, 182),
+		Position = UDim2.new(0.5, 0, 0, 198),
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 42,
 	})
@@ -1379,7 +1459,7 @@ end
 
 -- The lobby card: what the test is, the player's record, the reward and PLAY.
 local function buildLobby(screenGui: ScreenGui)
-	local holder = scaledHolder(screenGui, "PoseLobbyHolder", Vector2.new(300, 330), 0.75)
+	local holder = scaledHolder(screenGui, "PoseLobbyHolder", Vector2.new(300, 382), 0.75)
 	local function place()
 		-- Touch: top right (clear of the thumbstick and the jump button); else right middle.
 		holder.AnchorPoint = if Kit.touch then Vector2.new(1, 0) else Vector2.new(1, 0.5)
@@ -1409,10 +1489,62 @@ local function buildLobby(screenGui: ScreenGui)
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 42,
 	})
+	-- How to play, over chips for the current input (they follow a switch of input).
+	Kit.text(lobby, {
+		Name = "HowTo",
+		Text = "Watch the Chad, then copy his flexes",
+		TextSize = 14,
+		TextColor3 = C.TextDim,
+		Size = UDim2.new(1, -24, 0, 18),
+		Position = UDim2.new(0.5, 0, 0, 74),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 42,
+	})
+	local lobbyKeys = Kit.new("Frame", {
+		Name = "Keys",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -24, 0, 26),
+		Position = UDim2.new(0.5, 0, 0, 98),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 42,
+		Parent = lobby,
+	})
+	Kit.list(lobbyKeys, 6, true, Enum.HorizontalAlignment.Center)
+	local function keyChips()
+		for _, child in lobbyKeys:GetChildren() do
+			if child:IsA("GuiObject") then
+				child:Destroy()
+			end
+		end
+		local chips: { string } = if Kit.touch
+			then { "TAP THE FLEX BUTTONS" }
+			elseif Kit.gamepad then { "D-PAD" }
+			else { "ARROW KEYS", "or", "WASD" }
+		for order, text in chips do
+			local word = text == "or"
+			local chip = Kit.text(lobbyKeys, {
+				Name = "Chip" .. order,
+				Text = text,
+				Font = F.Display,
+				TextSize = 13,
+				TextWrapped = false,
+				TextColor3 = if word then C.TextDim else C.Ink,
+				BackgroundColor3 = C.Text,
+				BackgroundTransparency = if word then 1 else 0.05,
+				Size = UDim2.fromOffset(if word then 18 else 16 + #text * 9, 24),
+				LayoutOrder = order,
+				ZIndex = 43,
+			})
+			if not word then
+				Kit.round(chip)
+			end
+		end
+	end
+	Kit.onInput(keyChips)
 	local function stat(x: number, caption: string): TextLabel
 		local well = Kit.well(lobby, {
 			Size = UDim2.fromOffset(128, 52),
-			Position = UDim2.new(0.5, x, 0, 80),
+			Position = UDim2.new(0.5, x, 0, 132),
 			AnchorPoint = Vector2.new(0.5, 0),
 			ZIndex = 41,
 		})
@@ -1441,7 +1573,7 @@ local function buildLobby(screenGui: ScreenGui)
 		TextSize = 15,
 		TextWrapped = true,
 		Size = UDim2.new(1, -28, 0, 40),
-		Position = UDim2.new(0.5, 0, 0, 138),
+		Position = UDim2.new(0.5, 0, 0, 190),
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 42,
 	})
@@ -1450,7 +1582,7 @@ local function buildLobby(screenGui: ScreenGui)
 		Text = "PLAY",
 		Color = C.Good,
 		Size = UDim2.fromOffset(250, 64),
-		Position = UDim2.new(0.5, 0, 0, 186),
+		Position = UDim2.new(0.5, 0, 0, 238),
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 42,
 		Shimmer = true,
@@ -1463,7 +1595,7 @@ local function buildLobby(screenGui: ScreenGui)
 		TextSize = 13,
 		TextColor3 = C.TextDim,
 		Size = UDim2.new(1, -28, 0, 16),
-		Position = UDim2.new(0.5, 0, 0, 254),
+		Position = UDim2.new(0.5, 0, 0, 306),
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 42,
 	})

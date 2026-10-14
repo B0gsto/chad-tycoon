@@ -18,6 +18,9 @@
 	  showLength(round)           seconds from "round" to the player's turn
 	  repeatReady(lastAt, now)    the repeat share may pay again (REPEAT_GAP since the last)
 	  newBest(best, cleared)      the saved best after a run that cleared `cleared` rounds
+	  milestone(cleared)          a replay bonus is due at this many flexes (12, 16, 20...)
+	  bonusTake(at, used, now, s) the share of a bonus the window still pays (see REPLAY)
+	  bonusCash(repeatCash, s)    the cash of `s` repeat shares
 	  outsideArena(dx, dz, m)     a point (offsets from ARENA's centre) more than m off the deck
 
 	ARENA is where World.PoseStage builds the arena (floor top centre and size in studs,
@@ -83,6 +86,21 @@ PoseRules.PAD_HEIGHT = 4
 PoseRules.MAX_LANES = 3
 -- Inside the full reward's cooldown a pass pays the repeat share at most this often (s).
 PoseRules.REPEAT_GAP = 300
+
+--[[
+	REPLAY. A long run pays a bonus at every milestone past the pass: MILESTONE_FIRST flexes
+	copied (12), then every MILESTONE_EVERY more (16, 20, ...), each MILESTONE_SHARE (half)
+	of the repeat share (Economy repeatCash: MODE_REPEAT_SHARE of the cash pack). All the
+	bonuses together pay at most BONUS_CAP repeat shares per REPEAT_GAP window (its start and
+	what it paid are saved with the record), so with the pass's own repeat share (at most one
+	per REPEAT_GAP) a player earns at most (1 + BONUS_CAP) = 2 repeat shares per 5 minutes
+	outside the full pack, however many runs they play. Bonuses never restart the full
+	pack's cooldown.
+]]
+PoseRules.MILESTONE_FIRST = 12
+PoseRules.MILESTONE_EVERY = 4
+PoseRules.MILESTONE_SHARE = 0.5
+PoseRules.BONUS_CAP = 1
 
 local function lcg(seed: number): () -> number
 	local state = math.floor(math.abs(seed)) % 2147483648
@@ -205,6 +223,27 @@ end
 
 function PoseRules.newBest(best: number, cleared: number): number
 	return math.max(best, math.floor(cleared))
+end
+
+-- Whether copying `cleared` flexes reaches a replay milestone (12, 16, 20, ...).
+function PoseRules.milestone(cleared: number): boolean
+	local first, every = PoseRules.MILESTONE_FIRST, PoseRules.MILESTONE_EVERY
+	return cleared >= first and cleared == math.floor(cleared) and (cleared - first) % every == 0
+end
+
+-- A bonus of `share` repeat shares against the window that started at `windowAt` (os.time,
+-- 0 = none) and has paid `used` shares: returns the share paid now (0..share) and the
+-- window's new start and used shares. A window older than REPEAT_GAP starts afresh.
+function PoseRules.bonusTake(windowAt: number, used: number, now: number, share: number): (number, number, number)
+	if windowAt <= 0 or now - windowAt >= PoseRules.REPEAT_GAP or now < windowAt then
+		windowAt, used = now, 0
+	end
+	local paid = math.clamp(PoseRules.BONUS_CAP - math.max(0, used), 0, math.max(0, share))
+	return paid, windowAt, used + paid
+end
+
+function PoseRules.bonusCash(repeatCash: number, share: number): number
+	return math.max(0, math.floor(repeatCash * share))
 end
 
 return PoseRules

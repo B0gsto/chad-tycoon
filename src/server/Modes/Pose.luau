@@ -14,8 +14,17 @@
 	Copying PoseRules.PASS_ROUND flexes passes and pays once per game (GameModes.modeReward +
 	payReward: the full pack on the first clear or after the cooldown, else the repeat share
 	at most once per PoseRules.REPEAT_GAP); the game then goes on for a best (the longest
-	sequence copied). The results phase frees the podium and returns the player to the lobby
-	after PoseRules.RESULTS_TIME s. Only the lobby's EXIT pad (or "ModeQuit") leaves.
+	sequence copied). Past the pass every milestone (PoseRules.milestone: 12, 16, 20...) pays
+	a replay bonus, capped per PoseRules.REPEAT_GAP window (PoseRules "REPLAY"). The best is
+	saved on every cleared round. The results phase frees the podium and returns the player
+	to the lobby after PoseRules.RESULTS_TIME s. Only the lobby's EXIT pad (or "ModeQuit")
+	leaves.
+
+	Other players see the game through the character attribute "PoseFlex" = "<move>#<n>"
+	(n counts up, so the same move twice is still a change): a Poses flex name for a right
+	press, or "ready" | "stumble" | "slow" | "clear" | "pass" | "win" | "lose"; nil once the
+	player is off the podium's moves (lobby, stop). Fx.Pose plays the same moves on every
+	other player's avatar from it (the local player's own come from the Notify events).
 
 	PROTOCOL. Notify (kind = "Mode", mode = "pose"):
 	  "start"     { phase = "lobby", best, clears, rewardPreview, maxHearts, passRound,
@@ -23,16 +32,20 @@
 	                                       entered the mode (Vector3 positions; facing: the chads')
 	  "countdown" { seconds, lane, playerPos, rivalPos, facing, hearts, maxHearts, passRound,
 	                maxRound, timeout }    on the podium; play starts `seconds` s later
-	  "round"     { round, seq, step, lead, length, hearts, replay }
-	                                       seq: the round's flex indexes; the rival shows one every
-	                                       `step` s after `lead`; the player's turn starts `length`
-	                                       s after this arrives (the first round comes as play starts)
+	  "round"     { round, add, step, lead, length, hearts, replay }
+	                                       add: the flex index this round adds (round n plays the
+	                                       first n flexes; the client keeps the run's sequence, it is
+	                                       never sent whole); the rival shows one every `step` s
+	                                       after `lead`; the player's turn starts `length` s after
+	                                       this arrives (the first round comes as play starts)
 	  "clear"     { round, next, passed }  the round was copied (`next` comes up)
 	  "miss"      { hearts, reason, step, expected }   reason: "wrong" | "slow"
 	  "pass"      { round, cash, full, packCash, repeatCash, pay }
 	                                       pay: "first" | "full" | "repeat" | "none"
+	  "bonus"     { round, cash }          a replay milestone was copied (cash 0: the window's
+	                                       bonuses are spent)
 	  "win" / "lose" { cleared, best, prevBest, newBest, passed, cash, full, packCash,
-	                repeatCash, pay, resultsTime }
+	                repeatCash, pay, bonus, resultsTime }
 	                                       win = passed this game; phase results for resultsTime s
 	  "lobby"     { reason, best, clears, rewardPreview }
 	                                       back on lobbySpawn; reason: "timeout" | "button" |
@@ -44,7 +57,9 @@
 	Actions:
 	  "PoseBegin" {}                       phase lobby or results: take a podium, countdown
 	  "PoseLobby" {}                       phase results: back to the lobby now
-	  "PoseInput" { flex = 1..4, step = n }  phase play only (n = 1 for a round's first flex)
+	  "PoseInput" { flex = 1..4, step = n }  phase play only (n = 1 for a round's first flex);
+	                                       taken from the round's notify on (the show included),
+	                                       so a slow link never drops the first press
 	Snapshot modes.pose: { running, phase, best, clears, cooldownEnds, rewardPreview, round,
 	  hearts, lane }   phase: "lobby" | "countdown" | "play" | "results" (nil when not running)
 ]]
@@ -60,12 +75,15 @@ local PoseRules = require(script.Parent.PoseRules)
 local ID = "pose"
 -- Feet are about this far under the HumanoidRootPart's centre (R15 default rig).
 local FEET_BELOW_ROOT = 3
--- Presses are taken this long before the client's show ends (the "round" notify's trip, and
--- a player who already knows the sequence's start may begin while the last flex shows).
+-- The turn officially opens this long before the client's show ends (presses are taken
+-- during the whole show anyway: a press is never dropped for arriving early).
 local TURN_EARLY = 0.8
 -- The first flex's deadline gets this much extra: the client's bar starts when the "round"
--- notify arrives (after its trip), the server's clock when it was sent.
-local TURN_GRACE = 0.75
+-- notify arrives (after its trip), the server's clock when it was sent, and the press takes
+-- the trip back (a 1.5 s round trip still never loses a heart to "slow").
+local TURN_GRACE = 1.5
+-- The "PoseFlex" character attribute other clients pose this avatar from.
+local FLEX_ATTR = "PoseFlex"
 -- A held player whose feet end up this far from their podium (moved away by something
 -- else) has the mode ended as "invalid" (walking free: PoseRules.LEAVE_MARGIN off the deck).
 local LEAVE_SPOT = 30
@@ -95,6 +113,8 @@ type Run = {
 	prevBest: number,
 	passed: boolean,
 	pay: { [string]: any }?,
+	-- Cash the replay milestones paid this game.
+	bonus: number,
 }
 
 type Entry = {
@@ -117,14 +137,33 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 	local entries: { [Player]: Entry } = {}
 	local lastPos: { [Player]: Vector3 } = {}
 
-	local function record(session: any): { best: number, clears: number, lastRewardAt: number, lastRepeatAt: number? }
+	local function record(session: any): { [string]: any }
 		return session.profile.modes[ID]
+	end
+
+	-- A saved extra field (os.time stamps, shares) that may be missing or broken: 0 then.
+	local function stamp(value: any): number
+		return if type(value) == "number" and value == value and value >= 0 and value < math.huge then value else 0
 	end
 
 	-- When the repeat share last paid (os.time; an extra field on the saved record).
 	local function repeatAt(rec: { [string]: any }): number
-		local at = rec.lastRepeatAt
-		return if type(at) == "number" and at == at and at >= 0 and at < math.huge then at else 0
+		return stamp(rec.lastRepeatAt)
+	end
+
+	-- Tells every other client which move this player's avatar makes (FLEX_ATTR); nil clears.
+	local cueCount = 0
+	local function cue(player: Player, move: string?)
+		local character = player.Character
+		if not character then
+			return
+		end
+		if move then
+			cueCount += 1
+			character:SetAttribute(FLEX_ATTR, move .. "#" .. cueCount)
+		elseif character:GetAttribute(FLEX_ATTR) ~= nil then
+			character:SetAttribute(FLEX_ATTR, nil)
+		end
 	end
 
 	-- Anchors, with fallbacks for an arena built before the lobby existed.
@@ -188,6 +227,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 	-- Back to the lobby spawn (from results, a refused Begin or a fall there).
 	local function toLobby(player: Player, entry: Entry, reason: string)
 		unhold(entry)
+		cue(player, nil)
 		entry.phase = "lobby"
 		entry.run = nil
 		entry.lane = nil
@@ -217,7 +257,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		run.deadline = now + length + PoseRules.INPUT_TIMEOUT + TURN_GRACE
 		GameModes.notify(player, "round", ID, {
 			round = run.round,
-			seq = table.move(run.seq, 1, run.round, 1, {}),
+			add = run.seq[run.round],
 			step = step,
 			lead = PoseRules.SHOW_LEAD,
 			length = length,
@@ -229,29 +269,65 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 
 	-- The end of a game (hearts out, or MAX_ROUND cleared): saves the best, sends "win" (the
 	-- test was passed this game) or "lose", frees the podium and shows the results phase.
+	-- The results go out even if the save record is gone (the best then from this game).
 	local function finish(player: Player, entry: Entry, run: Run)
 		unhold(entry)
 		entry.run = nil
 		entry.phase = "results"
 		entry.phaseEnds = os.clock() + PoseRules.RESULTS_TIME
+		local won = run.passed
+		cue(player, if won then "win" else "lose")
+		local session = GameModes.session(player)
+		local best = PoseRules.newBest(run.prevBest, run.cleared)
+		if session then
+			local rec = record(session)
+			rec.best = PoseRules.newBest(rec.best, run.cleared)
+			best = rec.best
+			Tycoon.markDirty(session)
+		end
+		local payload: { [string]: any } = {
+			cleared = run.cleared,
+			best = best,
+			prevBest = run.prevBest,
+			newBest = run.cleared > run.prevBest,
+			passed = won,
+			bonus = run.bonus,
+			resultsTime = PoseRules.RESULTS_TIME,
+		}
+		payFields(payload, run)
+		GameModes.notify(player, if won then "win" else "lose", ID, payload)
+		GameModes.refresh(player)
+	end
+
+	-- A replay milestone (PoseRules.milestone) was copied: its bonus, as far as the REPEAT_GAP
+	-- window's BONUS_CAP still allows (PoseRules "REPLAY"). Never a full pay: the pack's
+	-- cooldown is untouched.
+	local function milestone(player: Player, run: Run)
 		local session = GameModes.session(player)
 		if not session then
 			return
 		end
 		local rec = record(session)
-		rec.best = PoseRules.newBest(rec.best, run.cleared)
-		local payload: { [string]: any } = {
-			cleared = run.cleared,
-			best = rec.best,
-			prevBest = run.prevBest,
-			newBest = run.cleared > run.prevBest,
-			passed = run.passed,
-			resultsTime = PoseRules.RESULTS_TIME,
-		}
-		payFields(payload, run)
-		GameModes.notify(player, if run.passed then "win" else "lose", ID, payload)
-		Tycoon.markDirty(session)
-		GameModes.refresh(player)
+		local now = os.time()
+		local share, windowAt, used = PoseRules.bonusTake(stamp(rec.bonusAt), stamp(rec.bonusUsed), now, PoseRules.MILESTONE_SHARE)
+		rec.bonusAt, rec.bonusUsed = windowAt, used
+		local priced = GameModes.modeReward(session, ID, false)
+		local cash = PoseRules.bonusCash(priced.repeatCash, share)
+		local paid = 0
+		if cash > 0 then
+			local root = GameModes.root(player)
+			local reward = GameModes.payReward(
+				player,
+				ID,
+				{ cash = cash, full = false, packCash = priced.packCash, repeatCash = priced.repeatCash },
+				root and root.Position
+			)
+			paid = reward.cash
+			run.bonus += paid
+		else
+			Tycoon.markDirty(session)
+		end
+		GameModes.notify(player, "bonus", ID, { round = run.cleared, cash = paid })
 	end
 
 	-- The game just cleared PASS_ROUND: one pay per game. Full on the first clear ever or
@@ -291,6 +367,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 
 	local function miss(player: Player, entry: Entry, run: Run, reason: string)
 		run.hearts -= 1
+		cue(player, if reason == "slow" then "slow" else "stumble")
 		GameModes.notify(player, "miss", ID, {
 			hearts = run.hearts,
 			reason = reason,
@@ -310,10 +387,24 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 	local function clear(player: Player, entry: Entry, run: Run)
 		run.cleared = math.max(run.cleared, run.round)
 		local passedNow = PoseRules.passed(run.cleared) and not run.passed
+		local bonusNow = PoseRules.milestone(run.cleared)
+		cue(player, if passedNow then "pass" else "clear")
+		-- The best is saved as it grows (a disconnect mid-run keeps it).
+		local session = GameModes.session(player)
+		if session then
+			local rec = record(session)
+			if run.cleared > rec.best then
+				rec.best = PoseRules.newBest(rec.best, run.cleared)
+				Tycoon.markDirty(session)
+			end
+		end
 		if run.round >= PoseRules.MAX_ROUND then
 			GameModes.notify(player, "clear", ID, { round = run.round, next = run.round, passed = true })
 			if passedNow then
 				pass(player, run)
+			end
+			if bonusNow then
+				milestone(player, run)
 			end
 			finish(player, entry, run)
 			return
@@ -324,6 +415,9 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		GameModes.notify(player, "clear", ID, { round = run.cleared, next = run.round, passed = run.passed or passedNow })
 		if passedNow then
 			pass(player, run)
+		end
+		if bonusNow then
+			milestone(player, run)
 		end
 		GameModes.refresh(player)
 	end
@@ -378,6 +472,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			prevBest = rec.best,
 			passed = false,
 			pay = nil,
+			bonus = 0,
 		}
 		local spot: CFrame = spots[lane]
 		unhold(entry)
@@ -387,6 +482,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		entry.spot = spot
 		teleportTo(player, spot)
 		entry.held = hold(player)
+		cue(player, "ready")
 		GameModes.notify(player, "countdown", ID, {
 			seconds = PoseRules.COUNTDOWN,
 			lane = lane,
@@ -457,6 +553,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		end
 		entries[player] = nil
 		unhold(entry)
+		cue(player, nil)
 		if reason ~= "leave" then
 			GameModes.notify(player, "stop", ID, { reason = reason })
 			GameModes.refresh(player)
@@ -516,8 +613,9 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		local phase = entry.phase
 		if PoseRules.fallBack(phase) == "podium" then
 			local spot = entry.spot :: CFrame
-			-- A respawned character is a new root: hold that one (and put it back on the podium).
-			if not entry.held or entry.held.root ~= root or fell then
+			-- Not held yet (no root at the Begin) or fell: back on the podium and held. (A
+			-- respawn never gets here: GameModes stops the mode on CharacterAdded.)
+			if not entry.held or fell then
 				unhold(entry)
 				teleportTo(player, spot)
 				entry.held = hold(player)
@@ -581,8 +679,9 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 	end)
 
 	-- One flex of the player's turn: { flex = 1..4, step = the press's place in the round }.
-	-- Only in phase play. Out-of-turn, repeated or stale presses are ignored (never a miss: a
-	-- lag spike must not cost a heart).
+	-- Only in phase play. Taken from the round's notify on, the show included (the client
+	-- only sends once its own show is over, so an early one is a slow link, not a cheat).
+	-- Repeated or stale presses are ignored (never a miss: a lag spike must not cost a heart).
 	Tycoon.addAction("PoseInput", function(session: any, data: { [string]: any })
 		local player = session.player
 		local entry = entries[player]
@@ -591,7 +690,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			return
 		end
 		local clock = os.clock()
-		if run.stage == "show" and clock >= run.turnAt then
+		if run.stage == "show" then
 			run.stage = "input"
 		end
 		if run.stage ~= "input" then
@@ -611,6 +710,9 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		end
 		run.done += 1
 		run.deadline = clock + PoseRules.INPUT_TIMEOUT
+		if result == "good" then
+			cue(player, PoseRules.FLEXES[flex].pose)
+		end
 		if result == "clear" then
 			clear(player, entry, run)
 		end
