@@ -22,8 +22,9 @@
 
 	Other players see the game through the character attribute "PoseFlex" = "<move>#<n>"
 	(n counts up, so the same move twice is still a change): a Poses flex name for a right
-	press, or "ready" | "stumble" | "slow" | "clear" | "pass" | "win" | "lose"; nil once the
-	player is off the podium's moves (lobby, stop). Fx.Pose plays the same moves on every
+	press (the round's last one too: "clear" / "pass" follow CLEAR_AFTER s later, so the
+	flex is seen first), or "ready" | "stumble" | "slow" | "clear" | "pass" | "win" | "lose";
+	nil once the player is off the podium's moves (a fresh lobby, results over, stop). Fx.Pose plays the same moves on every
 	other player's avatar from it (the local player's own come from the Notify events).
 
 	PROTOCOL. Notify (kind = "Mode", mode = "pose"):
@@ -32,21 +33,23 @@
 	                                       entered the mode (Vector3 positions; facing: the chads')
 	  "countdown" { seconds, lane, playerPos, rivalPos, facing, hearts, maxHearts, passRound,
 	                maxRound, timeout }    on the podium; play starts `seconds` s later
-	  "round"     { round, add, step, lead, length, hearts, replay }
+	  "round"     { round, add, step, lead, length, open, hearts, replay }
 	                                       add: the flex index this round adds (round n plays the
 	                                       first n flexes; the client keeps the run's sequence, it is
 	                                       never sent whole); the rival shows one every `step` s
 	                                       after `lead`; the player's turn starts `length` s after
-	                                       this arrives (the first round comes as play starts)
+	                                       this arrives (the first round comes as play starts);
+	                                       presses may start `open` s after it (PoseRules.pressOpen)
 	  "clear"     { round, next, passed }  the round was copied (`next` comes up)
 	  "miss"      { hearts, reason, step, expected }   reason: "wrong" | "slow"
 	  "pass"      { round, cash, full, packCash, repeatCash, pay }
 	                                       pay: "first" | "full" | "repeat" | "none"
-	  "bonus"     { round, cash }          a replay milestone was copied (cash 0: the window's
-	                                       bonuses are spent)
+	  "bonus"     { round, cash, trophy }  a replay milestone was copied (cash 0: the window's
+	                                       bonuses are spent); trophy: the run's title now
 	  "win" / "lose" { cleared, best, prevBest, newBest, passed, cash, full, packCash,
-	                repeatCash, pay, bonus, resultsTime }
-	                                       win = passed this game; phase results for resultsTime s
+	                repeatCash, pay, bonus, trophy?, nextTrophy?, nextTrophyAt?, resultsTime }
+	                                       win = passed this game; phase results for resultsTime s;
+	                                       trophy: PoseRules.trophy's title, the next one up
 	  "lobby"     { reason, best, clears, rewardPreview }
 	                                       back on lobbySpawn; reason: "timeout" | "button" |
 	                                       "fall" | "full" | "bumped" (another player needed the
@@ -58,8 +61,9 @@
 	  "PoseBegin" {}                       phase lobby or results: take a podium, countdown
 	  "PoseLobby" {}                       phase results: back to the lobby now
 	  "PoseInput" { flex = 1..4, step = n }  phase play only (n = 1 for a round's first flex);
-	                                       taken from the round's notify on (the show included),
-	                                       so a slow link never drops the first press
+	                                       counted from PoseRules.pressOpen (every flex shown) less
+	                                       TURN_EARLY after the round's notify, the client opens no
+	                                       earlier; anything before is ignored, never a miss
 	Snapshot modes.pose: { running, phase, best, clears, cooldownEnds, rewardPreview, round,
 	  hearts, lane }   phase: "lobby" | "countdown" | "play" | "results" (nil when not running)
 ]]
@@ -75,9 +79,12 @@ local PoseRules = require(script.Parent.PoseRules)
 local ID = "pose"
 -- Feet are about this far under the HumanoidRootPart's centre (R15 default rig).
 local FEET_BELOW_ROOT = 3
--- The turn officially opens this long before the client's show ends (presses are taken
--- during the whole show anyway: a press is never dropped for arriving early).
+-- Presses count from this long before PoseRules.pressOpen (the client's own opening, which
+-- comes after the notify's trip and the press's trip back): a real press is never dropped.
 local TURN_EARLY = 0.8
+-- The round's last right press shows its flex to other players first; "clear" / "pass"
+-- follow this much later (unless another move came first).
+local CLEAR_AFTER = 0.65
 -- The first flex's deadline gets this much extra: the client's bar starts when the "round"
 -- notify arrives (after its trip), the server's clock when it was sent, and the press takes
 -- the trip back (a 1.5 s round trip still never loses a heart to "slow").
@@ -164,6 +171,22 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		elseif character:GetAttribute(FLEX_ATTR) ~= nil then
 			character:SetAttribute(FLEX_ATTR, nil)
 		end
+	end
+
+	-- `move` CLEAR_AFTER s from now, if the player's avatar still shows the move it has now
+	-- (no other cue, no lobby, no stop, same character in between).
+	local function cueAfter(player: Player, move: string)
+		local character = player.Character
+		local now = character and character:GetAttribute(FLEX_ATTR)
+		if now == nil then
+			cue(player, move)
+			return
+		end
+		task.delay(CLEAR_AFTER, function()
+			if player.Character == character and character and character:GetAttribute(FLEX_ATTR) == now then
+				cue(player, move)
+			end
+		end)
 	end
 
 	-- Anchors, with fallbacks for an arena built before the lobby existed.
@@ -253,7 +276,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		local length = PoseRules.showLength(run.round)
 		run.stage = "show"
 		run.done = 0
-		run.turnAt = now + length - TURN_EARLY
+		run.turnAt = now + PoseRules.pressOpen(run.round) - TURN_EARLY
 		run.deadline = now + length + PoseRules.INPUT_TIMEOUT + TURN_GRACE
 		GameModes.notify(player, "round", ID, {
 			round = run.round,
@@ -261,6 +284,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			step = step,
 			lead = PoseRules.SHOW_LEAD,
 			length = length,
+			open = PoseRules.pressOpen(run.round),
 			hearts = run.hearts,
 			replay = run.replay,
 		})
@@ -277,6 +301,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		entry.phaseEnds = os.clock() + PoseRules.RESULTS_TIME
 		local won = run.passed
 		cue(player, if won then "win" else "lose")
+		local trophy, nextTrophy, nextTrophyAt = PoseRules.trophy(run.cleared)
 		local session = GameModes.session(player)
 		local best = PoseRules.newBest(run.prevBest, run.cleared)
 		if session then
@@ -292,6 +317,9 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			newBest = run.cleared > run.prevBest,
 			passed = won,
 			bonus = run.bonus,
+			trophy = trophy,
+			nextTrophy = nextTrophy,
+			nextTrophyAt = nextTrophyAt,
 			resultsTime = PoseRules.RESULTS_TIME,
 		}
 		payFields(payload, run)
@@ -309,7 +337,8 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		end
 		local rec = record(session)
 		local now = os.time()
-		local share, windowAt, used = PoseRules.bonusTake(stamp(rec.bonusAt), stamp(rec.bonusUsed), now, PoseRules.MILESTONE_SHARE)
+		local share, windowAt, used =
+			PoseRules.bonusTake(stamp(rec.bonusAt), stamp(rec.bonusUsed), now, PoseRules.milestoneShare(run.cleared))
 		rec.bonusAt, rec.bonusUsed = windowAt, used
 		local priced = GameModes.modeReward(session, ID, false)
 		local cash = PoseRules.bonusCash(priced.repeatCash, share)
@@ -327,7 +356,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		else
 			Tycoon.markDirty(session)
 		end
-		GameModes.notify(player, "bonus", ID, { round = run.cleared, cash = paid })
+		GameModes.notify(player, "bonus", ID, { round = run.cleared, cash = paid, trophy = (PoseRules.trophy(run.cleared)) })
 	end
 
 	-- The game just cleared PASS_ROUND: one pay per game. Full on the first clear ever or
@@ -388,7 +417,8 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		run.cleared = math.max(run.cleared, run.round)
 		local passedNow = PoseRules.passed(run.cleared) and not run.passed
 		local bonusNow = PoseRules.milestone(run.cleared)
-		cue(player, if passedNow then "pass" else "clear")
+		-- The last press's flex is up already (PoseInput): the cheer follows it.
+		cueAfter(player, if passedNow then "pass" else "clear")
 		-- The best is saved as it grows (a disconnect mid-run keeps it).
 		local session = GameModes.session(player)
 		if session then
@@ -512,6 +542,8 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		if old then
 			unhold(old)
 		end
+		-- A fresh lobby: no podium move left on the avatar (a restart mid-game or on results).
+		cue(player, nil)
 		local entry: Entry = {
 			phase = "lobby",
 			lane = nil,
@@ -679,9 +711,9 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 	end)
 
 	-- One flex of the player's turn: { flex = 1..4, step = the press's place in the round }.
-	-- Only in phase play. Taken from the round's notify on, the show included (the client
-	-- only sends once its own show is over, so an early one is a slow link, not a cheat).
-	-- Repeated or stale presses are ignored (never a miss: a lag spike must not cost a heart).
+	-- Only in phase play, from run.turnAt (PoseRules.pressOpen less TURN_EARLY: the client
+	-- opens its turn no earlier, so a real press always arrives after it). Early, repeated or
+	-- stale presses are ignored (never a miss: a lag spike must not cost a heart).
 	Tycoon.addAction("PoseInput", function(session: any, data: { [string]: any })
 		local player = session.player
 		local entry = entries[player]
@@ -690,7 +722,8 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 			return
 		end
 		local clock = os.clock()
-		if run.stage == "show" then
+		if run.stage == "show" and clock >= run.turnAt then
+			-- Every flex has been shown (PoseRules.pressOpen): the turn is on.
 			run.stage = "input"
 		end
 		if run.stage ~= "input" then
@@ -710,9 +743,8 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 		end
 		run.done += 1
 		run.deadline = clock + PoseRules.INPUT_TIMEOUT
-		if result == "good" then
-			cue(player, PoseRules.FLEXES[flex].pose)
-		end
+		-- Every right press shows its flex, the round's last too ("clear" follows: clear()).
+		cue(player, PoseRules.FLEXES[flex].pose)
 		if result == "clear" then
 			clear(player, entry, run)
 		end

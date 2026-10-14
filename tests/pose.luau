@@ -106,42 +106,82 @@ return function(h: { [string]: any })
 		eq(PoseRules.bonusCash(1000, 0.5), 500, "half a repeat share")
 		eq(PoseRules.bonusCash(999, 0.5), 499, "rounded down")
 		eq(PoseRules.bonusCash(1000, 0), 0, "nothing for nothing")
-		-- One window: 12 and 16 pay half each, then the window is spent.
-		local share = PoseRules.MILESTONE_SHARE
-		local paid, at, used = PoseRules.bonusTake(0, 0, 1000, share)
-		eq(paid, share, "first bonus pays")
+		-- Growing shares: 12 half, 16 three quarters, 20 and on a whole repeat share.
+		eq(PoseRules.milestoneShare(11), 0, "no milestone, no share")
+		eq(PoseRules.milestoneShare(13), 0, "between milestones, no share")
+		eq(PoseRules.milestoneShare(12), 0.5, "12 pays half")
+		eq(PoseRules.milestoneShare(16), 0.75, "16 pays three quarters")
+		eq(PoseRules.milestoneShare(20), 1, "20 pays a whole share")
+		eq(PoseRules.milestoneShare(28), 1, "later ones too")
+		check(PoseRules.BONUS_CAP >= 2 and PoseRules.BONUS_CAP <= 2.5, "the cap is 2 to 2.5 repeat shares")
+		-- One window: a 12-16-20 run pays every bonus, then the window is spent.
+		local paid, at, used = PoseRules.bonusTake(0, 0, 1000, PoseRules.milestoneShare(12))
+		eq(paid, 0.5, "12 pays")
 		eq(at, 1000, "the window starts")
-		paid, at, used = PoseRules.bonusTake(at, used, 1010, share)
-		eq(paid, share, "second bonus pays")
-		paid, at, used = PoseRules.bonusTake(at, used, 1020, share)
+		paid, at, used = PoseRules.bonusTake(at, used, 1010, PoseRules.milestoneShare(16))
+		eq(paid, 0.75, "16 pays")
+		paid, at, used = PoseRules.bonusTake(at, used, 1020, PoseRules.milestoneShare(20))
+		eq(paid, 1, "20 pays")
+		paid, at, used = PoseRules.bonusTake(at, used, 1030, PoseRules.milestoneShare(24))
+		eq(paid, PoseRules.BONUS_CAP - 2.25, "24 pays what the cap has left")
+		paid, at, used = PoseRules.bonusTake(at, used, 1040, PoseRules.milestoneShare(28))
 		eq(paid, 0, "the window's cap is spent")
 		eq(used, PoseRules.BONUS_CAP, "used stays at the cap")
-		paid, at = PoseRules.bonusTake(at, used, 1000 + PoseRules.REPEAT_GAP, share)
-		eq(paid, share, "a new window pays again")
+		paid, at = PoseRules.bonusTake(at, used, 1000 + PoseRules.REPEAT_GAP, 0.5)
+		eq(paid, 0.5, "a new window pays again")
 		eq(at, 1000 + PoseRules.REPEAT_GAP, "and starts now")
-		paid = PoseRules.bonusTake(5000, 0.75, 4000, share)
-		eq(paid, share, "a clock that went back opens a fresh window")
-		-- The rule: a bot or a grinder running back to back for an hour earns at most two
-		-- repeat shares per REPEAT_GAP outside the full pack (one pass share, BONUS_CAP bonus).
+		paid = PoseRules.bonusTake(5000, 0.75, 4000, 0.5)
+		eq(paid, 0.5, "a clock that went back opens a fresh window")
+		-- The rule: a bot or a grinder running back to back for an hour earns at most 2.5
+		-- repeat shares of bonuses per REPEAT_GAP (plus the pass's one share) outside the
+		-- full pack.
 		local repeatCash = 1000
 		local windowAt, windowUsed, repeatLast = 0, 0, 0
-		local total = 0
-		for t = 1000, 1000 + 3600 - 1, 20 do -- a run reaching 20 flexes every 20 s (os.time 0 is "never")
+		local total, bonusTotal = 0, 0
+		for t = 1000, 1000 + 3600 - 1, 20 do -- a run reaching 32 flexes every 20 s (os.time 0 is "never")
 			if PoseRules.repeatReady(repeatLast, t) then
 				total += repeatCash
 				repeatLast = t
 			end
-			for _, m in { 12, 16, 20 } do
-				if PoseRules.milestone(m) then
+			for m = 1, 32 do
+				local share = PoseRules.milestoneShare(m)
+				if share > 0 then
 					local s
 					s, windowAt, windowUsed = PoseRules.bonusTake(windowAt, windowUsed, t, share)
-					total += PoseRules.bonusCash(repeatCash, s)
+					bonusTotal += PoseRules.bonusCash(repeatCash, s)
 				end
 			end
 		end
+		total += bonusTotal
 		local windows = 3600 / PoseRules.REPEAT_GAP
-		check(total <= windows * (1 + PoseRules.BONUS_CAP) * repeatCash, "at most 2 repeat shares per window")
+		check(bonusTotal <= windows * 2.5 * repeatCash, "bonuses: at most 2.5 repeat shares per window")
+		check(total <= windows * (1 + PoseRules.BONUS_CAP) * repeatCash, "everything: pass share plus the cap")
 		check(total > windows * repeatCash, "replays pay more than the pass share alone")
+	end)
+
+	test("Pose: titles for long runs (BRONZE / SILVER / GOLD POSER)", function()
+		local name, nextName, nextAt = PoseRules.trophy(0)
+		check(name == nil and nextName == "BRONZE POSER" and nextAt == 12, "none yet: bronze at 12")
+		name, nextName, nextAt = PoseRules.trophy(PoseRules.PASS_ROUND)
+		check(name == nil and nextAt == 12, "the pass alone earns no title")
+		name, nextName, nextAt = PoseRules.trophy(12)
+		check(name == "BRONZE POSER" and nextName == "SILVER POSER" and nextAt == 16, "12: bronze")
+		name, nextName = PoseRules.trophy(19)
+		check(name == "SILVER POSER" and nextName == "GOLD POSER", "16..19: silver")
+		name, nextName, nextAt = PoseRules.trophy(40)
+		check(name == "GOLD POSER" and nextName == nil and nextAt == nil, "20 and on: gold")
+		for _, t in PoseRules.TROPHIES do
+			check(PoseRules.milestone(t.at), "every title comes with a milestone banner")
+		end
+	end)
+
+	test("Pose: presses open once every flex is shown, on both sides", function()
+		for round = 1, PoseRules.MAX_ROUND do
+			local step = PoseRules.showStep(round)
+			local open = PoseRules.pressOpen(round)
+			check(open > PoseRules.SHOW_LEAD + (round - 1) * step, "after the last flex appears")
+			check(open < PoseRules.showLength(round), "before the show is over")
+		end
 	end)
 
 	test("Pose: lobby phases gate Begin, input and falls", function()
@@ -159,7 +199,7 @@ return function(h: { [string]: any })
 		eq(PoseRules.fallBack("countdown"), "podium", "countdown fall: podium")
 		eq(PoseRules.fallBack("play"), "podium", "play fall: podium")
 		eq(PoseRules.COUNTDOWN, 3, "3-2-1")
-		check(PoseRules.RESULTS_TIME >= 4 and PoseRules.RESULTS_TIME <= 8, "results card about 6 s")
+		check(PoseRules.RESULTS_TIME >= 7 and PoseRules.RESULTS_TIME <= 10, "results card about 8 s")
 	end)
 
 	test("Pose: the START pad needs a step off and a re-arm", function()
