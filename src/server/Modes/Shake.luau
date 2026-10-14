@@ -116,6 +116,13 @@ type Visit = {
 	beganAt: number?,
 }
 
+-- World y of a part's top face, whatever way the part is turned (an upright cylinder's Size.Y
+-- is its diameter, not its height).
+local function partTop(part: BasePart): number
+	local cf, s = part.CFrame, part.Size
+	return cf.Position.Y + (math.abs(cf.XVector.Y) * s.X + math.abs(cf.YVector.Y) * s.Y + math.abs(cf.ZVector.Y) * s.Z) / 2
+end
+
 function Shake.create(GameModes: any, context: { [string]: any }): any
 	local built = context.world and context.world.shake
 	local Tycoon = context.Tycoon
@@ -562,7 +569,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		if phase == "lobby" then
 			local pad, radius = startPad()
 			if pad then
-				local top = pad.Position + Vector3.new(0, pad.Size.Y / 2, 0)
+				local top = Vector3.new(pad.Position.X, partTop(pad), pad.Position.Z)
 				local on = ShakeRules.onPad(pos.X, feetY, pos.Z, { x = top.X, y = top.Y, z = top.Z }, radius)
 				local go, offSince = ShakeRules.padStep(on, visit.padOff, now)
 				visit.padOff = offSince

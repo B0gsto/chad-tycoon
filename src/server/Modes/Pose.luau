@@ -137,6 +137,13 @@ type Entry = {
 	lastBegin: number,
 }
 
+-- World y of a part's top face, whatever way the part is turned (an upright cylinder's Size.Y
+-- is its diameter, not its height).
+local function partTop(part: BasePart): number
+	local cf, s = part.CFrame, part.Size
+	return cf.Position.Y + (math.abs(cf.XVector.Y) * s.X + math.abs(cf.YVector.Y) * s.Y + math.abs(cf.ZVector.Y) * s.Z) / 2
+end
+
 function Pose.create(GameModes: any, context: { [string]: any }): any
 	local built = context.world and context.world.pose
 	local Tycoon = context.Tycoon
@@ -595,7 +602,7 @@ function Pose.create(GameModes: any, context: { [string]: any }): any
 	-- Feet on a pad part's top (flat distance within `radius`).
 	local function onPart(part: BasePart, radius: number, pos: Vector3, feetY: number): boolean
 		local p = part.Position
-		return PoseRules.onPad(pos.X - p.X, feetY - (p.Y + part.Size.Y / 2), pos.Z - p.Z, radius)
+		return PoseRules.onPad(pos.X - p.X, feetY - partTop(part), pos.Z - p.Z, radius)
 	end
 
 	local function outsideArena(pos: Vector3, margin: number): boolean

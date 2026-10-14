@@ -137,6 +137,13 @@ type Run = {
 	autoBalls: number,
 }
 
+-- World y of a part's top face, whatever way the part is turned (an upright cylinder's Size.Y
+-- is its diameter, not its height).
+local function partTop(part: BasePart): number
+	local cf, s = part.CFrame, part.Size
+	return cf.Position.Y + (math.abs(cf.XVector.Y) * s.X + math.abs(cf.YVector.Y) * s.Y + math.abs(cf.ZVector.Y) * s.Z) / 2
+end
+
 function Bowling.create(GameModes: any, context: { [string]: any }): any
 	local built = context.world and context.world.bowling
 	local Tycoon = context.Tycoon
@@ -207,7 +214,7 @@ function Bowling.create(GameModes: any, context: { [string]: any }): any
 			return false
 		end
 		local c = pad.Position
-		return BowlingRules.onPad(pos.X - c.X, feetY - (c.Y + pad.Size.Y / 2), pos.Z - c.Z, radius)
+		return BowlingRules.onPad(pos.X - c.X, feetY - partTop(pad), pos.Z - c.Z, radius)
 	end
 
 	-- What the client needs to draw the lane, the pins and the dumbbell (lane space).
