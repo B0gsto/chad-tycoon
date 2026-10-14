@@ -143,7 +143,11 @@ local FX = {
 		live = 40, -- on screen at once
 		size = 34, -- design px across (28 to 40 reads as a coin at 1280x720)
 		endSize = 0.75, -- share of the size on arrival
-		time = 0.8, -- seconds of flight (eased out: half the way in the first 30%)
+		-- Seconds of flight (eased out: half the way in the first 30%). r6: measured in Studio
+		-- at 0.8 the first coin of a collect landed 0.93 s after the Cash effect and the label
+		-- swelled from 1.00 s; at 0.4 the coins land from about 0.5 s on, so the label is
+		-- swelling from +0.5 to +1.1 s.
+		time = 0.4,
 		stagger = 0.04, -- seconds between coins
 		lift = 230, -- design px the arc rises above the straight line (up into mid screen)
 		-- The arc's middle is pulled this share of the way to the screen centre, so coins from
@@ -153,16 +157,16 @@ local FX = {
 		-- the event and was still beside it at +0.36 s.
 		centre = 0.5,
 		scatter = 56, -- design px of random start offset
-		burst = 0.06, -- seconds a coin takes to pop out before it flies
+		burst = 0.05, -- seconds a coin takes to pop out before it flies
 		spin = 300, -- degrees turned on the way
 		pop = 64, -- design px across of the arrival ring at the cash amount
 		popTime = 0.28, -- seconds
-		popEvery = 3, -- an arrival ring for every Nth coin (and the last)
+		popEvery = 3, -- an arrival ring for every Nth coin (and the first and the last)
 		-- ... and the cash amount itself swells to this scale and back over pulseTime (r5:
 		-- measured in Studio the coins already ended on the label, 77-81 x 652-658 inside its
 		-- 13..105 x 633..682 box, but nothing on the label answered them).
-		pulse = 1.14,
-		pulseTime = 0.15,
+		pulse = 1.16,
+		pulseTime = 0.24, -- longer than the gap between two pulsing coins: one held swell
 		gold = Color3.fromRGB(255, 205, 60), -- the shape coin without the sprite
 		goldRim = Color3.fromRGB(196, 132, 20),
 	},
@@ -1084,6 +1088,7 @@ local function walletPop(layer: Frame, at: Vector2, k: number)
 end
 
 -- The cash amount swells and settles (a UIScale of its own, so the HUD's layout is untouched).
+local pulseToken = 0
 local function pulseMoney()
 	local label = walletMoney()
 	if not label then
@@ -1098,10 +1103,15 @@ local function pulseMoney()
 	end
 	local s = scale :: UIScale
 	local half = FX.arc.pulseTime / 2
-	s.Scale = 1
+	-- Grows from where it is (a pulse that lands mid-swell holds it up, no snap back to 1),
+	-- and only the newest pulse brings it back down.
+	pulseToken += 1
+	local mine = pulseToken
 	TweenService:Create(s, TweenInfo.new(half, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = FX.arc.pulse }):Play()
 	task.delay(half, function()
-		TweenService:Create(s, TweenInfo.new(half, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = 1 }):Play()
+		if pulseToken == mine then
+			TweenService:Create(s, TweenInfo.new(half, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = 1 }):Play()
+		end
 	end)
 end
 
@@ -1118,7 +1128,7 @@ local function stepArc()
 		if age >= FX.arc.burst + FX.arc.time or not layer or not c.gui.Parent then
 			c.gui:Destroy()
 			table.remove(arcCoins, i)
-			if layer and (c.index % FX.arc.popEvery == 0 or c.index == c.total) then
+			if layer and (c.index % FX.arc.popEvery == 0 or c.index == 1 or c.index == c.total) then
 				walletPop(layer, target, k)
 				pulseMoney()
 			end
