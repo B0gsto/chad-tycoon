@@ -2292,7 +2292,9 @@ actionHandlers.BenchStop = function(session)
 	Decor.releaseLifter(session.player)
 end
 
-local COSMETIC_ACTIONS = { BenchRep = true, BenchStop = true }
+-- Mini-game inputs are cosmetic here too: the modes refresh the State and pay (which marks the
+-- save dirty) themselves, so a press does not flush a full snapshot.
+local COSMETIC_ACTIONS = { BenchRep = true, BenchStop = true, PoseInput = true, BowlingRoll = true }
 
 -- Sent by the client once its UI is ready; the caller flushes fresh state.
 actionHandlers.Sync = function(_session) end
@@ -2651,7 +2653,7 @@ function Tycoon.init(builtWorld: WorldBuilder.World, themeModule: any)
 		local handler = actionHandlers[data.action]
 		if handler then
 			handler(session, data)
-			-- A rep changes no tycoon state: no snapshot for it.
+			-- A rep or a mini-game press changes no tycoon state: no snapshot for it.
 			if not COSMETIC_ACTIONS[data.action] then
 				markDirty(session)
 				flush(session)
