@@ -16,9 +16,12 @@
 	  passed(cleared)             cleared rounds reach PASS_ROUND
 	  showStep(round)             seconds per flex while the rival shows, faster each round
 	  showLength(round)           seconds from "round" to the player's turn
-	  repeatReady(lastAt, now)    the repeat share may pay again (REPEAT_GAP since the last)
+	  pressOpen(round)            seconds from "round" until presses count (the last flex is up)
+  repeatReady(lastAt, now)    the repeat share may pay again (REPEAT_GAP since the last)
 	  newBest(best, cleared)      the saved best after a run that cleared `cleared` rounds
 	  milestone(cleared)          a replay bonus is due at this many flexes (12, 16, 20...)
+  milestoneShare(cleared)     the repeat shares that milestone's bonus is worth (0 if none)
+  trophy(cleared)             the run's title (BRONZE / SILVER / GOLD POSER) and the next one
 	  bonusTake(at, used, now, s) the share of a bonus the window still pays (see REPLAY)
 	  bonusCash(repeatCash, s)    the cash of `s` repeat shares
 	  outsideArena(dx, dz, m)     a point (offsets from ARENA's centre) more than m off the deck
@@ -80,7 +83,7 @@ PoseRules.MISS_GAP = 2.2
 -- Lobby flow: the 3-2-1 before play, how long the results card holds the player before
 -- the lobby, the START pad's re-arm, its reach above/below the pad top and the podium cap.
 PoseRules.COUNTDOWN = 3
-PoseRules.RESULTS_TIME = 6
+PoseRules.RESULTS_TIME = 8
 PoseRules.PAD_REARM = 1.5
 PoseRules.PAD_HEIGHT = 4
 PoseRules.MAX_LANES = 3
@@ -89,18 +92,27 @@ PoseRules.REPEAT_GAP = 300
 
 --[[
 	REPLAY. A long run pays a bonus at every milestone past the pass: MILESTONE_FIRST flexes
-	copied (12), then every MILESTONE_EVERY more (16, 20, ...), each MILESTONE_SHARE (half)
-	of the repeat share (Economy repeatCash: MODE_REPEAT_SHARE of the cash pack). All the
-	bonuses together pay at most BONUS_CAP repeat shares per REPEAT_GAP window (its start and
-	what it paid are saved with the record), so with the pass's own repeat share (at most one
-	per REPEAT_GAP) a player earns at most (1 + BONUS_CAP) = 2 repeat shares per 5 minutes
-	outside the full pack, however many runs they play. Bonuses never restart the full
-	pack's cooldown.
+	copied (12), then every MILESTONE_EVERY more (16, 20, ...). Each is worth a growing part
+	of the repeat share (Economy repeatCash: MODE_REPEAT_SHARE of the cash pack),
+	MILESTONE_SHARES: 12 pays half, 16 three quarters, 20 and every later one a whole share.
+	All the bonuses together pay at most BONUS_CAP repeat shares per REPEAT_GAP window (its
+	start and what it paid are saved with the record): exactly one 12-16-20 run, so the
+	bonuses add at most 2.25 repeat shares per 5 minutes (with the pass's own repeat share,
+	at most one per REPEAT_GAP, 3.25 outside the full pack), however many runs are played.
+	Bonuses never restart the full pack's cooldown. Past the cap a run still earns its
+	TROPHIES title on the results card (no cash): a long run always ends with something.
 ]]
 PoseRules.MILESTONE_FIRST = 12
 PoseRules.MILESTONE_EVERY = 4
-PoseRules.MILESTONE_SHARE = 0.5
-PoseRules.BONUS_CAP = 1
+-- Repeat shares per milestone, in order (12, 16, 20); every later milestone pays the last.
+PoseRules.MILESTONE_SHARES = { 0.5, 0.75, 1 }
+PoseRules.BONUS_CAP = 2.25
+-- The run's title by flexes copied (shown on the results card and the milestone banner).
+PoseRules.TROPHIES = {
+	{ at = 12, name = "BRONZE POSER" },
+	{ at = 16, name = "SILVER POSER" },
+	{ at = 20, name = "GOLD POSER" },
+}
 
 local function lcg(seed: number): () -> number
 	local state = math.floor(math.abs(seed)) % 2147483648
@@ -134,6 +146,14 @@ function PoseRules.press(seq: { number }, round: number, done: number, flex: num
 		return "wrong"
 	end
 	return if done + 1 >= round then "clear" else "good"
+end
+
+-- Seconds from a round's notify until the player's presses count: half way through the last
+-- flex of the show (every step has been shown). The client opens the turn no earlier, the
+-- server takes presses from (a little before) then; earlier ones are ignored on both sides
+-- and never cost a heart.
+function PoseRules.pressOpen(round: number): number
+	return PoseRules.SHOW_LEAD + (math.max(1, round) - 0.5) * PoseRules.showStep(round)
 end
 
 -- Whether the repeat share may pay again (`lastAt`: os.time of its last pay, 0 = never).
@@ -229,6 +249,30 @@ end
 function PoseRules.milestone(cleared: number): boolean
 	local first, every = PoseRules.MILESTONE_FIRST, PoseRules.MILESTONE_EVERY
 	return cleared >= first and cleared == math.floor(cleared) and (cleared - first) % every == 0
+end
+
+-- The repeat shares the bonus at `cleared` flexes is worth (0: no milestone there).
+function PoseRules.milestoneShare(cleared: number): number
+	if not PoseRules.milestone(cleared) then
+		return 0
+	end
+	local shares = PoseRules.MILESTONE_SHARES
+	local nth = (cleared - PoseRules.MILESTONE_FIRST) // PoseRules.MILESTONE_EVERY + 1
+	return shares[math.min(nth, #shares)]
+end
+
+-- The title a run that copied `cleared` flexes earned (nil below the first) and the next
+-- one up with the flexes it needs (nil past the top).
+function PoseRules.trophy(cleared: number): (string?, string?, number?)
+	local name: string? = nil
+	for _, t in PoseRules.TROPHIES do
+		if cleared >= t.at then
+			name = t.name
+		else
+			return name, t.name, t.at
+		end
+	end
+	return name, nil, nil
 end
 
 -- A bonus of `share` repeat shares against the window that started at `windowAt` (os.time,

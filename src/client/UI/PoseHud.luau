@@ -33,11 +33,15 @@
 	               thumbs (bottom right on phones so the chads stay in view); the arrow keys,
 	               WASD and the D-pad press them. Shaded while the rival shows, each lights
 	               up as its flex is shown; a wrong press flashes red and lights the right one.
+	               A press before every flex was shown (the round's `open`) is only a nudge;
+	               after it, it starts the turn early (the server's rule too).
 	  Results      after "win" / "lose" (CARD_DELAY s later, docked right like the lobby
 	               card so the avatar's finale in the middle stays in view): flexes copied,
+	               the run's title (BRONZE / SILVER / GOLD POSER, else the first to reach),
 	               the best (NEW BEST! pulses), the pay and any milestone bonus, PLAY AGAIN
 	               (Enter / X; "PoseBegin") and LOBBY (B; "PoseLobby"). It goes on the
-	               server's "lobby" (or the snapshot's phase back to "lobby").
+	               server's "lobby" after the payload's resultsTime (or the snapshot's phase
+	               back to "lobby").
 	  Lobby again  "lobby" { reason } puts the lobby card back; "bumped" (another player
 	               needed the podium) and "full" (every podium busy) say so in a toast.
 	The arena's "BestBoard" SurfaceGui gets its "Best", "Clears" and "Reward" TextLabels
@@ -82,9 +86,11 @@ local GAP = 10
 local DESIGN_H = 760 -- screen height the HUD is laid out for (UIScale beyond it)
 -- Feet within this many studs (flat) of the "RehearsalSpot" part warm up at the mirror.
 local REHEARSE_RADIUS = 9
--- The results card's own way back if the snapshot's "lobby" never comes (s).
-local RESULTS_FALLBACK = 9
-local RESULTS_LOBBY = 6 -- the server's own return to the lobby (docs/minigames.md)
+-- The results card's own way back if the snapshot's "lobby" never comes: this long past
+-- resultsTime (s).
+local RESULTS_FALLBACK = 3
+-- The server's own return to the lobby: the "win" / "lose" payload's resultsTime.
+local resultsTime = 8
 -- The results card waits this long after "win" / "lose": the finale's first beat is seen whole.
 local CARD_DELAY = 1.2
 -- Past this many flexes in a round the dots row shows one page of them at a time.
@@ -144,6 +150,7 @@ local cardLines: TextLabel = nil :: any
 local cardCash: TextLabel = nil :: any
 local cardBest: TextLabel = nil :: any
 local cardTimer: TextLabel = nil :: any
+local cardTrophy: TextLabel = nil :: any
 local lobby: Frame = nil :: any
 local lobbyGoal: TextLabel = nil :: any
 local lobbyBest: TextLabel = nil :: any
@@ -159,9 +166,12 @@ local pops: { UIScale } = {}
 local stage = "off"
 -- A game is on screen (countdown or play): the pad's presses count.
 local running = false
--- Inside play: "intro" | "watch" | "turn" | "wait"; only "turn" takes presses.
+-- Inside play: "intro" | "watch" | "turn" | "wait"; only "turn" takes presses. A press in
+-- "watch" once every flex has been shown (openAt: the round's `open`, PoseRules.pressOpen,
+-- the server's own rule) starts the turn early; before that it is only a nudge.
 local phase = "intro"
 local beat = 0 -- bumps on every round / stop, so stale show timers do nothing
+local openAt = math.huge
 local seq: { number } = {}
 local done = 0
 local lives, maxLives = 3, 3
@@ -471,6 +481,8 @@ local function rehearse(i: number)
 	end)
 end
 
+local startTurn: () -> () = function() end
+
 local function press(i: number)
 	if not FLEXES[i] then
 		return
@@ -483,12 +495,16 @@ local function press(i: number)
 		return
 	end
 	if phase == "watch" then
-		-- Early presses cost nothing: a nudge to watch first.
-		subBanner.Text = "Watch first, then copy!"
-		subBanner.TextColor3 = C.Gold
-		subBanner.Visible = true
-		Kit.pop(subBanner, 1.1)
-		return
+		if os.clock() < openAt then
+			-- Too early (flexes still to come): never sent, never a heart. A nudge.
+			subBanner.Text = "Watch them all, then copy!"
+			subBanner.TextColor3 = C.Gold
+			subBanner.Visible = true
+			Kit.pop(subBanner, 1.1)
+			return
+		end
+		-- Every flex is shown: the turn starts now (the server takes it from here too).
+		startTurn()
 	end
 	if phase ~= "turn" then
 		return
@@ -597,6 +613,27 @@ end
 
 -- Show -------------------------------------------------------------------------------------
 
+-- The player's turn: the pad goes live (at the show's end, or on an early press once every
+-- flex was shown).
+startTurn = function()
+	phase = "turn"
+	-- Every dot blank again, from the first page.
+	showDotPage(0)
+	shadePad(false)
+	-- Every button bumps once: the pad is live.
+	for _, scale in pops do
+		scale.Scale = 1.08
+		Kit.tween(scale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+	end
+	showBanner(
+		"YOUR TURN!",
+		if Kit.touch then "Tap the " .. #seq .. (if #seq == 1 then " flex" else " flexes") else Kit.hint("", "Arrow keys or WASD", "D-pad"),
+		C.Good
+	)
+	Sounds.play("Ready")
+	startTimer()
+end
+
 local function onRound(p: any)
 	beat += 1
 	local mine = beat
@@ -622,6 +659,7 @@ local function onRound(p: any)
 	showBanner("WATCH!", if p.replay then "Watch again..." else "Copy the Chad's flexes", C.Gold)
 	local step = num(p.step, 0.9)
 	local lead = num(p.lead, 1.2)
+	openAt = os.clock() + num(p.open, lead + (#seq - 0.5) * step)
 	for i, flex in seq do
 		task.delay(lead + (i - 1) * step, function()
 			if beat ~= mine or not running then
@@ -644,27 +682,11 @@ local function onRound(p: any)
 		end)
 	end
 	task.delay(num(p.length, lead + #seq * step + 0.35), function()
-		if beat ~= mine or not running then
+		-- Not if a press already started the turn early.
+		if beat ~= mine or not running or phase ~= "watch" then
 			return
 		end
-		phase = "turn"
-		-- Every dot blank again, from the first page.
-		showDotPage(0)
-		shadePad(false)
-		-- Every button bumps once: the pad is live.
-		for _, scale in pops do
-			scale.Scale = 1.08
-			Kit.tween(scale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
-		end
-		showBanner(
-			"YOUR TURN!",
-			if Kit.touch
-				then "Tap the " .. #seq .. (if #seq == 1 then " flex" else " flexes")
-				else Kit.hint("", "Arrow keys or WASD", "D-pad"),
-			C.Good
-		)
-		Sounds.play("Ready")
-		startTimer()
+		startTurn()
 	end)
 end
 
@@ -728,7 +750,7 @@ local function rewardStatus(): (string, Color3)
 	local left = cooldownLeft()
 	local line = if left > 0 then "Next full pack in " .. Format.time(left) else "Full pack ready soon"
 	local repeatCash = num(reward.repeatCash, 0)
-	local now = if repeatCash > 0 then "A pass now pays +" .. Format.money(repeatCash) else "Repeat bonus resting"
+	local now = if repeatCash > 0 then "A pass now pays +" .. Format.money(repeatCash) else "Pass cash refills soon. Go for a trophy!"
 	return line .. "\n" .. now, C.TextDim
 end
 
@@ -860,12 +882,35 @@ local function hideCard()
 	end
 end
 
+-- Each title's colour on the card and the milestone banner.
+local TROPHY_COLORS = {
+	["BRONZE POSER"] = Color3.fromRGB(232, 146, 74),
+	["SILVER POSER"] = Color3.fromRGB(206, 222, 240),
+	["GOLD POSER"] = Color3.fromRGB(255, 208, 60),
+}
+
+local function trophyColor(name: string): Color3
+	return TROPHY_COLORS[name] or C.Gold
+end
+
 local function showCard(p: any, won: boolean)
 	local cleared = math.floor(num(p.cleared, 0))
 	best = math.floor(num(p.best, best))
 	cardTitle.Text = if won then "TEST PASSED!" else "NICE TRY!"
 	cardTitle.TextColor3 = if won then C.Gold else C.Text
 	cardLines.Text = "Flexes copied: " .. cleared
+	local trophy = if type(p.trophy) == "string" then p.trophy else nil
+	local nextTrophy = if type(p.nextTrophy) == "string" then p.nextTrophy else nil
+	local nextAt = math.floor(num(p.nextTrophyAt, 0))
+	if trophy then
+		cardTrophy.Text = trophy .. "!"
+		cardTrophy.TextColor3 = trophyColor(trophy)
+	elseif nextTrophy and nextAt > 0 then
+		cardTrophy.Text = "Copy " .. nextAt .. " for " .. nextTrophy
+		cardTrophy.TextColor3 = C.TextDim
+	else
+		cardTrophy.Text = ""
+	end
 	cardBest.Text = if p.newBest then "NEW BEST: " .. best .. "!" else "Best " .. best
 	cardBest.TextColor3 = if p.newBest then C.Gold else C.TextDim
 	local cash = num(p.cash, 0)
@@ -873,7 +918,7 @@ local function showCard(p: any, won: boolean)
 		then "First clear! +" .. Format.money(cash)
 		elseif cash > 0 and p.pay == "repeat" then "Run again bonus +" .. Format.money(cash)
 		elseif cash > 0 then "Full pack! +" .. Format.money(cash)
-		elseif won then "Pass bonus resting. Great posing!"
+		elseif won then "Great posing! Pass cash refills soon"
 		else "Copy " .. passRound .. " flexes to pass!"
 	cardCash.TextColor3 = if cash > 0 then C.Good else C.TextDim
 	local bonus = num(p.bonus, 0)
@@ -894,6 +939,9 @@ local function showCard(p: any, won: boolean)
 		if won then
 			Kit.confetti(card, { Origin = UDim2.fromScale(0.5, 0.2), Count = 40, ZIndex = 41, Power = 1.1 })
 			Sounds.play("Celebrate")
+		end
+		if trophy then
+			Kit.pop(cardTrophy, 1.4)
 		end
 		if p.newBest then
 			-- NEW BEST flashes: three pops and a twinkle while the card is up.
@@ -955,9 +1003,9 @@ local function onBeat(dt: number)
 			refreshLobby()
 		elseif stage == "results" then
 			local since = os.clock() - resultsAt
-			local left = math.ceil(RESULTS_LOBBY - since)
+			local left = math.ceil(resultsTime - since)
 			cardTimer.Text = if left > 0 then "Back to the lobby in " .. left else ""
-			if since > RESULTS_FALLBACK then
+			if since > resultsTime + RESULTS_FALLBACK then
 				toLobby()
 			end
 		end
@@ -1134,13 +1182,18 @@ function PoseHud.onNotify(payload: { [string]: any })
 	elseif event == "bonus" then
 		local cash = num(p.cash, 0)
 		local round = math.floor(num(p.round, 0))
+		local trophy = if type(p.trophy) == "string" then p.trophy else nil
+		local head = if trophy then trophy .. "!" else "BONUS!"
 		showBanner(
-			"BONUS!",
-			if cash > 0 then round .. " flexes: +" .. Format.money(cash) else round .. " flexes! Bonus resting, keep going!",
-			C.Gold
+			head,
+			if cash > 0 then round .. " flexes: +" .. Format.money(cash) else round .. " flexes! You're on fire, keep going!",
+			if trophy then trophyColor(trophy) else C.Gold
 		)
+		Kit.confetti(banner, { Origin = UDim2.fromScale(0.5, 0.4), Count = 30, ZIndex = 31, Power = 1 })
 		if cash > 0 then
 			Sounds.play("Coin", 0.05, 1.4)
+		else
+			Sounds.play("Celebrate")
 		end
 	elseif event == "miss" then
 		local wasTurn = phase == "turn"
@@ -1165,6 +1218,7 @@ function PoseHud.onNotify(payload: { [string]: any })
 		stopShow()
 		setStage("results")
 		resultsAt = os.clock()
+		resultsTime = math.clamp(num(p.resultsTime, 8), 2, 30)
 		showCard(p, event == "win")
 	end
 end
@@ -1371,7 +1425,7 @@ local function scaledHolder(parent: Instance, name: string, size: Vector2, touch
 end
 
 local function buildCard(screenGui: ScreenGui)
-	local holder = scaledHolder(screenGui, "PoseCardHolder", Vector2.new(380, 320), 0.75)
+	local holder = scaledHolder(screenGui, "PoseCardHolder", Vector2.new(380, 350), 0.75)
 	-- Docked where the lobby card sits (right; top right on touch, clear of the jump
 	-- button): the avatar's finale in the middle of the screen stays in view.
 	local function place()
@@ -1393,11 +1447,21 @@ local function buildCard(screenGui: ScreenGui)
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 42,
 	})
+	-- The run's title (BRONZE / SILVER / GOLD POSER), or the first one to reach.
+	cardTrophy = Kit.text(card, {
+		Text = "",
+		Font = F.Display,
+		TextSize = 24,
+		Size = UDim2.new(1, -40, 0, 28),
+		Position = UDim2.new(0.5, 0, 0, 68),
+		AnchorPoint = Vector2.new(0.5, 0),
+		ZIndex = 42,
+	})
 	cardLines = Kit.text(card, {
 		Text = "",
 		TextSize = 20,
 		Size = UDim2.new(1, -40, 0, 26),
-		Position = UDim2.new(0.5, 0, 0, 72),
+		Position = UDim2.new(0.5, 0, 0, 100),
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 42,
 	})
@@ -1406,7 +1470,7 @@ local function buildCard(screenGui: ScreenGui)
 		Font = F.Display,
 		TextSize = 24,
 		Size = UDim2.new(1, -40, 0, 30),
-		Position = UDim2.new(0.5, 0, 0, 104),
+		Position = UDim2.new(0.5, 0, 0, 132),
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 42,
 	})
@@ -1418,7 +1482,7 @@ local function buildCard(screenGui: ScreenGui)
 		TextYAlignment = Enum.TextYAlignment.Top,
 		-- Two lines: the pay and a milestone bonus.
 		Size = UDim2.new(1, -40, 0, 52),
-		Position = UDim2.new(0.5, 0, 0, 142),
+		Position = UDim2.new(0.5, 0, 0, 170),
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 42,
 	})
@@ -1427,7 +1491,7 @@ local function buildCard(screenGui: ScreenGui)
 		TextSize = 14,
 		TextColor3 = C.TextDim,
 		Size = UDim2.new(1, -40, 0, 18),
-		Position = UDim2.new(0.5, 0, 0, 198),
+		Position = UDim2.new(0.5, 0, 0, 226),
 		AnchorPoint = Vector2.new(0.5, 0),
 		ZIndex = 42,
 	})

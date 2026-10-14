@@ -508,12 +508,34 @@ local function moveLength(keys: Keys): number
 end
 
 local lastStumbleAt = -math.huge
+-- os.clock when the local avatar's last flex has held its pose (its SETTLE not counted): a
+-- "clear" / "pass" cheer waits for it, so the round's last flex is seen whole.
+local flexFreeAt = -math.huge
+-- Bumps on every move the avatar starts or queues: a queued move that was overtaken skips.
+local selfToken = 0
 
 -- The local avatar plays `keys` on its podium (`release`: hand the body back once it ends).
 local function selfPlay(keys: Keys, release: boolean?)
+	selfToken += 1
 	if selfPoser then
 		selfPoser:play(keys, release)
 	end
+end
+
+-- `keys` once the avatar's flex in progress has held its pose (now if none is).
+local function selfPlayAfterFlex(keys: Keys)
+	local wait = flexFreeAt - os.clock()
+	if wait <= 0.03 then
+		selfPlay(keys)
+		return
+	end
+	selfToken += 1
+	local mine, run = selfToken, runId
+	task.delay(wait, function()
+		if selfToken == mine and runId == run and running then
+			selfPlay(keys)
+		end
+	end)
 end
 
 -- Feet position of a character (HumanoidRootPart centre minus hip height and half the root).
@@ -1019,7 +1041,9 @@ function Pose.playerFlex(index: number, ok: boolean)
 	attachSelf()
 	lightLamp(index, 0.45)
 	if ok then
-		selfPlay(flexMove(flex.pose))
+		local keys = flexMove(flex.pose)
+		selfPlay(keys)
+		flexFreeAt = os.clock() + moveLength(keys) - moveLength({ SETTLE })
 		flashGlow("player", flex.color)
 	else
 		lastStumbleAt = os.clock()
@@ -1044,13 +1068,15 @@ local function onClear(_p: any)
 	pushAt = os.clock()
 	setExpr("Happy")
 	rivalStrike("Point", true, 0.9)
-	selfPlay(clearMove())
+	-- The "clear" comes about a round trip after the last press: its flex finishes first.
+	selfPlayAfterFlex(clearMove())
 end
 
 local function onPass(_p: any)
 	setExpr("Shock")
 	rivalStrike("Shock", false, 1.6)
-	selfPlay(passMove())
+	-- Right behind "clear" (the pass round's last press): replaces its queued cheer.
+	selfPlayAfterFlex(passMove())
 	for index in Pose.FLEXES do
 		lightLamp(index, 1.4)
 	end
