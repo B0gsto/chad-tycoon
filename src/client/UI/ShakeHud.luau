@@ -14,17 +14,21 @@
 	             ("12 / 25" with a star, the quiet X that asks "QUIT?" before ModeQuit; gamepad
 	             Y presses it, a Y badge shows while a gamepad is in use), a
 	             chunky bar toward the target, three hearts and the clock with the wave
+	             (the score counts a catch Fx.Shake predicts at once, through Fx.Shake.onPredict,
+	             and settles on the server's "catch" score; an unconfirmed one drops back out)
 	             ("0:42 · WAVE 2/4"). Wave banners and "TARGET HIT!" in the centre; a red
 	             edge flash when a heart goes.
 	  results    the results card on "win" / "lose": title, catches and score, best (a
-	             flashing NEW BEST!), the pay (or why none), the three stars (ShakeRules.STARS:
+	             flashing NEW BEST!), the pay (or why none: a resting repeat bonus counts down
+	             to the server's repeatReadyAt), the three stars (ShakeRules.STARS:
 	             lit for each tier reached, with the star bonus or the next star's points),
 	             PLAY AGAIN ("ShakeBegin"; Enter,
 	             gamepad X) and LOBBY ("ShakeLobby", counting down to the server's returnAt).
 	             It goes on the "lobby" event (or the snapshot's phase back to lobby).
 
 	The arena's "BestBoard" SurfaceGui (under the arena Model, attribute Mode = "shake") gets
-	its TextLabels "Best", "Clears" and "Reward" (each optional) filled from the snapshot, and
+	its TextLabels "Best" (with the best star count), "Clears" and "Reward" (each optional)
+	filled from the snapshot, and
 	"RewardCaption" says what the reward value is (the pack ready, a star bonus ready, or the
 	wait for the pack).
 
@@ -48,6 +52,7 @@ local Format = require(ReplicatedStorage.Shared.Format) :: any
 local Net = require(ReplicatedStorage.Shared.Net)
 
 local Client = script.Parent.Parent
+local FxShake = require(Client.Fx.Shake) :: any
 local Kit = require(script.Parent.Kit) :: any
 local Popups = require(script.Parent.Popups) :: any
 local Sounds = require(Client.Sounds) :: any
@@ -72,7 +77,9 @@ local PILL_W = 250
 local BAR_W = 230
 -- The lobby card (same spot as the run column).
 local LOBBY_W = 300
-local LOBBY_H = 250
+local LOBBY_H = 268
+-- The lobby card's rows below the two-line goal.
+local LOBBY_GOAL_H = 38
 -- HUD chrome that steps aside while the player is in the mode (the gift corner, the crates).
 local CLUTTER = { "FreeCorner", "ChestPanel" }
 -- Enter / gamepad X: PLAY in the lobby, PLAY AGAIN on the results card (gamepad A is jump).
@@ -92,6 +99,9 @@ local BEGIN_GAP = 1.5
 -- FINISH_HOLD with no returnAt) if the server never says "lobby".
 local FINISH_GRACE = 3
 local FINISH_HOLD = 20
+-- A predicted catch the server neither confirms nor Fx.Shake corrects within this many
+-- seconds drops out of the provisional score.
+local PENDING_KEEP = 4
 -- The gamepad X button's colour (its glyph on PLAY and PLAY AGAIN).
 local PAD_X_COLOR = Color3.fromRGB(40, 122, 232)
 
@@ -129,18 +139,25 @@ local padGlyphs: { GuiObject } = {}
 -- Server time the server brings the player back to the lobby (the results card's countdown).
 local returnAt = 0
 local lobbyLeft = -1
+-- A resting repeat bonus on the results card: server time it pays again (0: none shown).
+local restingUntil = 0
+local restingLeft = -1
 -- "" (not in the mode), "lobby", "countdown", "play", "results".
 local phase = ""
 -- The run column is up (countdown and play).
 local running = false
 local quitArmed = false
+-- The score on the pill: the server's (serverScore) plus the catches Fx.Shake predicted that
+-- the server has not answered yet (pending: id -> { points, at = os.clock() }).
 local score = 0
+local serverScore = 0
+local pending: { [number]: { points: number, at: number } } = {}
+-- Drop ids the server already scored this run (a late prediction for one is not counted twice).
+local confirmed: { [number]: boolean } = {}
 local target = 25
 local runSeconds = 60
 local hearts = 3
 local maxHearts = 3
--- Hearts a run starts with (the lobby's goal line).
-local startHearts = 3
 local goAt = 0
 local endAt = 0
 local wave = 1
@@ -149,6 +166,7 @@ local targetShown = false
 local lastCount = -1
 -- Last known stats (start payload and snapshot): best, clears, rewardPreview, cooldownEnds.
 local best = 0
+local bestStars = 0
 local clears = 0
 local reward: { [string]: any } = {}
 local cooldownEnds = 0
@@ -173,6 +191,15 @@ local boardLookAt = -math.huge
 
 local function num(value: any, default: number): number
 	return if type(value) == "number" and value == value then value else default
+end
+
+-- "★★☆" for `n` of the STAR_COUNT stars ("" for none).
+local function starText(n: number): string
+	n = math.clamp(math.floor(n), 0, STAR_COUNT)
+	if n <= 0 then
+		return ""
+	end
+	return string.rep("★", n) .. string.rep("☆", STAR_COUNT - n)
 end
 
 -- Best board (the arena's "BestBoard" SurfaceGui) -------------------------------------------
@@ -253,7 +280,7 @@ local function paintBoard()
 	if not findBoard() then
 		return
 	end
-	setBoardLabel("Best", if best > 0 then tostring(best) else "--")
+	setBoardLabel("Best", if best > 0 then (if bestStars > 0 then best .. " " .. starText(bestStars) else tostring(best)) else "--")
 	setBoardLabel("Clears", tostring(clears))
 	local _, _, ready, wait = rewardStatus()
 	if ready then
@@ -274,6 +301,7 @@ end
 -- Stats from a start payload or the snapshot.
 local function absorb(p: { [string]: any })
 	best = num(p.best, best)
+	bestStars = num(p.bestStars, bestStars)
 	clears = num(p.clears, clears)
 	target = num(p.target, target)
 	cooldownEnds = num(p.cooldownEnds, cooldownEnds)
@@ -362,7 +390,27 @@ end
 
 -- Score, banner, countdown, clock -------------------------------------------------------------
 
+-- The pill's score: the server's plus the predicted catches it has not answered yet.
+local function provisional(): number
+	local total = serverScore
+	local clock = os.clock()
+	for id, entry in pending do
+		if clock - entry.at > PENDING_KEEP then
+			pending[id] = nil
+		else
+			total += entry.points
+		end
+	end
+	return total
+end
+
+local function clearPending()
+	table.clear(pending)
+	table.clear(confirmed)
+end
+
 local function paintScore(pop: boolean)
+	score = provisional()
 	scoreLabel.Text = string.format("%d / %d", score, target)
 	local passed = score >= target
 	local fill = math.clamp(score / math.max(target, 1), 0, 1)
@@ -438,6 +486,18 @@ local function render()
 		end
 		clockLabel.Text = string.format("%s · WAVE %d/%d", Format.clock(left), wave, waves)
 		clockLabel.TextColor3 = if left <= 10 and toGo <= 0 then C.Bad else Color3.new(1, 1, 1)
+	end
+	if running and next(pending) ~= nil and provisional() ~= score then
+		-- A predicted catch timed out: the pill settles back.
+		paintScore(false)
+	end
+	if finishCard.Visible and restingUntil > 0 then
+		local left = math.max(0, math.ceil(restingUntil - now))
+		if left ~= restingLeft then
+			restingLeft = left
+			finishReward.Text = if left > 0 then "Next bonus in " .. Format.clock(left) else "Bonus ready! Play again!"
+			finishReward.TextColor3 = if left > 0 then C.Text else C.MoneyText
+		end
 	end
 	if finishCard.Visible and returnAt > 0 then
 		local left = math.max(0, math.ceil(returnAt - now))
@@ -617,8 +677,11 @@ end
 -- Lobby card ---------------------------------------------------------------------------------
 
 local function paintLobby()
-	lobbyGoal.Text = string.format("Score %d points — gold = 3! %d hearts", target, startHearts)
-	lobbyStats.Text = string.format("BEST %d   ·   CLEARS %d", best, clears)
+	lobbyGoal.Text = string.format("Catch shakes, dodge junk (a heart each). Score %d — gold = 3!", target)
+	local stars = starText(bestStars)
+	lobbyStats.Text = if stars ~= ""
+		then string.format("BEST %d %s   ·   CLEARS %d", best, stars, clears)
+		else string.format("BEST %d   ·   CLEARS %d", best, clears)
 	local line, sub, ready = rewardStatus()
 	lastRewardText = line
 	lobbyReward.Text = line
@@ -660,6 +723,9 @@ end
 local function showFinish(p: { [string]: any }, won: boolean)
 	local s, t = num(p.score, score), num(p.target, target)
 	best = math.max(best, num(p.best, best))
+	bestStars = math.max(bestStars, num(p.bestStars, bestStars))
+	restingUntil = 0
+	restingLeft = -1
 	local newBest = p.newBest == true and s > 0
 	finishTitle.Text = if won then "SHAKE CHAMP!" elseif p.why == "hearts" then "OUT OF HEARTS!" else "SO CLOSE!"
 	finishTitle.TextColor3 = if won then C.Gold else W.Coral
@@ -677,7 +743,14 @@ local function showFinish(p: { [string]: any }, won: boolean)
 		finishReward.Text = (if p.pay == "repeat" then "Repeat bonus +" else "+") .. Format.money(cash)
 		finishReward.TextColor3 = C.MoneyText
 	elseif p.pay == "resting" then
-		finishReward.Text = "Bonus is resting. Play again soon!"
+		-- The repeat bonus rests: render counts down to when it pays again.
+		local readyAt = num(p.repeatReadyAt, 0)
+		if readyAt > Workspace:GetServerTimeNow() then
+			restingUntil = readyAt
+			finishReward.Text = "Next bonus in " .. Format.clock(math.ceil(readyAt - Workspace:GetServerTimeNow()))
+		else
+			finishReward.Text = "Bonus ready! Play again!"
+		end
 		finishReward.TextColor3 = C.Text
 	else
 		local wait = math.max(0, num(p.cooldownEnds, cooldownEnds) - os.time())
@@ -762,6 +835,7 @@ end
 -- Takes the run column down (banners, count, flash).
 local function endRun()
 	running = false
+	clearPending()
 	bindQuit(false)
 	bannerEpoch += 1
 	bannerShown = 0
@@ -798,7 +872,9 @@ local function beginRun(p: { [string]: any })
 	bind(false)
 	phase = if p.phase == "play" then "play" else "countdown"
 	running = true
-	score = num(p.score, 0)
+	clearPending()
+	serverScore = num(p.score, 0)
+	score = serverScore
 	-- (A snapshot's hearts are the ones left, so they only ever raise the maximum.)
 	maxHearts = num(p.maxHearts, math.max(maxHearts, num(p.hearts, 0)))
 	hearts = maxHearts
@@ -848,9 +924,6 @@ function ShakeHud.start(payload: { [string]: any }?)
 	local p: { [string]: any } = payload or {}
 	if type(p.seconds) == "number" then
 		runSeconds = p.seconds
-	end
-	if type(p.hearts) == "number" and p.hearts > 0 then
-		startHearts = p.hearts
 	end
 	if p.phase == "lobby" or type(p.goAt) ~= "number" then
 		enterLobby(p)
@@ -936,9 +1009,16 @@ function ShakeHud.onNotify(payload: { [string]: any })
 			end)
 		end
 	elseif event == "catch" then
-		score = num(payload.score, score)
-		paintScore(true)
-		if score >= target and not targetShown then
+		local id = payload.id
+		local predicted = type(id) == "number" and pending[id] ~= nil
+		if type(id) == "number" then
+			pending[id] = nil
+			confirmed[id] = true
+		end
+		serverScore = num(payload.score, serverScore)
+		-- A predicted catch already popped the pill.
+		paintScore(not predicted)
+		if serverScore >= target and not targetShown then
 			targetShown = true
 			showBanner("TARGET HIT!", "Keep catching for a best!", C.Gold, 1.6)
 			Sounds.play("Upgrade")
@@ -990,9 +1070,9 @@ function ShakeHud.onState(data: any)
 			beginRun(info)
 		elseif running then
 			-- Safety net for a lost "catch" / "splat": the server's numbers win.
-			local s = num(info.score, score)
-			if s > score then
-				score = s
+			local s = num(info.score, serverScore)
+			if s > serverScore then
+				serverScore = s
 				paintScore(false)
 			end
 			local h = num(info.hearts, hearts)
@@ -1065,7 +1145,9 @@ local function buildLobby(screenGui: ScreenGui)
 		MaxTextSize = 16,
 		TextColor3 = C.Text,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		Size = UDim2.new(1, -28, 0, 20),
+		TextYAlignment = Enum.TextYAlignment.Top,
+		-- Two lines: the whole goal wraps at full size instead of shrinking to fit one.
+		Size = UDim2.new(1, -28, 0, LOBBY_GOAL_H),
 		Position = UDim2.fromOffset(14, 50),
 		ZIndex = 21,
 	})
@@ -1076,13 +1158,13 @@ local function buildLobby(screenGui: ScreenGui)
 		TextColor3 = C.Gold,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Size = UDim2.new(1, -28, 0, 22),
-		Position = UDim2.fromOffset(14, 74),
+		Position = UDim2.fromOffset(14, 56 + LOBBY_GOAL_H),
 		ZIndex = 21,
 	})
 	local well = Kit.well(lobbyCard, {
 		Name = "RewardWell",
 		Size = UDim2.new(1, -24, 0, 50),
-		Position = UDim2.fromOffset(12, 102),
+		Position = UDim2.fromOffset(12, 84 + LOBBY_GOAL_H),
 		ZIndex = 21,
 	})
 	lobbyReward = Kit.text(well, {
@@ -1112,7 +1194,7 @@ local function buildLobby(screenGui: ScreenGui)
 		Font = F.Display,
 		TextSize = 28,
 		Size = UDim2.new(1, -136, 0, 58),
-		Position = UDim2.fromOffset(12, 162),
+		Position = UDim2.fromOffset(12, 144 + LOBBY_GOAL_H),
 		ZIndex = 22,
 		Breathe = true,
 	}, sendBegin)
@@ -1125,7 +1207,7 @@ local function buildLobby(screenGui: ScreenGui)
 		Font = F.Display,
 		TextSize = 18,
 		Size = UDim2.fromOffset(104, 58),
-		Position = UDim2.new(1, -12, 0, 162),
+		Position = UDim2.new(1, -12, 0, 144 + LOBBY_GOAL_H),
 		AnchorPoint = Vector2.new(1, 0),
 		ZIndex = 22,
 	}, function()
@@ -1476,6 +1558,24 @@ function ShakeHud.init(screenGui: ScreenGui)
 
 	buildLobby(screenGui)
 	buildFinish(screenGui)
+
+	-- Fx.Shake's predicted catches count on the pill at once; the server's word settles them.
+	FxShake.onPredict(function(event: string, id: number, points: number)
+		if not running then
+			return
+		end
+		if event == "catch" then
+			if confirmed[id] or pending[id] then
+				return
+			end
+			pending[id] = { points = points, at = os.clock() }
+			-- (TARGET HIT! still waits for the server's score.)
+			paintScore(true)
+		elseif event == "missed" and pending[id] then
+			pending[id] = nil
+			paintScore(false)
+		end
+	end)
 end
 
 return ShakeHud

@@ -70,13 +70,15 @@ ShakeRules.PAD_HEIGHT = 4
 -- Speed check for root samples: a sample is trusted when it lies within
 -- MAX_WALK * SPEED_SLACK * dt + SPEED_PAD studs (flat) of the trust anchor, which moves to a
 -- trusted sample at most every ANCHOR_EVERY seconds (trust). MAX_WALK is a server constant (the
--- base WalkSpeed with Speedy Sneakers), never the live Humanoid.WalkSpeed. An implausible
+-- base WalkSpeed with Speedy Sneakers), never the live Humanoid.WalkSpeed; Modes.Shake holds the
+-- character at legitWalk (BASE_WALK, x the Sneakers' multiplier, never above MAX_WALK) for the
+-- whole visit so honest play never outruns the check (a 30 stud/s hack does). An implausible
 -- sample is dropped (it catches nothing) and the anchor stays put: as `dt` grows the allowed
 -- circle grows with it, so a fling or a lag spike is trusted again once the new spot could
 -- have been walked to from the last trusted one, and a teleport never re-anchors at once.
 ShakeRules.BASE_WALK = 16
 ShakeRules.MAX_WALK = 21
-ShakeRules.SPEED_SLACK = 1.5
+ShakeRules.SPEED_SLACK = 1.15
 ShakeRules.SPEED_PAD = 2
 ShakeRules.ANCHOR_EVERY = 0.5
 
@@ -140,12 +142,23 @@ export type Drop = {
 }
 export type Sample = { t: number, x: number, z: number }
 
--- A tiny deterministic generator (the same LCG as tests/run.luau's `seeded`): values in [0, 1).
+-- A tiny deterministic generator: the classic LCG state * 1103515245 + 12345 mod 2^31, values
+-- in [0, 1). The multiply is split in two (the multiplier's high and low 16 bits) so every
+-- product stays below 2^53 and no low bits are lost to float rounding: the result is exact,
+-- the same on the server and in Lune.
+local LCG_MUL_HI = 16838 -- math.floor(1103515245 / 65536)
+local LCG_MUL_LO = 20077 -- 1103515245 % 65536
+local LCG_MOD = 2147483648
+function ShakeRules.lcgNext(state: number): number
+	local hi = (state * LCG_MUL_HI) % LCG_MOD
+	return (hi * 65536 + state * LCG_MUL_LO + 12345) % LCG_MOD
+end
+
 function ShakeRules.rng(seed: number): () -> number
-	local state = math.floor(math.abs(seed)) % 2147483648
+	local state = if seed == seed and math.abs(seed) ~= math.huge then math.floor(math.abs(seed)) % LCG_MOD else 0
 	return function()
-		state = (state * 1103515245 + 12345) % 2147483648
-		return state / 2147483648
+		state = ShakeRules.lcgNext(state)
+		return state / LCG_MOD
 	end
 end
 
@@ -379,6 +392,13 @@ function ShakeRules.plausible(dist: number, dt: number): boolean
 		return false
 	end
 	return dist <= ShakeRules.MAX_WALK * ShakeRules.SPEED_SLACK * math.max(dt, 0) + ShakeRules.SPEED_PAD
+end
+
+-- The WalkSpeed Modes.Shake holds a visitor at: BASE_WALK times the Speedy Sneakers
+-- multiplier (Humanoid attribute "SpeedMultiplier"; anything else counts as 1), capped at MAX_WALK.
+function ShakeRules.legitWalk(multiplier: any): number
+	local mult = if type(multiplier) == "number" and multiplier == multiplier and multiplier >= 1 then multiplier else 1
+	return math.min(ShakeRules.BASE_WALK * mult, ShakeRules.MAX_WALK)
 end
 
 export type Anchor = { at: number, x: number, z: number }

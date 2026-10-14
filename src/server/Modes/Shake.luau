@@ -5,7 +5,7 @@
 
 	PROTOCOL (Notify kind = "Mode", mode = "shake"; every time is a
 	workspace:GetServerTimeNow() second):
-	  "start"     { phase = "lobby", best, clears, rewardPreview, target, hearts, seconds, waves }
+	  "start"     { phase = "lobby", best, bestStars, clears, rewardPreview, target, hearts, seconds, waves }
 	              entering the mode (gate walk-in or "ModeStart"): the player is in the lobby
 	  "countdown" { phase = "countdown", seconds, goAt, endAt, target, hearts, waves }
 	              after "ShakeBegin" / the START pad: the player is on the court; waves start at goAt
@@ -16,21 +16,23 @@
 	  "splat"     { id, kind, hearts, x, z }           junk food caught: a heart lost
 	  "win"       { phase = "results", returnAt, score, target, best, prevBest, newBest, caught,
 	              hearts, first, cash, full, packCash, repeatCash, repeatShare, pay, cooldownEnds,
-	              stars, starCash, starTiers, starNext }
+	              stars, bestStars, starCash, starTiers, starNext, repeatReadyAt }
 	              (pay: "full" | "repeat" | "resting": the repeat share waits for REPEAT_GAP;
+	              repeatReadyAt: with "resting", the server time the repeat share pays again;
 	              stars: 1-3 (ShakeRules.STARS); starCash: the part of `cash` that is the star
 	              bonus for starTiers, the tiers newly paid; starNext: points for the next star)
 	  "lose"      { phase = "results", returnAt, score, target, best, prevBest, newBest, caught,
-	              hearts, why = "hearts" | "time", stars = 0 }
-	  "lobby"     { phase = "lobby", best, clears, rewardPreview }
+	              hearts, why = "hearts" | "time", stars = 0, bestStars }
+	  "lobby"     { phase = "lobby", best, bestStars, clears, rewardPreview }
 	              back in the lobby (RESULTS_SECONDS after a finish, "ShakeLobby", or a fall on
 	              the results card)
-	  "stop"      { reason }   the visit is over ("quit" | "left" | "respawn" | "switch" | ...)
+	  "stop"      { reason }   the visit is over ("quit" | "left" | "respawn" | "switch" | ...; a run
+	              that ends while the save is gone ends the visit with "nosave", never a card)
 	Actions (Tycoon.addAction):
 	  "ShakeBegin" {}   start a run; accepted in phase "lobby" and "results" only
 	  "ShakeLobby" {}   the results card's LOBBY button: back to the lobby now ("results" only)
 	  ("ModeStart" { mode = "shake" } and "ModeQuit" are GameModes' own)
-	Snapshot modes.shake: { running, phase, best, clears, cooldownEnds, rewardPreview, target,
+	Snapshot modes.shake: { running, phase, best, bestStars, clears, cooldownEnds, rewardPreview, target,
 	score, hearts, goAt, endAt } (score / hearts / goAt / endAt only with a run, kept on the
 	results card). running is true for the whole visit, lobby included.
 
@@ -49,7 +51,10 @@
 	ShakeRules.REPEAT_GAP), plus the star bonus for each star tier reached that has not paid in
 	ShakeRules.STAR_COOLDOWN (ShakeRules.starBonus, a share of the repeat cash; rewardPreview
 	lists the tiers as stars = { { at, cash, ready } }). The results card stays RESULTS_SECONDS, then the player is back in
-	the lobby. The EXIT arch (lobby and results card) or "ModeQuit" ends the visit and brings the player
+	the lobby. The best star count (1-3) is kept in the save as modes.shake.stars (bestStars).
+	For the whole visit the character walks at ShakeRules.legitWalk (the base WalkSpeed, or the
+	Speedy Sneakers one), never faster, so honest play always passes the speed check; the
+	normal WalkSpeed comes back when the visit ends. The EXIT arch (lobby and results card) or "ModeQuit" ends the visit and brings the player
 	back to the gates; a fall puts them on the lobby spawn (lobby, results) or the court spawn
 	(countdown, play).
 ]]
@@ -125,6 +130,40 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		return session.profile.modes[ID]
 	end
 
+	-- The best star count saved (0 to #STARS; rec.stars).
+	local function bestStars(rec: { [string]: any }): number
+		local n = rec.stars
+		return if type(n) == "number" and n == n then math.clamp(math.floor(n), 0, #ShakeRules.STARS) else 0
+	end
+
+	local function humanoidOf(player: Player): Humanoid?
+		local character = player.Character
+		return character and character:FindFirstChildOfClass("Humanoid")
+	end
+
+	-- Holds the visitor at ShakeRules.legitWalk (the speed check's honest top speed): set on
+	-- start and begin, and pulled back each tick if anything raised it (a cosmetics refresh).
+	local function holdWalk(player: Player)
+		local humanoid = humanoidOf(player)
+		if humanoid then
+			local walk = ShakeRules.legitWalk(humanoid:GetAttribute("SpeedMultiplier"))
+			if humanoid.WalkSpeed > walk + 1e-3 or humanoid.WalkSpeed < walk - 1e-3 then
+				humanoid.WalkSpeed = walk
+			end
+		end
+	end
+
+	-- The normal WalkSpeed back (what Cosmetics sets: BaseWalkSpeed x SpeedMultiplier).
+	local function releaseWalk(player: Player)
+		local humanoid = humanoidOf(player)
+		if humanoid then
+			local base = humanoid:GetAttribute("BaseWalkSpeed")
+			local mult = humanoid:GetAttribute("SpeedMultiplier")
+			humanoid.WalkSpeed = (if type(base) == "number" and base == base then base else ShakeRules.BASE_WALK)
+				* (if type(mult) == "number" and mult == mult then mult else 1)
+		end
+	end
+
 	local function starPaidAt(rec: { [string]: any }): { [number]: number? }
 		local paidAt = {}
 		for i = 1, #ShakeRules.STARS do
@@ -181,6 +220,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		return {
 			phase = "lobby",
 			best = rec.best,
+			bestStars = bestStars(rec),
 			clears = rec.clears,
 			rewardPreview = def.rewardPreview(player),
 		}
@@ -254,6 +294,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		visit.phase = "countdown"
 		visit.run = run
 		visit.padOff = nil
+		holdWalk(player)
 		toCourt(player)
 		GameModes.notify(player, "countdown", ID, {
 			phase = "countdown",
@@ -286,6 +327,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		visit.padOff = nil
 		visit.awaySince = nil
 		visits[player] = visit
+		holdWalk(player)
 		if teleport then
 			toLobbySpawn(player)
 		end
@@ -305,18 +347,24 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		end
 		visits[player] = nil
 		if reason ~= "leave" then
+			releaseWalk(player)
 			GameModes.notify(player, "stop", ID, { reason = reason })
 			GameModes.refresh(player)
 		end
 	end
 
 	-- The run is over: best and clears, the pay (and the star bonus) on a pass, the finish
-	-- Notify, the results card. Without a session (a save still loading or gone) the card still
-	-- comes up, with nothing recorded or paid.
+	-- Notify, the results card. Without a session (the save is gone: nothing can be recorded,
+	-- paid or even sent) the visit simply ends ("nosave") and the player goes back to the gates.
 	local function finish(player: Player, visit: Visit, run: Run, result: string, root: BasePart, now: number)
+		local session = GameModes.session(player)
+		if not session then
+			def.stop(player, "nosave")
+			GameModes.toGates(player)
+			return
+		end
 		visit.phase = "results"
 		visit.returnAt = now + ShakeRules.RESULTS_SECONDS
-		local session = GameModes.session(player)
 		local payload: { [string]: any } = {
 			phase = "results",
 			returnAt = visit.returnAt,
@@ -333,11 +381,6 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		if result ~= "win" then
 			payload.why = if run.hearts <= 0 then "hearts" else "time"
 		end
-		if not session then
-			GameModes.notify(player, result, ID, payload)
-			GameModes.refresh(player)
-			return
-		end
 		local rec = record(session)
 		local prevBest = rec.best
 		local newBest = run.score > prevBest
@@ -347,6 +390,10 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		payload.best = rec.best
 		payload.prevBest = prevBest
 		payload.newBest = newBest
+		if result == "win" and payload.stars > bestStars(rec) then
+			rec.stars = payload.stars
+		end
+		payload.bestStars = bestStars(rec)
 		if result == "win" then
 			local first = rec.clears == 0
 			rec.clears += 1
@@ -359,6 +406,9 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 				r.cash = if pay == "repeat" then r.repeatCash else 0
 				if r.cash > 0 then
 					rec.lastRepeatAt = clock
+				elseif pay == "resting" then
+					-- When the repeat share pays again, on the server clock the client counts with.
+					payload.repeatReadyAt = now + math.max(0, rec.lastRepeatAt + ShakeRules.REPEAT_GAP - clock)
 				end
 			end
 			-- New star tiers add their bonus to the same pay.
@@ -462,6 +512,9 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 		end
 		local feetY = pos.Y - FEET_BELOW_ROOT
 		local visit = visits[player]
+		if visit then
+			holdWalk(player)
+		end
 		local exit = built.exit.Position
 		local onExit = Vector3.new(pos.X - exit.X, 0, pos.Z - exit.Z).Magnitude <= built.exitRadius and math.abs(feetY - built.top) < 4
 		if not visit then
@@ -571,6 +624,7 @@ function Shake.create(GameModes: any, context: { [string]: any }): any
 			running = visit ~= nil,
 			phase = if visit then visit.phase else nil,
 			best = rec.best,
+			bestStars = bestStars(rec),
 			clears = rec.clears,
 			cooldownEnds = rec.lastRewardAt + Economy.MODE_REWARD_COOLDOWN,
 			rewardPreview = def.rewardPreview(player),
