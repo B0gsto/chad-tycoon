@@ -1,0 +1,88 @@
+# Test environment for Chad Aura Tycoon (docs/testing-on-roblox.md).
+# Puts a branch on the private TEST experience (deploy/test-target.json), never on the public game:
+#   - every push to the branch `test`
+#   - Actions > Test environment > Run workflow, or: gh workflow run test-env.yml --ref <branch>
+# Full checks + release build, publish a Published version to the test place, restart its servers so they load it,
+# then run tests/cloud/*.luau against that version. Skips with a notice while the test experience's ids are null.
+name: Test environment
+
+on:
+  push:
+    branches: [test]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One test-server deploy at a time; a newer one waits instead of cancelling the running publish.
+concurrency:
+  group: test-env
+  cancel-in-progress: false
+
+jobs:
+  test-env:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HAS_KEY: ${{ secrets.ROBLOX_API_KEY != '' }}
+    steps:
+      - name: Require the ROBLOX_API_KEY secret
+        run: |
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::error title=Missing secret::Repository secret ROBLOX_API_KEY is not set. Add it with: gh secret set ROBLOX_API_KEY --repo ${{ github.repository }} < ~/RobloxProjects/.roblox-api-key"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Is the test experience configured?
+        id: gate
+        run: |
+          if python3 -c 'import json, sys; t = json.load(open("deploy/test-target.json")); sys.exit(0 if t.get("universeId") and t.get("placeId") else 1)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Test environment skipped::Test experience not configured yet: universeId/placeId in deploy/test-target.json are null."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install toolchain
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        run: tools/ci-install-tools.sh
+
+      - name: Check, test and release build
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        run: scripts/build-release.sh
+
+      - name: Publish to the test experience and restart its servers
+        id: publish
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        env:
+          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+        run: |
+          set -euo pipefail
+          python3 tools/deploy.py publish --target test | tee "$RUNNER_TEMP/publish.log"
+          version="$(grep -E '^VERSION=[0-9]+$' "$RUNNER_TEMP/publish.log" | tail -1 | cut -d= -f2)"
+          if [ -z "$version" ]; then echo "::error::publish printed no VERSION= line"; exit 1; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Max Players 6 like live; non-fatal: needs the universe.place:write scope, which the key may lack.
+          python3 tools/deploy.py server-size --target test 6 || echo "::warning::server-size failed (see above); continuing"
+          python3 tools/deploy.py restart-servers --target test
+
+      - name: Run tests/cloud on a Roblox server
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        env:
+          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+          VERSION: ${{ steps.publish.outputs.version }}
+        run: python3 tools/cloud_test.py --target test --version "$VERSION"
+
+      - name: Upload release file and test deploy history
+        continue-on-error: true
+        if: ${{ always() && steps.gate.outputs.run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-env-${{ github.sha }}
+          path: |
+            build/ChadAuraTycoon.rbxl
+            deploy/test-history.json
+          retention-days: 14
+          if-no-files-found: warn

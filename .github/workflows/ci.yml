@@ -2,6 +2,10 @@
 # Every pull request and every push to a branch other than main: format, lint, type-check, unit tests and the place
 # build (scripts/check.sh). Pushes to main run the same checks inside deploy.yml before publishing. A green run
 # for a pull request lets automerge.yml merge that PR into main.
+# Job `roblox` (docs/testing-on-roblox.md) then publishes the release build as a Saved (not live) version of the
+# private TEST experience (deploy/test-target.json) and runs tests/cloud/*.luau on a real Roblox server of that
+# version. It skips with a notice when the ROBLOX_API_KEY secret is unavailable (fork pull requests) or the test
+# experience's ids are still null.
 name: CI
 
 on:
@@ -38,3 +42,56 @@ jobs:
           path: build/ChadAuraTycoon.rbxlx
           retention-days: 14
           if-no-files-found: error
+
+  roblox:
+    name: Roblox cloud tests
+    needs: check
+    # Pushes (never main: see `on`) and pull requests from this repository; fork PRs get no secrets.
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # 'true' or 'false' only: decides whether to run without handing the key to any step but publish and test.
+      HAS_KEY: ${{ secrets.ROBLOX_API_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decide whether to run
+        id: gate
+        run: |
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::notice title=Cloud tests skipped::ROBLOX_API_KEY is not available to this run (fork pull request or unset secret)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if ! python3 -c 'import json, sys; t = json.load(open("deploy/test-target.json")); sys.exit(0 if t.get("universeId") and t.get("placeId") else 1)'; then
+            echo "::notice title=Cloud tests skipped::Test experience not configured yet: universeId/placeId in deploy/test-target.json are null."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install toolchain
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        run: tools/ci-install-tools.sh
+
+      - name: Release build
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        run: scripts/build-release.sh
+
+      - name: Publish a Saved version to the test experience
+        id: publish
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        env:
+          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+        run: |
+          set -euo pipefail
+          python3 tools/deploy.py publish --target test --saved | tee "$RUNNER_TEMP/publish.log"
+          version="$(grep -E '^VERSION=[0-9]+$' "$RUNNER_TEMP/publish.log" | tail -1 | cut -d= -f2)"
+          if [ -z "$version" ]; then echo "::error::publish printed no VERSION= line"; exit 1; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests/cloud on a Roblox server
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        env:
+          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+          VERSION: ${{ steps.publish.outputs.version }}
+        run: python3 tools/cloud_test.py --target test --version "$VERSION"
