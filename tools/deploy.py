@@ -2,9 +2,15 @@
 """Publish Chad Aura Tycoon to its Roblox place through Open Cloud.
 
 usage:
-  tools/deploy.py check   [--file PATH] [--offline]
-  tools/deploy.py publish [--file PATH] [--saved] [--force]
-  tools/deploy.py server-size [N]
+  tools/deploy.py check   [--target live|test] [--file PATH] [--offline]
+  tools/deploy.py publish [--target live|test] [--file PATH] [--saved] [--force]
+  tools/deploy.py server-size [--target live|test] [N]
+  tools/deploy.py restart-servers [--target live|test] [--all-versions] [--yes]
+
+--target  live (default; deploy/target.json, the PUBLIC game) or test (deploy/test-target.json, the private test
+          experience; publishes are logged in the git-ignored deploy/test-history.json). The environment variable
+          DEPLOY_TARGET sets the default. While the test experience's universeId/placeId are null every --target test
+          command prints "test experience not configured yet" and exits 0.
 
 check    read-only pre-flight: the API key ($ROBLOX_API_KEY, else the key file: exists, not empty, mode 600/400,
          git-ignored when inside the repo),
@@ -19,10 +25,15 @@ publish  uploads the place file as a new version of deploy/target.json's place:
          Content-Type is application/octet-stream for .rbxl and application/xml for .rbxlx. The new version number,
          a UTC timestamp, the file's sha256 and size are appended to deploy/history.json.
          Refuses a file older than 30 minutes (stale build) or one the API would reject, unless --force.
+         The last line printed is VERSION=<n> (machine-readable, for CI).
 server-size  prints the place's Max Players (Open Cloud Place resource field serverSize):
            GET   /cloud/v2/universes/{universeId}/places/{placeId}                        (no extra scope)
          with N, sets it when it differs and reads it back (idempotent; same value = no request):
            PATCH /cloud/v2/universes/{universeId}/places/{placeId}?updateMask=serverSize  (scope universe.place:write)
+restart-servers  restarts the universe's running servers so they pick up the latest Published version:
+           POST  /cloud/v2/universes/{universeId}:restartServers   (scope universe:write)
+         By default only servers on an older version restart; --all-versions sets closeAllVersions.
+         --target live (players get moved) is refused without --yes.
 
 Default file: build/ChadAuraTycoon.rbxl (scripts/build-release.sh), falling back to build/ChadAuraTycoon.rbxlx for
 `check` only. The API key comes from the ROBLOX_API_KEY environment variable when set (CI: the repository secret),
@@ -36,6 +47,12 @@ import assets  # noqa: E402  (shared key path, HTTP with 429 retries, target.jso
 ROOT = assets.ROOT
 TARGET = os.path.join(ROOT, "deploy", "target.json")
 HISTORY = os.path.join(ROOT, "deploy", "history.json")
+# --target: (target file, publish log). main() points TARGET/HISTORY at the chosen pair.
+TARGETS = {
+    "live": (TARGET, HISTORY),
+    "test": (os.path.join(ROOT, "deploy", "test-target.json"), os.path.join(ROOT, "deploy", "test-history.json")),
+}
+TARGET_NAME = "live"
 RELEASE = os.path.join(ROOT, "build", "ChadAuraTycoon.rbxl")
 XML_BUILD = os.path.join(ROOT, "build", "ChadAuraTycoon.rbxlx")
 MODELS = os.path.join(ROOT, "assets", "models")
@@ -88,9 +105,19 @@ class Report:
         print(f"  {level:<4} {what}" + (f": {detail}" if detail else ""), flush=True)
 
 
+class NotConfigured(Exception):
+    """The test experience exists in deploy/test-target.json but its universeId/placeId are still null."""
+
+
+NOT_CONFIGURED = ("test experience not configured yet: universeId/placeId in deploy/test-target.json are null "
+                  "(create the private test experience, fill them in; docs/testing-on-roblox.md)")
+
+
 def load_target():
     with open(TARGET) as f:
         t = json.load(f)
+    if TARGET_NAME != "live" and (t.get("universeId") is None or t.get("placeId") is None):
+        raise NotConfigured(NOT_CONFIGURED)
     u, p = int(t["universeId"]), int(t["placeId"])
     if u <= 0 or p <= 0:
         raise ValueError("universeId/placeId must be positive")
@@ -249,7 +276,7 @@ def check_online(rep, u, p):
             rep.line("WARN", "maturity rating", "ageRating unspecified: fill in the Maturity & Compliance questionnaire "
                      "(declare paid random items)")
     elif status == 404:
-        rep.line("FAIL", "universe", f"{u} does not exist (HTTP 404): fix deploy/target.json")
+        rep.line("FAIL", "universe", f"{u} does not exist (HTTP 404): fix {shown(TARGET)}")
     elif status in (401, 403):
         rep.line("WARN", "key can read the universe", f"HTTP {status}: {str(body)[:200]}")
     else:
@@ -268,7 +295,7 @@ def check_online(rep, u, p):
         else:
             rep.line("OK", "Max Players", f"serverSize {size} (game has {PLOTS} plots)")
     elif status == 404:
-        rep.line("FAIL", "place", f"{p} is not in universe {u} (HTTP 404): fix deploy/target.json")
+        rep.line("FAIL", "place", f"{p} is not in universe {u} (HTTP 404): fix {shown(TARGET)}")
     elif status in (401, 403):
         rep.line("WARN", "key can read the place", f"HTTP {status}: {str(body)[:200]} (read scope missing or the "
                  "experience is not added to the key; says nothing about write)")
@@ -280,14 +307,17 @@ def check_online(rep, u, p):
 
 def cmd_check(a):
     rep = Report()
-    print("deploy check (read-only, nothing on Roblox is changed)")
+    print("deploy check (read-only, nothing on Roblox is changed)" + ("" if TARGET_NAME == "live" else f" [target {TARGET_NAME}]"))
     key_ok = check_key(rep)
     try:
         t, u, p = load_target()
-        rep.line("OK", "deploy/target.json", f"'{t.get('name')}' universe {u}, place {p}, creator "
+        rep.line("OK", shown(TARGET), f"'{t.get('name')}' universe {u}, place {p}, creator "
                  f"{(t.get('creator') or {}).get('type')} {(t.get('creator') or {}).get('id')}")
+    except NotConfigured as e:
+        rep.line("INFO", shown(TARGET), str(e))
+        u = p = None
     except (OSError, ValueError, KeyError, TypeError) as e:
-        rep.line("FAIL", "deploy/target.json", str(e))
+        rep.line("FAIL", shown(TARGET), str(e))
         u = p = None
     check_file(rep, a.file or default_file(True), require_fresh=False)
     if a.offline:
@@ -324,6 +354,8 @@ def record(entry):
 def cmd_publish(a):
     path = os.path.abspath(a.file or default_file(False))
     vtype = "Saved" if a.saved else "Published"
+    if not configured():
+        return 0
     if not os.path.isfile(path):
         raise SystemExit(f"{path} does not exist; run scripts/build-release.sh")
     ctype = content_type(path)
@@ -346,7 +378,8 @@ def cmd_publish(a):
     with open(path, "rb") as f:
         data = f.read()
     print(f"publishing {shown(path)} ({size / 1e6:.2f} MB, sha256 {digest[:12]}) "
-          f"to universe {u} place {p} as versionType={vtype}", flush=True)
+          f"to universe {u} place {p} as versionType={vtype}" + ("" if TARGET_NAME == "live" else f" [target {TARGET_NAME}]"),
+          flush=True)
     url = f"/universes/v1/{u}/places/{p}/versions?versionType={vtype}"
     try:
         status, raw = assets._http("POST", url, data, ctype, timeout=600)
@@ -375,11 +408,13 @@ def cmd_publish(a):
         "forced": bool(a.force),
     })
     print(f"{vtype} place version {version}" + (" (live for new servers)" if vtype == "Published" else " (not live)"))
-    print("recorded in deploy/history.json")
+    print(f"recorded in {shown(HISTORY)}")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as f:
-            f.write(f"### {vtype} version {version} of place {p} from `{git_head()}`\n")
+            f.write(f"### {vtype} version {version} of place {p} from `{git_head()}`"
+                    + ("" if TARGET_NAME == "live" else f" ({TARGET_NAME} experience)") + "\n")
+    print(f"VERSION={version}", flush=True)
     return 0
 
 
@@ -400,6 +435,8 @@ def read_server_size(u, p):
 def cmd_server_size(a):
     if not assets.key_source():
         raise SystemExit(f"no Roblox API key: set ${assets.KEY_ENV} or create {assets.KEY_PATH}")
+    if not configured():
+        return 0
     _, u, p = load_target()
     current = read_server_size(u, p)
     print(f"place {p} (universe {u}): serverSize (Max Players) = {current}")
@@ -424,7 +461,51 @@ def cmd_server_size(a):
     return 0
 
 
+# -------------------------------------------------------------------------------------------------- restart-servers
+def cmd_restart_servers(a):
+    if not configured():
+        return 0
+    if TARGET_NAME == "live" and not a.yes:
+        raise SystemExit("refusing to restart the LIVE game's servers (players get moved): pass --yes if you mean it")
+    if not assets.key_source():
+        raise SystemExit(f"no Roblox API key: set ${assets.KEY_ENV} or create {assets.KEY_PATH}")
+    _, u, _ = load_target()
+    req = {"closeAllVersions": True} if a.all_versions else {}
+    print(f"restarting servers of universe {u} [target {TARGET_NAME}]"
+          + (" (all versions)" if a.all_versions else " (servers on an older version)"), flush=True)
+    status, raw = assets._http("POST", f"/cloud/v2/universes/{u}:restartServers", json.dumps(req).encode(),
+                               "application/json", timeout=60)
+    if status != 200:
+        text = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
+        hint = " (the key needs the universe:write scope for this experience)" if status in (401, 403) else ""
+        raise SystemExit(f"restart-servers failed: HTTP {status}: {text[:1000]}{hint}")
+    print("restart requested (HTTP 200)")
+    return 0
+
+
+def configured():
+    """False (after printing the notice) when the chosen target's IDs are still null."""
+    try:
+        load_target()
+    except NotConfigured as e:
+        print(f"NOTICE: {e}; nothing to do")
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::notice title=Test experience not configured::{e}")
+        return False
+    return True
+
+
+def add_target(parser):
+    default = os.environ.get("DEPLOY_TARGET") or "live"
+    if default not in TARGETS:
+        raise SystemExit(f"DEPLOY_TARGET={default!r}: expected one of {', '.join(TARGETS)}")
+    parser.add_argument("--target", choices=sorted(TARGETS), default=default,
+                        help="live = deploy/target.json (PUBLIC game, default), test = deploy/test-target.json "
+                             "(default from $DEPLOY_TARGET)")
+
+
 def main():
+    global TARGET, HISTORY, TARGET_NAME
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("check", help="read-only pre-flight")
@@ -436,8 +517,16 @@ def main():
     pb.add_argument("--force", action="store_true", help="skip the build-age and place-content guards")
     ss = sub.add_parser("server-size", help="read (or with N, set) the place's Max Players")
     ss.add_argument("size", nargs="?", type=int, help="new Max Players; omitted = read only")
+    rs = sub.add_parser("restart-servers", help="restart running servers so they load the latest Published version")
+    rs.add_argument("--all-versions", action="store_true", help="closeAllVersions: also restart up-to-date servers")
+    rs.add_argument("--yes", action="store_true", help="required for --target live")
+    for p in (c, pb, ss, rs):
+        add_target(p)
     a = ap.parse_args()
-    return {"check": cmd_check, "publish": cmd_publish, "server-size": cmd_server_size}[a.cmd](a)
+    TARGET_NAME = a.target
+    TARGET, HISTORY = TARGETS[a.target]
+    return {"check": cmd_check, "publish": cmd_publish, "server-size": cmd_server_size,
+            "restart-servers": cmd_restart_servers}[a.cmd](a)
 
 
 if __name__ == "__main__":

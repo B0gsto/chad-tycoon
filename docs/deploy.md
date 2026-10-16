@@ -10,6 +10,7 @@ The game is published to its own experience through Open Cloud:
 | Publish log | `deploy/history.json` (one entry per publish: version, type, UTC time, file, size, sha256, git head) |
 | API key | `$ROBLOX_API_KEY` when set (CI), else `~/RobloxProjects/.roblox-api-key` (mode 600; sent as `x-api-key`, never printed) |
 | CI/CD | `.github/workflows/ci.yml` (checks), `.github/workflows/automerge.yml` (merge green PRs) and `.github/workflows/deploy.yml` (publish on push to `main`): see [CI/CD](#cicd) |
+| Test experience | `deploy/test-target.json`, `--target test` on every `tools/deploy.py` command, cloud tests on real servers: see [testing-on-roblox.md](testing-on-roblox.md) |
 
 ## Release
 
