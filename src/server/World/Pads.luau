@@ -124,7 +124,7 @@ local LABEL_SHIFT: { [string]: Vector2 } = {
 -- menu from the entrance) hid behind the top HUD banner up close, all but its price: over the
 -- pad, 1.5 studs in and 4 back, it reads whole.
 local LABEL_NEAR: { [string]: { lift: number, shift: Vector2 } } = {
-	Buy1 = { lift = 7.6, shift = Vector2.new(-1.5, 4) },
+	Buy1 = { lift = 6.4, shift = Vector2.new(-1.5, 1) },
 }
 -- Share of the stud width that scales with distance, and the fixed pixel part added to it.
 local LABEL_SCALE = 0.8

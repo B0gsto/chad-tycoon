@@ -5556,7 +5556,7 @@ test("PadLabelSize: a label glides from its near to its far placement with the c
 	local pads = fs.readFile("src/server/World/Pads.luau")
 	check(string.find(pads, 'SetAttribute("NearOffset"', 1, true) ~= nil, "World.Pads stores the near placement")
 	check(string.find(pads, 'SetAttribute("FarOffset"', 1, true) ~= nil, "and the far one")
-	check(string.find(pads, "Buy1 = { lift = 7.6, shift = Vector2.new(-1.5, 4) }", 1, true) ~= nil, "Buy 1 sits over its pad up close")
+	check(string.find(pads, "Buy1 = { lift = 6.4, shift = Vector2.new(-1.5, 1) }", 1, true) ~= nil, "Buy 1 sits over its pad up close")
 	check(string.find(pads, "Buy1 = Vector2.new(-3, 7)", 1, true) ~= nil, "and high and back from afar")
 	check(string.find(pads, "Buy1 = 10,", 1, true) ~= nil, "clear of the BUY 5 tag")
 	check(string.find(fs.readFile("src/client/Fx/PadLabels.luau"), "PadLabelSize.blend", 1, true) ~= nil, "Fx.PadLabels glides by it")
