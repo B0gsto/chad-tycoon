@@ -5500,6 +5500,46 @@ test("loading screen brand matches the theme and assets", function()
 	end
 end)
 
+test("PadLabelSize: pad labels keep their world size far away and are capped up close", function()
+	local PadLabelSize = require("../src/shared/PadLabelSize")
+	local vy, fov = 1000, 70
+	-- A buy-row label (7.5 studs x 0.8 wide, LABEL_PX 32) seen from the spawn, ~60 studs away.
+	local w, h, capped = PadLabelSize.size(6, 32, 6 * 0.62, 32 * 0.62, 60, vy, fov)
+	check(not capped, "from the spawn the label is not capped")
+	check(math.abs(w - (6 * PadLabelSize.pixelsPerStud(60, vy, fov) + 32)) < 1e-6, "natural width = studs x px/stud + px")
+	check(math.abs(h / w - 0.62) < 1e-6, "natural shape kept")
+	-- Standing on the pad: ~15 studs from the camera.
+	local cw, ch, near = PadLabelSize.size(6, 32, 6 * 0.62, 32 * 0.62, 15, vy, fov)
+	check(near, "up close the label is capped")
+	eq(cw, PadLabelSize.MAX_SHARE * vy, "capped width = MAX_SHARE of the viewport height")
+	check(math.abs(ch / cw - 0.62) < 1e-6, "capped label keeps its shape")
+	check(cw <= 2.2 * w, "up close it is at most about twice its spawn size")
+	-- The neighbouring pad's centre is 10.25 studs away: two capped labels never meet.
+	check(10.25 * PadLabelSize.pixelsPerStud(17, vy, fov) > cw, "neighbouring capped labels stay apart")
+	local _, _, behind = PadLabelSize.size(6, 32, 3.72, 19.84, -5, vy, fov)
+	check(behind, "a label at or behind the camera counts as close")
+	local ww = PadLabelSize.size(6, 32, 3.72, 19.84, 60, 2 * vy, fov)
+	check(ww > w, "a taller viewport draws it bigger")
+	local pads = fs.readFile("src/server/World/Pads.luau")
+	check(string.find(pads, 'AddTag(gui, "PadLabel")', 1, true) ~= nil, "World.Pads tags its labels for Fx.PadLabels")
+	check(string.find(pads, 'SetAttribute("BaseSize"', 1, true) ~= nil, "and stores their own size")
+	check(string.find(fs.readFile("src/client/Main.client.luau"), '"PadLabels"', 1, true) ~= nil, "Main starts Fx.PadLabels")
+end)
+
+test("TestBridge: setcash and pending go through Tycoon and are documented", function()
+	local bridge = fs.readFile("src/server/TestBridge.luau")
+	local tycoon = fs.readFile("src/server/Tycoon.luau")
+	local doc = fs.readFile("docs/agent-playtest.md")
+	check(string.find(bridge, "COMMANDS.setcash", 1, true) ~= nil, "setcash command")
+	check(string.find(bridge, "Tycoon.setMoney(session", 1, true) ~= nil, "setcash uses Tycoon.setMoney")
+	check(string.find(bridge, "COMMANDS.pending", 1, true) ~= nil, "pending command")
+	check(string.find(bridge, "Tycoon.setPending(session", 1, true) ~= nil, "pending uses Tycoon.setPending")
+	check(string.find(tycoon, "function Tycoon.setMoney(", 1, true) ~= nil, "Tycoon.setMoney exists")
+	check(string.find(tycoon, "session.profile.pending = math.max(0, amount)", 1, true) ~= nil, "setPending sets profile.pending")
+	check(string.find(doc, "| `setcash` | `{amount}` |", 1, true) ~= nil, "setcash documented")
+	check(string.find(doc, "| `pending` | `{amount}` |", 1, true) ~= nil, "pending documented")
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
 	process.exit(1)

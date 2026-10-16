@@ -427,7 +427,9 @@ function Guide.labelTop(part: BasePart): number
 	if not (label and label:IsA("BillboardGui")) then
 		return 0
 	end
-	local size = label.Size.Y
+	-- Fx.PadLabels caps the label's on-screen size up close; "BaseSize" keeps its own size.
+	local base = label:GetAttribute("BaseSize")
+	local size = (if typeof(base) == "UDim2" then base else label.Size).Y
 	-- The label's offset runs along the pad's own axes (a round pad is a cylinder on its side).
 	local up = part.CFrame:VectorToWorldSpace(label.StudsOffsetWorldSpace).Y
 	local top = up + (size.Scale + size.Offset * LABEL_PX_STUDS) / 2

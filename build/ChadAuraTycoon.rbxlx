@@ -20281,6 +20281,62 @@ return OrbLook
       </Item>
       <Item class="ModuleScript" referent="171">
         <Properties>
+          <string name="Name">PadLabelSize</string>
+          <string name="Source"><![CDATA[--!strict
+--[[
+	PadLabelSize: how big a pad's floating label (World.Pads' "PadLabel" BillboardGui) may be
+	on screen (pure maths, no services; Fx.PadLabels applies it every frame).
+
+	A label is sized in studs plus a few fixed pixels, so it shrinks with distance and reads
+	from the plot's spawn. Close up the stud part alone filled a third of the screen and the
+	sign of the pad the player stood on covered its neighbours'. So its width is capped at
+	MAX_SHARE of the viewport's height (its height follows, keeping the label's shape): from
+	the spawn every label keeps its world size, and a label never grows past about twice that.
+]]
+
+local PadLabelSize = {}
+
+-- Widest a label may be on screen, as a share of the viewport's height.
+PadLabelSize.MAX_SHARE = 0.2
+-- Nearest depth (studs in front of the camera) the maths uses, so a label at or behind the
+-- camera counts as close rather than dividing by zero.
+PadLabelSize.MIN_DEPTH = 0.5
+
+-- Pixels per stud at `depth` studs in front of a camera with a vertical field of view of
+-- `fov` degrees and a viewport `viewportY` pixels tall.
+function PadLabelSize.pixelsPerStud(depth: number, viewportY: number, fov: number): number
+	local d = math.max(depth, PadLabelSize.MIN_DEPTH)
+	return viewportY / (2 * d * math.tan(math.rad(fov) / 2))
+end
+
+-- On-screen size (pixels) of a label `studsW` x `studsH` studs plus `pxW` x `pxH` pixels (its
+-- UDim2 Size's Scale and Offset parts) at `depth`: its natural size, or the capped one. The
+-- second result is true when capped.
+function PadLabelSize.size(
+	studsW: number,
+	pxW: number,
+	studsH: number,
+	pxH: number,
+	depth: number,
+	viewportY: number,
+	fov: number
+): (number, number, boolean)
+	local k = PadLabelSize.pixelsPerStud(depth, viewportY, fov)
+	local w = studsW * k + pxW
+	local h = studsH * k + pxH
+	local cap = PadLabelSize.MAX_SHARE * viewportY
+	if w <= cap or w <= 0 then
+		return w, h, false
+	end
+	return cap, h * cap / w, true
+end
+
+return PadLabelSize
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="172">
+        <Properties>
           <string name="Name">ParkourMoves</string>
           <string name="Source"><![CDATA[--!strict
 --[[
@@ -20376,7 +20432,7 @@ return Moves
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="172">
+      <Item class="ModuleScript" referent="173">
         <Properties>
           <string name="Name">Poses</string>
           <string name="Source"><![CDATA[--[[
@@ -22096,7 +22152,7 @@ return Poses
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="173">
+      <Item class="ModuleScript" referent="174">
         <Properties>
           <string name="Name">RigPose</string>
           <string name="Source"><![CDATA[--[[
@@ -22265,7 +22321,7 @@ return RigPose
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="174">
+      <Item class="ModuleScript" referent="175">
         <Properties>
           <string name="Name">SessionLock</string>
           <string name="Source"><![CDATA[--!strict
@@ -22318,7 +22374,7 @@ return SessionLock
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="175">
+      <Item class="ModuleScript" referent="176">
         <Properties>
           <string name="Name">ShopMath</string>
           <string name="Source"><![CDATA[--!strict
@@ -22350,7 +22406,7 @@ return ShopMath
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="176">
+      <Item class="ModuleScript" referent="177">
         <Properties>
           <string name="Name">Telemetry</string>
           <string name="Source"><![CDATA[--!strict
@@ -22363,7 +22419,7 @@ return ShopMath
 	    together. Telemetry.take gives each player their own minute of at most
 	    CAPS.Economy calls (under their 20), so the shared 120 stays spare. Cash moves are
 	    summed in a Ledger and sent at most once a minute per source or sink.
-	  - 100 custom event names (20 are used), 3 custom fields per event, 8,000 custom field
+	  - 100 custom event names (22 are used), 3 custom fields per event, 8,000 custom field
 	    values in all: every label below comes from a short fixed list (tiers, bands, buckets).
 	  - 10 currencies (one is used: "Cash"), 20 transaction types (the six of
 	    Enum.AnalyticsEconomyTransactionType), 100 item SKUs (SOURCES + SINKS).
@@ -22424,6 +22480,16 @@ function Telemetry.word(value: any): string
 		return string.upper(string.sub(value, 1, 1)) .. string.sub(value, 2)
 	end
 	return "Other"
+end
+
+-- A Robux item as a label: a pass's name ("DoubleAura"), or a product list and its place
+-- in it ("Money 2", "Aura 4"); "Crate" for the instant crate open.
+function Telemetry.itemLabel(name: any, index: any): string
+	local label = Telemetry.word(name)
+	if type(index) == "number" and index == index then
+		label ..= " " .. math.clamp(math.floor(index), 0, 99)
+	end
+	return label
 end
 
 -- Which part of a mode a Notify payload is about: Parkour's map, Cardio's stage, Mog's
@@ -22659,7 +22725,35 @@ return Telemetry
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="177">
+      <Item class="ModuleScript" referent="178">
+        <Properties>
+          <string name="Name">TestEnv</string>
+          <string name="Source"><![CDATA[-- The private TEST experience (deploy/test-target.json, docs/agent-playtest.md).
+--
+-- isTest() is the security boundary of the agent test bridge (Server.TestBridge,
+-- Client.TestBridge): it is true only in a running server or client of the TEST universe.
+-- The live game (deploy/target.json) and unpublished Studio places (GameId 0) never match,
+-- so the bridge stays completely inert there. Only the holder of the Open Cloud API key can
+-- publish the MessagingService messages that drive it.
+
+local TestEnv = {}
+
+-- Universe id of the TEST experience (deploy/test-target.json "universeId"); 0 = not set up yet.
+TestEnv.TEST_UNIVERSE_ID = 10771313560
+
+-- The live experience; never the test one, whatever TEST_UNIVERSE_ID says.
+TestEnv.LIVE_UNIVERSE_ID = 10769596890
+
+function TestEnv.isTest(): boolean
+	local id = TestEnv.TEST_UNIVERSE_ID
+	return id ~= 0 and id ~= TestEnv.LIVE_UNIVERSE_ID and game.GameId == id
+end
+
+return TestEnv
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="179">
         <Properties>
           <string name="Name">TutorialSteps</string>
           <string name="Source"><![CDATA[--!strict
@@ -22802,7 +22896,7 @@ return TutorialSteps
         </Properties>
       </Item>
     </Item>
-    <Item class="ModuleScript" referent="178">
+    <Item class="ModuleScript" referent="180">
       <Properties>
         <string name="Name">Theme</string>
         <string name="Source"><![CDATA[--[[
@@ -24347,15 +24441,15 @@ return Theme
       </Properties>
     </Item>
   </Item>
-  <Item class="ServerScriptService" referent="179">
+  <Item class="ServerScriptService" referent="181">
     <Properties>
       <string name="Name">ServerScriptService</string>
     </Properties>
-    <Item class="Folder" referent="180">
+    <Item class="Folder" referent="182">
       <Properties>
         <string name="Name">Server</string>
       </Properties>
-      <Item class="ModuleScript" referent="181">
+      <Item class="ModuleScript" referent="183">
         <Properties>
           <string name="Name">Analytics</string>
           <string name="Source"><![CDATA[--[[
@@ -24384,6 +24478,12 @@ return Theme
 
 	Shop funnel (recurring "Shop"): 1 Opened, 2 Prompted, 3 Purchased. One funnel session
 	per shop visit; a prompt from outside the shop (pads, crate panel) starts a new one.
+	Each prompt and each purchase is also a custom event per item, so prompts shown can be
+	set against purchases for every pass and product:
+	  PurchasePrompt  list price in Robux; item, Pass / Product, tier band
+	  PurchaseDone    Robux paid (a pass: its list price); item, Pass / Product, tier band
+	Items (Telemetry.itemLabel): a pass's name ("DoubleAura"), "Money 1".."Money 4",
+	"Aura 1".."Aura 4", "LegacyMoney n" (a retired pack's pending receipt) and "Crate".
 
 	Custom events (value; custom fields 1, 2, 3). Shared.Telemetry has the labels:
 	  TierReached   tier; "Tier 12", player age        a best tier from 11 up, when discovered
@@ -24483,6 +24583,11 @@ end
 
 -- Player -> current shop funnel session id and its last step.
 local shopFunnel: { [Player]: { id: string, step: number } } = {}
+
+-- A Robux item of a shop funnel step (Monetization): `kind` "Pass" or "Product", `name` the
+-- pass or the product list ("Money", "Aura", "LegacyMoney", "Crate"), `index` its place in
+-- that list, `robux` the price.
+export type Item = { kind: string, name: string, index: number?, robux: number? }
 
 -- What this module keeps for a session, from its first event to SessionEnd.
 type State = {
@@ -24665,7 +24770,9 @@ function Analytics.intro(session: Tycoon.Session, skipped: boolean, seconds: num
 	event(session, name, seconds)
 end
 
-function Analytics.shop(player: Player, step: number, name: string)
+-- A shop funnel step; `item` (a prompt or a purchase) also logs "PurchasePrompt" or
+-- "PurchaseDone" for that item.
+function Analytics.shop(player: Player, step: number, name: string, item: Item?)
 	local funnel = shopFunnel[player]
 	if step == 1 or not funnel or step <= funnel.step then
 		funnel = { id = HttpService:GenerateGUID(false), step = 0 }
@@ -24673,9 +24780,15 @@ function Analytics.shop(player: Player, step: number, name: string)
 	end
 	funnel.step = step
 	local session = Tycoon.getSession(player)
+	local state = session and stateOf(session)
 	-- Opening the shop over and over is capped; a purchase always counts.
 	local kind = if step >= 3 then "Step" else "Event"
-	send(session and stateOf(session), kind, "LogFunnelStepEvent", player, "Shop", funnel.id, step, name)
+	send(state, kind, "LogFunnelStepEvent", player, "Shop", funnel.id, step, name)
+	if item and session and state and step >= 2 then
+		local robux = if type(item.robux) == "number" and item.robux >= 0 then item.robux else nil
+		local labels = { Telemetry.itemLabel(item.name, item.index), Telemetry.word(item.kind), Telemetry.tierBand(bestTier(session)) }
+		custom(state, kind, player, if step >= 3 then "PurchaseDone" else "PurchasePrompt", robux, labels)
+	end
 end
 
 -- Cash into the wallet from `source` (a Telemetry.SOURCES name; "Purchase" = "Pack").
@@ -24917,7 +25030,7 @@ return Analytics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="182">
+      <Item class="ModuleScript" referent="184">
         <Properties>
           <string name="Name">Badges</string>
           <string name="Source"><![CDATA[--[[
@@ -25030,7 +25143,59 @@ return Badges
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="183">
+      <Item class="ModuleScript" referent="185">
+        <Properties>
+          <string name="Name">Boot</string>
+          <string name="Source"><![CDATA[-- Server start-up: creates the remotes, builds the map and initialises every service, in this order.
+-- Main.server.luau calls it once; tests/cloud/boot.luau calls the same function, because place scripts do not
+-- run inside an Open Cloud Luau Execution session.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local Server = script.Parent
+local WorldBuilder = require(Server.WorldBuilder)
+local Tycoon = require(Server.Tycoon)
+local Monetization = require(Server.Monetization)
+local Ranking = require(Server.Ranking)
+local Tutorial = require(Server.Tutorial)
+local Intro = require(Server.Intro)
+local GameModes = require(Server.GameModes)
+local Cosmetics = require(Server.Cosmetics)
+local Analytics = require(Server.Analytics)
+local Badges = require(Server.Badges)
+local Daily = require(Server.Daily)
+local TestBridge = require(Server.TestBridge)
+
+local Boot = {}
+
+function Boot.start()
+	-- Create remotes before anything else so clients never wait long.
+	Net.event("State")
+
+	local world = WorldBuilder.build(Theme)
+	Tycoon.init(world, Theme)
+	Tutorial.init()
+	Intro.init()
+	Monetization.init(Theme)
+	GameModes.init(world.modes, Theme, Tycoon, world)
+	Cosmetics.init(Theme)
+	Ranking.init(Theme, world.ranking)
+	Analytics.init()
+	Badges.init(Theme)
+	Daily.init(Theme)
+	-- Agent playtest bridge: does nothing outside the TEST experience (Shared.TestEnv).
+	TestBridge.init(world)
+	return world
+end
+
+return Boot
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="186">
         <Properties>
           <string name="Name">Cosmetics</string>
           <string name="Source"><![CDATA[--[[
@@ -25695,7 +25860,7 @@ return Cosmetics
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="184">
+      <Item class="ModuleScript" referent="187">
         <Properties>
           <string name="Name">Daily</string>
           <string name="Source"><![CDATA[--[[
@@ -25899,7 +26064,7 @@ return Daily
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="185">
+      <Item class="ModuleScript" referent="188">
         <Properties>
           <string name="Name">DataService</string>
           <string name="Source"><![CDATA[--[[
@@ -26452,7 +26617,7 @@ return DataService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="186">
+      <Item class="ModuleScript" referent="189">
         <Properties>
           <string name="Name">GameModes</string>
           <string name="Source"><![CDATA[--[[
@@ -26845,7 +27010,7 @@ return GameModes
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="187">
+      <Item class="ModuleScript" referent="190">
         <Properties>
           <string name="Name">Intro</string>
           <string name="Source"><![CDATA[--[[
@@ -26893,27 +27058,21 @@ return Intro
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Script" referent="188">
+      <Item class="Script" referent="191">
         <Properties>
           <string name="Name">Main</string>
           <token name="RunContext">0</token>
           <string name="Source"><![CDATA[-- Server entry point: builds the map, wires services and handles join/leave/saving.
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
-local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
-local Net = require(ReplicatedStorage.Shared.Net)
 
 local Server = script.Parent
+local Boot = require(Server.Boot)
 local DataService = require(Server.DataService)
-local WorldBuilder = require(Server.WorldBuilder)
 local Tycoon = require(Server.Tycoon)
 local Monetization = require(Server.Monetization)
 local Ranking = require(Server.Ranking)
-local Tutorial = require(Server.Tutorial)
 local Intro = require(Server.Intro)
-local GameModes = require(Server.GameModes)
 local Cosmetics = require(Server.Cosmetics)
 local Analytics = require(Server.Analytics)
 local Badges = require(Server.Badges)
@@ -26921,20 +27080,7 @@ local Daily = require(Server.Daily)
 
 local AUTOSAVE_SECONDS = 90
 
--- Create remotes before anything else so clients never wait long.
-Net.event("State")
-
-local world = WorldBuilder.build(Theme)
-Tycoon.init(world, Theme)
-Tutorial.init()
-Intro.init()
-Monetization.init(Theme)
-GameModes.init(world.modes, Theme, Tycoon, world)
-Cosmetics.init(Theme)
-Ranking.init(Theme, world.ranking)
-Analytics.init()
-Badges.init(Theme)
-Daily.init(Theme)
+Boot.start()
 
 local saving: { [Player]: boolean } = {}
 
@@ -27027,11 +27173,11 @@ end)
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="189">
+      <Item class="Folder" referent="192">
         <Properties>
           <string name="Name">Modes</string>
         </Properties>
-        <Item class="ModuleScript" referent="190">
+        <Item class="ModuleScript" referent="193">
           <Properties>
             <string name="Name">Bowling</string>
             <string name="Source"><![CDATA[--!strict
@@ -27843,7 +27989,7 @@ return Bowling
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="191">
+        <Item class="ModuleScript" referent="194">
           <Properties>
             <string name="Name">BowlingRules</string>
             <string name="Source"><![CDATA[--!strict
@@ -28637,7 +28783,7 @@ return BowlingRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="192">
+        <Item class="ModuleScript" referent="195">
           <Properties>
             <string name="Name">Cardio</string>
             <string name="Source"><![CDATA[--[[
@@ -29410,7 +29556,7 @@ return Cardio
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="193">
+        <Item class="ModuleScript" referent="196">
           <Properties>
             <string name="Name">CardioChase</string>
             <string name="Source"><![CDATA[--!strict
@@ -29812,7 +29958,7 @@ return CardioChase
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="194">
+        <Item class="ModuleScript" referent="197">
           <Properties>
             <string name="Name">CardioLayout</string>
             <string name="Source"><![CDATA[--!strict
@@ -31285,7 +31431,7 @@ return CardioLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="195">
+        <Item class="ModuleScript" referent="198">
           <Properties>
             <string name="Name">CardioRules</string>
             <string name="Source"><![CDATA[--!strict
@@ -31649,7 +31795,7 @@ return CardioRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="196">
+        <Item class="ModuleScript" referent="199">
           <Properties>
             <string name="Name">Catalog</string>
             <string name="Source"><![CDATA[--!strict
@@ -31714,7 +31860,7 @@ return Catalog
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="197">
+        <Item class="ModuleScript" referent="200">
           <Properties>
             <string name="Name">Course</string>
             <string name="Source"><![CDATA[--!strict
@@ -33965,7 +34111,7 @@ return Course
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="198">
+        <Item class="ModuleScript" referent="201">
           <Properties>
             <string name="Name">Mog</string>
             <string name="Source"><![CDATA[--[[
@@ -35047,7 +35193,7 @@ return { create = create }
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="199">
+        <Item class="ModuleScript" referent="202">
           <Properties>
             <string name="Name">MogBoard</string>
             <string name="Source"><![CDATA[--[[
@@ -35262,7 +35408,7 @@ return MogBoard
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="200">
+        <Item class="ModuleScript" referent="203">
           <Properties>
             <string name="Name">MogLayout</string>
             <string name="Source"><![CDATA[--[[
@@ -35339,7 +35485,7 @@ return MogLayout
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="201">
+        <Item class="ModuleScript" referent="204">
           <Properties>
             <string name="Name">MogRules</string>
             <string name="Source"><![CDATA[--[[
@@ -35889,7 +36035,7 @@ return MogRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="202">
+        <Item class="ModuleScript" referent="205">
           <Properties>
             <string name="Name">Parkour</string>
             <string name="Source"><![CDATA[--[[
@@ -36869,7 +37015,7 @@ return Parkour
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="203">
+        <Item class="ModuleScript" referent="206">
           <Properties>
             <string name="Name">Pose</string>
             <string name="Source"><![CDATA[--!strict
@@ -37676,7 +37822,7 @@ return Pose
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="204">
+        <Item class="ModuleScript" referent="207">
           <Properties>
             <string name="Name">PoseRules</string>
             <string name="Source"><![CDATA[--!strict
@@ -37975,7 +38121,7 @@ return PoseRules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="205">
+        <Item class="ModuleScript" referent="208">
           <Properties>
             <string name="Name">Rules</string>
             <string name="Source"><![CDATA[--!strict
@@ -38060,7 +38206,7 @@ return Rules
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="206">
+        <Item class="ModuleScript" referent="209">
           <Properties>
             <string name="Name">Shake</string>
             <string name="Source"><![CDATA[--!strict
@@ -38733,7 +38879,7 @@ return Shake
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="207">
+        <Item class="ModuleScript" referent="210">
           <Properties>
             <string name="Name">ShakeRules</string>
             <string name="Source"><![CDATA[--!strict
@@ -39218,7 +39364,7 @@ return ShakeRules
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="208">
+      <Item class="ModuleScript" referent="211">
         <Properties>
           <string name="Name">Monetization</string>
           <string name="Source"><![CDATA[--[[
@@ -39366,7 +39512,7 @@ function Monetization.promptCrate(player: Player, rarity: string, slot: number?)
 		end
 		return
 	end
-	Analytics.shop(player, 2, "Prompted")
+	Analytics.shop(player, 2, "Prompted", { kind = "Product", name = "Crate", robux = product.Price })
 	MarketplaceService:PromptProductPurchase(player, product.Id)
 end
 
@@ -39401,7 +39547,7 @@ function Monetization.promptPass(player: Player, name: string)
 		end
 		return
 	end
-	Analytics.shop(player, 2, "Prompted")
+	Analytics.shop(player, 2, "Prompted", { kind = "Pass", name = name, robux = pass.Price })
 	MarketplaceService:PromptGamePassPurchase(player, pass.Id)
 end
 
@@ -39421,7 +39567,7 @@ function Monetization.promptProduct(player: Player, kind: string, index: number)
 		end
 		return
 	end
-	Analytics.shop(player, 2, "Prompted")
+	Analytics.shop(player, 2, "Prompted", { kind = "Product", name = kind, index = index, robux = product.Price })
 	MarketplaceService:PromptProductPurchase(player, product.Id)
 end
 
@@ -39480,7 +39626,8 @@ local function processReceipt(receipt: any): Enum.ProductPurchaseDecision
 	else
 		grantProduct(session, kind, index)
 	end
-	Analytics.shop(session.player, 3, "Purchased")
+	local item = { kind = "Product", name = kind, index = if kind == "Crate" then nil else index, robux = receipt.CurrencySpent }
+	Analytics.shop(session.player, 3, "Purchased", item)
 	table.insert(profile.receipts, receipt.PurchaseId)
 	while #profile.receipts > MAX_RECEIPTS do
 		table.remove(profile.receipts, 1)
@@ -39497,7 +39644,7 @@ function Monetization.init(themeModule: any)
 		end
 		for name, pass in theme.Monetization.Passes do
 			if pass.Id == passId then
-				Analytics.shop(player, 3, "Purchased")
+				Analytics.shop(player, 3, "Purchased", { kind = "Pass", name = name, robux = pass.Price })
 				Tycoon.setPass(player, name)
 				local session = Tycoon.getSession(player)
 				if session then
@@ -39523,7 +39670,7 @@ return Monetization
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="209">
+      <Item class="ModuleScript" referent="212">
         <Properties>
           <string name="Name">PlotLayout</string>
           <string name="Source"><![CDATA[--!strict
@@ -40116,7 +40263,7 @@ return Layout
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="210">
+      <Item class="ModuleScript" referent="213">
         <Properties>
           <string name="Name">Ranking</string>
           <string name="Source"><![CDATA[--[[
@@ -40514,7 +40661,504 @@ return Ranking
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="211">
+      <Item class="ModuleScript" referent="214">
+        <Properties>
+          <string name="Name">TestBridge</string>
+          <string name="Source"><![CDATA[--[[
+	TestBridge: lets AI agents drive a real Roblox TEST server (docs/agent-playtest.md).
+
+	Completely inert unless Shared.TestEnv.isTest() (the TEST universe only: never the live
+	game, never an unpublished Studio place). Then:
+
+	  * subscribes to the MessagingService topic "TestBridge". tools/roblox_play.py publishes
+	    JSON { id, cmd, args, userId? } through Open Cloud; every server gets it, only the one
+	    with the target player (userId, default the owner) acts on it;
+	  * runs `cmd` from the fixed COMMANDS table below (no loadstring, no free-form code);
+	  * writes { ok, result | error, cmd, jobId, placeVersion, at } to the MemoryStore sorted
+	    map "TestBridge" under key `id` (expires after an hour), where the tool polls it;
+	  * creates ReplicatedStorage.TestBridgeClient (RemoteEvent) for Client.TestBridge, which
+	    does the client-only work: panels, camera presets, hiding the UI.
+]]
+
+local HttpService = game:GetService("HttpService")
+local MemoryStoreService = game:GetService("MemoryStoreService")
+local MessagingService = game:GetService("MessagingService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local TestEnv = require(ReplicatedStorage.Shared.TestEnv)
+
+local Server = script.Parent
+local Tycoon = require(Server.Tycoon)
+local GameModes = require(Server.GameModes)
+local Catalog = require(Server.Modes.Catalog)
+local Course = require(Server.Modes.Course)
+local CardioLayout = require(Server.Modes.CardioLayout)
+local MogLayout = require(Server.Modes.MogLayout)
+
+local TOPIC = "TestBridge"
+local MAP = "TestBridge"
+local RESULT_TTL = 3600
+local OWNER_USER_ID = 11718681576
+local MAX_GIVE = 1e15
+
+local TestBridge = {}
+
+type Args = { [string]: any }
+type Command = { help: string, run: (player: Player, args: Args) -> any }
+
+local world: any = nil
+local clientRemote: RemoteEvent? = nil
+
+-- Spots ------------------------------------------------------------------------------------
+
+type Spot = { feet: Vector3, look: Vector3 }
+
+local function fromCFrame(cf: CFrame): Spot
+	return { feet = cf.Position, look = cf.LookVector }
+end
+
+local function fromPoint(p: { x: number, y: number, z: number }, look: Vector3?): Spot
+	return { feet = Vector3.new(p.x, p.y, p.z), look = look or Vector3.new(0, 0, -1) }
+end
+
+-- Named teleport spots: name -> (player) -> Spot? (computed when used: the plot is per player).
+local SPOTS: { [string]: { help: string, at: (Player) -> Spot? } } = {
+	hub = {
+		help = "the hub spawn mat in front of the statue",
+		at = function()
+			local mat = Workspace:FindFirstChild("HubSpawn", true)
+			return if mat and mat:IsA("BasePart") then fromCFrame(mat.CFrame + Vector3.new(0, mat.Size.Y / 2, 0)) else nil
+		end,
+	},
+	plot = {
+		help = "the player's own plot spawn",
+		at = function(player)
+			local session = Tycoon.getSession(player)
+			return if session then fromCFrame(session.plot.spawn) else nil
+		end,
+	},
+	plaza = {
+		help = "GAME MODES plaza arrival (end of the spur), facing the gates",
+		at = function()
+			return fromPoint(Course.ARRIVAL, Vector3.new(-1, 0, 0))
+		end,
+	},
+	gates = {
+		help = "in front of the mini-game gates, facing the hub",
+		at = function()
+			return fromPoint(Course.QUIT, Vector3.new(1, 0, 0))
+		end,
+	},
+	mog = {
+		help = "MOG TEST stage centre (no run started)",
+		at = function()
+			local c = MogLayout.CENTER
+			return fromPoint({ x = c.x, y = c.y + MogLayout.THICKNESS + 1, z = c.z + MogLayout.DUEL })
+		end,
+	},
+	cardio = {
+		help = "CARDIO warm-up lobby (no run started)",
+		at = function()
+			local p = CardioLayout.spawn(0)
+			return if p then fromPoint(p, Vector3.new(1, 0, 0)) else nil
+		end,
+	},
+}
+for _, id in { "shake", "pose", "bowling" } do
+	SPOTS[id] = {
+		help = string.upper(id) .. " island lobby (no run started; use `mode` to enter properly)",
+		at = function()
+			local built = world and world[id]
+			local cf = built and (built.lobbySpawn or built.spawn)
+			return if typeof(cf) == "CFrame" then fromCFrame(cf) else nil
+		end,
+	}
+end
+
+local function spotNames(): { string }
+	local names = {}
+	for name in SPOTS do
+		table.insert(names, name)
+	end
+	table.sort(names)
+	return names
+end
+
+-- Panels the client can open (Client.TestBridge passes them to the client's UiPreview hook).
+local PANELS = {
+	"Shop",
+	"Index",
+	"Ranking",
+	"Settings",
+	"Modes",
+	"Maps",
+	"Daily",
+	"Shop,Passes",
+	"Shop,Cosmetics",
+	"Shop,Cash",
+	"Shop,Aura",
+	"starter",
+	"gift",
+	"surge",
+	"away",
+	"tutorialdone",
+	"reward,<tier>",
+	"rewards,<from>,<to>",
+	"crate,<Rarity>,<tier>",
+	"close",
+}
+
+local CAMERA_PRESETS = { "reset", "front", "back", "overhead", "plot", "spot:<name>", "cframe (args.pos + args.look)" }
+
+-- Helpers ----------------------------------------------------------------------------------
+
+local function vec(v: any): Vector3?
+	if type(v) == "table" and type(v[1]) == "number" and type(v[2]) == "number" and type(v[3]) == "number" then
+		return Vector3.new(v[1], v[2], v[3])
+	end
+	return nil
+end
+
+local function v3(v: Vector3): { number }
+	return { math.round(v.X * 10) / 10, math.round(v.Y * 10) / 10, math.round(v.Z * 10) / 10 }
+end
+
+local function rootPos(player: Player): Vector3?
+	local root = GameModes.root(player)
+	return if root then root.Position else nil
+end
+
+local function toClient(player: Player, payload: { [string]: any })
+	assert(clientRemote, "bridge remote missing")
+	clientRemote:FireClient(player, payload)
+end
+
+-- A JSON-safe summary of the profile: every scalar field, and tables as their length.
+local function profileSummary(profile: { [string]: any }): { [string]: any }
+	local out = {}
+	for key, value in profile do
+		local t = type(value)
+		if t == "number" or t == "boolean" or t == "string" then
+			out[key] = value
+		elseif t == "table" then
+			local n = 0
+			for _ in value do
+				n += 1
+			end
+			out[key .. "#"] = n
+		end
+	end
+	return out
+end
+
+-- Plot framing for the "plot" camera preset: behind and above the plot's spawn, looking in.
+local function plotCamera(player: Player): (Vector3?, Vector3?)
+	local session = Tycoon.getSession(player)
+	if not session then
+		return nil, nil
+	end
+	local spawn = session.plot.spawn
+	local look = Vector3.new(spawn.LookVector.X, 0, spawn.LookVector.Z).Unit
+	local pos = spawn.Position - look * 34 + Vector3.new(0, 48, 0)
+	return pos, spawn.Position + look * 36
+end
+
+-- Commands ---------------------------------------------------------------------------------
+
+local COMMANDS: { [string]: Command } = {}
+
+COMMANDS.ping = {
+	help = "server and player info: jobId, placeVersion, players",
+	run = function(player)
+		local list = {}
+		for _, p in Players:GetPlayers() do
+			table.insert(list, { userId = p.UserId, name = p.Name, loaded = Tycoon.getSession(p) ~= nil })
+		end
+		return { userId = player.UserId, name = player.Name, players = list, loaded = Tycoon.getSession(player) ~= nil }
+	end,
+}
+
+COMMANDS.state = {
+	help = "the player's cash, progress (profile scalars), plot, passes, mode and position",
+	run = function(player)
+		local session = Tycoon.getSession(player)
+		if not session then
+			error("player has no tycoon session yet (still loading?)")
+		end
+		local mode = GameModes.active(player)
+		local pos = rootPos(player)
+		return {
+			cash = session.profile.money,
+			income = Tycoon.income(session),
+			production = Tycoon.production(session),
+			plot = session.plot.index,
+			passes = session.passes,
+			premium = session.premium,
+			canSave = session.canSave,
+			mode = if mode then mode.id else nil,
+			position = if pos then v3(pos) else nil,
+			profile = profileSummary(session.profile :: any),
+		}
+	end,
+}
+
+COMMANDS.cash = {
+	help = "args {amount}: add cash through Tycoon.grantMoney (the game's own path); returns the new total",
+	run = function(player, args)
+		local session = Tycoon.getSession(player)
+		if not session then
+			error("player has no tycoon session yet")
+		end
+		local amount = tonumber(args.amount)
+		if not amount or amount ~= amount or amount <= 0 or amount > MAX_GIVE then
+			error("amount must be a number in (0, 1e15]")
+		end
+		Tycoon.grantMoney(session, amount, "Test")
+		return { cash = session.profile.money, added = amount }
+	end,
+}
+COMMANDS.give = { help = "alias of cash", run = COMMANDS.cash.run }
+
+-- The amount argument of setcash / pending: a number in [0, MAX_GIVE].
+local function amountArg(args: Args): number
+	local amount = tonumber(args.amount)
+	if not amount or amount ~= amount or amount < 0 or amount > MAX_GIVE then
+		error("amount must be a number in [0, 1e15]")
+	end
+	return amount
+end
+
+COMMANDS.setcash = {
+	help = "args {amount}: set the cash to exactly amount (Tycoon.setMoney: HUD, pads and save follow); returns it",
+	run = function(player, args)
+		local session = Tycoon.getSession(player)
+		if not session then
+			error("player has no tycoon session yet")
+		end
+		Tycoon.setMoney(session, amountArg(args))
+		return { cash = session.profile.money }
+	end,
+}
+
+COMMANDS.pending = {
+	help = "args {amount}: leave amount uncollected cash on the Collect pad (the vault's coin pile); returns it",
+	run = function(player, args)
+		local session = Tycoon.getSession(player)
+		if not session then
+			error("player has no tycoon session yet")
+		end
+		Tycoon.setPending(session, amountArg(args))
+		return { pending = session.profile.pending }
+	end,
+}
+
+COMMANDS.teleport = {
+	help = "args {spot} (see list) or {pos:[x,y,z], look?:[x,y,z]}: move the character's feet there",
+	run = function(player, args)
+		local spot: Spot? = nil
+		local p = vec(args.pos)
+		if p then
+			spot = { feet = p, look = vec(args.look) or Vector3.new(0, 0, -1) }
+		else
+			local def = SPOTS[tostring(args.spot)]
+			if not def then
+				error("unknown spot " .. tostring(args.spot) .. "; spots: " .. table.concat(spotNames(), ", "))
+			end
+			spot = def.at(player)
+		end
+		if not spot then
+			error("spot not available in this world")
+		end
+		if not GameModes.root(player) then
+			error("player has no character")
+		end
+		if args.stopMode ~= false and GameModes.active(player) then
+			GameModes.stop(player, "quit")
+		end
+		GameModes.teleport(player, spot.feet, spot.look)
+		return { position = v3(spot.feet) }
+	end,
+}
+
+COMMANDS.mode = {
+	help = "args {id, options?}: enter a mini-game the way its gate does (GameModes.start with teleport)",
+	run = function(player, args)
+		local id = tostring(args.id)
+		if not GameModes.get(id) then
+			local ids = {}
+			for _, entry in Catalog do
+				table.insert(ids, entry.id)
+			end
+			error("unknown mode " .. id .. "; modes: " .. table.concat(ids, ", "))
+		end
+		local ok = GameModes.start(player, id, true, if type(args.options) == "table" then args.options else nil)
+		return { started = ok }
+	end,
+}
+
+COMMANDS.stopmode = {
+	help = "quit the current mini-game run (as the QUIT button)",
+	run = function(player)
+		GameModes.stop(player, "quit")
+		return { mode = nil }
+	end,
+}
+
+COMMANDS.ui = {
+	help = 'args {panel}: open a panel/popup on the client (see list.panels; "close" closes all)',
+	run = function(player, args)
+		local panel = args.panel or args.name
+		if type(panel) ~= "string" or panel == "" then
+			error("args.panel required; panels: " .. table.concat(PANELS, ", "))
+		end
+		toClient(player, { cmd = "ui", panel = panel })
+		return { panel = panel }
+	end,
+}
+
+COMMANDS.camera = {
+	help = "args {preset} (reset|front|back|overhead|plot|spot:<name>) or {pos:[x,y,z], look:[x,y,z], fov?}",
+	run = function(player, args)
+		local preset = if type(args.preset) == "string" then args.preset else nil
+		local pos, look = vec(args.pos), vec(args.look)
+		if preset == "plot" then
+			pos, look = plotCamera(player)
+			if not pos then
+				error("no plot yet")
+			end
+			preset = nil
+		elseif preset and string.sub(preset, 1, 5) == "spot:" then
+			local def = SPOTS[string.sub(preset, 6)]
+			local spot = def and def.at(player)
+			if not spot then
+				error("unknown spot in " .. preset)
+			end
+			local flat = Vector3.new(spot.look.X, 0, spot.look.Z)
+			flat = if flat.Magnitude > 0.01 then flat.Unit else Vector3.new(0, 0, -1)
+			pos = spot.feet - flat * 28 + Vector3.new(0, 22, 0)
+			look = spot.feet + flat * 20
+			preset = nil
+		end
+		if not preset and not (pos and look) then
+			error("camera needs a preset or pos + look")
+		end
+		toClient(player, {
+			cmd = "camera",
+			preset = preset,
+			pos = pos,
+			look = look,
+			fov = tonumber(args.fov),
+			distance = tonumber(args.distance),
+		})
+		return { preset = preset or "cframe", pos = if pos then v3(pos) else nil, look = if look then v3(look) else nil }
+	end,
+}
+
+COMMANDS.hideui = {
+	help = "args {hidden?: bool} (default: toggle): hide every ScreenGui and the core UI for clean shots",
+	run = function(player, args)
+		toClient(player, { cmd = "hideui", hidden = if type(args.hidden) == "boolean" then args.hidden else nil })
+		return { hidden = args.hidden }
+	end,
+}
+
+COMMANDS.list = {
+	help = "available commands, teleport spots, panels and camera presets",
+	run = function()
+		local cmds = {}
+		for name, def in COMMANDS do
+			cmds[name] = def.help
+		end
+		local spots = {}
+		for name, def in SPOTS do
+			spots[name] = def.help
+		end
+		local modes = {}
+		for _, entry in Catalog do
+			table.insert(modes, entry.id)
+		end
+		return { commands = cmds, spots = spots, modes = modes, panels = PANELS, camera = CAMERA_PRESETS }
+	end,
+}
+
+-- Plumbing ---------------------------------------------------------------------------------
+
+local resultMap: MemoryStoreSortedMap? = nil
+
+local function writeResult(id: string, result: { [string]: any })
+	result.jobId = game.JobId
+	result.placeVersion = game.PlaceVersion
+	result.at = os.time()
+	local ok, err = pcall(function()
+		assert(resultMap, "result map missing"):SetAsync(id, HttpService:JSONEncode(result), RESULT_TTL)
+	end)
+	if not ok then
+		warn("[TestBridge] result write failed: " .. tostring(err))
+	end
+end
+
+local function handle(raw: any)
+	local okDecode, msg = pcall(HttpService.JSONDecode, HttpService, raw)
+	if not okDecode or type(msg) ~= "table" then
+		return
+	end
+	local id = msg.id
+	if type(id) ~= "string" or not string.match(id, "^[%w%-_]+$") or #id > 64 then
+		return
+	end
+	local userId = tonumber(msg.userId) or OWNER_USER_ID
+	local player = Players:GetPlayerByUserId(userId)
+	if not player then
+		return -- another server's player (or nobody's): stay silent
+	end
+	local cmd = COMMANDS[tostring(msg.cmd)]
+	if not cmd then
+		writeResult(id, { ok = false, cmd = msg.cmd, error = "unknown command; try `list`" })
+		return
+	end
+	local args = if type(msg.args) == "table" then msg.args else {}
+	local ok, result = pcall(cmd.run, player, args)
+	if ok then
+		writeResult(id, { ok = true, cmd = msg.cmd, result = result })
+	else
+		writeResult(id, { ok = false, cmd = msg.cmd, error = tostring(result) })
+	end
+end
+
+function TestBridge.init(builtWorld: any)
+	if not TestEnv.isTest() then
+		return
+	end
+	world = builtWorld
+	local remote = Instance.new("RemoteEvent")
+	remote.Name = "TestBridgeClient"
+	remote.Parent = ReplicatedStorage
+	clientRemote = remote
+	resultMap = MemoryStoreService:GetSortedMap(MAP)
+	task.spawn(function()
+		for attempt = 1, 5 do
+			local ok, err = pcall(function()
+				MessagingService:SubscribeAsync(TOPIC, function(message)
+					task.spawn(handle, message.Data)
+				end)
+			end)
+			if ok then
+				print("[TestBridge] listening on " .. TOPIC .. " (job " .. game.JobId .. ")")
+				return
+			end
+			warn("[TestBridge] subscribe failed (" .. attempt .. "): " .. tostring(err))
+			task.wait(2 * attempt)
+		end
+	end)
+end
+
+return TestBridge
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="215">
         <Properties>
           <string name="Name">Tutorial</string>
           <string name="Source"><![CDATA[--[[
@@ -40631,7 +41275,7 @@ return Tutorial
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="212">
+      <Item class="ModuleScript" referent="216">
         <Properties>
           <string name="Name">Tycoon</string>
           <string name="Source"><![CDATA[--[[
@@ -43278,6 +43922,22 @@ function Tycoon.grantMoney(session: Session, amount: number, source: string?)
 	flush(session)
 end
 
+-- TEST tooling (Server.TestBridge): sets the player's cash to exactly `amount`, through the
+-- profile the HUD, the pads and the save all read (no "Earn" event, no cash effect).
+function Tycoon.setMoney(session: Session, amount: number)
+	session.profile.money = math.max(0, amount)
+	markDirty(session)
+	flush(session)
+end
+
+-- TEST tooling (Server.TestBridge): leaves `amount` uncollected cash waiting on the Collect pad
+-- (profile.pending: the vault's coin pile and the pad's price read it).
+function Tycoon.setPending(session: Session, amount: number)
+	session.profile.pending = math.max(0, amount)
+	markDirty(session)
+	flush(session)
+end
+
 -- A free crate of `rarity` opened on the spot (daily reward), in two steps so the caller
 -- can pay something else when it does not fit: rollCrate returns the tier of its unit, or
 -- nil when the rack has no room for that unit (full, and nothing can merge)...
@@ -43375,11 +44035,11 @@ return Tycoon
 ]]></string>
         </Properties>
       </Item>
-      <Item class="Folder" referent="213">
+      <Item class="Folder" referent="217">
         <Properties>
           <string name="Name">World</string>
         </Properties>
-        <Item class="ModuleScript" referent="214">
+        <Item class="ModuleScript" referent="218">
           <Properties>
             <string name="Name">Arena</string>
             <string name="Source"><![CDATA[--!strict
@@ -43525,7 +44185,7 @@ return Arena
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="215">
+        <Item class="ModuleScript" referent="219">
           <Properties>
             <string name="Name">BowlingLane</string>
             <string name="Source"><![CDATA[--!strict
@@ -45704,7 +46364,7 @@ return BowlingLane
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="216">
+        <Item class="ModuleScript" referent="220">
           <Properties>
             <string name="Name">CardioTrack</string>
             <string name="Source"><![CDATA[--[[
@@ -47172,7 +47832,7 @@ return CardioTrack
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="217">
+        <Item class="ModuleScript" referent="221">
           <Properties>
             <string name="Name">Common</string>
             <string name="Source"><![CDATA[--[[
@@ -47358,7 +48018,7 @@ return Common
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="218">
+        <Item class="ModuleScript" referent="222">
           <Properties>
             <string name="Name">Decor</string>
             <string name="Source"><![CDATA[--[[
@@ -48410,7 +49070,7 @@ return Decor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="219">
+        <Item class="ModuleScript" referent="223">
           <Properties>
             <string name="Name">Hub</string>
             <string name="Source"><![CDATA[--[[
@@ -49527,7 +50187,7 @@ return Hub
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="220">
+        <Item class="ModuleScript" referent="224">
           <Properties>
             <string name="Name">Machines</string>
             <string name="Source"><![CDATA[--[[
@@ -50345,7 +51005,7 @@ return Machines
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="221">
+        <Item class="ModuleScript" referent="225">
           <Properties>
             <string name="Name">MapDecor</string>
             <string name="Source"><![CDATA[--[[
@@ -51290,7 +51950,7 @@ return MapDecor
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="222">
+        <Item class="ModuleScript" referent="226">
           <Properties>
             <string name="Name">MapDress</string>
             <string name="Source"><![CDATA[--[[
@@ -51849,7 +52509,7 @@ return MapDress
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="223">
+        <Item class="ModuleScript" referent="227">
           <Properties>
             <string name="Name">Modes</string>
             <string name="Source"><![CDATA[--[[
@@ -53912,7 +54572,7 @@ return Modes
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="224">
+        <Item class="ModuleScript" referent="228">
           <Properties>
             <string name="Name">MogStage</string>
             <string name="Source"><![CDATA[--[[
@@ -54770,7 +55430,7 @@ return MogStage
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="225">
+        <Item class="ModuleScript" referent="229">
           <Properties>
             <string name="Name">Pads</string>
             <string name="Source"><![CDATA[--[[
@@ -54792,12 +55452,17 @@ return MogStage
 	yet turns grey (PadPriceOff) and dims the effect line; a plain status stays white; a pad that
 	needs a game pass shows its price as Ink print on a gold chip. With no effect the label
 	closes up to two lines. The labels float above the head of a character standing on the pad;
-	along the buy row they climb outward (LABEL_LIFTS) so no tag covers its neighbour. Merge
+	along the buy row they climb outward (LABEL_LIFTS) so no tag covers its neighbour, and a few
+	stand off their pad's centre (LABEL_SHIFT) to stay clear of a tag or the HUD in the spawn
+	view. They are sized in studs, so they shrink with distance; Fx.PadLabels caps their size
+	on screen up close, so the tag of the pad underfoot never covers the next pad's. Merge
 	shows only its name in sunny yellow, as a low tag standing at the pad's far left corner
 	(LABEL_SHIFT), under the pen's crate labels in the spawn view. On a plot nobody owns the
 	names and effects are dimmed (setClaimed). A disabled pad turns soft grey
 	(Theme.Colors.PadDisabled).
 ]]
+
+local CollectionService = game:GetService("CollectionService")
 
 local Layout = require(script.Parent.Parent.PlotLayout)
 local Common = require(script.Parent.Common)
@@ -54871,8 +55536,14 @@ local LABEL_GROW: { [string]: number } = { Merge = 0.65, Deposit = 0.7 }
 -- is drawn over the pen's front wall, under every crate label and left of the character.
 -- The speed upgrades' tags lean out toward the walkway (and float higher, see LABEL_LIFTS):
 -- over their pads they sat on the juice bar's bottles and the blender beside the palm.
+-- From the spawn the deposit pad lines up with Auto Merge behind it, so the deposit tag stands
+-- over its pad's front outer quarter (toward the spawn and the converter): over the centre it
+-- hid the Auto Merge tag. Buy 1's tag leans in and back toward the rack, where perspective
+-- draws it nearer the screen's middle: over its pad it sat half under the left menu buttons.
 local LABEL_SHIFT: { [string]: Vector2 } = {
 	Merge = Vector2.new(5.2, 3.5),
+	Deposit = Vector2.new(-4, -4),
+	Buy1 = Vector2.new(-1.5, 4),
 	ProcUp1 = Vector2.new(3, -1.5),
 	ProcUp10 = Vector2.new(2, 0),
 }
@@ -55103,6 +55774,10 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number, hei
 	gui.StudsOffsetWorldSpace = padPart.CFrame:VectorToObjectSpace(offset + Vector3.new(0, height / 2, 0))
 	gui.MaxDistance = LABEL_MAX_DISTANCE
 	gui.LightInfluence = 0
+	-- Fx.PadLabels caps the label's on-screen size up close (Shared.PadLabelSize) and needs its
+	-- own size back once the camera is far again.
+	gui:SetAttribute("BaseSize", gui.Size)
+	CollectionService:AddTag(gui, "PadLabel")
 	gui.Parent = padPart
 	local card = Instance.new("Frame")
 	card.Name = "Card"
@@ -55376,7 +56051,7 @@ return Pads
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="226">
+        <Item class="ModuleScript" referent="230">
           <Properties>
             <string name="Name">Pen</string>
             <string name="Source"><![CDATA[--[[
@@ -55698,7 +56373,7 @@ return Pen
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="227">
+        <Item class="ModuleScript" referent="231">
           <Properties>
             <string name="Name">PoseStage</string>
             <string name="Source"><![CDATA[--!strict
@@ -57477,7 +58152,7 @@ return PoseStage
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="228">
+        <Item class="ModuleScript" referent="232">
           <Properties>
             <string name="Name">Props</string>
             <string name="Source"><![CDATA[--!strict
@@ -57748,7 +58423,7 @@ return Props
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="229">
+        <Item class="ModuleScript" referent="233">
           <Properties>
             <string name="Name">ShakeArena</string>
             <string name="Source"><![CDATA[--!strict
@@ -59625,7 +60300,7 @@ return ShakeArena
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="230">
+        <Item class="ModuleScript" referent="234">
           <Properties>
             <string name="Name">Shell</string>
             <string name="Source"><![CDATA[--[[
@@ -60074,7 +60749,7 @@ return Shell
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="231">
+        <Item class="ModuleScript" referent="235">
           <Properties>
             <string name="Name">Shelves</string>
             <string name="Source"><![CDATA[--[[
@@ -60726,7 +61401,7 @@ return Shelves
           </Properties>
         </Item>
       </Item>
-      <Item class="ModuleScript" referent="232">
+      <Item class="ModuleScript" referent="236">
         <Properties>
           <string name="Name">WorldBuilder</string>
           <string name="Source"><![CDATA[--[[
@@ -61533,26 +62208,26 @@ return WorldBuilder
       </Item>
     </Item>
   </Item>
-  <Item class="SoundService" referent="233">
+  <Item class="SoundService" referent="237">
     <Properties>
       <string name="Name">SoundService</string>
       <bool name="RespectFilteringEnabled">true</bool>
     </Properties>
   </Item>
-  <Item class="StarterPlayer" referent="234">
+  <Item class="StarterPlayer" referent="238">
     <Properties>
       <string name="Name">StarterPlayer</string>
       <float name="CameraMaxZoomDistance">120</float>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="235">
+    <Item class="StarterPlayerScripts" referent="239">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="Folder" referent="236">
+      <Item class="Folder" referent="240">
         <Properties>
           <string name="Name">Client</string>
         </Properties>
-        <Item class="ModuleScript" referent="237">
+        <Item class="ModuleScript" referent="241">
           <Properties>
             <string name="Name">Animator</string>
             <string name="Source"><![CDATA[--[[
@@ -62232,11 +62907,11 @@ return Animator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="238">
+        <Item class="Folder" referent="242">
           <Properties>
             <string name="Name">Fx</string>
           </Properties>
-          <Item class="ModuleScript" referent="239">
+          <Item class="ModuleScript" referent="243">
             <Properties>
               <string name="Name">Ambient</string>
               <string name="Source"><![CDATA[--[[
@@ -62616,7 +63291,7 @@ return Ambient
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="240">
+          <Item class="ModuleScript" referent="244">
             <Properties>
               <string name="Name">Bowling</string>
               <string name="Source"><![CDATA[--!strict
@@ -64229,7 +64904,7 @@ return Bowling
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="241">
+          <Item class="ModuleScript" referent="245">
             <Properties>
               <string name="Name">Budget</string>
               <string name="Source"><![CDATA[--[[
@@ -64406,7 +65081,7 @@ return Budget
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="242">
+          <Item class="ModuleScript" referent="246">
             <Properties>
               <string name="Name">BuyArrows</string>
               <string name="Source"><![CDATA[--[[
@@ -65011,7 +65686,7 @@ return BuyArrows
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="243">
+          <Item class="ModuleScript" referent="247">
             <Properties>
               <string name="Name">Camera</string>
               <string name="Source"><![CDATA[--[[
@@ -65535,7 +66210,7 @@ return Camera
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="244">
+          <Item class="ModuleScript" referent="248">
             <Properties>
               <string name="Name">Cardio</string>
               <string name="Source"><![CDATA[--!strict
@@ -67342,7 +68017,7 @@ return CardioFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="245">
+          <Item class="ModuleScript" referent="249">
             <Properties>
               <string name="Name">CardioChase</string>
               <string name="Source"><![CDATA[--!strict
@@ -68001,7 +68676,7 @@ return ChaseFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="246">
+          <Item class="ModuleScript" referent="250">
             <Properties>
               <string name="Name">Cosmetics</string>
               <string name="Source"><![CDATA[--[[
@@ -68319,7 +68994,7 @@ return CosmeticsFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="247">
+          <Item class="ModuleScript" referent="251">
             <Properties>
               <string name="Name">Crates</string>
               <string name="Source"><![CDATA[--[[
@@ -70631,7 +71306,7 @@ return Crates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="248">
+          <Item class="ModuleScript" referent="252">
             <Properties>
               <string name="Name">Fans</string>
               <string name="Source"><![CDATA[--[[
@@ -71787,7 +72462,7 @@ return Fans
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="249">
+          <Item class="ModuleScript" referent="253">
             <Properties>
               <string name="Name">Highlights</string>
               <string name="Source"><![CDATA[--[[
@@ -71911,7 +72586,7 @@ return Highlights
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="250">
+          <Item class="ModuleScript" referent="254">
             <Properties>
               <string name="Name">Interactive</string>
               <string name="Source"><![CDATA[--!strict
@@ -73237,7 +73912,7 @@ return Interactive
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="251">
+          <Item class="ModuleScript" referent="255">
             <Properties>
               <string name="Name">Machines</string>
               <string name="Source"><![CDATA[-- Client-side machine juice for the local player's own plot, painted from Theme.World (no glow
@@ -75714,7 +76389,7 @@ return Machines
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="252">
+          <Item class="ModuleScript" referent="256">
             <Properties>
               <string name="Name">Modes</string>
               <string name="Source"><![CDATA[--!strict
@@ -77732,7 +78407,7 @@ return ModesFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="253">
+          <Item class="ModuleScript" referent="257">
             <Properties>
               <string name="Name">Mog</string>
               <string name="Source"><![CDATA[--!strict
@@ -78761,7 +79436,7 @@ return MogFx
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="254">
+          <Item class="ModuleScript" referent="258">
             <Properties>
               <string name="Name">Orbs</string>
               <string name="Source"><![CDATA[-- Client-side aura orb visuals for the local player's own plot.
@@ -81512,7 +82187,97 @@ return Orbs
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="255">
+          <Item class="ModuleScript" referent="259">
+            <Properties>
+              <string name="Name">PadLabels</string>
+              <string name="Source"><![CDATA[--[[
+	Fx.PadLabels: keeps the pads' floating labels from ballooning up close.
+
+	World.Pads tags every pad label (BillboardGui "PadLabel") with "PadLabel" and stores its
+	stud + pixel size in the "BaseSize" attribute. Every frame each label's depth in front of
+	the camera gives its natural on-screen size; past Shared.PadLabelSize's cap (a share of the
+	viewport's height) the label is pinned at the capped pixel size, and it gets its stud size
+	back once the camera is far enough again. Labels are only written when they cross the cap
+	or the capped size changes (viewport resize, FOV kick), so the far labels cost a dot product.
+]]
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local PadLabelSize = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("PadLabelSize"))
+
+local TAG = "PadLabel"
+-- Pixel change below which a capped label is not resized again.
+local EPSILON = 0.5
+
+local PadLabels = {}
+
+type Entry = { base: UDim2, capped: boolean, w: number, h: number }
+
+local entries: { [BillboardGui]: Entry } = {}
+
+local function baseOf(gui: BillboardGui): UDim2
+	local base = gui:GetAttribute("BaseSize")
+	return if typeof(base) == "UDim2" then base else gui.Size
+end
+
+local function add(gui: Instance)
+	if not gui:IsA("BillboardGui") or entries[gui] then
+		return
+	end
+	entries[gui] = { base = baseOf(gui), capped = false, w = 0, h = 0 }
+end
+
+local function remove(gui: Instance)
+	entries[gui :: BillboardGui] = nil
+end
+
+local function step()
+	local camera = Workspace.CurrentCamera
+	if not camera then
+		return
+	end
+	local eye = camera.CFrame.Position
+	local look = camera.CFrame.LookVector
+	local viewportY = camera.ViewportSize.Y
+	local fov = camera.FieldOfView
+	for gui, entry in entries do
+		local adornee = gui.Adornee
+		if not (adornee and adornee:IsA("BasePart") and gui.Enabled) then
+			continue
+		end
+		local pos = adornee.Position + adornee.CFrame:VectorToWorldSpace(gui.StudsOffsetWorldSpace)
+		local depth = (pos - eye):Dot(look)
+		local base = entry.base
+		local w, h, capped = PadLabelSize.size(base.X.Scale, base.X.Offset, base.Y.Scale, base.Y.Offset, depth, viewportY, fov)
+		if capped then
+			if not entry.capped or math.abs(w - entry.w) > EPSILON or math.abs(h - entry.h) > EPSILON then
+				entry.capped, entry.w, entry.h = true, w, h
+				gui.Size = UDim2.fromOffset(w, h)
+			end
+		elseif entry.capped then
+			entry.capped = false
+			gui.Size = base
+		end
+	end
+end
+
+function PadLabels.init()
+	for _, gui in CollectionService:GetTagged(TAG) do
+		add(gui)
+	end
+	CollectionService:GetInstanceAddedSignal(TAG):Connect(add)
+	CollectionService:GetInstanceRemovedSignal(TAG):Connect(remove)
+	RunService.RenderStepped:Connect(step)
+end
+
+return PadLabels
+]]></string>
+            </Properties>
+          </Item>
+          <Item class="ModuleScript" referent="260">
             <Properties>
               <string name="Name">PlateStyle</string>
               <string name="Source"><![CDATA[--!strict
@@ -81761,7 +82526,7 @@ return PlateStyle
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="256">
+          <Item class="ModuleScript" referent="261">
             <Properties>
               <string name="Name">Plates</string>
               <string name="Source"><![CDATA[--!strict
@@ -82592,7 +83357,7 @@ return Plates
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="257">
+          <Item class="ModuleScript" referent="262">
             <Properties>
               <string name="Name">PlayerPose</string>
               <string name="Source"><![CDATA[--!strict
@@ -82937,7 +83702,7 @@ return PlayerPose
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="258">
+          <Item class="ModuleScript" referent="263">
             <Properties>
               <string name="Name">PlotRank</string>
               <string name="Source"><![CDATA[--[[
@@ -85088,7 +85853,7 @@ return PlotRank
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="259">
+          <Item class="ModuleScript" referent="264">
             <Properties>
               <string name="Name">Pose</string>
               <string name="Source"><![CDATA[--!strict
@@ -86393,7 +87158,7 @@ return Pose
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="260">
+          <Item class="ModuleScript" referent="265">
             <Properties>
               <string name="Name">Shake</string>
               <string name="Source"><![CDATA[--!strict
@@ -87597,7 +88362,7 @@ return Shake
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="261">
+          <Item class="ModuleScript" referent="266">
             <Properties>
               <string name="Name">Shelf</string>
               <string name="Source"><![CDATA[--[[
@@ -90104,7 +90869,7 @@ return Shelf
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="262">
+          <Item class="ModuleScript" referent="267">
             <Properties>
               <string name="Name">Sprites</string>
               <string name="Source"><![CDATA[--[[
@@ -90309,7 +91074,7 @@ return Sprites
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="263">
+          <Item class="ModuleScript" referent="268">
             <Properties>
               <string name="Name">Surge</string>
               <string name="Source"><![CDATA[--[[
@@ -90598,7 +91363,7 @@ return Surge
             </Properties>
           </Item>
         </Item>
-        <Item class="ModuleScript" referent="264">
+        <Item class="ModuleScript" referent="269">
           <Properties>
             <string name="Name">Guide</string>
             <string name="Source"><![CDATA[--[[
@@ -91030,7 +91795,9 @@ function Guide.labelTop(part: BasePart): number
 	if not (label and label:IsA("BillboardGui")) then
 		return 0
 	end
-	local size = label.Size.Y
+	-- Fx.PadLabels caps the label's on-screen size up close; "BaseSize" keeps its own size.
+	local base = label:GetAttribute("BaseSize")
+	local size = (if typeof(base) == "UDim2" then base else label.Size).Y
 	-- The label's offset runs along the pad's own axes (a round pad is a cylinder on its side).
 	local up = part.CFrame:VectorToWorldSpace(label.StudsOffsetWorldSpace).Y
 	local top = up + (size.Scale + size.Offset * LABEL_PX_STUDS) / 2
@@ -91566,11 +92333,11 @@ return Guide
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="265">
+        <Item class="Folder" referent="270">
           <Properties>
             <string name="Name">Intro</string>
           </Properties>
-          <Item class="ModuleScript" referent="266">
+          <Item class="ModuleScript" referent="271">
             <Properties>
               <string name="Name">Actors</string>
               <string name="Source"><![CDATA[--!strict
@@ -92239,7 +93006,7 @@ return Actors
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="267">
+          <Item class="ModuleScript" referent="272">
             <Properties>
               <string name="Name">Avatar</string>
               <string name="Source"><![CDATA[--!strict
@@ -92882,7 +93649,7 @@ return Avatar
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="268">
+          <Item class="ModuleScript" referent="273">
             <Properties>
               <string name="Name">AvatarRig</string>
               <string name="Source"><![CDATA[--!strict
@@ -93113,7 +93880,7 @@ return AvatarRig
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="269">
+          <Item class="ModuleScript" referent="274">
             <Properties>
               <string name="Name">Cutscene</string>
               <string name="Source"><![CDATA[--[[
@@ -93956,7 +94723,7 @@ return Cutscene
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="270">
+          <Item class="ModuleScript" referent="275">
             <Properties>
               <string name="Name">Effects</string>
               <string name="Source"><![CDATA[--!strict
@@ -94881,7 +95648,7 @@ return Effects
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="271">
+          <Item class="ModuleScript" referent="276">
             <Properties>
               <string name="Name">Framing</string>
               <string name="Source"><![CDATA[--!strict
@@ -95088,7 +95855,7 @@ return Framing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="272">
+          <Item class="ModuleScript" referent="277">
             <Properties>
               <string name="Name">Stage</string>
               <string name="Source"><![CDATA[--!strict
@@ -95374,7 +96141,7 @@ return Stage
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="273">
+          <Item class="ModuleScript" referent="278">
             <Properties>
               <string name="Name">Timeline</string>
               <string name="Source"><![CDATA[--!strict
@@ -95722,7 +96489,7 @@ return Timeline
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="274">
+          <Item class="ModuleScript" referent="279">
             <Properties>
               <string name="Name">Ui</string>
               <string name="Source"><![CDATA[--!strict
@@ -96598,7 +97365,7 @@ return Ui
             </Properties>
           </Item>
         </Item>
-        <Item class="LocalScript" referent="275">
+        <Item class="LocalScript" referent="280">
           <Properties>
             <string name="Name">Main</string>
             <string name="Source"><![CDATA[-- Client entry point: builds the UI and routes server messages.
@@ -96614,6 +97381,7 @@ local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Format = require(Shared.Format)
 local Net = require(Shared.Net)
+local TestEnv = require(Shared.TestEnv)
 
 local Client = script.Parent
 local State = require(Client.State)
@@ -96845,8 +97613,9 @@ end
 -- Studio-only capture hook: "UiPreview" = "<WindowName>", "Shop,<focus>", "close", "starter",
 -- "reward,<tier>", "rewards,<from>,<to>" (one reveal per tier), "crate,<Rarity>,<tier>" (the
 -- crate reveal with its rarity banner, then that unit), "gift", "surge", "tutorialdone"
--- or "away" (the "While you were away" card, with made-up offline cash).
-if RunService:IsStudio() then
+-- or "away" (the "While you were away" card, with made-up offline cash). Also live in the
+-- TEST experience only (Shared.TestEnv), where Client.TestBridge drives it for agents.
+if RunService:IsStudio() or TestEnv.isTest() then
 	player:GetAttributeChangedSignal("UiPreview"):Connect(function()
 		local spec = player:GetAttribute("UiPreview")
 		if typeof(spec) ~= "string" or spec == "" then
@@ -97210,6 +97979,7 @@ if fxFolder then
 			"Pose",
 			"Bowling",
 			"BuyArrows",
+			"PadLabels",
 		}
 	do
 		local moduleScript = fxFolder:FindFirstChild(name)
@@ -97232,7 +98002,7 @@ action:FireServer({ action = "Sync" })
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="276">
+        <Item class="ModuleScript" referent="281">
           <Properties>
             <string name="Name">Sounds</string>
             <string name="Source"><![CDATA[-- Sound effects plus background music.
@@ -97800,7 +98570,7 @@ return Sounds
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="277">
+        <Item class="ModuleScript" referent="282">
           <Properties>
             <string name="Name">State</string>
             <string name="Source"><![CDATA[-- Client-side store for the latest server snapshot.
@@ -97849,11 +98619,187 @@ return State
 ]]></string>
           </Properties>
         </Item>
-        <Item class="Folder" referent="278">
+        <Item class="LocalScript" referent="283">
+          <Properties>
+            <string name="Name">TestBridge</string>
+            <string name="Source"><![CDATA[--[[
+	Client half of the agent test bridge (Server.TestBridge, docs/agent-playtest.md).
+
+	Inert unless Shared.TestEnv.isTest() (the TEST experience only). Listens on
+	ReplicatedStorage.TestBridgeClient (created by the server only in test) for:
+
+	  { cmd = "ui", panel }        a window/popup spec for the client's UiPreview hook
+	                               (Main.client: "Shop", "Shop,Passes", "close", "gift", ...)
+	  { cmd = "camera", preset?, pos?, look?, fov?, distance? }
+	                               preset "reset" | "front" | "back" | "overhead", or a fixed
+	                               pos -> look; held every frame until "reset"
+	  { cmd = "hideui", hidden? }  hide/show every ScreenGui and the core UI (toggle when nil)
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local StarterGui = game:GetService("StarterGui")
+local Workspace = game:GetService("Workspace")
+
+local TestEnv = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("TestEnv"))
+
+if not TestEnv.isTest() then
+	return
+end
+
+local player = Players.LocalPlayer
+local remote = ReplicatedStorage:WaitForChild("TestBridgeClient", 60) :: RemoteEvent?
+if not remote then
+	return
+end
+
+local BIND = "TestBridgeCamera"
+local held: (() -> CFrame?)? = nil
+local savedFov: number? = nil
+
+local function root(): BasePart?
+	local character = player.Character
+	local part = character and character:FindFirstChild("HumanoidRootPart")
+	return if part and part:IsA("BasePart") then part else nil
+end
+
+local function flatLook(part: BasePart): Vector3
+	local look = Vector3.new(part.CFrame.LookVector.X, 0, part.CFrame.LookVector.Z)
+	return if look.Magnitude > 0.01 then look.Unit else Vector3.new(0, 0, -1)
+end
+
+-- Camera CFrame for a preset, relative to the character (nil when there is none).
+local function presetFrame(preset: string, distance: number?): CFrame?
+	local part = root()
+	if not part then
+		return nil
+	end
+	local at = part.Position
+	local look = flatLook(part)
+	if preset == "front" then
+		local d = distance or 9
+		return CFrame.lookAt(at + look * d + Vector3.new(0, 1.5, 0), at + Vector3.new(0, 0.5, 0))
+	elseif preset == "back" then
+		local d = distance or 14
+		return CFrame.lookAt(at - look * d + Vector3.new(0, 6, 0), at + look * 10)
+	elseif preset == "overhead" then
+		local d = distance or 70
+		return CFrame.lookAt(at + Vector3.new(0, d, 0) - look * 0.01, at)
+	end
+	return nil
+end
+
+local function release()
+	RunService:UnbindFromRenderStep(BIND)
+	held = nil
+	local camera = Workspace.CurrentCamera
+	if camera then
+		camera.CameraType = Enum.CameraType.Custom
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			camera.CameraSubject = humanoid
+		end
+		if savedFov then
+			camera.FieldOfView = savedFov
+		end
+	end
+	savedFov = nil
+end
+
+local function hold(frame: () -> CFrame?, fov: number?)
+	local camera = Workspace.CurrentCamera
+	if not camera then
+		return
+	end
+	if fov and not savedFov then
+		savedFov = camera.FieldOfView
+	end
+	held = frame
+	RunService:UnbindFromRenderStep(BIND)
+	-- After the default camera and any Fx camera, so the shot stays put.
+	RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
+		local cam = Workspace.CurrentCamera
+		local cf = held and held()
+		if cam and cf then
+			cam.CameraType = Enum.CameraType.Scriptable
+			cam.CFrame = cf
+			if fov then
+				cam.FieldOfView = fov
+			end
+		end
+	end)
+end
+
+-- UI hiding: remembers which ScreenGuis it turned off, so showing again restores exactly those.
+local hiddenGuis: { [ScreenGui]: boolean } = {}
+local uiHidden = false
+
+local function setHidden(hidden: boolean)
+	if hidden == uiHidden then
+		return
+	end
+	uiHidden = hidden
+	local gui = player:FindFirstChildOfClass("PlayerGui")
+	if hidden then
+		for _, child in (if gui then gui:GetChildren() else {}) do
+			if child:IsA("ScreenGui") and child.Enabled then
+				child.Enabled = false
+				hiddenGuis[child] = true
+			end
+		end
+	else
+		for screen in hiddenGuis do
+			if screen.Parent then
+				screen.Enabled = true
+			end
+		end
+		table.clear(hiddenGuis)
+	end
+	pcall(StarterGui.SetCoreGuiEnabled, StarterGui, Enum.CoreGuiType.All, not hidden)
+end
+
+remote.OnClientEvent:Connect(function(payload: any)
+	if type(payload) ~= "table" then
+		return
+	end
+	if payload.cmd == "ui" and type(payload.panel) == "string" then
+		-- Re-arm the hook so the same spec twice still fires.
+		player:SetAttribute("UiPreview", "")
+		player:SetAttribute("UiPreview", payload.panel)
+	elseif payload.cmd == "camera" then
+		local fov = tonumber(payload.fov)
+		if payload.preset == "reset" then
+			release()
+		elseif type(payload.preset) == "string" then
+			local preset, distance = payload.preset, tonumber(payload.distance)
+			-- Follows the character: a preset framed on it keeps it framed while it moves.
+			hold(function()
+				return presetFrame(preset, distance)
+			end, fov)
+		elseif typeof(payload.pos) == "Vector3" and typeof(payload.look) == "Vector3" then
+			local cf = CFrame.lookAt(payload.pos, payload.look)
+			hold(function()
+				return cf
+			end, fov)
+		end
+	elseif payload.cmd == "hideui" then
+		if type(payload.hidden) == "boolean" then
+			setHidden(payload.hidden)
+		else
+			setHidden(not uiHidden)
+		end
+	end
+end)
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="Folder" referent="284">
           <Properties>
             <string name="Name">UI</string>
           </Properties>
-          <Item class="ModuleScript" referent="279">
+          <Item class="ModuleScript" referent="285">
             <Properties>
               <string name="Name">AwayWindow</string>
               <string name="Source"><![CDATA[--[[
@@ -98206,7 +99152,7 @@ return AwayWindow
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="280">
+          <Item class="ModuleScript" referent="286">
             <Properties>
               <string name="Name">BowlingHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -100332,7 +101278,7 @@ return BowlingHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="281">
+          <Item class="ModuleScript" referent="287">
             <Properties>
               <string name="Name">CardioHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -102396,7 +103342,7 @@ return CardioHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="282">
+          <Item class="ModuleScript" referent="288">
             <Properties>
               <string name="Name">DailyWindow</string>
               <string name="Source"><![CDATA[--[[
@@ -103331,7 +104277,7 @@ return DailyWindow
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="283">
+          <Item class="ModuleScript" referent="289">
             <Properties>
               <string name="Name">Hud</string>
               <string name="Source"><![CDATA[--[[
@@ -107404,7 +108350,7 @@ return Hud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="284">
+          <Item class="ModuleScript" referent="290">
             <Properties>
               <string name="Name">Kit</string>
               <string name="Source"><![CDATA[--[[
@@ -111707,7 +112653,7 @@ return Kit
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="285">
+          <Item class="ModuleScript" referent="291">
             <Properties>
               <string name="Name">MapPicker</string>
               <string name="Source"><![CDATA[--[[
@@ -113005,7 +113951,7 @@ return MapPicker
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="286">
+          <Item class="ModuleScript" referent="292">
             <Properties>
               <string name="Name">MogHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -114340,7 +115286,7 @@ return MogHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="287">
+          <Item class="ModuleScript" referent="293">
             <Properties>
               <string name="Name">MogRing</string>
               <string name="Source"><![CDATA[--!strict
@@ -114870,7 +115816,7 @@ return MogRing
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="288">
+          <Item class="ModuleScript" referent="294">
             <Properties>
               <string name="Name">ObbyHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -115960,7 +116906,7 @@ return ObbyHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="289">
+          <Item class="ModuleScript" referent="295">
             <Properties>
               <string name="Name">Popups</string>
               <string name="Source"><![CDATA[--[[
@@ -122721,7 +123667,7 @@ return Popups
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="290">
+          <Item class="ModuleScript" referent="296">
             <Properties>
               <string name="Name">PoseHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -124623,7 +125569,7 @@ return PoseHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="291">
+          <Item class="ModuleScript" referent="297">
             <Properties>
               <string name="Name">ShakeHud</string>
               <string name="Source"><![CDATA[--!strict
@@ -126210,7 +127156,7 @@ return ShakeHud
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="292">
+          <Item class="ModuleScript" referent="298">
             <Properties>
               <string name="Name">ShopScenes</string>
               <string name="Source"><![CDATA[--[[
@@ -128138,7 +129084,7 @@ return ShopScenes
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="293">
+          <Item class="ModuleScript" referent="299">
             <Properties>
               <string name="Name">Tutorial</string>
               <string name="Source"><![CDATA[--[[
@@ -128798,7 +129744,7 @@ return Tutorial
 ]]></string>
             </Properties>
           </Item>
-          <Item class="ModuleScript" referent="294">
+          <Item class="ModuleScript" referent="300">
             <Properties>
               <string name="Name">Windows</string>
               <string name="Source"><![CDATA[--[[
@@ -134698,7 +135644,7 @@ return Windows
       </Item>
     </Item>
   </Item>
-  <Item class="Workspace" referent="295">
+  <Item class="Workspace" referent="301">
     <Properties>
       <string name="Name">Workspace</string>
       <float name="Gravity">196.2</float>

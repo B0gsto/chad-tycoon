@@ -2642,6 +2642,22 @@ function Tycoon.grantMoney(session: Session, amount: number, source: string?)
 	flush(session)
 end
 
+-- TEST tooling (Server.TestBridge): sets the player's cash to exactly `amount`, through the
+-- profile the HUD, the pads and the save all read (no "Earn" event, no cash effect).
+function Tycoon.setMoney(session: Session, amount: number)
+	session.profile.money = math.max(0, amount)
+	markDirty(session)
+	flush(session)
+end
+
+-- TEST tooling (Server.TestBridge): leaves `amount` uncollected cash waiting on the Collect pad
+-- (profile.pending: the vault's coin pile and the pad's price read it).
+function Tycoon.setPending(session: Session, amount: number)
+	session.profile.pending = math.max(0, amount)
+	markDirty(session)
+	flush(session)
+end
+
 -- A free crate of `rarity` opened on the spot (daily reward), in two steps so the caller
 -- can pay something else when it does not fit: rollCrate returns the tier of its unit, or
 -- nil when the rack has no room for that unit (full, and nothing can merge)...

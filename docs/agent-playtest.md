@@ -54,6 +54,8 @@ The result is printed as `{ok, result | error, cmd, jobId, placeVersion, at}`; e
 | `ping` | | userId, players in the server, whether the tycoon session is loaded |
 | `state` | | cash, income, production, plot index, passes, active mode, position, every scalar profile field (tables as `name#` counts) |
 | `cash` / `give` | `{amount}` | adds cash via `Tycoon.grantMoney` (the game's own path, saved like real cash) |
+| `setcash` | `{amount}` | sets the cash to exactly `amount` (0 to 1e15) via `Tycoon.setMoney`: the HUD and pads update and it saves like real cash; e.g. `cmd setcash '{"amount":10}'` to see the red spend flash |
+| `pending` | `{amount}` | leaves `amount` (0 to 1e15) uncollected cash on the Collect pad (`profile.pending`, what the vault's coin pile and the pad's price show); e.g. `cmd pending '{"amount":5000}'`. With the Auto Cash pass the next tick collects it at once |
 | `teleport` | `{spot}` or `{pos:[x,y,z], look?:[x,y,z]}` | moves the character (quits a running mini-game unless `stopMode:false`) |
 | `mode` | `{id, options?}` | enters a mini-game the way its gate does (`GameModes.start` with teleport) |
 | `stopmode` | | quits the current mini-game run |

@@ -255,6 +255,39 @@ COMMANDS.cash = {
 }
 COMMANDS.give = { help = "alias of cash", run = COMMANDS.cash.run }
 
+-- The amount argument of setcash / pending: a number in [0, MAX_GIVE].
+local function amountArg(args: Args): number
+	local amount = tonumber(args.amount)
+	if not amount or amount ~= amount or amount < 0 or amount > MAX_GIVE then
+		error("amount must be a number in [0, 1e15]")
+	end
+	return amount
+end
+
+COMMANDS.setcash = {
+	help = "args {amount}: set the cash to exactly amount (Tycoon.setMoney: HUD, pads and save follow); returns it",
+	run = function(player, args)
+		local session = Tycoon.getSession(player)
+		if not session then
+			error("player has no tycoon session yet")
+		end
+		Tycoon.setMoney(session, amountArg(args))
+		return { cash = session.profile.money }
+	end,
+}
+
+COMMANDS.pending = {
+	help = "args {amount}: leave amount uncollected cash on the Collect pad (the vault's coin pile); returns it",
+	run = function(player, args)
+		local session = Tycoon.getSession(player)
+		if not session then
+			error("player has no tycoon session yet")
+		end
+		Tycoon.setPending(session, amountArg(args))
+		return { pending = session.profile.pending }
+	end,
+}
+
 COMMANDS.teleport = {
 	help = "args {spot} (see list) or {pos:[x,y,z], look?:[x,y,z]}: move the character's feet there",
 	run = function(player, args)

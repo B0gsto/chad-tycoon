@@ -17,12 +17,17 @@
 	yet turns grey (PadPriceOff) and dims the effect line; a plain status stays white; a pad that
 	needs a game pass shows its price as Ink print on a gold chip. With no effect the label
 	closes up to two lines. The labels float above the head of a character standing on the pad;
-	along the buy row they climb outward (LABEL_LIFTS) so no tag covers its neighbour. Merge
+	along the buy row they climb outward (LABEL_LIFTS) so no tag covers its neighbour, and a few
+	stand off their pad's centre (LABEL_SHIFT) to stay clear of a tag or the HUD in the spawn
+	view. They are sized in studs, so they shrink with distance; Fx.PadLabels caps their size
+	on screen up close, so the tag of the pad underfoot never covers the next pad's. Merge
 	shows only its name in sunny yellow, as a low tag standing at the pad's far left corner
 	(LABEL_SHIFT), under the pen's crate labels in the spawn view. On a plot nobody owns the
 	names and effects are dimmed (setClaimed). A disabled pad turns soft grey
 	(Theme.Colors.PadDisabled).
 ]]
+
+local CollectionService = game:GetService("CollectionService")
 
 local Layout = require(script.Parent.Parent.PlotLayout)
 local Common = require(script.Parent.Common)
@@ -96,8 +101,14 @@ local LABEL_GROW: { [string]: number } = { Merge = 0.65, Deposit = 0.7 }
 -- is drawn over the pen's front wall, under every crate label and left of the character.
 -- The speed upgrades' tags lean out toward the walkway (and float higher, see LABEL_LIFTS):
 -- over their pads they sat on the juice bar's bottles and the blender beside the palm.
+-- From the spawn the deposit pad lines up with Auto Merge behind it, so the deposit tag stands
+-- over its pad's front outer quarter (toward the spawn and the converter): over the centre it
+-- hid the Auto Merge tag. Buy 1's tag leans in and back toward the rack, where perspective
+-- draws it nearer the screen's middle: over its pad it sat half under the left menu buttons.
 local LABEL_SHIFT: { [string]: Vector2 } = {
 	Merge = Vector2.new(5.2, 3.5),
+	Deposit = Vector2.new(-4, -4),
+	Buy1 = Vector2.new(-1.5, 4),
 	ProcUp1 = Vector2.new(3, -1.5),
 	ProcUp10 = Vector2.new(2, 0),
 }
@@ -328,6 +339,10 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number, hei
 	gui.StudsOffsetWorldSpace = padPart.CFrame:VectorToObjectSpace(offset + Vector3.new(0, height / 2, 0))
 	gui.MaxDistance = LABEL_MAX_DISTANCE
 	gui.LightInfluence = 0
+	-- Fx.PadLabels caps the label's on-screen size up close (Shared.PadLabelSize) and needs its
+	-- own size back once the camera is far again.
+	gui:SetAttribute("BaseSize", gui.Size)
+	CollectionService:AddTag(gui, "PadLabel")
 	gui.Parent = padPart
 	local card = Instance.new("Frame")
 	card.Name = "Card"
