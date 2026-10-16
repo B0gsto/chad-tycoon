@@ -5526,6 +5526,44 @@ test("PadLabelSize: pad labels keep their world size far away and are capped up 
 	check(string.find(fs.readFile("src/client/Main.client.luau"), '"PadLabels"', 1, true) ~= nil, "Main starts Fx.PadLabels")
 end)
 
+test("PadLabelSize: far labels stacked behind nearer ones fade, with hysteresis", function()
+	local PadLabelSize = require("../src/shared/PadLabelSize")
+	local function r(x: number, y: number, w: number, h: number)
+		return { x = x, y = y, w = w, h = h }
+	end
+	eq(PadLabelSize.overlapShare(r(0, 0, 10, 10), r(20, 0, 10, 10)), 0, "apart: no overlap")
+	eq(PadLabelSize.overlapShare(r(0, 0, 10, 10), r(10, 0, 10, 10)), 0, "touching edges: no overlap")
+	check(math.abs(PadLabelSize.overlapShare(r(0, 0, 10, 10), r(5, 0, 10, 10)) - 0.5) < 1e-9, "half over: 0.5")
+	eq(PadLabelSize.overlapShare(r(0, 0, 40, 40), r(0, 0, 10, 10)), 1, "share of the smaller rect")
+	eq(PadLabelSize.overlapShare(r(0, 0, 0, 10), r(0, 0, 10, 10)), 0, "an empty rect overlaps nothing")
+	-- The spawn view: the row's labels side by side, none faded.
+	local spawn = { r(100, 300, 80, 50), r(200, 300, 80, 50), r(300, 300, 80, 50), r(400, 300, 80, 50) }
+	local out = PadLabelSize.declutter(spawn, {})
+	for i = 1, #spawn do
+		check(not out[i], "spawn view: every label shown")
+	end
+	-- Looking along the row from Buy 1: the far labels stack (nearest first).
+	local along = { r(300, 300, 200, 120), r(700, 280, 60, 36), r(712, 280, 50, 30), r(720, 281, 44, 26) }
+	out = PadLabelSize.declutter(along, {})
+	check(not out[1] and not out[2], "the nearest labels stay shown")
+	check(out[3] and out[4], "labels stacked behind them fade")
+	-- Only nearer labels left shown count: a faded one hides nothing.
+	out = PadLabelSize.declutter({ r(0, 0, 10, 10), r(5, 0, 10, 10), r(12, 0, 10, 10) }, {})
+	check(out[2] and not out[3], "the third label is checked against the shown first, not the faded second")
+	-- Hysteresis: between FADE_IN_SHARE and FADE_OUT_SHARE a label keeps its state.
+	local a, b = r(0, 0, 10, 10), r(8.2, 0, 10, 10) -- 18% overlap
+	check(not PadLabelSize.declutter({ a, b }, { false, false })[2], "18% overlap: a shown label stays shown")
+	check(PadLabelSize.declutter({ a, b }, { false, true })[2], "18% overlap: a faded label stays faded")
+	check(not PadLabelSize.declutter({ a, r(9.5, 0, 10, 10) }, { false, true })[2], "5%: it comes back")
+	check(PadLabelSize.declutter({ a, r(7, 0, 10, 10) }, { false, false })[2], "30%: it fades")
+	-- The label the player stands at is never faded.
+	out = PadLabelSize.declutter({ r(0, 0, 10, 10), r(0, 0, 10, 10) }, { false, true }, { false, true })
+	check(not out[2], "a kept label stays shown")
+	local labels = fs.readFile("src/client/Fx/PadLabels.luau")
+	check(string.find(labels, "PadLabelSize.declutter", 1, true) ~= nil, "Fx.PadLabels declutters the plot's labels")
+	check(string.find(fs.readFile("src/client/Guide.luau"), "Declutter", 1, true) == nil, "Client.Guide is left alone")
+end)
+
 test("PadLabelSize: a label glides from its near to its far placement with the camera's distance", function()
 	local PadLabelSize = require("../src/shared/PadLabelSize")
 	local nearD, farD = PadLabelSize.NEAR_DISTANCE, PadLabelSize.FAR_DISTANCE

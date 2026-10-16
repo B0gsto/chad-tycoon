@@ -12,6 +12,12 @@
 	A label may also have two placements (World.Pads' "NearOffset" / "FarOffset" attributes):
 	one that reads with the camera beside its pad, one that reads from the plot's entrance.
 	placement blends them by the camera's distance from the pad (NEAR_DISTANCE..FAR_DISTANCE).
+
+	Labels always face the camera, so looking along the buy row from one end the far labels
+	pile up on screen. declutter decides which of them to fade: nearest first, a label whose
+	screen rect covers more than FADE_OUT_SHARE of a nearer shown label's (or its own, whichever
+	is smaller) fades out, and comes back once that is under FADE_IN_SHARE (the gap keeps it
+	from flickering).
 ]]
 
 local PadLabelSize = {}
@@ -69,6 +75,52 @@ end
 -- `far` offsets (both in the frame the label's StudsOffsetWorldSpace uses).
 function PadLabelSize.placement(near: Vector3, far: Vector3, distance: number): Vector3
 	return near:Lerp(far, PadLabelSize.blend(distance))
+end
+
+-- Overlap (share of the smaller rect) past which a farther label fades out, and under which a
+-- faded one comes back.
+PadLabelSize.FADE_OUT_SHARE = 0.25
+PadLabelSize.FADE_IN_SHARE = 0.1
+
+-- A label's rect on screen: centre `x`, `y` and size `w` x `h` (pixels).
+export type Rect = { x: number, y: number, w: number, h: number }
+
+-- How much of the smaller of rects `a` and `b` their overlap covers (0..1).
+function PadLabelSize.overlapShare(a: Rect, b: Rect): number
+	local ox = math.min(a.x + a.w / 2, b.x + b.w / 2) - math.max(a.x - a.w / 2, b.x - b.w / 2)
+	local oy = math.min(a.y + a.h / 2, b.y + b.h / 2) - math.max(a.y - a.h / 2, b.y - b.h / 2)
+	if ox <= 0 or oy <= 0 then
+		return 0
+	end
+	local smaller = math.min(a.w * a.h, b.w * b.h)
+	if smaller <= 0 then
+		return 0
+	end
+	return math.min(ox * oy / smaller, 1)
+end
+
+-- Which labels to fade. `rects` are the labels' screen rects nearest the camera first,
+-- `faded[i]` whether label i is faded now and `keep[i]` (optional) whether it must stay shown
+-- (the pad the player is at). Returns the new faded flags: each label is checked against the
+-- nearer labels left shown, a shown one fading past FADE_OUT_SHARE, a faded one coming back
+-- under FADE_IN_SHARE.
+function PadLabelSize.declutter(rects: { Rect }, faded: { boolean }, keep: { boolean }?): { boolean }
+	local result = table.create(#rects, false)
+	local shown: { Rect } = {}
+	for i, rect in rects do
+		local worst = 0
+		if not (keep and keep[i]) then
+			for _, other in shown do
+				worst = math.max(worst, PadLabelSize.overlapShare(rect, other))
+			end
+		end
+		local out = if faded[i] then worst >= PadLabelSize.FADE_IN_SHARE else worst > PadLabelSize.FADE_OUT_SHARE
+		result[i] = out
+		if not out then
+			table.insert(shown, rect)
+		end
+	end
+	return result
 end
 
 return PadLabelSize

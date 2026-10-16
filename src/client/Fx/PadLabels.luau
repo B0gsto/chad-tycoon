@@ -13,11 +13,21 @@
 	them by the camera's distance from its pad (Shared.PadLabelSize.placement). Only labels whose
 	placements differ, on the local player's plot and within their MaxDistance are moved, and
 	only when the blend changed by more than BLEND_EPSILON.
+
+	Every DECLUTTER_PERIOD the local plot's labels in view are projected to screen rects and
+	Shared.PadLabelSize.declutter picks the ones that hide behind a nearer label (looking along
+	the buy row the far ones stack up): those fade out over FADE_TIME and back once clear. The
+	label of the pad the player stands at (nearest to the character) is never faded. A label
+	has no transparency of its own, so a fading label's elements are moved into a CanvasGroup
+	("Declutter") whose GroupTransparency is tweened; once back in full they are moved out
+	again and the group is dropped, so a shown label renders exactly as World.Pads built it.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local PadLabelSize = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("PadLabelSize"))
@@ -28,6 +38,10 @@ local TAG = "PadLabel"
 local EPSILON = 0.5
 -- Blend change (0..1) below which a gliding label is not moved again (under 0.02 studs here).
 local BLEND_EPSILON = 0.004
+-- Seconds between declutter passes, and how long a label takes to fade out or back in.
+local DECLUTTER_PERIOD = 0.1
+local FADE_TIME = 0.15
+local FADE_INFO = TweenInfo.new(FADE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 local PadLabels = {}
 
@@ -37,6 +51,10 @@ type Glide = { near: Vector3, far: Vector3, t: number }
 
 local entries: { [BillboardGui]: Entry } = {}
 local glides: { [BillboardGui]: Glide } = {}
+-- Labels faded (or fading back in) by the declutter: the group holding their elements.
+type Fade = { group: CanvasGroup, out: boolean, tween: Tween? }
+local fades: { [BillboardGui]: Fade } = {}
+local sinceDeclutter = 0
 
 local function baseOf(gui: BillboardGui): UDim2
 	local base = gui:GetAttribute("BaseSize")
@@ -57,6 +75,59 @@ end
 local function remove(gui: Instance)
 	entries[gui :: BillboardGui] = nil
 	glides[gui :: BillboardGui] = nil
+	local fade = fades[gui :: BillboardGui]
+	if fade then
+		fades[gui :: BillboardGui] = nil
+		if fade.tween then
+			fade.tween:Cancel()
+		end
+	end
+end
+
+-- Fades a label out (`out`) or back in. Fading out wraps its elements in a CanvasGroup;
+-- once back in they are unwrapped and the group goes.
+local function setFaded(gui: BillboardGui, out: boolean)
+	local fade = fades[gui]
+	if not fade then
+		if not out then
+			return
+		end
+		local group = Instance.new("CanvasGroup")
+		group.Name = "Declutter"
+		group.Size = UDim2.fromScale(1, 1)
+		group.BackgroundTransparency = 1
+		group.BorderSizePixel = 0
+		group.GroupTransparency = 0
+		for _, child in gui:GetChildren() do
+			if child:IsA("GuiObject") then
+				child.Parent = group
+			end
+		end
+		group.Parent = gui
+		fade = { group = group, out = false, tween = nil }
+		fades[gui] = fade
+	end
+	local f = fade :: Fade
+	if f.out == out and f.tween then
+		return
+	end
+	f.out = out
+	if f.tween then
+		f.tween:Cancel()
+	end
+	local tween = TweenService:Create(f.group, FADE_INFO, { GroupTransparency = if out then 1 else 0 })
+	f.tween = tween
+	tween.Completed:Connect(function(state)
+		if state ~= Enum.PlaybackState.Completed or fades[gui] ~= f or f.out then
+			return
+		end
+		fades[gui] = nil
+		for _, child in f.group:GetChildren() do
+			child.Parent = gui
+		end
+		f.group:Destroy()
+	end)
+	tween:Play()
 end
 
 local function ownPlot(): Instance?
@@ -96,10 +167,94 @@ local function glide(eye: Vector3)
 	end
 end
 
-local function step()
+local function anchorOf(gui: BillboardGui, adornee: BasePart): Vector3
+	return adornee.Position + adornee.CFrame:VectorToWorldSpace(gui.StudsOffsetWorldSpace)
+end
+
+type Candidate = { gui: BillboardGui, rect: PadLabelSize.Rect, distance: number, keep: boolean }
+
+-- Fades the local plot's labels that a nearer label covers on screen (see the header).
+local function declutter(camera: Camera)
+	local plot = ownPlot()
+	local eye = camera.CFrame.Position
+	local look = camera.CFrame.LookVector
+	local viewport = camera.ViewportSize
+	local fov = camera.FieldOfView
+	local character = Players.LocalPlayer.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local feet = if root and root:IsA("BasePart") then root.Position else nil
+	local list: { Candidate } = {}
+	local nearest: Candidate?, nearestGap = nil, math.huge
+	if plot then
+		for gui, entry in entries do
+			local adornee = gui.Adornee
+			if not (adornee and adornee:IsA("BasePart") and gui.Enabled and gui:IsDescendantOf(plot)) then
+				continue
+			end
+			local pos = anchorOf(gui, adornee)
+			local distance = (pos - eye).Magnitude
+			local depth = (pos - eye):Dot(look)
+			if depth <= 0 or (adornee.Position - eye).Magnitude > gui.MaxDistance then
+				continue
+			end
+			local point = camera:WorldToViewportPoint(pos)
+			local base = entry.base
+			local w, h = PadLabelSize.size(base.X.Scale, base.X.Offset, base.Y.Scale, base.Y.Offset, depth, viewport.Y, fov)
+			if point.X + w / 2 < 0 or point.X - w / 2 > viewport.X or point.Y + h / 2 < 0 or point.Y - h / 2 > viewport.Y then
+				continue
+			end
+			local c: Candidate = { gui = gui, rect = { x = point.X, y = point.Y, w = w, h = h }, distance = distance, keep = false }
+			table.insert(list, c)
+			if feet then
+				local gap = Vector2.new(adornee.Position.X - feet.X, adornee.Position.Z - feet.Z).Magnitude
+				if gap < nearestGap then
+					nearest, nearestGap = c, gap
+				end
+			end
+		end
+	end
+	if nearest then
+		nearest.keep = true
+	end
+	-- The kept label first (so it always counts as shown), then nearest the camera first.
+	table.sort(list, function(a, b)
+		if a.keep ~= b.keep then
+			return a.keep
+		end
+		return a.distance < b.distance
+	end)
+	local rects, faded, keep = {}, {}, {}
+	for i, c in list do
+		rects[i] = c.rect
+		local fade = fades[c.gui]
+		faded[i] = fade ~= nil and fade.out
+		keep[i] = c.keep
+	end
+	local result = PadLabelSize.declutter(rects, faded, keep)
+	local seen: { [BillboardGui]: boolean } = {}
+	for i, c in list do
+		seen[c.gui] = true
+		if result[i] ~= faded[i] then
+			setFaded(c.gui, result[i])
+		end
+	end
+	-- Labels out of view or off the plot come back.
+	for gui, fade in fades do
+		if fade.out and not seen[gui] then
+			setFaded(gui, false)
+		end
+	end
+end
+
+local function step(dt: number)
 	local camera = Workspace.CurrentCamera
 	if not camera then
 		return
+	end
+	sinceDeclutter += dt
+	if sinceDeclutter >= DECLUTTER_PERIOD then
+		sinceDeclutter = 0
+		declutter(camera)
 	end
 	local eye = camera.CFrame.Position
 	local look = camera.CFrame.LookVector
@@ -111,7 +266,7 @@ local function step()
 		if not (adornee and adornee:IsA("BasePart") and gui.Enabled) then
 			continue
 		end
-		local pos = adornee.Position + adornee.CFrame:VectorToWorldSpace(gui.StudsOffsetWorldSpace)
+		local pos = anchorOf(gui, adornee)
 		local depth = (pos - eye):Dot(look)
 		local base = entry.base
 		local w, h, capped = PadLabelSize.size(base.X.Scale, base.X.Offset, base.Y.Scale, base.Y.Offset, depth, viewportY, fov)
