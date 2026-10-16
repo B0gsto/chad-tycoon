@@ -55530,7 +55530,7 @@ local LABEL_MAX_DISTANCE = 90
 -- The merge tag stands just above its pad: see LABEL_SHIFT.
 local LABEL_LIFTS: { [string]: number } = {
 	Deposit = 6.4,
-	Buy1 = 9.4,
+	Buy1 = 8.4,
 	Buy100 = 7.6,
 	AutoMerge = 9.6,
 	ProcUp1 = 6.6,
@@ -55555,7 +55555,7 @@ local LABEL_GROW: { [string]: number } = { Merge = 0.65, Deposit = 0.7 }
 local LABEL_SHIFT: { [string]: Vector2 } = {
 	Merge = Vector2.new(5.2, 3.5),
 	Deposit = Vector2.new(-4, -4),
-	Buy1 = Vector2.new(-3, 7),
+	Buy1 = Vector2.new(-2.5, 5.5),
 	ProcUp1 = Vector2.new(3, -1.5),
 	ProcUp10 = Vector2.new(2, 0),
 }
