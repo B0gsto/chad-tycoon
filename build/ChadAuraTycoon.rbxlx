@@ -82389,6 +82389,9 @@ return Orbs
 	has no transparency of its own, so a fading label's elements are moved into a CanvasGroup
 	("Declutter") whose GroupTransparency is tweened; once back in full they are moved out
 	again and the group is dropped, so a shown label renders exactly as World.Pads built it.
+	A BillboardGui does not honour GroupTransparency (the TEST bridge's `labels` showed a group
+	at 1 holding every element while the sign still drew), so once faded out the group is also
+	hidden (Visible = false) and shown again as it starts back in.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -82494,10 +82497,17 @@ local function setFaded(gui: BillboardGui, out: boolean)
 	if f.tween then
 		f.tween:Cancel()
 	end
+	if not out then
+		f.group.Visible = true
+	end
 	local tween = TweenService:Create(f.group, FADE_INFO, { GroupTransparency = if out then 1 else 0 })
 	f.tween = tween
 	tween.Completed:Connect(function(state)
-		if state ~= Enum.PlaybackState.Completed or fades[gui] ~= f or f.out then
+		if state ~= Enum.PlaybackState.Completed or fades[gui] ~= f then
+			return
+		end
+		if f.out then
+			f.group.Visible = false
 			return
 		end
 		fades[gui] = nil

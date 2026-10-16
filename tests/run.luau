@@ -5561,6 +5561,17 @@ test("PadLabelSize: far labels stacked behind nearer ones fade, with hysteresis"
 	check(not out[2], "a kept label stays shown")
 	local labels = fs.readFile("src/client/Fx/PadLabels.luau")
 	check(string.find(labels, "PadLabelSize.declutter", 1, true) ~= nil, "Fx.PadLabels declutters the plot's labels")
+	-- A BillboardGui ignores GroupTransparency: a faded label's group must be hidden outright.
+	check(string.find(labels, "f.group.Visible = false", 1, true) ~= nil, "a faded label's group is hidden once out")
+	check(string.find(labels, "f.group.Visible = true", 1, true) ~= nil, "and shown again as it fades back in")
+	-- Diagnostics: each label's worst overlap and the shown label giving it.
+	local _, shares, covers = PadLabelSize.declutter({ r(0, 0, 10, 10), r(7, 0, 10, 10), r(40, 0, 10, 10) }, {})
+	check(math.abs(shares[2] - 0.3) < 1e-6 and covers[2] == 1, "declutter reports the overlap and its cover")
+	check(shares[3] == 0 and covers[3] == 0 and covers[1] == 0, "and none for a clear label")
+	check(
+		string.find(fs.readFile("src/server/TestBridge.luau"), "COMMANDS.labels", 1, true) ~= nil,
+		"the TEST bridge has the labels diagnostic"
+	)
 	check(string.find(fs.readFile("src/client/Guide.luau"), "Declutter", 1, true) == nil, "Client.Guide is left alone")
 end)
 
