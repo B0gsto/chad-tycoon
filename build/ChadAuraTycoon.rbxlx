@@ -82550,6 +82550,26 @@ local function anchorOf(gui: BillboardGui, adornee: BasePart): Vector3
 	return adornee.Position + adornee.CFrame:VectorToWorldSpace(gui.StudsOffsetWorldSpace)
 end
 
+-- The fade group's state for the diagnostics: what it holds and what is left outside it.
+local function groupReport(gui: BillboardGui, fade: Fade): { [string]: any }
+	local outside = {}
+	for _, child in gui:GetChildren() do
+		if child ~= fade.group and child:IsA("GuiObject") and child.Visible then
+			table.insert(outside, child.Name)
+		end
+	end
+	local size = fade.group.AbsoluteSize
+	return {
+		out = fade.out,
+		transparency = math.round(fade.group.GroupTransparency * 100) / 100,
+		visible = fade.group.Visible,
+		parented = fade.group.Parent == gui,
+		inside = #fade.group:GetChildren(),
+		outside = outside,
+		absSize = { math.round(size.X), math.round(size.Y) },
+	}
+end
+
 type Candidate = { gui: BillboardGui, rect: PadLabelSize.Rect, distance: number, keep: boolean }
 
 -- Fades the local plot's labels that a nearer label covers on screen (see the header).
@@ -82642,7 +82662,7 @@ local function declutter(camera: Camera)
 			onScreen = true,
 			keep = c.keep,
 			faded = result[i],
-			fadeGroup = if fade then { out = fade.out, transparency = math.round(fade.group.GroupTransparency * 100) / 100 } else nil,
+			fadeGroup = if fade then groupReport(c.gui, fade) else nil,
 			overlap = math.round(shares[i] * 1000) / 1000,
 			cover = if cover then (cover.gui.Adornee :: BasePart).Name else nil,
 		})
