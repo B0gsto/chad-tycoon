@@ -24,6 +24,12 @@
 
 	Shop funnel (recurring "Shop"): 1 Opened, 2 Prompted, 3 Purchased. One funnel session
 	per shop visit; a prompt from outside the shop (pads, crate panel) starts a new one.
+	Each prompt and each purchase is also a custom event per item, so prompts shown can be
+	set against purchases for every pass and product:
+	  PurchasePrompt  list price in Robux; item, Pass / Product, tier band
+	  PurchaseDone    Robux paid (a pass: its list price); item, Pass / Product, tier band
+	Items (Telemetry.itemLabel): a pass's name ("DoubleAura"), "Money 1".."Money 4",
+	"Aura 1".."Aura 4", "LegacyMoney n" (a retired pack's pending receipt) and "Crate".
 
 	Custom events (value; custom fields 1, 2, 3). Shared.Telemetry has the labels:
 	  TierReached   tier; "Tier 12", player age        a best tier from 11 up, when discovered
@@ -123,6 +129,11 @@ end
 
 -- Player -> current shop funnel session id and its last step.
 local shopFunnel: { [Player]: { id: string, step: number } } = {}
+
+-- A Robux item of a shop funnel step (Monetization): `kind` "Pass" or "Product", `name` the
+-- pass or the product list ("Money", "Aura", "LegacyMoney", "Crate"), `index` its place in
+-- that list, `robux` the price.
+export type Item = { kind: string, name: string, index: number?, robux: number? }
 
 -- What this module keeps for a session, from its first event to SessionEnd.
 type State = {
@@ -305,7 +316,9 @@ function Analytics.intro(session: Tycoon.Session, skipped: boolean, seconds: num
 	event(session, name, seconds)
 end
 
-function Analytics.shop(player: Player, step: number, name: string)
+-- A shop funnel step; `item` (a prompt or a purchase) also logs "PurchasePrompt" or
+-- "PurchaseDone" for that item.
+function Analytics.shop(player: Player, step: number, name: string, item: Item?)
 	local funnel = shopFunnel[player]
 	if step == 1 or not funnel or step <= funnel.step then
 		funnel = { id = HttpService:GenerateGUID(false), step = 0 }
@@ -313,9 +326,15 @@ function Analytics.shop(player: Player, step: number, name: string)
 	end
 	funnel.step = step
 	local session = Tycoon.getSession(player)
+	local state = session and stateOf(session)
 	-- Opening the shop over and over is capped; a purchase always counts.
 	local kind = if step >= 3 then "Step" else "Event"
-	send(session and stateOf(session), kind, "LogFunnelStepEvent", player, "Shop", funnel.id, step, name)
+	send(state, kind, "LogFunnelStepEvent", player, "Shop", funnel.id, step, name)
+	if item and session and state and step >= 2 then
+		local robux = if type(item.robux) == "number" and item.robux >= 0 then item.robux else nil
+		local labels = { Telemetry.itemLabel(item.name, item.index), Telemetry.word(item.kind), Telemetry.tierBand(bestTier(session)) }
+		custom(state, kind, player, if step >= 3 then "PurchaseDone" else "PurchasePrompt", robux, labels)
+	end
 end
 
 -- Cash into the wallet from `source` (a Telemetry.SOURCES name; "Purchase" = "Pack").
