@@ -701,7 +701,10 @@ local function exportScene(root, extra)
 		elseif d:IsA("BillboardGui") and prop(d, "Enabled", true) then
 			local adornee = d.Adornee or d.Parent
 			if adornee and adornee:IsA("BasePart") then
-				local pos = adornee.CFrame.Position + prop(d, "StudsOffset", Vector3.zero) + prop(d, "StudsOffsetWorldSpace", Vector3.zero)
+				-- StudsOffsetWorldSpace runs along the adornee's own axes (as in Roblox).
+				local pos = adornee.CFrame.Position
+					+ prop(d, "StudsOffset", Vector3.zero)
+					+ adornee.CFrame:VectorToWorldSpace(prop(d, "StudsOffsetWorldSpace", Vector3.zero))
 				-- Pixel-sized billboards keep a constant on-screen size; the renderer
 				-- bakes them at 48 px per "stud" and sizes them by camera distance.
 				local pixels = d.Size.X.Scale == 0 and d.Size.Y.Scale == 0

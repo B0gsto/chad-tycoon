@@ -178,6 +178,10 @@ local TUNE = {
 		confetti = 20, -- over the piggy bank as the last coin goes in
 		stars = 4,
 		puff = 3.6, -- dust ring radius at the pad, studs
+		tickEvery = 2.5, -- seconds between the small "+$X" ticks over the growing pile
+		tickRange = 60, -- studs from the camera to the pad; farther, no tick
+		tickScale = 0.8,
+		tickSize = 0.6, -- the whole tick at 60%: up close it read too big over the pile
 	},
 	buy = {
 		coins = 8, -- coins from the pad (one more per digit of the price, at most 14)
@@ -1369,11 +1373,31 @@ end
 
 -- Collect pad coin stack ----------------------------------------------------------------------
 
-local MAX_COINS = 24
+local MAX_COINS = 40 -- 24 stack on the plate (8 layers of 3), the rest spill onto the floor
 local coins: { Part } = {}
 local coinHomes: { CFrame } = {}
+-- Each coin's drop-in tween: staggered up to ~2 s for a big pile, so it must be cancelled
+-- when the coin is put away, or it lands the coin back on its spot after the pile cleared.
+local coinTweens: { [number]: Tween } = {}
 local shownCoins = 0
 local burstAt = 0
+
+-- Puts coins first..last away (off the map), stopping any drop-in still on its way.
+local function hideCoins(first: number, last: number)
+	for i = first, last do
+		local tween = coinTweens[i]
+		if tween then
+			tween:Cancel()
+			coinTweens[i] = nil
+		end
+		local coin = coins[i]
+		if coin then
+			coin.CFrame = FAR
+			coin.Transparency = 0
+		end
+		coinHomes[i] = FAR
+	end
+end
 
 local function coinTarget(): number
 	local data = State.data
@@ -1381,10 +1405,34 @@ local function coinTarget(): number
 	if pending < 1 or os.clock() - burstAt < 1 then
 		return 0
 	end
-	return math.clamp(math.floor(math.log10(pending) * 5) + 1, 1, MAX_COINS)
+	return math.clamp(math.floor(math.log10(pending) * 6) + 1, 1, MAX_COINS)
 end
 
 local function coinHome(i: number, pad: BasePart): CFrame
+	if i > 24 then
+		-- Spill: coins slid off the full stack lie around the plate on the floor, tipped against
+		-- each other. Seeded by index, so a coin keeps its spot while the pile grows.
+		-- How far the pad's top stands over the plot floor, and how far its base reaches past the
+		-- coloured top (Server.World.Pads: a weight plate's rubber is RIM_TOP 0.35 + PLATE_LIP
+		-- 0.25 tall with the disc TOP_RISE 0.15 proud of it; a tile's base is 0.35 under the
+		-- same rise; both PlotLayout.PAD_RIM 0.5 wider than the top).
+		local round = (pad :: Part).Shape == Enum.PartType.Cylinder
+		local stand = if round then 0.75 else 0.5
+		local rim = 0.5
+		-- The coin (Size below): its radius and half its thickness.
+		local radius, half = 0.525, 0.11
+		local rng = Random.new(i * 7919)
+		local reach = (if round then pad.Size.Y else math.max(pad.Size.X, pad.Size.Z)) / 2 + rim
+		local angle = (i - 24) * 2.4 + rng:NextNumber(-0.3, 0.3)
+		local dist = reach + 0.4 + ((i - 24) % 3) * 0.45 + rng:NextNumber(0, 0.25)
+		local tilt = math.rad(rng:NextNumber(8, 34))
+		local floor = padTop(pad) + Vector3.new(math.cos(angle) * dist, -stand, math.sin(angle) * dist)
+		-- A tipped disc rests on its lowest rim point.
+		return CFrame.new(floor + Vector3.new(0, radius * math.sin(tilt) + half * math.cos(tilt), 0))
+			* CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
+			* CFrame.Angles(tilt, 0, 0)
+			* UPRIGHT
+	end
 	local col = (i - 1) % 3
 	local layer = math.floor((i - 1) / 3)
 	local offsets = { Vector3.new(-0.6, 0, -0.35), Vector3.new(0.6, 0, -0.35), Vector3.new(0, 0, 0.6) }
@@ -1412,21 +1460,71 @@ local function syncCoins()
 			local home = coinHome(i, pad)
 			coinHomes[i] = home
 			local coin = coins[i]
-			coin.CFrame = home + Vector3.new(0, 1.6, 0)
+			-- Stack coins drop onto the pile; spilled ones tumble off its top and bounce down.
+			local spill = i > 24
+			coin.CFrame = if spill then CFrame.new(padTop(pad) + UP * 2.2) * home.Rotation else home + UP * 1.6
 			coin.Transparency = 1
-			TweenService:Create(
+			local old = coinTweens[i]
+			if old then
+				old:Cancel()
+			end
+			local tween = TweenService:Create(
 				coin,
-				TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out, 0, false, (i - shownCoins - 1) * 0.04),
+				TweenInfo.new(
+					if spill then 0.45 else 0.3,
+					if spill then Enum.EasingStyle.Bounce else Enum.EasingStyle.Back,
+					Enum.EasingDirection.Out,
+					0,
+					false,
+					(i - shownCoins - 1) * 0.04
+				),
 				{ CFrame = home, Transparency = 0 }
-			):Play()
+			)
+			coinTweens[i] = tween
+			tween.Completed:Once(function()
+				if coinTweens[i] == tween then
+					coinTweens[i] = nil
+				end
+			end)
+			tween:Play()
 		end
 	else
-		for i = target + 1, shownCoins do
-			coins[i].CFrame = FAR
-			coinHomes[i] = FAR
-		end
+		hideCoins(target + 1, shownCoins)
 	end
 	shownCoins = target
+end
+
+-- A small "+$X" ticks up over the pile now and then while uncollected cash grows: what came
+-- in since the last tick. Only near the pad, so it reads as the pile filling, not as spam.
+local coinTick = { at = 0, base = 0, seen = false }
+
+local function tickCoins()
+	local pad = collectPad
+	local data = State.data
+	if not pad or not data then
+		return
+	end
+	local pending = tonumber(data.pending) or 0
+	if not coinTick.seen or pending < coinTick.base then
+		-- First look, or the cash was collected: count from here.
+		coinTick.seen = true
+		coinTick.base = pending
+		return
+	end
+	local K = TUNE.collect
+	local now = os.clock()
+	local gain = pending - coinTick.base
+	if gain < 1 or now - coinTick.at < K.tickEvery or now - burstAt < 1 then
+		return
+	end
+	coinTick.at = now
+	coinTick.base = pending
+	local camera = Workspace.CurrentCamera
+	if not camera or (camera.CFrame.Position - pad.Position).Magnitude > K.tickRange then
+		return
+	end
+	local lift = 1.4 + math.ceil(math.min(shownCoins, 24) / 3) * 0.26
+	Orbs.text(padTop(pad) + UP * lift, "+" .. Format.money(gain), C.Good, { scale = K.tickScale, size = K.tickSize, rise = 1.5, life = 1 })
 end
 
 local lastShower = 0
@@ -1559,7 +1657,8 @@ local function onCash(data: any)
 		cashArc({ target + UP * 1.5, pos + UP * 1.5 }, amount, K.arcDelay)
 	end
 	for i = 1, n do
-		local from = if i <= shownCoins then coinHomes[i].Position else pos + UP * 0.5
+		-- Off the top of the pile first (the spill, then the stack's upper layers).
+		local from = if i <= shownCoins then coinHomes[shownCoins - i + 1].Position else pos + UP * 0.5
 		if target then
 			-- Coins hop off the stack into the piggy bank's slot.
 			hop({
@@ -1589,9 +1688,7 @@ local function onCash(data: any)
 			hop({ from = from, to = pos + dir + UP * 0.3, delay = i * 0.03, duration = 0.5, arc = 3, size = K.hopSize })
 		end
 	end
-	for i = 1, shownCoins do
-		coins[i].CFrame = FAR
-	end
+	hideCoins(1, MAX_COINS)
 	shownCoins = 0
 	burstAt = os.clock()
 	puff(pos + UP * 0.4, TEAL_LIGHT, K.puff, 10)
@@ -1632,7 +1729,7 @@ local function onBuy(data: any)
 	local B = TUNE.buy
 	local cost = tonumber(data.cost)
 	if cost and cost > 0 then
-		Orbs.walletText("-" .. Format.money(cost), CORAL)
+		Orbs.walletText("-" .. Format.money(cost), C.Bad)
 	end
 	if typeof(data.padPos) ~= "Vector3" then
 		return
@@ -1840,6 +1937,11 @@ end
 -- Upgrade burst -------------------------------------------------------------------------------
 
 local function onUpgrade(data: any)
+	-- The price leaves the wallet in red, as on a buy (free and pass upgrades send no cost).
+	local cost = tonumber(data.cost)
+	if cost and cost > 0 and not data.free then
+		Orbs.walletText("-" .. Format.money(cost), C.Bad)
+	end
 	if typeof(data.padPos) ~= "Vector3" then
 		return
 	end
@@ -2308,6 +2410,11 @@ local function bindPlot(p: Instance)
 		end
 	end
 	collectPad = p:FindFirstChild("Pad_Collect") :: BasePart?
+	-- A new plot: its pile is built afresh and its cash ticks count from its own pending.
+	hideCoins(1, MAX_COINS)
+	shownCoins = 0
+	coinTick.seen = false
+	coinTick.at = 0
 	bindConverter(p)
 	bindJar()
 	bindProcessor(p)
@@ -2337,6 +2444,7 @@ function Machines.init()
 		if plot then
 			syncCrackers(fromSnapshot)
 			syncCoins()
+			tickCoins()
 		end
 	end
 	State.changed.Event:Connect(function()

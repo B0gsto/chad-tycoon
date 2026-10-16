@@ -480,6 +480,7 @@ export type TextOptions = {
 	plate: Color3?, -- a rounded badge of this colour behind the text
 	flash: boolean?, -- blink white a few times on the way in (with `plate`: the badge blinks)
 	hud: boolean?, -- moved down (along the camera's up) until it stays under the top HUD
+	size: number?, -- multiplies the whole text's size (below scale's 0.5 floor); 1 = as scale gives
 }
 
 -- The HUD's pixel scale (TycoonUI's UIScale; 1 at 1280x720).
@@ -602,8 +603,10 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	end
 	-- Pixel floor plus a share of the old stud size: about the old size up close, never tiny
 	-- far away.
-	local pxWide = px * FX.text.letter * math.max(utf8.len(text) or #text, 4) + px
-	local studsWide, studsHigh = (4 * k + 2) * FX.text.studs, (1.4 * k + 0.4) * FX.text.studs
+	local size = o.size or 1
+	local pxWide = (px * FX.text.letter * math.max(utf8.len(text) or #text, 4) + px) * size
+	local studsWide, studsHigh = (4 * k + 2) * FX.text.studs * size, (1.4 * k + 0.4) * FX.text.studs * size
+	px *= size
 	do
 		local camera = Workspace.CurrentCamera
 		local at = camera and camera:WorldToViewportPoint(pos)
@@ -641,7 +644,7 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	label.Rotation = (math.random() - 0.5) * 10
 	label.Parent = gui
 	local stroke = Instance.new("UIStroke")
-	stroke.Thickness = FX.text.stroke + k
+	stroke.Thickness = math.max(1.5, (FX.text.stroke + k) * size)
 	stroke.Color = o.stroke or C.Stroke or Color3.new(0, 0, 0)
 	stroke.Parent = label
 	local scale = Instance.new("UIScale")

@@ -5150,6 +5150,8 @@ require("./plot_rank")({ test = test, check = check, eq = eq })
 require("./index_rewards")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared, loadDataService = loadDataService })
 -- Comeback hooks: the "While you were away" rows and the "Before you go" line (tests/comeback.luau).
 require("./comeback")({ test = test, check = check, eq = eq, loadShared = loadShared })
+-- What to buy next: the affordable pads, Buy Max, the best pick (tests/buy_next.luau).
+require("./buy_next")({ test = test, check = check, eq = eq, loadShared = loadShared })
 -- Every script compiles the way Studio compiles it: 200 locals per chunk (tests/fx_juice.luau).
 require("./fx_juice")({ test = test, check = check })
 
@@ -5496,6 +5498,162 @@ test("loading screen brand matches the theme and assets", function()
 	for _, key in { "image", "x", "y", "w", "h" } do
 		eq(Brand.Orb[key], Assets.Icons.Orb[key], "Brand.Orb." .. key)
 	end
+end)
+
+test("PadLabelSize: pad labels keep their world size far away and are capped up close", function()
+	local PadLabelSize = require("../src/shared/PadLabelSize")
+	local vy, fov = 1000, 70
+	-- A buy-row label (7.5 studs x 0.8 wide, LABEL_PX 32) seen from the spawn, ~60 studs away.
+	local w, h, capped = PadLabelSize.size(6, 32, 6 * 0.62, 32 * 0.62, 60, vy, fov)
+	check(not capped, "from the spawn the label is not capped")
+	check(math.abs(w - (6 * PadLabelSize.pixelsPerStud(60, vy, fov) + 32)) < 1e-6, "natural width = studs x px/stud + px")
+	check(math.abs(h / w - 0.62) < 1e-6, "natural shape kept")
+	-- Standing on the pad: ~15 studs from the camera.
+	local cw, ch, near = PadLabelSize.size(6, 32, 6 * 0.62, 32 * 0.62, 15, vy, fov)
+	check(near, "up close the label is capped")
+	eq(cw, PadLabelSize.MAX_SHARE * vy, "capped width = MAX_SHARE of the viewport height")
+	check(math.abs(ch / cw - 0.62) < 1e-6, "capped label keeps its shape")
+	check(cw <= 2.2 * w, "up close it is at most about twice its spawn size")
+	-- The neighbouring pad's centre is 10.25 studs away: two capped labels never meet.
+	check(10.25 * PadLabelSize.pixelsPerStud(17, vy, fov) > cw, "neighbouring capped labels stay apart")
+	local _, _, behind = PadLabelSize.size(6, 32, 3.72, 19.84, -5, vy, fov)
+	check(behind, "a label at or behind the camera counts as close")
+	local ww = PadLabelSize.size(6, 32, 3.72, 19.84, 60, 2 * vy, fov)
+	check(ww > w, "a taller viewport draws it bigger")
+	local pads = fs.readFile("src/server/World/Pads.luau")
+	check(string.find(pads, 'AddTag(gui, "PadLabel")', 1, true) ~= nil, "World.Pads tags its labels for Fx.PadLabels")
+	check(string.find(pads, 'SetAttribute("BaseSize"', 1, true) ~= nil, "and stores their own size")
+	check(string.find(fs.readFile("src/client/Main.client.luau"), '"PadLabels"', 1, true) ~= nil, "Main starts Fx.PadLabels")
+end)
+
+test("PadLabelSize: far labels stacked behind nearer ones fade, with hysteresis", function()
+	local PadLabelSize = require("../src/shared/PadLabelSize")
+	local function r(x: number, y: number, w: number, h: number)
+		return { x = x, y = y, w = w, h = h }
+	end
+	eq(PadLabelSize.overlapShare(r(0, 0, 10, 10), r(20, 0, 10, 10)), 0, "apart: no overlap")
+	eq(PadLabelSize.overlapShare(r(0, 0, 10, 10), r(10, 0, 10, 10)), 0, "touching edges: no overlap")
+	check(math.abs(PadLabelSize.overlapShare(r(0, 0, 10, 10), r(5, 0, 10, 10)) - 0.5) < 1e-9, "half over: 0.5")
+	eq(PadLabelSize.overlapShare(r(0, 0, 40, 40), r(0, 0, 10, 10)), 1, "share of the smaller rect")
+	eq(PadLabelSize.overlapShare(r(0, 0, 0, 10), r(0, 0, 10, 10)), 0, "an empty rect overlaps nothing")
+	-- The spawn view: the row's labels side by side, none faded.
+	local spawn = { r(100, 300, 80, 50), r(200, 300, 80, 50), r(300, 300, 80, 50), r(400, 300, 80, 50) }
+	local out = PadLabelSize.declutter(spawn, {})
+	for i = 1, #spawn do
+		check(not out[i], "spawn view: every label shown")
+	end
+	-- Looking along the row from Buy 1: the far labels stack (nearest first).
+	local along = { r(300, 300, 200, 120), r(700, 280, 60, 36), r(712, 280, 50, 30), r(720, 281, 44, 26) }
+	out = PadLabelSize.declutter(along, {})
+	check(not out[1] and not out[2], "the nearest labels stay shown")
+	check(out[3] and out[4], "labels stacked behind them fade")
+	-- Only nearer labels left shown count: a faded one hides nothing.
+	out = PadLabelSize.declutter({ r(0, 0, 10, 10), r(5, 0, 10, 10), r(12, 0, 10, 10) }, {})
+	check(out[2] and not out[3], "the third label is checked against the shown first, not the faded second")
+	-- Hysteresis: between FADE_IN_SHARE and FADE_OUT_SHARE a label keeps its state.
+	check(PadLabelSize.FADE_IN_SHARE < PadLabelSize.FADE_OUT_SHARE, "fade-in sits under fade-out")
+	local a, b = r(0, 0, 10, 10), r(8.8, 0, 10, 10) -- 12% overlap
+	check(not PadLabelSize.declutter({ a, b }, { false, false })[2], "12% overlap: a shown label stays shown")
+	check(PadLabelSize.declutter({ a, b }, { false, true })[2], "12% overlap: a faded label stays faded")
+	check(not PadLabelSize.declutter({ a, r(9.6, 0, 10, 10) }, { false, true })[2], "4%: it comes back")
+	check(PadLabelSize.declutter({ a, r(8, 0, 10, 10) }, { false, false })[2], "20%: it fades")
+	-- Seen on the server: Buy 25 over a fifth of Buy 100's sign hid its price; that fades now.
+	check(PadLabelSize.declutter({ r(0, 0, 118, 72), r(90, 0, 111, 68) }, { false, false })[2], "a 22% cover fades")
+	-- The spawn view's worst overlap on the server (Buy 5 over Buy 1, up to 7%) stays shown, and
+	-- a sign faded on the way there comes back.
+	local brush = { r(0, 0, 118, 73), r(-107, 0, 111, 68) }
+	check(PadLabelSize.overlapShare(brush[1], brush[2]) > 0.06, "the spawn brush is over 6%")
+	check(not PadLabelSize.declutter(brush, { false, false })[2], "a 7% brush stays shown")
+	check(not PadLabelSize.declutter(brush, { false, true })[2], "and a faded sign comes back there")
+	check(
+		not PadLabelSize.declutter({ r(0, 0, 10, 10), r(9.17, 0, 10, 10) }, { false, true })[2],
+		"an 8.3% brush (narrow window) brings a faded sign back"
+	)
+	-- The label the player stands at is never faded.
+	out = PadLabelSize.declutter({ r(0, 0, 10, 10), r(0, 0, 10, 10) }, { false, true }, { false, true })
+	check(not out[2], "a kept label stays shown")
+	local labels = fs.readFile("src/client/Fx/PadLabels.luau")
+	check(string.find(labels, "PadLabelSize.declutter", 1, true) ~= nil, "Fx.PadLabels declutters the plot's labels")
+	-- The plot's other floating signs join in: a nearer sign hides a farther one, whatever its kind.
+	check(
+		string.find(fs.readFile("src/server/WorldBuilder.luau"), 'AddTag(gui, "PlotSign")', 1, true) ~= nil,
+		"the READY! pill is a PlotSign"
+	)
+	check(string.find(labels, 'SIGN_TAG = "PlotSign"', 1, true) ~= nil, "Fx.PadLabels declutters the PlotSign signs too")
+	-- A BillboardGui ignores GroupTransparency: a faded label's group must be hidden outright.
+	check(string.find(labels, "f.group.Visible = false", 1, true) ~= nil, "a faded label's group is hidden once out")
+	check(string.find(labels, "f.group.Visible = true", 1, true) ~= nil, "and shown again as it fades back in")
+	-- Diagnostics: each label's worst overlap and the shown label giving it.
+	local _, shares, covers = PadLabelSize.declutter({ r(0, 0, 10, 10), r(7, 0, 10, 10), r(40, 0, 10, 10) }, {})
+	check(math.abs(shares[2] - 0.3) < 1e-6 and covers[2] == 1, "declutter reports the overlap and its cover")
+	check(shares[3] == 0 and covers[3] == 0 and covers[1] == 0, "and none for a clear label")
+	check(
+		string.find(fs.readFile("src/server/TestBridge.luau"), "COMMANDS.labels", 1, true) ~= nil,
+		"the TEST bridge has the labels diagnostic"
+	)
+	check(string.find(fs.readFile("src/client/Guide.luau"), "Declutter", 1, true) == nil, "Client.Guide is left alone")
+	-- The HUD's top-centre stack counts as a shown sign: what it covers fades, but not the kept one.
+	local hud = r(0, 0, 40, 20)
+	out, shares, covers = PadLabelSize.declutter({ r(0, 8, 10, 10), r(-15, 8, 10, 10), r(100, 0, 10, 10) }, {}, { true }, hud)
+	check(not out[1] and out[2] and covers[2] == -1, "the HUD stack fades a sign under it, not the kept one")
+	check(not out[3] and shares[3] == 0, "and leaves a sign clear of it")
+	eq(PadLabelSize.coverShare(r(0, 8, 10, 10), hud), 0.7, "cover share is of the sign's own area")
+	-- The kept sign is moved down to clear the stack (bottom at y 10), up to a limit.
+	eq(PadLabelSize.clearBelow(r(0, 8, 10, 10), hud, 4, 100), 11, "moved down so its top clears the HUD by the margin")
+	eq(PadLabelSize.clearBelow(r(0, 8, 10, 10), hud, 4, 5), 5, "never past the limit")
+	eq(PadLabelSize.clearBelow(r(100, 8, 10, 10), hud, 4, 100), 0, "a sign beside the stack stays put")
+	eq(PadLabelSize.clearBelow(r(0, 40, 10, 10), hud, 4, 100), 0, "and so does one already under it")
+end)
+
+test("PadLabelSize: a label glides from its near to its far placement with the camera's distance", function()
+	local PadLabelSize = require("../src/shared/PadLabelSize")
+	local nearD, farD = PadLabelSize.NEAR_DISTANCE, PadLabelSize.FAR_DISTANCE
+	eq(nearD, 22, "near placement within 22 studs")
+	eq(farD, 36, "far placement from 36 studs")
+	eq(PadLabelSize.blend(0), 0, "on the pad: near")
+	eq(PadLabelSize.blend(nearD), 0, "at NEAR_DISTANCE: still near")
+	eq(PadLabelSize.blend(farD), 1, "at FAR_DISTANCE: far")
+	eq(PadLabelSize.blend(200), 1, "past it: far")
+	check(math.abs(PadLabelSize.blend((nearD + farD) / 2) - 0.5) < 1e-9, "halfway between: halfway")
+	local last = 0
+	for d = nearD, farD, 0.25 do
+		local t = PadLabelSize.blend(d)
+		check(t >= last, "the glide never turns back")
+		check(t - last < 0.04, "and never jumps")
+		last = t
+	end
+	check(PadLabelSize.blend(nearD + 0.1) < 0.001, "it eases out of the near placement")
+	check(1 - PadLabelSize.blend(farD - 0.1) < 0.001, "and into the far one")
+	local near, far = Vector3.new(-1.5, 7.6, 4), Vector3.new(-3, 10, 7)
+	local function same(a: Vector3, b: Vector3): boolean
+		return (a - b).Magnitude < 1e-6
+	end
+	check(same(PadLabelSize.placement(near, far, 5), near), "up close it sits at its near placement")
+	check(same(PadLabelSize.placement(near, far, 50), far), "from afar at its far one")
+	check(same(PadLabelSize.placement(near, far, 29), Vector3.new(-2.25, 8.8, 5.5)), "between them on the line")
+	check(same(PadLabelSize.placement(far, far, 18), far), "a label with one placement stays put")
+	local pads = fs.readFile("src/server/World/Pads.luau")
+	check(string.find(pads, 'SetAttribute("NearOffset"', 1, true) ~= nil, "World.Pads stores the near placement")
+	check(string.find(pads, 'SetAttribute("FarOffset"', 1, true) ~= nil, "and the far one")
+	check(string.find(pads, "Buy1 = { lift = 6.4, shift = Vector2.new(-1.5, 1) }", 1, true) ~= nil, "Buy 1 sits over its pad up close")
+	check(string.find(pads, "Buy1 = Vector2.new(-3, 7)", 1, true) ~= nil, "and high and back from afar")
+	check(string.find(pads, "Buy1 = 10,", 1, true) ~= nil, "clear of the BUY 5 tag")
+	check(string.find(fs.readFile("src/client/Fx/PadLabels.luau"), "PadLabelSize.blend", 1, true) ~= nil, "Fx.PadLabels glides by it")
+	check(string.find(fs.readFile("src/client/Guide.luau"), '"NearOffset", "FarOffset"', 1, true) ~= nil, "Guide clears both placements")
+end)
+
+test("TestBridge: setcash and pending go through Tycoon and are documented", function()
+	local bridge = fs.readFile("src/server/TestBridge.luau")
+	local tycoon = fs.readFile("src/server/Tycoon.luau")
+	local doc = fs.readFile("docs/agent-playtest.md")
+	check(string.find(bridge, "COMMANDS.setcash", 1, true) ~= nil, "setcash command")
+	check(string.find(bridge, "Tycoon.setMoney(session", 1, true) ~= nil, "setcash uses Tycoon.setMoney")
+	check(string.find(bridge, "COMMANDS.pending", 1, true) ~= nil, "pending command")
+	check(string.find(bridge, "Tycoon.setPending(session", 1, true) ~= nil, "pending uses Tycoon.setPending")
+	check(string.find(tycoon, "function Tycoon.setMoney(", 1, true) ~= nil, "Tycoon.setMoney exists")
+	check(string.find(tycoon, "session.profile.pending = math.max(0, amount)", 1, true) ~= nil, "setPending sets profile.pending")
+	check(string.find(doc, "| `setcash` | `{amount}` |", 1, true) ~= nil, "setcash documented")
+	check(string.find(doc, "| `pending` | `{amount}` |", 1, true) ~= nil, "pending documented")
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

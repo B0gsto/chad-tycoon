@@ -608,6 +608,8 @@ if fxFolder then
 			"Shake",
 			"Pose",
 			"Bowling",
+			"BuyArrows",
+			"PadLabels",
 		}
 	do
 		local moduleScript = fxFolder:FindFirstChild(name)

@@ -204,6 +204,16 @@ def read_result(u, item_id):
     return value
 
 
+def delete_result(u, item_id):
+    """Frees a read result at once: the TEST experience's MemoryStore quota is ~68 KB in all, and
+    results left to expire filled it (every write then failed and `cmd` timed out)."""
+    try:
+        assets._http("DELETE", f"/cloud/v2/universes/{u}/memory-store/sorted-maps/{MAP}/items/"
+                               f"{urllib.parse.quote(item_id)}", timeout=15)
+    except Exception:  # best effort: the server prunes its own results too
+        pass
+
+
 def bridge(u, name, args=None, user=None, timeout=20.0, quiet_timeout=False):
     """Publishes one command and waits for its result dict ({ok, result|error, jobId, placeVersion, at}).
     None when nobody answered within `timeout` (target player in no server)."""
@@ -219,6 +229,7 @@ def bridge(u, name, args=None, user=None, timeout=20.0, quiet_timeout=False):
         delay = min(delay * 1.4, 2.0)
         res = read_result(u, item_id)
         if res is not None:
+            delete_result(u, item_id)
             return res
     if not quiet_timeout:
         print(f"no answer to `{name}` in {timeout:.0f} s: is user {user or OWNER_USER_ID} in a TEST server, and was "

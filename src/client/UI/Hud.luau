@@ -83,6 +83,7 @@ local TextService = game:GetService("TextService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
+local BuyNext = require(ReplicatedStorage.Shared.BuyNext)
 local Economy = require(ReplicatedStorage.Shared.Economy)
 local Format = require(ReplicatedStorage.Shared.Format)
 local Net = require(ReplicatedStorage.Shared.Net)
@@ -241,7 +242,18 @@ local TUNE = {
 	SheenTilt = 20,
 	-- The cash plate behind the amount and the "+": a green flash and a floating "+$X" on
 	-- income, a red edge when something is too dear.
-	CashPlateH = 58,
+	CashPlateH = 60,
+	-- The cash amount: big lime digits in a thick black outline, readable on any floor. Cash
+	-- going down (a buy, an upgrade) turns it strong red for MoneyDropHold, easing back over
+	-- MoneyDropTime (the "-$X" beside the plate is Fx.Orbs.walletText's).
+	MoneyText = 50,
+	MoneyColor = Color3.fromRGB(150, 255, 60),
+	MoneyStroke = 4.5,
+	MoneyStrokeColor = Color3.fromRGB(0, 0, 0),
+	MoneyDrop = Color3.fromRGB(255, 58, 48),
+	MoneyDropHold = 0.6,
+	MoneyDropTime = 0.5,
+	MoneyDropPop = 0.5,
 	CashFlash = C.CashDeep,
 	CashFlashTime = 0.45,
 	GainText = 22,
@@ -379,7 +391,7 @@ local TUNE = {
 	IncomeText = 23,
 	IncomeColor = C.MoneyText,
 	IncomeGap = 2, -- under the cash plate
-	IncomeChipH = 26, -- its bottom overhangs the wallet's 168 by 2, into the 6 px margin
+	IncomeChipH = 26, -- its bottom overhangs the wallet's 168 by 4, into the 6 px margin
 	IncomeArrow = 16,
 	IncomeArrowColor = C.Cash,
 	IncomePop = 1.3,
@@ -397,6 +409,7 @@ local GOAL_BAR_H = 4
 local NEAR_GAP = 4 -- the "nearer goal" on the strip's second line: its icon to its words
 local NEAR_TICK = 0.5 -- seconds between two looks at what the nearer goal should be
 local NEAR_SNOOZE = 300 -- a nearer goal the player tapped stays away this long
+local AFFORD_SECONDS = 45 -- "You can afford ...!" gives way after this long on the strip
 local BLENDER_FULL_SECONDS = 60 -- aura waiting in the blender for longer than this: "full"
 local BROKE_SECONDS = 60 -- nothing affordable for this long: a Game Mode pays sooner
 local FAR_SECONDS = 300 -- so does it when the next tier is further off than a mode's pay (5 min of income)
@@ -2517,14 +2530,18 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- The nearer goal: the strip's second line (paintGoal) ----------------------------------
 	-- While the next tier is a long way off there is nearly always something closer worth
 	-- doing. One at a time, by priority: the blender is full and a faster one is affordable;
-	-- a crate has finished in the Smasher; a Game Mode pays out and nothing is affordable (or
-	-- the tier is far); last, the blender is full and the upgrade is still out of reach. It
+	-- a crate has finished in the Smasher; a pad worth buying is affordable (Shared.BuyNext,
+	-- once per pad a session, for AFFORD_SECONDS at most); a Game Mode pays out and nothing
+	-- is affordable (or the tier is far); last, the blender is full and the upgrade is still
+	-- out of reach. It
 	-- takes the place of the estimate and never a row of its own: the top stack ends with
 	-- the strip, so the plot's labels behind it stay readable. A tap on the strip does it
 	-- (opens Modes) or draws the path to the pad; Client.Guide keeps a chevron over a pad it
 	-- names. The free gift is not one of them: its own button in the corner pulses "CLAIM!"
 	-- (paintFree).
 	local nearSnooze: { [string]: number } = {}
+	-- The "afford" pick: the pads it has had its say on, and the one it names since when.
+	local afford = { said = {} :: { [string]: boolean }, pad = nil :: string?, since = 0 }
 	local brokeSince: number? = nil
 	local goalShown = false
 	local function pickNear(data: { [string]: any }): Near?
@@ -2592,6 +2609,30 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				end
 			end
 		end
+		-- A pad worth buying is affordable: said once per pad, and only for so long.
+		local best = if awake("afford") then BuyNext.best(data) else nil
+		if best ~= afford.pad then
+			if afford.pad then
+				afford.said[afford.pad] = true
+			end
+			afford.pad, afford.since = best, now
+		end
+		if best and not afford.said[best] then
+			if now - afford.since <= AFFORD_SECONDS then
+				local what = BuyNext.title(best, data)
+				local buy = string.sub(best, 1, 3) == "Buy"
+				return {
+					kind = "afford",
+					text = "You can afford " .. what .. "! SHOW ME",
+					short = (if buy then what else "Faster Blender") .. "! SHOW ME",
+					icon = if buy then "Coin" else "Orb",
+					color = C.Cash,
+					pad = best,
+					tag = "BUY!",
+				}
+			end
+			afford.said[best] = true
+		end
 		local pays = 0
 		if type(data.modes) == "table" then
 			for _, info in data.modes do
@@ -2658,8 +2699,11 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				end
 				-- Said and heard: the blender and crate ones stay (their chevron is the point),
 				-- the others give way to the next one for a while.
-				if near.kind == "mode" or near.kind == "save" then
+				if near.kind == "mode" or near.kind == "save" or near.kind == "afford" then
 					nearSnooze[near.kind] = os.clock() + NEAR_SNOOZE
+				end
+				if near.kind == "afford" and near.pad then
+					afford.said[near.pad] = true
 				end
 				updateNear()
 			else
@@ -2793,7 +2837,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		TextScaled = true,
 		MaxTextSize = 200,
 		MinPx = G.TextMinPhone,
-		StrokeThickness = 2,
+		-- Thick Ink outlines: the plaque's peach glass behind is as pale as the text.
+		StrokeThickness = 3,
 		TextColor3 = C.GoldLight,
 		Size = captionSize,
 		Position = captionPos,
@@ -2804,7 +2849,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Text = "0",
 		Font = F.Number,
 		TextScaled = true,
-		StrokeThickness = 2.5,
+		StrokeThickness = 4,
 		Size = numberSize,
 		Position = numberPos,
 		ZIndex = 4,
@@ -2938,12 +2983,14 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Name = "Money",
 		Text = "$0",
 		Font = F.Number,
-		TextSize = 46,
-		StrokeThickness = 3,
-		TextColor3 = C.MoneyText,
+		TextSize = TUNE.MoneyText,
+		StrokeThickness = TUNE.MoneyStroke,
+		StrokeColor = TUNE.MoneyStrokeColor,
+		TextColor3 = TUNE.MoneyColor,
 		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 50),
-		Position = UDim2.fromOffset(0, 88),
+		-- Centred on the cash plate (y 84).
+		Size = UDim2.fromOffset(0, TUNE.MoneyText + 4),
+		Position = UDim2.fromOffset(0, 84 + (TUNE.CashPlateH - TUNE.MoneyText - 4) // 2),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		ZIndex = 3,
 	})
@@ -3052,7 +3099,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- (`surgeWallet`): the plate's edge turns gold and pulses, and the SURGE chip comes on
 	-- and breathes (not on touch, where the chips share the top of the screen with the status
 	-- plate that says the same).
+	local shaking = false -- Hud.shakeWallet's "can't afford" shake is running
 	local cashGain: (number) -> ()
+	local cashSpend: (number) -> ()
 	local surgeWallet: (boolean) -> ()
 	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
 	do
@@ -3099,6 +3148,61 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end)
 			task.delay(TUNE.GainTime + 0.05, function()
 				float:Destroy()
+			end)
+		end
+		-- Spent (`cashSpend`, from refresh): the amount goes red and holds it, then eases back
+		-- to lime, and the plate flares red. The red is its own copy of the amount laid over it
+		-- ("Spent": the same text, size and outline, shown only while it is red), so nothing else
+		-- that touches the amount (a roll, the coin pops, the "can't afford" shake, Kit.fade)
+		-- can cut it short. The "-$X" itself is Fx.Orbs.walletText's, from the Buy / Upgrade
+		-- effect: one pop per spend.
+		local spent = Kit.hudText(moneyLabel, {
+			Name = "Spent",
+			Text = moneyLabel.Text,
+			Font = F.Number,
+			TextSize = TUNE.MoneyText,
+			StrokeThickness = TUNE.MoneyStroke,
+			StrokeColor = TUNE.MoneyStrokeColor,
+			TextColor3 = TUNE.MoneyDrop,
+			Size = UDim2.fromScale(1, 1),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Visible = false,
+			ZIndex = 4,
+		})
+		moneyLabel:GetPropertyChangedSignal("Text"):Connect(function()
+			spent.Text = moneyLabel.Text
+		end)
+		local spendTint: Tween? = nil
+		local spendToken = 0
+		cashSpend = function(_amount: number)
+			spendToken += 1
+			local mine = spendToken
+			if spendTint then
+				spendTint:Cancel()
+				spendTint = nil
+			end
+			if screen:GetAttribute("WindowOpen") == true then
+				spent.Visible = false
+				return -- the HUD is faded behind a window: nothing to see
+			end
+			spent.TextColor3 = TUNE.MoneyDrop
+			spent.Visible = true
+			Kit.pop(moneyLabel, TUNE.MoneyDropPop)
+			if not surgeActiveNow and not shaking then
+				flash(cashPlate, TUNE.MoneyDrop, TUNE.PlateColor, TUNE.MoneyDropHold + TUNE.MoneyDropTime, TUNE.MoneyDrop, nil, 5)
+			end
+			task.delay(TUNE.MoneyDropHold, function()
+				if spendToken ~= mine then
+					return
+				end
+				local tween =
+					Kit.tween(spent, TUNE.MoneyDropTime, { TextColor3 = TUNE.MoneyColor }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+				spendTint = tween
+				tween.Completed:Once(function()
+					if spendToken == mine then
+						spent.Visible = false
+					end
+				end)
 			end)
 		end
 		local stopChip: (() -> ())? = nil
@@ -3500,6 +3604,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			roll(moneyLabel, data.money, State.money, time)
 			if gain > 0 then
 				cashGain(gain)
+			else
+				cashSpend(-gain)
 			end
 		else
 			roll(moneyLabel, data.money, State.money)
@@ -3636,7 +3742,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 	end
 
-	local shaking = false
 	Hud.shakeWallet = function()
 		if shaking then
 			return
@@ -3657,7 +3762,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 				task.wait(0.045)
 			end
 			moneyLabel.Position = home
-			Kit.tween(moneyLabel, 0.35, { TextColor3 = C.MoneyText })
+			Kit.tween(moneyLabel, 0.35, { TextColor3 = TUNE.MoneyColor })
 			shaking = false
 		end)
 	end

@@ -288,7 +288,8 @@ local function suite(h: { [string]: any })
 		check(string.find(buyMax, "max = true", 1, true) ~= nil, "and says it was a Buy Max")
 		local _, buyEffects = string.gsub(buyMax, 'effect%(session, "Buy"', "")
 		eq(buyEffects, 1, "one Buy effect per Buy Max")
-		check(has('string.format("BUY MAX x%s %s", count, tierName(1))'), "the pad title names the amount")
+		check(has('BUY_MAX_PAD, "BUY MAX",'), "the pad title says Buy Max")
+		check(has('string.format("x%s %s", count, tierName(1))'), "its effect line names the amount")
 
 		-- Reward notify: per-tier rates and the earning before and after.
 		for _, field in { "rates = rates", "productionBefore =", "productionAfter =", "incomeBefore =", "incomeAfter =" } do

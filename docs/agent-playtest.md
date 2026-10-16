@@ -54,12 +54,15 @@ The result is printed as `{ok, result | error, cmd, jobId, placeVersion, at}`; e
 | `ping` | | userId, players in the server, whether the tycoon session is loaded |
 | `state` | | cash, income, production, plot index, passes, active mode, position, every scalar profile field (tables as `name#` counts) |
 | `cash` / `give` | `{amount}` | adds cash via `Tycoon.grantMoney` (the game's own path, saved like real cash) |
+| `setcash` | `{amount}` | sets the cash to exactly `amount` (0 to 1e15) via `Tycoon.setMoney`: the HUD and pads update and it saves like real cash; e.g. `cmd setcash '{"amount":10}'` to see the red spend flash |
+| `pending` | `{amount}` | leaves `amount` (0 to 1e15) uncollected cash on the Collect pad (`profile.pending`, what the vault's coin pile and the pad's price show); e.g. `cmd pending '{"amount":5000}'`. With the Auto Cash pass the next tick collects it at once |
 | `teleport` | `{spot}` or `{pos:[x,y,z], look?:[x,y,z]}` | moves the character (quits a running mini-game unless `stopMode:false`) |
 | `mode` | `{id, options?}` | enters a mini-game the way its gate does (`GameModes.start` with teleport) |
 | `stopmode` | | quits the current mini-game run |
 | `ui` | `{panel}` | opens a window or popup on the client (opening an open window closes it; `close` closes all) |
 | `camera` | `{preset}` or `{pos, look, fov?}` | holds the camera there every frame until `{"preset":"reset"}` |
 | `hideui` | `{hidden?}` | hides or shows every ScreenGui and the core UI (toggles without args) |
+| `labels` | | asks the client (RemoteFunction `TestBridgeQuery`) what Fx.PadLabels' last declutter pass saw: `passes`, `errors`, `lastError`, `secondsSincePass`, `viewport`, and per sign on your plot `name` (the pad), camera `distance`, `rect` [left, top, w, h] px, `keep` (the pad you are at, never faded), `faded`, `fadeGroup` (the Declutter CanvasGroup's state), `overlap` (share vs `cover`, the nearer shown sign covering it most); signs left out list `skipped` (behind camera, past MaxDistance, off screen) |
 | `list` | | all of the above, live from the server |
 
 Spots: `hub`, `plot` (your own), `plaza` (GAME MODES arrival), `gates`, `mog` (stage centre),

@@ -11,7 +11,9 @@
 	  * writes { ok, result | error, cmd, jobId, placeVersion, at } to the MemoryStore sorted
 	    map "TestBridge" under key `id` (expires after an hour), where the tool polls it;
 	  * creates ReplicatedStorage.TestBridgeClient (RemoteEvent) for Client.TestBridge, which
-	    does the client-only work: panels, camera presets, hiding the UI.
+	    does the client-only work: panels, camera presets, hiding the UI, and
+	    ReplicatedStorage.TestBridgeQuery (RemoteFunction) for commands that need the client's
+	    answer (`labels`).
 ]]
 
 local HttpService = game:GetService("HttpService")
@@ -33,7 +35,13 @@ local MogLayout = require(Server.Modes.MogLayout)
 
 local TOPIC = "TestBridge"
 local MAP = "TestBridge"
-local RESULT_TTL = 3600
+-- Results live 2 minutes (the tool polls for 20 s, then deletes what it read): the
+-- experience's whole MemoryStore quota is 64 KB + 1 KB per player, so a TEST place with one
+-- player has ~68 KB, and an hour of results (every `join` ping poll writes one) filled it:
+-- every write failed with TotalMemoryOverLimit and `cmd` timed out.
+local RESULT_TTL = 120
+-- This server's own results are removed once the tool has had this long to read them.
+local RESULT_KEEP = 30
 local OWNER_USER_ID = 11718681576
 local MAX_GIVE = 1e15
 
@@ -44,6 +52,7 @@ type Command = { help: string, run: (player: Player, args: Args) -> any }
 
 local world: any = nil
 local clientRemote: RemoteEvent? = nil
+local clientQuery: RemoteFunction? = nil
 
 -- Spots ------------------------------------------------------------------------------------
 
@@ -169,6 +178,27 @@ local function toClient(player: Player, payload: { [string]: any })
 	clientRemote:FireClient(player, payload)
 end
 
+-- Asks the client and returns its answer (errors after `timeout` seconds without one).
+local function askClient(player: Player, payload: { [string]: any }, timeout: number): any
+	local query = assert(clientQuery, "bridge query remote missing")
+	local done, ok, answer = false, false, nil
+	task.spawn(function()
+		ok, answer = pcall(query.InvokeClient, query, player, payload)
+		done = true
+	end)
+	local waited = 0
+	while not done and waited < timeout do
+		waited += task.wait(0.1)
+	end
+	if not done then
+		error("client did not answer within " .. timeout .. " s")
+	end
+	if not ok then
+		error("client query failed: " .. tostring(answer))
+	end
+	return answer
+end
+
 -- A JSON-safe summary of the profile: every scalar field, and tables as their length.
 local function profileSummary(profile: { [string]: any }): { [string]: any }
 	local out = {}
@@ -254,6 +284,41 @@ COMMANDS.cash = {
 	end,
 }
 COMMANDS.give = { help = "alias of cash", run = COMMANDS.cash.run }
+
+-- The amount argument of setcash / pending: a number in [0, MAX_GIVE].
+local function amountArg(args: Args): number
+	local amount = tonumber(args.amount)
+	if not amount or amount ~= amount or amount < 0 or amount > MAX_GIVE then
+		error("amount must be a number in [0, 1e15]")
+	end
+	return amount
+end
+
+COMMANDS.setcash = {
+	help = "args {amount}: set the cash to exactly amount (Tycoon.setMoney: HUD, pads and save follow); returns it",
+	run = function(player, args)
+		local session = Tycoon.getSession(player)
+		if not session then
+			error("player has no tycoon session yet")
+		end
+		Tycoon.setMoney(session, amountArg(args))
+		return { cash = session.profile.money }
+	end,
+}
+
+COMMANDS.pending = {
+	help = "args {amount, hold?}: leave amount uncollected cash on the Collect pad (the vault's coin pile); "
+		.. "hold (default true) stops an Auto Cash pass from collecting it until the player collects it on the pad; "
+		.. "hold=false lets Auto Cash take it on its next tick; returns it and autoCash (owns the pass)",
+	run = function(player, args)
+		local session = Tycoon.getSession(player)
+		if not session then
+			error("player has no tycoon session yet")
+		end
+		Tycoon.setPending(session, amountArg(args), args.hold ~= false)
+		return { pending = session.profile.pending, hold = session.holdPending == true, autoCash = session.passes.AutoCash == true }
+	end,
+}
 
 COMMANDS.teleport = {
 	help = "args {spot} (see list) or {pos:[x,y,z], look?:[x,y,z]}: move the character's feet there",
@@ -365,6 +430,13 @@ COMMANDS.hideui = {
 	end,
 }
 
+COMMANDS.labels = {
+	help = "pad-sign declutter diagnostics from the client: each local-plot sign's distance, screen rect, faded state, overlap and cover",
+	run = function(player, _args)
+		return askClient(player, { cmd = "labels" }, 8)
+	end,
+}
+
 COMMANDS.list = {
 	help = "available commands, teleport spots, panels and camera presets",
 	run = function()
@@ -388,15 +460,100 @@ COMMANDS.list = {
 
 local resultMap: MemoryStoreSortedMap? = nil
 
+-- A MemoryStore item holds at most 32 KB: past this the result is replaced by an error.
+local RESULT_MAX_BYTES = 30000
+
+-- A JSON-safe copy of `value`: non-finite numbers and non-JSON types become strings, and a
+-- table is an array only when its keys are exactly 1..n (anything else turns into an object
+-- with string keys), so JSONEncode cannot fail on it.
+local function jsonSafe(value: any, depth: number?): any
+	local d = depth or 0
+	local t = type(value)
+	if t == "number" then
+		return if value ~= value or value == math.huge or value == -math.huge then tostring(value) else value
+	elseif t == "string" or t == "boolean" or t == "nil" then
+		return value
+	elseif t ~= "table" or d > 12 then
+		return tostring(value)
+	end
+	local n, count = #value, 0
+	for _ in value do
+		count += 1
+	end
+	local out = {}
+	if count == n then
+		for i = 1, n do
+			out[i] = jsonSafe(value[i], d + 1)
+		end
+	else
+		for key, v in value do
+			out[tostring(key)] = jsonSafe(v, d + 1)
+		end
+	end
+	return out
+end
+
+-- Results this server wrote and when, oldest first (removed after RESULT_KEEP).
+local written: { { id: string, at: number } } = {}
+
+-- Removes this server's results older than `age` seconds (all of them at 0).
+local function pruneResults(age: number)
+	local now = os.clock()
+	while written[1] and now - written[1].at >= age do
+		local old = table.remove(written, 1) :: { id: string, at: number }
+		pcall(function()
+			assert(resultMap, "result map missing"):RemoveAsync(old.id)
+		end)
+	end
+end
+
 local function writeResult(id: string, result: { [string]: any })
 	result.jobId = game.JobId
 	result.placeVersion = game.PlaceVersion
 	result.at = os.time()
-	local ok, err = pcall(function()
-		assert(resultMap, "result map missing"):SetAsync(id, HttpService:JSONEncode(result), RESULT_TTL)
-	end)
-	if not ok then
+	-- Encode first: a result JSONEncode rejects (a mixed table, NaN) or one past the item size
+	-- limit used to fail the write silently, and the caller timed out without a word.
+	local okEncode, json = pcall(HttpService.JSONEncode, HttpService, result)
+	if not okEncode then
+		result.writeError = "JSONEncode failed: " .. tostring(json)
+		okEncode, json = pcall(HttpService.JSONEncode, HttpService, jsonSafe(result))
+	end
+	if not okEncode or #json > RESULT_MAX_BYTES then
+		json = HttpService:JSONEncode({
+			ok = false,
+			cmd = result.cmd,
+			error = if okEncode
+				then string.format("result too large: %d bytes (limit %d)", #json, RESULT_MAX_BYTES)
+				else "result not encodable: " .. tostring(json),
+			writeError = result.writeError,
+			jobId = result.jobId,
+			placeVersion = result.placeVersion,
+			at = result.at,
+		})
+	end
+	pruneResults(RESULT_KEEP)
+	local function write(): (boolean, any)
+		return pcall(function()
+			assert(resultMap, "result map missing"):SetAsync(id, json, RESULT_TTL)
+		end)
+	end
+	local ok, err = write()
+	if not ok and string.find(tostring(err), "MemoryOverLimit", 1, true) then
+		-- Out of quota: drop every result this server still holds and try once more.
+		pruneResults(0)
+		ok, err = write()
+	end
+	if ok then
+		table.insert(written, { id = id, at = os.clock() })
+	else
 		warn("[TestBridge] result write failed: " .. tostring(err))
+		pcall(function()
+			assert(resultMap, "result map missing"):SetAsync(
+				id,
+				HttpService:JSONEncode({ ok = false, cmd = result.cmd, error = "result write failed: " .. tostring(err), bytes = #json }),
+				RESULT_TTL
+			)
+		end)
 	end
 end
 
@@ -437,6 +594,10 @@ function TestBridge.init(builtWorld: any)
 	remote.Name = "TestBridgeClient"
 	remote.Parent = ReplicatedStorage
 	clientRemote = remote
+	local query = Instance.new("RemoteFunction")
+	query.Name = "TestBridgeQuery"
+	query.Parent = ReplicatedStorage
+	clientQuery = query
 	resultMap = MemoryStoreService:GetSortedMap(MAP)
 	task.spawn(function()
 		for attempt = 1, 5 do

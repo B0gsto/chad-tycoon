@@ -10,6 +10,10 @@
 	                               preset "reset" | "front" | "back" | "overhead", or a fixed
 	                               pos -> look; held every frame until "reset"
 	  { cmd = "hideui", hidden? }  hide/show every ScreenGui and the core UI (toggle when nil)
+
+	and answers ReplicatedStorage.TestBridgeQuery (RemoteFunction) for:
+
+	  { cmd = "labels" }           Fx.PadLabels.diagnostics(): what its last declutter pass saw
 ]]
 
 local Players = game:GetService("Players")
@@ -168,3 +172,25 @@ remote.OnClientEvent:Connect(function(payload: any)
 		end
 	end
 end)
+
+-- Round-trip queries: the server's bridge command returns what this answers.
+local query = ReplicatedStorage:WaitForChild("TestBridgeQuery", 60) :: RemoteFunction?
+if query then
+	query.OnClientInvoke = function(payload: any): any
+		if type(payload) ~= "table" then
+			return { error = "bad payload" }
+		end
+		if payload.cmd == "labels" then
+			local fx = script.Parent:FindFirstChild("Fx")
+			local module = fx and fx:FindFirstChild("PadLabels")
+			if not (module and module:IsA("ModuleScript")) then
+				return { error = "Fx.PadLabels missing" }
+			end
+			local ok, result = pcall(function()
+				return (require(module) :: any).diagnostics()
+			end)
+			return if ok then result else { error = tostring(result) }
+		end
+		return { error = "unknown query " .. tostring(payload.cmd) }
+	end
+end
