@@ -1708,23 +1708,37 @@ end
 -- Boards ------------------------------------------------------------------------------
 
 -- Writes a pad's label: its name (nil keeps it), price / status, whether the player can afford
--- it (yellow) or not (grey), and the cyan line saying what it does (nil keeps it).
+-- it (yellow) or not (grey), and the cyan line saying what it does (nil keeps it). The label
+-- is redrawn only when one of them changed (the boards refresh many times a second); the
+-- labels themselves hold the last values, so the owner reset (setOwnerSign) needs nothing more.
 local function setPad(session: Session, name: string, title: string?, sub: string, affordable: boolean?, effect: string?)
 	local pad = session.plot.padByName[name]
 	if not pad then
 		return
 	end
-	if title then
+	local changed = false
+	if title and pad.title.Text ~= title then
 		pad.title.Text = title
+		changed = true
 	end
-	if effect then
+	if effect and pad.effect.Text ~= effect then
 		pad.effect.Text = effect
+		changed = true
 	end
-	pad.sub.Text = sub
+	if pad.sub.Text ~= sub then
+		pad.sub.Text = sub
+		changed = true
+	end
 	if affordable ~= nil then
-		pad.sub.TextColor3 = if affordable then theme.Colors.Good else theme.Colors.Bad
+		local tint = if affordable then theme.Colors.Good else theme.Colors.Bad
+		if pad.sub.TextColor3 ~= tint then
+			pad.sub.TextColor3 = tint
+			changed = true
+		end
 	end
-	pad.redraw()
+	if changed then
+		pad.redraw()
+	end
 end
 
 local function updateBoards(session: Session)

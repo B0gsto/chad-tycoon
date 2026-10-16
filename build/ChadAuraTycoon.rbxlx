@@ -23113,7 +23113,8 @@ local RED_ORANGE = rgb(240, 92, 52)
 local CORAL = rgb(255, 112, 96)
 local ORANGE = rgb(255, 162, 72)
 local BLUE = rgb(92, 178, 255)
-local CYAN = rgb(64, 214, 236)
+-- Deep cyan: the automation plate, saturated enough to stand off the light teal mats.
+local CYAN = rgb(0, 184, 240)
 -- The buy plates' orange: deeper than ORANGE so it reads orange, not tan, in full sun.
 local PLATE_ORANGE = rgb(255, 132, 32)
 local PURE_WHITE = rgb(255, 255, 255)
@@ -23255,6 +23256,8 @@ Theme.World = {
 	PadEffect = rgb(96, 232, 255),
 	PadPrice = rgb(255, 222, 40),
 	PadPriceOff = rgb(178, 178, 190),
+	-- The dark pill behind every pad label, so its rows read on sand, water and sky alike.
+	PadCard = rgb(26, 22, 46),
 	-- Coloured chips: Good is the green "ready" / "free plot" pills on the world's signs, Pass
 	-- the gold chip (Ink text) behind a pad price that needs a game pass.
 	PadPlate = {
@@ -42341,23 +42344,37 @@ end
 -- Boards ------------------------------------------------------------------------------
 
 -- Writes a pad's label: its name (nil keeps it), price / status, whether the player can afford
--- it (yellow) or not (grey), and the cyan line saying what it does (nil keeps it).
+-- it (yellow) or not (grey), and the cyan line saying what it does (nil keeps it). The label
+-- is redrawn only when one of them changed (the boards refresh many times a second); the
+-- labels themselves hold the last values, so the owner reset (setOwnerSign) needs nothing more.
 local function setPad(session: Session, name: string, title: string?, sub: string, affordable: boolean?, effect: string?)
 	local pad = session.plot.padByName[name]
 	if not pad then
 		return
 	end
-	if title then
+	local changed = false
+	if title and pad.title.Text ~= title then
 		pad.title.Text = title
+		changed = true
 	end
-	if effect then
+	if effect and pad.effect.Text ~= effect then
 		pad.effect.Text = effect
+		changed = true
 	end
-	pad.sub.Text = sub
+	if pad.sub.Text ~= sub then
+		pad.sub.Text = sub
+		changed = true
+	end
 	if affordable ~= nil then
-		pad.sub.TextColor3 = if affordable then theme.Colors.Good else theme.Colors.Bad
+		local tint = if affordable then theme.Colors.Good else theme.Colors.Bad
+		if pad.sub.TextColor3 ~= tint then
+			pad.sub.TextColor3 = tint
+			changed = true
+		end
 	end
-	pad.redraw()
+	if changed then
+		pad.redraw()
+	end
 end
 
 local function updateBoards(session: Session)
@@ -54841,7 +54858,8 @@ local LABEL_LIFTS: { [string]: number } = {
 	Buy1 = 7.6,
 	Buy100 = 7.6,
 	AutoMerge = 9.6,
-	ProcUp10 = 7.2,
+	ProcUp1 = 6.6,
+	ProcUp10 = 9.4,
 	Merge = 0.4,
 }
 -- Pads whose label is wider or narrower than their size gives: the merge name a compact tag,
@@ -54851,7 +54869,13 @@ local LABEL_GROW: { [string]: number } = { Merge = 0.65, Deposit = 0.7 }
 -- stands at the pad's far left corner: floating over the far edge it covered the pen's crate
 -- labels ("Common") and, hung lower there, the walking character's own head. At the corner it
 -- is drawn over the pen's front wall, under every crate label and left of the character.
-local LABEL_SHIFT: { [string]: Vector2 } = { Merge = Vector2.new(5.2, 3.5) }
+-- The speed upgrades' tags lean out toward the walkway (and float higher, see LABEL_LIFTS):
+-- over their pads they sat on the juice bar's bottles and the blender beside the palm.
+local LABEL_SHIFT: { [string]: Vector2 } = {
+	Merge = Vector2.new(5.2, 3.5),
+	ProcUp1 = Vector2.new(3, -1.5),
+	ProcUp10 = Vector2.new(2, 0),
+}
 -- Share of the stud width that scales with distance, and the fixed pixel part added to it.
 local LABEL_SCALE = 0.8
 local LABEL_PX = 32
@@ -54864,9 +54888,21 @@ local NAME_H = 0.3
 local EFFECT_H = 0.22
 local NAME_ALONE = 0.4
 -- Outline thickness (pixels) of the name, the effect and the price.
-local NAME_STROKE = 3
-local EFFECT_STROKE = 2.5
-local PRICE_STROKE = 3.5
+local NAME_STROKE = 3.5
+local EFFECT_STROKE = 3
+local PRICE_STROKE = 4.5
+-- The rows' width (a share of the label's), inside the backing card.
+local TEXT_W = 0.92
+-- Backing card: a dark rounded pill behind the rows, so the white name, the cyan effect and a
+-- grey price read on pale sand, water and sky alike. Its colour and transparency, its corner,
+-- and its width: the widest row's estimated width (characters x glyph advance x row height,
+-- the advance as a share of the font size) plus a margin, never under CARD_MIN.
+local CARD_TRANSPARENCY = 0.12
+local CARD_CORNER = 0.22
+local CARD_MARGIN = 0.12
+local CARD_MIN = 0.5
+local GLYPH_DISPLAY = 0.62
+local GLYPH_NUMBER = 0.66
 -- Transparency of the effect line while the price is out of reach.
 local EFFECT_OFF = 0.45
 -- Gold pass chip behind a price: its share of the price row's height, and its width as a share
@@ -55039,6 +55075,7 @@ end
 -- The floating label's parts (see buildLabel).
 type Label = {
 	gui: BillboardGui,
+	card: Frame,
 	title: TextLabel,
 	titleStroke: UIStroke,
 	effect: TextLabel,
@@ -55064,12 +55101,23 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number, hei
 	gui.MaxDistance = LABEL_MAX_DISTANCE
 	gui.LightInfluence = 0
 	gui.Parent = padPart
+	local card = Instance.new("Frame")
+	card.Name = "Card"
+	card.AnchorPoint = Vector2.new(0.5, 0.5)
+	card.Position = UDim2.fromScale(0.5, 0.5)
+	card.Size = UDim2.fromScale(1, 1)
+	card.BackgroundColor3 = World.PadCard or World.Ink
+	card.BackgroundTransparency = CARD_TRANSPARENCY
+	card.BorderSizePixel = 0
+	card.ZIndex = 0
+	card.Parent = gui
+	corner(card, CARD_CORNER)
 	local title = text(gui, {
 		Name = "Title",
 		Text = "",
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.fromScale(0.5, 0),
-		Size = UDim2.fromScale(1, NAME_H),
+		Size = UDim2.fromScale(TEXT_W, NAME_H),
 		TextColor3 = white,
 	})
 	local titleStroke = outline(title, World.Ink, NAME_STROKE)
@@ -55078,7 +55126,7 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number, hei
 		Text = "",
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.fromScale(0.5, NAME_H),
-		Size = UDim2.fromScale(1, EFFECT_H),
+		Size = UDim2.fromScale(TEXT_W, EFFECT_H),
 		TextColor3 = World.PadEffect or white,
 	})
 	local effectStroke = outline(effect, World.Ink, EFFECT_STROKE)
@@ -55113,6 +55161,7 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number, hei
 	local priceStroke = outline(price, World.Ink, PRICE_STROKE)
 	return {
 		gui = gui,
+		card = card,
 		title = title,
 		titleStroke = titleStroke,
 		effect = effect,
@@ -55134,6 +55183,15 @@ end
 local function bindLabel(label: Label, effect: TextLabel, sub: TextLabel, entry: Painted): () -> ()
 	local white = World.White or Color3.new(1, 1, 1)
 	local yellow = label.price.TextColor3
+	-- How wide a row's text is drawn (share of the label's width): `share` of the label's
+	-- height tall, scaled down to TEXT_W when it is too long for that.
+	local tall = label.gui.Size.Y.Scale / math.max(label.gui.Size.X.Scale, 1e-3)
+	local function rowWidth(shown: string, share: number, glyph: number): number
+		if shown == "" then
+			return 0
+		end
+		return math.min(TEXT_W, (utf8.len(shown) or #shown) * glyph * share * tall)
+	end
 	local function redraw()
 		local shown = sub.Text
 		local tint = sub.TextColor3
@@ -55141,7 +55199,7 @@ local function bindLabel(label: Label, effect: TextLabel, sub: TextLabel, entry:
 		local off = not pass and sameColor(tint, theme.Colors.Bad)
 		local hasEffect = effect.Text ~= ""
 		local nameH = if hasEffect then NAME_H else NAME_ALONE
-		label.title.Size = UDim2.fromScale(1, nameH)
+		label.title.Size = UDim2.fromScale(TEXT_W, nameH)
 		label.effect.Text = effect.Text
 		label.effect.Visible = hasEffect
 		label.row.Size = UDim2.fromScale(1, 1 - nameH - (if hasEffect then EFFECT_H else 0))
@@ -55155,13 +55213,22 @@ local function bindLabel(label: Label, effect: TextLabel, sub: TextLabel, entry:
 			label.price.Size = UDim2.fromScale(chipW * 0.88, CHIP_H * 0.8)
 			label.price.TextColor3 = World.Ink
 		else
-			label.price.Size = UDim2.fromScale(1, 1)
+			label.price.Size = UDim2.fromScale(TEXT_W, 1)
 			label.price.TextColor3 = if off then World.PadPriceOff or white elseif sameColor(tint, theme.Colors.Good) then yellow else white
 		end
+		-- The card hugs the widest row.
+		local priceH = 1 - nameH - (if hasEffect then EFFECT_H else 0)
+		local widest = math.max(
+			rowWidth(label.title.Text, nameH, GLYPH_DISPLAY),
+			if hasEffect then rowWidth(effect.Text, EFFECT_H, GLYPH_DISPLAY) else 0,
+			if pass then label.chip.Size.X.Scale else rowWidth(shown, priceH, GLYPH_NUMBER)
+		)
+		label.card.Size = UDim2.fromScale(math.clamp(widest + CARD_MARGIN, CARD_MIN, 1), 1)
 
 		local dim = if entry.claimed then 0 else UNCLAIMED_DIM
 		label.title.TextTransparency = dim
 		label.titleStroke.Transparency = dim
+		label.card.BackgroundTransparency = CARD_TRANSPARENCY + (1 - CARD_TRANSPARENCY) * dim
 		local effectDim = math.max(dim, if off then EFFECT_OFF else 0)
 		label.effect.TextTransparency = effectDim
 		label.effectStroke.Transparency = effectDim
@@ -55240,6 +55307,7 @@ local function buildPad(B: Builder, name: string, color: Color3, title: string, 
 	local effectLabel = text(label.title, { Name = "EffectText", Text = effect or "", Visible = false })
 	if static then
 		label.title.Size = UDim2.fromScale(1, 1)
+		label.card.Visible = false
 		label.title.Text = string.upper(title)
 		label.title.TextColor3 = World.Sunny or color
 		label.effect.Visible = false
@@ -64351,9 +64419,10 @@ return Budget
 	    turned toward the pad. Tapping it draws the guide's path there. Not while the guide
 	    runs a "navigate" request or the tutorial: its own trail leads then
 
-	The pad the guide's chevron marks (Guide.current) gets no arrow of its own. Everything
-	hides while the tutorial runs, the intro plays, a window or a modal is open, a run is on,
-	or the player is more than PLOT_RANGE studs from the plot.
+	The pad the guide's chevron marks (Guide.current) gets no arrow of its own, and pads in
+	reach already when the player joins get none. Everything hides while the tutorial runs,
+	the intro plays, a window, a modal, a popup card or a reveal is up, a run is on, or the
+	player is more than PLOT_RANGE studs from the plot.
 ]]
 
 local GuiService = game:GetService("GuiService")
@@ -64407,7 +64476,7 @@ local POINTER_EASE = 10
 -- Further than this from the plot (the plaza, a course) nothing shows.
 local PLOT_RANGE = 110
 -- The HUD's busy flags (ScreenGui "TycoonUI" attributes).
-local BUSY = { "WindowOpen", "ModalOpen", "RunActive", "ObbyMode", "CardioActive" }
+local BUSY = { "WindowOpen", "ModalOpen", "PopupBusy", "RevealOpen", "RunActive", "ObbyMode", "CardioActive" }
 
 type Arrow = {
 	pad: string,
@@ -64423,24 +64492,62 @@ type Arrow = {
 local started = false
 local player = Players.LocalPlayer
 local arrows: { [string]: Arrow } = {}
-local wasAffordable: { [string]: boolean } = {}
+-- Pads in reach that have had their turn (an arrow, the overflow past MAX_ARROWS, or in reach
+-- already when the player joined). A pad leaves it when it goes out of reach.
+local seen: { [string]: boolean } = {}
+-- Whether the first look at the affordable set (at join) has been taken.
+local seeded = false
 local folder: Folder? = nil
+-- Looked up on the tick, read every frame: the plot, its floor, its pad parts, and the pad
+-- BuyNext.best picks with its part.
+local cache = {
+	index = nil :: number?,
+	plot = nil :: Instance?,
+	floor = nil :: BasePart?,
+	pads = {} :: { [string]: BasePart },
+	best = nil :: string?,
+	bestPart = nil :: BasePart?,
+}
 
 -- How thick a pad is: a round pad is a cylinder lying on its X axis.
 local function thickness(part: BasePart): number
 	return if part:IsA("Part") and part.Shape == Enum.PartType.Cylinder then part.Size.X else part.Size.Y
 end
 
-local function plotFolder(): Instance?
+-- Refreshes the plot and its floor when the plot changed or either left the world.
+local function refreshPlot()
 	local data = State.data
-	local map = Workspace:FindFirstChild("Map")
-	return data and map and data.plotIndex and map:FindFirstChild("Plot" .. tostring(data.plotIndex)) or nil
+	local index = data and data.plotIndex
+	local plot = cache.plot
+	if index ~= cache.index or not (plot and plot.Parent) then
+		local map = Workspace:FindFirstChild("Map")
+		plot = if map and index then map:FindFirstChild("Plot" .. tostring(index)) else nil
+		cache.index = index
+		cache.plot = plot
+		cache.floor = nil
+		table.clear(cache.pads)
+	end
+	local floor = cache.floor
+	if plot and not (floor and floor.Parent) then
+		local found = plot:FindFirstChild("Floor", true)
+		cache.floor = if found and found:IsA("BasePart") then found else nil
+	end
 end
 
+-- A pad's part on the plot (cached; looked up again once it left the world).
 local function padPart(name: string): BasePart?
-	local plot = plotFolder()
-	local part = plot and plot:FindFirstChild("Pad_" .. name, true)
-	return if part and part:IsA("BasePart") then part else nil
+	local part = cache.pads[name]
+	if part and part.Parent then
+		return part
+	end
+	cache.pads[name] = nil
+	local plot = cache.plot
+	local found = plot and plot:FindFirstChild("Pad_" .. name, true)
+	if found and found:IsA("BasePart") then
+		cache.pads[name] = found
+		return found
+	end
+	return nil
 end
 
 -- A rounded shape with an ink copy RIM px bigger behind it, so overlapping shapes share one
@@ -64570,14 +64677,14 @@ local function hiddenNow(screen: Instance?): boolean
 			end
 		end
 	end
-	local plot = plotFolder()
+	local plot = cache.plot
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
-	if not plot or not root then
+	if not (plot and plot.Parent) or not root then
 		return true
 	end
-	local floor = plot:FindFirstChild("Floor", true)
-	if not (floor and floor:IsA("BasePart")) then
+	local floor = cache.floor
+	if not (floor and floor.Parent) then
 		return false
 	end
 	local offset = root.Position - floor.Position
@@ -64585,12 +64692,18 @@ local function hiddenNow(screen: Instance?): boolean
 end
 
 -- Looks at the affordable set: new arrows for pads that just came in reach, away with the
--- ones whose pad went out of it or that have had their time.
-local function tick(hidden: boolean)
+-- ones whose pad went out of it or that have had their time. Also picks the pointer's pad.
+local function tick(hidden: boolean, marked: string?)
 	local data = State.data
-	if not data or data.tutorialDone ~= true then
+	cache.best = nil
+	cache.bestPart = nil
+	if not data then
+		return
+	end
+	if data.tutorialDone ~= true then
 		-- The tutorial's pads are the tutorial's: what is affordable when it ends is new.
-		table.clear(wasAffordable)
+		seeded = true
+		table.clear(seen)
 		for name in arrows do
 			dropArrow(name)
 		end
@@ -64602,13 +64715,29 @@ local function tick(hidden: boolean)
 	for _, name in list do
 		inReach[name] = true
 	end
+	cache.best = BuyNext.best(data)
+	cache.bestPart = if cache.best then padPart(cache.best) else nil
+	-- Pads out of reach may get an arrow again the next time they come in reach.
+	for name in seen do
+		if not inReach[name] then
+			seen[name] = nil
+		end
+	end
 	for name, arrow in arrows do
 		if not inReach[name] or now - arrow.since > ARROW_SECONDS then
 			dropArrow(name)
 		end
 	end
-	-- While hidden the set is not taken in: a pad that came in reach meanwhile still gets its
-	-- arrow once the screen is clear.
+	-- What is affordable at join is not news.
+	if not seeded then
+		seeded = true
+		for name in inReach do
+			seen[name] = true
+		end
+		return
+	end
+	-- While hidden no arrow is built: a pad that came in reach meanwhile still gets its arrow
+	-- once the screen is clear.
 	if hidden then
 		return
 	end
@@ -64618,20 +64747,23 @@ local function tick(hidden: boolean)
 			count += 1
 		end
 	end
-	-- The biggest pads first (the list runs small to big).
+	-- The biggest pads first (the list runs small to big). The guide's pad waits its turn
+	-- (its chevron leads already); a pad whose part is not streamed in yet is tried again.
 	for i = #list, 1, -1 do
 		local name = list[i]
-		if not wasAffordable[name] and count < MAX_ARROWS and not arrows[name] then
-			local part = padPart(name)
-			if part then
-				arrows[name] = buildArrow(name, part)
-				count += 1
-			end
+		if seen[name] or arrows[name] or name == marked then
+			continue
 		end
-	end
-	table.clear(wasAffordable)
-	for name in inReach do
-		wasAffordable[name] = true
+		if count >= MAX_ARROWS then
+			seen[name] = true
+			continue
+		end
+		local part = padPart(name)
+		if part then
+			arrows[name] = buildArrow(name, part)
+			seen[name] = true
+			count += 1
+		end
 	end
 end
 
@@ -64649,6 +64781,10 @@ local function stepArrows(clock: number, hidden: boolean, marked: string?)
 		if not part or not part.Parent or (leaving and clock - leaving >= POP_OUT) then
 			arrow.gui:Destroy()
 			arrows[name] = nil
+			if not leaving then
+				-- Its part streamed out: it gets a fresh arrow once the part is back.
+				seen[name] = nil
+			end
 			continue
 		end
 		local scale = if leaving then 1 - (clock - leaving) / POP_OUT else easeBack(math.clamp((clock - arrow.since) / POP_IN, 0, 1))
@@ -64776,9 +64912,11 @@ end
 
 -- `scale` is the HUD's UIScale (the margins and the chip are design px).
 local function stepPointer(pointer: Pointer, clock: number, dt: number, hidden: boolean, source: string, scale: number)
-	local data = State.data
-	local best = if not hidden and data and source == "hint" then BuyNext.best(data) else nil
-	local part = if best then padPart(best) else nil
+	local best = if not hidden and source == "hint" then cache.best else nil
+	local part = if best then cache.bestPart else nil
+	if part and not part.Parent then
+		part = nil
+	end
 	local camera = Workspace.CurrentCamera
 	local spot, dir = nil, Vector2.zero
 	if part and camera then
@@ -64843,12 +64981,16 @@ function BuyArrows.init()
 	RunService.Heartbeat:Connect(function(dt)
 		local clock = os.clock()
 		local hud = playerGui:FindFirstChild("TycoonUI")
-		local hidden = hiddenNow(hud)
-		if clock >= nextTick then
-			nextTick = clock + TICK
-			tick(hidden)
-		end
 		local marked, source = Guide.current()
+		local due = clock >= nextTick
+		if due then
+			nextTick = clock + TICK
+			refreshPlot()
+		end
+		local hidden = hiddenNow(hud)
+		if due then
+			tick(hidden, marked)
+		end
 		local uiScale = hud and hud:FindFirstChildOfClass("UIScale")
 		stepArrows(clock, hidden, marked)
 		stepPointer(pointer, clock, dt, hidden, source, if uiScale then uiScale.Scale else 1)
@@ -74481,15 +74623,23 @@ local function coinHome(i: number, pad: BasePart): CFrame
 	if i > 24 then
 		-- Spill: coins slid off the full stack lie around the plate on the floor, tipped against
 		-- each other. Seeded by index, so a coin keeps its spot while the pile grows.
-		local rng = Random.new(i * 7919)
+		-- How far the pad's top stands over the plot floor, and how far its base reaches past the
+		-- coloured top (Server.World.Pads: a weight plate's rubber is RIM_TOP 0.35 + PLATE_LIP
+		-- 0.25 tall with the disc TOP_RISE 0.15 proud of it; a tile's base is 0.35 under the
+		-- same rise; both PlotLayout.PAD_RIM 0.5 wider than the top).
 		local round = (pad :: Part).Shape == Enum.PartType.Cylinder
-		local thickness = if round then pad.Size.X else pad.Size.Y
-		local reach = (if round then pad.Size.Y else math.max(pad.Size.X, pad.Size.Z)) / 2
+		local stand = if round then 0.75 else 0.5
+		local rim = 0.5
+		-- The coin (Size below): its radius and half its thickness.
+		local radius, half = 0.525, 0.11
+		local rng = Random.new(i * 7919)
+		local reach = (if round then pad.Size.Y else math.max(pad.Size.X, pad.Size.Z)) / 2 + rim
 		local angle = (i - 24) * 2.4 + rng:NextNumber(-0.3, 0.3)
-		local dist = reach + 0.45 + ((i - 24) % 3) * 0.4 + rng:NextNumber(0, 0.25)
+		local dist = reach + 0.4 + ((i - 24) % 3) * 0.45 + rng:NextNumber(0, 0.25)
 		local tilt = math.rad(rng:NextNumber(8, 34))
-		local floor = pad.Position + Vector3.new(math.cos(angle) * dist, -thickness / 2, math.sin(angle) * dist)
-		return CFrame.new(floor + Vector3.new(0, 0.12 + math.sin(tilt) * 0.5, 0))
+		local floor = padTop(pad) + Vector3.new(math.cos(angle) * dist, -stand, math.sin(angle) * dist)
+		-- A tipped disc rests on its lowest rim point.
+		return CFrame.new(floor + Vector3.new(0, radius * math.sin(tilt) + half * math.cos(tilt), 0))
 			* CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
 			* CFrame.Angles(tilt, 0, 0)
 			* UPRIGHT
@@ -75465,6 +75615,14 @@ local function bindPlot(p: Instance)
 		end
 	end
 	collectPad = p:FindFirstChild("Pad_Collect") :: BasePart?
+	-- A new plot: its pile is built afresh and its cash ticks count from its own pending.
+	for i = 1, shownCoins do
+		coins[i].CFrame = FAR
+		coinHomes[i] = FAR
+	end
+	shownCoins = 0
+	coinTick.seen = false
+	coinTick.at = 0
 	bindConverter(p)
 	bindJar()
 	bindProcessor(p)
@@ -105997,7 +106155,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		TextScaled = true,
 		MaxTextSize = 200,
 		MinPx = G.TextMinPhone,
-		StrokeThickness = 2,
+		-- Thick Ink outlines: the plaque's peach glass behind is as pale as the text.
+		StrokeThickness = 3,
 		TextColor3 = C.GoldLight,
 		Size = captionSize,
 		Position = captionPos,
@@ -106008,7 +106167,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Text = "0",
 		Font = F.Number,
 		TextScaled = true,
-		StrokeThickness = 2.5,
+		StrokeThickness = 4,
 		Size = numberSize,
 		Position = numberPos,
 		ZIndex = 4,

@@ -306,7 +306,8 @@ local RED_ORANGE = rgb(240, 92, 52)
 local CORAL = rgb(255, 112, 96)
 local ORANGE = rgb(255, 162, 72)
 local BLUE = rgb(92, 178, 255)
-local CYAN = rgb(64, 214, 236)
+-- Deep cyan: the automation plate, saturated enough to stand off the light teal mats.
+local CYAN = rgb(0, 184, 240)
 -- The buy plates' orange: deeper than ORANGE so it reads orange, not tan, in full sun.
 local PLATE_ORANGE = rgb(255, 132, 32)
 local PURE_WHITE = rgb(255, 255, 255)
@@ -448,6 +449,8 @@ Theme.World = {
 	PadEffect = rgb(96, 232, 255),
 	PadPrice = rgb(255, 222, 40),
 	PadPriceOff = rgb(178, 178, 190),
+	-- The dark pill behind every pad label, so its rows read on sand, water and sky alike.
+	PadCard = rgb(26, 22, 46),
 	-- Coloured chips: Good is the green "ready" / "free plot" pills on the world's signs, Pass
 	-- the gold chip (Ink text) behind a pad price that needs a game pass.
 	PadPlate = {

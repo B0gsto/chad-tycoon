@@ -83,7 +83,8 @@ local LABEL_LIFTS: { [string]: number } = {
 	Buy1 = 7.6,
 	Buy100 = 7.6,
 	AutoMerge = 9.6,
-	ProcUp10 = 7.2,
+	ProcUp1 = 6.6,
+	ProcUp10 = 9.4,
 	Merge = 0.4,
 }
 -- Pads whose label is wider or narrower than their size gives: the merge name a compact tag,
@@ -93,7 +94,13 @@ local LABEL_GROW: { [string]: number } = { Merge = 0.65, Deposit = 0.7 }
 -- stands at the pad's far left corner: floating over the far edge it covered the pen's crate
 -- labels ("Common") and, hung lower there, the walking character's own head. At the corner it
 -- is drawn over the pen's front wall, under every crate label and left of the character.
-local LABEL_SHIFT: { [string]: Vector2 } = { Merge = Vector2.new(5.2, 3.5) }
+-- The speed upgrades' tags lean out toward the walkway (and float higher, see LABEL_LIFTS):
+-- over their pads they sat on the juice bar's bottles and the blender beside the palm.
+local LABEL_SHIFT: { [string]: Vector2 } = {
+	Merge = Vector2.new(5.2, 3.5),
+	ProcUp1 = Vector2.new(3, -1.5),
+	ProcUp10 = Vector2.new(2, 0),
+}
 -- Share of the stud width that scales with distance, and the fixed pixel part added to it.
 local LABEL_SCALE = 0.8
 local LABEL_PX = 32
@@ -106,9 +113,21 @@ local NAME_H = 0.3
 local EFFECT_H = 0.22
 local NAME_ALONE = 0.4
 -- Outline thickness (pixels) of the name, the effect and the price.
-local NAME_STROKE = 3
-local EFFECT_STROKE = 2.5
-local PRICE_STROKE = 3.5
+local NAME_STROKE = 3.5
+local EFFECT_STROKE = 3
+local PRICE_STROKE = 4.5
+-- The rows' width (a share of the label's), inside the backing card.
+local TEXT_W = 0.92
+-- Backing card: a dark rounded pill behind the rows, so the white name, the cyan effect and a
+-- grey price read on pale sand, water and sky alike. Its colour and transparency, its corner,
+-- and its width: the widest row's estimated width (characters x glyph advance x row height,
+-- the advance as a share of the font size) plus a margin, never under CARD_MIN.
+local CARD_TRANSPARENCY = 0.12
+local CARD_CORNER = 0.22
+local CARD_MARGIN = 0.12
+local CARD_MIN = 0.5
+local GLYPH_DISPLAY = 0.62
+local GLYPH_NUMBER = 0.66
 -- Transparency of the effect line while the price is out of reach.
 local EFFECT_OFF = 0.45
 -- Gold pass chip behind a price: its share of the price row's height, and its width as a share
@@ -281,6 +300,7 @@ end
 -- The floating label's parts (see buildLabel).
 type Label = {
 	gui: BillboardGui,
+	card: Frame,
 	title: TextLabel,
 	titleStroke: UIStroke,
 	effect: TextLabel,
@@ -306,12 +326,23 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number, hei
 	gui.MaxDistance = LABEL_MAX_DISTANCE
 	gui.LightInfluence = 0
 	gui.Parent = padPart
+	local card = Instance.new("Frame")
+	card.Name = "Card"
+	card.AnchorPoint = Vector2.new(0.5, 0.5)
+	card.Position = UDim2.fromScale(0.5, 0.5)
+	card.Size = UDim2.fromScale(1, 1)
+	card.BackgroundColor3 = World.PadCard or World.Ink
+	card.BackgroundTransparency = CARD_TRANSPARENCY
+	card.BorderSizePixel = 0
+	card.ZIndex = 0
+	card.Parent = gui
+	corner(card, CARD_CORNER)
 	local title = text(gui, {
 		Name = "Title",
 		Text = "",
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.fromScale(0.5, 0),
-		Size = UDim2.fromScale(1, NAME_H),
+		Size = UDim2.fromScale(TEXT_W, NAME_H),
 		TextColor3 = white,
 	})
 	local titleStroke = outline(title, World.Ink, NAME_STROKE)
@@ -320,7 +351,7 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number, hei
 		Text = "",
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.fromScale(0.5, NAME_H),
-		Size = UDim2.fromScale(1, EFFECT_H),
+		Size = UDim2.fromScale(TEXT_W, EFFECT_H),
 		TextColor3 = World.PadEffect or white,
 	})
 	local effectStroke = outline(effect, World.Ink, EFFECT_STROKE)
@@ -355,6 +386,7 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number, hei
 	local priceStroke = outline(price, World.Ink, PRICE_STROKE)
 	return {
 		gui = gui,
+		card = card,
 		title = title,
 		titleStroke = titleStroke,
 		effect = effect,
@@ -376,6 +408,15 @@ end
 local function bindLabel(label: Label, effect: TextLabel, sub: TextLabel, entry: Painted): () -> ()
 	local white = World.White or Color3.new(1, 1, 1)
 	local yellow = label.price.TextColor3
+	-- How wide a row's text is drawn (share of the label's width): `share` of the label's
+	-- height tall, scaled down to TEXT_W when it is too long for that.
+	local tall = label.gui.Size.Y.Scale / math.max(label.gui.Size.X.Scale, 1e-3)
+	local function rowWidth(shown: string, share: number, glyph: number): number
+		if shown == "" then
+			return 0
+		end
+		return math.min(TEXT_W, (utf8.len(shown) or #shown) * glyph * share * tall)
+	end
 	local function redraw()
 		local shown = sub.Text
 		local tint = sub.TextColor3
@@ -383,7 +424,7 @@ local function bindLabel(label: Label, effect: TextLabel, sub: TextLabel, entry:
 		local off = not pass and sameColor(tint, theme.Colors.Bad)
 		local hasEffect = effect.Text ~= ""
 		local nameH = if hasEffect then NAME_H else NAME_ALONE
-		label.title.Size = UDim2.fromScale(1, nameH)
+		label.title.Size = UDim2.fromScale(TEXT_W, nameH)
 		label.effect.Text = effect.Text
 		label.effect.Visible = hasEffect
 		label.row.Size = UDim2.fromScale(1, 1 - nameH - (if hasEffect then EFFECT_H else 0))
@@ -397,13 +438,22 @@ local function bindLabel(label: Label, effect: TextLabel, sub: TextLabel, entry:
 			label.price.Size = UDim2.fromScale(chipW * 0.88, CHIP_H * 0.8)
 			label.price.TextColor3 = World.Ink
 		else
-			label.price.Size = UDim2.fromScale(1, 1)
+			label.price.Size = UDim2.fromScale(TEXT_W, 1)
 			label.price.TextColor3 = if off then World.PadPriceOff or white elseif sameColor(tint, theme.Colors.Good) then yellow else white
 		end
+		-- The card hugs the widest row.
+		local priceH = 1 - nameH - (if hasEffect then EFFECT_H else 0)
+		local widest = math.max(
+			rowWidth(label.title.Text, nameH, GLYPH_DISPLAY),
+			if hasEffect then rowWidth(effect.Text, EFFECT_H, GLYPH_DISPLAY) else 0,
+			if pass then label.chip.Size.X.Scale else rowWidth(shown, priceH, GLYPH_NUMBER)
+		)
+		label.card.Size = UDim2.fromScale(math.clamp(widest + CARD_MARGIN, CARD_MIN, 1), 1)
 
 		local dim = if entry.claimed then 0 else UNCLAIMED_DIM
 		label.title.TextTransparency = dim
 		label.titleStroke.Transparency = dim
+		label.card.BackgroundTransparency = CARD_TRANSPARENCY + (1 - CARD_TRANSPARENCY) * dim
 		local effectDim = math.max(dim, if off then EFFECT_OFF else 0)
 		label.effect.TextTransparency = effectDim
 		label.effectStroke.Transparency = effectDim
@@ -482,6 +532,7 @@ local function buildPad(B: Builder, name: string, color: Color3, title: string, 
 	local effectLabel = text(label.title, { Name = "EffectText", Text = effect or "", Visible = false })
 	if static then
 		label.title.Size = UDim2.fromScale(1, 1)
+		label.card.Visible = false
 		label.title.Text = string.upper(title)
 		label.title.TextColor3 = World.Sunny or color
 		label.effect.Visible = false

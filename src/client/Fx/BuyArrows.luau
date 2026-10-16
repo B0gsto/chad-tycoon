@@ -11,9 +11,10 @@
 	    turned toward the pad. Tapping it draws the guide's path there. Not while the guide
 	    runs a "navigate" request or the tutorial: its own trail leads then
 
-	The pad the guide's chevron marks (Guide.current) gets no arrow of its own. Everything
-	hides while the tutorial runs, the intro plays, a window or a modal is open, a run is on,
-	or the player is more than PLOT_RANGE studs from the plot.
+	The pad the guide's chevron marks (Guide.current) gets no arrow of its own, and pads in
+	reach already when the player joins get none. Everything hides while the tutorial runs,
+	the intro plays, a window, a modal, a popup card or a reveal is up, a run is on, or the
+	player is more than PLOT_RANGE studs from the plot.
 ]]
 
 local GuiService = game:GetService("GuiService")
@@ -67,7 +68,7 @@ local POINTER_EASE = 10
 -- Further than this from the plot (the plaza, a course) nothing shows.
 local PLOT_RANGE = 110
 -- The HUD's busy flags (ScreenGui "TycoonUI" attributes).
-local BUSY = { "WindowOpen", "ModalOpen", "RunActive", "ObbyMode", "CardioActive" }
+local BUSY = { "WindowOpen", "ModalOpen", "PopupBusy", "RevealOpen", "RunActive", "ObbyMode", "CardioActive" }
 
 type Arrow = {
 	pad: string,
@@ -83,24 +84,62 @@ type Arrow = {
 local started = false
 local player = Players.LocalPlayer
 local arrows: { [string]: Arrow } = {}
-local wasAffordable: { [string]: boolean } = {}
+-- Pads in reach that have had their turn (an arrow, the overflow past MAX_ARROWS, or in reach
+-- already when the player joined). A pad leaves it when it goes out of reach.
+local seen: { [string]: boolean } = {}
+-- Whether the first look at the affordable set (at join) has been taken.
+local seeded = false
 local folder: Folder? = nil
+-- Looked up on the tick, read every frame: the plot, its floor, its pad parts, and the pad
+-- BuyNext.best picks with its part.
+local cache = {
+	index = nil :: number?,
+	plot = nil :: Instance?,
+	floor = nil :: BasePart?,
+	pads = {} :: { [string]: BasePart },
+	best = nil :: string?,
+	bestPart = nil :: BasePart?,
+}
 
 -- How thick a pad is: a round pad is a cylinder lying on its X axis.
 local function thickness(part: BasePart): number
 	return if part:IsA("Part") and part.Shape == Enum.PartType.Cylinder then part.Size.X else part.Size.Y
 end
 
-local function plotFolder(): Instance?
+-- Refreshes the plot and its floor when the plot changed or either left the world.
+local function refreshPlot()
 	local data = State.data
-	local map = Workspace:FindFirstChild("Map")
-	return data and map and data.plotIndex and map:FindFirstChild("Plot" .. tostring(data.plotIndex)) or nil
+	local index = data and data.plotIndex
+	local plot = cache.plot
+	if index ~= cache.index or not (plot and plot.Parent) then
+		local map = Workspace:FindFirstChild("Map")
+		plot = if map and index then map:FindFirstChild("Plot" .. tostring(index)) else nil
+		cache.index = index
+		cache.plot = plot
+		cache.floor = nil
+		table.clear(cache.pads)
+	end
+	local floor = cache.floor
+	if plot and not (floor and floor.Parent) then
+		local found = plot:FindFirstChild("Floor", true)
+		cache.floor = if found and found:IsA("BasePart") then found else nil
+	end
 end
 
+-- A pad's part on the plot (cached; looked up again once it left the world).
 local function padPart(name: string): BasePart?
-	local plot = plotFolder()
-	local part = plot and plot:FindFirstChild("Pad_" .. name, true)
-	return if part and part:IsA("BasePart") then part else nil
+	local part = cache.pads[name]
+	if part and part.Parent then
+		return part
+	end
+	cache.pads[name] = nil
+	local plot = cache.plot
+	local found = plot and plot:FindFirstChild("Pad_" .. name, true)
+	if found and found:IsA("BasePart") then
+		cache.pads[name] = found
+		return found
+	end
+	return nil
 end
 
 -- A rounded shape with an ink copy RIM px bigger behind it, so overlapping shapes share one
@@ -230,14 +269,14 @@ local function hiddenNow(screen: Instance?): boolean
 			end
 		end
 	end
-	local plot = plotFolder()
+	local plot = cache.plot
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
-	if not plot or not root then
+	if not (plot and plot.Parent) or not root then
 		return true
 	end
-	local floor = plot:FindFirstChild("Floor", true)
-	if not (floor and floor:IsA("BasePart")) then
+	local floor = cache.floor
+	if not (floor and floor.Parent) then
 		return false
 	end
 	local offset = root.Position - floor.Position
@@ -245,12 +284,18 @@ local function hiddenNow(screen: Instance?): boolean
 end
 
 -- Looks at the affordable set: new arrows for pads that just came in reach, away with the
--- ones whose pad went out of it or that have had their time.
-local function tick(hidden: boolean)
+-- ones whose pad went out of it or that have had their time. Also picks the pointer's pad.
+local function tick(hidden: boolean, marked: string?)
 	local data = State.data
-	if not data or data.tutorialDone ~= true then
+	cache.best = nil
+	cache.bestPart = nil
+	if not data then
+		return
+	end
+	if data.tutorialDone ~= true then
 		-- The tutorial's pads are the tutorial's: what is affordable when it ends is new.
-		table.clear(wasAffordable)
+		seeded = true
+		table.clear(seen)
 		for name in arrows do
 			dropArrow(name)
 		end
@@ -262,13 +307,29 @@ local function tick(hidden: boolean)
 	for _, name in list do
 		inReach[name] = true
 	end
+	cache.best = BuyNext.best(data)
+	cache.bestPart = if cache.best then padPart(cache.best) else nil
+	-- Pads out of reach may get an arrow again the next time they come in reach.
+	for name in seen do
+		if not inReach[name] then
+			seen[name] = nil
+		end
+	end
 	for name, arrow in arrows do
 		if not inReach[name] or now - arrow.since > ARROW_SECONDS then
 			dropArrow(name)
 		end
 	end
-	-- While hidden the set is not taken in: a pad that came in reach meanwhile still gets its
-	-- arrow once the screen is clear.
+	-- What is affordable at join is not news.
+	if not seeded then
+		seeded = true
+		for name in inReach do
+			seen[name] = true
+		end
+		return
+	end
+	-- While hidden no arrow is built: a pad that came in reach meanwhile still gets its arrow
+	-- once the screen is clear.
 	if hidden then
 		return
 	end
@@ -278,20 +339,23 @@ local function tick(hidden: boolean)
 			count += 1
 		end
 	end
-	-- The biggest pads first (the list runs small to big).
+	-- The biggest pads first (the list runs small to big). The guide's pad waits its turn
+	-- (its chevron leads already); a pad whose part is not streamed in yet is tried again.
 	for i = #list, 1, -1 do
 		local name = list[i]
-		if not wasAffordable[name] and count < MAX_ARROWS and not arrows[name] then
-			local part = padPart(name)
-			if part then
-				arrows[name] = buildArrow(name, part)
-				count += 1
-			end
+		if seen[name] or arrows[name] or name == marked then
+			continue
 		end
-	end
-	table.clear(wasAffordable)
-	for name in inReach do
-		wasAffordable[name] = true
+		if count >= MAX_ARROWS then
+			seen[name] = true
+			continue
+		end
+		local part = padPart(name)
+		if part then
+			arrows[name] = buildArrow(name, part)
+			seen[name] = true
+			count += 1
+		end
 	end
 end
 
@@ -309,6 +373,10 @@ local function stepArrows(clock: number, hidden: boolean, marked: string?)
 		if not part or not part.Parent or (leaving and clock - leaving >= POP_OUT) then
 			arrow.gui:Destroy()
 			arrows[name] = nil
+			if not leaving then
+				-- Its part streamed out: it gets a fresh arrow once the part is back.
+				seen[name] = nil
+			end
 			continue
 		end
 		local scale = if leaving then 1 - (clock - leaving) / POP_OUT else easeBack(math.clamp((clock - arrow.since) / POP_IN, 0, 1))
@@ -436,9 +504,11 @@ end
 
 -- `scale` is the HUD's UIScale (the margins and the chip are design px).
 local function stepPointer(pointer: Pointer, clock: number, dt: number, hidden: boolean, source: string, scale: number)
-	local data = State.data
-	local best = if not hidden and data and source == "hint" then BuyNext.best(data) else nil
-	local part = if best then padPart(best) else nil
+	local best = if not hidden and source == "hint" then cache.best else nil
+	local part = if best then cache.bestPart else nil
+	if part and not part.Parent then
+		part = nil
+	end
 	local camera = Workspace.CurrentCamera
 	local spot, dir = nil, Vector2.zero
 	if part and camera then
@@ -503,12 +573,16 @@ function BuyArrows.init()
 	RunService.Heartbeat:Connect(function(dt)
 		local clock = os.clock()
 		local hud = playerGui:FindFirstChild("TycoonUI")
-		local hidden = hiddenNow(hud)
-		if clock >= nextTick then
-			nextTick = clock + TICK
-			tick(hidden)
-		end
 		local marked, source = Guide.current()
+		local due = clock >= nextTick
+		if due then
+			nextTick = clock + TICK
+			refreshPlot()
+		end
+		local hidden = hiddenNow(hud)
+		if due then
+			tick(hidden, marked)
+		end
 		local uiScale = hud and hud:FindFirstChildOfClass("UIScale")
 		stepArrows(clock, hidden, marked)
 		stepPointer(pointer, clock, dt, hidden, source, if uiScale then uiScale.Scale else 1)

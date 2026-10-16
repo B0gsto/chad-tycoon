@@ -1391,15 +1391,23 @@ local function coinHome(i: number, pad: BasePart): CFrame
 	if i > 24 then
 		-- Spill: coins slid off the full stack lie around the plate on the floor, tipped against
 		-- each other. Seeded by index, so a coin keeps its spot while the pile grows.
-		local rng = Random.new(i * 7919)
+		-- How far the pad's top stands over the plot floor, and how far its base reaches past the
+		-- coloured top (Server.World.Pads: a weight plate's rubber is RIM_TOP 0.35 + PLATE_LIP
+		-- 0.25 tall with the disc TOP_RISE 0.15 proud of it; a tile's base is 0.35 under the
+		-- same rise; both PlotLayout.PAD_RIM 0.5 wider than the top).
 		local round = (pad :: Part).Shape == Enum.PartType.Cylinder
-		local thickness = if round then pad.Size.X else pad.Size.Y
-		local reach = (if round then pad.Size.Y else math.max(pad.Size.X, pad.Size.Z)) / 2
+		local stand = if round then 0.75 else 0.5
+		local rim = 0.5
+		-- The coin (Size below): its radius and half its thickness.
+		local radius, half = 0.525, 0.11
+		local rng = Random.new(i * 7919)
+		local reach = (if round then pad.Size.Y else math.max(pad.Size.X, pad.Size.Z)) / 2 + rim
 		local angle = (i - 24) * 2.4 + rng:NextNumber(-0.3, 0.3)
-		local dist = reach + 0.45 + ((i - 24) % 3) * 0.4 + rng:NextNumber(0, 0.25)
+		local dist = reach + 0.4 + ((i - 24) % 3) * 0.45 + rng:NextNumber(0, 0.25)
 		local tilt = math.rad(rng:NextNumber(8, 34))
-		local floor = pad.Position + Vector3.new(math.cos(angle) * dist, -thickness / 2, math.sin(angle) * dist)
-		return CFrame.new(floor + Vector3.new(0, 0.12 + math.sin(tilt) * 0.5, 0))
+		local floor = padTop(pad) + Vector3.new(math.cos(angle) * dist, -stand, math.sin(angle) * dist)
+		-- A tipped disc rests on its lowest rim point.
+		return CFrame.new(floor + Vector3.new(0, radius * math.sin(tilt) + half * math.cos(tilt), 0))
 			* CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
 			* CFrame.Angles(tilt, 0, 0)
 			* UPRIGHT
@@ -2375,6 +2383,14 @@ local function bindPlot(p: Instance)
 		end
 	end
 	collectPad = p:FindFirstChild("Pad_Collect") :: BasePart?
+	-- A new plot: its pile is built afresh and its cash ticks count from its own pending.
+	for i = 1, shownCoins do
+		coins[i].CFrame = FAR
+		coinHomes[i] = FAR
+	end
+	shownCoins = 0
+	coinTick.seen = false
+	coinTick.at = 0
 	bindConverter(p)
 	bindJar()
 	bindProcessor(p)

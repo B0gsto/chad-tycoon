@@ -2835,7 +2835,8 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		TextScaled = true,
 		MaxTextSize = 200,
 		MinPx = G.TextMinPhone,
-		StrokeThickness = 2,
+		-- Thick Ink outlines: the plaque's peach glass behind is as pale as the text.
+		StrokeThickness = 3,
 		TextColor3 = C.GoldLight,
 		Size = captionSize,
 		Position = captionPos,
@@ -2846,7 +2847,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		Text = "0",
 		Font = F.Number,
 		TextScaled = true,
-		StrokeThickness = 2.5,
+		StrokeThickness = 4,
 		Size = numberSize,
 		Position = numberPos,
 		ZIndex = 4,
