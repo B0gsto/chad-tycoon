@@ -51,10 +51,11 @@ function PadLabelSize.size(
 	return cap, h * cap / w, true
 end
 
--- Camera distances (studs from the pad) at and inside which a label sits at its near
+-- Camera distances (studs from the pad; the default follow camera stands ~15-20 studs off a
+-- pad the player is on, the spawn view ~50+) at and inside which a label sits at its near
 -- placement, and at and past which it sits at its far one; between them it glides across.
-PadLabelSize.NEAR_DISTANCE = 12
-PadLabelSize.FAR_DISTANCE = 24
+PadLabelSize.NEAR_DISTANCE = 22
+PadLabelSize.FAR_DISTANCE = 36
 
 -- How far (0 = near, 1 = far) along from its near placement a label is with the camera
 -- `distance` studs from its pad: a smoothstep, so it starts and ends its glide gently.

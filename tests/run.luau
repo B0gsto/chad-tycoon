@@ -5529,8 +5529,8 @@ end)
 test("PadLabelSize: a label glides from its near to its far placement with the camera's distance", function()
 	local PadLabelSize = require("../src/shared/PadLabelSize")
 	local nearD, farD = PadLabelSize.NEAR_DISTANCE, PadLabelSize.FAR_DISTANCE
-	eq(nearD, 12, "near placement within 12 studs")
-	eq(farD, 24, "far placement from 24 studs")
+	eq(nearD, 22, "near placement within 22 studs")
+	eq(farD, 36, "far placement from 36 studs")
 	eq(PadLabelSize.blend(0), 0, "on the pad: near")
 	eq(PadLabelSize.blend(nearD), 0, "at NEAR_DISTANCE: still near")
 	eq(PadLabelSize.blend(farD), 1, "at FAR_DISTANCE: far")
@@ -5550,8 +5550,8 @@ test("PadLabelSize: a label glides from its near to its far placement with the c
 		return (a - b).Magnitude < 1e-6
 	end
 	check(same(PadLabelSize.placement(near, far, 5), near), "up close it sits at its near placement")
-	check(same(PadLabelSize.placement(near, far, 30), far), "from afar at its far one")
-	check(same(PadLabelSize.placement(near, far, 18), Vector3.new(-2.25, 8.8, 5.5)), "between them on the line")
+	check(same(PadLabelSize.placement(near, far, 50), far), "from afar at its far one")
+	check(same(PadLabelSize.placement(near, far, 29), Vector3.new(-2.25, 8.8, 5.5)), "between them on the line")
 	check(same(PadLabelSize.placement(far, far, 18), far), "a label with one placement stays put")
 	local pads = fs.readFile("src/server/World/Pads.luau")
 	check(string.find(pads, 'SetAttribute("NearOffset"', 1, true) ~= nil, "World.Pads stores the near placement")
