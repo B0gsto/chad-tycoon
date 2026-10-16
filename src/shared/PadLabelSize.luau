@@ -82,9 +82,10 @@ end
 -- faded one comes back.
 -- At 0.25 a nearer sign still hid most of a farther one's price row (both are three rows, the
 -- price at the bottom). From the spawn view Buy 5 brushes Buy 1 by 0.05..0.07 as the camera
--- settles, so a sign faded on the way there must come back above that.
+-- settles (0.083 seen at a narrow window), so a sign faded on the way there must come back
+-- well above that.
 PadLabelSize.FADE_OUT_SHARE = 0.15
-PadLabelSize.FADE_IN_SHARE = 0.08
+PadLabelSize.FADE_IN_SHARE = 0.10
 
 -- A label's rect on screen: centre `x`, `y` and size `w` x `h` (pixels).
 export type Rect = { x: number, y: number, w: number, h: number }
