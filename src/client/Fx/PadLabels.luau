@@ -17,7 +17,10 @@
 	Every DECLUTTER_PERIOD the local plot's labels in view are projected to screen rects and
 	Shared.PadLabelSize.declutter picks the ones that hide behind a nearer label (looking along
 	the buy row the far ones stack up): those fade out over FADE_TIME and back once clear. The
-	label of the pad the player stands at (nearest to the character) is never faded. A label
+	label of the pad the player stands at (nearest to the character) is never faded. The plot's
+	other floating signs (tagged "PlotSign" by the server, e.g. a crate cracker's READY! pill)
+	join the declutter at their own size, so a nearer sign hides a farther one whatever its
+	kind; they are never resized or moved. A label
 	has no transparency of its own, so a fading label's elements are moved into a CanvasGroup
 	("Declutter") whose GroupTransparency is tweened; once back in full they are moved out
 	again and the group is dropped, so a shown label renders exactly as World.Pads built it.
@@ -37,6 +40,8 @@ local PadLabelSize = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChi
 local State = require(script.Parent.Parent.State)
 
 local TAG = "PadLabel"
+-- The plot's other floating signs: decluttered with the pad labels, nothing else.
+local SIGN_TAG = "PlotSign"
 -- Pixel change below which a capped label is not resized again.
 local EPSILON = 0.5
 -- Blend change (0..1) below which a gliding label is not moved again (under 0.02 studs here).
@@ -53,6 +58,8 @@ type Entry = { base: UDim2, capped: boolean, w: number, h: number }
 type Glide = { near: Vector3, far: Vector3, t: number }
 
 local entries: { [BillboardGui]: Entry } = {}
+-- PlotSign signs and their own size.
+local signs: { [BillboardGui]: UDim2 } = {}
 local glides: { [BillboardGui]: Glide } = {}
 -- Labels faded (or fading back in) by the declutter: the group holding their elements.
 type Fade = { group: CanvasGroup, out: boolean, tween: Tween? }
@@ -86,9 +93,16 @@ local function add(gui: Instance)
 	end
 end
 
+local function addSign(gui: Instance)
+	if gui:IsA("BillboardGui") and not entries[gui] then
+		signs[gui] = gui.Size
+	end
+end
+
 local function remove(gui: Instance)
 	entries[gui :: BillboardGui] = nil
 	glides[gui :: BillboardGui] = nil
+	signs[gui :: BillboardGui] = nil
 	local fade = fades[gui :: BillboardGui]
 	if fade then
 		fades[gui :: BillboardGui] = nil
@@ -212,7 +226,21 @@ local function groupReport(gui: BillboardGui, fade: Fade): { [string]: any }
 	}
 end
 
-type Candidate = { gui: BillboardGui, rect: PadLabelSize.Rect, distance: number, keep: boolean }
+type Candidate = { gui: BillboardGui, rect: PadLabelSize.Rect, distance: number, keep: boolean, sign: boolean }
+
+-- A sign's name in the diagnostics: a pad label by its pad, another sign by its own name and
+-- where it stands (the two crackers' READY! pills share a name).
+local function nameOf(gui: BillboardGui, sign: boolean): string
+	local adornee = gui.Adornee
+	if not adornee then
+		return gui:GetFullName()
+	end
+	if not sign then
+		return adornee.Name
+	end
+	local p = (adornee :: BasePart).Position
+	return string.format("%s(%d,%d)", gui.Name, math.round(p.X), math.round(p.Z))
+end
 
 -- Fades the local plot's labels that a nearer label covers on screen (see the header).
 local function declutter(camera: Camera)
@@ -227,45 +255,60 @@ local function declutter(camera: Camera)
 	local list: { Candidate } = {}
 	local skipped: { any } = {}
 	local nearest: Candidate?, nearestGap = nil, math.huge
-	local function skip(gui: BillboardGui, why: string)
+	local function skip(gui: BillboardGui, sign: boolean, why: string)
 		local adornee = gui.Adornee
 		table.insert(skipped, {
-			name = if adornee then adornee.Name else gui:GetFullName(),
+			name = nameOf(gui, sign),
+			kind = if sign then "sign" else "pad",
 			skipped = why,
 			distance = if adornee then math.round((adornee.Position - eye).Magnitude * 10) / 10 else nil,
 		})
 	end
+	-- Projects a sign (`base` its UDim2 size; `sign` when not a pad label, so never capped and
+	-- never kept) and adds it to the list when it is on screen.
+	local function consider(gui: BillboardGui, base: UDim2, sign: boolean)
+		local adornee = gui.Adornee
+		if not (adornee and adornee:IsA("BasePart") and gui.Enabled and gui:IsDescendantOf(plot :: Instance)) then
+			if gui:IsDescendantOf(plot :: Instance) then
+				skip(gui, sign, if not gui.Enabled then "disabled" else "no adornee")
+			end
+			return
+		end
+		local pos = anchorOf(gui, adornee)
+		local distance = (pos - eye).Magnitude
+		local depth = (pos - eye):Dot(look)
+		if depth <= 0 or (adornee.Position - eye).Magnitude > gui.MaxDistance then
+			skip(gui, sign, if depth <= 0 then "behind camera" else "past MaxDistance")
+			return
+		end
+		local point = camera:WorldToViewportPoint(pos)
+		local w, h
+		if sign then
+			local k = PadLabelSize.pixelsPerStud(depth, viewport.Y, fov)
+			w, h = base.X.Scale * k + base.X.Offset, base.Y.Scale * k + base.Y.Offset
+		else
+			w, h = PadLabelSize.size(base.X.Scale, base.X.Offset, base.Y.Scale, base.Y.Offset, depth, viewport.Y, fov)
+		end
+		if point.X + w / 2 < 0 or point.X - w / 2 > viewport.X or point.Y + h / 2 < 0 or point.Y - h / 2 > viewport.Y then
+			skip(gui, sign, "off screen")
+			return
+		end
+		local c: Candidate =
+			{ gui = gui, rect = { x = point.X, y = point.Y, w = w, h = h }, distance = distance, keep = false, sign = sign }
+		table.insert(list, c)
+		if feet and not sign then
+			local gap = Vector2.new(adornee.Position.X - feet.X, adornee.Position.Z - feet.Z).Magnitude
+			if gap < nearestGap then
+				nearest, nearestGap = c, gap
+			end
+		end
+	end
 	if plot then
 		for gui, entry in entries do
-			local adornee = gui.Adornee
-			if not (adornee and adornee:IsA("BasePart") and gui.Enabled and gui:IsDescendantOf(plot)) then
-				if gui:IsDescendantOf(plot) then
-					skip(gui, if not gui.Enabled then "disabled" else "no adornee")
-				end
-				continue
-			end
-			local pos = anchorOf(gui, adornee)
-			local distance = (pos - eye).Magnitude
-			local depth = (pos - eye):Dot(look)
-			if depth <= 0 or (adornee.Position - eye).Magnitude > gui.MaxDistance then
-				skip(gui, if depth <= 0 then "behind camera" else "past MaxDistance")
-				continue
-			end
-			local point = camera:WorldToViewportPoint(pos)
-			local base = entry.base
-			local w, h = PadLabelSize.size(base.X.Scale, base.X.Offset, base.Y.Scale, base.Y.Offset, depth, viewport.Y, fov)
-			if point.X + w / 2 < 0 or point.X - w / 2 > viewport.X or point.Y + h / 2 < 0 or point.Y - h / 2 > viewport.Y then
-				skip(gui, "off screen")
-				continue
-			end
-			local c: Candidate = { gui = gui, rect = { x = point.X, y = point.Y, w = w, h = h }, distance = distance, keep = false }
-			table.insert(list, c)
-			if feet then
-				local gap = Vector2.new(adornee.Position.X - feet.X, adornee.Position.Z - feet.Z).Magnitude
-				if gap < nearestGap then
-					nearest, nearestGap = c, gap
-				end
-			end
+			consider(gui, entry.base, false)
+		end
+		for gui, base in signs do
+			consider(gui, base, true)
 		end
 	end
 	if nearest then
@@ -295,10 +338,10 @@ local function declutter(camera: Camera)
 		end
 		local r = c.rect
 		local cover = list[covers[i]]
-		local adornee = c.gui.Adornee :: BasePart
 		local fade = fades[c.gui]
 		table.insert(report, {
-			name = adornee.Name,
+			name = nameOf(c.gui, c.sign),
+			kind = if c.sign then "sign" else "pad",
 			distance = math.round(c.distance * 10) / 10,
 			rect = { math.round(r.x - r.w / 2), math.round(r.y - r.h / 2), math.round(r.w), math.round(r.h) },
 			onScreen = true,
@@ -306,7 +349,7 @@ local function declutter(camera: Camera)
 			faded = result[i],
 			fadeGroup = if fade then groupReport(c.gui, fade) else nil,
 			overlap = math.round(shares[i] * 1000) / 1000,
-			cover = if cover then (cover.gui.Adornee :: BasePart).Name else nil,
+			cover = if cover then nameOf(cover.gui, cover.sign) else nil,
 		})
 	end
 	for _, s in skipped do
@@ -378,6 +421,13 @@ function PadLabels.diagnostics(): { [string]: any }
 		lastError = diag.lastError,
 		secondsSincePass = math.round((os.clock() - diag.at) * 100) / 100,
 		tracked = tracked,
+		signs = (function()
+			local n = 0
+			for _ in signs do
+				n += 1
+			end
+			return n
+		end)(),
 		plot = diag.plot,
 		viewport = diag.viewport,
 		labels = diag.labels,
@@ -390,6 +440,11 @@ function PadLabels.init()
 	end
 	CollectionService:GetInstanceAddedSignal(TAG):Connect(add)
 	CollectionService:GetInstanceRemovedSignal(TAG):Connect(remove)
+	for _, gui in CollectionService:GetTagged(SIGN_TAG) do
+		addSign(gui)
+	end
+	CollectionService:GetInstanceAddedSignal(SIGN_TAG):Connect(addSign)
+	CollectionService:GetInstanceRemovedSignal(SIGN_TAG):Connect(remove)
 	RunService.RenderStepped:Connect(step)
 end
 

@@ -5551,16 +5551,27 @@ test("PadLabelSize: far labels stacked behind nearer ones fade, with hysteresis"
 	out = PadLabelSize.declutter({ r(0, 0, 10, 10), r(5, 0, 10, 10), r(12, 0, 10, 10) }, {})
 	check(out[2] and not out[3], "the third label is checked against the shown first, not the faded second")
 	-- Hysteresis: between FADE_IN_SHARE and FADE_OUT_SHARE a label keeps its state.
-	local a, b = r(0, 0, 10, 10), r(8.2, 0, 10, 10) -- 18% overlap
-	check(not PadLabelSize.declutter({ a, b }, { false, false })[2], "18% overlap: a shown label stays shown")
-	check(PadLabelSize.declutter({ a, b }, { false, true })[2], "18% overlap: a faded label stays faded")
-	check(not PadLabelSize.declutter({ a, r(9.5, 0, 10, 10) }, { false, true })[2], "5%: it comes back")
-	check(PadLabelSize.declutter({ a, r(7, 0, 10, 10) }, { false, false })[2], "30%: it fades")
+	check(PadLabelSize.FADE_IN_SHARE < PadLabelSize.FADE_OUT_SHARE, "fade-in sits under fade-out")
+	local a, b = r(0, 0, 10, 10), r(9, 0, 10, 10) -- 10% overlap
+	check(not PadLabelSize.declutter({ a, b }, { false, false })[2], "10% overlap: a shown label stays shown")
+	check(PadLabelSize.declutter({ a, b }, { false, true })[2], "10% overlap: a faded label stays faded")
+	check(not PadLabelSize.declutter({ a, r(9.6, 0, 10, 10) }, { false, true })[2], "4%: it comes back")
+	check(PadLabelSize.declutter({ a, r(8, 0, 10, 10) }, { false, false })[2], "20%: it fades")
+	-- Seen on the server: Buy 25 over a fifth of Buy 100's sign hid its price; that fades now.
+	check(PadLabelSize.declutter({ r(0, 0, 118, 72), r(90, 0, 111, 68) }, { false, false })[2], "a 22% cover fades")
+	-- The spawn view's worst overlap on the server (Buy 5 over Buy 1, under 5%) stays shown.
+	check(not PadLabelSize.declutter({ r(0, 0, 118, 73), r(-109, 0, 111, 68) }, { false, false })[2], "a 5% brush stays")
 	-- The label the player stands at is never faded.
 	out = PadLabelSize.declutter({ r(0, 0, 10, 10), r(0, 0, 10, 10) }, { false, true }, { false, true })
 	check(not out[2], "a kept label stays shown")
 	local labels = fs.readFile("src/client/Fx/PadLabels.luau")
 	check(string.find(labels, "PadLabelSize.declutter", 1, true) ~= nil, "Fx.PadLabels declutters the plot's labels")
+	-- The plot's other floating signs join in: a nearer sign hides a farther one, whatever its kind.
+	check(
+		string.find(fs.readFile("src/server/WorldBuilder.luau"), 'AddTag(gui, "PlotSign")', 1, true) ~= nil,
+		"the READY! pill is a PlotSign"
+	)
+	check(string.find(labels, 'SIGN_TAG = "PlotSign"', 1, true) ~= nil, "Fx.PadLabels declutters the PlotSign signs too")
 	-- A BillboardGui ignores GroupTransparency: a faded label's group must be hidden outright.
 	check(string.find(labels, "f.group.Visible = false", 1, true) ~= nil, "a faded label's group is hidden once out")
 	check(string.find(labels, "f.group.Visible = true", 1, true) ~= nil, "and shown again as it fades back in")

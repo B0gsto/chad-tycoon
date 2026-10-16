@@ -16,6 +16,7 @@
 	a player walking in from the hub (Roblox is right-handed).
 ]]
 
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
@@ -244,6 +245,8 @@ local function buildReadyFlag(body: Frame, cardHeight: number, status: TextLabel
 	gui.MaxDistance = Common.SIGN_FADE_CARD
 	gui.LightInfluence = 0
 	gui.Enabled = false
+	-- Fx.PadLabels declutters it with the pad signs: a nearer sign hides a farther one.
+	CollectionService:AddTag(gui, "PlotSign")
 	gui.Parent = card
 	local pill = Instance.new("Frame")
 	pill.Size = UDim2.fromScale(1, 1)

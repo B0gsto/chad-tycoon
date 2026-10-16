@@ -14,7 +14,8 @@
 	placement blends them by the camera's distance from the pad (NEAR_DISTANCE..FAR_DISTANCE).
 
 	Labels always face the camera, so looking along the buy row from one end the far labels
-	pile up on screen. declutter decides which of them to fade: nearest first, a label whose
+	pile up on screen (and the plot's other floating signs, like a crate cracker's READY! pill,
+	join in). declutter decides which of them to fade: nearest first, a label whose
 	screen rect covers more than FADE_OUT_SHARE of a nearer shown label's (or its own, whichever
 	is smaller) fades out, and comes back once that is under FADE_IN_SHARE (the gap keeps it
 	from flickering).
@@ -79,8 +80,10 @@ end
 
 -- Overlap (share of the smaller rect) past which a farther label fades out, and under which a
 -- faded one comes back.
-PadLabelSize.FADE_OUT_SHARE = 0.25
-PadLabelSize.FADE_IN_SHARE = 0.1
+-- At 0.25 a nearer sign still hid most of a farther one's price row (both are three rows, the
+-- price at the bottom); from the spawn view the row's signs overlap under 0.05.
+PadLabelSize.FADE_OUT_SHARE = 0.15
+PadLabelSize.FADE_IN_SHARE = 0.06
 
 -- A label's rect on screen: centre `x`, `y` and size `w` x `h` (pixels).
 export type Rect = { x: number, y: number, w: number, h: number }
