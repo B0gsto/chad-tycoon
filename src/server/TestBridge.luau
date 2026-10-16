@@ -454,15 +454,75 @@ COMMANDS.list = {
 
 local resultMap: MemoryStoreSortedMap? = nil
 
+-- A MemoryStore item holds at most 32 KB: past this the result is replaced by an error.
+local RESULT_MAX_BYTES = 30000
+
+-- A JSON-safe copy of `value`: non-finite numbers and non-JSON types become strings, and a
+-- table is an array only when its keys are exactly 1..n (anything else turns into an object
+-- with string keys), so JSONEncode cannot fail on it.
+local function jsonSafe(value: any, depth: number?): any
+	local d = depth or 0
+	local t = type(value)
+	if t == "number" then
+		return if value ~= value or value == math.huge or value == -math.huge then tostring(value) else value
+	elseif t == "string" or t == "boolean" or t == "nil" then
+		return value
+	elseif t ~= "table" or d > 12 then
+		return tostring(value)
+	end
+	local n, count = #value, 0
+	for _ in value do
+		count += 1
+	end
+	local out = {}
+	if count == n then
+		for i = 1, n do
+			out[i] = jsonSafe(value[i], d + 1)
+		end
+	else
+		for key, v in value do
+			out[tostring(key)] = jsonSafe(v, d + 1)
+		end
+	end
+	return out
+end
+
 local function writeResult(id: string, result: { [string]: any })
 	result.jobId = game.JobId
 	result.placeVersion = game.PlaceVersion
 	result.at = os.time()
+	-- Encode first: a result JSONEncode rejects (a mixed table, NaN) or one past the item size
+	-- limit used to fail the write silently, and the caller timed out without a word.
+	local okEncode, json = pcall(HttpService.JSONEncode, HttpService, result)
+	if not okEncode then
+		result.writeError = "JSONEncode failed: " .. tostring(json)
+		okEncode, json = pcall(HttpService.JSONEncode, HttpService, jsonSafe(result))
+	end
+	if not okEncode or #json > RESULT_MAX_BYTES then
+		json = HttpService:JSONEncode({
+			ok = false,
+			cmd = result.cmd,
+			error = if okEncode
+				then string.format("result too large: %d bytes (limit %d)", #json, RESULT_MAX_BYTES)
+				else "result not encodable: " .. tostring(json),
+			writeError = result.writeError,
+			jobId = result.jobId,
+			placeVersion = result.placeVersion,
+			at = result.at,
+		})
+	end
 	local ok, err = pcall(function()
-		assert(resultMap, "result map missing"):SetAsync(id, HttpService:JSONEncode(result), RESULT_TTL)
+		assert(resultMap, "result map missing"):SetAsync(id, json, RESULT_TTL)
 	end)
 	if not ok then
 		warn("[TestBridge] result write failed: " .. tostring(err))
+		pcall(function()
+			assert(resultMap, "result map missing"):SetAsync(
+				id,
+				HttpService:JSONEncode({ ok = false, cmd = result.cmd, error = "result write failed: " .. tostring(err), bytes = #json }),
+				RESULT_TTL
+			)
+		end)
 	end
 end
 

@@ -27,9 +27,16 @@
 	A BillboardGui does not honour GroupTransparency (the TEST bridge's `labels` showed a group
 	at 1 holding every element while the sign still drew), so once faded out the group is also
 	hidden (Visible = false) and shown again as it starts back in.
+
+	The HUD's top-centre stack (count/surge row, NEXT plate with its afford hint, run or
+	tutorial pill; up to three rows) also hides what is under it: it joins the declutter as a
+	shown sign, so a label it covers fades like any other. The kept label is moved down instead
+	(along the camera's down, by just enough pixels for its top to clear the stack), easing
+	there and back over NUDGE_RATE.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
+local GuiService = game:GetService("GuiService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -50,10 +57,17 @@ local BLEND_EPSILON = 0.004
 local DECLUTTER_PERIOD = 0.1
 local FADE_TIME = 0.15
 local FADE_INFO = TweenInfo.new(FADE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+-- The HUD's top-centre stack (direct children of a ScreenGui, by name).
+local HUD_FRAMES = { Units = true, DepositStrip = true, NextGoal = true, RunPill = true, TutorialPill = true }
+-- Pixels the kept label's top keeps under the stack, the most it is moved (share of the
+-- viewport's height), and how fast (per second, exponential) it eases to its nudge.
+local HUD_MARGIN = 6
+local NUDGE_LIMIT = 0.35
+local NUDGE_RATE = 12
 
 local PadLabels = {}
 
-type Entry = { base: UDim2, capped: boolean, w: number, h: number }
+type Entry = { base: UDim2, capped: boolean, w: number, h: number, offset: Vector3 }
 -- A label with two placements and how far (0 near .. 1 far) it currently sits between them.
 type Glide = { near: Vector3, far: Vector3, t: number }
 
@@ -64,6 +78,9 @@ local glides: { [BillboardGui]: Glide } = {}
 -- Labels faded (or fading back in) by the declutter: the group holding their elements.
 type Fade = { group: CanvasGroup, out: boolean, tween: Tween? }
 local fades: { [BillboardGui]: Fade } = {}
+-- Labels moved down clear of the HUD stack: studs along the camera's down now and wanted.
+type Nudge = { studs: number, target: number }
+local nudges: { [BillboardGui]: Nudge } = {}
 local sinceDeclutter = 0
 -- Diagnostics for the TEST bridge (PadLabels.diagnostics): passes run, the last error and the
 -- last pass's labels, with why each was skipped or how it was judged.
@@ -75,6 +92,9 @@ local diag = {
 	at = 0,
 	plot = nil :: string?,
 	viewport = nil :: { number }?,
+	hudRect = nil :: { number }?,
+	hudFrames = {} :: { string },
+	inset = nil :: { number }?,
 }
 
 local function baseOf(gui: BillboardGui): UDim2
@@ -86,7 +106,7 @@ local function add(gui: Instance)
 	if not gui:IsA("BillboardGui") or entries[gui] then
 		return
 	end
-	entries[gui] = { base = baseOf(gui), capped = false, w = 0, h = 0 }
+	entries[gui] = { base = baseOf(gui), capped = false, w = 0, h = 0, offset = gui.StudsOffsetWorldSpace }
 	local near, far = gui:GetAttribute("NearOffset"), gui:GetAttribute("FarOffset")
 	if typeof(near) == "Vector3" and typeof(far) == "Vector3" and (near - far).Magnitude > 0.01 then
 		glides[gui] = { near = near, far = far, t = 1 }
@@ -103,6 +123,7 @@ local function remove(gui: Instance)
 	entries[gui :: BillboardGui] = nil
 	glides[gui :: BillboardGui] = nil
 	signs[gui :: BillboardGui] = nil
+	nudges[gui :: BillboardGui] = nil
 	local fade = fades[gui :: BillboardGui]
 	if fade then
 		fades[gui :: BillboardGui] = nil
@@ -197,13 +218,79 @@ local function glide(eye: Vector3)
 		-- Always land exactly on either end; in between only move past BLEND_EPSILON.
 		if t ~= g.t and (t == 0 or t == 1 or math.abs(t - g.t) > BLEND_EPSILON) then
 			g.t = t
-			gui.StudsOffsetWorldSpace = g.near:Lerp(g.far, t)
+			if not nudges[gui] then
+				gui.StudsOffsetWorldSpace = g.near:Lerp(g.far, t)
+			end
 		end
 	end
 end
 
 local function anchorOf(gui: BillboardGui, adornee: BasePart): Vector3
 	return adornee.Position + adornee.CFrame:VectorToWorldSpace(gui.StudsOffsetWorldSpace)
+end
+
+-- A label's offset before any HUD nudge: its glide's blend, or where World.Pads put it.
+local function baseOffset(gui: BillboardGui): Vector3
+	local g = glides[gui]
+	if g then
+		return g.near:Lerp(g.far, g.t)
+	end
+	local entry = entries[gui]
+	return if entry then entry.offset else gui.StudsOffsetWorldSpace
+end
+
+-- Eases the nudged labels toward their wanted nudge and places them (base + nudge along the
+-- camera's down); a label eased back to none gets its base offset and leaves the table.
+local function placeNudged(camera: Camera, dt: number)
+	if next(nudges) == nil then
+		return
+	end
+	local alpha = 1 - math.exp(-NUDGE_RATE * dt)
+	local down = -camera.CFrame.UpVector
+	for gui, n in nudges do
+		local adornee = gui.Adornee
+		n.studs += (n.target - n.studs) * alpha
+		if n.target == 0 and n.studs < 0.01 then
+			nudges[gui] = nil
+			gui.StudsOffsetWorldSpace = baseOffset(gui)
+		elseif adornee and adornee:IsA("BasePart") then
+			gui.StudsOffsetWorldSpace = baseOffset(gui) + adornee.CFrame:VectorToObjectSpace(down * n.studs)
+		end
+	end
+end
+
+-- The HUD's top-centre stack on screen (viewport px, a centre rect) and the frames in it.
+local function hudStack(): (PadLabelSize.Rect?, { string })
+	local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	if not playerGui then
+		return nil, {}
+	end
+	local inset = GuiService:GetGuiInset()
+	diag.inset = { math.round(inset.X), math.round(inset.Y) }
+	local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
+	local names = {}
+	for _, screen in playerGui:GetChildren() do
+		if not (screen:IsA("ScreenGui") and screen.Enabled) then
+			continue
+		end
+		local shift = if screen.IgnoreGuiInset then Vector2.zero else inset
+		for _, child in screen:GetChildren() do
+			if not (HUD_FRAMES[child.Name] and child:IsA("GuiObject") and child.Visible) then
+				continue
+			end
+			local pos, size = child.AbsolutePosition + shift, child.AbsoluteSize
+			if size.X <= 0 or size.Y <= 0 then
+				continue
+			end
+			left, top = math.min(left, pos.X), math.min(top, pos.Y)
+			right, bottom = math.max(right, pos.X + size.X), math.max(bottom, pos.Y + size.Y)
+			table.insert(names, child.Name)
+		end
+	end
+	if #names == 0 then
+		return nil, names
+	end
+	return { x = (left + right) / 2, y = (top + bottom) / 2, w = right - left, h = bottom - top }, names
 end
 
 -- The fade group's state for the diagnostics: what it holds and what is left outside it.
@@ -226,7 +313,14 @@ local function groupReport(gui: BillboardGui, fade: Fade): { [string]: any }
 	}
 end
 
-type Candidate = { gui: BillboardGui, rect: PadLabelSize.Rect, distance: number, keep: boolean, sign: boolean }
+type Candidate = {
+	gui: BillboardGui,
+	rect: PadLabelSize.Rect,
+	distance: number,
+	depth: number,
+	keep: boolean,
+	sign: boolean,
+}
 
 -- A sign's name in the diagnostics: a pad label by its pad, another sign by its own name and
 -- where it stands (the two crackers' READY! pills share a name).
@@ -274,7 +368,8 @@ local function declutter(camera: Camera)
 			end
 			return
 		end
-		local pos = anchorOf(gui, adornee)
+		-- Judged at its base offset: the HUD nudge is worked out below and must not feed back.
+		local pos = adornee.Position + adornee.CFrame:VectorToWorldSpace(baseOffset(gui))
 		local distance = (pos - eye).Magnitude
 		local depth = (pos - eye):Dot(look)
 		if depth <= 0 or (adornee.Position - eye).Magnitude > gui.MaxDistance then
@@ -293,8 +388,14 @@ local function declutter(camera: Camera)
 			skip(gui, sign, "off screen")
 			return
 		end
-		local c: Candidate =
-			{ gui = gui, rect = { x = point.X, y = point.Y, w = w, h = h }, distance = distance, keep = false, sign = sign }
+		local c: Candidate = {
+			gui = gui,
+			rect = { x = point.X, y = point.Y, w = w, h = h },
+			distance = distance,
+			depth = depth,
+			keep = false,
+			sign = sign,
+		}
 		table.insert(list, c)
 		if feet and not sign then
 			local gap = Vector2.new(adornee.Position.X - feet.X, adornee.Position.Z - feet.Z).Magnitude
@@ -311,8 +412,29 @@ local function declutter(camera: Camera)
 			consider(gui, base, true)
 		end
 	end
+	-- The HUD stack: the kept label moves down clear of it (its rect judged where it is going),
+	-- every other label it covers fades.
+	local hud, hudNames = hudStack()
+	diag.hudFrames = hudNames
+	local nudgePx = 0
 	if nearest then
 		nearest.keep = true
+		if hud then
+			nudgePx = PadLabelSize.clearBelow(nearest.rect, hud, HUD_MARGIN, NUDGE_LIMIT * viewport.Y)
+			nearest.rect.y += nudgePx
+		end
+		local studs = nudgePx / PadLabelSize.pixelsPerStud(nearest.depth, viewport.Y, fov)
+		local n = nudges[nearest.gui]
+		if n then
+			n.target = studs
+		elseif studs > 0 then
+			nudges[nearest.gui] = { studs = 0, target = studs }
+		end
+	end
+	for gui, n in nudges do
+		if not (nearest and gui == nearest.gui) then
+			n.target = 0
+		end
 	end
 	-- The kept label first (so it always counts as shown), then nearest the camera first.
 	table.sort(list, function(a, b)
@@ -328,7 +450,7 @@ local function declutter(camera: Camera)
 		faded[i] = fade ~= nil and fade.out
 		keep[i] = c.keep
 	end
-	local result, shares, covers = PadLabelSize.declutter(rects, faded, keep)
+	local result, shares, covers = PadLabelSize.declutter(rects, faded, keep, hud)
 	local seen: { [BillboardGui]: boolean } = {}
 	local report: { any } = {}
 	for i, c in list do
@@ -339,6 +461,7 @@ local function declutter(camera: Camera)
 		local r = c.rect
 		local cover = list[covers[i]]
 		local fade = fades[c.gui]
+		local n = nudges[c.gui]
 		table.insert(report, {
 			name = nameOf(c.gui, c.sign),
 			kind = if c.sign then "sign" else "pad",
@@ -349,7 +472,9 @@ local function declutter(camera: Camera)
 			faded = result[i],
 			fadeGroup = if fade then groupReport(c.gui, fade) else nil,
 			overlap = math.round(shares[i] * 1000) / 1000,
-			cover = if cover then nameOf(cover.gui, cover.sign) else nil,
+			cover = if covers[i] == -1 then "HUD" elseif cover then nameOf(cover.gui, cover.sign) else nil,
+			hudOverlap = if hud then math.round(PadLabelSize.coverShare(r, hud) * 1000) / 1000 else 0,
+			nudge = if n then { px = math.round(if c.keep then nudgePx else 0), studs = math.round(n.studs * 100) / 100 } else nil,
 		})
 	end
 	for _, s in skipped do
@@ -358,6 +483,9 @@ local function declutter(camera: Camera)
 	diag.labels = report
 	diag.plot = if plot then plot.Name else nil
 	diag.viewport = { math.round(viewport.X), math.round(viewport.Y) }
+	diag.hudRect = if hud
+		then { math.round(hud.x - hud.w / 2), math.round(hud.y - hud.h / 2), math.round(hud.w), math.round(hud.h) }
+		else nil
 	diag.at = os.clock()
 	-- Labels out of view or off the plot come back.
 	for gui, fade in fades do
@@ -387,6 +515,7 @@ local function step(dt: number)
 	local viewportY = camera.ViewportSize.Y
 	local fov = camera.FieldOfView
 	glide(eye)
+	placeNudged(camera, dt)
 	for gui, entry in entries do
 		local adornee = gui.Adornee
 		if not (adornee and adornee:IsA("BasePart") and gui.Enabled) then
@@ -430,6 +559,9 @@ function PadLabels.diagnostics(): { [string]: any }
 		end)(),
 		plot = diag.plot,
 		viewport = diag.viewport,
+		inset = diag.inset,
+		hudRect = diag.hudRect,
+		hudFrames = diag.hudFrames,
 		labels = diag.labels,
 	}
 end

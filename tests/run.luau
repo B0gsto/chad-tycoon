@@ -5592,6 +5592,17 @@ test("PadLabelSize: far labels stacked behind nearer ones fade, with hysteresis"
 		"the TEST bridge has the labels diagnostic"
 	)
 	check(string.find(fs.readFile("src/client/Guide.luau"), "Declutter", 1, true) == nil, "Client.Guide is left alone")
+	-- The HUD's top-centre stack counts as a shown sign: what it covers fades, but not the kept one.
+	local hud = r(0, 0, 40, 20)
+	out, shares, covers = PadLabelSize.declutter({ r(0, 8, 10, 10), r(-15, 8, 10, 10), r(100, 0, 10, 10) }, {}, { true }, hud)
+	check(not out[1] and out[2] and covers[2] == -1, "the HUD stack fades a sign under it, not the kept one")
+	check(not out[3] and shares[3] == 0, "and leaves a sign clear of it")
+	eq(PadLabelSize.coverShare(r(0, 8, 10, 10), hud), 0.7, "cover share is of the sign's own area")
+	-- The kept sign is moved down to clear the stack (bottom at y 10), up to a limit.
+	eq(PadLabelSize.clearBelow(r(0, 8, 10, 10), hud, 4, 100), 11, "moved down so its top clears the HUD by the margin")
+	eq(PadLabelSize.clearBelow(r(0, 8, 10, 10), hud, 4, 5), 5, "never past the limit")
+	eq(PadLabelSize.clearBelow(r(100, 8, 10, 10), hud, 4, 100), 0, "a sign beside the stack stays put")
+	eq(PadLabelSize.clearBelow(r(0, 40, 10, 10), hud, 4, 100), 0, "and so does one already under it")
 end)
 
 test("PadLabelSize: a label glides from its near to its far placement with the camera's distance", function()

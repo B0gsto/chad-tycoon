@@ -104,13 +104,37 @@ function PadLabelSize.overlapShare(a: Rect, b: Rect): number
 	return math.min(ox * oy / smaller, 1)
 end
 
+-- How much of rect `a`'s own area rect `b` covers (0..1).
+function PadLabelSize.coverShare(a: Rect, b: Rect): number
+	local ox = math.min(a.x + a.w / 2, b.x + b.w / 2) - math.max(a.x - a.w / 2, b.x - b.w / 2)
+	local oy = math.min(a.y + a.h / 2, b.y + b.h / 2) - math.max(a.y - a.h / 2, b.y - b.h / 2)
+	local area = a.w * a.h
+	if ox <= 0 or oy <= 0 or area <= 0 then
+		return 0
+	end
+	return math.min(ox * oy / area, 1)
+end
+
+-- Pixels rect `a` must move down for its top to clear the bottom of `occluder` (the HUD's
+-- top-centre stack) by `margin`: 0 when they do not overlap side to side or `a` already sits
+-- low enough, and never more than `limit`.
+function PadLabelSize.clearBelow(a: Rect, occluder: Rect, margin: number, limit: number): number
+	if a.x + a.w / 2 <= occluder.x - occluder.w / 2 or a.x - a.w / 2 >= occluder.x + occluder.w / 2 then
+		return 0
+	end
+	local need = (occluder.y + occluder.h / 2 + margin) - (a.y - a.h / 2)
+	return math.clamp(need, 0, limit)
+end
+
 -- Which labels to fade. `rects` are the labels' screen rects nearest the camera first,
 -- `faded[i]` whether label i is faded now and `keep[i]` (optional) whether it must stay shown
 -- (the pad the player is at). Returns the new faded flags: each label is checked against the
 -- nearer labels left shown, a shown one fading past FADE_OUT_SHARE, a faded one coming back
--- under FADE_IN_SHARE. Also returns each label's worst overlap share and the index of the
--- shown label giving it (0 when none), for diagnostics.
-function PadLabelSize.declutter(rects: { Rect }, faded: { boolean }, keep: { boolean }?): ({ boolean }, { number }, { number })
+-- under FADE_IN_SHARE. `hud` (optional) is a screen rect that always counts as shown (the HUD's
+-- top-centre stack): a label it covers (by share of the label's own area) fades the same way.
+-- Also returns each label's worst overlap share and the index of the shown label giving it
+-- (0 when none, -1 when it is the HUD), for diagnostics.
+function PadLabelSize.declutter(rects: { Rect }, faded: { boolean }, keep: { boolean }?, hud: Rect?): ({ boolean }, { number }, { number })
 	local result = table.create(#rects, false)
 	local shares = table.create(#rects, 0)
 	local covers = table.create(#rects, 0)
@@ -118,6 +142,12 @@ function PadLabelSize.declutter(rects: { Rect }, faded: { boolean }, keep: { boo
 	for i, rect in rects do
 		local worst, cover = 0, 0
 		if not (keep and keep[i]) then
+			if hud then
+				local share = PadLabelSize.coverShare(rect, hud)
+				if share > worst then
+					worst, cover = share, -1
+				end
+			end
 			for _, j in shown do
 				local share = PadLabelSize.overlapShare(rect, rects[j])
 				if share > worst then
