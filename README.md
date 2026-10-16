@@ -323,9 +323,11 @@ sand island in the sea.
 - **Analytics** (`src/server/Analytics.luau`, steps in `src/shared/Funnel.luau`) for the Creator Dashboard:
   the onboarding funnel, logged once per new player (1 Joined, 2 Intro Done, 3-7 the tutorial steps, then
   8 Tier 3, 9 Tier 5, 10 Tier 7, 11 Tier 10 and 12-15 Tier 12 / 15 / 20 / 25 for the highest tier
-  discovered), a recurring "Shop" funnel (Opened, Prompted, Purchased), custom events (TierReached,
+  discovered), a recurring "Shop" funnel (Opened, Prompted, Purchased) with a "PurchasePrompt" and a
+  "PurchaseDone" custom event per pass or product (item, Pass / Product, tier band; value = Robux), so
+  prompts shown can be set against purchases item by item, custom events (TierReached,
   SessionEnd, ReturnGap, DailyClaim, Crate, ModeStart / Finish / Skip / Stop) and economy events for the
-  Cash sources and sinks, sent once a minute per player. It also logs StreakSaved / StreakLost,
+  Cash sources and sinks (Cash is the only currency since Rizz was removed), sent once a minute per player. It also logs StreakSaved / StreakLost,
   IndexClaim, AwayCard (once per session), and why a
   mode finish paid (First, Full, RunAgain, Resting, Assisted, None). Set the Workspace attribute `AnalyticsDebug =
   true` to print every call. "TutorialSkipped" ends the funnel for that player, so

@@ -8,7 +8,7 @@
 	    together. Telemetry.take gives each player their own minute of at most
 	    CAPS.Economy calls (under their 20), so the shared 120 stays spare. Cash moves are
 	    summed in a Ledger and sent at most once a minute per source or sink.
-	  - 100 custom event names (20 are used), 3 custom fields per event, 8,000 custom field
+	  - 100 custom event names (22 are used), 3 custom fields per event, 8,000 custom field
 	    values in all: every label below comes from a short fixed list (tiers, bands, buckets).
 	  - 10 currencies (one is used: "Cash"), 20 transaction types (the six of
 	    Enum.AnalyticsEconomyTransactionType), 100 item SKUs (SOURCES + SINKS).
@@ -69,6 +69,16 @@ function Telemetry.word(value: any): string
 		return string.upper(string.sub(value, 1, 1)) .. string.sub(value, 2)
 	end
 	return "Other"
+end
+
+-- A Robux item as a label: a pass's name ("DoubleAura"), or a product list and its place
+-- in it ("Money 2", "Aura 4"); "Crate" for the instant crate open.
+function Telemetry.itemLabel(name: any, index: any): string
+	local label = Telemetry.word(name)
+	if type(index) == "number" and index == index then
+		label ..= " " .. math.clamp(math.floor(index), 0, 99)
+	end
+	return label
 end
 
 -- Which part of a mode a Notify payload is about: Parkour's map, Cardio's stage, Mog's
