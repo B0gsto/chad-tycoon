@@ -5565,7 +5565,10 @@ test("PadLabelSize: far labels stacked behind nearer ones fade, with hysteresis"
 	check(PadLabelSize.overlapShare(brush[1], brush[2]) > 0.06, "the spawn brush is over 6%")
 	check(not PadLabelSize.declutter(brush, { false, false })[2], "a 7% brush stays shown")
 	check(not PadLabelSize.declutter(brush, { false, true })[2], "and a faded sign comes back there")
-	check(not PadLabelSize.declutter({ r(0, 0, 10, 10), r(9.17, 0, 10, 10) }, { false, true })[2], "an 8.3% brush (narrow window) brings a faded sign back")
+	check(
+		not PadLabelSize.declutter({ r(0, 0, 10, 10), r(9.17, 0, 10, 10) }, { false, true })[2],
+		"an 8.3% brush (narrow window) brings a faded sign back"
+	)
 	-- The label the player stands at is never faded.
 	out = PadLabelSize.declutter({ r(0, 0, 10, 10), r(0, 0, 10, 10) }, { false, true }, { false, true })
 	check(not out[2], "a kept label stays shown")
