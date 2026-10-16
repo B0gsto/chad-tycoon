@@ -431,7 +431,15 @@ function Guide.labelTop(part: BasePart): number
 	local base = label:GetAttribute("BaseSize")
 	local size = (if typeof(base) == "UDim2" then base else label.Size).Y
 	-- The label's offset runs along the pad's own axes (a round pad is a cylinder on its side).
+	-- Fx.PadLabels glides it between its near and far placements ("NearOffset" / "FarOffset"):
+	-- the higher one keeps the marker clear of it at any camera distance, and steady.
 	local up = part.CFrame:VectorToWorldSpace(label.StudsOffsetWorldSpace).Y
+	for _, key in { "NearOffset", "FarOffset" } do
+		local offset = label:GetAttribute(key)
+		if typeof(offset) == "Vector3" then
+			up = math.max(up, part.CFrame:VectorToWorldSpace(offset).Y)
+		end
+	end
 	local top = up + (size.Scale + size.Offset * LABEL_PX_STUDS) / 2
 	return math.max(0, top - thickness(part) / 2)
 end

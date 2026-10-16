@@ -82,11 +82,12 @@ local LABEL_MAX_DISTANCE = 90
 -- higher on screen, so neighbours that climb outward never meet (Auto Merge used to hang low,
 -- right behind the Buy 25 / Buy 100 tags seen from the pen's side). The outer tags also float
 -- clear of the fan zones' cards and crowd behind them.
--- Buy 1's tag also stands back and higher still, clear of the left menu: see LABEL_SHIFT.
+-- Buy 1's tag also stands back and higher still, clear of the left menu: see LABEL_SHIFT
+-- (and LABEL_NEAR for where it sits with the camera beside its pad).
 -- The merge tag stands just above its pad: see LABEL_SHIFT.
 local LABEL_LIFTS: { [string]: number } = {
 	Deposit = 6.4,
-	Buy1 = 8.4,
+	Buy1 = 10,
 	Buy100 = 7.6,
 	AutoMerge = 9.6,
 	ProcUp1 = 6.6,
@@ -107,13 +108,23 @@ local LABEL_GROW: { [string]: number } = { Merge = 0.65, Deposit = 0.7 }
 -- hid the Auto Merge tag. Buy 1's tag leans in and well back toward the rack, where perspective
 -- draws it nearer the screen's middle: over its pad (and 1.5 studs in, 4 back) its left third
 -- still sat under the left menu buttons in a 1710x1073 window. Seven studs back it is also
--- drawn higher, so it floats higher still (LABEL_LIFTS) to stay clear above the BUY 5 tag.
+-- drawn higher, so it floats higher still (LABEL_LIFTS) to stay clear above the BUY 5 tag
+-- from a camera ~22 studs behind the player.
 local LABEL_SHIFT: { [string]: Vector2 } = {
 	Merge = Vector2.new(5.2, 3.5),
 	Deposit = Vector2.new(-4, -4),
-	Buy1 = Vector2.new(-2.5, 5.5),
+	Buy1 = Vector2.new(-3, 7),
 	ProcUp1 = Vector2.new(3, -1.5),
 	ProcUp10 = Vector2.new(2, 0),
+}
+-- Pads whose label moves to another placement with the camera beside the pad (lift, then
+-- plot-local (x, z) shift): LABEL_LIFTS / LABEL_SHIFT are where it sits from afar (the spawn
+-- and plot entrance), this where it sits within Shared.PadLabelSize.NEAR_DISTANCE, and
+-- Fx.PadLabels glides it between the two. Buy 1's far tag (high and back, clear of the left
+-- menu from the entrance) hid behind the top HUD banner up close, all but its price: over the
+-- pad, 1.5 studs in and 4 back, it reads whole.
+local LABEL_NEAR: { [string]: { lift: number, shift: Vector2 } } = {
+	Buy1 = { lift = 7.6, shift = Vector2.new(-1.5, 4) },
 }
 -- Share of the stud width that scales with distance, and the fixed pixel part added to it.
 local LABEL_SCALE = 0.8
@@ -325,12 +336,13 @@ type Label = {
 	priceStroke: UIStroke,
 }
 
--- The floating label above a pad: a BillboardGui `offset` (world space) from the pad top,
+-- The floating label above a pad: a BillboardGui `offset` (world space) from the pad top
+-- (`nearOffset` with the camera beside the pad, see LABEL_NEAR; `offset` when nil),
 -- `width` studs wide and `height` studs tall, plus `px` fixed pixels (scaled to its shape) so
 -- it shrinks less than the world with distance and does not fill the screen when the camera is
 -- beside the pad. Three rows, all with a thick Ink outline: the white name, the cyan effect and
 -- the price row (the price over its gold pass chip). layoutRows places them.
-local function buildLabel(padPart: BasePart, offset: Vector3, width: number, height: number, px: number): Label
+local function buildLabel(padPart: BasePart, offset: Vector3, nearOffset: Vector3?, width: number, height: number, px: number): Label
 	local white = World.White or Color3.new(1, 1, 1)
 	local gui = Instance.new("BillboardGui")
 	gui.Name = "PadLabel"
@@ -339,7 +351,13 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number, hei
 	-- StudsOffsetWorldSpace runs along the adornee's own axes, not the world's: a weight plate's
 	-- disc is a cylinder lying on its side, so a plain "up" offset floated the label sideways at
 	-- pad height, inside the stage behind the buy row. Turn the world offset into the pad's frame.
-	gui.StudsOffsetWorldSpace = padPart.CFrame:VectorToObjectSpace(offset + Vector3.new(0, height / 2, 0))
+	local up = Vector3.new(0, height / 2, 0)
+	local far = padPart.CFrame:VectorToObjectSpace(offset + up)
+	gui.StudsOffsetWorldSpace = far
+	-- Fx.PadLabels glides the label between these by the camera's distance (in the same pad
+	-- frame as StudsOffsetWorldSpace); Client.Guide keeps its marker clear of both.
+	gui:SetAttribute("FarOffset", far)
+	gui:SetAttribute("NearOffset", padPart.CFrame:VectorToObjectSpace((nearOffset or offset) + up))
 	gui.MaxDistance = LABEL_MAX_DISTANCE
 	gui.LightInfluence = 0
 	-- Fx.PadLabels caps the label's on-screen size up close (Shared.PadLabelSize) and needs its
@@ -539,9 +557,13 @@ local function buildPad(B: Builder, name: string, color: Color3, title: string, 
 	if shift then
 		offset += B.cf:VectorToWorldSpace(Vector3.new(shift.X, 0, shift.Y))
 	end
+	local near = LABEL_NEAR[name]
+	local nearOffset = if near
+		then Vector3.new(0, near.lift, 0) + B.cf:VectorToWorldSpace(Vector3.new(near.shift.X, 0, near.shift.Y))
+		else nil
 	local label = if static
-		then buildLabel(padPart, offset, width, width * STATIC_H, STATIC_PX)
-		else buildLabel(padPart, offset, width, width * LABEL_H, LABEL_PX)
+		then buildLabel(padPart, offset, nearOffset, width, width * STATIC_H, STATIC_PX)
+		else buildLabel(padPart, offset, nearOffset, width, width * LABEL_H, LABEL_PX)
 	local entry: Painted = { color = color, print = printColor, icon = icon, claimed = true, redraw = function() end }
 	painted[padPart] = entry
 	-- Server.Tycoon writes the pad's name into `title`, what it does into `effect` and the

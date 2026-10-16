@@ -8,6 +8,10 @@
 	sign of the pad the player stood on covered its neighbours'. So its width is capped at
 	MAX_SHARE of the viewport's height (its height follows, keeping the label's shape): from
 	the spawn every label keeps its world size, and a label never grows past about twice that.
+
+	A label may also have two placements (World.Pads' "NearOffset" / "FarOffset" attributes):
+	one that reads with the camera beside its pad, one that reads from the plot's entrance.
+	placement blends them by the camera's distance from the pad (NEAR_DISTANCE..FAR_DISTANCE).
 ]]
 
 local PadLabelSize = {}
@@ -45,6 +49,25 @@ function PadLabelSize.size(
 		return w, h, false
 	end
 	return cap, h * cap / w, true
+end
+
+-- Camera distances (studs from the pad) at and inside which a label sits at its near
+-- placement, and at and past which it sits at its far one; between them it glides across.
+PadLabelSize.NEAR_DISTANCE = 12
+PadLabelSize.FAR_DISTANCE = 24
+
+-- How far (0 = near, 1 = far) along from its near placement a label is with the camera
+-- `distance` studs from its pad: a smoothstep, so it starts and ends its glide gently.
+function PadLabelSize.blend(distance: number): number
+	local t = (distance - PadLabelSize.NEAR_DISTANCE) / (PadLabelSize.FAR_DISTANCE - PadLabelSize.NEAR_DISTANCE)
+	t = math.clamp(t, 0, 1)
+	return t * t * (3 - 2 * t)
+end
+
+-- A label's offset with the camera `distance` studs from its pad, between its `near` and
+-- `far` offsets (both in the frame the label's StudsOffsetWorldSpace uses).
+function PadLabelSize.placement(near: Vector3, far: Vector3, distance: number): Vector3
+	return near:Lerp(far, PadLabelSize.blend(distance))
 end
 
 return PadLabelSize

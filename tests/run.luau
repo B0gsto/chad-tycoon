@@ -5526,6 +5526,43 @@ test("PadLabelSize: pad labels keep their world size far away and are capped up 
 	check(string.find(fs.readFile("src/client/Main.client.luau"), '"PadLabels"', 1, true) ~= nil, "Main starts Fx.PadLabels")
 end)
 
+test("PadLabelSize: a label glides from its near to its far placement with the camera's distance", function()
+	local PadLabelSize = require("../src/shared/PadLabelSize")
+	local nearD, farD = PadLabelSize.NEAR_DISTANCE, PadLabelSize.FAR_DISTANCE
+	eq(nearD, 12, "near placement within 12 studs")
+	eq(farD, 24, "far placement from 24 studs")
+	eq(PadLabelSize.blend(0), 0, "on the pad: near")
+	eq(PadLabelSize.blend(nearD), 0, "at NEAR_DISTANCE: still near")
+	eq(PadLabelSize.blend(farD), 1, "at FAR_DISTANCE: far")
+	eq(PadLabelSize.blend(200), 1, "past it: far")
+	check(math.abs(PadLabelSize.blend((nearD + farD) / 2) - 0.5) < 1e-9, "halfway between: halfway")
+	local last = 0
+	for d = nearD, farD, 0.25 do
+		local t = PadLabelSize.blend(d)
+		check(t >= last, "the glide never turns back")
+		check(t - last < 0.04, "and never jumps")
+		last = t
+	end
+	check(PadLabelSize.blend(nearD + 0.1) < 0.001, "it eases out of the near placement")
+	check(1 - PadLabelSize.blend(farD - 0.1) < 0.001, "and into the far one")
+	local near, far = Vector3.new(-1.5, 7.6, 4), Vector3.new(-3, 10, 7)
+	local function same(a: Vector3, b: Vector3): boolean
+		return (a - b).Magnitude < 1e-6
+	end
+	check(same(PadLabelSize.placement(near, far, 5), near), "up close it sits at its near placement")
+	check(same(PadLabelSize.placement(near, far, 30), far), "from afar at its far one")
+	check(same(PadLabelSize.placement(near, far, 18), Vector3.new(-2.25, 8.8, 5.5)), "between them on the line")
+	check(same(PadLabelSize.placement(far, far, 18), far), "a label with one placement stays put")
+	local pads = fs.readFile("src/server/World/Pads.luau")
+	check(string.find(pads, 'SetAttribute("NearOffset"', 1, true) ~= nil, "World.Pads stores the near placement")
+	check(string.find(pads, 'SetAttribute("FarOffset"', 1, true) ~= nil, "and the far one")
+	check(string.find(pads, "Buy1 = { lift = 7.6, shift = Vector2.new(-1.5, 4) }", 1, true) ~= nil, "Buy 1 sits over its pad up close")
+	check(string.find(pads, "Buy1 = Vector2.new(-3, 7)", 1, true) ~= nil, "and high and back from afar")
+	check(string.find(pads, "Buy1 = 10,", 1, true) ~= nil, "clear of the BUY 5 tag")
+	check(string.find(fs.readFile("src/client/Fx/PadLabels.luau"), "PadLabelSize.blend", 1, true) ~= nil, "Fx.PadLabels glides by it")
+	check(string.find(fs.readFile("src/client/Guide.luau"), '"NearOffset", "FarOffset"', 1, true) ~= nil, "Guide clears both placements")
+end)
+
 test("TestBridge: setcash and pending go through Tycoon and are documented", function()
 	local bridge = fs.readFile("src/server/TestBridge.luau")
 	local tycoon = fs.readFile("src/server/Tycoon.luau")
