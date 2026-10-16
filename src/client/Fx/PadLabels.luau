@@ -279,7 +279,8 @@ local function hudStack(): (PadLabelSize.Rect?, { string })
 				continue
 			end
 			local pos, size = child.AbsolutePosition + shift, child.AbsoluteSize
-			if size.X <= 0 or size.Y <= 0 then
+			-- (A window parks the stack above the screen while it is open.)
+			if size.X <= 0 or size.Y <= 0 or pos.Y + size.Y <= 0 then
 				continue
 			end
 			left, top = math.min(left, pos.X), math.min(top, pos.Y)

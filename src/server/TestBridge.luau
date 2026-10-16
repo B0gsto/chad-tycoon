@@ -35,7 +35,13 @@ local MogLayout = require(Server.Modes.MogLayout)
 
 local TOPIC = "TestBridge"
 local MAP = "TestBridge"
-local RESULT_TTL = 3600
+-- Results live 2 minutes (the tool polls for 20 s, then deletes what it read): the
+-- experience's whole MemoryStore quota is 64 KB + 1 KB per player, so a TEST place with one
+-- player has ~68 KB, and an hour of results (every `join` ping poll writes one) filled it:
+-- every write failed with TotalMemoryOverLimit and `cmd` timed out.
+local RESULT_TTL = 120
+-- This server's own results are removed once the tool has had this long to read them.
+local RESULT_KEEP = 30
 local OWNER_USER_ID = 11718681576
 local MAX_GIVE = 1e15
 
@@ -487,6 +493,20 @@ local function jsonSafe(value: any, depth: number?): any
 	return out
 end
 
+-- Results this server wrote and when, oldest first (removed after RESULT_KEEP).
+local written: { { id: string, at: number } } = {}
+
+-- Removes this server's results older than `age` seconds (all of them at 0).
+local function pruneResults(age: number)
+	local now = os.clock()
+	while written[1] and now - written[1].at >= age do
+		local old = table.remove(written, 1) :: { id: string, at: number }
+		pcall(function()
+			assert(resultMap, "result map missing"):RemoveAsync(old.id)
+		end)
+	end
+end
+
 local function writeResult(id: string, result: { [string]: any })
 	result.jobId = game.JobId
 	result.placeVersion = game.PlaceVersion
@@ -511,10 +531,21 @@ local function writeResult(id: string, result: { [string]: any })
 			at = result.at,
 		})
 	end
-	local ok, err = pcall(function()
-		assert(resultMap, "result map missing"):SetAsync(id, json, RESULT_TTL)
-	end)
-	if not ok then
+	pruneResults(RESULT_KEEP)
+	local function write(): (boolean, any)
+		return pcall(function()
+			assert(resultMap, "result map missing"):SetAsync(id, json, RESULT_TTL)
+		end)
+	end
+	local ok, err = write()
+	if not ok and string.find(tostring(err), "MemoryOverLimit", 1, true) then
+		-- Out of quota: drop every result this server still holds and try once more.
+		pruneResults(0)
+		ok, err = write()
+	end
+	if ok then
+		table.insert(written, { id = id, at = os.clock() })
+	else
 		warn("[TestBridge] result write failed: " .. tostring(err))
 		pcall(function()
 			assert(resultMap, "result map missing"):SetAsync(
