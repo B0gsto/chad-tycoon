@@ -2,7 +2,8 @@
 	Guide: points the player at something on their plot.
 
 	  - a small chevron (BillboardGui, ~2.2 studs, 70% opacity, MaxDistance 120)
-	    gently bobbing above the target, tinted with the target pad's colour
+	    gently bobbing above the target (clear of a pad's floating label), tinted with
+	    the target pad's colour
 	  - an optional small tag on top of it (the "navigate" label, e.g. "CLAIM!")
 	  - a trail of flat chevrons on the floor from the player to the target, flowing
 	    toward it. It follows a walkable route: round the pen's corner posts, and over
@@ -25,6 +26,7 @@
 	MOG MERGE when the next tier is one step away). The hint comes last and is the
 	quietest: the chevron over the pad, a floor trail for its first HINT_TRAIL_SECONDS
 	(and whenever the player stands still), nothing at all from further than HINT_RANGE.
+	Guide.current() says which target and source win now (Fx.BuyArrows reads it).
 ]]
 
 local Players = game:GetService("Players")
@@ -41,8 +43,13 @@ local Guide = {}
 -- Marker: size in studs, opacity at full fade-in, height above the target's top.
 local MARKER_STUDS = 2.2
 local MARKER_OPACITY = 0.7
--- Clears the pads' floating titles (World.Pads: LABEL_LIFT 5.6, up to 7.2, plus their height).
+-- The least height over the target's top; over a pad it floats MARKER_LABEL_GAP above the top
+-- of the pad's floating label (World.Pads' "PadLabel", read at run time: labelTop), whichever
+-- is higher. A label's fixed pixels count as LABEL_PX_STUDS each (about their size from the
+-- spawn camera).
 local MARKER_HEIGHT = 10.5
+local MARKER_LABEL_GAP = 1
+local LABEL_PX_STUDS = 0.05
 local MARKER_BOB = 0.3
 local MAX_DISTANCE = 120
 -- Trail: chevron count, spacing along the route, first chevron's distance ahead of the player,
@@ -118,6 +125,8 @@ local hintSince = 0
 
 local currentPart: BasePart? = nil
 local currentName: string? = nil
+-- The marker's height over currentPart's top (markerHeight, refreshed with the part).
+local currentHeight = MARKER_HEIGHT
 local lastResolve = 0
 
 -- Eased visibility (0..1) of the marker, the trail and the beam.
@@ -407,8 +416,29 @@ local function activeTarget(): (string?, string, boolean, boolean)
 	return hintTarget, hintText, false, hintTarget ~= nil
 end
 
+-- How thick a pad is: a round pad is a cylinder lying on its X axis.
+local function thickness(part: BasePart): number
+	return if part:IsA("Part") and part.Shape == Enum.PartType.Cylinder then part.Size.X else part.Size.Y
+end
+
+-- Height of the top of a pad's floating label over the pad's top (0 when it has none).
+function Guide.labelTop(part: BasePart): number
+	local label = part:FindFirstChild("PadLabel")
+	if not (label and label:IsA("BillboardGui")) then
+		return 0
+	end
+	local size = label.Size.Y
+	local top = label.StudsOffsetWorldSpace.Y + (size.Scale + size.Offset * LABEL_PX_STUDS) / 2
+	return math.max(0, top - thickness(part) / 2)
+end
+
+-- The marker's height over a target's top: clear of its label.
+local function markerHeight(part: BasePart): number
+	return math.max(MARKER_HEIGHT, Guide.labelTop(part) + MARKER_LABEL_GAP)
+end
+
 -- The palette colour that matches what the target does.
-local function colorFor(name: string): Color3
+function Guide.colorFor(name: string): Color3
 	local pads = World.Pads
 	if name == "Orbs" then
 		return World.Pink
@@ -632,7 +662,7 @@ local function paintBeam(clock: number, color: Color3)
 			beam.Width1 = width * 0.55
 		end
 		-- The core starts above the pad's labels and the marker.
-		local at = anchor.CFrame.Position + Vector3.new(0, MARKER_HEIGHT + 3 + core.Size.X / 2, 0)
+		local at = anchor.CFrame.Position + Vector3.new(0, currentHeight + 3 + core.Size.X / 2, 0)
 		core.CFrame = CFrame.new(at) * CFrame.Angles(0, 0, math.rad(90))
 	end
 	if color ~= beamColor then
@@ -815,6 +845,7 @@ function Guide.update(clock: number, dt: number?)
 		lastResolve = os.clock()
 		currentName = name
 		currentPart = resolve(name)
+		currentHeight = if currentPart then markerHeight(currentPart) else MARKER_HEIGHT
 		refreshRayFilter()
 	end
 	local part = currentPart
@@ -822,7 +853,7 @@ function Guide.update(clock: number, dt: number?)
 		hideAll(clock, dt)
 		return
 	end
-	local color = colorFor(name)
+	local color = Guide.colorFor(name)
 	local position = part.CFrame.Position
 	local root = rootPart()
 	-- A hint is for a player on the plot: from the plaza or a course it shows nothing.
@@ -833,7 +864,7 @@ function Guide.update(clock: number, dt: number?)
 			return
 		end
 	end
-	local goal = position + Vector3.new(0, part.Size.Y * 0.5, 0)
+	local goal = position + Vector3.new(0, thickness(part) * 0.5, 0)
 	local from = markerPos
 	if from and dt and markerAlpha > 0.05 then
 		markerPos = from:Lerp(goal, 1 - math.exp(-8 * dt))
@@ -841,8 +872,9 @@ function Guide.update(clock: number, dt: number?)
 		markerPos = goal
 	end
 	anchor.CFrame = CFrame.new(markerPos :: Vector3)
-	marker.StudsOffsetWorldSpace = Vector3.new(0, MARKER_HEIGHT + math.sin(clock * 2.2) * MARKER_BOB, 0)
-	tag.StudsOffsetWorldSpace = Vector3.new(0, MARKER_HEIGHT + MARKER_STUDS * 0.5 + 0.9 + math.sin(clock * 2.2) * MARKER_BOB, 0)
+	local bob = math.sin(clock * 2.2) * MARKER_BOB
+	marker.StudsOffsetWorldSpace = Vector3.new(0, currentHeight + bob, 0)
+	tag.StudsOffsetWorldSpace = Vector3.new(0, currentHeight + MARKER_STUDS * 0.5 + 0.9 + bob, 0)
 	if tagLabel.Text ~= text then
 		tagLabel.Text = text
 	end
@@ -886,6 +918,16 @@ function Guide.setTutorialTarget(name: string?, text: string?)
 	end
 	tutorialTarget = name
 	tutorialText = text or ""
+end
+
+-- What the guide points at now and who asked: "tutorial", "navigate" or "hint" (a nil
+-- name with "hint": nothing). Fx.BuyArrows leaves that pad to the guide's own chevron.
+function Guide.current(): (string?, string)
+	local name, _, fromTutorial, fromHint = activeTarget()
+	if not name then
+		return nil, "hint"
+	end
+	return name, if fromTutorial then "tutorial" elseif fromHint then "hint" else "navigate"
 end
 
 -- Temporary target that overrides the tutorial for `seconds`.

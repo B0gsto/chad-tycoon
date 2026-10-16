@@ -5150,6 +5150,8 @@ require("./plot_rank")({ test = test, check = check, eq = eq })
 require("./index_rewards")({ test = test, check = check, eq = eq, near = near, loadShared = loadShared, loadDataService = loadDataService })
 -- Comeback hooks: the "While you were away" rows and the "Before you go" line (tests/comeback.luau).
 require("./comeback")({ test = test, check = check, eq = eq, loadShared = loadShared })
+-- What to buy next: the affordable pads, Buy Max, the best pick (tests/buy_next.luau).
+require("./buy_next")({ test = test, check = check, eq = eq, loadShared = loadShared })
 -- Every script compiles the way Studio compiles it: 200 locals per chunk (tests/fx_juice.luau).
 require("./fx_juice")({ test = test, check = check })
 

@@ -67,6 +67,9 @@ export type Plot = {
 	padByName: { [string]: Pad },
 	labels: { [string]: TextLabel },
 	ownerImage: ImageLabel,
+	-- Dims the pad names and lays out the free-plot dressing when `ownerImage` is empty, or
+	-- shows the plot as owned: Server.Tycoon calls it after setting the avatar.
+	showClaimed: () -> (),
 	unlockerScreens: { { frame: Frame, title: TextLabel, status: TextLabel, timer: TextLabel } },
 }
 
@@ -566,30 +569,31 @@ local function buildPlot(index: number): Plot
 	local pads: { Pad } = {}
 	local padByName: { [string]: Pad } = {}
 	local labels: { [string]: TextLabel } = {}
-	local function pad(name: string, color: Color3, title: string, sub: string): Pad
-		local record = buildPad(B, name, color, title, sub)
+	local function pad(name: string, color: Color3, title: string, sub: string, effect: string?): Pad
+		local record = buildPad(B, name, color, title, sub, effect)
 		table.insert(pads, record)
 		padByName[name] = record
 		return record
 	end
 
 	-- Until a player owns the plot (Server.Tycoon then writes every price and status), the pads
-	-- show their name only, with no price: a "$0" reads as a live offer.
+	-- show their name and what they do, with no price: a "$0" reads as a live offer. The
+	-- effects Tycoon never rewrites (Auto Merge, Collect, the crate smashers) stay as set here.
 
 	-- Buy pads either side of the pen, named after the unit they sell like on an owned plot.
 	local firstTier = theme.Tiers[1]
 	local unitName = if firstTier then firstTier.Name else w.Unit
 	for _, amount in Economy.BUY_AMOUNTS do
-		pad("Buy" .. amount, padColors.Buy, "Buy " .. amount .. " " .. unitName, "")
+		pad("Buy" .. amount, padColors.Buy, "Buy " .. amount, "", "+" .. amount .. " " .. unitName)
 	end
-	pad("AutoMerge", padColors.AutoMerge, "Auto Merge", "Game pass")
+	pad("AutoMerge", padColors.AutoMerge, "Auto Merge", "Game pass", "Merges for you!")
 
 	-- Merge pad centred in front of the pen, at the end of the walkway.
 	pad("Merge", padColors.Merge, w.Merge, "Pairs merge into the next tier")
 
 	-- Deposit station (-X court, level with the plaza): pad + converter machine. The pad's floating label already shows the
 	-- multiplier, so the multiplier labels Tycoon writes stay hidden on the pad.
-	local depositPad = pad("Deposit", padColors.Deposit, "DEPOSIT", "")
+	local depositPad = pad("Deposit", padColors.Deposit, "DEPOSIT", "", "Aura into cash")
 	do
 		local conv = Layout.MACHINES.Converter
 		buildConverter(B, (conv.minX + conv.maxX) / 2, (conv.minZ + conv.maxZ) / 2)
@@ -619,11 +623,11 @@ local function buildPlot(index: number): Plot
 		labels.ProcessRate = hiddenLabel(body)
 		labels.ProcessSpeed = hiddenLabel(body)
 	end
-	pad("ProcUp1", padColors.Process, "UPGRADE", "")
-	pad("ProcUp10", padColors.Process, "UPGRADE x" .. Economy.PROCESS_BULK, "")
+	pad("ProcUp1", padColors.Process, "Blender Speed", "", "Faster cash")
+	pad("ProcUp10", padColors.Process, "Blender x" .. Economy.PROCESS_BULK, "", "Way faster cash")
 
 	-- Collect cash pad + coin vault (-X court, front station).
-	pad("Collect", padColors.Collect, w.Collect, "")
+	pad("Collect", padColors.Collect, w.Collect, "", "Cash waiting")
 	buildVault(B)
 
 	-- Crate unlockers (+X court), each with a small sign card standing beside the machine's
@@ -632,7 +636,7 @@ local function buildPlot(index: number): Plot
 	for i = 1, 2 do
 		local name = if i == 1 then w.Unlocker else w.PremiumUnlocker
 		local color = if i == 1 then padColors.Unlock else padColors.UnlockVip
-		pad("Unlock" .. i, color, name, "")
+		pad("Unlock" .. i, color, name, "", if i == 1 then "Smash crates!" else "3x faster!")
 		local rect = Layout.MACHINES["Unlocker" .. i]
 		buildUnlocker(B, rect, color)
 		local body, titleLabel = standingCard(
@@ -700,8 +704,9 @@ local function buildPlot(index: number): Plot
 
 	labels.Owner = ownerLabel
 
-	-- Server.Tycoon puts the owner's avatar on the entrance card and clears it when they leave:
-	-- with no avatar the plot is free, so its pad names are dimmed and its card says so.
+	-- Server.Tycoon puts the owner's avatar on the entrance card and clears it when they leave,
+	-- then calls this: with no avatar the plot is free, so its pad names are dimmed and its card
+	-- says so.
 	local function showClaimed()
 		local claimed = ownerImage.Image ~= ""
 		for _, record in pads do
@@ -716,7 +721,6 @@ local function buildPlot(index: number): Plot
 			freeDressing.Parent = parent
 		end
 	end
-	ownerImage:GetPropertyChangedSignal("Image"):Connect(showClaimed)
 	showClaimed()
 
 	makeCameraSafe(folder)
@@ -755,6 +759,7 @@ local function buildPlot(index: number): Plot
 		padByName = padByName,
 		labels = labels,
 		ownerImage = ownerImage,
+		showClaimed = showClaimed,
 		unlockerScreens = unlockerScreens,
 	}
 end

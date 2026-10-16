@@ -49,9 +49,15 @@ export type Pad = {
 	part: BasePart,
 	title: TextLabel,
 	sub: TextLabel,
-	-- What `title` and `sub` say (and sub's tint) on a plot nobody owns: Server.Tycoon puts
-	-- them back when the owner leaves.
+	-- The cyan line between the name and the price: what the pad does ("+5 Chad").
+	effect: TextLabel,
+	-- Redraws the floating label from `title`, `effect` and `sub`: Server.Tycoon calls it after
+	-- writing them.
+	redraw: () -> (),
+	-- What `title`, `effect` and `sub` say (and sub's tint) on a plot nobody owns:
+	-- Server.Tycoon puts them back when the owner leaves.
 	defaultTitle: string,
+	defaultEffect: string,
 	defaultSub: string,
 	defaultTint: Color3,
 }

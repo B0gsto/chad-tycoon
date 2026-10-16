@@ -1564,8 +1564,10 @@ local function procUpgrade(session: Session, amount: number, padName: string)
 	local gain = upgradeGain(session, amount)
 	if spend(session, Economy.processBulkCost(p.processLevel, amount), padName) then
 		p.processLevel += amount
-		emit(session, "Spend", { sink = "Converter", amount = Economy.processBulkCost(p.processLevel - amount, amount) })
-		effect(session, "Upgrade", { pad = padName, padPos = padPos(session, padName), level = p.processLevel })
+		local cost = Economy.processBulkCost(p.processLevel - amount, amount)
+		emit(session, "Spend", { sink = "Converter", amount = cost })
+		-- `cost` lets the client pop the "-$X" over the wallet.
+		effect(session, "Upgrade", { pad = padName, padPos = padPos(session, padName), level = p.processLevel, cost = cost })
 		local what = if gain > 0 then "+$" .. perSecond(gain) .. "/sec" else string.format("+%s speed", upgradeSpeed(amount))
 		toast(session, string.format("Blender Lv %d: %s", p.processLevel, what), "good")
 		markDirty(session)
@@ -1705,7 +1707,9 @@ end
 
 -- Boards ------------------------------------------------------------------------------
 
-local function setPad(session: Session, name: string, title: string?, sub: string, affordable: boolean?)
+-- Writes a pad's label: its name (nil keeps it), price / status, whether the player can afford
+-- it (yellow) or not (grey), and the cyan line saying what it does (nil keeps it).
+local function setPad(session: Session, name: string, title: string?, sub: string, affordable: boolean?, effect: string?)
 	local pad = session.plot.padByName[name]
 	if not pad then
 		return
@@ -1713,10 +1717,14 @@ local function setPad(session: Session, name: string, title: string?, sub: strin
 	if title then
 		pad.title.Text = title
 	end
+	if effect then
+		pad.effect.Text = effect
+	end
 	pad.sub.Text = sub
 	if affordable ~= nil then
 		pad.sub.TextColor3 = if affordable then theme.Colors.Good else theme.Colors.Bad
 	end
+	pad.redraw()
 end
 
 local function updateBoards(session: Session)
@@ -1726,23 +1734,25 @@ local function updateBoards(session: Session)
 
 	for _, amount in Economy.BUY_AMOUNTS do
 		local cost = Economy.bulkPrice(p.bought, amount)
-		setPad(session, "Buy" .. amount, "Buy " .. amount .. " " .. tierName(1), Format.money(cost), canAfford(session, cost))
+		local effect = string.format("+%d %s", amount, tierName(1))
+		setPad(session, "Buy" .. amount, "Buy " .. amount, Format.money(cost), canAfford(session, cost), effect)
 	end
-	-- The Buy 100 pad while its next step is a Buy Max: "BUY MAX x1,240 Normie".
+	-- The Buy 100 pad while its next step is a Buy Max: "BUY MAX" over "x1,240 Normie".
 	local maxPlan = Economy.planBuyMax(p.units, p.bought, p.money)
 	if maxPlan then
 		local count = if maxPlan.amount < 1e6 then Format.commas(maxPlan.amount) else Format.short(maxPlan.amount)
-		setPad(session, BUY_MAX_PAD, string.format("BUY MAX x%s %s", count, tierName(1)), Format.money(maxPlan.cost), true)
+		setPad(session, BUY_MAX_PAD, "BUY MAX", Format.money(maxPlan.cost), true, string.format("x%s %s", count, tierName(1)))
 	end
 
+	-- Auto Merge, Collect and the crate smashers keep the effect Server.WorldBuilder gave them.
 	if ownsAutoMerge(session) then
 		setPad(session, "AutoMerge", "Auto Merge", if p.autoMerge then "ON" else "OFF", p.autoMerge)
 	else
 		setPad(session, "AutoMerge", "Auto Merge", Format.robux(theme.Monetization.Passes.AutoMerge.Price), true)
 	end
 
-	-- Upgrade pads: the cash an upgrade adds while the units out-produce the converter,
-	-- else the speed step; no price once the pads refuse (upgradeNotNeeded).
+	-- Upgrade pads: the effect line shows the cash an upgrade adds while the units out-produce
+	-- the converter, else the speed step; no price once the pads refuse (upgradeNotNeeded).
 	local rateNow = processRate(session, true)
 	local notNeeded = upgradeNotNeeded(session)
 	local singleGain = upgradeGain(session, 1)
@@ -1751,13 +1761,14 @@ local function updateBoards(session: Session)
 		local gain = upgradeGain(session, amount)
 		-- Each pad shows its own gain: when one level already catches up with the units the
 		-- bulk pad would promise the same cash, so it shows its speed step instead.
-		local title = if Economy.upgradeShowsCash(amount, gain, singleGain)
+		local what = if Economy.upgradeShowsCash(amount, gain, singleGain)
 			then "+$" .. perSecond(gain) .. "/sec"
 			else string.format("+%s speed", upgradeSpeed(amount))
+		local title = if amount == 1 then "Blender Speed" else "Blender x" .. amount
 		if notNeeded then
-			setPad(session, padName, title, "Not needed yet", false)
+			setPad(session, padName, title, "Not needed yet", false, what)
 		else
-			setPad(session, padName, title, Format.money(cost), canAfford(session, cost))
+			setPad(session, padName, title, Format.money(cost), canAfford(session, cost), what)
 		end
 	end
 
@@ -1774,7 +1785,7 @@ local function updateBoards(session: Session)
 	labels.DepositMult.Text = "x" .. string.format("%.1f", mult)
 	labels.DepositMult.TextColor3 = if mult >= 1.2 then theme.Colors.Good else theme.Colors.Primary
 	labels.DepositNext.Text = "next change in " .. math.max(0, math.ceil(nextAt - serverNow())) .. "s"
-	setPad(session, "Deposit", nil, theme.Icons.Orb .. Format.short(p.carried) .. "  x" .. string.format("%.1f", mult), p.carried > 0)
+	setPad(session, "Deposit", nil, theme.Icons.Orb .. Format.short(p.carried), p.carried > 0, string.format("x%.1f bonus", mult))
 
 	local freeLeft = p.lastFreeReward + Economy.FREE_REWARD_COOLDOWN - now
 	labels.FreeStatus.Text = if freeLeft <= 0 then "READY!" else Format.time(freeLeft)
@@ -2332,12 +2343,14 @@ local function setOwnerSign(plot: Plot, player: Player?)
 	else
 		plot.labels.Owner.Text = "FREE PLOT"
 		plot.ownerImage.Image = ""
-		-- Back to the pads Server.WorldBuilder built: names only, no prices, no "+N% speed"
-		-- titles, and "Game pass" on Auto Merge (nothing of the last owner stays).
+		-- Back to the pads Server.WorldBuilder built: names and effects only, no prices, no
+		-- "+N speed" effects, and "Game pass" on Auto Merge (nothing of the last owner stays).
 		for _, pad in plot.pads do
 			pad.title.Text = pad.defaultTitle
+			pad.effect.Text = pad.defaultEffect
 			pad.sub.TextColor3 = pad.defaultTint
 			pad.sub.Text = pad.defaultSub
+			pad.redraw()
 		end
 		for _, screen in plot.unlockerScreens do
 			screen.status.Text = ""
@@ -2359,6 +2372,7 @@ local function setOwnerSign(plot: Plot, player: Player?)
 			end
 		end
 	end
+	plot.showClaimed()
 end
 
 local function refreshFriendBonuses()

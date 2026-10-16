@@ -341,8 +341,10 @@ Layout.PAD_ORDER = {
 	"Unlock2",
 	"Free",
 }
--- Small pads (4 x 4.2 tops, at least 4 studs on the short side so a walking character fits) with
--- at least 5 studs of open floor between neighbouring bases and 6 between a pad and the pen.
+-- Small pads are round gym weight plates PLATE studs across (at least 4, so a walking character
+-- fits), with at least 5 studs of open floor between neighbouring bases and 6 between a pad and
+-- the pen. The big deposit and merge pads stay rounded tiles.
+local PLATE = 4.2
 local BUY_Z = PEN_INTERIOR.maxZ - 1.5
 -- The side courts hold three stations each, mirrored left and right: level with the plaza in
 -- front of the pen, half-way down, and by the front fence.
@@ -352,24 +354,24 @@ local PAD_X = 34
 Layout.PADS = {
 	-- One row at the foot of the unit rack, level with the back of the pen, reading Buy 1,
 	-- Buy 5, [pen], Buy 25, Buy 100, Auto Merge from the player's left (+X) to right.
-	Buy1 = { x = 32, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
-	Buy5 = { x = 22, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
-	Buy25 = { x = -22, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
-	Buy100 = { x = -32, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
-	AutoMerge = { x = -42, z = BUY_Z, sizeX = 4, sizeZ = 4.2 },
+	Buy1 = { x = 32.25, z = BUY_Z, sizeX = PLATE, sizeZ = PLATE, round = true },
+	Buy5 = { x = 22, z = BUY_Z, sizeX = PLATE, sizeZ = PLATE, round = true },
+	Buy25 = { x = -22, z = BUY_Z, sizeX = PLATE, sizeZ = PLATE, round = true },
+	Buy100 = { x = -32.25, z = BUY_Z, sizeX = PLATE, sizeZ = PLATE, round = true },
+	AutoMerge = { x = -42.5, z = BUY_Z, sizeX = PLATE, sizeZ = PLATE, round = true },
 	-- The merge pad closes the walkway, centred in front of the pen's front wall.
 	Merge = { x = 0, z = MERGE_Z, sizeX = 7, sizeZ = 7 },
 	-- -X court (right when walking in), back to front: the big deposit pad in front of the
 	-- converter, level with the plaza (the first stop after merging); the two process upgrades
 	-- in front of the processor; collect in front of the vault.
 	Deposit = { x = -31, z = ROW_BACK, sizeX = 10, sizeZ = 12 },
-	ProcUp10 = { x = -PAD_X, z = ROW_MID + 5.2, sizeX = 4, sizeZ = 4.2 },
-	ProcUp1 = { x = -PAD_X, z = ROW_MID - 5.2, sizeX = 4, sizeZ = 4.2 },
-	Collect = { x = -PAD_X, z = ROW_FRONT, sizeX = 4.5, sizeZ = 4.5 },
+	ProcUp10 = { x = -PAD_X, z = ROW_MID + 5.2, sizeX = PLATE, sizeZ = PLATE, round = true },
+	ProcUp1 = { x = -PAD_X, z = ROW_MID - 5.2, sizeX = PLATE, sizeZ = PLATE, round = true },
+	Collect = { x = -PAD_X, z = ROW_FRONT, sizeX = PLATE, sizeZ = PLATE, round = true },
 	-- +X court (left when walking in): a crate cracker pad per station, then the free reward.
-	Unlock1 = { x = PAD_X, z = ROW_BACK, sizeX = 4.5, sizeZ = 4.5 },
-	Unlock2 = { x = PAD_X, z = ROW_MID, sizeX = 4.5, sizeZ = 4.5 },
-	Free = { x = PAD_X, z = ROW_FRONT, sizeX = 4.5, sizeZ = 4.5 },
+	Unlock1 = { x = PAD_X, z = ROW_BACK, sizeX = PLATE, sizeZ = PLATE, round = true },
+	Unlock2 = { x = PAD_X, z = ROW_MID, sizeX = PLATE, sizeZ = PLATE, round = true },
+	Free = { x = PAD_X, z = ROW_FRONT, sizeX = PLATE, sizeZ = PLATE, round = true },
 } :: { [string]: PadSpot }
 
 -- Open floor kept between pads: between neighbouring bases, and from any pad to the pen's

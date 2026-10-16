@@ -306,6 +306,9 @@ local RED_ORANGE = rgb(240, 92, 52)
 local CORAL = rgb(255, 112, 96)
 local ORANGE = rgb(255, 162, 72)
 local BLUE = rgb(92, 178, 255)
+local CYAN = rgb(64, 214, 236)
+-- The buy plates' orange: deeper than ORANGE so it reads orange, not tan, in full sun.
+local PLATE_ORANGE = rgb(255, 132, 32)
 local PURE_WHITE = rgb(255, 255, 255)
 
 -- Aura orb paint, one per producing unit tier (OrbLook.tierColor cycles through the list, so
@@ -367,12 +370,13 @@ Theme.World = {
 	-- full sun), so every unit, dark or light clothed, reads as a clear silhouette and the
 	-- white name plates stand out against them.
 	RackBack = rgb(188, 214, 236),
-	-- Pad base rim round every pad face.
+	-- Pad base rim round every pad face, and the dark rubber of the round weight-plate pads.
 	PadRim = rgb(30, 98, 124),
+	PlateRubber = rgb(44, 44, 52),
 	-- Orb pen floor (light aqua, so orbs and crates pop) and its seams and gutter lining.
 	Pool = rgb(156, 226, 230),
 	PoolDeep = rgb(104, 196, 210),
-	-- Accent yellows: Butter is the buy-pad face, Sunny awnings, chute, crates and bands.
+	-- Accent yellows: Butter and Sunny for awnings, chute, crates and bands.
 	Butter = BUTTER,
 	Sunny = SUNNY,
 	-- The sparing warm pop: sign header bands, special pads, Chad shirts.
@@ -413,15 +417,16 @@ Theme.World = {
 	-- The storm landmark's light grey thunder cloud and the giga statue's darker gold limbs.
 	StormCloud = rgb(200, 205, 215),
 	GoldDeep = rgb(222, 150, 30),
-	-- One colour per pad job, so a pad's colour tells you what it does: yellows buy and
-	-- upgrade, teal/blue move aura and cash, warm pops are the special pads.
+	-- One colour per pad job, so a pad's colour tells you what it does: orange builds (buys
+	-- Chads), yellow speeds up, cyan automates, teal/blue move aura and cash, warm pops are the
+	-- special pads.
 	Pads = {
-		Buy = BUTTER,
+		Buy = PLATE_ORANGE,
 		Process = SUNNY,
 		Deposit = BLUE,
 		Collect = TEAL_LIGHT,
 		Merge = RED_ORANGE,
-		AutoMerge = RED_ORANGE,
+		AutoMerge = CYAN,
 		Unlock = CORAL,
 		UnlockVip = ORANGE,
 		Free = CORAL,
@@ -433,18 +438,20 @@ Theme.World = {
 		Deposit = TEAL_INK,
 		Collect = TEAL_INK,
 		Merge = PURE_WHITE,
-		AutoMerge = PURE_WHITE,
+		AutoMerge = TEAL_INK,
 		Unlock = PURE_WHITE,
 		UnlockVip = TEAL_INK,
 		Free = PURE_WHITE,
 	},
-	-- Plate behind a pad's floating price (white text): green when the player can afford it /
-	-- it is ready, soft red when not, dark for a plain status, gold (Ink text) on a pad that
-	-- needs a game pass.
+	-- Floating pad labels: the cyan effect line ("+5 Chad"), the big yellow price the player
+	-- can afford (or a ready status), and the grey one they can't yet.
+	PadEffect = rgb(96, 232, 255),
+	PadPrice = rgb(255, 222, 40),
+	PadPriceOff = rgb(178, 178, 190),
+	-- Coloured chips: Good is the green "ready" / "free plot" pills on the world's signs, Pass
+	-- the gold chip (Ink text) behind a pad price that needs a game pass.
 	PadPlate = {
 		Good = rgb(40, 158, 98),
-		Bad = rgb(216, 96, 92),
-		Plain = rgb(58, 48, 96),
 		Pass = rgb(255, 196, 40),
 	},
 }
