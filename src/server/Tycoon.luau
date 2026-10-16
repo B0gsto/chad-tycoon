@@ -78,6 +78,9 @@ export type Session = {
 	lastToast: { [string]: number },
 	-- os.clock() of the last "this is a game pass" toast per pad (PASS_HINT_INTERVAL).
 	lastPassHint: { [string]: number },
+	-- TEST tooling (Tycoon.setPending with hold): Auto Cash leaves the pending cash on the
+	-- Collect pad until the player collects it there, so the coin pile can be looked at.
+	holdPending: boolean?,
 	alive: boolean,
 }
 
@@ -1523,6 +1526,7 @@ padHandlers.Collect = function(session)
 	local amount = p.pending
 	addMoney(session, amount)
 	p.pending = 0
+	session.holdPending = nil
 	effect(session, "Cash", { amount = amount, source = "Collect", padPos = padPos(session, "Collect") })
 	emit(session, "Cash", { amount = amount })
 	markDirty(session)
@@ -2106,7 +2110,7 @@ local function slowTick(session: Session)
 		p.queue -= processed
 		p.pending += processed * Economy.CASH_PER_POINT * Tycoon.moneyMultiplier(session)
 	end
-	if session.passes.AutoCash and p.pending > 0 then
+	if session.passes.AutoCash and p.pending > 0 and not session.holdPending then
 		emit(session, "Cash", { amount = p.pending })
 		effect(session, "Cash", { amount = p.pending, source = "Auto" })
 		addMoney(session, p.pending)
@@ -2651,9 +2655,12 @@ function Tycoon.setMoney(session: Session, amount: number)
 end
 
 -- TEST tooling (Server.TestBridge): leaves `amount` uncollected cash waiting on the Collect pad
--- (profile.pending: the vault's coin pile and the pad's price read it).
-function Tycoon.setPending(session: Session, amount: number)
+-- (profile.pending: the vault's coin pile and the pad's price read it). With `hold`, an Auto
+-- Cash pass stops collecting it on the next slow tick: it waits until the player collects it
+-- on the pad (or setPending runs again without hold).
+function Tycoon.setPending(session: Session, amount: number, hold: boolean?)
 	session.profile.pending = math.max(0, amount)
+	session.holdPending = if hold and amount > 0 then true else nil
 	markDirty(session)
 	flush(session)
 end

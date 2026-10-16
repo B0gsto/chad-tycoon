@@ -244,14 +244,21 @@ local TUNE = {
 	-- income, a red edge when something is too dear.
 	CashPlateH = 60,
 	-- The cash amount: big lime digits in a thick black outline, readable on any floor. Cash
-	-- going down (a buy, an upgrade) flashes it red, easing back over MoneyDropTime.
+	-- going down (a buy, an upgrade) turns it red for MoneyDropHold, easing back over
+	-- MoneyDropTime, and a red "-$X" sinks beside the plate (spends within SpendMerge
+	-- seconds add up on one).
 	MoneyText = 50,
 	MoneyColor = Color3.fromRGB(150, 255, 60),
 	MoneyStroke = 4.5,
 	MoneyStrokeColor = Color3.fromRGB(0, 0, 0),
-	MoneyDrop = C.Bad,
-	MoneyDropTime = 0.35,
-	MoneyDropPop = 0.3,
+	MoneyDrop = Color3.fromRGB(255, 58, 48),
+	MoneyDropHold = 0.3,
+	MoneyDropTime = 0.5,
+	MoneyDropPop = 0.5,
+	SpendText = 26,
+	SpendSink = 26,
+	SpendTime = 1.1,
+	SpendMerge = 0.5,
 	CashFlash = C.CashDeep,
 	CashFlashTime = 0.45,
 	GainText = 22,
@@ -3097,7 +3104,9 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 	-- (`surgeWallet`): the plate's edge turns gold and pulses, and the SURGE chip comes on
 	-- and breathes (not on touch, where the chips share the top of the screen with the status
 	-- plate that says the same).
+	local shaking = false -- Hud.shakeWallet's "can't afford" shake is running
 	local cashGain: (number) -> ()
+	local cashSpend: (number) -> ()
 	local surgeWallet: (boolean) -> ()
 	-- In a block: its locals stay out of build's 200 (see the note at the top of build).
 	do
@@ -3144,6 +3153,78 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end)
 			task.delay(TUNE.GainTime + 0.05, function()
 				float:Destroy()
+			end)
+		end
+		-- Spent (`cashSpend`, from refresh): the amount goes red and holds it, then eases back
+		-- to lime; the plate flares red; a red "-$X" sinks beside it (where "+$X" rises) and fades.
+		local spendTint: Tween? = nil
+		local spendToken = 0
+		local spendFloat: TextLabel? = nil
+		local spendSum, spendAt = 0, 0
+		cashSpend = function(amount: number)
+			spendToken += 1
+			local mine = spendToken
+			if spendTint then
+				spendTint:Cancel()
+				spendTint = nil
+			end
+			moneyLabel.TextColor3 = TUNE.MoneyDrop
+			Kit.pop(moneyLabel, TUNE.MoneyDropPop)
+			if not surgeActiveNow and not shaking then
+				flash(cashPlate, TUNE.MoneyDrop, TUNE.PlateColor, TUNE.MoneyDropHold + TUNE.MoneyDropTime, TUNE.MoneyDrop, nil, 4)
+			end
+			task.delay(TUNE.MoneyDropHold, function()
+				if spendToken == mine and not shaking then
+					spendTint = Kit.tween(
+						moneyLabel,
+						TUNE.MoneyDropTime,
+						{ TextColor3 = TUNE.MoneyColor },
+						Enum.EasingStyle.Quad,
+						Enum.EasingDirection.In
+					)
+				end
+			end)
+			if screen:GetAttribute("WindowOpen") == true then
+				return
+			end
+			local now = os.clock()
+			local float = spendFloat
+			if float and float.Parent and now - spendAt < TUNE.SpendMerge then
+				-- Another spend right after: the same "-$X" counts it in and pops again.
+				spendSum += amount
+				float.Text = "-" .. State.money(spendSum)
+				Kit.pop(float, 1)
+				return
+			end
+			spendSum, spendAt = amount, now
+			float = Kit.hudText(wallet, {
+				Name = "Spend",
+				Text = "-" .. State.money(amount),
+				Font = F.Number,
+				TextSize = TUNE.SpendText,
+				TextColor3 = TUNE.MoneyDrop,
+				StrokeThickness = 2.5,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Size = UDim2.fromOffset(220, TUNE.SpendText + 4),
+				Position = UDim2.fromOffset(cashPlate.Size.X.Offset, 100), -- beside the plate, like "+$X"
+				ZIndex = 6,
+			})
+			local made: TextLabel = float :: TextLabel
+			spendFloat = made
+			Kit.pop(made, 1.5)
+			Kit.tween(made, TUNE.SpendTime, { Position = made.Position + UDim2.fromOffset(0, TUNE.SpendSink) })
+			local outline = made:FindFirstChild("Outline")
+			task.delay(TUNE.SpendTime * 0.65, function()
+				Kit.tween(made, TUNE.SpendTime * 0.35, { TextTransparency = 1 })
+				if outline then
+					Kit.tween(outline, TUNE.SpendTime * 0.35, { Transparency = 1 })
+				end
+			end)
+			task.delay(TUNE.SpendTime + 0.05, function()
+				if spendFloat == made then
+					spendFloat = nil
+				end
+				made:Destroy()
 			end)
 		end
 		local stopChip: (() -> ())? = nil
@@ -3546,10 +3627,7 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			if gain > 0 then
 				cashGain(gain)
 			else
-				-- Spent: a red flash of the amount and a small pop.
-				moneyLabel.TextColor3 = TUNE.MoneyDrop
-				Kit.tween(moneyLabel, TUNE.MoneyDropTime, { TextColor3 = TUNE.MoneyColor })
-				Kit.pop(moneyLabel, TUNE.MoneyDropPop)
+				cashSpend(-gain)
 			end
 		else
 			roll(moneyLabel, data.money, State.money)
@@ -3686,7 +3764,6 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		end
 	end
 
-	local shaking = false
 	Hud.shakeWallet = function()
 		if shaking then
 			return

@@ -277,14 +277,16 @@ COMMANDS.setcash = {
 }
 
 COMMANDS.pending = {
-	help = "args {amount}: leave amount uncollected cash on the Collect pad (the vault's coin pile); returns it",
+	help = "args {amount, hold?}: leave amount uncollected cash on the Collect pad (the vault's coin pile); "
+		.. "hold (default true) stops an Auto Cash pass from collecting it until the player collects it on the pad; "
+		.. "hold=false lets Auto Cash take it on its next tick; returns it and autoCash (owns the pass)",
 	run = function(player, args)
 		local session = Tycoon.getSession(player)
 		if not session then
 			error("player has no tycoon session yet")
 		end
-		Tycoon.setPending(session, amountArg(args))
-		return { pending = session.profile.pending }
+		Tycoon.setPending(session, amountArg(args), args.hold ~= false)
+		return { pending = session.profile.pending, hold = session.holdPending == true, autoCash = session.passes.AutoCash == true }
 	end,
 }
 

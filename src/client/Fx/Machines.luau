@@ -1376,8 +1376,28 @@ end
 local MAX_COINS = 40 -- 24 stack on the plate (8 layers of 3), the rest spill onto the floor
 local coins: { Part } = {}
 local coinHomes: { CFrame } = {}
+-- Each coin's drop-in tween: staggered up to ~2 s for a big pile, so it must be cancelled
+-- when the coin is put away, or it lands the coin back on its spot after the pile cleared.
+local coinTweens: { [number]: Tween } = {}
 local shownCoins = 0
 local burstAt = 0
+
+-- Puts coins first..last away (off the map), stopping any drop-in still on its way.
+local function hideCoins(first: number, last: number)
+	for i = first, last do
+		local tween = coinTweens[i]
+		if tween then
+			tween:Cancel()
+			coinTweens[i] = nil
+		end
+		local coin = coins[i]
+		if coin then
+			coin.CFrame = FAR
+			coin.Transparency = 0
+		end
+		coinHomes[i] = FAR
+	end
+end
 
 local function coinTarget(): number
 	local data = State.data
@@ -1444,7 +1464,11 @@ local function syncCoins()
 			local spill = i > 24
 			coin.CFrame = if spill then CFrame.new(padTop(pad) + UP * 2.2) * home.Rotation else home + UP * 1.6
 			coin.Transparency = 1
-			TweenService:Create(
+			local old = coinTweens[i]
+			if old then
+				old:Cancel()
+			end
+			local tween = TweenService:Create(
 				coin,
 				TweenInfo.new(
 					if spill then 0.45 else 0.3,
@@ -1455,13 +1479,17 @@ local function syncCoins()
 					(i - shownCoins - 1) * 0.04
 				),
 				{ CFrame = home, Transparency = 0 }
-			):Play()
+			)
+			coinTweens[i] = tween
+			tween.Completed:Once(function()
+				if coinTweens[i] == tween then
+					coinTweens[i] = nil
+				end
+			end)
+			tween:Play()
 		end
 	else
-		for i = target + 1, shownCoins do
-			coins[i].CFrame = FAR
-			coinHomes[i] = FAR
-		end
+		hideCoins(target + 1, shownCoins)
 	end
 	shownCoins = target
 end
@@ -1660,9 +1688,7 @@ local function onCash(data: any)
 			hop({ from = from, to = pos + dir + UP * 0.3, delay = i * 0.03, duration = 0.5, arc = 3, size = K.hopSize })
 		end
 	end
-	for i = 1, shownCoins do
-		coins[i].CFrame = FAR
-	end
+	hideCoins(1, MAX_COINS)
 	shownCoins = 0
 	burstAt = os.clock()
 	puff(pos + UP * 0.4, TEAL_LIGHT, K.puff, 10)
@@ -2385,10 +2411,7 @@ local function bindPlot(p: Instance)
 	end
 	collectPad = p:FindFirstChild("Pad_Collect") :: BasePart?
 	-- A new plot: its pile is built afresh and its cash ticks count from its own pending.
-	for i = 1, shownCoins do
-		coins[i].CFrame = FAR
-		coinHomes[i] = FAR
-	end
+	hideCoins(1, MAX_COINS)
 	shownCoins = 0
 	coinTick.seen = false
 	coinTick.at = 0
