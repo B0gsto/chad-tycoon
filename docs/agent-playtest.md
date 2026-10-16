@@ -62,6 +62,7 @@ The result is printed as `{ok, result | error, cmd, jobId, placeVersion, at}`; e
 | `ui` | `{panel}` | opens a window or popup on the client (opening an open window closes it; `close` closes all) |
 | `camera` | `{preset}` or `{pos, look, fov?}` | holds the camera there every frame until `{"preset":"reset"}` |
 | `hideui` | `{hidden?}` | hides or shows every ScreenGui and the core UI (toggles without args) |
+| `labels` | | asks the client (RemoteFunction `TestBridgeQuery`) what Fx.PadLabels' last declutter pass saw: `passes`, `errors`, `lastError`, `secondsSincePass`, `viewport`, and per sign on your plot `name` (the pad), camera `distance`, `rect` [left, top, w, h] px, `keep` (the pad you are at, never faded), `faded`, `fadeGroup` (the Declutter CanvasGroup's state), `overlap` (share vs `cover`, the nearer shown sign covering it most); signs left out list `skipped` (behind camera, past MaxDistance, off screen) |
 | `list` | | all of the above, live from the server |
 
 Spots: `hub`, `plot` (your own), `plaza` (GAME MODES arrival), `gates`, `mog` (stage centre),

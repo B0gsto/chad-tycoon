@@ -11,7 +11,9 @@
 	  * writes { ok, result | error, cmd, jobId, placeVersion, at } to the MemoryStore sorted
 	    map "TestBridge" under key `id` (expires after an hour), where the tool polls it;
 	  * creates ReplicatedStorage.TestBridgeClient (RemoteEvent) for Client.TestBridge, which
-	    does the client-only work: panels, camera presets, hiding the UI.
+	    does the client-only work: panels, camera presets, hiding the UI, and
+	    ReplicatedStorage.TestBridgeQuery (RemoteFunction) for commands that need the client's
+	    answer (`labels`).
 ]]
 
 local HttpService = game:GetService("HttpService")
@@ -44,6 +46,7 @@ type Command = { help: string, run: (player: Player, args: Args) -> any }
 
 local world: any = nil
 local clientRemote: RemoteEvent? = nil
+local clientQuery: RemoteFunction? = nil
 
 -- Spots ------------------------------------------------------------------------------------
 
@@ -167,6 +170,27 @@ end
 local function toClient(player: Player, payload: { [string]: any })
 	assert(clientRemote, "bridge remote missing")
 	clientRemote:FireClient(player, payload)
+end
+
+-- Asks the client and returns its answer (errors after `timeout` seconds without one).
+local function askClient(player: Player, payload: { [string]: any }, timeout: number): any
+	local query = assert(clientQuery, "bridge query remote missing")
+	local done, ok, answer = false, false, nil
+	task.spawn(function()
+		ok, answer = pcall(query.InvokeClient, query, player, payload)
+		done = true
+	end)
+	local waited = 0
+	while not done and waited < timeout do
+		waited += task.wait(0.1)
+	end
+	if not done then
+		error("client did not answer within " .. timeout .. " s")
+	end
+	if not ok then
+		error("client query failed: " .. tostring(answer))
+	end
+	return answer
 end
 
 -- A JSON-safe summary of the profile: every scalar field, and tables as their length.
@@ -400,6 +424,13 @@ COMMANDS.hideui = {
 	end,
 }
 
+COMMANDS.labels = {
+	help = "pad-sign declutter diagnostics from the client: each local-plot sign's distance, screen rect, faded state, overlap and cover",
+	run = function(player, _args)
+		return askClient(player, { cmd = "labels" }, 8)
+	end,
+}
+
 COMMANDS.list = {
 	help = "available commands, teleport spots, panels and camera presets",
 	run = function()
@@ -472,6 +503,10 @@ function TestBridge.init(builtWorld: any)
 	remote.Name = "TestBridgeClient"
 	remote.Parent = ReplicatedStorage
 	clientRemote = remote
+	local query = Instance.new("RemoteFunction")
+	query.Name = "TestBridgeQuery"
+	query.Parent = ReplicatedStorage
+	clientQuery = query
 	resultMap = MemoryStoreService:GetSortedMap(MAP)
 	task.spawn(function()
 		for attempt = 1, 5 do

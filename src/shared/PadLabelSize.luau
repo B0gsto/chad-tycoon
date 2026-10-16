@@ -103,24 +103,32 @@ end
 -- `faded[i]` whether label i is faded now and `keep[i]` (optional) whether it must stay shown
 -- (the pad the player is at). Returns the new faded flags: each label is checked against the
 -- nearer labels left shown, a shown one fading past FADE_OUT_SHARE, a faded one coming back
--- under FADE_IN_SHARE.
-function PadLabelSize.declutter(rects: { Rect }, faded: { boolean }, keep: { boolean }?): { boolean }
+-- under FADE_IN_SHARE. Also returns each label's worst overlap share and the index of the
+-- shown label giving it (0 when none), for diagnostics.
+function PadLabelSize.declutter(rects: { Rect }, faded: { boolean }, keep: { boolean }?): ({ boolean }, { number }, { number })
 	local result = table.create(#rects, false)
-	local shown: { Rect } = {}
+	local shares = table.create(#rects, 0)
+	local covers = table.create(#rects, 0)
+	local shown: { number } = {}
 	for i, rect in rects do
-		local worst = 0
+		local worst, cover = 0, 0
 		if not (keep and keep[i]) then
-			for _, other in shown do
-				worst = math.max(worst, PadLabelSize.overlapShare(rect, other))
+			for _, j in shown do
+				local share = PadLabelSize.overlapShare(rect, rects[j])
+				if share > worst then
+					worst, cover = share, j
+				end
 			end
 		end
 		local out = if faded[i] then worst >= PadLabelSize.FADE_IN_SHARE else worst > PadLabelSize.FADE_OUT_SHARE
 		result[i] = out
+		shares[i] = worst
+		covers[i] = cover
 		if not out then
-			table.insert(shown, rect)
+			table.insert(shown, i)
 		end
 	end
-	return result
+	return result, shares, covers
 end
 
 return PadLabelSize

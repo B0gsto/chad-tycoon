@@ -55,6 +55,17 @@ local glides: { [BillboardGui]: Glide } = {}
 type Fade = { group: CanvasGroup, out: boolean, tween: Tween? }
 local fades: { [BillboardGui]: Fade } = {}
 local sinceDeclutter = 0
+-- Diagnostics for the TEST bridge (PadLabels.diagnostics): passes run, the last error and the
+-- last pass's labels, with why each was skipped or how it was judged.
+local diag = {
+	passes = 0,
+	errors = 0,
+	lastError = nil :: string?,
+	labels = {} :: { any },
+	at = 0,
+	plot = nil :: string?,
+	viewport = nil :: { number }?,
+}
 
 local function baseOf(gui: BillboardGui): UDim2
 	local base = gui:GetAttribute("BaseSize")
@@ -184,23 +195,37 @@ local function declutter(camera: Camera)
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 	local feet = if root and root:IsA("BasePart") then root.Position else nil
 	local list: { Candidate } = {}
+	local skipped: { any } = {}
 	local nearest: Candidate?, nearestGap = nil, math.huge
+	local function skip(gui: BillboardGui, why: string)
+		local adornee = gui.Adornee
+		table.insert(skipped, {
+			name = if adornee then adornee.Name else gui:GetFullName(),
+			skipped = why,
+			distance = if adornee then math.round((adornee.Position - eye).Magnitude * 10) / 10 else nil,
+		})
+	end
 	if plot then
 		for gui, entry in entries do
 			local adornee = gui.Adornee
 			if not (adornee and adornee:IsA("BasePart") and gui.Enabled and gui:IsDescendantOf(plot)) then
+				if gui:IsDescendantOf(plot) then
+					skip(gui, if not gui.Enabled then "disabled" else "no adornee")
+				end
 				continue
 			end
 			local pos = anchorOf(gui, adornee)
 			local distance = (pos - eye).Magnitude
 			local depth = (pos - eye):Dot(look)
 			if depth <= 0 or (adornee.Position - eye).Magnitude > gui.MaxDistance then
+				skip(gui, if depth <= 0 then "behind camera" else "past MaxDistance")
 				continue
 			end
 			local point = camera:WorldToViewportPoint(pos)
 			local base = entry.base
 			local w, h = PadLabelSize.size(base.X.Scale, base.X.Offset, base.Y.Scale, base.Y.Offset, depth, viewport.Y, fov)
 			if point.X + w / 2 < 0 or point.X - w / 2 > viewport.X or point.Y + h / 2 < 0 or point.Y - h / 2 > viewport.Y then
+				skip(gui, "off screen")
 				continue
 			end
 			local c: Candidate = { gui = gui, rect = { x = point.X, y = point.Y, w = w, h = h }, distance = distance, keep = false }
@@ -230,14 +255,37 @@ local function declutter(camera: Camera)
 		faded[i] = fade ~= nil and fade.out
 		keep[i] = c.keep
 	end
-	local result = PadLabelSize.declutter(rects, faded, keep)
+	local result, shares, covers = PadLabelSize.declutter(rects, faded, keep)
 	local seen: { [BillboardGui]: boolean } = {}
+	local report: { any } = {}
 	for i, c in list do
 		seen[c.gui] = true
 		if result[i] ~= faded[i] then
 			setFaded(c.gui, result[i])
 		end
+		local r = c.rect
+		local cover = list[covers[i]]
+		local adornee = c.gui.Adornee :: BasePart
+		local fade = fades[c.gui]
+		table.insert(report, {
+			name = adornee.Name,
+			distance = math.round(c.distance * 10) / 10,
+			rect = { math.round(r.x - r.w / 2), math.round(r.y - r.h / 2), math.round(r.w), math.round(r.h) },
+			onScreen = true,
+			keep = c.keep,
+			faded = result[i],
+			fadeGroup = if fade then { out = fade.out, transparency = math.round(fade.group.GroupTransparency * 100) / 100 } else nil,
+			overlap = math.round(shares[i] * 1000) / 1000,
+			cover = if cover then (cover.gui.Adornee :: BasePart).Name else nil,
+		})
 	end
+	for _, s in skipped do
+		table.insert(report, s)
+	end
+	diag.labels = report
+	diag.plot = if plot then plot.Name else nil
+	diag.viewport = { math.round(viewport.X), math.round(viewport.Y) }
+	diag.at = os.clock()
 	-- Labels out of view or off the plot come back.
 	for gui, fade in fades do
 		if fade.out and not seen[gui] then
@@ -254,7 +302,12 @@ local function step(dt: number)
 	sinceDeclutter += dt
 	if sinceDeclutter >= DECLUTTER_PERIOD then
 		sinceDeclutter = 0
-		declutter(camera)
+		diag.passes += 1
+		local ok, err = pcall(declutter, camera)
+		if not ok then
+			diag.errors += 1
+			diag.lastError = tostring(err)
+		end
 	end
 	local eye = camera.CFrame.Position
 	local look = camera.CFrame.LookVector
@@ -280,6 +333,25 @@ local function step(dt: number)
 			gui.Size = base
 		end
 	end
+end
+
+-- What the last declutter pass saw (TEST bridge `labels`): passes run, errors caught, the last
+-- error and every label on the local plot (rect = left, top, width, height in viewport px).
+function PadLabels.diagnostics(): { [string]: any }
+	local tracked = 0
+	for _ in entries do
+		tracked += 1
+	end
+	return {
+		passes = diag.passes,
+		errors = diag.errors,
+		lastError = diag.lastError,
+		secondsSincePass = math.round((os.clock() - diag.at) * 100) / 100,
+		tracked = tracked,
+		plot = diag.plot,
+		viewport = diag.viewport,
+		labels = diag.labels,
+	}
 end
 
 function PadLabels.init()
