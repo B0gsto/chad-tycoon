@@ -5559,8 +5559,12 @@ test("PadLabelSize: far labels stacked behind nearer ones fade, with hysteresis"
 	check(PadLabelSize.declutter({ a, r(8, 0, 10, 10) }, { false, false })[2], "20%: it fades")
 	-- Seen on the server: Buy 25 over a fifth of Buy 100's sign hid its price; that fades now.
 	check(PadLabelSize.declutter({ r(0, 0, 118, 72), r(90, 0, 111, 68) }, { false, false })[2], "a 22% cover fades")
-	-- The spawn view's worst overlap on the server (Buy 5 over Buy 1, under 5%) stays shown.
-	check(not PadLabelSize.declutter({ r(0, 0, 118, 73), r(-109, 0, 111, 68) }, { false, false })[2], "a 5% brush stays")
+	-- The spawn view's worst overlap on the server (Buy 5 over Buy 1, up to 7%) stays shown, and
+	-- a sign faded on the way there comes back.
+	local brush = { r(0, 0, 118, 73), r(-107, 0, 111, 68) }
+	check(PadLabelSize.overlapShare(brush[1], brush[2]) > 0.06, "the spawn brush is over 6%")
+	check(not PadLabelSize.declutter(brush, { false, false })[2], "a 7% brush stays shown")
+	check(not PadLabelSize.declutter(brush, { false, true })[2], "and a faded sign comes back there")
 	-- The label the player stands at is never faded.
 	out = PadLabelSize.declutter({ r(0, 0, 10, 10), r(0, 0, 10, 10) }, { false, true }, { false, true })
 	check(not out[2], "a kept label stays shown")
