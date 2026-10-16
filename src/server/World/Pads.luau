@@ -82,10 +82,11 @@ local LABEL_MAX_DISTANCE = 90
 -- higher on screen, so neighbours that climb outward never meet (Auto Merge used to hang low,
 -- right behind the Buy 25 / Buy 100 tags seen from the pen's side). The outer tags also float
 -- clear of the fan zones' cards and crowd behind them.
+-- Buy 1's tag also stands back and higher still, clear of the left menu: see LABEL_SHIFT.
 -- The merge tag stands just above its pad: see LABEL_SHIFT.
 local LABEL_LIFTS: { [string]: number } = {
 	Deposit = 6.4,
-	Buy1 = 7.6,
+	Buy1 = 9.4,
 	Buy100 = 7.6,
 	AutoMerge = 9.6,
 	ProcUp1 = 6.6,
@@ -103,12 +104,14 @@ local LABEL_GROW: { [string]: number } = { Merge = 0.65, Deposit = 0.7 }
 -- over their pads they sat on the juice bar's bottles and the blender beside the palm.
 -- From the spawn the deposit pad lines up with Auto Merge behind it, so the deposit tag stands
 -- over its pad's front outer quarter (toward the spawn and the converter): over the centre it
--- hid the Auto Merge tag. Buy 1's tag leans in and back toward the rack, where perspective
--- draws it nearer the screen's middle: over its pad it sat half under the left menu buttons.
+-- hid the Auto Merge tag. Buy 1's tag leans in and well back toward the rack, where perspective
+-- draws it nearer the screen's middle: over its pad (and 1.5 studs in, 4 back) its left third
+-- still sat under the left menu buttons in a 1710x1073 window. Seven studs back it is also
+-- drawn higher, so it floats higher still (LABEL_LIFTS) to stay clear above the BUY 5 tag.
 local LABEL_SHIFT: { [string]: Vector2 } = {
 	Merge = Vector2.new(5.2, 3.5),
 	Deposit = Vector2.new(-4, -4),
-	Buy1 = Vector2.new(-1.5, 4),
+	Buy1 = Vector2.new(-3, 7),
 	ProcUp1 = Vector2.new(3, -1.5),
 	ProcUp10 = Vector2.new(2, 0),
 }

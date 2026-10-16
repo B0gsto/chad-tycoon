@@ -244,21 +244,16 @@ local TUNE = {
 	-- income, a red edge when something is too dear.
 	CashPlateH = 60,
 	-- The cash amount: big lime digits in a thick black outline, readable on any floor. Cash
-	-- going down (a buy, an upgrade) turns it red for MoneyDropHold, easing back over
-	-- MoneyDropTime, and a red "-$X" sinks beside the plate (spends within SpendMerge
-	-- seconds add up on one).
+	-- going down (a buy, an upgrade) turns it strong red for MoneyDropHold, easing back over
+	-- MoneyDropTime (the "-$X" beside the plate is Fx.Orbs.walletText's).
 	MoneyText = 50,
 	MoneyColor = Color3.fromRGB(150, 255, 60),
 	MoneyStroke = 4.5,
 	MoneyStrokeColor = Color3.fromRGB(0, 0, 0),
 	MoneyDrop = Color3.fromRGB(255, 58, 48),
-	MoneyDropHold = 0.3,
+	MoneyDropHold = 0.6,
 	MoneyDropTime = 0.5,
 	MoneyDropPop = 0.5,
-	SpendText = 26,
-	SpendSink = 26,
-	SpendTime = 1.1,
-	SpendMerge = 0.5,
 	CashFlash = C.CashDeep,
 	CashFlashTime = 0.45,
 	GainText = 22,
@@ -3156,75 +3151,58 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 			end)
 		end
 		-- Spent (`cashSpend`, from refresh): the amount goes red and holds it, then eases back
-		-- to lime; the plate flares red; a red "-$X" sinks beside it (where "+$X" rises) and fades.
+		-- to lime, and the plate flares red. The red is its own copy of the amount laid over it
+		-- ("Spent": the same text, size and outline, shown only while it is red), so nothing else
+		-- that touches the amount (a roll, the coin pops, the "can't afford" shake, Kit.fade)
+		-- can cut it short. The "-$X" itself is Fx.Orbs.walletText's, from the Buy / Upgrade
+		-- effect: one pop per spend.
+		local spent = Kit.hudText(moneyLabel, {
+			Name = "Spent",
+			Text = moneyLabel.Text,
+			Font = F.Number,
+			TextSize = TUNE.MoneyText,
+			StrokeThickness = TUNE.MoneyStroke,
+			StrokeColor = TUNE.MoneyStrokeColor,
+			TextColor3 = TUNE.MoneyDrop,
+			Size = UDim2.fromScale(1, 1),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Visible = false,
+			ZIndex = 4,
+		})
+		moneyLabel:GetPropertyChangedSignal("Text"):Connect(function()
+			spent.Text = moneyLabel.Text
+		end)
 		local spendTint: Tween? = nil
 		local spendToken = 0
-		local spendFloat: TextLabel? = nil
-		local spendSum, spendAt = 0, 0
-		cashSpend = function(amount: number)
+		cashSpend = function(_amount: number)
 			spendToken += 1
 			local mine = spendToken
 			if spendTint then
 				spendTint:Cancel()
 				spendTint = nil
 			end
-			moneyLabel.TextColor3 = TUNE.MoneyDrop
+			if screen:GetAttribute("WindowOpen") == true then
+				spent.Visible = false
+				return -- the HUD is faded behind a window: nothing to see
+			end
+			spent.TextColor3 = TUNE.MoneyDrop
+			spent.Visible = true
 			Kit.pop(moneyLabel, TUNE.MoneyDropPop)
 			if not surgeActiveNow and not shaking then
-				flash(cashPlate, TUNE.MoneyDrop, TUNE.PlateColor, TUNE.MoneyDropHold + TUNE.MoneyDropTime, TUNE.MoneyDrop, nil, 4)
+				flash(cashPlate, TUNE.MoneyDrop, TUNE.PlateColor, TUNE.MoneyDropHold + TUNE.MoneyDropTime, TUNE.MoneyDrop, nil, 5)
 			end
 			task.delay(TUNE.MoneyDropHold, function()
-				if spendToken == mine and not shaking then
-					spendTint = Kit.tween(
-						moneyLabel,
-						TUNE.MoneyDropTime,
-						{ TextColor3 = TUNE.MoneyColor },
-						Enum.EasingStyle.Quad,
-						Enum.EasingDirection.In
-					)
+				if spendToken ~= mine then
+					return
 				end
-			end)
-			if screen:GetAttribute("WindowOpen") == true then
-				return
-			end
-			local now = os.clock()
-			local float = spendFloat
-			if float and float.Parent and now - spendAt < TUNE.SpendMerge then
-				-- Another spend right after: the same "-$X" counts it in and pops again.
-				spendSum += amount
-				float.Text = "-" .. State.money(spendSum)
-				Kit.pop(float, 1)
-				return
-			end
-			spendSum, spendAt = amount, now
-			float = Kit.hudText(wallet, {
-				Name = "Spend",
-				Text = "-" .. State.money(amount),
-				Font = F.Number,
-				TextSize = TUNE.SpendText,
-				TextColor3 = TUNE.MoneyDrop,
-				StrokeThickness = 2.5,
-				TextXAlignment = Enum.TextXAlignment.Left,
-				Size = UDim2.fromOffset(220, TUNE.SpendText + 4),
-				Position = UDim2.fromOffset(cashPlate.Size.X.Offset, 100), -- beside the plate, like "+$X"
-				ZIndex = 6,
-			})
-			local made: TextLabel = float :: TextLabel
-			spendFloat = made
-			Kit.pop(made, 1.5)
-			Kit.tween(made, TUNE.SpendTime, { Position = made.Position + UDim2.fromOffset(0, TUNE.SpendSink) })
-			local outline = made:FindFirstChild("Outline")
-			task.delay(TUNE.SpendTime * 0.65, function()
-				Kit.tween(made, TUNE.SpendTime * 0.35, { TextTransparency = 1 })
-				if outline then
-					Kit.tween(outline, TUNE.SpendTime * 0.35, { Transparency = 1 })
-				end
-			end)
-			task.delay(TUNE.SpendTime + 0.05, function()
-				if spendFloat == made then
-					spendFloat = nil
-				end
-				made:Destroy()
+				local tween =
+					Kit.tween(spent, TUNE.MoneyDropTime, { TextColor3 = TUNE.MoneyColor }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+				spendTint = tween
+				tween.Completed:Once(function()
+					if spendToken == mine then
+						spent.Visible = false
+					end
+				end)
 			end)
 		end
 		local stopChip: (() -> ())? = nil
