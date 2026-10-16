@@ -428,7 +428,9 @@ function Guide.labelTop(part: BasePart): number
 		return 0
 	end
 	local size = label.Size.Y
-	local top = label.StudsOffsetWorldSpace.Y + (size.Scale + size.Offset * LABEL_PX_STUDS) / 2
+	-- The label's offset runs along the pad's own axes (a round pad is a cylinder on its side).
+	local up = part.CFrame:VectorToWorldSpace(label.StudsOffsetWorldSpace).Y
+	local top = up + (size.Scale + size.Offset * LABEL_PX_STUDS) / 2
 	return math.max(0, top - thickness(part) / 2)
 end
 

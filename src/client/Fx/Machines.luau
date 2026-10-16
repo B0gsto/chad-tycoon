@@ -181,6 +181,7 @@ local TUNE = {
 		tickEvery = 2.5, -- seconds between the small "+$X" ticks over the growing pile
 		tickRange = 60, -- studs from the camera to the pad; farther, no tick
 		tickScale = 0.8,
+		tickSize = 0.6, -- the whole tick at 60%: up close it read too big over the pile
 	},
 	buy = {
 		coins = 8, -- coins from the pad (one more per digit of the price, at most 14)
@@ -1495,7 +1496,7 @@ local function tickCoins()
 		return
 	end
 	local lift = 1.4 + math.ceil(math.min(shownCoins, 24) / 3) * 0.26
-	Orbs.text(padTop(pad) + UP * lift, "+" .. Format.money(gain), C.Good, { scale = K.tickScale, rise = 1.5, life = 1 })
+	Orbs.text(padTop(pad) + UP * lift, "+" .. Format.money(gain), C.Good, { scale = K.tickScale, size = K.tickSize, rise = 1.5, life = 1 })
 end
 
 local lastShower = 0

@@ -322,7 +322,10 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number, hei
 	gui.Name = "PadLabel"
 	gui.Adornee = padPart
 	gui.Size = UDim2.new(width * LABEL_SCALE, px, height * LABEL_SCALE, px * height / width)
-	gui.StudsOffsetWorldSpace = offset + Vector3.new(0, height / 2, 0)
+	-- StudsOffsetWorldSpace runs along the adornee's own axes, not the world's: a weight plate's
+	-- disc is a cylinder lying on its side, so a plain "up" offset floated the label sideways at
+	-- pad height, inside the stage behind the buy row. Turn the world offset into the pad's frame.
+	gui.StudsOffsetWorldSpace = padPart.CFrame:VectorToObjectSpace(offset + Vector3.new(0, height / 2, 0))
 	gui.MaxDistance = LABEL_MAX_DISTANCE
 	gui.LightInfluence = 0
 	gui.Parent = padPart

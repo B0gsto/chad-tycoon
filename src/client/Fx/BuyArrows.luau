@@ -57,11 +57,13 @@ local ARROW_MAX_DISTANCE = 110
 local RIM = 3
 -- Edge pointer: chip size, how far its chevron sits off the chip's centre, the screen's safe
 -- margins (design px at 1280x720, scaled with the HUD: clear of the top stack, the wallet and
--- the bottom bar, and the left menu grid) and how far it eases per second.
+-- the bottom bar, and the left menu grid) and how far it eases per second. At the bottom edge
+-- the chevron hangs POINTER_TIP below the chip, so SAFE_BOTTOM keeps it clear of the AURA
+-- dumbbell (about 122 px tall).
 local POINTER_PX = 50
 local POINTER_TIP = 36
 local SAFE_TOP = 96
-local SAFE_BOTTOM = 120
+local SAFE_BOTTOM = 156
 local SAFE_LEFT = 150
 local SAFE_RIGHT = 40
 local POINTER_EASE = 10
@@ -391,7 +393,9 @@ local function stepArrows(clock: number, hidden: boolean, marked: string?)
 			local tall = ARROW_STUDS * ARROW_TALL
 			local bob = math.sin((clock - arrow.since) * ARROW_BOB_SPEED) * ARROW_BOB
 			local lift = thickness(part) / 2 + Guide.labelTop(part) + ARROW_GAP + tall / 2 + bob
-			arrow.gui.StudsOffsetWorldSpace = Vector3.new(0, lift, 0)
+			-- StudsOffsetWorldSpace runs along the pad's own axes (a round pad is a cylinder on
+			-- its side): turn world "up" into them.
+			arrow.gui.StudsOffsetWorldSpace = part.CFrame:VectorToObjectSpace(Vector3.new(0, lift, 0))
 		end
 	end
 end
@@ -473,7 +477,10 @@ local function edgeSpot(camera: Camera, world: Vector3, scale: number): (Vector2
 	local half = POINTER_PX * scale / 2 + 6
 	local left, right = SAFE_LEFT * scale + half, view.X - SAFE_RIGHT * scale - half
 	local top, bottom = inset.Y + SAFE_TOP * scale + half, view.Y - SAFE_BOTTOM * scale - half
-	local point, inFront = camera:WorldToViewportPoint(world)
+	-- WorldToViewportPoint's second result is "on screen", not "in front": a pad just below the
+	-- screen counted as behind the camera and the pointer flipped to the top edge.
+	local point = camera:WorldToViewportPoint(world)
+	local inFront = point.Z > 0
 	local p = Vector2.new(point.X, point.Y)
 	if inFront and p.X >= 0 and p.X <= view.X and p.Y >= 0 and p.Y <= view.Y then
 		return nil, Vector2.zero

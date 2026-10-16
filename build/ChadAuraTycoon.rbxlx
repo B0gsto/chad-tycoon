@@ -55097,7 +55097,10 @@ local function buildLabel(padPart: BasePart, offset: Vector3, width: number, hei
 	gui.Name = "PadLabel"
 	gui.Adornee = padPart
 	gui.Size = UDim2.new(width * LABEL_SCALE, px, height * LABEL_SCALE, px * height / width)
-	gui.StudsOffsetWorldSpace = offset + Vector3.new(0, height / 2, 0)
+	-- StudsOffsetWorldSpace runs along the adornee's own axes, not the world's: a weight plate's
+	-- disc is a cylinder lying on its side, so a plain "up" offset floated the label sideways at
+	-- pad height, inside the stage behind the buy row. Turn the world offset into the pad's frame.
+	gui.StudsOffsetWorldSpace = padPart.CFrame:VectorToObjectSpace(offset + Vector3.new(0, height / 2, 0))
 	gui.MaxDistance = LABEL_MAX_DISTANCE
 	gui.LightInfluence = 0
 	gui.Parent = padPart
@@ -64465,11 +64468,13 @@ local ARROW_MAX_DISTANCE = 110
 local RIM = 3
 -- Edge pointer: chip size, how far its chevron sits off the chip's centre, the screen's safe
 -- margins (design px at 1280x720, scaled with the HUD: clear of the top stack, the wallet and
--- the bottom bar, and the left menu grid) and how far it eases per second.
+-- the bottom bar, and the left menu grid) and how far it eases per second. At the bottom edge
+-- the chevron hangs POINTER_TIP below the chip, so SAFE_BOTTOM keeps it clear of the AURA
+-- dumbbell (about 122 px tall).
 local POINTER_PX = 50
 local POINTER_TIP = 36
 local SAFE_TOP = 96
-local SAFE_BOTTOM = 120
+local SAFE_BOTTOM = 156
 local SAFE_LEFT = 150
 local SAFE_RIGHT = 40
 local POINTER_EASE = 10
@@ -64799,7 +64804,9 @@ local function stepArrows(clock: number, hidden: boolean, marked: string?)
 			local tall = ARROW_STUDS * ARROW_TALL
 			local bob = math.sin((clock - arrow.since) * ARROW_BOB_SPEED) * ARROW_BOB
 			local lift = thickness(part) / 2 + Guide.labelTop(part) + ARROW_GAP + tall / 2 + bob
-			arrow.gui.StudsOffsetWorldSpace = Vector3.new(0, lift, 0)
+			-- StudsOffsetWorldSpace runs along the pad's own axes (a round pad is a cylinder on
+			-- its side): turn world "up" into them.
+			arrow.gui.StudsOffsetWorldSpace = part.CFrame:VectorToObjectSpace(Vector3.new(0, lift, 0))
 		end
 	end
 end
@@ -64881,7 +64888,10 @@ local function edgeSpot(camera: Camera, world: Vector3, scale: number): (Vector2
 	local half = POINTER_PX * scale / 2 + 6
 	local left, right = SAFE_LEFT * scale + half, view.X - SAFE_RIGHT * scale - half
 	local top, bottom = inset.Y + SAFE_TOP * scale + half, view.Y - SAFE_BOTTOM * scale - half
-	local point, inFront = camera:WorldToViewportPoint(world)
+	-- WorldToViewportPoint's second result is "on screen", not "in front": a pad just below the
+	-- screen counted as behind the camera and the pointer flipped to the top edge.
+	local point = camera:WorldToViewportPoint(world)
+	local inFront = point.Z > 0
 	local p = Vector2.new(point.X, point.Y)
 	if inFront and p.X >= 0 and p.X <= view.X and p.Y >= 0 and p.Y <= view.Y then
 		return nil, Vector2.zero
@@ -73413,6 +73423,7 @@ local TUNE = {
 		tickEvery = 2.5, -- seconds between the small "+$X" ticks over the growing pile
 		tickRange = 60, -- studs from the camera to the pad; farther, no tick
 		tickScale = 0.8,
+		tickSize = 0.6, -- the whole tick at 60%: up close it read too big over the pile
 	},
 	buy = {
 		coins = 8, -- coins from the pad (one more per digit of the price, at most 14)
@@ -74727,7 +74738,7 @@ local function tickCoins()
 		return
 	end
 	local lift = 1.4 + math.ceil(math.min(shownCoins, 24) / 3) * 0.26
-	Orbs.text(padTop(pad) + UP * lift, "+" .. Format.money(gain), C.Good, { scale = K.tickScale, rise = 1.5, life = 1 })
+	Orbs.text(padTop(pad) + UP * lift, "+" .. Format.money(gain), C.Good, { scale = K.tickScale, size = K.tickSize, rise = 1.5, life = 1 })
 end
 
 local lastShower = 0
@@ -79235,6 +79246,7 @@ export type TextOptions = {
 	plate: Color3?, -- a rounded badge of this colour behind the text
 	flash: boolean?, -- blink white a few times on the way in (with `plate`: the badge blinks)
 	hud: boolean?, -- moved down (along the camera's up) until it stays under the top HUD
+	size: number?, -- multiplies the whole text's size (below scale's 0.5 floor); 1 = as scale gives
 }
 
 -- The HUD's pixel scale (TycoonUI's UIScale; 1 at 1280x720).
@@ -79357,8 +79369,10 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	end
 	-- Pixel floor plus a share of the old stud size: about the old size up close, never tiny
 	-- far away.
-	local pxWide = px * FX.text.letter * math.max(utf8.len(text) or #text, 4) + px
-	local studsWide, studsHigh = (4 * k + 2) * FX.text.studs, (1.4 * k + 0.4) * FX.text.studs
+	local size = o.size or 1
+	local pxWide = (px * FX.text.letter * math.max(utf8.len(text) or #text, 4) + px) * size
+	local studsWide, studsHigh = (4 * k + 2) * FX.text.studs * size, (1.4 * k + 0.4) * FX.text.studs * size
+	px *= size
 	do
 		local camera = Workspace.CurrentCamera
 		local at = camera and camera:WorldToViewportPoint(pos)
@@ -79396,7 +79410,7 @@ function Orbs.text(pos: Vector3, text: string, color: Color3?, opts: TextOptions
 	label.Rotation = (math.random() - 0.5) * 10
 	label.Parent = gui
 	local stroke = Instance.new("UIStroke")
-	stroke.Thickness = FX.text.stroke + k
+	stroke.Thickness = math.max(1.5, (FX.text.stroke + k) * size)
 	stroke.Color = o.stroke or C.Stroke or Color3.new(0, 0, 0)
 	stroke.Parent = label
 	local scale = Instance.new("UIScale")
@@ -91017,7 +91031,9 @@ function Guide.labelTop(part: BasePart): number
 		return 0
 	end
 	local size = label.Size.Y
-	local top = label.StudsOffsetWorldSpace.Y + (size.Scale + size.Offset * LABEL_PX_STUDS) / 2
+	-- The label's offset runs along the pad's own axes (a round pad is a cylinder on its side).
+	local up = part.CFrame:VectorToWorldSpace(label.StudsOffsetWorldSpace).Y
+	local top = up + (size.Scale + size.Offset * LABEL_PX_STUDS) / 2
 	return math.max(0, top - thickness(part) / 2)
 end
 
