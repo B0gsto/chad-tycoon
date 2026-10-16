@@ -11,6 +11,7 @@ local Theme = require(ReplicatedStorage:WaitForChild("Theme"))
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Format = require(Shared.Format)
 local Net = require(Shared.Net)
+local TestEnv = require(Shared.TestEnv)
 
 local Client = script.Parent
 local State = require(Client.State)
@@ -242,8 +243,9 @@ end
 -- Studio-only capture hook: "UiPreview" = "<WindowName>", "Shop,<focus>", "close", "starter",
 -- "reward,<tier>", "rewards,<from>,<to>" (one reveal per tier), "crate,<Rarity>,<tier>" (the
 -- crate reveal with its rarity banner, then that unit), "gift", "surge", "tutorialdone"
--- or "away" (the "While you were away" card, with made-up offline cash).
-if RunService:IsStudio() then
+-- or "away" (the "While you were away" card, with made-up offline cash). Also live in the
+-- TEST experience only (Shared.TestEnv), where Client.TestBridge drives it for agents.
+if RunService:IsStudio() or TestEnv.isTest() then
 	player:GetAttributeChangedSignal("UiPreview"):Connect(function()
 		local spec = player:GetAttribute("UiPreview")
 		if typeof(spec) ~= "string" or spec == "" then

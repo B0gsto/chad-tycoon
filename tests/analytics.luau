@@ -315,6 +315,11 @@ local function suite(h: { [string]: any })
 
 	test("Analytics labels: short fixed lists, nothing free-form", function()
 		eq(Telemetry.tierLabel(12), "Tier 12")
+		eq(Telemetry.itemLabel("DoubleAura"), "DoubleAura")
+		eq(Telemetry.itemLabel("Money", 2), "Money 2")
+		eq(Telemetry.itemLabel("LegacyMoney", 7), "LegacyMoney 7")
+		eq(Telemetry.itemLabel("Crate", true), "Crate", "the crate product has no place in a list")
+		eq(Telemetry.itemLabel("bad name!", 1), "Other 1")
 		eq(Telemetry.tierBand(1), "Tier 1-5")
 		eq(Telemetry.tierBand(5), "Tier 1-5")
 		eq(Telemetry.tierBand(11), "Tier 11-15")
@@ -788,6 +793,39 @@ local function suite(h: { [string]: any })
 		world.clock += 60
 		world.minute()
 		eq(#world.sent("LogEconomyEvent"), 4 + 6, "the rest follows a minute later")
+	end)
+
+	test("Analytics server: purchase prompts and purchases per item", function()
+		local Analytics, world = loadAnalytics()
+		local session = world.join(12)
+		Analytics.onSessionStart(session)
+		world.calls = {}
+		Analytics.shop(session.player, 2, "Prompted", { kind = "Pass", name = "DoubleAura", robux = 299 })
+		Analytics.shop(session.player, 3, "Purchased", { kind = "Pass", name = "DoubleAura", robux = 299 })
+		Analytics.shop(session.player, 2, "Prompted", { kind = "Product", name = "Money", index = 3, robux = 499 })
+		Analytics.shop(session.player, 2, "Prompted", { kind = "Product", name = "Crate", robux = 30 })
+		Analytics.shop(session.player, 3, "Purchased", { kind = "Product", name = "Crate", robux = 30 })
+		eq(#world.sent("LogFunnelStepEvent"), 5, "the shop funnel is unchanged")
+		eq(
+			events(world.sent("LogCustomEvent")),
+			"PurchasePrompt DoubleAura,Pass,Tier 11-15; PurchaseDone DoubleAura,Pass,Tier 11-15; "
+				.. "PurchasePrompt Money 3,Product,Tier 11-15; PurchasePrompt Crate,Product,Tier 11-15; "
+				.. "PurchaseDone Crate,Product,Tier 11-15",
+			"one event per prompt and per purchase, with the item"
+		)
+		eq(world.sent("LogCustomEvent", "PurchaseDone")[1][3], 299, "the value is the Robux")
+		Analytics.shop(session.player, 2, "Prompted")
+		eq(#world.sent("LogCustomEvent"), 5, "no item, no item event")
+		inspect(world.calls, check)
+		-- A purchase is never lost to the player's cap; a prompt is.
+		for _ = 1, 40 do
+			Analytics.shop(session.player, 2, "Prompted", { kind = "Pass", name = "AutoCash", robux = 99 })
+		end
+		world.calls = {}
+		Analytics.shop(session.player, 2, "Prompted", { kind = "Pass", name = "AutoCash", robux = 99 })
+		eq(#world.calls, 0, "prompts stop at the cap")
+		Analytics.shop(session.player, 3, "Purchased", { kind = "Pass", name = "AutoCash", robux = 99 })
+		eq(events(world.sent("LogCustomEvent")), "PurchaseDone AutoCash,Pass,Tier 11-15", "a purchase always counts")
 	end)
 
 	test("Analytics server: SessionEnd closes the session and nothing is personal", function()

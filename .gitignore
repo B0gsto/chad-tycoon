@@ -26,3 +26,5 @@ art/out/**
 !art/out/maps/**
 # Marketing renders, thumbnails and trailers (made in a separate session) stay out of git.
 marketing/
+# Test-experience publish log (tools/deploy.py publish --target test): CI and agents publish there constantly.
+deploy/test-history.json
