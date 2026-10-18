@@ -345,9 +345,11 @@ local TUNE = {
 	MenuBackRadius = 14,
 	-- Only one menu button calls at a time (MENU_RANK): its badge beats and it wears its ring
 	-- (Index, Modes) or breathes (Daily); the others keep a still badge.
-	-- Modes is new (the tutorial was finished this session): after ModesNewDelay its gold ring
-	-- pulses, a gold arrow bobs over it and the goal plate's second line says so, until Modes
-	-- is opened or for ModesNewSeconds.
+	-- Modes is new (the tutorial was finished this session and ModesNewTier found): after
+	-- ModesNewDelay its gold ring pulses, a gold arrow bobs over it and the goal plate's second
+	-- line says so, until Modes is opened or for ModesNewSeconds. Until that tier the strip
+	-- and the chevron point at the plot (the next buy, the merge pad) instead.
+	ModesNewTier = 3,
 	ModesNewDelay = 3,
 	ModesNewSeconds = 240,
 	ModesArrow = 26, -- the arrow's head, px
@@ -1219,14 +1221,16 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		handlers.openWindow("Daily", { origin = Hud.buttons.Daily })
 	end)
 	local dailyCaption = dailyButton:FindFirstChild("Caption") :: TextLabel
-	-- Right after the tutorial finishes (watched live this session) Modes is new: its gold ring
-	-- and arrow, and the goal plate's second line says so (pickNear). No toast: a third row
-	-- under the top stack would sit on the plot's signs.
+	-- Once the tutorial is finished (watched live this session) and the player has found
+	-- TUNE.ModesNewTier, Modes is new: its gold ring and arrow, and the goal plate's second
+	-- line says so (pickNear). Not before that tier: the plot's next steps (BUY!, the merge
+	-- pad) keep the strip and the chevron until then. No toast: a third row under the top
+	-- stack would sit on the plot's signs.
 	local tutorialWasOpen = false
 	State.changed.Event:Connect(function(data)
 		if data.tutorialDone ~= true then
 			tutorialWasOpen = true
-		elseif tutorialWasOpen then
+		elseif tutorialWasOpen and type(data.discovered) == "table" and Economy.highestTier(data.discovered) >= TUNE.ModesNewTier then
 			tutorialWasOpen = false
 			task.delay(TUNE.ModesNewDelay, function()
 				menu.modesNewUntil = os.clock() + TUNE.ModesNewSeconds
