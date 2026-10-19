@@ -34,6 +34,7 @@
 	waiting or up.
 ]]
 
+local AvatarEditorService = game:GetService("AvatarEditorService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -138,6 +139,9 @@ local MODE_QUIET = 20
 local MODE_HOLD = 90
 local MODE_BEGINS = { start = true, choose = true, queue = true, pick = true }
 local MODE_ENDS = { stop = true, finish = true, invalid = true, refused = true }
+
+-- Seconds between the "come back tomorrow" toast and the favorite prompt.
+local FAVORITE_AFTER_HINT = 3
 
 -- The streak line's right half: the saver's rule, and what it says once the saver is spent.
 local SAVER_RULE = "Miss a day? Your streak is saved once a week."
@@ -762,7 +766,17 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		-- The claim landed: today's card pops under a burst of confetti (the cash, its coins
 		-- and the crate reveal come through the usual Cash effect and Reward popup).
 		Net.event("Notify").OnClientEvent:Connect(function(payload)
-			if type(payload) ~= "table" or payload.kind ~= "Daily" or payload.event ~= "claimed" then
+			if type(payload) ~= "table" or payload.kind ~= "Daily" then
+				return
+			end
+			-- The once-per-player "come back tomorrow" toast: ask to favorite the game once it has been read.
+			if payload.event == "hint" then
+				task.delay(FAVORITE_AFTER_HINT, function()
+					pcall(AvatarEditorService.PromptSetFavorite, AvatarEditorService, game.PlaceId, Enum.AvatarItemType.Asset, true)
+				end)
+				return
+			end
+			if payload.event ~= "claimed" then
 				return
 			end
 			Kit.sound("Reward")

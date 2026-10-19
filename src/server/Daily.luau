@@ -22,7 +22,8 @@
 	    saved = true when the streak saver kept the streak? }
 
 	First day: once a player has finished the tutorial, has claimed and has been
-	playing for a few minutes, one toast names tomorrow's reward.
+	playing for a few minutes, one toast names tomorrow's reward, followed by
+	{ kind = "Daily", event = "hint" } (the client asks to favorite the game).
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -145,6 +146,8 @@ local function hint(session: Tycoon.Session, now: number)
 	local nextDay = DailyReward.card(d.streak + 1)
 	local reward = DailyReward.describe(nextDay, Format.money(cashFor(session, nextDay, false)), theme.Words.Chest)
 	Tycoon.toast(session, string.format("Come back tomorrow for Day %d: %s", nextDay, reward), "good")
+	-- The client follows it with Roblox's favorite prompt (favorites show on the home page).
+	Tycoon.notify(session, { kind = "Daily", event = "hint" })
 	Tycoon.markDirty(session)
 end
 

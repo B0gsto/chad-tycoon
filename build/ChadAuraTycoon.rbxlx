@@ -20388,13 +20388,37 @@ function PadLabelSize.overlapShare(a: Rect, b: Rect): number
 	return math.min(ox * oy / smaller, 1)
 end
 
+-- How much of rect `a`'s own area rect `b` covers (0..1).
+function PadLabelSize.coverShare(a: Rect, b: Rect): number
+	local ox = math.min(a.x + a.w / 2, b.x + b.w / 2) - math.max(a.x - a.w / 2, b.x - b.w / 2)
+	local oy = math.min(a.y + a.h / 2, b.y + b.h / 2) - math.max(a.y - a.h / 2, b.y - b.h / 2)
+	local area = a.w * a.h
+	if ox <= 0 or oy <= 0 or area <= 0 then
+		return 0
+	end
+	return math.min(ox * oy / area, 1)
+end
+
+-- Pixels rect `a` must move down for its top to clear the bottom of `occluder` (the HUD's
+-- top-centre stack) by `margin`: 0 when they do not overlap side to side or `a` already sits
+-- low enough, and never more than `limit`.
+function PadLabelSize.clearBelow(a: Rect, occluder: Rect, margin: number, limit: number): number
+	if a.x + a.w / 2 <= occluder.x - occluder.w / 2 or a.x - a.w / 2 >= occluder.x + occluder.w / 2 then
+		return 0
+	end
+	local need = (occluder.y + occluder.h / 2 + margin) - (a.y - a.h / 2)
+	return math.clamp(need, 0, limit)
+end
+
 -- Which labels to fade. `rects` are the labels' screen rects nearest the camera first,
 -- `faded[i]` whether label i is faded now and `keep[i]` (optional) whether it must stay shown
 -- (the pad the player is at). Returns the new faded flags: each label is checked against the
 -- nearer labels left shown, a shown one fading past FADE_OUT_SHARE, a faded one coming back
--- under FADE_IN_SHARE. Also returns each label's worst overlap share and the index of the
--- shown label giving it (0 when none), for diagnostics.
-function PadLabelSize.declutter(rects: { Rect }, faded: { boolean }, keep: { boolean }?): ({ boolean }, { number }, { number })
+-- under FADE_IN_SHARE. `hud` (optional) is a screen rect that always counts as shown (the HUD's
+-- top-centre stack): a label it covers (by share of the label's own area) fades the same way.
+-- Also returns each label's worst overlap share and the index of the shown label giving it
+-- (0 when none, -1 when it is the HUD), for diagnostics.
+function PadLabelSize.declutter(rects: { Rect }, faded: { boolean }, keep: { boolean }?, hud: Rect?): ({ boolean }, { number }, { number })
 	local result = table.create(#rects, false)
 	local shares = table.create(#rects, 0)
 	local covers = table.create(#rects, 0)
@@ -20402,6 +20426,12 @@ function PadLabelSize.declutter(rects: { Rect }, faded: { boolean }, keep: { boo
 	for i, rect in rects do
 		local worst, cover = 0, 0
 		if not (keep and keep[i]) then
+			if hud then
+				local share = PadLabelSize.coverShare(rect, hud)
+				if share > worst then
+					worst, cover = share, -1
+				end
+			end
 			for _, j in shown do
 				local share = PadLabelSize.overlapShare(rect, rects[j])
 				if share > worst then
@@ -25976,7 +26006,8 @@ return Cosmetics
 	    saved = true when the streak saver kept the streak? }
 
 	First day: once a player has finished the tutorial, has claimed and has been
-	playing for a few minutes, one toast names tomorrow's reward.
+	playing for a few minutes, one toast names tomorrow's reward, followed by
+	{ kind = "Daily", event = "hint" } (the client asks to favorite the game).
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -26099,6 +26130,8 @@ local function hint(session: Tycoon.Session, now: number)
 	local nextDay = DailyReward.card(d.streak + 1)
 	local reward = DailyReward.describe(nextDay, Format.money(cashFor(session, nextDay, false)), theme.Words.Chest)
 	Tycoon.toast(session, string.format("Come back tomorrow for Day %d: %s", nextDay, reward), "good")
+	-- The client follows it with Roblox's favorite prompt (favorites show on the home page).
+	Tycoon.notify(session, { kind = "Daily", event = "hint" })
 	Tycoon.markDirty(session)
 end
 
@@ -40790,7 +40823,13 @@ local MogLayout = require(Server.Modes.MogLayout)
 
 local TOPIC = "TestBridge"
 local MAP = "TestBridge"
-local RESULT_TTL = 3600
+-- Results live 2 minutes (the tool polls for 20 s, then deletes what it read): the
+-- experience's whole MemoryStore quota is 64 KB + 1 KB per player, so a TEST place with one
+-- player has ~68 KB, and an hour of results (every `join` ping poll writes one) filled it:
+-- every write failed with TotalMemoryOverLimit and `cmd` timed out.
+local RESULT_TTL = 120
+-- This server's own results are removed once the tool has had this long to read them.
+local RESULT_KEEP = 30
 local OWNER_USER_ID = 11718681576
 local MAX_GIVE = 1e15
 
@@ -41209,15 +41248,100 @@ COMMANDS.list = {
 
 local resultMap: MemoryStoreSortedMap? = nil
 
+-- A MemoryStore item holds at most 32 KB: past this the result is replaced by an error.
+local RESULT_MAX_BYTES = 30000
+
+-- A JSON-safe copy of `value`: non-finite numbers and non-JSON types become strings, and a
+-- table is an array only when its keys are exactly 1..n (anything else turns into an object
+-- with string keys), so JSONEncode cannot fail on it.
+local function jsonSafe(value: any, depth: number?): any
+	local d = depth or 0
+	local t = type(value)
+	if t == "number" then
+		return if value ~= value or value == math.huge or value == -math.huge then tostring(value) else value
+	elseif t == "string" or t == "boolean" or t == "nil" then
+		return value
+	elseif t ~= "table" or d > 12 then
+		return tostring(value)
+	end
+	local n, count = #value, 0
+	for _ in value do
+		count += 1
+	end
+	local out = {}
+	if count == n then
+		for i = 1, n do
+			out[i] = jsonSafe(value[i], d + 1)
+		end
+	else
+		for key, v in value do
+			out[tostring(key)] = jsonSafe(v, d + 1)
+		end
+	end
+	return out
+end
+
+-- Results this server wrote and when, oldest first (removed after RESULT_KEEP).
+local written: { { id: string, at: number } } = {}
+
+-- Removes this server's results older than `age` seconds (all of them at 0).
+local function pruneResults(age: number)
+	local now = os.clock()
+	while written[1] and now - written[1].at >= age do
+		local old = table.remove(written, 1) :: { id: string, at: number }
+		pcall(function()
+			assert(resultMap, "result map missing"):RemoveAsync(old.id)
+		end)
+	end
+end
+
 local function writeResult(id: string, result: { [string]: any })
 	result.jobId = game.JobId
 	result.placeVersion = game.PlaceVersion
 	result.at = os.time()
-	local ok, err = pcall(function()
-		assert(resultMap, "result map missing"):SetAsync(id, HttpService:JSONEncode(result), RESULT_TTL)
-	end)
-	if not ok then
+	-- Encode first: a result JSONEncode rejects (a mixed table, NaN) or one past the item size
+	-- limit used to fail the write silently, and the caller timed out without a word.
+	local okEncode, json = pcall(HttpService.JSONEncode, HttpService, result)
+	if not okEncode then
+		result.writeError = "JSONEncode failed: " .. tostring(json)
+		okEncode, json = pcall(HttpService.JSONEncode, HttpService, jsonSafe(result))
+	end
+	if not okEncode or #json > RESULT_MAX_BYTES then
+		json = HttpService:JSONEncode({
+			ok = false,
+			cmd = result.cmd,
+			error = if okEncode
+				then string.format("result too large: %d bytes (limit %d)", #json, RESULT_MAX_BYTES)
+				else "result not encodable: " .. tostring(json),
+			writeError = result.writeError,
+			jobId = result.jobId,
+			placeVersion = result.placeVersion,
+			at = result.at,
+		})
+	end
+	pruneResults(RESULT_KEEP)
+	local function write(): (boolean, any)
+		return pcall(function()
+			assert(resultMap, "result map missing"):SetAsync(id, json, RESULT_TTL)
+		end)
+	end
+	local ok, err = write()
+	if not ok and string.find(tostring(err), "MemoryOverLimit", 1, true) then
+		-- Out of quota: drop every result this server still holds and try once more.
+		pruneResults(0)
+		ok, err = write()
+	end
+	if ok then
+		table.insert(written, { id = id, at = os.clock() })
+	else
 		warn("[TestBridge] result write failed: " .. tostring(err))
+		pcall(function()
+			assert(resultMap, "result map missing"):SetAsync(
+				id,
+				HttpService:JSONEncode({ ok = false, cmd = result.cmd, error = "result write failed: " .. tostring(err), bytes = #json }),
+				RESULT_TTL
+			)
+		end)
 	end
 end
 
@@ -82403,9 +82527,16 @@ return Orbs
 	A BillboardGui does not honour GroupTransparency (the TEST bridge's `labels` showed a group
 	at 1 holding every element while the sign still drew), so once faded out the group is also
 	hidden (Visible = false) and shown again as it starts back in.
+
+	The HUD's top-centre stack (count/surge row, NEXT plate with its afford hint, run or
+	tutorial pill; up to three rows) also hides what is under it: it joins the declutter as a
+	shown sign, so a label it covers fades like any other. The kept label is moved down instead
+	(along the camera's down, by just enough pixels for its top to clear the stack), easing
+	there and back over NUDGE_RATE.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
+local GuiService = game:GetService("GuiService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -82426,10 +82557,17 @@ local BLEND_EPSILON = 0.004
 local DECLUTTER_PERIOD = 0.1
 local FADE_TIME = 0.15
 local FADE_INFO = TweenInfo.new(FADE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+-- The HUD's top-centre stack (direct children of a ScreenGui, by name).
+local HUD_FRAMES = { Units = true, DepositStrip = true, NextGoal = true, RunPill = true, TutorialPill = true }
+-- Pixels the kept label's top keeps under the stack, the most it is moved (share of the
+-- viewport's height), and how fast (per second, exponential) it eases to its nudge.
+local HUD_MARGIN = 6
+local NUDGE_LIMIT = 0.35
+local NUDGE_RATE = 12
 
 local PadLabels = {}
 
-type Entry = { base: UDim2, capped: boolean, w: number, h: number }
+type Entry = { base: UDim2, capped: boolean, w: number, h: number, offset: Vector3 }
 -- A label with two placements and how far (0 near .. 1 far) it currently sits between them.
 type Glide = { near: Vector3, far: Vector3, t: number }
 
@@ -82440,6 +82578,9 @@ local glides: { [BillboardGui]: Glide } = {}
 -- Labels faded (or fading back in) by the declutter: the group holding their elements.
 type Fade = { group: CanvasGroup, out: boolean, tween: Tween? }
 local fades: { [BillboardGui]: Fade } = {}
+-- Labels moved down clear of the HUD stack: studs along the camera's down now and wanted.
+type Nudge = { studs: number, target: number }
+local nudges: { [BillboardGui]: Nudge } = {}
 local sinceDeclutter = 0
 -- Diagnostics for the TEST bridge (PadLabels.diagnostics): passes run, the last error and the
 -- last pass's labels, with why each was skipped or how it was judged.
@@ -82451,6 +82592,9 @@ local diag = {
 	at = 0,
 	plot = nil :: string?,
 	viewport = nil :: { number }?,
+	hudRect = nil :: { number }?,
+	hudFrames = {} :: { string },
+	inset = nil :: { number }?,
 }
 
 local function baseOf(gui: BillboardGui): UDim2
@@ -82462,7 +82606,7 @@ local function add(gui: Instance)
 	if not gui:IsA("BillboardGui") or entries[gui] then
 		return
 	end
-	entries[gui] = { base = baseOf(gui), capped = false, w = 0, h = 0 }
+	entries[gui] = { base = baseOf(gui), capped = false, w = 0, h = 0, offset = gui.StudsOffsetWorldSpace }
 	local near, far = gui:GetAttribute("NearOffset"), gui:GetAttribute("FarOffset")
 	if typeof(near) == "Vector3" and typeof(far) == "Vector3" and (near - far).Magnitude > 0.01 then
 		glides[gui] = { near = near, far = far, t = 1 }
@@ -82479,6 +82623,7 @@ local function remove(gui: Instance)
 	entries[gui :: BillboardGui] = nil
 	glides[gui :: BillboardGui] = nil
 	signs[gui :: BillboardGui] = nil
+	nudges[gui :: BillboardGui] = nil
 	local fade = fades[gui :: BillboardGui]
 	if fade then
 		fades[gui :: BillboardGui] = nil
@@ -82573,13 +82718,80 @@ local function glide(eye: Vector3)
 		-- Always land exactly on either end; in between only move past BLEND_EPSILON.
 		if t ~= g.t and (t == 0 or t == 1 or math.abs(t - g.t) > BLEND_EPSILON) then
 			g.t = t
-			gui.StudsOffsetWorldSpace = g.near:Lerp(g.far, t)
+			if not nudges[gui] then
+				gui.StudsOffsetWorldSpace = g.near:Lerp(g.far, t)
+			end
 		end
 	end
 end
 
 local function anchorOf(gui: BillboardGui, adornee: BasePart): Vector3
 	return adornee.Position + adornee.CFrame:VectorToWorldSpace(gui.StudsOffsetWorldSpace)
+end
+
+-- A label's offset before any HUD nudge: its glide's blend, or where World.Pads put it.
+local function baseOffset(gui: BillboardGui): Vector3
+	local g = glides[gui]
+	if g then
+		return g.near:Lerp(g.far, g.t)
+	end
+	local entry = entries[gui]
+	return if entry then entry.offset else gui.StudsOffsetWorldSpace
+end
+
+-- Eases the nudged labels toward their wanted nudge and places them (base + nudge along the
+-- camera's down); a label eased back to none gets its base offset and leaves the table.
+local function placeNudged(camera: Camera, dt: number)
+	if next(nudges) == nil then
+		return
+	end
+	local alpha = 1 - math.exp(-NUDGE_RATE * dt)
+	local down = -camera.CFrame.UpVector
+	for gui, n in nudges do
+		local adornee = gui.Adornee
+		n.studs += (n.target - n.studs) * alpha
+		if n.target == 0 and n.studs < 0.01 then
+			nudges[gui] = nil
+			gui.StudsOffsetWorldSpace = baseOffset(gui)
+		elseif adornee and adornee:IsA("BasePart") then
+			gui.StudsOffsetWorldSpace = baseOffset(gui) + adornee.CFrame:VectorToObjectSpace(down * n.studs)
+		end
+	end
+end
+
+-- The HUD's top-centre stack on screen (viewport px, a centre rect) and the frames in it.
+local function hudStack(): (PadLabelSize.Rect?, { string })
+	local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	if not playerGui then
+		return nil, {}
+	end
+	local inset = GuiService:GetGuiInset()
+	diag.inset = { math.round(inset.X), math.round(inset.Y) }
+	local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
+	local names = {}
+	for _, screen in playerGui:GetChildren() do
+		if not (screen:IsA("ScreenGui") and screen.Enabled) then
+			continue
+		end
+		local shift = if screen.IgnoreGuiInset then Vector2.zero else inset
+		for _, child in screen:GetChildren() do
+			if not (HUD_FRAMES[child.Name] and child:IsA("GuiObject") and child.Visible) then
+				continue
+			end
+			local pos, size = child.AbsolutePosition + shift, child.AbsoluteSize
+			-- (A window parks the stack above the screen while it is open.)
+			if size.X <= 0 or size.Y <= 0 or pos.Y + size.Y <= 0 then
+				continue
+			end
+			left, top = math.min(left, pos.X), math.min(top, pos.Y)
+			right, bottom = math.max(right, pos.X + size.X), math.max(bottom, pos.Y + size.Y)
+			table.insert(names, child.Name)
+		end
+	end
+	if #names == 0 then
+		return nil, names
+	end
+	return { x = (left + right) / 2, y = (top + bottom) / 2, w = right - left, h = bottom - top }, names
 end
 
 -- The fade group's state for the diagnostics: what it holds and what is left outside it.
@@ -82602,7 +82814,14 @@ local function groupReport(gui: BillboardGui, fade: Fade): { [string]: any }
 	}
 end
 
-type Candidate = { gui: BillboardGui, rect: PadLabelSize.Rect, distance: number, keep: boolean, sign: boolean }
+type Candidate = {
+	gui: BillboardGui,
+	rect: PadLabelSize.Rect,
+	distance: number,
+	depth: number,
+	keep: boolean,
+	sign: boolean,
+}
 
 -- A sign's name in the diagnostics: a pad label by its pad, another sign by its own name and
 -- where it stands (the two crackers' READY! pills share a name).
@@ -82650,7 +82869,8 @@ local function declutter(camera: Camera)
 			end
 			return
 		end
-		local pos = anchorOf(gui, adornee)
+		-- Judged at its base offset: the HUD nudge is worked out below and must not feed back.
+		local pos = adornee.Position + adornee.CFrame:VectorToWorldSpace(baseOffset(gui))
 		local distance = (pos - eye).Magnitude
 		local depth = (pos - eye):Dot(look)
 		if depth <= 0 or (adornee.Position - eye).Magnitude > gui.MaxDistance then
@@ -82669,8 +82889,14 @@ local function declutter(camera: Camera)
 			skip(gui, sign, "off screen")
 			return
 		end
-		local c: Candidate =
-			{ gui = gui, rect = { x = point.X, y = point.Y, w = w, h = h }, distance = distance, keep = false, sign = sign }
+		local c: Candidate = {
+			gui = gui,
+			rect = { x = point.X, y = point.Y, w = w, h = h },
+			distance = distance,
+			depth = depth,
+			keep = false,
+			sign = sign,
+		}
 		table.insert(list, c)
 		if feet and not sign then
 			local gap = Vector2.new(adornee.Position.X - feet.X, adornee.Position.Z - feet.Z).Magnitude
@@ -82687,8 +82913,29 @@ local function declutter(camera: Camera)
 			consider(gui, base, true)
 		end
 	end
+	-- The HUD stack: the kept label moves down clear of it (its rect judged where it is going),
+	-- every other label it covers fades.
+	local hud, hudNames = hudStack()
+	diag.hudFrames = hudNames
+	local nudgePx = 0
 	if nearest then
 		nearest.keep = true
+		if hud then
+			nudgePx = PadLabelSize.clearBelow(nearest.rect, hud, HUD_MARGIN, NUDGE_LIMIT * viewport.Y)
+			nearest.rect.y += nudgePx
+		end
+		local studs = nudgePx / PadLabelSize.pixelsPerStud(nearest.depth, viewport.Y, fov)
+		local n = nudges[nearest.gui]
+		if n then
+			n.target = studs
+		elseif studs > 0 then
+			nudges[nearest.gui] = { studs = 0, target = studs }
+		end
+	end
+	for gui, n in nudges do
+		if not (nearest and gui == nearest.gui) then
+			n.target = 0
+		end
 	end
 	-- The kept label first (so it always counts as shown), then nearest the camera first.
 	table.sort(list, function(a, b)
@@ -82704,7 +82951,7 @@ local function declutter(camera: Camera)
 		faded[i] = fade ~= nil and fade.out
 		keep[i] = c.keep
 	end
-	local result, shares, covers = PadLabelSize.declutter(rects, faded, keep)
+	local result, shares, covers = PadLabelSize.declutter(rects, faded, keep, hud)
 	local seen: { [BillboardGui]: boolean } = {}
 	local report: { any } = {}
 	for i, c in list do
@@ -82715,6 +82962,7 @@ local function declutter(camera: Camera)
 		local r = c.rect
 		local cover = list[covers[i]]
 		local fade = fades[c.gui]
+		local n = nudges[c.gui]
 		table.insert(report, {
 			name = nameOf(c.gui, c.sign),
 			kind = if c.sign then "sign" else "pad",
@@ -82725,7 +82973,9 @@ local function declutter(camera: Camera)
 			faded = result[i],
 			fadeGroup = if fade then groupReport(c.gui, fade) else nil,
 			overlap = math.round(shares[i] * 1000) / 1000,
-			cover = if cover then nameOf(cover.gui, cover.sign) else nil,
+			cover = if covers[i] == -1 then "HUD" elseif cover then nameOf(cover.gui, cover.sign) else nil,
+			hudOverlap = if hud then math.round(PadLabelSize.coverShare(r, hud) * 1000) / 1000 else 0,
+			nudge = if n then { px = math.round(if c.keep then nudgePx else 0), studs = math.round(n.studs * 100) / 100 } else nil,
 		})
 	end
 	for _, s in skipped do
@@ -82734,6 +82984,9 @@ local function declutter(camera: Camera)
 	diag.labels = report
 	diag.plot = if plot then plot.Name else nil
 	diag.viewport = { math.round(viewport.X), math.round(viewport.Y) }
+	diag.hudRect = if hud
+		then { math.round(hud.x - hud.w / 2), math.round(hud.y - hud.h / 2), math.round(hud.w), math.round(hud.h) }
+		else nil
 	diag.at = os.clock()
 	-- Labels out of view or off the plot come back.
 	for gui, fade in fades do
@@ -82763,6 +83016,7 @@ local function step(dt: number)
 	local viewportY = camera.ViewportSize.Y
 	local fov = camera.FieldOfView
 	glide(eye)
+	placeNudged(camera, dt)
 	for gui, entry in entries do
 		local adornee = gui.Adornee
 		if not (adornee and adornee:IsA("BasePart") and gui.Enabled) then
@@ -82806,6 +83060,9 @@ function PadLabels.diagnostics(): { [string]: any }
 		end)(),
 		plot = diag.plot,
 		viewport = diag.viewport,
+		inset = diag.inset,
+		hudRect = diag.hudRect,
+		hudFrames = diag.hudFrames,
 		labels = diag.labels,
 	}
 end
@@ -103966,6 +104223,7 @@ return CardioHud
 	waiting or up.
 ]]
 
+local AvatarEditorService = game:GetService("AvatarEditorService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -104070,6 +104328,9 @@ local MODE_QUIET = 20
 local MODE_HOLD = 90
 local MODE_BEGINS = { start = true, choose = true, queue = true, pick = true }
 local MODE_ENDS = { stop = true, finish = true, invalid = true, refused = true }
+
+-- Seconds between the "come back tomorrow" toast and the favorite prompt.
+local FAVORITE_AFTER_HINT = 3
 
 -- The streak line's right half: the saver's rule, and what it says once the saver is spent.
 local SAVER_RULE = "Miss a day? Your streak is saved once a week."
@@ -104694,7 +104955,17 @@ function DailyWindow.build(screen: ScreenGui, deps: Deps): Daily
 		-- The claim landed: today's card pops under a burst of confetti (the cash, its coins
 		-- and the crate reveal come through the usual Cash effect and Reward popup).
 		Net.event("Notify").OnClientEvent:Connect(function(payload)
-			if type(payload) ~= "table" or payload.kind ~= "Daily" or payload.event ~= "claimed" then
+			if type(payload) ~= "table" or payload.kind ~= "Daily" then
+				return
+			end
+			-- The once-per-player "come back tomorrow" toast: ask to favorite the game once it has been read.
+			if payload.event == "hint" then
+				task.delay(FAVORITE_AFTER_HINT, function()
+					pcall(AvatarEditorService.PromptSetFavorite, AvatarEditorService, game.PlaceId, Enum.AvatarItemType.Asset, true)
+				end)
+				return
+			end
+			if payload.event ~= "claimed" then
 				return
 			end
 			Kit.sound("Reward")
@@ -105212,9 +105483,11 @@ local TUNE = {
 	MenuBackRadius = 14,
 	-- Only one menu button calls at a time (MENU_RANK): its badge beats and it wears its ring
 	-- (Index, Modes) or breathes (Daily); the others keep a still badge.
-	-- Modes is new (the tutorial was finished this session): after ModesNewDelay its gold ring
-	-- pulses, a gold arrow bobs over it and the goal plate's second line says so, until Modes
-	-- is opened or for ModesNewSeconds.
+	-- Modes is new (the tutorial was finished this session and ModesNewTier found): after
+	-- ModesNewDelay its gold ring pulses, a gold arrow bobs over it and the goal plate's second
+	-- line says so, until Modes is opened or for ModesNewSeconds. Until that tier the strip
+	-- and the chevron point at the plot (the next buy, the merge pad) instead.
+	ModesNewTier = 3,
 	ModesNewDelay = 3,
 	ModesNewSeconds = 240,
 	ModesArrow = 26, -- the arrow's head, px
@@ -106086,14 +106359,16 @@ function Hud.build(screen: ScreenGui, handlers: Handlers, sounds: any)
 		handlers.openWindow("Daily", { origin = Hud.buttons.Daily })
 	end)
 	local dailyCaption = dailyButton:FindFirstChild("Caption") :: TextLabel
-	-- Right after the tutorial finishes (watched live this session) Modes is new: its gold ring
-	-- and arrow, and the goal plate's second line says so (pickNear). No toast: a third row
-	-- under the top stack would sit on the plot's signs.
+	-- Once the tutorial is finished (watched live this session) and the player has found
+	-- TUNE.ModesNewTier, Modes is new: its gold ring and arrow, and the goal plate's second
+	-- line says so (pickNear). Not before that tier: the plot's next steps (BUY!, the merge
+	-- pad) keep the strip and the chevron until then. No toast: a third row under the top
+	-- stack would sit on the plot's signs.
 	local tutorialWasOpen = false
 	State.changed.Event:Connect(function(data)
 		if data.tutorialDone ~= true then
 			tutorialWasOpen = true
-		elseif tutorialWasOpen then
+		elseif tutorialWasOpen and type(data.discovered) == "table" and Economy.highestTier(data.discovered) >= TUNE.ModesNewTier then
 			tutorialWasOpen = false
 			task.delay(TUNE.ModesNewDelay, function()
 				menu.modesNewUntil = os.clock() + TUNE.ModesNewSeconds
