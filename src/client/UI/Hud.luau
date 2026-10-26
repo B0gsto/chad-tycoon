@@ -349,7 +349,7 @@ local TUNE = {
 	-- ModesNewDelay its gold ring pulses, a gold arrow bobs over it and the goal plate's second
 	-- line says so, until Modes is opened or for ModesNewSeconds. Until that tier the strip
 	-- and the chevron point at the plot (the next buy, the merge pad) instead.
-	ModesNewTier = 3,
+	ModesNewTier = 5,
 	ModesNewDelay = 3,
 	ModesNewSeconds = 240,
 	ModesArrow = 26, -- the arrow's head, px
